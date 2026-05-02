@@ -2,20 +2,24 @@ package ops //nolint:testpackage // internal test needs access to unexported ops
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
 )
 
 func TestOpsSpawnerUsesRuntime(t *testing.T) {
+	t.Setenv("PWD", "/wrong/root")
+	t.Setenv("GIT_DIR", "/wrong/root/.git")
+	workdir := t.TempDir()
 	spawner := NewExecSpawner(RuntimeSpec{
 		Command: "sh",
 		BuildArgs: func(model, prompt string) []string {
-			return []string{"-c", "printf '%s|%s|%s' \"$1\" \"$2\" \"$PWD\"", "sh", model, prompt}
+			return []string{"-c", "printf '%s|%s|%s|%s' \"$1\" \"$2\" \"$PWD\" \"${GIT_DIR-unset}\"", "sh", model, prompt}
 		},
 	})
 
-	proc, err := spawner.Spawn(context.Background(), "balanced", "review this", t.TempDir())
+	proc, err := spawner.Spawn(context.Background(), "balanced", "review this", workdir)
 	if err != nil {
 		t.Fatalf("Spawn() error = %v", err)
 	}
@@ -26,8 +30,38 @@ func TestOpsSpawnerUsesRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Output() error = %v", err)
 	}
-	if !strings.Contains(output, "balanced|review this|") {
+	if output != "balanced|review this|"+workdir+"|unset" {
 		t.Fatalf("output = %q, want runtime-built args to include model and prompt", output)
+	}
+}
+
+func TestOpsSpawnerSetsPWDWhenBuildEnvProvided(t *testing.T) {
+	t.Setenv("PWD", "/wrong/root")
+	t.Setenv("GIT_WORK_TREE", "/wrong/root")
+	workdir := t.TempDir()
+	spawner := NewExecSpawner(RuntimeSpec{
+		Command: "sh",
+		BuildArgs: func(_, _ string) []string {
+			return []string{"-c", "printf '%s|%s' \"$PWD\" \"${GIT_WORK_TREE-unset}\""}
+		},
+		BuildEnv: func() []string {
+			return append(os.Environ(), "CUSTOM_ENV=1")
+		},
+	})
+
+	proc, err := spawner.Spawn(context.Background(), "balanced", "review this", workdir)
+	if err != nil {
+		t.Fatalf("Spawn() error = %v", err)
+	}
+	if err := proc.Wait(); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	output, err := proc.Output()
+	if err != nil {
+		t.Fatalf("Output() error = %v", err)
+	}
+	if output != workdir+"|unset" {
+		t.Fatalf("env report = %q, want %q", output, workdir+"|unset")
 	}
 }
 

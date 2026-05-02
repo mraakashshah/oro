@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"oro/pkg/memory"
+	"oro/pkg/processenv"
 	"oro/pkg/protocol"
 )
 
@@ -394,6 +395,10 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 
 	w.resetForNewAssignment(msg.Assign)
 
+	if err := validateAssignedWorktree(msg.Assign.Worktree); err != nil {
+		return err
+	}
+
 	prompt, model := BuildAssignPrompt(msg.Assign)
 	proc, stdout, _, err := w.spawner.Spawn(ctx, model, prompt, msg.Assign.Worktree)
 	if err != nil {
@@ -411,6 +416,17 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	go w.monitorSubprocessExit(proc)
 	go w.watchContext(ctx)
 	go w.awaitSubprocessAndReport(ctx) // wait for exit, run QG, send DONE
+	return nil
+}
+
+func validateAssignedWorktree(worktree string) error {
+	info, err := os.Stat(worktree)
+	if err != nil {
+		return fmt.Errorf("assigned worktree unavailable: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("assigned worktree %q is not a directory", worktree)
+	}
 	return nil
 }
 
@@ -719,13 +735,14 @@ func (w *Worker) extractImplicitMemories(ctx context.Context) {
 	store := w.memStore
 	text := w.sessionText.String()
 	beadID := w.beadID
+	worktree := w.worktree
 	w.mu.Unlock()
 
 	if spawner == nil || store == nil {
 		return
 	}
 
-	if err := memory.ExtractWithLLM(ctx, spawner, text, beadID, store); err != nil {
+	if err := memory.ExtractWithLLMInWorkdir(ctx, spawner, text, beadID, store, worktree); err != nil {
 		fmt.Fprintf(os.Stderr, "worker %s: extract implicit memories: %v\n", w.ID, err)
 	}
 }
@@ -1241,6 +1258,7 @@ func findQualityGateScript(ctx context.Context, worktree string) (string, error)
 	for i, gitPath := range gitPaths {
 		restoreCmd := exec.CommandContext(ctx, "git", "checkout", "HEAD", "--", gitPath) //nolint:gosec // gitPath is from hardcoded constant slice above
 		restoreCmd.Dir = worktree
+		restoreCmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
 		if restoreCmd.Run() == nil {
 			if _, err := os.Stat(candidates[i]); err == nil {
 				return candidates[i], nil
@@ -1265,7 +1283,7 @@ func RunQualityGate(ctx context.Context, worktree string, skipMutation bool) (pa
 
 	cmd := exec.CommandContext(ctx, "bash", scriptPath) //nolint:gosec // script path constructed from worktree, not user input
 	cmd.Dir = worktree
-	cmd.Env = qualityGateEnv(skipMutation)
+	cmd.Env = qualityGateEnv(worktree, skipMutation)
 
 	out, err := cmd.CombinedOutput()
 	output = string(out)
@@ -1280,7 +1298,7 @@ func RunQualityGate(ctx context.Context, worktree string, skipMutation bool) (pa
 	return true, output, nil
 }
 
-func qualityGateEnv(skipMutation bool) []string {
+func qualityGateEnv(worktree string, skipMutation bool) []string {
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, kv := range os.Environ() {
 		if strings.HasPrefix(kv, "ORO_SKIP_MUTATION=") {
@@ -1291,7 +1309,7 @@ func qualityGateEnv(skipMutation bool) []string {
 	if skipMutation {
 		env = append(env, "ORO_SKIP_MUTATION=1")
 	}
-	return env
+	return processenv.ForWorkdir(env, worktree)
 }
 
 // ClaudeSpawner is the production StreamingSpawner that invokes `claude -p`.
@@ -1321,7 +1339,7 @@ func buildClaudeArgs(model, prompt string) []string {
 // environment, leaking CLAUDECODE and triggering the nested-session guard.
 // When ORO_PROJECT is set, also appends CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1
 // so claude picks up CLAUDE.md from directories added via --add-dir.
-func buildClaudeEnv() []string {
+func buildClaudeEnv(workdir string) []string {
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, e := range os.Environ() {
 		if strings.HasPrefix(e, "CLAUDECODE=") ||
@@ -1334,7 +1352,7 @@ func buildClaudeEnv() []string {
 		env = append(env, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1")
 	}
 	env = append(env, "ORO_WORKER=1")
-	return env
+	return processenv.ForWorkdir(env, workdir)
 }
 
 // Spawn starts a `claude -p` subprocess with the given prompt and working directory.
@@ -1350,7 +1368,7 @@ func (s *ClaudeSpawner) Spawn(ctx context.Context, model, prompt, workdir string
 	cmd := exec.CommandContext(ctx, "claude", args...) //nolint:gosec // args are constructed internally by buildClaudeArgs, not user input
 	cmd.Dir = workdir
 	cmd.Stderr = os.Stderr
-	cmd.Env = buildClaudeEnv()
+	cmd.Env = buildClaudeEnv(workdir)
 
 	// Open /dev/null for stdin to prevent the spawned process from inheriting parent stdin,
 	// which can cause claude -p to hang if the parent's stdin is a pipe.

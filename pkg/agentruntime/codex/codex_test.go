@@ -2,6 +2,8 @@ package codex_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -42,6 +44,38 @@ func TestCodexRuntimeSpawnContract(t *testing.T) {
 	}
 	if strings.Contains(joined, "claude") {
 		t.Fatalf("Codex contract must not contain Claude-specific flags or paths, got args %v", withoutModel)
+	}
+}
+
+func TestCodexWorkerSpawnerSetsPWDToWorkdir(t *testing.T) {
+	t.Setenv("PWD", "/wrong/root")
+	t.Setenv("GIT_DIR", "/wrong/root/.git")
+	workdir := t.TempDir()
+	binDir := t.TempDir()
+	report := filepath.Join(t.TempDir(), "pwd.txt")
+	fakeCodex := filepath.Join(binDir, "codex")
+	script := "#!/bin/sh\nprintf '%s|%s' \"$PWD\" \"${GIT_DIR-unset}\" > \"$ORO_TEST_REPORT\"\n"
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("ORO_TEST_REPORT", report)
+
+	spawner := codexruntime.NewWorkerSpawner()
+	proc, stdout, _, err := spawner.Spawn(context.Background(), "gpt-5-codex", "finish the bead", workdir)
+	if err != nil {
+		t.Fatalf("Spawn() error = %v", err)
+	}
+	defer stdout.Close()
+	if err := proc.Wait(); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	gotBytes, err := os.ReadFile(report)
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	if got := string(gotBytes); got != workdir+"|unset" {
+		t.Fatalf("env report = %q, want %q", got, workdir+"|unset")
 	}
 }
 

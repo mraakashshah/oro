@@ -57,7 +57,7 @@ func TestBuildClaudeEnv_StripsClaudecode(t *testing.T) {
 	t.Setenv("CLAUDECODE", "1")
 	t.Setenv("ORO_PROJECT", "")
 
-	env := buildClaudeEnv()
+	env := buildClaudeEnv("")
 	if env == nil {
 		t.Fatal("expected non-nil env (nil would inherit parent env including CLAUDECODE)")
 	}
@@ -75,7 +75,7 @@ func TestBuildClaudeEnv_AddsAdditionalDirs(t *testing.T) {
 	t.Setenv("CLAUDECODE", "1")
 	t.Setenv("ORO_PROJECT", "p")
 
-	env := buildClaudeEnv()
+	env := buildClaudeEnv("")
 	if env == nil {
 		t.Fatal("expected non-nil env")
 	}
@@ -90,5 +90,29 @@ func TestBuildClaudeEnv_AddsAdditionalDirs(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 to be present")
+	}
+}
+
+func TestBuildClaudeEnvSetsPWDToWorkdir(t *testing.T) {
+	t.Setenv("PWD", "/wrong/root")
+	t.Setenv("GIT_DIR", "/wrong/root/.git")
+	t.Setenv("GIT_WORK_TREE", "/wrong/root")
+	workdir := t.TempDir()
+
+	env := buildClaudeEnv(workdir)
+	found := false
+	for _, e := range env {
+		if e == "PWD="+workdir {
+			found = true
+		}
+		if strings.HasPrefix(e, "PWD=") && e != "PWD="+workdir {
+			t.Fatalf("PWD was not normalized to workdir: %q", e)
+		}
+		if strings.HasPrefix(e, "GIT_DIR=") || strings.HasPrefix(e, "GIT_WORK_TREE=") {
+			t.Fatalf("git override env leaked: %q", e)
+		}
+	}
+	if !found {
+		t.Fatalf("expected PWD=%s in env", workdir)
 	}
 }

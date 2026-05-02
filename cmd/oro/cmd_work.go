@@ -529,10 +529,10 @@ func hasCommitsAhead(repoRoot, branch, targetBranch string) bool {
 // codeSearchContext runs a timed FTS5 search against the code index and
 // formats the top results for prompt injection. Returns empty string on
 // error or timeout (5 s) — errors are non-fatal so the worker always runs.
-func codeSearchContext(ctx context.Context, idx *codesearch.CodeIndex, query string) string {
+func codeSearchContext(ctx context.Context, idx *codesearch.CodeIndex, query, worktree string) string {
 	sctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	results, _ := idx.Search(sctx, query, 5)
+	results, _ := idx.SearchInWorkdir(sctx, query, 5, worktree)
 	return codesearch.FormatResults(results)
 }
 
@@ -552,7 +552,7 @@ func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree
 
 	var codeCtx string
 	if deps.codeIndex != nil {
-		codeCtx = codeSearchContext(ctx, deps.codeIndex, cfg.bead.Title)
+		codeCtx = codeSearchContext(ctx, deps.codeIndex, cfg.bead.Title, worktree)
 	}
 
 	prompt := worker.AssemblePrompt(worker.PromptParams{
@@ -587,7 +587,7 @@ func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree
 		if deps.memStore != nil {
 			memInserter = deps.memStore
 		}
-		worker.DrainOutput(ctx, stdout, deps.spawner.StreamFormat(), memInserter, cfg.beadID, &memory.CLISpawner{}, writers...)
+		worker.DrainOutputInWorkdir(ctx, stdout, deps.spawner.StreamFormat(), memInserter, cfg.beadID, &memory.CLISpawner{}, worktree, writers...)
 	}
 
 	if err := proc.Wait(); err != nil {

@@ -69,6 +69,7 @@ type mockSpawner struct {
 	stdout   io.ReadCloser  // optional: simulated subprocess stdout
 	stdin    io.WriteCloser // optional: simulated subprocess stdin
 	format   worker.StreamFormat
+	onSpawn  func(model, prompt, workdir string) error
 }
 
 type spawnCall struct {
@@ -85,6 +86,11 @@ func (s *mockSpawner) Spawn(_ context.Context, model, prompt, workdir string) (w
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, spawnCall{Model: model, Prompt: prompt, Workdir: workdir})
+	if s.onSpawn != nil {
+		if err := s.onSpawn(model, prompt, workdir); err != nil {
+			return nil, nil, nil, err
+		}
+	}
 	if s.spawnErr != nil {
 		return nil, nil, nil, s.spawnErr
 	}
@@ -104,6 +110,15 @@ func (s *mockSpawner) SpawnCalls() []spawnCall {
 	dst := make([]spawnCall, len(s.calls))
 	copy(dst, s.calls)
 	return dst
+}
+
+func validAssignWorktree(t *testing.T, name string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create assign worktree: %v", err)
+	}
+	return dir
 }
 
 // readMessage reads a single line-delimited JSON message from a connection.
@@ -177,6 +192,7 @@ func TestReceiveAssign_StoresState(t *testing.T) {
 	t.Parallel()
 
 	spawner := newMockSpawner()
+	worktree := validAssignWorktree(t, "wt-42")
 	dispatcherConn, workerConn := net.Pipe()
 	defer func() { _ = dispatcherConn.Close() }()
 
@@ -192,7 +208,7 @@ func TestReceiveAssign_StoresState(t *testing.T) {
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "bead-42",
-			Worktree: "/tmp/wt-42",
+			Worktree: worktree,
 		},
 	})
 
@@ -216,11 +232,95 @@ func TestReceiveAssign_StoresState(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 spawn call, got %d", len(calls))
 	}
-	if calls[0].Workdir != "/tmp/wt-42" {
-		t.Errorf("expected workdir /tmp/wt-42, got %s", calls[0].Workdir)
+	if calls[0].Workdir != worktree {
+		t.Errorf("expected workdir %s, got %s", worktree, calls[0].Workdir)
 	}
 	if calls[0].Prompt == "" {
 		t.Error("expected non-empty prompt")
+	}
+
+	cancel()
+	<-errCh
+}
+
+func TestReceiveAssign_FailsClosedWhenWorktreeMissing(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-missing", workerConn, spawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	missingWorktree := filepath.Join(t.TempDir(), "missing-worktree")
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-missing-worktree",
+			Worktree: missingWorktree,
+		},
+	})
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected worker to fail closed when assigned worktree is missing")
+		}
+		if !strings.Contains(err.Error(), "assigned worktree unavailable") {
+			t.Fatalf("expected assigned worktree unavailable error, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not fail closed for missing assigned worktree")
+	}
+	if calls := spawner.SpawnCalls(); len(calls) != 0 {
+		t.Fatalf("spawner called for missing worktree: %+v", calls)
+	}
+}
+
+func TestReceiveAssign_SentinelEditUsesAssignedWorktree(t *testing.T) {
+	mainRoot := validAssignWorktree(t, "main-root")
+	assignedWorktree := validAssignWorktree(t, "assigned-worktree")
+	t.Setenv("PWD", mainRoot)
+	t.Setenv("GIT_DIR", filepath.Join(mainRoot, ".git"))
+	t.Setenv("GIT_WORK_TREE", mainRoot)
+
+	spawner := newMockSpawner()
+	spawner.onSpawn = func(_ string, _ string, workdir string) error {
+		return os.WriteFile(filepath.Join(workdir, "sentinel.txt"), []byte("worker edit\n"), 0o600)
+	}
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-sentinel", workerConn, spawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-sentinel-worktree",
+			Worktree: assignedWorktree,
+		},
+	})
+
+	msg := readMessage(t, dispatcherConn)
+	if msg.Type != protocol.MsgStatus || msg.Status.State != "running" {
+		t.Fatalf("expected running STATUS, got %+v", msg)
+	}
+
+	if _, err := os.Stat(filepath.Join(assignedWorktree, "sentinel.txt")); err != nil {
+		t.Fatalf("sentinel missing from assigned worktree: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(mainRoot, "sentinel.txt")); !os.IsNotExist(err) {
+		t.Fatalf("sentinel leaked into main root, stat err: %v", err)
 	}
 
 	cancel()
@@ -231,6 +331,7 @@ func TestReceiveAssign_QGRetryReportsReceipt(t *testing.T) {
 	t.Parallel()
 
 	spawner := newMockSpawner()
+	worktree := validAssignWorktree(t, "wt-42")
 	dispatcherConn, workerConn := net.Pipe()
 	defer func() { _ = dispatcherConn.Close() }()
 
@@ -245,7 +346,7 @@ func TestReceiveAssign_QGRetryReportsReceipt(t *testing.T) {
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "bead-42",
-			Worktree: "/tmp/wt-42",
+			Worktree: worktree,
 			Model:    protocol.ModelOpus,
 			Attempt:  1,
 		},
@@ -280,6 +381,7 @@ func TestWorkerUsesRuntimeSpawn(t *testing.T) {
 	spawner := newMockSpawner()
 	spawner.format = worker.StreamFormatLineText
 	spawner.stdout = io.NopCloser(strings.NewReader("plain text runtime output\n"))
+	worktree := validAssignWorktree(t, "wt-runtime")
 	dispatcherConn, workerConn := net.Pipe()
 	defer func() { _ = dispatcherConn.Close() }()
 
@@ -294,7 +396,7 @@ func TestWorkerUsesRuntimeSpawn(t *testing.T) {
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "bead-runtime",
-			Worktree: "/tmp/wt-runtime",
+			Worktree: worktree,
 		},
 	})
 
@@ -307,8 +409,8 @@ func TestWorkerUsesRuntimeSpawn(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 spawn call, got %d", len(calls))
 	}
-	if calls[0].Workdir != "/tmp/wt-runtime" {
-		t.Fatalf("workdir = %q, want %q", calls[0].Workdir, "/tmp/wt-runtime")
+	if calls[0].Workdir != worktree {
+		t.Fatalf("workdir = %q, want %q", calls[0].Workdir, worktree)
 	}
 
 	cancel()
@@ -321,6 +423,7 @@ func TestWorkerRunsWithCodexLineStream(t *testing.T) {
 	spawner := newMockSpawner()
 	spawner.format = worker.StreamFormatLineText
 	spawner.stdout = io.NopCloser(strings.NewReader("codex says hello\n[MEMORY] fact: line stream works\n"))
+	worktree := validAssignWorktree(t, "wt-codex")
 	dispatcherConn, workerConn := net.Pipe()
 	defer func() { _ = dispatcherConn.Close() }()
 
@@ -335,7 +438,7 @@ func TestWorkerRunsWithCodexLineStream(t *testing.T) {
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "bead-codex",
-			Worktree: "/tmp/wt-codex",
+			Worktree: worktree,
 			Model:    "gpt-5-codex",
 		},
 	})
@@ -362,6 +465,7 @@ func TestReceiveShutdown_ExitsCleanly(t *testing.T) {
 	t.Parallel()
 
 	spawner := newMockSpawner()
+	worktree := validAssignWorktree(t, "wt-99")
 	dispatcherConn, workerConn := net.Pipe()
 	defer func() { _ = dispatcherConn.Close() }()
 
@@ -376,7 +480,7 @@ func TestReceiveShutdown_ExitsCleanly(t *testing.T) {
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "bead-99",
-			Worktree: "/tmp/wt-99",
+			Worktree: worktree,
 		},
 	})
 	// Drain the STATUS message
@@ -693,6 +797,110 @@ func TestRunQualityGate_RestoresDeletedScript(t *testing.T) {
 	}
 }
 
+func TestRunQualityGate_RestoreUsesAssignedWorktreeWithPoisonedGitEnv(t *testing.T) {
+	initRepoWithQG := func(t *testing.T, dir, message string) string {
+		t.Helper()
+		scriptPath := filepath.Join(dir, "quality_gate.sh")
+		scriptContent := []byte("#!/bin/sh\necho '" + message + "'\nexit 0\n")
+		if err := os.WriteFile(scriptPath, scriptContent, 0o755); err != nil { //nolint:gosec // test file
+			t.Fatal(err)
+		}
+		for _, args := range [][]string{
+			{"init"},
+			{"config", "user.email", "test@test.com"},
+			{"config", "user.name", "Test"},
+			{"add", "quality_gate.sh"},
+			{"commit", "-m", "initial"},
+		} {
+			cmd := exec.Command("git", args...) //nolint:gosec // test helper with fixed args
+			cmd.Dir = dir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+			}
+		}
+		return scriptPath
+	}
+
+	mainRoot := t.TempDir()
+	assignedWorktree := t.TempDir()
+	mainScript := initRepoWithQG(t, mainRoot, "main qg")
+	assignedScript := initRepoWithQG(t, assignedWorktree, "assigned qg")
+
+	if err := os.Remove(mainScript); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(assignedScript); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PWD", mainRoot)
+	t.Setenv("GIT_DIR", filepath.Join(mainRoot, ".git"))
+	t.Setenv("GIT_WORK_TREE", mainRoot)
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(mainRoot, ".git", "index"))
+
+	passed, output, err := worker.RunQualityGate(context.Background(), assignedWorktree, false)
+	if err != nil {
+		t.Fatalf("RunQualityGate: %v", err)
+	}
+	if !passed {
+		t.Fatalf("expected quality gate to pass after assigned-worktree restore, output: %q", output)
+	}
+	if !strings.Contains(output, "assigned qg") {
+		t.Fatalf("expected assigned worktree quality gate output, got: %q", output)
+	}
+	if _, err := os.Stat(assignedScript); err != nil {
+		t.Fatalf("assigned quality_gate.sh was not restored: %v", err)
+	}
+	if _, err := os.Stat(mainScript); !os.IsNotExist(err) {
+		t.Fatalf("poisoned Git env restored main quality_gate.sh, stat err: %v", err)
+	}
+}
+
+func TestRunQualityGate_ChildProcessUsesAssignedWorktreeEnv(t *testing.T) {
+	mainRoot := t.TempDir()
+	assignedWorktree := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(assignedWorktree, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scriptPath := filepath.Join(assignedWorktree, "scripts", "quality_gate.sh")
+	script := `#!/bin/sh
+set -eu
+sh -c 'printf "PWD=%s\nACTUAL=%s\nGIT_DIR=%s\nGIT_WORK_TREE=%s\nGIT_INDEX_FILE=%s\n" "$PWD" "$(pwd -P)" "${GIT_DIR-unset}" "${GIT_WORK_TREE-unset}" "${GIT_INDEX_FILE-unset}" > qg-hook-env.txt'
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil { //nolint:gosec // test script
+		t.Fatal(err)
+	}
+
+	t.Setenv("PWD", mainRoot)
+	t.Setenv("GIT_DIR", filepath.Join(mainRoot, ".git"))
+	t.Setenv("GIT_WORK_TREE", mainRoot)
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(mainRoot, ".git", "index"))
+
+	passed, output, err := worker.RunQualityGate(context.Background(), assignedWorktree, false)
+	if err != nil {
+		t.Fatalf("RunQualityGate: %v", err)
+	}
+	if !passed {
+		t.Fatalf("expected quality gate to pass, output: %q", output)
+	}
+
+	assignedEnv, err := os.ReadFile(filepath.Join(assignedWorktree, "qg-hook-env.txt"))
+	if err != nil {
+		t.Fatalf("assigned child env missing: %v", err)
+	}
+	text := string(assignedEnv)
+	if !strings.Contains(text, "PWD="+assignedWorktree+"\n") {
+		t.Fatalf("expected child PWD to be assigned worktree, got:\n%s", text)
+	}
+	for _, key := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"} {
+		if !strings.Contains(text, key+"=unset\n") {
+			t.Fatalf("expected %s unset in child env, got:\n%s", key, text)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(mainRoot, "qg-hook-env.txt")); !os.IsNotExist(err) {
+		t.Fatalf("poisoned env wrote hook artifact in main root, stat err: %v", err)
+	}
+}
+
 func TestRunQualityGate_RestoreFails_ReturnsError(t *testing.T) {
 	t.Parallel()
 
@@ -908,11 +1116,12 @@ func TestReconnection_BuffersAndResends(t *testing.T) { //nolint:funlen // integ
 	_ = readMessage(t, dispConn1)
 
 	// Send ASSIGN on first connection
+	worktree := validAssignWorktree(t, "wt-recon")
 	sendMessage(t, dispConn1, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "bead-recon",
-			Worktree: "/tmp/wt-recon",
+			Worktree: worktree,
 		},
 	})
 
@@ -1281,12 +1490,13 @@ func TestContextWatcher_NoFileIsNotError(t *testing.T) {
 
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
-	// Send ASSIGN with a nonexistent worktree (no .oro/context_pct)
+	// Send ASSIGN with a real worktree that has no .oro/context_pct
+	worktree := validAssignWorktree(t, "wt-nofile")
 	sendMessage(t, dispatcherConn, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "bead-nofile",
-			Worktree: "/tmp/nonexistent-worktree-path",
+			Worktree: worktree,
 		},
 	})
 
@@ -1549,11 +1759,12 @@ func TestRun_ContextCancellationDuringProcessing(t *testing.T) {
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Assign work
+	worktree := validAssignWorktree(t, "wt-proc")
 	sendMessage(t, dispatcherConn, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "bead-proc",
-			Worktree: "/tmp/wt-proc",
+			Worktree: worktree,
 		},
 	})
 
@@ -1621,11 +1832,12 @@ func TestHandleAssign_SpawnError(t *testing.T) {
 
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
+	worktree := validAssignWorktree(t, "wt-fail")
 	sendMessage(t, dispatcherConn, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "bead-fail",
-			Worktree: "/tmp/wt-fail",
+			Worktree: worktree,
 		},
 	})
 
@@ -2276,11 +2488,12 @@ func TestHandleAssign_SendStatusError(t *testing.T) {
 
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
+	worktree := validAssignWorktree(t, "wt-statuserr")
 	sendMessage(t, dispatcherConn, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "bead-statuserr",
-			Worktree: "/tmp/wt-statuserr",
+			Worktree: worktree,
 		},
 	})
 
@@ -2395,11 +2608,12 @@ func TestSendMessage_BuffersWhenDisconnected(t *testing.T) { //nolint:funlen // 
 	_ = readMessage(t, dispConn1)
 
 	// Send ASSIGN so worker has a bead
+	worktree := validAssignWorktree(t, "wt-bufmsg")
 	sendMessage(t, dispConn1, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "bead-bufmsg",
-			Worktree: "/tmp/wt-bufmsg",
+			Worktree: worktree,
 		},
 	})
 	_ = readMessage(t, dispConn1) // drain STATUS
@@ -2494,11 +2708,12 @@ func TestWorkerExtractsMemories(t *testing.T) { //nolint:funlen // integration t
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Send ASSIGN
+	worktree := validAssignWorktree(t, "wt-mem")
 	sendMessage(t, dispatcherConn, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "bead-mem",
-			Worktree: "/tmp/wt-mem",
+			Worktree: worktree,
 		},
 	})
 
@@ -2620,11 +2835,12 @@ func TestWorkerExtractsMemories_OnDone(t *testing.T) { //nolint:funlen // integr
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Send ASSIGN
+	worktree := validAssignWorktree(t, "wt-done-mem")
 	sendMessage(t, dispatcherConn, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "bead-done-mem",
-			Worktree: "/tmp/wt-done-mem",
+			Worktree: worktree,
 		},
 	})
 
@@ -2712,11 +2928,12 @@ func TestWorkerNoMemoryStore_NoCrash(t *testing.T) {
 
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
+	worktree := validAssignWorktree(t, "wt-nomem")
 	sendMessage(t, dispatcherConn, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "bead-nomem",
-			Worktree: "/tmp/wt-nomem",
+			Worktree: worktree,
 		},
 	})
 
@@ -2792,11 +3009,12 @@ func TestHandleAssign_PassesMemoryContextToSpawner(t *testing.T) {
 	memCtx := "## Relevant Memories\n- [lesson] use table-driven tests"
 
 	// Send ASSIGN with MemoryContext
+	worktree := validAssignWorktree(t, "wt-mc-pass")
 	sendMessage(t, dispatcherConn, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:        "bead-mc-pass",
-			Worktree:      "/tmp/wt-mc-pass",
+			Worktree:      worktree,
 			MemoryContext: memCtx,
 		},
 	})
@@ -2945,11 +3163,12 @@ func TestProcessExitExtractsMemories(t *testing.T) { //nolint:funlen // integrat
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Send ASSIGN to start the subprocess.
+	worktree := validAssignWorktree(t, "wt-exit")
 	sendMessage(t, dispatcherConn, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "bead-exit",
-			Worktree: "/tmp/wt-exit",
+			Worktree: worktree,
 		},
 	})
 
@@ -3013,9 +3232,11 @@ func TestProcessExitExtractsMemories(t *testing.T) { //nolint:funlen // integrat
 
 // mockExtractSpawner implements memory.Spawner for testing ExtractWithLLM integration.
 type mockExtractSpawner struct {
-	mu        sync.Mutex
-	callCount int
-	output    string // simulated LLM output
+	mu               sync.Mutex
+	callCount        int
+	workdirCallCount int
+	lastWorkdir      string
+	output           string // simulated LLM output
 }
 
 func (m *mockExtractSpawner) Spawn(_ context.Context, _, _ string) (io.ReadCloser, error) {
@@ -3025,10 +3246,25 @@ func (m *mockExtractSpawner) Spawn(_ context.Context, _, _ string) (io.ReadClose
 	return io.NopCloser(strings.NewReader(m.output)), nil
 }
 
+func (m *mockExtractSpawner) SpawnInWorkdir(_ context.Context, _, _, workdir string) (io.ReadCloser, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.callCount++
+	m.workdirCallCount++
+	m.lastWorkdir = workdir
+	return io.NopCloser(strings.NewReader(m.output)), nil
+}
+
 func (m *mockExtractSpawner) CallCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.callCount
+}
+
+func (m *mockExtractSpawner) WorkdirCall() (int, string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.workdirCallCount, m.lastWorkdir
 }
 
 // TestExtractImplicitMemories_CallsExtractWithLLM verifies that when a subprocess
@@ -3066,11 +3302,12 @@ func TestExtractImplicitMemories_CallsExtractWithLLM(t *testing.T) {
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// Send ASSIGN to start the subprocess.
+	worktree := validAssignWorktree(t, "wt-llm")
 	sendMessage(t, dispatcherConn, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "bead-llm",
-			Worktree: "/tmp/wt-llm",
+			Worktree: worktree,
 		},
 	})
 
@@ -3101,6 +3338,9 @@ func TestExtractImplicitMemories_CallsExtractWithLLM(t *testing.T) {
 
 	if extractSpawner.CallCount() != 1 {
 		t.Errorf("expected 1 ExtractWithLLM call, got %d", extractSpawner.CallCount())
+	}
+	if gotCount, gotWorktree := extractSpawner.WorkdirCall(); gotCount != 1 || gotWorktree != worktree {
+		t.Errorf("expected extraction in assigned worktree %q once, got count=%d worktree=%q", worktree, gotCount, gotWorktree)
 	}
 
 	// Verify the memory was inserted into the store (proves ExtractWithLLM ran end-to-end).
@@ -3152,11 +3392,12 @@ func TestExtractImplicitMemories_NilSpawner(t *testing.T) {
 
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
+	worktree := validAssignWorktree(t, "wt-nil")
 	sendMessage(t, dispatcherConn, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "bead-nil",
-			Worktree: "/tmp/wt-nil",
+			Worktree: worktree,
 		},
 	})
 
@@ -3669,11 +3910,12 @@ func TestHandleAssign_KillsOldSubprocess(t *testing.T) {
 	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
 
 	// First ASSIGN — spawns oldProc
+	firstWorktree := validAssignWorktree(t, "wt-first")
 	sendMessage(t, dispatcherConn, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "bead-first",
-			Worktree: "/tmp/wt-first",
+			Worktree: firstWorktree,
 		},
 	})
 	// Drain STATUS from first ASSIGN
@@ -3685,11 +3927,12 @@ func TestHandleAssign_KillsOldSubprocess(t *testing.T) {
 	}
 
 	// Second ASSIGN (re-assignment after QG failure) — should kill oldProc, spawn newProc
+	retryWorktree := validAssignWorktree(t, "wt-retry")
 	sendMessage(t, dispatcherConn, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:   "bead-retry",
-			Worktree: "/tmp/wt-retry",
+			Worktree: retryWorktree,
 		},
 	})
 	// Drain STATUS from second ASSIGN

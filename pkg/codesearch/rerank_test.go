@@ -188,6 +188,38 @@ func TestRerank_ParsesIntIDs(t *testing.T) {
 	}
 }
 
+type workdirRerankSpawner struct {
+	output  string
+	workdir string
+}
+
+func (s *workdirRerankSpawner) Spawn(_ context.Context, _ string) (string, error) {
+	return s.output, nil
+}
+
+func (s *workdirRerankSpawner) SpawnInWorkdir(_ context.Context, _, workdir string) (string, error) {
+	s.workdir = workdir
+	return s.output, nil
+}
+
+func TestRerankInWorkdir_UsesWorkdirSpawner(t *testing.T) {
+	assigned := t.TempDir()
+	spawner := &workdirRerankSpawner{output: `[{"id":1,"reason":"assigned"}]`}
+	r := codesearch.NewReranker(spawner)
+	chunks := []codesearch.Chunk{{FilePath: "a.go", Name: "A", Content: "func A() {}"}}
+
+	results, err := r.RerankInWorkdir(context.Background(), "A", chunks, 1, assigned)
+	if err != nil {
+		t.Fatalf("RerankInWorkdir: %v", err)
+	}
+	if spawner.workdir != assigned {
+		t.Fatalf("workdir = %q, want %q", spawner.workdir, assigned)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(results))
+	}
+}
+
 // mockEnvelopeExtractSpawner simulates ClaudeRerankSpawner after the fix:
 // it holds a raw Claude --output-format json envelope and uses
 // ExtractResultFromEnvelope to return clean JSON to the Reranker.

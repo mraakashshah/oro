@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"oro/pkg/agentruntime"
+	"oro/pkg/processenv"
 )
 
 // maxSessionBytes is the maximum number of bytes taken from sessionText.
@@ -52,6 +53,12 @@ type Spawner interface {
 	Spawn(ctx context.Context, model, prompt string) (io.ReadCloser, error)
 }
 
+// WorkdirSpawner is implemented by subprocess spawners that can bind runtime
+// execution to a specific worktree.
+type WorkdirSpawner interface {
+	SpawnInWorkdir(ctx context.Context, model, prompt, workdir string) (io.ReadCloser, error)
+}
+
 // Inserter abstracts memory insertion.
 // *Store satisfies this interface via its Insert method (Go structural typing).
 type Inserter interface {
@@ -83,8 +90,20 @@ func (w *waitCloser) Close() error {
 // and hanging (see pkg/worker/worker.go:1249-1256 for full rationale).
 // The returned ReadCloser's Close method reaps the child process via cmd.Wait().
 func (c CLISpawner) Spawn(ctx context.Context, model, prompt string) (io.ReadCloser, error) {
+	return c.SpawnInWorkdir(ctx, model, prompt, "")
+}
+
+// SpawnInWorkdir starts a runtime subprocess from workdir with git environment
+// variables normalized to that worktree. This keeps best-effort memory
+// extraction from mutating the dispatcher/main checkout when a worker is
+// assigned to an isolated worktree.
+func (c CLISpawner) SpawnInWorkdir(ctx context.Context, model, prompt, workdir string) (io.ReadCloser, error) {
 	args := spawnCommand(model, prompt)
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // args constructed internally
+	if workdir != "" {
+		cmd.Dir = workdir
+	}
+	cmd.Env = processenv.ForWorkdir(os.Environ(), workdir)
 
 	devNull, err := os.Open(os.DevNull)
 	if err != nil {
@@ -142,6 +161,16 @@ func normalizeCodexModel(model string) string {
 //
 //oro:testonly — wired into production by subsequent memory-intake beads (worker.go, drain.go)
 func ExtractWithLLM(_ context.Context, spawner Spawner, sessionText, beadID string, store Inserter) error {
+	return extractWithLLM(spawner, sessionText, beadID, store, "")
+}
+
+// ExtractWithLLMInWorkdir runs extraction with a workdir-aware spawner when the
+// spawner supports it, falling back to the legacy Spawner contract otherwise.
+func ExtractWithLLMInWorkdir(_ context.Context, spawner Spawner, sessionText, beadID string, store Inserter, workdir string) error {
+	return extractWithLLM(spawner, sessionText, beadID, store, workdir)
+}
+
+func extractWithLLM(spawner Spawner, sessionText, beadID string, store Inserter, workdir string) error {
 	if spawner == nil {
 		return nil
 	}
@@ -160,7 +189,7 @@ func ExtractWithLLM(_ context.Context, spawner Spawner, sessionText, beadID stri
 
 	prompt := extractionPrompt + sessionText
 
-	reader, err := spawner.Spawn(extractCtx, extractionModel, prompt)
+	reader, err := spawnExtractor(extractCtx, spawner, extractionModel, prompt, workdir)
 	if err != nil {
 		log.Printf("memory extract: spawn error: %v", err)
 		return nil
@@ -189,4 +218,21 @@ func ExtractWithLLM(_ context.Context, spawner Spawner, sessionText, beadID stri
 	}
 
 	return nil
+}
+
+func spawnExtractor(ctx context.Context, spawner Spawner, model, prompt, workdir string) (io.ReadCloser, error) {
+	if workdir != "" {
+		if workdirSpawner, ok := spawner.(WorkdirSpawner); ok {
+			reader, err := workdirSpawner.SpawnInWorkdir(ctx, model, prompt, workdir)
+			if err != nil {
+				return nil, fmt.Errorf("spawn extractor in workdir: %w", err)
+			}
+			return reader, nil
+		}
+	}
+	reader, err := spawner.Spawn(ctx, model, prompt)
+	if err != nil {
+		return nil, fmt.Errorf("spawn extractor: %w", err)
+	}
+	return reader, nil
 }

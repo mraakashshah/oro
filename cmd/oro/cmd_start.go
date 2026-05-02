@@ -19,6 +19,7 @@ import (
 	"oro/pkg/dispatcher"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
+	"oro/pkg/processenv"
 
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
@@ -172,7 +173,7 @@ func cleanEnvForDaemon(env []string) []string {
 		}
 		cleaned = append(cleaned, e)
 	}
-	return cleaned
+	return processenv.ForWorkdir(cleaned, "")
 }
 
 // socketPollTimeout is the maximum time to wait for the dispatcher socket.
@@ -814,24 +815,13 @@ func (a *codeIndexAdapter) FTS5Search(ctx context.Context, query string, limit i
 // Search performs two-phase search (FTS5 + optional Claude reranking).
 // On reranker timeout or failure, falls back to FTS5 positional scores. No error is returned.
 func (a *codeIndexAdapter) Search(ctx context.Context, query string, topK int) ([]dispatcher.SearchResult, error) {
-	results, err := a.idx.Search(ctx, query, topK)
+	return a.SearchInWorkdir(ctx, query, topK, "")
+}
+
+func (a *codeIndexAdapter) SearchInWorkdir(ctx context.Context, query string, topK int, workdir string) ([]dispatcher.SearchResult, error) {
+	results, err := a.idx.SearchInWorkdir(ctx, query, topK, workdir)
 	if err == nil {
-		out := make([]dispatcher.SearchResult, len(results))
-		for i, r := range results {
-			out[i] = dispatcher.SearchResult{
-				CodeChunk: dispatcher.CodeChunk{
-					FilePath:  r.Chunk.FilePath,
-					Name:      r.Chunk.Name,
-					Kind:      string(r.Chunk.Kind),
-					StartLine: r.Chunk.StartLine,
-					EndLine:   r.Chunk.EndLine,
-					Content:   r.Chunk.Content,
-				},
-				Score:  r.Score,
-				Reason: r.Reason,
-			}
-		}
-		return out, nil
+		return adaptCodeSearchResults(results), nil
 	}
 	// Reranker failed/timed out — fall back to FTS5 positional scores with no Reason.
 	// Use a fresh context: the original ctx may already be expired after the reranker timeout.
@@ -856,6 +846,25 @@ func (a *codeIndexAdapter) Search(ctx context.Context, query string, topK int) (
 		}
 	}
 	return out, nil
+}
+
+func adaptCodeSearchResults(results []codesearch.SearchResult) []dispatcher.SearchResult {
+	out := make([]dispatcher.SearchResult, len(results))
+	for i, r := range results {
+		out[i] = dispatcher.SearchResult{
+			CodeChunk: dispatcher.CodeChunk{
+				FilePath:  r.Chunk.FilePath,
+				Name:      r.Chunk.Name,
+				Kind:      string(r.Chunk.Kind),
+				StartLine: r.Chunk.StartLine,
+				EndLine:   r.Chunk.EndLine,
+				Content:   r.Chunk.Content,
+			},
+			Score:  r.Score,
+			Reason: r.Reason,
+		}
+	}
+	return out
 }
 
 // sendStartDirective connects to the dispatcher UDS and sends a "start"

@@ -33,6 +33,7 @@ import (
 	"oro/pkg/memory"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
+	"oro/pkg/processenv"
 	"oro/pkg/protocol"
 	"oro/pkg/web"
 
@@ -204,6 +205,10 @@ type CodeIndex interface {
 	Search(ctx context.Context, query string, topK int) ([]SearchResult, error)
 }
 
+type workdirCodeIndex interface {
+	SearchInWorkdir(ctx context.Context, query string, topK int, workdir string) ([]SearchResult, error)
+}
+
 // CodeChunk represents a code search result.
 type CodeChunk struct {
 	FilePath  string
@@ -279,7 +284,7 @@ func (r *ShellQGRunner) Run(ctx context.Context, worktree string, skipMutation b
 
 	cmd := exec.CommandContext(ctx, "bash", scriptPath) //nolint:gosec // script path constructed from worktree, not user input
 	cmd.Dir = worktree
-	cmd.Env = qgRunnerEnv(skipMutation)
+	cmd.Env = qgRunnerEnv(skipMutation, worktree)
 	out, runErr := cmd.CombinedOutput()
 	output = string(out)
 	if runErr != nil {
@@ -292,7 +297,7 @@ func (r *ShellQGRunner) Run(ctx context.Context, worktree string, skipMutation b
 	return true, output, nil
 }
 
-func qgRunnerEnv(skipMutation bool) []string {
+func qgRunnerEnv(skipMutation bool, worktree string) []string {
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, kv := range os.Environ() {
 		if strings.HasPrefix(kv, "ORO_SKIP_MUTATION=") {
@@ -303,7 +308,7 @@ func qgRunnerEnv(skipMutation bool) []string {
 	if skipMutation {
 		env = append(env, "ORO_SKIP_MUTATION=1")
 	}
-	return env
+	return processenv.ForWorkdir(env, worktree)
 }
 
 // --- Worker tracking ---
@@ -3414,6 +3419,16 @@ func (d *Dispatcher) finalizeExternalClose(ctx context.Context, workerID, beadID
 func (d *Dispatcher) filterAssignable(ctx context.Context, allBeads []protocol.Bead) []protocol.Bead {
 	now := d.nowFunc()
 
+	allBeads = d.filterExecutableBeads(ctx, allBeads)
+
+	d.mu.Lock()
+	candidates := d.assignmentCandidatesLocked(allBeads, now)
+	d.mu.Unlock()
+
+	return d.filterAlreadyMergedBranches(ctx, candidates)
+}
+
+func (d *Dispatcher) filterExecutableBeads(ctx context.Context, allBeads []protocol.Bead) []protocol.Bead {
 	// Already-decomposed epics are not executable worker tasks. Childless epics
 	// remain assignable so a decomposition worker can create child beads.
 	executable := make([]protocol.Bead, 0, len(allBeads))
@@ -3431,10 +3446,10 @@ func (d *Dispatcher) filterAssignable(ctx context.Context, allBeads []protocol.B
 		}
 		executable = append(executable, b)
 	}
-	allBeads = executable
+	return executable
+}
 
-	d.mu.Lock()
-
+func (d *Dispatcher) assignmentCandidatesLocked(allBeads []protocol.Bead, now time.Time) []protocol.Bead {
 	// Build the set of open bead IDs for dependency resolution.
 	// A bead is "open" (can block others) if it is not closed.
 	openBeadIDs := make(map[string]bool, len(allBeads))
@@ -3459,8 +3474,10 @@ func (d *Dispatcher) filterAssignable(ctx context.Context, allBeads []protocol.B
 			candidates = append(candidates, b)
 		}
 	}
-	d.mu.Unlock()
+	return candidates
+}
 
+func (d *Dispatcher) filterAlreadyMergedBranches(ctx context.Context, candidates []protocol.Bead) []protocol.Bead {
 	// Second pass: check whether the agent branch is already merged to main.
 	// This requires a git subprocess, so it runs outside the lock.
 	out := make([]protocol.Bead, 0, len(candidates))
@@ -3933,7 +3950,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	if d.codeIndex != nil {
 		ctx5s, cancel5s := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel5s()
-		results, _ := d.codeIndex.Search(ctx5s, bead.Title, 5)
+		results, _ := d.searchCodeInWorkdir(ctx5s, bead.Title, 5, worktree)
 		if len(results) > 0 {
 			codeCtx = formatSearchResults(results)
 		}
@@ -3992,6 +4009,21 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		_ = d.logEvent(ctx, "worktree_cleanup", "dispatcher", bead.ID, w.id, err.Error())
 	}
 	return nil
+}
+
+func (d *Dispatcher) searchCodeInWorkdir(ctx context.Context, query string, topK int, worktree string) ([]SearchResult, error) {
+	if idx, ok := d.codeIndex.(workdirCodeIndex); ok {
+		results, err := idx.SearchInWorkdir(ctx, query, topK, worktree)
+		if err != nil {
+			return nil, fmt.Errorf("search code in workdir: %w", err)
+		}
+		return results, nil
+	}
+	results, err := d.codeIndex.Search(ctx, query, topK)
+	if err != nil {
+		return nil, fmt.Errorf("search code: %w", err)
+	}
+	return results, nil
 }
 
 // checkEpicAssignable determines whether an epic bead should proceed to assignment.

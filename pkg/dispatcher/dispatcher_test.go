@@ -7724,10 +7724,13 @@ func (m *mockQGRunner) Run(_ context.Context, worktree string, skipMutation bool
 
 func TestShellQGRunner_DoesNotInheritMutationSkipWhenDisabled(t *testing.T) {
 	t.Setenv("ORO_SKIP_MUTATION", "1")
+	t.Setenv("PWD", "/wrong/root")
+	t.Setenv("GIT_DIR", "/wrong/root/.git")
+	t.Setenv("GIT_WORK_TREE", "/wrong/root")
 
 	tmpDir := t.TempDir()
 	script := filepath.Join(tmpDir, "quality_gate.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nif [ \"${ORO_SKIP_MUTATION:-}\" = \"1\" ]; then echo unexpected; exit 1; fi\necho clean\nexit 0\n"), 0o600); err != nil { //nolint:gosec // test script
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nif [ \"${ORO_SKIP_MUTATION:-}\" = \"1\" ]; then echo unexpected; exit 1; fi\nprintf 'PWD=%s GIT_DIR=%s GIT_WORK_TREE=%s\\n' \"$PWD\" \"${GIT_DIR-unset}\" \"${GIT_WORK_TREE-unset}\"\nexit 0\n"), 0o600); err != nil { //nolint:gosec // test script
 		t.Fatal(err)
 	}
 	if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
@@ -7740,6 +7743,11 @@ func TestShellQGRunner_DoesNotInheritMutationSkipWhenDisabled(t *testing.T) {
 	}
 	if !passed {
 		t.Fatalf("expected QG to pass without inherited ORO_SKIP_MUTATION, output: %s", output)
+	}
+	if !strings.Contains(output, "PWD="+tmpDir) ||
+		!strings.Contains(output, "GIT_DIR=unset") ||
+		!strings.Contains(output, "GIT_WORK_TREE=unset") {
+		t.Fatalf("ShellQGRunner leaked cwd/git env into QG subprocess, output: %s", output)
 	}
 }
 
@@ -12860,12 +12868,13 @@ func TestBuildStatusJSON_LiveQueueDepth(t *testing.T) {
 
 // mockCodeIndex implements CodeIndex for testing.
 type mockCodeIndex struct {
-	mu            sync.Mutex
-	chunks        []CodeChunk    // returned by FTS5Search
-	searchResults []SearchResult // returned by Search
-	err           error
-	queries       []string // queries captured by FTS5Search
-	searchQueries []string // queries captured by Search
+	mu             sync.Mutex
+	chunks         []CodeChunk    // returned by FTS5Search
+	searchResults  []SearchResult // returned by Search
+	err            error
+	queries        []string // queries captured by FTS5Search
+	searchQueries  []string // queries captured by Search
+	searchWorkdirs []string
 }
 
 func (m *mockCodeIndex) FTS5Search(_ context.Context, query string, _ int) ([]CodeChunk, error) {
@@ -12879,9 +12888,14 @@ func (m *mockCodeIndex) FTS5Search(_ context.Context, query string, _ int) ([]Co
 }
 
 func (m *mockCodeIndex) Search(_ context.Context, query string, _ int) ([]SearchResult, error) {
+	return m.SearchInWorkdir(context.Background(), query, 0, "")
+}
+
+func (m *mockCodeIndex) SearchInWorkdir(_ context.Context, query string, _ int, workdir string) ([]SearchResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.searchQueries = append(m.searchQueries, query)
+	m.searchWorkdirs = append(m.searchWorkdirs, workdir)
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -12941,12 +12955,16 @@ func TestAssignBead_InjectsCodeContext(t *testing.T) {
 	// Verify Search was called with the bead title.
 	codeIdx.mu.Lock()
 	queries := codeIdx.searchQueries
+	workdirs := codeIdx.searchWorkdirs
 	codeIdx.mu.Unlock()
 	if len(queries) == 0 {
 		t.Fatal("expected Search to be called")
 	}
 	if queries[0] != "Add code search" {
 		t.Errorf("expected Search query to be bead title %q, got %q", "Add code search", queries[0])
+	}
+	if len(workdirs) == 0 || workdirs[0] != "/tmp/worktree-bead-code1" {
+		t.Fatalf("expected code search to run in assigned worktree, got %v", workdirs)
 	}
 }
 

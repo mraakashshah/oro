@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
+
+	"oro/pkg/processenv"
 )
 
 // ExecCommandRunner implements CommandRunner using os/exec.
@@ -20,6 +23,7 @@ func (r *ExecCommandRunner) Run(ctx context.Context, name string, args ...string
 	if r.Dir != "" {
 		cmd.Dir = r.Dir
 	}
+	cmd.Env = processenv.ForWorkdir(os.Environ(), r.Dir)
 	out, err := cmd.Output()
 	if err != nil {
 		var exitErr *exec.ExitError

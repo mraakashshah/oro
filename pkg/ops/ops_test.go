@@ -214,6 +214,35 @@ func TestReviewDocsOnlyDiffShortCircuits(t *testing.T) {
 	}
 }
 
+func TestIsDocsOnlyDiff_NormalizesGitEnvToWorktree(t *testing.T) {
+	mainRepo := initReviewTestRepo(t)
+	assignedRepo := initReviewTestRepo(t)
+
+	if err := os.WriteFile(filepath.Join(mainRepo, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write poisoned main code change: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(assignedRepo, "docs"), 0o755); err != nil {
+		t.Fatalf("mkdir docs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(assignedRepo, "docs", "guide.md"), []byte("# Guide\n"), 0o644); err != nil {
+		t.Fatalf("write assigned docs change: %v", err)
+	}
+
+	t.Setenv("PWD", mainRepo)
+	t.Setenv("GIT_DIR", filepath.Join(mainRepo, ".git"))
+	t.Setenv("GIT_WORK_TREE", mainRepo)
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(mainRepo, ".git", "index"))
+	t.Setenv("GIT_COMMON_DIR", filepath.Join(mainRepo, ".git"))
+
+	docsOnly, err := isDocsOnlyDiff(context.Background(), assignedRepo, "main")
+	if err != nil {
+		t.Fatalf("isDocsOnlyDiff: %v", err)
+	}
+	if !docsOnly {
+		t.Fatalf("expected assigned worktree docs-only diff despite poisoned main git env")
+	}
+}
+
 func TestReviewCodeDiffStillSpawns(t *testing.T) {
 	worktree := initReviewTestRepo(t)
 	if err := os.WriteFile(filepath.Join(worktree, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {

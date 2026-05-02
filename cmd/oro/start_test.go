@@ -142,11 +142,14 @@ func TestRunFullStart_Detached(t *testing.T) {
 
 func TestCleanEnvForDaemon(t *testing.T) {
 	t.Run("removes CLAUDECODE from env", func(t *testing.T) {
-		env := []string{"HOME=/Users/test", "CLAUDECODE=1", "PATH=/usr/bin"}
+		env := []string{"HOME=/Users/test", "CLAUDECODE=1", "PATH=/usr/bin", "GIT_DIR=/repo/.git"}
 		cleaned := cleanEnvForDaemon(env)
 		for _, e := range cleaned {
 			if e == "CLAUDECODE=1" {
 				t.Error("CLAUDECODE should be removed from daemon env")
+			}
+			if e == "GIT_DIR=/repo/.git" {
+				t.Error("GIT_DIR should be removed from daemon env")
 			}
 		}
 		if len(cleaned) != 2 {

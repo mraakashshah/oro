@@ -36,6 +36,20 @@ func (m *mockLLMSpawner) Spawn(_ context.Context, _, prompt string) (io.ReadClos
 	return io.NopCloser(strings.NewReader(m.output)), nil
 }
 
+type mockWorkdirLLMSpawner struct {
+	mockLLMSpawner
+	workdirCalled bool
+	workdir       string
+}
+
+func (m *mockWorkdirLLMSpawner) SpawnInWorkdir(_ context.Context, _, prompt, workdir string) (io.ReadCloser, error) {
+	m.workdirCalled = true
+	m.called = true
+	m.promptGiven = prompt
+	m.workdir = workdir
+	return io.NopCloser(strings.NewReader(m.output)), nil
+}
+
 // --- stream-json test helpers ---
 
 // textDeltaLine wraps text in a stream-json assistant text event.
@@ -233,6 +247,32 @@ func TestDrainOutput_LLMExtraction(t *testing.T) {
 	// Text content should be echoed to output for debugging visibility.
 	if !strings.Contains(buf.String(), "doing work") {
 		t.Errorf("expected text echo in output, got %q", buf.String())
+	}
+}
+
+func TestDrainOutputInWorkdir_BindsLLMExtractionToWorkdir(t *testing.T) {
+	workdir := t.TempDir()
+	spawner := &mockWorkdirLLMSpawner{
+		mockLLMSpawner: mockLLMSpawner{
+			output: "[MEMORY] type=lesson: extraction stayed in assigned worktree\n",
+		},
+	}
+	store := &mockMemStore{}
+
+	input := ndjsonInput(textDeltaLine("finished assigned task\n"))
+	reader := io.NopCloser(strings.NewReader(input))
+	var buf bytes.Buffer
+
+	worker.DrainOutputInWorkdir(context.Background(), reader, worker.StreamFormatClaudeJSON, store, "oro-llm-wd", spawner, workdir, &buf)
+
+	if !spawner.workdirCalled {
+		t.Fatal("expected workdir-aware spawner to be used")
+	}
+	if spawner.workdir != workdir {
+		t.Fatalf("spawner workdir = %q, want %q", spawner.workdir, workdir)
+	}
+	if len(store.inserted) == 0 {
+		t.Fatal("expected LLM-extracted memory to be inserted")
 	}
 }
 
