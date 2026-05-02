@@ -10,7 +10,7 @@ cutover veto after native SQLite validation passes.
 
 - Repo: `/Users/as21/codehouse/oro`
 - Binary: `/tmp/oro-current-phase10`
-- Binary version: `oro v0.1.0-660-g91ca3a87-dirty`
+- Binary version: `oro v0.1.0-666-ge8ad7f45-dirty`
 - State DB: `/Users/as21/.oro/projects/oro/state.db`
 - Baseline: `docs/plans/notes/baseline-metrics.md`
 - Baseline bd ready average: `106.79 ms`
@@ -25,9 +25,9 @@ scripts/check-phase8-no-writers.py
 active_writer_count=0
 
 /tmp/oro-current-phase10 bead status
-open        91
+open        88
 in_progress 1
-closed      1680
+closed      1686
 
 /tmp/oro-current-phase10 bead ready --json
 result: valid JSON array
@@ -40,7 +40,7 @@ result: id == oro-eyym and status is a string
 
 scripts/check-native-beadstore-invariants.py --db /Users/as21/.oro/projects/oro/state.db
 integrity_check=ok
-legacy_foreign_key_violations=30
+legacy_foreign_key_violations=0
 invalid_status_rows=0
 ready_view_mismatches=0
 blocked_view_mismatches=0
@@ -57,6 +57,33 @@ active_writer_count=0
 
 The single `in_progress` bead was `oro-cpv0`, the Phase 9 epic itself.
 
+## Foreign Key Repair
+
+An adversarial review correctly rejected the earlier evidence because
+`PRAGMA foreign_key_check` returned 30 rows. The repair transcript and SQLite
+backup are recorded under:
+
+```text
+/tmp/oro-phase9-fk-repair-20260502T121745Z
+```
+
+The repair cleared three open continuation beads whose `parent_id` referenced
+missing test-looking parents, then removed imported dependency edges whose
+referenced parent rows were absent from native SQLite. After the repair:
+
+```text
+PRAGMA foreign_key_check;
+result: zero rows
+
+scripts/check-native-beadstore-invariants.py --db /Users/as21/.oro/projects/oro/state.db
+legacy_foreign_key_violations=0
+```
+
+Commit `e8ad7f45` (`fix(beadstore): reject missing sqlite parents`) prevents
+new native `SQLiteStore.Create` and `SQLiteStore.Update` calls from creating
+non-empty orphan `parent_id` values. Commit `f288d9fa` makes nonzero native
+foreign-key violations fail `scripts/check-native-beadstore-invariants.py`.
+
 ## Latency
 
 Ten native `oro bead ready --json` calls were measured through the reviewed
@@ -72,6 +99,10 @@ latency_improved=True
 ```
 
 Native ready latency is improved versus the Phase 0 bd subprocess baseline.
+
+The latest current bundle at
+`/tmp/oro-phase9-current-20260502T121344Z/current-latency.txt` measured
+`sqlite_ready_avg_ms=21.85`, still improved over the `106.79 ms` bd baseline.
 
 ## Dispatcher And Worker Proof
 
@@ -188,10 +219,53 @@ oro-phase10-smoke-115523` as the single active assignment. The worker
 `PRAGMA integrity_check` returning `ok`. The proof bead was closed with this
 evidence.
 
+## Worker Execution Proof
+
+A stronger isolated proof ran in a disposable repo and temporary SQLite DB:
+
+```text
+/var/folders/7s/f2lfmp956d99wfn30y5c8n3w0000gn/T/oro-nobd-worker-proof.PNvEYn/proof
+```
+
+This proof used the real Oro dispatcher, `worker launch --bead`, process manager,
+worker process, sqlite beadstore, worktree creation, and QG path. The only shim
+was a deterministic `claude` executable in a stripped `PATH` so the worker child
+would run known native commands. The worker child environment recorded:
+
+```text
+PATH=/var/folders/.../oro-nobd-worker-proof.PNvEYn/nobd-bin
+ORO_DB_PATH=/var/folders/.../oro-nobd-worker-proof.PNvEYn/state.db
+ORO_BEADSOURCE_MODE=sqlite
+oro=/var/folders/.../nobd-bin/oro
+bd=
+dolt=
+```
+
+The controlled parent bead was `oro-proof-122828`; the worker child created
+`oro-proof-122828-child` by running native `oro bead create`, and updated the
+parent with native `oro bead update`. SQLite events in
+`proof/sql-events.tsv` show:
+
+```text
+spawn_for       oro-proof-122828 worker-spawnfor-1777724909518221000
+assign          oro-proof-122828 worker-spawnfor-1777724909518221000
+bead_updated    oro-proof-122828 {"notes":"proof-worker-native-oro-bead-update ..."}
+bead_created    oro-proof-122828-child {"priority":4,"type":"task"}
+ready_for_review oro-proof-122828 worker-spawnfor-1777724909518221000
+```
+
+`proof/no-dolt-events.tsv` is empty, and the worker `output.log` contains the
+expected `-> Bash` tool activity. The dispatcher stopped cleanly after the proof.
+The wrapper's final project-invariant call initially failed because the stripped
+temporary `PATH` did not include `python3`; rerunning the same project invariant
+from the normal environment is recorded in
+`proof/project-invariants-after-normal-path.txt` and reports all zeros.
+
 ## Conclusion
 
 Phase 9's old passive observation gate is superseded. Native SQLite validation,
-latency, dispatcher startup, and targeted worker assignment all pass with `bd`
-absent from `PATH`. Remaining Phase 10 work should treat post-cutover failures
-as native bugs unless SQLite data corruption is shown and a recorded backup must
-be restored.
+latency, dispatcher startup, targeted worker assignment, and deterministic
+worker-child native `oro bead` execution all pass with `bd` and `dolt` absent
+from `PATH`. Remaining Phase 10 work should treat post-cutover failures as
+native bugs unless SQLite data corruption is shown and a recorded backup must be
+restored.
