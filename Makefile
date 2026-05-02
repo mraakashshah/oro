@@ -80,7 +80,8 @@ dev-sync:
 	@test -f "$(ORO_HOME)/.claude/CLAUDE.md" && echo "  ✓ $(ORO_HOME)/.claude/CLAUDE.md ok" || (echo "  ✗ $(ORO_HOME)/.claude/CLAUDE.md FAILED" && exit 1)
 	@echo "✓ dev-sync complete"
 
-build: stage-assets
+build:
+	@$(MAKE) stage-assets
 	go build $(GO_BUILD_FLAGS) $(LDFLAGS) ./cmd/oro
 	@if [ -d cmd/oro-search-hook ]; then \
 		mkdir -p .claude/hooks $(ORO_HOME)/hooks && \
@@ -89,7 +90,8 @@ build: stage-assets
 	fi
 	@$(MAKE) clean-assets
 
-install: stage-assets
+install:
+	@$(MAKE) stage-assets
 	go install $(GO_BUILD_FLAGS) $(LDFLAGS) ./cmd/oro
 	@if [ -d cmd/oro-search-hook ]; then \
 		mkdir -p .claude/hooks $(ORO_HOME)/hooks && \
@@ -105,7 +107,8 @@ build-search-hook:
 	@mkdir -p $(ORO_HOME)/hooks
 	go build $(GO_BUILD_FLAGS) -o $(ORO_HOME)/hooks/oro-search-hook ./cmd/oro-search-hook
 
-test: stage-assets
+test:
+	@$(MAKE) stage-assets
 	go test -race -shuffle=on -p 2 ./...
 	@$(MAKE) clean-assets
 
@@ -114,7 +117,8 @@ test-all: test
 # test-integration runs tests tagged with //go:build integration.
 # CI-only target. Runs integration tests in cmd/oro/ package.
 # For local development, run the default 'test' target instead.
-test-integration: stage-assets
+test-integration:
+	@$(MAKE) stage-assets
 	go test -tags integration ./cmd/oro/...
 	@$(MAKE) clean-assets
 

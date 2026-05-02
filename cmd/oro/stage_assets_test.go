@@ -237,6 +237,78 @@ func TestDevSyncRemovesStaleInstalledSkillAssets(t *testing.T) {
 	}
 }
 
+func TestBuildInstallRestagesAssetsBetweenGoals(t *testing.T) {
+	repoRoot := filepath.Join("..", "..")
+	makefile, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+
+	tmp := t.TempDir()
+	for _, dir := range []string{
+		"assets/skills/test-driven-development",
+		"assets/hooks",
+		"assets/beacons",
+		"assets/commands",
+		"cmd/oro",
+		"cmd/oro-search-hook",
+		"bin",
+		"oro-home",
+	} {
+		if err := os.MkdirAll(filepath.Join(tmp, dir), 0o750); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "Makefile"), makefile, 0o600); err != nil {
+		t.Fatalf("write Makefile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "assets", "CLAUDE.md"), []byte("# claude\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "assets", "ORO_AGENT.md"), []byte("# oro\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "assets", "hooks", "enforce_skills.py"), []byte("# hook\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "assets", "skills", "test-driven-development", "SKILL.md"), []byte("# skill\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeGo := `#!/bin/sh
+set -eu
+case "$1" in
+  build|install)
+    if [ ! -d cmd/oro/_assets ]; then
+      echo "missing staged assets for go $1" >&2
+      exit 42
+    fi
+    out=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "-o" ]; then out="$arg"; break; fi
+      prev="$arg"
+    done
+    if [ -n "$out" ]; then
+      mkdir -p "$(dirname "$out")"
+      : >"$out"
+    fi
+    ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(tmp, "bin", "go"), []byte(fakeGo), 0o700); err != nil {
+		t.Fatalf("write fake go: %v", err)
+	}
+
+	cmd := exec.Command("make", "build", "install", "ORO_HOME="+filepath.Join(tmp, "oro-home"))
+	cmd.Dir = tmp
+	cmd.Env = append(os.Environ(), "PATH="+filepath.Join(tmp, "bin")+":"+os.Getenv("PATH"))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make build install should restage assets before each goal: %v\nOutput: %s", err, output)
+	}
+}
+
 // TestStageAssetsFailsWhenAssetsDirMissing verifies that stage-assets
 // produces a clear error when assets/ directory is missing.
 func TestStageAssetsFailsWhenAssetsDirMissing(t *testing.T) {
