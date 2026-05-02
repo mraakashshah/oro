@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -37,7 +36,7 @@ func newMgCmd() *cobra.Command {
 			}
 			source := resolveSource(cwd, path)
 			if source.Err == nil && source.Mode == data.SourceJSONL && source.Path == "" {
-				return fmt.Errorf("no .beads/ directory found and bd not on PATH\n\nRun from inside a project with Beads, or specify a path:\n  oro mg --path /path/to/.beads/issues.jsonl")
+				return fmt.Errorf("no native bead store or JSONL snapshot found\n\nRun from inside an Oro project with a state database, or specify a JSONL path:\n  oro mg --path /path/to/.beads/issues.jsonl")
 			}
 
 			issues, err := loadInitialIssues(source)
@@ -143,12 +142,6 @@ func findBeadsDir(dir string) string {
 		}
 		dir = parent
 	}
-}
-
-// bdOnPath returns true if the bd command is available.
-func bdOnPath() bool {
-	_, err := exec.LookPath("bd")
-	return err == nil
 }
 
 // resolveSource determines how oro mg should load issues.

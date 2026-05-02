@@ -1,10 +1,13 @@
 package app
 
 import (
+	"strings"
 	"testing"
 	"time"
 
+	"oro/pkg/beadstore"
 	"oro/pkg/mg/data"
+	"oro/pkg/protocol"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -144,5 +147,103 @@ func TestHelpCanOpenFromFilteringMode(t *testing.T) {
 	}
 	if !got.filtering {
 		t.Fatal("expected filtering mode to resume after closing help")
+	}
+}
+
+func TestFetchIssueDetailJSONLUsesLoadedIssuesWithoutBd(t *testing.T) {
+	t.Setenv("PATH", "")
+	issue := testIssue("mg-1", data.StatusOpen)
+	issue.Notes = "loaded notes"
+	issue.AcceptanceCriteria = "loaded acceptance"
+
+	m := New([]data.Issue{issue}, data.Source{Mode: data.SourceJSONL}, data.DefaultBlockingTypes)
+	msg := m.fetchIssueDetail("mg-1")()
+
+	got, ok := msg.(issueDetailMsg)
+	if !ok {
+		t.Fatalf("message = %T, want issueDetailMsg", msg)
+	}
+	if got.err != nil {
+		t.Fatalf("fetchIssueDetail returned error with bd absent: %v", got.err)
+	}
+	if got.issue == nil {
+		t.Fatal("fetchIssueDetail returned nil issue")
+	}
+	if got.issue.Notes != "loaded notes" || got.issue.AcceptanceCriteria != "loaded acceptance" {
+		t.Fatalf("detail = notes %q acceptance %q, want loaded issue fields", got.issue.Notes, got.issue.AcceptanceCriteria)
+	}
+
+	msg = m.fetchIssueDetail("missing")()
+	got, ok = msg.(issueDetailMsg)
+	if !ok {
+		t.Fatalf("message = %T, want issueDetailMsg", msg)
+	}
+	if got.err == nil || !strings.Contains(got.err.Error(), "issue missing not found") {
+		t.Fatalf("missing issue error = %v, want not found", got.err)
+	}
+}
+
+func TestIssueDetailMsgIgnoresStaleJSONLSnapshot(t *testing.T) {
+	oldIssue := testIssue("mg-1", data.StatusOpen)
+	oldIssue.Notes = "old notes"
+	newIssue := testIssue("mg-1", data.StatusOpen)
+	newIssue.Notes = "fresh notes"
+
+	m := New([]data.Issue{oldIssue}, data.Source{Mode: data.SourceJSONL}, data.DefaultBlockingTypes)
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 20})
+	got := model.(Model)
+	if got.detail.Issue == nil || got.detail.Issue.ID != "mg-1" {
+		t.Fatalf("selected detail = %+v, want mg-1", got.detail.Issue)
+	}
+
+	staleCmd := got.fetchIssueDetail("mg-1")
+
+	model, _ = got.Update(data.FileChangedMsg{Issues: []data.Issue{newIssue}})
+	got = model.(Model)
+	if got.detail.Issue == nil || got.detail.Issue.Notes != "fresh notes" {
+		t.Fatalf("detail after refresh = %+v, want fresh notes", got.detail.Issue)
+	}
+
+	model, _ = got.Update(staleCmd())
+	got = model.(Model)
+	if got.detail.Issue == nil || got.detail.Issue.Notes != "fresh notes" {
+		t.Fatalf("stale detail applied: %+v", got.detail.Issue)
+	}
+	if got.detail.RichIssueID != "" {
+		t.Fatalf("stale detail should not mark rich detail loaded, got %q", got.detail.RichIssueID)
+	}
+}
+
+func TestIssueDetailMsgAllowsFreshStoreDetailAfterRefresh(t *testing.T) {
+	issue := testIssue("mg-1", data.StatusOpen)
+	store := beadstore.NewFakeStore(protocol.Bead{
+		ID:        "mg-1",
+		Title:     "mg-1",
+		Status:    "open",
+		Priority:  2,
+		Type:      "task",
+		Notes:     "store notes",
+		CreatedAt: issue.CreatedAt.Format(time.RFC3339Nano),
+		UpdatedAt: issue.UpdatedAt.Format(time.RFC3339Nano),
+	})
+
+	m := New([]data.Issue{issue}, data.Source{Mode: data.SourceCLI, Store: store}, data.DefaultBlockingTypes)
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 20})
+	got := model.(Model)
+	detailCmd := got.fetchIssueDetail("mg-1")
+
+	model, _ = got.Update(data.ClosedIssuesMsg{Issues: []data.Issue{testIssue("closed-1", data.StatusClosed)}})
+	got = model.(Model)
+	if got.sourceVersion == 0 {
+		t.Fatal("expected refresh to advance sourceVersion")
+	}
+
+	model, _ = got.Update(detailCmd())
+	got = model.(Model)
+	if got.detail.Issue == nil || got.detail.Issue.Notes != "store notes" {
+		t.Fatalf("store detail was incorrectly dropped after refresh: %+v", got.detail.Issue)
+	}
+	if got.detail.RichIssueID != "mg-1" {
+		t.Fatalf("RichIssueID = %q, want mg-1", got.detail.RichIssueID)
 	}
 }

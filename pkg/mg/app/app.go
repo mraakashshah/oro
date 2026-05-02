@@ -55,6 +55,7 @@ type Model struct {
 	watchPath     string
 	pathExplicit  bool
 	lastFileMod   time.Time
+	sourceVersion uint64
 	blockingTypes map[string]bool
 	filterInput   textinput.Model
 	filtering     bool
@@ -93,10 +94,10 @@ type Model struct {
 	palette     components.Palette
 	startedAt   time.Time // guards ":" palette trigger during terminal negotiation
 
-	// Data source mode (JSONL file watcher vs bd CLI polling)
+	// Data source mode (JSONL file watcher vs native bead store polling)
 	sourceMode data.SourceMode
 
-	// Startup: issue ID from bd show --current, consumed after first parade build
+	// Startup: active issue ID consumed after first parade build.
 	pendingCurrentID string
 	currentIssueID   string // active issue shown in header
 
@@ -109,8 +110,8 @@ type Model struct {
 	// Metadata schema from .beads/config.yaml
 	metadataSchema *data.MetadataSchema
 
-	// Workspace identity from bd context --json (fetched at startup)
-	beadsContext *data.BeadsContext
+	// Workspace identity shown in the footer.
+	storeContext *data.StoreContext
 
 	// Shared terminal control-sequence guard (used by both the Bubble Tea
 	// filter and app-level deferred key handling).
@@ -187,20 +188,20 @@ func (m Model) Init() tea.Cmd {
 		cmds = append(cmds, pollWorkerState)
 	}
 	if m.sourceMode == data.SourceCLI {
-		cmds = append(cmds, fetchStoreBeadsContext(m.projectDir))
+		cmds = append(cmds, fetchStoreContext(m.projectDir))
 		// Background-hydrate the full closed set after the initial 50.
 		cmds = append(cmds, data.FetchAllClosedCmd(m.store))
 	}
 	return tea.Batch(cmds...)
 }
 
-type beadsContextMsg struct {
-	ctx *data.BeadsContext
+type storeContextMsg struct {
+	ctx *data.StoreContext
 }
 
-func fetchStoreBeadsContext(projectDir string) tea.Cmd {
+func fetchStoreContext(projectDir string) tea.Cmd {
 	return func() tea.Msg {
-		return beadsContextMsg{ctx: &data.BeadsContext{
+		return storeContextMsg{ctx: &data.StoreContext{
 			RepoRoot: projectDir,
 			Backend:  "sqlite",
 		}}
@@ -257,7 +258,7 @@ type mutateResultMsg struct {
 // changeIndicatorExpiredMsg clears change indicators after timeout.
 type changeIndicatorExpiredMsg struct{}
 
-// currentIssueMsg carries the active issue ID from bd show --current at startup.
+// currentIssueMsg carries the active issue ID at startup.
 type currentIssueMsg struct {
 	issueID string
 }
@@ -265,11 +266,13 @@ type currentIssueMsg struct {
 // headerShimmerMsg drives the bead string shimmer animation.
 type headerShimmerMsg struct{}
 
-// issueDetailMsg carries enriched issue data from bd show.
+// issueDetailMsg carries enriched issue data for the detail panel.
 type issueDetailMsg struct {
-	issueID string
-	issue   *data.Issue
-	err     error
+	issueID       string
+	guardVersion  bool
+	sourceVersion uint64
+	issue         *data.Issue
+	err           error
 }
 
 // Update implements tea.Model.
@@ -385,6 +388,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		m.issues = msg.Issues
+		m.sourceVersion++
 		m.groups = data.GroupByParade(msg.Issues, m.blockingTypes)
 		if !msg.LastMod.IsZero() {
 			m.lastFileMod = msg.LastMod
@@ -421,6 +425,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		m.issues = merged
+		m.sourceVersion++
 		m.groups = data.GroupByParade(merged, m.blockingTypes)
 		m.lastFileMod = time.Now()
 		m.rebuildParade()
@@ -433,6 +438,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Merge background-fetched closed issues into current set.
 		merged := mergeActiveWithClosed(m.issues, msg.Issues)
 		m.issues = merged
+		m.sourceVersion++
 		m.groups = data.GroupByParade(merged, m.blockingTypes)
 		m.prevIssueMap = make(map[string]data.Status, len(merged))
 		for _, iss := range merged {
@@ -547,11 +553,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case beadsContextMsg:
-		m.beadsContext = msg.ctx
+	case storeContextMsg:
+		m.storeContext = msg.ctx
 		return m, nil
 
 	case issueDetailMsg:
+		if msg.guardVersion && msg.sourceVersion != m.sourceVersion {
+			return m, nil
+		}
 		if msg.err == nil && msg.issue != nil {
 			if m.detail.Issue != nil && m.detail.Issue.ID == msg.issueID {
 				m.detail.SetRichDetail(msg.issueID, msg.issue)
@@ -1116,6 +1125,9 @@ func (m *Model) maybeFetchIssueDetail() tea.Cmd {
 func (m Model) fetchIssueDetail(issueID string) tea.Cmd {
 	store := m.store
 	sourceMode := m.sourceMode
+	sourceVersion := m.sourceVersion
+	guardVersion := sourceMode != data.SourceCLI
+	issues := append([]data.Issue(nil), m.issues...)
 	return func() tea.Msg {
 		var (
 			issue *data.Issue
@@ -1124,9 +1136,9 @@ func (m Model) fetchIssueDetail(issueID string) tea.Cmd {
 		if sourceMode == data.SourceCLI {
 			issue, err = data.FetchIssueDetail(store, issueID)
 		} else {
-			issue, err = data.FetchIssueDetailCLI(issueID)
+			issue, err = data.FetchIssueDetailFromIssues(issues, issueID)
 		}
-		return issueDetailMsg{issueID: issueID, issue: issue, err: err}
+		return issueDetailMsg{issueID: issueID, guardVersion: guardVersion, sourceVersion: sourceVersion, issue: issue, err: err}
 	}
 }
 
@@ -1408,7 +1420,7 @@ func (m Model) View() tea.View {
 		footer.LastRefresh = m.lastFileMod
 		footer.PathExplicit = m.pathExplicit
 		footer.SourceMode = m.sourceMode
-		footer.BeadsContext = m.beadsContext
+		footer.StoreContext = m.storeContext
 		bottomBar = footer.View()
 	}
 

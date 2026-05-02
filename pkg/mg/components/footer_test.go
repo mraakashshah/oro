@@ -46,30 +46,36 @@ func TestBulkFooterNoGasTownNoSling(t *testing.T) {
 	}
 }
 
-func TestFooterViewWithBeadsContext(t *testing.T) {
+func TestFooterViewWithStoreContext(t *testing.T) {
 	f := Footer{
 		Width:       120,
 		Bindings:    ParadeBindings,
 		SourceMode:  data.SourceCLI,
 		LastRefresh: time.Now(),
-		BeadsContext: &data.BeadsContext{
+		StoreContext: &data.StoreContext{
 			Database: "mardi_gras",
-			Backend:  "dolt",
+			Backend:  "sqlite",
 		},
 	}
 	output := f.View()
-	if !strings.Contains(output, "mardi_gras/dolt") {
+	if !strings.Contains(output, "beadstore") || !strings.Contains(output, "(native)") {
+		t.Fatalf("footer should identify native beadstore source, got: %s", output)
+	}
+	if legacyLabel := "bd" + " list"; strings.Contains(output, legacyLabel) {
+		t.Fatalf("footer should not label native source with legacy list wording, got: %s", output)
+	}
+	if !strings.Contains(output, "mardi_gras/sqlite") {
 		t.Fatalf("footer should contain database/backend, got: %s", output)
 	}
 }
 
-func TestFooterViewWithBeadsContextNoBackend(t *testing.T) {
+func TestFooterViewWithStoreContextNoBackend(t *testing.T) {
 	f := Footer{
 		Width:       120,
 		Bindings:    ParadeBindings,
 		SourceMode:  data.SourceCLI,
 		LastRefresh: time.Now(),
-		BeadsContext: &data.BeadsContext{
+		StoreContext: &data.StoreContext{
 			Database: "mardi_gras",
 		},
 	}
@@ -82,7 +88,7 @@ func TestFooterViewWithBeadsContextNoBackend(t *testing.T) {
 	}
 }
 
-func TestFooterViewWithoutBeadsContext(t *testing.T) {
+func TestFooterViewWithoutStoreContext(t *testing.T) {
 	f := Footer{
 		Width:       120,
 		Bindings:    ParadeBindings,
@@ -90,6 +96,9 @@ func TestFooterViewWithoutBeadsContext(t *testing.T) {
 		LastRefresh: time.Now(),
 	}
 	output := f.View()
+	if legacyLabel := "bd" + " list"; strings.Contains(output, legacyLabel) {
+		t.Fatalf("footer should not label native source with legacy list wording, got: %s", output)
+	}
 	if strings.Contains(output, "mardi_gras") {
 		t.Fatalf("footer should not contain context info when nil, got: %s", output)
 	}

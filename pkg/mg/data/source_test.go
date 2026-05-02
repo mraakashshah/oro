@@ -57,47 +57,6 @@ func TestSourceLabelJSONL(t *testing.T) {
 	}
 }
 
-func TestParseBdVersionWarningKnownBroken(t *testing.T) {
-	got := parseBdVersionWarning("bd version 0.59.0")
-	if got == "" {
-		t.Fatal("expected warning for v0.59.0, got empty string")
-	}
-	if got != "bd v0.59.0 has a known bug where --json is ignored; upgrade to v0.60.0+" {
-		t.Errorf("unexpected warning: %q", got)
-	}
-}
-
-func TestParseBdVersionWarningOK(t *testing.T) {
-	got := parseBdVersionWarning("bd version 0.58.0")
-	if got != "" {
-		t.Errorf("expected no warning for v0.58.0, got %q", got)
-	}
-}
-
-func TestParseBdVersionWarningUnparseable(t *testing.T) {
-	cases := []string{
-		"",
-		"garbled output here",
-		"bd",
-		"\x00\xff",
-	}
-	for _, input := range cases {
-		got := parseBdVersionWarning(input)
-		if got != "" {
-			t.Errorf("parseBdVersionWarning(%q) = %q, want empty", input, got)
-		}
-	}
-}
-
-func TestBdListArgs(t *testing.T) {
-	args := bdListArgs()
-	got := strings.Join(args, " ")
-	want := "list --json --limit 0 --all"
-	if got != want {
-		t.Fatalf("bdListArgs() = %q, want %q", got, want)
-	}
-}
-
 func TestSourceFetchActiveIssuesUsesFakeStore(t *testing.T) {
 	store := beadstore.NewFakeStore(
 		protocol.Bead{ID: "mg-2", Title: "open task", Status: "open", Priority: 2, Type: "task", UpdatedAt: "2026-03-02T00:00:00Z"},
@@ -335,6 +294,36 @@ func TestFetchIssueDetailUsesStoreShow(t *testing.T) {
 	}
 	if issue.ParentID() != "mg-parent" {
 		t.Fatalf("ParentID() = %q, want mg-parent", issue.ParentID())
+	}
+}
+
+func TestFetchIssueDetailFromIssuesUsesLoadedJSONL(t *testing.T) {
+	issues := []Issue{
+		{
+			ID:                 "mg-1",
+			Title:              "detail",
+			Status:             StatusOpen,
+			Priority:           PriorityHigh,
+			IssueType:          TypeTask,
+			Notes:              "jsonl notes",
+			AcceptanceCriteria: "jsonl acceptance",
+		},
+	}
+
+	issue, err := FetchIssueDetailFromIssues(issues, "mg-1")
+	if err != nil {
+		t.Fatalf("FetchIssueDetailFromIssues() error = %v", err)
+	}
+	if issue.Notes != "jsonl notes" || issue.AcceptanceCriteria != "jsonl acceptance" {
+		t.Fatalf("detail = notes %q acceptance %q, want JSONL fields", issue.Notes, issue.AcceptanceCriteria)
+	}
+
+	_, err = FetchIssueDetailFromIssues(issues, "missing")
+	if err == nil {
+		t.Fatal("FetchIssueDetailFromIssues() error = nil, want missing issue error")
+	}
+	if !strings.Contains(err.Error(), "issue missing not found") {
+		t.Fatalf("FetchIssueDetailFromIssues() error = %v, want missing issue error", err)
 	}
 }
 

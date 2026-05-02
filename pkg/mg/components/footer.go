@@ -26,7 +26,7 @@ type Footer struct {
 	LastRefresh  time.Time
 	PathExplicit bool
 	SourceMode   data.SourceMode
-	BeadsContext *data.BeadsContext
+	StoreContext *data.StoreContext
 }
 
 // ParadeBindings are the default keybindings for the parade view.
@@ -68,8 +68,8 @@ func (f Footer) View() string {
 	// Build source info (left side)
 	sourceInfo := ""
 	if f.SourceMode == data.SourceCLI || f.SourcePath != "" {
-		name := "bd list"
-		mode := "(cli)"
+		name := "beadstore"
+		mode := "(native)"
 		if f.SourceMode != data.SourceCLI {
 			name = filepath.Base(f.SourcePath)
 			mode = "(legacy)"
@@ -90,10 +90,10 @@ func (f Footer) View() string {
 			}
 		}
 		contextInfo := ""
-		if f.BeadsContext != nil && f.BeadsContext.Database != "" {
-			contextInfo = f.BeadsContext.Database
-			if f.BeadsContext.Backend != "" {
-				contextInfo += "/" + f.BeadsContext.Backend
+		if f.StoreContext != nil && f.StoreContext.Database != "" {
+			contextInfo = f.StoreContext.Database
+			if f.StoreContext.Backend != "" {
+				contextInfo += "/" + f.StoreContext.Backend
 			}
 			contextInfo = " · " + contextInfo
 		}

@@ -197,20 +197,6 @@ func TestFindBeadsDir_NotFound(t *testing.T) {
 	}
 }
 
-// --- bdOnPath ---
-
-func TestBdOnPath_ReturnsBoolean(t *testing.T) {
-	// Just verify it returns a valid bool without panicking.
-	_ = bdOnPath()
-}
-
-func TestBdOnPath_FalseWhenNotOnPath(t *testing.T) {
-	t.Setenv("PATH", "")
-	if bdOnPath() {
-		t.Fatal("expected bdOnPath to return false when PATH is empty")
-	}
-}
-
 // --- resolveSource ---
 
 func TestResolveSource_ExplicitPath(t *testing.T) {
@@ -283,7 +269,7 @@ func TestResolveSource_BeadsFileNoBd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Remove bd from PATH so bdOnPath returns false.
+	// Remove external tools from PATH to prove JSONL fallback is local-only.
 	t.Setenv("PATH", "")
 	t.Setenv("ORO_DB_PATH", "")
 	t.Setenv("ORO_HOME", t.TempDir())
@@ -548,7 +534,7 @@ func TestLoadInitialIssues_CLI_Error(t *testing.T) {
 	source := data.Source{Mode: data.SourceCLI, ProjectDir: t.TempDir()}
 	_, err := loadInitialIssues(source)
 	if err == nil {
-		t.Fatal("expected error when bd not on PATH")
+		t.Fatal("expected error when bead store is unavailable")
 	}
 }
 

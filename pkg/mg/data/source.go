@@ -54,22 +54,6 @@ func (s Source) Label() string {
 	return "issues.jsonl"
 }
 
-// parseBdVersionWarning returns a warning string if the version is known-broken,
-// or "" otherwise. Accepts output like "bd version 0.59.0".
-func parseBdVersionWarning(output string) string {
-	// Expected format: "bd version X.Y.Z" (possibly with trailing newline)
-	fields := strings.Fields(strings.TrimSpace(output))
-	if len(fields) < 2 {
-		return ""
-	}
-	// Version is the last field (handles "bd version 0.59.0" and "0.59.0")
-	ver := fields[len(fields)-1]
-	if ver == "0.59.0" {
-		return "bd v0.59.0 has a known bug where --json is ignored; upgrade to v0.60.0+"
-	}
-	return ""
-}
-
 // FetchIssues reads the full issue set from store.Export.
 //
 //oro:testonly
@@ -82,10 +66,6 @@ func FetchIssues(store beadstore.Store) ([]Issue, error) {
 		return nil, fmt.Errorf("export beads: %w", err)
 	}
 	return parseIssuesJSONL(out)
-}
-
-func bdListArgs() []string {
-	return []string{"list", "--json", "--limit", "0", "--all"}
 }
 
 // FetchActiveIssues fetches only non-closed issues. Used by the poll loop.
@@ -292,12 +272,12 @@ func ParseIssuesJSON(out []byte, expectedPrefix string) ([]Issue, error) {
 func parseIssuesCLIOutput(out []byte, expectedPrefix string) ([]Issue, error) {
 	var issues []Issue
 	if err := json.Unmarshal(out, &issues); err != nil {
-		// Check if bd returned tree-formatted text instead of JSON
+		// Check if the legacy list source returned tree-formatted text instead of JSON.
 		trimmed := strings.TrimSpace(string(out))
 		if trimmed != "" && !strings.HasPrefix(trimmed, "[") && !strings.HasPrefix(trimmed, "{") {
-			return nil, fmt.Errorf("bd list returned non-JSON output (tree format?) — bd v0.59.0 has a known bug, upgrade to v0.60.0+")
+			return nil, fmt.Errorf("legacy issue list returned non-JSON output (tree format?)")
 		}
-		return nil, fmt.Errorf("bd list parse: %w", err)
+		return nil, fmt.Errorf("legacy issue list parse: %w", err)
 	}
 	if err := validateIssuePrefixes(issues, expectedPrefix); err != nil {
 		return nil, err
@@ -306,16 +286,14 @@ func parseIssuesCLIOutput(out []byte, expectedPrefix string) ([]Issue, error) {
 	return issues, nil
 }
 
-// BeadsContext holds workspace identity from `bd context --json`.
-type BeadsContext struct {
-	BeadsDir     string `json:"beads_dir"`
+// StoreContext holds workspace identity for the active native issue store.
+type StoreContext struct {
+	StoreDir     string `json:"store_dir"`
 	RepoRoot     string `json:"repo_root"`
 	IsRedirected bool   `json:"is_redirected"`
 	Backend      string `json:"backend"`
-	DoltMode     string `json:"dolt_mode"`
 	Database     string `json:"database"`
 	Role         string `json:"role"`
-	BdVersion    string `json:"bd_version"`
 }
 
 func validateIssuePrefixes(issues []Issue, expectedPrefix string) error {
@@ -346,7 +324,7 @@ func validateIssuePrefixes(issues []Issue, expectedPrefix string) error {
 	}
 
 	for prefix := range mismatched {
-		return fmt.Errorf("bd list returned %q issues, but this workspace expects %q — possible cross-project Dolt routing", prefix, expectedPrefix)
+		return fmt.Errorf("legacy issue list returned %q issues, but this workspace expects %q", prefix, expectedPrefix)
 	}
 	return nil
 }
@@ -357,26 +335,6 @@ func issuePrefixFromID(id string) string {
 		return ""
 	}
 	return prefix
-}
-
-// DoctorDiagnostic represents a single finding from `bd doctor --agent --json`.
-type DoctorDiagnostic struct {
-	Name        string   `json:"name"`
-	Status      string   `json:"status"`       // "error", "warning", "ok"
-	Severity    string   `json:"severity"`     // "blocking", "degraded", etc.
-	Category    string   `json:"category"`     // "Core System", "Git Integration", etc.
-	Explanation string   `json:"explanation"`  // Human-readable detail
-	Observed    string   `json:"observed"`     // What was found
-	Expected    string   `json:"expected"`     // What was expected
-	Commands    []string `json:"commands"`     // Suggested fix commands
-	SourceFiles []string `json:"source_files"` // Upstream source references
-}
-
-// DoctorResult holds the full output of `bd doctor --agent --json`.
-type DoctorResult struct {
-	OK          bool               `json:"overall_ok"`
-	Summary     string             `json:"summary"`
-	Diagnostics []DoctorDiagnostic `json:"diagnostics"`
 }
 
 // FetchIssueDetail loads a single issue from the bead store.
@@ -398,22 +356,15 @@ func FetchIssueDetail(store beadstore.Store, issueID string) (*Issue, error) {
 	return &issue, nil
 }
 
-// FetchIssueDetailCLI runs `bd show <id> --long --json` and returns the enriched issue.
-// Returns fields not available from bd list: notes, design, acceptance_criteria.
-// The --long flag requests extended metadata (agent identity, gate fields, etc.).
-func FetchIssueDetailCLI(issueID string) (*Issue, error) {
-	out, err := runWithTimeout(timeoutShort, "bd", "show", issueID, "--long", "--json")
-	if err != nil {
-		return nil, wrapExitError("bd show", err)
+// FetchIssueDetailFromIssues loads detail from an already-loaded JSONL snapshot.
+func FetchIssueDetailFromIssues(issues []Issue, issueID string) (*Issue, error) {
+	for i := range issues {
+		if issues[i].ID == issueID {
+			issue := issues[i]
+			return &issue, nil
+		}
 	}
-	var issues []Issue
-	if err := json.Unmarshal(out, &issues); err != nil {
-		return nil, fmt.Errorf("bd show parse: %w", err)
-	}
-	if len(issues) == 0 {
-		return nil, fmt.Errorf("bd show: no issue returned")
-	}
-	return &issues[0], nil
+	return nil, fmt.Errorf("issue %s not found in loaded issue snapshot", issueID)
 }
 
 // FetchIssuesNow returns a tea.Cmd that fetches active issues via Store

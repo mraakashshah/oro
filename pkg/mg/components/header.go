@@ -16,7 +16,7 @@ type Header struct {
 	Groups         map[data.ParadeStatus][]data.Issue
 	WorkerCount    int
 	BeadOffset     int    // shimmer animation offset, incremented by tick
-	CurrentIssueID string // active issue from bd show --current
+	CurrentIssueID string // active issue shown in the header
 }
 
 // View renders the header.

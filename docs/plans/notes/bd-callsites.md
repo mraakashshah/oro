@@ -28,9 +28,9 @@ construct native SQLite stores for production.
 | File | Direct bd use | Marker | Resolution |
 | --- | --- | --- | --- |
 | `cmd/oro/cmd_cleanup.go` | formerly `bd list --status=in_progress --json`; `bd update <id> --status=open` | migrated | `cleanupBeads()` now opens the native SQLite state DB and calls `beadstore.SQLiteStore.InProgress()` plus `Update()`; remaining bd strings in `cmd_cleanup_test.go` are legacy fake-runner fixtures only. |
-| `pkg/mg/data/source.go` | `bd --version`; `bd list`; `bd context`; `bd show --current`; `bd doctor --agent`; `bd show <id> --long` | route-through-interface | Replace mg data source with constructor-injected `beadstore.Store` plus any extra native diagnostics needed. §11.2 calls out this rewrite. |
-| `pkg/mg/data/mutate.go` | `bd update`; `bd update --claim`; `bd close`; `bd create` | route-through-interface | Same mg rewrite as above. Mutation paths must call Store/native CLI rather than bd. |
-| `cmd/oro/cmd_mg.go` | `exec.LookPath("bd")`; loads through mg CLI source | route-through-interface | Remove `.beads`/bd preflight and construct mg data from native Store. §11.2 calls this out. |
+| `pkg/mg/data/source.go` | formerly `bd --version`; `bd list`; `bd context`; `bd show --current`; `bd doctor --agent`; `bd show <id> --long` | migrated | `oro mg` now constructs a native `beadstore.Store` when available; JSONL mode reads local snapshots only and detail comes from the loaded snapshot rather than `bd show`. |
+| `pkg/mg/data/mutate.go` | formerly `bd update`; `bd update --claim`; `bd close`; `bd create` | migrated | mg mutations now call `beadstore.Store` methods directly: `Update`, `Close`, `Create`, and `Show` for claim ownership checks. |
+| `cmd/oro/cmd_mg.go` | formerly `exec.LookPath("bd")`; loaded through mg CLI source | migrated | `resolveSource()` prefers the native SQLite store and falls back only to a local JSONL snapshot; it does not check for or execute `bd`. |
 | `pkg/dispatcher/health.go` | formerly `bd dolt status` | migrated | Phase 10 removed runtime Dolt status probing/recovery; remaining health loop path is a no-op until the obsolete Dolt ticker fields are removed. |
 | `pkg/dispatcher/dolt_recovery.go` | formerly `bd dolt start`; `bd import <backup>` | deleted | Removed by Phase 10 bead `oro-37t5`. SQLite recovery is handled through native state DB backups/runbooks, not bd import. |
 | `cmd/oro/cmd_stop.go` | formerly `bd dolt commit` | migrated | Phase 10 blocker `oro-zy25` removed legacy bd flush on stop; Phase 10 cleanup removed stale stop-all Dolt prose/fields. |
@@ -38,6 +38,7 @@ construct native SQLite stores for production.
 | `cmd/oro/cmd_doctor.go` | formerly ran legacy bd reinitialization commands | migrated | Phase 10 blocker `oro-p10d` removed the operator-visible legacy Dolt recovery command. Future native SQLite doctor checks should be added without bd/Dolt repair paths. |
 | `cmd/oro/cmd_bd.go` | formerly `oro bd` wrapper located and `exec`ed bd with optional stealth `--db` | deleted | Removed by Phase 10 bead `oro-37t5`. |
 | `cmd/oro/preflight.go` | standard `oro start` preflight no longer requires `bd`; SQLite daemon preflight requires `claude` and `git` only | migrated | Removed bd from required tools in Phase 10 blocker `oro-58f5`; keep this row as historical inventory until Phase 10 deletes or rewrites the surrounding legacy callsites. |
+| `cmd/oro/cmd_bead_migrate.go` | `bd export` when `oro bead migrate-from-dolt` runs without `--from-jsonl` or `--from-fixture` | accepted-legacy | Keep only as a migration import/audit fallback while bd/Dolt remains one possible source snapshot. Operational runbooks should prefer the preserved JSONL export through `--from-jsonl`; this is not a dispatcher, worker, mg, or post-cutover runtime beadstore path. Remove or deprecate after Phase 11 replaces the remaining bd/Dolt import dependency. |
 
 ## Python hook callsites
 
@@ -64,15 +65,18 @@ and therefore must be migrated with the hook work:
   examples. §11.4 lists the skill files and requires a Phase 6 hard gate where
   `git grep -l 'bd ' assets/skills/` returns zero files.
 
-## Test-only bd callsites
+## Test-only legacy references
 
 Tests still mock or assert legacy bd command strings in these areas:
 
 - `cmd/oro/cmd_cleanup_test.go` contains legacy fake-runner fixtures for
   regression coverage; current assertions ensure cleanup does not call bd in
   native SQLite paths.
-- `pkg/mg/data/*_test.go`
 - Python hook tests under `tests/`
+
+`pkg/mg/data/*_test.go` no longer contains bd command-callsite coverage. It
+retains legacy JSON contract fixtures and store-backed tests so JSONL imports
+and native store mappings remain compatible during the migration window.
 
 Deleted Phase 10 test surfaces:
 
@@ -81,6 +85,7 @@ Deleted Phase 10 test surfaces:
 
 Migrated Phase 10 test surfaces:
 
+- `pkg/mg/data/*_test.go`
 - `cmd/oro/cmd_stop_test.go`
 
 Marker: remaining legacy assertions are `accepted-legacy` until the
@@ -92,9 +97,9 @@ corresponding production path is migrated. Then replace tests with
 
 `beadstore.Store` is now the dispatcher/work production seam. Historical bd
 bypasses have been retired in the runtime paths that gate native SQLite
-dispatcher/work operation: cleanup uses native SQLite, stop no longer flushes
-bd/Dolt, doctor no longer repairs Dolt, dispatcher health no longer shells to
-bd, and the `oro bd` wrapper plus dispatcher CLI beadsource/recovery files are
-deleted. Remaining references in this inventory identify follow-up cleanup
-surfaces such as legacy mg, prompt/hook text, migration import tooling, and
-stale comments.
+dispatcher/work operation: cleanup uses native SQLite, mg uses native store or
+local JSONL snapshots, stop no longer flushes bd/Dolt, doctor no longer repairs
+Dolt, dispatcher health no longer shells to bd, and the `oro bd` wrapper plus
+dispatcher CLI beadsource/recovery files are deleted. Remaining references in
+this inventory identify follow-up cleanup surfaces such as prompt/hook text,
+the migration-only `bd export` import fallback, and stale comments.

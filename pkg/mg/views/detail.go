@@ -54,7 +54,7 @@ func (d *Detail) SetIssue(issue *data.Issue) {
 	d.Viewport.GotoTop()
 }
 
-// SetRichDetail enriches the current issue with fields from bd show (notes, design, acceptance_criteria).
+// SetRichDetail enriches the current issue with fields from the active issue source.
 func (d *Detail) SetRichDetail(issueID string, rich *data.Issue) {
 	d.RichIssueID = issueID
 	if d.Issue != nil && d.Issue.ID == issueID && rich != nil {

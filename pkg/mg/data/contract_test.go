@@ -12,7 +12,7 @@ import (
 
 // --- Sample bd output constants ---
 
-// bdListBasicIssue represents a fully-populated issue from `bd list --json`.
+// bdListBasicIssue represents a fully-populated issue from a legacy list JSON source.
 const bdListBasicIssue = `[{
 	"id": "proj-042",
 	"title": "Implement rate limiting",
@@ -172,8 +172,8 @@ const bdListWithHOP = `[{
 	"crystallizes": true
 }]`
 
-// bdShowDetailIssue represents enriched output from `bd show <id> --long --json`.
-const bdShowDetailIssue = `[{
+// legacyDetailIssue represents enriched issue detail from a legacy JSON source.
+const legacyDetailIssue = `[{
 	"id": "proj-042",
 	"title": "Implement rate limiting",
 	"description": "Add per-user rate limiting to the API gateway.",
@@ -459,7 +459,7 @@ func TestContractHOPFields(t *testing.T) {
 
 func TestContractDetailFields(t *testing.T) {
 	var issues []Issue
-	if err := json.Unmarshal([]byte(bdShowDetailIssue), &issues); err != nil {
+	if err := json.Unmarshal([]byte(legacyDetailIssue), &issues); err != nil {
 		t.Fatalf("failed to parse detail issue: %v", err)
 	}
 
@@ -570,74 +570,8 @@ func TestContractTimestampFormats(t *testing.T) {
 	}
 }
 
-func TestContractDoctorDiagnostic(t *testing.T) {
-	// Validate bd doctor --agent --json contract.
-	doctorJSON := `{
-		"overall_ok": false,
-		"summary": "2 issues found",
-		"diagnostics": [
-			{
-				"name": "dolt_server",
-				"status": "error",
-				"severity": "blocking",
-				"category": "Core System",
-				"explanation": "Dolt server is not running",
-				"observed": "no process on port 3307",
-				"expected": "dolt sql-server running on port 3307",
-				"commands": ["dolt sql-server --port 3307"],
-				"source_files": ["internal/db/server.go"]
-			},
-			{
-				"name": "git_clean",
-				"status": "warning",
-				"severity": "degraded",
-				"category": "Git Integration",
-				"explanation": "Working tree has uncommitted changes",
-				"observed": "3 modified files",
-				"expected": "clean working tree"
-			}
-		]
-	}`
-
-	var result DoctorResult
-	if err := json.Unmarshal([]byte(doctorJSON), &result); err != nil {
-		t.Fatalf("failed to parse doctor result: %v", err)
-	}
-
-	if result.OK {
-		t.Error("OK should be false")
-	}
-	assertEqual(t, "Summary", result.Summary, "2 issues found")
-
-	if len(result.Diagnostics) != 2 {
-		t.Fatalf("expected 2 diagnostics, got %d", len(result.Diagnostics))
-	}
-
-	d0 := result.Diagnostics[0]
-	assertEqual(t, "d0.Name", d0.Name, "dolt_server")
-	assertEqual(t, "d0.Status", d0.Status, "error")
-	assertEqual(t, "d0.Severity", d0.Severity, "blocking")
-	assertEqual(t, "d0.Category", d0.Category, "Core System")
-	if len(d0.Commands) != 1 {
-		t.Fatalf("expected 1 command, got %d", len(d0.Commands))
-	}
-	if len(d0.SourceFiles) != 1 {
-		t.Fatalf("expected 1 source file, got %d", len(d0.SourceFiles))
-	}
-
-	// Second diagnostic has no commands/source_files — should be nil/empty
-	d1 := result.Diagnostics[1]
-	assertEqual(t, "d1.Name", d1.Name, "git_clean")
-	if len(d1.Commands) != 0 {
-		t.Errorf("expected no commands, got %d", len(d1.Commands))
-	}
-	if len(d1.SourceFiles) != 0 {
-		t.Errorf("expected no source files, got %d", len(d1.SourceFiles))
-	}
-}
-
 func TestContractEmptyList(t *testing.T) {
-	// bd list --json returns [] when no issues exist.
+	// Legacy list JSON returns [] when no issues exist.
 	var issues []Issue
 	if err := json.Unmarshal([]byte(`[]`), &issues); err != nil {
 		t.Fatalf("failed to parse empty list: %v", err)
@@ -725,15 +659,15 @@ func TestContractSortAfterParse(t *testing.T) {
 	assertEqual(t, "sorted[2]", issues[2].ID, "c-1") // closed
 }
 
-func TestContractBdShowCurrentJSON(t *testing.T) {
-	// bd show --current --json returns {"id": "..."}.
+func TestContractCurrentIssueJSON(t *testing.T) {
+	// Legacy current-issue JSON returns {"id": "..."}.
 	showCurrentJSON := `{"id": "proj-042"}`
 
 	var result struct {
 		ID string `json:"id"`
 	}
 	if err := json.Unmarshal([]byte(showCurrentJSON), &result); err != nil {
-		t.Fatalf("failed to parse bd show --current: %v", err)
+		t.Fatalf("failed to parse current issue JSON: %v", err)
 	}
 	assertEqual(t, "ID", result.ID, "proj-042")
 }
