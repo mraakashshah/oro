@@ -20,6 +20,11 @@ const (
 	worktreesDirName = ".worktrees"
 )
 
+// LegacyBeadsDir is the conventional in-repo beads directory used before the
+// Phase 10 migration.  Retained so that migration and archive tooling can
+// locate and clean up old operator machines without embedding a magic string.
+const LegacyBeadsDir = ".beads"
+
 // Paths holds all resolved oro state file paths.
 // Use ResolvePaths() to populate this struct with defaults + env overrides.
 type Paths struct {

@@ -693,6 +693,15 @@ func TestMigrateGlobalDBsToProject(t *testing.T) {
 //
 // Acceptance: grep -rn '"\.beads"\|"\.worktrees"\|"\.oro/config' cmd/oro/*.go
 // returns 0 hits outside of ResolvePaths itself and tests.
+// TestLegacyBeadsDirRetained guards that LegacyBeadsDir is not accidentally removed
+// from paths.go. Downstream migration and archive tooling depend on this constant.
+func TestLegacyBeadsDirRetained(t *testing.T) {
+	const want = ".beads"
+	if LegacyBeadsDir != want {
+		t.Errorf("LegacyBeadsDir = %q, want %q", LegacyBeadsDir, want)
+	}
+}
+
 func TestAllCmdPathsUseProjectPaths(t *testing.T) {
 	re := regexp.MustCompile(`"\.beads"|"\.worktrees"|"\.oro/config`)
 
