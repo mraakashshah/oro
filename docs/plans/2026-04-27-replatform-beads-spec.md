@@ -2370,7 +2370,7 @@ This staging adds maybe 1–2 days of total effort to retain the legacy path thr
 **Acceptance:**
 
 - `make build && make install` produces a working oro without bd installed.
-- Fresh-machine setup test: clean macOS user, install oro, run a bead, succeed.
+- Fresh-machine setup test: clean macOS user, install oro, run a bead, succeed. If the historical `fresh-mac:latest` image is unavailable, run `scripts/check-phase10-no-bd-install.sh` and record the missing image as an acceptance-harness replacement, not a product blocker.
 - `oro uninstall` still cleanly removes a legacy `.beads/` directory if present.
 
 ### 12.12 Phase 11 — Cleanup pass 2 (1 day, deferred ~1–2 release cycles past Phase 10)
