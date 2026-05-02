@@ -37,6 +37,9 @@ func (m *mockWorktreeManager) Create(_ context.Context, beadID, _ string) (strin
 	defer m.mu.Unlock()
 	path := "/tmp/worktree-" + beadID
 	branch := "agent/" + beadID
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return "", "", err
+	}
 	if m.created == nil {
 		m.created = make(map[string]string)
 	}
