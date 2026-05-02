@@ -2675,13 +2675,13 @@ func TestApplyDirective_SpawnFor(t *testing.T) {
 		t.Errorf("expected detail to mention bead ID, got: %s", detail)
 	}
 
-	// Assert: target count incremented
+	// Assert: spawn-for is one-shot capacity, not persistent general pool size.
 	d.mu.Lock()
 	targetCount := d.targetWorkers
 	hasPriority := d.priorityBeads["oro-test-bead"]
 	d.mu.Unlock()
-	if targetCount != 2 {
-		t.Errorf("targetWorkers = %d, want 2 (incremented from 1)", targetCount)
+	if targetCount != 1 {
+		t.Errorf("targetWorkers = %d, want 1 (spawn-for must not alter general pool target)", targetCount)
 	}
 	if !hasPriority {
 		t.Error("expected bead to be in priorityBeads")
@@ -7687,6 +7687,27 @@ func (m *mockQGRunner) Run(_ context.Context, worktree string, skipMutation bool
 	m.calls = append(m.calls, worktree)
 	m.skipMutations = append(m.skipMutations, skipMutation)
 	return m.passed, m.output, m.err
+}
+
+func TestShellQGRunner_DoesNotInheritMutationSkipWhenDisabled(t *testing.T) {
+	t.Setenv("ORO_SKIP_MUTATION", "1")
+
+	tmpDir := t.TempDir()
+	script := filepath.Join(tmpDir, "quality_gate.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nif [ \"${ORO_SKIP_MUTATION:-}\" = \"1\" ]; then echo unexpected; exit 1; fi\necho clean\nexit 0\n"), 0o600); err != nil { //nolint:gosec // test script
+		t.Fatal(err)
+	}
+	if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+		t.Fatal(err)
+	}
+
+	passed, output, err := (&ShellQGRunner{}).Run(context.Background(), tmpDir, false)
+	if err != nil {
+		t.Fatalf("ShellQGRunner.Run: %v", err)
+	}
+	if !passed {
+		t.Fatalf("expected QG to pass without inherited ORO_SKIP_MUTATION, output: %s", output)
+	}
 }
 
 // TestMergeAndComplete_RunsPreMergeQG verifies that mergeAndComplete calls the
@@ -13652,6 +13673,35 @@ func TestKillWorkerCleansUpWorktreeAndBead(t *testing.T) {
 		d.mu.Unlock()
 		if target != 1 {
 			t.Errorf("targetWorkers = %d, want 1 after killing managed worker", target)
+		}
+	})
+
+	t.Run("managed spawn-for worker: targetWorkers NOT decremented", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		conn := newMockConn()
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:       workerID,
+			conn:     conn,
+			state:    protocol.WorkerIdle,
+			managed:  true,
+			spawnFor: true,
+			encoder:  json.NewEncoder(conn),
+		}
+		d.targetWorkers = 2
+		d.mu.Unlock()
+
+		_, err := d.applyKillWorker(workerID)
+		if err != nil {
+			t.Fatalf("applyKillWorker returned error: %v", err)
+		}
+
+		d.mu.Lock()
+		target := d.targetWorkers
+		d.mu.Unlock()
+		if target != 2 {
+			t.Errorf("targetWorkers = %d, want 2 after killing spawn-for worker", target)
 		}
 	})
 

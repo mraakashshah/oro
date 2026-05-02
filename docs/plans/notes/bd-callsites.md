@@ -37,7 +37,7 @@ flows. `cmd/oro/cmd_start.go` and `cmd/oro/cmd_work.go` construct
 | `cmd/oro/cmd_init.go` | tool definition checks `bd --version`; `bd init --agents-template /dev/null` | accepted-legacy | Required while setup bootstraps legacy beads. Remove bd from tool list and init path in Phase 10, as §11.2 specifies. |
 | `cmd/oro/cmd_doctor.go` | `bd init`; `bd init --from-jsonl` | accepted-legacy | Legacy Dolt recovery. Replace with native SQLite integrity/recovery tooling. |
 | `cmd/oro/cmd_bd.go` | `oro bd` wrapper locates and `exec`s bd with optional stealth `--db` | accepted-legacy | Delete in Phase 10. §11.2 lists this as a deleted file. |
-| `cmd/oro/preflight.go` | requires `bd` on PATH | accepted-legacy | Remove bd from required tools once the dispatcher no longer depends on it. |
+| `cmd/oro/preflight.go` | standard `oro start` preflight no longer requires `bd`; SQLite daemon preflight requires `claude` and `git` only | migrated | Removed bd from required tools in Phase 10 blocker `oro-58f5`; keep this row as historical inventory until Phase 10 deletes or rewrites the surrounding legacy callsites. |
 
 ## Python hook callsites
 
@@ -84,7 +84,7 @@ appropriate. This matches §11.3's test migration category.
 
 `BeadSource` is the main dispatcher seam, but it is not the only bd seam in the
 repo. The concrete bypasses that can affect runtime behavior are cleanup,
-legacy mg, Dolt health/recovery/stop/init/doctor, the `oro bd` wrapper, preflight,
-and Python hook surfaces. The replatform should treat cleanup and mg as
+legacy mg, Dolt health/recovery/stop/init/doctor, the `oro bd` wrapper, and
+Python hook surfaces. The replatform should treat cleanup and mg as
 `route-through-interface`; Dolt-specific paths are `accepted-legacy` only until
 the planned Phase 10 deletion/replacement.

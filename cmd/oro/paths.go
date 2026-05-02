@@ -16,9 +16,14 @@ import (
 // acceptance check (which enforces all call-sites use ProjectPaths) can exclude
 // this file and still pass.
 const (
-	beadsDirName     = ".beads"
+	beadsDirName     = LegacyBeadsDir
 	worktreesDirName = ".worktrees"
 )
+
+// LegacyBeadsDir is the conventional in-repo beads directory used before the
+// Phase 10 migration.  Retained so that migration and archive tooling can
+// locate and clean up old operator machines without embedding a magic string.
+const LegacyBeadsDir = ".beads"
 
 // Paths holds all resolved oro state file paths.
 // Use ResolvePaths() to populate this struct with defaults + env overrides.
@@ -84,6 +89,7 @@ type ProjectPaths struct {
 	Mode           string // "standard" | "stealth"
 	RepoRoot       string // absolute path to repo root
 	BeadsDir       string // .beads/ or ~/.oro/projects/s-<hash>/beads/
+	LegacyBeadsDir string // pre-replatform beads path for migration/cleanup tooling
 	WorktreesDir   string // .worktrees/ or ~/.oro/projects/s-<hash>/worktrees/
 	OroDocsDir     string // docs/ or ~/.oro/projects/s-<hash>/docs/
 	QualityGate    string // scripts/quality_gate.sh or ~/.oro/projects/s-<hash>/quality_gate.sh
@@ -160,7 +166,8 @@ func standardProjectPaths(repoRoot string) ProjectPaths {
 	return ProjectPaths{
 		Mode:           "standard",
 		RepoRoot:       repoRoot,
-		BeadsDir:       filepath.Join(repoRoot, ".beads"),
+		BeadsDir:       filepath.Join(repoRoot, LegacyBeadsDir),
+		LegacyBeadsDir: filepath.Join(repoRoot, LegacyBeadsDir),
 		WorktreesDir:   filepath.Join(repoRoot, ".worktrees"),
 		OroDocsDir:     filepath.Join(repoRoot, "docs"),
 		QualityGate:    filepath.Join(repoRoot, "scripts", "quality_gate.sh"),
@@ -178,6 +185,7 @@ func stealthProjectPaths(repoRoot, stealthDir string) ProjectPaths {
 		Mode:           "stealth",
 		RepoRoot:       repoRoot,
 		BeadsDir:       filepath.Join(stealthDir, "beads"),
+		LegacyBeadsDir: filepath.Join(stealthDir, "beads"),
 		WorktreesDir:   filepath.Join(stealthDir, "worktrees"),
 		OroDocsDir:     filepath.Join(stealthDir, "docs"),
 		QualityGate:    filepath.Join(stealthDir, "quality_gate.sh"),

@@ -95,6 +95,25 @@ func TestDoctorRecoverCorruptDolt(t *testing.T) {
 	}
 }
 
+func TestDoctorRecoverConfigForRepoUsesLegacyBeadsDir(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".oro"), 0o750); err != nil {
+		t.Fatalf("setup .oro dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, ".oro", "config.yaml"), []byte("project: test\n"), 0o600); err != nil {
+		t.Fatalf("setup config: %v", err)
+	}
+
+	cfg, err := doctorRecoverConfigForRepo(repoRoot, &bytes.Buffer{}, time.Now, func(string, ...string) error { return nil })
+	if err != nil {
+		t.Fatalf("doctorRecoverConfigForRepo: %v", err)
+	}
+	want := filepath.Join(repoRoot, LegacyBeadsDir)
+	if cfg.beadsDir != want {
+		t.Fatalf("doctor recover beadsDir = %q, want %q", cfg.beadsDir, want)
+	}
+}
+
 // TestDoctorRecoverCorruptDolt_NoFullState verifies the edge case where
 // full-state.jsonl is absent: warn user, reinit with empty db.
 func TestDoctorRecoverCorruptDolt_NoFullState(t *testing.T) {

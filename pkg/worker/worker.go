@@ -1265,9 +1265,7 @@ func RunQualityGate(ctx context.Context, worktree string, skipMutation bool) (pa
 
 	cmd := exec.CommandContext(ctx, "bash", scriptPath) //nolint:gosec // script path constructed from worktree, not user input
 	cmd.Dir = worktree
-	if skipMutation {
-		cmd.Env = append(os.Environ(), "ORO_SKIP_MUTATION=1")
-	}
+	cmd.Env = qualityGateEnv(skipMutation)
 
 	out, err := cmd.CombinedOutput()
 	output = string(out)
@@ -1280,6 +1278,20 @@ func RunQualityGate(ctx context.Context, worktree string, skipMutation bool) (pa
 		return false, output, fmt.Errorf("run quality gate: %w", err)
 	}
 	return true, output, nil
+}
+
+func qualityGateEnv(skipMutation bool) []string {
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "ORO_SKIP_MUTATION=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	if skipMutation {
+		env = append(env, "ORO_SKIP_MUTATION=1")
+	}
+	return env
 }
 
 // ClaudeSpawner is the production StreamingSpawner that invokes `claude -p`.

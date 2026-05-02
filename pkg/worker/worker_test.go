@@ -539,6 +539,27 @@ func TestRunQualityGate_Failure(t *testing.T) {
 	}
 }
 
+func TestRunQualityGate_DoesNotInheritMutationSkipWhenDisabled(t *testing.T) {
+	t.Setenv("ORO_SKIP_MUTATION", "1")
+
+	tmpDir := t.TempDir()
+	script := filepath.Join(tmpDir, "quality_gate.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nif [ \"${ORO_SKIP_MUTATION:-}\" = \"1\" ]; then echo unexpected; exit 1; fi\necho clean\nexit 0\n"), 0o600); err != nil { //nolint:gosec // test file
+		t.Fatal(err)
+	}
+	if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+		t.Fatal(err)
+	}
+
+	passed, output, err := worker.RunQualityGate(context.Background(), tmpDir, false)
+	if err != nil {
+		t.Fatalf("RunQualityGate: %v", err)
+	}
+	if !passed {
+		t.Fatalf("expected quality gate to pass without inherited ORO_SKIP_MUTATION, output: %s", output)
+	}
+}
+
 func TestRunQualityGate_NoScript(t *testing.T) {
 	t.Parallel()
 

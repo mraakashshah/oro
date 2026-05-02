@@ -721,34 +721,24 @@ func TestBeadTrackerGrowthIsBounded(t *testing.T) {
 			seedTrackingMaps(d, fmt.Sprintf("bead-closed-%d", i))
 		}
 
-		// Connect real workers so shutdown sequence can send graceful stop messages.
 		activeIDs := make([]string, active)
+		d.mu.Lock()
 		for i := range active {
-			conn, _ := connectWorker(t, d.cfg.SocketPath)
 			wid := fmt.Sprintf("w%d", i)
-			sendMsg(t, conn, protocol.Message{
-				Type:      protocol.MsgHeartbeat,
-				Heartbeat: &protocol.HeartbeatPayload{WorkerID: wid, ContextPct: 5},
-			})
 			activeIDs[i] = fmt.Sprintf("bead-active-%d", i)
+			d.workers[wid] = &trackedWorker{
+				id:     wid,
+				conn:   newMockConn(),
+				state:  protocol.WorkerBusy,
+				beadID: activeIDs[i],
+			}
 		}
-		waitForWorkers(t, d, active, 2*time.Second)
+		d.mu.Unlock()
 
 		// Seed active tracking entries (acquires its own lock internally).
 		for i := range active {
 			seedNonQGTrackingMaps(d, activeIDs[i])
 		}
-
-		// Assign beads to workers.
-		d.mu.Lock()
-		for i := range active {
-			wid := fmt.Sprintf("w%d", i)
-			if w, ok := d.workers[wid]; ok {
-				w.state = protocol.WorkerBusy
-				w.beadID = activeIDs[i]
-			}
-		}
-		d.mu.Unlock()
 
 		// Bead source returns nothing (orphaned beads are closed).
 		beadSrc.SetBeads(nil)

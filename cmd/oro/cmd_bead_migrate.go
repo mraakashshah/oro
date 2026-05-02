@@ -1668,7 +1668,7 @@ func beadMigrationDoltCountArgs() ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve project paths for dolt pre-flight: %w", err)
 	}
-	return beadMigrationDoltCountArgsForBeadsDir(paths.BeadsDir)
+	return beadMigrationDoltCountArgsForBeadsDir(paths.LegacyBeadsDir)
 }
 
 func beadMigrationDoltCountArgsForBeadsDir(beadsDir string) ([]string, error) {

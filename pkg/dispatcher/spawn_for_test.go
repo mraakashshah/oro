@@ -4,11 +4,44 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
 	"oro/pkg/protocol"
 )
+
+type deadlineTrackingConn struct {
+	*mockConn
+	mu             sync.Mutex
+	writeDeadlines []time.Time
+}
+
+func newDeadlineTrackingConn() *deadlineTrackingConn {
+	return &deadlineTrackingConn{mockConn: newMockConn()}
+}
+
+func (c *deadlineTrackingConn) SetWriteDeadline(t time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.writeDeadlines = append(c.writeDeadlines, t)
+	return nil
+}
+
+func (c *deadlineTrackingConn) writeDeadlineCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.writeDeadlines)
+}
+
+func (c *deadlineTrackingConn) lastWriteDeadlineIsZero() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.writeDeadlines) == 0 {
+		return false
+	}
+	return c.writeDeadlines[len(c.writeDeadlines)-1].IsZero()
+}
 
 type hookProcessManager struct {
 	mockProcessManager
@@ -173,6 +206,7 @@ func TestSpawnFor_TargetRegisteredBeforeSpawnedWorkerCanConnect(t *testing.T) {
 		d.mu.Lock()
 		target := d.workers[workerID].targetBeadID
 		managed := d.workers[workerID].managed
+		spawnFor := d.workers[workerID].spawnFor
 		workerCount := len(d.workers)
 		d.mu.Unlock()
 		if target != requestedID {
@@ -180,6 +214,9 @@ func TestSpawnFor_TargetRegisteredBeforeSpawnedWorkerCanConnect(t *testing.T) {
 		}
 		if !managed {
 			t.Fatalf("spawned worker=%s is unmanaged before assignment", workerID)
+		}
+		if !spawnFor {
+			t.Fatalf("spawned worker=%s is not marked spawn-for", workerID)
 		}
 		if workerCount != 1 {
 			t.Fatalf("expected exactly 1 worker before assignment, got %d", workerCount)
@@ -306,6 +343,7 @@ func TestSpawnFor_PendingTargetIsNotAssignedToGeneralIdleWorker(t *testing.T) {
 	d.mu.Lock()
 	d.targetWorkers = 1
 	d.pendingManagedIDs["worker-spawnfor-pending"] = true
+	d.pendingSpawnForWorkers["worker-spawnfor-pending"] = true
 	d.pendingWorkerTargets["worker-spawnfor-pending"] = requestedID
 	d.priorityBeads[requestedID] = true
 	d.workers[generalWorkerID] = &trackedWorker{
@@ -350,6 +388,7 @@ func TestSpawnFor_StalePendingTargetDoesNotReserveBeadForever(t *testing.T) {
 	d.mu.Lock()
 	d.targetWorkers = 1
 	d.pendingManagedIDs[staleWorkerID] = true
+	d.pendingSpawnForWorkers[staleWorkerID] = true
 	d.pendingManagedSince[staleWorkerID] = now.Add(-2 * time.Second)
 	d.pendingWorkerTargets[staleWorkerID] = requestedID
 	d.priorityBeads[requestedID] = true
@@ -380,14 +419,15 @@ func TestSpawnFor_StalePendingTargetDoesNotReserveBeadForever(t *testing.T) {
 	_, pendingManaged := d.pendingManagedIDs[staleWorkerID]
 	_, pendingSince := d.pendingManagedSince[staleWorkerID]
 	_, pendingTarget := d.pendingWorkerTargets[staleWorkerID]
+	_, pendingSpawnFor := d.pendingSpawnForWorkers[staleWorkerID]
 	exits := d.unexpectedManagedExits
 	d.mu.Unlock()
-	if pendingManaged || pendingSince || pendingTarget {
-		t.Fatalf("stale pending worker was not fully cleared: managed=%v since=%v target=%v",
-			pendingManaged, pendingSince, pendingTarget)
+	if pendingManaged || pendingSince || pendingTarget || pendingSpawnFor {
+		t.Fatalf("stale pending worker was not fully cleared: managed=%v since=%v target=%v spawnFor=%v",
+			pendingManaged, pendingSince, pendingTarget, pendingSpawnFor)
 	}
-	if exits != 1 {
-		t.Fatalf("expected stale pending worker to count as one managed exit, got %d", exits)
+	if exits != 0 {
+		t.Fatalf("expected stale spawn-for worker to stay out of general managed-exit cap, got %d", exits)
 	}
 }
 
@@ -442,6 +482,7 @@ func TestSpawnFor_TargetedIdleWorkerDoesNotBlockAutoscaleForOtherReadyBead(t *te
 		id:           "worker-spawnfor-test",
 		state:        protocol.WorkerIdle,
 		managed:      true,
+		spawnFor:     true,
 		targetBeadID: requestedID,
 	}
 	d.mu.Unlock()
@@ -451,6 +492,699 @@ func TestSpawnFor_TargetedIdleWorkerDoesNotBlockAutoscaleForOtherReadyBead(t *te
 	waitFor(t, func() bool {
 		return len(pm.SpawnedIDs()) == 1
 	}, 1*time.Second)
+}
+
+func TestSpawnFor_TargetedIdleWorkerAddsOneGeneralWorkerForOtherReadyBead(t *testing.T) {
+	d, beads, _, _, _, _ := newTestDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.setState(StateRunning)
+	d.cfg.MaxWorkers = 3
+
+	requestedID := "oro-spawnfor-requested"
+	otherID := "oro-spawnfor-other"
+	beads.SetBeads([]protocol.Bead{{ID: otherID, Priority: 0}})
+
+	d.mu.Lock()
+	d.targetWorkers = 0
+	d.workers["worker-spawnfor-test"] = &trackedWorker{
+		id:           "worker-spawnfor-test",
+		state:        protocol.WorkerIdle,
+		managed:      true,
+		spawnFor:     true,
+		targetBeadID: requestedID,
+	}
+	d.mu.Unlock()
+
+	d.tryAssign(context.Background())
+
+	waitFor(t, func() bool {
+		return len(pm.SpawnedIDs()) >= 1
+	}, 1*time.Second)
+	if got := len(pm.SpawnedIDs()); got != 1 {
+		t.Fatalf("spawn-for targeted idle worker should cause exactly one general worker for one unrelated bead, got %d: %v",
+			got, pm.SpawnedIDs())
+	}
+	d.mu.Lock()
+	targetWorkers := d.targetWorkers
+	d.mu.Unlock()
+	if targetWorkers != 1 {
+		t.Fatalf("targetWorkers = %d, want 1 for the unrelated ready bead only", targetWorkers)
+	}
+}
+
+func TestSpawnFor_DoesNotAutoscaleGeneralWorkerWhenManualPoolDisabled(t *testing.T) {
+	d, beads, wt, _, _, _ := newTestDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.setState(StateRunning)
+	d.cfg.MaxWorkers = 0
+	d.cfg.HeartbeatTimeout = time.Second
+
+	now := time.Date(2026, 5, 1, 5, 0, 0, 0, time.UTC)
+	d.nowFunc = func() time.Time { return now }
+
+	requestedID := "oro-spawnfor-requested"
+	otherID := "oro-spawnfor-other"
+	wt.createFn = func(_ context.Context, bID, _ string) (string, string, error) {
+		return "/tmp/worktree-" + bID, "agent/" + bID, nil
+	}
+	beads.SetBeads([]protocol.Bead{{ID: otherID, Priority: 0}})
+
+	d.mu.Lock()
+	d.targetWorkers = 0
+	d.mu.Unlock()
+
+	if _, err := d.applySpawnFor(requestedID); err != nil {
+		t.Fatalf("applySpawnFor failed: %v", err)
+	}
+	if got := len(pm.SpawnedIDs()); got != 1 {
+		t.Fatalf("spawn-for should spawn exactly one targeted worker, got %d", got)
+	}
+	workerID := pm.SpawnedIDs()[0]
+	conn := newMockConn()
+	d.registerWorker(workerID, conn)
+
+	d.tryAssign(context.Background())
+	if got := len(pm.SpawnedIDs()); got != 1 {
+		t.Fatalf("manual pool spawned unrelated general worker while spawn-for target was idle; spawned=%v", pm.SpawnedIDs())
+	}
+	if len(conn.written) != 0 {
+		var msg protocol.Message
+		_ = json.Unmarshal(conn.written[0], &msg)
+		t.Fatalf("spawn-for worker received unrelated assignment: type=%s assign=%v", msg.Type, msg.Assign)
+	}
+
+	now = now.Add(2 * time.Second)
+	d.checkHeartbeats(context.Background())
+	d.tryAssign(context.Background())
+
+	if got := len(pm.SpawnedIDs()); got != 1 {
+		t.Fatalf("manual pool spawned unrelated general worker after spawn-for worker exit; spawned=%v", pm.SpawnedIDs())
+	}
+	d.mu.Lock()
+	targetWorkers := d.targetWorkers
+	managedCount := d.managedWorkerCountLocked()
+	d.mu.Unlock()
+	if targetWorkers != 0 {
+		t.Fatalf("targetWorkers = %d, want 0 after spawn-for in manual mode", targetWorkers)
+	}
+	if managedCount != 0 {
+		t.Fatalf("general managed worker count = %d, want 0", managedCount)
+	}
+}
+
+func TestSpawnFor_DoneShutsDownOneShotWorker(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	workerID := "worker-spawnfor-test"
+	beadID := "oro-spawnfor-requested"
+	conn := newMockConn()
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		state:        protocol.WorkerBusy,
+		beadID:       beadID,
+		assignmentID: 42,
+		managed:      true,
+		spawnFor:     true,
+		encoder:      json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+
+	d.handleDone(context.Background(), workerID, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            beadID,
+			WorkerID:          workerID,
+			QualityGatePassed: true,
+		},
+	})
+
+	d.mu.Lock()
+	w := d.workers[workerID]
+	d.mu.Unlock()
+	if w == nil {
+		t.Fatal("spawn-for worker should remain tracked until it disconnects")
+	}
+	if w.state != protocol.WorkerShuttingDown {
+		t.Fatalf("spawn-for worker state = %s, want %s", w.state, protocol.WorkerShuttingDown)
+	}
+	if w.beadID != "" || w.assignmentID != 0 || w.targetBeadID != "" {
+		t.Fatalf("spawn-for worker tracking not cleared: bead=%q assignment=%d target=%q",
+			w.beadID, w.assignmentID, w.targetBeadID)
+	}
+
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if len(conn.written) != 1 {
+		t.Fatalf("expected one shutdown message, got %d", len(conn.written))
+	}
+	var msg protocol.Message
+	if err := json.Unmarshal(conn.written[0], &msg); err != nil {
+		t.Fatalf("decode shutdown message: %v", err)
+	}
+	if msg.Type != protocol.MsgShutdown {
+		t.Fatalf("message type = %s, want %s", msg.Type, protocol.MsgShutdown)
+	}
+}
+
+func TestSpawnFor_KillIdleWorkerShutsDownWithoutGeneralAssignment(t *testing.T) {
+	d, beads, wt, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+
+	workerID := "worker-spawnfor-test"
+	requestedID := "oro-spawnfor-requested"
+	otherID := "oro-spawnfor-other"
+	conn := newMockConn()
+	wt.createFn = func(_ context.Context, bID, _ string) (string, string, error) {
+		return "/tmp/worktree-" + bID, "agent/" + bID, nil
+	}
+	beads.SetBeads([]protocol.Bead{{ID: otherID, Priority: 0}})
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		state:        protocol.WorkerIdle,
+		managed:      true,
+		spawnFor:     true,
+		targetBeadID: requestedID,
+		encoder:      json.NewEncoder(conn),
+	}
+	d.targetWorkers = 0
+	d.mu.Unlock()
+
+	if _, err := d.applyKillWorker(workerID); err != nil {
+		t.Fatalf("applyKillWorker returned error: %v", err)
+	}
+	d.tryAssign(context.Background())
+
+	d.mu.Lock()
+	w := d.workers[workerID]
+	d.mu.Unlock()
+	if w == nil {
+		t.Fatal("spawn-for worker should remain tracked until it disconnects")
+	}
+	if w.state != protocol.WorkerShuttingDown {
+		t.Fatalf("spawn-for worker state = %s, want %s", w.state, protocol.WorkerShuttingDown)
+	}
+	if w.beadID != "" || w.assignmentID != 0 || w.targetBeadID != "" {
+		t.Fatalf("spawn-for worker tracking not cleared: bead=%q assignment=%d target=%q",
+			w.beadID, w.assignmentID, w.targetBeadID)
+	}
+
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if len(conn.written) != 1 {
+		t.Fatalf("expected one shutdown message and no assignment, got %d messages", len(conn.written))
+	}
+	var msg protocol.Message
+	if err := json.Unmarshal(conn.written[0], &msg); err != nil {
+		t.Fatalf("decode shutdown message: %v", err)
+	}
+	if msg.Type != protocol.MsgShutdown {
+		t.Fatalf("message type = %s, want %s", msg.Type, protocol.MsgShutdown)
+	}
+}
+
+func TestSpawnFor_StopIdleDoesNotAssignGeneralWork(t *testing.T) {
+	d, beads, wt, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+
+	workerID := "worker-spawnfor-stop"
+	requestedID := "oro-spawnfor-requested"
+	otherID := "oro-spawnfor-other"
+	conn := newMockConn()
+	wt.createFn = func(_ context.Context, bID, _ string) (string, string, error) {
+		return "/tmp/worktree-" + bID, "agent/" + bID, nil
+	}
+	beads.SetBeads([]protocol.Bead{{ID: otherID, Priority: 0}})
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		state:        protocol.WorkerIdle,
+		managed:      true,
+		spawnFor:     true,
+		targetBeadID: requestedID,
+		encoder:      json.NewEncoder(conn),
+	}
+	d.targetWorkers = 0
+	d.mu.Unlock()
+
+	d.GracefulShutdownWorker(workerID, time.Hour)
+	d.tryAssign(context.Background())
+
+	d.mu.Lock()
+	w := d.workers[workerID]
+	d.mu.Unlock()
+	if w == nil {
+		t.Fatal("spawn-for worker should remain tracked during graceful stop")
+	}
+	if w.state != protocol.WorkerShuttingDown {
+		t.Fatalf("spawn-for worker state = %s, want %s", w.state, protocol.WorkerShuttingDown)
+	}
+	if w.beadID != "" || w.assignmentID != 0 || w.targetBeadID != requestedID {
+		t.Fatalf("spawn-for stop mutated assignment unexpectedly: bead=%q assignment=%d target=%q",
+			w.beadID, w.assignmentID, w.targetBeadID)
+	}
+
+	d.handleShutdownApproved(context.Background(), workerID, protocol.Message{
+		Type: protocol.MsgShutdownApproved,
+		ShutdownApproved: &protocol.ShutdownApprovedPayload{
+			WorkerID: workerID,
+		},
+	})
+	d.tryAssign(context.Background())
+
+	d.mu.Lock()
+	w = d.workers[workerID]
+	d.mu.Unlock()
+	if w == nil {
+		t.Fatal("spawn-for worker should remain tracked until it disconnects")
+	}
+	if w.state != protocol.WorkerShuttingDown {
+		t.Fatalf("spawn-for worker state after approval = %s, want %s", w.state, protocol.WorkerShuttingDown)
+	}
+	if w.beadID != "" || w.assignmentID != 0 || w.targetBeadID != "" {
+		t.Fatalf("spawn-for worker tracking not cleared after approval: bead=%q assignment=%d target=%q",
+			w.beadID, w.assignmentID, w.targetBeadID)
+	}
+
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if len(conn.written) != 2 {
+		t.Fatalf("expected prepare-shutdown and shutdown messages, got %d", len(conn.written))
+	}
+	var prepare, shutdown protocol.Message
+	if err := json.Unmarshal(conn.written[0], &prepare); err != nil {
+		t.Fatalf("decode prepare-shutdown message: %v", err)
+	}
+	if prepare.Type != protocol.MsgPrepareShutdown {
+		t.Fatalf("first message type = %s, want %s", prepare.Type, protocol.MsgPrepareShutdown)
+	}
+	if err := json.Unmarshal(conn.written[1], &shutdown); err != nil {
+		t.Fatalf("decode shutdown message: %v", err)
+	}
+	if shutdown.Type != protocol.MsgShutdown {
+		t.Fatalf("second message type = %s, want %s", shutdown.Type, protocol.MsgShutdown)
+	}
+}
+
+func TestSpawnFor_DirectShutdownWritesUseDeadline(t *testing.T) {
+	conn := newDeadlineTrackingConn()
+	w := &trackedWorker{
+		id:   "worker-spawnfor-deadline",
+		conn: conn,
+	}
+
+	sendShutdownWithoutBuffering(w)
+	sendPrepareShutdownWithoutBuffering(w, time.Second)
+
+	if got := conn.writeDeadlineCount(); got != 4 {
+		t.Fatalf("direct writes should set and clear write deadlines, got %d deadline calls", got)
+	}
+	if !conn.lastWriteDeadlineIsZero() {
+		t.Fatal("direct writes should clear the write deadline after sending")
+	}
+}
+
+func TestSpawnFor_StopIdleSendFailureReconnectDoesNotAssignGeneralWork(t *testing.T) {
+	d, beads, wt, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+
+	workerID := "worker-spawnfor-stop-reconnect"
+	requestedID := "oro-spawnfor-requested"
+	otherID := "oro-spawnfor-other"
+	conn := newMockConn()
+	wt.createFn = func(_ context.Context, bID, _ string) (string, string, error) {
+		return "/tmp/worktree-" + bID, "agent/" + bID, nil
+	}
+	beads.SetBeads([]protocol.Bead{{ID: otherID, Priority: 0}})
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		state:        protocol.WorkerIdle,
+		managed:      true,
+		spawnFor:     true,
+		targetBeadID: requestedID,
+		encoder:      json.NewEncoder(conn),
+		pendingMsgs:  make([]protocol.Message, maxPendingMessages),
+	}
+	d.targetWorkers = 0
+	d.mu.Unlock()
+
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close mock connection: %v", err)
+	}
+	d.GracefulShutdownWorker(workerID, time.Hour)
+
+	d.mu.Lock()
+	if _, ok := d.workers[workerID]; !ok {
+		d.mu.Unlock()
+		t.Fatal("spawn-for worker should remain tracked when prepare-shutdown write fails")
+	}
+	d.pendingHandoffs[otherID] = &pendingHandoff{
+		beadID:   otherID,
+		worktree: "/tmp/worktree-handoff",
+		model:    "test-model",
+	}
+	d.mu.Unlock()
+
+	reconnectConn := newMockConn()
+	d.registerWorker(workerID, reconnectConn)
+	d.handleReconnect(context.Background(), workerID, protocol.Message{
+		Type: protocol.MsgReconnect,
+		Reconnect: &protocol.ReconnectPayload{
+			WorkerID: workerID,
+			State:    "idle",
+		},
+	})
+	d.tryAssign(context.Background())
+
+	d.mu.Lock()
+	w := d.workers[workerID]
+	if w == nil {
+		d.mu.Unlock()
+		t.Fatal("spawn-for worker should remain tracked after reconnect")
+	}
+	if w.state != protocol.WorkerShuttingDown {
+		d.mu.Unlock()
+		t.Fatalf("spawn-for worker state after reconnect = %s, want %s", w.state, protocol.WorkerShuttingDown)
+	}
+	if w.beadID != "" || w.assignmentID != 0 || w.targetBeadID != "" {
+		d.mu.Unlock()
+		t.Fatalf("stopped spawn-for worker reconnected into assignable state: bead=%q assignment=%d target=%q",
+			w.beadID, w.assignmentID, w.targetBeadID)
+	}
+	if _, ok := d.pendingHandoffs[otherID]; !ok {
+		d.mu.Unlock()
+		t.Fatalf("stopped spawn-for worker consumed unrelated pending handoff %q", otherID)
+	}
+	d.mu.Unlock()
+
+	reconnectConn.mu.Lock()
+	defer reconnectConn.mu.Unlock()
+	if len(reconnectConn.written) != 2 {
+		t.Fatalf("expected shutdown on reconnect and no assignment, got %d messages", len(reconnectConn.written))
+	}
+	for i, written := range reconnectConn.written {
+		var msg protocol.Message
+		if err := json.Unmarshal(written, &msg); err != nil {
+			t.Fatalf("decode reconnect shutdown message %d: %v", i, err)
+		}
+		if msg.Type != protocol.MsgShutdown {
+			t.Fatalf("reconnect message %d type = %s, want %s", i, msg.Type, protocol.MsgShutdown)
+		}
+	}
+}
+
+func TestSpawnFor_KillIdleSendFailureReconnectDoesNotAssignGeneralWork(t *testing.T) {
+	d, beads, wt, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+
+	workerID := "worker-spawnfor-reconnect"
+	requestedID := "oro-spawnfor-requested"
+	otherID := "oro-spawnfor-other"
+	conn := newMockConn()
+	wt.createFn = func(_ context.Context, bID, _ string) (string, string, error) {
+		return "/tmp/worktree-" + bID, "agent/" + bID, nil
+	}
+	beads.SetBeads([]protocol.Bead{{ID: otherID, Priority: 0}})
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		state:        protocol.WorkerIdle,
+		managed:      true,
+		spawnFor:     true,
+		targetBeadID: requestedID,
+		encoder:      json.NewEncoder(conn),
+		pendingMsgs:  make([]protocol.Message, maxPendingMessages),
+	}
+	d.targetWorkers = 0
+	d.mu.Unlock()
+
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close mock connection: %v", err)
+	}
+	if _, err := d.applyKillWorker(workerID); err != nil {
+		t.Fatalf("applyKillWorker returned error: %v", err)
+	}
+
+	d.mu.Lock()
+	d.pendingHandoffs[otherID] = &pendingHandoff{
+		beadID:   otherID,
+		worktree: "/tmp/worktree-handoff",
+		model:    "test-model",
+	}
+	d.mu.Unlock()
+
+	reconnectConn := newMockConn()
+	d.registerWorker(workerID, reconnectConn)
+	d.handleReconnect(context.Background(), workerID, protocol.Message{
+		Type: protocol.MsgReconnect,
+		Reconnect: &protocol.ReconnectPayload{
+			WorkerID: workerID,
+			State:    "idle",
+		},
+	})
+	d.tryAssign(context.Background())
+
+	d.mu.Lock()
+	w := d.workers[workerID]
+	if w == nil {
+		d.mu.Unlock()
+		t.Fatal("spawn-for worker should remain tracked after reconnect")
+	}
+	if w.state != protocol.WorkerShuttingDown {
+		d.mu.Unlock()
+		t.Fatalf("spawn-for worker state after reconnect = %s, want %s", w.state, protocol.WorkerShuttingDown)
+	}
+	if w.beadID != "" || w.assignmentID != 0 || w.targetBeadID != "" {
+		d.mu.Unlock()
+		t.Fatalf("spawn-for worker reconnected into assignable state: bead=%q assignment=%d target=%q",
+			w.beadID, w.assignmentID, w.targetBeadID)
+	}
+	if _, ok := d.pendingHandoffs[otherID]; !ok {
+		d.mu.Unlock()
+		t.Fatalf("stopped spawn-for worker consumed unrelated pending handoff %q", otherID)
+	}
+	d.mu.Unlock()
+
+	reconnectConn.mu.Lock()
+	defer reconnectConn.mu.Unlock()
+	if len(reconnectConn.written) != 2 {
+		t.Fatalf("expected shutdown on reconnect and no assignment, got %d messages", len(reconnectConn.written))
+	}
+	for i, written := range reconnectConn.written {
+		var msg protocol.Message
+		if err := json.Unmarshal(written, &msg); err != nil {
+			t.Fatalf("decode reconnect shutdown message %d: %v", i, err)
+		}
+		if msg.Type != protocol.MsgShutdown {
+			t.Fatalf("reconnect message %d type = %s, want %s", i, msg.Type, protocol.MsgShutdown)
+		}
+	}
+}
+
+func TestSpawnFor_KillBusyReconnectDoesNotResumeWork(t *testing.T) {
+	d, beads, wt, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+
+	workerID := "worker-spawnfor-busy-reconnect"
+	requestedID := "oro-spawnfor-requested"
+	otherID := "oro-spawnfor-other"
+	conn := newMockConn()
+	wt.createFn = func(_ context.Context, bID, _ string) (string, string, error) {
+		return "/tmp/worktree-" + bID, "agent/" + bID, nil
+	}
+	beads.SetBeads([]protocol.Bead{{ID: otherID, Priority: 0}})
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		state:        protocol.WorkerBusy,
+		managed:      true,
+		spawnFor:     true,
+		beadID:       requestedID,
+		targetBeadID: requestedID,
+		encoder:      json.NewEncoder(conn),
+	}
+	d.targetWorkers = 0
+	d.mu.Unlock()
+
+	if _, err := d.applyKillWorker(workerID); err != nil {
+		t.Fatalf("applyKillWorker returned error: %v", err)
+	}
+
+	reconnectConn := newMockConn()
+	d.registerWorker(workerID, reconnectConn)
+	d.handleReconnect(context.Background(), workerID, protocol.Message{
+		Type: protocol.MsgReconnect,
+		Reconnect: &protocol.ReconnectPayload{
+			WorkerID: workerID,
+			BeadID:   requestedID,
+			State:    "running",
+		},
+	})
+	d.tryAssign(context.Background())
+
+	d.mu.Lock()
+	w := d.workers[workerID]
+	if w == nil {
+		d.mu.Unlock()
+		t.Fatal("spawn-for worker should remain tracked after busy reconnect")
+	}
+	if w.state != protocol.WorkerShuttingDown {
+		d.mu.Unlock()
+		t.Fatalf("spawn-for worker state after busy reconnect = %s, want %s", w.state, protocol.WorkerShuttingDown)
+	}
+	if w.beadID != "" || w.assignmentID != 0 || w.targetBeadID != "" {
+		d.mu.Unlock()
+		t.Fatalf("stopped spawn-for worker resumed assignment: bead=%q assignment=%d target=%q",
+			w.beadID, w.assignmentID, w.targetBeadID)
+	}
+	d.mu.Unlock()
+
+	reconnectConn.mu.Lock()
+	defer reconnectConn.mu.Unlock()
+	if len(reconnectConn.written) != 2 {
+		t.Fatalf("expected shutdown on busy reconnect and no assignment, got %d messages", len(reconnectConn.written))
+	}
+	for i, written := range reconnectConn.written {
+		var msg protocol.Message
+		if err := json.Unmarshal(written, &msg); err != nil {
+			t.Fatalf("decode reconnect shutdown message %d: %v", i, err)
+		}
+		if msg.Type != protocol.MsgShutdown {
+			t.Fatalf("reconnect message %d type = %s, want %s", i, msg.Type, protocol.MsgShutdown)
+		}
+	}
+}
+
+func TestSpawnFor_StopCleanupBeforeReconnectPreservesShutdownState(t *testing.T) {
+	d, beads, wt, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+
+	workerID := "worker-spawnfor-cleanup-reconnect"
+	requestedID := "oro-spawnfor-requested"
+	otherID := "oro-spawnfor-other"
+	conn := newMockConn()
+	wt.createFn = func(_ context.Context, bID, _ string) (string, string, error) {
+		return "/tmp/worktree-" + bID, "agent/" + bID, nil
+	}
+	beads.SetBeads([]protocol.Bead{{ID: otherID, Priority: 0}})
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		state:        protocol.WorkerIdle,
+		managed:      true,
+		spawnFor:     true,
+		targetBeadID: requestedID,
+		encoder:      json.NewEncoder(conn),
+	}
+	d.targetWorkers = 0
+	d.mu.Unlock()
+
+	d.GracefulShutdownWorker(workerID, time.Hour)
+	d.connCloseCleanup(workerID, conn)
+
+	d.mu.Lock()
+	if w := d.workers[workerID]; w == nil || w.state != protocol.WorkerShuttingDown || !w.spawnFor {
+		d.mu.Unlock()
+		t.Fatalf("conn cleanup lost stopped spawn-for metadata: worker=%#v", w)
+	}
+	d.pendingHandoffs[otherID] = &pendingHandoff{
+		beadID:   otherID,
+		worktree: "/tmp/worktree-handoff",
+		model:    "test-model",
+	}
+	d.mu.Unlock()
+
+	reconnectConn := newMockConn()
+	d.registerWorker(workerID, reconnectConn)
+	d.handleReconnect(context.Background(), workerID, protocol.Message{
+		Type: protocol.MsgReconnect,
+		Reconnect: &protocol.ReconnectPayload{
+			WorkerID: workerID,
+			BeadID:   requestedID,
+			State:    "running",
+		},
+	})
+	d.tryAssign(context.Background())
+
+	d.mu.Lock()
+	w := d.workers[workerID]
+	if w == nil {
+		d.mu.Unlock()
+		t.Fatal("spawn-for worker should remain tracked after reconnect")
+	}
+	if w.state != protocol.WorkerShuttingDown {
+		d.mu.Unlock()
+		t.Fatalf("spawn-for worker state after reconnect = %s, want %s", w.state, protocol.WorkerShuttingDown)
+	}
+	if w.beadID != "" || w.assignmentID != 0 || w.targetBeadID != "" {
+		d.mu.Unlock()
+		t.Fatalf("stopped spawn-for worker resumed assignment after cleanup race: bead=%q assignment=%d target=%q",
+			w.beadID, w.assignmentID, w.targetBeadID)
+	}
+	if _, ok := d.pendingHandoffs[otherID]; !ok {
+		d.mu.Unlock()
+		t.Fatalf("stopped spawn-for worker consumed unrelated pending handoff %q", otherID)
+	}
+	d.mu.Unlock()
+}
+
+func TestSpawnFor_StoppedWorkerHeartbeatTimeoutDoesNotEscalateCrash(t *testing.T) {
+	d, _, _, esc, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+
+	now := time.Date(2026, 5, 1, 19, 30, 0, 0, time.UTC)
+	d.nowFunc = func() time.Time { return now }
+	workerID := "worker-spawnfor-stopped-timeout"
+	conn := newMockConn()
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:       workerID,
+		conn:     conn,
+		state:    protocol.WorkerShuttingDown,
+		managed:  true,
+		spawnFor: true,
+		lastSeen: now.Add(-2 * d.cfg.HeartbeatTimeout),
+	}
+	d.mu.Unlock()
+
+	d.checkHeartbeats(context.Background())
+
+	d.mu.Lock()
+	_, stillTracked := d.workers[workerID]
+	unexpectedManagedExits := d.unexpectedManagedExits
+	d.mu.Unlock()
+	if stillTracked {
+		t.Fatal("stopped spawn-for worker should be reaped after heartbeat timeout")
+	}
+	if unexpectedManagedExits != 0 {
+		t.Fatalf("stopped spawn-for worker should not count as unexpected managed exit, got %d", unexpectedManagedExits)
+	}
+	if messages := esc.Messages(); len(messages) != 0 {
+		t.Fatalf("stopped spawn-for worker should not escalate worker crash, got %v", messages)
+	}
+
+	if got := eventCount(t, d.db, "spawn_for_shutdown_timeout"); got != 1 {
+		t.Fatalf("spawn_for_shutdown_timeout event count = %d, want 1", got)
+	}
 }
 
 func TestSpawnFor_TargetedWorkerGetsRequestedBeadNotFirstReady(t *testing.T) {
