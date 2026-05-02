@@ -168,6 +168,35 @@ func TestUninstall_CleansProjectArtifacts(t *testing.T) {
 	}
 }
 
+func TestUninstall_RemovesLegacyBeadsDirectory(t *testing.T) {
+	oroHome := t.TempDir()
+	projectRoot := t.TempDir()
+	projectName := "legacy-project"
+
+	projDir := filepath.Join(oroHome, "projects", projectName)
+	mkFile(t, projDir, "project.root", projectRoot)
+
+	legacyBeadsDir := filepath.Join(projectRoot, ".beads")
+	mkFile(t, legacyBeadsDir, "issues.jsonl", "{}\n")
+	mkFile(t, legacyBeadsDir, "dolt/config.json", "{}\n")
+
+	var buf bytes.Buffer
+	opts := uninstallOptions{
+		oroHome:  oroHome,
+		force:    true,
+		keepData: true,
+		w:        &buf,
+	}
+
+	if err := runUninstall(opts); err != nil {
+		t.Fatalf("runUninstall: %v", err)
+	}
+
+	if _, err := os.Stat(legacyBeadsDir); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy .beads directory to be removed, got err=%v", err)
+	}
+}
+
 func TestUninstall_MissingOroHomeIsNotAnError(t *testing.T) {
 	var buf bytes.Buffer
 	opts := uninstallOptions{
