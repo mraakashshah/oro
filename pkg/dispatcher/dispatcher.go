@@ -4013,9 +4013,17 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 
 func (d *Dispatcher) searchCodeInWorkdir(ctx context.Context, query string, topK int, worktree string) ([]SearchResult, error) {
 	if idx, ok := d.codeIndex.(workdirCodeIndex); ok {
-		return idx.SearchInWorkdir(ctx, query, topK, worktree)
+		results, err := idx.SearchInWorkdir(ctx, query, topK, worktree)
+		if err != nil {
+			return nil, fmt.Errorf("search code in workdir: %w", err)
+		}
+		return results, nil
 	}
-	return d.codeIndex.Search(ctx, query, topK)
+	results, err := d.codeIndex.Search(ctx, query, topK)
+	if err != nil {
+		return nil, fmt.Errorf("search code: %w", err)
+	}
+	return results, nil
 }
 
 // checkEpicAssignable determines whether an epic bead should proceed to assignment.

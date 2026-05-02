@@ -22,6 +22,8 @@ type RuntimeRerankSpawner struct{}
 type ClaudeRerankSpawner = RuntimeRerankSpawner
 
 // BuildCmd constructs the exec.Cmd for the configured rerank runtime.
+//
+//oro:testonly
 func BuildCmd(ctx context.Context, prompt string) *exec.Cmd {
 	return BuildCmdInWorkdir(ctx, prompt, "")
 }

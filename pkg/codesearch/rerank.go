@@ -126,10 +126,18 @@ func (r *Reranker) RerankInWorkdir(ctx context.Context, query string, chunks []C
 func spawnReranker(ctx context.Context, spawner RerankSpawner, prompt, workdir string) (string, error) {
 	if workdir != "" {
 		if workdirSpawner, ok := spawner.(WorkdirRerankSpawner); ok {
-			return workdirSpawner.SpawnInWorkdir(ctx, prompt, workdir)
+			output, err := workdirSpawner.SpawnInWorkdir(ctx, prompt, workdir)
+			if err != nil {
+				return "", fmt.Errorf("spawn reranker in workdir: %w", err)
+			}
+			return output, nil
 		}
 	}
-	return spawner.Spawn(ctx, prompt)
+	output, err := spawner.Spawn(ctx, prompt)
+	if err != nil {
+		return "", fmt.Errorf("spawn reranker: %w", err)
+	}
+	return output, nil
 }
 
 // BuildPrompt constructs the reranking prompt with XML-tagged chunks.
