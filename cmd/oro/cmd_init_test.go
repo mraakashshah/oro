@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -951,14 +950,14 @@ func TestBootstrapDoesNotModifyRepoGitignore(t *testing.T) {
 	})
 }
 
-func TestBootstrapStartsDolt(t *testing.T) {
+func TestBootstrapDoesNotStartDolt(t *testing.T) {
 	assets := testAssets()
 
 	t.Run("dolt binary missing does not break init", func(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 
-		// Override PATH so dolt is not found — fail-open behavior.
+		// Override PATH so dolt is not found. Init should not invoke it.
 		t.Setenv("PATH", t.TempDir())
 
 		_, err := bootstrapProject(projectDir, "testproj", oroHome, assets, false)
@@ -966,38 +965,61 @@ func TestBootstrapStartsDolt(t *testing.T) {
 			t.Fatalf("bootstrapProject should succeed even when dolt is missing: %v", err)
 		}
 
-		// Metadata should still be written.
-		beadsPath := filepath.Join(projectDir, ".beads")
-		meta, err := readDoltMeta(beadsPath)
-		if err != nil {
-			t.Fatalf("readDoltMeta: %v", err)
-		}
-		if meta == nil {
-			t.Fatal("metadata should exist after init")
-		}
-		if meta.Backend != "dolt" {
-			t.Errorf("Backend = %q, want dolt", meta.Backend)
-		}
+		assertNoDoltInitState(t, filepath.Join(projectDir, ".beads"))
 	})
 
-	t.Run("dolt already running is adopted", func(t *testing.T) {
+	t.Run("dolt state is not created", func(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
-
-		// Start a TCP listener on the derived port to simulate running dolt.
-		beadsPath := filepath.Join(oroHome, "projects", "testproj", "beads")
-		if err := os.MkdirAll(beadsPath, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		// Create symlink so bootstrapProject can resolve .beads
-		// (bootstrapProject creates the symlink itself, so we just need
-		// to verify it doesn't error with a running server on the port)
 
 		_, err := bootstrapProject(projectDir, "testproj", oroHome, assets, false)
 		if err != nil {
 			t.Fatalf("bootstrapProject should succeed: %v", err)
 		}
+
+		assertNoDoltInitState(t, filepath.Join(projectDir, ".beads"))
 	})
+}
+
+func assertNoDoltInitState(t *testing.T, beadsPath string) {
+	t.Helper()
+	for _, name := range []string{"metadata.json", "dolt-server.port", "dolt-server.pid"} {
+		if _, statErr := os.Stat(filepath.Join(beadsPath, name)); statErr == nil {
+			t.Fatalf("init must not create Dolt state file %s", name)
+		} else if !os.IsNotExist(statErr) {
+			t.Fatalf("check Dolt state file %s: %v", name, statErr)
+		}
+	}
+}
+
+func TestInitLocalNoDoltState(t *testing.T) {
+	assets := testAssets()
+	projectDir := t.TempDir()
+	oroHome := t.TempDir()
+
+	_, err := bootstrapProject(projectDir, "testproj", oroHome, assets, false)
+	if err != nil {
+		t.Fatalf("bootstrapProject failed: %v", err)
+	}
+
+	assertNoDoltInitState(t, filepath.Join(projectDir, ".beads"))
+}
+
+func TestInitLocalNoBdState(t *testing.T) {
+	assets := testAssets()
+	projectDir := t.TempDir()
+	oroHome := t.TempDir()
+
+	_, err := bootstrapProject(projectDir, "testproj", oroHome, assets, false)
+	if err != nil {
+		t.Fatalf("bootstrapProject failed: %v", err)
+	}
+
+	if _, statErr := os.Stat(filepath.Join(projectDir, ".beads", "beads.db")); statErr == nil {
+		t.Fatal("local init must not create bd state file beads.db")
+	} else if !os.IsNotExist(statErr) {
+		t.Fatalf("check bd state file: %v", statErr)
+	}
 }
 
 // --- Quality gate generation tests (oro-1rep.2) ---
@@ -1927,122 +1949,6 @@ func TestInitBeadsDB(t *testing.T) {
 	}
 }
 
-func TestInitWritesDoltPort(t *testing.T) {
-	projectDir := t.TempDir()
-	oroHome := t.TempDir()
-
-	// Create minimal embedded FS for assets.
-	assets := fstest.MapFS{
-		".version":          &fstest.MapFile{Data: []byte("test-version")},
-		"hooks/.gitkeep":    &fstest.MapFile{Data: []byte("")},
-		"skills/.gitkeep":   &fstest.MapFile{Data: []byte("")},
-		"beacons/.gitkeep":  &fstest.MapFile{Data: []byte("")},
-		"commands/.gitkeep": &fstest.MapFile{Data: []byte("")},
-	}
-
-	_, err := bootstrapProject(projectDir, "testproject", oroHome, assets, false)
-	if err != nil {
-		t.Fatalf("bootstrapProject failed: %v", err)
-	}
-
-	// Verify metadata.json was created in .beads/ with dolt_server_port.
-	beadsLink := filepath.Join(projectDir, ".beads")
-	metaPath := filepath.Join(beadsLink, "metadata.json")
-
-	data, err := os.ReadFile(metaPath) //nolint:gosec // metaPath is constructed from trusted t.TempDir()
-	if err != nil {
-		t.Fatalf("metadata.json not found: %v", err)
-	}
-
-	var meta map[string]interface{}
-	if err := json.Unmarshal(data, &meta); err != nil {
-		t.Fatalf("failed to parse metadata.json: %v", err)
-	}
-
-	if _, ok := meta["dolt_server_port"]; !ok {
-		t.Error("metadata.json missing dolt_server_port field")
-	}
-
-	if _, ok := meta["backend"]; !ok {
-		t.Error("metadata.json missing backend field")
-	}
-
-	if backend, ok := meta["backend"].(string); ok && backend != "dolt" {
-		t.Errorf("expected backend=dolt, got %q", backend)
-	}
-}
-
-// TestInitDetectsSharedServer verifies that initDoltForProject sets port 13307
-// when ~/.oro/dolt-server.port exists (shared server mode), and falls back to
-// the per-project derived port when that file is absent.
-func TestInitDetectsSharedServer(t *testing.T) {
-	t.Run("uses SharedDoltPort when dolt-server.port file exists in oroHome", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		oroHome := filepath.Join(tmpDir, "oro")
-		beadsDir := filepath.Join(tmpDir, ".beads")
-
-		if err := os.MkdirAll(oroHome, 0o750); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
-			t.Fatal(err)
-		}
-
-		// Simulate shared server: write dolt-server.port to oroHome.
-		portPath := filepath.Join(oroHome, "dolt-server.port")
-		if err := os.WriteFile(portPath, []byte("13307"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-
-		initDoltForProject(beadsDir, oroHome)
-
-		meta, err := readDoltMeta(beadsDir)
-		if err != nil {
-			t.Fatalf("readDoltMeta: %v", err)
-		}
-		if meta == nil {
-			t.Fatal("expected metadata.json to be written, got nil")
-		}
-		if meta.DoltServerPort != SharedDoltPort {
-			t.Errorf("expected port %d when shared server exists, got %d", SharedDoltPort, meta.DoltServerPort)
-		}
-	})
-
-	t.Run("falls back to per-project port when dolt-server.port absent from oroHome", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		oroHome := filepath.Join(tmpDir, "oro")
-		beadsDir := filepath.Join(tmpDir, ".beads")
-
-		if err := os.MkdirAll(oroHome, 0o750); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
-			t.Fatal(err)
-		}
-
-		// No dolt-server.port in oroHome.
-		initDoltForProject(beadsDir, oroHome)
-
-		meta, err := readDoltMeta(beadsDir)
-		if err != nil {
-			t.Fatalf("readDoltMeta: %v", err)
-		}
-		if meta == nil {
-			t.Fatal("expected metadata.json to be written, got nil")
-		}
-		// Port must be a valid per-project port (not SharedDoltPort).
-		// AllocatePort is now used instead of DerivePort; the two agree unless
-		// DerivePort would return SharedDoltPort, in which case AllocatePort bumps.
-		if meta.DoltServerPort == SharedDoltPort {
-			t.Errorf("per-project port must not be SharedDoltPort (%d)", SharedDoltPort)
-		}
-		if meta.DoltServerPort < doltPortBase+1 || meta.DoltServerPort > doltPortBase+doltPortRange-1 {
-			t.Errorf("per-project port %d not in valid range [%d, %d]",
-				meta.DoltServerPort, doltPortBase+1, doltPortBase+doltPortRange-1)
-		}
-	})
-}
-
 // TestBuildHookConfig_NoStaleHookRefs verifies that every .py/.sh hook filename
 // referenced in buildHookConfig exists in the assets/hooks/ directory.
 // This catches stale references to deleted hooks (e.g. memory_capture.py).
@@ -2165,6 +2071,29 @@ func TestOroInitStealth_EndToEnd(t *testing.T) {
 	}
 }
 
+func TestInitStealthNoDoltState(t *testing.T) {
+	overrideToolDefs(t)
+
+	projectDir := t.TempDir()
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+
+	root := newRootCmd()
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetArgs([]string{"init", "--project-root", projectDir})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("oro init (stealth default) failed: %v\noutput: %s", err, buf.String())
+	}
+
+	hash, err := projectHash(projectDir)
+	if err != nil {
+		t.Fatalf("projectHash: %v", err)
+	}
+	assertNoDoltInitState(t, filepath.Join(oroHome, "projects", "s-"+hash, "beads"))
+}
+
 func TestOroInit_DefaultsStealth(t *testing.T) {
 	overrideToolDefs(t)
 
@@ -2227,72 +2156,5 @@ func TestOroInit_LocalFlagUsesStandardMode(t *testing.T) {
 	// Standard .oro/config.yaml MUST exist with --local.
 	if _, err := os.Stat(filepath.Join(projectDir, ".oro", "config.yaml")); os.IsNotExist(err) {
 		t.Error("--local must create .oro/config.yaml in project root")
-	}
-}
-
-// findBeadsDirHashingToSharedPort brute-forces a beads directory path that
-// DerivePort will hash to SharedDoltPort. Used for testing port collision detection.
-func findBeadsDirHashingToSharedPort(t *testing.T) string {
-	t.Helper()
-	// DerivePort returns doltPortBase (13307) + hash%doltPortRange (1000).
-	// For DerivePort to return SharedDoltPort (13307), we need hash%1000 == 0.
-	// Expected collision rate: 1 in 1000, so should find one quickly.
-	tmpBase := t.TempDir()
-	for i := 0; i < 100000; i++ {
-		candidate := filepath.Join(tmpBase, fmt.Sprintf("beads_%d", i))
-		port := DerivePort(candidate)
-		if port == SharedDoltPort {
-			return candidate
-		}
-	}
-	t.Fatalf("could not find a beads path that hashes to SharedDoltPort after 100000 attempts")
-	return ""
-}
-
-// TestInitDoltForProject_RefusesSharedPort verifies that when DerivePort
-// returns SharedDoltPort (port collision), initDoltForProject refuses
-// initialization and does not spawn a per-project dolt server.
-func TestInitDoltForProject_RefusesSharedPort(t *testing.T) {
-	// Find a beads directory path that hashes to SharedDoltPort (collision).
-	beadsDir := findBeadsDirHashingToSharedPort(t)
-	if err := os.MkdirAll(beadsDir, 0o750); err != nil {
-		t.Fatal(err)
-	}
-
-	// Use empty oroHome to ensure no shared server file exists.
-	// This ensures deriveEffectivePort will call DerivePort and return SharedDoltPort.
-	oroHome := ""
-
-	// Capture stderr to check for error message.
-	oldStderr := os.Stderr
-	r, w, _ := os.Pipe()
-	os.Stderr = w
-
-	// Call initDoltForProject with port collision scenario.
-	initDoltForProject(beadsDir, oroHome)
-
-	// Restore stderr and read captured output.
-	w.Close()
-	os.Stderr = oldStderr
-	var buf bytes.Buffer
-	buf.ReadFrom(r)
-	stderrOutput := buf.String()
-
-	// Verify that the function refused initialization:
-	// - Should print an error message
-	if !strings.Contains(stderrOutput, "oro dolt setup") {
-		t.Errorf("expected error message mentioning 'oro dolt setup', got stderr: %q", stderrOutput)
-	}
-
-	// - Should NOT spawn a dolt server (no dolt-server.port file in beadsDir)
-	beadsDoltPortPath := filepath.Join(beadsDir, "dolt-server.port")
-	if _, err := os.Stat(beadsDoltPortPath); err == nil {
-		t.Error("expected no dolt-server.port file in beadsDir when port is SharedDoltPort, but file was created")
-	}
-
-	// - Should NOT spawn a dolt server (no dolt-server.pid file in beadsDir)
-	beadsDoltPIDPath := filepath.Join(beadsDir, "dolt-server.pid")
-	if _, err := os.Stat(beadsDoltPIDPath); err == nil {
-		t.Error("expected no dolt-server.pid file in beadsDir when port is SharedDoltPort, but file was created")
 	}
 }

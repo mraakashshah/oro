@@ -495,14 +495,11 @@ func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS) error { 
 		return fmt.Errorf("create stealth beads dir: %w", err)
 	}
 
-	// 7. Initialize dolt for stealth beads dir (fail-open).
-	initDoltForProject(beadsDir, oroHome)
-
-	// 8. Install git hooks to prevent accidental leakage in stealth mode.
+	// 7. Install git hooks to prevent accidental leakage in stealth mode.
 	stealthPaths := stealthProjectPaths(projectRoot, stealthDir)
 	installStealthGitHooks(absProjectRoot, stealthPaths.QualityGate)
 
-	// 9. Generate settings.json.
+	// 8. Generate settings.json.
 	settingsData, err := generateSettings("$HOME/.oro")
 	if err != nil {
 		return fmt.Errorf("generate settings: %w", err)
@@ -511,17 +508,17 @@ func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS) error { 
 		return fmt.Errorf("write stealth settings: %w", err)
 	}
 
-	// 10. Extract embedded assets to oroHome (additive: don't overwrite user edits).
+	// 9. Extract embedded assets to oroHome (additive: don't overwrite user edits).
 	if err := extractAssets(oroHome, assets, false); err != nil {
 		return fmt.Errorf("extract assets: %w", err)
 	}
 
-	// 11. Generate quality_gate.sh to the stealth path (not in project root).
+	// 10. Generate quality_gate.sh to the stealth path (not in project root).
 	if err := writeQualityGateScriptFile(stealthPaths, false); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: quality gate generation failed: %v\n", err)
 	}
 
-	// 12. Build oro-search-hook binary (fail-open).
+	// 11. Build oro-search-hook binary (fail-open).
 	_ = ensureSearchHook(
 		os.Stderr,
 		filepath.Join(oroHome, "hooks", "oro-search-hook"),
@@ -582,24 +579,10 @@ func ensureGitRepo(projectRoot string) {
 	}
 }
 
-// initBeadsDB runs "bd init" in projectRoot if the beads database doesn't exist yet.
-// Fail-open: logs a warning on error but never blocks init.
+// initBeadsDB is retained for legacy callers. Phase 10 sqlite-only init does
+// not shell out to bd; the database is created by normal bead operations.
 func initBeadsDB(projectRoot string) {
-	projPaths, err := ResolvePaths(projectRoot)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: resolve paths for initBeadsDB: %v\n", err)
-		return
-	}
-	if _, err := os.Stat(projPaths.BeadsDir); err == nil {
-		return // already initialized
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "bd", "init", "--agents-template", os.DevNull) //nolint:gosec // trusted command
-	cmd.Dir = projectRoot
-	if out, err := cmd.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: bd init failed: %v\n%s\n", err, out)
-	}
+	_ = projectRoot
 }
 
 // resolveProjectName returns the project name from the argument or derives it from the directory.
@@ -620,15 +603,6 @@ func resolveProjectName(projectRoot, projectName string) (string, error) {
 // Returns the detected language config (threaded from createProjectAnchor) so
 // callers avoid a redundant disk read.
 func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, force bool) (*langprofile.Config, error) { //nolint:funlen // sequential bootstrap steps
-	// Resolve project paths once for use throughout bootstrap.
-	// At call time no config exists yet, so ResolvePaths returns standard mode;
-	// after createProjectAnchor writes .oro/config.yaml it would still return
-	// standard mode — the result is the same either way.
-	projPaths, err := ResolvePaths(projectRoot)
-	if err != nil {
-		return nil, fmt.Errorf("resolve paths: %w", err)
-	}
-
 	// 1. Create local anchor: .oro/config.yaml with project name.
 	// Thread the detected config back to the caller.
 	cfg, err := createProjectAnchor(projectRoot, projectName)
@@ -668,10 +642,6 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 		return nil, fmt.Errorf("setup beads symlink: %w", err)
 	}
 
-	// 4b. Initialize beads database and dolt server (fail-open).
-	initBeadsDB(projectRoot)
-	initDoltForProject(projPaths.BeadsDir, oroHome)
-
 	// 5. Generate settings.json (always overwrite — idempotent).
 	settingsData, err := generateSettings("$HOME/.oro")
 	if err != nil {
@@ -707,20 +677,6 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 	)
 
 	return cfg, nil
-}
-
-// initDoltForProject ensures dolt metadata and server are ready for a .beads path.
-// When oroHome contains a dolt-server.port file (shared server mode), port 13307
-// is used and the registry is not consulted. Otherwise AllocatePort is called to
-// obtain a collision-free per-project port; if the registry-assigned port differs
-// from what is already recorded in metadata.json, setDoltPort is used to sync them.
-// Fail-open: logs warnings but does not return errors.
-func initDoltForProject(beadsPath, oroHome string) {
-	if doltSharedServerActive(oroHome) {
-		doltEnsureAndStart(beadsPath, SharedDoltPort)
-		return
-	}
-	initDoltPerProjectPort(beadsPath, oroHome)
 }
 
 // doltSharedServerActive reports whether the shared dolt-server.port file is

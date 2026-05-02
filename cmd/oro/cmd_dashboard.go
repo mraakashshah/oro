@@ -9,6 +9,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var dashboardHTTPClient = &http.Client{Timeout: 2 * time.Second} //nolint:gochecknoglobals // injectable for tests.
+
 func newDashboardCmd() *cobra.Command {
 	var addr string
 
@@ -18,8 +20,7 @@ func newDashboardCmd() *cobra.Command {
 		Long:  "Connect to the local web dashboard served by `oro start --web`.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			url := normalizeDashboardURL(addr)
-			client := &http.Client{Timeout: 2 * time.Second}
-			resp, err := client.Get(url) //nolint:noctx,gosec // local operator convenience command
+			resp, err := dashboardHTTPClient.Get(url) //nolint:noctx,gosec // local operator convenience command
 			if err != nil {
 				return fmt.Errorf("dashboard not reachable at %s: %w\nrun `oro start --web` first", url, err)
 			}

@@ -34,7 +34,7 @@ flows. `cmd/oro/cmd_start.go` and `cmd/oro/cmd_work.go` construct
 | `pkg/dispatcher/health.go` | `bd dolt status` | accepted-legacy | Dolt health is only meaningful in legacy mode. Replace with SQLite ping when native beadstore lands, per §11.2. |
 | `pkg/dispatcher/dolt_recovery.go` | `bd dolt start`; `bd import <backup>` | accepted-legacy | Dolt-specific recovery. Delete/replace with SQLite recovery path in Phase 10. |
 | `cmd/oro/cmd_stop.go` | `bd dolt commit` | accepted-legacy | Legacy Dolt flush on stop. Remove with Dolt shutdown logic. |
-| `cmd/oro/cmd_init.go` | tool definition checks `bd --version`; `bd init --agents-template /dev/null` | accepted-legacy | Required while setup bootstraps legacy beads. Remove bd from tool list and init path in Phase 10, as §11.2 specifies. |
+| `cmd/oro/cmd_init.go` | formerly checked `bd --version` and ran `bd init --agents-template /dev/null` | migrated | Phase 10 blocker `oro-kk5f` removed live bd/Dolt initialization; keep this row as historical inventory until the broader Phase 10 cleanup deletes the surrounding legacy Dolt helpers. |
 | `cmd/oro/cmd_doctor.go` | `bd init`; `bd init --from-jsonl` | accepted-legacy | Legacy Dolt recovery. Replace with native SQLite integrity/recovery tooling. |
 | `cmd/oro/cmd_bd.go` | `oro bd` wrapper locates and `exec`s bd with optional stealth `--db` | accepted-legacy | Delete in Phase 10. §11.2 lists this as a deleted file. |
 | `cmd/oro/preflight.go` | standard `oro start` preflight no longer requires `bd`; SQLite daemon preflight requires `claude` and `git` only | migrated | Removed bd from required tools in Phase 10 blocker `oro-58f5`; keep this row as historical inventory until Phase 10 deletes or rewrites the surrounding legacy callsites. |

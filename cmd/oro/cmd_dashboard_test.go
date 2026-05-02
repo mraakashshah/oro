@@ -2,8 +2,8 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -36,21 +36,39 @@ func TestNormalizeDashboardURL(t *testing.T) {
 }
 
 func TestDashboardCmdPrintsReachableURL(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
+	oldClient := dashboardHTTPClient
+	t.Cleanup(func() { dashboardHTTPClient = oldClient })
+
+	dashboardHTTPClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.String() != "http://127.0.0.1:4545" {
+				t.Fatalf("request URL = %q, want http://127.0.0.1:4545", req.URL.String())
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("")),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		}),
+	}
 
 	cmd := newDashboardCmd()
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"--addr", srv.URL})
+	cmd.SetArgs([]string{"--addr", "127.0.0.1:4545"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("dashboard command failed: %v", err)
 	}
-	if !strings.Contains(buf.String(), srv.URL) {
-		t.Fatalf("expected output to contain %q, got %q", srv.URL, buf.String())
+	if !strings.Contains(buf.String(), "http://127.0.0.1:4545") {
+		t.Fatalf("expected output to contain dashboard URL, got %q", buf.String())
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
 }
