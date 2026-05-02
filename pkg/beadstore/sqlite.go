@@ -170,6 +170,9 @@ func (s *SQLiteStore) Create(ctx context.Context, params CreateParams) (*protoco
 
 	var parent sql.NullString
 	if params.ParentID != "" {
+		if err := ensureBeadExists(ctx, tx, params.ParentID); err != nil {
+			return nil, err
+		}
 		parent = sql.NullString{String: params.ParentID, Valid: true}
 	}
 	var estimate sql.NullInt64
@@ -218,6 +221,12 @@ func (s *SQLiteStore) Update(ctx context.Context, id string, params UpdateParams
 		return fmt.Errorf("beadstore: begin update transaction: %w", err)
 	}
 	defer rollback(tx)
+
+	if params.ParentID != nil && *params.ParentID != "" {
+		if err := ensureBeadExists(ctx, tx, *params.ParentID); err != nil {
+			return err
+		}
+	}
 
 	stmt := newUpdateStatement(params)
 	stmt.args = append(stmt.args, id)

@@ -34,6 +34,7 @@ func TestSQLiteStoreCreateShowExportAndMemory(t *testing.T) {
 		return "relevant memory", nil
 	}
 
+	mustCreate(t, store, CreateParams{ID: "oro-epic", Title: "epic", Type: "epic"})
 	created, err := store.Create(ctx, CreateParams{
 		ID:                 "oro-sql1",
 		Title:              "Implement SQLite store",
@@ -97,8 +98,79 @@ func TestSQLiteStoreCreateShowExportAndMemory(t *testing.T) {
 		}
 		rows = append(rows, bead)
 	}
-	if len(rows) != 1 || rows[0].ID != "oro-sql1" {
+	if len(rows) != 2 || rows[1].ID != "oro-sql1" {
 		t.Fatalf("exported rows = %#v", rows)
+	}
+}
+
+func TestSQLiteStoreCreateRejectsMissingOrDeletedParent(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+
+	if _, err := store.Create(ctx, CreateParams{ID: "oro-child-missing", Title: "child", ParentID: "oro-missing-parent"}); !isBeadNotFound(err) {
+		t.Fatalf("Create with missing parent error = %v, want BeadNotFoundError", err)
+	}
+	if shown, err := store.Show(ctx, "oro-child-missing"); err != nil || shown != nil {
+		t.Fatalf("Show child after missing-parent create = %#v, %v; want nil, nil", shown, err)
+	}
+
+	mustCreate(t, store, CreateParams{ID: "oro-deleted-parent", Title: "deleted parent"})
+	mustExec(t, store.db, `UPDATE beads SET deleted=1 WHERE id='oro-deleted-parent'`)
+	if _, err := store.Create(ctx, CreateParams{ID: "oro-child-deleted", Title: "child", ParentID: "oro-deleted-parent"}); !isBeadNotFound(err) {
+		t.Fatalf("Create with deleted parent error = %v, want BeadNotFoundError", err)
+	}
+	if shown, err := store.Show(ctx, "oro-child-deleted"); err != nil || shown != nil {
+		t.Fatalf("Show child after deleted-parent create = %#v, %v; want nil, nil", shown, err)
+	}
+}
+
+func TestSQLiteStoreUpdateRejectsMissingOrDeletedParent(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+
+	mustCreate(t, store, CreateParams{ID: "oro-child", Title: "child"})
+
+	missingParent := "oro-missing-parent"
+	if err := store.Update(ctx, "oro-child", UpdateParams{ParentID: &missingParent}); !isBeadNotFound(err) {
+		t.Fatalf("Update with missing parent error = %v, want BeadNotFoundError", err)
+	}
+	shown, err := store.Show(ctx, "oro-child")
+	if err != nil {
+		t.Fatalf("Show child after missing-parent update: %v", err)
+	}
+	if shown.Epic != "" {
+		t.Fatalf("child parent after missing-parent update = %q, want empty", shown.Epic)
+	}
+
+	mustCreate(t, store, CreateParams{ID: "oro-deleted-parent", Title: "deleted parent"})
+	mustExec(t, store.db, `UPDATE beads SET deleted=1 WHERE id='oro-deleted-parent'`)
+	deletedParent := "oro-deleted-parent"
+	if err := store.Update(ctx, "oro-child", UpdateParams{ParentID: &deletedParent}); !isBeadNotFound(err) {
+		t.Fatalf("Update with deleted parent error = %v, want BeadNotFoundError", err)
+	}
+	shown, err = store.Show(ctx, "oro-child")
+	if err != nil {
+		t.Fatalf("Show child after deleted-parent update: %v", err)
+	}
+	if shown.Epic != "" {
+		t.Fatalf("child parent after deleted-parent update = %q, want empty", shown.Epic)
+	}
+
+	mustCreate(t, store, CreateParams{ID: "oro-active-parent", Title: "active parent"})
+	activeParent := "oro-active-parent"
+	if err := store.Update(ctx, "oro-child", UpdateParams{ParentID: &activeParent}); err != nil {
+		t.Fatalf("Update with active parent: %v", err)
+	}
+	clearParent := ""
+	if err := store.Update(ctx, "oro-child", UpdateParams{ParentID: &clearParent}); err != nil {
+		t.Fatalf("Update clear parent: %v", err)
+	}
+	shown, err = store.Show(ctx, "oro-child")
+	if err != nil {
+		t.Fatalf("Show child after clearing parent: %v", err)
+	}
+	if shown.Epic != "" {
+		t.Fatalf("child parent after clearing parent = %q, want empty", shown.Epic)
 	}
 }
 
@@ -542,6 +614,7 @@ func TestParityStoreLifecycleMethods(t *testing.T) {
 	for _, fixture := range newParityFixtures(t) {
 		t.Run(fixture.name, func(t *testing.T) {
 			ctx := context.Background()
+			mustCreateStore(t, fixture.store, CreateParams{ID: "oro-parent", Title: "parent", Type: "epic"})
 			created, err := fixture.store.Create(ctx, CreateParams{
 				ID:                 "oro-lifecycle",
 				Title:              "lifecycle",
