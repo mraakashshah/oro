@@ -4558,8 +4558,10 @@ func (d *Dispatcher) applyKillWorker(args string) (string, error) {
 			w.markShuttingDownWithoutAssignment()
 		}
 	} else {
-		// Close connection and remove worker from pool.
-		_ = w.conn.Close()
+		// Tell the worker process to exit before removing dispatcher bookkeeping.
+		// Closing the connection alone makes `oro worker` treat it as a transient
+		// connection drop and reconnect while the dispatcher is still alive.
+		sendShutdownWithoutBuffering(w)
 		delete(d.workers, workerID)
 	}
 

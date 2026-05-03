@@ -13804,6 +13804,20 @@ func TestKillWorkerCleansUpWorktreeAndBead(t *testing.T) {
 		if target != 1 {
 			t.Errorf("targetWorkers = %d, want 1 (unmanaged worker should not affect target count)", target)
 		}
+
+		conn.mu.Lock()
+		writes := append([][]byte(nil), conn.written...)
+		conn.mu.Unlock()
+		if len(writes) != 1 {
+			t.Fatalf("unmanaged worker received %d messages, want one SHUTDOWN", len(writes))
+		}
+		var msg protocol.Message
+		if err := json.Unmarshal(writes[0], &msg); err != nil {
+			t.Fatalf("decode unmanaged shutdown message: %v", err)
+		}
+		if msg.Type != protocol.MsgShutdown {
+			t.Fatalf("unmanaged worker message type = %s, want %s", msg.Type, protocol.MsgShutdown)
+		}
 	})
 
 	t.Run("worker with no bead or worktree: skips removal and reset", func(t *testing.T) {
