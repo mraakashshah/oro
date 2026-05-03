@@ -1279,6 +1279,127 @@ func TestSpawnFor_TargetedWorkerGetsRequestedBeadNotFirstReady(t *testing.T) {
 	}
 }
 
+// TestSpawnFor_TargetedAssignment_PendingRequestSuppressesAutoscale verifies that
+// while a spawn-for worker is pending (spawned but not yet connected), autoscale
+// does not launch general workers for either the reserved target or unrelated work.
+//
+// Bug: tryAssign allowed autoscale to spawn a general worker during the pending
+// spawn-for window. The general worker could consume capacity or receive unrelated
+// ready work before the targeted worker connected.
+//
+// Fix: suppress autoscale while any spawn-for worker is pending.
+func TestSpawnFor_TargetedAssignment_PendingRequestSuppressesAutoscale(t *testing.T) {
+	d, beads, wt, _, _, _ := newTestDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.setState(StateRunning)
+	d.cfg.MaxWorkers = 3
+
+	requestedID := "oro-spawnfor-requested"
+	otherID := "oro-spawnfor-other"
+	wt.createFn = func(_ context.Context, bID, _ string) (string, string, error) {
+		return "/tmp/worktree-" + bID, "agent/" + bID, nil
+	}
+	beads.SetBeads([]protocol.Bead{
+		{ID: requestedID, Priority: 2},
+		{ID: otherID, Priority: 0},
+	})
+
+	d.mu.Lock()
+	d.targetWorkers = 0
+	d.mu.Unlock()
+
+	// Spawn the targeted worker; it is now pending (not yet connected).
+	if _, err := d.applySpawnFor(requestedID); err != nil {
+		t.Fatalf("applySpawnFor failed: %v", err)
+	}
+	spawnCount := len(pm.SpawnedIDs())
+	if spawnCount != 1 {
+		t.Fatalf("expected exactly 1 spawn-for worker after directive, got %d", spawnCount)
+	}
+
+	// tryAssign sees idle=[], a pending spawn-for reservation, and unrelated ready work.
+	// Autoscale must not fire until the targeted worker has connected and received
+	// its reserved task.
+	d.tryAssign(context.Background())
+
+	if got := len(pm.SpawnedIDs()); got != 1 {
+		t.Fatalf(
+			"autoscale spawned %d workers while spawn-for pending; want 1 (only the targeted worker)",
+			got,
+		)
+	}
+	d.mu.Lock()
+	targetWorkers := d.targetWorkers
+	d.mu.Unlock()
+	if targetWorkers != 0 {
+		t.Fatalf("targetWorkers = %d after tryAssign, want 0 (no general work to do)", targetWorkers)
+	}
+}
+
+func TestSpawnFor_PendingRequestSuppressesAutoscaleAfterQueueSnapshot(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.setState(StateRunning)
+	d.cfg.MaxWorkers = 3
+
+	d.mu.Lock()
+	d.targetWorkers = 0
+	d.pendingWorkerTargets["worker-spawnfor-pending"] = "oro-spawnfor-requested"
+	d.mu.Unlock()
+
+	d.maybeAutoScale(context.Background(), 2, 0)
+
+	if got := len(pm.SpawnedIDs()); got != 0 {
+		t.Fatalf("autoscale spawned %d workers after spawn-for became pending; want 0", got)
+	}
+	d.mu.Lock()
+	targetWorkers := d.targetWorkers
+	d.mu.Unlock()
+	if targetWorkers != 0 {
+		t.Fatalf("targetWorkers = %d after maybeAutoScale with pending spawn-for, want 0", targetWorkers)
+	}
+}
+
+func TestSpawnFor_PendingRequestSuppressesScaleUpAtReconcile(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.setState(StateRunning)
+	d.cfg.MaxWorkers = 3
+
+	d.mu.Lock()
+	d.targetWorkers = 2
+	d.pendingWorkerTargets["worker-spawnfor-pending"] = "oro-spawnfor-requested"
+	d.mu.Unlock()
+
+	detail := d.reconcileScale()
+
+	if got := len(pm.SpawnedIDs()); got != 0 {
+		t.Fatalf("reconcileScale spawned %d workers while spawn-for pending; want 0", got)
+	}
+	if !strings.Contains(detail, "pending spawn-for active") {
+		t.Fatalf("reconcileScale detail = %q, want pending spawn-for skip", detail)
+	}
+}
+
+func TestAutoscaleInputs_TargetedIdleExcludesPendingReservedTargets(t *testing.T) {
+	idle := []idleWorker{{targetBeadID: "oro-targeted"}}
+	beads := []protocol.Bead{
+		{ID: "oro-targeted"},
+		{ID: "oro-pending-spawn-for"},
+		{ID: "oro-general"},
+	}
+	reservedTargets := map[string]bool{"oro-pending-spawn-for": true}
+
+	queueDepth, idleCount := autoscaleInputsForIdleWorkers(idle, beads, reservedTargets)
+
+	if queueDepth != 2 || idleCount != 0 {
+		t.Fatalf("queueDepth=%d idleCount=%d, want queueDepth=2 idleCount=0", queueDepth, idleCount)
+	}
+}
+
 // TestIdleWorker_PicksUpQueuedBeadImmediately verifies that a worker connecting
 // while beads are queued receives an ASSIGN without waiting for the poll interval.
 //

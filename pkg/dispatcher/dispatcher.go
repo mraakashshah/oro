@@ -3171,11 +3171,13 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	beads := d.filterAssignable(ctx, allBeads)
 
 	pbSnapshot := d.sortBeadsByPriority(beads)
-	reservedTargets := d.reservedSpawnForTargets()
+	reservedTargets, hasPendingSpawnFor := d.reservedSpawnForTargets()
 
 	// Auto-scale: if we have assignable beads but no idle workers, scale up to MaxWorkers.
-	queueDepth, idleCount := autoscaleInputsForIdleWorkers(idle, beads)
-	d.maybeAutoScale(ctx, queueDepth, idleCount)
+	if !hasPendingSpawnFor {
+		queueDepth, idleCount := autoscaleInputsForIdleWorkers(idle, beads, reservedTargets)
+		d.maybeAutoScale(ctx, queueDepth, idleCount)
+	}
 
 	// Priority contention is now handled by the preemption system (oro-wofg).
 	// Escalating to the manager is noisy and unhelpful.
@@ -3191,7 +3193,7 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	d.assignGeneralIdleWorkers(ctx, idle, beads, pbSnapshot, assignedBeads, reservedTargets)
 }
 
-func (d *Dispatcher) reservedSpawnForTargets() map[string]bool {
+func (d *Dispatcher) reservedSpawnForTargets() (map[string]bool, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -3206,12 +3208,28 @@ func (d *Dispatcher) reservedSpawnForTargets() map[string]bool {
 			targets[worker.targetBeadID] = true
 		}
 	}
-	return targets
+	return targets, d.hasPendingSpawnForLocked()
 }
 
-func autoscaleInputsForIdleWorkers(idle []idleWorker, beads []protocol.Bead) (queueDepth, idleCount int) {
+func (d *Dispatcher) hasPendingSpawnForLocked() bool {
+	for _, target := range d.pendingWorkerTargets {
+		if target != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// autoscaleInputsForIdleWorkers computes (queueDepth, idleCount) for autoscaling.
+// reservedTargets contains bead IDs that are exclusively reserved for spawn-for workers
+// (both pending and connected-idle). These beads must not inflate the autoscale queue
+// depth because no general worker can claim them.
+func autoscaleInputsForIdleWorkers(idle []idleWorker, beads []protocol.Bead, reservedTargets map[string]bool) (queueDepth, idleCount int) {
 	if len(idle) == 0 {
-		return len(beads), 0
+		// No connected workers: count only beads that general workers can actually claim.
+		// Excluding reserved spawn-for targets prevents autoscale from spawning general
+		// workers for beads they can never take, which wastes worker slots.
+		return countGeneralQueueDepth(beads, reservedTargets), 0
 	}
 
 	autoscaleIdle := 0
@@ -3234,28 +3252,39 @@ func autoscaleInputsForIdleWorkers(idle []idleWorker, beads []protocol.Bead) (qu
 	}
 
 	if autoscaleIdle == 0 {
-		generalQueueDepth := 0
-		for _, bead := range beads {
-			if !targets[bead.ID] {
-				generalQueueDepth++
-			}
-		}
-		return generalQueueDepth, 0
+		// All idle workers are spawn-for workers. Compute general queue depth excluding
+		// both connected and pending spawn-for targets.
+		return countGeneralQueueDepth(beads, targets, reservedTargets), 0
 	}
 	if targetedIdle == 0 || generalIdle > 0 {
 		return len(beads), autoscaleIdle
 	}
 
-	generalQueueDepth := 0
-	for _, bead := range beads {
-		if !targets[bead.ID] {
-			generalQueueDepth++
-		}
-	}
+	generalQueueDepth := countGeneralQueueDepth(beads, targets, reservedTargets)
 	if generalQueueDepth == 0 {
 		return len(beads), autoscaleIdle
 	}
 	return targetedIdle + generalQueueDepth, 0
+}
+
+func countGeneralQueueDepth(beads []protocol.Bead, reservedSets ...map[string]bool) int {
+	depth := 0
+	for _, bead := range beads {
+		if isReservedBead(bead.ID, reservedSets...) {
+			continue
+		}
+		depth++
+	}
+	return depth
+}
+
+func isReservedBead(beadID string, reservedSets ...map[string]bool) bool {
+	for _, reserved := range reservedSets {
+		if reserved[beadID] {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *Dispatcher) assignTargetedIdleWorkers(ctx context.Context, idle []idleWorker, beads []protocol.Bead) map[string]bool {
@@ -4838,6 +4867,10 @@ func (d *Dispatcher) maybeAutoScale(ctx context.Context, queueDepth, idleCount i
 	}
 
 	d.mu.Lock()
+	if d.hasPendingSpawnForLocked() {
+		d.mu.Unlock()
+		return
+	}
 	currentTarget := d.targetWorkers
 	maxWorkers := d.cfg.MaxWorkers
 	explicitScaleTarget := d.explicitScaleTarget
@@ -4902,6 +4935,7 @@ func (d *Dispatcher) reconcileScale() string {
 	totalWorkers := d.activeWorkerCountLocked()
 	totalLiveWorkers := d.liveWorkerCountLocked()
 	maxWorkers := d.cfg.MaxWorkers
+	hasPendingSpawnFor := d.hasPendingSpawnForLocked()
 	d.mu.Unlock()
 
 	desiredManaged := target
@@ -4919,6 +4953,9 @@ func (d *Dispatcher) reconcileScale() string {
 	case managedCount > desiredManaged:
 		return d.scaleDown(desiredManaged, managedCount)
 	case managedCount < target:
+		if hasPendingSpawnFor {
+			return fmt.Sprintf("target=%d, managed=%d, pending spawn-for active, skipping scaleUp", target, managedCount)
+		}
 		if managedCount+managedExits >= 2*target {
 			return fmt.Sprintf("target=%d, managed=%d, exits=%d, managed+exits %d >= 2*target %d — cap reached, skipping scaleUp",
 				target, managedCount, managedExits, managedCount+managedExits, 2*target)
