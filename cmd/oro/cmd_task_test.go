@@ -67,6 +67,22 @@ func TestTaskCommandSubcommandParity(t *testing.T) {
 	}
 }
 
+func TestTaskCommandRejectsMigrationAlias(t *testing.T) {
+	cmd := newTaskCmdWithStore(beadstore.NewFakeStore())
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"migrate-from-dolt"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("task migrate-from-dolt unexpectedly succeeded:\n%s", out.String())
+	}
+	if !strings.Contains(err.Error(), "migrate-from-dolt") {
+		t.Fatalf("task migrate-from-dolt error = %v, want unavailable migration command named", err)
+	}
+}
+
 func TestTaskCommandAliasLifecycle(t *testing.T) {
 	ctx := context.Background()
 	store, err := beadstore.OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))

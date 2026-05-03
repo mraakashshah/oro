@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+
 	"oro/pkg/beadstore"
 
 	"github.com/spf13/cobra"
@@ -17,6 +19,12 @@ func newTaskCmdWithStore(store beadstore.Store) *cobra.Command {
 		Use:   "task",
 		Short: "Manage native Oro beads (alias for bead)",
 		Long:  "Manage native Oro beads. Alias for the bead command; migrate-from-dolt is not available via this alias.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return fmt.Errorf("unknown task command %q", args[0])
+			}
+			return cmd.Help()
+		},
 	}
 	cmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "emit machine-readable JSON output")
 
