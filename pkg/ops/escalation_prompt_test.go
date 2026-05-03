@@ -54,8 +54,8 @@ func TestBuildEscalationPrompt_ContainsCLICommands(t *testing.T) {
 		EscalationType: "MISSING_AC",
 		BeadID:         "oro-noac",
 	})
-	if !strings.Contains(prompt, "oro bead") {
-		t.Fatalf("prompt missing oro bead CLI reference, got:\n%s", prompt)
+	if !strings.Contains(prompt, "oro task") {
+		t.Fatalf("prompt missing oro task CLI reference, got:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "oro directive") {
 		t.Fatalf("prompt missing oro directive reference, got:\n%s", prompt)
@@ -157,8 +157,8 @@ func TestWritePlaybook_PriorityContention_Steps(t *testing.T) {
 		EscalationType: "PRIORITY_CONTENTION",
 		BeadID:         "oro-pc",
 	})
-	if !strings.Contains(prompt, "oro bead list --status=in_progress") {
-		t.Fatalf("PRIORITY_CONTENTION playbook missing 'oro bead list --status=in_progress', got:\n%s", prompt)
+	if !strings.Contains(prompt, "oro task list --status=in_progress") {
+		t.Fatalf("PRIORITY_CONTENTION playbook missing 'oro task list --status=in_progress', got:\n%s", prompt)
 	}
 }
 
@@ -167,8 +167,8 @@ func TestWritePlaybook_MissingAC_Steps(t *testing.T) {
 		EscalationType: "MISSING_AC",
 		BeadID:         "oro-mac",
 	})
-	if !strings.Contains(prompt, "oro bead show") {
-		t.Fatalf("MISSING_AC playbook missing 'oro bead show', got:\n%s", prompt)
+	if !strings.Contains(prompt, "oro task show") {
+		t.Fatalf("MISSING_AC playbook missing 'oro task show', got:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "--acceptance") {
 		t.Fatalf("MISSING_AC playbook missing '--acceptance' flag, got:\n%s", prompt)
@@ -192,8 +192,8 @@ func TestWriteAvailableCLI_BdShow(t *testing.T) {
 		EscalationType: "STUCK_WORKER",
 		BeadID:         "oro-cli",
 	})
-	if !strings.Contains(prompt, "oro bead show <id>") {
-		t.Fatalf("CLI section missing 'oro bead show <id>', got:\n%s", prompt)
+	if !strings.Contains(prompt, "oro task show <id>") {
+		t.Fatalf("CLI section missing 'oro task show <id>', got:\n%s", prompt)
 	}
 }
 
@@ -240,8 +240,8 @@ func TestOversizedBeadPlaybook(t *testing.T) {
 	})
 
 	// Must instruct ops to inspect the bead
-	if !strings.Contains(prompt, "oro bead show") {
-		t.Fatalf("OVERSIZED_BEAD playbook missing 'oro bead show', got:\n%s", prompt)
+	if !strings.Contains(prompt, "oro task show") {
+		t.Fatalf("OVERSIZED_BEAD playbook missing 'oro task show', got:\n%s", prompt)
 	}
 	// Must instruct ops to promote to epic
 	if !strings.Contains(prompt, "epic") {
@@ -250,6 +250,20 @@ func TestOversizedBeadPlaybook(t *testing.T) {
 	// Must instruct ops to create child beads per module boundary
 	if !strings.Contains(prompt, "module") {
 		t.Fatalf("OVERSIZED_BEAD playbook missing 'module' boundary instruction, got:\n%s", prompt)
+	}
+}
+
+// TestBuildEscalationPromptTaskTerminology verifies that the escalation prompt
+// uses "oro task" as the primary command in the available CLI section.
+func TestBuildEscalationPromptTaskTerminology(t *testing.T) {
+	got := buildEscalationPrompt(EscalationOpts{
+		EscalationType: "STUCK_WORKER",
+		BeadID:         "oro-esc-term",
+	})
+	for _, cmd := range []string{"oro task show", "oro task update", "oro task list"} {
+		if !strings.Contains(got, cmd) {
+			t.Errorf("escalation prompt must contain %q as the primary task command; got:\n%s", cmd, got)
+		}
 	}
 }
 

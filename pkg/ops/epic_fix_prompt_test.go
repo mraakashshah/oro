@@ -5,6 +5,22 @@ import (
 	"testing"
 )
 
+// TestBuildEpicFixPromptTaskTerminology verifies that the epic-fix prompt uses
+// "oro task" as the primary command for create/update/dep-add operations.
+func TestBuildEpicFixPromptTaskTerminology(t *testing.T) {
+	got := buildEpicFixPrompt(EpicFixOpts{
+		EpicID: "oro-fix-term",
+		AC:     "Test: pkg/foo_test.go:TestFoo | Cmd: go test | Assert: PASS",
+		Cmd:    "go test",
+		Output: "FAIL",
+	})
+	for _, cmd := range []string{"oro task create", "oro task update", "oro task dep add"} {
+		if !strings.Contains(got, cmd) {
+			t.Errorf("epic fix prompt must contain %q as the primary task command; got:\n%s", cmd, got)
+		}
+	}
+}
+
 func TestBuildEpicFixPromptUsesOroBeadCreateWithAcceptance(t *testing.T) {
 	prompt := buildEpicFixPrompt(EpicFixOpts{
 		EpicID: "oro-epic",
@@ -13,8 +29,8 @@ func TestBuildEpicFixPromptUsesOroBeadCreateWithAcceptance(t *testing.T) {
 		Output: "FAIL",
 	})
 
-	if !strings.Contains(prompt, "oro bead create") {
-		t.Fatalf("prompt missing oro bead create command:\n%s", prompt)
+	if !strings.Contains(prompt, "oro task create") {
+		t.Fatalf("prompt missing oro task create command:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "--acceptance=\"Test: <file>:<Fn> | Cmd: <cmd> | Assert: <expected>\"") {
 		t.Fatalf("prompt create command must include machine-verifiable acceptance criteria:\n%s", prompt)

@@ -15,9 +15,9 @@ func TestBuildACPrompt(t *testing.T) {
 
 	got := buildACPrompt(opts)
 
-	t.Run("oro bead show present", func(t *testing.T) {
-		if !strings.Contains(got, "oro bead show") {
-			t.Errorf("prompt missing 'oro bead show'; got:\n%s", got)
+	t.Run("oro task show present", func(t *testing.T) {
+		if !strings.Contains(got, "oro task show") {
+			t.Errorf("prompt missing 'oro task show'; got:\n%s", got)
 		}
 	})
 
@@ -84,9 +84,9 @@ func TestBuildACPrompt(t *testing.T) {
 		}
 	})
 
-	t.Run("oro bead update with acceptance instruction present", func(t *testing.T) {
-		if !strings.Contains(got, "oro bead update") {
-			t.Errorf("prompt missing 'oro bead update' instruction; got:\n%s", got)
+	t.Run("oro task update with acceptance instruction present", func(t *testing.T) {
+		if !strings.Contains(got, "oro task update") {
+			t.Errorf("prompt missing 'oro task update' instruction; got:\n%s", got)
 		}
 	})
 
@@ -104,6 +104,20 @@ func TestBuildACPrompt(t *testing.T) {
 			t.Errorf("prompt missing dependency exploration instruction; got:\n%s", got)
 		}
 	})
+}
+
+// TestBuildACPromptTaskTerminology verifies that the AC-writing prompt uses
+// "oro task" as the primary show/update command, not the legacy "oro bead".
+func TestBuildACPromptTaskTerminology(t *testing.T) {
+	got := buildACPrompt(WriteACOpts{
+		BeadID:    "oro-ac-term",
+		BeadTitle: "AC terminology test",
+	})
+	for _, cmd := range []string{"oro task show", "oro task update"} {
+		if !strings.Contains(got, cmd) {
+			t.Errorf("AC prompt must contain %q as the primary task command; got:\n%s", cmd, got)
+		}
+	}
 }
 
 func TestBuildACPromptUsesOroDocsDir(t *testing.T) {

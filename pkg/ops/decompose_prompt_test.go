@@ -54,8 +54,22 @@ func TestBuildDecomposePromptContainsBeadID(t *testing.T) {
 	if !strings.Contains(prompt, "oro-test123") {
 		t.Errorf("prompt does not contain BeadID %q", opts.BeadID)
 	}
-	if !strings.Contains(prompt, "oro bead create --title=\"...\" --type=task --parent=oro-test123") {
+	if !strings.Contains(prompt, "oro task create --title=\"...\" --type=task --parent=oro-test123") {
 		t.Error("prompt must use native create --parent for child hierarchy")
+	}
+}
+
+// TestBuildDecomposePromptTaskTerminology verifies that the decomposition prompt
+// uses "oro task" as the primary command for show/create/dep/update operations.
+func TestBuildDecomposePromptTaskTerminology(t *testing.T) {
+	got := buildDecomposePrompt(DecomposeOpts{
+		BeadID:   "oro-decomp-term",
+		QGOutput: "lint failed",
+	})
+	for _, cmd := range []string{"oro task show", "oro task create", "oro task dep add", "oro task update"} {
+		if !strings.Contains(got, cmd) {
+			t.Errorf("decompose prompt must contain %q as the primary task command; got:\n%s", cmd, got)
+		}
 	}
 }
 
