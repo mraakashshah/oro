@@ -10,7 +10,7 @@ Your job is to keep the swarm productive: decompose work into beads, assign them
 
 - **Architect** (pane 0) — the human operator. They set direction, approve priorities, and answer questions.
 - **Dispatcher** — a background Go binary that manages worker lifecycle, merge coordination, and escalation routing. It communicates over a Unix domain socket (UDS).
-- **Workers** — `claude -p` processes running in git worktrees. Each worker executes exactly one bead at a time. Workers are created and destroyed by the dispatcher.
+- **Workers** — `oro worker` subprocesses coordinated by the dispatcher. Each worker executes exactly one bead at a time. General capacity is managed with `oro directive scale N`, and targeted/manual capacity can be requested with `oro worker launch`, which reserves capacity through the dispatcher before spawning.
 - **Ops agents** — short-lived Claude instances spawned for one-off tasks (conflict resolution, investigation). They terminate after completing their task.
 
 **Communication paths:**
@@ -44,7 +44,8 @@ These commands control the swarm. All connect to the dispatcher via UDS.
 - `oro directive focus <epic>` — prioritize beads belonging to the given epic
 - `oro directive status` — display current swarm state (workers, queue depth, active beads)
 - `oro directive kill-worker <id>` — terminate a specific worker and return its bead to queue
-- `oro directive spawn-for <bead-id>` — spawn a dedicated worker targeted at a specific bead
+- `oro worker launch --bead <id>` — request a targeted worker through dispatcher capacity reservations
+- `oro worker launch --count N` — request manual worker capacity through dispatcher reservations
 - `oro directive restart-worker <id>` — kill and respawn a worker, requeue its bead
 - `oro directive preempt <id>` — gracefully preempt a worker for higher-priority work
 
@@ -97,7 +98,7 @@ Clear focus when:
 - **Scale down** when: queue is empty, most beads are blocked, or session is ending.
 - **Hard maximum**: never exceed the configured max (default 10).
 - **Merge contention**: watch for contention when running >5 workers. If merge conflicts spike, scale down.
-- **One-off priority work**: for P0 beads that need immediate attention, use `oro directive spawn-for <bead-id>` instead of assigning a general worker.
+- **One-off priority work**: for P0 beads that need immediate attention, use `oro worker launch --bead <bead-id>` to reserve targeted capacity through the dispatcher.
 
 ## Escalations
 
@@ -121,7 +122,7 @@ When the dispatcher sends an escalation, respond with the appropriate playbook:
 4. If a high-priority bead is blocked by workers on lower-priority work:
    - Use `oro directive preempt <worker-id>` to gracefully stop lower-priority work
    - Or use `oro directive restart-worker <worker-id>` to immediately free capacity
-   - For P0 beads that need immediate attention, use `oro directive spawn-for <bead-id>` to create a dedicated worker
+   - For P0 beads that need immediate attention, use `oro worker launch --bead <bead-id>` to reserve targeted capacity through the dispatcher
 
 ### WORKER_CRASH
 1. Note the crashed worker and its bead.
