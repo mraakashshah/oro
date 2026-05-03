@@ -548,6 +548,41 @@ func TestScaleUpReservesPendingBeforeSpawnRejectsConcurrentManualWorker(t *testi
 	}
 }
 
+func TestScaleUpRechecksMaxWorkerCapacityBeforeEachReservation(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.cfg.MaxWorkers = 2
+
+	spawnCalls := 0
+	pm := &hookProcessManager{}
+	pm.onSpawn = func(_ string) {
+		spawnCalls++
+		if spawnCalls != 1 {
+			return
+		}
+		if _, err := d.applyDirective(protocol.Directive("launch-workers"), `{"worker_ids":["manual-last-slot"]}`); err != nil {
+			t.Fatalf("launch-workers directive failed while scaleUp spawn lock was released: %v", err)
+		}
+	}
+	d.procMgr = pm
+
+	result := d.scaleUp(2, 0, 2)
+
+	if got := len(pm.SpawnedIDs()); got != 1 {
+		t.Fatalf("spawned %d managed workers, want 1 after manual reservation consumed last slot; result=%q", got, result)
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if got := d.liveWorkerCountLocked(); got != 2 {
+		t.Fatalf("live worker reservations = %d, want 2 (one managed, one manual)", got)
+	}
+	if got := len(d.pendingExternalIDs); got != 1 {
+		t.Fatalf("pending external reservations = %d, want 1", got)
+	}
+	if got := len(d.pendingManagedIDs); got != 1 {
+		t.Fatalf("pending managed reservations = %d, want 1", got)
+	}
+}
+
 func TestApplyMaxWorkersDrainsManagedWhenManualWorkersConsumeCapacity(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	d.cfg.MaxWorkers = 5

@@ -5048,6 +5048,10 @@ func (d *Dispatcher) scaleUp(target, connected, capacity int) string {
 	for i := 0; i < toSpawn; i++ {
 		id := fmt.Sprintf("worker-%d-%d", d.nowFunc().UnixNano(), i)
 		d.mu.Lock()
+		if d.cfg.MaxWorkers > 0 && d.liveWorkerCountLocked() >= d.cfg.MaxWorkers {
+			d.mu.Unlock()
+			break
+		}
 		d.pendingManagedIDs[id] = true
 		d.pendingManagedSince[id] = d.nowFunc()
 		d.mu.Unlock()
