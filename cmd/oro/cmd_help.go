@@ -39,6 +39,7 @@ Search:
 
 Workflow:
   work       Execute a bead through the full lifecycle
+  task       Manage native Oro tasks (preferred alias for bead)
   bead       Manage native Oro beads
   shell      Launch an interactive agent session with oro settings
 
