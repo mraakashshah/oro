@@ -4205,7 +4205,7 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 	}
 }
 
-func (d *Dispatcher) applyCapacityDirective(dir protocol.Directive, args string) (string, bool, error) {
+func (d *Dispatcher) applyCapacityDirective(dir protocol.Directive, args string) (detail string, handled bool, err error) {
 	switch dir {
 	case protocol.DirectiveMaxWorkers:
 		detail, err := d.applyMaxWorkersDirective(args)
@@ -4397,15 +4397,7 @@ func (d *Dispatcher) buildStatusJSON() string {
 	}
 
 	// Filter attempt counts to only include active beads.
-	var attemptCounts map[string]int
-	if len(d.attemptCounts) > 0 {
-		attemptCounts = make(map[string]int)
-		for beadID, count := range d.attemptCounts {
-			if activeBeadIDs[beadID] {
-				attemptCounts[beadID] = count
-			}
-		}
-	}
+	attemptCounts := filterAttemptCounts(d.attemptCounts, activeBeadIDs)
 
 	resp := statusResponse{
 		State:               string(d.state),
@@ -4445,6 +4437,19 @@ func workerRoleCounts(workers map[string]*trackedWorker) (managedCount, unmanage
 		}
 	}
 	return managedCount, unmanagedCount
+}
+
+func filterAttemptCounts(attemptCounts map[string]int, activeBeadIDs map[string]bool) map[string]int {
+	if len(attemptCounts) == 0 {
+		return nil
+	}
+	filtered := make(map[string]int)
+	for beadID, count := range attemptCounts {
+		if activeBeadIDs[beadID] {
+			filtered[beadID] = count
+		}
+	}
+	return filtered
 }
 
 // applyScaleDirective parses the target count from args, stores it, and
