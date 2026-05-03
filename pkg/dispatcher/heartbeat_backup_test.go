@@ -43,6 +43,28 @@ func TestHeartbeatFullStateBackup(t *testing.T) {
 	}
 }
 
+func TestHeartbeatFullStateBackup_SkipsLegacyPathInSQLiteMode(t *testing.T) {
+	t.Parallel()
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+	beadsDir := t.TempDir()
+	d.beadSourceMode = "sqlite"
+	d.beadsDir = beadsDir
+
+	beadSrc.mu.Lock()
+	beadSrc.exportData = []byte("{\"id\":\"oro-native\",\"status\":\"open\"}\n")
+	beadSrc.mu.Unlock()
+
+	d.backupFullState(t.Context())
+
+	backupPath := filepath.Join(beadsDir, "backup", "full-state.jsonl")
+	if _, err := os.Stat(backupPath); err == nil {
+		t.Fatal("sqlite mode wrote legacy full-state backup")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat backup path: %v", err)
+	}
+}
+
 // TestHeartbeatFullStateBackup_ExportError verifies that a bd export failure
 // logs a warning and skips writing (non-fatal: no file created).
 func TestHeartbeatFullStateBackup_ExportError(t *testing.T) {

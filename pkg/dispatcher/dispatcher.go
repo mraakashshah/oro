@@ -2974,9 +2974,15 @@ func (d *Dispatcher) handleDirectiveWithACK(ctx context.Context, conn net.Conn, 
 
 // --- Priority queue / assignment loop ---
 
-// assignLoop watches .beads/ directory and assigns work when files change.
-// Falls back to 60s polling as a safety net.
+// assignLoop watches the legacy beads directory and assigns work when files
+// change. Native sqlite mode skips that watch so cutover daemons do not keep
+// bd/Dolt-era paths open.
 func (d *Dispatcher) assignLoop(ctx context.Context) {
+	if d.shouldSkipLegacyBeadsWatch() {
+		d.assignLoopPoll(ctx)
+		return
+	}
+
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		// Fallback to pure polling if fsnotify fails
@@ -3003,6 +3009,10 @@ func (d *Dispatcher) assignLoop(ctx context.Context) {
 			return
 		}
 	}
+}
+
+func (d *Dispatcher) shouldSkipLegacyBeadsWatch() bool {
+	return strings.EqualFold(strings.TrimSpace(d.beadSourceMode), "sqlite")
 }
 
 // assignLoopIter runs one select iteration of assignLoop with panic recovery.

@@ -5115,6 +5115,40 @@ func TestDispatcher_BeadDirWatcher_TriggersAssignment(t *testing.T) {
 	}
 }
 
+func TestAssignLoopSQLiteModeDoesNotWatchLegacyBeadsDir(t *testing.T) {
+	beadsDir := t.TempDir()
+
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.beadSourceMode = "sqlite"
+	d.beadsDir = beadsDir
+	d.cfg.PollInterval = time.Hour
+	d.cfg.FallbackPollInterval = time.Hour
+
+	var calls atomic.Int32
+	d.tryAssignFn = func(_ context.Context) {
+		calls.Add(1)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go d.assignLoop(ctx)
+
+	time.Sleep(100 * time.Millisecond)
+	for i := 0; i < 10; i++ {
+		if err := os.WriteFile(filepath.Join(beadsDir, fmt.Sprintf("trigger-%d.tmp", i)), []byte("legacy write"), 0o600); err != nil {
+			t.Fatalf("write legacy trigger: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(250 * time.Millisecond)
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("sqlite assign loop watched legacy beadsDir; tryAssign calls after file write = %d, want 0", got)
+	}
+
+	d.workerReadyCh <- struct{}{}
+	waitFor(t, func() bool { return calls.Load() == 1 }, time.Second)
+}
+
 func TestDispatcher_BeadDirWatcher_FallbackPoll(t *testing.T) {
 	// Create temp directory for .beads/
 	beadsDir := t.TempDir()

@@ -412,9 +412,13 @@ func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
 }
 
 // backupFullState runs oro bead export and writes all issues (open + closed) to
-// .beads/backup/full-state.jsonl. Failures are logged as warnings and skipped
-// (non-fatal). An empty export is silently skipped.
+// the legacy beads backup path. Native sqlite mode skips this path so cutover
+// daemons do not touch bd/Dolt-era state after migration.
 func (d *Dispatcher) backupFullState(ctx context.Context) {
+	if d.shouldSkipLegacyBeadsWatch() {
+		return
+	}
+
 	data, err := d.beads.Export(ctx)
 	if err != nil {
 		slog.WarnContext(ctx, "full_state_backup_export_failed", "error", err.Error())
