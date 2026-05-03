@@ -131,9 +131,8 @@ oro work <task-id>           # lightweight — single worker, no dispatcher
 
 oro start --workers 3        # full swarm
   └─ tmux session "oro"
-       ├─ pane 0: architect (strategic oversight)
-       ├─ pane 1: manager (task triage, reviews)
-       └─ panes 2+: workers (one per task)
+       ├─ pane 0: manager (task triage, reviews)
+       └─ panes 1+: workers (one per task)
 
   Dispatcher (background daemon)
     ├─ polls oro task ready for unblocked tasks
