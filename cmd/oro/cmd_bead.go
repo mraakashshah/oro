@@ -25,8 +25,8 @@ func newBeadCmdWithStore(store beadstore.Store) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "bead",
-		Short: "Manage native Oro beads",
-		Long:  "Manage native Oro beads.",
+		Short: "Manage native Oro beads (legacy alias for task)",
+		Long:  "Manage native Oro beads. Legacy alias for the task command; retains migrate-from-dolt for one-time migration.",
 	}
 	cmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "emit machine-readable JSON output")
 

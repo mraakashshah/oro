@@ -295,11 +295,11 @@ func TestManagerNudge(t *testing.T) {
 	})
 
 	t.Run("suggests orientation commands", func(t *testing.T) {
-		if !strings.Contains(nudge, "oro bead status") {
-			t.Error("expected ManagerNudge() to suggest 'oro bead status'")
+		if !strings.Contains(nudge, "oro task status") {
+			t.Error("expected ManagerNudge() to suggest 'oro task status'")
 		}
-		if !strings.Contains(nudge, "oro bead ready") {
-			t.Error("expected ManagerNudge() to suggest 'oro bead ready'")
+		if !strings.Contains(nudge, "oro task ready") {
+			t.Error("expected ManagerNudge() to suggest 'oro task ready'")
 		}
 		if !strings.Contains(nudge, "oro directive status") {
 			t.Error("expected ManagerNudge() to suggest 'oro directive status'")
