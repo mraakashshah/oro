@@ -400,6 +400,10 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	}
 
 	prompt, model := BuildAssignPrompt(msg.Assign)
+	// Export the assigned bead ID so the spawned claude subprocess (which
+	// inherits this process's env via buildClaudeEnv) can be identified by the
+	// `oro task close` self-close guard. See oro-t5ha.
+	_ = os.Setenv("ORO_WORKER_BEAD_ID", msg.Assign.BeadID)
 	proc, stdout, _, err := w.spawner.Spawn(ctx, model, prompt, msg.Assign.Worktree)
 	if err != nil {
 		return fmt.Errorf("spawn claude: %w", err)

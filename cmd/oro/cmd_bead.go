@@ -226,6 +226,9 @@ func newBeadCloseCmd(store beadstore.Store) *cobra.Command {
 		Short: "Close a bead",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := guardWorkerSelfClose(args[0]); err != nil {
+				return writeBeadCommandErrorIfJSON(cmd, "close", err)
+			}
 			s, err := resolveBeadStore(store)
 			if err != nil {
 				return writeBeadCommandErrorIfJSON(cmd, "store", err)
@@ -238,6 +241,21 @@ func newBeadCloseCmd(store beadstore.Store) *cobra.Command {
 	}
 	cmd.Flags().String("reason", "", "close reason")
 	return cmd
+}
+
+// guardWorkerSelfClose blocks an Oro worker subprocess from closing its
+// currently assigned bead via the CLI. The dispatcher is the sole closer for
+// assigned worker beads (including manual-integration mode); a worker should
+// emit DONE and let the dispatcher run the close path. See oro-t5ha.
+func guardWorkerSelfClose(target string) error {
+	if os.Getenv("ORO_WORKER") != "1" {
+		return nil
+	}
+	assigned := os.Getenv("ORO_WORKER_BEAD_ID")
+	if assigned == "" || assigned != target {
+		return nil
+	}
+	return fmt.Errorf("refusing self-close of assigned bead %s: workers must emit DONE and let the dispatcher integrate (ORO_WORKER_BEAD_ID guard, oro-t5ha)", target)
 }
 
 func newBeadReopenCmd(store beadstore.Store) *cobra.Command {

@@ -396,6 +396,90 @@ func TestBeadUpdateAndCloseJSONEmitMutatedBead(t *testing.T) {
 	}
 }
 
+// TestBeadCloseRefusesWorkerSelfClose proves that an Oro worker subprocess
+// (ORO_WORKER=1) cannot close its currently assigned bead via the CLI. The
+// dispatcher remains the sole closer/integrator; the worker emits DONE and
+// lets the dispatcher run the close path. See oro-t5ha.
+func TestBeadCloseRefusesWorkerSelfClose(t *testing.T) {
+	store := beadstore.NewFakeStore(protocol.Bead{
+		ID:       "oro-spf1a",
+		Title:    "Self-close fixture",
+		Status:   "open",
+		Priority: 1,
+		Type:     "task",
+	})
+
+	t.Setenv("ORO_WORKER", "1")
+	t.Setenv("ORO_WORKER_BEAD_ID", "oro-spf1a")
+
+	cmd := newBeadCmdWithStore(store)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"close", "oro-spf1a", "--reason", "self"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("expected error refusing self-close, got nil; output=%s", out.String())
+	}
+	if !strings.Contains(err.Error(), "self-close") && !strings.Contains(err.Error(), "ORO_WORKER_BEAD_ID") {
+		t.Fatalf("expected self-close refusal error, got %v", err)
+	}
+
+	bead, ferr := store.Show(context.Background(), "oro-spf1a")
+	if ferr != nil {
+		t.Fatalf("store.Show: %v", ferr)
+	}
+	if bead == nil {
+		t.Fatalf("bead oro-spf1a missing from store")
+	}
+	if bead.Status != "open" {
+		t.Fatalf("bead status = %q, want open (worker self-close must not mutate)", bead.Status)
+	}
+}
+
+// TestBeadCloseSelfCloseGuardScopedToAssignedBead confirms the guard scopes
+// to the worker's own assigned bead — it does not block closing unrelated
+// beads (e.g. a worker auxiliary bead it created during work). See oro-t5ha.
+func TestBeadCloseSelfCloseGuardScopedToAssignedBead(t *testing.T) {
+	store := beadstore.NewFakeStore(protocol.Bead{
+		ID:       "oro-other",
+		Title:    "Aux",
+		Status:   "open",
+		Priority: 2,
+		Type:     "task",
+	})
+
+	t.Setenv("ORO_WORKER", "1")
+	t.Setenv("ORO_WORKER_BEAD_ID", "oro-spf1a")
+
+	closed := decodeBeadJSONObject(t, executeBeadCommand(t, store, "close", "oro-other", "--reason", "ok", "--json"))
+	if closed["status"] != "closed" {
+		t.Fatalf("close JSON = %#v, want closed bead", closed)
+	}
+}
+
+// TestBeadCloseSelfCloseGuardInactiveOutsideWorker proves the guard only fires
+// for workers — dispatcher/manager processes (no ORO_WORKER) close beads
+// normally even when ORO_WORKER_BEAD_ID happens to match. See oro-t5ha.
+func TestBeadCloseSelfCloseGuardInactiveOutsideWorker(t *testing.T) {
+	store := beadstore.NewFakeStore(protocol.Bead{
+		ID:       "oro-spf1a",
+		Title:    "Coordinator-driven close",
+		Status:   "open",
+		Priority: 1,
+		Type:     "task",
+	})
+
+	t.Setenv("ORO_WORKER", "")
+	t.Setenv("ORO_WORKER_BEAD_ID", "oro-spf1a")
+
+	closed := decodeBeadJSONObject(t, executeBeadCommand(t, store, "close", "oro-spf1a", "--reason", "manual", "--json"))
+	if closed["status"] != "closed" {
+		t.Fatalf("close JSON = %#v, want closed bead", closed)
+	}
+}
+
 func TestCmdBeadDependencyRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	store, err := beadstore.OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))

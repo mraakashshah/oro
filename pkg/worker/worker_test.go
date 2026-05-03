@@ -1789,6 +1789,65 @@ func TestRun_ContextCancellationDuringProcessing(t *testing.T) {
 	}
 }
 
+// TestHandleAssignExposesBeadIDForSelfCloseGuard proves the worker exports
+// ORO_WORKER_BEAD_ID to the claude subprocess via the parent env (consumed
+// by buildClaudeEnv) so that the `oro task close` self-close guard can
+// identify the assigned bead. See oro-t5ha.
+func TestHandleAssignExposesBeadIDForSelfCloseGuard(t *testing.T) {
+	// Cannot use t.Parallel — this test inspects process-wide os.Environ.
+	prev, hadPrev := os.LookupEnv("ORO_WORKER_BEAD_ID")
+	t.Cleanup(func() {
+		if hadPrev {
+			_ = os.Setenv("ORO_WORKER_BEAD_ID", prev)
+		} else {
+			_ = os.Unsetenv("ORO_WORKER_BEAD_ID")
+		}
+	})
+	_ = os.Unsetenv("ORO_WORKER_BEAD_ID")
+
+	spawner := newMockSpawner()
+	captured := make(chan string, 1)
+	spawner.onSpawn = func(model, prompt, workdir string) error {
+		captured <- os.Getenv("ORO_WORKER_BEAD_ID")
+		return nil
+	}
+
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-beadidenv", workerConn, spawner)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	worktree := validAssignWorktree(t, "wt-beadidenv")
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "oro-t5ha-fixture",
+			Worktree: worktree,
+		},
+	})
+
+	select {
+	case got := <-captured:
+		if got != "oro-t5ha-fixture" {
+			t.Fatalf("ORO_WORKER_BEAD_ID at spawn time = %q, want oro-t5ha-fixture", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Spawn was not called within 2s")
+	}
+
+	// Drain status message + clean shutdown.
+	_ = readMessage(t, dispatcherConn)
+	cancel()
+	select {
+	case <-errCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not exit after cancel")
+	}
+}
+
 func TestHandleAssign_MissingPayload(t *testing.T) {
 	t.Parallel()
 
