@@ -65,7 +65,7 @@ oro bead show <epic-id>    ← confirmed bead tree (no design doc)
 
 ## Full Mode
 
-Collaborative design → adversarial validation → bead decomposition. Produces a committed design doc.
+Collaborative design → consultation → adversarial validation → bead decomposition. Produces a committed design doc.
 
 ### Stage 1 — Brainstorm (`brainstorming` skill)
 
@@ -76,7 +76,47 @@ Invoke the `brainstorming` skill. Follow it completely:
 - Produce a design doc: `docs/plans/YYYY-MM-DD-<topic>-design.md`
 - Commit the design doc before moving to Stage 2
 
-### Stage 2 — Adversarial Review (`adversarial-spec-review` skill) ← GATE
+### Stage 2 — Consultation ← GATE
+
+Pressure-test the committed design doc before it goes to adversarial review. Human-in-the-loop stress test — confirm we're building the right thing, not just the thing asked for. Specs without pressure-testing build the wrong thing thoroughly.
+
+**The six forcing questions.** Ask one at a time. Present your recommended answer with each. Do not batch.
+
+1. **The real problem.** What is the underlying problem the design addresses? Is the stated request a proxy for something more important?
+2. **Status quo.** How is this solved today — workaround, manual process, absence? Whose pain does it cause, how much?
+3. **Desperate specificity.** Who specifically benefits? Name the user, bead type, failure mode, caller — not a persona.
+4. **Narrowest wedge.** Is there a version that ships half the scope for most of the benefit?
+5. **Do nothing.** What happens if we ship nothing? Is the status quo bad enough to justify this work?
+6. **Future-fit.** In 6 months, does this feel like a durable capability or a local patch? If a patch, is a durable version cheaper to build now?
+
+**Assumption ledger.** Maintain a running list of unresolved decisions. Every user answer may surface new ones — add them. Format:
+
+```
+LEDGER
+- [ ] DECISION: <what needs to be decided>
+      DEPENDS_ON: <other decisions this hinges on — if any>
+      RECOMMENDATION: <your answer with reasoning>
+      ASK: <the one-question form to put to the user>
+```
+
+**Reframe hypothesis.** If the forcing questions suggest the design is solving the wrong problem, propose a reframe:
+
+```
+REFRAME
+Current design: <what the committed doc says we'll build>
+Observed framing: <what the real problem looks like>
+Proposed reframe: <what to build instead, and why>
+Cost delta: <is the reframe more/less work?>
+```
+
+Present once. Let the user confirm, reject, or modify. Don't bulldoze. If the reframe is accepted, **update the design doc in place and commit** before proceeding.
+
+**Exit condition:** NOT "looks good enough." The stage exits only when:
+1. User has confirmed the design (original or reframed)
+2. Ledger has zero unchecked items
+3. Answering the last decision did not add new decisions
+
+### Stage 3 — Adversarial Review (`adversarial-spec-review` skill) ← GATE
 
 Spawn a **fresh-context subagent** to run `adversarial-spec-review` on the design doc.
 
@@ -87,11 +127,11 @@ Return the full output in the specified YAML format."
 ```
 
 - **FAIL** → fix the gaps identified, re-run the review (Ralph Loop)
-- **PASS** → continue to Stage 3
+- **PASS** → continue to Stage 4
 
 Do not skip this stage. Specs without adversarial review ship broken.
 
-### Stage 3 — Decompose (`beadcraft` Decompose mode)
+### Stage 4 — Decompose (`beadcraft` Decompose mode)
 
 Invoke `beadcraft` in Decompose mode on the validated design doc. Same as Quick Step 3.
 
@@ -113,3 +153,6 @@ oro bead show <epic-id>                          ← confirmed bead tree
 - Skipping adversarial checks in Quick mode ("the change is obvious")
 - Running Full adversarial review in the same context that wrote the spec
 - Stopping to ask for confirmation instead of proceeding to execution
+- Skipping Stage 2 Consultation in Full mode ("the design looks fine")
+- Invoking adversarial review before the assumption ledger is drained
+- Exiting Consultation on "looks good enough" instead of "ledger drained"

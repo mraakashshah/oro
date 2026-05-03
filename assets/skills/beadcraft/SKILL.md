@@ -105,7 +105,7 @@ If spec is vague: ask the user to clarify before decomposing. Don't guess.
 ### Step 2: Create Epic Bead
 
 ```bash
-oro bead create --title="<feature name>" --type=epic \
+oro bead create "<feature name>" --type epic \
   --acceptance "All child beads closed. Full quality gate passes." \
   --description "<goal from spec>"
 ```
@@ -116,9 +116,9 @@ For each seam/component, create a task bead. Apply the full Bead Anatomy format:
 
 ```bash
 # Create the child and attach it to the epic. Parentage is hierarchy only.
-oro bead create --title="<specific task>" \
-  --type=task \
-  --parent=<epic-id> \
+oro bead create "<specific task>" \
+  --type task \
+  --parent <epic-id> \
   --acceptance "Test: <path>:<FnName> | Cmd: <test_cmd> | Assert: <expected>
 Read: <file1>:<Symbol1>, <file2>:<Symbol2>
 Signature: <func signature if applicable>
@@ -139,8 +139,8 @@ Run all 5 passes (P1-P5) on every bead before emitting. Revise until all pass.
 
 Check every task bead against size heuristics. If too large, decompose:
 
-1. Promote: `oro bead update <id> --type=epic`
-2. Create child tasks with `oro bead create --parent=<id>`, then `oro bead dep add <id> <child>` for each child the epic must wait for
+1. Promote: `oro bead update <id> --type epic`
+2. Create child tasks with `oro bead create --parent <id>`, then `oro bead dep add <id> <child>` for each child the epic must wait for
 3. Re-apply size test + Rule of Five to children
 
 ### Step 6: Wire Dependencies
@@ -227,7 +227,7 @@ If too large → switch to Decompose mode.
 ### Step 5: Create
 
 ```bash
-oro bead create --title="<title>" --type <type> --priority <0-4> \
+oro bead create "<title>" --type <type> --priority <0-4> \
   --acceptance "<full anatomy>" \
   --estimate <minutes>
 ```
@@ -285,9 +285,9 @@ For each finding, suggest the fix command:
 oro bead update <id> --acceptance "Test: ... | Cmd: ... | Assert: ..."
 
 # Decompose oversized bead
-oro bead update <id> --type=epic
-oro bead create --title="<child1>" --type=task ...
-oro bead update <child1-id> --parent=<id>
+oro bead update <id> --type epic
+oro bead create "<child1>" --type task ...
+oro bead update <child1-id> --parent <id>
 oro bead dep add <id> <child1-id>
 
 # Clean stale dep

@@ -18,7 +18,7 @@ Execute one bead at a time through a full TDD cycle. Each closed bead produces o
 ```bash
 oro bead ready                              # find unblocked work
 oro bead show <id>                          # review details + acceptance
-oro bead update <id> --status=in_progress   # claim it
+oro bead update <id> --status in_progress   # claim it
 ```
 
 ### Step 2: Parse Acceptance
@@ -104,7 +104,7 @@ One commit per bead. Include implementation and tests together.
 
 ```bash
 git add <relevant files>
-git commit -m "<type>(<scope>): <desc> (<bead-id>)"
+git commit -m "<type>(<scope>): <desc> (oro-<id>)"
 ```
 
 **On feature branches:** Intermediate commits during TDD are fine. Squash to one atomic commit when closing the bead.
@@ -114,7 +114,7 @@ git commit -m "<type>(<scope>): <desc> (<bead-id>)"
 ### Step 8: Close
 
 ```bash
-oro bead close <id> --reason="Tests pass, gate clean. Commit: <hash>"
+oro bead close <id> --reason "Tests pass, gate clean. Commit: <hash>"
 ```
 
 ### Step 9: Context Checkpoint
@@ -135,8 +135,8 @@ Green → return to Step 1. Otherwise → handoff via `create-handoff` skill.
 If during Step 3 the bead needs multiple unrelated tests:
 
 1. **STOP** — do not continue implementation
-2. Promote: `oro bead update <id> --type=epic`
-3. Create children: `oro bead create --type=task --parent=<id> --acceptance "..." --estimate <min>`, then `oro bead dep add <id> <child>` for each child that must finish before the parent
+2. Promote: `oro bead update <id> --type epic`
+3. Create children: `oro bead create --type task --parent <id> --acceptance "..." --estimate <min>`, then `oro bead dep add <id> <child>` for each child that must finish before the parent
 4. Wire dependencies: `oro bead dep add` where ordering matters
 5. Return to Step 1 with the first child bead
 

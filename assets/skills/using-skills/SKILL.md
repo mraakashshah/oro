@@ -26,7 +26,7 @@ If an invoked skill turns out to be wrong for the situation, you don't need to f
 
 **Workflow:** spec, brainstorming, writing-plans, executing-plans, requesting-code-review, receiving-code-review, finishing-work, review-implementation, review-docs, adversarial-spec-review
 
-**Orchestration:** dispatching-parallel-agents, workflow-routing, premortem, completion-check, explore
+**Orchestration:** dispatching-parallel-agents, workflow-routing, premortem, completion-check, explore, watching-oro
 
 **Tools:** beads, git-commits, tmux, github, session-logs, agent-browser
 
@@ -63,6 +63,7 @@ These thoughts mean STOP — you're rationalizing:
 | "I'll just do this one thing first" | Check BEFORE doing anything. |
 | "This feels productive" | Undisciplined action wastes time. Skills prevent this. |
 | "I know what that means" | Knowing the concept ≠ using the skill. Invoke it. |
+| "Creating a bead without running beadcraft" | beadcraft defines quality for every bead |
 
 ## Commitment Protocol
 

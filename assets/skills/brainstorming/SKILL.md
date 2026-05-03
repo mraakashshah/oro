@@ -24,6 +24,7 @@ Before proposing anything, gather evidence. **You must not proceed to Step 3 unt
 
 #### Research checklist
 
+- [ ] **Check institutional knowledge** -- Grep `docs/decisions&discoveries.md` for keywords related to the task (module names, technical terms, problem indicators). Use `oro recall` to search memory store if needed. If hits found, read and incorporate before proposing anything new. This prevents re-solving solved problems.
 - [ ] **Read internal references** -- existing specs in `docs/plans/`, related code mentioned in the bead/task description, and reference implementations in the codebase. Use `Read`, `Grep`, `Glob` to find and read them.
 - [ ] **Read external references** (when applicable) -- Use `WebSearch` / `WebFetch` when the problem domain has established solutions worth comparing (algorithms, protocols, libraries). Skip for project-internal design.
 - [ ] **Present research summary to the user** -- before proposing anything, show:
@@ -35,6 +36,7 @@ Before proposing anything, gather evidence. **You must not proceed to Step 3 unt
 
 | Sufficient | Insufficient |
 |------------|-------------|
+| Grepped `docs/decisions&discoveries.md` for related terms | Skipped institutional knowledge check |
 | Read 2+ reference files and summarized findings | Read 0 files, jumped to proposals |
 | Searched codebase for related patterns | Assumed you know the codebase |
 | Checked `docs/plans/` for prior designs | Skipped because "this is new" |
@@ -48,6 +50,7 @@ Before proposing anything, gather evidence. **You must not proceed to Step 3 unt
 
 ### 2. Understand the Idea
 
+- **Scope assessment first**: Does the request describe multiple independent subsystems? If yes, help the user decompose into sub-projects before designing. Each sub-project gets its own spec → plan → implementation cycle.
 - Check current project state (files, docs, recent commits)
 - Ask questions **one at a time** — never multiple questions per message
 - Prefer multiple choice questions when possible
@@ -84,7 +87,18 @@ This applies to every architectural decision, not just the final plan.
 - Include resolved premortems with each decision (risks accepted, mitigations chosen)
 - Commit the design document
 
-### 7. Implementation Handoff
+### 7. Adversarial Review (GATE — mandatory before implementation)
+
+Before handing off to implementation, run `adversarial-spec-review` on the design:
+
+- Spawn a fresh-context subagent to review the spec adversarially
+- The reviewer must construct at least one scenario where all beads pass but the feature fails
+- If the review returns FAIL: fix the gaps, re-run the review (Ralph Loop)
+- Only proceed to implementation when the review returns PASS
+
+**Do not skip this step.** The audit proved that specs without adversarial review produce features that ship broken.
+
+### 8. Implementation Handoff
 
 - Ask: "Ready to set up for implementation?"
 - Use `writing-plans` skill to create detailed implementation plan
@@ -107,6 +121,16 @@ When you need to ask the human a question, use this 4-part structure:
 4. **Options** — list 2-3 alternatives with effort estimates (e.g. "Option A: 1 bead, low risk. Option B: 3 beads, rewrites the data model."). Gives the human a decision frame, not an open-ended prompt.
 
 Do not ask a question you can answer by reading the code. Do not ask multiple questions in one message.
+
+## Engineering Cognitive Patterns
+
+These apply to all design work. Max 5 active at once — prioritize the most load-bearing:
+
+1. **Prefer proven boring solutions over novel ones.** A well-understood approach with known failure modes beats an elegant unknown. Novelty is a liability until it's a necessity.
+2. **Estimate blast radius before proposing changes.** Ask: if this goes wrong, what breaks? Small blast radius = safe to try. Large blast radius = needs proof.
+3. **Name the constraint, not just the solution.** A good design decision explains what constraint it satisfies. If you can't name the constraint, the decision is arbitrary.
+4. **Distinguish reversible from irreversible decisions.** Irreversible decisions (schema changes, public API shapes, deleted data) deserve 10x more scrutiny than reversible ones.
+5. **Surface the assumption that would invalidate this design.** Every design has a load-bearing assumption. Name it explicitly so workers and the human can verify it before committing.
 
 ## Red Flags
 

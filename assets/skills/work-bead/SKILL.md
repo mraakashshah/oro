@@ -18,7 +18,7 @@ End-to-end workflow for executing exactly one bead in isolation. Uses a git work
 ```bash
 oro bead ready                              # find unblocked work
 oro bead show <id>                          # review details + acceptance
-oro bead update <id> --status=in_progress   # claim it
+oro bead update <id> --status in_progress   # claim it
 ```
 
 If `oro bead ready` returns nothing: report "No beads ready." STOP.
@@ -127,13 +127,13 @@ One atomic commit per bead. Include implementation and tests together.
 
 ```bash
 git add <relevant files>
-git commit -m "<type>(<scope>): <desc> (<bead-id>)"
+git commit -m "<type>(<scope>): <desc> (oro-<id>)"
 ```
 
 ### Step 9: CLOSE
 
 ```bash
-oro bead close <id> --reason="Tests pass, gate clean. Commit: <hash>"
+oro bead close <id> --reason "Tests pass, gate clean. Commit: <hash>"
 ```
 
 ### Step 10: MERGE — Rebase in-place
@@ -172,6 +172,8 @@ If `--ff-only` fails (main moved since rebase): re-run Step 10 rebase, then retr
 git push
 ```
 
+Note: `bead metadata export` is not needed here — the pre-commit hook runs it automatically on every commit.
+
 If push fails (no remote): report. Commit is local.
 
 ### Step 14: CLEANUP
@@ -185,8 +187,8 @@ git branch -d bead/<id>
 If during RED the bead needs multiple unrelated tests:
 
 1. Discard uncommitted work in worktree
-2. `oro bead update <id> --type=epic --notes "Decomposed: needed multiple unrelated tests"`
-3. Create child beads with `oro bead create --parent=<id>`, then `oro bead dep add <id> <child>` for each child that must finish before the parent
+2. `oro bead update <id> --type epic --notes "Decomposed: needed multiple unrelated tests"`
+3. Create child beads with `oro bead create --parent <id>`, then `oro bead dep add <id> <child>` for each child that must finish before the parent
 4. Remove worktree: `git worktree remove .worktrees/bead-<id>`
 5. Delete branch: `git checkout main && git branch -D bead/<id>`
 6. **STOP.** Report what was decomposed. Next invocation picks up a child.

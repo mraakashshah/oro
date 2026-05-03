@@ -65,6 +65,7 @@ Stop after your very next tool call. Write a minimal handoff (goal + files modif
 3. Verify remaining work exists as beads (create if needed)
 4. Use `create-handoff` skill with `beads:` section
 5. `git pull --rebase && git push`
+   - Note: The pre-commit hook automatically runs `bead metadata export`, so manual sync is not needed
 
 ## Handoff Template Addition
 
