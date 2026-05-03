@@ -44,7 +44,7 @@ construct native SQLite stores for production.
 
 | File | Direct bd use | Marker | Resolution |
 | --- | --- | --- | --- |
-| `assets/hooks/session_start_extras.py` | formerly `bd list --status=closed`; `bd ready`; `bd list --status=in_progress`; `bd show <id>` | migrated | Current hook invokes `oro bead list --status=in_progress --json`; worker sessions skip subprocess calls entirely. |
+| `assets/hooks/session_start_extras.py` | formerly `bd list --status=closed`; `bd ready`; `bd list --status=in_progress`; `bd show <id>` | migrated | Current hook invokes `oro task list --status=in_progress --json`; worker sessions skip subprocess calls entirely. |
 | `assets/hooks/session_start_compact.py` | formerly `bd list --status=in_progress`; continuation bead creation through `bd create` command text | migrated | Current hook no longer contains direct `bd` command strings. |
 | `assets/hooks/architect_router.py` | formerly allowed/routed user-entered `bd ...` and watched `bd create` text | migrated | Current hook no longer contains direct `bd` command strings. |
 | `assets/hooks/bd_create_notifier.py` | formerly watched `bd create` command text; no bd subprocess | migrated | Current hook no longer contains direct `bd` command strings. |
@@ -58,8 +58,8 @@ These are not shell-outs by themselves, but they can cause agents to emit bead
 commands and therefore were part of the prompt/hook migration gate. Current
 production prompt and hook surfaces are migrated:
 
-- `pkg/worker/prompt.go`: the Bead Tools section names `oro bead create` and
-  `oro bead dep add`; no `bd` command examples remain in the production worker
+- `pkg/worker/prompt.go`: the Task Tools section names `oro task create` and
+  `oro task dep add`; no `bd` command examples remain in the production worker
   prompt.
 - `pkg/ops`, `cmd/oro/manager.go`, `cmd/oro/architect.go`,
   `assets/hooks/`, and `assets/skills/`: `rg -n 'bd create|bd update|bd
