@@ -4160,6 +4160,9 @@ type workerLaunchReservation struct {
 //
 //nolint:gocyclo // dispatcher routing function - complexity is inherent to the pattern
 func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string, error) {
+	if detail, handled, err := d.applyCapacityDirective(dir, args); handled {
+		return detail, err
+	}
 	switch dir {
 	case protocol.DirectiveScale:
 		return d.applyScaleDirective(args)
@@ -4179,12 +4182,6 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 		return d.applyHealth()
 	case protocol.DirectiveWorkerLogs:
 		return d.applyWorkerLogs(args)
-	case protocol.DirectiveMaxWorkers:
-		return d.applyMaxWorkersDirective(args)
-	case directiveLaunchWorkers:
-		return d.applyLaunchWorkers(args)
-	case directiveCancelWorkerLaunch:
-		return d.applyCancelWorkerLaunch(args)
 	case protocol.DirectiveStart:
 		return d.applyStart()
 	case protocol.DirectiveStop:
@@ -4205,6 +4202,22 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 		return d.applyRestartDaemon()
 	default:
 		return fmt.Sprintf("applied %s", dir), nil
+	}
+}
+
+func (d *Dispatcher) applyCapacityDirective(dir protocol.Directive, args string) (string, bool, error) {
+	switch dir {
+	case protocol.DirectiveMaxWorkers:
+		detail, err := d.applyMaxWorkersDirective(args)
+		return detail, true, err
+	case directiveLaunchWorkers:
+		detail, err := d.applyLaunchWorkers(args)
+		return detail, true, err
+	case directiveCancelWorkerLaunch:
+		detail, err := d.applyCancelWorkerLaunch(args)
+		return detail, true, err
+	default:
+		return "", false, nil
 	}
 }
 
@@ -4370,14 +4383,7 @@ func (d *Dispatcher) buildStatusJSON() string {
 
 	// Calculate live queue depth (ready beads minus assigned beads).
 	queueDepth := calculateLiveQueueDepth(readyBeads, d.workers)
-	managedCount, unmanagedCount := 0, 0
-	for _, w := range d.workers {
-		if w.managed {
-			managedCount++
-		} else {
-			unmanagedCount++
-		}
-	}
+	managedCount, unmanagedCount := workerRoleCounts(d.workers)
 
 	// Build set of active bead IDs (assigned to workers OR in ready queue).
 	activeBeadIDs := make(map[string]bool)
@@ -4428,6 +4434,17 @@ func (d *Dispatcher) buildStatusJSON() string {
 		return fmt.Sprintf(`{"error":%q}`, err.Error())
 	}
 	return string(data)
+}
+
+func workerRoleCounts(workers map[string]*trackedWorker) (managedCount, unmanagedCount int) {
+	for _, w := range workers {
+		if w.managed {
+			managedCount++
+		} else {
+			unmanagedCount++
+		}
+	}
+	return managedCount, unmanagedCount
 }
 
 // applyScaleDirective parses the target count from args, stores it, and
@@ -5047,36 +5064,8 @@ func (d *Dispatcher) scaleDown(target, connected int) string {
 	toRemove := connected - target
 
 	d.mu.Lock()
-	var killPending []string
-	for id := range d.pendingManagedIDs {
-		if toRemove == 0 {
-			break
-		}
-		if d.pendingSpawnForWorkers[id] {
-			continue
-		}
-		killPending = append(killPending, id)
-		delete(d.pendingManagedIDs, id)
-		delete(d.pendingManagedSince, id)
-		delete(d.pendingWorkerTargets, id)
-		delete(d.pendingSpawnForWorkers, id)
-		toRemove--
-	}
-
-	// Partition managed workers into idle and busy — unmanaged are excluded.
-	var idle, busy []string
-	if toRemove > 0 {
-		for id, w := range d.workers {
-			if !w.managed || w.spawnFor || w.state == protocol.WorkerShuttingDown {
-				continue
-			}
-			if w.state == protocol.WorkerIdle {
-				idle = append(idle, id)
-			} else {
-				busy = append(busy, id)
-			}
-		}
-	}
+	killPending := d.removePendingManagedForScaleDownLocked(&toRemove)
+	idle, busy := d.managedScaleDownCandidatesLocked(toRemove)
 	procMgr := d.procMgr
 	d.mu.Unlock()
 
@@ -5100,6 +5089,46 @@ func (d *Dispatcher) scaleDown(target, connected int) string {
 	}
 
 	return fmt.Sprintf("target=%d, shutting down %d", target, len(killPending)+len(victims))
+}
+
+func (d *Dispatcher) removePendingManagedForScaleDownLocked(toRemove *int) []string {
+	var killPending []string
+	for id := range d.pendingManagedIDs {
+		if *toRemove == 0 {
+			break
+		}
+		if d.pendingSpawnForWorkers[id] {
+			continue
+		}
+		killPending = append(killPending, id)
+		delete(d.pendingManagedIDs, id)
+		delete(d.pendingManagedSince, id)
+		delete(d.pendingWorkerTargets, id)
+		delete(d.pendingSpawnForWorkers, id)
+		(*toRemove)--
+	}
+	return killPending
+}
+
+func (d *Dispatcher) managedScaleDownCandidatesLocked(toRemove int) (idle, busy []string) {
+	if toRemove <= 0 {
+		return nil, nil
+	}
+	for id, w := range d.workers {
+		if !isManagedScaleDownCandidate(w) {
+			continue
+		}
+		if w.state == protocol.WorkerIdle {
+			idle = append(idle, id)
+		} else {
+			busy = append(busy, id)
+		}
+	}
+	return idle, busy
+}
+
+func isManagedScaleDownCandidate(w *trackedWorker) bool {
+	return w.managed && !w.spawnFor && w.state != protocol.WorkerShuttingDown
 }
 
 // heartbeatLoop, checkHeartbeats → worker_pool.go

@@ -216,8 +216,7 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 	delete(d.pendingHandoffs, handoffBeadID)
 }
 
-func (d *Dispatcher) assignPendingHandoffsToIdleWorkers() int {
-	assigned := 0
+func (d *Dispatcher) assignPendingHandoffsToIdleWorkers() {
 	for {
 		d.mu.Lock()
 		var workerID, handoffBeadID string
@@ -231,7 +230,7 @@ func (d *Dispatcher) assignPendingHandoffsToIdleWorkers() int {
 		}
 		if workerID == "" {
 			d.mu.Unlock()
-			return assigned
+			return
 		}
 		for beadID, pending := range d.pendingHandoffs {
 			handoffBeadID = beadID
@@ -240,10 +239,9 @@ func (d *Dispatcher) assignPendingHandoffsToIdleWorkers() int {
 		}
 		if h == nil {
 			d.mu.Unlock()
-			return assigned
+			return
 		}
 		d.assignHandoffToWorker(workerID, handoffBeadID, h)
-		assigned++
 	}
 }
 
