@@ -470,7 +470,7 @@ func defaultWorkerCounts(initial, ceiling int) (initialOut, ceilingOut int) {
 }
 
 func shouldDefaultWorkerCounts(c Config) bool {
-	return !c.AllowZeroWorkers || c.InitialWorkers != 0 || c.MaxWorkers != 0
+	return !c.AllowZeroWorkers || c.InitialWorkers != 0
 }
 
 func (c *Config) withDefaults() Config {
@@ -772,6 +772,8 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		sseBroadcaster: web.NewSSEBroadcaster(),
 		state:          StateInert,
 		targetWorkers:  resolved.InitialWorkers,
+		explicitScaleTarget: resolved.AllowZeroWorkers &&
+			resolved.InitialWorkers == 0 && resolved.MaxWorkers > 0,
 		WorkerPool: WorkerPool{
 			workers: make(map[string]*trackedWorker),
 		},
@@ -4903,7 +4905,7 @@ func (d *Dispatcher) maybeAutoScale(ctx context.Context, queueDepth, idleCount i
 	maxWorkers := d.cfg.MaxWorkers
 	explicitScaleTarget := d.explicitScaleTarget
 	liveManagedCount := d.liveManagedWorkerCountLocked()
-	if explicitScaleTarget && liveManagedCount <= currentTarget {
+	if explicitScaleTarget && currentTarget > 0 && liveManagedCount <= currentTarget {
 		d.explicitScaleTarget = false
 		explicitScaleTarget = false
 	}

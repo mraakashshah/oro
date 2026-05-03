@@ -739,7 +739,7 @@ func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressT
 		SocketPath:        sockPath,
 		InitialWorkers:    initialWorkers,
 		MaxWorkers:        maxWorkers,
-		AllowZeroWorkers:  initialWorkers == 0 && maxWorkers == 0,
+		AllowZeroWorkers:  initialWorkers == 0,
 		DBPath:            dbPath,
 		RepoRoot:          repoRoot,
 		ProgressTimeout:   progressTimeout,

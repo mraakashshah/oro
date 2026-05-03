@@ -737,6 +737,32 @@ func TestStartReviewTimeoutFlagsAreDistinct(t *testing.T) {
 	})
 }
 
+func TestStartZeroWorkersPreservesMaxWorkersCeiling(t *testing.T) {
+	tmpDir := t.TempDir()
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+	t.Setenv("ORO_PROJECT", "")
+	t.Setenv("ORO_BEADSOURCE_MODE", "")
+	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+
+	d, db, err := buildDispatcherWithReviewTimeouts(0, 2, 0, 0, 0, false, "", false, "")
+	if err != nil {
+		t.Fatalf("buildDispatcherWithReviewTimeouts: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	cfg := d.GetConfig()
+	if cfg.InitialWorkers != 0 {
+		t.Errorf("InitialWorkers: got %d, want 0", cfg.InitialWorkers)
+	}
+	if cfg.MaxWorkers != 2 {
+		t.Errorf("MaxWorkers: got %d, want 2", cfg.MaxWorkers)
+	}
+	if got := d.TargetWorkers(); got != 0 {
+		t.Errorf("TargetWorkers: got %d, want 0", got)
+	}
+}
+
 func opsReviewTimeoutFromDispatcher(t *testing.T, d *dispatcher.Dispatcher) time.Duration {
 	t.Helper()
 

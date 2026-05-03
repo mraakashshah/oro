@@ -2480,6 +2480,59 @@ func TestConfigInitialWorkersFallback(t *testing.T) {
 	})
 }
 
+func TestConfigZeroWorkersPreservesMaxWorkersCeiling(t *testing.T) {
+	cfg := Config{InitialWorkers: 0, MaxWorkers: 2, AllowZeroWorkers: true}
+	resolved := cfg.withDefaults()
+	if resolved.InitialWorkers != 0 {
+		t.Errorf("InitialWorkers: got %d, want 0", resolved.InitialWorkers)
+	}
+	if resolved.MaxWorkers != 2 {
+		t.Errorf("MaxWorkers: got %d, want 2", resolved.MaxWorkers)
+	}
+}
+
+func TestZeroWorkersWithMaxWorkersDoesNotAutoScaleGeneralWorkers(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.mu.Lock()
+	d.cfg.MaxWorkers = 2
+	d.targetWorkers = 0
+	d.explicitScaleTarget = true
+	d.mu.Unlock()
+
+	d.maybeAutoScale(context.Background(), 2, 0)
+
+	if got := d.TargetWorkers(); got != 0 {
+		t.Fatalf("TargetWorkers: got %d, want 0", got)
+	}
+	if spawned := pm.SpawnedIDs(); len(spawned) != 0 {
+		t.Fatalf("spawned general workers despite explicit zero target: %v", spawned)
+	}
+}
+
+func TestZeroWorkersScaleDirectiveRemainsStickyForAutoscale(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.mu.Lock()
+	d.cfg.MaxWorkers = 2
+	d.targetWorkers = 1
+	d.mu.Unlock()
+
+	if _, err := d.applyScaleDirective("0"); err != nil {
+		t.Fatalf("applyScaleDirective: %v", err)
+	}
+	d.maybeAutoScale(context.Background(), 2, 0)
+
+	if got := d.TargetWorkers(); got != 0 {
+		t.Fatalf("TargetWorkers: got %d, want 0", got)
+	}
+	if spawned := pm.SpawnedIDs(); len(spawned) != 0 {
+		t.Fatalf("spawned general workers despite scale 0: %v", spawned)
+	}
+}
+
 func TestNew_TargetWorkersUsesInitialWorkers(t *testing.T) {
 	t.Helper()
 	db := newTestDB(t)
