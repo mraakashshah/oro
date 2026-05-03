@@ -172,12 +172,12 @@ func TestSourceFetchIssuesIgnoresBlankExportLines(t *testing.T) {
 }
 
 func TestSourceFetchRecentClosedRejectsNilStore(t *testing.T) {
-	_, err := FetchRecentClosed(nil, 5)
+	_, err := fetchRecentClosed(nil, 5)
 	if err == nil {
-		t.Fatal("FetchRecentClosed(nil) error = nil, want bead store is nil")
+		t.Fatal("fetchRecentClosed(nil) error = nil, want bead store is nil")
 	}
 	if !strings.Contains(err.Error(), "bead store is nil") {
-		t.Fatalf("FetchRecentClosed(nil) error = %v, want bead store is nil", err)
+		t.Fatalf("fetchRecentClosed(nil) error = %v, want bead store is nil", err)
 	}
 }
 
@@ -187,12 +187,12 @@ func TestSourceFetchRecentClosedWrapsStoreError(t *testing.T) {
 		err:       errors.New("closed query failed"),
 	}
 
-	_, err := FetchRecentClosed(store, 5)
+	_, err := fetchRecentClosed(store, 5)
 	if err == nil {
-		t.Fatal("FetchRecentClosed() error = nil, want closed query error")
+		t.Fatal("fetchRecentClosed() error = nil, want closed query error")
 	}
 	if !strings.Contains(err.Error(), "fetch closed beads: closed query failed") {
-		t.Fatalf("FetchRecentClosed() error = %v, want wrapped closed query error", err)
+		t.Fatalf("fetchRecentClosed() error = %v, want wrapped closed query error", err)
 	}
 }
 
@@ -429,7 +429,7 @@ func TestSourceUsesProjectPaths(t *testing.T) {
 	}
 
 	store := beadstore.NewFakeStore()
-	src := NewSource(store, tmpDir)
+	src := newSource(store, tmpDir)
 	if src.Store != store {
 		t.Errorf("Store = %p, want %p", src.Store, store)
 	}

@@ -16,9 +16,9 @@ const (
 	colourFleur   = "colour134" // Purple      #7B2D8E
 )
 
-// StatusLine returns a tmux-formatted status string showing parade counts.
+// statusLine returns a tmux-formatted status string showing parade counts.
 // Output uses tmux #[fg=colourN] markup — no lipgloss dependency.
-func StatusLine(groups map[data.ParadeStatus][]data.Issue) string {
+func statusLine(groups map[data.ParadeStatus][]data.Issue) string {
 	rolling := len(groups[data.ParadeRolling])
 	linedUp := len(groups[data.ParadeLinedUp])
 	stalled := len(groups[data.ParadeStalled])

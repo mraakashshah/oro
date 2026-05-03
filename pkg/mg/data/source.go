@@ -34,8 +34,8 @@ type Source struct {
 	Err        error
 }
 
-// NewSource creates a store-backed Source for projectDir.
-func NewSource(store beadstore.Store, projectDir string) Source {
+// newSource creates a store-backed Source for projectDir.
+func newSource(store beadstore.Store, projectDir string) Source {
 	return Source{
 		Mode:       SourceCLI,
 		ProjectDir: projectDir,
@@ -83,8 +83,8 @@ func FetchActiveIssues(store beadstore.Store) ([]Issue, error) {
 	return active, nil
 }
 
-// FetchRecentClosed fetches the N most recently closed issues.
-func FetchRecentClosed(store beadstore.Store, limit int) ([]Issue, error) {
+// fetchRecentClosed fetches the N most recently closed issues.
+func fetchRecentClosed(store beadstore.Store, limit int) ([]Issue, error) {
 	if store == nil {
 		return nil, fmt.Errorf("bead store is nil")
 	}

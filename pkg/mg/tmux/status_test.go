@@ -15,7 +15,7 @@ func TestStatusLineFormat(t *testing.T) {
 	}
 
 	groups := data.GroupByParade(issues, data.DefaultBlockingTypes)
-	got := StatusLine(groups)
+	got := statusLine(groups)
 
 	// Verify tmux markup present
 	if !strings.Contains(got, "#[fg=") {
@@ -45,7 +45,7 @@ func TestStatusLineEmptyGroups(t *testing.T) {
 		data.ParadePastTheStand: {},
 	}
 
-	got := StatusLine(groups)
+	got := statusLine(groups)
 
 	// All counts should be 0
 	for _, want := range []string{"0" + ui.SymRolling, "0" + ui.SymLinedUp, "0" + ui.SymStalled, "0" + ui.SymPassed} {
