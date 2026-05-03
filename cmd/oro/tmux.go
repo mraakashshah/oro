@@ -1072,8 +1072,7 @@ func (s *TmuxSession) CleanupPaneDiedHooks() error {
 //
 // This implements the unified command interface: the architect window accepts all
 // commands, and non-architect commands are routed to the manager automatically.
-// Routing decisions (whether to call this function) are made by the caller using
-// RouteCommand; this method always forwards unconditionally.
+// This method always forwards unconditionally.
 //
 // Returns the feedback string (e.g. "[forwarded to manager] oro directive scale 3")
 // and any send-keys error.

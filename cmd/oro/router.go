@@ -2,39 +2,7 @@
 // distributed AI agent swarms.
 package main
 
-import (
-	"strings"
-)
-
-// RouteDestination represents where a command should be executed.
-type RouteDestination int
-
-const (
-	// ForwardToManager means the command should be forwarded to the manager pane.
-	ForwardToManager RouteDestination = iota
-)
-
-// RouteCommand determines where a command should be routed based on its prefix.
-// Pure function for testability.
-//
-// Routing rules:
-//   - Commands starting with "oro " or "oro directive" forward to manager (ForwardToManager)
-//   - All other commands (git, ls, unknown) forward to manager (ForwardToManager)
-//   - Empty or whitespace-only commands forward to manager (ForwardToManager)
-func RouteCommand(command string) RouteDestination {
-	trimmed := strings.TrimSpace(command)
-	if trimmed == "" {
-		return ForwardToManager
-	}
-
-	// Check if command starts with "oro " (all oro commands forward to manager)
-	if strings.HasPrefix(trimmed, "oro ") {
-		return ForwardToManager
-	}
-
-	// All other commands (git, ls, unknown, etc.) forward to manager
-	return ForwardToManager
-}
+import "strings"
 
 // FormatForwardMessage creates a user-facing message indicating the command was forwarded.
 // Shows "[forwarded to manager]" for oro commands, "[forwarded]" for other commands.
