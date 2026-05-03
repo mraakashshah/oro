@@ -21,7 +21,7 @@ func TestManagerBeacon(t *testing.T) {
 			"## System Map",
 			"## Startup",
 			"## Oro CLI",
-			"## Beads CLI",
+			"## Tasks CLI",
 			"## Decomposition",
 			"## Scale Policy",
 			"## Escalations",
@@ -41,7 +41,7 @@ func TestManagerBeacon(t *testing.T) {
 		keyTerms := []string{
 			"oro start",
 			"oro directive scale",
-			"oro bead ready",
+			"oro task ready",
 			"[ORO-DISPATCH]",
 			"quality gate",
 		}
@@ -69,7 +69,7 @@ func TestManagerBeacon(t *testing.T) {
 	})
 
 	t.Run("startup section includes initialization steps", func(t *testing.T) {
-		startupTerms := []string{"oro bead status", "oro bead ready", "oro bead blocked", "oro directive status", "oro directive scale"}
+		startupTerms := []string{"oro task status", "oro task ready", "oro task blocked", "oro directive status", "oro directive scale"}
 		for _, term := range startupTerms {
 			if !strings.Contains(beacon, term) {
 				t.Errorf("expected Startup section to contain %q", term)
@@ -172,7 +172,7 @@ func TestManagerBeacon(t *testing.T) {
 	})
 
 	t.Run("shutdown section includes ordered steps", func(t *testing.T) {
-		shutdownTerms := []string{"oro directive scale 0", "oro stop", "oro bead status"}
+		shutdownTerms := []string{"oro directive scale 0", "oro stop", "oro task status"}
 		for _, term := range shutdownTerms {
 			if !strings.Contains(beacon, term) {
 				t.Errorf("expected Shutdown section to contain %q", term)

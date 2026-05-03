@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// buildACPrompt assembles the exploratory Opus prompt that reads bead context,
+// buildACPrompt assembles the exploratory Opus prompt that reads task context,
 // explores the codebase, and writes precise testable acceptance criteria.
 //
 // The agent is instructed to use 'oro task update --acceptance' to save its output —
@@ -23,15 +23,15 @@ func buildACPrompt(opts WriteACOpts) string {
 }
 
 func writeACHeader(b *strings.Builder) {
-	b.WriteString("You are a one-shot Opus agent. Your sole job is to write precise, testable acceptance criteria for a bead.\n")
+	b.WriteString("You are a one-shot Opus agent. Your sole job is to write precise, testable acceptance criteria for a task.\n")
 	b.WriteString("Do NOT write source code. Do NOT implement any feature. Do NOT create worktrees.\n\n")
 	b.WriteString("CRITICAL: Do NOT use TaskOutput or run tasks in the background.\n")
 	b.WriteString("Use the Read tool to check output files. Run all commands in foreground.\n\n")
 }
 
 func writeACContext(b *strings.Builder, opts WriteACOpts) {
-	b.WriteString("## Bead Context\n")
-	fmt.Fprintf(b, "Bead: %s", opts.BeadID)
+	b.WriteString("## Task Context\n")
+	fmt.Fprintf(b, "Task: %s", opts.BeadID)
 	if opts.BeadTitle != "" {
 		fmt.Fprintf(b, " — %s", opts.BeadTitle)
 	}
@@ -46,12 +46,12 @@ func writeACPlaybook(b *strings.Builder, opts WriteACOpts) {
 	b.WriteString("## Exploration Steps\n\n")
 	b.WriteString("Work through these steps in order before writing any acceptance criteria:\n\n")
 
-	fmt.Fprintf(b, "1. Run `oro task show %s` to read the full bead context, including title, description, and any existing notes.\n\n", opts.BeadID)
+	fmt.Fprintf(b, "1. Run `oro task show %s` to read the full task context, including title, description, and any existing notes.\n\n", opts.BeadID)
 
-	b.WriteString("2. If the bead has blocking or blocked dependencies, run `oro task show <dep-id>` on each to understand how they relate. " +
-		"Acceptance criteria must be compatible with what depends on or is depended on by this bead.\n\n")
+	b.WriteString("2. If the task has blocking or blocked dependencies, run `oro task show <dep-id>` on each to understand how they relate. " +
+		"Acceptance criteria must be compatible with what depends on or is depended on by this task.\n\n")
 
-	b.WriteString("3. Use Grep and Glob to explore the codebase for symbols, file paths, and packages referenced in the bead title and description. " +
+	b.WriteString("3. Use Grep and Glob to explore the codebase for symbols, file paths, and packages referenced in the task title and description. " +
 		"This tells you what already exists and what needs to be created.\n\n")
 
 	docsPlans := "docs/plans"
@@ -75,7 +75,7 @@ func writeACOutputFormat(b *strings.Builder, opts WriteACOpts) {
 	b.WriteString("  Test: pkg/ops/ac_prompt_test.go:TestBuildACPrompt | Cmd: go test ./pkg/ops/... -run TestBuildACPrompt -v | Assert: PASS\n")
 	b.WriteString("  Test: tests/test_parser.py::test_parse_empty | Cmd: uv run pytest tests/test_parser.py::test_parse_empty -v | Assert: PASS\n\n")
 	b.WriteString("Rules:\n")
-	b.WriteString("- One acceptance criterion per bead (one Test/Cmd/Assert triple)\n")
+	b.WriteString("- One acceptance criterion per task (one Test/Cmd/Assert triple)\n")
 	b.WriteString("- The test must not exist yet (you are specifying what to build, not what already passes)\n")
 	b.WriteString("- Cmd must be a shell command that runs the test in isolation\n")
 	b.WriteString("- Assert must be 'PASS' or a specific observable output\n\n")

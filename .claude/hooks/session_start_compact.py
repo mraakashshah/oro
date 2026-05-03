@@ -33,7 +33,7 @@ def _clear_debounce(role: str) -> None:
 
 
 def _live_swarm_context() -> str:
-    """Return live swarm context from oro status and bead list, or empty string on failure."""
+    """Return live swarm context from oro status and task list, or empty string on failure."""
     parts = []
     with contextlib.suppress(OSError, subprocess.TimeoutExpired):
         result = subprocess.run(
@@ -46,7 +46,7 @@ def _live_swarm_context() -> str:
         parts.append(result.stdout)
     with contextlib.suppress(OSError, subprocess.TimeoutExpired):
         result = subprocess.run(
-            ["oro", "bead", "list", "--status=in_progress"],
+            ["oro", "task", "list", "--status=in_progress"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -96,7 +96,7 @@ def main() -> None:
 
     bead_id = state.get("bead_id")
     if bead_id:
-        lines.append(f"  Bead in progress: {bead_id}")
+        lines.append(f"  Task in progress: {bead_id}")
 
     files = state.get("files_modified", [])
     if files:
@@ -115,9 +115,9 @@ def main() -> None:
         tc_summary = ", ".join(tc.get("name", "?") for tc in tool_calls)
         lines.append(f"  Recent tools: {tc_summary}")
 
-    # Create continuation bead if bead_id present and ORO_WORKER is set
+    # Create continuation task if bead_id present and ORO_WORKER is set
     if bead_id and os.environ.get("ORO_WORKER") == "1":
-        _create_continuation_bead(bead_id, state)
+        _create_continuation_task(bead_id, state)
 
     # Clean up state file
     with contextlib.suppress(OSError):
@@ -127,11 +127,11 @@ def main() -> None:
     print(json.dumps({"additionalContext": context}))
 
 
-def _create_continuation_bead(
+def _create_continuation_task(
     bead_id: str,
     state: dict,
 ) -> None:
-    """Create a continuation bead for the dispatcher to pick up."""
+    """Create a continuation task for the dispatcher to pick up."""
     files = ", ".join(state.get("files_modified", [])[:5])
     last_msg = state.get("last_assistant_message", "")[:200]
     description = f"Continue work from compacted session.\nFiles: {files}\nContext: {last_msg}"
@@ -140,7 +140,7 @@ def _create_continuation_bead(
         subprocess.run(
             [
                 "oro",
-                "bead",
+                "task",
                 "create",
                 f"--title=Continue: {bead_id}",
                 "--type=task",

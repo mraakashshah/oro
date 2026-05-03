@@ -313,6 +313,11 @@ class TestRoleBeaconTaskTerminology:
         assert '["oro", "bead"' not in source
         assert not self.PRIMARY_BEAD_COMMAND.search(source)
 
+    def test_stale_task_output_is_task_primary(self):
+        output = _mod._format_output([{"id": "oro-old", "title": "Old", "days_stale": 4}], [], [])
+        assert "## Stale Tasks" in output
+        assert "Stale Beads" not in output
+
 
 # --- pane_handoff ---
 

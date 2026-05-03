@@ -75,7 +75,7 @@ def should_notify(hook_input: dict) -> bool:
     Returns True if:
     - Role is architect
     - Tool is Bash
-    - Command starts with 'oro task create' or legacy 'oro bead create'
+    - Command starts with current task-create or legacy bead-create CLI path
     """
     if get_oro_role() != "architect":
         return False

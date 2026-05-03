@@ -1,6 +1,6 @@
 ---
 name: adversarial-spec-review
-description: Use after writing a spec or decomposing into beads — adversarially verifies the spec is complete, wired, and will actually work when all beads pass
+description: Use after writing a spec or decomposing into tasks — adversarially verifies the spec is complete, wired, and will actually work when all tasks pass
 user-invocable: true
 ---
 
@@ -8,9 +8,9 @@ user-invocable: true
 
 ## Overview
 
-Stress-test a spec or bead decomposition by actively trying to construct failure scenarios. The goal is to find a scenario where every bead passes individually but the feature still doesn't work.
+Stress-test a spec or task decomposition by actively trying to construct failure scenarios. The goal is to find a scenario where every task passes individually but the feature still doesn't work.
 
-> "Imagine every bead passes its QG, every review approves, every merge succeeds. The feature still doesn't work. Why?"
+> "Imagine every task passes its QG, every review approves, every merge succeeds. The feature still doesn't work. Why?"
 
 If you can answer that question, the spec has a gap. Fix it before execution begins.
 
@@ -19,15 +19,15 @@ If you can answer that question, the spec has a gap. Fix it before execution beg
 ## Scope — What Is and Is Not a Finding
 
 **Self-check for every finding before writing it down:**
-> "If this gap existed and all beads passed, would the feature be visibly broken or untestable?"
+> "If this gap existed and all tasks passed, would the feature be visibly broken or untestable?"
 > If **no** → not a finding. Drop it.
 
 **In scope (structural failures):**
 - Wiring gaps — component built but never called
-- Missing bead — no one delivers a required criterion
+- Missing task — no one delivers a required criterion
 - Untestable acceptance — can't write a binary pass/fail command
 - Format mismatch across a boundary — producer and consumer disagree
-- Cross-cutting concern with no covering bead
+- Cross-cutting concern with no covering task
 
 **Out of scope (handled elsewhere):**
 - Error message wording, naming, style → quality gate catches these
@@ -40,14 +40,14 @@ When in doubt, mark it `minor` in negative_space and do not let it affect the ve
 
 ## When to Use
 
-- After writing a spec, before decomposing into beads (design gate)
-- After decomposing into beads, before starting execution (coverage gate)
-- After fix beads land, to re-verify (the Ralph Loop)
+- After writing a spec, before decomposing into tasks (design gate)
+- After decomposing into tasks, before starting execution (coverage gate)
+- After fix tasks land, to re-verify (the Ralph Loop)
 - When an epic has failed integration and you need to find why
 
 **Do NOT use for:**
-- Individual beads (they have QG + review)
-- Trivial specs (< 3 beads, single package, no cross-cutting concerns)
+- Individual tasks (they have QG + review)
+- Trivial specs (< 3 tasks, single package, no cross-cutting concerns)
 
 ## The Six Checks
 
@@ -83,7 +83,7 @@ For every new component the spec describes, trace the ACTUAL call chain from the
 2. Read the actual source file at the entry point
 3. Follow the call chain through each function, reading actual source at each step
 4. Identify the exact location where the new code must be called
-5. Check: is there a bead that adds this call? Is the call site explicitly mentioned in any bead's `Read:` field?
+5. Check: is there a task that adds this call? Is the call site explicitly mentioned in any task's `Read:` field?
 
 **You must read actual source files, not descriptions.** The spec may say "worker calls BuildEpicDecompositionPrompt" but if you read `worker.go:buildAssignPrompt`, you'll see it never checks `IsEpicDecomposition`. That's the wiring gap.
 
@@ -92,7 +92,7 @@ For every new component the spec describes, trace the ACTUAL call chain from the
 Entry: cmd/oro/main.go → runWork()
 Chain: runWork → executeWork → spawnAndWait → worker.AssemblePrompt
 Gap:   AssemblePrompt calls buildAssignPrompt, which never checks IsEpicDecomposition
-Bead:  [missing — no bead wires the prompt into the call site]
+Task:  [missing — no task wires the prompt into the call site]
 ```
 
 If you can't trace the full chain for any component, that's a finding.
@@ -100,12 +100,12 @@ If you can't trace the full chain for any component, that's a finding.
 ### Check 3: Requirements Traceability Matrix
 
 For every acceptance criterion in the spec, map it to:
-1. Which bead delivers it
+1. Which task delivers it
 2. Which test verifies it
 3. Current status
 
 ```
-| # | Criterion              | Bead     | Test                        | Status  |
+| # | Criterion              | Task     | Test                        | Status  |
 |---|------------------------|----------|-----------------------------|---------|
 | 1 | Epics route to decomp  | oro-abc  | TestDispatcherRoutesEpics   | covered |
 | 2 | Worker uses decomp prompt | ???   | ???                         | GAP     |
@@ -113,9 +113,9 @@ For every acceptance criterion in the spec, map it to:
 ```
 
 Rules:
-- Every criterion must map to at least one bead. No bead = GAP.
+- Every criterion must map to at least one task. No task = GAP.
 - Every criterion must map to at least one test. No test = GAP.
-- A bead that "partially" covers a criterion counts as a GAP — partial is not done.
+- A task that "partially" covers a criterion counts as a GAP — partial is not done.
 
 ### Check 4: Negative Space Analysis
 
@@ -123,22 +123,22 @@ For each component or behavior the spec describes, ask:
 
 1. **What happens on error?** If the happy path is specified but the error path isn't, that's a gap. Workers will guess, and they'll guess wrong.
 2. **What happens with bad/missing input?** Nil, empty, malformed, oversized.
-3. **What happens concurrently?** Two requests at once, two beads editing the same file, race conditions between components tested in isolation.
+3. **What happens concurrently?** Two requests at once, two tasks editing the same file, race conditions between components tested in isolation.
 4. **What happens when a dependency is unavailable?** Network down, DB locked, file missing, process crashed.
 5. **What's the cleanup/rollback story?** If the feature fails halfway, what state is left? Can the user recover?
 
-For each gap found, determine: is this a missing bead, a missing acceptance criterion on an existing bead, or an acceptable risk that should be documented?
+For each gap found, determine: is this a missing task, a missing acceptance criterion on an existing task, or an acceptable risk that should be documented?
 
 ### Check 5: Red Team
 
-**Your job is to break it.** Actively construct scenarios where all individual beads pass but the feature doesn't work.
+**Your job is to break it.** Actively construct scenarios where all individual tasks pass but the feature doesn't work.
 
 Common failure patterns to hunt for:
 
 | Pattern | Example | How to detect |
 |---------|---------|---------------|
 | **Unwired component** | Function exists but never called | Check 2 catches this |
-| **Format mismatch** | Producer outputs JSON, consumer expects protobuf | Check bead boundaries |
+| **Format mismatch** | Producer outputs JSON, consumer expects protobuf | Check task boundaries |
 | **Test-only code** | Marked `//testonly` or behind build tag | Grep for build constraints |
 | **Branch-only code** | Code committed to branch, never merged to main | Check acceptance runs on main |
 | **Config gap** | Code works but config/flag/env not set | Check initialization path |
@@ -149,10 +149,10 @@ Common failure patterns to hunt for:
 **For each scenario you construct:**
 ```
 Scenario: Worker builds epic decomposition prompt but buildAssignPrompt ignores IsEpicDecomposition
-Beads pass: Yes — prompt.go has tests, worker.go has tests, both green
+Tasks pass: Yes — prompt.go has tests, worker.go has tests, both green
 Feature works: No — prompt is never used in production
-Root cause: No bead covers the wiring between prompt.go and worker.go
-Fix: Add wiring bead with Read: worker.go:buildAssignPrompt, prompt.go:BuildEpicDecompositionPrompt
+Root cause: No task covers the wiring between prompt.go and worker.go
+Fix: Add wiring task with Read: worker.go:buildAssignPrompt, prompt.go:BuildEpicDecompositionPrompt
 ```
 
 ### Check 6: Integration Point Inventory
@@ -161,9 +161,9 @@ List every existing file/function in the codebase that this feature MUST touch t
 
 **Procedure:**
 1. From Check 2's call chains, collect every file in the path
-2. For each file, check: does any bead list this in its `Read:` field?
-3. For files not in any bead's `Read:` — is the file affected by this feature?
-4. If yes and no bead covers it → GAP
+2. For each file, check: does any task list this in its `Read:` field?
+3. For files not in any task's `Read:` — is the file affected by this feature?
+4. If yes and no task covers it → GAP
 
 This catches the files nobody thought about — the router that needs a new route, the config that needs a new flag, the init function that needs to register a new handler.
 
@@ -184,19 +184,19 @@ traceability:
   covered: N
   gaps: N
   matrix: |
-    | # | Criterion | Bead | Test | Status |
+    | # | Criterion | Task | Test | Status |
     ...
 
 wiring_gaps:
   - entry: "<entry point>"
     chain: "<call chain>"
     gap: "<where it breaks>"
-    fix: "<what bead is needed>"
+    fix: "<what task is needed>"
 
 negative_space:
   - area: "<what's unspecified>"
     severity: critical | important | minor
-    fix: "<missing bead or criterion>"
+    fix: "<missing task or criterion>"
 
 red_team_scenarios:
   - scenario: "<description>"
@@ -210,13 +210,13 @@ integration_points:
   uncovered:
     - file: "<path>"
       reason: "<why it matters>"
-      fix: "<what bead should cover it>"
+      fix: "<what task should cover it>"
 ```
 
 ## Verdict Rules
 
 - **Any wiring gap** → FAIL (this is how epic decomp shipped broken)
-- **Any red team scenario with no covering bead** → FAIL
+- **Any red team scenario with no covering task** → FAIL
 - **Acceptance test can't be written** → FAIL
 - **3+ uncovered criteria in traceability matrix** → FAIL
 - **1-2 minor negative space gaps** → PASS with notes
@@ -226,11 +226,11 @@ integration_points:
 
 If FAIL:
 1. Present findings to user with specific fixes
-2. Create beads for each gap (use `beadcraft` create mode)
+2. Create tasks for each gap (use `beadcraft` create mode)
 3. Re-run this review after fixes are applied (the Ralph Loop)
 
 If PASS:
-1. Commit the acceptance test as the epic's criterion: `oro bead update <epic> --acceptance "Cmd: ... | Assert: ..."`
+1. Commit the acceptance test as the epic's criterion: `oro task update <epic> --acceptance "Cmd: ... | Assert: ..."`
 2. Proceed to execution
 
 ## Running as a Subagent
@@ -251,9 +251,9 @@ The agent reads the spec, reads the code, produces the review. Fresh eyes, no as
 - Skipping Check 2 (wiring audit) — this is the #1 failure mode in practice
 - Reading spec descriptions instead of actual source files
 - Saying "PASS" without constructing at least one red team scenario
-- Trusting bead titles instead of reading bead acceptance criteria
+- Trusting task titles instead of reading task acceptance criteria
 - Assuming "covered" without tracing the actual call chain
-- Running this on individual beads (wrong tool — use QG + review for that)
+- Running this on individual tasks (wrong tool — use QG + review for that)
 - Reviewer who wrote the spec reviewing their own spec (use a subagent)
 - Flagging style, naming, or error message wording as findings — use the self-check
 - Letting minor negative_space items inflate a PASS into a FAIL

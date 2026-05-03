@@ -1,11 +1,11 @@
 ---
 name: spec
-description: Use when the user says "make a spec", "spec out X", or "brainstorm X" — turns intent into a validated bead dependency graph
+description: Use when the user says "make a spec", "spec out X", or "brainstorm X" — turns intent into a validated task dependency graph
 ---
 
 # Spec
 
-Two modes, auto-detected. Both produce the same output: a validated bead dependency graph.
+Two modes, auto-detected. Both produce the same output: a validated task dependency graph.
 
 ## Scope Assessment
 
@@ -15,9 +15,9 @@ If the request is a single coherent feature (even if cross-cutting), proceed to 
 
 ## Mode Detection
 
-**Full** (default) — any of: cross-cutting (2+ packages), architectural decisions, unclear requirements, >5 beads likely.
+**Full** (default) — any of: cross-cutting (2+ packages), architectural decisions, unclear requirements, >5 tasks likely.
 
-**Quick** — all of: single package, well-understood change, <=5 beads, no architectural decisions.
+**Quick** — all of: single package, well-understood change, <=5 tasks, no architectural decisions.
 
 Announce which mode: "Using **quick spec** — single package, well-understood change." or "Using **full spec** — cross-cutting change, needs design doc."
 
@@ -51,21 +51,21 @@ Write findings inline. If any check reveals the change is bigger than expected �
 
 ### Step 3 — Decompose (`beadcraft`)
 
-Invoke `beadcraft` in Decompose mode on the research + review findings. Same quality bar as full mode: Rule of Five, full bead anatomy, wired dependencies.
+Invoke `beadcraft` in Decompose mode on the research + review findings. Same quality bar as full mode: Rule of Five, full task anatomy, wired dependencies.
 
-Present bead tree. Proceed to execution automatically.
+Present task tree. Proceed to execution automatically.
 
 ### Output
 
 ```
-oro bead show <epic-id>    ← confirmed bead tree (no design doc)
+oro task show <epic-id>    ← confirmed task tree (no design doc)
 ```
 
 ---
 
 ## Full Mode
 
-Collaborative design → consultation → adversarial validation → bead decomposition. Produces a committed design doc.
+Collaborative design → consultation → adversarial validation → task decomposition. Produces a committed design doc.
 
 ### Stage 1 — Brainstorm (`brainstorming` skill)
 
@@ -84,7 +84,7 @@ Pressure-test the committed design doc before it goes to adversarial review. Hum
 
 1. **The real problem.** What is the underlying problem the design addresses? Is the stated request a proxy for something more important?
 2. **Status quo.** How is this solved today — workaround, manual process, absence? Whose pain does it cause, how much?
-3. **Desperate specificity.** Who specifically benefits? Name the user, bead type, failure mode, caller — not a persona.
+3. **Desperate specificity.** Who specifically benefits? Name the user, task type, failure mode, caller — not a persona.
 4. **Narrowest wedge.** Is there a version that ships half the scope for most of the benefit?
 5. **Do nothing.** What happens if we ship nothing? Is the status quo bad enough to justify this work?
 6. **Future-fit.** In 6 months, does this feel like a durable capability or a local patch? If a patch, is a durable version cheaper to build now?
@@ -135,13 +135,13 @@ Do not skip this stage. Specs without adversarial review ship broken.
 
 Invoke `beadcraft` in Decompose mode on the validated design doc. Same as Quick Step 3.
 
-Present the bead tree. Proceed to execution automatically.
+Present the task tree. Proceed to execution automatically.
 
 ### Output
 
 ```
 docs/plans/YYYY-MM-DD-<topic>-design.md   ← committed
-oro bead show <epic-id>                          ← confirmed bead tree
+oro task show <epic-id>                          ← confirmed task tree
 ```
 
 ---

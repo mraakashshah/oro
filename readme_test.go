@@ -66,8 +66,8 @@ func TestNoBdInstallInstructions(t *testing.T) {
 			}
 		}
 
-		if path != "docs/dev-setup.md" && !strings.Contains(text, "oro bead") {
-			t.Errorf("%s must reference native oro bead operator workflows", path)
+		if path != "docs/dev-setup.md" && !strings.Contains(text, "oro task") {
+			t.Errorf("%s must reference native oro task operator workflows", path)
 		}
 	}
 }

@@ -63,7 +63,7 @@ files:
   created: [new files]
   modified: [changed files]
 
-beads:
+tasks:
   completed: [oro-xxx]
   in_progress: [oro-yyy]
   remaining: [oro-zzz]
@@ -81,7 +81,7 @@ beads:
 | `decisions:` | Important choices and rationale |
 | `worked:` / `failed:` | What to repeat vs avoid |
 | `next:` | Action items for next session |
-| `beads:` | Bead state for multi-session work (completed/in_progress/remaining/epic) |
+| `tasks:` | Task state for multi-session work (completed/in_progress/remaining/epic) |
 
 ### 4. Capture Learnings
 
@@ -98,7 +98,7 @@ This persists the learning to your memory store. Examples:
 
 ## Principles
 
-**Before** touching `.oro/handoff_done`, write a compact context summary so the dispatcher can embed it in the continuation bead description. Without this file, continuation beads have no context and workers must start blind.
+**Before** touching `.oro/handoff_done`, write a compact context summary so the dispatcher can embed it in the continuation task description. Without this file, continuation tasks have no context and workers must start blind.
 
 Use the `goal:` and `now:` values from your handoff YAML:
 
@@ -108,7 +108,7 @@ python3 ~/.oro/hooks/write_context_summary.py \
   --now "<now value from your handoff YAML>"
 ```
 
-This writes `.oro/context_summary.txt` relative to the current worktree root. The dispatcher reads this file in `handleHandoffExhaustion()` (`pkg/worker/worker.go`) to populate `ContextSummary` in the continuation bead.
+This writes `.oro/context_summary.txt` relative to the current worktree root. The dispatcher reads this file in `handleHandoffExhaustion()` (`pkg/worker/worker.go`) to populate `ContextSummary` in the continuation task.
 
 **Edges:**
 - `.oro/` does not exist → the script creates it automatically

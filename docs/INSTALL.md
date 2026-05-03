@@ -59,7 +59,7 @@ oro init --stealth
 oro start
 ```
 
-Stealth mode stores all config, beads, and quality gate scripts under
+Stealth mode stores all config, task data, and quality gate scripts under
 `~/.oro/projects/s-<hash>/` (where `<hash>` is derived from the repo path).
 No `.oro/` directory is created in the project root.
 
@@ -74,10 +74,10 @@ Develop oro itself.
 
 **Prerequisites:** macOS, Go 1.23+, Claude Code CLI
 
-The beadstore replatform has moved operator workflows to the native `oro bead`
+The beadstore replatform has moved operator workflows to the native `oro task`
 commands. Contributors and operators should inspect, create, update, and close
-work items through `oro bead` rather than installing or invoking the legacy
-Beads CLI.
+work items through `oro task` rather than installing or invoking the legacy
+tracker.
 
 ```bash
 git clone git@github.com:mraakashshah/oro.git

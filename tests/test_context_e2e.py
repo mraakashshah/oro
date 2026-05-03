@@ -220,12 +220,12 @@ class TestLayer3E2E:
         state = parse_transcript(transcript)
         assert len(state["last_tool_calls"]) == 5
 
-    def test_worker_mode_creates_continuation_bead(
+    def test_worker_mode_creates_continuation_task(
         self,
         tmp_path: Path,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """When ORO_WORKER=1, session_start_compact creates a continuation bead."""
+        """When ORO_WORKER=1, session_start_compact creates a continuation task."""
         import io
 
         state = {
@@ -249,11 +249,11 @@ class TestLayer3E2E:
         ):
             session_start_main()
 
-        # Verify oro bead create was called with continuation bead args
+        # Verify oro task create was called with continuation task args
         mock_run.assert_called_once()
         call_args = mock_run.call_args[0][0]
         assert call_args[0] == "oro"
-        assert call_args[1] == "bead"
+        assert call_args[1] == "task"
         assert "create" in call_args
         assert any("Continue: oro-high-ctx" in a for a in call_args)
         assert any("--parent=oro-high-ctx" in a for a in call_args)
@@ -267,7 +267,7 @@ class TestLayer3E2E:
         tmp_path: Path,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Without ORO_WORKER=1, no continuation bead is created."""
+        """Without ORO_WORKER=1, no continuation task is created."""
         import io
 
         state = {

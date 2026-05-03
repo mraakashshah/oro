@@ -58,7 +58,7 @@ Infer from the primary area of change:
 
 ```bash
 # Tier 1 — full context
-git commit -m "feat(skills): add 4 skills from openclaw and beads"
+git commit -m "feat(skills): add 4 skills from openclaw and tasks"
 
 # Tier 1 — with body
 git commit -m "$(cat <<'EOF'

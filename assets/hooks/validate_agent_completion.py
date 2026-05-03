@@ -5,7 +5,7 @@ When a Task-tool agent finishes, checks:
 1. If a worktree path was used, verify it exists
 2. Check for uncommitted changes in that worktree
 3. Check that the branch was pushed to remote
-4. Check that a bead was closed (oro bead close in output)
+4. Check that a task was closed (oro task close in output)
 
 Fails open: missing data -> approve. Warnings via additionalContext, not blocks.
 
@@ -22,8 +22,8 @@ from pathlib import Path
 # Pattern: /some/path/.worktrees/name (optionally followed by / or whitespace/EOL)
 _WORKTREE_RE = re.compile(r"(/\S+/\.worktrees/[\w.-]+)/?")
 
-# Pattern: current or legacy bead close command (with flexible whitespace)
-_ORO_BEAD_CLOSE_RE = re.compile(r"(?:oro\s+bead|b[d])\s+close\s+\S+")
+# Pattern: current task close command or legacy compatibility command.
+_ORO_TASK_CLOSE_RE = re.compile(r"(?:oro\s+task|oro\s+bead|b[d])\s+close\s+\S+")
 
 
 def extract_worktree_path(agent_output: str) -> str | None:
@@ -92,13 +92,13 @@ def check_unpushed(cwd: str) -> str | None:
 
 
 def check_bead_closed(agent_output: str) -> str | None:
-    """Check that the agent ran 'oro bead close' in its output.
+    """Check that the agent ran a task close command in its output.
 
     Returns a warning string if not found, None if found.
     """
-    if _ORO_BEAD_CLOSE_RE.search(agent_output):
+    if _ORO_TASK_CLOSE_RE.search(agent_output):
         return None
-    return "Agent did not run `oro bead close` to close its bead. Ensure the bead is closed."
+    return "Agent did not run `oro task close` to close its task. Ensure the task is closed."
 
 
 def build_warnings(agent_output: str) -> list[str]:

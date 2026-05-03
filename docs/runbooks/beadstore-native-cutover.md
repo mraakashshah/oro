@@ -153,14 +153,14 @@ Run against the target `state.db`:
 set -euo pipefail
 
 export ORO_DB_PATH="$state_db"
-representative_id=${ORO_NATIVE_REPRESENTATIVE_ID:?set to a migrated bead id from the migration report, not the smoke bead}
+representative_id=${ORO_NATIVE_REPRESENTATIVE_ID:?set to a migrated task id from the migration report, not the smoke task}
 scripts/check-phase8-no-writers.py
-ORO_BEADSOURCE_MODE=sqlite ./oro bead status
-ORO_BEADSOURCE_MODE=sqlite ./oro bead ready --json > /tmp/oro-native-ready.json
-ORO_BEADSOURCE_MODE=sqlite ./oro bead blocked --json > /tmp/oro-native-blocked.json
+ORO_BEADSOURCE_MODE=sqlite ./oro task status
+ORO_BEADSOURCE_MODE=sqlite ./oro task ready --json > /tmp/oro-native-ready.json
+ORO_BEADSOURCE_MODE=sqlite ./oro task blocked --json > /tmp/oro-native-blocked.json
 jq -e 'type == "array"' /tmp/oro-native-ready.json
 jq -e 'type == "array"' /tmp/oro-native-blocked.json
-ORO_BEADSOURCE_MODE=sqlite ./oro bead show "$representative_id" --json |
+ORO_BEADSOURCE_MODE=sqlite ./oro task show "$representative_id" --json |
   jq -e --arg id "$representative_id" '.id == $id and (.status | type == "string")'
 scripts/check-native-beadstore-invariants.py --db "$state_db"
 sqlite3 "$state_db" 'PRAGMA integrity_check;'
@@ -174,10 +174,10 @@ set -euo pipefail
 
 test_id="native-cutover-smoke-$(date -u +%Y%m%dT%H%M%SZ)"
 scripts/check-phase8-no-writers.py
-ORO_BEADSOURCE_MODE=sqlite ./oro bead create --id "$test_id" --title "Native cutover smoke" --type task --priority 4
-ORO_BEADSOURCE_MODE=sqlite ./oro bead show "$test_id" --json | jq -e '.id == "'"$test_id"'"'
-ORO_BEADSOURCE_MODE=sqlite ./oro bead close "$test_id" --reason "Native cutover smoke passed"
-ORO_BEADSOURCE_MODE=sqlite ./oro bead show "$test_id" --json | jq -e '.status == "closed"'
+ORO_BEADSOURCE_MODE=sqlite ./oro task create --id "$test_id" --title "Native cutover smoke" --type task --priority 4
+ORO_BEADSOURCE_MODE=sqlite ./oro task show "$test_id" --json | jq -e '.id == "'"$test_id"'"'
+ORO_BEADSOURCE_MODE=sqlite ./oro task close "$test_id" --reason "Native cutover smoke passed"
+ORO_BEADSOURCE_MODE=sqlite ./oro task show "$test_id" --json | jq -e '.status == "closed"'
 scripts/check-native-beadstore-invariants.py --db "$state_db"
 sqlite3 "$state_db" 'PRAGMA integrity_check;'
 ```
@@ -209,7 +209,7 @@ stripped `PATH` that resolves `oro` but not `bd`.
 
 In sqlite mode, the dispatcher must not enter legacy bd/Dolt health recovery.
 If `events` contains `dolt_recovery_started` after sqlite restart, stop before
-assigning worker proof beads and fix the dispatcher; with `bd` stripped from
+assigning worker proof tasks and fix the dispatcher; with `bd` stripped from
 `PATH`, legacy recovery pauses assignment instead of recovering anything useful.
 
 ```bash
@@ -260,7 +260,7 @@ test "$dispatcher_path" = "$cutover_path"
 ```
 
 For each restarted worker, record PID, PATH check output, log path, the
-controlled test bead ID, and dispatcher `assign`/`status` events for that bead.
+controlled test task ID, and dispatcher `assign`/`status` events for that task.
 Worker `output.log` may contain progress-only lines rather than full command
 transcripts; inspect only the post-offset segment and stop if it shows `bd`
 execution or missing-tool failures. The authoritative `bd` exclusion proof is
@@ -280,7 +280,7 @@ Rollback to bd is not the normal answer after cutover. Use this order:
    worker startup fail closed for legacy modes.
 5. If bd must be used temporarily for forensic recovery, run it outside the
    production dispatcher/worker path from an explicitly checked-out pre-cutover
-   binary or branch. First export SQLite with `oro bead export` and import that
+   binary or branch. First export SQLite with `oro task export` and import that
    into bd so bd contains native-side writes made after cutover, or record the
    explicit data-loss decision.
 
@@ -296,7 +296,7 @@ Record:
 - JSONL migration backup path.
 - Import report counts and verification result.
 - Native validation command outputs.
-- Controlled native smoke bead ID.
+- Controlled native smoke task ID.
 - Dispatcher PID before and after restart.
 - Worker PATH and post-offset log evidence.
 - Any bd/Dolt divergence treated as non-veto, with the reason.

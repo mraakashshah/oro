@@ -2,13 +2,13 @@
 name: oro
 description: >
   Use when working in an oro-managed project. Two modes:
-  "use oro" / "oro work" → single worker on one bead (lightweight, no dispatcher).
+  "use oro" / "oro work" → single worker on one task (lightweight, no dispatcher).
   "launch oro" → full swarm with dispatcher, tmux, multiple workers.
 
   Workflow-specific sub-skills:
   - Running the swarm and monitoring → /watching-oro
   - Restarting after crash or stuck state → /restart-oro
-  - Decomposing a spec into beads → /beadcraft
+  - Decomposing a spec into tasks → /beadcraft
   - Creating a handoff for session continuity → /create-handoff
   - Resuming from a handoff → /resume-handoff
 user-invocable: true
@@ -16,19 +16,19 @@ user-invocable: true
 
 # Oro
 
-## Mode 1: Work a Bead (`oro work`)
+## Mode 1: Work a Task (`oro work`)
 
-Single worker executes one bead end-to-end. No dispatcher, no tmux, no swarm.
+Single worker executes one task end-to-end. No dispatcher, no tmux, no swarm.
 
 ```bash
-oro work <bead-id>                              # work a bead against default branch
-oro work <bead-id> --base-branch feature/auth   # target a specific branch
-oro work <bead-id> --timeout 20m                # extend timeout for complex beads
+oro work <task-id>                              # work a task against default branch
+oro work <task-id> --base-branch feature/auth   # target a specific branch
+oro work <task-id> --timeout 20m                # extend timeout for complex tasks
 ```
 
-**What happens:** Worker claims bead → creates worktree → TDD implementation → quality gate (tests + lint + format) → ops review → merge to target branch → cleanup.
+**What happens:** Worker claims task → creates worktree → TDD implementation → quality gate (tests + lint + format) → ops review → merge to target branch → cleanup.
 
-**When to use:** Default for single beads. Say "use oro" or "oro work" to trigger this.
+**When to use:** Default for single tasks. Say "use oro" or "oro work" to trigger this.
 
 ## Mode 2: Launch Swarm (`oro start`)
 
@@ -42,17 +42,17 @@ oro attach                                      # connect to running swarm UI
 ORO_HUMAN_CONFIRMED=1 oro stop --force          # shutdown (non-TTY safe)
 ```
 
-**What happens:** Dispatcher polls `oro bead ready` → assigns beads to idle workers in isolated worktrees → quality gate → ops review → merge → next bead. Workers loop until queue is empty or context exhausted (handoff to fresh worker).
+**What happens:** Dispatcher polls `oro task ready` → assigns tasks to idle workers in isolated worktrees → quality gate → ops review → merge → next task. Workers loop until queue is empty or context exhausted (handoff to fresh worker).
 
-**When to use:** Multiple beads to execute in parallel. Say "launch oro" to trigger this.
+**When to use:** Multiple tasks to execute in parallel. Say "launch oro" to trigger this.
 
 ## Monitoring
 
-After launching the swarm, **always set up monitoring** to catch stuck workers and beads.
+After launching the swarm, **always set up monitoring** to catch stuck workers and tasks.
 
 ### Option A: In-session (`/watching-oro`)
 
-Active babysitting — observe, detect defects, file beads, fix, rebuild, relaunch. Use when you're actively working the swarm.
+Active babysitting — observe, detect defects, file tasks, fix, rebuild, relaunch. Use when you're actively working the swarm.
 
 ### Option B: Background cron (`/loop`)
 
@@ -65,36 +65,36 @@ Lightweight automated monitoring. Set up immediately after `oro start`:
 The monitoring prompt should:
 
 1. Run `oro status` and `oro logs --tail 100 | grep -v heartbeat | grep -v directive | grep -v missing_accept | tail -15`
-2. Report worker state and bead assignments
+2. Report worker state and task assignments
 3. Detect and fix stuck states (see table below)
-4. Report beads completed since last check
+4. Report tasks completed since last check
 
 ### Stuck Detection
 
 | Signal | Meaning | Auto-fix |
 |--------|---------|----------|
-| Worker idle + queue > 0 for 2+ checks | Assignment stuck | Check `oro bead ready`, restart dispatcher |
-| Same bead on same worker for 3+ checks (>15min) | Worker stuck | Check context %, kill if >80% |
-| `REJECTED` repeating >2x for same bead | Worker can't pass review | Read rejection feedback, check if bead AC is achievable |
-| `QG_FAILED` repeating >3x for same bead | Worker can't pass QG | Check QG output, may be flaky test vs real failure |
-| `merge_failed` repeating for same bead | Stale agent branch | Clean branch: `git branch -D agent/<bead-id>`, reopen bead |
-| Bead `IN_PROGRESS` but no worker assigned | Orphaned bead | `oro bead update <id> --status open` to re-queue |
-| `progress_timeout` → re-assign → timeout loop | Bead merged but not closed | Check if code is on main/epic branch, `oro bead close <id>` manually |
-| Workers idle, queue 0, beads still open | All work done or blocked | Check `oro bead ready` — if empty, epic may need closing |
+| Worker idle + queue > 0 for 2+ checks | Assignment stuck | Check `oro task ready`, restart dispatcher |
+| Same task on same worker for 3+ checks (>15min) | Worker stuck | Check context %, kill if >80% |
+| `REJECTED` repeating >2x for same task | Worker can't pass review | Read rejection feedback, check if task AC is achievable |
+| `QG_FAILED` repeating >3x for same task | Worker can't pass QG | Check QG output, may be flaky test vs real failure |
+| `merge_failed` repeating for same task | Stale agent branch | Clean branch: `git branch -D agent/<task-id>`, reopen task |
+| Task `IN_PROGRESS` but no worker assigned | Orphaned task | `oro task update <id> --status open` to re-queue |
+| `progress_timeout` → re-assign → timeout loop | Task merged but not closed | Check if code is on main/epic branch, `oro task close <id>` manually |
+| Workers idle, queue 0, tasks still open | All work done or blocked | Check `oro task ready` — if empty, epic may need closing |
 
 ### When to stop monitoring
 
 - Queue empty + workers idle for 3+ consecutive checks → stop cron, stop swarm
-- All target beads/epic closed → stop cron, stop swarm
+- All target tasks/epic closed → stop cron, stop swarm
 
 ## Commands
 
 | Command | Purpose |
 |---------|---------|
-| `oro work <bead-id>` | Execute one bead (lightweight, no dispatcher) |
+| `oro work <task-id>` | Execute one task (lightweight, no dispatcher) |
 | `oro start [--workers N] [--detach]` | Launch swarm |
 | `oro stop` | Graceful shutdown |
-| `oro status` | Dispatcher state, workers, active beads |
+| `oro status` | Dispatcher state, workers, active tasks |
 | `oro attach` | Connect to tmux session |
 | `oro logs [-f] [--tail N]` | Query event logs |
 | `oro directive <op>` | Control dispatcher: `status`, `pause`, `resume`, `scale N` |
@@ -106,13 +106,13 @@ Run `oro <command> --help` for flags.
 
 Both modes support `--base-branch`:
 - **`oro work`**: `--base-branch feature/auth` — worker branches from and merges to that branch
-- **`oro start`**: `--base-branch feature/auth` — all workers default to that branch (per-bead override via `--metadata branch=X`)
+- **`oro start`**: `--base-branch feature/auth` — all workers default to that branch (per-task override via `--metadata branch=X`)
 
 Without `--base-branch`, defaults to current HEAD at startup (falls back to `main`).
 
 ## Philosophy
 
-1. **Less Context, Better Work** — Workers see only their bead's AC, relevant memories, and a clean worktree. Context is a budget: spend it on signal.
+1. **Less Context, Better Work** — Workers see only their task's AC, relevant memories, and a clean worktree. Context is a budget: spend it on signal.
 2. **Compound Learnings** — Every session leaves the system smarter. Workers emit learnings, the dispatcher extracts patterns, memory consolidation scores and surfaces them.
 3. **Loop Until Done** — Context exhausted → handoff → fresh worker continues. Review fails → feedback → retry. Merge conflicts → ops agent resolves. No work is lost.
 4. **Better Specs, Better Outcomes** — Spend tokens upstream: brainstorm alternatives, premortem designs, write validated specs before code.
@@ -121,7 +121,7 @@ Without `--base-branch`, defaults to current HEAD at startup (falls back to `mai
 ## Architecture
 
 ```
-oro work <bead-id>           # lightweight — single worker, no dispatcher
+oro work <task-id>           # lightweight — single worker, no dispatcher
   └─ worker process
        ├─ creates worktree
        ├─ TDD implementation
@@ -132,11 +132,11 @@ oro work <bead-id>           # lightweight — single worker, no dispatcher
 oro start --workers 3        # full swarm
   └─ tmux session "oro"
        ├─ pane 0: architect (strategic oversight)
-       ├─ pane 1: manager (bead triage, reviews)
-       └─ panes 2+: workers (one per bead)
+       ├─ pane 1: manager (task triage, reviews)
+       └─ panes 2+: workers (one per task)
 
   Dispatcher (background daemon)
-    ├─ polls oro bead ready for unblocked beads
+    ├─ polls oro task ready for unblocked tasks
     ├─ assigns to idle workers in isolated worktrees
     ├─ runs quality gates (tests, lint, format)
     ├─ sends to ops review → merge to target branch
@@ -149,12 +149,12 @@ oro start --workers 3        # full swarm
 
 ```bash
 # 1. Create the epic
-oro bead create "Feature name" --type epic \
-  --acceptance "All child beads closed. Full quality gate passes." \
+oro task create "Feature name" --type epic \
+  --acceptance "All child tasks closed. Full quality gate passes." \
   --description "Goal from spec"
 
 # 2. Create child tasks with full AC
-oro bead create "Specific task" --type task \
+oro task create "Specific task" --type task \
   --acceptance "Test: path:FnName | Cmd: test_cmd | Assert: expected
 Read: file1.go:Symbol1, file2.go:Symbol2
 Signature: func Name(ctx, arg) (Result, error)
@@ -162,17 +162,17 @@ Edges: nil input → ErrInvalid" \
   --estimate 7
 
 # 3. Attach parent + wire dependency (order matters!)
-oro bead update <child-id> --parent <epic-id>
-oro bead dep add <epic-id> <child-id>
+oro task update <child-id> --parent <epic-id>
+oro task dep add <epic-id> <child-id>
 
 # 4. Target a branch (optional — epic children inherit)
-oro bead create "Feature name" --type epic \
+oro task create "Feature name" --type epic \
   --metadata branch=feature/auth ...
 ```
 
-`oro bead create --parent` is also valid for hierarchy: parentage does not create dependency edges. Add `oro bead dep add <epic-id> <child-id>` explicitly when the epic must wait for the child.
+`oro task create --parent` is also valid for hierarchy: parentage does not create dependency edges. Add `oro task dep add <epic-id> <child-id>` explicitly when the epic must wait for the child.
 
-### Bead Anatomy — Every bead needs:
+### Task Anatomy — Every task needs:
 
 | Field | Required | Example |
 |-------|----------|---------|
@@ -202,11 +202,11 @@ go test ./pkg/worker/... -v -count=1
 
 ## Native Beadstore Recovery
 
-**NEVER run `force-initialization commands`.** It destroys all bead history. This has happened 3 times.
+**NEVER run `force-initialization commands`.** It destroys all task history. This has happened 3 times.
 
 bd/Dolt is an import, audit, and rollback reference only. When native beadstore
-errors occur, inspect the SQLite state directly, verify `oro bead ready`,
-`oro bead blocked`, and `oro bead show`, and follow
+errors occur, inspect the SQLite state directly, verify `oro task ready`,
+`oro task blocked`, and `oro task show`, and follow
 `docs/runbooks/beadstore-recovery.md` for backup or restore operations. Do not
 restart or repair Dolt from Oro; the `oro dolt` operator commands are removed.
 

@@ -7,7 +7,7 @@ This note records the root cause and verification plan for Phase 8 blocker
 
 During the live P8-4 sqlite restart proof, the dispatcher and worker both
 started from a stripped `PATH` without `bd`, and both inherited
-`ORO_BEADSOURCE_MODE=sqlite`. A controlled native smoke bead stayed ready while
+`ORO_BEADSOURCE_MODE=sqlite`. A controlled native smoke task stayed ready while
 the worker heartbeated as idle. A targeted `spawn-for` worker also heartbeated,
 but no `assign` event was recorded.
 
@@ -22,7 +22,7 @@ dolt_recovery_started
 dolt_recovery_failed step=dolt_start error="exec: \"bd\": executable file not found in $PATH"
 ```
 
-While `doltRecovering` is true, `tryAssign` returns before polling ready beads
+While `doltRecovering` is true, `tryAssign` returns before polling ready tasks
 or idle workers. That made the worker proof look like an assignment bug even
 though the native ready queue was valid.
 
@@ -40,7 +40,7 @@ go test ./pkg/dispatcher -run TestSQLiteModeSkipsDoltRecoveryAndAssignsReadyBead
 
 The test proves that sqlite mode with `bd` unavailable does not invoke
 `bd dolt ...`, does not enter Dolt recovery, and still assigns a native SQLite
-ready bead to an idle worker.
+ready task to an idle worker.
 
 ## Live Retry Gate
 
@@ -53,5 +53,5 @@ sqlite3 /Users/as21/.oro/projects/oro/state.db 'PRAGMA integrity_check;'
 ```
 
 Then rebuild the reviewed binary, restart dispatcher/workers from the stripped
-sqlite cutover `PATH`, and rerun the controlled worker bead proof from
+sqlite cutover `PATH`, and rerun the controlled worker task proof from
 `docs/runbooks/beadstore-native-cutover.md`.

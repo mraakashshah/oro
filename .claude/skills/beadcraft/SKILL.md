@@ -1,29 +1,29 @@
 ---
 name: beadcraft
-description: Use when decomposing a spec, design, or feature description into a bead dependency graph with self-evaluating acceptance criteria
+description: Use when decomposing a spec, design, or feature description into a task dependency graph with self-evaluating acceptance criteria
 ---
 
-# Bead Craft
+# Task Craft
 
 ## Overview
 
-Unified skill for bead quality. Defines bead anatomy, quality standards, and size heuristics ONCE, serving three modes:
+Unified skill for task quality. Defines task anatomy, quality standards, and size heuristics ONCE, serving three modes:
 
-- **Decompose**: Spec/design → bead dependency graph (replaces spec-to-beads)
-- **Create**: Ad-hoc single bead with full quality applied
-- **Review**: Audit existing beads, flag smells
+- **Decompose**: Spec/design → task dependency graph (replaces spec-to-tasks)
+- **Create**: Ad-hoc single task with full quality applied
+- **Review**: Audit existing tasks, flag smells
 
-**Core principle:** Every bead must answer "how do I know this is done?" with a test command. Every bead passes the Rule of Five before being emitted.
+**Core principle:** Every task must answer "how do I know this is done?" with a test command. Every task passes the Rule of Five before being emitted.
 
 ---
 
-## Bead Quality Core
+## Task Quality Core
 
 All three modes apply this shared quality standard.
 
-### Bead Anatomy — Required Fields
+### Task Anatomy — Required Fields
 
-Every bead must include:
+Every task must include:
 
 ```
 Test: path:FnName | Cmd: test_cmd | Assert: expected
@@ -43,7 +43,7 @@ Edges: nil input → ErrInvalid; timeout → context.DeadlineExceeded
 
 ### Rule of Five — Critique Loop
 
-Run 5 passes on every bead before emitting. Each pass asks one question:
+Run 5 passes on every task before emitting. Each pass asks one question:
 
 | Pass | Name | Question |
 |------|------|----------|
@@ -53,18 +53,18 @@ Run 5 passes on every bead before emitting. Each pass asks one question:
 | P4 | **Boundary Check** | If this crosses IPC/RPC/package boundaries, are protocol details and both sides specified? |
 | P5 | **Adversarial** | What would a zero-context worker misunderstand? Fix it. |
 
-If any pass fails, revise the bead and re-run from P1.
+If any pass fails, revise the task and re-run from P1.
 
 ### Size Heuristics
 
-A bead is too large if ANY of these apply:
+A task is too large if ANY of these apply:
 
 - Estimate >7 minutes
 - Needs >1 test file or >4 source files
 - Title contains "and" (doing two things)
 - Acceptance needs multiple unrelated assertions
 
-A bead is small enough when ALL of these apply:
+A task is small enough when ALL of these apply:
 
 - One test function in acceptance criteria
 - <=7 min estimate
@@ -77,12 +77,12 @@ Used by Review mode, but also as a checklist for Decompose and Create:
 
 | Smell | Description |
 |-------|-------------|
-| No acceptance | Bead has no `Test:` / `Cmd:` / `Assert:` |
+| No acceptance | Task has no `Test:` / `Cmd:` / `Assert:` |
 | Vague title | "improve X", "handle edge cases", "clean up" |
 | Missing `Read:` | Worker doesn't know what files to look at |
 | Stale in_progress | >3 days in `in_progress` without activity |
 | Missing estimate | No time estimate attached |
-| Stale dependency | Depends on a closed bead (dep should be removed) |
+| Stale dependency | Depends on a closed task (dep should be removed) |
 | Oversized | Fails size heuristics but hasn't been decomposed |
 | Missing `Edges:` | Non-trivial logic with no error conditions specified |
 
@@ -90,7 +90,7 @@ Used by Review mode, but also as a checklist for Decompose and Create:
 
 ## Mode: Decompose
 
-Takes a spec (markdown doc, user description, or design output from `brainstorming`) and decomposes it into a bead dependency graph.
+Takes a spec (markdown doc, user description, or design output from `brainstorming`) and decomposes it into a task dependency graph.
 
 ### Step 1: Parse Spec
 
@@ -102,21 +102,21 @@ Extract from the spec:
 
 If spec is vague: ask the user to clarify before decomposing. Don't guess.
 
-### Step 2: Create Epic Bead
+### Step 2: Create Epic Task
 
 ```bash
-oro bead create "<feature name>" --type epic \
-  --acceptance "All child beads closed. Full quality gate passes." \
+oro task create "<feature name>" --type epic \
+  --acceptance "All child tasks closed. Full quality gate passes." \
   --description "<goal from spec>"
 ```
 
-### Step 3: Decompose to Task Beads
+### Step 3: Decompose to Task Tasks
 
-For each seam/component, create a task bead. Apply the full Bead Anatomy format:
+For each seam/component, create a task. Apply the full Task Anatomy format:
 
 ```bash
 # Create the child and attach it to the epic. Parentage is hierarchy only.
-oro bead create "<specific task>" \
+oro task create "<specific task>" \
   --type task \
   --parent <epic-id> \
   --acceptance "Test: <path>:<FnName> | Cmd: <test_cmd> | Assert: <expected>
@@ -126,27 +126,27 @@ Edges: <error conditions if applicable>" \
   --estimate <minutes>
 
 # Wire epic to depend on child (epic closes when children finish)
-oro bead dep add <epic-id> <child-id>
+oro task dep add <epic-id> <child-id>
 ```
 
-`oro bead create --parent` does not add dependency edges. Keep the explicit `oro bead dep add <epic-id> <child-id>` edge so the epic waits for its children to close.
+`oro task create --parent` does not add dependency edges. Keep the explicit `oro task dep add <epic-id> <child-id>` edge so the epic waits for its children to close.
 
-### Step 4: Rule of Five (Apply to Each Bead)
+### Step 4: Rule of Five (Apply to Each Task)
 
-Run all 5 passes (P1-P5) on every bead before emitting. Revise until all pass.
+Run all 5 passes (P1-P5) on every task before emitting. Revise until all pass.
 
 ### Step 5: Size Test (Recursive)
 
-Check every task bead against size heuristics. If too large, decompose:
+Check every task against size heuristics. If too large, decompose:
 
-1. Promote: `oro bead update <id> --type epic`
-2. Create child tasks with `oro bead create --parent <id>`, then `oro bead dep add <id> <child>` for each child the epic must wait for
+1. Promote: `oro task update <id> --type epic`
+2. Create child tasks with `oro task create --parent <id>`, then `oro task dep add <id> <child>` for each child the epic must wait for
 3. Re-apply size test + Rule of Five to children
 
 ### Step 6: Wire Dependencies
 
 ```bash
-oro bead dep add <later-bead> <earlier-bead>
+oro task dep add <later-task> <earlier-task>
 ```
 
 Common patterns:
@@ -158,7 +158,7 @@ Common patterns:
 ### Step 7: Present Tree
 
 ```bash
-oro bead show <epic-id>
+oro task show <epic-id>
 ```
 
 Present the full tree: epic → children, dependencies, estimates, acceptance criteria.
@@ -198,7 +198,7 @@ Epic: Implement JWT authentication (oro-001)
 
 ## Mode: Create
 
-For creating a single ad-hoc bead with full quality applied.
+For creating a single ad-hoc task with full quality applied.
 
 ### Step 1: Gather Context
 
@@ -208,13 +208,13 @@ From the user request, extract:
 - What type (task, bug, feature)
 - Priority
 
-### Step 2: Draft Bead
+### Step 2: Draft Task
 
-Write the full Bead Anatomy:
+Write the full Task Anatomy:
 - Title (single-purpose, imperative)
 - Acceptance with all fields (Test, Cmd, Assert, Read, Signature, Edges)
 - Estimate
-- Dependencies (check `oro bead list` for related work)
+- Dependencies (check `oro task list` for related work)
 
 ### Step 3: Rule of Five
 
@@ -227,35 +227,35 @@ If too large → switch to Decompose mode.
 ### Step 5: Create
 
 ```bash
-oro bead create "<title>" --type <type> --priority <0-4> \
+oro task create "<title>" --type <type> --priority <0-4> \
   --acceptance "<full anatomy>" \
   --estimate <minutes>
 ```
 
 Wire dependencies if needed:
 ```bash
-oro bead dep add <this-bead> <depends-on>
+oro task dep add <this-task> <depends-on>
 ```
 
 ---
 
 ## Mode: Review
 
-Audit existing beads for quality issues.
+Audit existing tasks for quality issues.
 
-### Step 1: Gather Beads
+### Step 1: Gather Tasks
 
 ```bash
-oro bead list --status=open
-oro bead list --status=in_progress
+oro task list --status=open
+oro task list --status=in_progress
 ```
 
-### Step 2: Audit Each Bead
+### Step 2: Audit Each Task
 
-For each bead, check against:
+For each task, check against:
 
 1. **Smell Catalog** — flag any matching smells
-2. **Bead Anatomy** — are required fields present?
+2. **Task Anatomy** — are required fields present?
 3. **Rule of Five** — would it pass all 5 passes?
 4. **Size Heuristics** — is it too large?
 
@@ -282,26 +282,26 @@ For each finding, suggest the fix command:
 
 ```bash
 # Add missing acceptance
-oro bead update <id> --acceptance "Test: ... | Cmd: ... | Assert: ..."
+oro task update <id> --acceptance "Test: ... | Cmd: ... | Assert: ..."
 
-# Decompose oversized bead
-oro bead update <id> --type epic
-oro bead create "<child1>" --type task ...
-oro bead update <child1-id> --parent <id>
-oro bead dep add <id> <child1-id>
+# Decompose oversized task
+oro task update <id> --type epic
+oro task create "<child1>" --type task ...
+oro task update <child1-id> --parent <id>
+oro task dep add <id> <child1-id>
 
 # Clean stale dep
-oro bead dep rm <id> <stale-dep>
+oro task dep rm <id> <stale-dep>
 ```
 
 ---
 
 ## Red Flags
 
-- Creating beads without running Rule of Five
+- Creating tasks without running Rule of Five
 - Acceptance criteria that can't be verified by a command
-- Beads with estimates >7min that haven't been decomposed
-- Missing dependencies (later bead assumes earlier bead's output)
+- Tasks with estimates >7min that haven't been decomposed
+- Missing dependencies (later task assumes earlier task's output)
 - Vague titles like "implement feature" or "handle edge cases"
 - Skipping `Read:` field — workers waste time exploring
-- Emitting beads after only 1-2 Rule of Five passes
+- Emitting tasks after only 1-2 Rule of Five passes

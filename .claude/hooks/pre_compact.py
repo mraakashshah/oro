@@ -181,9 +181,9 @@ def main() -> None:
     bead = state["bead_id"] or "none"
     msg = (
         f"Session was compacted. State saved to {state_path}.\n"
-        f"Bead in progress: {bead}\n"
+        f"Task in progress: {bead}\n"
         f"Files modified: {files}\n"
-        f"Run `oro bead ready` to check for continuation work."
+        f"Run `oro task ready` to check for continuation work."
     )
 
     print(json.dumps({"continue": True, "systemMessage": msg}))

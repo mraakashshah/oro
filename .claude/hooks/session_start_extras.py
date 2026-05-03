@@ -545,7 +545,7 @@ def _format_output(stale: list[dict], merged: list[dict], learnings: list[dict])
     sections = []
 
     if stale:
-        lines = ["## Stale Beads (no update in >3 days)"]
+        lines = ["## Stale Tasks (no update in >3 days)"]
         for b in stale:
             lines.append(f"- **{b['id']}**: {b['title']} ({b['days_stale']} days stale)")
         lines.append("Consider: close, update status, or add a comment to keep active.")

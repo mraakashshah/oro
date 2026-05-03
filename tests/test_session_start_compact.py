@@ -124,7 +124,7 @@ class TestSessionStartCompactRole:
         assert "additionalContext" in output
 
     def test_injects_live_state(self, capsys) -> None:
-        """Non-worker role injects live swarm context from BOTH oro status and bd list."""
+        """Non-worker role injects live swarm context from BOTH oro status and task list."""
         import io
 
         sys.stdin = io.StringIO(json.dumps({"session_id": "s1", "role": "manager"}))
@@ -133,23 +133,23 @@ class TestSessionStartCompactRole:
         mock_status.stdout = "status output"
         mock_status.returncode = 0
 
-        mock_bd = MagicMock()
-        mock_bd.stdout = "bd list output"
-        mock_bd.returncode = 0
+        mock_task = MagicMock()
+        mock_task.stdout = "task list output"
+        mock_task.returncode = 0
 
-        with patch("subprocess.run", side_effect=[mock_status, mock_bd]) as mock_run:
+        with patch("subprocess.run", side_effect=[mock_status, mock_task]) as mock_run:
             session_start_main()
 
         output = json.loads(capsys.readouterr().out)
         assert "additionalContext" in output
         assert "status output" in output["additionalContext"]
-        assert "bd list output" in output["additionalContext"]
+        assert "task list output" in output["additionalContext"]
         assert mock_run.call_count == 2
         first_cmd = mock_run.call_args_list[0][0][0]
         second_cmd = mock_run.call_args_list[1][0][0]
         assert first_cmd[0] == "oro"
         assert second_cmd[0] == "oro"
-        assert second_cmd[1] == "bead"
+        assert second_cmd[1] == "task"
 
     def test_oro_status_failure_suppressed(self, capsys) -> None:
         """OSError/TimeoutExpired from oro status is suppressed; output still valid."""

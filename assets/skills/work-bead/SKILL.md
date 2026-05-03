@@ -1,31 +1,31 @@
 ---
 name: work-bead
-description: Use when picking up a bead to execute end-to-end — from claim through worktree, TDD, merge to main, and cleanup
+description: Use when picking up a task to execute end-to-end — from claim through worktree, TDD, merge to main, and cleanup
 ---
 
-# Work Bead
+# Work Task
 
 ## Overview
 
-End-to-end workflow for executing exactly one bead in isolation. Uses a git worktree for safety, TDD for correctness, and fast-forward merge for clean history on main.
+End-to-end workflow for executing exactly one task in isolation. Uses a git worktree for safety, TDD for correctness, and fast-forward merge for clean history on main.
 
-**Core principle:** 1 invocation = 1 bead, worktree-isolated, rebased + fast-forward merged to main.
+**Core principle:** 1 invocation = 1 task, worktree-isolated, rebased + fast-forward merged to main.
 
 ## Workflow
 
 ### Step 1: PICK
 
 ```bash
-oro bead ready                              # find unblocked work
-oro bead show <id>                          # review details + acceptance
-oro bead update <id> --status in_progress   # claim it
+oro task ready                              # find unblocked work
+oro task show <id>                          # review details + acceptance
+oro task update <id> --status in_progress   # claim it
 ```
 
-If `oro bead ready` returns nothing: report "No beads ready." STOP.
+If `oro task ready` returns nothing: report "No tasks ready." STOP.
 
 ### Step 2: WORKTREE
 
-Create an isolated workspace for this bead:
+Create an isolated workspace for this task:
 
 ```bash
 git worktree add .worktrees/bead-<id> -b bead/<id>
@@ -65,7 +65,7 @@ If baseline tests fail: report failures, ask whether to proceed.
 
 ### Step 3: PARSE
 
-Extract the verification contract from the bead's `--acceptance` field:
+Extract the verification contract from the task's `--acceptance` field:
 
 ```
 Test: <path>:<FnName> | Cmd: <test_cmd> | Assert: <expected>
@@ -78,7 +78,7 @@ Test: <path>:<FnName> | Cmd: <test_cmd> | Assert: <expected>
 | `Assert:` | What "pass" looks like |
 
 If acceptance is missing or vague:
-- `oro bead update <id> --notes "Blocked: unclear acceptance criteria"`
+- `oro task update <id> --notes "Blocked: unclear acceptance criteria"`
 - Ask user for clarification. STOP.
 
 ### Step 4: RED
@@ -95,7 +95,7 @@ uv run pytest path/to/test_file.py::test_fn_name -v
 
 **Verify:** Test fails for the expected reason (missing feature, not a typo).
 
-**If bead is too large** (see `beadcraft` size heuristics): **DECOMPOSE AND STOP** (see Mid-Bead Decomposition below).
+**If task is too large** (see `beadcraft` size heuristics): **DECOMPOSE AND STOP** (see Mid-Task Decomposition below).
 
 ### Step 5: GREEN
 
@@ -123,7 +123,7 @@ Fix any issues. Re-run until clean. Never skip the gate.
 
 ### Step 8: COMMIT
 
-One atomic commit per bead. Include implementation and tests together.
+One atomic commit per task. Include implementation and tests together.
 
 ```bash
 git add <relevant files>
@@ -133,7 +133,7 @@ git commit -m "<type>(<scope>): <desc> (oro-<id>)"
 ### Step 9: CLOSE
 
 ```bash
-oro bead close <id> --reason "Tests pass, gate clean. Commit: <hash>"
+oro task close <id> --reason "Tests pass, gate clean. Commit: <hash>"
 ```
 
 ### Step 10: MERGE — Rebase in-place
@@ -172,7 +172,7 @@ If `--ff-only` fails (main moved since rebase): re-run Step 10 rebase, then retr
 git push
 ```
 
-Note: `bead metadata export` is not needed here — the pre-commit hook runs it automatically on every commit.
+Note: manual task metadata sync is not needed here — the pre-commit hook runs it automatically on every commit.
 
 If push fails (no remote): report. Commit is local.
 
@@ -182,13 +182,13 @@ If push fails (no remote): report. Commit is local.
 git branch -d bead/<id>
 ```
 
-## Mid-Bead Decomposition
+## Mid-Task Decomposition
 
-If during RED the bead needs multiple unrelated tests:
+If during RED the task needs multiple unrelated tests:
 
 1. Discard uncommitted work in worktree
-2. `oro bead update <id> --type epic --notes "Decomposed: needed multiple unrelated tests"`
-3. Create child beads with `oro bead create --parent <id>`, then `oro bead dep add <id> <child>` for each child that must finish before the parent
+2. `oro task update <id> --type epic --notes "Decomposed: needed multiple unrelated tests"`
+3. Create child tasks with `oro task create --parent <id>`, then `oro task dep add <id> <child>` for each child that must finish before the parent
 4. Remove worktree: `git worktree remove .worktrees/bead-<id>`
 5. Delete branch: `git checkout main && git branch -D bead/<id>`
 6. **STOP.** Report what was decomposed. Next invocation picks up a child.
@@ -199,8 +199,8 @@ If during RED the bead needs multiple unrelated tests:
 
 | Situation | Action |
 |-----------|--------|
-| `oro bead ready` returns nothing | Report "No beads ready." STOP. |
-| Acceptance missing/vague | `oro bead update <id> --notes "Blocked: unclear acceptance"`. Ask user. STOP. |
+| `oro task ready` returns nothing | Report "No tasks ready." STOP. |
+| Acceptance missing/vague | `oro task update <id> --notes "Blocked: unclear acceptance"`. Ask user. STOP. |
 | Baseline tests fail in worktree | Report failures. Ask whether to proceed. |
 | Test won't fail (RED) | Testing existing behavior. Fix test. |
 | Quality gate fails | Fix issues. Re-run. Never skip. |
@@ -212,8 +212,8 @@ If during RED the bead needs multiple unrelated tests:
 ## Red Flags
 
 - Skipping the RED step (writing code before a failing test)
-- Closing a bead without a passing quality gate
-- Multiple beads in one commit
+- Closing a task without a passing quality gate
+- Multiple tasks in one commit
 - Proceeding with failing baseline tests without asking
-- Continuing after discovering bead is too large (decompose and stop instead)
+- Continuing after discovering task is too large (decompose and stop instead)
 - Skipping worktree cleanup

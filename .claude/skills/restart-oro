@@ -6,7 +6,7 @@ user-invocable: true
 
 # Restart Oro
 
-Nuke all oro processes, clean stale state, rebuild, relaunch, then continuously monitor the swarm — catching errors, tracking bead progress, and filing P0 bugs.
+Nuke all oro processes, clean stale state, rebuild, relaunch, then continuously monitor the swarm — catching errors, tracking task progress, and filing P0 bugs.
 
 Execute these phases in order. Do NOT skip steps. Report status after each phase.
 
@@ -81,23 +81,23 @@ tmux capture-pane -t oro:1 -p 2>&1 | tail -20
 | Pattern | Meaning |
 |---------|---------|
 | `worktree_error` repeating | Infinite retry bug — stale branch/worktree |
-| `missing_acceptance` repeating | Assignment spam — bead has no AC |
+| `missing_acceptance` repeating | Assignment spam — task has no AC |
 | `qg_retry_escalated` | Quality gate exhausted — worker stuck |
 | `merge_conflict` without `merge_conflict_resolved` | Unresolved merge conflict |
 | `escalation_failed` | Manager unreachable — tmux pane may be dead |
 | Workers stuck at 0 for >60s | Workers not spawning or connecting |
 | Dispatcher state not `running` | Dispatcher crashed or stopped |
 | Panic/fatal in tmux panes | Agent crash |
-| Same bead assigned >3 times in logs | Assignment loop |
+| Same task assigned >3 times in logs | Assignment loop |
 | `heartbeat` stops for a worker | Worker process died |
 
 ### What to do when you find issues
 
 1. **Log spam (repeating errors):** Count occurrences and report the pattern. If >5 of the same error in one cycle, flag it prominently.
-2. **Stuck workers:** Report which worker and bead are stuck, how long, and what the last log entry was.
+2. **Stuck workers:** Report which worker and task are stuck, how long, and what the last log entry was.
 3. **Crashes/panics:** Capture the full error from the tmux pane. Report immediately — don't wait for next cycle.
-4. **Bead progress:** Track which beads are assigned, which complete (watch for `merged` events), and which are stuck. Report progress deltas between cycles.
-5. **P0 bugs:** If you observe a new systemic issue (not a one-off), create a bead: `oro bead create --title="P0: <description>" --type=bug --priority=0`
+4. **Task progress:** Track which tasks are assigned, which complete (watch for `merged` events), and which are stuck. Report progress deltas between cycles.
+5. **P0 bugs:** If you observe a new systemic issue (not a one-off), create a task: `oro task create --title="P0: <description>" --type=bug --priority=0`
 
 ### Reporting
 
@@ -111,7 +111,7 @@ Expand only when something changes or goes wrong:
 
 ```
 [cycle N] ISSUE — worktree_error for oro-abc repeated 8 times in 30s
-  Action: filed P0 bead oro-xyz
+  Action: filed P0 task oro-xyz
 ```
 
 ### Context management

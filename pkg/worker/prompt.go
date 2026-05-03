@@ -37,7 +37,7 @@ func section(b *strings.Builder, header, body string) {
 // stale memory markers (⚠), a verification reminder is appended.
 func memoryBody(ctx string) string {
 	if ctx == "" {
-		return "No prior context for this bead."
+		return "No prior context for this task."
 	}
 	if strings.Contains(ctx, "⚠") {
 		return ctx + "\n\n> **Stale memories detected** — verify by reading the actual source before acting on any ⚠-marked entry."
@@ -45,15 +45,15 @@ func memoryBody(ctx string) string {
 	return ctx
 }
 
-// AssemblePrompt builds the complete 12-section worker prompt from bead details
+// AssemblePrompt builds the complete 12-section worker prompt from task details
 // and context. This prompt is passed to `claude -p` when spawning a worker.
 func AssemblePrompt(params PromptParams) string {
 	var b strings.Builder
 
 	// 1. Role
-	section(&b, "Role", "You are an oro worker. You execute one bead at a time.")
+	section(&b, "Role", "You are an oro worker. You execute one task at a time.")
 
-	// 2. Bead
+	// 2. Task
 	beadBody := fmt.Sprintf(
 		"- **ID:** %s\n- **Title:** %s\n- **Description:** %s\n- **Acceptance Criteria:** %s",
 		params.BeadID, params.Title, params.Description, params.AcceptanceCriteria,
@@ -61,7 +61,7 @@ func AssemblePrompt(params PromptParams) string {
 	if params.Attempt > 0 {
 		beadBody += fmt.Sprintf("\n\n> **Retry attempt %d.** The quality gate has failed on previous attempts. Focus on fixing the issues identified in the feedback.", params.Attempt)
 	}
-	section(&b, "Bead", beadBody)
+	section(&b, "Task", beadBody)
 
 	// 2b. Previous Feedback (only on retries with feedback)
 	if params.Attempt > 0 && params.Feedback != "" {
@@ -95,37 +95,37 @@ type EpicPromptParams struct {
 	Description string
 }
 
-// buildBranchAndRebaseBead builds the Branch & Rebase Bead section for epic decomposition.
+// buildBranchAndRebaseBead builds the Branch & Rebase Task section for epic decomposition.
 func buildBranchAndRebaseBead(epicID string) string {
 	return strings.Join([]string{
-		"After decomposing all child beads:",
+		"After decomposing all child tasks:",
 		"",
 		"1. **Create feature branch**:",
 		"   ```",
 		"   git branch epic/" + epicID + " main",
 		"   ```",
-		"2. **Create rebase bead**: After all sibling task/feature beads are complete, create a final rebase bead that integrates all changes onto your epic branch.",
+		"2. **Create rebase task**: After all sibling task/feature tasks are complete, create a final rebase task that integrates all changes onto your epic branch.",
 		"   ```",
 		"   oro task create --title=\"rebase: integrate " + epicID + " into epic branch\" \\",
 		"     --type=task \\",
 		"     --tag rebase \\",
 		"     --acceptance-criteria=\"Rebase all child commits onto epic/" + epicID + " branch\"",
 		"   ```",
-		"3. **Wire rebase dependency**: Make the rebase bead depend on all sibling beads so it runs last:",
+		"3. **Wire rebase dependency**: Make the rebase task depend on all sibling tasks so it runs last:",
 		"   ```",
-		"   oro task dep add <rebase-bead-id> <sibling-1-id>",
-		"   oro task dep add <rebase-bead-id> <sibling-2-id>",
-		"   # ...for each sibling bead",
+		"   oro task dep add <rebase-task-id> <sibling-1-id>",
+		"   oro task dep add <rebase-task-id> <sibling-2-id>",
+		"   # ...for each sibling task",
 		"   ```",
 	}, "\n")
 }
 
 // BuildEpicDecompositionPrompt builds a prompt for decomposing an epic into
-// child beads using beadcraft. No TDD/QG/worktree sections — this is planning only.
+// child tasks using beadcraft. No TDD/QG/worktree sections — this is planning only.
 func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
 	var b strings.Builder
 
-	section(&b, "Role", "You are an oro worker in epic decomposition mode. Your job is to break this epic into executable child beads.")
+	section(&b, "Role", "You are an oro worker in epic decomposition mode. Your job is to break this epic into executable child tasks.")
 
 	epicBody := fmt.Sprintf("- **ID:** %s\n- **Title:** %s\n- **Description:** %s",
 		params.BeadID, params.Title, params.Description)
@@ -134,22 +134,22 @@ func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
 	section(&b, "Workflow", strings.Join([]string{
 		"1. **Explore**: Read the codebase to understand what this epic requires.",
 		"2. **Premortem**: Before decomposing, identify what could go wrong — tigers (likely failures), elephants (unlikely but catastrophic), paper tigers (seem scary but aren't).",
-		"3. **Decompose with beadcraft**: Break the epic into task/bug beads using `oro task create`.",
-		"   - Each bead must have full acceptance criteria: `Test: | Cmd: | Assert:`",
-		"   - Use neutral runtime tier language when a bead needs routing guidance: `fast`, `balanced`, `deep`, `background`",
-		"   - Each bead must have `Read:`, `Signature:` (when adding functions), and `Edges:` fields",
-		"   - Run the Rule of Five (P1-P5) on every bead before creating it",
+		"3. **Decompose with beadcraft**: Break the epic into task/bug tasks using `oro task create`.",
+		"   - Each task must have full acceptance criteria: `Test: | Cmd: | Assert:`",
+		"   - Use neutral runtime tier language when a task needs routing guidance: `fast`, `balanced`, `deep`, `background`",
+		"   - Each task must have `Read:`, `Signature:` (when adding functions), and `Edges:` fields",
+		"   - Run the Rule of Five (P1-P5) on every task before creating it",
 		"   - Size limit: <=7 min estimate, 1-3 source files, single-purpose title",
 		"4. **Wire dependencies**: `oro task dep add <later> <earlier>` where ordering matters.",
 		"5. **Verify**: Run `oro task show " + params.BeadID + "` to confirm the tree looks correct.",
 	}, "\n"))
 
 	if params.BeadID != "" {
-		section(&b, "Branch & Rebase Bead", buildBranchAndRebaseBead(params.BeadID))
+		section(&b, "Branch & Rebase Task", buildBranchAndRebaseBead(params.BeadID))
 	}
 
-	section(&b, "Bead Creation", strings.Join([]string{
-		"Use this command for each child bead. `--parent` attaches the child to this epic; it does not create a dependency:",
+	section(&b, "Task Creation", strings.Join([]string{
+		"Use this command for each child task. `--parent` attaches the child to this epic; it does not create a dependency:",
 		"```",
 		"oro task create --title=\"<specific task>\" \\",
 		"  --type=task \\",
@@ -167,14 +167,14 @@ func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
 	}, "\n"))
 
 	section(&b, "Constraints", strings.Join([]string{
-		"- Do NOT write code or create worktrees — only create beads",
+		"- Do NOT write code or create worktrees — only create tasks",
 		"- Do NOT close the epic — children must complete first",
 		"- Do NOT push to git",
 		"- Prefer neutral routing tiers over provider names: `fast`, `balanced`, `deep`, `background`",
-		"- Every bead must pass beadcraft Rule of Five before creation",
+		"- Every task must pass beadcraft Rule of Five before creation",
 	}, "\n"))
 
-	section(&b, "Exit", "When all child beads are created and dependencies wired, your work is complete. Exit cleanly.")
+	section(&b, "Exit", "When all child tasks are created and dependencies wired, your work is complete. Exit cleanly.")
 
 	return b.String()
 }
@@ -256,12 +256,12 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 		"**NEVER** stop for: style preferences, naming choices, trivial confirmations.",
 	}, "\n"))
 	section(b, "Autonomy", strings.Join([]string{
-		"You have full authority to execute this bead without asking for permission or confirmation.",
+		"You have full authority to execute this task without asking for permission or confirmation.",
 		"",
 		"Use these 3 strategies to stay autonomous:",
 		"1. **Decide and act** \u2014 make implementation choices yourself based on acceptance criteria.",
 		"2. **Recover from errors** \u2014 if a test fails or a command errors, diagnose and fix without escalating.",
-		"3. **Timebox exploration** \u2014 if you spend more than 5 minutes stuck, create a blocker bead and exit.",
+		"3. **Timebox exploration** \u2014 if you spend more than 5 minutes stuck, create a blocker task and exit.",
 	}, "\n"))
 	appendContextHandoffSection(b)
 	appendFailureSection(b, params.BeadID)
@@ -288,19 +288,19 @@ func appendContextHandoffSection(b *strings.Builder) {
 // appendFailureSection writes the Failure section with escalation instructions.
 func appendFailureSection(b *strings.Builder, beadID string) {
 	section(b, "Failure", strings.Join([]string{
-		"All bug beads MUST use --priority=0. Bugs are always P0.",
+		"All bug tasks MUST use --priority=0. Bugs are always P0.",
 		"",
-		"- 3 failed test attempts: create a P0 bead describing the failure, then exit.",
-		"  `oro task create --title=\"P0: <bead-title> test failure\" --type=bug --priority=0 --description=\"QG output: <paste error>\"`",
-		"- Bead too big: decompose with `oro task create --parent <bead-id>` for each child. `--parent` only attaches the child; add dependencies explicitly when needed.",
-		"  `oro task create --title=\"<subtask>\" --type=task --parent <bead-id>` for each piece",
-		"  then `oro task dep add <bead-id> <child-id>` for each child that must finish before the parent",
-		"- Context limit reached: create handoff beads, then exit.",
-		fmt.Sprintf("  `oro task create --title=\"Continue: <bead-title>\" --type=task --parent %s --acceptance-criteria=\"<copy same acceptance criteria from above>\" --description=\"Remaining: <what's left>\"`", beadID),
-		fmt.Sprintf("  then `oro task dep add %s <child-id>` if the parent must wait for the handoff bead", beadID),
-		"- Blocked: create a blocker bead, then declare the dependency and exit.",
+		"- 3 failed test attempts: create a P0 task describing the failure, then exit.",
+		"  `oro task create --title=\"P0: <task-title> test failure\" --type=bug --priority=0 --description=\"QG output: <paste error>\"`",
+		"- Task too big: decompose with `oro task create --parent <task-id>` for each child. `--parent` only attaches the child; add dependencies explicitly when needed.",
+		"  `oro task create --title=\"<subtask>\" --type=task --parent <task-id>` for each piece",
+		"  then `oro task dep add <task-id> <child-id>` for each child that must finish before the parent",
+		"- Context limit reached: create handoff tasks, then exit.",
+		fmt.Sprintf("  `oro task create --title=\"Continue: <task-title>\" --type=task --parent %s --acceptance-criteria=\"<copy same acceptance criteria from above>\" --description=\"Remaining: <what's left>\"`", beadID),
+		fmt.Sprintf("  then `oro task dep add %s <child-id>` if the parent must wait for the handoff task", beadID),
+		"- Blocked: create a blocker task, then declare the dependency and exit.",
 		"  `oro task create --title=\"Blocker: <what's blocking>\" --type=bug --priority=0`",
-		"  then `oro task dep add <this-bead> <blocker-bead>`",
+		"  then `oro task dep add <this-task> <blocker-task>`",
 	}, "\n"))
 }
 
@@ -317,9 +317,9 @@ func appendExitSection(b *strings.Builder) {
 		"2. Your work is complete. The dispatcher will:",
 		"   - Receive your completion signal",
 		"   - Merge your worktree branch to main",
-		"   - Close the bead if merge succeeds",
+		"   - Close the task if merge succeeds",
 		"   - Escalate to the manager if merge fails",
 		"",
-		"You do NOT need to merge to main or close the bead yourself.",
+		"You do NOT need to merge to main or close the task yourself.",
 	}, "\n"))
 }

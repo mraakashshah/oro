@@ -159,33 +159,33 @@ tmux split-window -t oro-watch "oro-dash"
 ```
 
 ### Dashboard data sources
-The dashboard reads from the same `state.db` and `beads` CLI — so all observation techniques above feed it too.
+The dashboard reads from the same `state.db` and `tasks` CLI — so all observation techniques above feed it too.
 
-## 5. Bead Behavior
+## 5. Task Behavior
 
-### Query bead state
+### Query task state
 ```bash
-# Current in-progress beads
-oro bead list --status=in_progress
+# Current in-progress tasks
+oro task list --status=in_progress
 
-# Detailed bead view
-oro bead show <bead-id>
+# Detailed task view
+oro task show <task-id>
 
 ```
 
-### Bead assignment tracking
+### Task assignment tracking
 ```bash
-# Which bead is assigned to which worker?
+# Which task is assigned to which worker?
 sqlite3 ~/.oro/state.db \
   "SELECT bead_id, worker_id, status, attempt_count
    FROM assignments WHERE status != 'completed';"
 
-# Beads that have been assigned more than once (retries)
+# Tasks that have been assigned more than once (retries)
 sqlite3 ~/.oro/state.db \
   "SELECT bead_id, count(*) as assigns, max(attempt_count) as attempts
    FROM assignments GROUP BY bead_id HAVING assigns > 1;"
 
-# Bead completion timeline
+# Task completion timeline
 sqlite3 ~/.oro/state.db \
   "SELECT bead_id, type, created_at FROM events
    WHERE type IN ('ASSIGN','DONE','QG_FAILED','MERGE_CONFLICT','MERGED')
@@ -220,10 +220,10 @@ sqlite3 ~/.oro/state.db \
 |-------------|-------|
 | `STUCK_WORKER` | No progress for 10min — kill or investigate |
 | `WORKER_CRASH` | Process died — check worker output.log |
-| `QG_FAILED` repeating for same bead | Worker can't pass quality gate |
+| `QG_FAILED` repeating for same task | Worker can't pass quality gate |
 | `MERGE_CONFLICT` without `MERGED` | Unresolved conflict — needs manual intervention |
 | `escalation_failed` | Manager pane unreachable |
-| `ASSIGN` spam (same bead) | Assignment loop — check rejection counts |
+| `ASSIGN` spam (same task) | Assignment loop — check rejection counts |
 | `context_pct > 80` in heartbeats | Worker running low on context |
 
 ### Quick health check (one-shot)
@@ -271,10 +271,10 @@ sqlite3 ~/.oro/state.db \
   "SELECT id, type, substr(content,1,80), source, created_at
    FROM memories ORDER BY created_at DESC LIMIT 20;"
 
-# Memories from a specific worker/bead
+# Memories from a specific worker/task
 sqlite3 ~/.oro/state.db \
   "SELECT substr(content,1,100), type, confidence
-   FROM memories WHERE bead_id='<bead-id>';"
+   FROM memories WHERE bead_id='<task-id>';"
 
 # Search memories
 sqlite3 ~/.oro/state.db \

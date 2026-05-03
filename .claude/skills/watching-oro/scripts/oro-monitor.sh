@@ -78,8 +78,8 @@ tmux split-window -t "$SESSION":0.3 -v \
      clear; \
      echo '=== \$(date +%H:%M:%S) ==='; \
      $ORO_BIN status 2>&1; \
-     echo; echo '--- Beads In Progress ---'; \
-     oro bead list --status=in_progress 2>&1 | head -20; \
+     echo; echo '--- Tasks In Progress ---'; \
+     $ORO_BIN task list --status=in_progress 2>&1 | head -20; \
      echo; echo '--- Recent Events ---'; \
      $ORO_BIN logs 2>&1 | tail -10; \
      if command -v fswatch >/dev/null 2>&1; then \

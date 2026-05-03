@@ -245,7 +245,7 @@ func (s *Spawner) Diagnose(ctx context.Context, opts DiagOpts) <-chan Result {
 }
 
 // DiagnoseEpicFailure spawns an agent that reads the failed acceptance test
-// output and creates fix beads under the epic. The result channel delivers the
+// output and creates fix tasks under the epic. The result channel delivers the
 // agent's feedback when it exits (fire-and-forget is fine; callers may ignore
 // the channel).
 func (s *Spawner) DiagnoseEpicFailure(ctx context.Context, opts EpicFixOpts) <-chan Result {
@@ -254,14 +254,14 @@ func (s *Spawner) DiagnoseEpicFailure(ctx context.Context, opts EpicFixOpts) <-c
 }
 
 // Escalate spawns a one-shot manager agent to handle a dispatcher escalation.
-// The agent receives the escalation type, bead context, and recent history,
+// The agent receives the escalation type, task context, and recent history,
 // then takes corrective action (e.g. restart worker, add AC, resolve conflict).
 func (s *Spawner) Escalate(ctx context.Context, opts EscalationOpts) <-chan Result {
 	prompt := buildEscalationPrompt(opts)
 	return s.run(ctx, OpsEscalation, opts.BeadID, opts.Workdir, prompt)
 }
 
-// WriteAC spawns an agent that writes acceptance criteria for a bead.
+// WriteAC spawns an agent that writes acceptance criteria for a task.
 //
 //oro:testonly — wired into production by dispatcher (OpsWriteAC escalation path)
 func (s *Spawner) WriteAC(ctx context.Context, opts WriteACOpts) <-chan Result {
@@ -269,8 +269,8 @@ func (s *Spawner) WriteAC(ctx context.Context, opts WriteACOpts) <-chan Result {
 	return s.run(ctx, OpsWriteAC, opts.BeadID, opts.Workdir, prompt)
 }
 
-// Decompose spawns a one-shot agent that decomposes a bead into smaller child
-// beads when a bead has exhausted all worker retry attempts.
+// Decompose spawns a one-shot agent that decomposes a task into smaller child
+// tasks when a task has exhausted all worker retry attempts.
 func (s *Spawner) Decompose(ctx context.Context, opts DecomposeOpts) <-chan Result {
 	prompt := buildDecomposePrompt(opts)
 	return s.run(ctx, OpsDecompose, opts.BeadID, "", prompt)
@@ -623,7 +623,7 @@ func buildDiagnosisPrompt(opts DiagOpts) string {
 	var b strings.Builder
 	b.WriteString("CRITICAL: Do NOT use TaskOutput or run tasks in the background.\n")
 	b.WriteString("Use the Read tool to check output files. Run all commands in foreground.\n\n")
-	fmt.Fprintf(&b, "Diagnose why bead %s is stuck.\n", opts.BeadID)
+	fmt.Fprintf(&b, "Diagnose why task %s is stuck.\n", opts.BeadID)
 	fmt.Fprintf(&b, "Symptom: %s\n", opts.Symptom)
 	b.WriteString("Check: test output, recent commits, worktree state.\n")
 	return b.String()

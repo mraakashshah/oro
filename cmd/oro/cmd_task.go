@@ -46,10 +46,10 @@ func newTaskCmdWithStore(store beadstore.Store) *cobra.Command {
 		newBeadTagCmd(store),
 		newBeadMetaCmd(store),
 		newBeadNoteCmd(store),
-		newBeadStubCmd(store, "search <query>", "Search beads", cobra.ExactArgs(1)),
+		newBeadStubCmd(store, "search <query>", "Search tasks", cobra.ExactArgs(1)),
 		newBeadExportCmd(store),
-		newBeadStubCmd(store, "import <path>", "Import bead snapshot", cobra.ExactArgs(1)),
-		newBeadStubCmd(store, "doctor", "Check bead-store health", cobra.NoArgs),
+		newBeadStubCmd(store, "import <path>", "Import task snapshot", cobra.ExactArgs(1)),
+		newBeadStubCmd(store, "doctor", "Check task store health", cobra.NoArgs),
 		newBeadStatusCmd(store),
 	)
 	adaptTaskCommandHelp(cmd)

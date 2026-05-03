@@ -23,10 +23,10 @@ func TestArchitectBeacon_AllNineSections(t *testing.T) {
 		"## System Map",
 		"## Core Skills",
 		"## Output Contract",
-		"## Bead Craft",
+		"## Task Craft",
 		"## Strategic Decomposition",
 		"## Research",
-		"## Beads CLI",
+		"## Tasks CLI",
 		"## Anti-patterns",
 	}
 
@@ -46,10 +46,10 @@ func TestArchitectBeacon_KeyTerms(t *testing.T) {
 		term   string
 		reason string
 	}{
-		{"oro bead create", "architect creates beads"},
-		{"oro bead show", "architect inspects beads"},
-		{"oro bead dep add", "architect maps dependencies"},
-		{"acceptance criteria", "beads must have acceptance criteria"},
+		{"oro task create", "architect creates tasks"},
+		{"oro task show", "architect inspects tasks"},
+		{"oro task dep add", "architect maps dependencies"},
+		{"acceptance criteria", "tasks must have acceptance criteria"},
 		{"worktree", "system map references worktrees"},
 		{"You do not write code", "core role constraint"},
 	}

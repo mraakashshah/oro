@@ -8,11 +8,11 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-# Load the hook module from ORO_HOME/hooks/ (externalized config)
-_oro_home = Path(os.environ.get("ORO_HOME", Path.home() / ".oro"))
+_repo_root = Path(__file__).resolve().parent.parent
+_repo_hook = _repo_root / "assets" / "hooks" / "validate_agent_completion.py"
 _spec = importlib.util.spec_from_file_location(
     "validate_agent_completion",
-    _oro_home / "hooks" / "validate_agent_completion.py",
+    _repo_hook,
 )
 _mod = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
 _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
@@ -125,21 +125,25 @@ class TestCheckUnpushed:
 # check_bead_closed
 # ---------------------------------------------------------------------------
 class TestCheckBeadClosed:
-    def test_bd_close_present(self):
+    def test_task_close_present(self):
+        output = 'Running: oro task close oro-abc --reason="Done"\nSuccess.'
+        assert check_bead_closed(output) is None
+
+    def test_legacy_bd_close_present(self):
         output = 'Running: bd close oro-abc --reason="Done"\nSuccess.'
         assert check_bead_closed(output) is None
 
-    def test_bd_close_missing(self):
+    def test_task_close_missing(self):
         output = "I finished the task. All tests pass."
         result = check_bead_closed(output)
         assert result is not None
-        assert "bd close" in result.lower() or "bead" in result.lower()
+        assert "oro task close" in result.lower() or "task" in result.lower()
 
     def test_empty_output(self):
         result = check_bead_closed("")
         assert result is not None
 
-    def test_bd_close_with_different_formatting(self):
+    def test_legacy_bd_close_with_different_formatting(self):
         output = "bd  close  my-bead  --reason='Completed'"
         assert check_bead_closed(output) is None
 
@@ -155,7 +159,7 @@ class TestBuildWarnings:
         assert warnings == []
 
     def test_missing_bead_close_warning(self):
-        """Even without worktree, should warn about missing bd close."""
+        """With a worktree, should warn about missing task close."""
         output = "Working in /foo/.worktrees/bead-abc\nAll done, tests pass."
         # Worktree won't exist, so we mock check_dirty_worktree and check_unpushed
         with (
@@ -163,10 +167,10 @@ class TestBuildWarnings:
             patch.object(_mod, "check_unpushed", return_value=None),
         ):
             warnings = build_warnings(output)
-        assert any("bd close" in w.lower() or "bead" in w.lower() for w in warnings)
+        assert any("oro task close" in w.lower() or "task" in w.lower() for w in warnings)
 
     def test_all_clean_no_warnings(self):
-        output = 'git -C /foo/.worktrees/bead-abc commit\nbd close abc --reason="Done"'
+        output = 'git -C /foo/.worktrees/bead-abc commit\noro task close abc --reason="Done"'
         with (
             patch.object(_mod, "check_dirty_worktree", return_value=None),
             patch.object(_mod, "check_unpushed", return_value=None),
@@ -181,7 +185,7 @@ class TestBuildWarnings:
             patch.object(_mod, "check_unpushed", return_value="Unpushed commits found"),
         ):
             warnings = build_warnings(output)
-        # Should have dirty + unpushed + no bd close = 3 warnings
+        # Should have dirty + unpushed + no task close = 3 warnings
         assert len(warnings) == 3
 
 
@@ -208,11 +212,11 @@ class TestMain:
         assert result.stdout == ""
 
     def test_task_tool_clean_no_worktree(self):
-        """Task tool with no worktree mention and bd close should produce no output."""
+        """Task tool with no worktree mention and task close should produce no output."""
         hook_input = {
             "tool_name": "Task",
             "tool_input": {"prompt": "Do something"},
-            "tool_output": 'bd close xyz --reason="Done"',
+            "tool_output": 'oro task close xyz --reason="Done"',
         }
         result = subprocess.run(
             [
@@ -223,11 +227,38 @@ class TestMain:
             capture_output=True,
             text=True,
         )
-        # No worktree -> fail open, bd close present -> no warning
+        # No worktree -> fail open, task close present -> no warning
         assert result.stdout == ""
 
-    def test_task_tool_missing_bd_close_warns(self):
-        """Task with worktree but no bd close should produce warning JSON."""
+    def test_task_tool_clean_worktree_with_task_close_no_warning(self, tmp_path):
+        """Checked-in hook accepts oro task close when a worktree is present."""
+        worktree = tmp_path / ".worktrees" / "oro-abc"
+        worktree.mkdir(parents=True)
+        subprocess.run(["git", "init"], cwd=worktree, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=worktree, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "T"], cwd=worktree, capture_output=True, check=True)
+        (worktree / "f.txt").write_text("ok")
+        subprocess.run(["git", "add", "f.txt"], cwd=worktree, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=worktree, capture_output=True, check=True)
+        hook_input = {
+            "tool_name": "Task",
+            "tool_input": {"prompt": f"Work in {worktree}"},
+            "tool_output": 'oro task close oro-abc --reason="Done"',
+        }
+        result = subprocess.run(
+            [
+                "python3",
+                str(Path(__file__).resolve().parent.parent / ".claude" / "hooks" / "validate_agent_completion.py"),
+            ],
+            input=json.dumps(hook_input),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert result.stdout == ""
+
+    def test_task_tool_missing_task_close_warns(self):
+        """Task with worktree but no task close should produce warning JSON."""
         hook_input = {
             "tool_name": "Task",
             "tool_input": {"prompt": "Work in /foo/.worktrees/bead-test"},
@@ -246,4 +277,4 @@ class TestMain:
             output = json.loads(result.stdout)
             assert "hookSpecificOutput" in output
             ctx = output["hookSpecificOutput"].get("additionalContext", "")
-            assert "bd close" in ctx.lower() or "bead" in ctx.lower()
+            assert "oro task close" in ctx.lower() or "task" in ctx.lower()

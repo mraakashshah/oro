@@ -44,7 +44,7 @@ the externally managed Dolt server on `127.0.0.1:13310` is reachable. A dry-run
 that cannot run `bd export`, needs `--force-recover`, cannot query Dolt's
 internal count, or reports a count mismatch is a no-go for initial import.
 
-Rollback is also not yet fully executable from the shipped CLI. `oro bead
+Rollback is also not yet fully executable from the shipped CLI. `oro task
 import` is still a stub, and `migrate-from-dolt --from-jsonl` is an initial
 import path, not an in-place restore command for a populated or corrupted
 SQLite beadstore. Real migration or rollback must have an operator-taken
@@ -82,7 +82,7 @@ Expected results:
 - `scripts/check-bd-version.sh` passes. If a waiver is required, use `scripts/check-bd-version.sh --ignore-version-drift` and record the waiver in the operator log. Although `--ignore-version-drift` appears in `migrate-from-dolt --help`, it is not implemented for initial migration.
 - Run the gate block as one script, with `set -euo pipefail` active, so any failed `test` aborts before dry-run.
 - Dispatcher count is `0` across both `oro start` and `oro dispatcher start` invocation paths. Stop all dispatchers before migration.
-- Worker/writer process scan prints `active_writer_count=0`. If any worker, any direct `bd` process, direct native `oro bead` mutator, or another migration command is active, stop it before dry-run. The scanner inspects process command names and argv tokens instead of substring-matching the whole shell command, so macOS daemons such as `sbd` and `donotdisturbd` and the shell running this gate do not trip the gate. This intentionally treats read-only `bd` commands as stop-the-world conflicts so the gate cannot miss newly added bd mutators; otherwise `bd export`, `state.db` snapshotting, or migration apply can race an active writer.
+- Worker/writer process scan prints `active_writer_count=0`. If any worker, any direct `bd` process, direct native `oro task` mutator, legacy `oro bead` compatibility mutator, or another migration command is active, stop it before dry-run. The scanner inspects process command names and argv tokens instead of substring-matching the whole shell command, so macOS daemons such as `sbd` and `donotdisturbd` and the shell running this gate do not trip the gate. This intentionally treats read-only `bd` commands as stop-the-world conflicts so the gate cannot miss newly added bd mutators; otherwise `bd export`, `state.db` snapshotting, or migration apply can race an active writer.
 - `ORO_BEADSOURCE_MODE` is empty or `cli`; the command block exits non-zero otherwise. Do not migrate while already in `shadow` or `sqlite`.
 - Help output matches the actual migration flags listed below; do not add unimplemented backup toggles.
 - Dry-run exits successfully without `--force-recover` and does not report `native bead table is not empty`. Initial migration is not a repair command for an existing native bead table; any pre-existing row, including a soft-deleted row, means the operator must restore or clear `state.db` through a reviewed rollback path before retrying.
@@ -155,7 +155,7 @@ printf '%s\n' "${ORO_BEADSOURCE_MODE:?}"
 After apply:
 
 ```bash
-./oro bead status
+./oro task status
 ```
 
 The integrity check must print `ok`. Record the snapshot path and the migration JSONL backup path in the operator log. Then restart the dispatcher from the environment where `ORO_BEADSOURCE_MODE=shadow` is exported, with the worker count explicitly chosen for the migration restart:
@@ -182,7 +182,7 @@ shadow-mode primary. Restart and verify bd's Dolt server before starting the
 shadow dispatcher, especially for a manual monitor start with `--workers 0`.
 If `bd dolt status` does not show a reachable server, do not start shadow mode.
 
-Every restarted worker subprocess must no longer have `bd` on `PATH`, and a controlled test bead per restarted worker must prove workers emit native `oro bead` commands rather than `bd` commands before normal work resumes. Worker logs are append-only, so record each worker log byte offset before assigning the controlled bead and inspect only the new log segment:
+Every restarted worker subprocess must no longer have `bd` on `PATH`, and a controlled test task per restarted worker must prove workers emit native `oro task` commands rather than `bd` commands before normal work resumes. Worker logs are append-only, so record each worker log byte offset before assigning the controlled task and inspect only the new log segment:
 
 ```bash
 worker_ids="<space-separated restarted dispatcher worker ids>"
@@ -204,13 +204,14 @@ for worker_id in $worker_ids; do
   else
     before_bytes=0
   fi
-  test_bead=<operator-created test bead assigned to worker_id>
-  test -n "$test_bead"
+  test_task=<operator-created test task assigned to worker_id>
+  test -n "$test_task"
   test -r "$test_worker_log"
   after_log=$(mktemp)
   tail -c +"$((before_bytes + 1))" "$test_worker_log" > "$after_log"
-  rg --fixed-strings "$test_bead" "$after_log"
-  rg 'oro bead (create|update|close|reopen|dep|deps|tag|defer|undefer|comment|note|meta)' "$after_log"
+  rg --fixed-strings "$test_task" "$after_log"
+  rg 'oro task (create|update|close|reopen|dep|deps|tag|defer|undefer|comment|note|meta)' "$after_log"
+  ! rg 'oro bead (create|update|close|reopen|dep|deps|tag|defer|undefer|comment|note|meta)' "$after_log"
   ! rg '(^|[;&|[:space:]])bd([[:space:]]|$)' "$after_log"
   rm -f "$after_log"
 done
@@ -249,7 +250,7 @@ test "$mode" = shadow
 ./oro bead migrate-from-dolt --reconcile
 ```
 
-Dispatcher count must be `0` across both dispatcher invocation paths, `ORO_BEADSOURCE_MODE` must be exactly `shadow`, and the worker/writer process scan must print `active_writer_count=0`. Apply only after the preview is reviewed and conflict-free, with the dispatcher, workers, direct `bd` processes, direct native `oro bead` mutators, and other migration commands still stopped:
+Dispatcher count must be `0` across both dispatcher invocation paths, `ORO_BEADSOURCE_MODE` must be exactly `shadow`, and the worker/writer process scan must print `active_writer_count=0`. Apply only after the preview is reviewed and conflict-free, with the dispatcher, workers, direct `bd` processes, direct native `oro task` mutators, legacy `oro bead` compatibility mutators, and other migration commands still stopped:
 
 ```bash
 set -euo pipefail
@@ -309,7 +310,7 @@ Migration aborted mid-import:
 - Legacy-only: leave `ORO_BEADSOURCE_MODE=cli`. After Phase 10 native
   dispatcher/worker startup begins, keep production stopped instead of trying to
   restart in `cli`.
-- Keep dispatcher, workers, direct `bd` processes, direct native `oro bead` mutators, and other migration commands stopped until the failed `state.db` is restored or moved aside and integrity-checked.
+- Keep dispatcher, workers, direct `bd` processes, direct native `oro task` mutators, legacy `oro bead` compatibility mutators, and other migration commands stopped until the failed `state.db` is restored or moved aside and integrity-checked.
 - Preserve the command transcript, the `OroHome/migrations/<timestamp>-pre-migration.jsonl` backup, and the failed `state.db`.
 - The migration validates rows before opening SQLite, but row-level insert failures can be collected and committed for other rows before the command returns a validation error. Treat any non-zero migration error count as a partial import unless proven otherwise.
 - Do not rerun real migration against the same failed `state.db`. Restore a known-good pre-migration `state.db` SQLite backup snapshot or move the failed DB aside before retrying the full gate sequence.
@@ -433,14 +434,14 @@ printf 'restored state.db from %s; failed DB moved to %s\n' "$snapshot_dir" "$fa
 Critical bug after sqlite cutover:
 
 - Stop dispatcher and workers.
-- Export the current SQLite beadstore with `oro bead export` and reconcile bd from that export using bd's import path before switching authority back:
+- Export the current SQLite beadstore with `oro task export` and reconcile bd from that export using bd's import path before switching authority back:
 
 ```bash
 set -euo pipefail
 
 rollback_export=".oro/exports/sqlite-rollback-$(date -u +%Y%m%dT%H%M%SZ).jsonl"
 mkdir -p "$(dirname "$rollback_export")"
-oro bead export --out="$rollback_export"
+oro task export --out="$rollback_export"
 bd import --dry-run "$rollback_export"
 bd import "$rollback_export"
 ```

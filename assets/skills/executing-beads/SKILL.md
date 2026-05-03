@@ -1,29 +1,29 @@
 ---
 name: executing-beads
-description: Use when work is tracked as beads — executes one bead at a time through the full TDD-commit-verify lifecycle
+description: Use when work is tracked as tasks — executes one task at a time through the full TDD-commit-verify lifecycle
 ---
 
-# Executing Beads
+# Executing Tasks
 
 ## Overview
 
-Execute one bead at a time through a full TDD cycle. Each closed bead produces one atomic, tested commit. This replaces `executing-plans` when work is tracked as beads.
+Execute one task at a time through a full TDD cycle. Each closed task produces one atomic, tested commit. This replaces `executing-plans` when work is tracked as tasks.
 
-**Core principle:** 1 bead = 1 TDD cycle = 1 atomic commit.
+**Core principle:** 1 task = 1 TDD cycle = 1 atomic commit.
 
-## Per-Bead Cycle
+## Per-Task Cycle
 
 ### Step 1: Pick
 
 ```bash
-oro bead ready                              # find unblocked work
-oro bead show <id>                          # review details + acceptance
-oro bead update <id> --status in_progress   # claim it
+oro task ready                              # find unblocked work
+oro task show <id>                          # review details + acceptance
+oro task update <id> --status in_progress   # claim it
 ```
 
 ### Step 2: Parse Acceptance
 
-Extract the verification contract from the bead's `--acceptance` field:
+Extract the verification contract from the task's `--acceptance` field:
 
 ```
 Test: <path>:<FnName> | Cmd: <test_cmd> | Assert: <expected>
@@ -35,7 +35,7 @@ Test: <path>:<FnName> | Cmd: <test_cmd> | Assert: <expected>
 | `Cmd:` | Command to run verification |
 | `Assert:` | What "pass" looks like |
 
-If acceptance is missing or vague: STOP. Update the bead with concrete acceptance before proceeding.
+If acceptance is missing or vague: STOP. Update the task with concrete acceptance before proceeding.
 
 ### Step 3: RED — Write Failing Test
 
@@ -82,7 +82,7 @@ Skip this check for trivial changes (rename, docs, config). Apply for any change
 
 ### Step 5c: Spec Check
 
-Invoke `review-implementation` against the bead's acceptance criteria and description. Confirm every requirement is met before proceeding to the quality gate.
+Invoke `review-implementation` against the task's acceptance criteria and description. Confirm every requirement is met before proceeding to the quality gate.
 
 ### Step 6: Quality Gate
 
@@ -100,45 +100,45 @@ Fix any issues before proceeding.
 
 ### Step 7: Atomic Commit
 
-One commit per bead. Include implementation and tests together.
+One commit per task. Include implementation and tests together.
 
 ```bash
 git add <relevant files>
 git commit -m "<type>(<scope>): <desc> (oro-<id>)"
 ```
 
-**On feature branches:** Intermediate commits during TDD are fine. Squash to one atomic commit when closing the bead.
+**On feature branches:** Intermediate commits during TDD are fine. Squash to one atomic commit when closing the task.
 
 **On main (no branch):** Produce a single commit at this step.
 
 ### Step 8: Close
 
 ```bash
-oro bead close <id> --reason "Tests pass, gate clean. Commit: <hash>"
+oro task close <id> --reason "Tests pass, gate clean. Commit: <hash>"
 ```
 
 ### Step 9: Context Checkpoint
 
-After every bead closure, run `context-checkpoint` skill logic:
+After every task closure, run `context-checkpoint` skill logic:
 
 | Message Pairs | Zone | Action |
 |---------------|------|--------|
-| 0-10 | Green | Continue to next bead |
+| 0-10 | Green | Continue to next task |
 | 11-15 | Yellow | Finish current, then evaluate |
-| 16-20 | Orange | Do NOT start new bead. Handoff now. |
+| 16-20 | Orange | Do NOT start new task. Handoff now. |
 | 20+ | Red | Stop immediately. Emergency handoff. |
 
 Green → return to Step 1. Otherwise → handoff via `create-handoff` skill.
 
-## Mid-Bead Decomposition
+## Mid-Task Decomposition
 
-If during Step 3 the bead needs multiple unrelated tests:
+If during Step 3 the task needs multiple unrelated tests:
 
 1. **STOP** — do not continue implementation
-2. Promote: `oro bead update <id> --type epic`
-3. Create children: `oro bead create --type task --parent <id> --acceptance "..." --estimate <min>`, then `oro bead dep add <id> <child>` for each child that must finish before the parent
-4. Wire dependencies: `oro bead dep add` where ordering matters
-5. Return to Step 1 with the first child bead
+2. Promote: `oro task update <id> --type epic`
+3. Create children: `oro task create --type task --parent <id> --acceptance "..." --estimate <min>`, then `oro task dep add <id> <child>` for each child that must finish before the parent
+4. Wire dependencies: `oro task dep add` where ordering matters
+5. Return to Step 1 with the first child task
 
 **Too-large signals:**
 - Needs multiple unrelated assertions
@@ -153,14 +153,14 @@ If during Step 3 the bead needs multiple unrelated tests:
 | Test won't fail (Step 3) | You're testing existing behavior. Fix the test. |
 | Test errors instead of fails | Fix the error (imports, syntax), re-run until proper failure. |
 | Quality gate fails (Step 6) | Fix issues. Don't skip the gate. |
-| Blocked by another bead | `oro bead ready` to find a different bead. Note the blocker. |
-| Acceptance criteria unclear | STOP. `oro bead update <id> --notes "Blocked: unclear acceptance"`. Ask user. |
+| Blocked by another task | `oro task ready` to find a different task. Note the blocker. |
+| Acceptance criteria unclear | STOP. `oro task update <id> --notes "Blocked: unclear acceptance"`. Ask user. |
 
 ## Red Flags
 
 - Skipping the RED step (writing code before a failing test)
-- Closing a bead without a passing quality gate
-- Multiple beads in one commit
+- Closing a task without a passing quality gate
+- Multiple tasks in one commit
 - Proceeding with failing tests
 - Ignoring context checkpoint signals
 - Writing implementation before parsing acceptance criteria

@@ -33,7 +33,7 @@ Oro is a self-managing multi-agent system that coordinates AI workers to execute
   - [Maintenance](#maintenance)
   - [Internal](#internal)
 - [Key Concepts](#key-concepts)
-  - [Beads](#beads)
+  - [Tasks](#tasks)
   - [Epics](#epics)
   - [Quality Gate](#quality-gate)
   - [Worktrees](#worktrees)
@@ -45,7 +45,7 @@ Oro is a self-managing multi-agent system that coordinates AI workers to execute
 
 ## Why "Oro"?
 
-*Oro* is Spanish for **gold** — because that's what we're doing: mining. Sifting through the infinite possibility space of code, specs, and designs to extract the nuggets that actually work. Every bead is a dig site. Every memory is a vein worth returning to.
+*Oro* is Spanish for **gold** — because that's what we're doing: mining. Sifting through the infinite possibility space of code, specs, and designs to extract the nuggets that actually work. Every task is a dig site. Every memory is a vein worth returning to.
 
 It's also the heart of ***ouro*boros** — the serpent that eats its own tail. Workers consume their own context, write a handoff, and a fresh worker picks up where they left off. The loop never ends. The serpent never stops eating. Context is finite; the work is not.
 
@@ -54,9 +54,9 @@ Also, our cute mascot is Oro, the *oro* ouroboros !
 
 ## Philosophy
 
-Oro exists because single-agent coding sessions don't scale. One agent hits context limits, loses track of prior decisions, and can't parallelize. Oro solves this with a swarm: multiple workers execute beads (tracked work items) simultaneously, each in an isolated worktree, each with access to cross-session memory. When a worker exhausts its context window, it writes a handoff and a fresh worker picks up where it left off — the serpent eats its tail.
+Oro exists because single-agent coding sessions don't scale. One agent hits context limits, loses track of prior decisions, and can't parallelize. Oro solves this with a swarm: multiple workers execute tasks (tracked work items) simultaneously, each in an isolated worktree, each with access to cross-session memory. When a worker exhausts its context window, it writes a handoff and a fresh worker picks up where it left off — the serpent eats its tail.
 
-Quality is not optional. Every bead goes through TDD (red-green-refactor), an automated quality gate (tests + lint + format), and ops-agent code review before merging to main. Failed reviews get feedback and retry. Merge conflicts get an ops agent. Stuck workers get diagnosed. The system is opinionated about correctness because autonomous agents must earn trust through process, not promises.
+Quality is not optional. Every task goes through TDD (red-green-refactor), an automated quality gate (tests + lint + format), and ops-agent code review before merging to main. Failed reviews get feedback and retry. Merge conflicts get an ops agent. Stuck workers get diagnosed. The system is opinionated about correctness because autonomous agents must earn trust through process, not promises.
 
 Memory persists across sessions. Workers emit learnings during execution, the dispatcher extracts patterns from logs, and a FTS5-backed memory store surfaces relevant context to future workers. Decisions, gotchas, and patterns accumulate over time — the swarm gets smarter as it works.
 
@@ -64,7 +64,7 @@ Memory persists across sessions. Workers emit learnings during execution, the di
 
 ### 1. Less Context, Better Work
 
-Agents produce better output when they see less. A worker that receives a tightly scoped bead — clear acceptance criteria, relevant memories, no noise — outperforms one drowning in an entire codebase. Oro decomposes work into atomic beads, assigns each to a worker in a clean worktree, and injects only the memories that match. Context is a budget: spend it on signal, not surface area.
+Agents produce better output when they see less. A worker that receives a tightly scoped task — clear acceptance criteria, relevant memories, no noise — outperforms one drowning in an entire codebase. Oro decomposes work into atomic tasks, assigns each to a worker in a clean worktree, and injects only the memories that match. Context is a budget: spend it on signal, not surface area.
 
 ### 2. Compound Learnings
 
@@ -72,7 +72,7 @@ Every session leaves the system smarter. Workers emit learnings during execution
 
 ### 3. Loop Until Done
 
-The ouroboros isn't a metaphor — it's the architecture. When a worker exhausts its context window, it writes a handoff and a fresh worker continues. When a bead fails review, it gets feedback and retries. When a merge conflicts, an ops agent resolves it. The system loops — handoff loops, review loops, retry loops — until the work is done or explicitly abandoned. No work is lost to context limits, flaky failures, or transient state.
+The ouroboros isn't a metaphor — it's the architecture. When a worker exhausts its context window, it writes a handoff and a fresh worker continues. When a task fails review, it gets feedback and retries. When a merge conflicts, an ops agent resolves it. The system loops — handoff loops, review loops, retry loops — until the work is done or explicitly abandoned. No work is lost to context limits, flaky failures, or transient state.
 
 ### 4. Better Specs, Better Outcomes
 
@@ -80,7 +80,7 @@ The most leveraged investment is upstream. Oro spends tokens on brainstorming al
 
 ### 5. Guards Over Trust
 
-Autonomous agents earn trust through mechanism, not promises. Oro wraps every bead in guards: TDD (failing test before code), a 19-check quality gate (tests, lint, format, type-check, vulnerability scan), ops-agent code review, and evidence-based verification. These guards aren't overhead — they're what let the system execute fearlessly. When correctness is enforced mechanically, you stop worrying about whether the agent "did the right thing" and start compounding velocity.
+Autonomous agents earn trust through mechanism, not promises. Oro wraps every task in guards: TDD (failing test before code), a 19-check quality gate (tests, lint, format, type-check, vulnerability scan), ops-agent code review, and evidence-based verification. These guards aren't overhead — they're what let the system execute fearlessly. When correctness is enforced mechanically, you stop worrying about whether the agent "did the right thing" and start compounding velocity.
 
 ## How Oro Creates Software
 
@@ -122,10 +122,10 @@ Oro enforces a disciplined pipeline from idea to merged code. Every phase has a 
                            │
                            ▼
  ┌─────────────────────────────────────────────────────────┐
- │  5. BEAD CRAFT                                          │
- │  Decompose plan into beads — atomic work items with     │
+ │  5. TASK CRAFT                                          │
+ │  Decompose plan into tasks — atomic work items with     │
  │  testable acceptance criteria, dependencies, and        │
- │  priority. Each bead answers: "how do I know this is    │
+ │  priority. Each task answers: "how do I know this is    │
  │  done?" with a runnable test command.                   │
  └─────────────────────────┬───────────────────────────────┘
                            │
@@ -181,7 +181,7 @@ Oro enforces a disciplined pipeline from idea to merged code. Every phase has a 
                     Code on main
 ```
 
-This pipeline is encoded as skills — reusable process definitions that agents follow. The architect orchestrates the early phases (brainstorm through bead craft), while workers execute the later phases (observe through merge) autonomously. The dispatcher enforces the quality gate and review gates mechanically — a worker cannot merge without passing both.
+This pipeline is encoded as skills — reusable process definitions that agents follow. The architect orchestrates the early phases (brainstorm through task craft), while workers execute the later phases (observe through merge) autonomously. The dispatcher enforces the quality gate and review gates mechanically — a worker cannot merge without passing both.
 
 The key insight: autonomous agents are only as trustworthy as their process. Oro doesn't trust agents to "do the right thing" — it structures the work so that the right thing is the only path forward.
 
@@ -193,18 +193,18 @@ The key insight: autonomous agents are only as trustworthy as their process. Oro
  │  ┌──────────────────────┐  ┌──────────────────────────┐ │
  │  │  Architect (pane 0)  │  │  Manager (pane 1)        │ │
  │  │  Designs specs,      │  │  Judgment calls,         │ │
- │  │  creates beads,      │  │  merge conflicts,        │ │
+ │  │  creates tasks,      │  │  merge conflicts,        │ │
  │  │  sets priorities     │  │  stuck workers,          │ │
  │  │                      │  │  scales swarm            │ │
  │  └──────────────────────┘  └──────────────────────────┘ │
  └─────────────────────────────────────────────────────────┘
                           │
-                    oro bead CLI
+                    oro task CLI
                           │
                           ▼
  ┌─────────────────────────────────────────────────────────┐
  │              Dispatcher (background daemon)             │
- │  Polls ready beads → assigns to idle workers → merges   │
+ │  Polls ready tasks → assigns to idle workers → merges   │
  │  UDS socket · SQLite state · heartbeat monitoring       │
  └────────┬──────────┬──────────┬──────────┬───────────────┘
           │          │          │          │
@@ -217,12 +217,12 @@ The key insight: autonomous agents are only as trustworthy as their process. Oro
            │          │          │          │
            ▼          ▼          ▼          ▼
        worktree   worktree   worktree   worktree
-      bead/abc   bead/def   bead/ghi   bead/jkl
+      agent/abc  agent/def  agent/ghi  agent/jkl
 ```
 
 **Dispatcher states:** `inert` → `running` → `paused` / `stopping`
 
-**Worker lifecycle:** spawn → connect (UDS) → receive ASSIGN → execute bead via the configured runtime adapter → run quality gate → send DONE → dispatcher merges to main → next bead
+**Worker lifecycle:** spawn → connect (UDS) → receive ASSIGN → execute task via the configured runtime adapter → run quality gate → send DONE → dispatcher merges to main → next task
 
 **Context exhaustion (ralph loop):** When a worker hits its context threshold, it writes a handoff file and signals the dispatcher. A fresh worker spawns in the same worktree, reads the handoff, and continues — no work lost.
 
@@ -232,13 +232,13 @@ Three layers of persistent memory:
 
 | Layer | Storage | Scope | Access |
 |-------|---------|-------|--------|
-| **Bead annotations** | Native bead store | Per-work-item notes, acceptance criteria | `oro bead show <id>` |
+| **Task annotations** | Native task store | Per-work-item notes, acceptance criteria | `oro task show <id>` |
 | **Handoffs** | YAML files in worktree | Immediate task context for continuation | Auto-read by next worker |
 | **Project memory** | SQLite FTS5 | Cross-session learnings, patterns, decisions | `oro remember` / `oro recall` |
 
-Workers emit `[MEMORY]` markers during execution. The dispatcher also runs LLM-based extraction (haiku) on session output to catch patterns workers didn't explicitly tag. Before assigning a bead, the dispatcher queries the top relevant memories and injects them into the worker's prompt — annotated with age so workers verify stale claims (>7 days) against current code.
+Workers emit `[MEMORY]` markers during execution. The dispatcher also runs LLM-based extraction (haiku) on session output to catch patterns workers didn't explicitly tag. Before assigning a task, the dispatcher queries the top relevant memories and injects them into the worker's prompt — annotated with age so workers verify stale claims (>7 days) against current code.
 
-**Dreaming:** Every 10 completed beads (or when an epic closes), the dispatcher spawns a dreaming ops agent that reads the entire memories table, synthesizes cross-session patterns, resolves contradictions, merges duplicates, and prunes obsolete entries. The swarm gets smarter over time without human curation.
+**Dreaming:** Every 10 completed tasks (or when an epic closes), the dispatcher spawns a dreaming ops agent that reads the entire memories table, synthesizes cross-session patterns, resolves contradictions, merges duplicates, and prunes obsolete entries. The swarm gets smarter over time without human curation.
 
 ## Quick Start
 
@@ -278,7 +278,7 @@ oro setup
 oro uninstall
 ```
 
-Removes the binary, `~/.oro/`, launchd agents, `.beads` symlinks in known projects, `.oro/` anchor dirs, oro-managed git hooks (restores `.user` backups), and oro entries from the global gitignore. Use `--force` to skip the confirmation prompt, or `--keep-data` to preserve `~/.oro/` (databases, bead history).
+Removes the binary, `~/.oro/`, launchd agents, legacy `.beads` symlinks in known projects, `.oro/` anchor dirs, oro-managed git hooks (restores `.user` backups), and oro entries from the global gitignore. Use `--force` to skip the confirmation prompt, or `--keep-data` to preserve `~/.oro/` (databases, task history).
 
 ### Build from Source
 
@@ -304,7 +304,7 @@ oro start
 oro start --detach
 ```
 
-This creates a tmux session with an architect pane and a manager pane, starts the dispatcher daemon, and spawns the worker pool. The architect begins designing work, the manager monitors execution, and workers pick up beads as they become ready.
+This creates a tmux session with an architect pane and a manager pane, starts the dispatcher daemon, and spawns the worker pool. The architect begins designing work, the manager monitors execution, and workers pick up tasks as they become ready.
 
 ### Basic Operations
 
@@ -315,7 +315,7 @@ oro status
 # Scale workers up
 oro directive scale 4
 
-# Pause new assignments (workers finish current beads)
+# Pause new assignments (workers finish current tasks)
 oro directive pause
 
 # Resume
@@ -352,7 +352,7 @@ oro stop
 
 **`oro stop`** flags: `--force` (skip confirmation, requires `ORO_HUMAN_CONFIRMED=1`)
 
-**`oro uninstall`** flags: `--force` (skip confirmation prompt), `--keep-data` (preserve `~/.oro/` — databases and bead history)
+**`oro uninstall`** flags: `--force` (skip confirmation prompt), `--keep-data` (preserve `~/.oro/` — databases and task history)
 
 ### Monitoring
 
@@ -407,7 +407,7 @@ oro stop
 
 | Command | Description | Example |
 |---------|-------------|---------|
-| `oro work` | Execute a single bead interactively (no dispatcher) | `oro work oro-abc1 --model opus` |
+| `oro work` | Execute a single task interactively (no dispatcher) | `oro work oro-abc1 --model opus` |
 
 **`oro work`** flags: `--model` (default: sonnet), `--timeout` (default: 15m), `--skip-review`, `--base-branch`
 
@@ -425,19 +425,25 @@ oro stop
 
 ## Key Concepts
 
-### Beads
+### Tasks
 
-Work items tracked by the native `oro bead` CLI. Each bead has a title, description, acceptance criteria, priority (P0-P4), type (task/feature/bug/epic), and optional dependencies. The dispatcher assigns ready beads (no unresolved blockers) to idle workers.
+Work items tracked by the native `oro task` CLI. Each task has a title, description, acceptance criteria, priority (P0-P4), type (task/feature/bug/epic), and optional dependencies. The dispatcher assigns ready tasks (no unresolved blockers) to idle workers.
+
+### Task Terminology
+
+- **Task:** preferred public term for an Oro work item.
+- **Bead:** legacy/internal term still visible in storage, historical docs, compatibility CLI, and migration artifacts.
+- **Task type:** the `type` field, whose values include `task`, `bug`, `epic`, `research`, and `chore`.
 
 ### Epics
 
-Parent beads that group related work. The dispatcher can `focus` on an epic to prioritize its children. When an epic is first assigned, a worker decomposes it into child beads. Child beads merge to an isolated `epic/<epicID>` branch (not main). When all children complete, the epic branch passes a quality gate check, then fast-forward merges to main.
+Parent tasks that group related work. The dispatcher can `focus` on an epic to prioritize its children. When an epic is first assigned, a worker decomposes it into child tasks. Child tasks merge to an isolated `epic/<epicID>` branch (not main). When all children complete, the epic branch passes a quality gate check, then fast-forward merges to main.
 
 ### Quality Gate
 
-An automated pipeline (`scripts/quality_gate.sh`) that every bead must pass before merging: `go test ./... -race` + `golangci-lint` + `gofumpt` + `goimports`. Workers run the gate after implementation. Failed gates mean the bead is not done.
+An automated pipeline (`scripts/quality_gate.sh`) that every task must pass before merging: `go test ./... -race` + `golangci-lint` + `gofumpt` + `goimports`. Workers run the gate after implementation. Failed gates mean the task is not done.
 
-The quality gate is generated during `oro init` / `oro setup` based on detected project languages. For projects with no recognized languages, a shell-only quality gate is still generated (shellcheck + markdownlint) so that beads always have a gate to pass.
+The quality gate is generated during `oro init` / `oro setup` based on detected project languages. For projects with no recognized languages, a shell-only quality gate is still generated (shellcheck + markdownlint) so that tasks always have a gate to pass.
 
 ### Dead Pane Detection
 
@@ -445,11 +451,11 @@ When the dispatcher sends commands to worker tmux panes via `SendKeysVerified`, 
 
 ### Worktrees
 
-Each worker operates in an isolated git worktree (`bead/<id>` branch). This prevents conflicts between concurrent workers. On completion, the dispatcher rebases onto main and fast-forward merges — maintaining linear history.
+Each worker operates in an isolated git worktree on an `agent/<id>` branch. This prevents conflicts between concurrent workers. On completion, the dispatcher rebases onto main and fast-forward merges — maintaining linear history.
 
 ### Handoffs
 
-When a worker exhausts its context window, it writes a YAML handoff file capturing current progress, remaining work, and learnings. A fresh worker spawns in the same worktree and continues. This "ralph loop" means no bead is limited by a single context window.
+When a worker exhausts its context window, it writes a YAML handoff file capturing current progress, remaining work, and learnings. A fresh worker spawns in the same worktree and continues. This "ralph loop" means no task is limited by a single context window.
 
 ### Ops Agents
 
@@ -479,7 +485,7 @@ oro/
 │   ├── oro-dash/         # TUI dashboard helpers (library package)
 │   └── oro-search-hook/  # Code search integration
 ├── pkg/
-│   ├── dispatcher/       # Core orchestrator — state machine, worker pool, bead tracking
+│   ├── dispatcher/       # Core orchestrator — state machine, worker pool, task tracking
 │   ├── worker/           # Worker agent — UDS connection, prompt assembly, subprocess
 │   ├── memory/           # FTS5 memory store — insert, search, consolidate
 │   ├── ops/              # Ops agent spawner — review, merge resolution, diagnosis

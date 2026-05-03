@@ -5,17 +5,17 @@ import (
 	"strings"
 )
 
-// buildDecomposePrompt assembles the bead decomposition agent prompt from the
-// bead ID and quality gate output that triggered the decomposition request.
+// buildDecomposePrompt assembles the task decomposition agent prompt from the
+// task ID and quality gate output that triggered the decomposition request.
 func buildDecomposePrompt(opts DecomposeOpts) string {
 	var b strings.Builder
 
-	b.WriteString("You are a bead decomposition agent. A bead has exhausted all worker retry attempts.\n\n")
+	b.WriteString("You are a task decomposition agent. A task has exhausted all worker retry attempts.\n\n")
 	b.WriteString("CRITICAL: Do NOT use TaskOutput or run tasks in the background.\n")
 	b.WriteString("Use the Read tool to check output files. Run all commands in foreground.\n\n")
 
-	fmt.Fprintf(&b, "## Bead\n")
-	fmt.Fprintf(&b, "Bead ID: %s\n\n", opts.BeadID)
+	fmt.Fprintf(&b, "## Task\n")
+	fmt.Fprintf(&b, "Task ID: %s\n\n", opts.BeadID)
 
 	if opts.QGOutput != "" {
 		b.WriteString("## Quality Gate Output\n")
@@ -24,10 +24,10 @@ func buildDecomposePrompt(opts DecomposeOpts) string {
 	}
 
 	b.WriteString("## Steps\n")
-	fmt.Fprintf(&b, "1. Run `oro task show %s` to read the full bead details and acceptance criteria.\n", opts.BeadID)
-	b.WriteString("2. Analyze why the bead is too large or ambiguous.\n")
-	b.WriteString("3. Create 2-4 smaller child beads:\n")
-	b.WriteString("   For each child bead:\n")
+	fmt.Fprintf(&b, "1. Run `oro task show %s` to read the full task details and acceptance criteria.\n", opts.BeadID)
+	b.WriteString("2. Analyze why the task is too large or ambiguous.\n")
+	b.WriteString("3. Create 2-4 smaller child tasks:\n")
+	b.WriteString("   For each child task:\n")
 	fmt.Fprintf(&b, "   a. `oro task create --title=\"...\" --type=task --parent=%s --acceptance=\"...\" --estimate=<min>`\n", opts.BeadID)
 	fmt.Fprintf(&b, "      (`--parent` sets hierarchy only, no dep)\n")
 	fmt.Fprintf(&b, "   b. `oro task dep add %s <child-id>`  (epic depends on child — correct direction)\n", opts.BeadID)
@@ -38,7 +38,7 @@ func buildDecomposePrompt(opts DecomposeOpts) string {
 	b.WriteString("   VERDICT: failed: <one-line reason>\n\n")
 
 	b.WriteString("## Constraint\n")
-	b.WriteString("Do not write code. Only create beads and update bead type.\n")
+	b.WriteString("Do not write code. Only create tasks and update task type.\n")
 
 	return b.String()
 }

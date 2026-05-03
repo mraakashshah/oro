@@ -24,13 +24,13 @@ waits for ACK, then disconnects.
 
 Supported operations:
   start                    - Begin pulling and assigning ready work
-  stop                     - Finish current work, don't assign new beads
+  stop                     - Finish current work, don't assign new tasks
   pause                    - Hold new assignments, workers keep running
   resume                   - Resume from paused state
   scale N                  - Set target worker pool size to N
-  focus <epic>             - Prioritize beads from specific epic
+  focus <epic>             - Prioritize tasks from specific epic
   status                   - Query dispatcher state
-  restart-worker <id>      - Kill and respawn a worker, requeue its bead
+  restart-worker <id>      - Kill and respawn a worker, requeue its task
   preempt <id>             - Gracefully preempt a worker for higher-priority work
   worker-logs <id> [N]     - Read last N lines from worker output.log (default 20)
   max-workers N            - Adjust the runtime worker pool ceiling (0 disables autoscale)`,

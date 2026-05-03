@@ -12,7 +12,7 @@ read by oro and can be safely archived or deleted.
 ## When to run this
 
 Run this runbook after confirming that `oro` is operating correctly without the
-legacy `.beads/` data: all beads are visible via `oro bead list`, native
+legacy `.beads/` data: all tasks are visible via `oro task list`, native
 commands work, and the new backend is healthy.
 
 ## Steps

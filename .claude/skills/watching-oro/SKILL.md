@@ -1,17 +1,17 @@
 ---
 name: watching-oro
-description: Use when running oro as a software factory and continuously observing, detecting defects, filing bug beads, fixing via workers, and relaunching
+description: Use when running oro as a software factory and continuously observing, detecting defects, filing bug tasks, fixing via workers, and relaunching
 user-invocable: true
 ---
 
 # Watching Oro
 
-Operate oro as a software factory. Run the swarm, observe behavior, detect defects, spec/bead them, fix them (via workers when possible, manually when not), rebuild, relaunch, repeat.
+Operate oro as a software factory. Run the swarm, observe behavior, detect defects, spec/task them, fix them (via workers when possible, manually when not), rebuild, relaunch, repeat.
 
 ## The Loop
 
 ```
-LAUNCH → OBSERVE → DETECT → SPEC/BEAD → FIX → REBUILD → RELAUNCH
+LAUNCH → OBSERVE → DETECT → SPEC/TASK → FIX → REBUILD → RELAUNCH
    ↑                                                         |
    └─────────────────────────────────────────────────────────┘
 ```
@@ -42,9 +42,9 @@ The primary observation pattern is a poll-on-demand loop using `./oro logs --tai
 import json,sys
 d=json.load(sys.stdin)
 for w in d['workers']:
-    bead = w.get('bead_id', 'idle')
+    task = w.get('bead_id', 'idle')
     ctx = w.get('context_pct', 0)
-    print(f'{bead:15s} ctx={ctx:3d}% state={w[\"state\"]}')
+    print(f'{task:15s} ctx={ctx:3d}% state={w[\"state\"]}')
 "
 
 # Check worktree progress (commits + diffs)
@@ -74,24 +74,24 @@ tmux capture-pane -t oro:1 -p -S -30   # manager
 |--------|---------|
 | Same event repeating >5x in 30s | Loop bug — spec immediately |
 | `STUCK_WORKER` | Progress timeout — check worker context % |
-| `WORKER_CRASH` with empty bead ID | Auto-ack path — verify dispatcher handles it |
-| `QG_FAILED` repeating for same bead | Worker can't pass QG — check prompt or test |
+| `WORKER_CRASH` with empty task ID | Auto-ack path — verify dispatcher handles it |
+| `QG_FAILED` repeating for same task | Worker can't pass QG — check prompt or test |
 | `MERGE_CONFLICT` without later `MERGED` | Stale worktree — needs manual rebase |
 | Heartbeat `context_pct > 80` | Worker degrading — will likely fail |
 | Pane activity stale >10min | Manager/architect crashed — check pane |
-| Assignment spam (same bead >3x) | Rejection loop — check AC or worker prompt |
+| Assignment spam (same task >3x) | Rejection loop — check AC or worker prompt |
 
 ## Phase 3: Detect + Spec
 
 When you observe a defect:
 
 1. **Characterize**: What's the symptom? What component? Is it reproducible?
-2. **Check if known**: `oro bead list --status=open | grep -i "<keyword>"` — don't duplicate
-3. **Spec it**: Use `spec` skill for systemic issues, or create a bug bead directly:
+2. **Check if known**: `oro task list --status=open | grep -i "<keyword>"` — don't duplicate
+3. **Spec it**: Use `spec` skill for systemic issues, or create a bug task directly:
 
 ```bash
-oro bead create --title="Bug: <symptom>" --type=bug --priority=1
-oro bead update <id> --description="..." --notes="Observed: <evidence>"
+oro task create --title="Bug: <symptom>" --type=bug --priority=1
+oro task update <id> --description="..." --notes="Observed: <evidence>"
 ```
 
 Set clear acceptance criteria so a worker (or you) can verify the fix.
@@ -100,7 +100,7 @@ Set clear acceptance criteria so a worker (or you) can verify the fix.
 
 **Prefer workers** for isolated, well-scoped bugs:
 ```bash
-# Workers pick up ready beads automatically
+# Workers pick up ready tasks automatically
 # Verify it was assigned:
 ./oro directive status
 ```
@@ -141,13 +141,13 @@ make build
 
 ## Native Beadstore Errors During Monitoring
 
-**NEVER run `force-initialization commands`.** It destroys all bead history. This has happened 3 times.
+**NEVER run `force-initialization commands`.** It destroys all task history. This has happened 3 times.
 
 When native beadstore errors occur during observation:
 
 1. Inspect `./oro status`, logs, and event output for the failing component.
-2. Verify the active SQLite state path and run `./oro bead ready`,
-   `./oro bead blocked`, and `./oro bead show <id>` directly.
+2. Verify the active SQLite state path and run `./oro task ready`,
+   `./oro task blocked`, and `./oro task show <id>` directly.
 3. If the store is damaged, follow `docs/runbooks/beadstore-recovery.md` and
    restore only from reviewed JSONL or SQLite backups.
 4. If still broken: **ask the user**
@@ -158,12 +158,12 @@ Do not restart or repair Dolt from Oro. Don't panic. Don't nuke.
 
 - At 40% context: switch to summary-only observation (report changes only)
 - At 50%: create a handoff with current defect list and observation state
-- File all unresolved observations as beads before exiting
+- File all unresolved observations as tasks before exiting
 
 ## Anti-Patterns
 
 - Sleep-polling instead of `tail -f` / `--follow` / `fswatch`
-- Fixing bugs without beads (no tracking = no verification)
+- Fixing bugs without tasks (no tracking = no verification)
 - Fixing oro runtime bugs via workers (they can't rebuild themselves)
 - Continuing to observe after 3+ cycles with no new defects (declare clean)
 - Skipping rebuild after merging a fix (stale binary = stale bugs)

@@ -7,15 +7,15 @@ description: Use when facing 2 or more independent tasks that can be worked on w
 
 ## Overview
 
-Run a pipeline of N workers against a prioritized bead queue. Each worker executes one bead end-to-end via `oro work`. As workers complete, merge results and immediately launch the next bead.
+Run a pipeline of N workers against a prioritized task queue. Each worker executes one task end-to-end via `oro work`. As workers complete, merge results and immediately launch the next task.
 
 **Core principle:** Keep N worker slots saturated. Merge as you go. Never wait for all workers to finish before starting more.
 
 ## When to Use
 
-- Queue of 2+ independent beads to execute
+- Queue of 2+ independent tasks to execute
 - Multiple subsystems to build/fix in parallel
-- Each bead can be understood without context from others
+- Each task can be understood without context from others
 
 **Don't use when:**
 - Failures are related (fix one might fix others)
@@ -28,17 +28,17 @@ Before dispatching, clean house:
 
 ```bash
 git worktree list              # check for orphaned worktrees from previous sessions
-oro bead ready                       # get prioritized queue
-oro bead list --status=in_progress   # check for stale claims
+oro task ready                       # get prioritized queue
+oro task list --status=in_progress   # check for stale claims
 ```
 
-Remove stale worktrees from previous sessions. Reset stale in_progress beads if the worker is gone.
+Remove stale worktrees from previous sessions. Reset stale in_progress tasks if the worker is gone.
 
 ## Priority Order
 
 Process the queue in this order:
 
-1. **Individual beads** (not epic children), bugs first
+1. **Individual tasks** (not epic children), bugs first
 2. **Decomposed epic children**, bugs first then tasks
 3. **New epics** needing decomposition
 
@@ -47,7 +47,7 @@ Within each tier: higher priority (P0 > P1 > P2) first.
 ## Scheduling Rules
 
 - **Different files → parallel**: Launch simultaneously
-- **Same file → sequential**: Wire deps with `oro bead dep add`
+- **Same file → sequential**: Wire deps with `oro task dep add`
 - **Default concurrency: 5 oro workers**
 
 ## The Pipeline
@@ -59,16 +59,16 @@ Fill empty slots up to N concurrency:
 **Primary — `oro work` (handles worktree, TDD, QG, ops review, merge):**
 
 ```bash
-oro work <bead-id> &    # background, or use Task tool with run_in_background
+oro work <task-id> &    # background, or use Task tool with run_in_background
 ```
 
-**Fallback — Task agent (when work is not a bead, or oro unavailable):**
+**Fallback — Task agent (when work is not a task, or oro unavailable):**
 
 ```
 You are working in an isolated git worktree at: /absolute/path/.worktrees/<id>
 Branch: agent/<id>
 
-FIRST: oro bead update <id> --status=in_progress
+FIRST: oro task update <id> --status=in_progress
 
 ## Task
 [task description]
@@ -78,7 +78,7 @@ FIRST: oro bead update <id> --status=in_progress
 - Run tests: go test -C /absolute/path/.worktrees/<id> ./pkg/... -race -count=1
 - Commit your work with a descriptive message before completing
 - Do NOT push, merge, or rebase
-- Close bead: oro bead close <id> --reason="summary"
+- Close task: oro task close <id> --reason="summary"
 ```
 
 **IMPORTANT:** Tell agents to use `go -C <worktree>` or absolute paths, never `cd <worktree>`. The `cd` persists in the Bash tool cwd — if the worktree is later removed, ALL subsequent bash commands fail silently.
@@ -88,21 +88,21 @@ FIRST: oro bead update <id> --status=in_progress
 - Run background agents with `run_in_background: true`
 - **Never poll** — trust task completion notifications
 - **Never use TaskOutput** to read full transcripts (70k+ tokens eats context)
-- **Do NOT create TaskCreate/TodoWrite entries** to track agents — they go stale after compaction. Use `beads` for persistent tracking.
-- Agent closes bead with `oro bead close <id>` — the bead IS the output
+- **Do NOT create TaskCreate/TodoWrite entries** to track agents — they go stale after compaction. Use `tasks` for persistent tracking.
+- Agent closes task with `oro task close <id>` — the task IS the output
 
 ### 3. Merge (as each worker completes)
 
 Rebase + fast-forward merge. Always. This gives clean linear history without duplicate commits.
 
 ```bash
-git stash                                    # save dirty beads file
+git stash                                    # save dirty tasks file
 git worktree remove --force .worktrees/<id>  # remove worktree, keep branch
 git rebase main <branch>                     # rebase onto current main
 git checkout main                            # switch back to main
 git merge --ff-only <branch>                 # fast-forward (no merge commit)
 git branch -D <branch>                       # delete merged branch
-git stash pop                                # restore beads state
+git stash pop                                # restore tasks state
 ```
 
 **Why not cherry-pick?** Cherry-pick duplicates commit hashes, polluting `git log` and breaking `git bisect`. Rebase preserves authorship and produces identical diffs with clean history.
@@ -113,9 +113,9 @@ git stash pop                                # restore beads state
 
 ### 4. Backfill
 
-Launch the next bead from the queue into the freed slot. Repeat until queue is empty.
+Launch the next task from the queue into the freed slot. Repeat until queue is empty.
 
-Check dependency chains: if bead X was blocking bead Y (same file), Y is now unblocked.
+Check dependency chains: if task X was blocking task Y (same file), Y is now unblocked.
 
 ### 5. Finalize
 
@@ -159,7 +159,7 @@ When `git rebase main agent/X` produces conflicts:
 | Worker fails (test failure) | Inspect worktree. Fix + recommit, or re-dispatch. |
 | Worker killed (signal:killed) | Resource contention. Reduce concurrency. Re-dispatch. |
 | Worker stuck (no progress) | Check output file tail. Kill and re-dispatch if needed. |
-| Bead too large (worker decomposes) | Worker promotes to epic. Pick up children in next cycle. |
+| Task too large (worker decomposes) | Worker promotes to epic. Pick up children in next cycle. |
 
 **Do NOT blindly retry failed workers.** Inspect first.
 
@@ -173,14 +173,14 @@ When `git rebase main agent/X` produces conflicts:
 
 Use raw Task agents instead of `oro work` when:
 
-- Work is not tracked as a bead (ad-hoc exploration, research)
+- Work is not tracked as a task (ad-hoc exploration, research)
 - `oro` binary is unavailable or broken
 - Need custom agent behavior beyond `oro work`'s lifecycle
 
 Task agent prompt template must include:
 - Absolute worktree path
-- `oro bead update <id> --status=in_progress` at start
-- `oro bead close <id>` at end
+- `oro task update <id> --status=in_progress` at start
+- `oro task close <id>` at end
 - Commit instructions (do NOT push/merge/rebase)
 
 ## Common Mistakes
@@ -188,9 +188,9 @@ Task agent prompt template must include:
 | Mistake | Fix |
 |---------|-----|
 | Batch dispatch (wait for all, then merge all) | Pipeline: merge each as it finishes, backfill |
-| Not claiming beads (`in_progress`) | Worker prompt must include `oro bead update` at start |
-| Dispatching overlapping file scopes | Same file = sequential deps via `oro bead dep add` |
-| Using TaskOutput to read transcripts | Trust notifications. Read bead, not transcript. |
+| Not claiming tasks (`in_progress`) | Worker prompt must include `oro task update` at start |
+| Dispatching overlapping file scopes | Same file = sequential deps via `oro task dep add` |
+| Using TaskOutput to read transcripts | Trust notifications. Read task, not transcript. |
 | Using tools between worktree remove and merge complete | Complete the 7-step merge atomically |
 | Polling agents with sleep loops | Trust task notifications |
 | Forgetting stale worktree cleanup | Preflight: `git worktree list` |
@@ -200,6 +200,6 @@ Task agent prompt template must include:
 
 - All slots empty while queue has work (pipeline stall)
 - Two workers editing the same file (merge conflict guaranteed)
-- Worker running >10min on a 7min bead (check progress)
+- Worker running >10min on a 7min task (check progress)
 - signal:killed appearing (reduce concurrency)
 - Saying "ready to push" (just push)

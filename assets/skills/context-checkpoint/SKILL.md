@@ -1,6 +1,6 @@
 ---
 name: context-checkpoint
-description: Use after every bead completion to monitor context consumption and trigger proactive handoff before context degrades
+description: Use after every task completion to monitor context consumption and trigger proactive handoff before context degrades
 user-invocable: false
 ---
 
@@ -8,7 +8,7 @@ user-invocable: false
 
 ## Overview
 
-Monitor context consumption and trigger proactive handoff before quality degrades. Called after every bead completion in `executing-beads`.
+Monitor context consumption and trigger proactive handoff before quality degrades. Called after every task completion in `executing-beads`.
 
 **Core principle:** Better to hand off early than to lose context and produce bad work.
 
@@ -45,7 +45,7 @@ These symptoms indicate context degradation regardless of token usage — treat 
 
 ### Green (Continue)
 
-`system_warning` shows usage well below soft threshold. Proceed to next bead.
+`system_warning` shows usage well below soft threshold. Proceed to next task.
 
 ### Soft Threshold Breached
 
@@ -60,19 +60,19 @@ Stop after your very next tool call. Write a minimal handoff (goal + files modif
 
 ### Handoff Steps
 
-1. Close current bead if work is complete
-2. For in-progress work: `oro bead update <id> --notes "Partial: <what's done, what remains>"`
-3. Verify remaining work exists as beads (create if needed)
-4. Use `create-handoff` skill with `beads:` section
+1. Close current task if work is complete
+2. For in-progress work: `oro task update <id> --notes "Partial: <what's done, what remains>"`
+3. Verify remaining work exists as tasks (create if needed)
+4. Use `create-handoff` skill with `tasks:` section
 5. `git pull --rebase && git push`
-   - Note: The pre-commit hook automatically runs `bead metadata export`, so manual sync is not needed
+   - Note: The pre-commit hook automatically syncs task metadata, so manual sync is not needed
 
 ## Handoff Template Addition
 
-When handing off due to context checkpoint, add `beads:` section to handoff YAML:
+When handing off due to context checkpoint, add `tasks:` section to handoff YAML:
 
 ```yaml
-beads:
+tasks:
   completed: [oro-xxx, oro-yyy]
   in_progress: [oro-zzz]
   remaining: [oro-aaa, oro-bbb]
@@ -81,8 +81,8 @@ beads:
 
 ## Red Flags
 
-- Ignoring hook messages and starting new beads
-- Skipping checkpoint after bead completion
+- Ignoring hook messages and starting new tasks
+- Skipping checkpoint after task completion
 - Not saving in-progress state before handoff
-- Producing a handoff without the `beads:` section
-- Rationalizing "just one more bead" after handoff message
+- Producing a handoff without the `tasks:` section
+- Rationalizing "just one more task" after handoff message

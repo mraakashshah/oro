@@ -25,7 +25,7 @@ Before proposing anything, gather evidence. **You must not proceed to Step 3 unt
 #### Research checklist
 
 - [ ] **Check institutional knowledge** -- Grep `docs/decisions&discoveries.md` for keywords related to the task (module names, technical terms, problem indicators). Use `oro recall` to search memory store if needed. If hits found, read and incorporate before proposing anything new. This prevents re-solving solved problems.
-- [ ] **Read internal references** -- existing specs in `docs/plans/`, related code mentioned in the bead/task description, and reference implementations in the codebase. Use `Read`, `Grep`, `Glob` to find and read them.
+- [ ] **Read internal references** -- existing specs in `docs/plans/`, related code mentioned in the task/task description, and reference implementations in the codebase. Use `Read`, `Grep`, `Glob` to find and read them.
 - [ ] **Read external references** (when applicable) -- Use `WebSearch` / `WebFetch` when the problem domain has established solutions worth comparing (algorithms, protocols, libraries). Skip for project-internal design.
 - [ ] **Present research summary to the user** -- before proposing anything, show:
   1. What files/sources you read (with paths or URLs)
@@ -92,7 +92,7 @@ This applies to every architectural decision, not just the final plan.
 Before handing off to implementation, run `adversarial-spec-review` on the design:
 
 - Spawn a fresh-context subagent to review the spec adversarially
-- The reviewer must construct at least one scenario where all beads pass but the feature fails
+- The reviewer must construct at least one scenario where all tasks pass but the feature fails
 - If the review returns FAIL: fix the gaps, re-run the review (Ralph Loop)
 - Only proceed to implementation when the review returns PASS
 
@@ -118,7 +118,7 @@ When you need to ask the human a question, use this 4-part structure:
 1. **Reground** — restate what you understand to be true so far. One sentence. Surfaces misalignments early.
 2. **Simplify** — reduce the question to its single most important unknown. Don't ask three things when one unlocks the rest.
 3. **Recommend** — give your current best answer with a completeness score (e.g. "I'd go with X — 70% confident"). Forces a concrete position and makes it easy for the human to agree, correct, or refine.
-4. **Options** — list 2-3 alternatives with effort estimates (e.g. "Option A: 1 bead, low risk. Option B: 3 beads, rewrites the data model."). Gives the human a decision frame, not an open-ended prompt.
+4. **Options** — list 2-3 alternatives with effort estimates (e.g. "Option A: 1 task, low risk. Option B: 3 tasks, rewrites the data model."). Gives the human a decision frame, not an open-ended prompt.
 
 Do not ask a question you can answer by reading the code. Do not ask multiple questions in one message.
 

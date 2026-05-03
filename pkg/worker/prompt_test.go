@@ -13,7 +13,7 @@ import (
 // expectedSectionHeaders lists all 12 section headers in order.
 var expectedSectionHeaders = []string{
 	"## Role",
-	"## Bead",
+	"## Task",
 	"## Memory",
 	"## Coding Rules",
 	"## TDD",
@@ -232,8 +232,8 @@ func TestAssemblePrompt_RoleContent(t *testing.T) {
 	if !strings.Contains(prompt, "You are an oro worker") {
 		t.Error("expected Role section to contain 'You are an oro worker'")
 	}
-	if !strings.Contains(prompt, "one bead at a time") {
-		t.Error("expected Role section to contain 'one bead at a time'")
+	if !strings.Contains(prompt, "one task at a time") {
+		t.Error("expected Role section to contain 'one task at a time'")
 	}
 }
 
@@ -535,7 +535,7 @@ func TestAssemblePrompt_FailureSectionHasOroBeadCreateExamples(t *testing.T) {
 	}{
 		{"oro task create --title flag", `oro task create --title=`},
 		{"test failure bug type+priority", `--type=bug --priority=0`},
-		{"decompose uses native create parent", `oro task create --title="<subtask>" --type=task --parent <bead-id>`},
+		{"decompose uses native create parent", `oro task create --title="<subtask>" --type=task --parent <task-id>`},
 		{"context limit handoff", `oro task create --title="Continue:`},
 		{"blocker bug creation", `oro task create --title="Blocker:`},
 		{"oro task dep add example", `oro task dep add`},
@@ -1488,7 +1488,7 @@ func TestContextHandoffPrompt(t *testing.T) {
 }
 
 // TestAssemblePrompt_BugP0Rule verifies that the Failure section contains
-// the mandatory rule: all bug beads must use --priority=0.
+// the mandatory rule: all bug tasks must use --priority=0.
 func TestAssemblePrompt_BugP0Rule(t *testing.T) {
 	t.Parallel()
 
@@ -1516,8 +1516,8 @@ func TestAssemblePrompt_BugP0Rule(t *testing.T) {
 		failureSection = prompt[failureStart : failureStart+1+failureEnd]
 	}
 
-	if !strings.Contains(failureSection, "All bug beads MUST use --priority=0") {
-		t.Errorf("Failure section must contain 'All bug beads MUST use --priority=0'. Got:\n%s", failureSection)
+	if !strings.Contains(failureSection, "All bug tasks MUST use --priority=0") {
+		t.Errorf("Failure section must contain 'All bug tasks MUST use --priority=0'. Got:\n%s", failureSection)
 	}
 }
 

@@ -6,7 +6,7 @@
 """Utility: write a compact context summary to .oro/context_summary.txt.
 
 Called during the create-handoff skill, BEFORE touching .oro/handoff_done.
-The dispatcher reads this file to populate ContextSummary in continuation beads
+The dispatcher reads this file to populate ContextSummary in continuation tasks
 (see pkg/worker/worker.go handleHandoffExhaustion).
 """
 
@@ -43,7 +43,7 @@ def write_context_summary(goal: str, now: str, worktree_root: Path) -> Path:
 
 def main() -> None:
     """CLI entry point: python3 write_context_summary.py --goal '...' --now '...'"""
-    parser = argparse.ArgumentParser(description="Write .oro/context_summary.txt for continuation bead context")
+    parser = argparse.ArgumentParser(description="Write .oro/context_summary.txt for continuation task context")
     parser.add_argument("--goal", required=True, help="Current session goal (handoff 'goal:' field)")
     parser.add_argument("--now", required=True, help="What next session should do first (handoff 'now:' field)")
     parser.add_argument(

@@ -24,12 +24,12 @@ representative_id=oro-ect4.5
 export ORO_DB_PATH="$state_db"
 
 scripts/check-phase8-no-writers.py
-ORO_BEADSOURCE_MODE=sqlite "$oro_bin" bead status
-ORO_BEADSOURCE_MODE=sqlite "$oro_bin" bead ready --json > /tmp/oro-native-ready.json
-ORO_BEADSOURCE_MODE=sqlite "$oro_bin" bead blocked --json > /tmp/oro-native-blocked.json
+ORO_BEADSOURCE_MODE=sqlite "$oro_bin" task status
+ORO_BEADSOURCE_MODE=sqlite "$oro_bin" task ready --json > /tmp/oro-native-ready.json
+ORO_BEADSOURCE_MODE=sqlite "$oro_bin" task blocked --json > /tmp/oro-native-blocked.json
 jq -e 'type == "array"' /tmp/oro-native-ready.json
 jq -e 'type == "array"' /tmp/oro-native-blocked.json
-ORO_BEADSOURCE_MODE=sqlite "$oro_bin" bead show "$representative_id" --json |
+ORO_BEADSOURCE_MODE=sqlite "$oro_bin" task show "$representative_id" --json |
   jq -e --arg id "$representative_id" '.id == $id and (.status | type == "string")'
 scripts/check-native-beadstore-invariants.py --db "$state_db"
 sqlite3 "$state_db" 'PRAGMA integrity_check;'
@@ -64,16 +64,16 @@ and fails closed on native ready/blocked/status/assignment mismatches.
 
 ## Native Smoke Write
 
-The controlled smoke bead was `native-cutover-smoke-20260430T192811Z`.
+The controlled smoke task was `native-cutover-smoke-20260430T192811Z`.
 
 The gate used:
 
 ```bash
 scripts/check-phase8-no-writers.py
-ORO_BEADSOURCE_MODE=sqlite "$oro_bin" bead create --id "$test_id" --title "Native cutover smoke" --type task --priority 4
-ORO_BEADSOURCE_MODE=sqlite "$oro_bin" bead show "$test_id" --json | jq -e --arg id "$test_id" '.id == $id'
-ORO_BEADSOURCE_MODE=sqlite "$oro_bin" bead close "$test_id" --reason "Native cutover smoke passed"
-ORO_BEADSOURCE_MODE=sqlite "$oro_bin" bead show "$test_id" --json | jq -e '.status == "closed"'
+ORO_BEADSOURCE_MODE=sqlite "$oro_bin" task create --id "$test_id" --title "Native cutover smoke" --type task --priority 4
+ORO_BEADSOURCE_MODE=sqlite "$oro_bin" task show "$test_id" --json | jq -e --arg id "$test_id" '.id == $id'
+ORO_BEADSOURCE_MODE=sqlite "$oro_bin" task close "$test_id" --reason "Native cutover smoke passed"
+ORO_BEADSOURCE_MODE=sqlite "$oro_bin" task show "$test_id" --json | jq -e '.status == "closed"'
 scripts/check-native-beadstore-invariants.py --db "$state_db"
 sqlite3 "$state_db" 'PRAGMA integrity_check;'
 scripts/check-phase8-no-writers.py
@@ -105,7 +105,7 @@ native_gate=pass
 - Native validation passed against SQLite directly.
 - Real cutover restart has not been executed in this log.
 - `ORO_BEADSOURCE_MODE` has not been globally exported by this log.
-- Dispatcher/workers remain stopped for Phase 8 until the restart beads execute.
+- Dispatcher/workers remain stopped for Phase 8 until the restart tasks execute.
 
 ## Cutover Completion Update
 

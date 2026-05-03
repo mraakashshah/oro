@@ -48,7 +48,7 @@ Shall I proceed, or adjust the approach?
 
 - Convert `next:` items from handoff into tasks
 - Add new tasks discovered during analysis
-- Check `oro bead ready` for any tracked work
+- Check `oro task ready` for any tracked work
 - Get user confirmation before starting
 
 ## Principles

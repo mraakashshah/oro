@@ -44,7 +44,7 @@ func writeEscalationHeader(b *strings.Builder, opts EscalationOpts) {
 
 func writeEscalationContext(b *strings.Builder, opts EscalationOpts) {
 	b.WriteString("## Context\n")
-	fmt.Fprintf(b, "Bead: %s", opts.BeadID)
+	fmt.Fprintf(b, "Task: %s", opts.BeadID)
 	if opts.BeadTitle != "" {
 		fmt.Fprintf(b, " — %s", opts.BeadTitle)
 	}
@@ -81,59 +81,59 @@ func writePlaybook(b *strings.Builder, escalationType string) {
 func writeStuckWorkerPlaybook(b *strings.Builder) {
 	b.WriteString("A worker has stalled with no progress beyond the progress timeout.\n\n")
 	b.WriteString("Steps:\n")
-	b.WriteString("1. Check the worker's current bead and worktree state\n")
-	b.WriteString("2. Look at recent event log for the bead: oro task show <bead-id>\n")
+	b.WriteString("1. Check the worker's current task and worktree state\n")
+	b.WriteString("2. Look at recent event log for the task: oro task show <task-id>\n")
 	b.WriteString("3. If the worker is genuinely stuck, restart it: oro directive restart-worker <worker-id>\n")
-	b.WriteString("4. If the bead itself is problematic, add notes: oro task update <bead-id> --notes=\"<diagnosis>\"\n")
-	b.WriteString("5. If the bead needs decomposition, escalate to persistent manager\n\n")
+	b.WriteString("4. If the task itself is problematic, add notes: oro task update <task-id> --notes=\"<diagnosis>\"\n")
+	b.WriteString("5. If the task needs decomposition, escalate to persistent manager\n\n")
 }
 
 func writeMergeConflictPlaybook(b *strings.Builder) {
 	b.WriteString("A merge conflict could not be automatically resolved by the ops merge agent.\n\n")
 	b.WriteString("Steps:\n")
 	b.WriteString("1. Inspect the conflicting files in the worktree\n")
-	b.WriteString("2. Understand both sides of the conflict from bead context\n")
+	b.WriteString("2. Understand both sides of the conflict from task context\n")
 	b.WriteString("3. Resolve the conflict manually if straightforward\n")
 	b.WriteString("4. If the conflict is semantic (not just textual), note it for the human manager\n")
 	b.WriteString("5. After resolution, run tests to verify: go test ./...\n\n")
 }
 
 func writePriorityContentionPlaybook(b *strings.Builder) {
-	b.WriteString("A P0 (critical priority) bead is queued but all workers are busy with lower-priority work.\n\n")
+	b.WriteString("A P0 (critical priority) task is queued but all workers are busy with lower-priority work.\n\n")
 	b.WriteString("Steps:\n")
 	b.WriteString("1. List current worker assignments: oro task list --status=in_progress\n")
-	b.WriteString("2. Identify the lowest-priority bead currently being worked\n")
+	b.WriteString("2. Identify the lowest-priority task currently being worked\n")
 	b.WriteString("3. Consider preempting: oro directive restart-worker <worker-id> to free a slot\n")
-	b.WriteString("4. The freed worker will pick up the P0 bead on next assignment cycle\n")
+	b.WriteString("4. The freed worker will pick up the P0 task on next assignment cycle\n")
 	b.WriteString("5. If all work is equally critical, note the contention for the human manager\n\n")
 }
 
 func writeMissingACPlaybook(b *strings.Builder) {
-	b.WriteString("A bead was about to be assigned but has no acceptance criteria.\n\n")
+	b.WriteString("A task was about to be assigned but has no acceptance criteria.\n\n")
 	b.WriteString("Steps:\n")
-	b.WriteString("1. Read the bead details: oro task show <bead-id>\n")
+	b.WriteString("1. Read the task details: oro task show <task-id>\n")
 	b.WriteString("2. Infer acceptance criteria from the title and description\n")
-	b.WriteString("3. Add acceptance criteria: oro task update <bead-id> --acceptance=\"<criteria>\"\n")
+	b.WriteString("3. Add acceptance criteria: oro task update <task-id> --acceptance=\"<criteria>\"\n")
 	b.WriteString("4. The dispatcher will retry assignment on the next cycle\n\n")
 }
 
 func writeOversizedBeadPlaybook(b *strings.Builder) {
-	b.WriteString("A bead spans too many module boundaries and should be decomposed.\n\n")
+	b.WriteString("A task spans too many module boundaries and should be decomposed.\n\n")
 	b.WriteString("Steps:\n")
-	b.WriteString("1. Inspect the bead: oro task show <bead-id>\n")
-	b.WriteString("2. Promote the bead to an epic: oro task update <bead-id> --type=epic\n")
-	b.WriteString("3. Create child beads — one per module boundary touched\n")
+	b.WriteString("1. Inspect the task: oro task show <task-id>\n")
+	b.WriteString("2. Promote the task to an epic: oro task update <task-id> --type=epic\n")
+	b.WriteString("3. Create child tasks — one per module boundary touched\n")
 	b.WriteString("4. Wire dependencies: oro task dep add <epic-id> <child-id> for each child\n")
 	b.WriteString("5. The dispatcher will assign children individually on the next cycle\n\n")
 }
 
 func writeAvailableCLI(b *strings.Builder) {
 	b.WriteString("## Available CLI Commands\n")
-	b.WriteString("- `oro task show <id>` — view bead details and acceptance criteria\n")
+	b.WriteString("- `oro task show <id>` — view task details and acceptance criteria\n")
 	b.WriteString("- `oro task list --status=in_progress` — see active work\n")
-	b.WriteString("- `oro task update <id> --notes=\"...\"` — add notes to a bead\n")
+	b.WriteString("- `oro task update <id> --notes=\"...\"` — add notes to a task\n")
 	b.WriteString("- `oro task update <id> --acceptance=\"...\"` — set acceptance criteria\n")
-	b.WriteString("- `oro task ready` — list beads ready for assignment\n")
+	b.WriteString("- `oro task ready` — list tasks ready for assignment\n")
 	b.WriteString("- `oro directive restart-worker <worker-id>` — kill and respawn a worker\n")
 	b.WriteString("- `oro directive preempt <worker-id>` — preempt a worker for higher-priority work\n\n")
 }

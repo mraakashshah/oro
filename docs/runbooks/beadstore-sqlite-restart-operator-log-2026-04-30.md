@@ -82,7 +82,7 @@ PATH="$cutover_path" ORO_DB_PATH="$state_db" ORO_BEADSOURCE_MODE=sqlite "$oro_bi
   stayed open/ready. Targeted `worker launch --bead` spawned
   `worker-spawnfor-1777582706091359000`, which heartbeated, but no `assign`
   event appeared after more than one assign interval. Dispatcher/workers were
-  stopped, the smoke bead was closed manually for cleanup, and
+  stopped, the smoke task was closed manually for cleanup, and
   `scripts/check-phase8-no-writers.py` returned `active_writer_count=0`.
   New blocker: `oro-ect4.6`.
 - Root cause for `oro-ect4.6`: sqlite dispatcher startup still allowed the

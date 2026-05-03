@@ -10,7 +10,7 @@ const sharedInstructionsFilename = "ORO_AGENT.md"
 
 // buildReviewPrompt assembles a comprehensive code review prompt from project
 // files (shared instructions, Claude compatibility files, .claude/rules/,
-// assets/review-patterns.md) and bead context.
+// assets/review-patterns.md) and task context.
 func buildReviewPrompt(opts ReviewOpts) string {
 	base := opts.BaseBranch
 	if base == "" {
@@ -33,7 +33,7 @@ func writeHeader(b *strings.Builder, base string) {
 	b.WriteString("The quality gate already passed. Do NOT re-check formatting, linting,\n")
 	b.WriteString("or compilation — those are mechanical checks the QG handles.\n\n")
 	b.WriteString("MANDATORY BEFORE APPROVAL: Run the full relevant test package to catch\n")
-	b.WriteString("regressions in existing tests that the bead's own tests do not cover.\n")
+	b.WriteString("regressions in existing tests that the task's own tests do not cover.\n")
 	b.WriteString("Determine the package(s) from the diff (e.g. if changes are in\n")
 	b.WriteString("pkg/dispatcher/, run: go test -race -count=1 ./pkg/dispatcher/...).\n")
 	b.WriteString("A regression in any existing test is a Critical finding → REJECTED.\n\n")
@@ -45,7 +45,7 @@ func writeHeader(b *strings.Builder, base string) {
 
 func writeContext(b *strings.Builder, opts ReviewOpts) {
 	b.WriteString("## Context\n")
-	b.WriteString("Bead: ")
+	b.WriteString("Task: ")
 	b.WriteString(opts.BeadID)
 	if opts.BeadTitle != "" {
 		b.WriteString(" — ")
