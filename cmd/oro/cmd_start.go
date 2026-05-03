@@ -39,6 +39,12 @@ type ExecDaemonSpawner struct {
 	ManualIntegration  bool
 }
 
+// SetManualIntegration lets dispatcher-only startup configure the daemon
+// spawner without widening the core SpawnDaemon interface used by tests.
+func (e *ExecDaemonSpawner) SetManualIntegration(enabled bool) {
+	e.ManualIntegration = enabled
+}
+
 // buildArgs constructs the CLI arguments for the daemon child process.
 func (e *ExecDaemonSpawner) buildArgs(workers, maxWorkers int) []string {
 	args := []string{"start", "--daemon-only", "--workers", strconv.Itoa(workers), "--max-workers", strconv.Itoa(maxWorkers)}

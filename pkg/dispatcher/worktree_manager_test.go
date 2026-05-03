@@ -247,9 +247,9 @@ func TestGitWorktreeManager_Prune_NoWorktreesDir(t *testing.T) {
 		t.Fatalf("Prune with no .worktrees dir should not error, got: %v", err)
 	}
 
-	// git worktree prune should still be called (it's safe even without .worktrees/).
-	if len(runner.calls) != 1 {
-		t.Fatalf("expected 1 command call for git worktree prune, got %d", len(runner.calls))
+	// git worktree prune/list should still be called (safe even without .worktrees/).
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected 2 command calls for git worktree cleanup, got %d", len(runner.calls))
 	}
 }
 
@@ -264,8 +264,16 @@ func TestGitWorktreeManager_Prune_GitPruneErrorLogged(t *testing.T) {
 		t.Fatalf("mkdir orphan: %v", err)
 	}
 
-	// git worktree prune fails, but Prune should still remove dirs and not return error.
-	runner := &mockCommandRunner{err: fmt.Errorf("git prune failed")}
+	// git worktree prune fails, but Prune should still list registered worktrees,
+	// remove orphan dirs, and not return error.
+	runner := &mockCommandRunner{
+		callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			if containsAll(args, "worktree", "prune") {
+				return nil, fmt.Errorf("git prune failed")
+			}
+			return nil, nil
+		},
+	}
 	mgr := NewGitWorktreeManager(tmpDir, "", "", runner)
 
 	err := mgr.Prune(context.Background())
@@ -280,6 +288,38 @@ func TestGitWorktreeManager_Prune_GitPruneErrorLogged(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("expected .worktrees to be empty after Prune, got %d entries", len(entries))
+	}
+}
+
+func TestGitWorktreeManager_Prune_PreservesRegisteredWorktrees(t *testing.T) {
+	tmpDir := t.TempDir()
+	worktreesDir := filepath.Join(tmpDir, ".worktrees")
+	preserved := filepath.Join(worktreesDir, "oro-manual")
+	orphan := filepath.Join(worktreesDir, "oro-orphan")
+	for _, dir := range []string{preserved, orphan} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+
+	runner := &mockCommandRunner{
+		callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			if containsAll(args, "worktree", "list", "--porcelain") {
+				return []byte("worktree " + preserved + "\nHEAD abc123\nbranch refs/heads/agent/oro-manual\n"), nil
+			}
+			return nil, nil
+		},
+	}
+	mgr := NewGitWorktreeManager(tmpDir, "", "", runner)
+
+	if err := mgr.Prune(context.Background()); err != nil {
+		t.Fatalf("Prune returned error: %v", err)
+	}
+	if _, err := os.Stat(preserved); err != nil {
+		t.Fatalf("registered worktree should be preserved: %v", err)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatalf("orphan worktree should be removed, stat err: %v", err)
 	}
 }
 
@@ -557,9 +597,10 @@ func TestGitWorktreeManager_Prune_NoWorktreesDirReturnsNilNoOtherCalls(t *testin
 		t.Fatalf("Prune with missing .worktrees should return nil, got: %v", err)
 	}
 
-	// Only the git worktree prune call should have been made.
-	if len(runner.calls) != 1 {
-		t.Fatalf("expected exactly 1 git call (worktree prune), got %d", len(runner.calls))
+	// The safe startup path prunes git metadata and lists registered
+	// worktrees before it discovers the local worktrees directory is absent.
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected exactly 2 git calls (worktree prune/list), got %d", len(runner.calls))
 	}
 }
 

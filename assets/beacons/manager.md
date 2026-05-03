@@ -130,6 +130,13 @@ When the dispatcher sends an escalation, respond with the appropriate playbook:
 3. Reassign the task to a new worker.
 4. If crashes repeat, investigate the task for issues.
 
+### MANUAL_INTEGRATION
+1. Inspect the referenced branch and worktree from the escalation payload.
+2. Run the task's focused tests and the quality gate from the worktree.
+3. Review the diff before merging; do not treat worker completion as approval.
+4. Fast-forward or otherwise integrate only after the review is clean.
+5. Close or unblock the task with the commit and test evidence recorded.
+
 ## Human Interaction
 
 - **Inform, don't ask** for routine operations: scaling, task assignment, merge coordination.

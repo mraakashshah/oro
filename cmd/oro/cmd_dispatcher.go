@@ -124,8 +124,9 @@ func runDispatcherStopSequence(ctx context.Context, cfg *stopConfig) error {
 // sends the start directive, and prints the PID.
 func newDispatcherStartCmd() *cobra.Command {
 	var (
-		workers int
-		force   bool
+		workers           int
+		force             bool
+		manualIntegration bool
 	)
 
 	cmd := &cobra.Command{
@@ -147,13 +148,14 @@ Useful for CI environments or manual worker management (--workers 0 disables aut
 			}
 
 			return withDaemonPreflightBypass(force, func() error {
-				return runDispatcherStart(w, workers, newDispatcherDaemonSpawner(), socketPollTimeout)
+				return runDispatcherStart(w, workers, manualIntegration, newDispatcherDaemonSpawner(), socketPollTimeout)
 			})
 		},
 	}
 
 	cmd.Flags().IntVarP(&workers, "workers", "w", 0, "number of workers to auto-spawn (0 = manual mode)")
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "skip running check")
+	cmd.Flags().BoolVar(&manualIntegration, "manual-integration", false, "leave completed worker branches/worktrees for coordinator review instead of auto-merging")
 
 	return cmd
 }
@@ -165,13 +167,21 @@ Useful for CI environments or manual worker management (--workers 0 disables aut
 // 4. Print PID and status
 //
 // No tmux session is created. The spawner is injected for testability.
-func runDispatcherStart(w io.Writer, workers int, spawner DaemonSpawner, socketTimeout time.Duration) error {
+func runDispatcherStart(w io.Writer, workers int, manualIntegration bool, spawner DaemonSpawner, socketTimeout time.Duration) error {
 	paths, err := ResolveDaemonPaths()
 	if err != nil {
 		return fmt.Errorf("resolve paths: %w", err)
 	}
 	pidPath := paths.PIDPath
 	sockPath := paths.SocketPath
+
+	if manualIntegration {
+		configurable, ok := spawner.(interface{ SetManualIntegration(bool) })
+		if !ok {
+			return fmt.Errorf("spawner does not support manual integration")
+		}
+		configurable.SetManualIntegration(true)
+	}
 
 	// Spawn the daemon subprocess.
 	pid, err := spawner.SpawnDaemon(pidPath, workers, workers)

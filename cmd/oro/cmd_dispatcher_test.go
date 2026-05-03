@@ -24,10 +24,15 @@ type dispatcherFakeSpawner struct {
 	pidPath             string
 	workers             int
 	maxWorkers          int
+	manualIntegration   bool
 	returnPID           int
 	returnErr           error
 	socketPath          string // if set, create a UDS listener after "spawn"
 	daemonSkipPreflight string
+}
+
+func (f *dispatcherFakeSpawner) SetManualIntegration(enabled bool) {
+	f.manualIntegration = enabled
 }
 
 func (f *dispatcherFakeSpawner) SpawnDaemon(pidPath string, workers, maxWorkers int) (int, error) {
@@ -96,7 +101,7 @@ func TestDispatcherStartSpawnsDaemon(t *testing.T) {
 		}
 
 		var stdout bytes.Buffer
-		err := runDispatcherStart(&stdout, 0, spawner, socketPollTimeout)
+		err := runDispatcherStart(&stdout, 0, false, spawner, socketPollTimeout)
 		if err != nil {
 			t.Fatalf("runDispatcherStart returned error: %v", err)
 		}
@@ -112,6 +117,9 @@ func TestDispatcherStartSpawnsDaemon(t *testing.T) {
 		}
 		if spawner.maxWorkers != 0 {
 			t.Errorf("expected maxWorkers=0, got %d", spawner.maxWorkers)
+		}
+		if spawner.manualIntegration {
+			t.Error("manual integration should be false by default")
 		}
 
 		// 3. Output must contain PID.
@@ -152,7 +160,7 @@ func TestDispatcherStartSpawnsDaemon(t *testing.T) {
 
 		// Inject fake spawner via the command's spawner field.
 		// We call runDispatcherStart directly to verify the default.
-		err := runDispatcherStart(&stdout, 0, spawner, 100*time.Millisecond)
+		err := runDispatcherStart(&stdout, 0, false, spawner, 100*time.Millisecond)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -247,7 +255,7 @@ func TestDispatcherStartSpawnsDaemon(t *testing.T) {
 		}
 
 		var stdout bytes.Buffer
-		err := runDispatcherStart(&stdout, 0, spawner, 50*time.Millisecond) // short timeout
+		err := runDispatcherStart(&stdout, 0, false, spawner, 50*time.Millisecond) // short timeout
 		if err == nil {
 			t.Fatal("expected error when socket never appears")
 		}
@@ -338,6 +346,44 @@ func TestDispatcherStartForcePropagatesDaemonPreflightBypass(t *testing.T) {
 	}
 }
 
+func TestDispatcherStartManualIntegrationFlagConfiguresDaemon(t *testing.T) {
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "oro.pid")
+	sockPath := fmt.Sprintf("/tmp/oro-dsmi-%d.sock", time.Now().UnixNano())
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
+	dbPath := filepath.Join(tmpDir, "state.db")
+
+	t.Setenv("ORO_PID_PATH", pidFile)
+	t.Setenv("ORO_SOCKET_PATH", sockPath)
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_BEADSOURCE_MODE", "sqlite")
+	t.Setenv("PATH", tmpDir)
+
+	spawner := &dispatcherFakeSpawner{
+		returnPID:  12346,
+		socketPath: sockPath,
+	}
+	previousFactory := newDispatcherDaemonSpawner
+	newDispatcherDaemonSpawner = func() DaemonSpawner { return spawner }
+	t.Cleanup(func() { newDispatcherDaemonSpawner = previousFactory })
+
+	cmd := newDispatcherCmd()
+	cmd.SetArgs([]string{"start", "--force", "--workers", "0", "--manual-integration"})
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stdout)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("dispatcher start --manual-integration: %v", err)
+	}
+	if !spawner.called {
+		t.Fatal("expected daemon spawner to be called")
+	}
+	if !spawner.manualIntegration {
+		t.Fatal("expected manual integration to be forwarded to daemon spawner")
+	}
+}
+
 // TestDispatcherCmdStructure verifies the cobra command hierarchy.
 func TestDispatcherCmdStructure(t *testing.T) {
 	cmd := newDispatcherCmd()
@@ -372,6 +418,15 @@ func TestDispatcherCmdStructure(t *testing.T) {
 	fFlag := startCmd.Flags().Lookup("force")
 	if fFlag == nil {
 		t.Fatal("expected --force flag on dispatcher start")
+	}
+
+	// Verify --manual-integration flag exists.
+	miFlag := startCmd.Flags().Lookup("manual-integration")
+	if miFlag == nil {
+		t.Fatal("expected --manual-integration flag on dispatcher start")
+	}
+	if miFlag.DefValue != "false" {
+		t.Errorf("expected --manual-integration default=false, got %q", miFlag.DefValue)
 	}
 
 	// Find the "stop" subcommand.

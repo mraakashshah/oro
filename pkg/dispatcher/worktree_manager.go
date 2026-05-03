@@ -300,15 +300,22 @@ func (g *GitWorktreeManager) GCClosedWorktrees(ctx context.Context, isBeadClosed
 }
 
 // Prune cleans up orphaned worktree state left by a previous crash.
-// It runs `git worktree prune` to clean git's internal tracking, then
-// removes all directories under .worktrees/. Errors are logged but
-// do not prevent startup — this method always returns nil.
+// It runs `git worktree prune` to clean git's internal tracking, then removes
+// only directories under .worktrees/ that are not still registered git
+// worktrees. Errors are logged but do not prevent startup — this method always
+// returns nil.
 func (g *GitWorktreeManager) Prune(ctx context.Context) error {
 	// Step 1: Ask git to prune its internal worktree bookkeeping.
 	// Errors are non-fatal — the directory cleanup below handles the rest.
 	_, _ = g.runner.Run(ctx, "git", "-C", g.repoRoot, "worktree", "prune")
 
-	// Step 2: Remove all directories under worktreesDir.
+	registered, err := g.registeredWorktreePaths(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "worktree_list_failed", "error", err.Error())
+		return nil
+	}
+
+	// Step 2: Remove orphan directories under worktreesDir.
 	entries, err := os.ReadDir(g.worktreesDir)
 	if err != nil {
 		// Directory doesn't exist or is unreadable — nothing to clean.
@@ -319,10 +326,30 @@ func (g *GitWorktreeManager) Prune(ctx context.Context) error {
 		if !entry.IsDir() {
 			continue
 		}
-		_ = os.RemoveAll(filepath.Join(g.worktreesDir, entry.Name()))
+		path := filepath.Join(g.worktreesDir, entry.Name())
+		if registered[filepath.Clean(path)] {
+			continue
+		}
+		_ = os.RemoveAll(path)
 	}
 
 	return nil
+}
+
+func (g *GitWorktreeManager) registeredWorktreePaths(ctx context.Context) (map[string]bool, error) {
+	out, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, fmt.Errorf("git worktree list: %w", err)
+	}
+	paths := make(map[string]bool)
+	for _, line := range strings.Split(string(out), "\n") {
+		path, ok := strings.CutPrefix(line, "worktree ")
+		if !ok {
+			continue
+		}
+		paths[filepath.Clean(path)] = true
+	}
+	return paths, nil
 }
 
 // RebaseOnto rebases branch onto onto using `git rebase --onto onto branch`.
