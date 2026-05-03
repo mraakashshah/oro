@@ -925,6 +925,9 @@ func buildHookConfig(hooksDir string) map[string][]hookGroup {
 			{Matcher: "Edit|Write", Hooks: []hookEntry{
 				{Type: "command", Command: sh("auto-format.sh")},
 			}},
+			{Matcher: "Bash", Hooks: []hookEntry{
+				{Type: "command", Command: py("notify_manager_on_bead_create.py")},
+			}},
 			{Matcher: "Task", Hooks: []hookEntry{
 				{Type: "command", Command: py("validate_agent_completion.py")},
 			}},

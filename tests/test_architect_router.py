@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 # Import the module under test
 import architect_router
+import bd_create_notifier
 
 
 class TestRouteCommand:
@@ -201,6 +202,37 @@ class TestArchitectRouterPolicy:
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
     @patch("architect_router.send_to_manager_pane")
+    def test_task_commands_with_shell_chaining_blocked(self, mock_send):
+        """Allowed task commands cannot smuggle risky oro commands through shell operators."""
+        for cmd in [
+            "oro task create --title='test' && oro stop",
+            "oro task show oro-123; oro start",
+            "oro task dep add oro-123 oro-456 | oro directive scale 0",
+            "oro task dep add oro-123 oro-456\noro work",
+            "oro bead create --title='test' && oro stop",
+            "oro bead show oro-123; oro start",
+            "oro task create --title=$(oro stop)",
+            "oro bead create --title=$(oro stop)",
+            "oro task create --title=`oro stop`",
+            "oro task ready > /tmp/oro-ready.txt",
+            "oro bead show oro-123 >> /tmp/oro-show.txt",
+            "oro task ready &> /tmp/oro-ready.txt",
+            "oro task create --title='test' >| /tmp/oro-task.txt",
+            "oro bead show oro-123 <<< input",
+            "oro task create --title=<(oro stop)",
+            "oro task show oro-123 |& cat",
+        ]:
+            hook_input = {
+                "tool_name": "Bash",
+                "tool_input": {"command": cmd},
+            }
+            result = architect_router.build_decision(hook_input)
+            assert result is not None, f"Expected block for: {cmd}"
+            assert result["permissionDecision"] == "deny", f"Expected deny for: {cmd}"
+            mock_send.assert_not_called()
+
+    @patch.dict(os.environ, {"ORO_ROLE": "architect"})
+    @patch("architect_router.send_to_manager_pane")
     def test_go_commands_blocked(self, mock_send):
         """go test/build/install are blocked."""
         for cmd in ["go test ./...", "go build ./...", "go install ./..."]:
@@ -253,8 +285,27 @@ class TestArchitectRouterPolicy:
             assert result is None, f"Expected passthrough for: {cmd}"
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
+    def test_task_commands_allowed(self):
+        """Task commands used by architect guidance pass through."""
+        for cmd in [
+            "oro task status",
+            "oro task ready",
+            "oro task blocked",
+            "oro task list",
+            "oro task show oro-123",
+            "oro task create --title='test'",
+            "oro task dep add oro-123 oro-456",
+        ]:
+            hook_input = {
+                "tool_name": "Bash",
+                "tool_input": {"command": cmd},
+            }
+            result = architect_router.build_decision(hook_input)
+            assert result is None, f"Expected passthrough for: {cmd}"
+
+    @patch.dict(os.environ, {"ORO_ROLE": "architect"})
     def test_bead_commands_allowed(self):
-        """oro bead create/update/show pass through."""
+        """Legacy oro bead create/update/show pass through."""
         for cmd in [
             "oro bead create --title='test'",
             "oro bead update oro-123",
@@ -285,6 +336,8 @@ class TestArchitectRouterPolicy:
             "git add main.go",
             "git commit -m 'test'",
             "git push",
+            "oro task ready",
+            "oro task create --title='test'",
             "oro bead create --title='test'",
             "oro bead update oro-123",
             "git status",
@@ -306,8 +359,30 @@ class TestNotifyOnBeadCreate:
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
     @patch("architect_router.send_to_manager_pane", return_value=True)
+    def test_notifies_manager_on_task_create(self, mock_send):
+        """When architect runs oro task create, manager pane gets notification."""
+        hook_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "oro task create --title='test task' --type=task"},
+            "tool_output": "Created issue: oro-xyz123",
+        }
+        result = architect_router.notify_on_bead_create(hook_input)
+
+        assert result is not None
+        assert "additionalContext" in result
+        mock_send.assert_called_once()
+
+        call_args = mock_send.call_args[0]
+        assert "[NEW WORK]" in call_args[0]
+        assert "task" in call_args[0]
+        assert "oro task ready" in call_args[0]
+        assert "task" in result["additionalContext"]
+        assert "bead" not in result["additionalContext"]
+
+    @patch.dict(os.environ, {"ORO_ROLE": "architect"})
+    @patch("architect_router.send_to_manager_pane", return_value=True)
     def test_notifies_manager_on_bead_create(self, mock_send):
-        """When architect runs oro bead create, manager pane gets notification."""
+        """Legacy oro bead create still notifies manager."""
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "oro bead create --title='test task' --type=task"},
@@ -322,7 +397,7 @@ class TestNotifyOnBeadCreate:
         # Verify the notification message content
         call_args = mock_send.call_args[0]
         assert "[NEW WORK]" in call_args[0]
-        assert "Check oro bead ready" in call_args[0]
+        assert "oro task ready" in call_args[0]
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
     @patch("architect_router.send_to_manager_pane", return_value=True)
@@ -366,6 +441,56 @@ class TestNotifyOnBeadCreate:
         # Should return None (fail open) when tmux fails
         assert result is None
         mock_send.assert_called_once()
+
+
+class TestBdCreateNotifierPolicy:
+    """Test simple task-create notification predicate."""
+
+    @patch.dict(os.environ, {"ORO_ROLE": "architect"})
+    def test_task_create_notifies(self):
+        hook_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "oro task create --title='test task' --type=task"},
+        }
+
+        assert bd_create_notifier.should_notify(hook_input) is True
+
+    @patch.dict(os.environ, {"ORO_ROLE": "architect"})
+    def test_legacy_bead_create_notifies(self):
+        hook_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "oro bead create --title='test task' --type=task"},
+        }
+
+        assert bd_create_notifier.should_notify(hook_input) is True
+
+    @patch.dict(os.environ, {"ORO_ROLE": "architect"})
+    def test_task_ready_does_not_notify(self):
+        hook_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "oro task ready"},
+        }
+
+        assert bd_create_notifier.should_notify(hook_input) is False
+
+    @patch.dict(os.environ, {"ORO_ROLE": "architect"})
+    def test_non_create_prefixes_do_not_notify(self):
+        for cmd in [
+            "oro task createx --title='test task'",
+            "oro bead createx --title='test task'",
+            "oro task create --title='test' && oro stop",
+            "oro task create --title=$(oro stop)",
+            "oro task create --title='test' > /tmp/oro-task.txt",
+            "oro bead create --title='test' &> /tmp/oro-task.txt",
+            "oro task create --title='test' <<< input",
+            "oro task create --title=<(oro stop)",
+        ]:
+            hook_input = {
+                "tool_name": "Bash",
+                "tool_input": {"command": cmd},
+            }
+
+            assert bd_create_notifier.should_notify(hook_input) is False
 
 
 class TestAssetSync:

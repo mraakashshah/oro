@@ -1217,9 +1217,21 @@ func TestGenerateSettings_NoBdCreateNotifier(t *testing.T) {
 	}
 }
 
+func TestGenerateSettings_RegistersTaskCreateNotifier(t *testing.T) {
+	data, err := generateSettings("$HOME/.oro")
+	if err != nil {
+		t.Fatalf("generateSettings failed: %v", err)
+	}
+
+	content := string(data)
+	if !strings.Contains(content, "notify_manager_on_bead_create.py") {
+		t.Errorf("settings.json should register task create notifier hook, got:\n%s", content)
+	}
+}
+
 func TestDefaultHookEntries_NoGhostHooks(t *testing.T) {
-	// Test that buildHookConfig contains no Bash PostToolUse matcher
-	// with memory_capture or learning_reminder (oro-pw0d)
+	// Test that buildHookConfig contains no removed PostToolUse hooks
+	// such as memory_capture or learning_reminder (oro-pw0d).
 	hooks := buildHookConfig("$HOME/.oro/hooks")
 
 	postToolUseHooks, ok := hooks["PostToolUse"]
@@ -1227,9 +1239,14 @@ func TestDefaultHookEntries_NoGhostHooks(t *testing.T) {
 		t.Fatal("PostToolUse key missing from hook config")
 	}
 
+	foundTaskCreateNotifier := false
 	for _, group := range postToolUseHooks {
 		if group.Matcher == "Bash" {
-			t.Errorf("Bash PostToolUse matcher should be removed, found with hooks: %v", group.Hooks)
+			for _, hook := range group.Hooks {
+				if strings.Contains(hook.Command, "notify_manager_on_bead_create.py") {
+					foundTaskCreateNotifier = true
+				}
+			}
 		}
 		for _, hook := range group.Hooks {
 			if strings.Contains(hook.Command, "memory_capture") {
@@ -1239,6 +1256,9 @@ func TestDefaultHookEntries_NoGhostHooks(t *testing.T) {
 				t.Errorf("learning_reminder.py hook should not exist, found in command: %s", hook.Command)
 			}
 		}
+	}
+	if !foundTaskCreateNotifier {
+		t.Error("Bash PostToolUse matcher should include notify_manager_on_bead_create.py")
 	}
 }
 

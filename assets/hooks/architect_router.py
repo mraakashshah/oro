@@ -2,7 +2,8 @@
 """PreToolUse Bash hook: block mutating commands in architect pane.
 
 When ORO_ROLE=architect, intercepts Bash commands and enforces policy:
-  - oro bead commands: allowed (create, update, show, etc.)
+  - oro task commands used by architect guidance: allowed
+  - legacy oro bead commands: allowed during transition
   - Read-only git (status, log, diff, branch, show): allowed
   - git pull: allowed
   - All other git (add, commit, push): BLOCKED
@@ -20,6 +21,7 @@ Output: JSON with permissionDecision=deny + additionalContext for blocked comman
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 
@@ -38,9 +40,70 @@ def route_command(command: str) -> str:
     return "architect"
 
 
-def _is_bead_create_command(command: str) -> bool:
-    """Return True when command creates a bead through the current CLI."""
-    return command.startswith("oro bead create")
+_SHELL_CONTROL_TOKENS = frozenset({";", "&&", "||", "|", "&", ">", ">>", "<", "<<"})
+_SHELL_OPERATOR_CHARS = frozenset(";&|<>")
+
+
+def _shell_tokens(command: str) -> list[str]:
+    """Tokenize a shell command enough for conservative hook policy checks."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    return list(lexer)
+
+
+def _has_shell_control_operator(command: str) -> bool:
+    """Return True when command contains shell control flow or separators."""
+    if "\n" in command or "$(" in command or "`" in command or "<(" in command or ">(" in command:
+        return True
+    try:
+        tokens = _shell_tokens(command)
+    except ValueError:
+        return True
+    return any(token in _SHELL_CONTROL_TOKENS or all(ch in _SHELL_OPERATOR_CHARS for ch in token) for token in tokens)
+
+
+def _is_task_create_command(command: str) -> bool:
+    """Return True when command creates a task through a supported CLI path."""
+    if _has_shell_control_operator(command):
+        return False
+    try:
+        tokens = _shell_tokens(command)
+    except ValueError:
+        return False
+    return tokens[:3] in (["oro", "task", "create"], ["oro", "bead", "create"])
+
+
+def _is_allowed_task_command(command: str) -> bool:
+    """Return True for task commands the architect role may run directly."""
+    if _has_shell_control_operator(command):
+        return False
+    try:
+        tokens = _shell_tokens(command)
+    except ValueError:
+        return False
+
+    allowed_exact = (
+        ["oro", "task", "status"],
+        ["oro", "task", "ready"],
+        ["oro", "task", "blocked"],
+        ["oro", "task", "list"],
+    )
+    if tokens in allowed_exact:
+        return True
+    if tokens[:3] in (["oro", "task", "show"], ["oro", "task", "create"]):
+        return len(tokens) >= 3
+    return tokens[:4] == ["oro", "task", "dep", "add"] and len(tokens) >= 6
+
+
+def _is_allowed_legacy_bead_command(command: str) -> bool:
+    """Return True for legacy bead commands when they are a single safe shell command."""
+    if _has_shell_control_operator(command):
+        return False
+    try:
+        tokens = _shell_tokens(command)
+    except ValueError:
+        return False
+    return tokens[:2] == ["oro", "bead"] and len(tokens) >= 3
 
 
 # Extensions for code files that the architect must not stage or commit
@@ -201,8 +264,12 @@ def build_decision(hook_input: dict) -> dict | None:
     if trimmed.startswith("git "):
         return _check_git_command(command)
 
-    # Allow bead management commands; block the rest of the oro CLI.
-    if trimmed.startswith("oro bead "):
+    # Allow task management commands needed by architect guidance.
+    if _is_allowed_task_command(trimmed):
+        return None
+
+    # Allow legacy bead management commands during the task terminology transition.
+    if _is_allowed_legacy_bead_command(trimmed):
         return None
 
     # Block oro commands — architect must not run oro directly
@@ -230,9 +297,9 @@ def build_decision(hook_input: dict) -> dict | None:
 
 
 def notify_on_bead_create(hook_input: dict) -> dict | None:
-    """Send notification to manager when architect creates a bead.
+    """Send notification to manager when architect creates a task.
 
-    This is a PostToolUse hook that triggers after oro bead create commands.
+    This is a PostToolUse hook that triggers after oro task create commands.
     Returns additionalContext to notify the agent, or None if no notification needed.
     """
     # Only notify when running as architect
@@ -247,11 +314,11 @@ def notify_on_bead_create(hook_input: dict) -> dict | None:
         return None
 
     command = tool_input.get("command", "").strip()
-    if not _is_bead_create_command(command):
+    if not _is_task_create_command(command):
         return None
 
     # Send notification to manager pane
-    notification = "[NEW WORK] Architect created a bead. Check oro bead ready."
+    notification = "[NEW WORK] Architect created a task. Check oro task ready."
     send_success = send_to_manager_pane(notification)
 
     if not send_success:
@@ -263,7 +330,7 @@ def notify_on_bead_create(hook_input: dict) -> dict | None:
         "hookSpecificOutput": {
             "hookEventName": "PostToolUse",
         },
-        "additionalContext": "✓ Manager notified of new bead",
+        "additionalContext": "✓ Manager notified of new task",
     }
 
 

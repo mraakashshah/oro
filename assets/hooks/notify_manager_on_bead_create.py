@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""PostToolUse Bash hook: batch notify manager when architect creates beads.
+"""PostToolUse Bash hook: batch notify manager when architect creates tasks.
 
-When ORO_ROLE=architect and a Bash command starting with "oro bead create" executes,
-accumulate the bead into a debounce state file. After a debounce window of no
+When ORO_ROLE=architect and a Bash command starting with "oro task create" executes,
+accumulate the task into a debounce state file. After a debounce window of no
 new creates (default 30s), send a single grouped notification to the manager
-pane listing all new beads.
+pane listing all new tasks.
 
 State is persisted across process invocations in a JSON file at
 $ORO_HOME/bead_notify_state.json.
@@ -27,6 +27,7 @@ Impure edges:
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -34,11 +35,37 @@ from pathlib import Path
 
 _DEBOUNCE_WINDOW_SECS = 30
 _EMPTY_STATE: dict = {"beads": [], "last_create_ts": 0.0}
+_SHELL_CONTROL_TOKENS = frozenset({";", "&&", "||", "|", "&", ">", ">>", "<", "<<"})
+_SHELL_OPERATOR_CHARS = frozenset(";&|<>")
+
+
+def _shell_tokens(command: str) -> list[str]:
+    """Tokenize a shell command enough for conservative hook policy checks."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    return list(lexer)
+
+
+def _has_shell_control_operator(command: str) -> bool:
+    """Return True when command contains shell control flow or separators."""
+    if "\n" in command or "$(" in command or "`" in command or "<(" in command or ">(" in command:
+        return True
+    try:
+        tokens = _shell_tokens(command)
+    except ValueError:
+        return True
+    return any(token in _SHELL_CONTROL_TOKENS or all(ch in _SHELL_OPERATOR_CHARS for ch in token) for token in tokens)
 
 
 def _is_bead_create_command(command: str) -> bool:
-    """Return True when command creates a bead through the current CLI."""
-    return command.startswith("oro bead create")
+    """Return True when command creates a task through a supported CLI path."""
+    if _has_shell_control_operator(command):
+        return False
+    try:
+        tokens = _shell_tokens(command)
+    except ValueError:
+        return False
+    return tokens[:3] in (["oro", "task", "create"], ["oro", "bead", "create"])
 
 
 # ---------------------------------------------------------------------------
@@ -93,10 +120,10 @@ def should_notify(state: dict, now: float, window_secs: int) -> bool:
 
 
 def format_batch_notification(state: dict) -> str:
-    """Format a grouped notification message for all pending beads."""
+    """Format a grouped notification message for all pending tasks."""
     beads = state.get("beads", [])
     count = len(beads)
-    lines = [f"[NEW WORK] {count} bead(s) ready — check oro bead ready:"]
+    lines = [f"[NEW WORK] {count} task(s) ready - check oro task ready:"]
     for b in beads:
         lines.append(f"  • {b['id']}: {b['title']}")
     return "\n".join(lines)
@@ -145,11 +172,11 @@ def handle_post_tool_use(
 ) -> None:
     """Handle a PostToolUse hook event with batched notification logic.
 
-    1. If role != architect or tool != Bash or command != oro bead create -> skip.
+    1. If role != architect or tool != Bash or command != oro task create -> skip.
     2. Load state, check if window expired (should_notify).
-       - If yes: flush accumulated beads as a single grouped notification,
-         clear state, then record the new bead.
-       - If no: record the new bead (accumulate).
+       - If yes: flush accumulated tasks as a single grouped notification,
+         clear state, then record the new task.
+       - If no: record the new task (accumulate).
     3. Save updated state.
 
     Args:
@@ -204,7 +231,7 @@ def handle_post_tool_use(
 
 
 def _extract_title_from_command(command: str) -> str:
-    """Extract --title value from an oro bead create command string.
+    """Extract --title value from an oro task create command string.
 
     Returns empty string if not found.
     """
@@ -218,7 +245,7 @@ def _extract_title_from_command(command: str) -> str:
 
 
 def extract_bead_id_from_output(tool_output: str) -> str:
-    """Extract bead ID from oro bead create tool output.
+    """Extract task ID from oro task create tool output.
 
     Parses current output like 'oro-xyz' and older output like 'Created issue: oro-xyz'.
     Returns empty string if not found.
