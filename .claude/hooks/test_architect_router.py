@@ -181,12 +181,12 @@ class TestSendToManagerPane:
 
 
 class TestNotifyOnBeadCreate:
-    """Test PostToolUse notification when architect creates beads."""
+    """Test PostToolUse notification when architect creates tasks."""
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
     @patch("architect_router.send_to_manager_pane", return_value=True)
     def test_notifies_manager_on_bead_create(self, mock_send):
-        """When architect creates a bead, manager pane gets notification."""
+        """When architect creates a task, manager pane gets notification."""
         hook_input = {
             "tool_name": "Bash",
             "tool_input": {"command": "oro bead create --title='test task' --type=task"},
@@ -201,7 +201,7 @@ class TestNotifyOnBeadCreate:
         # Verify the notification message content
         call_args = mock_send.call_args[0]
         assert "[NEW WORK]" in call_args[0]
-        assert "Check oro bead ready" in call_args[0]
+        assert "Check oro task ready" in call_args[0]
 
     @patch.dict(os.environ, {"ORO_ROLE": "architect"})
     @patch("architect_router.send_to_manager_pane", return_value=True)
