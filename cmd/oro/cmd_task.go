@@ -2,10 +2,12 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"oro/pkg/beadstore"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 func newTaskCmd() *cobra.Command {
@@ -50,6 +52,26 @@ func newTaskCmdWithStore(store beadstore.Store) *cobra.Command {
 		newBeadStubCmd(store, "doctor", "Check bead-store health", cobra.NoArgs),
 		newBeadStatusCmd(store),
 	)
+	adaptTaskCommandHelp(cmd)
 
 	return cmd
+}
+
+func adaptTaskCommandHelp(cmd *cobra.Command) {
+	taskHelpReplacer := strings.NewReplacer(
+		"Beads", "Tasks",
+		"beads", "tasks",
+		"Bead", "Task",
+		"bead", "task",
+	)
+	for _, sub := range cmd.Commands() {
+		sub.Short = taskHelpReplacer.Replace(sub.Short)
+		sub.Long = taskHelpReplacer.Replace(sub.Long)
+		sub.Example = taskHelpReplacer.Replace(sub.Example)
+		sub.Use = taskHelpReplacer.Replace(sub.Use)
+		sub.Flags().VisitAll(func(flag *pflag.Flag) {
+			flag.Usage = taskHelpReplacer.Replace(flag.Usage)
+		})
+		adaptTaskCommandHelp(sub)
+	}
 }

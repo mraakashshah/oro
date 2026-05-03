@@ -171,8 +171,11 @@ func TestWorkConfig_Validate_MissingAC(t *testing.T) {
 	if strings.Contains(got, "bd update") {
 		t.Fatalf("missing acceptance guidance must not use legacy bd command: %s", got)
 	}
-	if !strings.Contains(got, `oro bead update oro-test --acceptance "..."`) {
-		t.Fatalf("missing acceptance guidance should use native oro bead update; got: %s", got)
+	if strings.Contains(got, "oro bead update") {
+		t.Fatalf("missing acceptance guidance must not use legacy oro bead command: %s", got)
+	}
+	if !strings.Contains(got, `oro task update oro-test --acceptance "..."`) {
+		t.Fatalf("missing acceptance guidance should use native oro task update; got: %s", got)
 	}
 }
 
@@ -1673,10 +1676,23 @@ func (m *branchCapturingWorktreeManager) CreateBranch(_ context.Context, _, _ st
 func TestWorkCommandTaskTerminology(t *testing.T) {
 	cmd := newWorkCmd()
 
+	if !strings.Contains(cmd.Use, "<task-id>") {
+		t.Errorf("work command Use should reference '<task-id>', got: %q", cmd.Use)
+	}
 	if !strings.Contains(strings.ToLower(cmd.Short), "task") {
 		t.Errorf("work command Short should reference 'task', got: %q", cmd.Short)
 	}
 	if !strings.Contains(strings.ToLower(cmd.Long), "task") {
 		t.Errorf("work command Long should reference 'task', got: %q", cmd.Long)
+	}
+	modelFlag := cmd.Flags().Lookup("model")
+	if modelFlag == nil {
+		t.Fatal("work command missing --model flag")
+	}
+	if strings.Contains(modelFlag.Usage, "bead metadata") {
+		t.Errorf("work command --model help should not reference bead metadata, got: %q", modelFlag.Usage)
+	}
+	if !strings.Contains(modelFlag.Usage, "task metadata") {
+		t.Errorf("work command --model help should reference task metadata, got: %q", modelFlag.Usage)
 	}
 }

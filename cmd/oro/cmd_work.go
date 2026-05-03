@@ -57,7 +57,7 @@ func (c *workConfig) validate() error {
 		return fmt.Errorf("bead %s has no title", c.bead.ID)
 	}
 	if c.bead.AcceptanceCriteria == "" {
-		return fmt.Errorf("bead %s has no acceptance criteria — add with: oro bead update %s --acceptance \"...\"", c.bead.ID, c.bead.ID)
+		return fmt.Errorf("task %s has no acceptance criteria — add with: oro task update %s --acceptance \"...\"", c.bead.ID, c.bead.ID)
 	}
 	return nil
 }
@@ -67,7 +67,7 @@ func newWorkCmd() *cobra.Command {
 	var cfg workConfig
 
 	cmd := &cobra.Command{
-		Use:   "work <bead-id>",
+		Use:   "work <task-id>",
 		Short: "Execute a task through the full lifecycle",
 		Long: `Drives a single task end-to-end: worktree → claude → quality gate →
 ops review → merge → close. Runnable by a human or a claude agent.
@@ -81,7 +81,7 @@ automatically. Exit code 0 means the task landed on main.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&cfg.model, "model", "", "starting Claude model (opus/sonnet/haiku); empty uses bead metadata")
+	cmd.Flags().StringVar(&cfg.model, "model", "", "starting Claude model (opus/sonnet/haiku); empty uses task metadata")
 	cmd.Flags().DurationVar(&cfg.timeout, "timeout", 15*time.Minute, "per-claude-spawn timeout")
 	cmd.Flags().DurationVar(&cfg.reviewTimeout, "review-timeout", 0, "ops review process timeout override (default: ops review default)")
 	cmd.Flags().BoolVar(&cfg.skipReview, "skip-review", false, "skip ops review gate")

@@ -67,6 +67,32 @@ func TestTaskCommandSubcommandParity(t *testing.T) {
 	}
 }
 
+func TestTaskCommandHelpUsesTaskTerminology(t *testing.T) {
+	cmd := newTaskCmdWithStore(nil)
+	for _, args := range [][]string{
+		{"ready", "--help"},
+		{"list", "--help"},
+		{"show", "--help"},
+		{"search", "--help"},
+		{"doctor", "--help"},
+	} {
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("task %s help error: %v\n%s", strings.Join(args, " "), err, out.String())
+		}
+		got := out.String()
+		if strings.Contains(got, "bead") || strings.Contains(got, "Bead") {
+			t.Fatalf("task %s help should be task-primary, got:\n%s", strings.Join(args, " "), got)
+		}
+		if !strings.Contains(got, "task") && !strings.Contains(got, "Task") {
+			t.Fatalf("task %s help should mention task terminology, got:\n%s", strings.Join(args, " "), got)
+		}
+	}
+}
+
 func TestTaskCommandRejectsMigrationAlias(t *testing.T) {
 	cmd := newTaskCmdWithStore(beadstore.NewFakeStore())
 	var out bytes.Buffer
