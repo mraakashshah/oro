@@ -625,11 +625,13 @@ func TestStartReviewTimeoutFlagsAreDistinct(t *testing.T) {
 		spawner := &ExecDaemonSpawner{
 			OpsReviewTimeout:   35 * time.Minute,
 			ReviewStallTimeout: 15 * time.Minute,
+			ManualIntegration:  true,
 		}
 		argStr := strings.Join(spawner.buildArgs(2, 2), " ")
 		for _, want := range []string{
 			"--ops-review-timeout=35m0s",
 			"--review-stall-timeout=15m0s",
+			"--manual-integration",
 		} {
 			if !strings.Contains(argStr, want) {
 				t.Errorf("daemon args missing %q: %s", want, argStr)
@@ -647,7 +649,7 @@ func TestStartReviewTimeoutFlagsAreDistinct(t *testing.T) {
 		t.Setenv("ORO_PROJECT", "")
 		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
 
-		d, db, err := buildDispatcherWithReviewTimeouts(1, 1, 7*time.Minute, 35*time.Minute, 15*time.Minute, "", false, "")
+		d, db, err := buildDispatcherWithReviewTimeouts(1, 1, 7*time.Minute, 35*time.Minute, 15*time.Minute, true, "", false, "")
 		if err != nil {
 			t.Fatalf("buildDispatcherWithReviewTimeouts: %v", err)
 		}
@@ -659,6 +661,9 @@ func TestStartReviewTimeoutFlagsAreDistinct(t *testing.T) {
 		}
 		if cfg.ReviewTimeout != 15*time.Minute {
 			t.Errorf("dispatcher ReviewTimeout: got %v, want review stall timeout 15m", cfg.ReviewTimeout)
+		}
+		if !cfg.ManualIntegration {
+			t.Error("dispatcher ManualIntegration: got false, want true")
 		}
 		if got := opsReviewTimeoutFromDispatcher(t, d); got != 35*time.Minute {
 			t.Errorf("ops review timeout: got %v, want 35m", got)
@@ -673,7 +678,7 @@ func TestStartReviewTimeoutFlagsAreDistinct(t *testing.T) {
 		t.Setenv("ORO_BEADSOURCE_MODE", "")
 		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
 
-		d, db, err := buildDispatcherWithReviewTimeouts(0, 0, 0, 0, 0, "", false, "")
+		d, db, err := buildDispatcherWithReviewTimeouts(0, 0, 0, 0, 0, false, "", false, "")
 		if err != nil {
 			t.Fatalf("buildDispatcherWithReviewTimeouts: %v", err)
 		}
@@ -699,7 +704,7 @@ func TestStartReviewTimeoutFlagsAreDistinct(t *testing.T) {
 		t.Setenv("ORO_BEADSOURCE_MODE", "cli")
 		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
 
-		_, _, err := buildDispatcherWithReviewTimeouts(0, 0, 0, 0, 0, "", false, "")
+		_, _, err := buildDispatcherWithReviewTimeouts(0, 0, 0, 0, 0, false, "", false, "")
 		if err == nil {
 			t.Fatal("buildDispatcherWithReviewTimeouts succeeded with legacy cli beadsource mode")
 		}

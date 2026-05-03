@@ -36,6 +36,7 @@ type ExecDaemonSpawner struct {
 	ProgressTimeout    time.Duration
 	OpsReviewTimeout   time.Duration
 	ReviewStallTimeout time.Duration
+	ManualIntegration  bool
 }
 
 // buildArgs constructs the CLI arguments for the daemon child process.
@@ -49,6 +50,9 @@ func (e *ExecDaemonSpawner) buildArgs(workers, maxWorkers int) []string {
 	}
 	if e.ReviewStallTimeout > 0 {
 		args = append(args, "--review-stall-timeout="+e.ReviewStallTimeout.String())
+	}
+	if e.ManualIntegration {
+		args = append(args, "--manual-integration")
 	}
 	return args
 }
@@ -466,6 +470,7 @@ func newStartCmd() *cobra.Command {
 		progressTimeout    time.Duration
 		opsReviewTimeout   time.Duration
 		reviewStallTimeout time.Duration
+		manualIntegration  bool
 		baseBranch         string
 		webEnabled         bool
 		webAddr            string
@@ -494,9 +499,9 @@ func newStartCmd() *cobra.Command {
 					isDetached(detach), nil, 0)
 			}
 			if daemonOnly {
-				return runDaemonOnly(cmd, pidPath, workers, maxWorkers, progressTimeout, opsReviewTimeout, reviewStallTimeout, baseBranch, webEnabled, webAddr)
+				return runDaemonOnly(cmd, pidPath, workers, maxWorkers, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, baseBranch, webEnabled, webAddr)
 			}
-			return startFreshSwarm(cmd.OutOrStdout(), workers, maxWorkers, model, detach, progressTimeout, opsReviewTimeout, reviewStallTimeout)
+			return startFreshSwarm(cmd.OutOrStdout(), workers, maxWorkers, model, detach, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration)
 		},
 	}
 
@@ -510,6 +515,7 @@ func newStartCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&reviewStallTimeout, "review-stall-timeout", 0, "max time a reviewing worker can stall before STUCK_WORKER (default 15m)")
 	cmd.Flags().DurationVar(&reviewStallTimeout, "review-timeout", 0, "deprecated alias for --review-stall-timeout")
 	_ = cmd.Flags().MarkHidden("review-timeout")
+	cmd.Flags().BoolVar(&manualIntegration, "manual-integration", false, "leave completed worker branches for manual review instead of auto-merging")
 	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "base branch for worktree creation (default: main)")
 	cmd.Flags().BoolVar(&webEnabled, "web", false, "enable HTTP server for dashboard/health endpoints")
 	cmd.Flags().StringVar(&webAddr, "web-addr", "", "HTTP server listen address (default 127.0.0.1:4444)")
@@ -518,7 +524,7 @@ func newStartCmd() *cobra.Command {
 }
 
 // startFreshSwarm sets up project env vars and launches the full swarm (daemon + tmux).
-func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach bool, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration) error {
+func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach bool, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool) error {
 	project, err := readProjectConfig(".")
 	if err != nil {
 		return fmt.Errorf("read project config: %w", err)
@@ -539,7 +545,7 @@ func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach 
 		return err
 	}
 	return runFullStart(w, workers, maxWorkers, model, project,
-		&ExecDaemonSpawner{ProgressTimeout: progressTimeout, OpsReviewTimeout: opsReviewTimeout, ReviewStallTimeout: reviewStallTimeout},
+		&ExecDaemonSpawner{ProgressTimeout: progressTimeout, OpsReviewTimeout: opsReviewTimeout, ReviewStallTimeout: reviewStallTimeout, ManualIntegration: manualIntegration},
 		&ExecRunner{},
 		func(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) },
 		socketPollTimeout, nil, 0, isDetached(detach),
@@ -570,7 +576,7 @@ func cleanStaleWorkerLogs(oroHome string, maxAge time.Duration) { //nolint:unpar
 }
 
 // runDaemonOnly runs the dispatcher in the foreground (used for testing/CI).
-func runDaemonOnly(cmd *cobra.Command, pidPath string, workers, maxWorkers int, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, baseBranch string, webEnabled bool, webAddr string) error {
+func runDaemonOnly(cmd *cobra.Command, pidPath string, workers, maxWorkers int, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool, baseBranch string, webEnabled bool, webAddr string) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "starting dispatcher (PID %d, workers=%d)\n", os.Getpid(), workers)
 	if err := WritePIDFile(pidPath, os.Getpid()); err != nil {
 		return fmt.Errorf("write pid file: %w", err)
@@ -585,7 +591,7 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers, maxWorkers int, 
 	// Build dispatcher first so we can wire its shutdown authorization flag
 	// into the signal handler. This makes the daemon immune to raw SIGTERM
 	// until the "shutdown" directive authorizes it.
-	d, db, err := buildDispatcherWithReviewTimeouts(workers, maxWorkers, progressTimeout, opsReviewTimeout, reviewStallTimeout, baseBranch, webEnabled, webAddr)
+	d, db, err := buildDispatcherWithReviewTimeouts(workers, maxWorkers, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, baseBranch, webEnabled, webAddr)
 	if err != nil {
 		return fmt.Errorf("build dispatcher: %w", err)
 	}
@@ -661,12 +667,12 @@ func buildCodeIndex(ctx context.Context, repoRoot, dbPath string) error {
 // The initial target and auto-scale ceiling both start at one worker for
 // callers that do not need timeout controls.
 func buildDispatcher(baseBranch string, webEnabled bool, webAddr string) (*dispatcher.Dispatcher, *sql.DB, error) {
-	return buildDispatcherWithReviewTimeouts(1, 1, 0, 0, 0, baseBranch, webEnabled, webAddr)
+	return buildDispatcherWithReviewTimeouts(1, 1, 0, 0, 0, false, baseBranch, webEnabled, webAddr)
 }
 
 // buildDispatcherWithReviewTimeouts constructs a Dispatcher with separate
 // ops-review subprocess and reviewing-worker stall timeout controls.
-func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, baseBranch string, webEnabled bool, webAddr string) (*dispatcher.Dispatcher, *sql.DB, error) { //nolint:funlen // factory initialization
+func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool, baseBranch string, webEnabled bool, webAddr string) (*dispatcher.Dispatcher, *sql.DB, error) { //nolint:funlen // factory initialization
 	if err := requireNativeProductionBeadSourceMode("oro start"); err != nil {
 		return nil, nil, err
 	}
@@ -722,19 +728,20 @@ func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressT
 	opsSpawner := ops.NewSpawnerWithReviewTimeout(runtime.opsSpawn, opsReviewTimeout)
 
 	cfg := dispatcher.Config{
-		SocketPath:       sockPath,
-		InitialWorkers:   initialWorkers,
-		MaxWorkers:       maxWorkers,
-		AllowZeroWorkers: initialWorkers == 0 && maxWorkers == 0,
-		DBPath:           dbPath,
-		RepoRoot:         repoRoot,
-		ProgressTimeout:  progressTimeout,
-		ReviewTimeout:    reviewStallTimeout,
-		WorkerProgram:    resolveWorkerProgramPath(repoRoot),
-		DefaultBranch:    baseBranch,
-		DreamInterval:    10,
-		WebEnabled:       webEnabled,
-		WebAddr:          webAddr,
+		SocketPath:        sockPath,
+		InitialWorkers:    initialWorkers,
+		MaxWorkers:        maxWorkers,
+		AllowZeroWorkers:  initialWorkers == 0 && maxWorkers == 0,
+		DBPath:            dbPath,
+		RepoRoot:          repoRoot,
+		ProgressTimeout:   progressTimeout,
+		ReviewTimeout:     reviewStallTimeout,
+		ManualIntegration: manualIntegration,
+		WorkerProgram:     resolveWorkerProgramPath(repoRoot),
+		DefaultBranch:     baseBranch,
+		DreamInterval:     10,
+		WebEnabled:        webEnabled,
+		WebAddr:           webAddr,
 	}
 
 	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, codeIdx)

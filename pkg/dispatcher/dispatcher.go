@@ -425,6 +425,7 @@ type Config struct {
 	PaneRestartCooldown   time.Duration // Min time between manager pane restarts (default 2m).
 	PaneInactivityTimeout time.Duration // Manager inactivity duration before restart (default 10m).
 	ReviewTimeout         time.Duration // Max time a reviewing worker can stall before STUCK_WORKER escalation (default 15m).
+	ManualIntegration     bool          // If true, completed worker branches wait for manual coordinator integration instead of auto-merge.
 	BackupInterval        time.Duration // Interval between full-state JSONL backups to .beads/backup/full-state.jsonl (default 5m).
 	DoltHealthInterval    time.Duration // Interval between dolt reachability probes in heartbeatLoop (default 30s).
 	Estimator             BeadEstimator // LLM-based bead complexity estimator (default NewBeadEstimator()).
@@ -1487,10 +1488,27 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 		return
 	}
 
+	if d.cfg.ManualIntegration {
+		d.completeManualIntegration(ctx, beadID, workerID, release)
+		return
+	}
+
 	// Merge in background
 	d.safeGo(func() {
 		d.mergeAndComplete(ctx, beadID, workerID, release.worktree, release.branch, release.epicID, release.targetBranch, release.assignmentID)
 	})
+}
+
+func (d *Dispatcher) completeManualIntegration(ctx context.Context, beadID, workerID string, release doneWorkerRelease) {
+	if err := d.completeAssignment(ctx, release.assignmentID, beadID); err != nil {
+		_ = d.logEvent(ctx, "manual_integration_assignment_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
+	}
+	if err := d.updateBeadStatus(ctx, beadID, "blocked"); err != nil {
+		_ = d.logEvent(ctx, "manual_integration_status_failed", "dispatcher", beadID, workerID, err.Error())
+	}
+	detail := fmt.Sprintf(`{"branch":%q,"worktree":%q,"target_branch":%q}`, release.branch, release.worktree, release.targetBranch)
+	_ = d.logEvent(ctx, "manual_integration_required", "dispatcher", beadID, workerID, detail)
+	d.escalate(ctx, fmt.Sprintf("[ORO-DISPATCH] MANUAL_INTEGRATION: %s — review and merge %s from %s.", beadID, release.branch, release.worktree), beadID, workerID)
 }
 
 type doneWorkerRelease struct {

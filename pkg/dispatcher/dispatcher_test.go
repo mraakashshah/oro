@@ -3854,6 +3854,66 @@ func TestHandleDone_QualityGatePassed_ProceedsMerge(t *testing.T) {
 	}
 }
 
+func TestHandleDoneManualIntegrationSkipsMergeAndPreservesWorktree(t *testing.T) {
+	d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)
+	d.cfg.ManualIntegration = true
+	startDispatcher(t, d)
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-manual", Title: "Manual integration", Priority: 1}})
+	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            "bead-manual",
+			WorkerID:          "w1",
+			QualityGatePassed: true,
+		},
+	})
+
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "manual_integration_required") > 0
+	}, 2*time.Second)
+
+	if eventCount(t, d.db, "merged") != 0 {
+		t.Fatal("manual integration mode must not auto-merge")
+	}
+	if len(beadSrc.closed) != 0 {
+		t.Fatalf("manual integration mode closed bead: %v", beadSrc.closed)
+	}
+	if got := beadSrc.updated["bead-manual"]; got != "blocked" {
+		t.Fatalf("bead status = %q, want blocked", got)
+	}
+	if len(wtMgr.removed) != 0 {
+		t.Fatalf("manual integration mode removed worktree: %v", wtMgr.removed)
+	}
+
+	var status string
+	if err := d.db.QueryRow(`SELECT status FROM assignments WHERE bead_id='bead-manual'`).Scan(&status); err != nil {
+		t.Fatalf("query assignment: %v", err)
+	}
+	if status != "completed" {
+		t.Fatalf("assignment status = %q, want completed", status)
+	}
+	msgs := esc.Messages()
+	if len(msgs) != 1 || !strings.Contains(msgs[0], "MANUAL_INTEGRATION") || !strings.Contains(msgs[0], "agent/bead-manual") {
+		t.Fatalf("manual integration escalation = %v", msgs)
+	}
+}
+
 func TestHandleDonePreservesEpicID(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
