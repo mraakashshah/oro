@@ -106,6 +106,7 @@ def test_agent_asset_mirrors() -> None:
     _assert_hook_root_contains_only_staged_file_types(assets_hooks)
     _assert_hook_root_contains_only_staged_file_types(
         REPO_ROOT / ".claude" / "hooks",
+        allowed_extra_paths={Path(".DS_Store"), Path("oro-search-hook")},
         allowed_extra_prefixes=(Path("beacons"),),
     )
     _assert_hook_root_contains_only_staged_file_types(REPO_ROOT / "cmd" / "oro" / "_assets" / "hooks")
