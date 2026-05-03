@@ -79,8 +79,11 @@ func TestExecuteWork_DryRunSpawnPrintsWorkerPromptCommands(t *testing.T) {
 	}
 
 	got := stdout.String()
-	if !strings.Contains(got, "oro bead create") {
-		t.Fatalf("dry-run spawn prompt missing oro bead create; got:\n%s", got)
+	if strings.Contains(got, "oro bead create") {
+		t.Fatalf("dry-run spawn prompt should use task-primary create guidance, got:\n%s", got)
+	}
+	if !strings.Contains(got, "oro task create") {
+		t.Fatalf("dry-run spawn prompt missing oro task create; got:\n%s", got)
 	}
 	if strings.Contains(got, "bd create") {
 		t.Fatalf("dry-run spawn prompt contains legacy bd create; got:\n%s", got)
