@@ -89,6 +89,32 @@ find_embedded_files() {
 	done
 }
 
+scan_runtime_command_comments() {
+	local candidates=("$@")
+	local files=()
+	local normal_commands='create|show|update|close|reopen|defer|undefer|list|status|ready|blocked|closed|dep|deps|tag|meta|note|comment|search|export|import|doctor|work'
+	local command_regex='\boro bead[[:space:]]+('"$normal_commands"')\b'
+	local stale_runtime_comment_regex='SessionStart hooks \(bd list, bd ready|oro bead commands?'
+
+	local file
+	for file in "${candidates[@]}"; do
+		[ -e "$file" ] || continue
+		files+=("$file")
+	done
+
+	if ((${#files[@]} == 0)); then
+		return 0
+	fi
+	if rg -n -U --pcre2 "$command_regex" "${files[@]}"; then
+		printf "terminology: current runtime comments must use \`oro task\` for normal work-item command paths; \`oro bead migrate-from-dolt\` remains migration-only.\n" >&2
+		bad=1
+	fi
+	if rg -n --pcre2 "$stale_runtime_comment_regex" "${files[@]}"; then
+		printf 'terminology: current runtime comments must describe SessionStart task commands, not legacy bd commands.\n' >&2
+		bad=1
+	fi
+}
+
 default_files=()
 while IFS= read -r file; do
 	default_files+=("$file")
@@ -115,10 +141,22 @@ for file in "${files[@]}"; do
 	existing_files+=("$file")
 done
 files=("${existing_files[@]}")
+runtime_comment_files=(cmd/oro/tmux.go pkg/dispatcher/dispatcher.go)
+generic_files=()
+for file in "${files[@]}"; do
+	normalized_file="${file#./}"
+	case "$normalized_file" in
+	cmd/oro/tmux.go | pkg/dispatcher/dispatcher.go)
+		continue
+		;;
+	esac
+	generic_files+=("$file")
+done
 
 if ! require_readme_glossary; then
 	bad=1
 fi
-scan_files "${files[@]}"
+scan_files "${generic_files[@]}"
+scan_runtime_command_comments "${runtime_comment_files[@]}"
 
 exit "$bad"

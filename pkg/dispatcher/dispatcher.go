@@ -1,12 +1,12 @@
 // Package dispatcher implements the Oro orchestrator — the core coordination
 // engine that composes protocol, merge, worker, and ops packages into a
 // unified runtime. The Dispatcher manages a UDS server for worker connections,
-// SQLite WAL for runtime state, a priority queue from oro bead ready, worker
+// SQLite WAL for runtime state, a priority queue from oro task ready, worker
 // lifecycle supervision, merge execution, ops agent spawning, command
 // processing, and escalation to the Manager.
 //
 // The Dispatcher is INERT until it receives a "start" directive. After that
-// it runs autonomously, polling for work and assigning beads to idle workers.
+// it runs autonomously, polling for work and assigning tasks to idle workers.
 package dispatcher
 
 import (
@@ -408,14 +408,14 @@ type pendingHandoff struct {
 type Config struct {
 	SocketPath            string        // UDS socket path.
 	DBPath                string        // SQLite database path.
-	RepoRoot              string        // Absolute path to the repository root. Used so oro bead commands run from the right directory even when the process is started from a worktree. Falls back to os.Getwd() if empty.
+	RepoRoot              string        // Absolute path to the repository root. Used so oro task commands run from the right directory even when the process is started from a worktree. Falls back to os.Getwd() if empty.
 	BeadsDir              string        // Path to the beads directory (defaults to protocol.BeadsDir when empty). Set from ProjectPaths.BeadsDir for stealth-mode support.
 	MaxWorkers            int           // Worker pool ceiling for auto-scale (default 10).
 	InitialWorkers        int           // Initial targetWorkers on startup (default: MaxWorkers).
 	AllowZeroWorkers      bool          // Preserve InitialWorkers=0 and MaxWorkers=0 for explicit manual-worker mode.
 	HeartbeatTimeout      time.Duration // Worker heartbeat timeout (default 45s).
 	ProgressTimeout       time.Duration // Max time without meaningful progress before STUCK_WORKER escalation (default 15m).
-	PollInterval          time.Duration // oro bead ready poll interval (default 10s).
+	PollInterval          time.Duration // oro task ready poll interval (default 10s).
 	FallbackPollInterval  time.Duration // Fallback poll interval for fsnotify safety net (default 60s).
 	ShutdownTimeout       time.Duration // Graceful shutdown timeout (default 10s).
 	ConsolidateAfterN     int           // Trigger context consolidation after N completed beads (default 5).
@@ -735,7 +735,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 	if err := resolved.validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
-	// Determine the effective repo root for oro bead commands.
+	// Determine the effective repo root for oro task commands.
 	// Falls back to the process working directory when RepoRoot is not set.
 	rootDir, beadsDir := resolved.RepoRoot, resolved.BeadsDir
 	if rootDir == "" {
@@ -3603,9 +3603,9 @@ func (d *Dispatcher) isBeadAssignable(b protocol.Bead, now time.Time, activeBead
 		return false
 	}
 	// Skip beads currently being merged and closed. There's a race window
-	// between mergeAndComplete setting mergingBeads and oro bead close propagating
-	// the status change — without this check the bead appears "ready" to
-	// oro bead ready --json and gets re-assigned, causing bead_closed_externally spam.
+	// between mergeAndComplete setting mergingBeads and oro task close propagating
+	// the status change — without this check the task appears "ready" to
+	// oro task ready --json and gets re-assigned, causing bead_closed_externally spam.
 	if d.mergingBeads[b.ID] {
 		return false
 	}

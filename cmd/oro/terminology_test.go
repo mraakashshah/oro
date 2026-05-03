@@ -405,6 +405,75 @@ func TestTaskTerminologyGuard(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects stale current runtime command comments", func(t *testing.T) {
+		tempRoot := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(tempRoot, "scripts"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		scriptBytes, err := os.ReadFile(script)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tempScript := filepath.Join(tempRoot, "scripts", "check-task-terminology.sh")
+		if err := os.WriteFile(tempScript, scriptBytes, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		readme := strings.Join([]string{
+			"### Task Terminology",
+			"- **Task:** preferred public term for an Oro work item.",
+			"- **Bead:** legacy/internal term still visible in storage, historical docs, compatibility CLI, and migration artifacts.",
+			"- **Task type:** the `type` field, whose values include `task`, `bug`, `epic`, `research`, and `chore`.",
+			"",
+		}, "\n")
+		if err := os.WriteFile(filepath.Join(tempRoot, "README.md"), []byte(readme), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for _, dir := range []string{
+			filepath.Join(tempRoot, "docs"),
+			filepath.Join(tempRoot, "cmd", "oro"),
+			filepath.Join(tempRoot, "pkg", "dispatcher"),
+		} {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(tempRoot, "docs", "INSTALL.md"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(tempRoot, "cmd", "oro", "tmux.go"), []byte("// SessionStart hooks (bd list, bd ready, git status, etc.)\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		dispatcherComment := strings.Join([]string{
+			"// priority queue from oro bead ready",
+			"// Determine the effective repo root for oro bead commands.",
+			"",
+		}, "\n")
+		if err := os.WriteFile(filepath.Join(tempRoot, "pkg", "dispatcher", "dispatcher.go"), []byte(dispatcherComment), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		cmd := exec.Command(tempScript)
+		cmd.Dir = tempRoot
+		output, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("terminology guard accepted stale runtime command comments:\n%s", string(output))
+		}
+		if !strings.Contains(string(output), "oro bead ready") ||
+			!strings.Contains(string(output), "oro bead commands") ||
+			!strings.Contains(string(output), "SessionStart hooks") {
+			t.Fatalf("terminology guard rejection did not cite stale runtime comments:\n%s", string(output))
+		}
+	})
+
+	t.Run("allows dot slash runtime comment file arguments", func(t *testing.T) {
+		cmd := exec.Command(script, "./pkg/dispatcher/dispatcher.go", "./cmd/oro/tmux.go")
+		cmd.Dir = repoRoot
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("terminology guard rejected dot-slash runtime file arguments:\n%s", string(output))
+		}
+	})
+
 	t.Run("rejects invented task branch naming", func(t *testing.T) {
 		badDoc := filepath.Join(t.TempDir(), "bad-branch.md")
 		if err := os.WriteFile(badDoc, []byte("Worker worktrees use task/abc branches.\n"), 0o644); err != nil {

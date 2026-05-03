@@ -32,7 +32,7 @@ func (e *ExecRunner) Run(name string, args ...string) (string, error) {
 }
 
 // defaultReadyTimeout is the default time to wait for the runtime CLI to become ready.
-// Claude Code with SessionStart hooks (bd list, bd ready, git status, etc.)
+// Claude Code with SessionStart hooks (oro task list, oro task ready, git status, etc.)
 // can take 30-45s to initialize.
 const defaultReadyTimeout = 60 * time.Second
 
