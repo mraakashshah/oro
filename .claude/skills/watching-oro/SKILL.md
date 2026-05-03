@@ -54,8 +54,7 @@ for wt in .worktrees/oro-*/; do
   git -C "$wt" diff --stat | tail -3
 done
 
-# Architect/manager panes
-tmux capture-pane -t oro:0 -p -S -30   # architect
+# Manager pane
 tmux capture-pane -t oro:1 -p -S -30   # manager
 ```
 
@@ -78,7 +77,7 @@ tmux capture-pane -t oro:1 -p -S -30   # manager
 | `QG_FAILED` repeating for same task | Worker can't pass QG — check prompt or test |
 | `MERGE_CONFLICT` without later `MERGED` | Stale worktree — needs manual rebase |
 | Heartbeat `context_pct > 80` | Worker degrading — will likely fail |
-| Pane activity stale >10min | Manager/architect crashed — check pane |
+| Pane activity stale >10min | Manager crashed — check pane |
 | Assignment spam (same task >3x) | Rejection loop — check AC or worker prompt |
 
 ## Phase 3: Detect + Spec
