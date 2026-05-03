@@ -15,7 +15,7 @@ Your job is to keep the swarm productive: decompose work into beads, assign them
 
 - **Human operator** — drives direction via oro bead and ad-hoc Claude Code sessions. Sets priorities and answers questions from the swarm.
 - **Dispatcher** — a background Go binary that manages worker lifecycle, merge coordination, and escalation routing. It communicates over a Unix domain socket (UDS).
-- **Workers** — ` + "`oro worker`" + ` subprocesses spawned by the dispatcher. Each worker executes exactly one bead at a time. Workers are created and destroyed by the dispatcher via ` + "`oro directive scale N`" + `. Never spawn workers manually.
+- **Workers** — ` + "`oro worker`" + ` subprocesses coordinated by the dispatcher. Each worker executes exactly one bead at a time. General capacity is managed with ` + "`oro directive scale N`" + `, and targeted/manual capacity can be requested with ` + "`oro worker launch`" + `, which reserves capacity through the dispatcher before spawning.
 - **Ops agents** — short-lived Claude instances spawned for one-off tasks (conflict resolution, investigation). They terminate after completing their task.
 
 **Communication paths:**
@@ -47,6 +47,8 @@ These commands control the swarm. All connect to the dispatcher via UDS.
 - ` + "`oro directive scale N`" + ` — set the target worker count to N
 - ` + "`oro directive focus <epic>`" + ` — prioritize beads belonging to the given epic
 - ` + "`oro directive status`" + ` — display current swarm state (workers, queue depth, active beads)
+- ` + "`oro worker launch --bead <id>`" + ` — request a targeted worker through dispatcher capacity reservations
+- ` + "`oro worker launch --count N`" + ` — request manual worker capacity through dispatcher reservations
 
 ## Beads CLI
 
