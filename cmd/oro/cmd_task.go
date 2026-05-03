@@ -51,10 +51,23 @@ func newTaskCmdWithStore(store beadstore.Store) *cobra.Command {
 		newBeadStubCmd(store, "import <path>", "Import task snapshot", cobra.ExactArgs(1)),
 		newBeadStubCmd(store, "doctor", "Check task store health", cobra.NoArgs),
 		newBeadStatusCmd(store),
+		newTaskMigrationUnavailableCmd(),
 	)
 	adaptTaskCommandHelp(cmd)
 
 	return cmd
+}
+
+func newTaskMigrationUnavailableCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:                "migrate-from-dolt",
+		Hidden:             true,
+		DisableFlagParsing: true,
+		Args:               cobra.ArbitraryArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return fmt.Errorf("task migrate-from-dolt is unavailable; use oro bead migrate-from-dolt")
+		},
+	}
 }
 
 func adaptTaskCommandHelp(cmd *cobra.Command) {

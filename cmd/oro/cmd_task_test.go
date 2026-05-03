@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"oro/pkg/beadstore"
+
+	"github.com/spf13/cobra"
 )
 
 func TestRootCommandIncludesTask(t *testing.T) {
@@ -44,13 +46,13 @@ func TestTaskCommandSubcommandParity(t *testing.T) {
 		beadSubs[sub.Name()] = true
 	}
 
-	taskSubs := map[string]bool{}
+	taskSubs := map[string]*cobra.Command{}
 	for _, sub := range taskCmd.Commands() {
-		taskSubs[sub.Name()] = true
+		taskSubs[sub.Name()] = sub
 	}
 
-	if taskSubs["migrate-from-dolt"] {
-		t.Fatal("task command must not expose migrate-from-dolt")
+	if migrate, ok := taskSubs["migrate-from-dolt"]; ok && !migrate.Hidden {
+		t.Fatal("task command must not visibly expose migrate-from-dolt")
 	}
 
 	if !beadSubs["migrate-from-dolt"] {
@@ -61,7 +63,7 @@ func TestTaskCommandSubcommandParity(t *testing.T) {
 		if name == "migrate-from-dolt" {
 			continue
 		}
-		if !taskSubs[name] {
+		if taskSubs[name] == nil {
 			t.Fatalf("task command missing subcommand %q that bead has", name)
 		}
 	}
@@ -106,6 +108,26 @@ func TestTaskCommandRejectsMigrationAlias(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "migrate-from-dolt") {
 		t.Fatalf("task migrate-from-dolt error = %v, want unavailable migration command named", err)
+	}
+}
+
+func TestTaskCommandRejectsMigrationAliasHelp(t *testing.T) {
+	out, _, err := executeCommand("task", "migrate-from-dolt", "--help")
+	if err == nil {
+		t.Fatalf("task migrate-from-dolt --help unexpectedly succeeded:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "migrate-from-dolt") {
+		t.Fatalf("task migrate-from-dolt --help error = %v, want unavailable migration command named", err)
+	}
+}
+
+func TestTaskCommandRejectsMigrationAliasViaHelpCommand(t *testing.T) {
+	out, _, err := executeCommand("help", "task", "migrate-from-dolt")
+	if err == nil {
+		t.Fatalf("help task migrate-from-dolt unexpectedly succeeded:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "migrate-from-dolt") {
+		t.Fatalf("help task migrate-from-dolt error = %v, want unavailable migration command named", err)
 	}
 }
 

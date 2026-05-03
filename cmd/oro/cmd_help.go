@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -72,8 +73,8 @@ func newHelpCmd(root *cobra.Command) *cobra.Command {
 
 			// Fall through to cobra's per-command help.
 			target, _, err := root.Find(args)
-			if err != nil || target == nil || target == root {
-				return fmt.Errorf("unknown command %q", args[0])
+			if err != nil || target == nil || target == root || target.Hidden {
+				return fmt.Errorf("unknown command %q", strings.Join(args, " "))
 			}
 			return target.Help()
 		},
