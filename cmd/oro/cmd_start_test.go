@@ -754,6 +754,50 @@ func opsReviewTimeoutFromDispatcher(t *testing.T, d *dispatcher.Dispatcher) time
 	return time.Duration(timeoutField.Int())
 }
 
+func TestStartManualIntegrationDaemonHandoffForwardsFlagAndConfig(t *testing.T) {
+	spawner := &ExecDaemonSpawner{
+		OpsReviewTimeout:   35 * time.Minute,
+		ReviewStallTimeout: 15 * time.Minute,
+		ManualIntegration:  true,
+	}
+	argStr := strings.Join(spawner.buildArgs(2, 2), " ")
+	for _, want := range []string{
+		"--ops-review-timeout=35m0s",
+		"--review-stall-timeout=15m0s",
+		"--manual-integration",
+	} {
+		if !strings.Contains(argStr, want) {
+			t.Errorf("daemon args missing %q: %s", want, argStr)
+		}
+	}
+	if strings.Contains(argStr, "--review-timeout=") {
+		t.Errorf("daemon args should not use ambiguous --review-timeout: %s", argStr)
+	}
+
+	tmpDir := t.TempDir()
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+	t.Setenv("ORO_PROJECT", "")
+	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+
+	d, db, err := buildDispatcherWithReviewTimeouts(1, 1, 7*time.Minute, 35*time.Minute, 15*time.Minute, true, "", false, "")
+	if err != nil {
+		t.Fatalf("buildDispatcherWithReviewTimeouts: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	cfg := d.GetConfig()
+	if !cfg.ManualIntegration {
+		t.Error("dispatcher ManualIntegration: got false, want true")
+	}
+	if cfg.ReviewTimeout != 15*time.Minute {
+		t.Errorf("dispatcher ReviewTimeout: got %v, want review stall timeout 15m", cfg.ReviewTimeout)
+	}
+	if got := opsReviewTimeoutFromDispatcher(t, d); got != 35*time.Minute {
+		t.Errorf("ops review timeout: got %v, want 35m", got)
+	}
+}
+
 // TestStartBaseBranchFlag verifies that the --base-branch flag exists on the
 // start command and that its value flows into Config.DefaultBranch via buildDispatcher.
 func TestStartBaseBranchFlag(t *testing.T) {
