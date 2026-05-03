@@ -24,15 +24,15 @@ import (
 func TestNewWorkCmd_Flags(t *testing.T) {
 	cmd := newWorkCmd()
 
-	if cmd.Use != "work <bead-id>" {
-		t.Fatalf("expected Use='work <bead-id>', got %s", cmd.Use)
+	if cmd.Use != "work <task-id>" {
+		t.Fatalf("expected Use='work <task-id>', got %s", cmd.Use)
 	}
 
 	tests := []struct {
 		name     string
 		defValue string
 	}{
-		{"model", ""}, // empty means "use bead metadata then default"; resolved at runtime
+		{"model", ""}, // empty means "use task metadata then default"; resolved at runtime
 		{"timeout", "15m0s"},
 		{"review-timeout", "0s"},
 		{"skip-review", "false"},
