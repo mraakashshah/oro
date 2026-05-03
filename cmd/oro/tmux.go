@@ -374,7 +374,7 @@ func (s *TmuxSession) launchAndNudgeManagerOnly(nudge string) error {
 	s.beaconWg.Add(1)
 	go func() {
 		defer s.beaconWg.Done()
-		if err := s.VerifyBeaconReceived(s.Name+":manager", "oro bead status", beaconTimeout); err != nil {
+		if err := s.VerifyBeaconReceived(s.Name+":manager", "oro task status", beaconTimeout); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: manager nudge may not have been received: %v\n", err)
 		}
 	}()
@@ -494,7 +494,7 @@ func (s *TmuxSession) launchAndNudgeAll(architectNudge, managerNudge string) err
 	s.beaconWg.Add(1)
 	go func() {
 		defer s.beaconWg.Done()
-		if err := s.VerifyBeaconReceived(s.Name+":manager", "oro bead status", beaconTimeout); err != nil {
+		if err := s.VerifyBeaconReceived(s.Name+":manager", "oro task status", beaconTimeout); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: manager nudge may not have been received: %v\n", err)
 		}
 	}()

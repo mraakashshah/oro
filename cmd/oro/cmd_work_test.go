@@ -1667,3 +1667,16 @@ func (m *branchCapturingWorktreeManager) PushBranch(_ context.Context, _ string)
 func (m *branchCapturingWorktreeManager) CreateBranch(_ context.Context, _, _ string) error {
 	return nil
 }
+
+// TestWorkCommandTaskTerminology verifies that the work command's Short and Long
+// descriptions use task-primary terminology rather than bead-only phrasing.
+func TestWorkCommandTaskTerminology(t *testing.T) {
+	cmd := newWorkCmd()
+
+	if !strings.Contains(strings.ToLower(cmd.Short), "task") {
+		t.Errorf("work command Short should reference 'task', got: %q", cmd.Short)
+	}
+	if !strings.Contains(strings.ToLower(cmd.Long), "task") {
+		t.Errorf("work command Long should reference 'task', got: %q", cmd.Long)
+	}
+}

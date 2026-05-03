@@ -116,6 +116,46 @@ func TestHelpUnknownCommand(t *testing.T) {
 	}
 }
 
+// TestHelpTaskTerminology verifies that helpText is task-primary: "task" is the
+// primary Workflow entry and "bead" is described as a legacy alias.
+func TestHelpTaskTerminology(t *testing.T) {
+	workflowIdx := strings.Index(helpText, "Workflow:")
+	if workflowIdx < 0 {
+		t.Fatal("expected Workflow section in helpText")
+	}
+	workflowSection := helpText[workflowIdx:]
+
+	// "task" must appear in the Workflow section.
+	taskIdx := strings.Index(workflowSection, "  task")
+	if taskIdx < 0 {
+		t.Error("expected 'task' command in Workflow section of helpText")
+	}
+
+	// If "bead" also appears in the Workflow section, "task" must come first.
+	beadIdx := strings.Index(workflowSection, "  bead")
+	if beadIdx >= 0 && taskIdx > beadIdx {
+		t.Error("'task' entry must appear before 'bead' in Workflow section (task is primary)")
+	}
+
+	// The bead entry, if present, must signal legacy/alias status.
+	if beadIdx >= 0 {
+		// Grab the bead line from the workflow section.
+		beadLine := workflowSection[beadIdx:]
+		if nl := strings.IndexByte(beadLine, '\n'); nl >= 0 {
+			beadLine = beadLine[:nl]
+		}
+		beadLine = strings.ToLower(beadLine)
+		if !strings.Contains(beadLine, "legacy") && !strings.Contains(beadLine, "alias") && !strings.Contains(beadLine, "compat") {
+			t.Errorf("bead entry in Workflow section should indicate legacy/alias status, got: %q", beadLine)
+		}
+	}
+
+	// "task" must appear in the Workflow section description as the primary command.
+	if !strings.Contains(workflowSection, "task") {
+		t.Error("expected 'task' in Workflow section of helpText")
+	}
+}
+
 // TestHelpIncludesAllRegisteredCommands ensures that if a new command is added
 // to root.go, it must also be added to the help text. This prevents drift between
 // registered commands and the help output.

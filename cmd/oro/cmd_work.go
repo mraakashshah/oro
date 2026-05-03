@@ -68,12 +68,12 @@ func newWorkCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "work <bead-id>",
-		Short: "Execute a bead through the full lifecycle",
-		Long: `Drives a single bead end-to-end: worktree → claude → quality gate →
+		Short: "Execute a task through the full lifecycle",
+		Long: `Drives a single task end-to-end: worktree → claude → quality gate →
 ops review → merge → close. Runnable by a human or a claude agent.
 
 All retries, model escalation, and review feedback loops are handled
-automatically. Exit code 0 means the bead landed on main.`,
+automatically. Exit code 0 means the task landed on main.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg.beadID = args[0]

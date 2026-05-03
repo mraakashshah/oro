@@ -85,7 +85,7 @@ func stubPaneReady(fake *fakeCmd, sessionName, architectNudge, managerNudge stri
 	fake.seqOut[mgrCapture] = []string{
 		"Welcome\n❯ \nstatus bar",                     // WaitForPrompt
 		"Welcome\n❯ " + managerNudge + "\nstatus bar", // SendKeysVerified
-		"oro bead status\nrunning\n",                  // VerifyBeaconReceived (async goroutine)
+		"oro task status\nrunning\n",                  // VerifyBeaconReceived (async goroutine)
 	}
 }
 
@@ -98,7 +98,7 @@ func stubCodexPaneReady(fake *fakeCmd, sessionName, architectNudge, managerNudge
 	fake.output[archCapture] = "Codex ready\n" + architectNudge + "\n"
 	fake.seqOut[mgrCapture] = []string{
 		"Codex ready\n" + managerNudge + "\n",
-		"oro bead status\nrunning\n",
+		"oro task status\nrunning\n",
 	}
 }
 
@@ -820,12 +820,12 @@ func TestCreateVerifiesBeaconAfterInjection(t *testing.T) {
 		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
 
 		// capture-pane is used by WaitForPrompt (needs ❯), SendKeysVerified
-		// (needs nudge text), and VerifyBeaconReceived (needs "oro bead status").
+		// (needs nudge text), and VerifyBeaconReceived (needs "oro task status").
 		managerCapture := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
 		fake.seqOut[managerCapture] = []string{
 			"Welcome\n❯ \nstatus bar",              // WaitForPrompt
 			"Welcome\n❯ manager nudge\nstatus bar", // SendKeysVerified
-			"oro bead status\n❯ output visible\n",  // VerifyBeaconReceived
+			"oro task status\n❯ output visible\n",  // VerifyBeaconReceived
 		}
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: time.Second}
@@ -1585,7 +1585,7 @@ func TestCreate_KillsZombieSession(t *testing.T) {
 		fake.seqOut[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = []string{
 			"Welcome\n❯ \nstatus bar",              // WaitForPrompt
 			"Welcome\n❯ manager nudge\nstatus bar", // SendKeysVerified
-			"oro bead status\n❯ output\n",          // VerifyBeaconReceived
+			"oro task status\n❯ output\n",          // VerifyBeaconReceived
 		}
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: time.Second}
@@ -2948,7 +2948,7 @@ func TestCreateParallelNudge(t *testing.T) {
 			"loading...",                          // WaitForPrompt: not ready yet
 			"Welcome\n❯ \nstatus bar",             // WaitForPrompt: ready
 			"Welcome\n❯ mgr nudge\nstatus bar",    // SendKeysVerified
-			"oro bead status\n❯ output visible\n", // VerifyBeaconReceived (if sync)
+			"oro task status\n❯ output visible\n", // VerifyBeaconReceived (if sync)
 		}
 
 		// Sleeper records each invocation start time to detect serialization.
@@ -2994,7 +2994,7 @@ func TestCreateParallelNudge(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubPaneReady(fake, "oro", "arch nudge", "mgr nudge")
 
-		// VerifyBeaconReceived: capture-pane for manager never shows "oro bead status".
+		// VerifyBeaconReceived: capture-pane for manager never shows "oro task status".
 		managerCapture := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
 		fake.seqOut[managerCapture] = []string{
 			"Welcome\n❯ \nstatus bar",          // WaitForPrompt
@@ -3036,7 +3036,7 @@ func TestCreateWithManagerOnly(t *testing.T) {
 		fake.seqOut[mgrCapture] = []string{
 			"Welcome\n❯ \nstatus bar",              // WaitForPrompt
 			"Welcome\n❯ manager nudge\nstatus bar", // SendKeysVerified
-			"oro bead status\nrunning\n",           // VerifyBeaconReceived (async)
+			"oro task status\nrunning\n",           // VerifyBeaconReceived (async)
 		}
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
@@ -3088,7 +3088,7 @@ func TestCreateWithManagerOnly(t *testing.T) {
 		mgrCapture := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
 		fake.seqOut[mgrCapture] = []string{
 			"Welcome\n❯ \nstatus bar",    // WaitForPrompt
-			"oro bead status\nrunning\n", // VerifyBeaconReceived (async)
+			"oro task status\nrunning\n", // VerifyBeaconReceived (async)
 		}
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
@@ -3123,6 +3123,39 @@ func TestCreateWithManagerOnly(t *testing.T) {
 		sess.WaitBeacon()
 		if !strings.Contains(err.Error(), "prompt") {
 			t.Errorf("expected 'prompt' in error, got: %v", err)
+		}
+	})
+}
+
+// TestTmuxManagerBeaconVerificationUsesTaskTerminology verifies that:
+//  1. ManagerNudge uses "oro task" commands (not "oro bead status").
+//  2. VerifyBeaconReceived succeeds when pane contains "oro task status".
+//  3. VerifyBeaconReceived fails when pane only contains "oro bead status"
+//     (because the beacon indicator is now task-based, not bead-based).
+func TestTmuxManagerBeaconVerificationUsesTaskTerminology(t *testing.T) {
+	nudge := ManagerNudge()
+	if strings.Contains(nudge, "oro bead status") {
+		t.Errorf("ManagerNudge must not reference legacy 'oro bead status'; got: %q", nudge)
+	}
+	if !strings.Contains(nudge, "oro task") {
+		t.Errorf("ManagerNudge must use 'oro task' commands; got: %q", nudge)
+	}
+
+	t.Run("beacon succeeds when pane contains oro task status", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = "Working...\noro task status\nrunning\n"
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		if err := sess.VerifyBeaconReceived("oro:manager", "oro task status", 50*time.Millisecond); err != nil {
+			t.Errorf("VerifyBeaconReceived with 'oro task status' should succeed: %v", err)
+		}
+	})
+
+	t.Run("beacon times out when pane only contains legacy oro bead status", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = "Working...\noro bead status\nrunning\n"
+		sess := &TmuxSession{Name: "oro", Runner: fake, Sleeper: noopSleep}
+		if err := sess.VerifyBeaconReceived("oro:manager", "oro task status", 10*time.Millisecond); err == nil {
+			t.Error("VerifyBeaconReceived should time out when pane only shows legacy 'oro bead status'")
 		}
 	})
 }

@@ -135,7 +135,7 @@ func ArchitectBeacon() string {
 // architectNudge is the short nudge sent via tmux send-keys to kick the architect
 // session into action. The full role context is injected by the SessionStart hook
 // based on the ORO_ROLE env var — this nudge just gets things moving.
-const architectNudge = `You are the oro architect. Your full role context has been injected via SessionStart hook. Run ` + "`oro bead status`" + ` and ` + "`oro bead ready`" + ` to orient yourself, then check docs/handoffs/ for the latest handoff.`
+const architectNudge = `You are the oro architect. Your full role context has been injected via SessionStart hook. Run ` + "`oro task status`" + ` and ` + "`oro task ready`" + ` to orient yourself, then check docs/handoffs/ for the latest handoff.`
 
 // ArchitectNudge returns the short nudge string for the architect session.
 func ArchitectNudge() string {

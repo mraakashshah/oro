@@ -38,9 +38,9 @@ Search:
   index      Semantic code search (build, search)
 
 Workflow:
-  work       Execute a bead through the full lifecycle
-  task       Manage native Oro tasks (preferred alias for bead)
-  bead       Manage native Oro beads
+  work       Execute a task through the full lifecycle
+  task       Manage native Oro tasks
+  bead       Manage native Oro beads (legacy alias for task)
   shell      Launch an interactive agent session with oro settings
 
 Global:
