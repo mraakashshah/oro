@@ -384,6 +384,44 @@ func TestDispatcherStartManualIntegrationFlagConfiguresDaemon(t *testing.T) {
 	}
 }
 
+func TestDispatcherStartAutoMergeDefaultDoesNotEnableManualIntegration(t *testing.T) {
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "oro.pid")
+	sockPath := fmt.Sprintf("/tmp/oro-dsam-%d.sock", time.Now().UnixNano())
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
+	dbPath := filepath.Join(tmpDir, "state.db")
+
+	t.Setenv("ORO_PID_PATH", pidFile)
+	t.Setenv("ORO_SOCKET_PATH", sockPath)
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_BEADSOURCE_MODE", "sqlite")
+	t.Setenv("PATH", tmpDir)
+
+	spawner := &dispatcherFakeSpawner{
+		returnPID:  12347,
+		socketPath: sockPath,
+	}
+	previousFactory := newDispatcherDaemonSpawner
+	newDispatcherDaemonSpawner = func() DaemonSpawner { return spawner }
+	t.Cleanup(func() { newDispatcherDaemonSpawner = previousFactory })
+
+	cmd := newDispatcherCmd()
+	cmd.SetArgs([]string{"start", "--force", "--workers", "0"})
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stdout)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("dispatcher start default auto-merge mode: %v", err)
+	}
+	if !spawner.called {
+		t.Fatal("expected daemon spawner to be called")
+	}
+	if spawner.manualIntegration {
+		t.Fatal("default dispatcher start must leave manual integration disabled")
+	}
+}
+
 // TestDispatcherCmdStructure verifies the cobra command hierarchy.
 func TestDispatcherCmdStructure(t *testing.T) {
 	cmd := newDispatcherCmd()

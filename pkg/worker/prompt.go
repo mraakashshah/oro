@@ -316,9 +316,10 @@ func appendExitSection(b *strings.Builder) {
 		"",
 		"2. Your work is complete. The dispatcher will:",
 		"   - Receive your completion signal",
-		"   - Merge your worktree branch to main",
-		"   - Close the task if merge succeeds",
-		"   - Escalate to the manager if merge fails",
+		"   - Integrate your work according to the active dispatcher mode",
+		"   - In auto-merge mode, merge your worktree branch to main and close the task if merge succeeds",
+		"   - In manual-integration mode, preserve your branch/worktree and escalate for coordinator review",
+		"   - Escalate to the manager if integration fails",
 		"",
 		"You do NOT need to merge to main or close the task yourself.",
 	}, "\n"))

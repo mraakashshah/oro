@@ -3813,7 +3813,7 @@ func TestHandleDone_QualityGateFailed_RejectsMerge(t *testing.T) {
 	}
 }
 
-func TestHandleDone_QualityGatePassed_ProceedsMerge(t *testing.T) {
+func TestHandleDoneAutoMergeDefaultProceedsMerge(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
