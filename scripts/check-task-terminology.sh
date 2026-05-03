@@ -13,7 +13,7 @@ require_readme_glossary() {
 		'^### Task Terminology$' \
 		'\*\*Task:\*\* preferred public term for an Oro work item' \
 		'\*\*Bead:\*\* legacy/internal term' \
-		'\*\*Task type:\*\* the `type` field'; do
+		"\\*\\*Task type:\\*\\* the \`type\` field"; do
 		if ! rg -q "$pattern" "$readme"; then
 			printf 'terminology: README glossary missing pattern: %s\n' "$pattern" >&2
 			missing=1
@@ -27,7 +27,7 @@ scan_files() {
 	local normal_commands='create|show|update|close|reopen|defer|undefer|list|status|ready|blocked|closed|dep|deps|tag|meta|note|comment|search|export|import|doctor|work'
 	local command_regex='\boro bead[[:space:]]+('"$normal_commands"')\b'
 	local argv_command_regex='(?s)["'\'']bead["'\''][[:space:]]*,[[:space:]]*["'\'']('"$normal_commands"')["'\'']'
-	local docs_regex='native `oro bead`|primary .*oro bead|work items through `oro bead`|tracked by the native `oro bead` CLI'
+	local docs_regex="native \`oro bead\`|primary .*oro bead|work items through \`oro bead\`|tracked by the native \`oro bead\` CLI"
 	local primary_term_regex='one bead|execute beads|assigns beads|assign new beads|prioritize beads|requeue its bead|work is tracked as beads|all beads are visible|Bead in progress|continuation bead|bead queue|bead progress|bead completion|per-bead|bead dependency graph|Bead Anatomy|No beads ready|Stale Beads|Same bead|P0 bead|create a bead|blocker bead|test bead assigned|worker proof beads|controlled test bead|smoke bead|restart beads|ready bead|worker bead|bead has no AC|worker and bead are stuck|fix beads|child beads|smaller child beads|bead metadata export|export bead metadata|Diagnose why bead|Search beads|Import bead snapshot|Beads In Progress|BEAD CRAFT|SPEC/BEAD|Beads CLI'
 	local false_rename_regex='task/(abc|def|ghi|jkl)\b|\.worktrees/task|task/<id>|task branch'
 
@@ -36,15 +36,15 @@ scan_files() {
 	fi
 
 	if rg -n -U --pcre2 "$command_regex" "${files[@]}"; then
-		printf 'terminology: public docs/prompts must use `oro task` for normal work-item operations; `oro bead migrate-from-dolt` remains migration-only.\n' >&2
+		printf "terminology: public docs/prompts must use \`oro task\` for normal work-item operations; \`oro bead migrate-from-dolt\` remains migration-only.\n" >&2
 		bad=1
 	fi
 	if rg -n -U --pcre2 "$argv_command_regex" "${files[@]}" | rg -v '(^|/)(architect_router|notify_manager_on_bead_create|bd_create_notifier|pre_compact)\.py:'; then
-		printf 'terminology: active hooks/prompts must not invoke normal work-item operations through argv-form `oro bead`; use `oro task` unless the file is an explicit legacy compatibility parser.\n' >&2
+		printf "terminology: active hooks/prompts must not invoke normal work-item operations through argv-form \`oro bead\`; use \`oro task\` unless the file is an explicit legacy compatibility parser.\n" >&2
 		bad=1
 	fi
 	if rg -n --pcre2 "$docs_regex" "${files[@]}"; then
-		printf 'terminology: public docs/prompts must describe `oro task` as the normal work-item CLI.\n' >&2
+		printf "terminology: public docs/prompts must describe \`oro task\` as the normal work-item CLI.\n" >&2
 		bad=1
 	fi
 	if rg -n --pcre2 "$primary_term_regex" "${files[@]}"; then
