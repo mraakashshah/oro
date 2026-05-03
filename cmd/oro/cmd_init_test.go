@@ -1229,6 +1229,18 @@ func TestGenerateSettings_RegistersTaskCreateNotifier(t *testing.T) {
 	}
 }
 
+func TestGenerateSettingsNoArchitectRouter(t *testing.T) {
+	data, err := generateSettings("$HOME/.oro")
+	if err != nil {
+		t.Fatalf("generateSettings failed: %v", err)
+	}
+
+	content := string(data)
+	if strings.Contains(content, "architect_router") {
+		t.Errorf("settings.json should NOT contain architect_router hook, got:\n%s", content)
+	}
+}
+
 func TestDefaultHookEntries_NoGhostHooks(t *testing.T) {
 	// Test that buildHookConfig contains no removed PostToolUse hooks
 	// such as memory_capture or learning_reminder (oro-pw0d).
