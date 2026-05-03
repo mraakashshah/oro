@@ -36,7 +36,10 @@ Add `managed bool` field to `trackedWorker`:
 
 `reconcileScale` behavior:
 - `MaxWorkers=0` → no-op (skip entirely, manual mode)
-- `MaxWorkers>0` → count/kill only `managed` workers; external workers are invisible to scaling
+- `MaxWorkers>0` → enforce a hard cap across dispatcher-managed workers,
+  spawn-for workers, and externally launched worker reservations. External workers
+  are never killed directly by autoscale, but they consume capacity; when manual
+  workers fill the cap, `reconcileScale` drains dispatcher-managed workers first.
 
 ### Kill Worker Cleanup (applyKillWorker)
 
@@ -104,8 +107,8 @@ Phase 5: Flush bead state via beads.Sync (existing)
 |----------|-----------|---------|----------|---------------|
 | Full auto (`oro start`) | N>0 | N | 0 | Manages N workers |
 | Manual only (`oro dispatcher start`) | 0 | 0 | user-launched | No-op |
-| Mixed (auto + dedicated bead worker) | N>0 | N | 1+ | Ignores external |
-| Scale down in mixed | N→M | N→M killed | untouched | Only kills managed |
+| Mixed (auto + dedicated bead worker) | N>0 | N | 1+ | External workers consume cap; managed workers drain first |
+| Scale down in mixed | N→M | N→M killed as needed | untouched | Only kills managed; external workers still count against cap |
 
 ## Dependencies
 

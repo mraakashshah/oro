@@ -761,6 +761,60 @@ func TestReconcileScaleIgnoresWorkersAlreadyShuttingDownForDrainPressure(t *test
 	}
 }
 
+func TestScaleDownSkipsManagedWorkersAlreadyShuttingDown(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	activeConn := newMockConn()
+	shuttingConn1 := newMockConn()
+	shuttingConn2 := newMockConn()
+	d.mu.Lock()
+	d.workers["active-managed"] = &trackedWorker{
+		id:      "active-managed",
+		conn:    activeConn,
+		state:   protocol.WorkerBusy,
+		managed: true,
+		encoder: json.NewEncoder(activeConn),
+	}
+	d.workers["shutting-managed-1"] = &trackedWorker{
+		id:      "shutting-managed-1",
+		conn:    shuttingConn1,
+		state:   protocol.WorkerShuttingDown,
+		managed: true,
+		encoder: json.NewEncoder(shuttingConn1),
+	}
+	d.workers["shutting-managed-2"] = &trackedWorker{
+		id:      "shutting-managed-2",
+		conn:    shuttingConn2,
+		state:   protocol.WorkerShuttingDown,
+		managed: true,
+		encoder: json.NewEncoder(shuttingConn2),
+	}
+	d.mu.Unlock()
+
+	result := d.scaleDown(0, 3)
+	if !strings.Contains(result, "shutting down 1") {
+		t.Fatalf("scaleDown result = %q, want only active managed worker selected", result)
+	}
+
+	activeConn.mu.Lock()
+	activeWrites := len(activeConn.written)
+	activeConn.mu.Unlock()
+	if activeWrites != 1 {
+		t.Fatalf("active managed worker writes = %d, want 1 shutdown", activeWrites)
+	}
+	for id, conn := range map[string]*mockConn{
+		"shutting-managed-1": shuttingConn1,
+		"shutting-managed-2": shuttingConn2,
+	} {
+		conn.mu.Lock()
+		writes := len(conn.written)
+		conn.mu.Unlock()
+		if writes != 0 {
+			t.Fatalf("%s received %d shutdown messages despite already shutting down", id, writes)
+		}
+	}
+}
+
 func TestStatusJSONExposesWorkerCapacityRoles(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	d.cfg.MaxWorkers = 2

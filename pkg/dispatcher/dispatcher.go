@@ -5067,7 +5067,7 @@ func (d *Dispatcher) scaleDown(target, connected int) string {
 	var idle, busy []string
 	if toRemove > 0 {
 		for id, w := range d.workers {
-			if !w.managed || w.spawnFor {
+			if !w.managed || w.spawnFor || w.state == protocol.WorkerShuttingDown {
 				continue
 			}
 			if w.state == protocol.WorkerIdle {
