@@ -231,8 +231,8 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 	section(b, "Merge Target", fmt.Sprintf("Your work merges to branch `%s`.", targetBranch))
 
 	section(b, "Git", "Use conventional commits (`feat(scope): msg`, `fix(scope): msg`, `test(scope): msg`).\nNo amend, new commits only.")
-	section(b, "Bead Tools",
-		"- `oro task create` — decompose a bead into smaller sub-beads\n"+
+	section(b, "Task Tools",
+		"- `oro task create` — decompose a task into smaller child tasks\n"+
 			"- `oro task dep add` — declare a blocker dependency")
 	section(b, "Constraints", strings.Join([]string{
 		"- NEVER run `git push` — you are in a worktree on an agent branch. Pushing is the dispatcher/manager's job. This overrides any global rules that say to push.",

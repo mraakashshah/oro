@@ -20,7 +20,7 @@ var expectedSectionHeaders = []string{
 	"## Quality Gate",
 	"## Worktree",
 	"## Git",
-	"## Bead Tools",
+	"## Task Tools",
 	"## Constraints",
 	"## Autonomy",
 	"## Failure",
@@ -371,10 +371,10 @@ func TestAssemblePrompt_BeadToolsContent(t *testing.T) {
 	prompt := worker.AssemblePrompt(params)
 
 	if !strings.Contains(prompt, "oro task create") {
-		t.Error("expected Bead Tools section to contain 'oro task create'")
+		t.Error("expected Task Tools section to contain 'oro task create'")
 	}
 	if !strings.Contains(prompt, "oro task dep add") {
-		t.Error("expected Bead Tools section to contain 'oro task dep add'")
+		t.Error("expected Task Tools section to contain 'oro task dep add'")
 	}
 }
 
@@ -435,19 +435,19 @@ func TestPromptGolden(t *testing.T) {
 	}
 }
 
-// TestAssemblePrompt_BeadToolsDoesNotContainBdClose verifies that the Bead
-// Tools section does NOT list `oro bead close` as a worker tool. Workers must not
-// close beads — the dispatcher handles bead closure after merging to main.
+// TestAssemblePrompt_TaskToolsDoesNotContainTaskClose verifies that the Task
+// Tools section does NOT list `oro task close` as a worker tool. Workers must not
+// close tasks — the dispatcher handles task closure after merging to main.
 //
-// Context: oro-u74j bug — listing `oro bead close` in Bead Tools contradicts the
+// Context: oro-u74j bug — listing a close command in Task Tools contradicts the
 // Exit section's instruction that the dispatcher handles closure, leading
-// workers to close beads without merging to main.
-func TestAssemblePrompt_BeadToolsDoesNotContainBdClose(t *testing.T) {
+// workers to close tasks without merging to main.
+func TestAssemblePrompt_TaskToolsDoesNotContainTaskClose(t *testing.T) {
 	t.Parallel()
 
 	params := worker.PromptParams{
 		BeadID:             "bead-no-close",
-		Title:              "No oro bead close in tools",
+		Title:              "No oro task close in tools",
 		Description:        "Workers must not close beads",
 		AcceptanceCriteria: "Tests pass",
 		WorktreePath:       "/tmp/wt-no-close",
@@ -456,10 +456,10 @@ func TestAssemblePrompt_BeadToolsDoesNotContainBdClose(t *testing.T) {
 
 	prompt := worker.AssemblePrompt(params)
 
-	// Extract just the Bead Tools section
-	toolsStart := strings.Index(prompt, "## Bead Tools")
+	// Extract just the Task Tools section.
+	toolsStart := strings.Index(prompt, "## Task Tools")
 	if toolsStart == -1 {
-		t.Fatal("expected prompt to contain ## Bead Tools section")
+		t.Fatal("expected prompt to contain ## Task Tools section")
 	}
 	toolsEnd := strings.Index(prompt[toolsStart+1:], "## ")
 	var toolsSection string
@@ -469,8 +469,8 @@ func TestAssemblePrompt_BeadToolsDoesNotContainBdClose(t *testing.T) {
 		toolsSection = prompt[toolsStart : toolsStart+1+toolsEnd]
 	}
 
-	if strings.Contains(toolsSection, "oro bead close") {
-		t.Errorf("Bead Tools section must NOT contain 'oro bead close' — dispatcher handles bead closure (oro-u74j). Got:\n%s", toolsSection)
+	if strings.Contains(toolsSection, "oro task close") || strings.Contains(toolsSection, "oro bead close") {
+		t.Errorf("Task Tools section must NOT contain close commands — dispatcher handles task closure (oro-u74j). Got:\n%s", toolsSection)
 	}
 }
 
@@ -506,8 +506,8 @@ func TestAssemblePrompt_FailureSectionHasOroBeadCreateExamples(t *testing.T) {
 	params := worker.PromptParams{
 		BeadID:             "bead-fail-ex",
 		Title:              "Failure examples test",
-		Description:        "Test failure section has oro bead create examples",
-		AcceptanceCriteria: "oro bead create examples present in Failure section",
+		Description:        "Test failure section has oro task create examples",
+		AcceptanceCriteria: "oro task create examples present in Failure section",
 		MemoryContext:      "",
 		WorktreePath:       "/tmp/wt-fail-ex",
 		Model:              "opus",
@@ -528,7 +528,7 @@ func TestAssemblePrompt_FailureSectionHasOroBeadCreateExamples(t *testing.T) {
 		failureSection = prompt[failStart : failStart+1+failEnd]
 	}
 
-	// Each failure mode should have a concrete oro bead create command example
+	// Each failure mode should have a concrete oro task create command example.
 	checks := []struct {
 		name   string
 		substr string
@@ -783,7 +783,7 @@ func TestPromptHandoffTemplate(t *testing.T) {
 
 	// Check that handoff template attaches child bead with native create --parent.
 	if !strings.Contains(failureSection, "--parent oro-xyz123") {
-		t.Error("expected handoff template to contain 'oro bead create ... --parent oro-xyz123'")
+		t.Error("expected handoff template to contain 'oro task create ... --parent oro-xyz123'")
 	}
 
 	// Check that handoff template contains --acceptance-criteria flag

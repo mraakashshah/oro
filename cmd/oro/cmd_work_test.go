@@ -88,10 +88,13 @@ func TestExecuteWork_DryRunSpawnPrintsWorkerPromptCommands(t *testing.T) {
 	if strings.Contains(got, "bd create") {
 		t.Fatalf("dry-run spawn prompt contains legacy bd create; got:\n%s", got)
 	}
-	if !strings.Contains(got, "## Bead Tools") {
+	if strings.Contains(got, "## Bead Tools") {
+		t.Fatalf("dry-run spawn prompt should not use bead-primary tools header; got:\n%s", got)
+	}
+	if !strings.Contains(got, "## Task Tools") {
 		t.Fatalf("dry-run spawn did not print assembled worker prompt; got:\n%s", got)
 	}
-	if strings.Contains(logs.String(), "## Bead Tools") {
+	if strings.Contains(logs.String(), "## Task Tools") {
 		t.Fatalf("dry-run spawn prompt should not be duplicated in logs; got:\n%s", logs.String())
 	}
 	if sp.called {
