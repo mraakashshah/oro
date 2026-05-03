@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1278,6 +1279,56 @@ func TestExtractAssets(t *testing.T) {
 	bdCreateNotifierPath := filepath.Join(dest, "hooks", "bd_create_notifier.py")
 	if _, err := os.Stat(bdCreateNotifierPath); err == nil {
 		t.Errorf("bd_create_notifier.py should NOT be extracted, but found at: %s", bdCreateNotifierPath)
+	}
+}
+
+func TestInitInstallsTaskPrimaryBeacons(t *testing.T) {
+	assertInstalledBeaconsAreTaskPrimary(t)
+}
+
+func TestInitInstallsBeaconTaskPrimaryAssets(t *testing.T) {
+	assertInstalledBeaconsAreTaskPrimary(t)
+}
+
+func assertInstalledBeaconsAreTaskPrimary(t *testing.T) {
+	t.Helper()
+
+	oroHome := t.TempDir()
+	embeddedAssets, err := fs.Sub(EmbeddedAssets, "_assets")
+	if err != nil {
+		t.Fatalf("sub embedded assets: %v", err)
+	}
+
+	if err := extractAssets(oroHome, embeddedAssets, true); err != nil {
+		t.Fatalf("extractAssets failed: %v", err)
+	}
+
+	primaryBeadCommands := []string{
+		"oro bead ready",
+		"oro bead create",
+		"oro bead show",
+		"oro bead close",
+		"oro bead dep",
+		"oro bead status",
+		"oro bead blocked",
+		"oro bead list",
+	}
+
+	for _, name := range []string{"architect.md", "manager.md"} {
+		path := filepath.Join(oroHome, "beacons", name)
+		data, err := os.ReadFile(path) //nolint:gosec // test-created file
+		if err != nil {
+			t.Fatalf("read installed beacon %s: %v", name, err)
+		}
+		text := string(data)
+		if !strings.Contains(text, "oro task") {
+			t.Fatalf("%s should teach task-primary commands, got:\n%s", name, text)
+		}
+		for _, command := range primaryBeadCommands {
+			if strings.Contains(text, command) {
+				t.Fatalf("%s should not teach primary command %q", name, command)
+			}
+		}
 	}
 }
 

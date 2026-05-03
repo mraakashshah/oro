@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import os
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -249,6 +250,68 @@ class TestRoleBeacon:
         assert len(manager) > 500, "manager beacon should be substantial"
         assert "## Role" in manager
         assert "manager" in manager.lower()
+
+
+class TestRoleBeaconTaskTerminology:
+    PRIMARY_BEAD_COMMAND = re.compile(r"\boro\s+bead\s+(ready|create|show|close|dep|status|blocked|list|closed)\b")
+
+    def test_checked_in_beacons_are_task_primary(self):
+        beacon_paths = [
+            _repo_root / "assets" / "beacons" / "architect.md",
+            _repo_root / "assets" / "beacons" / "manager.md",
+            _repo_root / ".claude" / "hooks" / "beacons" / "architect.md",
+            _repo_root / ".claude" / "hooks" / "beacons" / "manager.md",
+        ]
+
+        for path in beacon_paths:
+            text = path.read_text()
+            assert "oro task" in text, f"{path} should teach task-primary commands"
+            assert not self.PRIMARY_BEAD_COMMAND.search(text), f"{path} should not teach primary oro bead commands"
+
+        manager = (_repo_root / "assets" / "beacons" / "manager.md").read_text()
+        assert "oro worker launch --bead <task-id>" in manager
+        assert "legacy flag" in manager.lower()
+
+    def test_superpowers_context_uses_task_commands(self):
+        assert "oro task ready" in _mod._SUPERPOWERS
+        assert "oro task close" in _mod._SUPERPOWERS
+        assert "create tasks for remaining work" in _mod._SUPERPOWERS
+        assert "oro bead ready" not in _mod._SUPERPOWERS
+        assert "oro bead close" not in _mod._SUPERPOWERS
+        assert "create beads" not in _mod._SUPERPOWERS
+        assert "beads for remaining work" not in _mod._SUPERPOWERS
+
+    def test_session_start_queries_native_task_alias(self, monkeypatch):
+        calls = []
+
+        class Result:
+            returncode = 0
+
+            def __init__(self, stdout):
+                self.stdout = stdout
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(cmd)
+            if cmd[:3] == ["oro", "task", "closed"]:
+                return Result('[{"id":"oro-done","title":"Done"}]')
+            if cmd[:3] == ["oro", "task", "ready"]:
+                return Result('[{"id":"oro-ready","title":"Ready"}]')
+            msg = f"unexpected command: {cmd!r}"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+
+        assert _mod.recently_closed_beads(limit=1) == [{"id": "oro-done", "title": "Done"}]
+        assert _mod.ready_beads(limit=1) == [{"id": "oro-ready", "title": "Ready"}]
+
+        assert ["oro", "task", "closed", "--limit=1", "--json"] in calls
+        assert ["oro", "task", "ready", "--json"] in calls
+
+    def test_session_start_source_has_no_primary_bead_subprocesses(self):
+        source = (_repo_root / "assets" / "hooks" / "session_start_extras.py").read_text()
+        assert '["oro", "task", "list", "--status=in_progress", "--json"]' in source
+        assert '["oro", "bead"' not in source
+        assert not self.PRIMARY_BEAD_COMMAND.search(source)
 
 
 # --- pane_handoff ---

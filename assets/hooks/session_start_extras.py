@@ -59,7 +59,7 @@ You are an expert autonomous coding agent. These rules override defaults.
 
 ## Context Hygiene
 - **Never use TaskOutput** to block-wait on background agents — it dumps transcripts and eats context.
-- **Decompose early**: At 45% context, create beads for remaining work and start handing off.
+- **Decompose early**: At 45% context, create tasks for remaining work and start handing off.
 - **Commit often**: Small, atomic commits. Never batch unrelated changes.
 
 ## Efficiency
@@ -69,8 +69,8 @@ You are an expert autonomous coding agent. These rules override defaults.
 - **Functional first**: Pure functions, immutability, early returns. Impure edges only.
 
 ## Session Protocol
-- Start: `oro bead ready` to find work. Check latest handoff in `docs/handoffs/`.
-- End: `oro bead close` → `git add` → `git commit` → `git push` (pre-commit hook auto-syncs beads).
+- Start: `oro task ready` to find work. Check latest handoff in `docs/handoffs/`.
+- End: `oro task close` → `git add` → `git commit` → `git push` (pre-commit hook auto-syncs tasks).
 - **Never say "ready to push" — just push.**
 
 ## Anti-Patterns (STOP if you catch yourself)
@@ -258,11 +258,11 @@ _CLOSED_LINE_RE = re.compile(r"^✓\s+([\w.-]+)\s+\[.*?\]\s+\[.*?\]\s+-\s+(.+)$"
 def recently_closed_beads(limit: int = 3) -> list[dict]:
     """Get the most recently closed beads (sorted by close date, descending).
 
-    Uses the oro bead command and falls back to an empty list on failures.
+    Uses the oro task command and falls back to an empty list on failures.
     """
     try:
         result = subprocess.run(
-            ["oro", "bead", "closed", f"--limit={limit}", "--json"],
+            ["oro", "task", "closed", f"--limit={limit}", "--json"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -290,7 +290,7 @@ def ready_beads(limit: int = 4) -> list[dict]:
     """Get beads that are ready to work on (no blockers)."""
     try:
         result = subprocess.run(
-            ["oro", "bead", "ready", "--json"],
+            ["oro", "task", "ready", "--json"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -490,13 +490,13 @@ def auto_load_skills(skills_file: str) -> str:
 
 
 def project_state() -> str:
-    """Gather ready beads, git status, git log, and current.md into a context string."""
+    """Gather ready tasks, git status, git log, and current.md into a context string."""
     sections = []
 
-    # ready beads
+    # ready tasks
     try:
         result = subprocess.run(
-            ["oro", "bead", "ready"], capture_output=True, text=True, timeout=10, start_new_session=True
+            ["oro", "task", "ready"], capture_output=True, text=True, timeout=10, start_new_session=True
         )
         if result.returncode == 0 and result.stdout.strip():
             sections.append(f"## Ready Work\n```\n{result.stdout.strip()}\n```")
@@ -602,14 +602,14 @@ def main() -> None:
     stale = []
     try:
         bd_ids_result = subprocess.run(
-            ["oro", "bead", "list", "--status=in_progress", "--json"],
+            ["oro", "task", "list", "--status=in_progress", "--json"],
             capture_output=True,
             text=True,
             timeout=10,
             start_new_session=True,
         )
         if bd_ids_result.returncode == 0 and bd_ids_result.stdout.strip():
-            # Parse timestamps directly from oro bead JSON output.
+            # Parse timestamps directly from oro task JSON output.
             items = []
             with contextlib.suppress(json.JSONDecodeError, ValueError):
                 parsed = json.loads(bd_ids_result.stdout)
