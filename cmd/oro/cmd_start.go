@@ -195,6 +195,8 @@ const socketPollInterval = 50 * time.Millisecond
 
 const daemonSkipPreflightEnv = "ORO_DAEMON_SKIP_PREFLIGHT"
 
+var runDaemonOnlyFn = runDaemonOnly //nolint:gochecknoglobals // test seam for start command flag handoff
+
 func withDaemonPreflightBypass(enabled bool, fn func() error) error {
 	if !enabled {
 		return fn()
@@ -505,7 +507,7 @@ func newStartCmd() *cobra.Command {
 					isDetached(detach), nil, 0)
 			}
 			if daemonOnly {
-				return runDaemonOnly(cmd, pidPath, workers, maxWorkers, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, baseBranch, webEnabled, webAddr)
+				return runDaemonOnlyFn(cmd, pidPath, workers, maxWorkers, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, baseBranch, webEnabled, webAddr)
 			}
 			return startFreshSwarm(cmd.OutOrStdout(), workers, maxWorkers, model, detach, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration)
 		},

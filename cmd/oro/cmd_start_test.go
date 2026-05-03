@@ -20,6 +20,8 @@ import (
 	"oro/pkg/dispatcher"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
+
+	"github.com/spf13/cobra"
 )
 
 func TestStartReadsProjectConfig(t *testing.T) {
@@ -755,6 +757,48 @@ func opsReviewTimeoutFromDispatcher(t *testing.T, d *dispatcher.Dispatcher) time
 }
 
 func TestStartManualIntegrationDaemonHandoffForwardsFlagAndConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	pidPath := filepath.Join(tmpDir, "oro.pid")
+	socketPath := filepath.Join(tmpDir, "oro.sock")
+	dbPath := filepath.Join(tmpDir, "state.db")
+
+	t.Setenv("ORO_PID_PATH", pidPath)
+	t.Setenv("ORO_SOCKET_PATH", socketPath)
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_BEADSOURCE_MODE", "sqlite")
+	t.Setenv(daemonSkipPreflightEnv, "1")
+
+	var capturedManualIntegration bool
+	var capturedWorkers int
+	var capturedMaxWorkers int
+	previousRunDaemonOnly := runDaemonOnlyFn
+	runDaemonOnlyFn = func(_ *cobra.Command, gotPIDPath string, workers, maxWorkers int, _ time.Duration, _ time.Duration, _ time.Duration, manualIntegration bool, _ string, _ bool, _ string) error {
+		if gotPIDPath != pidPath {
+			t.Fatalf("pidPath: got %q, want %q", gotPIDPath, pidPath)
+		}
+		capturedWorkers = workers
+		capturedMaxWorkers = maxWorkers
+		capturedManualIntegration = manualIntegration
+		return nil
+	}
+	t.Cleanup(func() { runDaemonOnlyFn = previousRunDaemonOnly })
+
+	cmd := newStartCmd()
+	cmd.SetArgs([]string{"--daemon-only", "--workers", "0", "--manual-integration"})
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stdout)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("start --daemon-only --manual-integration: %v", err)
+	}
+	if !capturedManualIntegration {
+		t.Fatal("start command did not forward parsed --manual-integration into runDaemonOnly")
+	}
+	if capturedWorkers != 0 || capturedMaxWorkers != 0 {
+		t.Fatalf("workers/maxWorkers = %d/%d, want 0/0", capturedWorkers, capturedMaxWorkers)
+	}
+
 	spawner := &ExecDaemonSpawner{
 		OpsReviewTimeout:   35 * time.Minute,
 		ReviewStallTimeout: 15 * time.Minute,
@@ -774,11 +818,9 @@ func TestStartManualIntegrationDaemonHandoffForwardsFlagAndConfig(t *testing.T) 
 		t.Errorf("daemon args should not use ambiguous --review-timeout: %s", argStr)
 	}
 
-	tmpDir := t.TempDir()
 	oroHome := t.TempDir()
 	t.Setenv("ORO_HOME", oroHome)
 	t.Setenv("ORO_PROJECT", "")
-	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
 
 	d, db, err := buildDispatcherWithReviewTimeouts(1, 1, 7*time.Minute, 35*time.Minute, 15*time.Minute, true, "", false, "")
 	if err != nil {
