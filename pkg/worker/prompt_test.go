@@ -324,8 +324,8 @@ func TestAssemblePrompt_FailureContent(t *testing.T) {
 	if !strings.Contains(prompt, "3 failed test attempts") {
 		t.Error("expected Failure section to contain '3 failed test attempts'")
 	}
-	if !strings.Contains(prompt, "oro bead create") {
-		t.Error("expected Failure section to mention oro bead create for decomposition")
+	if !strings.Contains(prompt, "oro task create") {
+		t.Error("expected Failure section to mention oro task create for decomposition")
 	}
 }
 
@@ -370,11 +370,11 @@ func TestAssemblePrompt_BeadToolsContent(t *testing.T) {
 
 	prompt := worker.AssemblePrompt(params)
 
-	if !strings.Contains(prompt, "oro bead create") {
-		t.Error("expected Bead Tools section to contain 'oro bead create'")
+	if !strings.Contains(prompt, "oro task create") {
+		t.Error("expected Bead Tools section to contain 'oro task create'")
 	}
-	if !strings.Contains(prompt, "oro bead dep add") {
-		t.Error("expected Bead Tools section to contain 'oro bead dep add'")
+	if !strings.Contains(prompt, "oro task dep add") {
+		t.Error("expected Bead Tools section to contain 'oro task dep add'")
 	}
 }
 
@@ -411,9 +411,9 @@ func TestPromptGolden(t *testing.T) {
 	}
 
 	for _, newCommand := range []string{
-		"oro bead create",
-		"oro bead dep add",
-		"oro bead show",
+		"oro task create",
+		"oro task dep add",
+		"oro task show",
 	} {
 		if !strings.Contains(combined, newCommand) {
 			t.Fatalf("prompt must contain %q", newCommand)
@@ -533,12 +533,12 @@ func TestAssemblePrompt_FailureSectionHasOroBeadCreateExamples(t *testing.T) {
 		name   string
 		substr string
 	}{
-		{"oro bead create --title flag", `oro bead create --title=`},
+		{"oro task create --title flag", `oro task create --title=`},
 		{"test failure bug type+priority", `--type=bug --priority=0`},
-		{"decompose uses native create parent", `oro bead create --title="<subtask>" --type=task --parent <bead-id>`},
-		{"context limit handoff", `oro bead create --title="Continue:`},
-		{"blocker bug creation", `oro bead create --title="Blocker:`},
-		{"oro bead dep add example", `oro bead dep add`},
+		{"decompose uses native create parent", `oro task create --title="<subtask>" --type=task --parent <bead-id>`},
+		{"context limit handoff", `oro task create --title="Continue:`},
+		{"blocker bug creation", `oro task create --title="Blocker:`},
+		{"oro task dep add example", `oro task dep add`},
 	}
 
 	for _, c := range checks {
@@ -882,9 +882,9 @@ func TestBuildAssignPromptUsesEpicDecomposition(t *testing.T) {
 		if !strings.Contains(prompt, "beadcraft") {
 			t.Errorf("expected epic decomp prompt to contain 'beadcraft', got:\n%s", prompt)
 		}
-		// Must contain oro bead create and parent wiring via native create --parent.
-		if !strings.Contains(prompt, "oro bead create") {
-			t.Errorf("expected epic decomp prompt to contain 'oro bead create', got:\n%s", prompt)
+		// Must contain oro task create and parent wiring via native create --parent.
+		if !strings.Contains(prompt, "oro task create") {
+			t.Errorf("expected epic decomp prompt to contain 'oro task create', got:\n%s", prompt)
 		}
 		if !strings.Contains(prompt, "--parent oro-epic-1") {
 			t.Errorf("expected epic decomp prompt to contain native create --parent, got:\n%s", prompt)
@@ -1144,7 +1144,7 @@ func TestBuildEpicDecompositionPrompt(t *testing.T) {
 
 	t.Run("contains_bead_craft_instructions", func(t *testing.T) {
 		t.Parallel()
-		if !strings.Contains(prompt, "beadcraft") || !strings.Contains(prompt, "oro bead create") {
+		if !strings.Contains(prompt, "beadcraft") || !strings.Contains(prompt, "oro task create") {
 			t.Error("expected prompt to contain beadcraft decomposition instructions")
 		}
 	})
@@ -1963,6 +1963,47 @@ func TestPrompt_TargetBranchConstraint(t *testing.T) {
 // TestPromptStalenessWarning verifies that AssemblePrompt appends a staleness
 // verification warning to the Memory section when MemoryContext contains a
 // stale marker (⚠), and that no warning is added otherwise.
+// TestPromptTaskTerminology verifies that the worker and epic decomposition prompts
+// use "oro task" as the primary command for create/show/dep/update operations.
+// Workers must NOT be instructed to close the assigned task — the dispatcher handles closure.
+func TestPromptTaskTerminology(t *testing.T) {
+	t.Parallel()
+
+	prompt := worker.AssemblePrompt(worker.PromptParams{
+		BeadID:             "oro-term-test",
+		Title:              "Task terminology test",
+		Description:        "Verify prompt uses oro task commands",
+		AcceptanceCriteria: "Tests pass",
+		WorktreePath:       "/tmp/wt-term-test",
+		Model:              "opus",
+	})
+	epicPrompt := worker.BuildEpicDecompositionPrompt(worker.EpicPromptParams{
+		BeadID:      "oro-epic-term",
+		Title:       "Epic term test",
+		Description: "Verify epic prompt uses oro task commands",
+	})
+	combined := prompt + "\n" + epicPrompt
+
+	for _, cmd := range []string{"oro task create", "oro task show", "oro task dep add"} {
+		if !strings.Contains(combined, cmd) {
+			t.Errorf("prompts must contain %q as the primary task command", cmd)
+		}
+	}
+
+	// Self-close guardrail: Exit section must NOT instruct the worker to close the assigned task.
+	exitStart := strings.Index(prompt, "## Exit")
+	if exitStart == -1 {
+		t.Fatal("expected prompt to contain ## Exit section")
+	}
+	exitSection := prompt[exitStart:]
+	if strings.Contains(exitSection, "oro task close") || strings.Contains(exitSection, "oro bead close") {
+		t.Error("Exit section must NOT instruct worker to close the assigned task — dispatcher handles closure")
+	}
+	if !strings.Contains(strings.ToLower(exitSection), "dispatcher") {
+		t.Error("Exit section must mention dispatcher to confirm worker does not close the task")
+	}
+}
+
 func TestPromptStalenessWarning(t *testing.T) {
 	t.Parallel()
 

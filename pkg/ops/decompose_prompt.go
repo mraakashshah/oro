@@ -24,14 +24,14 @@ func buildDecomposePrompt(opts DecomposeOpts) string {
 	}
 
 	b.WriteString("## Steps\n")
-	fmt.Fprintf(&b, "1. Run `oro bead show %s` to read the full bead details and acceptance criteria.\n", opts.BeadID)
+	fmt.Fprintf(&b, "1. Run `oro task show %s` to read the full bead details and acceptance criteria.\n", opts.BeadID)
 	b.WriteString("2. Analyze why the bead is too large or ambiguous.\n")
 	b.WriteString("3. Create 2-4 smaller child beads:\n")
 	b.WriteString("   For each child bead:\n")
-	fmt.Fprintf(&b, "   a. `oro bead create --title=\"...\" --type=task --parent=%s --acceptance=\"...\" --estimate=<min>`\n", opts.BeadID)
+	fmt.Fprintf(&b, "   a. `oro task create --title=\"...\" --type=task --parent=%s --acceptance=\"...\" --estimate=<min>`\n", opts.BeadID)
 	fmt.Fprintf(&b, "      (`--parent` sets hierarchy only, no dep)\n")
-	fmt.Fprintf(&b, "   b. `oro bead dep add %s <child-id>`  (epic depends on child — correct direction)\n", opts.BeadID)
-	fmt.Fprintf(&b, "4. Convert parent to epic: `oro bead update %s --type=epic`\n", opts.BeadID)
+	fmt.Fprintf(&b, "   b. `oro task dep add %s <child-id>`  (epic depends on child — correct direction)\n", opts.BeadID)
+	fmt.Fprintf(&b, "4. Convert parent to epic: `oro task update %s --type=epic`\n", opts.BeadID)
 	b.WriteString("5. If all steps succeed, print exactly:\n")
 	b.WriteString("   VERDICT: resolved\n\n")
 	b.WriteString("   If unable to decompose, print:\n")
