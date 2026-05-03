@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -20,6 +21,8 @@ import (
 type fakeWorkerSpawner struct {
 	calls     []workerSpawnCall
 	returnErr error
+	failOn    int
+	failErr   error
 }
 
 type workerSpawnCall struct {
@@ -34,6 +37,12 @@ func (f *fakeWorkerSpawner) SpawnWorker(socketPath, workerID, logPath string) er
 		workerID:   workerID,
 		logPath:    logPath,
 	})
+	if f.failOn > 0 && len(f.calls) == f.failOn {
+		if f.failErr != nil {
+			return f.failErr
+		}
+		return errors.New("spawn failed")
+	}
 	return f.returnErr
 }
 
@@ -76,6 +85,39 @@ func startWorkerLaunchReservationServer(t *testing.T, sockPath string, ack proto
 		_, _ = conn.Write(append(data, '\n'))
 	}()
 	return received
+}
+
+func startWorkerLaunchMultiDirectiveServer(t *testing.T, sockPath string, ack protocol.ACKPayload, count int) <-chan []protocol.DirectivePayload {
+	t.Helper()
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen unix socket: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	done := make(chan []protocol.DirectivePayload, 1)
+	go func() {
+		received := make([]protocol.DirectivePayload, 0, count)
+		defer func() { done <- received }()
+		for len(received) < count {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			scanner := bufio.NewScanner(conn)
+			if scanner.Scan() {
+				var msg protocol.Message
+				if err := json.Unmarshal(scanner.Bytes(), &msg); err == nil && msg.Directive != nil {
+					received = append(received, *msg.Directive)
+					resp := protocol.Message{Type: protocol.MsgACK, ACK: &ack}
+					data, _ := json.Marshal(resp)
+					_, _ = conn.Write(append(data, '\n'))
+				}
+			}
+			_ = conn.Close()
+		}
+	}()
+	return done
 }
 
 func shortWorkerLaunchSocketPath(t *testing.T) string {
@@ -301,6 +343,71 @@ func TestWorkerLaunchReservesCapacityThroughDispatcherBeforeSpawning(t *testing.
 	}
 	if len(spawner.calls) != 2 {
 		t.Fatalf("spawn calls = %d, want 2 after reservation", len(spawner.calls))
+	}
+}
+
+func TestWorkerLaunchCancelsFailedAndUnspawnedReservationsOnPartialSpawnFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := shortWorkerLaunchSocketPath(t)
+	dbPath := filepath.Join(tmpDir, "state.db")
+	received := startWorkerLaunchMultiDirectiveServer(t, sockPath, protocol.ACKPayload{OK: true, Detail: "ok"}, 2)
+
+	t.Setenv("ORO_SOCKET_PATH", sockPath)
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_HOME", tmpDir)
+
+	spawner := &fakeWorkerSpawner{failOn: 2, failErr: errors.New("boom")}
+	err := runWorkerLaunch(spawner, 3, "manual", "")
+	if err == nil {
+		t.Fatal("expected partial worker launch failure")
+	}
+	if !strings.Contains(err.Error(), "manual-1") {
+		t.Fatalf("error = %v, want failed worker ID", err)
+	}
+	if len(spawner.calls) != 2 {
+		t.Fatalf("spawn calls = %d, want first success and second failure", len(spawner.calls))
+	}
+
+	var directives []protocol.DirectivePayload
+	select {
+	case directives = <-received:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for launch reservation and cancellation directives")
+	}
+	if len(directives) != 2 {
+		t.Fatalf("directives = %d, want launch plus cancel", len(directives))
+	}
+	if directives[0].Op != "launch-workers" {
+		t.Fatalf("first directive op = %q, want launch-workers", directives[0].Op)
+	}
+	if directives[1].Op != "cancel-worker-launch" {
+		t.Fatalf("second directive op = %q, want cancel-worker-launch", directives[1].Op)
+	}
+
+	var launch, cancel workerLaunchReservation
+	if err := json.Unmarshal([]byte(directives[0].Args), &launch); err != nil {
+		t.Fatalf("unmarshal launch reservation: %v", err)
+	}
+	if err := json.Unmarshal([]byte(directives[1].Args), &cancel); err != nil {
+		t.Fatalf("unmarshal cancel reservation: %v", err)
+	}
+	wantLaunch := []string{"manual-0", "manual-1", "manual-2"}
+	wantCancel := []string{"manual-1", "manual-2"}
+	if strings.Join(launch.WorkerIDs, ",") != strings.Join(wantLaunch, ",") {
+		t.Fatalf("launch worker IDs = %v, want %v", launch.WorkerIDs, wantLaunch)
+	}
+	if strings.Join(cancel.WorkerIDs, ",") != strings.Join(wantCancel, ",") {
+		t.Fatalf("cancel worker IDs = %v, want failed and unspawned reservations %v", cancel.WorkerIDs, wantCancel)
+	}
+	pending := make(map[string]bool, len(launch.WorkerIDs))
+	for _, id := range launch.WorkerIDs {
+		pending[id] = true
+	}
+	for _, id := range cancel.WorkerIDs {
+		delete(pending, id)
+	}
+	if len(pending) != 1 || !pending["manual-0"] {
+		t.Fatalf("remaining reservations = %v, want only successfully spawned worker manual-0", pending)
 	}
 }
 
