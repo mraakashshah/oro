@@ -412,7 +412,7 @@ type Config struct {
 	BeadsDir              string        // Path to the beads directory (defaults to protocol.BeadsDir when empty). Set from ProjectPaths.BeadsDir for stealth-mode support.
 	MaxWorkers            int           // Worker pool ceiling for auto-scale (default 10).
 	InitialWorkers        int           // Initial targetWorkers on startup (default: MaxWorkers).
-	AllowZeroWorkers      bool          // Preserve InitialWorkers=0 and MaxWorkers=0 for explicit manual-worker mode.
+	AllowZeroWorkers      bool          // When true, InitialWorkers=0 is treated as an explicit target (not auto-defaulted) so daemon-only manual-worker mode keeps a zero baseline. Combined with MaxWorkers>0 in New(), this also seeds explicitScaleTarget so maybeAutoScale will not raise the target from zero.
 	HeartbeatTimeout      time.Duration // Worker heartbeat timeout (default 45s).
 	ProgressTimeout       time.Duration // Max time without meaningful progress before STUCK_WORKER escalation (default 15m).
 	PollInterval          time.Duration // oro task ready poll interval (default 10s).

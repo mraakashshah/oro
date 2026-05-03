@@ -2492,22 +2492,64 @@ func TestConfigZeroWorkersPreservesMaxWorkersCeiling(t *testing.T) {
 }
 
 func TestZeroWorkersWithMaxWorkersDoesNotAutoScaleGeneralWorkers(t *testing.T) {
-	d, _, _, _, _, _ := newTestDispatcher(t)
+	// Production-wiring proof: build the dispatcher through New() with the same
+	// Config that buildDispatcherWithReviewTimeouts(0, 2, ...) produces in
+	// daemon-only manual-worker mode, then prove that maybeAutoScale honors the
+	// explicit zero target without the test having to set explicitScaleTarget
+	// itself. Catches regressions in either New()'s explicitScaleTarget wiring
+	// or maybeAutoScale's currentTarget>0 sticky-zero guard.
+	db := newTestDB(t)
+	gitRunner := &mockGitRunner{}
+	merger := merge.NewCoordinator(gitRunner)
+	spawnMock := &mockBatchSpawner{verdict: "looks good\n\nVERDICT: APPROVED"}
+	opsSpawner := ops.NewSpawner(spawnMock)
+	beadSrc := &fakeBeadStore{beads: []protocol.Bead{}, shown: make(map[string]*protocol.BeadDetail)}
+	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
+	esc := &mockEscalator{}
+
+	sockPath := fmt.Sprintf("/tmp/oro-test-zero-%d.sock", time.Now().UnixNano())
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
+
+	cfg := Config{
+		SocketPath:       sockPath,
+		DBPath:           ":memory:",
+		InitialWorkers:   0,
+		MaxWorkers:       2,
+		AllowZeroWorkers: true,
+		HeartbeatTimeout: 500 * time.Millisecond,
+		PollInterval:     50 * time.Millisecond,
+		ShutdownTimeout:  200 * time.Millisecond,
+	}
+
+	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	if got := d.TargetWorkers(); got != 0 {
+		t.Fatalf("TargetWorkers after New: got %d, want 0", got)
+	}
+	d.mu.Lock()
+	gotExplicit := d.explicitScaleTarget
+	gotMax := d.cfg.MaxWorkers
+	d.mu.Unlock()
+	if !gotExplicit {
+		t.Fatalf("explicitScaleTarget after New: got false, want true (production wiring must set this for InitialWorkers=0/MaxWorkers>0)")
+	}
+	if gotMax != 2 {
+		t.Fatalf("cfg.MaxWorkers after New: got %d, want 2", gotMax)
+	}
+
 	pm := &mockProcessManager{}
 	d.procMgr = pm
-	d.mu.Lock()
-	d.cfg.MaxWorkers = 2
-	d.targetWorkers = 0
-	d.explicitScaleTarget = true
-	d.mu.Unlock()
 
 	d.maybeAutoScale(context.Background(), 2, 0)
 
 	if got := d.TargetWorkers(); got != 0 {
-		t.Fatalf("TargetWorkers: got %d, want 0", got)
+		t.Fatalf("TargetWorkers after maybeAutoScale: got %d, want 0", got)
 	}
 	if spawned := pm.SpawnedIDs(); len(spawned) != 0 {
-		t.Fatalf("spawned general workers despite explicit zero target: %v", spawned)
+		t.Fatalf("spawned general workers despite production-wired zero target: %v", spawned)
 	}
 }
 
