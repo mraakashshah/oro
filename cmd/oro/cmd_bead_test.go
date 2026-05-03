@@ -171,19 +171,24 @@ func TestBeadListJSONFiltersOroNativeArray(t *testing.T) {
 	store := beadstore.NewFakeStore(
 		protocol.Bead{ID: "oro-list1", Title: "List", Status: "open", Priority: 1, Type: "task", Epic: "oro-parent", Tags: []string{"cli"}},
 		protocol.Bead{ID: "oro-other", Title: "Other", Status: "open", Priority: 2, Type: "task", Epic: "oro-parent"},
-		protocol.Bead{ID: "oro-closed", Title: "Closed", Status: "closed", Priority: 0, Type: "task", ClosedAt: "2026-04-28T00:00:00Z"},
+		protocol.Bead{ID: "oro-closed", Title: "Closed", Status: "closed", Priority: 0, Type: "task", Epic: "oro-parent", Tags: []string{"cli"}, ClosedAt: "2026-04-28T00:00:00Z"},
 	)
 	out := executeBeadCommand(t, store, "list", "--parent", "oro-parent", "--tag", "cli", "--json")
 
 	got := decodeBeadJSONArray(t, out)
-	if len(got) != 1 {
-		t.Fatalf("list count = %d, want 1 in:\n%s", len(got), out)
+	if len(got) != 2 {
+		t.Fatalf("list count = %d, want 2 in:\n%s", len(got), out)
 	}
-	if got[0]["id"] != "oro-list1" || got[0]["parent_id"] != "oro-parent" {
-		t.Fatalf("list JSON = %#v, want oro-native filtered bead in:\n%s", got[0], out)
+	if !beadJSONArrayHasID(got, "oro-list1") || !beadJSONArrayHasID(got, "oro-closed") {
+		t.Fatalf("list JSON = %#v, want open and closed matching beads in:\n%s", got, out)
 	}
-	if _, ok := got[0]["issue_type"]; ok {
-		t.Fatalf("legacy issue_type key present in oro-native JSON:\n%s", out)
+	for _, bead := range got {
+		if bead["id"] == "oro-list1" && bead["parent_id"] != "oro-parent" {
+			t.Fatalf("parent_id = %#v, want oro-parent in:\n%s", bead["parent_id"], out)
+		}
+		if _, ok := bead["issue_type"]; ok {
+			t.Fatalf("legacy issue_type key present in oro-native JSON:\n%s", out)
+		}
 	}
 }
 
@@ -454,6 +459,40 @@ func TestBeadListInProgressIncludesActiveAssignments(t *testing.T) {
 	status := decodeBeadJSONObject(t, executeBeadCommand(t, store, "status", "--json"))
 	if status["open"] != float64(0) || status["in_progress"] != float64(2) || status["closed"] != float64(0) {
 		t.Fatalf("status = %#v, want assigned open bead counted as in_progress", status)
+	}
+}
+
+func TestBeadListDefaultIncludesInProgress(t *testing.T) {
+	store := beadstore.NewFakeStore(
+		protocol.Bead{ID: "oro-ready", Title: "Ready", Status: "open"},
+		protocol.Bead{ID: "oro-progress", Title: "Progress", Status: "in_progress"},
+		protocol.Bead{ID: "oro-closed", Title: "Closed", Status: "closed"},
+	)
+
+	got := decodeBeadJSONArray(t, executeBeadCommand(t, store, "list", "--json"))
+	if !beadJSONArrayHasID(got, "oro-ready") || !beadJSONArrayHasID(got, "oro-progress") {
+		t.Fatalf("list default = %#v, want ready and in-progress beads", got)
+	}
+	if !beadJSONArrayHasID(got, "oro-closed") {
+		t.Fatalf("list default omitted closed bead: %#v", got)
+	}
+}
+
+func TestBeadListStatusOpenIncludesBlockedOpenBeads(t *testing.T) {
+	store := beadstore.NewFakeStore(
+		protocol.Bead{ID: "oro-blocker", Title: "Blocker", Status: "open"},
+		protocol.Bead{ID: "oro-blocked", Title: "Blocked", Status: "open", Dependencies: []protocol.Dependency{
+			{IssueID: "oro-blocked", DependsOnID: "oro-blocker", Type: "blocks"},
+		}},
+		protocol.Bead{ID: "oro-progress", Title: "Progress", Status: "in_progress"},
+	)
+
+	got := decodeBeadJSONArray(t, executeBeadCommand(t, store, "list", "--status=open", "--json"))
+	if !beadJSONArrayHasID(got, "oro-blocker") || !beadJSONArrayHasID(got, "oro-blocked") {
+		t.Fatalf("list --status=open = %#v, want all open beads including blocked", got)
+	}
+	if beadJSONArrayHasID(got, "oro-progress") {
+		t.Fatalf("list --status=open included in-progress bead: %#v", got)
 	}
 }
 

@@ -206,6 +206,11 @@ func TestTaskCommandReadyListStatusAndDependencies(t *testing.T) {
 		t.Fatalf("task ready omitted blocker task: %#v", ready)
 	}
 
+	openTasks := decodeBeadJSONArray(t, execTask("list", "--status=open", "--json"))
+	if !beadJSONArrayHasID(openTasks, "oro-task-blocked") || !beadJSONArrayHasID(openTasks, "oro-task-blocker") {
+		t.Fatalf("task list --status=open = %#v, want all open tasks including blocked", openTasks)
+	}
+
 	filtered := decodeBeadJSONArray(t, execTask("list", "--parent", "oro-task-parent", "--tag", "alias", "--json"))
 	if len(filtered) != 1 || filtered[0]["id"] != "oro-task-blocked" {
 		t.Fatalf("task list filtered = %#v, want oro-task-blocked", filtered)
@@ -225,5 +230,34 @@ func TestTaskCommandReadyListStatusAndDependencies(t *testing.T) {
 	ready = decodeBeadJSONArray(t, execTask("ready", "--json"))
 	if !beadJSONArrayHasID(ready, "oro-task-blocked") {
 		t.Fatalf("task ready omitted unblocked task after dep rm: %#v", ready)
+	}
+}
+
+func TestTaskListDefaultIncludesInProgress(t *testing.T) {
+	ctx := context.Background()
+	store, err := beadstore.OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore: %v", err)
+	}
+
+	execTask := func(args ...string) string {
+		t.Helper()
+		cmd := newTaskCmdWithStore(store)
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("task %s error: %v\n%s", strings.Join(args, " "), err, out.String())
+		}
+		return out.String()
+	}
+
+	execTask("create", "--id", "oro-task-progress", "--title", "progress", "--type", "task")
+	execTask("update", "oro-task-progress", "--status", "in_progress")
+
+	listed := decodeBeadJSONArray(t, execTask("list", "--json"))
+	if !beadJSONArrayHasID(listed, "oro-task-progress") {
+		t.Fatalf("task list omitted in-progress task: %#v", listed)
 	}
 }

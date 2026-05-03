@@ -624,8 +624,10 @@ func listBeadsForCmd(ctx context.Context, s beadstore.Store, cmd *cobra.Command)
 		err   error
 	)
 	switch status {
-	case "", "open":
-		beads, err = s.Ready(ctx)
+	case "":
+		beads, err = listExportedBeads(ctx, s)
+	case "open":
+		beads, err = listBeadsByExportedStatus(ctx, s, "open")
 	case "blocked":
 		beads, err = s.Blocked(ctx)
 	case "closed":
@@ -642,6 +644,32 @@ func listBeadsForCmd(ctx context.Context, s beadstore.Store, cmd *cobra.Command)
 		return nil, fmt.Errorf("list beads for status %q: %w", status, err)
 	}
 	return applyBeadListFilters(beads, "", parent, limit), nil
+}
+
+func listExportedBeads(ctx context.Context, s beadstore.Store) ([]protocol.Bead, error) {
+	data, err := s.Export(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("export beads for list: %w", err)
+	}
+	return decodeBeadExportJSONL(data)
+}
+
+func listBeadsByExportedStatus(ctx context.Context, s beadstore.Store, status string) ([]protocol.Bead, error) {
+	beads, err := listExportedBeads(ctx, s)
+	if err != nil {
+		return nil, err
+	}
+	return filterBeadsByStatus(beads, status), nil
+}
+
+func filterBeadsByStatus(beads []protocol.Bead, status string) []protocol.Bead {
+	filtered := beads[:0]
+	for _, bead := range beads {
+		if bead.Status == status {
+			filtered = append(filtered, bead)
+		}
+	}
+	return filtered
 }
 
 func applyBeadListFilters(beads []protocol.Bead, status, parent string, limit int) []protocol.Bead {
@@ -770,6 +798,22 @@ func writeBeadMutationResult(cmd *cobra.Command, store beadstore.Store, id strin
 }
 
 func beadJSONLToJSONArray(data []byte) ([]byte, error) {
+	beads, err := decodeBeadExportJSONL(data)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]beadJSON, 0, len(beads))
+	for _, bead := range beads {
+		out = append(out, beadJSONFromProtocol(bead))
+	}
+	encoded, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode export JSON: %w", err)
+	}
+	return append(encoded, '\n'), nil
+}
+
+func decodeBeadExportJSONL(data []byte) ([]protocol.Bead, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	beads := []protocol.Bead{}
 	for {
@@ -782,15 +826,7 @@ func beadJSONLToJSONArray(data []byte) ([]byte, error) {
 		}
 		beads = append(beads, bead)
 	}
-	out := make([]beadJSON, 0, len(beads))
-	for _, bead := range beads {
-		out = append(out, beadJSONFromProtocol(bead))
-	}
-	encoded, err := json.MarshalIndent(out, "", "  ")
-	if err != nil {
-		return nil, fmt.Errorf("encode export JSON: %w", err)
-	}
-	return append(encoded, '\n'), nil
+	return beads, nil
 }
 
 func isJSONOutput(cmd *cobra.Command) bool {
