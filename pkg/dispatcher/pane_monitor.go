@@ -17,16 +17,16 @@ type paneState struct {
 	restarting    bool // guard against concurrent restart attempts
 }
 
-// paneMonitorLoop polls ~/.oro/panes/{architect,manager}/context_pct at the
-// configured interval (default 5s). When a pane's context percentage exceeds
-// the configured threshold, it writes a handoff_requested file to signal the
-// pane to initiate a handoff. Panes are tracked in signaledPanes to prevent
+// paneMonitorLoop polls ~/.oro/panes/manager/context_pct at the configured
+// interval (default 5s). When the pane's context percentage exceeds the
+// configured threshold, it writes a handoff_requested file to signal the pane
+// to initiate a handoff. Panes are tracked in signaledPanes to prevent
 // re-signaling on subsequent polls.
 func (d *Dispatcher) paneMonitorLoop(ctx context.Context) {
 	ticker := time.NewTicker(d.cfg.PaneMonitorInterval)
 	defer ticker.Stop()
 
-	roles := []string{"architect", "manager"}
+	roles := []string{"manager"}
 
 	for {
 		select {
@@ -53,7 +53,7 @@ func (d *Dispatcher) checkPaneContexts(ctx context.Context, roles []string) {
 
 // checkPaneContext reads the context_pct file for a single role, parses the
 // percentage, and either restarts (manager with PaneRestarter wired) or signals
-// handoff (architect, or manager without PaneRestarter).
+// handoff (manager without PaneRestarter).
 func (d *Dispatcher) checkPaneContext(ctx context.Context, role string) {
 	// Manager with a PaneRestarter: use restart logic instead of signalHandoff.
 	d.mu.Lock()

@@ -108,9 +108,6 @@ func TestHealthPaneAlive(t *testing.T) {
 		d.nowFunc = func() time.Time { return fixedNow }
 
 		recentTS := fixedNow.Unix() - 30 // 30 seconds ago — within the 60s window
-		if _, err := d.db.Exec(`INSERT OR REPLACE INTO pane_activity (pane, last_seen) VALUES (?, ?)`, "architect", recentTS); err != nil {
-			t.Fatalf("insert architect: %v", err)
-		}
 		if _, err := d.db.Exec(`INSERT OR REPLACE INTO pane_activity (pane, last_seen) VALUES (?, ?)`, "manager", recentTS); err != nil {
 			t.Fatalf("insert manager: %v", err)
 		}
@@ -124,9 +121,6 @@ func TestHealthPaneAlive(t *testing.T) {
 			t.Fatalf("unmarshal: %v", err)
 		}
 
-		if !health.ArchitectPane.Alive {
-			t.Error("expected ArchitectPane.Alive=true for recent pane_activity row")
-		}
 		if !health.ManagerPane.Alive {
 			t.Error("expected ManagerPane.Alive=true for recent pane_activity row")
 		}
@@ -137,9 +131,6 @@ func TestHealthPaneAlive(t *testing.T) {
 		d.nowFunc = func() time.Time { return fixedNow }
 
 		staleTS := fixedNow.Unix() - 90 // 90 seconds ago — outside the 60s window
-		if _, err := d.db.Exec(`INSERT OR REPLACE INTO pane_activity (pane, last_seen) VALUES (?, ?)`, "architect", staleTS); err != nil {
-			t.Fatalf("insert architect: %v", err)
-		}
 		if _, err := d.db.Exec(`INSERT OR REPLACE INTO pane_activity (pane, last_seen) VALUES (?, ?)`, "manager", staleTS); err != nil {
 			t.Fatalf("insert manager: %v", err)
 		}
@@ -153,9 +144,6 @@ func TestHealthPaneAlive(t *testing.T) {
 			t.Fatalf("unmarshal: %v", err)
 		}
 
-		if health.ArchitectPane.Alive {
-			t.Error("expected ArchitectPane.Alive=false for stale pane_activity row")
-		}
 		if health.ManagerPane.Alive {
 			t.Error("expected ManagerPane.Alive=false for stale pane_activity row")
 		}
@@ -173,9 +161,6 @@ func TestHealthPaneAlive(t *testing.T) {
 			t.Fatalf("unmarshal: %v", err)
 		}
 
-		if health.ArchitectPane.Alive {
-			t.Error("expected ArchitectPane.Alive=false when no pane_activity row")
-		}
 		if health.ManagerPane.Alive {
 			t.Error("expected ManagerPane.Alive=false when no pane_activity row")
 		}
@@ -188,8 +173,8 @@ func TestHealthPaneAlive(t *testing.T) {
 		d.nowFunc = func() time.Time { return fixedNow }
 
 		exactTS := fixedNow.Unix() - 60 // exactly 60 seconds ago — on the inclusive boundary
-		if _, err := d.db.Exec(`INSERT OR REPLACE INTO pane_activity (pane, last_seen) VALUES (?, ?)`, "architect", exactTS); err != nil {
-			t.Fatalf("insert architect: %v", err)
+		if _, err := d.db.Exec(`INSERT OR REPLACE INTO pane_activity (pane, last_seen) VALUES (?, ?)`, "manager", exactTS); err != nil {
+			t.Fatalf("insert manager: %v", err)
 		}
 
 		result, err := d.applyHealth()
@@ -201,8 +186,8 @@ func TestHealthPaneAlive(t *testing.T) {
 			t.Fatalf("unmarshal: %v", err)
 		}
 
-		if !health.ArchitectPane.Alive {
-			t.Error("expected ArchitectPane.Alive=true when last_seen exactly 60s ago (inclusive <= 60 window)")
+		if !health.ManagerPane.Alive {
+			t.Error("expected ManagerPane.Alive=true when last_seen exactly 60s ago (inclusive <= 60 window)")
 		}
 	})
 
@@ -212,8 +197,8 @@ func TestHealthPaneAlive(t *testing.T) {
 		d.nowFunc = func() time.Time { return fixedNow }
 
 		staleTS := fixedNow.Unix() - 61
-		if _, err := d.db.Exec(`INSERT OR REPLACE INTO pane_activity (pane, last_seen) VALUES (?, ?)`, "architect", staleTS); err != nil {
-			t.Fatalf("insert architect: %v", err)
+		if _, err := d.db.Exec(`INSERT OR REPLACE INTO pane_activity (pane, last_seen) VALUES (?, ?)`, "manager", staleTS); err != nil {
+			t.Fatalf("insert manager: %v", err)
 		}
 
 		result, err := d.applyHealth()
@@ -225,8 +210,8 @@ func TestHealthPaneAlive(t *testing.T) {
 			t.Fatalf("unmarshal: %v", err)
 		}
 
-		if health.ArchitectPane.Alive {
-			t.Error("expected ArchitectPane.Alive=false when last_seen 61s ago")
+		if health.ManagerPane.Alive {
+			t.Error("expected ManagerPane.Alive=false when last_seen 61s ago")
 		}
 	})
 }
@@ -239,7 +224,7 @@ func TestPaneAliveDirect(t *testing.T) {
 	t.Run("returns false when no row exists", func(t *testing.T) {
 		d, _, _, _, _, _ := newTestDispatcher(t)
 		// No rows inserted — QueryRow returns sql.ErrNoRows
-		got := paneAlive(ctx, d.db, "architect", 1000)
+		got := paneAlive(ctx, d.db, 1000)
 		if got {
 			t.Error("expected false when pane_activity row is missing")
 		}
@@ -252,7 +237,7 @@ func TestPaneAliveDirect(t *testing.T) {
 	t.Run("returns false when DB error and nowUnix is small", func(t *testing.T) {
 		d, _, _, _, _, _ := newTestDispatcher(t)
 		// No row — DB returns error. With nowUnix=50, lastSeen=0 gives 50-0=50<=60=true after mutation.
-		got := paneAlive(ctx, d.db, "architect", 50)
+		got := paneAlive(ctx, d.db, 50)
 		if got {
 			t.Error("expected false on DB error regardless of nowUnix value")
 		}
@@ -263,10 +248,10 @@ func TestPaneAliveDirect(t *testing.T) {
 		d, _, _, _, _, _ := newTestDispatcher(t)
 		nowUnix := int64(1000)
 		exactTS := nowUnix - 60
-		if _, err := d.db.Exec(`INSERT OR REPLACE INTO pane_activity (pane, last_seen) VALUES (?, ?)`, "architect", exactTS); err != nil {
+		if _, err := d.db.Exec(`INSERT OR REPLACE INTO pane_activity (pane, last_seen) VALUES (?, ?)`, "manager", exactTS); err != nil {
 			t.Fatalf("insert: %v", err)
 		}
-		got := paneAlive(ctx, d.db, "architect", nowUnix)
+		got := paneAlive(ctx, d.db, nowUnix)
 		if !got {
 			t.Error("expected true when last_seen exactly 60s ago (inclusive <= 60 window)")
 		}
@@ -276,10 +261,10 @@ func TestPaneAliveDirect(t *testing.T) {
 		d, _, _, _, _, _ := newTestDispatcher(t)
 		nowUnix := int64(1000)
 		staleTS := nowUnix - 61
-		if _, err := d.db.Exec(`INSERT OR REPLACE INTO pane_activity (pane, last_seen) VALUES (?, ?)`, "architect", staleTS); err != nil {
+		if _, err := d.db.Exec(`INSERT OR REPLACE INTO pane_activity (pane, last_seen) VALUES (?, ?)`, "manager", staleTS); err != nil {
 			t.Fatalf("insert: %v", err)
 		}
-		got := paneAlive(ctx, d.db, "architect", nowUnix)
+		got := paneAlive(ctx, d.db, nowUnix)
 		if got {
 			t.Error("expected false when last_seen 61s ago")
 		}
@@ -289,10 +274,10 @@ func TestPaneAliveDirect(t *testing.T) {
 		d, _, _, _, _, _ := newTestDispatcher(t)
 		nowUnix := int64(1000)
 		recentTS := nowUnix - 59
-		if _, err := d.db.Exec(`INSERT OR REPLACE INTO pane_activity (pane, last_seen) VALUES (?, ?)`, "architect", recentTS); err != nil {
+		if _, err := d.db.Exec(`INSERT OR REPLACE INTO pane_activity (pane, last_seen) VALUES (?, ?)`, "manager", recentTS); err != nil {
 			t.Fatalf("insert: %v", err)
 		}
-		got := paneAlive(ctx, d.db, "architect", nowUnix)
+		got := paneAlive(ctx, d.db, nowUnix)
 		if !got {
 			t.Error("expected true when last_seen 59s ago")
 		}

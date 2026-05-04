@@ -26,36 +26,26 @@ func pollCounter(d *Dispatcher) func(n int64) func() bool {
 	}
 }
 
-func TestPaneMonitorLoop_SignalsHandoff(t *testing.T) {
-	// Create temporary test directory
+// TestPaneMonitorLoop_ManagerHandoff exercises the full monitor loop for the
+// manager pane without a PaneRestarter (falls through to signalHandoff path).
+// Verifies: below-threshold = no handoff; above-threshold = handoff created;
+// once signaled, pane remains in signaledPanes even after pct drops.
+func TestPaneMonitorLoop_ManagerHandoff(t *testing.T) {
 	tmpDir := t.TempDir()
 	panesDir := filepath.Join(tmpDir, ".oro", "panes")
-	architectDir := filepath.Join(panesDir, "architect")
 	managerDir := filepath.Join(panesDir, "manager")
 
-	//nolint:gosec // test directory permissions
-	if err := os.MkdirAll(architectDir, 0o755); err != nil {
-		t.Fatalf("failed to create architect dir: %v", err)
-	}
 	//nolint:gosec // test directory permissions
 	if err := os.MkdirAll(managerDir, 0o755); err != nil {
 		t.Fatalf("failed to create manager dir: %v", err)
 	}
 
-	// Create context_pct files with values below threshold
-	architectPctFile := filepath.Join(architectDir, "context_pct")
 	managerPctFile := filepath.Join(managerDir, "context_pct")
-
-	//nolint:gosec // test file permissions
-	if err := os.WriteFile(architectPctFile, []byte("40"), 0o644); err != nil {
-		t.Fatalf("failed to write architect context_pct: %v", err)
-	}
 	//nolint:gosec // test file permissions
 	if err := os.WriteFile(managerPctFile, []byte("40"), 0o644); err != nil {
 		t.Fatalf("failed to write manager context_pct: %v", err)
 	}
 
-	// Create dispatcher with test database
 	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("failed to open db: %v", err)
@@ -68,7 +58,7 @@ func TestPaneMonitorLoop_SignalsHandoff(t *testing.T) {
 
 	cfg := Config{
 		PaneContextThreshold: 50,
-		PaneMonitorInterval:  100 * time.Millisecond, // Fast polling for test
+		PaneMonitorInterval:  100 * time.Millisecond,
 	}
 	cfg = cfg.withDefaults()
 
@@ -80,114 +70,70 @@ func TestPaneMonitorLoop_SignalsHandoff(t *testing.T) {
 		signaledPanes: make(map[string]bool),
 	}
 
-	// Install poll-completion hook for synchronization
 	awaitPolls := pollCounter(d)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Start monitor loop
 	done := make(chan struct{})
 	go func() {
 		d.paneMonitorLoop(ctx)
 		close(done)
 	}()
 
-	// Wait for at least one poll to complete (replaces time.Sleep)
-	pollDone := awaitPolls(1)
-	waitFor(t, pollDone, 2*time.Second)
+	// Wait for at least one poll to complete (below threshold — no handoff yet).
+	waitFor(t, awaitPolls(1), 2*time.Second)
 
-	// Verify no handoff files created yet (below threshold)
-	architectHandoffFile := filepath.Join(architectDir, "handoff_requested")
 	managerHandoffFile := filepath.Join(managerDir, "handoff_requested")
-
-	if _, err := os.Stat(architectHandoffFile); err == nil {
-		t.Error("architect handoff_requested should not exist yet")
-	}
 	if _, err := os.Stat(managerHandoffFile); err == nil {
-		t.Error("manager handoff_requested should not exist yet")
+		t.Error("handoff_requested should not exist below threshold")
 	}
 
-	// Update architect to exceed threshold
-	//nolint:gosec // test file permissions
-	if err := os.WriteFile(architectPctFile, []byte("55"), 0o644); err != nil {
-		t.Fatalf("failed to update architect context_pct: %v", err)
-	}
-
-	// Wait for handoff file to appear (replaces time.Sleep)
-	waitFor(t, func() bool {
-		_, statErr := os.Stat(architectHandoffFile)
-		return statErr == nil
-	}, 2*time.Second)
-
-	// Verify handoff file created for architect
-	if _, err := os.Stat(architectHandoffFile); os.IsNotExist(err) {
-		t.Error("architect handoff_requested should exist after exceeding threshold")
-	}
-
-	// Manager should still not have handoff file
-	if _, err := os.Stat(managerHandoffFile); err == nil {
-		t.Error("manager handoff_requested should not exist (below threshold)")
-	}
-
-	// Update manager to exceed threshold
+	// Raise manager above threshold.
 	//nolint:gosec // test file permissions
 	if err := os.WriteFile(managerPctFile, []byte("70"), 0o644); err != nil {
 		t.Fatalf("failed to update manager context_pct: %v", err)
 	}
 
-	// Wait for manager handoff file to appear (replaces time.Sleep)
 	waitFor(t, func() bool {
 		_, statErr := os.Stat(managerHandoffFile)
 		return statErr == nil
 	}, 2*time.Second)
 
-	// Verify handoff file created for manager
 	if _, err := os.Stat(managerHandoffFile); os.IsNotExist(err) {
-		t.Error("manager handoff_requested should exist after exceeding threshold")
+		t.Error("handoff_requested should exist after exceeding threshold")
 	}
 
-	// Update architect back below threshold
+	// Lower manager back below threshold.
 	//nolint:gosec // test file permissions
-	if err := os.WriteFile(architectPctFile, []byte("40"), 0o644); err != nil {
-		t.Fatalf("failed to update architect context_pct: %v", err)
+	if err := os.WriteFile(managerPctFile, []byte("40"), 0o644); err != nil {
+		t.Fatalf("failed to lower manager context_pct: %v", err)
 	}
 
-	// Wait for at least one more poll cycle (replaces time.Sleep)
-	pollAfterLower := awaitPolls(1)
-	waitFor(t, pollAfterLower, 2*time.Second)
+	afterLower := awaitPolls(1)
+	waitFor(t, afterLower, 2*time.Second)
 
-	// Verify architect is still signaled (no re-signal, stays in map)
+	// Manager must remain in signaledPanes (no re-signal on subsequent polls).
 	d.mu.Lock()
-	architectSignaled := d.signaledPanes["architect"]
+	signaled := d.signaledPanes["manager"]
 	d.mu.Unlock()
 
-	if !architectSignaled {
-		t.Error("architect should remain in signaledPanes map")
+	if !signaled {
+		t.Error("manager should remain in signaledPanes map after pct drops")
 	}
 
-	// Cancel context and wait for loop to exit
 	cancel()
 	select {
 	case <-done:
-		// Loop exited cleanly
 	case <-time.After(2 * time.Second):
 		t.Error("paneMonitorLoop did not exit after context cancellation")
 	}
 }
 
 func TestPaneMonitorLoop_SkipsMissingFiles(t *testing.T) {
-	// Create temporary test directory with only architect dir
 	tmpDir := t.TempDir()
 	panesDir := filepath.Join(tmpDir, ".oro", "panes")
-	architectDir := filepath.Join(panesDir, "architect")
-
-	//nolint:gosec // test directory permissions
-	if err := os.MkdirAll(architectDir, 0o755); err != nil {
-		t.Fatalf("failed to create architect dir: %v", err)
-	}
-
-	// Don't create manager dir or any context_pct files
+	// Don't create manager dir or any context_pct files.
 
 	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
@@ -201,7 +147,7 @@ func TestPaneMonitorLoop_SkipsMissingFiles(t *testing.T) {
 
 	cfg := Config{
 		PaneContextThreshold: 50,
-		PaneMonitorInterval:  100 * time.Millisecond, // Fast polling for test
+		PaneMonitorInterval:  100 * time.Millisecond,
 	}
 	cfg = cfg.withDefaults()
 
@@ -213,49 +159,41 @@ func TestPaneMonitorLoop_SkipsMissingFiles(t *testing.T) {
 		signaledPanes: make(map[string]bool),
 	}
 
-	// Install poll-completion hook for synchronization
 	awaitPolls := pollCounter(d)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	// Start monitor loop - should not panic or error
 	done := make(chan struct{})
 	go func() {
 		d.paneMonitorLoop(ctx)
 		close(done)
 	}()
 
-	// Wait for at least one poll to complete (replaces time.Sleep)
-	pollDone := awaitPolls(1)
-	waitFor(t, pollDone, 2*time.Second)
+	waitFor(t, awaitPolls(1), 2*time.Second)
 
-	// Cancel and verify clean exit
 	cancel()
 	select {
 	case <-done:
-		// Loop exited cleanly
 	case <-time.After(1 * time.Second):
 		t.Error("paneMonitorLoop did not exit after context cancellation")
 	}
 }
 
 func TestPaneMonitorLoop_ParseError(t *testing.T) {
-	// Create temporary test directory
 	tmpDir := t.TempDir()
 	panesDir := filepath.Join(tmpDir, ".oro", "panes")
-	architectDir := filepath.Join(panesDir, "architect")
+	managerDir := filepath.Join(panesDir, "manager")
 
 	//nolint:gosec // test directory permissions
-	if err := os.MkdirAll(architectDir, 0o755); err != nil {
-		t.Fatalf("failed to create architect dir: %v", err)
+	if err := os.MkdirAll(managerDir, 0o755); err != nil {
+		t.Fatalf("failed to create manager dir: %v", err)
 	}
 
-	// Create context_pct file with invalid content
-	architectPctFile := filepath.Join(architectDir, "context_pct")
+	pctFile := filepath.Join(managerDir, "context_pct")
 	//nolint:gosec // test file permissions
-	if err := os.WriteFile(architectPctFile, []byte("not-a-number"), 0o644); err != nil {
-		t.Fatalf("failed to write architect context_pct: %v", err)
+	if err := os.WriteFile(pctFile, []byte("not-a-number"), 0o644); err != nil {
+		t.Fatalf("failed to write manager context_pct: %v", err)
 	}
 
 	db, err := dbutil.OpenDB(":memory:")
@@ -270,7 +208,7 @@ func TestPaneMonitorLoop_ParseError(t *testing.T) {
 
 	cfg := Config{
 		PaneContextThreshold: 50,
-		PaneMonitorInterval:  100 * time.Millisecond, // Fast polling for test
+		PaneMonitorInterval:  100 * time.Millisecond,
 	}
 	cfg = cfg.withDefaults()
 
@@ -282,34 +220,27 @@ func TestPaneMonitorLoop_ParseError(t *testing.T) {
 		signaledPanes: make(map[string]bool),
 	}
 
-	// Install poll-completion hook for synchronization
 	awaitPolls := pollCounter(d)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	// Start monitor loop - should skip parse errors gracefully
 	done := make(chan struct{})
 	go func() {
 		d.paneMonitorLoop(ctx)
 		close(done)
 	}()
 
-	// Wait for at least one poll to complete (replaces time.Sleep)
-	pollDone := awaitPolls(1)
-	waitFor(t, pollDone, 2*time.Second)
+	waitFor(t, awaitPolls(1), 2*time.Second)
 
-	// Verify no handoff file created (parse error should skip)
-	architectHandoffFile := filepath.Join(architectDir, "handoff_requested")
-	if _, err := os.Stat(architectHandoffFile); err == nil {
-		t.Error("architect handoff_requested should not exist (parse error)")
+	handoffFile := filepath.Join(managerDir, "handoff_requested")
+	if _, err := os.Stat(handoffFile); err == nil {
+		t.Error("handoff_requested should not exist (parse error)")
 	}
 
-	// Cancel and verify clean exit
 	cancel()
 	select {
 	case <-done:
-		// Loop exited cleanly
 	case <-time.After(1 * time.Second):
 		t.Error("paneMonitorLoop did not exit after context cancellation")
 	}
@@ -346,7 +277,7 @@ func newPaneTestDispatcher(t *testing.T, threshold int, panesDir string) *Dispat
 func TestCheckPaneContext_ExactThreshold(t *testing.T) {
 	tmpDir := t.TempDir()
 	panesDir := filepath.Join(tmpDir, "panes")
-	roleDir := filepath.Join(panesDir, "architect")
+	roleDir := filepath.Join(panesDir, "manager")
 	if err := os.MkdirAll(roleDir, 0o755); err != nil { //nolint:gosec
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -358,7 +289,7 @@ func TestCheckPaneContext_ExactThreshold(t *testing.T) {
 	}
 
 	d := newPaneTestDispatcher(t, threshold, panesDir)
-	d.checkPaneContext(context.Background(), "architect")
+	d.checkPaneContext(context.Background(), "manager")
 
 	handoffFile := filepath.Join(roleDir, "handoff_requested")
 	if _, err := os.Stat(handoffFile); os.IsNotExist(err) {
@@ -370,7 +301,7 @@ func TestCheckPaneContext_ExactThreshold(t *testing.T) {
 func TestCheckPaneContext_BelowThreshold(t *testing.T) {
 	tmpDir := t.TempDir()
 	panesDir := filepath.Join(tmpDir, "panes")
-	roleDir := filepath.Join(panesDir, "architect")
+	roleDir := filepath.Join(panesDir, "manager")
 	if err := os.MkdirAll(roleDir, 0o755); err != nil { //nolint:gosec
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -382,7 +313,7 @@ func TestCheckPaneContext_BelowThreshold(t *testing.T) {
 	}
 
 	d := newPaneTestDispatcher(t, threshold, panesDir)
-	d.checkPaneContext(context.Background(), "architect")
+	d.checkPaneContext(context.Background(), "manager")
 
 	handoffFile := filepath.Join(roleDir, "handoff_requested")
 	if _, err := os.Stat(handoffFile); err == nil {
@@ -395,7 +326,7 @@ func TestCheckPaneContext_BelowThreshold(t *testing.T) {
 func TestCheckPaneContext_AlreadySignaled(t *testing.T) {
 	tmpDir := t.TempDir()
 	panesDir := filepath.Join(tmpDir, "panes")
-	roleDir := filepath.Join(panesDir, "architect")
+	roleDir := filepath.Join(panesDir, "manager")
 	if err := os.MkdirAll(roleDir, 0o755); err != nil { //nolint:gosec
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -409,7 +340,7 @@ func TestCheckPaneContext_AlreadySignaled(t *testing.T) {
 	d := newPaneTestDispatcher(t, threshold, panesDir)
 
 	// First call: should signal and set signaledPanes.
-	d.checkPaneContext(context.Background(), "architect")
+	d.checkPaneContext(context.Background(), "manager")
 
 	handoffFile := filepath.Join(roleDir, "handoff_requested")
 	if _, err := os.Stat(handoffFile); os.IsNotExist(err) {
@@ -418,8 +349,8 @@ func TestCheckPaneContext_AlreadySignaled(t *testing.T) {
 
 	// Verify signaledPanes is set.
 	d.mu.Lock()
-	if !d.signaledPanes["architect"] {
-		t.Error("signaledPanes[architect] must be true after first signal")
+	if !d.signaledPanes["manager"] {
+		t.Error("signaledPanes[manager] must be true after first signal")
 	}
 	d.mu.Unlock()
 
@@ -428,7 +359,7 @@ func TestCheckPaneContext_AlreadySignaled(t *testing.T) {
 		t.Fatalf("remove handoff: %v", err)
 	}
 
-	d.checkPaneContext(context.Background(), "architect")
+	d.checkPaneContext(context.Background(), "manager")
 
 	// File must still be absent (early return via alreadySignaled guard).
 	if _, err := os.Stat(handoffFile); err == nil {
@@ -467,7 +398,7 @@ func TestSignalHandoff_SetsSignaledPanes(t *testing.T) {
 func TestSignalHandoff_DeduplicatesOnLoop(t *testing.T) {
 	tmpDir := t.TempDir()
 	panesDir := filepath.Join(tmpDir, "panes")
-	roleDir := filepath.Join(panesDir, "architect")
+	roleDir := filepath.Join(panesDir, "manager")
 	if err := os.MkdirAll(roleDir, 0o755); err != nil { //nolint:gosec
 		t.Fatalf("mkdir: %v", err)
 	}

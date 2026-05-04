@@ -76,7 +76,7 @@ func TestTmuxPaneRestarter_Restart(t *testing.T) {
 		runner := &mockPaneRestartRunner{}
 		r := dispatcher.NewTmuxPaneRestarter("oro", "oro worker", runner)
 
-		_ = r.Restart("architect")
+		_ = r.Restart("manager")
 
 		if len(runner.calls) != 1 {
 			t.Fatalf("expected 1 call, got %d", len(runner.calls))
