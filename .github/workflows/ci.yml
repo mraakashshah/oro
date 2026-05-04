@@ -129,8 +129,11 @@ jobs:
         run: CGO_ENABLED=0 go build ./cmd/oro ./cmd/oro-search-hook
 
       - name: Test (CGO_ENABLED=0)
-        timeout-minutes: 15
-        run: CGO_ENABLED=0 go test -count=1 -timeout=10m ./cmd/... ./internal/... ./pkg/...
+        timeout-minutes: 20
+        # -p 1 forces sequential package execution so each "ok PKG" line
+        # streams immediately; recent CI hangs produced zero output for
+        # 47 minutes, making diagnosis impossible.
+        run: CGO_ENABLED=0 go test -count=1 -p 1 -timeout=8m ./cmd/... ./internal/... ./pkg/...
 
       - name: Clean assets
         if: always()
