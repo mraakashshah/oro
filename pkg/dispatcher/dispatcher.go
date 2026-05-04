@@ -1910,34 +1910,31 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 		return
 	}
 
-	// Clean merge — close bead, complete assignment, remove worktree.
-	_ = d.beads.Close(ctx, beadID, fmt.Sprintf("Merged: %s", result.CommitSHA))
+	d.finalizeSuccessfulMerge(ctx, beadID, workerID, worktree, epicID, targetBranch, assignmentID, result.CommitSHA)
+}
+
+func (d *Dispatcher) finalizeSuccessfulMerge(ctx context.Context, beadID, workerID, worktree, epicID, targetBranch string, assignmentID int64, sha string) {
+	_ = d.beads.Close(ctx, beadID, fmt.Sprintf("Merged: %s", sha))
 	_ = d.completeAssignment(ctx, assignmentID, beadID)
 
-	// Cancel any in-flight ops agents for this bead to prevent stale escalations.
 	d.cancelOpsAgents(ctx, beadID, workerID, "bead_merged")
 
-	_ = d.logEvent(ctx, "merged", "dispatcher", beadID, workerID,
-		fmt.Sprintf(`{"sha":%q}`, result.CommitSHA))
+	_ = d.logEvent(ctx, "merged", "dispatcher", beadID, workerID, fmt.Sprintf(`{"sha":%q}`, sha))
 	mergedTo := targetBranch
 	if mergedTo == "" {
 		mergedTo = d.cfg.DefaultBranch
 	}
-	d.escalate(ctx, protocol.FormatEscalation(protocol.EscMergeComplete, beadID, "merged to "+mergedTo, result.CommitSHA), beadID, workerID)
+	d.escalate(ctx, protocol.FormatEscalation(protocol.EscMergeComplete, beadID, "merged to "+mergedTo, sha), beadID, workerID)
 
-	// Clear any prior merge failure so the auto-close attempt below is not blocked.
 	if epicID != "" {
 		d.mu.Lock()
 		delete(d.epicMergeFailed, epicID)
 		d.mu.Unlock()
 	}
-	// Auto-close parent epic if all children are completed.
 	d.autoCloseEpicIfComplete(ctx, workerID, epicID)
 	d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
 
-	// Trigger memory consolidation after every N bead completions.
 	d.maybeConsolidateMemory(ctx)
-	// Trigger dream memory processing after every DreamInterval completions.
 	d.maybeTriggerDream(ctx)
 }
 
