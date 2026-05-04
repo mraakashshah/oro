@@ -158,6 +158,55 @@ func TestReadyQueueSkipsNonExecutableOperationalBeads(t *testing.T) {
 	}
 }
 
+// TestResumeWorktreeStaleWorktreeRespectsPriority proves that a stale
+// worktree from a prior session does not let its lower-priority bead
+// leapfrog higher-priority ready work. Covers oro-qq5b: in the proof run a
+// P2 bead with .worktrees/oro-lga5 left over from a previous dispatcher
+// session was assigned ahead of valid P0 beads. The fix locks in the
+// priority invariant at the queue-selection layer — even with worktreeByBead
+// pre-populated, filterAssignable must keep the highest-priority ready bead
+// first.
+func TestResumeWorktreeStaleWorktreeRespectsPriority(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const (
+		p0ID      = "oro-priority-zero"
+		stalePath = "/tmp/oro-stale-worktree"
+		p2ID      = "oro-stale-resume"
+	)
+	beadSrc.shown[p0ID] = &protocol.BeadDetail{
+		ID:                 p0ID,
+		Title:              "High priority work",
+		AcceptanceCriteria: "Test: pkg/x:TestThing | Cmd: go test ./pkg/x/... | Assert: PASS",
+	}
+	beadSrc.shown[p2ID] = &protocol.BeadDetail{
+		ID:                 p2ID,
+		Title:              "Stale resume",
+		AcceptanceCriteria: "Test: pkg/y:TestOther | Cmd: go test ./pkg/y/... | Assert: PASS",
+	}
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: p0ID, Title: "High priority work", Priority: 0, Type: "task"},
+		{ID: p2ID, Title: "Stale resume", Priority: 2, Type: "task"},
+	})
+
+	d.mu.Lock()
+	d.worktreeByBead[p2ID] = stalePath
+	d.mu.Unlock()
+
+	all, err := beadSrc.Ready(ctx)
+	if err != nil {
+		t.Fatalf("Ready: %v", err)
+	}
+	filtered := d.filterAssignable(ctx, all)
+	if len(filtered) == 0 {
+		t.Fatalf("filtered queue empty")
+	}
+	if filtered[0].ID != p0ID {
+		t.Fatalf("filtered[0] = %s, want %s — stale worktree must not bypass priority order", filtered[0].ID, p0ID)
+	}
+}
+
 // TestQueueSkipNonTDDDoesNotBypassPriority proves that when checkBeadReady
 // rejects a higher-priority bead for non_tdd_acceptance, an escalation is
 // raised so the silent-skip can't masquerade as priority being respected.
