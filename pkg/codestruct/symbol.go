@@ -7,6 +7,7 @@ type SymbolKind string
 const (
 	KindFunc      SymbolKind = "func"
 	KindMethod    SymbolKind = "method"
+	KindClass     SymbolKind = "class"
 	KindType      SymbolKind = "type"
 	KindInterface SymbolKind = "interface"
 	KindConst     SymbolKind = "const"

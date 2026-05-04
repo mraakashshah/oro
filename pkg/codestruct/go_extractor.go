@@ -173,6 +173,8 @@ func extractIdentList(n *sitter.Node, src []byte) []string {
 }
 
 // nodeFieldContent returns the source text of a named field child, or "".
+//
+//nolint:unparam // field is intentionally generic; callers happen to all use "name" today but the helper is shared across extractors
 func nodeFieldContent(n *sitter.Node, field string, src []byte) string {
 	child := n.ChildByFieldName(field)
 	if child == nil {
