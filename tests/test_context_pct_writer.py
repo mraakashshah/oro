@@ -47,6 +47,10 @@ def test_writes_correct_percentage_with_1m_budget():
             # Run the hook with ORO_ROLE set
             env = os.environ.copy()
             env["ORO_ROLE"] = "test-worker"
+            # Scrub ORO_WORKER so the hook does not also write to Path.cwd()/.oro/
+            # (cwd here is HOOKS_DIR = repo's assets/hooks/, which would pollute
+            # the source tree and break test_asset_mirrors).
+            env.pop("ORO_WORKER", None)
 
             # Temporarily modify hook to use custom panes dir
             result = subprocess.run(
@@ -115,6 +119,10 @@ def test_clamps_percentage_at_100():
 
             env = os.environ.copy()
             env["ORO_ROLE"] = "test-worker"
+            # Scrub ORO_WORKER so the hook does not also write to Path.cwd()/.oro/
+            # (cwd here is HOOKS_DIR = repo's assets/hooks/, which would pollute
+            # the source tree and break test_asset_mirrors).
+            env.pop("ORO_WORKER", None)
 
             result = subprocess.run(
                 [
