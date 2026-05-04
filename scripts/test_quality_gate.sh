@@ -794,21 +794,21 @@ test_quality_gate_stage_assets_fail_closed() {
 	return 0
 }
 
-# shellcheck disable=SC2329 # invoked by name through the test runner
+# shellcheck disable=SC2317,SC2329 # invoked by name through the test runner
 write_quality_gate_python_helpers() {
 	local out="$1"
 	sed -n '/^qg_python_tool_path()/,/^# Run multiple checks/p' "$SCRIPT_DIR/quality_gate.sh" |
 		sed '$d' >"$out"
 }
 
-# shellcheck disable=SC2329 # invoked by name through the test runner
+# shellcheck disable=SC2317,SC2329 # invoked by name through the test runner
 write_generated_quality_gate_python_helpers() {
 	local out="$1"
 	sed -n '/^qg_python_tool_path()/,/^# Run multiple checks/p' "$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go" |
 		sed '$d' >"$out"
 }
 
-# shellcheck disable=SC2329 # invoked by name through the test runner
+# shellcheck disable=SC2317,SC2329 # invoked by name through the test runner
 run_python_tool_resolution_fixture() {
 	local helpers="$1"
 	local tmpdir
