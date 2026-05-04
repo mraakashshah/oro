@@ -48,7 +48,8 @@ func (r *failingDoltRunner) snapshot() []string {
 }
 
 type sqliteSentinelProcess struct {
-	done chan struct{}
+	done     chan struct{}
+	killOnce sync.Once
 }
 
 func newSQLiteSentinelProcess() *sqliteSentinelProcess {
@@ -61,11 +62,7 @@ func (p *sqliteSentinelProcess) Wait() error {
 }
 
 func (p *sqliteSentinelProcess) Kill() error {
-	select {
-	case <-p.done:
-	default:
-		close(p.done)
-	}
+	p.killOnce.Do(func() { close(p.done) })
 	return nil
 }
 
