@@ -17,6 +17,7 @@ import (
 
 	"oro/pkg/beadstore"
 	"oro/pkg/codesearch"
+	"oro/pkg/codestruct"
 	"oro/pkg/dispatcher"
 	"oro/pkg/langprofile"
 	"oro/pkg/memory"
@@ -536,6 +537,45 @@ func codeSearchContext(ctx context.Context, idx *codesearch.CodeIndex, query, wo
 	return codesearch.FormatResults(results)
 }
 
+// codeStructureContext builds Code Structure nav-maps for Go source files
+// referenced in the acceptance criteria (Test: <path>:<Func> pattern).
+// Returns empty string if no files are found or all extractions fail.
+func codeStructureContext(worktree, acceptanceCriteria string) string {
+	path := parseTestFilePath(acceptanceCriteria)
+	if path == "" || !strings.HasSuffix(path, ".go") {
+		return ""
+	}
+	abs := filepath.Join(worktree, path)
+	src, err := os.ReadFile(abs) //nolint:gosec // path comes from bead acceptance criteria, within worktree
+	if err != nil {
+		return ""
+	}
+	syms, err := codestruct.ExtractGoSymbols(abs)
+	if err != nil {
+		return ""
+	}
+	totalLines := strings.Count(string(src), "\n") + 1
+	return worker.FormatNavMap(abs, totalLines, syms)
+}
+
+// parseTestFilePath extracts the file path from "Test: path:Func" in the
+// acceptance criteria string. Returns empty string if not found.
+func parseTestFilePath(ac string) string {
+	idx := strings.Index(ac, "Test: ")
+	if idx < 0 {
+		return ""
+	}
+	rest := ac[idx+len("Test: "):]
+	if pipeIdx := strings.Index(rest, " | "); pipeIdx >= 0 {
+		rest = rest[:pipeIdx]
+	}
+	parts := strings.SplitN(rest, ":", 2)
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(parts[0])
+}
+
 // spawnAndWait spawns claude -p and waits for it to exit, with timeout.
 // logFile, when non-nil, receives a copy of Claude's stdout alongside stderr.
 func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree, model string, attempt int, feedback string, logFile *os.File) error {
@@ -555,18 +595,21 @@ func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree
 		codeCtx = codeSearchContext(ctx, deps.codeIndex, cfg.bead.Title, worktree)
 	}
 
+	codeStructCtx := codeStructureContext(worktree, cfg.bead.AcceptanceCriteria)
+
 	prompt := worker.AssemblePrompt(worker.PromptParams{
-		BeadID:             cfg.beadID,
-		Title:              cfg.bead.Title,
-		Description:        cfg.bead.Description,
-		AcceptanceCriteria: cfg.bead.AcceptanceCriteria,
-		MemoryContext:      memCtx,
-		CodeSearchContext:  codeCtx,
-		WorktreePath:       worktree,
-		Model:              model,
-		Attempt:            attempt,
-		Feedback:           feedback,
-		ProjectRoot:        projectRoot,
+		BeadID:               cfg.beadID,
+		Title:                cfg.bead.Title,
+		Description:          cfg.bead.Description,
+		AcceptanceCriteria:   cfg.bead.AcceptanceCriteria,
+		MemoryContext:        memCtx,
+		CodeSearchContext:    codeCtx,
+		CodeStructureContext: codeStructCtx,
+		WorktreePath:         worktree,
+		Model:                model,
+		Attempt:              attempt,
+		Feedback:             feedback,
+		ProjectRoot:          projectRoot,
 	})
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, cfg.timeout)

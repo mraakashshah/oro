@@ -11,20 +11,21 @@ import (
 
 // PromptParams contains all inputs needed to assemble the 12-section worker prompt.
 type PromptParams struct {
-	BeadID             string
-	Title              string
-	Description        string
-	AcceptanceCriteria string
-	MemoryContext      string // may be empty
-	CodeSearchContext  string // formatted code search results from FTS5Search
-	WorktreePath       string
-	Model              string
-	Attempt            int    // QG retry attempt (0 = first attempt)
-	Feedback           string // rejection/QG failure feedback from previous attempt
-	ProjectRoot        string // optional: path to project root for reading .oro/config.yaml
-	TargetBranch       string // merge target branch; defaults to "main" if empty
-	GitLog             string // git log context; may be empty
-	WorkerProgram      string // worker program invocation string; may be empty
+	BeadID               string
+	Title                string
+	Description          string
+	AcceptanceCriteria   string
+	MemoryContext        string // may be empty
+	CodeSearchContext    string // formatted code search results from FTS5Search
+	CodeStructureContext string // formatted nav-maps from codestruct (outline + line ranges)
+	WorktreePath         string
+	Model                string
+	Attempt              int    // QG retry attempt (0 = first attempt)
+	Feedback             string // rejection/QG failure feedback from previous attempt
+	ProjectRoot          string // optional: path to project root for reading .oro/config.yaml
+	TargetBranch         string // merge target branch; defaults to "main" if empty
+	GitLog               string // git log context; may be empty
+	WorkerProgram        string // worker program invocation string; may be empty
 }
 
 // section writes a markdown section (## header + body) to the builder.
@@ -73,7 +74,12 @@ func AssemblePrompt(params PromptParams) string {
 	// 3. Memory
 	section(&b, "Memory", memoryBody(params.MemoryContext))
 
-	// 3b. Relevant Code (only if CodeSearchContext is non-empty)
+	// 3b. Code Structure nav-maps (only if CodeStructureContext is non-empty)
+	if params.CodeStructureContext != "" {
+		section(&b, "Code Structure", params.CodeStructureContext)
+	}
+
+	// 3c. Relevant Code (only if CodeSearchContext is non-empty)
 	if params.CodeSearchContext != "" {
 		section(&b, "Relevant Code", params.CodeSearchContext)
 	}

@@ -482,20 +482,21 @@ func BuildAssignPrompt(a *protocol.AssignPayload) (prompt, model string) {
 		})
 	case a.Title != "":
 		prompt = AssemblePrompt(PromptParams{
-			BeadID:             a.BeadID,
-			Title:              a.Title,
-			Description:        a.Description,
-			AcceptanceCriteria: a.AcceptanceCriteria,
-			MemoryContext:      a.MemoryContext,
-			CodeSearchContext:  a.CodeSearchContext,
-			WorktreePath:       a.Worktree,
-			Model:              a.Model,
-			Attempt:            a.Attempt,
-			Feedback:           a.Feedback,
-			ProjectRoot:        a.ProjectRoot,
-			TargetBranch:       a.TargetBranch,
-			GitLog:             a.GitLog,
-			WorkerProgram:      a.WorkerProgram,
+			BeadID:               a.BeadID,
+			Title:                a.Title,
+			Description:          a.Description,
+			AcceptanceCriteria:   a.AcceptanceCriteria,
+			MemoryContext:        a.MemoryContext,
+			CodeSearchContext:    a.CodeSearchContext,
+			CodeStructureContext: a.CodeStructureContext,
+			WorktreePath:         a.Worktree,
+			Model:                a.Model,
+			Attempt:              a.Attempt,
+			Feedback:             a.Feedback,
+			ProjectRoot:          a.ProjectRoot,
+			TargetBranch:         a.TargetBranch,
+			GitLog:               a.GitLog,
+			WorkerProgram:        a.WorkerProgram,
 		})
 	default:
 		prompt = BuildPrompt(a.BeadID, a.Worktree, a.MemoryContext)
