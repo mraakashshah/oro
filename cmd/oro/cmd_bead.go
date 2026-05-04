@@ -258,6 +258,24 @@ func guardWorkerSelfClose(target string) error {
 	return fmt.Errorf("refusing self-close of assigned bead %s: workers must emit DONE and let the dispatcher integrate (ORO_WORKER_BEAD_ID guard, oro-t5ha)", target)
 }
 
+// guardWorkerDepAddSelf blocks an Oro worker subprocess from adding a
+// dependency edge whose source matches its own assigned bead. This stops
+// the leaf-bead self-decomposition pattern (oro-xs1a / oro-qafy) where a
+// worker assigned a non-epic bead injected phantom blocks-deps onto itself,
+// rendering the bead unreachable in the queue. Legitimate epic decomposition
+// adds deps on the parent epic (source != ORO_WORKER_BEAD_ID), which is
+// allowed.
+func guardWorkerDepAddSelf(source string) error {
+	if os.Getenv("ORO_WORKER") != "1" {
+		return nil
+	}
+	assigned := os.Getenv("ORO_WORKER_BEAD_ID")
+	if assigned == "" || assigned != source {
+		return nil
+	}
+	return fmt.Errorf("refusing self-dep-add on assigned bead %s: workers must not block their own assignment via the CLI (ORO_WORKER_BEAD_ID guard, oro-xs1a/oro-qafy)", source)
+}
+
 func newBeadReopenCmd(store beadstore.Store) *cobra.Command {
 	return &cobra.Command{
 		Use:   "reopen <id>",
@@ -369,6 +387,9 @@ func newBeadDepAddCmd(store beadstore.Store) *cobra.Command {
 		Short: "Add a dependency",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := guardWorkerDepAddSelf(args[0]); err != nil {
+				return writeBeadCommandErrorIfJSON(cmd, "guard", err)
+			}
 			s, err := resolveBeadStore(store)
 			if err != nil {
 				return writeBeadCommandErrorIfJSON(cmd, "store", err)

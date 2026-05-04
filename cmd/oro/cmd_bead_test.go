@@ -663,6 +663,80 @@ func TestBeadDepJSONRoundTripsFakeStore(t *testing.T) {
 	}
 }
 
+// TestBeadDepAddRefusesWorkerAddDepDepAddOnAssignedBeadLeafBeadWorkerDepAddSelf
+// proves that an Oro worker subprocess (ORO_WORKER=1) cannot add a dependency
+// edge whose source matches its currently assigned bead. This blocks the
+// leaf-bead self-decomposition pattern (oro-xs1a) where a worker assigned a
+// type=task bead added phantom blocks-deps onto itself, corrupting the bead
+// queue. Also covers oro-qafy's CLI guard requirement for dep-add on the
+// caller's assigned bead.
+func TestBeadDepAddRefusesWorkerAddDepDepAddOnAssignedBeadLeafBeadWorkerDepAddSelf(t *testing.T) {
+	ctx := context.Background()
+	store, err := beadstore.OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore: %v", err)
+	}
+
+	executeBeadCommand(t, store, "create", "--id", "oro-leaf", "--title", "leaf bead", "--type", "task")
+	executeBeadCommand(t, store, "create", "--id", "oro-phantom", "--title", "phantom child")
+
+	t.Setenv("ORO_WORKER", "1")
+	t.Setenv("ORO_WORKER_BEAD_ID", "oro-leaf")
+
+	cmd := newBeadCmdWithStore(store)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"dep", "add", "oro-leaf", "oro-phantom", "--type", "blocks"})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatalf("expected guard error refusing worker self-decomposition, got nil; output=%s", out.String())
+	} else if !strings.Contains(err.Error(), "ORO_WORKER_BEAD_ID") && !strings.Contains(err.Error(), "self-dep") {
+		t.Fatalf("expected ORO_WORKER_BEAD_ID guard error, got %v", err)
+	}
+
+	bead, ferr := store.Show(context.Background(), "oro-leaf")
+	if ferr != nil {
+		t.Fatalf("store.Show: %v", ferr)
+	}
+	if bead == nil {
+		t.Fatalf("bead oro-leaf missing")
+	}
+	if len(bead.Dependencies) != 0 {
+		t.Fatalf("bead deps = %#v, want none (guard must prevent dep insertion)", bead.Dependencies)
+	}
+}
+
+// TestBeadDepAddEpicDecompAllowed proves the worker-dep-add guard only
+// fires when the source matches the worker's own assigned bead. A legitimate
+// epic decomposition adds blocks-deps from the parent epic to newly created
+// children — the source there is the parent (not the worker's assigned bead),
+// so the guard must not block it. Covers oro-xs1a's EpicDecomp acceptance.
+func TestBeadDepAddEpicDecompAllowed(t *testing.T) {
+	ctx := context.Background()
+	store, err := beadstore.OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore: %v", err)
+	}
+
+	executeBeadCommand(t, store, "create", "--id", "oro-parent-epic", "--title", "parent epic", "--type", "epic")
+	executeBeadCommand(t, store, "create", "--id", "oro-decomp-task", "--title", "task running decomp", "--type", "task")
+	executeBeadCommand(t, store, "create", "--id", "oro-child", "--title", "spawned child")
+
+	t.Setenv("ORO_WORKER", "1")
+	t.Setenv("ORO_WORKER_BEAD_ID", "oro-decomp-task")
+
+	executeBeadCommand(t, store, "dep", "add", "oro-parent-epic", "oro-child", "--type", "blocks", "--json")
+
+	parent, ferr := store.Show(context.Background(), "oro-parent-epic")
+	if ferr != nil {
+		t.Fatalf("store.Show: %v", ferr)
+	}
+	if len(parent.Dependencies) != 1 || parent.Dependencies[0].DependsOnID != "oro-child" {
+		t.Fatalf("parent deps = %#v, want one dep on oro-child", parent.Dependencies)
+	}
+}
+
 func executeBeadCommand(t *testing.T, store beadstore.Store, args ...string) string {
 	t.Helper()
 

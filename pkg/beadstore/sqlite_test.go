@@ -1166,6 +1166,36 @@ func TestParityUpdateOpenClearsDeferredUntil(t *testing.T) {
 	}
 }
 
+// TestSQLiteStoreAddDependencyRejectsSelfBlock locks in the source==target
+// rejection at the store layer. Covers oro-qafy (a): a dependency edge from a
+// bead to itself must be refused before any insertion happens. The CLI guard
+// in cmd_bead.go provides the worker-context layer; this test covers the
+// underlying store invariant.
+func TestSQLiteStoreAddDependencyRejectsSelfBlock(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+
+	if _, err := store.Create(ctx, CreateParams{ID: "oro-x", Title: "x", Type: "task"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	err := store.AddDependency(ctx, "oro-x", "oro-x", "blocks")
+	if err == nil {
+		t.Fatalf("expected self-block rejection, got nil")
+	}
+	if !strings.Contains(err.Error(), "itself") {
+		t.Fatalf("expected error containing 'itself', got %v", err)
+	}
+
+	bead, err := store.Show(ctx, "oro-x")
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if bead == nil || len(bead.Dependencies) != 0 {
+		t.Fatalf("bead deps = %#v, want none", bead)
+	}
+}
+
 func newTestSQLiteStore(t *testing.T) *SQLiteStore {
 	t.Helper()
 
