@@ -38,7 +38,7 @@ NC='\033[0m'
 QG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/qg-$$-XXXXXX")
 QG_STAGE_ASSETS_LOCK=""
 QG_EXIT_STATUS=0
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 cleanup_qg() {
 	local status=$?
 	if [ -n "${QG_STAGE_ASSETS_LOCK:-}" ]; then
@@ -206,7 +206,7 @@ qg_python_tool_path_allowed() {
 	done
 }
 
-# shellcheck disable=SC2329 # invoked indirectly via check/parallel_checks command strings
+# shellcheck disable=SC2317,SC2329 # invoked indirectly via check/parallel_checks command strings
 qg_run_python_tool() {
 	local tool="$1"
 	shift
@@ -223,7 +223,7 @@ qg_run_python_tool() {
 	return 77
 }
 
-# shellcheck disable=SC2329 # invoked indirectly via check/parallel_checks command strings
+# shellcheck disable=SC2317,SC2329 # invoked indirectly via check/parallel_checks command strings
 qg_ruff() {
 	qg_run_python_tool ruff "$@"
 }
@@ -293,7 +293,7 @@ parallel_checks() {
 	done
 }
 
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 read_go_formatters_from_config() {
 	[ -f ".oro/config.yaml" ] || return 1
 	awk '
@@ -313,7 +313,7 @@ read_go_formatters_from_config() {
 	' ".oro/config.yaml"
 }
 
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 go_formatter_check() {
 	local tool="$1"
 	local runner=""
@@ -447,7 +447,7 @@ lane_go() {
 	header "GO TIER 2: LINT + DEAD CODE + ARCHITECTURE"
 
 	# Dead exports detector (function must be defined before parallel_checks eval's it)
-	# shellcheck disable=SC2329
+	# shellcheck disable=SC2317,SC2329
 	check_dead_exports() {
 		local dead_found=0
 		local checked=0
@@ -526,7 +526,7 @@ lane_go() {
 
 	local COVERAGE_FILE="$QG_DIR/coverage-$$.out"
 
-	# shellcheck disable=SC2329
+	# shellcheck disable=SC2317,SC2329
 	go_test_with_coverage() {
 		local race_flag=""
 		local goos goarch
@@ -571,7 +571,7 @@ lane_go() {
 	elif go tool -n go-mutesting >/dev/null 2>&1; then
 		header "GO TIER 4: MUTATION TESTING (incremental)"
 
-		# shellcheck disable=SC2329
+		# shellcheck disable=SC2317,SC2329
 		run_go_mutation_test() {
 			local mutation_base
 			mutation_base=$(mutation_base_ref)
@@ -738,7 +738,7 @@ lane_python() {
 		header "PYTHON TIER 5: MUTATION TESTING (incremental)"
 		local CR_SESSION="$QG_DIR/cr-$$.sqlite"
 
-		# shellcheck disable=SC2329
+		# shellcheck disable=SC2317,SC2329
 		run_mutation_test() {
 			local mutation_base
 			mutation_base=$(mutation_base_ref)
