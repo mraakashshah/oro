@@ -521,16 +521,15 @@ func TestPruneStaleTracking(t *testing.T) {
 	cancel := startDispatcher(t, d)
 	defer cancel()
 
-	// Seed tracking maps for multiple beads.
 	orphanedBead1 := "bead-orphan-1"
 	orphanedBead2 := "bead-orphan-2"
 	activeBead := "bead-active"
 
-	seedTrackingMaps(d, orphanedBead1)
-	seedTrackingMaps(d, orphanedBead2)
-	seedTrackingMaps(d, activeBead)
-
-	// Create a worker and assign the active bead.
+	// Connect the worker and pin it to activeBead BEFORE seeding pendingHandoffs.
+	// registerWorker -> assignHandoffToWorker consumes one pending handoff at
+	// connect time and may re-add it if the worker's state changes mid-flight,
+	// which races with pruneStaleTracking. Seeding after the worker is busy
+	// avoids the race entirely. (CI flake observed 2026-05-04 oro main #25325847127)
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
 	sendMsg(t, conn, protocol.Message{
 		Type:      protocol.MsgHeartbeat,
@@ -543,6 +542,10 @@ func TestPruneStaleTracking(t *testing.T) {
 	w.state = protocol.WorkerBusy
 	w.beadID = activeBead
 	d.mu.Unlock()
+
+	seedTrackingMaps(d, orphanedBead1)
+	seedTrackingMaps(d, orphanedBead2)
+	seedTrackingMaps(d, activeBead)
 
 	// Run pruneStaleTracking.
 	ctx := context.Background()
