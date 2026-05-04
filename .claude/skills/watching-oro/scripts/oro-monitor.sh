@@ -2,13 +2,12 @@
 # oro-monitor.sh — Create a tmux monitoring layout for observing a running oro swarm.
 # Usage: .claude/skills/watching-oro/scripts/oro-monitor.sh [--workers N]
 #
-# Creates tmux session "oro-watch" with 6 panes:
+# Creates tmux session "oro-watch" with 5 panes:
 #   0: Dispatcher event stream (oro logs --follow)
 #   1: Daemon stderr log (tail -f /tmp/oro-daemon.log)
 #   2: Worker output logs (tail -f on all worker output.logs)
-#   3: Architect pane mirror (continuous capture)
-#   4: Manager pane mirror (continuous capture)
-#   5: Status dashboard (oro status loop via inotifywait or kqueue)
+#   3: Manager pane mirror (continuous capture)
+#   4: Status dashboard (oro status loop via inotifywait or kqueue)
 #
 # All panes use tail -f or --follow flags. No sleep-based polling.
 
@@ -51,18 +50,8 @@ tmux split-window -t "$SESSION":0.0 -v \
      inotifywait -qq -e create \"$ORO_HOME/workers\" 2>/dev/null || sleep 2; \
    done"
 
-# Pane 3 (bottom-right top): architect pane mirror
-# Uses tmux wait-for + pipe-pane for event-driven capture
+# Pane 3 (bottom-right): manager pane mirror
 tmux split-window -t "$SESSION":0.1 -v \
-	"echo '--- Architect Pane (oro:0) ---'; \
-   while true; do \
-     tmux capture-pane -t oro:0 -p -S -40 2>/dev/null || echo '[architect pane not available]'; \
-     echo '--- refresh ---'; \
-     inotifywait -qq -t 5 -e modify \"$ORO_HOME/state.db\" 2>/dev/null || true; \
-   done"
-
-# Pane 4 (below pane 2): manager pane mirror
-tmux split-window -t "$SESSION":0.2 -v \
 	"echo '--- Manager Pane (oro:1) ---'; \
    while true; do \
      tmux capture-pane -t oro:1 -p -S -40 2>/dev/null || echo '[manager pane not available]'; \
@@ -70,9 +59,9 @@ tmux split-window -t "$SESSION":0.2 -v \
      inotifywait -qq -t 5 -e modify \"$ORO_HOME/state.db\" 2>/dev/null || true; \
    done"
 
-# Pane 5 (below pane 3): status dashboard
+# Pane 4 (below pane 3): status dashboard
 # Refreshes on DB changes (event-driven via fswatch on macOS, inotifywait on Linux)
-tmux split-window -t "$SESSION":0.3 -v \
+tmux split-window -t "$SESSION":0.2 -v \
 	"echo '--- Oro Status Dashboard ---'; \
    while true; do \
      clear; \
@@ -95,9 +84,8 @@ tmux split-window -t "$SESSION":0.3 -v \
 tmux select-pane -t "$SESSION":0.0 -T "events"
 tmux select-pane -t "$SESSION":0.1 -T "daemon-log"
 tmux select-pane -t "$SESSION":0.2 -T "worker-logs"
-tmux select-pane -t "$SESSION":0.3 -T "architect"
-tmux select-pane -t "$SESSION":0.4 -T "manager"
-tmux select-pane -t "$SESSION":0.5 -T "status"
+tmux select-pane -t "$SESSION":0.3 -T "manager"
+tmux select-pane -t "$SESSION":0.4 -T "status"
 
 # Enable pane titles in status
 tmux set-option -t "$SESSION" pane-border-status top
@@ -109,5 +97,5 @@ echo "  tmux attach -t $SESSION"
 echo ""
 echo "Pane layout:"
 echo "  0: events       1: daemon-log"
-echo "  2: worker-logs  3: architect"
-echo "  4: manager      5: status"
+echo "  2: worker-logs  3: manager"
+echo "  4: status"
