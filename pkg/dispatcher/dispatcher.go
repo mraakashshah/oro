@@ -1412,8 +1412,13 @@ func (d *Dispatcher) handleHeartbeat(ctx context.Context, workerID string, msg p
 	d.mu.Lock()
 	if w, ok := d.workers[workerID]; ok {
 		w.lastSeen = d.nowFunc()
+		previousPct := w.contextPct
 		w.contextPct = msg.Heartbeat.ContextPct
-		if w.state == protocol.WorkerBusy {
+		// Only count a heartbeat as progress when context_pct actually moved.
+		// Flat-context heartbeats are liveness signals (lastSeen), not progress
+		// — without this guard, STUCK_WORKER never fires for genuinely-stalled
+		// workers that keep heartbeating (oro-16yy).
+		if w.state == protocol.WorkerBusy && msg.Heartbeat.ContextPct != previousPct {
 			w.lastProgress = d.nowFunc()
 		}
 	}

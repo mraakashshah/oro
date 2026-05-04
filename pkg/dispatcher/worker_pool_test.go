@@ -658,9 +658,10 @@ func TestTouchProgress_NoopForUnknownWorker(t *testing.T) {
 
 // --- handleHeartbeat progress tests ---
 
-// TestHeartbeatTouchesProgressForBusyWorker verifies that a heartbeat from a
-// busy worker updates lastProgress, preventing the progress timeout from
-// killing workers that are legitimately running Claude for >10 min.
+// TestHeartbeatTouchesProgressForBusyWorker verifies that a heartbeat with
+// climbing context_pct updates lastProgress, so a worker that is genuinely
+// running Claude (context grows) doesn't trip the progress timeout. Flat
+// context heartbeats are liveness only — see oro-16yy.
 func TestHeartbeatTouchesProgressForBusyWorker(t *testing.T) {
 	t.Parallel()
 	d, _, _, _, _, _ := newTestDispatcher(t)
@@ -670,7 +671,9 @@ func TestHeartbeatTouchesProgressForBusyWorker(t *testing.T) {
 	now := time.Now()
 	d.nowFunc = func() time.Time { return now }
 
-	// Register a busy worker with stale lastProgress (past timeout).
+	// Register a busy worker with stale lastProgress (past timeout) and a
+	// known prior context_pct. The next heartbeat carries a higher context_pct
+	// (Claude advanced), so it must refresh lastProgress.
 	staleProgress := now.Add(-(d.cfg.ProgressTimeout + time.Second))
 	conn := newMockConn()
 	workerID := "busy-heartbeating"
@@ -682,16 +685,18 @@ func TestHeartbeatTouchesProgressForBusyWorker(t *testing.T) {
 		beadID:       "test-bead",
 		lastSeen:     now,
 		lastProgress: staleProgress,
+		contextPct:   5,
 		encoder:      json.NewEncoder(conn),
 	}
 	d.mu.Unlock()
 
-	// Send heartbeat — should refresh lastProgress for busy worker.
+	// Heartbeat with CLIMBING context_pct — should refresh lastProgress.
 	d.handleHeartbeat(context.Background(), workerID, protocol.Message{
 		Type: protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{
-			WorkerID: workerID,
-			BeadID:   "test-bead",
+			WorkerID:   workerID,
+			BeadID:     "test-bead",
+			ContextPct: 7,
 		},
 	})
 
@@ -700,7 +705,7 @@ func TestHeartbeatTouchesProgressForBusyWorker(t *testing.T) {
 	got := d.workers[workerID].lastProgress
 	d.mu.Unlock()
 	if !got.Equal(now) {
-		t.Errorf("lastProgress = %v, want %v (heartbeat should refresh progress for busy worker)", got, now)
+		t.Errorf("lastProgress = %v, want %v (climbing context heartbeat should refresh progress)", got, now)
 	}
 
 	// The worker must survive checkHeartbeats.
