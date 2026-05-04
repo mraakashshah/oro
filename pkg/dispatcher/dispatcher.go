@@ -1863,6 +1863,18 @@ func (d *Dispatcher) checkEpicQG(ctx context.Context, epicID, workerID, epicBran
 func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, worktree, branch, epicID, targetBranch string, assignmentID int64) {
 	defer d.guardMerge(beadID)()
 
+	// Closed-bead guard (oro-jev9): if the bead was closed externally between
+	// assignment and review (e.g. manager dedup-closed it as a duplicate),
+	// abort before merging. Otherwise the worker's commit lands on the target
+	// branch even though the bead is already resolved.
+	if detail, showErr := d.beads.Show(ctx, beadID); showErr == nil && detail != nil && detail.Status == "closed" {
+		_ = d.logEvent(ctx, "merge_aborted_closed_bead", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"branch":%q,"target":%q}`, branch, targetBranch))
+		_ = d.completeAssignment(ctx, assignmentID, beadID)
+		d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
+		return
+	}
+
 	if !d.checkPreMergeQG(ctx, beadID, workerID, worktree, assignmentID) {
 		return
 	}
