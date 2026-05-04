@@ -17,6 +17,10 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # ripgrep is required by scripts/check-task-terminology.sh
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       # Stage assets for go:embed (required for build/lint/test)
       - name: Stage assets
         run: make stage-assets
@@ -85,6 +89,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+
+      # ripgrep is required by scripts/check-task-terminology.sh (run by tests)
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
 
       - name: Stage assets
         run: make stage-assets
