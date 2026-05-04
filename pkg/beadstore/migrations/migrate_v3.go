@@ -24,9 +24,11 @@ func MigrateToV3(ctx context.Context, db *sql.DB) error {
 		`ALTER TABLE beads ADD COLUMN blockers         TEXT`,
 		`ALTER TABLE beads ADD COLUMN linked_artifacts TEXT`,
 		`ALTER TABLE beads ADD COLUMN worker_state     TEXT`,
-		`ALTER TABLE beads ADD COLUMN gate_state TEXT NOT NULL DEFAULT 'none'`,
+		`ALTER TABLE beads ADD COLUMN gate_state TEXT NOT NULL DEFAULT 'none'
+		   CHECK (gate_state IN ('none','eligible','satisfied','blocked','replan'))`,
 		`ALTER TABLE beads ADD COLUMN premortem_cycle_count INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE beads ADD COLUMN pipeline_stage TEXT`,
+		`ALTER TABLE beads ADD COLUMN pipeline_stage TEXT
+		   CHECK (pipeline_stage IN ('assess','plan','premortem','prepare','execute','validate','evolve','none'))`,
 		`ALTER TABLE beads ADD COLUMN sandbox_session       TEXT`,
 		`ALTER TABLE beads ADD COLUMN allowed_external_fns  TEXT`,
 		`ALTER TABLE beads ADD COLUMN context_thresholds    TEXT`,
@@ -80,7 +82,7 @@ CREATE INDEX IF NOT EXISTS idx_journey_ts      ON bead_journey(ts);
 
 CREATE TABLE IF NOT EXISTS cards (
   id                   TEXT PRIMARY KEY,
-  type                 TEXT NOT NULL,
+  type                 TEXT NOT NULL CHECK (type IN ('rule','taste','pattern','decision','fact')),
   title                TEXT NOT NULL,
   body_summary         TEXT NOT NULL,
   body_full            TEXT NOT NULL,
