@@ -64,3 +64,7 @@ injectable-derive-fn: pure deterministic helper needs test control → expose as
 `omitempty-test-bait`: subtest named "omitempty tag does X" but body never marshals a zero-value struct → either marshal `T{}` and assert key absent, or rename to describe the actual setter-side behavior verified.
 daemon-only-bypass: cobra RunE forks between startFreshSwarm and runDaemonOnly → safety checks added to one path must be mirrored (or hoisted) to the other, or explicitly scoped in AC.
 word-boundary-grep-false-positive: AC uses `\barchitect\b` → underscore-prefixed identifiers like `architect_router.py` don't match (underscore is a word character), so test-fixture filenames that filter oro-specific hooks can remain legitimately.
+base-lag-readme-diff: branch based on pre-doc-cleanup commit shows phantom doc additions in `git diff main` → verify the commit's own file list before flagging README scope drift; 3-way merge resolves naturally.
+window-name-over-index: tmux pane refs in user-facing docs → prefer named window (`oro:manager`) over numeric index so docs survive single-window vs multi-window modes.
+stale-stub-after-rename: renamed method/parameters leave fake-runner stub keys matching the OLD call signature → audit `fake.errs` / `fake.output` keys post-rename; tests can pass-by-coincidence when the stub becomes a no-op.
+orphaned-test-after-source-delete: deleting a hook/beacon source → grep `tests/*.py` for `import <module_basename>` and delete those orphan tests in the same bead so QG stays green.
