@@ -4066,6 +4066,10 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	if isEpicDecomp {
 		resolvedModel = protocol.ModelOpus
 	}
+	// Release any prior bead this worker was carrying — the new assignment is
+	// committed, so any leftover in_progress state on the old bead must be
+	// cleared (oro-xqrh).
+	d.releasePriorAssignment(ctx, w, bead.ID)
 	d.mu.Lock()
 	w.state = protocol.WorkerBusy
 	w.assignmentID = assignmentID
@@ -5868,6 +5872,41 @@ func (d *Dispatcher) logAssignmentInvariantViolations(ctx context.Context) {
 		_ = d.logEvent(ctx, "assignment_invariant_violation", "dispatcher", beadID, "",
 			fmt.Sprintf(`{"active_assignments":%d}`, activeCount))
 	}
+}
+
+// releasePriorAssignment finalizes a worker's previous bead assignment when
+// it is being reassigned to a different bead without a clean DONE. It marks
+// the prior assignment row as completed and returns the prior bead's status
+// to "open" so the bead is once again visible to oro task ready. Without
+// this, a worker reassigned mid-run leaves the prior bead stuck in_progress
+// with worker_id still pointing at the worker (oro-xqrh).
+//
+// The caller must NOT hold d.mu. Safe to call when the worker has no prior
+// bead — both empty and matching priorID/newID cases are no-ops.
+func (d *Dispatcher) releasePriorAssignment(ctx context.Context, w *trackedWorker, newBeadID string) {
+	if w == nil {
+		return
+	}
+	d.mu.Lock()
+	priorBeadID := w.beadID
+	priorAssignmentID := w.assignmentID
+	workerID := w.id
+	d.mu.Unlock()
+
+	if priorBeadID == "" || priorBeadID == newBeadID {
+		return
+	}
+
+	if priorAssignmentID > 0 {
+		if err := d.completeAssignment(ctx, priorAssignmentID, priorBeadID); err != nil {
+			_ = d.logEvent(ctx, "release_prior_assignment_failed", "dispatcher", priorBeadID, workerID, err.Error())
+		}
+	}
+	if err := d.updateBeadStatus(ctx, priorBeadID, "open"); err != nil {
+		_ = d.logEvent(ctx, "release_prior_status_failed", "dispatcher", priorBeadID, workerID, err.Error())
+	}
+	_ = d.logEvent(ctx, "worker_abandon_release", "dispatcher", priorBeadID, workerID,
+		fmt.Sprintf(`{"reason":"reassign_to_%s","prior_assignment_id":%d}`, newBeadID, priorAssignmentID))
 }
 
 func (d *Dispatcher) completeAssignment(ctx context.Context, assignmentID int64, beadID string) error {
