@@ -211,7 +211,7 @@ func TestStartPrintsQuitHint(t *testing.T) {
 
 		fakeTmux := newFakeCmd()
 		fakeTmux.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fakeTmux, "oro", ArchitectNudge(), ManagerNudge())
+		stubPaneReady(fakeTmux, "oro", ManagerNudge())
 
 		spawner := &fakeSpawner{
 			returnPID:  99999,
@@ -252,7 +252,7 @@ func TestStartPrintsQuitHint(t *testing.T) {
 
 		fakeTmux := newFakeCmd()
 		fakeTmux.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fakeTmux, "oro", ArchitectNudge(), ManagerNudge())
+		stubPaneReady(fakeTmux, "oro", ManagerNudge())
 
 		spawner := &fakeSpawner{
 			returnPID:  88888,
