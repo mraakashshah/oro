@@ -504,11 +504,12 @@ func TestReconnectTmuxRecreatesUnhealthySession(t *testing.T) {
 
 		// Simulate existing but unhealthy session:
 		// has-session → success (session exists)
-		// display-message for architect → "zsh" (shell = unhealthy)
+		// display-message for manager → "zsh" (shell = unhealthy, triggers Create to kill)
 		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = nil
 
 		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_current_command}")] = "zsh"
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_current_command}")] = "zsh"
 
 		// Kill succeeds
 		fake.output[key("tmux", "kill-session", "-t", "oro")] = ""
@@ -522,11 +523,11 @@ func TestReconnectTmuxRecreatesUnhealthySession(t *testing.T) {
 			"", // not called again after kill, but safe fallback
 		}
 
-		// Stub new-session and new-window for recreation
-		fake.output[key("tmux", "new-session", "-d", "-s", "oro", "-n", "architect")] = "" // partial match won't work
+		// Stub new-session for recreation (manager-only window)
+		fake.output[key("tmux", "new-session", "-d", "-s", "oro", "-n", "manager")] = ""
 
 		// Stub pane readiness for the recreated session
-		stubPaneReady(fake, "oro", ArchitectNudge(), ManagerNudge())
+		stubPaneReady(fake, "oro", ManagerNudge())
 
 		var buf bytes.Buffer
 		err := reconnectTmux(&buf, fake, "", true, noopSleep, 50*time.Millisecond)

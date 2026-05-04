@@ -258,61 +258,9 @@ func execEnvCmd(role, project string) string {
 		base, oroHome, settingsPath)
 }
 
-// Create creates the Oro tmux session with two windows (architect + manager).
-// Both windows launch the active interactive runtime with role env vars (ORO_ROLE, BD_ACTOR,
-// GIT_AUTHOR_NAME) set, then poll for Claude readiness before injecting a short
-// nudge via send-keys. The full role context is injected by the SessionStart hook
-// reading the ORO_ROLE env var — send-keys only sends a short nudge/kick.
-// If the session already exists, it is a no-op.
-func (s *TmuxSession) Create(architectNudge, managerNudge string) error {
-	if s.Exists() {
-		if s.isHealthy() {
-			return nil
-		}
-		// Zombie session: Claude is not running. Kill and recreate.
-		_ = s.Kill()
-	}
-
-	if err := bootstrapRoleConfigs(); err != nil {
-		return err
-	}
-
-	// Create a detached session with first window named "architect".
-	// The exec-env command is the last arg — Claude IS the initial process (no shell phase).
-	if _, err := s.Runner.Run("tmux", "new-session", "-d", "-s", s.Name, "-n", "architect", execEnvCmd("architect", s.Project)); err != nil {
-		return fmt.Errorf("tmux new-session: %w", err)
-	}
-
-	// Create second window named "manager".
-	if _, err := s.Runner.Run("tmux", "new-window", "-t", s.Name, "-n", "manager", execEnvCmd("manager", s.Project)); err != nil {
-		_ = s.Kill() // cleanup on partial creation failure
-		return fmt.Errorf("tmux new-window: %w", err)
-	}
-
-	// Configure session options (status bar, labels, remain-on-exit, scrollback, mouse, clipboard).
-	if err := s.configureSessionOptions(); err != nil {
-		_ = s.Kill()
-		return err
-	}
-
-	// Launch Claude in both windows concurrently and start async beacon check.
-	if err := s.launchAndNudgeAll(architectNudge, managerNudge); err != nil {
-		_ = s.Kill()
-		return err
-	}
-
-	// Register pane-died hooks for crash detection.
-	if err := s.RegisterPaneDiedHooks(); err != nil {
-		// Warning only — don't fail startup.
-		fmt.Fprintf(os.Stderr, "warning: failed to register pane-died hooks: %v\n", err)
-	}
-
-	return nil
-}
-
-// CreateWithManagerOnly creates the Oro tmux session with a single manager window.
+// Create creates the Oro tmux session with a single manager window.
 // If the session already exists and the manager pane is healthy, it is a no-op.
-func (s *TmuxSession) CreateWithManagerOnly(managerNudge string) error {
+func (s *TmuxSession) Create(managerNudge string) error {
 	if s.Exists() {
 		pane := s.Name + ":manager"
 		out, err := s.Runner.Run("tmux", "display-message", "-p", "-t", pane, "#{pane_current_command}")
@@ -457,69 +405,6 @@ func (s *TmuxSession) configureSessionOptions() error {
 		return fmt.Errorf("tmux set-option set-clipboard: %w", err)
 	}
 
-	return nil
-}
-
-// launchAndNudgeAll launches nudges concurrently for all panes and starts the
-// async beacon verification goroutine. Returns the first nudge error (if any).
-func (s *TmuxSession) launchAndNudgeAll(architectNudge, managerNudge string) error {
-	type nudgeResult struct {
-		role string
-		err  error
-	}
-	results := make(chan nudgeResult, 2)
-	for _, w := range []struct{ role, nudge string }{
-		{"architect", architectNudge},
-		{"manager", managerNudge},
-	} {
-		go func() {
-			results <- nudgeResult{role: w.role, err: s.launchAndNudge(w.role, w.nudge)}
-		}()
-	}
-	var nudgeErr error
-	for range 2 {
-		r := <-results
-		if r.err != nil && nudgeErr == nil {
-			nudgeErr = fmt.Errorf("%s: %w", r.role, r.err)
-		}
-	}
-	if nudgeErr != nil {
-		return nudgeErr
-	}
-	// Start async beacon verification — warning-only, must not block startup.
-	beaconTimeout := s.BeaconTimeout
-	if beaconTimeout == 0 {
-		beaconTimeout = defaultBeaconTimeout
-	}
-	s.beaconWg.Add(1)
-	go func() {
-		defer s.beaconWg.Done()
-		if err := s.VerifyBeaconReceived(s.Name+":manager", "oro task status", beaconTimeout); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: manager nudge may not have been received: %v\n", err)
-		}
-	}()
-	return nil
-}
-
-// launchAndNudge waits for the active runtime to be ready in a window (already
-// launched via exec-env as the initial process), then sends the nudge message
-// with verified delivery.
-func (s *TmuxSession) launchAndNudge(role, nudge string) error {
-	pane := s.Name + ":" + role
-	if runtimeUsesClaudeConfig() {
-		if err := s.WaitForPrompt(pane); err != nil {
-			return fmt.Errorf("wait for %s prompt: %w", role, err)
-		}
-	} else if err := s.WaitForCommand(pane); err != nil {
-		return fmt.Errorf("wait for %s runtime: %w", role, err)
-	}
-	nudgeTimeout := s.ReadyTimeout
-	if nudgeTimeout == 0 {
-		nudgeTimeout = defaultReadyTimeout
-	}
-	if err := s.SendKeysVerified(pane, nudge, nudgeTimeout); err != nil {
-		return fmt.Errorf("%s nudge: %w", role, err)
-	}
 	return nil
 }
 

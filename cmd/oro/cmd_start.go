@@ -311,7 +311,7 @@ func runFullStart(w io.Writer, workers, maxWorkers int, model, project string, s
 
 	// 3. Create tmux session with short nudges (full role context injected by SessionStart hook).
 	sess := &TmuxSession{Name: TmuxSessionName(project), Project: project, Runner: tmuxRunner, Sleeper: sleeper, BeaconTimeout: beaconTimeout}
-	if err := sess.Create(ArchitectNudge(), ManagerNudge()); err != nil {
+	if err := sess.Create(ManagerNudge()); err != nil {
 		cleanupOrphans()
 		return fmt.Errorf("create tmux session: %w", err)
 	}
@@ -433,7 +433,7 @@ func reconnectTmux(w io.Writer, runner CmdRunner, project string, detach bool, s
 		fmt.Fprintf(w, "session unhealthy — recreating tmux panes\n")
 	}
 
-	if err := sess.Create(ArchitectNudge(), ManagerNudge()); err != nil {
+	if err := sess.Create(ManagerNudge()); err != nil {
 		return fmt.Errorf("recreate tmux session: %w", err)
 	}
 

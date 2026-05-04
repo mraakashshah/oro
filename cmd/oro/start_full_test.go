@@ -87,7 +87,7 @@ func TestFullStart(t *testing.T) {
 		fakeTmux := newFakeCmd()
 		// has-session returns error (session does not exist)
 		fakeTmux.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fakeTmux, "oro", ArchitectNudge(), ManagerNudge())
+		stubPaneReady(fakeTmux, "oro", ManagerNudge())
 
 		spawner := &fakeSpawner{
 			returnPID:  12345,
@@ -125,63 +125,36 @@ func TestFullStart(t *testing.T) {
 			t.Fatal("expected tmux new-session to be called")
 		}
 
-		// 3. Verify both windows launch interactive claude with role env vars.
-		var architectCalls, managerCalls [][]string
-		for _, call := range tmuxCalls {
-			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
-				joined := strings.Join(call, " ")
-				if strings.Contains(joined, "oro:architect") {
-					architectCalls = append(architectCalls, call)
-				}
-				if strings.Contains(joined, "oro:manager") {
-					managerCalls = append(managerCalls, call)
-				}
-			}
-		}
-
-		// With exec-env, launch happens via new-session/new-window args (not send-keys).
-		// Verify new-session has exec env with architect role.
-		archCmd := newSessionCall[len(newSessionCall)-1]
-		for _, envVar := range []string{"ORO_ROLE=architect", "BD_ACTOR=architect", "GIT_AUTHOR_NAME=architect"} {
-			if !strings.Contains(archCmd, envVar) {
-				t.Errorf("new-session command should set %s, got: %s", envVar, archCmd)
-			}
-		}
-		if !strings.Contains(archCmd, "claude") {
-			t.Errorf("new-session command should launch claude, got: %s", archCmd)
-		}
-		if strings.Contains(archCmd, "claude -p") {
-			t.Errorf("should use interactive claude, not 'claude -p', got: %s", archCmd)
-		}
-
-		// Verify architect nudge is injected (first send-keys is nudge literal).
-		if len(architectCalls) < 1 {
-			t.Fatalf("expected at least 1 send-keys to architect window, got %d", len(architectCalls))
-		}
-		archNudge := strings.Join(architectCalls[0], " ")
-		if !strings.Contains(archNudge, "oro architect") {
-			t.Errorf("architect window nudge should contain 'oro architect', got: %s", archNudge)
-		}
-
-		// Verify new-window has exec env with manager role.
-		newWindowCall := findCall(tmuxCalls, "new-window")
-		if newWindowCall == nil {
-			t.Fatal("expected tmux new-window to be called")
-		}
-		mgrCmd := newWindowCall[len(newWindowCall)-1]
+		// 3. Verify manager window launches interactive claude with role env vars via new-session.
+		mgrCmd := newSessionCall[len(newSessionCall)-1]
 		for _, envVar := range []string{"ORO_ROLE=manager", "BD_ACTOR=manager", "GIT_AUTHOR_NAME=manager"} {
 			if !strings.Contains(mgrCmd, envVar) {
-				t.Errorf("new-window command should set %s, got: %s", envVar, mgrCmd)
+				t.Errorf("new-session command should set %s, got: %s", envVar, mgrCmd)
 			}
 		}
 		if !strings.Contains(mgrCmd, "claude") {
-			t.Errorf("new-window command should launch claude, got: %s", mgrCmd)
+			t.Errorf("new-session command should launch claude, got: %s", mgrCmd)
 		}
 		if strings.Contains(mgrCmd, "claude -p") {
 			t.Errorf("should use interactive claude, not 'claude -p', got: %s", mgrCmd)
 		}
 
-		// Verify manager nudge is injected (first send-keys is nudge literal).
+		// 4. Verify no new-window call (single-window architecture).
+		for _, call := range tmuxCalls {
+			if len(call) >= 2 && call[0] == "tmux" && call[1] == "new-window" {
+				t.Errorf("Create must not call new-window (single manager window), got: %v", call)
+			}
+		}
+
+		// 5. Verify manager nudge is injected via send-keys.
+		var managerCalls [][]string
+		for _, call := range tmuxCalls {
+			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
+				if strings.Contains(strings.Join(call, " "), "oro:manager") {
+					managerCalls = append(managerCalls, call)
+				}
+			}
+		}
 		if len(managerCalls) < 1 {
 			t.Fatalf("expected at least 1 send-keys to manager window, got %d", len(managerCalls))
 		}
@@ -278,42 +251,28 @@ func TestFullStart(t *testing.T) {
 }
 
 func TestCreateWithNudges(t *testing.T) {
-	t.Run("injects both nudges via send-keys to respective windows", func(t *testing.T) {
+	t.Run("injects manager nudge via send-keys", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fake, "oro", "You are a test architect.", "You are a test manager.")
+		stubPaneReady(fake, "oro", "You are a test manager.")
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("You are a test architect.", "You are a test manager.")
+		err := sess.Create("You are a test manager.")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
 		sess.WaitBeacon()
 
-		// Collect send-keys calls per window.
-		var architectCalls, managerCalls [][]string
+		var managerCalls [][]string
 		for _, call := range fake.calls {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
 				joined := strings.Join(call, " ")
-				if strings.Contains(joined, "oro:architect") {
-					architectCalls = append(architectCalls, call)
-				}
 				if strings.Contains(joined, "oro:manager") {
 					managerCalls = append(managerCalls, call)
 				}
 			}
 		}
 
-		// Architect window: first send-keys is nudge literal (no launch send-keys with exec-env).
-		if len(architectCalls) < 1 {
-			t.Fatalf("expected at least 1 send-keys to architect window, got %d", len(architectCalls))
-		}
-		archNudge := strings.Join(architectCalls[0], " ")
-		if !strings.Contains(archNudge, "You are a test architect.") {
-			t.Errorf("architect window nudge should contain architect text, got: %s", archNudge)
-		}
-
-		// Manager window: first send-keys is nudge literal.
 		if len(managerCalls) < 1 {
 			t.Fatalf("expected at least 1 send-keys to manager window, got %d", len(managerCalls))
 		}
@@ -323,13 +282,13 @@ func TestCreateWithNudges(t *testing.T) {
 		}
 	})
 
-	t.Run("neither window uses claude -p", func(t *testing.T) {
+	t.Run("manager window does not use claude -p", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fake, "oro", "architect nudge", "manager nudge")
+		stubPaneReady(fake, "oro", "manager nudge")
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("architect nudge", "manager nudge")
+		err := sess.Create("manager nudge")
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
@@ -339,25 +298,13 @@ func TestCreateWithNudges(t *testing.T) {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
 				joined := strings.Join(call, " ")
 				if strings.Contains(joined, "claude -p") {
-					t.Errorf("no window should use 'claude -p', got: %s", joined)
+					t.Errorf("manager window should not use 'claude -p', got: %s", joined)
 				}
 			}
 		}
 	})
 
-	t.Run("nudges are short not full beacons", func(t *testing.T) {
-		// Verify that ArchitectNudge and ManagerNudge are significantly shorter
-		// than the full beacon content, confirming the Gastown pattern.
-		archNudge := ArchitectNudge()
-		archBeacon := ArchitectBeacon()
-		if len(archNudge) >= len(archBeacon) {
-			t.Errorf("ArchitectNudge (%d chars) should be much shorter than ArchitectBeacon (%d chars)",
-				len(archNudge), len(archBeacon))
-		}
-		if len(archNudge) > 500 {
-			t.Errorf("ArchitectNudge should be a short nudge (<500 chars), got %d chars", len(archNudge))
-		}
-
+	t.Run("nudge is shorter than full beacon", func(t *testing.T) {
 		mgrNudge := ManagerNudge()
 		mgrBeacon := ManagerBeacon()
 		if len(mgrNudge) >= len(mgrBeacon) {
@@ -386,7 +333,7 @@ func TestCreateWithNudges(t *testing.T) {
 		fakeTmux := newFakeCmd()
 		// has-session returns error (session does not exist)
 		fakeTmux.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fakeTmux, "oro", ArchitectNudge(), ManagerNudge())
+		stubPaneReady(fakeTmux, "oro", ManagerNudge())
 
 		spawner := &fakeSpawner{
 			returnPID:  12345,
