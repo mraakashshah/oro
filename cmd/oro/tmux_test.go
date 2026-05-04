@@ -2967,7 +2967,9 @@ func TestCreateWithManagerOnly(t *testing.T) {
 // has exactly one parameter (managerNudge string) and returns error.
 // If Create has two parameters, this file will not compile.
 func TestCreateSingleSignature(t *testing.T) {
-	var _ func(*TmuxSession, string) error = (*TmuxSession).Create
+	var _ interface {
+		Create(string) error
+	} = (*TmuxSession)(nil)
 }
 
 // TestTmuxManagerBeaconVerificationUsesTaskTerminology verifies that:
