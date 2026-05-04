@@ -1086,8 +1086,8 @@ func TestBuildDispatcherCallsMigrateGlobalDBs(t *testing.T) {
 
 func TestBuildDispatcherResolvesOpsRuntime(t *testing.T) {
 	t.Run("defaults to claude runtime when unset", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		oroHome := t.TempDir()
+		tmpDir := mkdirTempIgnoreCleanupErrors(t)
+		oroHome := mkdirTempIgnoreCleanupErrors(t)
 		t.Chdir(tmpDir)
 		t.Setenv(agentRuntimeEnvVar, "")
 		t.Setenv("ORO_HOME", oroHome)
@@ -1116,8 +1116,8 @@ func TestBuildDispatcherResolvesOpsRuntime(t *testing.T) {
 	})
 
 	t.Run("codex runtime resolves injected ops spawner", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		oroHome := t.TempDir()
+		tmpDir := mkdirTempIgnoreCleanupErrors(t)
+		oroHome := mkdirTempIgnoreCleanupErrors(t)
 		t.Chdir(tmpDir)
 		t.Setenv(agentRuntimeEnvVar, runtimeCodex)
 		t.Setenv("ORO_HOME", oroHome)
@@ -1386,4 +1386,21 @@ func TestSendStartDirectiveTimeout(t *testing.T) {
 	if elapsed > 12*time.Second {
 		t.Logf("warning: timeout took longer than expected: %v", elapsed)
 	}
+}
+
+// mkdirTempIgnoreCleanupErrors is a t.TempDir replacement that tolerates
+// "directory not empty" cleanup errors. buildDispatcher spawns a background
+// goroutine that writes to ORO_HOME (no cancellation), and several SQLite
+// handles outlive the test's deferred close. On Linux CI runners the race
+// between RemoveAll and lingering writes occasionally makes RemoveAll fail.
+// Tests using this helper care about correctness of the dispatcher build,
+// not flake-free temp-dir cleanup.
+func mkdirTempIgnoreCleanupErrors(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "oro-cmd-start-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
 }
