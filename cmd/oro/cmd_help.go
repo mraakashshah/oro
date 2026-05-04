@@ -37,6 +37,9 @@ Control:
 Search:
   index      Semantic code search (build, search)
 
+Codebase:
+  outline    Print a symbol outline for a Go source file
+
 Workflow:
   work       Execute a task through the full lifecycle
   task       Manage native Oro tasks
