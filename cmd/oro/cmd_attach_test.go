@@ -88,9 +88,8 @@ func TestAttachUnhealthy(t *testing.T) {
 	}
 	fake := newFakeCmd()
 	// has-session succeeds (Exists = true, no entry in errs map)
-	// isHealthy: architect returns "zsh" → unhealthy
-	archPane := "oro:architect"
-	fake.output[key("tmux", "display-message", "-p", "-t", archPane, "#{pane_current_command}")] = "zsh"
+	// isHealthy: manager returns "zsh" → unhealthy
+	fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_current_command}")] = "zsh"
 	cfg := &attachConfig{
 		pidPath:  pidFile,
 		sockPath: filepath.Join(tmpDir, "nonexistent.sock"),
@@ -114,10 +113,7 @@ func TestAttachNoTTY(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 	fake := newFakeCmd()
-	archPane := "oro:architect"
-	mgrPane := "oro:manager"
-	fake.output[key("tmux", "display-message", "-p", "-t", archPane, "#{pane_current_command}")] = "claude"
-	fake.output[key("tmux", "display-message", "-p", "-t", mgrPane, "#{pane_current_command}")] = "claude"
+	fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_current_command}")] = "claude"
 	cfg := &attachConfig{
 		pidPath:  pidFile,
 		sockPath: filepath.Join(tmpDir, "nonexistent.sock"),
@@ -141,10 +137,7 @@ func TestAttachSuccess(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 	fake := newFakeCmd()
-	archPane := "oro:architect"
-	mgrPane := "oro:manager"
-	fake.output[key("tmux", "display-message", "-p", "-t", archPane, "#{pane_current_command}")] = "claude"
-	fake.output[key("tmux", "display-message", "-p", "-t", mgrPane, "#{pane_current_command}")] = "claude"
+	fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_current_command}")] = "claude"
 
 	attached := false
 	cfg := &attachConfig{

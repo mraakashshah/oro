@@ -87,8 +87,9 @@ func (s *TmuxSession) Exists() bool {
 	return err == nil
 }
 
-// isPreCollapseLayout returns true when the session has an "architect" window,
-// indicating it was created by the old two-window layout and needs migration.
+// isPreCollapseLayout returns true when the session has any window other than
+// "manager", indicating it was created by the old two-window layout and needs
+// migration to the single-window design.
 // Returns (false, nil) when the session does not exist; (false, err) on
 // list-windows failure — callers should continue the normal path on error.
 func (s *TmuxSession) isPreCollapseLayout() (bool, error) {
@@ -100,27 +101,23 @@ func (s *TmuxSession) isPreCollapseLayout() (bool, error) {
 		return false, fmt.Errorf("tmux list-windows: %w", err)
 	}
 	for _, line := range strings.Split(out, "\n") {
-		if strings.TrimSpace(line) == "architect" {
+		name := strings.TrimSpace(line)
+		if name != "" && name != "manager" {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-// isHealthy checks whether the runtime CLI is running in both panes. Returns
-// false if either pane shows a shell (zombie session — agent crashed back to shell).
+// isHealthy checks whether the runtime CLI is running in the manager pane. Returns
+// false if the pane shows a shell (zombie session — agent crashed back to shell).
 func (s *TmuxSession) isHealthy() bool {
-	for _, window := range []string{"architect", "manager"} {
-		pane := s.Name + ":" + window
-		out, err := s.Runner.Run("tmux", "display-message", "-p", "-t", pane, "#{pane_current_command}")
-		if err != nil {
-			return false
-		}
-		if isShell(strings.TrimSpace(out)) {
-			return false
-		}
+	pane := s.Name + ":manager"
+	out, err := s.Runner.Run("tmux", "display-message", "-p", "-t", pane, "#{pane_current_command}")
+	if err != nil {
+		return false
 	}
-	return true
+	return !isShell(strings.TrimSpace(out))
 }
 
 func activeRuntime() string {
@@ -290,7 +287,7 @@ func (s *TmuxSession) killStaleSession() bool {
 		if w == nil {
 			w = os.Stdout
 		}
-		fmt.Fprintln(w, "migrating pre-collapse session (architect+manager→manager-only)...")
+		fmt.Fprintln(w, "migrating pre-collapse session to single-window manager layout...")
 		_ = s.Kill()
 		return true
 	}
@@ -305,8 +302,8 @@ func (s *TmuxSession) killStaleSession() bool {
 
 // Create creates the Oro tmux session with a single manager window.
 // If the session already exists and the manager pane is healthy, it is a no-op.
-// If the session uses the old two-window (architect+manager) layout it is killed
-// and recreated as a single-window session, printing a one-line migration notice.
+// If the session uses the old two-window layout it is killed and recreated as a
+// single-window session, printing a one-line migration notice.
 func (s *TmuxSession) Create(managerNudge string) error {
 	if s.Exists() && !s.killStaleSession() {
 		return nil
@@ -371,47 +368,35 @@ func (s *TmuxSession) launchAndNudgeManagerOnly(nudge string) error {
 	return nil
 }
 
-// bootstrapRoleConfigs sets up role-scoped Claude config directories so each
-// role gets isolated input history (history.jsonl) while sharing all other
-// config via symlinks, then pre-trusts the current project so the workspace
-// trust dialog doesn't block headless panes. No-op when the active runtime
-// does not use Claude config.
+// bootstrapRoleConfigs sets up the manager role-scoped Claude config directory so
+// it gets isolated input history (history.jsonl) while sharing all other config
+// via symlinks, then pre-trusts the current project so the workspace trust dialog
+// doesn't block headless panes. No-op when the active runtime does not use Claude config.
 func bootstrapRoleConfigs() error {
 	if !runtimeUsesClaudeConfig() {
 		return nil
 	}
 	configBase := claudeConfigBase()
 	cwd, _ := os.Getwd()
-	for _, role := range []string{"architect", "manager"} {
-		roleDir := roleConfigDir(configBase, role)
-		if err := setupRoleConfigDir(configBase, roleDir); err != nil {
-			return fmt.Errorf("setup %s config dir: %w", role, err)
-		}
-		if cwd == "" {
-			continue
-		}
-		if err := preTrustProject(roleDir, cwd); err != nil {
-			return fmt.Errorf("pre-trust project for %s: %w", role, err)
-		}
+	roleDir := roleConfigDir(configBase, "manager")
+	if err := setupRoleConfigDir(configBase, roleDir); err != nil {
+		return fmt.Errorf("setup manager config dir: %w", err)
+	}
+	if cwd == "" {
+		return nil
+	}
+	if err := preTrustProject(roleDir, cwd); err != nil {
+		return fmt.Errorf("pre-trust project for manager: %w", err)
 	}
 	return nil
 }
 
-// configureSessionOptions sets tmux session options: status bar color with
-// window-switch hook, role labels, remain-on-exit, scrollback, mouse mode, and clipboard.
+// configureSessionOptions sets tmux session options: status bar color (single
+// static manager color), role labels, remain-on-exit, scrollback, mouse mode, and clipboard.
 func (s *TmuxSession) configureSessionOptions() error {
-	// Set initial status bar color to architect (green).
-	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "status-style", "bg=colour46,fg=black"); err != nil {
+	// Set a single static status bar color (manager orange) — no window-switch hook needed.
+	if _, err := s.Runner.Run("tmux", "set-option", "-t", s.Name, "status-style", "bg=colour208,fg=black"); err != nil {
 		return fmt.Errorf("tmux set-option status-style: %w", err)
-	}
-
-	// Set hook to change status bar color when switching windows.
-	hookCmd := fmt.Sprintf(
-		`if-shell -F "#{==:#{window_name},architect}" "set-option -t %s status-style bg=colour46,fg=black" "set-option -t %s status-style bg=colour208,fg=black"`,
-		s.Name, s.Name,
-	)
-	if _, err := s.Runner.Run("tmux", "set-hook", "-t", s.Name, "after-select-window", hookCmd); err != nil {
-		return fmt.Errorf("tmux set-hook status-style: %w", err)
 	}
 
 	// Add role labels to status bar.
@@ -749,8 +734,8 @@ func getAllDescendants(pid string) []string {
 // Kill destroys the named tmux session after cleaning up descendant processes.
 // Walks the process tree to prevent orphaned Claude/node processes.
 func (s *TmuxSession) Kill() error {
-	// Get pane PIDs before killing session
-	for _, window := range []string{"architect", "manager"} {
+	// Get manager pane PID before killing session
+	for _, window := range []string{"manager"} {
 		pane := s.Name + ":" + window
 		pidStr, err := s.Runner.Run("tmux", "display-message", "-p", "-t", pane, "#{pane_pid}")
 		if err != nil {
@@ -872,17 +857,7 @@ func (s *TmuxSession) Attach() error {
 // AttachInteractive attaches to the named tmux session with real terminal I/O.
 // This bypasses the CmdRunner interface to connect stdin/stdout/stderr directly,
 // allowing interactive use. It blocks until the session is detached or exits.
-// Before attaching, it selects the architect window so the user lands on that pane.
 func (s *TmuxSession) AttachInteractive() error {
-	// Select the architect window before attaching so the session opens on that pane.
-	// Only attempt if Runner is set (for testability).
-	if s.Runner != nil {
-		if _, err := s.Runner.Run("tmux", "select-window", "-t", s.Name+":architect"); err != nil {
-			// Non-fatal: log warning and proceed with attach (session may be in unexpected state).
-			fmt.Fprintf(os.Stderr, "warning: failed to select architect window: %v\n", err)
-		}
-	}
-
 	cmd := exec.CommandContext(context.Background(), "tmux", "attach-session", "-t", s.Name) //nolint:gosec // s.Name is controlled by codebase, not user input
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -893,58 +868,36 @@ func (s *TmuxSession) AttachInteractive() error {
 	return nil
 }
 
-// RegisterPaneDiedHooks registers pane-died hooks for both architect and manager
-// panes to detect when either pane crashes or closes. Each hook sends an escalation
-// message to the surviving pane and logs the event to the dispatcher log.
+// RegisterPaneDiedHooks registers a pane-died hook for the manager pane to
+// detect when it crashes or closes. The hook respawns the pane and logs the
+// event to the dispatcher via the UDS socket.
 func (s *TmuxSession) RegisterPaneDiedHooks() error {
-	// Register hook for architect pane
-	architectPane := s.Name + ":architect"
-	architectHook := buildPaneDiedHook("architect", s.Name, s.Project)
-	if _, err := s.Runner.Run("tmux", "set-hook", "-t", architectPane, "pane-died", architectHook); err != nil {
-		return fmt.Errorf("register pane-died hook for architect: %w", err)
-	}
-
-	// Register hook for manager pane
 	managerPane := s.Name + ":manager"
-	managerHook := buildPaneDiedHook("manager", s.Name, s.Project)
+	managerHook := buildPaneDiedHook(s.Name, s.Project)
 	if _, err := s.Runner.Run("tmux", "set-hook", "-t", managerPane, "pane-died", managerHook); err != nil {
 		return fmt.Errorf("register pane-died hook for manager: %w", err)
 	}
-
 	return nil
 }
 
 // buildPaneDiedHook constructs a tmux hook command for pane-died events.
 // The hook respawns the dead pane with the same exec-env command (crash recovery),
-// then sends an escalation message to the surviving pane. The [ORO-DISPATCH]
-// prefix in the message serves as the logging mechanism — the manager receives
-// and can act on the crash notification. Since the dying pane triggers the hook,
-// the message goes to the other pane (architect→manager or manager→architect).
-func buildPaneDiedHook(dyingRole, sessionName, project string) string {
-	respawnCmd := execEnvCmd(dyingRole, project)
-	dyingPane := sessionName + ":" + dyingRole
+// then logs the event to the dispatcher via the UDS socket (ORO_SOCKET_PATH).
+// Guard with double-respawn check: if restarting flag exists, entire hook is no-op.
+func buildPaneDiedHook(sessionName, project string) string {
+	const role = "manager"
+	respawnCmd := execEnvCmd(role, project)
+	dyingPane := sessionName + ":" + role
 
-	// Determine the surviving role and pane
-	survivingRole := "manager"
-	if dyingRole == "manager" {
-		survivingRole = "architect"
-	}
-	survivingPane := sessionName + ":" + survivingRole
+	logMsg := fmt.Sprintf("[ORO-DISPATCH] PANE_RESPAWNED: %s pane crashed and was respawned.", role)
 
-	// Build an escalation-style message for the surviving pane
-	escalationMsg := fmt.Sprintf("[ORO-DISPATCH] PANE_RESPAWNED: %s pane crashed and was respawned.", dyingRole)
-
-	// Respawn the dead pane with the same command, plus notify surviving pane
-	// Note: escapeForShell already wraps output in single quotes, so we use %s not '%s'
-	// Guard with double-respawn check: if restarting flag exists, entire hook becomes no-op
+	// Note: escapeForShell already wraps output in single quotes, so we use %s not '%s'.
 	hook := fmt.Sprintf(
-		"run-shell \"test \\! -f ~/.oro/panes/%s/restarting && tmux respawn-pane -k -t %s %s && tmux set-buffer -b oro-pane-died %s && tmux paste-buffer -b oro-pane-died -t %s -d && tmux send-keys -t %s Enter\"",
-		dyingRole,
+		"run-shell \"test \\! -f ~/.oro/panes/%s/restarting && tmux respawn-pane -k -t %s %s && echo %s | nc -U ${ORO_SOCKET_PATH:-~/.oro/oro.sock} 2>/dev/null || true\"",
+		role,
 		dyingPane,
 		escapeForShell(respawnCmd),
-		escapeForShell(sanitizeForTmuxHook(escalationMsg)),
-		survivingPane,
-		survivingPane,
+		escapeForShell(sanitizeForTmuxHook(logMsg)),
 	)
 	return hook
 }
@@ -968,23 +921,14 @@ func escapeForShell(s string) string {
 	return "'" + escaped + "'"
 }
 
-// CleanupPaneDiedHooks removes the pane-died hooks from both architect and manager panes.
+// CleanupPaneDiedHooks removes the pane-died hook from the manager pane.
 //
 //nolint:unparam // error return kept for interface consistency; errors are logged not propagated
 func (s *TmuxSession) CleanupPaneDiedHooks() error {
-	// Only attempt cleanup if session exists
 	if !s.Exists() {
 		return nil
 	}
 
-	// Remove hook from architect pane
-	architectPane := s.Name + ":architect"
-	if _, err := s.Runner.Run("tmux", "set-hook", "-u", "-t", architectPane, "pane-died"); err != nil {
-		// Non-fatal — hook may not have been registered
-		fmt.Fprintf(os.Stderr, "warning: failed to unregister pane-died hook for architect: %v\n", err)
-	}
-
-	// Remove hook from manager pane
 	managerPane := s.Name + ":manager"
 	if _, err := s.Runner.Run("tmux", "set-hook", "-u", "-t", managerPane, "pane-died"); err != nil {
 		// Non-fatal — hook may not have been registered
@@ -995,10 +939,7 @@ func (s *TmuxSession) CleanupPaneDiedHooks() error {
 }
 
 // ForwardCommandToManager forwards a command to the manager pane via tmux send-keys
-// and returns a feedback message to display to the architect.
-//
-// This implements the unified command interface: the architect window accepts all
-// commands, and non-architect commands are routed to the manager automatically.
+// and returns a feedback message to the caller.
 // This method always forwards unconditionally.
 //
 // Returns the feedback string (e.g. "[forwarded to manager] oro directive scale 3")
