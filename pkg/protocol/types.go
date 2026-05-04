@@ -208,6 +208,7 @@ const (
 	EscEpicComplete       EscalationType = "EPIC_COMPLETE"
 	EscMergeComplete      EscalationType = "MERGE_COMPLETE"
 	EscOversizedBead      EscalationType = "OVERSIZED_BEAD"
+	EscNonTDDAC           EscalationType = "NON_TDD_AC"
 )
 
 // FormatEscalation produces a structured escalation message in the form:

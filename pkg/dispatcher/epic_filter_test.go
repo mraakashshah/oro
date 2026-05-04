@@ -3,6 +3,7 @@ package dispatcher //nolint:testpackage // internal white-box tests need access 
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -154,6 +155,41 @@ func TestReadyQueueSkipsNonExecutableOperationalBeads(t *testing.T) {
 	}
 	if operationalSkips == 0 {
 		t.Fatalf("expected bead_skipped_non_tdd_acceptance event for %s", operationalID)
+	}
+}
+
+// TestQueueSkipNonTDDDoesNotBypassPriority proves that when checkBeadReady
+// rejects a higher-priority bead for non_tdd_acceptance, an escalation is
+// raised so the silent-skip can't masquerade as priority being respected.
+// Covers oro-5833: P0 beads with Cmd+Assert (no Test:) were being silently
+// dropped while a P2 stale resume was offered.
+func TestQueueSkipNonTDDDoesNotBypassPriority(t *testing.T) {
+	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const opID = "oro-p0-operational"
+	beadSrc.shown[opID] = &protocol.BeadDetail{
+		ID:                 opID,
+		Title:              "Delete current.md",
+		AcceptanceCriteria: "Cmd: ls current.md 2>&1 | grep -c 'No such'\nAssert: returns 1",
+	}
+	bead := protocol.Bead{ID: opID, Title: "Delete current.md", Priority: 0, Type: "task"}
+
+	_, _, ok := d.checkBeadReady(ctx, bead, "w1")
+	if ok {
+		t.Fatalf("checkBeadReady = true; expected non-TDD AC bead to be deferred")
+	}
+
+	msgs := esc.Messages()
+	found := false
+	for _, m := range msgs {
+		if strings.Contains(m, opID) && (strings.Contains(m, "NON_TDD_AC") || strings.Contains(m, "non-TDD")) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected escalation surfacing the non-TDD AC skip for %s, got: %#v", opID, msgs)
 	}
 }
 

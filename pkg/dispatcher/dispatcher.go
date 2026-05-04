@@ -3732,6 +3732,10 @@ func (d *Dispatcher) checkBeadReady(ctx context.Context, bead protocol.Bead, wor
 		if executable, reason := isWorkerExecutableBead(bead, protocol.BeadDetail{AcceptanceCriteria: acceptance}); !executable {
 			_ = d.logEvent(ctx, "bead_skipped_non_tdd_acceptance", "dispatcher", bead.ID, workerID,
 				fmt.Sprintf(`{"reason":%q}`, reason))
+			if reason == "non_tdd_acceptance" {
+				d.escalate(ctx, protocol.FormatEscalation(protocol.EscNonTDDAC, bead.ID,
+					fmt.Sprintf("priority %d bead has Cmd/Assert without 'Test:' prefix — rewrite acceptance or move out of worker queue (oro-5833)", bead.Priority), ""), bead.ID, workerID)
+			}
 			d.recordAssignmentFailure(bead.ID)
 			return title, "", false
 		}
