@@ -17,7 +17,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/sahilm/fuzzy v0.1.1
 	github.com/spf13/cobra v1.10.2
-	github.com/stretchr/testify v1.8.2
+	github.com/stretchr/testify v1.9.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.44.3
 )
@@ -55,6 +55,7 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
+	github.com/smacker/go-tree-sitter v0.0.0-20240827094217-dd81d9e9be82 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yalue/onnxruntime_go v1.27.0 // indirect
