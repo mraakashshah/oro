@@ -2,7 +2,7 @@
 
 **Autonomous agent swarm orchestrator for software engineering.**
 
-Oro is a self-managing multi-agent system that coordinates AI workers to execute software engineering tasks. An architect designs, a manager judges, a dispatcher orchestrates, and workers write code — all running concurrently in isolated git worktrees with TDD, quality gates, and code review baked into every cycle.
+Oro is a self-managing multi-agent system that coordinates AI workers to execute software engineering tasks. A manager judges, a dispatcher orchestrates, and workers write code — all running concurrently in isolated git worktrees with TDD, quality gates, and code review baked into every cycle.
 
 ## Table of Contents
 
@@ -181,7 +181,7 @@ Oro enforces a disciplined pipeline from idea to merged code. Every phase has a 
                     Code on main
 ```
 
-This pipeline is encoded as skills — reusable process definitions that agents follow. The architect orchestrates the early phases (brainstorm through task craft), while workers execute the later phases (observe through merge) autonomously. The dispatcher enforces the quality gate and review gates mechanically — a worker cannot merge without passing both.
+This pipeline is encoded as skills — reusable process definitions that agents follow. Workers execute each phase (observe through merge) autonomously. The dispatcher enforces the quality gate and review gates mechanically — a worker cannot merge without passing both.
 
 The key insight: autonomous agents are only as trustworthy as their process. Oro doesn't trust agents to "do the right thing" — it structures the work so that the right thing is the only path forward.
 
@@ -190,13 +190,11 @@ The key insight: autonomous agents are only as trustworthy as their process. Oro
 ```
  ┌─────────────────────────────────────────────────────────┐
  │                    tmux session "oro"                   │
- │  ┌──────────────────────┐  ┌──────────────────────────┐ │
- │  │  Architect (pane 0)  │  │  Manager (pane 1)        │ │
- │  │  Designs specs,      │  │  Judgment calls,         │ │
- │  │  creates tasks,      │  │  merge conflicts,        │ │
- │  │  sets priorities     │  │  stuck workers,          │ │
- │  │                      │  │  scales swarm            │ │
- │  └──────────────────────┘  └──────────────────────────┘ │
+ │  ┌─────────────────────────────────────────────────┐   │
+ │  │  Manager (pane 0)                               │   │
+ │  │  Judgment calls, merge conflicts,               │   │
+ │  │  stuck workers, scales swarm                    │   │
+ │  └─────────────────────────────────────────────────┘   │
  └─────────────────────────────────────────────────────────┘
                           │
                     oro task CLI
@@ -304,7 +302,7 @@ oro start
 oro start --detach
 ```
 
-This creates a tmux session with an architect pane and a manager pane, starts the dispatcher daemon, and spawns the worker pool. The architect begins designing work, the manager monitors execution, and workers pick up tasks as they become ready.
+This creates a tmux session with a manager pane, starts the dispatcher daemon, and spawns the worker pool. The manager monitors execution, and workers pick up tasks as they become ready.
 
 ### Basic Operations
 
