@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -69,6 +70,7 @@ type TmuxSession struct {
 	Project       string // optional project name; runtime-specific launch behavior may use this
 	Runner        CmdRunner
 	Sleeper       func(time.Duration) // optional; overrides time.Sleep for testing
+	Output        io.Writer           // optional; migration messages go here; nil means os.Stdout
 	ReadyTimeout  time.Duration       // timeout for Claude readiness polling; 0 means defaultReadyTimeout
 	BeaconTimeout time.Duration       // timeout for beacon verification polling; 0 means defaultBeaconTimeout
 	beaconWg      sync.WaitGroup      // tracks background beacon verification goroutine
@@ -83,6 +85,26 @@ func NewTmuxSession(name string) *TmuxSession {
 func (s *TmuxSession) Exists() bool {
 	_, err := s.Runner.Run("tmux", "has-session", "-t", s.Name)
 	return err == nil
+}
+
+// isPreCollapseLayout returns true when the session has an "architect" window,
+// indicating it was created by the old two-window layout and needs migration.
+// Returns (false, nil) when the session does not exist; (false, err) on
+// list-windows failure — callers should continue the normal path on error.
+func (s *TmuxSession) isPreCollapseLayout() (bool, error) {
+	if !s.Exists() {
+		return false, nil
+	}
+	out, err := s.Runner.Run("tmux", "list-windows", "-t", s.Name, "-F", "#{window_name}")
+	if err != nil {
+		return false, fmt.Errorf("tmux list-windows: %w", err)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "architect" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // isHealthy checks whether the runtime CLI is running in both panes. Returns
@@ -258,16 +280,36 @@ func execEnvCmd(role, project string) string {
 		base, oroHome, settingsPath)
 }
 
+// killStaleSession kills the session if it needs to be replaced (pre-collapse
+// layout or zombie manager pane). Returns true when the session was killed
+// (caller should recreate), false when the session is healthy (caller should
+// return without creating a new one).
+func (s *TmuxSession) killStaleSession() bool {
+	if preCollapse, _ := s.isPreCollapseLayout(); preCollapse {
+		w := s.Output
+		if w == nil {
+			w = os.Stdout
+		}
+		fmt.Fprintln(w, "migrating pre-collapse session (architect+manager→manager-only)...")
+		_ = s.Kill()
+		return true
+	}
+	pane := s.Name + ":manager"
+	out, err := s.Runner.Run("tmux", "display-message", "-p", "-t", pane, "#{pane_current_command}")
+	if err == nil && !isShell(strings.TrimSpace(out)) {
+		return false
+	}
+	_ = s.Kill()
+	return true
+}
+
 // Create creates the Oro tmux session with a single manager window.
 // If the session already exists and the manager pane is healthy, it is a no-op.
+// If the session uses the old two-window (architect+manager) layout it is killed
+// and recreated as a single-window session, printing a one-line migration notice.
 func (s *TmuxSession) Create(managerNudge string) error {
-	if s.Exists() {
-		pane := s.Name + ":manager"
-		out, err := s.Runner.Run("tmux", "display-message", "-p", "-t", pane, "#{pane_current_command}")
-		if err == nil && !isShell(strings.TrimSpace(out)) {
-			return nil
-		}
-		_ = s.Kill()
+	if s.Exists() && !s.killStaleSession() {
+		return nil
 	}
 
 	if err := bootstrapRoleConfigs(); err != nil {

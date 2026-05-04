@@ -2972,6 +2972,170 @@ func TestCreateSingleSignature(t *testing.T) {
 	} = (*TmuxSession)(nil)
 }
 
+func TestIsPreCollapseLayout(t *testing.T) {
+	t.Run("returns true when architect window present", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
+		fake.output[key("tmux", "list-windows", "-t", "oro", "-F", "#{window_name}")] = "architect\nmanager"
+
+		sess := &TmuxSession{Name: "oro", Runner: fake}
+		got, err := sess.isPreCollapseLayout()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !got {
+			t.Error("expected true for session with architect window")
+		}
+	})
+
+	t.Run("returns false when only manager window present", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
+		fake.output[key("tmux", "list-windows", "-t", "oro", "-F", "#{window_name}")] = "manager"
+
+		sess := &TmuxSession{Name: "oro", Runner: fake}
+		got, err := sess.isPreCollapseLayout()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got {
+			t.Error("expected false for session with only manager window")
+		}
+	})
+
+	t.Run("returns false nil for nonexistent session", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+
+		sess := &TmuxSession{Name: "oro", Runner: fake}
+		got, err := sess.isPreCollapseLayout()
+		if err != nil {
+			t.Fatalf("expected nil error for nonexistent session, got: %v", err)
+		}
+		if got {
+			t.Error("expected false for nonexistent session")
+		}
+	})
+
+	t.Run("returns false error when list-windows fails", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
+		fake.errs[key("tmux", "list-windows", "-t", "oro", "-F", "#{window_name}")] = fmt.Errorf("tmux error")
+
+		sess := &TmuxSession{Name: "oro", Runner: fake}
+		got, err := sess.isPreCollapseLayout()
+		if err == nil {
+			t.Fatal("expected error when list-windows fails")
+		}
+		if got {
+			t.Error("expected false when list-windows fails")
+		}
+	})
+}
+
+func TestCreateMigratesPreCollapseSession(t *testing.T) {
+	t.Run("kills and recreates when session has architect+manager windows", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
+		fake.output[key("tmux", "list-windows", "-t", "oro", "-F", "#{window_name}")] = "architect\nmanager"
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{session_attached}")] = "1"
+		fake.seqOut[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = []string{
+			"Welcome\n❯ \nstatus bar",
+			"Welcome\n❯ nudge\nstatus bar",
+			"oro task status\nrunning\n",
+		}
+
+		var buf strings.Builder
+		sess := &TmuxSession{
+			Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep,
+			ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond,
+			Output: &buf,
+		}
+		err := sess.Create("nudge")
+		if err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+		sess.WaitBeacon()
+
+		var killed bool
+		for _, call := range fake.getCalls() {
+			if len(call) >= 2 && call[1] == "kill-session" {
+				killed = true
+				break
+			}
+		}
+		if !killed {
+			t.Error("expected kill-session for pre-collapse session")
+		}
+		if findCall(fake.getCalls(), "new-session") == nil {
+			t.Error("expected new-session after killing pre-collapse session")
+		}
+		if !strings.Contains(buf.String(), "migrat") {
+			t.Errorf("expected migration message in output, got: %q", buf.String())
+		}
+	})
+
+	t.Run("early return without kill when session has manager-only and is healthy", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
+		fake.output[key("tmux", "list-windows", "-t", "oro", "-F", "#{window_name}")] = "manager"
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_current_command}")] = "claude"
+
+		var buf strings.Builder
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, Output: &buf}
+		err := sess.Create("nudge")
+		if err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+
+		for _, call := range fake.getCalls() {
+			if len(call) >= 2 && call[1] == "kill-session" {
+				t.Error("should not kill session when not pre-collapse and manager is healthy")
+			}
+			if len(call) >= 2 && call[1] == "new-session" {
+				t.Error("should not create new session when not pre-collapse and manager is healthy")
+			}
+		}
+		if strings.Contains(buf.String(), "migrat") {
+			t.Errorf("should not print migration message for non-pre-collapse session, got: %q", buf.String())
+		}
+	})
+
+	t.Run("creates new session when no existing session", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+		fake.seqOut[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = []string{
+			"Welcome\n❯ \nstatus bar",
+			"Welcome\n❯ nudge\nstatus bar",
+			"oro task status\nrunning\n",
+		}
+
+		var buf strings.Builder
+		sess := &TmuxSession{
+			Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep,
+			ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond,
+			Output: &buf,
+		}
+		err := sess.Create("nudge")
+		if err != nil {
+			t.Fatalf("Create returned error: %v", err)
+		}
+		sess.WaitBeacon()
+
+		if findCall(fake.getCalls(), "new-session") == nil {
+			t.Error("expected new-session for nonexistent session")
+		}
+		for _, call := range fake.getCalls() {
+			if len(call) >= 2 && call[1] == "kill-session" {
+				t.Error("should not kill session when no existing session")
+			}
+		}
+		if strings.Contains(buf.String(), "migrat") {
+			t.Errorf("should not print migration message when creating fresh session, got: %q", buf.String())
+		}
+	})
+}
+
 // TestTmuxManagerBeaconVerificationUsesTaskTerminology verifies that:
 //  1. ManagerNudge uses "oro task" commands (not "oro bead status").
 //  2. VerifyBeaconReceived succeeds when pane contains "oro task status".
