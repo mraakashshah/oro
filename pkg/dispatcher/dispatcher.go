@@ -5908,6 +5908,7 @@ func (d *Dispatcher) releasePriorAssignment(ctx context.Context, w *trackedWorke
 	priorBeadID := w.beadID
 	priorAssignmentID := w.assignmentID
 	workerID := w.id
+	priorWorktree := d.worktreeByBead[priorBeadID]
 	d.mu.Unlock()
 
 	if priorBeadID == "" || priorBeadID == newBeadID {
@@ -5919,11 +5920,26 @@ func (d *Dispatcher) releasePriorAssignment(ctx context.Context, w *trackedWorke
 			_ = d.logEvent(ctx, "release_prior_assignment_failed", "dispatcher", priorBeadID, workerID, err.Error())
 		}
 	}
-	if err := d.updateBeadStatus(ctx, priorBeadID, "open"); err != nil {
-		_ = d.logEvent(ctx, "release_prior_status_failed", "dispatcher", priorBeadID, workerID, err.Error())
+	// Preserve external close (oro-wp74): if the prior bead has been closed by
+	// another party (e.g. manager dedup), do not reopen it. Reopening masks the
+	// dedup and lets the bead be re-picked, feeding the oro-jev9 race.
+	externallyClosed := false
+	if detail, showErr := d.beads.Show(ctx, priorBeadID); showErr == nil && detail != nil && detail.Status == "closed" {
+		externallyClosed = true
+	}
+	if !externallyClosed {
+		if err := d.updateBeadStatus(ctx, priorBeadID, "open"); err != nil {
+			_ = d.logEvent(ctx, "release_prior_status_failed", "dispatcher", priorBeadID, workerID, err.Error())
+		}
+	}
+	// Clean up the worktree+branch (oro-wp74). The worker is moving to a new
+	// bead, so any work on the prior worktree is abandoned. Leaving the branch
+	// behind risks resurrection on a future cycle.
+	if priorWorktree != "" {
+		d.removeWorktreeAndClearTracking(ctx, priorBeadID, workerID, priorWorktree)
 	}
 	_ = d.logEvent(ctx, "worker_abandon_release", "dispatcher", priorBeadID, workerID,
-		fmt.Sprintf(`{"reason":"reassign_to_%s","prior_assignment_id":%d}`, newBeadID, priorAssignmentID))
+		fmt.Sprintf(`{"reason":"reassign_to_%s","prior_assignment_id":%d,"externally_closed":%t}`, newBeadID, priorAssignmentID, externallyClosed))
 }
 
 func (d *Dispatcher) completeAssignment(ctx context.Context, assignmentID int64, beadID string) error {
