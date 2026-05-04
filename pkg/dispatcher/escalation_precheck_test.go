@@ -315,6 +315,121 @@ func TestEscalationPrecheck_OversizedBead(t *testing.T) {
 	}
 }
 
+// TestRetryNonTDDAC verifies the NON_TDD_AC escalation precheck:
+//
+//	(a) open bead with Cmd/Assert but no Test: → retry (still broken)
+//	(b) in_progress bead → no retry (worker is handling it)
+//	(c) AC gains Test: → no retry (fixed)
+//	(d) epic type → no retry (not worker-executable)
+//	(e) closed bead → no retry (resolved)
+//	(f) bead Show error → retry (don't suppress on error)
+func TestRetryNonTDDAC(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name      string
+		beadID    string
+		setupBead func(*fakeBeadStore)
+		want      bool
+	}{
+		{
+			name:   "(a) open with Cmd/Assert but no Test: — retry",
+			beadID: "oro-a",
+			setupBead: func(m *fakeBeadStore) {
+				m.shown["oro-a"] = &protocol.BeadDetail{
+					ID:                 "oro-a",
+					Status:             "open",
+					Type:               "task",
+					AcceptanceCriteria: "Cmd: go test ./... | Assert: PASS",
+				}
+			},
+			want: true,
+		},
+		{
+			name:   "(b) in_progress — no retry",
+			beadID: "oro-b",
+			setupBead: func(m *fakeBeadStore) {
+				m.shown["oro-b"] = &protocol.BeadDetail{
+					ID:                 "oro-b",
+					Status:             "in_progress",
+					Type:               "task",
+					AcceptanceCriteria: "Cmd: go test ./... | Assert: PASS",
+				}
+			},
+			want: false,
+		},
+		{
+			name:   "(c) AC gains Test: — no retry",
+			beadID: "oro-c",
+			setupBead: func(m *fakeBeadStore) {
+				m.shown["oro-c"] = &protocol.BeadDetail{
+					ID:                 "oro-c",
+					Status:             "open",
+					Type:               "task",
+					AcceptanceCriteria: "Test: pkg/foo/foo_test.go:TestFoo | Cmd: go test ./... | Assert: PASS",
+				}
+			},
+			want: false,
+		},
+		{
+			name:   "(d) epic type — no retry",
+			beadID: "oro-d",
+			setupBead: func(m *fakeBeadStore) {
+				m.shown["oro-d"] = &protocol.BeadDetail{
+					ID:                 "oro-d",
+					Status:             "open",
+					Type:               "epic",
+					AcceptanceCriteria: "Cmd: go test ./... | Assert: PASS",
+				}
+			},
+			want: false,
+		},
+		{
+			name:   "(e) closed — no retry",
+			beadID: "oro-e",
+			setupBead: func(m *fakeBeadStore) {
+				m.shown["oro-e"] = &protocol.BeadDetail{
+					ID:                 "oro-e",
+					Status:             "closed",
+					Type:               "task",
+					AcceptanceCriteria: "Cmd: go test ./... | Assert: PASS",
+				}
+			},
+			want: false,
+		},
+		{
+			name:   "(f) Show error — retry (don't suppress)",
+			beadID: "oro-f",
+			setupBead: func(m *fakeBeadStore) {
+				m.showErr = errTestShow
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			beadSrc := &fakeBeadStore{
+				shown: make(map[string]*protocol.BeadDetail),
+			}
+			if tt.setupBead != nil {
+				tt.setupBead(beadSrc)
+			}
+
+			d := &Dispatcher{
+				beads:      beadSrc,
+				WorkerPool: WorkerPool{workers: make(map[string]*trackedWorker)},
+			}
+
+			got := d.shouldRetryEscalation(ctx, string(protocol.EscNonTDDAC), tt.beadID)
+			if got != tt.want {
+				t.Errorf("shouldRetryEscalation(NON_TDD_AC, %q) = %v, want %v",
+					tt.beadID, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestRetryPendingEscalations_AutoAck verifies that retryPendingEscalations
 // auto-acks resolved escalations instead of re-sending them.
 func TestRetryPendingEscalations_AutoAck(t *testing.T) {
