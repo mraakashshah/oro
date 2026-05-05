@@ -150,8 +150,15 @@ func (d *Dispatcher) handleCheckpointAck(ctx context.Context, workerID string, m
 // with the same worktree and the intent summary from the checkpoint ack (§9.3
 // steps 6-8).  It increments checkpointCounts[beadID] so that the incoming
 // worker's ASSIGN.Attempt reflects turn N+1 of the bead's lifetime (§9.3 step 9).
+//
+// Critical ordering: the worker MUST be detached from its bead BEFORE
+// procMgr.Kill terminates the subprocess. The killed subprocess closes its
+// UDS socket; handleConn's deferred connCloseCleanup runs and — if the worker
+// is still attached to beadID — calls clearBeadTracking which wipes the
+// pendingHandoffs and checkpointCounts entries this function has just set.
+// shutdownWorkerForHandoff defends the ralph-handoff path the same way.
 func (d *Dispatcher) respawnAfterCheckpoint(ctx context.Context, workerID, beadID, nextAction string) {
-	worktree, model, epicID, baseBranch, targetBranch := d.workerContextForBead(workerID)
+	worktree, model, epicID, baseBranch, targetBranch := d.detachWorkerForCheckpoint(workerID)
 	if worktree == "" {
 		return
 	}
@@ -166,21 +173,44 @@ func (d *Dispatcher) respawnAfterCheckpoint(ctx context.Context, workerID, beadI
 	d.spawnCheckpointWorker(ctx, beadID, newID)
 }
 
-// workerContextForBead reads the worker's assigned bead context under the
-// dispatcher lock. Returns empty worktree if the worker is not found.
-func (d *Dispatcher) workerContextForBead(workerID string) (worktree, model, epicID, baseBranch, targetBranch string) {
+// detachWorkerForCheckpoint reads the worker's bead context, then detaches
+// the worker (state → ShuttingDown, beadID/epicID/assignmentID cleared) so a
+// subsequent procMgr.Kill triggers connCloseCleanup that observes beadID==""
+// and skips clearBeadTracking. Returns empty worktree if the worker is not
+// found. Mirrors shutdownWorkerForHandoff's contract for the ralph-handoff
+// path.
+func (d *Dispatcher) detachWorkerForCheckpoint(workerID string) (worktree, model, epicID, baseBranch, targetBranch string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	w, ok := d.workers[workerID]
 	if !ok {
 		return
 	}
-	return w.worktree, w.model, w.epicID, w.baseBranch, w.targetBranch
+	worktree = w.worktree
+	model = w.model
+	epicID = w.epicID
+	baseBranch = w.baseBranch
+	targetBranch = w.targetBranch
+	w.state = protocol.WorkerShuttingDown
+	w.assignmentID = 0
+	w.beadID = ""
+	w.epicID = ""
+	w.isEpicDecomp = false
+	return worktree, model, epicID, baseBranch, targetBranch
 }
 
 // enqueueCheckpointHandoff registers the pending handoff for beadID, increments
 // the checkpoint counter, and reserves a managed worker ID (if a ProcessManager
-// is wired). Returns (newID, turn); newID is empty when no ProcessManager is set.
+// is wired and the pool is below MaxWorkers). Returns (newID, turn); newID is
+// empty when no ProcessManager is set OR when MaxWorkers would be exceeded.
+//
+// The pending handoff is queued unconditionally so an idle general worker can
+// still pick it up via assignPendingHandoffsToIdleWorkers — only spawning a
+// fresh worker is gated by the cap. Mirrors respawnWorker's cap clamp.
+//
+// pendingWorkerTargets[newID] is set to beadID so the spawned worker, on
+// connect, only consumes the handoff for THIS bead — preventing it from
+// picking up an unrelated handoff when multiple are queued.
 func (d *Dispatcher) enqueueCheckpointHandoff(beadID string, assignmentID int64, worktree, model, epicID, baseBranch, targetBranch, nextAction string) (newID string, turn int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -200,9 +230,13 @@ func (d *Dispatcher) enqueueCheckpointHandoff(beadID string, assignmentID int64,
 		nextAction:     nextAction,
 		checkpointTurn: turn,
 	}
+	if newID != "" && d.cfg.MaxWorkers > 0 && d.liveWorkerCountLocked() >= d.cfg.MaxWorkers {
+		newID = ""
+	}
 	if newID != "" {
 		d.pendingManagedIDs[newID] = true
 		d.pendingManagedSince[newID] = d.nowFunc()
+		d.pendingWorkerTargets[newID] = beadID
 	}
 	return newID, turn
 }
@@ -218,6 +252,7 @@ func (d *Dispatcher) spawnCheckpointWorker(ctx context.Context, beadID, newID st
 	if !stillPending {
 		delete(d.pendingManagedIDs, newID)
 		delete(d.pendingManagedSince, newID)
+		delete(d.pendingWorkerTargets, newID)
 		d.mu.Unlock()
 		return
 	}
@@ -226,6 +261,7 @@ func (d *Dispatcher) spawnCheckpointWorker(ctx context.Context, beadID, newID st
 		d.mu.Lock()
 		delete(d.pendingManagedIDs, newID)
 		delete(d.pendingManagedSince, newID)
+		delete(d.pendingWorkerTargets, newID)
 		d.mu.Unlock()
 		_ = d.logEvent(ctx, "checkpoint_spawn_failed", "dispatcher", beadID, newID, err.Error())
 	}

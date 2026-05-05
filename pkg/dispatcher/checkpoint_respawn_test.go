@@ -3,7 +3,9 @@ package dispatcher //nolint:testpackage // white-box: needs access to unexported
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"testing"
+	"time"
 
 	"oro/pkg/protocol"
 )
@@ -113,6 +115,29 @@ func TestCheckpointRespawn(t *testing.T) {
 	if !foundAck {
 		t.Fatalf("journal must have checkpoint_acked with intent_summary %q; events=%v", intentSummary, journalEvts)
 	}
+
+	// 5. Spawned worker must be routed back to *this* bead's handoff
+	// (§9.3 step 8). With multiple pending handoffs the new worker would
+	// otherwise pick one at random — pendingWorkerTargets pins it.
+	d.mu.Lock()
+	target, hasTarget := d.pendingWorkerTargets[newWorkerID]
+	d.mu.Unlock()
+	if !hasTarget {
+		t.Fatalf("pendingWorkerTargets[%q] missing — checkpoint respawn must route the spawned worker to this bead", newWorkerID)
+	}
+	if target != beadID {
+		t.Fatalf("pendingWorkerTargets[%q]: got %q, want %q", newWorkerID, target, beadID)
+	}
+
+	// 6. Bead status must remain in_progress between respawn and
+	// reassignment — the respawn flow must not flip it to "open" (which
+	// would let an unrelated worker pick it up via bd-ready).
+	store.fakeBeadStore.mu.Lock()
+	status, wasUpdated := store.fakeBeadStore.updated[beadID]
+	store.fakeBeadStore.mu.Unlock()
+	if wasUpdated && status == "open" {
+		t.Fatalf("bead %q status was flipped to %q during checkpoint respawn; status must stay in_progress", beadID, status)
+	}
 }
 
 // TestCheckpointRespawn_ASSIGN_carries_next_action verifies that the ASSIGN
@@ -214,6 +239,217 @@ func TestCheckpointRespawn_ASSIGN_carries_next_action(t *testing.T) {
 	// Attempt = checkpointTurn (turn N+1).
 	if assign.Attempt != 1 {
 		t.Fatalf("ASSIGN.Attempt: got %d, want 1 (first checkpoint respawn)", assign.Attempt)
+	}
+}
+
+// TestCheckpointRespawn_ConnCloseDoesNotWipeState is a regression test for a
+// race in respawnAfterCheckpoint: when the dispatcher kills the old worker
+// subprocess, that subprocess closes its UDS socket. handleConn's deferred
+// connCloseCleanup then runs and — if the worker is still attached to the bead
+// — calls clearBeadTracking(beadID) and updateBeadStatus(beadID, "open"),
+// wiping the freshly-set pendingHandoffs and checkpointCounts entries. The
+// just-spawned new worker would then connect with no handoff to consume.
+//
+// The fix detaches the worker from its bead (state, beadID, assignmentID,
+// epicID) before procMgr.Kill, so connCloseCleanup observes beadID == "" and
+// skips the bead-tracking cleanup. This mirrors shutdownWorkerForHandoff which
+// already defends the ralph-handoff path.
+func TestCheckpointRespawn_ConnCloseDoesNotWipeState(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	d, store := makeCheckpointDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+
+	const (
+		beadID        = "bead-cr-conn-race"
+		workerID      = "w-cr-conn-1"
+		worktreePath  = "/tmp/wt-bead-cr-conn-race"
+		intentSummary = "preserve respawn state across conn close"
+	)
+
+	// Wire the worker through handleConn so the deferred connCloseCleanup
+	// fires when the client side closes — exactly what happens when
+	// procMgr.Kill terminates the real subprocess in production.
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close() })
+
+	handleConnDone := make(chan struct{})
+	go func() {
+		defer close(handleConnDone)
+		d.handleConn(ctx, server)
+	}()
+
+	// Register the worker with the dispatcher via heartbeat so handleConn
+	// owns the connection and will drive cleanup on close.
+	sendMsg(t, client, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   workerID,
+			ContextPct: 5,
+		},
+	})
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		_, ok := d.workers[workerID]
+		return ok
+	}, 2*time.Second)
+
+	// Promote the registered worker to busy on beadID with a known worktree.
+	d.mu.Lock()
+	w := d.workers[workerID]
+	w.state = protocol.WorkerBusy
+	w.beadID = beadID
+	w.worktree = worktreePath
+	w.model = protocol.ModelSonnet
+	d.worktreeByBead[beadID] = worktreePath
+	d.mu.Unlock()
+
+	d.triggerCheckpoint(ctx, beadID, workerID, 80)
+	cs := d.checkpoints.get(beadID)
+	if cs == nil {
+		t.Fatal("expected active checkpoint after triggerCheckpoint")
+	}
+	cpID := cs.checkpointID
+
+	// Send the checkpoint ack via the same connection so handleMessage
+	// drives the full handleCheckpointAck → respawnAfterCheckpoint path.
+	sendMsg(t, client, protocol.Message{
+		Type: protocol.MsgCheckpointAck,
+		CheckpointAck: &protocol.CheckpointAckPayload{
+			BeadID:        beadID,
+			CheckpointID:  cpID,
+			IntentSummary: intentSummary,
+		},
+	})
+
+	// Wait for respawn to complete: handoff registered, new worker spawned.
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		_, hasHandoff := d.pendingHandoffs[beadID]
+		return hasHandoff && len(pm.SpawnedIDs()) > 0
+	}, 2*time.Second)
+
+	// In production procMgr.Kill terminates the subprocess and its socket
+	// closes. Mock Kill is a no-op, so close the client side ourselves to
+	// drive the deferred cleanup that happens regardless in production.
+	_ = client.Close()
+	select {
+	case <-handleConnDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleConn did not exit after pipe close")
+	}
+	// connCloseCleanup runs in handleConn's defer — wait for the worker to
+	// disappear from the map before asserting.
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		_, ok := d.workers[workerID]
+		return !ok
+	}, 2*time.Second)
+
+	// The respawn state must SURVIVE the conn close. Without the detach-
+	// before-kill fix, connCloseCleanup observes the still-attached beadID
+	// and wipes pendingHandoffs/checkpointCounts via clearBeadTracking.
+	d.mu.Lock()
+	handoff, hasHandoff := d.pendingHandoffs[beadID]
+	cpCount := d.checkpointCounts[beadID]
+	d.mu.Unlock()
+	if !hasHandoff {
+		t.Fatalf("pendingHandoffs[%q] was wiped by connCloseCleanup — respawnAfterCheckpoint must detach worker.beadID before procMgr.Kill", beadID)
+	}
+	if handoff.nextAction != intentSummary {
+		t.Fatalf("handoff.nextAction: got %q, want %q (must survive conn close)", handoff.nextAction, intentSummary)
+	}
+	if cpCount != 1 {
+		t.Fatalf("checkpointCounts[%q]: got %d, want 1 (must survive conn close)", beadID, cpCount)
+	}
+
+	// Bead status must NOT be flipped to "open" — that would let an
+	// unrelated worker pick the bead up via bd-ready before the spawned
+	// respawn worker connects, producing a duplicate assignment.
+	store.fakeBeadStore.mu.Lock()
+	status, wasUpdated := store.fakeBeadStore.updated[beadID]
+	store.fakeBeadStore.mu.Unlock()
+	if wasUpdated && status == "open" {
+		t.Fatalf("bead %q status flipped to %q during conn close; respawn must keep it in_progress", beadID, status)
+	}
+
+	// The spawned worker must be pinned to this bead's handoff via
+	// pendingWorkerTargets so it cannot consume a different pending handoff
+	// when it eventually connects.
+	spawned := pm.SpawnedIDs()
+	if len(spawned) == 0 {
+		t.Fatal("checkpoint respawn must spawn a new worker")
+	}
+	newID := spawned[0]
+	d.mu.Lock()
+	target := d.pendingWorkerTargets[newID]
+	d.mu.Unlock()
+	if target != beadID {
+		t.Fatalf("pendingWorkerTargets[%q]: got %q, want %q", newID, target, beadID)
+	}
+}
+
+// TestCheckpointRespawn_HonorsMaxWorkers verifies that enqueueCheckpointHandoff
+// respects the MaxWorkers cap. The killed worker is still in d.workers until
+// connCloseCleanup runs, so liveWorkerCountLocked still counts it — without
+// the cap, a saturated dispatcher would spawn past the limit on every
+// checkpoint respawn.
+func TestCheckpointRespawn_HonorsMaxWorkers(t *testing.T) {
+	ctx := context.Background()
+
+	d, _ := makeCheckpointDispatcher(t)
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.cfg.MaxWorkers = 1
+
+	const (
+		beadID        = "bead-cr-cap"
+		workerID      = "w-cr-cap-1"
+		worktreePath  = "/tmp/wt-bead-cr-cap"
+		intentSummary = "respect max workers"
+	)
+
+	// Single worker saturates the pool at MaxWorkers=1.
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:       workerID,
+		state:    protocol.WorkerBusy,
+		beadID:   beadID,
+		worktree: worktreePath,
+		model:    protocol.ModelSonnet,
+		lastSeen: d.nowFunc(),
+	}
+	d.worktreeByBead[beadID] = worktreePath
+	d.mu.Unlock()
+
+	d.triggerCheckpoint(ctx, beadID, workerID, 80)
+	cpID := d.checkpoints.get(beadID).checkpointID
+
+	d.handleCheckpointAck(ctx, workerID, protocol.Message{
+		Type: protocol.MsgCheckpointAck,
+		CheckpointAck: &protocol.CheckpointAckPayload{
+			BeadID:        beadID,
+			CheckpointID:  cpID,
+			IntentSummary: intentSummary,
+		},
+	})
+
+	// Handoff must be queued for an idle worker to pick up later, but the
+	// dispatcher must NOT spawn a new managed worker because the pool is
+	// already at MaxWorkers (the killed worker is still in d.workers).
+	d.mu.Lock()
+	_, hasHandoff := d.pendingHandoffs[beadID]
+	d.mu.Unlock()
+	if !hasHandoff {
+		t.Fatal("pending handoff must be queued even when MaxWorkers prevents spawning")
+	}
+	if spawned := pm.SpawnedIDs(); len(spawned) != 0 {
+		t.Fatalf("checkpoint respawn must honor MaxWorkers; spawned=%v", spawned)
 	}
 }
 
