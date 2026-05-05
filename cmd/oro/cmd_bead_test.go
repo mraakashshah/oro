@@ -557,8 +557,8 @@ func TestBeadListDefaultIncludesInProgress(t *testing.T) {
 	if !beadJSONArrayHasID(got, "oro-ready") || !beadJSONArrayHasID(got, "oro-progress") {
 		t.Fatalf("list default = %#v, want ready and in-progress beads", got)
 	}
-	if !beadJSONArrayHasID(got, "oro-closed") {
-		t.Fatalf("list default omitted closed bead: %#v", got)
+	if beadJSONArrayHasID(got, "oro-closed") {
+		t.Fatalf("list default included closed bead: %#v", got)
 	}
 }
 

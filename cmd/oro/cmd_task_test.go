@@ -3,14 +3,33 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/protocol"
 
 	"github.com/spf13/cobra"
 )
+
+// dupReadStore injects extra into both InProgress and Ready to simulate overlap for dedup testing.
+type dupReadStore struct {
+	beadstore.Store
+	extra protocol.Bead
+}
+
+func (d *dupReadStore) InProgress(ctx context.Context) ([]protocol.Bead, error) {
+	beads, err := d.Store.InProgress(ctx)
+	return append(beads, d.extra), err
+}
+
+func (d *dupReadStore) Ready(ctx context.Context) ([]protocol.Bead, error) {
+	beads, err := d.Store.Ready(ctx)
+	return append(beads, d.extra), err
+}
 
 func TestRootCommandIncludesTask(t *testing.T) {
 	root := newRootCmd()
@@ -282,4 +301,149 @@ func TestTaskListDefaultIncludesInProgress(t *testing.T) {
 	if !beadJSONArrayHasID(listed, "oro-task-progress") {
 		t.Fatalf("task list omitted in-progress task: %#v", listed)
 	}
+}
+
+func TestTaskListDefaultsToTopUnfinished(t *testing.T) {
+	ctx := context.Background()
+	store, err := beadstore.OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore: %v", err)
+	}
+
+	execTask := func(args ...string) string {
+		t.Helper()
+		cmd := newTaskCmdWithStore(store)
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("task %s error: %v\n%s", strings.Join(args, " "), err, out.String())
+		}
+		return out.String()
+	}
+
+	// 2 in_progress beads (priority 1)
+	execTask("create", "--id", "oro-ip-00", "--title", "in-progress 0", "--priority", "1")
+	execTask("update", "oro-ip-00", "--status", "in_progress")
+	execTask("create", "--id", "oro-ip-01", "--title", "in-progress 1", "--priority", "1")
+	execTask("update", "oro-ip-01", "--status", "in_progress")
+
+	// 22 open/ready beads (priority 2) — exceeds the default cap of 20 when combined with in_progress
+	for i := 0; i < 22; i++ {
+		execTask("create",
+			"--id", fmt.Sprintf("oro-open-%02d", i),
+			"--title", fmt.Sprintf("open %d", i),
+			"--priority", "2",
+		)
+	}
+
+	// 1 blocked bead (has an active blocker dependency)
+	execTask("create", "--id", "oro-blocker", "--title", "blocker", "--priority", "3")
+	execTask("create", "--id", "oro-blocked", "--title", "blocked", "--priority", "3")
+	execTask("dep", "add", "oro-blocked", "oro-blocker", "--type", "blocks")
+
+	// 1 closed bead
+	execTask("create", "--id", "oro-closed", "--title", "closed", "--priority", "3")
+	execTask("close", "oro-closed", "--reason", "done")
+
+	// 1 deferred bead
+	execTask("create", "--id", "oro-deferred", "--title", "deferred", "--priority", "3")
+	future := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339Nano)
+	execTask("defer", "oro-deferred", "--until", future)
+
+	// Default list — no flags
+	listed := decodeBeadJSONArray(t, execTask("list", "--json"))
+
+	if len(listed) > 20 {
+		t.Fatalf("task list returned %d beads, want at most 20", len(listed))
+	}
+	if len(listed) == 0 {
+		t.Fatal("task list returned no beads")
+	}
+
+	// All statuses must be in_progress or open
+	for _, bead := range listed {
+		status, _ := bead["status"].(string)
+		if status != "in_progress" && status != "open" {
+			t.Fatalf("task list included bead with status %q, want only in_progress or open", status)
+		}
+	}
+
+	// in_progress beads appear before open beads
+	seenOpen := false
+	for _, bead := range listed {
+		status, _ := bead["status"].(string)
+		if status == "open" {
+			seenOpen = true
+		}
+		if seenOpen && status == "in_progress" {
+			t.Fatalf("task list: in_progress bead appeared after open bead (ordering violated)")
+		}
+	}
+
+	// Both in_progress beads are included
+	if !beadJSONArrayHasID(listed, "oro-ip-00") || !beadJSONArrayHasID(listed, "oro-ip-01") {
+		t.Fatalf("task list missing in_progress beads: %#v", listed)
+	}
+
+	// Blocked, closed, and deferred beads are excluded
+	if beadJSONArrayHasID(listed, "oro-blocked") {
+		t.Fatalf("task list included blocked bead")
+	}
+	if beadJSONArrayHasID(listed, "oro-closed") {
+		t.Fatalf("task list included closed bead")
+	}
+	if beadJSONArrayHasID(listed, "oro-deferred") {
+		t.Fatalf("task list included deferred bead")
+	}
+
+	// --limit=5 overrides the default cap
+	limited := decodeBeadJSONArray(t, execTask("list", "--limit=5", "--json"))
+	if len(limited) != 5 {
+		t.Fatalf("task list --limit=5 returned %d beads, want 5", len(limited))
+	}
+
+	// --limit=0 means unlimited (returns more than the default 20)
+	unlimited := decodeBeadJSONArray(t, execTask("list", "--limit=0", "--json"))
+	if len(unlimited) <= 20 {
+		t.Fatalf("task list --limit=0 returned %d beads, want more than 20 (unlimited)", len(unlimited))
+	}
+
+	// --status=open preserves existing full-export path (no implicit cap, includes blocked)
+	openListed := decodeBeadJSONArray(t, execTask("list", "--status=open", "--json"))
+	if len(openListed) <= 20 {
+		t.Fatalf("task list --status=open returned %d beads, want more than 20 (no implicit cap)", len(openListed))
+	}
+
+	// Dedup: same bead appearing in both InProgress and Ready results in exactly one entry
+	t.Run("dedup", func(t *testing.T) {
+		dupBead := protocol.Bead{
+			ID:        "oro-dup",
+			Title:     "dup bead",
+			Status:    "in_progress",
+			Priority:  1,
+			CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		}
+		base := beadstore.NewFakeStore()
+		wrapper := &dupReadStore{Store: base, extra: dupBead}
+		cmd := newTaskCmdWithStore(wrapper)
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs([]string{"list", "--json"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("task list error: %v\n%s", err, out.String())
+		}
+		got := decodeBeadJSONArray(t, out.String())
+		count := 0
+		for _, b := range got {
+			if b["id"] == "oro-dup" {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("dedup: bead %q appeared %d times in list, want 1", "oro-dup", count)
+		}
+	})
 }

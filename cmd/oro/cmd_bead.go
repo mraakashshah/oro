@@ -658,6 +658,16 @@ func listBeadsForCmd(ctx context.Context, s beadstore.Store, cmd *cobra.Command)
 		return applyBeadListFilters(beads, status, parent, limit), err
 	}
 
+	// Default view: no filtering flags set → InProgress ++ Ready, deduped, capped at 20.
+	// Explicit --limit overrides the default cap (0 = unlimited).
+	if status == "" && parent == "" && tag == "" {
+		effectiveLimit := 20
+		if cmd.Flags().Changed("limit") {
+			effectiveLimit = limit
+		}
+		return listTopUnfinished(ctx, s, effectiveLimit)
+	}
+
 	var (
 		beads []protocol.Bead
 		err   error
@@ -683,6 +693,37 @@ func listBeadsForCmd(ctx context.Context, s beadstore.Store, cmd *cobra.Command)
 		return nil, fmt.Errorf("list beads for status %q: %w", status, err)
 	}
 	return applyBeadListFilters(beads, "", parent, limit), nil
+}
+
+// listTopUnfinished returns InProgress beads followed by Ready beads, deduplicated,
+// capped at limit (0 = unlimited). This is the default view for `oro task list`.
+func listTopUnfinished(ctx context.Context, s beadstore.Store, limit int) ([]protocol.Bead, error) {
+	inProgress, err := s.InProgress(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list in_progress beads: %w", err)
+	}
+	ready, err := s.Ready(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list ready beads: %w", err)
+	}
+
+	seen := make(map[string]struct{}, len(inProgress))
+	for _, b := range inProgress {
+		seen[b.ID] = struct{}{}
+	}
+
+	result := make([]protocol.Bead, 0, len(inProgress)+len(ready))
+	result = append(result, inProgress...)
+	for _, b := range ready {
+		if _, dup := seen[b.ID]; !dup {
+			result = append(result, b)
+		}
+	}
+
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
 }
 
 func listExportedBeads(ctx context.Context, s beadstore.Store) ([]protocol.Bead, error) {
