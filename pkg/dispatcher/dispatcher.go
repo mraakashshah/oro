@@ -805,6 +805,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 			worktreeByBead:         make(map[string]string),
 			epicMergeFailed:        make(map[string]bool),
 			processedExternalClose: make(map[string]bool),
+			epicSkipLogged:         make(map[string]bool),
 		},
 		priorityBeads:          make(map[string]bool),
 		pendingManagedIDs:      make(map[string]bool),
@@ -3710,8 +3711,16 @@ func (d *Dispatcher) filterAlreadyMergedBranches(ctx context.Context, candidates
 // all children are done so the epic can be auto-closed (fallback path for epics
 // whose last child completed before the epic status was updated).
 func (d *Dispatcher) processEpicSkip(ctx context.Context, bead protocol.Bead) {
-	_ = d.logEvent(ctx, "non_executable_issue_type", "dispatcher", bead.ID, "",
-		`{"reason":"non_executable_issue_type","issue_type":"epic"}`)
+	d.mu.Lock()
+	alreadyLogged := d.epicSkipLogged[bead.ID]
+	if !alreadyLogged {
+		d.epicSkipLogged[bead.ID] = true
+	}
+	d.mu.Unlock()
+	if !alreadyLogged {
+		_ = d.logEvent(ctx, "non_executable_issue_type", "dispatcher", bead.ID, "",
+			`{"reason":"non_executable_issue_type","issue_type":"epic"}`)
+	}
 	hasChildren, err := d.beads.HasChildren(ctx, bead.ID)
 	if err != nil || !hasChildren {
 		return
