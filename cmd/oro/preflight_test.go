@@ -161,16 +161,52 @@ func TestEnsureSearchHook(t *testing.T) {
 	})
 }
 
-// TestEnsureSearchHookMissingSrcDir verifies that ensureSearchHook fails open
-// (logs warning, returns nil) when the source directory does not exist.
-// This is required for go-install users who lack the source tree.
-func TestEnsureSearchHookMissingSrcDir(t *testing.T) {
+// TestEnsureSearchHookFailsClosedWhenBothMissing verifies that ensureSearchHook
+// returns a non-nil error when neither the binary nor the source directory
+// exists. Settings.json references the binary at runtime; silently degrading
+// here means every Read tool call hits a missing-binary error forever.
+// Hard preflight: refuse to start so the failure surfaces immediately.
+func TestEnsureSearchHookFailsClosedWhenBothMissing(t *testing.T) {
 	tmpDir := t.TempDir()
 	binPath := filepath.Join(tmpDir, "oro-search-hook")
 
 	err := ensureSearchHook(io.Discard, binPath, "/nonexistent/source/dir")
-	if err != nil {
-		t.Fatalf("expected nil for missing srcDir (fail-open), got error: %v", err)
+	if err == nil {
+		t.Fatal("expected error when binary missing AND srcDir missing, got nil")
+	}
+	if !strings.Contains(err.Error(), "oro-search-hook") {
+		t.Errorf("error should mention oro-search-hook, got: %v", err)
+	}
+}
+
+// TestEnsureSearchHookFailsClosedWhenBuildFails verifies that a build failure
+// against a present srcDir returns an error rather than silently skipping.
+// Uses a fake srcDir with a syntactically broken Go file to force `go build`
+// to exit non-zero.
+func TestEnsureSearchHookFailsClosedWhenBuildFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	binPath := filepath.Join(tmpDir, "oro-search-hook")
+
+	// Construct a fake repo layout: <repoRoot>/cmd/oro-search-hook/main.go
+	// containing invalid Go so go build fails.
+	repoRoot := filepath.Join(tmpDir, "fakerepo")
+	srcDir := filepath.Join(repoRoot, "cmd", "oro-search-hook")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "go.mod"), []byte("module fake\ngo 1.22\n"), 0o644); err != nil { //nolint:gosec // test-only
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "main.go"), []byte("package main\nthis is not valid go\n"), 0o644); err != nil { //nolint:gosec // test-only
+		t.Fatal(err)
+	}
+
+	err := ensureSearchHook(io.Discard, binPath, srcDir)
+	if err == nil {
+		t.Fatal("expected error when go build fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "oro-search-hook") {
+		t.Errorf("error should mention oro-search-hook, got: %v", err)
 	}
 }
 

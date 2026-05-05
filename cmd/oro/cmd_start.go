@@ -379,17 +379,8 @@ func preflightAndCheckRunningWith(w io.Writer, preflight func() error) (pidPath 
 		regenerateProjectSettings(w, paths.OroHome, readProjectNameCWD())
 	}
 
-	// Warn about quality_gate.sh issues and build oro-search-hook if stale.
-	repoRoot, err := os.Getwd()
-	if err == nil {
-		// Build oro-search-hook if missing or stale. ensureSearchHook is fail-open:
-		// if the source tree is absent (go-install users), it skips silently.
-		searchHookBin := filepath.Join(paths.OroHome, "hooks", "oro-search-hook")
-		_ = ensureSearchHook(os.Stderr, searchHookBin, filepath.Join(repoRoot, "cmd", "oro-search-hook"))
-
-		warnIfQualityGateMissing(w, repoRoot)
-		warnIfQualityGateUntracked(w, repoRoot)
-		warnIfEpicCNotDeployed(w, repoRoot)
+	if err := runRepoPreflightChecks(w, paths.OroHome); err != nil {
+		return "", err
 	}
 
 	pidPath = paths.PIDPath
@@ -412,6 +403,30 @@ func preflightAndCheckRunningWith(w io.Writer, preflight func() error) (pidPath 
 	}
 
 	return pidPath, nil
+}
+
+// runRepoPreflightChecks performs repo-rooted preflight steps:
+// builds oro-search-hook (hard-fails if no recovery path) and emits warnings
+// about quality_gate.sh + Epic C config drift. No-op when cwd is unreadable.
+func runRepoPreflightChecks(w io.Writer, oroHome string) error {
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		return nil //nolint:nilerr // cwd unreadable is non-fatal: warnings + hook build are best-effort here
+	}
+
+	// Build oro-search-hook if missing or stale. Hard-fails when no recovery
+	// path exists (binary missing AND srcDir missing or build broken):
+	// settings.json references this binary, so silently degrading turns every
+	// PreToolUse Read hook into a missing-binary error.
+	searchHookBin := filepath.Join(oroHome, "hooks", "oro-search-hook")
+	if hookErr := ensureSearchHook(os.Stderr, searchHookBin, filepath.Join(repoRoot, "cmd", "oro-search-hook")); hookErr != nil {
+		return fmt.Errorf("preflight: %w", hookErr)
+	}
+
+	warnIfQualityGateMissing(w, repoRoot)
+	warnIfQualityGateUntracked(w, repoRoot)
+	warnIfEpicCNotDeployed(w, repoRoot)
+	return nil
 }
 
 func startPreflightAndCheckRunning(w io.Writer, daemonOnly bool) (pidPath string, err error) {

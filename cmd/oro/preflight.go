@@ -48,20 +48,28 @@ func runSQLiteDaemonPreflightChecks() error {
 	return runPreflightChecksForTools("claude", "git")
 }
 
-// ensureSearchHook builds the oro-search-hook binary if it is missing or stale
-// (older than any source file in srcDir). Fail-open on all errors: missing
-// srcDir logs a warning and returns nil (safe for go-install users who lack
-// the source tree), and build failures are logged but not fatal.
+// ensureSearchHook builds the oro-search-hook binary if missing or stale.
+// Hard-fails (returns non-nil error) when there is no recovery path:
+//   - binary missing AND srcDir missing
+//   - binary missing AND build fails
+//
+// Soft-fails (warning, returns nil) when an existing binary is on disk and
+// rebuild can't run: external/go-install projects without source, or transient
+// build failures. settings.json points at the binary at runtime, so silently
+// degrading turns every PreToolUse Read hook into a missing-binary error.
 func ensureSearchHook(w io.Writer, binPath, srcDir string) error {
-	// Verify source directory exists — fail-open for go-install users.
+	binaryExists := false
+	if _, err := os.Stat(binPath); err == nil {
+		binaryExists = true
+	}
+
 	if _, err := os.Stat(srcDir); err != nil {
-		// If the binary already exists (e.g. installed by make install),
-		// skip silently — no need to rebuild from source.
-		if _, binErr := os.Stat(binPath); binErr == nil {
+		if binaryExists {
+			// External project / go-install user: no source tree, but a binary
+			// from a prior make install is already on disk. Skip silently.
 			return nil
 		}
-		fmt.Fprintf(w, "warning: oro-search-hook source dir not found (%s) — skipping build\n", srcDir)
-		return nil
+		return fmt.Errorf("oro-search-hook binary missing at %s and source dir not found at %s — run `make install` from the oro repo", binPath, srcDir)
 	}
 
 	if !isStale(binPath, srcDir) {
@@ -94,14 +102,19 @@ func ensureSearchHook(w io.Writer, binPath, srcDir string) error {
 	cmd := exec.CommandContext(ctx, "go", "build", "-o", tmpBin, "./"+relPkg) //nolint:gosec // args constructed internally from known paths
 	cmd.Dir = repoRoot
 	if out, err := cmd.CombinedOutput(); err != nil {
-		// Fail-open: log warning but don't block startup. Existing binary preserved.
-		fmt.Fprintf(w, "warning: failed to build search hook: %v\n%s\n", err, out)
-		return nil
+		if binaryExists {
+			fmt.Fprintf(w, "warning: failed to rebuild oro-search-hook (existing binary preserved): %v\n%s\n", err, out)
+			return nil
+		}
+		return fmt.Errorf("build oro-search-hook failed and no existing binary at %s: %w\n%s", binPath, err, out)
 	}
 
 	if err := os.Rename(tmpBin, binPath); err != nil {
-		fmt.Fprintf(w, "warning: failed to install search hook: %v\n", err)
-		return nil
+		if binaryExists {
+			fmt.Fprintf(w, "warning: failed to install oro-search-hook (existing binary preserved): %v\n", err)
+			return nil
+		}
+		return fmt.Errorf("install oro-search-hook to %s: %w", binPath, err)
 	}
 
 	return nil
