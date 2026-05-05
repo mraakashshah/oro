@@ -1,8 +1,6 @@
 package worker_test
 
 import (
-	"fmt"
-	"os"
 	"strings"
 	"testing"
 
@@ -10,36 +8,13 @@ import (
 	"oro/pkg/worker"
 )
 
-// generateSyntheticGoFile creates a valid Go source file with approximately
-// the given number of lines, containing multiple function declarations.
-// Each function body is padded with comment lines so the file is large enough
-// to demonstrate token savings in nav-map format.
-func generateSyntheticGoFile(lines int) string {
-	var b strings.Builder
-	b.WriteString("package synthetic\n\n")
-	b.WriteString("import \"fmt\"\n\n")
-
-	funcsNeeded := lines / 20 // each function ~20 lines
-	if funcsNeeded < 1 {
-		funcsNeeded = 1
-	}
-	for i := range funcsNeeded {
-		fmt.Fprintf(&b, "// Function%d performs synthetic operation %d.\nfunc Function%d(x int) int {\n", i, i, i)
-		for j := range 15 {
-			fmt.Fprintf(&b, "\t// padding line %d of function %d\n", j, i)
-		}
-		fmt.Fprintf(&b, "\t_ = fmt.Sprintf(\"%%d\", x)\n")
-		fmt.Fprintf(&b, "\treturn x + %d\n}\n\n", i)
-	}
-	return b.String()
-}
-
 // TestPromptCodeStructure verifies:
 //  1. FormatNavMap produces structured nav-maps (OUTLINE: header + symbol entries with line ranges).
-//  2. The nav-map saves >= 80% tokens vs raw file content.
-//  3. AssemblePrompt includes a "## Code Structure" section when CodeStructureContext is non-empty.
-//  4. The section is omitted when CodeStructureContext is empty.
-//  5. The section appears between ## Memory and ## Relevant Code.
+//  2. AssemblePrompt includes a "## Code Structure" section when CodeStructureContext is non-empty.
+//  3. The section is omitted when CodeStructureContext is empty.
+//  4. The section appears between ## Memory and ## Relevant Code.
+//
+// Note: the token-savings subtest (requires CGO) lives in prompt_code_structure_cgo_test.go.
 func TestPromptCodeStructure(t *testing.T) {
 	t.Parallel()
 
@@ -72,38 +47,6 @@ func TestPromptCodeStructure(t *testing.T) {
 		}
 		if !strings.Contains(navMap, "[182-340]") {
 			t.Error("nav-map must contain line range [182-340] for Run")
-		}
-	})
-
-	t.Run("token_savings_vs_raw_file", func(t *testing.T) {
-		t.Parallel()
-
-		tmpDir := t.TempDir()
-		tmpFile := tmpDir + "/synthetic.go"
-		content := generateSyntheticGoFile(200)
-		if err := os.WriteFile(tmpFile, []byte(content), 0o600); err != nil {
-			t.Fatalf("write temp file: %v", err)
-		}
-
-		symbols, err := codestruct.ExtractGoSymbols(tmpFile)
-		if err != nil {
-			t.Fatalf("extract symbols: %v", err)
-		}
-
-		totalLines := len(strings.Split(content, "\n"))
-		navMap := worker.FormatNavMap(tmpFile, totalLines, symbols)
-
-		rawChars := len(content)
-		navChars := len(navMap)
-
-		if rawChars == 0 {
-			t.Fatal("raw file must have content")
-		}
-
-		savings := float64(rawChars-navChars) / float64(rawChars)
-		if savings < 0.80 {
-			t.Errorf("expected nav-map to save >= 80%% chars vs raw file, got %.1f%% savings (raw: %d chars, nav: %d chars)",
-				savings*100, rawChars, navChars)
 		}
 	})
 

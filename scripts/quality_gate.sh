@@ -555,6 +555,7 @@ lane_go() {
 		"go test + coverage" "go_test_with_coverage"
 		"go build" "go build -buildvcs=false ./..."
 		"go vet" "go vet ./..."
+		"CGO-free build" "CGO_ENABLED=0 go build -buildvcs=false ./cmd/oro ./cmd/oro-search-hook"
 	)
 	tier3_checks+=("govulncheck" "go tool govulncheck ./...")
 	parallel_checks "${tier3_checks[@]}"

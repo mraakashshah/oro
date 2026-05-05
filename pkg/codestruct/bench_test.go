@@ -1,4 +1,4 @@
-//go:build darwin && arm64 && !race
+//go:build cgo && darwin && arm64 && !race
 
 // Performance-budget tests for pkg/codestruct (§6.10, harness architecture spec).
 // Build constraints restrict to M-series Macs without the race detector:

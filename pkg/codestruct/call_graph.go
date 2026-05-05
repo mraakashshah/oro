@@ -1,3 +1,5 @@
+//go:build cgo
+
 package codestruct
 
 import (
@@ -11,17 +13,6 @@ import (
 	sitter "github.com/smacker/go-tree-sitter"
 	"github.com/smacker/go-tree-sitter/golang"
 )
-
-// CallEdge represents a single function/method call resolved from source.
-type CallEdge struct {
-	CallerFile   string // file containing the call
-	CallerSymbol string // enclosing function/method name; empty for top-level code
-	CalleeName   string // callee as it appears in source (e.g. "pkg.Func")
-	CalleeFile   string // file where callee is defined; empty when unresolved
-	CalleeSymbol string // callee's symbol name; empty when unresolved
-	Line         int    // 1-indexed line of the call expression
-	Resolved     bool
-}
 
 // BuildCallGraph walks call expressions in the given Go files and resolves callees
 // to symbols in pkgSymbols. files are the Go source files to analyse (one package).

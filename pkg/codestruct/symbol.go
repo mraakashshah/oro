@@ -25,3 +25,14 @@ type Symbol struct {
 	Visibility string   // "exported" or "unexported"
 	Decorators []string // Python/TS decorator names; empty for Go
 }
+
+// CallEdge represents a single function/method call resolved from source.
+type CallEdge struct {
+	CallerFile   string // file containing the call
+	CallerSymbol string // enclosing function/method name; empty for top-level code
+	CalleeName   string // callee as it appears in source (e.g. "pkg.Func")
+	CalleeFile   string // file where callee is defined; empty when unresolved
+	CalleeSymbol string // callee's symbol name; empty when unresolved
+	Line         int    // 1-indexed line of the call expression
+	Resolved     bool
+}

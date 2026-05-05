@@ -1,3 +1,5 @@
+//go:build cgo
+
 // Package codestruct provides tree-sitter-backed symbol extraction for Go source files.
 package codestruct
 
