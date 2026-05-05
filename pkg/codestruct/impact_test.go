@@ -1,9 +1,11 @@
-package codestruct
+package codestruct_test
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"oro/pkg/codestruct"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -95,7 +97,7 @@ func main() {
 func TestComputeImpactBlastRadius(t *testing.T) {
 	root, dispatcherFile := buildImpactFixture(t)
 
-	got, err := ComputeImpact(root, dispatcherFile, "Run")
+	got, err := codestruct.ComputeImpact(root, dispatcherFile, "Run")
 	require.NoError(t, err)
 
 	assert.Equal(t, "Run", got.Symbol)
@@ -161,7 +163,7 @@ import "dedup/pkg/target"
 func CallA() { target.Hit() }
 `)
 
-	got, err := ComputeImpact(root, target, "Hit")
+	got, err := codestruct.ComputeImpact(root, target, "Hit")
 	require.NoError(t, err)
 
 	wantDirect := []string{
@@ -174,7 +176,7 @@ func CallA() { target.Hit() }
 }
 
 func TestComputeImpactWalkError(t *testing.T) {
-	_, err := ComputeImpact(filepath.Join(t.TempDir(), "does-not-exist"), "ignored.go", "Run")
+	_, err := codestruct.ComputeImpact(filepath.Join(t.TempDir(), "does-not-exist"), "ignored.go", "Run")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "impact:")
 }
@@ -185,7 +187,7 @@ func TestFindGoModDir(t *testing.T) {
 	nested := filepath.Join(root, "a", "b", "c")
 	require.NoError(t, os.MkdirAll(nested, 0o755))
 
-	got, err := FindGoModDir(nested)
+	got, err := codestruct.FindGoModDir(nested)
 	require.NoError(t, err)
 	gotResolved, err := filepath.EvalSymlinks(got)
 	require.NoError(t, err)
@@ -196,7 +198,7 @@ func TestFindGoModDir(t *testing.T) {
 
 func TestFindGoModDirNotFound(t *testing.T) {
 	dir := t.TempDir()
-	_, err := FindGoModDir(dir)
+	_, err := codestruct.FindGoModDir(dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no go.mod found")
 }
