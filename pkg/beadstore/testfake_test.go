@@ -514,6 +514,119 @@ func TestFakeStoreCards(t *testing.T) {
 	})
 }
 
+func TestFakeCardsReadTx_Filters(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	retiredNow := now
+
+	active := cards.Card{
+		ID: "active", Type: cards.CardTypeRule, Title: "A",
+		BodyFull: "body-active", Score: 1.0, DecayAnchor: now, CreatedAt: now, UpdatedAt: now,
+	}
+	retired := cards.Card{
+		ID: "retired", Type: cards.CardTypeRule, Title: "R",
+		BodyFull: "body-retired", Score: 1.0, DecayAnchor: now, CreatedAt: now, UpdatedAt: now,
+		RetiredAt: &retiredNow,
+	}
+	pattern := cards.Card{
+		ID: "pattern-1", Type: cards.CardTypePattern, Title: "P",
+		BodyFull: "body-pattern", Score: 1.0, DecayAnchor: now, CreatedAt: now, UpdatedAt: now,
+	}
+
+	store := beadstore.NewFakeStore()
+	store.SetCards([]cards.Card{active, retired, pattern})
+
+	getTx := func(t *testing.T) cards.ReadTx {
+		t.Helper()
+		var tx cards.ReadTx
+		if err := store.WithReadTx(ctx, func(readTx beadstore.ReadTx) error {
+			tx = readTx.Cards()
+			return nil
+		}); err != nil {
+			t.Fatalf("WithReadTx: %v", err)
+		}
+		return tx
+	}
+
+	t.Run("List excludes retired by default", func(t *testing.T) {
+		got, err := getTx(t).List(ctx, cards.ListQuery{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range got {
+			if c.ID == "retired" {
+				t.Fatal("retired card included in default List")
+			}
+		}
+	})
+
+	t.Run("List includes retired when IncludeRetired=true", func(t *testing.T) {
+		got, err := getTx(t).List(ctx, cards.ListQuery{IncludeRetired: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("List(IncludeRetired) = %d cards, want 3", len(got))
+		}
+	})
+
+	t.Run("List filters by Type", func(t *testing.T) {
+		got, err := getTx(t).List(ctx, cards.ListQuery{Type: cards.CardTypePattern})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0].ID != "pattern-1" {
+			t.Fatalf("List(Type=pattern) = %v, want [pattern-1]", got)
+		}
+	})
+
+	t.Run("List Offset skips cards", func(t *testing.T) {
+		got, err := getTx(t).List(ctx, cards.ListQuery{Offset: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("List(Offset=1) = %d cards, want 1", len(got))
+		}
+	})
+
+	t.Run("List Offset beyond end returns nil", func(t *testing.T) {
+		got, err := getTx(t).List(ctx, cards.ListQuery{Offset: 100})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("List(Offset=100) = %v, want empty", got)
+		}
+	})
+
+	t.Run("List Limit caps results", func(t *testing.T) {
+		got, err := getTx(t).List(ctx, cards.ListQuery{Limit: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("List(Limit=1) = %d cards, want 1", len(got))
+		}
+	})
+
+	t.Run("Relevant with MaxTokens inlines within budget", func(t *testing.T) {
+		rel, err := getTx(t).Relevant(ctx, cards.RelevanceQuery{
+			IncludeLowScore: true,
+			MaxTokens:       1000,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rel.Deck) == 0 {
+			t.Fatal("Relevant.Deck is empty")
+		}
+		if len(rel.Inlined) == 0 {
+			t.Fatal("Relevant.Inlined is empty with MaxTokens=1000")
+		}
+	})
+}
+
 func assertIDs(t *testing.T, beads []protocol.Bead, want []string) {
 	t.Helper()
 	got := make([]string, 0, len(beads))
