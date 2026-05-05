@@ -430,6 +430,60 @@ func TestRetryNonTDDAC(t *testing.T) {
 	}
 }
 
+// TestShouldRetryEscalation_ManualIntegration verifies that MANUAL_INTEGRATION
+// escalations are never re-delivered by the retry loop. They are one-shot
+// notifications: once the escalation fires, the human reads and acts; no
+// repeat reminder is needed. Without this case the default branch returns
+// true, causing the 50ms test ticker to pump duplicate messages and making
+// TestHandleDoneManualIntegrationSkipsMergeAndPreservesWorktree flaky under load.
+func TestShouldRetryEscalation_ManualIntegration(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name      string
+		beadID    string
+		setupBead func(*fakeBeadStore)
+	}{
+		{
+			name:   "bead still blocked — no retry",
+			beadID: "oro-mi1",
+			setupBead: func(m *fakeBeadStore) {
+				m.shown["oro-mi1"] = &protocol.BeadDetail{
+					ID:     "oro-mi1",
+					Status: "blocked",
+				}
+			},
+		},
+		{
+			name:   "bead closed (merged) — no retry",
+			beadID: "oro-mi2",
+			setupBead: func(m *fakeBeadStore) {
+				m.shown["oro-mi2"] = &protocol.BeadDetail{
+					ID:     "oro-mi2",
+					Status: "closed",
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			beadSrc := &fakeBeadStore{shown: make(map[string]*protocol.BeadDetail)}
+			if tt.setupBead != nil {
+				tt.setupBead(beadSrc)
+			}
+			d := &Dispatcher{
+				beads:      beadSrc,
+				WorkerPool: WorkerPool{workers: make(map[string]*trackedWorker)},
+			}
+			got := d.shouldRetryEscalation(ctx, string(protocol.EscManualIntegration), tt.beadID)
+			if got {
+				t.Errorf("shouldRetryEscalation(MANUAL_INTEGRATION, %q) = true, want false (one-shot notification must not retry)", tt.beadID)
+			}
+		})
+	}
+}
+
 // TestRetryPendingEscalations_AutoAck verifies that retryPendingEscalations
 // auto-acks resolved escalations instead of re-sending them.
 func TestRetryPendingEscalations_AutoAck(t *testing.T) {

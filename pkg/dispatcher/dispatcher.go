@@ -5474,7 +5474,7 @@ func (d *Dispatcher) shouldRetryEscalation(ctx context.Context, escType, beadID 
 		return d.retryOversizedBead(ctx, beadID)
 	case protocol.EscNonTDDAC:
 		return d.retryNonTDDAC(ctx, beadID)
-	case protocol.EscMergeComplete:
+	case protocol.EscMergeComplete, protocol.EscManualIntegration:
 		return false
 	default:
 		return true
