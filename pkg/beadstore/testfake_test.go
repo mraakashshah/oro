@@ -8,8 +8,10 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/cards"
 	"oro/pkg/protocol"
 )
 
@@ -438,6 +440,76 @@ func TestFakeStore(t *testing.T) {
 		closed[0] = "mutated"
 		if got := store.ClosedBeads(); !reflect.DeepEqual(got, []string{"defaulted", "second"}) {
 			t.Fatalf("ClosedBeads returned aliased slice: %v", got)
+		}
+	})
+}
+
+func TestFakeStoreCards(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	seeded := cards.Card{
+		ID:          "card-abc",
+		Type:        cards.CardTypeRule,
+		Title:       "Always write tests",
+		BodySummary: "Rules for testing",
+		BodyFull:    "Test all the things",
+		Tags:        []string{"testing"},
+		Score:       1.0,
+		DecayAnchor: now,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+
+	store := beadstore.NewFakeStore()
+	store.SetCards([]cards.Card{seeded})
+
+	var gotCardTx cards.ReadTx
+	if err := store.WithReadTx(ctx, func(tx beadstore.ReadTx) error {
+		gotCardTx = tx.Cards()
+		return nil
+	}); err != nil {
+		t.Fatalf("WithReadTx: %v", err)
+	}
+
+	if gotCardTx == nil {
+		t.Fatal("Cards() returned nil, want non-nil cards.ReadTx")
+	}
+
+	t.Run("Show returns seeded card", func(t *testing.T) {
+		got, err := gotCardTx.Show(ctx, "card-abc")
+		if err != nil {
+			t.Fatalf("Show: %v", err)
+		}
+		if got == nil || got.ID != "card-abc" {
+			t.Fatalf("Show = %v, want card-abc", got)
+		}
+	})
+
+	t.Run("Show returns ErrNotFound for missing id", func(t *testing.T) {
+		_, err := gotCardTx.Show(ctx, "missing")
+		if !errors.Is(err, cards.ErrNotFound) {
+			t.Fatalf("Show missing = %v, want cards.ErrNotFound", err)
+		}
+	})
+
+	t.Run("List returns seeded cards", func(t *testing.T) {
+		listed, err := gotCardTx.List(ctx, cards.ListQuery{})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(listed) != 1 || listed[0].ID != "card-abc" {
+			t.Fatalf("List = %v, want [card-abc]", listed)
+		}
+	})
+
+	t.Run("Relevant returns seeded card in Deck", func(t *testing.T) {
+		rel, err := gotCardTx.Relevant(ctx, cards.RelevanceQuery{IncludeLowScore: true})
+		if err != nil {
+			t.Fatalf("Relevant: %v", err)
+		}
+		if len(rel.Deck) != 1 || rel.Deck[0].ID != "card-abc" {
+			t.Fatalf("Relevant.Deck = %v, want [card-abc]", rel.Deck)
 		}
 	})
 }

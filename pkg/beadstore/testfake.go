@@ -26,6 +26,7 @@ type FakeStore struct {
 	gateStates         map[string]GateState
 	pipelineStages     map[string]PipelineStage
 	premortCycleCounts map[string]int
+	fakeCards          []cards.Card
 }
 
 // NewFakeStore returns a map-backed Store seeded with optional beads.
@@ -63,6 +64,16 @@ func (s *FakeStore) SetBeads(beads []protocol.Bead) {
 		}
 		s.beads[bead.ID] = cloneBead(bead)
 	}
+}
+
+// SetCards replaces the fake card store contents with the supplied cards.
+//
+//oro:testonly
+func (s *FakeStore) SetCards(cs []cards.Card) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fakeCards = make([]cards.Card, len(cs))
+	copy(s.fakeCards, cs)
 }
 
 // ClosedBeads returns bead IDs closed through Close, in call order.
@@ -875,17 +886,24 @@ func (s *FakeStore) TransitionPipelineStage(_ context.Context, beadID string, fr
 }
 
 // WithReadTx executes fn with a ReadTx that delegates to the FakeStore.
-// Cards() returns nil because FakeStore has no card store.
+// Cards() returns a snapshot of cards seeded via SetCards.
 //
 //oro:testonly
 func (s *FakeStore) WithReadTx(_ context.Context, fn func(tx ReadTx) error) error {
-	return fn(&fakeReadTx{s: s})
+	s.mu.RLock()
+	snapshot := make([]cards.Card, len(s.fakeCards))
+	copy(snapshot, s.fakeCards)
+	s.mu.RUnlock()
+	return fn(&fakeReadTx{s: s, cardsTx: &fakeCardsReadTx{cards: snapshot}})
 }
 
 // fakeReadTx is a thin adapter so FakeStore can satisfy the ReadTx interface.
 //
 //oro:testonly
-type fakeReadTx struct{ s *FakeStore }
+type fakeReadTx struct {
+	s       *FakeStore
+	cardsTx cards.ReadTx
+}
 
 // Ready implements ReadTx.
 func (r *fakeReadTx) Ready(ctx context.Context) ([]protocol.Bead, error) {
@@ -937,10 +955,107 @@ func (r *fakeReadTx) LatestJourney(ctx context.Context, beadID string, limit int
 	return r.s.LatestJourney(ctx, beadID, limit)
 }
 
-// Cards implements ReadTx. Returns nil because FakeStore has no card store.
-// TODO(oro-6v7p): plumb a fake cards.ReadTx so render-path tests using
-// tx.Cards() do not nil-panic.
-func (r *fakeReadTx) Cards() cards.ReadTx { return nil }
+// Cards implements ReadTx. Returns a snapshot-backed fake cards.ReadTx.
+func (r *fakeReadTx) Cards() cards.ReadTx { return r.cardsTx }
+
+// fakeCardsReadTx implements cards.ReadTx over an in-memory card snapshot.
+//
+//oro:testonly
+type fakeCardsReadTx struct {
+	cards []cards.Card
+}
+
+// Show implements cards.ReadTx.
+func (f *fakeCardsReadTx) Show(_ context.Context, id string) (*cards.Card, error) {
+	for _, c := range f.cards {
+		if c.ID == id {
+			clone := c
+			return &clone, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: %s", cards.ErrNotFound, id)
+}
+
+// List implements cards.ReadTx.
+func (f *fakeCardsReadTx) List(_ context.Context, q cards.ListQuery) ([]cards.Card, error) {
+	var out []cards.Card
+	for _, c := range f.cards {
+		if !q.IncludeRetired && c.RetiredAt != nil {
+			continue
+		}
+		if q.Type != "" && c.Type != q.Type {
+			continue
+		}
+		out = append(out, c)
+	}
+	if q.Offset > 0 {
+		if q.Offset >= len(out) {
+			return nil, nil
+		}
+		out = out[q.Offset:]
+	}
+	if q.Limit > 0 && len(out) > q.Limit {
+		out = out[:q.Limit]
+	}
+	return out, nil
+}
+
+// Relevant implements cards.ReadTx using exported scoring helpers.
+func (f *fakeCardsReadTx) Relevant(_ context.Context, q cards.RelevanceQuery) (cards.RelevantCards, error) {
+	now := time.Now()
+	type scored struct {
+		card  cards.Card
+		score float64
+	}
+	var candidates []scored
+	for _, c := range f.cards {
+		if c.RetiredAt != nil {
+			continue
+		}
+		eff := cards.EffectiveScore(&c, now)
+		isSuppressed := cards.SuppressionMultiplier(c.Type, c.LastContradictedAt, now) == 0.0
+		if !q.IncludeSuppressed && isSuppressed {
+			continue
+		}
+		scoreForThreshold := eff
+		if isSuppressed && q.IncludeSuppressed {
+			scoreForThreshold = c.Score * cards.DecayMultiplier(c.Type, c.DecayAnchor, now)
+		}
+		if !q.IncludeLowScore && scoreForThreshold < cards.DefaultThreshold {
+			continue
+		}
+		candidates = append(candidates, scored{card: c, score: eff})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
+	deck := make([]cards.CardSummary, 0, len(candidates))
+	var inlined []cards.CardSummary
+	budget := q.MaxTokens
+	for _, sc := range candidates {
+		deck = append(deck, toFakeCardSummary(sc.card))
+		if budget > 0 {
+			tokens := (len(sc.card.BodyFull) + 3) / 4
+			if tokens <= budget {
+				inlined = append(inlined, toFakeCardSummary(sc.card))
+				budget -= tokens
+			}
+		}
+	}
+	return cards.RelevantCards{Deck: deck, Inlined: inlined}, nil
+}
+
+func toFakeCardSummary(c cards.Card) cards.CardSummary {
+	return cards.CardSummary{
+		ID:          c.ID,
+		Type:        c.Type,
+		Title:       c.Title,
+		BodySummary: c.BodySummary,
+		BodyFull:    c.BodyFull,
+		Score:       c.Score,
+		Tags:        c.Tags,
+	}
+}
 
 func nowString() string {
 	return time.Now().UTC().Format(time.RFC3339Nano)
