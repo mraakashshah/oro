@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -14,6 +15,11 @@ import (
 	"oro/pkg/beadstore"
 	"oro/pkg/protocol"
 )
+
+// ErrReplanLoopExhausted is returned by OnReplanChildrenClosed when the parent
+// is already at gate_state=escalated, indicating the replan cycle cap has been
+// reached and no further replan children should be created.
+var ErrReplanLoopExhausted = errors.New("dispatcher: replan loop exhausted")
 
 const tagAwaitsParentClose = "awaits_parent_close"
 
@@ -181,6 +187,14 @@ func ReapDeletedParentChildren(ctx context.Context, store DeferredStore) error {
 // the parent's gate_state from replan → eligible and records the cycle count.
 // If cycleNum >= maxCycles, it emits an escalated event instead.
 func OnReplanChildrenClosed(ctx context.Context, store beadstore.Store, counter PremortCounter, parentID string, cycleNum, maxCycles int) error {
+	gs, err := store.GateState(ctx, parentID)
+	if err != nil {
+		return fmt.Errorf("sweep: gate state for %s: %w", parentID, err)
+	}
+	if gs == beadstore.GateEscalated {
+		return ErrReplanLoopExhausted
+	}
+
 	beads, err := exportBeads(ctx, store)
 	if err != nil {
 		return err

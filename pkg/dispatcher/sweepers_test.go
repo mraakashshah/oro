@@ -3,6 +3,7 @@ package dispatcher //nolint:testpackage // white-box: shares package to access u
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -311,6 +312,29 @@ func TestSweepers(t *testing.T) {
 		}
 		if len(counter.calls) > 0 {
 			t.Error("SetPremortCycleCount should not be called when children still open")
+		}
+	})
+
+	t.Run("OnReplanChildrenClosed/blocks_replan_after_max_cycles", func(t *testing.T) {
+		parent := protocol.Bead{ID: "or-p-esc", Status: "in_progress"}
+		store := beadstore.NewFakeStore(parent)
+		// Parent already at gate_state=escalated with 5 completed premortem cycles.
+		_ = store.SetGateState(ctx, "or-p-esc", beadstore.GateState(""), beadstore.GateEscalated, "test-pre-escalated")
+		for range 5 {
+			_ = store.IncrPremortCycleCount(ctx, "or-p-esc")
+		}
+
+		counter := &fakePremortCounter{}
+		err := OnReplanChildrenClosed(ctx, store, counter, "or-p-esc", 6, 5)
+		if !errors.Is(err, ErrReplanLoopExhausted) {
+			t.Errorf("6th replan cycle: expected ErrReplanLoopExhausted, got %v", err)
+		}
+		if len(counter.calls) > 0 {
+			t.Error("SetPremortCycleCount must not be called when already escalated")
+		}
+		children, _ := store.FindByParentAndTag(ctx, "or-p-esc", "replan_cycle:6")
+		if len(children) > 0 {
+			t.Errorf("must not create new replan child after max cycles, got %d children", len(children))
 		}
 	})
 

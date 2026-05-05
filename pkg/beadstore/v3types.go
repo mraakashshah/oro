@@ -22,6 +22,7 @@ const (
 	GateSatisfied GateState = "satisfied"
 	GateBlocked   GateState = "blocked"
 	GateReplan    GateState = "replan"
+	GateEscalated GateState = "escalated"
 )
 
 // PipelineStage is the current stage in the bead's workflow pipeline (§11.9).
