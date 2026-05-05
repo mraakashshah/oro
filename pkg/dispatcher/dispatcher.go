@@ -1987,7 +1987,7 @@ func (d *Dispatcher) notifyReplanChildClosed(ctx context.Context, beadID string)
 	if cycleNum < 0 {
 		return
 	}
-	if err := OnReplanChildrenClosed(ctx, d.beads, nopPremortCounter{}, bead.Epic, cycleNum, defaultMaxPremortemCycles); err != nil {
+	if err := OnReplanChildrenClosed(ctx, d.beads, nopPremortCounter{}, bead.Epic, cycleNum, defaultMaxPremortemCycles); err != nil && !errors.Is(err, ErrReplanLoopExhausted) {
 		_ = d.logEvent(ctx, "replan_child_closed_failed", "dispatcher", beadID, "", err.Error())
 	}
 }

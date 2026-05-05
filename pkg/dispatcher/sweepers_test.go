@@ -336,6 +336,18 @@ func TestSweepers(t *testing.T) {
 		if len(children) > 0 {
 			t.Errorf("must not create new replan child after max cycles, got %d children", len(children))
 		}
+		// Guard must run BEFORE the cycleNum>=maxCycles escalation branch — otherwise
+		// a 6th call would re-emit "escalated" on top of the prior gate transition.
+		events, _ := store.Journey(ctx, "or-p-esc", time.Time{})
+		var escalatedCount int
+		for _, e := range events {
+			if e.Event == "escalated" {
+				escalatedCount++
+			}
+		}
+		if escalatedCount != 0 {
+			t.Errorf("guard must short-circuit before re-emitting escalated; got %d escalated events", escalatedCount)
+		}
 	})
 
 	// ─── ExpireReviewQueueSLA ────────────────────────────────────────────────
