@@ -998,11 +998,13 @@ func TestBeadHelper() string {
 
 // spyOpsReviewer implements opsReviewer and records the BaseBranch used in Review calls.
 type spyOpsReviewer struct {
-	capturedBaseBranch string
+	capturedBaseBranch     string
+	capturedReviewPatterns string
 }
 
 func (s *spyOpsReviewer) Review(_ context.Context, opts ops.ReviewOpts) <-chan ops.Result {
 	s.capturedBaseBranch = opts.BaseBranch
+	s.capturedReviewPatterns = opts.ReviewPatterns
 	ch := make(chan ops.Result, 1)
 	ch <- ops.Result{Verdict: ops.VerdictApproved}
 	return ch
@@ -1754,5 +1756,56 @@ func TestWork_RefusedOnEligibleParent(t *testing.T) {
 	}
 	if mg.called {
 		t.Error("merger should not be called when premortem gate refuses dispatch")
+	}
+}
+
+// TestOroWorkPassesReviewPatternsToReviewOpts verifies that reviewLoop resolves
+// and passes the ReviewPatterns path from ProjectPaths into ops.ReviewOpts.ReviewPatterns.
+// Uses a custom stealth path so fallback-to-worktree-assets fails if ReviewPatterns is not explicitly set.
+func TestOroWorkPassesReviewPatternsToReviewOpts(t *testing.T) {
+	repoRoot := t.TempDir()
+
+	// Create assets directory with review-patterns.md for standard mode
+	assetsDir := filepath.Join(repoRoot, "assets")
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatalf("mkdir assets: %v", err)
+	}
+	reviewPatternsPath := filepath.Join(assetsDir, "review-patterns.md")
+	if err := os.WriteFile(reviewPatternsPath, []byte("# Review Patterns"), 0o644); err != nil {
+		t.Fatalf("write review-patterns.md: %v", err)
+	}
+
+	// Create a spy that captures ReviewPatterns
+	spy := &spyOpsReviewer{capturedReviewPatterns: ""}
+
+	cfg := &workConfig{
+		beadID: "oro-test",
+		bead: &protocol.BeadDetail{
+			ID:                 "oro-test",
+			Title:              "Test bead",
+			AcceptanceCriteria: "Tests pass",
+		},
+	}
+	deps := &workDeps{
+		opsMgr:   spy,
+		repoRoot: repoRoot,
+	}
+
+	model := "sonnet"
+	attempt := 0
+	feedback := ""
+
+	err := reviewLoop(context.Background(), cfg, deps, repoRoot, "main", &model, &attempt, &feedback, nil)
+	if err != nil {
+		t.Fatalf("reviewLoop: %v", err)
+	}
+
+	// Assert that ReviewPatterns was passed
+	if spy.capturedReviewPatterns == "" {
+		t.Error("ReviewPatterns in ReviewOpts is empty, should be the resolved path")
+	}
+	expectedPath := filepath.Join(repoRoot, "assets", "review-patterns.md")
+	if spy.capturedReviewPatterns != expectedPath {
+		t.Errorf("ReviewPatterns in ReviewOpts = %q, want %q", spy.capturedReviewPatterns, expectedPath)
 	}
 }

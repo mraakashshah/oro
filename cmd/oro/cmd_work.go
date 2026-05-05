@@ -658,6 +658,11 @@ func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree
 // reviewLoop runs ops review and handles rejection retries.
 // targetBranch is the branch the worker merges into (epic branch or "main").
 func reviewLoop(ctx context.Context, cfg *workConfig, deps *workDeps, worktree, targetBranch string, model *string, attempt *int, feedback *string, logFile *os.File) error {
+	projPaths, err := ResolvePaths(worktree)
+	if err != nil {
+		return fmt.Errorf("resolve paths: %w", err)
+	}
+
 	for rejects := 0; ; {
 		logStep("Running ops review (opus)...")
 		resultCh := deps.opsMgr.Review(ctx, ops.ReviewOpts{
@@ -667,6 +672,7 @@ func reviewLoop(ctx context.Context, cfg *workConfig, deps *workDeps, worktree, 
 			AcceptanceCriteria: cfg.bead.AcceptanceCriteria,
 			BaseBranch:         targetBranch,
 			ProjectRoot:        worktree,
+			ReviewPatterns:     projPaths.ReviewPatterns,
 		})
 		result, err := waitForReviewResult(ctx, resultCh)
 		if err != nil {
