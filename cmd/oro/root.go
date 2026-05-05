@@ -51,7 +51,12 @@ func newRootCmd() *cobra.Command {
 		newModelsCmd(),
 		newOutlineCmd(),
 		newImpactCmd(),
+		newEditCmd(),
 	)
+
+	for _, alias := range editRootAliases() {
+		cmd.AddCommand(alias)
+	}
 
 	return cmd
 }

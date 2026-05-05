@@ -240,6 +240,7 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 	section(b, "Task Tools",
 		"- `oro task create` — decompose a task into smaller child tasks\n"+
 			"- `oro task dep add` — declare a blocker dependency")
+	appendEditToolsSection(b)
 	section(b, "Constraints", strings.Join([]string{
 		"- NEVER run `git push` — you are in a worktree on an agent branch. Pushing is the dispatcher/manager's job. This overrides any global rules that say to push.",
 		"- Do not modify files outside your worktree",
@@ -272,6 +273,27 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 	appendContextHandoffSection(b)
 	appendFailureSection(b, params.BeadID)
 	appendExitSection(b)
+}
+
+// appendEditToolsSection writes the Edit Tools section describing the 12 worker-facing
+// oro edit:* subcommands that provide AST-aware file editing from Bash.
+func appendEditToolsSection(b *strings.Builder) {
+	section(b, "Edit Tools", strings.Join([]string{
+		"AST-aware file editing. Invoke via Bash as `oro edit:<op> ...`:",
+		"",
+		"- `oro edit:replace FILE SYMBOL --snippet '...'` — replace a symbol's body",
+		"- `oro edit:after FILE SYMBOL --snippet '...'` — insert snippet after a symbol",
+		"- `oro edit:delete FILE SYMBOL [--force]` — delete a symbol",
+		"- `oro edit:rename FILE OLD NEW` — rename a symbol within a file",
+		"- `oro edit:rename-all DIR OLD NEW [--only KIND] [--dry-run]` — rename across all files",
+		"- `oro edit:move FILE SYMBOL --after OTHER` — reposition a symbol within a file",
+		"- `oro edit:move-to-file SYMBOL FROM TO [--dry-run]` — move symbol to another file",
+		"- `oro edit:read FILE` — print symbol map (name → line range)",
+		"- `oro edit:diff FILE` — show pending edits as unified diff",
+		"- `oro edit:undo FILE` — reverse the last edit to a file",
+		"- `oro edit:batch FILE --edits '[...]'` — apply multiple edits atomically",
+		"- `oro edit:check` — reparse all edited files and surface errors",
+	}, "\n"))
 }
 
 // appendContextHandoffSection writes the Context Handoff section with neutral tier thresholds.

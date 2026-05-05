@@ -2004,6 +2004,52 @@ func TestPromptTaskTerminology(t *testing.T) {
 	}
 }
 
+// TestAssemblePromptIncludesEditSurface verifies that AssemblePrompt emits the
+// edit:* surface in the worker tool prompt section so workers know how to
+// invoke oro edit subcommands from Bash.
+func TestAssemblePromptIncludesEditSurface(t *testing.T) {
+	t.Parallel()
+
+	params := worker.PromptParams{
+		BeadID:             "bead-edit-surface",
+		Title:              "Edit surface test",
+		Description:        "Verify edit:* surface in prompt",
+		AcceptanceCriteria: "All 12 edit ops listed",
+		WorktreePath:       "/tmp/wt-edit-surface",
+		Model:              "opus",
+	}
+
+	prompt := worker.AssemblePrompt(params)
+
+	// All 12 edit:* subcommands must appear in the prompt.
+	editOps := []string{
+		"edit:replace",
+		"edit:after",
+		"edit:delete",
+		"edit:rename",
+		"edit:rename-all",
+		"edit:move",
+		"edit:move-to-file",
+		"edit:read",
+		"edit:diff",
+		"edit:undo",
+		"edit:batch",
+		"edit:check",
+	}
+	for _, op := range editOps {
+		if !strings.Contains(prompt, op) {
+			t.Errorf("expected prompt to contain edit op %q in tool surface", op)
+		}
+	}
+
+	// The edit surface must appear in the Task Tools section or a dedicated Edit Tools section.
+	toolsIdx := strings.Index(prompt, "## Task Tools")
+	editToolsIdx := strings.Index(prompt, "## Edit Tools")
+	if toolsIdx == -1 && editToolsIdx == -1 {
+		t.Fatal("expected prompt to contain '## Task Tools' or '## Edit Tools' section")
+	}
+}
+
 func TestPromptStalenessWarning(t *testing.T) {
 	t.Parallel()
 
