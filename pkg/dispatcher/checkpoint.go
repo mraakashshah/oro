@@ -143,6 +143,92 @@ func (d *Dispatcher) handleCheckpointAck(ctx context.Context, workerID string, m
 	})
 
 	d.checkpoints.clear(beadID)
+	d.respawnAfterCheckpoint(ctx, workerID, beadID, ack.IntentSummary)
+}
+
+// respawnAfterCheckpoint kills the old worker and queues a fresh one for beadID
+// with the same worktree and the intent summary from the checkpoint ack (§9.3
+// steps 6-8).  It increments checkpointCounts[beadID] so that the incoming
+// worker's ASSIGN.Attempt reflects turn N+1 of the bead's lifetime (§9.3 step 9).
+func (d *Dispatcher) respawnAfterCheckpoint(ctx context.Context, workerID, beadID, nextAction string) {
+	worktree, model, epicID, baseBranch, targetBranch := d.workerContextForBead(workerID)
+	if worktree == "" {
+		return
+	}
+	if d.procMgr != nil {
+		_ = d.procMgr.Kill(workerID)
+	}
+	assignmentID := d.activeAssignmentIDForBead(ctx, beadID)
+	newID, turn := d.enqueueCheckpointHandoff(beadID, assignmentID, worktree, model, epicID, baseBranch, targetBranch, nextAction)
+	_ = d.logEvent(ctx, "checkpoint_respawn_pending", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"next_action":%q,"turn":%d}`, nextAction, turn))
+	d.assignPendingHandoffsToIdleWorkers()
+	d.spawnCheckpointWorker(ctx, beadID, newID)
+}
+
+// workerContextForBead reads the worker's assigned bead context under the
+// dispatcher lock. Returns empty worktree if the worker is not found.
+func (d *Dispatcher) workerContextForBead(workerID string) (worktree, model, epicID, baseBranch, targetBranch string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w, ok := d.workers[workerID]
+	if !ok {
+		return
+	}
+	return w.worktree, w.model, w.epicID, w.baseBranch, w.targetBranch
+}
+
+// enqueueCheckpointHandoff registers the pending handoff for beadID, increments
+// the checkpoint counter, and reserves a managed worker ID (if a ProcessManager
+// is wired). Returns (newID, turn); newID is empty when no ProcessManager is set.
+func (d *Dispatcher) enqueueCheckpointHandoff(beadID string, assignmentID int64, worktree, model, epicID, baseBranch, targetBranch, nextAction string) (newID string, turn int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.checkpointCounts[beadID]++
+	turn = d.checkpointCounts[beadID]
+	if d.procMgr != nil {
+		newID = fmt.Sprintf("worker-checkpoint-%d", d.nowFunc().UnixNano())
+	}
+	d.pendingHandoffs[beadID] = &pendingHandoff{
+		assignmentID:   assignmentID,
+		beadID:         beadID,
+		epicID:         epicID,
+		worktree:       worktree,
+		baseBranch:     baseBranch,
+		targetBranch:   targetBranch,
+		model:          model,
+		nextAction:     nextAction,
+		checkpointTurn: turn,
+	}
+	if newID != "" {
+		d.pendingManagedIDs[newID] = true
+		d.pendingManagedSince[newID] = d.nowFunc()
+	}
+	return newID, turn
+}
+
+// spawnCheckpointWorker spawns newID if the handoff for beadID is still pending
+// (i.e., no idle worker consumed it via assignPendingHandoffsToIdleWorkers).
+func (d *Dispatcher) spawnCheckpointWorker(ctx context.Context, beadID, newID string) {
+	if d.procMgr == nil || newID == "" {
+		return
+	}
+	d.mu.Lock()
+	_, stillPending := d.pendingHandoffs[beadID]
+	if !stillPending {
+		delete(d.pendingManagedIDs, newID)
+		delete(d.pendingManagedSince, newID)
+		d.mu.Unlock()
+		return
+	}
+	d.mu.Unlock()
+	if _, err := d.procMgr.Spawn(newID); err != nil {
+		d.mu.Lock()
+		delete(d.pendingManagedIDs, newID)
+		delete(d.pendingManagedSince, newID)
+		d.mu.Unlock()
+		_ = d.logEvent(ctx, "checkpoint_spawn_failed", "dispatcher", beadID, newID, err.Error())
+	}
 }
 
 // findInflightCheckpoint scans journey events (ascending chronological order)

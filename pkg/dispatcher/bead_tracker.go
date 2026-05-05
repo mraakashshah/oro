@@ -21,6 +21,7 @@ type BeadTracker struct {
 	rejectionCounts        map[string]int             // bead ID -> review rejection count
 	handoffCounts          map[string]int             // bead ID -> ralph handoff count
 	attemptCounts          map[string]int             // bead ID -> QG retry attempt count
+	checkpointCounts       map[string]int             // bead ID -> checkpoint respawn count (§9.3 step 9)
 	pendingHandoffs        map[string]*pendingHandoff // bead ID -> pending handoff info
 	qgStuckTracker         map[string]*qgHistory      // bead ID -> consecutive QG output hashes
 	escalatedBeads         map[string]bool            // bead ID -> true if PRIORITY_CONTENTION escalated
@@ -43,6 +44,7 @@ func (d *Dispatcher) clearBeadTracking(beadID string) {
 	delete(d.attemptCounts, beadID)
 	delete(d.handoffCounts, beadID)
 	delete(d.rejectionCounts, beadID)
+	delete(d.checkpointCounts, beadID)
 	delete(d.pendingHandoffs, beadID)
 	delete(d.qgStuckTracker, beadID)
 	delete(d.escalatedBeads, beadID)
@@ -131,6 +133,7 @@ func (d *Dispatcher) deleteOrphanedTracking(activeBeads map[string]bool) int {
 		delete(d.attemptCounts, beadID)
 		delete(d.handoffCounts, beadID)
 		delete(d.rejectionCounts, beadID)
+		delete(d.checkpointCounts, beadID)
 		delete(d.pendingHandoffs, beadID)
 		delete(d.qgStuckTracker, beadID)
 		delete(d.escalatedBeads, beadID)
@@ -161,49 +164,46 @@ func (d *Dispatcher) gcWorktrees(ctx context.Context) {
 	}
 }
 
+// addIntMapKeys marks every key in m as present in seen.
+func addIntMapKeys(seen map[string]bool, m map[string]int) {
+	for id := range m {
+		seen[id] = true
+	}
+}
+
+// addBoolMapKeys marks every key in m as present in seen.
+func addBoolMapKeys(seen, m map[string]bool) {
+	for id := range m {
+		seen[id] = true
+	}
+}
+
 // allTrackingKeys returns all bead IDs referenced across tracking maps.
 // Caller must hold d.mu.
 func (d *Dispatcher) allTrackingKeys() []string {
 	seen := make(map[string]bool)
-	for id := range d.attemptCounts {
-		seen[id] = true
-	}
-	for id := range d.handoffCounts {
-		seen[id] = true
-	}
-	for id := range d.rejectionCounts {
-		seen[id] = true
-	}
+	addIntMapKeys(seen, d.attemptCounts)
+	addIntMapKeys(seen, d.handoffCounts)
+	addIntMapKeys(seen, d.rejectionCounts)
+	addIntMapKeys(seen, d.checkpointCounts)
 	for id := range d.pendingHandoffs {
 		seen[id] = true
 	}
 	for id := range d.qgStuckTracker {
 		seen[id] = true
 	}
-	for id := range d.escalatedBeads {
-		seen[id] = true
-	}
 	for id := range d.worktreeFailures {
-		seen[id] = true
-	}
-	for id := range d.exhaustedBeads {
-		seen[id] = true
-	}
-	for id := range d.assigningBeads {
-		seen[id] = true
-	}
-	for id := range d.mergingBeads {
 		seen[id] = true
 	}
 	for id := range d.worktreeByBead {
 		seen[id] = true
 	}
-	for id := range d.epicMergeFailed {
-		seen[id] = true
-	}
-	for id := range d.processedExternalClose {
-		seen[id] = true
-	}
+	addBoolMapKeys(seen, d.escalatedBeads)
+	addBoolMapKeys(seen, d.exhaustedBeads)
+	addBoolMapKeys(seen, d.assigningBeads)
+	addBoolMapKeys(seen, d.mergingBeads)
+	addBoolMapKeys(seen, d.epicMergeFailed)
+	addBoolMapKeys(seen, d.processedExternalClose)
 	keys := make([]string, 0, len(seen))
 	for id := range seen {
 		keys = append(keys, id)

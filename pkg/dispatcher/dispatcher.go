@@ -391,15 +391,17 @@ const shutdownReasonScaleDown = "scale_down"
 // during a ralph handoff. The next worker to connect will be assigned this
 // bead+worktree instead of going through normal assignment.
 type pendingHandoff struct {
-	assignmentID int64
-	beadID       string
-	epicID       string // parent epic ID if the bead is a child of an epic
-	worktree     string
-	baseBranch   string // branch the worktree was created from (main or epic/<epicID>)
-	targetBranch string // branch the worker's changes should merge into (same as baseBranch)
-	model        string
-	title        string   // bead title for memory search on respawn
-	labels       []string // bead labels for memory search on respawn
+	assignmentID   int64
+	beadID         string
+	epicID         string // parent epic ID if the bead is a child of an epic
+	worktree       string
+	baseBranch     string // branch the worktree was created from (main or epic/<epicID>)
+	targetBranch   string // branch the worker's changes should merge into (same as baseBranch)
+	model          string
+	title          string   // bead title for memory search on respawn
+	labels         []string // bead labels for memory search on respawn
+	nextAction     string   // intent_summary from checkpoint_acked (§9.3); empty for ralph handoffs
+	checkpointTurn int      // checkpoint respawn count for this bead (§9.3 step 9); 0 for ralph handoffs
 }
 
 // --- Config ---
@@ -789,6 +791,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 			rejectionCounts:        make(map[string]int),
 			handoffCounts:          make(map[string]int),
 			attemptCounts:          make(map[string]int),
+			checkpointCounts:       make(map[string]int),
 			pendingHandoffs:        make(map[string]*pendingHandoff),
 			qgStuckTracker:         make(map[string]*qgHistory),
 			escalatedBeads:         make(map[string]bool),

@@ -204,6 +204,8 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 			Model:         h.model,
 			MemoryContext: memCtx,
 			TargetBranch:  h.targetBranch,
+			Feedback:      h.nextAction,
+			Attempt:       h.checkpointTurn,
 		},
 	}); err != nil {
 		_ = w.conn.Close()
