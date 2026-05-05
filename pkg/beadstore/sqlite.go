@@ -242,16 +242,31 @@ func (s *SQLiteStore) Update(ctx context.Context, id string, params UpdateParams
 	if affected == 0 {
 		return &protocol.BeadNotFoundError{BeadID: id}
 	}
-	if params.Notes != nil && strings.TrimSpace(*params.Notes) != "" {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO bead_notes (bead_id, author, content, created_at) VALUES (?, 'oro', ?, ?)`, id, *params.Notes, nowString()); err != nil {
-			return fmt.Errorf("beadstore: add note %s: %w", id, err)
-		}
+	if err := applyUpdateSideEffects(ctx, tx, id, params); err != nil {
+		return err
 	}
 	if err := insertEvent(ctx, tx, "bead_updated", id, updatePayload(params)); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("beadstore: commit update %s: %w", id, err)
+	}
+	return nil
+}
+
+// applyUpdateSideEffects applies tag and note side-effects inside an open
+// transaction. Extracted to keep (*SQLiteStore).Update below the cyclomatic
+// complexity limit.
+func applyUpdateSideEffects(ctx context.Context, tx *sql.Tx, id string, params UpdateParams) error {
+	if params.Tags != nil {
+		if err := replaceStrings(ctx, tx, "bead_tags", "tag", id, *params.Tags); err != nil {
+			return err
+		}
+	}
+	if params.Notes != nil && strings.TrimSpace(*params.Notes) != "" {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO bead_notes (bead_id, author, content, created_at) VALUES (?, 'oro', ?, ?)`, id, *params.Notes, nowString()); err != nil {
+			return fmt.Errorf("beadstore: add note %s: %w", id, err)
+		}
 	}
 	return nil
 }
@@ -912,6 +927,9 @@ func updatePayload(params UpdateParams) map[string]any {
 	}
 	if params.Owner != nil {
 		payload["owner"] = *params.Owner
+	}
+	if params.Tags != nil {
+		payload["tags"] = *params.Tags
 	}
 	return payload
 }

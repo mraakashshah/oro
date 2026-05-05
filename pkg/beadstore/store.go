@@ -118,4 +118,7 @@ type UpdateParams struct {
 	// ParentID uses nil for no change and "" for clearing the parent.
 	ParentID *string
 	Owner    *string
+	// Tags replaces the bead's entire tag list when non-nil.
+	// Set to &[]string{} to clear all tags.
+	Tags *[]string
 }

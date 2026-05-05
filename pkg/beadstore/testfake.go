@@ -228,6 +228,9 @@ func (s *FakeStore) Update(ctx context.Context, id string, params UpdateParams) 
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("update bead context: %w", err)
 	}
+	if err := validateUpdateParams(params); err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -236,12 +239,28 @@ func (s *FakeStore) Update(ctx context.Context, id string, params UpdateParams) 
 	if !ok {
 		return &protocol.BeadNotFoundError{BeadID: id}
 	}
+	if !applyBeadFields(&bead, params) {
+		return nil
+	}
+	bead.UpdatedAt = nowString()
+	s.beads[id] = bead
+	return nil
+}
+
+// validateUpdateParams returns an error for semantically invalid fields.
+func validateUpdateParams(params UpdateParams) error {
 	if params.Status != nil && !validStatus(*params.Status) {
 		return fmt.Errorf("beadstore: invalid status %q", *params.Status)
 	}
+	return nil
+}
+
+// applyBeadFields applies non-nil fields from params to bead.
+// Returns true when at least one field changed.
+func applyBeadFields(bead *protocol.Bead, params UpdateParams) bool {
 	changed := false
 	if params.Status != nil {
-		applyStatusUpdate(&bead, *params.Status)
+		applyStatusUpdate(bead, *params.Status)
 		changed = true
 	}
 	if params.Priority != nil {
@@ -272,12 +291,11 @@ func (s *FakeStore) Update(ctx context.Context, id string, params UpdateParams) 
 		bead.Owner = *params.Owner
 		changed = true
 	}
-	if !changed {
-		return nil
+	if params.Tags != nil {
+		bead.Tags = cloneStrings(*params.Tags)
+		changed = true
 	}
-	bead.UpdatedAt = nowString()
-	s.beads[id] = bead
-	return nil
+	return changed
 }
 
 func applyStatusUpdate(bead *protocol.Bead, status string) {
