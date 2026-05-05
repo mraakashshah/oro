@@ -268,7 +268,7 @@ parallel_checks() {
 				else
 					{
 						printf '%b▶%b %-30s%b✗ FAIL%b\n' "$BLUE" "$NC" "$name" "$RED" "$NC"
-						head -20 "$cmd_out"
+						cat "$cmd_out"
 					} >"${pfx}.display"
 					echo "fail" >"${pfx}.rc"
 				fi
