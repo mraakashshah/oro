@@ -409,7 +409,7 @@ func preflightAndCheckRunningWith(w io.Writer, preflight func() error) (pidPath 
 // builds oro-search-hook (hard-fails if no recovery path) and emits warnings
 // about quality_gate.sh + Epic C config drift. No-op when cwd is unreadable.
 func runRepoPreflightChecks(w io.Writer, oroHome string) error {
-	repoRoot, err := os.Getwd()
+	cwd, err := os.Getwd()
 	if err != nil {
 		return nil //nolint:nilerr // cwd unreadable is non-fatal: warnings + hook build are best-effort here
 	}
@@ -418,15 +418,37 @@ func runRepoPreflightChecks(w io.Writer, oroHome string) error {
 	// path exists (binary missing AND srcDir missing or build broken):
 	// settings.json references this binary, so silently degrading turns every
 	// PreToolUse Read hook into a missing-binary error.
+	//
+	// Resolve srcDir from the actual repo root (walk up to find go.mod) rather
+	// than cwd — `go test ./cmd/oro/...` runs with cwd inside the package
+	// directory, so a naive Join(cwd, "cmd/oro-search-hook") would produce a
+	// nonsensical doubled path and trigger false hard-fail (oro-5879).
+	srcRoot := walkUpForGoMod(cwd)
 	searchHookBin := filepath.Join(oroHome, "hooks", "oro-search-hook")
-	if hookErr := ensureSearchHook(os.Stderr, searchHookBin, filepath.Join(repoRoot, "cmd", "oro-search-hook")); hookErr != nil {
+	if hookErr := ensureSearchHook(os.Stderr, searchHookBin, filepath.Join(srcRoot, "cmd", "oro-search-hook")); hookErr != nil {
 		return fmt.Errorf("preflight: %w", hookErr)
 	}
 
-	warnIfQualityGateMissing(w, repoRoot)
-	warnIfQualityGateUntracked(w, repoRoot)
-	warnIfEpicCNotDeployed(w, repoRoot)
+	warnIfQualityGateMissing(w, cwd)
+	warnIfQualityGateUntracked(w, cwd)
+	warnIfEpicCNotDeployed(w, cwd)
 	return nil
+}
+
+// walkUpForGoMod walks up from start looking for a directory containing go.mod.
+// Falls back to start when no go.mod is found anywhere on the way to /.
+func walkUpForGoMod(start string) string {
+	dir := start
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return start
+		}
+		dir = parent
+	}
 }
 
 func startPreflightAndCheckRunning(w io.Writer, daemonOnly bool) (pidPath string, err error) {

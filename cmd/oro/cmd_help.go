@@ -30,6 +30,7 @@ Memory:
   forget     Delete memories by ID
   memories   Browse and manage the memory store
   models     Manage embedding/reranker model files (list, verify, prefetch)
+  cards      Manage knowledge cards
 
 Control:
   directive  Send a directive to the dispatcher (scale, focus, pause, resume)
@@ -54,9 +55,11 @@ Global:
 Maintenance:
   doctor     Diagnose oro installation issues
   uninstall  Remove oro and all its artifacts from this machine
+  harness    Run Oro harness verification tests (§18)
 
 Internal:
   worker     Run an oro worker process (used by the dispatcher)
+  test:context-safety  Report effective context-safety thresholds (diagnostic)
 
 Use "oro <command> --help" for detailed usage of any command.
 `
