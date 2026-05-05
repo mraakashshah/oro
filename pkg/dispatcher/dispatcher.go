@@ -435,6 +435,10 @@ type Config struct {
 	WebAddr               string        // HTTP server listen address (default 127.0.0.1:4444 in withDefaults).
 	SemanticModelDir      string        // Directory containing the BGE ONNX model files. Empty means semantic search is disabled.
 	RerankerModelDir      string        // Directory containing the BGE reranker ONNX model files. Empty means reranker unavailable.
+	// CheckpointThreshold is the context-usage percentage (0–100) at which the dispatcher
+	// triggers a checkpoint for the assigned worker. 0 disables checkpoint signalling.
+	// Default 75 (§9.3).
+	CheckpointThreshold int
 }
 
 // intDefault returns v if non-zero, otherwise dflt.
@@ -613,6 +617,9 @@ type Dispatcher struct {
 
 	// startTime records when Run() was called (for uptime).
 	startTime time.Time
+
+	// checkpoints tracks the in-flight checkpoint state per bead (§9.3).
+	checkpoints *checkpointTracker
 
 	// cachedQueueDepth stores the last-known count from beads.Ready() in the assign loop.
 	cachedQueueDepth int
@@ -805,6 +812,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		panesDir:               filepath.Join(os.Getenv("HOME"), ".oro", "panes"),
 		signaledPanes:          make(map[string]bool),
 		paneStates:             make(map[string]*paneState),
+		checkpoints:            newCheckpointTracker(),
 		nowFunc:                time.Now,
 		acceptSem:              make(chan struct{}, 100), // limit to 100 concurrent connection handlers
 	}, nil
@@ -1402,6 +1410,8 @@ func (d *Dispatcher) handleMessage(ctx context.Context, workerID string, msg pro
 		d.handleReconnect(ctx, workerID, msg)
 	case protocol.MsgShutdownApproved:
 		d.handleShutdownApproved(ctx, workerID, msg)
+	case protocol.MsgCheckpointAck:
+		d.handleCheckpointAck(ctx, workerID, msg)
 	}
 }
 
@@ -1425,6 +1435,15 @@ func (d *Dispatcher) handleHeartbeat(ctx context.Context, workerID string, msg p
 	d.mu.Unlock()
 
 	_ = d.logEvent(ctx, "heartbeat", workerID, msg.Heartbeat.BeadID, workerID, "")
+
+	// Trigger a checkpoint when context usage crosses the configured threshold
+	// and no checkpoint is already in-flight for this bead (§9.3).
+	if d.cfg.CheckpointThreshold > 0 &&
+		msg.Heartbeat.ContextPct >= d.cfg.CheckpointThreshold &&
+		msg.Heartbeat.BeadID != "" &&
+		d.checkpoints.get(msg.Heartbeat.BeadID) == nil {
+		d.triggerCheckpoint(ctx, msg.Heartbeat.BeadID, workerID, msg.Heartbeat.ContextPct)
+	}
 }
 
 func (d *Dispatcher) handleStatus(ctx context.Context, workerID string, msg protocol.Message) {

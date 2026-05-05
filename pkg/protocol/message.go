@@ -34,6 +34,7 @@ const (
 	MsgReadyForReview   MessageType = "READY_FOR_REVIEW"
 	MsgReconnect        MessageType = "RECONNECT"
 	MsgShutdownApproved MessageType = "SHUTDOWN_APPROVED"
+	MsgCheckpointAck    MessageType = "CHECKPOINT_ACK"
 )
 
 // Manager -> Dispatcher message types.
@@ -70,6 +71,7 @@ type Message struct {
 	EmbedResp        *EmbedResponse           `json:"embed_response,omitempty"`
 	RerankReq        *RerankByIDsRequest      `json:"rerank_req,omitempty"`
 	RerankResp       *RerankByIDsResponse     `json:"rerank_resp,omitempty"`
+	CheckpointAck    *CheckpointAckPayload    `json:"checkpoint_ack,omitempty"`
 }
 
 // AssignPayload is sent by the dispatcher to assign a bead to a worker.
@@ -166,6 +168,15 @@ type DonePayload struct {
 	WorkerID          string `json:"worker_id"`
 	QualityGatePassed bool   `json:"quality_gate_passed"`
 	QGOutput          string `json:"qg_output,omitempty"`
+}
+
+// CheckpointAckPayload is sent by a worker to acknowledge a checkpoint_requested signal.
+// The CheckpointID must match the one in the corresponding checkpoint_requested event.
+type CheckpointAckPayload struct {
+	BeadID        string `json:"bead_id"`
+	CheckpointID  string `json:"checkpoint_id"`
+	CommittedSHA  string `json:"committed_sha,omitempty"`
+	IntentSummary string `json:"intent_summary,omitempty"`
 }
 
 // ReadyForReviewPayload is sent by a worker when its bead is ready for review.
