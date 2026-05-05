@@ -3,6 +3,7 @@ package dispatcher //nolint:testpackage // white-box: needs access to Dispatcher
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"oro/pkg/beadstore"
@@ -13,67 +14,98 @@ import (
 //  1. BuildPrompt routes by bead type to the correct assembler (§10.2)
 //  2. Dispatcher.CloseBead calls store.Close then runs the child-promote sweep (§10.4)
 //  3. Sweep failure (including ErrStaleStage) is non-fatal — CloseBead returns nil
+//
+// Each routing subtest asserts a distinguishing token for its branch so a
+// future refactor that returned the same literal for every type would fail.
 func TestRouterAndCloseBead(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("task_routes_to_worker_prompt", func(t *testing.T) {
 		b := protocol.Bead{ID: "t1", Type: "task", Title: "Fix bug", AcceptanceCriteria: "pass"}
-		got, err := BuildPrompt(ctx, beadstore.NewFakeStore(), b)
+		got, err := BuildPrompt(ctx, b)
 		if err != nil {
 			t.Fatalf("task routing: unexpected error: %v", err)
 		}
-		if got == "" {
-			t.Error("task routing: expected non-empty prompt")
+		// Worker prompt must include the bead ID and acceptance criteria —
+		// distinguishes it from the oracle/premortem stubs.
+		if !strings.Contains(got, "t1") {
+			t.Errorf("task prompt missing bead ID: got %q", got)
+		}
+		if !strings.Contains(got, "pass") {
+			t.Errorf("task prompt missing acceptance criteria: got %q", got)
+		}
+		if strings.Contains(got, "Oracle prompt") || strings.Contains(got, "Premortem prompt") {
+			t.Errorf("task prompt should not contain oracle/premortem markers: got %q", got)
 		}
 	})
 
 	t.Run("bug_routes_to_worker_prompt", func(t *testing.T) {
-		b := protocol.Bead{ID: "b1", Type: "bug", Title: "Fix crash"}
-		got, err := BuildPrompt(ctx, beadstore.NewFakeStore(), b)
+		b := protocol.Bead{ID: "b1", Type: "bug", Title: "Fix crash", AcceptanceCriteria: "no crash"}
+		got, err := BuildPrompt(ctx, b)
 		if err != nil {
 			t.Fatalf("bug routing: unexpected error: %v", err)
 		}
-		if got == "" {
-			t.Error("bug routing: expected non-empty prompt")
+		if !strings.Contains(got, "b1") {
+			t.Errorf("bug prompt missing bead ID: got %q", got)
+		}
+		if strings.Contains(got, "Oracle prompt") || strings.Contains(got, "Premortem prompt") {
+			t.Errorf("bug prompt should not contain oracle/premortem markers: got %q", got)
 		}
 	})
 
 	t.Run("chore_routes_to_worker_prompt", func(t *testing.T) {
-		b := protocol.Bead{ID: "c1", Type: "chore", Title: "Cleanup"}
-		got, err := BuildPrompt(ctx, beadstore.NewFakeStore(), b)
+		b := protocol.Bead{ID: "c1", Type: "chore", Title: "Cleanup", AcceptanceCriteria: "clean"}
+		got, err := BuildPrompt(ctx, b)
 		if err != nil {
 			t.Fatalf("chore routing: unexpected error: %v", err)
 		}
-		if got == "" {
-			t.Error("chore routing: expected non-empty prompt")
+		if !strings.Contains(got, "c1") {
+			t.Errorf("chore prompt missing bead ID: got %q", got)
+		}
+		if strings.Contains(got, "Oracle prompt") || strings.Contains(got, "Premortem prompt") {
+			t.Errorf("chore prompt should not contain oracle/premortem markers: got %q", got)
 		}
 	})
 
 	t.Run("research_routes_to_oracle_stub", func(t *testing.T) {
 		b := protocol.Bead{ID: "r1", Type: "research", Title: "Investigate X"}
-		got, err := BuildPrompt(ctx, beadstore.NewFakeStore(), b)
+		got, err := BuildPrompt(ctx, b)
 		if err != nil {
 			t.Fatalf("research routing: unexpected error: %v", err)
 		}
-		if got == "" {
-			t.Error("research routing: expected non-empty prompt")
+		// Oracle stub must carry its own marker; must not be the worker prompt
+		// or the premortem stub.
+		if !strings.Contains(got, "Oracle prompt") {
+			t.Errorf("research prompt missing 'Oracle prompt' marker: got %q", got)
+		}
+		if !strings.Contains(got, "r1") || !strings.Contains(got, "Investigate X") {
+			t.Errorf("research prompt missing bead identity: got %q", got)
+		}
+		if strings.Contains(got, "Premortem prompt") {
+			t.Errorf("research prompt should not contain 'Premortem prompt': got %q", got)
 		}
 	})
 
 	t.Run("premortem_routes_to_premortem_stub", func(t *testing.T) {
 		b := protocol.Bead{ID: "p1", Type: "premortem", Title: "Review risks"}
-		got, err := BuildPrompt(ctx, beadstore.NewFakeStore(), b)
+		got, err := BuildPrompt(ctx, b)
 		if err != nil {
 			t.Fatalf("premortem routing: unexpected error: %v", err)
 		}
-		if got == "" {
-			t.Error("premortem routing: expected non-empty prompt")
+		if !strings.Contains(got, "Premortem prompt") {
+			t.Errorf("premortem prompt missing 'Premortem prompt' marker: got %q", got)
+		}
+		if !strings.Contains(got, "p1") || !strings.Contains(got, "Review risks") {
+			t.Errorf("premortem prompt missing bead identity: got %q", got)
+		}
+		if strings.Contains(got, "Oracle prompt") {
+			t.Errorf("premortem prompt should not contain 'Oracle prompt': got %q", got)
 		}
 	})
 
 	t.Run("epic_returns_error", func(t *testing.T) {
 		b := protocol.Bead{ID: "e1", Type: "epic", Title: "Big feature"}
-		_, err := BuildPrompt(ctx, beadstore.NewFakeStore(), b)
+		_, err := BuildPrompt(ctx, b)
 		if err == nil {
 			t.Error("epic routing: expected error, got nil")
 		}
@@ -81,7 +113,7 @@ func TestRouterAndCloseBead(t *testing.T) {
 
 	t.Run("review_returns_error", func(t *testing.T) {
 		b := protocol.Bead{ID: "rv1", Type: "review", Title: "Code review"}
-		_, err := BuildPrompt(ctx, beadstore.NewFakeStore(), b)
+		_, err := BuildPrompt(ctx, b)
 		if err == nil {
 			t.Error("review routing: expected error, got nil")
 		}
@@ -89,7 +121,7 @@ func TestRouterAndCloseBead(t *testing.T) {
 
 	t.Run("unknown_type_returns_error", func(t *testing.T) {
 		b := protocol.Bead{ID: "u1", Type: "mystery-type"}
-		_, err := BuildPrompt(ctx, beadstore.NewFakeStore(), b)
+		_, err := BuildPrompt(ctx, b)
 		if err == nil {
 			t.Error("unknown routing: expected error, got nil")
 		}
