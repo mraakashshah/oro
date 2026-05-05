@@ -134,6 +134,36 @@ func TestDrainOutput_ExtractsMemoryMarkers(t *testing.T) {
 	}
 }
 
+func TestDrainOutput_FlushRemainingTrailingPartial(t *testing.T) {
+	// Text deltas that never close with \n leave bytes in the line buffer.
+	// drainFlushRemaining must flush them (and parse a [MEMORY] marker if
+	// present) before DrainOutput returns.
+	input := ndjsonInput(
+		textDeltaLine("[MEMORY] type=lesson: trailing memory without newline"),
+	)
+	store := &mockMemStore{}
+	worker.DrainOutput(context.Background(), io.NopCloser(strings.NewReader(input)),
+		worker.StreamFormatClaudeJSON, store, "oro-bead-rem", nil, io.Discard)
+
+	if len(store.inserted) != 1 {
+		t.Fatalf("expected 1 memory inserted from flushed remainder, got %d", len(store.inserted))
+	}
+	if got := store.inserted[0].BeadID; got != "oro-bead-rem" {
+		t.Errorf("BeadID = %q, want oro-bead-rem", got)
+	}
+	if !strings.Contains(store.inserted[0].Content, "trailing memory") {
+		t.Errorf("content = %q, want substring 'trailing memory'", store.inserted[0].Content)
+	}
+}
+
+func TestDrainOutput_FlushRemainingNoMarkerNoStore(t *testing.T) {
+	// Trailing partial without a [MEMORY] marker and a nil store: covers the
+	// non-marker / nil-store branches of drainFlushRemaining.
+	input := ndjsonInput(textDeltaLine("plain trailing text without newline"))
+	worker.DrainOutput(context.Background(), io.NopCloser(strings.NewReader(input)),
+		worker.StreamFormatClaudeJSON, nil, "oro-bead-plain", nil, io.Discard)
+}
+
 func TestDrainOutput_NilStore(t *testing.T) {
 	input := ndjsonInput(
 		textDeltaLine("[MEMORY] type=lesson: should not panic\n"),

@@ -4378,6 +4378,75 @@ func TestEpicDecompositionSkipsQG(t *testing.T) {
 	<-errCh
 }
 
+// TestClaudeSpawnerStreamFormat verifies the format identifier returned by the
+// production spawner. This is a tiny but real surface: the dispatcher uses it
+// to pick a parser, so accidental drift would break stream parsing silently.
+func TestClaudeSpawnerStreamFormat(t *testing.T) {
+	t.Parallel()
+	got := (&worker.ClaudeSpawner{}).StreamFormat()
+	if got != worker.StreamFormatClaudeJSON {
+		t.Errorf("StreamFormat = %q, want %q", got, worker.StreamFormatClaudeJSON)
+	}
+}
+
+// TestCmdProcess_WaitAndKill exercises the production Process implementation
+// against real subprocesses. Together they cover the success and error paths
+// of both Wait (exit 0 vs non-zero) and Kill (with and without a started
+// process), which the goroutine-based mockProcess elsewhere in this file does
+// not exercise.
+func TestCmdProcess_WaitAndKill(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Wait returns nil on clean exit", func(t *testing.T) {
+		t.Parallel()
+		cmd := exec.Command("true")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		p := &worker.CmdProcess{Cmd: cmd}
+		if err := p.Wait(); err != nil {
+			t.Errorf("Wait on clean exit: %v", err)
+		}
+	})
+
+	t.Run("Wait wraps non-zero exit", func(t *testing.T) {
+		t.Parallel()
+		cmd := exec.Command("false")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		p := &worker.CmdProcess{Cmd: cmd}
+		err := p.Wait()
+		if err == nil {
+			t.Fatal("Wait on failed exit returned nil error")
+		}
+		if !strings.Contains(err.Error(), "claude process wait") {
+			t.Errorf("error not wrapped: %v", err)
+		}
+	})
+
+	t.Run("Kill on unstarted process is a no-op", func(t *testing.T) {
+		t.Parallel()
+		p := &worker.CmdProcess{Cmd: exec.Command("true")}
+		if err := p.Kill(); err != nil {
+			t.Errorf("Kill on unstarted: %v", err)
+		}
+	})
+
+	t.Run("Kill terminates a running process", func(t *testing.T) {
+		t.Parallel()
+		cmd := exec.Command("sleep", "30")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		p := &worker.CmdProcess{Cmd: cmd}
+		if err := p.Kill(); err != nil {
+			t.Errorf("Kill: %v", err)
+		}
+		_ = cmd.Wait() // reap; ignore "signal: killed" error
+	})
+}
+
 // TestClaudeSpawnerSetsStdinToDevNull verifies that ClaudeSpawner.Spawn sets cmd.Stdin to /dev/null,
 // preventing the spawned process from inheriting parent stdin and hanging on reads.
 func TestClaudeSpawnerSetsStdinToDevNull(t *testing.T) {

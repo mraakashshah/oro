@@ -188,3 +188,28 @@ func TestContextPct(t *testing.T) {
 		}
 	})
 }
+
+func TestContextPctFromLine(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		format worker.StreamFormat
+		line   string
+		want   float64
+		ok     bool
+	}{
+		{"claude routes to ParseClaudeContextPct", worker.StreamFormatClaudeJSON, `{"event":"turn_end","context_pct":42}`, 42.0, true},
+		{"gemini routes to ParseGeminiContextPct", worker.StreamFormatGeminiJSON, `{"context_pct":55}`, 55.0, true},
+		{"line-text falls through to Codex parser", worker.StreamFormatLineText, `{"context_pct":33}`, 33.0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := worker.ContextPctFromLine(tc.format, []byte(tc.line))
+			if ok != tc.ok || got != tc.want {
+				t.Errorf("ContextPctFromLine(%v, %q) = (%v, %v), want (%v, %v)", tc.format, tc.line, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
