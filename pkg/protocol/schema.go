@@ -474,18 +474,34 @@ func ensureBeadStatusAllowsBlocked(ctx context.Context, db *sql.DB) (bool, error
 		return false, err
 	}
 
+	// Wrap the multi-step rebuild in a transaction so any failure (e.g. a
+	// CHECK violation in the new beadTableDDL) rolls back atomically and
+	// leaves the original beads table intact (oro-pyr2). Without this,
+	// a partial INSERT...SELECT failure would orphan data in the renamed
+	// beads_status_rebuild_old table and leave an empty new beads table —
+	// the failure mode that destroyed 1833 beads on 2026-05-05.
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin rebuild tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	const beadColumns = `id, title, description, acceptance_criteria, status, priority, type, parent_id, owner, estimated_minutes, tier, model, deferred_until, close_reason, created_at, updated_at, closed_at, deleted`
-	rebuild := `
-DROP VIEW IF EXISTS beads_ready;
-DROP VIEW IF EXISTS beads_blocked;
-ALTER TABLE beads RENAME TO beads_status_rebuild_old;
-` + beadTableDDL + `
-INSERT INTO beads (` + beadColumns + `)
-SELECT ` + beadColumns + ` FROM beads_status_rebuild_old;
-DROP TABLE beads_status_rebuild_old;
-`
-	if _, err := conn.ExecContext(ctx, rebuild); err != nil {
-		return false, fmt.Errorf("rebuild beads table: %w", err)
+	rebuildSteps := []string{
+		`DROP VIEW IF EXISTS beads_ready`,
+		`DROP VIEW IF EXISTS beads_blocked`,
+		`ALTER TABLE beads RENAME TO beads_status_rebuild_old`,
+		beadTableDDL,
+		`INSERT INTO beads (` + beadColumns + `) SELECT ` + beadColumns + ` FROM beads_status_rebuild_old`,
+		`DROP TABLE beads_status_rebuild_old`,
+	}
+	for _, stmt := range rebuildSteps {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return false, fmt.Errorf("rebuild beads table: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit rebuild tx: %w", err)
 	}
 	fkViolationsAfter, err := countSQLiteForeignKeyViolations(ctx, conn)
 	if err != nil {
