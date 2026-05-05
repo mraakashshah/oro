@@ -19,7 +19,8 @@ import (
 //	PD (15)  Python: async def with decorators (§7.4 gotcha)
 //	PE (15)  Python: classmethod / staticmethod (§7.4 gotcha)
 //	PF (10)  Python: default args with function calls (§7.4 gotcha)
-//	PG (10)  Python: EFALLTHROUGH
+//	PG (8)   Python: EFALLTHROUGH
+//	PH (2)   Python: forward-search & wrong-lang marker positive cases
 //
 //	TA (20)  TypeScript: two-anchor basic replace
 //	TB (15)  TypeScript: continuation marker
@@ -1276,7 +1277,7 @@ func TestNonGoCorpus(t *testing.T) {
 			},
 		},
 
-		// ── PG: Python EFALLTHROUGH (10) ──────────────────────────────────────
+		// ── PG: Python EFALLTHROUGH (8) ───────────────────────────────────────
 
 		{
 			name:    "PG01 only one anchor matches",
@@ -1334,25 +1335,21 @@ func TestNonGoCorpus(t *testing.T) {
 			snippet: []string{py, py, "    a = 2", "    b = 3"},
 			wantErr: edit.ErrFallthrough,
 		},
+		// ── PH: Python forward-search & wrong-lang marker positive cases (2) ──
+
 		{
-			name:    "PG09 anchors but searched-past after first match",
+			name:    "PH01 duplicate anchor resolves via forward search",
 			lang:    edit.LangPython,
 			orig:    []string{"    a = 1", "    b = 2", "    a = 1"},
 			snippet: []string{"    a = 1", "    new = 7", "    a = 1"},
-			// "    a = 1"@0, then "    a = 1" starting at 1: found at 2. positions=[0,2] → eligible → not EFALLTHROUGH
-			// Let me redesign: orig has only one occurrence of a, so we can't satisfy two-anchor.
-			// Override:
 			want:    []string{"    a = 1", "    new = 7", "    a = 1"},
-			wantErr: nil,
 		},
 		{
-			name:    "PG10 wrong-language marker",
+			name:    "PH02 wrong-language marker treated as new line",
 			lang:    edit.LangPython,
 			orig:    []string{"    a = 1", "    g = 2", "    b = 3"},
 			snippet: []string{"    a = 1", "// ...", "    b = 3"},
-			// "// ..." is not the python marker (which is "# ...") and "// ..." is not in orig → it's lineNew, snippet has 2 anchors and inter has zero markers but 1 new line → REPLACE the gap with "// ..."
 			want:    []string{"    a = 1", "// ...", "    b = 3"},
-			wantErr: nil,
 		},
 
 		// ── TA: TypeScript two-anchor basic replace (20) ──────────────────────
@@ -3560,6 +3557,64 @@ func TestNonGoCorpus(t *testing.T) {
 
 	if len(cases) != 250 {
 		t.Fatalf("corpus must contain exactly 250 cases (100 Python + 100 TS + 50 JS), got %d", len(cases))
+	}
+
+	wantGroupCounts := map[string]int{
+		"PA": 20, "PB": 15, "PC": 15, "PD": 15, "PE": 15, "PF": 10, "PG": 8, "PH": 2,
+		"TA": 20, "TB": 15, "TC": 15, "TD": 15, "TE": 15, "TF": 10, "TG": 10,
+		"JA": 10, "JB": 10, "JC": 10, "JD": 10, "JE": 10,
+	}
+	gotGroupCounts := make(map[string]int, len(wantGroupCounts))
+	for _, c := range cases {
+		if len(c.name) < 2 {
+			t.Fatalf("case name %q too short to extract group prefix", c.name)
+		}
+		gotGroupCounts[c.name[:2]]++
+	}
+	for prefix, want := range wantGroupCounts {
+		if got := gotGroupCounts[prefix]; got != want {
+			t.Errorf("group %s: got %d cases, want %d", prefix, got, want)
+		}
+	}
+	for prefix, got := range gotGroupCounts {
+		if _, ok := wantGroupCounts[prefix]; !ok {
+			t.Errorf("unexpected group prefix %q with %d cases", prefix, got)
+		}
+	}
+
+	wantLangCounts := map[edit.Language]int{
+		edit.LangPython:     100,
+		edit.LangTypeScript: 100,
+		edit.LangJavaScript: 50,
+	}
+	gotLangCounts := make(map[edit.Language]int, len(wantLangCounts))
+	for _, c := range cases {
+		gotLangCounts[c.lang]++
+	}
+	for lang, want := range wantLangCounts {
+		if got := gotLangCounts[lang]; got != want {
+			t.Errorf("language %v: got %d cases, want %d", lang, got, want)
+		}
+	}
+
+	wantFallthrough := map[string]int{
+		"PG": 8, "TG": 10, "JE": 10,
+	}
+	gotFallthrough := make(map[string]int, len(wantFallthrough))
+	for _, c := range cases {
+		if errors.Is(c.wantErr, edit.ErrFallthrough) {
+			gotFallthrough[c.name[:2]]++
+		}
+	}
+	for prefix, want := range wantFallthrough {
+		if got := gotFallthrough[prefix]; got != want {
+			t.Errorf("group %s EFALLTHROUGH count: got %d, want %d", prefix, got, want)
+		}
+	}
+	for prefix, got := range gotFallthrough {
+		if _, ok := wantFallthrough[prefix]; !ok {
+			t.Errorf("unexpected EFALLTHROUGH group %q with %d cases (only PG/TG/JE may assert ErrFallthrough)", prefix, got)
+		}
 	}
 
 	for i, c := range cases {
