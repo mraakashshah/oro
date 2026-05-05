@@ -97,36 +97,37 @@ const maxBufferedMessages = 100
 // Worker is the Oro worker agent. It holds a UDS connection to the Dispatcher,
 // manages a claude -p subprocess, and monitors context usage.
 type Worker struct {
-	ID                  string
-	conn                net.Conn
-	proc                Process
-	beadID              string
-	worktree            string
-	model               string
-	streamFormat        StreamFormat
-	mu                  sync.Mutex
-	spawner             StreamingSpawner
-	socketPath          string // for reconnection
-	buffer              *MessageBuffer
-	disconnected        bool
-	contextPollInterval time.Duration
-	reconnectInterval   time.Duration // base retry interval for reconnection
-	memStore            *memory.Store
-	extractSpawner      memory.Spawner
-	sessionText         strings.Builder
-	outputWg            sync.WaitGroup // tracks processOutput goroutine completion
-	reconnectDialHook   func(net.Conn) // test hook: called after dial, before sendMessage
-	pendingQGOutput     string         // QG output stored while awaiting review result
-	isEpicDecomposition bool           // true when current assignment is an epic decomposition
-	subprocExitCh       chan struct{}  // closed when subprocess exits
-	subprocExitClosed   bool           // true if subprocExitCh has been closed
-	handleExitClaimed   bool           // true if a handler claimed subprocess exit handling
-	subprocKilledByUs   bool           // true if we intentionally killed the subprocess
-	connWriteMu         sync.Mutex     // serializes conn writes so heartbeat deadlines don't leak
-	heartbeatInterval   time.Duration  // minimum time between periodic heartbeats
-	logFile             *os.File       // per-worker output log file at ~/.oro/workers/<ID>/output.log
-	logWriter           *bufio.Writer  // buffered writer for logFile to prevent blocking
-	streamContextPct    int32          // atomic: latest context_pct observed from stream output (0 = no signal yet)
+	ID                     string
+	conn                   net.Conn
+	proc                   Process
+	beadID                 string
+	worktree               string
+	model                  string
+	streamFormat           StreamFormat
+	mu                     sync.Mutex
+	spawner                StreamingSpawner
+	socketPath             string // for reconnection
+	buffer                 *MessageBuffer
+	disconnected           bool
+	contextPollInterval    time.Duration
+	reconnectInterval      time.Duration // base retry interval for reconnection
+	memStore               *memory.Store
+	extractSpawner         memory.Spawner
+	sessionText            strings.Builder
+	outputWg               sync.WaitGroup // tracks processOutput goroutine completion
+	reconnectDialHook      func(net.Conn) // test hook: called after dial, before sendMessage
+	reconnectTimerStopHook func()         // test hook: called when timer.Stop() fires on ctx cancel
+	pendingQGOutput        string         // QG output stored while awaiting review result
+	isEpicDecomposition    bool           // true when current assignment is an epic decomposition
+	subprocExitCh          chan struct{}  // closed when subprocess exits
+	subprocExitClosed      bool           // true if subprocExitCh has been closed
+	handleExitClaimed      bool           // true if a handler claimed subprocess exit handling
+	subprocKilledByUs      bool           // true if we intentionally killed the subprocess
+	connWriteMu            sync.Mutex     // serializes conn writes so heartbeat deadlines don't leak
+	heartbeatInterval      time.Duration  // minimum time between periodic heartbeats
+	logFile                *os.File       // per-worker output log file at ~/.oro/workers/<ID>/output.log
+	logWriter              *bufio.Writer  // buffered writer for logFile to prevent blocking
+	streamContextPct       int32          // atomic: latest context_pct observed from stream output (0 = no signal yet)
 }
 
 // New creates a Worker that connects to the Dispatcher at socketPath.
@@ -195,6 +196,16 @@ func (w *Worker) SetReconnectDialHook(fn func(net.Conn)) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.reconnectDialHook = fn
+}
+
+// SetReconnectTimerStopHook sets a function called when timer.Stop() fires due
+// to context cancellation during the reconnect sleep. For testing only.
+//
+//oro:testonly
+func (w *Worker) SetReconnectTimerStopHook(fn func()) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.reconnectTimerStopHook = fn
 }
 
 // SetMemoryStore attaches a memory store to the worker for memory extraction.
@@ -982,6 +993,25 @@ func (w *Worker) killProc() {
 	}
 }
 
+// reconnectSleep blocks for d or until ctx is cancelled. On cancellation it
+// calls reconnectTimerStopHook (if set) and returns a wrapped ctx.Err().
+func (w *Worker) reconnectSleep(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	select {
+	case <-ctx.Done():
+		timer.Stop()
+		w.mu.Lock()
+		hook := w.reconnectTimerStopHook
+		w.mu.Unlock()
+		if hook != nil {
+			hook()
+		}
+		return fmt.Errorf("worker reconnect: %w", ctx.Err())
+	case <-timer.C:
+		return nil
+	}
+}
+
 // reconnect attempts to re-establish the UDS connection to the Dispatcher.
 // It retries every 2s with ±500ms jitter until success or context cancellation.
 // The subprocess is NOT killed during reconnection.
@@ -1003,12 +1033,8 @@ func (w *Worker) reconnect(ctx context.Context) error {
 		jitter := time.Duration(rand.Int64N(int64(2*reconnectJitter))) - reconnectJitter //nolint:gosec // jitter doesn't need crypto rand
 		wait := baseInterval + jitter
 
-		timer := time.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return fmt.Errorf("worker reconnect: %w", ctx.Err())
-		case <-timer.C:
+		if err := w.reconnectSleep(ctx, wait); err != nil {
+			return err
 		}
 
 		conn, err := net.Dial("unix", w.socketPath) //nolint:noctx // UDS reconnect is instant

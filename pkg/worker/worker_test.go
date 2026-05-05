@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -4045,6 +4044,11 @@ func TestReconnect_TimerCleanup(t *testing.T) {
 	// Use a long reconnect interval so the timer is alive when we cancel.
 	w.SetReconnectInterval(10 * time.Second)
 
+	// timerStopped is closed by the hook when timer.Stop() is called on ctx
+	// cancellation — proves structural cleanup without NumGoroutine() heuristics.
+	timerStopped := make(chan struct{})
+	w.SetReconnectTimerStopHook(func() { close(timerStopped) })
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -4071,34 +4075,20 @@ func TestReconnect_TimerCleanup(t *testing.T) {
 	// sleep (the 10s timer).
 	justWait(300 * time.Millisecond)
 
-	// Snapshot goroutine count before cancellation.
-	before := runtime.NumGoroutine()
-
-	// Cancel context during the reconnect sleep — this should stop the timer
-	// cleanly without leaking a goroutine.
+	// Cancel context during the reconnect sleep — timer must be stopped cleanly.
 	cancel()
+
+	// Structural assertion: timer.Stop() must be called as part of cleanup.
+	select {
+	case <-timerStopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timer.Stop was not called after context cancellation")
+	}
 
 	select {
 	case <-errCh:
 	case <-time.After(5 * time.Second):
 		t.Fatal("worker did not exit after cancel during reconnect")
-	}
-
-	// Allow background goroutines to wind down.
-	justWait(200 * time.Millisecond)
-	runtime.GC()
-	justWait(100 * time.Millisecond)
-
-	after := runtime.NumGoroutine()
-
-	// With the leak, a long-lived timer goroutine would still be present.
-	// Allow +5 jitter for runtime/parallel-test goroutines that may start
-	// between the before/after snapshots (CI with -shuffle sees +3 routinely);
-	// reject any larger growth that indicates a real leak.
-	const goroutineJitter = 5
-	if after > before+goroutineJitter {
-		t.Errorf("goroutine leak: before cancel=%d, after=%d (delta=+%d, allowed jitter=+%d)",
-			before, after, after-before, goroutineJitter)
 	}
 }
 
