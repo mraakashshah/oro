@@ -3525,8 +3525,22 @@ func (d *Dispatcher) shutdownWorkerForClose(workerID, beadID string) (worktree, 
 }
 
 // finalizeExternalClose cleans up the assignment record, worktree, and ops
-// agents after an external close. External close is a cancellation, not a
-// merge — the agent branch is discarded.
+// agents after an external close. If the worker has a worktree (and therefore
+// possibly committed work on agent/<beadID>), the dispatcher first attempts
+// to ff-merge that branch to its target so a worker that called
+// `oro task close` itself doesn't silently drop committed work
+// (oro-0xqv: oro-ohlro lost commit 099cc7a6 this way). Merger handles the
+// no-commits / branch-missing cases by returning an error which we treat as
+// the legacy cancellation path.
+//
+// Recovery outcomes:
+//   - Merge succeeds: log external_close_recovered with the SHA. The merger
+//     also removes the worktree, so we only complete the assignment and clear
+//     tracking afterward.
+//   - Merge fails (conflict, missing branch, transient error): log
+//     external_close_recovery_failed, escalate with the worktree path and
+//     error so the manager can recover manually, then proceed with the
+//     legacy cleanup (worktree remove, tracking clear, cancellation event).
 func (d *Dispatcher) finalizeExternalClose(ctx context.Context, workerID, beadID, worktree, epicID, targetBranch string, assignmentID int64) {
 	logCancelled := func() {
 		_ = d.logEvent(ctx, "external_close_cancelled", "dispatcher", beadID, workerID,
@@ -3534,8 +3548,11 @@ func (d *Dispatcher) finalizeExternalClose(ctx context.Context, workerID, beadID
 	}
 	if worktree != "" {
 		d.safeGo(func() {
+			d.tryRecoverExternalCloseWork(ctx, workerID, beadID, worktree, targetBranch)
 			_ = d.completeAssignment(ctx, assignmentID, beadID)
 			d.cancelOpsAgents(ctx, beadID, workerID, "external_close")
+			// removeWorktreeAndClearTracking is a no-op if the merger already
+			// took the worktree on a successful recovery merge.
 			d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
 			d.clearBeadTracking(beadID)
 			logCancelled()
@@ -3545,6 +3562,35 @@ func (d *Dispatcher) finalizeExternalClose(ctx context.Context, workerID, beadID
 	_ = d.completeAssignment(ctx, assignmentID, beadID)
 	d.clearBeadTracking(beadID)
 	logCancelled()
+}
+
+// tryRecoverExternalCloseWork attempts to ff-merge the agent branch for a
+// bead that was closed externally so committed work isn't silently dropped.
+// Logs external_close_recovered on success, external_close_recovery_failed
+// + escalates on failure. The caller (finalizeExternalClose) always proceeds
+// with cleanup regardless of outcome.
+func (d *Dispatcher) tryRecoverExternalCloseWork(ctx context.Context, workerID, beadID, worktree, targetBranch string) {
+	branch := protocol.BranchPrefix + beadID
+	result, err := d.merger.Merge(ctx, merge.Opts{
+		Branch:       branch,
+		Worktree:     worktree,
+		BeadID:       beadID,
+		TargetBranch: targetBranch,
+	})
+	if err == nil && result != nil {
+		_ = d.logEvent(ctx, "external_close_recovered", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"sha":%q,"branch":%q,"target":%q}`, result.CommitSHA, branch, targetBranch))
+		return
+	}
+	errMsg := "no recoverable result"
+	if err != nil {
+		errMsg = err.Error()
+	}
+	_ = d.logEvent(ctx, "external_close_recovery_failed", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"branch":%q,"worktree":%q,"target":%q,"error":%q}`, branch, worktree, targetBranch, errMsg))
+	d.escalate(ctx, protocol.FormatEscalation(protocol.EscMergeConflict, beadID,
+		"external close: failed to recover worker branch "+branch,
+		"worktree="+worktree+"; error="+errMsg), beadID, workerID)
 }
 
 // filterAssignable returns beads eligible for assignment: excludes closed beads,
