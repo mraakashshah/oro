@@ -133,7 +133,7 @@ func TestCheckpointRespawn(t *testing.T) {
 	// reassignment — the respawn flow must not flip it to "open" (which
 	// would let an unrelated worker pick it up via bd-ready).
 	store.fakeBeadStore.mu.Lock()
-	status, wasUpdated := store.fakeBeadStore.updated[beadID]
+	status, wasUpdated := store.updated[beadID]
 	store.fakeBeadStore.mu.Unlock()
 	if wasUpdated && status == "open" {
 		t.Fatalf("bead %q status was flipped to %q during checkpoint respawn; status must stay in_progress", beadID, status)
@@ -372,7 +372,7 @@ func TestCheckpointRespawn_ConnCloseDoesNotWipeState(t *testing.T) {
 	// unrelated worker pick the bead up via bd-ready before the spawned
 	// respawn worker connects, producing a duplicate assignment.
 	store.fakeBeadStore.mu.Lock()
-	status, wasUpdated := store.fakeBeadStore.updated[beadID]
+	status, wasUpdated := store.updated[beadID]
 	store.fakeBeadStore.mu.Unlock()
 	if wasUpdated && status == "open" {
 		t.Fatalf("bead %q status flipped to %q during conn close; respawn must keep it in_progress", beadID, status)

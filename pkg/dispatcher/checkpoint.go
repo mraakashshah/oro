@@ -184,7 +184,7 @@ func (d *Dispatcher) detachWorkerForCheckpoint(workerID string) (worktree, model
 	defer d.mu.Unlock()
 	w, ok := d.workers[workerID]
 	if !ok {
-		return
+		return "", "", "", "", ""
 	}
 	worktree = w.worktree
 	model = w.model
