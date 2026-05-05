@@ -164,7 +164,7 @@ func premortemPromptBody() string {
 		"Output one of: proceed | block | replan",
 		"- proceed: risks are low or fully mitigated by the verification plan.",
 		"- block: a hard blocker exists that this bead cannot resolve unilaterally.",
-		"- replan: findings require new child beads (decomposition or research).",
+		"- replan: findings require new child tasks (decomposition or research).",
 		"",
 		"Provide a one-line reason after the verdict.",
 		"",
