@@ -86,18 +86,19 @@ func ResolveProjectDBPaths() (*Paths, error) {
 // ProjectPaths holds all path-dependent components for a single project.
 // Use ResolvePaths(repoRoot) to populate from mode detection + config.
 type ProjectPaths struct {
-	Mode           string // "standard" | "stealth"
-	RepoRoot       string // absolute path to repo root
-	BeadsDir       string // .beads/ or ~/.oro/projects/s-<hash>/beads/
-	LegacyBeadsDir string // pre-replatform beads path for migration/cleanup tooling
-	WorktreesDir   string // .worktrees/ or ~/.oro/projects/s-<hash>/worktrees/
-	OroDocsDir     string // docs/ or ~/.oro/projects/s-<hash>/docs/
-	QualityGate    string // scripts/quality_gate.sh or ~/.oro/projects/s-<hash>/quality_gate.sh
-	OroProjectDir  string // .oro/ or ~/.oro/projects/s-<hash>/
-	ClaudeMD       string // .claude/CLAUDE.md or ~/.oro/projects/s-<hash>/CLAUDE.md
-	ReviewPatterns string // assets/review-patterns.md or ~/.oro/projects/s-<hash>/review-patterns.md
-	ConfigYAML     string // .oro/config.yaml or ~/.oro/projects/s-<hash>/config.yaml
-	WorkerProgram  string // worker-program.md or ~/.oro/projects/s-<hash>/worker-program.md
+	Mode                    string // "standard" | "stealth"
+	RepoRoot                string // absolute path to repo root
+	BeadsDir                string // .beads/ or ~/.oro/projects/s-<hash>/beads/
+	LegacyBeadsDir          string // pre-replatform beads path for migration/cleanup tooling
+	WorktreesDir            string // .worktrees/ or ~/.oro/projects/s-<hash>/worktrees/
+	OroDocsDir              string // docs/ or ~/.oro/projects/s-<hash>/docs/
+	QualityGate             string // scripts/quality_gate.sh or ~/.oro/projects/s-<hash>/quality_gate.sh
+	OroProjectDir           string // .oro/ or ~/.oro/projects/s-<hash>/
+	ClaudeMD                string // .claude/CLAUDE.md or ~/.oro/projects/s-<hash>/CLAUDE.md
+	ReviewPatterns          string // assets/review-patterns.md or ~/.oro/projects/s-<hash>/review-patterns.md
+	ReviewPatternCandidates string // .oro/review-pattern-candidates.md or ~/.oro/projects/s-<hash>/review-pattern-candidates.md
+	ConfigYAML              string // .oro/config.yaml or ~/.oro/projects/s-<hash>/config.yaml
+	WorkerProgram           string // worker-program.md or ~/.oro/projects/s-<hash>/worker-program.md
 }
 
 // ResolvePaths resolves project-level paths for the given repo root.
@@ -164,36 +165,38 @@ func projectInitialized(repoRoot string) bool {
 // standardProjectPaths returns ProjectPaths for standard (in-repo) mode.
 func standardProjectPaths(repoRoot string) ProjectPaths {
 	return ProjectPaths{
-		Mode:           "standard",
-		RepoRoot:       repoRoot,
-		BeadsDir:       filepath.Join(repoRoot, LegacyBeadsDir),
-		LegacyBeadsDir: filepath.Join(repoRoot, LegacyBeadsDir),
-		WorktreesDir:   filepath.Join(repoRoot, ".worktrees"),
-		OroDocsDir:     filepath.Join(repoRoot, "docs"),
-		QualityGate:    filepath.Join(repoRoot, "scripts", "quality_gate.sh"),
-		OroProjectDir:  filepath.Join(repoRoot, ".oro"),
-		ClaudeMD:       filepath.Join(repoRoot, ".claude", "CLAUDE.md"),
-		ReviewPatterns: filepath.Join(repoRoot, "assets", "review-patterns.md"),
-		ConfigYAML:     filepath.Join(repoRoot, ".oro", "config.yaml"),
-		WorkerProgram:  filepath.Join(repoRoot, "worker-program.md"),
+		Mode:                    "standard",
+		RepoRoot:                repoRoot,
+		BeadsDir:                filepath.Join(repoRoot, LegacyBeadsDir),
+		LegacyBeadsDir:          filepath.Join(repoRoot, LegacyBeadsDir),
+		WorktreesDir:            filepath.Join(repoRoot, ".worktrees"),
+		OroDocsDir:              filepath.Join(repoRoot, "docs"),
+		QualityGate:             filepath.Join(repoRoot, "scripts", "quality_gate.sh"),
+		OroProjectDir:           filepath.Join(repoRoot, ".oro"),
+		ClaudeMD:                filepath.Join(repoRoot, ".claude", "CLAUDE.md"),
+		ReviewPatterns:          filepath.Join(repoRoot, "assets", "review-patterns.md"),
+		ReviewPatternCandidates: filepath.Join(repoRoot, ".oro", "review-pattern-candidates.md"),
+		ConfigYAML:              filepath.Join(repoRoot, ".oro", "config.yaml"),
+		WorkerProgram:           filepath.Join(repoRoot, "worker-program.md"),
 	}
 }
 
 // stealthProjectPaths returns ProjectPaths for stealth (zero-footprint) mode.
 func stealthProjectPaths(repoRoot, stealthDir string) ProjectPaths {
 	return ProjectPaths{
-		Mode:           "stealth",
-		RepoRoot:       repoRoot,
-		BeadsDir:       filepath.Join(stealthDir, "beads"),
-		LegacyBeadsDir: filepath.Join(stealthDir, "beads"),
-		WorktreesDir:   filepath.Join(stealthDir, "worktrees"),
-		OroDocsDir:     filepath.Join(stealthDir, "docs"),
-		QualityGate:    filepath.Join(stealthDir, "quality_gate.sh"),
-		OroProjectDir:  stealthDir,
-		ClaudeMD:       filepath.Join(stealthDir, "CLAUDE.md"),
-		ReviewPatterns: filepath.Join(stealthDir, "review-patterns.md"),
-		ConfigYAML:     filepath.Join(stealthDir, "config.yaml"),
-		WorkerProgram:  filepath.Join(stealthDir, "worker-program.md"),
+		Mode:                    "stealth",
+		RepoRoot:                repoRoot,
+		BeadsDir:                filepath.Join(stealthDir, "beads"),
+		LegacyBeadsDir:          filepath.Join(stealthDir, "beads"),
+		WorktreesDir:            filepath.Join(stealthDir, "worktrees"),
+		OroDocsDir:              filepath.Join(stealthDir, "docs"),
+		QualityGate:             filepath.Join(stealthDir, "quality_gate.sh"),
+		OroProjectDir:           stealthDir,
+		ClaudeMD:                filepath.Join(stealthDir, "CLAUDE.md"),
+		ReviewPatterns:          filepath.Join(stealthDir, "review-patterns.md"),
+		ReviewPatternCandidates: filepath.Join(stealthDir, "review-pattern-candidates.md"),
+		ConfigYAML:              filepath.Join(stealthDir, "config.yaml"),
+		WorkerProgram:           filepath.Join(stealthDir, "worker-program.md"),
 	}
 }
 

@@ -708,6 +708,63 @@ func TestLegacyBeadsDirRetained(t *testing.T) {
 	}
 }
 
+func TestPaths_ReviewPatternCandidates_StandardAndStealth(t *testing.T) {
+	t.Run("standard", func(t *testing.T) {
+		repoRoot := t.TempDir()
+
+		paths, err := ResolvePaths(repoRoot)
+		if err != nil {
+			t.Fatalf("ResolvePaths() error: %v", err)
+		}
+
+		wantReviewPatterns := filepath.Join(repoRoot, "assets", "review-patterns.md")
+		if paths.ReviewPatterns != wantReviewPatterns {
+			t.Errorf("ReviewPatterns = %q, want %q", paths.ReviewPatterns, wantReviewPatterns)
+		}
+
+		wantCandidates := filepath.Join(repoRoot, ".oro", "review-pattern-candidates.md")
+		if paths.ReviewPatternCandidates != wantCandidates {
+			t.Errorf("ReviewPatternCandidates = %q, want %q", paths.ReviewPatternCandidates, wantCandidates)
+		}
+	})
+
+	t.Run("stealth", func(t *testing.T) {
+		repoRoot := t.TempDir()
+		tmpOroHome := t.TempDir()
+		t.Setenv("ORO_HOME", tmpOroHome)
+
+		resolved, err := filepath.EvalSymlinks(repoRoot)
+		if err != nil {
+			t.Fatalf("EvalSymlinks: %v", err)
+		}
+		sum := sha256.Sum256([]byte(resolved))
+		hash := fmt.Sprintf("%x", sum[:8])
+
+		stealthDir := filepath.Join(tmpOroHome, "projects", "s-"+hash)
+		if err := os.MkdirAll(stealthDir, 0o750); err != nil {
+			t.Fatalf("mkdir stealth dir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(stealthDir, "config.yaml"), []byte("mode: stealth\n"), 0o600); err != nil {
+			t.Fatalf("write stealth config: %v", err)
+		}
+
+		paths, err := ResolvePaths(repoRoot)
+		if err != nil {
+			t.Fatalf("ResolvePaths() error: %v", err)
+		}
+
+		wantReviewPatterns := filepath.Join(stealthDir, "review-patterns.md")
+		if paths.ReviewPatterns != wantReviewPatterns {
+			t.Errorf("ReviewPatterns = %q, want %q", paths.ReviewPatterns, wantReviewPatterns)
+		}
+
+		wantCandidates := filepath.Join(stealthDir, "review-pattern-candidates.md")
+		if paths.ReviewPatternCandidates != wantCandidates {
+			t.Errorf("ReviewPatternCandidates = %q, want %q", paths.ReviewPatternCandidates, wantCandidates)
+		}
+	})
+}
+
 func TestAllCmdPathsUseProjectPaths(t *testing.T) {
 	re := regexp.MustCompile(`"\.beads"|"\.worktrees"|"\.oro/config`)
 
