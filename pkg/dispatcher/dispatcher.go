@@ -441,6 +441,9 @@ type Config struct {
 	// triggers a checkpoint for the assigned worker. 0 disables checkpoint signalling.
 	// Default 75 (§9.3).
 	CheckpointThreshold int
+	// ContextSafety holds the configurable warning/checkpoint thresholds (§9.4).
+	// Expressed as fractions in [0, 1]. Zero values fall back to package defaults.
+	ContextSafety ContextSafetyConfig
 }
 
 // intDefault returns v if non-zero, otherwise dflt.

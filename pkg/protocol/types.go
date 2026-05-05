@@ -69,6 +69,7 @@ type Bead struct {
 	Tags               []string       `json:"tags,omitempty"`                // tags for categorization
 	Metadata           map[string]any `json:"metadata,omitempty"`            // arbitrary metadata; mixed-type values
 	Labels             []string       `json:"labels,omitempty"`              // structured labels
+	ContextThresholds  string         `json:"context_thresholds,omitempty"`  // JSON {warning, checkpoint} per-bead overrides (§9.4)
 }
 
 // BeadDetail is a migration-window alias for the unified Bead shape.
