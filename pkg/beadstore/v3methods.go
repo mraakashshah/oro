@@ -243,6 +243,23 @@ func (s *SQLiteStore) IncrPremortCycleCount(ctx context.Context, beadID string) 
 	return nil
 }
 
+// ResetPremortCycleCount sets premortem_cycle_count to 0 for beadID.
+// Used by the gate-reset escape hatch to allow a fresh replan cycle.
+func (s *SQLiteStore) ResetPremortCycleCount(ctx context.Context, beadID string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE beads SET premortem_cycle_count = 0 WHERE id=? AND deleted=0`, beadID)
+	if err != nil {
+		return fmt.Errorf("beadstore: reset premortem cycle count for %s: %w", beadID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("beadstore: reset premortem cycle count rows affected for %s: %w", beadID, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("beadstore: reset premortem cycle count: bead %s not found", beadID)
+	}
+	return nil
+}
+
 func scanJourneyEvents(rows *sql.Rows) ([]JourneyEvent, error) {
 	var events []JourneyEvent
 	for rows.Next() {

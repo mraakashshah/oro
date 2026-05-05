@@ -54,6 +54,7 @@ func newBeadCmdWithStore(store beadstore.Store) *cobra.Command {
 		newBeadStatusCmd(store),
 		newBeadMigrateFromDoltCmd(store),
 		newBeadGateStateCmd(store),
+		newBeadGateResetCmd(store),
 		newBeadPremortemCloseCmd(store),
 	)
 
@@ -1036,6 +1037,36 @@ func nullableMetadata(value map[string]any) map[string]any {
 		return map[string]any(nil)
 	}
 	return value
+}
+
+// newBeadGateResetCmd implements `oro bead gate-reset <id>` — resets a bead's
+// gate_state from escalated back to eligible and zeroes premortem_cycle_count.
+// This is a human escape hatch after the automated replan loop is exhausted.
+func newBeadGateResetCmd(store beadstore.Store) *cobra.Command {
+	return &cobra.Command{
+		Use:   "gate-reset <id>",
+		Short: "Reset gate_state from escalated to eligible and zero premortem_cycle_count",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := resolveBeadStore(store)
+			if err != nil {
+				return writeBeadCommandErrorIfJSON(cmd, "store", err)
+			}
+			if err := s.SetGateState(cmd.Context(), args[0], beadstore.GateEscalated, beadstore.GateEligible, "gate-reset"); err != nil {
+				return writeBeadCommandErrorIfJSON(cmd, "gate-reset", fmt.Errorf("set gate state: %w", err))
+			}
+			resetter, ok := s.(interface {
+				ResetPremortCycleCount(context.Context, string) error
+			})
+			if !ok {
+				return writeBeadCommandErrorIfJSON(cmd, "unsupported", fmt.Errorf("%s: ResetPremortCycleCount not supported by this bead store", cmd.CommandPath()))
+			}
+			if err := resetter.ResetPremortCycleCount(cmd.Context(), args[0]); err != nil {
+				return writeBeadCommandErrorIfJSON(cmd, "gate-reset", fmt.Errorf("reset premortem cycle count: %w", err))
+			}
+			return nil
+		},
+	}
 }
 
 // newBeadGateStateCmd implements `oro bead gate-state <id>` — prints the

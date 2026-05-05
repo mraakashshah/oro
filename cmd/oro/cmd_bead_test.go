@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/dispatcher"
 	"oro/pkg/protocol"
 )
 
@@ -789,6 +790,99 @@ func beadJSONArrayHasID(beads []map[string]any, id string) bool {
 		}
 	}
 	return false
+}
+
+// nopPremortCounter satisfies dispatcher.PremortCounter for tests that don't
+// need cycle-count side effects.
+type nopPremortCounter struct{}
+
+func (nopPremortCounter) SetPremortCycleCount(_ context.Context, _ string, _ int) error {
+	return nil
+}
+
+// TestGateReset_ClearsEscalation verifies that `oro task gate-reset <epic-id>`:
+//  1. Transitions gate_state from escalated → eligible.
+//  2. Zeroes premortem_cycle_count.
+//  3. Allows a subsequent OnReplanChildrenClosed (cycle=1, gate_state=replan)
+//     to succeed without returning ErrReplanLoopExhausted.
+func TestGateReset_ClearsEscalation(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	db, err := openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("openStateDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := beadstore.NewSQLiteStore(db)
+
+	if _, err := store.Create(ctx, beadstore.CreateParams{
+		ID: "epic-gr", Title: "Epic", Type: "epic",
+	}); err != nil {
+		t.Fatalf("create epic: %v", err)
+	}
+
+	// Drive gate_state to escalated (simulates replan loop exhaustion).
+	if err := store.SetGateState(ctx, "epic-gr", beadstore.GateNone, beadstore.GateEscalated, "test setup"); err != nil {
+		t.Fatalf("SetGateState →escalated: %v", err)
+	}
+
+	// Simulate 5 completed replan cycles.
+	for range 5 {
+		if err := store.IncrPremortCycleCount(ctx, "epic-gr"); err != nil {
+			t.Fatalf("IncrPremortCycleCount: %v", err)
+		}
+	}
+
+	// Run gate-reset.
+	executeBeadCommand(t, store, "gate-reset", "epic-gr")
+
+	// 1. gate_state must be eligible after reset.
+	gs, err := store.GateState(ctx, "epic-gr")
+	if err != nil {
+		t.Fatalf("GateState after gate-reset: %v", err)
+	}
+	if gs != beadstore.GateEligible {
+		t.Errorf("gate_state after gate-reset = %q, want eligible", gs)
+	}
+
+	// 2. premortem_cycle_count must be zeroed.
+	var cycleCount int
+	if err := db.QueryRowContext(ctx, `SELECT premortem_cycle_count FROM beads WHERE id='epic-gr'`).Scan(&cycleCount); err != nil {
+		t.Fatalf("query premortem_cycle_count: %v", err)
+	}
+	if cycleCount != 0 {
+		t.Errorf("premortem_cycle_count after gate-reset = %d, want 0", cycleCount)
+	}
+
+	// 3. Advance to replan (dispatcher does this when spawning new replan children).
+	if err := store.SetGateState(ctx, "epic-gr", beadstore.GateEligible, beadstore.GateReplan, "new cycle"); err != nil {
+		t.Fatalf("SetGateState eligible→replan: %v", err)
+	}
+
+	// Create an open replan_cycle:1 child so OnReplanChildrenClosed waits.
+	if _, err := store.Create(ctx, beadstore.CreateParams{
+		ID:       "child-gr",
+		Title:    "replan child",
+		Type:     "task",
+		ParentID: "epic-gr",
+		Tags:     []string{"replan_cycle:1"},
+	}); err != nil {
+		t.Fatalf("create replan child: %v", err)
+	}
+
+	// OnReplanChildrenClosed must succeed (not return ErrReplanLoopExhausted)
+	// with an open replan child present: gate stays replan.
+	if err := dispatcher.OnReplanChildrenClosed(ctx, store, nopPremortCounter{}, "epic-gr", 1, 5); err != nil {
+		t.Errorf("OnReplanChildrenClosed after gate-reset: %v", err)
+	}
+
+	gs, err = store.GateState(ctx, "epic-gr")
+	if err != nil {
+		t.Fatalf("GateState after OnReplanChildrenClosed: %v", err)
+	}
+	if gs != beadstore.GateReplan {
+		t.Errorf("gate_state after OnReplanChildrenClosed = %q, want replan", gs)
+	}
 }
 
 // TestBeadGateStateCmdEmitsGateState verifies that `oro bead gate-state <id>`

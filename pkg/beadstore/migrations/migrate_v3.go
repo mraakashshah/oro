@@ -25,7 +25,7 @@ func MigrateToV3(ctx context.Context, db *sql.DB) error {
 		`ALTER TABLE beads ADD COLUMN linked_artifacts TEXT`,
 		`ALTER TABLE beads ADD COLUMN worker_state     TEXT`,
 		`ALTER TABLE beads ADD COLUMN gate_state TEXT NOT NULL DEFAULT 'none'
-		   CHECK (gate_state IN ('none','eligible','satisfied','blocked','replan'))`,
+		   CHECK (gate_state IN ('none','eligible','satisfied','blocked','replan','escalated'))`,
 		`ALTER TABLE beads ADD COLUMN premortem_cycle_count INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE beads ADD COLUMN pipeline_stage TEXT
 		   CHECK (pipeline_stage IN ('assess','plan','premortem','prepare','execute','validate','evolve','none'))`,
