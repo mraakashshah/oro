@@ -35,6 +35,16 @@ type Store interface {
 	AllChildrenClosed(ctx context.Context, epicID string) (bool, error)
 	// FindByParentAndTag returns children under parentID that have tag.
 	FindByParentAndTag(ctx context.Context, parentID, tag string) ([]protocol.Bead, error)
+	// CountChildren returns the total number of non-deleted child beads for parentID (§11.4).
+	CountChildren(ctx context.Context, parentID string) (int, error)
+	// GateState returns the current gate_state for beadID (§11.4).
+	GateState(ctx context.Context, beadID string) (GateState, error)
+	// HasClosedPremortemChild reports whether parentID has at least one closed
+	// child bead of type="premortem" (§11.4 gate eligibility check).
+	HasClosedPremortemChild(ctx context.Context, parentID string) (bool, error)
+	// IncrPremortCycleCount atomically increments the premortem_cycle_count
+	// column for beadID by 1 (§11.4 replan verdict path).
+	IncrPremortCycleCount(ctx context.Context, beadID string) error
 
 	// Export returns a JSONL backup snapshot.
 	Export(ctx context.Context) ([]byte, error)

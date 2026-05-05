@@ -299,6 +299,29 @@ func (s *ShadowStore) SetPremortemVerdict(ctx context.Context, beadID, verdict, 
 	return wrapPrimaryStoreError("set premortem verdict", s.primary.SetPremortemVerdict(ctx, beadID, verdict, reason))
 }
 
+// CountChildren delegates to primary only.
+func (s *ShadowStore) CountChildren(ctx context.Context, parentID string) (int, error) {
+	n, err := s.primary.CountChildren(ctx, parentID)
+	return n, wrapPrimaryStoreError("count children", err)
+}
+
+// GateState delegates to primary only.
+func (s *ShadowStore) GateState(ctx context.Context, beadID string) (GateState, error) {
+	gs, err := s.primary.GateState(ctx, beadID)
+	return gs, wrapPrimaryStoreError("gate state", err)
+}
+
+// HasClosedPremortemChild delegates to primary only.
+func (s *ShadowStore) HasClosedPremortemChild(ctx context.Context, parentID string) (bool, error) {
+	ok, err := s.primary.HasClosedPremortemChild(ctx, parentID)
+	return ok, wrapPrimaryStoreError("has closed premortem child", err)
+}
+
+// IncrPremortCycleCount delegates to primary only.
+func (s *ShadowStore) IncrPremortCycleCount(ctx context.Context, beadID string) error {
+	return wrapPrimaryStoreError("incr premortem cycle count", s.primary.IncrPremortCycleCount(ctx, beadID))
+}
+
 // WithReadTx delegates to primary so reads see a consistent snapshot from the
 // authoritative store. Errors returned from fn are passed through unwrapped —
 // only BeginTx/Commit failures are framed as primary-store malfunctions.

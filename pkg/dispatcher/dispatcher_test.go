@@ -318,6 +318,16 @@ func (m *fakeBeadStore) SetPremortemVerdict(_ context.Context, _, _, _ string) e
 	return nil
 }
 
+func (m *fakeBeadStore) CountChildren(_ context.Context, _ string) (int, error) { return 0, nil }
+func (m *fakeBeadStore) GateState(_ context.Context, _ string) (beadstore.GateState, error) {
+	return beadstore.GateNone, nil
+}
+
+func (m *fakeBeadStore) HasClosedPremortemChild(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+func (m *fakeBeadStore) IncrPremortCycleCount(_ context.Context, _ string) error { return nil }
+
 func (m *fakeBeadStore) WithReadTx(_ context.Context, _ func(tx beadstore.ReadTx) error) error {
 	// Loud failure: fakeBeadStore does not embed FakeStore, so naively delegating
 	// to a fresh FakeStore would silently expose an empty snapshot to the dispatcher

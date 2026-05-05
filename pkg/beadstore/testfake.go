@@ -18,13 +18,14 @@ import (
 //
 //oro:testonly
 type FakeStore struct {
-	mu             sync.RWMutex
-	beads          map[string]protocol.Bead
-	closed         []string
-	nextID         int
-	journeys       map[string][]JourneyEvent
-	gateStates     map[string]GateState
-	pipelineStages map[string]PipelineStage
+	mu                 sync.RWMutex
+	beads              map[string]protocol.Bead
+	closed             []string
+	nextID             int
+	journeys           map[string][]JourneyEvent
+	gateStates         map[string]GateState
+	pipelineStages     map[string]PipelineStage
+	premortCycleCounts map[string]int
 }
 
 // NewFakeStore returns a map-backed Store seeded with optional beads.
@@ -32,11 +33,12 @@ type FakeStore struct {
 //oro:testonly
 func NewFakeStore(initial ...protocol.Bead) *FakeStore {
 	store := &FakeStore{
-		beads:          make(map[string]protocol.Bead, len(initial)),
-		journeys:       make(map[string][]JourneyEvent),
-		gateStates:     make(map[string]GateState),
-		pipelineStages: make(map[string]PipelineStage),
-		nextID:         1,
+		beads:              make(map[string]protocol.Bead, len(initial)),
+		journeys:           make(map[string][]JourneyEvent),
+		gateStates:         make(map[string]GateState),
+		pipelineStages:     make(map[string]PipelineStage),
+		premortCycleCounts: make(map[string]int),
+		nextID:             1,
 	}
 	for _, bead := range initial {
 		store.beads[bead.ID] = cloneBead(bead)
@@ -537,6 +539,62 @@ func (s *FakeStore) FindByParentAndTag(ctx context.Context, parentID, tag string
 	return matches, nil
 }
 
+// CountChildren returns the number of non-deleted child beads for parentID.
+func (s *FakeStore) CountChildren(ctx context.Context, epicID string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, fmt.Errorf("count children context: %w", err)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := 0
+	for _, bead := range s.beads {
+		if bead.Epic == epicID {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// GateState returns the current gate_state for beadID. Returns GateNone when
+// no gate state has been set, matching the SQL schema's DEFAULT 'none'.
+func (s *FakeStore) GateState(_ context.Context, beadID string) (GateState, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return normalizeGate(s.gateStates[beadID]), nil
+}
+
+// HasClosedPremortemChild reports whether parentID has a closed child of type="premortem".
+func (s *FakeStore) HasClosedPremortemChild(ctx context.Context, parentID string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, fmt.Errorf("has closed premortem child context: %w", err)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, bead := range s.beads {
+		if bead.Epic == parentID && bead.Type == "premortem" && bead.Status == "closed" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// IncrPremortCycleCount increments the premortem_cycle_count for beadID by 1.
+func (s *FakeStore) IncrPremortCycleCount(_ context.Context, beadID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.premortCycleCounts[beadID]++
+	return nil
+}
+
+// PremortCycleCount returns the current premortem cycle count for beadID (test helper).
+//
+//oro:testonly
+func (s *FakeStore) PremortCycleCount(beadID string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.premortCycleCounts[beadID]
+}
+
 // Export returns a JSONL backup snapshot.
 func (s *FakeStore) Export(ctx context.Context) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
@@ -743,13 +801,23 @@ func (s *FakeStore) LatestJourney(_ context.Context, beadID string, limit int) (
 	return out, nil
 }
 
+// normalizeGate maps GateState("") to GateNone so FakeStore's zero-value
+// map entries behave consistently with SQLite's DEFAULT 'none'.
+func normalizeGate(gs GateState) GateState {
+	if gs == GateState("") {
+		return GateNone
+	}
+	return gs
+}
+
 // SetGateState atomically transitions beadID's gate state and records the
 // change. Returns ErrStaleGate if the current state does not equal from.
+// GateState("") and GateNone are treated as equivalent (both mean "not yet set").
 func (s *FakeStore) SetGateState(_ context.Context, beadID string, from, to GateState, reason string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cur := s.gateStates[beadID]
-	if cur != from {
+	cur := normalizeGate(s.gateStates[beadID])
+	if cur != normalizeGate(from) {
 		return ErrStaleGate
 	}
 	s.gateStates[beadID] = to

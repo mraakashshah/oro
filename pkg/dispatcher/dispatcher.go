@@ -1875,13 +1875,12 @@ func (d *Dispatcher) checkEpicQG(ctx context.Context, epicID, workerID, epicBran
 	if !passed {
 		_ = d.logEvent(ctx, "epic_qg_failed", "dispatcher", epicID, workerID,
 			fmt.Sprintf(`{"output":%q}`, qgOutput))
-		_, _ = d.beads.Create(ctx, beadstore.CreateParams{
+		_, _ = CreateBeadGraph(ctx, d.beads, epicID, []beadstore.CreateParams{{
 			Title:       fmt.Sprintf("Fix QG failures on %s", epicBranch),
 			Type:        "task",
 			Priority:    0,
 			Description: fmt.Sprintf("Epic %s QG failed on branch %s.\n\nQG output:\n%s", epicID, epicBranch, qgOutput),
-			ParentID:    epicID,
-		})
+		}})
 		return false
 	}
 	return true
@@ -3646,6 +3645,9 @@ func (d *Dispatcher) filterExecutableBeads(ctx context.Context, allBeads []proto
 				d.processEpicSkip(ctx, b)
 				continue
 			}
+		} else if err := CheckPremortemGate(ctx, d.beads, b.ID); err != nil {
+			_ = d.logEvent(ctx, "premortem_gate_blocked", "dispatcher", b.ID, "", err.Error())
+			continue
 		}
 		executable = append(executable, b)
 	}

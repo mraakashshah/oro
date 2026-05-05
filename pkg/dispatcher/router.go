@@ -3,9 +3,11 @@ package dispatcher
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 
+	"oro/pkg/beadstore"
 	"oro/pkg/protocol"
 	"oro/pkg/worker"
 )
@@ -122,6 +124,10 @@ func (d *Dispatcher) CloseBead(ctx context.Context, beadID, reason string) error
 // malformed (or carries an unknown verdict value), the bead still closes but
 // with verdict="replan" as the fail-safe default and a
 // premortem_verdict_invalid event is recorded for observability.
+//
+// After persisting the verdict, the parent epic's gate_state is transitioned
+// per the verdict: proceed→satisfied, block→blocked, replan→replan (+ cycle
+// count increment). ErrStaleGate is treated as non-fatal (gate already moved).
 func (d *Dispatcher) ClosePremortemBead(ctx context.Context, beadID string, payload []byte) error {
 	verdict, reason, invalid := parsePremortemVerdict(payload)
 	if invalid {
@@ -130,8 +136,49 @@ func (d *Dispatcher) ClosePremortemBead(ctx context.Context, beadID string, payl
 	if err := d.beads.SetPremortemVerdict(ctx, beadID, verdict, reason); err != nil {
 		return fmt.Errorf("Store.SetPremortemVerdict(%s): %w", beadID, err)
 	}
+	if err := d.applyPremortemVerdict(ctx, beadID, verdict); err != nil {
+		return fmt.Errorf("apply premortem verdict for %s: %w", beadID, err)
+	}
 	closeReason := fmt.Sprintf("premortem verdict=%s", verdict)
 	return d.CloseBead(ctx, beadID, closeReason)
+}
+
+// applyPremortemVerdict transitions the parent bead's gate_state based on the
+// premortem verdict (§11.4). ErrStaleGate is non-fatal — it means the gate
+// already moved (concurrent write or test setup without a matching initial state).
+func (d *Dispatcher) applyPremortemVerdict(ctx context.Context, premortemID, verdict string) error {
+	bead, err := d.beads.Show(ctx, premortemID)
+	if err != nil {
+		return fmt.Errorf("show premortem bead: %w", err)
+	}
+	if bead == nil || bead.Epic == "" {
+		return nil
+	}
+	parentID := bead.Epic
+	var gateErr error
+	switch verdict {
+	case "proceed":
+		gateErr = d.beads.SetGateState(ctx, parentID, beadstore.GateEligible, beadstore.GateSatisfied, "premortem_verdict_proceed")
+	case "block":
+		gateErr = d.beads.SetGateState(ctx, parentID, beadstore.GateEligible, beadstore.GateBlocked, "premortem_verdict_block")
+	case "replan":
+		gateErr = d.beads.SetGateState(ctx, parentID, beadstore.GateEligible, beadstore.GateReplan, "premortem_verdict_replan")
+		if gateErr == nil {
+			if err := d.beads.IncrPremortCycleCount(ctx, parentID); err != nil {
+				return fmt.Errorf("increment premortem cycle count for %s: %w", parentID, err)
+			}
+			return nil
+		}
+	default:
+		return nil
+	}
+	if errors.Is(gateErr, beadstore.ErrStaleGate) {
+		return nil
+	}
+	if gateErr != nil {
+		return fmt.Errorf("set gate state for %s: %w", parentID, gateErr)
+	}
+	return nil
 }
 
 // warnInvalidPremortemVerdict records a fail-safe warning when a premortem

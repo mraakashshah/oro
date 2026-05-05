@@ -200,6 +200,49 @@ func (s *SQLiteStore) TransitionPipelineStage(ctx context.Context, beadID string
 	return nil
 }
 
+// CountChildren returns the number of non-deleted child beads for parentID.
+func (s *SQLiteStore) CountChildren(ctx context.Context, parentID string) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM beads WHERE parent_id=? AND deleted=0`, parentID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("beadstore: count children for %s: %w", parentID, err)
+	}
+	return n, nil
+}
+
+// GateState returns the current gate_state for beadID.
+func (s *SQLiteStore) GateState(ctx context.Context, beadID string) (GateState, error) {
+	var gs string
+	if err := s.db.QueryRowContext(ctx, `SELECT gate_state FROM beads WHERE id=? AND deleted=0`, beadID).Scan(&gs); err != nil {
+		return GateNone, fmt.Errorf("beadstore: gate state for %s: %w", beadID, err)
+	}
+	return GateState(gs), nil
+}
+
+// HasClosedPremortemChild reports whether parentID has at least one closed child of type="premortem".
+func (s *SQLiteStore) HasClosedPremortemChild(ctx context.Context, parentID string) (bool, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM beads WHERE parent_id=? AND type='premortem' AND status='closed' AND deleted=0`, parentID).Scan(&n); err != nil {
+		return false, fmt.Errorf("beadstore: has closed premortem child for %s: %w", parentID, err)
+	}
+	return n > 0, nil
+}
+
+// IncrPremortCycleCount atomically increments the premortem_cycle_count column for beadID by 1.
+func (s *SQLiteStore) IncrPremortCycleCount(ctx context.Context, beadID string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE beads SET premortem_cycle_count = premortem_cycle_count + 1 WHERE id=? AND deleted=0`, beadID)
+	if err != nil {
+		return fmt.Errorf("beadstore: incr premortem cycle count for %s: %w", beadID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("beadstore: incr premortem cycle count rows affected for %s: %w", beadID, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("beadstore: incr premortem cycle count: bead %s not found", beadID)
+	}
+	return nil
+}
+
 func scanJourneyEvents(rows *sql.Rows) ([]JourneyEvent, error) {
 	var events []JourneyEvent
 	for rows.Next() {
