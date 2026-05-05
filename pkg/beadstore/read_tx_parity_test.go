@@ -7,8 +7,10 @@ import (
 	"reflect"
 	"sort"
 	"testing"
+	"time"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/beadstore/migrations"
 	"oro/pkg/cards"
 	"oro/pkg/protocol"
 
@@ -372,4 +374,184 @@ func formatIDWorker(ids []string, m map[string]string) []string {
 		}
 	}
 	return out
+}
+
+// TestReadTxChildrenAndJourney exercises the ReadTx methods that are only
+// reachable via WithReadTx and have no coverage from other tests:
+// HasChildren, AllChildrenClosed, FindByParentAndTag, Journey, LatestJourney.
+func TestReadTxChildrenAndJourney(t *testing.T) {
+	ctx := context.Background()
+	db := openBeadDB(ctx, t)
+	defer db.Close()
+	if err := migrations.MigrateToV3(ctx, db); err != nil {
+		t.Fatalf("MigrateToV3: %v", err)
+	}
+	store := beadstore.NewSQLiteStore(db)
+
+	mustCreate(ctx, t, store, beadstore.CreateParams{ID: "epic", Title: "epic bead"})
+
+	t.Run("HasChildren_no_children", func(t *testing.T) {
+		var has bool
+		if err := store.WithReadTx(ctx, func(tx beadstore.ReadTx) error {
+			var err error
+			has, err = tx.HasChildren(ctx, "epic")
+			return err
+		}); err != nil {
+			t.Fatalf("WithReadTx: %v", err)
+		}
+		if has {
+			t.Error("HasChildren: want false before any children exist")
+		}
+	})
+
+	t.Run("AllChildrenClosed_no_children", func(t *testing.T) {
+		var allClosed bool
+		if err := store.WithReadTx(ctx, func(tx beadstore.ReadTx) error {
+			var err error
+			allClosed, err = tx.AllChildrenClosed(ctx, "epic")
+			return err
+		}); err != nil {
+			t.Fatalf("WithReadTx: %v", err)
+		}
+		if !allClosed {
+			t.Error("AllChildrenClosed: want true when no children exist")
+		}
+	})
+
+	mustCreate(ctx, t, store, beadstore.CreateParams{ID: "child1", Title: "child1", ParentID: "epic", Tags: []string{"premortem"}})
+	mustCreate(ctx, t, store, beadstore.CreateParams{ID: "child2", Title: "child2", ParentID: "epic"})
+
+	t.Run("HasChildren_with_children", func(t *testing.T) {
+		var has bool
+		if err := store.WithReadTx(ctx, func(tx beadstore.ReadTx) error {
+			var err error
+			has, err = tx.HasChildren(ctx, "epic")
+			return err
+		}); err != nil {
+			t.Fatalf("WithReadTx: %v", err)
+		}
+		if !has {
+			t.Error("HasChildren: want true after children created")
+		}
+	})
+
+	t.Run("AllChildrenClosed_open_children", func(t *testing.T) {
+		var allClosed bool
+		if err := store.WithReadTx(ctx, func(tx beadstore.ReadTx) error {
+			var err error
+			allClosed, err = tx.AllChildrenClosed(ctx, "epic")
+			return err
+		}); err != nil {
+			t.Fatalf("WithReadTx: %v", err)
+		}
+		if allClosed {
+			t.Error("AllChildrenClosed: want false when children are open")
+		}
+	})
+
+	t.Run("FindByParentAndTag", func(t *testing.T) {
+		var matches []protocol.Bead
+		if err := store.WithReadTx(ctx, func(tx beadstore.ReadTx) error {
+			var err error
+			matches, err = tx.FindByParentAndTag(ctx, "epic", "premortem")
+			return err
+		}); err != nil {
+			t.Fatalf("WithReadTx: %v", err)
+		}
+		if len(matches) != 1 || matches[0].ID != "child1" {
+			t.Errorf("FindByParentAndTag(premortem): got %v, want [child1]", matchIDs(matches))
+		}
+
+		var none []protocol.Bead
+		if err := store.WithReadTx(ctx, func(tx beadstore.ReadTx) error {
+			var err error
+			none, err = tx.FindByParentAndTag(ctx, "epic", "nonexistent")
+			return err
+		}); err != nil {
+			t.Fatalf("WithReadTx: %v", err)
+		}
+		if len(none) != 0 {
+			t.Errorf("FindByParentAndTag(nonexistent): want empty, got %v", matchIDs(none))
+		}
+	})
+
+	// Seed journey events.
+	ts := time.Now().UTC()
+	for i, evtName := range []string{"start", "note", "done"} {
+		evt := beadstore.JourneyEvent{
+			BeadID: "epic",
+			Ts:     ts.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Actor:  "worker",
+			Event:  evtName,
+		}
+		if err := store.AppendJourney(ctx, "epic", evt); err != nil {
+			t.Fatalf("AppendJourney %s: %v", evtName, err)
+		}
+	}
+
+	t.Run("Journey_readtx", func(t *testing.T) {
+		since := ts.Add(time.Second) // skip first event
+		var events []beadstore.JourneyEvent
+		if err := store.WithReadTx(ctx, func(tx beadstore.ReadTx) error {
+			var err error
+			events, err = tx.Journey(ctx, "epic", since)
+			return err
+		}); err != nil {
+			t.Fatalf("WithReadTx: %v", err)
+		}
+		if len(events) != 2 || events[0].Event != "note" || events[1].Event != "done" {
+			t.Errorf("Journey(since+1s): got %v events, want [note done]", eventNames(events))
+		}
+	})
+
+	t.Run("LatestJourney_readtx", func(t *testing.T) {
+		var events []beadstore.JourneyEvent
+		if err := store.WithReadTx(ctx, func(tx beadstore.ReadTx) error {
+			var err error
+			events, err = tx.LatestJourney(ctx, "epic", 2)
+			return err
+		}); err != nil {
+			t.Fatalf("WithReadTx: %v", err)
+		}
+		if len(events) != 2 || events[0].Event != "note" || events[1].Event != "done" {
+			t.Errorf("LatestJourney(limit 2): got %v, want [note done]", eventNames(events))
+		}
+	})
+
+	if err := store.Close(ctx, "child1", "done"); err != nil {
+		t.Fatalf("Close child1: %v", err)
+	}
+	if err := store.Close(ctx, "child2", "done"); err != nil {
+		t.Fatalf("Close child2: %v", err)
+	}
+
+	t.Run("AllChildrenClosed_after_close", func(t *testing.T) {
+		var allClosed bool
+		if err := store.WithReadTx(ctx, func(tx beadstore.ReadTx) error {
+			var err error
+			allClosed, err = tx.AllChildrenClosed(ctx, "epic")
+			return err
+		}); err != nil {
+			t.Fatalf("WithReadTx: %v", err)
+		}
+		if !allClosed {
+			t.Error("AllChildrenClosed: want true after all children closed")
+		}
+	})
+}
+
+func matchIDs(beads []protocol.Bead) []string {
+	ids := make([]string, len(beads))
+	for i, b := range beads {
+		ids[i] = b.ID
+	}
+	return ids
+}
+
+func eventNames(events []beadstore.JourneyEvent) []string {
+	names := make([]string, len(events))
+	for i, e := range events {
+		names[i] = e.Event
+	}
+	return names
 }
