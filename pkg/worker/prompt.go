@@ -94,6 +94,92 @@ func AssemblePrompt(params PromptParams) string {
 	return b.String()
 }
 
+// PremortemPromptParams contains inputs for building a premortem agent prompt
+// (§10.3, §11.4). The premortem agent runs as a non-interactive bead with
+// parent_id = TargetBeadID and emits a verdict ∈ {proceed, block, replan}.
+type PremortemPromptParams struct {
+	BeadID            string
+	TargetBeadID      string
+	TargetTitle       string
+	TargetDescription string
+}
+
+// AssemblePremortemPrompt builds the 6-section premortem prompt (§11.4).
+//
+// Structural sections of the prompt itself use a single # heading marker so
+// they do not collide with the 6 ## output-template labels the agent must
+// produce. The 6 ## labels are: Failure Modes, Hidden Assumptions,
+// Dependencies, Blast Radius, Verification Plan, Verdict.
+func AssemblePremortemPrompt(p PremortemPromptParams) string {
+	return premortemPromptHeader(p) + premortemPromptBody() + premortemPromptFooter()
+}
+
+func premortemPromptHeader(p PremortemPromptParams) string {
+	return strings.Join([]string{
+		"# Role",
+		"",
+		fmt.Sprintf("You are the premortem agent for bead %s. Your task is to audit target bead %s before execution begins. This bead is non-interactive: produce findings only, no code, no approval gates.",
+			p.BeadID, p.TargetBeadID),
+		"",
+		"# Target",
+		"",
+		fmt.Sprintf("- Premortem bead: %s", p.BeadID),
+		fmt.Sprintf("- Target bead: %s", p.TargetBeadID),
+		fmt.Sprintf("- Title: %s", p.TargetTitle),
+		fmt.Sprintf("- Description: %s", p.TargetDescription),
+		"",
+		"# Methodology",
+		"",
+		"For each likely failure mode, name the failure, the assumption that hides it, and a verification step that would catch it. Be specific. Output exactly the six sections below, in order, using ## headers. Do not introduce additional ## headers.",
+		"",
+		"# Output Format",
+		"",
+	}, "\n")
+}
+
+func premortemPromptBody() string {
+	return strings.Join([]string{
+		"## Failure Modes",
+		"",
+		"List each likely failure mode as a bullet. Be specific about which step fails and why.",
+		"",
+		"## Hidden Assumptions",
+		"",
+		"List the assumptions the plan implicitly makes. Each line: assumption — risk if false.",
+		"",
+		"## Dependencies",
+		"",
+		"External services, libraries, data, or upstream beads this work needs. Mark each as available, fragile, or missing.",
+		"",
+		"## Blast Radius",
+		"",
+		"What other systems, beads, or users are affected if this work breaks or regresses. Bound the harm.",
+		"",
+		"## Verification Plan",
+		"",
+		"For each failure mode, the test or check that would catch it. Tie back to the failure-modes list by index.",
+		"",
+		"## Verdict",
+		"",
+		"Output one of: proceed | block | replan",
+		"- proceed: risks are low or fully mitigated by the verification plan.",
+		"- block: a hard blocker exists that this bead cannot resolve unilaterally.",
+		"- replan: findings require new child beads (decomposition or research).",
+		"",
+		"Provide a one-line reason after the verdict.",
+		"",
+	}, "\n")
+}
+
+func premortemPromptFooter() string {
+	return strings.Join([]string{
+		"# Stopping Criteria",
+		"",
+		"When all six sections above are populated and the Verdict line is set, signal completion. Do not modify code, run tests, or contact external services. Premortem beads are non-interactive auditors.",
+		"",
+	}, "\n")
+}
+
 // EpicPromptParams contains inputs for building an epic decomposition prompt.
 type EpicPromptParams struct {
 	BeadID      string

@@ -314,6 +314,10 @@ func (m *fakeBeadStore) TransitionPipelineStage(_ context.Context, _ string, _, 
 	return nil
 }
 
+func (m *fakeBeadStore) SetPremortemVerdict(_ context.Context, _, _, _ string) error {
+	return nil
+}
+
 func (m *fakeBeadStore) WithReadTx(_ context.Context, _ func(tx beadstore.ReadTx) error) error {
 	// Loud failure: fakeBeadStore does not embed FakeStore, so naively delegating
 	// to a fresh FakeStore would silently expose an empty snapshot to the dispatcher

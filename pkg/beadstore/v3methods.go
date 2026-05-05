@@ -109,6 +109,46 @@ func (s *SQLiteStore) SetGateState(ctx context.Context, beadID string, from, to 
 	return nil
 }
 
+// SetPremortemVerdict persists a premortem agent's verdict (§11.4) on
+// beadID by writing two bead_metadata rows: premortem_verdict and
+// premortem_reason. Existing values for those keys are upserted; other
+// metadata keys are preserved.
+func (s *SQLiteStore) SetPremortemVerdict(ctx context.Context, beadID, verdict, reason string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beadstore: begin set premortem verdict: %w", err)
+	}
+	defer rollback(tx)
+
+	if err := upsertMetadata(ctx, tx, beadID, "premortem_verdict", verdict); err != nil {
+		return err
+	}
+	if err := upsertMetadata(ctx, tx, beadID, "premortem_reason", reason); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("beadstore: commit set premortem verdict for %s: %w", beadID, err)
+	}
+	return nil
+}
+
+// upsertMetadata replaces a single bead_metadata row identified by (beadID,
+// key) without touching other keys for the same bead. SQLite ≥3.24 supports
+// ON CONFLICT, but for portability across the existing schema we DELETE+INSERT.
+func upsertMetadata(ctx context.Context, tx *sql.Tx, beadID, key, value string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM bead_metadata WHERE bead_id=? AND key=?`, beadID, key); err != nil {
+		return fmt.Errorf("beadstore: clear metadata key %q for %s: %w", key, beadID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO bead_metadata (bead_id, key, value) VALUES (?, ?, ?)`, beadID, key, value); err != nil {
+		return fmt.Errorf("beadstore: write metadata key %q for %s: %w", key, beadID, err)
+	}
+	return nil
+}
+
 // TransitionPipelineStage atomically transitions beadID's pipeline_stage from →
 // to and appends a pipeline_stage_changed journey event. Returns ErrStaleStage
 // if the current pipeline_stage does not match from.

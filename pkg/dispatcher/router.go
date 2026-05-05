@@ -2,12 +2,51 @@ package dispatcher
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 
 	"oro/pkg/protocol"
 	"oro/pkg/worker"
 )
+
+// premortemVerdictPayload is the structured output a premortem agent emits at
+// completion. The dispatcher's ClosePremortemBead consumes this payload and
+// persists the verdict on the bead.
+type premortemVerdictPayload struct {
+	Verdict string `json:"verdict"`
+	Reason  string `json:"reason"`
+}
+
+// isValidPremortemVerdict reports whether v is in the closed verdict set per
+// §11.4: proceed, block, replan.
+func isValidPremortemVerdict(v string) bool {
+	switch v {
+	case "proceed", "block", "replan":
+		return true
+	default:
+		return false
+	}
+}
+
+// parsePremortemVerdict normalizes an emitted payload into (verdict, reason,
+// invalid). When the payload is empty, malformed, or carries a verdict outside
+// the closed set, the verdict defaults to "replan" and invalid=true so the
+// caller can log a fail-safe warning. Reason text is preserved verbatim when
+// extractable, even if the verdict itself is invalid.
+func parsePremortemVerdict(payload []byte) (verdict, reason string, invalid bool) {
+	if len(payload) == 0 {
+		return "replan", "", true
+	}
+	var p premortemVerdictPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return "replan", "", true
+	}
+	if !isValidPremortemVerdict(p.Verdict) {
+		return "replan", p.Reason, true
+	}
+	return p.Verdict, p.Reason, false
+}
 
 // BuildPrompt selects the correct prompt assembler based on bead.Type (§10.2).
 //
@@ -34,8 +73,12 @@ func BuildPrompt(_ context.Context, b protocol.Bead) (string, error) {
 		// Phase B.3 will replace this stub with AssembleOraclePrompt.
 		return fmt.Sprintf("# Oracle prompt\n\n## Bead\n\n%s: %s\n", b.ID, b.Title), nil
 	case "premortem":
-		// Phase B.3 will replace this stub with AssemblePremortemPrompt.
-		return fmt.Sprintf("# Premortem prompt\n\n## Target\n\n%s: %s\n", b.ID, b.Title), nil
+		return worker.AssemblePremortemPrompt(worker.PremortemPromptParams{
+			BeadID:            b.ID,
+			TargetBeadID:      b.Epic,
+			TargetTitle:       b.Title,
+			TargetDescription: b.Description,
+		}), nil
 	case "epic", "review":
 		return "", fmt.Errorf("bead type %q is not directly executable; routed via decomposition or ops review", b.Type)
 	default:
@@ -71,4 +114,34 @@ func (d *Dispatcher) CloseBead(ctx context.Context, beadID, reason string) error
 		d.warnSweepFailure(ctx, beadID, err)
 	}
 	return nil
+}
+
+// ClosePremortemBead closes a premortem-type bead and persists its verdict
+// payload to bead.Metadata (§11.4). The verdict is one of {proceed, block,
+// replan}; reason is preserved verbatim. When the payload is missing or
+// malformed (or carries an unknown verdict value), the bead still closes but
+// with verdict="replan" as the fail-safe default and a
+// premortem_verdict_invalid event is recorded for observability.
+func (d *Dispatcher) ClosePremortemBead(ctx context.Context, beadID string, payload []byte) error {
+	verdict, reason, invalid := parsePremortemVerdict(payload)
+	if invalid {
+		d.warnInvalidPremortemVerdict(ctx, beadID, payload)
+	}
+	if err := d.beads.SetPremortemVerdict(ctx, beadID, verdict, reason); err != nil {
+		return fmt.Errorf("Store.SetPremortemVerdict(%s): %w", beadID, err)
+	}
+	closeReason := fmt.Sprintf("premortem verdict=%s", verdict)
+	return d.CloseBead(ctx, beadID, closeReason)
+}
+
+// warnInvalidPremortemVerdict records a fail-safe warning when a premortem
+// bead closes without a parsable verdict. The bead still closes (with the
+// "replan" default), but downstream observers need a signal that the agent
+// did not produce a clean verdict.
+func (d *Dispatcher) warnInvalidPremortemVerdict(ctx context.Context, beadID string, payload []byte) {
+	if d.db == nil {
+		fmt.Fprintf(os.Stderr, "warn: dispatcher.ClosePremortemBead: invalid verdict payload for %s; defaulting to replan\n", beadID)
+		return
+	}
+	_ = d.logEvent(ctx, "premortem_verdict_invalid", "dispatcher", beadID, "", string(payload))
 }

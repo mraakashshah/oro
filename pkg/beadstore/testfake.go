@@ -764,6 +764,27 @@ func (s *FakeStore) SetGateState(_ context.Context, beadID string, from, to Gate
 	return nil
 }
 
+// SetPremortemVerdict persists a premortem agent's verdict (§11.4) on
+// beadID by writing the bead's Metadata map. Existing values for the
+// premortem_verdict and premortem_reason keys are overwritten; other keys
+// are preserved.
+func (s *FakeStore) SetPremortemVerdict(_ context.Context, beadID, verdict, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	bead, ok := s.beads[beadID]
+	if !ok {
+		return &protocol.BeadNotFoundError{BeadID: beadID}
+	}
+	if bead.Metadata == nil {
+		bead.Metadata = map[string]any{}
+	}
+	bead.Metadata["premortem_verdict"] = verdict
+	bead.Metadata["premortem_reason"] = reason
+	bead.UpdatedAt = nowString()
+	s.beads[beadID] = bead
+	return nil
+}
+
 // TransitionPipelineStage atomically transitions beadID's pipeline stage.
 // Returns ErrStaleStage if the current stage does not equal from.
 func (s *FakeStore) TransitionPipelineStage(_ context.Context, beadID string, from, to PipelineStage) error {

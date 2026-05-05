@@ -86,14 +86,17 @@ func TestRouterAndCloseBead(t *testing.T) {
 		}
 	})
 
-	t.Run("premortem_routes_to_premortem_stub", func(t *testing.T) {
-		b := protocol.Bead{ID: "p1", Type: "premortem", Title: "Review risks"}
+	t.Run("premortem_routes_to_premortem_assembler", func(t *testing.T) {
+		b := protocol.Bead{ID: "p1", Type: "premortem", Title: "Review risks", Epic: "epic-target"}
 		got, err := BuildPrompt(ctx, b)
 		if err != nil {
 			t.Fatalf("premortem routing: unexpected error: %v", err)
 		}
-		if !strings.Contains(got, "Premortem prompt") {
-			t.Errorf("premortem prompt missing 'Premortem prompt' marker: got %q", got)
+		// Premortem prompt has the six output-template ## headers per §11.4.
+		for _, label := range []string{"## Failure Modes", "## Verdict"} {
+			if !strings.Contains(got, label) {
+				t.Errorf("premortem prompt missing section %q: got %q", label, got)
+			}
 		}
 		if !strings.Contains(got, "p1") || !strings.Contains(got, "Review risks") {
 			t.Errorf("premortem prompt missing bead identity: got %q", got)

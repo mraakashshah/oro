@@ -294,6 +294,11 @@ func (s *ShadowStore) TransitionPipelineStage(ctx context.Context, beadID string
 	return wrapPrimaryStoreError("transition pipeline stage", s.primary.TransitionPipelineStage(ctx, beadID, from, to))
 }
 
+// SetPremortemVerdict delegates to primary only.
+func (s *ShadowStore) SetPremortemVerdict(ctx context.Context, beadID, verdict, reason string) error {
+	return wrapPrimaryStoreError("set premortem verdict", s.primary.SetPremortemVerdict(ctx, beadID, verdict, reason))
+}
+
 // WithReadTx delegates to primary so reads see a consistent snapshot from the
 // authoritative store. Errors returned from fn are passed through unwrapped —
 // only BeginTx/Commit failures are framed as primary-store malfunctions.

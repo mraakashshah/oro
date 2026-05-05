@@ -53,6 +53,12 @@ type Store interface {
 	// current gate_state does not equal from (concurrent write raced ahead).
 	SetGateState(ctx context.Context, beadID string, from, to GateState, reason string) error
 
+	// SetPremortemVerdict persists a premortem agent's verdict (§11.4) on
+	// beadID via the bead_metadata table (keys: premortem_verdict,
+	// premortem_reason). Existing values for those keys are overwritten;
+	// other metadata keys are preserved.
+	SetPremortemVerdict(ctx context.Context, beadID, verdict, reason string) error
+
 	// TransitionPipelineStage atomically transitions beadID's pipeline_stage
 	// from → to and appends a pipeline_stage_changed journey event. Returns
 	// ErrStaleStage if the current pipeline_stage does not equal from.
