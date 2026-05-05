@@ -1941,7 +1941,7 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 }
 
 func (d *Dispatcher) finalizeSuccessfulMerge(ctx context.Context, beadID, workerID, worktree, epicID, targetBranch string, assignmentID int64, sha string) {
-	_ = d.beads.Close(ctx, beadID, fmt.Sprintf("Merged: %s", sha))
+	_ = d.CloseBead(ctx, beadID, fmt.Sprintf("Merged: %s", sha))
 	_ = d.completeAssignment(ctx, assignmentID, beadID)
 
 	d.cancelOpsAgents(ctx, beadID, workerID, "bead_merged")
@@ -2294,7 +2294,7 @@ func (d *Dispatcher) completeEpicClose(ctx context.Context, epicID, workerID, re
 		return
 	}
 
-	_ = d.beads.Close(ctx, epicID, reason)
+	_ = d.CloseBead(ctx, epicID, reason)
 
 	// Cancel any in-flight ops agents for this epic to prevent stale escalations.
 	if n, err := d.ops.CancelForBead(epicID); n > 0 {
@@ -3686,7 +3686,7 @@ func (d *Dispatcher) filterAlreadyMergedBranches(ctx context.Context, candidates
 	out := make([]protocol.Bead, 0, len(candidates))
 	for _, b := range candidates {
 		if d.isBranchMerged(ctx, b.ID) {
-			_ = d.beads.Close(ctx, b.ID, "branch already merged to main")
+			_ = d.CloseBead(ctx, b.ID, "branch already merged to main")
 			_ = d.logEvent(ctx, "bead_branch_already_merged", "dispatcher", b.ID, "", "")
 			continue
 		}
