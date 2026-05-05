@@ -110,6 +110,27 @@ func newBeadShowCmd(store beadstore.Store) *cobra.Command {
 	return cmd
 }
 
+// createBeadFromParams routes through CreateBeadGraph when ParentID is set so
+// the §11.4 retroactive premortem gate fires; otherwise falls back to the
+// direct Create path (parentless beads can't trigger the gate).
+func createBeadFromParams(ctx context.Context, s beadstore.Store, params beadstore.CreateParams) (*protocol.Bead, error) {
+	if params.ParentID == "" {
+		bead, err := s.Create(ctx, params)
+		if err != nil {
+			return nil, fmt.Errorf("Store.Create: %w", err)
+		}
+		return bead, nil
+	}
+	created, err := dispatcher.CreateBeadGraph(ctx, s, params.ParentID, []beadstore.CreateParams{params})
+	if err != nil {
+		return nil, fmt.Errorf("CreateBeadGraph: %w", err)
+	}
+	if len(created) == 0 {
+		return nil, fmt.Errorf("CreateBeadGraph returned no beads")
+	}
+	return created[0], nil
+}
+
 func newBeadCreateCmd(store beadstore.Store) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create",
@@ -131,37 +152,20 @@ func newBeadCreateCmd(store beadstore.Store) *cobra.Command {
 				acceptance = acceptanceCriteria
 			}
 
-			parentID := mustStringFlag(cmd, "parent")
 			params := beadstore.CreateParams{
 				Title:              mustStringFlag(cmd, "title"),
 				Type:               mustStringFlag(cmd, "type"),
 				Priority:           mustIntFlag(cmd, "priority"),
-				ParentID:           parentID,
+				ParentID:           mustStringFlag(cmd, "parent"),
 				Description:        mustStringFlag(cmd, "description"),
 				AcceptanceCriteria: acceptance,
 				EstimatedMinutes:   mustIntFlag(cmd, "estimate"),
 				ID:                 mustStringFlag(cmd, "id"),
 				Tags:               mustStringArrayFlag(cmd, "tag"),
 			}
-			// When --parent is set, route through CreateBeadGraph so the §11.4
-			// retroactive premortem gate fires after the create. With no parent,
-			// the gate cannot trigger anyway, so the direct Create path stays.
-			var bead *protocol.Bead
-			if parentID != "" {
-				created, err := dispatcher.CreateBeadGraph(cmd.Context(), s, parentID, []beadstore.CreateParams{params})
-				if err != nil {
-					return writeBeadCommandErrorIfJSON(cmd, "create", err)
-				}
-				if len(created) == 0 {
-					return writeBeadCommandErrorIfJSON(cmd, "create", fmt.Errorf("CreateBeadGraph returned no beads"))
-				}
-				bead = created[0]
-			} else {
-				b, err := s.Create(cmd.Context(), params)
-				if err != nil {
-					return writeBeadCommandErrorIfJSON(cmd, "create", err)
-				}
-				bead = b
+			bead, err := createBeadFromParams(cmd.Context(), s, params)
+			if err != nil {
+				return writeBeadCommandErrorIfJSON(cmd, "create", err)
 			}
 
 			if isJSONOutput(cmd) {

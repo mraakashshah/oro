@@ -40,6 +40,12 @@ type SQLiteStore struct {
 }
 
 // OpenSQLiteStore opens a SQLite database, migrates the schema, and returns a store.
+//
+// Production code uses cmd/oro.openStateDB instead, which additionally applies
+// v3 migrations (gate_state, premortem_cycle_count, etc.). This helper stays
+// for tests that only need the bead schema (and don't exercise §11.4 fields).
+//
+//oro:testonly
 func OpenSQLiteStore(ctx context.Context, path string, opts ...Option) (*SQLiteStore, error) {
 	db, err := dbutil.OpenDB(path)
 	if err != nil {

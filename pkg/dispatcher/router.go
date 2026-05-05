@@ -201,7 +201,10 @@ func ClosePremortemBeadWithStore(ctx context.Context, store beadstore.Store, bea
 		return fmt.Errorf("apply premortem verdict for %s: %w", beadID, err)
 	}
 	closeReason := fmt.Sprintf("premortem verdict=%s", verdict)
-	return store.Close(ctx, beadID, closeReason)
+	if err := store.Close(ctx, beadID, closeReason); err != nil {
+		return fmt.Errorf("Store.Close(%s): %w", beadID, err)
+	}
+	return nil
 }
 
 // warnInvalidPremortemVerdict records a fail-safe warning when a premortem

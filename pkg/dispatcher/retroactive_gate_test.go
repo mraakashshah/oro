@@ -326,6 +326,64 @@ func TestPremortemNotSelfBlocked(t *testing.T) {
 	}
 }
 
+// TestClosePremortemBeadWithStore verifies the dispatcher-free analogue of
+// ClosePremortemBead — used by `oro bead premortem-close` — closes the bead,
+// persists the verdict, and transitions the parent's gate_state.
+func TestClosePremortemBeadWithStore(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("proceed", func(t *testing.T) {
+		epic := protocol.Bead{ID: "epic-cw1", Type: "epic", Status: "open"}
+		pm := protocol.Bead{ID: "pm-cw1", Type: "premortem", Epic: "epic-cw1", Status: "open"}
+		store := beadstore.NewFakeStore(epic, pm)
+		if err := store.SetGateState(ctx, "epic-cw1", beadstore.GateState(""), beadstore.GateEligible, "test"); err != nil {
+			t.Fatalf("SetGateState: %v", err)
+		}
+
+		if err := ClosePremortemBeadWithStore(ctx, store, "pm-cw1", []byte(`{"verdict":"proceed","reason":"ok"}`)); err != nil {
+			t.Fatalf("ClosePremortemBeadWithStore: %v", err)
+		}
+
+		gs, err := store.GateState(ctx, "epic-cw1")
+		if err != nil {
+			t.Fatalf("GateState: %v", err)
+		}
+		if gs != beadstore.GateSatisfied {
+			t.Errorf("gate_state = %q, want satisfied", gs)
+		}
+
+		// Bead must be closed.
+		bead, err := store.Show(ctx, "pm-cw1")
+		if err != nil {
+			t.Fatalf("Show: %v", err)
+		}
+		if bead.Status != "closed" {
+			t.Errorf("status = %q, want closed", bead.Status)
+		}
+	})
+
+	t.Run("invalid_payload_defaults_to_replan", func(t *testing.T) {
+		epic := protocol.Bead{ID: "epic-cw2", Type: "epic", Status: "open"}
+		pm := protocol.Bead{ID: "pm-cw2", Type: "premortem", Epic: "epic-cw2", Status: "open"}
+		store := beadstore.NewFakeStore(epic, pm)
+		if err := store.SetGateState(ctx, "epic-cw2", beadstore.GateState(""), beadstore.GateEligible, "test"); err != nil {
+			t.Fatalf("SetGateState: %v", err)
+		}
+
+		// Empty payload → replan default.
+		if err := ClosePremortemBeadWithStore(ctx, store, "pm-cw2", nil); err != nil {
+			t.Fatalf("ClosePremortemBeadWithStore: %v", err)
+		}
+		gs, err := store.GateState(ctx, "epic-cw2")
+		if err != nil {
+			t.Fatalf("GateState: %v", err)
+		}
+		if gs != beadstore.GateReplan {
+			t.Errorf("invalid payload → gate_state = %q, want replan (fail-safe default)", gs)
+		}
+	})
+}
+
 // TestBlockerHitJourneyDeduplicated verifies that calling CheckPremortemGate
 // repeatedly for the same blocked bead/parent does NOT spam blocker_hit
 // events. The first refusal records one event; subsequent refusals on the
