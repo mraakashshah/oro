@@ -67,7 +67,7 @@ func findAnchorPositions(orig []string, classified []classifiedLine) ([]int, err
 			}
 		}
 		if found == -1 {
-			return nil, ErrFallthrough
+			return nil, &FallthroughError{Reason: "anchor text not found in original body"}
 		}
 		positions = append(positions, found)
 	}
@@ -117,14 +117,18 @@ func contCount(seg []classifiedLine) int {
 //  3. Continuation markers are unambiguous: at most one per segment.
 func validateEligibility(anchorPositions []int, pre []classifiedLine, inter [][]classifiedLine, post []classifiedLine) error {
 	if len(anchorPositions) < 2 {
-		return ErrFallthrough
+		reason := "no anchor lines matched; need at least 2."
+		if len(anchorPositions) == 1 {
+			reason = "only 1 anchor line matched; need at least 2."
+		}
+		return &FallthroughError{Reason: reason}
 	}
 	if contCount(pre) > 1 || contCount(post) > 1 {
-		return ErrFallthrough
+		return &FallthroughError{Reason: "ambiguous continuation markers: more than one per segment"}
 	}
 	for _, seg := range inter {
 		if contCount(seg) > 1 {
-			return ErrFallthrough
+			return &FallthroughError{Reason: "ambiguous continuation markers: more than one per segment"}
 		}
 	}
 	return nil
@@ -182,7 +186,7 @@ func Splice(orig, snippet []string, contMarker string) ([]string, error) {
 
 	anchorPositions, err := findAnchorPositions(orig, classified)
 	if err != nil {
-		return nil, ErrFallthrough
+		return nil, err
 	}
 
 	pre, _, inter, post := splitByAnchors(classified)
