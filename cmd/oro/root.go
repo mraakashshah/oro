@@ -51,6 +51,7 @@ func newRootCmd() *cobra.Command {
 		newModelsCmd(),
 		newOutlineCmd(),
 		newImpactCmd(),
+		newEditCmd(),
 	)
 
 	return cmd

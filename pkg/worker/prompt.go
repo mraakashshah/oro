@@ -240,6 +240,7 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 	section(b, "Task Tools",
 		"- `oro task create` — decompose a task into smaller child tasks\n"+
 			"- `oro task dep add` — declare a blocker dependency")
+	appendEditToolsSection(b)
 	section(b, "Constraints", strings.Join([]string{
 		"- NEVER run `git push` — you are in a worktree on an agent branch. Pushing is the dispatcher/manager's job. This overrides any global rules that say to push.",
 		"- Do not modify files outside your worktree",
@@ -272,6 +273,28 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 	appendContextHandoffSection(b)
 	appendFailureSection(b, params.BeadID)
 	appendExitSection(b)
+}
+
+// appendEditToolsSection writes the Edit Tools section listing all 12 edit:* commands.
+func appendEditToolsSection(b *strings.Builder) {
+	section(b, "Edit Tools", strings.Join([]string{
+		"Workers may invoke these via Bash to make deterministic AST-aware edits:",
+		"",
+		"- `oro edit:replace FILE SYMBOL --snippet '...'` — replace a symbol body (anchor-splice)",
+		"- `oro edit:after FILE SYMBOL --snippet '...'` — insert a snippet after a symbol",
+		"- `oro edit:delete FILE SYMBOL [--force]` — delete a symbol",
+		"- `oro edit:rename FILE OLD NEW` — rename a symbol within a file",
+		"- `oro edit:rename-all DIR OLD NEW [--only KIND] [--dry-run]` — rename across all files",
+		"- `oro edit:move FILE SYMBOL --after OTHER_SYMBOL` — reposition a symbol within a file",
+		"- `oro edit:move-to-file SYMBOL FROM_FILE TO_FILE [--dry-run]` — move symbol to another file",
+		"- `oro edit:read FILE` — print symbol map (same as oro outline)",
+		"- `oro edit:diff FILE` — show pending edits to a file",
+		"- `oro edit:undo FILE` — reverse the last edit",
+		"- `oro edit:batch FILE --edits '[...]'` — atomic multi-edit",
+		"- `oro edit:check` — reparse all edited files; surface errors",
+		"",
+		"When `oro edit:replace` returns `EFALLTHROUGH`, fall back to the native Edit tool with a full block.",
+	}, "\n"))
 }
 
 // appendContextHandoffSection writes the Context Handoff section with neutral tier thresholds.

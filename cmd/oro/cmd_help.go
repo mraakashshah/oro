@@ -40,6 +40,7 @@ Search:
 Codebase:
   outline    Print a symbol outline for a Go source file
   impact     Show call-graph blast radius of a symbol
+  edit       AST-aware file editing operations (replace, after, delete, rename, …)
 
 Workflow:
   work       Execute a task through the full lifecycle

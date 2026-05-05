@@ -2004,6 +2004,44 @@ func TestPromptTaskTerminology(t *testing.T) {
 	}
 }
 
+// TestAssemblePromptIncludesEditSurface verifies that AssemblePrompt emits
+// all 12 edit:* commands in the worker tool prompt.
+func TestAssemblePromptIncludesEditSurface(t *testing.T) {
+	t.Parallel()
+
+	params := worker.PromptParams{
+		BeadID:             "bead-edit-surface",
+		Title:              "Edit surface test",
+		Description:        "Verify edit:* commands in worker prompt",
+		AcceptanceCriteria: "All edit commands present",
+		WorktreePath:       "/tmp/wt-edit-surface",
+		Model:              "opus",
+	}
+
+	prompt := worker.AssemblePrompt(params)
+
+	editCommands := []string{
+		"oro edit:replace",
+		"oro edit:after",
+		"oro edit:delete",
+		"oro edit:rename",
+		"oro edit:rename-all",
+		"oro edit:move",
+		"oro edit:move-to-file",
+		"oro edit:read",
+		"oro edit:diff",
+		"oro edit:undo",
+		"oro edit:batch",
+		"oro edit:check",
+	}
+
+	for _, cmd := range editCommands {
+		if !strings.Contains(prompt, cmd) {
+			t.Errorf("expected worker prompt to contain %q", cmd)
+		}
+	}
+}
+
 func TestPromptStalenessWarning(t *testing.T) {
 	t.Parallel()
 
