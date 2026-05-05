@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	"oro/pkg/beadstore"
 	"oro/pkg/beadstore/migrations"
 	"oro/pkg/dbutil"
 	"oro/pkg/protocol"
@@ -43,6 +44,10 @@ func openStateDB(path string) (*sql.DB, error) {
 	if err := migrations.MigrateToV3(context.Background(), db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply v3 schema on %s: %w", path, err)
+	}
+	if err := beadstore.BackfillJourneyEvents(context.Background(), db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("backfill journey events on %s: %w", path, err)
 	}
 
 	migrateStateDB(db)

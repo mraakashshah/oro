@@ -461,28 +461,40 @@ func ensureBeadStatusAllowsBlocked(ctx context.Context, db *sql.DB) (bool, error
 	if err != nil {
 		return false, fmt.Errorf("count foreign keys before beads rebuild: %w", err)
 	}
+	if err := runBeadsStatusRebuild(ctx, conn, foreignKeysEnabled); err != nil {
+		return false, err
+	}
+	fkViolationsAfter, err := countSQLiteForeignKeyViolations(ctx, conn)
+	if err != nil {
+		return false, fmt.Errorf("count foreign keys after beads rebuild: %w", err)
+	}
+	if fkViolationsAfter > fkViolationsBefore {
+		return false, fmt.Errorf("foreign key violations increased after beads rebuild: before=%d after=%d", fkViolationsBefore, fkViolationsAfter)
+	}
+	return true, nil
+}
+
+// runBeadsStatusRebuild executes the legacy-alter-table rebuild sequence that
+// adds 'blocked' to the beads.status CHECK constraint. The rebuild is wrapped
+// in a transaction so any failure rolls back atomically, leaving the original
+// beads table intact (oro-pyr2).
+func runBeadsStatusRebuild(ctx context.Context, conn *sql.Conn, foreignKeysEnabled bool) error {
 	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
-		return false, fmt.Errorf("disable foreign keys: %w", err)
+		return fmt.Errorf("disable foreign keys: %w", err)
 	}
 	defer func() { _ = restoreSQLiteForeignKeys(context.Background(), conn, foreignKeysEnabled) }()
 	if _, err := conn.ExecContext(ctx, `PRAGMA legacy_alter_table=ON`); err != nil {
-		return false, fmt.Errorf("enable legacy alter table: %w", err)
+		return fmt.Errorf("enable legacy alter table: %w", err)
 	}
 	defer func() { _, _ = conn.ExecContext(context.Background(), `PRAGMA legacy_alter_table=OFF`) }()
 
 	if err := dropBeadSchemaRebuildTriggers(ctx, conn); err != nil {
-		return false, err
+		return err
 	}
 
-	// Wrap the multi-step rebuild in a transaction so any failure (e.g. a
-	// CHECK violation in the new beadTableDDL) rolls back atomically and
-	// leaves the original beads table intact (oro-pyr2). Without this,
-	// a partial INSERT...SELECT failure would orphan data in the renamed
-	// beads_status_rebuild_old table and leave an empty new beads table —
-	// the failure mode that destroyed 1833 beads on 2026-05-05.
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
-		return false, fmt.Errorf("begin rebuild tx: %w", err)
+		return fmt.Errorf("begin rebuild tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -495,22 +507,13 @@ func ensureBeadStatusAllowsBlocked(ctx context.Context, db *sql.DB) (bool, error
 		`INSERT INTO beads (` + beadColumns + `) SELECT ` + beadColumns + ` FROM beads_status_rebuild_old`,
 		`DROP TABLE beads_status_rebuild_old`,
 	}
-	for _, stmt := range rebuildSteps {
-		if _, err := tx.ExecContext(ctx, stmt); err != nil {
-			return false, fmt.Errorf("rebuild beads table: %w", err)
-		}
+	if err := execStmts(ctx, tx, rebuildSteps); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("commit rebuild tx: %w", err)
+		return fmt.Errorf("commit rebuild tx: %w", err)
 	}
-	fkViolationsAfter, err := countSQLiteForeignKeyViolations(ctx, conn)
-	if err != nil {
-		return false, fmt.Errorf("count foreign keys after beads rebuild: %w", err)
-	}
-	if fkViolationsAfter > fkViolationsBefore {
-		return false, fmt.Errorf("foreign key violations increased after beads rebuild: before=%d after=%d", fkViolationsBefore, fkViolationsAfter)
-	}
-	return true, nil
+	return nil
 }
 
 func sqliteForeignKeysEnabled(ctx context.Context, conn *sql.Conn) (bool, error) {
@@ -541,6 +544,15 @@ func dropBeadSchemaRebuildTriggers(ctx context.Context, conn *sql.Conn) error {
 	for _, name := range dropTriggers {
 		if _, err := conn.ExecContext(ctx, `DROP TRIGGER IF EXISTS `+name); err != nil {
 			return fmt.Errorf("drop trigger %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func execStmts(ctx context.Context, tx *sql.Tx, stmts []string) error {
+	for _, stmt := range stmts {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("rebuild beads table: %w", err)
 		}
 	}
 	return nil
