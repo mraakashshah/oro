@@ -306,19 +306,26 @@ func TestCheckpointFlow(t *testing.T) {
 	// --- sub-test 4: respawn discovers in-flight checkpoint via journey ---
 	t.Run("respawn_discovers_inflight_checkpoint_via_journey", func(t *testing.T) {
 		const cpID = "cp-respawn-12345"
+		const wid = "w-respawn"
 
 		// Seed: checkpoint_requested exists, no checkpointed.
 		events := []beadstore.JourneyEvent{
 			{
 				Actor:   "dispatcher",
 				Event:   "checkpoint_requested",
-				Payload: fmt.Sprintf(`{"checkpoint_id":%q,"trigger":"context_threshold"}`, cpID),
+				Payload: fmt.Sprintf(`{"checkpoint_id":%q,"worker_id":%q,"trigger":"context_threshold"}`, cpID, wid),
 			},
 		}
 
 		got := findInflightCheckpoint(events)
-		if got != cpID {
-			t.Fatalf("findInflightCheckpoint: got %q, want %q", got, cpID)
+		if got == nil {
+			t.Fatal("findInflightCheckpoint: got nil, want in-flight state")
+		}
+		if got.checkpointID != cpID {
+			t.Fatalf("findInflightCheckpoint cpID: got %q, want %q", got.checkpointID, cpID)
+		}
+		if got.workerID != wid {
+			t.Fatalf("findInflightCheckpoint workerID: got %q, want %q", got.workerID, wid)
 		}
 	})
 
@@ -340,8 +347,97 @@ func TestCheckpointFlow(t *testing.T) {
 		}
 
 		got := findInflightCheckpoint(events)
-		if got != "" {
-			t.Fatalf("findInflightCheckpoint: expected empty (completed), got %q", got)
+		if got != nil {
+			t.Fatalf("findInflightCheckpoint: expected nil (completed), got %+v", got)
+		}
+	})
+
+	// --- sub-test 6: heartbeat at threshold triggers checkpoint via real path ---
+	t.Run("heartbeat_at_threshold_triggers_checkpoint", func(t *testing.T) {
+		d, _ := makeCheckpointDispatcher(t)
+		const beadID, workerID = "bead-hb", "w-hb"
+
+		// Register a busy worker assigned to the bead so handleHeartbeat's
+		// touchProgress lookups don't trip on a missing worker.
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:           workerID,
+			state:        protocol.WorkerBusy,
+			beadID:       beadID,
+			lastSeen:     d.nowFunc(),
+			lastProgress: d.nowFunc(),
+		}
+		d.mu.Unlock()
+
+		// Heartbeat with ContextPct=80 (>= threshold 75) must trigger a
+		// checkpoint_requested event via the production handleHeartbeat path.
+		d.handleHeartbeat(ctx, workerID, protocol.Message{
+			Type: protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{
+				WorkerID:   workerID,
+				BeadID:     beadID,
+				ContextPct: 80,
+			},
+		})
+
+		var count int
+		if err := d.db.QueryRowContext(ctx,
+			`SELECT count(*) FROM events WHERE type='checkpoint_requested' AND bead_id=?`,
+			beadID,
+		).Scan(&count); err != nil {
+			t.Fatalf("query checkpoint_requested: %v", err)
+		}
+		if count != 1 {
+			t.Fatalf("heartbeat at threshold: expected 1 checkpoint_requested event, got %d", count)
+		}
+
+		// Active checkpoint must be registered for the bead.
+		if cs := d.checkpoints.get(beadID); cs == nil || cs.workerID != workerID {
+			t.Fatalf("checkpoint tracker not populated by heartbeat: cs=%+v", cs)
+		}
+	})
+
+	// --- sub-test 7: restore-path discovers in-flight checkpoint and populates tracker ---
+	t.Run("restoreInflightCheckpoints_populates_tracker", func(t *testing.T) {
+		d, store := makeCheckpointDispatcher(t)
+		const beadID, workerID = "bead-restore", "w-restore"
+		const cpID = "cp-restored-1"
+
+		// Seed the journey with a checkpoint_requested but no completion event.
+		_ = store.AppendJourney(ctx, beadID, beadstore.JourneyEvent{
+			Actor:   "dispatcher",
+			Event:   "checkpoint_requested",
+			Payload: fmt.Sprintf(`{"checkpoint_id":%q,"worker_id":%q,"trigger":"context_threshold"}`, cpID, workerID),
+		})
+
+		// Tracker is empty before restore.
+		if d.checkpoints.get(beadID) != nil {
+			t.Fatal("tracker should be empty before restoreInflightCheckpoints")
+		}
+
+		d.restoreInflightCheckpoints(ctx, []restoredAssignment{{beadID: beadID}})
+
+		cs := d.checkpoints.get(beadID)
+		if cs == nil {
+			t.Fatal("restoreInflightCheckpoints did not populate tracker")
+		}
+		if cs.checkpointID != cpID {
+			t.Fatalf("restored cpID: got %q, want %q", cs.checkpointID, cpID)
+		}
+		if cs.workerID != workerID {
+			t.Fatalf("restored workerID: got %q, want %q", cs.workerID, workerID)
+		}
+
+		// A checkpoint_recovered event should be logged.
+		var count int
+		if err := d.db.QueryRowContext(ctx,
+			`SELECT count(*) FROM events WHERE type='checkpoint_recovered' AND bead_id=?`,
+			beadID,
+		).Scan(&count); err != nil {
+			t.Fatalf("query checkpoint_recovered: %v", err)
+		}
+		if count != 1 {
+			t.Fatalf("restoreInflightCheckpoints: expected 1 checkpoint_recovered event, got %d", count)
 		}
 	})
 }

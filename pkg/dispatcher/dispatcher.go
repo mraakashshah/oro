@@ -497,6 +497,7 @@ func (c *Config) withDefaults() Config {
 	out.ReviewTimeout = durationDefault(out.ReviewTimeout, 15*time.Minute)
 	out.BackupInterval = durationDefault(out.BackupInterval, 5*time.Minute)
 	out.DoltHealthInterval = durationDefault(out.DoltHealthInterval, 30*time.Second)
+	out.CheckpointThreshold = intDefault(out.CheckpointThreshold, 75)
 	if out.Estimator == nil {
 		out.Estimator = NewBeadEstimator()
 	}
@@ -5803,6 +5804,7 @@ func (d *Dispatcher) restoreState(ctx context.Context) (map[string]bool, startup
 		return nil, startupRecoveryStats{}, err
 	}
 	recoverable := d.applyRestoredAssignments(restored)
+	d.restoreInflightCheckpoints(ctx, restored)
 	stats := startupRecoveryStats{recoverable: len(restored), quarantined: len(quarantined)}
 	return recoverable, stats, nil
 }

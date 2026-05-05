@@ -47,6 +47,10 @@ func (t *checkpointTracker) clear(beadID string) {
 }
 
 // generateCheckpointID returns a unique checkpoint correlation ID.
+//
+// TODO(oro-l024): spec §9.3 specifies UUIDv7. Current `cp-<UnixNano>` form is
+// process-locally unique and time-ordered but not RFC 9562 compliant and not
+// sortable across dispatcher processes. Swap to github.com/google/uuid v7.
 func generateCheckpointID() string {
 	return fmt.Sprintf("cp-%d", time.Now().UnixNano())
 }
@@ -93,8 +97,12 @@ func (d *Dispatcher) handleCheckpointAck(ctx context.Context, workerID string, m
 
 	cs := d.checkpoints.get(beadID)
 
-	// No active checkpoint or wrong checkpoint_id → stale ack.
-	if cs == nil || ack.CheckpointID != cs.checkpointID {
+	// Stale ack rules (§9.3 step 3):
+	//   - no active checkpoint for this bead, or
+	//   - ack's checkpoint_id differs from the active one, or
+	//   - ack came from a different worker_id than the one in the original
+	//     checkpoint_requested event (defense-in-depth on respawn races).
+	if cs == nil || ack.CheckpointID != cs.checkpointID || (cs.workerID != "" && workerID != cs.workerID) {
 		originalID := ack.CheckpointID
 		payload := fmt.Sprintf(`{"kind":"stale_checkpoint_ack","original_id":%q}`, originalID)
 		_ = d.logEvent(ctx, "note", "dispatcher", beadID, workerID, payload)
@@ -138,24 +146,33 @@ func (d *Dispatcher) handleCheckpointAck(ctx context.Context, workerID string, m
 }
 
 // findInflightCheckpoint scans journey events (ascending chronological order)
-// and returns the checkpoint_id of the most recent checkpoint_requested event
-// that has no corresponding checkpointed or checkpoint_failed event.  Returns ""
-// when no in-flight checkpoint exists.
+// and returns the checkpoint state for the most recent checkpoint_requested
+// event that has no corresponding checkpointed or checkpoint_failed event.
+// Returns nil when no in-flight checkpoint exists.
 //
-// Used by the dispatcher after a restart to reconstruct in-memory checkpoint
-// state from the durable bead journey (§9.3 respawn path).
-func findInflightCheckpoint(events []beadstore.JourneyEvent) string {
+// The returned state has deadline=zero — after a dispatcher restart the
+// original deadline cannot be reconstructed, so any subsequent ack will be
+// treated as late (forced=true), per §9.3 step 5.
+//
+// Used by restoreInflightCheckpoints after a dispatcher restart to
+// reconstruct in-memory checkpoint state from the durable bead journey
+// (§9.3 respawn path).
+func findInflightCheckpoint(events []beadstore.JourneyEvent) *checkpointState {
 	completed := make(map[string]bool)
-	var lastRequested string
+	var lastRequested *checkpointState
 
 	for _, evt := range events {
 		switch evt.Event {
 		case "checkpoint_requested":
 			var p struct {
 				CheckpointID string `json:"checkpoint_id"`
+				WorkerID     string `json:"worker_id"`
 			}
 			if err := json.Unmarshal([]byte(evt.Payload), &p); err == nil && p.CheckpointID != "" {
-				lastRequested = p.CheckpointID
+				lastRequested = &checkpointState{
+					checkpointID: p.CheckpointID,
+					workerID:     p.WorkerID,
+				}
 			}
 		case "checkpointed", "checkpoint_failed":
 			var p struct {
@@ -167,8 +184,29 @@ func findInflightCheckpoint(events []beadstore.JourneyEvent) string {
 		}
 	}
 
-	if lastRequested == "" || completed[lastRequested] {
-		return ""
+	if lastRequested == nil || completed[lastRequested.checkpointID] {
+		return nil
 	}
 	return lastRequested
+}
+
+// restoreInflightCheckpoints reads each restored bead's journey and re-populates
+// the in-memory checkpoint tracker with any in-flight checkpoint discovered.
+// Called from restoreState after applyRestoredAssignments so that an ack
+// arriving post-restart is correlated with the original checkpoint_id rather
+// than treated as stale.
+func (d *Dispatcher) restoreInflightCheckpoints(ctx context.Context, restored []restoredAssignment) {
+	for _, a := range restored {
+		events, err := d.beads.Journey(ctx, a.beadID, time.Time{})
+		if err != nil {
+			continue
+		}
+		cs := findInflightCheckpoint(events)
+		if cs == nil {
+			continue
+		}
+		d.checkpoints.set(a.beadID, cs)
+		_ = d.logEvent(ctx, "checkpoint_recovered", "dispatcher", a.beadID, cs.workerID,
+			fmt.Sprintf(`{"checkpoint_id":%q}`, cs.checkpointID))
+	}
 }
