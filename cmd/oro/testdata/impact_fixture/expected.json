@@ -1,0 +1,8 @@
+{
+	"symbol": "Run",
+	"file": "pkg/dispatcher/dispatcher.go",
+	"direct_callers": ["pkg/caller/caller.go:StartAll"],
+	"transitive_callers": ["cmd/app/main.go:main"],
+	"cross_package_callees": ["pkg/worker.Assemble"],
+	"external_callees": ["context.WithTimeout", "fmt.Println"]
+}

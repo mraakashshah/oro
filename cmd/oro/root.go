@@ -50,6 +50,7 @@ func newRootCmd() *cobra.Command {
 		newUninstallCmd(),
 		newModelsCmd(),
 		newOutlineCmd(),
+		newImpactCmd(),
 	)
 
 	return cmd

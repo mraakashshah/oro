@@ -28,8 +28,6 @@ type CallEdge struct {
 // pkgSymbols maps every in-project file path to its extracted symbols; the caller
 // populates this with symbols from all packages that might be called.
 // Returns resolved edges, warning strings for each unresolved callee, and any parse error.
-//
-//oro:testonly
 func BuildCallGraph(files []string, pkgSymbols map[string][]Symbol) ([]CallEdge, []string, error) {
 	// allSymsByName maps symbol name → first file where it appears (for simple resolution).
 	allSymsByName := make(map[string]string, len(pkgSymbols)*8)

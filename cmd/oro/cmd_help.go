@@ -39,6 +39,7 @@ Search:
 
 Codebase:
   outline    Print a symbol outline for a Go source file
+  impact     Show call-graph blast radius of a symbol
 
 Workflow:
   work       Execute a task through the full lifecycle
