@@ -2241,3 +2241,42 @@ func TestOroInit_LocalFlagUsesStandardMode(t *testing.T) {
 		t.Error("--local must create .oro/config.yaml in project root")
 	}
 }
+
+// TestReviewPatternCandidateFilesIgnored verifies that review-pattern inbox
+// files are git-ignored at the repo level, and that oroGitignoreEntries still
+// carries .oro/ so target-project inits remain correct.
+func TestReviewPatternCandidateFilesIgnored(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot determine test file path")
+	}
+	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..")
+	gitignorePath := filepath.Join(repoRoot, ".gitignore")
+
+	data, err := os.ReadFile(gitignorePath) //nolint:gosec // test reads a known repo file
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	content := string(data)
+
+	for _, entry := range []string{
+		"/.oro/review-pattern-candidates.md",
+		"/.oro/review-pattern-candidates.promoted.md",
+	} {
+		if !strings.Contains(content, entry) {
+			t.Errorf("repo .gitignore must contain %q", entry)
+		}
+	}
+
+	entries := oroGitignoreEntries()
+	found := false
+	for _, e := range entries {
+		if e == ".oro/" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("oroGitignoreEntries() must still include \".oro/\" for target-project inits")
+	}
+}

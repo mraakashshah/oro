@@ -46,6 +46,8 @@ cmd/oro/_assets/
 .gstack/
 pkg/dispatcher/workers/
 /.oro/context_pct
+/.oro/review-pattern-candidates.md
+/.oro/review-pattern-candidates.promoted.md
 
 # Local config
 .claude/settings.local.json
