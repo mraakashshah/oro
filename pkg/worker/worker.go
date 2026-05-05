@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"oro/pkg/memory"
@@ -30,6 +31,8 @@ const (
 	StreamFormatClaudeJSON StreamFormat = "claude_stream_json"
 	// StreamFormatLineText is a plain-text line-oriented stream format.
 	StreamFormatLineText StreamFormat = "line_text"
+	// StreamFormatGeminiJSON is the Gemini CLI event stream format.
+	StreamFormatGeminiJSON StreamFormat = "gemini_stream_json"
 )
 
 // StreamingSpawner abstracts runtime subprocess invocation for testing.
@@ -123,6 +126,7 @@ type Worker struct {
 	heartbeatInterval   time.Duration  // minimum time between periodic heartbeats
 	logFile             *os.File       // per-worker output log file at ~/.oro/workers/<ID>/output.log
 	logWriter           *bufio.Writer  // buffered writer for logFile to prevent blocking
+	streamContextPct    int32          // atomic: latest context_pct observed from stream output (0 = no signal yet)
 }
 
 // New creates a Worker that connects to the Dispatcher at socketPath.
@@ -638,6 +642,10 @@ func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser) {
 
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
+		// Extract context% from each line; store the latest observed value.
+		if pct, ok := ContextPctFromLine(format, scanner.Bytes()); ok {
+			atomic.StoreInt32(&w.streamContextPct, int32(pct))
+		}
 		switch format {
 		case StreamFormatLineText:
 			w.processPlaintextLine(ctx, scanner.Text())
@@ -896,13 +904,21 @@ func (w *Worker) handleContextThreshold(ctx context.Context, wt string, threshol
 
 	pctPath := filepath.Join(wt, protocol.OroDir, "context_pct")
 	data, err := os.ReadFile(pctPath) //nolint:gosec // path is constructed internally, not user input
-	if err != nil {
+
+	var pct int
+	if err == nil {
+		pct, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+	}
+	// Fall back to stream-parsed context_pct when the file is absent or unparseable.
+	if pct == 0 {
+		pct = int(atomic.LoadInt32(&w.streamContextPct))
+	}
+	if pct == 0 {
 		return false
 	}
 
 	hardStop := threshold + 10
-	pct, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || pct <= hardStop {
+	if pct <= hardStop {
 		return false
 	}
 
