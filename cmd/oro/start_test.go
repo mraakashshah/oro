@@ -180,6 +180,12 @@ func TestStartPreflightAndCheckRunning_DaemonOnlyBypass(t *testing.T) {
 		}
 	}
 
+	// Hermetic ORO_HOME so the test does not silently pick up the developer's
+	// pre-built oro-search-hook in ~/.oro/hooks. Without this isolation, a
+	// build failure inside ensureSearchHook fell back to "preserved binary"
+	// locally while hard-failing in CI (oro-7jjt). With ORO_HOME pointing at
+	// a fresh tmp dir, daemon-skip mode must skip the hook build entirely.
+	t.Setenv("ORO_HOME", filepath.Join(tmpDir, "orohome"))
 	t.Setenv("ORO_PID_PATH", pidFile)
 	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
 	t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))

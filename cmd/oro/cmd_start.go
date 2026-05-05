@@ -341,10 +341,15 @@ func attachOrDetach(w io.Writer, sess *TmuxSession, detach bool) error {
 // and checks if the daemon is already running. Returns the pidPath on success,
 // or "" if the daemon is already running (caller should return nil).
 func preflightAndCheckRunning(w io.Writer) (pidPath string, err error) {
-	return preflightAndCheckRunningWith(w, runPreflightChecks)
+	return preflightAndCheckRunningWith(w, runPreflightChecks, true)
 }
 
-func preflightAndCheckRunningWith(w io.Writer, preflight func() error) (pidPath string, err error) {
+// preflightAndCheckRunningWith runs the supplied preflight closure and
+// optionally the repo-rooted checks (build oro-search-hook, warn on
+// quality_gate.sh / Epic C drift). Hermetic daemon-skip mode passes
+// runRepoChecks=false because that mode assumes no Go toolchain and no
+// repo on disk (oro-7jjt).
+func preflightAndCheckRunningWith(w io.Writer, preflight func() error, runRepoChecks bool) (pidPath string, err error) {
 	// Clear CLAUDECODE early — it leaks from Claude Code's Bash tool
 	// and blocks nested claude sessions in tmux panes and workers.
 	os.Unsetenv("CLAUDECODE")
@@ -379,8 +384,10 @@ func preflightAndCheckRunningWith(w io.Writer, preflight func() error) (pidPath 
 		regenerateProjectSettings(w, paths.OroHome, readProjectNameCWD())
 	}
 
-	if err := runRepoPreflightChecks(w, paths.OroHome); err != nil {
-		return "", err
+	if runRepoChecks {
+		if err := runRepoPreflightChecks(w, paths.OroHome); err != nil {
+			return "", err
+		}
 	}
 
 	pidPath = paths.PIDPath
@@ -453,7 +460,7 @@ func walkUpForGoMod(start string) string {
 
 func startPreflightAndCheckRunning(w io.Writer, daemonOnly bool) (pidPath string, err error) {
 	if shouldSkipDaemonPreflight(daemonOnly) {
-		return preflightAndCheckRunningWith(w, runSQLiteDaemonPreflightChecks)
+		return preflightAndCheckRunningWith(w, runSQLiteDaemonPreflightChecks, false)
 	}
 	return preflightAndCheckRunning(w)
 }
