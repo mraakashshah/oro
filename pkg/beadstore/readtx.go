@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,19 +21,61 @@ type readTxImpl struct {
 // Cards implements ReadTx.
 func (r *readTxImpl) Cards() cards.ReadTx { return r.cardsTx }
 
-// Ready implements ReadTx.
+// Ready implements ReadTx with the same assignment-filtering behavior as Store.Ready.
 func (r *readTxImpl) Ready(ctx context.Context) ([]protocol.Bead, error) {
-	return queryBeadsInTx(ctx, r.tx, `SELECT `+beadColumns+` FROM beads_ready ORDER BY priority ASC, created_at ASC`)
+	beads, err := queryBeadsInTx(ctx, r.tx, `SELECT `+beadColumns+` FROM beads_ready ORDER BY priority ASC, created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	return filterUnassignedInTx(ctx, r.tx, beads)
 }
 
-// InProgress implements ReadTx.
+// InProgress implements ReadTx with the same active-assignment merge as Store.InProgress:
+// populates WorkerID for matching beads and surfaces assignment-only beads.
 func (r *readTxImpl) InProgress(ctx context.Context) ([]protocol.Bead, error) {
-	return queryBeadsInTx(ctx, r.tx, `SELECT `+beadColumns+` FROM beads WHERE deleted=0 AND status='in_progress' ORDER BY updated_at DESC, created_at ASC`)
+	beads, err := queryBeadsInTx(ctx, r.tx, `SELECT `+beadColumns+` FROM beads WHERE deleted=0 AND status='in_progress' ORDER BY updated_at DESC, created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	active, err := activeAssignmentsInTx(ctx, r.tx)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(beads))
+	for i := range beads {
+		seen[beads[i].ID] = struct{}{}
+		if workerID := active[beads[i].ID]; workerID != "" {
+			beads[i].WorkerID = workerID
+		}
+	}
+	activeIDs := make([]string, 0, len(active))
+	for beadID := range active {
+		if _, ok := seen[beadID]; !ok {
+			activeIDs = append(activeIDs, beadID)
+		}
+	}
+	sort.Strings(activeIDs)
+	for _, beadID := range activeIDs {
+		assigned, err := queryBeadsInTx(ctx, r.tx, `SELECT `+beadColumns+` FROM beads WHERE deleted=0 AND status!='closed' AND id=?`, beadID)
+		if err != nil {
+			return nil, err
+		}
+		if len(assigned) == 0 {
+			continue
+		}
+		assigned[0].WorkerID = active[beadID]
+		beads = append(beads, assigned[0])
+	}
+	return beads, nil
 }
 
-// Blocked implements ReadTx.
+// Blocked implements ReadTx with the same assignment-filtering behavior as Store.Blocked.
 func (r *readTxImpl) Blocked(ctx context.Context) ([]protocol.Bead, error) {
-	return queryBeadsInTx(ctx, r.tx, `SELECT `+beadColumns+` FROM beads_blocked ORDER BY priority ASC, created_at ASC`)
+	beads, err := queryBeadsInTx(ctx, r.tx, `SELECT `+beadColumns+` FROM beads_blocked ORDER BY priority ASC, created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	return filterUnassignedInTx(ctx, r.tx, beads)
 }
 
 // Closed implements ReadTx.
@@ -43,7 +86,9 @@ func (r *readTxImpl) Closed(ctx context.Context, limit int) ([]protocol.Bead, er
 	return queryBeadsInTx(ctx, r.tx, `SELECT `+beadColumns+` FROM beads WHERE deleted=0 AND status='closed' ORDER BY closed_at DESC, updated_at DESC LIMIT ?`, limit)
 }
 
-// Show implements ReadTx.
+// Show implements ReadTx and populates runtime fields (WorkerID) like Store.Show.
+// Memory enrichment is intentionally skipped: it requires a Store-level fetcher and
+// is not part of the §4.7 render-snapshot contract.
 func (r *readTxImpl) Show(ctx context.Context, id string) (*protocol.Bead, error) {
 	beads, err := queryBeadsInTx(ctx, r.tx, `SELECT `+beadColumns+` FROM beads WHERE deleted=0 AND id=?`, id)
 	if err != nil {
@@ -52,7 +97,11 @@ func (r *readTxImpl) Show(ctx context.Context, id string) (*protocol.Bead, error
 	if len(beads) == 0 {
 		return nil, nil
 	}
-	return &beads[0], nil
+	bead := &beads[0]
+	if err := enrichRuntimeInTx(ctx, r.tx, bead); err != nil {
+		return nil, err
+	}
+	return bead, nil
 }
 
 // HasChildren implements ReadTx.
@@ -274,4 +323,70 @@ func txDependencies(ctx context.Context, tx *sql.Tx, id string) ([]protocol.Depe
 		return nil, fmt.Errorf("beadstore: tx iterate dependencies for %s: %w", id, err)
 	}
 	return deps, nil
+}
+
+// activeAssignmentsInTx mirrors (*SQLiteStore).activeAssignments but reads inside
+// the supplied transaction so the result participates in the same snapshot.
+func activeAssignmentsInTx(ctx context.Context, tx *sql.Tx) (map[string]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT bead_id, worker_id FROM assignments WHERE status='active' ORDER BY assigned_at DESC, id DESC`)
+	if err != nil {
+		if isNoSuchTable(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("beadstore: tx query active assignments: %w", err)
+	}
+	defer rows.Close()
+	active := map[string]string{}
+	for rows.Next() {
+		var beadID, workerID string
+		if err := rows.Scan(&beadID, &workerID); err != nil {
+			return nil, fmt.Errorf("beadstore: tx scan active assignment: %w", err)
+		}
+		if _, ok := active[beadID]; !ok {
+			active[beadID] = workerID
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("beadstore: tx iterate active assignments: %w", err)
+	}
+	return active, nil
+}
+
+// filterUnassignedInTx mirrors (*SQLiteStore).filterUnassigned but reads inside
+// the supplied transaction.
+func filterUnassignedInTx(ctx context.Context, tx *sql.Tx, beads []protocol.Bead) ([]protocol.Bead, error) {
+	active, err := activeAssignmentsInTx(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	if len(active) == 0 {
+		return beads, nil
+	}
+	filtered := beads[:0]
+	for _, bead := range beads {
+		if _, ok := active[bead.ID]; ok {
+			continue
+		}
+		filtered = append(filtered, bead)
+	}
+	return filtered, nil
+}
+
+// enrichRuntimeInTx mirrors (*SQLiteStore).enrichRuntime but reads inside the
+// supplied transaction so the runtime field stays consistent with other reads.
+func enrichRuntimeInTx(ctx context.Context, tx *sql.Tx, bead *protocol.Bead) error {
+	var workerID sql.NullString
+	err := tx.QueryRowContext(ctx,
+		`SELECT worker_id FROM assignments WHERE bead_id=? AND status='active' ORDER BY assigned_at DESC, id DESC LIMIT 1`,
+		bead.ID).Scan(&workerID)
+	if err != nil {
+		if isNoSuchTable(err) || err == sql.ErrNoRows {
+			return nil
+		}
+		return fmt.Errorf("beadstore: tx runtime assignment for %s: %w", bead.ID, err)
+	}
+	if workerID.Valid {
+		bead.WorkerID = workerID.String
+	}
+	return nil
 }

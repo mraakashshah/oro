@@ -314,8 +314,12 @@ func (m *fakeBeadStore) TransitionPipelineStage(_ context.Context, _ string, _, 
 	return nil
 }
 
-func (m *fakeBeadStore) WithReadTx(ctx context.Context, fn func(tx beadstore.ReadTx) error) error {
-	return beadstore.NewFakeStore().WithReadTx(ctx, fn)
+func (m *fakeBeadStore) WithReadTx(_ context.Context, _ func(tx beadstore.ReadTx) error) error {
+	// Loud failure: fakeBeadStore does not embed FakeStore, so naively delegating
+	// to a fresh FakeStore would silently expose an empty snapshot to the dispatcher
+	// and every test would pass for the wrong reason. Wire this to m's seeded state
+	// when the dispatcher actually starts using WithReadTx in a read path.
+	panic("fakeBeadStore.WithReadTx not implemented — wire to m's seeded state before using")
 }
 
 func (m *fakeBeadStore) SetBeads(beads []protocol.Bead) {

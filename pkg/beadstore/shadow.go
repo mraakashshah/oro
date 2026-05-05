@@ -295,9 +295,18 @@ func (s *ShadowStore) TransitionPipelineStage(ctx context.Context, beadID string
 }
 
 // WithReadTx delegates to primary so reads see a consistent snapshot from the
-// authoritative store.
+// authoritative store. Errors returned from fn are passed through unwrapped —
+// only BeginTx/Commit failures are framed as primary-store malfunctions.
 func (s *ShadowStore) WithReadTx(ctx context.Context, fn func(tx ReadTx) error) error {
-	return wrapPrimaryStoreError("with read tx", s.primary.WithReadTx(ctx, fn))
+	var closureErr error
+	err := s.primary.WithReadTx(ctx, func(tx ReadTx) error {
+		closureErr = fn(tx)
+		return closureErr
+	})
+	if closureErr != nil {
+		return closureErr
+	}
+	return wrapPrimaryStoreError("with read tx", err)
 }
 
 func wrapPrimaryStoreError(operation string, err error) error {

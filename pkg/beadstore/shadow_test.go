@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -420,6 +421,23 @@ func TestShadowStore(t *testing.T) {
 		}
 		if err := store.Undefer(ctx, "later"); err == nil {
 			t.Fatal("Undefer with unsupported primary succeeded, want error")
+		}
+	})
+
+	t.Run("WithReadTx passes closure errors through unwrapped", func(t *testing.T) {
+		ctx := context.Background()
+		store := beadstore.NewShadowStore(beadstore.NewFakeStore(), beadstore.NewFakeStore())
+
+		closureErr := errors.New("LatestJourney(bead-X): boom")
+		err := store.WithReadTx(ctx, func(_ beadstore.ReadTx) error {
+			return closureErr
+		})
+		if !errors.Is(err, closureErr) {
+			t.Fatalf("WithReadTx error = %v, want closure error %v", err, closureErr)
+		}
+		// The error should NOT be re-framed as "shadow primary with read tx: ...".
+		if msg := err.Error(); strings.Contains(msg, "shadow primary") {
+			t.Errorf("closure error was wrapped as primary failure: %q", msg)
 		}
 	})
 }

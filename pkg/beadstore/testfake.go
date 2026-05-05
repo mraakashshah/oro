@@ -831,6 +831,8 @@ func (r *fakeReadTx) LatestJourney(ctx context.Context, beadID string, limit int
 }
 
 // Cards implements ReadTx. Returns nil because FakeStore has no card store.
+// TODO(oro-6v7p): plumb a fake cards.ReadTx so render-path tests using
+// tx.Cards() do not nil-panic.
 func (r *fakeReadTx) Cards() cards.ReadTx { return nil }
 
 func nowString() string {
