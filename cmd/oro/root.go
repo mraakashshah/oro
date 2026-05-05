@@ -52,6 +52,7 @@ func newRootCmd() *cobra.Command {
 		newOutlineCmd(),
 		newImpactCmd(),
 		newEditCmd(),
+		newCardsCmd(),
 	)
 
 	for _, alias := range editRootAliases() {
