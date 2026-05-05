@@ -294,6 +294,26 @@ func (m *fakeBeadStore) Undefer(_ context.Context, id string) error {
 	return nil
 }
 
+func (m *fakeBeadStore) AppendJourney(_ context.Context, _ string, _ beadstore.JourneyEvent) error {
+	return nil
+}
+
+func (m *fakeBeadStore) Journey(_ context.Context, _ string, _ time.Time) ([]beadstore.JourneyEvent, error) {
+	return nil, nil
+}
+
+func (m *fakeBeadStore) LatestJourney(_ context.Context, _ string, _ int) ([]beadstore.JourneyEvent, error) {
+	return nil, nil
+}
+
+func (m *fakeBeadStore) SetGateState(_ context.Context, _ string, _, _ beadstore.GateState, _ string) error {
+	return nil
+}
+
+func (m *fakeBeadStore) TransitionPipelineStage(_ context.Context, _ string, _, _ beadstore.PipelineStage) error {
+	return nil
+}
+
 func (m *fakeBeadStore) SetBeads(beads []protocol.Bead) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -17,10 +17,13 @@ import (
 //
 //oro:testonly
 type FakeStore struct {
-	mu     sync.RWMutex
-	beads  map[string]protocol.Bead
-	closed []string
-	nextID int
+	mu             sync.RWMutex
+	beads          map[string]protocol.Bead
+	closed         []string
+	nextID         int
+	journeys       map[string][]JourneyEvent
+	gateStates     map[string]GateState
+	pipelineStages map[string]PipelineStage
 }
 
 // NewFakeStore returns a map-backed Store seeded with optional beads.
@@ -28,8 +31,11 @@ type FakeStore struct {
 //oro:testonly
 func NewFakeStore(initial ...protocol.Bead) *FakeStore {
 	store := &FakeStore{
-		beads:  make(map[string]protocol.Bead, len(initial)),
-		nextID: 1,
+		beads:          make(map[string]protocol.Bead, len(initial)),
+		journeys:       make(map[string][]JourneyEvent),
+		gateStates:     make(map[string]GateState),
+		pipelineStages: make(map[string]PipelineStage),
+		nextID:         1,
 	}
 	for _, bead := range initial {
 		store.beads[bead.ID] = cloneBead(bead)
@@ -676,6 +682,88 @@ func sortBeads(beads []protocol.Bead) {
 		}
 		return beads[i].ID < beads[j].ID
 	})
+}
+
+// AppendJourney appends a single event to beadID's in-memory journey log.
+func (s *FakeStore) AppendJourney(_ context.Context, beadID string, evt JourneyEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	evt.BeadID = beadID
+	s.journeys[beadID] = append(s.journeys[beadID], evt)
+	return nil
+}
+
+// Journey returns events for beadID with ts >= since in ascending order.
+func (s *FakeStore) Journey(_ context.Context, beadID string, since time.Time) ([]JourneyEvent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sinceStr := since.UTC().Format(time.RFC3339Nano)
+	var out []JourneyEvent
+	for _, e := range s.journeys[beadID] {
+		if e.Ts >= sinceStr {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// LatestJourney returns the most recent limit events for beadID in ascending order.
+func (s *FakeStore) LatestJourney(_ context.Context, beadID string, limit int) ([]JourneyEvent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	all := s.journeys[beadID]
+	if limit <= 0 || len(all) == 0 {
+		return nil, nil
+	}
+	start := len(all) - limit
+	if start < 0 {
+		start = 0
+	}
+	out := make([]JourneyEvent, len(all)-start)
+	copy(out, all[start:])
+	return out, nil
+}
+
+// SetGateState atomically transitions beadID's gate state and records the
+// change. Returns ErrStaleGate if the current state does not equal from.
+func (s *FakeStore) SetGateState(_ context.Context, beadID string, from, to GateState, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur := s.gateStates[beadID]
+	if cur != from {
+		return ErrStaleGate
+	}
+	s.gateStates[beadID] = to
+	payload := fmt.Sprintf(`{"from":%q,"to":%q,"reason":%q}`, from, to, reason)
+	s.journeys[beadID] = append(s.journeys[beadID], JourneyEvent{
+		BeadID:  beadID,
+		Ts:      nowString(),
+		Actor:   "dispatcher",
+		Event:   "gate_state_changed",
+		Payload: payload,
+	})
+	return nil
+}
+
+// TransitionPipelineStage atomically transitions beadID's pipeline stage.
+// Returns ErrStaleStage if the current stage does not equal from.
+func (s *FakeStore) TransitionPipelineStage(_ context.Context, beadID string, from, to PipelineStage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur := s.pipelineStages[beadID]
+	if cur != from {
+		return ErrStaleStage
+	}
+	s.pipelineStages[beadID] = to
+	payload := fmt.Sprintf(`{"from":%q,"to":%q}`, from, to)
+	s.journeys[beadID] = append(s.journeys[beadID], JourneyEvent{
+		BeadID:  beadID,
+		Ts:      nowString(),
+		Actor:   "dispatcher",
+		Event:   "pipeline_stage_changed",
+		Payload: payload,
+	})
+	return nil
 }
 
 func nowString() string {

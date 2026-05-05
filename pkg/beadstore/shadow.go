@@ -267,6 +267,33 @@ func (s *ShadowStore) Export(ctx context.Context) ([]byte, error) {
 	return primary, nil
 }
 
+// AppendJourney delegates to primary only; journey data is not shadow-compared.
+func (s *ShadowStore) AppendJourney(ctx context.Context, beadID string, evt JourneyEvent) error {
+	return wrapPrimaryStoreError("append journey", s.primary.AppendJourney(ctx, beadID, evt))
+}
+
+// Journey delegates to primary only.
+func (s *ShadowStore) Journey(ctx context.Context, beadID string, since time.Time) ([]JourneyEvent, error) {
+	events, err := s.primary.Journey(ctx, beadID, since)
+	return events, wrapPrimaryStoreError("journey", err)
+}
+
+// LatestJourney delegates to primary only.
+func (s *ShadowStore) LatestJourney(ctx context.Context, beadID string, limit int) ([]JourneyEvent, error) {
+	events, err := s.primary.LatestJourney(ctx, beadID, limit)
+	return events, wrapPrimaryStoreError("latest journey", err)
+}
+
+// SetGateState delegates to primary only.
+func (s *ShadowStore) SetGateState(ctx context.Context, beadID string, from, to GateState, reason string) error {
+	return wrapPrimaryStoreError("set gate state", s.primary.SetGateState(ctx, beadID, from, to, reason))
+}
+
+// TransitionPipelineStage delegates to primary only.
+func (s *ShadowStore) TransitionPipelineStage(ctx context.Context, beadID string, from, to PipelineStage) error {
+	return wrapPrimaryStoreError("transition pipeline stage", s.primary.TransitionPipelineStage(ctx, beadID, from, to))
+}
+
 func wrapPrimaryStoreError(operation string, err error) error {
 	if err == nil {
 		return nil

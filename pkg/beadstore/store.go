@@ -3,6 +3,7 @@ package beadstore
 
 import (
 	"context"
+	"time"
 
 	"oro/pkg/protocol"
 )
@@ -36,6 +37,25 @@ type Store interface {
 
 	// Export returns a JSONL backup snapshot.
 	Export(ctx context.Context) ([]byte, error)
+
+	// AppendJourney appends a single event to beadID's append-only audit trail.
+	// It is a single INSERT with no read-modify-write; callers must supply Ts.
+	AppendJourney(ctx context.Context, beadID string, evt JourneyEvent) error
+	// Journey returns all events for beadID with ts >= since, in ascending order.
+	Journey(ctx context.Context, beadID string, since time.Time) ([]JourneyEvent, error)
+	// LatestJourney returns the most recent limit events for beadID in
+	// ascending (chronological) order.
+	LatestJourney(ctx context.Context, beadID string, limit int) ([]JourneyEvent, error)
+
+	// SetGateState atomically transitions beadID's gate_state from → to and
+	// appends a gate_state_changed journey event. Returns ErrStaleGate if the
+	// current gate_state does not equal from (concurrent write raced ahead).
+	SetGateState(ctx context.Context, beadID string, from, to GateState, reason string) error
+
+	// TransitionPipelineStage atomically transitions beadID's pipeline_stage
+	// from → to and appends a pipeline_stage_changed journey event. Returns
+	// ErrStaleStage if the current pipeline_stage does not equal from.
+	TransitionPipelineStage(ctx context.Context, beadID string, from, to PipelineStage) error
 }
 
 // StatusCounts contains quick bead counts by lifecycle status.

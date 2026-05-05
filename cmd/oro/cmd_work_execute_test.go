@@ -129,6 +129,31 @@ func (m *fakeBeadStore) Undefer(ctx context.Context, id string) error {
 	return m.FakeStore.Undefer(ctx, id)
 }
 
+func (m *fakeBeadStore) AppendJourney(ctx context.Context, beadID string, evt beadstore.JourneyEvent) error {
+	m.ensureStore()
+	return m.FakeStore.AppendJourney(ctx, beadID, evt)
+}
+
+func (m *fakeBeadStore) Journey(ctx context.Context, beadID string, since time.Time) ([]beadstore.JourneyEvent, error) {
+	m.ensureStore()
+	return m.FakeStore.Journey(ctx, beadID, since)
+}
+
+func (m *fakeBeadStore) LatestJourney(ctx context.Context, beadID string, limit int) ([]beadstore.JourneyEvent, error) {
+	m.ensureStore()
+	return m.FakeStore.LatestJourney(ctx, beadID, limit)
+}
+
+func (m *fakeBeadStore) SetGateState(ctx context.Context, beadID string, from, to beadstore.GateState, reason string) error {
+	m.ensureStore()
+	return m.FakeStore.SetGateState(ctx, beadID, from, to, reason)
+}
+
+func (m *fakeBeadStore) TransitionPipelineStage(ctx context.Context, beadID string, from, to beadstore.PipelineStage) error {
+	m.ensureStore()
+	return m.FakeStore.TransitionPipelineStage(ctx, beadID, from, to)
+}
+
 // mockWorktreeManager records Create/Remove calls.
 type mockWorktreeManager struct {
 	createPath         string
