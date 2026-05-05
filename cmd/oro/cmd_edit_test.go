@@ -76,4 +76,27 @@ func TestEditSubcommandSurface(t *testing.T) {
 			t.Errorf("'oro edit --help' output does not list subcommand %q; got:\n%s", name, helpOut)
 		}
 	}
+
+	// 5. The colon-form surface ('oro edit:<op>') — the form workers actually
+	// invoke per spec §7.5 — must be registered at root and respond to --help
+	// with exit 0 and non-empty output. Without this assertion the previous
+	// space-form-only registration looked correct in tests but failed in
+	// production whenever a worker followed the prompt verbatim.
+	for _, name := range wantSubcmds {
+		name := name
+		t.Run("colon_"+name+"_help_noerr", func(t *testing.T) {
+			t.Parallel()
+			var buf bytes.Buffer
+			r := newRootCmd()
+			r.SetOut(&buf)
+			r.SetErr(&buf)
+			r.SetArgs([]string{"edit:" + name, "--help"})
+			if execErr := r.Execute(); execErr != nil {
+				t.Errorf("oro edit:%s --help returned error: %v", name, execErr)
+			}
+			if buf.Len() == 0 {
+				t.Errorf("oro edit:%s --help returned empty output", name)
+			}
+		})
+	}
 }

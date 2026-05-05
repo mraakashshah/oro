@@ -6,30 +6,59 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newEditCmd creates the "oro edit" command with all 12 AST-aware edit subcommands.
+// editSubcommandFactories returns the constructors for the 12 edit operations.
+// Each factory returns a fresh *cobra.Command so the same op can be parented
+// twice — once under "oro edit" (for help/discovery) and once at root with a
+// literal "edit:<op>" name (the surface workers invoke per spec §7.5).
+func editSubcommandFactories() []func() *cobra.Command {
+	return []func() *cobra.Command{
+		newEditReplaceCmd,
+		newEditAfterCmd,
+		newEditDeleteCmd,
+		newEditRenameCmd,
+		newEditRenameAllCmd,
+		newEditMoveCmd,
+		newEditMoveToFileCmd,
+		newEditReadCmd,
+		newEditDiffCmd,
+		newEditUndoCmd,
+		newEditBatchCmd,
+		newEditCheckCmd,
+	}
+}
+
+// newEditCmd creates the "oro edit" parent group used for help/discovery
+// (e.g. `oro edit --help` lists all 12 subcommands). Workers do not invoke
+// this group directly; they invoke the colon-named root commands wired by
+// newEditColonCommands.
 func newEditCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "edit",
 		Short: "AST-aware file editing operations",
-		Long:  "Deterministic AST-aware editing for Go, Python, TypeScript, and JavaScript source files.\nWorkers invoke subcommands as 'oro edit:<op> ...' in their Bash tool.",
+		Long:  "Deterministic AST-aware editing for Go, Python, TypeScript, and JavaScript source files.\nWorkers invoke subcommands as 'oro edit:<op> ...' in their Bash tool (see 'oro edit:replace --help' etc.).",
 	}
 
-	cmd.AddCommand(
-		newEditReplaceCmd(),
-		newEditAfterCmd(),
-		newEditDeleteCmd(),
-		newEditRenameCmd(),
-		newEditRenameAllCmd(),
-		newEditMoveCmd(),
-		newEditMoveToFileCmd(),
-		newEditReadCmd(),
-		newEditDiffCmd(),
-		newEditUndoCmd(),
-		newEditBatchCmd(),
-		newEditCheckCmd(),
-	)
+	for _, factory := range editSubcommandFactories() {
+		cmd.AddCommand(factory())
+	}
 
 	return cmd
+}
+
+// newEditColonCommands returns the 12 edit operations as top-level root
+// commands with literal "edit:<op>" names. This is the surface workers
+// actually invoke (per spec §7.5: `oro edit:replace FILE SYMBOL --snippet '...'`).
+// Hidden so the colon-named variants don't duplicate the parent group in root help.
+func newEditColonCommands() []*cobra.Command {
+	factories := editSubcommandFactories()
+	cmds := make([]*cobra.Command, 0, len(factories))
+	for _, factory := range factories {
+		c := factory()
+		c.Use = "edit:" + c.Use
+		c.Hidden = true
+		cmds = append(cmds, c)
+	}
+	return cmds
 }
 
 func newEditReplaceCmd() *cobra.Command {

@@ -54,5 +54,9 @@ func newRootCmd() *cobra.Command {
 		newEditCmd(),
 	)
 
+	for _, c := range newEditColonCommands() {
+		cmd.AddCommand(c)
+	}
+
 	return cmd
 }

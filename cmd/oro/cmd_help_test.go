@@ -177,7 +177,10 @@ func TestHelpIncludesAllRegisteredCommands(t *testing.T) {
 		cmdName := cmd.Name()
 		// Skip the help command itself - it shouldn't list itself.
 		// Skip auto-generated cobra commands like "completion".
-		if cmdName == "help" || cmdName == "completion" {
+		// Skip Hidden commands — by design they are not part of the user-facing help
+		// surface (e.g. the colon-named edit:* aliases workers invoke per spec §7.5,
+		// which are surfaced under the "edit" parent group instead).
+		if cmdName == "help" || cmdName == "completion" || cmd.Hidden {
 			continue
 		}
 		if !strings.Contains(helpOutput, cmdName) {
