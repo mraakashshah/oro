@@ -790,3 +790,125 @@ func beadJSONArrayHasID(beads []map[string]any, id string) bool {
 	}
 	return false
 }
+
+// TestBeadGateStateCmdEmitsGateState verifies that `oro bead gate-state <id>`
+// prints the parent epic's current gate_state — used by the §18.6 verify
+// script to assert the gate transitions across the premortem lifecycle.
+func TestBeadGateStateCmdEmitsGateState(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	db, err := openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("openStateDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := beadstore.NewSQLiteStore(db)
+
+	executeBeadCommand(t, store,
+		"create", "--id", "epic-gs", "--title", "Epic", "--type", "epic", "--acceptance-criteria", "n/a")
+	out := strings.TrimSpace(executeBeadCommand(t, store, "gate-state", "epic-gs"))
+	if out != "none" {
+		t.Errorf("default gate-state = %q, want none", out)
+	}
+
+	if err := store.SetGateState(ctx, "epic-gs", beadstore.GateNone, beadstore.GateEligible, "test"); err != nil {
+		t.Fatalf("SetGateState: %v", err)
+	}
+	out = strings.TrimSpace(executeBeadCommand(t, store, "gate-state", "epic-gs"))
+	if out != "eligible" {
+		t.Errorf("after eligible transition, gate-state = %q, want eligible", out)
+	}
+}
+
+// TestBeadPremortemCloseCmdTransitionsGate verifies that `oro bead
+// premortem-close <id> --verdict proceed` closes the premortem bead and
+// transitions the parent's gate_state from eligible to satisfied.
+func TestBeadPremortemCloseCmdTransitionsGate(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	db, err := openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("openStateDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := beadstore.NewSQLiteStore(db)
+
+	if _, err := store.Create(ctx, beadstore.CreateParams{
+		ID: "epic-pc", Title: "epic", Type: "epic",
+	}); err != nil {
+		t.Fatalf("create epic: %v", err)
+	}
+	if _, err := store.Create(ctx, beadstore.CreateParams{
+		ID: "pm-pc", Title: "premortem", Type: "premortem", ParentID: "epic-pc",
+	}); err != nil {
+		t.Fatalf("create premortem: %v", err)
+	}
+	if err := store.SetGateState(ctx, "epic-pc", beadstore.GateNone, beadstore.GateEligible, "test"); err != nil {
+		t.Fatalf("SetGateState: %v", err)
+	}
+
+	executeBeadCommand(t, store, "premortem-close", "pm-pc", "--verdict", "proceed", "--reason", "ok")
+
+	gs, err := store.GateState(ctx, "epic-pc")
+	if err != nil {
+		t.Fatalf("GateState: %v", err)
+	}
+	if gs != beadstore.GateSatisfied {
+		t.Errorf("gate_state after premortem-close proceed = %q, want satisfied", gs)
+	}
+}
+
+// TestBeadCreateFiresRetroactiveGate verifies that `oro bead create --parent X`
+// flows through dispatcher.CreateBeadGraph so the §11.4 retroactive premortem
+// gate fires from the CLI path. After 6 children, the parent's gate_state
+// must be 'eligible'.
+func TestBeadCreateFiresRetroactiveGate(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	db, err := openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("openStateDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := beadstore.NewSQLiteStore(db)
+
+	executeBeadCommand(t, store,
+		"create",
+		"--id", "epic-cli",
+		"--title", "Epic from CLI",
+		"--type", "epic",
+		"--acceptance-criteria", "n/a",
+	)
+
+	for i := range 6 {
+		executeBeadCommand(t, store,
+			"create",
+			"--title", "child",
+			"--type", "task",
+			"--parent", "epic-cli",
+			"--acceptance-criteria", "ac",
+		)
+		_ = i
+	}
+
+	gs, err := store.GateState(ctx, "epic-cli")
+	if err != nil {
+		t.Fatalf("GateState: %v", err)
+	}
+	if gs != beadstore.GateEligible {
+		t.Errorf("after 6 CLI-created children, gate_state = %q, want eligible", gs)
+	}
+
+	// And a premortem child with parent_id=epic-cli should have been spawned.
+	beads := decodeBeadJSONArray(t, executeBeadCommand(t, store, "list", "--json"))
+	var found bool
+	for _, b := range beads {
+		if b["type"] == "premortem" && b["parent_id"] == "epic-cli" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected auto-spawned premortem with parent_id=epic-cli; got: %v", beads)
+	}
+}

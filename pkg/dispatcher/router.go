@@ -147,7 +147,13 @@ func (d *Dispatcher) ClosePremortemBead(ctx context.Context, beadID string, payl
 // premortem verdict (§11.4). ErrStaleGate is non-fatal — it means the gate
 // already moved (concurrent write or test setup without a matching initial state).
 func (d *Dispatcher) applyPremortemVerdict(ctx context.Context, premortemID, verdict string) error {
-	bead, err := d.beads.Show(ctx, premortemID)
+	return ApplyPremortemVerdict(ctx, d.beads, premortemID, verdict)
+}
+
+// ApplyPremortemVerdict is the store-only version of applyPremortemVerdict.
+// CLI callers (which don't have a Dispatcher) reuse this directly.
+func ApplyPremortemVerdict(ctx context.Context, store beadstore.Store, premortemID, verdict string) error {
+	bead, err := store.Show(ctx, premortemID)
 	if err != nil {
 		return fmt.Errorf("show premortem bead: %w", err)
 	}
@@ -158,13 +164,13 @@ func (d *Dispatcher) applyPremortemVerdict(ctx context.Context, premortemID, ver
 	var gateErr error
 	switch verdict {
 	case "proceed":
-		gateErr = d.beads.SetGateState(ctx, parentID, beadstore.GateEligible, beadstore.GateSatisfied, "premortem_verdict_proceed")
+		gateErr = store.SetGateState(ctx, parentID, beadstore.GateEligible, beadstore.GateSatisfied, "premortem_verdict_proceed")
 	case "block":
-		gateErr = d.beads.SetGateState(ctx, parentID, beadstore.GateEligible, beadstore.GateBlocked, "premortem_verdict_block")
+		gateErr = store.SetGateState(ctx, parentID, beadstore.GateEligible, beadstore.GateBlocked, "premortem_verdict_block")
 	case "replan":
-		gateErr = d.beads.SetGateState(ctx, parentID, beadstore.GateEligible, beadstore.GateReplan, "premortem_verdict_replan")
+		gateErr = store.SetGateState(ctx, parentID, beadstore.GateEligible, beadstore.GateReplan, "premortem_verdict_replan")
 		if gateErr == nil {
-			if err := d.beads.IncrPremortCycleCount(ctx, parentID); err != nil {
+			if err := store.IncrPremortCycleCount(ctx, parentID); err != nil {
 				return fmt.Errorf("increment premortem cycle count for %s: %w", parentID, err)
 			}
 			return nil
@@ -179,6 +185,23 @@ func (d *Dispatcher) applyPremortemVerdict(ctx context.Context, premortemID, ver
 		return fmt.Errorf("set gate state for %s: %w", parentID, gateErr)
 	}
 	return nil
+}
+
+// ClosePremortemBeadWithStore is the dispatcher-free analogue of
+// (*Dispatcher).ClosePremortemBead — used by `oro bead premortem-close` so the
+// CLI can drive the §11.4 verdict transition without a running dispatcher.
+// Verdict is one of {proceed, block, replan}; payload is parsed via
+// parsePremortemVerdict (invalid → "replan" default).
+func ClosePremortemBeadWithStore(ctx context.Context, store beadstore.Store, beadID string, payload []byte) error {
+	verdict, reason, _ := parsePremortemVerdict(payload)
+	if err := store.SetPremortemVerdict(ctx, beadID, verdict, reason); err != nil {
+		return fmt.Errorf("Store.SetPremortemVerdict(%s): %w", beadID, err)
+	}
+	if err := ApplyPremortemVerdict(ctx, store, beadID, verdict); err != nil {
+		return fmt.Errorf("apply premortem verdict for %s: %w", beadID, err)
+	}
+	closeReason := fmt.Sprintf("premortem verdict=%s", verdict)
+	return store.Close(ctx, beadID, closeReason)
 }
 
 // warnInvalidPremortemVerdict records a fail-safe warning when a premortem

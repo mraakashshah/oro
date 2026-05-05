@@ -1702,3 +1702,57 @@ func TestWorkCommandTaskTerminology(t *testing.T) {
 		t.Errorf("work command --model help should reference task metadata, got: %q", modelFlag.Usage)
 	}
 }
+
+// TestWork_RefusedOnEligibleParent verifies that `oro work` (the path used by
+// --auto) refuses to dispatch a child whose parent's premortem gate is
+// 'eligible' and has no closed premortem child. The §11.4 contract says this
+// path must surface kind=premortem_required in the failure message; without
+// the check, single-worker `oro work --auto` would bypass the gate entirely.
+func TestWork_RefusedOnEligibleParent(t *testing.T) {
+	ctx := context.Background()
+
+	parent := protocol.Bead{ID: "epic-pg1", Type: "epic", Status: "open", Title: "Epic"}
+	child := protocol.Bead{
+		ID:                 "task-pg1",
+		Type:               "task",
+		Epic:               "epic-pg1",
+		Status:             "open",
+		Title:              "Child task",
+		AcceptanceCriteria: "Tests pass",
+	}
+	bs := &fakeBeadStore{
+		FakeStore: beadstore.NewFakeStore(parent, child),
+	}
+	if err := bs.FakeStore.SetGateState(ctx, "epic-pg1", beadstore.GateState(""), beadstore.GateEligible, "test_setup"); err != nil {
+		t.Fatalf("SetGateState: %v", err)
+	}
+
+	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/task-pg1"}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
+	deps := testDeps(bs, wt, sp, mg, false, true)
+
+	cfg := &workConfig{
+		beadID:     "task-pg1",
+		model:      "sonnet",
+		timeout:    5 * time.Second,
+		auto:       true,
+		skipReview: true,
+	}
+
+	err := executeWork(ctx, cfg, deps)
+	if err == nil {
+		t.Fatal("expected error when parent gate is eligible, got nil")
+	}
+	if !strings.Contains(err.Error(), "premortem_required") {
+		t.Errorf("expected error to mention premortem_required, got: %v", err)
+	}
+
+	// Worker MUST NOT have been spawned and merger MUST NOT have been called.
+	if sp.called {
+		t.Error("spawner should not be called when premortem gate refuses dispatch")
+	}
+	if mg.called {
+		t.Error("merger should not be called when premortem gate refuses dispatch")
+	}
+}

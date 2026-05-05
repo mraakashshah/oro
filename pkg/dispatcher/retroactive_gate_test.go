@@ -266,4 +266,98 @@ func TestVerdictTransitionsGateState(t *testing.T) {
 			t.Errorf("premortem_cycle_count = %d, want 1", store.PremortCycleCount("epic-vt2"))
 		}
 	})
+
+	t.Run("block_transitions_to_blocked", func(t *testing.T) {
+		epic := protocol.Bead{ID: "epic-vt3", Type: "epic", Status: "open"}
+		pm := protocol.Bead{ID: "pm-vt3", Type: "premortem", Epic: "epic-vt3", Status: "open"}
+		store := beadstore.NewFakeStore(epic, pm)
+		if err := store.SetGateState(ctx, "epic-vt3", beadstore.GateState(""), beadstore.GateEligible, "test"); err != nil {
+			t.Fatalf("SetGateState: %v", err)
+		}
+
+		db := newTestDB(t)
+		d := &Dispatcher{beads: store, db: db}
+
+		if err := d.ClosePremortemBead(ctx, "pm-vt3", []byte(`{"verdict":"block","reason":"unsafe"}`)); err != nil {
+			t.Fatalf("ClosePremortemBead: %v", err)
+		}
+
+		// Gate must be blocked.
+		gs, err := store.GateState(ctx, "epic-vt3")
+		if err != nil {
+			t.Fatalf("GateState: %v", err)
+		}
+		if gs != beadstore.GateBlocked {
+			t.Errorf("gate_state = %q, want blocked", gs)
+		}
+
+		// Cycle count must NOT have incremented (only replan increments).
+		if store.PremortCycleCount("epic-vt3") != 0 {
+			t.Errorf("premortem_cycle_count = %d, want 0 (block does not increment)", store.PremortCycleCount("epic-vt3"))
+		}
+	})
+}
+
+// TestPremortemNotSelfBlocked is a regression test for the gate-self-block
+// pattern: when filterExecutableBeads (or any caller) checks the gate on the
+// auto-spawned premortem bead itself, the gate must NOT refuse it. Otherwise
+// the premortem can never execute and the parent epic deadlocks on 'eligible'.
+func TestPremortemNotSelfBlocked(t *testing.T) {
+	ctx := context.Background()
+
+	epic := protocol.Bead{ID: "epic-ns1", Type: "epic", Status: "open"}
+	pm := protocol.Bead{ID: "pm-ns1", Type: "premortem", Epic: "epic-ns1", Status: "open"}
+	child := protocol.Bead{ID: "task-ns1", Type: "task", Epic: "epic-ns1", Status: "open"}
+	store := beadstore.NewFakeStore(epic, pm, child)
+
+	// Parent gate is eligible — premortem child has not closed yet.
+	if err := store.SetGateState(ctx, "epic-ns1", beadstore.GateState(""), beadstore.GateEligible, "test"); err != nil {
+		t.Fatalf("SetGateState: %v", err)
+	}
+
+	// The premortem itself must pass through the gate so it can be executed.
+	if err := CheckPremortemGate(ctx, store, "pm-ns1"); err != nil {
+		t.Errorf("CheckPremortemGate(premortem) = %v, want nil (premortem is the satisfier, must not self-block)", err)
+	}
+
+	// A regular task child still gets blocked.
+	if err := CheckPremortemGate(ctx, store, "task-ns1"); err == nil {
+		t.Error("CheckPremortemGate(task) = nil, want PremortemGateError")
+	}
+}
+
+// TestBlockerHitJourneyDeduplicated verifies that calling CheckPremortemGate
+// repeatedly for the same blocked bead/parent does NOT spam blocker_hit
+// events. The first refusal records one event; subsequent refusals on the
+// same parent skip the append.
+func TestBlockerHitJourneyDeduplicated(t *testing.T) {
+	ctx := context.Background()
+
+	epic := protocol.Bead{ID: "epic-dd1", Type: "epic", Status: "open"}
+	child := protocol.Bead{ID: "task-dd1", Type: "task", Epic: "epic-dd1", Status: "open"}
+	store := beadstore.NewFakeStore(epic, child)
+	if err := store.SetGateState(ctx, "epic-dd1", beadstore.GateState(""), beadstore.GateEligible, "test"); err != nil {
+		t.Fatalf("SetGateState: %v", err)
+	}
+
+	// Invoke the gate three times — simulating three dispatcher ticks.
+	for i := range 3 {
+		if err := CheckPremortemGate(ctx, store, "task-dd1"); err == nil {
+			t.Fatalf("CheckPremortemGate iteration %d: expected error, got nil", i)
+		}
+	}
+
+	events, err := store.Journey(ctx, "task-dd1", time.Time{})
+	if err != nil {
+		t.Fatalf("Journey: %v", err)
+	}
+	var blockerHits int
+	for _, e := range events {
+		if e.Event == "blocker_hit" {
+			blockerHits++
+		}
+	}
+	if blockerHits != 1 {
+		t.Errorf("blocker_hit event count = %d, want 1 (deduplicated across ticks)", blockerHits)
+	}
 }

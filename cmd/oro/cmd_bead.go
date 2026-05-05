@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/dispatcher"
 	"oro/pkg/protocol"
 
 	"github.com/spf13/cobra"
@@ -52,6 +53,8 @@ func newBeadCmdWithStore(store beadstore.Store) *cobra.Command {
 		newBeadStubCmd(store, "doctor", "Check bead-store health", cobra.NoArgs),
 		newBeadStatusCmd(store),
 		newBeadMigrateFromDoltCmd(store),
+		newBeadGateStateCmd(store),
+		newBeadPremortemCloseCmd(store),
 	)
 
 	return cmd
@@ -128,20 +131,37 @@ func newBeadCreateCmd(store beadstore.Store) *cobra.Command {
 				acceptance = acceptanceCriteria
 			}
 
+			parentID := mustStringFlag(cmd, "parent")
 			params := beadstore.CreateParams{
 				Title:              mustStringFlag(cmd, "title"),
 				Type:               mustStringFlag(cmd, "type"),
 				Priority:           mustIntFlag(cmd, "priority"),
-				ParentID:           mustStringFlag(cmd, "parent"),
+				ParentID:           parentID,
 				Description:        mustStringFlag(cmd, "description"),
 				AcceptanceCriteria: acceptance,
 				EstimatedMinutes:   mustIntFlag(cmd, "estimate"),
 				ID:                 mustStringFlag(cmd, "id"),
 				Tags:               mustStringArrayFlag(cmd, "tag"),
 			}
-			bead, err := s.Create(cmd.Context(), params)
-			if err != nil {
-				return writeBeadCommandErrorIfJSON(cmd, "create", err)
+			// When --parent is set, route through CreateBeadGraph so the §11.4
+			// retroactive premortem gate fires after the create. With no parent,
+			// the gate cannot trigger anyway, so the direct Create path stays.
+			var bead *protocol.Bead
+			if parentID != "" {
+				created, err := dispatcher.CreateBeadGraph(cmd.Context(), s, parentID, []beadstore.CreateParams{params})
+				if err != nil {
+					return writeBeadCommandErrorIfJSON(cmd, "create", err)
+				}
+				if len(created) == 0 {
+					return writeBeadCommandErrorIfJSON(cmd, "create", fmt.Errorf("CreateBeadGraph returned no beads"))
+				}
+				bead = created[0]
+			} else {
+				b, err := s.Create(cmd.Context(), params)
+				if err != nil {
+					return writeBeadCommandErrorIfJSON(cmd, "create", err)
+				}
+				bead = b
 			}
 
 			if isJSONOutput(cmd) {
@@ -780,11 +800,13 @@ func resolveBeadStore(store beadstore.Store) (beadstore.Store, error) {
 	if err := os.MkdirAll(filepath.Dir(paths.StateDBPath), 0o700); err != nil {
 		return nil, fmt.Errorf("create bead store dir: %w", err)
 	}
-	s, err := beadstore.OpenSQLiteStore(context.Background(), paths.StateDBPath)
+	// Use openStateDB so v3 migrations (gate_state, premortem_cycle_count, etc.)
+	// are applied — bare OpenSQLiteStore only runs MigrateBeadSchema.
+	db, err := openStateDB(paths.StateDBPath)
 	if err != nil {
 		return nil, fmt.Errorf("open bead store: %w", err)
 	}
-	return s, nil
+	return beadstore.NewSQLiteStore(db), nil
 }
 
 type beadJSON struct {
@@ -1010,4 +1032,55 @@ func nullableMetadata(value map[string]any) map[string]any {
 		return map[string]any(nil)
 	}
 	return value
+}
+
+// newBeadGateStateCmd implements `oro bead gate-state <id>` — prints the
+// current gate_state of a bead. Used by the §18.6 verify script (and by
+// humans) to inspect §11.4 retroactive premortem gate transitions.
+func newBeadGateStateCmd(store beadstore.Store) *cobra.Command {
+	return &cobra.Command{
+		Use:   "gate-state <id>",
+		Short: "Print the gate_state of a bead",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := resolveBeadStore(store)
+			if err != nil {
+				return writeBeadCommandErrorIfJSON(cmd, "store", err)
+			}
+			gs, err := s.GateState(cmd.Context(), args[0])
+			if err != nil {
+				return writeBeadCommandErrorIfJSON(cmd, "gate-state", err)
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), string(gs))
+			return nil
+		},
+	}
+}
+
+// newBeadPremortemCloseCmd implements `oro bead premortem-close <id> --verdict
+// proceed|block|replan [--reason TEXT]` — closes a premortem-type bead with the
+// given verdict and applies the §11.4 gate transition on the parent.
+func newBeadPremortemCloseCmd(store beadstore.Store) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "premortem-close <id>",
+		Short: "Close a premortem bead with a verdict (proceed/block/replan)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := resolveBeadStore(store)
+			if err != nil {
+				return writeBeadCommandErrorIfJSON(cmd, "store", err)
+			}
+			verdict := mustStringFlag(cmd, "verdict")
+			reason := mustStringFlag(cmd, "reason")
+			payload := fmt.Sprintf(`{"verdict":%q,"reason":%q}`, verdict, reason)
+			if err := dispatcher.ClosePremortemBeadWithStore(cmd.Context(), s, args[0], []byte(payload)); err != nil {
+				return writeBeadCommandErrorIfJSON(cmd, "premortem-close", err)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().String("verdict", "", "verdict: proceed, block, or replan (required)")
+	cmd.Flags().String("reason", "", "reason text (preserved verbatim)")
+	_ = cmd.MarkFlagRequired("verdict")
+	return cmd
 }
