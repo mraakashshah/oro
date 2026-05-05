@@ -314,6 +314,10 @@ func (m *fakeBeadStore) TransitionPipelineStage(_ context.Context, _ string, _, 
 	return nil
 }
 
+func (m *fakeBeadStore) WithReadTx(ctx context.Context, fn func(tx beadstore.ReadTx) error) error {
+	return beadstore.NewFakeStore().WithReadTx(ctx, fn)
+}
+
 func (m *fakeBeadStore) SetBeads(beads []protocol.Bead) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

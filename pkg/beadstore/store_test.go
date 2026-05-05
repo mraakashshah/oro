@@ -18,8 +18,8 @@ func TestStoreContractMatchesReplatformSpec(t *testing.T) {
 		methods[method.Name] = method.Type
 	}
 
-	if len(methods) != 17 {
-		t.Fatalf("Store has %d methods, want 17: %v", len(methods), methodNames(methods))
+	if len(methods) != 18 {
+		t.Fatalf("Store has %d methods, want 18: %v", len(methods), methodNames(methods))
 	}
 
 	ctxType := reflect.TypeOf((*context.Context)(nil)).Elem()

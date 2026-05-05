@@ -5,6 +5,7 @@ import (
 	"context"
 	"time"
 
+	"oro/pkg/cards"
 	"oro/pkg/protocol"
 )
 
@@ -56,6 +57,33 @@ type Store interface {
 	// from → to and appends a pipeline_stage_changed journey event. Returns
 	// ErrStaleStage if the current pipeline_stage does not equal from.
 	TransitionPipelineStage(ctx context.Context, beadID string, from, to PipelineStage) error
+
+	// WithReadTx executes fn inside a single read-only SQL transaction so all
+	// reads inside fn see a consistent snapshot. The cards.ReadTx returned by
+	// ReadTx.Cards() is bound to the same transaction. See §4.7.
+	WithReadTx(ctx context.Context, fn func(tx ReadTx) error) error
+}
+
+// ReadTx is a read-only view over the bead store (and optionally the card store)
+// within a single SQL transaction. Every render-facing read method on Store has a
+// counterpart here with an identical signature. Export is intentionally absent —
+// it has its own transactional semantics and is not part of any render path.
+type ReadTx interface {
+	Ready(ctx context.Context) ([]protocol.Bead, error)
+	InProgress(ctx context.Context) ([]protocol.Bead, error)
+	Blocked(ctx context.Context) ([]protocol.Bead, error)
+	Closed(ctx context.Context, limit int) ([]protocol.Bead, error)
+	Show(ctx context.Context, id string) (*protocol.Bead, error)
+
+	HasChildren(ctx context.Context, epicID string) (bool, error)
+	AllChildrenClosed(ctx context.Context, epicID string) (bool, error)
+	FindByParentAndTag(ctx context.Context, parentID, tag string) ([]protocol.Bead, error)
+
+	Journey(ctx context.Context, beadID string, since time.Time) ([]JourneyEvent, error)
+	LatestJourney(ctx context.Context, beadID string, limit int) ([]JourneyEvent, error)
+
+	// Cards returns a read-only card store bound to the same SQL transaction.
+	Cards() cards.ReadTx
 }
 
 // StatusCounts contains quick bead counts by lifecycle status.

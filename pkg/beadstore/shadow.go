@@ -294,6 +294,12 @@ func (s *ShadowStore) TransitionPipelineStage(ctx context.Context, beadID string
 	return wrapPrimaryStoreError("transition pipeline stage", s.primary.TransitionPipelineStage(ctx, beadID, from, to))
 }
 
+// WithReadTx delegates to primary so reads see a consistent snapshot from the
+// authoritative store.
+func (s *ShadowStore) WithReadTx(ctx context.Context, fn func(tx ReadTx) error) error {
+	return wrapPrimaryStoreError("with read tx", s.primary.WithReadTx(ctx, fn))
+}
+
 func wrapPrimaryStoreError(operation string, err error) error {
 	if err == nil {
 		return nil

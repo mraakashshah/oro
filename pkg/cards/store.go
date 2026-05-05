@@ -604,6 +604,12 @@ func (s *SQLiteCardStore) Retire(ctx context.Context, id, reason, supersededBy s
 	})
 }
 
+// NewReadTx wraps tx as a ReadTx bound to the supplied SQL transaction.
+// Used by beadstore.WithReadTx to share one transaction across stores.
+func NewReadTx(tx *sql.Tx) ReadTx {
+	return &readTxImpl{tx: tx}
+}
+
 // WithReadTx runs fn inside a read transaction.
 func (s *SQLiteCardStore) WithReadTx(ctx context.Context, fn func(tx ReadTx) error) error {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"oro/pkg/cards"
 	"oro/pkg/protocol"
 )
 
@@ -765,6 +766,72 @@ func (s *FakeStore) TransitionPipelineStage(_ context.Context, beadID string, fr
 	})
 	return nil
 }
+
+// WithReadTx executes fn with a ReadTx that delegates to the FakeStore.
+// Cards() returns nil because FakeStore has no card store.
+//
+//oro:testonly
+func (s *FakeStore) WithReadTx(_ context.Context, fn func(tx ReadTx) error) error {
+	return fn(&fakeReadTx{s: s})
+}
+
+// fakeReadTx is a thin adapter so FakeStore can satisfy the ReadTx interface.
+//
+//oro:testonly
+type fakeReadTx struct{ s *FakeStore }
+
+// Ready implements ReadTx.
+func (r *fakeReadTx) Ready(ctx context.Context) ([]protocol.Bead, error) {
+	return r.s.Ready(ctx)
+}
+
+// InProgress implements ReadTx.
+func (r *fakeReadTx) InProgress(ctx context.Context) ([]protocol.Bead, error) {
+	return r.s.InProgress(ctx)
+}
+
+// Blocked implements ReadTx.
+func (r *fakeReadTx) Blocked(ctx context.Context) ([]protocol.Bead, error) {
+	return r.s.Blocked(ctx)
+}
+
+// Closed implements ReadTx.
+func (r *fakeReadTx) Closed(ctx context.Context, limit int) ([]protocol.Bead, error) {
+	return r.s.Closed(ctx, limit)
+}
+
+// Show implements ReadTx.
+func (r *fakeReadTx) Show(ctx context.Context, id string) (*protocol.Bead, error) {
+	return r.s.Show(ctx, id)
+}
+
+// HasChildren implements ReadTx.
+func (r *fakeReadTx) HasChildren(ctx context.Context, epicID string) (bool, error) {
+	return r.s.HasChildren(ctx, epicID)
+}
+
+// AllChildrenClosed implements ReadTx.
+func (r *fakeReadTx) AllChildrenClosed(ctx context.Context, epicID string) (bool, error) {
+	return r.s.AllChildrenClosed(ctx, epicID)
+}
+
+// FindByParentAndTag implements ReadTx.
+func (r *fakeReadTx) FindByParentAndTag(ctx context.Context, parentID, tag string) ([]protocol.Bead, error) {
+	return r.s.FindByParentAndTag(ctx, parentID, tag)
+}
+
+// Journey implements ReadTx.
+func (r *fakeReadTx) Journey(ctx context.Context, beadID string, since time.Time) ([]JourneyEvent, error) {
+	return r.s.Journey(ctx, beadID, since)
+}
+
+// LatestJourney implements ReadTx.
+func (r *fakeReadTx) LatestJourney(ctx context.Context, beadID string, limit int) ([]JourneyEvent, error) {
+	return r.s.LatestJourney(ctx, beadID, limit)
+}
+
+// Cards implements ReadTx. Returns nil because FakeStore has no card store.
+func (r *fakeReadTx) Cards() cards.ReadTx { return nil }
 
 func nowString() string {
 	return time.Now().UTC().Format(time.RFC3339Nano)
