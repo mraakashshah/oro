@@ -338,6 +338,8 @@ func issuePrefixFromID(id string) string {
 }
 
 // FetchIssueDetail loads a single issue from the bead store.
+//
+//oro:testonly
 func FetchIssueDetail(store beadstore.Store, issueID string) (*Issue, error) {
 	if store == nil {
 		return nil, fmt.Errorf("bead store is nil")
@@ -357,6 +359,8 @@ func FetchIssueDetail(store beadstore.Store, issueID string) (*Issue, error) {
 }
 
 // FetchIssueDetailFromIssues loads detail from an already-loaded JSONL snapshot.
+//
+//oro:testonly
 func FetchIssueDetailFromIssues(issues []Issue, issueID string) (*Issue, error) {
 	for i := range issues {
 		if issues[i].ID == issueID {
@@ -370,6 +374,8 @@ func FetchIssueDetailFromIssues(issues []Issue, issueID string) (*Issue, error) 
 // FetchIssuesNow returns a tea.Cmd that fetches active issues via Store
 // immediately (no timer delay). Emits ActiveIssuesMsg for merge with cached
 // closed issues, or FileWatchErrorMsg on failure.
+//
+//oro:testonly
 func FetchIssuesNow(store beadstore.Store) tea.Cmd {
 	return func() tea.Msg {
 		issues, err := FetchActiveIssues(store)

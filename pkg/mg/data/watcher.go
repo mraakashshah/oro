@@ -35,6 +35,8 @@ const (
 
 // WatchFile polls a JSONL file and emits a single message (changed, unchanged, or error).
 // Callers should schedule it again after handling the returned message.
+//
+//oro:testonly
 func WatchFile(path string, lastMod time.Time) tea.Cmd {
 	if path == "" {
 		return nil
@@ -61,6 +63,8 @@ func WatchFile(path string, lastMod time.Time) tea.Cmd {
 // PollCLI polls the bead store on a timer and emits ActiveIssuesMsg.
 // Only fetches non-closed issues to keep the poll fast (5 active vs 1150+ closed).
 // The app merges the active snapshot with its cached closed issues.
+//
+//oro:testonly
 func PollCLI(store beadstore.Store) tea.Cmd {
 	return tea.Tick(cliPollInterval, func(time.Time) tea.Msg {
 		issues, err := FetchActiveIssues(store)
@@ -85,6 +89,8 @@ type ClosedIssuesMsg struct {
 
 // FetchAllClosedCmd returns a tea.Cmd that fetches all closed issues in the
 // background. Used to hydrate the full closed set after startup.
+//
+//oro:testonly
 func FetchAllClosedCmd(store beadstore.Store) tea.Cmd {
 	return func() tea.Msg {
 		issues, err := FetchAllClosed(store)
@@ -96,6 +102,8 @@ func FetchAllClosedCmd(store beadstore.Store) tea.Cmd {
 }
 
 // FileModTime returns the file's modification time.
+//
+//oro:testonly
 func FileModTime(path string) (time.Time, error) {
 	info, err := os.Stat(path)
 	if err != nil {

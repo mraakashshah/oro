@@ -10,17 +10,23 @@ import (
 )
 
 // InTmux returns true if running inside a tmux session.
+//
+//oro:testonly
 func InTmux() bool {
 	return os.Getenv("TMUX") != ""
 }
 
 // TmuxAvailable returns true if tmux binary is on PATH.
+//
+//oro:testonly
 func TmuxAvailable() bool {
 	_, err := exec.LookPath("tmux")
 	return err == nil
 }
 
 // WorkAvailable returns true if the oro binary is on PATH.
+//
+//oro:testonly
 func WorkAvailable() bool {
 	_, err := exec.LookPath("oro")
 	return err == nil
@@ -29,6 +35,8 @@ func WorkAvailable() bool {
 // LaunchWorkInTmux splits a tmux pane running `oro work <beadID>`.
 // Tags the pane with @oro_mg_work=<beadID> for tracking.
 // Returns paneID on success.
+//
+//oro:testonly
 func LaunchWorkInTmux(beadID, projectDir string) (string, error) {
 	tmuxArgs := []string{
 		"split-window",
@@ -85,6 +93,8 @@ func parseWorkerPanes(output string) map[string]string {
 }
 
 // KillWorkerPane closes the tmux pane for the given bead.
+//
+//oro:testonly
 func KillWorkerPane(beadID string) error {
 	panes, err := PollWorkerPanes()
 	if err != nil {
@@ -98,6 +108,8 @@ func KillWorkerPane(beadID string) error {
 }
 
 // SelectWorkerPane switches focus to the tmux pane for the given bead.
+//
+//oro:testonly
 func SelectWorkerPane(beadID string) error {
 	panes, err := PollWorkerPanes()
 	if err != nil {
@@ -111,6 +123,8 @@ func SelectWorkerPane(beadID string) error {
 }
 
 // WorkCommand returns an *exec.Cmd for `oro work <beadID>` (non-tmux fallback).
+//
+//oro:testonly
 func WorkCommand(beadID, projectDir string) *exec.Cmd {
 	cmd := exec.Command("oro", "work", beadID)
 	cmd.Dir = projectDir

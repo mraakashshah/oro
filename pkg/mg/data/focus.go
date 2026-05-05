@@ -10,6 +10,8 @@ import (
 // 1. Issues assigned to the current user that are in_progress
 // 2. Highest priority unblocked issues (open, not blocked)
 // 3. Blocked issues with context
+//
+//oro:testonly
 func FocusFilter(issues []Issue, blockingTypes map[string]bool) []Issue {
 	user := currentUser()
 	issueMap := BuildIssueMap(issues)

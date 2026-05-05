@@ -30,6 +30,8 @@ type Toast struct {
 type ToastDismissMsg struct{}
 
 // ShowToast creates a new toast and returns a dismiss command.
+//
+//oro:testonly
 func ShowToast(message string, level ToastLevel, duration time.Duration) (Toast, tea.Cmd) {
 	t := Toast{
 		Message:   message,

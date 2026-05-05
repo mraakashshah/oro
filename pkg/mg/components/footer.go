@@ -113,6 +113,8 @@ func (f Footer) View() string {
 }
 
 // NewFooter creates a footer with the given width and pane focus.
+//
+//oro:testonly
 func NewFooter(width int, detailFocused bool) Footer {
 	bindings := ParadeBindings
 	if detailFocused {
@@ -122,6 +124,8 @@ func NewFooter(width int, detailFocused bool) Footer {
 }
 
 // BulkFooter renders the footer bar shown during multi-select.
+//
+//oro:testonly
 func BulkFooter(width, count int) string {
 	label := ui.FooterKey.Render(fmt.Sprintf(" %d selected: ", count))
 	bindings := []FooterBinding{
@@ -141,6 +145,8 @@ func BulkFooter(width, count int) string {
 }
 
 // Divider returns a full-width horizontal divider line.
+//
+//oro:testonly
 func Divider(width int) string {
 	return lipgloss.NewStyle().
 		Foreground(ui.DimPurple).

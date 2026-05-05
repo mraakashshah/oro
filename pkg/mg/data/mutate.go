@@ -9,6 +9,8 @@ import (
 )
 
 // SetStatus changes an issue's status through the bead store.
+//
+//oro:testonly
 func SetStatus(store beadstore.Store, issueID string, status Status) error {
 	if store == nil {
 		return fmt.Errorf("bead store is nil")
@@ -18,6 +20,8 @@ func SetStatus(store beadstore.Store, issueID string, status Status) error {
 }
 
 // ClaimIssue marks an issue in progress and records the current user as owner.
+//
+//oro:testonly
 func ClaimIssue(store beadstore.Store, issueID string) error {
 	if store == nil {
 		return fmt.Errorf("bead store is nil")
@@ -42,6 +46,8 @@ func ClaimIssue(store beadstore.Store, issueID string) error {
 }
 
 // CloseIssue closes an issue through the bead store.
+//
+//oro:testonly
 func CloseIssue(store beadstore.Store, issueID string) error {
 	if store == nil {
 		return fmt.Errorf("bead store is nil")
@@ -50,6 +56,8 @@ func CloseIssue(store beadstore.Store, issueID string) error {
 }
 
 // SetPriority changes an issue priority through the bead store.
+//
+//oro:testonly
 func SetPriority(store beadstore.Store, issueID string, priority Priority) error {
 	if store == nil {
 		return fmt.Errorf("bead store is nil")
@@ -59,6 +67,8 @@ func SetPriority(store beadstore.Store, issueID string, priority Priority) error
 }
 
 // CreateIssue creates an issue through the bead store and returns the new issue ID.
+//
+//oro:testonly
 func CreateIssue(store beadstore.Store, title string, issueType IssueType, priority Priority) (string, error) {
 	if store == nil {
 		return "", fmt.Errorf("bead store is nil")
@@ -78,6 +88,8 @@ func CreateIssue(store beadstore.Store, title string, issueType IssueType, prior
 }
 
 // BranchName generates a git branch name from an issue.
+//
+//oro:testonly
 func BranchName(issue Issue) string {
 	prefix := "feat"
 	switch issue.IssueType {

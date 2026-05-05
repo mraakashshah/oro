@@ -76,6 +76,8 @@ type Palette struct {
 const paletteMaxVisible = 12
 
 // NewPalette creates a new command palette.
+//
+//oro:testonly
 func NewPalette(width, height int, commands []PaletteCommand) Palette {
 	ti := textinput.New()
 	ti.Prompt = ui.InputPrompt.Render(ui.FleurDeLis + " ")

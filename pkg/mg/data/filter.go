@@ -138,6 +138,8 @@ func fuzzyFilter(issues []Issue, query string) []Issue {
 
 // FilterIssuesWithHighlights returns filtered issues plus a map of issue ID → matched
 // character indices in the "ID + Title" search string. Used for rendering highlights.
+//
+//oro:testonly
 func FilterIssuesWithHighlights(issues []Issue, query string) (result []Issue, matchMap map[string][]int) {
 	query = strings.TrimSpace(query)
 	if query == "" {

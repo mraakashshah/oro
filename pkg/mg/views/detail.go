@@ -44,6 +44,8 @@ func NewDetail(width, height int, issues []data.Issue) Detail {
 }
 
 // SetIssue updates the displayed issue and rebuilds content.
+//
+//oro:testonly
 func (d *Detail) SetIssue(issue *data.Issue) {
 	d.Issue = issue
 	// Clear stale rich detail when switching issues
@@ -55,6 +57,8 @@ func (d *Detail) SetIssue(issue *data.Issue) {
 }
 
 // SetRichDetail enriches the current issue with fields from the active issue source.
+//
+//oro:testonly
 func (d *Detail) SetRichDetail(issueID string, rich *data.Issue) {
 	d.RichIssueID = issueID
 	if d.Issue != nil && d.Issue.ID == issueID && rich != nil {

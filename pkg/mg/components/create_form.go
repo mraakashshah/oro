@@ -53,6 +53,8 @@ type CreateForm struct {
 }
 
 // NewCreateForm creates a new issue creation form.
+//
+//oro:testonly
 func NewCreateForm(width, height int) CreateForm {
 	ti := textinput.New()
 	ti.Prompt = ""
@@ -229,6 +231,8 @@ func (cf CreateForm) View() string {
 }
 
 // ParsePriority converts the form's priority string to data.Priority.
+//
+//oro:testonly
 func ParsePriority(s string) data.Priority {
 	switch s {
 	case "0":

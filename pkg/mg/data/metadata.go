@@ -54,6 +54,8 @@ type beadsMetadata struct {
 // LoadMetadataSchema loads validation.metadata from .beads/config.yaml,
 // resolving redirect if present. Returns nil if not configured.
 // An optional beadsDir argument overrides the default projectDir/.beads path.
+//
+//oro:testonly
 func LoadMetadataSchema(projectDir string, beadsDir ...string) *MetadataSchema {
 	bd := ""
 	if len(beadsDir) > 0 && beadsDir[0] != "" {

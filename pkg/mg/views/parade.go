@@ -139,6 +139,8 @@ func (p *Parade) rebuildItems() {
 }
 
 // MoveUp moves the cursor up, skipping headers and footers.
+//
+//oro:testonly
 func (p *Parade) MoveUp() {
 	for i := p.Cursor - 1; i >= 0; i-- {
 		if p.Items[i].isSelectable() {
@@ -151,6 +153,8 @@ func (p *Parade) MoveUp() {
 }
 
 // MoveDown moves the cursor down, skipping headers and footers.
+//
+//oro:testonly
 func (p *Parade) MoveDown() {
 	for i := p.Cursor + 1; i < len(p.Items); i++ {
 		if p.Items[i].isSelectable() {
@@ -163,6 +167,8 @@ func (p *Parade) MoveDown() {
 }
 
 // ToggleClosed shows or hides closed issues.
+//
+//oro:testonly
 func (p *Parade) ToggleClosed() {
 	p.ShowClosed = !p.ShowClosed
 	selectedID := ""
@@ -221,6 +227,8 @@ func (p *Parade) ensureVisible() {
 }
 
 // ToggleSelect toggles multi-select on the issue at the cursor.
+//
+//oro:testonly
 func (p *Parade) ToggleSelect() {
 	if p.Cursor < 0 || p.Cursor >= len(p.Items) {
 		return
@@ -241,11 +249,15 @@ func (p *Parade) ToggleSelect() {
 }
 
 // ClearSelection removes all multi-selections.
+//
+//oro:testonly
 func (p *Parade) ClearSelection() {
 	p.Selected = nil
 }
 
 // SelectedIssues returns the list of multi-selected issues.
+//
+//oro:testonly
 func (p *Parade) SelectedIssues() []*data.Issue {
 	if len(p.Selected) == 0 {
 		return nil
@@ -260,6 +272,8 @@ func (p *Parade) SelectedIssues() []*data.Issue {
 }
 
 // SelectionCount returns the number of multi-selected issues.
+//
+//oro:testonly
 func (p *Parade) SelectionCount() int {
 	return len(p.Selected)
 }
