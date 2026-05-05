@@ -1943,6 +1943,14 @@ func (d *Dispatcher) finalizeSuccessfulMerge(ctx context.Context, beadID, worker
 	_ = d.CloseBead(ctx, beadID, fmt.Sprintf("Merged: %s", sha))
 	_ = d.completeAssignment(ctx, assignmentID, beadID)
 
+	// A successful merge proves the system is producing, not crash-looping —
+	// reset the unexpected-exit counter so reconcileScale's runaway cap
+	// (managed+exits >= 2*target) can't strand a long-running dispatcher with
+	// fewer workers than target after natural worker turnover (oro-1dbr).
+	d.mu.Lock()
+	d.unexpectedManagedExits = 0
+	d.mu.Unlock()
+
 	d.cancelOpsAgents(ctx, beadID, workerID, "bead_merged")
 
 	_ = d.logEvent(ctx, "merged", "dispatcher", beadID, workerID, fmt.Sprintf(`{"sha":%q}`, sha))
