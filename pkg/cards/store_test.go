@@ -809,4 +809,92 @@ func TestCardStoreRead(t *testing.T) {
 			t.Errorf("WithReadTx Show: got %v", got)
 		}
 	})
+
+	t.Run("WithReadTx_List_filtersAndPaginates", func(t *testing.T) {
+		store := newTestStore(t)
+		mustCreate(t, store, cards.CardCreateParams{
+			Type: cards.CardTypeRule, Title: "r1",
+			BodySummary: "s", BodyFull: "b",
+		})
+		mustCreate(t, store, cards.CardCreateParams{
+			Type: cards.CardTypePattern, Title: "p1",
+			BodySummary: "s", BodyFull: "b",
+		})
+		toRetire := mustCreate(t, store, cards.CardCreateParams{
+			Type: cards.CardTypePattern, Title: "p2",
+			BodySummary: "s", BodyFull: "b",
+		})
+		if err := store.Retire(ctx, toRetire.ID, "test", ""); err != nil {
+			t.Fatalf("Retire: %v", err)
+		}
+
+		var rules, patternsAll []cards.Card
+		var limited []cards.Card
+		err := store.WithReadTx(ctx, func(tx cards.ReadTx) error {
+			var err error
+			rules, err = tx.List(ctx, cards.ListQuery{Type: cards.CardTypeRule})
+			if err != nil {
+				return err
+			}
+			patternsAll, err = tx.List(ctx, cards.ListQuery{Type: cards.CardTypePattern, IncludeRetired: true})
+			if err != nil {
+				return err
+			}
+			limited, err = tx.List(ctx, cards.ListQuery{Limit: 1, Offset: 1})
+			return err
+		})
+		if err != nil {
+			t.Fatalf("WithReadTx: %v", err)
+		}
+		if len(rules) != 1 {
+			t.Errorf("rules: got %d, want 1", len(rules))
+		}
+		if len(patternsAll) != 2 {
+			t.Errorf("patterns including retired: got %d, want 2", len(patternsAll))
+		}
+		if len(limited) != 1 {
+			t.Errorf("limited: got %d, want 1", len(limited))
+		}
+	})
+
+	t.Run("WithReadTx_Relevant_returnsScoredCards", func(t *testing.T) {
+		store := newTestStore(t)
+		mustCreate(t, store, cards.CardCreateParams{
+			Type:        cards.CardTypeRule,
+			Title:       "Wrap errors",
+			BodySummary: "Use fmt.Errorf with %w to preserve context",
+			BodyFull:    "Detailed body",
+			Tags:        []string{"go", "errors"},
+		})
+		mustCreate(t, store, cards.CardCreateParams{
+			Type:        cards.CardTypeDecision,
+			Title:       "Use Postgres",
+			BodySummary: "ACID guarantees matter for billing",
+			BodyFull:    "Detailed",
+			Tags:        []string{"db", "postgres"},
+		})
+
+		var result cards.RelevantCards
+		err := store.WithReadTx(ctx, func(tx cards.ReadTx) error {
+			var err error
+			result, err = tx.Relevant(ctx, cards.RelevanceQuery{
+				BeadType:        "feature",
+				BeadTags:        []string{"go", "errors"},
+				BeadDescription: "wrap errors with context",
+				SymbolHints:     []string{"errors"},
+				MaxTokens:       1000,
+			})
+			return err
+		})
+		if err != nil {
+			t.Fatalf("WithReadTx Relevant: %v", err)
+		}
+		if len(result.Deck) == 0 {
+			t.Fatal("Deck: got empty, want at least one card")
+		}
+		// Highest-scoring card should be the errors-tagged one.
+		if result.Deck[0].Title != "Wrap errors" {
+			t.Errorf("top card: got %q, want %q", result.Deck[0].Title, "Wrap errors")
+		}
+	})
 }
