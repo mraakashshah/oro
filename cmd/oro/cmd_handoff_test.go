@@ -1,0 +1,106 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"testing"
+	"time"
+
+	"oro/pkg/beadstore"
+)
+
+func TestHandoffScopedToSessionWindow(t *testing.T) {
+	ctx := context.Background()
+	beadStore, _ := openTestRenderStore(t)
+
+	// Seed one in-progress bead.
+	inProg := "in_progress"
+	if _, err := beadStore.Create(ctx, beadstore.CreateParams{
+		ID: "bead-hoff-1", Title: "Handoff Task", Type: "task",
+	}); err != nil {
+		t.Fatalf("Create bead: %v", err)
+	}
+	if err := beadStore.Update(ctx, "bead-hoff-1", beadstore.UpdateParams{Status: &inProg}); err != nil {
+		t.Fatalf("Update bead: %v", err)
+	}
+
+	now := time.Now().UTC()
+
+	// Seed old events (> 1h ago — should be excluded by --since 1h).
+	oldEvents := []beadstore.JourneyEvent{
+		{Ts: now.Add(-3 * time.Hour).Format(time.RFC3339Nano), Actor: "worker", Event: "started"},
+		{Ts: now.Add(-2 * time.Hour).Format(time.RFC3339Nano), Actor: "worker", Event: "checkpoint"},
+		{Ts: now.Add(-90 * time.Minute).Format(time.RFC3339Nano), Actor: "worker", Event: "plan"},
+	}
+	for _, e := range oldEvents {
+		if err := beadStore.AppendJourney(ctx, "bead-hoff-1", e); err != nil {
+			t.Fatalf("AppendJourney old: %v", err)
+		}
+	}
+
+	// Seed recent events (< 1h ago — should be included by --since 1h).
+	recentEvents := []beadstore.JourneyEvent{
+		{Ts: now.Add(-45 * time.Minute).Format(time.RFC3339Nano), Actor: "worker", Event: "execute"},
+		{Ts: now.Add(-20 * time.Minute).Format(time.RFC3339Nano), Actor: "worker", Event: "validate"},
+	}
+	for _, e := range recentEvents {
+		if err := beadStore.AppendJourney(ctx, "bead-hoff-1", e); err != nil {
+			t.Fatalf("AppendJourney recent: %v", err)
+		}
+	}
+
+	cutoff := now.Add(-1 * time.Hour)
+
+	cmd := newHandoffCmdWithStore(beadStore)
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--since", "1h"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("oro handoff --since 1h: %v\nstderr: %s", err, stderr.String())
+	}
+
+	var result struct {
+		SessionJourney []map[string]any `json:"session_journey"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal handoff output: %v\noutput: %s", err, stdout.String())
+	}
+
+	// All returned events must have ts >= cutoff.
+	for _, item := range result.SessionJourney {
+		ts, _ := item["ts"].(string)
+		if ts == "" {
+			t.Fatal("event missing ts field")
+		}
+		if ts < cutoff.Format(time.RFC3339Nano) {
+			t.Fatalf("event ts %q is before cutoff %s (should be excluded by --since 1h)", ts, cutoff.Format(time.RFC3339Nano))
+		}
+	}
+
+	// Recent events must be present.
+	if len(result.SessionJourney) != len(recentEvents) {
+		t.Fatalf("session_journey len = %d, want %d (recent only)", len(result.SessionJourney), len(recentEvents))
+	}
+
+	// Output must be ordered DESC by ts (deterministic for the same fixture).
+	for i := 1; i < len(result.SessionJourney); i++ {
+		tsA, _ := result.SessionJourney[i-1]["ts"].(string)
+		tsB, _ := result.SessionJourney[i]["ts"].(string)
+		if tsA < tsB {
+			t.Fatalf("session_journey not sorted DESC: [%d]=%q < [%d]=%q", i-1, tsA, i, tsB)
+		}
+	}
+}
+
+func TestHandoffCommandRegisteredInRoot(t *testing.T) {
+	root := newRootCmd()
+	for _, cmd := range root.Commands() {
+		if cmd.Name() == "handoff" {
+			return
+		}
+	}
+	t.Fatal("root command did not register handoff subcommand")
+}

@@ -49,6 +49,11 @@ Workflow:
   bead       Manage native Oro beads (legacy alias for task)
   shell      Launch an interactive agent session with oro settings
 
+Renders:
+  current    Show current work context (in-progress beads, journey, cards)
+  handoff    Show session-scoped work context (in-progress beads, recent journey, cards)
+  resume     Drop into a bead's context (title, status, AC, recent journey, cards)
+
 Global:
   agent-assets         Sync oro skills and runtime assets for agent sessions
 
