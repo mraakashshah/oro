@@ -6,10 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
+	"time"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/cards"
 	"oro/pkg/protocol"
 )
 
@@ -438,6 +441,114 @@ func TestFakeStore(t *testing.T) {
 		closed[0] = "mutated"
 		if got := store.ClosedBeads(); !reflect.DeepEqual(got, []string{"defaulted", "second"}) {
 			t.Fatalf("ClosedBeads returned aliased slice: %v", got)
+		}
+	})
+}
+
+func TestFakeStoreCards(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Second)
+
+	t.Run("Cards returns non-nil ReadTx backed by seeded cards", func(t *testing.T) {
+		store := beadstore.NewFakeStore()
+		store.SeedCards([]cards.Card{{
+			ID:          "card-1",
+			Type:        cards.CardTypeRule,
+			Title:       "Rule One",
+			BodySummary: "summary",
+			BodyFull:    "body",
+			Score:       1.0,
+			Tags:        []string{"go"},
+			DecayAnchor: now,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}})
+
+		var listed []cards.Card
+		err := store.WithReadTx(ctx, func(tx beadstore.ReadTx) error {
+			rtx := tx.Cards()
+			if rtx == nil {
+				return fmt.Errorf("Cards() returned nil")
+			}
+			var err error
+			listed, err = rtx.List(ctx, cards.ListQuery{})
+			return err
+		})
+		if err != nil {
+			t.Fatalf("WithReadTx: %v", err)
+		}
+		if len(listed) != 1 || listed[0].ID != "card-1" {
+			t.Fatalf("List = %v, want [card-1]", listed)
+		}
+	})
+
+	t.Run("Cards Show returns seeded card by ID", func(t *testing.T) {
+		store := beadstore.NewFakeStore()
+		store.SeedCards([]cards.Card{{
+			ID:          "card-show",
+			Type:        cards.CardTypeFact,
+			Title:       "A fact",
+			BodySummary: "short",
+			BodyFull:    "long",
+			Score:       1.0,
+			DecayAnchor: now,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}})
+
+		err := store.WithReadTx(ctx, func(tx beadstore.ReadTx) error {
+			c, err := tx.Cards().Show(ctx, "card-show")
+			if err != nil {
+				return err
+			}
+			if c == nil || c.ID != "card-show" {
+				return fmt.Errorf("Show = %v, want card-show", c)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("WithReadTx: %v", err)
+		}
+	})
+
+	t.Run("Cards Show returns ErrNotFound for missing card", func(t *testing.T) {
+		store := beadstore.NewFakeStore()
+
+		err := store.WithReadTx(ctx, func(tx beadstore.ReadTx) error {
+			_, err := tx.Cards().Show(ctx, "missing")
+			return err
+		})
+		if !errors.Is(err, cards.ErrNotFound) {
+			t.Fatalf("Show missing err = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("Cards Relevant returns seeded cards above threshold", func(t *testing.T) {
+		store := beadstore.NewFakeStore()
+		store.SeedCards([]cards.Card{{
+			ID:          "card-rel",
+			Type:        cards.CardTypeRule,
+			Title:       "Relevant Rule",
+			BodySummary: "summary",
+			BodyFull:    "body",
+			Score:       1.0,
+			DecayAnchor: now,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}})
+
+		err := store.WithReadTx(ctx, func(tx beadstore.ReadTx) error {
+			rel, err := tx.Cards().Relevant(ctx, cards.RelevanceQuery{MaxTokens: 1000})
+			if err != nil {
+				return err
+			}
+			if len(rel.Deck) != 1 || rel.Deck[0].ID != "card-rel" {
+				return fmt.Errorf("Relevant.Deck = %v, want [card-rel]", rel.Deck)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("WithReadTx: %v", err)
 		}
 	})
 }
