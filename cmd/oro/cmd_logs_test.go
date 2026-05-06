@@ -259,6 +259,46 @@ func TestParseEventSinceDuration(t *testing.T) {
 	}
 }
 
+func TestParseEventSinceDurationUsesUTC(t *testing.T) {
+	eastern := time.FixedZone("EDT", -4*60*60)
+	now := time.Date(2026, 5, 6, 0, 42, 44, 0, eastern)
+	got, err := parseEventSince("1m", now)
+	if err != nil {
+		t.Fatalf("parseEventSince: %v", err)
+	}
+	if got != "2026-05-06 04:41:44" {
+		t.Fatalf("parseEventSince = %q, want UTC cutoff 2026-05-06 04:41:44", got)
+	}
+}
+
+func TestEventsSinceDurationExcludesOldUTCEvents(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	insertTestEvent(t, db, "old_utc", "dispatcher", "", "worker-1", "", "2026-05-06 00:42:23")
+	insertTestEvent(t, db, "recent_utc", "dispatcher", "", "worker-1", "", "2026-05-06 04:42:23")
+
+	eastern := time.FixedZone("EDT", -4*60*60)
+	cutoff, err := parseEventSince("1m", time.Date(2026, 5, 6, 0, 42, 44, 0, eastern))
+	if err != nil {
+		t.Fatalf("parseEventSince: %v", err)
+	}
+
+	events, err := queryFilteredEvents(context.Background(), db, eventFilter{
+		since: cutoff,
+		limit: 20,
+	})
+	if err != nil {
+		t.Fatalf("queryFilteredEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events since cutoff = %d, want 1: %+v", len(events), events)
+	}
+	if events[0].Type != "recent_utc" {
+		t.Fatalf("event = %q, want recent_utc", events[0].Type)
+	}
+}
+
 func TestFormatEvent(t *testing.T) {
 	evt := event{
 		ID:        1,

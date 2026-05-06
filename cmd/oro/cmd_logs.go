@@ -176,12 +176,12 @@ func parseEventSince(raw string, now time.Time) (string, error) {
 		return "", nil
 	}
 	if d, err := time.ParseDuration(raw); err == nil {
-		return now.Add(-d).Format("2006-01-02 15:04:05"), nil
+		return now.UTC().Add(-d).Format("2006-01-02 15:04:05"), nil
 	}
 	layouts := []string{"2006-01-02 15:04:05", time.RFC3339}
 	for _, layout := range layouts {
 		if parsed, err := time.Parse(layout, raw); err == nil {
-			return parsed.Format("2006-01-02 15:04:05"), nil
+			return parsed.UTC().Format("2006-01-02 15:04:05"), nil
 		}
 	}
 	return "", fmt.Errorf("parse --since %q as duration or timestamp", raw)
