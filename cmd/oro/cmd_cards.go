@@ -10,5 +10,6 @@ func newCardsCmd() *cobra.Command {
 		Long:  "Manage durable knowledge cards (rules, patterns, decisions, facts).\nCards are the long-lived knowledge layer that replaces pkg/memory (§5 harness spec).",
 	}
 	cmd.AddCommand(newImportFromMemoryCmd())
+	cmd.AddCommand(newCheckDriftCmd())
 	return cmd
 }

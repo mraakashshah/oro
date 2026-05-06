@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/cards"
 	"oro/pkg/memory"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
@@ -555,7 +556,8 @@ type Dispatcher struct {
 	worktrees WorktreeManager
 	escalator Escalator
 	memories  *memory.Store
-	codeIndex CodeIndex // interface for FTS5 code search (nil means no search)
+	cardStore cards.Store // dual-write mirror; nil means D.3 shim disabled
+	codeIndex CodeIndex   // interface for FTS5 code search (nil means no search)
 	// beadSourceMode is the normalized ORO_BEADSOURCE_MODE captured at startup.
 	// It controls legacy bd/Dolt safety loops that must not run after sqlite cutover.
 	beadSourceMode string
@@ -761,6 +763,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 	memStore := memory.NewStore(db)
 	// NewEmbedder returns the default *TFIDFEmbedder implementation of the Embedder interface.
 	memStore.SetEmbedder(memory.NewEmbedder())
+	cardStore, _ := cards.NewStore(db) // non-fatal; nil disables D.3 dual-write
 	beadSourceMode := normalizeBeadSourceModeForPrimary(os.Getenv("ORO_BEADSOURCE_MODE"), beads)
 	selectedBeads, err := selectStore(context.Background(), beadSourceMode, beads, db, memStore)
 	if err != nil {
@@ -775,6 +778,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		worktrees:      wt,
 		escalator:      esc,
 		memories:       memStore,
+		cardStore:      cardStore,
 		codeIndex:      codeIdx,
 		beadSourceMode: beadSourceMode,
 		repoRoot:       rootDir,
@@ -2638,9 +2642,15 @@ func (d *Dispatcher) persistHandoffContext(ctx context.Context, h *protocol.Hand
 	if d.memories == nil {
 		return
 	}
+	var inserter interface {
+		Insert(ctx context.Context, m memory.InsertParams) (int64, error)
+	} = d.memories
+	if d.cardStore != nil {
+		inserter = cards.NewLegacyWriter(d.memories, d.cardStore)
+	}
 
 	for _, learning := range h.Learnings {
-		_, _ = d.memories.Insert(ctx, memory.InsertParams{
+		_, _ = inserter.Insert(ctx, memory.InsertParams{
 			Content:       learning,
 			Type:          "lesson",
 			Source:        "self_report",
@@ -2652,7 +2662,7 @@ func (d *Dispatcher) persistHandoffContext(ctx context.Context, h *protocol.Hand
 	}
 
 	for _, decision := range h.Decisions {
-		_, _ = d.memories.Insert(ctx, memory.InsertParams{
+		_, _ = inserter.Insert(ctx, memory.InsertParams{
 			Content:       decision,
 			Type:          "decision",
 			Source:        "self_report",
@@ -2665,7 +2675,7 @@ func (d *Dispatcher) persistHandoffContext(ctx context.Context, h *protocol.Hand
 
 	// Persist structured session summary as type=summary for bead continuity.
 	if h.Summary != nil {
-		_, _ = d.memories.Insert(ctx, memory.InsertParams{
+		_, _ = inserter.Insert(ctx, memory.InsertParams{
 			Content:    h.Summary.FormatContent(),
 			Type:       "summary",
 			Source:     "self_report",
