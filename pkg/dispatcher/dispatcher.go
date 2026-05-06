@@ -3296,12 +3296,12 @@ func (d *Dispatcher) assignLoopPoll(ctx context.Context) {
 
 // sortBeadsByPriority sorts beads into four groups (all ties broken by priority):
 //  1. spawn-for beads (explicit priorityBeads map)
-//  2. focused epic children
+//  2. focused epic descendants
 //  3. non-epic standalone beads (Epic == "")
 //  4. unfocused epic children, oldest epic first (lower ID = older)
 //
 // Returns a snapshot of priorityBeads for cleanup.
-func (d *Dispatcher) sortBeadsByPriority(beads []protocol.Bead) map[string]bool {
+func (d *Dispatcher) sortBeadsByPriority(ctx context.Context, beads []protocol.Bead) map[string]bool {
 	d.mu.Lock()
 	epic := d.focusedEpic
 	pbSnapshot := make(map[string]bool, len(d.priorityBeads))
@@ -3310,12 +3310,14 @@ func (d *Dispatcher) sortBeadsByPriority(beads []protocol.Bead) map[string]bool 
 	}
 	d.mu.Unlock()
 
+	focused := d.focusedDescendants(ctx, beads, epic)
+
 	group := func(b protocol.Bead) int {
 		if pbSnapshot[b.ID] {
 			return 0 // spawn-for
 		}
-		if epic != "" && b.Epic == epic {
-			return 1 // focused epic child
+		if focused[b.ID] {
+			return 1 // focused epic descendant
 		}
 		if b.Epic == "" {
 			return 2 // non-epic standalone
@@ -3336,6 +3338,45 @@ func (d *Dispatcher) sortBeadsByPriority(beads []protocol.Bead) map[string]bool 
 		return bi.Priority < bj.Priority
 	})
 	return pbSnapshot
+}
+
+func (d *Dispatcher) focusedDescendants(ctx context.Context, beads []protocol.Bead, focusedEpic string) map[string]bool {
+	focused := make(map[string]bool)
+	if focusedEpic == "" {
+		return focused
+	}
+	parentCache := make(map[string]string)
+	for _, bead := range beads {
+		if d.isFocusedDescendant(ctx, bead.Epic, focusedEpic, parentCache) {
+			focused[bead.ID] = true
+		}
+	}
+	return focused
+}
+
+func (d *Dispatcher) isFocusedDescendant(ctx context.Context, parentID, focusedEpic string, parentCache map[string]string) bool {
+	seen := make(map[string]bool)
+	for parentID != "" {
+		if parentID == focusedEpic {
+			return true
+		}
+		if seen[parentID] {
+			return false
+		}
+		seen[parentID] = true
+		if cached, ok := parentCache[parentID]; ok {
+			parentID = cached
+			continue
+		}
+		parent, err := d.beads.Show(ctx, parentID)
+		if err != nil || parent == nil {
+			parentCache[parentID] = ""
+			return false
+		}
+		parentCache[parentID] = parent.Epic
+		parentID = parent.Epic
+	}
+	return false
 }
 
 // tryAssign attempts to assign ready beads to idle workers.
@@ -3383,7 +3424,7 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 
 	beads := d.filterAssignable(ctx, allBeads)
 
-	pbSnapshot := d.sortBeadsByPriority(beads)
+	pbSnapshot := d.sortBeadsByPriority(ctx, beads)
 	reservedTargets, hasPendingSpawnFor := d.reservedSpawnForTargets()
 
 	// Auto-scale: if we have assignable beads but no idle workers, scale up to MaxWorkers.

@@ -17064,7 +17064,7 @@ func TestSortBeadsByPriority_EpicFinishing(t *testing.T) {
 			{ID: "b-focus-p1", Priority: 1, Epic: "epic-focus"},
 		}
 
-		d.sortBeadsByPriority(beads)
+		d.sortBeadsByPriority(context.Background(), beads)
 
 		want := []string{
 			"b-spawn-p0",    // group 1: spawn-for, P0
@@ -17105,13 +17105,44 @@ func TestSortBeadsByPriority_EpicFinishing(t *testing.T) {
 			{ID: "p1", Priority: 1, Epic: ""},
 		}
 
-		d.sortBeadsByPriority(beads)
+		d.sortBeadsByPriority(context.Background(), beads)
 
 		want := []string{"p0", "p1", "p2"}
 		for i, id := range want {
 			if beads[i].ID != id {
 				t.Errorf("position %d: got %q, want %q", i, beads[i].ID, id)
 			}
+		}
+	})
+
+	t.Run("focused epic includes nested descendants", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+		d.mu.Lock()
+		d.focusedEpic = "epic-root"
+		d.mu.Unlock()
+
+		beadSrc.shown["epic-child"] = &protocol.BeadDetail{
+			ID:    "epic-child",
+			Title: "Child Epic",
+			Type:  "epic",
+			Epic:  "epic-root",
+		}
+		beadSrc.shown["epic-root"] = &protocol.BeadDetail{
+			ID:    "epic-root",
+			Title: "Root Epic",
+			Type:  "epic",
+		}
+
+		beads := []protocol.Bead{
+			{ID: "standalone-p0", Priority: 0, Epic: ""},
+			{ID: "nested-p2", Priority: 2, Epic: "epic-child"},
+		}
+
+		d.sortBeadsByPriority(context.Background(), beads)
+
+		if got := beads[0].ID; got != "nested-p2" {
+			t.Fatalf("first bead after focused sort = %q, want nested descendant nested-p2", got)
 		}
 	})
 
@@ -17124,7 +17155,7 @@ func TestSortBeadsByPriority_EpicFinishing(t *testing.T) {
 			{ID: "p1", Priority: 1, Epic: "epic-one"},
 		}
 
-		d.sortBeadsByPriority(beads)
+		d.sortBeadsByPriority(context.Background(), beads)
 
 		want := []string{"p0", "p1", "p2"}
 		for i, id := range want {
