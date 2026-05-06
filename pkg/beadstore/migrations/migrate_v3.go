@@ -134,7 +134,7 @@ CREATE INDEX IF NOT EXISTS idx_card_events_card_ts ON card_events(card_id, ts);
 // blocking clause (§10.4) while preserving all v20 semantics verbatim.
 const v3ViewsDDL = `
 DROP VIEW IF EXISTS beads_ready;
-CREATE VIEW beads_ready AS
+CREATE VIEW IF NOT EXISTS beads_ready AS
 SELECT b.*
 FROM beads b
 WHERE b.deleted = 0
@@ -168,7 +168,7 @@ WHERE b.deleted = 0
   );
 
 DROP VIEW IF EXISTS beads_blocked;
-CREATE VIEW beads_blocked AS
+CREATE VIEW IF NOT EXISTS beads_blocked AS
 SELECT b.*
 FROM beads b
 WHERE b.deleted = 0
