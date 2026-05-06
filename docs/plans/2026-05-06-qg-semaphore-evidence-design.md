@@ -104,6 +104,7 @@ Status:
 - `qg_waiting`
 - `qg_max_concurrency`
 - optional per-entry bead IDs and modes for verbose/JSON status.
+- Status throttling must either include QG state in the cache invalidation path or document bounded staleness; stale QG backlog numbers must not hide an active deadlock.
 
 ### 2. Shared Access From Worker Processes
 
@@ -119,11 +120,20 @@ Preferred implementation:
 - Worker wraps `RunQualityGate` with a lease-aware runner.
 - If the dispatcher connection is unavailable, the worker must fail closed for factory mode: QG is not run unbounded.
 
+Dispatcher protocol routing:
+
+- New QG lease messages must be first-class `protocol.Message` variants.
+- `pkg/dispatcher/dispatcher.go:extractWorkerID`, `extractBeadID`, and `handleMessage` must route lease request/release messages.
+- Lease grant responses must be written over the worker connection without blocking unrelated dispatcher message handling.
+- `connCloseCleanup` must release all leases owned by the worker/session whose connection closed.
+- Lease ownership must include both worker ID and dispatcher session/connection identity so reconnects cannot release another process's lease accidentally.
+
 Fallback for `oro work`:
 
 - If `oro work` is connected to a dispatcher, use the dispatcher lease service.
 - If no dispatcher is running, use a local file lock under the project Oro home so multiple `oro work` processes still do not stampede.
 - The local lock path must be project-scoped, not global across all repos.
+- All `cmd/oro/cmd_work.go` QG call sites must go through the same limiter abstraction, not only the first post-coding gate.
 
 Why not only SQLite leases:
 
@@ -165,12 +175,22 @@ Required values:
 - `Mode`: distinguishes skipped mutation/local gate from full gate.
 - `OutputHash`: SHA-256 of combined output; keep full output in existing retry feedback paths, not in status.
 
+Worker review handoff:
+
+- Worker QG passes before the worker sends `READY_FOR_REVIEW`.
+- `DONE` is sent later from `pkg/worker/worker.go:handleReviewResult` after approval.
+- Therefore the worker must persist pending QG evidence alongside `pendingQGOutput`.
+- `handleAssign` must clear pending evidence exactly as it clears stale pending QG output.
+- Review rejection must discard pending evidence because the next attempt must produce fresh evidence for a new tested state.
+
 Persistence:
 
 - Store evidence in SQLite, keyed by `run_id`.
 - Index by `bead_id`, `head_sha`, `component`, `passed`, and `finished_at`.
 - Store the latest passing evidence per bead/head for quick lookup.
 - Keep event-log summaries small; full output remains in existing QG failure handling.
+- Add schema/migration coverage through the same state DB path used by dispatcher startup.
+- Evidence writes are best-effort for failed runs, but passing evidence required for a merge decision must be persisted or the dispatcher must run its own QG.
 
 ### 4. Dispatcher Evidence Policy
 
@@ -230,6 +250,7 @@ Rules:
 - Epic QG records evidence with `Component=dispatcher-epic` and `Mode=epic`.
 - Epic close requires passing epic evidence for the epic branch head.
 - Worker evidence for child tasks cannot substitute for epic QG.
+- Epic evidence must be persisted before the epic is closed so restart/audit can prove why the epic was accepted.
 
 ### 6. Configuration
 
@@ -237,6 +258,13 @@ Startup flags:
 
 - `oro start --qg-concurrency N`
 - `oro dispatcher start --qg-concurrency N`
+
+Startup propagation:
+
+- Foreground `oro start` must pass `--qg-concurrency` through `ExecDaemonSpawner.buildArgs` into the daemon-only child.
+- `oro dispatcher start --qg-concurrency` must pass the same value through its dispatcher-only start path.
+- `runDaemonOnly` and `buildDispatcherWithReviewTimeouts` must set `dispatcher.Config.MaxQGConcurrency`.
+- A daemon started with an existing dispatcher must reject impossible values and report the active value in status.
 
 Directive:
 
@@ -395,23 +423,47 @@ Epic: Implement global QG limiting and evidence-based QG reuse.
    - Read: `pkg/dispatcher/dispatcher.go:checkPreMergeQG`, `pkg/dispatcher/dispatcher.go:checkEpicQG`, `pkg/dispatcher/dispatcher.go:ShellQGRunner`
    - Edges: QG pass, fail, script error, and canceled context all release the lease.
 
-4. Add worker lease protocol
+4. Add dispatcher lease protocol routing
+   - Test: `pkg/dispatcher/dispatcher_test.go:TestDispatcherQGLeaseProtocolRoutesRequests`
+   - Cmd: `go test ./pkg/dispatcher -run TestDispatcherQGLeaseProtocolRoutesRequests -count=1 -v`
+   - Assert: dispatcher grants/releases worker QG leases over UDS and releases worker-owned leases on connection cleanup.
+   - Read: `pkg/dispatcher/dispatcher.go:handleMessage`, `pkg/dispatcher/dispatcher.go:extractWorkerID`, `pkg/dispatcher/dispatcher.go:extractBeadID`, `pkg/dispatcher/dispatcher.go:connCloseCleanup`, `pkg/protocol/message.go:Message`
+   - Signature: `type QGLeaseRequestPayload struct {...}`, `type QGLeaseGrantedPayload struct {...}`, `type QGLeaseReleasePayload struct {...}`
+   - Edges: unknown worker, canceled waiter, worker disconnect while waiting, worker disconnect while holding lease.
+
+5. Add worker lease client
    - Test: `pkg/worker/worker_test.go:TestWorkerQGUsesDispatcherLease`
    - Cmd: `go test ./pkg/worker -run TestWorkerQGUsesDispatcherLease -count=1 -v`
    - Assert: worker requests a lease before running QG and releases it after pass/fail/error.
    - Read: `pkg/worker/worker.go:runQGAndReport`, `pkg/worker/worker.go:RunQualityGate`, `pkg/protocol/message.go:Message`
-   - Signature: `type QGLeaseRequestPayload struct {...}`, `type QGLeaseReleasePayload struct {...}`
+   - Signature: `func (w *Worker) acquireQGLease(ctx context.Context, req protocol.QGLeaseRequestPayload) (*QGLease, error)`
    - Edges: dispatcher unavailable -> fail closed with `DONE(false)`.
 
-5. Record QG evidence from actual runs
+6. Add `oro work` QG limiting
+   - Test: `cmd/oro/cmd_work_test.go:TestWorkQGUsesProjectLimiter`
+   - Cmd: `go test ./cmd/oro -run TestWorkQGUsesProjectLimiter -count=1 -v`
+   - Assert: every `cmd_work` QG call site acquires a dispatcher lease when available and a project-scoped file lock when no dispatcher is running.
+   - Read: `cmd/oro/cmd_work.go:newWorkDeps`, `cmd/oro/cmd_work.go:runWork`, `cmd/oro/cmd_work.go:handleReviewRejection`, `cmd/oro/cmd_work_execute_test.go`
+   - Signature: `func limitedWorkQGRunner(base runQGFunc, limiter QGLimiter) runQGFunc`
+   - Edges: first post-coding QG, mutation/final QG, QG after review rejection, dispatcher unavailable, two concurrent `oro work` processes.
+
+7. Record QG evidence from actual runs
    - Test: `pkg/worker/worker_test.go:TestWorkerDoneIncludesQGEvidenceForTestedHead`
    - Cmd: `go test ./pkg/worker -run TestWorkerDoneIncludesQGEvidenceForTestedHead -count=1 -v`
    - Assert: passing worker QG sends evidence containing tested HEAD and QG script hash.
-   - Read: `pkg/worker/worker.go:runQGAndReport`, `pkg/worker/worker.go:SendDone`, `pkg/worker/worker.go:RunQualityGate`
+   - Read: `pkg/worker/worker.go:runQGAndReport`, `pkg/worker/worker.go:handleReviewResult`, `pkg/worker/worker.go:SendDone`, `pkg/worker/worker.go:RunQualityGate`, `pkg/worker/pending_qg_clear_test.go:TestHandleAssignClearsPendingQGOutput`
    - Signature: `func BuildQGEvidence(ctx context.Context, worktree string, opts QGEvidenceOptions) (*protocol.QGEvidence, error)`
-   - Edges: detached HEAD, missing target branch, missing script hash.
+   - Edges: detached HEAD, missing target branch, missing script hash, review rejection clears pending evidence, reassignment clears stale pending evidence.
 
-6. Implement dispatcher evidence policy
+8. Persist QG evidence
+   - Test: `pkg/dispatcher/qg_evidence_store_test.go:TestQGEvidenceStoreLatestPassingByBeadHead`
+   - Cmd: `go test ./pkg/dispatcher -run TestQGEvidenceStoreLatestPassingByBeadHead -count=1 -v`
+   - Assert: state DB migration creates `qg_evidence`, inserts pass/fail records, and returns latest passing evidence for a bead/head.
+   - Read: `pkg/protocol/schema.go:SchemaDDL`, `cmd/oro/db.go:migrateStateDB`, `pkg/dispatcher/dispatcher.go:New`
+   - Signature: `func RecordQGEvidence(ctx context.Context, db *sql.DB, evidence protocol.QGEvidence) error`
+   - Edges: duplicate run ID, failed evidence write on passing merge evidence, restart reads existing evidence.
+
+9. Implement dispatcher evidence policy
    - Test: `pkg/dispatcher/qg_evidence_policy_test.go:TestShouldRunPreMergeQGDecisionMatrix`
    - Cmd: `go test ./pkg/dispatcher -run TestShouldRunPreMergeQGDecisionMatrix -count=1 -v`
    - Assert: exact matching evidence is accepted; missing/mismatched/stale evidence forces or rejects as specified.
@@ -419,28 +471,43 @@ Epic: Implement global QG limiting and evidence-based QG reuse.
    - Signature: `func ShouldRunPreMergeQG(e *protocol.QGEvidence, ctx MergeQGContext) QGDecision`
    - Edges: changed HEAD, changed script hash, changed target branch, wrong worker, wrong bead.
 
-7. Skip duplicate dispatcher QG when evidence is valid
+10. Skip duplicate dispatcher QG when evidence is valid
    - Test: `pkg/dispatcher/dispatcher_test.go:TestPreMergeAcceptsMatchingWorkerQGEvidence`
    - Cmd: `go test ./pkg/dispatcher -run TestPreMergeAcceptsMatchingWorkerQGEvidence -count=1 -v`
    - Assert: dispatcher does not invoke `qgRunner.Run` when worker evidence exactly matches current merge context.
    - Read: `pkg/dispatcher/dispatcher.go:handleDone`, `pkg/dispatcher/dispatcher.go:checkPreMergeQG`, `pkg/dispatcher/dispatcher_test.go:mockQGRunner`
    - Edges: missing evidence remains backward compatible by running dispatcher QG.
 
-8. Add config, directive, and status observability
-   - Test: `cmd/oro/cmd_status_test.go:TestStatusShowsQGCapacity`
-   - Cmd: `go test ./cmd/oro -run 'TestStatusShowsQGCapacity|TestDirectiveQGConcurrency' -count=1 -v`
-   - Assert: status prints QG running/waiting/max and directive adjusts max at runtime.
-   - Read: `cmd/oro/cmd_start.go:newStartCmd`, `cmd/oro/cmd_directive.go:newDirectiveCmd`, `cmd/oro/cmd_status.go:formatStatusResponse`, `pkg/protocol/directive.go`
-   - Edges: invalid values reject; lowering below active count prevents new leases until active drops.
+11. Record dispatcher pre-merge QG evidence
+   - Test: `pkg/dispatcher/dispatcher_test.go:TestPreMergeQGPersistsDispatcherEvidenceBeforeMerge`
+   - Cmd: `go test ./pkg/dispatcher -run TestPreMergeQGPersistsDispatcherEvidenceBeforeMerge -count=1 -v`
+   - Assert: when worker evidence is missing/stale and dispatcher runs fallback pre-merge QG, it persists `Component=dispatcher-pre-merge` evidence before authorizing merge.
+   - Read: `pkg/dispatcher/dispatcher.go:checkPreMergeQG`, `pkg/dispatcher/dispatcher.go:mergeAndComplete`, `pkg/dispatcher/qg_evidence_store_test.go:TestQGEvidenceStoreLatestPassingByBeadHead`
+   - Signature: `func BuildDispatcherQGEvidence(ctx context.Context, worktree string, opts QGEvidenceOptions) (*protocol.QGEvidence, error)`
+   - Edges: evidence persist failure prevents evidence-based merge authorization, QG failure records failed evidence best-effort, script error does not authorize merge.
 
-9. Add integration coverage for four workers and cap two
+12. Record epic QG evidence before epic close
+   - Test: `pkg/dispatcher/epic_qg_test.go:TestEpicQGPersistsEvidenceBeforeClose`
+   - Cmd: `go test ./pkg/dispatcher -run TestEpicQGPersistsEvidenceBeforeClose -count=1 -v`
+   - Assert: epic QG acquires a lease, records dispatcher-epic evidence for the epic branch head, and closes only after evidence is persisted.
+   - Read: `pkg/dispatcher/dispatcher.go:checkEpicQG`, `pkg/dispatcher/epic_qg_test.go`, `pkg/dispatcher/dispatcher.go:completeEpicClose`
+   - Edges: evidence persist failure, QG failure, temporary worktree cleanup.
+
+13. Add config, startup propagation, directive, status, and events
+   - Test: `cmd/oro/cmd_status_test.go:TestStatusShowsQGCapacity`
+   - Cmd: `go test ./cmd/oro -run 'TestStatusShowsQGCapacity|TestDirectiveQGConcurrency|TestStartQGConcurrencyPropagatesToDaemon|TestDispatcherStartQGConcurrencyPropagatesToDaemon' -count=1 -v`
+   - Assert: status prints QG running/waiting/max, directive adjusts max at runtime, and both `oro start --qg-concurrency N` and `oro dispatcher start --qg-concurrency N` reach daemon-only dispatcher config.
+   - Read: `cmd/oro/cmd_start.go:newStartCmd`, `cmd/oro/cmd_start.go:ExecDaemonSpawner.buildArgs`, `cmd/oro/cmd_start.go:runDaemonOnly`, `cmd/oro/cmd_start.go:buildDispatcherWithReviewTimeouts`, `cmd/oro/cmd_dispatcher.go:newDispatcherCmd`, `cmd/oro/cmd_dispatcher.go:runDispatcherStart`, `cmd/oro/cmd_directive.go:newDirectiveCmd`, `cmd/oro/cmd_status.go:formatStatusResponse`, `pkg/protocol/directive.go`
+   - Edges: invalid values reject, lowering below active count prevents new leases until active drops, status cache does not hide QG deadlock, qg_wait/qg_run events are logged.
+
+14. Add integration coverage for four workers and cap two
    - Test: `pkg/integration/dispatcher_worker_test.go:TestGlobalQGLimiterCapsWorkerAndDispatcherRuns`
    - Cmd: `go test ./pkg/integration -run TestGlobalQGLimiterCapsWorkerAndDispatcherRuns -count=1 -v`
    - Assert: four workers can run, but active QG process count never exceeds two across worker and dispatcher phases.
    - Read: `pkg/integration/dispatcher_worker_test.go`, `pkg/worker/worker.go:runQGAndReport`, `pkg/dispatcher/dispatcher.go:checkPreMergeQG`
-   - Edges: one QG failure releases slot; next waiter starts.
+   - Edges: one QG failure releases slot, next waiter starts, worker-side and dispatcher-side QG contend for same cap, `oro work` does not bypass cap.
 
-10. Document operating policy
+15. Document operating policy
    - Test: `docs/runbooks/factory-monitoring.md` or equivalent doc lint/manual review
    - Cmd: `./scripts/quality_gate.sh`
    - Assert: monitoring docs explain `workers=4`, `qg_concurrency=2`, QG backlog interpretation, and stop triggers.
@@ -452,7 +519,11 @@ Epic: Implement global QG limiting and evidence-based QG reuse.
 Primary machine check:
 
 ```bash
-go test ./pkg/dispatcher ./pkg/worker ./pkg/protocol ./pkg/integration ./cmd/oro -run 'QG|QualityGate|QGEvidence|QGLimiter|StatusShowsQG|DirectiveQG' -count=1
+go test ./pkg/protocol -run TestDonePayload_QGEvidenceRoundTrip -count=1
+go test ./pkg/dispatcher -run 'TestQGLimiterCapsConcurrentRuns|TestPreMergeAndEpicQGShareLimiter|TestDispatcherQGLeaseProtocolRoutesRequests|TestQGEvidenceStoreLatestPassingByBeadHead|TestShouldRunPreMergeQGDecisionMatrix|TestPreMergeAcceptsMatchingWorkerQGEvidence|TestPreMergeQGPersistsDispatcherEvidenceBeforeMerge|TestEpicQGPersistsEvidenceBeforeClose' -count=1
+go test ./pkg/worker -run 'TestWorkerQGUsesDispatcherLease|TestWorkerDoneIncludesQGEvidenceForTestedHead' -count=1
+go test ./cmd/oro -run 'TestWorkQGUsesProjectLimiter|TestStatusShowsQGCapacity|TestDirectiveQGConcurrency|TestStartQGConcurrencyPropagatesToDaemon|TestDispatcherStartQGConcurrencyPropagatesToDaemon' -count=1
+go test ./pkg/integration -run TestGlobalQGLimiterCapsWorkerAndDispatcherRuns -count=1
 ```
 
 Final gate:
@@ -473,42 +544,64 @@ Operational acceptance:
 ## Adversarial Review
 
 ```yaml
-verdict: PASS_WITH_NOTES
+verdict: CHALLENGE_FAIL_INCORPORATED
 spec: docs/plans/2026-05-06-qg-semaphore-evidence-design.md
-reviewer_note: "The spec addresses the main structural risk: local semaphores are insufficient because QG runs span worker and dispatcher processes."
+reviewer_note: "Fresh Codex challenge passes found missing coverage for dispatcher lease routing, oro work, persistence, startup propagation, dispatcher-only start, pre-merge evidence persistence, event observability, and review-handoff evidence. This revision incorporates those gaps into the design and task graph."
 acceptance_test:
-  cmd: "go test ./pkg/dispatcher ./pkg/worker ./pkg/protocol ./pkg/integration ./cmd/oro -run 'QG|QualityGate|QGEvidence|QGLimiter|StatusShowsQG|DirectiveQG' -count=1 && ./scripts/quality_gate.sh"
+  cmd: "Run the explicit package/test list in Acceptance Test For Epic, then ./scripts/quality_gate.sh"
   assert: "QG concurrency is globally capped at 2, evidence-based skip works only for exact matching state, and full project gate passes."
   adequate: true
 requirements_traceability:
   - criterion: "Global QG cap across worker and dispatcher"
-    task: 2,3,4,9
+    task: 2,3,4,5,14
+    status: covered
+  - criterion: "oro work QG uses dispatcher lease or project file lock"
+    task: 6,14
     status: covered
   - criterion: "Evidence can replace duplicate dispatcher QG only when safe"
-    task: 1,5,6,7
+    task: 1,7,8,9,10,11
     status: covered
   - criterion: "Epic QG remains authoritative"
-    task: 3,9
+    task: 3,12,14
+    status: covered
+  - criterion: "Evidence persists for audit/restart"
+    task: 8,11,12
+    status: covered
+  - criterion: "Startup flags and directives configure runtime limiter"
+    task: 13
     status: covered
   - criterion: "Operators can observe and tune the limiter"
-    task: 8,10
+    task: 13,15
     status: covered
 negative_space:
   - scenario: "Old worker sends no evidence"
-    coverage: "Task 7 requires backward-compatible fallback to dispatcher QG."
+    coverage: "Task 10 requires backward-compatible fallback to dispatcher QG."
+  - scenario: "Worker QG evidence is lost between READY_FOR_REVIEW and DONE"
+    coverage: "Task 7 requires pending evidence to be stored and cleared with pendingQGOutput."
   - scenario: "Worker dies while holding lease"
     coverage: "Task 4 requires lease release on disconnect/session death."
+  - scenario: "Two oro work processes bypass dispatcher and OOM the host"
+    coverage: "Task 6 requires project-scoped file locking when no dispatcher lease is available."
+  - scenario: "Foreground start drops qg-concurrency when spawning daemon-only child"
+    coverage: "Task 13 requires foreground and dispatcher-only start propagation tests."
+  - scenario: "Dispatcher fallback pre-merge QG passes but leaves no audit evidence"
+    coverage: "Task 11 requires dispatcher-pre-merge evidence persistence before merge authorization."
+  - scenario: "Event observability is absent even though status looks fine"
+    coverage: "Task 13 requires qg_wait/qg_run event logging."
   - scenario: "Target branch moves after worker QG"
-    coverage: "Task 6 requires conservative retest."
+    coverage: "Task 9 requires conservative retest."
 integration_inventory:
   must_touch:
     - "pkg/protocol/message.go"
+    - "pkg/protocol/schema.go"
     - "pkg/protocol/directive.go"
     - "pkg/worker/worker.go"
     - "pkg/dispatcher/dispatcher.go"
     - "cmd/oro/cmd_start.go"
+    - "cmd/oro/cmd_dispatcher.go"
     - "cmd/oro/cmd_directive.go"
     - "cmd/oro/cmd_status.go"
     - "cmd/oro/cmd_work.go"
+    - "cmd/oro/db.go"
     - "pkg/integration/dispatcher_worker_test.go"
 ```
