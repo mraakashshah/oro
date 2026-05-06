@@ -69,6 +69,11 @@ func newBeadReadyCmd(store beadstore.Store) *cobra.Command {
 
 func newBeadListCmd(store beadstore.Store) *cobra.Command {
 	cmd := newBeadListLikeCmd(store, "list", "List beads with optional filters", cobra.NoArgs, listBeadsForCmd)
+	cmd.Long = `List beads with optional filters.
+
+By default, shows the top 20 in-progress and unblocked open beads as a human-readable table with aligned columns (ID, STATUS, PRI, TYPE, UPDATED, TITLE).
+
+Use --json for stable machine-readable JSON output suitable for scripting and automation.`
 	cmd.Flags().String("status", "", "filter by status")
 	cmd.Flags().String("parent", "", "filter by parent bead ID")
 	cmd.Flags().String("tag", "", "filter by tag")

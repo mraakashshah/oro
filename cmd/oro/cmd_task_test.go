@@ -114,6 +114,27 @@ func TestTaskCommandHelpUsesTaskTerminology(t *testing.T) {
 	}
 }
 
+func TestTaskListHelpMentionsTableAndJSON(t *testing.T) {
+	cmd := newTaskCmdWithStore(nil)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"list", "--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("task list --help error: %v\n%s", err, out.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "table") {
+		t.Fatalf("task list help should mention 'table', got:\n%s", got)
+	}
+	if !strings.Contains(got, "--json") {
+		t.Fatalf("task list help should mention '--json', got:\n%s", got)
+	}
+	if strings.Contains(got, "bead") || strings.Contains(got, "Bead") {
+		t.Fatalf("task list help should not use bead terminology, got:\n%s", got)
+	}
+}
+
 func TestTaskCommandRejectsMigrationAlias(t *testing.T) {
 	cmd := newTaskCmdWithStore(beadstore.NewFakeStore())
 	var out bytes.Buffer
