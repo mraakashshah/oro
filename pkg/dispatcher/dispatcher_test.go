@@ -7987,6 +7987,55 @@ func TestShutdownResetBeadUsesSelectedStore(t *testing.T) {
 	}
 }
 
+func TestShutdownReopensNoAssignmentInProgressTasksAndPreservesBranches(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	beadSrc.inProgressBeads = []protocol.Bead{
+		{ID: "task-with-branch", Status: "in_progress", Type: "task"},
+		{ID: "bug-without-assignment", Status: "in_progress", Type: "bug"},
+		{ID: "epic-state", Status: "in_progress", Type: "epic"},
+	}
+	wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
+		if branch == "agent/task-with-branch" {
+			return true, nil
+		}
+		t.Fatalf("shutdown reset should not inspect or mutate branch %q", branch)
+		return false, nil
+	}
+
+	if _, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES ('assigned-task', 'w-test', '/tmp/assigned-task', 'active')`); err != nil {
+		t.Fatalf("insert active assignment: %v", err)
+	}
+
+	d.shutdownResetActiveBeads()
+
+	beadSrc.mu.Lock()
+	updated := beadSrc.updated
+	beadSrc.mu.Unlock()
+
+	for _, beadID := range []string{"assigned-task", "task-with-branch", "bug-without-assignment"} {
+		if got := updated[beadID]; got != "open" {
+			t.Errorf("%s update = %q, want open", beadID, got)
+		}
+	}
+	if got := updated["epic-state"]; got != "" {
+		t.Fatalf("epic-state update = %q, want preserved in_progress epic state", got)
+	}
+
+	wtMgr.mu.Lock()
+	removed := append([]string(nil), wtMgr.removed...)
+	deleted := append([]string(nil), wtMgr.deletedBranches...)
+	wtMgr.mu.Unlock()
+	if len(removed) != 0 {
+		t.Fatalf("shutdown reset removed worktrees %v; existing agent work must be preserved", removed)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("shutdown reset deleted branches %v; existing agent work must be preserved", deleted)
+	}
+}
+
 // TestMergeClosesBead verifies that after a successful merge, the dispatcher
 // calls beads.Close(beadID) so the bead doesn't get re-assigned.
 func TestMergeClosesBead(t *testing.T) {

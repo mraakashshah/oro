@@ -6667,18 +6667,34 @@ func (d *Dispatcher) shutdownResetActiveBeads() {
 	}
 	defer func() { _ = rows.Close() }()
 
+	active := make(map[string]bool)
 	for rows.Next() {
 		var beadID string
 		if scanErr := rows.Scan(&beadID); scanErr != nil {
 			_ = d.logEvent(ctx, "shutdown_reset_scan_failed", "dispatcher", "", "", scanErr.Error())
 			continue
 		}
+		active[beadID] = true
 		if updateErr := updateBeadStatus(ctx, d.beads, beadID, "open"); updateErr != nil {
 			_ = d.logEvent(ctx, "shutdown_reset_bead_failed", "dispatcher", beadID, "", updateErr.Error())
 		}
 	}
 	if rowsErr := rows.Err(); rowsErr != nil {
 		_ = d.logEvent(ctx, "shutdown_reset_rows_failed", "dispatcher", "", "", rowsErr.Error())
+	}
+
+	inProgress, listErr := d.beads.InProgress(ctx)
+	if listErr != nil {
+		_ = d.logEvent(ctx, "shutdown_reset_in_progress_list_failed", "dispatcher", "", "", listErr.Error())
+		return
+	}
+	for _, bead := range inProgress {
+		if active[bead.ID] || bead.Type == "epic" {
+			continue
+		}
+		if updateErr := updateBeadStatus(ctx, d.beads, bead.ID, "open"); updateErr != nil {
+			_ = d.logEvent(ctx, "shutdown_reset_in_progress_bead_failed", "dispatcher", bead.ID, "", updateErr.Error())
+		}
 	}
 }
 
