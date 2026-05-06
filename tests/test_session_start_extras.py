@@ -241,11 +241,6 @@ class TestRoleBeacon:
         """Verify the actual beacon files in ORO_HOME are loadable."""
         beacons_dir = _oro_home / "beacons"
 
-        architect = role_beacon("architect", beacons_dir=str(beacons_dir))
-        assert len(architect) > 500, "architect beacon should be substantial"
-        assert "## Role" in architect
-        assert "architect" in architect.lower()
-
         manager = role_beacon("manager", beacons_dir=str(beacons_dir))
         assert len(manager) > 500, "manager beacon should be substantial"
         assert "## Role" in manager

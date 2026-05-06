@@ -1217,15 +1217,15 @@ func TestGenerateSettings_NoBdCreateNotifier(t *testing.T) {
 	}
 }
 
-func TestGenerateSettings_RegistersTaskCreateNotifier(t *testing.T) {
+func TestGenerateSettings_NoTaskCreateNotifier(t *testing.T) {
 	data, err := generateSettings("$HOME/.oro")
 	if err != nil {
 		t.Fatalf("generateSettings failed: %v", err)
 	}
 
 	content := string(data)
-	if !strings.Contains(content, "notify_manager_on_bead_create.py") {
-		t.Errorf("settings.json should register task create notifier hook, got:\n%s", content)
+	if strings.Contains(content, "notify_manager_on_bead_create") {
+		t.Errorf("settings.json should NOT contain notify_manager_on_bead_create hook, got:\n%s", content)
 	}
 }
 
@@ -1243,7 +1243,8 @@ func TestGenerateSettingsNoArchitectRouter(t *testing.T) {
 
 func TestDefaultHookEntries_NoGhostHooks(t *testing.T) {
 	// Test that buildHookConfig contains no removed PostToolUse hooks
-	// such as memory_capture or learning_reminder (oro-pw0d).
+	// such as memory_capture or learning_reminder (oro-pw0d), and no
+	// notify_manager_on_bead_create after the architect/notify teardown.
 	hooks := buildHookConfig("$HOME/.oro/hooks")
 
 	postToolUseHooks, ok := hooks["PostToolUse"]
@@ -1251,15 +1252,7 @@ func TestDefaultHookEntries_NoGhostHooks(t *testing.T) {
 		t.Fatal("PostToolUse key missing from hook config")
 	}
 
-	foundTaskCreateNotifier := false
 	for _, group := range postToolUseHooks {
-		if group.Matcher == "Bash" {
-			for _, hook := range group.Hooks {
-				if strings.Contains(hook.Command, "notify_manager_on_bead_create.py") {
-					foundTaskCreateNotifier = true
-				}
-			}
-		}
 		for _, hook := range group.Hooks {
 			if strings.Contains(hook.Command, "memory_capture") {
 				t.Errorf("memory_capture.py hook should not exist, found in command: %s", hook.Command)
@@ -1267,10 +1260,10 @@ func TestDefaultHookEntries_NoGhostHooks(t *testing.T) {
 			if strings.Contains(hook.Command, "learning_reminder") {
 				t.Errorf("learning_reminder.py hook should not exist, found in command: %s", hook.Command)
 			}
+			if strings.Contains(hook.Command, "notify_manager_on_bead_create") {
+				t.Errorf("notify_manager_on_bead_create hook should not exist, found in command: %s", hook.Command)
+			}
 		}
-	}
-	if !foundTaskCreateNotifier {
-		t.Error("Bash PostToolUse matcher should include notify_manager_on_bead_create.py")
 	}
 }
 
@@ -1346,7 +1339,7 @@ func assertInstalledBeaconsAreTaskPrimary(t *testing.T) {
 		"oro bead list",
 	}
 
-	for _, name := range []string{"architect.md", "manager.md"} {
+	for _, name := range []string{"manager.md"} {
 		path := filepath.Join(oroHome, "beacons", name)
 		data, err := os.ReadFile(path) //nolint:gosec // test-created file
 		if err != nil {
