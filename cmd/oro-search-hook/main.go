@@ -38,11 +38,27 @@ type hookInput struct {
 	ToolInput toolInput `json:"tool_input"`
 }
 
-// toolInput represents the tool_input field from the hook payload.
+// toolInput represents the tool_input field from the Claude Code hook payload.
 type toolInput struct {
 	FilePath string  `json:"file_path"`
 	Offset   float64 `json:"offset,omitempty"`
 	Limit    float64 `json:"limit,omitempty"`
+}
+
+// codexToolInput represents the tool_input field from the Codex CLI hook payload.
+// Codex uses "path" instead of "file_path", and "view_range" instead of offset/limit.
+type codexToolInput struct {
+	Command   string    `json:"command"`
+	Path      string    `json:"path"`
+	ViewRange []float64 `json:"view_range,omitempty"`
+}
+
+// codexHookInput represents the JSON payload sent by Codex CLI hooks.
+// Unlike Claude Code, Codex omits hook_type and uses str_replace_based_edit_tool
+// with command:"view" for file reads.
+type codexHookInput struct {
+	ToolName  string         `json:"tool_name"`
+	ToolInput codexToolInput `json:"tool_input"`
 }
 
 // denyResponse is the JSON shape for blocking a Read with a summary.
@@ -54,70 +70,112 @@ type denyResponse struct {
 // allowJSON is the pre-encoded allow response (empty JSON object).
 var allowJSON = []byte("{}")
 
-// HandleHook processes a Claude Code PreToolUse hook event and returns the
-// appropriate JSON response. This is the core logic, extracted from main() for
-// testability.
+// HandleHook processes a hook event and returns the appropriate JSON response.
+// This is the core logic, extracted from main() for testability.
 //
 // Design: fail-open. Every error path returns allowJSON so the hook never
 // blocks the user. This is intentional -- a broken hook should degrade to
-// normal Claude behavior, not prevent file reads.
+// normal agent behavior, not prevent file reads.
 //
-// Logic:
-//  1. Non-Read tools: allow.
-//  2. Read tool with bypass conditions (small file, test file, config, offset/limit): allow.
-//  3. Read tool on large Go file: summarize and deny with summary.
-//  4. Summarize error: allow (fail open, never block the user).
+// Shape detection (runtime selected by inspecting stdin):
+//  1. Claude Code shape: tool_name="Read", file at tool_input.file_path.
+//  2. Codex shape: tool_name="str_replace_based_edit_tool", command="view",
+//     file at tool_input.path. No hook_type field.
+//  3. Unknown shape: fail-open allow (user-never-blocked invariant).
+//
+// Within each shape:
+//   - Non-read tools / non-view commands: allow.
+//   - Bypass conditions (small file, test file, config, offset/limit/view_range): allow.
+//   - Large file: summarize and deny with summary.
+//   - Summarize error: allow (fail open).
 func HandleHook(input []byte) []byte {
 	var hook hookInput
 	if err := json.Unmarshal(input, &hook); err != nil {
 		return allowJSON
 	}
 
-	// Only intercept Read tool calls.
-	if hook.ToolName != "Read" {
+	switch hook.ToolName {
+	case "Read":
+		// Claude Code shape: file path at tool_input.file_path.
+		return handleClaudeRead(hook.ToolInput)
+
+	case "str_replace_based_edit_tool":
+		// Codex shape: file path at tool_input.path, view indicated by command="view".
+		var codexHook codexHookInput
+		if err := json.Unmarshal(input, &codexHook); err != nil {
+			return allowJSON
+		}
+		return handleCodexView(codexHook.ToolInput)
+
+	default:
+		// Unknown shape or non-intercepted tool: fail-open.
 		return allowJSON
 	}
+}
 
-	filePath := hook.ToolInput.FilePath
+// handleClaudeRead processes a Claude Code Read tool_input.
+func handleClaudeRead(ti toolInput) []byte {
+	filePath := ti.FilePath
 	if filePath == "" {
 		return allowJSON
 	}
-
-	// Stat the file to get size for bypass check.
 	info, err := os.Stat(filePath)
 	if err != nil {
-		// File doesn't exist or inaccessible: let Claude handle the error.
 		return allowJSON
 	}
-
-	ti := codesearch.ToolInput{
+	cti := codesearch.ToolInput{
 		FilePath: filePath,
 		FileSize: info.Size(),
-		Offset:   int(hook.ToolInput.Offset),
-		Limit:    int(hook.ToolInput.Limit),
+		Offset:   int(ti.Offset),
+		Limit:    int(ti.Limit),
 	}
-
-	if codesearch.ShouldBypass(ti) {
+	if codesearch.ShouldBypass(cti) {
 		return allowJSON
 	}
+	return summarizeAndDeny(filePath)
+}
 
-	// Attempt summarization.
+// handleCodexView processes a Codex str_replace_based_edit_tool tool_input.
+// Only command="view" without a view_range is intercepted; all others allow.
+func handleCodexView(ti codexToolInput) []byte {
+	if ti.Command != "view" || ti.Path == "" {
+		return allowJSON
+	}
+	info, err := os.Stat(ti.Path)
+	if err != nil {
+		return allowJSON
+	}
+	// view_range indicates a partial read — treat like offset (bypass summarization).
+	offset := 0
+	if len(ti.ViewRange) > 0 {
+		offset = 1
+	}
+	cti := codesearch.ToolInput{
+		FilePath: ti.Path,
+		FileSize: info.Size(),
+		Offset:   offset,
+	}
+	if codesearch.ShouldBypass(cti) {
+		return allowJSON
+	}
+	return summarizeAndDeny(ti.Path)
+}
+
+// summarizeAndDeny attempts to summarize filePath and returns a deny response.
+// On summarization error, returns allowJSON (fail-open).
+func summarizeAndDeny(filePath string) []byte {
 	summary, err := codesearch.SummarizeFile(filePath)
 	if err != nil {
-		// Fail open: if summarization fails, allow the read through.
 		return allowJSON
 	}
-
 	resp := denyResponse{
 		PermissionDecision:       "deny",
 		PermissionDecisionReason: summary,
 	}
-
 	out, err := json.Marshal(resp)
 	if err != nil {
 		return allowJSON
 	}
-
 	return out
 }
 

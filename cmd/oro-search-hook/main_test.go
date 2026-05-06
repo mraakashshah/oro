@@ -308,6 +308,149 @@ func writeTempFile(t *testing.T, ext, content string) string {
 	return path
 }
 
+// TestHandleHookCodexShape verifies that HandleHook correctly processes Codex
+// CLI hook input where file_path is at tool_input.path (not tool_input.file_path)
+// and tool_name is str_replace_based_edit_tool with command:"view".
+// Codex does not send hook_type; runtime is selected by inspecting stdin shape.
+func TestHandleHookCodexShape(t *testing.T) {
+	if _, err := exec.LookPath("ast-grep"); err != nil {
+		t.Skip("ast-grep not installed, skipping")
+	}
+
+	largeGoFile := writeTempGoFile(t, 200)
+	smallGoFile := writeTempGoFile(t, 3)
+
+	tests := []struct {
+		name      string
+		input     map[string]any
+		wantAllow bool
+		wantDeny  bool
+	}{
+		{
+			name: "deny large Go file via Codex view shape",
+			input: map[string]any{
+				"tool_name": "str_replace_based_edit_tool",
+				"tool_input": map[string]any{
+					"command": "view",
+					"path":    largeGoFile,
+				},
+			},
+			wantDeny: true,
+		},
+		{
+			name: "allow small Go file via Codex view shape (bypass)",
+			input: map[string]any{
+				"tool_name": "str_replace_based_edit_tool",
+				"tool_input": map[string]any{
+					"command": "view",
+					"path":    smallGoFile,
+				},
+			},
+			wantAllow: true,
+		},
+		{
+			name: "allow non-view Codex command (str_replace is not a read)",
+			input: map[string]any{
+				"tool_name": "str_replace_based_edit_tool",
+				"tool_input": map[string]any{
+					"command": "str_replace",
+					"path":    largeGoFile,
+				},
+			},
+			wantAllow: true,
+		},
+		{
+			name: "allow Codex view with view_range set (partial read bypass)",
+			input: map[string]any{
+				"tool_name": "str_replace_based_edit_tool",
+				"tool_input": map[string]any{
+					"command":    "view",
+					"path":       largeGoFile,
+					"view_range": []int{1, 50},
+				},
+			},
+			wantAllow: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inputJSON, err := json.Marshal(tt.input)
+			if err != nil {
+				t.Fatalf("failed to marshal input: %v", err)
+			}
+
+			output := HandleHook(inputJSON)
+
+			var resp hookResponse
+			if err := json.Unmarshal(output, &resp); err != nil {
+				t.Fatalf("failed to unmarshal output %q: %v", string(output), err)
+			}
+
+			if tt.wantAllow && resp.PermissionDecision != "" {
+				t.Errorf("expected allow (empty JSON), got permissionDecision=%q", resp.PermissionDecision)
+			}
+			if tt.wantDeny && resp.PermissionDecision != "deny" {
+				t.Errorf("expected deny, got permissionDecision=%q", resp.PermissionDecision)
+			}
+		})
+	}
+}
+
+// TestHandleHookFailsOpenOnUnknownShape verifies that HandleHook returns the
+// allow response ({}) for any input that doesn't match the Claude Code or Codex
+// hook shapes. Fail-open preserves the user-never-blocked invariant.
+func TestHandleHookFailsOpenOnUnknownShape(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "empty object",
+			input: `{}`,
+		},
+		{
+			name:  "completely different structure",
+			input: `{"event":"tool_call","action":"read","target":"/some/file.go"}`,
+		},
+		{
+			name:  "unknown tool_name without hook_type",
+			input: `{"tool_name":"UnknownTool","tool_input":{"data":"something"}}`,
+		},
+		{
+			name:  "malformed JSON",
+			input: `not valid json`,
+		},
+		{
+			name:  "JSON array instead of object",
+			input: `[]`,
+		},
+		{
+			name:  "str_replace_based_edit_tool with unknown command",
+			input: `{"tool_name":"str_replace_based_edit_tool","tool_input":{"command":"create","path":"/tmp/file.go","file_text":"package main"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := HandleHook([]byte(tt.input))
+
+			trimmed := strings.TrimSpace(string(output))
+			if trimmed == "{}" {
+				return // explicit allow
+			}
+			var resp hookResponse
+			if err := json.Unmarshal(output, &resp); err != nil {
+				t.Errorf("expected valid JSON allow response for unknown shape, got %q", trimmed)
+				return
+			}
+			if resp.PermissionDecision != "" {
+				t.Errorf("expected allow (no permissionDecision) for unknown shape, got permissionDecision=%q", resp.PermissionDecision)
+			}
+		})
+	}
+}
+
 // itoa converts an int to a string without importing strconv.
 func itoa(n int) string {
 	if n == 0 {
