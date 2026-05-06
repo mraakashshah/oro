@@ -648,16 +648,19 @@ func sjNDJSON(lines ...string) string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
-// TestSpawnAndWait_MemoryWired verifies that deps.memStore is wired into both
-// the prompt (via ForPrompt) and DrainOutput ([MEMORY] marker capture).
+// TestSpawnAndWait_MemoryWired verifies that deps.memStore is wired into
+// DrainOutput for [MEMORY] marker capture. Per the D.4 read cutover (§13.2),
+// memory content is no longer rendered in the prompt — the `## Cards` section
+// replaces the old `## Memory` and `## Previous Feedback` sections. The first
+// subtest pins this contract: seeded memory text must NOT appear in the prompt.
 func TestSpawnAndWait_MemoryWired(t *testing.T) {
-	t.Run("seeded memory appears in prompt", func(t *testing.T) {
+	t.Run("seeded memory not rendered in prompt after D.4 cutover", func(t *testing.T) {
 		db := setupTestMemoryDB(t)
 		store := memory.NewStore(db)
 		ctx := context.Background()
 
-		// Seed a memory whose content contains both words from bead title "Test bead"
-		// so FTS5 search will return it.
+		// Seed a memory whose content would have appeared in the old `## Memory`
+		// section. After the D.4 cutover it must not leak into the prompt.
 		_, err := store.Insert(ctx, memory.InsertParams{
 			Content:    "Test bead approach works well for automation",
 			Type:       "lesson",
@@ -691,9 +694,16 @@ func TestSpawnAndWait_MemoryWired(t *testing.T) {
 			t.Fatalf("spawnAndWait: %v", err)
 		}
 
-		if !strings.Contains(sp.capturedPrompt, "Test bead approach") {
-			t.Errorf("prompt does not contain seeded memory; prompt snippet: %q",
+		if strings.Contains(sp.capturedPrompt, "Test bead approach") {
+			t.Errorf("seeded memory content leaked into prompt after D.4 cutover; prompt snippet: %q",
 				sp.capturedPrompt[:min(300, len(sp.capturedPrompt))])
+		}
+		if !strings.Contains(sp.capturedPrompt, "## Cards") {
+			t.Errorf("prompt missing Cards section; prompt snippet: %q",
+				sp.capturedPrompt[:min(300, len(sp.capturedPrompt))])
+		}
+		if strings.Contains(sp.capturedPrompt, "## Memory") || strings.Contains(sp.capturedPrompt, "## Previous Feedback") {
+			t.Errorf("legacy Memory/Previous Feedback section still present after D.4 cutover")
 		}
 	})
 

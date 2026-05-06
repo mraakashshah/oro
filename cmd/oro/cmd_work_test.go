@@ -844,7 +844,11 @@ func (m *envCapturingWorktreeManager) CreateBranch(_ context.Context, _, _ strin
 func TestSpawnAndWaitWithMemoryAndCodeContext(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("non-nil memStore with memories gives non-empty MemoryContext", func(t *testing.T) {
+	t.Run("non-nil memStore: memory content not rendered in prompt after D.4 cutover", func(t *testing.T) {
+		// Per the D.4 read cutover (§13.2), the worker prompt's `## Memory` and
+		// `## Previous Feedback` sections were replaced by a single `## Cards`
+		// section. memStore is still wired through spawnAndWait for marker
+		// capture, but its content must no longer leak into the prompt.
 		db := setupTestMemoryDB(t)
 		store := memory.NewStore(db)
 		_, err := store.Insert(ctx, memory.InsertParams{
@@ -874,8 +878,14 @@ func TestSpawnAndWaitWithMemoryAndCodeContext(t *testing.T) {
 			t.Fatalf("spawnAndWait: %v", err)
 		}
 
-		if !strings.Contains(sp.capturedPrompt, "dependency injection") {
-			t.Errorf("MemoryContext not injected: seeded memory content missing from prompt")
+		if strings.Contains(sp.capturedPrompt, "dependency injection") {
+			t.Errorf("seeded memory content leaked into prompt after D.4 cutover")
+		}
+		if !strings.Contains(sp.capturedPrompt, "## Cards") {
+			t.Errorf("prompt missing Cards section after D.4 cutover")
+		}
+		if strings.Contains(sp.capturedPrompt, "## Memory") || strings.Contains(sp.capturedPrompt, "## Previous Feedback") {
+			t.Errorf("legacy Memory/Previous Feedback section still present after D.4 cutover")
 		}
 	})
 
