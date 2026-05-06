@@ -231,8 +231,8 @@ func TestFullStart(t *testing.T) {
 		fakeTmux := newFakeCmd()
 		// has-session returns error (no session)
 		fakeTmux.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		// new-session fails
-		fakeTmux.errs[key("tmux", "new-session", "-d", "-s", "oro", "-n", "architect")] = fmt.Errorf("tmux not installed")
+		// new-session fails — key must include the execEnvCmd arg that production code passes.
+		fakeTmux.errs[key("tmux", "new-session", "-d", "-s", "oro", "-n", "manager", execEnvCmd("manager", ""))] = fmt.Errorf("tmux not installed")
 
 		spawner := &fakeSpawner{
 			returnPID:  12345,
