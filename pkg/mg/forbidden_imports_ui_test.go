@@ -26,12 +26,21 @@ func TestNoMgUiImports(t *testing.T) {
 	var violators []string
 
 	err := filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") {
+		if err != nil {
 			return err
+		}
+		rel, relErr := filepath.Rel(repoRoot, path)
+		if d.IsDir() {
+			if relErr == nil && (rel == ".worktrees" || rel == filepath.Join(".claude", "worktrees")) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") {
+			return nil
 		}
 
 		// Excluded: _test.go files inside pkg/mg/data and pkg/mg/views.
-		rel, relErr := filepath.Rel(repoRoot, path)
 		if relErr == nil && strings.HasSuffix(path, "_test.go") {
 			dir := filepath.Dir(rel)
 			if dir == filepath.Join("pkg", "mg", "data") ||

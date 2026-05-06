@@ -60,7 +60,6 @@ User asked me to stop and fix the runtime bug.
 - TDD: `TestExternalCloseRecoversWorktree` (mockGitRunner returns fake SHA → recovery event), `TestExternalCloseEscalatesOnMergeConflict` (mockGitRunner.conflict=true → recovery_failed + escalation). Existing `TestExternalCloseDoesNotMergeWorkerBranch` and 4 sibling external-close tests all still pass.
 - Rebuilt + reinstalled. Search hook present (9.6MB, 09:09:05). Relaunched at PID 53679 with 2 workers, queue=20.
 
-
 ## Cycle 7 — Post-fix throughput
 
 - **Merged**: oro-4p6c → d750d6ef `test(beadstore): add §4.5 journey hot-path bench gate`
