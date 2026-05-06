@@ -6292,6 +6292,76 @@ func TestDispatcher_FocusImmediatePreemptsAssignedNonFocusedWorker(t *testing.T)
 	}
 }
 
+type blockingOnceEstimator struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (e *blockingOnceEstimator) Estimate(ctx context.Context, _, _ string) int {
+	e.once.Do(func() {
+		close(e.started)
+		select {
+		case <-e.release:
+		case <-ctx.Done():
+		}
+	})
+	return 1
+}
+
+func TestDispatcher_FocusImmediateAbortsPostPersistPreSendAssignment(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	estimator := &blockingOnceEstimator{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	d.estimator = estimator
+
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-other", Title: "Other work", Priority: 1, Epic: "epic-aaa"},
+		{ID: "bead-focus", Title: "Focused work", Priority: 1, Epic: "epic-focus"},
+	})
+
+	startDispatcher(t, d)
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendDirective(t, d.cfg.SocketPath, "start")
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	select {
+	case <-estimator.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected assignment to reach estimator before focus directive")
+	}
+
+	ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "focus", "--immediate epic-focus")
+	if !ack.OK {
+		t.Fatalf("expected OK=true, got false, detail: %s", ack.Detail)
+	}
+	close(estimator.release)
+
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected assignment after post-persist focus abort")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+	if msg.Assign.BeadID != "bead-focus" {
+		t.Fatalf("assigned bead = %s, want focused bead-focus", msg.Assign.BeadID)
+	}
+
+	beadSrc.mu.Lock()
+	otherStatus := beadSrc.updated["bead-other"]
+	beadSrc.mu.Unlock()
+	if otherStatus != "open" {
+		t.Fatalf("post-persist non-focused bead status = %q, want open", otherStatus)
+	}
+}
+
 func TestDispatcher_FocusDirectiveStandardDoesNotPreempt(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
