@@ -68,9 +68,10 @@ def test_no_output_when_signal_file_missing(mock_env_architect, capsys):
 
 def test_injects_reminder_when_signal_present(mock_env_architect, capsys):
     """Hook should inject system reminder when handoff_requested exists."""
-    # Create the signal file
+    # Create the signal file and context_pct file (>= 40 required to fire)
     signal_file = mock_env_architect / "handoff_requested"
     signal_file.touch()
+    (mock_env_architect / "context_pct").write_text("50")
 
     hook_input = {
         "hookEventName": "PreToolUse",
@@ -91,7 +92,6 @@ def test_injects_reminder_when_signal_present(mock_env_architect, capsys):
     context = output["hookSpecificOutput"]["additionalContext"]
     assert "handoff" in context.lower()
     assert "architect/handoff.yaml" in context
-    assert "CRITICAL" in context
     assert "Context threshold reached" in context
 
 
@@ -135,13 +135,14 @@ def test_performance_when_signal_missing(mock_env_architect, tmp_path):
 
 
 def test_works_with_different_roles(temp_panes_dir, capsys):
-    """Hook should work with different role names."""
-    manager_dir = temp_panes_dir / "manager"
-    manager_dir.mkdir()
-    signal_file = manager_dir / "handoff_requested"
+    """Hook should work with different role names (non-manager, non-architect)."""
+    worker_dir = temp_panes_dir / "worker-test"
+    worker_dir.mkdir()
+    signal_file = worker_dir / "handoff_requested"
     signal_file.touch()
+    (worker_dir / "context_pct").write_text("50")
 
-    with patch.dict(os.environ, {"ORO_ROLE": "manager", "ORO_PANES_DIR": str(temp_panes_dir)}):
+    with patch.dict(os.environ, {"ORO_ROLE": "worker-test", "ORO_PANES_DIR": str(temp_panes_dir)}):
         hook_input = {
             "hookEventName": "PreToolUse",
             "tool_name": "Read",
@@ -155,7 +156,7 @@ def test_works_with_different_roles(temp_panes_dir, capsys):
         output = json.loads(captured.out)
 
         context = output["hookSpecificOutput"]["additionalContext"]
-        assert "manager/handoff.yaml" in context
+        assert "worker-test/handoff.yaml" in context
 
 
 def test_uses_default_panes_dir_when_env_not_set(tmp_path, capsys):
@@ -169,6 +170,7 @@ def test_uses_default_panes_dir_when_env_not_set(tmp_path, capsys):
     worker_dir.mkdir()
     signal_file = worker_dir / "handoff_requested"
     signal_file.touch()
+    (worker_dir / "context_pct").write_text("50")
 
     with patch.dict(os.environ, {"ORO_ROLE": "worker", "HOME": str(tmp_path)}):
         hook_input = {

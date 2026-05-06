@@ -52,6 +52,7 @@ def test_pane_activity_written_when_oro_role_set(temp_state_db):
             {
                 "ORO_ROLE": "architect",
                 "ORO_HOME": str(oro_home),
+                "ORO_WORKER": "",
             },
         ),
         mock.patch("session_start_extras.oro_home", return_value=str(oro_home)),
@@ -131,6 +132,7 @@ def test_pane_activity_updates_existing_row(temp_state_db):
             {
                 "ORO_ROLE": "manager",
                 "ORO_HOME": str(oro_home),
+                "ORO_WORKER": "",
             },
         ),
         mock.patch("session_start_extras.oro_home", return_value=str(oro_home)),
