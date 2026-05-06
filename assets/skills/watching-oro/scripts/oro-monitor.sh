@@ -52,9 +52,9 @@ tmux split-window -t "$SESSION":0.0 -v \
 
 # Pane 3 (bottom-right): manager pane mirror
 tmux split-window -t "$SESSION":0.1 -v \
-	"echo '--- Manager Pane (oro:1) ---'; \
+	"echo '--- Manager Pane (oro:manager) ---'; \
    while true; do \
-     tmux capture-pane -t oro:1 -p -S -40 2>/dev/null || echo '[manager pane not available]'; \
+     tmux capture-pane -t oro:manager -p -S -40 2>/dev/null || echo '[manager pane not available]'; \
      echo '--- refresh ---'; \
      inotifywait -qq -t 5 -e modify \"$ORO_HOME/state.db\" 2>/dev/null || true; \
    done"
