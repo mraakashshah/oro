@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"text/tabwriter"
 	"time"
 
 	"oro/pkg/beadstore"
@@ -866,18 +865,6 @@ func writeBeadsJSON(cmd *cobra.Command, beads []protocol.Bead) error {
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(out); err != nil {
 		return fmt.Errorf("encode beads JSON: %w", err)
-	}
-	return nil
-}
-
-func writeBeadListHuman(w io.Writer, beads []protocol.Bead, _ time.Time) error {
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tSTATUS\tPRI\tTITLE")
-	for _, bead := range beads {
-		fmt.Fprintf(tw, "%s\t%s\tP%d\t%s\n", bead.ID, bead.Status, bead.Priority, bead.Title)
-	}
-	if err := tw.Flush(); err != nil {
-		return fmt.Errorf("flush bead list table: %w", err)
 	}
 	return nil
 }
