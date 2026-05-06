@@ -1,6 +1,9 @@
 {
 	"permissions": {
-		"allow": ["mcp__context7__resolve-library-id", "mcp__context7__query-docs"]
+		"allow": [
+			"mcp__context7__resolve-library-id",
+			"mcp__context7__query-docs"
+		]
 	},
 	"hooks": {
 		"SessionStart": [
@@ -72,15 +75,6 @@
 				]
 			},
 			{
-				"matcher": "Bash",
-				"hooks": [
-					{
-						"type": "command",
-						"command": "python3 .claude/hooks/notify_manager_on_bead_create.py"
-					}
-				]
-			},
-			{
 				"matcher": "Task",
 				"hooks": [
 					{
@@ -103,10 +97,6 @@
 			{
 				"matcher": "Bash",
 				"hooks": [
-					{
-						"type": "command",
-						"command": "python3 .claude/hooks/architect_router.py"
-					},
 					{
 						"type": "command",
 						"command": "python3 .claude/hooks/worktree_guard.py"

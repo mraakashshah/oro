@@ -257,9 +257,7 @@ class TestRoleBeaconTaskTerminology:
 
     def test_checked_in_beacons_are_task_primary(self):
         beacon_paths = [
-            _repo_root / "assets" / "beacons" / "architect.md",
             _repo_root / "assets" / "beacons" / "manager.md",
-            _repo_root / ".claude" / "hooks" / "beacons" / "architect.md",
             _repo_root / ".claude" / "hooks" / "beacons" / "manager.md",
         ]
 
