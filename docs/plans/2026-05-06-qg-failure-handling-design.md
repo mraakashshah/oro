@@ -43,10 +43,18 @@ Files and sources read:
   the bead and removes the worktree.
 - `pkg/dispatcher/dispatcher.go:1933` - epic QG failure creates a P0 fix task
   directly under the epic.
+- `pkg/dispatcher/qg_stuck.go` - repeated identical output is detected before
+  retry exhaustion, so it must classify and clean up lifecycle state directly.
+- `pkg/dispatcher/dispatcher.go:isBeadAssignable` and `filterAssignable` -
+  `exhaustedBeads` can make a reopened original bead invisible unless cleared.
 - `pkg/dispatcher/qg_retry_test.go` - current tests assert retry, stuck
   detection, retry exhaustion, and P0 creation.
 - `pkg/dispatcher/epic_qg_test.go` - current tests assert epic QG failure
   creates a fix bead.
+- `pkg/dispatcher/dispatcher.go:buildStatusJSON` and status response helpers -
+  production `oro status` fields originate in dispatcher status JSON, not only
+  CLI formatting.
+- `cmd/oro/cmd_logs.go` - the actual `oro events` implementation lives here.
 - `pkg/protocol/errors.go` - `QualityGateError` contains only bead, worker,
   output, and attempt.
 - `docs/decisions&discoveries.md` - records the historical decision to create
@@ -214,6 +222,9 @@ Worker deterministic failure:
 - Retry the same bead with feedback while attempts remain.
 - On exhaustion, complete the active assignment and set the original bead to
   `open`, not permanently exhausted.
+- Clear or avoid `exhaustedBeads` for `ReopenOriginal` and `BumpOriginal`
+  decisions so `filterAssignable` and `isBeadAssignable` can pick the bead up
+  again.
 - Add a note/comment summarizing attempts, fingerprint, latest output hash, and
   preserved branch/worktree.
 - Preserve the agent branch/worktree for resumption when possible.
@@ -224,6 +235,8 @@ Pre-merge deterministic failure:
 - Reopen the original bead.
 - Preserve the worker branch or archive the worktree according to existing
   rejected-work preservation rules.
+- QG runner errors such as missing scripts, killed processes, and tooling
+  failures go through the same classifier before escalation or cleanup.
 - Record a failure event linked to the branch/head that failed.
 
 Impossible bead:
@@ -316,6 +329,8 @@ Epic QG validates combined child work, so it deserves separate handling.
   infra bug and link the epic.
 - If the output is flaky/transient, rerun with backoff under the QG semaphore
   before creating work.
+- QG runner errors and QG worktree creation failures are classified as
+  systemic/transient/unknown incidents instead of bypassing the incident store.
 - The epic remains open/in_progress until a passing epic QG authorizes close.
 
 This replaces the current direct P0 fix-task creation for all epic QG failures.
@@ -495,6 +510,12 @@ premortem:
     - risk: "The identical-output stuck detector bypasses the classifier because it runs before retry exhaustion."
       severity: high
       mitigation_checked: "Task graph includes a repeated-identical-output test that must classify before escalation."
+    - risk: "A reopened deterministic failure remains unassignable because exhaustedBeads is still set."
+      severity: high
+      mitigation_checked: "Task graph requires a production tryAssign/isBeadAssignable test after reopen."
+    - risk: "QG runner error branches bypass classification because they are separate from failed-output branches."
+      severity: high
+      mitigation_checked: "Task graph covers pre-merge qgErr, epic qgErr, and epic QG worktree-create failure."
   elephants:
     - risk: "This is more dispatcher policy surface area around already complex retry code."
     - risk: "The real fix for many failures may be reducing QG flakiness, not smarter triage."
@@ -519,38 +540,38 @@ Epic: Implement classified QG failure handling.
 
 2. Persist QG failure incidents and occurrences
    - Test: `pkg/dispatcher/qg_failure_store_test.go:TestQGFailureStoreDedupesByFingerprint`
-   - Cmd: `go test ./pkg/dispatcher -run TestQGFailureStoreDedupesByFingerprint -count=1 -v`
-   - Assert: repeated same fingerprint updates one incident, records multiple occurrences, and survives dispatcher restart.
+   - Cmd: `go test ./pkg/dispatcher -run 'TestQGFailureStoreDedupesByFingerprint|TestQGFailureStoreConcurrentSameFingerprintCreatesOneIncident' -count=1 -v`
+   - Assert: repeated and concurrent same-fingerprint writes update one incident, record multiple occurrences, and survive dispatcher restart.
    - Read: `pkg/protocol/schema.go:SchemaDDL`, `cmd/oro/db.go:migrateStateDB`, `pkg/dispatcher/dispatcher.go:New`
    - Signature: `func RecordQGFailureOccurrence(ctx context.Context, db *sql.DB, rec QGFailureRecord, cls QGFailureClassification) (QGIncident, error)`
    - Edges: duplicate occurrence ID, DB locked, missing infra bead ID, closed incident recurrence.
 
 3. Replace worker QG exhaustion P0 creation with classified policy
    - Test: `pkg/dispatcher/qg_retry_test.go:TestQGExhaustion_ReopensOriginalForDeterministicFailure`
-   - Cmd: `go test ./pkg/dispatcher -run 'TestQGExhaustion_ReopensOriginalForDeterministicFailure|TestQGExhaustion_ReusesInfraIncidentForSystemicFailure' -count=1 -v`
-   - Assert: deterministic exhaustion reopens original bead with notes and creates no P0 child; systemic exhaustion creates or reuses one infra bug and links the original bead.
-   - Read: `pkg/dispatcher/dispatcher.go:handleQGExhausted`, `pkg/dispatcher/dispatcher.go:handleQGExhaustedFallback`, `pkg/dispatcher/qg_retry_test.go:TestQGExhaustion_CreatesP0Bead`
+   - Cmd: `go test ./pkg/dispatcher -run 'TestQGExhaustion_ReopensOriginalForDeterministicFailure|TestQGExhaustion_ReusesInfraIncidentForSystemicFailure|TestQGExhaustion_ReopenedOriginalIsAssignable' -count=1 -v`
+   - Assert: deterministic exhaustion reopens original bead with notes and creates no P0 child; systemic exhaustion creates or reuses one infra bug and links the original bead; a reopened original is assignable through the production `tryAssign` path and is not blocked by `exhaustedBeads`.
+   - Read: `pkg/dispatcher/dispatcher.go:handleQGExhausted`, `pkg/dispatcher/dispatcher.go:handleQGExhaustedFallback`, `pkg/dispatcher/dispatcher.go:filterAssignable`, `pkg/dispatcher/dispatcher.go:isBeadAssignable`, `pkg/dispatcher/qg_retry_test.go:TestQGExhaustion_CreatesP0Bead`
    - Signature: `func (d *Dispatcher) handleClassifiedQGExhaustion(...)`
    - Edges: decompose ops resolved, decompose ops failed, no active assignment, worker disconnected, original bead already closed.
 
 4. Route worker retry/backoff by classification
    - Test: `pkg/dispatcher/qg_retry_test.go:TestTransientQGFailureBacksOffWithoutBurningWorkerAttempt`
    - Cmd: `go test ./pkg/dispatcher -run 'TestTransientQGFailureBacksOffWithoutBurningWorkerAttempt|TestFlakyQGFailureRerunThenCreatesIncidentAtThreshold|TestRepeatedIdenticalQGOutputClassifiedBeforeEscalation' -count=1 -v`
-   - Assert: transient/flaky failures use backoff/rerun events and do not consume all worker-fix attempts before recurrence threshold; repeated identical output is classified before escalation or incident creation.
+   - Assert: transient/flaky failures use backoff/rerun events and do not consume all worker-fix attempts before recurrence threshold; repeated identical output is classified before escalation or incident creation and leaves no active assignment, stale worker state, stale `qgStuckTracker`, or stranded original bead.
    - Read: `pkg/dispatcher/dispatcher.go:handleQGFailure`, `pkg/dispatcher/dispatcher.go:qgRetryWithReservation`, `pkg/dispatcher/qg_stuck.go`, `pkg/dispatcher/persist_counts_test.go`
    - Edges: context cancellation during backoff, dispatcher shutdown, worker disconnect, recurrence after prior pass.
 
 5. Classify dispatcher pre-merge QG failures
    - Test: `pkg/dispatcher/pre_merge_qg_lifecycle_test.go:TestPreMergeQGFailureClassifiedBeforeReopen`
-   - Cmd: `go test ./pkg/dispatcher -run TestPreMergeQGFailureClassifiedBeforeReopen -count=1 -v`
-   - Assert: pre-merge QG failure records an occurrence, preserves/reopens the original bead for deterministic failure, and reuses infra incident for systemic failure.
-   - Read: `pkg/dispatcher/dispatcher.go:checkPreMergeQG`, `pkg/dispatcher/pre_merge_qg_lifecycle_test.go`
+   - Cmd: `go test ./pkg/dispatcher -run 'TestPreMergeQGFailureClassifiedBeforeReopen|TestPreMergeQGErrorClassifiedBeforeCleanup|TestPreMergeQGFailurePreservesRejectedWork' -count=1 -v`
+   - Assert: pre-merge QG failure or QG runner error records an occurrence, preserves or archives rejected worker work before cleanup, reopens the original bead for deterministic failure, and reuses infra incident for systemic failure.
+   - Read: `pkg/dispatcher/dispatcher.go:checkPreMergeQG`, `pkg/dispatcher/dispatcher.go:removeWorktreeAndClearTracking`, `pkg/dispatcher/pre_merge_qg_lifecycle_test.go`
    - Edges: bead externally closed, dirty/rejected worktree preservation, QG script error, missing bead detail.
 
 6. Classify epic QG failures before creating fix work
    - Test: `pkg/dispatcher/epic_qg_test.go:TestEpicQGFailureClassifiedBeforeFixBeadCreation`
-   - Cmd: `go test ./pkg/dispatcher -run TestEpicQGFailureClassifiedBeforeFixBeadCreation -count=1 -v`
-   - Assert: deterministic integration failure creates a targeted epic fix task; systemic/flaky failure reuses infra incident and does not create duplicate epic fix tasks.
+   - Cmd: `go test ./pkg/dispatcher -run 'TestEpicQGFailureClassifiedBeforeFixBeadCreation|TestEpicQGErrorCreatesOrReusesIncident|TestEpicQGWorktreeCreateFailureCreatesOrReusesIncident' -count=1 -v`
+   - Assert: deterministic integration failure creates a targeted epic fix task; systemic/flaky failed-output, QG runner error, and QG worktree creation failure reuse infra incidents and do not create duplicate epic fix tasks.
    - Read: `pkg/dispatcher/dispatcher.go:checkEpicQG`, `pkg/dispatcher/epic_qg_test.go`, `pkg/ops/epic_fix_prompt.go`
    - Edges: QG worktree create failure, QG error, repeated same epic fingerprint, multiple epics with same fingerprint.
 
@@ -563,17 +584,17 @@ Epic: Implement classified QG failure handling.
 
 8. Add status/events observability
    - Test: `cmd/oro/cmd_status_test.go:TestStatusShowsQGFailureIncidents`
-   - Cmd: `go test ./cmd/oro -run 'TestStatusShowsQGFailureIncidents|TestEventsShowQGFailureClassification' -count=1 -v`
-   - Assert: status reports open QG incidents and recent occurrence count; events include class, fingerprint, decision, and affected bead.
-   - Read: `cmd/oro/cmd_status.go`, `cmd/oro/cmd_events.go`, `pkg/dispatcher/dispatcher.go:logEvent`
+   - Cmd: `go test ./pkg/dispatcher -run TestStatusJSONIncludesQGFailureIncidents -count=1 -v && go test ./cmd/oro -run 'TestStatusShowsQGFailureIncidents|TestEventsShowQGFailureClassification' -count=1 -v`
+   - Assert: dispatcher status JSON populates QG incident fields; CLI status displays open QG incidents and recent occurrence count; events include class, fingerprint, decision, and affected bead.
+   - Read: `pkg/dispatcher/dispatcher.go:buildStatusJSON`, `pkg/dispatcher/dispatcher.go:applyStatus`, `cmd/oro/cmd_status.go`, `cmd/oro/cmd_logs.go:newEventsCmd`, `cmd/oro/cmd_logs.go:queryFilteredEvents`, `cmd/oro/cmd_logs.go:formatEvent`, `pkg/dispatcher/dispatcher.go:logEvent`
    - Edges: no incidents, many incidents, status cache staleness, JSON and human output.
 
 9. Integrate with `oro work` QG exhaustion
    - Test: `cmd/oro/cmd_work_execute_test.go:TestExecuteWorkQGExhaustionUsesClassifiedPolicy`
-   - Cmd: `go test ./cmd/oro -run TestExecuteWorkQGExhaustionUsesClassifiedPolicy -count=1 -v`
-   - Assert: standalone `oro work` does not create noisy QG exhaustion beads; deterministic failure resets original bead and systemic failure creates/reuses infra incident when dispatcher state DB is available.
-   - Read: `cmd/oro/cmd_work.go`, `cmd/oro/cmd_work_execute_test.go:TestExecuteWork_QGExhaustion_ResetsBead`
-   - Edges: no dispatcher running, no state DB, no bead store mutation available, existing agent branch.
+   - Cmd: `go test ./cmd/oro -run 'TestExecuteWorkQGExhaustionUsesClassifiedPolicy|TestExecuteWorkQGErrorUsesClassifiedPolicy|TestExecuteWorkPreMergeQGFailureUsesClassifiedPolicy|TestExecuteWorkPreMergeQGErrorUsesClassifiedPolicy|TestNewProductionDepsWiresQGFailureRecorder' -count=1 -v`
+   - Assert: standalone `oro work` does not create noisy QG exhaustion beads; deterministic failure resets original bead; implementation-loop QG failed output, implementation-loop QG runner error, pre-merge QG failed output, and pre-merge QG runner error all record classified occurrences or original-bead decisions; systemic failure creates/reuses infra incident when dispatcher state DB is available; production `newProductionDeps` wires the incident recorder/state DB path, not only fake test deps.
+   - Read: `cmd/oro/cmd_work.go`, `cmd/oro/cmd_work.go:newProductionDeps`, `cmd/oro/cmd_work_execute_test.go:TestExecuteWork_QGExhaustion_ResetsBead`, `cmd/oro/db.go`
+   - Edges: no dispatcher running, no state DB, no bead store mutation available, existing agent branch, implementation QG qgErr, pre-merge QG failure, pre-merge QG qgErr, pre-merge rejected-work preservation.
 
 10. Document operator policy and cleanup of legacy noisy QG beads
     - Test: docs review plus quality gate
@@ -587,8 +608,8 @@ Epic: Implement classified QG failure handling.
 Primary machine check:
 
 ```bash
-go test ./pkg/dispatcher -run 'TestQGFailureFingerprintNormalizesVolatileOutput|TestClassifyQGFailureDecisionMatrix|TestQGFailureStoreDedupesByFingerprint|TestQGExhaustion_ReopensOriginalForDeterministicFailure|TestQGExhaustion_ReusesInfraIncidentForSystemicFailure|TestTransientQGFailureBacksOffWithoutBurningWorkerAttempt|TestFlakyQGFailureRerunThenCreatesIncidentAtThreshold|TestRepeatedIdenticalQGOutputClassifiedBeforeEscalation|TestPreMergeQGFailureClassifiedBeforeReopen|TestEpicQGFailureClassifiedBeforeFixBeadCreation|TestQGFailureNotesLinkAffectedBeadsToIncident' -count=1
-go test ./cmd/oro -run 'TestStatusShowsQGFailureIncidents|TestEventsShowQGFailureClassification|TestExecuteWorkQGExhaustionUsesClassifiedPolicy' -count=1
+go test ./pkg/dispatcher -run 'TestQGFailureFingerprintNormalizesVolatileOutput|TestClassifyQGFailureDecisionMatrix|TestQGFailureStoreDedupesByFingerprint|TestQGFailureStoreConcurrentSameFingerprintCreatesOneIncident|TestQGExhaustion_ReopensOriginalForDeterministicFailure|TestQGExhaustion_ReusesInfraIncidentForSystemicFailure|TestQGExhaustion_ReopenedOriginalIsAssignable|TestTransientQGFailureBacksOffWithoutBurningWorkerAttempt|TestFlakyQGFailureRerunThenCreatesIncidentAtThreshold|TestRepeatedIdenticalQGOutputClassifiedBeforeEscalation|TestPreMergeQGFailureClassifiedBeforeReopen|TestPreMergeQGErrorClassifiedBeforeCleanup|TestPreMergeQGFailurePreservesRejectedWork|TestEpicQGFailureClassifiedBeforeFixBeadCreation|TestEpicQGErrorCreatesOrReusesIncident|TestEpicQGWorktreeCreateFailureCreatesOrReusesIncident|TestQGFailureNotesLinkAffectedBeadsToIncident|TestStatusJSONIncludesQGFailureIncidents' -count=1
+go test ./cmd/oro -run 'TestStatusShowsQGFailureIncidents|TestEventsShowQGFailureClassification|TestExecuteWorkQGExhaustionUsesClassifiedPolicy|TestExecuteWorkQGErrorUsesClassifiedPolicy|TestExecuteWorkPreMergeQGFailureUsesClassifiedPolicy|TestExecuteWorkPreMergeQGErrorUsesClassifiedPolicy|TestNewProductionDepsWiresQGFailureRecorder' -count=1
 ```
 
 Final gate:
@@ -608,39 +629,42 @@ Operational acceptance:
 - `oro status` and `oro events` expose incident counts, fingerprint, class, and
   decision.
 
-## Adversarial Review
+## Fresh Adversarial Review
 
 ```yaml
-verdict: SELF_REVIEW_PASS_PENDING_FRESH_CHALLENGE
+verdict: PASS
 spec: docs/plans/2026-05-06-qg-failure-handling-design.md
-reviewer_note: "In-context adversarial review found two high-risk gaps: old P0 creation paths could remain wired, and identical-output stuck detection could bypass classification. The task graph now explicitly covers worker exhaustion, repeated-output stuck detection, pre-merge, epic, and oro-work QG failure paths."
+reviewer_note: "Fresh subagent challenge initially failed on assignability after reopen, repeated-output stuck cleanup, qgErr branches, dispatcher status wiring, actual events command files, concurrent incident dedupe, rejected-work preservation, oro-work state DB access, oro-work production dependency wiring, and standalone oro-work pre-merge QG branches. After incorporating those gaps, the fourth review passed."
 
 acceptance_test:
-  cmd: "go test ./pkg/dispatcher -run 'TestQGFailureFingerprintNormalizesVolatileOutput|TestClassifyQGFailureDecisionMatrix|TestQGFailureStoreDedupesByFingerprint|TestQGExhaustion_ReopensOriginalForDeterministicFailure|TestQGExhaustion_ReusesInfraIncidentForSystemicFailure|TestTransientQGFailureBacksOffWithoutBurningWorkerAttempt|TestFlakyQGFailureRerunThenCreatesIncidentAtThreshold|TestRepeatedIdenticalQGOutputClassifiedBeforeEscalation|TestPreMergeQGFailureClassifiedBeforeReopen|TestEpicQGFailureClassifiedBeforeFixBeadCreation|TestQGFailureNotesLinkAffectedBeadsToIncident' -count=1 && go test ./cmd/oro -run 'TestStatusShowsQGFailureIncidents|TestEventsShowQGFailureClassification|TestExecuteWorkQGExhaustionUsesClassifiedPolicy' -count=1"
-  assert: "No default P0-per-exhaustion path remains; deterministic failures stay on original beads; systemic/flaky failures dedupe into incidents."
+  cmd: "go test ./pkg/dispatcher -run 'TestQGFailureFingerprintNormalizesVolatileOutput|TestClassifyQGFailureDecisionMatrix|TestQGFailureStoreDedupesByFingerprint|TestQGFailureStoreConcurrentSameFingerprintCreatesOneIncident|TestQGExhaustion_ReopensOriginalForDeterministicFailure|TestQGExhaustion_ReusesInfraIncidentForSystemicFailure|TestQGExhaustion_ReopenedOriginalIsAssignable|TestTransientQGFailureBacksOffWithoutBurningWorkerAttempt|TestFlakyQGFailureRerunThenCreatesIncidentAtThreshold|TestRepeatedIdenticalQGOutputClassifiedBeforeEscalation|TestPreMergeQGFailureClassifiedBeforeReopen|TestPreMergeQGErrorClassifiedBeforeCleanup|TestPreMergeQGFailurePreservesRejectedWork|TestEpicQGFailureClassifiedBeforeFixBeadCreation|TestEpicQGErrorCreatesOrReusesIncident|TestEpicQGWorktreeCreateFailureCreatesOrReusesIncident|TestQGFailureNotesLinkAffectedBeadsToIncident|TestStatusJSONIncludesQGFailureIncidents' -count=1 && go test ./cmd/oro -run 'TestStatusShowsQGFailureIncidents|TestEventsShowQGFailureClassification|TestExecuteWorkQGExhaustionUsesClassifiedPolicy|TestExecuteWorkQGErrorUsesClassifiedPolicy|TestExecuteWorkPreMergeQGFailureUsesClassifiedPolicy|TestExecuteWorkPreMergeQGErrorUsesClassifiedPolicy|TestNewProductionDepsWiresQGFailureRecorder' -count=1 && ./scripts/quality_gate.sh"
+  assert: "No default P0-per-exhaustion path remains; deterministic failures stay on original beads and are assignable; systemic/flaky failures dedupe into incidents; dispatcher, epic, status/events, and standalone oro work QG branches all record classified evidence or original-bead decisions."
   adequate: true
+  issues: []
 
 traceability:
-  covered: 9
+  covered: 14
   gaps: 0
   matrix: |
     | # | Criterion | Task | Test | Status |
     | 1 | Classify QG failures | 1 | TestClassifyQGFailureDecisionMatrix | covered |
-    | 2 | Dedupe systemic/flaky incidents | 2,3 | TestQGFailureStoreDedupesByFingerprint, TestQGExhaustion_ReusesInfraIncidentForSystemicFailure | covered |
-    | 3 | Deterministic failures stay on original bead | 3,5 | TestQGExhaustion_ReopensOriginalForDeterministicFailure, TestPreMergeQGFailureClassifiedBeforeReopen | covered |
+    | 2 | Dedupe systemic/flaky incidents | 2,3 | TestQGFailureStoreDedupesByFingerprint, TestQGFailureStoreConcurrentSameFingerprintCreatesOneIncident, TestQGExhaustion_ReusesInfraIncidentForSystemicFailure | covered |
+    | 3 | Deterministic failures stay on original bead and are assignable | 3,5 | TestQGExhaustion_ReopensOriginalForDeterministicFailure, TestQGExhaustion_ReopenedOriginalIsAssignable, TestPreMergeQGFailureClassifiedBeforeReopen | covered |
     | 4 | Transient/flaky retry does not burn worker-fix attempts | 4 | TestTransientQGFailureBacksOffWithoutBurningWorkerAttempt | covered |
     | 5 | Repeated identical QG output is classified | 4 | TestRepeatedIdenticalQGOutputClassifiedBeforeEscalation | covered |
-    | 6 | Epic QG classification replaces direct fix creation | 6 | TestEpicQGFailureClassifiedBeforeFixBeadCreation | covered |
-    | 7 | Evidence links affected beads | 7 | TestQGFailureNotesLinkAffectedBeadsToIncident | covered |
-    | 8 | Operator observability | 8 | TestStatusShowsQGFailureIncidents, TestEventsShowQGFailureClassification | covered |
-    | 9 | oro work path does not bypass policy | 9 | TestExecuteWorkQGExhaustionUsesClassifiedPolicy | covered |
+    | 6 | Pre-merge QG errors are classified | 5 | TestPreMergeQGErrorClassifiedBeforeCleanup | covered |
+    | 7 | Rejected pre-merge work is preserved | 5 | TestPreMergeQGFailurePreservesRejectedWork | covered |
+    | 8 | Epic QG classification replaces direct fix creation and covers errors | 6 | TestEpicQGFailureClassifiedBeforeFixBeadCreation, TestEpicQGErrorCreatesOrReusesIncident, TestEpicQGWorktreeCreateFailureCreatesOrReusesIncident | covered |
+    | 9 | Evidence links affected beads | 7 | TestQGFailureNotesLinkAffectedBeadsToIncident | covered |
+    | 10 | Operator observability is populated by dispatcher and CLI | 8 | TestStatusJSONIncludesQGFailureIncidents, TestStatusShowsQGFailureIncidents, TestEventsShowQGFailureClassification | covered |
+    | 11 | oro work implementation QG path and production deps do not bypass policy | 9 | TestExecuteWorkQGExhaustionUsesClassifiedPolicy, TestExecuteWorkQGErrorUsesClassifiedPolicy, TestNewProductionDepsWiresQGFailureRecorder | covered |
+    | 12 | oro work pre-merge QG path does not bypass policy | 9 | TestExecuteWorkPreMergeQGFailureUsesClassifiedPolicy, TestExecuteWorkPreMergeQGErrorUsesClassifiedPolicy | covered |
+    | 13 | Standalone oro work production deps wire persistence | 9 | TestNewProductionDepsWiresQGFailureRecorder | covered |
+    | 14 | Operator docs cover policy and legacy cleanup | 10 | ./scripts/quality_gate.sh | covered |
 
 wiring_gaps: []
 
 negative_space:
-  - area: "Fresh-context adversarial review"
-    severity: minor
-    fix: "Run a separate Codex/ops review before beadcraft if operator wants the full Ralph Loop gate."
   - area: "Classifier tuning from real logs"
     severity: minor
     fix: "Task 10 documents operator cleanup and legacy incidents; classifier tests should include real examples from current open QG P0s."
@@ -661,23 +685,49 @@ red_team_scenarios:
     feature_works: false
     root_cause: "No original bead state policy."
     fix: "Tasks 3, 5, and 7 require reopen/link behavior."
+  - scenario: "Deterministic exhaustion updates original bead to open, but exhaustedBeads still blocks filterAssignable."
+    beads_pass: false
+    feature_works: false
+    root_cause: "Assignability after reopen was missing from original draft."
+    fix: "Task 3 requires TestQGExhaustion_ReopenedOriginalIsAssignable and reads filterAssignable/isBeadAssignable."
   - scenario: "Repeated identical QG output triggers the existing stuck escalation and never records a classified incident."
     beads_pass: false
     feature_works: false
     root_cause: "The stuck detector runs before retry exhaustion."
     fix: "Task 4 requires TestRepeatedIdenticalQGOutputClassifiedBeforeEscalation."
+  - scenario: "QG runner error branches bypass the classifier while failed-output branches are fixed."
+    beads_pass: false
+    feature_works: false
+    root_cause: "Pre-merge and epic qgErr branches are separate code paths."
+    fix: "Tasks 5 and 6 require explicit qgErr/worktree-create tests."
+  - scenario: "executeWork tests pass with fake deps, but production oro work never wires the incident recorder."
+    beads_pass: false
+    feature_works: false
+    root_cause: "Production dependency constructor was not covered."
+    fix: "Task 9 requires TestNewProductionDepsWiresQGFailureRecorder and reads newProductionDeps."
+  - scenario: "Standalone oro work passes implementation QG and review, then fails pre-merge QG without recording classified evidence."
+    beads_pass: false
+    feature_works: false
+    root_cause: "executeWork has a later pre-merge QG branch distinct from implementation-loop QG exhaustion."
+    fix: "Task 9 requires TestExecuteWorkPreMergeQGFailureUsesClassifiedPolicy and TestExecuteWorkPreMergeQGErrorUsesClassifiedPolicy."
 
 integration_points:
   covered:
     - "pkg/dispatcher/dispatcher.go:handleQGFailure"
     - "pkg/dispatcher/qg_stuck.go"
+    - "pkg/dispatcher/dispatcher.go:filterAssignable"
+    - "pkg/dispatcher/dispatcher.go:isBeadAssignable"
     - "pkg/dispatcher/dispatcher.go:handleQGExhausted"
     - "pkg/dispatcher/dispatcher.go:handleQGExhaustedFallback"
     - "pkg/dispatcher/dispatcher.go:checkPreMergeQG"
+    - "pkg/dispatcher/dispatcher.go:removeWorktreeAndClearTracking"
     - "pkg/dispatcher/dispatcher.go:checkEpicQG"
+    - "pkg/dispatcher/dispatcher.go:buildStatusJSON"
+    - "pkg/dispatcher/dispatcher.go:applyStatus"
     - "cmd/oro/cmd_work.go"
+    - "cmd/oro/cmd_work.go:newProductionDeps"
+    - "cmd/oro/cmd_logs.go"
     - "cmd/oro/cmd_status.go"
-    - "cmd/oro/cmd_events.go"
     - "pkg/protocol/schema.go"
     - "cmd/oro/db.go"
   uncovered: []
