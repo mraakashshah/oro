@@ -102,15 +102,15 @@ Bead breakdown below sequences: (1) AssignPayload schema change, (2) dispatcher-
 
 ## Scope (In)
 
-1. New `agent` config block in `.oro/config.yaml` with per-tier and per-role keys.
+1. New `agent` config block with per-tier, per-role, and per-API-model keys. Block lives at user level (`~/.oro/config.yaml`) by default; `--project` flag writes it to `.oro/config.yaml`. See "Config File Location and Precedence" below.
 2. `oro init` wizard: 5 questions (primary runtime + 4 tiers).
-3. `oro config models` re-runs the wizard.
+3. `oro config wizard` re-runs the wizard.
 4. Role resolution at runtime: explicit `role.runtime+model` → `tiers[role.tier]` → built-in default.
 5. Mixing allowed: any tier or role can override runtime independently of any other.
 6. Bead generation writes `tier:` instead of `metadata.model:` for new beads.
 7. Legacy `metadata.model=opus|sonnet|haiku` maps to `deep|balanced|fast` tier on read; runtime resolves from config, not pinned to Claude.
-8. Auxiliary models (estimator, reranker, memory extractor) become roles, not consts.
-9. `thresholds.json` and Claude-family hooks rekey by tier.
+8. Auxiliary models (codesearch reranker, memory extractor) become CLI roles. Estimator becomes an API role pinned to Anthropic.
+9. `thresholds.json` and Claude-family hooks gain tier keys; Python hook code maps Claude `model_key` → tier internally.
 
 ## Scope (Out)
 
@@ -122,6 +122,8 @@ Bead breakdown below sequences: (1) AssignPayload schema change, (2) dispatcher-
 
 ## Config Schema
 
+The example below is the **built-in default** — what you get when no `agent` block is present anywhere. It is intentionally identical to today's behavior: Claude everywhere, Haiku for fast/background, Sonnet for balanced, Opus for deep. The default role-tier mapping mirrors `pkg/ops/ops.go:55-72` exactly: review/merge/diagnosis/epic_fix/write_ac/decompose are deep, escalation is balanced, dream is background.
+
 ```yaml
 agent:
   # CLI tiers — used by transport=cli roles
@@ -129,29 +131,40 @@ agent:
     fast:       { runtime: claude, model: claude-haiku-4-5-20251001 }
     balanced:   { runtime: claude, model: claude-sonnet-4-6 }
     deep:       { runtime: claude, model: claude-opus-4-7 }
-    background: { runtime: codex,  model: gpt-5-codex }
+    background: { runtime: claude, model: claude-haiku-4-5-20251001 }
 
   # API-only models — pinned to providers; do NOT inherit from agent.tiers
   api_models:
     anthropic_fast: claude-haiku-4-5-20251001
 
   roles:
-    # CLI-spawn roles — runtime + model both honored
+    # CLI-spawn roles — defaults must match current pkg/ops/ops.go tier routing
     worker:               { tier: balanced, transport: cli }
     worker_escalation:    { tier: deep,     transport: cli }
     ops_review:           { tier: deep,     transport: cli }
-    ops_merge:            { tier: balanced, transport: cli }
-    ops_diagnosis:        { tier: balanced, transport: cli }
-    ops_epic_fix:         { tier: balanced, transport: cli }
-    ops_write_ac:         { tier: fast,     transport: cli }
-    ops_escalation:       { tier: deep,     transport: cli }
-    ops_decompose:        { tier: balanced, transport: cli }
+    ops_merge:            { tier: deep,     transport: cli }
+    ops_diagnosis:        { tier: deep,     transport: cli }
+    ops_epic_fix:         { tier: deep,     transport: cli }
+    ops_write_ac:         { tier: deep,     transport: cli }
+    ops_escalation:       { tier: balanced, transport: cli }
+    ops_decompose:        { tier: deep,     transport: cli }
     ops_dream:            { tier: background, transport: cli }
     memory_extractor:     { tier: fast,     transport: cli }
     codesearch_reranker:  { tier: fast,     transport: cli }
 
     # API-call roles — read from agent.api_models, NOT from agent.tiers
     estimator:            { transport: api, provider: anthropic, api_model: anthropic_fast }
+```
+
+Mixing example (NOT the default — what the wizard produces if a user picks Codex for some tiers):
+
+```yaml
+agent:
+  tiers:
+    fast:       { runtime: codex,  model: gpt-5-codex }
+    balanced:   { runtime: claude, model: claude-sonnet-4-6 }
+    deep:       { runtime: codex,  model: gpt-5-codex }
+    background: { runtime: codex,  model: gpt-5-codex }
 ```
 
 The `agent.tiers` block is for CLI roles only. API roles read from `agent.api_models` via the role's `api_model:` key. This keeps `tiers.fast = gpt-5-codex` from breaking the estimator.
@@ -161,9 +174,9 @@ The `agent.tiers` block is for CLI roles only. API roles read from `agent.api_mo
 Each role declares a `transport`:
 
 - `transport: cli` — Oro spawns the runtime CLI (`claude -p` or `codex exec`) with the resolved model. Both `runtime` and `model` from the resolved tier are used.
-- `transport: api` — Oro calls a provider's HTTP API directly. The role's `provider` (anthropic, openai) selects the endpoint; only `model` is honored. The tier's `runtime` is informational, not used for spawning.
+- `transport: api` — Oro calls a provider's HTTP API directly. The role's `provider` (anthropic, openai) selects the endpoint. API roles ONLY honor `api_model:` (which references a key in `agent.api_models`); they do NOT read a `model:` or `tier:` key on the role.
 
-`transport` is NOT user-configurable in the wizard. It is fixed per role by the implementation. Users may override `model` for `transport: api` roles, but they MUST stay within the role's pinned `provider`. Cross-provider model strings (e.g., `gpt-5-codex` for `provider: anthropic`) fail validation at load.
+`transport` is NOT user-configurable in the wizard. It is fixed per role by the implementation. For `transport: api` roles, users may override only the model string by editing `agent.api_models.<key>`, and the value must stay within the role's pinned `provider`. Cross-provider model strings (e.g., `gpt-5-codex` for `provider: anthropic`) fail validation at load.
 
 This boundary exists because the estimator (`pkg/dispatcher/estimate.go:18-21`) calls `https://api.anthropic.com/v1/messages` directly with `ANTHROPIC_API_KEY` and has no provider abstraction. Adding one is out of scope for this extension.
 
@@ -201,7 +214,7 @@ If validation fails (e.g., `api_models.anthropic_fast: gpt-5-codex` referenced b
   This guarantees a row with explicit provider-native `model` plus stale legacy `metadata.model` keeps the explicit column value; only legacy-only rows convert to tiers.
 - `--model` CLI flag accepts both tier names (`fast|balanced|deep|background`) and provider-native strings. Tier names are stored as `Bead.Tier`; provider-native strings as `Bead.Model`.
 
-## Wizard Flow (`oro init` and `oro config models`)
+## Wizard Flow (`oro init` and `oro config wizard`)
 
 Five prompts, with smart defaults:
 
@@ -274,10 +287,11 @@ Acceptance is structural preservation, NOT byte-identity. Reviewers should look 
 
 ### Routing layer
 
-- `pkg/protocol/types.go` — keep `Tier` constants and existing helpers; replace `Tier.DefaultModel()` (line 108) with a function that consults config. The fallback when no config is loaded preserves current Claude families for back-compat.
-- `pkg/agentruntime/runtime.go` — add `ResolveForRole(role string) (runtime, model string)`. Existing `ReadRuntime()` is preserved but downgraded to "default runtime when no role context is available"; new code MUST call `ResolveForRole`.
-- `pkg/agentruntime/codex/codex.go` — `normalizeCodexModel` no longer strips legacy names blindly; legacy strings route through tier resolution before reaching the adapter.
-- `pkg/ops/ops.go` — replace ops `Type → "opus/sonnet/haiku"` mapping (lines 57–67, 84–88) with ops `Type → role name`; resolver returns `(runtime, model)` from config.
+- `pkg/protocol/types.go` — keep `Tier` constants and existing helpers; **delete** `Tier.DefaultModel()` (line 108) entirely. Resolution moves to `pkg/agentmodel`; protocol stays leaf with no config dependency.
+- `pkg/agentmodel/agentmodel.go` (new) — owns `ResolveForRole(role string) (runtime, model string)` and `ResolveForBead(role string, b protocol.Bead) (runtime, model string)`. Depends on `pkg/protocol` and `pkg/config`. **All new model-resolution code MUST call this package, NOT `pkg/agentruntime`.**
+- `pkg/agentruntime/runtime.go` — `ReadRuntime()` is preserved as a back-compat shim returning the default runtime when no role context is available (used by stale callers and the worker payload fallback). NO `ResolveForRole` is added here.
+- `pkg/agentruntime/codex/codex.go` — `normalizeCodexModel` no longer strips legacy names blindly; legacy strings route through tier resolution (in `agentmodel`) before reaching the adapter.
+- `pkg/ops/ops.go` — replace ops `Type → "opus/sonnet/haiku"` mapping (lines 57–67, 84–88) with ops `Type → role name`; callers resolve the role via `agentmodel.ResolveForRole(roleName)`.
 
 ### Worker, dispatcher, ops paths
 
@@ -294,7 +308,7 @@ Acceptance is structural preservation, NOT byte-identity. Reviewers should look 
 
 The current worker process is bound to one runtime via `cmd/oro/cmd_worker.go:55` and `cmd/oro/agent_runtime.go:35`. To honor mixing across roles within a single bead's lifetime (e.g., escalation from `tier=balanced` Claude to `tier=deep` Codex):
 
-- `pkg/protocol/types.go` — `AssignPayload` struct adds `Runtime string` field alongside `Model`.
+- `pkg/protocol/message.go` — `AssignPayload` struct (line 88) adds `Runtime string` field alongside `Model`. (Note: `AssignPayload` lives in `message.go`, NOT `types.go`.)
 - `cmd/oro/cmd_worker.go` — instantiate Claude AND Codex spawners on startup; route per-assignment based on `payload.Runtime`.
 - `pkg/worker/worker.go` — `Spawn()` accepts a runtime+model pair, not just model. Existing `ClaudeSpawner` / Codex adapter implementations remain; the dispatcher selects which one to call.
 - Backward compat: when `payload.Runtime == ""` (stale dispatcher pre-migration), the worker MUST NOT call `agentmodel` — it has no config layer. It logs a warning and falls back to `agentruntime.ReadRuntime()` for runtime and the existing `cfg.bead.Model` / `protocol.DefaultModel` chain at `pkg/worker/worker.go:519` for model. This shim survives one release after rollout, then is removed.
@@ -370,7 +384,7 @@ The extension is done when:
 7. `oro config show` → prints resolved agent config and source layer for each value.
 8. **Mixing end-to-end test:** with `tiers.deep.runtime=codex` and `tiers.balanced.runtime=claude`, a worker assigned a `tier=balanced` bead spawns Claude, and when QG retry escalation kicks in (worker_escalation→deep) the SAME worker process spawns Codex on the next attempt. Verifies AssignPayload carries Runtime and the worker selects spawner per-assignment.
 9. `roles.codesearch_reranker.runtime=claude` with `tiers.balanced.runtime=codex` correctly spawns Claude for the reranker via `agentmodel.ResolveForRole("codesearch_reranker")`, NOT via `agentruntime.ReadRuntime()`.
-10. Legacy bead with `metadata.model=opus` and no `tier` field → on hydration, `Bead.Tier=deep` and `Bead.Model=""`. `Bead.ResolveModel()` returns the configured `tiers.deep.model`, NOT `"opus"`.
+10. Legacy bead with `metadata.model=opus` and no `tier` field → on hydration, `Bead.Tier=deep` and `Bead.Model=""`. `agentmodel.ResolveForBead("worker", bead)` returns the configured `tiers.deep.model`+`runtime`, NOT `"opus"`. (`Bead.ResolveModel()` itself is a pure shim returning `b.Model`; the configured value comes from `agentmodel`, not from `protocol`.)
 11. Estimator stays Anthropic-only: `roles.estimator.api_model: anthropic_fast` references `agent.api_models.anthropic_fast`. If a user sets `agent.api_models.anthropic_fast: gpt-5-codex`, config load rejects with a clear error naming the role and provider mismatch.
 12. `tiers.fast.model=gpt-5-codex` does NOT affect estimator behavior. Estimator continues to call Anthropic.
 13. `oro task create --tier=deep` writes `bead.Tier=deep` to the SQLite store via `CreateParams.Tier`. Verifies `pkg/beadstore/store.go:112` schema change.
@@ -466,7 +480,7 @@ These were Open Questions in draft v1, now decided based on premortem findings:
 
 3. **Transport per role.** Added as a fixed-per-role property (`cli|api`), not user-configurable. Estimator is pinned to `transport: api, provider: anthropic`. CLI roles use `transport: cli`. Reason: estimator (`pkg/dispatcher/estimate.go`) calls Anthropic API directly with no provider abstraction; pretending it's freely configurable breaks at runtime.
 
-4. **Already-done protocol work.** `Bead.Tier`, `Tier` constants, `LegacyModelToTier`, `ResolveTier`, `ResolveModel` are not in scope here — they exist (`pkg/protocol/types.go:52,89-151`). The remaining gap is config consultation in `Tier.DefaultModel()`.
+4. **Already-done protocol work.** `Bead.Tier`, `Tier` constants, `LegacyModelToTier`, `ResolveTier`, `ResolveModel` are not in scope here — they exist (`pkg/protocol/types.go:52,89-151`). The remaining gap is **config-aware resolution outside `protocol`**, owned by the new `pkg/agentmodel` package. `Tier.DefaultModel()` is deleted, NOT updated to consult config.
 
 ## Remaining Open Questions
 
@@ -490,7 +504,7 @@ Order matters: schema + YAML utility → resolver → call sites → wire format
 2. `feat(yaml): node-level YAML merge utility (yaml.v3 Node API) used by config writers; preserves user-edited top-level keys`
 3. `feat(agentmodel): new pkg/agentmodel package; ResolveForRole and ResolveForBead; depends on protocol + config; protocol stays leaf`
 4. `refactor(beadstore): add Tier field to CreateParams; SQLite + testfake insert tier column; hydration converts legacy metadata.model={opus,sonnet,haiku} into Bead.Tier ONLY when SQLite model column is empty AND tier is empty`
-5. `refactor(protocol): delete Tier.DefaultModel(); Bead.ResolveModel becomes pure shim returning b.Model; add Runtime field to AssignPayload`
+5. `refactor(protocol): delete Tier.DefaultModel() in pkg/protocol/types.go; Bead.ResolveModel becomes pure shim returning b.Model; add Runtime field to AssignPayload in pkg/protocol/message.go (NOT types.go)`
 6. `refactor(dispatcher): resolve runtime+model dispatcher-side via agentmodel.ResolveForBead; populate AssignPayload.Runtime and Model on every send`
 7. `refactor(worker): worker process holds both Claude+Codex spawners; selects per-assignment from AssignPayload.Runtime; back-compat shim warns and uses ReadRuntime when payload.Runtime is empty`
 8. `refactor(routing): cmd_work, cmd_start, ops route through agentmodel; cmd_start manager flag default reads tiers.balanced.model directly (no manager role)`
