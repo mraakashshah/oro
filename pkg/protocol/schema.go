@@ -285,6 +285,20 @@ WHERE b.deleted = 0
     WHERE d.bead_id = b.id
       AND d.type IN ('blocks','conditional-blocks')
       AND (parent.id IS NULL OR parent.status != 'closed')
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM bead_tags t
+    WHERE t.bead_id = b.id
+      AND t.tag = 'awaits_parent_close'
+      AND (
+           b.parent_id IS NULL
+        OR NOT EXISTS (
+               SELECT 1 FROM beads p
+               WHERE p.id = b.parent_id
+                 AND p.deleted = 0
+                 AND p.status = 'closed'
+           )
+      )
   );
 
 CREATE VIEW IF NOT EXISTS beads_blocked AS
@@ -304,6 +318,20 @@ WHERE b.deleted = 0
         AND d.type IN ('blocks','conditional-blocks')
         AND (parent.id IS NULL OR parent.status != 'closed')
     )
+    OR EXISTS (
+      SELECT 1 FROM bead_tags t
+      WHERE t.bead_id = b.id
+        AND t.tag = 'awaits_parent_close'
+        AND (
+             b.parent_id IS NULL
+          OR NOT EXISTS (
+                 SELECT 1 FROM beads p
+                 WHERE p.id = b.parent_id
+                   AND p.deleted = 0
+                   AND p.status = 'closed'
+             )
+        )
+    )
   )
   AND NOT EXISTS (
     SELECT 1 FROM assignments a
@@ -318,6 +346,20 @@ WHERE b.deleted = 0
       WHERE d.bead_id = b.id
         AND d.type IN ('blocks','conditional-blocks')
         AND (parent.id IS NULL OR parent.status != 'closed')
+    )
+    OR EXISTS (
+      SELECT 1 FROM bead_tags t
+      WHERE t.bead_id = b.id
+        AND t.tag = 'awaits_parent_close'
+        AND (
+             b.parent_id IS NULL
+          OR NOT EXISTS (
+                 SELECT 1 FROM beads p
+                 WHERE p.id = b.parent_id
+                   AND p.deleted = 0
+                   AND p.status = 'closed'
+             )
+        )
     )
   )
 ;
