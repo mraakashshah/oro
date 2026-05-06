@@ -1782,6 +1782,35 @@ func TestDispatcher_HeartbeatTimeout_DetectsDeadWorker(t *testing.T) {
 		Type:      protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-dead", ContextPct: 5},
 	})
+
+	// Keep the worker alive with periodic heartbeats until assignment is
+	// consumed. Without this, the 100ms heartbeat timeout can fire before
+	// assignment completes on a loaded system (slow waitForWorkers +
+	// waitForState path).
+	hbData, _ := json.Marshal(protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-dead", ContextPct: 5},
+	})
+	hbData = append(hbData, '\n')
+	stopHeartbeats := make(chan struct{})
+	var stopOnce sync.Once
+	stopHB := func() { stopOnce.Do(func() { close(stopHeartbeats) }) }
+	t.Cleanup(stopHB)
+	go func() {
+		ticker := time.NewTicker(30 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopHeartbeats:
+				return
+			case <-ticker.C:
+				if _, err := conn.Write(hbData); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
 	waitForWorkers(t, d, 1, 1*time.Second)
 
 	// Assign work so the worker is busy (idle workers are not timed out)
@@ -1790,6 +1819,8 @@ func TestDispatcher_HeartbeatTimeout_DetectsDeadWorker(t *testing.T) {
 
 	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-dead", Title: "Dead worker test", Priority: 1}})
 	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	// Stop heartbeats immediately so the timeout clock starts now.
+	stopHB()
 	if !ok {
 		t.Fatal("expected ASSIGN")
 	}
