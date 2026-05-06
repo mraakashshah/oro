@@ -537,7 +537,7 @@ func TestTaskListDefaultsToTopUnfinished(t *testing.T) {
 		t.Fatalf("task list --status=open returned %d beads, want more than 20 (no implicit cap)", len(openListed))
 	}
 
-	// Dedup: same bead appearing in both InProgress and Ready results in exactly one entry
+	// Dedup: same bead appearing in both InProgress and Ready results in exactly one entry.
 	t.Run("dedup", func(t *testing.T) {
 		dupBead := protocol.Bead{
 			ID:        "oro-dup",
@@ -567,4 +567,67 @@ func TestTaskListDefaultsToTopUnfinished(t *testing.T) {
 			t.Fatalf("dedup: bead %q appeared %d times in list, want 1", "oro-dup", count)
 		}
 	})
+}
+
+func TestTaskListHumanOutputPreservesJSONContract(t *testing.T) {
+	ctx := context.Background()
+	store, err := beadstore.OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore: %v", err)
+	}
+
+	execTask := func(args ...string) string {
+		t.Helper()
+		cmd := newTaskCmdWithStore(store)
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("task %s: %v\n%s", strings.Join(args, " "), err, out.String())
+		}
+		return out.String()
+	}
+
+	execTask("create", "--id", "oro-hl-1", "--title", "alpha task", "--priority", "0")
+	execTask("update", "oro-hl-1", "--status", "in_progress")
+	execTask("create", "--id", "oro-hl-2", "--title", "beta task", "--priority", "2")
+
+	// Human output: must have a header row containing ID, STATUS, TITLE columns.
+	humanOut := execTask("list")
+	lines := strings.Split(strings.TrimSpace(humanOut), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("task list (no --json) expected at least header + data rows, got:\n%s", humanOut)
+	}
+	header := strings.ToUpper(lines[0])
+	if !strings.Contains(header, "ID") {
+		t.Fatalf("task list header missing ID column, got: %s", lines[0])
+	}
+	if !strings.Contains(header, "STATUS") {
+		t.Fatalf("task list header missing STATUS column, got: %s", lines[0])
+	}
+	if !strings.Contains(header, "TITLE") {
+		t.Fatalf("task list header missing TITLE column, got: %s", lines[0])
+	}
+	if !strings.Contains(humanOut, "oro-hl-1") || !strings.Contains(humanOut, "oro-hl-2") {
+		t.Fatalf("task list (no --json) missing expected task IDs:\n%s", humanOut)
+	}
+
+	// JSON output: must start with '[' (no header text), decode to an array with
+	// id/title/status/priority/parent_id/type fields on every element.
+	jsonOut := execTask("list", "--json")
+	if trimmed := strings.TrimSpace(jsonOut); !strings.HasPrefix(trimmed, "[") {
+		t.Fatalf("task list --json should start with '[', got:\n%s", jsonOut)
+	}
+	items := decodeBeadJSONArray(t, jsonOut)
+	if len(items) == 0 {
+		t.Fatal("task list --json returned empty array")
+	}
+	for _, item := range items {
+		for _, field := range []string{"id", "title", "status", "priority", "parent_id", "type"} {
+			if _, ok := item[field]; !ok {
+				t.Fatalf("task list --json item missing field %q: %#v", field, item)
+			}
+		}
+	}
 }
