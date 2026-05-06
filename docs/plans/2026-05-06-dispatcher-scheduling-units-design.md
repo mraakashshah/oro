@@ -40,7 +40,7 @@ Current scheduler behavior:
 
 The problem:
 
-- Unfocused epic scheduling is based on epic ID/age, not the epic's priority.
+- Unfocused epic scheduling is based primarily on epic ID/age, not the epic's priority.
 - Child bead priority can make the dispatcher sample multiple epics instead of pushing one epic forward.
 - The scheduler cannot express "this epic is the work unit; drain its ready frontier."
 
@@ -113,6 +113,8 @@ Epic units are sorted by:
 
 1. root epic priority ascending
 2. root epic created time / ID as stable tie-breaker
+
+That preserves a deterministic default behavior: among epics with the same priority, older epics can still run first. The required semantic change is that age no longer outranks explicit epic priority.
 
 Within a selected epic unit, ready descendants are sorted by:
 
@@ -215,7 +217,7 @@ The first implementation can still return a flattened ordered list if it preserv
   - newer epic P0 with ready child
 - Assert:
   - newer P0 epic unit is scheduled first.
-  - This replaces the old "oldest epic first" behavior.
+  - Oldest-first remains valid only as a tie-breaker among same-priority epic units.
 
 `pkg/dispatcher/dispatcher_test.go:TestBuildSchedulingPlan_EpicUnitKeepsFrontierContiguous`
 
@@ -315,8 +317,8 @@ negative_space:
     coverage: "Task requires tryAssign/assignGeneralIdleWorkers to consume schedulingPlan, not just helper tests."
   - scenario: "Nested epic child sorted by nested child priority instead of root epic priority"
     coverage: "Nested root-priority test covers parent-chain walking."
-  - scenario: "Old test still asserts oldest epic first"
-    coverage: "Spec explicitly requires replacing that regression test."
+  - scenario: "Old test still asserts oldest epic first as the primary rule"
+    coverage: "Spec requires revising that regression test so oldest-first is only a same-priority tie-breaker."
 ```
 
 ## Task Graph
@@ -352,10 +354,10 @@ Epic: Implement dispatcher scheduling units.
    - Read: `pkg/dispatcher/dispatcher.go:sortBeadsByPriority`, `pkg/dispatcher/dispatcher.go:applyFocusDirective`, existing focus tests.
    - Edges: nested focused epic, immediate focus preemption, backfill when focused frontier is empty.
 
-5. Replace obsolete oldest-epic regression tests and docs
+5. Revise oldest-epic regression tests and docs
    - Test: `pkg/dispatcher/dispatcher_test.go:TestBuildSchedulingPlan_EpicPriorityBeatsEpicAge`
    - Cmd: `go test ./pkg/dispatcher -run 'TestBuildSchedulingPlan|TestTryAssign_FillsSelectedEpicBeforeNextEpic' -count=1 -v`
-   - Assert: no test or comment still claims unfocused epics are ordered by oldest epic ID.
+   - Assert: no test or comment claims unfocused epics are ordered by oldest epic ID before epic priority; same-priority epic tie-breaks may remain oldest-first.
    - Read: `pkg/dispatcher/dispatcher_test.go:TestSortBeadsByPriority_EpicFinishing`, `docs/plans/2026-05-06-dispatcher-scheduling-units-design.md`
    - Edges: stale comments, stale test names, old helper still referenced.
 
