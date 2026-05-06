@@ -490,7 +490,7 @@ def auto_load_skills(skills_file: str) -> str:
 
 
 def project_state() -> str:
-    """Gather ready tasks, git status, git log, and current.md into a context string."""
+    """Gather ready tasks, git status, and git log into a context string."""
     sections = []
 
     # ready tasks
