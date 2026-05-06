@@ -465,6 +465,24 @@ func startPreflightAndCheckRunning(w io.Writer, daemonOnly bool) (pidPath string
 	return preflightAndCheckRunning(w)
 }
 
+// reconnectRunningDaemon handles the case where a daemon is already running.
+// It activates the dispatcher if inert, then reconnects (or returns early in
+// daemon-only mode).
+func reconnectRunningDaemon(w io.Writer, workers int, daemonOnly, detach bool) error {
+	paths, err := ResolveDaemonPaths()
+	if err != nil {
+		return fmt.Errorf("resolve daemon paths: %w", err)
+	}
+	if err := activateInertDispatcher(paths.SocketPath, workers); err != nil {
+		return fmt.Errorf("activate dispatcher: %w", err)
+	}
+	if daemonOnly {
+		return nil
+	}
+	project, _ := readProjectConfig(".")
+	return reconnectTmux(w, &ExecRunner{}, project, isDetached(detach), nil, 0)
+}
+
 // reconnectTmux ensures the tmux session is healthy when the daemon is already
 // running. If the session is unhealthy (Claude crashed back to shell), it kills
 // and recreates it. With detach=true, prints attach instructions instead of
@@ -542,13 +560,7 @@ func newStartCmd() *cobra.Command {
 				return err
 			}
 			if pidPath == "" {
-				// Daemon running — ensure tmux session is healthy and reconnect.
-				if daemonOnly {
-					return nil
-				}
-				project, _ := readProjectConfig(".")
-				return reconnectTmux(cmd.OutOrStdout(), &ExecRunner{}, project,
-					isDetached(detach), nil, 0)
+				return reconnectRunningDaemon(cmd.OutOrStdout(), workers, daemonOnly, detach)
 			}
 			if daemonOnly {
 				return runDaemonOnlyFn(cmd, pidPath, workers, maxWorkers, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, baseBranch, webEnabled, webAddr)
@@ -947,6 +959,73 @@ func adaptCodeSearchResults(results []codesearch.SearchResult) []dispatcher.Sear
 		}
 	}
 	return out
+}
+
+// probeDispatcherState connects to the dispatcher socket, sends a status
+// directive, and returns the dispatcher's current state string (e.g. "inert",
+// "running", "paused"). Returns an error if the socket is unreachable or the
+// response cannot be parsed.
+func probeDispatcherState(sockPath string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := dialDispatcher(ctx, sockPath)
+	if err != nil {
+		return "", fmt.Errorf("dial dispatcher: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := sendDirective(conn, "status", ""); err != nil {
+		return "", fmt.Errorf("send status directive: %w", err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return "", fmt.Errorf("set read deadline: %w", err)
+	}
+	ack, err := readACK(conn)
+	if err != nil {
+		return "", fmt.Errorf("read ack: %w", err)
+	}
+	resp, err := parseStatusFromACK(ack.Detail)
+	if err != nil {
+		return "", fmt.Errorf("parse status: %w", err)
+	}
+	return resp.State, nil
+}
+
+// sendScaleDirective connects to the dispatcher socket and sends a scale
+// directive to set the target worker pool size to workers.
+func sendScaleDirective(sockPath string, workers int) error {
+	conn, err := (&net.Dialer{}).DialContext(context.Background(), "unix", sockPath)
+	if err != nil {
+		return fmt.Errorf("connect to dispatcher: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := sendDirective(conn, "scale", strconv.Itoa(workers)); err != nil {
+		return fmt.Errorf("send scale directive: %w", err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return fmt.Errorf("set read deadline: %w", err)
+	}
+	if _, err := readACK(conn); err != nil {
+		return fmt.Errorf("read ack: %w", err)
+	}
+	return nil
+}
+
+// activateInertDispatcher probes the dispatcher state and, if inert, sends a
+// start directive to transition from inert→running, then sends a scale
+// directive to apply the requested worker count. No-op when the dispatcher is
+// already in a non-inert state.
+func activateInertDispatcher(sockPath string, workers int) error {
+	state, err := probeDispatcherState(sockPath)
+	if err != nil {
+		return fmt.Errorf("probe dispatcher state: %w", err)
+	}
+	if state != "inert" {
+		return nil
+	}
+	if err := sendStartDirective(sockPath); err != nil {
+		return fmt.Errorf("activate inert dispatcher: %w", err)
+	}
+	return sendScaleDirective(sockPath, workers)
 }
 
 // sendStartDirective connects to the dispatcher UDS and sends a "start"

@@ -504,6 +504,110 @@ func TestStartSendsDirective(t *testing.T) {
 	}
 }
 
+// TestStartExistingInertDaemonAppliesRequestedWorkers verifies that when
+// oro start --workers N finds an existing inert dispatcher, it sends a start
+// directive (to transition from inert→running) and a scale directive (to apply
+// the requested worker count), rather than silently leaving managed=0.
+func TestStartExistingInertDaemonAppliesRequestedWorkers(t *testing.T) {
+	sockPath := fmt.Sprintf("/tmp/oro-kp9x-%d.sock", time.Now().UnixNano())
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
+
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	directives := make(chan string, 20)
+	scaleArgs := make(chan string, 5)
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				scanner := bufio.NewScanner(c)
+				if !scanner.Scan() {
+					return
+				}
+				var msg protocol.Message
+				if json.Unmarshal(scanner.Bytes(), &msg) != nil || msg.Directive == nil {
+					return
+				}
+				op := msg.Directive.Op
+				select {
+				case directives <- op:
+				default:
+				}
+				if op == "scale" {
+					select {
+					case scaleArgs <- msg.Directive.Args:
+					default:
+					}
+				}
+				var detail string
+				if op == "status" {
+					detail = fmt.Sprintf(`{"state":"inert","pid":%d,"managed_count":0,"target_count":0}`, os.Getpid())
+				} else {
+					detail = op + " applied"
+				}
+				ack := protocol.Message{
+					Type: protocol.MsgACK,
+					ACK:  &protocol.ACKPayload{OK: true, Detail: detail},
+				}
+				data, _ := json.Marshal(ack)
+				data = append(data, '\n')
+				_, _ = c.Write(data)
+			}(conn)
+		}
+	}()
+
+	if err := activateInertDispatcher(sockPath, 3); err != nil {
+		t.Fatalf("activateInertDispatcher: %v", err)
+	}
+
+	// Drain directives sent during the call.
+	var received []string
+	deadline := time.After(time.Second)
+drain:
+	for {
+		select {
+		case d := <-directives:
+			received = append(received, d)
+		case <-deadline:
+			break drain
+		}
+	}
+
+	if !directiveSent(received, "start") {
+		t.Errorf("expected start directive to be sent, got: %v", received)
+	}
+	if !directiveSent(received, "scale") {
+		t.Errorf("expected scale directive to be sent, got: %v", received)
+	}
+
+	select {
+	case args := <-scaleArgs:
+		if args != "3" {
+			t.Errorf("expected scale args %q, got %q", "3", args)
+		}
+	default:
+		t.Error("scale directive args not captured")
+	}
+}
+
+func directiveSent(received []string, op string) bool {
+	for _, d := range received {
+		if d == op {
+			return true
+		}
+	}
+	return false
+}
+
 func TestReconnectTmuxRecreatesUnhealthySession(t *testing.T) {
 	t.Run("unhealthy session is killed and recreated", func(t *testing.T) {
 		fake := newFakeCmd()
