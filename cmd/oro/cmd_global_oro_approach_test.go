@@ -311,7 +311,7 @@ func TestRunGlobalOroApproach_SkipsOroSpecificHooks(t *testing.T) {
 
 	// Only provide oro-specific hooks — none of the portable ones
 	makeHooksDir(t, srcHooks, map[string]string{
-		"architect_router.py": "# oro-specific\n",
+		"enforce_worktree.py": "# oro-specific\n",
 		"compact_trigger.py":  "# oro-specific\n",
 		"no_cd_guard.py":      "# oro-specific\n",
 	})
@@ -335,7 +335,7 @@ func TestRunGlobalOroApproach_SkipsOroSpecificHooks(t *testing.T) {
 	}
 
 	// None of the oro-specific hooks should appear in dst
-	for _, name := range []string{"architect_router.py", "compact_trigger.py", "no_cd_guard.py"} {
+	for _, name := range []string{"enforce_worktree.py", "compact_trigger.py", "no_cd_guard.py"} {
 		if _, err := os.Stat(filepath.Join(dstHooks, name)); err == nil {
 			t.Errorf("oro-specific hook %q should not have been copied", name)
 		}

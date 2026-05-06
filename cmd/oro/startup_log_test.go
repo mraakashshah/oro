@@ -26,13 +26,13 @@ func TestStartupLog_StepTimed(t *testing.T) {
 	var buf bytes.Buffer
 	log := newStartupLog(&buf, true) // TTY mode
 
-	log.StepTimed("Architect ready", 34*time.Second)
+	log.StepTimed("Manager ready", 34*time.Second)
 
 	output := buf.String()
 	if !strings.Contains(output, "✓") {
 		t.Errorf("expected ✓ checkmark, got: %q", output)
 	}
-	if !strings.Contains(output, "Architect ready") {
+	if !strings.Contains(output, "Manager ready") {
 		t.Errorf("expected message, got: %q", output)
 	}
 	if !strings.Contains(output, "34s") {
