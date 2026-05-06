@@ -130,7 +130,6 @@ def main() -> None:
     role = os.getenv("ORO_ROLE")
     is_worker = os.getenv("ORO_WORKER") == "1"
 
-    # Silent no-op for certain roles (checked below)
     if role == "architect":
         return
 
