@@ -1066,8 +1066,21 @@ func (d *Dispatcher) startHTTPServer() {
 //
 // Run blocks until ctx is cancelled.
 func (d *Dispatcher) Run(ctx context.Context) error {
+	// Defer-recover so a panic anywhere in Run() (or its synchronous callees)
+	// leaves a breadcrumb on disk before the process dies. Background loops
+	// are wrapped in safeGo and have their own panic handling; this catches
+	// the rest. Re-panic so callers / Go runtime still see the panic
+	// (oro-zxxn — silent dispatcher death gave us nothing to triage from).
+	defer func() {
+		if r := recover(); r != nil {
+			d.writeExitMarker("panic", fmt.Sprint(r), debug.Stack())
+			panic(r)
+		}
+	}()
+
 	lock, err := acquirePIDLock(d.cfg.DBPath)
 	if err != nil {
+		d.writeExitMarker("fatal", "acquirePIDLock: "+err.Error(), nil)
 		return err
 	}
 	defer func() { _ = lock.release() }()
@@ -1080,24 +1093,60 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 	d.mu.Unlock()
 
 	if err := d.startupRecovery(ctx); err != nil {
+		d.writeExitMarker("fatal", "startupRecovery: "+err.Error(), nil)
 		return err
 	}
 
 	ln, err := d.openSocket()
 	if err != nil {
+		d.writeExitMarker("fatal", "openSocket: "+err.Error(), nil)
 		return err
 	}
 
 	d.spawnBackgroundLoops(ctx, ln)
 
+	exitReason := "shutdownCh"
 	select {
 	case <-ctx.Done():
+		exitReason = "ctx_done"
 	case <-d.shutdownCh:
 	}
 
 	_ = ln.Close()
 	d.shutdownWithTimeout()
+	d.writeExitMarker("normal", exitReason, nil)
 	return nil
+}
+
+// writeExitMarker appends a timestamped line to dispatcher.exit.log alongside
+// the dispatcher DB. Last-resort breadcrumb when the dispatcher dies — events
+// table writes can fail during shutdown if SQLite is hosed, but a plain
+// os.OpenFile + Write is robust. Filed by oro-zxxn after a silent dispatcher
+// death on 2026-05-05 left no triage signal.
+//
+// kind is one of: "panic", "normal", "fatal". detail is a short human reason
+// (panic message, "ctx_done", "openSocket: ...", etc). stack is optional —
+// pass debug.Stack() inside a recover to capture goroutine state.
+func (d *Dispatcher) writeExitMarker(kind, detail string, stack []byte) {
+	if d == nil || d.cfg.DBPath == "" {
+		return
+	}
+	path := filepath.Join(filepath.Dir(d.cfg.DBPath), "dispatcher.exit.log")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // path derived from trusted d.cfg.DBPath set at dispatcher startup
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	ts := time.Now().UTC().Format(time.RFC3339Nano)
+	pid := os.Getpid()
+	_, _ = fmt.Fprintf(f, "%s pid=%d kind=%s detail=%q\n", ts, pid, kind, detail)
+	if len(stack) > 0 {
+		_, _ = f.Write(stack)
+		if stack[len(stack)-1] != '\n' {
+			_, _ = f.WriteString("\n")
+		}
+	}
+	_, _ = f.WriteString("---\n")
 }
 
 // startupRecovery initializes the schema, prunes orphaned worktrees, and runs
