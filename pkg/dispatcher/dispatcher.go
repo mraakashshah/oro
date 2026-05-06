@@ -598,6 +598,7 @@ type Dispatcher struct {
 	state                       State
 	listener                    net.Listener
 	focusedEpic                 string
+	focusVersion                uint64
 	targetWorkers               int
 	explicitScaleTarget         bool
 	completionsSinceConsolidate int // counts completed beads since last context consolidation
@@ -3301,9 +3302,10 @@ func (d *Dispatcher) assignLoopPoll(ctx context.Context) {
 //  4. unfocused epic children, oldest epic first (lower ID = older)
 //
 // Returns a snapshot of priorityBeads for cleanup.
-func (d *Dispatcher) sortBeadsByPriority(ctx context.Context, beads []protocol.Bead) map[string]bool {
+func (d *Dispatcher) sortBeadsByPriority(ctx context.Context, beads []protocol.Bead) (prioritySnapshot map[string]bool, focusVersion uint64) {
 	d.mu.Lock()
 	epic := d.focusedEpic
+	focusVersion = d.focusVersion
 	pbSnapshot := make(map[string]bool, len(d.priorityBeads))
 	for id := range d.priorityBeads {
 		pbSnapshot[id] = true
@@ -3337,7 +3339,7 @@ func (d *Dispatcher) sortBeadsByPriority(ctx context.Context, beads []protocol.B
 		}
 		return bi.Priority < bj.Priority
 	})
-	return pbSnapshot
+	return pbSnapshot, focusVersion
 }
 
 func (d *Dispatcher) focusedDescendants(ctx context.Context, beads []protocol.Bead, focusedEpic string) map[string]bool {
@@ -3424,7 +3426,7 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 
 	beads := d.filterAssignable(ctx, allBeads)
 
-	pbSnapshot := d.sortBeadsByPriority(ctx, beads)
+	pbSnapshot, focusVersion := d.sortBeadsByPriority(ctx, beads)
 	reservedTargets, hasPendingSpawnFor := d.reservedSpawnForTargets()
 
 	// Auto-scale: if we have assignable beads but no idle workers, scale up to MaxWorkers.
@@ -3443,8 +3445,8 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 		return
 	}
 
-	assignedBeads := d.assignTargetedIdleWorkers(ctx, idle, beads)
-	d.assignGeneralIdleWorkers(ctx, idle, beads, pbSnapshot, assignedBeads, reservedTargets)
+	assignedBeads := d.assignTargetedIdleWorkers(ctx, idle, beads, focusVersion)
+	d.assignGeneralIdleWorkers(ctx, idle, beads, pbSnapshot, assignedBeads, reservedTargets, focusVersion)
 }
 
 func (d *Dispatcher) reservedSpawnForTargets() (map[string]bool, bool) {
@@ -3541,7 +3543,7 @@ func isReservedBead(beadID string, reservedSets ...map[string]bool) bool {
 	return false
 }
 
-func (d *Dispatcher) assignTargetedIdleWorkers(ctx context.Context, idle []idleWorker, beads []protocol.Bead) map[string]bool {
+func (d *Dispatcher) assignTargetedIdleWorkers(ctx context.Context, idle []idleWorker, beads []protocol.Bead, focusVersion uint64) map[string]bool {
 	assignedBeads := make(map[string]bool)
 	beadsByID := make(map[string]protocol.Bead, len(beads))
 	for _, bead := range beads {
@@ -3556,7 +3558,7 @@ func (d *Dispatcher) assignTargetedIdleWorkers(ctx context.Context, idle []idleW
 		if !ok {
 			continue
 		}
-		_ = d.assignBead(ctx, candidate.worker, bead)
+		_ = d.assignBead(ctx, candidate.worker, bead, focusVersion)
 		d.mu.Lock()
 		if candidate.worker.state != protocol.WorkerIdle {
 			assignedBeads[bead.ID] = true
@@ -3568,7 +3570,7 @@ func (d *Dispatcher) assignTargetedIdleWorkers(ctx context.Context, idle []idleW
 	return assignedBeads
 }
 
-func (d *Dispatcher) assignGeneralIdleWorkers(ctx context.Context, idle []idleWorker, beads []protocol.Bead, pbSnapshot, assignedBeads, reservedTargets map[string]bool) {
+func (d *Dispatcher) assignGeneralIdleWorkers(ctx context.Context, idle []idleWorker, beads []protocol.Bead, pbSnapshot, assignedBeads, reservedTargets map[string]bool, focusVersion uint64) {
 	// Assign beads to idle workers. Advance the idle cursor only when a worker is
 	// actually claimed — epics skipped in assignBead leave the worker idle so the
 	// next bead in the list can still be paired with it.
@@ -3597,7 +3599,7 @@ func (d *Dispatcher) assignGeneralIdleWorkers(ctx context.Context, idle []idleWo
 		if idleIdx >= len(idle) {
 			break
 		}
-		_ = d.assignBead(ctx, idle[idleIdx].worker, bead)
+		_ = d.assignBead(ctx, idle[idleIdx].worker, bead, focusVersion)
 		// Advance idle cursor and clean up priority snapshot under a single lock.
 		d.mu.Lock()
 		if idle[idleIdx].worker.state != protocol.WorkerIdle {
@@ -4165,9 +4167,13 @@ func (d *Dispatcher) lazyCreateEpicBranch(ctx context.Context, beadID, baseBranc
 	return true
 }
 
-func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead protocol.Bead) error { //nolint:funlen,gocognit,gocyclo // orchestration logic, splitting would obscure flow
+func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersionOpt ...uint64) error { //nolint:funlen,gocognit,gocyclo // orchestration logic, splitting would obscure flow
 	if strings.TrimSpace(bead.ID) == "" {
 		return fmt.Errorf("assignBead: empty bead ID")
+	}
+	focusVersion := d.currentFocusVersion()
+	if len(focusVersionOpt) > 0 {
+		focusVersion = focusVersionOpt[0]
 	}
 
 	title, acceptance, ok := d.checkBeadReady(ctx, bead, w.id)
@@ -4178,6 +4184,10 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	// Epic routing: check children before proceeding (requires I/O, must be outside lock).
 	isEpicDecomp, skip := d.checkEpicAssignable(ctx, bead, w.id)
 	if skip {
+		return nil
+	}
+	if d.focusChangedSince(focusVersion) {
+		d.notifyAssignLoop()
 		return nil
 	}
 
@@ -4215,6 +4225,10 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		d.mu.Lock()
 		delete(d.assigningBeads, bead.ID)
 		d.mu.Unlock()
+		return nil
+	}
+	if d.focusChangedSince(focusVersion) {
+		d.abortAssignmentForFocusChange(ctx, bead.ID, w.id, "", false, 0)
 		return nil
 	}
 
@@ -4304,6 +4318,10 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		d.worktreeByBead[bead.ID] = worktree
 		d.mu.Unlock()
 	}
+	if d.focusChangedSince(focusVersion) {
+		d.abortAssignmentForFocusChange(ctx, bead.ID, w.id, worktree, existingWorktree == "", 0)
+		return nil
+	}
 
 	assignmentID, assignErr := d.createAssignment(ctx, bead.ID, w.id, worktree)
 	if assignErr != nil {
@@ -4319,6 +4337,10 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		d.mu.Lock()
 		delete(d.assigningBeads, bead.ID)
 		d.mu.Unlock()
+		return nil
+	}
+	if d.focusChangedSince(focusVersion) {
+		d.abortAssignmentForFocusChange(ctx, bead.ID, w.id, worktree, existingWorktree == "", assignmentID)
 		return nil
 	}
 	_ = d.logEvent(ctx, "assign", "dispatcher", bead.ID, w.id,
@@ -4395,6 +4417,38 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		_ = d.logEvent(ctx, "worktree_cleanup", "dispatcher", bead.ID, w.id, err.Error())
 	}
 	return nil
+}
+
+func (d *Dispatcher) focusChangedSince(version uint64) bool {
+	d.mu.Lock()
+	changed := d.focusVersion != version
+	d.mu.Unlock()
+	return changed
+}
+
+func (d *Dispatcher) currentFocusVersion() uint64 {
+	d.mu.Lock()
+	version := d.focusVersion
+	d.mu.Unlock()
+	return version
+}
+
+func (d *Dispatcher) abortAssignmentForFocusChange(ctx context.Context, beadID, workerID, worktree string, removeWorktree bool, assignmentID int64) {
+	if assignmentID != 0 {
+		_ = d.completeAssignment(ctx, assignmentID, beadID)
+	}
+	_ = d.updateBeadStatus(ctx, beadID, "open")
+	if removeWorktree && worktree != "" {
+		_ = d.worktrees.Remove(ctx, worktree)
+		d.mu.Lock()
+		delete(d.worktreeByBead, beadID)
+		d.mu.Unlock()
+	}
+	d.mu.Lock()
+	delete(d.assigningBeads, beadID)
+	d.mu.Unlock()
+	_ = d.logEvent(ctx, "assignment_aborted_focus_changed", "dispatcher", beadID, workerID, "")
+	d.notifyAssignLoop()
 }
 
 func (d *Dispatcher) searchCodeInWorkdir(ctx context.Context, query string, topK int, worktree string) ([]SearchResult, error) {
@@ -4633,6 +4687,7 @@ func (d *Dispatcher) applyFocus(args string) (string, error) {
 	}
 	d.mu.Lock()
 	d.focusedEpic = epic
+	d.focusVersion++
 	d.mu.Unlock()
 	if d.GetState() != StateRunning {
 		d.setState(StateRunning)

@@ -6229,6 +6229,69 @@ func TestDispatcher_FocusDirectiveImmediateStopsNonFocusedWorkers(t *testing.T) 
 	}
 }
 
+func TestDispatcher_FocusImmediatePreemptsAssignedNonFocusedWorker(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+
+	createStarted := make(chan struct{})
+	releaseCreate := make(chan struct{})
+	var startedOnce sync.Once
+	wtMgr.createFn = func(ctx context.Context, beadID, baseBranch string) (string, string, error) {
+		if beadID == "bead-other" {
+			startedOnce.Do(func() { close(createStarted) })
+			select {
+			case <-releaseCreate:
+			case <-ctx.Done():
+				return "", "", ctx.Err()
+			}
+		}
+		return "/tmp/worktree-" + beadID, protocol.BranchPrefix + beadID, nil
+	}
+
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-other", Title: "Other work", Priority: 1, Epic: "epic-aaa"},
+		{ID: "bead-focus", Title: "Focused work", Priority: 1, Epic: "epic-focus"},
+	})
+
+	startDispatcher(t, d)
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendDirective(t, d.cfg.SocketPath, "start")
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	select {
+	case <-createStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected non-focused assignment to begin before focus directive")
+	}
+
+	ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "focus", "--immediate epic-focus")
+	if !ack.OK {
+		t.Fatalf("expected OK=true, got false, detail: %s", ack.Detail)
+	}
+	close(releaseCreate)
+
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected assignment after focus change")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+	if msg.Assign.BeadID != "bead-focus" {
+		t.Fatalf("assigned bead = %s, want focused bead-focus", msg.Assign.BeadID)
+	}
+
+	beadSrc.mu.Lock()
+	otherStatus := beadSrc.updated["bead-other"]
+	beadSrc.mu.Unlock()
+	if otherStatus != "open" {
+		t.Fatalf("non-focused in-flight bead status = %q, want open", otherStatus)
+	}
+}
+
 func TestDispatcher_FocusDirectiveStandardDoesNotPreempt(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
@@ -17189,7 +17252,7 @@ func TestSortBeadsByPriority_EpicFinishing(t *testing.T) {
 			{ID: "b-focus-p1", Priority: 1, Epic: "epic-focus"},
 		}
 
-		d.sortBeadsByPriority(context.Background(), beads)
+		_, _ = d.sortBeadsByPriority(context.Background(), beads)
 
 		want := []string{
 			"b-spawn-p0",    // group 1: spawn-for, P0
@@ -17230,7 +17293,7 @@ func TestSortBeadsByPriority_EpicFinishing(t *testing.T) {
 			{ID: "p1", Priority: 1, Epic: ""},
 		}
 
-		d.sortBeadsByPriority(context.Background(), beads)
+		_, _ = d.sortBeadsByPriority(context.Background(), beads)
 
 		want := []string{"p0", "p1", "p2"}
 		for i, id := range want {
@@ -17264,7 +17327,7 @@ func TestSortBeadsByPriority_EpicFinishing(t *testing.T) {
 			{ID: "nested-p2", Priority: 2, Epic: "epic-child"},
 		}
 
-		d.sortBeadsByPriority(context.Background(), beads)
+		_, _ = d.sortBeadsByPriority(context.Background(), beads)
 
 		if got := beads[0].ID; got != "nested-p2" {
 			t.Fatalf("first bead after focused sort = %q, want nested descendant nested-p2", got)
@@ -17280,7 +17343,7 @@ func TestSortBeadsByPriority_EpicFinishing(t *testing.T) {
 			{ID: "p1", Priority: 1, Epic: "epic-one"},
 		}
 
-		d.sortBeadsByPriority(context.Background(), beads)
+		_, _ = d.sortBeadsByPriority(context.Background(), beads)
 
 		want := []string{"p0", "p1", "p2"}
 		for i, id := range want {
