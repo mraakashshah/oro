@@ -252,12 +252,66 @@ context_pct_writer.main()
             Path(transcript_path).unlink(missing_ok=True)
 
 
-def test_writes_both_pane_and_worktree_when_both_set():
-    """Hook should write to both locations when both ORO_ROLE and ORO_WORKER are set.
+def test_architect_role_is_silent_noop():
+    """Hook should silently return early when ORO_ROLE=architect.
+
+    Given: ORO_ROLE=architect
+    When: Hook runs after a tool use
+    Then: Should return silently without writing pane files, no stderr
+    """
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        transcript_path = f.name
+        entry = {
+            "message": {
+                "model": "claude-sonnet-4-5",
+                "usage": {"input_tokens": 60000, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+            }
+        }
+        f.write(json.dumps(entry) + "\n")
+
+    with tempfile.TemporaryDirectory() as panes_dir:
+        try:
+            hook_input = {"transcript_path": transcript_path, "budget": 200_000}
+
+            env = os.environ.copy()
+            env["ORO_ROLE"] = "architect"
+            env.pop("ORO_WORKER", None)
+            env["PYTHONPATH"] = HOOKS_DIR
+
+            result = subprocess.run(
+                [
+                    "python3",
+                    "-c",
+                    f'''
+import context_pct_writer
+context_pct_writer.PANES_DIR = "{panes_dir}"
+context_pct_writer.main()
+''',
+                ],
+                input=json.dumps(hook_input),
+                capture_output=True,
+                text=True,
+                timeout=5,
+                env=env,
+            )
+
+            assert result.returncode == 0, f"Hook failed: {result.stderr}"
+            assert result.stderr == "", f"Architect role should emit no stderr, got: {result.stderr}"
+
+            # Pane file should NOT exist
+            pane_dir = Path(panes_dir) / "architect"
+            assert not pane_dir.exists(), "Architect role should NOT write pane directory"
+
+        finally:
+            Path(transcript_path).unlink(missing_ok=True)
+
+
+def test_architect_role_silent_noop_even_with_worker():
+    """Hook with ORO_ROLE=architect should still be silent no-op, even if ORO_WORKER=1.
 
     Given: ORO_ROLE=architect AND ORO_WORKER=1
     When: Hook runs after a tool use
-    Then: Should write to both ~/.oro/panes/<role>/context_pct AND CWD/.oro/context_pct
+    Then: Should NOT write to pane, but SHOULD still write to CWD/.oro/context_pct (worker path)
     """
     with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
         transcript_path = f.name
@@ -297,10 +351,69 @@ context_pct_writer.main()
             )
 
             assert result.returncode == 0, f"Hook failed: {result.stderr}"
+            assert result.stderr == "", f"Architect role should emit no stderr, got: {result.stderr}"
+
+            # Pane file should NOT exist
+            pane_dir = Path(panes_dir) / "architect"
+            assert not pane_dir.exists(), "Architect role should NOT write pane directory even with ORO_WORKER=1"
+
+            # But worktree file should NOT exist either (architect role is a silent no-op)
+            wt_file = Path(work_dir) / ".oro" / "context_pct"
+            assert not wt_file.exists(), "Architect role should not write worktree file either (silent no-op)"
+
+        finally:
+            Path(transcript_path).unlink(missing_ok=True)
+
+
+def test_writes_both_pane_and_worktree_when_both_set():
+    """Hook should write to both locations when both ORO_ROLE and ORO_WORKER are set (non-architect).
+
+    Given: ORO_ROLE=manager AND ORO_WORKER=1
+    When: Hook runs after a tool use
+    Then: Should write to both ~/.oro/panes/<role>/context_pct AND CWD/.oro/context_pct
+    """
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        transcript_path = f.name
+        entry = {
+            "message": {
+                "model": "claude-sonnet-4-5",
+                "usage": {"input_tokens": 60000, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+            }
+        }
+        f.write(json.dumps(entry) + "\n")
+
+    with tempfile.TemporaryDirectory() as work_dir, tempfile.TemporaryDirectory() as panes_dir:
+        try:
+            hook_input = {"transcript_path": transcript_path, "budget": 200_000}
+
+            env = os.environ.copy()
+            env["ORO_ROLE"] = "manager"
+            env["ORO_WORKER"] = "1"
+            env["PYTHONPATH"] = HOOKS_DIR
+
+            result = subprocess.run(
+                [
+                    "python3",
+                    "-c",
+                    f'''
+import context_pct_writer
+context_pct_writer.PANES_DIR = "{panes_dir}"
+context_pct_writer.main()
+''',
+                ],
+                input=json.dumps(hook_input),
+                capture_output=True,
+                text=True,
+                timeout=5,
+                env=env,
+                cwd=work_dir,
+            )
+
+            assert result.returncode == 0, f"Hook failed: {result.stderr}"
 
             # Pane file should exist
-            pane_file = Path(panes_dir) / "architect" / "context_pct"
-            assert pane_file.exists(), "Hook should write pane context_pct when ORO_ROLE set"
+            pane_file = Path(panes_dir) / "manager" / "context_pct"
+            assert pane_file.exists(), "Hook should write pane context_pct when ORO_ROLE set (non-architect)"
 
             # Worktree file should also exist
             wt_file = Path(work_dir) / ".oro" / "context_pct"

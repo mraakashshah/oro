@@ -10,7 +10,7 @@ Input: JSON on stdin with transcript_path, tool_name, tool_input, etc.
 Output: Silent (no stdout). Best-effort file write.
 
 Environment:
-  ORO_ROLE: Role name (architect/manager/main). Writes to pane file when set.
+  ORO_ROLE: Role name (manager/main). Writes to pane file when set.
     Defaults to "main" when neither ORO_ROLE nor ORO_WORKER is set.
   ORO_WORKER: Set to "1" for worker processes. Writes to CWD/.oro/context_pct.
 
@@ -129,6 +129,10 @@ def main() -> None:
     """Main entry point."""
     role = os.getenv("ORO_ROLE")
     is_worker = os.getenv("ORO_WORKER") == "1"
+
+    # Silent no-op for certain roles (checked below)
+    if role == "architect":
+        return
 
     # Default to "main" role for interactive sessions (no ORO_ROLE, no ORO_WORKER)
     if not role and not is_worker:
