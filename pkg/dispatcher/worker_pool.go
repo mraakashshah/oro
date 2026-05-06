@@ -498,10 +498,13 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 	stuckWorkers, stuckManagedExits := d.removeStuckWorkersLocked(ctx, stuck, now)
 	newManagedExits := deadManagedExits + stuckManagedExits
 	d.unexpectedManagedExits += newManagedExits
+	hasManagedIdle := d.hasManagedIdleWorkersLocked()
 	d.mu.Unlock()
 
-	// Wake the assign loop so reconcileScale can spawn replacements immediately.
-	if len(deadWorkers)+len(stuckWorkers) > 0 {
+	// Wake the assign loop so reconcileScale can spawn replacements immediately,
+	// and so idle managed workers pick up newly-ready beads without waiting for
+	// the next poll tick (oro-ntr3).
+	if len(deadWorkers)+len(stuckWorkers) > 0 || hasManagedIdle {
 		d.notifyAssignLoop()
 	}
 
@@ -510,6 +513,15 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 
 	// Kill OS processes for timed-out managed workers (best-effort, outside lock).
 	d.killManagedWorkers(managedWorkerIDs(deadWorkers, stuckWorkers))
+}
+
+func (d *Dispatcher) hasManagedIdleWorkersLocked() bool {
+	for _, w := range d.workers {
+		if w.managed && !w.spawnFor && w.state == protocol.WorkerIdle {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *Dispatcher) collectTimedOutWorkersLocked(now time.Time) (dead, stuck, stoppedSpawnFor []string) {
