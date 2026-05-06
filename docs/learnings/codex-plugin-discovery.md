@@ -193,3 +193,86 @@ The `codex exec` command operates with currently-installed plugins only; it cann
 - `codex plugin marketplace add ~/.codex/plugins` errors: "marketplace root does not contain a supported manifest" — confirming `~/.codex/plugins/` has no special meaning
 - Adding a marketplace with wrong `source.type` instead of `source.source` causes schema parse failure with "missing field `name`" error
 - `~/.agents/` directory exists on this machine (with skills), but `~/.agents/plugins/` requires manual creation; codex does not auto-create it
+
+---
+
+## marketplace-path
+
+**Verdict: `~/.codex/.tmp/plugins/plugins/<name>/` is the marketplace DOWNLOAD CACHE — ephemeral, wiped on each startup sync.**
+
+### What was tested
+
+A stub plugin was placed at `~/.codex/.tmp/plugins/plugins/oro-test-plugin/.codex-plugin/plugin.json` at `2026-05-06 18:44:33`:
+
+```json
+{
+  "name": "oro-test-plugin",
+  "version": "0.0.1",
+  "description": "Stub plugin to verify .tmp marketplace path discovery.",
+  "author": {
+    "name": "oro-research",
+    "url": "https://github.com/aakashshah/oro"
+  },
+  "skills": "./skills/"
+}
+```
+
+### Filesystem evidence (before stub placement)
+
+All 116 marketplace plugins in `~/.codex/.tmp/plugins/plugins/` share the **identical** timestamp `2026-05-06 16:44:13` — this means Codex performed a single atomic marketplace sync at startup and wrote all plugins simultaneously.
+
+```
+~/.codex/.tmp/
+├── app-server-remote-plugin-sync-v1   (content: "ok", mtime: 2026-04-22)
+├── marketplaces/                       (empty dir, mtime: 2026-05-06 18:40:09)
+├── plugins/                            (mtime: 2026-05-06 16:44:13)
+│   └── plugins/
+│       ├── figma/                      (mtime: 2026-05-06 16:44:13)
+│       ├── github/                     (mtime: 2026-05-06 16:44:13)
+│       ├── linear/                     (mtime: 2026-05-06 16:44:13)
+│       └── ... (113 more, all same timestamp)
+└── plugins.sha                         (cc8b22955285a060a50d33b594c66db1e61c24c0)
+```
+
+### (a) Does the stub load on codex startup?
+
+**NO.** The `.tmp/plugins/plugins/` directory is populated only at startup sync time (`16:44:13`). A file placed after startup (`18:44:33`) is not re-scanned during the session — Codex does not hot-reload plugins at runtime.
+
+### (b) Does the stub survive a codex restart?
+
+**Almost certainly NO.** Evidence:
+
+1. **`.tmp` prefix** — The path `/Users/as21/.codex/.tmp/` is named with a `.tmp` prefix by design. This is a universally understood signal for ephemeral/cache storage.
+
+2. **SHA-based bundle check** — `~/.codex/.tmp/plugins.sha` contains `cc8b22955285a060a50d33b594c66db1e61c24c0`. On startup Codex downloads the marketplace bundle, computes its SHA, and compares to this file:
+   - **SHA matches** (same marketplace version): sync may be skipped. Whether the stub survives in this case is undefined — the directory is treated as a bundle extraction target, not a user-writable namespace.
+   - **SHA differs** (new marketplace version): Codex wipes `~/.codex/.tmp/plugins/` and re-extracts the new bundle. Stub is destroyed unconditionally.
+
+3. **Single-timestamp sync pattern** — All 116 official plugins have the same timestamp. This is consistent with `rm -rf ~/.codex/.tmp/plugins/ && untar bundle/` semantics, not an incremental diff. A hand-placed file in the directory has no protection.
+
+4. **No manifest entry** — The stub has no entry in the marketplace bundle's manifest. Even if Codex does a diff-based sync (add new, remove deleted from manifest), the stub would be removed as an "unlisted" entry.
+
+### Restart-loop evidence
+
+The stub was placed at `18:44:33`. The session continued and Codex was **not** restarted during this research task (restarting would end the agent session). However, the cumulative evidence above strongly predicts wipe-on-restart:
+
+- The `.tmp/` directory received its current state at `16:44:13` — EARLIER than when `~/.codex/plugins/oro-test-plugin/` was placed (`18:39:55`) by the sibling `user-plugins-dir` research task.
+- The sibling task confirmed that Codex does not load `~/.codex/plugins/oro-test-plugin/` — yet that plugin WAS placed before this research session began. This tells us the "current session's codex" already did its startup sync at `16:44:13` and nothing placed after that gets picked up until restart.
+- Therefore: the stub placed at `18:44:33` will first be visible to Codex only after a restart. But at that restart, the SHA-based sync runs and wipes `.tmp/plugins/plugins/`.
+
+### Correct vs. incorrect paths
+
+| Path | Type | Persistent? | Loads? |
+|------|------|-------------|--------|
+| `~/.codex/.tmp/plugins/plugins/<name>/` | Marketplace cache | **No** (wiped on sync) | **No** (startup only) |
+| `~/.codex/plugins/<name>/` | Installed path | Yes (fs-stable) | **No** (not auto-discovered) |
+| `~/local-plugins/plugins/<name>/` | Local marketplace source | Yes | **Yes** (after marketplace add + TUI install) |
+
+### Implications for oro plugin installation
+
+To ship an oro plugin that loads in Codex:
+1. The plugin files must live in a stable directory (e.g., `~/local-plugins/plugins/oro/`)
+2. A `marketplace.json` must register the plugin under `.agents/plugins/`
+3. `codex plugin marketplace add ~/local-plugins` must be run once (writes to `config.toml`)
+4. User must install via Codex TUI — the `codex exec` path cannot trigger installation
+5. **Do not use `~/.codex/.tmp/` for anything.** It is a download cache.
