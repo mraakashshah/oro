@@ -3,6 +3,7 @@ package dispatcher //nolint:testpackage // white-box: asserts abandonStaleActive
 import (
 	"context"
 	"testing"
+	"time"
 
 	"oro/pkg/protocol"
 )
@@ -97,6 +98,48 @@ func TestAbandonStaleActiveAssignments_ResetsOpenBeads(t *testing.T) {
 	if live != "" {
 		t.Errorf("bead-live: expected no Update (live worker still connected), got %q", live)
 	}
+}
+
+func TestStaleAssignmentSweepRepeatsAfterStartupGrace(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	d.cfg.HeartbeatTimeout = 20 * time.Millisecond
+
+	beadSrc.mu.Lock()
+	beadSrc.shown = map[string]*protocol.BeadDetail{
+		"bead-late-open": {ID: "bead-late-open", Status: "open"},
+	}
+	beadSrc.mu.Unlock()
+
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	// Let the startup grace and one-shot sweep pass before seeding the stale
+	// row. This reproduces a worker that dies later in a long-lived dispatcher.
+	time.Sleep(4 * d.cfg.HeartbeatTimeout)
+
+	mustExec(t, d, `INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?,?,?,?)`,
+		"bead-late-open", "dead-worker-late", "/tmp/wt-late-open", "active")
+
+	deadline := time.Now().Add(10 * d.cfg.HeartbeatTimeout)
+	for time.Now().Before(deadline) {
+		var status string
+		if err := d.db.QueryRowContext(ctx,
+			`SELECT status FROM assignments WHERE bead_id='bead-late-open'`).Scan(&status); err != nil {
+			t.Fatalf("query late assignment: %v", err)
+		}
+		if status == "abandoned" {
+			return
+		}
+		time.Sleep(d.cfg.HeartbeatTimeout / 2)
+	}
+
+	var status string
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT status FROM assignments WHERE bead_id='bead-late-open'`).Scan(&status); err != nil {
+		t.Fatalf("query late assignment after deadline: %v", err)
+	}
+	t.Fatalf("late stale assignment status = %q, want abandoned by recurring sweep", status)
 }
 
 func mustExec(t *testing.T, d *Dispatcher, query string, args ...any) {

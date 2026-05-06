@@ -1118,21 +1118,7 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 
 	d.spawnBackgroundLoops(ctx, ln)
 
-	// Sweep stale active assignments after a grace window so any worker
-	// that survives the dispatcher restart and is going to reconnect has
-	// time to do so. Anything still pointing at a disconnected worker is
-	// abandoned, returning the bead to the ready queue (oro-tczh).
-	graceWindow := 3 * d.cfg.HeartbeatTimeout
-	d.safeGo(func() {
-		select {
-		case <-time.After(graceWindow):
-		case <-ctx.Done():
-			return
-		case <-d.shutdownCh:
-			return
-		}
-		d.abandonStaleActiveAssignments(ctx)
-	})
+	d.safeGo(func() { d.staleAssignmentSweepLoop(ctx) })
 
 	exitReason := "shutdownCh"
 	select {
@@ -6308,6 +6294,35 @@ func (d *Dispatcher) processQuarantined(ctx context.Context, quarantined []quara
 			fmt.Sprintf(`{"assignment_id":%d,"reason":%q}`, q.id, q.reason))
 	}
 	return nil
+}
+
+// staleAssignmentSweepLoop sweeps stale active assignments after a startup
+// grace window, then keeps sweeping periodically for long-lived dispatcher
+// sessions. The initial grace preserves time for workers from a surviving
+// restart to reconnect before their assignments are considered stale.
+func (d *Dispatcher) staleAssignmentSweepLoop(ctx context.Context) {
+	graceWindow := 3 * d.cfg.HeartbeatTimeout
+	select {
+	case <-time.After(graceWindow):
+	case <-ctx.Done():
+		return
+	case <-d.shutdownCh:
+		return
+	}
+	d.abandonStaleActiveAssignments(ctx)
+
+	ticker := time.NewTicker(d.cfg.HeartbeatTimeout)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			d.abandonStaleActiveAssignments(ctx)
+		case <-ctx.Done():
+			return
+		case <-d.shutdownCh:
+			return
+		}
+	}
 }
 
 // abandonStaleActiveAssignments walks every status='active' assignment row
