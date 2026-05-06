@@ -4700,7 +4700,7 @@ func (d *Dispatcher) preemptWorkersOutsideFocus(ctx context.Context, focusedEpic
 		if d.beadIsFocusedDescendant(ctx, candidate.beadID, focusedEpic, parentCache) {
 			continue
 		}
-		if d.preemptWorkerIfStillOnBead(ctx, candidate.workerID, candidate.beadID, "focus --immediate") {
+		if d.restartWorkerIfStillOnBead(ctx, candidate.workerID, candidate.beadID, "focus --immediate") {
 			preempted++
 		}
 	}
@@ -4730,24 +4730,39 @@ func (d *Dispatcher) beadIsFocusedDescendant(ctx context.Context, beadID, focuse
 	return d.isFocusedDescendant(ctx, bead.Epic, focusedEpic, parentCache)
 }
 
-func (d *Dispatcher) preemptWorkerIfStillOnBead(ctx context.Context, workerID, beadID, reason string) bool {
+func (d *Dispatcher) restartWorkerIfStillOnBead(ctx context.Context, workerID, beadID, reason string) bool {
 	d.mu.Lock()
 	worker, ok := d.workers[workerID]
 	if !ok || worker.beadID != beadID || !preemptableWorkerState(worker.state) {
 		d.mu.Unlock()
 		return false
 	}
-	prevState := worker.state
-	worker.state = protocol.WorkerPreempting
-	msg := protocol.Message{Type: protocol.MsgPreempt}
-	if err := d.sendToWorker(worker, msg); err != nil {
-		worker.state = prevState
-		d.mu.Unlock()
-		return false
+	assignmentID := worker.assignmentID
+	wasManaged := worker.managed
+	_ = worker.conn.Close()
+	delete(d.workers, workerID)
+	if wasManaged {
+		d.pendingManagedIDs[workerID] = true
+		d.pendingManagedSince[workerID] = d.nowFunc()
 	}
+	procMgr := d.procMgr
 	d.mu.Unlock()
-	_ = d.logEvent(ctx, "worker_preempted", "dispatcher", beadID, workerID,
+
+	if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
+		_ = d.logEvent(ctx, "focus_immediate_bead_reset_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"error":%q}`, err.Error()))
+	}
+	d.clearBeadTracking(beadID)
+	_ = d.completeAssignment(ctx, assignmentID, beadID)
+	_ = d.logEvent(ctx, "worker_restarted", "dispatcher", beadID, workerID,
 		fmt.Sprintf(`{"reason":%q}`, reason))
+
+	if procMgr != nil {
+		if _, err := procMgr.Spawn(workerID); err != nil {
+			_ = d.logEvent(ctx, "worker_spawn_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"error":%q}`, err.Error()))
+		}
+	}
 	return true
 }
 

@@ -6140,7 +6140,7 @@ func TestDispatcher_FocusDirective_ClearsEpic(t *testing.T) {
 	}
 }
 
-func TestDispatcher_FocusDirectiveImmediatePreemptsNonFocusedWorkers(t *testing.T) {
+func TestDispatcher_FocusDirectiveImmediateStopsNonFocusedWorkers(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
@@ -6166,6 +6166,7 @@ func TestDispatcher_FocusDirectiveImmediatePreemptsNonFocusedWorkers(t *testing.
 		conn:    otherConn,
 		state:   protocol.WorkerBusy,
 		beadID:  "bead-other",
+		managed: true,
 		encoder: json.NewEncoder(otherConn),
 	}
 	d.workers["worker-nested"] = &trackedWorker{
@@ -6187,7 +6188,8 @@ func TestDispatcher_FocusDirectiveImmediatePreemptsNonFocusedWorkers(t *testing.
 
 	d.mu.Lock()
 	focusedState := d.workers["worker-focused"].state
-	otherState := d.workers["worker-other"].state
+	_, otherExists := d.workers["worker-other"]
+	_, pendingManaged := d.pendingManagedIDs["worker-other"]
 	nestedState := d.workers["worker-nested"].state
 	epic := d.focusedEpic
 	d.mu.Unlock()
@@ -6201,8 +6203,11 @@ func TestDispatcher_FocusDirectiveImmediatePreemptsNonFocusedWorkers(t *testing.
 	if nestedState != protocol.WorkerReviewing {
 		t.Fatalf("nested focused worker state = %s, want reviewing", nestedState)
 	}
-	if otherState != protocol.WorkerPreempting {
-		t.Fatalf("non-focused worker state = %s, want preempting", otherState)
+	if otherExists {
+		t.Fatal("non-focused worker still exists after immediate focus, want removed/restarted")
+	}
+	if !pendingManaged {
+		t.Fatal("non-focused managed worker was not marked pending for respawn")
 	}
 	if len(focusedConn.written) != 0 {
 		t.Fatalf("focused worker received %d messages, want none", len(focusedConn.written))
@@ -6210,15 +6215,17 @@ func TestDispatcher_FocusDirectiveImmediatePreemptsNonFocusedWorkers(t *testing.
 	if len(nestedConn.written) != 0 {
 		t.Fatalf("nested focused worker received %d messages, want none", len(nestedConn.written))
 	}
-	if len(otherConn.written) != 1 {
-		t.Fatalf("non-focused worker received %d messages, want PREEMPT", len(otherConn.written))
+	if len(otherConn.written) != 0 {
+		t.Fatalf("non-focused worker received %d messages, want connection close without PREEMPT", len(otherConn.written))
 	}
-	var msg protocol.Message
-	if err := json.Unmarshal(otherConn.written[0], &msg); err != nil {
-		t.Fatalf("unmarshal preempt message: %v", err)
+	if !otherConn.closed {
+		t.Fatal("non-focused worker connection was not closed")
 	}
-	if msg.Type != protocol.MsgPreempt {
-		t.Fatalf("message type = %s, want %s", msg.Type, protocol.MsgPreempt)
+	beadSrc.mu.Lock()
+	gotStatus := beadSrc.updated["bead-other"]
+	beadSrc.mu.Unlock()
+	if gotStatus != "open" {
+		t.Fatalf("non-focused bead status = %q, want open", gotStatus)
 	}
 }
 
