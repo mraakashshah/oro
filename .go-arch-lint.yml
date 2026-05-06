@@ -17,6 +17,8 @@ components:
     in: internal/**
   pkg:
     in: pkg/**
+  tests:
+    in: tests/**
 
 deps:
   cmd:
@@ -29,4 +31,9 @@ deps:
       - pkg
   pkg:
     mayDependOn:
+      - pkg
+  tests:
+    mayDependOn:
+      - cmd
+      - internal
       - pkg

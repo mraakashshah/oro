@@ -75,7 +75,7 @@ Every call site that previously hit `Tier.DefaultModel()` or `Bead.ResolveModel(
 The spec previously implied changing `Tier.DefaultModel()` was sufficient. It is not. Every site that picks a model must move to `agentmodel`:
 
 - `pkg/protocol/types.go:108` — delete `Tier.DefaultModel()` entirely
-- `pkg/protocol/types.go:158` — `Bead.ResolveModel()` becomes a back-compat shim that delegates to `agentmodel.ResolveForBead(role="worker", bead)` only when called from legacy code paths
+- `pkg/protocol/types.go:158` — `Bead.ResolveModel()` becomes a pure shim that returns `b.Model` only. It does NOT delegate to agentmodel. Tier-aware resolution moves to call sites.
 - `cmd/oro/cmd_work.go:288` — direct `protocol.DefaultModel` fallback replaced with `agentmodel.ResolveForBead(role="worker", bead)`
 - `cmd/oro/cmd_work.go:409, 726` — QG/review retry escalation must update the resolved (runtime, model) pair, not just the model variable
 - `pkg/dispatcher/dispatcher.go:4324` — assignment payload construction must carry runtime+model, not just model (see "AssignPayload Schema Change" below)
@@ -297,7 +297,7 @@ The current worker process is bound to one runtime via `cmd/oro/cmd_worker.go:55
 - `pkg/protocol/types.go` — `AssignPayload` struct adds `Runtime string` field alongside `Model`.
 - `cmd/oro/cmd_worker.go` — instantiate Claude AND Codex spawners on startup; route per-assignment based on `payload.Runtime`.
 - `pkg/worker/worker.go` — `Spawn()` accepts a runtime+model pair, not just model. Existing `ClaudeSpawner` / Codex adapter implementations remain; the dispatcher selects which one to call.
-- Backward compat: when `payload.Runtime == ""`, fall back to `agentmodel.ResolveForBead(role, bead)` resolution at the worker side; if that also returns empty, use `agentruntime.ReadRuntime()` as the final shim.
+- Backward compat: when `payload.Runtime == ""` (stale dispatcher pre-migration), the worker MUST NOT call `agentmodel` — it has no config layer. It logs a warning and falls back to `agentruntime.ReadRuntime()` for runtime and the existing `cfg.bead.Model` / `protocol.DefaultModel` chain at `pkg/worker/worker.go:519` for model. This shim survives one release after rollout, then is removed.
 
 ### Auxiliary roles
 
@@ -305,7 +305,7 @@ These currently call `agentruntime.ReadRuntime()` as a global switch (line numbe
 
 - `pkg/codesearch/claude_spawner.go:16, 34, 41, 51, 77` — drop `codexRerankModel` const and hardcoded `--model haiku`; `BuildCmdInWorkdir` must accept a role name (default `"codesearch_reranker"`); resolve runtime+model via `ResolveForRole`. Branch on resolved runtime, not on `ReadRuntime()`.
 - `pkg/memory/extract_llm.go:25–26, 68, 128, 141` — drop `extractionModel` and `codexExtractionModel` consts; `spawnCommand` must accept a role name (default `"memory_extractor"`); resolve via `ResolveForRole`. The legacy switch on `"haiku"|"sonnet"|"opus"` becomes a tier-mapping switch.
-- `pkg/dispatcher/estimate.go:18, 47-53` — drop `estimatorModel` const; load `roles.estimator.model` from config at construction; provider stays pinned to Anthropic (transport=api). When `ANTHROPIC_API_KEY` is unset OR resolved model is non-Anthropic, return the existing zero-estimate fallback.
+- `pkg/dispatcher/estimate.go:18, 47-53` — drop `estimatorModel` const; load `roles.estimator.api_model` (which references a key in `agent.api_models`) at construction; provider stays pinned to Anthropic (transport=api). When `ANTHROPIC_API_KEY` is unset OR resolved model is non-Anthropic, return the existing zero-estimate fallback.
 
 ### Asset & hook layer
 
@@ -443,7 +443,7 @@ Two-phase rollout to avoid breaking installed projects:
 | Wizard breaks non-interactive `oro init` (CI, Docker, scripts) | Auto-detect non-TTY via existing `mattn/go-isatty` (already a dep); `--skip-wizard` as explicit escape hatch |
 | Adding config dependency to `pkg/protocol` creates import cycle | New `pkg/agentmodel` package owns resolution; `protocol` stays leaf |
 | Worker process bound to one runtime breaks mixing claim | `AssignPayload` carries Runtime; worker holds both spawners and selects per-assignment |
-| Legacy bead hydration pins `Bead.Model="opus"` and bypasses tier resolution | Hydration converts legacy `opus|sonnet|haiku` to `Bead.Tier`, leaving `Bead.Model` empty |
+| Legacy bead hydration pins `Bead.Model="opus"` and bypasses tier resolution | Hydration converts legacy Claude model names to `Bead.Tier`, leaving `Bead.Model` empty |
 | `oro init` overwrites config and drops user-edited blocks | Wizard uses node-level YAML edit (yaml.v3 Node API); round-trip test required |
 | `--no-config` flag conflicts with init's stealth/local handling | Flag dropped from spec; only `--skip-wizard` added; existing `--check`/`--quiet`/`--local`/`--project-root` preserved |
 | `oro config models` namespace conflicts with existing `oro models` (ONNX) | Wizard subcommand is `oro config wizard` under a new `oro config` parent |

@@ -25,8 +25,8 @@ make -C "$repo_root" build >/dev/null
 
 ORO_BIN="$repo_root/oro"
 if [[ ! -x "$ORO_BIN" ]]; then
-  echo "FATAL: oro binary not found at $ORO_BIN after make build" >&2
-  exit 2
+	echo "FATAL: oro binary not found at $ORO_BIN after make build" >&2
+	exit 2
 fi
 
 # Hermetic temp DB so this script does not touch the live bead store.
@@ -40,9 +40,9 @@ export ORO_PROJECT=""
 # find_first_bead <type> [<parent_id>] — print the ID of the first bead matching
 # type (and optional parent_id), or empty if none. Reads `oro bead list --json`.
 find_first_bead() {
-  local want_type="$1"
-  local want_parent="${2:-}"
-  python3 -c '
+	local want_type="$1"
+	local want_parent="${2:-}"
+	python3 -c '
 import json, sys
 beads = json.load(sys.stdin)
 want_type, want_parent = sys.argv[1], sys.argv[2] or None
@@ -57,14 +57,14 @@ for b in beads:
 }
 
 assert_eq() {
-  local label="$1"
-  local got="$2"
-  local want="$3"
-  if [[ "$got" != "$want" ]]; then
-    echo "FAIL: $label = '$got', want '$want'" >&2
-    exit 1
-  fi
-  echo "PASS: $label = '$got'"
+	local label="$1"
+	local got="$2"
+	local want="$3"
+	if [[ "$got" != "$want" ]]; then
+		echo "FAIL: $label = '$got', want '$want'" >&2
+		exit 1
+	fi
+	echo "PASS: $label = '$got'"
 }
 
 # ------------------------------------------------------------------
@@ -79,9 +79,9 @@ echo "    EPIC=$EPIC"
 # ------------------------------------------------------------------
 echo "==> Step 2: batch 6 children under epic"
 for i in 1 2 3 4 5 6; do
-  "$ORO_BIN" bead create \
-    --title="child-$i" --type=task --parent="$EPIC" \
-    --acceptance-criteria="Test: ok | Cmd: true" >/dev/null
+	"$ORO_BIN" bead create \
+		--title="child-$i" --type=task --parent="$EPIC" \
+		--acceptance-criteria="Test: ok | Cmd: true" >/dev/null
 done
 
 GATE="$("$ORO_BIN" bead gate-state "$EPIC" | tr -d '[:space:]')"
@@ -93,8 +93,8 @@ assert_eq "gate_state after 6th child" "$GATE" "eligible"
 echo "==> Step 3: oro work --auto on a child must be refused"
 CHILD="$("$ORO_BIN" bead list --json | find_first_bead task "$EPIC")"
 if [[ -z "$CHILD" ]]; then
-  echo "FAIL: no task child of $EPIC found in bead list" >&2
-  exit 1
+	echo "FAIL: no task child of $EPIC found in bead list" >&2
+	exit 1
 fi
 WORK_LOG="$TMP_DIR/work-refused.log"
 set +e
@@ -102,14 +102,14 @@ set +e
 WORK_RC=$?
 set -e
 if [[ $WORK_RC -eq 0 ]]; then
-  echo "FAIL: oro work --auto $CHILD exited 0; expected non-zero refusal" >&2
-  cat "$WORK_LOG" >&2
-  exit 1
+	echo "FAIL: oro work --auto $CHILD exited 0; expected non-zero refusal" >&2
+	cat "$WORK_LOG" >&2
+	exit 1
 fi
 if ! grep -q "premortem_required" "$WORK_LOG"; then
-  echo "FAIL: oro work --auto $CHILD did not surface kind=premortem_required" >&2
-  cat "$WORK_LOG" >&2
-  exit 1
+	echo "FAIL: oro work --auto $CHILD did not surface kind=premortem_required" >&2
+	cat "$WORK_LOG" >&2
+	exit 1
 fi
 echo "PASS: oro work --auto refused (rc=$WORK_RC, kind=premortem_required)"
 
@@ -119,9 +119,9 @@ echo "PASS: oro work --auto refused (rc=$WORK_RC, kind=premortem_required)"
 echo "==> Step 4: premortem bead must be auto-spawned"
 PM="$("$ORO_BIN" bead list --json | find_first_bead premortem "$EPIC")"
 if [[ -z "$PM" ]]; then
-  echo "FAIL: no auto-spawned premortem with parent_id=$EPIC" >&2
-  "$ORO_BIN" bead list --json >&2
-  exit 1
+	echo "FAIL: no auto-spawned premortem with parent_id=$EPIC" >&2
+	"$ORO_BIN" bead list --json >&2
+	exit 1
 fi
 echo "PASS: auto-spawned premortem PM=$PM (parent_id=$EPIC)"
 
@@ -143,14 +143,14 @@ set +e
 WORK_RC=$?
 set -e
 if [[ $WORK_RC -ne 0 ]]; then
-  echo "FAIL: oro work --auto --dry-run $CHILD exited $WORK_RC; expected 0" >&2
-  cat "$WORK_LOG" >&2
-  exit 1
+	echo "FAIL: oro work --auto --dry-run $CHILD exited $WORK_RC; expected 0" >&2
+	cat "$WORK_LOG" >&2
+	exit 1
 fi
 if grep -q "premortem_required" "$WORK_LOG"; then
-  echo "FAIL: oro work --auto $CHILD still cites premortem_required after satisfied gate" >&2
-  cat "$WORK_LOG" >&2
-  exit 1
+	echo "FAIL: oro work --auto $CHILD still cites premortem_required after satisfied gate" >&2
+	cat "$WORK_LOG" >&2
+	exit 1
 fi
 echo "PASS: oro work --auto accepted (rc=0)"
 
