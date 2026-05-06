@@ -436,6 +436,7 @@ type Config struct {
 	DoltHealthInterval      time.Duration // Interval between dolt reachability probes in heartbeatLoop (default 30s).
 	Estimator               BeadEstimator // LLM-based bead complexity estimator (default NewBeadEstimator()).
 	WorkerProgram           string        // Absolute path to worker-program.md. Defaults to <RepoRoot>/worker-program.md.
+	ReviewPatterns          string        // Absolute path for review patterns. Populated from ProjectPaths.ReviewPatterns.
 	ReviewPatternCandidates string        // Absolute path for review-pattern candidate inbox. Populated from ProjectPaths.ReviewPatternCandidates.
 	DefaultBranch           string        // Base branch for worktree creation and epic FF merges (default "main"). Set via --base-branch flag.
 	WebEnabled              bool          // Enable HTTP server for dashboard/health endpoints (default false).

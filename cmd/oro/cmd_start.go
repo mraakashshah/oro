@@ -790,6 +790,7 @@ func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressT
 		ReviewTimeout:           reviewStallTimeout,
 		ManualIntegration:       manualIntegration,
 		WorkerProgram:           resolveWorkerProgramPath(repoRoot),
+		ReviewPatterns:          resolveReviewPatternsPath(repoRoot),
 		ReviewPatternCandidates: resolveReviewPatternCandidatesPath(repoRoot),
 		DefaultBranch:           baseBranch,
 		DreamInterval:           10,
@@ -812,6 +813,16 @@ func resolveWorkerProgramPath(repoRoot string) string {
 		return filepath.Join(repoRoot, "worker-program.md")
 	}
 	return paths.WorkerProgram
+}
+
+// resolveReviewPatternsPath returns the review-patterns path for repoRoot.
+// Falls back to <repoRoot>/assets/review-patterns.md if path resolution fails.
+func resolveReviewPatternsPath(repoRoot string) string {
+	paths, err := ResolvePaths(repoRoot)
+	if err != nil {
+		return filepath.Join(repoRoot, "assets", "review-patterns.md")
+	}
+	return paths.ReviewPatterns
 }
 
 // resolveReviewPatternCandidatesPath returns the review-pattern-candidates path

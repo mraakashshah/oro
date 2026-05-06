@@ -919,6 +919,35 @@ func TestStartBaseBranchFlag(t *testing.T) {
 // TestStartWebFlags verifies that --web and --web-addr flags exist on the start
 // command and that their values flow into Config.WebEnabled / Config.WebAddr
 // via buildDispatcher.
+// TestStartWiresReviewPatternPaths verifies that oro start copies
+// ProjectPaths.ReviewPatterns and ProjectPaths.ReviewPatternCandidates
+// into dispatcher.Config.
+func TestStartWiresReviewPatternPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+	t.Setenv("ORO_PROJECT", "")
+	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+
+	d, db, err := buildDispatcher("", false, "")
+	if err != nil {
+		t.Fatalf("buildDispatcher: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	cfg := d.GetConfig()
+
+	// Assert: ReviewPatterns must be non-empty and point to a valid path
+	if cfg.ReviewPatterns == "" {
+		t.Error("ReviewPatterns: got empty string, expected non-empty path")
+	}
+
+	// Assert: ReviewPatternCandidates must be non-empty and point to a valid path
+	if cfg.ReviewPatternCandidates == "" {
+		t.Error("ReviewPatternCandidates: got empty string, expected non-empty path")
+	}
+}
+
 func TestStartWebFlags(t *testing.T) {
 	t.Run("--web flag exists and defaults to false", func(t *testing.T) {
 		cmd := newStartCmd()
