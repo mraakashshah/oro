@@ -521,15 +521,6 @@ def project_state() -> str:
     except (subprocess.TimeoutExpired, OSError):
         pass
 
-    # current.md
-    current = Path("current.md")
-    if current.is_file():
-        try:
-            content = current.read_text()[:1500]
-            sections.append(f"## current.md\n{content}")
-        except OSError:
-            pass
-
     return "\n\n".join(sections)
 
 

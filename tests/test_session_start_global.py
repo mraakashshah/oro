@@ -17,6 +17,16 @@ _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
 
 _auto_load_skills_silent = _mod._auto_load_skills_silent
 
+# Load session_start_extras for project_state testing
+_extras_spec = importlib.util.spec_from_file_location(
+    "session_start_extras",
+    _repo_root / "assets" / "hooks" / "session_start_extras.py",
+)
+_extras_mod = importlib.util.module_from_spec(_extras_spec)  # type: ignore[arg-type]
+_extras_spec.loader.exec_module(_extras_mod)  # type: ignore[union-attr]
+
+_project_state = _extras_mod.project_state
+
 
 # --- _auto_load_skills_silent ---
 
@@ -171,3 +181,17 @@ class TestMainIntegration:
     def test_invalid_stdin_handled_gracefully(self, monkeypatch, tmp_path):
         output = _run_main(monkeypatch, tmp_path, stdin_data="not json")
         assert "hookSpecificOutput" in output
+
+
+# --- project_state() ---
+
+
+class TestProjectState:
+    def test_current_md_block_removed(self, tmp_path, monkeypatch):
+        """project_state() must not include ## current.md even when file exists."""
+        (tmp_path / "current.md").write_text("# Current task\nsome content")
+        monkeypatch.chdir(tmp_path)
+
+        result = _project_state()
+
+        assert "## current.md" not in result
