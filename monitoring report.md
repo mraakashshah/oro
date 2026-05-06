@@ -83,3 +83,14 @@ User asked me to stop and fix the runtime bug.
 - **Fix**: `e348338e` `fix(dispatcher): include nested descendants in epic focus (oro-bck8)`. `sortBeadsByPriority` now walks parent chains via `Show` with cycle protection and treats all descendants of the focused epic as focused.
 - **Verified**: RED regression `TestSortBeadsByPriority_EpicFinishing/focused_epic_includes_nested_descendants`; `go test ./pkg/dispatcher -count=1`; `./scripts/quality_gate.sh`.
 - Rebuilt + reinstalled, search hook present (9.6MB, 09:34). Relaunching with `--workers 3 --max-workers 3` and focus `oro-gpex`.
+
+## Cycle 25 — Stop, fix immediate-focus preemption races
+
+- **Clarified semantics**: standard `focus` keeps priority/backfill behavior; `focus --immediate` preempts current non-focused workers, then still uses normal focus priority with backfill.
+- **Invalidated**: `oro-sfpa` was closed without code after the strict no-backfill interpretation was rejected.
+- **Fixed**:
+  - `58ea6e3b` `fix(dispatcher): abort stale assignments on focus change (oro-771g)` guards assignments when focus changes during worktree setup.
+  - `896dea8c` `fix(dispatcher): abort post-persist assignments on focus change (oro-rkhr)` covers the post-persist/pre-send window.
+  - `b5cd0e97` `fix(dispatcher): guard focus at worker state commit (oro-gj1z)` checks `focusVersion` under `d.mu` immediately before committing worker state.
+- **Verified**: focused dispatcher regressions plus full `./scripts/quality_gate.sh` passed for each fix. Rebuilt + reinstalled, hook present at `/Users/as21/.oro/hooks/oro-search-hook`.
+- **Relaunch result**: dispatcher PID 24303, target=3, managed=3, focus=`oro-gpex`. `focus --immediate oro-gpex` preempted 3 non-focused workers; `oro-q53e` is active as focused work and remaining capacity is backfilled (`oro-fro8`, `oro-jv74`), as intended.
