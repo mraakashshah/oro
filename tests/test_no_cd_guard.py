@@ -160,12 +160,6 @@ class TestCheckGitCommand:
             assert result is not None
             assert result["permissionDecision"] == "deny"
 
-    def test_blocks_worktree_remove_when_architect(self):
-        with patch.dict("os.environ", {"ORO_ROLE": "architect"}):
-            result = check_git_command("git worktree remove .worktrees/agent-123")
-            assert result is not None
-            assert result["permissionDecision"] == "deny"
-
     def test_blocks_worktree_remove_when_manager(self):
         with patch.dict("os.environ", {"ORO_ROLE": "manager"}):
             result = check_git_command("git worktree remove .worktrees/agent-123")
@@ -230,7 +224,7 @@ class TestBlockWorktreeRemove:
 
     @patch("no_cd_guard._PROJECT_ROOT", "/project")
     def test_blocks_git_worktree_add_when_role_set(self):
-        with patch.dict("os.environ", {"ORO_ROLE": "architect"}):
+        with patch.dict("os.environ", {"ORO_ROLE": "manager"}):
             result = build_decision(self._hook_input("git worktree add .worktrees/new-branch new-branch"))
             assert result is not None
             assert result["permissionDecision"] == "deny"

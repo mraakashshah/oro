@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PreToolUse hook: block Bash commands that cd outside the project root or modify worktrees.
 
-Agents (architect, manager, dispatcher, subagents doing merges) must always
+Agents (manager, dispatcher, subagents doing merges) must always
 operate from the project root using absolute paths. Changing directory into
 worktrees or other locations causes shell state corruption when combined
 with git operations (worktree remove, rebase chains, etc.).
@@ -83,14 +83,14 @@ def check_git_command(command: str) -> dict | None:
     """Detect and block dangerous git worktree subcommands.
 
     Blocks 'git worktree remove', 'git worktree add', and other mutating
-    subcommands when ORO_ROLE is set (worker, architect, manager). The main
+    subcommands when ORO_ROLE is set (worker, manager). The main
     session (no ORO_ROLE) needs worktree commands for cleanup and maintenance.
 
     Allows bare 'git worktree' and 'git worktree list' (read-only) regardless.
     """
     if not command:
         return None
-    # Only block worktree mutations for swarm roles (worker, architect, manager).
+    # Only block worktree mutations for swarm roles (worker, manager).
     # The main session (ORO_ROLE unset) needs worktree commands for cleanup.
     if not os.environ.get("ORO_ROLE"):
         return None
