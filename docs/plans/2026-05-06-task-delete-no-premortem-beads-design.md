@@ -1,7 +1,7 @@
 # Task Delete And No Automatic Premortem Beads Design
 
 Date: 2026-05-06
-Status: draft
+Status: challenged
 
 ## Problem
 
@@ -19,6 +19,7 @@ a bead is plainly a process artifact.
 ## Goals
 
 - Stop automatic premortem bead creation from normal task and graph creation.
+- Reject new user-facing `type=premortem` task creation.
 - Stop premortem gate enforcement from blocking ordinary worker assignment or
   `oro work`.
 - Add `oro task delete <id>` for operator cleanup of spurious beads.
@@ -67,10 +68,16 @@ Read:
 
 ## Design
 
-### 1. Disable Automatic Premortem Creation
+### 1. Disable Premortem Creation
 
 `createBeadFromParams` should call `Store.Create` for all CLI-created beads,
 including beads with `ParentID`.
+
+`oro task create --type premortem` and `oro bead create --type premortem`
+should fail with a clear message that premortem beads are legacy and no new
+premortem beads should be created. Existing premortem rows remain readable and
+closable/deletable; this is a forward-looking creation ban, not a data
+migration.
 
 The `dispatcher.CreateBeadGraph` helper should no longer run
 `checkRetroactiveGate` or spawn a premortem bead. It should remain a small
@@ -85,6 +92,8 @@ Tests to replace:
 
 - Replace `TestBeadCreateFiresRetroactiveGate` with a test that creates six
   child tasks under an epic and asserts no premortem child exists.
+- Add a CLI test that `oro task create --type premortem` fails and creates no
+  bead.
 - Replace `dispatcher` retroactive gate tests that require auto-spawned
   premortem beads with tests asserting `CreateBeadGraph` creates only the
   requested children.
@@ -126,8 +135,10 @@ For the first implementation it should:
    `depends_on_id`.
 5. Set `deleted=1`, `updated_at=now`, and preserve all other bead fields.
 6. Insert a `bead_deleted` event with `{ "reason": reason }`.
-7. Append a bead journey event named `deleted` with actor `human` and the same
-   reason if journey storage is available.
+7. Insert a bead journey event named `deleted` with actor `human` and the same
+   reason inside the same SQL transaction when `bead_journey` exists. Do not
+   call `Store.AppendJourney` while holding `writeMu`; it uses its own write
+   path and would risk lock inversion.
 
 Deletion should not set `status='closed'`. A deleted bead is not a closed bead;
 it is hidden from normal operational surfaces. Keeping the prior status
@@ -183,6 +194,7 @@ go test ./cmd/oro ./pkg/beadstore ./pkg/dispatcher
 Required assertions inside those tests:
 
 - Six CLI-created child tasks under an epic do not create a premortem bead.
+- `oro task create --type premortem` fails and creates no bead.
 - `CreateBeadGraph` creates only requested child beads.
 - Dispatcher executable filtering no longer blocks a task due to a premortem
   gate state.
@@ -205,14 +217,16 @@ Required assertions inside those tests:
 3. Add `newBeadDeleteCmd` and register it in `newBeadCmdWithStore` and
    `newTaskCmdWithStore`.
 4. Add CLI tests for human and JSON `oro task delete` output.
-5. Change `createBeadFromParams` to call `Store.Create` even when `ParentID` is
+5. Reject `--type premortem` in user-facing create commands before calling the
+   store.
+6. Change `createBeadFromParams` to call `Store.Create` even when `ParentID` is
    set.
-6. Change `CreateBeadGraph` to stop invoking the retroactive gate.
-7. Remove production calls to `CheckPremortemGate` from dispatcher filtering and
+7. Change `CreateBeadGraph` to stop invoking the retroactive gate.
+8. Remove production calls to `CheckPremortemGate` from dispatcher filtering and
    `oro work`.
-8. Replace old premortem auto-spawn and gate-blocking tests with no-premortem
+9. Replace old premortem auto-spawn and gate-blocking tests with no-premortem
    behavioral tests.
-9. Run `go test ./cmd/oro ./pkg/beadstore ./pkg/dispatcher`.
+10. Run `go test ./cmd/oro ./pkg/beadstore ./pkg/dispatcher`.
 
 ## Deep Premortem
 
@@ -233,6 +247,12 @@ premortem:
     - risk: "Removing only auto-spawn would still leave old eligible gate states blocking workers."
       severity: high
       mitigation_checked: "dispatcher filtering calls CheckPremortemGate at pkg/dispatcher/dispatcher.go:3804 and oro work calls it at cmd/oro/cmd_work.go:273; both production calls must be removed."
+    - risk: "A user or worker could still create premortem beads manually with --type premortem."
+      severity: high
+      mitigation_checked: "cmd/oro/cmd_bead.go:161-170 accepts Type directly from flags today, so the CLI create path must reject premortem explicitly."
+    - risk: "Delete could deadlock if it calls Store.AppendJourney while already holding writeMu."
+      severity: high
+      mitigation_checked: "SQLiteStore.AppendJourney has its own write path in pkg/beadstore/v3methods.go:13, so Delete must insert the journey row inside its existing transaction."
   elephants:
     - risk: "The premortem subsystem is now legacy code, but fully deleting it is larger than the requested fix and risks migration churn."
   paper_tigers:
@@ -254,20 +274,21 @@ acceptance_test:
   adequate: true
   issues: []
 traceability:
-  covered: 10
+  covered: 11
   gaps: 0
   matrix: |
     | # | Criterion | Implementation step | Test |
-    | 1 | CLI child create makes no premortem | 5 | cmd/oro create test |
-    | 2 | Graph create makes no premortem | 6 | dispatcher graph test |
-    | 3 | Dispatcher does not gate on premortem | 7 | dispatcher filter test |
-    | 4 | oro work does not gate on premortem | 7 | cmd/oro work dry-run test |
-    | 5 | task delete soft-deletes and hides bead | 1, 3 | beadstore and CLI tests |
-    | 6 | delete removes dependency edges | 1 | beadstore ready/dependency test |
-    | 7 | delete rejects active assignment | 1 | beadstore test |
-    | 8 | delete rejects non-empty epic | 1 | beadstore test |
-    | 9 | delete rejects missing/deleted id | 1, 3 | beadstore and CLI tests |
-    | 10 | delete emits JSON output | 3 | CLI test |
+    | 1 | CLI child create makes no premortem | 6 | cmd/oro create test |
+    | 2 | Graph create makes no premortem | 7 | dispatcher graph test |
+    | 3 | CLI rejects new premortem beads | 5 | cmd/oro create rejection test |
+    | 4 | Dispatcher does not gate on premortem | 8 | dispatcher filter test |
+    | 5 | oro work does not gate on premortem | 8 | cmd/oro work dry-run test |
+    | 6 | task delete soft-deletes and hides bead | 1, 3 | beadstore and CLI tests |
+    | 7 | delete removes dependency edges | 1 | beadstore ready/dependency test |
+    | 8 | delete rejects active assignment | 1 | beadstore test |
+    | 9 | delete rejects non-empty epic | 1 | beadstore test |
+    | 10 | delete rejects missing/deleted id | 1, 3 | beadstore and CLI tests |
+    | 11 | delete emits JSON output | 3 | CLI test |
 wiring_gaps: []
 negative_space:
   - area: "Recursive delete"
@@ -291,7 +312,12 @@ red_team_scenarios:
     beads_pass: false
     feature_works: false
     root_cause: "Spec requires removing dispatcher and oro work production gate calls."
-    fix: "Covered by step 7."
+    fix: "Covered by step 8."
+  - scenario: "Workers stop auto-spawn but can still create premortem beads through oro task create --type premortem."
+    beads_pass: false
+    feature_works: false
+    root_cause: "No-more-premortem must cover user-facing creation, not only auto-spawn."
+    fix: "Covered by step 5 and CLI rejection test."
 integration_points:
   covered:
     - "cmd/oro/cmd_bead.go:createBeadFromParams"
