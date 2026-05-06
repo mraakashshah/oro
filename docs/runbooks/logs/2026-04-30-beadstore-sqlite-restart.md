@@ -92,4 +92,4 @@ PATH="$cutover_path" ORO_DB_PATH="$state_db" ORO_BEADSOURCE_MODE=sqlite "$oro_bi
   that state. Fix branch `bead/oro-ect4.6-sqlite-assign` now captures
   `ORO_BEADSOURCE_MODE` at dispatcher startup and skips bd/Dolt health recovery
   only in sqlite mode. Detailed note:
-  `docs/runbooks/beadstore-sqlite-assignment-blocker-2026-04-30.md`.
+  `docs/runbooks/incidents/2026-04-30-beadstore-sqlite-assignment-blocker.md`.

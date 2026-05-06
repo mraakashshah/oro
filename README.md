@@ -500,8 +500,13 @@ oro/
 │   ├── install.sh        # curl installer
 │   └── quality_gate.sh   # Automated quality gate runner
 ├── docs/
-│   ├── plans/            # Architecture specs and design docs
-│   └── solutions/        # Documented solved problems
+│   ├── plans/            # Active specs, design docs, and plan notes
+│   ├── runbooks/         # Operator procedures, logs, incidents, drills
+│   ├── learnings/        # Synthesized learnings and prior-art studies
+│   ├── audits/           # Technical audits and pressure reviews
+│   ├── research/         # Comparative research
+│   ├── solutions/        # Documented solved problems
+│   └── archive/          # Superseded or compatibility-only docs
 ├── .goreleaser.yml       # Release build config
 ├── Makefile
 └── go.mod

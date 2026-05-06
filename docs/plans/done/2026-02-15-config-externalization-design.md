@@ -20,7 +20,7 @@ Oro currently takes over the target project's `.claude/` directory and commits `
 - `assets/review-patterns.md` — code review patterns
 - `.beads/` — SQLite DB, issues.jsonl, config, formulas, memory
 - `docs/handoffs/` — session handoff YAMLs
-- `docs/decisions-and-discoveries.md` — architectural log
+- `docs/decisions&discoveries.md` — architectural log
 - `CLAUDE.md` — oro system instructions
 
 ---
@@ -182,7 +182,7 @@ HANDOFFS_DIR = os.path.join(oro_project_dir(), "handoffs") if oro_project_dir() 
 | `session_start_extras.py` | `docs/handoffs/` | `$ORO_HOME/projects/$ORO_PROJECT/handoffs/` |
 | `memory_capture.py` | `.beads/memory/knowledge.jsonl` | unchanged (beads descoped) |
 | `learning_reminder.py` | `.beads/memory/knowledge.jsonl` | unchanged (already has `ORO_KNOWLEDGE_FILE` env var) |
-| `learning_analysis.py` | `docs/decisions-and-discoveries.md` | `$ORO_HOME/projects/$ORO_PROJECT/decisions.md` |
+| `learning_analysis.py` | `docs/decisions&discoveries.md` | `$ORO_HOME/projects/$ORO_PROJECT/decisions.md` |
 
 ### Generated settings.json
 
@@ -278,7 +278,7 @@ Once Phase 1 is deployed and tested:
 3. Copy `.claude/hooks/` → `~/.oro/hooks/`
 4. Copy `.claude/hooks/beacons/` → `~/.oro/beacons/`
 5. Copy `docs/handoffs/` → `~/.oro/projects/oro/handoffs/`
-6. Copy `docs/decisions-and-discoveries.md` → `~/.oro/projects/oro/decisions.md`
+6. Copy `docs/decisions&discoveries.md` → `~/.oro/projects/oro/decisions.md`
 7. Verify `oro start` works with externalized config
 8. Remove `.claude/skills/`, `.claude/hooks/`, `.claude/settings.json` from git
 9. Keep `.beads/` (descoped to oro-6v9z)
@@ -339,7 +339,7 @@ Worker in worktree (.worktrees/bead-abc123/)
 | `assets/review-patterns.md` | `~/.oro/projects/<name>/review-patterns.md` |
 | `CLAUDE.md` (oro instructions) | `~/.oro/.claude/CLAUDE.md` |
 | `docs/handoffs/` | `~/.oro/projects/<name>/handoffs/` |
-| `docs/decisions-and-discoveries.md` | `~/.oro/projects/<name>/decisions.md` |
+| `docs/decisions&discoveries.md` | `~/.oro/projects/<name>/decisions.md` |
 
 ### Net Result for a Fresh Target Project
 

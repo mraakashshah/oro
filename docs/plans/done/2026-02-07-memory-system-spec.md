@@ -245,6 +245,6 @@ oro memories consolidate                             # Dedup + prune via FTS5 si
 
 1. **Extraction method: Option C (hybrid).** Self-report markers for real-time capture + daemon for implicit extraction + periodic consolidation for quality. Maximizes capture rate.
 2. **Where does Dispatcher merge worker memories?** Worker INSERTs to a local SQLite in its worktree (`.oro/state.db`). On bead completion (merge step), Dispatcher copies new rows to the main `.oro/state.db`. Same merge-on-completion flow as code.
-3. **Should memories be git-tracked?** No. Memories live in SQLite (binary, doesn't diff). SQLite is runtime-adjacent state in `.oro/state.db`. Project knowledge worth preserving long-term goes to `docs/decisions-and-discoveries.md` (human-curated, git-tracked).
+3. **Should memories be git-tracked?** No. Memories live in SQLite (binary, doesn't diff). SQLite is runtime-adjacent state in `.oro/state.db`. Project knowledge worth preserving long-term goes to `docs/decisions&discoveries.md` (human-curated, git-tracked).
 4. **Why SQLite, not JSONL?** Retrieval quality. FTS5 gives BM25 ranked search; JSONL grep can't rank. Already in the stack for runtime state — one DB, one driver. Embeddings column reserved for future semantic search.
 5. **Why not LanceDB?** No Go SDK. Manager is a Go binary. SQLite FTS5 + future embeddings column covers the same ground without adding a language bridge.

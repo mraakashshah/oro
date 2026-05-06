@@ -181,7 +181,7 @@ Hook inventory (same in both files):
 **Tags:** #memory #architecture #decisions
 **Context:** Resolving open questions in memory system spec. JSONL was proposed for simplicity but retrieval (finding the right 3 memories for a 200-token prompt budget) is the hard problem, not storage. Keyword grep can't rank results.
 **Decision:** Single SQLite DB (`.oro/state.db`) for both runtime state and memories. FTS5 for BM25 ranked search. Embeddings column reserved for future semantic search. Hybrid extraction: worker self-report markers (real-time) + daemon post-session extraction (background) + periodic consolidation. LanceDB rejected — no Go SDK.
-**Implications:** One DB, one Go driver, one dependency. Memories not git-tracked (SQLite binary doesn't diff). Human-curated knowledge goes to `docs/decisions-and-discoveries.md`. CC-v3's retrieval architecture on a local-first backend.
+**Implications:** One DB, one Go driver, one dependency. Memories not git-tracked (SQLite binary doesn't diff). Human-curated knowledge goes to `docs/decisions&discoveries.md`. CC-v3's retrieval architecture on a local-first backend.
 
 ## 2026-02-07: Create review-docs and review-implementation skills
 **Tags:** #skills #review #quality

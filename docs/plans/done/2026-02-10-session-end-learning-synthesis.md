@@ -67,14 +67,14 @@ Bead completion              Session end              Work-landed moment
 
 **What it checks:**
 1. Scan ALL `knowledge.jsonl` entries from this session (filter by timestamp > session start, or by bead IDs worked this session).
-2. Cross-reference with `docs/decisions-and-discoveries.md` to find undocumented learnings.
+2. Cross-reference with `docs/decisions&discoveries.md` to find undocumented learnings.
 3. Run frequency analysis across all entries, not just this session's.
 4. Check for learnings that appear in multiple beads (cross-bead patterns).
 
 **What it proposes:**
 - List undocumented learnings with a one-line summary each.
 - For any learning at 3+ frequency: propose specific codification target (skill, rule, or solution doc) per the Decision Tree.
-- For cross-bead patterns: propose a `docs/decisions-and-discoveries.md` entry.
+- For cross-bead patterns: propose a `docs/decisions&discoveries.md` entry.
 - Format: inject a `## Undocumented Learnings` section into the handoff YAML as a new `learnings:` field.
 
 **Implementation approach:** Add steps to the `create-handoff` skill between Step 3 (Field Guide) and Step 4 (Capture Learnings). The current Step 4 says "ask yourself" -- the new step makes this concrete with a scan-and-summarize protocol. No new hook needed.
@@ -92,7 +92,7 @@ Bead completion              Session end              Work-landed moment
 - If LEARNED entries exist for this bead: inject a brief reminder via `additionalContext`:
   ```
   You have N undocumented learnings for bead <id>. Consider:
-  - Adding to docs/decisions-and-discoveries.md
+  - Adding to docs/decisions&discoveries.md
   - Running `oro remember "..."` to promote to project memory
   ```
 - If no entries: no output (lightweight, zero-cost when nothing to surface).
@@ -132,7 +132,7 @@ Is it a heuristic, rule of thumb, or constraint?
          Example: "Never cd into worktrees" -> already in standards
 
 Is it a solved problem with context?
-  YES -> Propose a SOLUTION DOC (docs/decisions-and-discoveries.md entry)
+  YES -> Propose a SOLUTION DOC (docs/decisions&discoveries.md entry)
          Example: "modernc sqlite doesn't support FTS5 bm25()" -> decision entry
 
 None of the above?
@@ -199,7 +199,7 @@ Session works on beads `oro-abc` and `oro-def`. During work:
    - Scans all entries from this session: 2 learnings (oro-abc, oro-def).
    - Cross-references: both relate to git rebase + worktrees. Cross-bead pattern detected.
    - Frequency: `git` tag now at 4. Content similarity between the two entries is high (Jaccard > 0.5).
-   - Proposes: "Cross-bead pattern: git rebase + worktree conflicts. Appeared in oro-abc and oro-def. Suggest: `docs/decisions-and-discoveries.md` entry + `.claude/rules/` addition."
+   - Proposes: "Cross-bead pattern: git rebase + worktree conflicts. Appeared in oro-abc and oro-def. Suggest: `docs/decisions&discoveries.md` entry + `.claude/rules/` addition."
 6. Handoff YAML includes:
    ```yaml
    learnings:
