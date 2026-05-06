@@ -74,3 +74,12 @@ User asked me to stop and fix the runtime bug.
 - **oro-7jjt** → `fff9316c` `fix(cmd): skip repo preflight in hermetic daemon-skip mode`. Added `runRepoChecks bool` parameter to `preflightAndCheckRunningWith`; daemon-skip path passes `false` (hermetic mode = no Go toolchain, no source on disk, building a search hook is impossible). Full path passes `true`.
 - Rebuilt + reinstalled, search hook present (9.6MB, 09:35:00). Dispatcher PID 85593 still running cleanly — no relaunch needed since the bug was tests-only in cmd/oro.
 - CI run 25379616028 watching via monitor `bnhagetxp`.
+
+## Cycle 24 — Stop, fix focused epic descendant scheduling (oro-bck8)
+
+- **Observed during relaunch**: after `oro directive focus oro-gpex`, dispatcher assigned unrelated ready tasks (`oro-jv74`, `oro-fro8`, `oro-9nfh`) while focused epic descendant `oro-q53e` was ready under `oro-sgge -> oro-gpex`.
+- **Filed**: `oro-bck8` P0 bug, "Focused epic scheduling ignores nested descendants".
+- **Root cause**: scheduler focus grouping only checked `bead.Epic == focusedEpic`. `Epic` is the immediate parent, so grandchildren of the focused epic were sorted as unfocused work.
+- **Fix**: `e348338e` `fix(dispatcher): include nested descendants in epic focus (oro-bck8)`. `sortBeadsByPriority` now walks parent chains via `Show` with cycle protection and treats all descendants of the focused epic as focused.
+- **Verified**: RED regression `TestSortBeadsByPriority_EpicFinishing/focused_epic_includes_nested_descendants`; `go test ./pkg/dispatcher -count=1`; `./scripts/quality_gate.sh`.
+- Rebuilt + reinstalled, search hook present (9.6MB, 09:34). Relaunching with `--workers 3 --max-workers 3` and focus `oro-gpex`.
