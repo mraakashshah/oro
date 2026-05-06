@@ -62,6 +62,7 @@ func newRootCmd() *cobra.Command {
 		newCurrentCmd(),
 		newHandoffCmd(),
 		newResumeCmd(),
+		newReviewPatternsCmd(),
 	)
 
 	for _, alias := range editRootAliases() {

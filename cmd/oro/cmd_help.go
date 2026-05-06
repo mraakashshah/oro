@@ -52,6 +52,9 @@ Workflow:
   bead       Manage native Oro beads (legacy alias for task)
   shell      Launch an interactive agent session with oro settings
 
+Reviews:
+  review-patterns  Inspect and promote candidate review patterns captured from approved reviews
+
 Renders:
   current    Show current work context (in-progress beads, journey, cards)
   handoff    Show session-scoped work context (in-progress beads, recent journey, cards)
