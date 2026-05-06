@@ -151,7 +151,8 @@ CREATE TABLE IF NOT EXISTS beads (
     status                TEXT NOT NULL CHECK (status IN
                           ('open','in_progress','blocked','closed')),
     priority              INTEGER NOT NULL DEFAULT 2,
-    type                  TEXT NOT NULL DEFAULT 'task',
+    type                  TEXT NOT NULL DEFAULT 'task' CHECK (type IN
+                          ('task','bug','epic','research','chore','premortem','review')),
     parent_id             TEXT REFERENCES beads(id),
     owner                 TEXT,
     estimated_minutes     INTEGER,
@@ -422,11 +423,15 @@ func MigrateBeadSchema(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("migrate bead status constraint: %w", err)
 	}
+	rebuiltTypeConstraint, err := EnsureBeadTypeCheckConstraint(ctx, db)
+	if err != nil {
+		return fmt.Errorf("migrate bead type constraint: %w", err)
+	}
 	_, err = db.ExecContext(ctx, beadSchemaDDL)
 	if err != nil {
 		return fmt.Errorf("refresh bead schema: %w", err)
 	}
-	if rebuiltStatusConstraint {
+	if rebuiltStatusConstraint || rebuiltTypeConstraint {
 		if _, err := db.ExecContext(ctx, `INSERT INTO beads_fts(beads_fts) VALUES('rebuild')`); err != nil {
 			return fmt.Errorf("rebuild beads fts: %w", err)
 		}
@@ -545,6 +550,85 @@ func dropBeadSchemaRebuildTriggers(ctx context.Context, conn *sql.Conn) error {
 		if _, err := conn.ExecContext(ctx, `DROP TRIGGER IF EXISTS `+name); err != nil {
 			return fmt.Errorf("drop trigger %s: %w", name, err)
 		}
+	}
+	return nil
+}
+
+// EnsureBeadTypeCheckConstraint ensures the beads.type column has a CHECK
+// constraint restricting values to the seven canonical bead types (§4.6.c).
+// Returns true if a table rebuild was performed (callers may wish to
+// re-synchronise derived structures such as FTS indexes).
+// Safe to call on databases that already have the constraint (no-op) and
+// on databases where the beads table does not yet exist.
+func EnsureBeadTypeCheckConstraint(ctx context.Context, db *sql.DB) (bool, error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return false, fmt.Errorf("acquire sqlite connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	var tableSQL string
+	err = conn.QueryRowContext(ctx, `SELECT sql FROM sqlite_schema WHERE type='table' AND name='beads'`).Scan(&tableSQL)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect beads table: %w", err)
+	}
+	// 'premortem' is only present in the type CHECK constraint, not in any
+	// other column constraint in the DDL.
+	if strings.Contains(tableSQL, "'premortem'") {
+		return false, nil
+	}
+
+	if err := runBeadsTypeRebuild(ctx, conn); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// runBeadsTypeRebuild adds the type CHECK constraint to the beads table via a
+// full table rebuild wrapped in a transaction.  It follows the same
+// legacy_alter_table pattern used by runBeadsStatusRebuild.
+func runBeadsTypeRebuild(ctx context.Context, conn *sql.Conn) error {
+	foreignKeysEnabled, err := sqliteForeignKeysEnabled(ctx, conn)
+	if err != nil {
+		return fmt.Errorf("inspect foreign_keys pragma: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
+		return fmt.Errorf("disable foreign keys: %w", err)
+	}
+	defer func() { _ = restoreSQLiteForeignKeys(context.Background(), conn, foreignKeysEnabled) }()
+
+	if _, err := conn.ExecContext(ctx, `PRAGMA legacy_alter_table=ON`); err != nil {
+		return fmt.Errorf("enable legacy_alter_table: %w", err)
+	}
+	defer func() { _, _ = conn.ExecContext(context.Background(), `PRAGMA legacy_alter_table=OFF`) }()
+
+	if err := dropBeadSchemaRebuildTriggers(ctx, conn); err != nil {
+		return err
+	}
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin rebuild tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	const beadColumns = `id, title, description, acceptance_criteria, status, priority, type, parent_id, owner, estimated_minutes, tier, model, deferred_until, close_reason, created_at, updated_at, closed_at, deleted`
+	rebuildSteps := []string{
+		`DROP VIEW IF EXISTS beads_ready`,
+		`DROP VIEW IF EXISTS beads_blocked`,
+		`ALTER TABLE beads RENAME TO beads_type_rebuild_old`,
+		beadTableDDL,
+		`INSERT INTO beads (` + beadColumns + `) SELECT ` + beadColumns + ` FROM beads_type_rebuild_old`,
+		`DROP TABLE beads_type_rebuild_old`,
+	}
+	if err := execStmts(ctx, tx, rebuildSteps); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit rebuild tx: %w", err)
 	}
 	return nil
 }
