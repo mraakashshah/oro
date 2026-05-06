@@ -16,6 +16,7 @@ import (
 
 // newDirectiveCmd creates the "oro directive" subcommand.
 func newDirectiveCmd() *cobra.Command {
+	var immediate bool
 	cmd := &cobra.Command{
 		Use:   "directive <op> [args]",
 		Short: "Send a directive to the dispatcher",
@@ -37,15 +38,16 @@ Supported operations:
   max-workers N            - Adjust the runtime worker pool ceiling (0 disables autoscale)`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDirective(cmd.Context(), cmd.OutOrStdout(), args)
+			return runDirective(cmd.Context(), cmd.OutOrStdout(), args, immediate)
 		},
 	}
+	cmd.Flags().BoolVar(&immediate, "immediate", false, "for focus: preempt workers outside the focused epic")
 
 	return cmd
 }
 
 // runDirective sends a directive to the dispatcher and prints the result.
-func runDirective(ctx context.Context, w io.Writer, args []string) error {
+func runDirective(ctx context.Context, w io.Writer, args []string, immediate bool) error {
 	op := args[0]
 
 	// Block shutdown directive entirely from "oro directive" — use "oro stop"
@@ -58,6 +60,15 @@ func runDirective(ctx context.Context, w io.Writer, args []string) error {
 	var opArgs string
 	if len(args) > 1 {
 		opArgs = strings.Join(args[1:], " ")
+	}
+	if immediate {
+		if protocol.Directive(op) != protocol.DirectiveFocus {
+			return fmt.Errorf("--immediate is only supported with focus")
+		}
+		if opArgs == "" {
+			return fmt.Errorf("focus --immediate requires an epic ID")
+		}
+		opArgs = "--immediate " + opArgs
 	}
 
 	paths, err := ResolveDaemonPaths()

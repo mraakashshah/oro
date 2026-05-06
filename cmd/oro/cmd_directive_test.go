@@ -62,6 +62,12 @@ func TestDirectiveCmd(t *testing.T) {
 			want: protocol.DirectivePayload{Op: "focus", Args: "oro-abc"},
 		},
 		{
+			name: "focus immediate directive",
+			op:   "focus",
+			args: []string{"--immediate", "oro-abc"},
+			want: protocol.DirectivePayload{Op: "focus", Args: "--immediate oro-abc"},
+		},
+		{
 			name: "status directive",
 			op:   "status",
 			args: []string{},
