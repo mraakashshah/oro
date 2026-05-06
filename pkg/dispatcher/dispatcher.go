@@ -6193,7 +6193,8 @@ func (d *Dispatcher) logAssignmentInvariantViolations(ctx context.Context) {
 // with worker_id still pointing at the worker (oro-xqrh).
 //
 // The caller must NOT hold d.mu. Safe to call when the worker has no prior
-// bead — both empty and matching priorID/newID cases are no-ops.
+// bead. If in-memory bead state was already cleared but assignmentID remains,
+// the active assignment row is used as the source of truth (oro-fksf).
 func (d *Dispatcher) releasePriorAssignment(ctx context.Context, w *trackedWorker, newBeadID string) {
 	if w == nil {
 		return
@@ -6204,6 +6205,14 @@ func (d *Dispatcher) releasePriorAssignment(ctx context.Context, w *trackedWorke
 	workerID := w.id
 	priorWorktree := d.worktreeByBead[priorBeadID]
 	d.mu.Unlock()
+
+	if priorBeadID == "" {
+		persistedBeadID, persistedWorktree := d.activeAssignmentBead(ctx, priorAssignmentID, workerID)
+		priorBeadID = persistedBeadID
+		if priorWorktree == "" {
+			priorWorktree = persistedWorktree
+		}
+	}
 
 	if priorBeadID == "" || priorBeadID == newBeadID {
 		return
@@ -6234,6 +6243,22 @@ func (d *Dispatcher) releasePriorAssignment(ctx context.Context, w *trackedWorke
 	}
 	_ = d.logEvent(ctx, "worker_abandon_release", "dispatcher", priorBeadID, workerID,
 		fmt.Sprintf(`{"reason":"reassign_to_%s","prior_assignment_id":%d,"externally_closed":%t}`, newBeadID, priorAssignmentID, externallyClosed))
+}
+
+func (d *Dispatcher) activeAssignmentBead(ctx context.Context, assignmentID int64, workerID string) (beadID, worktree string) {
+	if assignmentID <= 0 || d.db == nil {
+		return "", ""
+	}
+
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT bead_id, worktree FROM assignments WHERE id=? AND status='active'`,
+		assignmentID).Scan(&beadID, &worktree); err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			_ = d.logEvent(ctx, "release_prior_assignment_lookup_failed", "dispatcher", "", workerID, err.Error())
+		}
+		return "", ""
+	}
+	return beadID, worktree
 }
 
 func (d *Dispatcher) completeAssignment(ctx context.Context, assignmentID int64, beadID string) error {
