@@ -344,6 +344,7 @@ type trackedWorker struct {
 	spawnFor         bool               // true for one-shot workers spawned by spawn-for
 	targetBeadID     string             // set for spawn-for workers; only this bead may be assigned
 	prevSession      bool               // true if worker ID predates this dispatcher's startTime (previous session)
+	reviewDeadSince  time.Time          // set when ops review subprocess is detected dead; zero if review is active
 }
 
 func (w *trackedWorker) markShuttingDownWithoutAssignment() {
@@ -431,6 +432,7 @@ type Config struct {
 	PaneRestartCooldown     time.Duration // Min time between manager pane restarts (default 2m).
 	PaneInactivityTimeout   time.Duration // Manager inactivity duration before restart (default 10m).
 	ReviewTimeout           time.Duration // Max time a reviewing worker can stall before STUCK_WORKER escalation (default 15m).
+	ReviewDeadGrace         time.Duration // Grace period before removing a reviewing worker whose ops review subprocess has exited (default 30s).
 	ManualIntegration       bool          // If true, completed worker branches wait for manual coordinator integration instead of auto-merge.
 	BackupInterval          time.Duration // Interval between full-state JSONL backups to .beads/backup/full-state.jsonl (default 5m).
 	DoltHealthInterval      time.Duration // Interval between dolt reachability probes in heartbeatLoop (default 30s).
@@ -506,6 +508,7 @@ func (c *Config) withDefaults() Config {
 	out.PaneRestartCooldown = durationDefault(out.PaneRestartCooldown, 2*time.Minute)
 	out.PaneInactivityTimeout = durationDefault(out.PaneInactivityTimeout, 10*time.Minute)
 	out.ReviewTimeout = durationDefault(out.ReviewTimeout, 15*time.Minute)
+	out.ReviewDeadGrace = durationDefault(out.ReviewDeadGrace, 30*time.Second)
 	out.BackupInterval = durationDefault(out.BackupInterval, 5*time.Minute)
 	out.DoltHealthInterval = durationDefault(out.DoltHealthInterval, 30*time.Second)
 	out.CheckpointThreshold = intDefault(out.CheckpointThreshold, 75)

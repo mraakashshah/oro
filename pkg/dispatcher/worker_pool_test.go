@@ -1226,6 +1226,64 @@ func TestCheckHeartbeats_ManagedReviewingWorkerWithDeadProcessIsRemoved(t *testi
 	}
 }
 
+// TestCheckHeartbeats_ReviewingWorkerWithLiveProcessButDeadReviewIsRemoved verifies
+// that a managed reviewing worker whose ops review subprocess is no longer active
+// (HasActiveForBead returns false) is removed by checkHeartbeats after ReviewDeadGrace
+// elapses, even when the worker OS process is alive, heartbeat is fresh, and the
+// review timeout has not fired.
+func TestCheckHeartbeats_ReviewingWorkerWithLiveProcessButDeadReviewIsRemoved(t *testing.T) {
+	t.Parallel()
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+	pm := &mockProcessManager{} // IsAlive returns true for all IDs (none marked dead)
+	d.procMgr = pm
+	d.cfg.ReviewDeadGrace = 100 * time.Millisecond
+
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+
+	workerID := "reviewing-live-process-dead-review"
+	beadID := "bead-dead-review"
+	conn := newMockConn()
+	grace := d.cfg.ReviewDeadGrace
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:              workerID,
+		conn:            conn,
+		state:           protocol.WorkerReviewing,
+		beadID:          beadID,
+		lastSeen:        now.Add(-50 * time.Millisecond), // fresh — heartbeat NOT timed out (timeout=500ms)
+		lastProgress:    now.Add(-50 * time.Millisecond), // fresh — review timeout NOT fired
+		managed:         true,
+		encoder:         json.NewEncoder(conn),
+		reviewDeadSince: now.Add(-(grace + time.Millisecond)), // past grace period
+	}
+	d.mu.Unlock()
+
+	// d.ops.HasActiveForBead(beadID) returns false — no review was started for this bead
+
+	d.checkHeartbeats(context.Background())
+
+	d.mu.Lock()
+	_, stillPresent := d.workers[workerID]
+	d.mu.Unlock()
+
+	if stillPresent {
+		t.Errorf("expected reviewing worker with dead review (past grace) to be removed, but it was still present")
+	}
+	if !conn.closed {
+		t.Error("expected worker connection to be closed")
+	}
+
+	beadSrc.mu.Lock()
+	status, hasUpdate := beadSrc.updated[beadID]
+	beadSrc.mu.Unlock()
+	if !hasUpdate || status != "open" {
+		t.Errorf("bead status = %q (updated=%v), want %q", status, hasUpdate, "open")
+	}
+}
+
 // TestCheckHeartbeats_KillsManagedWorkerProcess verifies that checkHeartbeats calls
 // procMgr.Kill for managed workers (heartbeat and progress timeout) but NOT for
 // unmanaged workers. prevSession managed workers are still killed (the OS process

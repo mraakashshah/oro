@@ -524,6 +524,21 @@ func (d *Dispatcher) hasManagedIdleWorkersLocked() bool {
 	return false
 }
 
+// reviewDeadGraceExpiredLocked tracks whether the ops review subprocess for w has
+// been absent for longer than ReviewDeadGrace. It resets the timer when the review
+// is active and starts it on first absence. Must be called with d.mu held.
+func (d *Dispatcher) reviewDeadGraceExpiredLocked(w *trackedWorker, now time.Time) bool {
+	if d.ops == nil || d.ops.HasActiveForBead(w.beadID) {
+		w.reviewDeadSince = time.Time{}
+		return false
+	}
+	if w.reviewDeadSince.IsZero() {
+		w.reviewDeadSince = now
+		return false
+	}
+	return now.Sub(w.reviewDeadSince) > d.cfg.ReviewDeadGrace
+}
+
 func (d *Dispatcher) collectTimedOutWorkersLocked(now time.Time) (dead, stuck, stoppedSpawnFor []string) {
 	for id, w := range d.workers {
 		if w.state == protocol.WorkerReserved {
@@ -543,6 +558,12 @@ func (d *Dispatcher) collectTimedOutWorkersLocked(now time.Time) (dead, stuck, s
 		// Reviewing workers may keep heartbeating long after their process dies
 		// (the review timeout is 15m), so we detect exit via signal(0) instead.
 		if w.managed && w.state == protocol.WorkerReviewing && d.procMgr != nil && !d.procMgr.IsAlive(id) {
+			dead = append(dead, id)
+			continue
+		}
+		// Dead ops review check: reviewing worker whose ops subprocess has exited
+		// while the OS process is still alive. After ReviewDeadGrace, remove worker.
+		if w.managed && w.state == protocol.WorkerReviewing && d.reviewDeadGraceExpiredLocked(w, now) {
 			dead = append(dead, id)
 			continue
 		}
