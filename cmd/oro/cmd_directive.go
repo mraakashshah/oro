@@ -29,6 +29,7 @@ Supported operations:
   resume                   - Resume from paused state
   scale N                  - Set target worker pool size to N
   focus <epic>             - Prioritize tasks from specific epic
+  focus --immediate <epic> - Prioritize epic and preempt non-focused workers
   status                   - Query dispatcher state
   restart-worker <id>      - Kill and respawn a worker, requeue its task
   preempt <id>             - Gracefully preempt a worker for higher-priority work

@@ -6140,6 +6140,124 @@ func TestDispatcher_FocusDirective_ClearsEpic(t *testing.T) {
 	}
 }
 
+func TestDispatcher_FocusDirectiveImmediatePreemptsNonFocusedWorkers(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	focusedConn := newMockConn()
+	otherConn := newMockConn()
+	nestedConn := newMockConn()
+
+	beadSrc.shown["bead-focused"] = &protocol.BeadDetail{ID: "bead-focused", Epic: "epic-focus"}
+	beadSrc.shown["bead-other"] = &protocol.BeadDetail{ID: "bead-other", Epic: "epic-other"}
+	beadSrc.shown["bead-nested"] = &protocol.BeadDetail{ID: "bead-nested", Epic: "epic-child"}
+	beadSrc.shown["epic-child"] = &protocol.BeadDetail{ID: "epic-child", Type: "epic", Epic: "epic-focus"}
+
+	d.mu.Lock()
+	d.workers["worker-focused"] = &trackedWorker{
+		id:      "worker-focused",
+		conn:    focusedConn,
+		state:   protocol.WorkerBusy,
+		beadID:  "bead-focused",
+		encoder: json.NewEncoder(focusedConn),
+	}
+	d.workers["worker-other"] = &trackedWorker{
+		id:      "worker-other",
+		conn:    otherConn,
+		state:   protocol.WorkerBusy,
+		beadID:  "bead-other",
+		encoder: json.NewEncoder(otherConn),
+	}
+	d.workers["worker-nested"] = &trackedWorker{
+		id:      "worker-nested",
+		conn:    nestedConn,
+		state:   protocol.WorkerReviewing,
+		beadID:  "bead-nested",
+		encoder: json.NewEncoder(nestedConn),
+	}
+	d.mu.Unlock()
+
+	ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "focus", "--immediate epic-focus")
+	if !ack.OK {
+		t.Fatalf("expected OK=true, got false, detail: %s", ack.Detail)
+	}
+	if ack.Detail != "focused on epic-focus; preempted 1 non-focused worker" {
+		t.Fatalf("unexpected focus detail: %q", ack.Detail)
+	}
+
+	d.mu.Lock()
+	focusedState := d.workers["worker-focused"].state
+	otherState := d.workers["worker-other"].state
+	nestedState := d.workers["worker-nested"].state
+	epic := d.focusedEpic
+	d.mu.Unlock()
+
+	if epic != "epic-focus" {
+		t.Fatalf("focusedEpic = %q, want epic-focus", epic)
+	}
+	if focusedState != protocol.WorkerBusy {
+		t.Fatalf("focused worker state = %s, want busy", focusedState)
+	}
+	if nestedState != protocol.WorkerReviewing {
+		t.Fatalf("nested focused worker state = %s, want reviewing", nestedState)
+	}
+	if otherState != protocol.WorkerPreempting {
+		t.Fatalf("non-focused worker state = %s, want preempting", otherState)
+	}
+	if len(focusedConn.written) != 0 {
+		t.Fatalf("focused worker received %d messages, want none", len(focusedConn.written))
+	}
+	if len(nestedConn.written) != 0 {
+		t.Fatalf("nested focused worker received %d messages, want none", len(nestedConn.written))
+	}
+	if len(otherConn.written) != 1 {
+		t.Fatalf("non-focused worker received %d messages, want PREEMPT", len(otherConn.written))
+	}
+	var msg protocol.Message
+	if err := json.Unmarshal(otherConn.written[0], &msg); err != nil {
+		t.Fatalf("unmarshal preempt message: %v", err)
+	}
+	if msg.Type != protocol.MsgPreempt {
+		t.Fatalf("message type = %s, want %s", msg.Type, protocol.MsgPreempt)
+	}
+}
+
+func TestDispatcher_FocusDirectiveStandardDoesNotPreempt(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn := newMockConn()
+	beadSrc.shown["bead-other"] = &protocol.BeadDetail{ID: "bead-other", Epic: "epic-other"}
+
+	d.mu.Lock()
+	d.workers["worker-other"] = &trackedWorker{
+		id:      "worker-other",
+		conn:    conn,
+		state:   protocol.WorkerBusy,
+		beadID:  "bead-other",
+		encoder: json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+
+	ack := sendDirectiveWithArgs(t, d.cfg.SocketPath, "focus", "epic-focus")
+	if !ack.OK {
+		t.Fatalf("expected OK=true, got false, detail: %s", ack.Detail)
+	}
+	if ack.Detail != "focused on epic-focus" {
+		t.Fatalf("unexpected focus detail: %q", ack.Detail)
+	}
+
+	d.mu.Lock()
+	state := d.workers["worker-other"].state
+	d.mu.Unlock()
+	if state != protocol.WorkerBusy {
+		t.Fatalf("standard focus worker state = %s, want busy", state)
+	}
+	if len(conn.written) != 0 {
+		t.Fatalf("standard focus sent %d messages, want none", len(conn.written))
+	}
+}
+
 func TestDispatcher_FocusEpic_PrioritizesFocusedBeads(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)

@@ -4627,16 +4627,128 @@ func (d *Dispatcher) applyRestartDaemon() (string, error) {
 
 // applyFocus sets the focused epic and resumes the dispatcher if paused.
 func (d *Dispatcher) applyFocus(args string) (string, error) {
+	epic, immediate, err := parseFocusArgs(args)
+	if err != nil {
+		return "", err
+	}
 	d.mu.Lock()
-	d.focusedEpic = args
+	d.focusedEpic = epic
 	d.mu.Unlock()
 	if d.GetState() != StateRunning {
 		d.setState(StateRunning)
 	}
-	if args == "" {
+	if epic == "" {
 		return "focus cleared", nil
 	}
-	return fmt.Sprintf("focused on %s", args), nil
+	if !immediate {
+		return fmt.Sprintf("focused on %s", epic), nil
+	}
+	preempted := d.preemptWorkersOutsideFocus(context.Background(), epic)
+	return fmt.Sprintf("focused on %s; preempted %d non-focused %s", epic, preempted, pluralize(preempted, "worker", "workers")), nil
+}
+
+func parseFocusArgs(args string) (epic string, immediate bool, err error) {
+	fields := strings.Fields(args)
+	if len(fields) == 0 {
+		return "", false, nil
+	}
+	for _, field := range fields {
+		switch field {
+		case "--immediate", "-i":
+			immediate = true
+		default:
+			if strings.HasPrefix(field, "-") {
+				return "", false, fmt.Errorf("unknown focus option %q", field)
+			}
+			if epic != "" {
+				return "", false, fmt.Errorf("focus accepts one epic ID")
+			}
+			epic = field
+		}
+	}
+	if immediate && epic == "" {
+		return "", false, fmt.Errorf("epic ID required with --immediate")
+	}
+	return epic, immediate, nil
+}
+
+func pluralize(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
+}
+
+func (d *Dispatcher) preemptWorkersOutsideFocus(ctx context.Context, focusedEpic string) int {
+	type candidate struct {
+		workerID string
+		beadID   string
+	}
+	d.mu.Lock()
+	candidates := make([]candidate, 0, len(d.workers))
+	for workerID, worker := range d.workers {
+		if worker.beadID == "" || !preemptableWorkerState(worker.state) {
+			continue
+		}
+		candidates = append(candidates, candidate{workerID: workerID, beadID: worker.beadID})
+	}
+	d.mu.Unlock()
+
+	parentCache := make(map[string]string)
+	preempted := 0
+	for _, candidate := range candidates {
+		if d.beadIsFocusedDescendant(ctx, candidate.beadID, focusedEpic, parentCache) {
+			continue
+		}
+		if d.preemptWorkerIfStillOnBead(ctx, candidate.workerID, candidate.beadID, "focus --immediate") {
+			preempted++
+		}
+	}
+	if preempted > 0 {
+		d.notifyAssignLoop()
+	}
+	return preempted
+}
+
+func preemptableWorkerState(state protocol.WorkerState) bool {
+	return state == protocol.WorkerBusy || state == protocol.WorkerReviewing
+}
+
+func (d *Dispatcher) beadIsFocusedDescendant(ctx context.Context, beadID, focusedEpic string, parentCache map[string]string) bool {
+	if beadID == focusedEpic {
+		return true
+	}
+	if cached, ok := parentCache[beadID]; ok {
+		return d.isFocusedDescendant(ctx, cached, focusedEpic, parentCache)
+	}
+	bead, err := d.beads.Show(ctx, beadID)
+	if err != nil || bead == nil {
+		parentCache[beadID] = ""
+		return false
+	}
+	parentCache[beadID] = bead.Epic
+	return d.isFocusedDescendant(ctx, bead.Epic, focusedEpic, parentCache)
+}
+
+func (d *Dispatcher) preemptWorkerIfStillOnBead(ctx context.Context, workerID, beadID, reason string) bool {
+	d.mu.Lock()
+	worker, ok := d.workers[workerID]
+	if !ok || worker.beadID != beadID || !preemptableWorkerState(worker.state) {
+		d.mu.Unlock()
+		return false
+	}
+	prevState := worker.state
+	worker.state = protocol.WorkerPreempting
+	msg := protocol.Message{Type: protocol.MsgPreempt}
+	if err := d.sendToWorker(worker, msg); err != nil {
+		worker.state = prevState
+		d.mu.Unlock()
+		return false
+	}
+	d.mu.Unlock()
+	_ = d.logEvent(ctx, "worker_preempted", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"reason":%q}`, reason))
+	return true
 }
 
 // buildStatusJSON constructs the status response JSON string.
