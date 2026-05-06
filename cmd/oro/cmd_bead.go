@@ -664,10 +664,7 @@ func newBeadListLikeCmd(store beadstore.Store, use, short string, args cobra.Pos
 			if isJSONOutput(cmd) {
 				return writeBeadsJSON(cmd, beads)
 			}
-			for _, bead := range beads {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\tP%d\t%s\n", bead.ID, bead.Status, bead.Priority, bead.Title)
-			}
-			return nil
+			return writeBeadListHuman(cmd.OutOrStdout(), beads, time.Now())
 		},
 	}
 }

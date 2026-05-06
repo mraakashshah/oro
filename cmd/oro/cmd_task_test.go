@@ -303,6 +303,127 @@ func TestTaskListDefaultIncludesInProgress(t *testing.T) {
 	}
 }
 
+func TestTaskListHumanOutputUsesReadableTable(t *testing.T) {
+	now := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
+	recent := now.Add(-5 * time.Minute).Format(time.RFC3339Nano)
+
+	beads := []protocol.Bead{
+		{
+			ID:        "oro-abc1",
+			Status:    "open",
+			Priority:  1,
+			Type:      "task",
+			UpdatedAt: recent,
+			Title:     "normal title",
+		},
+		{
+			ID:       "oro-abc2",
+			Status:   "in_progress",
+			Priority: 0,
+			Type:     "bug",
+			Title:    "title with\nnewline",
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := writeBeadListHuman(&buf, beads, now); err != nil {
+		t.Fatalf("writeBeadListHuman: %v", err)
+	}
+
+	output := buf.String()
+	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+
+	// Header is first and contains all expected columns in declared order.
+	if len(lines) < 1 {
+		t.Fatal("no output")
+	}
+	header := lines[0]
+	cols := []string{"ID", "STATUS", "PRI", "TYPE", "UPDATED", "TITLE"}
+	for _, col := range cols {
+		if !strings.Contains(header, col) {
+			t.Fatalf("header missing column %q in: %q", col, header)
+		}
+	}
+	for i := 1; i < len(cols); i++ {
+		if strings.Index(header, cols[i-1]) >= strings.Index(header, cols[i]) {
+			t.Fatalf("header column %q not before %q in: %q", cols[i-1], cols[i], header)
+		}
+	}
+
+	// One header + one row per bead.
+	if len(lines) != 1+len(beads) {
+		t.Fatalf("got %d lines, want %d:\n%s", len(lines), 1+len(beads), output)
+	}
+
+	// Both bead IDs appear in the output.
+	for _, b := range beads {
+		if !strings.Contains(output, b.ID) {
+			t.Fatalf("output missing bead ID %q:\n%s", b.ID, output)
+		}
+	}
+
+	// Embedded newlines in titles are replaced — total \n count equals line count.
+	if strings.Count(output, "\n") != 1+len(beads) {
+		t.Fatalf("title newlines not normalized; got %d newlines, want %d:\n%s",
+			strings.Count(output, "\n"), 1+len(beads), output)
+	}
+
+	// Column alignment: STATUS value in each row starts at the same byte offset as the header.
+	statusOff := strings.Index(header, "STATUS")
+	for i, line := range lines[1:] {
+		if len(line) < statusOff {
+			t.Fatalf("row %d shorter than STATUS column offset %d: %q", i+1, statusOff, line)
+		}
+		if line[statusOff] == ' ' {
+			t.Fatalf("row %d: STATUS column misaligned (space at offset %d): %q", i+1, statusOff, line)
+		}
+	}
+
+	t.Run("empty_slice_has_header", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := writeBeadListHuman(&buf, []protocol.Bead{}, now); err != nil {
+			t.Fatalf("writeBeadListHuman(empty): %v", err)
+		}
+		out := buf.String()
+		outLines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+		if len(outLines) < 1 || !strings.Contains(outLines[0], "ID") {
+			t.Fatalf("empty slice: header missing: %q", out)
+		}
+	})
+
+	t.Run("updated_label_no_timestamps", func(t *testing.T) {
+		b := protocol.Bead{ID: "x"}
+		if got := beadListUpdatedLabel(now, b); got != "-" {
+			t.Fatalf("beadListUpdatedLabel with no timestamps = %q, want \"-\"", got)
+		}
+	})
+
+	t.Run("updated_label_invalid_timestamp", func(t *testing.T) {
+		b := protocol.Bead{ID: "x", UpdatedAt: "not-a-timestamp"}
+		got := beadListUpdatedLabel(now, b)
+		if got == "" {
+			t.Fatal("beadListUpdatedLabel returned empty for invalid timestamp")
+		}
+	})
+
+	t.Run("single_line_title", func(t *testing.T) {
+		cases := []struct {
+			input string
+			want  string
+		}{
+			{"hello\nworld", "hello world"},
+			{"a\r\nb", "a b"},
+			{"no newline", "no newline"},
+			{"multi\nline\ntitle", "multi line title"},
+		}
+		for _, tc := range cases {
+			if got := singleLineListTitle(tc.input); got != tc.want {
+				t.Fatalf("singleLineListTitle(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		}
+	})
+}
+
 func TestTaskListDefaultsToTopUnfinished(t *testing.T) {
 	ctx := context.Background()
 	store, err := beadstore.OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))
