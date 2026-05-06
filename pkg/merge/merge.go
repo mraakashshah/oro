@@ -217,10 +217,14 @@ func (c *Coordinator) worktreeRemoveAndFFMerge(ctx context.Context, opts Opts) (
 		return nil, fmt.Errorf("worktree remove failed (branch %s merged but worktree lingers): %w", opts.Branch, removeErr)
 	}
 
-	// Get the final commit SHA on main.
-	stdout, _, err := c.git.Run(ctx, primaryRepo, "rev-parse", "HEAD")
+	// Read the per-bead commit SHA from the merged branch ref, not from HEAD.
+	// After a successful --ff-only merge, rev-parse <branch> == rev-parse HEAD,
+	// but using the branch ref makes the result specific to this bead even when
+	// concurrent merges advance HEAD between the merge and the rev-parse step
+	// (oro-fsks: two beads merged in the same tick both echoed bead-a's SHA).
+	stdout, _, err := c.git.Run(ctx, primaryRepo, "rev-parse", opts.Branch)
 	if err != nil {
-		return nil, fmt.Errorf("rev-parse HEAD failed: %w", err)
+		return nil, fmt.Errorf("rev-parse %s failed: %w", opts.Branch, err)
 	}
 	return &Result{CommitSHA: strings.TrimSpace(stdout)}, nil
 }

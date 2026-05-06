@@ -41,7 +41,7 @@ func TestMergeToMain_FFMerge(t *testing.T) {
 				{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
 				// 3. git merge --ff-only bead/abc (in primary repo)
 				{Stdout: "", Stderr: "", Err: nil},
-				// 4. git rev-parse HEAD (in primary repo) — same SHA as branch tip
+				// 4. git rev-parse bead/abc (in primary repo) — per-bead branch SHA
 				{Stdout: "branchTipSHA\n", Stderr: "", Err: nil},
 			},
 		}
@@ -79,7 +79,7 @@ func TestMergeToMain_FFMerge(t *testing.T) {
 		assertArgs(t, calls[1], "/tmp/wt-abc", "rebase", "main", "bead/abc")
 		assertArgs(t, calls[2], "/tmp/wt-abc", "rev-parse", "--git-common-dir")
 		assertArgs(t, calls[3], "/repo", "merge", "--ff-only", "bead/abc")
-		assertArgs(t, calls[4], "/repo", "rev-parse", "HEAD")
+		assertArgs(t, calls[4], "/repo", "rev-parse", "bead/abc")
 
 		// Verify no cherry-pick was issued
 		for _, c := range calls {

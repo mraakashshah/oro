@@ -105,8 +105,8 @@ func TestMerge_CleanRebaseAndMerge(t *testing.T) {
 	assertArgs(t, calls[3], "/repo", "merge", "--ff-only", "bead/abc")
 	// Call 4: git worktree remove --force (after successful merge)
 	assertArgs(t, calls[4], "/repo", "worktree", "remove", "--force", "/tmp/wt-abc")
-	// Call 5: rev-parse HEAD
-	assertArgs(t, calls[5], "/repo", "rev-parse", "HEAD")
+	// Call 5: rev-parse bead/abc — per-bead branch SHA (not tick-wide HEAD)
+	assertArgs(t, calls[5], "/repo", "rev-parse", "bead/abc")
 }
 
 func TestMerge_CommonDirWithoutDotGitUsesShowTopLevel(t *testing.T) {
@@ -151,7 +151,7 @@ func TestMerge_CommonDirWithoutDotGitUsesShowTopLevel(t *testing.T) {
 	assertArgs(t, calls[3], "/tmp/wt-linked", "rev-parse", "--show-toplevel")
 	assertArgs(t, calls[4], "/repo", "merge", "--ff-only", "bead/linked")
 	assertArgs(t, calls[5], "/repo", "worktree", "remove", "--force", "/tmp/wt-linked")
-	assertArgs(t, calls[6], "/repo", "rev-parse", "HEAD")
+	assertArgs(t, calls[6], "/repo", "rev-parse", "bead/linked")
 }
 
 func TestMerge_RebaseConflict_ReturnsConflictError(t *testing.T) {
@@ -1245,8 +1245,8 @@ func TestMerge_FFOnlyFails_RebasesAndRetries(t *testing.T) {
 	assertArgs(t, calls[6], "/repo", "merge", "--ff-only", "bead/retry")
 	// Call 7: worktree remove (after successful merge)
 	assertArgs(t, calls[7], "/repo", "worktree", "remove", "--force", "/tmp/wt-retry")
-	// Call 8: rev-parse HEAD
-	assertArgs(t, calls[8], "/repo", "rev-parse", "HEAD")
+	// Call 8: rev-parse bead/retry — per-bead branch SHA (not tick-wide HEAD)
+	assertArgs(t, calls[8], "/repo", "rev-parse", "bead/retry")
 }
 
 func TestCoordinatorAbort_NoMergeInProgress(t *testing.T) {

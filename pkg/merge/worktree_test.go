@@ -60,8 +60,8 @@ func TestMergeToMain(t *testing.T) {
 		assertArgs(t, calls[3], "/path/to/repo", "merge", "--ff-only", "bead/abc")
 		// Verify worktree remove --force (fallback via git, in primary repo)
 		assertArgs(t, calls[4], "/path/to/repo", "worktree", "remove", "--force", "/tmp/wt-abc")
-		// Verify final rev-parse in primary repo
-		assertArgs(t, calls[5], "/path/to/repo", "rev-parse", "HEAD")
+		// Verify final rev-parse uses per-bead branch ref (not tick-wide HEAD)
+		assertArgs(t, calls[5], "/path/to/repo", "rev-parse", "bead/abc")
 	})
 
 	t.Run("commits from agent branch land on main with same SHA", func(t *testing.T) {
