@@ -780,20 +780,21 @@ func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressT
 	opsSpawner := ops.NewSpawnerWithReviewTimeout(runtime.opsSpawn, opsReviewTimeout)
 
 	cfg := dispatcher.Config{
-		SocketPath:        sockPath,
-		InitialWorkers:    initialWorkers,
-		MaxWorkers:        maxWorkers,
-		AllowZeroWorkers:  initialWorkers == 0,
-		DBPath:            dbPath,
-		RepoRoot:          repoRoot,
-		ProgressTimeout:   progressTimeout,
-		ReviewTimeout:     reviewStallTimeout,
-		ManualIntegration: manualIntegration,
-		WorkerProgram:     resolveWorkerProgramPath(repoRoot),
-		DefaultBranch:     baseBranch,
-		DreamInterval:     10,
-		WebEnabled:        webEnabled,
-		WebAddr:           webAddr,
+		SocketPath:              sockPath,
+		InitialWorkers:          initialWorkers,
+		MaxWorkers:              maxWorkers,
+		AllowZeroWorkers:        initialWorkers == 0,
+		DBPath:                  dbPath,
+		RepoRoot:                repoRoot,
+		ProgressTimeout:         progressTimeout,
+		ReviewTimeout:           reviewStallTimeout,
+		ManualIntegration:       manualIntegration,
+		WorkerProgram:           resolveWorkerProgramPath(repoRoot),
+		ReviewPatternCandidates: resolveReviewPatternCandidatesPath(repoRoot),
+		DefaultBranch:           baseBranch,
+		DreamInterval:           10,
+		WebEnabled:              webEnabled,
+		WebAddr:                 webAddr,
 	}
 
 	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, codeIdx)
@@ -811,6 +812,17 @@ func resolveWorkerProgramPath(repoRoot string) string {
 		return filepath.Join(repoRoot, "worker-program.md")
 	}
 	return paths.WorkerProgram
+}
+
+// resolveReviewPatternCandidatesPath returns the review-pattern-candidates path
+// for repoRoot. Falls back to <repoRoot>/.oro/review-pattern-candidates.md if
+// path resolution fails.
+func resolveReviewPatternCandidatesPath(repoRoot string) string {
+	paths, err := ResolvePaths(repoRoot)
+	if err != nil {
+		return filepath.Join(repoRoot, ".oro", "review-pattern-candidates.md")
+	}
+	return paths.ReviewPatternCandidates
 }
 
 // wireDependencies attaches production components to the dispatcher.

@@ -409,35 +409,36 @@ type pendingHandoff struct {
 
 // Config holds Dispatcher configuration.
 type Config struct {
-	SocketPath            string        // UDS socket path.
-	DBPath                string        // SQLite database path.
-	RepoRoot              string        // Absolute path to the repository root. Used so oro task commands run from the right directory even when the process is started from a worktree. Falls back to os.Getwd() if empty.
-	BeadsDir              string        // Path to the beads directory (defaults to protocol.BeadsDir when empty). Set from ProjectPaths.BeadsDir for stealth-mode support.
-	MaxWorkers            int           // Worker pool ceiling for auto-scale (default 10).
-	InitialWorkers        int           // Initial targetWorkers on startup (default: MaxWorkers).
-	AllowZeroWorkers      bool          // When true, InitialWorkers=0 is treated as an explicit target (not auto-defaulted) so daemon-only manual-worker mode keeps a zero baseline. Combined with MaxWorkers>0 in New(), this also seeds explicitScaleTarget so maybeAutoScale will not raise the target from zero.
-	HeartbeatTimeout      time.Duration // Worker heartbeat timeout (default 45s).
-	ProgressTimeout       time.Duration // Max time without meaningful progress before STUCK_WORKER escalation (default 15m).
-	PollInterval          time.Duration // oro task ready poll interval (default 10s).
-	FallbackPollInterval  time.Duration // Fallback poll interval for fsnotify safety net (default 60s).
-	ShutdownTimeout       time.Duration // Graceful shutdown timeout (default 10s).
-	ConsolidateAfterN     int           // Trigger context consolidation after N completed beads (default 5).
-	DreamInterval         int           // Spawn a dream memory-consolidation agent after N completed beads (default 10; 0 disables).
-	PaneContextThreshold  int           // Context percentage threshold for pane handoff (default 60).
-	PaneMonitorInterval   time.Duration // Pane context_pct poll interval (default 5s).
-	PaneRestartCooldown   time.Duration // Min time between manager pane restarts (default 2m).
-	PaneInactivityTimeout time.Duration // Manager inactivity duration before restart (default 10m).
-	ReviewTimeout         time.Duration // Max time a reviewing worker can stall before STUCK_WORKER escalation (default 15m).
-	ManualIntegration     bool          // If true, completed worker branches wait for manual coordinator integration instead of auto-merge.
-	BackupInterval        time.Duration // Interval between full-state JSONL backups to .beads/backup/full-state.jsonl (default 5m).
-	DoltHealthInterval    time.Duration // Interval between dolt reachability probes in heartbeatLoop (default 30s).
-	Estimator             BeadEstimator // LLM-based bead complexity estimator (default NewBeadEstimator()).
-	WorkerProgram         string        // Absolute path to worker-program.md. Defaults to <RepoRoot>/worker-program.md.
-	DefaultBranch         string        // Base branch for worktree creation and epic FF merges (default "main"). Set via --base-branch flag.
-	WebEnabled            bool          // Enable HTTP server for dashboard/health endpoints (default false).
-	WebAddr               string        // HTTP server listen address (default 127.0.0.1:4444 in withDefaults).
-	SemanticModelDir      string        // Directory containing the BGE ONNX model files. Empty means semantic search is disabled.
-	RerankerModelDir      string        // Directory containing the BGE reranker ONNX model files. Empty means reranker unavailable.
+	SocketPath              string        // UDS socket path.
+	DBPath                  string        // SQLite database path.
+	RepoRoot                string        // Absolute path to the repository root. Used so oro task commands run from the right directory even when the process is started from a worktree. Falls back to os.Getwd() if empty.
+	BeadsDir                string        // Path to the beads directory (defaults to protocol.BeadsDir when empty). Set from ProjectPaths.BeadsDir for stealth-mode support.
+	MaxWorkers              int           // Worker pool ceiling for auto-scale (default 10).
+	InitialWorkers          int           // Initial targetWorkers on startup (default: MaxWorkers).
+	AllowZeroWorkers        bool          // When true, InitialWorkers=0 is treated as an explicit target (not auto-defaulted) so daemon-only manual-worker mode keeps a zero baseline. Combined with MaxWorkers>0 in New(), this also seeds explicitScaleTarget so maybeAutoScale will not raise the target from zero.
+	HeartbeatTimeout        time.Duration // Worker heartbeat timeout (default 45s).
+	ProgressTimeout         time.Duration // Max time without meaningful progress before STUCK_WORKER escalation (default 15m).
+	PollInterval            time.Duration // oro task ready poll interval (default 10s).
+	FallbackPollInterval    time.Duration // Fallback poll interval for fsnotify safety net (default 60s).
+	ShutdownTimeout         time.Duration // Graceful shutdown timeout (default 10s).
+	ConsolidateAfterN       int           // Trigger context consolidation after N completed beads (default 5).
+	DreamInterval           int           // Spawn a dream memory-consolidation agent after N completed beads (default 10; 0 disables).
+	PaneContextThreshold    int           // Context percentage threshold for pane handoff (default 60).
+	PaneMonitorInterval     time.Duration // Pane context_pct poll interval (default 5s).
+	PaneRestartCooldown     time.Duration // Min time between manager pane restarts (default 2m).
+	PaneInactivityTimeout   time.Duration // Manager inactivity duration before restart (default 10m).
+	ReviewTimeout           time.Duration // Max time a reviewing worker can stall before STUCK_WORKER escalation (default 15m).
+	ManualIntegration       bool          // If true, completed worker branches wait for manual coordinator integration instead of auto-merge.
+	BackupInterval          time.Duration // Interval between full-state JSONL backups to .beads/backup/full-state.jsonl (default 5m).
+	DoltHealthInterval      time.Duration // Interval between dolt reachability probes in heartbeatLoop (default 30s).
+	Estimator               BeadEstimator // LLM-based bead complexity estimator (default NewBeadEstimator()).
+	WorkerProgram           string        // Absolute path to worker-program.md. Defaults to <RepoRoot>/worker-program.md.
+	ReviewPatternCandidates string        // Absolute path for review-pattern candidate inbox. Populated from ProjectPaths.ReviewPatternCandidates.
+	DefaultBranch           string        // Base branch for worktree creation and epic FF merges (default "main"). Set via --base-branch flag.
+	WebEnabled              bool          // Enable HTTP server for dashboard/health endpoints (default false).
+	WebAddr                 string        // HTTP server listen address (default 127.0.0.1:4444 in withDefaults).
+	SemanticModelDir        string        // Directory containing the BGE ONNX model files. Empty means semantic search is disabled.
+	RerankerModelDir        string        // Directory containing the BGE reranker ONNX model files. Empty means reranker unavailable.
 	// CheckpointThreshold is the context-usage percentage (0–100) at which the dispatcher
 	// triggers a checkpoint for the assigned worker. 0 disables checkpoint signalling.
 	// Default 75 (§9.3).
@@ -2767,12 +2768,12 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 			_ = d.logEvent(ctx, "review_approved", "ops", beadID, workerID, result.Feedback)
 			d.clearRejectionCount(beadID)
 
-			// Capture anti-patterns from reviewer output
+			// Capture pattern candidates from reviewer output into the inbox.
 			patterns := ops.ExtractPatterns(result.Feedback)
 			if len(patterns) > 0 {
-				if err := d.appendReviewPatterns(ctx, beadID, workerID, patterns); err != nil {
+				if err := d.appendReviewPatternCandidates(ctx, beadID, workerID, patterns); err != nil {
 					// Non-blocking: log the error but continue
-					_ = d.logEvent(ctx, "append_review_patterns_failed", "ops", beadID, workerID, err.Error())
+					_ = d.logEvent(ctx, "append_review_pattern_candidates_failed", "ops", beadID, workerID, err.Error())
 				}
 			}
 
@@ -2914,6 +2915,41 @@ func (d *Dispatcher) appendReviewPatterns(ctx context.Context, beadID, workerID 
 		if _, err := f.WriteString(p + "\n"); err != nil {
 			_ = d.logEvent(ctx, "append_review_patterns_failed", "ops", beadID, workerID, fmt.Sprintf("write failed: %v", err))
 			return fmt.Errorf("write pattern: %w", err)
+		}
+	}
+	return nil
+}
+
+// appendReviewPatternCandidates writes one structured record per candidate to
+// the ReviewPatternCandidates inbox path. Each record is written with a single
+// WriteString call so concurrent appends from parallel workers produce complete,
+// non-interleaved records. Parent directory is created if absent.
+func (d *Dispatcher) appendReviewPatternCandidates(ctx context.Context, beadID, workerID string, candidates []string) error {
+	path := d.cfg.ReviewPatternCandidates
+	if path == "" {
+		return nil
+	}
+
+	//nolint:gosec // path is derived from trusted project config
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		_ = d.logEvent(ctx, "append_review_pattern_candidates_failed", "ops", beadID, workerID, fmt.Sprintf("mkdir failed: %v", err))
+		return fmt.Errorf("create candidates directory: %w", err)
+	}
+
+	//nolint:gosec // path is derived from trusted project config
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		_ = d.logEvent(ctx, "append_review_pattern_candidates_failed", "ops", beadID, workerID, fmt.Sprintf("open file failed: %v", err))
+		return fmt.Errorf("open candidates file: %w", err)
+	}
+	defer f.Close()
+
+	now := d.nowFunc().UTC().Format(time.RFC3339)
+	for _, c := range candidates {
+		record := fmt.Sprintf("---\nbead: %s\nworker: %s\ncaptured_at: %s\n\n%s\n\n", beadID, workerID, now, c)
+		if _, err := f.WriteString(record); err != nil {
+			_ = d.logEvent(ctx, "append_review_pattern_candidates_failed", "ops", beadID, workerID, fmt.Sprintf("write failed: %v", err))
+			return fmt.Errorf("write candidate record: %w", err)
 		}
 	}
 	return nil

@@ -19026,3 +19026,63 @@ func TestPruneStaleAgentBranches_StripsPlusPrefix(t *testing.T) {
 		}
 	}
 }
+
+// TestApprovedReview_WritesCandidateInboxNotAssets verifies that
+// appendReviewPatternCandidates writes one complete record per candidate to the
+// ReviewPatternCandidates path and leaves assets/review-patterns.md untouched.
+func TestApprovedReview_WritesCandidateInboxNotAssets(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create assets/review-patterns.md so we can verify it is not written.
+	assetsDir := filepath.Join(tmpDir, "assets")
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatalf("mkdir assets: %v", err)
+	}
+	assetsFile := filepath.Join(assetsDir, "review-patterns.md")
+	const originalContent = "# Existing patterns\n"
+	if err := os.WriteFile(assetsFile, []byte(originalContent), 0o644); err != nil {
+		t.Fatalf("write assets file: %v", err)
+	}
+	assetsStat, err := os.Stat(assetsFile)
+	if err != nil {
+		t.Fatalf("stat assets: %v", err)
+	}
+	assetsMtime := assetsStat.ModTime()
+
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	candidatesPath := filepath.Join(tmpDir, ".oro", "review-pattern-candidates.md")
+	d.cfg.ReviewPatternCandidates = candidatesPath
+
+	ctx := context.Background()
+	if err := d.appendReviewPatternCandidates(ctx, "oro-test", "worker-1", []string{"never skip tests"}); err != nil {
+		t.Fatalf("appendReviewPatternCandidates: %v", err)
+	}
+
+	// Verify candidate file has a complete record with required fields.
+	data, err := os.ReadFile(candidatesPath)
+	if err != nil {
+		t.Fatalf("read candidates file: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{"bead:", "worker:", "captured_at:", "never skip tests"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("candidate record missing %q\ngot:\n%s", want, content)
+		}
+	}
+
+	// Verify assets/review-patterns.md content and mtime are unchanged.
+	newStat, err := os.Stat(assetsFile)
+	if err != nil {
+		t.Fatalf("re-stat assets: %v", err)
+	}
+	if !newStat.ModTime().Equal(assetsMtime) {
+		t.Error("assets/review-patterns.md mtime changed — must not be written to")
+	}
+	got, err := os.ReadFile(assetsFile)
+	if err != nil {
+		t.Fatalf("re-read assets: %v", err)
+	}
+	if string(got) != originalContent {
+		t.Errorf("assets/review-patterns.md content changed: got %q want %q", string(got), originalContent)
+	}
+}
