@@ -29,9 +29,9 @@ func TestTmuxPaneTarget(t *testing.T) {
 		want    string
 	}{
 		{"", "manager", "oro:manager"},
-		{"", "architect", "oro:architect"},
+		{"", "worker", "oro:worker"},
 		{"myproj", "manager", "oro-myproj:manager"},
-		{"myproj", "architect", "oro-myproj:architect"},
+		{"myproj", "worker", "oro-myproj:worker"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.project+"/"+tt.role, func(t *testing.T) {

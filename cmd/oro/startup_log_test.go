@@ -44,13 +44,13 @@ func TestStartupLog_SpinnerTTY(t *testing.T) {
 	var buf bytes.Buffer
 	log := newStartupLog(&buf, true) // TTY mode
 
-	stop := log.StartSpinner("Waiting for architect...")
+	stop := log.StartSpinner("Waiting for dispatcher...")
 	time.Sleep(200 * time.Millisecond) // Let spinner animate a few frames
 	stop()
 
 	output := buf.String()
 	// Should contain spinner frames (braille characters)
-	if !strings.Contains(output, "Waiting for architect...") {
+	if !strings.Contains(output, "Waiting for dispatcher...") {
 		t.Errorf("expected message, got: %q", output)
 	}
 	// Should contain final checkmark
@@ -63,13 +63,13 @@ func TestStartupLog_SpinnerNonTTY(t *testing.T) {
 	var buf bytes.Buffer
 	log := newStartupLog(&buf, false) // Non-TTY mode
 
-	stop := log.StartSpinner("Waiting for architect...")
+	stop := log.StartSpinner("Waiting for dispatcher...")
 	time.Sleep(100 * time.Millisecond)
 	stop()
 
 	output := buf.String()
 	// Non-TTY should print static line without spinner animation
-	if !strings.Contains(output, "Waiting for architect...") {
+	if !strings.Contains(output, "Waiting for dispatcher...") {
 		t.Errorf("expected message, got: %q", output)
 	}
 	// Should not contain carriage return escape sequences
