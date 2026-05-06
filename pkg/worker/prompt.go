@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 
+	"oro/pkg/cards"
 	"oro/pkg/langprofile"
 	"oro/pkg/protocol"
 )
@@ -15,9 +16,10 @@ type PromptParams struct {
 	Title                string
 	Description          string
 	AcceptanceCriteria   string
-	MemoryContext        string // may be empty
-	CodeSearchContext    string // formatted code search results from FTS5Search
-	CodeStructureContext string // formatted nav-maps from codestruct (outline + line ranges)
+	MemoryContext        string              // deprecated after D.4: no longer rendered; use Cards
+	Cards                cards.RelevantCards // relevant knowledge cards (§5.5, §13.1)
+	CodeSearchContext    string              // formatted code search results from FTS5Search
+	CodeStructureContext string              // formatted nav-maps from codestruct (outline + line ranges)
 	WorktreePath         string
 	Model                string
 	Attempt              int    // QG retry attempt (0 = first attempt)
@@ -33,17 +35,41 @@ func section(b *strings.Builder, header, body string) {
 	fmt.Fprintf(b, "## %s\n\n%s\n\n", header, body)
 }
 
-// memoryBody returns the memory section content, falling back to a
-// placeholder when no prior context is available. When the context contains
-// stale memory markers (⚠), a verification reminder is appended.
-func memoryBody(ctx string) string {
-	if ctx == "" {
-		return "No prior context for this task."
+// cardsBody renders the Cards section body from a RelevantCards result (§5.5).
+// Inlined cards show their full body; any deck entries beyond the inline set
+// appear in the deck-view format so the worker can request deep content on demand.
+func cardsBody(rc cards.RelevantCards) string {
+	if len(rc.Deck) == 0 {
+		return "No relevant cards for this task."
 	}
-	if strings.Contains(ctx, "⚠") {
-		return ctx + "\n\n> **Stale memories detected** — verify by reading the actual source before acting on any ⚠-marked entry."
+
+	var b strings.Builder
+
+	// Inline cards with full body.
+	for _, c := range rc.Inlined {
+		fmt.Fprintf(&b, "**[%s] %s** (id: %s, score: %.1f)\n\n%s\n\n", c.Type, c.Title, c.ID, c.Score, c.BodyFull)
 	}
-	return ctx
+
+	// Deck view for cards beyond the inline budget.
+	inlinedIDs := make(map[string]bool, len(rc.Inlined))
+	for _, c := range rc.Inlined {
+		inlinedIDs[c.ID] = true
+	}
+	var deckOnly []cards.CardSummary
+	for _, c := range rc.Deck {
+		if !inlinedIDs[c.ID] {
+			deckOnly = append(deckOnly, c)
+		}
+	}
+	if len(deckOnly) > 0 {
+		b.WriteString("=== Cards (deck view) ===\n\n")
+		for _, c := range deckOnly {
+			fmt.Fprintf(&b, "[%-8s] %-40s score %.1f   id %s\n", string(c.Type), c.Title, c.Score, c.ID)
+		}
+		b.WriteString("\nTo see full body of any card: `oro cards show <id>`\n")
+	}
+
+	return b.String()
 }
 
 // AssemblePrompt builds the complete 12-section worker prompt from task details
@@ -64,15 +90,8 @@ func AssemblePrompt(params PromptParams) string {
 	}
 	section(&b, "Task", beadBody)
 
-	// 2b. Previous Feedback (only on retries with feedback)
-	if params.Attempt > 0 && params.Feedback != "" {
-		section(&b, "Previous Feedback",
-			fmt.Sprintf("**This is retry attempt %d.** The previous attempt was rejected. You MUST address the feedback below before doing anything else.\n\n```\n%s\n```\n\nStart by running `git checkout . && git clean -fd` to reset the worktree, then fix the issues above.",
-				params.Attempt, params.Feedback))
-	}
-
-	// 3. Memory
-	section(&b, "Memory", memoryBody(params.MemoryContext))
+	// 3. Cards (replaces Memory + Previous Feedback per §13.2)
+	section(&b, "Cards", cardsBody(params.Cards))
 
 	// 3b. Code Structure nav-maps (only if CodeStructureContext is non-empty)
 	if params.CodeStructureContext != "" {

@@ -113,17 +113,17 @@ func TestPromptCodeStructure(t *testing.T) {
 
 		prompt := worker.AssemblePrompt(params)
 
-		memIdx := strings.Index(prompt, "## Memory")
+		memIdx := strings.Index(prompt, "## Cards")
 		structIdx := strings.Index(prompt, "## Code Structure")
 		codeIdx := strings.Index(prompt, "## Relevant Code")
 
 		if memIdx == -1 || structIdx == -1 || codeIdx == -1 {
-			t.Fatalf("expected Memory (%d), Code Structure (%d), and Relevant Code (%d) sections in prompt",
+			t.Fatalf("expected Cards (%d), Code Structure (%d), and Relevant Code (%d) sections in prompt",
 				memIdx, structIdx, codeIdx)
 		}
 
 		if structIdx <= memIdx {
-			t.Errorf("expected ## Code Structure (at %d) to appear after ## Memory (at %d)", structIdx, memIdx)
+			t.Errorf("expected ## Code Structure (at %d) to appear after ## Cards (at %d)", structIdx, memIdx)
 		}
 		if structIdx >= codeIdx {
 			t.Errorf("expected ## Code Structure (at %d) to appear before ## Relevant Code (at %d)", structIdx, codeIdx)

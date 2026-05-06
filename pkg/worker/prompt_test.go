@@ -14,7 +14,7 @@ import (
 var expectedSectionHeaders = []string{
 	"## Role",
 	"## Task",
-	"## Memory",
+	"## Cards",
 	"## Coding Rules",
 	"## TDD",
 	"## Quality Gate",
@@ -82,52 +82,48 @@ func TestAssemblePrompt_EmptyMemoryContext(t *testing.T) {
 	t.Parallel()
 
 	params := worker.PromptParams{
-		BeadID:             "bead-nomem",
-		Title:              "Test bead",
-		Description:        "A test bead",
-		AcceptanceCriteria: "Tests pass",
-		MemoryContext:      "",
-		WorktreePath:       "/tmp/wt-nomem",
-		Model:              "opus",
+		BeadID:       "bead-nomem",
+		Title:        "Test bead",
+		Description:  "A test bead",
+		WorktreePath: "/tmp/wt-nomem",
+		Model:        "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
 
-	// Memory section header should still be present
-	if !strings.Contains(prompt, "## Memory") {
-		t.Error("expected prompt to contain ## Memory header even when empty")
+	// Cards section header should be present even when no cards are provided.
+	if !strings.Contains(prompt, "## Cards") {
+		t.Error("expected prompt to contain ## Cards header even when no cards provided")
 	}
-	// Should contain a "no prior context" note
-	if !strings.Contains(prompt, "No prior context") {
-		t.Error("expected prompt to contain 'No prior context' note when memory is empty")
+	// Should contain the empty-cards placeholder.
+	if !strings.Contains(prompt, "No relevant cards for this task") {
+		t.Error("expected prompt to contain 'No relevant cards' placeholder when Cards is empty")
 	}
 }
 
 func TestAssemblePrompt_NonEmptyMemoryContext(t *testing.T) {
 	t.Parallel()
 
+	// MemoryContext is deprecated after D.4 (subsumed by Cards). Verify it is
+	// no longer rendered — setting it must not cause memory content to appear.
 	memCtx := "- [lesson] always run go vet before committing\n- [gotcha] FTS5 needs triggers"
 
 	params := worker.PromptParams{
-		BeadID:             "bead-withmem",
-		Title:              "Test bead with memory",
-		Description:        "A test bead",
-		AcceptanceCriteria: "Tests pass",
-		MemoryContext:      memCtx,
-		WorktreePath:       "/tmp/wt-withmem",
-		Model:              "opus",
+		BeadID:        "bead-withmem",
+		Title:         "Test bead with memory",
+		Description:   "A test bead",
+		MemoryContext: memCtx,
+		WorktreePath:  "/tmp/wt-withmem",
+		Model:         "opus",
 	}
 
 	prompt := worker.AssemblePrompt(params)
 
-	if !strings.Contains(prompt, "always run go vet before committing") {
-		t.Error("expected prompt to contain memory context content")
+	if strings.Contains(prompt, "always run go vet before committing") {
+		t.Error("MemoryContext must NOT be rendered after D.4 cutover — use Cards instead")
 	}
-	if !strings.Contains(prompt, "FTS5 needs triggers") {
-		t.Error("expected prompt to contain all memory context entries")
-	}
-	if strings.Contains(prompt, "No prior context") {
-		t.Error("prompt should NOT contain 'No prior context' when memory context is provided")
+	if strings.Contains(prompt, "FTS5 needs triggers") {
+		t.Error("MemoryContext must NOT be rendered after D.4 cutover — use Cards instead")
 	}
 }
 
@@ -571,21 +567,24 @@ func TestAssemblePrompt_AttemptPositive_IncludesRetryNote(t *testing.T) {
 
 func TestAssemblePrompt_FeedbackIncludedInRetry(t *testing.T) {
 	t.Parallel()
+	// After D.4 cutover, Previous Feedback is subsumed by Cards (§13.2).
+	// Feedback text no longer appears as a dedicated section; the retry
+	// note remains in the Task section.
 	params := worker.PromptParams{
-		BeadID:             "bead-fb",
-		Title:              "Fix bug",
-		AcceptanceCriteria: "Tests pass",
-		WorktreePath:       "/tmp/wt-fb",
-		Model:              "opus",
-		Attempt:            1,
-		Feedback:           "FAIL: TestFoo expected 42 got 0",
+		BeadID:       "bead-fb",
+		Title:        "Fix bug",
+		WorktreePath: "/tmp/wt-fb",
+		Model:        "opus",
+		Attempt:      1,
+		Feedback:     "FAIL: TestFoo expected 42 got 0",
 	}
 	prompt := worker.AssemblePrompt(params)
-	if !strings.Contains(prompt, "FAIL: TestFoo expected 42 got 0") {
-		t.Errorf("expected feedback in prompt, got:\n%s", prompt)
+	if strings.Contains(prompt, "## Previous Feedback") {
+		t.Error("prompt must NOT contain ## Previous Feedback section after D.4 cutover")
 	}
-	if !strings.Contains(prompt, "Previous Feedback") {
-		t.Error("expected 'Previous Feedback' section header")
+	// Retry note is still injected into the Task section.
+	if !strings.Contains(prompt, "Retry attempt 1") {
+		t.Error("expected retry note in Task section")
 	}
 }
 
@@ -643,11 +642,11 @@ func TestAssemblePrompt_CodeSearchContext_Present(t *testing.T) {
 		t.Error("expected prompt to contain code search content")
 	}
 
-	// Relevant Code should appear AFTER Memory section
-	memIdx := strings.Index(prompt, "## Memory")
+	// Relevant Code should appear AFTER Cards section
+	memIdx := strings.Index(prompt, "## Cards")
 	codeIdx := strings.Index(prompt, "## Relevant Code")
 	if memIdx == -1 || codeIdx == -1 || codeIdx <= memIdx {
-		t.Error("expected '## Relevant Code' section to appear after '## Memory' section")
+		t.Error("expected '## Relevant Code' section to appear after '## Cards' section")
 	}
 
 	// Relevant Code should appear BEFORE Coding Rules section
@@ -659,7 +658,7 @@ func TestAssemblePrompt_CodeSearchContext_Present(t *testing.T) {
 
 // TestAssemblePrompt_CodeSearchSection verifies that the ## Relevant Code section
 // is rendered conditionally: present when CodeSearchContext is non-empty, omitted
-// when empty, and positioned correctly between Memory and Coding Rules sections.
+// when empty, and positioned correctly between Cards and Coding Rules sections.
 func TestAssemblePrompt_CodeSearchSection(t *testing.T) {
 	t.Parallel()
 
@@ -729,12 +728,12 @@ func TestAssemblePrompt_CodeSearchSection(t *testing.T) {
 
 		prompt := worker.AssemblePrompt(params)
 
-		memIdx := strings.Index(prompt, "## Memory")
+		memIdx := strings.Index(prompt, "## Cards")
 		codeIdx := strings.Index(prompt, "## Relevant Code")
 		rulesIdx := strings.Index(prompt, "## Coding Rules")
 
 		if memIdx == -1 {
-			t.Fatal("## Memory section not found in prompt")
+			t.Fatal("## Cards section not found in prompt")
 		}
 		if codeIdx == -1 {
 			t.Fatal("## Relevant Code section not found in prompt")
@@ -744,7 +743,7 @@ func TestAssemblePrompt_CodeSearchSection(t *testing.T) {
 		}
 
 		if codeIdx <= memIdx {
-			t.Errorf("expected ## Relevant Code to appear after ## Memory (Memory at %d, Code at %d)", memIdx, codeIdx)
+			t.Errorf("expected ## Relevant Code to appear after ## Cards (Cards at %d, Code at %d)", memIdx, codeIdx)
 		}
 
 		if codeIdx >= rulesIdx {
@@ -2057,36 +2056,32 @@ func TestPromptStalenessWarning(t *testing.T) {
 
 	t.Run("stale_marker_present", func(t *testing.T) {
 		t.Parallel()
-		// Memory context with at least one ⚠ stale marker (as produced by ForPrompt).
+		// After D.4 cutover, MemoryContext is no longer rendered — staleness
+		// warnings from the old memory system must NOT appear in the prompt.
 		memCtx := "| 42 | gotcha | some stale memory | 10d ⚠ | ~15 |"
 		params := worker.PromptParams{
-			BeadID:             "bead-stale",
-			Title:              "Stale memory test",
-			Description:        "Test that stale marker triggers warning",
-			AcceptanceCriteria: "Warning present",
-			MemoryContext:      memCtx,
-			WorktreePath:       "/tmp/wt-stale",
-			Model:              "opus",
+			BeadID:        "bead-stale",
+			Title:         "Stale memory test",
+			MemoryContext: memCtx,
+			WorktreePath:  "/tmp/wt-stale",
+			Model:         "opus",
 		}
 		prompt := worker.AssemblePrompt(params)
-		if !strings.Contains(prompt, stalenessWarning) {
-			t.Errorf("expected prompt to contain staleness warning %q when MemoryContext has ⚠ marker, got memory section:\n%s",
-				stalenessWarning, extractSection(t, prompt, "## Memory"))
+		if strings.Contains(prompt, stalenessWarning) {
+			t.Errorf("prompt must NOT contain staleness warning after D.4 cutover (MemoryContext is no longer rendered)")
 		}
 	})
 
 	t.Run("no_stale_marker", func(t *testing.T) {
 		t.Parallel()
-		// Memory context with no stale marker.
+		// MemoryContext with no stale marker — staleness warning must still be absent.
 		memCtx := "| 10 | lesson | always run go vet | 2d | ~12 |"
 		params := worker.PromptParams{
-			BeadID:             "bead-fresh",
-			Title:              "Fresh memory test",
-			Description:        "Test that no stale marker → no warning",
-			AcceptanceCriteria: "Warning absent",
-			MemoryContext:      memCtx,
-			WorktreePath:       "/tmp/wt-fresh",
-			Model:              "opus",
+			BeadID:        "bead-fresh",
+			Title:         "Fresh memory test",
+			MemoryContext: memCtx,
+			WorktreePath:  "/tmp/wt-fresh",
+			Model:         "opus",
 		}
 		prompt := worker.AssemblePrompt(params)
 		if strings.Contains(prompt, stalenessWarning) {
@@ -2097,17 +2092,15 @@ func TestPromptStalenessWarning(t *testing.T) {
 	t.Run("empty_memory_context", func(t *testing.T) {
 		t.Parallel()
 		params := worker.PromptParams{
-			BeadID:             "bead-empty-mem",
-			Title:              "Empty memory test",
-			Description:        "Empty MemoryContext → No prior context unchanged",
-			AcceptanceCriteria: "No prior context present, no warning",
-			MemoryContext:      "",
-			WorktreePath:       "/tmp/wt-empty-mem",
-			Model:              "opus",
+			BeadID:       "bead-empty-mem",
+			Title:        "Empty memory test",
+			WorktreePath: "/tmp/wt-empty-mem",
+			Model:        "opus",
 		}
 		prompt := worker.AssemblePrompt(params)
-		if !strings.Contains(prompt, "No prior context") {
-			t.Error("expected 'No prior context' when MemoryContext is empty")
+		// Cards section shows empty-cards placeholder instead of "No prior context".
+		if !strings.Contains(prompt, "No relevant cards for this task") {
+			t.Error("expected 'No relevant cards' placeholder when Cards is empty")
 		}
 		if strings.Contains(prompt, stalenessWarning) {
 			t.Errorf("prompt must NOT contain staleness warning when MemoryContext is empty")
