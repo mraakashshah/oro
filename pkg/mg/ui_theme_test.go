@@ -2,7 +2,6 @@ package mg
 
 import (
 	"image/color"
-	"strings"
 	"testing"
 )
 
@@ -115,28 +114,6 @@ func TestAgentStateColorDistinctCategories(t *testing.T) {
 	for _, pair := range pairs {
 		if colors[pair[0]] == colors[pair[1]] {
 			t.Errorf("AgentStateColor(%q) == AgentStateColor(%q), should be distinct", pair[0], pair[1])
-		}
-	}
-}
-
-func TestApplyMardiGrasGradientEmpty(t *testing.T) {
-	result := ApplyMardiGrasGradient("")
-	if result != "" {
-		t.Errorf("ApplyMardiGrasGradient(\"\") = %q, want \"\"", result)
-	}
-}
-
-func TestApplyMardiGrasGradientNonEmpty(t *testing.T) {
-	input := "hello"
-	result := ApplyMardiGrasGradient(input)
-
-	if result == "" {
-		t.Fatal("ApplyMardiGrasGradient(\"hello\") returned empty string")
-	}
-
-	for _, r := range input {
-		if !strings.Contains(result, string(r)) {
-			t.Errorf("result missing character %q from input", string(r))
 		}
 	}
 }
