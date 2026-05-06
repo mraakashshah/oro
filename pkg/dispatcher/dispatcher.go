@@ -4364,10 +4364,6 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	if bead.Model == "" && bead.EstimatedMinutes == 0 && d.estimator != nil {
 		bead.EstimatedMinutes = d.estimator.Estimate(ctx, bead.Title, acceptance)
 	}
-	if d.focusChangedSince(focusVersion) {
-		d.abortAssignmentForFocusChange(ctx, bead.ID, w.id, worktree, existingWorktree == "", assignmentID)
-		return nil
-	}
 
 	resolvedModel := bead.ResolveModel()
 	if isEpicDecomp {
@@ -4378,6 +4374,11 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	// cleared (oro-xqrh).
 	d.releasePriorAssignment(ctx, w, bead.ID)
 	d.mu.Lock()
+	if d.focusVersion != focusVersion {
+		d.mu.Unlock()
+		d.abortAssignmentForFocusChange(ctx, bead.ID, w.id, worktree, existingWorktree == "", assignmentID)
+		return nil
+	}
 	w.state = protocol.WorkerBusy
 	w.assignmentID = assignmentID
 	w.beadID = bead.ID

@@ -6310,6 +6310,15 @@ func (e *blockingOnceEstimator) Estimate(ctx context.Context, _, _ string) int {
 }
 
 func TestDispatcher_FocusImmediateAbortsPostPersistPreSendAssignment(t *testing.T) {
+	assertFocusImmediateAbortsEstimatorBlockedAssignment(t, "post-persist")
+}
+
+func TestDispatcher_FocusImmediateAbortsStateTransitionRace(t *testing.T) {
+	assertFocusImmediateAbortsEstimatorBlockedAssignment(t, "state-transition")
+}
+
+func assertFocusImmediateAbortsEstimatorBlockedAssignment(t *testing.T, label string) {
+	t.Helper()
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	estimator := &blockingOnceEstimator{
 		started: make(chan struct{}),
@@ -6345,7 +6354,7 @@ func TestDispatcher_FocusImmediateAbortsPostPersistPreSendAssignment(t *testing.
 
 	msg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
-		t.Fatal("expected assignment after post-persist focus abort")
+		t.Fatalf("expected assignment after %s focus abort", label)
 	}
 	if msg.Type != protocol.MsgAssign {
 		t.Fatalf("expected ASSIGN, got %s", msg.Type)
@@ -6358,7 +6367,7 @@ func TestDispatcher_FocusImmediateAbortsPostPersistPreSendAssignment(t *testing.
 	otherStatus := beadSrc.updated["bead-other"]
 	beadSrc.mu.Unlock()
 	if otherStatus != "open" {
-		t.Fatalf("post-persist non-focused bead status = %q, want open", otherStatus)
+		t.Fatalf("%s non-focused bead status = %q, want open", label, otherStatus)
 	}
 }
 
