@@ -1109,6 +1109,22 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 
 	d.spawnBackgroundLoops(ctx, ln)
 
+	// Sweep stale active assignments after a grace window so any worker
+	// that survives the dispatcher restart and is going to reconnect has
+	// time to do so. Anything still pointing at a disconnected worker is
+	// abandoned, returning the bead to the ready queue (oro-tczh).
+	graceWindow := 3 * d.cfg.HeartbeatTimeout
+	d.safeGo(func() {
+		select {
+		case <-time.After(graceWindow):
+		case <-ctx.Done():
+			return
+		case <-d.shutdownCh:
+			return
+		}
+		d.abandonStaleActiveAssignments(ctx)
+	})
+
 	exitReason := "shutdownCh"
 	select {
 	case <-ctx.Done():
@@ -6021,6 +6037,75 @@ func (d *Dispatcher) processQuarantined(ctx context.Context, quarantined []quara
 			fmt.Sprintf(`{"assignment_id":%d,"reason":%q}`, q.id, q.reason))
 	}
 	return nil
+}
+
+// abandonStaleActiveAssignments walks every status='active' assignment row
+// and abandons any whose worker_id is not currently in the connected pool.
+// For each abandoned assignment, if the bead is still status='in_progress',
+// it is reset to 'open' so beads_ready picks it up again.
+//
+// Filed by oro-tczh after a silent dispatcher death (oro-zxxn) left 9 dead
+// workers' assignments still active. The new dispatcher's startupRecovery
+// path only handled in_progress beads with recoverable worktrees and never
+// abandoned the stranded rows; the queue silently dropped from many beads
+// to one until manual SQL untangled it.
+//
+// Caller is responsible for the grace window — call after enough time has
+// passed that any worker that was going to reconnect has done so.
+func (d *Dispatcher) abandonStaleActiveAssignments(ctx context.Context) int {
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT id, bead_id, worker_id FROM assignments WHERE status='active'`)
+	if err != nil {
+		_ = d.logEvent(ctx, "stale_assignment_scan_failed", "dispatcher", "", "", err.Error())
+		return 0
+	}
+	type stale struct {
+		id       int64
+		beadID   string
+		workerID string
+	}
+	var pending []stale
+	for rows.Next() {
+		var s stale
+		if scanErr := rows.Scan(&s.id, &s.beadID, &s.workerID); scanErr != nil {
+			_ = rows.Close()
+			_ = d.logEvent(ctx, "stale_assignment_scan_failed", "dispatcher", "", "", scanErr.Error())
+			return 0
+		}
+		d.mu.Lock()
+		_, connected := d.workers[s.workerID]
+		d.mu.Unlock()
+		if !connected {
+			pending = append(pending, s)
+		}
+	}
+	_ = rows.Close()
+
+	abandoned := 0
+	for _, s := range pending {
+		if _, execErr := d.db.ExecContext(ctx,
+			`UPDATE assignments SET status='abandoned', completed_at=datetime('now') WHERE id=? AND status='active'`,
+			s.id); execErr != nil {
+			_ = d.logEvent(ctx, "stale_assignment_abandon_failed", "dispatcher", s.beadID, s.workerID, execErr.Error())
+			continue
+		}
+		abandoned++
+		_ = d.logEvent(ctx, "stale_assignment_abandoned", "dispatcher", s.beadID, s.workerID,
+			fmt.Sprintf(`{"assignment_id":%d}`, s.id))
+		// If the bead is still in_progress, return it to open so beads_ready
+		// picks it up. Open beads are already visible once their last active
+		// assignment is gone.
+		bead, beadErr := d.beads.Show(ctx, s.beadID)
+		if beadErr != nil || bead == nil {
+			continue
+		}
+		if bead.Status == "in_progress" {
+			if updateErr := d.updateBeadStatus(ctx, s.beadID, "open"); updateErr != nil {
+				_ = d.logEvent(ctx, "stale_assignment_reset_failed", "dispatcher", s.beadID, "", updateErr.Error())
+			}
+		}
+	}
+	return abandoned
 }
 
 // applyRestoredAssignments populates worktreeByBead/attemptCounts/handoffCounts
