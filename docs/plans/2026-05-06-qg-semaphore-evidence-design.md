@@ -472,47 +472,47 @@ Epic: Implement global QG limiting and evidence-based QG reuse.
    - Edges: changed HEAD, changed script hash, changed target branch, wrong worker, wrong bead.
 
 10. Skip duplicate dispatcher QG when evidence is valid
-   - Test: `pkg/dispatcher/dispatcher_test.go:TestPreMergeAcceptsMatchingWorkerQGEvidence`
-   - Cmd: `go test ./pkg/dispatcher -run TestPreMergeAcceptsMatchingWorkerQGEvidence -count=1 -v`
-   - Assert: dispatcher does not invoke `qgRunner.Run` when worker evidence exactly matches current merge context.
-   - Read: `pkg/dispatcher/dispatcher.go:handleDone`, `pkg/dispatcher/dispatcher.go:checkPreMergeQG`, `pkg/dispatcher/dispatcher_test.go:mockQGRunner`
-   - Edges: missing evidence remains backward compatible by running dispatcher QG.
+    - Test: `pkg/dispatcher/dispatcher_test.go:TestPreMergeAcceptsMatchingWorkerQGEvidence`
+    - Cmd: `go test ./pkg/dispatcher -run TestPreMergeAcceptsMatchingWorkerQGEvidence -count=1 -v`
+    - Assert: dispatcher does not invoke `qgRunner.Run` when worker evidence exactly matches current merge context.
+    - Read: `pkg/dispatcher/dispatcher.go:handleDone`, `pkg/dispatcher/dispatcher.go:checkPreMergeQG`, `pkg/dispatcher/dispatcher_test.go:mockQGRunner`
+    - Edges: missing evidence remains backward compatible by running dispatcher QG.
 
 11. Record dispatcher pre-merge QG evidence
-   - Test: `pkg/dispatcher/dispatcher_test.go:TestPreMergeQGPersistsDispatcherEvidenceBeforeMerge`
-   - Cmd: `go test ./pkg/dispatcher -run TestPreMergeQGPersistsDispatcherEvidenceBeforeMerge -count=1 -v`
-   - Assert: when worker evidence is missing/stale and dispatcher runs fallback pre-merge QG, it persists `Component=dispatcher-pre-merge` evidence before authorizing merge.
-   - Read: `pkg/dispatcher/dispatcher.go:checkPreMergeQG`, `pkg/dispatcher/dispatcher.go:mergeAndComplete`, `pkg/dispatcher/qg_evidence_store_test.go:TestQGEvidenceStoreLatestPassingByBeadHead`
-   - Signature: `func BuildDispatcherQGEvidence(ctx context.Context, worktree string, opts QGEvidenceOptions) (*protocol.QGEvidence, error)`
-   - Edges: evidence persist failure prevents evidence-based merge authorization, QG failure records failed evidence best-effort, script error does not authorize merge.
+    - Test: `pkg/dispatcher/dispatcher_test.go:TestPreMergeQGPersistsDispatcherEvidenceBeforeMerge`
+    - Cmd: `go test ./pkg/dispatcher -run TestPreMergeQGPersistsDispatcherEvidenceBeforeMerge -count=1 -v`
+    - Assert: when worker evidence is missing/stale and dispatcher runs fallback pre-merge QG, it persists `Component=dispatcher-pre-merge` evidence before authorizing merge.
+    - Read: `pkg/dispatcher/dispatcher.go:checkPreMergeQG`, `pkg/dispatcher/dispatcher.go:mergeAndComplete`, `pkg/dispatcher/qg_evidence_store_test.go:TestQGEvidenceStoreLatestPassingByBeadHead`
+    - Signature: `func BuildDispatcherQGEvidence(ctx context.Context, worktree string, opts QGEvidenceOptions) (*protocol.QGEvidence, error)`
+    - Edges: evidence persist failure prevents evidence-based merge authorization, QG failure records failed evidence best-effort, script error does not authorize merge.
 
 12. Record epic QG evidence before epic close
-   - Test: `pkg/dispatcher/epic_qg_test.go:TestEpicQGPersistsEvidenceBeforeClose`
-   - Cmd: `go test ./pkg/dispatcher -run TestEpicQGPersistsEvidenceBeforeClose -count=1 -v`
-   - Assert: epic QG acquires a lease, records dispatcher-epic evidence for the epic branch head, and closes only after evidence is persisted.
-   - Read: `pkg/dispatcher/dispatcher.go:checkEpicQG`, `pkg/dispatcher/epic_qg_test.go`, `pkg/dispatcher/dispatcher.go:completeEpicClose`
-   - Edges: evidence persist failure, QG failure, temporary worktree cleanup.
+    - Test: `pkg/dispatcher/epic_qg_test.go:TestEpicQGPersistsEvidenceBeforeClose`
+    - Cmd: `go test ./pkg/dispatcher -run TestEpicQGPersistsEvidenceBeforeClose -count=1 -v`
+    - Assert: epic QG acquires a lease, records dispatcher-epic evidence for the epic branch head, and closes only after evidence is persisted.
+    - Read: `pkg/dispatcher/dispatcher.go:checkEpicQG`, `pkg/dispatcher/epic_qg_test.go`, `pkg/dispatcher/dispatcher.go:completeEpicClose`
+    - Edges: evidence persist failure, QG failure, temporary worktree cleanup.
 
 13. Add config, startup propagation, directive, status, and events
-   - Test: `cmd/oro/cmd_status_test.go:TestStatusShowsQGCapacity`
-   - Cmd: `go test ./cmd/oro -run 'TestStatusShowsQGCapacity|TestDirectiveQGConcurrency|TestStartQGConcurrencyPropagatesToDaemon|TestDispatcherStartQGConcurrencyPropagatesToDaemon' -count=1 -v`
-   - Assert: status prints QG running/waiting/max, directive adjusts max at runtime, and both `oro start --qg-concurrency N` and `oro dispatcher start --qg-concurrency N` reach daemon-only dispatcher config.
-   - Read: `cmd/oro/cmd_start.go:newStartCmd`, `cmd/oro/cmd_start.go:ExecDaemonSpawner.buildArgs`, `cmd/oro/cmd_start.go:runDaemonOnly`, `cmd/oro/cmd_start.go:buildDispatcherWithReviewTimeouts`, `cmd/oro/cmd_dispatcher.go:newDispatcherCmd`, `cmd/oro/cmd_dispatcher.go:runDispatcherStart`, `cmd/oro/cmd_directive.go:newDirectiveCmd`, `cmd/oro/cmd_status.go:formatStatusResponse`, `pkg/protocol/directive.go`
-   - Edges: invalid values reject, lowering below active count prevents new leases until active drops, status cache does not hide QG deadlock, qg_wait/qg_run events are logged.
+    - Test: `cmd/oro/cmd_status_test.go:TestStatusShowsQGCapacity`
+    - Cmd: `go test ./cmd/oro -run 'TestStatusShowsQGCapacity|TestDirectiveQGConcurrency|TestStartQGConcurrencyPropagatesToDaemon|TestDispatcherStartQGConcurrencyPropagatesToDaemon' -count=1 -v`
+    - Assert: status prints QG running/waiting/max, directive adjusts max at runtime, and both `oro start --qg-concurrency N` and `oro dispatcher start --qg-concurrency N` reach daemon-only dispatcher config.
+    - Read: `cmd/oro/cmd_start.go:newStartCmd`, `cmd/oro/cmd_start.go:ExecDaemonSpawner.buildArgs`, `cmd/oro/cmd_start.go:runDaemonOnly`, `cmd/oro/cmd_start.go:buildDispatcherWithReviewTimeouts`, `cmd/oro/cmd_dispatcher.go:newDispatcherCmd`, `cmd/oro/cmd_dispatcher.go:runDispatcherStart`, `cmd/oro/cmd_directive.go:newDirectiveCmd`, `cmd/oro/cmd_status.go:formatStatusResponse`, `pkg/protocol/directive.go`
+    - Edges: invalid values reject, lowering below active count prevents new leases until active drops, status cache does not hide QG deadlock, qg_wait/qg_run events are logged.
 
 14. Add integration coverage for four workers and cap two
-   - Test: `pkg/integration/dispatcher_worker_test.go:TestGlobalQGLimiterCapsWorkerAndDispatcherRuns`
-   - Cmd: `go test ./pkg/integration -run TestGlobalQGLimiterCapsWorkerAndDispatcherRuns -count=1 -v`
-   - Assert: four workers can run, but active QG process count never exceeds two across worker and dispatcher phases.
-   - Read: `pkg/integration/dispatcher_worker_test.go`, `pkg/worker/worker.go:runQGAndReport`, `pkg/dispatcher/dispatcher.go:checkPreMergeQG`
-   - Edges: one QG failure releases slot, next waiter starts, worker-side and dispatcher-side QG contend for same cap, `oro work` does not bypass cap.
+    - Test: `pkg/integration/dispatcher_worker_test.go:TestGlobalQGLimiterCapsWorkerAndDispatcherRuns`
+    - Cmd: `go test ./pkg/integration -run TestGlobalQGLimiterCapsWorkerAndDispatcherRuns -count=1 -v`
+    - Assert: four workers can run, but active QG process count never exceeds two across worker and dispatcher phases.
+    - Read: `pkg/integration/dispatcher_worker_test.go`, `pkg/worker/worker.go:runQGAndReport`, `pkg/dispatcher/dispatcher.go:checkPreMergeQG`
+    - Edges: one QG failure releases slot, next waiter starts, worker-side and dispatcher-side QG contend for same cap, `oro work` does not bypass cap.
 
 15. Document operating policy
-   - Test: `docs/runbooks/factory-monitoring.md` or equivalent doc lint/manual review
-   - Cmd: `./scripts/quality_gate.sh`
-   - Assert: monitoring docs explain `workers=4`, `qg_concurrency=2`, QG backlog interpretation, and stop triggers.
-   - Read: `docs/plans/2026-05-06-qg-semaphore-evidence-design.md`, existing monitoring docs.
-   - Edges: backlog vs stuck worker distinction.
+    - Test: `docs/runbooks/factory-monitoring.md` or equivalent doc lint/manual review
+    - Cmd: `./scripts/quality_gate.sh`
+    - Assert: monitoring docs explain `workers=4`, `qg_concurrency=2`, QG backlog interpretation, and stop triggers.
+    - Read: `docs/plans/2026-05-06-qg-semaphore-evidence-design.md`, existing monitoring docs.
+    - Edges: backlog vs stuck worker distinction.
 
 ## Acceptance Test For Epic
 
