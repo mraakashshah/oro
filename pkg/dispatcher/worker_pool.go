@@ -527,6 +527,13 @@ func (d *Dispatcher) collectTimedOutWorkersLocked(now time.Time) (dead, stuck, s
 			dead = append(dead, id)
 			continue
 		}
+		// Dead process check: managed reviewing worker whose OS process has exited.
+		// Reviewing workers may keep heartbeating long after their process dies
+		// (the review timeout is 15m), so we detect exit via signal(0) instead.
+		if w.managed && w.state == protocol.WorkerReviewing && d.procMgr != nil && !d.procMgr.IsAlive(id) {
+			dead = append(dead, id)
+			continue
+		}
 		// Progress check: busy worker has not made meaningful progress.
 		if workerProgressTimedOut(w, now, d.cfg.ProgressTimeout) {
 			stuck = append(stuck, id)

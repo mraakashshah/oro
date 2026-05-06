@@ -6267,6 +6267,7 @@ type mockProcessManager struct {
 	mu       sync.Mutex
 	spawned  []string               // IDs passed to Spawn
 	killed   []string               // IDs passed to Kill
+	deadIDs  map[string]bool        // IDs explicitly marked as dead via MarkDead
 	spawnErr error                  // if set, Spawn returns this error
 	procs    map[string]*os.Process // tracked processes (nil for tests)
 }
@@ -6307,6 +6308,23 @@ func (m *mockProcessManager) KilledIDs() []string {
 	out := make([]string, len(m.killed))
 	copy(out, m.killed)
 	return out
+}
+
+func (m *mockProcessManager) IsAlive(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return !m.deadIDs[id]
+}
+
+// MarkDead marks the given worker ID as having a dead process.
+// After MarkDead, IsAlive returns false for that ID.
+func (m *mockProcessManager) MarkDead(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.deadIDs == nil {
+		m.deadIDs = make(map[string]bool)
+	}
+	m.deadIDs[id] = true
 }
 
 // TestDispatcher_ScaleDirective_StoresTarget verifies that sending a scale

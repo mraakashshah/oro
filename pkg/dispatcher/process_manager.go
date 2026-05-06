@@ -165,6 +165,19 @@ func (pm *ExecProcessManager) startAndTrack(id string, cmd *exec.Cmd, logFile *o
 	return proc, nil
 }
 
+// IsAlive reports whether the tracked process for id is still running.
+// Uses signal 0 to probe the process without affecting it.
+// Returns false if id is not tracked or the process has already exited.
+func (pm *ExecProcessManager) IsAlive(id string) bool {
+	pm.mu.Lock()
+	proc, ok := pm.procs[id]
+	pm.mu.Unlock()
+	if !ok || proc == nil {
+		return false
+	}
+	return proc.Signal(syscall.Signal(0)) == nil
+}
+
 // Kill sends SIGTERM to the tracked worker process, waits a short grace
 // period, and then sends SIGKILL if the process is still alive. The worker
 // is removed from tracking regardless of outcome.

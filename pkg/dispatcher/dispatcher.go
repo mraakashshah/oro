@@ -198,6 +198,9 @@ type Escalator interface {
 type ProcessManager interface {
 	Spawn(id string) (*os.Process, error)
 	Kill(id string) error
+	// IsAlive reports whether the tracked process for id is still running.
+	// Returns false if id is not tracked or the process has exited.
+	IsAlive(id string) bool
 }
 
 // CodeIndex provides code search for injecting relevant code into prompts.

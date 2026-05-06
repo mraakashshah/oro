@@ -1184,6 +1184,48 @@ func TestCheckHeartbeats_ReviewTimeout_ZeroLastProgressSkipped(t *testing.T) {
 	}
 }
 
+// TestCheckHeartbeats_ManagedReviewingWorkerWithDeadProcessIsRemoved verifies
+// that a managed reviewing worker whose underlying process has exited is removed
+// by checkHeartbeats even when heartbeat and review timeouts have not fired.
+func TestCheckHeartbeats_ManagedReviewingWorkerWithDeadProcessIsRemoved(t *testing.T) {
+	t.Parallel()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+
+	reviewingID := "reviewing-dead-process"
+	conn := newMockConn()
+
+	d.mu.Lock()
+	d.workers[reviewingID] = &trackedWorker{
+		id:           reviewingID,
+		conn:         conn,
+		state:        protocol.WorkerReviewing,
+		beadID:       "bead-reviewing",
+		lastSeen:     now.Add(-50 * time.Millisecond), // recent — heartbeat NOT timed out (timeout=500ms)
+		lastProgress: now.Add(-50 * time.Millisecond), // recent — review timeout NOT triggered (timeout=15m)
+		managed:      true,
+		encoder:      json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+
+	pm.MarkDead(reviewingID) // process has exited
+
+	d.checkHeartbeats(context.Background())
+
+	d.mu.Lock()
+	_, stillPresent := d.workers[reviewingID]
+	d.mu.Unlock()
+
+	if stillPresent {
+		t.Errorf("expected managed reviewing worker with dead process to be removed, but it was still present")
+	}
+}
+
 // TestCheckHeartbeats_KillsManagedWorkerProcess verifies that checkHeartbeats calls
 // procMgr.Kill for managed workers (heartbeat and progress timeout) but NOT for
 // unmanaged workers. prevSession managed workers are still killed (the OS process
