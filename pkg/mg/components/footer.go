@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"oro/pkg/mg/data"
 	"oro/pkg/mg"
+	"oro/pkg/mg/data"
 
 	"charm.land/lipgloss/v2"
 )

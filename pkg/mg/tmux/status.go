@@ -3,8 +3,8 @@ package tmux
 import (
 	"fmt"
 
-	"oro/pkg/mg/data"
 	"oro/pkg/mg"
+	"oro/pkg/mg/data"
 )
 
 // tmux 256-color equivalents for the parade theme.

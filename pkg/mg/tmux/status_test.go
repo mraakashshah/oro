@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"oro/pkg/mg/data"
 	"oro/pkg/mg"
+	"oro/pkg/mg/data"
 )
 
 func TestStatusLineFormat(t *testing.T) {

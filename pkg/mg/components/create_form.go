@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"oro/pkg/mg/data"
 	"oro/pkg/mg"
+	"oro/pkg/mg/data"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"

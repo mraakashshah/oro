@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"oro/pkg/mg"
 	"oro/pkg/mg/data"
-	"oro/pkg/mg/ui"
 	"oro/pkg/mg/views"
 	"oro/pkg/protocol"
 	"oro/pkg/web"
@@ -40,7 +40,7 @@ func TestDashboardSnapshot(t *testing.T) {
 			t.Fatalf("dashboard snapshot missing %q:\n%s", want, stripped)
 		}
 	}
-	if !strings.Contains(stripped, "    "+ui.SymLinedUp+" abc-1.1") {
+	if !strings.Contains(stripped, "    "+mg.SymLinedUp+" abc-1.1") {
 		t.Fatalf("explicit parent child should render indented in parade snapshot:\n%s", stripped)
 	}
 
@@ -53,7 +53,7 @@ func TestDashboardSnapshot(t *testing.T) {
 	flatNativeIssues := parseDashboardSnapshotIssues(t, flatNativeDashboardSnapshotJSON)
 	flatNativeParade := views.NewParade(flatNativeIssues, width, height, data.DefaultBlockingTypes)
 	flatNative := ansi.Strip(flatNativeParade.View())
-	if !strings.Contains(flatNative, "    "+ui.SymLinedUp+" xyz-3") {
+	if !strings.Contains(flatNative, "    "+mg.SymLinedUp+" xyz-3") {
 		t.Fatalf("flat native child with explicit parent should render indented in parade snapshot:\n%s", flatNative)
 	}
 }
