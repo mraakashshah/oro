@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"oro/pkg/mg/data"
-	"oro/pkg/mg/ui"
+	"oro/pkg/mg"
 )
 
 func TestStatusLineFormat(t *testing.T) {
@@ -23,14 +23,14 @@ func TestStatusLineFormat(t *testing.T) {
 	}
 
 	// Verify all symbols present
-	for _, sym := range []string{ui.FleurDeLis, ui.SymRolling, ui.SymLinedUp, ui.SymStalled, ui.SymPassed} {
+	for _, sym := range []string{mg.FleurDeLis, mg.SymRolling, mg.SymLinedUp, mg.SymStalled, mg.SymPassed} {
 		if !strings.Contains(got, sym) {
 			t.Errorf("missing symbol %q in: %s", sym, got)
 		}
 	}
 
 	// Verify correct counts
-	for _, want := range []string{"3" + ui.SymRolling, "12" + ui.SymLinedUp, "3" + ui.SymStalled, "3" + ui.SymPassed} {
+	for _, want := range []string{"3" + mg.SymRolling, "12" + mg.SymLinedUp, "3" + mg.SymStalled, "3" + mg.SymPassed} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing count %q in: %s", want, got)
 		}
@@ -48,7 +48,7 @@ func TestStatusLineEmptyGroups(t *testing.T) {
 	got := statusLine(groups)
 
 	// All counts should be 0
-	for _, want := range []string{"0" + ui.SymRolling, "0" + ui.SymLinedUp, "0" + ui.SymStalled, "0" + ui.SymPassed} {
+	for _, want := range []string{"0" + mg.SymRolling, "0" + mg.SymLinedUp, "0" + mg.SymStalled, "0" + mg.SymPassed} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing zero count %q in: %s", want, got)
 		}

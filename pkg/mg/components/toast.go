@@ -3,7 +3,7 @@ package components
 import (
 	"time"
 
-	"oro/pkg/mg/ui"
+	"oro/pkg/mg"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -53,13 +53,13 @@ func (t Toast) View(width int) string {
 	var style lipgloss.Style
 	switch t.Level {
 	case ToastSuccess:
-		style = ui.ToastSuccess
+		style = mg.ToastSuccess
 	case ToastWarn:
-		style = ui.ToastWarn
+		style = mg.ToastWarn
 	case ToastError:
-		style = ui.ToastError
+		style = mg.ToastError
 	default:
-		style = ui.ToastInfo
+		style = mg.ToastInfo
 	}
 
 	return style.Width(width).Render(t.Message)

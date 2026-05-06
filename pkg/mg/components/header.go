@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"oro/pkg/mg/data"
-	"oro/pkg/mg/ui"
+	"oro/pkg/mg"
 
 	"charm.land/lipgloss/v2"
 )
@@ -26,24 +26,24 @@ func (h Header) View() string {
 	stalled := len(h.Groups[data.ParadeStalled])
 	total := rolling + linedUp + stalled + len(h.Groups[data.ParadePastTheStand])
 
-	titleStr := fmt.Sprintf("%s MARDI GRAS %s", ui.FleurDeLis, ui.FleurDeLis)
-	title := ui.HeaderStyle.Render(ui.ApplyMardiGrasGradient(titleStr))
+	titleStr := fmt.Sprintf("%s MARDI GRAS %s", mg.FleurDeLis, mg.FleurDeLis)
+	title := mg.HeaderStyle.Render(mg.ApplyMardiGrasGradient(titleStr))
 
-	counts := ui.HeaderCounts.Render(fmt.Sprintf(
+	counts := mg.HeaderCounts.Render(fmt.Sprintf(
 		" %d ⊘  %d ♪  %d ●  %d ✓ ",
 		stalled, linedUp, rolling, len(h.Groups[data.ParadePastTheStand]),
 	))
 
 	workerInfo := ""
 	if h.WorkerCount > 0 {
-		workerStyle := lipgloss.NewStyle().Foreground(ui.StatusAgent).Bold(true)
-		workerInfo = workerStyle.Render(fmt.Sprintf(" %s%d", ui.SymWorker, h.WorkerCount))
+		workerStyle := lipgloss.NewStyle().Foreground(mg.StatusAgent).Bold(true)
+		workerInfo = workerStyle.Render(fmt.Sprintf(" %s%d", mg.SymWorker, h.WorkerCount))
 	}
 
 	currentInfo := ""
 	if h.CurrentIssueID != "" {
-		currentStyle := lipgloss.NewStyle().Foreground(ui.BrightGold).Italic(true)
-		currentInfo = currentStyle.Render(fmt.Sprintf(" %s %s", ui.SymWorking, h.CurrentIssueID))
+		currentStyle := lipgloss.NewStyle().Foreground(mg.BrightGold).Italic(true)
+		currentInfo = currentStyle.Render(fmt.Sprintf(" %s %s", mg.SymWorking, h.CurrentIssueID))
 	}
 
 	bar := h.renderProgressBar(total, len(h.Groups[data.ParadePastTheStand]), 20)
@@ -68,7 +68,7 @@ func (h Header) View() string {
 
 // renderBeadString creates the decorative bead string separator with shimmer animation.
 func (h Header) renderBeadString() string {
-	beads := []string{ui.BeadRound, ui.BeadDiamond}
+	beads := []string{mg.BeadRound, mg.BeadDiamond}
 
 	var parts []string
 	visibleWidth := 0
@@ -78,7 +78,7 @@ func (h Header) renderBeadString() string {
 		parts = append(parts, bead)
 		visibleWidth++
 		if visibleWidth < h.Width-2 {
-			parts = append(parts, ui.BeadDash)
+			parts = append(parts, mg.BeadDash)
 			visibleWidth++
 		}
 		ci++
@@ -91,9 +91,9 @@ func (h Header) renderBeadString() string {
 	if h.BeadOffset > 0 {
 		// Offset cycles through 0.0-1.0 over ~20 ticks (10s at 500ms interval)
 		phase := float64(h.BeadOffset%20) / 20.0
-		gradientString = ui.ApplyShimmerGradient(rawString, phase)
+		gradientString = mg.ApplyShimmerGradient(rawString, phase)
 	} else {
-		gradientString = ui.ApplyMardiGrasGradient(rawString)
+		gradientString = mg.ApplyMardiGrasGradient(rawString)
 	}
 
 	return lipgloss.NewStyle().Width(h.Width).Render(gradientString)
@@ -111,10 +111,10 @@ func (h Header) renderProgressBar(total, done, length int) string {
 
 	percent := int((float64(done) / float64(total)) * 100)
 
-	styledFilled := ui.ApplyPartialMardiGrasGradient(filled, length)
-	styledEmpty := lipgloss.NewStyle().Foreground(ui.DimPurple).Render(empty)
+	styledFilled := mg.ApplyPartialMardiGrasGradient(filled, length)
+	styledEmpty := lipgloss.NewStyle().Foreground(mg.DimPurple).Render(empty)
 
-	textRight := ui.HeaderCounts.Render(fmt.Sprintf(" %d%%", percent))
+	textRight := mg.HeaderCounts.Render(fmt.Sprintf(" %d%%", percent))
 
 	return styledFilled + styledEmpty + textRight
 }

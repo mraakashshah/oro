@@ -1,7 +1,7 @@
 package components
 
 import (
-	"oro/pkg/mg/ui"
+	"oro/pkg/mg"
 
 	"charm.land/lipgloss/v2"
 )
@@ -12,12 +12,12 @@ import (
 func Float(title string, width int) string {
 	style := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(ui.BrightGold).
-		Foreground(ui.BrightPurple).
+		BorderForeground(mg.BrightGold).
+		Foreground(mg.BrightPurple).
 		Bold(true).
 		Width(width-4).
 		Align(lipgloss.Center).
 		Padding(0, 1)
 
-	return style.Render(ui.FleurDeLis + " " + title + " " + ui.FleurDeLis)
+	return style.Render(mg.FleurDeLis + " " + title + " " + mg.FleurDeLis)
 }

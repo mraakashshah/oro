@@ -3,7 +3,7 @@ package components
 import (
 	"strings"
 
-	"oro/pkg/mg/ui"
+	"oro/pkg/mg"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -80,7 +80,7 @@ const paletteMaxVisible = 12
 //oro:testonly
 func NewPalette(width, height int, commands []PaletteCommand) Palette {
 	ti := textinput.New()
-	ti.Prompt = ui.InputPrompt.Render(ui.FleurDeLis + " ")
+	ti.Prompt = mg.InputPrompt.Render(mg.FleurDeLis + " ")
 	ti.Placeholder = "Type a command..."
 	ti.Focus()
 
@@ -201,13 +201,13 @@ func (p Palette) View() string {
 	}
 
 	// Title
-	title := ui.HelpTitle.Width(contentWidth).Render(ui.FleurDeLis + " COMMAND PALETTE")
+	title := mg.HelpTitle.Width(contentWidth).Render(mg.FleurDeLis + " COMMAND PALETTE")
 
 	// Input field
 	inputLine := p.input.View()
 
 	// Separator
-	sep := lipgloss.NewStyle().Foreground(ui.DimPurple).Render(strings.Repeat("─", contentWidth))
+	sep := lipgloss.NewStyle().Foreground(mg.DimPurple).Render(strings.Repeat("─", contentWidth))
 
 	// Command list
 	visible := p.filtered
@@ -231,14 +231,14 @@ func (p Palette) View() string {
 	for i, cmd := range visible {
 		idx := p.scrollOffset + i
 		cursor := "  "
-		nameStyle := ui.HelpDesc
+		nameStyle := mg.HelpDesc
 		if idx == p.cursor {
-			cursor = ui.ItemCursor.Render(ui.Cursor + " ")
-			nameStyle = lipgloss.NewStyle().Foreground(ui.White).Bold(true)
+			cursor = mg.ItemCursor.Render(mg.Cursor + " ")
+			nameStyle = lipgloss.NewStyle().Foreground(mg.White).Bold(true)
 		}
 
 		name := ansi.Truncate(cmd.Name, nameWidth, "...")
-		key := ui.HelpKey.Width(keyWidth).Align(lipgloss.Right).Render(cmd.Key)
+		key := mg.HelpKey.Width(keyWidth).Align(lipgloss.Right).Render(cmd.Key)
 		row := cursor + nameStyle.Render(name)
 
 		// Pad to fill width, then append key
@@ -250,7 +250,7 @@ func (p Palette) View() string {
 		row = row + strings.Repeat(" ", gap) + key
 
 		if idx == p.cursor {
-			row = ui.ItemSelectedBg.Width(contentWidth).Render(row)
+			row = mg.ItemSelectedBg.Width(contentWidth).Render(row)
 		}
 
 		rows = append(rows, row)
@@ -258,11 +258,11 @@ func (p Palette) View() string {
 
 	list := strings.Join(rows, "\n")
 	if len(p.filtered) == 0 {
-		list = ui.HelpHint.Width(contentWidth).Render("No matching commands")
+		list = mg.HelpHint.Width(contentWidth).Render("No matching commands")
 	}
 
 	// Hint
-	hint := ui.HelpHint.Width(contentWidth).Render("esc to close")
+	hint := mg.HelpHint.Width(contentWidth).Render("esc to close")
 
 	content := lipgloss.JoinVertical(
 		lipgloss.Left,
@@ -275,7 +275,7 @@ func (p Palette) View() string {
 		hint,
 	)
 
-	box := ui.HelpOverlayBg.Width(contentWidth + 4).Render(content)
+	box := mg.HelpOverlayBg.Width(contentWidth + 4).Render(content)
 
 	return lipgloss.Place(p.width, p.height, lipgloss.Center, lipgloss.Center, box)
 }

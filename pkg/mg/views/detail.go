@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"oro/pkg/mg/data"
-	"oro/pkg/mg/ui"
+	"oro/pkg/mg"
 
 	"charm.land/bubbles/v2/viewport"
 	"charm.land/lipgloss/v2"
@@ -92,14 +92,14 @@ func (d *Detail) View() string {
 		empty := lipgloss.NewStyle().
 			Width(d.Width).
 			Height(d.Height).
-			Foreground(ui.Muted).
+			Foreground(mg.Muted).
 			Align(lipgloss.Center, lipgloss.Center).
 			Render("No issue selected")
-		return ui.DetailBorder.Height(d.Height).Render(empty)
+		return mg.DetailBorder.Height(d.Height).Render(empty)
 	}
 
 	content := d.Viewport.View()
-	return ui.DetailBorder.Height(d.Height).Render(content)
+	return mg.DetailBorder.Height(d.Height).Render(content)
 }
 
 // renderMarkdown renders markdown text using glamour with dark theme.
@@ -136,7 +136,7 @@ func (d *Detail) renderContent() string {
 	var lines []string
 
 	// Title
-	lines = append(lines, ui.DetailTitle.Render(issue.Title))
+	lines = append(lines, mg.DetailTitle.Render(issue.Title))
 	lines = append(lines, "")
 
 	// Status row
@@ -146,61 +146,61 @@ func (d *Detail) renderContent() string {
 	lines = append(lines, d.row("Status:", statusStyle.Render(statusSym+" "+statusLabel+" ("+string(issue.Status)+")")))
 
 	// Type
-	typeColor := ui.IssueTypeColor(string(issue.IssueType))
+	typeColor := mg.IssueTypeColor(string(issue.IssueType))
 	lines = append(lines, d.row("Type:", lipgloss.NewStyle().Foreground(typeColor).Render(string(issue.IssueType))))
 
 	if progress, ok := d.epicProgress(issue); ok {
-		progressStyle := lipgloss.NewStyle().Foreground(ui.BrightGold).Bold(true)
+		progressStyle := lipgloss.NewStyle().Foreground(mg.BrightGold).Bold(true)
 		if progress.Done == progress.Total {
-			progressStyle = lipgloss.NewStyle().Foreground(ui.BrightGreen).Bold(true)
+			progressStyle = lipgloss.NewStyle().Foreground(mg.BrightGreen).Bold(true)
 		}
 		lines = append(lines, d.row("Progress:", progressStyle.Render(progress.Label())))
 		lines = append(lines, "  "+moleculeProgressBar(progress.Done, progress.Total, max(d.Width-16, 10)))
 	}
 
 	// Priority
-	prioColor := ui.PriorityColor(int(issue.Priority))
+	prioColor := mg.PriorityColor(int(issue.Priority))
 	prioLabel := fmt.Sprintf("%s (%s)", data.PriorityLabel(issue.Priority), data.PriorityName(issue.Priority))
 	lines = append(lines, d.row("Priority:", lipgloss.NewStyle().Foreground(prioColor).Bold(true).Render(prioLabel)))
 
 	// Owner
 	if issue.Owner != "" {
-		lines = append(lines, d.row("Owner:", ui.DetailValue.Render(issue.Owner)))
+		lines = append(lines, d.row("Owner:", mg.DetailValue.Render(issue.Owner)))
 	}
 
 	// Assignee
 	if issue.Assignee != "" {
-		lines = append(lines, d.row("Assignee:", ui.DetailValue.Render(issue.Assignee)))
+		lines = append(lines, d.row("Assignee:", mg.DetailValue.Render(issue.Assignee)))
 	}
 
 	// Age
-	lines = append(lines, d.row("Age:", ui.DetailValue.Render(issue.AgeLabel())))
+	lines = append(lines, d.row("Age:", mg.DetailValue.Render(issue.AgeLabel())))
 
 	// Due date
 	if issue.DueAt != nil {
 		dueLabel := issue.DueLabel()
 		if issue.IsOverdue() {
-			dueLabel = ui.OverdueBadge.Render(ui.SymOverdue + " " + dueLabel)
+			dueLabel = mg.OverdueBadge.Render(mg.SymOverdue + " " + dueLabel)
 		} else {
-			dueLabel = ui.DueSoonBadge.Render(ui.SymDueDate + " " + dueLabel)
+			dueLabel = mg.DueSoonBadge.Render(mg.SymDueDate + " " + dueLabel)
 		}
 		lines = append(lines, d.row("Due:", dueLabel))
 	}
 
 	// Deferred
 	if issue.IsDeferred() {
-		lines = append(lines, d.row("Deferred:", ui.DeferredStyle.Render(ui.SymDeferred+" "+issue.DeferLabel())))
+		lines = append(lines, d.row("Deferred:", mg.DeferredStyle.Render(mg.SymDeferred+" "+issue.DeferLabel())))
 	}
 
 	// ID
-	lines = append(lines, d.row("ID:", ui.DetailValue.Render(issue.ID)))
+	lines = append(lines, d.row("ID:", mg.DetailValue.Render(issue.ID)))
 
 	// Worker status
 	if d.ActiveWorkers != nil {
 		if _, active := d.ActiveWorkers[issue.ID]; active {
-			workerStyle := lipgloss.NewStyle().Foreground(ui.StatusAgent).Bold(true)
+			workerStyle := lipgloss.NewStyle().Foreground(mg.StatusAgent).Bold(true)
 			lines = append(lines, d.row("Worker:", workerStyle.Render(
-				fmt.Sprintf("%s active", ui.SymWorker),
+				fmt.Sprintf("%s active", mg.SymWorker),
 			)))
 		}
 	}
@@ -208,8 +208,8 @@ func (d *Detail) renderContent() string {
 	// Quality (HOP)
 	if issue.QualityScore != nil {
 		lines = append(lines, "")
-		lines = append(lines, ui.DetailSection.Render("QUALITY"))
-		stars := ui.RenderStars(*issue.QualityScore)
+		lines = append(lines, mg.DetailSection.Render("QUALITY"))
+		stars := mg.RenderStars(*issue.QualityScore)
 		scoreStr := fmt.Sprintf("%.2f (%s)", *issue.QualityScore, data.QualityLabel(*issue.QualityScore))
 		lines = append(lines, d.row("Score:", stars+" "+scoreStr))
 
@@ -218,22 +218,22 @@ func (d *Detail) renderContent() string {
 			if issue.Creator.Platform != "" {
 				creatorLabel += " (" + issue.Creator.Platform + ")"
 			}
-			lines = append(lines, d.row("Creator:", ui.DetailValue.Render(creatorLabel)))
+			lines = append(lines, d.row("Creator:", mg.DetailValue.Render(creatorLabel)))
 		}
 
 		if len(issue.Validations) > 0 {
 			lines = append(lines, d.row("Validators:", ""))
 			for _, v := range issue.Validations {
 				var style lipgloss.Style
-				sym := ui.SymResolved
+				sym := mg.SymResolved
 				switch v.Outcome {
 				case data.OutcomeAccepted:
-					style = ui.ValidatorAccepted
+					style = mg.ValidatorAccepted
 				case data.OutcomeRejected:
-					style = ui.ValidatorRejected
+					style = mg.ValidatorRejected
 					sym = "✗"
 				case data.OutcomeRevision:
-					style = ui.ValidatorRevision
+					style = mg.ValidatorRevision
 					sym = "↻"
 				}
 				label := fmt.Sprintf("  %s %s %s (%.1f)",
@@ -244,9 +244,9 @@ func (d *Detail) renderContent() string {
 
 		if issue.Crystallizes != nil {
 			if *issue.Crystallizes {
-				lines = append(lines, d.row("Nature:", ui.CrystalBadge.Render(ui.SymCrystal+" crystallizes")))
+				lines = append(lines, d.row("Nature:", mg.CrystalBadge.Render(mg.SymCrystal+" crystallizes")))
 			} else {
-				lines = append(lines, d.row("Nature:", ui.EphemeralBadge.Render(ui.SymEphemeral+" ephemeral")))
+				lines = append(lines, d.row("Nature:", mg.EphemeralBadge.Render(mg.SymEphemeral+" ephemeral")))
 			}
 		}
 	}
@@ -254,7 +254,7 @@ func (d *Detail) renderContent() string {
 	// Description (markdown rendered)
 	if issue.Description != "" {
 		lines = append(lines, "")
-		lines = append(lines, ui.DetailSection.Render("DESCRIPTION"))
+		lines = append(lines, mg.DetailSection.Render("DESCRIPTION"))
 		lines = append(lines, d.renderMarkdown(issue.Description))
 	}
 
@@ -267,28 +267,28 @@ func (d *Detail) renderContent() string {
 	// Close reason
 	if issue.CloseReason != "" {
 		lines = append(lines, "")
-		lines = append(lines, ui.DetailSection.Render("CLOSE REASON"))
+		lines = append(lines, mg.DetailSection.Render("CLOSE REASON"))
 		lines = append(lines, d.renderMarkdown(issue.CloseReason))
 	}
 
 	// Notes (markdown rendered)
 	if issue.Notes != "" {
 		lines = append(lines, "")
-		lines = append(lines, ui.DetailSection.Render("NOTES"))
+		lines = append(lines, mg.DetailSection.Render("NOTES"))
 		lines = append(lines, d.renderMarkdown(issue.Notes))
 	}
 
 	// Acceptance Criteria (markdown rendered)
 	if issue.AcceptanceCriteria != "" {
 		lines = append(lines, "")
-		lines = append(lines, ui.DetailSection.Render("ACCEPTANCE CRITERIA"))
+		lines = append(lines, mg.DetailSection.Render("ACCEPTANCE CRITERIA"))
 		lines = append(lines, d.renderMarkdown(issue.AcceptanceCriteria))
 	}
 
 	// Design (markdown rendered)
 	if issue.Design != "" {
 		lines = append(lines, "")
-		lines = append(lines, ui.DetailSection.Render("DESIGN"))
+		lines = append(lines, mg.DetailSection.Render("DESIGN"))
 		lines = append(lines, d.renderMarkdown(issue.Design))
 	}
 
@@ -298,21 +298,21 @@ func (d *Detail) renderContent() string {
 	hasDeps := len(eval.Edges) > 0 || len(blocks) > 0
 	if hasDeps {
 		lines = append(lines, "")
-		lines = append(lines, ui.DetailSection.Render("DEPENDENCIES"))
+		lines = append(lines, mg.DetailSection.Render("DEPENDENCIES"))
 
 		for _, id := range eval.BlockingIDs {
 			title := id
 			if dep, ok := d.IssueMap[id]; ok {
 				title = dep.Title
 			}
-			lines = append(lines, ui.DepBlocked.Render(
-				fmt.Sprintf("  %s waiting on %s %s (%s)", ui.SymStalled, ui.DepArrow, id, truncate(title, 30)),
+			lines = append(lines, mg.DepBlocked.Render(
+				fmt.Sprintf("  %s waiting on %s %s (%s)", mg.SymStalled, mg.DepArrow, id, truncate(title, 30)),
 			))
 		}
 
 		for _, id := range eval.MissingIDs {
-			lines = append(lines, ui.DepMissing.Render(
-				fmt.Sprintf("  %s missing %s %s (not found)", ui.SymMissing, ui.DepArrow, id),
+			lines = append(lines, mg.DepMissing.Render(
+				fmt.Sprintf("  %s missing %s %s (not found)", mg.SymMissing, mg.DepArrow, id),
 			))
 		}
 
@@ -321,8 +321,8 @@ func (d *Detail) renderContent() string {
 			if dep, ok := d.IssueMap[id]; ok {
 				title = dep.Title
 			}
-			lines = append(lines, ui.DepResolved.Render(
-				fmt.Sprintf("  %s resolved %s %s (%s)", ui.SymResolved, ui.DepArrow, id, truncate(title, 30)),
+			lines = append(lines, mg.DepResolved.Render(
+				fmt.Sprintf("  %s resolved %s %s (%s)", mg.SymResolved, mg.DepArrow, id, truncate(title, 30)),
 			))
 		}
 
@@ -333,7 +333,7 @@ func (d *Detail) renderContent() string {
 			}
 			sym, verb, style := depTypeDisplay(edge.Type)
 			lines = append(lines, style.Render(
-				fmt.Sprintf("  %s %s %s %s (%s)", sym, verb, ui.DepArrow, edge.DependsOnID, truncate(title, 25)),
+				fmt.Sprintf("  %s %s %s %s (%s)", sym, verb, mg.DepArrow, edge.DependsOnID, truncate(title, 25)),
 			))
 		}
 
@@ -342,8 +342,8 @@ func (d *Detail) renderContent() string {
 			if dep, ok := d.IssueMap[id]; ok {
 				title = dep.Title
 			}
-			lines = append(lines, ui.DepBlocks.Render(
-				fmt.Sprintf("  %s blocks %s %s (%s)", ui.SymRolling, ui.DepArrow, id, truncate(title, 30)),
+			lines = append(lines, mg.DepBlocks.Render(
+				fmt.Sprintf("  %s blocks %s %s (%s)", mg.SymRolling, mg.DepArrow, id, truncate(title, 30)),
 			))
 		}
 	}
@@ -352,15 +352,15 @@ func (d *Detail) renderContent() string {
 	crossRigRefs := data.CrossRigDeps(issue)
 	if len(crossRigRefs) > 0 {
 		lines = append(lines, "")
-		lines = append(lines, ui.DetailSection.Render("CROSS-RIG"))
+		lines = append(lines, mg.DetailSection.Render("CROSS-RIG"))
 		for _, ref := range crossRigRefs {
-			rigStyle := lipgloss.NewStyle().Foreground(ui.BrightPurple).Bold(true)
-			idStyle := lipgloss.NewStyle().Foreground(ui.Light)
+			rigStyle := lipgloss.NewStyle().Foreground(mg.BrightPurple).Bold(true)
+			idStyle := lipgloss.NewStyle().Foreground(mg.Light)
 			lines = append(lines, fmt.Sprintf("  %s %s %s %s",
-				ui.DepArrow,
+				mg.DepArrow,
 				rigStyle.Render(ref.Rig),
 				idStyle.Render(ref.IssueID),
-				lipgloss.NewStyle().Foreground(ui.Dim).Render("(external)")))
+				lipgloss.NewStyle().Foreground(mg.Dim).Render("(external)")))
 		}
 	}
 
@@ -379,10 +379,10 @@ func (d *Detail) renderActivity() string {
 	}
 
 	var lines []string
-	lines = append(lines, ui.DetailSection.Render("ACTIVITY"))
+	lines = append(lines, mg.DetailSection.Render("ACTIVITY"))
 
-	timeStyle := lipgloss.NewStyle().Foreground(ui.Muted)
-	eventStyle := lipgloss.NewStyle().Foreground(ui.Light)
+	timeStyle := lipgloss.NewStyle().Foreground(mg.Muted)
+	eventStyle := lipgloss.NewStyle().Foreground(mg.Light)
 
 	// Created
 	lines = append(lines, fmt.Sprintf("  %s  %s",
@@ -393,7 +393,7 @@ func (d *Detail) renderActivity() string {
 	if issue.DueAt != nil {
 		dueLabel := "Due"
 		if issue.IsOverdue() {
-			dueLabel = ui.OverdueBadge.Render("Overdue")
+			dueLabel = mg.OverdueBadge.Render("Overdue")
 		}
 		lines = append(lines, fmt.Sprintf("  %s  %s",
 			timeStyle.Render(issue.DueAt.Format("Jan 02 15:04")),
@@ -403,10 +403,10 @@ func (d *Detail) renderActivity() string {
 	// Worker assignment
 	if d.ActiveWorkers != nil && issue.ID != "" {
 		if _, active := d.ActiveWorkers[issue.ID]; active {
-			workerStyle := lipgloss.NewStyle().Foreground(ui.StatusAgent)
+			workerStyle := lipgloss.NewStyle().Foreground(mg.StatusAgent)
 			lines = append(lines, fmt.Sprintf("  %s  %s",
 				timeStyle.Render("  now"),
-				workerStyle.Render(fmt.Sprintf("%s worker active", ui.SymWorker))))
+				workerStyle.Render(fmt.Sprintf("%s worker active", mg.SymWorker))))
 		}
 	}
 
@@ -421,7 +421,7 @@ func (d *Detail) renderActivity() string {
 	if issue.ClosedAt != nil {
 		lines = append(lines, fmt.Sprintf("  %s  %s",
 			timeStyle.Render(formatTime(*issue.ClosedAt)),
-			ui.MolStepDone.Render("Closed")))
+			mg.MolStepDone.Render("Closed")))
 	}
 
 	return strings.Join(lines, "\n")
@@ -447,7 +447,7 @@ func (d *Detail) renderMetadata() string {
 		if schema.Mode != "" && schema.Mode != "none" {
 			header += fmt.Sprintf(" [%s]", schema.Mode)
 		}
-		lines = append(lines, ui.DetailSection.Render(header))
+		lines = append(lines, mg.DetailSection.Render(header))
 
 		fieldNames := schema.SortedFieldNames()
 		for _, name := range fieldNames {
@@ -462,18 +462,18 @@ func (d *Detail) renderMetadata() string {
 				val := fmt.Sprintf("%v", issue.Metadata[key])
 				lines = append(lines, d.row(
 					key+":",
-					ui.MetaFieldType.Render(val),
+					mg.MetaFieldType.Render(val),
 				))
 			}
 		}
 	} else if hasMetadata {
 		// No schema, but issue has metadata — show raw values
-		lines = append(lines, ui.DetailSection.Render("METADATA"))
+		lines = append(lines, mg.DetailSection.Render("METADATA"))
 		keys := sortedMetadataKeys(issue.Metadata, nil)
 		for _, key := range keys {
 			lines = append(lines, d.row(
 				key+":",
-				ui.DetailValue.Render(fmt.Sprintf("%v", issue.Metadata[key])),
+				mg.DetailValue.Render(fmt.Sprintf("%v", issue.Metadata[key])),
 			))
 		}
 	}
@@ -495,7 +495,7 @@ func (d *Detail) renderMetadataField(fieldName string, field data.MetadataFieldS
 	// Required marker
 	reqMarker := ""
 	if field.Required {
-		reqMarker = ui.MetaRequired.Render("*")
+		reqMarker = mg.MetaRequired.Render("*")
 	}
 
 	// Check for actual value on the issue
@@ -509,20 +509,20 @@ func (d *Detail) renderMetadataField(fieldName string, field data.MetadataFieldS
 	if valueStr != "" {
 		// Show: name* type = value
 		return fmt.Sprintf("  %s%s %s = %s",
-			ui.MetaFieldName.Render(fieldName), reqMarker,
-			ui.MetaFieldType.Render(descriptor),
-			ui.MetaFieldValue.Render(valueStr))
+			mg.MetaFieldName.Render(fieldName), reqMarker,
+			mg.MetaFieldType.Render(descriptor),
+			mg.MetaFieldValue.Render(valueStr))
 	}
 
 	// No value — show: name* type  (with dimmer style if optional)
 	if field.Required {
 		return fmt.Sprintf("  %s%s %s",
-			ui.MetaFieldName.Render(fieldName), reqMarker,
-			ui.MetaFieldType.Render(descriptor))
+			mg.MetaFieldName.Render(fieldName), reqMarker,
+			mg.MetaFieldType.Render(descriptor))
 	}
 	return fmt.Sprintf("  %s %s",
-		ui.MetaFieldNameDim.Render(fieldName),
-		ui.MetaFieldType.Render(descriptor))
+		mg.MetaFieldNameDim.Render(fieldName),
+		mg.MetaFieldType.Render(descriptor))
 }
 
 // sortedMetadataKeys returns metadata keys sorted alphabetically,
@@ -544,16 +544,16 @@ func sortedMetadataKeys(metadata map[string]interface{}, schemaFields map[string
 // moleculeProgressBar renders a progress bar for molecule steps with Mardi Gras gradient.
 func moleculeProgressBar(done, total, width int) string {
 	if total <= 0 || width <= 0 {
-		return strings.Repeat(ui.SymProgressEmpty, width)
+		return strings.Repeat(mg.SymProgressEmpty, width)
 	}
 	filled := max(min(done*width/total, width), 0)
 	empty := width - filled
 
-	emptyStyle := lipgloss.NewStyle().Foreground(ui.Dim)
+	emptyStyle := lipgloss.NewStyle().Foreground(mg.Dim)
 
-	filledStr := strings.Repeat(ui.SymProgress, filled)
-	return ui.ApplyPartialMardiGrasGradient(filledStr, width) +
-		emptyStyle.Render(strings.Repeat(ui.SymProgressEmpty, empty))
+	filledStr := strings.Repeat(mg.SymProgress, filled)
+	return mg.ApplyPartialMardiGrasGradient(filledStr, width) +
+		emptyStyle.Render(strings.Repeat(mg.SymProgressEmpty, empty))
 }
 
 // formatTime renders a time as a compact label.
@@ -565,7 +565,7 @@ func formatTime(t time.Time) string {
 }
 
 func (d *Detail) row(label, value string) string {
-	return ui.DetailLabel.Render(label) + " " + value
+	return mg.DetailLabel.Render(label) + " " + value
 }
 
 type issueProgress struct {
@@ -637,21 +637,21 @@ func truncate(s string, maxLen int) string {
 func depTypeDisplay(depType string) (symbol, verb string, style lipgloss.Style) {
 	switch depType {
 	case "related":
-		return ui.SymRelated, "related to", ui.DepRelated
+		return mg.SymRelated, "related to", mg.DepRelated
 	case "duplicates":
-		return ui.SymDuplicates, "duplicates", ui.DepDuplicates
+		return mg.SymDuplicates, "duplicates", mg.DepDuplicates
 	case "supersedes":
-		return ui.SymSupersedes, "supersedes", ui.DepSupersedes
+		return mg.SymSupersedes, "supersedes", mg.DepSupersedes
 	case "discovered-from":
-		return ui.SymNonBlocking, "discovered from", ui.DepNonBlocking
+		return mg.SymNonBlocking, "discovered from", mg.DepNonBlocking
 	case "waits-for":
-		return ui.SymStalled, "waits for", ui.DepBlocked
+		return mg.SymStalled, "waits for", mg.DepBlocked
 	case "parent-child":
-		return ui.DepTree, "child of", ui.DepNonBlocking
+		return mg.DepTree, "child of", mg.DepNonBlocking
 	case "replies-to":
-		return ui.SymNonBlocking, "replies to", ui.DepNonBlocking
+		return mg.SymNonBlocking, "replies to", mg.DepNonBlocking
 	default:
-		return ui.SymNonBlocking, depType, ui.DepNonBlocking
+		return mg.SymNonBlocking, depType, mg.DepNonBlocking
 	}
 }
 

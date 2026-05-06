@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"oro/pkg/mg/ui"
+	"oro/pkg/mg"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -222,13 +222,13 @@ func (h Help) View() string {
 	if contentWidth >= 44 {
 		titleBlock = renderTitle(contentWidth)
 	} else {
-		titleBlock = ui.HelpTitle.Width(contentWidth).Render("[ MARDI GRAS HELP ]")
+		titleBlock = mg.HelpTitle.Width(contentWidth).Render("[ MARDI GRAS HELP ]")
 	}
 
 	header := lipgloss.JoinVertical(
 		lipgloss.Left,
 		titleBlock,
-		ui.HelpSubtitle.Width(contentWidth).Render("Navigation and filter shortcuts"),
+		mg.HelpSubtitle.Width(contentWidth).Render("Navigation and filter shortcuts"),
 	)
 
 	body := h.renderSections(contentWidth, pages[page])
@@ -236,12 +236,12 @@ func (h Help) View() string {
 	// Footer with page indicator
 	footerParts := []string{}
 	if len(pages) > 1 {
-		pageStyle := lipgloss.NewStyle().Foreground(ui.Muted)
+		pageStyle := lipgloss.NewStyle().Foreground(mg.Muted)
 		pageLabel := pageStyle.Render(fmt.Sprintf("Page %d/%d", page+1, len(pages)))
-		navHint := lipgloss.NewStyle().Foreground(ui.Dim).Render("  h/l or ←/→ to navigate")
+		navHint := lipgloss.NewStyle().Foreground(mg.Dim).Render("  h/l or ←/→ to navigate")
 		footerParts = append(footerParts, pageLabel+navHint)
 	}
-	footerParts = append(footerParts, ui.HelpHint.Width(contentWidth).Render("Press esc, q, or ? to close"))
+	footerParts = append(footerParts, mg.HelpHint.Width(contentWidth).Render("Press esc, q, or ? to close"))
 
 	content := lipgloss.JoinVertical(
 		lipgloss.Left,
@@ -252,7 +252,7 @@ func (h Help) View() string {
 		strings.Join(footerParts, "\n"),
 	)
 
-	box := ui.HelpOverlayBg.Width(contentWidth + 4).Render(content)
+	box := mg.HelpOverlayBg.Width(contentWidth + 4).Render(content)
 
 	return lipgloss.Place(h.Width, h.Height, lipgloss.Center, lipgloss.Center, box)
 }
@@ -274,20 +274,20 @@ func (h Help) renderSection(width int, section helpSection, keyWidth int) string
 
 	for i := range section.bindings {
 		b := section.bindings[i]
-		key := ui.HelpKey.Width(keyWidth).Render(b.key)
+		key := mg.HelpKey.Width(keyWidth).Render(b.key)
 		desc := ansi.Truncate(b.desc, descWidth, "...")
 		row := lipgloss.JoinHorizontal(
 			lipgloss.Top,
 			key,
 			" ",
-			ui.HelpDesc.Width(descWidth).Render(desc),
+			mg.HelpDesc.Width(descWidth).Render(desc),
 		)
 		rows = append(rows, row)
 	}
 
 	content := lipgloss.JoinVertical(
 		lipgloss.Left,
-		ui.HelpSection.Render(section.title),
+		mg.HelpSection.Render(section.title),
 		strings.Join(rows, "\n"),
 	)
 	return content
@@ -304,9 +304,9 @@ var asciiTitle = [3]string{
 // Each row cycles through purple → gold → green.
 func renderTitle(maxWidth int) string {
 	colors := [3]lipgloss.Style{
-		lipgloss.NewStyle().Foreground(ui.BrightPurple).Bold(true),
-		lipgloss.NewStyle().Foreground(ui.BrightGold).Bold(true),
-		lipgloss.NewStyle().Foreground(ui.BrightGreen).Bold(true),
+		lipgloss.NewStyle().Foreground(mg.BrightPurple).Bold(true),
+		lipgloss.NewStyle().Foreground(mg.BrightGold).Bold(true),
+		lipgloss.NewStyle().Foreground(mg.BrightGreen).Bold(true),
 	}
 
 	rows := make([]string, len(asciiTitle))

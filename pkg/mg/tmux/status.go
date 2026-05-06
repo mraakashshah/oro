@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"oro/pkg/mg/data"
-	"oro/pkg/mg/ui"
+	"oro/pkg/mg"
 )
 
 // tmux 256-color equivalents for the parade theme.
@@ -26,10 +26,10 @@ func statusLine(groups map[data.ParadeStatus][]data.Issue) string {
 
 	return fmt.Sprintf(
 		"#[fg=%s]%s #[fg=%s]%d%s #[fg=%s]%d%s #[fg=%s]%d%s #[fg=%s]%d%s",
-		colourFleur, ui.FleurDeLis,
-		colourRolling, rolling, ui.SymRolling,
-		colourLinedUp, linedUp, ui.SymLinedUp,
-		colourStalled, stalled, ui.SymStalled,
-		colourPassed, passed, ui.SymPassed,
+		colourFleur, mg.FleurDeLis,
+		colourRolling, rolling, mg.SymRolling,
+		colourLinedUp, linedUp, mg.SymLinedUp,
+		colourStalled, stalled, mg.SymStalled,
+		colourPassed, passed, mg.SymPassed,
 	)
 }

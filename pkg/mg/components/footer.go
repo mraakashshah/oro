@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"oro/pkg/mg/data"
-	"oro/pkg/mg/ui"
+	"oro/pkg/mg"
 
 	"charm.land/lipgloss/v2"
 )
@@ -59,8 +59,8 @@ func (f Footer) View() string {
 	// Build keybindings section (right side)
 	var parts []string
 	for _, b := range f.Bindings {
-		key := ui.FooterKey.Render(b.Key)
-		desc := ui.FooterDesc.Render(b.Desc)
+		key := mg.FooterKey.Render(b.Key)
+		desc := mg.FooterDesc.Render(b.Desc)
 		parts = append(parts, key+" "+desc)
 	}
 	keybindings := strings.Join(parts, "  ")
@@ -97,7 +97,7 @@ func (f Footer) View() string {
 			}
 			contextInfo = " · " + contextInfo
 		}
-		sourceInfo = ui.FooterSource.Render(fmt.Sprintf("%s %s · %s%s", name, mode, age, contextInfo))
+		sourceInfo = mg.FooterSource.Render(fmt.Sprintf("%s %s · %s%s", name, mode, age, contextInfo))
 	}
 
 	if sourceInfo != "" {
@@ -106,10 +106,10 @@ func (f Footer) View() string {
 		keysW := lipgloss.Width(keybindings)
 		gap := max(f.Width-sourceW-keysW-2, 1) // 2 for padding
 		content := sourceInfo + strings.Repeat(" ", gap) + keybindings
-		return ui.FooterStyle.Width(f.Width).Render(content)
+		return mg.FooterStyle.Width(f.Width).Render(content)
 	}
 
-	return ui.FooterStyle.Width(f.Width).Render(keybindings)
+	return mg.FooterStyle.Width(f.Width).Render(keybindings)
 }
 
 // NewFooter creates a footer with the given width and pane focus.
@@ -127,7 +127,7 @@ func NewFooter(width int, detailFocused bool) Footer {
 //
 //oro:testonly
 func BulkFooter(width, count int) string {
-	label := ui.FooterKey.Render(fmt.Sprintf(" %d selected: ", count))
+	label := mg.FooterKey.Render(fmt.Sprintf(" %d selected: ", count))
 	bindings := []FooterBinding{
 		{Key: "1", Desc: "in_progress"},
 		{Key: "2", Desc: "open"},
@@ -136,12 +136,12 @@ func BulkFooter(width, count int) string {
 	}
 	var parts []string
 	for _, b := range bindings {
-		key := ui.FooterKey.Render(b.Key)
-		desc := ui.FooterDesc.Render(b.Desc)
+		key := mg.FooterKey.Render(b.Key)
+		desc := mg.FooterDesc.Render(b.Desc)
 		parts = append(parts, key+" "+desc)
 	}
 	content := label + strings.Join(parts, "  ")
-	return ui.FooterStyle.Width(width).Render(content)
+	return mg.FooterStyle.Width(width).Render(content)
 }
 
 // Divider returns a full-width horizontal divider line.
@@ -149,7 +149,7 @@ func BulkFooter(width, count int) string {
 //oro:testonly
 func Divider(width int) string {
 	return lipgloss.NewStyle().
-		Foreground(ui.DimPurple).
+		Foreground(mg.DimPurple).
 		Width(width).
-		Render(strings.Repeat(ui.DividerH, width))
+		Render(strings.Repeat(mg.DividerH, width))
 }

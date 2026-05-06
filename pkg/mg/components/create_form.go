@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"oro/pkg/mg/data"
-	"oro/pkg/mg/ui"
+	"oro/pkg/mg"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -174,10 +174,10 @@ func (cf CreateForm) Update(msg tea.Msg) (CreateForm, tea.Cmd) {
 
 // View renders the form.
 func (cf CreateForm) View() string {
-	titleStyle := lipgloss.NewStyle().Foreground(ui.BrightGold).Bold(true)
-	selectedStyle := lipgloss.NewStyle().Foreground(ui.BrightGreen)
-	normalStyle := lipgloss.NewStyle().Foreground(ui.Light)
-	dimStyle := lipgloss.NewStyle().Foreground(ui.Dim)
+	titleStyle := lipgloss.NewStyle().Foreground(mg.BrightGold).Bold(true)
+	selectedStyle := lipgloss.NewStyle().Foreground(mg.BrightGreen)
+	normalStyle := lipgloss.NewStyle().Foreground(mg.Light)
+	dimStyle := lipgloss.NewStyle().Foreground(mg.Dim)
 
 	var lines []string
 
