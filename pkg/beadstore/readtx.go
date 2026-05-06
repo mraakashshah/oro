@@ -252,6 +252,7 @@ func loadBeadChildrenInTx(ctx context.Context, tx *sql.Tx, beads []protocol.Bead
 			return err
 		}
 		beads[i].Dependencies = deps
+		hydrateParentFromDependencies(&beads[i])
 
 		notes, err := txStringRows(ctx, tx, `SELECT content FROM bead_notes WHERE bead_id=? ORDER BY created_at, id`, id)
 		if err != nil {

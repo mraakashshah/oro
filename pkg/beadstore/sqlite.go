@@ -700,6 +700,7 @@ func (s *SQLiteStore) loadChildren(ctx context.Context, beads []protocol.Bead) e
 			return err
 		}
 		beads[i].Dependencies = deps
+		hydrateParentFromDependencies(&beads[i])
 		notes, err := s.loadStringRows(ctx, `SELECT content FROM bead_notes WHERE bead_id=? ORDER BY created_at, id`, id)
 		if err != nil {
 			return err
@@ -770,6 +771,18 @@ func (s *SQLiteStore) loadDependencies(ctx context.Context, id string) ([]protoc
 		return nil, fmt.Errorf("beadstore: iterate dependencies for %s: %w", id, err)
 	}
 	return deps, nil
+}
+
+func hydrateParentFromDependencies(bead *protocol.Bead) {
+	if bead.Epic != "" {
+		return
+	}
+	for _, dep := range bead.Dependencies {
+		if dep.Type == "parent-child" && dep.DependsOnID != "" {
+			bead.Epic = dep.DependsOnID
+			return
+		}
+	}
 }
 
 func (s *SQLiteStore) enrichRuntime(ctx context.Context, bead *protocol.Bead) error {

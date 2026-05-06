@@ -295,6 +295,54 @@ func TestTaskCommandReadyListStatusAndDependencies(t *testing.T) {
 	}
 }
 
+func TestTaskListJSONHydratesParentFromParentChildDependency(t *testing.T) {
+	ctx := context.Background()
+	store, err := beadstore.OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore: %v", err)
+	}
+
+	execTask := func(args ...string) string {
+		t.Helper()
+		cmd := newTaskCmdWithStore(store)
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("task %s error: %v\n%s", strings.Join(args, " "), err, out.String())
+		}
+		return out.String()
+	}
+
+	execTask("create", "--id", "oro-parent-a", "--title", "parent a", "--type", "epic")
+	execTask("create", "--id", "oro-parent-b", "--title", "parent b", "--type", "epic")
+	execTask("create", "--id", "oro-legacy-child", "--title", "legacy child")
+	execTask("create", "--id", "oro-explicit-child", "--title", "explicit child", "--parent", "oro-parent-b")
+	execTask("create", "--id", "oro-blocks-only", "--title", "blocks only")
+
+	execTask("dep", "add", "oro-legacy-child", "oro-parent-a", "--type", "parent-child")
+	execTask("dep", "add", "oro-explicit-child", "oro-parent-a", "--type", "parent-child")
+	execTask("dep", "add", "oro-blocks-only", "oro-parent-a", "--type", "blocks")
+
+	listed := decodeBeadJSONArray(t, execTask("list", "--status=open", "--json"))
+	byID := map[string]map[string]any{}
+	for _, bead := range listed {
+		id, _ := bead["id"].(string)
+		byID[id] = bead
+	}
+
+	if got := byID["oro-legacy-child"]["parent_id"]; got != "oro-parent-a" {
+		t.Fatalf("legacy child parent_id = %#v, want parent-child dependency parent oro-parent-a in %#v", got, byID["oro-legacy-child"])
+	}
+	if got := byID["oro-explicit-child"]["parent_id"]; got != "oro-parent-b" {
+		t.Fatalf("explicit child parent_id = %#v, want explicit parent oro-parent-b to win in %#v", got, byID["oro-explicit-child"])
+	}
+	if got := byID["oro-blocks-only"]["parent_id"]; got != nil {
+		t.Fatalf("blocks-only child parent_id = %#v, want nil because blocks deps are not parentage in %#v", got, byID["oro-blocks-only"])
+	}
+}
+
 func TestTaskListDefaultIncludesInProgress(t *testing.T) {
 	ctx := context.Background()
 	store, err := beadstore.OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))
