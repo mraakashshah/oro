@@ -19104,3 +19104,58 @@ func TestApprovedReview_WritesCandidateInboxNotAssets(t *testing.T) {
 		t.Errorf("assets/review-patterns.md content changed: got %q want %q", string(got), originalContent)
 	}
 }
+
+// TestHandleReviewApproved_PatternCaptureFailureIsNonBlocking locks in the
+// invariant that a failure in appendReviewPatternCandidates cannot block an
+// approved review: the worker must still receive MsgReviewResult "approved"
+// and review_approved must still be logged.
+func TestHandleReviewApproved_PatternCaptureFailureIsNonBlocking(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	const workerID = "w-nonblock-approval"
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: workerID, ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	// Force appendReviewPatternCandidates to fail by placing a regular file
+	// where MkdirAll expects a directory.
+	tmpDir := t.TempDir()
+	blockingFile := filepath.Join(tmpDir, "not-a-dir")
+	if err := os.WriteFile(blockingFile, []byte("I am a file"), 0o644); err != nil {
+		t.Fatalf("setup blocking file: %v", err)
+	}
+	d.cfg.ReviewPatternCandidates = filepath.Join(blockingFile, "subdir", "candidates.md")
+
+	ctx := context.Background()
+	resultCh := make(chan ops.Result, 1)
+	resultCh <- ops.Result{
+		Verdict:  ops.VerdictApproved,
+		Feedback: "VERDICT: APPROVED\nPATTERN: never block approval on pattern capture failure",
+	}
+
+	d.handleReviewResult(ctx, workerID, "bead-nonblock", resultCh)
+
+	// Invariant 1: review_approved must be logged despite the write failure.
+	if eventCount(t, d.db, "review_approved") == 0 {
+		t.Fatal("review_approved must be logged even when pattern capture fails")
+	}
+	// Invariant 2: the failure must be recorded.
+	if eventCount(t, d.db, "append_review_pattern_candidates_failed") == 0 {
+		t.Fatal("expected 'append_review_pattern_candidates_failed' event when candidates path is unwritable")
+	}
+	// Invariant 3: worker must still receive MsgReviewResult with "approved".
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("worker did not receive MsgReviewResult after pattern capture failure")
+	}
+	if msg.Type != protocol.MsgReviewResult {
+		t.Fatalf("expected MsgReviewResult, got %q", msg.Type)
+	}
+	if msg.ReviewResult == nil || msg.ReviewResult.Verdict != "approved" {
+		t.Fatalf("expected approved verdict in MsgReviewResult, got %+v", msg.ReviewResult)
+	}
+}
