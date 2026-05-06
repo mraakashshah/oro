@@ -16,7 +16,7 @@ func TmuxSessionName(project string) string {
 }
 
 // TmuxPaneTarget returns a tmux pane target string (<session>:<role>)
-// for the given project and role (e.g. "architect", "manager").
+// for the given project and role (e.g. "manager", "worker").
 func TmuxPaneTarget(project, role string) string {
 	return TmuxSessionName(project) + ":" + role
 }
