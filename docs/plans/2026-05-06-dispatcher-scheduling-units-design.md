@@ -21,6 +21,9 @@ Files read:
 - `pkg/dispatcher/dispatcher.go:tryAssign`
 - `pkg/dispatcher/dispatcher.go:filterExecutableBeads`
 - `pkg/dispatcher/dispatcher.go:assignGeneralIdleWorkers`
+- `pkg/dispatcher/dispatcher.go:assignBead`
+- `pkg/dispatcher/epic_branch.go:resolveEpicBranch`
+- `pkg/protocol/types.go:Bead`
 - `pkg/dispatcher/dispatcher_test.go:TestSortBeadsByPriority_EpicFinishing`
 - `pkg/beadstore/sqlite.go:Ready`
 - `pkg/beadstore/migrations/migrate_v3.go:v3ViewsDDL`
@@ -31,6 +34,8 @@ Current scheduler behavior:
 
 - `Ready()` returns ready open beads ordered by bead priority and created time.
 - `filterExecutableBeads` excludes already-decomposed epic beads because those epic beads are not directly executable.
+- `protocol.Bead.Epic` is the raw JSON `parent` field. It may point to any parent bead type, not necessarily an epic.
+- `assignBead` already uses `resolveEpicBranch` to walk the parent chain and find the nearest epic-type ancestor for branch selection.
 - `sortBeadsByPriority` then mutates the flat ready child list into four groups:
   1. spawn-for priority beads
   2. focused epic descendants
@@ -67,7 +72,8 @@ The problem:
 
 Independent bead:
 
-- A ready bead with no parent epic: `Epic == ""`.
+- A ready bead with no epic-type ancestor in its parent chain.
+- This includes unparented beads where `Epic == ""` and beads parented under non-epic organizational beads.
 - It can be any executable non-epic type such as task, bug, review, premortem, or chore.
 
 Epic unit:
@@ -82,8 +88,9 @@ Ready frontier:
 
 Top-level epic:
 
-- The root epic reached by walking `Bead.Epic` parent links until the parent has no `Epic`.
+- The root epic-type ancestor reached by walking `Bead.Epic` parent links and checking parent bead type.
 - Nested epic descendants inherit the root epic as their scheduling unit unless focus targets a nested epic directly.
+- A non-epic parent chain with no epic-type ancestor is independent work.
 
 ## Scheduling Policy
 
@@ -155,13 +162,16 @@ Required metadata:
 - root epic ID
 - root epic priority
 - root epic created time or deterministic fallback
+- whether a parented bead has no epic ancestor and is therefore independent
 - descendant chain for focus and root lookup
 
 Implementation approach:
 
 - Build a per-`tryAssign` parent cache.
-- For each ready bead with `Epic != ""`, walk parent links via `d.beads.Show(ctx, parentID)`.
-- Stop at the first parent whose `Epic == ""`; that is the root epic.
+- For each ready bead with `Epic != ""`, walk parent links via `d.beads.Show(ctx, parentID)` and inspect parent type.
+- Share or extract the type-aware parent-chain semantics from `pkg/dispatcher/epic_branch.go:resolveEpicBranch`; scheduling and branch selection must agree on which epic, if any, owns a bead.
+- If the chain contains no `Type == "epic"` ancestor, classify the bead as independent.
+- If the chain contains an epic ancestor, continue walking to the root epic-type ancestor for scheduling-unit grouping.
 - Cache both parent ID to parent detail and child bead ID to root epic info.
 - If any parent lookup fails, keep the descendant assignable but place it in a conservative fallback epic unit sorted after known epic units of the same priority class.
 
@@ -246,6 +256,15 @@ The first implementation can still return a flattened ordered list if it preserv
 - Assert:
   - child schedules under root epic P0 when no nested focus is active.
 
+`pkg/dispatcher/dispatcher_test.go:TestBuildSchedulingPlan_NonEpicParentIsIndependent`
+
+- Input:
+  - parent bead `task-parent` has `Type == "task"` and no epic ancestor
+  - ready child has `Epic == "task-parent"`
+  - separate epic unit has a ready descendant
+- Assert:
+  - the parented child is scheduled as independent work, not as an epic unit.
+
 `pkg/dispatcher/dispatcher_test.go:TestTryAssign_FillsSelectedEpicBeforeNextEpic`
 
 - Input:
@@ -255,6 +274,28 @@ The first implementation can still return a flattened ordered list if it preserv
   - epic-b P0 with one ready descendant
 - Assert:
   - both workers receive epic-a descendants before epic-b.
+
+`pkg/dispatcher/dispatcher_test.go:TestTryAssign_IndependentBeforeEpicUnits`
+
+- Input:
+  - three idle general workers
+  - one unparented independent bead, e.g. `independent-root` P1
+  - one bead parented under a non-epic parent, with no epic ancestor: parent `task-zzz` (`Type == "task"`), child `independent-child` P2 with `Epic == "task-zzz"`
+  - one high-priority epic unit whose ID sorts before the non-epic parent under the old flat sorter: epic `epic-aaa` P0, child `epic-child` P0 with `Epic == "epic-aaa"`
+- Assert:
+  - production `tryAssign` sends real `ASSIGN` messages in this order in the same assignment tick: `independent-root`, `independent-child`, `epic-child`.
+  - This fixture must fail under the old flat sorter, which would treat `independent-child` as an unfocused epic child and sort `epic-aaa` before `task-zzz`.
+
+`pkg/dispatcher/dispatcher_test.go:TestTryAssign_EpicPriorityBeatsEpicAge`
+
+- Input:
+  - two idle general workers
+  - no independent beads
+  - older epic P2 with a ready descendant
+  - newer epic P0 with a ready descendant
+- Assert:
+  - production `tryAssign` assigns the newer P0 epic descendant before the older P2 epic descendant.
+  - Same-priority epic age/ID tie-break behavior can still be tested separately.
 
 ### Integration/Regression Tests
 
@@ -275,6 +316,9 @@ premortem:
     - risk: "Parent priority lookup failure makes high-priority epics invisible."
       severity: medium
       mitigation_checked: "Spec requires conservative fallback ordering and event logging for parent lookup failures."
+    - risk: "Raw parent IDs are mistaken for epic IDs, delaying ordinary parented tasks or choosing a different branch than assignBead."
+      severity: high
+      mitigation_checked: "Spec requires type-aware parent-chain resolution shared with resolveEpicBranch semantics."
     - risk: "Flattened sorting loses the epic unit invariant."
       severity: high
       mitigation_checked: "Spec prefers a schedulingPlan type and tests frontier contiguity."
@@ -293,18 +337,19 @@ premortem:
 ## Adversarial Review
 
 ```yaml
-verdict: PASS_WITH_NOTES
+verdict: CHALLENGE_FAIL_INCORPORATED
 spec: docs/plans/2026-05-06-dispatcher-scheduling-units-design.md
+reviewer_note: "Fresh Codex challenge found that Bead.Epic is a raw parent field, not necessarily an epic ID, and that production mixed tryAssign behavior lacked coverage. This revision requires type-aware parent-chain resolution and mixed independent/epic tryAssign tests."
 acceptance_test:
-  cmd: "go test ./pkg/dispatcher -run 'TestBuildSchedulingPlan|TestTryAssign_FillsSelectedEpicBeforeNextEpic' -count=1"
-  assert: "Independent beads schedule before epic units; epic units sort by root epic priority; selected epic frontier stays contiguous; focus overrides normal ordering."
+  cmd: "go test ./pkg/dispatcher -run 'TestBuildSchedulingPlan|TestTryAssign_FillsSelectedEpicBeforeNextEpic|TestTryAssign_IndependentBeforeEpicUnits|TestTryAssign_EpicPriorityBeatsEpicAge' -count=1"
+  assert: "Independent beads, including non-epic-parented beads, schedule before epic units; epic units sort by root epic priority; selected epic frontier stays contiguous; focus overrides normal ordering."
   adequate: true
 requirements_traceability:
   - criterion: "Independent beads before epics"
-    tests: ["TestBuildSchedulingPlan_IndependentBeforeEpics"]
+    tests: ["TestBuildSchedulingPlan_IndependentBeforeEpics", "TestBuildSchedulingPlan_NonEpicParentIsIndependent", "TestTryAssign_IndependentBeforeEpicUnits"]
     status: covered
   - criterion: "Epics have priorities"
-    tests: ["TestBuildSchedulingPlan_EpicPriorityBeatsEpicAge"]
+    tests: ["TestBuildSchedulingPlan_EpicPriorityBeatsEpicAge", "TestTryAssign_EpicPriorityBeatsEpicAge"]
     status: covered
   - criterion: "Full epic unit, not random child sampling"
     tests: ["TestBuildSchedulingPlan_EpicUnitKeepsFrontierContiguous", "TestTryAssign_FillsSelectedEpicBeforeNextEpic"]
@@ -314,9 +359,11 @@ requirements_traceability:
     status: covered
 negative_space:
   - scenario: "All tasks pass but old flat `sortBeadsByPriority` still used by tryAssign"
-    coverage: "Task requires tryAssign/assignGeneralIdleWorkers to consume schedulingPlan, not just helper tests."
+    coverage: "Task requires mixed production tryAssign ASSIGN assertions with old-sort-distinguishing fixture data, not just helper tests."
   - scenario: "Nested epic child sorted by nested child priority instead of root epic priority"
     coverage: "Nested root-priority test covers parent-chain walking."
+  - scenario: "Raw parent_id pointing to a non-epic bead is misclassified as epic work"
+    coverage: "Spec requires type-aware parent resolution shared with resolveEpicBranch semantics."
   - scenario: "Old test still asserts oldest epic first as the primary rule"
     coverage: "Spec requires revising that regression test so oldest-first is only a same-priority tie-breaker."
 ```
@@ -329,23 +376,23 @@ Epic: Implement dispatcher scheduling units.
    - Test: `pkg/dispatcher/dispatcher_test.go:TestBuildSchedulingPlan_IndependentBeforeEpics`
    - Cmd: `go test ./pkg/dispatcher -run TestBuildSchedulingPlan_IndependentBeforeEpics -count=1 -v`
    - Assert: independent ready beads schedule before epic units; epic units sort by root epic priority.
-   - Read: `pkg/dispatcher/dispatcher.go:sortBeadsByPriority`, `pkg/dispatcher/dispatcher.go:focusedDescendants`, `pkg/dispatcher/dispatcher_test.go:TestSortBeadsByPriority_EpicFinishing`
+   - Read: `pkg/dispatcher/dispatcher.go:sortBeadsByPriority`, `pkg/dispatcher/dispatcher.go:focusedDescendants`, `pkg/dispatcher/epic_branch.go:resolveEpicBranch`, `pkg/protocol/types.go:Bead`, `pkg/dispatcher/dispatcher_test.go:TestSortBeadsByPriority_EpicFinishing`
    - Signature: `func (d *Dispatcher) buildSchedulingPlan(ctx context.Context, beads []protocol.Bead) (schedulingPlan, map[string]bool, uint64)`
-   - Edges: no focused epic, empty queue, parent lookup failure.
+   - Edges: no focused epic, empty queue, parent lookup failure, raw parent_id points to non-epic bead.
 
 2. Preserve epic unit contiguity and root-priority lookup
    - Test: `pkg/dispatcher/dispatcher_test.go:TestBuildSchedulingPlan_EpicUnitKeepsFrontierContiguous`
-   - Cmd: `go test ./pkg/dispatcher -run 'TestBuildSchedulingPlan_EpicUnitKeepsFrontierContiguous|TestBuildSchedulingPlan_NestedEpicUsesRootPriority|TestBuildSchedulingPlan_EpicPriorityBeatsEpicAge' -count=1 -v`
-   - Assert: selected epic descendants remain contiguous and nested descendants use root epic priority.
-   - Read: `pkg/dispatcher/dispatcher.go:isFocusedDescendant`, `pkg/dispatcher/dispatcher.go:focusedDescendants`, `pkg/beadstore/testfake.go:Show`
-   - Edges: nested epic chain, parent cycle, missing parent, equal epic priority.
+   - Cmd: `go test ./pkg/dispatcher -run 'TestBuildSchedulingPlan_EpicUnitKeepsFrontierContiguous|TestBuildSchedulingPlan_NestedEpicUsesRootPriority|TestBuildSchedulingPlan_NonEpicParentIsIndependent|TestBuildSchedulingPlan_EpicPriorityBeatsEpicAge' -count=1 -v`
+   - Assert: selected epic descendants remain contiguous, nested descendants use root epic priority, and non-epic-parented beads remain independent.
+   - Read: `pkg/dispatcher/dispatcher.go:isFocusedDescendant`, `pkg/dispatcher/dispatcher.go:focusedDescendants`, `pkg/dispatcher/epic_branch.go:resolveEpicBranch`, `pkg/beadstore/testfake.go:Show`
+   - Edges: nested epic chain, non-epic parent chain, parent cycle, missing parent, equal epic priority.
 
 3. Wire tryAssign to consume scheduling units
    - Test: `pkg/dispatcher/dispatcher_test.go:TestTryAssign_FillsSelectedEpicBeforeNextEpic`
-   - Cmd: `go test ./pkg/dispatcher -run TestTryAssign_FillsSelectedEpicBeforeNextEpic -count=1 -v`
-   - Assert: multiple idle workers drain the selected epic frontier before moving to another same/lower-priority epic.
+   - Cmd: `go test ./pkg/dispatcher -run 'TestTryAssign_FillsSelectedEpicBeforeNextEpic|TestTryAssign_IndependentBeforeEpicUnits|TestTryAssign_EpicPriorityBeatsEpicAge' -count=1 -v`
+   - Assert: multiple idle workers drain the selected epic frontier before moving to another same/lower-priority epic; mixed queues assign all independent units first and then epic descendants in the same tick using fixture data that would fail under the old flat sorter; production tryAssign honors epic priority over epic age.
    - Read: `pkg/dispatcher/dispatcher.go:tryAssign`, `pkg/dispatcher/dispatcher.go:assignGeneralIdleWorkers`, `pkg/dispatcher/dispatcher.go:assignTargetedIdleWorkers`
-   - Edges: targeted idle workers, reserved spawn-for targets, fewer epic children than idle workers.
+   - Edges: targeted idle workers, reserved spawn-for targets, fewer epic children than idle workers, mixed independent plus epic queue with spare idle capacity, epic priority versus epic age.
 
 4. Preserve focus and immediate focus semantics
    - Test: `pkg/dispatcher/dispatcher_test.go:TestBuildSchedulingPlan_FocusOverridesIndependent`
@@ -364,13 +411,14 @@ Epic: Implement dispatcher scheduling units.
 ## Acceptance
 
 ```bash
-go test ./pkg/dispatcher -run 'TestBuildSchedulingPlan|TestTryAssign_FillsSelectedEpicBeforeNextEpic|TestImmediateFocus' -count=1
+go test ./pkg/dispatcher -run 'TestBuildSchedulingPlan|TestTryAssign_FillsSelectedEpicBeforeNextEpic|TestTryAssign_IndependentBeforeEpicUnits|TestTryAssign_EpicPriorityBeatsEpicAge|TestImmediateFocus' -count=1
 ./scripts/quality_gate.sh
 ```
 
 Operational acceptance:
 
 - With independent beads ready, workers take independent beads before non-focused epic children.
+- A bead parented under a non-epic bead is independent unless its parent chain contains an epic-type ancestor.
 - When independent queue is empty, workers select the highest-priority epic unit and assign its ready frontier.
 - A P0 epic is selected before a P2 epic regardless of epic ID age.
 - Focused epic work still outranks independent backfill.
