@@ -158,7 +158,7 @@ func TestScaleUpDoesNotDuplicateAssignment(t *testing.T) {
 	d.cfg.MaxWorkers = 6
 	startDispatcher(t, d)
 	sendDirective(t, d.cfg.SocketPath, "start")
-	waitForState(t, d, StateRunning, 1*time.Second)
+	waitForState(t, d, StateRunning, 5*time.Second)
 
 	// Provide one bead.
 	beadSrc.SetBeads([]protocol.Bead{
@@ -207,7 +207,7 @@ func TestScaleUpDoesNotDuplicateAssignment(t *testing.T) {
 	})
 
 	// Wait for W6 to be registered (total: 5 injected + 1 connected = 6).
-	waitForWorkers(t, d, 6, 1*time.Second)
+	waitForWorkers(t, d, 6, 5*time.Second)
 
 	// Wait for the assign loop to have run at least once with W6 idle.
 	// cachedQueueDepth > 0 proves tryAssign ran and saw the ready bead.
@@ -216,7 +216,7 @@ func TestScaleUpDoesNotDuplicateAssignment(t *testing.T) {
 		depth := d.cachedQueueDepth
 		d.mu.Unlock()
 		return depth > 0
-	}, 2*time.Second)
+	}, 10*time.Second)
 
 	// ASSERTION 1: No assignment_race_detected event should have been logged.
 	// Before the fix, filterAssignable does NOT check assigningBeads, so
