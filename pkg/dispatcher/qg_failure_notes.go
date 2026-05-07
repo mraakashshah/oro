@@ -57,6 +57,12 @@ func (d *Dispatcher) ensureQGIncidentBead(ctx context.Context, infraID string, i
 		return fmt.Errorf("show qg incident bead %s: %w", infraID, err)
 	}
 	if existing != nil {
+		if existing.Status == "closed" {
+			status := "open"
+			if err := d.beads.Update(ctx, infraID, beadstore.UpdateParams{Status: &status}); err != nil {
+				return fmt.Errorf("reopen qg incident bead %s: %w", infraID, err)
+			}
+		}
 		return nil
 	}
 
