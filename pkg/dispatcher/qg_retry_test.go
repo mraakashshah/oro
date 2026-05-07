@@ -5,10 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"oro/pkg/beadstore"
+	"oro/pkg/dbutil"
 	"oro/pkg/memory"
 	"oro/pkg/protocol"
 )
@@ -849,5 +852,73 @@ func TestQGExhaustion_ReopensOriginalForDeterministicFailure(t *testing.T) {
 	d.handleClassifiedQGExhaustion(ctx, workerID, closedID, 0, closedRec, cls)
 	if beadSrc.updated[closedID] == "open" {
 		t.Fatal("already closed original bead was reopened")
+	}
+}
+
+func TestQGExhaustion_ReusesInfraIncidentForSystemicFailure(t *testing.T) {
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("SchemaDDL: %v", err)
+	}
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("MigrateBeadSchema: %v", err)
+	}
+	store := beadstore.NewSQLiteStore(db)
+	for _, id := range []string{"oro-systemic-a", "oro-systemic-b"} {
+		if _, err := store.Create(ctx, beadstore.CreateParams{ID: id, Title: id, Type: "task", Priority: 1}); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+
+	d := &Dispatcher{db: db, beads: store}
+	cls := QGFailureClassification{
+		Class:      QGFailureClassSystemic,
+		Decision:   QGFailureDecisionCreateOrReuseInfra,
+		Confidence: QGFailureConfidenceHigh,
+		Reason:     "same systemic fingerprint across unrelated beads",
+	}
+	recA := QGFailureRecord{
+		ID:          "systemic-occ-a",
+		BeadID:      "oro-systemic-a",
+		WorkerID:    "worker-a",
+		Fingerprint: "qg:systemic-shared",
+		Summary:     "quality_gate.sh package loader failure",
+		Output:      "quality_gate.sh failed: package loader cannot load stdlib",
+		OutputHash:  "hash-systemic-a",
+	}
+	recB := recA
+	recB.ID = "systemic-occ-b"
+	recB.BeadID = "oro-systemic-b"
+	recB.WorkerID = "worker-b"
+	recB.OutputHash = "hash-systemic-b"
+
+	first, err := d.createOrReuseQGInfraIncident(ctx, recA, cls)
+	if err != nil {
+		t.Fatalf("first createOrReuseQGInfraIncident: %v", err)
+	}
+	second, err := d.createOrReuseQGInfraIncident(ctx, recB, cls)
+	if err != nil {
+		t.Fatalf("second createOrReuseQGInfraIncident: %v", err)
+	}
+	if first.ID == 0 || second.ID != first.ID || second.OccurrenceCount != 2 {
+		t.Fatalf("incidents first=%+v second=%+v, want same nonzero id and occurrence_count=2", first, second)
+	}
+
+	infra, err := store.Show(ctx, qgIncidentBeadID(first.ID))
+	if err != nil {
+		t.Fatalf("show infra incident: %v", err)
+	}
+	if infra == nil {
+		t.Fatal("infra incident bead was not created")
+	}
+	for _, beadID := range []string{"oro-systemic-a", "oro-systemic-b"} {
+		if got := strings.Count(infra.Notes, "affected_bead: "+beadID); got != 1 {
+			t.Fatalf("affected evidence for %s count = %d, want 1:\n%s", beadID, got, infra.Notes)
+		}
 	}
 }

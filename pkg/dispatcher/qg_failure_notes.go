@@ -35,6 +35,22 @@ func (d *Dispatcher) linkQGFailureToBeads(ctx context.Context, incident QGIncide
 	return d.appendUniqueBeadNote(ctx, infraID, note, marker)
 }
 
+func (d *Dispatcher) createOrReuseQGInfraIncident(ctx context.Context, rec QGFailureRecord, cls QGFailureClassification) (QGIncident, error) {
+	rec = normalizeQGFailureRecord(rec)
+	incident, err := RecordQGFailureOccurrence(ctx, d.db, rec, cls)
+	if err != nil {
+		return QGIncident{}, err
+	}
+	if err := d.linkQGFailureToBeads(ctx, incident, rec, cls); err != nil {
+		_ = d.logEvent(ctx, "qg_failure_incident_create_failed", "dispatcher", rec.BeadID, rec.WorkerID,
+			fmt.Sprintf(`{"incident_id":%d,"fingerprint":%q,"error":%q}`, incident.ID, rec.Fingerprint, err.Error()))
+		if rec.BeadID != "" {
+			_ = d.updateBeadStatus(ctx, rec.BeadID, "open")
+		}
+	}
+	return incident, nil
+}
+
 func (d *Dispatcher) ensureQGIncidentBead(ctx context.Context, infraID string, incident QGIncident, rec QGFailureRecord, cls QGFailureClassification) error {
 	existing, err := d.beads.Show(ctx, infraID)
 	if err != nil {

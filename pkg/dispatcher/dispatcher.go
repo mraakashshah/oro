@@ -6750,23 +6750,16 @@ func (d *Dispatcher) cancelOpsAgents(ctx context.Context, beadID, workerID, reas
 // runs the existing P0 bug + EscStuck escalation path.
 func (d *Dispatcher) handleQGExhausted(ctx context.Context, workerID, beadID string, assignmentID int64, qgOutput string, attempt int, qgErr *protocol.QualityGateError) {
 	d.persistBeadCount(ctx, assignmentID, beadID, "attempt_count", attempt)
-	qgFingerprint, qgSummary := FingerprintQGFailure(qgOutput, QGFingerprintOptions{})
-	rec := QGFailureRecord{
-		ID:           fmt.Sprintf("%s:%s:%d:%d", beadID, workerID, assignmentID, attempt),
-		BeadID:       beadID,
-		WorkerID:     workerID,
-		AssignmentID: assignmentID,
-		Component:    "worker",
-		Fingerprint:  qgFingerprint,
-		Summary:      qgSummary,
-		Output:       qgOutput,
-	}
-	cls := ClassifyQGFailure(rec, QGFailureHistory{RetryExhausted: true})
+	rec, cls := qgExhaustionRecord(workerID, beadID, assignmentID, qgOutput, attempt)
 	if cls.Decision == QGFailureDecisionReopenOriginal {
 		d.handleClassifiedQGExhaustion(ctx, workerID, beadID, assignmentID, rec, cls)
 		return
 	}
-	d.recordQGFailureIncident(ctx, workerID, beadID, assignmentID, attempt, qgOutput, qgFingerprint, qgSummary, cls)
+	if cls.Decision == QGFailureDecisionCreateOrReuseInfra {
+		d.handleSystemicQGExhaustion(ctx, workerID, beadID, assignmentID, rec, cls)
+		return
+	}
+	d.recordQGFailureIncident(ctx, workerID, beadID, assignmentID, attempt, qgOutput, rec.Fingerprint, rec.Summary, cls)
 
 	_ = d.completeAssignment(ctx, assignmentID, beadID)
 
@@ -6817,6 +6810,39 @@ func (d *Dispatcher) handleQGExhausted(ctx context.Context, workerID, beadID str
 		result := <-ch
 		d.handleDecomposeResult(ctx, workerID, beadID, result, qgOutput, attempt, qgErr)
 	})
+}
+
+func qgExhaustionRecord(workerID, beadID string, assignmentID int64, qgOutput string, attempt int) (QGFailureRecord, QGFailureClassification) {
+	qgFingerprint, qgSummary := FingerprintQGFailure(qgOutput, QGFingerprintOptions{})
+	rec := QGFailureRecord{
+		ID:           fmt.Sprintf("%s:%s:%d:%d", beadID, workerID, assignmentID, attempt),
+		BeadID:       beadID,
+		WorkerID:     workerID,
+		AssignmentID: assignmentID,
+		Component:    "worker",
+		Fingerprint:  qgFingerprint,
+		Summary:      qgSummary,
+		Output:       qgOutput,
+	}
+	return rec, ClassifyQGFailure(rec, QGFailureHistory{RetryExhausted: true})
+}
+
+func (d *Dispatcher) handleSystemicQGExhaustion(ctx context.Context, workerID, beadID string, assignmentID int64, rec QGFailureRecord, cls QGFailureClassification) {
+	incident, err := d.createOrReuseQGInfraIncident(ctx, rec, cls)
+	if err != nil {
+		_ = d.logEvent(ctx, "qg_failure_record_failed", workerID, beadID, workerID,
+			fmt.Sprintf(`{"error":%q,"fingerprint":%q}`, err.Error(), rec.Fingerprint))
+	}
+	_ = d.completeAssignment(ctx, assignmentID, beadID)
+	d.releaseWorkerAfterQGExhaustion(workerID, beadID)
+	if d.shouldReopenQGOriginal(ctx, beadID) {
+		if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
+			_ = d.logEvent(ctx, "qg_original_reopen_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"error":%q}`, err.Error()))
+		}
+	}
+	_ = d.logEvent(ctx, "qg_infra_incident_reused", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"incident_id":%d,"class":%q,"fingerprint":%q}`, incident.ID, cls.Class, rec.Fingerprint))
 }
 
 func (d *Dispatcher) handleClassifiedQGExhaustion(ctx context.Context, workerID, beadID string, assignmentID int64, rec QGFailureRecord, cls QGFailureClassification) {
