@@ -3,7 +3,6 @@ package beadstore
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -33,7 +32,7 @@ func mustCreateBead(t *testing.T, s *SQLiteStore, id, title string) {
 }
 
 // TestV3Methods is the acceptance test for the v3 Store methods:
-// AppendJourney, Journey, LatestJourney, SetGateState, TransitionPipelineStage.
+// AppendJourney, Journey, LatestJourney, TransitionPipelineStage.
 func TestV3Methods(t *testing.T) {
 	t.Run("AppendJourney_single_insert", func(t *testing.T) {
 		ctx := context.Background()
@@ -157,81 +156,6 @@ func TestV3Methods(t *testing.T) {
 		}
 	})
 
-	t.Run("SetGateState_transitions_and_emits_event", func(t *testing.T) {
-		ctx := context.Background()
-		store := newV3TestStore(t)
-		mustCreateBead(t, store, "g1", "gate bead")
-
-		// none → eligible
-		if err := store.SetGateState(ctx, "g1", GateNone, GateEligible, "epic created with child"); err != nil {
-			t.Fatalf("SetGateState none→eligible: %v", err)
-		}
-
-		// Verify gate_state in DB.
-		var gs string
-		if err := store.db.QueryRowContext(ctx, `SELECT gate_state FROM beads WHERE id='g1'`).Scan(&gs); err != nil {
-			t.Fatalf("query gate_state: %v", err)
-		}
-		if gs != "eligible" {
-			t.Fatalf("gate_state = %q, want eligible", gs)
-		}
-
-		// Verify gate_state_changed event was appended to bead_journey.
-		events, err := store.LatestJourney(ctx, "g1", 10)
-		if err != nil {
-			t.Fatalf("LatestJourney: %v", err)
-		}
-		if len(events) != 1 {
-			t.Fatalf("expected 1 journey event, got %d", len(events))
-		}
-		e := events[0]
-		if e.Event != "gate_state_changed" {
-			t.Fatalf("event = %q, want gate_state_changed", e.Event)
-		}
-		var payload map[string]any
-		if err := json.Unmarshal([]byte(e.Payload), &payload); err != nil {
-			t.Fatalf("unmarshal payload: %v", err)
-		}
-		if payload["from"] != "none" || payload["to"] != "eligible" || payload["reason"] != "epic created with child" {
-			t.Fatalf("unexpected payload: %v", payload)
-		}
-	})
-
-	t.Run("SetGateState_stale_returns_ErrStaleGate", func(t *testing.T) {
-		ctx := context.Background()
-		store := newV3TestStore(t)
-		mustCreateBead(t, store, "g2", "gate bead stale")
-
-		// First transition: none → eligible
-		if err := store.SetGateState(ctx, "g2", GateNone, GateEligible, "first"); err != nil {
-			t.Fatalf("SetGateState first: %v", err)
-		}
-
-		// Second transition with stale `from` (none, but DB now has eligible).
-		err := store.SetGateState(ctx, "g2", GateNone, GateSatisfied, "stale attempt")
-		if !errors.Is(err, ErrStaleGate) {
-			t.Fatalf("expected ErrStaleGate, got %v", err)
-		}
-
-		// Gate state must remain 'eligible' — rollback confirmed.
-		var gs string
-		if err := store.db.QueryRowContext(ctx, `SELECT gate_state FROM beads WHERE id='g2'`).Scan(&gs); err != nil {
-			t.Fatalf("query gate_state: %v", err)
-		}
-		if gs != "eligible" {
-			t.Fatalf("gate_state = %q after stale attempt, want eligible", gs)
-		}
-
-		// No extra journey event should exist (only the one from the first call).
-		events, err := store.LatestJourney(ctx, "g2", 10)
-		if err != nil {
-			t.Fatalf("LatestJourney: %v", err)
-		}
-		if len(events) != 1 {
-			t.Fatalf("expected 1 journey event after stale attempt, got %d", len(events))
-		}
-	})
-
 	t.Run("TransitionPipelineStage_happy_path", func(t *testing.T) {
 		ctx := context.Background()
 		store := newV3TestStore(t)
@@ -329,41 +253,6 @@ func TestV3Methods(t *testing.T) {
 		}
 		if len(events) != 4 {
 			t.Fatalf("expected 4 journey events for 4 transitions, got %d", len(events))
-		}
-	})
-
-	t.Run("SetGateState_all_valid_values", func(t *testing.T) {
-		ctx := context.Background()
-		store := newV3TestStore(t)
-		mustCreateBead(t, store, "g3", "gate all values")
-
-		transitions := []struct {
-			from, to GateState
-			reason   string
-		}{
-			{GateNone, GateEligible, "epic with child"},
-			{GateEligible, GateSatisfied, "premortem cleared"},
-			{GateSatisfied, GateNone, "reset"},
-			{GateNone, GateBlocked, "human blocked"},
-			{GateBlocked, GateReplan, "replan requested"},
-		}
-		for _, tr := range transitions {
-			if err := store.SetGateState(ctx, "g3", tr.from, tr.to, tr.reason); err != nil {
-				t.Fatalf("SetGateState %s→%s: %v", tr.from, tr.to, err)
-			}
-		}
-
-		events, err := store.LatestJourney(ctx, "g3", 20)
-		if err != nil {
-			t.Fatalf("LatestJourney: %v", err)
-		}
-		if len(events) != len(transitions) {
-			t.Fatalf("expected %d journey events, got %d", len(transitions), len(events))
-		}
-		for i, e := range events {
-			if e.Event != "gate_state_changed" {
-				t.Errorf("event[%d].Event = %q, want gate_state_changed", i, e.Event)
-			}
 		}
 	})
 }

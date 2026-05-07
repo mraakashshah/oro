@@ -2069,28 +2069,9 @@ func (d *Dispatcher) finalizeSuccessfulMerge(ctx context.Context, beadID, worker
 	}
 	d.autoCloseEpicIfComplete(ctx, workerID, epicID)
 	d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
-	d.safeGo(func() { d.notifyReplanChildClosed(ctx, beadID) })
 
 	d.maybeConsolidateMemory(ctx)
 	d.maybeTriggerDream(ctx)
-}
-
-// notifyReplanChildClosed calls OnReplanChildrenClosed when beadID carries a
-// replan_cycle:<N> tag, signalling that a premortem replan child has merged.
-// The nopPremortCounter is a stub until the v3 SQLiteStore gains a persistent
-// cycle-count writer (§11.4 follow-up task).
-func (d *Dispatcher) notifyReplanChildClosed(ctx context.Context, beadID string) {
-	bead, err := d.beads.Show(ctx, beadID)
-	if err != nil || bead == nil || bead.Epic == "" {
-		return
-	}
-	cycleNum := parseReplanCycleNum(bead.Tags)
-	if cycleNum < 0 {
-		return
-	}
-	if err := OnReplanChildrenClosed(ctx, d.beads, nopPremortCounter{}, bead.Epic, cycleNum, defaultMaxPremortemCycles); err != nil && !errors.Is(err, ErrReplanLoopExhausted) {
-		_ = d.logEvent(ctx, "replan_child_closed_failed", "dispatcher", beadID, "", err.Error())
-	}
 }
 
 // maybeConsolidateMemory increments the completion counter and triggers an

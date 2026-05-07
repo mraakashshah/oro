@@ -170,7 +170,7 @@ func newProductionDeps(reviewTimeout time.Duration) (*workDeps, error) {
 	if pathsErr != nil {
 		return nil, fmt.Errorf("resolve project db paths: %w", pathsErr)
 	}
-	beadDB, dbErr := openStateDB(paths.StateDBPath)
+	beadDB, dbErr := openStateDBWithV4Migration(paths.StateDBPath)
 	if dbErr != nil {
 		return nil, fmt.Errorf("open beadstore db: %w", dbErr)
 	}

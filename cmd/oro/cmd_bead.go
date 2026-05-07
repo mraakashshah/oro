@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"oro/pkg/beadstore"
-	"oro/pkg/dispatcher"
 	"oro/pkg/protocol"
 
 	"github.com/spf13/cobra"
@@ -55,9 +54,6 @@ func newBeadCmdWithStore(store beadstore.Store) *cobra.Command {
 		newBeadStubCmd(store, "doctor", "Check bead-store health", cobra.NoArgs),
 		newBeadStatusCmd(store),
 		newBeadMigrateFromDoltCmd(store),
-		newBeadGateStateCmd(store),
-		newBeadGateResetCmd(store),
-		newBeadPremortemCloseCmd(store),
 	)
 
 	return cmd
@@ -837,8 +833,8 @@ func resolveBeadStore(store beadstore.Store) (beadstore.Store, error) {
 	if err := os.MkdirAll(filepath.Dir(paths.StateDBPath), 0o700); err != nil {
 		return nil, fmt.Errorf("create bead store dir: %w", err)
 	}
-	// Use openStateDB so v3 migrations (gate_state, premortem_cycle_count, etc.)
-	// are applied — bare OpenSQLiteStore only runs MigrateBeadSchema.
+	// Use openStateDB so native beadstore migrations are applied — bare
+	// OpenSQLiteStore only runs MigrateBeadSchema.
 	db, err := openStateDB(paths.StateDBPath)
 	if err != nil {
 		return nil, fmt.Errorf("open bead store: %w", err)
@@ -1080,85 +1076,4 @@ func nullableMetadata(value map[string]any) map[string]any {
 		return map[string]any(nil)
 	}
 	return value
-}
-
-// newBeadGateResetCmd implements `oro bead gate-reset <id>` — resets a bead's
-// gate_state from escalated back to eligible and zeroes premortem_cycle_count.
-// This is a human escape hatch after the automated replan loop is exhausted.
-func newBeadGateResetCmd(store beadstore.Store) *cobra.Command {
-	return &cobra.Command{
-		Use:   "gate-reset <id>",
-		Short: "Reset gate_state from escalated to eligible and zero premortem_cycle_count",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			s, err := resolveBeadStore(store)
-			if err != nil {
-				return writeBeadCommandErrorIfJSON(cmd, "store", err)
-			}
-			if err := s.SetGateState(cmd.Context(), args[0], beadstore.GateEscalated, beadstore.GateEligible, "gate-reset"); err != nil {
-				return writeBeadCommandErrorIfJSON(cmd, "gate-reset", fmt.Errorf("set gate state: %w", err))
-			}
-			resetter, ok := s.(interface {
-				ResetPremortCycleCount(context.Context, string) error
-			})
-			if !ok {
-				return writeBeadCommandErrorIfJSON(cmd, "unsupported", fmt.Errorf("%s: ResetPremortCycleCount not supported by this bead store", cmd.CommandPath()))
-			}
-			if err := resetter.ResetPremortCycleCount(cmd.Context(), args[0]); err != nil {
-				return writeBeadCommandErrorIfJSON(cmd, "gate-reset", fmt.Errorf("reset premortem cycle count: %w", err))
-			}
-			return nil
-		},
-	}
-}
-
-// newBeadGateStateCmd implements `oro bead gate-state <id>` — prints the
-// current gate_state of a bead. Used by the §18.6 verify script (and by
-// humans) to inspect §11.4 retroactive premortem gate transitions.
-func newBeadGateStateCmd(store beadstore.Store) *cobra.Command {
-	return &cobra.Command{
-		Use:   "gate-state <id>",
-		Short: "Print the gate_state of a bead",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			s, err := resolveBeadStore(store)
-			if err != nil {
-				return writeBeadCommandErrorIfJSON(cmd, "store", err)
-			}
-			gs, err := s.GateState(cmd.Context(), args[0])
-			if err != nil {
-				return writeBeadCommandErrorIfJSON(cmd, "gate-state", err)
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), string(gs))
-			return nil
-		},
-	}
-}
-
-// newBeadPremortemCloseCmd implements `oro bead premortem-close <id> --verdict
-// proceed|block|replan [--reason TEXT]` — closes a premortem-type bead with the
-// given verdict and applies the §11.4 gate transition on the parent.
-func newBeadPremortemCloseCmd(store beadstore.Store) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "premortem-close <id>",
-		Short: "Close a premortem bead with a verdict (proceed/block/replan)",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			s, err := resolveBeadStore(store)
-			if err != nil {
-				return writeBeadCommandErrorIfJSON(cmd, "store", err)
-			}
-			verdict := mustStringFlag(cmd, "verdict")
-			reason := mustStringFlag(cmd, "reason")
-			payload := fmt.Sprintf(`{"verdict":%q,"reason":%q}`, verdict, reason)
-			if err := dispatcher.ClosePremortemBeadWithStore(cmd.Context(), s, args[0], []byte(payload)); err != nil {
-				return writeBeadCommandErrorIfJSON(cmd, "premortem-close", err)
-			}
-			return nil
-		},
-	}
-	cmd.Flags().String("verdict", "", "verdict: proceed, block, or replan (required)")
-	cmd.Flags().String("reason", "", "reason text (preserved verbatim)")
-	_ = cmd.MarkFlagRequired("verdict")
-	return cmd
 }

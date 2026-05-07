@@ -18,6 +18,14 @@ import (
 //   - §4.6.d: 4 new tables (bead_journey, cards, bead_learnings_pending, card_events) + indexes
 //   - §4.6.e: beads_ready and beads_blocked views amended with awaits_parent_close clause
 func MigrateToV3(ctx context.Context, db *sql.DB) error {
+	var userVersion int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&userVersion); err != nil {
+		return fmt.Errorf("migrate v3 user_version: %w", err)
+	}
+	if userVersion >= 4 {
+		return nil
+	}
+
 	// §4.6.a + §4.6.b — bead-table column additions (10 total).
 	alters := []string{
 		`ALTER TABLE beads ADD COLUMN next_action      TEXT`,

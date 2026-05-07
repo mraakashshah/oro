@@ -2,59 +2,18 @@ package dispatcher
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 
-	"oro/pkg/beadstore"
 	"oro/pkg/protocol"
 	"oro/pkg/worker"
 )
 
-// premortemVerdictPayload is the structured output a premortem agent emits at
-// completion. The dispatcher's ClosePremortemBead consumes this payload and
-// persists the verdict on the bead.
-type premortemVerdictPayload struct {
-	Verdict string `json:"verdict"`
-	Reason  string `json:"reason"`
-}
-
-// isValidPremortemVerdict reports whether v is in the closed verdict set per
-// §11.4: proceed, block, replan.
-func isValidPremortemVerdict(v string) bool {
-	switch v {
-	case "proceed", "block", "replan":
-		return true
-	default:
-		return false
-	}
-}
-
-// parsePremortemVerdict normalizes an emitted payload into (verdict, reason,
-// invalid). When the payload is empty, malformed, or carries a verdict outside
-// the closed set, the verdict defaults to "replan" and invalid=true so the
-// caller can log a fail-safe warning. Reason text is preserved verbatim when
-// extractable, even if the verdict itself is invalid.
-func parsePremortemVerdict(payload []byte) (verdict, reason string, invalid bool) {
-	if len(payload) == 0 {
-		return "replan", "", true
-	}
-	var p premortemVerdictPayload
-	if err := json.Unmarshal(payload, &p); err != nil {
-		return "replan", "", true
-	}
-	if !isValidPremortemVerdict(p.Verdict) {
-		return "replan", p.Reason, true
-	}
-	return p.Verdict, p.Reason, false
-}
-
 // BuildPrompt selects the correct prompt assembler based on bead.Type (§10.2).
 //
 // Executable types: task, bug, chore → worker prompt; research → oracle stub;
-// premortem → premortem stub. Non-executable types (epic, review) return an
-// error. Full oracle and premortem assemblers are Phase B.3 deliverables.
+// non-executable types (epic, review) return an error. Full oracle assemblers
+// are Phase B.3 deliverables.
 //
 // Deviation from §10.3 sketch: the spec sketches BuildPrompt(ctx, store,
 // cards, b) because real assemblers will fetch journey/cards via the store.
@@ -74,13 +33,6 @@ func BuildPrompt(_ context.Context, b protocol.Bead) (string, error) {
 	case "research":
 		// Phase B.3 will replace this stub with AssembleOraclePrompt.
 		return fmt.Sprintf("# Oracle prompt\n\n## Bead\n\n%s: %s\n", b.ID, b.Title), nil
-	case "premortem":
-		return worker.AssemblePremortemPrompt(worker.PremortemPromptParams{
-			BeadID:            b.ID,
-			TargetBeadID:      b.Epic,
-			TargetTitle:       b.Title,
-			TargetDescription: b.Description,
-		}), nil
 	case "epic", "review":
 		return "", fmt.Errorf("bead type %q is not directly executable; routed via decomposition or ops review", b.Type)
 	default:
@@ -116,105 +68,4 @@ func (d *Dispatcher) CloseBead(ctx context.Context, beadID, reason string) error
 		d.warnSweepFailure(ctx, beadID, err)
 	}
 	return nil
-}
-
-// ClosePremortemBead closes a premortem-type bead and persists its verdict
-// payload to bead.Metadata (§11.4). The verdict is one of {proceed, block,
-// replan}; reason is preserved verbatim. When the payload is missing or
-// malformed (or carries an unknown verdict value), the bead still closes but
-// with verdict="replan" as the fail-safe default and a
-// premortem_verdict_invalid event is recorded for observability.
-//
-// After persisting the verdict, the parent epic's gate_state is transitioned
-// per the verdict: proceed→satisfied, block→blocked, replan→replan (+ cycle
-// count increment). ErrStaleGate is treated as non-fatal (gate already moved).
-func (d *Dispatcher) ClosePremortemBead(ctx context.Context, beadID string, payload []byte) error {
-	verdict, reason, invalid := parsePremortemVerdict(payload)
-	if invalid {
-		d.warnInvalidPremortemVerdict(ctx, beadID, payload)
-	}
-	if err := d.beads.SetPremortemVerdict(ctx, beadID, verdict, reason); err != nil {
-		return fmt.Errorf("Store.SetPremortemVerdict(%s): %w", beadID, err)
-	}
-	if err := d.applyPremortemVerdict(ctx, beadID, verdict); err != nil {
-		return fmt.Errorf("apply premortem verdict for %s: %w", beadID, err)
-	}
-	closeReason := fmt.Sprintf("premortem verdict=%s", verdict)
-	return d.CloseBead(ctx, beadID, closeReason)
-}
-
-// applyPremortemVerdict transitions the parent bead's gate_state based on the
-// premortem verdict (§11.4). ErrStaleGate is non-fatal — it means the gate
-// already moved (concurrent write or test setup without a matching initial state).
-func (d *Dispatcher) applyPremortemVerdict(ctx context.Context, premortemID, verdict string) error {
-	return ApplyPremortemVerdict(ctx, d.beads, premortemID, verdict)
-}
-
-// ApplyPremortemVerdict is the store-only version of applyPremortemVerdict.
-// CLI callers (which don't have a Dispatcher) reuse this directly.
-func ApplyPremortemVerdict(ctx context.Context, store beadstore.Store, premortemID, verdict string) error {
-	bead, err := store.Show(ctx, premortemID)
-	if err != nil {
-		return fmt.Errorf("show premortem bead: %w", err)
-	}
-	if bead == nil || bead.Epic == "" {
-		return nil
-	}
-	parentID := bead.Epic
-	var gateErr error
-	switch verdict {
-	case "proceed":
-		gateErr = store.SetGateState(ctx, parentID, beadstore.GateEligible, beadstore.GateSatisfied, "premortem_verdict_proceed")
-	case "block":
-		gateErr = store.SetGateState(ctx, parentID, beadstore.GateEligible, beadstore.GateBlocked, "premortem_verdict_block")
-	case "replan":
-		gateErr = store.SetGateState(ctx, parentID, beadstore.GateEligible, beadstore.GateReplan, "premortem_verdict_replan")
-		if gateErr == nil {
-			if err := store.IncrPremortCycleCount(ctx, parentID); err != nil {
-				return fmt.Errorf("increment premortem cycle count for %s: %w", parentID, err)
-			}
-			return nil
-		}
-	default:
-		return nil
-	}
-	if errors.Is(gateErr, beadstore.ErrStaleGate) {
-		return nil
-	}
-	if gateErr != nil {
-		return fmt.Errorf("set gate state for %s: %w", parentID, gateErr)
-	}
-	return nil
-}
-
-// ClosePremortemBeadWithStore is the dispatcher-free analogue of
-// (*Dispatcher).ClosePremortemBead — used by `oro bead premortem-close` so the
-// CLI can drive the §11.4 verdict transition without a running dispatcher.
-// Verdict is one of {proceed, block, replan}; payload is parsed via
-// parsePremortemVerdict (invalid → "replan" default).
-func ClosePremortemBeadWithStore(ctx context.Context, store beadstore.Store, beadID string, payload []byte) error {
-	verdict, reason, _ := parsePremortemVerdict(payload)
-	if err := store.SetPremortemVerdict(ctx, beadID, verdict, reason); err != nil {
-		return fmt.Errorf("Store.SetPremortemVerdict(%s): %w", beadID, err)
-	}
-	if err := ApplyPremortemVerdict(ctx, store, beadID, verdict); err != nil {
-		return fmt.Errorf("apply premortem verdict for %s: %w", beadID, err)
-	}
-	closeReason := fmt.Sprintf("premortem verdict=%s", verdict)
-	if err := store.Close(ctx, beadID, closeReason); err != nil {
-		return fmt.Errorf("Store.Close(%s): %w", beadID, err)
-	}
-	return nil
-}
-
-// warnInvalidPremortemVerdict records a fail-safe warning when a premortem
-// bead closes without a parsable verdict. The bead still closes (with the
-// "replan" default), but downstream observers need a signal that the agent
-// did not produce a clean verdict.
-func (d *Dispatcher) warnInvalidPremortemVerdict(ctx context.Context, beadID string, payload []byte) {
-	if d.db == nil {
-		fmt.Fprintf(os.Stderr, "warn: dispatcher.ClosePremortemBead: invalid verdict payload for %s; defaulting to replan\n", beadID)
-		return
-	}
-	_ = d.logEvent(ctx, "premortem_verdict_invalid", "dispatcher", beadID, "", string(payload))
 }

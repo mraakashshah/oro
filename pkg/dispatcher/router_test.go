@@ -27,15 +27,15 @@ func TestRouterAndCloseBead(t *testing.T) {
 			t.Fatalf("task routing: unexpected error: %v", err)
 		}
 		// Worker prompt must include the bead ID and acceptance criteria —
-		// distinguishes it from the oracle/premortem stubs.
+		// distinguishes it from the oracle stub.
 		if !strings.Contains(got, "t1") {
 			t.Errorf("task prompt missing bead ID: got %q", got)
 		}
 		if !strings.Contains(got, "pass") {
 			t.Errorf("task prompt missing acceptance criteria: got %q", got)
 		}
-		if strings.Contains(got, "Oracle prompt") || strings.Contains(got, "Premortem prompt") {
-			t.Errorf("task prompt should not contain oracle/premortem markers: got %q", got)
+		if strings.Contains(got, "Oracle prompt") {
+			t.Errorf("task prompt should not contain oracle markers: got %q", got)
 		}
 	})
 
@@ -48,8 +48,8 @@ func TestRouterAndCloseBead(t *testing.T) {
 		if !strings.Contains(got, "b1") {
 			t.Errorf("bug prompt missing bead ID: got %q", got)
 		}
-		if strings.Contains(got, "Oracle prompt") || strings.Contains(got, "Premortem prompt") {
-			t.Errorf("bug prompt should not contain oracle/premortem markers: got %q", got)
+		if strings.Contains(got, "Oracle prompt") {
+			t.Errorf("bug prompt should not contain oracle markers: got %q", got)
 		}
 	})
 
@@ -62,8 +62,8 @@ func TestRouterAndCloseBead(t *testing.T) {
 		if !strings.Contains(got, "c1") {
 			t.Errorf("chore prompt missing bead ID: got %q", got)
 		}
-		if strings.Contains(got, "Oracle prompt") || strings.Contains(got, "Premortem prompt") {
-			t.Errorf("chore prompt should not contain oracle/premortem markers: got %q", got)
+		if strings.Contains(got, "Oracle prompt") {
+			t.Errorf("chore prompt should not contain oracle markers: got %q", got)
 		}
 	})
 
@@ -73,36 +73,12 @@ func TestRouterAndCloseBead(t *testing.T) {
 		if err != nil {
 			t.Fatalf("research routing: unexpected error: %v", err)
 		}
-		// Oracle stub must carry its own marker; must not be the worker prompt
-		// or the premortem stub.
+		// Oracle stub must carry its own marker; must not be the worker prompt.
 		if !strings.Contains(got, "Oracle prompt") {
 			t.Errorf("research prompt missing 'Oracle prompt' marker: got %q", got)
 		}
 		if !strings.Contains(got, "r1") || !strings.Contains(got, "Investigate X") {
 			t.Errorf("research prompt missing bead identity: got %q", got)
-		}
-		if strings.Contains(got, "Premortem prompt") {
-			t.Errorf("research prompt should not contain 'Premortem prompt': got %q", got)
-		}
-	})
-
-	t.Run("premortem_routes_to_premortem_assembler", func(t *testing.T) {
-		b := protocol.Bead{ID: "p1", Type: "premortem", Title: "Review risks", Epic: "epic-target"}
-		got, err := BuildPrompt(ctx, b)
-		if err != nil {
-			t.Fatalf("premortem routing: unexpected error: %v", err)
-		}
-		// Premortem prompt has the six output-template ## headers per §11.4.
-		for _, label := range []string{"## Failure Modes", "## Verdict"} {
-			if !strings.Contains(got, label) {
-				t.Errorf("premortem prompt missing section %q: got %q", label, got)
-			}
-		}
-		if !strings.Contains(got, "p1") || !strings.Contains(got, "Review risks") {
-			t.Errorf("premortem prompt missing bead identity: got %q", got)
-		}
-		if strings.Contains(got, "Oracle prompt") {
-			t.Errorf("premortem prompt should not contain 'Oracle prompt': got %q", got)
 		}
 	})
 

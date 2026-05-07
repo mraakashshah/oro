@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
+	"os"
+	"time"
 
 	"oro/pkg/beadstore"
 	"oro/pkg/beadstore/migrations"
@@ -53,6 +56,113 @@ func openStateDB(path string) (*sql.DB, error) {
 	migrateStateDB(db)
 
 	return db, nil
+}
+
+func openStateDBWithV4Migration(path string) (*sql.DB, error) {
+	db, err := openStateDB(path)
+	if err != nil {
+		return nil, err
+	}
+
+	needsV4, err := stateDBNeedsV4Migration(context.Background(), db)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if !needsV4 {
+		return db, nil
+	}
+
+	db, backupPath, err := reopenStateDBWithV4Backup(path, db)
+	if err != nil {
+		return nil, err
+	}
+	if err := migrations.MigrateToV4(context.Background(), db); err != nil {
+		_ = db.Close()
+		_ = os.Remove(backupPath)
+		return nil, fmt.Errorf("apply v4 schema on %s: %w", path, err)
+	}
+	return db, nil
+}
+
+func reopenStateDBWithV4Backup(path string, db *sql.DB) (*sql.DB, string, error) {
+	if _, err := db.ExecContext(context.Background(), `PRAGMA wal_checkpoint(FULL)`); err != nil {
+		_ = db.Close()
+		return nil, "", fmt.Errorf("checkpoint state db before v4 backup: %w", err)
+	}
+	_ = db.Close()
+
+	backupPath, err := backupStateDBForV4(path)
+	if err != nil {
+		return nil, "", err
+	}
+	db, err = openStateDB(path)
+	if err != nil {
+		_ = os.Remove(backupPath)
+		return nil, "", err
+	}
+	return db, backupPath, nil
+}
+
+func stateDBNeedsV4Migration(ctx context.Context, db *sql.DB) (bool, error) {
+	var userVersion int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&userVersion); err != nil {
+		return false, fmt.Errorf("inspect state db user_version: %w", err)
+	}
+	if userVersion >= 4 {
+		return false, nil
+	}
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(beads)`)
+	if err != nil {
+		return false, fmt.Errorf("inspect beads columns: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return false, fmt.Errorf("scan beads column: %w", err)
+		}
+		if name == "gate_state" {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate beads columns: %w", err)
+	}
+	return false, nil
+}
+
+func backupStateDBForV4(path string) (string, error) {
+	src, err := os.Open(path) // #nosec G304,G703 -- path is the configured local SQLite state database.
+	if err != nil {
+		return "", fmt.Errorf("open state db for v4 backup: %w", err)
+	}
+	defer func() { _ = src.Close() }()
+
+	backupPath := fmt.Sprintf("%s.pre-v4-%s", path, time.Now().UTC().Format("20060102T150405.000000000Z"))
+	dst, err := os.OpenFile(backupPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600) // #nosec G304,G703 -- backupPath is derived from the configured local state DB path.
+	if err != nil {
+		return "", fmt.Errorf("create v4 backup %s: %w", backupPath, err)
+	}
+	cleanup := true
+	defer func() {
+		_ = dst.Close()
+		if cleanup {
+			_ = os.Remove(backupPath)
+		}
+	}()
+	if _, err := io.Copy(dst, src); err != nil {
+		return "", fmt.Errorf("copy v4 backup %s: %w", backupPath, err)
+	}
+	if err := dst.Sync(); err != nil {
+		return "", fmt.Errorf("sync v4 backup %s: %w", backupPath, err)
+	}
+	cleanup = false
+	return backupPath, nil
 }
 
 // migrateStateDB applies schema migrations to the dispatcher state database.

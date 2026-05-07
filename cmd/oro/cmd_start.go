@@ -758,7 +758,7 @@ func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressT
 		}
 	}
 
-	db, err := openStateDB(dbPath)
+	db, err := openStateDBWithV4Migration(dbPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open state db: %w", err)
 	}

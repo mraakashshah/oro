@@ -52,9 +52,6 @@ func newTaskCmdWithStore(store beadstore.Store) *cobra.Command {
 		newBeadStubCmd(store, "import <path>", "Import task snapshot", cobra.ExactArgs(1)),
 		newBeadStubCmd(store, "doctor", "Check task store health", cobra.NoArgs),
 		newBeadStatusCmd(store),
-		newBeadGateStateCmd(store),
-		newBeadGateResetCmd(store),
-		newBeadPremortemCloseCmd(store),
 		newTaskMigrationUnavailableCmd(),
 	)
 	adaptTaskCommandHelp(cmd)

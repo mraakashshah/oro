@@ -18,8 +18,8 @@ func TestStoreContractMatchesReplatformSpec(t *testing.T) {
 		methods[method.Name] = method.Type
 	}
 
-	if len(methods) != 24 {
-		t.Fatalf("Store has %d methods, want 24: %v", len(methods), methodNames(methods))
+	if len(methods) != 19 {
+		t.Fatalf("Store has %d methods, want 19: %v", len(methods), methodNames(methods))
 	}
 
 	ctxType := reflect.TypeOf((*context.Context)(nil)).Elem()
@@ -46,15 +46,7 @@ func TestStoreContractMatchesReplatformSpec(t *testing.T) {
 	assertSignature(t, methods, "AllChildrenClosed", []reflect.Type{ctxType, stringType}, []reflect.Type{boolType, errType})
 	assertSignature(t, methods, "FindByParentAndTag", []reflect.Type{ctxType, stringType, stringType}, []reflect.Type{beadSliceType, errType})
 	assertSignature(t, methods, "Export", []reflect.Type{ctxType}, []reflect.Type{bytesType, errType})
-	assertSignature(t, methods, "SetPremortemVerdict",
-		[]reflect.Type{ctxType, stringType, stringType, stringType},
-		[]reflect.Type{errType})
-
-	gateStateType := reflect.TypeOf(beadstore.GateNone)
 	assertSignature(t, methods, "CountChildren", []reflect.Type{ctxType, stringType}, []reflect.Type{intType, errType})
-	assertSignature(t, methods, "GateState", []reflect.Type{ctxType, stringType}, []reflect.Type{gateStateType, errType})
-	assertSignature(t, methods, "HasClosedPremortemChild", []reflect.Type{ctxType, stringType}, []reflect.Type{boolType, errType})
-	assertSignature(t, methods, "IncrPremortCycleCount", []reflect.Type{ctxType, stringType}, []reflect.Type{errType})
 }
 
 func TestStoreInterfaceDeleteSignature(t *testing.T) {

@@ -66,7 +66,7 @@ func hasMigrationTag(f *ast.File) bool {
 }
 
 // checkFile walks f's AST and collects disallowed Store.Close calls.
-// It skips any FuncDecl named CloseBead or ClosePremortemBeadWithStore so the
+// It skips any FuncDecl named CloseBead so the
 // blessed wrappers' bodies are exempt.
 func checkFile(fset *token.FileSet, f *ast.File) []Finding {
 	var findings []Finding
@@ -106,12 +106,10 @@ func checkFile(fset *token.FileSet, f *ast.File) []Finding {
 }
 
 // isBlessedCloser reports whether name is a blessed wrapper that may call
-// Store.Close directly. The dispatcher's main wrapper is CloseBead;
-// ClosePremortemBeadWithStore is the dispatcher-free analogue used by the
-// `oro bead premortem-close` CLI when no Dispatcher exists to delegate to.
+// Store.Close directly. The dispatcher's main wrapper is CloseBead.
 func isBlessedCloser(name string) bool {
 	switch name {
-	case "CloseBead", "ClosePremortemBeadWithStore":
+	case "CloseBead":
 		return true
 	default:
 		return false

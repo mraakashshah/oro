@@ -438,9 +438,6 @@ func TestTaskDeleteNoPremortemEndToEnd(t *testing.T) {
 		t.Fatal("task show after delete unexpectedly succeeded")
 	}
 
-	if err := store.SetGateState(ctx, "oro-e2e-epic", beadstore.GateNone, beadstore.GateEligible, "test"); err != nil {
-		t.Fatalf("SetGateState: %v", err)
-	}
 	err = executeWork(ctx, &workConfig{
 		beadID:  "oro-e2e-child-1",
 		timeout: 5 * time.Second,

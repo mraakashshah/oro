@@ -333,27 +333,11 @@ func (m *fakeBeadStore) LatestJourney(_ context.Context, _ string, _ int) ([]bea
 	return nil, nil
 }
 
-func (m *fakeBeadStore) SetGateState(_ context.Context, _ string, _, _ beadstore.GateState, _ string) error {
-	return nil
-}
-
 func (m *fakeBeadStore) TransitionPipelineStage(_ context.Context, _ string, _, _ beadstore.PipelineStage) error {
 	return nil
 }
 
-func (m *fakeBeadStore) SetPremortemVerdict(_ context.Context, _, _, _ string) error {
-	return nil
-}
-
 func (m *fakeBeadStore) CountChildren(_ context.Context, _ string) (int, error) { return 0, nil }
-func (m *fakeBeadStore) GateState(_ context.Context, _ string) (beadstore.GateState, error) {
-	return beadstore.GateNone, nil
-}
-
-func (m *fakeBeadStore) HasClosedPremortemChild(_ context.Context, _ string) (bool, error) {
-	return false, nil
-}
-func (m *fakeBeadStore) IncrPremortCycleCount(_ context.Context, _ string) error { return nil }
 
 func (m *fakeBeadStore) WithReadTx(_ context.Context, _ func(tx beadstore.ReadTx) error) error {
 	// Loud failure: fakeBeadStore does not embed FakeStore, so naively delegating
@@ -18523,9 +18507,6 @@ func TestFilterExecutableBeadsIgnoresPremortemGate(t *testing.T) {
 	decomposedEpic := protocol.Bead{ID: "epic-decomposed", Type: "epic", Status: "open"}
 	decomposedChild := protocol.Bead{ID: "child-decomposed", Type: "task", Status: "open", Epic: "epic-decomposed"}
 	store := beadstore.NewFakeStore(parent, child, decomposedEpic, decomposedChild)
-	if err := store.SetGateState(ctx, "epic-gated", beadstore.GateNone, beadstore.GateEligible, "test"); err != nil {
-		t.Fatalf("SetGateState: %v", err)
-	}
 	d := &Dispatcher{
 		beads: store,
 		db:    newTestDB(t),
@@ -18545,7 +18526,7 @@ func TestFilterExecutableBeadsIgnoresPremortemGate(t *testing.T) {
 		}
 	}
 	if !sawChild {
-		t.Fatalf("filterExecutableBeads skipped child under eligible premortem gate; got %#v", got)
+		t.Fatalf("filterExecutableBeads skipped child; got %#v", got)
 	}
 	if sawDecomposedEpic {
 		t.Fatalf("filterExecutableBeads included decomposed epic; got %#v", got)

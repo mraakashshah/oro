@@ -1,0 +1,206 @@
+package migrations
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+)
+
+const v4BeadColumns = `id, title, description, acceptance_criteria, status, priority, type, parent_id, owner, estimated_minutes, tier, model, deferred_until, close_reason, created_at, updated_at, closed_at, deleted, next_action, blockers, linked_artifacts, worker_state, pipeline_stage, sandbox_session, allowed_external_fns, context_thresholds`
+
+const v4BeadTableDDL = `
+CREATE TABLE beads (
+    id                    TEXT PRIMARY KEY,
+    title                 TEXT NOT NULL,
+    description           TEXT NOT NULL DEFAULT '',
+    acceptance_criteria   TEXT NOT NULL DEFAULT '',
+    status                TEXT NOT NULL CHECK (status IN
+                          ('open','in_progress','blocked','closed')),
+    priority              INTEGER NOT NULL DEFAULT 2,
+    type                  TEXT NOT NULL DEFAULT 'task' CHECK (type IN
+                          ('task','bug','epic','research','chore','review')),
+    parent_id             TEXT REFERENCES beads(id),
+    owner                 TEXT,
+    estimated_minutes     INTEGER,
+    tier                  TEXT,
+    model                 TEXT,
+    deferred_until        TEXT,
+    close_reason          TEXT,
+    created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    closed_at             TEXT,
+    deleted               INTEGER NOT NULL DEFAULT 0,
+    next_action           TEXT,
+    blockers              TEXT,
+    linked_artifacts      TEXT,
+    worker_state          TEXT,
+    pipeline_stage        TEXT CHECK (pipeline_stage IN ('assess','plan','prepare','execute','validate','evolve','none')),
+    sandbox_session       TEXT,
+    allowed_external_fns  TEXT,
+    context_thresholds    TEXT
+);
+`
+
+const v4BeadsFTSTriggersDDL = `
+CREATE TRIGGER IF NOT EXISTS beads_ai AFTER INSERT ON beads BEGIN
+  INSERT INTO beads_fts(rowid, title, description, acceptance_criteria, status, type, parent_id, owner)
+  VALUES (new.rowid, new.title, new.description, new.acceptance_criteria, new.status, new.type, new.parent_id, new.owner);
+END;
+CREATE TRIGGER IF NOT EXISTS beads_ad AFTER DELETE ON beads BEGIN
+  INSERT INTO beads_fts(beads_fts, rowid, title, description, acceptance_criteria, status, type, parent_id, owner)
+  VALUES ('delete', old.rowid, old.title, old.description, old.acceptance_criteria, old.status, old.type, old.parent_id, old.owner);
+END;
+CREATE TRIGGER IF NOT EXISTS beads_au AFTER UPDATE ON beads BEGIN
+  INSERT INTO beads_fts(beads_fts, rowid, title, description, acceptance_criteria, status, type, parent_id, owner)
+  VALUES ('delete', old.rowid, old.title, old.description, old.acceptance_criteria, old.status, old.type, old.parent_id, old.owner);
+  INSERT INTO beads_fts(rowid, title, description, acceptance_criteria, status, type, parent_id, owner)
+  VALUES (new.rowid, new.title, new.description, new.acceptance_criteria, new.status, new.type, new.parent_id, new.owner);
+END;
+`
+
+// MigrateToV4 removes the legacy premortem-as-bead-type schema and data.
+func MigrateToV4(ctx context.Context, db *sql.DB) error {
+	needed, err := needsV4Migration(ctx, db)
+	if err != nil {
+		return err
+	}
+	if !needed {
+		return nil
+	}
+	if err := ensureNoActiveAssignments(ctx, db); err != nil {
+		return err
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("migrate v4 begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := execV4MigrationSteps(ctx, tx); err != nil {
+		return err
+	}
+	if err := checkForeignKeys(ctx, tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migrate v4 commit: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA legacy_alter_table=OFF`); err != nil {
+		return fmt.Errorf("migrate v4 disable legacy_alter_table: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA user_version = 4`); err != nil {
+		return fmt.Errorf("migrate v4 mark user_version: %w", err)
+	}
+	return nil
+}
+
+func execV4MigrationSteps(ctx context.Context, tx *sql.Tx) error {
+	steps := []string{
+		`INSERT INTO bead_journey (bead_id, ts, actor, event, payload)
+		 SELECT id, strftime('%Y-%m-%dT%H:%M:%fZ','now'), 'migration', 'migration_type_converted',
+		        '{"original_type":"premortem","reason":"premortem-excision"}'
+		   FROM beads WHERE type='premortem'`,
+		`UPDATE beads
+		    SET deleted=1,
+		        type='task',
+		        pipeline_stage = CASE WHEN pipeline_stage = 'premortem' THEN 'none' ELSE pipeline_stage END,
+		        close_reason='premortem-excision: auto-soft-deleted by migrate_v4',
+		        updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		  WHERE type='premortem'`,
+		`UPDATE beads SET pipeline_stage='none' WHERE pipeline_stage='premortem'`,
+		`DELETE FROM bead_metadata WHERE key IN ('premortem_verdict','premortem_reason')`,
+		`DELETE FROM bead_journey WHERE actor='premortem'`,
+		`DROP VIEW IF EXISTS beads_ready`,
+		`DROP VIEW IF EXISTS beads_blocked`,
+		`DROP TRIGGER IF EXISTS beads_ai`,
+		`DROP TRIGGER IF EXISTS beads_ad`,
+		`DROP TRIGGER IF EXISTS beads_au`,
+		`PRAGMA legacy_alter_table=ON`,
+		`ALTER TABLE beads RENAME TO beads_v4_rebuild_old`,
+		v4BeadTableDDL,
+		`INSERT INTO beads (` + v4BeadColumns + `) SELECT ` + v4BeadColumns + ` FROM beads_v4_rebuild_old`,
+		`DROP TABLE beads_v4_rebuild_old`,
+		v3ViewsDDL,
+		v4BeadsFTSTriggersDDL,
+		`INSERT INTO beads_fts(beads_fts) VALUES('rebuild')`,
+	}
+	for _, stmt := range steps {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("migrate v4: %w", err)
+		}
+	}
+	return nil
+}
+
+func needsV4Migration(ctx context.Context, db *sql.DB) (bool, error) {
+	var userVersion int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&userVersion); err != nil {
+		return false, fmt.Errorf("migrate v4 user_version: %w", err)
+	}
+	if userVersion >= 4 {
+		return false, nil
+	}
+	hasGateColumn, err := beadsColumnExists(ctx, db, "gate_state")
+	if err != nil {
+		return false, err
+	}
+	if hasGateColumn {
+		return true, nil
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA user_version = 4`); err != nil {
+		return false, fmt.Errorf("migrate v4 mark user_version: %w", err)
+	}
+	return false, nil
+}
+
+func ensureNoActiveAssignments(ctx context.Context, db *sql.DB) error {
+	var activeAssignments int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM assignments WHERE status='active'`).Scan(&activeAssignments); err != nil {
+		return fmt.Errorf("migrate v4 active assignment check: %w", err)
+	}
+	if activeAssignments > 0 {
+		return fmt.Errorf("migrate_v4: cannot migrate while %d active assignments exist; run 'oro stop' first then re-run 'oro start'", activeAssignments)
+	}
+	return nil
+}
+
+func checkForeignKeys(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return fmt.Errorf("migrate v4 foreign_key_check: %w", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return fmt.Errorf("migrate v4 foreign_key_check failed")
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("migrate v4 foreign_key_check rows: %w", err)
+	}
+	return nil
+}
+
+func beadsColumnExists(ctx context.Context, db *sql.DB, name string) (bool, error) {
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(beads)`)
+	if err != nil {
+		return false, fmt.Errorf("inspect beads columns: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var colName, colType string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &colName, &colType, &notNull, &defaultValue, &pk); err != nil {
+			return false, fmt.Errorf("scan beads column: %w", err)
+		}
+		if colName == name {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate beads columns: %w", err)
+	}
+	return false, nil
+}

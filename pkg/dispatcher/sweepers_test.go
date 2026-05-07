@@ -3,7 +3,6 @@ package dispatcher //nolint:testpackage // white-box: shares package to access u
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -14,21 +13,6 @@ import (
 	"oro/pkg/dbutil"
 	"oro/pkg/protocol"
 )
-
-// fakePremortCounter records SetPremortCycleCount calls for sweeper tests.
-type fakePremortCounter struct {
-	calls []premortCycleCall
-}
-
-type premortCycleCall struct {
-	beadID string
-	n      int
-}
-
-func (f *fakePremortCounter) SetPremortCycleCount(_ context.Context, beadID string, n int) error {
-	f.calls = append(f.calls, premortCycleCall{beadID: beadID, n: n})
-	return nil
-}
 
 // countingExportStore wraps FakeStore and counts Export invocations for ticker tests.
 type countingExportStore struct {
@@ -215,138 +199,6 @@ func TestSweepers(t *testing.T) {
 		events, _ := store.Journey(ctx, "rp-c3", time.Time{})
 		if len(events) != 1 {
 			t.Errorf("expected exactly 1 escalated event after 2 runs, got %d", len(events))
-		}
-	})
-
-	// ─── OnReplanChildrenClosed ─────────────────────────────────────────────
-
-	t.Run("OnReplanChildrenClosed/transitions_gate_when_all_children_closed", func(t *testing.T) {
-		parent := protocol.Bead{ID: "or-p1", Status: "in_progress"}
-		child := protocol.Bead{
-			ID:     "or-c1",
-			Epic:   "or-p1",
-			Tags:   []string{"replan_cycle:1"},
-			Status: "closed",
-		}
-		store := beadstore.NewFakeStore(parent, child)
-		// FakeStore zero-initializes gate state to ""; use GateState("") as from.
-		_ = store.SetGateState(ctx, "or-p1", beadstore.GateState(""), beadstore.GateReplan, "setup")
-
-		counter := &fakePremortCounter{}
-		if err := OnReplanChildrenClosed(ctx, store, counter, "or-p1", 1, 5); err != nil {
-			t.Fatalf("OnReplanChildrenClosed: %v", err)
-		}
-
-		events, _ := store.Journey(ctx, "or-p1", time.Time{})
-		var gateChanges int
-		for _, e := range events {
-			if e.Event == "gate_state_changed" {
-				gateChanges++
-			}
-		}
-		// setup call + sweeper call = 2 gate_state_changed events
-		if gateChanges < 2 {
-			t.Errorf("expected at least 2 gate_state_changed events (setup + sweeper), got %d", gateChanges)
-		}
-
-		if len(counter.calls) == 0 {
-			t.Error("expected SetPremortCycleCount to be called")
-		} else if counter.calls[0].n != 1 {
-			t.Errorf("cycle count arg = %d, want 1", counter.calls[0].n)
-		}
-	})
-
-	t.Run("OnReplanChildrenClosed/escalates_at_max_cycles", func(t *testing.T) {
-		parent := protocol.Bead{ID: "or-p2", Status: "in_progress"}
-		store := beadstore.NewFakeStore(parent)
-		_ = store.SetGateState(ctx, "or-p2", beadstore.GateState(""), beadstore.GateReplan, "setup")
-
-		counter := &fakePremortCounter{}
-		// cycleNum(5) >= maxCycles(5) → escalate instead of transitioning
-		if err := OnReplanChildrenClosed(ctx, store, counter, "or-p2", 5, 5); err != nil {
-			t.Fatalf("OnReplanChildrenClosed: %v", err)
-		}
-
-		events, _ := store.Journey(ctx, "or-p2", time.Time{})
-		var escalated bool
-		for _, e := range events {
-			if e.Event == "escalated" {
-				escalated = true
-			}
-		}
-		if !escalated {
-			t.Error("expected escalated event when max cycles reached")
-		}
-
-		if len(counter.calls) > 0 {
-			t.Error("SetPremortCycleCount should not be called when escalating")
-		}
-	})
-
-	t.Run("OnReplanChildrenClosed/noop_when_open_replan_children_exist", func(t *testing.T) {
-		parent := protocol.Bead{ID: "or-p3", Status: "in_progress"}
-		child := protocol.Bead{
-			ID:     "or-c3",
-			Epic:   "or-p3",
-			Tags:   []string{"replan_cycle:1"},
-			Status: "open",
-		}
-		store := beadstore.NewFakeStore(parent, child)
-		_ = store.SetGateState(ctx, "or-p3", beadstore.GateState(""), beadstore.GateReplan, "setup")
-
-		counter := &fakePremortCounter{}
-		if err := OnReplanChildrenClosed(ctx, store, counter, "or-p3", 1, 5); err != nil {
-			t.Fatalf("OnReplanChildrenClosed: %v", err)
-		}
-
-		// Only the setup gate_state_changed event; sweeper must not add another
-		events, _ := store.Journey(ctx, "or-p3", time.Time{})
-		var gateChanges int
-		for _, e := range events {
-			if e.Event == "gate_state_changed" {
-				gateChanges++
-			}
-		}
-		if gateChanges != 1 {
-			t.Errorf("expected exactly 1 gate_state_changed event (setup only), got %d", gateChanges)
-		}
-		if len(counter.calls) > 0 {
-			t.Error("SetPremortCycleCount should not be called when children still open")
-		}
-	})
-
-	t.Run("OnReplanChildrenClosed/blocks_replan_after_max_cycles", func(t *testing.T) {
-		parent := protocol.Bead{ID: "or-p-esc", Status: "in_progress"}
-		store := beadstore.NewFakeStore(parent)
-		// Parent already at gate_state=escalated with 5 completed premortem cycles.
-		_ = store.SetGateState(ctx, "or-p-esc", beadstore.GateState(""), beadstore.GateEscalated, "test-pre-escalated")
-		for range 5 {
-			_ = store.IncrPremortCycleCount(ctx, "or-p-esc")
-		}
-
-		counter := &fakePremortCounter{}
-		err := OnReplanChildrenClosed(ctx, store, counter, "or-p-esc", 6, 5)
-		if !errors.Is(err, ErrReplanLoopExhausted) {
-			t.Errorf("6th replan cycle: expected ErrReplanLoopExhausted, got %v", err)
-		}
-		if len(counter.calls) > 0 {
-			t.Error("SetPremortCycleCount must not be called when already escalated")
-		}
-		children, _ := store.FindByParentAndTag(ctx, "or-p-esc", "replan_cycle:6")
-		if len(children) > 0 {
-			t.Errorf("must not create new replan child after max cycles, got %d children", len(children))
-		}
-		// Guard must run BEFORE the cycleNum>=maxCycles escalation branch — otherwise
-		// a 6th call would re-emit "escalated" on top of the prior gate transition.
-		events, _ := store.Journey(ctx, "or-p-esc", time.Time{})
-		var escalatedCount int
-		for _, e := range events {
-			if e.Event == "escalated" {
-				escalatedCount++
-			}
-		}
-		if escalatedCount != 0 {
-			t.Errorf("guard must short-circuit before re-emitting escalated; got %d escalated events", escalatedCount)
 		}
 	})
 

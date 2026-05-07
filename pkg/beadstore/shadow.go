@@ -292,42 +292,15 @@ func (s *ShadowStore) LatestJourney(ctx context.Context, beadID string, limit in
 	return events, wrapPrimaryStoreError("latest journey", err)
 }
 
-// SetGateState delegates to primary only.
-func (s *ShadowStore) SetGateState(ctx context.Context, beadID string, from, to GateState, reason string) error {
-	return wrapPrimaryStoreError("set gate state", s.primary.SetGateState(ctx, beadID, from, to, reason))
-}
-
 // TransitionPipelineStage delegates to primary only.
 func (s *ShadowStore) TransitionPipelineStage(ctx context.Context, beadID string, from, to PipelineStage) error {
 	return wrapPrimaryStoreError("transition pipeline stage", s.primary.TransitionPipelineStage(ctx, beadID, from, to))
-}
-
-// SetPremortemVerdict delegates to primary only.
-func (s *ShadowStore) SetPremortemVerdict(ctx context.Context, beadID, verdict, reason string) error {
-	return wrapPrimaryStoreError("set premortem verdict", s.primary.SetPremortemVerdict(ctx, beadID, verdict, reason))
 }
 
 // CountChildren delegates to primary only.
 func (s *ShadowStore) CountChildren(ctx context.Context, parentID string) (int, error) {
 	n, err := s.primary.CountChildren(ctx, parentID)
 	return n, wrapPrimaryStoreError("count children", err)
-}
-
-// GateState delegates to primary only.
-func (s *ShadowStore) GateState(ctx context.Context, beadID string) (GateState, error) {
-	gs, err := s.primary.GateState(ctx, beadID)
-	return gs, wrapPrimaryStoreError("gate state", err)
-}
-
-// HasClosedPremortemChild delegates to primary only.
-func (s *ShadowStore) HasClosedPremortemChild(ctx context.Context, parentID string) (bool, error) {
-	ok, err := s.primary.HasClosedPremortemChild(ctx, parentID)
-	return ok, wrapPrimaryStoreError("has closed premortem child", err)
-}
-
-// IncrPremortCycleCount delegates to primary only.
-func (s *ShadowStore) IncrPremortCycleCount(ctx context.Context, beadID string) error {
-	return wrapPrimaryStoreError("incr premortem cycle count", s.primary.IncrPremortCycleCount(ctx, beadID))
 }
 
 // WithReadTx delegates to primary so reads see a consistent snapshot from the

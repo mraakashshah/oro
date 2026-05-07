@@ -451,7 +451,7 @@ func beadTypeMatch(cardType CardType, beadType string) float64 {
 	case CardTypeTaste:
 		return 0.5
 	case CardTypeDecision:
-		if beadType == "research" || beadType == "premortem" {
+		if beadType == "research" {
 			return 1.0
 		}
 		return 0.3

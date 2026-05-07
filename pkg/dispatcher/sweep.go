@@ -6,7 +6,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -16,50 +15,7 @@ import (
 	"oro/pkg/protocol"
 )
 
-// ErrReplanLoopExhausted is returned by OnReplanChildrenClosed when the parent
-// is already at gate_state=escalated, indicating the replan cycle cap has been
-// reached and no further replan children should be created.
-var ErrReplanLoopExhausted = errors.New("dispatcher: replan loop exhausted")
-
 const tagAwaitsParentClose = "awaits_parent_close"
-
-// defaultMaxPremortemCycles is the default cap on replan cycles before escalation (§11.4).
-const defaultMaxPremortemCycles = 5
-
-// nopPremortCounter satisfies PremortCounter with no-op SetPremortCycleCount.
-// Used as a stub until the v3 beadstore gains a persistent cycle-count writer.
-type nopPremortCounter struct{}
-
-// SetPremortCycleCount is a no-op implementation of PremortCounter.
-func (nopPremortCounter) SetPremortCycleCount(_ context.Context, _ string, _ int) error {
-	return nil
-}
-
-// parseReplanCycleNum extracts the N from the first "replan_cycle:N" tag in tags.
-// Returns -1 when no such tag is present or when N cannot be parsed.
-func parseReplanCycleNum(tags []string) int {
-	for _, tag := range tags {
-		if len(tag) > len("replan_cycle:") && tag[:len("replan_cycle:")] == "replan_cycle:" {
-			n := 0
-			rest := tag[len("replan_cycle:"):]
-			for _, c := range rest {
-				if c < '0' || c > '9' {
-					return -1
-				}
-				n = n*10 + int(c-'0')
-			}
-			return n
-		}
-	}
-	return -1
-}
-
-// PremortCounter records a bead's completed premortem cycle count.
-// It is satisfied by any type that exposes SetPremortCycleCount, including
-// beadstore.SQLiteStore after v3 migration.
-type PremortCounter interface {
-	SetPremortCycleCount(ctx context.Context, beadID string, n int) error
-}
 
 // PromoteChildrenOnParentClose removes the awaits_parent_close tag from every
 // child of parentID and appends a parent_closed_promoted journey event on each.
@@ -178,57 +134,6 @@ func ReapDeletedParentChildren(ctx context.Context, store DeferredStore) error {
 		if err := store.Defer(ctx, child.ID, zombieDeferredUntil); err != nil {
 			return fmt.Errorf("sweep: defer child %s: %w", child.ID, err)
 		}
-	}
-	return nil
-}
-
-// OnReplanChildrenClosed is called when a replan-cycle child of parentID closes.
-// When all open children tagged replan_cycle:<cycleNum> are gone, it transitions
-// the parent's gate_state from replan → eligible and records the cycle count.
-// If cycleNum >= maxCycles, it emits an escalated event instead.
-func OnReplanChildrenClosed(ctx context.Context, store beadstore.Store, counter PremortCounter, parentID string, cycleNum, maxCycles int) error {
-	gs, err := store.GateState(ctx, parentID)
-	if err != nil {
-		return fmt.Errorf("sweep: gate state for %s: %w", parentID, err)
-	}
-	if gs == beadstore.GateEscalated {
-		return ErrReplanLoopExhausted
-	}
-
-	beads, err := exportBeads(ctx, store)
-	if err != nil {
-		return err
-	}
-
-	replanTag := fmt.Sprintf("replan_cycle:%d", cycleNum)
-	for _, b := range beads {
-		if b.Epic == parentID && hasBeadTag(b, replanTag) && b.Status != "closed" {
-			return nil // open replan children remain
-		}
-	}
-
-	if cycleNum >= maxCycles {
-		payload := fmt.Sprintf(
-			`{"kind":"premortem_loop","parent_id":%q,"cycle_count":%d,"max_cycles":%d}`,
-			parentID, cycleNum, maxCycles)
-		if err := store.AppendJourney(ctx, parentID, beadstore.JourneyEvent{
-			BeadID:  parentID,
-			Ts:      time.Now().UTC().Format(time.RFC3339Nano),
-			Actor:   "dispatcher",
-			Event:   "escalated",
-			Payload: payload,
-		}); err != nil {
-			return fmt.Errorf("sweep: escalate at max cycles for %s: %w", parentID, err)
-		}
-		return nil
-	}
-
-	reason := fmt.Sprintf("replan_cycle_%d_complete", cycleNum)
-	if err := store.SetGateState(ctx, parentID, beadstore.GateReplan, beadstore.GateEligible, reason); err != nil {
-		return fmt.Errorf("sweep: gate transition for %s: %w", parentID, err)
-	}
-	if err := counter.SetPremortCycleCount(ctx, parentID, cycleNum); err != nil {
-		return fmt.Errorf("sweep: set premortem cycle count for %s: %w", parentID, err)
 	}
 	return nil
 }

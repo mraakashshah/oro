@@ -144,11 +144,6 @@ func (m *fakeBeadStore) LatestJourney(ctx context.Context, beadID string, limit 
 	return m.FakeStore.LatestJourney(ctx, beadID, limit)
 }
 
-func (m *fakeBeadStore) SetGateState(ctx context.Context, beadID string, from, to beadstore.GateState, reason string) error {
-	m.ensureStore()
-	return m.FakeStore.SetGateState(ctx, beadID, from, to, reason)
-}
-
 func (m *fakeBeadStore) TransitionPipelineStage(ctx context.Context, beadID string, from, to beadstore.PipelineStage) error {
 	m.ensureStore()
 	return m.FakeStore.TransitionPipelineStage(ctx, beadID, from, to)
@@ -955,9 +950,6 @@ func TestExecuteWorkIgnoresPremortemGate(t *testing.T) {
 		showDetail: child,
 		shownByID:  map[string]*protocol.BeadDetail{"epic-gated": parent},
 	}
-	if err := bs.SetGateState(ctx, "epic-gated", beadstore.GateNone, beadstore.GateEligible, "test"); err != nil {
-		t.Fatalf("SetGateState: %v", err)
-	}
 	deps := &workDeps{
 		beadSrc:  bs,
 		wtMgr:    &mockWorktreeManager{},
@@ -973,7 +965,7 @@ func TestExecuteWorkIgnoresPremortemGate(t *testing.T) {
 
 	err := executeWork(ctx, cfg, deps)
 	if err != nil {
-		t.Fatalf("executeWork dry-run under eligible premortem gate = %v, want nil", err)
+		t.Fatalf("executeWork dry-run with parent epic = %v, want nil", err)
 	}
 }
 

@@ -37,16 +37,8 @@ type Store interface {
 	AllChildrenClosed(ctx context.Context, epicID string) (bool, error)
 	// FindByParentAndTag returns children under parentID that have tag.
 	FindByParentAndTag(ctx context.Context, parentID, tag string) ([]protocol.Bead, error)
-	// CountChildren returns the total number of non-deleted child beads for parentID (§11.4).
+	// CountChildren returns the total number of non-deleted child beads for parentID.
 	CountChildren(ctx context.Context, parentID string) (int, error)
-	// GateState returns the current gate_state for beadID (§11.4).
-	GateState(ctx context.Context, beadID string) (GateState, error)
-	// HasClosedPremortemChild reports whether parentID has at least one closed
-	// child bead of type="premortem" (§11.4 gate eligibility check).
-	HasClosedPremortemChild(ctx context.Context, parentID string) (bool, error)
-	// IncrPremortCycleCount atomically increments the premortem_cycle_count
-	// column for beadID by 1 (§11.4 replan verdict path).
-	IncrPremortCycleCount(ctx context.Context, beadID string) error
 
 	// Export returns a JSONL backup snapshot.
 	Export(ctx context.Context) ([]byte, error)
@@ -59,17 +51,6 @@ type Store interface {
 	// LatestJourney returns the most recent limit events for beadID in
 	// ascending (chronological) order.
 	LatestJourney(ctx context.Context, beadID string, limit int) ([]JourneyEvent, error)
-
-	// SetGateState atomically transitions beadID's gate_state from → to and
-	// appends a gate_state_changed journey event. Returns ErrStaleGate if the
-	// current gate_state does not equal from (concurrent write raced ahead).
-	SetGateState(ctx context.Context, beadID string, from, to GateState, reason string) error
-
-	// SetPremortemVerdict persists a premortem agent's verdict (§11.4) on
-	// beadID via the bead_metadata table (keys: premortem_verdict,
-	// premortem_reason). Existing values for those keys are overwritten;
-	// other metadata keys are preserved.
-	SetPremortemVerdict(ctx context.Context, beadID, verdict, reason string) error
 
 	// TransitionPipelineStage atomically transitions beadID's pipeline_stage
 	// from → to and appends a pipeline_stage_changed journey event. Returns

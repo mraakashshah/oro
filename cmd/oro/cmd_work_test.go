@@ -1715,8 +1715,8 @@ func TestWorkCommandTaskTerminology(t *testing.T) {
 	}
 }
 
-// TestWork_AllowsEligibleParent verifies that `oro work` does not apply the
-// dispatcher's premortem gate when manually executing a bead.
+// TestWork_AllowsEligibleParent verifies that `oro work` can execute a child
+// of an open epic directly.
 func TestWork_AllowsEligibleParent(t *testing.T) {
 	ctx := context.Background()
 
@@ -1732,10 +1732,6 @@ func TestWork_AllowsEligibleParent(t *testing.T) {
 	bs := &fakeBeadStore{
 		FakeStore: beadstore.NewFakeStore(parent, child),
 	}
-	if err := bs.FakeStore.SetGateState(ctx, "epic-pg1", beadstore.GateState(""), beadstore.GateEligible, "test_setup"); err != nil {
-		t.Fatalf("SetGateState: %v", err)
-	}
-
 	wtDir := t.TempDir()
 	testFileDir := filepath.Join(wtDir, "pkg", "foo")
 	if err := os.MkdirAll(testFileDir, 0o750); err != nil {
@@ -1767,7 +1763,7 @@ func TestWork_AllowsEligibleParent(t *testing.T) {
 	}
 
 	if !sp.called {
-		t.Error("spawner should be called when premortem gate is ignored")
+		t.Error("spawner should be called")
 	}
 	if mg.called {
 		t.Error("merger should not be called when no commits were produced")

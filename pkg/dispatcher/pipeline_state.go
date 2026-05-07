@@ -13,14 +13,13 @@ import (
 var ErrInvalidTransition = errors.New("dispatcher: invalid pipeline stage transition")
 
 var validTransitions = map[beadstore.PipelineStage][]beadstore.PipelineStage{ //nolint:gochecknoglobals // §11.9 state machine — static config table, read-only after init
-	beadstore.StageNone:      {beadstore.StageAssess},
-	beadstore.StageAssess:    {beadstore.StagePlan},
-	beadstore.StagePlan:      {beadstore.StagePremortem, beadstore.StagePrepare},
-	beadstore.StagePremortem: {beadstore.StagePrepare, beadstore.StagePlan},
-	beadstore.StagePrepare:   {beadstore.StageExecute},
-	beadstore.StageExecute:   {beadstore.StageValidate, beadstore.StageExecute},
-	beadstore.StageValidate:  {beadstore.StageEvolve, beadstore.StageExecute},
-	beadstore.StageEvolve:    {beadstore.StageAssess},
+	beadstore.StageNone:     {beadstore.StageAssess},
+	beadstore.StageAssess:   {beadstore.StagePlan},
+	beadstore.StagePlan:     {beadstore.StagePrepare},
+	beadstore.StagePrepare:  {beadstore.StageExecute},
+	beadstore.StageExecute:  {beadstore.StageValidate, beadstore.StageExecute},
+	beadstore.StageValidate: {beadstore.StageEvolve, beadstore.StageExecute},
+	beadstore.StageEvolve:   {beadstore.StageAssess},
 }
 
 // pipelineStageTransitioner is the beadstore capability required for pipeline transitions.

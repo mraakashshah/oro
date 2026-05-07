@@ -43,10 +43,7 @@ func TestPipelineStateMachine(t *testing.T) {
 			{beadstore.StageNone, beadstore.StageAssess},
 			// §11.9 forward path
 			{beadstore.StageAssess, beadstore.StagePlan},
-			{beadstore.StagePlan, beadstore.StagePremortem},
 			{beadstore.StagePlan, beadstore.StagePrepare},
-			{beadstore.StagePremortem, beadstore.StagePrepare},
-			{beadstore.StagePremortem, beadstore.StagePlan}, // replan
 			{beadstore.StagePrepare, beadstore.StageExecute},
 			{beadstore.StageExecute, beadstore.StageValidate},
 			{beadstore.StageExecute, beadstore.StageExecute}, // retry loop
