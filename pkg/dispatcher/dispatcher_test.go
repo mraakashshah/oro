@@ -19557,11 +19557,11 @@ func TestApprovedReview_WritesCandidateInboxNotAssets(t *testing.T) {
 	}
 }
 
-// TestHandleReviewApproved_PatternCaptureFailureIsNonBlocking locks in the
+// TestReviewPatternCandidateCaptureFailureDoesNotBlockApproval locks in the
 // invariant that a failure in appendReviewPatternCandidates cannot block an
 // approved review: the worker must still receive MsgReviewResult "approved"
 // and review_approved must still be logged.
-func TestHandleReviewApproved_PatternCaptureFailureIsNonBlocking(t *testing.T) {
+func TestReviewPatternCandidateCaptureFailureDoesNotBlockApproval(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
@@ -19581,6 +19581,9 @@ func TestHandleReviewApproved_PatternCaptureFailureIsNonBlocking(t *testing.T) {
 		t.Fatalf("setup blocking file: %v", err)
 	}
 	d.cfg.ReviewPatternCandidates = filepath.Join(blockingFile, "subdir", "candidates.md")
+	d.mu.Lock()
+	d.rejectionCounts["bead-nonblock"] = 2
+	d.mu.Unlock()
 
 	ctx := context.Background()
 	resultCh := make(chan ops.Result, 1)
@@ -19609,5 +19612,11 @@ func TestHandleReviewApproved_PatternCaptureFailureIsNonBlocking(t *testing.T) {
 	}
 	if msg.ReviewResult == nil || msg.ReviewResult.Verdict != "approved" {
 		t.Fatalf("expected approved verdict in MsgReviewResult, got %+v", msg.ReviewResult)
+	}
+	d.mu.Lock()
+	_, rejectionCountPresent := d.rejectionCounts["bead-nonblock"]
+	d.mu.Unlock()
+	if rejectionCountPresent {
+		t.Fatal("rejection count was not cleared after approved review")
 	}
 }
