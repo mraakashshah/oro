@@ -37,6 +37,7 @@ func newTaskCmdWithStore(store beadstore.Store) *cobra.Command {
 		newBeadCreateCmd(store),
 		newBeadUpdateCmd(store),
 		newBeadCloseCmd(store),
+		newBeadDeleteCmd(store),
 		newBeadReopenCmd(store),
 		newBeadDeferCmd(store),
 		newBeadUndeferCmd(store),

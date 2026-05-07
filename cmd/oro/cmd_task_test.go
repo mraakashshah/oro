@@ -225,6 +225,42 @@ func TestTaskCommandAliasLifecycle(t *testing.T) {
 	}
 }
 
+func TestTaskDeleteSoftDeletesHumanOutput(t *testing.T) {
+	ctx := context.Background()
+	store, err := beadstore.OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore: %v", err)
+	}
+	if _, err := store.Create(ctx, beadstore.CreateParams{ID: "oro-delete-cli", Title: "delete cli"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	cmd := newTaskCmdWithStore(store)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"delete", "oro-delete-cli", "--reason", "cleanup"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("task delete error: %v\n%s", err, out.String())
+	}
+	if got := strings.TrimSpace(out.String()); got != "deleted oro-delete-cli" {
+		t.Fatalf("task delete output = %q, want deleted oro-delete-cli", got)
+	}
+
+	cmd = newTaskCmdWithStore(store)
+	out.Reset()
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"show", "oro-delete-cli"})
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatalf("task show after delete unexpectedly succeeded:\n%s", out.String())
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("task show after delete error = %v, want not found", err)
+	}
+}
+
 func TestTaskCommandReadyListStatusAndDependencies(t *testing.T) {
 	ctx := context.Background()
 	store, err := beadstore.OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))

@@ -38,6 +38,7 @@ func newBeadCmdWithStore(store beadstore.Store) *cobra.Command {
 		newBeadCreateCmd(store),
 		newBeadUpdateCmd(store),
 		newBeadCloseCmd(store),
+		newBeadDeleteCmd(store),
 		newBeadReopenCmd(store),
 		newBeadDeferCmd(store),
 		newBeadUndeferCmd(store),
@@ -270,6 +271,38 @@ func newBeadCloseCmd(store beadstore.Store) *cobra.Command {
 		},
 	}
 	cmd.Flags().String("reason", "", "close reason")
+	return cmd
+}
+
+func newBeadDeleteCmd(store beadstore.Store) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "delete <id>",
+		Short: "Delete a bead",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := resolveBeadStore(store)
+			if err != nil {
+				return writeBeadCommandErrorIfJSON(cmd, "store", err)
+			}
+			if err := s.Delete(cmd.Context(), args[0], mustStringFlag(cmd, "reason")); err != nil {
+				return writeBeadCommandErrorIfJSON(cmd, "delete", err)
+			}
+			if isJSONOutput(cmd) {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				if err := enc.Encode(map[string]any{
+					"ok": true,
+					"id": args[0],
+				}); err != nil {
+					return writeBeadCommandErrorIfJSON(cmd, "delete", fmt.Errorf("encode delete JSON: %w", err))
+				}
+				return nil
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "deleted %s\n", args[0])
+			return nil
+		},
+	}
+	cmd.Flags().String("reason", "", "delete reason")
 	return cmd
 }
 
