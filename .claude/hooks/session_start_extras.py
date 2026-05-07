@@ -618,7 +618,15 @@ def main() -> None:
 
     # 4. Update pane activity (if ORO_ROLE is set)
     oro_role = os.environ.get("ORO_ROLE", "")
-    update_pane_activity(oro_role)
+    role_hooks_enabled = bool(oro_role)
+    if oro_role == "architect":
+        print(
+            "[oro] ORO_ROLE=architect is no longer supported — this value was removed. See release notes.",
+            file=sys.stderr,
+        )
+        role_hooks_enabled = False
+    if role_hooks_enabled:
+        update_pane_activity(oro_role)
 
     # 4a. Clean stale handoff signals from previous session
     if oro_role:
@@ -638,7 +646,7 @@ def main() -> None:
         state = project_state()
 
     # 6. Role-specific beacon injection (ORO_ROLE env var set by oro start)
-    beacon = role_beacon(oro_role)
+    beacon = role_beacon(oro_role) if role_hooks_enabled else ""
 
     # 7. Auto-load skills (inject using-skills content between Superpowers and Role Beacon)
     skills_file = Path(oro_home()) / ".claude" / "skills" / "using-skills" / "SKILL.md"

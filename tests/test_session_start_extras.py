@@ -439,6 +439,91 @@ class TestAutoLoadSkills:
 
 
 class TestMainIntegration:
+    def _run_main_for_role(self, tmp_path, monkeypatch, role):
+        import io
+        import subprocess
+        import sys
+
+        oro_home = tmp_path / ".oro"
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("ORO_HOME", str(oro_home))
+        if role is None:
+            monkeypatch.delenv("ORO_ROLE", raising=False)
+        else:
+            monkeypatch.setenv("ORO_ROLE", role)
+        monkeypatch.delenv("ORO_WORKER", raising=False)
+
+        calls: dict[str, list] = {"update": [], "beacon": [], "subprocess": []}
+
+        def fake_update_pane_activity(pane_role):
+            calls["update"].append(pane_role)
+
+        def fake_role_beacon(pane_role):
+            calls["beacon"].append(pane_role)
+            return f"{pane_role} beacon" if pane_role else ""
+
+        def fake_run(cmd, *args, **kwargs):
+            calls["subprocess"].append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="[]\n", stderr="")
+
+        monkeypatch.setattr(_mod, "update_pane_activity", fake_update_pane_activity)
+        monkeypatch.setattr(_mod, "role_beacon", fake_role_beacon)
+        monkeypatch.setattr(_mod, "pane_handoff", lambda _role: "")
+        monkeypatch.setattr(_mod, "latest_handoff", lambda _dir: "handoff context")
+        monkeypatch.setattr(_mod, "project_state", lambda: "state context")
+        monkeypatch.setattr(_mod, "find_merged_worktrees", lambda _dir: [])
+        monkeypatch.setattr(_mod, "recent_memories_db", lambda n=5: [])
+        monkeypatch.setattr(_mod, "recently_closed_beads", lambda limit=3: [])
+        monkeypatch.setattr(_mod, "ready_beads", lambda limit=4: [])
+        monkeypatch.setattr(
+            _mod, "auto_load_skills", lambda _path: "# Auto-loaded Skill: using-skills\n\nskill context"
+        )
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(sys, "stdin", io.StringIO("{}"))
+
+        mock_stdout = io.StringIO()
+        monkeypatch.setattr(sys, "stdout", mock_stdout)
+
+        _mod.main()
+        output = json.loads(mock_stdout.getvalue())
+        context = output["hookSpecificOutput"]["additionalContext"]
+        return calls, context
+
+    def test_main_architect_role_warns_and_skips_role_side_effects(self, tmp_path, monkeypatch, capsys):
+        calls, context = self._run_main_for_role(tmp_path, monkeypatch, "architect")
+
+        captured = capsys.readouterr()
+        assert (
+            "[oro] ORO_ROLE=architect is no longer supported — this value was removed. See release notes."
+            in captured.err
+        )
+        assert calls["update"] == []
+        assert calls["beacon"] == []
+        assert "# Superpowers" in context
+        assert "# Auto-loaded Skill: using-skills" in context
+        assert "handoff context" in context
+        assert "state context" in context
+
+    def test_main_manager_role_updates_activity_and_injects_beacon(self, tmp_path, monkeypatch, capsys):
+        calls, context = self._run_main_for_role(tmp_path, monkeypatch, "manager")
+
+        captured = capsys.readouterr()
+        assert "ORO_ROLE=architect is no longer supported" not in captured.err
+        assert calls["update"] == ["manager"]
+        assert calls["beacon"] == ["manager"]
+        assert "# Role Beacon (manager)" in context
+        assert "manager beacon" in context
+
+    def test_main_unset_role_skips_role_side_effects(self, tmp_path, monkeypatch, capsys):
+        calls, context = self._run_main_for_role(tmp_path, monkeypatch, None)
+
+        captured = capsys.readouterr()
+        assert "ORO_ROLE=architect is no longer supported" not in captured.err
+        assert calls["update"] == []
+        assert calls["beacon"] == []
+        assert "# Superpowers" in context
+        assert "# Auto-loaded Skill: using-skills" in context
+
     def test_auto_load_skills_injected_into_additional_context(self, tmp_path, monkeypatch):
         """Verify main() calls auto_load_skills and injects content into additionalContext."""
         import io
