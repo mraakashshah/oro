@@ -601,6 +601,7 @@ type Dispatcher struct {
 	state                       State
 	listener                    net.Listener
 	focusedEpic                 string
+	focusedImmediate            bool
 	focusVersion                uint64
 	targetWorkers               int
 	explicitScaleTarget         bool
@@ -3414,6 +3415,7 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	d.mu.Unlock()
 
 	beads := d.filterAssignable(ctx, allBeads)
+	d.preemptForImmediateFocus(ctx, beads, len(idle))
 
 	pbSnapshot, focusVersion := d.sortBeadsByPriority(ctx, beads)
 	reservedTargets, hasPendingSpawnFor := d.reservedSpawnForTargets()
@@ -3434,7 +3436,7 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 		return
 	}
 
-	assignedBeads := d.assignTargetedIdleWorkers(ctx, idle, beads, focusVersion)
+	assignedBeads := d.assignTargetedIdleWorkers(ctx, idle, allBeads, focusVersion)
 	d.assignGeneralIdleWorkers(ctx, idle, beads, pbSnapshot, assignedBeads, reservedTargets, focusVersion)
 }
 
@@ -4681,6 +4683,7 @@ func (d *Dispatcher) applyFocus(args string) (string, error) {
 	}
 	d.mu.Lock()
 	d.focusedEpic = epic
+	d.focusedImmediate = immediate
 	d.focusVersion++
 	d.mu.Unlock()
 	if d.GetState() != StateRunning {
@@ -4692,7 +4695,9 @@ func (d *Dispatcher) applyFocus(args string) (string, error) {
 	if !immediate {
 		return fmt.Sprintf("focused on %s", epic), nil
 	}
-	preempted := d.preemptWorkersOutsideFocus(context.Background(), epic)
+	ctx := context.Background()
+	needed := d.focusedPreemptionsNeeded(ctx, nil, -1, epic)
+	preempted := d.preemptWorkersOutsideFocus(ctx, epic, needed)
 	return fmt.Sprintf("focused on %s; preempted %d non-focused %s", epic, preempted, pluralize(preempted, "worker", "workers")), nil
 }
 
@@ -4728,7 +4733,58 @@ func pluralize(n int, singular, plural string) string {
 	return plural
 }
 
-func (d *Dispatcher) preemptWorkersOutsideFocus(ctx context.Context, focusedEpic string) int {
+func (d *Dispatcher) preemptForImmediateFocus(ctx context.Context, beads []protocol.Bead, idleCount int) int {
+	d.mu.Lock()
+	epic := d.focusedEpic
+	immediate := d.focusedImmediate
+	d.mu.Unlock()
+	if !immediate || epic == "" {
+		return 0
+	}
+	needed := d.focusedPreemptionsNeeded(ctx, beads, idleCount, epic)
+	return d.preemptWorkersOutsideFocus(ctx, epic, needed)
+}
+
+func (d *Dispatcher) focusedPreemptionsNeeded(ctx context.Context, beads []protocol.Bead, idleCount int, focusedEpic string) int {
+	if beads == nil {
+		allBeads, err := d.beads.Ready(ctx)
+		if err != nil {
+			return 0
+		}
+		beads = d.filterAssignable(ctx, allBeads)
+	}
+	focused := d.focusedDescendants(ctx, beads, focusedEpic)
+
+	focusedReady := 0
+	for _, bead := range beads {
+		if bead.ID == focusedEpic || focused[bead.ID] {
+			focusedReady++
+		}
+	}
+	if focusedReady == 0 {
+		return 0
+	}
+
+	if idleCount < 0 {
+		d.mu.Lock()
+		idleCount = 0
+		for _, worker := range d.workers {
+			if worker.state == protocol.WorkerIdle {
+				idleCount++
+			}
+		}
+		d.mu.Unlock()
+	}
+	if idleCount >= focusedReady {
+		return 0
+	}
+	return focusedReady - idleCount
+}
+
+func (d *Dispatcher) preemptWorkersOutsideFocus(ctx context.Context, focusedEpic string, limit int) int {
+	if limit <= 0 {
+		return 0
+	}
 	type candidate struct {
 		workerID string
 		beadID   string
@@ -4751,6 +4807,9 @@ func (d *Dispatcher) preemptWorkersOutsideFocus(ctx context.Context, focusedEpic
 		}
 		if d.restartWorkerIfStillOnBead(ctx, candidate.workerID, candidate.beadID, "focus --immediate") {
 			preempted++
+			if preempted >= limit {
+				break
+			}
 		}
 	}
 	if preempted > 0 {
@@ -5309,9 +5368,9 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 	return fmt.Sprintf("worker %s restarted", workerID), nil
 }
 
-// applyPreempt gracefully preempts a worker for higher-priority work.
-// Unlike restart-worker, this sends a PREEMPT message to allow the worker
-// to complete its current operation cleanly before stopping.
+// applyPreempt preempts a worker and immediately releases its assignment.
+// The PREEMPT message gives the worker a chance to stop its current loop, but
+// the dispatcher must not keep the slot in WorkerPreempting indefinitely.
 func (d *Dispatcher) applyPreempt(args string) (string, error) {
 	if args == "" {
 		return "", fmt.Errorf("worker ID required")
@@ -5327,23 +5386,22 @@ func (d *Dispatcher) applyPreempt(args string) (string, error) {
 		return "", fmt.Errorf("worker not found")
 	}
 
-	// Mark worker as preempting; save previous state for rollback on send failure.
-	prevState := w.state
-	w.state = protocol.WorkerPreempting
-
 	// Send PREEMPT message through sendToWorker (handles disconnected workers).
 	msg := protocol.Message{
 		Type: protocol.MsgPreempt,
 	}
 	if err := d.sendToWorker(w, msg); err != nil {
-		// Reset state: preempt message was not delivered.
-		w.state = prevState
 		d.mu.Unlock()
 		return "", fmt.Errorf("send preempt message: %w", err)
 	}
 
 	beadID := w.beadID
 	d.mu.Unlock()
+
+	if beadID != "" {
+		d.restartWorkerIfStillOnBead(ctx, workerID, beadID, "preempt directive")
+		d.notifyAssignLoop()
+	}
 
 	// Log the preemption event
 	if beadID != "" {

@@ -22,6 +22,7 @@ import (
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
+	"oro/pkg/testutil/loadguard"
 )
 
 // --- Mock implementations ---
@@ -1780,6 +1781,8 @@ func TestDispatcher_Handoff_RespawnsWorker(t *testing.T) {
 }
 
 func TestDispatcher_HeartbeatTimeout_DetectsDeadWorker(t *testing.T) {
+	loadguard.SkipIfLoaded(t)
+
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	// Use a very short heartbeat timeout
 	d.cfg.HeartbeatTimeout = 100 * time.Millisecond
@@ -3144,6 +3147,8 @@ func TestRestartWorkerResetsBead(t *testing.T) {
 func TestApplyDirective_Preempt(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
+	pm := &mockProcessManager{}
+	d.procMgr = pm
 
 	// Setup: create worker with active assignment
 	workerID := "worker-preempt-test"
@@ -3158,6 +3163,7 @@ func TestApplyDirective_Preempt(t *testing.T) {
 		beadID:   beadID,
 		worktree: "/fake/worktree",
 		encoder:  json.NewEncoder(conn),
+		managed:  true,
 	}
 	d.mu.Unlock()
 
@@ -3178,15 +3184,20 @@ func TestApplyDirective_Preempt(t *testing.T) {
 		t.Errorf("expected detail to mention 'preempted', got: %s", detail)
 	}
 
-	// Assert: worker still in pool but marked for preemption
+	// Assert: worker slot is immediately released and reserved for respawn.
 	d.mu.Lock()
-	w, exists := d.workers[workerID]
+	_, exists := d.workers[workerID]
+	pending := d.pendingManagedIDs[workerID]
 	d.mu.Unlock()
-	if !exists {
-		t.Errorf("worker %s should still be in pool during graceful preemption", workerID)
+	if exists {
+		t.Errorf("worker %s should be removed after preempt release", workerID)
 	}
-	if w.state != protocol.WorkerPreempting {
-		t.Errorf("worker state = %v, want %v (WorkerPreempting)", w.state, protocol.WorkerPreempting)
+	if !pending {
+		t.Errorf("worker %s should be pending managed respawn", workerID)
+	}
+	spawned := pm.SpawnedIDs()
+	if len(spawned) != 1 || spawned[0] != workerID {
+		t.Fatalf("spawned IDs = %v, want [%s]", spawned, workerID)
 	}
 
 	// Assert: PREEMPT message sent to worker
@@ -3201,7 +3212,7 @@ func TestApplyDirective_Preempt(t *testing.T) {
 		t.Errorf("message type = %v, want %v (MsgPreempt)", msg.Type, protocol.MsgPreempt)
 	}
 
-	// Assert: bead NOT immediately requeued (graceful, worker handles it)
+	// Assert: assignment is completed so the bead can be reassigned.
 	var status string
 	err = d.db.QueryRow(
 		`SELECT status FROM assignments WHERE bead_id = ? AND worker_id = ?`,
@@ -3209,8 +3220,8 @@ func TestApplyDirective_Preempt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to query assignment: %v", err)
 	}
-	if status != "active" {
-		t.Errorf("assignment status = %s, want 'active' (not requeued yet, worker will do gracefully)", status)
+	if status != "completed" {
+		t.Errorf("assignment status = %s, want 'completed'", status)
 	}
 }
 
@@ -6223,6 +6234,9 @@ func TestDispatcher_FocusDirectiveImmediateStopsNonFocusedWorkers(t *testing.T) 
 	beadSrc.shown["bead-other"] = &protocol.BeadDetail{ID: "bead-other", Epic: "epic-other"}
 	beadSrc.shown["bead-nested"] = &protocol.BeadDetail{ID: "bead-nested", Epic: "epic-child"}
 	beadSrc.shown["epic-child"] = &protocol.BeadDetail{ID: "epic-child", Type: "epic", Epic: "epic-focus"}
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-ready-focus", Title: "Ready focused work", Priority: 1, Epic: "epic-focus"},
+	})
 
 	d.mu.Lock()
 	d.workers["worker-focused"] = &trackedWorker{
@@ -6512,6 +6526,145 @@ func TestDispatcher_FocusEpic_PrioritizesFocusedBeads(t *testing.T) {
 	}
 }
 
+func TestDispatcher_FocusImmediate_PrioritizesFocusedAndAllowsFallback(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn1, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn1, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-focus-1", ContextPct: 5},
+	})
+	conn2, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn2, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-focus-2", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 2, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+	sendDirectiveWithArgs(t, d.cfg.SocketPath, "focus", "--immediate epic-auth")
+
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-p0-other", Title: "Critical other", Priority: 0, Epic: "epic-other"},
+		{ID: "bead-p2-auth", Title: "Auth task", Priority: 2, Epic: "epic-auth"},
+	})
+
+	got := make(map[string]bool)
+	for _, conn := range []net.Conn{conn1, conn2} {
+		if msg, ok := readMsg(t, conn, 2*time.Second); ok && msg.Assign != nil {
+			got[msg.Assign.BeadID] = true
+		}
+	}
+	if !got["bead-p2-auth"] {
+		t.Fatalf("expected focused epic bead bead-p2-auth to be assigned, got %v", got)
+	}
+	// Focus is a priority policy, not an exclusive filter. After focused work is
+	// claimed, other idle workers may take fallback work.
+}
+
+func TestDispatcher_FocusImmediate_InheritsThroughSubEpic(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-sub-epic", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+	sendDirectiveWithArgs(t, d.cfg.SocketPath, "focus", "--immediate epic-root")
+
+	beadSrc.shown["epic-child"] = &protocol.BeadDetail{
+		ID:   "epic-child",
+		Type: "epic",
+		Epic: "epic-root",
+	}
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-p0-other", Title: "Critical other", Priority: 0, Epic: "epic-other"},
+		{ID: "bead-sub-child", Title: "Nested focused task", Priority: 2, Epic: "epic-child"},
+	})
+
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	if msg.Assign.BeadID != "bead-sub-child" {
+		t.Fatalf("expected nested focused bead bead-sub-child, got %s", msg.Assign.BeadID)
+	}
+}
+
+func TestDispatcher_FocusImmediate_PreemptsOnLaterFocusedUnblock(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+	d.procMgr = &mockProcessManager{}
+	wtMgr.createFn = func(_ context.Context, beadID, _ string) (string, string, error) {
+		return "/tmp/worktree-" + beadID, protocol.BranchPrefix + beadID, nil
+	}
+
+	idleConn := newMockConn()
+	busyConn := newMockConn()
+	beadSrc.shown["epic-child"] = &protocol.BeadDetail{ID: "epic-child", Type: "epic", Epic: "epic-root"}
+	beadSrc.shown["bead-other"] = &protocol.BeadDetail{ID: "bead-other", Epic: "epic-other"}
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-focused-a", Title: "Focused A", Priority: 1, Epic: "epic-child"},
+		{ID: "bead-focused-b", Title: "Focused B", Priority: 1, Epic: "epic-child"},
+		{ID: "bead-other", Title: "Fallback", Priority: 0, Epic: "epic-other"},
+	})
+
+	d.mu.Lock()
+	d.focusedEpic = "epic-root"
+	d.focusedImmediate = true
+	d.targetWorkers = 2
+	d.workers["worker-idle"] = &trackedWorker{
+		id:      "worker-idle",
+		conn:    idleConn,
+		state:   protocol.WorkerIdle,
+		managed: true,
+		encoder: json.NewEncoder(idleConn),
+	}
+	d.workers["worker-busy"] = &trackedWorker{
+		id:      "worker-busy",
+		conn:    busyConn,
+		state:   protocol.WorkerBusy,
+		beadID:  "bead-other",
+		managed: true,
+		encoder: json.NewEncoder(busyConn),
+	}
+	d.mu.Unlock()
+
+	d.tryAssign(context.Background())
+
+	if len(idleConn.written) == 0 {
+		t.Fatal("idle worker did not receive focused assignment")
+	}
+	var msg protocol.Message
+	if err := json.Unmarshal(idleConn.written[0], &msg); err != nil {
+		t.Fatalf("unmarshal assign: %v", err)
+	}
+	if msg.Assign == nil || (msg.Assign.BeadID != "bead-focused-a" && msg.Assign.BeadID != "bead-focused-b") {
+		t.Fatalf("idle worker got %v, want one focused bead", msg.Assign)
+	}
+
+	d.mu.Lock()
+	_, busyExists := d.workers["worker-busy"]
+	pending := d.pendingManagedIDs["worker-busy"]
+	d.mu.Unlock()
+	if busyExists {
+		t.Fatal("busy non-focused worker still exists after immediate focus preemption")
+	}
+	if !pending {
+		t.Fatal("busy non-focused worker was not reserved for managed respawn")
+	}
+	if !busyConn.closed {
+		t.Fatal("busy non-focused worker connection was not closed")
+	}
+}
+
 func TestDispatcher_FocusEpic_FallsBackToNonFocused(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
@@ -6534,7 +6687,6 @@ func TestDispatcher_FocusEpic_FallsBackToNonFocused(t *testing.T) {
 		{ID: "bead-other", Title: "Other work", Priority: 2, Epic: "epic-other"},
 	})
 
-	// Should still assign the non-focused bead (fallback)
 	msg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected ASSIGN")
