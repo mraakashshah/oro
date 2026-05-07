@@ -18,15 +18,20 @@ const defaultLoadPerCPUThreshold = 1.5
 //oro:testonly
 func SkipOutsidePushQG(tb testing.TB) {
 	tb.Helper()
-
-	if os.Getenv("ORO_LOADGUARD_DISABLE") == "1" {
-		return
-	}
-	switch os.Getenv("ORO_QG_CONTEXT") {
-	case "push", "pre-push":
-		return
-	default:
+	if shouldSkipOutsidePushQG(os.Getenv("ORO_QG_CONTEXT"), os.Getenv("ORO_LOADGUARD_DISABLE")) {
 		tb.Skip("skipping timing-sensitive test outside push quality gate context")
+	}
+}
+
+func shouldSkipOutsidePushQG(qgContext, loadguardDisable string) bool {
+	if loadguardDisable == "1" {
+		return false
+	}
+	switch qgContext {
+	case "push", "pre-push":
+		return false
+	default:
+		return true
 	}
 }
 
