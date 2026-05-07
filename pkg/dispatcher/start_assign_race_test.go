@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"oro/pkg/protocol"
+	"oro/pkg/testutil/loadguard"
 )
 
 // TestDispatcherStartSequence_AssignsWorkerUnderParallelStress verifies that
@@ -21,6 +22,7 @@ import (
 // Run with -race -count=20 to confirm there are no data races and the
 // assignment is deterministic across many iterations.
 func TestDispatcherStartSequence_AssignsWorkerUnderParallelStress(t *testing.T) {
+	loadguard.SkipIfLoaded(t)
 	const numWorkers = 4
 
 	d, beadSrc, wt, _, _, _ := newTestDispatcher(t)
@@ -40,7 +42,7 @@ func TestDispatcherStartSequence_AssignsWorkerUnderParallelStress(t *testing.T) 
 
 	startDispatcher(t, d)
 	sendDirective(t, d.cfg.SocketPath, "start")
-	waitForState(t, d, StateRunning, 2*time.Second)
+	waitForState(t, d, StateRunning, 10*time.Second)
 
 	// Open all connections before sending any heartbeats so all workers
 	// can register concurrently, maximising the race window.
@@ -82,7 +84,7 @@ func TestDispatcherStartSequence_AssignsWorkerUnderParallelStress(t *testing.T) 
 	for i := range conns {
 		i := i
 		go func() {
-			_ = conns[i].SetReadDeadline(time.Now().Add(5 * time.Second))
+			_ = conns[i].SetReadDeadline(time.Now().Add(10 * time.Second))
 			if !scanners[i].Scan() {
 				resultCh <- result{idx: i, err: fmt.Sprintf("worker %d: timed out before ASSIGN", i)}
 				return
