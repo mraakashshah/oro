@@ -1941,14 +1941,20 @@ func (d *Dispatcher) checkEpicQG(ctx context.Context, epicID, workerID, epicBran
 		_ = d.logEvent(ctx, "epic_qg_failed", "dispatcher", epicID, workerID,
 			fmt.Sprintf(`{"output":%q}`, qgOutput))
 		_, _ = CreateBeadGraph(ctx, d.beads, epicID, []beadstore.CreateParams{{
-			Title:       fmt.Sprintf("Fix QG failures on %s", epicBranch),
-			Type:        "task",
-			Priority:    0,
-			Description: fmt.Sprintf("Epic %s QG failed on branch %s.\n\nQG output:\n%s", epicID, epicBranch, qgOutput),
+			Title:              fmt.Sprintf("P0: Fix QG failures on %s", epicBranch),
+			Type:               "bug",
+			Priority:           0,
+			Description:        fmt.Sprintf("Epic %s QG failed on branch %s.\n\nQG output:\n%s", epicID, epicBranch, qgOutput),
+			AcceptanceCriteria: epicQGFixAcceptance(epicID, epicBranch),
 		}})
 		return false
 	}
 	return true
+}
+
+func epicQGFixAcceptance(epicID, epicBranch string) string {
+	return fmt.Sprintf("Test: epic QG failure for %s | Cmd: git branch --list %s | grep -q '^..%s$' && ORO_QG_CONTEXT=local ./scripts/quality_gate.sh | Assert: quality gate passes on %s without creating another missing-AC child bead.\nRead: scripts/quality_gate.sh, .beads/beads_oro\nEdges: reproduce the failing QG on %s before changing code; do not close %s directly; fix the underlying QG failure, then let the dispatcher retry epic auto-close.",
+		epicID, epicBranch, epicBranch, epicBranch, epicBranch, epicID)
 }
 
 func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, worktree, branch, epicID, targetBranch string, assignmentID int64) { //nolint:funlen // orchestrates merge pipeline; splitting would obscure the sequential flow

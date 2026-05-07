@@ -220,6 +220,18 @@ func TestEpicQGPassesThenMerges(t *testing.T) {
 		if fixBead != nil && fixBead.parent != epicID {
 			t.Errorf("fix bead parent = %q, want %q", fixBead.parent, epicID)
 		}
+		if fixBead != nil && fixBead.beadType != "bug" {
+			t.Errorf("fix bead type = %q, want bug", fixBead.beadType)
+		}
+		if fixBead != nil && fixBead.priority != 0 {
+			t.Errorf("fix bead priority = %d, want 0", fixBead.priority)
+		}
+		if fixBead != nil && !strings.Contains(fixBead.acceptanceCriteria, "Test:") {
+			t.Errorf("fix bead acceptance criteria missing Test: %q", fixBead.acceptanceCriteria)
+		}
+		if fixBead != nil && !strings.Contains(fixBead.acceptanceCriteria, "./scripts/quality_gate.sh") {
+			t.Errorf("fix bead acceptance criteria missing quality gate command: %q", fixBead.acceptanceCriteria)
+		}
 
 		// Assert (3): epic NOT closed.
 		beadSrc.mu.Lock()
