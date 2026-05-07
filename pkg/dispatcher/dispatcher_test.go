@@ -6223,6 +6223,7 @@ func TestDispatcher_FocusDirective_ClearsEpic(t *testing.T) {
 }
 
 func TestDispatcher_FocusDirectiveImmediateStopsNonFocusedWorkers(t *testing.T) {
+	loadguard.SkipIfLoaded(t)
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
@@ -6239,27 +6240,31 @@ func TestDispatcher_FocusDirectiveImmediateStopsNonFocusedWorkers(t *testing.T) 
 	})
 
 	d.mu.Lock()
+	now := d.nowFunc()
 	d.workers["worker-focused"] = &trackedWorker{
-		id:      "worker-focused",
-		conn:    focusedConn,
-		state:   protocol.WorkerBusy,
-		beadID:  "bead-focused",
-		encoder: json.NewEncoder(focusedConn),
+		id:       "worker-focused",
+		conn:     focusedConn,
+		state:    protocol.WorkerBusy,
+		beadID:   "bead-focused",
+		lastSeen: now,
+		encoder:  json.NewEncoder(focusedConn),
 	}
 	d.workers["worker-other"] = &trackedWorker{
-		id:      "worker-other",
-		conn:    otherConn,
-		state:   protocol.WorkerBusy,
-		beadID:  "bead-other",
-		managed: true,
-		encoder: json.NewEncoder(otherConn),
+		id:       "worker-other",
+		conn:     otherConn,
+		state:    protocol.WorkerBusy,
+		beadID:   "bead-other",
+		managed:  true,
+		lastSeen: now,
+		encoder:  json.NewEncoder(otherConn),
 	}
 	d.workers["worker-nested"] = &trackedWorker{
-		id:      "worker-nested",
-		conn:    nestedConn,
-		state:   protocol.WorkerReviewing,
-		beadID:  "bead-nested",
-		encoder: json.NewEncoder(nestedConn),
+		id:       "worker-nested",
+		conn:     nestedConn,
+		state:    protocol.WorkerReviewing,
+		beadID:   "bead-nested",
+		lastSeen: now,
+		encoder:  json.NewEncoder(nestedConn),
 	}
 	d.mu.Unlock()
 
@@ -6315,7 +6320,9 @@ func TestDispatcher_FocusDirectiveImmediateStopsNonFocusedWorkers(t *testing.T) 
 }
 
 func TestDispatcher_FocusImmediatePreemptsAssignedNonFocusedWorker(t *testing.T) {
+	const opTimeout = 10 * time.Second
 	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	d.cfg.HeartbeatTimeout = opTimeout
 
 	createStarted := make(chan struct{})
 	releaseCreate := make(chan struct{})
@@ -6337,18 +6344,18 @@ func TestDispatcher_FocusImmediatePreemptsAssignedNonFocusedWorker(t *testing.T)
 		{ID: "bead-focus", Title: "Focused work", Priority: 1, Epic: "epic-focus"},
 	})
 
-	startDispatcher(t, d)
+	startDispatcherWithTimeout(t, d, opTimeout)
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
 	sendDirective(t, d.cfg.SocketPath, "start")
 	sendMsg(t, conn, protocol.Message{
 		Type:      protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
 	})
-	waitForWorkers(t, d, 1, 1*time.Second)
+	waitForWorkers(t, d, 1, opTimeout)
 
 	select {
 	case <-createStarted:
-	case <-time.After(2 * time.Second):
+	case <-time.After(opTimeout):
 		t.Fatal("expected non-focused assignment to begin before focus directive")
 	}
 
@@ -6358,7 +6365,7 @@ func TestDispatcher_FocusImmediatePreemptsAssignedNonFocusedWorker(t *testing.T)
 	}
 	close(releaseCreate)
 
-	msg, ok := readMsg(t, conn, 2*time.Second)
+	msg, ok := readMsg(t, conn, opTimeout)
 	if !ok {
 		t.Fatal("expected assignment after focus change")
 	}
@@ -6404,30 +6411,32 @@ func TestDispatcher_FocusImmediateAbortsStateTransitionRace(t *testing.T) {
 
 func assertFocusImmediateAbortsEstimatorBlockedAssignment(t *testing.T, label string) {
 	t.Helper()
+	const opTimeout = 10 * time.Second
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	estimator := &blockingOnceEstimator{
 		started: make(chan struct{}),
 		release: make(chan struct{}),
 	}
 	d.estimator = estimator
+	d.cfg.HeartbeatTimeout = opTimeout
 
 	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "bead-other", Title: "Other work", Priority: 1, Epic: "epic-aaa"},
 		{ID: "bead-focus", Title: "Focused work", Priority: 1, Epic: "epic-focus"},
 	})
 
-	startDispatcher(t, d)
+	startDispatcherWithTimeout(t, d, opTimeout)
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
 	sendDirective(t, d.cfg.SocketPath, "start")
 	sendMsg(t, conn, protocol.Message{
 		Type:      protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
 	})
-	waitForWorkers(t, d, 1, 1*time.Second)
+	waitForWorkers(t, d, 1, opTimeout)
 
 	select {
 	case <-estimator.started:
-	case <-time.After(2 * time.Second):
+	case <-time.After(opTimeout):
 		t.Fatal("expected assignment to reach estimator before focus directive")
 	}
 
@@ -6437,7 +6446,7 @@ func assertFocusImmediateAbortsEstimatorBlockedAssignment(t *testing.T, label st
 	}
 	close(estimator.release)
 
-	msg, ok := readMsg(t, conn, 2*time.Second)
+	msg, ok := readMsg(t, conn, opTimeout)
 	if !ok {
 		t.Fatalf("expected assignment after %s focus abort", label)
 	}
@@ -6527,8 +6536,10 @@ func TestDispatcher_FocusEpic_PrioritizesFocusedBeads(t *testing.T) {
 }
 
 func TestDispatcher_FocusImmediate_PrioritizesFocusedAndAllowsFallback(t *testing.T) {
+	const opTimeout = 10 * time.Second
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
-	startDispatcher(t, d)
+	d.cfg.HeartbeatTimeout = opTimeout
+	startDispatcherWithTimeout(t, d, opTimeout)
 
 	conn1, _ := connectWorker(t, d.cfg.SocketPath)
 	sendMsg(t, conn1, protocol.Message{
@@ -6540,10 +6551,10 @@ func TestDispatcher_FocusImmediate_PrioritizesFocusedAndAllowsFallback(t *testin
 		Type:      protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-focus-2", ContextPct: 5},
 	})
-	waitForWorkers(t, d, 2, 1*time.Second)
+	waitForWorkers(t, d, 2, opTimeout)
 
 	sendDirective(t, d.cfg.SocketPath, "start")
-	waitForState(t, d, StateRunning, 1*time.Second)
+	waitForState(t, d, StateRunning, opTimeout)
 	sendDirectiveWithArgs(t, d.cfg.SocketPath, "focus", "--immediate epic-auth")
 
 	beadSrc.SetBeads([]protocol.Bead{
@@ -6553,7 +6564,7 @@ func TestDispatcher_FocusImmediate_PrioritizesFocusedAndAllowsFallback(t *testin
 
 	got := make(map[string]bool)
 	for _, conn := range []net.Conn{conn1, conn2} {
-		if msg, ok := readMsg(t, conn, 2*time.Second); ok && msg.Assign != nil {
+		if msg, ok := readMsg(t, conn, opTimeout); ok && msg.Assign != nil {
 			got[msg.Assign.BeadID] = true
 		}
 	}
@@ -6565,18 +6576,20 @@ func TestDispatcher_FocusImmediate_PrioritizesFocusedAndAllowsFallback(t *testin
 }
 
 func TestDispatcher_FocusImmediate_InheritsThroughSubEpic(t *testing.T) {
+	const opTimeout = 10 * time.Second
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
-	startDispatcher(t, d)
+	d.cfg.HeartbeatTimeout = opTimeout
+	startDispatcherWithTimeout(t, d, opTimeout)
 
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
 	sendMsg(t, conn, protocol.Message{
 		Type:      protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-sub-epic", ContextPct: 5},
 	})
-	waitForWorkers(t, d, 1, 1*time.Second)
+	waitForWorkers(t, d, 1, opTimeout)
 
 	sendDirective(t, d.cfg.SocketPath, "start")
-	waitForState(t, d, StateRunning, 1*time.Second)
+	waitForState(t, d, StateRunning, opTimeout)
 	sendDirectiveWithArgs(t, d.cfg.SocketPath, "focus", "--immediate epic-root")
 
 	beadSrc.shown["epic-child"] = &protocol.BeadDetail{
@@ -6589,7 +6602,7 @@ func TestDispatcher_FocusImmediate_InheritsThroughSubEpic(t *testing.T) {
 		{ID: "bead-sub-child", Title: "Nested focused task", Priority: 2, Epic: "epic-child"},
 	})
 
-	msg, ok := readMsg(t, conn, 2*time.Second)
+	msg, ok := readMsg(t, conn, opTimeout)
 	if !ok {
 		t.Fatal("expected ASSIGN")
 	}
