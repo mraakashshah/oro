@@ -3,6 +3,7 @@ package dispatcher //nolint:testpackage // white-box test needs internal access
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -235,6 +236,22 @@ func TestHTTPServerServesDashboard(t *testing.T) {
 }
 
 func TestHTTPServerStreamsDashboardEvents(t *testing.T) {
+	assertHTTPServerStreamsDashboardEvents(t, 2*time.Second)
+}
+
+func TestHTTPServerStreamsDashboardEvents_StableUnderLoad(t *testing.T) {
+	// Repeat a few independent server lifecycles to exercise the subscribe/send
+	// race window that only showed up under race-mode full-suite contention.
+	for i := 0; i < 5; i++ {
+		t.Run(fmt.Sprintf("iteration_%d", i), func(t *testing.T) {
+			assertHTTPServerStreamsDashboardEvents(t, 10*time.Second)
+		})
+	}
+}
+
+func assertHTTPServerStreamsDashboardEvents(t *testing.T, timeout time.Duration) {
+	t.Helper()
+
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	addr := freeAddr(t)
 	d.cfg.WebEnabled = true
@@ -254,7 +271,10 @@ func TestHTTPServerStreamsDashboardEvents(t *testing.T) {
 
 	sendDirective(t, d.cfg.SocketPath, "start")
 
-	req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/events", nil)
+	ctx, cancelReq := context.WithTimeout(context.Background(), timeout)
+	defer cancelReq()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/events", nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -265,13 +285,15 @@ func TestHTTPServerStreamsDashboardEvents(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	done := make(chan []string, 1)
+	readErrs := make(chan error, 1)
 	go func() {
 		reader := bufio.NewReader(resp.Body)
 		lines := make([]string, 0, 8)
 		for len(lines) < 8 {
 			line, readErr := reader.ReadString('\n')
 			if readErr != nil {
-				break
+				readErrs <- readErr
+				return
 			}
 			line = strings.TrimSpace(line)
 			if line != "" {
@@ -281,23 +303,37 @@ func TestHTTPServerStreamsDashboardEvents(t *testing.T) {
 		done <- lines
 	}()
 
-	d.sseBroadcaster.Send("merged", "oro-123", "worker-1")
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
 
-	select {
-	case lines := <-done:
-		got := strings.Join(lines, "\n")
-		for _, want := range []string{
-			"event: new-event",
-			`data: {"type":"merged","bead_id":"oro-123","worker_id":"worker-1"}`,
-			"event: parade-update",
-			"event: worker-update",
-			"event: throughput-update",
-		} {
-			if !strings.Contains(got, want) {
-				t.Fatalf("SSE stream missing %q:\n%s", want, got)
-			}
+	for {
+		select {
+		case lines := <-done:
+			assertDashboardSSEFrames(t, lines)
+			return
+		case err := <-readErrs:
+			t.Fatalf("read SSE stream: %v", err)
+		case <-ticker.C:
+			d.sseBroadcaster.Send("merged", "oro-123", "worker-1")
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for SSE frames")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for SSE frames")
+	}
+}
+
+func assertDashboardSSEFrames(t *testing.T, lines []string) {
+	t.Helper()
+
+	got := strings.Join(lines, "\n")
+	for _, want := range []string{
+		"event: new-event",
+		`data: {"type":"merged","bead_id":"oro-123","worker_id":"worker-1"}`,
+		"event: parade-update",
+		"event: worker-update",
+		"event: throughput-update",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("SSE stream missing %q:\n%s", want, got)
+		}
 	}
 }
