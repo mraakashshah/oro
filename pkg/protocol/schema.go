@@ -119,6 +119,36 @@ CREATE TABLE IF NOT EXISTS rejection_history (
 
 CREATE INDEX IF NOT EXISTS idx_rejection_bead ON rejection_history(bead_id);
 
+-- Deduped quality-gate failure incidents keyed by normalized fingerprint.
+CREATE TABLE IF NOT EXISTS qg_failure_incidents (
+    id INTEGER PRIMARY KEY,
+    fingerprint TEXT NOT NULL UNIQUE,
+    class TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    confidence TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    occurrence_count INTEGER NOT NULL DEFAULT 0,
+    first_seen TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS qg_failure_occurrences (
+    id TEXT PRIMARY KEY,
+    incident_id INTEGER NOT NULL REFERENCES qg_failure_incidents(id),
+    bead_id TEXT,
+    worker_id TEXT,
+    assignment_id INTEGER,
+    component TEXT,
+    output_hash TEXT NOT NULL,
+    raw_output TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_qg_failure_occurrences_incident ON qg_failure_occurrences(incident_id);
+CREATE INDEX IF NOT EXISTS idx_qg_failure_incidents_status ON qg_failure_incidents(status);
+
 -- FTS5 full-text index over memories for BM25-ranked search
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
     content,

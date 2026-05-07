@@ -16,9 +16,15 @@ const (
 // QGFailureRecord captures the stable identity and concise summary of a
 // quality-gate failure.
 type QGFailureRecord struct {
-	Fingerprint string
-	Summary     string
-	Output      string
+	ID           string
+	BeadID       string
+	WorkerID     string
+	AssignmentID int64
+	Component    string
+	Fingerprint  string
+	Summary      string
+	Output       string
+	OutputHash   string
 }
 
 // QGFailureHistory summarizes prior observations for the same or related

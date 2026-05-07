@@ -1701,6 +1701,7 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 
 	if attempt >= maxQGRetries {
 		d.mu.Unlock()
+		d.recordQGFailureIncident(ctx, workerID, beadID, assignmentID, attempt, qgOutput, qgFingerprint, qgSummary, qgClassification)
 		d.handleQGExhausted(ctx, workerID, beadID, assignmentID, qgOutput, attempt, qgErr)
 		return
 	}
@@ -1711,8 +1712,26 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 	}
 	d.mu.Unlock()
 
+	d.recordQGFailureIncident(ctx, workerID, beadID, assignmentID, attempt, qgOutput, qgFingerprint, qgSummary, qgClassification)
 	d.persistBeadCount(ctx, assignmentID, beadID, "attempt_count", attempt)
 	d.qgRetryWithReservation(ctx, workerID, beadID, qgOutput, attempt)
+}
+
+func (d *Dispatcher) recordQGFailureIncident(ctx context.Context, workerID, beadID string, assignmentID int64, attempt int, output, fingerprint, summary string, cls QGFailureClassification) {
+	_, err := RecordQGFailureOccurrence(ctx, d.db, QGFailureRecord{
+		ID:           fmt.Sprintf("%s:%s:%d:%d", beadID, workerID, assignmentID, attempt),
+		BeadID:       beadID,
+		WorkerID:     workerID,
+		AssignmentID: assignmentID,
+		Component:    "worker",
+		Fingerprint:  fingerprint,
+		Summary:      summary,
+		Output:       output,
+	}, cls)
+	if err != nil {
+		_ = d.logEvent(ctx, "qg_failure_record_failed", workerID, beadID, workerID,
+			fmt.Sprintf(`{"error":%q,"fingerprint":%q}`, err.Error(), fingerprint))
+	}
 }
 
 // withReservation executes a two-phase reservation pattern for worker re-assignment:
