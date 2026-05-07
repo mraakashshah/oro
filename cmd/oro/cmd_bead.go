@@ -284,15 +284,20 @@ func newBeadDeleteCmd(store beadstore.Store) *cobra.Command {
 			if err != nil {
 				return writeBeadCommandErrorIfJSON(cmd, "store", err)
 			}
-			if err := s.Delete(cmd.Context(), args[0], mustStringFlag(cmd, "reason")); err != nil {
+			reason := mustStringFlag(cmd, "reason")
+			if err := s.Delete(cmd.Context(), args[0], reason); err != nil {
 				return writeBeadCommandErrorIfJSON(cmd, "delete", err)
+			}
+			if reason == "" {
+				reason = "deleted by user"
 			}
 			if isJSONOutput(cmd) {
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
 				if err := enc.Encode(map[string]any{
-					"ok": true,
-					"id": args[0],
+					"id":      args[0],
+					"deleted": true,
+					"reason":  reason,
 				}); err != nil {
 					return writeBeadCommandErrorIfJSON(cmd, "delete", fmt.Errorf("encode delete JSON: %w", err))
 				}
@@ -973,7 +978,18 @@ func decodeBeadExportJSONL(data []byte) ([]protocol.Bead, error) {
 
 func isJSONOutput(cmd *cobra.Command) bool {
 	jsonOutput, err := cmd.Flags().GetBool("json")
-	return err == nil && jsonOutput
+	if err == nil {
+		return jsonOutput
+	}
+	jsonOutput, err = cmd.InheritedFlags().GetBool("json")
+	if err == nil {
+		return jsonOutput
+	}
+	if cmd.Root() != nil {
+		jsonOutput, err = cmd.Root().PersistentFlags().GetBool("json")
+		return err == nil && jsonOutput
+	}
+	return false
 }
 
 func stringFlag(cmd *cobra.Command, name string) (string, error) {

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/dbutil"
 	"oro/pkg/protocol"
 
 	"github.com/spf13/cobra"
@@ -258,6 +260,111 @@ func TestTaskDeleteSoftDeletesHumanOutput(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("task show after delete error = %v, want not found", err)
+	}
+}
+
+func TestTaskDeleteJSONAndRefusals(t *testing.T) {
+	ctx := context.Background()
+
+	newStore := func(t *testing.T) (*beadstore.SQLiteStore, func(query string, args ...any)) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "state.db")
+		store, err := beadstore.OpenSQLiteStore(ctx, path)
+		if err != nil {
+			t.Fatalf("OpenSQLiteStore: %v", err)
+		}
+		db, err := dbutil.OpenDB(path)
+		if err != nil {
+			t.Fatalf("OpenDB raw: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		execRaw := func(query string, args ...any) {
+			t.Helper()
+			if _, err := db.ExecContext(ctx, query, args...); err != nil {
+				t.Fatalf("exec raw %q: %v", query, err)
+			}
+		}
+		return store, execRaw
+	}
+	execTask := func(store beadstore.Store, args ...string) (string, error) {
+		cmd := newTaskCmdWithStore(store)
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs(args)
+		err := cmd.Execute()
+		return out.String(), err
+	}
+	decode := func(t *testing.T, out string) map[string]any {
+		t.Helper()
+		var got map[string]any
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("unmarshal JSON %q: %v", out, err)
+		}
+		return got
+	}
+
+	t.Run("json success includes deleted and reason", func(t *testing.T) {
+		store, _ := newStore(t)
+		if _, err := store.Create(ctx, beadstore.CreateParams{ID: "oro-json-delete", Title: "json delete"}); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		out, err := execTask(store, "delete", "oro-json-delete", "--reason", "cleanup", "--json")
+		if err != nil {
+			t.Fatalf("task delete --json error: %v\n%s", err, out)
+		}
+		got := decode(t, out)
+		if got["id"] != "oro-json-delete" || got["deleted"] != true || got["reason"] != "cleanup" {
+			t.Fatalf("delete JSON = %#v, want id/deleted/reason", got)
+		}
+	})
+
+	for name, setup := range map[string]func(t *testing.T, store *beadstore.SQLiteStore, execRaw func(string, ...any)) string{
+		"active assignment": func(t *testing.T, store *beadstore.SQLiteStore, execRaw func(string, ...any)) string {
+			t.Helper()
+			if _, err := store.Create(ctx, beadstore.CreateParams{ID: "oro-active-delete", Title: "active delete"}); err != nil {
+				t.Fatalf("Create active: %v", err)
+			}
+			execRaw(`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES ('oro-active-delete', 'worker-1', '/tmp/active-delete', 'active')`)
+			return "oro-active-delete"
+		},
+		"child bead": func(t *testing.T, store *beadstore.SQLiteStore, _ func(string, ...any)) string {
+			t.Helper()
+			if _, err := store.Create(ctx, beadstore.CreateParams{ID: "oro-parent-delete-cli", Title: "parent delete"}); err != nil {
+				t.Fatalf("Create parent: %v", err)
+			}
+			if _, err := store.Create(ctx, beadstore.CreateParams{ID: "oro-child-delete-cli", Title: "child delete", ParentID: "oro-parent-delete-cli"}); err != nil {
+				t.Fatalf("Create child: %v", err)
+			}
+			return "oro-parent-delete-cli"
+		},
+		"unknown id": func(_ *testing.T, _ *beadstore.SQLiteStore, _ func(string, ...any)) string {
+			return "oro-missing-delete"
+		},
+		"already deleted": func(t *testing.T, store *beadstore.SQLiteStore, _ func(string, ...any)) string {
+			t.Helper()
+			if _, err := store.Create(ctx, beadstore.CreateParams{ID: "oro-double-delete", Title: "double delete"}); err != nil {
+				t.Fatalf("Create double: %v", err)
+			}
+			if err := store.Delete(ctx, "oro-double-delete", "first"); err != nil {
+				t.Fatalf("Delete first: %v", err)
+			}
+			return "oro-double-delete"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store, execRaw := newStore(t)
+			id := setup(t, store, execRaw)
+			out, err := execTask(store, "delete", id, "--json")
+			if err != nil {
+				t.Fatalf("task delete %s JSON error: %v\n%s", name, err, out)
+			}
+			got := decode(t, out)
+			if got["ok"] != false || got["message"] == "" {
+				t.Fatalf("delete refusal JSON = %#v, want ok=false with message", got)
+			}
+		})
 	}
 }
 
