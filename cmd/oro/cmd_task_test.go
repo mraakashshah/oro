@@ -368,6 +368,92 @@ func TestTaskDeleteJSONAndRefusals(t *testing.T) {
 	}
 }
 
+func TestTaskDeleteNoPremortemEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	db, err := openStateDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("openStateDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := beadstore.NewSQLiteStore(db)
+
+	execTask := func(args ...string) (string, error) {
+		t.Helper()
+		cmd := newTaskCmdWithStore(store)
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs(args)
+		err := cmd.Execute()
+		return out.String(), err
+	}
+	mustTask := func(args ...string) string {
+		t.Helper()
+		out, err := execTask(args...)
+		if err != nil {
+			t.Fatalf("task %s error: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return out
+	}
+
+	mustTask("create", "--id", "oro-e2e-epic", "--title", "e2e epic", "--type", "epic", "--acceptance-criteria", "epic ac")
+	for i := range 6 {
+		mustTask(
+			"create",
+			"--id", fmt.Sprintf("oro-e2e-child-%d", i),
+			"--title", fmt.Sprintf("e2e child %d", i),
+			"--type", "task",
+			"--parent", "oro-e2e-epic",
+			"--acceptance-criteria", "child ac",
+		)
+	}
+
+	out, err := execTask("create", "--id", "oro-e2e-premortem", "--title", "blocked", "--type", "premortem")
+	if err == nil {
+		t.Fatalf("task create premortem unexpectedly succeeded:\n%s", out)
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "premortem") {
+		t.Fatalf("task create premortem error = %v, want premortem mentioned", err)
+	}
+
+	beads := decodeBeadJSONArray(t, mustTask("list", "--json"))
+	var taskChildren, premortemChildren int
+	for _, bead := range beads {
+		if bead["parent_id"] != "oro-e2e-epic" {
+			continue
+		}
+		switch bead["type"] {
+		case "task":
+			taskChildren++
+		case "premortem":
+			premortemChildren++
+		}
+	}
+	if taskChildren != 6 || premortemChildren != 0 {
+		t.Fatalf("task-created children: tasks=%d premortem=%d, want tasks=6 premortem=0; beads=%#v", taskChildren, premortemChildren, beads)
+	}
+
+	mustTask("delete", "oro-e2e-child-0", "--reason", "cleanup")
+	if _, err := execTask("show", "oro-e2e-child-0"); err == nil {
+		t.Fatal("task show after delete unexpectedly succeeded")
+	}
+
+	if err := store.SetGateState(ctx, "oro-e2e-epic", beadstore.GateNone, beadstore.GateEligible, "test"); err != nil {
+		t.Fatalf("SetGateState: %v", err)
+	}
+	err = executeWork(ctx, &workConfig{
+		beadID:  "oro-e2e-child-1",
+		timeout: 5 * time.Second,
+		dryRun:  true,
+	}, &workDeps{
+		beadSrc:  store,
+		repoRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("executeWork dry-run with eligible legacy gate = %v, want nil", err)
+	}
+}
+
 func TestTaskCommandReadyListStatusAndDependencies(t *testing.T) {
 	ctx := context.Background()
 	store, err := beadstore.OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))
