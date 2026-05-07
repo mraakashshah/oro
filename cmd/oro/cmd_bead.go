@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"oro/pkg/beadstore"
@@ -158,10 +159,14 @@ func newBeadCreateCmd(store beadstore.Store) *cobra.Command {
 			} else if acceptanceCriteria != "" {
 				acceptance = acceptanceCriteria
 			}
+			typeName := strings.TrimSpace(mustStringFlag(cmd, "type"))
+			if strings.EqualFold(typeName, "premortem") {
+				return writeBeadCommandErrorIfJSON(cmd, "create", fmt.Errorf("creating premortem beads from the CLI is no longer supported"))
+			}
 
 			params := beadstore.CreateParams{
 				Title:              mustStringFlag(cmd, "title"),
-				Type:               mustStringFlag(cmd, "type"),
+				Type:               typeName,
 				Priority:           mustIntFlag(cmd, "priority"),
 				ParentID:           mustStringFlag(cmd, "parent"),
 				Description:        mustStringFlag(cmd, "description"),

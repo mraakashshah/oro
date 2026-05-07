@@ -13,6 +13,8 @@ import (
 	"oro/pkg/beadstore"
 	"oro/pkg/dispatcher"
 	"oro/pkg/protocol"
+
+	"github.com/spf13/cobra"
 )
 
 func TestRootCommandIncludesBead(t *testing.T) {
@@ -237,6 +239,56 @@ func TestBeadCreateJSONEmitsCreatedBead(t *testing.T) {
 	}
 	if got["type"] != "task" {
 		t.Fatalf("type = %#v, want task in:\n%s", got["type"], out)
+	}
+}
+
+func TestTaskCreateRejectsPremortemType(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		cmd  func(beadstore.Store) *cobra.Command
+		args []string
+		id   string
+	}{
+		{
+			name: "task",
+			cmd:  newTaskCmdWithStore,
+			args: []string{"create", "--id", "oro-task-premortem", "--title", "blocked", "--type", "premortem"},
+			id:   "oro-task-premortem",
+		},
+		{
+			name: "bead",
+			cmd:  newBeadCmdWithStore,
+			args: []string{"create", "--id", "oro-bead-premortem", "--title", "blocked", "--type", "PREMORTEM"},
+			id:   "oro-bead-premortem",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := beadstore.OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))
+			if err != nil {
+				t.Fatalf("OpenSQLiteStore: %v", err)
+			}
+			cmd := tc.cmd(store)
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+			cmd.SetArgs(tc.args)
+
+			err = cmd.Execute()
+			if err == nil {
+				t.Fatalf("%s create premortem unexpectedly succeeded:\n%s", tc.name, out.String())
+			}
+			if !strings.Contains(strings.ToLower(err.Error()), "premortem") {
+				t.Fatalf("%s create premortem error = %v, want premortem mentioned", tc.name, err)
+			}
+			bead, showErr := store.Show(ctx, tc.id)
+			if showErr != nil {
+				t.Fatalf("Show %s: %v", tc.id, showErr)
+			}
+			if bead != nil {
+				t.Fatalf("%s created premortem row: %#v", tc.name, bead)
+			}
+		})
 	}
 }
 
