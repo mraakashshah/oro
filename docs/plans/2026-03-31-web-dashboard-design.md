@@ -1,15 +1,15 @@
-# Web Dashboard Design — Replacing oro mg
+# Web Dashboard Design — Replacing legacy oro mg
 
 **Date:** 2026-03-31
 **Status:** R1 FAIL → R2 PASS. Ready for beadcraft decomposition.
 
 ## Goal
 
-Replace the slow bubbletea TUI (oro mg, 45K LOC) with a fast local web dashboard. Server-rendered HTML via Go templates, live updates via SSE, htmx for interactivity. No JS build step, no npm.
+Replace the slow deprecated bubbletea TUI (legacy oro mg, 45K LOC) with a fast local web dashboard. Server-rendered HTML via Go templates, live updates via SSE, htmx for interactivity. No JS build step, no npm.
 
 ## Context: What Exists Today
 
-**oro mg** (`pkg/mg/`, 45K LOC) is a Mardi Gras-themed bubbletea TUI with:
+**Legacy oro mg** (`pkg/mg/`, 45K LOC, removed in oro-gpex) was a Mardi Gras-themed bubbletea TUI with:
 - Parade view: beads grouped by status (Queued Up → Rolling → Stalled → Finished)
 - Detail panel: split-pane with scrollable viewport, lazy-loaded rich detail via `bd show`
 - Header: counts (stalled/rolling/done), worker count, progress bar
@@ -75,7 +75,7 @@ Dispatcher fragment handler
 - Status colors as small accents (dots/icons), not full-row highlighting
 - Compact density — tight rows, no wasted vertical space
 
-**From oro mg (keeping the whimsy):**
+**From legacy oro mg (historical, keeping the whimsy):**
 - Mardi Gras color palette — purple (#9B59B6), gold (#F1C40F), green (#2ECC71) as accents
 - Parade metaphor and section names
 - Status symbols (♪ ● ⊘ ✓)
@@ -112,7 +112,7 @@ Single page, two-column layout. Parade dominates left two-thirds. Right sidebar 
 
 ### 1. Parade (left, primary)
 
-The parade metaphor from oro mg — beads are a procession flowing through the pipeline. The dispatcher moves them, not the user. You watch, not drag.
+The parade metaphor from legacy oro mg — beads are a procession flowing through the pipeline. The dispatcher moves them, not the user. You watch, not drag.
 
 **Sections (top to bottom):**
 - **Queued Up** (♪) — ready beads, no blockers, waiting for a worker
@@ -308,9 +308,9 @@ The Dispatcher implements this interface. `pkg/web` handlers accept `DashboardDa
 - No authentication — localhost only
 - No cost panel data until cost pipeline lands (degrade to "—")
 - No mobile responsiveness — this is a dev tool on localhost
-- No replacing oro mg's data layer (`pkg/mg/data/`) — web dashboard reads from dispatcher directly, not through bd CLI
+- No reviving the removed legacy oro mg data layer (`pkg/mg/data/`) — web dashboard reads from dispatcher directly, not through bd CLI
 
-## What We ARE Keeping from oro mg
+## What We ARE Keeping from legacy oro mg
 
 - Parade metaphor and status groupings (Queued Up/Rolling/Stalled/Finished)
 - Status symbols (♪ ● ⊘ ✓)

@@ -145,11 +145,11 @@ type ProjectPaths struct {
 | `langprofile/detect.go:38` | `".oro/config.yaml"` | `paths.ConfigYAML` |
 | `langprofile/config.go:102` | `".oro/config.yaml"` | `paths.ConfigYAML` |
 | `cmd/oro/cmd_doctor.go:123` | `".beads"` | `paths.BeadsDir` |
-| `cmd/oro/cmd_mg.go:115,130` | `".beads"` | `paths.BeadsDir` |
+| legacy Mardi Gras dashboard command | `".beads"` | removed in the dashboard migration |
 | `cmd/oro/cmd_init.go:440` | `".beads"` | stealth init uses own path |
 | `cmd/oro/store.go:42` | `".oro/config.yaml"` | `paths.ConfigYAML` |
-| `pkg/mg/data/source.go` | bare `bd list --json` | `bdExtraArgs` or env var |
-| `pkg/mg/data/metadata.go:61,94` | `".beads"` | `paths.BeadsDir` |
+| legacy dashboard data source | bare `bd list --json` | removed in the dashboard migration |
+| legacy dashboard metadata reader | `".beads"` | removed in the dashboard migration |
 | `pkg/dispatcher/assign_payload.go:72` | `worker-program.md` from repo root | `paths.WorkerProgram` |
 | `cmd/oro/quality_gate_gen.go:542,550` | `".beads/"`, `"docs/"` in script body | template with `paths.BeadsDir`, `paths.OroDocsDir` |
 
@@ -161,7 +161,7 @@ type ProjectPaths struct {
 
 **`readProjectName()` change (bootstrap function):** This is the root of all path resolution. Must become stealth-aware: try `.oro/config.yaml` first (standard mode). If not found, compute hash from CWD and check `~/.oro/projects/s-<hash>/config.yaml` (stealth mode). All downstream callers (`readProjectConfig`, `preflightAndCheckRunning`, `cmd_shell`, `store.go`) inherit the correct mode. Without this, `oro start` on a stealth project would auto-run `oro init` (standard), creating `.oro/` and defeating stealth.
 
-**`oro mg` change:** The Mardi Gras TUI shells out to `bd` independently via `pkg/mg/data/source.go`. In stealth mode, these calls need `--db`. Fix: `oro mg` resolves `ProjectPaths` at startup (same as `oro start`) and passes `bdExtraArgs` to the mg data layer. Or: set `BEADS_DB` env var for the mg subprocess.
+**Legacy dashboard note:** The removed Mardi Gras TUI used to shell out to `bd` independently. That path is gone after the dashboard migration, so stealth-mode data access now flows through the normal project path and beadstore layers.
 
 **`quality_gate_gen.go` change:** The generated shell script body hardcodes `docs/`, `.beads/`, `.worktrees/` in find exclusions and biome paths. Fix: `writeQualityGateScript` accepts `ProjectPaths` and templates the correct directory names into the generated script.
 

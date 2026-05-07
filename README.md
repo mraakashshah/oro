@@ -360,7 +360,7 @@ oro stop
 |---------|-------------|---------|
 | `oro status` | Show current swarm state | `oro status` |
 | `oro logs` | Query and tail dispatcher event logs | `oro logs --tail 50 -f` |
-| `oro mg` | Launch Mardi Gras TUI dashboard (parade view) | `oro mg` |
+| `oro dashboard` | Show the local web dashboard | `oro dashboard` |
 
 **`oro logs`** flags: `--tail <n>` (default: 20), `-f, --follow` (poll for new events)
 
@@ -491,7 +491,7 @@ oro/
 │   ├── ops/              # Ops agent spawner — review, merge resolution, diagnosis
 │   ├── merge/            # Merge coordinator — serialized rebase + ff-only
 │   ├── protocol/         # Shared types, UDS messages, SQLite schema, constants
-│   ├── mg/               # Mardi Gras TUI dashboard (bubbletea, parade view)
+│   ├── dashboard/        # Dashboard data and headless view helpers
 │   ├── codesearch/       # Semantic code search
 │   ├── eventlog/         # Queryable event log
 │   ├── langprofile/      # Language detection for quality gate generation
