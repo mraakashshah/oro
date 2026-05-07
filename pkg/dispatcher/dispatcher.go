@@ -4683,7 +4683,13 @@ func (d *Dispatcher) applyFocus(args string) (string, error) {
 	}
 	d.mu.Lock()
 	d.focusedEpic = epic
-	d.focusedImmediate = immediate
+	// focusedImmediate is intentionally NOT set here for the immediate=true case.
+	// It is set after the initial preemption below to prevent preemptForImmediateFocus
+	// in tryAssign from racing and consuming the preemption before applyFocus can
+	// report it (oro-aers).
+	if !immediate {
+		d.focusedImmediate = false
+	}
 	d.focusVersion++
 	d.mu.Unlock()
 	if d.GetState() != StateRunning {
@@ -4698,6 +4704,10 @@ func (d *Dispatcher) applyFocus(args string) (string, error) {
 	ctx := context.Background()
 	needed := d.focusedPreemptionsNeeded(ctx, nil, -1, epic)
 	preempted := d.preemptWorkersOutsideFocus(ctx, epic, needed)
+	// Enable ongoing rebalancing only after the initial preemption is reported.
+	d.mu.Lock()
+	d.focusedImmediate = true
+	d.mu.Unlock()
 	return fmt.Sprintf("focused on %s; preempted %d non-focused %s", epic, preempted, pluralize(preempted, "worker", "workers")), nil
 }
 
