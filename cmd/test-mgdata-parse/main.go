@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"oro/pkg/mg/data"
+	"oro/pkg/dashboard/data"
 )
 
 func main() {
