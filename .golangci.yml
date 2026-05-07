@@ -193,6 +193,25 @@ linters:
           - unparam
           - wrapcheck
 
+      # pkg/dashboard mirrors pkg/mg structure (TUI-style code copied from mg/data).
+      - path: pkg/dashboard/
+        linters:
+          - funlen
+          - gocyclo
+          - gocognit
+          - nestif
+          - noctx
+          - gochecknoglobals
+          - errcheck
+          - gocritic
+          - gosec
+          - nilerr
+          - prealloc
+          - revive
+          - testpackage
+          - unparam
+          - wrapcheck
+
       # CLI tools legitimately exec subprocesses and write user-supplied
       # paths to stdout — not a web context.
       - path: exec_runner\.go

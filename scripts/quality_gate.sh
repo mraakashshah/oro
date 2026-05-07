@@ -538,10 +538,11 @@ lane_go() {
 		# shellcheck disable=SC2086
 		GOFLAGS=-buildvcs=false go test $race_flag -shuffle=on -p 3 \
 			-coverprofile="$COVERAGE_FILE" ./internal/... ./pkg/... || return 1
-		# Exclude newly-ported TUI packages (pkg/mg/ subpackages) from
-		# coverage — they have 0% coverage until full integration wiring.
+		# Exclude newly-ported TUI packages (pkg/mg/ and pkg/dashboard/
+		# subpackages) from coverage — they have 0% coverage until full
+		# integration wiring.
 		local filtered="${COVERAGE_FILE}.filtered"
-		grep -v 'oro/pkg/mg/' "$COVERAGE_FILE" >"$filtered"
+		grep -v -e 'oro/pkg/mg/' -e 'oro/pkg/dashboard/' "$COVERAGE_FILE" >"$filtered"
 		local cov
 		cov=$(go tool cover -func="$filtered" | grep total | awk '{print $3}' | sed 's/%//')
 		echo "Coverage: ${cov}%"
