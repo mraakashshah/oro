@@ -1,7 +1,7 @@
 # Premortem Excision Design
 
 Date: 2026-05-07
-Status: draft (Stage 1 — Brainstorm; revised post-adversarial-review v1)
+Status: draft (Stage 1 — Brainstorm; revised post-adversarial-review v2)
 
 ## Problem
 
@@ -55,7 +55,7 @@ The 2026-05-06 task-delete-and-no-premortem-beads design explicitly punted this 
   - `OnReplanChildrenClosed` (line 189)
   - `ErrReplanLoopExhausted` sentinel
   - `defaultMaxPremortemCycles` const
-- `pkg/dispatcher/sweepers_test.go` — delete tests for the symbols above.
+- `pkg/dispatcher/sweepers_test.go` — delete only the `TestSweepers` subtests targeting `OnReplanChildrenClosed/*` (4 subtests). **Preserve** the 8 subtests for `PromoteClosedParentChildren`, `ReapDeletedParentChildren`, and `ExpireReviewQueueSLA` — these test sweepers we keep.
 - `pkg/dispatcher/dispatcher.go` — at lines **2072 (caller)** and **2078-2094 (definition)**: delete `d.safeGo(func() { d.notifyReplanChildClosed(ctx, beadID) })` from `finalizeSuccessfulMerge` AND delete the `notifyReplanChildClosed` method itself. **This is a production hot-path on every successful merge.** `CreateBeadGraph` callsite at line 1974 stays (no longer triggers gate).
 - `pkg/dispatcher/dispatcher_test.go` — delete tests for `notifyReplanChildClosed`, replan-cycle handling, and gate-state filtering.
 
@@ -79,14 +79,23 @@ The 2026-05-06 task-delete-and-no-premortem-beads design explicitly punted this 
 ### Schema
 
 - `pkg/protocol/schema.go:184-185` — remove `'premortem'` from the `type` CHECK constraint in `beadTableDDL`. Result: `CHECK (type IN ('task','bug','epic','research','chore','review'))`.
-- `pkg/protocol/schema.go:629-706` — `EnsureBeadTypeCheckConstraint` and `runBeadsTypeRebuild`. **Retirement decision**: replace `EnsureBeadTypeCheckConstraint` body with a no-op + deprecation comment ("retired 2026-05-07: migrate_v4 owns CHECK tightening; legacy DBs reach the new shape via migrate_v4"). Keep `runBeadsTypeRebuild` exported (still used by migrate_v4 by name pattern, see Migration Design). Update the function's existing call sites in `MigrateBeadSchema` to skip it cleanly. Justification: leaving the function as-is creates two competing CHECK-tightening paths that race on detection; retiring it makes v4 the single source of truth.
+- `pkg/protocol/schema.go:629-706` — `EnsureBeadTypeCheckConstraint` and `runBeadsTypeRebuild`. **Retirement decision**: replace `EnsureBeadTypeCheckConstraint` body with a no-op (returns `false, nil`) + deprecation comment ("retired 2026-05-07: migrate_v4 owns CHECK tightening; legacy DBs reach the new shape via migrate_v4"). **Delete `runBeadsTypeRebuild` outright** in the same commit — it is unexported (lowercase r, single call site at line 656) and becomes orphaned `unused` (golangci-lint U1000 fail) once its caller is no-op'd. `migrate_v4` inlines an equivalent rebuild pattern (Migration Design step 4) rather than calling the helper, because v4's rebuild also drops columns whereas `runBeadsTypeRebuild` only updates CHECKs. Justification: leaving the function as-is creates two competing CHECK-tightening paths that race on detection; retiring it makes v4 the single source of truth and removes the dead-code lint risk.
+
+- `pkg/protocol/schema.go:498-510 (MigrateBeadSchema)` — caller of `EnsureBeadTypeCheckConstraint`. The bool return is stored in `rebuiltTypeConstraint` and used on line 506 (`rebuiltStatusConstraint || rebuiltTypeConstraint`) to gate `INSERT INTO beads_fts(beads_fts) VALUES('rebuild')`. Post-retirement the bool is always `false`, so FTS rebuild on this path fires only when status migration triggers it. This is safe because v4's own FTS rebuild (Migration Design step 5) covers the v3→v4 transition; subsequent type-CHECK changes don't exist (CHECK is stable post-v4). Caller wiring stays unchanged.
 
 ### CLI
 
 - `cmd/oro/cmd_bead.go` — remove `gate-reset`, `gate-state`, `premortem-close` subcommand factories and their wiring in `newBeadCmdWithStore`. **Keep** the `--type=premortem` rejection guard (CHECK is double-protection but the guard returns a clearer error message). Update line 840-841 outdated comment ("v3 migrations (gate_state, premortem_cycle_count, etc.)") to reflect post-v4 shape.
 - `cmd/oro/cmd_task.go` — remove the corresponding alias registrations on `newTaskCmdWithStore`.
 - `cmd/oro/cmd_bead_test.go`, `cmd_task_test.go`, `cmd_work_test.go`, `cmd_work_execute_test.go` — remove premortem-gate / premortem-close test cases. Keep `TestTaskCreateRejectsPremortemType` (still wanted; guard remains).
-- `cmd/oro/db.go` (or wherever `openStateDB` lives) — **insert** `migrations.MigrateToV4(ctx, db)` call after `migrations.MigrateToV3` and **before** any backfill steps. Pre-migration: copy `paths.StateDBPath` to `paths.StateDBPath + ".pre-v4-" + time.Now().UTC().Format(time.RFC3339)` if the v3 → v4 transition is detected (file copy, not migration step, so a corrupt migration leaves a valid v3 backup).
+- `cmd/oro/db.go:30 openStateDB` — **leave default migration path applying through v3 only** (do NOT auto-trigger v4 here). Add a sibling function `openStateDBWithV4Migration(ctx, path)` that wraps `openStateDB` and additionally runs the v3→v4 transition (backup + `migrations.MigrateToV4`). **Only `cmd_start.go:openStateDB callsite (line 761)` calls the v4-migration variant**; all other 13+ callsites continue using plain `openStateDB`. Rationale: `oro start` is the dispatcher entry point and is the natural single migration trigger; CLI commands like `oro task list`, `oro logs`, `oro task show` work read-only at v3 schema (none reference dropped columns), so the upgrade window is non-blocking for observability commands. The active-assignment guard inside `migrate_v4` then becomes defense-in-depth (a running dispatcher cannot start while assignments are active by existing pre-existing constraints).
+- Pre-migration backup sequence (inside `openStateDBWithV4Migration`, after first connection-open + PRAGMA detection):
+  1. Open SQL connection on `paths.StateDBPath`.
+  2. `PRAGMA table_info(beads)` to detect v3 shape (`gate_state` column present).
+  3. If v3 detected: close connection, `io.Copy` source file to `<path>.pre-v4-<RFC3339>` (open source, open dest with O_CREATE|O_WRONLY|O_EXCL, io.Copy, fsync dest, close both — no `os.Rename` because rename moves the file leaving no original).
+  4. Reopen SQL connection, run `migrations.MigrateToV4(ctx, db)`.
+  5. If v4 already applied (no `gate_state` column), skip backup, no-op migration.
+- `cmd/oro/cmd_bead_migrate.go:339, 1393` — these callsites use plain `openStateDB`; document that running `oro task migrate-from-dolt` does NOT trigger v4. The intended upgrade order is: stop running dispatcher, then `oro start` (which triggers v4).
 
 ### Worker
 
@@ -124,11 +133,14 @@ Single atomic table-rebuild migration. All steps in one transaction except the p
 
 ### Pre-tx preconditions
 
-**P1. File backup (in `cmd/oro/db.go:openStateDB`, before opening the SQL connection):**
-- If a `gate_state` column is detected via `PRAGMA table_info(beads)` (i.e., DB is at v3 and has not yet had v4 applied), copy `<dbpath>` to `<dbpath>.pre-v4-<RFC3339>` using `os.Rename`-then-copy or `io.Copy` (whichever the existing codebase uses for the v3 cutover backup). If the DB is fresh (no `beads` table) or already at v4 (no `gate_state` column), no backup taken.
+**P1. File backup (in `openStateDBWithV4Migration` only, after the first SQL connection is opened to detect v3 shape via `PRAGMA table_info(beads)`):**
+- Open SQL connection.
+- `PRAGMA table_info(beads)` — if `gate_state` column absent, DB is fresh or already at v4 → no backup, return early from migration step.
+- If `gate_state` present (v3 shape): close the connection (so the OS file is fully flushed), then perform `io.Copy` from `<dbpath>` to `<dbpath>.pre-v4-<RFC3339>` (open source O_RDONLY, open dest O_CREATE|O_WRONLY|O_EXCL with mode 0600, copy bytes, `f.Sync()` dest, close both). Do **not** use `os.Rename` — that moves the file and leaves the original gone.
+- Reopen the SQL connection for the migration tx.
 
-**P2. Active-assignment guard (first SQL of migrate_v4):**
-- `SELECT COUNT(*) FROM assignments WHERE status='active'`. If count > 0, abort with: `migrate_v4: cannot migrate while N active assignments exist; run 'oro stop' or wait for workers to finish`. The migration is reversible (just re-run after stop) and avoids racing with a live dispatcher reading `beads_ready`/`beads_blocked` views mid-rebuild.
+**P2. Active-assignment guard (defense-in-depth, first SQL of migrate_v4):**
+- `SELECT COUNT(*) FROM assignments WHERE status='active'`. If count > 0, abort with: `migrate_v4: cannot migrate while N active assignments exist; run 'oro stop' first then re-run 'oro start'`. Because v4 is only triggered by `oro start` (which itself ensures no other dispatcher is running) and `oro start` boots before workers reattach, this guard is unlikely to fire in practice. It exists to catch a manual-invocation footgun (a developer calling `MigrateToV4` directly with a stale DB) and document the operator constraint.
 
 ### Steps inside single tx
 
@@ -178,7 +190,11 @@ SQLite 3.35+ DROP COLUMN works for column removal but does not allow CHECK const
 ### Why one tx
 
 - Atomicity: any failure rolls back to v3 state; no half-migrated tables.
-- Concurrency: the active-assignment guard ensures no concurrent dispatcher reads pass through a half-rebuilt view set.
+- Concurrency: triggering only from `oro start` ensures no other dispatcher process is running; the active-assignment guard catches the manual-invocation footgun.
+
+### Why migrate_v3 stays untouched
+
+`migrate_v3.go:30-31` adds `pipeline_stage` with a CHECK that includes `'premortem'`. Spec leaves that file intact for two reasons: (a) hash-stable history — modifying a shipped migration breaks idempotency-detection across DBs with different application states; (b) safety — v4's table rebuild tightens the CHECK before any worker can insert `pipeline_stage='premortem'` (the only writer was `notifyReplanChildClosed`, deleted in commit 6). On fresh installs the sequence is: `beadTableDDL` (post-v4 shape) → `MigrateBeadSchema` (no-op) → `MigrateToV3` (re-adds gate_state etc., per its idempotent ALTER) → `MigrateToV4` (drops them via rebuild). Net: correct shape, one wasted rebuild cycle per fresh install. Acceptable tradeoff.
 
 ## Acceptance Test
 
@@ -210,7 +226,7 @@ go build ./... && \
 8. `TestMigrateV4PreservesNonPremortemData` — fixture has 100 normal beads of varied types/statuses + dependencies + assignments (status='inactive') + tags + metadata; counts and edges preserved post-migration.
 9. `TestMigrateV4PreservesViews` — `beads_ready` and `beads_blocked` views return the same rows as a v3 baseline for the non-premortem fixture.
 10. `TestMigrateV4PreservesFTS` — fixture has 50 beads with title + description text; after migration, `SELECT id FROM beads_fts WHERE beads_fts MATCH 'specific-token'` returns the same set as pre-migration.
-11. `TestMigrateV4FKViolationRollsBack` — synthesize an FK violation by injecting an orphan in `bead_deps` after step 4, before step 6; assert ROLLBACK leaves DB at original v3 shape (gate_state column still present, no migration_type_converted events emitted).
+11. `TestMigrateV4FKViolationRollsBack` — pre-seed an FK-violating row in `bead_deps` with `PRAGMA foreign_keys=OFF` (an orphan `depends_on_id` pointing to a non-existent bead), then invoke migrate_v4. Step 6's `PRAGMA foreign_key_check` detects the orphan and triggers ROLLBACK. Assert DB at original v3 shape (gate_state column still present, no migration_type_converted events emitted, original orphan still present in bead_deps).
 12. `TestMigrateV4RejectsActiveAssignments` — fixture seeded with `INSERT INTO assignments (..., status='active', ...)`; migrate_v4 returns the documented error and does not mutate any rows.
 13. `TestMigrateV4WritesPreMigrationBackup` — call `openStateDB` on a v3-shape file; assert a sibling file matching `<path>.pre-v4-*` exists and is byte-identical to the original.
 14. `TestSymbolsRemoved` (build-graph completion) — runs the grep gate above as a Go test; fails if any production .go file references a removed symbol.
@@ -233,9 +249,9 @@ Each commit compiles + tests-green standalone (so reviewers can step through). O
 8. `feat(beadstore): remove gate-state Store API + types + constants` — store.go interface + v3types.go + v3methods.go + sqlite.go + shadow.go + testfake.go + v3_methods_test.go + read_tx_parity_test.go + store_test.go.
 9. `feat(cli): remove gate-reset/gate-state/premortem-close subcommands` — cmd_bead.go + cmd_task.go + tests; keep type=premortem rejection guard.
 10. `feat(integration): remove verify_retroactive_gate test + script + add tombstone` — delete tests/integration/verify_retroactive_gate_test.go and scripts/verify-retroactive-gate.sh; add forbidden_paths_test.go.
-11. `feat(schema): retire EnsureBeadTypeCheckConstraint and tighten beadTableDDL` — pkg/protocol/schema.go updates; replace function body with no-op.
+11. `feat(schema): retire EnsureBeadTypeCheckConstraint, delete runBeadsTypeRebuild, tighten beadTableDDL` — pkg/protocol/schema.go updates; replace `EnsureBeadTypeCheckConstraint` body with `return false, nil` no-op + deprecation comment; **delete `runBeadsTypeRebuild`** to avoid dead-code lint; remove `'premortem'` from `beadTableDDL` type CHECK.
 12. `feat(beadstore): add migrate_v4 (drop columns, tighten CHECKs, scrub legacy rows, FTS rebuild)` — migrations/migrate_v4.go + migrate_v4_test.go.
-13. `feat(cli): wire MigrateToV4 into openStateDB with pre-migration backup` — cmd/oro/db.go updates + db_test.go updates.
+13. `feat(cli): add openStateDBWithV4Migration and wire only into oro start` — cmd/oro/db.go gains `openStateDBWithV4Migration(ctx, path)` (open conn → PRAGMA detect → close → io.Copy backup → reopen → MigrateToV4). cmd_start.go:761 switches to the new variant; all other 13 openStateDB callsites stay on the plain function. Read-only commands (`oro task list`, `oro logs`, `oro task show`) work against v3 schema during the upgrade window. db_test.go gets `TestMigrateV4WritesPreMigrationBackup` + a regression test asserting plain `openStateDB` does NOT trigger v4.
 14. `chore(assets): scrub premortem entries from review-patterns.md` — line 101 citation rewrite, line 119 + 123 deletions, audit pass.
 15. `chore(docs): mark 2026-05-06 punt redeemed and 2026-04-28 architecture partially superseded` — header notes only.
 
@@ -294,6 +310,24 @@ The build-graph grep gate (test #14) runs in CI; any commit that introduces an o
 
 - **Code excision**: reversible via `git revert`. Branch saved as `excise-premortem-2026-05-07`.
 - **Schema migration**: irreversible without backup-restore. Pre-migration backup at `<dbpath>.pre-v4-<RFC3339>` provides a recovery path. Migration writes nothing destructive that isn't backed by either an audit row in `bead_journey` (for type conversions) or the file backup (for column drops).
+- **Backup retention**: backup files accumulate (one per v3→v4 transition; idempotent re-runs do not generate additional backups). Recommend in upgrade runbook: `rm <dbpath>.pre-v4-*` after verifying upstream behavior. Not deleted automatically.
+
+## Pre-implementation audit checklist
+
+These quick greps must run clean (or surface known hits) before commit 1:
+
+```bash
+# oro-dash binary should not query gate_state / premortem_cycle_count
+grep -rn 'gate_state\|premortem_cycle_count\|StagePremortem' cmd/oro-dash/ || echo "clean"
+
+# Other SQL string emitters
+grep -rn "gate_state\|premortem_cycle_count" --include='*.go' . | grep -v 'pkg/beadstore\|migrate_v3\|migrate_v4\|docs/'
+
+# External writers of actor='premortem' (assumption #3)
+grep -rn "actor.*['\"]\?premortem['\"]\?" --include='*.go' --include='*.sql' . | grep -v 'pkg/beadstore/v3types.go\|migrate_v4'
+```
+
+Any non-empty output (other than the documented exclusions) must be addressed in the affected-surface list.
 
 ## Load-bearing assumptions (verified in adversarial review v1)
 
@@ -306,7 +340,7 @@ The build-graph grep gate (test #14) runs in CI; any commit that introduces an o
 3. **No external (out-of-tree) consumer reads `bead_journey` filtering on `actor='premortem'`.** Internal verification: zero in-repo writers of `actor='premortem'` (premortem agent's events used `actor='dispatcher'` per router.go:101).
 4. **`v3ViewsDDL` uses `SELECT b.*` which dynamically resolves at view-creation time.** The migration drops views before the rebuild and recreates them after, so the post-v4 column set propagates cleanly. **Order is critical**: any future migration that recreates views before rebuild would silently include dropped columns and break — `migrate_v4` enforces drop-first / recreate-last ordering.
 5. **SKILL-level premortem references** (README, CLAUDE.md, skill SKILL.md files) describe a planning *practice*, not bead-type machinery. Verified: each reference reads as Tiger/Elephant/Paper-Tiger framework or "premortem each decision," none reference `type=premortem` beads or gate states.
-6. **`EnsureBeadTypeCheckConstraint` retirement is safe** because all current call sites (in `MigrateBeadSchema`) accept a no-op return without depending on rebuild side effects. Verified by reading the function's contract — it returns `(rebuilt bool, err error)`; current callers ignore the bool.
+6. **`EnsureBeadTypeCheckConstraint` retirement is safe.** The single caller, `MigrateBeadSchema` at `schema.go:498-510`, captures the bool into `rebuiltTypeConstraint` and ORs it with `rebuiltStatusConstraint` to gate `INSERT INTO beads_fts(beads_fts) VALUES('rebuild')` (line 506). Replacing the function body with `return false, nil` causes that branch of the OR to be permanently false, which is **safe** because: (a) the status-rebuild branch retains its own FTS-rebuild trigger via `rebuiltStatusConstraint`, and (b) `migrate_v4` itself includes an explicit FTS rebuild (Migration Design step 5) that covers the v3→v4 transition. After v4 lands, no further type-CHECK changes are anticipated, so the false-return path is correct in steady state. **Note**: assumption #6 in v0 of this doc was factually wrong (claimed callers ignore the bool) — corrected here.
 
 ## Status checkpoints
 
