@@ -8,7 +8,6 @@ import (
 
 	"oro/pkg/dashboard/data"
 
-	"charm.land/bubbles/v2/viewport"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -296,7 +295,7 @@ func TestRenderIssueNoOrphanBadge(t *testing.T) {
 
 func TestDetailViewNilIssue(t *testing.T) {
 	d := Detail{Width: 60, Height: 20}
-	d.Viewport = viewport.New(viewport.WithWidth(58), viewport.WithHeight(20))
+	d.Viewport = NewViewport(58, 20)
 	out := d.View()
 
 	if !strings.Contains(out, "No issue selected") {

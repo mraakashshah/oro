@@ -4,8 +4,6 @@ import (
 	"os"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
-
 	"oro/pkg/beadstore"
 )
 
@@ -37,11 +35,11 @@ const (
 // Callers should schedule it again after handling the returned message.
 //
 //oro:testonly
-func WatchFile(path string, lastMod time.Time) tea.Cmd {
+func WatchFile(path string, lastMod time.Time) Cmd {
 	if path == "" {
 		return nil
 	}
-	return tea.Tick(watchInterval, func(time.Time) tea.Msg {
+	return tick(watchInterval, func(time.Time) Msg {
 		info, err := os.Stat(path)
 		if err != nil {
 			return FileWatchErrorMsg{Err: err}
@@ -65,8 +63,8 @@ func WatchFile(path string, lastMod time.Time) tea.Cmd {
 // The app merges the active snapshot with its cached closed issues.
 //
 //oro:testonly
-func PollCLI(store beadstore.Store) tea.Cmd {
-	return tea.Tick(cliPollInterval, func(time.Time) tea.Msg {
+func PollCLI(store beadstore.Store) Cmd {
+	return tick(cliPollInterval, func(time.Time) Msg {
 		issues, err := FetchActiveIssues(store)
 		if err != nil {
 			return FileWatchErrorMsg{Err: err}
@@ -87,12 +85,12 @@ type ClosedIssuesMsg struct {
 	Err    error
 }
 
-// FetchAllClosedCmd returns a tea.Cmd that fetches all closed issues in the
+// FetchAllClosedCmd returns a Cmd that fetches all closed issues in the
 // background. Used to hydrate the full closed set after startup.
 //
 //oro:testonly
-func FetchAllClosedCmd(store beadstore.Store) tea.Cmd {
-	return func() tea.Msg {
+func FetchAllClosedCmd(store beadstore.Store) Cmd {
+	return func() Msg {
 		issues, err := FetchAllClosed(store)
 		if err != nil {
 			return ClosedIssuesMsg{Err: err}

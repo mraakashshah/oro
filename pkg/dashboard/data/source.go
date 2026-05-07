@@ -10,8 +10,6 @@ import (
 	"strings"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
-
 	"oro/pkg/beadstore"
 	"oro/pkg/protocol"
 )
@@ -371,13 +369,13 @@ func FetchIssueDetailFromIssues(issues []Issue, issueID string) (*Issue, error) 
 	return nil, fmt.Errorf("issue %s not found in loaded issue snapshot", issueID)
 }
 
-// FetchIssuesNow returns a tea.Cmd that fetches active issues via Store
+// FetchIssuesNow returns a Cmd that fetches active issues via Store
 // immediately (no timer delay). Emits ActiveIssuesMsg for merge with cached
 // closed issues, or FileWatchErrorMsg on failure.
 //
 //oro:testonly
-func FetchIssuesNow(store beadstore.Store) tea.Cmd {
-	return func() tea.Msg {
+func FetchIssuesNow(store beadstore.Store) Cmd {
+	return func() Msg {
 		issues, err := FetchActiveIssues(store)
 		if err != nil {
 			return FileWatchErrorMsg{Err: err}

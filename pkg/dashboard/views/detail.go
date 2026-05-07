@@ -8,7 +8,6 @@ import (
 
 	"oro/pkg/dashboard/data"
 
-	"charm.land/bubbles/v2/viewport"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/glamour"
 )
@@ -19,7 +18,7 @@ type Detail struct {
 	AllIssues      []data.Issue
 	IssueMap       map[string]*data.Issue
 	BlockingTypes  map[string]bool
-	Viewport       viewport.Model
+	Viewport       Viewport
 	Width          int
 	Height         int
 	Focused        bool
@@ -32,7 +31,7 @@ type Detail struct {
 //
 //oro:testonly
 func NewDetail(width, height int, issues []data.Issue) Detail {
-	vp := viewport.New(viewport.WithWidth(width-2), viewport.WithHeight(height))
+	vp := NewViewport(width-2, height)
 	return Detail{
 		AllIssues: issues,
 		IssueMap:  data.BuildIssueMap(issues),
