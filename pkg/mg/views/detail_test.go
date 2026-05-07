@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"oro/pkg/mg/data"
+	"oro/pkg/dashboard/data"
 )
 
 func TestParadeLabel(t *testing.T) {

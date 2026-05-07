@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/dashboard/data"
 	"oro/pkg/mg"
-	"oro/pkg/mg/data"
 
 	"charm.land/bubbles/v2/viewport"
 	"github.com/charmbracelet/x/ansi"

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"oro/pkg/mg/data"
+	"oro/pkg/dashboard/data"
 	"oro/pkg/mg/views"
 
 	"github.com/charmbracelet/x/ansi"

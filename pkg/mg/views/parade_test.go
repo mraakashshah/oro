@@ -3,7 +3,7 @@ package views
 import (
 	"testing"
 
-	"oro/pkg/mg/data"
+	"oro/pkg/dashboard/data"
 )
 
 // paradeIssues returns a mix of open, in_progress, and closed issues for testing.

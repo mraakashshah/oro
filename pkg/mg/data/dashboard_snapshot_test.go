@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"oro/pkg/dashboard/data"
 	"oro/pkg/mg"
-	"oro/pkg/mg/data"
 	"oro/pkg/mg/views"
 	"oro/pkg/protocol"
 	"oro/pkg/web"

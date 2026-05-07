@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"oro/pkg/dashboard/data"
 	"oro/pkg/mg"
-	"oro/pkg/mg/data"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
