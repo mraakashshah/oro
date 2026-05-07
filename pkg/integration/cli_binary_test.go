@@ -60,16 +60,8 @@ func integrationProjectRoot(t *testing.T) string {
 
 // stageAssets runs `make stage-assets` from the project root so that the
 // embed.FS in cmd/oro/embed.go has a populated _assets/ directory at compile time.
-// It registers a cleanup to remove the staged directory after the test.
 func stageAssets(t *testing.T, projectRoot string) {
 	t.Helper()
-
-	assetsDir := filepath.Join(projectRoot, "cmd", "oro", "_assets")
-
-	// Skip staging if already present (e.g., running under `make test`).
-	if _, err := os.Stat(assetsDir); err == nil {
-		return
-	}
 
 	stage := exec.Command("make", "stage-assets") //nolint:gosec // test-only, constant args
 	stage.Dir = projectRoot
@@ -77,12 +69,27 @@ func stageAssets(t *testing.T, projectRoot string) {
 	if err != nil {
 		t.Fatalf("make stage-assets failed: %v\n%s", err, out)
 	}
+}
 
-	t.Cleanup(func() {
-		if err := os.RemoveAll(assetsDir); err != nil {
-			t.Logf("warning: failed to clean up _assets: %v", err)
-		}
-	})
+func TestStageAssetsRestagesExistingAssetsDir(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "cmd", "oro", "_assets"), 0o750); err != nil {
+		t.Fatalf("mkdir existing assets dir: %v", err)
+	}
+	makefile := "stage-assets:\n\t@mkdir -p cmd/oro/_assets && echo staged > cmd/oro/_assets/marker\n"
+	if err := os.WriteFile(filepath.Join(root, "Makefile"), []byte(makefile), 0o600); err != nil {
+		t.Fatalf("write Makefile: %v", err)
+	}
+
+	stageAssets(t, root)
+
+	marker, err := os.ReadFile(filepath.Join(root, "cmd", "oro", "_assets", "marker"))
+	if err != nil {
+		t.Fatalf("expected stageAssets to refresh existing _assets dir: %v", err)
+	}
+	if strings.TrimSpace(string(marker)) != "staged" {
+		t.Fatalf("unexpected marker content: %q", marker)
+	}
 }
 
 // TestOroBinary_AllSubcommandsHelp verifies that every top-level and nested
