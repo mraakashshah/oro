@@ -293,13 +293,34 @@ Acceptance is structural preservation, NOT byte-identity. Reviewers should look 
 - `pkg/agentruntime/codex/codex.go` — `normalizeCodexModel` no longer strips legacy names blindly; legacy strings route through tier resolution (in `agentmodel`) before reaching the adapter.
 - `pkg/ops/ops.go` — replace ops `Type → "opus/sonnet/haiku"` mapping (lines 57–67, 84–88) with ops `Type → role name`; callers resolve the role via `agentmodel.ResolveForRole(roleName)`.
 
+### Ops Spawner: per-call runtime selection
+
+`pkg/ops/ops.go:191` `Spawner` currently holds ONE `BatchSpawner`. Each call (`Review`, `Decompose`, `WriteAC`, `Dream`, `Diagnosis`, `EpicFix`, `Escalation`, `Merge`) goes to that one spawner with `opsType.Model()` as the model string (`pkg/ops/ops.go:361` and equivalent dispatch sites).
+
+For mixing to work across ops (e.g., `ops_review` resolves to Codex but `ops_dream` resolves to Claude in the same dispatcher process), `ops.Spawner` must hold BOTH a Claude `BatchSpawner` and a Codex `BatchSpawner` and select per-call:
+
+- `pkg/ops/ops.go` — `Spawner` struct adds a second `BatchSpawner` field and a router that picks based on the resolved runtime for the current `Type → role name`.
+- `NewSpawner` constructor accepts both spawners; existing tests keep working because the test spawner can be passed to both fields.
+- The model argument passed to `s.spawner.Spawn(ctx, model, ...)` is replaced with `agentmodel.ResolveForRole(opsRole)` returning `(runtime, model)`. The `runtime` selects which spawner to call; `model` is passed verbatim.
+
+Backward compat: if `agentmodel` returns empty runtime (no config), fall back to the single legacy spawner field. This keeps single-runtime tests green during migration.
+
 ### Worker, dispatcher, ops paths
 
 - `cmd/oro/cmd_work.go:85` — `--model` help text rewritten; flag accepts tier names or provider-native strings.
-- `cmd/oro/cmd_work.go:288` — direct `protocol.DefaultModel` fallback replaced with `agentmodel.ResolveForBead(role="worker", bead)`. This is a separate call site from `cmd_start.go`'s dispatcher path.
-- `cmd/oro/cmd_work.go:409, 726` — QG/review retry escalation must update both `runtime` and `model` (resolved from `agentmodel.ResolveForRole("worker_escalation")`), not just the model variable.
+- `cmd/oro/cmd_work.go:158` — `newProductionDeps` currently binds `workDeps.spawner` and `workDeps.opsMgr` to ONE globally-resolved runtime via `resolveProductionRuntime()`. To support escalation across runtimes within a single `oro work` invocation: `workDeps` MUST hold both Claude and Codex worker spawners, and both Claude and Codex ops `BatchSpawner`s. The single-runtime resolution at line 158 is replaced with a both-runtimes constructor.
+- `cmd/oro/cmd_work.go:195, 196` — `spawner: runtime.workerSpawn` and `opsMgr: ops.NewSpawnerWithReviewTimeout(runtime.opsSpawn, ...)` become `spawner: claudeWorker, codexWorker` and `opsMgr: ops.NewSpawnerWithBothRuntimes(claudeOps, codexOps, ...)` (or equivalent shape that keeps both available).
+- `cmd/oro/cmd_work.go:633` — the `deps.spawner.Spawn(..., model, ...)` call (and equivalent in `spawnAndWait`) gains a `runtime string` parameter sourced from `agentmodel.ResolveForBead(role, bead)`. The internal selector picks Claude vs Codex spawner per call.
+- `cmd/oro/cmd_work.go:288` — direct `protocol.DefaultModel` fallback replaced with `agentmodel.ResolveForBead(role="worker", bead)`. Returns runtime+model; both threaded into `spawnAndWait`.
+- `cmd/oro/cmd_work.go:409, 726` — `oro work` (standalone) QG/review retry escalation must update both `runtime` and `model` (resolved from `agentmodel.ResolveForRole("worker_escalation")`), not just the model variable.
+- `pkg/dispatcher/dispatcher.go:1762, 1779, 2868` — dispatcher-side retry/escalation paths also hardcode `protocol.ModelOpus`. These build retry payloads via `pkg/dispatcher/assign_payload.go:36` `buildAssignPayload`. Each must:
+  - Resolve `(runtime, model) = agentmodel.ResolveForRole("worker_escalation")` instead of using the raw `protocol.ModelOpus` constant
+  - Pass both fields to `buildAssignPayload`, which now constructs `AssignPayload{Runtime, Model, ...}`
+  - Update `trackedWorker.runtime` AND `trackedWorker.model` when live escalation mutates the worker's bound runtime
+- `pkg/dispatcher/assign_payload.go:36` — `buildAssignPayload` signature gains `runtime string` parameter. Every caller (fresh assign, handoff resume, retry, escalation) passes both runtime and model.
 - `cmd/oro/cmd_work.go:796–801` — `inferFamily()` becomes legacy-only path used to map old strings to tiers.
 - `cmd/oro/cmd_start.go:563` — `--model "sonnet"` default replaced with a direct lookup of `agent.tiers.balanced.model` when the resolved runtime is Claude. There is NO `manager` role; this is a CLI flag default sourced from a tier, not a config role lookup. The `manager` role is explicitly excluded from `agent.roles`.
+- `cmd/oro/tmux.go:123` (and surrounding `execEnvCmd` / `runtimeBinary` / `runtimeUsesClaudeConfig`) — manager pane currently selects its CLI binary via `agentruntime.ReadRuntime()`. Replace with a single `agentmodel.ResolveForRole("manager_session")` lookup OR (preferred) read `agent.tiers.balanced.runtime` directly and use that to pick the binary. Without this fix, a config-only Codex setup (no env var) would still launch Claude in the manager pane.
 - `cmd/oro/cmd_start.go:731` — runtime resolver receives full role config, not just runtime ID.
 - `pkg/dispatcher/dispatcher.go:4324` — `AssignPayload` constructor must populate runtime+model pair from `agentmodel.ResolveForBead(role="worker", bead)`.
 - `pkg/dispatcher/estimate.go:18, 47-53` — drop `estimatorModel` const; load `roles.estimator.api_model` from config at construction; provider stays pinned to Anthropic. Estimator does NOT stamp model on the bead — `dispatcher.go:4301` continues to set `EstimatedMinutes` only, and tier resolution is downstream via `Bead.ResolveTier`.
@@ -312,6 +333,30 @@ The current worker process is bound to one runtime via `cmd/oro/cmd_worker.go:55
 - `cmd/oro/cmd_worker.go` — instantiate Claude AND Codex spawners on startup; route per-assignment based on `payload.Runtime`.
 - `pkg/worker/worker.go` — `Spawn()` accepts a runtime+model pair, not just model. Existing `ClaudeSpawner` / Codex adapter implementations remain; the dispatcher selects which one to call.
 - Backward compat: when `payload.Runtime == ""` (stale dispatcher pre-migration), the worker MUST NOT call `agentmodel` — it has no config layer. It logs a warning and falls back to `agentruntime.ReadRuntime()` for runtime and the existing `cfg.bead.Model` / `protocol.DefaultModel` chain at `pkg/worker/worker.go:519` for model. This shim survives one release after rollout, then is removed.
+
+### Handoff path: state must carry runtime alongside model
+
+`AssignPayload` is constructed in TWO places, not one:
+
+- `pkg/dispatcher/dispatcher.go:4324` — fresh assignment (the obvious site)
+- `pkg/dispatcher/worker_pool.go:201` — handoff resumption when a worker registers and a `pendingHandoff` is waiting
+
+The handoff path also threads `model` through several intermediate structs:
+
+- `pendingHandoff` struct (`pkg/dispatcher/dispatcher.go:397`) — carries `model string`
+- `trackedWorker.model` (`pkg/dispatcher/dispatcher.go:323`) — carries the worker's currently-assigned model
+- `assignHandoffToWorker` (`pkg/dispatcher/worker_pool.go:167-174`) — copies `h.model` to `w.model`, then sends `AssignPayload{Model: h.model}` at line 199-209
+
+ALL of these must add a `runtime` field in lockstep with `model`. Otherwise a handoff resumption silently loses the runtime selection from the original assignment and falls back to env-var routing.
+
+Specifically:
+
+- `pendingHandoff` adds `runtime string`
+- `trackedWorker` adds `runtime string`
+- `assignHandoffToWorker` copies `h.runtime` into `w.runtime` AND populates `AssignPayload.Runtime`
+- Anywhere a `pendingHandoff` is constructed (search `pendingHandoffs[...] =` and `pendingHandoff{...}`) must populate runtime alongside model
+
+This is part of the AssignPayload schema change bead, NOT a separate bead — it's the same field, threaded through the same in-memory state.
 
 ### Auxiliary roles
 
@@ -328,6 +373,14 @@ These currently call `agentruntime.ReadRuntime()` as a global switch (line numbe
 - `assets/thresholds.json`, `cmd/oro/_assets/thresholds.json` — add tier keys (`fast/balanced/deep/background`) alongside legacy `opus/sonnet/haiku`. Both keying schemes coexist indefinitely.
 - `assets/hooks/compact_trigger.py`, `cmd/oro/_assets/hooks/compact_trigger.py` — when `model_key` is `opus|sonnet|haiku`, look up tier-keyed threshold first; fall back to legacy key. Pure Python change, no Oro process involved.
 - `assets/hooks/context_pct_writer.py`, `cmd/oro/_assets/hooks/context_pct_writer.py` — same lookup pattern for context budgets keyed by transcript model string.
+
+### Go-side worker thresholds (separate from Python hooks)
+
+`pkg/worker/worker.go:67, 848` and `worker.go:977` key context thresholds in Go via `modelFamily(model)` returning `opus|sonnet|haiku`. This is INSIDE the Go process, not Python — the hook fix above does not cover it.
+
+- `pkg/worker/worker.go` — `modelFamily()` extends to map provider-native Codex strings AND tier names to a normalized key. The threshold table accepts both legacy family keys (`opus|sonnet|haiku`) and tier keys (`fast|balanced|deep|background`).
+- Resolution order at threshold lookup: (a) if a tier is known via `cfg.bead.Tier`, use the tier key; (b) else fall back to `modelFamily(model)` for legacy beads; (c) else use `DefaultTier=balanced`.
+- For Codex models without a Claude-family hint (e.g., `gpt-5-codex`), `modelFamily` returns the configured tier from `cfg.bead.Tier`. Workers without tier info on the bead use the default balanced threshold.
 
 ### Init / config commands
 
@@ -359,6 +412,21 @@ Real entry points to update — the schema changes BEFORE the CLI flag:
 - `pkg/ops/decompose_prompt.go:31` — update the `oro task create ...` invocation to include `--tier=<inferred-from-parent>` when parent has a tier.
 - `pkg/worker/prompt.go:265, 427` — same update for any worker prompt that creates tasks.
 - `pkg/ops/epic_fix_prompt.go:26` — same for epic-fix flow.
+
+#### Programmatic bead creation (Go-side, NOT prompts)
+
+The dispatcher creates child beads programmatically in several places. These bypass `oro task create` and the agent prompts entirely. They must inherit tier from the parent bead at construction time:
+
+- `pkg/dispatcher/dispatcher.go:1953` — child bead from in-process operation
+- `pkg/dispatcher/dispatcher.go:2345` — child bead from another in-process operation
+- `pkg/dispatcher/dispatcher.go:2564` — child bead creation
+- `pkg/dispatcher/dispatcher.go:6537` — child bead creation
+- `pkg/dispatcher/retroactive_gate.go:83` — retroactive bead creation
+- `pkg/mg/data/mutate.go` — any mutation path that creates beads
+
+For each: when constructing `beadstore.CreateParams`, populate `Tier` from `parent.Tier` if a parent exists. Otherwise leave empty; the dispatcher's downstream tier resolution (estimator + `Bead.ResolveTier`) handles it.
+
+Add a structural test that scans `beadstore.CreateParams{...}` constructions in `pkg/dispatcher/...` and asserts each one passes `Tier:` (either inherited or explicitly empty with a comment).
 
 ### Migration scope (Dolt → SQLite)
 
@@ -505,14 +573,20 @@ Order matters: schema + YAML utility → resolver → call sites → wire format
 3. `feat(agentmodel): new pkg/agentmodel package; ResolveForRole and ResolveForBead; depends on protocol + config; protocol stays leaf`
 4. `refactor(beadstore): add Tier field to CreateParams; SQLite + testfake insert tier column; hydration converts legacy metadata.model={opus,sonnet,haiku} into Bead.Tier ONLY when SQLite model column is empty AND tier is empty`
 5. `refactor(protocol): delete Tier.DefaultModel() in pkg/protocol/types.go; Bead.ResolveModel becomes pure shim returning b.Model; add Runtime field to AssignPayload in pkg/protocol/message.go (NOT types.go)`
-6. `refactor(dispatcher): resolve runtime+model dispatcher-side via agentmodel.ResolveForBead; populate AssignPayload.Runtime and Model on every send`
+6. `refactor(dispatcher): resolve runtime+model dispatcher-side via agentmodel.ResolveForBead; populate AssignPayload.Runtime and Model on every send (both fresh assign at dispatcher.go:4324 AND handoff path at worker_pool.go:201); thread runtime through pendingHandoff and trackedWorker in lockstep with model`
 7. `refactor(worker): worker process holds both Claude+Codex spawners; selects per-assignment from AssignPayload.Runtime; back-compat shim warns and uses ReadRuntime when payload.Runtime is empty`
+7b. `refactor(ops): ops.Spawner holds both Claude+Codex BatchSpawners; selects per-call from agentmodel.ResolveForRole(opsRole).runtime; legacy single-spawner fallback for tests`
+7c. `refactor(cmd_work): newProductionDeps holds both Claude+Codex worker and ops spawners; spawnAndWait and per-attempt loop accept (runtime, model) pair from agentmodel.ResolveForBead; symmetric with worker process change in 7`
 8. `refactor(routing): cmd_work, cmd_start, ops route through agentmodel; cmd_start manager flag default reads tiers.balanced.model directly (no manager role)`
-9. `refactor(cmd_work): QG/review retry escalation updates runtime+model pair via worker_escalation role`
+9. `refactor(cmd_work): standalone oro work QG/review retry escalation (cmd_work.go:409,726) updates runtime+model pair via worker_escalation role`
+9b. `refactor(dispatcher-retry): dispatcher-side retry/escalation (dispatcher.go:1762,1779,2868 and assign_payload.go:36 buildAssignPayload) resolves worker_escalation runtime+model; trackedWorker mutation includes runtime`
 10. `refactor(aux-roles): codesearch_reranker, memory_extractor take role name and call agentmodel.ResolveForRole; ReadRuntime() retained only as last fallback`
 11. `refactor(estimator): drop estimatorModel const; load roles.estimator.api_model from agent.api_models with provider validation; estimator does NOT stamp model on bead`
 12. `feat(cli): oro task create --tier flag accepting fast|balanced|deep|background; persists via CreateParams.Tier`
 13. `refactor(prompts): decompose_prompt, worker prompt task-creation, epic_fix_prompt include --tier=<inferred-from-parent>`
+13b. `refactor(programmatic-beadcreate): dispatcher.go (1953, 2345, 2564, 6537), retroactive_gate.go:83, pkg/mg/data/mutate.go all populate CreateParams.Tier from parent at construction; structural test verifies coverage`
+13c. `refactor(manager-tmux): cmd/oro/tmux.go manager binary selection reads agent.tiers.balanced.runtime instead of agentruntime.ReadRuntime() so config-only Codex setups launch Codex in the manager pane`
+13d. `refactor(worker-thresholds): pkg/worker/worker.go modelFamily() and threshold tables accept tier keys alongside legacy family keys; bead's Tier wins when set, modelFamily fallback for legacy`
 14. `feat(init): wizard with isatty detection (mattn/go-isatty existing dep); --skip-wizard flag; preserves --check/--quiet/--local/--project-root; uses YAML merge utility from bead 2`
 15. `feat(cli): new oro config parent command with config wizard and config show subcommands; register in root.go alongside oro models`
 16. `refactor(cli-flags): oro work/start --model accept tier names and provider-native strings; rewrite help text`
