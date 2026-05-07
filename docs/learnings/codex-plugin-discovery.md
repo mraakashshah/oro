@@ -236,36 +236,47 @@ All 116 marketplace plugins in `~/.codex/.tmp/plugins/plugins/` share the **iden
 
 ### (a) Does the stub load on codex startup?
 
-**NO.** The `.tmp/plugins/plugins/` directory is populated only at startup sync time (`16:44:13`). A file placed after startup (`18:44:33`) is not re-scanned during the session — Codex does not hot-reload plugins at runtime.
+**NO.** Empirical test: after stub placement at `18:44:33`, a fresh `codex exec` invocation (session id `019dffbb-19f0-75f0-9347-301e3a8da260`) was queried with `"List all loaded plugins by name"`. Response: `{"plugins":["github"]}` — the stub is **not** loaded. This is consistent with the `user-plugins-dir` finding: Codex requires explicit installation through the marketplace TUI, regardless of the source path on disk.
+
+The `.tmp/plugins/plugins/<name>/` directory is the **AVAILABLE pool**, not the **INSTALLED set**. Of the 116 official plugins present in `.tmp/plugins/plugins/`, only `github` is reported as loaded — confirming this directory is a discovery-source-of-truth for the marketplace UI, not a load list.
 
 ### (b) Does the stub survive a codex restart?
 
-**Almost certainly NO.** Evidence:
+**YES (empirically confirmed) — but only under `codex exec`.** Two restart-loop tests were run:
 
-1. **`.tmp` prefix** — The path `/Users/as21/.codex/.tmp/` is named with a `.tmp` prefix by design. This is a universally understood signal for ephemeral/cache storage.
+**Test 1 — SHA-match path (sync skipped):**
+- Pre-state: `plugins.sha = cc8b22...`, stub at `18:44:33`, figma at `16:44:13`.
+- Action: ran `codex exec` (fresh process, session id `019dffbb-19f0-75f0-9347-301e3a8da260`).
+- Post-state: stub mtime UNCHANGED (`18:44:33`), figma mtime UNCHANGED (`16:44:13`), `plugins.sha` UNCHANGED (`cc8b22...`, mtime `16:44:13`).
+- **Stub survived.**
 
-2. **SHA-based bundle check** — `~/.codex/.tmp/plugins.sha` contains `cc8b22955285a060a50d33b594c66db1e61c24c0`. On startup Codex downloads the marketplace bundle, computes its SHA, and compares to this file:
-   - **SHA matches** (same marketplace version): sync may be skipped. Whether the stub survives in this case is undefined — the directory is treated as a bundle extraction target, not a user-writable namespace.
-   - **SHA differs** (new marketplace version): Codex wipes `~/.codex/.tmp/plugins/` and re-extracts the new bundle. Stub is destroyed unconditionally.
+**Test 2 — SHA-mismatch path (forced sync):**
+- Pre-state: overwrote `plugins.sha` with `deadbeef0000...` to force a re-sync if Codex performs SHA validation.
+- Action: ran `codex exec` (fresh process, session id `019dffbb-dddf-7bd3-8a1d-6985f7c5340d`). Output: `{"plugins":["github"]}`.
+- Post-state: stub mtime UNCHANGED (`18:44:33`), figma mtime UNCHANGED (`16:44:13`), `plugins/` dir mtime UNCHANGED (`18:44:33`). `plugins.sha` mtime updated (`19:59:50`) but **content remained `deadbeef...`** — Codex did not overwrite the SHA, did not wipe `.tmp/plugins/plugins/`, and did not re-extract the bundle.
+- **Stub survived even with intentionally-corrupted SHA.**
 
-3. **Single-timestamp sync pattern** — All 116 official plugins have the same timestamp. This is consistent with `rm -rf ~/.codex/.tmp/plugins/ && untar bundle/` semantics, not an incremental diff. A hand-placed file in the directory has no protection.
-
-4. **No manifest entry** — The stub has no entry in the marketplace bundle's manifest. Even if Codex does a diff-based sync (add new, remove deleted from manifest), the stub would be removed as an "unlisted" entry.
+**Inference:** Marketplace sync is **not triggered by `codex exec`** — it is a TUI-only flow. The `.tmp/plugins/plugins/` directory is populated by interactive Codex sessions when the marketplace bundle changes. A non-interactive `exec` call neither validates nor refreshes the cache.
 
 ### Restart-loop evidence
 
-The stub was placed at `18:44:33`. The session continued and Codex was **not** restarted during this research task (restarting would end the agent session). However, the cumulative evidence above strongly predicts wipe-on-restart:
+```text
+T0 = 16:44:13  initial marketplace sync (figma, github, ... 116 plugins)
+T1 = 18:44:33  stub placed at .tmp/plugins/plugins/oro-test-plugin/
+T2 = 19:59:01  codex exec #1 (SHA matches)        → stub survived, not loaded
+T3 = 19:59:30  plugins.sha overwritten with deadbeef
+T4 = 19:59:50  codex exec #2 (SHA mismatch)       → stub survived, not loaded, sha NOT regenerated
+T5 = 19:59:51  plugins.sha restored
+```
 
-- The `.tmp/` directory received its current state at `16:44:13` — EARLIER than when `~/.codex/plugins/oro-test-plugin/` was placed (`18:39:55`) by the sibling `user-plugins-dir` research task.
-- The sibling task confirmed that Codex does not load `~/.codex/plugins/oro-test-plugin/` — yet that plugin WAS placed before this research session began. This tells us the "current session's codex" already did its startup sync at `16:44:13` and nothing placed after that gets picked up until restart.
-- Therefore: the stub placed at `18:44:33` will first be visible to Codex only after a restart. But at that restart, the SHA-based sync runs and wipes `.tmp/plugins/plugins/`.
+Two restart events (`T2`, `T4`) confirmed the stub persists across `codex exec` invocations. **Caveat:** the TUI restart path (`codex` interactive) was NOT exercised in this research session because launching the TUI inside an automated worker is not feasible. Based on the SHA-based design (`plugins.sha` as a bundle-version marker), a TUI restart with a SHA-mismatch is the most likely path that would wipe and re-extract the cache.
 
 ### Correct vs. incorrect paths
 
-| Path | Type | Persistent? | Loads? |
-|------|------|-------------|--------|
-| `~/.codex/.tmp/plugins/plugins/<name>/` | Marketplace cache | **No** (wiped on sync) | **No** (startup only) |
-| `~/.codex/plugins/<name>/` | Installed path | Yes (fs-stable) | **No** (not auto-discovered) |
+| Path | Type | Persistent under `codex exec`? | Loads? |
+|------|------|--------------------------------|--------|
+| `~/.codex/.tmp/plugins/plugins/<name>/` | Marketplace AVAILABLE cache | **Yes** (exec does not sync); TUI restart with new bundle SHA likely wipes | **No** (must be installed via TUI, regardless of presence on disk) |
+| `~/.codex/plugins/<name>/` | Not used by Codex | Yes (fs-stable, Codex never reads it) | **No** (not auto-discovered) |
 | `~/local-plugins/plugins/<name>/` | Local marketplace source | Yes | **Yes** (after marketplace add + TUI install) |
 
 ### Implications for oro plugin installation
@@ -275,4 +286,4 @@ To ship an oro plugin that loads in Codex:
 2. A `marketplace.json` must register the plugin under `.agents/plugins/`
 3. `codex plugin marketplace add ~/local-plugins` must be run once (writes to `config.toml`)
 4. User must install via Codex TUI — the `codex exec` path cannot trigger installation
-5. **Do not use `~/.codex/.tmp/` for anything.** It is a download cache.
+5. **Do not use `~/.codex/.tmp/` for anything.** It is the marketplace download cache: stub files placed there persist across `codex exec` (sync skipped) but provide no functionality, and would be wiped by any TUI-driven marketplace re-sync that detects a SHA mismatch.
