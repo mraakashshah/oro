@@ -13,6 +13,23 @@ import (
 
 const defaultLoadPerCPUThreshold = 1.5
 
+// SkipOutsidePushQG skips timing-sensitive tests unless quality gate context is push-like.
+//
+//oro:testonly
+func SkipOutsidePushQG(tb testing.TB) {
+	tb.Helper()
+
+	if os.Getenv("ORO_LOADGUARD_DISABLE") == "1" {
+		return
+	}
+	switch os.Getenv("ORO_QG_CONTEXT") {
+	case "push", "pre-push":
+		return
+	default:
+		tb.Skip("skipping timing-sensitive test outside push quality gate context")
+	}
+}
+
 // SkipIfLoaded skips timing-sensitive tests when the host is already heavily loaded.
 //
 //oro:testonly

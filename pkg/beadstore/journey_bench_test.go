@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"oro/pkg/beadstore/migrations"
+	"oro/pkg/testutil/loadguard"
 )
 
 const (
@@ -37,6 +38,8 @@ const (
 // sample window, each stall lasting 10–30 ms — enough to push the 10th-highest
 // sample past a 20 ms limit but not past 100 ms.
 func TestJourneyBench(t *testing.T) {
+	loadguard.SkipIfLoaded(t)
+
 	ctx := context.Background()
 	store, err := OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
@@ -48,6 +51,9 @@ func TestJourneyBench(t *testing.T) {
 	}
 
 	t.Run("AppendJourney", func(t *testing.T) {
+		loadguard.SkipOutsidePushQG(t)
+		loadguard.SkipIfLoaded(t)
+
 		if _, err := store.Create(ctx, CreateParams{ID: "bench-append", Title: "append bench"}); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -78,6 +84,9 @@ func TestJourneyBench(t *testing.T) {
 	})
 
 	t.Run("LatestJourney50", func(t *testing.T) {
+		loadguard.SkipOutsidePushQG(t)
+		loadguard.SkipIfLoaded(t)
+
 		if _, err := store.Create(ctx, CreateParams{ID: "bench-latest", Title: "latest bench"}); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -108,6 +117,9 @@ func TestJourneyBench(t *testing.T) {
 	})
 
 	t.Run("JourneyFull1000", func(t *testing.T) {
+		loadguard.SkipOutsidePushQG(t)
+		loadguard.SkipIfLoaded(t)
+
 		if _, err := store.Create(ctx, CreateParams{ID: "bench-full", Title: "full bench"}); err != nil {
 			t.Fatalf("Create: %v", err)
 		}

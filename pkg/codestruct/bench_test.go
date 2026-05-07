@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"oro/pkg/codestruct"
+	"oro/pkg/testutil/loadguard"
 )
 
 const (
@@ -44,9 +45,14 @@ const (
 //     regression-tracking signal — this gate exists to catch order-of-magnitude
 //     regressions, not microsecond drift.
 func TestBench(t *testing.T) {
+	loadguard.SkipIfLoaded(t)
+
 	dir := t.TempDir()
 
 	t.Run("SymbolExtraction", func(t *testing.T) {
+		loadguard.SkipOutsidePushQG(t)
+		loadguard.SkipIfLoaded(t)
+
 		file := filepath.Join(dir, "bench500.go")
 		if err := writeLargeGoFile(file); err != nil {
 			t.Fatalf("writeLargeGoFile: %v", err)
@@ -66,6 +72,9 @@ func TestBench(t *testing.T) {
 	})
 
 	t.Run("CallGraph", func(t *testing.T) {
+		loadguard.SkipOutsidePushQG(t)
+		loadguard.SkipIfLoaded(t)
+
 		pkgDir := filepath.Join(dir, "bench10pkg")
 		files, pkgSymbols, err := setup10FilePkg(pkgDir)
 		if err != nil {
