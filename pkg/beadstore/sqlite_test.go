@@ -2,6 +2,7 @@
 package beadstore
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -453,6 +454,69 @@ func TestSQLiteStoreRuntimeEventsAndRollback(t *testing.T) {
 	}
 	if err := store.Close(ctx, "oro-missing", "done"); !isBeadNotFound(err) {
 		t.Fatalf("Close missing error = %v, want BeadNotFoundError", err)
+	}
+}
+
+func TestSQLiteStoreDeleteSoftDeletesAndHidesLeaf(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+
+	mustCreate(t, store, CreateParams{ID: "oro-delete", Title: "delete me", Priority: 0})
+	mustCreate(t, store, CreateParams{ID: "oro-keep", Title: "keep me", Priority: 1})
+
+	if err := store.Delete(ctx, "oro-delete", "cleanup"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	var deleted int
+	var status, reason string
+	if err := store.db.QueryRowContext(
+		ctx,
+		`SELECT deleted, status, close_reason FROM beads WHERE id='oro-delete'`,
+	).Scan(&deleted, &status, &reason); err != nil {
+		t.Fatalf("query deleted row: %v", err)
+	}
+	if deleted != 1 || status != "open" || reason != "cleanup" {
+		t.Fatalf("deleted row = deleted %d status %q reason %q, want deleted/open/cleanup", deleted, status, reason)
+	}
+
+	shown, err := store.Show(ctx, "oro-delete")
+	if err != nil {
+		t.Fatalf("Show deleted: %v", err)
+	}
+	if shown != nil {
+		t.Fatalf("Show deleted = %#v, want nil", shown)
+	}
+
+	ready, err := store.Ready(ctx)
+	if err != nil {
+		t.Fatalf("Ready: %v", err)
+	}
+	if ids(ready) != "oro-keep" {
+		t.Fatalf("Ready ids = %s, want oro-keep", ids(ready))
+	}
+
+	counts, err := store.CountByStatus(ctx)
+	if err != nil {
+		t.Fatalf("CountByStatus: %v", err)
+	}
+	if counts != (StatusCounts{Open: 1}) {
+		t.Fatalf("CountByStatus = %#v, want only non-deleted open bead", counts)
+	}
+
+	exported, err := store.Export(ctx)
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	if bytes.Contains(exported, []byte("oro-delete")) || !bytes.Contains(exported, []byte("oro-keep")) {
+		t.Fatalf("Export should omit deleted bead and include active bead:\n%s", exported)
+	}
+
+	if got := eventCount(t, store.db, "bead_deleted"); got != 1 {
+		t.Fatalf("bead_deleted event count = %d, want 1", got)
+	}
+	if err := store.Delete(ctx, "oro-delete", "again"); !isBeadNotFound(err) {
+		t.Fatalf("second Delete error = %v, want BeadNotFoundError", err)
 	}
 }
 
