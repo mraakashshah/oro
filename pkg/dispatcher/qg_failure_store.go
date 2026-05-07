@@ -7,7 +7,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 )
+
+const maxQGFailureStoreAttempts = 8
 
 // QGIncident is the persisted incident row for a deduped QG failure.
 type QGIncident struct {
@@ -30,19 +34,56 @@ func RecordQGFailureOccurrence(ctx context.Context, db *sql.DB, rec QGFailureRec
 	}
 	rec = normalizeQGFailureRecord(rec)
 
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return QGIncident{}, fmt.Errorf("record qg failure occurrence: begin: %w", err)
+	var lastErr error
+	for attempt := range maxQGFailureStoreAttempts {
+		incident, err := recordQGFailureOccurrenceOnce(ctx, db, rec, cls)
+		if err == nil {
+			return incident, nil
+		}
+		lastErr = err
+		if !isRetryableQGStoreError(err) || attempt == maxQGFailureStoreAttempts-1 {
+			break
+		}
+		if err := waitQGStoreRetry(ctx, attempt); err != nil {
+			return QGIncident{}, fmt.Errorf("record qg failure occurrence: retry: %w", err)
+		}
 	}
-	defer func() { _ = tx.Rollback() }()
+	return QGIncident{}, lastErr
+}
 
-	incident, err := recordQGFailureOccurrenceTx(ctx, tx, rec, cls)
+type qgFailureStoreConn interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func recordQGFailureOccurrenceOnce(ctx context.Context, db *sql.DB, rec QGFailureRecord, cls QGFailureClassification) (QGIncident, error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return QGIncident{}, fmt.Errorf("record qg failure occurrence: conn: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.ExecContext(ctx, `PRAGMA busy_timeout=5000`); err != nil {
+		return QGIncident{}, fmt.Errorf("record qg failure occurrence: busy timeout: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return QGIncident{}, fmt.Errorf("record qg failure occurrence: begin immediate: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+		}
+	}()
+
+	incident, err := recordQGFailureOccurrenceTx(ctx, conn, rec, cls)
 	if err != nil {
 		return QGIncident{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
 		return QGIncident{}, fmt.Errorf("record qg failure occurrence: commit: %w", err)
 	}
+	committed = true
 	return incident, nil
 }
 
@@ -65,12 +106,12 @@ func normalizeQGFailureRecord(rec QGFailureRecord) QGFailureRecord {
 	return rec
 }
 
-func recordQGFailureOccurrenceTx(ctx context.Context, tx *sql.Tx, rec QGFailureRecord, cls QGFailureClassification) (QGIncident, error) {
-	incidentID, err := ensureQGIncident(ctx, tx, rec, cls)
+func recordQGFailureOccurrenceTx(ctx context.Context, conn qgFailureStoreConn, rec QGFailureRecord, cls QGFailureClassification) (QGIncident, error) {
+	incidentID, err := ensureQGIncident(ctx, conn, rec, cls)
 	if err != nil {
 		return QGIncident{}, err
 	}
-	result, err := tx.ExecContext(ctx, `
+	result, err := conn.ExecContext(ctx, `
 INSERT OR IGNORE INTO qg_failure_occurrences
     (id, incident_id, bead_id, worker_id, assignment_id, component, output_hash, raw_output)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -83,7 +124,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		return QGIncident{}, fmt.Errorf("record qg failure occurrence: rows affected: %w", err)
 	}
 	if inserted > 0 {
-		if _, err := tx.ExecContext(ctx, `
+		if _, err := conn.ExecContext(ctx, `
 UPDATE qg_failure_incidents
    SET occurrence_count = occurrence_count + 1,
        last_seen = datetime('now'),
@@ -99,16 +140,16 @@ UPDATE qg_failure_incidents
 		}
 	}
 
-	incident, err := fetchQGIncident(ctx, tx, incidentID)
+	incident, err := fetchQGIncident(ctx, conn, incidentID)
 	if err != nil {
 		return QGIncident{}, err
 	}
 	return incident, nil
 }
 
-func ensureQGIncident(ctx context.Context, tx *sql.Tx, rec QGFailureRecord, cls QGFailureClassification) (int64, error) {
+func ensureQGIncident(ctx context.Context, conn qgFailureStoreConn, rec QGFailureRecord, cls QGFailureClassification) (int64, error) {
 	var incidentID int64
-	err := tx.QueryRowContext(ctx, `SELECT id FROM qg_failure_incidents WHERE fingerprint=?`, rec.Fingerprint).Scan(&incidentID)
+	err := conn.QueryRowContext(ctx, `SELECT id FROM qg_failure_incidents WHERE fingerprint=?`, rec.Fingerprint).Scan(&incidentID)
 	if err == nil {
 		return incidentID, nil
 	}
@@ -116,7 +157,7 @@ func ensureQGIncident(ctx context.Context, tx *sql.Tx, rec QGFailureRecord, cls 
 		return 0, fmt.Errorf("record qg failure occurrence: query incident: %w", err)
 	}
 
-	result, err := tx.ExecContext(ctx, `
+	result, err := conn.ExecContext(ctx, `
 INSERT INTO qg_failure_incidents
     (fingerprint, class, decision, confidence, reason, summary)
 VALUES (?, ?, ?, ?, ?, ?)`,
@@ -131,10 +172,10 @@ VALUES (?, ?, ?, ?, ?, ?)`,
 	return incidentID, nil
 }
 
-func fetchQGIncident(ctx context.Context, tx *sql.Tx, id int64) (QGIncident, error) {
+func fetchQGIncident(ctx context.Context, conn qgFailureStoreConn, id int64) (QGIncident, error) {
 	var incident QGIncident
 	var class, decision, confidence string
-	err := tx.QueryRowContext(ctx, `
+	err := conn.QueryRowContext(ctx, `
 SELECT id, fingerprint, class, decision, confidence, reason, summary, status, occurrence_count
   FROM qg_failure_incidents
  WHERE id=?`, id).Scan(
@@ -179,4 +220,27 @@ func nullableInt64(v int64) any {
 		return nil
 	}
 	return v
+}
+
+func isRetryableQGStoreError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "sqlite_busy") ||
+		strings.Contains(text, "database is locked") ||
+		strings.Contains(text, "database table is locked") ||
+		strings.Contains(text, "unique constraint failed")
+}
+
+func waitQGStoreRetry(ctx context.Context, attempt int) error {
+	delay := time.Duration(attempt+1) * 10 * time.Millisecond
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("context done: %w", ctx.Err())
+	case <-timer.C:
+		return nil
+	}
 }

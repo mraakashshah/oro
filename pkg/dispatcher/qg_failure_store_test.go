@@ -2,7 +2,10 @@ package dispatcher_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"oro/pkg/dbutil"
@@ -84,5 +87,86 @@ func TestQGFailureStoreDedupesByFingerprint(t *testing.T) {
 	}
 	if incidentRows != 1 || occurrenceRows != 3 {
 		t.Fatalf("rows: incidents=%d occurrences=%d, want 1/3", incidentRows, occurrenceRows)
+	}
+}
+
+func TestQGFailureStoreConcurrentSameFingerprintCreatesOneIncident(t *testing.T) {
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("SchemaDDL: %v", err)
+	}
+
+	cls := dispatcher.QGFailureClassification{
+		Class:      dispatcher.QGFailureClassSystemic,
+		Decision:   dispatcher.QGFailureDecisionCreateOrReuseInfra,
+		Confidence: dispatcher.QGFailureConfidenceHigh,
+		Reason:     "shared fingerprint",
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	const calls = 32
+	errs := make(chan error, calls)
+	for i := range calls {
+		rec := dispatcher.QGFailureRecord{
+			ID:          fmt.Sprintf("concurrent-occ-%d", i),
+			Fingerprint: "qg:concurrent",
+			BeadID:      fmt.Sprintf("oro-%d", i),
+			WorkerID:    fmt.Sprintf("worker-%d", i),
+			Summary:     "same failure",
+			Output:      "same output",
+		}
+		wg.Add(1)
+		go func(rec dispatcher.QGFailureRecord) {
+			defer wg.Done()
+			<-start
+			_, err := dispatcher.RecordQGFailureOccurrence(ctx, db, rec, cls)
+			errs <- err
+		}(rec)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("Record concurrent occurrence: %v", err)
+		}
+	}
+
+	var incidentRows, occurrenceRows, occurrenceCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(MAX(occurrence_count), 0) FROM qg_failure_incidents`).Scan(&incidentRows, &occurrenceCount); err != nil {
+		t.Fatalf("count incidents: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM qg_failure_occurrences`).Scan(&occurrenceRows); err != nil {
+		t.Fatalf("count occurrences: %v", err)
+	}
+	if incidentRows != 1 || occurrenceRows != calls || occurrenceCount != calls {
+		t.Fatalf("rows: incidents=%d occurrences=%d occurrence_count=%d, want 1/%d/%d", incidentRows, occurrenceRows, occurrenceCount, calls, calls)
+	}
+
+	canceledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err = dispatcher.RecordQGFailureOccurrence(canceledCtx, db, dispatcher.QGFailureRecord{
+		ID:          "canceled-occ",
+		Fingerprint: "qg:canceled",
+		BeadID:      "oro-canceled",
+		Summary:     "canceled failure",
+		Output:      "canceled output",
+	}, cls)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled Record error = %v, want context.Canceled", err)
+	}
+	var canceledRows int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM qg_failure_incidents WHERE fingerprint='qg:canceled'`).Scan(&canceledRows); err != nil {
+		t.Fatalf("count canceled incidents: %v", err)
+	}
+	if canceledRows != 0 {
+		t.Fatalf("canceled incidents = %d, want 0", canceledRows)
 	}
 }
