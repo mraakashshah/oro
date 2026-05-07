@@ -1,6 +1,8 @@
+// Package loadguard contains helpers for skipping timing-sensitive tests under noisy conditions.
 package loadguard
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"runtime"
@@ -12,14 +14,16 @@ import (
 const defaultLoadPerCPUThreshold = 1.5
 
 // SkipIfLoaded skips timing-sensitive tests when the host is already heavily loaded.
-func SkipIfLoaded(t testing.TB) {
-	t.Helper()
+//
+//oro:testonly
+func SkipIfLoaded(tb testing.TB) {
+	tb.Helper()
 
 	if os.Getenv("ORO_LOADGUARD_DISABLE") == "1" {
 		return
 	}
 	if os.Getenv("ORO_LOADGUARD_FORCE_SKIP") == "1" {
-		t.Skip("host load guard forced by ORO_LOADGUARD_FORCE_SKIP")
+		tb.Skip("host load guard forced by ORO_LOADGUARD_FORCE_SKIP")
 	}
 
 	load, ok := oneMinuteLoad()
@@ -28,7 +32,7 @@ func SkipIfLoaded(t testing.TB) {
 	}
 	cpus := runtime.NumCPU()
 	if shouldSkip(load, cpus, defaultLoadPerCPUThreshold) {
-		t.Skipf("host load is %.2f across %d CPUs; skipping timing-sensitive test", load, cpus)
+		tb.Skipf("host load is %.2f across %d CPUs; skipping timing-sensitive test", load, cpus)
 	}
 }
 
@@ -49,7 +53,7 @@ func oneMinuteLoad() (float64, bool) {
 		}
 	}
 
-	out, err := exec.Command("sysctl", "-n", "vm.loadavg").Output()
+	out, err := exec.CommandContext(context.Background(), "sysctl", "-n", "vm.loadavg").Output()
 	if err != nil {
 		return 0, false
 	}
