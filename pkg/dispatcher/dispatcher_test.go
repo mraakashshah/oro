@@ -9964,6 +9964,10 @@ func TestPriorityContention_StableUnderLoad(t *testing.T) {
 	)
 
 	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
+	// Widen heartbeat timeout: under parallel QG load, dispatcher goroutines can
+	// be starved for >500ms before processing heartbeat messages, causing
+	// checkHeartbeats to fire spurious EscWorkerCrash escalations (oro-aers).
+	d.cfg.HeartbeatTimeout = opTimeout
 	startDispatcherWithTimeout(t, d, opTimeout)
 
 	sendDirective(t, d.cfg.SocketPath, "start")
