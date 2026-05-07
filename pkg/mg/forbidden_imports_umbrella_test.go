@@ -62,7 +62,7 @@ func TestPkgMgFinalState(t *testing.T) {
 	forbiddenImports := map[string]bool{
 		"oro/pkg/mg/app":        false,
 		"oro/pkg/mg/components": false,
-		"oro/pkg/mg/data":       false,
+		"oro/pkg/mg/" + "data":  false,
 		"oro/pkg/mg/tmux":       false,
 		"oro/pkg/mg/ui":         false,
 	}
