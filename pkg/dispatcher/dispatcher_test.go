@@ -1845,10 +1845,11 @@ func TestDispatcher_HeartbeatTimeout_DetectsDeadWorker(t *testing.T) {
 }
 
 func TestDispatcher_HeartbeatTimeout_EscalatesWithStructuredFormat(t *testing.T) {
+	const opTimeout = 10 * time.Second // generous: survives race detector overhead at dispatcher startup
 	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
 	d.cfg.HeartbeatTimeout = 100 * time.Millisecond
 
-	startDispatcher(t, d)
+	startDispatcherWithTimeout(t, d, opTimeout)
 
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
 	sendMsg(t, conn, protocol.Message{
@@ -4452,21 +4453,23 @@ func TestHandleHandoffPreservesEpicContext(t *testing.T) {
 }
 
 func TestDispatcher_Handoff_PersistsLearningsAsMemories(t *testing.T) {
+	const opTimeout = 10 * time.Second
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
-	startDispatcher(t, d)
+	d.cfg.HeartbeatTimeout = opTimeout
+	startDispatcherWithTimeout(t, d, opTimeout)
 
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
 	sendMsg(t, conn, protocol.Message{
 		Type:      protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
 	})
-	waitForWorkers(t, d, 1, 1*time.Second)
+	waitForWorkers(t, d, 1, opTimeout)
 
 	sendDirective(t, d.cfg.SocketPath, "start")
-	waitForState(t, d, StateRunning, 1*time.Second)
+	waitForState(t, d, StateRunning, opTimeout)
 
 	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-mem", Title: "Memory handoff test", Priority: 1}})
-	_, ok2 := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	_, ok2 := readMsg(t, conn, opTimeout) // consume ASSIGN
 	if !ok2 {
 		t.Fatal("expected ASSIGN")
 	}
@@ -4486,7 +4489,7 @@ func TestDispatcher_Handoff_PersistsLearningsAsMemories(t *testing.T) {
 	})
 
 	// Worker should receive SHUTDOWN
-	msg, ok3 := readMsg(t, conn, 2*time.Second)
+	msg, ok3 := readMsg(t, conn, opTimeout)
 	if !ok3 {
 		t.Fatal("expected SHUTDOWN after handoff")
 	}
@@ -4497,7 +4500,7 @@ func TestDispatcher_Handoff_PersistsLearningsAsMemories(t *testing.T) {
 	// Wait for handoff event to be logged
 	waitFor(t, func() bool {
 		return eventCount(t, d.db, "handoff") > 0
-	}, 1*time.Second)
+	}, opTimeout)
 
 	// Verify memories were persisted: 2 learnings + 1 decision = 3 memories
 	var memCount int
@@ -4528,8 +4531,10 @@ func TestDispatcher_Handoff_PersistsLearningsAsMemories(t *testing.T) {
 }
 
 func TestDispatcher_ReassignIncludesForPromptOutput(t *testing.T) { //nolint:funlen // integration test
+	const opTimeout = 10 * time.Second
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
-	startDispatcher(t, d)
+	d.cfg.HeartbeatTimeout = opTimeout
+	startDispatcherWithTimeout(t, d, opTimeout)
 
 	// Pre-seed a memory that matches the bead title
 	_, err := d.db.Exec(
@@ -4547,16 +4552,16 @@ func TestDispatcher_ReassignIncludesForPromptOutput(t *testing.T) { //nolint:fun
 		Type:      protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
 	})
-	waitForWorkers(t, d, 1, 1*time.Second)
+	waitForWorkers(t, d, 1, opTimeout)
 
 	sendDirective(t, d.cfg.SocketPath, "start")
-	waitForState(t, d, StateRunning, 1*time.Second)
+	waitForState(t, d, StateRunning, opTimeout)
 
 	// Set bead with title that matches the memory
 	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-reassign", Title: "fix linting with ruff and pyright", Priority: 1}})
 
 	// Read ASSIGN — should include MemoryContext
-	msg, ok := readMsg(t, conn, 2*time.Second)
+	msg, ok := readMsg(t, conn, opTimeout)
 	if !ok {
 		t.Fatal("expected ASSIGN")
 	}
@@ -4589,21 +4594,23 @@ func containsIgnoreCase(s, substr string) bool {
 }
 
 func TestDispatcher_GracefulShutdown_WaitsForApproval(t *testing.T) {
+	const opTimeout = 10 * time.Second
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
-	startDispatcher(t, d)
+	d.cfg.HeartbeatTimeout = opTimeout
+	startDispatcherWithTimeout(t, d, opTimeout)
 
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
 	sendMsg(t, conn, protocol.Message{
 		Type:      protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
 	})
-	waitForWorkers(t, d, 1, 1*time.Second)
+	waitForWorkers(t, d, 1, opTimeout)
 
 	sendDirective(t, d.cfg.SocketPath, "start")
-	waitForState(t, d, StateRunning, 1*time.Second)
+	waitForState(t, d, StateRunning, opTimeout)
 
 	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-gs", Title: "Graceful shutdown test", Priority: 1}})
-	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	_, ok := readMsg(t, conn, opTimeout) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
 	}
@@ -4613,7 +4620,7 @@ func TestDispatcher_GracefulShutdown_WaitsForApproval(t *testing.T) {
 	d.GracefulShutdownWorker("w1", 2*time.Second)
 
 	// Worker should receive PREPARE_SHUTDOWN
-	msg, ok := readMsg(t, conn, 2*time.Second)
+	msg, ok := readMsg(t, conn, opTimeout)
 	if !ok {
 		t.Fatal("expected PREPARE_SHUTDOWN message")
 	}
@@ -4637,10 +4644,10 @@ func TestDispatcher_GracefulShutdown_WaitsForApproval(t *testing.T) {
 	// Wait for shutdown_approved event
 	waitFor(t, func() bool {
 		return eventCount(t, d.db, "shutdown_approved") > 0
-	}, 2*time.Second)
+	}, opTimeout)
 
 	// Worker should then receive hard SHUTDOWN
-	msg2, ok := readMsg(t, conn, 2*time.Second)
+	msg2, ok := readMsg(t, conn, opTimeout)
 	if !ok {
 		t.Fatal("expected SHUTDOWN after approval")
 	}
@@ -4650,21 +4657,23 @@ func TestDispatcher_GracefulShutdown_WaitsForApproval(t *testing.T) {
 }
 
 func TestDispatcher_GracefulShutdown_TimeoutFallsBackToHardKill(t *testing.T) {
+	const opTimeout = 10 * time.Second
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
-	startDispatcher(t, d)
+	d.cfg.HeartbeatTimeout = opTimeout
+	startDispatcherWithTimeout(t, d, opTimeout)
 
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
 	sendMsg(t, conn, protocol.Message{
 		Type:      protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-timeout", ContextPct: 5},
 	})
-	waitForWorkers(t, d, 1, 1*time.Second)
+	waitForWorkers(t, d, 1, opTimeout)
 
 	sendDirective(t, d.cfg.SocketPath, "start")
-	waitForState(t, d, StateRunning, 1*time.Second)
+	waitForState(t, d, StateRunning, opTimeout)
 
 	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-timeout", Title: "Timeout test", Priority: 1}})
-	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	_, ok := readMsg(t, conn, opTimeout) // consume ASSIGN
 	if !ok {
 		t.Fatal("expected ASSIGN")
 	}
@@ -4674,7 +4683,7 @@ func TestDispatcher_GracefulShutdown_TimeoutFallsBackToHardKill(t *testing.T) {
 	d.GracefulShutdownWorker("w-timeout", 200*time.Millisecond)
 
 	// Worker receives PREPARE_SHUTDOWN but does NOT respond
-	msg, ok := readMsg(t, conn, 2*time.Second)
+	msg, ok := readMsg(t, conn, opTimeout)
 	if !ok {
 		t.Fatal("expected PREPARE_SHUTDOWN")
 	}
@@ -4683,7 +4692,7 @@ func TestDispatcher_GracefulShutdown_TimeoutFallsBackToHardKill(t *testing.T) {
 	}
 
 	// Do NOT respond — dispatcher should fall back to hard SHUTDOWN after timeout
-	msg2, ok := readMsg(t, conn, 2*time.Second)
+	msg2, ok := readMsg(t, conn, opTimeout)
 	if !ok {
 		t.Fatal("expected hard SHUTDOWN after timeout")
 	}
@@ -4693,8 +4702,9 @@ func TestDispatcher_GracefulShutdown_TimeoutFallsBackToHardKill(t *testing.T) {
 }
 
 func TestDispatcher_GracefulShutdown_UnknownWorker(t *testing.T) {
+	const opTimeout = 10 * time.Second
 	d, _, _, _, _, _ := newTestDispatcher(t)
-	startDispatcher(t, d)
+	startDispatcherWithTimeout(t, d, opTimeout)
 
 	// Should not panic for unknown worker
 	d.GracefulShutdownWorker("w-nonexistent", 1*time.Second)
