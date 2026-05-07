@@ -1,4 +1,4 @@
-package mg
+package views
 
 import (
 	"strings"

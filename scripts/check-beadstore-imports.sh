@@ -8,7 +8,7 @@ fi
 
 matches=$(
 	find pkg/beadstore -name '*.go' -type f -exec awk '
-		/"oro\/pkg\/(dispatcher|worker|ops|mg)(\/[^"]*)?"/ {
+		/"oro\/pkg\/(dispatcher|worker|ops)(\/[^"]*)?"/ {
 			print FILENAME ":" FNR ":" $0
 		}
 	' {} + || true

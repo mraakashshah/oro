@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"oro/pkg/dashboard/data"
-	"oro/pkg/mg/views"
+	"oro/pkg/dashboard/views"
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/google/go-cmp/cmp"

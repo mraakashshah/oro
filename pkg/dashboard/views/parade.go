@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"oro/pkg/dashboard/data"
-	"oro/pkg/mg"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -23,10 +22,10 @@ type paradeSection struct {
 }
 
 var sections = []paradeSection{
-	{Title: "Rolling", Symbol: mg.SymRolling, Style: mg.SectionRolling, Color: mg.StatusRolling, Status: data.ParadeRolling},
-	{Title: "Lined Up", Symbol: mg.SymLinedUp, Style: mg.SectionLinedUp, Color: mg.StatusLinedUp, Status: data.ParadeLinedUp},
-	{Title: "Stalled", Symbol: mg.SymStalled, Style: mg.SectionStalled, Color: mg.StatusStalled, Status: data.ParadeStalled},
-	{Title: "Past the Stand", Symbol: mg.SymPassed, Style: mg.SectionPassed, Color: mg.StatusPassed, Status: data.ParadePastTheStand},
+	{Title: "Rolling", Symbol: SymRolling, Style: SectionRolling, Color: StatusRolling, Status: data.ParadeRolling},
+	{Title: "Lined Up", Symbol: SymLinedUp, Style: SectionLinedUp, Color: StatusLinedUp, Status: data.ParadeLinedUp},
+	{Title: "Stalled", Symbol: SymStalled, Style: SectionStalled, Color: StatusStalled, Status: data.ParadeStalled},
+	{Title: "Past the Stand", Symbol: SymPassed, Style: SectionPassed, Color: StatusPassed, Status: data.ParadePastTheStand},
 }
 
 // ParadeItem is a renderable entry — a section header, footer, or issue.
@@ -338,24 +337,24 @@ func (p *Parade) renderBorderTop(sec paradeSection) string {
 	// Build the title content
 	var titleText string
 	if sec.Status == data.ParadePastTheStand {
-		toggle := mg.Collapsed
+		toggle := Collapsed
 		if p.ShowClosed {
-			toggle = mg.Expanded
+			toggle = Expanded
 		}
-		titleText = fmt.Sprintf("%s %s %s%s", toggle, sec.Symbol, sec.Title, mg.Superscript(count))
+		titleText = fmt.Sprintf("%s %s %s%s", toggle, sec.Symbol, sec.Title, Superscript(count))
 		if !p.ShowClosed {
 			titleText += " press c"
 		}
 	} else {
-		titleText = fmt.Sprintf("%s %s%s", sec.Symbol, sec.Title, mg.Superscript(count))
+		titleText = fmt.Sprintf("%s %s%s", sec.Symbol, sec.Title, Superscript(count))
 	}
 
 	coloredTitle := sec.Style.Render(titleText)
 	titleWidth := lipgloss.Width(coloredTitle)
 
 	// ╭─ <title> ─────────────╮
-	prefix := borderStyle.Render(mg.BoxTopLeft + mg.BoxHorizontal + " ")
-	suffix := borderStyle.Render(" " + mg.BoxTopRight)
+	prefix := borderStyle.Render(BoxTopLeft + BoxHorizontal + " ")
+	suffix := borderStyle.Render(" " + BoxTopRight)
 
 	prefixW := lipgloss.Width(prefix)
 	suffixW := lipgloss.Width(suffix)
@@ -372,7 +371,7 @@ func (p *Parade) renderBorderTop(sec paradeSection) string {
 	if fillLen < 1 {
 		fillLen = 1
 	}
-	fill := borderStyle.Render(" " + strings.Repeat(mg.BoxHorizontal, fillLen))
+	fill := borderStyle.Render(" " + strings.Repeat(BoxHorizontal, fillLen))
 
 	return prefix + coloredTitle + fill + suffix
 }
@@ -382,15 +381,15 @@ func (p *Parade) renderBorderBottom(sec paradeSection) string {
 	borderStyle := lipgloss.NewStyle().Foreground(sec.Color)
 
 	// ╰─...─╯
-	cornerL := borderStyle.Render(mg.BoxBottomLeft)
-	cornerR := borderStyle.Render(mg.BoxBottomRight)
+	cornerL := borderStyle.Render(BoxBottomLeft)
+	cornerR := borderStyle.Render(BoxBottomRight)
 	cornersW := lipgloss.Width(cornerL) + lipgloss.Width(cornerR)
 
 	fillLen := p.Width - cornersW
 	if fillLen < 1 {
 		fillLen = 1
 	}
-	fill := borderStyle.Render(strings.Repeat(mg.BoxHorizontal, fillLen))
+	fill := borderStyle.Render(strings.Repeat(BoxHorizontal, fillLen))
 
 	return cornerL + fill + cornerR
 }
@@ -405,7 +404,7 @@ func (p *Parade) renderIssue(item ParadeItem, selected bool, distFromCursor int)
 	sym := statusSymbol(issue, p.issueMap, p.blockingTypes)
 	prio := data.PriorityLabel(issue.Priority)
 
-	prioStyle := mg.BadgePriority.Foreground(mg.PriorityColor(int(issue.Priority)))
+	prioStyle := BadgePriority.Foreground(PriorityColor(int(issue.Priority)))
 	symStyle := lipgloss.NewStyle().Foreground(statusColor(issue, p.issueMap, p.blockingTypes))
 
 	// Multi-select checkbox
@@ -413,9 +412,9 @@ func (p *Parade) renderIssue(item ParadeItem, selected bool, distFromCursor int)
 	selectWidth := 0
 	if len(p.Selected) > 0 {
 		if p.Selected[issue.ID] {
-			selectPrefix = lipgloss.NewStyle().Foreground(mg.BrightGold).Bold(true).Render(mg.SymSelected) + " "
+			selectPrefix = lipgloss.NewStyle().Foreground(BrightGold).Bold(true).Render(SymSelected) + " "
 		} else {
-			selectPrefix = lipgloss.NewStyle().Foreground(mg.Dim).Render(mg.SymUnselected) + " "
+			selectPrefix = lipgloss.NewStyle().Foreground(Dim).Render(SymUnselected) + " "
 		}
 		selectWidth = 2
 	}
@@ -424,7 +423,7 @@ func (p *Parade) renderIssue(item ParadeItem, selected bool, distFromCursor int)
 	changePrefix := ""
 	changeWidth := 0
 	if p.ChangedIDs != nil && p.ChangedIDs[issue.ID] {
-		changePrefix = lipgloss.NewStyle().Foreground(mg.BrightGold).Render(mg.SymChanged) + " "
+		changePrefix = lipgloss.NewStyle().Foreground(BrightGold).Render(SymChanged) + " "
 		changeWidth = 2
 	}
 
@@ -433,7 +432,7 @@ func (p *Parade) renderIssue(item ParadeItem, selected bool, distFromCursor int)
 	workerWidth := 0
 	if p.ActiveWorkers != nil {
 		if _, active := p.ActiveWorkers[issue.ID]; active {
-			workerPrefix = mg.AgentBadge.Render(mg.SymWorker) + " "
+			workerPrefix = AgentBadge.Render(SymWorker) + " "
 			workerWidth = 2
 		}
 	}
@@ -447,14 +446,14 @@ func (p *Parade) renderIssue(item ParadeItem, selected bool, distFromCursor int)
 	dueBadge := ""
 	dueWidth := 0
 	if issue.IsOverdue() {
-		label := fmt.Sprintf("%s %s", mg.SymOverdue, issue.DueLabel())
-		dueBadge = " " + mg.OverdueBadge.Render(label)
+		label := fmt.Sprintf("%s %s", SymOverdue, issue.DueLabel())
+		dueBadge = " " + OverdueBadge.Render(label)
 		dueWidth = lipgloss.Width(dueBadge)
 	} else if issue.DueAt != nil && issue.Status != data.StatusClosed {
 		days := int(time.Until(*issue.DueAt).Hours() / 24)
 		if days <= 3 {
-			label := fmt.Sprintf("%s %s", mg.SymDueDate, issue.DueLabel())
-			dueBadge = " " + mg.DueSoonBadge.Render(label)
+			label := fmt.Sprintf("%s %s", SymDueDate, issue.DueLabel())
+			dueBadge = " " + DueSoonBadge.Render(label)
 			dueWidth = lipgloss.Width(dueBadge)
 		}
 	}
@@ -463,7 +462,7 @@ func (p *Parade) renderIssue(item ParadeItem, selected bool, distFromCursor int)
 	deferBadge := ""
 	deferWidth := 0
 	if issue.IsDeferred() {
-		deferBadge = " " + mg.DeferredStyle.Render(mg.SymDeferred)
+		deferBadge = " " + DeferredStyle.Render(SymDeferred)
 		deferWidth = 2
 	}
 
@@ -471,19 +470,19 @@ func (p *Parade) renderIssue(item ParadeItem, selected bool, distFromCursor int)
 	qualityBadge := ""
 	qualityWidth := 0
 	if issue.QualityScore != nil {
-		qualityBadge = " " + mg.RenderStarsCompact(*issue.QualityScore)
+		qualityBadge = " " + RenderStarsCompact(*issue.QualityScore)
 		qualityWidth = 3 // " ★N"
 	}
 
 	// Build the "next blocker" hint for stalled issues
 	var rawHint string
-	hintStyle := lipgloss.NewStyle().Foreground(mg.Muted)
+	hintStyle := lipgloss.NewStyle().Foreground(Muted)
 	eval := issue.EvaluateDependencies(p.issueMap, p.blockingTypes)
 	if eval.IsBlocked && eval.NextBlockerID != "" {
 		if target, ok := p.issueMap[eval.NextBlockerID]; ok {
-			rawHint = fmt.Sprintf(" %s %s %s", mg.SymNextArrow, eval.NextBlockerID, target.Title)
+			rawHint = fmt.Sprintf(" %s %s %s", SymNextArrow, eval.NextBlockerID, target.Title)
 		} else {
-			rawHint = fmt.Sprintf(" %s missing %s", mg.SymNextArrow, eval.NextBlockerID)
+			rawHint = fmt.Sprintf(" %s missing %s", SymNextArrow, eval.NextBlockerID)
 		}
 	}
 
@@ -517,11 +516,11 @@ func (p *Parade) renderIssue(item ParadeItem, selected bool, distFromCursor int)
 	// Apply dim styling to deferred issue titles, or highlight fuzzy matches
 	var renderedTitle string
 	if indices, ok := p.MatchHighlights[issue.ID]; ok && len(indices) > 0 {
-		renderedTitle = mg.HighlightMatches(title, indices, maxTitle)
+		renderedTitle = HighlightMatches(title, indices, maxTitle)
 	} else {
 		titleStyle := lipgloss.NewStyle()
 		if issue.IsDeferred() {
-			titleStyle = mg.DeferredStyle
+			titleStyle = DeferredStyle
 		}
 		renderedTitle = titleStyle.Render(title)
 	}
@@ -529,7 +528,7 @@ func (p *Parade) renderIssue(item ParadeItem, selected bool, distFromCursor int)
 	// Age-based color for issue ID (fresh=green, aging=gold, stale=red)
 	ageDays := int(issue.Age().Hours() / 24)
 	agePct := min(ageDays*100/30, 100) // 30 days = fully stale
-	idStyle := mg.GradientHeat.At(agePct)
+	idStyle := GradientHeat.At(agePct)
 
 	line := fmt.Sprintf("%s%s %s%s%s%s %s %s",
 		indent,
@@ -543,18 +542,18 @@ func (p *Parade) renderIssue(item ParadeItem, selected bool, distFromCursor int)
 	)
 	line += qualityBadge + dueBadge + deferBadge + hint
 
-	leftBorder := borderStyle.Render(mg.BoxVertical)
-	rightBorder := borderStyle.Render(mg.BoxVertical)
+	leftBorder := borderStyle.Render(BoxVertical)
+	rightBorder := borderStyle.Render(BoxVertical)
 
 	if selected {
-		cursor := mg.ItemCursor.Render(mg.Cursor + " ")
+		cursor := ItemCursor.Render(Cursor + " ")
 		row := cursor + line
 		// Pad to fill inner width, then apply highlight
 		rowWidth := lipgloss.Width(row)
 		if padLen := innerWidth - rowWidth; padLen > 0 {
 			row += strings.Repeat(" ", padLen)
 		}
-		content := mg.ItemSelectedBg.Render(ansi.Truncate(row, innerWidth, ""))
+		content := ItemSelectedBg.Render(ansi.Truncate(row, innerWidth, ""))
 		return leftBorder + " " + content + " " + rightBorder
 	}
 
@@ -576,33 +575,33 @@ func (p *Parade) renderIssue(item ParadeItem, selected bool, distFromCursor int)
 func statusSymbol(issue *data.Issue, issueMap map[string]*data.Issue, blockingTypes map[string]bool) string {
 	switch issue.Status {
 	case data.StatusClosed:
-		return mg.SymPassed
+		return SymPassed
 	case data.StatusInProgress:
 		if issue.EvaluateDependencies(issueMap, blockingTypes).IsBlocked {
-			return mg.SymStalled
+			return SymStalled
 		}
-		return mg.SymRolling
+		return SymRolling
 	default:
 		if issue.EvaluateDependencies(issueMap, blockingTypes).IsBlocked {
-			return mg.SymStalled
+			return SymStalled
 		}
-		return mg.SymLinedUp
+		return SymLinedUp
 	}
 }
 
 func statusColor(issue *data.Issue, issueMap map[string]*data.Issue, blockingTypes map[string]bool) color.Color {
 	switch issue.Status {
 	case data.StatusClosed:
-		return mg.StatusPassed
+		return StatusPassed
 	case data.StatusInProgress:
 		if issue.EvaluateDependencies(issueMap, blockingTypes).IsBlocked {
-			return mg.StatusStalled
+			return StatusStalled
 		}
-		return mg.StatusRolling
+		return StatusRolling
 	default:
 		if issue.EvaluateDependencies(issueMap, blockingTypes).IsBlocked {
-			return mg.StatusStalled
+			return StatusStalled
 		}
-		return mg.StatusLinedUp
+		return StatusLinedUp
 	}
 }

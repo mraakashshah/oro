@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"oro/pkg/dashboard/data"
-	"oro/pkg/mg"
 
 	"charm.land/bubbles/v2/viewport"
 	"github.com/charmbracelet/x/ansi"
@@ -46,27 +45,27 @@ func TestStatusSymbol(t *testing.T) {
 		{
 			name:   "closed",
 			issue:  testIssue("closed-1", data.StatusClosed),
-			expect: mg.SymPassed,
+			expect: SymPassed,
 		},
 		{
 			name:   "in_progress not blocked",
 			issue:  testIssue("rolling-1", data.StatusInProgress),
-			expect: mg.SymRolling,
+			expect: SymRolling,
 		},
 		{
 			name:   "in_progress blocked",
 			issue:  blockedIssue("stalled-ip-1", data.StatusInProgress),
-			expect: mg.SymStalled,
+			expect: SymStalled,
 		},
 		{
 			name:   "open not blocked",
 			issue:  testIssue("open-1", data.StatusOpen),
-			expect: mg.SymLinedUp,
+			expect: SymLinedUp,
 		},
 		{
 			name:   "open blocked",
 			issue:  blockedIssue("stalled-open-1", data.StatusOpen),
-			expect: mg.SymStalled,
+			expect: SymStalled,
 		},
 	}
 
@@ -92,27 +91,27 @@ func TestStatusColor(t *testing.T) {
 		{
 			name:   "closed",
 			issue:  testIssue("closed-1", data.StatusClosed),
-			expect: mg.StatusPassed,
+			expect: StatusPassed,
 		},
 		{
 			name:   "in_progress not blocked",
 			issue:  testIssue("rolling-1", data.StatusInProgress),
-			expect: mg.StatusRolling,
+			expect: StatusRolling,
 		},
 		{
 			name:   "in_progress blocked",
 			issue:  blockedIssue("stalled-ip-1", data.StatusInProgress),
-			expect: mg.StatusStalled,
+			expect: StatusStalled,
 		},
 		{
 			name:   "open not blocked",
 			issue:  testIssue("open-1", data.StatusOpen),
-			expect: mg.StatusLinedUp,
+			expect: StatusLinedUp,
 		},
 		{
 			name:   "open blocked",
 			issue:  blockedIssue("stalled-open-1", data.StatusOpen),
-			expect: mg.StatusStalled,
+			expect: StatusStalled,
 		},
 	}
 
@@ -196,8 +195,8 @@ func TestRenderIssueCursor(t *testing.T) {
 	}
 
 	out := p.renderIssue(item, true, 0)
-	if !strings.Contains(out, mg.Cursor) {
-		t.Fatalf("renderIssue with selected=true should contain cursor %q, got: %s", mg.Cursor, out)
+	if !strings.Contains(out, Cursor) {
+		t.Fatalf("renderIssue with selected=true should contain cursor %q, got: %s", Cursor, out)
 	}
 }
 
@@ -219,8 +218,8 @@ func TestRenderIssueNoCursor(t *testing.T) {
 	}
 
 	out := p.renderIssue(item, false, 0)
-	if strings.Contains(out, mg.Cursor) {
-		t.Fatalf("renderIssue with selected=false should not contain cursor %q, got: %s", mg.Cursor, out)
+	if strings.Contains(out, Cursor) {
+		t.Fatalf("renderIssue with selected=false should not contain cursor %q, got: %s", Cursor, out)
 	}
 }
 
@@ -243,8 +242,8 @@ func TestRenderIssueMultiSelect(t *testing.T) {
 	}
 
 	out := p.renderIssue(item, false, 0)
-	if !strings.Contains(out, mg.SymSelected) {
-		t.Fatalf("renderIssue with multi-select should contain %q, got: %s", mg.SymSelected, out)
+	if !strings.Contains(out, SymSelected) {
+		t.Fatalf("renderIssue with multi-select should contain %q, got: %s", SymSelected, out)
 	}
 }
 
@@ -267,8 +266,8 @@ func TestRenderIssueChangedDot(t *testing.T) {
 	}
 
 	out := p.renderIssue(item, false, 0)
-	if !strings.Contains(out, mg.SymChanged) {
-		t.Fatalf("renderIssue with ChangedIDs should contain %q, got: %s", mg.SymChanged, out)
+	if !strings.Contains(out, SymChanged) {
+		t.Fatalf("renderIssue with ChangedIDs should contain %q, got: %s", SymChanged, out)
 	}
 }
 
@@ -290,8 +289,8 @@ func TestRenderIssueNoOrphanBadge(t *testing.T) {
 	}
 
 	out := p.renderIssue(item, false, 0)
-	if strings.Contains(out, mg.SymDeadRig) {
-		t.Fatalf("renderIssue without OrphanedIDs should not contain %q", mg.SymDeadRig)
+	if strings.Contains(out, SymDeadRig) {
+		t.Fatalf("renderIssue without OrphanedIDs should not contain %q", SymDeadRig)
 	}
 }
 
@@ -372,8 +371,8 @@ func TestRenderIssueDueBadge(t *testing.T) {
 		t.Fatal("no selectable item found")
 	}
 	out := p.renderIssue(item, false, 0)
-	if !strings.Contains(out, mg.SymDueDate) {
-		t.Fatalf("renderIssue with upcoming due should contain %q, got: %s", mg.SymDueDate, out)
+	if !strings.Contains(out, SymDueDate) {
+		t.Fatalf("renderIssue with upcoming due should contain %q, got: %s", SymDueDate, out)
 	}
 }
 
@@ -396,8 +395,8 @@ func TestRenderIssueOverdueBadge(t *testing.T) {
 		t.Fatal("no selectable item found")
 	}
 	out := p.renderIssue(item, false, 0)
-	if !strings.Contains(out, mg.SymOverdue) {
-		t.Fatalf("renderIssue with overdue should contain %q, got: %s", mg.SymOverdue, out)
+	if !strings.Contains(out, SymOverdue) {
+		t.Fatalf("renderIssue with overdue should contain %q, got: %s", SymOverdue, out)
 	}
 }
 
@@ -420,8 +419,8 @@ func TestRenderIssueDeferredDim(t *testing.T) {
 		t.Fatal("no selectable item found")
 	}
 	out := p.renderIssue(item, false, 0)
-	if !strings.Contains(out, mg.SymDeferred) {
-		t.Fatalf("renderIssue with deferred should contain %q, got: %s", mg.SymDeferred, out)
+	if !strings.Contains(out, SymDeferred) {
+		t.Fatalf("renderIssue with deferred should contain %q, got: %s", SymDeferred, out)
 	}
 }
 
@@ -446,12 +445,12 @@ func TestRenderIssueHierarchicalIndent(t *testing.T) {
 			// Parent should not have extra indent (no leading spaces before sym)
 		case "mg-007.1":
 			// Depth 1 → 2 spaces of indent
-			if !strings.Contains(out, "  "+mg.SymLinedUp) {
+			if !strings.Contains(out, "  "+SymLinedUp) {
 				t.Errorf("child issue should be indented, got: %s", out)
 			}
 		case "mg-007.1.1":
 			// Depth 2 → 4 spaces of indent
-			if !strings.Contains(out, "    "+mg.SymLinedUp) {
+			if !strings.Contains(out, "    "+SymLinedUp) {
 				t.Errorf("grandchild issue should be double-indented, got: %s", out)
 			}
 		}
@@ -474,8 +473,8 @@ func TestDetailRenderContentDueDate(t *testing.T) {
 	if !strings.Contains(out, "Due:") {
 		t.Fatalf("renderContent with DueAt set should contain 'Due:', got: %s", out)
 	}
-	if !strings.Contains(out, mg.SymDueDate) {
-		t.Fatalf("renderContent with upcoming due should contain %q, got: %s", mg.SymDueDate, out)
+	if !strings.Contains(out, SymDueDate) {
+		t.Fatalf("renderContent with upcoming due should contain %q, got: %s", SymDueDate, out)
 	}
 }
 
@@ -498,8 +497,8 @@ func TestDetailRenderContentRichDeps(t *testing.T) {
 		AllIssues:     allIssues,
 	}
 	out := d.renderContent()
-	if !strings.Contains(out, mg.SymRelated) {
-		t.Fatalf("renderContent with related dep should contain %q, got: %s", mg.SymRelated, out)
+	if !strings.Contains(out, SymRelated) {
+		t.Fatalf("renderContent with related dep should contain %q, got: %s", SymRelated, out)
 	}
 	if !strings.Contains(out, "related to") {
 		t.Fatalf("renderContent with related dep should contain 'related to', got: %s", out)
@@ -512,14 +511,14 @@ func TestDepTypeDisplay(t *testing.T) {
 		wantSym  string
 		wantVerb string
 	}{
-		{"related", mg.SymRelated, "related to"},
-		{"duplicates", mg.SymDuplicates, "duplicates"},
-		{"supersedes", mg.SymSupersedes, "supersedes"},
-		{"discovered-from", mg.SymNonBlocking, "discovered from"},
-		{"waits-for", mg.SymStalled, "waits for"},
-		{"parent-child", mg.DepTree, "child of"},
-		{"replies-to", mg.SymNonBlocking, "replies to"},
-		{"unknown-type", mg.SymNonBlocking, "unknown-type"},
+		{"related", SymRelated, "related to"},
+		{"duplicates", SymDuplicates, "duplicates"},
+		{"supersedes", SymSupersedes, "supersedes"},
+		{"discovered-from", SymNonBlocking, "discovered from"},
+		{"waits-for", SymStalled, "waits for"},
+		{"parent-child", DepTree, "child of"},
+		{"replies-to", SymNonBlocking, "replies to"},
+		{"unknown-type", SymNonBlocking, "unknown-type"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.depType, func(t *testing.T) {

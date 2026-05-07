@@ -200,7 +200,6 @@ package beadstore
 
 import (
 	"oro/pkg/dispatcher"
-	"oro/pkg/mg/data"
 	"oro/pkg/ops"
 	"oro/pkg/worker"
 )
@@ -221,9 +220,8 @@ EOF
 	fi
 	for expected in \
 		'pkg/beadstore/bad.go:4:.*oro/pkg/dispatcher' \
-		'pkg/beadstore/bad.go:5:.*oro/pkg/mg/data' \
-		'pkg/beadstore/bad.go:6:.*oro/pkg/ops' \
-		'pkg/beadstore/bad.go:7:.*oro/pkg/worker'; do
+		'pkg/beadstore/bad.go:5:.*oro/pkg/ops' \
+		'pkg/beadstore/bad.go:6:.*oro/pkg/worker'; do
 		if ! echo "$output" | grep -q "$expected"; then
 			echo "Expected output to include $expected, got:"
 			echo "$output"

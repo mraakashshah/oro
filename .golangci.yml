@@ -175,7 +175,7 @@ linters:
       # Bubbletea TUI: View/Update funcs are naturally long, models use
       # type assertions, package-level style vars, math/rand for
       # animations (not security), and nested conditionals in rendering.
-      - path: pkg/mg/
+      - path: pkg/dashboard/views/
         linters:
           - funlen
           - gocyclo
@@ -193,7 +193,7 @@ linters:
           - unparam
           - wrapcheck
 
-      # pkg/dashboard mirrors pkg/mg structure (TUI-style code copied from mg/data).
+      # pkg/dashboard contains relocated TUI-style code.
       - path: pkg/dashboard/
         linters:
           - funlen
