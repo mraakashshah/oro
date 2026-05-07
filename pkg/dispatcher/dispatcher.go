@@ -1672,9 +1672,11 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 		Output:   qgOutput,
 		Attempt:  0, // Will be updated after lock
 	}
+	qgFingerprint, qgSummary := FingerprintQGFailure(qgOutput, QGFingerprintOptions{})
 
 	_ = d.logEvent(ctx, "quality_gate_rejected", workerID, beadID, workerID,
-		fmt.Sprintf(`{"reason":"QualityGatePassed=false","error":%q}`, qgErr.Error()))
+		fmt.Sprintf(`{"reason":"QualityGatePassed=false","error":%q,"fingerprint":%q,"summary":%q}`,
+			qgErr.Error(), qgFingerprint, qgSummary))
 
 	// Check stuck detection: hash QGOutput and track consecutive identical hashes.
 	if d.isQGStuck(beadID, qgOutput) {
