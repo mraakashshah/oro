@@ -1718,7 +1718,7 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 }
 
 func (d *Dispatcher) recordQGFailureIncident(ctx context.Context, workerID, beadID string, assignmentID int64, attempt int, output, fingerprint, summary string, cls QGFailureClassification) {
-	_, err := RecordQGFailureOccurrence(ctx, d.db, QGFailureRecord{
+	rec := QGFailureRecord{
 		ID:           fmt.Sprintf("%s:%s:%d:%d", beadID, workerID, assignmentID, attempt),
 		BeadID:       beadID,
 		WorkerID:     workerID,
@@ -1727,10 +1727,16 @@ func (d *Dispatcher) recordQGFailureIncident(ctx context.Context, workerID, bead
 		Fingerprint:  fingerprint,
 		Summary:      summary,
 		Output:       output,
-	}, cls)
+	}
+	incident, err := RecordQGFailureOccurrence(ctx, d.db, rec, cls)
 	if err != nil {
 		_ = d.logEvent(ctx, "qg_failure_record_failed", workerID, beadID, workerID,
 			fmt.Sprintf(`{"error":%q,"fingerprint":%q}`, err.Error(), fingerprint))
+		return
+	}
+	if err := d.linkQGFailureToBeads(ctx, incident, rec, cls); err != nil {
+		_ = d.logEvent(ctx, "qg_failure_link_failed", workerID, beadID, workerID,
+			fmt.Sprintf(`{"error":%q,"fingerprint":%q,"incident_id":%d}`, err.Error(), fingerprint, incident.ID))
 	}
 }
 
