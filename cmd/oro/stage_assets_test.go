@@ -13,16 +13,26 @@ import (
 func TestStageAssetsUsesRepoAssetsDir(t *testing.T) {
 	// Find repo root (two levels up from cmd/oro/)
 	repoRoot := filepath.Join("..", "..")
-	assetsDir := filepath.Join(repoRoot, "cmd", "oro", "_assets")
 
-	// Clean up any existing _assets from previous runs
-	if err := os.RemoveAll(assetsDir); err != nil && !os.IsNotExist(err) {
-		t.Fatalf("failed to clean _assets: %v", err)
+	tmp := t.TempDir()
+	makefile, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(tmp, "Makefile"), makefile, 0o600); err != nil {
+		t.Fatalf("write temp Makefile: %v", err)
+	}
+	if err := os.CopyFS(filepath.Join(tmp, "assets"), os.DirFS(filepath.Join(repoRoot, "assets"))); err != nil {
+		t.Fatalf("copy assets fixture: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmp, "cmd", "oro"), 0o750); err != nil {
+		t.Fatalf("mkdir cmd/oro: %v", err)
+	}
+	assetsDir := filepath.Join(tmp, "cmd", "oro", "_assets")
 
 	// Run make stage-assets from repo root
 	cmd := exec.Command("make", "stage-assets")
-	cmd.Dir = repoRoot
+	cmd.Dir = tmp
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("make stage-assets failed: %v\nOutput: %s", err, output)

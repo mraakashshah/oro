@@ -313,6 +313,13 @@ func TestCmdBeadCreateShowUpdateCloseRoundTripThroughBinary(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "state.db")
 	oroHome := filepath.Join(tmpDir, "oro-home")
 
+	stage := exec.Command("make", "stage-assets")
+	stage.Dir = filepath.Join("..", "..")
+	stage.Env = os.Environ()
+	if out, err := stage.CombinedOutput(); err != nil {
+		t.Fatalf("stage assets: %v\n%s", err, out)
+	}
+
 	build := exec.Command("go", "build", "-o", binPath, ".")
 	build.Env = os.Environ()
 	if out, err := build.CombinedOutput(); err != nil {

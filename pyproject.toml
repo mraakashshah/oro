@@ -28,6 +28,7 @@ init-hook = "import sys; sys.path.insert(0, 'assets/hooks')"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = ["--import-mode=importlib"]
 markers = [
     "requires_oro_home: tests that require ~/.oro/ directory structure"
 ]

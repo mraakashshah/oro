@@ -30,3 +30,13 @@ def test_pyright_python_version():
             f"pyrightconfig.json takes precedence over pyproject.toml but "
             f"pythonVersion is {data.get('pythonVersion')!r} — must be '3.13'"
         )
+
+
+def test_pytest_uses_importlib_mode_for_mirrored_hook_tests():
+    """Mirrored hook test files share basenames and must not collide at collection time."""
+    pyproject = PROJECT_ROOT / "pyproject.toml"
+    with pyproject.open("rb") as f:
+        config = tomllib.load(f)
+
+    pytest_cfg = config.get("tool", {}).get("pytest", {}).get("ini_options", {})
+    assert pytest_cfg.get("addopts") == ["--import-mode=importlib"]

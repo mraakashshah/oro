@@ -1,187 +1,152 @@
-#!/usr/bin/env python3
-"""Tests for pane_handoff_reminder.py PreToolUse hook."""
+"""Tests for the pane_handoff_reminder PreToolUse hook."""
+# pylint: disable=import-error
 
-import json
-import os
-import tempfile
+import importlib.util
 from pathlib import Path
-from unittest.mock import patch
 
-import pytest
-from pane_handoff_reminder import main
+import pytest  # type: ignore[import-not-found]
 
+# Load the hook module from source (assets/hooks/) for testing
+_repo_root = Path(__file__).resolve().parents[2]
+_spec = importlib.util.spec_from_file_location(
+    "pane_handoff_reminder",
+    _repo_root / "assets" / "hooks" / "pane_handoff_reminder.py",
+)
+_mod = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
+_spec.loader.exec_module(_mod)  # type: ignore[union-attr]
 
-@pytest.fixture
-def temp_panes_dir():
-    """Create temporary panes directory structure."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        panes = Path(tmpdir) / "panes"
-        panes.mkdir()
-        yield panes
-
-
-@pytest.fixture
-def mock_env_no_role():
-    """Mock environment with no ORO_ROLE set."""
-    with patch.dict(os.environ, {}, clear=True):
-        yield
+_check_signal = _mod._check_signal
+main = _mod.main
 
 
 @pytest.fixture
-def mock_env_architect(temp_panes_dir):
-    """Mock environment with ORO_ROLE=architect."""
-    architect_dir = temp_panes_dir / "architect"
-    architect_dir.mkdir()
-    with patch.dict(os.environ, {"ORO_ROLE": "architect", "ORO_PANES_DIR": str(temp_panes_dir)}):
-        yield architect_dir
+def temp_panes_dir(tmp_path, monkeypatch):
+    """Create a temporary panes directory and set ORO_PANES_DIR."""
+    panes_dir = tmp_path / "panes"
+    panes_dir.mkdir()
+    monkeypatch.setenv("ORO_PANES_DIR", str(panes_dir))
+    return panes_dir
 
 
-def test_no_output_when_role_not_set(mock_env_no_role, capsys):
-    """Hook should no-op when ORO_ROLE is not set."""
-    hook_input = {
-        "hookEventName": "PreToolUse",
-        "tool_name": "Read",
-        "tool_input": {"file_path": "/some/file.txt"},
-    }
+@pytest.fixture
+def temp_role(monkeypatch):
+    """Set a test ORO_ROLE."""
+    monkeypatch.setenv("ORO_ROLE", "test-worker")
+    return "test-worker"
 
-    with patch("sys.stdin.read", return_value=json.dumps(hook_input)):
+
+class TestCheckSignal:
+    """Test the _check_signal function."""
+
+    def test_signal_exists(self, temp_panes_dir, temp_role):
+        """Should return True when signal file exists."""
+        role_dir = temp_panes_dir / temp_role
+        role_dir.mkdir()
+        signal_file = role_dir / "handoff_requested"
+        signal_file.touch()
+
+        assert _check_signal(temp_role) is True
+
+    def test_signal_missing(self, temp_panes_dir, temp_role):
+        """Should return False when signal file missing."""
+        role_dir = temp_panes_dir / temp_role
+        role_dir.mkdir()
+
+        assert _check_signal(temp_role) is False
+
+
+class TestMessageWording:
+    """Test that reminder message uses appropriate (non-alarming) wording."""
+
+    def test_message_wording(self, temp_panes_dir, temp_role, capsys):
+        """Output message must not contain 'CRITICAL' — use calm directive wording."""
+        role_dir = temp_panes_dir / temp_role
+        role_dir.mkdir()
+        (role_dir / "handoff_requested").touch()
+        (role_dir / "context_pct").write_text("55")
+
         main()
-
-    captured = capsys.readouterr()
-    assert captured.out == ""
-
-
-def test_no_output_when_signal_file_missing(mock_env_architect, capsys):
-    """Hook should no-op when handoff_requested signal file is missing."""
-    hook_input = {
-        "hookEventName": "PreToolUse",
-        "tool_name": "Read",
-        "tool_input": {"file_path": "/some/file.txt"},
-    }
-
-    with patch("sys.stdin.read", return_value=json.dumps(hook_input)):
-        main()
-
-    captured = capsys.readouterr()
-    assert captured.out == ""
-
-
-def test_injects_reminder_when_signal_present(mock_env_architect, capsys):
-    """Hook should inject system reminder when handoff_requested exists."""
-    # Create the signal file
-    signal_file = mock_env_architect / "handoff_requested"
-    signal_file.touch()
-
-    hook_input = {
-        "hookEventName": "PreToolUse",
-        "tool_name": "Read",
-        "tool_input": {"file_path": "/some/file.txt"},
-    }
-
-    with patch("sys.stdin.read", return_value=json.dumps(hook_input)):
-        main()
-
-    captured = capsys.readouterr()
-    output = json.loads(captured.out)
-
-    assert "hookSpecificOutput" in output
-    assert output["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
-    assert "additionalContext" in output["hookSpecificOutput"]
-
-    context = output["hookSpecificOutput"]["additionalContext"]
-    assert "handoff" in context.lower()
-    assert "architect/handoff.yaml" in context
-    assert "CRITICAL" in context
-    assert "Context threshold reached" in context
-
-
-def test_does_not_delete_signal_file(mock_env_architect, capsys):
-    """Hook should NOT delete the signal file (dispatcher manages lifecycle)."""
-    signal_file = mock_env_architect / "handoff_requested"
-    signal_file.touch()
-
-    hook_input = {
-        "hookEventName": "PreToolUse",
-        "tool_name": "Read",
-        "tool_input": {"file_path": "/some/file.txt"},
-    }
-
-    with patch("sys.stdin.read", return_value=json.dumps(hook_input)):
-        main()
-
-    # Signal file should still exist
-    assert signal_file.exists()
-
-
-def test_performance_when_signal_missing(mock_env_architect, tmp_path):
-    """Hook should be fast (<5ms) when signal file is missing."""
-    import time
-
-    hook_input = {
-        "hookEventName": "PreToolUse",
-        "tool_name": "Read",
-        "tool_input": {"file_path": "/some/file.txt"},
-    }
-
-    start = time.perf_counter()
-
-    with patch("sys.stdin.read", return_value=json.dumps(hook_input)):
-        main()
-
-    elapsed = (time.perf_counter() - start) * 1000  # convert to ms
-
-    # Should be very fast (file existence check only)
-    assert elapsed < 5.0
-
-
-def test_works_with_different_roles(temp_panes_dir, capsys):
-    """Hook should work with different role names."""
-    manager_dir = temp_panes_dir / "manager"
-    manager_dir.mkdir()
-    signal_file = manager_dir / "handoff_requested"
-    signal_file.touch()
-
-    with patch.dict(os.environ, {"ORO_ROLE": "manager", "ORO_PANES_DIR": str(temp_panes_dir)}):
-        hook_input = {
-            "hookEventName": "PreToolUse",
-            "tool_name": "Read",
-            "tool_input": {"file_path": "/some/file.txt"},
-        }
-
-        with patch("sys.stdin.read", return_value=json.dumps(hook_input)):
-            main()
 
         captured = capsys.readouterr()
-        output = json.loads(captured.out)
+        assert captured.out != "", "Hook should produce output when signal+context fire"
+        assert "CRITICAL" not in captured.out, (
+            "Message must not use alarming 'CRITICAL' prefix — use calm wording instead"
+        )
+        assert "handoff" in captured.out.lower(), "Message must mention handoff"
 
-        context = output["hookSpecificOutput"]["additionalContext"]
-        assert "manager/handoff.yaml" in context
 
+class TestMainWithContextGuard:
+    """Test main() respects context_pct guard (defense in depth)."""
 
-def test_uses_default_panes_dir_when_env_not_set(tmp_path, capsys):
-    """Hook should use ~/.oro/panes when ORO_PANES_DIR is not set."""
-    # Create mock home directory structure
-    home_oro = tmp_path / ".oro"
-    home_oro.mkdir()
-    panes = home_oro / "panes"
-    panes.mkdir()
-    worker_dir = panes / "worker"
-    worker_dir.mkdir()
-    signal_file = worker_dir / "handoff_requested"
-    signal_file.touch()
+    def test_stale_signal_low_context_no_output(self, temp_panes_dir, temp_role, capsys):
+        """Signal exists + context_pct=19 → no output."""
+        # Setup: create signal file
+        role_dir = temp_panes_dir / temp_role
+        role_dir.mkdir()
+        signal_file = role_dir / "handoff_requested"
+        signal_file.touch()
 
-    with patch.dict(os.environ, {"ORO_ROLE": "worker", "HOME": str(tmp_path)}):
-        hook_input = {
-            "hookEventName": "PreToolUse",
-            "tool_name": "Read",
-            "tool_input": {"file_path": "/some/file.txt"},
-        }
+        # Setup: create context_pct file with low value
+        context_pct_file = role_dir / "context_pct"
+        context_pct_file.write_text("19")
 
-        with patch("sys.stdin.read", return_value=json.dumps(hook_input)):
-            main()
+        # Act: run the hook
+        main()
 
+        # Assert: no output because context is still fresh (< 40%)
         captured = capsys.readouterr()
-        output = json.loads(captured.out)
+        assert captured.out == ""
 
-        context = output["hookSpecificOutput"]["additionalContext"]
-        assert "handoff.yaml" in context
+    def test_valid_signal_high_context_outputs_warning(self, temp_panes_dir, temp_role, capsys):
+        """Signal exists + context_pct=55 → critical warning."""
+        # Setup: create signal file
+        role_dir = temp_panes_dir / temp_role
+        role_dir.mkdir()
+        signal_file = role_dir / "handoff_requested"
+        signal_file.touch()
+
+        # Setup: create context_pct file with high value
+        context_pct_file = role_dir / "context_pct"
+        context_pct_file.write_text("55")
+
+        # Act: run the hook
+        main()
+
+        # Assert: outputs handoff reminder because context is high (>= 40%)
+        captured = capsys.readouterr()
+        assert "Context threshold reached" in captured.out
+        assert "handoff.yaml" in captured.out
+
+    def test_signal_exists_no_context_pct_file_no_output(self, temp_panes_dir, temp_role, capsys):
+        """Signal exists but context_pct file missing → no output (defensive)."""
+        # Setup: create signal file only
+        role_dir = temp_panes_dir / temp_role
+        role_dir.mkdir()
+        signal_file = role_dir / "handoff_requested"
+        signal_file.touch()
+
+        # Act: run the hook (context_pct file doesn't exist)
+        main()
+
+        # Assert: no output (can't verify context is high, so don't fire)
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    def test_signal_exists_malformed_context_pct_no_output(self, temp_panes_dir, temp_role, capsys):
+        """Signal exists + malformed context_pct → no output (defensive)."""
+        # Setup: create signal file
+        role_dir = temp_panes_dir / temp_role
+        role_dir.mkdir()
+        signal_file = role_dir / "handoff_requested"
+        signal_file.touch()
+
+        # Setup: create malformed context_pct file
+        context_pct_file = role_dir / "context_pct"
+        context_pct_file.write_text("not-a-number")
+
+        # Act: run the hook
+        main()
+
+        # Assert: no output (can't parse pct, so don't fire)
+        captured = capsys.readouterr()
+        assert captured.out == ""
