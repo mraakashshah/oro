@@ -810,6 +810,15 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *fakeBeadStore, *mockWorktree
 // startDispatcher starts the dispatcher in the background and returns a cancel func.
 func startDispatcher(t *testing.T, d *Dispatcher) context.CancelFunc {
 	t.Helper()
+	return startDispatcherWithTimeout(t, d, 2*time.Second)
+}
+
+// startDispatcherWithTimeout is like startDispatcher but uses a caller-supplied
+// timeout for the listener-ready wait. Use it in tests that run under heavy
+// parallel load (e.g. parallel QG execution) where goroutine scheduling delays
+// can exceed the default 2-second window.
+func startDispatcherWithTimeout(t *testing.T, d *Dispatcher, listenerTimeout time.Duration) context.CancelFunc {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 
 	errCh := make(chan error, 1)
@@ -830,7 +839,7 @@ func startDispatcher(t *testing.T, d *Dispatcher) context.CancelFunc {
 		d.mu.Lock()
 		defer d.mu.Unlock()
 		return d.listener != nil
-	}, 2*time.Second)
+	}, listenerTimeout)
 
 	t.Cleanup(func() {
 		cancel()
@@ -9955,7 +9964,7 @@ func TestPriorityContention_StableUnderLoad(t *testing.T) {
 	)
 
 	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
-	startDispatcher(t, d)
+	startDispatcherWithTimeout(t, d, opTimeout)
 
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, opTimeout)
