@@ -21,6 +21,72 @@ type QGFailureRecord struct {
 	Output      string
 }
 
+// QGFailureHistory summarizes prior observations for the same or related
+// quality-gate failure fingerprint.
+type QGFailureHistory struct {
+	AffectedBeads  int
+	KnownFlaky     bool
+	RerunPassed    bool
+	RetryExhausted bool
+}
+
+// QGFailureClass is the broad cause category assigned to a QG failure.
+type QGFailureClass string
+
+const (
+	// QGFailureClassWorkerDeterministic means the failure is tied to worker changes.
+	QGFailureClassWorkerDeterministic QGFailureClass = "worker_deterministic"
+	// QGFailureClassSystemic means the failure appears shared across beads or infrastructure.
+	QGFailureClassSystemic QGFailureClass = "systemic"
+	// QGFailureClassFlaky means the failure matches known flaky or rerun-sensitive behavior.
+	QGFailureClassFlaky QGFailureClass = "flaky"
+	// QGFailureClassTransient means the failure appears temporary or environmental.
+	QGFailureClassTransient QGFailureClass = "transient"
+	// QGFailureClassImpossible means the bead acceptance or state is impossible to satisfy as written.
+	QGFailureClassImpossible QGFailureClass = "impossible"
+	// QGFailureClassUnknown means the classifier has low confidence.
+	QGFailureClassUnknown QGFailureClass = "unknown"
+)
+
+// QGFailureDecision is the dispatcher policy selected for a classified QG
+// failure.
+type QGFailureDecision string
+
+const (
+	// QGFailureDecisionRetryOriginal retries the same original bead with feedback.
+	QGFailureDecisionRetryOriginal QGFailureDecision = "retry_original"
+	// QGFailureDecisionReopenOriginal reopens the original bead after retry exhaustion.
+	QGFailureDecisionReopenOriginal QGFailureDecision = "reopen_original"
+	// QGFailureDecisionCreateOrReuseInfra creates or reuses an infra incident.
+	QGFailureDecisionCreateOrReuseInfra QGFailureDecision = "create_or_reuse_infra"
+	// QGFailureDecisionBackoffRetry retries after backoff without burning worker-fix attempts.
+	QGFailureDecisionBackoffRetry QGFailureDecision = "backoff_retry"
+	// QGFailureDecisionBumpOriginal updates or bumps the original bead.
+	QGFailureDecisionBumpOriginal QGFailureDecision = "bump_original"
+	// QGFailureDecisionStopForTriage stops automated handling for human or ops triage.
+	QGFailureDecisionStopForTriage QGFailureDecision = "stop_for_triage"
+)
+
+// QGFailureConfidence is the classifier's confidence in its selected policy.
+type QGFailureConfidence string
+
+const (
+	// QGFailureConfidenceHigh means the classifier has strong evidence.
+	QGFailureConfidenceHigh QGFailureConfidence = "high"
+	// QGFailureConfidenceMedium means the classifier has useful but incomplete evidence.
+	QGFailureConfidenceMedium QGFailureConfidence = "medium"
+	// QGFailureConfidenceLow means automation should stop for triage.
+	QGFailureConfidenceLow QGFailureConfidence = "low"
+)
+
+// QGFailureClassification is the classifier result for one QG failure.
+type QGFailureClassification struct {
+	Class      QGFailureClass
+	Decision   QGFailureDecision
+	Confidence QGFailureConfidence
+	Reason     string
+}
+
 // QGFingerprintOptions configures quality-gate failure normalization.
 type QGFingerprintOptions struct {
 	MaxInputBytes int
@@ -52,6 +118,84 @@ func FingerprintQGFailure(output string, opts QGFingerprintOptions) (fingerprint
 	fingerprint = "qg:" + hex.EncodeToString(sum[:])[:24]
 	summary = summarizeQGFailure(normalized)
 	return fingerprint, summary
+}
+
+// ClassifyQGFailure maps a QG failure record plus prior history to the
+// dispatcher policy that should handle it.
+func ClassifyQGFailure(record QGFailureRecord, history QGFailureHistory) QGFailureClassification {
+	text := strings.ToLower(record.Output + "\n" + record.Summary)
+
+	switch {
+	case isImpossibleQGFailure(text):
+		return qgClassification(QGFailureClassImpossible, QGFailureDecisionBumpOriginal, QGFailureConfidenceHigh,
+			"failure indicates missing or impossible task acceptance")
+	case history.AffectedBeads > 1 || isSystemicQGFailure(text):
+		return qgClassification(QGFailureClassSystemic, QGFailureDecisionCreateOrReuseInfra, QGFailureConfidenceHigh,
+			"failure appears systemic across beads or shared infrastructure")
+	case history.KnownFlaky || history.RerunPassed || isFlakyQGFailure(text):
+		return qgClassification(QGFailureClassFlaky, QGFailureDecisionBackoffRetry, QGFailureConfidenceHigh,
+			"failure matches known flaky or rerun-sensitive pattern")
+	case isTransientQGFailure(text):
+		return qgClassification(QGFailureClassTransient, QGFailureDecisionBackoffRetry, QGFailureConfidenceMedium,
+			"failure appears transient or environmental")
+	case isDeterministicQGFailure(text):
+		if history.RetryExhausted {
+			return qgClassification(QGFailureClassWorkerDeterministic, QGFailureDecisionReopenOriginal, QGFailureConfidenceHigh,
+				"deterministic worker failure exhausted retry budget")
+		}
+		return qgClassification(QGFailureClassWorkerDeterministic, QGFailureDecisionRetryOriginal, QGFailureConfidenceHigh,
+			"failure is tied to deterministic test, compile, or lint output")
+	default:
+		return qgClassification(QGFailureClassUnknown, QGFailureDecisionStopForTriage, QGFailureConfidenceLow,
+			"could not classify QG failure with enough confidence")
+	}
+}
+
+func qgClassification(class QGFailureClass, decision QGFailureDecision, confidence QGFailureConfidence, reason string) QGFailureClassification {
+	return QGFailureClassification{Class: class, Decision: decision, Confidence: confidence, Reason: reason}
+}
+
+func isDeterministicQGFailure(text string) bool {
+	return strings.Contains(text, "--- fail:") ||
+		strings.Contains(text, "\nfail") ||
+		strings.Contains(text, "golangci-lint") ||
+		strings.Contains(text, "compile") ||
+		strings.Contains(text, "build failed") ||
+		strings.Contains(text, "unused variable")
+}
+
+func isSystemicQGFailure(text string) bool {
+	return strings.Contains(text, "package loader") ||
+		strings.Contains(text, "quality_gate.sh") ||
+		strings.Contains(text, "out of memory") ||
+		strings.Contains(text, " oom") ||
+		strings.Contains(text, "no such table") ||
+		strings.Contains(text, "database panic") ||
+		strings.Contains(text, "cannot load stdlib")
+}
+
+func isFlakyQGFailure(text string) bool {
+	return strings.Contains(text, "flaky") ||
+		strings.Contains(text, "race detected") ||
+		strings.Contains(text, "parallel load") ||
+		strings.Contains(text, "rerun passes")
+}
+
+func isTransientQGFailure(text string) bool {
+	return strings.Contains(text, "network") ||
+		strings.Contains(text, "timeout") ||
+		strings.Contains(text, "temporary") ||
+		strings.Contains(text, "database is locked") ||
+		strings.Contains(text, "context canceled") ||
+		strings.Contains(text, "shutdown")
+}
+
+func isImpossibleQGFailure(text string) bool {
+	return strings.Contains(text, "missing acceptance") ||
+		strings.Contains(text, "no cmd field") ||
+		strings.Contains(text, "impossible command") ||
+		strings.Contains(text, "contradictory") ||
+		strings.Contains(text, "required dependency absent")
 }
 
 func normalizeQGFailureOutput(output string, opts QGFingerprintOptions) string {

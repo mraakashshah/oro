@@ -63,3 +63,91 @@ signal: killed
 		t.Fatalf("unparsable output should hash normalized output: %q != %q", rawA, rawB)
 	}
 }
+
+func TestClassifyQGFailureDecisionMatrix(t *testing.T) {
+	tests := []struct {
+		name         string
+		record       dispatcher.QGFailureRecord
+		history      dispatcher.QGFailureHistory
+		wantClass    dispatcher.QGFailureClass
+		wantDecision dispatcher.QGFailureDecision
+	}{
+		{
+			name: "deterministic retries original",
+			record: dispatcher.QGFailureRecord{
+				Output:  "--- FAIL: TestAcceptance\npkg/worker/foo_test.go:42: got false want true",
+				Summary: "FAIL pkg/worker TestAcceptance",
+			},
+			wantClass:    dispatcher.QGFailureClassWorkerDeterministic,
+			wantDecision: dispatcher.QGFailureDecisionRetryOriginal,
+		},
+		{
+			name: "deterministic exhausted reopens original",
+			record: dispatcher.QGFailureRecord{
+				Output: "golangci-lint failed: pkg/foo/foo.go:12: unused variable",
+			},
+			history:      dispatcher.QGFailureHistory{RetryExhausted: true},
+			wantClass:    dispatcher.QGFailureClassWorkerDeterministic,
+			wantDecision: dispatcher.QGFailureDecisionReopenOriginal,
+		},
+		{
+			name: "systemic cross bead creates infra",
+			record: dispatcher.QGFailureRecord{
+				Fingerprint: "qg:loader",
+				Output:      "package loader failure: cannot load stdlib",
+			},
+			history:      dispatcher.QGFailureHistory{AffectedBeads: 3},
+			wantClass:    dispatcher.QGFailureClassSystemic,
+			wantDecision: dispatcher.QGFailureDecisionCreateOrReuseInfra,
+		},
+		{
+			name: "known flaky backs off",
+			record: dispatcher.QGFailureRecord{
+				Output: "race detected under parallel load",
+			},
+			history:      dispatcher.QGFailureHistory{KnownFlaky: true},
+			wantClass:    dispatcher.QGFailureClassFlaky,
+			wantDecision: dispatcher.QGFailureDecisionBackoffRetry,
+		},
+		{
+			name: "transient backs off",
+			record: dispatcher.QGFailureRecord{
+				Output: "network timeout while downloading module",
+			},
+			wantClass:    dispatcher.QGFailureClassTransient,
+			wantDecision: dispatcher.QGFailureDecisionBackoffRetry,
+		},
+		{
+			name: "impossible bumps original",
+			record: dispatcher.QGFailureRecord{
+				Output: "missing acceptance criteria: no Cmd field",
+			},
+			wantClass:    dispatcher.QGFailureClassImpossible,
+			wantDecision: dispatcher.QGFailureDecisionBumpOriginal,
+		},
+		{
+			name: "unknown stops for triage",
+			record: dispatcher.QGFailureRecord{
+				Output: "something odd happened",
+			},
+			wantClass:    dispatcher.QGFailureClassUnknown,
+			wantDecision: dispatcher.QGFailureDecisionStopForTriage,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dispatcher.ClassifyQGFailure(tt.record, tt.history)
+			if got.Class != tt.wantClass || got.Decision != tt.wantDecision {
+				t.Fatalf("ClassifyQGFailure() = class=%q decision=%q, want class=%q decision=%q; reason=%q",
+					got.Class, got.Decision, tt.wantClass, tt.wantDecision, got.Reason)
+			}
+			if got.Confidence == "" || got.Reason == "" {
+				t.Fatalf("classification missing confidence/reason: %+v", got)
+			}
+			if got.Decision == dispatcher.QGFailureDecisionStopForTriage && got.Confidence != dispatcher.QGFailureConfidenceLow {
+				t.Fatalf("triage confidence = %q, want low", got.Confidence)
+			}
+		})
+	}
+}
