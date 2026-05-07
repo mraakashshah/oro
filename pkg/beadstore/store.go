@@ -28,6 +28,8 @@ type Store interface {
 	Update(ctx context.Context, id string, params UpdateParams) error
 	// Close marks a bead closed with the supplied reason.
 	Close(ctx context.Context, id, reason string) error
+	// Delete soft-deletes a bead with the supplied reason.
+	Delete(ctx context.Context, id, reason string) error
 
 	// HasChildren reports whether epicID has any children.
 	HasChildren(ctx context.Context, epicID string) (bool, error)

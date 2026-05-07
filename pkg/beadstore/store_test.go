@@ -18,8 +18,8 @@ func TestStoreContractMatchesReplatformSpec(t *testing.T) {
 		methods[method.Name] = method.Type
 	}
 
-	if len(methods) != 23 {
-		t.Fatalf("Store has %d methods, want 23: %v", len(methods), methodNames(methods))
+	if len(methods) != 24 {
+		t.Fatalf("Store has %d methods, want 24: %v", len(methods), methodNames(methods))
 	}
 
 	ctxType := reflect.TypeOf((*context.Context)(nil)).Elem()
@@ -41,6 +41,7 @@ func TestStoreContractMatchesReplatformSpec(t *testing.T) {
 	assertSignature(t, methods, "Create", []reflect.Type{ctxType, createParamsType}, []reflect.Type{beadPtrType, errType})
 	assertSignature(t, methods, "Update", []reflect.Type{ctxType, stringType, updateParamsType}, []reflect.Type{errType})
 	assertSignature(t, methods, "Close", []reflect.Type{ctxType, stringType, stringType}, []reflect.Type{errType})
+	assertSignature(t, methods, "Delete", []reflect.Type{ctxType, stringType, stringType}, []reflect.Type{errType})
 	assertSignature(t, methods, "HasChildren", []reflect.Type{ctxType, stringType}, []reflect.Type{boolType, errType})
 	assertSignature(t, methods, "AllChildrenClosed", []reflect.Type{ctxType, stringType}, []reflect.Type{boolType, errType})
 	assertSignature(t, methods, "FindByParentAndTag", []reflect.Type{ctxType, stringType, stringType}, []reflect.Type{beadSliceType, errType})
@@ -54,6 +55,21 @@ func TestStoreContractMatchesReplatformSpec(t *testing.T) {
 	assertSignature(t, methods, "GateState", []reflect.Type{ctxType, stringType}, []reflect.Type{gateStateType, errType})
 	assertSignature(t, methods, "HasClosedPremortemChild", []reflect.Type{ctxType, stringType}, []reflect.Type{boolType, errType})
 	assertSignature(t, methods, "IncrPremortCycleCount", []reflect.Type{ctxType, stringType}, []reflect.Type{errType})
+}
+
+func TestStoreInterfaceDeleteSignature(t *testing.T) {
+	storeType := reflect.TypeOf((*beadstore.Store)(nil)).Elem()
+	method, ok := storeType.MethodByName("Delete")
+	if !ok {
+		t.Fatal("Store missing Delete method")
+	}
+
+	ctxType := reflect.TypeOf((*context.Context)(nil)).Elem()
+	stringType := reflect.TypeOf("")
+	errType := reflect.TypeOf((*error)(nil)).Elem()
+	assertSignature(t, map[string]reflect.Type{"Delete": method.Type}, "Delete",
+		[]reflect.Type{ctxType, stringType, stringType},
+		[]reflect.Type{errType})
 }
 
 func TestCreateAndUpdateParamsExposeSpecFields(t *testing.T) {

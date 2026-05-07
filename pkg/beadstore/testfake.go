@@ -358,6 +358,35 @@ func (s *FakeStore) Close(ctx context.Context, id, reason string) error {
 	return nil
 }
 
+// Delete soft-deletes a bead with the supplied reason.
+func (s *FakeStore) Delete(ctx context.Context, id, reason string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("delete bead context: %w", err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.beads[id]; !ok {
+		return &protocol.BeadNotFoundError{BeadID: id}
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "deleted by user"
+	}
+	delete(s.beads, id)
+
+	payload, _ := json.Marshal(map[string]string{"reason": reason})
+	s.journeys[id] = append(s.journeys[id], JourneyEvent{
+		BeadID:  id,
+		Ts:      nowString(),
+		Actor:   "human",
+		Event:   "deleted",
+		Payload: string(payload),
+	})
+	return nil
+}
+
 // AddDependency records a dependency edge for an existing bead.
 func (s *FakeStore) AddDependency(ctx context.Context, beadID, dependsOnID, depType string) error {
 	if err := ctx.Err(); err != nil {

@@ -161,6 +161,13 @@ func (m *fakeBeadStore) Close(_ context.Context, id string, reason string) error
 	return nil
 }
 
+func (m *fakeBeadStore) Delete(_ context.Context, id string, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.beadOps = append(m.beadOps, "delete:"+id)
+	return nil
+}
+
 func (m *fakeBeadStore) Update(_ context.Context, id string, params beadstore.UpdateParams) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -442,6 +443,39 @@ func TestFakeStore(t *testing.T) {
 			t.Fatalf("ClosedBeads returned aliased slice: %v", got)
 		}
 	})
+}
+
+func TestFakeStoreDelete(t *testing.T) {
+	ctx := context.Background()
+	store := beadstore.NewFakeStore(protocol.Bead{ID: "delete-me", Title: "delete me", Status: "open"})
+
+	if err := store.Delete(ctx, "delete-me", ""); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	shown, err := store.Show(ctx, "delete-me")
+	if err != nil {
+		t.Fatalf("Show deleted: %v", err)
+	}
+	if shown != nil {
+		t.Fatalf("Show deleted = %#v, want nil", shown)
+	}
+
+	events, err := store.Journey(ctx, "delete-me", time.Time{})
+	if err != nil {
+		t.Fatalf("Journey deleted: %v", err)
+	}
+	if len(events) != 1 || events[0].Event != "deleted" || !strings.Contains(events[0].Payload, "deleted by user") {
+		t.Fatalf("Delete journey = %#v, want deleted event with default reason", events)
+	}
+
+	var notFound *protocol.BeadNotFoundError
+	if err := store.Delete(ctx, "delete-me", "again"); !errors.As(err, &notFound) {
+		t.Fatalf("second Delete error = %v, want BeadNotFoundError", err)
+	}
+	if err := store.Delete(ctx, "missing", "missing"); !errors.As(err, &notFound) {
+		t.Fatalf("missing Delete error = %v, want BeadNotFoundError", err)
+	}
 }
 
 func TestFakeStoreCards(t *testing.T) {

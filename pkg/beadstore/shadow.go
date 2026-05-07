@@ -196,6 +196,14 @@ func (s *ShadowStore) Close(ctx context.Context, id, reason string) error {
 	return nil
 }
 
+// Delete writes to primary only.
+func (s *ShadowStore) Delete(ctx context.Context, id, reason string) error {
+	if err := s.primary.Delete(ctx, id, reason); err != nil {
+		return fmt.Errorf("shadow primary delete bead: %w", err)
+	}
+	return nil
+}
+
 // Defer writes to primary only when the primary store supports deferred beads.
 func (s *ShadowStore) Defer(ctx context.Context, id, until string) error {
 	primary, ok := s.primary.(deferredStore)

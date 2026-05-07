@@ -315,6 +315,49 @@ WHERE id=? AND deleted=0`, reason, now, now, id)
 	return nil
 }
 
+// Delete soft-deletes a bead with the supplied reason.
+func (s *SQLiteStore) Delete(ctx context.Context, id, reason string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("delete bead context: %w", err)
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "deleted by user"
+	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beadstore: begin delete transaction: %w", err)
+	}
+	defer rollback(tx)
+
+	now := nowString()
+	res, err := tx.ExecContext(ctx, `
+UPDATE beads
+SET deleted=1, close_reason=?, updated_at=?
+WHERE id=? AND deleted=0`, reason, now, id)
+	if err != nil {
+		return fmt.Errorf("delete bead %s: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete bead %s rows affected: %w", id, err)
+	}
+	if n == 0 {
+		return &protocol.BeadNotFoundError{BeadID: id}
+	}
+	if err := insertEvent(ctx, tx, "bead_deleted", id, map[string]any{"reason": reason}); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("beadstore: commit delete %s: %w", id, err)
+	}
+	return nil
+}
+
 // AddDependency records a dependency edge from beadID to dependsOnID.
 func (s *SQLiteStore) AddDependency(ctx context.Context, beadID, dependsOnID, depType string) error {
 	depType = strings.TrimSpace(depType)
