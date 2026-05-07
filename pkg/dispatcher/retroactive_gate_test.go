@@ -5,6 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,11 +85,60 @@ func TestCreateBeadGraphDoesNotSpawnPremortem(t *testing.T) {
 	}
 }
 
-// TestExecuteRefusedOnEligibleParent verifies §11.4 eligibility gate:
-// when a bead's parent has gate_state='eligible' and no closed premortem child
-// exists, CheckPremortemGate returns a blocker error and does not advance the
-// bead's pipeline_stage.
-func TestExecuteRefusedOnEligibleParent(t *testing.T) {
+func TestLegacyPremortemGateIsNotInAssignmentPath(t *testing.T) {
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(testFile), "..", ".."))
+	searchRoots := []string{
+		filepath.Join(repoRoot, "pkg", "dispatcher"),
+		filepath.Join(repoRoot, "cmd", "oro"),
+	}
+
+	for _, root := range searchRoots {
+		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+			if err != nil {
+				return err
+			}
+			ast.Inspect(file, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				switch fn := call.Fun.(type) {
+				case *ast.Ident:
+					if fn.Name == "CheckPremortemGate" {
+						t.Errorf("production call to legacy CheckPremortemGate at %s", fset.Position(fn.Pos()))
+					}
+				case *ast.SelectorExpr:
+					if fn.Sel.Name == "CheckPremortemGate" {
+						t.Errorf("production call to legacy CheckPremortemGate at %s", fset.Position(fn.Sel.Pos()))
+					}
+				}
+				return true
+			})
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", root, err)
+		}
+	}
+}
+
+// TestLegacyPremortemGateHelperRecordsBlocker preserves coverage for the
+// legacy test-only helper. Production assignment and `oro work` paths must not
+// call CheckPremortemGate.
+func TestLegacyPremortemGateHelperRecordsBlocker(t *testing.T) {
 	ctx := context.Background()
 
 	epic := protocol.Bead{ID: "epic-er1", Type: "epic", Status: "open"}
@@ -246,11 +302,9 @@ func TestVerdictTransitionsGateState(t *testing.T) {
 	})
 }
 
-// TestPremortemNotSelfBlocked is a regression test for the gate-self-block
-// pattern: when filterExecutableBeads (or any caller) checks the gate on the
-// auto-spawned premortem bead itself, the gate must NOT refuse it. Otherwise
-// the premortem can never execute and the parent epic deadlocks on 'eligible'.
-func TestPremortemNotSelfBlocked(t *testing.T) {
+// TestLegacyPremortemGateHelperAllowsPremortemSatisfier is a regression test
+// for the gate-self-block pattern in the legacy test-only helper.
+func TestLegacyPremortemGateHelperAllowsPremortemSatisfier(t *testing.T) {
 	ctx := context.Background()
 
 	epic := protocol.Bead{ID: "epic-ns1", Type: "epic", Status: "open"}
