@@ -9960,12 +9960,19 @@ func TestPriorityContention_StableUnderLoad(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, opTimeout)
 
-	// Connect all workers.
+	// Connect all workers and keep them alive with continuous heartbeats.
+	// A single heartbeat per worker is insufficient: the HeartbeatTimeout is
+	// 500ms and under parallel QG load goroutine scheduling delays can exceed
+	// that window, causing checkHeartbeats to fire EscWorkerCrash escalations
+	// before the test assertion runs (same fix as TestDispatcher_HeartbeatTimeout_*).
 	type workerSlot struct {
 		conn net.Conn
 		id   string
 	}
 	slots := make([]workerSlot, numWorkers)
+	stopAllHB := make(chan struct{})
+	var stopOnce sync.Once
+	t.Cleanup(func() { stopOnce.Do(func() { close(stopAllHB) }) })
 	for i := range slots {
 		conn, _ := connectWorker(t, d.cfg.SocketPath)
 		id := fmt.Sprintf("load-worker-%d", i+1)
@@ -9977,6 +9984,28 @@ func TestPriorityContention_StableUnderLoad(t *testing.T) {
 				ContextPct: 10,
 			},
 		})
+		hbData, _ := json.Marshal(protocol.Message{
+			Type: protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{
+				WorkerID:   id,
+				ContextPct: 10,
+			},
+		})
+		hbData = append(hbData, '\n')
+		go func(c net.Conn, data []byte) {
+			ticker := time.NewTicker(100 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stopAllHB:
+					return
+				case <-ticker.C:
+					if _, err := c.Write(data); err != nil {
+						return
+					}
+				}
+			}
+		}(conn, hbData)
 	}
 	waitForWorkers(t, d, numWorkers, opTimeout)
 
