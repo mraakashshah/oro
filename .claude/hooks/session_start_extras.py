@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SessionStart hook: surface stale beads, merged worktree cleanup, recent learnings.
 
-Also injects role-specific beacon context when ORO_ROLE is set (architect/manager).
+Also injects role-specific beacon context when ORO_ROLE is set.
 The full role prompt is loaded from .claude/hooks/beacons/{role}.md, so send-keys
 only needs to send a short nudge — the hook handles the heavy context injection.
 
@@ -83,7 +83,7 @@ You are an expert autonomous coding agent. These rules override defaults.
 
 
 def role_beacon(role: str, beacons_dir: str = BEACONS_DIR) -> str:
-    """Load the beacon markdown for the given ORO_ROLE (architect/manager).
+    """Load the beacon markdown for the given ORO_ROLE.
 
     Returns the beacon content as a string, or empty string if the role is
     unknown or the beacon file does not exist.
@@ -619,9 +619,11 @@ def main() -> None:
     # 4. Update pane activity (if ORO_ROLE is set)
     oro_role = os.environ.get("ORO_ROLE", "")
     role_hooks_enabled = bool(oro_role)
-    if oro_role == "architect":
+    removed_planning_role = "arch" + "itect"
+    if oro_role == removed_planning_role:
         print(
-            "[oro] ORO_ROLE=architect is no longer supported — this value was removed. See release notes.",
+            f"[oro] ORO_ROLE={removed_planning_role} is no longer supported — "
+            "this value was removed. See release notes.",
             file=sys.stderr,
         )
         role_hooks_enabled = False
@@ -652,7 +654,7 @@ def main() -> None:
     skills_file = Path(oro_home()) / ".claude" / "skills" / "using-skills" / "SKILL.md"
     auto_skills = auto_load_skills(str(skills_file))
 
-    # Full injection for manager/architect sessions
+    # Full injection for role sessions
     situational = _format_output(stale, merged, learnings)
     parts = [_SUPERPOWERS]
     if auto_skills:

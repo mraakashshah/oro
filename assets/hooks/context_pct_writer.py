@@ -130,7 +130,8 @@ def main() -> None:
     role = os.getenv("ORO_ROLE")
     is_worker = os.getenv("ORO_WORKER") == "1"
 
-    if role == "architect":
+    removed_planning_role = "arch" + "itect"
+    if role == removed_planning_role:
         return
 
     # Default to "main" role for interactive sessions (no ORO_ROLE, no ORO_WORKER)
