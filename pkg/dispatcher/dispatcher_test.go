@@ -18496,6 +18496,42 @@ func TestCheckEpicAssignable_RetriesOnError(t *testing.T) {
 	}
 }
 
+func TestFilterExecutableBeadsIgnoresPremortemGate(t *testing.T) {
+	ctx := context.Background()
+	parent := protocol.Bead{ID: "epic-gated", Type: "epic", Status: "open"}
+	child := protocol.Bead{ID: "child-gated", Type: "task", Status: "open", Epic: "epic-gated"}
+	decomposedEpic := protocol.Bead{ID: "epic-decomposed", Type: "epic", Status: "open"}
+	decomposedChild := protocol.Bead{ID: "child-decomposed", Type: "task", Status: "open", Epic: "epic-decomposed"}
+	store := beadstore.NewFakeStore(parent, child, decomposedEpic, decomposedChild)
+	if err := store.SetGateState(ctx, "epic-gated", beadstore.GateNone, beadstore.GateEligible, "test"); err != nil {
+		t.Fatalf("SetGateState: %v", err)
+	}
+	d := &Dispatcher{
+		beads: store,
+		db:    newTestDB(t),
+		BeadTracker: BeadTracker{
+			epicSkipLogged: make(map[string]bool),
+		},
+	}
+
+	got := d.filterExecutableBeads(ctx, []protocol.Bead{child, decomposedEpic})
+	var sawChild, sawDecomposedEpic bool
+	for _, bead := range got {
+		if bead.ID == child.ID {
+			sawChild = true
+		}
+		if bead.ID == decomposedEpic.ID {
+			sawDecomposedEpic = true
+		}
+	}
+	if !sawChild {
+		t.Fatalf("filterExecutableBeads skipped child under eligible premortem gate; got %#v", got)
+	}
+	if sawDecomposedEpic {
+		t.Fatalf("filterExecutableBeads included decomposed epic; got %#v", got)
+	}
+}
+
 func TestChildAssignment_SkipsWhenEpicNotAssigned(t *testing.T) {
 	t.Run("epic in open status with missing branch does not escalate", func(t *testing.T) {
 		d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)

@@ -3807,9 +3807,6 @@ func (d *Dispatcher) filterExecutableBeads(ctx context.Context, allBeads []proto
 				d.processEpicSkip(ctx, b)
 				continue
 			}
-		} else if err := CheckPremortemGate(ctx, d.beads, b.ID); err != nil {
-			_ = d.logEvent(ctx, "premortem_gate_blocked", "dispatcher", b.ID, "", err.Error())
-			continue
 		}
 		executable = append(executable, b)
 	}
