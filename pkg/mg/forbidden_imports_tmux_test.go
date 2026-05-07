@@ -23,7 +23,7 @@ func TestNoMgTmuxImports(t *testing.T) {
 		t.Fatalf("unexpected error checking pkg/mg/tmux: %v", err)
 	}
 
-	// Walk all .go files (excluding _test.go in pkg/mg/data and pkg/mg/views)
+	// Walk all .go files (excluding _test.go in pkg/mg/views)
 	fset := token.NewFileSet()
 	pkgImports := make(map[string]bool)
 
@@ -36,9 +36,9 @@ func TestNoMgTmuxImports(t *testing.T) {
 			return nil
 		}
 
-		// Skip _test.go files in pkg/mg/data and pkg/mg/views
+		// Skip _test.go files in pkg/mg/views
 		if strings.HasSuffix(path, "_test.go") {
-			if strings.Contains(path, "pkg/mg/data") || strings.Contains(path, "pkg/mg/views") {
+			if strings.Contains(path, "pkg/mg/views") {
 				return nil
 			}
 		}

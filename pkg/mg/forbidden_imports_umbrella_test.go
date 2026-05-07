@@ -11,10 +11,10 @@ import (
 	"testing"
 )
 
-// TestPkgMgFinalState is the composite verification that runs after all 5 deletion
-// children (app, components, tmux, ui, work) land. It asserts:
+// TestPkgMgFinalState is the composite verification that runs after all 6 deletion
+// children (app, components, data, tmux, ui, work) land. It asserts:
 // 1. All deleted subpackages and files are absent
-// 2. Remaining data/ and views/ directories contain Go files (regression guard)
+// 2. Remaining views/ directory contains Go files (regression guard)
 // 3. No source file imports any deleted subpackage
 func TestPkgMgFinalState(t *testing.T) {
 	root := mgFindModuleRoot(t)
@@ -24,6 +24,7 @@ func TestPkgMgFinalState(t *testing.T) {
 	deletedPaths := []string{
 		filepath.Join("pkg", "mg", "app"),
 		filepath.Join("pkg", "mg", "components"),
+		filepath.Join("pkg", "mg", "data"),
 		filepath.Join("pkg", "mg", "tmux"),
 		filepath.Join("pkg", "mg", "ui"),
 		filepath.Join("pkg", "mg", "work.go"),
@@ -38,31 +39,20 @@ func TestPkgMgFinalState(t *testing.T) {
 		}
 	}
 
-	// Step 2: Assert data/ and views/ still contain Go files (regression guard)
-	dataGo, viewsGo := false, false
+	// Step 2: Assert views/ still contains Go files (regression guard)
+	viewsGo := false
 
-	for _, dir := range []string{"data", "views"} {
-		dirPath := filepath.Join(mgPath, dir)
-		entries, err := os.ReadDir(dirPath)
-		if err != nil {
-			t.Errorf("failed to read pkg/mg/%s: %v", dir, err)
-			continue
-		}
-
+	viewsPath := filepath.Join(mgPath, "views")
+	entries, err := os.ReadDir(viewsPath)
+	if err != nil {
+		t.Errorf("failed to read pkg/mg/views: %v", err)
+	} else {
 		for _, entry := range entries {
 			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".go") &&
 				!strings.HasSuffix(entry.Name(), "_test.go") {
-				if dir == "data" {
-					dataGo = true
-				} else {
-					viewsGo = true
-				}
+				viewsGo = true
 			}
 		}
-	}
-
-	if !dataGo {
-		t.Error("pkg/mg/data/ should contain Go source files")
 	}
 	if !viewsGo {
 		t.Error("pkg/mg/views/ should contain Go source files")
@@ -72,6 +62,7 @@ func TestPkgMgFinalState(t *testing.T) {
 	forbiddenImports := map[string]bool{
 		"oro/pkg/mg/app":        false,
 		"oro/pkg/mg/components": false,
+		"oro/pkg/mg/data":       false,
 		"oro/pkg/mg/tmux":       false,
 		"oro/pkg/mg/ui":         false,
 	}
@@ -92,11 +83,10 @@ func TestPkgMgFinalState(t *testing.T) {
 			return nil
 		}
 
-		// Exclude _test.go files under pkg/mg/data and pkg/mg/views
+		// Exclude _test.go files under pkg/mg/views
 		if strings.HasSuffix(path, "_test.go") {
 			dir := filepath.Dir(rel)
-			if dir == filepath.Join("pkg", "mg", "data") ||
-				dir == filepath.Join("pkg", "mg", "views") {
+			if dir == filepath.Join("pkg", "mg", "views") {
 				return nil
 			}
 		}

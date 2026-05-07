@@ -11,9 +11,8 @@ import (
 )
 
 // TestNoMgUiImports guards that pkg/mg/ui has been deleted and no source file
-// imports it. Excluded: _test.go files under pkg/mg/data and pkg/mg/views
-// (those packages may keep snapshot/render tests that reference ui until they
-// are separately cleaned up).
+// imports it. Excluded: _test.go files under pkg/mg/views, which may keep
+// render tests that reference ui until they are separately cleaned up.
 func TestNoMgUiImports(t *testing.T) {
 	// Assert the ui subdirectory is gone.
 	if _, err := os.Stat("ui"); !errors.Is(err, os.ErrNotExist) {
@@ -40,11 +39,10 @@ func TestNoMgUiImports(t *testing.T) {
 			return nil
 		}
 
-		// Excluded: _test.go files inside pkg/mg/data and pkg/mg/views.
+		// Excluded: _test.go files inside pkg/mg/views.
 		if relErr == nil && strings.HasSuffix(path, "_test.go") {
 			dir := filepath.Dir(rel)
-			if dir == filepath.Join("pkg", "mg", "data") ||
-				dir == filepath.Join("pkg", "mg", "views") {
+			if dir == filepath.Join("pkg", "mg", "views") {
 				return nil
 			}
 		}

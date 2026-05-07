@@ -32,12 +32,11 @@ func TestNoMgComponentsImports(t *testing.T) {
 			return nil
 		}
 
-		// Exclude _test.go files under pkg/mg/data and pkg/mg/views
+		// Exclude _test.go files under pkg/mg/views
 		rel, _ := filepath.Rel(root, path)
 		if strings.HasSuffix(path, "_test.go") {
 			dir := filepath.Dir(rel)
-			if strings.HasPrefix(dir, filepath.Join("pkg", "mg", "data")) ||
-				strings.HasPrefix(dir, filepath.Join("pkg", "mg", "views")) {
+			if strings.HasPrefix(dir, filepath.Join("pkg", "mg", "views")) {
 				return nil
 			}
 		}
