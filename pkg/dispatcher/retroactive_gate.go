@@ -2,7 +2,6 @@ package dispatcher
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -11,10 +10,6 @@ import (
 	"oro/pkg/beadstore"
 	"oro/pkg/protocol"
 )
-
-// retroactiveGateChildThreshold is the number of children that triggers the
-// premortem gate retroactively (§11.4: CountChildren > 5 fires eligible).
-const retroactiveGateChildThreshold = 5
 
 // PremortemGateError is returned by CheckPremortemGate when a bead cannot
 // enter EXECUTE because the parent's premortem gate is unsatisfied.
@@ -27,15 +22,11 @@ func (e *PremortemGateError) Error() string {
 	return fmt.Sprintf("blocker_hit: kind=%s parent=%s", e.Kind, e.ParentID)
 }
 
-// CreateBeadGraph creates one or more child beads under parentID and then
-// checks the retroactive premortem gate (§11.4). When the 6th child causes
-// CountChildren to cross the threshold and the parent's gate_state is 'none',
-// the gate transitions to 'eligible' and a premortem bead is auto-spawned.
-//
-// Note: each child's ParentID is forced to parentID — any value the caller
+// CreateBeadGraph creates one or more child beads under parentID.
+// Each child's ParentID is forced to parentID — any value the caller
 // sets on params.ParentID is overwritten. This is intentional: CreateBeadGraph
-// is the single seam for "create N children under one parent and run the gate
-// check," so a stray different ParentID would silently break the gate count.
+// is the single seam for "create N children under one parent," so a stray
+// different ParentID would silently break the graph shape.
 func CreateBeadGraph(ctx context.Context, store beadstore.Store, parentID string, children []beadstore.CreateParams) ([]*protocol.Bead, error) {
 	created := make([]*protocol.Bead, 0, len(children))
 	for _, params := range children {
@@ -46,49 +37,7 @@ func CreateBeadGraph(ctx context.Context, store beadstore.Store, parentID string
 		}
 		created = append(created, b)
 	}
-	if err := checkRetroactiveGate(ctx, store, parentID); err != nil {
-		return created, fmt.Errorf("retroactive gate check: %w", err)
-	}
 	return created, nil
-}
-
-// checkRetroactiveGate fires the §11.4 retroactive trigger: if CountChildren
-// exceeds the threshold and the parent's gate_state is still 'none', it
-// atomically transitions to 'eligible' and auto-spawns a premortem bead.
-func checkRetroactiveGate(ctx context.Context, store beadstore.Store, parentID string) error {
-	count, err := store.CountChildren(ctx, parentID)
-	if err != nil {
-		return fmt.Errorf("count children: %w", err)
-	}
-	if count <= retroactiveGateChildThreshold {
-		return nil
-	}
-	err = store.SetGateState(ctx, parentID, beadstore.GateNone, beadstore.GateEligible, "retroactive_gate_threshold_crossed")
-	if errors.Is(err, beadstore.ErrStaleGate) {
-		return nil // gate already set by a concurrent or earlier call
-	}
-	if err != nil {
-		return fmt.Errorf("set gate state: %w", err)
-	}
-	return spawnPremortemBead(ctx, store, parentID)
-}
-
-// spawnPremortemBead creates a premortem bead whose parent is parentID.
-func spawnPremortemBead(ctx context.Context, store beadstore.Store, parentID string) error {
-	title := "Premortem for " + parentID
-	parent, err := store.Show(ctx, parentID)
-	if err == nil && parent != nil && parent.Title != "" {
-		title = "Premortem for " + parent.Title
-	}
-	_, err = store.Create(ctx, beadstore.CreateParams{
-		Title:    title,
-		Type:     "premortem",
-		ParentID: parentID,
-	})
-	if err != nil {
-		return fmt.Errorf("spawn premortem bead for %s: %w", parentID, err)
-	}
-	return nil
 }
 
 // CheckPremortemGate checks whether beadID can enter EXECUTE (§11.4). If the
