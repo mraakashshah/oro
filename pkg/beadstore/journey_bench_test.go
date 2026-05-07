@@ -51,6 +51,9 @@ func TestJourneyBench(t *testing.T) {
 	}
 
 	t.Run("AppendJourney", func(t *testing.T) {
+		loadguard.SkipOutsidePushQG(t)
+		loadguard.SkipIfLoaded(t)
+
 		if _, err := store.Create(ctx, CreateParams{ID: "bench-append", Title: "append bench"}); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -81,6 +84,9 @@ func TestJourneyBench(t *testing.T) {
 	})
 
 	t.Run("LatestJourney50", func(t *testing.T) {
+		loadguard.SkipOutsidePushQG(t)
+		loadguard.SkipIfLoaded(t)
+
 		if _, err := store.Create(ctx, CreateParams{ID: "bench-latest", Title: "latest bench"}); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -111,6 +117,9 @@ func TestJourneyBench(t *testing.T) {
 	})
 
 	t.Run("JourneyFull1000", func(t *testing.T) {
+		loadguard.SkipOutsidePushQG(t)
+		loadguard.SkipIfLoaded(t)
+
 		if _, err := store.Create(ctx, CreateParams{ID: "bench-full", Title: "full bench"}); err != nil {
 			t.Fatalf("Create: %v", err)
 		}

@@ -81,12 +81,18 @@ func TestPkgMgFinalState(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || !strings.HasSuffix(path, ".go") {
+		rel, _ := filepath.Rel(root, path)
+		if d.IsDir() {
+			if rel == ".worktrees" || rel == filepath.Join(".claude", "worktrees") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") {
 			return nil
 		}
 
 		// Exclude _test.go files under pkg/mg/data and pkg/mg/views
-		rel, _ := filepath.Rel(root, path)
 		if strings.HasSuffix(path, "_test.go") {
 			dir := filepath.Dir(rel)
 			if dir == filepath.Join("pkg", "mg", "data") ||
@@ -129,8 +135,12 @@ func TestPkgMgFinalState(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
+			rel, _ := filepath.Rel(root, path)
 			base := d.Name()
-			if base == "archive" || strings.HasPrefix(base, ".") {
+			if base == "archive" ||
+				rel == ".worktrees" ||
+				rel == filepath.Join(".claude", "worktrees") ||
+				strings.HasPrefix(base, ".") {
 				return filepath.SkipDir
 			}
 			return nil
