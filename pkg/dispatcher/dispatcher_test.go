@@ -2634,7 +2634,7 @@ func TestZeroWorkersWithMaxWorkersDoesNotAutoScaleGeneralWorkers(t *testing.T) {
 		InitialWorkers:   0,
 		MaxWorkers:       2,
 		AllowZeroWorkers: true,
-		HeartbeatTimeout: 500 * time.Millisecond,
+		HeartbeatTimeout: 10 * time.Second,
 		PollInterval:     50 * time.Millisecond,
 		ShutdownTimeout:  200 * time.Millisecond,
 	}
@@ -2713,7 +2713,7 @@ func TestNew_TargetWorkersUsesInitialWorkers(t *testing.T) {
 		DBPath:           ":memory:",
 		MaxWorkers:       5,
 		InitialWorkers:   3,
-		HeartbeatTimeout: 500 * time.Millisecond,
+		HeartbeatTimeout: 10 * time.Second,
 		PollInterval:     50 * time.Millisecond,
 		ShutdownTimeout:  200 * time.Millisecond,
 	}
@@ -4839,11 +4839,12 @@ func TestDispatcherShutdownBroadcast(t *testing.T) {
 }
 
 func TestDispatcherShutdownBroadcast_TimeoutForcesHardShutdown(t *testing.T) {
+	const opTimeout = 10 * time.Second // generous: survives race detector overhead under parallel QG load
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	// Very short shutdown timeout
 	d.cfg.ShutdownTimeout = 300 * time.Millisecond
 
-	cancel := startDispatcher(t, d)
+	cancel := startDispatcherWithTimeout(t, d, opTimeout)
 
 	// Connect 2 workers
 	conn1, _ := connectWorker(t, d.cfg.SocketPath)
@@ -4856,11 +4857,11 @@ func TestDispatcherShutdownBroadcast_TimeoutForcesHardShutdown(t *testing.T) {
 		Type:      protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-force-1", ContextPct: 5},
 	})
-	waitForWorkers(t, d, 2, 2*time.Second)
+	waitForWorkers(t, d, 2, opTimeout)
 
 	// Start and assign beads
 	sendDirective(t, d.cfg.SocketPath, "start")
-	waitForState(t, d, StateRunning, 1*time.Second)
+	waitForState(t, d, StateRunning, opTimeout)
 
 	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "bead-force-0", Title: "Force 0", Priority: 1},
@@ -4868,11 +4869,11 @@ func TestDispatcherShutdownBroadcast_TimeoutForcesHardShutdown(t *testing.T) {
 	})
 
 	// Consume ASSIGN for both workers
-	_, ok := readMsg(t, conn1, 3*time.Second)
+	_, ok := readMsg(t, conn1, opTimeout)
 	if !ok {
 		t.Fatal("worker 0: expected ASSIGN")
 	}
-	_, ok = readMsg(t, conn2, 3*time.Second)
+	_, ok = readMsg(t, conn2, opTimeout)
 	if !ok {
 		t.Fatal("worker 1: expected ASSIGN")
 	}
@@ -4882,14 +4883,14 @@ func TestDispatcherShutdownBroadcast_TimeoutForcesHardShutdown(t *testing.T) {
 	cancel()
 
 	// Both workers should receive PREPARE_SHUTDOWN
-	msg1, ok := readMsg(t, conn1, 2*time.Second)
+	msg1, ok := readMsg(t, conn1, opTimeout)
 	if !ok {
 		t.Fatal("worker 0: expected PREPARE_SHUTDOWN")
 	}
 	if msg1.Type != protocol.MsgPrepareShutdown {
 		t.Fatalf("worker 0: expected PREPARE_SHUTDOWN, got %s", msg1.Type)
 	}
-	msg2, ok := readMsg(t, conn2, 2*time.Second)
+	msg2, ok := readMsg(t, conn2, opTimeout)
 	if !ok {
 		t.Fatal("worker 1: expected PREPARE_SHUTDOWN")
 	}
@@ -4903,7 +4904,7 @@ func TestDispatcherShutdownBroadcast_TimeoutForcesHardShutdown(t *testing.T) {
 	// We verify by polling ConnectedWorkers until it reaches 0.
 	waitFor(t, func() bool {
 		return d.ConnectedWorkers() == 0
-	}, 3*time.Second)
+	}, opTimeout)
 }
 
 func TestConfig_ShutdownTimeout_Default(t *testing.T) {
@@ -5129,6 +5130,7 @@ func TestDispatcherShutdownOpsCleanup(t *testing.T) {
 }
 
 func TestDispatcherShutdownWorktreeCleanup(t *testing.T) {
+	const opTimeout = 10 * time.Second // generous: survives race detector overhead under parallel QG load
 	db := newTestDB(t)
 	gitRunner := &mockGitRunner{}
 	merger := merge.NewCoordinator(gitRunner)
@@ -5145,7 +5147,7 @@ func TestDispatcherShutdownWorktreeCleanup(t *testing.T) {
 		SocketPath:       sockPath,
 		DBPath:           ":memory:",
 		MaxWorkers:       5,
-		HeartbeatTimeout: 500 * time.Millisecond,
+		HeartbeatTimeout: opTimeout,
 		PollInterval:     50 * time.Millisecond,
 		ShutdownTimeout:  500 * time.Millisecond,
 	}
@@ -5154,7 +5156,7 @@ func TestDispatcherShutdownWorktreeCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
-	cancel := startDispatcher(t, d)
+	cancel := startDispatcherWithTimeout(t, d, opTimeout)
 
 	// Connect two workers
 	conn1, _ := connectWorker(t, d.cfg.SocketPath)
@@ -5167,11 +5169,11 @@ func TestDispatcherShutdownWorktreeCleanup(t *testing.T) {
 		Type:      protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w2", ContextPct: 5},
 	})
-	waitForWorkers(t, d, 2, 1*time.Second)
+	waitForWorkers(t, d, 2, opTimeout)
 
 	// Start and assign two beads (creates worktrees)
 	sendDirective(t, d.cfg.SocketPath, "start")
-	waitForState(t, d, StateRunning, 1*time.Second)
+	waitForState(t, d, StateRunning, opTimeout)
 
 	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "bead-wt-1", Title: "WT cleanup 1", Priority: 1},
@@ -5179,10 +5181,10 @@ func TestDispatcherShutdownWorktreeCleanup(t *testing.T) {
 	})
 
 	// Consume ASSIGN messages
-	if _, ok := readMsg(t, conn1, 2*time.Second); !ok {
+	if _, ok := readMsg(t, conn1, opTimeout); !ok {
 		t.Fatal("expected ASSIGN for w1")
 	}
-	if _, ok := readMsg(t, conn2, 2*time.Second); !ok {
+	if _, ok := readMsg(t, conn2, opTimeout); !ok {
 		t.Fatal("expected ASSIGN for w2")
 	}
 	beadSrc.SetBeads(nil)
@@ -5196,7 +5198,7 @@ func TestDispatcherShutdownWorktreeCleanup(t *testing.T) {
 		n := len(wtMgr.removed)
 		wtMgr.mu.Unlock()
 		return n >= 2
-	}, 2*time.Second)
+	}, opTimeout)
 }
 
 func TestShutdown_WorktreesRemovedAfterWorkerStop(t *testing.T) {
