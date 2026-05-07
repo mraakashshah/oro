@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/beadstore/migrations"
 	"oro/pkg/protocol"
 
 	_ "modernc.org/sqlite"
@@ -545,6 +546,69 @@ func TestSQLiteStoreDeleteRejectsActiveAndChildren(t *testing.T) {
 		}
 		assertNotDeleted(t, store, "oro-parent-delete")
 	})
+}
+
+func TestSQLiteStoreDeleteRemovesDependencyEdgesAndAudits(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	if err := migrations.MigrateToV3(ctx, store.db); err != nil {
+		t.Fatalf("MigrateToV3: %v", err)
+	}
+
+	mustCreate(t, store, CreateParams{ID: "oro-delete-deps", Title: "delete deps"})
+	mustCreate(t, store, CreateParams{ID: "oro-dependent", Title: "dependent"})
+	mustCreate(t, store, CreateParams{ID: "oro-other", Title: "other"})
+	if err := store.AddDependency(ctx, "oro-dependent", "oro-delete-deps", "blocks"); err != nil {
+		t.Fatalf("AddDependency incoming: %v", err)
+	}
+	if err := store.AddDependency(ctx, "oro-delete-deps", "oro-other", "blocks"); err != nil {
+		t.Fatalf("AddDependency outgoing: %v", err)
+	}
+
+	ready, err := store.Ready(ctx)
+	if err != nil {
+		t.Fatalf("Ready before delete: %v", err)
+	}
+	if strings.Contains(ids(ready), "oro-dependent") {
+		t.Fatalf("dependent ready before blocker delete: %s", ids(ready))
+	}
+
+	if err := store.Delete(ctx, "oro-delete-deps", "cleanup deps"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	var depCount int
+	if err := store.db.QueryRowContext(
+		ctx,
+		`SELECT COUNT(*) FROM bead_deps WHERE bead_id='oro-delete-deps' OR depends_on_id='oro-delete-deps'`,
+	).Scan(&depCount); err != nil {
+		t.Fatalf("query dependency edge count: %v", err)
+	}
+	if depCount != 0 {
+		t.Fatalf("dependency edges involving deleted bead = %d, want 0", depCount)
+	}
+
+	ready, err = store.Ready(ctx)
+	if err != nil {
+		t.Fatalf("Ready after delete: %v", err)
+	}
+	if !strings.Contains(ids(ready), "oro-dependent") {
+		t.Fatalf("dependent not ready after blocker delete: %s", ids(ready))
+	}
+
+	if got := eventCount(t, store.db, "bead_deleted"); got != 1 {
+		t.Fatalf("bead_deleted event count = %d, want 1", got)
+	}
+	journey, err := store.Journey(ctx, "oro-delete-deps", time.Time{})
+	if err != nil {
+		t.Fatalf("Journey: %v", err)
+	}
+	if len(journey) != 1 ||
+		journey[0].Actor != "human" ||
+		journey[0].Event != "deleted" ||
+		!strings.Contains(journey[0].Payload, "cleanup deps") {
+		t.Fatalf("delete journey = %#v, want human deleted event with reason", journey)
+	}
 }
 
 func TestSQLiteStoreOpenAppliesDBUtilPragmas(t *testing.T) {

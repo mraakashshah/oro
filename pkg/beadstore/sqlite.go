@@ -337,6 +337,9 @@ func (s *SQLiteStore) Delete(ctx context.Context, id, reason string) error {
 	if err := ensureDeletable(ctx, tx, id); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM bead_deps WHERE bead_id=? OR depends_on_id=?`, id, id); err != nil {
+		return fmt.Errorf("delete bead %s dependency edges: %w", id, err)
+	}
 
 	now := nowString()
 	res, err := tx.ExecContext(ctx, `
@@ -354,6 +357,14 @@ WHERE id=? AND deleted=0`, reason, now, id)
 		return &protocol.BeadNotFoundError{BeadID: id}
 	}
 	if err := insertEvent(ctx, tx, "bead_deleted", id, map[string]any{"reason": reason}); err != nil {
+		return err
+	}
+	if err := insertJourneyEvent(ctx, tx, id, JourneyEvent{
+		Ts:      now,
+		Actor:   "human",
+		Event:   "deleted",
+		Payload: mustJSON(map[string]any{"reason": reason}),
+	}); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -908,6 +919,29 @@ func insertEvent(ctx context.Context, tx *sql.Tx, eventType, beadID string, payl
 		return fmt.Errorf("beadstore: insert %s event for %s: %w", eventType, beadID, err)
 	}
 	return nil
+}
+
+func insertJourneyEvent(ctx context.Context, tx *sql.Tx, beadID string, evt JourneyEvent) error {
+	payload := sql.NullString{String: evt.Payload, Valid: evt.Payload != ""}
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO bead_journey (bead_id, ts, actor, event, payload)
+		VALUES (?, ?, ?, ?, ?)`,
+		beadID, evt.Ts, evt.Actor, evt.Event, payload)
+	if err != nil && isNoSuchTable(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("beadstore: insert journey %s for %s: %w", evt.Event, beadID, err)
+	}
+	return nil
+}
+
+func mustJSON(payload map[string]any) string {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
 }
 
 func ensureBeadExists(ctx context.Context, tx *sql.Tx, id string) error {
