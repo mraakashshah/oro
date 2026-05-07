@@ -1701,7 +1701,6 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 
 	if attempt >= maxQGRetries {
 		d.mu.Unlock()
-		d.recordQGFailureIncident(ctx, workerID, beadID, assignmentID, attempt, qgOutput, qgFingerprint, qgSummary, qgClassification)
 		d.handleQGExhausted(ctx, workerID, beadID, assignmentID, qgOutput, attempt, qgErr)
 		return
 	}
@@ -6751,6 +6750,23 @@ func (d *Dispatcher) cancelOpsAgents(ctx context.Context, beadID, workerID, reas
 // runs the existing P0 bug + EscStuck escalation path.
 func (d *Dispatcher) handleQGExhausted(ctx context.Context, workerID, beadID string, assignmentID int64, qgOutput string, attempt int, qgErr *protocol.QualityGateError) {
 	d.persistBeadCount(ctx, assignmentID, beadID, "attempt_count", attempt)
+	qgFingerprint, qgSummary := FingerprintQGFailure(qgOutput, QGFingerprintOptions{})
+	rec := QGFailureRecord{
+		ID:           fmt.Sprintf("%s:%s:%d:%d", beadID, workerID, assignmentID, attempt),
+		BeadID:       beadID,
+		WorkerID:     workerID,
+		AssignmentID: assignmentID,
+		Component:    "worker",
+		Fingerprint:  qgFingerprint,
+		Summary:      qgSummary,
+		Output:       qgOutput,
+	}
+	cls := ClassifyQGFailure(rec, QGFailureHistory{RetryExhausted: true})
+	if cls.Decision == QGFailureDecisionReopenOriginal {
+		d.handleClassifiedQGExhaustion(ctx, workerID, beadID, assignmentID, rec, cls)
+		return
+	}
+	d.recordQGFailureIncident(ctx, workerID, beadID, assignmentID, attempt, qgOutput, qgFingerprint, qgSummary, cls)
 
 	_ = d.completeAssignment(ctx, assignmentID, beadID)
 
@@ -6801,6 +6817,58 @@ func (d *Dispatcher) handleQGExhausted(ctx context.Context, workerID, beadID str
 		result := <-ch
 		d.handleDecomposeResult(ctx, workerID, beadID, result, qgOutput, attempt, qgErr)
 	})
+}
+
+func (d *Dispatcher) handleClassifiedQGExhaustion(ctx context.Context, workerID, beadID string, assignmentID int64, rec QGFailureRecord, cls QGFailureClassification) {
+	rec = normalizeQGFailureRecord(rec)
+	incident, err := RecordQGFailureOccurrence(ctx, d.db, rec, cls)
+	if err != nil {
+		_ = d.logEvent(ctx, "qg_failure_record_failed", workerID, beadID, workerID,
+			fmt.Sprintf(`{"error":%q,"fingerprint":%q}`, err.Error(), rec.Fingerprint))
+	} else if err := d.linkQGFailureToBeads(ctx, incident, rec, cls); err != nil {
+		_ = d.logEvent(ctx, "qg_failure_link_failed", workerID, beadID, workerID,
+			fmt.Sprintf(`{"error":%q,"fingerprint":%q,"incident_id":%d}`, err.Error(), rec.Fingerprint, incident.ID))
+	}
+
+	_ = d.completeAssignment(ctx, assignmentID, beadID)
+	d.releaseWorkerAfterQGExhaustion(workerID, beadID)
+	if d.shouldReopenQGOriginal(ctx, beadID) {
+		if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
+			_ = d.logEvent(ctx, "qg_original_reopen_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"error":%q}`, err.Error()))
+		}
+	}
+	_ = d.logEvent(ctx, "qg_original_reopened", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"class":%q,"decision":%q,"fingerprint":%q}`, cls.Class, cls.Decision, rec.Fingerprint))
+}
+
+func (d *Dispatcher) releaseWorkerAfterQGExhaustion(workerID, beadID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if w, ok := d.workers[workerID]; ok {
+		w.state = protocol.WorkerIdle
+		w.assignmentID = 0
+		w.beadID = ""
+		w.epicID = ""
+		w.isEpicDecomp = false
+	}
+	delete(d.attemptCounts, beadID)
+	delete(d.handoffCounts, beadID)
+	delete(d.rejectionCounts, beadID)
+	delete(d.pendingHandoffs, beadID)
+	delete(d.qgStuckTracker, beadID)
+	delete(d.escalatedBeads, beadID)
+	delete(d.worktreeFailures, beadID)
+	delete(d.assigningBeads, beadID)
+	delete(d.exhaustedBeads, beadID)
+}
+
+func (d *Dispatcher) shouldReopenQGOriginal(ctx context.Context, beadID string) bool {
+	detail, err := d.beads.Show(ctx, beadID)
+	if err != nil || detail == nil {
+		return true
+	}
+	return detail.Status != "closed"
 }
 
 // handleDecomposeResult processes the outcome of a Decompose ops agent.

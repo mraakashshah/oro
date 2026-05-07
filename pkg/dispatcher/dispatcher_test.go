@@ -182,7 +182,27 @@ func (m *fakeBeadStore) Update(_ context.Context, id string, params beadstore.Up
 	if params.Status != nil {
 		m.updated[id] = *params.Status
 	}
+	m.appendNoteLocked(id, params.Notes)
 	return nil
+}
+
+func (m *fakeBeadStore) appendNoteLocked(id string, note *string) {
+	if note == nil || strings.TrimSpace(*note) == "" {
+		return
+	}
+	if m.shown == nil {
+		m.shown = make(map[string]*protocol.BeadDetail)
+	}
+	detail := m.shown[id]
+	if detail == nil {
+		detail = &protocol.BeadDetail{ID: id}
+		m.shown[id] = detail
+	}
+	if detail.Notes == "" {
+		detail.Notes = *note
+		return
+	}
+	detail.Notes += "\n\n" + *note
 }
 
 func (m *fakeBeadStore) Sync(_ context.Context) error {
@@ -11603,7 +11623,7 @@ func TestQGExhaustionPreventsReassignment(t *testing.T) {
 			BeadID:            "bead-exh",
 			WorkerID:          "w1",
 			QualityGatePassed: false,
-			QGOutput:          "FAIL: coverage too low",
+			QGOutput:          "unclassified exhaustion output",
 		},
 	})
 

@@ -66,7 +66,7 @@ func TestHandleDone_QGFailRetryIncrementsAttempt(t *testing.T) {
 				BeadID:            "bead-qg1",
 				WorkerID:          "w1",
 				QualityGatePassed: false,
-				QGOutput:          fmt.Sprintf("fail-%d", i),
+				QGOutput:          fmt.Sprintf("unclassified-retry-%d", i),
 			},
 		})
 
@@ -697,7 +697,7 @@ func TestQGExhaustion_CreatesP0Bead(t *testing.T) {
 			BeadID:            "bead-p0",
 			WorkerID:          "w1",
 			QualityGatePassed: false,
-			QGOutput:          "FAIL: TestWidget — expected 42, got nil",
+			QGOutput:          "unclassified qg exhausted output xyz",
 		},
 	})
 
@@ -739,7 +739,7 @@ func TestQGExhaustion_CreatesP0Bead(t *testing.T) {
 	if c.beadType != "bug" {
 		t.Fatalf("expected type 'bug', got %q", c.beadType)
 	}
-	if !strings.Contains(c.description, "FAIL: TestWidget") {
+	if !strings.Contains(c.description, "unclassified qg exhausted output xyz") {
 		t.Fatalf("expected QG output in description, got %q", c.description)
 	}
 	if c.parent != "bead-p0" {
@@ -750,5 +750,104 @@ func TestQGExhaustion_CreatesP0Bead(t *testing.T) {
 	msg, ok := readMsgFromScanner(t, scanner, 300*time.Millisecond)
 	if ok && msg.Type == protocol.MsgAssign {
 		t.Fatal("expected no ASSIGN after QG exhaustion, but got one")
+	}
+}
+
+func TestQGExhaustion_ReopensOriginalForDeterministicFailure(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		beadID   = "bead-deterministic-qg"
+		workerID = "w-deterministic-qg"
+		worktree = "/tmp/wt-deterministic-qg"
+	)
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "deterministic qg bead",
+		Status:             "in_progress",
+		AcceptanceCriteria: "Test: go test ./... | Assert: pass",
+	}
+	assignmentID := insertActiveAssignment(t, d, beadID, workerID, worktree)
+	d.mu.Lock()
+	d.worktreeByBead[beadID] = worktree
+	d.exhaustedBeads[beadID] = true
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		state:        protocol.WorkerBusy,
+		beadID:       beadID,
+		assignmentID: assignmentID,
+		worktree:     worktree,
+	}
+	d.mu.Unlock()
+
+	rec := QGFailureRecord{
+		ID:           "deterministic-exhaustion-occ",
+		BeadID:       beadID,
+		WorkerID:     workerID,
+		AssignmentID: assignmentID,
+		Component:    "worker",
+		Fingerprint:  "qg:deterministic",
+		Summary:      "golangci-lint unused variable",
+		Output:       "golangci-lint failed: unused variable widget",
+		OutputHash:   "hash-deterministic",
+	}
+	cls := QGFailureClassification{
+		Class:      QGFailureClassWorkerDeterministic,
+		Decision:   QGFailureDecisionReopenOriginal,
+		Confidence: QGFailureConfidenceHigh,
+		Reason:     "deterministic worker failure exhausted retry budget",
+	}
+
+	d.handleClassifiedQGExhaustion(ctx, workerID, beadID, assignmentID, rec, cls)
+
+	var status, storedWorktree string
+	if err := d.db.QueryRowContext(ctx, `SELECT status, worktree FROM assignments WHERE id=?`, assignmentID).Scan(&status, &storedWorktree); err != nil {
+		t.Fatalf("query assignment: %v", err)
+	}
+	if status != "completed" || storedWorktree != worktree {
+		t.Fatalf("assignment status/worktree = %s/%s, want completed/%s", status, storedWorktree, worktree)
+	}
+
+	d.mu.Lock()
+	preservedWorktree := d.worktreeByBead[beadID]
+	_, exhausted := d.exhaustedBeads[beadID]
+	d.mu.Unlock()
+	if preservedWorktree != worktree {
+		t.Fatalf("worktreeByBead[%s] = %q, want %q", beadID, preservedWorktree, worktree)
+	}
+	if exhausted {
+		t.Fatal("deterministic reopen left bead marked exhausted")
+	}
+	if beadSrc.updated[beadID] != "open" {
+		t.Fatalf("bead status update = %q, want open", beadSrc.updated[beadID])
+	}
+	if len(beadSrc.created) != 0 {
+		t.Fatalf("created P0 children = %+v, want none", beadSrc.created)
+	}
+	if notes := beadSrc.shown[beadID].Notes; !strings.Contains(notes, "qg_incident:") || !strings.Contains(notes, "output_hash: hash-deterministic") {
+		t.Fatalf("original bead notes missing qg incident/hash evidence:\n%s", notes)
+	}
+
+	var occurrences int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM qg_failure_occurrences WHERE bead_id=?`, beadID).Scan(&occurrences); err != nil {
+		t.Fatalf("count qg occurrences: %v", err)
+	}
+	if occurrences != 1 {
+		t.Fatalf("qg occurrences = %d, want 1", occurrences)
+	}
+
+	closedID := "bead-deterministic-closed"
+	beadSrc.shown[closedID] = &protocol.BeadDetail{
+		ID:     closedID,
+		Title:  "already closed deterministic qg bead",
+		Status: "closed",
+	}
+	closedRec := rec
+	closedRec.ID = "deterministic-closed-occ"
+	closedRec.BeadID = closedID
+	closedRec.AssignmentID = 0
+	d.handleClassifiedQGExhaustion(ctx, workerID, closedID, 0, closedRec, cls)
+	if beadSrc.updated[closedID] == "open" {
+		t.Fatal("already closed original bead was reopened")
 	}
 }
