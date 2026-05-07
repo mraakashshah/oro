@@ -118,25 +118,12 @@ func newBeadShowCmd(store beadstore.Store) *cobra.Command {
 	return cmd
 }
 
-// createBeadFromParams routes through CreateBeadGraph when ParentID is set so
-// the §11.4 retroactive premortem gate fires; otherwise falls back to the
-// direct Create path (parentless beads can't trigger the gate).
 func createBeadFromParams(ctx context.Context, s beadstore.Store, params beadstore.CreateParams) (*protocol.Bead, error) {
-	if params.ParentID == "" {
-		bead, err := s.Create(ctx, params)
-		if err != nil {
-			return nil, fmt.Errorf("Store.Create: %w", err)
-		}
-		return bead, nil
-	}
-	created, err := dispatcher.CreateBeadGraph(ctx, s, params.ParentID, []beadstore.CreateParams{params})
+	bead, err := s.Create(ctx, params)
 	if err != nil {
-		return nil, fmt.Errorf("CreateBeadGraph: %w", err)
+		return nil, fmt.Errorf("Store.Create: %w", err)
 	}
-	if len(created) == 0 {
-		return nil, fmt.Errorf("CreateBeadGraph returned no beads")
-	}
-	return created[0], nil
+	return bead, nil
 }
 
 func newBeadCreateCmd(store beadstore.Store) *cobra.Command {

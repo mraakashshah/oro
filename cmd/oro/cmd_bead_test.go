@@ -1011,12 +1011,7 @@ func TestBeadPremortemCloseCmdTransitionsGate(t *testing.T) {
 	}
 }
 
-// TestBeadCreateFiresRetroactiveGate verifies that `oro bead create --parent X`
-// flows through dispatcher.CreateBeadGraph so the §11.4 retroactive premortem
-// gate fires from the CLI path. After 6 children, the parent's gate_state
-// must be 'eligible'.
-func TestBeadCreateFiresRetroactiveGate(t *testing.T) {
-	ctx := context.Background()
+func TestBeadCreateWithParentDoesNotSpawnPremortem(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "state.db")
 	db, err := openStateDB(dbPath)
 	if err != nil {
@@ -1044,24 +1039,20 @@ func TestBeadCreateFiresRetroactiveGate(t *testing.T) {
 		_ = i
 	}
 
-	gs, err := store.GateState(ctx, "epic-cli")
-	if err != nil {
-		t.Fatalf("GateState: %v", err)
-	}
-	if gs != beadstore.GateEligible {
-		t.Errorf("after 6 CLI-created children, gate_state = %q, want eligible", gs)
-	}
-
-	// And a premortem child with parent_id=epic-cli should have been spawned.
 	beads := decodeBeadJSONArray(t, executeBeadCommand(t, store, "list", "--json"))
-	var found bool
+	var taskChildren, premortemChildren int
 	for _, b := range beads {
-		if b["type"] == "premortem" && b["parent_id"] == "epic-cli" {
-			found = true
-			break
+		if b["parent_id"] != "epic-cli" {
+			continue
+		}
+		switch b["type"] {
+		case "task":
+			taskChildren++
+		case "premortem":
+			premortemChildren++
 		}
 	}
-	if !found {
-		t.Errorf("expected auto-spawned premortem with parent_id=epic-cli; got: %v", beads)
+	if taskChildren != 6 || premortemChildren != 0 {
+		t.Errorf("CLI-created children: tasks=%d premortem=%d, want tasks=6 premortem=0; beads=%v", taskChildren, premortemChildren, beads)
 	}
 }
