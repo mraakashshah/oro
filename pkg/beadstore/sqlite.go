@@ -334,6 +334,10 @@ func (s *SQLiteStore) Delete(ctx context.Context, id, reason string) error {
 	}
 	defer rollback(tx)
 
+	if err := ensureDeletable(ctx, tx, id); err != nil {
+		return err
+	}
+
 	now := nowString()
 	res, err := tx.ExecContext(ctx, `
 UPDATE beads
@@ -354,6 +358,25 @@ WHERE id=? AND deleted=0`, reason, now, id)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("beadstore: commit delete %s: %w", id, err)
+	}
+	return nil
+}
+
+func ensureDeletable(ctx context.Context, tx *sql.Tx, id string) error {
+	var activeAssignments int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM assignments WHERE bead_id=? AND status='active'`, id).Scan(&activeAssignments); err != nil {
+		return fmt.Errorf("delete bead %s active assignment check: %w", id, err)
+	}
+	if activeAssignments > 0 {
+		return fmt.Errorf("delete bead %s: active assignment exists", id)
+	}
+
+	var children int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM beads WHERE parent_id=? AND deleted=0`, id).Scan(&children); err != nil {
+		return fmt.Errorf("delete bead %s child check: %w", id, err)
+	}
+	if children > 0 {
+		return fmt.Errorf("delete bead %s: recursive delete unsupported for bead with non-deleted children", id)
 	}
 	return nil
 }

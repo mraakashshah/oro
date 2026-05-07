@@ -520,6 +520,33 @@ func TestSQLiteStoreDeleteSoftDeletesAndHidesLeaf(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreDeleteRejectsActiveAndChildren(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+
+	t.Run("active assignment", func(t *testing.T) {
+		mustCreate(t, store, CreateParams{ID: "oro-active-delete", Title: "active"})
+		mustExec(t, store.db, `INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES ('oro-active-delete', 'worker-1', '/tmp/active', 'active')`)
+
+		err := store.Delete(ctx, "oro-active-delete", "cleanup")
+		if err == nil || !strings.Contains(err.Error(), "active assignment") || !strings.Contains(err.Error(), "oro-active-delete") {
+			t.Fatalf("Delete active error = %v, want clear active assignment refusal naming bead", err)
+		}
+		assertNotDeleted(t, store, "oro-active-delete")
+	})
+
+	t.Run("non-deleted child", func(t *testing.T) {
+		mustCreate(t, store, CreateParams{ID: "oro-parent-delete", Title: "parent", Type: "epic"})
+		mustCreate(t, store, CreateParams{ID: "oro-child-delete", Title: "child", ParentID: "oro-parent-delete"})
+
+		err := store.Delete(ctx, "oro-parent-delete", "cleanup")
+		if err == nil || !strings.Contains(err.Error(), "recursive delete unsupported") || !strings.Contains(err.Error(), "oro-parent-delete") {
+			t.Fatalf("Delete parent error = %v, want clear child refusal naming recursive delete unsupported", err)
+		}
+		assertNotDeleted(t, store, "oro-parent-delete")
+	})
+}
+
 func TestSQLiteStoreOpenAppliesDBUtilPragmas(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "nested", "state.db"))
@@ -1472,6 +1499,17 @@ func splitJSONLines(s string) []string {
 
 func strPtr(s string) *string { return &s }
 func intPtr(i int) *int       { return &i }
+
+func assertNotDeleted(t *testing.T, store *SQLiteStore, id string) {
+	t.Helper()
+	var deleted int
+	if err := store.db.QueryRow(`SELECT deleted FROM beads WHERE id=?`, id).Scan(&deleted); err != nil {
+		t.Fatalf("query deleted for %s: %v", id, err)
+	}
+	if deleted != 0 {
+		t.Fatalf("%s deleted = %d, want 0", id, deleted)
+	}
+}
 
 func isBeadNotFound(err error) bool {
 	var notFound *protocol.BeadNotFoundError
