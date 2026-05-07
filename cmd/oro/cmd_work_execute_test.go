@@ -945,6 +945,38 @@ func TestExecuteWork_DryRunShowsResolvedModel(t *testing.T) {
 	})
 }
 
+func TestExecuteWorkIgnoresPremortemGate(t *testing.T) {
+	ctx := context.Background()
+	child := testBead()
+	child.ID = "oro-child-gated"
+	child.Epic = "epic-gated"
+	parent := &protocol.BeadDetail{ID: "epic-gated", Type: "epic", Title: "gated epic", Status: "open"}
+	bs := &fakeBeadStore{
+		showDetail: child,
+		shownByID:  map[string]*protocol.BeadDetail{"epic-gated": parent},
+	}
+	if err := bs.SetGateState(ctx, "epic-gated", beadstore.GateNone, beadstore.GateEligible, "test"); err != nil {
+		t.Fatalf("SetGateState: %v", err)
+	}
+	deps := &workDeps{
+		beadSrc:  bs,
+		wtMgr:    &mockWorktreeManager{},
+		spawner:  &mockSpawner{proc: &mockProcess{}},
+		merger:   &mockMerger{},
+		repoRoot: "/tmp",
+	}
+	cfg := &workConfig{
+		beadID:  child.ID,
+		timeout: 5 * time.Second,
+		dryRun:  true,
+	}
+
+	err := executeWork(ctx, cfg, deps)
+	if err != nil {
+		t.Fatalf("executeWork dry-run under eligible premortem gate = %v, want nil", err)
+	}
+}
+
 func TestExecuteWork_HonorsBeadMetadataModel(t *testing.T) {
 	// Test that executeWork honors bead metadata model in standalone path.
 	// Priority: explicit --model flag > bead.Model > default

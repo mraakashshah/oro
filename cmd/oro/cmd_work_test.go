@@ -1715,12 +1715,9 @@ func TestWorkCommandTaskTerminology(t *testing.T) {
 	}
 }
 
-// TestWork_RefusedOnEligibleParent verifies that `oro work` (the path used by
-// --auto) refuses to dispatch a child whose parent's premortem gate is
-// 'eligible' and has no closed premortem child. The §11.4 contract says this
-// path must surface kind=premortem_required in the failure message; without
-// the check, single-worker `oro work --auto` would bypass the gate entirely.
-func TestWork_RefusedOnEligibleParent(t *testing.T) {
+// TestWork_AllowsEligibleParent verifies that `oro work` does not apply the
+// dispatcher's premortem gate when manually executing a bead.
+func TestWork_AllowsEligibleParent(t *testing.T) {
 	ctx := context.Background()
 
 	parent := protocol.Bead{ID: "epic-pg1", Type: "epic", Status: "open", Title: "Epic"}
@@ -1730,7 +1727,7 @@ func TestWork_RefusedOnEligibleParent(t *testing.T) {
 		Epic:               "epic-pg1",
 		Status:             "open",
 		Title:              "Child task",
-		AcceptanceCriteria: "Tests pass",
+		AcceptanceCriteria: "Test: pkg/foo/foo_test.go:TestFoo | Cmd: go test ./pkg/foo/... -run TestFoo | Assert: PASS",
 	}
 	bs := &fakeBeadStore{
 		FakeStore: beadstore.NewFakeStore(parent, child),
@@ -1739,10 +1736,22 @@ func TestWork_RefusedOnEligibleParent(t *testing.T) {
 		t.Fatalf("SetGateState: %v", err)
 	}
 
-	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/task-pg1"}
+	wtDir := t.TempDir()
+	testFileDir := filepath.Join(wtDir, "pkg", "foo")
+	if err := os.MkdirAll(testFileDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(testFileDir, "foo_test.go"), []byte("package foo"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	wt := &mockWorktreeManager{createPath: wtDir, createBranch: "bead/task-pg1"}
 	sp := &mockSpawner{proc: &mockProcess{}}
 	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
 	deps := testDeps(bs, wt, sp, mg, false, true)
+	deps.runShellCmd = func(_ context.Context, _, _ string) (bool, error) {
+		return true, nil
+	}
 
 	cfg := &workConfig{
 		beadID:     "task-pg1",
@@ -1753,19 +1762,15 @@ func TestWork_RefusedOnEligibleParent(t *testing.T) {
 	}
 
 	err := executeWork(ctx, cfg, deps)
-	if err == nil {
-		t.Fatal("expected error when parent gate is eligible, got nil")
-	}
-	if !strings.Contains(err.Error(), "premortem_required") {
-		t.Errorf("expected error to mention premortem_required, got: %v", err)
+	if err != nil {
+		t.Fatalf("expected eligible parent gate to allow work execution, got: %v", err)
 	}
 
-	// Worker MUST NOT have been spawned and merger MUST NOT have been called.
-	if sp.called {
-		t.Error("spawner should not be called when premortem gate refuses dispatch")
+	if !sp.called {
+		t.Error("spawner should be called when premortem gate is ignored")
 	}
 	if mg.called {
-		t.Error("merger should not be called when premortem gate refuses dispatch")
+		t.Error("merger should not be called when no commits were produced")
 	}
 }
 

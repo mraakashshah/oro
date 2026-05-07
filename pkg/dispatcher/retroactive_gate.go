@@ -52,6 +52,8 @@ func CreateBeadGraph(ctx context.Context, store beadstore.Store, parentID string
 // To avoid spamming the journey on repeated dispatcher ticks, blocker_hit is
 // appended only when the most recent journey event is not already a
 // blocker_hit for the same parent.
+//
+//oro:testonly
 func CheckPremortemGate(ctx context.Context, store beadstore.Store, beadID string) error {
 	bead, err := store.Show(ctx, beadID)
 	if err != nil {

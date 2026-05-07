@@ -270,21 +270,6 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	}
 	logStep("Loaded %s: %s", cfg.bead.ID, cfg.bead.Title)
 
-	// §11.4 retroactive premortem gate: refuse EXECUTE when the parent epic's
-	// gate_state is 'eligible' and no closed premortem child exists. This
-	// path bypasses the dispatcher's filterAssignable, so the gate must be
-	// checked here too.
-	if gateErr := dispatcher.CheckPremortemGate(ctx, deps.beadSrc, cfg.beadID); gateErr != nil {
-		var pmErr *dispatcher.PremortemGateError
-		if errors.As(gateErr, &pmErr) {
-			return &exitError{
-				code: exitCodeBeadError,
-				msg:  fmt.Sprintf("blocker_hit kind=%s parent=%s: oro work refused — close the premortem first", pmErr.Kind, pmErr.ParentID),
-			}
-		}
-		return &exitError{code: exitCodeBeadError, msg: fmt.Sprintf("premortem gate check failed: %v", gateErr)}
-	}
-
 	// Resolve model: explicit flag > bead metadata > default.
 	// Empty cfg.model means no --model flag was provided, so we check bead metadata.
 	// Must happen before dry-run so the resolved model is displayed.
