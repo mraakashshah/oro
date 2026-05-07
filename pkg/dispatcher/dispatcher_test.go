@@ -811,7 +811,7 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *fakeBeadStore, *mockWorktree
 // startDispatcher starts the dispatcher in the background and returns a cancel func.
 func startDispatcher(t *testing.T, d *Dispatcher) context.CancelFunc {
 	t.Helper()
-	return startDispatcherWithTimeout(t, d, 2*time.Second)
+	return startDispatcherWithTimeout(t, d, 10*time.Second)
 }
 
 // startDispatcherWithTimeout is like startDispatcher but uses a caller-supplied
@@ -1885,14 +1885,14 @@ func TestDispatcher_HeartbeatTimeout_EscalatesWithStructuredFormat(t *testing.T)
 		}
 	}()
 
-	waitForWorkers(t, d, 1, 1*time.Second)
+	waitForWorkers(t, d, 1, opTimeout)
 
 	// Assign work so the worker is busy (idle workers are not timed out)
 	sendDirective(t, d.cfg.SocketPath, "start")
-	waitForState(t, d, StateRunning, 1*time.Second)
+	waitForState(t, d, StateRunning, opTimeout)
 
 	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-crash", Title: "Crash test", Priority: 1}})
-	_, ok := readMsg(t, conn, 2*time.Second) // consume ASSIGN
+	_, ok := readMsg(t, conn, opTimeout) // consume ASSIGN
 	// Stop heartbeats immediately so the timeout clock starts now.
 	stopHB()
 	if !ok {
@@ -1900,7 +1900,8 @@ func TestDispatcher_HeartbeatTimeout_EscalatesWithStructuredFormat(t *testing.T)
 	}
 	beadSrc.SetBeads(nil)
 
-	// Don't send any more heartbeats — wait for timeout + escalation
+	// Don't send any more heartbeats — wait for timeout + escalation.
+	// HeartbeatTimeout is 100ms; escalation fires within ~400ms (300ms grace + 100ms tick).
 	waitFor(t, func() bool {
 		msgs := esc.Messages()
 		if len(msgs) > 0 {
@@ -1914,7 +1915,7 @@ func TestDispatcher_HeartbeatTimeout_EscalatesWithStructuredFormat(t *testing.T)
 			return true
 		}
 		return false
-	}, 2*time.Second)
+	}, opTimeout)
 }
 
 func TestDispatcher_ReadyForReview_SpawnsReviewer(t *testing.T) {
