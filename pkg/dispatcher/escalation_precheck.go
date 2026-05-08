@@ -14,6 +14,9 @@ func (d *Dispatcher) retryMissingAC(ctx context.Context, beadID string) bool {
 	if err != nil {
 		return true
 	}
+	if detail == nil {
+		return false // bead gone — escalation is stale
+	}
 	if detail.Status == "closed" {
 		return false
 	}
@@ -39,6 +42,9 @@ func (d *Dispatcher) retryBeadStillAssigned(ctx context.Context, beadID string) 
 	if err != nil {
 		return true
 	}
+	if detail == nil {
+		return false // bead gone — escalation is stale
+	}
 	return detail.WorkerID != ""
 }
 
@@ -47,6 +53,9 @@ func (d *Dispatcher) retryMergeConflict(ctx context.Context, beadID string) bool
 	detail, err := d.beads.Show(ctx, beadID)
 	if err != nil {
 		return true
+	}
+	if detail == nil {
+		return false // bead gone — escalation is stale
 	}
 	return detail.WorkerID != ""
 }
@@ -57,6 +66,9 @@ func (d *Dispatcher) retryPriorityContention(ctx context.Context, beadID string)
 	if err != nil {
 		return true
 	}
+	if detail == nil {
+		return false // bead gone — escalation is stale
+	}
 	return detail.WorkerID == ""
 }
 
@@ -66,6 +78,9 @@ func (d *Dispatcher) retryNonTDDAC(ctx context.Context, beadID string) bool {
 	detail, err := d.beads.Show(ctx, beadID)
 	if err != nil {
 		return true
+	}
+	if detail == nil {
+		return false // bead gone — escalation is stale
 	}
 	if detail.Status == "closed" || detail.Status == "in_progress" {
 		return false
@@ -86,6 +101,9 @@ func (d *Dispatcher) retryOversizedBead(ctx context.Context, beadID string) bool
 	detail, err := d.beads.Show(ctx, beadID)
 	if err != nil {
 		return true
+	}
+	if detail == nil {
+		return false // bead gone — escalation is stale
 	}
 	if detail.Status == "closed" {
 		return false

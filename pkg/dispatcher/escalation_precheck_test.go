@@ -592,3 +592,175 @@ func TestRetryPendingEscalations_AutoAck(t *testing.T) {
 		t.Errorf("escalator received %q, want '[ORO-DISPATCH] MISSING_AC: oro-unresolved'", messages[0])
 	}
 }
+
+// TestRetryOversizedBead_NilDetail is a regression test for the panic in
+// retryOversizedBead when beads.Show returns (nil, nil) — a missing bead with
+// no error. Without the fix, detail.Status panics with a nil pointer dereference.
+func TestRetryOversizedBead_NilDetail(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name      string
+		beadID    string
+		setupBead func(*fakeBeadStore)
+		want      bool
+	}{
+		{
+			name:   "nil detail (missing bead) — must not panic, skip escalation",
+			beadID: "oro-nil",
+			setupBead: func(m *fakeBeadStore) {
+				if m.shownNil == nil {
+					m.shownNil = make(map[string]bool)
+				}
+				m.shownNil["oro-nil"] = true
+			},
+			want: false, // bead missing → escalation stale → auto-ack (skip)
+		},
+		{
+			name:   "healthy bead still oversized — continues to retry",
+			beadID: "oro-big",
+			setupBead: func(m *fakeBeadStore) {
+				m.shown["oro-big"] = &protocol.BeadDetail{
+					ID:                 "oro-big",
+					Type:               "task",
+					AcceptanceCriteria: "Read: pkg/ops/foo.go\nRead: pkg/dispatcher/bar.go\nRead: pkg/protocol/baz.go",
+				}
+			},
+			want: true, // still 3 modules → retry
+		},
+		{
+			name:   "healthy bead resolved — no retry",
+			beadID: "oro-small",
+			setupBead: func(m *fakeBeadStore) {
+				m.shown["oro-small"] = &protocol.BeadDetail{
+					ID:                 "oro-small",
+					Type:               "task",
+					AcceptanceCriteria: "Read: pkg/ops/foo.go",
+				}
+			},
+			want: false, // ≤2 modules → resolved
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			beadSrc := &fakeBeadStore{
+				shown: make(map[string]*protocol.BeadDetail),
+			}
+			if tt.setupBead != nil {
+				tt.setupBead(beadSrc)
+			}
+			d := &Dispatcher{
+				beads:      beadSrc,
+				WorkerPool: WorkerPool{workers: make(map[string]*trackedWorker)},
+			}
+			got := d.retryOversizedBead(ctx, tt.beadID)
+			if got != tt.want {
+				t.Errorf("retryOversizedBead(%q) = %v, want %v", tt.beadID, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRetryOversizedBead_PendingEscalationNilDetail verifies the full path:
+// retryPendingEscalations must not panic when an OVERSIZED_BEAD escalation
+// references a bead whose Show() returns (nil, nil). Healthy assignments must
+// continue to be retried normally.
+func TestRetryOversizedBead_PendingEscalationNilDetail(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS escalations (
+		    id INTEGER PRIMARY KEY,
+		    type TEXT NOT NULL,
+		    bead_id TEXT,
+		    worker_id TEXT,
+		    message TEXT NOT NULL,
+		    status TEXT NOT NULL DEFAULT 'pending',
+		    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+		    acked_at TEXT,
+		    retry_count INTEGER DEFAULT 0,
+		    last_retry_at TEXT
+		)`)
+	if err != nil {
+		t.Fatalf("failed to create escalations table: %v", err)
+	}
+
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO escalations (type, bead_id, message, status, retry_count)
+		VALUES
+			('OVERSIZED_BEAD', 'oro-missing', '[ORO-DISPATCH] OVERSIZED_BEAD: oro-missing', 'pending', 0),
+			('OVERSIZED_BEAD', 'oro-still-big', '[ORO-DISPATCH] OVERSIZED_BEAD: oro-still-big', 'pending', 0)
+	`)
+	if err != nil {
+		t.Fatalf("failed to insert escalations: %v", err)
+	}
+
+	beadSrc := &fakeBeadStore{
+		shown: map[string]*protocol.BeadDetail{
+			"oro-still-big": {
+				ID:                 "oro-still-big",
+				Type:               "task",
+				AcceptanceCriteria: "Read: pkg/ops/foo.go\nRead: pkg/dispatcher/bar.go\nRead: pkg/protocol/baz.go",
+			},
+		},
+		shownNil: map[string]bool{"oro-missing": true},
+	}
+
+	escalator := &mockEscalator{}
+
+	d := &Dispatcher{
+		db:        db,
+		beads:     beadSrc,
+		escalator: escalator,
+		WorkerPool: WorkerPool{
+			workers: make(map[string]*trackedWorker),
+		},
+	}
+
+	// Must not panic — this is the regression assertion.
+	d.retryPendingEscalations(ctx)
+
+	// Verify: missing-bead escalation was auto-acked (skipped).
+	var missingStatus string
+	var missingAckedAt sql.NullString
+	err = db.QueryRowContext(ctx,
+		`SELECT status, acked_at FROM escalations WHERE bead_id = 'oro-missing'`).
+		Scan(&missingStatus, &missingAckedAt)
+	if err != nil {
+		t.Fatalf("failed to query missing escalation: %v", err)
+	}
+	if missingStatus != "acked" {
+		t.Errorf("missing-bead escalation status = %q, want 'acked'", missingStatus)
+	}
+	if !missingAckedAt.Valid || missingAckedAt.String == "" {
+		t.Error("missing-bead escalation acked_at is NULL or empty, want timestamp")
+	}
+
+	// Verify: healthy still-oversized escalation was retried.
+	var healthyRetryCount int
+	err = db.QueryRowContext(ctx,
+		`SELECT retry_count FROM escalations WHERE bead_id = 'oro-still-big'`).
+		Scan(&healthyRetryCount)
+	if err != nil {
+		t.Fatalf("failed to query healthy escalation: %v", err)
+	}
+	if healthyRetryCount != 1 {
+		t.Errorf("healthy escalation retry_count = %d, want 1", healthyRetryCount)
+	}
+
+	// Verify: only the healthy escalation was sent to the escalator.
+	messages := escalator.Messages()
+	if len(messages) != 1 {
+		t.Fatalf("escalator called %d times, want 1; messages: %v", len(messages), messages)
+	}
+	if messages[0] != "[ORO-DISPATCH] OVERSIZED_BEAD: oro-still-big" {
+		t.Errorf("escalator received %q, want '[ORO-DISPATCH] OVERSIZED_BEAD: oro-still-big'", messages[0])
+	}
+}
