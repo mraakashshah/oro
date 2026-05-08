@@ -65,12 +65,13 @@ tmux capture-pane -t oro:1 -p -S -30   # manager
 - After `awaiting_review` events — do the review immediately
 - After rebuild+relaunch — verify workers picked up new work
 
-**What to watch**: See [deep-observation.md](references/deep-observation.md) for per-component techniques, DB queries, and failure pattern signatures.
+**What to watch**: See [deep-observation.md](references/deep-observation.md) for per-component techniques, DB queries, and failure pattern signatures. For operator cadence and incident policy, follow `docs/runbooks/oro-monitoring.md`.
 
 ### Key failure signatures
 
 | Signal | Meaning |
 |--------|---------|
+| `goroutine_panic` / panic stack | Active incident — 60s cadence, file/fix bug, rebuild/restart after merge |
 | Same event repeating >5x in 30s | Loop bug — spec immediately |
 | `STUCK_WORKER` | Progress timeout — check worker context % |
 | `WORKER_CRASH` with empty task ID | Auto-ack path — verify dispatcher handles it |
@@ -115,6 +116,10 @@ For manual fixes: use `work-bead` skill (TDD, worktree, merge to main).
 ## Phase 5: Rebuild + Relaunch
 
 After merging fixes to main:
+
+If the fix changes Oro runtime behavior, do not continue monitoring the old
+dispatcher. Stop, rebuild/install, restart, then verify no fresh occurrence for
+two 60s windows.
 
 ```bash
 # 1. Graceful shutdown (non-interactive — ./oro stop requires TTY)
