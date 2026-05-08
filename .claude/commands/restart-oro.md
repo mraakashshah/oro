@@ -73,6 +73,7 @@ tmux capture-pane -t oro:manager -p 2>&1 | tail -20
 
 | Pattern | Meaning |
 |---------|---------|
+| `goroutine_panic` or panic stack | Active incident — capture stack, file/fix, restart after merge |
 | `worktree_error` repeating | Infinite retry bug — stale branch/worktree |
 | `missing_acceptance` repeating | Assignment spam — task has no AC |
 | `qg_retry_escalated` | Quality gate exhausted — worker stuck |
@@ -88,7 +89,7 @@ tmux capture-pane -t oro:manager -p 2>&1 | tail -20
 
 1. **Log spam (repeating errors):** Count occurrences and report the pattern. If >5 of the same error in one cycle, flag it prominently.
 2. **Stuck workers:** Report which worker and task are stuck, how long, and what the last log entry was.
-3. **Crashes/panics:** Capture the full error from the tmux pane. Report immediately — don't wait for next cycle.
+3. **Crashes/panics:** Capture the full error from logs or the tmux pane. Report immediately — don't wait for next cycle. If `restart_count` increases or the panic repeats, stay on 60-second incident cadence until a fix is merged, rebuilt, and restarted.
 4. **Task progress:** Track which tasks are assigned, which complete (watch for `merged` events), and which are stuck. Report progress deltas between cycles.
 5. **P0 bugs:** If you observe a new systemic issue (not a one-off), create a task: `oro task create --title="P0: <description>" --type=bug --priority=0`
 
