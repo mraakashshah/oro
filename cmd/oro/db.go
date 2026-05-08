@@ -48,6 +48,10 @@ func openStateDB(path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply v3 schema on %s: %w", path, err)
 	}
+	if err := repairAppliedV4Schema(context.Background(), db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("repair v4 schema on %s: %w", path, err)
+	}
 	if err := beadstore.BackfillJourneyEvents(context.Background(), db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("backfill journey events on %s: %w", path, err)
@@ -56,6 +60,20 @@ func openStateDB(path string) (*sql.DB, error) {
 	migrateStateDB(db)
 
 	return db, nil
+}
+
+func repairAppliedV4Schema(ctx context.Context, db *sql.DB) error {
+	var userVersion int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&userVersion); err != nil {
+		return fmt.Errorf("inspect state db user_version: %w", err)
+	}
+	if userVersion < 4 {
+		return nil
+	}
+	if err := migrations.EnsureV4BeadsFTSTriggers(ctx, db); err != nil {
+		return fmt.Errorf("ensure v4 fts triggers: %w", err)
+	}
+	return nil
 }
 
 func openStateDBWithV4Migration(path string) (*sql.DB, error) {

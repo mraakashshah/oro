@@ -46,6 +46,13 @@ func TestMigrateToV4ExcisesPremortemSchemaAndData(t *testing.T) {
 	assertCount(t, db, `SELECT COUNT(*) FROM bead_journey WHERE actor='premortem'`, 0)
 	assertCount(t, db, `SELECT COUNT(*) FROM bead_journey WHERE actor='migration' AND event='migration_type_converted'`, 1)
 
+	if _, err := db.ExecContext(ctx, `UPDATE beads SET status='in_progress' WHERE id='epic-1'`); err != nil {
+		t.Fatalf("update bead after v4 migration: %v", err)
+	}
+	assertNoTrigger(t, db, "beads_ai")
+	assertNoTrigger(t, db, "beads_ad")
+	assertNoTrigger(t, db, "beads_au")
+
 	if err := migrations.MigrateToV4(ctx, db); err != nil {
 		t.Fatalf("MigrateToV4 second call: %v", err)
 	}
@@ -56,6 +63,34 @@ func TestMigrateToV4ExcisesPremortemSchemaAndData(t *testing.T) {
 	if userVersion != 4 {
 		t.Fatalf("user_version = %d, want 4", userVersion)
 	}
+}
+
+func TestMigrateToV4RepairsLegacyBadFTSTriggers(t *testing.T) {
+	ctx := context.Background()
+	db := openV20DB(t)
+	if err := migrations.MigrateToV3(ctx, db); err != nil {
+		t.Fatalf("MigrateToV3: %v", err)
+	}
+	if err := migrations.MigrateToV4(ctx, db); err != nil {
+		t.Fatalf("MigrateToV4: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA user_version = 4`); err != nil {
+		t.Fatalf("set user_version: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+CREATE TRIGGER beads_ai AFTER INSERT ON beads BEGIN
+  INSERT INTO beads_fts(rowid, title, description, acceptance_criteria, status, type, parent_id, owner)
+  VALUES (new.rowid, new.title, new.description, new.acceptance_criteria, new.status, new.type, new.parent_id, new.owner);
+END;`); err != nil {
+		t.Fatalf("install legacy bad trigger: %v", err)
+	}
+	if err := migrations.MigrateToV4(ctx, db); err != nil {
+		t.Fatalf("MigrateToV4 repair: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE beads SET status='in_progress' WHERE id='epic-1'`); err != nil {
+		t.Fatalf("update bead after repair: %v", err)
+	}
+	assertNoTrigger(t, db, "beads_ai")
 }
 
 func TestMigrateToV4RejectsActiveAssignments(t *testing.T) {
@@ -142,5 +177,16 @@ func assertCount(t *testing.T, db *sql.DB, query string, want int) {
 	}
 	if got != want {
 		t.Fatalf("%s = %d, want %d", query, got, want)
+	}
+}
+
+func assertNoTrigger(t *testing.T, db *sql.DB, name string) {
+	t.Helper()
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_schema WHERE type='trigger' AND name=?`, name).Scan(&count); err != nil {
+		t.Fatalf("count trigger %s: %v", name, err)
+	}
+	if count != 0 {
+		t.Fatalf("trigger %s exists", name)
 	}
 }

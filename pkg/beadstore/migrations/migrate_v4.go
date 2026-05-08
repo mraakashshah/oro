@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 const v4BeadColumns = `id, title, description, acceptance_criteria, status, priority, type, parent_id, owner, estimated_minutes, tier, model, deferred_until, close_reason, created_at, updated_at, closed_at, deleted, next_action, blockers, linked_artifacts, worker_state, pipeline_stage, sandbox_session, allowed_external_fns, context_thresholds`
@@ -42,20 +43,29 @@ CREATE TABLE beads (
 `
 
 const v4BeadsFTSTriggersDDL = `
-CREATE TRIGGER IF NOT EXISTS beads_ai AFTER INSERT ON beads BEGIN
-  INSERT INTO beads_fts(rowid, title, description, acceptance_criteria, status, type, parent_id, owner)
-  VALUES (new.rowid, new.title, new.description, new.acceptance_criteria, new.status, new.type, new.parent_id, new.owner);
+CREATE TRIGGER IF NOT EXISTS beads_fts_ai AFTER INSERT ON beads BEGIN
+  INSERT INTO beads_fts(rowid, title, description, acceptance_criteria)
+  VALUES (new.rowid, new.title, new.description, new.acceptance_criteria);
 END;
-CREATE TRIGGER IF NOT EXISTS beads_ad AFTER DELETE ON beads BEGIN
-  INSERT INTO beads_fts(beads_fts, rowid, title, description, acceptance_criteria, status, type, parent_id, owner)
-  VALUES ('delete', old.rowid, old.title, old.description, old.acceptance_criteria, old.status, old.type, old.parent_id, old.owner);
+CREATE TRIGGER IF NOT EXISTS beads_fts_ad AFTER DELETE ON beads BEGIN
+  INSERT INTO beads_fts(beads_fts, rowid, title, description, acceptance_criteria)
+  VALUES ('delete', old.rowid, old.title, old.description, old.acceptance_criteria);
 END;
-CREATE TRIGGER IF NOT EXISTS beads_au AFTER UPDATE ON beads BEGIN
-  INSERT INTO beads_fts(beads_fts, rowid, title, description, acceptance_criteria, status, type, parent_id, owner)
-  VALUES ('delete', old.rowid, old.title, old.description, old.acceptance_criteria, old.status, old.type, old.parent_id, old.owner);
-  INSERT INTO beads_fts(rowid, title, description, acceptance_criteria, status, type, parent_id, owner)
-  VALUES (new.rowid, new.title, new.description, new.acceptance_criteria, new.status, new.type, new.parent_id, new.owner);
+CREATE TRIGGER IF NOT EXISTS beads_fts_au AFTER UPDATE ON beads BEGIN
+  INSERT INTO beads_fts(beads_fts, rowid, title, description, acceptance_criteria)
+  VALUES ('delete', old.rowid, old.title, old.description, old.acceptance_criteria);
+  INSERT INTO beads_fts(rowid, title, description, acceptance_criteria)
+  VALUES (new.rowid, new.title, new.description, new.acceptance_criteria);
 END;
+`
+
+const v4DropBeadsFTSTriggersDDL = `
+DROP TRIGGER IF EXISTS beads_ai;
+DROP TRIGGER IF EXISTS beads_ad;
+DROP TRIGGER IF EXISTS beads_au;
+DROP TRIGGER IF EXISTS beads_fts_ai;
+DROP TRIGGER IF EXISTS beads_fts_ad;
+DROP TRIGGER IF EXISTS beads_fts_au;
 `
 
 // MigrateToV4 removes the legacy premortem-as-bead-type schema and data.
@@ -65,7 +75,7 @@ func MigrateToV4(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	if !needed {
-		return nil
+		return EnsureV4BeadsFTSTriggers(ctx, db)
 	}
 	if err := ensureNoActiveAssignments(ctx, db); err != nil {
 		return err
@@ -113,9 +123,7 @@ func execV4MigrationSteps(ctx context.Context, tx *sql.Tx) error {
 		`DELETE FROM bead_journey WHERE actor='premortem'`,
 		`DROP VIEW IF EXISTS beads_ready`,
 		`DROP VIEW IF EXISTS beads_blocked`,
-		`DROP TRIGGER IF EXISTS beads_ai`,
-		`DROP TRIGGER IF EXISTS beads_ad`,
-		`DROP TRIGGER IF EXISTS beads_au`,
+		v4DropBeadsFTSTriggersDDL,
 		`PRAGMA legacy_alter_table=ON`,
 		`ALTER TABLE beads RENAME TO beads_v4_rebuild_old`,
 		v4BeadTableDDL,
@@ -131,6 +139,83 @@ func execV4MigrationSteps(ctx context.Context, tx *sql.Tx) error {
 		}
 	}
 	return nil
+}
+
+// RepairV4BeadsFTSTriggers removes the transient bad v4 trigger family that
+// wrote non-existent metadata columns into beads_fts, then reinstalls the
+// canonical content-column triggers.
+func RepairV4BeadsFTSTriggers(ctx context.Context, db *sql.DB) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("repair v4 fts triggers begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, v4DropBeadsFTSTriggersDDL); err != nil {
+		return fmt.Errorf("repair v4 fts triggers drop: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, v4BeadsFTSTriggersDDL); err != nil {
+		return fmt.Errorf("repair v4 fts triggers create: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO beads_fts(beads_fts) VALUES('rebuild')`); err != nil {
+		return fmt.Errorf("repair v4 fts rebuild: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("repair v4 fts triggers commit: %w", err)
+	}
+	return nil
+}
+
+// EnsureV4BeadsFTSTriggers repairs FTS triggers only when the legacy bad
+// trigger family is present or the canonical trigger family is incomplete.
+func EnsureV4BeadsFTSTriggers(ctx context.Context, db *sql.DB) error {
+	needed, err := v4BeadsFTSTriggersNeedRepair(ctx, db)
+	if err != nil {
+		return err
+	}
+	if !needed {
+		return nil
+	}
+	return RepairV4BeadsFTSTriggers(ctx, db)
+}
+
+func v4BeadsFTSTriggersNeedRepair(ctx context.Context, db *sql.DB) (bool, error) {
+	var badTriggers int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_schema WHERE type='trigger' AND name IN ('beads_ai','beads_ad','beads_au')`).Scan(&badTriggers); err != nil {
+		return false, fmt.Errorf("inspect bad v4 fts triggers: %w", err)
+	}
+	if badTriggers > 0 {
+		return true, nil
+	}
+
+	rows, err := db.QueryContext(ctx, `SELECT name, sql FROM sqlite_schema WHERE type='trigger' AND name IN ('beads_fts_ai','beads_fts_ad','beads_fts_au')`)
+	if err != nil {
+		return false, fmt.Errorf("inspect canonical v4 fts triggers: %w", err)
+	}
+	defer rows.Close()
+	canonical := map[string]bool{
+		"beads_fts_ai": false,
+		"beads_fts_ad": false,
+		"beads_fts_au": false,
+	}
+	for rows.Next() {
+		var name, sqlText string
+		if err := rows.Scan(&name, &sqlText); err != nil {
+			return false, fmt.Errorf("scan canonical v4 fts trigger: %w", err)
+		}
+		if strings.Contains(sqlText, "status, type, parent_id, owner") {
+			return true, nil
+		}
+		canonical[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate canonical v4 fts triggers: %w", err)
+	}
+	for _, present := range canonical {
+		if !present {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func needsV4Migration(ctx context.Context, db *sql.DB) (bool, error) {

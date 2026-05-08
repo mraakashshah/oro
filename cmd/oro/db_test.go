@@ -198,6 +198,49 @@ func TestOpenStateDBIdempotent(t *testing.T) {
 	}
 }
 
+func TestOpenStateDBWithV4MigrationRepairsBadFTSTriggers(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	db, err := openStateDBWithV4Migration(dbPath)
+	if err != nil {
+		t.Fatalf("openStateDBWithV4Migration: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO beads (id, title, status, type) VALUES ('repair-target', 'repair target', 'open', 'task')`); err != nil {
+		t.Fatalf("insert bead: %v", err)
+	}
+	_ = db.Close()
+
+	db, err = openDB(dbPath)
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	if _, err := db.Exec(`
+CREATE TRIGGER beads_ai AFTER INSERT ON beads BEGIN
+  INSERT INTO beads_fts(rowid, title, description, acceptance_criteria, status, type, parent_id, owner)
+  VALUES (new.rowid, new.title, new.description, new.acceptance_criteria, new.status, new.type, new.parent_id, new.owner);
+END;
+CREATE TRIGGER beads_au AFTER UPDATE ON beads BEGIN
+  INSERT INTO beads_fts(beads_fts, rowid, title, description, acceptance_criteria, status, type, parent_id, owner)
+  VALUES ('delete', old.rowid, old.title, old.description, old.acceptance_criteria, old.status, old.type, old.parent_id, old.owner);
+  INSERT INTO beads_fts(rowid, title, description, acceptance_criteria, status, type, parent_id, owner)
+  VALUES (new.rowid, new.title, new.description, new.acceptance_criteria, new.status, new.type, new.parent_id, new.owner);
+END;`); err != nil {
+		t.Fatalf("install bad triggers: %v", err)
+	}
+	if _, err := db.Exec(`PRAGMA user_version = 4`); err != nil {
+		t.Fatalf("set user_version: %v", err)
+	}
+	_ = db.Close()
+
+	db, err = openStateDBWithV4Migration(dbPath)
+	if err != nil {
+		t.Fatalf("openStateDBWithV4Migration repair: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`UPDATE beads SET status='in_progress' WHERE id='repair-target'`); err != nil {
+		t.Fatalf("update bead after startup repair: %v", err)
+	}
+}
+
 // TestOpenStateDB_SemanticMemoryMigrationsApplied is a regression test for
 // the post-overhaul gap where semantic_memory_search_events (and related
 // telemetry/chunk tables) existed as separate migration constants in
