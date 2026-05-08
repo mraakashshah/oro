@@ -9954,6 +9954,126 @@ func TestPriorityContention(t *testing.T) {
 	}
 }
 
+// TestPriorityContention_StableUnderLoad verifies the priority-contention
+// invariant under concurrent QG load: with all workers busy and a P0 bead
+// queued, no PRIORITY_CONTENTION escalation fires, and after all workers
+// complete their P1 cycles simultaneously, the P0 bead gets assigned.
+//
+// Unlike TestPriorityContention (single worker, sequential), this test drives
+// numWorkers concurrent DONE deliveries to exercise assign-loop locking under
+// parallel mergeAndComplete goroutines.  The -race detector must not fire.
+func TestPriorityContention_StableUnderLoad(t *testing.T) {
+	const numWorkers = 4
+
+	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 2*time.Second)
+
+	// Connect all workers and send initial heartbeats.
+	conns := make([]net.Conn, numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		conns[i], _ = connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conns[i], protocol.Message{
+			Type: protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{
+				WorkerID:   fmt.Sprintf("load-w%d", i),
+				ContextPct: 10,
+			},
+		})
+	}
+	waitForWorkers(t, d, numWorkers, 2*time.Second)
+
+	// Fill all workers with P1 beads.
+	p1Beads := make([]protocol.Bead, numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		p1Beads[i] = protocol.Bead{
+			ID:       fmt.Sprintf("load-bead-p1-%d", i),
+			Title:    fmt.Sprintf("P1 Task %d", i),
+			Priority: 1,
+		}
+	}
+	beadSrc.SetBeads(p1Beads)
+
+	// Drain one ASSIGN per worker (sequential reads from the test goroutine are safe).
+	for i := 0; i < numWorkers; i++ {
+		msg, ok := readMsg(t, conns[i], 3*time.Second)
+		if !ok {
+			t.Fatalf("worker %d: expected ASSIGN for P1 bead", i)
+		}
+		if msg.Type != protocol.MsgAssign {
+			t.Fatalf("worker %d: expected ASSIGN, got %s", i, msg.Type)
+		}
+	}
+	for i := 0; i < numWorkers; i++ {
+		waitForWorkerState(t, d, fmt.Sprintf("load-w%d", i), protocol.WorkerBusy, 2*time.Second)
+	}
+
+	// Queue a P0 bead while all workers are busy.
+	allBeads := append(append([]protocol.Bead{}, p1Beads...), protocol.Bead{
+		ID:       "load-bead-p0",
+		Title:    "P0 Critical",
+		Priority: 0,
+	})
+	beadSrc.SetBeads(allBeads)
+
+	// Wait for the assign loop to observe all beads before asserting.
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		depth := d.cachedQueueDepth
+		d.mu.Unlock()
+		return depth >= numWorkers+1
+	}, 3*time.Second)
+
+	// No escalation should have fired while all workers are busy.
+	if msgs := esc.Messages(); len(msgs) != 0 {
+		t.Fatalf("expected no escalations with all workers busy, got %d: %v", len(msgs), msgs)
+	}
+
+	// Parallel QG completion: all workers send DONE simultaneously.
+	// Use raw writes so goroutines never call t.Fatal.
+	var wg sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		i, conn := i, conns[i]
+		go func() {
+			defer wg.Done()
+			doneMsg := protocol.Message{
+				Type: protocol.MsgDone,
+				Done: &protocol.DonePayload{
+					WorkerID:          fmt.Sprintf("load-w%d", i),
+					BeadID:            fmt.Sprintf("load-bead-p1-%d", i),
+					QualityGatePassed: true,
+				},
+			}
+			b, _ := json.Marshal(doneMsg)
+			b = append(b, '\n')
+			_, _ = conn.Write(b)
+		}()
+	}
+	wg.Wait()
+
+	// Poll dispatcher state until P0 is assigned to any worker.
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		for _, w := range d.workers {
+			if w.beadID == "load-bead-p0" && w.state == protocol.WorkerBusy {
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second)
+
+	// No PRIORITY_CONTENTION or STUCK escalations should have fired.
+	// MERGE_COMPLETE escalations from successful P1 merges are expected and allowed.
+	for _, msg := range esc.Messages() {
+		if strings.Contains(msg, "PRIORITY_CONTENTION") || strings.Contains(msg, string(protocol.EscStuck)) {
+			t.Errorf("unexpected problematic escalation: %s", msg)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // TestTryAssign_NoBeadsReady (oro-2ao)
 // ---------------------------------------------------------------------------
