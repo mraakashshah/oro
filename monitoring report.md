@@ -94,3 +94,15 @@ User asked me to stop and fix the runtime bug.
   - `b5cd0e97` `fix(dispatcher): guard focus at worker state commit (oro-gj1z)` checks `focusVersion` under `d.mu` immediately before committing worker state.
 - **Verified**: focused dispatcher regressions plus full `./scripts/quality_gate.sh` passed for each fix. Rebuilt + reinstalled, hook present at `/Users/as21/.oro/hooks/oro-search-hook`.
 - **Relaunch result**: dispatcher PID 24303, target=3, managed=3, focus=`oro-gpex`. `focus --immediate oro-gpex` preempted 3 non-focused workers; `oro-q53e` is active as focused work and remaining capacity is backfilled (`oro-fro8`, `oro-jv74`), as intended.
+
+## Cycle 26 — Stop, fix v4 FTS trigger stall, relaunch
+
+- **Launch attempt**: `/Users/as21/go/bin/oro start --workers 2 --max-workers 2 --detach` after `make build`/`make install`.
+- **Observed stall**: dispatcher started but had 0 registered workers and 43 ready tasks. Logs repeated `update_status_failed` on ready tasks with `SQL logic error: table beads_fts has no column named status`.
+- **Root cause**: v4 migration installed legacy `beads_ai/beads_ad/beads_au` triggers that wrote `status/type/parent_id/owner` into `beads_fts`, while the canonical FTS table only contains `title/description/acceptance_criteria`.
+- **Filed**: `oro-db6n` P1 bug, "Bug: v4 migration installs bad beads_fts triggers".
+- **Fixed**: `bd56b386` `fix(beadstore): repair v4 fts triggers`. Future v4 migrations now install canonical `beads_fts_*` triggers only; already-migrated `user_version=4` DBs are repaired through normal DB open/startup; repair skips the FTS rebuild when trigger state is already healthy.
+- **Verified**: focused regression tests passed, full `./scripts/quality_gate.sh` passed, and `claude -p` ops review returned PASS with no Critical/Important blockers.
+- **DB repair confirmed**: live state DB now has only `beads_fts_ai`, `beads_fts_ad`, `beads_fts_au`.
+- **Relaunch result**: dispatcher PID 36168, target=2, max=2, managed=2. Workers active on `oro-aers` and `oro-f4pq`; queue=41. Fresh logs show `assign` and `bead_updated` to `in_progress`; no new trigger errors after 20:05.
+- **Follow-up filed**: `oro-nft6` P1 for a recovered `goroutine_panic` in `retryOversizedBead` at 20:07:19. The panic did not repeat in the next monitoring check and the swarm remained healthy, so the run was not stopped for this separate defect.
