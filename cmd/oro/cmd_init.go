@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -989,28 +990,47 @@ func filePermForAsset(path string) os.FileMode {
 	return 0o644
 }
 
-// extractSharedAgentInstructions extracts the shared instruction source to
-// dest/ORO_AGENT.md. Skips writing if force is false and the file already exists.
-func extractSharedAgentInstructions(dest string, assets fs.FS, force bool) error {
+// writeFileWithPolicy implements the content-aware regeneration policy for
+// agent instruction views derived from ORO_AGENT.md.
+//   - New file: always written.
+//   - Exists + matches: silently skipped.
+//   - Exists + diverged + force=false: warning emitted to w, file NOT overwritten.
+//   - Exists + diverged + force=true: file overwritten silently.
+func writeFileWithPolicy(w io.Writer, destPath string, data []byte, force bool) error {
+	if fileExists(destPath) {
+		existing, err := os.ReadFile(destPath) //nolint:gosec // path from trusted caller
+		if err != nil {
+			return fmt.Errorf("read %s: %w", filepath.Base(destPath), err)
+		}
+		if bytes.Equal(existing, data) {
+			return nil // content matches — silent skip
+		}
+		if !force {
+			fmt.Fprintf(w, "[oro] warning: %s has local edits and differs from ORO_AGENT.md — skipping (use --force to overwrite)\n", filepath.Base(destPath))
+			return nil
+		}
+	}
+	if err := os.WriteFile(destPath, data, 0o644); err != nil { //nolint:gosec // needs to be readable
+		return fmt.Errorf("write %s: %w", filepath.Base(destPath), err)
+	}
+	return nil
+}
+
+// extractSharedAgentInstructionsW extracts the shared instruction source to
+// dest/ORO_AGENT.md using the content-aware regeneration policy.
+func extractSharedAgentInstructionsW(dest string, assets fs.FS, force bool, w io.Writer) error {
 	data, err := fs.ReadFile(assets, sharedAgentInstructionsFile)
 	if err != nil {
 		return nil //nolint:nilerr // shared instructions are optional during migration
 	}
 	destPath := filepath.Join(dest, sharedAgentInstructionsFile)
-	if !force && fileExists(destPath) {
-		return nil
-	}
-	if err := os.WriteFile(destPath, data, 0o644); err != nil { //nolint:gosec // needs to be readable
-		return fmt.Errorf("write %s: %w", sharedAgentInstructionsFile, err)
-	}
-	return nil
+	return writeFileWithPolicy(w, destPath, data, force)
 }
 
-// extractClaudeMD extracts the Claude compatibility instructions to
-// dest/.claude/CLAUDE.md. When shared instructions exist, they are the
-// canonical source for the Claude compatibility view. Falls back to a direct
-// CLAUDE.md asset for older bundles.
-func extractClaudeMD(dest string, assets fs.FS, force bool) error {
+// extractClaudeMDW extracts the Claude compatibility view to dest/.claude/CLAUDE.md.
+// ORO_AGENT.md is the canonical source; falls back to a direct CLAUDE.md asset for
+// older bundles. Uses the content-aware regeneration policy.
+func extractClaudeMDW(dest string, assets fs.FS, force bool, w io.Writer) error {
 	data, err := fs.ReadFile(assets, sharedAgentInstructionsFile)
 	if err != nil {
 		data, err = fs.ReadFile(assets, "CLAUDE.md")
@@ -1023,13 +1043,18 @@ func extractClaudeMD(dest string, assets fs.FS, force bool) error {
 		return fmt.Errorf("create .claude dir: %w", err)
 	}
 	claudePath := filepath.Join(claudeDir, "CLAUDE.md")
-	if !force && fileExists(claudePath) {
-		return nil
+	return writeFileWithPolicy(w, claudePath, data, force)
+}
+
+// extractAgentsMDW extracts the AGENTS.md compatibility view to dest/AGENTS.md.
+// ORO_AGENT.md is the single source. Uses the content-aware regeneration policy.
+func extractAgentsMDW(dest string, assets fs.FS, force bool, w io.Writer) error {
+	data, err := fs.ReadFile(assets, sharedAgentInstructionsFile)
+	if err != nil {
+		return nil //nolint:nilerr // ORO_AGENT.md is optional during migration
 	}
-	if err := os.WriteFile(claudePath, data, 0o644); err != nil { //nolint:gosec // needs to be readable
-		return fmt.Errorf("write CLAUDE.md: %w", err)
-	}
-	return nil
+	agentsPath := filepath.Join(dest, "AGENTS.md")
+	return writeFileWithPolicy(w, agentsPath, data, force)
 }
 
 // extractAssetDir walks a single mapped directory from srcFS and copies files
@@ -1079,15 +1104,23 @@ func extractThresholdsJSON(dest string, assets fs.FS, force bool) error {
 
 // extractAssets walks the embedded FS and copies files to oroHome.
 // Directory mapping: skills → .claude/skills/, hooks → hooks/, beacons → beacons/,
-// commands → .claude/commands/, CLAUDE.md → .claude/CLAUDE.md.
-// When force is false, files that already exist on disk are skipped (additive-only).
-// When force is true, all files are overwritten (current behavior for version bumps).
-// The version stamp is always written regardless of the force flag.
+// commands → .claude/commands/, ORO_AGENT.md → ORO_AGENT.md,
+// CLAUDE.md → .claude/CLAUDE.md, AGENTS.md → AGENTS.md.
+// Divergence warnings for agent instruction views are written to os.Stderr.
 func extractAssets(dest string, assets fs.FS, force bool) error {
-	if err := extractSharedAgentInstructions(dest, assets, force); err != nil {
+	return extractAssetsW(dest, assets, force, os.Stderr)
+}
+
+// extractAssetsW is extractAssets with an explicit writer for divergence warnings
+// on agent instruction views (ORO_AGENT.md, CLAUDE.md, AGENTS.md).
+func extractAssetsW(dest string, assets fs.FS, force bool, w io.Writer) error {
+	if err := extractSharedAgentInstructionsW(dest, assets, force, w); err != nil {
 		return err
 	}
-	if err := extractClaudeMD(dest, assets, force); err != nil {
+	if err := extractClaudeMDW(dest, assets, force, w); err != nil {
+		return err
+	}
+	if err := extractAgentsMDW(dest, assets, force, w); err != nil {
 		return err
 	}
 	if err := extractThresholdsJSON(dest, assets, force); err != nil {

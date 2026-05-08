@@ -2273,3 +2273,168 @@ func TestReviewPatternCandidateFilesIgnored(t *testing.T) {
 		t.Error("oroGitignoreEntries() must still include \".oro/\" for target-project inits")
 	}
 }
+
+// TestInitEmitsBothClaudeAndAgentsMD verifies that extractAssets materialises
+// both .claude/CLAUDE.md and AGENTS.md from the ORO_AGENT.md shared source.
+func TestInitEmitsBothClaudeAndAgentsMD(t *testing.T) {
+	assets := fstest.MapFS{
+		"ORO_AGENT.md":                 &fstest.MapFile{Data: []byte("# Oro Agent Instructions\nportable content\n")},
+		"skills/using-skills/SKILL.md": &fstest.MapFile{Data: []byte("# skill\n")},
+		"hooks/placeholder.sh":         &fstest.MapFile{Data: []byte("#!/bin/sh\n")},
+		"beacons/placeholder.md":       &fstest.MapFile{Data: []byte("# beacon\n")},
+		"commands/placeholder/cmd.md":  &fstest.MapFile{Data: []byte("# cmd\n")},
+	}
+	dest := t.TempDir()
+
+	if err := extractAssets(dest, assets, false); err != nil {
+		t.Fatalf("extractAssets failed: %v", err)
+	}
+
+	sharedPath := filepath.Join(dest, "ORO_AGENT.md")
+	sharedData, err := os.ReadFile(sharedPath) //nolint:gosec // test-created file
+	if err != nil {
+		t.Fatalf("ORO_AGENT.md not extracted: %v", err)
+	}
+
+	claudePath := filepath.Join(dest, ".claude", "CLAUDE.md")
+	claudeData, err := os.ReadFile(claudePath) //nolint:gosec // test-created file
+	if err != nil {
+		t.Fatalf(".claude/CLAUDE.md not extracted: %v", err)
+	}
+	if string(claudeData) != string(sharedData) {
+		t.Errorf(".claude/CLAUDE.md should mirror ORO_AGENT.md\ngot  %q\nwant %q", string(claudeData), string(sharedData))
+	}
+
+	agentsPath := filepath.Join(dest, "AGENTS.md")
+	agentsData, err := os.ReadFile(agentsPath) //nolint:gosec // test-created file
+	if err != nil {
+		t.Fatalf("AGENTS.md not extracted: %v", err)
+	}
+	if string(agentsData) != string(sharedData) {
+		t.Errorf("AGENTS.md should mirror ORO_AGENT.md\ngot  %q\nwant %q", string(agentsData), string(sharedData))
+	}
+}
+
+// TestRegenerationPolicyOnDivergence verifies the content-aware regeneration
+// policy for ORO_AGENT.md, .claude/CLAUDE.md and AGENTS.md:
+//   - matching content → silent skip
+//   - diverged content + force=false → warn but do NOT overwrite
+//   - diverged content + force=true  → overwrite silently
+func TestRegenerationPolicyOnDivergence(t *testing.T) {
+	const original = "# ORO_AGENT original content\n"
+	const userEdited = "# user edited this file — do not overwrite\n"
+	const updated = "# updated by oro upgrade\n"
+
+	makeAssets := func(content string) fstest.MapFS {
+		return fstest.MapFS{
+			"ORO_AGENT.md":                 &fstest.MapFile{Data: []byte(content)},
+			"skills/using-skills/SKILL.md": &fstest.MapFile{Data: []byte("# skill\n")},
+			"hooks/placeholder.sh":         &fstest.MapFile{Data: []byte("#!/bin/sh\n")},
+			"beacons/placeholder.md":       &fstest.MapFile{Data: []byte("# beacon\n")},
+			"commands/placeholder/cmd.md":  &fstest.MapFile{Data: []byte("# cmd\n")},
+		}
+	}
+
+	t.Run("matching content skip silently", func(t *testing.T) {
+		dest := t.TempDir()
+
+		var w bytes.Buffer
+		if err := extractAssetsW(dest, makeAssets(original), false, &w); err != nil {
+			t.Fatalf("first extraction failed: %v", err)
+		}
+		if w.Len() > 0 {
+			t.Errorf("expected no warnings on first install, got: %q", w.String())
+		}
+
+		w.Reset()
+		if err := extractAssetsW(dest, makeAssets(original), false, &w); err != nil {
+			t.Fatalf("second extraction failed: %v", err)
+		}
+		if w.Len() > 0 {
+			t.Errorf("expected no warnings when content matches, got: %q", w.String())
+		}
+	})
+
+	t.Run("diverged content warns but does not overwrite with force=false", func(t *testing.T) {
+		dest := t.TempDir()
+		claudeDir := filepath.Join(dest, ".claude")
+		if err := os.MkdirAll(claudeDir, 0o755); err != nil { //nolint:gosec // test dir
+			t.Fatalf("mkdir: %v", err)
+		}
+		writeFile := func(path, content string) {
+			t.Helper()
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil { //nolint:gosec // test file
+				t.Fatalf("write %s: %v", path, err)
+			}
+		}
+		writeFile(filepath.Join(dest, "ORO_AGENT.md"), userEdited)
+		writeFile(filepath.Join(claudeDir, "CLAUDE.md"), userEdited)
+		writeFile(filepath.Join(dest, "AGENTS.md"), userEdited)
+
+		var w bytes.Buffer
+		if err := extractAssetsW(dest, makeAssets(updated), false, &w); err != nil {
+			t.Fatalf("extraction failed: %v", err)
+		}
+
+		checkNotOverwritten := func(path string) {
+			t.Helper()
+			data, err := os.ReadFile(path) //nolint:gosec // test-created file
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+			if string(data) != userEdited {
+				t.Errorf("%s should not be overwritten\ngot  %q\nwant %q", path, string(data), userEdited)
+			}
+		}
+		checkNotOverwritten(filepath.Join(dest, "ORO_AGENT.md"))
+		checkNotOverwritten(filepath.Join(claudeDir, "CLAUDE.md"))
+		checkNotOverwritten(filepath.Join(dest, "AGENTS.md"))
+
+		warning := w.String()
+		if warning == "" {
+			t.Error("expected divergence warnings, got none")
+		}
+		if !strings.Contains(warning, "AGENTS.md") {
+			t.Errorf("warning should mention AGENTS.md, got: %q", warning)
+		}
+		if !strings.Contains(warning, "CLAUDE.md") {
+			t.Errorf("warning should mention CLAUDE.md, got: %q", warning)
+		}
+	})
+
+	t.Run("diverged content overwritten when force=true", func(t *testing.T) {
+		dest := t.TempDir()
+		claudeDir := filepath.Join(dest, ".claude")
+		if err := os.MkdirAll(claudeDir, 0o755); err != nil { //nolint:gosec // test dir
+			t.Fatalf("mkdir: %v", err)
+		}
+		writeFile := func(path, content string) {
+			t.Helper()
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil { //nolint:gosec // test file
+				t.Fatalf("write %s: %v", path, err)
+			}
+		}
+		writeFile(filepath.Join(dest, "ORO_AGENT.md"), userEdited)
+		writeFile(filepath.Join(claudeDir, "CLAUDE.md"), userEdited)
+		writeFile(filepath.Join(dest, "AGENTS.md"), userEdited)
+
+		var w bytes.Buffer
+		if err := extractAssetsW(dest, makeAssets(updated), true, &w); err != nil {
+			t.Fatalf("extraction with force failed: %v", err)
+		}
+
+		checkOverwritten := func(path string) {
+			t.Helper()
+			data, err := os.ReadFile(path) //nolint:gosec // test-created file
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+			if string(data) != updated {
+				t.Errorf("%s should be overwritten\ngot  %q\nwant %q", path, string(data), updated)
+			}
+		}
+		checkOverwritten(filepath.Join(dest, "ORO_AGENT.md"))
+		checkOverwritten(filepath.Join(claudeDir, "CLAUDE.md"))
+		checkOverwritten(filepath.Join(dest, "AGENTS.md"))
+	})
+}
