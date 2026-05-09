@@ -1664,6 +1664,29 @@ func (d *Dispatcher) shutdownCompletedSpawnForWorkerLocked(w *trackedWorker) {
 	w.markShuttingDownWithoutAssignment()
 }
 
+// handleQGStuckDetected handles the case where a bead has produced the same QG
+// output enough consecutive times to be considered stuck. The repeated identical
+// output proves the current approach isn't working, so we classify with
+// RetryExhausted=true so deterministic failures get ReopenOriginal routing.
+func (d *Dispatcher) handleQGStuckDetected(ctx context.Context, workerID, beadID, qgOutput, qgFingerprint, qgSummary string) {
+	_ = d.logEvent(ctx, "qg_stuck_detected", workerID, beadID, workerID,
+		fmt.Sprintf(`{"repeated_count":%d}`, maxStuckCount))
+	d.mu.Lock()
+	assignmentID := d.assignmentIDLocked(workerID, beadID)
+	d.mu.Unlock()
+	stuckRec := QGFailureRecord{
+		BeadID:       beadID,
+		WorkerID:     workerID,
+		AssignmentID: assignmentID,
+		Component:    "worker",
+		Fingerprint:  qgFingerprint,
+		Summary:      qgSummary,
+		Output:       qgOutput,
+	}
+	stuckCls := ClassifyQGFailure(stuckRec, QGFailureHistory{RetryExhausted: true})
+	d.handleRepeatedQGOutput(ctx, workerID, beadID, stuckRec, stuckCls)
+}
+
 // handleQGFailure processes a quality-gate failure: checks for stuck detection
 // (repeated identical outputs), increments the attempt counter, escalates if
 // either cap is reached, or re-assigns with feedback.
@@ -1690,24 +1713,7 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 
 	// Check stuck detection: hash QGOutput and track consecutive identical hashes.
 	if d.isQGStuck(beadID, qgOutput) {
-		_ = d.logEvent(ctx, "qg_stuck_detected", workerID, beadID, workerID,
-			fmt.Sprintf(`{"repeated_count":%d}`, maxStuckCount))
-		d.mu.Lock()
-		assignmentID := d.assignmentIDLocked(workerID, beadID)
-		d.mu.Unlock()
-		stuckRec := QGFailureRecord{
-			BeadID:       beadID,
-			WorkerID:     workerID,
-			AssignmentID: assignmentID,
-			Component:    "worker",
-			Fingerprint:  qgFingerprint,
-			Summary:      qgSummary,
-			Output:       qgOutput,
-		}
-		// Repeated identical output proves the current approach isn't working;
-		// classify as exhausted so deterministic failures get ReopenOriginal routing.
-		stuckCls := ClassifyQGFailure(stuckRec, QGFailureHistory{RetryExhausted: true})
-		d.handleRepeatedQGOutput(ctx, workerID, beadID, stuckRec, stuckCls)
+		d.handleQGStuckDetected(ctx, workerID, beadID, qgOutput, qgFingerprint, qgSummary)
 		return
 	}
 
