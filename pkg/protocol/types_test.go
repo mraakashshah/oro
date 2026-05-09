@@ -8,6 +8,44 @@ import (
 	"oro/pkg/protocol"
 )
 
+func TestResolveModelIsPureShim(t *testing.T) {
+	tests := []struct {
+		name     string
+		bead     protocol.Bead
+		expected string
+	}{
+		{
+			name:     "explicit model override",
+			bead:     protocol.Bead{Model: "custom-model"},
+			expected: "custom-model",
+		},
+		{
+			name:     "EstimatedMinutes=3 no longer routes in protocol",
+			bead:     protocol.Bead{EstimatedMinutes: 3},
+			expected: "",
+		},
+		{
+			name:     "tier no longer maps to model in protocol",
+			bead:     protocol.Bead{Tier: protocol.TierDeep},
+			expected: "",
+		},
+		{
+			name:     "empty bead has no model",
+			bead:     protocol.Bead{},
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.bead.ResolveModel()
+			if got != tt.expected {
+				t.Errorf("ResolveModel() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestBeadResolveModel(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -20,29 +58,24 @@ func TestBeadResolveModel(t *testing.T) {
 			expected: "custom-model",
 		},
 		{
-			name:     "EstimatedMinutes=3 routes to Haiku",
-			bead:     protocol.Bead{EstimatedMinutes: 3},
-			expected: protocol.ModelHaiku,
-		},
-		{
-			name:     "EstimatedMinutes=5 routes to Haiku",
+			name:     "EstimatedMinutes=5 returns no model",
 			bead:     protocol.Bead{EstimatedMinutes: 5},
-			expected: protocol.ModelHaiku,
+			expected: "",
 		},
 		{
-			name:     "EstimatedMinutes=6 routes to Sonnet",
+			name:     "EstimatedMinutes=6 returns no model",
 			bead:     protocol.Bead{EstimatedMinutes: 6},
-			expected: protocol.ModelSonnet,
+			expected: "",
 		},
 		{
-			name:     "EstimatedMinutes=0 (unset) routes to Sonnet",
+			name:     "EstimatedMinutes=0 (unset) returns no model",
 			bead:     protocol.Bead{EstimatedMinutes: 0},
-			expected: protocol.ModelSonnet,
+			expected: "",
 		},
 		{
-			name:     "no fields set routes to Sonnet",
+			name:     "no fields set returns no model",
 			bead:     protocol.Bead{},
-			expected: protocol.ModelSonnet,
+			expected: "",
 		},
 	}
 
@@ -67,7 +100,7 @@ func TestLegacyModelMappingToTier(t *testing.T) {
 			name:      "explicit tier routes to neutral deep",
 			bead:      protocol.Bead{Tier: protocol.TierDeep},
 			wantTier:  protocol.TierDeep,
-			wantModel: protocol.ModelOpus,
+			wantModel: "",
 		},
 		{
 			name:      "legacy opus maps to deep",
@@ -127,9 +160,6 @@ func TestLegacyModelCompatibilityMapping(t *testing.T) {
 			}
 			if gotTier != tt.tier {
 				t.Fatalf("LegacyModelToTier(%q) = %q, want %q", tt.model, gotTier, tt.tier)
-			}
-			if gotModel := tt.tier.DefaultModel(); gotModel != tt.model {
-				t.Fatalf("tier %q default model = %q, want %q", tt.tier, gotModel, tt.model)
 			}
 		})
 	}

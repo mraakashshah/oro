@@ -104,20 +104,6 @@ const DefaultModel = ModelSonnet
 // routing does not apply.
 const DefaultTier = TierBalanced
 
-// DefaultModel returns the legacy-model equivalent for the neutral tier.
-func (t Tier) DefaultModel() string {
-	switch t {
-	case TierFast:
-		return ModelHaiku
-	case TierDeep:
-		return ModelOpus
-	case TierBackground:
-		return ModelHaiku
-	default:
-		return ModelSonnet
-	}
-}
-
 // IsKnown reports whether the tier is one of Oro's defined routing tiers.
 func (t Tier) IsKnown() bool {
 	switch t {
@@ -150,16 +136,10 @@ func LegacyModelToTier(model string) (Tier, bool) {
 	}
 }
 
-// ResolveModel returns the model to use for this bead. Priority:
-//  1. Explicit Model field (bead-level override)
-//  2. Explicit Tier field
-//  2. Estimate-based routing: <=5 min -> Haiku, >5 min -> Sonnet
-//  3. DefaultModel (Sonnet) as fallback
+// ResolveModel returns the explicit model override, when present.
+// Runtime/tier/estimate fallback resolution lives in pkg/agentmodel.
 func (b Bead) ResolveModel() string {
-	if b.Model != "" {
-		return b.Model
-	}
-	return b.ResolveTier().DefaultModel()
+	return b.Model
 }
 
 // ResolveTier returns the neutral routing tier for this bead. Priority:

@@ -73,7 +73,14 @@ func (t Type) Tier() protocol.Tier {
 
 // Model returns the preferred legacy-model equivalent for this ops type.
 func (t Type) Model() string {
-	return t.Tier().DefaultModel()
+	switch t.Tier() {
+	case protocol.TierFast, protocol.TierBackground:
+		return protocol.ModelHaiku
+	case protocol.TierDeep:
+		return protocol.ModelOpus
+	default:
+		return protocol.ModelSonnet
+	}
 }
 
 // Timeout returns the per-type process timeout. Returns 0 for all types except

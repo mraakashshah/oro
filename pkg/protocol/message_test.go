@@ -185,6 +185,33 @@ func TestAssignPayloadMemoryContext(t *testing.T) {
 	}
 }
 
+func TestAssignPayloadHasRuntime(t *testing.T) {
+	t.Parallel()
+
+	original := protocol.AssignPayload{
+		BeadID:   "oro-runtime",
+		Worktree: "/tmp/worktree",
+		Runtime:  "codex",
+		Model:    "gpt-5-codex",
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal AssignPayload: %v", err)
+	}
+	if !strings.Contains(string(data), `"runtime":"codex"`) {
+		t.Fatalf("AssignPayload JSON missing runtime: %s", string(data))
+	}
+
+	var decoded protocol.AssignPayload
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal AssignPayload: %v", err)
+	}
+	if decoded.Runtime != original.Runtime {
+		t.Fatalf("Runtime = %q, want %q", decoded.Runtime, original.Runtime)
+	}
+}
+
 // contains checks if substr exists in s (simple helper to avoid importing strings).
 func contains(s, substr string) bool {
 	for i := 0; i <= len(s)-len(substr); i++ {

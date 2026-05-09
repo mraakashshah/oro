@@ -33,9 +33,10 @@ func ResolveForRole(role string) (runtime, model string) {
 // explicit runtime/model; role tier; default tier.
 func ResolveForBead(role string, b protocol.Bead) (runtime, model string) {
 	cfg := loadAgentConfig()
+	explicitModel := b.ResolveModel()
 
-	if cfg.legacyDefaults && b.Model != "" {
-		return "claude", b.Model
+	if cfg.legacyDefaults && explicitModel != "" {
+		return "claude", explicitModel
 	}
 
 	if tier, ok := beadTier(b, cfg.hasAgentBlock); ok {
@@ -43,8 +44,8 @@ func ResolveForBead(role string, b protocol.Bead) (runtime, model string) {
 	}
 
 	runtime, model = resolveRole(cfg.cfg, role)
-	if b.Model != "" {
-		return runtime, b.Model
+	if explicitModel != "" {
+		return runtime, explicitModel
 	}
 	return runtime, model
 }

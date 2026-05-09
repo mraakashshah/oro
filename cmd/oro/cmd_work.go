@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"oro/pkg/agentmodel"
 	"oro/pkg/beadstore"
 	"oro/pkg/codesearch"
 	"oro/pkg/codestruct"
@@ -307,7 +308,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		}
 	}
 	// Resolve model using standard bead resolution (Model > Tier > estimate > default).
-	model := cfg.bead.ResolveModel()
+	_, model := agentmodel.ResolveForBead("worker", *cfg.bead)
 
 	if cfg.dryRun {
 		logStep("Dry run — would execute bead %s with model=%s, timeout=%s, skip-review=%t",
