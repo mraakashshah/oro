@@ -895,3 +895,88 @@ func TestBeadCreateWithParentDoesNotSpawnPremortem(t *testing.T) {
 		t.Errorf("CLI-created children: tasks=%d premortem=%d, want tasks=6 premortem=0; beads=%v", taskChildren, premortemChildren, beads)
 	}
 }
+
+// TestTaskCreateTierFlag verifies that `oro task create --tier <value>`:
+//  1. Accepts fast|balanced|deep|background and persists to the DB tier column.
+//  2. Rejects unknown tier values.
+//  3. Leaves tier unset when --tier is not provided.
+func TestTaskCreateTierFlag(t *testing.T) {
+	t.Run("deep_tier_persisted", func(t *testing.T) {
+		ctx := context.Background()
+		store, err := beadstore.OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))
+		if err != nil {
+			t.Fatalf("OpenSQLiteStore: %v", err)
+		}
+
+		out := executeTaskCommand(t, store, "create", "--title", "t", "--tier", "deep", "--json")
+		got := decodeBeadJSONObject(t, out)
+		if got["tier"] != "deep" {
+			t.Fatalf("tier = %#v, want deep", got["tier"])
+		}
+	})
+
+	for _, tier := range []string{"fast", "balanced", "deep", "background"} {
+		tier := tier
+		t.Run("accepts_"+tier, func(t *testing.T) {
+			ctx := context.Background()
+			store, err := beadstore.OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))
+			if err != nil {
+				t.Fatalf("OpenSQLiteStore: %v", err)
+			}
+
+			out := executeTaskCommand(t, store, "create", "--title", "t", "--tier", tier, "--json")
+			got := decodeBeadJSONObject(t, out)
+			if got["tier"] != tier {
+				t.Fatalf("tier = %#v, want %s", got["tier"], tier)
+			}
+		})
+	}
+
+	t.Run("rejects_unknown_tier", func(t *testing.T) {
+		ctx := context.Background()
+		store, err := beadstore.OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))
+		if err != nil {
+			t.Fatalf("OpenSQLiteStore: %v", err)
+		}
+
+		cmd := newTaskCmdWithStore(store)
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		cmd.SetErr(&buf)
+		cmd.SetArgs([]string{"create", "--title", "t", "--tier", "invalid", "--json"})
+		_ = cmd.Execute()
+		got := decodeBeadJSONObject(t, buf.String())
+		if got["ok"] != false {
+			t.Fatalf("expected ok=false for unknown tier, got output=%s", buf.String())
+		}
+	})
+
+	t.Run("empty_tier_is_unset", func(t *testing.T) {
+		ctx := context.Background()
+		store, err := beadstore.OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))
+		if err != nil {
+			t.Fatalf("OpenSQLiteStore: %v", err)
+		}
+
+		out := executeTaskCommand(t, store, "create", "--title", "t", "--json")
+		got := decodeBeadJSONObject(t, out)
+		if tier, ok := got["tier"]; ok && tier != "" && tier != nil {
+			t.Fatalf("tier = %#v, want absent/empty when not set", tier)
+		}
+	})
+}
+
+func executeTaskCommand(t *testing.T, store beadstore.Store, args ...string) string {
+	t.Helper()
+
+	cmd := newTaskCmdWithStore(store)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs(args)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("task %s error: %v\n%s", strings.Join(args, " "), err, out.String())
+	}
+	return out.String()
+}

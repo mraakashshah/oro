@@ -147,6 +147,10 @@ func newBeadCreateCmd(store beadstore.Store) *cobra.Command {
 				return writeBeadCommandErrorIfJSON(cmd, "create", fmt.Errorf("creating premortem beads from the CLI is no longer supported"))
 			}
 
+			tier, err := parseTierFlag(cmd)
+			if err != nil {
+				return writeBeadCommandErrorIfJSON(cmd, "flags", err)
+			}
 			params := beadstore.CreateParams{
 				Title:              mustStringFlag(cmd, "title"),
 				Type:               typeName,
@@ -157,6 +161,7 @@ func newBeadCreateCmd(store beadstore.Store) *cobra.Command {
 				EstimatedMinutes:   mustIntFlag(cmd, "estimate"),
 				ID:                 mustStringFlag(cmd, "id"),
 				Tags:               mustStringArrayFlag(cmd, "tag"),
+				Tier:               tier,
 			}
 			bead, err := createBeadFromParams(cmd.Context(), s, params)
 			if err != nil {
@@ -180,7 +185,22 @@ func newBeadCreateCmd(store beadstore.Store) *cobra.Command {
 	cmd.Flags().String("acceptance-criteria", "", "acceptance criteria")
 	cmd.Flags().Int("estimate", 0, "estimated minutes")
 	cmd.Flags().StringArray("tag", nil, "tag to attach; repeatable")
+	cmd.Flags().String("tier", "", "routing tier: fast, balanced, deep, or background")
 	return cmd
+}
+
+// parseTierFlag reads the --tier flag and validates it. Returns an empty Tier
+// when the flag is absent or empty.
+func parseTierFlag(cmd *cobra.Command) (protocol.Tier, error) {
+	raw, err := stringFlag(cmd, "tier")
+	if err != nil || raw == "" {
+		return "", err
+	}
+	tier, ok := protocol.ParseTier(raw)
+	if !ok {
+		return "", fmt.Errorf("unknown tier %q: must be fast, balanced, deep, or background", raw)
+	}
+	return tier, nil
 }
 
 func newBeadUpdateCmd(store beadstore.Store) *cobra.Command {
