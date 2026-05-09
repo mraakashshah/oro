@@ -57,7 +57,16 @@ func (d *Dispatcher) handleTransientQGFailure(ctx context.Context, workerID, bea
 	attempt := d.attemptCounts[beadID] // read without incrementing
 	d.mu.Unlock()
 
-	// Backoff: interruptible via context cancellation.
+	if !d.awaitTransientBackoff(ctx, workerID, transientCount) {
+		return false
+	}
+
+	return d.reassignAfterTransientBackoff(ctx, workerID, beadID, attempt, transientCount, assignmentID, rec)
+}
+
+// awaitTransientBackoff sleeps for the backoff duration. If ctx is cancelled
+// during the wait, it releases the reserved worker and returns false.
+func (d *Dispatcher) awaitTransientBackoff(ctx context.Context, workerID string, transientCount int) bool {
 	timer := time.NewTimer(d.transientBackoff(transientCount))
 	select {
 	case <-ctx.Done():
@@ -70,9 +79,21 @@ func (d *Dispatcher) handleTransientQGFailure(ctx context.Context, workerID, bea
 		d.mu.Unlock()
 		return false
 	case <-timer.C:
+		return true
 	}
+}
 
-	// Capture snapshot for buildAssignPayload (I/O runs outside lock).
+// reassignAfterTransientBackoff captures a worker snapshot, builds the assign
+// payload, and re-sends it through withReservation. If the reservation fails
+// because the worker is gone (not a send error), it completes the assignment
+// and reopens the bead.
+func (d *Dispatcher) reassignAfterTransientBackoff(
+	ctx context.Context,
+	workerID, beadID string,
+	attempt, transientCount int,
+	assignmentID int64,
+	rec QGFailureRecord,
+) bool {
 	d.mu.Lock()
 	var snap trackedWorker
 	if w, ok := d.workers[workerID]; ok {
@@ -90,35 +111,11 @@ func (d *Dispatcher) handleTransientQGFailure(ctx context.Context, workerID, bea
 			payload = d.buildAssignPayload(ctx, &snap, attempt, rec.Output, memCtx)
 			return memCtx
 		},
-		func(w *trackedWorker, memCtx string) bool {
-			if w.model != protocol.ModelOpus {
-				w.model = protocol.ModelOpus
-			}
-			payload.Model = w.model
-			if err := d.sendToWorker(w, protocol.Message{
-				Type:   protocol.MsgAssign,
-				Assign: payload,
-			}); err != nil {
-				sendFailed = true
-				w.state = protocol.WorkerIdle
-				w.beadID = ""
-				w.epicID = ""
-				w.isEpicDecomp = false
-				_ = d.logEvent(ctx, "qg_transient_retry_send_failed", workerID, beadID, workerID,
-					fmt.Sprintf(`{"error":%q,"transient_count":%d}`, err.Error(), transientCount))
-				_ = d.completeAssignment(ctx, w.assignmentID, beadID)
-				return false
-			}
-			_ = d.logEventLocked(ctx, "qg_transient_retry_sent", workerID, beadID, workerID,
-				fmt.Sprintf(`{"attempt":%d,"transient_count":%d}`, attempt, transientCount))
-			w.state = protocol.WorkerBusy
-			w.beadID = beadID
-			return true
+		func(w *trackedWorker, _ string) bool {
+			return d.sendTransientReassign(ctx, w, beadID, payload, attempt, transientCount, &sendFailed)
 		},
 	)
 
-	// If withReservation returned false because the worker was already gone
-	// (not a send failure), complete the assignment and reopen the bead.
 	if !assigned && !sendFailed {
 		_ = d.completeAssignment(ctx, assignmentID, beadID)
 		if d.shouldReopenQGOriginal(ctx, beadID) {
@@ -126,4 +123,43 @@ func (d *Dispatcher) handleTransientQGFailure(ctx context.Context, workerID, bea
 		}
 	}
 	return assigned
+}
+
+// sendTransientReassign delivers the rebuilt ASSIGN to the reserved worker.
+// On send failure it resets worker state, logs the failure, and completes the
+// assignment so the bead can be reopened. Sets *sendFailed when the network
+// send itself errors (vs. the worker being gone before delivery).
+func (d *Dispatcher) sendTransientReassign(
+	ctx context.Context,
+	w *trackedWorker,
+	beadID string,
+	payload *protocol.AssignPayload,
+	attempt, transientCount int,
+	sendFailed *bool,
+) bool {
+	if w.model != protocol.ModelOpus {
+		w.model = protocol.ModelOpus
+	}
+	payload.Model = w.model
+	if err := d.sendToWorker(w, protocol.Message{
+		Type:   protocol.MsgAssign,
+		Assign: payload,
+	}); err != nil {
+		*sendFailed = true
+		assignID := w.assignmentID
+		workerID := w.id
+		w.state = protocol.WorkerIdle
+		w.beadID = ""
+		w.epicID = ""
+		w.isEpicDecomp = false
+		_ = d.logEvent(ctx, "qg_transient_retry_send_failed", workerID, beadID, workerID,
+			fmt.Sprintf(`{"error":%q,"transient_count":%d}`, err.Error(), transientCount))
+		_ = d.completeAssignment(ctx, assignID, beadID)
+		return false
+	}
+	_ = d.logEventLocked(ctx, "qg_transient_retry_sent", w.id, beadID, w.id,
+		fmt.Sprintf(`{"attempt":%d,"transient_count":%d}`, attempt, transientCount))
+	w.state = protocol.WorkerBusy
+	w.beadID = beadID
+	return true
 }
