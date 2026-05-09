@@ -4768,6 +4768,14 @@ type workerStatus struct {
 	TargetBeadID      string  `json:"target_bead_id,omitempty"`
 }
 
+// QGFailureStatus summarises open quality-gate failure incidents for the
+// dispatcher status response.
+type QGFailureStatus struct {
+	OpenIncidents   int
+	Occurrences30m  int
+	TopFingerprints []string
+}
+
 // statusResponse is the JSON structure returned by the status directive.
 type statusResponse struct {
 	State       string            `json:"state"`
@@ -4790,6 +4798,11 @@ type statusResponse struct {
 	PendingHandoffCount int            `json:"pending_handoff_count"`
 	AttemptCounts       map[string]int `json:"attempt_counts,omitempty"`
 	ProgressTimeoutSecs float64        `json:"progress_timeout_secs"`
+
+	// QG failure incident fields
+	QGFailureIncidentsOpen   int      `json:"qg_failure_incidents_open"`
+	QGFailureOccurrences30m  int      `json:"qg_failure_occurrences_30m"`
+	QGFailureTopFingerprints []string `json:"qg_failure_top_fingerprints,omitempty"`
 }
 
 const (
@@ -5141,6 +5154,62 @@ func (d *Dispatcher) statusQueueBeads(ctx context.Context, readyBeads []protocol
 	return queueBeads
 }
 
+// qgFailureStatus queries the state DB and returns a snapshot of open QG
+// failure incidents. On DB error it logs to stderr and returns a zero value.
+func (d *Dispatcher) qgFailureStatus(ctx context.Context) QGFailureStatus {
+	if d.db == nil {
+		return QGFailureStatus{}
+	}
+
+	var open int
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM qg_failure_incidents WHERE status = 'open'`,
+	).Scan(&open); err != nil {
+		fmt.Fprintf(os.Stderr, "qgFailureStatus: count open incidents: %v\n", err)
+		return QGFailureStatus{}
+	}
+
+	var occ30m int
+	if err := d.db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM qg_failure_occurrences
+ WHERE created_at >= datetime('now', '-30 minutes')`,
+	).Scan(&occ30m); err != nil {
+		fmt.Fprintf(os.Stderr, "qgFailureStatus: count occurrences 30m: %v\n", err)
+		return QGFailureStatus{}
+	}
+
+	rows, err := d.db.QueryContext(ctx, `
+SELECT fingerprint FROM qg_failure_incidents
+ WHERE status = 'open'
+ ORDER BY occurrence_count DESC
+ LIMIT 5`)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "qgFailureStatus: top fingerprints: %v\n", err)
+		return QGFailureStatus{}
+	}
+	defer func() { _ = rows.Close() }()
+
+	var fps []string
+	for rows.Next() {
+		var fp string
+		if err := rows.Scan(&fp); err != nil {
+			fmt.Fprintf(os.Stderr, "qgFailureStatus: scan fingerprint: %v\n", err)
+			return QGFailureStatus{}
+		}
+		fps = append(fps, fp)
+	}
+	if err := rows.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "qgFailureStatus: rows error: %v\n", err)
+		return QGFailureStatus{}
+	}
+
+	return QGFailureStatus{
+		OpenIncidents:   open,
+		Occurrences30m:  occ30m,
+		TopFingerprints: fps,
+	}
+}
+
 func (d *Dispatcher) buildStatusJSON() string {
 	now := d.nowFunc()
 
@@ -5151,6 +5220,8 @@ func (d *Dispatcher) buildStatusJSON() string {
 		readyBeads = nil // Continue with empty ready list on error.
 	}
 	readyBeads = d.statusQueueBeads(ctx, readyBeads)
+
+	qgStatus := d.qgFailureStatus(ctx)
 
 	d.mu.Lock()
 	workers, assignments, activeCount, idleCount := d.snapshotWorkers(now)
@@ -5174,24 +5245,27 @@ func (d *Dispatcher) buildStatusJSON() string {
 	attemptCounts := filterAttemptCounts(d.attemptCounts, activeBeadIDs)
 
 	resp := statusResponse{
-		State:               string(d.state),
-		PID:                 os.Getpid(),
-		WorkerCount:         len(d.workers),
-		QueueDepth:          queueDepth,
-		Assignments:         assignments,
-		FocusedEpic:         d.focusedEpic,
-		Workers:             workers,
-		ActiveCount:         activeCount,
-		IdleCount:           idleCount,
-		TargetCount:         d.targetWorkers,
-		MaxWorkers:          d.cfg.MaxWorkers,
-		ManagedCount:        managedCount,
-		UnmanagedCount:      unmanagedCount,
-		PendingWorkerCount:  len(d.pendingManagedIDs) + len(d.pendingExternalIDs),
-		UptimeSeconds:       now.Sub(d.startTime).Seconds(),
-		PendingHandoffCount: len(d.pendingHandoffs),
-		AttemptCounts:       attemptCounts,
-		ProgressTimeoutSecs: d.cfg.ProgressTimeout.Seconds(),
+		State:                    string(d.state),
+		PID:                      os.Getpid(),
+		WorkerCount:              len(d.workers),
+		QueueDepth:               queueDepth,
+		Assignments:              assignments,
+		FocusedEpic:              d.focusedEpic,
+		Workers:                  workers,
+		ActiveCount:              activeCount,
+		IdleCount:                idleCount,
+		TargetCount:              d.targetWorkers,
+		MaxWorkers:               d.cfg.MaxWorkers,
+		ManagedCount:             managedCount,
+		UnmanagedCount:           unmanagedCount,
+		PendingWorkerCount:       len(d.pendingManagedIDs) + len(d.pendingExternalIDs),
+		UptimeSeconds:            now.Sub(d.startTime).Seconds(),
+		PendingHandoffCount:      len(d.pendingHandoffs),
+		AttemptCounts:            attemptCounts,
+		ProgressTimeoutSecs:      d.cfg.ProgressTimeout.Seconds(),
+		QGFailureIncidentsOpen:   qgStatus.OpenIncidents,
+		QGFailureOccurrences30m:  qgStatus.Occurrences30m,
+		QGFailureTopFingerprints: qgStatus.TopFingerprints,
 	}
 	d.mu.Unlock()
 

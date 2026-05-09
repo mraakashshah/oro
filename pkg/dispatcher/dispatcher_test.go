@@ -13636,6 +13636,106 @@ func TestBuildStatusJSON_LiveQueueDepth(t *testing.T) {
 	}
 }
 
+func TestStatusJSONIncludesQGFailureIncidents(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	t.Run("no incidents zero counts", func(t *testing.T) {
+		raw := d.buildStatusJSON()
+		var out map[string]any
+		if err := json.Unmarshal([]byte(raw), &out); err != nil {
+			t.Fatalf("parse status json: %v", err)
+		}
+		if _, ok := out["qg_failure_incidents_open"]; !ok {
+			t.Error("expected qg_failure_incidents_open in status JSON")
+		}
+		if _, ok := out["qg_failure_occurrences_30m"]; !ok {
+			t.Error("expected qg_failure_occurrences_30m in status JSON")
+		}
+		if v := out["qg_failure_incidents_open"]; v != float64(0) {
+			t.Errorf("expected qg_failure_incidents_open=0, got %v", v)
+		}
+		if v := out["qg_failure_occurrences_30m"]; v != float64(0) {
+			t.Errorf("expected qg_failure_occurrences_30m=0, got %v", v)
+		}
+	})
+
+	t.Run("with open incident", func(t *testing.T) {
+		rec := QGFailureRecord{
+			Output: "FAIL: some test failure output\n\nFailed tests:\nTestFoo",
+			BeadID: "bead-qg-status-1",
+		}
+		cls := QGFailureClassification{
+			Class:      QGFailureClassWorkerDeterministic,
+			Decision:   QGFailureDecisionRetryOriginal,
+			Confidence: QGFailureConfidenceHigh,
+			Reason:     "worker made a bad change",
+		}
+		if _, err := RecordQGFailureOccurrence(ctx, d.db, rec, cls); err != nil {
+			t.Fatalf("record qg failure occurrence: %v", err)
+		}
+
+		raw := d.buildStatusJSON()
+		var out map[string]any
+		if err := json.Unmarshal([]byte(raw), &out); err != nil {
+			t.Fatalf("parse status json: %v", err)
+		}
+
+		openCount, _ := out["qg_failure_incidents_open"].(float64)
+		if openCount < 1 {
+			t.Errorf("expected qg_failure_incidents_open >= 1, got %v", out["qg_failure_incidents_open"])
+		}
+		occ30m, _ := out["qg_failure_occurrences_30m"].(float64)
+		if occ30m < 1 {
+			t.Errorf("expected qg_failure_occurrences_30m >= 1, got %v", out["qg_failure_occurrences_30m"])
+		}
+		fps, ok := out["qg_failure_top_fingerprints"].([]any)
+		if !ok || len(fps) == 0 {
+			t.Errorf("expected non-empty qg_failure_top_fingerprints, got %v", out["qg_failure_top_fingerprints"])
+		}
+	})
+
+	t.Run("many incidents bounded fingerprints", func(t *testing.T) {
+		for i := range 10 {
+			rec := QGFailureRecord{
+				Output: fmt.Sprintf("FAIL: unique failure number %d\nTestUnique%d", i, i),
+				BeadID: fmt.Sprintf("bead-many-%d", i),
+			}
+			cls := QGFailureClassification{
+				Class:      QGFailureClassTransient,
+				Decision:   QGFailureDecisionBackoffRetry,
+				Confidence: QGFailureConfidenceMedium,
+				Reason:     "transient",
+			}
+			if _, err := RecordQGFailureOccurrence(ctx, d.db, rec, cls); err != nil {
+				t.Fatalf("record qg failure %d: %v", i, err)
+			}
+		}
+		raw := d.buildStatusJSON()
+		var out map[string]any
+		if err := json.Unmarshal([]byte(raw), &out); err != nil {
+			t.Fatalf("parse status json: %v", err)
+		}
+		fps, _ := out["qg_failure_top_fingerprints"].([]any)
+		const maxTopFingerprints = 5
+		if len(fps) > maxTopFingerprints {
+			t.Errorf("expected qg_failure_top_fingerprints bounded to <= %d, got %d", maxTopFingerprints, len(fps))
+		}
+		if len(fps) == 0 {
+			t.Error("expected non-empty qg_failure_top_fingerprints with many incidents")
+		}
+	})
+
+	t.Run("db nil omits details", func(t *testing.T) {
+		d2, _, _, _, _, _ := newTestDispatcher(t)
+		d2.db = nil
+		raw := d2.buildStatusJSON()
+		if !json.Valid([]byte(raw)) {
+			t.Fatalf("expected valid JSON on nil DB, got: %s", raw)
+		}
+	})
+}
+
 // mockCodeIndex implements CodeIndex for testing.
 type mockCodeIndex struct {
 	mu             sync.Mutex
