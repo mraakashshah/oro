@@ -120,4 +120,6 @@ User asked me to stop and fix the runtime bug.
 - Full package verification: `go test ./pkg/dispatcher -count=1 -timeout 180s` passed.
 - Quality gate: `./scripts/quality_gate.sh` passed after applying `shfmt` to `scripts/check_no_claude_workers_phrasing.sh`.
 - Ops review: `claude -p` first pass returned PASS with two Important tighten-ups; second pass returned PASS after fixing both.
-- **Current state**: dispatcher remains stopped while build/install and relaunch complete.
+- **Committed**: `b1910b85` `fix(dispatcher): kill duplicate worker processes`.
+- **Relaunch result**: started via `/Users/as21/go/bin/oro start --workers 2 --max-workers 2 --detach`, dispatcher PID 22512. Startup quarantined interrupted assignments for `oro-e5ts` and `oro-c761` due to missing worktree paths, reopened them, and then reassigned both.
+- **Post-relaunch monitoring**: two consecutive clean cadence checks show 2 active workers, 0 idle, 0 pending, queue=43, exactly two worker OS processes, active tasks `oro-e5ts` and `oro-c761`, and no fresh panic or duplicate-worker recurrence.
