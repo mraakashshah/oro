@@ -64,6 +64,35 @@ signal: killed
 	}
 }
 
+func TestQGFailureFingerprintStripsANSIEscapeCodes(t *testing.T) {
+	// QG output as it appears in a terminal: ANSI color codes wrapping labels.
+	// The elapsed-time normalization regex (`\b\d+m\b`) would corrupt ANSI
+	// sequences like \033[0;34m if ANSI is not stripped first, producing
+	// different fingerprints for identical logical content.
+	withANSI := "\033[0;34m\xe2\x96\xb6\033[0m golangci-lint                  \033[0;31m\xe2\x9c\x97 FAIL\033[0m\n" +
+		"\033[0;34m\xe2\x96\xb6\033[0m pytest                         \033[0;31m\xe2\x9c\x97 FAIL\033[0m\n" +
+		"\033[0;31mFailed:\033[0m 3\n" +
+		"\033[0;31mQuality gate FAILED\033[0m\n"
+
+	withoutANSI := "▶ golangci-lint                  ✗ FAIL\n" +
+		"▶ pytest                         ✗ FAIL\n" +
+		"Failed: 3\n" +
+		"Quality gate FAILED\n"
+
+	fpWith, summaryWith := dispatcher.FingerprintQGFailure(withANSI, dispatcher.QGFingerprintOptions{})
+	fpWithout, _ := dispatcher.FingerprintQGFailure(withoutANSI, dispatcher.QGFingerprintOptions{})
+
+	if fpWith == "" {
+		t.Fatal("fingerprint is empty for ANSI output")
+	}
+	if fpWith != fpWithout {
+		t.Fatalf("fingerprints differ with vs without ANSI escape codes:\nwith    = %q\nwithout = %q", fpWith, fpWithout)
+	}
+	if strings.ContainsRune(summaryWith, '\033') {
+		t.Fatalf("summary contains raw ESC byte: %q", summaryWith)
+	}
+}
+
 func TestClassifyQGFailureDecisionMatrix(t *testing.T) {
 	tests := []struct {
 		name         string

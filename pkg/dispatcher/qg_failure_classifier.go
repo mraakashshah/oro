@@ -99,6 +99,7 @@ type QGFingerprintOptions struct {
 }
 
 var (
+	qgANSIEscapeRE     = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 	qgTimestampRE      = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}[T ][0-9:.]+(?:Z|[+-]\d{2}:?\d{2})?\b`)
 	qgWorkerIDRE       = regexp.MustCompile(`\bworker-[A-Za-z0-9_-]+\b`)
 	qgPIDRE            = regexp.MustCompile(`\b(?:pid|PID|process)\s*[=: ]\s*\d+\b`)
@@ -205,6 +206,7 @@ func isImpossibleQGFailure(text string) bool {
 }
 
 func normalizeQGFailureOutput(output string, opts QGFingerprintOptions) string {
+	output = qgANSIEscapeRE.ReplaceAllString(output, "")
 	output = strings.TrimSpace(output)
 	if output == "" {
 		return ""
