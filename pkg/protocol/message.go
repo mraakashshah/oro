@@ -89,6 +89,7 @@ type AssignPayload struct {
 	BeadID               string `json:"bead_id"`
 	Worktree             string `json:"worktree"`
 	Model                string `json:"model,omitempty"`
+	Tier                 Tier   `json:"tier,omitempty"`
 	MemoryContext        string `json:"memory_context,omitempty"`
 	CodeSearchContext    string `json:"code_search_context,omitempty"`
 	CodeStructureContext string `json:"code_structure_context,omitempty"`

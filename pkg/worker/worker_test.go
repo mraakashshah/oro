@@ -4716,3 +4716,98 @@ func TestStaleHandoffFileCleanedOnAssign(t *testing.T) {
 	cancel()
 	<-errCh
 }
+
+// TestThresholdLookupAcceptsTierKey verifies that the threshold table accepts tier keys
+// (fast/balanced/deep/background) alongside legacy model-family keys, and that the
+// effectiveThresholdKey priority (bead.Tier wins, then modelFamily, then balanced default)
+// is respected.
+func TestThresholdLookupAcceptsTierKey(t *testing.T) {
+	t.Parallel()
+
+	models := map[string]int{
+		"fast":       35,
+		"balanced":   40,
+		"deep":       45,
+		"background": 30,
+		"opus":       45,
+		"sonnet":     40,
+		"haiku":      35,
+	}
+
+	lookupCases := []struct {
+		key  string
+		want int
+	}{
+		{"fast", 35},
+		{"balanced", 40},
+		{"deep", 45},
+		{"background", 30},
+		{"opus", 45},
+		{"sonnet", 40},
+		{"haiku", 35},
+		{"unknown-key", worker.DefaultThreshold},
+	}
+
+	for _, tc := range lookupCases {
+		t.Run("lookup/"+tc.key, func(t *testing.T) {
+			t.Parallel()
+			if got := worker.ForThresholdKey(models, tc.key); got != tc.want {
+				t.Errorf("ForThresholdKey(%q) = %d, want %d", tc.key, got, tc.want)
+			}
+		})
+	}
+
+	// effectiveThresholdKey priority: bead.Tier wins; claude family fallback; balanced default for non-Claude.
+	keyCases := []struct {
+		tier  protocol.Tier
+		model string
+		want  string
+	}{
+		{protocol.TierFast, "gpt-5-codex", "fast"},            // tier wins over non-Claude model
+		{protocol.TierDeep, "claude-3-opus-20240229", "deep"}, // tier wins over model family
+		{"", "claude-3-opus-20240229", "opus"},                // no tier → modelFamily
+		{"", "claude-3-5-sonnet-20241022", "sonnet"},          // no tier → modelFamily
+		{"", "claude-3-haiku-20240307", "haiku"},              // no tier → modelFamily
+		{"", "gpt-5-codex", "balanced"},                       // non-Claude → balanced default
+	}
+
+	for _, tc := range keyCases {
+		t.Run("key/"+string(tc.tier)+"/"+tc.model, func(t *testing.T) {
+			t.Parallel()
+			if got := worker.EffectiveThresholdKeyFn(tc.tier, tc.model); got != tc.want {
+				t.Errorf("EffectiveThresholdKeyFn(%q, %q) = %q, want %q", tc.tier, tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestModelFamilyHandlesCodexNative verifies that modelFamily returns "balanced" for
+// non-Claude models (e.g. gpt-5-codex) instead of passing the raw model string through.
+func TestModelFamilyHandlesCodexNative(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		model string
+		want  string
+	}{
+		{"gpt-5-codex", "balanced"},
+		{"gpt-4o", "balanced"},
+		{"codex-native", "balanced"},
+		{"gemini-2.5-pro", "balanced"},
+		{"claude-3-opus-20240229", "opus"},
+		{"claude-3-5-sonnet-20241022", "sonnet"},
+		{"claude-3-haiku-20240307", "haiku"},
+		{"opus", "opus"},
+		{"sonnet", "sonnet"},
+		{"haiku", "haiku"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			t.Parallel()
+			if got := worker.ModelFamilyFn(tc.model); got != tc.want {
+				t.Errorf("ModelFamilyFn(%q) = %q, want %q", tc.model, got, tc.want)
+			}
+		})
+	}
+}

@@ -1,1 +1,9 @@
-{ "opus": 40, "sonnet": 40, "haiku": 40 }
+{
+	"opus": 40,
+	"sonnet": 40,
+	"haiku": 40,
+	"fast": 40,
+	"balanced": 40,
+	"deep": 40,
+	"background": 40
+}

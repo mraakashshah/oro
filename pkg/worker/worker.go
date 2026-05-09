@@ -128,6 +128,7 @@ type Worker struct {
 	logFile                *os.File       // per-worker output log file at ~/.oro/workers/<ID>/output.log
 	logWriter              *bufio.Writer  // buffered writer for logFile to prevent blocking
 	streamContextPct       int32          // atomic: latest context_pct observed from stream output (0 = no signal yet)
+	tier                   protocol.Tier  // routing tier from bead assignment; empty for legacy beads
 }
 
 // New creates a Worker that connects to the Dispatcher at socketPath.
@@ -457,6 +458,7 @@ func (w *Worker) resetForNewAssignment(a *protocol.AssignPayload) {
 	w.mu.Lock()
 	w.beadID = a.BeadID
 	w.worktree = a.Worktree
+	w.tier = a.Tier
 	w.sessionText.Reset()
 	w.pendingQGOutput = ""
 	w.isEpicDecomposition = a.IsEpicDecomposition
@@ -835,6 +837,7 @@ func (w *Worker) watchContext(ctx context.Context) {
 	interval := w.contextPollInterval
 	wt := w.worktree
 	model := w.model
+	tier := w.tier
 	hbInterval := w.heartbeatInterval
 	w.mu.Unlock()
 	if hbInterval == 0 {
@@ -843,9 +846,9 @@ func (w *Worker) watchContext(ctx context.Context) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	// Load per-model thresholds from worktree root.
+	// Load per-model/tier thresholds from worktree root.
 	th := loadThresholds(wt)
-	threshold := th.For(modelFamily(model))
+	threshold := th.For(effectiveThresholdKey(tier, model))
 
 	var subprocExitDetectedAt time.Time
 	lastHeartbeat := time.Now() // start counting from now; first heartbeat after hbInterval
@@ -972,6 +975,7 @@ func (w *Worker) checkSubprocessHealth(ctx context.Context, detectedAt *time.Tim
 }
 
 // modelFamily extracts the model family name (opus, sonnet, haiku) from a full model ID.
+// Returns "balanced" for non-Claude models so they fall back to a known threshold key.
 func modelFamily(model string) string {
 	lower := strings.ToLower(model)
 	for _, family := range []string{"opus", "sonnet", "haiku"} {
@@ -979,7 +983,16 @@ func modelFamily(model string) string {
 			return family
 		}
 	}
-	return model
+	return "balanced"
+}
+
+// effectiveThresholdKey returns the thresholds map key for the given tier and model.
+// Priority: known tier → tier string; else → modelFamily (claude) or "balanced" (non-claude).
+func effectiveThresholdKey(tier protocol.Tier, model string) string {
+	if tier.IsKnown() {
+		return string(tier)
+	}
+	return modelFamily(model)
 }
 
 // killProc kills the current subprocess if one is running.
