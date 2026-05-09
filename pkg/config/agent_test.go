@@ -373,3 +373,101 @@ func TestAgentConfigPartialOverrideRejected(t *testing.T) {
 		}
 	})
 }
+
+func TestAgentConfigCrossRuntimeMismatchRejected(t *testing.T) {
+	t.Run("codex runtime with claude model is rejected (tier)", func(t *testing.T) {
+		cfg := &config.AgentConfig{
+			Tiers: map[protocol.Tier]config.TierConfig{
+				protocol.TierDeep: {
+					Runtime: "codex",
+					Model:   "claude-opus-4-7",
+				},
+			},
+		}
+		err := config.Validate(cfg)
+		if err == nil {
+			t.Fatal("expected validation error for cross-runtime mismatch, got nil")
+		}
+		if !strings.Contains(err.Error(), string(protocol.TierDeep)) {
+			t.Errorf("error %q does not name the offending tier %q", err.Error(), protocol.TierDeep)
+		}
+		if !strings.Contains(err.Error(), "claude") {
+			t.Errorf("error %q does not name the conflicting runtime %q", err.Error(), "claude")
+		}
+	})
+
+	t.Run("claude runtime with codex model is rejected (tier)", func(t *testing.T) {
+		cfg := &config.AgentConfig{
+			Tiers: map[protocol.Tier]config.TierConfig{
+				protocol.TierBalanced: {
+					Runtime: "claude",
+					Model:   "gpt-5-codex",
+				},
+			},
+		}
+		err := config.Validate(cfg)
+		if err == nil {
+			t.Fatal("expected validation error for cross-runtime mismatch, got nil")
+		}
+		if !strings.Contains(err.Error(), string(protocol.TierBalanced)) {
+			t.Errorf("error %q does not name the offending tier %q", err.Error(), protocol.TierBalanced)
+		}
+		if !strings.Contains(err.Error(), "codex") {
+			t.Errorf("error %q does not name the conflicting runtime %q", err.Error(), "codex")
+		}
+	})
+
+	t.Run("matching runtime and model is accepted", func(t *testing.T) {
+		cfg := &config.AgentConfig{
+			Tiers: map[protocol.Tier]config.TierConfig{
+				protocol.TierDeep: {
+					Runtime: "claude",
+					Model:   "claude-opus-4-7",
+				},
+				protocol.TierFast: {
+					Runtime: "codex",
+					Model:   "gpt-5-codex",
+				},
+			},
+		}
+		if err := config.Validate(cfg); err != nil {
+			t.Errorf("expected no error for matching runtimes, got: %v", err)
+		}
+	})
+
+	t.Run("empty model skips runtime check", func(t *testing.T) {
+		cfg := &config.AgentConfig{
+			Tiers: map[protocol.Tier]config.TierConfig{
+				protocol.TierBalanced: {
+					Runtime: "claude",
+					Model:   "",
+				},
+			},
+		}
+		if err := config.Validate(cfg); err != nil {
+			t.Errorf("expected no error for empty model, got: %v", err)
+		}
+	})
+
+	t.Run("role explicit override with cross-runtime mismatch is rejected", func(t *testing.T) {
+		cfg := &config.AgentConfig{
+			Roles: map[string]config.RoleConfig{
+				"worker": {
+					Transport: "cli",
+					Runtime:   "codex",
+					Model:     "claude-opus-4-7",
+				},
+			},
+		}
+		err := config.Validate(cfg)
+		if err == nil {
+			t.Fatal("expected validation error for role cross-runtime mismatch, got nil")
+		}
+		if !strings.Contains(err.Error(), "worker") {
+			t.Errorf("error %q does not name the offending role %q", err.Error(), "worker")
+		}
+		if !strings.Contains(err.Error(), "claude") {
+			t.Errorf("error %q does not name the conflicting runtime %q", err.Error(), "claude")
+		}
+	})
+}

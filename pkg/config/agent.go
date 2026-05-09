@@ -100,38 +100,81 @@ func Load(path string) (*AgentConfig, error) {
 	return f.Agent, nil
 }
 
-// Validate checks AgentConfig for invalid role definitions and returns a
-// descriptive error naming every offending role and its missing fields.
-// A nil config is valid (callers fall back to built-in defaults).
+// Validate checks AgentConfig for invalid role definitions and
+// cross-runtime model mismatches, returning a descriptive error naming
+// every offender. A nil config is valid (callers fall back to defaults).
+//
+// Validation rules:
+//   - CLI role overrides must be all-or-nothing: setting Runtime without
+//     Model (or vice versa) is rejected.
+//   - A tier or explicit role override whose model string belongs to a
+//     different runtime than declared (e.g., runtime=codex with
+//     model=claude-opus-4-7) is rejected.
 func Validate(c *AgentConfig) error {
 	if c == nil {
 		return nil
 	}
 
 	var errs []string
+
+	for tier, tc := range c.Tiers {
+		if msg := checkRuntimeModelMatch(fmt.Sprintf("tier %q", string(tier)), tc.Runtime, tc.Model); msg != "" {
+			errs = append(errs, msg)
+		}
+	}
+
 	for name, role := range c.Roles {
 		if role.Transport != "cli" {
 			continue
 		}
 		hasRuntime := role.Runtime != ""
 		hasModel := role.Model != ""
-		if hasRuntime == hasModel {
-			// Both set (full override) or neither set (tier/default) — valid.
+		if hasRuntime != hasModel {
+			var missing string
+			if hasRuntime {
+				missing = "model"
+			} else {
+				missing = "runtime"
+			}
+			errs = append(errs, fmt.Sprintf("role %q: CLI override is partial — %s is set but %s is missing; set both or neither", name, roleSetField(role), missing))
 			continue
 		}
-		var missing string
-		if hasRuntime {
-			missing = "model"
-		} else {
-			missing = "runtime"
+		if msg := checkRuntimeModelMatch(fmt.Sprintf("role %q", name), role.Runtime, role.Model); msg != "" {
+			errs = append(errs, msg)
 		}
-		errs = append(errs, fmt.Sprintf("role %q: CLI override is partial — %s is set but %s is missing; set both or neither", name, roleSetField(role), missing))
 	}
 
 	if len(errs) == 0 {
 		return nil
 	}
 	return fmt.Errorf("invalid agent config:\n  %s", strings.Join(errs, "\n  "))
+}
+
+// checkRuntimeModelMatch returns an error message when the declared runtime
+// disagrees with the runtime inferred from the model string. An empty model,
+// empty runtime, or unknown/legacy model name skips the check.
+func checkRuntimeModelMatch(label, runtime, model string) string {
+	if runtime == "" || model == "" {
+		return ""
+	}
+	modelRT := inferModelRuntime(model)
+	if modelRT == "" || modelRT == runtime {
+		return ""
+	}
+	return fmt.Sprintf("%s: model %q belongs to runtime %q but %s declares runtime %q", label, model, modelRT, label, runtime)
+}
+
+// inferModelRuntime guesses which runtime a provider-native model string belongs to.
+// Returns an empty string when the model string is ambiguous (tier alias, legacy name, or unknown).
+func inferModelRuntime(model string) string {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	if strings.HasPrefix(lower, "claude") {
+		return "claude"
+	}
+	if strings.Contains(lower, "gpt") || strings.Contains(lower, "codex") {
+		return "codex"
+	}
+	return ""
 }
 
 // roleSetField returns the name of the field that IS set in a partial override.
