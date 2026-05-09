@@ -125,6 +125,9 @@ func Validate(c *AgentConfig) error {
 
 	for name, role := range c.Roles {
 		if role.Transport != "cli" {
+			if role.Transport == "api" && role.Tier != "" {
+				errs = append(errs, fmt.Sprintf("role %q: API role must not set tier; use provider and api_model", name))
+			}
 			continue
 		}
 		hasRuntime := role.Runtime != ""

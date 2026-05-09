@@ -471,3 +471,27 @@ func TestAgentConfigCrossRuntimeMismatchRejected(t *testing.T) {
 		}
 	})
 }
+
+func TestAgentConfigAPIRoleRejectsTierKey(t *testing.T) {
+	cfg := &config.AgentConfig{
+		Roles: map[string]config.RoleConfig{
+			"estimator": {
+				Transport: "api",
+				Tier:      protocol.TierFast,
+				Provider:  "anthropic",
+				APIModel:  "anthropic_fast",
+			},
+		},
+	}
+
+	err := config.Validate(cfg)
+	if err == nil {
+		t.Fatal("expected validation error for API role with tier key, got nil")
+	}
+	if !strings.Contains(err.Error(), "estimator") {
+		t.Errorf("error must name the offending role %q; got: %v", "estimator", err)
+	}
+	if !strings.Contains(err.Error(), "tier") {
+		t.Errorf("error must name the forbidden field %q; got: %v", "tier", err)
+	}
+}
