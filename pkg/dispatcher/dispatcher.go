@@ -2106,7 +2106,7 @@ func (d *Dispatcher) checkEpicQG(ctx context.Context, epicID, workerID, epicBran
 	if err != nil {
 		_ = d.logEvent(ctx, "epic_qg_worktree_failed", "dispatcher", epicID, workerID,
 			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, err.Error()))
-		return false
+		return d.handleEpicQGInfraFailure(ctx, epicID, workerID, epicBranch, err)
 	}
 	defer func() { _ = d.worktrees.Remove(context.Background(), worktree) }()
 
@@ -2115,7 +2115,7 @@ func (d *Dispatcher) checkEpicQG(ctx context.Context, epicID, workerID, epicBran
 		_ = d.logEvent(ctx, "epic_qg_error", "dispatcher", epicID, workerID,
 			fmt.Sprintf(`{"error":%q}`, qgErr.Error()))
 		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, epicID, "epic QG error", qgErr.Error()), epicID, workerID)
-		return false
+		return d.handleEpicQGInfraFailure(ctx, epicID, workerID, epicBranch, qgErr)
 	}
 	if !passed {
 		return d.handleEpicQGFailure(ctx, epicID, workerID, epicBranch, qgOutput)
@@ -2187,6 +2187,35 @@ func (d *Dispatcher) recordEpicFixBead(ctx context.Context, epicID, fingerprint,
 	_, _ = d.db.ExecContext(ctx,
 		`INSERT OR IGNORE INTO qg_epic_fix_beads (epic_id, fingerprint, bead_id) VALUES (?, ?, ?)`,
 		epicID, fingerprint, beadID)
+}
+
+// handleEpicQGInfraFailure classifies an infrastructure error (worktree create
+// failure or QG runner error) as systemic/transient/unknown, records an infra
+// incident via the standard QG failure store, and returns false. It never
+// creates a direct epic child fix task.
+func (d *Dispatcher) handleEpicQGInfraFailure(ctx context.Context, epicID, workerID, epicBranch string, err error) bool { //nolint:unparam // always false: infra errors never allow epic close to proceed
+	errText := err.Error()
+	fingerprint, summary := FingerprintQGFailure(errText, QGFingerprintOptions{})
+	rec := QGFailureRecord{
+		BeadID:      epicID,
+		WorkerID:    workerID,
+		Component:   "dispatcher",
+		Output:      errText,
+		Fingerprint: fingerprint,
+		Summary:     summary,
+	}
+	cls := ClassifyQGFailure(rec, QGFailureHistory{})
+	cls.Decision = QGFailureDecisionCreateOrReuseInfra
+
+	incident, incErr := d.createOrReuseQGInfraIncident(ctx, rec, cls)
+	if incErr != nil {
+		_ = d.logEvent(ctx, "epic_qg_infra_record_failed", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, incErr.Error()))
+		return false
+	}
+	_ = d.logEvent(ctx, "qg_infra_incident_reused", "dispatcher", epicID, workerID,
+		fmt.Sprintf(`{"incident_id":%d,"class":%q,"fingerprint":%q}`, incident.ID, cls.Class, fingerprint))
+	return false
 }
 
 func epicQGFixAcceptance(epicID, epicBranch string) string {

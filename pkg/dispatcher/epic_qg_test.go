@@ -159,6 +159,118 @@ func fixBeadsForEpic(created []createCall, epicID string) []createCall {
 	return out
 }
 
+// epicQGTestSetup builds a dispatcher ready for tryCloseEpic tests.
+// All children are closed, the acceptance runner always passes, and the
+// epic branch exists. Individual tests override createFn / qgRunner as needed.
+func epicQGTestSetup(t *testing.T, epicID string) (*Dispatcher, *fakeBeadStore, *mockWorktreeManager) {
+	t.Helper()
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	epicBranch := protocol.EpicBranchPrefix + epicID
+	beadSrc.allChildrenClosedMap = map[string]bool{epicID: true}
+	beadSrc.mu.Lock()
+	beadSrc.shown[epicID] = &protocol.BeadDetail{
+		ID:                 epicID,
+		Title:              "My Epic",
+		AcceptanceCriteria: "Test: pkg/... | Cmd: go test ./... | Assert: PASS",
+	}
+	beadSrc.mu.Unlock()
+
+	d.acceptance = &mockAcceptanceRunner{passed: true}
+
+	wtMgr.mu.Lock()
+	wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
+		return branch == epicBranch, nil
+	}
+	wtMgr.createFn = func(_ context.Context, beadID, baseBranch string) (string, string, error) {
+		return "/tmp/worktree-" + beadID, "agent/" + beadID, nil
+	}
+	wtMgr.mu.Unlock()
+
+	return d, beadSrc, wtMgr
+}
+
+// TestEpicQGErrorCreatesOrReusesIncident verifies that when the QG runner
+// returns an error during epic auto-close, an infra incident is recorded in
+// the database and no direct child fix bead is created for the epic.
+func TestEpicQGErrorCreatesOrReusesIncident(t *testing.T) {
+	const epicID = "epic-qg-inc-err"
+	const workerID = "w-qg-inc-err"
+
+	d, beadSrc, _ := epicQGTestSetup(t, epicID)
+	ctx := context.Background()
+
+	// QG runner returns a systemic error.
+	d.qgRunner = &mockQGRunner{err: fmt.Errorf("quality_gate.sh: script not found")}
+
+	d.tryCloseEpic(ctx, epicID, workerID)
+
+	// Assert: an infra incident was recorded in the database.
+	var incidentCount int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM qg_failure_incidents`).Scan(&incidentCount); err != nil {
+		t.Fatalf("query qg_failure_incidents: %v", err)
+	}
+	if incidentCount == 0 {
+		t.Error("expected infra incident to be created in qg_failure_incidents, got 0")
+	}
+
+	// Assert: no direct fix bead was created with epicID as parent.
+	beadSrc.mu.Lock()
+	created := append([]createCall(nil), beadSrc.created...)
+	beadSrc.mu.Unlock()
+	for _, cc := range created {
+		if cc.parent == epicID {
+			t.Errorf("unexpected direct fix bead with parent=%q: title=%q type=%q", epicID, cc.title, cc.beadType)
+		}
+	}
+}
+
+// TestEpicQGWorktreeCreateFailureCreatesOrReusesIncident verifies that when
+// the QG worktree cannot be created, an infra incident is recorded and no
+// direct child fix bead is spawned for the epic.
+func TestEpicQGWorktreeCreateFailureCreatesOrReusesIncident(t *testing.T) {
+	const epicID = "epic-qg-inc-wt"
+	const workerID = "w-qg-inc-wt"
+
+	d, beadSrc, wtMgr := epicQGTestSetup(t, epicID)
+	ctx := context.Background()
+
+	// Override: QG worktree creation fails.
+	wtMgr.mu.Lock()
+	wtMgr.createFn = func(_ context.Context, beadID, baseBranch string) (string, string, error) {
+		if strings.HasSuffix(beadID, "-qg") {
+			return "", "", fmt.Errorf("out of memory: cannot create worktree")
+		}
+		return "/tmp/worktree-" + beadID, "agent/" + beadID, nil
+	}
+	wtMgr.mu.Unlock()
+
+	d.tryCloseEpic(ctx, epicID, workerID)
+
+	// Assert: an infra incident was recorded in the database.
+	var incidentCount int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM qg_failure_incidents`).Scan(&incidentCount); err != nil {
+		t.Fatalf("query qg_failure_incidents: %v", err)
+	}
+	if incidentCount == 0 {
+		t.Error("expected infra incident to be created in qg_failure_incidents, got 0")
+	}
+
+	// Assert: no direct fix bead was created with epicID as parent.
+	beadSrc.mu.Lock()
+	created := append([]createCall(nil), beadSrc.created...)
+	beadSrc.mu.Unlock()
+	for _, cc := range created {
+		if cc.parent == epicID {
+			t.Errorf("unexpected direct fix bead with parent=%q: title=%q type=%q", epicID, cc.title, cc.beadType)
+		}
+	}
+}
+
 // TestEpicQGPassesThenMerges covers all assertion points from the acceptance criteria:
 //
 //  1. checkEpicQG creates temp worktree via Create(epicID+"-qg", epicBranch), runs
