@@ -368,6 +368,78 @@ func TestGetWorkerLogPathRejectsTraversal(t *testing.T) {
 	}
 }
 
+func TestEventsShowQGFailureClassification(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	// Insert a qg_failure_classified event with full payload
+	qgPayload := `{"class":"timeout","fingerprint":"fp_abc123def456","decision":"retry","affected_bead":"oro-bead-xyz789"}`
+	insertTestEvent(t, db, "qg_failure_classified", "qg_classifier", "oro-bead-xyz789", "worker-qg-1", qgPayload, "2026-05-09 10:30:00")
+
+	// Query and format the event
+	var buf bytes.Buffer
+	err := printEvents(context.Background(), db, &buf, eventFilter{
+		eventType: "qg_failure_classified",
+		limit:     20,
+	})
+	if err != nil {
+		t.Fatalf("printEvents failed: %v", err)
+	}
+
+	output := buf.String()
+
+	// Verify all payload fields are present and not truncated
+	if !strings.Contains(output, "timeout") {
+		t.Errorf("output missing class field: %s", output)
+	}
+	if !strings.Contains(output, "fp_abc123def456") {
+		t.Errorf("output missing full fingerprint: %s", output)
+	}
+	if !strings.Contains(output, "retry") {
+		t.Errorf("output missing decision field: %s", output)
+	}
+	if !strings.Contains(output, "oro-bead-xyz789") {
+		t.Errorf("output missing affected_bead identifier: %s", output)
+	}
+
+	// Verify event type is shown
+	if !strings.Contains(output, "qg_failure_classified") {
+		t.Errorf("output missing qg_failure_classified event type: %s", output)
+	}
+}
+
+func TestEventsShowQGFailureClassificationWithMissingFields(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	// Insert a qg_failure_classified event with partial payload
+	qgPayload := `{"class":"lint_error","fingerprint":"fp_short"}`
+	insertTestEvent(t, db, "qg_failure_classified", "qg_classifier", "oro-bead-123", "worker-qg-2", qgPayload, "2026-05-09 10:31:00")
+
+	// Query and format the event - should not crash even with missing fields
+	var buf bytes.Buffer
+	err := printEvents(context.Background(), db, &buf, eventFilter{
+		eventType: "qg_failure_classified",
+		limit:     20,
+	})
+	if err != nil {
+		t.Fatalf("printEvents failed: %v", err)
+	}
+
+	output := buf.String()
+
+	// Verify present fields are shown
+	if !strings.Contains(output, "lint_error") {
+		t.Errorf("output missing class field: %s", output)
+	}
+	if !strings.Contains(output, "fp_short") {
+		t.Errorf("output missing fingerprint: %s", output)
+	}
+	if !strings.Contains(output, "qg_failure_classified") {
+		t.Errorf("output missing event type: %s", output)
+	}
+}
+
 func TestLogsRawFlag(t *testing.T) {
 	t.Run("reads from output.log file", func(t *testing.T) {
 		// Create temporary worker directory with output.log
