@@ -128,51 +128,7 @@ func newBeadCreateCmd(store beadstore.Store) *cobra.Command {
 		Short: "Create a bead",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			s, err := resolveBeadStore(store)
-			if err != nil {
-				return writeBeadCommandErrorIfJSON(cmd, "store", err)
-			}
-
-			acceptance, err := stringFlag(cmd, "acceptance")
-			if err != nil {
-				return writeBeadCommandErrorIfJSON(cmd, "flags", err)
-			}
-			if acceptanceCriteria, err := stringFlag(cmd, "acceptance-criteria"); err != nil {
-				return writeBeadCommandErrorIfJSON(cmd, "flags", err)
-			} else if acceptanceCriteria != "" {
-				acceptance = acceptanceCriteria
-			}
-			typeName := strings.TrimSpace(mustStringFlag(cmd, "type"))
-			if strings.EqualFold(typeName, "premortem") {
-				return writeBeadCommandErrorIfJSON(cmd, "create", fmt.Errorf("creating premortem beads from the CLI is no longer supported"))
-			}
-
-			tier, err := parseTierFlag(cmd)
-			if err != nil {
-				return writeBeadCommandErrorIfJSON(cmd, "flags", err)
-			}
-			params := beadstore.CreateParams{
-				Title:              mustStringFlag(cmd, "title"),
-				Type:               typeName,
-				Priority:           mustIntFlag(cmd, "priority"),
-				ParentID:           mustStringFlag(cmd, "parent"),
-				Description:        mustStringFlag(cmd, "description"),
-				AcceptanceCriteria: acceptance,
-				EstimatedMinutes:   mustIntFlag(cmd, "estimate"),
-				ID:                 mustStringFlag(cmd, "id"),
-				Tags:               mustStringArrayFlag(cmd, "tag"),
-				Tier:               string(tier),
-			}
-			bead, err := createBeadFromParams(cmd.Context(), s, params)
-			if err != nil {
-				return writeBeadCommandErrorIfJSON(cmd, "create", err)
-			}
-
-			if isJSONOutput(cmd) {
-				return writeBeadJSON(cmd, *bead)
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), bead.ID)
-			return nil
+			return runBeadCreate(cmd, store)
 		},
 	}
 	cmd.Flags().String("id", "", "explicit bead ID")
@@ -187,6 +143,54 @@ func newBeadCreateCmd(store beadstore.Store) *cobra.Command {
 	cmd.Flags().StringArray("tag", nil, "tag to attach; repeatable")
 	cmd.Flags().String("tier", "", "routing tier: fast, balanced, deep, or background")
 	return cmd
+}
+
+func runBeadCreate(cmd *cobra.Command, store beadstore.Store) error {
+	s, err := resolveBeadStore(store)
+	if err != nil {
+		return writeBeadCommandErrorIfJSON(cmd, "store", err)
+	}
+
+	acceptance, err := stringFlag(cmd, "acceptance")
+	if err != nil {
+		return writeBeadCommandErrorIfJSON(cmd, "flags", err)
+	}
+	if acceptanceCriteria, err := stringFlag(cmd, "acceptance-criteria"); err != nil {
+		return writeBeadCommandErrorIfJSON(cmd, "flags", err)
+	} else if acceptanceCriteria != "" {
+		acceptance = acceptanceCriteria
+	}
+	typeName := strings.TrimSpace(mustStringFlag(cmd, "type"))
+	if strings.EqualFold(typeName, "premortem") {
+		return writeBeadCommandErrorIfJSON(cmd, "create", fmt.Errorf("creating premortem beads from the CLI is no longer supported"))
+	}
+
+	tier, err := parseTierFlag(cmd)
+	if err != nil {
+		return writeBeadCommandErrorIfJSON(cmd, "flags", err)
+	}
+	params := beadstore.CreateParams{
+		Title:              mustStringFlag(cmd, "title"),
+		Type:               typeName,
+		Priority:           mustIntFlag(cmd, "priority"),
+		ParentID:           mustStringFlag(cmd, "parent"),
+		Description:        mustStringFlag(cmd, "description"),
+		AcceptanceCriteria: acceptance,
+		EstimatedMinutes:   mustIntFlag(cmd, "estimate"),
+		ID:                 mustStringFlag(cmd, "id"),
+		Tags:               mustStringArrayFlag(cmd, "tag"),
+		Tier:               string(tier),
+	}
+	bead, err := createBeadFromParams(cmd.Context(), s, params)
+	if err != nil {
+		return writeBeadCommandErrorIfJSON(cmd, "create", err)
+	}
+
+	if isJSONOutput(cmd) {
+		return writeBeadJSON(cmd, *bead)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), bead.ID)
+	return nil
 }
 
 // parseTierFlag reads the --tier flag and validates it. Returns an empty Tier
