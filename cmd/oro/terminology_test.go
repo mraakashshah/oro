@@ -523,6 +523,24 @@ func TestTaskTerminologyGuard(t *testing.T) {
 			t.Fatalf("terminology guard failed under /bin/bash:\n%s", string(output))
 		}
 	})
+
+	t.Run("rejects junk smoke task create placeholders", func(t *testing.T) {
+		badRunbook := filepath.Join(t.TempDir(), "bad-smoke.md")
+		content := "Smoke: `oro task create --type task --title=t --description=d --acceptance-criteria=ac`.\n"
+		if err := os.WriteFile(badRunbook, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		cmd := exec.Command(script, badRunbook)
+		cmd.Dir = repoRoot
+		output, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("terminology guard accepted junk smoke guidance:\n%s", string(output))
+		}
+		if !strings.Contains(string(output), "--title=t") {
+			t.Fatalf("terminology guard rejection did not cite junk smoke command:\n%s", string(output))
+		}
+	})
 }
 
 func terminologyRepoRoot(t *testing.T) string {

@@ -30,6 +30,7 @@ scan_files() {
 	local docs_regex="native \`oro bead\`|primary .*oro bead|work items through \`oro bead\`|tracked by the native \`oro bead\` CLI"
 	local primary_term_regex='one bead|execute beads|assigns beads|assign new beads|prioritize beads|requeue its bead|work is tracked as beads|all beads are visible|Bead in progress|continuation bead|bead queue|bead progress|bead completion|per-bead|bead dependency graph|Bead Anatomy|No beads ready|Stale Beads|Same bead|P0 bead|create a bead|blocker bead|test bead assigned|worker proof beads|controlled test bead|smoke bead|restart beads|ready bead|worker bead|bead has no AC|worker and bead are stuck|fix beads|child beads|smaller child beads|bead metadata export|export bead metadata|Diagnose why bead|Search beads|Import bead snapshot|Beads In Progress|BEAD CRAFT|SPEC/BEAD|Beads CLI'
 	local false_rename_regex='task/(abc|def|ghi|jkl)\b|\.worktrees/task|task/<id>|task branch'
+	local junk_smoke_regex='oro task create[^`'\''"]*--title[=[:space:]]t\b|oro task create[^`'\''"]*--description[=[:space:]]d\b|oro task create[^`'\''"]*--acceptance-criteria[=[:space:]]ac\b'
 
 	if ((${#files[@]} == 0)); then
 		return 0
@@ -53,6 +54,10 @@ scan_files() {
 	fi
 	if rg -n --pcre2 "$false_rename_regex" "${files[@]}"; then
 		printf 'terminology: do not invent task-prefixed git/worktree names; preserve real branch/worktree conventions such as agent/<id> or legacy/internal bead/<id> examples.\n' >&2
+		bad=1
+	fi
+	if rg -n -U --pcre2 "$junk_smoke_regex" "${files[@]}"; then
+		printf 'terminology: public smoke-test guidance must use isolated temp DBs and descriptive task fields, not copy-pastable --title=t/--description=d/--acceptance-criteria=ac placeholders.\n' >&2
 		bad=1
 	fi
 }

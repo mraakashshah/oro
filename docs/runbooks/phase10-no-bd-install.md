@@ -3,10 +3,11 @@
 Use this check before closing Phase 10 acceptance when the historical
 `fresh-mac:latest` Docker image is unavailable.
 
-The original Phase 10 bead referenced:
+The original Phase 10 task referenced:
 
 ```bash
-docker run --rm -v "$PWD:/oro" fresh-mac /bin/sh -c 'cd /oro && make build && make install && oro task create --type task --title=t --description=d --acceptance-criteria=ac'
+tmp="$(mktemp -d)" &&
+docker run --rm -v "$PWD:/oro" fresh-mac /bin/sh -c 'cd /oro && make build && make install && ORO_HOME=/tmp/orohome ORO_DB_PATH=/tmp/orohome/state.db oro task create --type task --title=phase10-no-bd-install-smoke --description="Phase 10 no-bd install smoke" --acceptance-criteria="created by Phase 10 no-bd install smoke"'
 ```
 
 That image is not part of this repository and may not exist on operator
