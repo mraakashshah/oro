@@ -40,6 +40,12 @@ func NewGitWorktreeManager(repoRoot, worktreesDir, qualityGatePath string, runne
 // Create runs `git worktree add <path> -b agent/<beadID> <baseBranch>` and returns
 // the worktree path and branch name. baseBranch is the branch to branch from
 // (e.g. "main" for standalone beads, "agent/<epicID>" for epic child beads).
+//
+// Before creating the worktree, Create performs a best-effort `git fetch origin
+// <baseBranch>` so that the new agent branch always starts from the current
+// remote HEAD, not a potentially-stale local ref. On success the worktree is
+// branched from `origin/<baseBranch>`; if the fetch fails (e.g. no remote) the
+// local ref is used as a fallback.
 func (g *GitWorktreeManager) Create(ctx context.Context, beadID, baseBranch string) (path, branch string, err error) {
 	// Validate bead ID before using it in filepath operations to prevent
 	// directory traversal attacks.
@@ -51,11 +57,20 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID, baseBranch stri
 		baseBranch = "main"
 	}
 
+	// Best-effort: fetch from origin so the worktree branches from the current
+	// remote HEAD, not a potentially-stale local ref (govulncheck loop root cause).
+	// On success use origin/<baseBranch>; fall back to the local ref if there is
+	// no remote or the fetch fails (e.g. local-only repos, no network).
+	effectiveBase := baseBranch
+	if _, fetchErr := g.runner.Run(ctx, "git", "-C", g.repoRoot, "fetch", "origin", baseBranch); fetchErr == nil {
+		effectiveBase = "origin/" + baseBranch
+	}
+
 	path = filepath.Join(g.worktreesDir, beadID)
 	branch = protocol.BranchPrefix + beadID
 
 	_, err = g.runner.Run(ctx, "git", "-C", g.repoRoot,
-		"worktree", "add", path, "-b", branch, baseBranch,
+		"worktree", "add", path, "-b", branch, effectiveBase,
 	)
 	if err == nil {
 		g.stageAssets(ctx, path)
@@ -73,7 +88,7 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID, baseBranch stri
 	}
 
 	_, err = g.runner.Run(ctx, "git", "-C", g.repoRoot,
-		"worktree", "add", path, "-b", branch, baseBranch,
+		"worktree", "add", path, "-b", branch, effectiveBase,
 	)
 	if err != nil {
 		return "", "", fmt.Errorf("worktree add %s (after prune): %w", beadID, err)
