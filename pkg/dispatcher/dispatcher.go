@@ -2079,8 +2079,10 @@ func (d *Dispatcher) checkEpicQG(ctx context.Context, epicID, workerID, epicBran
 //   - deterministic/unknown → create one targeted fix bead per (epic, fingerprint);
 //     subsequent calls with the same fingerprint are no-ops to prevent duplicates.
 //
-// Always returns false (the epic remains open until QG passes).
-func (d *Dispatcher) handleEpicQGFailure(ctx context.Context, epicID, workerID, epicBranch, qgOutput string) bool {
+// Always returns false (the epic remains open until QG passes); the bool
+// return preserves the symmetry with checkEpicQG's other branches so the
+// caller can keep its `return d.handleEpicQGFailure(...)` form.
+func (d *Dispatcher) handleEpicQGFailure(ctx context.Context, epicID, workerID, epicBranch, qgOutput string) bool { //nolint:unparam // bool mirrors checkEpicQG's success/failure return so the call site stays a single-line return
 	fp, summary := FingerprintQGFailure(qgOutput, QGFingerprintOptions{})
 	rec := QGFailureRecord{
 		BeadID:      epicID,
