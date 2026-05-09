@@ -46,6 +46,11 @@ type statusResponse struct {
 	PendingHandoffCount int            `json:"pending_handoff_count"`
 	AttemptCounts       map[string]int `json:"attempt_counts,omitempty"`
 	ProgressTimeoutSecs float64        `json:"progress_timeout_secs"`
+
+	// QG incidents
+	QGFailureIncidentsOpen   int      `json:"qg_failure_incidents_open"`
+	QGFailureOccurrences30m  int      `json:"qg_failure_occurrences_30m"`
+	QGFailureTopFingerprints []string `json:"qg_failure_top_fingerprints,omitempty"`
 }
 
 // statusSocketTimeout is how long to wait for the dispatcher socket round-trip.
@@ -168,6 +173,9 @@ func formatAlerts(w io.Writer, resp *statusResponse) bool {
 			alerts = append(alerts, alert{"!", fmt.Sprintf("%s: QG failed %dx", beadID, count)})
 		}
 	}
+	if resp.QGFailureIncidentsOpen > 0 {
+		alerts = append(alerts, alert{"!", fmt.Sprintf("%d open QG failure incident(s)", resp.QGFailureIncidentsOpen)})
+	}
 
 	// Pending handoff alerts.
 	if resp.PendingHandoffCount > 0 {
@@ -210,6 +218,26 @@ func filterActiveWorkers(workers []workerStatus) []workerStatus {
 	return active
 }
 
+// formatQGIncidents writes the QG incidents section if any are present.
+func formatQGIncidents(w io.Writer, resp *statusResponse) {
+	if resp.QGFailureIncidentsOpen == 0 {
+		return
+	}
+
+	fmt.Fprintf(w, "  QG incidents: %d open", resp.QGFailureIncidentsOpen)
+	if resp.QGFailureOccurrences30m > 0 {
+		fmt.Fprintf(w, " (%d total occurrences)", resp.QGFailureOccurrences30m)
+	}
+	fmt.Fprintln(w)
+
+	if len(resp.QGFailureTopFingerprints) > 0 {
+		fmt.Fprintln(w, "    top fingerprints:")
+		for _, fp := range resp.QGFailureTopFingerprints {
+			fmt.Fprintf(w, "      %s\n", fp)
+		}
+	}
+}
+
 // formatStatusResponse writes a human-readable status summary with alerts.
 func formatStatusResponse(w io.Writer, resp *statusResponse) {
 	formatAlerts(w, resp)
@@ -234,6 +262,8 @@ func formatStatusResponse(w io.Writer, resp *statusResponse) {
 	if resp.FocusedEpic != "" {
 		fmt.Fprintf(w, "  focus:       %s\n", resp.FocusedEpic)
 	}
+
+	formatQGIncidents(w, resp)
 
 	switch {
 	case len(resp.Workers) > 0:

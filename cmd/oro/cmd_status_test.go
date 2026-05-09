@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -658,6 +659,118 @@ func TestStatusCommand(t *testing.T) {
 	// Idle worker must not appear in in-progress table.
 	if strings.Contains(got, "worker-3") {
 		t.Errorf("idle worker-3 should not appear in in-progress table, got:\n%s", got)
+	}
+}
+
+func TestStatusShowsQGFailureIncidents(t *testing.T) {
+	tests := []struct {
+		name        string
+		resp        statusResponse
+		wantTxt     bool // Whether we expect to see QG incidents in human format
+		checks      []string
+		notContains []string
+	}{
+		{
+			name: "QG incidents with occurrences and fingerprints",
+			resp: statusResponse{
+				State:                    "running",
+				QGFailureIncidentsOpen:   2,
+				QGFailureOccurrences30m:  5,
+				QGFailureTopFingerprints: []string{"test_failure_auth", "build_timeout"},
+			},
+			wantTxt: true,
+			checks: []string{
+				"ALERTS:",
+				"2 open QG failure incident(s)",
+				"QG incidents: 2 open",
+				"5 total occurrences",
+				"top fingerprints:",
+				"test_failure_auth",
+				"build_timeout",
+			},
+		},
+		{
+			name: "QG incidents without occurrences",
+			resp: statusResponse{
+				State:                    "running",
+				QGFailureIncidentsOpen:   1,
+				QGFailureTopFingerprints: []string{"linter_error"},
+			},
+			wantTxt: true,
+			checks: []string{
+				"ALERTS:",
+				"1 open QG failure incident(s)",
+				"QG incidents: 1 open",
+				"linter_error",
+			},
+			notContains: []string{"total occurrences"},
+		},
+		{
+			name: "no QG incidents",
+			resp: statusResponse{
+				State:                  "running",
+				QGFailureIncidentsOpen: 0,
+			},
+			wantTxt: false,
+			checks:  []string{},
+		},
+		{
+			name: "zero incidents is silent",
+			resp: statusResponse{
+				State:                   "running",
+				QGFailureIncidentsOpen:  0,
+				QGFailureOccurrences30m: 0,
+			},
+			wantTxt: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test human-readable format
+			var buf bytes.Buffer
+			formatStatusResponse(&buf, &tt.resp)
+			got := buf.String()
+
+			if tt.wantTxt {
+				for _, check := range tt.checks {
+					if !strings.Contains(got, check) {
+						t.Errorf("human output should contain %q, got:\n%s", check, got)
+					}
+				}
+				for _, check := range tt.notContains {
+					if strings.Contains(got, check) {
+						t.Errorf("human output should not contain %q, got:\n%s", check, got)
+					}
+				}
+			} else {
+				if strings.Contains(got, "QG incidents") {
+					t.Errorf("human output should not contain 'QG incidents', got:\n%s", got)
+				}
+			}
+
+			// Test JSON format
+			var jsonBuf bytes.Buffer
+			formatStatusJSON(&jsonBuf, &tt.resp)
+			jsonOut := jsonBuf.String()
+
+			// Must be valid JSON
+			var parsed statusResponse
+			if err := json.Unmarshal([]byte(jsonOut), &parsed); err != nil {
+				t.Fatalf("JSON output is not valid: %v\nraw: %s", err, jsonOut)
+			}
+
+			// Verify QG fields survived round-trip
+			if parsed.QGFailureIncidentsOpen != tt.resp.QGFailureIncidentsOpen {
+				t.Errorf("JSON QGFailureIncidentsOpen = %d, want %d", parsed.QGFailureIncidentsOpen, tt.resp.QGFailureIncidentsOpen)
+			}
+			if parsed.QGFailureOccurrences30m != tt.resp.QGFailureOccurrences30m {
+				t.Errorf("JSON QGFailureOccurrences30m = %d, want %d", parsed.QGFailureOccurrences30m, tt.resp.QGFailureOccurrences30m)
+			}
+			if !slices.Equal(parsed.QGFailureTopFingerprints, tt.resp.QGFailureTopFingerprints) {
+				t.Errorf("JSON QGFailureTopFingerprints = %v, want %v", parsed.QGFailureTopFingerprints, tt.resp.QGFailureTopFingerprints)
+			}
+		})
 	}
 }
 
