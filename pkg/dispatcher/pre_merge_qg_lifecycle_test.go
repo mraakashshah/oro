@@ -8,6 +8,163 @@ import (
 	"oro/pkg/protocol"
 )
 
+// TestPreMergeQGFailureClassifiedBeforeReopen verifies that handlePreMergeQGFailure
+// classifies QG output before deciding how to record and reopen:
+//  1. Deterministic failure: records a qg_failure_occurrence and reopens the original bead.
+//  2. Systemic failure: creates or reuses an infra incident (qg_infra_incident_reused event)
+//     without creating a direct P0 child of the original bead.
+//  3. Closed bead: classification still runs but the bead is not reopened.
+func TestPreMergeQGFailureClassifiedBeforeReopen(t *testing.T) {
+	t.Run("deterministic records occurrence and reopens bead", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		const (
+			beadID   = "bead-prm-det"
+			workerID = "w-prm-det"
+			worktree = "/tmp/wt-prm-det"
+			qgOutput = "golangci-lint: error in pkg/bar/baz.go: unused variable"
+		)
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+
+		res, err := d.db.ExecContext(ctx,
+			`INSERT INTO assignments (bead_id, worker_id, worktree) VALUES (?, ?, ?)`,
+			beadID, workerID, worktree)
+		if err != nil {
+			t.Fatalf("insert assignment: %v", err)
+		}
+		assignmentID, _ := res.LastInsertId()
+		d.mu.Lock()
+		d.worktreeByBead[beadID] = worktree
+		d.mu.Unlock()
+
+		got := d.handlePreMergeQGFailure(ctx, beadID, workerID, worktree, assignmentID, qgOutput)
+
+		if got {
+			t.Error("handlePreMergeQGFailure returned true, want false (QG failed)")
+		}
+
+		// occurrence recorded in DB
+		var occurrences int
+		if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM qg_failure_occurrences WHERE bead_id=?`, beadID).Scan(&occurrences); err != nil {
+			t.Fatalf("count qg_failure_occurrences: %v", err)
+		}
+		if occurrences != 1 {
+			t.Errorf("qg_failure_occurrences count = %d, want 1", occurrences)
+		}
+
+		// bead reopened to "open"
+		beadSrc.mu.Lock()
+		status, wasUpdated := beadSrc.updated[beadID]
+		beadSrc.mu.Unlock()
+		if !wasUpdated || status != "open" {
+			t.Errorf("bead status after deterministic pre-merge QG fail = %q (updated=%v), want \"open\"", status, wasUpdated)
+		}
+
+		// no direct P0 child bead created
+		beadSrc.mu.Lock()
+		created := beadSrc.created
+		beadSrc.mu.Unlock()
+		for _, c := range created {
+			if c.parent == beadID {
+				t.Errorf("unexpected direct P0 child of %s: %+v", beadID, c)
+			}
+		}
+	})
+
+	t.Run("systemic reuses infra incident without direct P0 child", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		const (
+			beadID   = "bead-prm-sys"
+			workerID = "w-prm-sys"
+			worktree = "/tmp/wt-prm-sys"
+			qgOutput = "out of memory: killed by OOM killer"
+		)
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+
+		res, err := d.db.ExecContext(ctx,
+			`INSERT INTO assignments (bead_id, worker_id, worktree) VALUES (?, ?, ?)`,
+			beadID, workerID, worktree)
+		if err != nil {
+			t.Fatalf("insert assignment: %v", err)
+		}
+		assignmentID, _ := res.LastInsertId()
+		d.mu.Lock()
+		d.worktreeByBead[beadID] = worktree
+		d.mu.Unlock()
+
+		got := d.handlePreMergeQGFailure(ctx, beadID, workerID, worktree, assignmentID, qgOutput)
+
+		if got {
+			t.Error("handlePreMergeQGFailure returned true, want false (QG failed)")
+		}
+
+		// infra incident recorded
+		var incidents int
+		if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM qg_failure_incidents`).Scan(&incidents); err != nil {
+			t.Fatalf("count qg_failure_incidents: %v", err)
+		}
+		if incidents == 0 {
+			t.Error("no qg_failure_incidents row created for systemic pre-merge QG failure")
+		}
+
+		// qg_infra_incident_reused event logged
+		var eventCount int
+		if err := d.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM events WHERE type='qg_infra_incident_reused' AND bead_id=?`, beadID).Scan(&eventCount); err != nil {
+			t.Fatalf("count qg_infra_incident_reused events: %v", err)
+		}
+		if eventCount == 0 {
+			t.Error("qg_infra_incident_reused event not logged for systemic pre-merge QG failure")
+		}
+
+		// no direct P0 child of the original bead
+		beadSrc.mu.Lock()
+		created := beadSrc.created
+		beadSrc.mu.Unlock()
+		for _, c := range created {
+			if c.parent == beadID {
+				t.Errorf("unexpected direct P0 child of %s created: title=%q", beadID, c.title)
+			}
+		}
+	})
+
+	t.Run("closed bead not reopened", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		const (
+			beadID   = "bead-prm-closed"
+			workerID = "w-prm-closed"
+			worktree = "/tmp/wt-prm-closed"
+			qgOutput = "golangci-lint: error in closed bead pkg/foo"
+		)
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "closed"}
+
+		res, err := d.db.ExecContext(ctx,
+			`INSERT INTO assignments (bead_id, worker_id, worktree) VALUES (?, ?, ?)`,
+			beadID, workerID, worktree)
+		if err != nil {
+			t.Fatalf("insert assignment: %v", err)
+		}
+		assignmentID, _ := res.LastInsertId()
+		d.mu.Lock()
+		d.worktreeByBead[beadID] = worktree
+		d.mu.Unlock()
+
+		d.handlePreMergeQGFailure(ctx, beadID, workerID, worktree, assignmentID, qgOutput)
+
+		beadSrc.mu.Lock()
+		updatedStatus, wasUpdated := beadSrc.updated[beadID]
+		beadSrc.mu.Unlock()
+		if wasUpdated {
+			t.Errorf("closed bead was reopened to %q, want no status update", updatedStatus)
+		}
+	})
+}
+
 // TestPreMergeQGFailureDoesNotOrphan verifies that when the pre-merge mutation
 // QG fails the dispatcher:
 //  1. Records a "qg_failed" event with the actionable QG output.

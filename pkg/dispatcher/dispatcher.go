@@ -1957,6 +1957,60 @@ func (d *Dispatcher) guardMerge(beadID string) func() {
 	}
 }
 
+// handlePreMergeQGFailure classifies the pre-merge QG failure output, records the
+// occurrence, handles cleanup, and returns false so the caller aborts the merge.
+// For deterministic failures it records via RecordQGFailureOccurrence; for systemic
+// failures it creates or reuses an infra incident. In both cases the original bead
+// is reopened unless it was externally closed before this handler runs.
+func (d *Dispatcher) handlePreMergeQGFailure(ctx context.Context, beadID, workerID, worktree string, assignmentID int64, qgOutput string) bool {
+	qgFingerprint, qgSummary := FingerprintQGFailure(qgOutput, QGFingerprintOptions{})
+	rec := QGFailureRecord{
+		ID:           fmt.Sprintf("%s:%s:%d:pre-merge", beadID, workerID, assignmentID),
+		BeadID:       beadID,
+		WorkerID:     workerID,
+		AssignmentID: assignmentID,
+		Component:    "pre-merge",
+		Fingerprint:  qgFingerprint,
+		Summary:      qgSummary,
+		Output:       qgOutput,
+	}
+	cls := ClassifyQGFailure(rec, QGFailureHistory{RetryExhausted: true})
+
+	_ = d.logEvent(ctx, "qg_failed", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"output":%q,"fingerprint":%q,"class":%q,"decision":%q}`,
+			qgOutput, qgFingerprint, cls.Class, cls.Decision))
+
+	if cls.Decision == QGFailureDecisionCreateOrReuseInfra {
+		incident, err := d.createOrReuseQGInfraIncident(ctx, rec, cls)
+		if err != nil {
+			_ = d.logEvent(ctx, "qg_failure_record_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"error":%q,"fingerprint":%q}`, err.Error(), qgFingerprint))
+		} else {
+			_ = d.logEvent(ctx, "qg_infra_incident_reused", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"incident_id":%d,"class":%q,"fingerprint":%q}`, incident.ID, cls.Class, qgFingerprint))
+		}
+	} else {
+		incident, err := RecordQGFailureOccurrence(ctx, d.db, rec, cls)
+		if err != nil {
+			_ = d.logEvent(ctx, "qg_failure_record_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"error":%q,"fingerprint":%q}`, err.Error(), qgFingerprint))
+		} else if err := d.linkQGFailureToBeads(ctx, incident, rec, cls); err != nil {
+			_ = d.logEvent(ctx, "qg_failure_link_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"error":%q,"fingerprint":%q,"incident_id":%d}`, err.Error(), qgFingerprint, incident.ID))
+		}
+	}
+
+	// Only requeue if not already closed on main — a stale QG failure must
+	// not reopen a bead that was successfully merged externally.
+	if d.shouldReopenQGOriginal(ctx, beadID) {
+		_ = d.updateBeadStatus(ctx, beadID, "open")
+	}
+
+	_ = d.completeAssignment(ctx, assignmentID, beadID)
+	d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
+	return false
+}
+
 // checkPreMergeQG runs the local pre-merge quality gate before merging. Mutation
 // testing is deferred to push so local branch merges do not pay that cost.
 // It returns true when the gate passes and the merge should proceed. On failure
@@ -1971,16 +2025,7 @@ func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, work
 		return false
 	}
 	if !qgPassed {
-		_ = d.logEvent(ctx, "qg_failed", "dispatcher", beadID, workerID,
-			fmt.Sprintf(`{"output":%q}`, qgOutput))
-		// Only requeue if not already closed on main — a stale QG failure must
-		// not reopen a bead that was successfully merged externally.
-		if detail, showErr := d.beads.Show(ctx, beadID); showErr == nil && (detail == nil || detail.Status != "closed") {
-			_ = d.updateBeadStatus(ctx, beadID, "open")
-		}
-		_ = d.completeAssignment(ctx, assignmentID, beadID)
-		d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
-		return false
+		return d.handlePreMergeQGFailure(ctx, beadID, workerID, worktree, assignmentID, qgOutput)
 	}
 	return true
 }
