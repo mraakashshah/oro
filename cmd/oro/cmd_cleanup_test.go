@@ -205,6 +205,44 @@ func TestCleanup_RemovesStaleFiles(t *testing.T) {
 	}
 }
 
+func TestCleanup_RemovesStaleStateDBLock(t *testing.T) {
+	fake := newFakeCmd()
+	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
+	fake.output[key("git", "branch", "--list", "agent/*")] = ""
+	fake.output[key("git", "branch", "--list", "epic/*")] = ""
+
+	tmpDir := t.TempDir()
+	stateDBPath := filepath.Join(tmpDir, "state.db")
+	lockPath := stateDBPath + ".lock"
+	if err := os.WriteFile(lockPath, []byte("999999\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	cfg := &cleanupConfig{
+		runner:      fake,
+		w:           &buf,
+		tmuxName:    TmuxSessionName(""),
+		pidPath:     filepath.Join(tmpDir, "oro.pid"),
+		sockPath:    filepath.Join(tmpDir, "oro.sock"),
+		stateDBPath: stateDBPath,
+		signalFn:    func(int) error { return nil },
+		aliveFn:     func(int) bool { return false },
+	}
+
+	if err := runCleanup(context.Background(), cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Error("expected stale state DB lock to be removed")
+	}
+	if out := buf.String(); !strings.Contains(out, "state DB lock") {
+		t.Errorf("expected output to mention state DB lock removal, got: %s", out)
+	}
+}
+
 func TestCleanup_PrunesWorktrees(t *testing.T) {
 	fake := newFakeCmd()
 	// tmux has-session fails

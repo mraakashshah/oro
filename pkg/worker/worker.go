@@ -128,6 +128,7 @@ type Worker struct {
 	logFile                *os.File       // per-worker output log file at ~/.oro/workers/<ID>/output.log
 	logWriter              *bufio.Writer  // buffered writer for logFile to prevent blocking
 	streamContextPct       int32          // atomic: latest context_pct observed from stream output (0 = no signal yet)
+	assignmentGeneration   uint64         // guarded by mu: rejects stale stdout context from prior assignments
 	tier                   protocol.Tier  // routing tier from bead assignment; empty for legacy beads
 	targetBranch           string         // branch to rebase onto before QG; defaults to "main"
 }
@@ -428,8 +429,11 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	w.recordSpawnedProc(proc, model)
 
 	if stdout != nil {
+		w.mu.Lock()
+		generation := w.assignmentGeneration
+		w.mu.Unlock()
 		w.outputWg.Add(1)
-		go w.processOutput(ctx, stdout)
+		go w.processOutput(ctx, stdout, generation)
 	}
 	if err := w.SendStatus(ctx, "running", ""); err != nil {
 		return fmt.Errorf("send status: %w", err)
@@ -452,7 +456,7 @@ func validateAssignedWorktree(worktree string) error {
 }
 
 // resetForNewAssignment kills any prior subprocess, clears worker state under
-// the lock, removes the stale handoff_done sentinel from the new worktree, and
+// the lock, removes stale assignment-local sentinels from the new worktree, and
 // truncates the log file before the next subprocess spawns.
 func (w *Worker) resetForNewAssignment(a *protocol.AssignPayload) {
 	w.killProc()
@@ -461,6 +465,8 @@ func (w *Worker) resetForNewAssignment(a *protocol.AssignPayload) {
 		target = "main"
 	}
 	w.mu.Lock()
+	w.assignmentGeneration++
+	atomic.StoreInt32(&w.streamContextPct, 0)
 	w.beadID = a.BeadID
 	w.worktree = a.Worktree
 	w.tier = a.Tier
@@ -471,10 +477,16 @@ func (w *Worker) resetForNewAssignment(a *protocol.AssignPayload) {
 	w.mu.Unlock()
 
 	if a.Worktree != "" {
-		_ = os.Remove(filepath.Join(a.Worktree, protocol.OroDir, "handoff_done"))
+		clearAssignmentLocalState(a.Worktree)
 	}
 	w.closeLogFile()
 	_ = w.openLogFile()
+}
+
+func clearAssignmentLocalState(worktree string) {
+	oroDir := filepath.Join(worktree, protocol.OroDir)
+	_ = os.Remove(filepath.Join(oroDir, "handoff_done"))
+	_ = os.Remove(filepath.Join(oroDir, "context_pct"))
 }
 
 // recordSpawnedProc captures the freshly spawned subprocess + model and resets
@@ -656,7 +668,7 @@ func (w *Worker) runQGAndReport(ctx context.Context) {
 // memory extraction. When stdout closes (subprocess exits), it extracts
 // implicit memories so that learnings from failed attempts are persisted
 // before the dispatcher re-assigns.
-func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser) {
+func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser, generation uint64) {
 	defer w.outputWg.Done()
 	defer func() { _ = stdout.Close() }()
 
@@ -670,7 +682,11 @@ func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser) {
 	for scanner.Scan() {
 		// Extract context% from each line; store the latest observed value.
 		if pct, ok := ContextPctFromLine(format, scanner.Bytes()); ok {
-			atomic.StoreInt32(&w.streamContextPct, int32(pct))
+			w.mu.Lock()
+			if w.assignmentGeneration == generation {
+				atomic.StoreInt32(&w.streamContextPct, int32(pct))
+			}
+			w.mu.Unlock()
 		}
 		switch format {
 		case StreamFormatLineText:

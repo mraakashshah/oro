@@ -9,11 +9,14 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"oro/pkg/beadstore"
 
 	"github.com/spf13/cobra"
 )
+
+const cleanupDispatcherExitWait = 5 * time.Second
 
 // cleanupConfig holds injectable dependencies for the cleanup command.
 type cleanupConfig struct {
@@ -27,6 +30,7 @@ type cleanupConfig struct {
 	signalFn     func(int) error // sends SIGINT; injectable for testing
 	aliveFn      func(int) bool  // checks process liveness; injectable for testing
 	isTTY        func() bool     // returns true if stdin is a TTY; injectable for testing
+	exitWait     time.Duration   // bounded wait for dispatcher exit after SIGINT
 }
 
 // newCleanupCmd creates the "oro cleanup" subcommand.
@@ -65,6 +69,7 @@ Safe to run anytime. If nothing is running, reports "nothing to clean".`,
 				signalFn:     defaultSignalINT,
 				aliveFn:      IsProcessAlive,
 				isTTY:        isStdinTTY,
+				exitWait:     cleanupDispatcherExitWait,
 			}
 
 			return runCleanup(cmd.Context(), cfg)
@@ -89,8 +94,9 @@ func runCleanup(ctx context.Context, cfg *cleanupConfig) error {
 	}
 
 	// 2. Kill dispatcher process if running (read PID file).
-	if cleanedDispatcher := cleanupDispatcher(cfg); cleanedDispatcher {
+	if cleanedDispatcher, dispatcherPID := cleanupDispatcher(cfg); cleanedDispatcher {
 		cleaned = true
+		waitForDispatcherExit(cfg, dispatcherPID)
 	}
 
 	// 3. Kill worker claude processes with ORO_ROLE env var.
@@ -108,15 +114,20 @@ func runCleanup(ctx context.Context, cfg *cleanupConfig) error {
 		cleaned = true
 	}
 
-	// 6. Prune git worktrees.
+	// 6. Remove stale dispatcher state DB lock.
+	if cleanedLock := cleanupStateDBLock(cfg); cleanedLock {
+		cleaned = true
+	}
+
+	// 7. Prune git worktrees.
 	cleanupWorktrees(cfg)
 
-	// 7. Remove .worktrees/ directory.
+	// 8. Remove .worktrees/ directory.
 	if cleanedWorktreeDir := cleanupWorktreeDir(cfg); cleanedWorktreeDir {
 		cleaned = true
 	}
 
-	// 8. Delete agent/* and epic/* branches.
+	// 9. Delete agent/* and epic/* branches.
 	cleanedBranches, err := cleanupAgentBranches(ctx, cfg)
 	if cleanedBranches {
 		cleaned = true
@@ -125,7 +136,7 @@ func runCleanup(ctx context.Context, cfg *cleanupConfig) error {
 		cleanupErr = err
 	}
 
-	// 9. Reset in_progress beads back to open.
+	// 10. Reset in_progress beads back to open.
 	if cleanedBeads := cleanupBeads(ctx, cfg); cleanedBeads {
 		cleaned = true
 	}
@@ -151,29 +162,46 @@ func cleanupTmux(cfg *cleanupConfig) bool {
 	return true
 }
 
-// cleanupDispatcher signals the dispatcher process if running. Returns true if something was cleaned.
+// cleanupDispatcher signals the dispatcher process if running. Returns true and
+// the signaled PID if something was cleaned.
 // Sends SIGINT (always honored by daemon) for graceful shutdown.
 // Falls back to socket probe when PID file is missing.
-func cleanupDispatcher(cfg *cleanupConfig) bool {
+func cleanupDispatcher(cfg *cleanupConfig) (bool, int) {
 	pid, err := ReadPIDFile(cfg.pidPath)
 	if err != nil {
 		// No PID file — try socket probe to discover PID.
 		pid = probeSocket(cfg.sockPath)
 		if pid == 0 {
-			return false
+			return false, 0
 		}
 	}
 
 	if !cfg.aliveFn(pid) {
 		// Process is dead, PID file is stale — will be cleaned in step 4.
-		return false
+		return false, 0
 	}
 
 	fmt.Fprintf(cfg.w, "killing dispatcher (PID %d)\n", pid)
 	if err := cfg.signalFn(pid); err != nil {
 		fmt.Fprintf(cfg.w, "warning: signal dispatcher PID %d: %v\n", pid, err)
 	}
-	return true
+	return true, pid
+}
+
+func waitForDispatcherExit(cfg *cleanupConfig, pid int) {
+	if cfg.exitWait <= 0 || pid <= 0 {
+		return
+	}
+	deadline := time.Now().Add(cfg.exitWait)
+	for time.Now().Before(deadline) {
+		if !cfg.aliveFn(pid) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if cfg.aliveFn(pid) {
+		fmt.Fprintf(cfg.w, "warning: dispatcher PID %d still alive after %s\n", pid, cfg.exitWait)
+	}
 }
 
 // cleanupWorkers finds and kills worker processes with ORO_ROLE env var.
@@ -241,6 +269,35 @@ func cleanupSocketFile(cfg *cleanupConfig) bool {
 		fmt.Fprintf(cfg.w, "warning: remove socket file: %v\n", err)
 	}
 	return true
+}
+
+func cleanupStateDBLock(cfg *cleanupConfig) bool {
+	if cfg.stateDBPath == "" {
+		return false
+	}
+	canonicalStateDBPath, err := canonicalBeadMigrationStateDBPath(cfg.stateDBPath)
+	if err != nil {
+		fmt.Fprintf(cfg.w, "warning: canonicalize state DB lock: %v\n", err)
+		return false
+	}
+	lockPath := canonicalStateDBPath + ".lock"
+	lock, err := inspectPIDLock(lockPath)
+	if err != nil {
+		fmt.Fprintf(cfg.w, "warning: inspect state DB lock: %v\n", err)
+		return false
+	}
+	if !lock.exists || !lock.stale {
+		return false
+	}
+	removed, err := removeInspectedPIDLock(lock)
+	if err != nil {
+		fmt.Fprintf(cfg.w, "warning: remove state DB lock: %v\n", err)
+		return false
+	}
+	if removed {
+		fmt.Fprintf(cfg.w, "removed stale state DB lock %s\n", lockPath)
+	}
+	return removed
 }
 
 // cleanupWorktrees runs git worktree prune.

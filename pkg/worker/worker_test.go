@@ -4269,11 +4269,6 @@ func TestWatchContext_HeartbeatIncludesContextPct(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Write context_pct = 42 to the worktree
-	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("42"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -4292,6 +4287,10 @@ func TestWatchContext_HeartbeatIncludesContextPct(t *testing.T) {
 	msg := readMessage(t, dispatcherConn)
 	if msg.Type != protocol.MsgStatus {
 		t.Fatalf("expected STATUS, got %s", msg.Type)
+	}
+
+	if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), []byte("42"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 
 	// Collect heartbeats — at least one should include ContextPct=42
@@ -4711,6 +4710,124 @@ func TestStaleHandoffFileCleanedOnAssign(t *testing.T) {
 	// handoff_done should be gone — deleted during handleAssign before watchContext starts
 	if _, err := os.Stat(handoffDone); !os.IsNotExist(err) {
 		t.Error("expected stale handoff_done to be deleted during handleAssign")
+	}
+
+	cancel()
+	<-errCh
+}
+
+func TestStaleContextFileCleanedOnAssign(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-stale-context", workerConn, spawner)
+	w.SetContextPollInterval(50 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tmpDir := t.TempDir()
+	oroDir := filepath.Join(tmpDir, ".oro")
+	if err := os.MkdirAll(oroDir, 0o750); err != nil { //nolint:gosec // test directory
+		t.Fatal(err)
+	}
+	contextPct := filepath.Join(oroDir, "context_pct")
+	if err := os.WriteFile(contextPct, []byte("95"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-stale-context",
+			Worktree: tmpDir,
+		},
+	})
+	_ = readMessage(t, dispatcherConn)
+
+	if _, err := os.Stat(contextPct); !os.IsNotExist(err) {
+		t.Error("expected stale context_pct to be deleted during handleAssign")
+	}
+
+	cancel()
+	<-errCh
+}
+
+func TestStaleStreamContextIgnoredAfterNewAssign(t *testing.T) {
+	t.Parallel()
+
+	firstReader, firstWriter := io.Pipe()
+	t.Cleanup(func() {
+		_ = firstReader.Close()
+		_ = firstWriter.Close()
+	})
+
+	spawner := newMockSpawner()
+	spawner.format = worker.StreamFormatLineText
+	spawnCount := 0
+	spawner.onSpawn = func(_, _, _ string) error {
+		spawnCount++
+		spawner.process = newMockProcess()
+		if spawnCount == 1 {
+			spawner.stdout = firstReader
+		} else {
+			spawner.stdout = nil
+		}
+		return nil
+	}
+
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-stale-stream-context", workerConn, spawner)
+	w.SetContextPollInterval(25 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	firstWorktree := validAssignWorktree(t, "wt-first-stream-context")
+	secondWorktree := validAssignWorktree(t, "wt-second-stream-context")
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-first-stream-context",
+			Worktree: firstWorktree,
+		},
+	})
+	_ = readMessage(t, dispatcherConn)
+
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-second-stream-context",
+			Worktree: secondWorktree,
+		},
+	})
+	_ = readMessage(t, dispatcherConn)
+
+	if _, err := firstWriter.Write([]byte(`{"context_pct":95}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	_ = firstWriter.Close()
+
+	_ = dispatcherConn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	scanner := bufio.NewScanner(dispatcherConn)
+	for scanner.Scan() {
+		var msg protocol.Message
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			continue
+		}
+		if msg.Type == protocol.MsgHandoff {
+			t.Fatalf("stale stream context from prior assignment triggered handoff for %s", msg.Handoff.BeadID)
+		}
 	}
 
 	cancel()
