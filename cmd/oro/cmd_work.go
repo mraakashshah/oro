@@ -106,19 +106,20 @@ type opsReviewer interface {
 
 // workDeps holds injectable dependencies for testability.
 type workDeps struct {
-	beadSrc       beadstore.Store
-	wtMgr         dispatcher.WorktreeManager
-	spawner       worker.StreamingSpawner
-	opsMgr        opsReviewer
-	merger        merger
-	repoRoot      string
-	memStore      *memory.Store
-	codeIndex     *codesearch.CodeIndex
-	defaultBranch string
-	hasNewWork    func(repoRoot, branch, targetBranch string) bool                                    // defaults to hasCommitsAhead
-	runQG         func(ctx context.Context, worktree string, skipMutation bool) (bool, string, error) // defaults to worker.RunQualityGate
-	runShellCmd   func(ctx context.Context, dir, cmd string) (bool, error)                            // defaults to defaultRunShellCmd
-	stdout        io.Writer
+	beadSrc         beadstore.Store
+	wtMgr           dispatcher.WorktreeManager
+	spawner         worker.StreamingSpawner
+	opsMgr          opsReviewer
+	merger          merger
+	repoRoot        string
+	memStore        *memory.Store
+	codeIndex       *codesearch.CodeIndex
+	defaultBranch   string
+	hasNewWork      func(repoRoot, branch, targetBranch string) bool                                    // defaults to hasCommitsAhead
+	runQG           func(ctx context.Context, worktree string, skipMutation bool) (bool, string, error) // defaults to worker.RunQualityGate
+	runShellCmd     func(ctx context.Context, dir, cmd string) (bool, error)                            // defaults to defaultRunShellCmd
+	recordQGFailure func(ctx context.Context, rec dispatcher.QGFailureRecord, cls dispatcher.QGFailureClassification) error
+	stdout          io.Writer
 }
 
 func updateWorkBeadStatus(ctx context.Context, beads beadstore.Store, id, status string) error {
@@ -145,6 +146,26 @@ type exitError struct {
 }
 
 func (e *exitError) Error() string { return e.msg }
+
+// newDegradedQGFailureRecorder returns a recorder that logs the event but
+// does not persist it. Used when the state DB is unavailable.
+func newDegradedQGFailureRecorder() func(context.Context, dispatcher.QGFailureRecord, dispatcher.QGFailureClassification) error {
+	return func(_ context.Context, rec dispatcher.QGFailureRecord, cls dispatcher.QGFailureClassification) error {
+		logStep("qg failure recorder degraded: no state db (component=%s bead=%s class=%s)", rec.Component, rec.BeadID, cls.Class)
+		return nil
+	}
+}
+
+// newStateDBQGFailureRecorder returns a recorder that persists QG failure
+// incidents and occurrences to the state DB.
+func newStateDBQGFailureRecorder(db *sql.DB) func(context.Context, dispatcher.QGFailureRecord, dispatcher.QGFailureClassification) error {
+	return func(ctx context.Context, rec dispatcher.QGFailureRecord, cls dispatcher.QGFailureClassification) error {
+		if _, err := dispatcher.RecordQGFailureOccurrence(ctx, db, rec, cls); err != nil {
+			return fmt.Errorf("record qg failure occurrence: %w", err)
+		}
+		return nil
+	}
+}
 
 // newProductionDeps creates real dependencies.
 func newProductionDeps(reviewTimeout time.Duration) (*workDeps, error) {
@@ -190,19 +211,20 @@ func newProductionDeps(reviewTimeout time.Duration) (*workDeps, error) {
 	}
 
 	return &workDeps{
-		beadSrc:       newWorkerBeadStore(beadDB, memStore),
-		wtMgr:         dispatcher.NewGitWorktreeManager(repoRoot, "", projectPaths.QualityGate, runner),
-		spawner:       runtime.workerSpawn,
-		opsMgr:        ops.NewSpawnerWithReviewTimeout(runtime.opsSpawn, reviewTimeout),
-		merger:        merge.NewCoordinator(&merge.ExecGitRunner{}),
-		repoRoot:      repoRoot,
-		memStore:      memStore,
-		codeIndex:     codeIdx,
-		defaultBranch: defaultBranch,
-		hasNewWork:    hasCommitsAhead,
-		runQG:         worker.RunQualityGate,
-		runShellCmd:   defaultRunShellCmd,
-		stdout:        os.Stdout,
+		beadSrc:         newWorkerBeadStore(beadDB, memStore),
+		wtMgr:           dispatcher.NewGitWorktreeManager(repoRoot, "", projectPaths.QualityGate, runner),
+		spawner:         runtime.workerSpawn,
+		opsMgr:          ops.NewSpawnerWithReviewTimeout(runtime.opsSpawn, reviewTimeout),
+		merger:          merge.NewCoordinator(&merge.ExecGitRunner{}),
+		repoRoot:        repoRoot,
+		memStore:        memStore,
+		codeIndex:       codeIdx,
+		defaultBranch:   defaultBranch,
+		hasNewWork:      hasCommitsAhead,
+		runQG:           worker.RunQualityGate,
+		runShellCmd:     defaultRunShellCmd,
+		recordQGFailure: newStateDBQGFailureRecorder(beadDB),
+		stdout:          os.Stdout,
 	}, nil
 }
 

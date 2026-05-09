@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/dispatcher"
 	"oro/pkg/memory"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
@@ -1148,4 +1149,61 @@ func (r *sequentialOpsReviewer) Review(_ context.Context, _ ops.ReviewOpts) <-ch
 		ch <- ops.Result{Verdict: ops.VerdictFailed, Feedback: "no more results"}
 	}
 	return ch
+}
+
+// TestNewProductionDepsWiresQGFailureRecorder verifies that newProductionDeps
+// wires a state DB backed QG failure recorder so standalone oro work can
+// persist incidents/occurrences when the state DB is available.
+func TestNewProductionDepsWiresQGFailureRecorder(t *testing.T) {
+	t.Run("wires non-nil recorder backed by state DB", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("ORO_HOME", tmpDir)
+		t.Setenv("ORO_PROJECT", "")
+		t.Chdir(tmpDir)
+
+		deps, err := newProductionDeps(0)
+		if err != nil {
+			t.Fatalf("newProductionDeps: %v", err)
+		}
+		if deps.recordQGFailure == nil {
+			t.Fatal("expected non-nil recordQGFailure when state DB is available")
+		}
+
+		rec := dispatcher.QGFailureRecord{
+			BeadID:    "oro-test",
+			Component: "oro-work",
+			Output:    "FAIL: go test ./... failed",
+		}
+		cls := dispatcher.QGFailureClassification{
+			Class:      dispatcher.QGFailureClassWorkerDeterministic,
+			Decision:   dispatcher.QGFailureDecisionRetryOriginal,
+			Confidence: dispatcher.QGFailureConfidenceHigh,
+			Reason:     "deterministic test failure",
+		}
+		if err := deps.recordQGFailure(context.Background(), rec, cls); err != nil {
+			t.Fatalf("production recordQGFailure returned error: %v", err)
+		}
+	})
+
+	t.Run("degraded recorder logs and does not error when no DB", func(t *testing.T) {
+		var buf strings.Builder
+		oldLogOut := logOut
+		logOut = &buf
+		defer func() { logOut = oldLogOut }()
+
+		recorder := newDegradedQGFailureRecorder()
+		rec := dispatcher.QGFailureRecord{BeadID: "oro-test", Component: "oro-work", Output: "FAIL"}
+		cls := dispatcher.QGFailureClassification{
+			Class:      dispatcher.QGFailureClassWorkerDeterministic,
+			Decision:   dispatcher.QGFailureDecisionRetryOriginal,
+			Confidence: dispatcher.QGFailureConfidenceHigh,
+			Reason:     "no db",
+		}
+		if err := recorder(context.Background(), rec, cls); err != nil {
+			t.Fatalf("degraded recorder must not error: %v", err)
+		}
+		if !strings.Contains(buf.String(), "qg") {
+			t.Errorf("degraded recorder should log a qg event, got: %q", buf.String())
+		}
+	})
 }
