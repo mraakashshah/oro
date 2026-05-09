@@ -42,6 +42,7 @@ Oro is a self-managing multi-agent system that coordinates AI workers to execute
 - [Development](#development)
   - [Build](#build)
   - [Project Structure](#project-structure)
+- [Claude Runtime Compatibility](#claude-runtime-compatibility)
 
 ## Why "Oro"?
 
@@ -234,7 +235,7 @@ Three layers of persistent memory:
 | **Handoffs** | YAML files in worktree | Immediate task context for continuation | Auto-read by next worker |
 | **Project memory** | SQLite FTS5 | Cross-session learnings, patterns, decisions | `oro remember` / `oro recall` |
 
-Workers emit `[MEMORY]` markers during execution. The dispatcher also runs LLM-based extraction (haiku) on session output to catch patterns workers didn't explicitly tag. Before assigning a task, the dispatcher queries the top relevant memories and injects them into the worker's prompt — annotated with age so workers verify stale claims (>7 days) against current code.
+Workers emit `[MEMORY]` markers during execution. The dispatcher also runs LLM-based extraction (background tier) on session output to catch patterns workers didn't explicitly tag. Before assigning a task, the dispatcher queries the top relevant memories and injects them into the worker's prompt — annotated with age so workers verify stale claims (>7 days) against current code.
 
 **Dreaming:** Every 10 completed tasks (or when an epic closes), the dispatcher spawns a dreaming ops agent that reads the entire memories table, synthesizes cross-session patterns, resolves contradictions, merges duplicates, and prunes obsolete entries. The swarm gets smarter over time without human curation.
 
@@ -346,7 +347,7 @@ oro stop
 
 **`oro init`** flags: `--check` (verify only), `--force` (overwrite config), `--project-root <dir>`, `--quiet`, `--local` (in-repo mode: create `.oro/` in project root). Default is stealth mode — zero footprint, config stored under `~/.oro/projects/s-<hash>/`.
 
-**`oro start`** flags: `--workers, -w` (default: 2), `--max-workers` (hard ceiling for autoscale, scale directives, spawn-for, and manual `oro worker launch` reservations), `--model` (default: sonnet), `--detach, -D`, `--daemon-only, -d`, `--manual-integration` (leave completed worker branches/worktrees for coordinator review instead of auto-merging)
+**`oro start`** flags: `--workers, -w` (default: 2), `--max-workers` (hard ceiling for autoscale, scale directives, spawn-for, and manual `oro worker launch` reservations), `--model` (tier name or provider model name — default: `balanced`), `--detach, -D`, `--daemon-only, -d`, `--manual-integration` (leave completed worker branches/worktrees for coordinator review instead of auto-merging)
 
 **`oro dispatcher start`** flags: `--workers, -w` (default: 0), `--force, -f`, `--manual-integration` (leave completed worker branches/worktrees for coordinator review instead of auto-merging)
 
@@ -407,9 +408,9 @@ oro stop
 
 | Command | Description | Example |
 |---------|-------------|---------|
-| `oro work` | Execute a single task interactively (no dispatcher) | `oro work oro-abc1 --model opus` |
+| `oro work` | Execute a single task interactively (no dispatcher) | `oro work oro-abc1 --model deep` |
 
-**`oro work`** flags: `--model` (default: sonnet), `--timeout` (default: 15m), `--skip-review`, `--base-branch`
+**`oro work`** flags: `--model` (tier name or provider model name — default: `balanced`), `--timeout` (default: 15m), `--skip-review`, `--base-branch`
 
 ### Maintenance
 
@@ -510,6 +511,27 @@ oro/
 ├── .goreleaser.yml       # Release build config
 ├── Makefile
 └── go.mod
+```
+
+## Claude Runtime Compatibility
+
+Oro is runtime-agnostic — workers dispatch tasks to whatever AI agent CLI is configured. Claude (`claude`) is the current primary runtime; Codex (`codex`) is also supported.
+
+The `--model` flag and the bead `model` field accept **tier names** (preferred) or provider-specific model names (accepted for explicit overrides):
+
+| Tier | Claude model | Typical use |
+|------|-------------|-------------|
+| `fast` | `haiku` | Quick lookups, formatting, lightweight tasks |
+| `balanced` | `sonnet` | Standard implementation tasks (default) |
+| `deep` | `opus` | Complex architecture, multi-file refactors |
+| `background` | `haiku` | Memory extraction, dreaming, ops subtasks |
+
+Tier names are the stable interface — they remain valid across Claude model generations. When the configured runtime is not Claude, tier names route to the runtime's equivalent capability level.
+
+**Prerequisite for Claude runtime:**
+
+```bash
+claude --version   # must be installed and authenticated
 ```
 
 ## References
