@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"oro/pkg/config"
@@ -279,4 +280,96 @@ func TestAgentConfigLoadMissingFileReturnsDefaults(t *testing.T) {
 	if got := cfg.Tiers[protocol.TierBalanced].Model; got != "claude-sonnet-4-6" {
 		t.Errorf("missing-file default tiers.balanced.model = %q, want %q", got, "claude-sonnet-4-6")
 	}
+}
+
+func TestAgentConfigPartialOverrideRejected(t *testing.T) {
+	t.Run("runtime set without model", func(t *testing.T) {
+		cfg := &config.AgentConfig{
+			Roles: map[string]config.RoleConfig{
+				"worker": {
+					Transport: "cli",
+					Runtime:   "codex",
+					// Model omitted — partial override, must be rejected
+				},
+			},
+		}
+		err := config.Validate(cfg)
+		if err == nil {
+			t.Fatal("expected error for partial CLI override (runtime without model), got nil")
+		}
+		if !strings.Contains(err.Error(), "worker") {
+			t.Errorf("error must name the offending role %q; got: %v", "worker", err)
+		}
+		if !strings.Contains(err.Error(), "model") {
+			t.Errorf("error must name the missing field \"model\"; got: %v", err)
+		}
+	})
+
+	t.Run("model set without runtime", func(t *testing.T) {
+		cfg := &config.AgentConfig{
+			Roles: map[string]config.RoleConfig{
+				"ops_review": {
+					Transport: "cli",
+					Model:     "gpt-5-codex",
+					// Runtime omitted — partial override, must be rejected
+				},
+			},
+		}
+		err := config.Validate(cfg)
+		if err == nil {
+			t.Fatal("expected error for partial CLI override (model without runtime), got nil")
+		}
+		if !strings.Contains(err.Error(), "ops_review") {
+			t.Errorf("error must name the offending role %q; got: %v", "ops_review", err)
+		}
+		if !strings.Contains(err.Error(), "runtime") {
+			t.Errorf("error must name the missing field \"runtime\"; got: %v", err)
+		}
+	})
+
+	t.Run("full explicit override accepted", func(t *testing.T) {
+		cfg := &config.AgentConfig{
+			Roles: map[string]config.RoleConfig{
+				"worker": {
+					Transport: "cli",
+					Runtime:   "codex",
+					Model:     "gpt-5-codex",
+				},
+			},
+		}
+		if err := config.Validate(cfg); err != nil {
+			t.Errorf("expected no error for full explicit override, got: %v", err)
+		}
+	})
+
+	t.Run("tier-only CLI role accepted", func(t *testing.T) {
+		cfg := &config.AgentConfig{
+			Roles: map[string]config.RoleConfig{
+				"worker": {
+					Transport: "cli",
+					Tier:      protocol.TierBalanced,
+				},
+			},
+		}
+		if err := config.Validate(cfg); err != nil {
+			t.Errorf("expected no error for tier-only CLI role, got: %v", err)
+		}
+	})
+
+	t.Run("nil config accepted", func(t *testing.T) {
+		if err := config.Validate(nil); err != nil {
+			t.Errorf("expected no error for nil config, got: %v", err)
+		}
+	})
+
+	t.Run("empty role accepted", func(t *testing.T) {
+		cfg := &config.AgentConfig{
+			Roles: map[string]config.RoleConfig{
+				"worker": {Transport: "cli"},
+			},
+		}
+		if err := config.Validate(cfg); err != nil {
+			t.Errorf("expected no error for empty CLI role (falls back to defaults), got: %v", err)
+		}
+	})
 }

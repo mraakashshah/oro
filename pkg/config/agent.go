@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"oro/pkg/protocol"
 
@@ -97,4 +98,46 @@ func Load(path string) (*AgentConfig, error) {
 		return defaultAgentConfig(), nil
 	}
 	return f.Agent, nil
+}
+
+// Validate checks AgentConfig for invalid role definitions and returns a
+// descriptive error naming every offending role and its missing fields.
+// A nil config is valid (callers fall back to built-in defaults).
+func Validate(c *AgentConfig) error {
+	if c == nil {
+		return nil
+	}
+
+	var errs []string
+	for name, role := range c.Roles {
+		if role.Transport != "cli" {
+			continue
+		}
+		hasRuntime := role.Runtime != ""
+		hasModel := role.Model != ""
+		if hasRuntime == hasModel {
+			// Both set (full override) or neither set (tier/default) — valid.
+			continue
+		}
+		var missing string
+		if hasRuntime {
+			missing = "model"
+		} else {
+			missing = "runtime"
+		}
+		errs = append(errs, fmt.Sprintf("role %q: CLI override is partial — %s is set but %s is missing; set both or neither", name, roleSetField(role), missing))
+	}
+
+	if len(errs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("invalid agent config:\n  %s", strings.Join(errs, "\n  "))
+}
+
+// roleSetField returns the name of the field that IS set in a partial override.
+func roleSetField(r RoleConfig) string {
+	if r.Runtime != "" {
+		return "runtime"
+	}
+	return "model"
 }
