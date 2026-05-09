@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"oro/pkg/config"
 	"oro/pkg/langprofile"
 
 	"github.com/spf13/cobra"
@@ -689,10 +690,8 @@ func createProjectAnchor(projectRoot, projectName string) (*langprofile.Config, 
 		return nil, fmt.Errorf("create .oro dir: %w", err)
 	}
 
+	// Detect languages and build initial config content.
 	var buf strings.Builder
-	fmt.Fprintf(&buf, "project: %s\n", projectName)
-
-	// Detect languages and append profile config.
 	profiles := langprofile.AllProfiles()
 	cfg, err := langprofile.GenerateConfig(projectRoot, profiles)
 	if err == nil {
@@ -707,6 +706,9 @@ func createProjectAnchor(projectRoot, projectName string) (*langprofile.Config, 
 	configPath := filepath.Join(oroDir, "config.yaml")
 	if err := os.WriteFile(configPath, []byte(buf.String()), 0o644); err != nil { //nolint:gosec // config file needs to be readable
 		return nil, fmt.Errorf("write config.yaml: %w", err)
+	}
+	if err := config.MergeKey(configPath, "project", projectName); err != nil {
+		return nil, fmt.Errorf("write project to config.yaml: %w", err)
 	}
 	return cfg, nil
 }
