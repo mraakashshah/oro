@@ -1158,7 +1158,13 @@ func TestRespawnWorker_ReservesHandoffWorkerAsManagedAtMaxWorkers(t *testing.T) 
 	}
 	d.mu.Unlock()
 
-	d.respawnWorker(context.Background(), "bead-handoff", "/tmp/wt-handoff", protocol.ModelSonnet, "", "main", "main", "Handoff bead", nil)
+	d.respawnWorker(context.Background(), "bead-handoff", workerAssignmentSnapshot{
+		worktree:     "/tmp/wt-handoff",
+		runtime:      "claude",
+		model:        protocol.ModelSonnet,
+		baseBranch:   "main",
+		targetBranch: "main",
+	}, "Handoff bead", nil)
 
 	spawned := pm.SpawnedIDs()
 	if len(spawned) != 1 {
@@ -1224,7 +1230,13 @@ func TestRespawnWorker_DefersSpawnWhenMaxLiveWorkersReached(t *testing.T) {
 	}
 	d.mu.Unlock()
 
-	d.respawnWorker(context.Background(), "bead-handoff", "/tmp/wt-handoff", protocol.ModelSonnet, "", "main", "main", "Handoff bead", nil)
+	d.respawnWorker(context.Background(), "bead-handoff", workerAssignmentSnapshot{
+		worktree:     "/tmp/wt-handoff",
+		runtime:      "claude",
+		model:        protocol.ModelSonnet,
+		baseBranch:   "main",
+		targetBranch: "main",
+	}, "Handoff bead", nil)
 
 	if spawned := pm.SpawnedIDs(); len(spawned) != 0 {
 		t.Fatalf("spawned handoff workers despite MaxWorkers live cap: %v", spawned)

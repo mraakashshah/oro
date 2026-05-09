@@ -171,6 +171,7 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 	w.assignmentID = h.assignmentID
 	w.beadID = h.beadID
 	w.worktree = h.worktree
+	w.runtime = h.runtime
 	w.model = h.model
 	w.epicID = h.epicID
 	w.baseBranch = h.baseBranch
@@ -201,6 +202,7 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 		Assign: &protocol.AssignPayload{
 			BeadID:        h.beadID,
 			Worktree:      h.worktree,
+			Runtime:       h.runtime,
 			Model:         h.model,
 			MemoryContext: memCtx,
 			TargetBranch:  h.targetBranch,

@@ -158,15 +158,15 @@ func (d *Dispatcher) handleCheckpointAck(ctx context.Context, workerID string, m
 // pendingHandoffs and checkpointCounts entries this function has just set.
 // shutdownWorkerForHandoff defends the ralph-handoff path the same way.
 func (d *Dispatcher) respawnAfterCheckpoint(ctx context.Context, workerID, beadID, nextAction string) {
-	worktree, model, epicID, baseBranch, targetBranch := d.detachWorkerForCheckpoint(workerID)
-	if worktree == "" {
+	snap := d.detachWorkerForCheckpoint(workerID)
+	if snap.worktree == "" {
 		return
 	}
 	if d.procMgr != nil {
 		_ = d.procMgr.Kill(workerID)
 	}
 	assignmentID := d.activeAssignmentIDForBead(ctx, beadID)
-	newID, turn := d.enqueueCheckpointHandoff(beadID, assignmentID, worktree, model, epicID, baseBranch, targetBranch, nextAction)
+	newID, turn := d.enqueueCheckpointHandoff(beadID, assignmentID, snap, nextAction)
 	_ = d.logEvent(ctx, "checkpoint_respawn_pending", "dispatcher", beadID, workerID,
 		fmt.Sprintf(`{"next_action":%q,"turn":%d}`, nextAction, turn))
 	d.assignPendingHandoffsToIdleWorkers()
@@ -179,24 +179,27 @@ func (d *Dispatcher) respawnAfterCheckpoint(ctx context.Context, workerID, beadI
 // and skips clearBeadTracking. Returns empty worktree if the worker is not
 // found. Mirrors shutdownWorkerForHandoff's contract for the ralph-handoff
 // path.
-func (d *Dispatcher) detachWorkerForCheckpoint(workerID string) (worktree, model, epicID, baseBranch, targetBranch string) {
+func (d *Dispatcher) detachWorkerForCheckpoint(workerID string) workerAssignmentSnapshot {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	w, ok := d.workers[workerID]
 	if !ok {
-		return "", "", "", "", ""
+		return workerAssignmentSnapshot{}
 	}
-	worktree = w.worktree
-	model = w.model
-	epicID = w.epicID
-	baseBranch = w.baseBranch
-	targetBranch = w.targetBranch
+	snap := workerAssignmentSnapshot{
+		worktree:     w.worktree,
+		runtime:      w.runtime,
+		model:        w.model,
+		epicID:       w.epicID,
+		baseBranch:   w.baseBranch,
+		targetBranch: w.targetBranch,
+	}
 	w.state = protocol.WorkerShuttingDown
 	w.assignmentID = 0
 	w.beadID = ""
 	w.epicID = ""
 	w.isEpicDecomp = false
-	return worktree, model, epicID, baseBranch, targetBranch
+	return snap
 }
 
 // enqueueCheckpointHandoff registers the pending handoff for beadID, increments
@@ -211,7 +214,7 @@ func (d *Dispatcher) detachWorkerForCheckpoint(workerID string) (worktree, model
 // pendingWorkerTargets[newID] is set to beadID so the spawned worker, on
 // connect, only consumes the handoff for THIS bead — preventing it from
 // picking up an unrelated handoff when multiple are queued.
-func (d *Dispatcher) enqueueCheckpointHandoff(beadID string, assignmentID int64, worktree, model, epicID, baseBranch, targetBranch, nextAction string) (newID string, turn int) {
+func (d *Dispatcher) enqueueCheckpointHandoff(beadID string, assignmentID int64, snap workerAssignmentSnapshot, nextAction string) (newID string, turn int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.checkpointCounts[beadID]++
@@ -222,11 +225,12 @@ func (d *Dispatcher) enqueueCheckpointHandoff(beadID string, assignmentID int64,
 	d.pendingHandoffs[beadID] = &pendingHandoff{
 		assignmentID:   assignmentID,
 		beadID:         beadID,
-		epicID:         epicID,
-		worktree:       worktree,
-		baseBranch:     baseBranch,
-		targetBranch:   targetBranch,
-		model:          model,
+		epicID:         snap.epicID,
+		worktree:       snap.worktree,
+		baseBranch:     snap.baseBranch,
+		targetBranch:   snap.targetBranch,
+		runtime:        snap.runtime,
+		model:          snap.model,
 		nextAction:     nextAction,
 		checkpointTurn: turn,
 	}

@@ -33,6 +33,7 @@ func (d *Dispatcher) buildAssignPayload(ctx context.Context, w *trackedWorker, a
 	p := &protocol.AssignPayload{
 		BeadID:              w.beadID,
 		Worktree:            w.worktree,
+		Runtime:             w.runtime,
 		Model:               w.model,
 		Attempt:             attempt,
 		Feedback:            feedback,

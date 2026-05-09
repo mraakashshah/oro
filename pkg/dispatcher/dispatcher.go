@@ -332,6 +332,7 @@ type trackedWorker struct {
 	worktree         string
 	baseBranch       string // branch the worktree was created from (main or epic/<epicID>)
 	targetBranch     string // branch the worker's changes should merge into (same as baseBranch)
+	runtime          string // resolved runtime for the current bead assignment
 	model            string // resolved model for the current bead assignment
 	lastSeen         time.Time
 	lastProgress     time.Time // last time meaningful progress was observed (DONE/READY_FOR_REVIEW/QG/first STATUS)
@@ -403,11 +404,21 @@ type pendingHandoff struct {
 	worktree       string
 	baseBranch     string // branch the worktree was created from (main or epic/<epicID>)
 	targetBranch   string // branch the worker's changes should merge into (same as baseBranch)
+	runtime        string
 	model          string
 	title          string   // bead title for memory search on respawn
 	labels         []string // bead labels for memory search on respawn
 	nextAction     string   // intent_summary from checkpoint_acked (§9.3); empty for ralph handoffs
 	checkpointTurn int      // checkpoint respawn count for this bead (§9.3 step 9); 0 for ralph handoffs
+}
+
+type workerAssignmentSnapshot struct {
+	worktree     string
+	runtime      string
+	model        string
+	epicID       string
+	baseBranch   string
+	targetBranch string
 }
 
 // --- Config ---
@@ -1816,11 +1827,7 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 	// Capture a snapshot for buildAssignPayload (I/O runs outside lock).
 	// Always set model=Opus on the snapshot — QG retry always escalates.
 	d.mu.Lock()
-	var snap trackedWorker
-	if w, ok := d.workers[workerID]; ok {
-		snap = *w
-	}
-	snap.model = protocol.ModelOpus
+	snap := d.opusEscalationSnapshotLocked(workerID)
 	d.mu.Unlock()
 
 	var payload *protocol.AssignPayload
@@ -1833,10 +1840,12 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 		},
 		// Assign function: update state and send message under lock.
 		func(w *trackedWorker, memCtx string) bool {
-			// Escalate to opus if not already opus.
-			if w.model != protocol.ModelOpus {
+			// Escalate runtime+model together.
+			if w.model != protocol.ModelOpus || w.runtime != "claude" {
+				w.runtime = "claude"
 				w.model = protocol.ModelOpus
 			}
+			payload.Runtime = w.runtime
 			payload.Model = w.model // sync with live escalated value
 
 			if err := d.sendToWorker(w, protocol.Message{
@@ -2717,16 +2726,16 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 	handoffCount, assignmentID := d.incrementHandoffCount(workerID, beadID)
 	d.persistBeadCount(ctx, assignmentID, beadID, "handoff_count", handoffCount)
 
-	// Send SHUTDOWN to the old worker and capture worktree+model+epic context for respawn.
-	worktree, model, epicID, baseBranch, targetBranch := d.shutdownWorkerForHandoff(workerID)
+	// Send SHUTDOWN to the old worker and capture worktree+runtime+model+epic context for respawn.
+	snap := d.shutdownWorkerForHandoff(workerID)
 
-	if worktree == "" {
+	if snap.worktree == "" {
 		return
 	}
 
 	// On 2nd+ handoff for the same bead, spawn diagnosis agent instead of respawning.
 	if handoffCount >= maxHandoffsBeforeDiagnosis {
-		d.handleHandoffExhaustion(ctx, beadID, workerID, handoffCount, worktree, msg)
+		d.handleHandoffExhaustion(ctx, beadID, workerID, handoffCount, snap.worktree, msg)
 		return
 	}
 
@@ -2738,7 +2747,7 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 		labels = detail.Labels
 	}
 
-	d.respawnWorker(ctx, beadID, worktree, model, epicID, baseBranch, targetBranch, title, labels)
+	d.respawnWorker(ctx, beadID, snap, title, labels)
 }
 
 func (d *Dispatcher) incrementHandoffCount(workerID, beadID string) (handoffCount int, assignmentID int64) {
@@ -2748,25 +2757,28 @@ func (d *Dispatcher) incrementHandoffCount(workerID, beadID string) (handoffCoun
 	return d.handoffCounts[beadID], d.assignmentIDLocked(workerID, beadID)
 }
 
-func (d *Dispatcher) shutdownWorkerForHandoff(workerID string) (worktree, model, epicID, baseBranch, targetBranch string) {
+func (d *Dispatcher) shutdownWorkerForHandoff(workerID string) workerAssignmentSnapshot {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	w, ok := d.workers[workerID]
 	if !ok {
-		return "", "", "", "", ""
+		return workerAssignmentSnapshot{}
 	}
-	worktree = w.worktree
-	model = w.model
-	epicID = w.epicID
-	baseBranch = w.baseBranch
-	targetBranch = w.targetBranch
+	snap := workerAssignmentSnapshot{
+		worktree:     w.worktree,
+		runtime:      w.runtime,
+		model:        w.model,
+		epicID:       w.epicID,
+		baseBranch:   w.baseBranch,
+		targetBranch: w.targetBranch,
+	}
 	_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
 	w.state = protocol.WorkerShuttingDown
 	w.assignmentID = 0
 	w.beadID = ""
 	w.epicID = ""
 	w.isEpicDecomp = false
-	return worktree, model, epicID, baseBranch, targetBranch
+	return snap
 }
 
 func (d *Dispatcher) suppressScaleDownHandoff(ctx context.Context, workerID, beadID string) bool {
@@ -2822,7 +2834,7 @@ func (d *Dispatcher) handleHandoffExhaustion(ctx context.Context, beadID, worker
 }
 
 // respawnWorker stores a pending handoff and spawns a fresh worker process.
-func (d *Dispatcher) respawnWorker(ctx context.Context, beadID, worktree, model, epicID, baseBranch, targetBranch, title string, labels []string) {
+func (d *Dispatcher) respawnWorker(ctx context.Context, beadID string, snap workerAssignmentSnapshot, title string, labels []string) {
 	assignmentID := d.activeAssignmentIDForBead(ctx, beadID)
 	newID := ""
 	if d.procMgr != nil {
@@ -2832,11 +2844,12 @@ func (d *Dispatcher) respawnWorker(ctx context.Context, beadID, worktree, model,
 	d.pendingHandoffs[beadID] = &pendingHandoff{
 		assignmentID: assignmentID,
 		beadID:       beadID,
-		epicID:       epicID,
-		worktree:     worktree,
-		baseBranch:   baseBranch,
-		targetBranch: targetBranch,
-		model:        model,
+		epicID:       snap.epicID,
+		worktree:     snap.worktree,
+		baseBranch:   snap.baseBranch,
+		targetBranch: snap.targetBranch,
+		runtime:      snap.runtime,
+		model:        snap.model,
 		title:        title,
 		labels:       labels,
 	}
@@ -2849,7 +2862,7 @@ func (d *Dispatcher) respawnWorker(ctx context.Context, beadID, worktree, model,
 	}
 	d.mu.Unlock()
 
-	_ = d.logEvent(ctx, "handoff_pending", "dispatcher", beadID, "", worktree)
+	_ = d.logEvent(ctx, "handoff_pending", "dispatcher", beadID, "", snap.worktree)
 	d.assignPendingHandoffsToIdleWorkers()
 	if newID != "" {
 		d.mu.Lock()
@@ -2870,7 +2883,7 @@ func (d *Dispatcher) respawnWorker(ctx context.Context, beadID, worktree, model,
 			d.mu.Unlock()
 			_ = d.logEvent(ctx, "handoff_spawn_failed", "dispatcher", beadID, newID, err.Error())
 		} else {
-			_ = d.logEvent(ctx, "handoff_spawned", "dispatcher", beadID, newID, worktree)
+			_ = d.logEvent(ctx, "handoff_spawned", "dispatcher", beadID, newID, snap.worktree)
 		}
 	}
 }
@@ -3105,11 +3118,7 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 	// Set model=Opus on the snapshot only — w.model is NOT escalated on the live
 	// worker for review rejection (preserving prior behaviour).
 	d.mu.Lock()
-	var snap trackedWorker
-	if w, wOK := d.workers[workerID]; wOK {
-		snap = *w
-	}
-	snap.model = protocol.ModelOpus
+	snap := d.opusEscalationSnapshotLocked(workerID)
 	d.mu.Unlock()
 
 	var payload *protocol.AssignPayload
@@ -3135,6 +3144,16 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 			return true
 		},
 	)
+}
+
+func (d *Dispatcher) opusEscalationSnapshotLocked(workerID string) trackedWorker {
+	var snap trackedWorker
+	if w, ok := d.workers[workerID]; ok {
+		snap = *w
+	}
+	snap.runtime = "claude"
+	snap.model = protocol.ModelOpus
+	return snap
 }
 
 // appendReviewPatterns appends captured anti-patterns to assets/review-patterns.md
@@ -4630,6 +4649,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	w.worktree = worktree
 	w.baseBranch = baseBranch
 	w.targetBranch = targetBranch
+	w.runtime = resolvedRuntime
 	w.model = resolvedModel
 	w.lastProgress = d.nowFunc()
 	err = d.sendToWorker(w, protocol.Message{

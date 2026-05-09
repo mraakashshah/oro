@@ -1486,6 +1486,66 @@ func TestDispatcher_AssignBead_ModelPropagation(t *testing.T) {
 	}
 }
 
+func TestDispatcherSendsRuntimeOnAssignPayload(t *testing.T) {
+	writeAgentRuntimeConfig(t, `agent:
+  tiers:
+    fast:
+      runtime: codex
+      model: gpt-5-mini
+    balanced:
+      runtime: claude
+      model: sonnet
+`)
+
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-runtime", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, time.Second)
+
+	beadSrc.SetBeads([]protocol.Bead{{
+		ID: "bead-runtime", Title: "Runtime test", Priority: 1, Tier: protocol.TierFast,
+	}})
+
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok || msg.Assign == nil {
+		t.Fatalf("expected ASSIGN, got ok=%v msg=%+v", ok, msg)
+	}
+	if msg.Assign.Runtime != "codex" {
+		t.Fatalf("Assign.Runtime = %q, want codex", msg.Assign.Runtime)
+	}
+	if msg.Assign.Model != "gpt-5-mini" {
+		t.Fatalf("Assign.Model = %q, want gpt-5-mini", msg.Assign.Model)
+	}
+
+	d.mu.Lock()
+	runtime := d.workers["w-runtime"].runtime
+	d.mu.Unlock()
+	if runtime != "codex" {
+		t.Fatalf("trackedWorker.runtime = %q, want codex", runtime)
+	}
+}
+
+func writeAgentRuntimeConfig(t *testing.T, content string) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Chdir(dir)
+	oroDir := filepath.Join(dir, ".oro")
+	if err := os.MkdirAll(oroDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oroDir, "config.yaml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDispatcher_AssignBead_DefaultModel(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)

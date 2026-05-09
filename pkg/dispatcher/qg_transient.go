@@ -95,11 +95,7 @@ func (d *Dispatcher) reassignAfterTransientBackoff(
 	rec QGFailureRecord,
 ) bool {
 	d.mu.Lock()
-	var snap trackedWorker
-	if w, ok := d.workers[workerID]; ok {
-		snap = *w
-	}
-	snap.model = protocol.ModelOpus
+	snap := d.opusEscalationSnapshotLocked(workerID)
 	d.mu.Unlock()
 
 	var payload *protocol.AssignPayload
@@ -137,9 +133,11 @@ func (d *Dispatcher) sendTransientReassign(
 	attempt, transientCount int,
 	sendFailed *bool,
 ) bool {
-	if w.model != protocol.ModelOpus {
+	if w.model != protocol.ModelOpus || w.runtime != "claude" {
+		w.runtime = "claude"
 		w.model = protocol.ModelOpus
 	}
+	payload.Runtime = w.runtime
 	payload.Model = w.model
 	if err := d.sendToWorker(w, protocol.Message{
 		Type:   protocol.MsgAssign,

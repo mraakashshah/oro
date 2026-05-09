@@ -390,7 +390,13 @@ func TestRespawnWorkerAssignsPendingHandoffToExistingIdleWorkerAtCap(t *testing.
 	}
 	d.mu.Unlock()
 
-	d.respawnWorker(context.Background(), "handoff-at-cap", "/tmp/handoff-at-cap", protocol.ModelSonnet, "", "main", "main", "Handoff at cap", nil)
+	d.respawnWorker(context.Background(), "handoff-at-cap", workerAssignmentSnapshot{
+		worktree:     "/tmp/handoff-at-cap",
+		runtime:      "claude",
+		model:        protocol.ModelSonnet,
+		baseBranch:   "main",
+		targetBranch: "main",
+	}, "Handoff at cap", nil)
 
 	if spawned := pm.SpawnedIDs(); len(spawned) != 0 {
 		t.Fatalf("spawned handoff workers despite idle worker at cap: %v", spawned)
@@ -2439,6 +2445,48 @@ func TestRegisterWorkerIncludesTargetBranch(t *testing.T) {
 	}
 	if msg.Assign.Model != "haiku" {
 		t.Errorf("Model = %q, want %q", msg.Assign.Model, "haiku")
+	}
+}
+
+func TestHandoffPathCarriesRuntime(t *testing.T) {
+	t.Parallel()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	conn := newMockConn()
+	workerID := "runtime-handoff-worker"
+	beadID := "runtime-handoff-bead"
+
+	d.mu.Lock()
+	d.pendingHandoffs[beadID] = &pendingHandoff{
+		beadID:   beadID,
+		worktree: "/tmp/wt",
+		runtime:  "codex",
+		model:    "gpt-5-codex",
+	}
+	d.mu.Unlock()
+
+	d.registerWorker(workerID, conn)
+
+	if len(conn.written) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(conn.written))
+	}
+
+	var msg protocol.Message
+	if err := json.Unmarshal(conn.written[0], &msg); err != nil {
+		t.Fatalf("failed to unmarshal message: %v", err)
+	}
+	if msg.Assign == nil {
+		t.Fatal("message Assign payload is nil")
+	}
+	if msg.Assign.Runtime != "codex" {
+		t.Fatalf("Assign.Runtime = %q, want codex", msg.Assign.Runtime)
+	}
+
+	d.mu.Lock()
+	runtime := d.workers[workerID].runtime
+	d.mu.Unlock()
+	if runtime != "codex" {
+		t.Fatalf("trackedWorker.runtime = %q, want codex", runtime)
 	}
 }
 
