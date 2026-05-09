@@ -129,6 +129,7 @@ type Worker struct {
 	logWriter              *bufio.Writer  // buffered writer for logFile to prevent blocking
 	streamContextPct       int32          // atomic: latest context_pct observed from stream output (0 = no signal yet)
 	tier                   protocol.Tier  // routing tier from bead assignment; empty for legacy beads
+	targetBranch           string         // branch to rebase onto before QG; defaults to "main"
 }
 
 // New creates a Worker that connects to the Dispatcher at socketPath.
@@ -455,10 +456,15 @@ func validateAssignedWorktree(worktree string) error {
 // truncates the log file before the next subprocess spawns.
 func (w *Worker) resetForNewAssignment(a *protocol.AssignPayload) {
 	w.killProc()
+	target := a.TargetBranch
+	if target == "" {
+		target = "main"
+	}
 	w.mu.Lock()
 	w.beadID = a.BeadID
 	w.worktree = a.Worktree
 	w.tier = a.Tier
+	w.targetBranch = target
 	w.sessionText.Reset()
 	w.pendingQGOutput = ""
 	w.isEpicDecomposition = a.IsEpicDecomposition
@@ -613,7 +619,14 @@ func (w *Worker) runQGAndReport(ctx context.Context) {
 
 	w.mu.Lock()
 	wt := w.worktree
+	target := w.targetBranch
 	w.mu.Unlock()
+
+	// Rebase onto the target branch before QG so fixes already on main
+	// (e.g. go.mod vulnerability patches) are visible to the quality gate.
+	// If the rebase fails (conflict or no git repo), proceed anyway — QG will
+	// surface legitimate failures without blocking the worker indefinitely.
+	_ = rebaseOntoTarget(ctx, wt, target)
 
 	passed, output, err := RunQualityGate(ctx, wt, false)
 	if err != nil {
@@ -1298,6 +1311,30 @@ func (w *Worker) SendReadyForReview(_ context.Context) error {
 			WorkerID: w.ID,
 		},
 	})
+}
+
+// rebaseOntoTarget runs "git rebase <target>" in worktree so the branch picks
+// up commits already on the target (e.g. a go.mod vuln-fix that landed on main
+// after the worktree was branched). On conflict it aborts the rebase to leave
+// the worktree clean. Returns nil when the worktree has no git repo (no-op).
+func rebaseOntoTarget(ctx context.Context, worktree, target string) error {
+	cmd := exec.CommandContext(ctx, "git", "rebase", target) //nolint:gosec // target is from trusted protocol payload
+	cmd.Dir = worktree
+	cmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	// Treat "not a git repository" as a no-op — the worktree may be plain dir.
+	if strings.Contains(string(out), "not a git repository") {
+		return nil
+	}
+	// Conflict or other rebase failure: abort to leave the worktree clean.
+	abort := exec.CommandContext(ctx, "git", "rebase", "--abort") //nolint:gosec // constant args
+	abort.Dir = worktree
+	abort.Env = processenv.ForWorkdir(os.Environ(), worktree)
+	_ = abort.Run()
+	return fmt.Errorf("rebase onto %s: %w\n%s", target, err, out)
 }
 
 // findQualityGateScript locates quality_gate.sh in the worktree, trying
