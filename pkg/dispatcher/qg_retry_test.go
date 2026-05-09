@@ -855,6 +855,65 @@ func TestQGExhaustion_ReopensOriginalForDeterministicFailure(t *testing.T) {
 	}
 }
 
+// --- Transient QG Backoff Test (oro-34e5) ---
+
+func TestTransientQGFailureBacksOffWithoutBurningWorkerAttempt(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	// Zero-duration backoff so the test completes without sleeping.
+	d.transientBackoffFn = func(_ int) time.Duration { return 0 }
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	conn, scanner := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, 1*time.Second)
+
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-transient1", Title: "Transient QG test", Priority: 1, Type: "task", Model: protocol.ModelOpus}})
+
+	// Drain initial ASSIGN.
+	readMsg(t, conn, 2*time.Second)
+
+	// Send a QG failure with transient output — must match isTransientQGFailure
+	// and not match any higher-priority classifier.
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            "bead-transient1",
+			WorkerID:          "w1",
+			QualityGatePassed: false,
+			QGOutput:          "network timeout: dial tcp 127.0.0.1:3000: connect: connection refused",
+		},
+	})
+
+	// Assert: qg_transient_retry event logged.
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "qg_transient_retry") >= 1
+	}, 2*time.Second)
+
+	// Assert: attemptCounts NOT incremented — transient retry must not burn worker-fix attempts.
+	d.mu.Lock()
+	count := d.attemptCounts["bead-transient1"]
+	d.mu.Unlock()
+	if count != 0 {
+		t.Fatalf("transient QG failure must not increment attemptCounts, got %d", count)
+	}
+
+	// Assert: worker receives a re-ASSIGN after the (zero-duration) backoff.
+	msg, ok := readMsgFromScanner(t, scanner, 2*time.Second)
+	if !ok {
+		t.Fatal("expected re-ASSIGN after transient QG backoff")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN after transient retry, got %s", msg.Type)
+	}
+}
+
 func TestQGExhaustion_ReusesInfraIncidentForSystemicFailure(t *testing.T) {
 	ctx := context.Background()
 	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))

@@ -20,7 +20,8 @@ const worktreeFailureCooldown = 60 * time.Second
 type BeadTracker struct {
 	rejectionCounts        map[string]int             // bead ID -> review rejection count
 	handoffCounts          map[string]int             // bead ID -> ralph handoff count
-	attemptCounts          map[string]int             // bead ID -> QG retry attempt count
+	attemptCounts          map[string]int             // bead ID -> QG retry attempt count (deterministic failures)
+	transientCounts        map[string]int             // bead ID -> transient/flaky QG retry count (does not burn worker-fix budget)
 	checkpointCounts       map[string]int             // bead ID -> checkpoint respawn count (§9.3 step 9)
 	pendingHandoffs        map[string]*pendingHandoff // bead ID -> pending handoff info
 	qgStuckTracker         map[string]*qgHistory      // bead ID -> consecutive QG output hashes
@@ -43,6 +44,7 @@ type BeadTracker struct {
 func (d *Dispatcher) clearBeadTracking(beadID string) {
 	d.mu.Lock()
 	delete(d.attemptCounts, beadID)
+	delete(d.transientCounts, beadID)
 	delete(d.handoffCounts, beadID)
 	delete(d.rejectionCounts, beadID)
 	delete(d.checkpointCounts, beadID)
@@ -132,6 +134,7 @@ func (d *Dispatcher) deleteOrphanedTracking(activeBeads map[string]bool) int {
 	}
 	for beadID := range orphaned {
 		delete(d.attemptCounts, beadID)
+		delete(d.transientCounts, beadID)
 		delete(d.handoffCounts, beadID)
 		delete(d.rejectionCounts, beadID)
 		delete(d.checkpointCounts, beadID)
@@ -184,6 +187,7 @@ func addBoolMapKeys(seen, m map[string]bool) {
 func (d *Dispatcher) allTrackingKeys() []string {
 	seen := make(map[string]bool)
 	addIntMapKeys(seen, d.attemptCounts)
+	addIntMapKeys(seen, d.transientCounts)
 	addIntMapKeys(seen, d.handoffCounts)
 	addIntMapKeys(seen, d.rejectionCounts)
 	addIntMapKeys(seen, d.checkpointCounts)

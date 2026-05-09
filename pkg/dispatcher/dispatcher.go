@@ -667,6 +667,10 @@ type Dispatcher struct {
 	// Intended for tests that need deterministic, fast backoff values.
 	loopPanicBackoffFn func(restartCount int) time.Duration
 
+	// transientBackoffFn, if non-nil, overrides the per-retry backoff duration
+	// used by handleTransientQGFailure. Tests inject this to avoid real sleeps.
+	transientBackoffFn func(count int) time.Duration
+
 	// tryAssignFn, if non-nil, is called instead of d.tryAssign inside
 	// assignLoop and assignLoopPoll. Allows tests to inject panics or track calls.
 	tryAssignFn func(ctx context.Context)
@@ -807,6 +811,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 			rejectionCounts:        make(map[string]int),
 			handoffCounts:          make(map[string]int),
 			attemptCounts:          make(map[string]int),
+			transientCounts:        make(map[string]int),
 			checkpointCounts:       make(map[string]int),
 			pendingHandoffs:        make(map[string]*pendingHandoff),
 			qgStuckTracker:         make(map[string]*qgHistory),
@@ -1690,6 +1695,21 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
 			fmt.Sprintf("QG output repeated %d times — worker stuck", maxStuckCount), qgOutput), beadID, workerID)
 		d.clearBeadTracking(beadID)
+		return
+	}
+
+	// Transient and flaky failures use backoff retry — they do not increment
+	// attemptCounts and therefore do not burn the worker-fix retry budget.
+	if qgClassification.Decision == QGFailureDecisionBackoffRetry {
+		rec := QGFailureRecord{
+			BeadID:      beadID,
+			WorkerID:    workerID,
+			Component:   "worker",
+			Fingerprint: qgFingerprint,
+			Summary:     qgSummary,
+			Output:      qgOutput,
+		}
+		d.handleTransientQGFailure(ctx, workerID, beadID, rec, qgClassification)
 		return
 	}
 
@@ -6864,6 +6884,7 @@ func (d *Dispatcher) releaseWorkerAfterQGExhaustion(workerID, beadID string) {
 		w.isEpicDecomp = false
 	}
 	delete(d.attemptCounts, beadID)
+	delete(d.transientCounts, beadID)
 	delete(d.handoffCounts, beadID)
 	delete(d.rejectionCounts, beadID)
 	delete(d.pendingHandoffs, beadID)
