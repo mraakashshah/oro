@@ -64,3 +64,15 @@ func TestWriteExitMarker_Appends(t *testing.T) {
 		t.Errorf("second exit should be appended, got: %q", s)
 	}
 }
+
+func TestWriteExitMarker_SkipsMemoryDB(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	d := &Dispatcher{cfg: Config{DBPath: ":memory:"}}
+
+	d.writeExitMarker("normal", "ctx_done", nil)
+
+	if _, err := os.Stat(filepath.Join(dir, "dispatcher.exit.log")); !os.IsNotExist(err) {
+		t.Fatalf("dispatcher.exit.log should not be written for :memory: DB, stat err: %v", err)
+	}
+}

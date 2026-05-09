@@ -1148,7 +1148,7 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 // (panic message, "ctx_done", "openSocket: ...", etc). stack is optional —
 // pass debug.Stack() inside a recover to capture goroutine state.
 func (d *Dispatcher) writeExitMarker(kind, detail string, stack []byte) {
-	if d == nil || d.cfg.DBPath == "" {
+	if d == nil || d.cfg.DBPath == "" || d.cfg.DBPath == ":memory:" {
 		return
 	}
 	path := filepath.Join(filepath.Dir(d.cfg.DBPath), "dispatcher.exit.log")
