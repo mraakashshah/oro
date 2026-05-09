@@ -76,6 +76,11 @@ func defaultAgentConfig() *AgentConfig {
 	}
 }
 
+// DefaultAgentConfig returns Oro's built-in agent runtime configuration.
+func DefaultAgentConfig() *AgentConfig {
+	return defaultAgentConfig()
+}
+
 // Load reads the YAML file at path and returns the parsed AgentConfig.
 // When the file does not exist or the agent block is absent, built-in
 // defaults are returned. Parse errors are surfaced as-is.

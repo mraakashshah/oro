@@ -29,6 +29,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"oro/pkg/agentmodel"
 	"oro/pkg/beadstore"
 	"oro/pkg/cards"
 	"oro/pkg/memory"
@@ -4604,9 +4605,12 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		bead.EstimatedMinutes = d.estimator.Estimate(ctx, bead.Title, acceptance)
 	}
 
-	resolvedModel := bead.ResolveModel()
+	// Runtime selection is intentionally deferred to oro-zdqd/oro-snx1. This
+	// step wires model resolution through agentmodel while preserving the
+	// existing Claude-only worker launch path.
+	_, resolvedModel := agentmodel.ResolveForBead("worker", bead)
 	if isEpicDecomp {
-		resolvedModel = protocol.ModelOpus
+		_, resolvedModel = agentmodel.ResolveForRole("ops_decompose")
 	}
 	// Release any prior bead this worker was carrying — the new assignment is
 	// committed, so any leftover in_progress state on the old bead must be
