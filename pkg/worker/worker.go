@@ -681,35 +681,12 @@ func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser, genera
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
 		// Extract context% from each line; store the latest observed value.
-		if pct, ok := ContextPctFromLine(format, scanner.Bytes()); ok {
-			w.mu.Lock()
-			if w.assignmentGeneration == generation {
-				atomic.StoreInt32(&w.streamContextPct, int32(pct))
-			}
-			w.mu.Unlock()
-		}
+		w.updateStreamContextPct(format, scanner.Bytes(), generation)
 		switch format {
 		case StreamFormatLineText:
 			w.processPlaintextLine(ctx, scanner.Text())
 		default:
-			activity := ParseStreamEvent(scanner.Bytes())
-
-			// Log formatted tool-call activity (best-effort; don't block on I/O errors).
-			if formatted := FormatActivity(activity); formatted != "" {
-				w.mu.Lock()
-				lw := w.logWriter
-				w.mu.Unlock()
-				if lw != nil {
-					_, _ = lw.WriteString(formatted)
-					_, _ = lw.WriteString("\n")
-				}
-			}
-
-			// Accumulate text content and process complete lines.
-			if activity.Text != "" {
-				lineBuf.WriteString(activity.Text)
-				w.flushCompleteLines(ctx, &lineBuf)
-			}
+			w.processStructuredStreamLine(ctx, scanner.Bytes(), &lineBuf)
 		}
 	}
 
@@ -728,6 +705,40 @@ func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser, genera
 	// Subprocess stdout closed — extract implicit memories so learnings from
 	// failed attempts (e.g. QG failure) are persisted regardless of outcome.
 	w.extractImplicitMemories(ctx)
+}
+
+func (w *Worker) updateStreamContextPct(format StreamFormat, line []byte, generation uint64) {
+	pct, ok := ContextPctFromLine(format, line)
+	if !ok {
+		return
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.assignmentGeneration == generation {
+		atomic.StoreInt32(&w.streamContextPct, int32(pct))
+	}
+}
+
+func (w *Worker) processStructuredStreamLine(ctx context.Context, line []byte, lineBuf *strings.Builder) {
+	activity := ParseStreamEvent(line)
+
+	// Log formatted tool-call activity (best-effort; don't block on I/O errors).
+	if formatted := FormatActivity(activity); formatted != "" {
+		w.mu.Lock()
+		lw := w.logWriter
+		w.mu.Unlock()
+		if lw != nil {
+			_, _ = lw.WriteString(formatted)
+			_, _ = lw.WriteString("\n")
+		}
+	}
+
+	// Accumulate text content and process complete lines.
+	if activity.Text != "" {
+		lineBuf.WriteString(activity.Text)
+		w.flushCompleteLines(ctx, lineBuf)
+	}
 }
 
 func (w *Worker) processPlaintextLine(ctx context.Context, line string) {

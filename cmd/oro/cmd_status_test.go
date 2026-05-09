@@ -733,16 +733,8 @@ func TestStatusShowsQGFailureIncidents(t *testing.T) {
 			got := buf.String()
 
 			if tt.wantTxt {
-				for _, check := range tt.checks {
-					if !strings.Contains(got, check) {
-						t.Errorf("human output should contain %q, got:\n%s", check, got)
-					}
-				}
-				for _, check := range tt.notContains {
-					if strings.Contains(got, check) {
-						t.Errorf("human output should not contain %q, got:\n%s", check, got)
-					}
-				}
+				assertContainsAll(t, got, tt.checks)
+				assertContainsNone(t, got, tt.notContains)
 			} else {
 				if strings.Contains(got, "QG incidents") {
 					t.Errorf("human output should not contain 'QG incidents', got:\n%s", got)
@@ -771,6 +763,24 @@ func TestStatusShowsQGFailureIncidents(t *testing.T) {
 				t.Errorf("JSON QGFailureTopFingerprints = %v, want %v", parsed.QGFailureTopFingerprints, tt.resp.QGFailureTopFingerprints)
 			}
 		})
+	}
+}
+
+func assertContainsAll(t *testing.T, got string, checks []string) {
+	t.Helper()
+	for _, check := range checks {
+		if !strings.Contains(got, check) {
+			t.Errorf("human output should contain %q, got:\n%s", check, got)
+		}
+	}
+}
+
+func assertContainsNone(t *testing.T, got string, checks []string) {
+	t.Helper()
+	for _, check := range checks {
+		if strings.Contains(got, check) {
+			t.Errorf("human output should not contain %q, got:\n%s", check, got)
+		}
 	}
 }
 
