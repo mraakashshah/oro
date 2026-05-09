@@ -152,8 +152,10 @@ func (pm *ExecProcessManager) startAndTrack(id string, cmd *exec.Cmd, logFile *o
 	proc := cmd.Process
 
 	pm.mu.Lock()
+	oldProc := pm.procs[id]
 	pm.procs[id] = proc
 	pm.mu.Unlock()
+	terminateProcessGroup(oldProc, &pm.wg)
 
 	// Reap the child process in the background to avoid zombies.
 	pm.wg.Add(1)
@@ -163,6 +165,25 @@ func (pm *ExecProcessManager) startAndTrack(id string, cmd *exec.Cmd, logFile *o
 	}()
 
 	return proc, nil
+}
+
+// terminateProcessGroup best-effort terminates a process spawned by Spawn.
+// Spawn always sets Setpgid, so the process PID is also its process group ID.
+func terminateProcessGroup(proc *os.Process, wg *sync.WaitGroup) {
+	if proc == nil {
+		return
+	}
+	pgid := proc.Pid
+	if err := syscall.Kill(-pgid, syscall.SIGTERM); err != nil {
+		_ = proc.Kill()
+		return
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		time.Sleep(3 * time.Second)
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	}()
 }
 
 // IsAlive reports whether the tracked process for id is still running.

@@ -6607,6 +6607,7 @@ type mockProcessManager struct {
 	mu       sync.Mutex
 	spawned  []string               // IDs passed to Spawn
 	killed   []string               // IDs passed to Kill
+	events   []string               // chronological "spawn:<id>" / "kill:<id>" events
 	deadIDs  map[string]bool        // IDs explicitly marked as dead via MarkDead
 	spawnErr error                  // if set, Spawn returns this error
 	procs    map[string]*os.Process // tracked processes (nil for tests)
@@ -6619,6 +6620,7 @@ func (m *mockProcessManager) Spawn(id string) (*os.Process, error) {
 		return nil, m.spawnErr
 	}
 	m.spawned = append(m.spawned, id)
+	m.events = append(m.events, "spawn:"+id)
 	if m.procs == nil {
 		m.procs = make(map[string]*os.Process)
 	}
@@ -6631,6 +6633,7 @@ func (m *mockProcessManager) Kill(id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.killed = append(m.killed, id)
+	m.events = append(m.events, "kill:"+id)
 	return nil
 }
 
@@ -6647,6 +6650,14 @@ func (m *mockProcessManager) KilledIDs() []string {
 	defer m.mu.Unlock()
 	out := make([]string, len(m.killed))
 	copy(out, m.killed)
+	return out
+}
+
+func (m *mockProcessManager) Events() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, len(m.events))
+	copy(out, m.events)
 	return out
 }
 

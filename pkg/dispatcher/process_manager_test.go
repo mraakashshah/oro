@@ -86,6 +86,36 @@ func TestExecProcessManager_Spawn_MultipleWorkers(t *testing.T) {
 	}
 }
 
+func TestExecProcessManager_Spawn_DuplicateIDKillsExistingProcess(t *testing.T) {
+	pm := dispatcher.NewExecProcessManager("/tmp/test.sock")
+
+	first, err := pm.Spawn("w-dup")
+	if err != nil {
+		t.Fatalf("first Spawn returned error: %v", err)
+	}
+	firstPID := first.Pid
+
+	second, err := pm.Spawn("w-dup")
+	if err != nil {
+		t.Fatalf("second Spawn returned error: %v", err)
+	}
+	secondPID := second.Pid
+	t.Cleanup(func() { _ = pm.Kill("w-dup") })
+
+	if firstPID == secondPID {
+		t.Fatalf("duplicate Spawn reused PID %d, want replacement process", firstPID)
+	}
+
+	firstProc, _ := os.FindProcess(firstPID)
+	waitFor(t, func() bool {
+		return firstProc.Signal(syscall.Signal(0)) != nil
+	}, 2*time.Second)
+
+	if err := firstProc.Signal(syscall.Signal(0)); err == nil {
+		t.Fatalf("first process PID %d survived duplicate Spawn for same worker ID", firstPID)
+	}
+}
+
 // TestExecProcessManager_Kill_SendsSignalToTrackedProcess verifies that
 // Kill terminates a tracked process.
 func TestExecProcessManager_Kill_SendsSignalToTrackedProcess(t *testing.T) {

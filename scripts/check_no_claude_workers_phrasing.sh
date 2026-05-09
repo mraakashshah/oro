@@ -41,7 +41,7 @@ check_no_claude_workers_outside_section() {
 				found=1
 			fi
 		fi
-	done < "$file"
+	done <"$file"
 	if [[ $found -eq 1 ]]; then
 		printf 'claude-workers: "%s" must not use "Claude workers" phrasing outside Claude-specific section\n' "$file" >&2
 		return 1

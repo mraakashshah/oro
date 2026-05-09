@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1091,6 +1092,48 @@ func TestApplyRestartWorker_PreservesManagedFlag(t *testing.T) {
 
 	if !isManaged {
 		t.Errorf("respawned worker %q should be managed after reconnect, but managed=%v", workerID, isManaged)
+	}
+}
+
+func TestApplyRestartWorker_KillsManagedProcessBeforeSameIDRespawn(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+	ctx := context.Background()
+
+	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+
+	workerID := "managed-restart-kill"
+	conn1, conn2 := net.Pipe()
+	defer conn1.Close()
+	defer conn2.Close()
+
+	d.mu.Lock()
+	d.pendingManagedIDs[workerID] = true
+	d.mu.Unlock()
+	d.registerWorker(workerID, conn1)
+
+	if _, err := d.applyRestartWorker(workerID); err != nil {
+		t.Fatalf("applyRestartWorker failed: %v", err)
+	}
+
+	killed := pm.KilledIDs()
+	if len(killed) != 1 || killed[0] != workerID {
+		t.Fatalf("restart-worker must kill old managed process before respawn; killed=%v", killed)
+	}
+
+	spawned := pm.SpawnedIDs()
+	if len(spawned) != 1 || spawned[0] != workerID {
+		t.Fatalf("restart-worker must respawn same worker ID once; spawned=%v", spawned)
+	}
+
+	wantEvents := []string{"kill:" + workerID, "spawn:" + workerID}
+	if events := pm.Events(); !reflect.DeepEqual(events, wantEvents) {
+		t.Fatalf("restart-worker process lifecycle order = %v, want %v", events, wantEvents)
 	}
 }
 

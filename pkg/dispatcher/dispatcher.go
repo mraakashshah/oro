@@ -5299,6 +5299,10 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 	procMgr := d.procMgr
 	d.mu.Unlock()
 
+	if wasManaged && procMgr != nil {
+		_ = procMgr.Kill(workerID)
+	}
+
 	// Reset bead to open, clear tracking, and complete the assignment so it can be reassigned.
 	if beadID != "" {
 		if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {

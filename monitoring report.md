@@ -106,3 +106,18 @@ User asked me to stop and fix the runtime bug.
 - **DB repair confirmed**: live state DB now has only `beads_fts_ai`, `beads_fts_ad`, `beads_fts_au`.
 - **Relaunch result**: dispatcher PID 36168, target=2, max=2, managed=2. Workers active on `oro-aers` and `oro-f4pq`; queue=41. Fresh logs show `assign` and `bead_updated` to `in_progress`; no new trigger errors after 20:05.
 - **Follow-up filed**: `oro-nft6` P1 for a recovered `goroutine_panic` in `retryOversizedBead` at 20:07:19. The panic did not repeat in the next monitoring check and the swarm remained healthy, so the run was not stopped for this separate defect.
+
+## Cycle 27 — Stop, fix duplicate worker-process leak
+
+- **Observed during resumed monitoring**: `oro status` reported PID 60674 with 2 managed active workers (`oro-c761`, `oro-e5ts`) and 43 ready tasks, but `ps` showed 6 `oro worker` OS processes under the dispatcher. Three processes shared worker ID `worker-1778279429892676000-0`; two stale workers were still heartbeating with no bead. Logs also showed stale-base workers filing duplicate govulncheck bugs after the fix had already merged.
+- **Action**: stopped dispatcher with `ORO_HUMAN_CONFIRMED=1 oro stop --force`, then killed leftover worker processes for the project socket. Verified `oro status` reported stopped and no matching worker processes remained.
+- **Filed**: `oro-xmzh` P0 bug, "restart-worker leaves duplicate worker OS processes alive".
+- **Root cause**: `applyRestartWorker` closed the worker socket and spawned the same worker ID without first calling `procMgr.Kill(workerID)`. `ExecProcessManager.Spawn` then overwrote `procs[id]`, so older same-ID processes were no longer reachable by process-manager kills.
+- **Fix**: `applyRestartWorker` now kills old managed worker processes before respawning the same ID; `ExecProcessManager.Spawn` now terminates any previously tracked process for a duplicate ID after successfully starting the replacement.
+- **Verification**: RED regressions failed as expected, then passed after the fix:
+  - `TestApplyRestartWorker_KillsManagedProcessBeforeSameIDRespawn`
+  - `TestExecProcessManager_Spawn_DuplicateIDKillsExistingProcess`
+- Full package verification: `go test ./pkg/dispatcher -count=1 -timeout 180s` passed.
+- Quality gate: `./scripts/quality_gate.sh` passed after applying `shfmt` to `scripts/check_no_claude_workers_phrasing.sh`.
+- Ops review: `claude -p` first pass returned PASS with two Important tighten-ups; second pass returned PASS after fixing both.
+- **Current state**: dispatcher remains stopped while build/install and relaunch complete.
