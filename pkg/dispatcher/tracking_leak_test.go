@@ -85,7 +85,7 @@ func seedNonQGTrackingMaps(d *Dispatcher, beadID string) {
 
 func TestTrackingMaps_ClearedOnEscalation(t *testing.T) {
 	t.Run("QG_stuck_escalation_clears_maps", func(t *testing.T) {
-		d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 		cancel := startDispatcher(t, d)
 		defer cancel()
 
@@ -110,9 +110,14 @@ func TestTrackingMaps_ClearedOnEscalation(t *testing.T) {
 		// The QG flow itself populates attemptCounts and qgStuckTracker.
 		seedNonQGTrackingMaps(d, beadID)
 
-		// Send maxStuckCount identical QG failures to trigger stuck escalation.
+		// Send maxStuckCount identical QG failures to trigger stuck classification.
+		// Clear the bead queue before the last DONE to prevent immediate re-assignment
+		// from repopulating tracking maps before assertTrackingMapsEmpty can observe them.
 		identicalOutput := "FAIL: TestFoo — exact same error"
 		for i := 1; i <= maxStuckCount; i++ {
+			if i == maxStuckCount {
+				beadSrc.SetBeads(nil)
+			}
 			sendMsg(t, conn, protocol.Message{
 				Type: protocol.MsgDone,
 				Done: &protocol.DonePayload{
@@ -127,26 +132,22 @@ func TestTrackingMaps_ClearedOnEscalation(t *testing.T) {
 			}
 		}
 
-		// Wait for escalation.
+		// Wait for all tracking maps to be cleared by the classification handler.
 		waitFor(t, func() bool {
-			for _, m := range esc.Messages() {
-				if strings.Contains(m, beadID) && strings.Contains(m, "QG output repeated") {
-					return true
-				}
-			}
-			return false
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			_, hasAttempt := d.attemptCounts[beadID]
+			_, hasHandoff := d.handoffCounts[beadID]
+			_, hasReject := d.rejectionCounts[beadID]
+			_, hasPending := d.pendingHandoffs[beadID]
+			_, hasStuck := d.qgStuckTracker[beadID]
+			_, hasEscalated := d.escalatedBeads[beadID]
+			_, hasWorktree := d.worktreeFailures[beadID]
+			_, hasExhausted := d.exhaustedBeads[beadID]
+			_, hasAssigning := d.assigningBeads[beadID]
+			return !hasAttempt && !hasHandoff && !hasReject && !hasPending && !hasStuck &&
+				!hasEscalated && !hasWorktree && !hasExhausted && !hasAssigning
 		}, 2*time.Second)
-		msgs := esc.Messages()
-		found := false
-		for _, m := range msgs {
-			if strings.Contains(m, beadID) && strings.Contains(m, "QG output repeated") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("expected stuck escalation, got: %v", msgs)
-		}
 
 		assertTrackingMapsEmpty(t, d, beadID)
 	})

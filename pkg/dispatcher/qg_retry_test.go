@@ -392,7 +392,7 @@ func TestHandleDone_QGStuckDetection_IdenticalOutputsEscalate(t *testing.T) {
 	readMsg(t, conn, 2*time.Second)
 
 	// Send 3 identical QG outputs. The stuck detector should fire on the 3rd,
-	// escalating instead of re-assigning.
+	// classifying and releasing instead of re-assigning.
 	identicalOutput := "FAIL: TestFoo — expected 42, got 0"
 	for i := 1; i <= maxStuckCount; i++ {
 		sendMsg(t, conn, protocol.Message{
@@ -416,25 +416,23 @@ func TestHandleDone_QGStuckDetection_IdenticalOutputsEscalate(t *testing.T) {
 		}
 	}
 
-	// After maxStuckCount identical outputs, should escalate with stuck message.
+	// After maxStuckCount identical outputs, the stuck path classifies the failure
+	// and reopens the bead — no generic "QG output repeated" escalation.
 	waitFor(t, func() bool {
-		for _, m := range esc.Messages() {
-			if strings.Contains(m, "bead-stuck1") && strings.Contains(m, "QG output repeated") {
-				return true
-			}
-		}
-		return false
+		beadSrc.mu.Lock()
+		defer beadSrc.mu.Unlock()
+		return beadSrc.updated["bead-stuck1"] == "open"
 	}, 2*time.Second)
-	msgs := esc.Messages()
-	found := false
-	for _, m := range msgs {
-		if strings.Contains(m, "bead-stuck1") && strings.Contains(m, "QG output repeated") {
-			found = true
-			break
-		}
+	beadSrc.mu.Lock()
+	updatedStatus := beadSrc.updated["bead-stuck1"]
+	beadSrc.mu.Unlock()
+	if updatedStatus != "open" {
+		t.Fatalf("expected bead-stuck1 reopened after stuck classification, got status %q", updatedStatus)
 	}
-	if !found {
-		t.Fatalf("expected stuck escalation for bead-stuck1, got messages: %v", msgs)
+	for _, m := range esc.Messages() {
+		if strings.Contains(m, "bead-stuck1") && strings.Contains(m, "QG output repeated") {
+			t.Fatalf("unexpected old-style stuck escalation: %s", m)
+		}
 	}
 }
 
@@ -980,4 +978,282 @@ func TestQGExhaustion_ReusesInfraIncidentForSystemicFailure(t *testing.T) {
 			t.Fatalf("affected evidence for %s count = %d, want 1:\n%s", beadID, got, infra.Notes)
 		}
 	}
+}
+
+// TestRepeatedIdenticalQGOutputClassifiedBeforeEscalation verifies that when
+// isQGStuck detects maxStuckCount consecutive identical QG outputs,
+// handleRepeatedQGOutput classifies the failure and routes to the correct
+// cleanup path. All four routing edges must leave:
+//   - no active assignment
+//   - no stale worker state (worker idle or absent from d.workers)
+//   - no stale qgStuckTracker entry
+//   - no stranded original bead
+func TestRepeatedIdenticalQGOutputClassifiedBeforeEscalation(t *testing.T) {
+	const worktree = "/tmp/wt-repeated-qg-test"
+
+	// deterministic class: repeated deterministic failure → reopen original bead,
+	// no escalation to manager.
+	t.Run("deterministic/reopens_original_bead_no_escalation", func(t *testing.T) {
+		d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		const (
+			beadID   = "bead-rep-det"
+			workerID = "w-rep-det"
+		)
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+		assignmentID := insertActiveAssignment(t, d, beadID, workerID, worktree)
+		d.mu.Lock()
+		d.qgStuckTracker[beadID] = &qgHistory{hashes: []string{"h1", "h2", "h3"}}
+		d.attemptCounts[beadID] = 2
+		d.workers[workerID] = &trackedWorker{
+			id: workerID, state: protocol.WorkerBusy,
+			beadID: beadID, assignmentID: assignmentID,
+		}
+		d.mu.Unlock()
+
+		rec := QGFailureRecord{
+			ID:     fmt.Sprintf("%s:%s:%d:2", beadID, workerID, assignmentID),
+			BeadID: beadID, WorkerID: workerID, AssignmentID: assignmentID,
+			Component: "worker", Fingerprint: "qg:repeated-det",
+			Summary:    "golangci-lint unused variable x",
+			Output:     "golangci-lint failed: x declared but not used",
+			OutputHash: "hash-rep-det",
+		}
+		cls := QGFailureClassification{
+			Class: QGFailureClassWorkerDeterministic, Decision: QGFailureDecisionReopenOriginal,
+			Confidence: QGFailureConfidenceHigh, Reason: "repeated deterministic",
+		}
+
+		d.handleRepeatedQGOutput(ctx, workerID, beadID, rec, cls)
+
+		// no active assignment
+		var asgStatus string
+		if err := d.db.QueryRowContext(ctx,
+			`SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&asgStatus); err != nil {
+			t.Fatalf("query assignment: %v", err)
+		}
+		if asgStatus != "completed" {
+			t.Fatalf("assignment status = %q, want completed", asgStatus)
+		}
+
+		// no stale worker state, no stale qgStuckTracker
+		d.mu.Lock()
+		w := d.workers[workerID]
+		_, stuckExists := d.qgStuckTracker[beadID]
+		d.mu.Unlock()
+		if w != nil && w.beadID != "" {
+			t.Fatalf("worker still holds beadID %q after handleRepeatedQGOutput", w.beadID)
+		}
+		if stuckExists {
+			t.Fatal("qgStuckTracker entry not cleared by handleRepeatedQGOutput")
+		}
+
+		// original bead reopened (not stranded)
+		if beadSrc.updated[beadID] != "open" {
+			t.Fatalf("bead status update = %q, want open", beadSrc.updated[beadID])
+		}
+
+		// no escalation to manager
+		for _, m := range esc.Messages() {
+			if strings.Contains(m, beadID) {
+				t.Fatalf("unexpected escalation for deterministic stuck: %s", m)
+			}
+		}
+	})
+
+	// systemic class: repeated infra failure → create/reuse incident bead,
+	// no generic escalation to manager.
+	t.Run("systemic/creates_infra_incident_no_escalation", func(t *testing.T) {
+		d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		const (
+			beadID   = "bead-rep-sys"
+			workerID = "w-rep-sys"
+		)
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+		// Fresh DB → first QG incident gets id=1 → infra bead id = "oro-qg-incident-1".
+		// Mark it nil so ensureQGIncidentBead treats it as not-yet-created.
+		beadSrc.shown["oro-qg-incident-1"] = nil
+		assignmentID := insertActiveAssignment(t, d, beadID, workerID, worktree)
+		d.mu.Lock()
+		d.qgStuckTracker[beadID] = &qgHistory{hashes: []string{"h1", "h2", "h3"}}
+		d.workers[workerID] = &trackedWorker{
+			id: workerID, state: protocol.WorkerBusy,
+			beadID: beadID, assignmentID: assignmentID,
+		}
+		d.mu.Unlock()
+
+		rec := QGFailureRecord{
+			ID:     fmt.Sprintf("%s:%s:%d:2", beadID, workerID, assignmentID),
+			BeadID: beadID, WorkerID: workerID, AssignmentID: assignmentID,
+			Component: "worker", Fingerprint: "qg:repeated-sys",
+			Summary:    "quality_gate.sh package loader failure",
+			Output:     "quality_gate.sh failed: package loader cannot load stdlib",
+			OutputHash: "hash-rep-sys",
+		}
+		cls := QGFailureClassification{
+			Class: QGFailureClassSystemic, Decision: QGFailureDecisionCreateOrReuseInfra,
+			Confidence: QGFailureConfidenceHigh, Reason: "systemic infra repeated",
+		}
+
+		d.handleRepeatedQGOutput(ctx, workerID, beadID, rec, cls)
+
+		// no active assignment
+		var asgStatus string
+		if err := d.db.QueryRowContext(ctx,
+			`SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&asgStatus); err != nil {
+			t.Fatalf("query assignment: %v", err)
+		}
+		if asgStatus != "completed" {
+			t.Fatalf("assignment status = %q, want completed", asgStatus)
+		}
+
+		// no stale worker state, no stale qgStuckTracker
+		d.mu.Lock()
+		w := d.workers[workerID]
+		_, stuckExists := d.qgStuckTracker[beadID]
+		d.mu.Unlock()
+		if w != nil && w.beadID != "" {
+			t.Fatalf("worker still holds beadID %q", w.beadID)
+		}
+		if stuckExists {
+			t.Fatal("qgStuckTracker entry not cleared")
+		}
+
+		// infra incident bead created (ensureQGIncidentBead called beads.Create)
+		beadSrc.mu.Lock()
+		numCreated := len(beadSrc.created)
+		beadSrc.mu.Unlock()
+		if numCreated == 0 {
+			t.Fatal("expected infra incident bead to be created for systemic stuck, got none")
+		}
+
+		// no escalation to manager
+		for _, m := range esc.Messages() {
+			if strings.Contains(m, beadID) {
+				t.Fatalf("unexpected escalation for systemic stuck: %s", m)
+			}
+		}
+	})
+
+	// unknown class: low-confidence classification → log qg_repeated_triage event,
+	// no escalation to manager.
+	t.Run("unknown/logs_triage_event_no_escalation", func(t *testing.T) {
+		d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		const (
+			beadID   = "bead-rep-unk"
+			workerID = "w-rep-unk"
+		)
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+		assignmentID := insertActiveAssignment(t, d, beadID, workerID, worktree)
+		d.mu.Lock()
+		d.qgStuckTracker[beadID] = &qgHistory{hashes: []string{"h1", "h2", "h3"}}
+		d.workers[workerID] = &trackedWorker{
+			id: workerID, state: protocol.WorkerBusy,
+			beadID: beadID, assignmentID: assignmentID,
+		}
+		d.mu.Unlock()
+
+		rec := QGFailureRecord{
+			ID:     fmt.Sprintf("%s:%s:%d:2", beadID, workerID, assignmentID),
+			BeadID: beadID, WorkerID: workerID, AssignmentID: assignmentID,
+			Component: "worker", Fingerprint: "qg:repeated-unk",
+			Summary:    "unrecognized failure pattern",
+			Output:     "some unknown error that does not match any known pattern",
+			OutputHash: "hash-rep-unk",
+		}
+		cls := QGFailureClassification{
+			Class: QGFailureClassUnknown, Decision: QGFailureDecisionStopForTriage,
+			Confidence: QGFailureConfidenceLow, Reason: "could not classify",
+		}
+
+		d.handleRepeatedQGOutput(ctx, workerID, beadID, rec, cls)
+
+		// no active assignment
+		var asgStatus string
+		if err := d.db.QueryRowContext(ctx,
+			`SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&asgStatus); err != nil {
+			t.Fatalf("query assignment: %v", err)
+		}
+		if asgStatus != "completed" {
+			t.Fatalf("assignment status = %q, want completed", asgStatus)
+		}
+
+		// no stale worker state, no stale qgStuckTracker
+		d.mu.Lock()
+		w := d.workers[workerID]
+		_, stuckExists := d.qgStuckTracker[beadID]
+		d.mu.Unlock()
+		if w != nil && w.beadID != "" {
+			t.Fatalf("worker still holds beadID %q", w.beadID)
+		}
+		if stuckExists {
+			t.Fatal("qgStuckTracker entry not cleared")
+		}
+
+		// triage event logged — classification reached before any escalation
+		if eventCount(t, d.db, "qg_repeated_triage") == 0 {
+			t.Fatal("expected qg_repeated_triage event to be logged, got 0")
+		}
+
+		// no escalation to manager
+		for _, m := range esc.Messages() {
+			if strings.Contains(m, beadID) {
+				t.Fatalf("unexpected escalation for unknown stuck: %s", m)
+			}
+		}
+	})
+
+	// worker disconnected: worker absent from d.workers — function must still
+	// clean up all tracking state without attempting any worker send.
+	t.Run("disconnected_worker/cleans_up_without_send", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		const (
+			beadID   = "bead-rep-disc"
+			workerID = "w-rep-disc" // not added to d.workers
+		)
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+		assignmentID := insertActiveAssignment(t, d, beadID, workerID, worktree)
+		d.mu.Lock()
+		d.qgStuckTracker[beadID] = &qgHistory{hashes: []string{"h1", "h2", "h3"}}
+		d.attemptCounts[beadID] = 2
+		// worker intentionally absent — simulates disconnect before cleanup runs
+		d.mu.Unlock()
+
+		rec := QGFailureRecord{
+			// AssignmentID = 0: what handleQGFailure computes when worker is gone
+			BeadID: beadID, WorkerID: workerID, AssignmentID: 0,
+			Component: "worker", Fingerprint: "qg:repeated-disc",
+			Summary:    "golangci-lint lint error",
+			Output:     "golangci-lint failed: some lint error",
+			OutputHash: "hash-rep-disc",
+		}
+		cls := QGFailureClassification{
+			Class: QGFailureClassWorkerDeterministic, Decision: QGFailureDecisionReopenOriginal,
+			Confidence: QGFailureConfidenceHigh, Reason: "deterministic",
+		}
+
+		// Must not panic even though worker is disconnected.
+		d.handleRepeatedQGOutput(ctx, workerID, beadID, rec, cls)
+
+		// qgStuckTracker cleared despite disconnected worker
+		d.mu.Lock()
+		_, stuckExists := d.qgStuckTracker[beadID]
+		d.mu.Unlock()
+		if stuckExists {
+			t.Fatal("qgStuckTracker entry not cleared for disconnected worker")
+		}
+
+		// assignment completed via bead_id fallback (assignmentID=0 path)
+		var asgStatus string
+		if err := d.db.QueryRowContext(ctx,
+			`SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&asgStatus); err != nil {
+			t.Fatalf("query assignment: %v", err)
+		}
+		if asgStatus != "completed" {
+			t.Fatalf("assignment status = %q, want completed (bead_id fallback)", asgStatus)
+		}
+	})
 }

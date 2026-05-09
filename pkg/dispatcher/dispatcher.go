@@ -1692,9 +1692,22 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 	if d.isQGStuck(beadID, qgOutput) {
 		_ = d.logEvent(ctx, "qg_stuck_detected", workerID, beadID, workerID,
 			fmt.Sprintf(`{"repeated_count":%d}`, maxStuckCount))
-		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
-			fmt.Sprintf("QG output repeated %d times — worker stuck", maxStuckCount), qgOutput), beadID, workerID)
-		d.clearBeadTracking(beadID)
+		d.mu.Lock()
+		assignmentID := d.assignmentIDLocked(workerID, beadID)
+		d.mu.Unlock()
+		stuckRec := QGFailureRecord{
+			BeadID:       beadID,
+			WorkerID:     workerID,
+			AssignmentID: assignmentID,
+			Component:    "worker",
+			Fingerprint:  qgFingerprint,
+			Summary:      qgSummary,
+			Output:       qgOutput,
+		}
+		// Repeated identical output proves the current approach isn't working;
+		// classify as exhausted so deterministic failures get ReopenOriginal routing.
+		stuckCls := ClassifyQGFailure(stuckRec, QGFailureHistory{RetryExhausted: true})
+		d.handleRepeatedQGOutput(ctx, workerID, beadID, stuckRec, stuckCls)
 		return
 	}
 
@@ -6745,6 +6758,41 @@ func (d *Dispatcher) cancelOpsAgents(ctx context.Context, beadID, workerID, reas
 		if err != nil {
 			_ = d.logEvent(ctx, "ops_cancel_error", "dispatcher", beadID, workerID, err.Error())
 		}
+	}
+}
+
+// handleRepeatedQGOutput is called when isQGStuck detects maxStuckCount
+// consecutive identical QG outputs for a bead. It classifies the failure and
+// routes to the appropriate cleanup path without generic escalation:
+//   - QGFailureDecisionReopenOriginal  → handleClassifiedQGExhaustion (reopen bead)
+//   - QGFailureDecisionCreateOrReuseInfra → handleSystemicQGExhaustion (infra incident)
+//   - default (StopForTriage, etc.)    → complete assignment, release worker, log triage event
+//
+// All paths leave no active assignment, stale worker state, stale qgStuckTracker,
+// or stranded original bead. Worker-facing sends are never attempted, so the
+// function is safe to call even when the worker has already disconnected.
+func (d *Dispatcher) handleRepeatedQGOutput(ctx context.Context, workerID, beadID string, rec QGFailureRecord, cls QGFailureClassification) {
+	_ = d.logEvent(ctx, "qg_repeated_classified", workerID, beadID, workerID,
+		fmt.Sprintf(`{"class":%q,"decision":%q,"fingerprint":%q}`,
+			cls.Class, cls.Decision, rec.Fingerprint))
+
+	switch cls.Decision {
+	case QGFailureDecisionReopenOriginal:
+		d.handleClassifiedQGExhaustion(ctx, workerID, beadID, rec.AssignmentID, rec, cls)
+	case QGFailureDecisionCreateOrReuseInfra:
+		d.handleSystemicQGExhaustion(ctx, workerID, beadID, rec.AssignmentID, rec, cls)
+	default:
+		_ = d.completeAssignment(ctx, rec.AssignmentID, beadID)
+		d.releaseWorkerAfterQGExhaustion(workerID, beadID)
+		if d.shouldReopenQGOriginal(ctx, beadID) {
+			if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
+				_ = d.logEvent(ctx, "qg_repeated_reopen_failed", "dispatcher", beadID, workerID,
+					fmt.Sprintf(`{"error":%q}`, err.Error()))
+			}
+		}
+		_ = d.logEvent(ctx, "qg_repeated_triage", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"class":%q,"decision":%q,"fingerprint":%q}`,
+				cls.Class, cls.Decision, rec.Fingerprint))
 	}
 }
 
