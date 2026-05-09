@@ -226,6 +226,14 @@ func (s *FakeStore) Create(ctx context.Context, params CreateParams) (*protocol.
 		Tags:               cloneStrings(params.Tags),
 		Labels:             cloneStrings(params.Labels),
 		Metadata:           stringMapToAny(params.Metadata),
+		Tier:               protocol.Tier(params.Tier),
+	}
+	if bead.Model == "" && bead.Tier == "" {
+		if model, ok := params.Metadata["model"]; ok {
+			if t, ok := protocol.LegacyModelToTier(model); ok {
+				bead.Tier = t
+			}
+		}
 	}
 	s.beads[id] = cloneBead(bead)
 	clone := cloneBead(bead)

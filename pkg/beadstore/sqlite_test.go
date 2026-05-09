@@ -67,8 +67,11 @@ func TestSQLiteStoreCreateShowExportAndMemory(t *testing.T) {
 	if got.Memory != "relevant memory" {
 		t.Fatalf("Show Memory = %q, want callback result", got.Memory)
 	}
-	if got.Model != protocol.ModelHaiku {
-		t.Fatalf("Show Model = %q, want metadata-promoted haiku", got.Model)
+	if got.Tier != protocol.TierFast {
+		t.Fatalf("Show Tier = %q, want fast (metadata model=haiku promotes to tier)", got.Tier)
+	}
+	if got.Model != "" {
+		t.Fatalf("Show Model = %q, want empty (metadata model no longer promotes to Model)", got.Model)
 	}
 	if !reflect.DeepEqual(got.Tags, []string{"phase-1", "sqlite"}) {
 		t.Fatalf("Show Tags = %#v", got.Tags)
@@ -1578,4 +1581,75 @@ func assertNotDeleted(t *testing.T, store *SQLiteStore, id string) {
 func isBeadNotFound(err error) bool {
 	var notFound *protocol.BeadNotFoundError
 	return err != nil && errors.As(err, &notFound)
+}
+
+func TestLegacyMetadataModelMapsToTierOnlyWhenEmpty(t *testing.T) {
+	ctx := context.Background()
+
+	cases := []struct {
+		name        string
+		legacyModel string
+		wantTier    protocol.Tier
+	}{
+		{"opus→deep", "opus", protocol.TierDeep},
+		{"sonnet→balanced", "sonnet", protocol.TierBalanced},
+		{"haiku→fast", "haiku", protocol.TierFast},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestSQLiteStore(t)
+			mustCreate(t, store, CreateParams{
+				ID:       "oro-leg-" + tc.legacyModel,
+				Title:    "legacy " + tc.legacyModel,
+				Metadata: map[string]string{"model": tc.legacyModel},
+			})
+			got, err := store.Show(ctx, "oro-leg-"+tc.legacyModel)
+			if err != nil {
+				t.Fatalf("Show: %v", err)
+			}
+			if got.Tier != tc.wantTier {
+				t.Fatalf("Tier = %q, want %q (model column empty, tier column empty)", got.Tier, tc.wantTier)
+			}
+			if got.Model != "" {
+				t.Fatalf("Model = %q, want empty (metadata model should not promote to Model)", got.Model)
+			}
+		})
+	}
+
+	t.Run("tier-column-wins-over-metadata-model", func(t *testing.T) {
+		store := newTestSQLiteStore(t)
+		mustCreate(t, store, CreateParams{
+			ID:       "oro-leg-tier-col",
+			Title:    "explicit tier",
+			Tier:     string(protocol.TierFast),
+			Metadata: map[string]string{"model": "opus"},
+		})
+		got, err := store.Show(ctx, "oro-leg-tier-col")
+		if err != nil {
+			t.Fatalf("Show: %v", err)
+		}
+		if got.Tier != protocol.TierFast {
+			t.Fatalf("Tier = %q, want %q (tier column should win)", got.Tier, protocol.TierFast)
+		}
+	})
+}
+
+func TestExplicitModelColumnPreserved(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+
+	mustCreate(t, store, CreateParams{ID: "oro-model-col", Title: "model column test"})
+	mustExec(t, store.db, `UPDATE beads SET model='claude-opus-native' WHERE id='oro-model-col'`)
+	mustExec(t, store.db, `INSERT INTO bead_metadata (bead_id, key, value) VALUES ('oro-model-col', 'model', 'haiku')`)
+
+	got, err := store.Show(ctx, "oro-model-col")
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if got.Model != "claude-opus-native" {
+		t.Fatalf("Model = %q, want %q (explicit model column must be preserved)", got.Model, "claude-opus-native")
+	}
+	if got.Tier != "" {
+		t.Fatalf("Tier = %q, want empty (no tier hydration when model column is set)", got.Tier)
+	}
 }

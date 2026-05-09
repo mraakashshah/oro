@@ -105,6 +105,7 @@ type CreateParams struct {
 	Metadata           map[string]string
 	EstimatedMinutes   int
 	ID                 string
+	Tier               string
 }
 
 // UpdateParams contains optional bead fields to update.

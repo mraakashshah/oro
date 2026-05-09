@@ -185,11 +185,12 @@ func (s *SQLiteStore) Create(ctx context.Context, params CreateParams) (*protoco
 	if params.EstimatedMinutes > 0 {
 		estimate = sql.NullInt64{Int64: int64(params.EstimatedMinutes), Valid: true}
 	}
+	tier := sql.NullString{String: params.Tier, Valid: params.Tier != ""}
 
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO beads (id, title, description, acceptance_criteria, status, priority, type, parent_id, estimated_minutes, created_at, updated_at)
-VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)`,
-		params.ID, params.Title, params.Description, params.AcceptanceCriteria, params.Priority, params.Type, parent, estimate, now, now); err != nil {
+INSERT INTO beads (id, title, description, acceptance_criteria, status, priority, type, parent_id, estimated_minutes, tier, created_at, updated_at)
+VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
+		params.ID, params.Title, params.Description, params.AcceptanceCriteria, params.Priority, params.Type, parent, estimate, tier, now, now); err != nil {
 		return nil, fmt.Errorf("beadstore: create bead %s: %w", params.ID, err)
 	}
 	if err := replaceStrings(ctx, tx, "bead_tags", "tag", params.ID, params.Tags); err != nil {
@@ -767,11 +768,7 @@ func (s *SQLiteStore) loadChildren(ctx context.Context, beads []protocol.Bead) e
 			return err
 		}
 		beads[i].Metadata = metadata
-		if beads[i].Model == "" {
-			if model, ok := metadata["model"].(string); ok && isAllowedModel(model) {
-				beads[i].Model = model
-			}
-		}
+		applyLegacyMetadataTier(&beads[i], metadata)
 		deps, err := s.loadDependencies(ctx, id)
 		if err != nil {
 			return err
@@ -1057,8 +1054,20 @@ func validStatus(status string) bool {
 	return status == "open" || status == "in_progress" || status == "blocked" || status == "closed"
 }
 
-func isAllowedModel(model string) bool {
-	return model == protocol.ModelHaiku || model == protocol.ModelSonnet || model == protocol.ModelOpus
+// applyLegacyMetadataTier sets bead.Tier from metadata["model"] when both the
+// model column and tier column are empty. This converts legacy Claude-family
+// model names (opus/sonnet/haiku) stored in metadata to provider-neutral tiers.
+func applyLegacyMetadataTier(bead *protocol.Bead, metadata map[string]any) {
+	if bead.Model != "" || bead.Tier != "" {
+		return
+	}
+	model, ok := metadata["model"].(string)
+	if !ok {
+		return
+	}
+	if t, ok := protocol.LegacyModelToTier(model); ok {
+		bead.Tier = t
+	}
 }
 
 func generateBeadID() string {

@@ -241,11 +241,7 @@ func loadBeadChildrenInTx(ctx context.Context, tx *sql.Tx, beads []protocol.Bead
 			return err
 		}
 		beads[i].Metadata = metadata
-		if beads[i].Model == "" {
-			if model, ok := metadata["model"].(string); ok && isAllowedModel(model) {
-				beads[i].Model = model
-			}
-		}
+		applyLegacyMetadataTier(&beads[i], metadata)
 
 		deps, err := txDependencies(ctx, tx, id)
 		if err != nil {
