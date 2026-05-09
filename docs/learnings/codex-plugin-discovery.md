@@ -287,3 +287,175 @@ To ship an oro plugin that loads in Codex:
 3. `codex plugin marketplace add ~/local-plugins` must be run once (writes to `config.toml`)
 4. User must install via Codex TUI — the `codex exec` path cannot trigger installation
 5. **Do not use `~/.codex/.tmp/` for anything.** It is the marketplace download cache: stub files placed there persist across `codex exec` (sync skipped) but provide no functionality, and would be wiped by any TUI-driven marketplace re-sync that detects a SHA mismatch.
+
+---
+
+## config-toml-plugins
+
+**Summary:** `~/.codex/config.toml` does NOT support a `[plugin]` or `[[plugins]]` key that points to an arbitrary plugin path. The recognized mechanism is `[marketplaces.NAME]` with `source_type = "local"`.
+
+### config_toml_supports
+
+**Finding:** config.toml supports the `[marketplaces.NAME]` section for local plugin discovery, not `[plugin]` or `[[plugins]]`.
+
+---
+
+### TOML Key Names Tested
+
+#### `[plugin]` (table)
+
+```toml
+model = "gpt-4o"
+
+[plugin]
+path = "/tmp/oro-test-plugin/"
+```
+
+**Result:** Silently ignored.
+- `codex --version`: returns `codex-cli 0.128.0` unchanged (--version does not load config at all)
+- `codex app-server`: starts normally, no error on stdout or stderr, continues running
+
+#### `[[plugins]]` (array of tables)
+
+```toml
+model = "gpt-4o"
+
+[[plugins]]
+path = "/tmp/oro-test-plugin/"
+```
+
+**Result:** Logs an error on stderr, falls back to defaults, continues running.
+- `codex --version`: returns `codex-cli 0.128.0` (no error — --version skips config load)
+- `codex app-server` stderr:
+  ```
+  ERROR codex_app_server: Invalid configuration; using defaults. /private/tmp/codex-test-home/config.toml:3:1: invalid type: sequence, expected a map
+  ```
+- The error "invalid type: sequence, expected a map" means codex reserves the key `plugins` internally (expects it to be a table/map), but TOML array-of-tables creates a sequence. App-server falls back to defaults and does not panic.
+- Exit behavior: server starts and continues running (exit only on timeout/kill)
+
+---
+
+### Correct TOML Key: `[marketplaces.NAME]`
+
+The only supported mechanism for adding local plugin paths is via the marketplace system:
+
+```toml
+[marketplaces.my-marketplace]
+last_updated = "2026-05-09T09:13:14Z"
+source_type = "local"
+source = "/path/to/marketplace-directory"
+```
+
+This is what `codex plugin marketplace add /path/to/dir` writes into config.toml.
+
+**Exact key name:** `marketplaces` (TOML table-of-tables, one entry per named marketplace)
+
+---
+
+### Marketplace Directory Structure Requirements
+
+A local marketplace directory must contain `.agents/plugins/marketplace.json`:
+
+```
+/path/to/marketplace/
+├── .agents/
+│   └── plugins/
+│       └── marketplace.json        ← required manifest
+└── plugins/
+    └── my-plugin/
+        └── .codex-plugin/
+            └── plugin.json         ← plugin manifest
+```
+
+**`marketplace.json` schema** (from test-marketplace):
+```json
+{
+  "name": "marketplace-name",
+  "interface": { "displayName": "Display Name" },
+  "plugins": [
+    {
+      "name": "plugin-name",
+      "source": { "source": "local", "path": "./plugins/plugin-name" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Productivity"
+    }
+  ]
+}
+```
+
+**`plugin.json` schema** (from figma plugin):
+```json
+{
+  "name": "plugin-name",
+  "version": "1.0.0",
+  "description": "...",
+  "author": { "name": "...", "url": "..." },
+  "skills": "./skills/",
+  "apps": "./.app.json",
+  "interface": {
+    "displayName": "...",
+    "shortDescription": "...",
+    "longDescription": "...",
+    "developerName": "...",
+    "category": "...",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "websiteURL": "...",
+    "privacyPolicyURL": "...",
+    "termsOfServiceURL": "...",
+    "defaultPrompt": ["...", "...", "..."],
+    "brandColor": "#RRGGBB",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/logo.png",
+    "screenshots": []
+  }
+}
+```
+
+---
+
+### Error Handling Summary
+
+| Config Entry | `--version` | `app-server` stderr | App behavior |
+|---|---|---|---|
+| `[plugin]` + arbitrary keys | No error | No error | Silently ignored; server runs |
+| `[[plugins]]` + arbitrary keys | No error | `ERROR: invalid type: sequence, expected a map` | Falls back to defaults; server runs |
+| `[marketplaces.x]` → missing path | No error | No error | Silently ignored; server runs |
+| `[marketplaces.x]` → dir without manifest | No error | No error | Silently ignored; server runs |
+| Invalid TOML syntax | No error | — (depends on command) | `--version` skips config entirely |
+
+**Key insight:** `codex --version` does NOT load config.toml. Errors only surface when starting the app-server or TUI session. This means config mistakes can go unnoticed until first interactive use.
+
+---
+
+### `codex --version` behavior
+
+`--version` outputs `codex-cli 0.128.0` regardless of config.toml contents, including completely invalid TOML. It is not useful as a before/after comparison for config changes.
+
+Use `codex app-server` (with `timeout`) or `codex debug models` to verify config is loaded correctly.
+
+---
+
+### Reference: config.toml snapshot at time of research
+
+```toml
+model = "gpt-5.5"
+model_reasoning_effort = "medium"
+
+[projects."/Users/as21/codehouse/oro"]
+trust_level = "trusted"
+
+[tui]
+status_line = ["model-with-reasoning", "current-dir", "git-branch", "run-state", "context-used", "five-hour-limit", "weekly-limit"]
+
+[marketplaces.home-local]
+last_updated = "2026-05-06T22:41:45Z"
+source_type = "local"
+source = "/Users/as21/local-plugins"
+
+[marketplaces.test-local]
+last_updated = "2026-05-07T03:15:34Z"
+source_type = "local"
+source = "/private/tmp/test-marketplace"
+```
+
+codex version: `0.128.0`
