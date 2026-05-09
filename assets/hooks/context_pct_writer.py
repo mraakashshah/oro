@@ -29,21 +29,32 @@ ORO_HOME = Path(os.environ.get("ORO_HOME", os.path.expanduser("~/.oro")))
 BUDGETS_FILE = ORO_HOME / "context_budgets.json"
 
 
-def load_budget_from_config(model_key: str, config_path: Path | None = None) -> int:
-    """Load token budget for model_key from context_budgets.json.
+_KNOWN_TIERS = frozenset({"fast", "balanced", "deep", "background"})
+
+
+def load_budget_from_config(
+    model_key: str,
+    config_path: Path | None = None,
+    *,
+    tier: str = "",
+) -> int:
+    """Load token budget, preferring tier key over legacy model key.
 
     Args:
         model_key: Model identifier key (e.g., "1m_beta", "default").
         config_path: Path to config JSON. Defaults to BUDGETS_FILE.
+        tier: Bead routing tier (e.g., "fast", "balanced", "deep", "background").
+            When set and the tier key exists in budgets, it wins over model_key.
 
     Returns:
-        Token budget. Falls back to config "default" if key not found,
-        then to DEFAULT_CONTEXT_WINDOW if file is missing or invalid.
+        Token budget. Priority: known tier key > model_key > "default" > DEFAULT_CONTEXT_WINDOW.
     """
     if config_path is None:
         config_path = BUDGETS_FILE
     try:
         budgets = json.loads(config_path.read_text())
+        if tier in _KNOWN_TIERS and tier in budgets:
+            return budgets[tier]
         return budgets.get(model_key, budgets.get("default", DEFAULT_CONTEXT_WINDOW))
     except (OSError, json.JSONDecodeError):
         return DEFAULT_CONTEXT_WINDOW
