@@ -86,3 +86,28 @@ func TestBuildDecomposePromptNoCreateParent(t *testing.T) {
 		t.Error("prompt must attach children with native create --parent")
 	}
 }
+
+func TestDecomposePromptIncludesTier(t *testing.T) {
+	t.Run("includes tier when parent has tier", func(t *testing.T) {
+		opts := DecomposeOpts{
+			BeadID:   "oro-parent",
+			QGOutput: "qg failed",
+			Tier:     "deep",
+		}
+		prompt := buildDecomposePrompt(opts)
+		if !strings.Contains(prompt, "--tier=deep") {
+			t.Errorf("prompt must include --tier=deep when parent tier is set; got:\n%s", prompt)
+		}
+	})
+
+	t.Run("omits tier when parent has no tier", func(t *testing.T) {
+		opts := DecomposeOpts{
+			BeadID:   "oro-parent",
+			QGOutput: "qg failed",
+		}
+		prompt := buildDecomposePrompt(opts)
+		if strings.Contains(prompt, "--tier=") {
+			t.Errorf("prompt must not include --tier= when parent tier is empty; got:\n%s", prompt)
+		}
+	})
+}

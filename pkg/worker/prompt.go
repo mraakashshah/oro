@@ -118,6 +118,7 @@ type EpicPromptParams struct {
 	BeadID      string
 	Title       string
 	Description string
+	ParentTier  string // routing tier of the epic; included in oro task create when non-empty
 }
 
 // buildBranchAndRebaseBead builds the Branch & Rebase Task section for epic decomposition.
@@ -173,12 +174,17 @@ func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
 		section(&b, "Branch & Rebase Task", buildBranchAndRebaseBead(params.BeadID))
 	}
 
-	section(&b, "Task Creation", strings.Join([]string{
+	taskCreateLines := []string{
 		"Use this command for each child task. `--parent` attaches the child to this epic; it does not create a dependency:",
 		"```",
 		"oro task create --title=\"<specific task>\" \\",
 		"  --type=task \\",
 		"  --parent " + params.BeadID + " \\",
+	}
+	if params.ParentTier != "" {
+		taskCreateLines = append(taskCreateLines, "  --tier="+params.ParentTier+" \\")
+	}
+	taskCreateLines = append(taskCreateLines,
 		"  --acceptance=\"Test: <path>:<FnName> | Cmd: <test_cmd> | Assert: <expected>",
 		"Read: <file1>:<Symbol1>, <file2>:<Symbol2>",
 		"Signature: <func signature if applicable>",
@@ -187,9 +193,10 @@ func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
 		"```",
 		"Then wire the explicit completion dependency (epic depends on child, not the other way around):",
 		"```",
-		"oro task dep add " + params.BeadID + " <child-id>",
+		"oro task dep add "+params.BeadID+" <child-id>",
 		"```",
-	}, "\n"))
+	)
+	section(&b, "Task Creation", strings.Join(taskCreateLines, "\n"))
 
 	section(&b, "Constraints", strings.Join([]string{
 		"- Do NOT write code or create worktrees — only create tasks",

@@ -2107,3 +2107,34 @@ func TestPromptStalenessWarning(t *testing.T) {
 		}
 	})
 }
+
+func TestWorkerPromptTaskCreateIncludesTier(t *testing.T) {
+	t.Parallel()
+
+	t.Run("includes tier when parent has tier", func(t *testing.T) {
+		t.Parallel()
+		params := worker.EpicPromptParams{
+			BeadID:      "oro-epic-tier",
+			Title:       "Epic with tier",
+			Description: "An epic running at balanced tier",
+			ParentTier:  "balanced",
+		}
+		prompt := worker.BuildEpicDecompositionPrompt(params)
+		if !strings.Contains(prompt, "--tier=balanced") {
+			t.Errorf("epic decomposition prompt must include --tier=balanced when parent tier is set; got:\n%s", prompt)
+		}
+	})
+
+	t.Run("omits tier when parent has no tier", func(t *testing.T) {
+		t.Parallel()
+		params := worker.EpicPromptParams{
+			BeadID:      "oro-epic-no-tier",
+			Title:       "Epic without tier",
+			Description: "An epic with no tier set",
+		}
+		prompt := worker.BuildEpicDecompositionPrompt(params)
+		if strings.Contains(prompt, "--tier=") {
+			t.Errorf("epic decomposition prompt must not include --tier= when parent tier is empty; got:\n%s", prompt)
+		}
+	})
+}

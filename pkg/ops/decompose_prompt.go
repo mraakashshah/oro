@@ -28,7 +28,11 @@ func buildDecomposePrompt(opts DecomposeOpts) string {
 	b.WriteString("2. Analyze why the task is too large or ambiguous.\n")
 	b.WriteString("3. Create 2-4 smaller child tasks:\n")
 	b.WriteString("   For each child task:\n")
-	fmt.Fprintf(&b, "   a. `oro task create --title=\"...\" --type=task --parent=%s --acceptance=\"...\" --estimate=<min>`\n", opts.BeadID)
+	tierFlag := ""
+	if opts.Tier != "" {
+		tierFlag = " --tier=" + opts.Tier
+	}
+	fmt.Fprintf(&b, "   a. `oro task create --title=\"...\" --type=task --parent=%s%s --acceptance=\"...\" --estimate=<min>`\n", opts.BeadID, tierFlag)
 	fmt.Fprintf(&b, "      (`--parent` sets hierarchy only, no dep)\n")
 	fmt.Fprintf(&b, "   b. `oro task dep add %s <child-id>`  (epic depends on child — correct direction)\n", opts.BeadID)
 	fmt.Fprintf(&b, "4. Convert parent to epic: `oro task update %s --type=epic`\n", opts.BeadID)

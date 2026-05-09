@@ -170,6 +170,7 @@ type WriteACOpts struct {
 type DecomposeOpts struct {
 	BeadID   string
 	QGOutput string // quality gate output that triggered decomposition
+	Tier     string // parent bead's routing tier; included in oro task create when non-empty
 }
 
 // DreamOpts configures a memory-consolidation dream agent.
@@ -183,6 +184,7 @@ type EpicFixOpts struct {
 	AC     string // full acceptance criteria text
 	Cmd    string // the Cmd: command that was run
 	Output string // combined stdout+stderr from the failed run
+	Tier   string // parent epic's routing tier; included in oro task create when non-empty
 }
 
 // --- Spawner ---
