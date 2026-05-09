@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"oro/pkg/protocol"
 )
 
 var beadMigrationDefaultDoltCountArgs = []string{"sql", "--result-format", "json", "-q", beadMigrationDoltCountQuery}
@@ -1319,6 +1321,18 @@ func comparableFixtureBead(bead bdExportBead, source bool) comparableMigratedFix
 		if strings.TrimSpace(acceptanceCriteria) == "" {
 			acceptanceCriteria = extractedAC
 		}
+		// Mirror legacy model-to-tier normalization applied by normalizeBDExportBeadForMigration.
+		if bead.Model == "" {
+			if metaModel, _ := bead.Metadata["model"].(string); metaModel != "" {
+				if tier, ok := protocol.LegacyModelToTier(metaModel); ok {
+					if bead.Tier == "" {
+						bead.Tier = string(tier)
+					}
+				} else {
+					bead.Model = metaModel
+				}
+			}
+		}
 	}
 
 	deps := make([]string, 0, len(bead.Dependencies))
@@ -1842,6 +1856,124 @@ func TestMigrateFromDoltReconcileSameSecondTimestampOnlyTieIsClean(t *testing.T)
 	}
 	if strings.Contains(out, "conflict: oro-timestamp-only") {
 		t.Fatalf("timestamp-only tie surfaced conflict:\n%s", out)
+	}
+}
+
+func TestMigrationMapsLegacyModelToTier(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_HOME", filepath.Join(t.TempDir(), "oro-home"))
+	t.Setenv("ORO_PROJECT", "")
+
+	importJSONL := writeMigrationJSONL(t, strings.Join([]string{
+		`{"id":"oro-opus","title":"Opus","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","metadata":{"model":"opus"}}`,
+		`{"id":"oro-sonnet","title":"Sonnet","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","metadata":{"model":"sonnet"}}`,
+		`{"id":"oro-haiku","title":"Haiku","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","metadata":{"model":"haiku"}}`,
+		`{"id":"oro-nonclaude","title":"Non-Claude","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","metadata":{"model":"my-custom-model"}}`,
+		`{"id":"oro-tieralready","title":"Tier already set","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","tier":"balanced","metadata":{"model":"opus"}}`,
+		"",
+	}, "\n"))
+	runBeadMigrateCommand(t, "migrate-from-dolt", "--from-jsonl", importJSONL)
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open migrated db: %v", err)
+	}
+	defer db.Close()
+
+	queryBeadTierModel := func(id string) (tier, model sql.NullString) {
+		t.Helper()
+		if err := db.QueryRow(`SELECT tier, model FROM beads WHERE id=?`, id).Scan(&tier, &model); err != nil {
+			t.Fatalf("query bead %s: %v", id, err)
+		}
+		return tier, model
+	}
+
+	if tier, model := queryBeadTierModel("oro-opus"); tier.String != "deep" || model.Valid {
+		t.Fatalf("oro-opus: tier=%q model=%v, want tier=deep model=NULL", tier.String, model)
+	}
+	if tier, model := queryBeadTierModel("oro-sonnet"); tier.String != "balanced" || model.Valid {
+		t.Fatalf("oro-sonnet: tier=%q model=%v, want tier=balanced model=NULL", tier.String, model)
+	}
+	if tier, model := queryBeadTierModel("oro-haiku"); tier.String != "fast" || model.Valid {
+		t.Fatalf("oro-haiku: tier=%q model=%v, want tier=fast model=NULL", tier.String, model)
+	}
+	if tier, model := queryBeadTierModel("oro-nonclaude"); model.String != "my-custom-model" || tier.Valid {
+		t.Fatalf("oro-nonclaude: tier=%v model=%q, want tier=NULL model=my-custom-model", tier, model.String)
+	}
+	if tier, model := queryBeadTierModel("oro-tieralready"); tier.String != "balanced" || model.Valid {
+		t.Fatalf("oro-tieralready: tier=%q model=%v, want tier=balanced model=NULL", tier.String, model)
+	}
+
+	// reconcile applies same mapping rules
+	reconcileJSONL := writeMigrationJSONL(t, strings.Join([]string{
+		`{"id":"oro-opus","title":"Opus updated","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","metadata":{"model":"opus"}}`,
+		`{"id":"oro-sonnet","title":"Sonnet","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","metadata":{"model":"sonnet"}}`,
+		`{"id":"oro-haiku","title":"Haiku","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","metadata":{"model":"haiku"}}`,
+		`{"id":"oro-nonclaude","title":"Non-Claude","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","metadata":{"model":"my-custom-model"}}`,
+		`{"id":"oro-tieralready","title":"Tier already set","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","tier":"balanced","metadata":{"model":"opus"}}`,
+		"",
+	}, "\n"))
+	runBeadMigrateCommand(t, "migrate-from-dolt", "--reconcile", "--apply", "--from-jsonl", reconcileJSONL)
+
+	if tier, model := queryBeadTierModel("oro-opus"); tier.String != "deep" || model.Valid {
+		t.Fatalf("reconcile oro-opus: tier=%q model=%v, want tier=deep model=NULL", tier.String, model)
+	}
+	if tier, model := queryBeadTierModel("oro-nonclaude"); model.String != "my-custom-model" || tier.Valid {
+		t.Fatalf("reconcile oro-nonclaude: tier=%v model=%q, want tier=NULL model=my-custom-model", tier, model.String)
+	}
+}
+
+func TestMigrationPreservesProviderNativeModel(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_HOME", filepath.Join(t.TempDir(), "oro-home"))
+	t.Setenv("ORO_PROJECT", "")
+
+	importJSONL := writeMigrationJSONL(t, strings.Join([]string{
+		`{"id":"oro-native-only","title":"Native model","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","model":"claude-opus-4-7","metadata":{"model":"opus"}}`,
+		`{"id":"oro-both","title":"Both set","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","tier":"deep","model":"claude-opus-4-7","metadata":{"model":"sonnet"}}`,
+		"",
+	}, "\n"))
+	runBeadMigrateCommand(t, "migrate-from-dolt", "--from-jsonl", importJSONL)
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open migrated db: %v", err)
+	}
+	defer db.Close()
+
+	queryBeadTierModel := func(id string) (tier, model sql.NullString) {
+		t.Helper()
+		if err := db.QueryRow(`SELECT tier, model FROM beads WHERE id=?`, id).Scan(&tier, &model); err != nil {
+			t.Fatalf("query bead %s: %v", id, err)
+		}
+		return tier, model
+	}
+
+	// provider-native model preserved; metadata.model=opus does NOT set tier when model column is set
+	if tier, model := queryBeadTierModel("oro-native-only"); model.String != "claude-opus-4-7" || tier.Valid {
+		t.Fatalf("oro-native-only: tier=%v model=%q, want tier=NULL model=claude-opus-4-7", tier, model.String)
+	}
+	// both tier and model explicitly set: preserve both unchanged
+	if tier, model := queryBeadTierModel("oro-both"); tier.String != "deep" || model.String != "claude-opus-4-7" {
+		t.Fatalf("oro-both: tier=%q model=%q, want tier=deep model=claude-opus-4-7", tier.String, model.String)
+	}
+
+	// reconcile applies same rules: bump updated_at for oro-native-only to trigger update
+	reconcileJSONL := writeMigrationJSONL(t, strings.Join([]string{
+		`{"id":"oro-native-only","title":"Native model updated","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","model":"claude-opus-4-7","metadata":{"model":"opus"}}`,
+		`{"id":"oro-both","title":"Both set","status":"open","priority":1,"issue_type":"task","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","tier":"deep","model":"claude-opus-4-7","metadata":{"model":"sonnet"}}`,
+		"",
+	}, "\n"))
+	runBeadMigrateCommand(t, "migrate-from-dolt", "--reconcile", "--apply", "--from-jsonl", reconcileJSONL)
+
+	// after reconcile: provider-native model still preserved, tier still not set from metadata
+	if tier, model := queryBeadTierModel("oro-native-only"); model.String != "claude-opus-4-7" || tier.Valid {
+		t.Fatalf("reconcile oro-native-only: tier=%v model=%q, want tier=NULL model=claude-opus-4-7", tier, model.String)
+	}
+	if tier, model := queryBeadTierModel("oro-both"); tier.String != "deep" || model.String != "claude-opus-4-7" {
+		t.Fatalf("reconcile oro-both: tier=%q model=%q, want tier=deep model=claude-opus-4-7", tier.String, model.String)
 	}
 }
 

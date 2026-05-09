@@ -1514,6 +1514,17 @@ func normalizeBDExportBeadForMigration(bead bdExportBead) (bdExportBead, error) 
 	if strings.TrimSpace(bead.AcceptanceCriteria) == "" {
 		bead.AcceptanceCriteria = extractedAC
 	}
+	if bead.Model == "" {
+		if metaModel, _ := bead.Metadata["model"].(string); metaModel != "" {
+			if tier, ok := protocol.LegacyModelToTier(metaModel); ok {
+				if bead.Tier == "" {
+					bead.Tier = string(tier)
+				}
+			} else {
+				bead.Model = metaModel
+			}
+		}
+	}
 	return bead, nil
 }
 
