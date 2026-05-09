@@ -161,7 +161,7 @@ func newBeadCreateCmd(store beadstore.Store) *cobra.Command {
 				EstimatedMinutes:   mustIntFlag(cmd, "estimate"),
 				ID:                 mustStringFlag(cmd, "id"),
 				Tags:               mustStringArrayFlag(cmd, "tag"),
-				Tier:               tier,
+				Tier:               string(tier),
 			}
 			bead, err := createBeadFromParams(cmd.Context(), s, params)
 			if err != nil {
