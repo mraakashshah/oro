@@ -11,6 +11,154 @@ import (
 	"oro/pkg/protocol"
 )
 
+// TestEpicQGFailureClassifiedBeforeFixBeadCreation verifies that handleEpicQGFailure
+// classifies QG output before deciding whether to create an epic fix task.
+//
+//   - deterministic: one targeted fix bead per (epic, fingerprint); no duplicates on repeat.
+//   - systemic/flaky: infra incident recorded; no epic fix bead created; incident reused on repeat.
+func TestEpicQGFailureClassifiedBeforeFixBeadCreation(t *testing.T) {
+	// deterministicOut classifies as worker_deterministic (contains "--- fail:" and golangci-lint).
+	const deterministicOut = "--- FAIL: TestFoo (0.12s)\n    testfoo_test.go:42: unexpected result\ngolangci-lint: unused variable\nFAIL\toro/pkg/foo\t0.12s"
+	// systemicOut classifies as systemic (contains "cannot load stdlib").
+	const systemicOut = "package loader failure: cannot load stdlib"
+	// flakyOut classifies as flaky (contains "race detected").
+	const flakyOut = "WARNING: DATA RACE\nrace detected in TestParallel\nrace detected under parallel load"
+
+	setup := func(t *testing.T) (d *Dispatcher, beadSrc *fakeBeadStore) {
+		t.Helper()
+		d, beadSrc, _, _, _, _ = newTestDispatcher(t)
+		ctx := context.Background()
+		if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+		return d, beadSrc
+	}
+
+	t.Run("deterministic creates one fix bead; second call creates no duplicate", func(t *testing.T) {
+		d, beadSrc := setup(t)
+		ctx := context.Background()
+		const epicID = "epic-cls-det"
+		const epicBranch = protocol.EpicBranchPrefix + epicID
+
+		beadSrc.mu.Lock()
+		beadSrc.shown[epicID] = &protocol.BeadDetail{ID: epicID, Title: "Deterministic Epic"}
+		beadSrc.mu.Unlock()
+
+		result := d.handleEpicQGFailure(ctx, epicID, "worker-det", epicBranch, deterministicOut)
+		if result {
+			t.Error("handleEpicQGFailure must return false (epic stays open on QG failure)")
+		}
+
+		beadSrc.mu.Lock()
+		firstCreated := append([]createCall(nil), beadSrc.created...)
+		beadSrc.mu.Unlock()
+
+		epicFixBeads := fixBeadsForEpic(firstCreated, epicID)
+		if len(epicFixBeads) != 1 {
+			t.Fatalf("expected 1 fix bead after first call, got %d: %v", len(epicFixBeads), firstCreated)
+		}
+		if epicFixBeads[0].beadType != "bug" {
+			t.Errorf("fix bead type = %q, want bug", epicFixBeads[0].beadType)
+		}
+		if epicFixBeads[0].priority != 0 {
+			t.Errorf("fix bead priority = %d, want 0", epicFixBeads[0].priority)
+		}
+
+		// Second call with identical output → same fingerprint → no duplicate bead.
+		d.handleEpicQGFailure(ctx, epicID, "worker-det-2", epicBranch, deterministicOut)
+
+		beadSrc.mu.Lock()
+		secondCreated := append([]createCall(nil), beadSrc.created...)
+		beadSrc.mu.Unlock()
+
+		if got := len(fixBeadsForEpic(secondCreated, epicID)); got != 1 {
+			t.Errorf("expected still 1 fix bead after second call, got %d", got)
+		}
+	})
+
+	t.Run("systemic reuses infra incident; no epic fix bead created", func(t *testing.T) {
+		d, beadSrc := setup(t)
+		ctx := context.Background()
+		const epicID = "epic-cls-sys"
+		const epicBranch = protocol.EpicBranchPrefix + epicID
+
+		beadSrc.mu.Lock()
+		beadSrc.shown[epicID] = &protocol.BeadDetail{ID: epicID, Title: "Systemic Epic"}
+		beadSrc.mu.Unlock()
+
+		d.handleEpicQGFailure(ctx, epicID, "worker-sys-1", epicBranch, systemicOut)
+
+		beadSrc.mu.Lock()
+		afterFirst := append([]createCall(nil), beadSrc.created...)
+		beadSrc.mu.Unlock()
+
+		if got := len(fixBeadsForEpic(afterFirst, epicID)); got != 0 {
+			t.Errorf("expected 0 epic fix beads after systemic failure, got %d", got)
+		}
+
+		// Incident must be recorded in DB.
+		var incidentCount int
+		if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM qg_failure_incidents`).Scan(&incidentCount); err != nil {
+			t.Fatalf("count incidents: %v", err)
+		}
+		if incidentCount == 0 {
+			t.Error("expected at least one QG incident recorded for systemic failure")
+		}
+
+		// Second call: reuses same incident (count stays 1); still no fix bead.
+		d.handleEpicQGFailure(ctx, epicID, "worker-sys-2", epicBranch, systemicOut)
+
+		var incidentCountAfter int
+		if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM qg_failure_incidents`).Scan(&incidentCountAfter); err != nil {
+			t.Fatalf("count incidents after second call: %v", err)
+		}
+		if incidentCountAfter != incidentCount {
+			t.Errorf("expected incident count to stay %d (reused), got %d", incidentCount, incidentCountAfter)
+		}
+
+		beadSrc.mu.Lock()
+		afterSecond := append([]createCall(nil), beadSrc.created...)
+		beadSrc.mu.Unlock()
+
+		if got := len(fixBeadsForEpic(afterSecond, epicID)); got != 0 {
+			t.Errorf("expected still 0 epic fix beads after second systemic call, got %d", got)
+		}
+	})
+
+	t.Run("flaky reuses infra incident; no epic fix bead created", func(t *testing.T) {
+		d, beadSrc := setup(t)
+		ctx := context.Background()
+		const epicID = "epic-cls-flaky"
+		const epicBranch = protocol.EpicBranchPrefix + epicID
+
+		beadSrc.mu.Lock()
+		beadSrc.shown[epicID] = &protocol.BeadDetail{ID: epicID, Title: "Flaky Epic"}
+		beadSrc.mu.Unlock()
+
+		d.handleEpicQGFailure(ctx, epicID, "worker-flaky-1", epicBranch, flakyOut)
+		d.handleEpicQGFailure(ctx, epicID, "worker-flaky-2", epicBranch, flakyOut)
+
+		beadSrc.mu.Lock()
+		created := append([]createCall(nil), beadSrc.created...)
+		beadSrc.mu.Unlock()
+
+		if got := len(fixBeadsForEpic(created, epicID)); got != 0 {
+			t.Errorf("expected 0 epic fix beads for flaky failure, got %d: %v", got, created)
+		}
+	})
+}
+
+// fixBeadsForEpic returns createCalls that have parent == epicID.
+func fixBeadsForEpic(created []createCall, epicID string) []createCall {
+	var out []createCall
+	for _, c := range created {
+		if c.parent == epicID {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // TestEpicQGPassesThenMerges covers all assertion points from the acceptance criteria:
 //
 //  1. checkEpicQG creates temp worktree via Create(epicID+"-qg", epicBranch), runs

@@ -149,6 +149,16 @@ CREATE TABLE IF NOT EXISTS qg_failure_occurrences (
 CREATE INDEX IF NOT EXISTS idx_qg_failure_occurrences_incident ON qg_failure_occurrences(incident_id);
 CREATE INDEX IF NOT EXISTS idx_qg_failure_incidents_status ON qg_failure_incidents(status);
 
+-- Tracks which epic fix beads have been created per (epic_id, fingerprint).
+-- Prevents duplicate fix beads when the same QG fingerprint reappears for the same epic.
+CREATE TABLE IF NOT EXISTS qg_epic_fix_beads (
+    epic_id TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    bead_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (epic_id, fingerprint)
+);
+
 -- FTS5 full-text index over memories for BM25-ranked search
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
     content,

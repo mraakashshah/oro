@@ -2068,18 +2068,73 @@ func (d *Dispatcher) checkEpicQG(ctx context.Context, epicID, workerID, epicBran
 		return false
 	}
 	if !passed {
-		_ = d.logEvent(ctx, "epic_qg_failed", "dispatcher", epicID, workerID,
-			fmt.Sprintf(`{"output":%q}`, qgOutput))
-		_, _ = CreateBeadGraph(ctx, d.beads, epicID, []beadstore.CreateParams{{
+		return d.handleEpicQGFailure(ctx, epicID, workerID, epicBranch, qgOutput)
+	}
+	return true
+}
+
+// handleEpicQGFailure classifies a QG failure on an epic branch and takes the
+// appropriate action:
+//   - systemic/flaky → record or reuse the infra incident; no epic-specific fix bead.
+//   - deterministic/unknown → create one targeted fix bead per (epic, fingerprint);
+//     subsequent calls with the same fingerprint are no-ops to prevent duplicates.
+//
+// Always returns false (the epic remains open until QG passes).
+func (d *Dispatcher) handleEpicQGFailure(ctx context.Context, epicID, workerID, epicBranch, qgOutput string) bool {
+	fp, summary := FingerprintQGFailure(qgOutput, QGFingerprintOptions{})
+	rec := QGFailureRecord{
+		BeadID:      epicID,
+		WorkerID:    workerID,
+		Component:   "epic",
+		Fingerprint: fp,
+		Summary:     summary,
+		Output:      qgOutput,
+	}
+	cls := ClassifyQGFailure(rec, QGFailureHistory{})
+
+	_ = d.logEvent(ctx, "epic_qg_failed", "dispatcher", epicID, workerID,
+		fmt.Sprintf(`{"output":%q,"fingerprint":%q,"class":%q,"decision":%q}`, qgOutput, fp, cls.Class, cls.Decision))
+
+	// Systemic or flaky: record/reuse an infra incident; no epic-specific fix bead.
+	if cls.Decision == QGFailureDecisionCreateOrReuseInfra || cls.Decision == QGFailureDecisionBackoffRetry {
+		_, _ = d.createOrReuseQGInfraIncident(ctx, rec, cls)
+		return false
+	}
+
+	// Deterministic or unknown: one fix bead per (epic, fingerprint); skip if already created.
+	if !d.epicFixBeadExists(ctx, epicID, fp) {
+		beads, err := CreateBeadGraph(ctx, d.beads, epicID, []beadstore.CreateParams{{
 			Title:              fmt.Sprintf("P0: Fix QG failures on %s", epicBranch),
 			Type:               "bug",
 			Priority:           0,
 			Description:        fmt.Sprintf("Epic %s QG failed on branch %s.\n\nQG output:\n%s", epicID, epicBranch, qgOutput),
 			AcceptanceCriteria: epicQGFixAcceptance(epicID, epicBranch),
 		}})
+		if err == nil && len(beads) > 0 {
+			d.recordEpicFixBead(ctx, epicID, fp, beads[0].ID)
+		}
+	}
+	return false
+}
+
+func (d *Dispatcher) epicFixBeadExists(ctx context.Context, epicID, fingerprint string) bool {
+	if d.db == nil {
 		return false
 	}
-	return true
+	var count int
+	_ = d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM qg_epic_fix_beads WHERE epic_id=? AND fingerprint=?`,
+		epicID, fingerprint).Scan(&count)
+	return count > 0
+}
+
+func (d *Dispatcher) recordEpicFixBead(ctx context.Context, epicID, fingerprint, beadID string) {
+	if d.db == nil {
+		return
+	}
+	_, _ = d.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO qg_epic_fix_beads (epic_id, fingerprint, bead_id) VALUES (?, ?, ?)`,
+		epicID, fingerprint, beadID)
 }
 
 func epicQGFixAcceptance(epicID, epicBranch string) string {
