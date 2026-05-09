@@ -1957,6 +1957,60 @@ func (d *Dispatcher) guardMerge(beadID string) func() {
 	}
 }
 
+// classifyQGError returns "systemic" for persistent environment failures (e.g.
+// missing quality_gate.sh) and "transient" for recoverable interruptions (e.g.
+// context cancellation). Systemic errors trigger work preservation; transient
+// errors proceed with standard cleanup.
+func classifyQGError(err error) string {
+	if errors.Is(err, os.ErrNotExist) {
+		return "systemic"
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "transient"
+	}
+	return "systemic"
+}
+
+// handlePreMergeQGError classifies a pre-merge QG infrastructure error, records the
+// classification before any cleanup, and performs class-appropriate cleanup.
+// Systemic errors preserve the agent branch for human discovery; transient errors
+// proceed with full cleanup. Always returns false.
+func (d *Dispatcher) handlePreMergeQGError(ctx context.Context, beadID, workerID, worktree string, _ int64, err error) bool {
+	class := classifyQGError(err)
+
+	// Record classification before any escalation or cleanup so it is observable
+	// even if subsequent steps fail.
+	_ = d.logEvent(ctx, "pre_merge_qg_error_classified", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"class":%q,"error":%q}`, class, err.Error()))
+
+	if class == "systemic" {
+		// Preserve branch for human discovery before removing the worktree directory.
+		branch := protocol.BranchPrefix + beadID
+		_ = d.logEvent(ctx, "pre_merge_qg_work_preserved", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"branch":%q,"worktree":%q}`, branch, worktree))
+
+		d.escalate(ctx,
+			protocol.FormatEscalation(protocol.EscStuck, beadID, "pre-merge QG systemic error", err.Error()),
+			beadID, workerID)
+
+		// Remove worktree directory but keep the branch discoverable.
+		if removeErr := d.worktrees.Remove(ctx, worktree); removeErr != nil {
+			_ = d.logEvent(ctx, "worktree_cleanup_failed", "dispatcher", beadID, workerID, removeErr.Error())
+		}
+		d.mu.Lock()
+		delete(d.worktreeByBead, beadID)
+		d.mu.Unlock()
+		return false
+	}
+
+	// Transient: standard escalation and full cleanup.
+	d.escalate(ctx,
+		protocol.FormatEscalation(protocol.EscStuck, beadID, "pre-merge QG error", err.Error()),
+		beadID, workerID)
+	d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
+	return false
+}
+
 // handlePreMergeQGFailure classifies the pre-merge QG failure output, records the
 // occurrence, handles cleanup, and returns false so the caller aborts the merge.
 // For deterministic failures it records via RecordQGFailureOccurrence; for systemic
@@ -2033,11 +2087,7 @@ func (d *Dispatcher) recordPreMergeDeterministicFailure(ctx context.Context, rec
 func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, worktree string, assignmentID int64) bool {
 	qgPassed, qgOutput, qgErr := d.qgRunner.Run(ctx, worktree, false)
 	if qgErr != nil {
-		_ = d.logEvent(ctx, "pre_merge_qg_error", "dispatcher", beadID, workerID,
-			fmt.Sprintf(`{"error":%q}`, qgErr.Error()))
-		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID, "pre-merge QG error", qgErr.Error()), beadID, workerID)
-		d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
-		return false
+		return d.handlePreMergeQGError(ctx, beadID, workerID, worktree, assignmentID, qgErr)
 	}
 	if !qgPassed {
 		return d.handlePreMergeQGFailure(ctx, beadID, workerID, worktree, assignmentID, qgOutput)

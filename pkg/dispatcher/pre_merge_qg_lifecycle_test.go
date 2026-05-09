@@ -2,6 +2,8 @@ package dispatcher //nolint:testpackage // white-box tests for checkPreMergeQG l
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -281,5 +283,130 @@ func TestClosedBeadNotReopenedByStaleAssignment(t *testing.T) {
 	}
 	if assignStatus != "completed" {
 		t.Errorf("assignment status = %q after closed-bead QG fail, want \"completed\"", assignStatus)
+	}
+}
+
+// TestPreMergeQGErrorClassifiedBeforeCleanup verifies that when checkPreMergeQG
+// encounters a qgErr (infrastructure failure, not just a test failure), the dispatcher
+// records a classified occurrence — with its incident class — before invoking worktree
+// removal. This ensures the classification is observable even if cleanup fails.
+func TestPreMergeQGErrorClassifiedBeforeCleanup(t *testing.T) {
+	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const beadID = "bead-qg-classify"
+	const workerID = "w-qg-classify"
+	const worktree = "/tmp/worktree-qg-classify"
+
+	res, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree) VALUES (?, ?, ?)`,
+		beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("insert assignment: %v", err)
+	}
+	assignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("last insert id: %v", err)
+	}
+
+	// Track whether the classification event was already recorded when Remove is called.
+	var classifiedBeforeCleanup bool
+	var cleanupHappened bool
+	wtMgr.mu.Lock()
+	wtMgr.removeFn = func(rctx context.Context, _ string) error {
+		cleanupHappened = true
+		var count int
+		_ = d.db.QueryRowContext(rctx,
+			`SELECT COUNT(*) FROM events WHERE type='pre_merge_qg_error_classified' AND bead_id=?`,
+			beadID).Scan(&count)
+		classifiedBeforeCleanup = count > 0
+		return nil
+	}
+	wtMgr.mu.Unlock()
+
+	// Simulate a systemic infrastructure error: quality_gate.sh not found.
+	d.qgRunner = &mockQGRunner{err: fmt.Errorf("run quality gate: %w", os.ErrNotExist)}
+	d.mu.Lock()
+	d.worktreeByBead[beadID] = worktree
+	d.mu.Unlock()
+
+	d.checkPreMergeQG(ctx, beadID, workerID, worktree, assignmentID)
+
+	// (1) Classification event must be recorded.
+	var payload string
+	err = d.db.QueryRowContext(ctx,
+		`SELECT payload FROM events WHERE type='pre_merge_qg_error_classified' AND bead_id=?`,
+		beadID).Scan(&payload)
+	if err != nil {
+		t.Fatalf("expected 'pre_merge_qg_error_classified' event: %v", err)
+	}
+	if !strings.Contains(payload, `"class"`) {
+		t.Errorf("classification payload = %q, want 'class' field", payload)
+	}
+	// Missing QG script is a systemic incident.
+	if !strings.Contains(payload, `"systemic"`) {
+		t.Errorf("classification payload = %q, want class='systemic' for missing QG script", payload)
+	}
+
+	// (2) Classification must have been recorded before worktree cleanup.
+	if !cleanupHappened {
+		t.Errorf("worktree Remove was never called — cannot verify ordering")
+	}
+	if !classifiedBeforeCleanup {
+		t.Errorf("classification event not recorded before worktree cleanup")
+	}
+}
+
+// TestPreMergeQGFailurePreservesRejectedWork verifies that a systemic pre-merge QG
+// error (e.g. missing quality_gate.sh) preserves the agent branch for discovery rather
+// than deleting it, and logs a preservation event before cleanup.
+func TestPreMergeQGFailurePreservesRejectedWork(t *testing.T) {
+	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const beadID = "bead-qg-preserve"
+	const workerID = "w-qg-preserve"
+	const worktree = "/tmp/worktree-qg-preserve"
+
+	res, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree) VALUES (?, ?, ?)`,
+		beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("insert assignment: %v", err)
+	}
+	assignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("last insert id: %v", err)
+	}
+
+	// Systemic error: missing quality_gate.sh.
+	d.qgRunner = &mockQGRunner{err: fmt.Errorf("run quality gate: %w", os.ErrNotExist)}
+	d.mu.Lock()
+	d.worktreeByBead[beadID] = worktree
+	d.mu.Unlock()
+
+	d.checkPreMergeQG(ctx, beadID, workerID, worktree, assignmentID)
+
+	// (1) Preservation event must be logged.
+	var preservePayload string
+	err = d.db.QueryRowContext(ctx,
+		`SELECT payload FROM events WHERE type='pre_merge_qg_work_preserved' AND bead_id=?`,
+		beadID).Scan(&preservePayload)
+	if err != nil {
+		t.Fatalf("expected 'pre_merge_qg_work_preserved' event: %v", err)
+	}
+	branch := protocol.BranchPrefix + beadID
+	if !strings.Contains(preservePayload, branch) {
+		t.Errorf("preservation payload = %q, want branch reference %q", preservePayload, branch)
+	}
+
+	// (2) Agent branch must NOT be deleted — leave it discoverable.
+	wtMgr.mu.Lock()
+	deletedBranches := append([]string(nil), wtMgr.deletedBranches...)
+	wtMgr.mu.Unlock()
+	for _, b := range deletedBranches {
+		if b == branch {
+			t.Errorf("branch %q was deleted for systemic error; want preserved for discovery", branch)
+		}
 	}
 }
