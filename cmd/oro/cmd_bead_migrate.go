@@ -1514,18 +1514,30 @@ func normalizeBDExportBeadForMigration(bead bdExportBead) (bdExportBead, error) 
 	if strings.TrimSpace(bead.AcceptanceCriteria) == "" {
 		bead.AcceptanceCriteria = extractedAC
 	}
-	if bead.Model == "" {
-		if metaModel, _ := bead.Metadata["model"].(string); metaModel != "" {
-			if tier, ok := protocol.LegacyModelToTier(metaModel); ok {
-				if bead.Tier == "" {
-					bead.Tier = string(tier)
-				}
-			} else {
-				bead.Model = metaModel
-			}
-		}
+	return applyMigrationLegacyModelMapping(bead), nil
+}
+
+// applyMigrationLegacyModelMapping promotes legacy Claude model names stored
+// in metadata.model to the neutral tier field when no provider-native model is
+// set and no explicit tier is already present. Non-Claude metadata.model strings
+// fall through to Bead.Model. Provider-native model columns are never overwritten.
+func applyMigrationLegacyModelMapping(bead bdExportBead) bdExportBead {
+	if bead.Model != "" {
+		return bead
 	}
-	return bead, nil
+	metaModel, _ := bead.Metadata["model"].(string)
+	if metaModel == "" {
+		return bead
+	}
+	tier, ok := protocol.LegacyModelToTier(metaModel)
+	if !ok {
+		bead.Model = metaModel
+		return bead
+	}
+	if bead.Tier == "" {
+		bead.Tier = string(tier)
+	}
+	return bead
 }
 
 func loadSQLiteMigrationDeps(ctx context.Context, db *sql.DB, id string) ([]protocol.Dependency, error) {

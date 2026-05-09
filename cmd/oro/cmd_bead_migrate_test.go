@@ -14,8 +14,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"oro/pkg/protocol"
 )
 
 var beadMigrationDefaultDoltCountArgs = []string{"sql", "--result-format", "json", "-q", beadMigrationDoltCountQuery}
@@ -1322,17 +1320,7 @@ func comparableFixtureBead(bead bdExportBead, source bool) comparableMigratedFix
 			acceptanceCriteria = extractedAC
 		}
 		// Mirror legacy model-to-tier normalization applied by normalizeBDExportBeadForMigration.
-		if bead.Model == "" {
-			if metaModel, _ := bead.Metadata["model"].(string); metaModel != "" {
-				if tier, ok := protocol.LegacyModelToTier(metaModel); ok {
-					if bead.Tier == "" {
-						bead.Tier = string(tier)
-					}
-				} else {
-					bead.Model = metaModel
-				}
-			}
-		}
+		bead = applyMigrationLegacyModelMapping(bead)
 	}
 
 	deps := make([]string, 0, len(bead.Dependencies))
