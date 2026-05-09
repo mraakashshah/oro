@@ -1820,3 +1820,63 @@ func TestOroWorkPassesReviewPatternsToReviewOpts(t *testing.T) {
 		t.Errorf("ReviewPatterns in ReviewOpts = %q, want %q", spy.capturedReviewPatterns, expectedPath)
 	}
 }
+
+func TestWorkModelFlagAcceptsTierAndNative(t *testing.T) {
+	// parseModelFlag classification table
+	cases := []struct {
+		raw       string
+		wantTier  protocol.Tier
+		wantModel string
+	}{
+		{"fast", protocol.TierFast, ""},
+		{"balanced", protocol.TierBalanced, ""},
+		{"deep", protocol.TierDeep, ""},
+		{"background", protocol.TierBackground, ""},
+		{"opus", protocol.TierDeep, ""},            // legacy shortname → tier
+		{"sonnet", protocol.TierBalanced, ""},      // legacy shortname → tier
+		{"haiku", protocol.TierFast, ""},           // legacy shortname → tier
+		{"claude-opus-4-7", "", "claude-opus-4-7"}, // provider-native → model
+		{"claude-sonnet-4-6", "", "claude-sonnet-4-6"},
+		{"", "", ""}, // empty → unset
+	}
+	for _, tc := range cases {
+		tier, model := parseModelFlag(tc.raw)
+		if tier != tc.wantTier {
+			t.Errorf("parseModelFlag(%q) tier = %q, want %q", tc.raw, tier, tc.wantTier)
+		}
+		if model != tc.wantModel {
+			t.Errorf("parseModelFlag(%q) model = %q, want %q", tc.raw, model, tc.wantModel)
+		}
+	}
+
+	// Tier names and provider-native strings both resolve to the correct model.
+	resolvedCases := []struct {
+		modelFlag    string
+		wantResolved string
+	}{
+		{"fast", protocol.ModelHaiku},
+		{"balanced", protocol.ModelSonnet},
+		{"deep", protocol.ModelOpus},
+		{"opus", protocol.ModelOpus}, // legacy maps via tier
+		{"claude-opus-4-7", "claude-opus-4-7"},
+	}
+	for _, tc := range resolvedCases {
+		tier, providerModel := parseModelFlag(tc.modelFlag)
+		b := &protocol.Bead{Tier: tier, Model: providerModel}
+		if got := b.ResolveModel(); got != tc.wantResolved {
+			t.Errorf("parseModelFlag(%q)+ResolveModel() = %q, want %q", tc.modelFlag, got, tc.wantResolved)
+		}
+	}
+
+	// Help text uses tier-first vocabulary.
+	cmd := newWorkCmd()
+	f := cmd.Flag("model")
+	if f == nil {
+		t.Fatal("--model flag missing from oro work")
+	}
+	for _, tier := range []string{"fast", "balanced", "deep", "background"} {
+		if !strings.Contains(f.Usage, tier) {
+			t.Errorf("--model usage should mention tier %q; got: %q", tier, f.Usage)
+		}
+	}
+}

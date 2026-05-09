@@ -82,7 +82,7 @@ automatically. Exit code 0 means the task landed on main.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&cfg.model, "model", "", "starting Claude model (opus/sonnet/haiku); empty uses task metadata")
+	cmd.Flags().StringVar(&cfg.model, "model", "", "routing tier (fast/balanced/deep/background) or provider-native model override; empty uses task metadata")
 	cmd.Flags().DurationVar(&cfg.timeout, "timeout", 15*time.Minute, "per-claude-spawn timeout")
 	cmd.Flags().DurationVar(&cfg.reviewTimeout, "review-timeout", 0, "ops review process timeout override (default: ops review default)")
 	cmd.Flags().BoolVar(&cfg.skipReview, "skip-review", false, "skip ops review gate")
@@ -270,17 +270,22 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	}
 	logStep("Loaded %s: %s", cfg.bead.ID, cfg.bead.Title)
 
-	// Resolve model: explicit flag > bead metadata > default.
-	// Empty cfg.model means no --model flag was provided, so we check bead metadata.
-	// Must happen before dry-run so the resolved model is displayed.
-	model := cfg.model
-	if model == "" {
-		if cfg.bead.Model != "" {
-			model = cfg.bead.Model
+	// Apply --model flag: parse into (tier, providerModel) and update bead fields.
+	// Tier names and legacy shortnames (opus/sonnet/haiku) set Bead.Tier.
+	// Provider-native strings (e.g. claude-opus-4-7) set Bead.Model directly.
+	// Empty flag leaves bead metadata unchanged.
+	if cfg.model != "" {
+		tier, providerModel := parseModelFlag(cfg.model)
+		if tier != "" {
+			cfg.bead.Tier = tier
+			cfg.bead.Model = ""
 		} else {
-			model = protocol.DefaultModel
+			cfg.bead.Model = providerModel
+			cfg.bead.Tier = ""
 		}
 	}
+	// Resolve model using standard bead resolution (Model > Tier > estimate > default).
+	model := cfg.bead.ResolveModel()
 
 	if cfg.dryRun {
 		logStep("Dry run — would execute bead %s with model=%s, timeout=%s, skip-review=%t",
@@ -773,6 +778,25 @@ var logOut io.Writer = os.Stderr //nolint:gochecknoglobals // package-level writ
 // logStep prints a status line to logOut (stderr + optional log file).
 func logStep(format string, args ...any) {
 	fmt.Fprintf(logOut, format+"\n", args...) //nolint:gosec // logStep is only called with internal format strings.
+}
+
+// parseModelFlag interprets a --model flag value and returns (tier, providerModel).
+// Tier names (fast/balanced/deep/background) and legacy shortnames (opus/sonnet/haiku)
+// return a non-empty Tier and empty providerModel; the tier drives model selection.
+// Anything else is treated as a provider-native model string (e.g. claude-opus-4-7).
+// Empty input returns ("", "") meaning "unset — use bead metadata".
+func parseModelFlag(raw string) (tier protocol.Tier, providerModel string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", ""
+	}
+	if t := protocol.Tier(strings.ToLower(raw)); t.IsKnown() {
+		return t, ""
+	}
+	if t, ok := protocol.LegacyModelToTier(raw); ok {
+		return t, ""
+	}
+	return "", raw
 }
 
 // modelShort returns a human-friendly model name.

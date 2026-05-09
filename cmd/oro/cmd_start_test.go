@@ -1433,3 +1433,32 @@ func mkdirTempIgnoreCleanupErrors(t *testing.T) string {
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return dir
 }
+
+func TestStartModelFlagAcceptsTier(t *testing.T) {
+	cmd := newStartCmd()
+	f := cmd.Flag("model")
+	if f == nil {
+		t.Fatal("--model flag missing from oro start")
+	}
+
+	// Help text uses tier-first vocabulary.
+	for _, tier := range []string{"fast", "balanced", "deep", "background"} {
+		if !strings.Contains(f.Usage, tier) {
+			t.Errorf("--model usage should mention tier %q; got: %q", tier, f.Usage)
+		}
+	}
+
+	// Flag accepts tier names without error.
+	for _, tier := range []string{"fast", "balanced", "deep", "background"} {
+		if err := cmd.Flags().Set("model", tier); err != nil {
+			t.Errorf("--model=%q rejected: %v", tier, err)
+		}
+	}
+
+	// Flag accepts provider-native strings without error.
+	for _, native := range []string{"claude-opus-4-7", "claude-sonnet-4-6"} {
+		if err := cmd.Flags().Set("model", native); err != nil {
+			t.Errorf("--model=%q rejected: %v", native, err)
+		}
+	}
+}

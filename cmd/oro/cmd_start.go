@@ -572,7 +572,7 @@ func newStartCmd() *cobra.Command {
 	cmd.Flags().IntVarP(&workers, "workers", "w", 2, "number of workers to spawn initially")
 	cmd.Flags().IntVar(&maxWorkers, "max-workers", 0, "maximum worker ceiling for auto-scale (default: same as --workers)")
 	cmd.Flags().BoolVarP(&daemonOnly, "daemon-only", "d", false, "start dispatcher without tmux/sessions (for CI or testing)")
-	cmd.Flags().StringVar(&model, "model", "sonnet", "model for manager session")
+	cmd.Flags().StringVar(&model, "model", "balanced", "routing tier (fast/balanced/deep/background) or provider-native model for manager session")
 	cmd.Flags().BoolVarP(&detach, "detach", "D", false, "start in detached mode (don't attach to tmux session)")
 	cmd.Flags().DurationVar(&progressTimeout, "progress-timeout", 0, "max time without worker progress before STUCK_WORKER (default 10m)")
 	cmd.Flags().DurationVar(&opsReviewTimeout, "ops-review-timeout", 0, "max time for ops review subprocess (default 35m)")
