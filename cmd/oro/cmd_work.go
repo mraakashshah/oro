@@ -107,8 +107,14 @@ type opsReviewer interface {
 
 // workDeps holds injectable dependencies for testability.
 type workDeps struct {
-	beadSrc         beadstore.Store
-	wtMgr           dispatcher.WorktreeManager
+	beadSrc      beadstore.Store
+	wtMgr        dispatcher.WorktreeManager
+	claudeWorker worker.StreamingSpawner
+	codexWorker  worker.StreamingSpawner
+	claudeOps    ops.BatchSpawner
+	codexOps     ops.BatchSpawner
+	// spawner is a fallback used by tests that construct workDeps directly
+	// without setting claudeWorker/codexWorker.
 	spawner         worker.StreamingSpawner
 	opsMgr          opsReviewer
 	merger          merger
@@ -177,14 +183,7 @@ func newProductionDeps(reviewTimeout time.Duration) (*workDeps, error) {
 	if err != nil {
 		return nil, fmt.Errorf("getwd: %w", err)
 	}
-	runtime, err := resolveProductionRuntime()
-	if err != nil {
-		return nil, err
-	}
 	runner := &dispatcher.ExecCommandRunner{}
-
-	// Initialize memory store and code index from project-scoped DB paths.
-	// The native beadstore is required; memory/code index degrade gracefully.
 	var beadDB *sql.DB
 	var memStore *memory.Store
 	var codeIdx *codesearch.CodeIndex
@@ -204,18 +203,28 @@ func newProductionDeps(reviewTimeout time.Duration) (*workDeps, error) {
 	}
 
 	projectPaths, _ := ResolvePaths(repoRoot)
-
-	// Load DefaultBranch from config.yaml, defaulting to "main" if not specified.
 	defaultBranch := readDefaultBranch(".")
 	if defaultBranch == "" {
 		defaultBranch = "main"
 	}
 
+	claudeWorker := newClaudeWorkerSpawner()
+	codexWorker := newCodexWorkerSpawner()
+	claudeOps := newClaudeOpsSpawner()
+	codexOps := newCodexOpsSpawner()
+	opsSpawn := claudeOps
+	if readAgentRuntime() == runtimeCodex {
+		opsSpawn = codexOps
+	}
+
 	return &workDeps{
 		beadSrc:         newWorkerBeadStore(beadDB, memStore),
 		wtMgr:           dispatcher.NewGitWorktreeManager(repoRoot, "", projectPaths.QualityGate, runner),
-		spawner:         runtime.workerSpawn,
-		opsMgr:          ops.NewSpawnerWithReviewTimeout(runtime.opsSpawn, reviewTimeout),
+		claudeWorker:    claudeWorker,
+		codexWorker:     codexWorker,
+		claudeOps:       claudeOps,
+		codexOps:        codexOps,
+		opsMgr:          ops.NewSpawnerWithReviewTimeout(opsSpawn, reviewTimeout),
 		merger:          merge.NewCoordinator(&merge.ExecGitRunner{}),
 		repoRoot:        repoRoot,
 		memStore:        memStore,
@@ -307,8 +316,8 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 			cfg.bead.Tier = ""
 		}
 	}
-	// Resolve model using standard bead resolution (Model > Tier > estimate > default).
-	_, model := agentmodel.ResolveForBead("worker", *cfg.bead)
+	// Resolve runtime and model using standard bead resolution (Model > Tier > estimate > default).
+	runtime, model := agentmodel.ResolveForBead("worker", *cfg.bead)
 
 	if cfg.dryRun {
 		logStep("Dry run — would execute bead %s with model=%s, timeout=%s, skip-review=%t",
@@ -392,7 +401,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		if !skipClaude {
 			logStep("--- attempt %d (%s) ---", attempt, modelShort(model))
 			logStep("Spawning claude (%s, attempt %d)...", modelShort(model), attempt)
-			if err := spawnAndWait(ctx, cfg, deps, worktree, model, attempt, feedback, logFile); err != nil {
+			if err := spawnAndWait(ctx, runtime, model, cfg, deps, worktree, attempt, feedback, logFile); err != nil {
 				return fmt.Errorf("claude spawn: %w", err)
 			}
 			logStep("Claude completed")
@@ -435,7 +444,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 
 	// Step 8: Ops review.
 	if !cfg.skipReview {
-		if err := reviewLoop(ctx, cfg, deps, worktree, targetBranch, &model, &attempt, &feedback, logFile); err != nil {
+		if err := reviewLoop(ctx, runtime, cfg, deps, worktree, targetBranch, &model, &attempt, &feedback, logFile); err != nil {
 			return err
 		}
 	} else {
@@ -604,10 +613,12 @@ func parseTestFilePath(ac string) string {
 	return strings.TrimSpace(parts[0])
 }
 
-// spawnAndWait spawns claude -p and waits for it to exit, with timeout.
-// logFile, when non-nil, receives a copy of Claude's stdout alongside stderr.
-func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree, model string, attempt int, feedback string, logFile *os.File) error {
-	// Resolve project root from worktree path
+// spawnAndWait spawns the worker process for the given runtime and waits for
+// it to exit, with timeout. runtime selects between claudeWorker and
+// codexWorker; an unknown runtime falls back to claudeWorker (or the legacy
+// spawner field for tests that set it directly).
+// logFile, when non-nil, receives a copy of stdout alongside stderr.
+func spawnAndWait(ctx context.Context, runtime, model string, cfg *workConfig, deps *workDeps, worktree string, attempt int, feedback string, logFile *os.File) error {
 	projectRoot := ""
 	if resolved, err := langprofile.ResolveProjectRoot(worktree); err == nil {
 		projectRoot = resolved
@@ -617,12 +628,10 @@ func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree
 	if deps.memStore != nil {
 		memCtx, _ = memory.ForPrompt(ctx, deps.memStore, nil, buildSearchQuery(cfg.bead.Title, cfg.bead.Labels), 0)
 	}
-
 	var codeCtx string
 	if deps.codeIndex != nil {
 		codeCtx = codeSearchContext(ctx, deps.codeIndex, cfg.bead.Title, worktree)
 	}
-
 	codeStructCtx := codeStructureContext(worktree, cfg.bead.AcceptanceCriteria)
 
 	prompt := worker.AssemblePrompt(worker.PromptParams{
@@ -642,13 +651,18 @@ func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, cfg.timeout)
 	defer cancel()
+	sp := deps.claudeWorker
+	if runtime == runtimeCodex && deps.codexWorker != nil {
+		sp = deps.codexWorker
+	} else if sp == nil {
+		sp = deps.spawner
+	}
 
-	proc, stdout, _, err := deps.spawner.Spawn(timeoutCtx, model, prompt, worktree)
+	proc, stdout, _, err := sp.Spawn(timeoutCtx, model, prompt, worktree)
 	if err != nil {
 		return fmt.Errorf("spawn: %w", err)
 	}
 
-	// Drain stdout (echoes to stderr + optional log file, extracts memories).
 	if stdout != nil {
 		writers := []io.Writer{os.Stderr}
 		if logFile != nil {
@@ -658,11 +672,10 @@ func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree
 		if deps.memStore != nil {
 			memInserter = deps.memStore
 		}
-		worker.DrainOutputInWorkdir(ctx, stdout, deps.spawner.StreamFormat(), memInserter, cfg.beadID, &memory.CLISpawner{}, worktree, writers...)
+		worker.DrainOutputInWorkdir(ctx, stdout, sp.StreamFormat(), memInserter, cfg.beadID, &memory.CLISpawner{}, worktree, writers...)
 	}
 
 	if err := proc.Wait(); err != nil {
-		// Non-zero exit is common for claude -p; log but don't fail.
 		logStep("Claude exited with: %v", err)
 	}
 	return nil
@@ -670,7 +683,7 @@ func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree
 
 // reviewLoop runs ops review and handles rejection retries.
 // targetBranch is the branch the worker merges into (epic branch or "main").
-func reviewLoop(ctx context.Context, cfg *workConfig, deps *workDeps, worktree, targetBranch string, model *string, attempt *int, feedback *string, logFile *os.File) error {
+func reviewLoop(ctx context.Context, runtime string, cfg *workConfig, deps *workDeps, worktree, targetBranch string, model *string, attempt *int, feedback *string, logFile *os.File) error {
 	projPaths, err := ResolvePaths(worktree)
 	if err != nil {
 		return fmt.Errorf("resolve paths: %w", err)
@@ -698,7 +711,7 @@ func reviewLoop(ctx context.Context, cfg *workConfig, deps *workDeps, worktree, 
 			return nil
 
 		case ops.VerdictRejected:
-			nextRejects, err := handleReviewRejection(ctx, cfg, deps, worktree, result, rejects, model, attempt, feedback, logFile)
+			nextRejects, err := handleReviewRejection(ctx, runtime, cfg, deps, worktree, result, rejects, model, attempt, feedback, logFile)
 			if err != nil {
 				return err
 			}
@@ -725,7 +738,7 @@ func waitForReviewResult(ctx context.Context, resultCh <-chan ops.Result) (ops.R
 	}
 }
 
-func handleReviewRejection(ctx context.Context, cfg *workConfig, deps *workDeps, worktree string, result ops.Result, rejects int, model *string, attempt *int, feedback *string, logFile *os.File) (int, error) {
+func handleReviewRejection(ctx context.Context, runtime string, cfg *workConfig, deps *workDeps, worktree string, result ops.Result, rejects int, model *string, attempt *int, feedback *string, logFile *os.File) (int, error) {
 	rejects++
 	logStep("Review REJECTED (%d/%d): %s", rejects, maxReviewRejects, truncate(result.Feedback, 200))
 
@@ -741,7 +754,7 @@ func handleReviewRejection(ctx context.Context, cfg *workConfig, deps *workDeps,
 	*feedback = result.Feedback
 
 	logStep("Re-executing with review feedback (opus)...")
-	if err := spawnAndWait(ctx, cfg, deps, worktree, *model, *attempt, *feedback, logFile); err != nil {
+	if err := spawnAndWait(ctx, runtime, *model, cfg, deps, worktree, *attempt, *feedback, logFile); err != nil {
 		return rejects, fmt.Errorf("claude re-spawn after review: %w", err)
 	}
 

@@ -686,7 +686,7 @@ func TestSpawnAndWait_MemoryWired(t *testing.T) {
 			bead:       testBead(),
 		}
 
-		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "sonnet", 0, "", nil); err != nil {
+		if err := spawnAndWait(ctx, runtimeClaude, "sonnet", cfg, deps, "/tmp/wt", 0, "", nil); err != nil {
 			t.Fatalf("spawnAndWait: %v", err)
 		}
 
@@ -727,7 +727,7 @@ func TestSpawnAndWait_MemoryWired(t *testing.T) {
 			bead:       testBead(),
 		}
 
-		if err := spawnAndWait(context.Background(), cfg, deps, "/tmp/wt", "sonnet", 0, "", nil); err != nil {
+		if err := spawnAndWait(context.Background(), runtimeClaude, "sonnet", cfg, deps, "/tmp/wt", 0, "", nil); err != nil {
 			t.Fatalf("spawnAndWait: %v", err)
 		}
 
@@ -763,7 +763,7 @@ func TestSpawnAndWait_MemoryWired(t *testing.T) {
 			bead:       testBead(),
 		}
 
-		if err := spawnAndWait(context.Background(), cfg, deps, "/tmp/wt", "sonnet", 0, "", nil); err != nil {
+		if err := spawnAndWait(context.Background(), runtimeClaude, "sonnet", cfg, deps, "/tmp/wt", 0, "", nil); err != nil {
 			t.Errorf("spawnAndWait with nil memStore should not error: %v", err)
 		}
 	})

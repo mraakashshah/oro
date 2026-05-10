@@ -691,16 +691,11 @@ func TestBuildDepsResolvesRuntime(t *testing.T) {
 		if err != nil {
 			t.Fatalf("newProductionDeps: %v", err)
 		}
-		if deps.spawner != wantWorker {
-			t.Fatalf("spawner = %#v, want injected claude runtime spawner %#v", deps.spawner, wantWorker)
+		if deps.claudeWorker != wantWorker {
+			t.Fatalf("claudeWorker = %#v, want injected claude runtime spawner %#v", deps.claudeWorker, wantWorker)
 		}
-
-		rt, err := resolveProductionRuntime()
-		if err != nil {
-			t.Fatalf("resolveProductionRuntime: %v", err)
-		}
-		if rt.opsSpawn != wantOps {
-			t.Fatalf("ops spawner = %#v, want injected claude ops spawner %#v", rt.opsSpawn, wantOps)
+		if deps.claudeOps != wantOps {
+			t.Fatalf("claudeOps = %#v, want injected claude ops spawner %#v", deps.claudeOps, wantOps)
 		}
 	})
 
@@ -726,16 +721,11 @@ func TestBuildDepsResolvesRuntime(t *testing.T) {
 		if err != nil {
 			t.Fatalf("newProductionDeps: %v", err)
 		}
-		if deps.spawner != wantWorker {
-			t.Fatalf("spawner = %#v, want injected codex runtime spawner %#v", deps.spawner, wantWorker)
+		if deps.codexWorker != wantWorker {
+			t.Fatalf("codexWorker = %#v, want injected codex runtime spawner %#v", deps.codexWorker, wantWorker)
 		}
-
-		rt, err := resolveProductionRuntime()
-		if err != nil {
-			t.Fatalf("resolveProductionRuntime: %v", err)
-		}
-		if rt.opsSpawn != wantOps {
-			t.Fatalf("ops spawner = %#v, want injected codex ops spawner %#v", rt.opsSpawn, wantOps)
+		if deps.codexOps != wantOps {
+			t.Fatalf("codexOps = %#v, want injected codex ops spawner %#v", deps.codexOps, wantOps)
 		}
 	})
 }
@@ -874,7 +864,7 @@ func TestSpawnAndWaitWithMemoryAndCodeContext(t *testing.T) {
 			bead:    testBead(),
 		}
 
-		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "sonnet", 0, "", nil); err != nil {
+		if err := spawnAndWait(ctx, runtimeClaude, "sonnet", cfg, deps, "/tmp/wt", 0, "", nil); err != nil {
 			t.Fatalf("spawnAndWait: %v", err)
 		}
 
@@ -928,7 +918,7 @@ func TestBeadHelper() string {
 			bead:    testBead(),
 		}
 
-		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "sonnet", 0, "", nil); err != nil {
+		if err := spawnAndWait(ctx, runtimeClaude, "sonnet", cfg, deps, "/tmp/wt", 0, "", nil); err != nil {
 			t.Fatalf("spawnAndWait: %v", err)
 		}
 
@@ -956,7 +946,7 @@ func TestBeadHelper() string {
 			bead:    testBead(),
 		}
 
-		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "sonnet", 0, "", nil); err != nil {
+		if err := spawnAndWait(ctx, runtimeClaude, "sonnet", cfg, deps, "/tmp/wt", 0, "", nil); err != nil {
 			t.Errorf("spawnAndWait with nil deps should not error: %v", err)
 		}
 		if sp.capturedPrompt == "" {
@@ -983,7 +973,7 @@ func TestBeadHelper() string {
 			bead:    testBead(),
 		}
 
-		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "sonnet", 0, "", nil); err != nil {
+		if err := spawnAndWait(ctx, runtimeClaude, "sonnet", cfg, deps, "/tmp/wt", 0, "", nil); err != nil {
 			t.Fatalf("spawnAndWait: %v", err)
 		}
 
@@ -1117,7 +1107,7 @@ func TestWorkCommandEpicBranch(t *testing.T) {
 		model := "sonnet"
 		attempt := 0
 		feedback := ""
-		err := reviewLoop(context.Background(), cfg, deps, "/tmp/wt", epicTargetBranch, &model, &attempt, &feedback, nil)
+		err := reviewLoop(context.Background(), runtimeClaude, cfg, deps, "/tmp/wt", epicTargetBranch, &model, &attempt, &feedback, nil)
 		if err != nil {
 			t.Fatalf("reviewLoop: %v", err)
 		}
@@ -1274,7 +1264,7 @@ func TestReviewLoop_RejectedThenApproved(t *testing.T) {
 	attempt := 0
 	feedback := ""
 
-	err := reviewLoop(context.Background(), cfg, deps, "/tmp/wt", "main", &model, &attempt, &feedback, nil)
+	err := reviewLoop(context.Background(), runtimeClaude, cfg, deps, "/tmp/wt", "main", &model, &attempt, &feedback, nil)
 	if err != nil {
 		t.Fatalf("expected nil, got: %v", err)
 	}
@@ -1307,7 +1297,7 @@ func TestReviewLoop_RejectedMaxTimes(t *testing.T) {
 	attempt := 0
 	feedback := ""
 
-	err := reviewLoop(context.Background(), cfg, deps, "/tmp/wt", "main", &model, &attempt, &feedback, nil)
+	err := reviewLoop(context.Background(), runtimeClaude, cfg, deps, "/tmp/wt", "main", &model, &attempt, &feedback, nil)
 	if err == nil {
 		t.Fatal("expected error on max rejections")
 	}
@@ -1343,7 +1333,7 @@ func TestReviewLoop_QGFailAfterRejection(t *testing.T) {
 	attempt := 0
 	feedback := ""
 
-	err := reviewLoop(context.Background(), cfg, deps, "/tmp/wt", "main", &model, &attempt, &feedback, nil)
+	err := reviewLoop(context.Background(), runtimeClaude, cfg, deps, "/tmp/wt", "main", &model, &attempt, &feedback, nil)
 	if err == nil {
 		t.Fatal("expected error when QG fails after review rejection")
 	}
@@ -1378,7 +1368,7 @@ func TestReviewLoop_QGErrorAfterRejection(t *testing.T) {
 	attempt := 0
 	feedback := ""
 
-	err := reviewLoop(context.Background(), cfg, deps, "/tmp/wt", "main", &model, &attempt, &feedback, nil)
+	err := reviewLoop(context.Background(), runtimeClaude, cfg, deps, "/tmp/wt", "main", &model, &attempt, &feedback, nil)
 	if err == nil {
 		t.Fatal("expected error when runQG returns error")
 	}
@@ -1406,7 +1396,7 @@ func TestReviewLoop_SpawnErrorAfterRejection(t *testing.T) {
 	attempt := 0
 	feedback := ""
 
-	err := reviewLoop(context.Background(), cfg, deps, "/tmp/wt", "main", &model, &attempt, &feedback, nil)
+	err := reviewLoop(context.Background(), runtimeClaude, cfg, deps, "/tmp/wt", "main", &model, &attempt, &feedback, nil)
 	if err == nil {
 		t.Fatal("expected error when spawn fails after rejection")
 	}
@@ -1478,7 +1468,7 @@ func TestWorkReviewFailsClosedOnFailedOrUnknownVerdict(t *testing.T) {
 			logOut = &logs
 			defer func() { logOut = oldLogOut }()
 
-			err := reviewLoop(context.Background(), cfg, deps, "/tmp/wt", "main", &model, &attempt, &feedback, nil)
+			err := reviewLoop(context.Background(), runtimeClaude, cfg, deps, "/tmp/wt", "main", &model, &attempt, &feedback, nil)
 			if err == nil {
 				t.Fatal("expected reviewLoop to fail closed")
 			}
@@ -1806,7 +1796,7 @@ func TestOroWorkPassesReviewPatternsToReviewOpts(t *testing.T) {
 	attempt := 0
 	feedback := ""
 
-	err := reviewLoop(context.Background(), cfg, deps, repoRoot, "main", &model, &attempt, &feedback, nil)
+	err := reviewLoop(context.Background(), runtimeClaude, cfg, deps, repoRoot, "main", &model, &attempt, &feedback, nil)
 	if err != nil {
 		t.Fatalf("reviewLoop: %v", err)
 	}
@@ -1879,4 +1869,118 @@ func TestWorkModelFlagAcceptsTierAndNative(t *testing.T) {
 			t.Errorf("--model usage should mention tier %q; got: %q", tier, f.Usage)
 		}
 	}
+}
+
+// captureRuntimeSpawner records whether Spawn was called, for runtime routing tests.
+type captureRuntimeSpawner struct {
+	proc   worker.Process
+	called bool
+}
+
+func (s *captureRuntimeSpawner) Spawn(_ context.Context, _, _, _ string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
+	s.called = true
+	return s.proc, io.NopCloser(strings.NewReader("")), nil, nil
+}
+
+func (s *captureRuntimeSpawner) StreamFormat() worker.StreamFormat {
+	return worker.StreamFormatClaudeJSON
+}
+
+// TestNewProductionDepsHoldsBothRuntimes verifies that newProductionDeps always
+// creates both Claude and Codex worker spawners and ops BatchSpawners,
+// regardless of the AGENT_RUNTIME env var.
+func TestNewProductionDepsHoldsBothRuntimes(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+	t.Setenv("ORO_HOME", tmpDir)
+	t.Setenv("ORO_PROJECT", "")
+
+	wantClaudeWorker := &testRuntimeWorkerSpawner{}
+	wantCodexWorker := &testRuntimeWorkerSpawner{}
+	wantClaudeOps := &testRuntimeOpsSpawner{}
+	wantCodexOps := &testRuntimeOpsSpawner{}
+
+	prevClaudeWorker := newClaudeWorkerSpawner
+	prevCodexWorker := newCodexWorkerSpawner
+	prevClaudeOps := newClaudeOpsSpawner
+	prevCodexOps := newCodexOpsSpawner
+	newClaudeWorkerSpawner = func() worker.StreamingSpawner { return wantClaudeWorker }
+	newCodexWorkerSpawner = func() worker.StreamingSpawner { return wantCodexWorker }
+	newClaudeOpsSpawner = func() ops.BatchSpawner { return wantClaudeOps }
+	newCodexOpsSpawner = func() ops.BatchSpawner { return wantCodexOps }
+	defer func() {
+		newClaudeWorkerSpawner = prevClaudeWorker
+		newCodexWorkerSpawner = prevCodexWorker
+		newClaudeOpsSpawner = prevClaudeOps
+		newCodexOpsSpawner = prevCodexOps
+	}()
+
+	deps, err := newProductionDeps(0)
+	if err != nil {
+		t.Fatalf("newProductionDeps: %v", err)
+	}
+	if deps.claudeWorker != wantClaudeWorker {
+		t.Errorf("claudeWorker = %#v, want injected claude worker spawner", deps.claudeWorker)
+	}
+	if deps.codexWorker != wantCodexWorker {
+		t.Errorf("codexWorker = %#v, want injected codex worker spawner", deps.codexWorker)
+	}
+	if deps.claudeOps != wantClaudeOps {
+		t.Errorf("claudeOps = %#v, want injected claude ops spawner", deps.claudeOps)
+	}
+	if deps.codexOps != wantCodexOps {
+		t.Errorf("codexOps = %#v, want injected codex ops spawner", deps.codexOps)
+	}
+}
+
+// TestSpawnAndWaitTakesRuntimeParam verifies that spawnAndWait selects the
+// worker spawner from deps based on the runtime parameter.
+func TestSpawnAndWaitTakesRuntimeParam(t *testing.T) {
+	t.Run("runtime=claude uses claudeWorker", func(t *testing.T) {
+		claudeSp := &captureRuntimeSpawner{proc: &mockProcess{}}
+		codexSp := &captureRuntimeSpawner{proc: &mockProcess{}}
+		deps := &workDeps{
+			claudeWorker: claudeSp,
+			codexWorker:  codexSp,
+		}
+		cfg := &workConfig{
+			beadID:  "oro-test",
+			timeout: 5 * time.Second,
+			bead:    testBead(),
+		}
+
+		if err := spawnAndWait(context.Background(), runtimeClaude, "sonnet", cfg, deps, "/tmp/wt", 0, "", nil); err != nil {
+			t.Fatalf("spawnAndWait: %v", err)
+		}
+		if !claudeSp.called {
+			t.Error("expected claude spawner to be called for runtime=claude")
+		}
+		if codexSp.called {
+			t.Error("codex spawner must not be called for runtime=claude")
+		}
+	})
+
+	t.Run("runtime=codex uses codexWorker", func(t *testing.T) {
+		claudeSp := &captureRuntimeSpawner{proc: &mockProcess{}}
+		codexSp := &captureRuntimeSpawner{proc: &mockProcess{}}
+		deps := &workDeps{
+			claudeWorker: claudeSp,
+			codexWorker:  codexSp,
+		}
+		cfg := &workConfig{
+			beadID:  "oro-test",
+			timeout: 5 * time.Second,
+			bead:    testBead(),
+		}
+
+		if err := spawnAndWait(context.Background(), runtimeCodex, "codex-default", cfg, deps, "/tmp/wt", 0, "", nil); err != nil {
+			t.Fatalf("spawnAndWait: %v", err)
+		}
+		if claudeSp.called {
+			t.Error("claude spawner must not be called for runtime=codex")
+		}
+		if !codexSp.called {
+			t.Error("expected codex spawner to be called for runtime=codex")
+		}
+	})
 }
