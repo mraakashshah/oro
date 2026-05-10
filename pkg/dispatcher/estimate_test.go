@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"oro/pkg/config"
+	"oro/pkg/protocol"
 )
 
 // anthropicResponse mimics the subset of the Anthropic Messages API response we use.
@@ -52,6 +55,7 @@ func TestEstimateBeadMinutes(t *testing.T) {
 			apiKey:  "test-key",
 			client:  srv.Client(),
 			baseURL: srv.URL,
+			model:   "claude-haiku-4-5-20251001",
 		}
 
 		got := e.Estimate(context.Background(), "Some bead title", "Some acceptance criteria")
@@ -96,7 +100,7 @@ func TestEstimateBeadMinutes(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		e := &llmEstimator{apiKey: "test-key", client: srv.Client(), baseURL: srv.URL}
+		e := &llmEstimator{apiKey: "test-key", client: srv.Client(), baseURL: srv.URL, model: "claude-haiku-4-5-20251001"}
 		got := e.Estimate(context.Background(), "Some title", "Some acceptance")
 		if got != 0 {
 			t.Errorf("expected 0 on 500 error, got %d", got)
@@ -109,7 +113,7 @@ func TestEstimateBeadMinutes(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		e := &llmEstimator{apiKey: "test-key", client: srv.Client(), baseURL: srv.URL}
+		e := &llmEstimator{apiKey: "test-key", client: srv.Client(), baseURL: srv.URL, model: "claude-haiku-4-5-20251001"}
 		got := e.Estimate(context.Background(), "Some title", "Some acceptance")
 		if got != 0 {
 			t.Errorf("expected 0 on rate limit error, got %d", got)
@@ -131,7 +135,7 @@ func TestEstimateBeadMinutes(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		e := &llmEstimator{apiKey: "test-key", client: srv.Client(), baseURL: srv.URL}
+		e := &llmEstimator{apiKey: "test-key", client: srv.Client(), baseURL: srv.URL, model: "claude-haiku-4-5-20251001"}
 		got := e.Estimate(context.Background(), "Some title", "Some acceptance")
 		if got != 0 {
 			t.Errorf("expected 0 for non-numeric response, got %d", got)
@@ -156,7 +160,7 @@ func TestEstimateBeadMinutes(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // cancel immediately
 
-		e := &llmEstimator{apiKey: "test-key", client: srv.Client(), baseURL: srv.URL}
+		e := &llmEstimator{apiKey: "test-key", client: srv.Client(), baseURL: srv.URL, model: "claude-haiku-4-5-20251001"}
 		got := e.Estimate(ctx, "Some title", "Some acceptance")
 		if got != 0 {
 			t.Errorf("expected 0 for cancelled context, got %d", got)
@@ -197,6 +201,7 @@ func TestEstimateBeadMinutes(t *testing.T) {
 			apiKey:  "test-key",
 			client:  srv.Client(),
 			baseURL: srv.URL,
+			model:   "claude-haiku-4-5-20251001",
 		}
 		start := time.Now()
 		got := e.Estimate(context.Background(), "Some title", "Some acceptance")
@@ -227,10 +232,147 @@ func TestEstimateBeadMinutes(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		e := &llmEstimator{apiKey: "test-key", client: srv.Client(), baseURL: srv.URL}
+		e := &llmEstimator{apiKey: "test-key", client: srv.Client(), baseURL: srv.URL, model: "claude-haiku-4-5-20251001"}
 		got := e.Estimate(context.Background(), "Implement feature X", "Tests pass")
 		if got != 7 {
 			t.Errorf("expected 7, got %d", got)
+		}
+	})
+}
+
+func TestEstimatorReadsAPIModelsBlock(t *testing.T) {
+	t.Run("uses model resolved from api_models via roles.estimator.api_model", func(t *testing.T) {
+		cfg := &config.AgentConfig{
+			APIModels: map[string]string{
+				"my_estimator_key": "claude-custom-haiku",
+			},
+			Roles: map[string]config.RoleConfig{
+				"estimator": {Transport: "api", Provider: "anthropic", APIModel: "my_estimator_key"},
+			},
+		}
+
+		var capturedModel string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			if m, ok := body["model"].(string); ok {
+				capturedModel = m
+			}
+			resp := anthropicResponse{
+				Content: []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				}{
+					{Type: "text", Text: "5"},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}))
+		defer srv.Close()
+
+		e := &llmEstimator{
+			apiKey:  "test-key",
+			client:  srv.Client(),
+			baseURL: srv.URL,
+			model:   resolveEstimatorModel(cfg),
+		}
+
+		got := e.Estimate(context.Background(), "Some title", "Some criteria")
+		if got != 5 {
+			t.Errorf("expected 5, got %d", got)
+		}
+		if capturedModel != "claude-custom-haiku" {
+			t.Errorf("expected model %q from api_models, got %q", "claude-custom-haiku", capturedModel)
+		}
+	})
+
+	t.Run("rejects cross-provider model — non-anthropic provider yields empty model", func(t *testing.T) {
+		cfg := &config.AgentConfig{
+			APIModels: map[string]string{
+				"gpt_key": "gpt-4o",
+			},
+			Roles: map[string]config.RoleConfig{
+				"estimator": {Transport: "api", Provider: "openai", APIModel: "gpt_key"},
+			},
+		}
+
+		model := resolveEstimatorModel(cfg)
+		if model != "" {
+			t.Errorf("expected empty model for non-anthropic provider, got %q", model)
+		}
+	})
+
+	t.Run("returns empty model when api_model key missing from api_models", func(t *testing.T) {
+		cfg := &config.AgentConfig{
+			APIModels: map[string]string{},
+			Roles: map[string]config.RoleConfig{
+				"estimator": {Transport: "api", Provider: "anthropic", APIModel: "missing_key"},
+			},
+		}
+
+		model := resolveEstimatorModel(cfg)
+		if model != "" {
+			t.Errorf("expected empty model for missing api_model key, got %q", model)
+		}
+	})
+}
+
+func TestEstimatorIgnoresTierChanges(t *testing.T) {
+	t.Run("tiers.fast change does not affect estimator model", func(t *testing.T) {
+		// tiers.fast is changed to opus; estimator must still use haiku from api_models.
+		cfg := &config.AgentConfig{
+			Tiers: map[protocol.Tier]config.TierConfig{
+				protocol.TierFast: {Runtime: "claude", Model: "claude-opus-4-7"},
+			},
+			APIModels: map[string]string{
+				"anthropic_fast": "claude-haiku-4-5-20251001",
+			},
+			Roles: map[string]config.RoleConfig{
+				"estimator": {Transport: "api", Provider: "anthropic", APIModel: "anthropic_fast"},
+			},
+		}
+
+		var capturedModel string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			if m, ok := body["model"].(string); ok {
+				capturedModel = m
+			}
+			resp := anthropicResponse{
+				Content: []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				}{
+					{Type: "text", Text: "10"},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}))
+		defer srv.Close()
+
+		e := &llmEstimator{
+			apiKey:  "test-key",
+			client:  srv.Client(),
+			baseURL: srv.URL,
+			model:   resolveEstimatorModel(cfg),
+		}
+
+		got := e.Estimate(context.Background(), "Some title", "Some criteria")
+		if got != 10 {
+			t.Errorf("expected 10, got %d", got)
+		}
+		if capturedModel != "claude-haiku-4-5-20251001" {
+			t.Errorf("tier change should not affect estimator: expected haiku, got %q (tiers.fast=%q)",
+				capturedModel, cfg.Tiers[protocol.TierFast].Model)
 		}
 	})
 }

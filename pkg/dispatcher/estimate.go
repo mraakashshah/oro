@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,14 +12,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
-)
 
-// estimatorModel is the Anthropic model used for bead complexity estimation.
-// Haiku is chosen for speed and low cost.
-const estimatorModel = "claude-haiku-4-5-20251001"
+	"oro/pkg/config"
+)
 
 // estimatorBaseURL is the default Anthropic API endpoint.
 const estimatorBaseURL = "https://api.anthropic.com"
+
+// estimatorConfigPath is the project-local config file read on startup.
+const estimatorConfigPath = ".oro/config.yaml"
 
 // estimatorTimeout is the hard deadline applied to every Estimate call.
 const estimatorTimeout = 5 * time.Second
@@ -34,22 +36,80 @@ type BeadEstimator interface {
 	Estimate(ctx context.Context, title, acceptance string) int
 }
 
-// llmEstimator uses the Anthropic Messages API with the haiku model to estimate
-// bead complexity in minutes.
+// llmEstimator uses the Anthropic Messages API to estimate bead complexity in minutes.
+// The model is resolved from roles.estimator.api_model in the agent config.
 type llmEstimator struct {
 	apiKey  string
 	client  *http.Client
 	baseURL string // overrideable for testing; defaults to estimatorBaseURL
+	model   string // resolved from config; empty means no estimate (zero return)
 }
 
 // NewBeadEstimator constructs a BeadEstimator backed by the Anthropic Messages API.
-// Returns an estimator that always returns 0 when ANTHROPIC_API_KEY is not set.
+// The model is loaded from roles.estimator.api_model in the agent config; provider
+// must be "anthropic". Returns an estimator that always returns 0 when
+// ANTHROPIC_API_KEY is not set or a non-anthropic provider is configured.
 func NewBeadEstimator() BeadEstimator {
+	cfg := loadEstimatorConfig()
 	return &llmEstimator{
 		apiKey:  os.Getenv("ANTHROPIC_API_KEY"),
 		client:  &http.Client{},
 		baseURL: estimatorBaseURL,
+		model:   resolveEstimatorModel(cfg),
 	}
+}
+
+// loadEstimatorConfig reads the project config and merges estimator-relevant
+// defaults so roles["estimator"] and api_models are always populated.
+func loadEstimatorConfig() *config.AgentConfig {
+	cfg, err := config.Load(estimatorConfigPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return config.DefaultAgentConfig()
+	}
+	if cfg == nil {
+		return config.DefaultAgentConfig()
+	}
+	return mergeEstimatorDefaults(cfg)
+}
+
+// mergeEstimatorDefaults ensures the estimator role and its api_models entries
+// are present, falling back to built-in defaults when the user config omits them.
+func mergeEstimatorDefaults(cfg *config.AgentConfig) *config.AgentConfig {
+	defaults := config.DefaultAgentConfig()
+	if cfg.Roles == nil {
+		cfg.Roles = defaults.Roles
+	} else if _, ok := cfg.Roles["estimator"]; !ok {
+		cfg.Roles["estimator"] = defaults.Roles["estimator"]
+	}
+	if cfg.APIModels == nil {
+		cfg.APIModels = defaults.APIModels
+	} else {
+		for k, v := range defaults.APIModels {
+			if _, ok := cfg.APIModels[k]; !ok {
+				cfg.APIModels[k] = v
+			}
+		}
+	}
+	return cfg
+}
+
+// resolveEstimatorModel returns the concrete model string for the estimator role.
+// It reads roles["estimator"].api_model and looks it up in api_models.
+// Returns empty string if the role is missing, provider is not "anthropic",
+// or the api_model key is absent from api_models.
+func resolveEstimatorModel(cfg *config.AgentConfig) string {
+	if cfg == nil {
+		return ""
+	}
+	role, ok := cfg.Roles["estimator"]
+	if !ok || role.Provider != "anthropic" || role.APIModel == "" {
+		return ""
+	}
+	model, ok := cfg.APIModels[role.APIModel]
+	if !ok {
+		return ""
+	}
+	return model
 }
 
 // estimateRequest is the Anthropic Messages API request body.
@@ -73,10 +133,11 @@ type estimateResponse struct {
 	} `json:"content"`
 }
 
-// Estimate calls the Anthropic haiku model and returns estimated minutes for the bead.
-// Returns 0 on empty title, missing API key, timeout, API error, or unparseable response.
+// Estimate calls the Anthropic API and returns estimated minutes for the bead.
+// Returns 0 on empty title, missing API key, unconfigured model, timeout, API error,
+// or unparseable response.
 func (e *llmEstimator) Estimate(ctx context.Context, title, acceptance string) int {
-	if strings.TrimSpace(title) == "" || e.apiKey == "" {
+	if strings.TrimSpace(title) == "" || e.apiKey == "" || e.model == "" {
 		return 0
 	}
 
@@ -93,7 +154,7 @@ func (e *llmEstimator) Estimate(ctx context.Context, title, acceptance string) i
 
 func (e *llmEstimator) callAPI(ctx context.Context, title, acceptance string) (int, error) { //nolint:cyclop // linear error-check chain; splitting would obscure flow
 	data, err := json.Marshal(estimateRequest{
-		Model:     estimatorModel,
+		Model:     e.model,
 		MaxTokens: estimatorMaxTokens,
 		System:    estimateSystemPrompt,
 		Messages: []estimateMessage{
