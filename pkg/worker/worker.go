@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"oro/pkg/agentruntime"
 	"oro/pkg/memory"
 	"oro/pkg/processenv"
 	"oro/pkg/protocol"
@@ -95,7 +96,7 @@ const reconnectJitter = 500 * time.Millisecond
 const maxBufferedMessages = 100
 
 // Worker is the Oro worker agent. It holds a UDS connection to the Dispatcher,
-// manages a claude -p subprocess, and monitors context usage.
+// manages a subprocess (claude or codex), and monitors context usage.
 type Worker struct {
 	ID                     string
 	conn                   net.Conn
@@ -105,7 +106,8 @@ type Worker struct {
 	model                  string
 	streamFormat           StreamFormat
 	mu                     sync.Mutex
-	spawner                StreamingSpawner
+	claudeSpawner          StreamingSpawner
+	codexSpawner           StreamingSpawner
 	socketPath             string // for reconnection
 	buffer                 *MessageBuffer
 	disconnected           bool
@@ -134,6 +136,7 @@ type Worker struct {
 }
 
 // New creates a Worker that connects to the Dispatcher at socketPath.
+// spawner is treated as the claude runtime spawner; codex falls back to it when no codexSpawner is set.
 func New(id, socketPath string, spawner StreamingSpawner) (*Worker, error) {
 	conn, err := net.Dial("unix", socketPath) //nolint:noctx // UDS connect is instant, no context needed
 	if err != nil {
@@ -142,7 +145,26 @@ func New(id, socketPath string, spawner StreamingSpawner) (*Worker, error) {
 	return &Worker{
 		ID:                  id,
 		conn:                conn,
-		spawner:             spawner,
+		claudeSpawner:       spawner,
+		socketPath:          socketPath,
+		buffer:              NewMessageBuffer(maxBufferedMessages),
+		contextPollInterval: DefaultContextPollInterval,
+		reconnectInterval:   reconnectBaseInterval,
+	}, nil
+}
+
+// NewWithBothSpawners creates a Worker that connects to the Dispatcher at socketPath,
+// holding separate spawners for the claude and codex runtimes.
+func NewWithBothSpawners(id, socketPath string, claude, codex StreamingSpawner) (*Worker, error) {
+	conn, err := net.Dial("unix", socketPath) //nolint:noctx // UDS connect is instant, no context needed
+	if err != nil {
+		return nil, fmt.Errorf("connect to dispatcher: %w", err)
+	}
+	return &Worker{
+		ID:                  id,
+		conn:                conn,
+		claudeSpawner:       claude,
+		codexSpawner:        codex,
 		socketPath:          socketPath,
 		buffer:              NewMessageBuffer(maxBufferedMessages),
 		contextPollInterval: DefaultContextPollInterval,
@@ -151,13 +173,30 @@ func New(id, socketPath string, spawner StreamingSpawner) (*Worker, error) {
 }
 
 // NewWithConn creates a Worker with a pre-established connection (for testing).
+// spawner is treated as the claude runtime spawner.
 //
 //oro:testonly
 func NewWithConn(id string, conn net.Conn, spawner StreamingSpawner) *Worker {
 	return &Worker{
 		ID:                  id,
 		conn:                conn,
-		spawner:             spawner,
+		claudeSpawner:       spawner,
+		buffer:              NewMessageBuffer(maxBufferedMessages),
+		contextPollInterval: DefaultContextPollInterval,
+		reconnectInterval:   reconnectBaseInterval,
+	}
+}
+
+// NewWithConnBothSpawners creates a Worker with a pre-established connection and
+// separate spawners for the claude and codex runtimes (for testing).
+//
+//oro:testonly
+func NewWithConnBothSpawners(id string, conn net.Conn, claude, codex StreamingSpawner) *Worker {
+	return &Worker{
+		ID:                  id,
+		conn:                conn,
+		claudeSpawner:       claude,
+		codexSpawner:        codex,
 		buffer:              NewMessageBuffer(maxBufferedMessages),
 		contextPollInterval: DefaultContextPollInterval,
 		reconnectInterval:   reconnectBaseInterval,
@@ -418,15 +457,16 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	}
 
 	prompt, model := BuildAssignPrompt(msg.Assign)
-	// Export the assigned bead ID so the spawned claude subprocess (which
+	// Export the assigned bead ID so the spawned subprocess (which
 	// inherits this process's env via buildClaudeEnv) can be identified by the
 	// `oro task close` self-close guard. See oro-t5ha.
 	_ = os.Setenv("ORO_WORKER_BEAD_ID", msg.Assign.BeadID)
-	proc, stdout, _, err := w.spawner.Spawn(ctx, model, prompt, msg.Assign.Worktree)
+	spawner := w.selectSpawner(msg.Assign.Runtime)
+	proc, stdout, _, err := spawner.Spawn(ctx, model, prompt, msg.Assign.Worktree)
 	if err != nil {
-		return fmt.Errorf("spawn claude: %w", err)
+		return fmt.Errorf("spawn agent: %w", err)
 	}
-	w.recordSpawnedProc(proc, model)
+	w.recordSpawnedProc(proc, model, spawner)
 
 	if stdout != nil {
 		w.mu.Lock()
@@ -489,14 +529,36 @@ func clearAssignmentLocalState(worktree string) {
 	_ = os.Remove(filepath.Join(oroDir, "context_pct"))
 }
 
+// selectSpawner returns the StreamingSpawner to use for the given runtime string.
+// When runtime is empty, it falls back to agentruntime.ReadRuntime() and logs a warning
+// to stderr. If the resolved runtime is codex but no codexSpawner is configured,
+// it falls back to claudeSpawner.
+func (w *Worker) selectSpawner(runtime string) StreamingSpawner {
+	if runtime == "" {
+		resolved := agentruntime.ReadRuntime()
+		fmt.Fprintf(os.Stderr, "worker %s: assignment missing runtime, falling back to %q from %s\n",
+			w.ID, resolved, agentruntime.EnvVar)
+		runtime = resolved
+	}
+	switch runtime {
+	case agentruntime.RuntimeCodex:
+		if w.codexSpawner != nil {
+			return w.codexSpawner
+		}
+		return w.claudeSpawner
+	default:
+		return w.claudeSpawner
+	}
+}
+
 // recordSpawnedProc captures the freshly spawned subprocess + model and resets
 // the exit-coordination flags under the worker lock.
-func (w *Worker) recordSpawnedProc(proc Process, model string) {
+func (w *Worker) recordSpawnedProc(proc Process, model string, spawner StreamingSpawner) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.proc = proc
 	w.model = model
-	w.streamFormat = w.spawner.StreamFormat()
+	w.streamFormat = spawner.StreamFormat()
 	w.subprocExitCh = make(chan struct{})
 	w.subprocExitClosed = false
 	w.handleExitClaimed = false

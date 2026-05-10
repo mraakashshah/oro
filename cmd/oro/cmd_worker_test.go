@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"oro/pkg/dbutil"
-	"oro/pkg/worker"
 )
 
 func TestNewWorkerCmd_Flags(t *testing.T) {
@@ -68,25 +67,6 @@ func TestNewWorkerCmd_InvalidSocket(t *testing.T) {
 	err := cmd.ExecuteContext(context.Background())
 	if err == nil {
 		t.Fatal("expected error connecting to nonexistent socket")
-	}
-}
-
-func TestWorkerSpawnerRespectsConfiguredRuntime(t *testing.T) {
-	t.Setenv(agentRuntimeEnvVar, runtimeCodex)
-
-	want := &testRuntimeWorkerSpawner{}
-	prevWorker := newCodexWorkerSpawner
-	newCodexWorkerSpawner = func() worker.StreamingSpawner { return want }
-	defer func() {
-		newCodexWorkerSpawner = prevWorker
-	}()
-
-	got, err := workerSpawnerForRuntime()
-	if err != nil {
-		t.Fatalf("workerSpawnerForRuntime: %v", err)
-	}
-	if got != want {
-		t.Fatalf("worker spawner = %#v, want injected codex runtime spawner %#v", got, want)
 	}
 }
 

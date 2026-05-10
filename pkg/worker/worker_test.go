@@ -4928,3 +4928,86 @@ func TestModelFamilyHandlesCodexNative(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkerSelectsSpawnerFromPayloadRuntime(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		payloadRuntime string
+		expectClaude   bool
+	}{
+		{
+			name:           "claude_explicit",
+			payloadRuntime: "claude",
+			expectClaude:   true,
+		},
+		{
+			name:           "codex_explicit",
+			payloadRuntime: "codex",
+			expectClaude:   false,
+		},
+		{
+			name:           "empty_runtime_falls_back_to_env_default",
+			payloadRuntime: "",
+			expectClaude:   true, // ORO_AGENT_RUNTIME unset → ReadRuntime() returns "claude"
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			claudeSpawner := newMockSpawner()
+			codexSpawner := newMockSpawner()
+			codexSpawner.format = worker.StreamFormatLineText
+
+			worktree := validAssignWorktree(t, "wt-route-"+tt.name)
+			dispatcherConn, workerConn := net.Pipe()
+			defer func() { _ = dispatcherConn.Close() }()
+
+			w := worker.NewWithConnBothSpawners("w-route", workerConn, claudeSpawner, codexSpawner)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+			sendMessage(t, dispatcherConn, protocol.Message{
+				Type: protocol.MsgAssign,
+				Assign: &protocol.AssignPayload{
+					BeadID:   "bead-route",
+					Worktree: worktree,
+					Runtime:  tt.payloadRuntime,
+				},
+			})
+
+			msg := readMessage(t, dispatcherConn)
+			if msg.Type != protocol.MsgStatus || msg.Status.State != "running" {
+				t.Fatalf("expected running STATUS, got type=%s state=%s", msg.Type, func() string {
+					if msg.Status != nil {
+						return msg.Status.State
+					}
+					return "<nil>"
+				}())
+			}
+
+			claudeCalls := claudeSpawner.SpawnCalls()
+			codexCalls := codexSpawner.SpawnCalls()
+
+			wantClaude, wantCodex := 1, 0
+			if !tt.expectClaude {
+				wantClaude, wantCodex = 0, 1
+			}
+			if got := len(claudeCalls); got != wantClaude {
+				t.Errorf("claude spawn calls = %d, want %d", got, wantClaude)
+			}
+			if got := len(codexCalls); got != wantCodex {
+				t.Errorf("codex spawn calls = %d, want %d", got, wantCodex)
+			}
+
+			cancel()
+			<-errCh
+		})
+	}
+}

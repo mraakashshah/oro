@@ -52,11 +52,7 @@ func runWorker(ctx context.Context, socketPath, id string) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	spawner, err := workerSpawnerForRuntime()
-	if err != nil {
-		return err
-	}
-	w, err := worker.New(id, socketPath, spawner)
+	w, err := worker.NewWithBothSpawners(id, socketPath, newClaudeWorkerSpawner(), newCodexWorkerSpawner())
 	if err != nil {
 		return fmt.Errorf("create worker %s: %w", id, err)
 	}
@@ -84,14 +80,6 @@ func runWorker(ctx context.Context, socketPath, id string) error {
 		_ = memStore.SaveVocab(context.Background())
 	}
 	return nil
-}
-
-func workerSpawnerForRuntime() (worker.StreamingSpawner, error) {
-	runtime, err := resolveProductionRuntime()
-	if err != nil {
-		return nil, err
-	}
-	return runtime.workerSpawn, nil
 }
 
 // openWorkerMemoryStore creates a memory.Store from an open DB connection.
