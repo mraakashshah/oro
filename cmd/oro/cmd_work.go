@@ -215,7 +215,7 @@ func newProductionDeps(reviewTimeout time.Duration) (*workDeps, error) {
 		beadSrc:         newWorkerBeadStore(beadDB, memStore),
 		wtMgr:           dispatcher.NewGitWorktreeManager(repoRoot, "", projectPaths.QualityGate, runner),
 		spawner:         runtime.workerSpawn,
-		opsMgr:          ops.NewSpawnerWithReviewTimeout(runtime.opsSpawn, reviewTimeout),
+		opsMgr:          ops.NewSpawnerWithBoth(runtime.claudeOpsSpawn, runtime.codexOpsSpawn, agentmodel.ResolveForRole).WithReviewTimeout(reviewTimeout),
 		merger:          merge.NewCoordinator(&merge.ExecGitRunner{}),
 		repoRoot:        repoRoot,
 		memStore:        memStore,

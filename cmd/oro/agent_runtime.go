@@ -16,9 +16,10 @@ const (
 )
 
 type productionRuntime struct {
-	id          string
-	workerSpawn worker.StreamingSpawner
-	opsSpawn    ops.BatchSpawner
+	id             string
+	workerSpawn    worker.StreamingSpawner
+	claudeOpsSpawn ops.BatchSpawner
+	codexOpsSpawn  ops.BatchSpawner
 }
 
 var (
@@ -36,15 +37,17 @@ func resolveProductionRuntime() (*productionRuntime, error) {
 	switch runtime := readAgentRuntime(); runtime {
 	case runtimeClaude:
 		return &productionRuntime{
-			id:          runtimeClaude,
-			workerSpawn: newClaudeWorkerSpawner(),
-			opsSpawn:    newClaudeOpsSpawner(),
+			id:             runtimeClaude,
+			workerSpawn:    newClaudeWorkerSpawner(),
+			claudeOpsSpawn: newClaudeOpsSpawner(),
+			codexOpsSpawn:  newCodexOpsSpawner(),
 		}, nil
 	case runtimeCodex:
 		return &productionRuntime{
-			id:          runtimeCodex,
-			workerSpawn: newCodexWorkerSpawner(),
-			opsSpawn:    newCodexOpsSpawner(),
+			id:             runtimeCodex,
+			workerSpawn:    newCodexWorkerSpawner(),
+			claudeOpsSpawn: newClaudeOpsSpawner(),
+			codexOpsSpawn:  newCodexOpsSpawner(),
 		}, nil
 	default:
 		return nil, fmt.Errorf("unknown agent runtime %q", runtime)

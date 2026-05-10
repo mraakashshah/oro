@@ -699,8 +699,8 @@ func TestBuildDepsResolvesRuntime(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveProductionRuntime: %v", err)
 		}
-		if rt.opsSpawn != wantOps {
-			t.Fatalf("ops spawner = %#v, want injected claude ops spawner %#v", rt.opsSpawn, wantOps)
+		if rt.claudeOpsSpawn != wantOps {
+			t.Fatalf("ops spawner = %#v, want injected claude ops spawner %#v", rt.claudeOpsSpawn, wantOps)
 		}
 	})
 
@@ -734,8 +734,8 @@ func TestBuildDepsResolvesRuntime(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveProductionRuntime: %v", err)
 		}
-		if rt.opsSpawn != wantOps {
-			t.Fatalf("ops spawner = %#v, want injected codex ops spawner %#v", rt.opsSpawn, wantOps)
+		if rt.codexOpsSpawn != wantOps {
+			t.Fatalf("ops spawner = %#v, want injected codex ops spawner %#v", rt.codexOpsSpawn, wantOps)
 		}
 	})
 }
@@ -778,8 +778,8 @@ func TestClaudeRuntimeDefaultPath(t *testing.T) {
 	if rt.id != runtimeClaude {
 		t.Fatalf("runtime id = %q, want %q", rt.id, runtimeClaude)
 	}
-	if rt.workerSpawn == nil || rt.opsSpawn == nil {
-		t.Fatal("default Claude runtime must provide worker and ops spawners")
+	if rt.workerSpawn == nil || rt.claudeOpsSpawn == nil || rt.codexOpsSpawn == nil {
+		t.Fatal("default Claude runtime must provide worker and both ops spawners")
 	}
 }
 

@@ -99,6 +99,31 @@ func (t Type) Timeout() time.Duration {
 	}
 }
 
+// Role returns the agentmodel role name for this ops type, used to resolve
+// the runtime/model pair via agentmodel.ResolveForRole.
+func (t Type) Role() string {
+	switch t {
+	case OpsReview:
+		return "ops_review"
+	case OpsMerge:
+		return "ops_merge"
+	case OpsDiagnosis:
+		return "ops_diagnosis"
+	case OpsEscalation:
+		return "ops_escalation"
+	case OpsEpicFix:
+		return "ops_epic_fix"
+	case OpsWriteAC:
+		return "ops_write_ac"
+	case OpsDecompose:
+		return "ops_decompose"
+	case OpsDream:
+		return "ops_dream"
+	default:
+		return "ops_review"
+	}
+}
+
 // Verdict is the outcome of an ops agent run.
 type Verdict string
 
@@ -200,12 +225,16 @@ type EpicFixOpts struct {
 type Spawner struct {
 	mu            sync.Mutex
 	active        map[string]*Agent
-	spawner       BatchSpawner
-	timeout       time.Duration // one-shot process timeout (defaults to 5 minutes)
-	reviewTimeout time.Duration // optional OpsReview override; zero preserves Type.Timeout().
+	spawner       BatchSpawner                              // claude/primary spawner (legacy field)
+	codex         BatchSpawner                              // codex spawner; nil = single-runtime mode
+	resolver      func(role string) (runtime, model string) // nil = no routing (legacy path)
+	timeout       time.Duration                             // one-shot process timeout (defaults to 5 minutes)
+	reviewTimeout time.Duration                             // optional OpsReview override; zero preserves Type.Timeout().
 }
 
-// NewSpawner creates a Spawner backed by the given BatchSpawner.
+// NewSpawner creates a Spawner backed by a single BatchSpawner.
+//
+//oro:testonly — legacy single-spawner constructor; production uses NewSpawnerWithBoth.
 func NewSpawner(sp BatchSpawner) *Spawner {
 	return &Spawner{
 		active:  make(map[string]*Agent),
@@ -214,13 +243,38 @@ func NewSpawner(sp BatchSpawner) *Spawner {
 	}
 }
 
-// NewSpawnerWithReviewTimeout creates a Spawner with an optional OpsReview
-// timeout override. A zero or negative reviewTimeout preserves the per-type
-// default returned by OpsReview.Timeout().
-func NewSpawnerWithReviewTimeout(sp BatchSpawner, reviewTimeout time.Duration) *Spawner {
-	s := NewSpawner(sp)
-	s.reviewTimeout = reviewTimeout
+// NewSpawnerWithBoth creates a Spawner that holds both a Claude and a Codex
+// BatchSpawner. The resolver maps an ops role name to (runtime, model); each
+// Run call invokes route(opsType) which calls resolver to pick the spawner.
+// Edges: nil codex → always use claude; nil resolver → use claude (legacy path).
+func NewSpawnerWithBoth(claude, codex BatchSpawner, resolver func(role string) (runtime, model string)) *Spawner {
+	return &Spawner{
+		active:   make(map[string]*Agent),
+		spawner:  claude,
+		codex:    codex,
+		resolver: resolver,
+		timeout:  5 * time.Minute,
+	}
+}
+
+// WithReviewTimeout sets an optional OpsReview timeout override and returns
+// the receiver, enabling builder-style construction.
+func (s *Spawner) WithReviewTimeout(d time.Duration) *Spawner {
+	s.reviewTimeout = d
 	return s
+}
+
+// route picks the BatchSpawner for the given ops type. Falls back to the
+// legacy spawner field when codex or resolver is nil.
+func (s *Spawner) route(opsType Type) BatchSpawner {
+	if s.codex == nil || s.resolver == nil {
+		return s.spawner
+	}
+	runtime, _ := s.resolver(opsType.Role())
+	if runtime == "codex" {
+		return s.codex
+	}
+	return s.spawner
 }
 
 // Review spawns a two-stage review agent. The result is delivered on the
@@ -367,7 +421,7 @@ func (s *Spawner) run(ctx context.Context, opsType Type, beadID, worktree, promp
 			s.mu.Unlock()
 		}()
 
-		proc, err := s.spawner.Spawn(ctx, opsType.Model(), prompt, worktree)
+		proc, err := s.route(opsType).Spawn(ctx, opsType.Model(), prompt, worktree)
 		if err != nil {
 			ch <- Result{
 				Type:    opsType,

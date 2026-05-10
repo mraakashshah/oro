@@ -898,7 +898,7 @@ func TestTypeTimeout(t *testing.T) {
 
 func TestSpawnerReviewTimeoutOverride(t *testing.T) {
 	mock := &mockBatchSpawner{process: newReadyMockProcess("VERDICT: APPROVED", nil)}
-	s := NewSpawnerWithReviewTimeout(mock, 45*time.Minute)
+	s := NewSpawner(mock).WithReviewTimeout(45 * time.Minute)
 
 	if got := s.effectiveTimeout(OpsReview); got != 45*time.Minute {
 		t.Fatalf("OpsReview effective timeout = %v, want 45m", got)
@@ -910,7 +910,7 @@ func TestSpawnerReviewTimeoutOverride(t *testing.T) {
 		t.Fatalf("OpsDream effective timeout = %v, want 60s", got)
 	}
 
-	fallback := NewSpawnerWithReviewTimeout(mock, 0)
+	fallback := NewSpawner(mock).WithReviewTimeout(0)
 	if got := fallback.effectiveTimeout(OpsReview); got != 35*time.Minute {
 		t.Fatalf("zero override OpsReview effective timeout = %v, want 35m", got)
 	}
@@ -1101,4 +1101,81 @@ func TestMergePromptContainsTargetBranch(t *testing.T) {
 	if !containsSubstring(prompt, "git rebase main") {
 		t.Errorf("merge prompt missing default 'git rebase main', got: %s", prompt)
 	}
+}
+
+func TestOpsSpawnerSelectsRuntimePerCall(t *testing.T) {
+	t.Run("routes review to codex when resolver returns codex", func(t *testing.T) {
+		claudeMock := &mockBatchSpawner{process: newReadyMockProcess("VERDICT: APPROVED", nil)}
+		codexMock := &mockBatchSpawner{process: newReadyMockProcess("VERDICT: APPROVED", nil)}
+
+		resolver := func(role string) (string, string) {
+			if role == "ops_review" {
+				return "codex", "gpt-5"
+			}
+			return "claude", "claude-opus-4-7"
+		}
+
+		s := NewSpawnerWithBoth(claudeMock, codexMock, resolver)
+		ch := s.Review(context.Background(), ReviewOpts{BeadID: "bead-1", Worktree: "/tmp/wt"})
+		waitResult(t, ch)
+
+		if got := len(codexMock.getCalls()); got != 1 {
+			t.Errorf("codex spawner: got %d calls, want 1 (review should route to codex)", got)
+		}
+		if got := len(claudeMock.getCalls()); got != 0 {
+			t.Errorf("claude spawner: got %d calls, want 0 (review routed to codex)", got)
+		}
+	})
+
+	t.Run("routes merge to claude when resolver returns claude", func(t *testing.T) {
+		claudeMock := &mockBatchSpawner{process: newReadyMockProcess("CONFLICT RESOLVED", nil)}
+		codexMock := &mockBatchSpawner{process: newReadyMockProcess("CONFLICT RESOLVED", nil)}
+
+		resolver := func(_ string) (string, string) {
+			return "claude", "claude-opus-4-7"
+		}
+
+		s := NewSpawnerWithBoth(claudeMock, codexMock, resolver)
+		ch := s.ResolveMergeConflict(context.Background(), MergeOpts{BeadID: "bead-2", Worktree: "/tmp/wt"})
+		waitResult(t, ch)
+
+		if got := len(claudeMock.getCalls()); got != 1 {
+			t.Errorf("claude spawner: got %d calls for merge, want 1", got)
+		}
+		if got := len(codexMock.getCalls()); got != 0 {
+			t.Errorf("codex spawner: got %d calls for merge, want 0 (merge routes to claude)", got)
+		}
+	})
+
+	t.Run("nil codex falls back to claude spawner", func(t *testing.T) {
+		claudeMock := &mockBatchSpawner{process: newReadyMockProcess("VERDICT: APPROVED", nil)}
+
+		resolver := func(_ string) (string, string) {
+			return "codex", "gpt-5"
+		}
+
+		s := NewSpawnerWithBoth(claudeMock, nil, resolver)
+		ch := s.Review(context.Background(), ReviewOpts{BeadID: "bead-3", Worktree: "/tmp/wt"})
+		waitResult(t, ch)
+
+		if got := len(claudeMock.getCalls()); got != 1 {
+			t.Errorf("claude spawner: got %d calls, want 1 (nil codex fallback)", got)
+		}
+	})
+
+	t.Run("nil resolver falls back to legacy spawner field", func(t *testing.T) {
+		claudeMock := &mockBatchSpawner{process: newReadyMockProcess("VERDICT: APPROVED", nil)}
+		codexMock := &mockBatchSpawner{process: newReadyMockProcess("VERDICT: APPROVED", nil)}
+
+		s := NewSpawnerWithBoth(claudeMock, codexMock, nil)
+		ch := s.Review(context.Background(), ReviewOpts{BeadID: "bead-4", Worktree: "/tmp/wt"})
+		waitResult(t, ch)
+
+		if got := len(claudeMock.getCalls()); got != 1 {
+			t.Errorf("claude spawner: got %d calls, want 1 (nil resolver legacy path)", got)
+		}
+		if got := len(codexMock.getCalls()); got != 0 {
+			t.Errorf("codex spawner: got %d calls, want 0 (nil resolver no routing)", got)
+		}
+	})
 }

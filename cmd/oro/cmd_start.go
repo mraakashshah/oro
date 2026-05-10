@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"oro/pkg/agentmodel"
 	"oro/pkg/beadstore"
 	"oro/pkg/codesearch"
 	"oro/pkg/dispatcher"
@@ -789,7 +790,8 @@ func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressT
 	wtMgr := dispatcher.NewGitWorktreeManager(repoRoot, "", projectPaths.QualityGate, runner)
 	esc := dispatcher.NewTmuxEscalator(TmuxSessionName(readProjectNameCWD()), TmuxPaneTarget(readProjectNameCWD(), "manager"), runner)
 	merger := merge.NewCoordinator(&merge.ExecGitRunner{})
-	opsSpawner := ops.NewSpawnerWithReviewTimeout(runtime.opsSpawn, opsReviewTimeout)
+	opsSpawner := ops.NewSpawnerWithBoth(runtime.claudeOpsSpawn, runtime.codexOpsSpawn, agentmodel.ResolveForRole).
+		WithReviewTimeout(opsReviewTimeout)
 
 	cfg := dispatcher.Config{
 		SocketPath:              sockPath,

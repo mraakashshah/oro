@@ -1132,8 +1132,8 @@ func TestBuildDispatcherResolvesOpsRuntime(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveProductionRuntime: %v", err)
 		}
-		if rt.opsSpawn != wantOps {
-			t.Fatalf("ops spawner = %#v, want injected claude ops spawner %#v", rt.opsSpawn, wantOps)
+		if rt.claudeOpsSpawn != wantOps {
+			t.Fatalf("ops spawner = %#v, want injected claude ops spawner %#v", rt.claudeOpsSpawn, wantOps)
 		}
 
 		d, db, err := buildDispatcher("", false, "")
@@ -1162,8 +1162,8 @@ func TestBuildDispatcherResolvesOpsRuntime(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveProductionRuntime: %v", err)
 		}
-		if rt.opsSpawn != wantOps {
-			t.Fatalf("ops spawner = %#v, want injected codex ops spawner %#v", rt.opsSpawn, wantOps)
+		if rt.codexOpsSpawn != wantOps {
+			t.Fatalf("ops spawner = %#v, want injected codex ops spawner %#v", rt.codexOpsSpawn, wantOps)
 		}
 
 		d, db, err := buildDispatcher("", false, "")
