@@ -179,7 +179,7 @@ const reconnectJitter = 500 * time.Millisecond
 const maxBufferedMessages = 100
 
 // Worker is the Oro worker agent. It holds a UDS connection to the Dispatcher,
-// manages a claude -p subprocess, and monitors context usage.
+// manages a subprocess (claude or codex), and monitors context usage.
 type Worker struct {
 	ID                     string
 	conn                   net.Conn
@@ -222,6 +222,7 @@ type Worker struct {
 }
 
 // New creates a Worker that connects to the Dispatcher at socketPath.
+// spawner is treated as the claude runtime spawner; codex falls back to it when no codexSpawner is set.
 func New(id, socketPath string, spawner StreamingSpawner) (*Worker, error) {
 	return NewWithRuntimeSpawner(id, socketPath, singleRuntimeSpawner(spawner))
 }
@@ -244,7 +245,14 @@ func NewWithRuntimeSpawner(id, socketPath string, spawner RuntimeStreamingSpawne
 	}, nil
 }
 
+// NewWithBothSpawners creates a Worker that connects to the Dispatcher at socketPath,
+// holding separate spawners for the claude and codex runtimes.
+func NewWithBothSpawners(id, socketPath string, claude, codex StreamingSpawner) (*Worker, error) {
+	return NewWithRuntimeSpawner(id, socketPath, NewRuntimeSpawnerRouter(claude, codex))
+}
+
 // NewWithConn creates a Worker with a pre-established connection (for testing).
+// spawner is treated as the claude runtime spawner.
 //
 //oro:testonly
 func NewWithConn(id string, conn net.Conn, spawner StreamingSpawner) *Worker {
