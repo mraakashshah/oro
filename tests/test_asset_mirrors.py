@@ -88,7 +88,7 @@ def test_agent_asset_mirrors() -> None:
     _assert_mirror(
         assets_hooks,
         REPO_ROOT / ".claude" / "hooks",
-        exclude_names={"test_enforce_skills.py", "test_hook_schemas.py"},
+        exclude_names={"test_enforce_skills.py", "test_hook_schemas.py", "test_parity.py"},
         allowed_extra_paths={
             Path("test_architect_router.py"),
             Path("test_architect_router_new.py"),
