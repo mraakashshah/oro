@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"oro/pkg/agentmodel"
 	"oro/pkg/agentruntime"
 	"oro/pkg/processenv"
 )
@@ -98,7 +99,7 @@ func (c CLISpawner) Spawn(ctx context.Context, model, prompt string) (io.ReadClo
 // extraction from mutating the dispatcher/main checkout when a worker is
 // assigned to an isolated worktree.
 func (c CLISpawner) SpawnInWorkdir(ctx context.Context, model, prompt, workdir string) (io.ReadCloser, error) {
-	args := spawnCommand(model, prompt)
+	args := spawnCommand(model, prompt, "memory_extractor")
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // args constructed internally
 	if workdir != "" {
 		cmd.Dir = workdir
@@ -124,15 +125,26 @@ func (c CLISpawner) SpawnInWorkdir(ctx context.Context, model, prompt, workdir s
 	return &waitCloser{ReadCloser: stdout, cmd: cmd}, nil
 }
 
-func spawnCommand(model, prompt string) []string {
-	if agentruntime.ReadRuntime() == agentruntime.RuntimeCodex {
+func spawnCommand(model, prompt, role string) []string {
+	runtime, resolvedModel := resolveExtractorModel(role, model)
+	if runtime == agentruntime.RuntimeCodex {
 		args := []string{"codex", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write"}
-		if codexModel := normalizeCodexModel(model); codexModel != "" {
+		if codexModel := normalizeCodexModel(resolvedModel); codexModel != "" {
 			args = append(args, "--model", codexModel)
 		}
 		return append(args, prompt)
 	}
-	return []string{"claude", "-p", prompt, "--model", model}
+	return []string{"claude", "-p", prompt, "--model", resolvedModel}
+}
+
+// resolveExtractorModel returns the runtime and model for the memory extractor.
+// When role is non-empty, it calls agentmodel.ResolveForRole; otherwise it
+// falls back to agentruntime.ReadRuntime() with fallbackModel.
+func resolveExtractorModel(role, fallbackModel string) (runtime, model string) {
+	if role != "" {
+		return agentmodel.ResolveForRole(role)
+	}
+	return agentruntime.ReadRuntime(), fallbackModel
 }
 
 func normalizeCodexModel(model string) string {

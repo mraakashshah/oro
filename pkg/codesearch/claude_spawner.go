@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"oro/pkg/agentmodel"
 	"oro/pkg/agentruntime"
 	"oro/pkg/processenv"
 )
@@ -25,20 +26,37 @@ type ClaudeRerankSpawner = RuntimeRerankSpawner
 //
 //oro:testonly
 func BuildCmd(ctx context.Context, prompt string) *exec.Cmd {
-	return BuildCmdInWorkdir(ctx, prompt, "")
+	return BuildCmdInWorkdir(ctx, prompt, "", "")
 }
 
 // BuildCmdInWorkdir constructs the exec.Cmd bound to workdir. Empty workdir
 // falls back to a neutral temp dir for callers without an assigned worktree.
-func BuildCmdInWorkdir(ctx context.Context, prompt, workdir string) *exec.Cmd {
-	if agentruntime.ReadRuntime() == agentruntime.RuntimeCodex {
-		return buildCodexCmd(ctx, prompt, workdir)
+// role is resolved via agentmodel.ResolveForRole; empty role falls back to
+// agentruntime.ReadRuntime() with the legacy haiku default.
+func BuildCmdInWorkdir(ctx context.Context, prompt, workdir, role string) *exec.Cmd {
+	runtime, model := resolveRerankModel(role)
+	if runtime == agentruntime.RuntimeCodex {
+		return buildCodexCmd(ctx, prompt, workdir, model)
 	}
-	return buildClaudeCmd(ctx, prompt, workdir)
+	return buildClaudeCmd(ctx, prompt, workdir, model)
 }
 
-func buildClaudeCmd(ctx context.Context, prompt, workdir string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "claude", "-p", prompt, "--model", "haiku", "--output-format", "json") //nolint:gosec // prompt is constructed internally
+// resolveRerankModel returns the runtime and model for the reranker.
+// When role is non-empty, it calls agentmodel.ResolveForRole; otherwise it
+// falls back to agentruntime.ReadRuntime() with a hardcoded codex or haiku default.
+func resolveRerankModel(role string) (runtime, model string) {
+	if role != "" {
+		return agentmodel.ResolveForRole(role)
+	}
+	rt := agentruntime.ReadRuntime()
+	if rt == agentruntime.RuntimeCodex {
+		return rt, codexRerankModel
+	}
+	return rt, "haiku"
+}
+
+func buildClaudeCmd(ctx context.Context, prompt, workdir, model string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "claude", "-p", prompt, "--model", model, "--output-format", "json") //nolint:gosec // prompt is constructed internally
 	cmd.Stdin = strings.NewReader("")
 	env := slices.DeleteFunc(os.Environ(), func(e string) bool {
 		return strings.HasPrefix(e, "CLAUDECODE")
@@ -47,8 +65,8 @@ func buildClaudeCmd(ctx context.Context, prompt, workdir string) *exec.Cmd {
 	return cmd
 }
 
-func buildCodexCmd(ctx context.Context, prompt, workdir string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "codex", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--model", codexRerankModel, prompt) //nolint:gosec // prompt is constructed internally
+func buildCodexCmd(ctx context.Context, prompt, workdir, model string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "codex", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--model", model, prompt) //nolint:gosec // prompt is constructed internally
 	cmd.Stdin = strings.NewReader("")
 	bindRerankCmdToWorkdir(cmd, os.Environ(), workdir)
 	return cmd
@@ -69,12 +87,12 @@ func (s *RuntimeRerankSpawner) Spawn(ctx context.Context, prompt string) (string
 
 // SpawnInWorkdir runs the configured rerank CLI with cwd/env bound to workdir.
 func (s *RuntimeRerankSpawner) SpawnInWorkdir(ctx context.Context, prompt, workdir string) (string, error) {
-	cmd := BuildCmdInWorkdir(ctx, prompt, workdir)
+	cmd := BuildCmdInWorkdir(ctx, prompt, workdir, "codesearch_reranker")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("runtime rerank: %w", err)
 	}
-	if agentruntime.ReadRuntime() == agentruntime.RuntimeCodex {
+	if cmd.Args[0] == "codex" {
 		return strings.TrimSpace(string(out)), nil
 	}
 	return ExtractResultFromEnvelope(out)

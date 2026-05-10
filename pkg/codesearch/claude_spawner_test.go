@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"oro/pkg/agentmodel"
 	"oro/pkg/codesearch"
 )
 
@@ -106,7 +107,7 @@ func TestBuildCmdInWorkdir_UsesAssignedWorkdir(t *testing.T) {
 	t.Setenv("GIT_INDEX_FILE", "/poisoned/main/.git/index")
 	assigned := t.TempDir()
 
-	cmd := codesearch.BuildCmdInWorkdir(context.Background(), "test prompt", assigned)
+	cmd := codesearch.BuildCmdInWorkdir(context.Background(), "test prompt", assigned, "")
 
 	if cmd.Dir != assigned {
 		t.Fatalf("BuildCmdInWorkdir Dir = %q, want assigned %q", cmd.Dir, assigned)
@@ -126,6 +127,43 @@ func envValue(env []string, key string) string {
 	for _, entry := range env {
 		if strings.HasPrefix(entry, prefix) {
 			return strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return ""
+}
+
+// TestCodesearchRerankerRoleResolves verifies that BuildCmdInWorkdir resolves the
+// model via agentmodel.ResolveForRole when a role is provided, and falls back to
+// ReadRuntime() when role is empty.
+func TestCodesearchRerankerRoleResolves(t *testing.T) {
+	t.Run("role resolves model via agentmodel", func(t *testing.T) {
+		t.Setenv("ORO_AGENT_RUNTIME", "")
+
+		_, expectedModel := agentmodel.ResolveForRole("codesearch_reranker")
+		cmd := codesearch.BuildCmdInWorkdir(context.Background(), "probe", "", "codesearch_reranker")
+
+		gotModel := argsValue(cmd.Args, "--model")
+		if gotModel != expectedModel {
+			t.Errorf("BuildCmdInWorkdir model = %q, want %q (from agentmodel.ResolveForRole)", gotModel, expectedModel)
+		}
+	})
+
+	t.Run("empty role falls back to ReadRuntime default", func(t *testing.T) {
+		t.Setenv("ORO_AGENT_RUNTIME", "")
+
+		cmd := codesearch.BuildCmdInWorkdir(context.Background(), "probe", "", "")
+
+		if cmd.Args[0] != "claude" {
+			t.Errorf("empty role: command = %q, want claude (ReadRuntime default)", cmd.Args[0])
+		}
+	})
+}
+
+// argsValue finds the value following key in args (e.g. "--model" → next element).
+func argsValue(args []string, key string) string {
+	for i, arg := range args {
+		if arg == key && i+1 < len(args) {
+			return args[i+1]
 		}
 	}
 	return ""

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"oro/pkg/agentmodel"
 )
 
 // spawnerMock is a test double for Spawner.
@@ -275,18 +277,19 @@ func TestCLISpawner_SpawnInWorkdirNormalizesGitEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("canonical workdir: %v", err)
 	}
-	fakeCodex := filepath.Join(binDir, "codex")
+	// Use a fake claude binary — SpawnInWorkdir resolves memory_extractor role to
+	// the claude runtime via agentmodel, so we intercept claude (not codex).
+	fakeClaude := filepath.Join(binDir, "claude")
 	script := "#!/bin/sh\n" +
 		"printf 'PWD=%s\\n' \"$PWD\"\n" +
 		"printf 'GIT_DIR=%s\\n' \"${GIT_DIR-unset}\"\n" +
 		"printf 'GIT_WORK_TREE=%s\\n' \"${GIT_WORK_TREE-unset}\"\n" +
 		"printf 'GIT_INDEX_FILE=%s\\n' \"${GIT_INDEX_FILE-unset}\"\n" +
 		"printf 'ACTUAL=%s\\n' \"$(pwd -P)\"\n"
-	if err := os.WriteFile(fakeCodex, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake codex: %v", err)
+	if err := os.WriteFile(fakeClaude, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
 	}
 
-	t.Setenv("ORO_AGENT_RUNTIME", "codex")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("PWD", "/poisoned/main")
 	t.Setenv("GIT_DIR", "/poisoned/main/.git")
@@ -323,7 +326,7 @@ func TestCLISpawner_SpawnInWorkdirNormalizesGitEnv(t *testing.T) {
 func TestSpawnCommand_DefaultsToClaude(t *testing.T) {
 	t.Setenv("ORO_AGENT_RUNTIME", "")
 
-	got := spawnCommand("haiku", "test prompt")
+	got := spawnCommand("haiku", "test prompt", "")
 	want := []string{"claude", "-p", "test prompt", "--model", "haiku"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("spawnCommand() = %v, want %v", got, want)
@@ -333,9 +336,50 @@ func TestSpawnCommand_DefaultsToClaude(t *testing.T) {
 func TestSpawnCommand_UsesCodexWhenConfigured(t *testing.T) {
 	t.Setenv("ORO_AGENT_RUNTIME", "codex")
 
-	got := spawnCommand("haiku", "test prompt")
+	got := spawnCommand("haiku", "test prompt", "")
 	want := []string{"codex", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--model", "gpt-5-codex", "test prompt"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("spawnCommand() = %v, want %v", got, want)
 	}
+}
+
+// TestMemoryExtractorRoleResolves verifies that spawnCommand resolves the model
+// via agentmodel.ResolveForRole when a role is provided, and falls back to
+// ReadRuntime() + the model parameter when role is empty.
+func TestMemoryExtractorRoleResolves(t *testing.T) {
+	t.Run("role resolves model via agentmodel", func(t *testing.T) {
+		t.Setenv("ORO_AGENT_RUNTIME", "")
+
+		_, expectedModel := agentmodel.ResolveForRole("memory_extractor")
+		args := spawnCommand("haiku", "probe", "memory_extractor")
+
+		gotModel := sliceValue(args, "--model")
+		if gotModel != expectedModel {
+			t.Errorf("spawnCommand model = %q, want %q (from agentmodel.ResolveForRole)", gotModel, expectedModel)
+		}
+	})
+
+	t.Run("empty role falls back to ReadRuntime default", func(t *testing.T) {
+		t.Setenv("ORO_AGENT_RUNTIME", "")
+
+		args := spawnCommand("my-model", "probe", "")
+
+		if args[0] != "claude" {
+			t.Errorf("empty role: command = %q, want claude (ReadRuntime default)", args[0])
+		}
+		gotModel := sliceValue(args, "--model")
+		if gotModel != "my-model" {
+			t.Errorf("empty role: model = %q, want my-model (fallback parameter)", gotModel)
+		}
+	})
+}
+
+// sliceValue finds the value following key in a string slice.
+func sliceValue(args []string, key string) string {
+	for i, arg := range args {
+		if arg == key && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
 }
