@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -16,7 +17,9 @@ import (
 
 	"oro/pkg/config"
 	"oro/pkg/langprofile"
+	"oro/pkg/protocol"
 
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
@@ -286,12 +289,129 @@ func runInstall(w io.Writer, def toolDef) error {
 	return nil
 }
 
-// newInitCmd creates the "oro init" subcommand.
+// initDeps holds injectable dependencies for the init wizard (TTY detection and prompting).
+type initDeps struct {
+	isTTY  func() bool
+	prompt func(w io.Writer, question, def string) (string, error)
+}
+
+// defaultInitDeps returns production initDeps using real stdin/isatty.
+func defaultInitDeps() *initDeps {
+	return &initDeps{
+		isTTY:  func() bool { return isatty.IsTerminal(os.Stdin.Fd()) },
+		prompt: interactivePrompt,
+	}
+}
+
+// interactivePrompt prints question+default to w, reads a line from stdin,
+// and returns the trimmed input (or def when the user presses Enter).
+func interactivePrompt(w io.Writer, question, def string) (string, error) {
+	fmt.Fprintf(w, "%s [%s]: ", question, def)
+	scanner := bufio.NewScanner(os.Stdin)
+	if scanner.Scan() {
+		if line := strings.TrimSpace(scanner.Text()); line != "" {
+			return line, nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return def, fmt.Errorf("reading input: %w", err)
+	}
+	return def, nil
+}
+
+// defaultTierConfig returns the default agent tier configuration.
+func defaultTierConfig() map[protocol.Tier]config.TierConfig {
+	return map[protocol.Tier]config.TierConfig{
+		protocol.TierFast:       {Runtime: "claude", Model: "claude-haiku-4-5-20251001"},
+		protocol.TierBalanced:   {Runtime: "claude", Model: "claude-sonnet-4-6"},
+		protocol.TierDeep:       {Runtime: "claude", Model: "claude-opus-4-7"},
+		protocol.TierBackground: {Runtime: "claude", Model: "claude-haiku-4-5-20251001"},
+	}
+}
+
+// runTierWizard prompts the user for each tier's runtime and model (5 prompts
+// total) and returns the resulting tier map.
+func runTierWizard(w io.Writer, prompt func(io.Writer, string, string) (string, error)) (map[protocol.Tier]config.TierConfig, error) {
+	rt, err := prompt(w, "Primary runtime", "claude")
+	if err != nil {
+		return nil, err
+	}
+	fast, err := prompt(w, "Model for fast tier (quick tool calls)", "claude-haiku-4-5-20251001")
+	if err != nil {
+		return nil, err
+	}
+	balanced, err := prompt(w, "Model for balanced tier (main workers)", "claude-sonnet-4-6")
+	if err != nil {
+		return nil, err
+	}
+	deep, err := prompt(w, "Model for deep tier (ops/escalation)", "claude-opus-4-7")
+	if err != nil {
+		return nil, err
+	}
+	background, err := prompt(w, "Model for background tier (background tasks)", "claude-haiku-4-5-20251001")
+	if err != nil {
+		return nil, err
+	}
+	return map[protocol.Tier]config.TierConfig{
+		protocol.TierFast:       {Runtime: rt, Model: fast},
+		protocol.TierBalanced:   {Runtime: rt, Model: balanced},
+		protocol.TierDeep:       {Runtime: rt, Model: deep},
+		protocol.TierBackground: {Runtime: rt, Model: background},
+	}, nil
+}
+
+// resolveInitConfigPath returns the path to config.yaml for the just-bootstrapped project.
+func resolveInitConfigPath(stealth bool, projectRoot, oroHome string) (string, error) {
+	if stealth {
+		hash, err := projectHash(projectRoot)
+		if err != nil {
+			return "", fmt.Errorf("compute project hash: %w", err)
+		}
+		return filepath.Join(oroHome, "projects", "s-"+hash, "config.yaml"), nil
+	}
+	return filepath.Join(projectRoot, ".oro", "config.yaml"), nil
+}
+
+// writeInitAgentTiers writes agent.tiers to configPath.
+// When TTY and not skipping: runs the interactive wizard.
+// When non-TTY and not skipping: writes defaults and prints a stderr notice.
+// When skipping: writes defaults silently.
+func writeInitAgentTiers(w, errW io.Writer, configPath string, skipWizard bool, deps *initDeps) error {
+	var tiers map[protocol.Tier]config.TierConfig
+	isTTY := deps.isTTY()
+
+	switch {
+	case !skipWizard && isTTY:
+		var err error
+		tiers, err = runTierWizard(w, deps.prompt)
+		if err != nil {
+			return err
+		}
+	case !skipWizard && !isTTY:
+		tiers = defaultTierConfig()
+		fmt.Fprintf(errW, "oro: non-interactive session — writing default agent tiers. Run 'oro init' interactively to customize.\n")
+	default:
+		tiers = defaultTierConfig()
+	}
+
+	if err := config.MergeKey(configPath, "agent", map[string]any{"tiers": tiers}); err != nil {
+		return fmt.Errorf("write agent tiers: %w", err)
+	}
+	return nil
+}
+
+// newInitCmd creates the "oro init" subcommand using production dependencies.
 func newInitCmd() *cobra.Command {
+	return newInitCmdWithDeps(defaultInitDeps())
+}
+
+// newInitCmdWithDeps creates the "oro init" subcommand with injectable deps.
+func newInitCmdWithDeps(deps *initDeps) *cobra.Command {
 	var (
 		checkOnly   bool
 		quiet       bool
 		local       bool
+		skipWizard  bool
 		projectRoot string
 	)
 
@@ -314,16 +434,18 @@ Flags:
   --quiet         Suppress all output (useful for CI scripts).
   --local         In-repo mode: create .oro/ directory in the project root.
                   By default oro uses stealth mode (zero footprint).
-  --project-root  Specify a different project directory (default: current directory).`,
+  --project-root  Specify a different project directory (default: current directory).
+  --skip-wizard   Skip interactive setup wizard and write default agent tiers silently.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := cmd.OutOrStdout()
+			errW := cmd.ErrOrStderr()
 			projectName := ""
 			if len(args) > 0 {
 				projectName = args[0]
 			}
 			stealth := !local
-			return runInit(w, checkOnly, quiet, stealth, projectRoot, projectName)
+			return runInitWithDeps(w, errW, checkOnly, quiet, stealth, skipWizard, projectRoot, projectName, deps)
 		},
 	}
 
@@ -331,12 +453,19 @@ Flags:
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress output, just exit code")
 	cmd.Flags().BoolVar(&local, "local", false, "in-repo mode: create .oro/ in project root (default: stealth)")
 	cmd.Flags().StringVar(&projectRoot, "project-root", ".", "project root directory for config generation")
+	cmd.Flags().BoolVar(&skipWizard, "skip-wizard", false, "skip interactive setup wizard (write default agent tiers silently)")
 
 	return cmd
 }
 
-// runInit is the core logic for the init command, separated for testability.
+// runInit is the backward-compatible entry point used by cmd_start auto-init.
+// It always skips the wizard (non-interactive context).
 func runInit(w io.Writer, checkOnly, quiet, stealth bool, projectRoot, projectName string) error {
+	return runInitWithDeps(w, os.Stderr, checkOnly, quiet, stealth, true, projectRoot, projectName, defaultInitDeps())
+}
+
+// runInitWithDeps is the core init logic with injectable dependencies.
+func runInitWithDeps(w, errW io.Writer, checkOnly, quiet, stealth, skipWizard bool, projectRoot, projectName string, deps *initDeps) error {
 	// Resolve real repo root for worktree support (e.g. when running from inside .worktrees/).
 	if resolved, err := langprofile.ResolveProjectRoot(projectRoot); err == nil {
 		projectRoot = resolved
@@ -374,25 +503,40 @@ func runInit(w io.Writer, checkOnly, quiet, stealth bool, projectRoot, projectNa
 		return fmt.Errorf("access embedded assets: %w", err)
 	}
 
-	if stealth {
-		return runInitStealth(w, projectRoot, oroHome, subAssets)
+	if err := runBootstrapAndPrint(w, stealth, projectRoot, projectName, oroHome, subAssets); err != nil {
+		return err
 	}
 
+	// Write agent tiers to config (wizard, defaults, or skip).
+	cfgPath, err := resolveInitConfigPath(stealth, projectRoot, oroHome)
+	if err != nil {
+		fmt.Fprintf(errW, "warning: could not resolve config path for agent tiers: %v\n", err)
+		return nil
+	}
+	if err := writeInitAgentTiers(w, errW, cfgPath, skipWizard, deps); err != nil {
+		fmt.Fprintf(errW, "warning: agent tier config: %v\n", err)
+	}
+	return nil
+}
+
+// runBootstrapAndPrint runs the appropriate bootstrap path (stealth or local)
+// and prints the success message to w.
+func runBootstrapAndPrint(w io.Writer, stealth bool, projectRoot, projectName, oroHome string, assets fs.FS) error {
+	if stealth {
+		return runInitStealth(w, projectRoot, oroHome, assets)
+	}
 	name, err := resolveProjectName(projectRoot, projectName)
 	if err != nil {
 		return err
 	}
-
-	if _, err := bootstrapProject(projectRoot, name, oroHome, subAssets, false); err != nil {
+	if _, err := bootstrapProject(projectRoot, name, oroHome, assets, false); err != nil {
 		return fmt.Errorf("bootstrap project: %w", err)
 	}
-
 	fmt.Fprintf(w, "\n✓ Initialized project %q\n", name)
 	fmt.Fprintf(w, "  Local anchor: %s/.oro/config.yaml\n", projectRoot)
 	fmt.Fprintf(w, "  Project dir:  %s/projects/%s/\n", oroHome, name)
 	fmt.Fprintf(w, "  Settings:     %s/projects/%s/settings.json\n", oroHome, name)
 	fmt.Fprintf(w, "\nRun 'oro start' to launch agents.\n")
-
 	return nil
 }
 

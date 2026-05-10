@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 	"testing/fstest"
 
 	"oro/pkg/langprofile"
+
+	"github.com/spf13/cobra"
 )
 
 // --- ToolChecker unit tests ---
@@ -2436,5 +2439,224 @@ func TestRegenerationPolicyOnDivergence(t *testing.T) {
 		checkOverwritten(filepath.Join(dest, "ORO_AGENT.md"))
 		checkOverwritten(filepath.Join(claudeDir, "CLAUDE.md"))
 		checkOverwritten(filepath.Join(dest, "AGENTS.md"))
+	})
+}
+
+// --- Init wizard tests (oro-vezg) ---
+
+// newTestRootForInitDeps builds a minimal cobra root with the init subcommand
+// wired to the given deps. Used only in tests.
+func newTestRootForInitDeps(deps *initDeps) *cobra.Command {
+	root := &cobra.Command{Use: "oro", SilenceUsage: true, SilenceErrors: true}
+	root.AddCommand(newInitCmdWithDeps(deps))
+	return root
+}
+
+// cannedPrompt returns a prompt function that serves answers from the slice in
+// order, falling back to def when the slice is exhausted.
+func cannedPrompt(answers []string) func(io.Writer, string, string) (string, error) {
+	idx := 0
+	return func(_ io.Writer, _, def string) (string, error) {
+		if idx >= len(answers) {
+			return def, nil
+		}
+		ans := answers[idx]
+		idx++
+		return ans, nil
+	}
+}
+
+// TestInitWizardWritesAgentTiers verifies that a TTY-detected init session
+// presents the 5-prompt wizard and writes the collected values to agent.tiers
+// in config.yaml.
+func TestInitWizardWritesAgentTiers(t *testing.T) {
+	overrideToolDefs(t)
+	tmpDir := t.TempDir()
+	t.Setenv("ORO_HOME", t.TempDir())
+
+	deps := &initDeps{
+		isTTY: func() bool { return true },
+		prompt: cannedPrompt([]string{
+			"claude",                    // primary runtime
+			"claude-haiku-4-5-20251001", // fast
+			"claude-sonnet-4-6",         // balanced
+			"claude-opus-4-7",           // deep
+			"claude-haiku-4-5-20251001", // background
+		}),
+	}
+
+	root := newTestRootForInitDeps(deps)
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetArgs([]string{"init", "--project-root", tmpDir, "--local"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	configPath := filepath.Join(tmpDir, ".oro", "config.yaml")
+	data, err := os.ReadFile(configPath) //nolint:gosec // test file
+	if err != nil {
+		t.Fatalf("config.yaml not found: %v", err)
+	}
+	content := string(data)
+
+	for _, want := range []string{"agent:", "tiers:", "fast:", "balanced:", "deep:", "background:"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("config.yaml should contain %q after wizard, got:\n%s", want, content)
+		}
+	}
+}
+
+// TestInitNonTTYWritesDefaults verifies that a non-TTY session skips the
+// wizard, writes default agent.tiers silently, and emits a notice to stderr.
+func TestInitNonTTYWritesDefaults(t *testing.T) {
+	overrideToolDefs(t)
+	tmpDir := t.TempDir()
+	t.Setenv("ORO_HOME", t.TempDir())
+
+	deps := &initDeps{
+		isTTY:  func() bool { return false },
+		prompt: cannedPrompt(nil), // should never be called
+	}
+
+	root := newTestRootForInitDeps(deps)
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{"init", "--project-root", tmpDir, "--local"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	configPath := filepath.Join(tmpDir, ".oro", "config.yaml")
+	data, err := os.ReadFile(configPath) //nolint:gosec // test file
+	if err != nil {
+		t.Fatalf("config.yaml not found: %v", err)
+	}
+	content := string(data)
+
+	for _, want := range []string{"agent:", "tiers:"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("config.yaml should contain %q (defaults), got:\n%s", want, content)
+		}
+	}
+
+	if !strings.Contains(stderr.String(), "non-interactive") {
+		t.Errorf("stderr should contain non-interactive notice, got: %q", stderr.String())
+	}
+}
+
+// TestInitSkipWizardFlag verifies that --skip-wizard writes silent defaults
+// without emitting a stderr notice.
+func TestInitSkipWizardFlag(t *testing.T) {
+	overrideToolDefs(t)
+	tmpDir := t.TempDir()
+	t.Setenv("ORO_HOME", t.TempDir())
+
+	deps := &initDeps{
+		isTTY:  func() bool { return true }, // would normally trigger wizard
+		prompt: cannedPrompt(nil),           // must not be called
+	}
+
+	root := newTestRootForInitDeps(deps)
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{"init", "--project-root", tmpDir, "--local", "--skip-wizard"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("init --skip-wizard failed: %v", err)
+	}
+
+	configPath := filepath.Join(tmpDir, ".oro", "config.yaml")
+	data, err := os.ReadFile(configPath) //nolint:gosec // test file
+	if err != nil {
+		t.Fatalf("config.yaml not found: %v", err)
+	}
+	content := string(data)
+
+	for _, want := range []string{"agent:", "tiers:"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("config.yaml should contain %q (defaults), got:\n%s", want, content)
+		}
+	}
+
+	if strings.Contains(stderr.String(), "non-interactive") {
+		t.Errorf("--skip-wizard should produce no stderr notice, got: %q", stderr.String())
+	}
+}
+
+// TestInitCheckQuietPreserved verifies that --check, --quiet, --local, and
+// --project-root flags still behave identically after the wizard changes.
+func TestInitCheckQuietPreserved(t *testing.T) {
+	t.Run("check flag still exits non-zero on missing tool", func(t *testing.T) {
+		orig := defaultToolDefs
+		defaultToolDefs = []toolDef{
+			{Name: "nonexistent-tool-xyz", Category: "system", CheckCmd: "nonexistent-tool-xyz", CheckArgs: []string{"--version"}},
+		}
+		t.Cleanup(func() { defaultToolDefs = orig })
+
+		root := newRootCmd()
+		var buf bytes.Buffer
+		root.SetOut(&buf)
+		root.SetErr(&buf)
+		root.SetArgs([]string{"init", "--check"})
+
+		if err := root.Execute(); err == nil {
+			t.Fatal("init --check should fail with missing tools")
+		}
+	})
+
+	t.Run("quiet flag produces no output on success", func(t *testing.T) {
+		overrideToolDefs(t)
+
+		root := newRootCmd()
+		var buf bytes.Buffer
+		root.SetOut(&buf)
+		root.SetErr(&buf)
+		root.SetArgs([]string{"init", "--check", "--quiet"})
+
+		if err := root.Execute(); err != nil {
+			t.Fatalf("init --check --quiet should pass: %v", err)
+		}
+		if buf.String() != "" {
+			t.Errorf("quiet mode should produce no output, got: %q", buf.String())
+		}
+	})
+
+	t.Run("local flag creates .oro in project-root", func(t *testing.T) {
+		overrideToolDefs(t)
+		tmpDir := t.TempDir()
+		t.Setenv("ORO_HOME", t.TempDir())
+
+		root := newRootCmd()
+		var buf bytes.Buffer
+		root.SetOut(&buf)
+		root.SetArgs([]string{"init", "--project-root", tmpDir, "--local", "--skip-wizard"})
+
+		if err := root.Execute(); err != nil {
+			t.Fatalf("init --local failed: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(tmpDir, ".oro", "config.yaml")); err != nil {
+			t.Errorf("--local should create .oro/config.yaml in project-root: %v", err)
+		}
+	})
+
+	t.Run("skip-wizard composes with check flag (no bootstrap)", func(t *testing.T) {
+		overrideToolDefs(t)
+
+		root := newRootCmd()
+		var buf bytes.Buffer
+		root.SetOut(&buf)
+		root.SetArgs([]string{"init", "--check", "--skip-wizard"})
+
+		if err := root.Execute(); err != nil {
+			t.Fatalf("init --check --skip-wizard should pass: %v", err)
+		}
+		if !strings.Contains(buf.String(), "OK") {
+			t.Errorf("--check output should contain OK, got: %q", buf.String())
+		}
 	})
 }
