@@ -263,6 +263,225 @@ func TestStop_ForceRequiresEnvVar(t *testing.T) {
 	})
 }
 
+func TestStopForceKillsWorkerProcessGroups(t *testing.T) {
+	t.Setenv("ORO_HUMAN_CONFIRMED", "1")
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "oro.pid")
+	if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
+		t.Fatalf("setup PID: %v", err)
+	}
+
+	var treeKilledPID int
+	var treeKillPatterns []string
+	var killedWith int
+	var buf bytes.Buffer
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	cfg := ttyStop(pidFile, newFakeCmd(), &buf)
+	cfg.force = true
+	cfg.isTTY = func() bool { return false }
+	cfg.aliveFn = func(pid int) bool { return true }
+	cfg.killFn = func(pid int) error { killedWith = pid; return nil }
+	cfg.treeKillFn = func(_ context.Context, pid int, patterns []string) error {
+		treeKilledPID = pid
+		treeKillPatterns = append([]string(nil), patterns...)
+		return nil
+	}
+
+	if err := runStopSequence(ctx, cfg); err != nil {
+		t.Fatalf("runStopSequence: %v", err)
+	}
+	if treeKilledPID != os.Getpid() {
+		t.Fatalf("tree kill pid = %d, want dispatcher pid %d", treeKilledPID, os.Getpid())
+	}
+	if killedWith != 0 {
+		t.Fatalf("single-pid kill fallback was used despite treeKillFn, pid=%d", killedWith)
+	}
+	wantMarker := "ORO_SOCKET_PATH=" + cfg.sockPath
+	joinedPatterns := strings.Join(treeKillPatterns, "\n")
+	if !strings.Contains(joinedPatterns, wantMarker) {
+		t.Fatalf("tree kill patterns %q missing %q", joinedPatterns, wantMarker)
+	}
+	for _, tooBroad := range []string{"ORO_ROLE=", "ORO_WORKER_ID=", "ORO_SOCKET_PATH="} {
+		if joinedPatterns == tooBroad || strings.Contains(joinedPatterns, tooBroad+"\n") {
+			t.Fatalf("tree kill patterns include unscoped marker %q: %q", tooBroad, joinedPatterns)
+		}
+	}
+}
+
+func TestStopScansAndKillsOroOwnedResidualChildren(t *testing.T) {
+	t.Setenv("ORO_HUMAN_CONFIRMED", "1")
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "oro.pid")
+	if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
+		t.Fatalf("setup PID: %v", err)
+	}
+
+	var killed []int
+	var buf bytes.Buffer
+	cfg := ttyStop(pidFile, newFakeCmd(), &buf)
+	cfg.force = true
+	cfg.isTTY = func() bool { return false }
+	cfg.residualRoots = []string{"/tmp/oro-owned-worktree"}
+	cfg.residualMarkers = []string{"ORO_SOCKET_PATH=" + cfg.sockPath}
+	snapshots := []processSnapshot{
+		{PID: 2001, PPID: 1, PGID: 2001, Session: 2001, Command: "sh -c ORO_SOCKET_PATH=" + cfg.sockPath + " ./scripts/quality_gate.sh"},
+		{PID: 2002, PPID: 1, PGID: 2002, Session: 2002, Command: "go test ./pkg/dispatcher -worktree /tmp/oro-owned-worktree"},
+		{PID: 2003, PPID: 1, PGID: 2003, Session: 2003, Command: "go test ./pkg/dispatcher"},
+	}
+	cfg.residualScanFn = func(_ context.Context, roots, markers []string) ([]ResidualProcess, error) {
+		return scanOroResidualProcessSnapshots(snapshots, roots, markers), nil
+	}
+	cfg.residualKillFn = func(_ context.Context, residuals ...ResidualProcess) error {
+		for _, residual := range residuals {
+			killed = append(killed, residual.PID)
+		}
+		return nil
+	}
+
+	if err := runStopSequence(context.Background(), cfg); err != nil {
+		t.Fatalf("runStopSequence: %v", err)
+	}
+	if got, want := killed, []int{2001, 2002}; !sameInts(got, want) {
+		t.Fatalf("killed residual PIDs = %v, want %v", got, want)
+	}
+	if strings.Contains(buf.String(), "2003") {
+		t.Fatalf("unrelated matching process was reported as killed:\n%s", buf.String())
+	}
+}
+
+func TestResidualScanDoesNotTreatBareToolNamesAsOwnership(t *testing.T) {
+	residuals := scanOroResidualProcessSnapshots([]processSnapshot{
+		{PID: 2101, PPID: 1, PGID: 2101, Session: 2101, Command: "./scripts/quality_gate.sh"},
+		{PID: 2102, PPID: 1, PGID: 2102, Session: 2102, Command: "ops-review --some-other-project"},
+		{PID: 2103, PPID: 1, PGID: 2103, Session: 2103, Command: "go test ./pkg/dispatcher -worktree /tmp/oro-owned-worktree"},
+	}, []string{"/tmp/oro-owned-worktree"}, defaultOroResidualMarkers("myproject", "/tmp/myproject/oro.sock"))
+
+	if len(residuals) != 1 || residuals[0].PID != 2103 {
+		t.Fatalf("residuals = %+v, want only root-owned process 2103", residuals)
+	}
+}
+
+func TestResidualScanUsesScopedMarkers(t *testing.T) {
+	residuals := scanOroResidualProcessSnapshots([]processSnapshot{
+		{PID: 2111, PPID: 1, PGID: 2111, Session: 2111, Command: "ORO_ROLE=worker ORO_WORKER_ID=w1 go test ./pkg/dispatcher"},
+		{PID: 2112, PPID: 1, PGID: 2112, Session: 2112, Command: "ORO_SOCKET_PATH=/tmp/project-a/oro.sock ./scripts/quality_gate.sh"},
+		{PID: 2113, PPID: 1, PGID: 2113, Session: 2113, Command: "ORO_SOCKET_PATH=/tmp/project-ab/oro.sock ./scripts/quality_gate.sh"},
+		{PID: 2114, PPID: 1, PGID: 2114, Session: 2114, Command: "ORO_PROJECT=project-a ops-review"},
+		{PID: 2115, PPID: 1, PGID: 2115, Session: 2115, Command: "ORO_PROJECT=project-ab ops-review"},
+	}, nil, defaultOroResidualMarkers("project-a", "/tmp/project-a/oro.sock"))
+
+	if got, want := residualPIDs(residuals), []int{2112, 2114}; !sameInts(got, want) {
+		t.Fatalf("residual PIDs = %v, want scoped project/socket matches %v", got, want)
+	}
+}
+
+func TestResidualScanUsesPathBoundariesForRoots(t *testing.T) {
+	residuals := scanOroResidualProcessSnapshots([]processSnapshot{
+		{PID: 2121, PPID: 1, PGID: 2121, Session: 2121, Command: "go test -worktree /tmp/oro/projects/foo"},
+		{PID: 2122, PPID: 1, PGID: 2122, Session: 2122, Command: "go test -worktree /tmp/oro/projects/foo/worktree"},
+		{PID: 2123, PPID: 1, PGID: 2123, Session: 2123, Command: "go test -worktree /tmp/oro/projects/foobar"},
+		{PID: 2124, PPID: 1, PGID: 2124, Session: 2124, Command: "go test -worktree /tmp/oro/projects/foo-bar"},
+	}, []string{"/tmp/oro/projects/foo"}, nil)
+
+	if got, want := residualPIDs(residuals), []int{2121, 2122}; !sameInts(got, want) {
+		t.Fatalf("residual PIDs = %v, want only boundary-safe root matches %v", got, want)
+	}
+}
+
+func TestStopResidualRootsIncludesCurrentProjectWorktreesDir(t *testing.T) {
+	repoRoot := t.TempDir()
+	t.Chdir(repoRoot)
+	pidPath := filepath.Join(t.TempDir(), "oro.pid")
+
+	got := stopResidualRoots(pidPath)
+	wantWorktrees := filepath.Join(repoRoot, ".worktrees")
+	if !containsString(got, filepath.Dir(pidPath)) || !containsString(got, wantWorktrees) {
+		t.Fatalf("stop residual roots = %v, want PID dir and project worktrees dir %q", got, wantWorktrees)
+	}
+}
+
+func TestActiveAssignmentWorktreeRoots(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	db, err := openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	activeWorktree := filepath.Join(t.TempDir(), "active-worktree")
+	completedWorktree := filepath.Join(t.TempDir(), "completed-worktree")
+	if _, err := db.ExecContext(context.Background(),
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES
+			('oro-active', 'worker-1', ?, 'active'),
+			('oro-completed', 'worker-2', ?, 'completed')`,
+		activeWorktree, completedWorktree); err != nil {
+		t.Fatalf("insert assignments: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close state db: %v", err)
+	}
+
+	got, err := activeAssignmentWorktreeRoots(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("activeAssignmentWorktreeRoots: %v", err)
+	}
+	if len(got) != 1 || got[0] != activeWorktree {
+		t.Fatalf("active assignment roots = %v, want [%s]", got, activeWorktree)
+	}
+}
+
+func TestResidualKillDeduplicatesProcessGroups(t *testing.T) {
+	pids, pgids := uniqueResidualTargets([]ResidualProcess{
+		{PID: 2201, PGID: 3301},
+		{PID: 2202, PGID: 3301},
+		{PID: 2201, PGID: 3301},
+		{PID: 2203, PGID: 3303},
+	})
+	if got, want := pids, []int{2201, 2202, 2203}; !sameInts(got, want) {
+		t.Fatalf("unique residual pids = %v, want %v", got, want)
+	}
+	if got, want := pgids, []int{3301, 3303}; !sameInts(got, want) {
+		t.Fatalf("unique residual pgids = %v, want %v", got, want)
+	}
+}
+
+func TestKillProcessTreeDoesNotSkipSigkillWhenContextDone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := killProcessTree(ctx, 4000000, nil); err != nil {
+		t.Fatalf("already-gone process tree should still complete after canceled wait: %v", err)
+	}
+}
+
+func residualPIDs(residuals []ResidualProcess) []int {
+	pids := make([]int, 0, len(residuals))
+	for _, residual := range residuals {
+		pids = append(pids, residual.PID)
+	}
+	return pids
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func sameInts(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // TestRunStopSequence verifies the full stop sequence completes successfully and
 // does NOT invoke bd daemon stop or bd sync (those are handled by the dispatcher
 // itself on shutdown and the pre-commit hook, respectively).
