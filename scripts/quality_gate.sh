@@ -79,6 +79,87 @@ qg_git() {
 }
 
 # shellcheck disable=SC2317,SC2329
+qg_source_files() {
+	qg_git ls-files -- "$@" \
+		':(exclude)references/**' \
+		':(exclude)archive/**' \
+		':(exclude).tmp-test/**' \
+		':(exclude).cache/**' \
+		':(exclude).worktrees/**' \
+		':(exclude).claude/worktrees/**' \
+		':(exclude).venv/**' \
+		':(exclude)node_modules/**' \
+		':(exclude)cmd/oro/_assets/**'
+}
+
+# shellcheck disable=SC2317,SC2329
+qg_python_source_files() {
+	qg_source_files '*.py' \
+		':(exclude)assets/**' \
+		':(exclude).claude/hooks/**'
+}
+
+# shellcheck disable=SC2317,SC2329
+qg_yaml_source_files() {
+	qg_source_files '*.yml' '*.yaml' ':(exclude).beads/**'
+}
+
+# shellcheck disable=SC2317,SC2329
+qg_run_ruff_format_source() {
+	local -a files=()
+	mapfile -t files < <(qg_python_source_files)
+	if [ "${#files[@]}" -eq 0 ]; then
+		echo "No tracked Python source files"
+		return 0
+	fi
+	qg_ruff format --check "${files[@]}"
+}
+
+# shellcheck disable=SC2317,SC2329
+qg_run_ruff_check_source() {
+	local -a files=()
+	mapfile -t files < <(qg_python_source_files)
+	if [ "${#files[@]}" -eq 0 ]; then
+		echo "No tracked Python source files"
+		return 0
+	fi
+	qg_ruff check "${files[@]}"
+}
+
+# shellcheck disable=SC2317,SC2329
+qg_run_pylint_source() {
+	local -a files=()
+	mapfile -t files < <(qg_python_source_files)
+	if [ "${#files[@]}" -eq 0 ]; then
+		echo "No tracked Python source files"
+		return 0
+	fi
+	pylint --disable=all --enable=E "${files[@]}"
+}
+
+# shellcheck disable=SC2317,SC2329
+qg_run_pyright_source() {
+	local -a files=()
+	mapfile -t files < <(qg_python_source_files)
+	if [ "${#files[@]}" -eq 0 ]; then
+		echo "No tracked Python source files"
+		return 0
+	fi
+	qg_pyright "${files[@]}"
+}
+
+# shellcheck disable=SC2317,SC2329
+qg_run_yamllint_source() {
+	local -a files=()
+	mapfile -t files < <(qg_yaml_source_files)
+	if [ "${#files[@]}" -eq 0 ]; then
+		echo "No tracked YAML source files"
+		return 0
+	fi
+	yamllint -d relaxed --no-warnings "${files[@]}"
+}
+
+# shellcheck disable=SC2317,SC2329
 should_run_mutation_tests() {
 	if [ "${ORO_SKIP_MUTATION:-}" = "1" ]; then
 		return 1
@@ -686,7 +767,7 @@ lane_python() {
 
 	# --- Tier 1: Formatting ---
 	header "PYTHON TIER 1: FORMATTING"
-	if check "ruff format" "qg_ruff format --check ."; then
+	if check "ruff format" "qg_run_ruff_format_source"; then
 		pass=$((pass + 1))
 	else
 		fail=$((fail + 1))
@@ -696,9 +777,9 @@ lane_python() {
 
 	# --- Tier 2: Linting (parallel) ---
 	header "PYTHON TIER 2: LINTING"
-	local tier2_checks=("ruff check" "qg_ruff check .")
+	local tier2_checks=("ruff check" "qg_run_ruff_check_source")
 	if command -v pylint >/dev/null 2>&1; then
-		tier2_checks+=("pylint" "find . -name '*.py' -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './.claude/worktrees/*' -not -path './assets/*' -not -path './.venv/*' -not -path './.claude/hooks/*' -not -path './node_modules/*' -not -path './cmd/oro/_assets/*' | xargs pylint --disable=all --enable=E")
+		tier2_checks+=("pylint" "qg_run_pylint_source")
 	fi
 	parallel_checks "${tier2_checks[@]}"
 	pass=$((pass + TIER_PASS))
@@ -711,7 +792,7 @@ lane_python() {
 	# --- Tier 3: Type Checking ---
 	header "PYTHON TIER 3: TYPE CHECKING"
 	if qg_pyright --version >/dev/null 2>&1; then
-		if check "pyright" "qg_pyright"; then
+		if check "pyright" "qg_run_pyright_source"; then
 			pass=$((pass + 1))
 		else
 			fail=$((fail + 1))
@@ -787,8 +868,8 @@ lane_other() {
 	if $HAS_SHELL; then
 		header "SHELL: FORMAT + LINT"
 		parallel_checks \
-			"shfmt" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './node_modules/*' -not -path './cmd/oro/_assets/*' -exec shfmt -d {} +" \
-			"shellcheck" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './node_modules/*' -not -path './cmd/oro/_assets/*' -exec shellcheck --severity=info {} +"
+			"shfmt" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.tmp-test/*' -not -path './.cache/*' -not -path './.worktrees/*' -not -path './.claude/worktrees/*' -not -path './.venv/*' -not -path './node_modules/*' -not -path './.beads/*' -not -path './cmd/oro/_assets/*' -exec shfmt -d {} +" \
+			"shellcheck" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.tmp-test/*' -not -path './.cache/*' -not -path './.worktrees/*' -not -path './.claude/worktrees/*' -not -path './.venv/*' -not -path './node_modules/*' -not -path './.beads/*' -not -path './cmd/oro/_assets/*' -exec shellcheck --severity=info {} +"
 		pass=$((pass + TIER_PASS))
 		fail=$((fail + TIER_FAIL))
 	fi
@@ -808,7 +889,7 @@ lane_other() {
 
 	local docs_checks=(
 		"markdownlint" "$NODE_BIN/markdownlint-cli2 --config .markdownlint.yml 'docs/**/*.md' '*.md' '!references/**' '!archive/**'"
-		"yamllint" "find . \\( -name '*.yml' -o -name '*.yaml' \\) -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -not -path './node_modules/*' -not -path './.beads/*' | xargs yamllint -d relaxed --no-warnings"
+		"yamllint" "qg_run_yamllint_source"
 	)
 	if [ -n "$BIOME_PATHS" ]; then
 		# shellcheck disable=SC2086

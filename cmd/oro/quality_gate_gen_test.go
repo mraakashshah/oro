@@ -344,11 +344,17 @@ func TestQualityGateScript_StealthPaths(t *testing.T) {
 	}
 	script := buf.String()
 
-	// Script must reference the provided stealth paths.
-	for _, want := range []string{paths.WorktreesDir, paths.BeadsDir, paths.OroDocsDir} {
+	// Script must reference the provided stealth paths that can appear inside
+	// repository-relative command arguments. WorktreesDir may be outside the
+	// repo in stealth mode; git pathspecs must not include absolute external
+	// paths because git rejects them before producing any source file list.
+	for _, want := range []string{paths.BeadsDir, paths.OroDocsDir} {
 		if !strings.Contains(script, want) {
 			t.Errorf("expected %q in script", want)
 		}
+	}
+	if strings.Contains(script, paths.WorktreesDir) {
+		t.Errorf("script should not use stealth WorktreesDir %q as a git/find path", paths.WorktreesDir)
 	}
 
 	// Biome loop must use the stealth docs path.
@@ -356,10 +362,9 @@ func TestQualityGateScript_StealthPaths(t *testing.T) {
 		t.Errorf("biome loop should start with OroDocsDir %q", paths.OroDocsDir)
 	}
 
-	// Script must NOT use hardcoded defaults when stealth paths are set.
-	if strings.Contains(script, "./.worktrees") {
-		t.Error("script should not contain hardcoded ./.worktrees when stealth WorktreesDir is set")
-	}
+	// Script must NOT use hardcoded defaults when stealth paths are set, except
+	// repo-relative .worktrees exclusions. Those are safe because find/git only
+	// traverse the current repository, not external stealth worktree roots.
 	if strings.Contains(script, " .beads/") {
 		t.Error("script should not contain hardcoded .beads/ when stealth BeadsDir is set")
 	}

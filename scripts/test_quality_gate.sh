@@ -892,14 +892,14 @@ test_quality_gate_python_tools_avoid_pyenv_shims() {
 		echo "FAIL: quality_gate.sh does not resolve symlinks before rejecting pyenv shims"
 		return 1
 	fi
-	if ! grep -q 'qg_ruff format --check .' "$SCRIPT_DIR/quality_gate.sh" ||
-		! grep -q 'qg_ruff check .' "$SCRIPT_DIR/quality_gate.sh"; then
-		echo "FAIL: quality_gate.sh ruff lanes do not use qg_ruff wrapper"
+	if ! grep -q 'qg_run_ruff_format_source' "$SCRIPT_DIR/quality_gate.sh" ||
+		! grep -q 'qg_run_ruff_check_source' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: quality_gate.sh ruff lanes do not use source-scoped qg_ruff wrappers"
 		return 1
 	fi
 	if ! grep -q 'qg_pyright --version' "$SCRIPT_DIR/quality_gate.sh" ||
-		! grep -q 'check "pyright" "qg_pyright"' "$SCRIPT_DIR/quality_gate.sh"; then
-		echo "FAIL: quality_gate.sh pyright lane does not use qg_pyright wrapper"
+		! grep -q 'check "pyright" "qg_run_pyright_source"' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: quality_gate.sh pyright lane does not use source-scoped qg_pyright wrapper"
 		return 1
 	fi
 	local helpers
@@ -929,14 +929,14 @@ test_generated_quality_gate_python_tools_avoid_pyenv_shims() {
 		echo "FAIL: generated quality gate template does not resolve symlinks before rejecting pyenv shims"
 		return 1
 	fi
-	if ! grep -q 'qg_ruff format --check .' "$gen" ||
-		! grep -q 'qg_ruff check .' "$gen"; then
-		echo "FAIL: generated quality gate template ruff lanes do not use qg_ruff wrapper"
+	if ! grep -q 'qg_run_ruff_format_source' "$gen" ||
+		! grep -q 'qg_run_ruff_check_source' "$gen"; then
+		echo "FAIL: generated quality gate template ruff lanes do not use source-scoped qg_ruff wrappers"
 		return 1
 	fi
 	if ! grep -q 'qg_pyright --version' "$gen" ||
-		! grep -q 'check "pyright" "qg_pyright"' "$gen"; then
-		echo "FAIL: generated quality gate template pyright lane does not use qg_pyright wrapper"
+		! grep -q 'check "pyright" "qg_run_pyright_source"' "$gen"; then
+		echo "FAIL: generated quality gate template pyright lane does not use source-scoped qg_pyright wrapper"
 		return 1
 	fi
 	local helpers
@@ -946,6 +946,63 @@ test_generated_quality_gate_python_tools_avoid_pyenv_shims() {
 	local rc=$?
 	rm -f "$helpers"
 	return "$rc"
+}
+
+# Test: filesystem-walking quality gate lanes are scoped to tracked source files.
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_filesystem_walkers_are_source_scoped() {
+	local script="$SCRIPT_DIR/quality_gate.sh"
+	local gen="$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go"
+
+	for file in "$script" "$gen"; do
+		if ! grep -q 'qg_python_source_files()' "$file"; then
+			echo "FAIL: $file lacks qg_python_source_files helper"
+			return 1
+		fi
+		if ! grep -q 'qg_yaml_source_files()' "$file"; then
+			echo "FAIL: $file lacks qg_yaml_source_files helper"
+			return 1
+		fi
+		if ! grep -q 'qg_run_ruff_format_source' "$file" ||
+			! grep -q 'qg_run_ruff_check_source' "$file" ||
+			! grep -q 'qg_run_pyright_source' "$file"; then
+			echo "FAIL: $file Python lanes do not use source-scoped wrappers"
+			return 1
+		fi
+		if ! grep -q 'qg_run_yamllint_source' "$file"; then
+			echo "FAIL: $file yamllint lane does not use source-scoped wrapper"
+			return 1
+		fi
+		if grep -q "':(exclude){{.WorktreesDir}}/\*\*'" "$file"; then
+			echo "FAIL: $file uses generated WorktreesDir as a git pathspec"
+			return 1
+		fi
+	done
+
+	if grep -q 'qg_ruff format --check \.' "$script" ||
+		grep -q 'qg_ruff check \.' "$script" ||
+		grep -q 'check "pyright" "qg_pyright"' "$script" ||
+		grep -q 'xargs yamllint' "$script"; then
+		echo "FAIL: quality_gate.sh still scans repo root for Python/YAML lanes"
+		return 1
+	fi
+	if grep -q 'qg_ruff format --check \.' "$gen" ||
+		grep -q 'qg_ruff check \.' "$gen" ||
+		grep -q 'check "pyright" "qg_pyright"' "$gen" ||
+		grep -q 'xargs yamllint' "$gen"; then
+		echo "FAIL: generated quality gate template still scans repo root for Python/YAML lanes"
+		return 1
+	fi
+	for path in './.tmp-test/*' './.cache/*' './.worktrees/*'; do
+		if ! grep -Fq -- "-not -path '$path'" "$script"; then
+			echo "FAIL: quality_gate.sh shell lane does not exclude $path"
+			return 1
+		fi
+		if ! grep -Fq -- "-not -path '$path'" "$gen"; then
+			echo "FAIL: generated quality gate template shell lane does not exclude $path"
+			return 1
+		fi
+	done
 }
 
 # Test: invalid LC_ALL values are normalized before invoking Python tools.
@@ -1101,6 +1158,7 @@ test_case "quality_gate.sh \$changed is quoted" test_quality_gate_changed_is_quo
 test_case "quality_gate.sh stage-assets failures fail closed" test_quality_gate_stage_assets_fail_closed
 test_case "quality_gate.sh Python tools avoid pyenv shims" test_quality_gate_python_tools_avoid_pyenv_shims
 test_case "generated quality gate Python tools avoid pyenv shims" test_generated_quality_gate_python_tools_avoid_pyenv_shims
+test_case "quality_gate.sh filesystem walkers are source scoped" test_quality_gate_filesystem_walkers_are_source_scoped
 test_case "quality_gate.sh invalid locale sanitized" test_quality_gate_invalid_locale_sanitized
 test_case "Makefile git diff has 2>/dev/null" test_makefile_git_diff_stderr_redirect
 test_case "Makefile \$\$changed is quoted" test_makefile_changed_is_quoted
