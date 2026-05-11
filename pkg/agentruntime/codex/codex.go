@@ -91,7 +91,7 @@ func buildExecArgsWithReasoning(model, reasoning, prompt string) []string {
 	}
 	reasoning = strings.TrimSpace(reasoning)
 	if reasoning != "" {
-		args = append(args, "--reasoning-effort", reasoning)
+		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", reasoning))
 	}
 	args = append(args, prompt)
 	return args

@@ -34,10 +34,17 @@ func TestBuildExecArgsAddsReasoningEffort(t *testing.T) {
 	t.Parallel()
 
 	args := buildExecArgsWithReasoning("gpt-5.5-codex", "high", "do work")
-	for i, arg := range args {
-		if arg == "--reasoning-effort" && i+1 < len(args) && args[i+1] == "high" {
-			return
-		}
+	if slices.Contains(args, "--reasoning-effort") {
+		t.Fatalf("codex 0.130.0 does not support --reasoning-effort; got args: %v", args)
 	}
-	t.Fatalf("codex reasoning effort should be passed through: %v", args)
+	configIndex := slices.Index(args, "-c")
+	if configIndex == -1 || configIndex+1 >= len(args) {
+		t.Fatalf("codex reasoning effort should be passed through via -c config: %v", args)
+	}
+	if got, want := args[configIndex+1], `model_reasoning_effort="high"`; got != want {
+		t.Fatalf("reasoning config = %q, want %q (args: %v)", got, want, args)
+	}
+	if got, want := args[len(args)-1], "do work"; got != want {
+		t.Fatalf("prompt must remain the final positional arg; got final arg %q, want %q (args: %v)", got, want, args)
+	}
 }
