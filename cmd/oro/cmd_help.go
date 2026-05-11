@@ -20,6 +20,7 @@ Lifecycle:
 
 Monitoring:
   status     Show current swarm state
+  throughput Report swarm throughput health
   logs       Query and tail dispatcher event logs
   events     Query dispatcher events
   dashboard  Show the local web dashboard (requires 'oro start --web')

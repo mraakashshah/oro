@@ -30,6 +30,7 @@ func newRootCmd() *cobra.Command {
 		newDispatcherCmd(),
 		newStopCmd(),
 		newStatusCmd(),
+		newThroughputCmd(),
 		newDashboardCmd(),
 		newDirectiveCmd(),
 		newRememberCmdWithStore(nil),
