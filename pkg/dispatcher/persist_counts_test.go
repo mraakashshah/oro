@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"oro/pkg/protocol"
+	"oro/pkg/testutil/loadguard"
 )
 
 // TestPersistAttemptCounts verifies that attempt_count and handoff_count
@@ -324,6 +325,8 @@ func TestAssignmentMarkedCompleteOnMerge(t *testing.T) {
 // TestConsolidation_TriggeredAfterNCompletions verifies that memory consolidation
 // is triggered after ConsolidateAfterN bead completions.
 func TestConsolidation_TriggeredAfterNCompletions(t *testing.T) {
+	loadguard.SkipOutsidePushQG(t)
+
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	d.cfg.ConsolidateAfterN = 2 // trigger after every 2 completions
 	cancel := startDispatcher(t, d)

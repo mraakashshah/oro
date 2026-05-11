@@ -4952,12 +4952,12 @@ func TestThresholdLookupAcceptsTierKey(t *testing.T) {
 		model string
 		want  string
 	}{
-		{protocol.TierFast, "gpt-5.5", "fast"},            // tier wins over non-Claude model
+		{protocol.TierFast, "gpt-5.5", "fast"},                // tier wins over non-Claude model
 		{protocol.TierDeep, "claude-3-opus-20240229", "deep"}, // tier wins over model family
 		{"", "claude-3-opus-20240229", "opus"},                // no tier → modelFamily
 		{"", "claude-3-5-sonnet-20241022", "sonnet"},          // no tier → modelFamily
 		{"", "claude-3-haiku-20240307", "haiku"},              // no tier → modelFamily
-		{"", "gpt-5.5", "balanced"},                       // non-Claude → balanced default
+		{"", "gpt-5.5", "balanced"},                           // non-Claude → balanced default
 	}
 
 	for _, tc := range keyCases {

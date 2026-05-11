@@ -22,6 +22,7 @@ import (
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
+	"oro/pkg/testutil/loadguard"
 )
 
 // --- Mock implementations ---
@@ -10190,6 +10191,8 @@ func TestPriorityContention(t *testing.T) {
 // numWorkers concurrent DONE deliveries to exercise assign-loop locking under
 // parallel mergeAndComplete goroutines.  The -race detector must not fire.
 func TestPriorityContention_StableUnderLoad(t *testing.T) {
+	loadguard.SkipOutsidePushQG(t)
+
 	const numWorkers = 4
 
 	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
