@@ -5160,9 +5160,11 @@ func (d *Dispatcher) restartWorkerIfStillOnBead(ctx context.Context, workerID, b
 	procMgr := d.procMgr
 	d.mu.Unlock()
 
-	if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
-		_ = d.logEvent(ctx, "focus_immediate_bead_reset_failed", "dispatcher", beadID, workerID,
-			fmt.Sprintf(`{"error":%q}`, err.Error()))
+	if d.shouldReopenBead(ctx, beadID) {
+		if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
+			_ = d.logEvent(ctx, "focus_immediate_bead_reset_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"error":%q}`, err.Error()))
+		}
 	}
 	d.clearBeadTracking(beadID)
 	_ = d.completeAssignment(ctx, assignmentID, beadID)
@@ -5713,10 +5715,14 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 	}
 
 	// Reset bead to open, clear tracking, and complete the assignment so it can be reassigned.
+	// If the bead was closed while the worker was still active, preserve that
+	// close instead of resurrecting stale work.
 	if beadID != "" {
-		if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
-			_ = d.logEvent(ctx, "restart_worker_bead_reset_failed", "dispatcher", beadID, workerID,
-				fmt.Sprintf(`{"error":%q}`, err.Error()))
+		if d.shouldReopenBead(ctx, beadID) {
+			if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
+				_ = d.logEvent(ctx, "restart_worker_bead_reset_failed", "dispatcher", beadID, workerID,
+					fmt.Sprintf(`{"error":%q}`, err.Error()))
+			}
 		}
 		d.clearBeadTracking(beadID)
 		_ = d.completeAssignment(ctx, assignmentID, beadID)
@@ -7336,6 +7342,10 @@ func (d *Dispatcher) releaseWorkerAfterQGExhaustion(workerID, beadID string) {
 }
 
 func (d *Dispatcher) shouldReopenQGOriginal(ctx context.Context, beadID string) bool {
+	return d.shouldReopenBead(ctx, beadID)
+}
+
+func (d *Dispatcher) shouldReopenBead(ctx context.Context, beadID string) bool {
 	detail, err := d.beads.Show(ctx, beadID)
 	if err != nil || detail == nil {
 		return true

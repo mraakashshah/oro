@@ -3207,6 +3207,67 @@ func TestRestartWorkerResetsBead(t *testing.T) {
 	pm.Wait()
 }
 
+func TestRestartWorkerPreservesClosedBead(t *testing.T) {
+	d, mockBeads, _, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+	ctx := context.Background()
+
+	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	pm := NewExecProcessManager(d.cfg.SocketPath)
+	d.SetProcessManager(pm)
+
+	workerID := "test-worker-closed"
+	beadID := "oro-test-closed"
+	conn1, conn2 := net.Pipe()
+	defer conn1.Close()
+	defer conn2.Close()
+
+	d.registerWorker(workerID, conn1)
+
+	assignmentID, err := d.createAssignment(ctx, beadID, workerID, "/fake/worktree")
+	if err != nil {
+		t.Fatalf("createAssignment: %v", err)
+	}
+
+	d.mu.Lock()
+	w := d.workers[workerID]
+	w.state = protocol.WorkerBusy
+	w.beadID = beadID
+	w.assignmentID = assignmentID
+	w.worktree = "/fake/worktree"
+	d.targetWorkers = 1
+	d.mu.Unlock()
+
+	mockBeads.mu.Lock()
+	mockBeads.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "closed"}
+	mockBeads.mu.Unlock()
+
+	if _, err := d.applyDirective(protocol.DirectiveRestartWorker, workerID); err != nil {
+		t.Fatalf("applyDirective(restart-worker) failed: %v", err)
+	}
+
+	mockBeads.mu.Lock()
+	gotStatus, reopened := mockBeads.updated[beadID]
+	mockBeads.mu.Unlock()
+	if reopened {
+		t.Fatalf("restart-worker must not reopen closed bead, updated[%q]=%q", beadID, gotStatus)
+	}
+
+	var assignmentStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("query assignment: %v", err)
+	}
+	if assignmentStatus != "completed" {
+		t.Fatalf("assignment status = %q, want completed", assignmentStatus)
+	}
+
+	_ = pm.Kill(workerID)
+	pm.Wait()
+}
+
 func TestApplyDirective_Preempt(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
