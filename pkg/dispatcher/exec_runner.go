@@ -34,3 +34,22 @@ func (r *ExecCommandRunner) Run(ctx context.Context, name string, args ...string
 	}
 	return out, nil
 }
+
+// RunWithInput executes a command with input connected to stdin.
+func (r *ExecCommandRunner) RunWithInput(ctx context.Context, input, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	if r.Dir != "" {
+		cmd.Dir = r.Dir
+	}
+	cmd.Env = processenv.ForWorkdir(os.Environ(), r.Dir)
+	cmd.Stdin = strings.NewReader(input)
+	out, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if ok := errors.As(err, &exitErr); ok {
+			return nil, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, exitErr.Stderr)
+		}
+		return nil, fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+	}
+	return out, nil
+}

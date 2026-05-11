@@ -7,3 +7,9 @@ import "context"
 type CommandRunner interface {
 	Run(ctx context.Context, name string, args ...string) ([]byte, error)
 }
+
+// InputCommandRunner extends CommandRunner for commands that need stdin.
+type InputCommandRunner interface {
+	CommandRunner
+	RunWithInput(ctx context.Context, input, name string, args ...string) ([]byte, error)
+}

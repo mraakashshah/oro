@@ -14,6 +14,7 @@ import (
 // mockEscRunner captures commands for assertion without running real tmux.
 type mockEscRunner struct {
 	calls          []escCall
+	inputCalls     []escInputCall
 	err            error
 	hasSessionErr  error  // separate error for has-session check
 	detachedOutput []byte // output for display-message #{session_attached} (nil = "attached")
@@ -22,6 +23,12 @@ type mockEscRunner struct {
 type escCall struct {
 	name string
 	args []string
+}
+
+type escInputCall struct {
+	name  string
+	args  []string
+	input string
 }
 
 func (m *mockEscRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -38,6 +45,11 @@ func (m *mockEscRunner) Run(_ context.Context, name string, args ...string) ([]b
 	}
 
 	// Otherwise return the general err
+	return nil, m.err
+}
+
+func (m *mockEscRunner) RunWithInput(_ context.Context, input, name string, args ...string) ([]byte, error) {
+	m.inputCalls = append(m.inputCalls, escInputCall{name: name, args: args, input: input})
 	return nil, m.err
 }
 
@@ -179,6 +191,34 @@ func TestTmuxEscalator_Escalate_BasicMessage(t *testing.T) {
 	}
 	if enterCall.args[len(enterCall.args)-1] != "Enter" {
 		t.Fatalf("expected Enter as last arg, got %s", enterCall.args[len(enterCall.args)-1])
+	}
+}
+
+func TestTmuxEscalator_OversizedPayloadUsesStdin(t *testing.T) {
+	runner := &mockEscRunner{}
+	esc := dispatcher.NewTmuxEscalator("oro", "oro:manager", runner)
+	payload := strings.Repeat("review rejection transcript ", 5000)
+
+	err := esc.Escalate(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	calls := coreCalls(runner.calls)
+	for _, call := range calls {
+		if call.name == "tmux" && len(call.args) > 0 && call.args[0] == "set-buffer" {
+			t.Fatalf("oversized payload must not use set-buffer argv: %v", call.args[:3])
+		}
+	}
+	if len(runner.inputCalls) != 1 {
+		t.Fatalf("expected one stdin tmux call, got %d", len(runner.inputCalls))
+	}
+	inputCall := runner.inputCalls[0]
+	if inputCall.name != "tmux" || strings.Join(inputCall.args, " ") != "load-buffer -b oro-escalate -" {
+		t.Fatalf("expected tmux load-buffer from stdin, got %s %v", inputCall.name, inputCall.args)
+	}
+	if inputCall.input == "" || len(inputCall.input) <= 64*1024 {
+		t.Fatalf("expected large sanitized payload on stdin, got %d bytes", len(inputCall.input))
 	}
 }
 

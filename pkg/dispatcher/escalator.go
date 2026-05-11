@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const tmuxSetBufferArgLimit = 64 * 1024
+
 // EscalationType and FormatEscalation are now in pkg/protocol/types.go
 
 // TmuxEscalator implements the Escalator interface by sending messages to a
@@ -68,9 +70,8 @@ func (e *TmuxEscalator) Escalate(ctx context.Context, msg string) error {
 	sanitized := sanitizeForTmux(msg)
 
 	// Step 1: Set the message into a named tmux buffer
-	_, err = e.runner.Run(ctx, "tmux", "set-buffer", "-b", "oro-escalate", sanitized)
-	if err != nil {
-		return fmt.Errorf("tmux set-buffer: %w", err)
+	if err := e.loadEscalationBuffer(ctx, sanitized); err != nil {
+		return err
 	}
 
 	// Step 2: Paste the buffer content to the target pane (literal text)
@@ -102,6 +103,29 @@ func (e *TmuxEscalator) Escalate(ctx context.Context, msg string) error {
 	// Wake so Ink processes Enter in detached sessions.
 	e.wakeIfDetached(ctx)
 
+	return nil
+}
+
+func (e *TmuxEscalator) loadEscalationBuffer(ctx context.Context, sanitized string) error {
+	if len(sanitized) > tmuxSetBufferArgLimit {
+		return e.loadEscalationBufferFromStdin(ctx, sanitized)
+	}
+	_, err := e.runner.Run(ctx, "tmux", "set-buffer", "-b", "oro-escalate", sanitized)
+	if err != nil {
+		return fmt.Errorf("tmux set-buffer: %w", err)
+	}
+	return nil
+}
+
+func (e *TmuxEscalator) loadEscalationBufferFromStdin(ctx context.Context, sanitized string) error {
+	inputRunner, ok := e.runner.(InputCommandRunner)
+	if !ok {
+		return fmt.Errorf("tmux load-buffer: runner does not support stdin for %d-byte escalation", len(sanitized))
+	}
+	_, err := inputRunner.RunWithInput(ctx, sanitized, "tmux", "load-buffer", "-b", "oro-escalate", "-")
+	if err != nil {
+		return fmt.Errorf("tmux load-buffer: %w", err)
+	}
 	return nil
 }
 
