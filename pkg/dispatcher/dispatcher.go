@@ -1786,7 +1786,7 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 
 	if attempt >= maxQGRetries {
 		d.mu.Unlock()
-		d.handleQGExhausted(ctx, workerID, beadID, assignmentID, qgOutput, attempt, qgErr)
+		d.handleQGExhausted(ctx, workerID, beadID, assignmentID, qgOutput, attempt)
 		return
 	}
 
@@ -7394,11 +7394,10 @@ func (d *Dispatcher) handleRepeatedQGOutput(ctx context.Context, workerID, beadI
 }
 
 // handleQGExhausted handles the case when quality gate retries are exhausted.
-// It releases the worker, cancels in-flight ops, marks the bead as exhausted,
-// then spawns a Decompose ops agent as a fallback. If Decompose succeeds
-// (VerdictResolved), no P0 bug is created. If it fails, handleQGExhaustedFallback
-// runs the existing P0 bug + EscStuck escalation path.
-func (d *Dispatcher) handleQGExhausted(ctx context.Context, workerID, beadID string, assignmentID int64, qgOutput string, attempt int, qgErr *protocol.QualityGateError) {
+// It classifies before creating any follow-up work: deterministic failures stay
+// on the original bead, systemic failures reuse/create infra incidents, and
+// low-confidence failures stop for triage without creating legacy QG P0 beads.
+func (d *Dispatcher) handleQGExhausted(ctx context.Context, workerID, beadID string, assignmentID int64, qgOutput string, attempt int) {
 	d.persistBeadCount(ctx, assignmentID, beadID, "attempt_count", attempt)
 	rec := qgExhaustionRecord(workerID, beadID, assignmentID, qgOutput, attempt)
 	cls := d.classifyQGFailure(ctx, rec, QGFailureHistory{RetryExhausted: true})
@@ -7410,57 +7409,7 @@ func (d *Dispatcher) handleQGExhausted(ctx context.Context, workerID, beadID str
 		d.handleSystemicQGExhaustion(ctx, workerID, beadID, assignmentID, rec, cls)
 		return
 	}
-	d.recordQGFailureIncident(ctx, workerID, beadID, assignmentID, attempt, qgOutput, rec.Fingerprint, rec.Summary, cls)
-
-	_ = d.completeAssignment(ctx, assignmentID, beadID)
-
-	// Release the worker so checkHeartbeats won't find a stale busy worker
-	// and call clearBeadTracking (which would wipe exhaustedBeads).
-	d.mu.Lock()
-	if w, ok := d.workers[workerID]; ok {
-		w.state = protocol.WorkerIdle
-		w.assignmentID = 0
-		w.beadID = ""
-		w.worktree = ""
-		w.epicID = ""
-		w.isEpicDecomp = false
-	}
-	d.mu.Unlock()
-
-	// Cancel any in-flight ops agents for this bead to prevent stale escalations.
-	d.cancelOpsAgents(ctx, beadID, workerID, "qg_exhausted")
-
-	// Release worker and mark bead as exhausted atomically.
-	// Worker must be released to prevent heartbeat/progress timeout from
-	// calling clearBeadTracking and wiping exhaustedBeads.
-	d.mu.Lock()
-	if w, ok := d.workers[workerID]; ok {
-		w.state = protocol.WorkerIdle
-		w.assignmentID = 0
-		w.beadID = ""
-		w.epicID = ""
-		w.isEpicDecomp = false
-	}
-	// Clear tracking maps and set exhaustedBeads within same lock.
-	delete(d.attemptCounts, beadID)
-	delete(d.handoffCounts, beadID)
-	delete(d.rejectionCounts, beadID)
-	delete(d.pendingHandoffs, beadID)
-	delete(d.qgStuckTracker, beadID)
-	delete(d.escalatedBeads, beadID)
-	delete(d.worktreeFailures, beadID)
-	delete(d.assigningBeads, beadID)
-	// Set exhaustedBeads before spawning goroutine to block re-assignment.
-	d.exhaustedBeads[beadID] = true
-	d.mu.Unlock()
-
-	// Spawn a Decompose agent as a fallback. On VerdictResolved, no P0 bug is
-	// created. On VerdictFailed (or error), the existing P0 + escalation path runs.
-	d.safeGo(func() {
-		ch := d.ops.Decompose(ctx, ops.DecomposeOpts{BeadID: beadID, QGOutput: qgOutput})
-		result := <-ch
-		d.handleDecomposeResult(ctx, workerID, beadID, result, qgOutput, attempt, qgErr)
-	})
+	d.handleTriageQGExhaustion(ctx, workerID, beadID, assignmentID, rec, cls)
 }
 
 func qgExhaustionRecord(workerID, beadID string, assignmentID int64, qgOutput string, attempt int) QGFailureRecord {
@@ -7520,6 +7469,32 @@ func (d *Dispatcher) handleClassifiedQGExhaustion(ctx context.Context, workerID,
 		fmt.Sprintf(`{"class":%q,"decision":%q,"fingerprint":%q}`, cls.Class, cls.Decision, rec.Fingerprint))
 }
 
+func (d *Dispatcher) handleTriageQGExhaustion(ctx context.Context, workerID, beadID string, assignmentID int64, rec QGFailureRecord, cls QGFailureClassification) {
+	rec = normalizeQGFailureRecord(rec)
+	incident, err := RecordQGFailureOccurrence(ctx, d.db, rec, cls)
+	if err != nil {
+		_ = d.logEvent(ctx, "qg_failure_record_failed", workerID, beadID, workerID,
+			fmt.Sprintf(`{"error":%q,"fingerprint":%q}`, err.Error(), rec.Fingerprint))
+	} else if err := d.linkQGFailureToBeads(ctx, incident, rec, cls); err != nil {
+		_ = d.logEvent(ctx, "qg_failure_link_failed", workerID, beadID, workerID,
+			fmt.Sprintf(`{"error":%q,"fingerprint":%q,"incident_id":%d}`, err.Error(), rec.Fingerprint, incident.ID))
+	}
+
+	_ = d.completeAssignment(ctx, assignmentID, beadID)
+	d.releaseWorkerAfterQGExhaustion(workerID, beadID)
+	if d.shouldReopenQGOriginal(ctx, beadID) {
+		if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
+			_ = d.logEvent(ctx, "qg_original_reopen_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"error":%q}`, err.Error()))
+		} else {
+			d.deferReopenedQGOriginal(ctx, beadID, workerID, rec.Fingerprint)
+		}
+	}
+	_ = d.logEvent(ctx, "qg_failure_triage_required", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"class":%q,"decision":%q,"fingerprint":%q,"reason":%q}`,
+			cls.Class, cls.Decision, rec.Fingerprint, cls.Reason))
+}
+
 func (d *Dispatcher) deferReopenedQGOriginal(ctx context.Context, beadID, workerID, fingerprint string) {
 	until := d.nowFunc().UTC().Add(qgOriginalReopenDeferDuration).Format(time.RFC3339)
 	if err := d.beads.Defer(ctx, beadID, until); err != nil {
@@ -7566,54 +7541,6 @@ func (d *Dispatcher) shouldReopenBead(ctx context.Context, beadID string) bool {
 		return true
 	}
 	return detail.Status != "closed"
-}
-
-// handleDecomposeResult processes the outcome of a Decompose ops agent.
-// On VerdictResolved, it logs success and returns without creating a P0 bug.
-// On VerdictFailed or error, it calls handleQGExhaustedFallback to run the
-// standard P0 bug + EscStuck escalation path.
-func (d *Dispatcher) handleDecomposeResult(ctx context.Context, workerID, beadID string, result ops.Result, qgOutput string, attempt int, qgErr *protocol.QualityGateError) {
-	if result.Err != nil {
-		_ = d.logEvent(ctx, "decompose_error", "ops", beadID, workerID,
-			fmt.Sprintf(`{"error":%q}`, result.Err.Error()))
-		d.handleQGExhaustedFallback(ctx, workerID, beadID, qgOutput, attempt, qgErr)
-		return
-	}
-	if result.Verdict != ops.VerdictResolved {
-		_ = d.logEvent(ctx, "decompose_failed", "ops", beadID, workerID,
-			fmt.Sprintf(`{"verdict":%q,"feedback":%q}`, result.Verdict, result.Feedback))
-		d.handleQGExhaustedFallback(ctx, workerID, beadID, qgOutput, attempt, qgErr)
-		return
-	}
-	_ = d.logEvent(ctx, "decompose_resolved", "ops", beadID, workerID,
-		fmt.Sprintf(`{"feedback":%q}`, result.Feedback))
-}
-
-// handleQGExhaustedFallback creates a P0 bug bead and escalates to the manager.
-// Called when the Decompose agent fails or returns VerdictFailed after QG retries
-// are exhausted.
-func (d *Dispatcher) handleQGExhaustedFallback(ctx context.Context, workerID, beadID, qgOutput string, attempt int, qgErr *protocol.QualityGateError) {
-	// Create a P0 bug bead so the failure is tracked as actionable work.
-	p0Title := fmt.Sprintf("P0: QG exhausted for %s", beadID)
-	p0Desc := fmt.Sprintf("Quality gate failed %d times. Last output:\n%s", attempt, qgOutput)
-	created, createErr := d.beads.Create(ctx, beadstore.CreateParams{
-		Title:       p0Title,
-		Type:        "bug",
-		Priority:    0,
-		Description: p0Desc,
-		ParentID:    beadID,
-	})
-	if createErr != nil {
-		_ = d.logEvent(ctx, "p0_bead_create_failed", workerID, beadID, workerID, createErr.Error())
-	} else {
-		_ = d.logEvent(ctx, "p0_bead_created", workerID, beadID, workerID,
-			fmt.Sprintf(`{"new_bead_id":%q}`, created.ID))
-	}
-
-	_ = d.logEvent(ctx, "qg_retry_escalated", workerID, beadID, workerID,
-		fmt.Sprintf(`{"attempts":%d,"error":%q}`, attempt, qgErr.Error()))
-	d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
-		fmt.Sprintf("quality gate failed %d times", attempt), qgOutput), beadID, workerID)
 }
 
 // formatSearchResults formats code search results into markdown for prompt injection.

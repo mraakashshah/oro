@@ -192,33 +192,20 @@ func TestTrackingMaps_ClearedOnEscalation(t *testing.T) {
 		}
 
 		waitFor(t, func() bool {
-			for _, m := range esc.Messages() {
-				if strings.Contains(m, beadID) && strings.Contains(m, "quality gate failed") {
-					return true
-				}
-			}
-			return false
+			return eventCount(t, d.db, "qg_failure_triage_required") > 0
 		}, 2*time.Second)
-		msgs := esc.Messages()
-		found := false
-		for _, m := range msgs {
+		for _, m := range esc.Messages() {
 			if strings.Contains(m, beadID) && strings.Contains(m, "quality gate failed") {
-				found = true
-				break
+				t.Fatalf("unexpected QG cap manager escalation: %s", m)
 			}
-		}
-		if !found {
-			t.Fatalf("expected QG cap escalation, got: %v", msgs)
 		}
 
-		// exhaustedBeads is intentionally set AFTER clearBeadTracking to block
-		// re-assignment of beads that exhausted QG retries. Verify it's set,
-		// then clear it so assertTrackingMapsEmpty can check all other maps.
+		// Triage uses bead deferral instead of exhaustedBeads so
+		// assertTrackingMapsEmpty can check all tracking maps directly.
 		d.mu.Lock()
-		if !d.exhaustedBeads[beadID] {
-			t.Errorf("exhaustedBeads[%s] should be set after QG retry cap", beadID)
+		if d.exhaustedBeads[beadID] {
+			t.Errorf("exhaustedBeads[%s] should not be set after QG triage", beadID)
 		}
-		delete(d.exhaustedBeads, beadID)
 		d.mu.Unlock()
 
 		assertTrackingMapsEmpty(t, d, beadID)

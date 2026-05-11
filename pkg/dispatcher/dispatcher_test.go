@@ -12243,26 +12243,28 @@ func TestQGExhaustionPreventsReassignment(t *testing.T) {
 		},
 	})
 
-	// Wait for the dispatcher to process exhaustion and release the worker.
+	// Wait for the dispatcher to process exhaustion and defer the original
+	// bead for triage instead of assigning it immediately.
 	waitFor(t, func() bool {
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		return d.exhaustedBeads["bead-exh"]
+		beadSrc.mu.Lock()
+		defer beadSrc.mu.Unlock()
+		return len(beadSrc.deferCalls) > 0 && beadSrc.deferCalls[0].id == "bead-exh"
 	}, 2*time.Second)
 
-	// The bead should now be in exhaustedBeads and NOT re-assigned.
-	// Try to read another message — should NOT be an ASSIGN for bead-exh.
+	// The bead should now be deferred for triage and NOT re-assigned.
+	// Try to read another message -- should NOT be an ASSIGN for bead-exh.
 	msg2, ok2 := readMsg(t, conn, 1*time.Second)
 	if ok2 && msg2.Type == protocol.MsgAssign && msg2.Assign.BeadID == "bead-exh" {
 		t.Fatal("exhausted bead was re-assigned — should be blocked from re-assignment")
 	}
 
-	// Verify exhaustedBeads contains the bead.
+	// Verify exhaustedBeads does not hide the bead indefinitely; deferral is
+	// the circuit breaker for triage.
 	d.mu.Lock()
 	exhausted := d.exhaustedBeads["bead-exh"]
 	d.mu.Unlock()
-	if !exhausted {
-		t.Fatal("bead-exh should be in exhaustedBeads after QG exhaustion")
+	if exhausted {
+		t.Fatal("bead-exh should not remain in exhaustedBeads after QG triage deferral")
 	}
 }
 

@@ -91,25 +91,15 @@ func TestHandleDone_QGFailRetryIncrementsAttempt(t *testing.T) {
 		}
 	}
 
-	// After maxQGRetries, should escalate to manager.
+	// After maxQGRetries, low-confidence exhaustion stops for triage without
+	// manager escalation.
 	waitFor(t, func() bool {
-		for _, m := range esc.Messages() {
-			if strings.Contains(m, "bead-qg1") && strings.Contains(m, "quality gate failed") {
-				return true
-			}
-		}
-		return false
+		return eventCount(t, d.db, "qg_failure_triage_required") > 0
 	}, 2*time.Second)
-	msgs := esc.Messages()
-	found := false
-	for _, m := range msgs {
+	for _, m := range esc.Messages() {
 		if strings.Contains(m, "bead-qg1") && strings.Contains(m, "quality gate failed") {
-			found = true
-			break
+			t.Fatalf("unexpected manager escalation for bead-qg1: %s", m)
 		}
-	}
-	if !found {
-		t.Fatalf("expected escalation for bead-qg1, got messages: %v", msgs)
 	}
 }
 
@@ -188,7 +178,7 @@ func TestHandleDone_QGFailRetryAttemptContinuesAcrossModelEscalation(t *testing.
 		t.Fatalf("expected no third retry ASSIGN after max total attempts, got %+v", msg.Assign)
 	}
 	waitFor(t, func() bool {
-		return eventCount(t, d.db, "qg_retry_escalated") > 0
+		return eventCount(t, d.db, "qg_failure_triage_required") > 0
 	}, 2*time.Second)
 }
 
@@ -483,17 +473,11 @@ func TestHandleDone_QGStuckDetection_DifferentOutputsReset(t *testing.T) {
 		}
 	}
 
-	// Negative test: verify stuck escalation did NOT fire. We wait for the
-	// escalation message for bead-stuck2 that we know WILL arrive (the QG retry
-	// cap "quality gate failed" message) to confirm processing completed, then
-	// assert no stuck-specific escalation exists.
+	// Negative test: verify stuck escalation did NOT fire. Wait for the triage
+	// event to confirm retry-cap processing completed, then assert no
+	// stuck-specific escalation exists.
 	waitFor(t, func() bool {
-		for _, m := range esc.Messages() {
-			if strings.Contains(m, "bead-stuck2") && strings.Contains(m, "quality gate failed") {
-				return true
-			}
-		}
-		return false
+		return eventCount(t, d.db, "qg_failure_triage_required") > 0
 	}, 2*time.Second)
 	msgs := esc.Messages()
 	for _, m := range msgs {
@@ -541,27 +525,16 @@ func TestHandleQGFailure_Exhaustion(t *testing.T) {
 		},
 	})
 
-	// Wait for dispatcher to process and escalate.
+	// Wait for dispatcher to process and stop for triage.
 	waitFor(t, func() bool {
-		for _, m := range esc.Messages() {
-			if strings.Contains(m, "bead-exh1") && strings.Contains(m, "quality gate failed 3 times") {
-				return true
-			}
-		}
-		return false
+		return eventCount(t, d.db, "qg_failure_triage_required") > 0
 	}, 2*time.Second)
 
-	// Assert: escalation with "quality gate failed 3 times".
-	msgs := esc.Messages()
-	found := false
-	for _, m := range msgs {
+	// Assert: no manager escalation with "quality gate failed 3 times".
+	for _, m := range esc.Messages() {
 		if strings.Contains(m, "bead-exh1") && strings.Contains(m, "quality gate failed 3 times") {
-			found = true
-			break
+			t.Fatalf("unexpected QG retry manager escalation for bead-exh1: %s", m)
 		}
-	}
-	if !found {
-		t.Fatalf("expected escalation containing 'quality gate failed 3 times' for bead-exh1, got messages: %v", msgs)
 	}
 
 	// Assert: attemptCounts cleared (clearBeadTracking was called).
@@ -583,10 +556,10 @@ func TestHandleQGFailure_Exhaustion(t *testing.T) {
 		t.Fatal("expected no ASSIGN after retry exhaustion, but got one")
 	}
 
-	// Assert: qg_retry_escalated event logged.
-	evCount := eventCount(t, d.db, "qg_retry_escalated")
+	// Assert: triage event logged.
+	evCount := eventCount(t, d.db, "qg_failure_triage_required")
 	if evCount == 0 {
-		t.Fatal("expected qg_retry_escalated event to be logged, but found 0")
+		t.Fatal("expected qg_failure_triage_required event to be logged, but found 0")
 	}
 }
 
@@ -644,16 +617,11 @@ func TestHandleDone_QGStuckDetection_IndependentOfAttemptCount(t *testing.T) {
 		}
 	}
 
-	// Negative test: verify stuck escalation did NOT fire. Wait for the QG retry
-	// cap escalation ("quality gate failed") to confirm processing completed,
-	// then assert no stuck-specific escalation exists.
+	// Negative test: verify stuck escalation did NOT fire. Wait for the triage
+	// event to confirm retry-cap processing completed, then assert no
+	// stuck-specific escalation exists.
 	waitFor(t, func() bool {
-		for _, m := range esc.Messages() {
-			if strings.Contains(m, "bead-stuck3") && strings.Contains(m, "quality gate failed") {
-				return true
-			}
-		}
-		return false
+		return eventCount(t, d.db, "qg_failure_triage_required") > 0
 	}, 2*time.Second)
 	msgs := esc.Messages()
 
@@ -664,9 +632,9 @@ func TestHandleDone_QGStuckDetection_IndependentOfAttemptCount(t *testing.T) {
 	}
 }
 
-// --- QG Exhaustion Creates P0 Bead (oro-2ir.2) ---
+// --- QG Exhaustion Triage Policy ---
 
-func TestQGExhaustion_CreatesP0Bead(t *testing.T) {
+func TestQGExhaustion_UnclassifiedDoesNotCreateP0Bead(t *testing.T) {
 	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
 	cancel := startDispatcher(t, d)
 	defer cancel()
@@ -702,49 +670,33 @@ func TestQGExhaustion_CreatesP0Bead(t *testing.T) {
 		},
 	})
 
-	// Wait for dispatcher to process and escalate.
+	// Wait for dispatcher to process and record the triage event.
 	waitFor(t, func() bool {
-		for _, m := range esc.Messages() {
-			if strings.Contains(m, "bead-p0") && strings.Contains(m, "quality gate failed") {
-				return true
-			}
-		}
-		return false
+		return eventCount(t, d.db, "qg_failure_triage_required") > 0
 	}, 2*time.Second)
 
-	// Assert: escalation still happens.
-	msgs := esc.Messages()
-	foundEsc := false
-	for _, m := range msgs {
-		if strings.Contains(m, "bead-p0") && strings.Contains(m, "quality gate failed") {
-			foundEsc = true
-			break
-		}
-	}
-	if !foundEsc {
-		t.Fatalf("expected escalation for bead-p0, got: %v", msgs)
-	}
-
-	// Assert: BeadSource.Create was called with P0 priority and QG output in description.
+	// Assert: no legacy P0 bug bead is created for low-confidence triage.
 	beadSrc.mu.Lock()
-	created := beadSrc.created
+	created := append([]createCall(nil), beadSrc.created...)
+	updated := beadSrc.updated["bead-p0"]
+	deferCalls := append([]deferCall(nil), beadSrc.deferCalls...)
 	beadSrc.mu.Unlock()
 
-	if len(created) == 0 {
-		t.Fatal("expected BeadSource.Create to be called on QG exhaustion, but it was not")
+	for _, c := range created {
+		if strings.Contains(c.title, "P0: QG exhausted") {
+			t.Fatalf("unexpected legacy QG P0 bead: %+v", c)
+		}
 	}
-	c := created[0]
-	if c.priority != 0 {
-		t.Fatalf("expected P0 priority, got %d", c.priority)
+	if updated != "open" {
+		t.Fatalf("original bead status = %q, want open", updated)
 	}
-	if c.beadType != "bug" {
-		t.Fatalf("expected type 'bug', got %q", c.beadType)
+	if len(deferCalls) == 0 || deferCalls[0].id != "bead-p0" {
+		t.Fatalf("expected original bead to be deferred for triage, got %+v", deferCalls)
 	}
-	if !strings.Contains(c.description, "unclassified qg exhausted output xyz") {
-		t.Fatalf("expected QG output in description, got %q", c.description)
-	}
-	if c.parent != "bead-p0" {
-		t.Fatalf("expected parent 'bead-p0', got %q", c.parent)
+	for _, m := range esc.Messages() {
+		if strings.Contains(m, "bead-p0") && strings.Contains(m, "quality gate failed") {
+			t.Fatalf("unexpected manager escalation for triage-only QG exhaustion: %s", m)
+		}
 	}
 
 	// Assert: no ASSIGN sent (worker should NOT get re-assigned).
