@@ -3059,60 +3059,77 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 	case result := <-resultCh:
 		switch result.Verdict {
 		case ops.VerdictApproved:
-			// Fail closed: a nonzero subprocess exit (Err != nil) with "APPROVED"
-			// in stdout signals a model/runtime error, not a genuine review decision.
-			// Trust the exit status over the text to prevent false approvals.
-			if result.Err != nil {
-				detail := result.Err.Error()
-				_ = d.logEvent(ctx, "review_error", "ops", beadID, workerID, detail)
-				d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID, "review error", detail), beadID, workerID)
-				d.clearBeadTracking(beadID)
-				return
-			}
-			_ = d.logEvent(ctx, "review_approved", "ops", beadID, workerID, result.Feedback)
-			d.clearRejectionCount(beadID)
-
-			// Capture pattern candidates from reviewer output into the inbox.
-			patterns := ops.ExtractPatterns(result.Feedback)
-			if len(patterns) > 0 {
-				if err := d.appendReviewPatternCandidates(ctx, beadID, workerID, patterns); err != nil {
-					// Non-blocking: log the error but continue
-					_ = d.logEvent(ctx, "append_review_pattern_candidates_failed", "ops", beadID, workerID, err.Error())
-				}
-			}
-
-			// Notify worker to proceed to DONE.
-			d.mu.Lock()
-			w, ok := d.workers[workerID]
-			if ok {
-				_ = d.sendToWorker(w, protocol.Message{
-					Type: protocol.MsgReviewResult,
-					ReviewResult: &protocol.ReviewResultPayload{
-						Verdict:  "approved",
-						Feedback: result.Feedback,
-					},
-				})
-			}
-			d.mu.Unlock()
+			d.handleReviewApproved(ctx, workerID, beadID, result)
 		case ops.VerdictRejected:
 			d.handleReviewRejection(ctx, workerID, beadID, result.Feedback)
 		default:
-			detail := result.Feedback
-			if detail == "" && result.Err != nil {
-				detail = result.Err.Error()
-			}
-			if detail == "" {
-				detail = "review completed without a machine-readable verdict"
-			}
-			_ = d.logEvent(ctx, "review_failed", "ops", beadID, workerID, detail)
-			d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID, "review failed", detail), beadID, workerID)
-			if result.Err == nil && d.reviewingWorkerMatches(workerID, beadID) {
-				d.handleReviewRejection(ctx, workerID, beadID, "Review failed: "+detail)
-				return
-			}
-			d.clearBeadTracking(beadID)
+			d.handleReviewFailed(ctx, workerID, beadID, result)
 		}
 	}
+}
+
+func (d *Dispatcher) handleReviewApproved(ctx context.Context, workerID, beadID string, result ops.Result) {
+	// Fail closed: a nonzero subprocess exit (Err != nil) with "APPROVED"
+	// in stdout signals a model/runtime error, not a genuine review decision.
+	// Trust the exit status over the text to prevent false approvals.
+	if result.Err != nil {
+		detail := result.Err.Error()
+		_ = d.logEvent(ctx, "review_error", "ops", beadID, workerID, detail)
+		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID, "review error", detail), beadID, workerID)
+		d.clearBeadTracking(beadID)
+		return
+	}
+	_ = d.logEvent(ctx, "review_approved", "ops", beadID, workerID, result.Feedback)
+	d.clearRejectionCount(beadID)
+	d.appendExtractedReviewPatterns(ctx, beadID, workerID, result.Feedback)
+	d.sendReviewApproved(workerID, result.Feedback)
+}
+
+func (d *Dispatcher) appendExtractedReviewPatterns(ctx context.Context, beadID, workerID, feedback string) {
+	patterns := ops.ExtractPatterns(feedback)
+	if len(patterns) == 0 {
+		return
+	}
+	if err := d.appendReviewPatternCandidates(ctx, beadID, workerID, patterns); err != nil {
+		_ = d.logEvent(ctx, "append_review_pattern_candidates_failed", "ops", beadID, workerID, err.Error())
+	}
+}
+
+func (d *Dispatcher) sendReviewApproved(workerID, feedback string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w, ok := d.workers[workerID]
+	if !ok {
+		return
+	}
+	_ = d.sendToWorker(w, protocol.Message{
+		Type: protocol.MsgReviewResult,
+		ReviewResult: &protocol.ReviewResultPayload{
+			Verdict:  "approved",
+			Feedback: feedback,
+		},
+	})
+}
+
+func (d *Dispatcher) handleReviewFailed(ctx context.Context, workerID, beadID string, result ops.Result) {
+	detail := reviewFailureDetail(result)
+	_ = d.logEvent(ctx, "review_failed", "ops", beadID, workerID, detail)
+	d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID, "review failed", detail), beadID, workerID)
+	if result.Err == nil && d.reviewingWorkerMatches(workerID, beadID) {
+		d.handleReviewRejection(ctx, workerID, beadID, "Review failed: "+detail)
+		return
+	}
+	d.clearBeadTracking(beadID)
+}
+
+func reviewFailureDetail(result ops.Result) string {
+	if result.Feedback != "" {
+		return result.Feedback
+	}
+	if result.Err != nil {
+		return result.Err.Error()
+	}
+	return "review completed without a machine-readable verdict"
 }
 
 func (d *Dispatcher) reviewingWorkerMatches(workerID, beadID string) bool {
