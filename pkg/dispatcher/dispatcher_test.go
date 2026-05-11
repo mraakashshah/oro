@@ -770,8 +770,19 @@ func newTestDB(t *testing.T) *sql.DB {
 	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
 		t.Fatalf("init schema: %v", err)
 	}
+	if _, err := db.Exec(protocol.MigrateSemanticMemorySearchEvents); err != nil {
+		t.Fatalf("init semantic memory search events: %v", err)
+	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
+}
+
+func TestNewTestDBMigratesMemorySearchEvents(t *testing.T) {
+	db := newTestDB(t)
+
+	if _, err := db.Exec("INSERT INTO memory_search_events (query_hash) VALUES ('deadbeef')"); err != nil {
+		t.Fatalf("memory_search_events must be writable after newTestDB: %v", err)
+	}
 }
 
 // newTestDispatcher creates a Dispatcher with mocks and an in-memory DB.
