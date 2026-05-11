@@ -63,6 +63,94 @@ Escalate to active incident cadence when any of these occur:
 | `update_status_failed` or DB write error | Any repeat | Stop swarm before store spam; inspect SQLite schema/state |
 | `goroutine_panic` | Any occurrence | Follow Panic Policy |
 
+## QG Failure Policy
+
+QG failure handling is classification-first. A failed quality gate never
+authorizes merge, but it also does not automatically mean "create a fresh P0
+for this bead." First identify whether the failure belongs to the original bead
+or to factory infrastructure.
+
+Classification decisions:
+
+| Class | Operator policy |
+| --- | --- |
+| `worker_deterministic` | Keep the work on the original bead. Retry while attempts remain; after exhaustion, reopen the original bead with the QG fingerprint, output hash, latest branch/worktree, and review state. Do not create a new P0 by default. |
+| `systemic` | Create or reuse one infra bug keyed by the QG fingerprint. Use P0 only when it blocks multiple beads, main/epic QG, or factory throughput. Link every affected bead as evidence. |
+| `flaky` | Back off and rerun before assigning more coding work. If the same flaky fingerprint recurs enough to block throughput, create or reuse the infra bug and link affected beads. |
+| `transient` | Back off and retry without burning all worker-fix attempts. Create tracked work only after recurrence or sustained throughput impact. |
+| `impossible` | Update the original bead: fix acceptance criteria, add missing dependency details, or block/replan it. Do not convert impossible AC into a random QG P0. |
+| `unknown` | Stop for triage after repeated failure. Keep the original bead visible with evidence; create infra work only after the failure is classified or recurrence shows factory impact. |
+
+Create a P0 infra bug when the classified failure is infrastructure and at
+least one of these is true:
+
+- The same fingerprint affects unrelated beads.
+- The failure reproduces on `main`, an epic branch baseline, or a clean QG
+  worktree.
+- QG cannot run because tooling, scripts, the store, process control, or the
+  runner environment is broken.
+- Main/epic QG, merge safety, or overall factory throughput is blocked.
+
+Do not promote a failure to P0 solely because retry attempts were exhausted. For
+single-bead deterministic failures, the operator should inspect and continue the
+original bead.
+
+## Inspecting Affected QG Beads
+
+Until a dedicated `oro qg incidents` command exists, use status, events, task
+metadata, and logs as the incident view.
+
+```bash
+oro status --json | jq '{qg_failure_incidents_open,qg_failure_occurrences_30m,qg_failure_top_fingerprints}'
+oro logs --tail 300 | grep -E 'qg_failure_|quality_gate_|QG_FAILED|qg_failed'
+oro task show <bead-id> --json
+oro task show <infra-bug-id> --json
+```
+
+If the JSON status fields are absent in an older binary, fall back to event/log
+inspection and bead notes. Capture:
+
+- QG fingerprint or normalized failure summary.
+- Class, confidence, and policy decision.
+- Affected bead IDs and statuses.
+- Component: worker, dispatcher pre-merge, epic QG, or standalone `oro work`.
+- Branch, worktree, assignment ID, and worker ID when available.
+- Representative output hash or short excerpt.
+
+For deterministic failures, inspect the original bead's worktree/branch before
+cleanup. Preserve rejected work whenever it contains useful fixes or review
+feedback. For systemic/flaky failures, add the affected bead list to the infra
+bug instead of filing one bug per bead.
+
+## Legacy QG P0 Cleanup
+
+Older Oro builds created beads titled like `P0: QG exhausted for <bead>` for
+many retry-exhausted failures. Clean them up only after confirming whether they
+are duplicates of a classified incident or actually contain unique work.
+
+Cleanup procedure:
+
+1. Find the legacy P0 and the original bead named in its title/body.
+2. Compare the QG output, fingerprint if present, affected branch/worktree, and
+   close reason against any open infra incident.
+3. If the legacy P0 is a duplicate of an open infra incident, add its evidence
+   to that infra bug and close the duplicate as superseded.
+4. If the failure is worker-deterministic and belongs to the original bead,
+   move any useful output or branch details back to the original bead and close
+   the legacy P0 as duplicate/no longer policy.
+5. If the legacy P0 contains unique systemic evidence with no incident yet,
+   convert or retitle it as the fingerprint-keyed infra bug instead of closing
+   it.
+
+Closed recurrence policy:
+
+- If the same fingerprint recurs after its infra bug was closed as fixed,
+  reopen the infra bug when the output is materially the same.
+- Create a recurrence child only when the new output shows a changed root cause
+  or the original fix no longer describes the failure.
+- Do not reopen closed duplicate P0 beads; link them from the active incident as
+  historical evidence.
+
 ## Fix And Relaunch
 
 When a runtime bug in Oro itself is fixed:
