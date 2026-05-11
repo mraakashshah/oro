@@ -409,6 +409,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		logStep("Running local quality gate (mutation deferred to push)...")
 		passed, qgOutput, qgErr := deps.runQG(ctx, worktree, false)
 		if qgErr != nil {
+			recordWorkQGFailure(ctx, cfg, deps, "oro-work-implementation", qgErr.Error())
 			return fmt.Errorf("quality gate error: %w", qgErr)
 		}
 
@@ -428,6 +429,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 			attempt = 0
 		}
 		if attempt >= maxQGRetriesPerTier {
+			recordWorkQGFailure(ctx, cfg, deps, "oro-work-implementation", qgOutput)
 			return &exitError{
 				code: exitCodeRetries,
 				msg:  fmt.Sprintf("Quality gate failed %d times. Last output:\n%s", attempt, qgOutput),
@@ -448,9 +450,11 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	logStep("Running pre-merge quality gate (mutation deferred to push)...")
 	mutPassed, mutOutput, mutErr := deps.runQG(ctx, worktree, false)
 	if mutErr != nil {
+		recordWorkQGFailure(ctx, cfg, deps, "oro-work-pre-merge", mutErr.Error())
 		return fmt.Errorf("pre-merge quality gate error: %w", mutErr)
 	}
 	if !mutPassed {
+		recordWorkQGFailure(ctx, cfg, deps, "oro-work-pre-merge", mutOutput)
 		return &exitError{
 			code: exitCodeRetries,
 			msg:  fmt.Sprintf("Pre-merge quality gate failed:\n%s", mutOutput),
@@ -487,6 +491,26 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	}
 
 	return nil
+}
+
+func recordWorkQGFailure(ctx context.Context, cfg *workConfig, deps *workDeps, component, output string) {
+	if deps == nil || deps.recordQGFailure == nil {
+		logStep("qg failure recorder degraded: no recorder (component=%s bead=%s)", component, cfg.beadID)
+		return
+	}
+	fingerprint, summary := dispatcher.FingerprintQGFailure(output, dispatcher.QGFingerprintOptions{})
+	rec := dispatcher.QGFailureRecord{
+		ID:          fmt.Sprintf("%s:%s:%s", cfg.beadID, component, fingerprint),
+		BeadID:      cfg.beadID,
+		Component:   component,
+		Fingerprint: fingerprint,
+		Summary:     summary,
+		Output:      output,
+	}
+	cls := dispatcher.ClassifyQGFailure(rec, dispatcher.QGFailureHistory{RetryExhausted: true})
+	if err := deps.recordQGFailure(ctx, rec, cls); err != nil {
+		logStep("qg failure recorder error: %v", err)
+	}
 }
 
 func dryRunSpawnBeadDetail(_ context.Context, beadID string, detail *protocol.Bead, showErr error) (*protocol.Bead, error) {
@@ -773,9 +797,11 @@ func handleReviewRejection(ctx context.Context, cfg *workConfig, deps *workDeps,
 	logStep("Re-running local quality gate (mutation deferred to push)...")
 	passed, qgOutput, qgErr := deps.runQG(ctx, worktree, false)
 	if qgErr != nil {
+		recordWorkQGFailure(ctx, cfg, deps, "oro-work-implementation", qgErr.Error())
 		return rejects, fmt.Errorf("quality gate error: %w", qgErr)
 	}
 	if !passed {
+		recordWorkQGFailure(ctx, cfg, deps, "oro-work-implementation", qgOutput)
 		return rejects, &exitError{
 			code: exitCodeRetries,
 			msg:  fmt.Sprintf("Quality gate failed after review fix:\n%s", qgOutput),

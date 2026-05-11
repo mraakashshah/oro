@@ -388,6 +388,286 @@ func TestExecuteWork_QGExhaustion_ResetsBead(t *testing.T) {
 	}
 }
 
+func TestExecuteWorkQGExhaustionUsesClassifiedPolicy(t *testing.T) {
+	bs := &fakeBeadStore{showDetail: testBead()}
+	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/oro-test"}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	mg := &mockMerger{}
+	deps := testDeps(bs, wt, sp, mg, true, false)
+
+	var records []dispatcher.QGFailureRecord
+	var classes []dispatcher.QGFailureClassification
+	deps.runQG = func(_ context.Context, _ string, _ bool) (bool, string, error) {
+		return false, "FAIL: go test ./cmd/oro failed", nil
+	}
+	deps.recordQGFailure = func(_ context.Context, rec dispatcher.QGFailureRecord, cls dispatcher.QGFailureClassification) error {
+		records = append(records, rec)
+		classes = append(classes, cls)
+		return nil
+	}
+
+	err := executeWork(context.Background(), &workConfig{
+		beadID:     "oro-test",
+		model:      "sonnet",
+		timeout:    5 * time.Second,
+		skipReview: true,
+	}, deps)
+	if err == nil {
+		t.Fatal("expected QG exhaustion error")
+	}
+	if len(records) != 1 {
+		t.Fatalf("recorded QG failures = %d, want 1", len(records))
+	}
+	if records[0].Component != "oro-work-implementation" {
+		t.Fatalf("component = %q, want oro-work-implementation", records[0].Component)
+	}
+	if records[0].ID == "" || !strings.Contains(records[0].ID, "oro-work-implementation") {
+		t.Fatalf("record ID = %q, want unique component-scoped ID", records[0].ID)
+	}
+	if classes[0].Class != dispatcher.QGFailureClassWorkerDeterministic ||
+		classes[0].Decision != dispatcher.QGFailureDecisionReopenOriginal {
+		t.Fatalf("classification = class %q decision %q, want worker_deterministic/reopen_original",
+			classes[0].Class, classes[0].Decision)
+	}
+}
+
+func TestExecuteWorkQGErrorUsesClassifiedPolicy(t *testing.T) {
+	bs := &fakeBeadStore{showDetail: testBead()}
+	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/oro-test"}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	mg := &mockMerger{}
+	deps := testDeps(bs, wt, sp, mg, true, true)
+
+	var record dispatcher.QGFailureRecord
+	var class dispatcher.QGFailureClassification
+	deps.runQG = func(_ context.Context, _ string, _ bool) (bool, string, error) {
+		return false, "", errors.New("FAIL: go test ./cmd/oro failed")
+	}
+	deps.recordQGFailure = func(_ context.Context, rec dispatcher.QGFailureRecord, cls dispatcher.QGFailureClassification) error {
+		record = rec
+		class = cls
+		return nil
+	}
+
+	err := executeWork(context.Background(), &workConfig{
+		beadID:     "oro-test",
+		model:      "sonnet",
+		timeout:    5 * time.Second,
+		skipReview: true,
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "quality gate error") {
+		t.Fatalf("executeWork error = %v, want quality gate error", err)
+	}
+	if record.Component != "oro-work-implementation" {
+		t.Fatalf("component = %q, want oro-work-implementation", record.Component)
+	}
+	if !strings.Contains(record.Output, "go test") {
+		t.Fatalf("record output = %q, want qgErr text", record.Output)
+	}
+	if class.Class != dispatcher.QGFailureClassWorkerDeterministic ||
+		class.Decision != dispatcher.QGFailureDecisionReopenOriginal {
+		t.Fatalf("classification = class %q decision %q, want worker_deterministic/reopen_original",
+			class.Class, class.Decision)
+	}
+}
+
+func TestExecuteWorkPreMergeQGFailureUsesClassifiedPolicy(t *testing.T) {
+	bs := &fakeBeadStore{showDetail: testBead()}
+	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/oro-test"}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
+	deps := testDeps(bs, wt, sp, mg, true, true)
+
+	qgCalls := 0
+	var records []dispatcher.QGFailureRecord
+	var classes []dispatcher.QGFailureClassification
+	deps.runQG = func(_ context.Context, _ string, _ bool) (bool, string, error) {
+		qgCalls++
+		if qgCalls == 1 {
+			return true, "implementation passed", nil
+		}
+		return false, "FAIL: go test ./cmd/oro failed", nil
+	}
+	deps.recordQGFailure = func(_ context.Context, rec dispatcher.QGFailureRecord, cls dispatcher.QGFailureClassification) error {
+		records = append(records, rec)
+		classes = append(classes, cls)
+		return nil
+	}
+
+	err := executeWork(context.Background(), &workConfig{
+		beadID:     "oro-test",
+		model:      "sonnet",
+		timeout:    5 * time.Second,
+		skipReview: true,
+	}, deps)
+	if err == nil {
+		t.Fatal("expected pre-merge QG failure")
+	}
+	if len(records) != 1 {
+		t.Fatalf("recorded QG failures = %d, want 1", len(records))
+	}
+	if records[0].Component != "oro-work-pre-merge" {
+		t.Fatalf("component = %q, want oro-work-pre-merge", records[0].Component)
+	}
+	if records[0].ID == "" || !strings.Contains(records[0].ID, "oro-work-pre-merge") {
+		t.Fatalf("record ID = %q, want unique component-scoped ID", records[0].ID)
+	}
+	if classes[0].Class != dispatcher.QGFailureClassWorkerDeterministic ||
+		classes[0].Decision != dispatcher.QGFailureDecisionReopenOriginal {
+		t.Fatalf("classification = class %q decision %q, want worker_deterministic/reopen_original",
+			classes[0].Class, classes[0].Decision)
+	}
+	if mg.called {
+		t.Fatal("merge must not run after pre-merge QG failure")
+	}
+}
+
+func TestExecuteWorkPreMergeQGErrorUsesClassifiedPolicy(t *testing.T) {
+	bs := &fakeBeadStore{showDetail: testBead()}
+	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/oro-test"}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
+	deps := testDeps(bs, wt, sp, mg, true, true)
+
+	qgCalls := 0
+	var record dispatcher.QGFailureRecord
+	var class dispatcher.QGFailureClassification
+	deps.runQG = func(_ context.Context, _ string, _ bool) (bool, string, error) {
+		qgCalls++
+		if qgCalls == 1 {
+			return true, "implementation passed", nil
+		}
+		return false, "", errors.New("FAIL: go test ./cmd/oro failed")
+	}
+	deps.recordQGFailure = func(_ context.Context, rec dispatcher.QGFailureRecord, cls dispatcher.QGFailureClassification) error {
+		record = rec
+		class = cls
+		return nil
+	}
+
+	err := executeWork(context.Background(), &workConfig{
+		beadID:     "oro-test",
+		model:      "sonnet",
+		timeout:    5 * time.Second,
+		skipReview: true,
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "pre-merge quality gate error") {
+		t.Fatalf("executeWork error = %v, want pre-merge quality gate error", err)
+	}
+	if record.Component != "oro-work-pre-merge" {
+		t.Fatalf("component = %q, want oro-work-pre-merge", record.Component)
+	}
+	if !strings.Contains(record.Output, "go test") {
+		t.Fatalf("record output = %q, want qgErr text", record.Output)
+	}
+	if class.Class != dispatcher.QGFailureClassWorkerDeterministic ||
+		class.Decision != dispatcher.QGFailureDecisionReopenOriginal {
+		t.Fatalf("classification = class %q decision %q, want worker_deterministic/reopen_original",
+			class.Class, class.Decision)
+	}
+	if mg.called {
+		t.Fatal("merge must not run after pre-merge QG error")
+	}
+}
+
+func TestHandleReviewRejectionQGFailureUsesClassifiedPolicy(t *testing.T) {
+	bs := &fakeBeadStore{showDetail: testBead()}
+	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/oro-test"}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	mg := &mockMerger{}
+	deps := testDeps(bs, wt, sp, mg, true, true)
+	deps.runQG = func(_ context.Context, _ string, _ bool) (bool, string, error) {
+		return false, "FAIL: go test ./cmd/oro failed", nil
+	}
+
+	var record dispatcher.QGFailureRecord
+	var class dispatcher.QGFailureClassification
+	deps.recordQGFailure = func(_ context.Context, rec dispatcher.QGFailureRecord, cls dispatcher.QGFailureClassification) error {
+		record = rec
+		class = cls
+		return nil
+	}
+
+	model := protocol.ModelSonnet
+	attempt := 0
+	feedback := ""
+	rejects, err := handleReviewRejection(context.Background(), &workConfig{
+		beadID:  "oro-test",
+		bead:    testBead(),
+		model:   protocol.ModelSonnet,
+		timeout: 5 * time.Second,
+	}, deps, t.TempDir(), ops.Result{
+		Verdict:  ops.VerdictRejected,
+		Feedback: "fix review issue",
+	}, 0, &model, &attempt, &feedback, nil)
+	if err == nil {
+		t.Fatal("expected QG failure after review rejection")
+	}
+	if rejects != 1 {
+		t.Fatalf("rejects = %d, want 1", rejects)
+	}
+	if record.Component != "oro-work-implementation" {
+		t.Fatalf("component = %q, want oro-work-implementation", record.Component)
+	}
+	if record.ID == "" || !strings.Contains(record.ID, "oro-work-implementation") {
+		t.Fatalf("record ID = %q, want unique component-scoped ID", record.ID)
+	}
+	if class.Class != dispatcher.QGFailureClassWorkerDeterministic ||
+		class.Decision != dispatcher.QGFailureDecisionReopenOriginal {
+		t.Fatalf("classification = class %q decision %q, want worker_deterministic/reopen_original",
+			class.Class, class.Decision)
+	}
+}
+
+func TestHandleReviewRejectionQGErrorUsesClassifiedPolicy(t *testing.T) {
+	bs := &fakeBeadStore{showDetail: testBead()}
+	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/oro-test"}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	mg := &mockMerger{}
+	deps := testDeps(bs, wt, sp, mg, true, true)
+	deps.runQG = func(_ context.Context, _ string, _ bool) (bool, string, error) {
+		return false, "", errors.New("FAIL: go test ./cmd/oro failed")
+	}
+
+	var record dispatcher.QGFailureRecord
+	var class dispatcher.QGFailureClassification
+	deps.recordQGFailure = func(_ context.Context, rec dispatcher.QGFailureRecord, cls dispatcher.QGFailureClassification) error {
+		record = rec
+		class = cls
+		return nil
+	}
+
+	model := protocol.ModelSonnet
+	attempt := 0
+	feedback := ""
+	rejects, err := handleReviewRejection(context.Background(), &workConfig{
+		beadID:  "oro-test",
+		bead:    testBead(),
+		model:   protocol.ModelSonnet,
+		timeout: 5 * time.Second,
+	}, deps, t.TempDir(), ops.Result{
+		Verdict:  ops.VerdictRejected,
+		Feedback: "fix review issue",
+	}, 0, &model, &attempt, &feedback, nil)
+	if err == nil || !strings.Contains(err.Error(), "quality gate error") {
+		t.Fatalf("handleReviewRejection error = %v, want quality gate error", err)
+	}
+	if rejects != 1 {
+		t.Fatalf("rejects = %d, want 1", rejects)
+	}
+	if record.Component != "oro-work-implementation" {
+		t.Fatalf("component = %q, want oro-work-implementation", record.Component)
+	}
+	if !strings.Contains(record.Output, "go test") {
+		t.Fatalf("record output = %q, want qgErr text", record.Output)
+	}
+	if class.Class != dispatcher.QGFailureClassWorkerDeterministic ||
+		class.Decision != dispatcher.QGFailureDecisionReopenOriginal {
+		t.Fatalf("classification = class %q decision %q, want worker_deterministic/reopen_original",
+			class.Class, class.Decision)
+	}
+}
+
 func TestExecuteWork_MergeFail_ResetsBead(t *testing.T) {
 	// When merge fails, bead should be reset to "open".
 
