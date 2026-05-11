@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"oro/pkg/protocol"
@@ -116,23 +117,82 @@ func legacyDefaultAgentConfig() *AgentConfig {
 // defaults are returned. Parse errors are surfaced as-is.
 // Validation of field values lives in Validate() — this function only parses.
 func Load(path string) (*AgentConfig, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // path accepted from caller
-	if errors.Is(err, os.ErrNotExist) {
+	cfg, _, err := loadIfAgentBlock(path)
+	if err != nil {
+		return nil, err
+	}
+	if cfg == nil {
 		return legacyDefaultAgentConfig(), nil
 	}
+	return cfg, nil
+}
+
+// LoadWithPrecedence reads an agent block from the highest-priority config
+// layer that defines one. Agent configuration is global-user scoped, falling
+// back to project config only when higher layers are unset, absent, or do not
+// contain an agent block.
+//
+// Precedence:
+//  1. $ORO_HOME/config.yaml, when ORO_HOME is set
+//  2. ~/.oro/config.yaml
+//  3. projectConfigPath, typically <repo>/.oro/config.yaml
+func LoadWithPrecedence(projectConfigPath string) (*AgentConfig, error) {
+	for _, path := range agentConfigCandidates(projectConfigPath) {
+		cfg, found, err := loadIfAgentBlock(path)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			return cfg, nil
+		}
+	}
+	return legacyDefaultAgentConfig(), nil
+}
+
+// HasAgentBlockWithPrecedence reports whether any config layer in precedence
+// order defines an agent block.
+func HasAgentBlockWithPrecedence(projectConfigPath string) bool {
+	for _, path := range agentConfigCandidates(projectConfigPath) {
+		_, found, err := loadIfAgentBlock(path)
+		if err == nil && found {
+			return true
+		}
+	}
+	return false
+}
+
+func agentConfigCandidates(projectConfigPath string) []string {
+	candidates := make([]string, 0, 3)
+	if oroHome := os.Getenv("ORO_HOME"); oroHome != "" {
+		candidates = append(candidates, filepath.Join(oroHome, "config.yaml"))
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		candidates = append(candidates, filepath.Join(home, ".oro", "config.yaml"))
+	}
+	if projectConfigPath != "" {
+		candidates = append(candidates, projectConfigPath)
+	}
+	return candidates
+}
+
+func loadIfAgentBlock(path string) (*AgentConfig, bool, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // path accepted from caller
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
+		return nil, false, fmt.Errorf("reading %s: %w", path, err)
 	}
 
 	var f configFile
 	if err := yaml.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", path, err)
+		return nil, false, fmt.Errorf("parsing %s: %w", path, err)
 	}
 
 	if f.Agent == nil {
-		return legacyDefaultAgentConfig(), nil
+		return nil, false, nil
 	}
-	return f.Agent, nil
+	return f.Agent, true, nil
 }
 
 // Validate checks AgentConfig for invalid role definitions and

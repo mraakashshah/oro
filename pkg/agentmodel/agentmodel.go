@@ -3,13 +3,10 @@
 package agentmodel
 
 import (
-	"os"
 	"path/filepath"
 
 	"oro/pkg/config"
 	"oro/pkg/protocol"
-
-	"gopkg.in/yaml.v3"
 )
 
 const defaultConfigPath = ".oro/config.yaml"
@@ -52,29 +49,15 @@ func ResolveForBead(role string, b protocol.Bead) (runtime, model, reasoning str
 
 func loadAgentConfig() loadedConfig {
 	configPath := filepath.Clean(defaultConfigPath)
-	if !hasAgentBlock(configPath) {
+	if !config.HasAgentBlockWithPrecedence(configPath) {
 		return loadedConfig{cfg: legacyAgentConfig(), legacyDefaults: true}
 	}
 
-	cfg, err := config.Load(configPath)
+	cfg, err := config.LoadWithPrecedence(configPath)
 	if err != nil {
 		return loadedConfig{cfg: legacyAgentConfig(), legacyDefaults: true}
 	}
 	return loadedConfig{cfg: withDefaults(cfg), hasAgentBlock: true}
-}
-
-func hasAgentBlock(path string) bool {
-	data, err := os.ReadFile(path) //nolint:gosec // project-local config path
-	if err != nil {
-		return false
-	}
-	var doc struct {
-		Agent *config.AgentConfig `yaml:"agent"`
-	}
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return false
-	}
-	return doc.Agent != nil
 }
 
 func legacyAgentConfig() *config.AgentConfig {
