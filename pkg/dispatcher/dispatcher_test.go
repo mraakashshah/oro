@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -2106,6 +2107,67 @@ func TestDispatcher_ReviewRejected_FeedbackSent(t *testing.T) {
 	}
 	if msg.Type != protocol.MsgAssign {
 		t.Fatalf("expected ASSIGN after rejection, got %s", msg.Type)
+	}
+}
+
+func TestReadyForReviewRejectsUntrackedTaskFilesBeforeOpsReview(t *testing.T) {
+	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	worktree := t.TempDir()
+	if err := exec.Command("git", "-C", worktree, "init").Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "implementation.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write untracked file: %v", err)
+	}
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, 1*time.Second)
+
+	beadSrc.shown["bead-dirty"] = &protocol.BeadDetail{
+		Title:              "Dirty review test",
+		AcceptanceCriteria: "Test: dirty | Assert: no ops review",
+	}
+
+	d.mu.Lock()
+	w := d.workers["w1"]
+	w.state = protocol.WorkerBusy
+	w.beadID = "bead-dirty"
+	w.worktree = worktree
+	w.targetBranch = "main"
+	d.mu.Unlock()
+
+	d.handleReadyForReview(context.Background(), "w1", protocol.Message{
+		Type:           protocol.MsgReadyForReview,
+		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-dirty", WorkerID: "w1"},
+	})
+
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "pre_review_git_dirty") > 0
+	}, 1*time.Second)
+
+	if got := spawnMock.SpawnCount(); got != 0 {
+		t.Fatalf("ops review should not spawn for dirty worktree, got %d spawns", got)
+	}
+	if got := eventCount(t, d.db, "review_rejected"); got != 0 {
+		t.Fatalf("dirty pre-review gate should not log review_rejected, got %d", got)
+	}
+
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected worker feedback ASSIGN")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN feedback, got %s", msg.Type)
+	}
+	if msg.Assign == nil || !strings.Contains(msg.Assign.Feedback, "implementation.go") ||
+		!strings.Contains(msg.Assign.Feedback, "stage/commit") {
+		t.Fatalf("expected actionable feedback naming untracked file, got %#v", msg.Assign)
 	}
 }
 

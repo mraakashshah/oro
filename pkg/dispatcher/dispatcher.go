@@ -3030,6 +3030,22 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 		return
 	}
 
+	hygiene, err := d.checkPreReviewGitHygiene(ctx, beadID, worktree)
+	if err != nil {
+		d.handleReviewFailed(ctx, workerID, beadID, ops.Result{Err: err})
+		return
+	}
+	if hygiene.Dirty {
+		feedback := hygiene.Feedback()
+		payload, marshalErr := json.Marshal(map[string][]string{"files": hygiene.Files})
+		if marshalErr != nil {
+			payload = []byte(`{"files":[]}`)
+		}
+		_ = d.logEvent(ctx, "pre_review_git_dirty", "dispatcher", beadID, workerID, string(payload))
+		d.sendPreReviewGitDirtyFeedback(ctx, workerID, beadID, feedback)
+		return
+	}
+
 	// Look up bead details for the reviewer
 	title, acceptance, _ := d.lookupBeadDetail(ctx, beadID, workerID)
 
@@ -3045,6 +3061,88 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 
 	// Handle review result asynchronously
 	d.safeGo(func() { d.handleReviewResult(ctx, workerID, beadID, resultCh) })
+}
+
+// PreReviewGitHygieneResult describes whether a worker worktree is clean
+// enough to enter ops review.
+type PreReviewGitHygieneResult struct {
+	Dirty bool
+	Files []string
+}
+
+// Feedback returns actionable worker feedback for a dirty pre-review worktree.
+func (r PreReviewGitHygieneResult) Feedback() string {
+	if len(r.Files) == 0 {
+		return "Pre-review git hygiene failed. Remove unrelated edits or stage/commit task files before requesting review again."
+	}
+	return "Pre-review git hygiene failed. stage/commit task files or remove unrelated edits before requesting review again. Dirty files: " +
+		strings.Join(r.Files, ", ")
+}
+
+func (d *Dispatcher) checkPreReviewGitHygiene(ctx context.Context, _, worktree string) (PreReviewGitHygieneResult, error) {
+	if _, statErr := os.Stat(filepath.Join(worktree, ".git")); statErr != nil {
+		if errors.Is(statErr, os.ErrNotExist) {
+			return PreReviewGitHygieneResult{}, nil
+		}
+		return PreReviewGitHygieneResult{}, fmt.Errorf("pre-review git metadata: %w", statErr)
+	}
+
+	out, err := (&ExecCommandRunner{Dir: worktree}).Run(ctx, "git", "status", "--porcelain", "-z")
+	if err != nil {
+		return PreReviewGitHygieneResult{}, fmt.Errorf("pre-review git status: %w", err)
+	}
+
+	files := parseGitStatusPorcelainZ(out)
+	if len(files) == 0 {
+		return PreReviewGitHygieneResult{}, nil
+	}
+	sort.Strings(files)
+	return PreReviewGitHygieneResult{Dirty: true, Files: files}, nil
+}
+
+func parseGitStatusPorcelainZ(out []byte) []string {
+	entries := strings.Split(string(out), "\x00")
+	files := make([]string, 0, len(entries))
+	for i := 0; i < len(entries); i++ {
+		entry := entries[i]
+		if len(entry) < 4 {
+			continue
+		}
+		path := strings.TrimSpace(entry[3:])
+		if path == "" {
+			continue
+		}
+		files = append(files, path)
+		if entry[0] == 'R' || entry[1] == 'R' {
+			i++
+		}
+	}
+	return files
+}
+
+func (d *Dispatcher) sendPreReviewGitDirtyFeedback(ctx context.Context, workerID, beadID, feedback string) {
+	d.mu.Lock()
+	if w, ok := d.workers[workerID]; ok {
+		w.state = protocol.WorkerReserved
+	}
+	snap := d.opusEscalationSnapshotLocked(workerID)
+	d.mu.Unlock()
+
+	memCtx := d.fetchBeadMemories(ctx, beadID)
+	payload := d.buildAssignPayload(ctx, &snap, 0, feedback, memCtx)
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w, ok := d.workers[workerID]
+	if !ok || w.state != protocol.WorkerReserved {
+		return
+	}
+	w.state = protocol.WorkerBusy
+	w.lastProgress = d.nowFunc()
+	_ = d.sendToWorker(w, protocol.Message{
+		Type:   protocol.MsgAssign,
+		Assign: payload,
+	})
 }
 
 // maxReviewRejections is the number of rejection cycles before escalating to
