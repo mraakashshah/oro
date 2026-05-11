@@ -1173,7 +1173,7 @@ func TestBuildDispatcherResolvesOpsRuntime(t *testing.T) {
 		if !ok {
 			t.Fatalf("ops spawner = %#v, want runtime router", rt.opsSpawn)
 		}
-		if _, err := router.SpawnRuntime(context.Background(), runtimeCodex, "gpt-5.5-codex", "high", "prompt", tmpDir); err != nil {
+		if _, err := router.SpawnRuntime(context.Background(), runtimeCodex, "gpt-5.5", "high", "prompt", tmpDir); err != nil {
 			t.Fatalf("spawn codex ops through router: %v", err)
 		}
 		if wantOps.calls != 1 {

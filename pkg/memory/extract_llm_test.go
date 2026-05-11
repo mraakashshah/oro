@@ -296,7 +296,7 @@ func TestCLISpawner_SpawnInWorkdirNormalizesGitEnv(t *testing.T) {
 	t.Setenv("GIT_WORK_TREE", "/poisoned/main")
 	t.Setenv("GIT_INDEX_FILE", "/poisoned/main/.git/index")
 
-	reader, err := CLISpawner{}.SpawnInWorkdir(context.Background(), "gpt-5-codex", "extract", workdir)
+	reader, err := CLISpawner{}.SpawnInWorkdir(context.Background(), "gpt-5.5", "extract", workdir)
 	if err != nil {
 		t.Fatalf("SpawnInWorkdir() error: %v", err)
 	}
@@ -337,7 +337,7 @@ func TestSpawnCommand_UsesCodexWhenConfigured(t *testing.T) {
 	t.Setenv("ORO_AGENT_RUNTIME", "codex")
 
 	got := spawnCommand("haiku", "test prompt", "")
-	want := []string{"codex", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--model", "gpt-5-codex", "test prompt"}
+	want := []string{"codex", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--model", "gpt-5.5", "test prompt"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("spawnCommand() = %v, want %v", got, want)
 	}
@@ -347,7 +347,7 @@ func TestSpawnCommand_UsesCodexModelForClaudeFallbackWhenConfigured(t *testing.T
 	t.Setenv("ORO_AGENT_RUNTIME", "codex")
 
 	got := spawnCommand("claude-haiku-4-5-20251001", "test prompt", "")
-	want := []string{"codex", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--model", "gpt-5-codex", "test prompt"}
+	want := []string{"codex", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--model", "gpt-5.5", "test prompt"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("spawnCommand() = %v, want %v", got, want)
 	}

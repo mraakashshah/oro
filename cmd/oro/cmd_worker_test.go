@@ -88,7 +88,7 @@ func TestWorkerSpawnerBuildsRuntimeRouter(t *testing.T) {
 	if _, _, _, _, err := got.Spawn(context.Background(), runtimeClaude, "sonnet", "", "prompt", t.TempDir()); err != nil {
 		t.Fatalf("spawn claude through runtime router: %v", err)
 	}
-	if _, _, _, _, err := got.Spawn(context.Background(), runtimeCodex, "gpt-5-codex", "high", "prompt", t.TempDir()); err != nil {
+	if _, _, _, _, err := got.Spawn(context.Background(), runtimeCodex, "gpt-5.5", "high", "prompt", t.TempDir()); err != nil {
 		t.Fatalf("spawn codex through runtime router: %v", err)
 	}
 

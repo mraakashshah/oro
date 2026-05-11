@@ -124,13 +124,13 @@ func TestOpsRoutingUsesLockedRoleModels(t *testing.T) {
 	}{
 		{"ops_escalation", func(s *Spawner) <-chan Result {
 			return s.Escalate(context.Background(), EscalationOpts{BeadID: "b", Workdir: dir})
-		}, "codex", "gpt-5.5-codex", "high"},
+		}, "codex", "gpt-5.5", "high"},
 		{"ops_merge", func(s *Spawner) <-chan Result {
 			return s.ResolveMergeConflict(context.Background(), MergeOpts{BeadID: "b", Worktree: dir})
-		}, "codex", "gpt-5.5-codex", "high"},
+		}, "codex", "gpt-5.5", "high"},
 		{"ops_diagnosis", func(s *Spawner) <-chan Result {
 			return s.Diagnose(context.Background(), DiagOpts{BeadID: "b", Worktree: dir})
-		}, "codex", "gpt-5.5-codex", "high"},
+		}, "codex", "gpt-5.5", "high"},
 		{"ops_review", func(s *Spawner) <-chan Result {
 			return s.Review(context.Background(), ReviewOpts{BeadID: "b", Worktree: ""})
 		}, "claude", "claude-opus-4-7", ""},
@@ -145,7 +145,7 @@ func TestOpsRoutingUsesLockedRoleModels(t *testing.T) {
 		}, "claude", "claude-opus-4-7", ""},
 		{"ops_dream", func(s *Spawner) <-chan Result {
 			return s.Dream(context.Background(), DreamOpts{})
-		}, "codex", "gpt-5.5-codex", "low"},
+		}, "codex", "gpt-5.5", "low"},
 	}
 
 	for _, tc := range cases {

@@ -45,7 +45,7 @@ A new package (`pkg/agentmodel`) owns role→runtime+model resolution. It depend
 ```
 pkg/protocol     // unchanged: types, tiers, parsers (leaf — stdlib only)
 pkg/config       // new: agent.tiers + agent.api_models + agent.roles schema
-pkg/agentmodel   // new: ResolveForBead(role, bead) (runtime, model string)
+pkg/agentmodel   // new: ResolveForBead(role, bead) (runtime, model, reasoning string)
                  //      depends on protocol + config
 ```
 
@@ -59,8 +59,8 @@ func (b Bead) ResolveTier() Tier { /* unchanged tier resolution from explicit fi
 
 ```go
 // pkg/agentmodel/agentmodel.go — owns the actual resolution
-func ResolveForBead(role string, b protocol.Bead) (runtime, model string) {
-    if b.Model != "" { return inferRuntimeFromModel(b.Model), b.Model }
+func ResolveForBead(role string, b protocol.Bead) (runtime, model, reasoning string) {
+    if b.Model != "" { return inferRuntimeFromModel(b.Model), b.Model, "" }
     tier := b.ResolveTier()
     return resolveTierFromConfig(role, tier)
 }
@@ -122,33 +122,38 @@ Bead breakdown below sequences: (1) AssignPayload schema change, (2) dispatcher-
 
 ## Config Schema
 
-The example below is the **built-in default** — what you get when no `agent` block is present anywhere. It is intentionally identical to today's behavior: Claude everywhere, Haiku for fast/background, Sonnet for balanced, Opus for deep. The default role-tier mapping mirrors `pkg/ops/ops.go:55-72` exactly: review/merge/diagnosis/epic_fix/write_ac/decompose are deep, escalation is balanced, dream is background.
+The example below is the locked **explicit `agent:` end state** for `oro-6myx`. If no `agent` block is present, Oro still preserves the legacy Claude-only defaults for compatibility. Once an `agent` block exists, role routing is intentionally pinned: Claude Opus handles spec/AC/decomposition/review work, Codex 5.5 handles implementation and operational escalation with per-role reasoning.
 
 ```yaml
 agent:
   # CLI tiers — used by transport=cli roles
   tiers:
-    fast:       { runtime: claude, model: claude-haiku-4-5-20251001 }
-    balanced:   { runtime: claude, model: claude-sonnet-4-6 }
-    deep:       { runtime: claude, model: claude-opus-4-7 }
-    background: { runtime: claude, model: claude-haiku-4-5-20251001 }
+    fast:       { runtime: codex, model: gpt-5.5, reasoning: low }
+    balanced:   { runtime: codex, model: gpt-5.5, reasoning: low }
+    deep:       { runtime: codex, model: gpt-5.5, reasoning: high }
+    background: { runtime: codex, model: gpt-5.5, reasoning: low }
 
   # API-only models — pinned to providers; do NOT inherit from agent.tiers
   api_models:
     anthropic_fast: claude-haiku-4-5-20251001
 
   roles:
-    # CLI-spawn roles — defaults must match current pkg/ops/ops.go tier routing
-    worker:               { tier: balanced, transport: cli }
-    worker_escalation:    { tier: deep,     transport: cli }
-    ops_review:           { tier: deep,     transport: cli }
-    ops_merge:            { tier: deep,     transport: cli }
-    ops_diagnosis:        { tier: deep,     transport: cli }
-    ops_epic_fix:         { tier: deep,     transport: cli }
-    ops_write_ac:         { tier: deep,     transport: cli }
-    ops_escalation:       { tier: balanced, transport: cli }
-    ops_decompose:        { tier: deep,     transport: cli }
-    ops_dream:            { tier: background, transport: cli }
+    spec_writer:          { transport: cli, runtime: claude, model: claude-opus-4-7 }
+    spec_challenger:      { transport: cli, runtime: codex, model: gpt-5.5, reasoning: xhigh }
+
+    worker:               { transport: cli, runtime: codex, model: gpt-5.5, reasoning: low }
+    worker_escalation:    { transport: cli, runtime: codex, model: gpt-5.5, reasoning: medium }
+
+    ops_review:           { transport: cli, runtime: claude, model: claude-opus-4-7 }
+    ops_escalation:       { transport: cli, runtime: codex, model: gpt-5.5, reasoning: high }
+    ops_merge:            { transport: cli, runtime: codex, model: gpt-5.5, reasoning: high }
+    ops_diagnosis:        { transport: cli, runtime: codex, model: gpt-5.5, reasoning: high }
+
+    ops_decompose:        { transport: cli, runtime: claude, model: claude-opus-4-7 }
+    ops_epic_fix:         { transport: cli, runtime: claude, model: claude-opus-4-7 }
+    ops_write_ac:         { transport: cli, runtime: claude, model: claude-opus-4-7 }
+    ops_dream:            { tier: fast, transport: cli }
+
     memory_extractor:     { tier: fast,     transport: cli }
     codesearch_reranker:  { tier: fast,     transport: cli }
 
@@ -156,18 +161,7 @@ agent:
     estimator:            { transport: api, provider: anthropic, api_model: anthropic_fast }
 ```
 
-Mixing example (NOT the default — what the wizard produces if a user picks Codex for some tiers):
-
-```yaml
-agent:
-  tiers:
-    fast:       { runtime: codex,  model: gpt-5-codex }
-    balanced:   { runtime: claude, model: claude-sonnet-4-6 }
-    deep:       { runtime: codex,  model: gpt-5-codex }
-    background: { runtime: codex,  model: gpt-5-codex }
-```
-
-The `agent.tiers` block is for CLI roles only. API roles read from `agent.api_models` via the role's `api_model:` key. This keeps `tiers.fast = gpt-5-codex` from breaking the estimator.
+The `agent.tiers` block is for CLI roles only. API roles read from `agent.api_models` via the role's `api_model:` key. This keeps `tiers.fast = gpt-5.5` from breaking the estimator. `reasoning` is accepted only for Codex CLI routes (`low`, `medium`, `high`, `xhigh`) and is ignored by Claude routes.
 
 ### Roles vs Transports
 
@@ -176,7 +170,7 @@ Each role declares a `transport`:
 - `transport: cli` — Oro spawns the runtime CLI (`claude -p` or `codex exec`) with the resolved model. Both `runtime` and `model` from the resolved tier are used.
 - `transport: api` — Oro calls a provider's HTTP API directly. The role's `provider` (anthropic, openai) selects the endpoint. API roles ONLY honor `api_model:` (which references a key in `agent.api_models`); they do NOT read a `model:` or `tier:` key on the role.
 
-`transport` is NOT user-configurable in the wizard. It is fixed per role by the implementation. For `transport: api` roles, users may override only the model string by editing `agent.api_models.<key>`, and the value must stay within the role's pinned `provider`. Cross-provider model strings (e.g., `gpt-5-codex` for `provider: anthropic`) fail validation at load.
+`transport` is NOT user-configurable in the wizard. It is fixed per role by the implementation. For `transport: api` roles, users may override only the model string by editing `agent.api_models.<key>`, and the value must stay within the role's pinned `provider`. Cross-provider model strings (e.g., `gpt-5.5` for `provider: anthropic`) fail validation at load.
 
 This boundary exists because the estimator (`pkg/dispatcher/estimate.go:18-21`) calls `https://api.anthropic.com/v1/messages` directly with `ANTHROPIC_API_KEY` and has no provider abstraction. Adding one is out of scope for this extension.
 
@@ -184,8 +178,8 @@ This boundary exists because the estimator (`pkg/dispatcher/estimate.go:18-21`) 
 
 For any `transport: cli` role:
 
-1. If `roles[role].runtime` AND `roles[role].model` are both set → use them.
-2. Else if `roles[role].tier` is set → use `tiers[tier].runtime` and `tiers[tier].model`.
+1. If `roles[role].runtime` AND `roles[role].model` are both set → use them, plus `roles[role].reasoning` when present.
+2. Else if `roles[role].tier` is set → use `tiers[tier].runtime`, `tiers[tier].model`, and `tiers[tier].reasoning`.
 3. Else fall back to the built-in default tier mapping (the table above).
 
 A CLI role MUST NOT specify a partial override (only `runtime` or only `model`). Invalid configs fail loud at load time. This keeps "what binary will spawn?" deterministic and inspectable.
@@ -199,7 +193,7 @@ For any `transport: api` role:
 
 API roles do **NOT** read `roles[role].model` and do **NOT** inherit from `agent.tiers`. The `tier` field is invalid on API roles. The loader rejects API-role config with a `tier:` key.
 
-If validation fails (e.g., `api_models.anthropic_fast: gpt-5-codex` referenced by `provider: anthropic`), the loader rejects the config with a message naming the role, the api_model key, and the conflicting model. The estimator gracefully degrades to "no estimate" if `ANTHROPIC_API_KEY` is missing — that behavior is preserved.
+If validation fails (e.g., `api_models.anthropic_fast: gpt-5.5` referenced by `provider: anthropic`), the loader rejects the config with a message naming the role, the api_model key, and the conflicting model. The estimator gracefully degrades to "no estimate" if `ANTHROPIC_API_KEY` is missing — that behavior is preserved.
 
 ### Backward Compatibility
 
@@ -208,7 +202,7 @@ If validation fails (e.g., `api_models.anthropic_fast: gpt-5-codex` referenced b
 - **Legacy bead hydration (corrected)**: `pkg/beadstore/sqlite.go:693` and `pkg/beadstore/readtx.go:244` currently copy `metadata["model"]` into `Bead.Model` only when `Bead.Model == ""`. The fix MUST preserve that guard. Specifically, at hydration time:
   - If the SQLite `model` column is non-empty → set `Bead.Model` from that column verbatim. Do NOT touch `Bead.Tier`.
   - Else if `metadata.model ∈ {opus, sonnet, haiku}` AND `Bead.Tier` is empty → write the mapped tier into `Bead.Tier`. Leave `Bead.Model` empty.
-  - Else if `metadata.model` is a provider-native string (e.g., `claude-opus-4-7`, `gpt-5-codex`) AND `Bead.Model` column is empty → set `Bead.Model` from metadata.
+  - Else if `metadata.model` is a provider-native string (e.g., `claude-opus-4-7`, `gpt-5.5`) AND `Bead.Model` column is empty → set `Bead.Model` from metadata.
   - Else → leave both empty.
 
   This guarantees a row with explicit provider-native `model` plus stale legacy `metadata.model` keeps the explicit column value; only legacy-only rows convert to tiers.
@@ -219,10 +213,10 @@ If validation fails (e.g., `api_models.anthropic_fast: gpt-5-codex` referenced b
 Five prompts, with smart defaults:
 
 1. **Primary runtime?** `claude | codex` — default `claude`. Used as default for the next 4.
-2. **Fast tier model?** Defaults: `claude-haiku-4-5-20251001` for claude, `gpt-5-codex` for codex. Allow overriding runtime here.
-3. **Balanced tier model?** Defaults: `claude-sonnet-4-6` / `gpt-5-codex`.
-4. **Deep tier model?** Defaults: `claude-opus-4-7` / `gpt-5-codex` (or strongest available).
-5. **Background tier model?** Defaults: `claude-haiku-4-5-20251001` / `gpt-5-codex`.
+2. **Fast tier model?** Defaults: `claude-haiku-4-5-20251001` for claude, `gpt-5.5` for codex. Allow overriding runtime here.
+3. **Balanced tier model?** Defaults: `claude-sonnet-4-6` / `gpt-5.5`.
+4. **Deep tier model?** Defaults: `claude-opus-4-7` / `gpt-5.5` (or strongest available).
+5. **Background tier model?** Defaults: `claude-haiku-4-5-20251001` / `gpt-5.5`.
 
 After collection: write `agent.tiers` to the config file (see precedence rules below). Roles are NOT prompted; the file is generated with the default tier→role table commented to invite manual edits.
 
@@ -385,8 +379,8 @@ The extension is done when:
 8. **Mixing end-to-end test:** with `tiers.deep.runtime=codex` and `tiers.balanced.runtime=claude`, a worker assigned a `tier=balanced` bead spawns Claude, and when QG retry escalation kicks in (worker_escalation→deep) the SAME worker process spawns Codex on the next attempt. Verifies AssignPayload carries Runtime and the worker selects spawner per-assignment.
 9. `roles.codesearch_reranker.runtime=claude` with `tiers.balanced.runtime=codex` correctly spawns Claude for the reranker via `agentmodel.ResolveForRole("codesearch_reranker")`, NOT via `agentruntime.ReadRuntime()`.
 10. Legacy bead with `metadata.model=opus` and no `tier` field → on hydration, `Bead.Tier=deep` and `Bead.Model=""`. `agentmodel.ResolveForBead("worker", bead)` returns the configured `tiers.deep.model`+`runtime`, NOT `"opus"`. (`Bead.ResolveModel()` itself is a pure shim returning `b.Model`; the configured value comes from `agentmodel`, not from `protocol`.)
-11. Estimator stays Anthropic-only: `roles.estimator.api_model: anthropic_fast` references `agent.api_models.anthropic_fast`. If a user sets `agent.api_models.anthropic_fast: gpt-5-codex`, config load rejects with a clear error naming the role and provider mismatch.
-12. `tiers.fast.model=gpt-5-codex` does NOT affect estimator behavior. Estimator continues to call Anthropic.
+11. Estimator stays Anthropic-only: `roles.estimator.api_model: anthropic_fast` references `agent.api_models.anthropic_fast`. If a user sets `agent.api_models.anthropic_fast: gpt-5.5`, config load rejects with a clear error naming the role and provider mismatch.
+12. `tiers.fast.model=gpt-5.5` does NOT affect estimator behavior. Estimator continues to call Anthropic.
 13. `oro task create --tier=deep` writes `bead.Tier=deep` to the SQLite store via `CreateParams.Tier`. Verifies `pkg/beadstore/store.go:112` schema change.
 14. Decomposer / epic-fix / worker prompts that create tasks include `--tier=<inferred-from-parent>` when parent has a tier.
 15. `oro work --model fast` and `oro work --model claude-opus-4-7` both work; help text reflects tier-first vocabulary.

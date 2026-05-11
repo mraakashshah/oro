@@ -15,12 +15,12 @@ import (
 func TestCodexRuntimeSpawnContract(t *testing.T) {
 	t.Parallel()
 
-	args := codexruntimeTestBuildExecArgs("gpt-5-codex", "finish the bead")
+	args := codexruntimeTestBuildExecArgs("gpt-5.5", "finish the bead")
 	want := []string{
 		"exec",
 		"--skip-git-repo-check",
 		"--sandbox", "workspace-write",
-		"--model", "gpt-5-codex",
+		"--model", "gpt-5.5",
 		"finish the bead",
 	}
 	if len(args) != len(want) {
@@ -62,7 +62,7 @@ func TestCodexWorkerSpawnerSetsPWDToWorkdir(t *testing.T) {
 	t.Setenv("ORO_TEST_REPORT", report)
 
 	spawner := codexruntime.NewWorkerSpawner()
-	proc, stdout, _, err := spawner.Spawn(context.Background(), "gpt-5-codex", "finish the bead", workdir)
+	proc, stdout, _, err := spawner.Spawn(context.Background(), "gpt-5.5", "finish the bead", workdir)
 	if err != nil {
 		t.Fatalf("Spawn() error = %v", err)
 	}

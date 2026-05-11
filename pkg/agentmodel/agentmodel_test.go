@@ -36,7 +36,7 @@ func TestRoleResolutionPrecedence(t *testing.T) {
     explicit_worker:
       transport: cli
       runtime: codex
-      model: gpt-5-codex
+      model: gpt-5.5
       reasoning: medium
 `)
 
@@ -49,8 +49,8 @@ func TestRoleResolutionPrecedence(t *testing.T) {
 
 	t.Run("explicit role override wins over tier", func(t *testing.T) {
 		runtime, model, reasoning := agentmodel.ResolveForRole("explicit_worker")
-		if runtime != "codex" || model != "gpt-5-codex" || reasoning != "medium" {
-			t.Fatalf("ResolveForRole(explicit_worker) = (%q, %q, %q), want (codex, gpt-5-codex, medium)", runtime, model, reasoning)
+		if runtime != "codex" || model != "gpt-5.5" || reasoning != "medium" {
+			t.Fatalf("ResolveForRole(explicit_worker) = (%q, %q, %q), want (codex, gpt-5.5, medium)", runtime, model, reasoning)
 		}
 	})
 
@@ -128,17 +128,17 @@ func TestLockedRoleResolution(t *testing.T) {
 		reasoning string
 	}{
 		"spec_writer":       {"claude", "claude-opus-4-7", ""},
-		"spec_challenger":   {"codex", "gpt-5.5-codex", "xhigh"},
-		"worker":            {"codex", "gpt-5.5-codex", "low"},
-		"worker_escalation": {"codex", "gpt-5.5-codex", "medium"},
+		"spec_challenger":   {"codex", "gpt-5.5", "xhigh"},
+		"worker":            {"codex", "gpt-5.5", "low"},
+		"worker_escalation": {"codex", "gpt-5.5", "medium"},
 		"ops_review":        {"claude", "claude-opus-4-7", ""},
-		"ops_escalation":    {"codex", "gpt-5.5-codex", "high"},
-		"ops_merge":         {"codex", "gpt-5.5-codex", "high"},
-		"ops_diagnosis":     {"codex", "gpt-5.5-codex", "high"},
+		"ops_escalation":    {"codex", "gpt-5.5", "high"},
+		"ops_merge":         {"codex", "gpt-5.5", "high"},
+		"ops_diagnosis":     {"codex", "gpt-5.5", "high"},
 		"ops_decompose":     {"claude", "claude-opus-4-7", ""},
 		"ops_epic_fix":      {"claude", "claude-opus-4-7", ""},
 		"ops_write_ac":      {"claude", "claude-opus-4-7", ""},
-		"ops_dream":         {"codex", "gpt-5.5-codex", "low"},
+		"ops_dream":         {"codex", "gpt-5.5", "low"},
 	}
 
 	for role, want := range cases {

@@ -66,7 +66,7 @@ type Inserter interface {
 	Insert(ctx context.Context, m InsertParams) (int64, error)
 }
 
-const codexExtractionModel = "gpt-5-codex"
+const codexExtractionModel = "gpt-5.5"
 
 // CLISpawner is the production Spawner that invokes the configured runtime CLI.
 type CLISpawner struct{}

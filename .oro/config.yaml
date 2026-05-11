@@ -1,4 +1,98 @@
 project: oro
+agent:
+  tiers:
+    fast:
+      runtime: codex
+      model: gpt-5.5
+      reasoning: low
+    balanced:
+      runtime: codex
+      model: gpt-5.5
+      reasoning: low
+    deep:
+      runtime: codex
+      model: gpt-5.5
+      reasoning: high
+    background:
+      runtime: codex
+      model: gpt-5.5
+      reasoning: low
+  roles:
+    spec_writer:
+      transport: cli
+      runtime: codex
+      model: gpt-5.5
+      reasoning: xhigh
+    spec_challenger:
+      transport: cli
+      runtime: codex
+      model: gpt-5.5
+      reasoning: xhigh
+    worker:
+      transport: cli
+      runtime: codex
+      model: gpt-5.5
+      reasoning: low
+    worker_escalation:
+      transport: cli
+      runtime: codex
+      model: gpt-5.5
+      reasoning: medium
+    ops_review:
+      transport: cli
+      runtime: codex
+      model: gpt-5.5
+      reasoning: high
+    ops_escalation:
+      transport: cli
+      runtime: codex
+      model: gpt-5.5
+      reasoning: high
+    ops_merge:
+      transport: cli
+      runtime: codex
+      model: gpt-5.5
+      reasoning: high
+    ops_diagnosis:
+      transport: cli
+      runtime: codex
+      model: gpt-5.5
+      reasoning: high
+    ops_epic_fix:
+      transport: cli
+      runtime: codex
+      model: gpt-5.5
+      reasoning: high
+    ops_write_ac:
+      transport: cli
+      runtime: codex
+      model: gpt-5.5
+      reasoning: high
+    ops_decompose:
+      transport: cli
+      runtime: codex
+      model: gpt-5.5
+      reasoning: high
+    ops_dream:
+      transport: cli
+      runtime: codex
+      model: gpt-5.5
+      reasoning: low
+    memory_extractor:
+      transport: cli
+      runtime: codex
+      model: gpt-5.5
+      reasoning: low
+    codesearch_reranker:
+      transport: cli
+      runtime: codex
+      model: gpt-5.5
+      reasoning: low
+    estimator:
+      transport: cli
+      runtime: codex
+      model: gpt-5.5
+      reasoning: low
 languages:
   go:
     formatters:

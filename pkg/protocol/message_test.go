@@ -192,7 +192,7 @@ func TestAssignPayloadHasRuntime(t *testing.T) {
 		BeadID:   "oro-runtime",
 		Worktree: "/tmp/worktree",
 		Runtime:  "codex",
-		Model:    "gpt-5-codex",
+		Model:    "gpt-5.5",
 	}
 
 	data, err := json.Marshal(original)

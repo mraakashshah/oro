@@ -52,23 +52,23 @@ type configFile struct {
 func defaultAgentConfig() *AgentConfig {
 	return &AgentConfig{
 		Tiers: map[protocol.Tier]TierConfig{
-			protocol.TierFast:       {Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "low"},
-			protocol.TierBalanced:   {Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "low"},
-			protocol.TierDeep:       {Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "high"},
-			protocol.TierBackground: {Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "low"},
+			protocol.TierFast:       {Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
+			protocol.TierBalanced:   {Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
+			protocol.TierDeep:       {Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
+			protocol.TierBackground: {Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
 		},
 		APIModels: map[string]string{
 			"anthropic_fast": "claude-haiku-4-5-20251001",
 		},
 		Roles: map[string]RoleConfig{
 			"spec_writer":         {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
-			"spec_challenger":     {Transport: "cli", Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "xhigh"},
-			"worker":              {Transport: "cli", Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "low"},
-			"worker_escalation":   {Transport: "cli", Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "medium"},
+			"spec_challenger":     {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "xhigh"},
+			"worker":              {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
+			"worker_escalation":   {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "medium"},
 			"ops_review":          {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
-			"ops_escalation":      {Transport: "cli", Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "high"},
-			"ops_merge":           {Transport: "cli", Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "high"},
-			"ops_diagnosis":       {Transport: "cli", Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "high"},
+			"ops_escalation":      {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
+			"ops_merge":           {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
+			"ops_diagnosis":       {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
 			"ops_epic_fix":        {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
 			"ops_write_ac":        {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
 			"ops_decompose":       {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},

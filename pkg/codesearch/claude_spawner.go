@@ -14,7 +14,7 @@ import (
 	"oro/pkg/processenv"
 )
 
-const codexRerankModel = "gpt-5-codex"
+const codexRerankModel = "gpt-5.5"
 
 // RuntimeRerankSpawner implements RerankSpawner using the configured runtime CLI.
 type RuntimeRerankSpawner struct{}

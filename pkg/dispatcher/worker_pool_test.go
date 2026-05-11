@@ -2461,7 +2461,7 @@ func TestHandoffPathCarriesRuntime(t *testing.T) {
 		beadID:   beadID,
 		worktree: "/tmp/wt",
 		runtime:  "codex",
-		model:    "gpt-5-codex",
+		model:    "gpt-5.5",
 	}
 	d.mu.Unlock()
 

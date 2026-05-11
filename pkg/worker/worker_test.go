@@ -459,7 +459,7 @@ func TestWorkerSelectsSpawnerFromPayloadRuntime(t *testing.T) {
 			BeadID:    "bead-codex",
 			Worktree:  codexWorktree,
 			Runtime:   "codex",
-			Model:     "gpt-5-codex",
+			Model:     "gpt-5.5",
 			Reasoning: "high",
 		},
 	})
@@ -480,8 +480,8 @@ func TestWorkerSelectsSpawnerFromPayloadRuntime(t *testing.T) {
 	if len(codexCalls) != 1 {
 		t.Fatalf("expected 1 Codex spawn call, got %d", len(codexCalls))
 	}
-	if codexCalls[0].Model != "gpt-5-codex" || codexCalls[0].Reasoning != "high" || codexCalls[0].Workdir != codexWorktree {
-		t.Fatalf("Codex call = %+v, want model gpt-5-codex reasoning high workdir %s", codexCalls[0], codexWorktree)
+	if codexCalls[0].Model != "gpt-5.5" || codexCalls[0].Reasoning != "high" || codexCalls[0].Workdir != codexWorktree {
+		t.Fatalf("Codex call = %+v, want model gpt-5.5 reasoning high workdir %s", codexCalls[0], codexWorktree)
 	}
 
 	cancel()
@@ -510,7 +510,7 @@ func TestWorkerRunsWithCodexLineStream(t *testing.T) {
 		Assign: &protocol.AssignPayload{
 			BeadID:   "bead-codex",
 			Worktree: worktree,
-			Model:    "gpt-5-codex",
+			Model:    "gpt-5.5",
 		},
 	})
 
@@ -4952,12 +4952,12 @@ func TestThresholdLookupAcceptsTierKey(t *testing.T) {
 		model string
 		want  string
 	}{
-		{protocol.TierFast, "gpt-5-codex", "fast"},            // tier wins over non-Claude model
+		{protocol.TierFast, "gpt-5.5", "fast"},            // tier wins over non-Claude model
 		{protocol.TierDeep, "claude-3-opus-20240229", "deep"}, // tier wins over model family
 		{"", "claude-3-opus-20240229", "opus"},                // no tier → modelFamily
 		{"", "claude-3-5-sonnet-20241022", "sonnet"},          // no tier → modelFamily
 		{"", "claude-3-haiku-20240307", "haiku"},              // no tier → modelFamily
-		{"", "gpt-5-codex", "balanced"},                       // non-Claude → balanced default
+		{"", "gpt-5.5", "balanced"},                       // non-Claude → balanced default
 	}
 
 	for _, tc := range keyCases {
@@ -4971,7 +4971,7 @@ func TestThresholdLookupAcceptsTierKey(t *testing.T) {
 }
 
 // TestModelFamilyHandlesCodexNative verifies that modelFamily returns "balanced" for
-// non-Claude models (e.g. gpt-5-codex) instead of passing the raw model string through.
+// non-Claude models (e.g. gpt-5.5) instead of passing the raw model string through.
 func TestModelFamilyHandlesCodexNative(t *testing.T) {
 	t.Parallel()
 
@@ -4979,7 +4979,7 @@ func TestModelFamilyHandlesCodexNative(t *testing.T) {
 		model string
 		want  string
 	}{
-		{"gpt-5-codex", "balanced"},
+		{"gpt-5.5", "balanced"},
 		{"gpt-4o", "balanced"},
 		{"codex-native", "balanced"},
 		{"gemini-2.5-pro", "balanced"},

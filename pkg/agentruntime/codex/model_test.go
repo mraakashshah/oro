@@ -21,9 +21,9 @@ func TestBuildExecArgsOmitsLegacyClaudeModels(t *testing.T) {
 func TestBuildExecArgsKeepsNativeCodexModel(t *testing.T) {
 	t.Parallel()
 
-	args := buildExecArgs("gpt-5-codex", "do work")
+	args := buildExecArgs("gpt-5.5", "do work")
 	for i, arg := range args {
-		if arg == "--model" && i+1 < len(args) && args[i+1] == "gpt-5-codex" {
+		if arg == "--model" && i+1 < len(args) && args[i+1] == "gpt-5.5" {
 			return
 		}
 	}
@@ -33,7 +33,7 @@ func TestBuildExecArgsKeepsNativeCodexModel(t *testing.T) {
 func TestBuildExecArgsAddsReasoningEffort(t *testing.T) {
 	t.Parallel()
 
-	args := buildExecArgsWithReasoning("gpt-5.5-codex", "high", "do work")
+	args := buildExecArgsWithReasoning("gpt-5.5", "high", "do work")
 	if slices.Contains(args, "--reasoning-effort") {
 		t.Fatalf("codex 0.130.0 does not support --reasoning-effort; got args: %v", args)
 	}
