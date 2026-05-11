@@ -67,6 +67,7 @@ type Store struct {
 
 // NewStore creates a new Store backed by the given SQLite database.
 func NewStore(db *sql.DB) *Store {
+	_, _ = db.ExecContext(context.Background(), protocol.MigrateSemanticMemorySearchEvents)
 	return &Store{db: db}
 }
 

@@ -30,6 +30,20 @@ func setupTelemetryDB(t *testing.T) *sql.DB {
 	return db
 }
 
+func TestNewStoreMigratesSearchEventsOnEmptyDB(t *testing.T) {
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	_ = NewStore(db)
+
+	if _, err := db.Exec("INSERT INTO memory_search_events (query_hash) VALUES ('x')"); err != nil {
+		t.Fatalf("memory_search_events must be writable after NewStore: %v", err)
+	}
+}
+
 func TestLogSearchEventWritesRow(t *testing.T) {
 	db := setupTelemetryDB(t)
 	store := NewStore(db)
