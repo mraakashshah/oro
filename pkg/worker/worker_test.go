@@ -72,9 +72,10 @@ type mockSpawner struct {
 }
 
 type spawnCall struct {
-	Model   string
-	Prompt  string
-	Workdir string
+	Model     string
+	Reasoning string
+	Prompt    string
+	Workdir   string
 }
 
 func newMockSpawner() *mockSpawner {
@@ -82,9 +83,13 @@ func newMockSpawner() *mockSpawner {
 }
 
 func (s *mockSpawner) Spawn(_ context.Context, model, prompt, workdir string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
+	return s.SpawnWithReasoning(context.Background(), model, "", prompt, workdir)
+}
+
+func (s *mockSpawner) SpawnWithReasoning(_ context.Context, model, reasoning, prompt, workdir string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.calls = append(s.calls, spawnCall{Model: model, Prompt: prompt, Workdir: workdir})
+	s.calls = append(s.calls, spawnCall{Model: model, Reasoning: reasoning, Prompt: prompt, Workdir: workdir})
 	if s.onSpawn != nil {
 		if err := s.onSpawn(model, prompt, workdir); err != nil {
 			return nil, nil, nil, err
@@ -410,6 +415,73 @@ func TestWorkerUsesRuntimeSpawn(t *testing.T) {
 	}
 	if calls[0].Workdir != worktree {
 		t.Fatalf("workdir = %q, want %q", calls[0].Workdir, worktree)
+	}
+
+	cancel()
+	<-errCh
+}
+
+func TestWorkerSelectsSpawnerFromPayloadRuntime(t *testing.T) {
+	t.Parallel()
+
+	claudeSpawner := newMockSpawner()
+	codexSpawner := newMockSpawner()
+	codexSpawner.format = worker.StreamFormatLineText
+	claudeWorktree := validAssignWorktree(t, "wt-claude")
+	codexWorktree := validAssignWorktree(t, "wt-codex")
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConnAndRuntimeSpawners("w-runtime-route", workerConn, claudeSpawner, codexSpawner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-claude",
+			Worktree: claudeWorktree,
+			Runtime:  "claude",
+			Model:    "claude-sonnet-4-5",
+		},
+	})
+	msg := readMessage(t, dispatcherConn)
+	if msg.Type != protocol.MsgStatus || msg.Status.State != "running" {
+		t.Fatalf("expected first running STATUS, got %+v", msg)
+	}
+
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:    "bead-codex",
+			Worktree:  codexWorktree,
+			Runtime:   "codex",
+			Model:     "gpt-5-codex",
+			Reasoning: "high",
+		},
+	})
+	msg = readMessage(t, dispatcherConn)
+	if msg.Type != protocol.MsgStatus || msg.Status.State != "running" {
+		t.Fatalf("expected second running STATUS, got %+v", msg)
+	}
+
+	claudeCalls := claudeSpawner.SpawnCalls()
+	if len(claudeCalls) != 1 {
+		t.Fatalf("expected 1 Claude spawn call, got %d", len(claudeCalls))
+	}
+	if claudeCalls[0].Model != "claude-sonnet-4-5" || claudeCalls[0].Workdir != claudeWorktree {
+		t.Fatalf("Claude call = %+v, want model claude-sonnet-4-5 workdir %s", claudeCalls[0], claudeWorktree)
+	}
+
+	codexCalls := codexSpawner.SpawnCalls()
+	if len(codexCalls) != 1 {
+		t.Fatalf("expected 1 Codex spawn call, got %d", len(codexCalls))
+	}
+	if codexCalls[0].Model != "gpt-5-codex" || codexCalls[0].Reasoning != "high" || codexCalls[0].Workdir != codexWorktree {
+		t.Fatalf("Codex call = %+v, want model gpt-5-codex reasoning high workdir %s", codexCalls[0], codexWorktree)
 	}
 
 	cancel()

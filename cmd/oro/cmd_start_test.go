@@ -1132,8 +1132,15 @@ func TestBuildDispatcherResolvesOpsRuntime(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveProductionRuntime: %v", err)
 		}
-		if rt.opsSpawn != wantOps {
-			t.Fatalf("ops spawner = %#v, want injected claude ops spawner %#v", rt.opsSpawn, wantOps)
+		router, ok := rt.opsSpawn.(ops.RuntimeBatchSpawner)
+		if !ok {
+			t.Fatalf("ops spawner = %#v, want runtime router", rt.opsSpawn)
+		}
+		if _, err := router.SpawnRuntime(context.Background(), runtimeClaude, "claude-opus-4-7", "", "prompt", tmpDir); err != nil {
+			t.Fatalf("spawn claude ops through router: %v", err)
+		}
+		if wantOps.calls != 1 {
+			t.Fatalf("claude ops calls = %d, want 1", wantOps.calls)
 		}
 
 		d, db, err := buildDispatcher("", false, "")
@@ -1162,8 +1169,15 @@ func TestBuildDispatcherResolvesOpsRuntime(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveProductionRuntime: %v", err)
 		}
-		if rt.opsSpawn != wantOps {
-			t.Fatalf("ops spawner = %#v, want injected codex ops spawner %#v", rt.opsSpawn, wantOps)
+		router, ok := rt.opsSpawn.(ops.RuntimeBatchSpawner)
+		if !ok {
+			t.Fatalf("ops spawner = %#v, want runtime router", rt.opsSpawn)
+		}
+		if _, err := router.SpawnRuntime(context.Background(), runtimeCodex, "gpt-5.5-codex", "high", "prompt", tmpDir); err != nil {
+			t.Fatalf("spawn codex ops through router: %v", err)
+		}
+		if wantOps.calls != 1 {
+			t.Fatalf("codex ops calls = %d, want 1", wantOps.calls)
 		}
 
 		d, db, err := buildDispatcher("", false, "")

@@ -20,8 +20,8 @@ type loadedConfig struct {
 	legacyDefaults bool
 }
 
-// ResolveForRole returns the runtime and model configured for role.
-func ResolveForRole(role string) (runtime, model string) {
+// ResolveForRole returns the runtime, model, and reasoning effort configured for role.
+func ResolveForRole(role string) (runtime, model, reasoning string) {
 	cfg := loadAgentConfig()
 	return resolveRole(cfg.cfg, role)
 }
@@ -31,23 +31,23 @@ func ResolveForRole(role string) (runtime, model string) {
 // explicit model values; known bead tier; legacy model mapped through the
 // configured tier when an agent block exists; estimate-derived tier; role
 // explicit runtime/model; role tier; default tier.
-func ResolveForBead(role string, b protocol.Bead) (runtime, model string) {
+func ResolveForBead(role string, b protocol.Bead) (runtime, model, reasoning string) {
 	cfg := loadAgentConfig()
 	explicitModel := b.ResolveModel()
 
 	if cfg.legacyDefaults && explicitModel != "" {
-		return "claude", explicitModel
+		return "claude", explicitModel, ""
 	}
 
 	if tier, ok := beadTier(b, cfg.hasAgentBlock); ok {
 		return resolveTier(cfg.cfg, tier)
 	}
 
-	runtime, model = resolveRole(cfg.cfg, role)
+	runtime, model, reasoning = resolveRole(cfg.cfg, role)
 	if explicitModel != "" {
-		return runtime, explicitModel
+		return runtime, explicitModel, reasoning
 	}
-	return runtime, model
+	return runtime, model, reasoning
 }
 
 func loadAgentConfig() loadedConfig {
@@ -85,6 +85,21 @@ func legacyAgentConfig() *config.AgentConfig {
 		protocol.TierDeep:       {Runtime: "claude", Model: protocol.ModelOpus},
 		protocol.TierBackground: {Runtime: "claude", Model: protocol.ModelHaiku},
 	}
+	cfg.Roles = map[string]config.RoleConfig{
+		"worker":              {Tier: protocol.TierBalanced, Transport: "cli"},
+		"worker_escalation":   {Tier: protocol.TierDeep, Transport: "cli"},
+		"ops_review":          {Tier: protocol.TierDeep, Transport: "cli"},
+		"ops_merge":           {Tier: protocol.TierDeep, Transport: "cli"},
+		"ops_diagnosis":       {Tier: protocol.TierDeep, Transport: "cli"},
+		"ops_epic_fix":        {Tier: protocol.TierDeep, Transport: "cli"},
+		"ops_write_ac":        {Tier: protocol.TierDeep, Transport: "cli"},
+		"ops_escalation":      {Tier: protocol.TierBalanced, Transport: "cli"},
+		"ops_decompose":       {Tier: protocol.TierDeep, Transport: "cli"},
+		"ops_dream":           {Tier: protocol.TierBackground, Transport: "cli"},
+		"memory_extractor":    {Tier: protocol.TierFast, Transport: "cli"},
+		"codesearch_reranker": {Tier: protocol.TierFast, Transport: "cli"},
+		"estimator":           {Transport: "api", Provider: "anthropic", APIModel: "anthropic_fast"},
+	}
 	return cfg
 }
 
@@ -121,14 +136,14 @@ func withDefaults(cfg *config.AgentConfig) *config.AgentConfig {
 	return cfg
 }
 
-func resolveRole(cfg *config.AgentConfig, role string) (runtime, model string) {
+func resolveRole(cfg *config.AgentConfig, role string) (runtime, model, reasoning string) {
 	roleCfg, ok := cfg.Roles[role]
 	if !ok {
 		roleCfg = cfg.Roles["worker"]
 	}
 
 	if roleCfg.Runtime != "" && roleCfg.Model != "" {
-		return roleCfg.Runtime, roleCfg.Model
+		return roleCfg.Runtime, roleCfg.Model, roleCfg.Reasoning
 	}
 
 	tier := roleCfg.Tier
@@ -156,7 +171,7 @@ func beadTier(b protocol.Bead, hasAgentBlock bool) (protocol.Tier, bool) {
 	return "", false
 }
 
-func resolveTier(cfg *config.AgentConfig, tier protocol.Tier) (runtime, model string) {
+func resolveTier(cfg *config.AgentConfig, tier protocol.Tier) (runtime, model, reasoning string) {
 	if !tier.IsKnown() {
 		tier = protocol.DefaultTier
 	}
@@ -165,5 +180,5 @@ func resolveTier(cfg *config.AgentConfig, tier protocol.Tier) (runtime, model st
 	if !ok {
 		tierCfg = cfg.Tiers[protocol.DefaultTier]
 	}
-	return tierCfg.Runtime, tierCfg.Model
+	return tierCfg.Runtime, tierCfg.Model, tierCfg.Reasoning
 }

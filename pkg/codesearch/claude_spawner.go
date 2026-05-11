@@ -46,7 +46,8 @@ func BuildCmdInWorkdir(ctx context.Context, prompt, workdir, role string) *exec.
 // falls back to agentruntime.ReadRuntime() with a hardcoded codex or haiku default.
 func resolveRerankModel(role string) (runtime, model string) {
 	if role != "" {
-		return agentmodel.ResolveForRole(role)
+		runtime, model, _ := agentmodel.ResolveForRole(role)
+		return runtime, model
 	}
 	rt := agentruntime.ReadRuntime()
 	if rt == agentruntime.RuntimeCodex {

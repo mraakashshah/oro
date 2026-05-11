@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/agentmodel"
 	codexruntime "oro/pkg/agentruntime/codex"
 	"oro/pkg/beadstore"
 	"oro/pkg/codesearch"
@@ -662,9 +663,12 @@ func (s *testRuntimeWorkerSpawner) StreamFormat() worker.StreamFormat {
 	return worker.StreamFormatClaudeJSON
 }
 
-type testRuntimeOpsSpawner struct{}
+type testRuntimeOpsSpawner struct {
+	calls int
+}
 
 func (s *testRuntimeOpsSpawner) Spawn(_ context.Context, _, _, _ string) (ops.Process, error) {
+	s.calls++
 	return nil, nil
 }
 
@@ -699,8 +703,15 @@ func TestBuildDepsResolvesRuntime(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveProductionRuntime: %v", err)
 		}
-		if rt.opsSpawn != wantOps {
-			t.Fatalf("ops spawner = %#v, want injected claude ops spawner %#v", rt.opsSpawn, wantOps)
+		router, ok := rt.opsSpawn.(ops.RuntimeBatchSpawner)
+		if !ok {
+			t.Fatalf("ops spawner = %#v, want runtime router", rt.opsSpawn)
+		}
+		if _, err := router.SpawnRuntime(context.Background(), runtimeClaude, "claude-opus-4-7", "", "prompt", tmpDir); err != nil {
+			t.Fatalf("spawn claude ops through router: %v", err)
+		}
+		if wantOps.calls != 1 {
+			t.Fatalf("claude ops calls = %d, want 1", wantOps.calls)
 		}
 	})
 
@@ -734,8 +745,15 @@ func TestBuildDepsResolvesRuntime(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveProductionRuntime: %v", err)
 		}
-		if rt.opsSpawn != wantOps {
-			t.Fatalf("ops spawner = %#v, want injected codex ops spawner %#v", rt.opsSpawn, wantOps)
+		router, ok := rt.opsSpawn.(ops.RuntimeBatchSpawner)
+		if !ok {
+			t.Fatalf("ops spawner = %#v, want runtime router", rt.opsSpawn)
+		}
+		if _, err := router.SpawnRuntime(context.Background(), runtimeCodex, "gpt-5.5-codex", "high", "prompt", tmpDir); err != nil {
+			t.Fatalf("spawn codex ops through router: %v", err)
+		}
+		if wantOps.calls != 1 {
+			t.Fatalf("codex ops calls = %d, want 1", wantOps.calls)
 		}
 	})
 }
@@ -874,7 +892,7 @@ func TestSpawnAndWaitWithMemoryAndCodeContext(t *testing.T) {
 			bead:    testBead(),
 		}
 
-		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "sonnet", 0, "", nil); err != nil {
+		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "claude", "sonnet", "", 0, "", nil); err != nil {
 			t.Fatalf("spawnAndWait: %v", err)
 		}
 
@@ -928,7 +946,7 @@ func TestBeadHelper() string {
 			bead:    testBead(),
 		}
 
-		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "sonnet", 0, "", nil); err != nil {
+		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "claude", "sonnet", "", 0, "", nil); err != nil {
 			t.Fatalf("spawnAndWait: %v", err)
 		}
 
@@ -956,7 +974,7 @@ func TestBeadHelper() string {
 			bead:    testBead(),
 		}
 
-		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "sonnet", 0, "", nil); err != nil {
+		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "claude", "sonnet", "", 0, "", nil); err != nil {
 			t.Errorf("spawnAndWait with nil deps should not error: %v", err)
 		}
 		if sp.capturedPrompt == "" {
@@ -983,7 +1001,7 @@ func TestBeadHelper() string {
 			bead:    testBead(),
 		}
 
-		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "sonnet", 0, "", nil); err != nil {
+		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "claude", "sonnet", "", 0, "", nil); err != nil {
 			t.Fatalf("spawnAndWait: %v", err)
 		}
 
@@ -1822,6 +1840,8 @@ func TestOroWorkPassesReviewPatternsToReviewOpts(t *testing.T) {
 }
 
 func TestWorkModelFlagAcceptsTierAndNative(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
 	// parseModelFlag classification table
 	cases := []struct {
 		raw       string
@@ -1863,8 +1883,9 @@ func TestWorkModelFlagAcceptsTierAndNative(t *testing.T) {
 	for _, tc := range resolvedCases {
 		tier, providerModel := parseModelFlag(tc.modelFlag)
 		b := &protocol.Bead{Tier: tier, Model: providerModel}
-		if got := b.ResolveModel(); got != tc.wantResolved {
-			t.Errorf("parseModelFlag(%q)+ResolveModel() = %q, want %q", tc.modelFlag, got, tc.wantResolved)
+		_, got, _ := agentmodel.ResolveForBead("worker", *b)
+		if got != tc.wantResolved {
+			t.Errorf("parseModelFlag(%q)+ResolveForBead() = %q, want %q", tc.modelFlag, got, tc.wantResolved)
 		}
 	}
 

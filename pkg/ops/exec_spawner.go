@@ -12,9 +12,10 @@ import (
 
 // RuntimeSpec describes how an ops runtime launches a subprocess.
 type RuntimeSpec struct {
-	Command   string
-	BuildArgs func(model, prompt string) []string
-	BuildEnv  func() []string
+	Command                string
+	BuildArgs              func(model, prompt string) []string
+	BuildArgsWithReasoning func(model, reasoning, prompt string) []string
+	BuildEnv               func() []string
 }
 
 // ExecSpawner implements BatchSpawner for a runtime-specific exec spec.
@@ -29,7 +30,20 @@ func NewExecSpawner(spec RuntimeSpec) *ExecSpawner {
 
 // Spawn starts a subprocess using the runtime spec.
 func (s *ExecSpawner) Spawn(ctx context.Context, model, prompt, workdir string) (Process, error) {
-	cmd := exec.CommandContext(ctx, s.spec.Command, s.spec.BuildArgs(model, prompt)...)
+	return s.SpawnWithReasoning(ctx, model, "", prompt, workdir)
+}
+
+// SpawnWithReasoning starts a subprocess, passing reasoning only when the
+// runtime spec supports it.
+func (s *ExecSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning, prompt, workdir string) (Process, error) {
+	buildArgs := s.spec.BuildArgs
+	args := []string{}
+	if s.spec.BuildArgsWithReasoning != nil {
+		args = s.spec.BuildArgsWithReasoning(model, reasoning, prompt)
+	} else if buildArgs != nil {
+		args = buildArgs(model, prompt)
+	}
+	cmd := exec.CommandContext(ctx, s.spec.Command, args...)
 	cmd.Dir = workdir
 	if s.spec.BuildEnv != nil {
 		cmd.Env = processenv.ForWorkdir(s.spec.BuildEnv(), workdir)
@@ -45,6 +59,50 @@ func (s *ExecSpawner) Spawn(ctx context.Context, model, prompt, workdir string) 
 		return nil, fmt.Errorf("spawn %s: %w", s.spec.Command, err)
 	}
 	return &opsProcess{cmd: cmd, output: &outBuf}, nil
+}
+
+// RuntimeSpawnerRouter selects a Claude or Codex ops spawner per role resolution.
+type RuntimeSpawnerRouter struct {
+	claude BatchSpawner
+	codex  BatchSpawner
+}
+
+// NewRuntimeSpawnerRouter creates an ops spawner that routes each call by runtime.
+func NewRuntimeSpawnerRouter(claude, codex BatchSpawner) *RuntimeSpawnerRouter {
+	return &RuntimeSpawnerRouter{claude: claude, codex: codex}
+}
+
+// Spawn preserves the BatchSpawner interface by defaulting to Claude.
+func (r *RuntimeSpawnerRouter) Spawn(ctx context.Context, model, prompt, workdir string) (Process, error) {
+	return r.SpawnRuntime(ctx, "claude", model, "", prompt, workdir)
+}
+
+// SpawnRuntime routes an ops subprocess to the requested runtime spawner.
+func (r *RuntimeSpawnerRouter) SpawnRuntime(ctx context.Context, runtime, model, reasoning, prompt, workdir string) (Process, error) {
+	var spawner BatchSpawner
+	switch runtime {
+	case "claude":
+		spawner = r.claude
+	case "codex":
+		spawner = r.codex
+	default:
+		return nil, fmt.Errorf("unknown ops runtime %q", runtime)
+	}
+	if spawner == nil {
+		return nil, fmt.Errorf("%s ops spawner is not configured", runtime)
+	}
+	if reasoningSpawner, ok := spawner.(ReasoningBatchSpawner); ok {
+		proc, err := reasoningSpawner.SpawnWithReasoning(ctx, model, reasoning, prompt, workdir)
+		if err != nil {
+			return nil, fmt.Errorf("spawn %s ops subprocess: %w", runtime, err)
+		}
+		return proc, nil
+	}
+	proc, err := spawner.Spawn(ctx, model, prompt, workdir)
+	if err != nil {
+		return nil, fmt.Errorf("spawn %s ops subprocess: %w", runtime, err)
+	}
+	return proc, nil
 }
 
 // ClaudeOpsSpawner implements BatchSpawner using Claude's subprocess contract.

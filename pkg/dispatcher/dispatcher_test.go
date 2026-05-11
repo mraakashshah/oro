@@ -1492,6 +1492,7 @@ func TestDispatcherSendsRuntimeOnAssignPayload(t *testing.T) {
     fast:
       runtime: codex
       model: gpt-5-mini
+      reasoning: low
     balanced:
       runtime: claude
       model: sonnet
@@ -1523,6 +1524,9 @@ func TestDispatcherSendsRuntimeOnAssignPayload(t *testing.T) {
 	}
 	if msg.Assign.Model != "gpt-5-mini" {
 		t.Fatalf("Assign.Model = %q, want gpt-5-mini", msg.Assign.Model)
+	}
+	if msg.Assign.Reasoning != "low" {
+		t.Fatalf("Assign.Reasoning = %q, want low", msg.Assign.Reasoning)
 	}
 
 	d.mu.Lock()
@@ -3752,6 +3756,88 @@ func TestHandleReviewResult_UnknownVerdict(t *testing.T) {
 	}
 	if !strings.HasPrefix(msgs[0], "[ORO-DISPATCH] STUCK: bead-unk") {
 		t.Fatalf("review escalation should use structured format, got: %q", msgs[0])
+	}
+}
+
+func TestHandleReviewResult_FailedVerdictReassignsReviewingWorker(t *testing.T) {
+	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const (
+		workerID = "w-review-failed"
+		beadID   = "bead-review-failed"
+		worktree = "/tmp/review-failed"
+	)
+
+	assignmentID, err := d.createAssignment(ctx, beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+
+	conn := newMockConn()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		encoder:      json.NewEncoder(conn),
+		state:        protocol.WorkerReviewing,
+		beadID:       beadID,
+		assignmentID: assignmentID,
+		worktree:     worktree,
+		baseBranch:   "main",
+		targetBranch: "main",
+	}
+	d.mu.Unlock()
+
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Review failed",
+		AcceptanceCriteria: "Test: review failed | Assert: worker is reassigned",
+		Status:             "in_progress",
+	}
+	beadSrc.mu.Unlock()
+
+	resultCh := make(chan ops.Result, 1)
+	resultCh <- ops.Result{
+		Verdict:  ops.VerdictFailed,
+		Feedback: "review process exited without VERDICT",
+	}
+
+	d.handleReviewResult(ctx, workerID, beadID, resultCh)
+
+	if eventCount(t, d.db, "review_failed") == 0 {
+		t.Fatal("expected review_failed event")
+	}
+	if eventCount(t, d.db, "review_rejected") == 0 {
+		t.Fatal("expected review_rejected event so worker leaves reviewing")
+	}
+	if len(esc.Messages()) == 0 {
+		t.Fatal("expected escalation for failed review")
+	}
+
+	d.mu.Lock()
+	state := d.workers[workerID].state
+	d.mu.Unlock()
+	if state == protocol.WorkerReviewing {
+		t.Fatal("worker remained reviewing after failed review result")
+	}
+
+	conn.mu.Lock()
+	written := append([][]byte(nil), conn.written...)
+	conn.mu.Unlock()
+	if len(written) == 0 {
+		t.Fatal("expected reassignment message after failed review")
+	}
+	var msg protocol.Message
+	if err := json.Unmarshal(written[len(written)-1], &msg); err != nil {
+		t.Fatalf("decode last worker message: %v", err)
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("last worker message type = %s, want %s", msg.Type, protocol.MsgAssign)
+	}
+	if msg.Assign == nil || msg.Assign.Feedback == "" {
+		t.Fatalf("expected ASSIGN feedback after failed review, got %#v", msg.Assign)
 	}
 }
 
@@ -8348,11 +8434,12 @@ func TestMergeAndCompleteUsesTargetBranch(t *testing.T) {
 	})
 }
 
-// TestMergeAndComplete_CleansUpOnNonConflictError verifies that when merger.Merge
-// returns a non-ConflictError (e.g. ff-only merge failure), the worktree is
-// still removed, the agent branch is deleted, and worktreeByBead is cleared.
-func TestMergeAndComplete_CleansUpOnNonConflictError(t *testing.T) {
-	d, _, wtMgr, _, gitRunner, _ := newTestDispatcher(t)
+// TestMergeAndComplete_NonConflictMergeFailurePreservesRecoveryContext verifies
+// that when merger.Merge returns a non-ConflictError (e.g. ff-only merge failure
+// after a rebase retry), the dispatcher preserves the worktree/branch for the
+// escalation agent and reopens the bead instead of stranding it in_progress.
+func TestMergeAndComplete_NonConflictMergeFailurePreservesRecoveryContext(t *testing.T) {
+	d, beadSrc, wtMgr, _, gitRunner, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
 	_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
@@ -8364,6 +8451,16 @@ func TestMergeAndComplete_CleansUpOnNonConflictError(t *testing.T) {
 	const workerID = "w-nc"
 	const worktree = "/tmp/worktree-nonconflict"
 	branch := protocol.BranchPrefix + beadID
+	res, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree) VALUES (?, ?, ?)`,
+		beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("insert assignment: %v", err)
+	}
+	assignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("last insert id: %v", err)
+	}
 
 	// Fail the ff-only merge step — produces a non-ConflictError.
 	gitRunner.mu.Lock()
@@ -8375,42 +8472,40 @@ func TestMergeAndComplete_CleansUpOnNonConflictError(t *testing.T) {
 	d.worktreeByBead[beadID] = worktree
 	d.mu.Unlock()
 
-	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "", 0)
+	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "", assignmentID)
 
-	// Verify worktrees.Remove was called.
 	wtMgr.mu.Lock()
 	removed := append([]string(nil), wtMgr.removed...)
 	deleted := append([]string(nil), wtMgr.deletedBranches...)
 	wtMgr.mu.Unlock()
 
-	foundRemoved := false
-	for _, r := range removed {
-		if r == worktree {
-			foundRemoved = true
-			break
-		}
+	if len(removed) != 0 {
+		t.Errorf("worktree removed on recoverable merge failure; removed=%v", removed)
 	}
-	if !foundRemoved {
-		t.Errorf("worktrees.Remove(%q) not called on non-conflict error; removed=%v", worktree, removed)
+	if len(deleted) != 0 {
+		t.Errorf("agent branch deleted on recoverable merge failure; deletedBranches=%v", deleted)
 	}
 
-	foundDeleted := false
-	for _, b := range deleted {
-		if b == branch {
-			foundDeleted = true
-			break
-		}
-	}
-	if !foundDeleted {
-		t.Errorf("worktrees.DeleteBranch(%q) not called on non-conflict error; deletedBranches=%v", branch, deleted)
-	}
-
-	// Verify worktreeByBead is cleared.
 	d.mu.Lock()
 	trackedPath := d.worktreeByBead[beadID]
 	d.mu.Unlock()
-	if trackedPath != "" {
-		t.Errorf("worktreeByBead[%q] = %q, want empty (should be cleared on non-conflict cleanup)", beadID, trackedPath)
+	if trackedPath != worktree {
+		t.Errorf("worktreeByBead[%q] = %q, want %q for retry", beadID, trackedPath, worktree)
+	}
+
+	var assignmentStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("query assignment status: %v", err)
+	}
+	if assignmentStatus != "completed" {
+		t.Errorf("assignment status = %q, want completed", assignmentStatus)
+	}
+
+	beadSrc.mu.Lock()
+	updatedStatus := beadSrc.updated[beadID]
+	beadSrc.mu.Unlock()
+	if updatedStatus != "open" {
+		t.Errorf("bead status update = %q, want open", updatedStatus)
 	}
 }
 

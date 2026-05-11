@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -75,9 +76,11 @@ type mockBatchSpawner struct {
 }
 
 type spawnCall struct {
-	model   string
-	prompt  string
-	workdir string
+	runtime   string
+	model     string
+	reasoning string
+	prompt    string
+	workdir   string
 }
 
 func (m *mockBatchSpawner) Spawn(_ context.Context, model, prompt, workdir string) (Process, error) {
@@ -87,12 +90,79 @@ func (m *mockBatchSpawner) Spawn(_ context.Context, model, prompt, workdir strin
 	return m.process, m.err
 }
 
+func (m *mockBatchSpawner) SpawnRuntime(_ context.Context, runtime, model, reasoning, prompt, workdir string) (Process, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, spawnCall{runtime: runtime, model: model, reasoning: reasoning, prompt: prompt, workdir: workdir})
+	return m.process, m.err
+}
+
 func (m *mockBatchSpawner) getCalls() []spawnCall {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make([]spawnCall, len(m.calls))
 	copy(out, m.calls)
 	return out
+}
+
+func TestOpsRoutingUsesLockedRoleModels(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.MkdirAll(filepath.Join(dir, ".oro"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".oro", "config.yaml"), []byte("agent: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name      string
+		run       func(*Spawner) <-chan Result
+		runtime   string
+		model     string
+		reasoning string
+	}{
+		{"ops_escalation", func(s *Spawner) <-chan Result {
+			return s.Escalate(context.Background(), EscalationOpts{BeadID: "b", Workdir: dir})
+		}, "codex", "gpt-5.5-codex", "high"},
+		{"ops_merge", func(s *Spawner) <-chan Result {
+			return s.ResolveMergeConflict(context.Background(), MergeOpts{BeadID: "b", Worktree: dir})
+		}, "codex", "gpt-5.5-codex", "high"},
+		{"ops_diagnosis", func(s *Spawner) <-chan Result {
+			return s.Diagnose(context.Background(), DiagOpts{BeadID: "b", Worktree: dir})
+		}, "codex", "gpt-5.5-codex", "high"},
+		{"ops_review", func(s *Spawner) <-chan Result {
+			return s.Review(context.Background(), ReviewOpts{BeadID: "b", Worktree: ""})
+		}, "claude", "claude-opus-4-7", ""},
+		{"ops_decompose", func(s *Spawner) <-chan Result {
+			return s.Decompose(context.Background(), DecomposeOpts{BeadID: "b"})
+		}, "claude", "claude-opus-4-7", ""},
+		{"ops_epic_fix", func(s *Spawner) <-chan Result {
+			return s.DiagnoseEpicFailure(context.Background(), EpicFixOpts{EpicID: "e"})
+		}, "claude", "claude-opus-4-7", ""},
+		{"ops_write_ac", func(s *Spawner) <-chan Result {
+			return s.WriteAC(context.Background(), WriteACOpts{BeadID: "b", Workdir: dir})
+		}, "claude", "claude-opus-4-7", ""},
+		{"ops_dream", func(s *Spawner) <-chan Result {
+			return s.Dream(context.Background(), DreamOpts{})
+		}, "codex", "gpt-5.5-codex", "low"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockBatchSpawner{process: newReadyMockProcess("VERDICT: APPROVED", nil)}
+			s := NewSpawner(mock)
+			<-tc.run(s)
+			calls := mock.getCalls()
+			if len(calls) != 1 {
+				t.Fatalf("calls = %d, want 1", len(calls))
+			}
+			got := calls[0]
+			if got.runtime != tc.runtime || got.model != tc.model || got.reasoning != tc.reasoning {
+				t.Fatalf("spawn = (%q, %q, %q), want (%q, %q, %q)", got.runtime, got.model, got.reasoning, tc.runtime, tc.model, tc.reasoning)
+			}
+		})
+	}
 }
 
 // multiProcessSpawner returns different processes on each Spawn call.
@@ -813,13 +883,45 @@ func TestParseResultNonZeroExitNoKeyword(t *testing.T) {
 }
 
 func TestParseResultNonZeroExitNonReviewStillFails(t *testing.T) {
-	// For non-review ops types (merge, diagnosis), non-zero exit should
-	// still produce VerdictFailed — only OpsReview gets the text-verdict override.
+	// For non-review ops types without a successful merge signal, non-zero exit
+	// should still produce VerdictFailed.
 	waitErr := errors.New("exit status 1")
-	result := parseResult(OpsMerge, "oro-nz4", "RESOLVED\n", waitErr)
+	result := parseResult(OpsDiagnosis, "oro-nz4", "diagnosis output\n", waitErr)
 
 	if result.Verdict != VerdictFailed {
 		t.Fatalf("expected VerdictFailed for non-review ops type with non-zero exit, got %q", result.Verdict)
+	}
+}
+
+func TestParseMergeOutputRecognizesCleanRebaseSummary(t *testing.T) {
+	stdout := "Rebase completed cleanly onto main (HEAD is `2d7cadb6`, also main's tip).\n" +
+		"Working tree clean. No new commit required.\n"
+
+	verdict, feedback := parseMergeOutput(stdout)
+
+	if verdict != VerdictResolved {
+		t.Fatalf("parseMergeOutput verdict = %q, want %q", verdict, VerdictResolved)
+	}
+	if !strings.Contains(feedback, "Rebase completed cleanly") {
+		t.Fatalf("feedback should preserve successful resolver output, got %q", feedback)
+	}
+}
+
+func TestParseResultMergeNonZeroCleanRebaseOutputResolved(t *testing.T) {
+	waitErr := errors.New("exit status 1")
+	stdout := "Rebase completed cleanly onto main (HEAD is `2d7cadb6`, also main's tip).\n" +
+		"Working tree clean. Branch agent/oro-acqj is ahead of origin/main.\n"
+
+	result := parseResult(OpsMerge, "oro-14zr", stdout, waitErr)
+
+	if result.Verdict != VerdictResolved {
+		t.Fatalf("parseResult verdict = %q, want %q", result.Verdict, VerdictResolved)
+	}
+	if result.Err != nil {
+		t.Fatalf("resolved merge output should suppress non-zero process error, got %v", result.Err)
+	}
+	if !strings.Contains(result.Feedback, "Working tree clean") {
+		t.Fatalf("feedback should include resolver output, got %q", result.Feedback)
 	}
 }
 

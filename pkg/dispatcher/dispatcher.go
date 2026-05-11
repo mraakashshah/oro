@@ -65,6 +65,10 @@ const MetaBranch = "branch"
 // redundant rebuilds when the manager sends bursts of 2-5 status calls.
 const statusThrottleWindow = 5 * time.Second
 
+// qgOriginalReopenDeferDuration keeps deterministic QG-exhausted beads out of
+// the ready queue long enough for another task or an operator to make progress.
+const qgOriginalReopenDeferDuration = time.Hour
+
 // ErrSemanticDisabled is returned by WaitForEmbedder when semantic search has
 // not been configured (embedderReady channel was never created).
 var ErrSemanticDisabled = errors.New("semantic search disabled")
@@ -334,6 +338,7 @@ type trackedWorker struct {
 	targetBranch     string // branch the worker's changes should merge into (same as baseBranch)
 	runtime          string // resolved runtime for the current bead assignment
 	model            string // resolved model for the current bead assignment
+	reasoning        string // resolved Codex reasoning effort for the current bead assignment
 	lastSeen         time.Time
 	lastProgress     time.Time // last time meaningful progress was observed (DONE/READY_FOR_REVIEW/QG/first STATUS)
 	contextPct       int       // context usage percentage from last heartbeat (0-100)
@@ -406,6 +411,7 @@ type pendingHandoff struct {
 	targetBranch   string // branch the worker's changes should merge into (same as baseBranch)
 	runtime        string
 	model          string
+	reasoning      string
 	title          string   // bead title for memory search on respawn
 	labels         []string // bead labels for memory search on respawn
 	nextAction     string   // intent_summary from checkpoint_acked (§9.3); empty for ralph handoffs
@@ -416,6 +422,7 @@ type workerAssignmentSnapshot struct {
 	worktree     string
 	runtime      string
 	model        string
+	reasoning    string
 	epicID       string
 	baseBranch   string
 	targetBranch string
@@ -1583,6 +1590,7 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 		if detail, err := d.beads.Show(ctx, beadID); err == nil && detail != nil && detail.Type == "epic" {
 			_ = d.logEvent(ctx, "type_changed_to_epic", workerID, beadID, workerID, "")
 			d.safeGo(func() { d.removeWorktreeAndClearTracking(ctx, beadID, workerID, release.worktree) })
+			d.releaseWorkerAfterDoneTerminal(workerID, beadID, release.assignmentID)
 			return
 		}
 	}
@@ -1601,6 +1609,7 @@ func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protoc
 				_ = d.logEvent(ctx, "worktree_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
 			}
 		})
+		d.releaseWorkerAfterDoneTerminal(workerID, beadID, release.assignmentID)
 		return
 	}
 
@@ -1625,6 +1634,7 @@ func (d *Dispatcher) completeManualIntegration(ctx context.Context, beadID, work
 	detail := fmt.Sprintf(`{"branch":%q,"worktree":%q,"target_branch":%q}`, release.branch, release.worktree, release.targetBranch)
 	_ = d.logEvent(ctx, "manual_integration_required", "dispatcher", beadID, workerID, detail)
 	d.escalate(ctx, fmt.Sprintf("[ORO-DISPATCH] MANUAL_INTEGRATION: %s — review and merge %s from %s.", beadID, release.branch, release.worktree), beadID, workerID)
+	d.releaseWorkerAfterDoneTerminal(workerID, beadID, release.assignmentID)
 }
 
 type doneWorkerRelease struct {
@@ -1657,18 +1667,38 @@ func (d *Dispatcher) releaseWorkerAfterDoneLocked(workerID, beadID string) doneW
 	if spawnFor {
 		w.state = protocol.WorkerShuttingDown
 	} else {
+		w.state = protocol.WorkerReserved
+	}
+
+	if spawnFor {
+		d.shutdownCompletedSpawnForWorkerLocked(w)
+	}
+	return release
+}
+
+func (d *Dispatcher) releaseWorkerAfterDoneTerminal(workerID, beadID string, assignmentID int64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w, ok := d.workers[workerID]
+	if !ok || w.beadID != beadID || w.assignmentID != assignmentID {
+		return
+	}
+	if w.spawnFor {
+		w.state = protocol.WorkerShuttingDown
+		d.shutdownCompletedSpawnForWorkerLocked(w)
+	} else {
 		w.state = protocol.WorkerIdle
 	}
 	w.assignmentID = 0
 	w.beadID = ""
 	w.epicID = ""
 	w.isEpicDecomp = false
+	w.worktree = ""
+	w.baseBranch = ""
+	w.targetBranch = ""
 	w.targetBeadID = ""
-
-	if spawnFor {
-		d.shutdownCompletedSpawnForWorkerLocked(w)
-	}
-	return release
+	w.lastProgress = d.nowFunc()
+	d.notifyAssignLoop()
 }
 
 func (d *Dispatcher) shutdownCompletedSpawnForWorkerLocked(w *trackedWorker) {
@@ -1840,13 +1870,11 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 		},
 		// Assign function: update state and send message under lock.
 		func(w *trackedWorker, memCtx string) bool {
-			// Escalate runtime+model together.
-			if w.model != protocol.ModelOpus || w.runtime != "claude" {
-				w.runtime = "claude"
-				w.model = protocol.ModelOpus
-			}
+			// Escalate runtime+model+reasoning together.
+			w.runtime, w.model, w.reasoning = agentmodel.ResolveForRole("worker_escalation")
 			payload.Runtime = w.runtime
 			payload.Model = w.model // sync with live escalated value
+			payload.Reasoning = w.reasoning
 
 			if err := d.sendToWorker(w, protocol.Message{
 				Type:   protocol.MsgAssign,
@@ -1985,7 +2013,7 @@ func classifyQGError(err error) string {
 // classification before any cleanup, and performs class-appropriate cleanup.
 // Systemic errors preserve the agent branch for human discovery; transient errors
 // proceed with full cleanup. Always returns false.
-func (d *Dispatcher) handlePreMergeQGError(ctx context.Context, beadID, workerID, worktree string, _ int64, err error) bool {
+func (d *Dispatcher) handlePreMergeQGError(ctx context.Context, beadID, workerID, worktree string, assignmentID int64, err error) bool {
 	class := classifyQGError(err)
 
 	// Record classification before any escalation or cleanup so it is observable
@@ -2010,6 +2038,8 @@ func (d *Dispatcher) handlePreMergeQGError(ctx context.Context, beadID, workerID
 		d.mu.Lock()
 		delete(d.worktreeByBead, beadID)
 		d.mu.Unlock()
+		_ = d.completeAssignment(ctx, assignmentID, beadID)
+		d.releaseWorkerAfterDoneTerminal(workerID, beadID, assignmentID)
 		return false
 	}
 
@@ -2018,6 +2048,8 @@ func (d *Dispatcher) handlePreMergeQGError(ctx context.Context, beadID, workerID
 		protocol.FormatEscalation(protocol.EscStuck, beadID, "pre-merge QG error", err.Error()),
 		beadID, workerID)
 	d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
+	_ = d.completeAssignment(ctx, assignmentID, beadID)
+	d.releaseWorkerAfterDoneTerminal(workerID, beadID, assignmentID)
 	return false
 }
 
@@ -2058,6 +2090,7 @@ func (d *Dispatcher) handlePreMergeQGFailure(ctx context.Context, beadID, worker
 
 	_ = d.completeAssignment(ctx, assignmentID, beadID)
 	d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
+	d.releaseWorkerAfterDoneTerminal(workerID, beadID, assignmentID)
 	return false
 }
 
@@ -2245,6 +2278,7 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 			fmt.Sprintf(`{"branch":%q,"target":%q}`, branch, targetBranch))
 		_ = d.completeAssignment(ctx, assignmentID, beadID)
 		d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
+		d.releaseWorkerAfterDoneTerminal(workerID, beadID, assignmentID)
 		return
 	}
 
@@ -2276,10 +2310,17 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 				fmt.Sprintf(`{"files":%q}`, conflictErr.Files))
 			return
 		}
-		// Non-conflict merge failure — clean up worktree+branch+tracking first, then escalate (oro-4mu1.4).
-		d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
+		// Non-conflict merge failure after rebase/ff retry is still recoverable.
+		// Keep the worktree and agent branch available for the escalation agent
+		// and for a future reassignment; otherwise the only recovery context can
+		// be deleted before ops gets a chance to inspect it.
+		_ = d.completeAssignment(ctx, assignmentID, beadID)
+		if updateErr := d.updateBeadStatus(ctx, beadID, "open"); updateErr != nil {
+			_ = d.logEvent(ctx, "merge_failed_reopen_failed", "dispatcher", beadID, workerID, updateErr.Error())
+		}
 		d.escalate(ctx, protocol.FormatEscalation(protocol.EscMergeConflict, beadID, "merge failed", err.Error()), beadID, workerID)
 		_ = d.logEvent(ctx, "merge_failed", "dispatcher", beadID, workerID, err.Error())
+		d.releaseWorkerAfterDoneTerminal(workerID, beadID, assignmentID)
 		return
 	}
 
@@ -2289,6 +2330,7 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 func (d *Dispatcher) finalizeSuccessfulMerge(ctx context.Context, beadID, workerID, worktree, epicID, targetBranch string, assignmentID int64, sha string) {
 	_ = d.CloseBead(ctx, beadID, fmt.Sprintf("Merged: %s", sha))
 	_ = d.completeAssignment(ctx, assignmentID, beadID)
+	d.releaseWorkerAfterDoneTerminal(workerID, beadID, assignmentID)
 
 	// A successful merge proves the system is producing, not crash-looping —
 	// reset the unexpected-exit counter so reconcileScale's runaway cap
@@ -2694,6 +2736,7 @@ func (d *Dispatcher) handleMergeConflictResult(ctx context.Context, beadID, work
 			d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
 			d.escalate(ctx, protocol.FormatEscalation(protocol.EscMergeConflict, beadID,
 				"merge conflict resolution failed", result.Feedback), beadID, workerID)
+			d.releaseWorkerAfterDoneTerminal(workerID, beadID, assignmentID)
 		}
 	}
 }
@@ -3058,11 +3101,25 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 			if detail == "" && result.Err != nil {
 				detail = result.Err.Error()
 			}
+			if detail == "" {
+				detail = "review completed without a machine-readable verdict"
+			}
 			_ = d.logEvent(ctx, "review_failed", "ops", beadID, workerID, detail)
 			d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID, "review failed", detail), beadID, workerID)
+			if result.Err == nil && d.reviewingWorkerMatches(workerID, beadID) {
+				d.handleReviewRejection(ctx, workerID, beadID, "Review failed: "+detail)
+				return
+			}
 			d.clearBeadTracking(beadID)
 		}
 	}
+}
+
+func (d *Dispatcher) reviewingWorkerMatches(workerID, beadID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w, ok := d.workers[workerID]
+	return ok && w.beadID == beadID && w.state == protocol.WorkerReviewing
 }
 
 // handleReviewRejection processes a rejected review verdict: increments the
@@ -3151,8 +3208,7 @@ func (d *Dispatcher) opusEscalationSnapshotLocked(workerID string) trackedWorker
 	if w, ok := d.workers[workerID]; ok {
 		snap = *w
 	}
-	snap.runtime = "claude"
-	snap.model = protocol.ModelOpus
+	snap.runtime, snap.model, snap.reasoning = agentmodel.ResolveForRole("worker_escalation")
 	return snap
 }
 
@@ -4627,9 +4683,9 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	// Runtime launch selection is intentionally deferred to oro-zdqd/oro-snx1.
 	// This step propagates runtime/model while preserving the existing
 	// Claude-only worker launch path.
-	resolvedRuntime, resolvedModel := agentmodel.ResolveForBead("worker", bead)
+	resolvedRuntime, resolvedModel, resolvedReasoning := agentmodel.ResolveForBead("worker", bead)
 	if isEpicDecomp {
-		resolvedRuntime, resolvedModel = agentmodel.ResolveForRole("ops_decompose")
+		resolvedRuntime, resolvedModel, resolvedReasoning = agentmodel.ResolveForRole("ops_decompose")
 	}
 	// Release any prior bead this worker was carrying — the new assignment is
 	// committed, so any leftover in_progress state on the old bead must be
@@ -4651,6 +4707,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	w.targetBranch = targetBranch
 	w.runtime = resolvedRuntime
 	w.model = resolvedModel
+	w.reasoning = resolvedReasoning
 	w.lastProgress = d.nowFunc()
 	err = d.sendToWorker(w, protocol.Message{
 		Type: protocol.MsgAssign,
@@ -4659,6 +4716,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 			Worktree:            worktree,
 			Runtime:             resolvedRuntime,
 			Model:               resolvedModel,
+			Reasoning:           resolvedReasoning,
 			MemoryContext:       memCtx,
 			CodeSearchContext:   codeCtx,
 			Title:               title,
@@ -7216,10 +7274,26 @@ func (d *Dispatcher) handleClassifiedQGExhaustion(ctx context.Context, workerID,
 		if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
 			_ = d.logEvent(ctx, "qg_original_reopen_failed", "dispatcher", beadID, workerID,
 				fmt.Sprintf(`{"error":%q}`, err.Error()))
+		} else {
+			d.deferReopenedQGOriginal(ctx, beadID, workerID, rec.Fingerprint)
 		}
 	}
 	_ = d.logEvent(ctx, "qg_original_reopened", "dispatcher", beadID, workerID,
 		fmt.Sprintf(`{"class":%q,"decision":%q,"fingerprint":%q}`, cls.Class, cls.Decision, rec.Fingerprint))
+}
+
+func (d *Dispatcher) deferReopenedQGOriginal(ctx context.Context, beadID, workerID, fingerprint string) {
+	until := d.nowFunc().UTC().Add(qgOriginalReopenDeferDuration).Format(time.RFC3339)
+	if err := d.beads.Defer(ctx, beadID, until); err != nil {
+		d.mu.Lock()
+		d.exhaustedBeads[beadID] = true
+		d.mu.Unlock()
+		_ = d.logEvent(ctx, "qg_original_defer_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"error":%q,"fingerprint":%q}`, err.Error(), fingerprint))
+		return
+	}
+	_ = d.logEvent(ctx, "qg_original_deferred", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"until":%q,"fingerprint":%q}`, until, fingerprint))
 }
 
 func (d *Dispatcher) releaseWorkerAfterQGExhaustion(workerID, beadID string) {

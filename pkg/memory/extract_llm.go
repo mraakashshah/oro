@@ -142,7 +142,8 @@ func spawnCommand(model, prompt, role string) []string {
 // falls back to agentruntime.ReadRuntime() with fallbackModel.
 func resolveExtractorModel(role, fallbackModel string) (runtime, model string) {
 	if role != "" {
-		return agentmodel.ResolveForRole(role)
+		runtime, model, _ := agentmodel.ResolveForRole(role)
+		return runtime, model
 	}
 	return agentruntime.ReadRuntime(), fallbackModel
 }
@@ -153,6 +154,9 @@ func normalizeCodexModel(model string) string {
 	case "", "haiku", "sonnet", "opus":
 		return codexExtractionModel
 	default:
+		if strings.HasPrefix(model, "claude-") {
+			return codexExtractionModel
+		}
 		return model
 	}
 }

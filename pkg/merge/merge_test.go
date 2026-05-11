@@ -1263,7 +1263,7 @@ func TestCoordinatorAbort_NoMergeInProgress(t *testing.T) {
 }
 
 func TestTargetBranch(t *testing.T) {
-	t.Run("custom TargetBranch used in rebase, rev-list, diff, rev-parse, ff-merge", func(t *testing.T) {
+	t.Run("custom TargetBranch fast-forwards target ref without merging primary HEAD", func(t *testing.T) {
 		mock := &mockGitRunner{
 			results: []mockResult{
 				// 0. rev-list --count epic/feat..bead/abc — not merged yet
@@ -1272,11 +1272,13 @@ func TestTargetBranch(t *testing.T) {
 				{Stdout: "", Stderr: "", Err: nil},
 				// 2. rev-parse --git-common-dir
 				{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
-				// 3. merge --ff-only bead/abc
+				// 3. merge-base --is-ancestor epic/feat bead/abc
 				{Stdout: "", Stderr: "", Err: nil},
-				// 4. worktree remove (fallback via GitRunner)
+				// 4. update-ref refs/heads/epic/feat bead/abc
 				{Stdout: "", Stderr: "", Err: nil},
-				// 5. rev-parse HEAD
+				// 5. worktree remove (fallback via GitRunner)
+				{Stdout: "", Stderr: "", Err: nil},
+				// 6. rev-parse bead/abc
 				{Stdout: "abc123def456\n", Stderr: "", Err: nil},
 			},
 		}
@@ -1296,15 +1298,15 @@ func TestTargetBranch(t *testing.T) {
 		}
 
 		calls := mock.getCalls()
-		if len(calls) != 6 {
-			t.Fatalf("expected 6 git calls, got %d: %+v", len(calls), calls)
+		if len(calls) != 7 {
+			t.Fatalf("expected 7 git calls, got %d: %+v", len(calls), calls)
 		}
 		// rev-list uses TargetBranch (not "main")
 		assertArgs(t, calls[0], "/tmp/wt-abc", "rev-list", "--count", "epic/feat..bead/abc")
 		// rebase uses TargetBranch (not "main")
 		assertArgs(t, calls[1], "/tmp/wt-abc", "rebase", "epic/feat", "bead/abc")
-		// ff-merge uses branch (not hardcoded "main" ref)
-		assertArgs(t, calls[3], "/repo", "merge", "--ff-only", "bead/abc")
+		assertArgs(t, calls[3], "/repo", "merge-base", "--is-ancestor", "epic/feat", "bead/abc")
+		assertArgs(t, calls[4], "/repo", "update-ref", "refs/heads/epic/feat", "bead/abc")
 	})
 
 	t.Run("empty TargetBranch defaults to main", func(t *testing.T) {
@@ -1525,35 +1527,46 @@ func TestTwoLevelLocking(t *testing.T) {
 		}
 	})
 
-	t.Run("global ffLock serializes all ff merges", func(t *testing.T) {
+	t.Run("global ffLock serializes current-branch merge and target-ref update", func(t *testing.T) {
 		// Two merges to different targets. Rebases run in parallel (level-1 allows this),
 		// but FF merges must be serialized (level-2 global ffLock).
 		rebaseDone := make(chan struct{}, 2)
 		ffBlock := make(chan struct{})   // blocks first FF until signaled
 		ffStarted := make(chan struct{}) // signals when first FF starts
 
-		var ffOrder []string
-		var ffOrderMu sync.Mutex
-		var ffCount atomic.Int32
-		var ffStartedOnce sync.Once
+		var mergeOrder []string
+		var mergeOrderMu sync.Mutex
+		var mergeCount atomic.Int32
+		var mergeStartedOnce sync.Once
 
 		runner := &funcGitRunner{fn: func(_ context.Context, _ string, args ...string) (string, string, error) {
 			switch {
 			case len(args) >= 2 && args[0] == "rebase" && args[1] != "--abort":
 				rebaseDone <- struct{}{} // signal rebase done
 			case len(args) >= 2 && args[0] == "merge" && args[1] == "--ff-only":
-				n := ffCount.Add(1)
-				ffOrderMu.Lock()
-				ffOrder = append(ffOrder, fmt.Sprintf("ff%d", n))
-				ffOrderMu.Unlock()
+				n := mergeCount.Add(1)
+				mergeOrderMu.Lock()
+				mergeOrder = append(mergeOrder, fmt.Sprintf("merge%d", n))
+				mergeOrderMu.Unlock()
 				if n == 1 {
-					ffStartedOnce.Do(func() { close(ffStarted) })
+					mergeStartedOnce.Do(func() { close(ffStarted) })
 					<-ffBlock // block first FF
+				}
+			case len(args) >= 1 && args[0] == "update-ref":
+				n := mergeCount.Add(1)
+				mergeOrderMu.Lock()
+				mergeOrder = append(mergeOrder, fmt.Sprintf("update%d", n))
+				mergeOrderMu.Unlock()
+				if n == 1 {
+					mergeStartedOnce.Do(func() { close(ffStarted) })
+					<-ffBlock
 				}
 			case len(args) >= 1 && args[0] == "rev-list":
 				return "1\n", "", nil
 			case len(args) == 2 && args[0] == "rev-parse" && args[1] == "--git-common-dir":
 				return "/repo/.git\n", "", nil
+			case len(args) >= 1 && args[0] == "merge-base":
+				return "", "", nil
 			case len(args) == 2 && args[0] == "rev-parse" && args[1] == "HEAD":
 				return "sha\n", "", nil
 			}
@@ -1593,22 +1606,22 @@ func TestTwoLevelLocking(t *testing.T) {
 		}
 
 		// At this point, first FF is blocked. Second FF must NOT have started.
-		ffOrderMu.Lock()
-		currentCount := len(ffOrder)
-		ffOrderMu.Unlock()
+		mergeOrderMu.Lock()
+		currentCount := len(mergeOrder)
+		mergeOrderMu.Unlock()
 		if currentCount != 1 {
-			t.Errorf("expected exactly 1 FF in progress while first blocks, got %d: %v", currentCount, ffOrder)
+			t.Errorf("expected exactly 1 merge/update in progress while first blocks, got %d: %v", currentCount, mergeOrder)
 		}
 
 		// Unblock first FF, let both complete.
 		close(ffBlock)
 		wg.Wait()
 
-		// Both FFs must have run sequentially (total = 2).
-		ffOrderMu.Lock()
-		defer ffOrderMu.Unlock()
-		if len(ffOrder) != 2 {
-			t.Errorf("expected 2 FF merges total, got %d: %v", len(ffOrder), ffOrder)
+		// Both target advances must have run sequentially (total = 2).
+		mergeOrderMu.Lock()
+		defer mergeOrderMu.Unlock()
+		if len(mergeOrder) != 2 {
+			t.Errorf("expected 2 target advances total, got %d: %v", len(mergeOrder), mergeOrder)
 		}
 	})
 }

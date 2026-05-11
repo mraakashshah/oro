@@ -343,6 +343,16 @@ func TestSpawnCommand_UsesCodexWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestSpawnCommand_UsesCodexModelForClaudeFallbackWhenConfigured(t *testing.T) {
+	t.Setenv("ORO_AGENT_RUNTIME", "codex")
+
+	got := spawnCommand("claude-haiku-4-5-20251001", "test prompt", "")
+	want := []string{"codex", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--model", "gpt-5-codex", "test prompt"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("spawnCommand() = %v, want %v", got, want)
+	}
+}
+
 // TestMemoryExtractorRoleResolves verifies that spawnCommand resolves the model
 // via agentmodel.ResolveForRole when a role is provided, and falls back to
 // ReadRuntime() + the model parameter when role is empty.
@@ -350,7 +360,7 @@ func TestMemoryExtractorRoleResolves(t *testing.T) {
 	t.Run("role resolves model via agentmodel", func(t *testing.T) {
 		t.Setenv("ORO_AGENT_RUNTIME", "")
 
-		_, expectedModel := agentmodel.ResolveForRole("memory_extractor")
+		_, expectedModel, _ := agentmodel.ResolveForRole("memory_extractor")
 		args := spawnCommand("haiku", "probe", "memory_extractor")
 
 		gotModel := sliceValue(args, "--model")

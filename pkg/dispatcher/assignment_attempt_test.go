@@ -3,6 +3,8 @@ package dispatcher //nolint:testpackage // white-box test needs internal access
 import (
 	"context"
 	"testing"
+
+	"oro/pkg/protocol"
 )
 
 func TestAssignmentReassignmentLeavesSingleActiveRow(t *testing.T) {
@@ -47,6 +49,88 @@ func TestAssignmentReassignmentLeavesSingleActiveRow(t *testing.T) {
 	}
 	if activeID != secondID {
 		t.Fatalf("active assignment id: got %d, want %d", activeID, secondID)
+	}
+}
+
+func TestReleaseWorkerAfterDoneReservesUntilTerminalCleanup(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const (
+		beadID   = "oro-approved"
+		workerID = "worker-approved"
+		worktree = "/tmp/oro-approved"
+	)
+
+	assignmentID, err := d.createAssignment(ctx, beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		state:        protocol.WorkerBusy,
+		beadID:       beadID,
+		assignmentID: assignmentID,
+		worktree:     worktree,
+	}
+	release := d.releaseWorkerAfterDoneLocked(workerID, beadID)
+	w := d.workers[workerID]
+	reservedState := w.state
+	reservedBead := w.beadID
+	reservedAssignment := w.assignmentID
+	d.mu.Unlock()
+
+	if !release.ok {
+		t.Fatal("releaseWorkerAfterDoneLocked returned ok=false")
+	}
+	if reservedState != protocol.WorkerReserved {
+		t.Fatalf("worker state after DONE = %s, want %s", reservedState, protocol.WorkerReserved)
+	}
+	if reservedBead != beadID || reservedAssignment != assignmentID {
+		t.Fatalf("worker assignment cleared before terminal cleanup: bead=%q assignment=%d", reservedBead, reservedAssignment)
+	}
+
+	var activeBefore int
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM assignments WHERE worker_id=? AND status='active'`,
+		workerID,
+	).Scan(&activeBefore); err != nil {
+		t.Fatalf("count active assignments before terminal cleanup: %v", err)
+	}
+	if activeBefore != 1 {
+		t.Fatalf("active assignments before terminal cleanup = %d, want 1", activeBefore)
+	}
+
+	if err := d.completeAssignment(ctx, assignmentID, beadID); err != nil {
+		t.Fatalf("complete assignment: %v", err)
+	}
+	d.releaseWorkerAfterDoneTerminal(workerID, beadID, assignmentID)
+
+	d.mu.Lock()
+	w = d.workers[workerID]
+	finalState := w.state
+	finalBead := w.beadID
+	finalAssignment := w.assignmentID
+	d.mu.Unlock()
+
+	if finalState != protocol.WorkerIdle {
+		t.Fatalf("worker state after terminal cleanup = %s, want %s", finalState, protocol.WorkerIdle)
+	}
+	if finalBead != "" || finalAssignment != 0 {
+		t.Fatalf("worker assignment after terminal cleanup: bead=%q assignment=%d, want cleared", finalBead, finalAssignment)
+	}
+
+	var activeAfter int
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM assignments WHERE worker_id=? AND status='active'`,
+		workerID,
+	).Scan(&activeAfter); err != nil {
+		t.Fatalf("count active assignments after terminal cleanup: %v", err)
+	}
+	if activeAfter != 0 {
+		t.Fatalf("active assignments after terminal cleanup = %d, want 0", activeAfter)
 	}
 }
 

@@ -173,6 +173,7 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 	w.worktree = h.worktree
 	w.runtime = h.runtime
 	w.model = h.model
+	w.reasoning = h.reasoning
 	w.epicID = h.epicID
 	w.baseBranch = h.baseBranch
 	w.targetBranch = h.targetBranch
@@ -204,6 +205,7 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 			Worktree:      h.worktree,
 			Runtime:       h.runtime,
 			Model:         h.model,
+			Reasoning:     h.reasoning,
 			MemoryContext: memCtx,
 			TargetBranch:  h.targetBranch,
 			Feedback:      h.nextAction,

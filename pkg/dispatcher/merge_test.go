@@ -21,20 +21,21 @@ func (f *funcMergeGitRunner) Run(ctx context.Context, dir string, args ...string
 }
 
 // TestMergeFFOnlyAfterParallelAdvance verifies that when W1 advances the
-// primary repo HEAD between W2's rebase and W2's ff-only attempt, W2's merge
-// succeeds.
+// primary repo HEAD while W2 targets a non-checked-out epic branch, W2 advances
+// the target ref directly instead of trying to ff-merge into the primary HEAD.
 //
 // Regression test for cascading exit-128 failures observed 2026-04-17
-// (oro-y47c, oro-k7m5, oro-xher): W2's retry rebase used effectiveTarget
-// ("epic/feat") instead of the primary repo's current HEAD, so the retry
-// ff-only also failed when the primary HEAD had advanced past the epic branch.
+// Regression coverage for the 2026-05-10 merge churn: approved epic-targeted
+// branches were rebased correctly but then reopened because the coordinator
+// tried to merge them into the primary worktree HEAD rather than advancing the
+// epic branch ref.
 func TestMergeFFOnlyAfterParallelAdvance(t *testing.T) {
 	// Race window:
 	//   W2 (target="epic/feat") rebases agent/w2 onto epic/feat@M0.
 	//   W1 (target="main") acquires ffLock first, ff-merges agent/w1 →
 	//     primary repo HEAD advances from M0 to M1.
-	//   W2 acquires ffLock, tries ff-only → fails (agent/w2 based on M0 ≠ M1).
-	//   W2 must re-rebase onto primary HEAD (M1), not epic/feat (M0), then retry.
+	//   W2 acquires ffLock and must update refs/heads/epic/feat to agent/w2,
+	//     not try to ff-merge agent/w2 into primary HEAD.
 
 	// Synchronization channels enforce the exact race ordering.
 	w2RebaseDone := make(chan struct{}) // W2 signals initial rebase done
@@ -42,7 +43,8 @@ func TestMergeFFOnlyAfterParallelAdvance(t *testing.T) {
 
 	var (
 		mu              sync.Mutex
-		w2FFCount       int    // how many ff-only attempts W2 made
+		w2FFCount       int // how many ff-only attempts W2 made
+		w2UpdateRef     int
 		w2RebaseIsRetry bool   // set to true after W2's first ff-only fails
 		retryRebaseBase string // the base arg of W2's retry rebase call
 	)
@@ -124,6 +126,17 @@ func TestMergeFFOnlyAfterParallelAdvance(t *testing.T) {
 				return "", "", nil
 			}
 
+		case len(args) >= 3 && args[0] == "merge-base" && args[1] == "--is-ancestor":
+			return "", "", nil
+
+		case len(args) >= 3 && args[0] == "update-ref":
+			if args[1] == "refs/heads/epic/feat" && args[2] == "agent/w2" {
+				mu.Lock()
+				w2UpdateRef++
+				mu.Unlock()
+			}
+			return "", "", nil
+
 		case len(args) >= 3 && args[0] == "worktree" && args[1] == "remove":
 			return "", "", nil
 		}
@@ -177,10 +190,13 @@ func TestMergeFFOnlyAfterParallelAdvance(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if w2FFCount != 2 {
-		t.Errorf("expected 2 ff-only attempts for W2 (1 fail + 1 retry success), got %d", w2FFCount)
+	if w2FFCount != 0 {
+		t.Errorf("expected no ff-only attempts for non-HEAD W2 target, got %d", w2FFCount)
 	}
-	if retryRebaseBase == "epic/feat" {
-		t.Errorf("retry rebase must NOT use stale effectiveTarget 'epic/feat'; it used: %q", retryRebaseBase)
+	if w2UpdateRef != 1 {
+		t.Errorf("expected one update-ref for W2 epic target, got %d", w2UpdateRef)
+	}
+	if retryRebaseBase != "" {
+		t.Errorf("expected no retry rebase for non-HEAD target, got base %q", retryRebaseBase)
 	}
 }

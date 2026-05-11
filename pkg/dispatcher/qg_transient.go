@@ -133,12 +133,12 @@ func (d *Dispatcher) sendTransientReassign(
 	attempt, transientCount int,
 	sendFailed *bool,
 ) bool {
-	if w.model != protocol.ModelOpus || w.runtime != "claude" {
-		w.runtime = "claude"
-		w.model = protocol.ModelOpus
-	}
+	w.runtime = payload.Runtime
+	w.model = payload.Model
+	w.reasoning = payload.Reasoning
 	payload.Runtime = w.runtime
 	payload.Model = w.model
+	payload.Reasoning = w.reasoning
 	if err := d.sendToWorker(w, protocol.Message{
 		Type:   protocol.MsgAssign,
 		Assign: payload,

@@ -139,7 +139,7 @@ func TestCodesearchRerankerRoleResolves(t *testing.T) {
 	t.Run("role resolves model via agentmodel", func(t *testing.T) {
 		t.Setenv("ORO_AGENT_RUNTIME", "")
 
-		_, expectedModel := agentmodel.ResolveForRole("codesearch_reranker")
+		_, expectedModel, _ := agentmodel.ResolveForRole("codesearch_reranker")
 		cmd := codesearch.BuildCmdInWorkdir(context.Background(), "probe", "", "codesearch_reranker")
 
 		gotModel := argsValue(cmd.Args, "--model")

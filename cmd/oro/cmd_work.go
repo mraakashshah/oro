@@ -110,6 +110,7 @@ type workDeps struct {
 	beadSrc         beadstore.Store
 	wtMgr           dispatcher.WorktreeManager
 	spawner         worker.StreamingSpawner
+	runtimeSpawner  worker.RuntimeStreamingSpawner
 	opsMgr          opsReviewer
 	merger          merger
 	repoRoot        string
@@ -215,6 +216,7 @@ func newProductionDeps(reviewTimeout time.Duration) (*workDeps, error) {
 		beadSrc:         newWorkerBeadStore(beadDB, memStore),
 		wtMgr:           dispatcher.NewGitWorktreeManager(repoRoot, "", projectPaths.QualityGate, runner),
 		spawner:         runtime.workerSpawn,
+		runtimeSpawner:  workerSpawnerForRuntime(),
 		opsMgr:          ops.NewSpawnerWithReviewTimeout(runtime.opsSpawn, reviewTimeout),
 		merger:          merge.NewCoordinator(&merge.ExecGitRunner{}),
 		repoRoot:        repoRoot,
@@ -307,8 +309,8 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 			cfg.bead.Tier = ""
 		}
 	}
-	// Resolve model using standard bead resolution (Model > Tier > estimate > default).
-	_, model := agentmodel.ResolveForBead("worker", *cfg.bead)
+	// Resolve runtime, model, and reasoning using standard bead resolution.
+	runtime, model, reasoning := agentmodel.ResolveForBead("worker", *cfg.bead)
 
 	if cfg.dryRun {
 		logStep("Dry run — would execute bead %s with model=%s, timeout=%s, skip-review=%t",
@@ -391,9 +393,9 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 
 		if !skipClaude {
 			logStep("--- attempt %d (%s) ---", attempt, modelShort(model))
-			logStep("Spawning claude (%s, attempt %d)...", modelShort(model), attempt)
-			if err := spawnAndWait(ctx, cfg, deps, worktree, model, attempt, feedback, logFile); err != nil {
-				return fmt.Errorf("claude spawn: %w", err)
+			logStep("Spawning %s (%s, attempt %d)...", runtime, modelShort(model), attempt)
+			if err := spawnAndWait(ctx, cfg, deps, worktree, runtime, model, reasoning, attempt, feedback, logFile); err != nil {
+				return fmt.Errorf("%s spawn: %w", runtime, err)
 			}
 			logStep("Claude completed")
 
@@ -604,9 +606,9 @@ func parseTestFilePath(ac string) string {
 	return strings.TrimSpace(parts[0])
 }
 
-// spawnAndWait spawns claude -p and waits for it to exit, with timeout.
-// logFile, when non-nil, receives a copy of Claude's stdout alongside stderr.
-func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree, model string, attempt int, feedback string, logFile *os.File) error {
+// spawnAndWait spawns the configured agent runtime and waits for it to exit, with timeout.
+// logFile, when non-nil, receives a copy of runtime stdout alongside stderr.
+func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree, runtime, model, reasoning string, attempt int, feedback string, logFile *os.File) error {
 	// Resolve project root from worktree path
 	projectRoot := ""
 	if resolved, err := langprofile.ResolveProjectRoot(worktree); err == nil {
@@ -643,12 +645,40 @@ func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree
 	timeoutCtx, cancel := context.WithTimeout(ctx, cfg.timeout)
 	defer cancel()
 
-	proc, stdout, _, err := deps.spawner.Spawn(timeoutCtx, model, prompt, worktree)
+	proc, stdout, streamFormat, err := spawnRuntimeProcess(timeoutCtx, deps, runtime, model, reasoning, prompt, worktree)
 	if err != nil {
-		return fmt.Errorf("spawn: %w", err)
+		return err
 	}
 
 	// Drain stdout (echoes to stderr + optional log file, extracts memories).
+	drainRuntimeOutput(ctx, deps, stdout, streamFormat, cfg.beadID, worktree, logFile)
+
+	if err := proc.Wait(); err != nil {
+		// Non-zero exit is common for agent CLIs; log but don't fail.
+		logStep("Runtime exited with: %v", err)
+	}
+	return nil
+}
+
+func spawnRuntimeProcess(ctx context.Context, deps *workDeps, runtime, model, reasoning, prompt, worktree string) (worker.Process, io.ReadCloser, worker.StreamFormat, error) {
+	var proc worker.Process
+	var stdout io.ReadCloser
+	var err error
+	streamFormat := deps.spawner.StreamFormat()
+	if deps.runtimeSpawner != nil {
+		var format worker.StreamFormat
+		proc, stdout, _, format, err = deps.runtimeSpawner.Spawn(ctx, runtime, model, reasoning, prompt, worktree)
+		streamFormat = format
+	} else {
+		proc, stdout, _, err = deps.spawner.Spawn(ctx, model, prompt, worktree)
+	}
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("spawn: %w", err)
+	}
+	return proc, stdout, streamFormat, nil
+}
+
+func drainRuntimeOutput(ctx context.Context, deps *workDeps, stdout io.ReadCloser, streamFormat worker.StreamFormat, beadID, worktree string, logFile *os.File) {
 	if stdout != nil {
 		writers := []io.Writer{os.Stderr}
 		if logFile != nil {
@@ -658,14 +688,8 @@ func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree
 		if deps.memStore != nil {
 			memInserter = deps.memStore
 		}
-		worker.DrainOutputInWorkdir(ctx, stdout, deps.spawner.StreamFormat(), memInserter, cfg.beadID, &memory.CLISpawner{}, worktree, writers...)
+		worker.DrainOutputInWorkdir(ctx, stdout, streamFormat, memInserter, beadID, &memory.CLISpawner{}, worktree, writers...)
 	}
-
-	if err := proc.Wait(); err != nil {
-		// Non-zero exit is common for claude -p; log but don't fail.
-		logStep("Claude exited with: %v", err)
-	}
-	return nil
 }
 
 // reviewLoop runs ops review and handles rejection retries.
@@ -736,13 +760,14 @@ func handleReviewRejection(ctx context.Context, cfg *workConfig, deps *workDeps,
 		}
 	}
 
-	*model = protocol.ModelOpus
+	runtime, escalationModel, reasoning := agentmodel.ResolveForRole("worker_escalation")
+	*model = escalationModel
 	*attempt = rejects
 	*feedback = result.Feedback
 
-	logStep("Re-executing with review feedback (opus)...")
-	if err := spawnAndWait(ctx, cfg, deps, worktree, *model, *attempt, *feedback, logFile); err != nil {
-		return rejects, fmt.Errorf("claude re-spawn after review: %w", err)
+	logStep("Re-executing with review feedback (%s)...", modelShort(*model))
+	if err := spawnAndWait(ctx, cfg, deps, worktree, runtime, *model, reasoning, *attempt, *feedback, logFile); err != nil {
+		return rejects, fmt.Errorf("%s re-spawn after review: %w", runtime, err)
 	}
 
 	logStep("Re-running local quality gate (mutation deferred to push)...")

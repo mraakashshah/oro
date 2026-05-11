@@ -15,12 +15,14 @@ func TestRoleResolutionPrecedence(t *testing.T) {
     fast:
       runtime: codex
       model: gpt-5-mini
+      reasoning: low
     balanced:
       runtime: claude
       model: claude-sonnet-4-6
     deep:
       runtime: codex
       model: gpt-5.5
+      reasoning: high
     background:
       runtime: claude
       model: claude-haiku-4-5-20251001
@@ -35,54 +37,55 @@ func TestRoleResolutionPrecedence(t *testing.T) {
       transport: cli
       runtime: codex
       model: gpt-5-codex
+      reasoning: medium
 `)
 
 	t.Run("role tier resolves through configured tier", func(t *testing.T) {
-		runtime, model := agentmodel.ResolveForRole("ops_review")
-		if runtime != "codex" || model != "gpt-5.5" {
-			t.Fatalf("ResolveForRole(ops_review) = (%q, %q), want (codex, gpt-5.5)", runtime, model)
+		runtime, model, reasoning := agentmodel.ResolveForRole("ops_review")
+		if runtime != "codex" || model != "gpt-5.5" || reasoning != "high" {
+			t.Fatalf("ResolveForRole(ops_review) = (%q, %q, %q), want (codex, gpt-5.5, high)", runtime, model, reasoning)
 		}
 	})
 
 	t.Run("explicit role override wins over tier", func(t *testing.T) {
-		runtime, model := agentmodel.ResolveForRole("explicit_worker")
-		if runtime != "codex" || model != "gpt-5-codex" {
-			t.Fatalf("ResolveForRole(explicit_worker) = (%q, %q), want (codex, gpt-5-codex)", runtime, model)
+		runtime, model, reasoning := agentmodel.ResolveForRole("explicit_worker")
+		if runtime != "codex" || model != "gpt-5-codex" || reasoning != "medium" {
+			t.Fatalf("ResolveForRole(explicit_worker) = (%q, %q, %q), want (codex, gpt-5-codex, medium)", runtime, model, reasoning)
 		}
 	})
 
 	t.Run("unknown role uses built in default", func(t *testing.T) {
-		runtime, model := agentmodel.ResolveForRole("unknown_role")
-		if runtime != "claude" || model != "claude-sonnet-4-6" {
-			t.Fatalf("ResolveForRole(unknown_role) = (%q, %q), want built-in balanced default", runtime, model)
+		runtime, model, reasoning := agentmodel.ResolveForRole("unknown_role")
+		if runtime != "claude" || model != "claude-sonnet-4-6" || reasoning != "" {
+			t.Fatalf("ResolveForRole(unknown_role) = (%q, %q, %q), want configured worker default", runtime, model, reasoning)
 		}
 	})
 
 	t.Run("bead tier wins over role", func(t *testing.T) {
-		runtime, model := agentmodel.ResolveForBead("worker", protocol.Bead{Tier: protocol.TierFast})
-		if runtime != "codex" || model != "gpt-5-mini" {
-			t.Fatalf("ResolveForBead(fast bead) = (%q, %q), want (codex, gpt-5-mini)", runtime, model)
+		runtime, model, reasoning := agentmodel.ResolveForBead("worker", protocol.Bead{Tier: protocol.TierFast})
+		if runtime != "codex" || model != "gpt-5-mini" || reasoning != "low" {
+			t.Fatalf("ResolveForBead(fast bead) = (%q, %q, %q), want (codex, gpt-5-mini, low)", runtime, model, reasoning)
 		}
 	})
 
 	t.Run("provider native bead model wins while preserving role runtime", func(t *testing.T) {
-		runtime, model := agentmodel.ResolveForBead("worker", protocol.Bead{Model: "custom-provider-model"})
-		if runtime != "claude" || model != "custom-provider-model" {
-			t.Fatalf("ResolveForBead(model override) = (%q, %q), want (claude, custom-provider-model)", runtime, model)
+		runtime, model, reasoning := agentmodel.ResolveForBead("worker", protocol.Bead{Model: "custom-provider-model"})
+		if runtime != "claude" || model != "custom-provider-model" || reasoning != "" {
+			t.Fatalf("ResolveForBead(model override) = (%q, %q, %q), want (claude, custom-provider-model, empty reasoning)", runtime, model, reasoning)
 		}
 	})
 
 	t.Run("legacy bead model resolves through configured tier", func(t *testing.T) {
-		runtime, model := agentmodel.ResolveForBead("worker", protocol.Bead{Model: protocol.ModelOpus})
-		if runtime != "codex" || model != "gpt-5.5" {
-			t.Fatalf("ResolveForBead(legacy opus) = (%q, %q), want configured deep tier", runtime, model)
+		runtime, model, reasoning := agentmodel.ResolveForBead("worker", protocol.Bead{Model: protocol.ModelOpus})
+		if runtime != "codex" || model != "gpt-5.5" || reasoning != "high" {
+			t.Fatalf("ResolveForBead(legacy opus) = (%q, %q, %q), want configured deep tier", runtime, model, reasoning)
 		}
 	})
 
 	t.Run("unknown bead tier falls back to default tier", func(t *testing.T) {
-		runtime, model := agentmodel.ResolveForBead("worker", protocol.Bead{Tier: protocol.Tier("turbo")})
-		if runtime != "claude" || model != "claude-sonnet-4-6" {
-			t.Fatalf("ResolveForBead(unknown tier) = (%q, %q), want balanced default", runtime, model)
+		runtime, model, reasoning := agentmodel.ResolveForBead("worker", protocol.Bead{Tier: protocol.Tier("turbo")})
+		if runtime != "claude" || model != "claude-sonnet-4-6" || reasoning != "" {
+			t.Fatalf("ResolveForBead(unknown tier) = (%q, %q, %q), want balanced default", runtime, model, reasoning)
 		}
 	})
 }
@@ -95,25 +98,57 @@ languages:
 `)
 
 	t.Run("default role keeps legacy model names", func(t *testing.T) {
-		runtime, model := agentmodel.ResolveForRole("worker")
+		runtime, model, _ := agentmodel.ResolveForRole("worker")
 		if runtime != "claude" || model != protocol.ModelSonnet {
 			t.Fatalf("ResolveForRole(worker) = (%q, %q), want (claude, sonnet)", runtime, model)
 		}
 	})
 
 	t.Run("estimated short bead keeps legacy haiku routing", func(t *testing.T) {
-		runtime, model := agentmodel.ResolveForBead("worker", protocol.Bead{EstimatedMinutes: 3})
+		runtime, model, _ := agentmodel.ResolveForBead("worker", protocol.Bead{EstimatedMinutes: 3})
 		if runtime != "claude" || model != protocol.ModelHaiku {
 			t.Fatalf("ResolveForBead(short estimate) = (%q, %q), want (claude, haiku)", runtime, model)
 		}
 	})
 
 	t.Run("legacy explicit model stays explicit", func(t *testing.T) {
-		runtime, model := agentmodel.ResolveForBead("worker", protocol.Bead{Model: protocol.ModelOpus})
+		runtime, model, _ := agentmodel.ResolveForBead("worker", protocol.Bead{Model: protocol.ModelOpus})
 		if runtime != "claude" || model != protocol.ModelOpus {
 			t.Fatalf("ResolveForBead(opus) = (%q, %q), want (claude, opus)", runtime, model)
 		}
 	})
+}
+
+func TestLockedRoleResolution(t *testing.T) {
+	writeAgentConfig(t, `agent: {}`)
+
+	cases := map[string]struct {
+		runtime   string
+		model     string
+		reasoning string
+	}{
+		"spec_writer":       {"claude", "claude-opus-4-7", ""},
+		"spec_challenger":   {"codex", "gpt-5.5-codex", "xhigh"},
+		"worker":            {"codex", "gpt-5.5-codex", "low"},
+		"worker_escalation": {"codex", "gpt-5.5-codex", "medium"},
+		"ops_review":        {"claude", "claude-opus-4-7", ""},
+		"ops_escalation":    {"codex", "gpt-5.5-codex", "high"},
+		"ops_merge":         {"codex", "gpt-5.5-codex", "high"},
+		"ops_diagnosis":     {"codex", "gpt-5.5-codex", "high"},
+		"ops_decompose":     {"claude", "claude-opus-4-7", ""},
+		"ops_epic_fix":      {"claude", "claude-opus-4-7", ""},
+		"ops_write_ac":      {"claude", "claude-opus-4-7", ""},
+		"ops_dream":         {"codex", "gpt-5.5-codex", "low"},
+	}
+
+	for role, want := range cases {
+		t.Run(role, func(t *testing.T) {
+			runtime, model, reasoning := agentmodel.ResolveForRole(role)
+			if runtime != want.runtime || model != want.model || reasoning != want.reasoning {
+				t.Fatalf("ResolveForRole(%s) = (%q, %q, %q), want (%q, %q, %q)", role, runtime, model, reasoning, want.runtime, want.model, want.reasoning)
+			}
+		})
+	}
 }
 
 func TestProtocolPackageHasNoConfigImport(t *testing.T) {

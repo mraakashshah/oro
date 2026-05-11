@@ -90,6 +90,7 @@ type AssignPayload struct {
 	Worktree             string `json:"worktree"`
 	Runtime              string `json:"runtime,omitempty"`
 	Model                string `json:"model,omitempty"`
+	Reasoning            string `json:"reasoning,omitempty"`
 	Tier                 Tier   `json:"tier,omitempty"`
 	MemoryContext        string `json:"memory_context,omitempty"`
 	CodeSearchContext    string `json:"code_search_context,omitempty"`

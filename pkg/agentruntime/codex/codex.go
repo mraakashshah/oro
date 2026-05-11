@@ -35,7 +35,12 @@ func (s *WorkerSpawner) StreamFormat() worker.StreamFormat {
 
 // Spawn starts a `codex exec` subprocess using a plain-text line stream.
 func (s *WorkerSpawner) Spawn(ctx context.Context, model, prompt, workdir string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
-	cmd := exec.CommandContext(ctx, s.binary(), buildExecArgs(model, BuildBootstrapPrompt(prompt, workdir))...) //nolint:gosec // args built internally
+	return s.SpawnWithReasoning(ctx, model, "", prompt, workdir)
+}
+
+// SpawnWithReasoning starts Codex with an optional model reasoning effort.
+func (s *WorkerSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning, prompt, workdir string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
+	cmd := exec.CommandContext(ctx, s.binary(), buildExecArgsWithReasoning(model, reasoning, BuildBootstrapPrompt(prompt, workdir))...) //nolint:gosec // args built internally
 	cmd.Dir = workdir
 	cmd.Stderr = os.Stderr
 	cmd.Env = processenv.ForWorkdir(os.Environ(), workdir)
@@ -68,16 +73,25 @@ func (s *WorkerSpawner) binary() string {
 // NewOpsSpawner creates the Codex ops spawner using the same subprocess contract.
 func NewOpsSpawner() ops.BatchSpawner {
 	return ops.NewExecSpawner(ops.RuntimeSpec{
-		Command:   commandName,
-		BuildArgs: buildExecArgs,
+		Command:                commandName,
+		BuildArgs:              buildExecArgs,
+		BuildArgsWithReasoning: buildExecArgsWithReasoning,
 	})
 }
 
 func buildExecArgs(model, prompt string) []string {
+	return buildExecArgsWithReasoning(model, "", prompt)
+}
+
+func buildExecArgsWithReasoning(model, reasoning, prompt string) []string {
 	args := []string{"exec", "--skip-git-repo-check", "--sandbox", "workspace-write"}
 	model = normalizeCodexModel(model)
 	if model != "" {
 		args = append(args, "--model", model)
+	}
+	reasoning = strings.TrimSpace(reasoning)
+	if reasoning != "" {
+		args = append(args, "--reasoning-effort", reasoning)
 	}
 	args = append(args, prompt)
 	return args

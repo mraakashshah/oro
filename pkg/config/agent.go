@@ -23,8 +23,9 @@ type AgentConfig struct {
 // TierConfig specifies the runtime and model for a provider-neutral routing tier.
 // Used by CLI-spawn roles (transport: cli).
 type TierConfig struct {
-	Runtime string `yaml:"runtime"`
-	Model   string `yaml:"model"`
+	Runtime   string `yaml:"runtime"`
+	Model     string `yaml:"model"`
+	Reasoning string `yaml:"reasoning,omitempty"`
 }
 
 // RoleConfig specifies the routing configuration for a named role.
@@ -35,6 +36,7 @@ type RoleConfig struct {
 	Transport string        `yaml:"transport"`
 	Runtime   string        `yaml:"runtime,omitempty"`
 	Model     string        `yaml:"model,omitempty"`
+	Reasoning string        `yaml:"reasoning,omitempty"`
 	Provider  string        `yaml:"provider,omitempty"`
 	APIModel  string        `yaml:"api_model,omitempty"`
 }
@@ -50,25 +52,27 @@ type configFile struct {
 func defaultAgentConfig() *AgentConfig {
 	return &AgentConfig{
 		Tiers: map[protocol.Tier]TierConfig{
-			protocol.TierFast:       {Runtime: "claude", Model: "claude-haiku-4-5-20251001"},
-			protocol.TierBalanced:   {Runtime: "claude", Model: "claude-sonnet-4-6"},
-			protocol.TierDeep:       {Runtime: "claude", Model: "claude-opus-4-7"},
-			protocol.TierBackground: {Runtime: "claude", Model: "claude-haiku-4-5-20251001"},
+			protocol.TierFast:       {Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "low"},
+			protocol.TierBalanced:   {Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "low"},
+			protocol.TierDeep:       {Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "high"},
+			protocol.TierBackground: {Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "low"},
 		},
 		APIModels: map[string]string{
 			"anthropic_fast": "claude-haiku-4-5-20251001",
 		},
 		Roles: map[string]RoleConfig{
-			"worker":              {Tier: protocol.TierBalanced, Transport: "cli"},
-			"worker_escalation":   {Tier: protocol.TierDeep, Transport: "cli"},
-			"ops_review":          {Tier: protocol.TierDeep, Transport: "cli"},
-			"ops_merge":           {Tier: protocol.TierDeep, Transport: "cli"},
-			"ops_diagnosis":       {Tier: protocol.TierDeep, Transport: "cli"},
-			"ops_epic_fix":        {Tier: protocol.TierDeep, Transport: "cli"},
-			"ops_write_ac":        {Tier: protocol.TierDeep, Transport: "cli"},
-			"ops_escalation":      {Tier: protocol.TierBalanced, Transport: "cli"},
-			"ops_decompose":       {Tier: protocol.TierDeep, Transport: "cli"},
-			"ops_dream":           {Tier: protocol.TierBackground, Transport: "cli"},
+			"spec_writer":         {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+			"spec_challenger":     {Transport: "cli", Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "xhigh"},
+			"worker":              {Transport: "cli", Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "low"},
+			"worker_escalation":   {Transport: "cli", Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "medium"},
+			"ops_review":          {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+			"ops_escalation":      {Transport: "cli", Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "high"},
+			"ops_merge":           {Transport: "cli", Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "high"},
+			"ops_diagnosis":       {Transport: "cli", Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "high"},
+			"ops_epic_fix":        {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+			"ops_write_ac":        {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+			"ops_decompose":       {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+			"ops_dream":           {Tier: protocol.TierFast, Transport: "cli"},
 			"memory_extractor":    {Tier: protocol.TierFast, Transport: "cli"},
 			"codesearch_reranker": {Tier: protocol.TierFast, Transport: "cli"},
 			"estimator":           {Transport: "api", Provider: "anthropic", APIModel: "anthropic_fast"},
@@ -81,6 +85,32 @@ func DefaultAgentConfig() *AgentConfig {
 	return defaultAgentConfig()
 }
 
+func legacyDefaultAgentConfig() *AgentConfig {
+	cfg := defaultAgentConfig()
+	cfg.Tiers = map[protocol.Tier]TierConfig{
+		protocol.TierFast:       {Runtime: "claude", Model: "claude-haiku-4-5-20251001"},
+		protocol.TierBalanced:   {Runtime: "claude", Model: "claude-sonnet-4-6"},
+		protocol.TierDeep:       {Runtime: "claude", Model: "claude-opus-4-7"},
+		protocol.TierBackground: {Runtime: "claude", Model: "claude-haiku-4-5-20251001"},
+	}
+	cfg.Roles = map[string]RoleConfig{
+		"worker":              {Tier: protocol.TierBalanced, Transport: "cli"},
+		"worker_escalation":   {Tier: protocol.TierDeep, Transport: "cli"},
+		"ops_review":          {Tier: protocol.TierDeep, Transport: "cli"},
+		"ops_merge":           {Tier: protocol.TierDeep, Transport: "cli"},
+		"ops_diagnosis":       {Tier: protocol.TierDeep, Transport: "cli"},
+		"ops_epic_fix":        {Tier: protocol.TierDeep, Transport: "cli"},
+		"ops_write_ac":        {Tier: protocol.TierDeep, Transport: "cli"},
+		"ops_escalation":      {Tier: protocol.TierBalanced, Transport: "cli"},
+		"ops_decompose":       {Tier: protocol.TierDeep, Transport: "cli"},
+		"ops_dream":           {Tier: protocol.TierBackground, Transport: "cli"},
+		"memory_extractor":    {Tier: protocol.TierFast, Transport: "cli"},
+		"codesearch_reranker": {Tier: protocol.TierFast, Transport: "cli"},
+		"estimator":           {Transport: "api", Provider: "anthropic", APIModel: "anthropic_fast"},
+	}
+	return cfg
+}
+
 // Load reads the YAML file at path and returns the parsed AgentConfig.
 // When the file does not exist or the agent block is absent, built-in
 // defaults are returned. Parse errors are surfaced as-is.
@@ -88,7 +118,7 @@ func DefaultAgentConfig() *AgentConfig {
 func Load(path string) (*AgentConfig, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // path accepted from caller
 	if errors.Is(err, os.ErrNotExist) {
-		return defaultAgentConfig(), nil
+		return legacyDefaultAgentConfig(), nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
@@ -100,7 +130,7 @@ func Load(path string) (*AgentConfig, error) {
 	}
 
 	if f.Agent == nil {
-		return defaultAgentConfig(), nil
+		return legacyDefaultAgentConfig(), nil
 	}
 	return f.Agent, nil
 }
@@ -123,39 +153,76 @@ func Validate(c *AgentConfig) error {
 	var errs []string
 
 	for tier, tc := range c.Tiers {
-		if msg := checkRuntimeModelMatch(fmt.Sprintf("tier %q", string(tier)), tc.Runtime, tc.Model); msg != "" {
-			errs = append(errs, msg)
-		}
+		errs = append(errs, validateTier(tier, tc)...)
 	}
 
 	for name, role := range c.Roles {
-		if role.Transport != "cli" {
-			if role.Transport == "api" && role.Tier != "" {
-				errs = append(errs, fmt.Sprintf("role %q: API role must not set tier; use provider and api_model", name))
-			}
-			continue
-		}
-		hasRuntime := role.Runtime != ""
-		hasModel := role.Model != ""
-		if hasRuntime != hasModel {
-			var missing string
-			if hasRuntime {
-				missing = "model"
-			} else {
-				missing = "runtime"
-			}
-			errs = append(errs, fmt.Sprintf("role %q: CLI override is partial — %s is set but %s is missing; set both or neither", name, roleSetField(role), missing))
-			continue
-		}
-		if msg := checkRuntimeModelMatch(fmt.Sprintf("role %q", name), role.Runtime, role.Model); msg != "" {
-			errs = append(errs, msg)
-		}
+		errs = append(errs, validateRole(name, role)...)
 	}
 
 	if len(errs) == 0 {
 		return nil
 	}
 	return fmt.Errorf("invalid agent config:\n  %s", strings.Join(errs, "\n  "))
+}
+
+func validateTier(tier protocol.Tier, tc TierConfig) []string {
+	label := fmt.Sprintf("tier %q", string(tier))
+	return validationMessages(label, tc.Runtime, tc.Model, tc.Reasoning)
+}
+
+func validateRole(name string, role RoleConfig) []string {
+	if role.Transport != "cli" {
+		if role.Transport == "api" && role.Tier != "" {
+			return []string{fmt.Sprintf("role %q: API role must not set tier; use provider and api_model", name)}
+		}
+		return nil
+	}
+
+	if msg := checkPartialCLIOverride(name, role); msg != "" {
+		return []string{msg}
+	}
+	label := fmt.Sprintf("role %q", name)
+	return validationMessages(label, role.Runtime, role.Model, role.Reasoning)
+}
+
+func validationMessages(label, runtime, model, reasoning string) []string {
+	var errs []string
+	if msg := checkRuntimeModelMatch(label, runtime, model); msg != "" {
+		errs = append(errs, msg)
+	}
+	if msg := checkReasoning(label, runtime, reasoning); msg != "" {
+		errs = append(errs, msg)
+	}
+	return errs
+}
+
+func checkPartialCLIOverride(name string, role RoleConfig) string {
+	hasRuntime := role.Runtime != ""
+	hasModel := role.Model != ""
+	if hasRuntime == hasModel {
+		return ""
+	}
+	missing := "runtime"
+	if hasRuntime {
+		missing = "model"
+	}
+	return fmt.Sprintf("role %q: CLI override is partial — %s is set but %s is missing; set both or neither", name, roleSetField(role), missing)
+}
+
+func checkReasoning(label, runtime, reasoning string) string {
+	if reasoning == "" {
+		return ""
+	}
+	if runtime != "codex" {
+		return ""
+	}
+	switch reasoning {
+	case "low", "medium", "high", "xhigh":
+		return ""
+	default:
+		return fmt.Sprintf("%s: reasoning %q is invalid for codex; expected one of low, medium, high, xhigh", label, reasoning)
+	}
 }
 
 // checkRuntimeModelMatch returns an error message when the declared runtime

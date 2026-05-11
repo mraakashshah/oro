@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"oro/pkg/agentruntime"
 	"oro/pkg/memory"
 	"oro/pkg/processenv"
 	"oro/pkg/protocol"
@@ -40,6 +41,74 @@ const (
 type StreamingSpawner interface {
 	Spawn(ctx context.Context, model string, prompt string, workdir string) (Process, io.ReadCloser, io.WriteCloser, error)
 	StreamFormat() StreamFormat
+}
+
+// ReasoningStreamingSpawner accepts a Codex-style reasoning effort in addition
+// to the model. Claude spawners ignore reasoning by not implementing it.
+type ReasoningStreamingSpawner interface {
+	SpawnWithReasoning(ctx context.Context, model string, reasoning string, prompt string, workdir string) (Process, io.ReadCloser, io.WriteCloser, error)
+}
+
+// RuntimeStreamingSpawner routes subprocess invocation by runtime.
+type RuntimeStreamingSpawner interface {
+	Spawn(ctx context.Context, runtime string, model string, reasoning string, prompt string, workdir string) (Process, io.ReadCloser, io.WriteCloser, StreamFormat, error)
+}
+
+type runtimeSpawnerRouter struct {
+	claudeSpawner StreamingSpawner
+	codexSpawner  StreamingSpawner
+}
+
+// NewRuntimeSpawnerRouter creates a runtime-aware router over Claude and Codex spawners.
+func NewRuntimeSpawnerRouter(claudeSpawner, codexSpawner StreamingSpawner) RuntimeStreamingSpawner {
+	return &runtimeSpawnerRouter{
+		claudeSpawner: claudeSpawner,
+		codexSpawner:  codexSpawner,
+	}
+}
+
+func singleRuntimeSpawner(spawner StreamingSpawner) RuntimeStreamingSpawner {
+	return &runtimeSpawnerRouter{
+		claudeSpawner: spawner,
+		codexSpawner:  spawner,
+	}
+}
+
+// Spawn selects the configured runtime spawner and starts the assignment subprocess.
+func (r *runtimeSpawnerRouter) Spawn(ctx context.Context, runtime, model, reasoning, prompt, workdir string) (Process, io.ReadCloser, io.WriteCloser, StreamFormat, error) {
+	spawner, err := r.spawnerForRuntime(runtime)
+	if err != nil {
+		return nil, nil, nil, "", err
+	}
+	var proc Process
+	var stdout io.ReadCloser
+	var stdin io.WriteCloser
+	if reasoningSpawner, ok := spawner.(ReasoningStreamingSpawner); ok {
+		proc, stdout, stdin, err = reasoningSpawner.SpawnWithReasoning(ctx, model, reasoning, prompt, workdir)
+	} else {
+		proc, stdout, stdin, err = spawner.Spawn(ctx, model, prompt, workdir)
+	}
+	if err != nil {
+		return nil, nil, nil, "", fmt.Errorf("spawn %s subprocess: %w", runtime, err)
+	}
+	return proc, stdout, stdin, spawner.StreamFormat(), nil
+}
+
+func (r *runtimeSpawnerRouter) spawnerForRuntime(runtime string) (StreamingSpawner, error) {
+	switch runtime {
+	case agentruntime.RuntimeClaude:
+		if r.claudeSpawner == nil {
+			return nil, fmt.Errorf("claude runtime spawner is not configured")
+		}
+		return r.claudeSpawner, nil
+	case agentruntime.RuntimeCodex:
+		if r.codexSpawner == nil {
+			return nil, fmt.Errorf("codex runtime spawner is not configured")
+		}
+		return r.codexSpawner, nil
+	default:
+		return nil, fmt.Errorf("unknown agent runtime %q", runtime)
+	}
 }
 
 // Process abstracts a running subprocess.
@@ -105,7 +174,7 @@ type Worker struct {
 	model                  string
 	streamFormat           StreamFormat
 	mu                     sync.Mutex
-	spawner                StreamingSpawner
+	spawner                RuntimeStreamingSpawner
 	socketPath             string // for reconnection
 	buffer                 *MessageBuffer
 	disconnected           bool
@@ -135,6 +204,12 @@ type Worker struct {
 
 // New creates a Worker that connects to the Dispatcher at socketPath.
 func New(id, socketPath string, spawner StreamingSpawner) (*Worker, error) {
+	return NewWithRuntimeSpawner(id, socketPath, singleRuntimeSpawner(spawner))
+}
+
+// NewWithRuntimeSpawner creates a Worker that connects to the Dispatcher at socketPath
+// and routes each assignment through the provided runtime-aware spawner.
+func NewWithRuntimeSpawner(id, socketPath string, spawner RuntimeStreamingSpawner) (*Worker, error) {
 	conn, err := net.Dial("unix", socketPath) //nolint:noctx // UDS connect is instant, no context needed
 	if err != nil {
 		return nil, fmt.Errorf("connect to dispatcher: %w", err)
@@ -157,7 +232,21 @@ func NewWithConn(id string, conn net.Conn, spawner StreamingSpawner) *Worker {
 	return &Worker{
 		ID:                  id,
 		conn:                conn,
-		spawner:             spawner,
+		spawner:             singleRuntimeSpawner(spawner),
+		buffer:              NewMessageBuffer(maxBufferedMessages),
+		contextPollInterval: DefaultContextPollInterval,
+		reconnectInterval:   reconnectBaseInterval,
+	}
+}
+
+// NewWithConnAndRuntimeSpawners creates a Worker that routes each assignment by payload runtime.
+//
+//oro:testonly
+func NewWithConnAndRuntimeSpawners(id string, conn net.Conn, claudeSpawner, codexSpawner StreamingSpawner) *Worker {
+	return &Worker{
+		ID:                  id,
+		conn:                conn,
+		spawner:             NewRuntimeSpawnerRouter(claudeSpawner, codexSpawner),
 		buffer:              NewMessageBuffer(maxBufferedMessages),
 		contextPollInterval: DefaultContextPollInterval,
 		reconnectInterval:   reconnectBaseInterval,
@@ -418,15 +507,21 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	}
 
 	prompt, model := BuildAssignPrompt(msg.Assign)
+	runtime := msg.Assign.Runtime
+	if runtime == "" {
+		runtime = agentruntime.ReadRuntime()
+		model = protocol.DefaultModel
+		fmt.Fprintf(os.Stderr, "oro worker: assign payload missing runtime; falling back to %s/%s\n", runtime, model)
+	}
 	// Export the assigned bead ID so the spawned claude subprocess (which
 	// inherits this process's env via buildClaudeEnv) can be identified by the
 	// `oro task close` self-close guard. See oro-t5ha.
 	_ = os.Setenv("ORO_WORKER_BEAD_ID", msg.Assign.BeadID)
-	proc, stdout, _, err := w.spawner.Spawn(ctx, model, prompt, msg.Assign.Worktree)
+	proc, stdout, _, format, err := w.spawner.Spawn(ctx, runtime, model, msg.Assign.Reasoning, prompt, msg.Assign.Worktree)
 	if err != nil {
-		return fmt.Errorf("spawn claude: %w", err)
+		return fmt.Errorf("spawn %s: %w", runtime, err)
 	}
-	w.recordSpawnedProc(proc, model)
+	w.recordSpawnedProc(proc, model, format)
 
 	if stdout != nil {
 		w.mu.Lock()
@@ -491,12 +586,12 @@ func clearAssignmentLocalState(worktree string) {
 
 // recordSpawnedProc captures the freshly spawned subprocess + model and resets
 // the exit-coordination flags under the worker lock.
-func (w *Worker) recordSpawnedProc(proc Process, model string) {
+func (w *Worker) recordSpawnedProc(proc Process, model string, format StreamFormat) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.proc = proc
 	w.model = model
-	w.streamFormat = w.spawner.StreamFormat()
+	w.streamFormat = format
 	w.subprocExitCh = make(chan struct{})
 	w.subprocExitClosed = false
 	w.handleExitClaimed = false

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"oro/pkg/agentmodel"
 	"oro/pkg/processenv"
 	"oro/pkg/protocol"
 
@@ -32,6 +33,17 @@ type Process interface {
 // BatchSpawner creates new claude -p processes.
 type BatchSpawner interface {
 	Spawn(ctx context.Context, model string, prompt string, workdir string) (Process, error)
+}
+
+// ReasoningBatchSpawner accepts a Codex-style reasoning effort. Claude
+// spawners ignore reasoning by not implementing it.
+type ReasoningBatchSpawner interface {
+	SpawnWithReasoning(ctx context.Context, model string, reasoning string, prompt string, workdir string) (Process, error)
+}
+
+// RuntimeBatchSpawner routes ops subprocesses by runtime.
+type RuntimeBatchSpawner interface {
+	SpawnRuntime(ctx context.Context, runtime string, model string, reasoning string, prompt string, workdir string) (Process, error)
 }
 
 // --- Ops types and verdicts ---
@@ -80,6 +92,30 @@ func (t Type) Model() string {
 		return protocol.ModelOpus
 	default:
 		return protocol.ModelSonnet
+	}
+}
+
+// Role returns the agent config role used for this ops type.
+func (t Type) Role() string {
+	switch t {
+	case OpsReview:
+		return "ops_review"
+	case OpsMerge:
+		return "ops_merge"
+	case OpsDiagnosis:
+		return "ops_diagnosis"
+	case OpsEscalation:
+		return "ops_escalation"
+	case OpsEpicFix:
+		return "ops_epic_fix"
+	case OpsWriteAC:
+		return "ops_write_ac"
+	case OpsDecompose:
+		return "ops_decompose"
+	case OpsDream:
+		return "ops_dream"
+	default:
+		return "worker"
 	}
 }
 
@@ -367,7 +403,8 @@ func (s *Spawner) run(ctx context.Context, opsType Type, beadID, worktree, promp
 			s.mu.Unlock()
 		}()
 
-		proc, err := s.spawner.Spawn(ctx, opsType.Model(), prompt, worktree)
+		runtime, model, reasoning := agentmodel.ResolveForRole(opsType.Role())
+		proc, err := spawnOps(ctx, s.spawner, runtime, model, reasoning, prompt, worktree)
 		if err != nil {
 			ch <- Result{
 				Type:    opsType,
@@ -403,6 +440,28 @@ func (s *Spawner) run(ctx context.Context, opsType Type, beadID, worktree, promp
 	}()
 
 	return ch
+}
+
+func spawnOps(ctx context.Context, spawner BatchSpawner, runtime, model, reasoning, prompt, worktree string) (Process, error) {
+	if runtimeSpawner, ok := spawner.(RuntimeBatchSpawner); ok {
+		proc, err := runtimeSpawner.SpawnRuntime(ctx, runtime, model, reasoning, prompt, worktree)
+		if err != nil {
+			return nil, fmt.Errorf("spawn %s ops runtime: %w", runtime, err)
+		}
+		return proc, nil
+	}
+	if reasoningSpawner, ok := spawner.(ReasoningBatchSpawner); ok {
+		proc, err := reasoningSpawner.SpawnWithReasoning(ctx, model, reasoning, prompt, worktree)
+		if err != nil {
+			return nil, fmt.Errorf("spawn ops model %q: %w", model, err)
+		}
+		return proc, nil
+	}
+	proc, err := spawner.Spawn(ctx, model, prompt, worktree)
+	if err != nil {
+		return nil, fmt.Errorf("spawn ops model %q: %w", model, err)
+	}
+	return proc, nil
 }
 
 // waitForProcess waits for a process to complete with timeout and context cancellation.
@@ -513,6 +572,14 @@ func parseResult(opsType Type, beadID, stdout string, waitErr error) Result {
 	}
 
 	if waitErr != nil {
+		if opsType == OpsMerge {
+			verdict, feedback := parseMergeOutput(stdout)
+			if verdict == VerdictResolved {
+				r.Verdict = verdict
+				r.Feedback = feedback
+				return r
+			}
+		}
 		r.Verdict = VerdictFailed
 		r.Err = fmt.Errorf("ops: process exited with error: %w", waitErr)
 		r.Feedback = stdout
@@ -565,7 +632,24 @@ func parseMergeOutput(stdout string) (verdict Verdict, feedback string) {
 	if strings.Contains(upper, "FAILED") {
 		return VerdictFailed, extractFeedback(stdout, "FAILED")
 	}
+	if mergeOutputIndicatesCleanRebase(upper) {
+		return VerdictResolved, strings.TrimSpace(stdout)
+	}
 	return VerdictFailed, stdout
+}
+
+func mergeOutputIndicatesCleanRebase(upper string) bool {
+	if strings.Contains(upper, "REBASE COMPLETED CLEANLY") {
+		return true
+	}
+	if strings.Contains(upper, "WORKING TREE CLEAN") &&
+		(strings.Contains(upper, "REBASE") || strings.Contains(upper, "RESOLUTION")) {
+		return true
+	}
+	if strings.Contains(upper, "NOTHING TO COMMIT") && strings.Contains(upper, "REBASE") {
+		return true
+	}
+	return false
 }
 
 // extractFeedback returns text after the verdict keyword (on the same line

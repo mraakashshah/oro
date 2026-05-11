@@ -90,6 +90,10 @@ func writeStuckWorkerPlaybook(b *strings.Builder) {
 
 func writeMergeConflictPlaybook(b *strings.Builder) {
 	b.WriteString("A merge conflict could not be automatically resolved by the ops merge agent.\n\n")
+	b.WriteString("Safety rules:\n")
+	b.WriteString("- Do not close the task unless the recovered work has been merged into the target branch and verified.\n")
+	b.WriteString("- Do not use task closure to break a merge-conflict loop or hide unmerged recovery work.\n")
+	b.WriteString("- If local repository state, dirty files, missing worktree data, or semantic conflicts block integration, preserve the branch/worktree and output ESCALATE with the exact blocker.\n\n")
 	b.WriteString("Steps:\n")
 	b.WriteString("1. Inspect the conflicting files in the worktree\n")
 	b.WriteString("2. Understand both sides of the conflict from task context\n")

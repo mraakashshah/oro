@@ -822,6 +822,15 @@ func TestQGExhaustion_ReopensOriginalForDeterministicFailure(t *testing.T) {
 	if beadSrc.updated[beadID] != "open" {
 		t.Fatalf("bead status update = %q, want open", beadSrc.updated[beadID])
 	}
+	if len(beadSrc.deferCalls) != 1 {
+		t.Fatalf("defer calls = %+v, want one cooldown defer", beadSrc.deferCalls)
+	}
+	if beadSrc.deferCalls[0].id != beadID {
+		t.Fatalf("defer call id = %q, want %q", beadSrc.deferCalls[0].id, beadID)
+	}
+	if until, err := time.Parse(time.RFC3339, beadSrc.deferCalls[0].until); err != nil || !until.After(time.Now().UTC()) {
+		t.Fatalf("defer until = %q, want future RFC3339 timestamp (parse err %v)", beadSrc.deferCalls[0].until, err)
+	}
 	if len(beadSrc.created) != 0 {
 		t.Fatalf("created P0 children = %+v, want none", beadSrc.created)
 	}
@@ -850,6 +859,9 @@ func TestQGExhaustion_ReopensOriginalForDeterministicFailure(t *testing.T) {
 	d.handleClassifiedQGExhaustion(ctx, workerID, closedID, 0, closedRec, cls)
 	if beadSrc.updated[closedID] == "open" {
 		t.Fatal("already closed original bead was reopened")
+	}
+	if len(beadSrc.deferCalls) != 1 {
+		t.Fatalf("closed original changed defer calls = %+v, want unchanged one call", beadSrc.deferCalls)
 	}
 }
 
@@ -1051,6 +1063,9 @@ func TestRepeatedIdenticalQGOutputClassifiedBeforeEscalation(t *testing.T) {
 		// original bead reopened (not stranded)
 		if beadSrc.updated[beadID] != "open" {
 			t.Fatalf("bead status update = %q, want open", beadSrc.updated[beadID])
+		}
+		if len(beadSrc.deferCalls) != 1 || beadSrc.deferCalls[0].id != beadID {
+			t.Fatalf("defer calls = %+v, want cooldown defer for %s", beadSrc.deferCalls, beadID)
 		}
 
 		// no escalation to manager

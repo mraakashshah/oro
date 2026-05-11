@@ -47,29 +47,33 @@ func TestAgentConfigStructFields(t *testing.T) {
 		}
 	})
 
-	t.Run("TierConfig has Runtime and Model fields", func(t *testing.T) {
-		tc := config.TierConfig{Runtime: "claude", Model: "claude-sonnet-4-6"}
+	t.Run("TierConfig has Runtime Model and Reasoning fields", func(t *testing.T) {
+		tc := config.TierConfig{Runtime: "claude", Model: "claude-sonnet-4-6", Reasoning: "low"}
 		if tc.Runtime != "claude" {
 			t.Errorf("TierConfig.Runtime: got %q, want %q", tc.Runtime, "claude")
 		}
 		if tc.Model != "claude-sonnet-4-6" {
 			t.Errorf("TierConfig.Model: got %q, want %q", tc.Model, "claude-sonnet-4-6")
 		}
+		if tc.Reasoning != "low" {
+			t.Errorf("TierConfig.Reasoning: got %q, want %q", tc.Reasoning, "low")
+		}
 
 		tierType := reflect.TypeFor[config.TierConfig]()
-		for _, name := range []string{"Runtime", "Model"} {
+		for _, name := range []string{"Runtime", "Model", "Reasoning"} {
 			if _, ok := tierType.FieldByName(name); !ok {
 				t.Errorf("TierConfig missing field %q", name)
 			}
 		}
 	})
 
-	t.Run("RoleConfig has Tier Transport Runtime Model Provider APIModel", func(t *testing.T) {
+	t.Run("RoleConfig has Tier Transport Runtime Model Reasoning Provider APIModel", func(t *testing.T) {
 		rc := config.RoleConfig{
 			Tier:      protocol.TierBalanced,
 			Transport: "cli",
 			Runtime:   "claude",
 			Model:     "claude-sonnet-4-6",
+			Reasoning: "medium",
 			Provider:  "anthropic",
 			APIModel:  "anthropic_fast",
 		}
@@ -85,6 +89,9 @@ func TestAgentConfigStructFields(t *testing.T) {
 		if rc.Model != "claude-sonnet-4-6" {
 			t.Errorf("RoleConfig.Model: got %q, want %q", rc.Model, "claude-sonnet-4-6")
 		}
+		if rc.Reasoning != "medium" {
+			t.Errorf("RoleConfig.Reasoning: got %q, want %q", rc.Reasoning, "medium")
+		}
 		if rc.Provider != "anthropic" {
 			t.Errorf("RoleConfig.Provider: got %q, want %q", rc.Provider, "anthropic")
 		}
@@ -93,7 +100,7 @@ func TestAgentConfigStructFields(t *testing.T) {
 		}
 
 		roleType := reflect.TypeFor[config.RoleConfig]()
-		for _, name := range []string{"Tier", "Transport", "Runtime", "Model", "Provider", "APIModel"} {
+		for _, name := range []string{"Tier", "Transport", "Runtime", "Model", "Reasoning", "Provider", "APIModel"} {
 			if _, ok := roleType.FieldByName(name); !ok {
 				t.Errorf("RoleConfig missing field %q", name)
 			}
@@ -108,7 +115,7 @@ func TestAgentConfigStructFields(t *testing.T) {
 		cfg := config.AgentConfig{
 			Tiers: map[protocol.Tier]config.TierConfig{
 				protocol.TierFast: {Runtime: "claude", Model: "claude-haiku-4-5-20251001"},
-				protocol.TierDeep: {Runtime: "codex", Model: "gpt-5-codex"},
+				protocol.TierDeep: {Runtime: "codex", Model: "gpt-5-codex", Reasoning: "high"},
 			},
 			APIModels: map[string]string{
 				"anthropic_fast": "claude-haiku-4-5-20251001",
@@ -129,6 +136,9 @@ func TestAgentConfigStructFields(t *testing.T) {
 		if cfg.Tiers[protocol.TierDeep].Runtime != "codex" {
 			t.Errorf("deep tier Runtime: got %q, want codex", cfg.Tiers[protocol.TierDeep].Runtime)
 		}
+		if cfg.Tiers[protocol.TierDeep].Reasoning != "high" {
+			t.Errorf("deep tier Reasoning: got %q, want high", cfg.Tiers[protocol.TierDeep].Reasoning)
+		}
 		if cfg.APIModels["anthropic_fast"] != "claude-haiku-4-5-20251001" {
 			t.Errorf("APIModels[anthropic_fast]: got %q", cfg.APIModels["anthropic_fast"])
 		}
@@ -147,6 +157,7 @@ func TestAgentConfigLoadFromYAML(t *testing.T) {
     fast:
       runtime: testruntime
       model: test-model-fast
+      reasoning: low
     balanced:
       runtime: testruntime
       model: test-model-balanced
@@ -184,6 +195,9 @@ func TestAgentConfigLoadFromYAML(t *testing.T) {
 	}
 	if got := cfg.Tiers[protocol.TierFast].Model; got != "test-model-fast" {
 		t.Errorf("tiers.fast.model = %q, want %q", got, "test-model-fast")
+	}
+	if got := cfg.Tiers[protocol.TierFast].Reasoning; got != "low" {
+		t.Errorf("tiers.fast.reasoning = %q, want %q", got, "low")
 	}
 	if got := cfg.Tiers[protocol.TierBalanced].Model; got != "test-model-balanced" {
 		t.Errorf("tiers.balanced.model = %q, want %q", got, "test-model-balanced")
@@ -252,6 +266,40 @@ languages:
 	}
 	if got := cfg.APIModels["anthropic_fast"]; got != "claude-haiku-4-5-20251001" {
 		t.Errorf("default api_models.anthropic_fast = %q, want %q", got, "claude-haiku-4-5-20251001")
+	}
+}
+
+func TestDefaultAgentConfigLockedProviderRoleTable(t *testing.T) {
+	cfg := config.DefaultAgentConfig()
+
+	for tier, want := range map[protocol.Tier]config.TierConfig{
+		protocol.TierFast:       {Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "low"},
+		protocol.TierBalanced:   {Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "low"},
+		protocol.TierDeep:       {Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "high"},
+		protocol.TierBackground: {Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "low"},
+	} {
+		if got := cfg.Tiers[tier]; got != want {
+			t.Fatalf("tier %s = %+v, want %+v", tier, got, want)
+		}
+	}
+
+	for role, want := range map[string]config.RoleConfig{
+		"spec_writer":       {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+		"spec_challenger":   {Transport: "cli", Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "xhigh"},
+		"worker":            {Transport: "cli", Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "low"},
+		"worker_escalation": {Transport: "cli", Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "medium"},
+		"ops_review":        {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+		"ops_escalation":    {Transport: "cli", Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "high"},
+		"ops_merge":         {Transport: "cli", Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "high"},
+		"ops_diagnosis":     {Transport: "cli", Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "high"},
+		"ops_decompose":     {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+		"ops_epic_fix":      {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+		"ops_write_ac":      {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+		"ops_dream":         {Transport: "cli", Tier: protocol.TierFast},
+	} {
+		if got := cfg.Roles[role]; got != want {
+			t.Fatalf("role %s = %+v, want %+v", role, got, want)
+		}
 	}
 }
 
@@ -468,6 +516,45 @@ func TestAgentConfigCrossRuntimeMismatchRejected(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "claude") {
 			t.Errorf("error %q does not name the conflicting runtime %q", err.Error(), "claude")
+		}
+	})
+}
+
+func TestAgentConfigCodexReasoningValidation(t *testing.T) {
+	t.Run("invalid codex tier reasoning is rejected", func(t *testing.T) {
+		cfg := &config.AgentConfig{
+			Tiers: map[protocol.Tier]config.TierConfig{
+				protocol.TierFast: {Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "extreme"},
+			},
+		}
+		err := config.Validate(cfg)
+		if err == nil {
+			t.Fatal("expected validation error for invalid codex reasoning")
+		}
+		if !strings.Contains(err.Error(), "reasoning") || !strings.Contains(err.Error(), "extreme") {
+			t.Fatalf("error = %v, want invalid reasoning detail", err)
+		}
+	})
+
+	t.Run("valid codex role reasoning is accepted", func(t *testing.T) {
+		cfg := &config.AgentConfig{
+			Roles: map[string]config.RoleConfig{
+				"worker": {Transport: "cli", Runtime: "codex", Model: "gpt-5.5-codex", Reasoning: "xhigh"},
+			},
+		}
+		if err := config.Validate(cfg); err != nil {
+			t.Fatalf("expected valid codex reasoning, got %v", err)
+		}
+	})
+
+	t.Run("claude role without reasoning is accepted", func(t *testing.T) {
+		cfg := &config.AgentConfig{
+			Roles: map[string]config.RoleConfig{
+				"ops_review": {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+			},
+		}
+		if err := config.Validate(cfg); err != nil {
+			t.Fatalf("expected claude role without reasoning to be valid, got %v", err)
 		}
 	})
 }

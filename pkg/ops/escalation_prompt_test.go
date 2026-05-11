@@ -152,6 +152,23 @@ func TestWritePlaybook_MergeConflict_GoTestStep(t *testing.T) {
 	}
 }
 
+func TestWritePlaybook_MergeConflict_ForbidsClosingUnmergedRecovery(t *testing.T) {
+	prompt := buildEscalationPrompt(EscalationOpts{
+		EscalationType: "MERGE_CONFLICT",
+		BeadID:         "oro-mc",
+	})
+
+	for _, want := range []string{
+		"Do not close the task unless the recovered work has been merged",
+		"Do not use task closure to break a merge-conflict loop",
+		"preserve the branch/worktree and output ESCALATE",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("MERGE_CONFLICT playbook missing %q, got:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestWritePlaybook_PriorityContention_Steps(t *testing.T) {
 	prompt := buildEscalationPrompt(EscalationOpts{
 		EscalationType: "PRIORITY_CONTENTION",

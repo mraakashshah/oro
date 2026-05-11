@@ -164,8 +164,8 @@ func (c *Coordinator) Merge(ctx context.Context, opts Opts) (*Result, error) {
 	return c.worktreeRemoveAndFFMerge(ctx, opts)
 }
 
-// worktreeRemoveAndFFMerge fast-forward merges the rebased branch onto main,
-// then removes the agent worktree.
+// worktreeRemoveAndFFMerge fast-forward merges the rebased branch onto the
+// target branch, then removes the agent worktree.
 //
 // This preserves commit hashes — no cherry-pick rewrite occurs.
 //
@@ -188,6 +188,10 @@ func (c *Coordinator) worktreeRemoveAndFFMerge(ctx context.Context, opts Opts) (
 			return nil, fmt.Errorf("failed to get primary repo path: %w", err)
 		}
 		primaryRepo = strings.TrimSpace(primaryRepo)
+	}
+
+	if target := effectiveTarget(opts); target != "main" {
+		return c.updateTargetRefAndRemove(ctx, opts, primaryRepo, target)
 	}
 
 	// Try ff-only merge BEFORE removing the worktree so we can retry on failure.
@@ -222,6 +226,27 @@ func (c *Coordinator) worktreeRemoveAndFFMerge(ctx context.Context, opts Opts) (
 	// but using the branch ref makes the result specific to this bead even when
 	// concurrent merges advance HEAD between the merge and the rev-parse step
 	// (oro-fsks: two beads merged in the same tick both echoed bead-a's SHA).
+	stdout, _, err := c.git.Run(ctx, primaryRepo, "rev-parse", opts.Branch)
+	if err != nil {
+		return nil, fmt.Errorf("rev-parse %s failed: %w", opts.Branch, err)
+	}
+	return &Result{CommitSHA: strings.TrimSpace(stdout)}, nil
+}
+
+func (c *Coordinator) updateTargetRefAndRemove(ctx context.Context, opts Opts, primaryRepo, target string) (*Result, error) {
+	if _, _, err := c.git.Run(ctx, primaryRepo, "merge-base", "--is-ancestor", target, opts.Branch); err != nil {
+		return nil, fmt.Errorf("target branch %s is not an ancestor of %s: %w", target, opts.Branch, err)
+	}
+
+	targetRef := "refs/heads/" + strings.TrimPrefix(target, "refs/heads/")
+	if _, _, err := c.git.Run(ctx, primaryRepo, "update-ref", targetRef, opts.Branch); err != nil {
+		return nil, fmt.Errorf("fast-forward %s to %s: %w", target, opts.Branch, err)
+	}
+
+	if removeErr := c.removeWorktree(ctx, primaryRepo, opts.Worktree); removeErr != nil {
+		return nil, fmt.Errorf("worktree remove failed (branch %s merged but worktree lingers): %w", opts.Branch, removeErr)
+	}
+
 	stdout, _, err := c.git.Run(ctx, primaryRepo, "rev-parse", opts.Branch)
 	if err != nil {
 		return nil, fmt.Errorf("rev-parse %s failed: %w", opts.Branch, err)

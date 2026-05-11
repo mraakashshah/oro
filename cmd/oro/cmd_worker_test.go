@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"testing"
 	"time"
 
@@ -71,24 +72,51 @@ func TestNewWorkerCmd_InvalidSocket(t *testing.T) {
 	}
 }
 
-func TestWorkerSpawnerRespectsConfiguredRuntime(t *testing.T) {
-	t.Setenv(agentRuntimeEnvVar, runtimeCodex)
-
-	want := &testRuntimeWorkerSpawner{}
-	prevWorker := newCodexWorkerSpawner
-	newCodexWorkerSpawner = func() worker.StreamingSpawner { return want }
+func TestWorkerSpawnerBuildsRuntimeRouter(t *testing.T) {
+	claudeSpawner := &workerRouterTestSpawner{}
+	codexSpawner := &workerRouterTestSpawner{}
+	prevClaude := newClaudeWorkerSpawner
+	prevCodex := newCodexWorkerSpawner
+	newClaudeWorkerSpawner = func() worker.StreamingSpawner { return claudeSpawner }
+	newCodexWorkerSpawner = func() worker.StreamingSpawner { return codexSpawner }
 	defer func() {
-		newCodexWorkerSpawner = prevWorker
+		newClaudeWorkerSpawner = prevClaude
+		newCodexWorkerSpawner = prevCodex
 	}()
 
-	got, err := workerSpawnerForRuntime()
-	if err != nil {
-		t.Fatalf("workerSpawnerForRuntime: %v", err)
+	got := workerSpawnerForRuntime()
+	if _, _, _, _, err := got.Spawn(context.Background(), runtimeClaude, "sonnet", "", "prompt", t.TempDir()); err != nil {
+		t.Fatalf("spawn claude through runtime router: %v", err)
 	}
-	if got != want {
-		t.Fatalf("worker spawner = %#v, want injected codex runtime spawner %#v", got, want)
+	if _, _, _, _, err := got.Spawn(context.Background(), runtimeCodex, "gpt-5-codex", "high", "prompt", t.TempDir()); err != nil {
+		t.Fatalf("spawn codex through runtime router: %v", err)
+	}
+
+	if claudeSpawner.calls != 1 {
+		t.Fatalf("claude spawner calls = %d, want 1", claudeSpawner.calls)
+	}
+	if codexSpawner.calls != 1 {
+		t.Fatalf("codex spawner calls = %d, want 1", codexSpawner.calls)
 	}
 }
+
+type workerRouterTestSpawner struct {
+	calls int
+}
+
+func (s *workerRouterTestSpawner) Spawn(_ context.Context, _, _, _ string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
+	s.calls++
+	return &workerRouterTestProcess{}, nil, nil, nil
+}
+
+func (s *workerRouterTestSpawner) StreamFormat() worker.StreamFormat {
+	return worker.StreamFormatClaudeJSON
+}
+
+type workerRouterTestProcess struct{}
+
+func (p *workerRouterTestProcess) Wait() error { return nil }
+func (p *workerRouterTestProcess) Kill() error { return nil }
 
 // TestOpenWorkerMemoryDB verifies that openWorkerMemoryDB opens a SQLite
 // connection and creates a valid memory.Store. This ensures the worker memory

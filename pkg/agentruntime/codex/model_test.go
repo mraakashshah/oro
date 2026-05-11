@@ -29,3 +29,15 @@ func TestBuildExecArgsKeepsNativeCodexModel(t *testing.T) {
 	}
 	t.Fatalf("native Codex model should be passed through: %v", args)
 }
+
+func TestBuildExecArgsAddsReasoningEffort(t *testing.T) {
+	t.Parallel()
+
+	args := buildExecArgsWithReasoning("gpt-5.5-codex", "high", "do work")
+	for i, arg := range args {
+		if arg == "--reasoning-effort" && i+1 < len(args) && args[i+1] == "high" {
+			return
+		}
+	}
+	t.Fatalf("codex reasoning effort should be passed through: %v", args)
+}
