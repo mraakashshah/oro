@@ -184,6 +184,9 @@ Acceptance shape:
   infra, not task code.
 - A gofumpt/goimports failure classifies as worker deterministic with direct
   retry feedback.
+- Dispatcher QG classification call sites load cross-bead fingerprint history
+  from `qg_failure_occurrences` before calling the classifier. The unit
+  classifier must not be the only tested path.
 
 ### 7. Make Stop Kill The Whole Swarm Process Tree
 
@@ -196,11 +199,17 @@ Policy:
 - Stop must terminate worker process groups, not only dispatcher/worker PIDs.
 - Stop must verify no matching children remain and log residuals if any had to
   be force-killed.
+- Stop must perform a post-stop residual scan scoped by Oro ownership markers,
+  recorded worker PIDs, process groups, sessions, or worktree roots so
+  reparented QG, `go test`, and ops-review children are detected without killing
+  unrelated user processes.
 
 Acceptance shape:
 
-- A test launches a fake worker with a nested sleep child, runs stop cleanup,
-  and asserts the nested child is gone.
+- A test launches a fake worker with a nested child, runs stop cleanup, and
+  asserts the nested child is gone.
+- A second test simulates or records an escaped/reparented QG child and asserts
+  stop reports and terminates it using Oro-scoped ownership evidence.
 
 ### 8. Add Throughput Health Metrics
 
@@ -215,11 +224,45 @@ Add a status or report command that shows:
 - review rejection count,
 - progress timeout count,
 - top repeated beads/fingerprints.
+- derived health ratios:
+  - productive closures per assignment,
+  - QG rejections per assignment,
+  - review rejections per assignment,
+  - progress timeouts per assignment,
+  - comparison against the May 11 shutdown baseline.
 
 Acceptance shape:
 
 - A fixture DB with mixed timestamp formats reports normalized counts.
 - Productive closure excludes `DEFERRED` and duplicate incident cleanup.
+- The command has an assert mode so operators can run a binary health gate,
+  for example `oro throughput --window 60m --assert productive_per_assignment>=0.25`.
+
+### 9. Add A Bounded Swarm Proof Run
+
+Component tests are not enough for this recovery. The final gate must prove the
+fixes work together through the real dispatcher, worker, review, QG, stop, and
+throughput paths.
+
+Add a proof-run script or command that:
+
+- starts a bounded three-worker Oro run against a small deterministic workload,
+- runs long enough to exercise assignment, QG, review, merge/close, and stop,
+- stops the swarm with `oro stop --force`,
+- asserts no Oro-owned dispatcher, worker, QG, `go test`, or ops-review
+  subprocesses remain,
+- asserts throughput health crosses an explicit minimum useful-output threshold,
+- emits a compact report operators can attach to the epic before relaunch.
+
+Acceptance shape:
+
+- One command runs against `main` after all child fixes are merged:
+  `./scripts/proof_swarm_throughput.sh`.
+- The command fails if productive closures are zero, rejection/assignment ratios
+  exceed the configured thresholds, progress timeouts recur, or residual
+  Oro-owned child processes remain.
+- The command records the measured thresholds and the comparison against the May
+  11 shutdown baseline.
 
 ## Plan Premortem
 
@@ -257,6 +300,8 @@ premortem:
 3. Land classification/retry economics after the failure taxonomy is tested.
 4. Land stop process-tree cleanup before the next long swarm run.
 5. Add throughput health reporting last.
+6. Run the bounded three-worker proof command before relaunching normal swarm
+   operations.
 
 Relaunch criteria:
 
