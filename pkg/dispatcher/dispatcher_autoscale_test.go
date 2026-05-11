@@ -1410,3 +1410,42 @@ func TestReconcileScale_CapByManagedExits(t *testing.T) {
 		}
 	})
 }
+
+func TestCheckHeartbeatsReconcilesAfterManagedProgressTimeouts(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	d.cfg.MaxWorkers = 2
+	d.cfg.ProgressTimeout = 100 * time.Millisecond
+
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+
+	d.mu.Lock()
+	d.targetWorkers = 2
+	d.unexpectedManagedExits = 2
+	for i := 0; i < 2; i++ {
+		id := fmt.Sprintf("managed-stuck-%d", i)
+		conn := newMockConn()
+		d.workers[id] = &trackedWorker{
+			id:           id,
+			conn:         conn,
+			state:        protocol.WorkerBusy,
+			managed:      true,
+			beadID:       fmt.Sprintf("bead-%d", i),
+			lastSeen:     now,
+			lastProgress: now.Add(-2 * d.cfg.ProgressTimeout),
+			encoder:      json.NewEncoder(conn),
+		}
+	}
+	d.mu.Unlock()
+
+	d.checkHeartbeats(context.Background())
+	_ = d.reconcileScale()
+
+	spawned := pm.SpawnedIDs()
+	if len(spawned) != 2 {
+		t.Fatalf("spawned workers = %d (%v), want 2 replacements after all managed workers timed out", len(spawned), spawned)
+	}
+}

@@ -502,6 +502,7 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 	stuckWorkers, stuckManagedExits := d.removeStuckWorkersLocked(ctx, stuck, now)
 	newManagedExits := deadManagedExits + stuckManagedExits
 	d.unexpectedManagedExits += newManagedExits
+	d.clampManagedExitCapAfterPoolDrainLocked(ctx, newManagedExits)
 	hasManagedIdle := d.hasManagedIdleWorkersLocked()
 	d.mu.Unlock()
 
@@ -517,6 +518,23 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 
 	// Kill OS processes for timed-out managed workers (best-effort, outside lock).
 	d.killManagedWorkers(managedWorkerIDs(deadWorkers, stuckWorkers))
+}
+
+func (d *Dispatcher) clampManagedExitCapAfterPoolDrainLocked(ctx context.Context, newManagedExits int) {
+	target := d.targetWorkers
+	if newManagedExits == 0 || target <= 0 {
+		return
+	}
+	if d.managedWorkerCountLocked() != 0 {
+		return
+	}
+	capAt := 2 * target
+	if d.unexpectedManagedExits < capAt {
+		return
+	}
+	d.unexpectedManagedExits = target
+	_ = d.logEventLocked(ctx, "managed_exit_cap_clamped", "dispatcher", "", "",
+		fmt.Sprintf(`{"target":%d,"cap":%d}`, target, capAt))
 }
 
 func (d *Dispatcher) hasManagedIdleWorkersLocked() bool {
