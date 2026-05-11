@@ -32,11 +32,10 @@ func writeHeader(b *strings.Builder, base string) {
 	b.WriteString(".\n")
 	b.WriteString("The quality gate already passed. Do NOT re-check formatting, linting,\n")
 	b.WriteString("or compilation — those are mechanical checks the QG handles.\n\n")
-	b.WriteString("MANDATORY BEFORE APPROVAL: Run the full relevant test package to catch\n")
-	b.WriteString("regressions in existing tests that the task's own tests do not cover.\n")
-	b.WriteString("Determine the package(s) from the diff (e.g. if changes are in\n")
-	b.WriteString("pkg/dispatcher/, run: go test -race -count=1 ./pkg/dispatcher/...).\n")
-	b.WriteString("A regression in any existing test is a Critical finding → REJECTED.\n\n")
+	b.WriteString("MANDATORY BEFORE APPROVAL: Run the task acceptance command first.\n")
+	b.WriteString("Only run broader package tests when they are directly task-relevant and\n")
+	b.WriteString("safe in the current review environment. A real regression in any existing\n")
+	b.WriteString("task-relevant test is a Critical finding → REJECTED.\n\n")
 	b.WriteString("CRITICAL: You MUST NOT use the TaskOutput tool or run tasks in the\n")
 	b.WriteString("background. TaskOutput uses 'tail -f' internally which hangs indefinitely\n")
 	b.WriteString("on completed tasks. To check task output, use the Read tool on output files.\n")
@@ -56,8 +55,23 @@ func writeContext(b *strings.Builder, opts ReviewOpts) {
 		b.WriteString("Acceptance: ")
 		b.WriteString(opts.AcceptanceCriteria)
 		b.WriteString("\n")
+		if cmd := acceptanceCommand(opts.AcceptanceCriteria); cmd != "" {
+			b.WriteString("Primary verification command: ")
+			b.WriteString(cmd)
+			b.WriteString("\n")
+		}
 	}
 	b.WriteString("\n")
+}
+
+func acceptanceCommand(ac string) string {
+	for _, part := range strings.Split(ac, "|") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, "Cmd:") {
+			return strings.TrimSpace(strings.TrimPrefix(part, "Cmd:"))
+		}
+	}
+	return ""
 }
 
 func writeProjectContext(b *strings.Builder, opts ReviewOpts) {

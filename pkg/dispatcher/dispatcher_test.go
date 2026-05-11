@@ -2171,6 +2171,162 @@ func TestReadyForReviewRejectsUntrackedTaskFilesBeforeOpsReview(t *testing.T) {
 	}
 }
 
+func TestReviewSandboxBlockedDoesNotIncrementRejectionCount(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const beadID = "bead-sandbox"
+	const workerID = "w-sandbox"
+	res, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`,
+		beadID, workerID, "/tmp/review-sandbox")
+	if err != nil {
+		t.Fatalf("insert assignment: %v", err)
+	}
+	assignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("assignment id: %v", err)
+	}
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		state:        protocol.WorkerReviewing,
+		beadID:       beadID,
+		worktree:     "/tmp/review-sandbox",
+		assignmentID: assignmentID,
+	}
+	d.mu.Unlock()
+
+	resultCh := make(chan ops.Result, 1)
+	resultCh <- ops.Result{
+		Verdict:  ops.VerdictRejected,
+		Feedback: "acceptance command passed\nbroader test failed: listen unix /tmp/oro.sock: bind: operation not permitted\nVERDICT: REJECTED",
+	}
+	d.handleReviewResult(ctx, workerID, beadID, resultCh)
+
+	if got := eventCount(t, d.db, "review_env_blocked"); got != 1 {
+		t.Fatalf("expected review_env_blocked event, got %d", got)
+	}
+	if got := eventCount(t, d.db, "review_rejected"); got != 0 {
+		t.Fatalf("sandbox-blocked review must not count as review_rejected, got %d", got)
+	}
+	if got := beadSrc.updated[beadID]; got != "open" {
+		t.Fatalf("sandbox-blocked review must reopen bead, got %q", got)
+	}
+	var assignmentStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("assignment status: %v", err)
+	}
+	if assignmentStatus != "completed" {
+		t.Fatalf("sandbox-blocked review must complete assignment, got %q", assignmentStatus)
+	}
+	d.mu.Lock()
+	rejections := d.rejectionCounts[beadID]
+	d.mu.Unlock()
+	if rejections != 0 {
+		t.Fatalf("sandbox-blocked review must not increment rejection count, got %d", rejections)
+	}
+}
+
+func TestReviewPermissionDeniedRegressionStillCountsAsRejection(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const beadID = "bead-real-regression"
+	const workerID = "w-real-regression"
+	conn := newMockConn()
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		encoder:      json.NewEncoder(conn),
+		state:        protocol.WorkerReviewing,
+		beadID:       beadID,
+		worktree:     "/tmp/real-regression",
+		baseBranch:   "main",
+		targetBranch: "main",
+	}
+	d.mu.Unlock()
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Real regression",
+		AcceptanceCriteria: "Test: real regression | Assert: ordinary review rejection",
+		Status:             "in_progress",
+	}
+	beadSrc.mu.Unlock()
+
+	resultCh := make(chan ops.Result, 1)
+	resultCh <- ops.Result{
+		Verdict:  ops.VerdictRejected,
+		Feedback: "acceptance command passed\nreview found real regression: authorization test returns permission denied for non-admin user\nVERDICT: REJECTED",
+	}
+	d.handleReviewResult(ctx, workerID, beadID, resultCh)
+
+	if got := eventCount(t, d.db, "review_env_blocked"); got != 0 {
+		t.Fatalf("real permission-denied regression must not be classified env-blocked, got %d", got)
+	}
+	if got := eventCount(t, d.db, "review_rejected"); got != 1 {
+		t.Fatalf("real permission-denied regression must count as review_rejected, got %d", got)
+	}
+	d.mu.Lock()
+	rejections := d.rejectionCounts[beadID]
+	d.mu.Unlock()
+	if rejections != 1 {
+		t.Fatalf("real permission-denied regression must increment rejection count, got %d", rejections)
+	}
+}
+
+func TestStaleReviewSandboxBlockedDoesNotMutateNewAssignment(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const beadID = "bead-stale-sandbox"
+	const oldWorkerID = "w-old-reviewer"
+	const newWorkerID = "w-new-owner"
+
+	res, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`,
+		beadID, newWorkerID, "/tmp/new-owner")
+	if err != nil {
+		t.Fatalf("insert new assignment: %v", err)
+	}
+	newAssignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("new assignment id: %v", err)
+	}
+
+	d.mu.Lock()
+	d.workers[newWorkerID] = &trackedWorker{
+		id:           newWorkerID,
+		state:        protocol.WorkerBusy,
+		beadID:       beadID,
+		worktree:     "/tmp/new-owner",
+		assignmentID: newAssignmentID,
+	}
+	d.mu.Unlock()
+
+	resultCh := make(chan ops.Result, 1)
+	resultCh <- ops.Result{
+		Verdict:  ops.VerdictRejected,
+		Feedback: "acceptance command passed\nbroader test failed: listen unix /tmp/oro.sock: bind: operation not permitted\nVERDICT: REJECTED",
+	}
+	d.handleReviewResult(ctx, oldWorkerID, beadID, resultCh)
+
+	if got := eventCount(t, d.db, "review_env_blocked_stale"); got != 1 {
+		t.Fatalf("expected stale blocked-review event, got %d", got)
+	}
+	if _, reopened := beadSrc.updated[beadID]; reopened {
+		t.Fatalf("stale blocked-review result must not reopen bead, updates=%v", beadSrc.updated)
+	}
+	var assignmentStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, newAssignmentID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("new assignment status: %v", err)
+	}
+	if assignmentStatus != "active" {
+		t.Fatalf("stale blocked-review result must not complete new assignment, got %q", assignmentStatus)
+	}
+}
+
 func TestDispatcher_Reconnect_ResumesWorker(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)

@@ -140,6 +140,29 @@ func TestReviewPromptPrefersSharedInstructions(t *testing.T) {
 	}
 }
 
+func TestReviewPromptPrefersAcceptanceCommand(t *testing.T) {
+	tmpDir := t.TempDir()
+	prompt := buildReviewPrompt(ReviewOpts{
+		BeadID:             "oro-test",
+		Worktree:           tmpDir,
+		ProjectRoot:        tmpDir,
+		BaseBranch:         "main",
+		AcceptanceCriteria: "Test: pkg/dispatcher/foo_test.go:TestThing | Cmd: go test ./pkg/dispatcher -run TestThing -count=1 | Assert: thing works",
+	})
+
+	acceptanceIdx := strings.Index(prompt, "go test ./pkg/dispatcher -run TestThing -count=1")
+	if acceptanceIdx < 0 {
+		t.Fatal("prompt should include acceptance command as primary verification")
+	}
+	broadIdx := strings.Index(prompt, "go test -race -count=1 ./pkg/dispatcher/...")
+	if broadIdx >= 0 && broadIdx < acceptanceIdx {
+		t.Fatal("prompt should not prioritize broad race-heavy package tests before acceptance command")
+	}
+	if strings.Contains(prompt, "MANDATORY BEFORE APPROVAL: Run the full relevant test package") {
+		t.Fatal("prompt should not mandate broad package tests before acceptance command")
+	}
+}
+
 func TestBuildReviewPrompt_IncludesRules(t *testing.T) {
 	tmpDir := t.TempDir()
 

@@ -3149,6 +3149,22 @@ func (d *Dispatcher) sendPreReviewGitDirtyFeedback(ctx context.Context, workerID
 // the Manager instead of re-assigning the bead to the worker.
 const maxReviewRejections = 2
 
+// ReviewFailureClass distinguishes genuine review findings from failures in
+// the review execution environment.
+type ReviewFailureClass string
+
+const (
+	// ReviewFailureOrdinary is a normal reviewer rejection that should be sent
+	// back to the worker as implementation feedback.
+	ReviewFailureOrdinary ReviewFailureClass = "ordinary"
+	// ReviewFailureEnvBlocked means the acceptance command passed, but an
+	// environment sandbox blocked broader verification.
+	ReviewFailureEnvBlocked ReviewFailureClass = "env_blocked"
+	// ReviewFailureInfraBlocked means the acceptance command passed, but the
+	// review agent or tooling failed before producing useful implementation feedback.
+	ReviewFailureInfraBlocked ReviewFailureClass = "infra_blocked"
+)
+
 // handleReviewResult waits for the ops review result and acts on it.
 func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID string, resultCh <-chan ops.Result) {
 	select {
@@ -3159,6 +3175,11 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 		case ops.VerdictApproved:
 			d.handleReviewApproved(ctx, workerID, beadID, result)
 		case ops.VerdictRejected:
+			switch classifyReviewFailure(result) {
+			case ReviewFailureEnvBlocked, ReviewFailureInfraBlocked:
+				d.handleReviewBlocked(ctx, workerID, beadID, result)
+				return
+			}
 			d.handleReviewRejection(ctx, workerID, beadID, result.Feedback)
 		default:
 			d.handleReviewFailed(ctx, workerID, beadID, result)
@@ -3230,11 +3251,103 @@ func reviewFailureDetail(result ops.Result) string {
 	return "review completed without a machine-readable verdict"
 }
 
+func classifyReviewFailure(result ops.Result) ReviewFailureClass {
+	detail := strings.ToLower(reviewFailureDetail(result))
+	if !strings.Contains(detail, "acceptance command passed") {
+		return ReviewFailureOrdinary
+	}
+	if reviewEnvBlocked(detail) {
+		return ReviewFailureEnvBlocked
+	}
+	if reviewInfraBlocked(detail) {
+		return ReviewFailureInfraBlocked
+	}
+	return ReviewFailureOrdinary
+}
+
+func reviewEnvBlocked(detail string) bool {
+	denied := containsAny(detail, "permission denied", "operation not permitted", "read-only file system")
+	if strings.Contains(detail, "listen unix") && strings.Contains(detail, "bind: operation not permitted") {
+		return true
+	}
+	if denied && containsAny(detail, "uv cache", ".cache/uv") {
+		return true
+	}
+	if denied && containsAny(detail, "home directory", "$home", "user home") {
+		return true
+	}
+	return false
+}
+
+func reviewInfraBlocked(detail string) bool {
+	return containsAny(detail,
+		"taskoutput",
+		"tail -f",
+		"context deadline exceeded",
+		"timed out waiting for review",
+	)
+}
+
+func containsAny(s string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func (d *Dispatcher) reviewingWorkerMatches(workerID, beadID string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	w, ok := d.workers[workerID]
 	return ok && w.beadID == beadID && w.state == protocol.WorkerReviewing
+}
+
+func (d *Dispatcher) handleReviewBlocked(ctx context.Context, workerID, beadID string, result ops.Result) {
+	assignmentID := int64(0)
+	matchesReviewingWorker := false
+	d.mu.Lock()
+	if w, ok := d.workers[workerID]; ok && w.beadID == beadID && w.state == protocol.WorkerReviewing {
+		assignmentID = w.assignmentID
+		matchesReviewingWorker = true
+	}
+	d.mu.Unlock()
+
+	class := classifyReviewFailure(result)
+	eventType := "review_env_blocked"
+	reason := "review environment blocked"
+	if class == ReviewFailureInfraBlocked {
+		eventType = "review_infra_blocked"
+		reason = "review infrastructure blocked"
+	}
+	detail := reviewFailureDetail(result)
+	if !matchesReviewingWorker {
+		_ = d.logEvent(ctx, eventType+"_stale", "ops", beadID, workerID, detail)
+		return
+	}
+	_ = d.logEvent(ctx, eventType, "ops", beadID, workerID, detail)
+	d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID, reason, detail), beadID, workerID)
+	if d.shouldReopenBead(ctx, beadID) {
+		if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
+			_ = d.logEvent(ctx, eventType+"_reopen_failed", "ops", beadID, workerID, err.Error())
+		}
+	}
+	if err := d.completeAssignment(ctx, assignmentID, beadID); err != nil {
+		_ = d.logEvent(ctx, eventType+"_assignment_cleanup_failed", "ops", beadID, workerID, err.Error())
+	}
+	d.clearBeadTracking(beadID)
+
+	d.mu.Lock()
+	if w, ok := d.workers[workerID]; ok && w.beadID == beadID && w.state == protocol.WorkerReviewing {
+		w.state = protocol.WorkerIdle
+		w.beadID = ""
+		w.epicID = ""
+		w.isEpicDecomp = false
+		w.worktree = ""
+		w.model = ""
+	}
+	d.mu.Unlock()
 }
 
 // handleReviewRejection processes a rejected review verdict: increments the
