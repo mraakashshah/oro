@@ -2171,6 +2171,59 @@ func TestReadyForReviewRejectsUntrackedTaskFilesBeforeOpsReview(t *testing.T) {
 	}
 }
 
+func TestDispatcherQGClassificationLoadsCrossBeadHistory(t *testing.T) {
+	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	qgOutput := `--- FAIL: TestPriorityContention (30.00s)
+dispatcher_test.go:123: timed out waiting for worker under contention
+FAIL oro/pkg/dispatcher`
+	fingerprint, summary := FingerprintQGFailure(qgOutput, QGFingerprintOptions{})
+	priorRec := QGFailureRecord{
+		ID:          "prior-cross-bead-qg",
+		BeadID:      "bead-prior",
+		WorkerID:    "worker-prior",
+		Component:   "pre-merge",
+		Fingerprint: fingerprint,
+		Summary:     summary,
+		Output:      qgOutput,
+	}
+	priorCls := QGFailureClassification{
+		Class:      QGFailureClassWorkerDeterministic,
+		Decision:   QGFailureDecisionReopenOriginal,
+		Confidence: QGFailureConfidenceHigh,
+		Reason:     "prior deterministic classification before cross-bead history",
+	}
+	if _, err := RecordQGFailureOccurrence(ctx, d.db, priorRec, priorCls); err != nil {
+		t.Fatalf("record prior qg occurrence: %v", err)
+	}
+
+	d.handlePreMergeQGFailure(ctx, "bead-current", "worker-current", "/tmp/current-worktree", 0, qgOutput)
+
+	if got := eventCount(t, d.db, "qg_infra_incident_reused"); got != 1 {
+		t.Fatalf("expected repeated cross-bead fingerprint to create/reuse infra incident, got %d", got)
+	}
+	removed := false
+	for _, path := range wtMgr.removed {
+		if path == "/tmp/current-worktree" {
+			removed = true
+			break
+		}
+	}
+	if !removed {
+		t.Fatalf("pre-merge QG failure should still clean up worktree, removed=%v", wtMgr.removed)
+	}
+	var class, decision string
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT class, decision FROM qg_failure_incidents WHERE fingerprint=?`,
+		fingerprint).Scan(&class, &decision); err != nil {
+		t.Fatalf("query qg incident: %v", err)
+	}
+	if class != string(QGFailureClassSystemic) || decision != string(QGFailureDecisionCreateOrReuseInfra) {
+		t.Fatalf("incident class/decision = %q/%q, want %q/%q",
+			class, decision, QGFailureClassSystemic, QGFailureDecisionCreateOrReuseInfra)
+	}
+}
+
 func TestReviewSandboxBlockedDoesNotIncrementRejectionCount(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()

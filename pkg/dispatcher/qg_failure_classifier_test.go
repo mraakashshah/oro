@@ -180,3 +180,71 @@ func TestClassifyQGFailureDecisionMatrix(t *testing.T) {
 		})
 	}
 }
+
+func TestClassifyRepeatedQGPatternsFromThroughputRun(t *testing.T) {
+	tests := []struct {
+		name         string
+		output       string
+		history      dispatcher.QGFailureHistory
+		wantClass    dispatcher.QGFailureClass
+		wantDecision dispatcher.QGFailureDecision
+	}{
+		{
+			name: "priority contention repeated across beads is systemic",
+			output: `--- FAIL: TestPriorityContention (30.00s)
+dispatcher_test.go:123: timed out waiting for worker under contention
+FAIL oro/pkg/dispatcher`,
+			history:      dispatcher.QGFailureHistory{AffectedBeads: 2},
+			wantClass:    dispatcher.QGFailureClassSystemic,
+			wantDecision: dispatcher.QGFailureDecisionCreateOrReuseInfra,
+		},
+		{
+			name: "consolidation repeated under load is flaky",
+			output: `--- FAIL: TestConsolidation (15.00s)
+dispatcher_test.go:456: throughput consolidation failed under parallel load
+FAIL oro/pkg/dispatcher`,
+			wantClass:    dispatcher.QGFailureClassFlaky,
+			wantDecision: dispatcher.QGFailureDecisionBackoffRetry,
+		},
+		{
+			name: "tmp-test yamllint is source scoped infrastructure",
+			output: `.tmp-test/session/generated.yaml
+  1:1       error    too many blank lines  (empty-lines)
+yamllint failed while scanning .tmp-test generated artifacts`,
+			wantClass:    dispatcher.QGFailureClassSystemic,
+			wantDecision: dispatcher.QGFailureDecisionCreateOrReuseInfra,
+		},
+		{
+			name: "gofumpt remains worker deterministic",
+			output: `gofumpt failed:
+pkg/dispatcher/foo.go
+Run gofumpt -w pkg/dispatcher/foo.go`,
+			wantClass:    dispatcher.QGFailureClassWorkerDeterministic,
+			wantDecision: dispatcher.QGFailureDecisionRetryOriginal,
+		},
+		{
+			name: "goimports remains worker deterministic",
+			output: `goimports failed:
+pkg/dispatcher/foo.go imports are not sorted`,
+			wantClass:    dispatcher.QGFailureClassWorkerDeterministic,
+			wantDecision: dispatcher.QGFailureDecisionRetryOriginal,
+		},
+		{
+			name: "unexpected subprocess death stops for triage",
+			output: `quality gate subprocess died unexpectedly
+signal: killed`,
+			wantClass:    dispatcher.QGFailureClassUnknown,
+			wantDecision: dispatcher.QGFailureDecisionStopForTriage,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dispatcher.ClassifyQGFailure(dispatcher.QGFailureRecord{Output: tt.output}, tt.history)
+			if got.Class != tt.wantClass || got.Decision != tt.wantDecision {
+				t.Fatalf("ClassifyQGFailure() = class=%q decision=%q reason=%q, want class=%q decision=%q",
+					got.Class, got.Decision, got.Reason, tt.wantClass, tt.wantDecision)
+			}
+		})
+	}
+}

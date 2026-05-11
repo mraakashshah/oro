@@ -222,6 +222,67 @@ func nullableInt64(v int64) any {
 	return v
 }
 
+func (d *Dispatcher) classifyQGFailure(ctx context.Context, rec QGFailureRecord, override QGFailureHistory) QGFailureClassification {
+	history := d.loadQGFailureHistory(ctx, rec)
+	history.KnownFlaky = history.KnownFlaky || override.KnownFlaky
+	history.RerunPassed = history.RerunPassed || override.RerunPassed
+	history.RetryExhausted = history.RetryExhausted || override.RetryExhausted
+	if override.AffectedBeads > history.AffectedBeads {
+		history.AffectedBeads = override.AffectedBeads
+	}
+	return ClassifyQGFailure(rec, history)
+}
+
+func (d *Dispatcher) loadQGFailureHistory(ctx context.Context, rec QGFailureRecord) QGFailureHistory {
+	if d == nil || d.db == nil || rec.Fingerprint == "" {
+		return QGFailureHistory{}
+	}
+
+	var affectedBeads int
+	if err := d.db.QueryRowContext(ctx, `
+SELECT COUNT(DISTINCT o.bead_id)
+  FROM qg_failure_occurrences o
+  JOIN qg_failure_incidents i ON i.id = o.incident_id
+ WHERE i.fingerprint = ?
+   AND o.bead_id IS NOT NULL
+   AND o.bead_id != ''`,
+		rec.Fingerprint).Scan(&affectedBeads); err != nil {
+		_ = d.logEvent(ctx, "qg_failure_history_load_failed", "dispatcher", rec.BeadID, rec.WorkerID, err.Error())
+		return QGFailureHistory{}
+	}
+	if rec.BeadID != "" {
+		var currentSeen int
+		if err := d.db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+  FROM qg_failure_occurrences o
+  JOIN qg_failure_incidents i ON i.id = o.incident_id
+ WHERE i.fingerprint = ?
+   AND o.bead_id = ?`,
+			rec.Fingerprint, rec.BeadID).Scan(&currentSeen); err != nil {
+			_ = d.logEvent(ctx, "qg_failure_history_load_failed", "dispatcher", rec.BeadID, rec.WorkerID, err.Error())
+			return QGFailureHistory{AffectedBeads: affectedBeads}
+		}
+		if currentSeen == 0 {
+			affectedBeads++
+		}
+	}
+
+	var flakyRows int
+	if err := d.db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+  FROM qg_failure_incidents
+ WHERE fingerprint = ?
+   AND (class = ? OR decision = ?)`,
+		rec.Fingerprint, string(QGFailureClassFlaky), string(QGFailureDecisionBackoffRetry)).Scan(&flakyRows); err != nil {
+		_ = d.logEvent(ctx, "qg_failure_history_load_failed", "dispatcher", rec.BeadID, rec.WorkerID, err.Error())
+	}
+
+	return QGFailureHistory{
+		AffectedBeads: affectedBeads,
+		KnownFlaky:    flakyRows > 0,
+	}
+}
+
 func isRetryableQGStoreError(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false

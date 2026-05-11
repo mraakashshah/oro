@@ -165,6 +165,8 @@ func qgClassification(class QGFailureClass, decision QGFailureDecision, confiden
 func isDeterministicQGFailure(text string) bool {
 	return strings.Contains(text, "--- fail:") ||
 		strings.Contains(text, "\nfail") ||
+		strings.Contains(text, "gofumpt") ||
+		strings.Contains(text, "goimports") ||
 		strings.Contains(text, "golangci-lint") ||
 		strings.Contains(text, "compile") ||
 		strings.Contains(text, "build failed") ||
@@ -174,6 +176,7 @@ func isDeterministicQGFailure(text string) bool {
 func isSystemicQGFailure(text string) bool {
 	return strings.Contains(text, "package loader") ||
 		strings.Contains(text, "quality_gate.sh") ||
+		(strings.Contains(text, ".tmp-test") && strings.Contains(text, "yamllint")) ||
 		strings.Contains(text, "out of memory") ||
 		strings.Contains(text, " oom") ||
 		strings.Contains(text, "no such table") ||
