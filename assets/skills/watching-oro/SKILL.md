@@ -29,6 +29,26 @@ make build && ./oro start --workers 3 --detach
 
 **No sleep loops.** Use event-driven techniques:
 
+### Outcome-based autopilot
+
+For unattended monitoring, start the installed autopilot monitor. It treats
+fresh heartbeats as liveness only; throughput is healthy only when tasks close
+or the queue shrinks within a bounded window.
+
+```bash
+tmux new-session -d -s oro-autopilot \
+  'python3 ~/.oro/.claude/skills/watching-oro/scripts/oro_autopilot_monitor.py \
+     --oro "$(command -v oro)" \
+     --repo "$PWD" \
+     --target 2 \
+     --max-workers 2'
+```
+
+The monitor logs `THROUGHPUT_STALL` when workers stay busy without productive
+closures for repeated checks, logs `QG_INCIDENT_INCREASE` when new QG incidents
+appear, captures ready/closed/log snapshots, scales back to the target worker
+count, and restarts the factory if throughput stalls persist.
+
 ### Tail-based observation loop
 
 The primary observation pattern is a poll-on-demand loop using `./oro logs --tail` and `./oro directive status`:

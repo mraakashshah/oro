@@ -57,11 +57,30 @@ Escalate to active incident cadence when any of these occur:
 | Signal | Threshold | Action |
 | --- | --- | --- |
 | Workers idle with ready queue | 2 consecutive checks | Inspect `oro task ready`; restart dispatcher if assignment is stuck |
+| Workers busy but no productive closures and queue not shrinking | 4 consecutive checks | Treat as throughput stall; inspect ready/closed/log snapshots, then restart or intervene on the repeated task/QG blocker |
+| Same assigned task set | 4 consecutive checks | Treat as retry churn even if heartbeats are fresh; inspect AC, QG notes, and worker output |
 | Same task and no progress | 3 checks or 15 minutes | Inspect context, worker logs, and worktree diff |
 | `QG_FAILED` same fingerprint | 3 repeats | Classify as deterministic, flaky, or infrastructure; file/fix if systemic |
 | Merge conflict without resolution | Next check after conflict | Inspect branch/worktree; preserve work before cleanup |
 | `update_status_failed` or DB write error | Any repeat | Stop swarm before store spam; inspect SQLite schema/state |
 | `goroutine_panic` | Any occurrence | Follow Panic Policy |
+
+For unattended runs, use the outcome-based autopilot monitor so this policy is
+enforced continuously:
+
+```bash
+tmux new-session -d -s oro-autopilot \
+  'python3 ~/.oro/.claude/skills/watching-oro/scripts/oro_autopilot_monitor.py \
+     --oro "$(command -v oro)" \
+     --repo "$PWD" \
+     --target 2 \
+     --max-workers 2'
+```
+
+The monitor logs `THROUGHPUT_STALL` when workers stay busy without productive
+closures, logs `QG_INCIDENT_INCREASE` when new QG incidents appear, captures
+ready/closed/log snapshots, keeps the worker pool at target, and restarts the
+factory if throughput stalls persist.
 
 ## QG Failure Policy
 
