@@ -760,6 +760,44 @@ func TestMerge_BranchAlreadyMerged(t *testing.T) {
 	assertArgs(t, calls[2], "/tmp/wt-done", "rev-parse", "main")
 }
 
+func TestMerge_NoNewCommitAfterRebaseReportsNoop(t *testing.T) {
+	mock := &mockGitRunner{
+		results: []mockResult{
+			// 0. The branch appears to have work before rebase.
+			{Stdout: "1\n", Stderr: "", Err: nil},
+			// 1. Rebase succeeds but drops the branch to the current epic head.
+			{Stdout: "", Stderr: "", Err: nil},
+			// 2. primaryRepo is derived by stripping /.git.
+			{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
+			// 3. target is an ancestor of branch.
+			{Stdout: "", Stderr: "", Err: nil},
+			// 4. After rebase, the branch has no commits beyond target.
+			{Stdout: "0\n", Stderr: "", Err: nil},
+			// 5. worktree remove.
+			{Stdout: "", Stderr: "", Err: nil},
+			// 6. branch still points at the existing epic head.
+			{Stdout: "epichead123\n", Stderr: "", Err: nil},
+		},
+	}
+
+	coord := NewCoordinator(mock)
+	result, err := coord.Merge(context.Background(), Opts{
+		Branch:       "bead/noop",
+		Worktree:     "/tmp/wt-noop",
+		BeadID:       "oro-noop",
+		TargetBranch: "epic/feat",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !result.Noop {
+		t.Fatalf("expected merge result to be marked noop when ff-only introduced no new commit: %#v", result)
+	}
+	if result.CommitSHA != "epichead123" {
+		t.Errorf("expected existing epic head SHA, got %q", result.CommitSHA)
+	}
+}
+
 func TestMerge_BranchAlreadyMerged_DiffCheck(t *testing.T) {
 	t.Run("count=0 and diff empty → short-circuit success", func(t *testing.T) {
 		mock := &mockGitRunner{
@@ -1274,11 +1312,13 @@ func TestTargetBranch(t *testing.T) {
 				{Stdout: "/repo/.git\n", Stderr: "", Err: nil},
 				// 3. merge-base --is-ancestor epic/feat bead/abc
 				{Stdout: "", Stderr: "", Err: nil},
-				// 4. update-ref refs/heads/epic/feat bead/abc
+				// 4. post-rebase rev-list --count epic/feat..bead/abc
+				{Stdout: "2\n", Stderr: "", Err: nil},
+				// 5. update-ref refs/heads/epic/feat bead/abc
 				{Stdout: "", Stderr: "", Err: nil},
-				// 5. worktree remove (fallback via GitRunner)
+				// 6. worktree remove (fallback via GitRunner)
 				{Stdout: "", Stderr: "", Err: nil},
-				// 6. rev-parse bead/abc
+				// 7. rev-parse bead/abc
 				{Stdout: "abc123def456\n", Stderr: "", Err: nil},
 			},
 		}
@@ -1298,15 +1338,16 @@ func TestTargetBranch(t *testing.T) {
 		}
 
 		calls := mock.getCalls()
-		if len(calls) != 7 {
-			t.Fatalf("expected 7 git calls, got %d: %+v", len(calls), calls)
+		if len(calls) != 8 {
+			t.Fatalf("expected 8 git calls, got %d: %+v", len(calls), calls)
 		}
 		// rev-list uses TargetBranch (not "main")
 		assertArgs(t, calls[0], "/tmp/wt-abc", "rev-list", "--count", "epic/feat..bead/abc")
 		// rebase uses TargetBranch (not "main")
 		assertArgs(t, calls[1], "/tmp/wt-abc", "rebase", "epic/feat", "bead/abc")
 		assertArgs(t, calls[3], "/repo", "merge-base", "--is-ancestor", "epic/feat", "bead/abc")
-		assertArgs(t, calls[4], "/repo", "update-ref", "refs/heads/epic/feat", "bead/abc")
+		assertArgs(t, calls[4], "/repo", "rev-list", "--count", "epic/feat..bead/abc")
+		assertArgs(t, calls[5], "/repo", "update-ref", "refs/heads/epic/feat", "bead/abc")
 	})
 
 	t.Run("empty TargetBranch defaults to main", func(t *testing.T) {

@@ -239,9 +239,16 @@ func (c *Coordinator) updateTargetRefAndRemove(ctx context.Context, opts Opts, p
 		return nil, fmt.Errorf("target branch %s is not an ancestor of %s: %w", target, opts.Branch, err)
 	}
 
-	targetRef := "refs/heads/" + strings.TrimPrefix(target, "refs/heads/")
-	if _, _, err := c.git.Run(ctx, primaryRepo, "update-ref", targetRef, opts.Branch); err != nil {
-		return nil, fmt.Errorf("fast-forward %s to %s: %w", target, opts.Branch, err)
+	ahead, _, err := c.git.Run(ctx, primaryRepo, "rev-list", "--count", target+".."+opts.Branch)
+	if err != nil {
+		return nil, fmt.Errorf("rev-list --count %s..%s after rebase: %w", target, opts.Branch, err)
+	}
+	noop := strings.TrimSpace(ahead) == "0"
+	if !noop {
+		targetRef := "refs/heads/" + strings.TrimPrefix(target, "refs/heads/")
+		if _, _, err := c.git.Run(ctx, primaryRepo, "update-ref", targetRef, opts.Branch); err != nil {
+			return nil, fmt.Errorf("fast-forward %s to %s: %w", target, opts.Branch, err)
+		}
 	}
 
 	if removeErr := c.removeWorktree(ctx, primaryRepo, opts.Worktree); removeErr != nil {
@@ -252,7 +259,7 @@ func (c *Coordinator) updateTargetRefAndRemove(ctx context.Context, opts Opts, p
 	if err != nil {
 		return nil, fmt.Errorf("rev-parse %s failed: %w", opts.Branch, err)
 	}
-	return &Result{CommitSHA: strings.TrimSpace(stdout)}, nil
+	return &Result{CommitSHA: strings.TrimSpace(stdout), Noop: noop}, nil
 }
 
 // removeWorktree removes the agent worktree. If a WorktreeRemover is configured,
