@@ -31,11 +31,14 @@ class MonitorState:
         *,
         no_close_check_limit: int = 4,
         same_assignment_check_limit: int = 4,
+        idle_queue_check_limit: int = 2,
         stall_restart_limit: int = 2,
     ) -> None:
         self.no_close_check_limit = no_close_check_limit
         self.same_assignment_check_limit = same_assignment_check_limit
+        self.idle_queue_check_limit = idle_queue_check_limit
         self.stall_restart_limit = stall_restart_limit
+        self.idle_queue_checks = 0
         self.no_close_checks = 0
         self.same_assignment_checks = 0
         self.stall_restarts = 0
@@ -53,6 +56,7 @@ class MonitorState:
         assigned_beads = set(assignments.values())
         qg_open = int(snapshot.get("qg_failure_incidents_open", 0) or 0)
 
+        self._evaluate_idle_queue(actions, queue, active, int(snapshot.get("idle_count", 0) or 0))
         new_closed = self._evaluate_closures(closed_ids, queue, active)
         if new_closed:
             actions.append("THROUGHPUT_CLOSED")
@@ -76,6 +80,11 @@ class MonitorState:
                 actions.append("RESTART_FACTORY")
                 self.stall_restarts = 0
 
+        if self.idle_queue_checks >= self.idle_queue_check_limit:
+            actions.append("RESTART_FACTORY")
+            reason = "idle workers with ready queue"
+            self.idle_queue_checks = 0
+
         self.last_queue = queue
         self.last_assigned_beads = assigned_beads
         self.last_qg_open = qg_open
@@ -87,6 +96,13 @@ class MonitorState:
             previous_qg_open=previous_qg_open,
             current_qg_open=qg_open,
         )
+
+    def _evaluate_idle_queue(self, actions: list[str], queue: int, active: int, idle: int) -> None:
+        if queue > 0 and active == 0 and idle > 0:
+            self.idle_queue_checks += 1
+            actions.append("RESUME_ASSIGNMENT")
+            return
+        self.idle_queue_checks = 0
 
     def _evaluate_closures(self, closed_ids: set[str], queue: int, active: int) -> set[str]:
         if self.last_closed is None:
@@ -184,6 +200,9 @@ class OroAutopilot:
     def apply_decision(self, decision: MonitorDecision) -> None:
         if "THROUGHPUT_CLOSED" in decision.actions:
             self.log(f"throughput closed={sorted(decision.new_closed)}")
+        if "RESUME_ASSIGNMENT" in decision.actions:
+            proc = self.run([self.oro, "directive", "resume"], timeout=30)
+            self.log(f"ACTION resume_idle_queue rc={proc.returncode} tail={tail(proc.stdout, 300)!r}")
         if "QG_INCIDENT_INCREASE" in decision.actions:
             self.log(f"QG_INCIDENT_INCREASE previous={decision.previous_qg_open} current={decision.current_qg_open}")
             self.capture_snapshot("qg_incident_increase")

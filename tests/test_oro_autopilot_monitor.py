@@ -69,3 +69,23 @@ def test_qg_incident_increase_reports_immediate_signal():
     assert "QG_INCIDENT_INCREASE" in result.actions
     assert result.previous_qg_open == 1
     assert result.current_qg_open == 2
+
+
+def test_idle_workers_with_ready_queue_resume_then_restart():
+    monitor = load_monitor_module()
+    state = monitor.MonitorState(no_close_check_limit=99, same_assignment_check_limit=99, idle_queue_check_limit=2)
+    snapshot = {
+        "queue_depth": 5,
+        "active_count": 0,
+        "idle_count": 2,
+        "assignments": {},
+        "qg_failure_incidents_open": 0,
+    }
+
+    first = state.evaluate(snapshot, closed_ids=set())
+    second = state.evaluate(snapshot, closed_ids=set())
+
+    assert "RESUME_ASSIGNMENT" in first.actions
+    assert "RESUME_ASSIGNMENT" in second.actions
+    assert "RESTART_FACTORY" in second.actions
+    assert second.reason == "idle workers with ready queue"
