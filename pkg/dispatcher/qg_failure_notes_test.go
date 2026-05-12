@@ -89,6 +89,15 @@ func TestQGFailureNotesLinkAffectedBeadsToIncident(t *testing.T) {
 	if infra.Type != "bug" || infra.Priority != 0 {
 		t.Fatalf("infra bead type/priority = %s/%d, want bug/0", infra.Type, infra.Priority)
 	}
+	for _, want := range []string{
+		"Test: quality gate reproduction for QG incident 42",
+		"Cmd: ./scripts/quality_gate.sh",
+		"Assert: quality gate passes after addressing fingerprint qg:fingerprint",
+	} {
+		if !strings.Contains(infra.AcceptanceCriteria, want) {
+			t.Fatalf("infra acceptance missing %q:\n%s", want, infra.AcceptanceCriteria)
+		}
+	}
 	if got := strings.Count(infra.Notes, "affected_bead: oro-original"); got != 1 {
 		t.Fatalf("affected bead note count = %d, want 1:\n%s", got, infra.Notes)
 	}
@@ -156,6 +165,15 @@ func TestQGFailureReopensClosedIncidentBeadForAssignment(t *testing.T) {
 	}
 	if infra.Status != "open" {
 		t.Fatalf("incident status = %q, want open", infra.Status)
+	}
+	for _, want := range []string{
+		"Test: quality gate reproduction for QG incident 7",
+		"Cmd: ./scripts/quality_gate.sh",
+		"Assert: quality gate passes after addressing fingerprint qg:shared",
+	} {
+		if !strings.Contains(infra.AcceptanceCriteria, want) {
+			t.Fatalf("reopened incident acceptance missing %q:\n%s", want, infra.AcceptanceCriteria)
+		}
 	}
 
 	ready, err := store.Ready(ctx)

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/protocol"
 )
 
 const maxQGFailureNoteExcerptBytes = 1200
@@ -57,27 +58,39 @@ func (d *Dispatcher) ensureQGIncidentBead(ctx context.Context, infraID string, i
 		return fmt.Errorf("show qg incident bead %s: %w", infraID, err)
 	}
 	if existing != nil {
-		if existing.Status == "closed" {
-			status := "open"
-			if err := d.beads.Update(ctx, infraID, beadstore.UpdateParams{Status: &status}); err != nil {
-				return fmt.Errorf("reopen qg incident bead %s: %w", infraID, err)
-			}
-		}
-		return nil
+		return d.refreshExistingQGIncidentBead(ctx, infraID, existing, incident, rec)
 	}
 
 	desc := fmt.Sprintf("Infrastructure issue for QG incident %d.\n\nfingerprint: %s\nclass: %s\ndecision: %s\nconfidence: %s\nreason: %s",
 		incident.ID, rec.Fingerprint, cls.Class, cls.Decision, cls.Confidence, cls.Reason)
 	_, err = d.beads.Create(ctx, beadstore.CreateParams{
-		ID:          infraID,
-		Title:       fmt.Sprintf("QG incident %d: %s", incident.ID, incident.Summary),
-		Type:        "bug",
-		Priority:    0,
-		Description: desc,
-		Tags:        []string{"qg-failure", "infra"},
+		ID:                 infraID,
+		Title:              fmt.Sprintf("QG incident %d: %s", incident.ID, incident.Summary),
+		Type:               "bug",
+		Priority:           0,
+		Description:        desc,
+		AcceptanceCriteria: formatQGIncidentAcceptance(incident, rec),
+		Tags:               []string{"qg-failure", "infra"},
 	})
 	if err != nil {
 		return fmt.Errorf("create qg incident bead %s: %w", infraID, err)
+	}
+	return nil
+}
+
+func (d *Dispatcher) refreshExistingQGIncidentBead(ctx context.Context, infraID string, existing *protocol.BeadDetail, incident QGIncident, rec QGFailureRecord) error {
+	acceptance := formatQGIncidentAcceptance(incident, rec)
+	if strings.TrimSpace(existing.AcceptanceCriteria) == "" {
+		if err := d.beads.Update(ctx, infraID, beadstore.UpdateParams{AcceptanceCriteria: &acceptance}); err != nil {
+			return fmt.Errorf("update qg incident acceptance %s: %w", infraID, err)
+		}
+	}
+	if existing.Status != "closed" {
+		return nil
+	}
+	status := "open"
+	if err := d.beads.Update(ctx, infraID, beadstore.UpdateParams{Status: &status}); err != nil {
+		return fmt.Errorf("reopen qg incident bead %s: %w", infraID, err)
 	}
 	return nil
 }
@@ -124,6 +137,13 @@ fingerprint: %s
 output_hash: %s
 summary: %s`,
 		incident.ID, rec.BeadID, rec.WorkerID, cls.Class, rec.Fingerprint, rec.OutputHash, rec.Summary))
+}
+
+func formatQGIncidentAcceptance(incident QGIncident, rec QGFailureRecord) string {
+	return strings.TrimSpace(fmt.Sprintf(`Test: quality gate reproduction for QG incident %d
+Cmd: ./scripts/quality_gate.sh
+Assert: quality gate passes after addressing fingerprint %s; affected bead %s can be retried without the same QG failure
+Read: QG incident notes and affected bead worktree before changing code`, incident.ID, rec.Fingerprint, rec.BeadID))
 }
 
 func qgIncidentBeadID(incidentID int64) string {
