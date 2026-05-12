@@ -48,6 +48,7 @@ type Opts struct {
 // Result holds the outcome of a successful merge.
 type Result struct {
 	CommitSHA string
+	Noop      bool
 }
 
 // ConflictError is returned when a rebase encounters merge conflicts.
@@ -140,7 +141,7 @@ func (c *Coordinator) Merge(ctx context.Context, opts Opts) (*Result, error) {
 	// Step 0: Check if branch is already merged (agent may have merged inside worktree).
 	alreadyMerged, sha, checkErr := c.isBranchMerged(ctx, opts)
 	if checkErr == nil && alreadyMerged {
-		return &Result{CommitSHA: sha}, nil
+		return &Result{CommitSHA: sha, Noop: true}, nil
 	}
 
 	// Step 1: Rebase branch onto target.

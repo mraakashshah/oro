@@ -2344,8 +2344,30 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 		d.releaseWorkerAfterDoneTerminal(workerID, beadID, assignmentID)
 		return
 	}
+	if result.Noop {
+		d.handleNoopMerge(ctx, beadID, workerID, worktree, branch, targetBranch, assignmentID, result.CommitSHA)
+		return
+	}
 
 	d.finalizeSuccessfulMerge(ctx, beadID, workerID, worktree, epicID, targetBranch, assignmentID, result.CommitSHA)
+}
+
+func (d *Dispatcher) handleNoopMerge(ctx context.Context, beadID, workerID, worktree, branch, targetBranch string, assignmentID int64, sha string) {
+	target := targetBranch
+	if target == "" {
+		target = d.cfg.DefaultBranch
+	}
+	note := fmt.Sprintf("merge_noop: branch %s introduced no commits beyond %s at %s; bead reopened for worker follow-up", branch, target, sha)
+	status := "open"
+	if err := d.beads.Update(ctx, beadID, beadstore.UpdateParams{Status: &status, Notes: &note}); err != nil {
+		_ = d.logEvent(ctx, "merge_noop_reopen_failed", "dispatcher", beadID, workerID, err.Error())
+	}
+	_ = d.completeAssignment(ctx, assignmentID, beadID)
+	_ = d.logEvent(ctx, "merge_noop", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"branch":%q,"target":%q,"sha":%q}`, branch, target, sha))
+	d.escalate(ctx, protocol.FormatEscalation(protocol.EscMergeConflict, beadID, "merge produced no commits", note), beadID, workerID)
+	d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
+	d.releaseWorkerAfterDoneTerminal(workerID, beadID, assignmentID)
 }
 
 func (d *Dispatcher) finalizeSuccessfulMerge(ctx context.Context, beadID, workerID, worktree, epicID, targetBranch string, assignmentID int64, sha string) {

@@ -512,9 +512,10 @@ func (m *mockEscalator) Messages() []string {
 // mockGitRunner for merge.Coordinator — always succeeds unless configured otherwise.
 type mockGitRunner struct {
 	mu           sync.Mutex
-	failOn       string     // if set, fail when this arg is in the command
-	conflict     bool       // if true, rebase returns conflict error
-	conflictOnce bool       // if true, fail on the first rebase only
+	failOn       string // if set, fail when this arg is in the command
+	conflict     bool   // if true, rebase returns conflict error
+	conflictOnce bool   // if true, fail on the first rebase only
+	revListCount string
 	rebaseCalls  [][]string // records args for each rebase invocation
 }
 
@@ -547,8 +548,11 @@ func (m *mockGitRunner) Run(_ context.Context, _ string, args ...string) (string
 	if len(args) > 0 && args[0] == "rev-parse" {
 		return "abc123def456\n", "", nil
 	}
-	// rev-list returns a fake commit so cherry-pick path is entered
+	// rev-list returns a fake commit count so the merge path is entered.
 	if len(args) > 0 && args[0] == "rev-list" {
+		if m.revListCount != "" {
+			return m.revListCount + "\n", "", nil
+		}
 		return "abc123def456\n", "", nil
 	}
 	return "", "", nil
@@ -8207,6 +8211,51 @@ func TestDispatcher_ReviewRejection_MemoryContextAccumulatesFeedback(t *testing.
 
 	// Verify stored rejection memories in the DB (both rejections stored)
 	_ = d // used for db access if needed
+}
+
+func TestMergeAndCompleteNoopMergeReopensBead(t *testing.T) {
+	d, beadSrc, _, esc, gitRunner, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	beadID := "bead-noop-merge"
+	workerID := "w-noop"
+	worktree := "/tmp/worktree-" + beadID
+	branch := "agent/" + beadID
+	targetBranch := protocol.EpicBranchPrefix + "epic-noop"
+
+	gitRunner.mu.Lock()
+	gitRunner.revListCount = "0"
+	gitRunner.mu.Unlock()
+
+	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "epic-noop", targetBranch, 0)
+
+	beadSrc.mu.Lock()
+	closed := append([]string(nil), beadSrc.closed...)
+	status := beadSrc.updated[beadID]
+	notes := ""
+	if detail := beadSrc.shown[beadID]; detail != nil {
+		notes = detail.Notes
+	}
+	beadSrc.mu.Unlock()
+
+	for _, id := range closed {
+		if id == beadID {
+			t.Fatalf("no-op merge must not close bead %q; closed=%v", beadID, closed)
+		}
+	}
+	if status != "open" {
+		t.Fatalf("no-op merge status = %q, want open", status)
+	}
+	if !strings.Contains(notes, "merge_noop:") || !strings.Contains(notes, targetBranch) {
+		t.Fatalf("no-op merge note missing structured details:\n%s", notes)
+	}
+	if len(esc.Messages()) == 0 {
+		t.Fatal("expected no-op merge to escalate for follow-up")
+	}
 }
 
 // TestRejectionReassignIncludesMemoryAndAttempt verifies that when a review
