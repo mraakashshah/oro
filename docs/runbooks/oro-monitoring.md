@@ -69,13 +69,17 @@ For unattended runs, use the outcome-based autopilot monitor so this policy is
 enforced continuously:
 
 ```bash
-tmux new-session -d -s oro-autopilot \
+tmux -L oro-autopilot new-session -d -s oro-autopilot \
   'python3 ~/.oro/.claude/skills/watching-oro/scripts/oro_autopilot_monitor.py \
      --oro "$(command -v oro)" \
      --repo "$PWD" \
      --target 2 \
      --max-workers 2'
 ```
+
+Use the `oro-autopilot` tmux socket so the monitor is isolated from the Oro
+factory tmux server. When the monitor restarts the factory, it must not kill its
+own session. Inspect it with `tmux -L oro-autopilot attach -t oro-autopilot`.
 
 The monitor logs `THROUGHPUT_STALL` when workers stay busy without productive
 closures, logs `QG_INCIDENT_INCREASE` when new QG incidents appear, captures

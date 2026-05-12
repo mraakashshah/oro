@@ -36,13 +36,18 @@ fresh heartbeats as liveness only; throughput is healthy only when tasks close
 or the queue shrinks within a bounded window.
 
 ```bash
-tmux new-session -d -s oro-autopilot \
+tmux -L oro-autopilot new-session -d -s oro-autopilot \
   'python3 ~/.oro/.claude/skills/watching-oro/scripts/oro_autopilot_monitor.py \
      --oro "$(command -v oro)" \
      --repo "$PWD" \
      --target 2 \
      --max-workers 2'
 ```
+
+Run the autopilot on the `oro-autopilot` tmux socket, not the default socket.
+Factory restarts may kill the default tmux server, and the monitor must survive
+the restart it requested. Inspect it with `tmux -L oro-autopilot attach -t
+oro-autopilot`.
 
 The monitor logs `THROUGHPUT_STALL` when workers stay busy without productive
 closures for repeated checks, logs `QG_INCIDENT_INCREASE` when new QG incidents
