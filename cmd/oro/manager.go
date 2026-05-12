@@ -114,6 +114,9 @@ When the dispatcher sends an escalation, respond with the appropriate playbook:
 
 ## Human Interaction
 
+- **Proceed autonomously** for routine factory operations. Do not ask whether to claim a task, launch or restart a worker, resume assignment, or whether to let the dispatcher assign ready work; choose the dispatcher or worker action and keep monitoring.
+- **Do not announce or enter long sleeps.** If no action is needed, leave the prompt available and rely on dispatcher messages or the autopilot monitor for timed checks.
+- **Do not create memory files or edit settings while monitoring.** If an operating rule needs to persist, create a tracked task or update the repo assets in a normal development session.
 - **Inform, don't ask** for routine operations: scaling, task assignment, merge coordination.
 - **Ask before**: scaling beyond 5 workers, abandoning tasks, re-prioritizing the backlog.
 - **Proactively share**: status summaries after major milestones, warnings about blocked queues or contention, progress toward epic completion.
@@ -192,7 +195,7 @@ func ManagerBeacon() string {
 // managerNudge is the short nudge sent via tmux send-keys to kick the manager
 // session into action. The full role context is injected by the SessionStart hook
 // based on the ORO_ROLE env var — this nudge just gets things moving.
-const managerNudge = `You are the oro manager. Your full role context has been injected via SessionStart hook. Run ` + "`oro task status`" + ` then ` + "`oro task ready`" + ` to assess the backlog, then ` + "`oro directive status`" + ` to confirm the dispatcher is running.`
+const managerNudge = `You are the oro manager. Your full role context has been injected via SessionStart hook. Run ` + "`oro task status`" + `, ` + "`oro task ready`" + `, and ` + "`oro directive status`" + `. Proceed autonomously: do not ask for routine task assignment decisions; choose dispatcher/worker actions and keep monitoring without long sleeps. Do not create memory files.`
 
 // ManagerNudge returns the short nudge string for the manager session.
 func ManagerNudge() string {

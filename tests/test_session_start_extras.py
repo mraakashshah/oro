@@ -265,6 +265,20 @@ class TestRoleBeaconTaskTerminology:
         assert "oro worker launch --bead <task-id>" in manager
         assert "legacy flag" in manager.lower()
 
+    def test_manager_beacons_require_autonomous_routine_operations(self):
+        beacon_paths = [
+            _repo_root / "assets" / "beacons" / "manager.md",
+            _repo_root / ".claude" / "hooks" / "beacons" / "manager.md",
+        ]
+
+        for path in beacon_paths:
+            text = path.read_text()
+            assert "Proceed autonomously" in text
+            assert "Do not ask whether to claim" in text
+            assert "whether to let the dispatcher assign" in text
+            assert "Do not announce or enter long sleeps" in text
+            assert "Do not create memory files" in text
+
     def test_superpowers_context_uses_task_commands(self):
         assert "oro task ready" in _mod._SUPERPOWERS
         assert "oro task close" in _mod._SUPERPOWERS

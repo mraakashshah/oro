@@ -316,6 +316,21 @@ func TestCreateWithNudges(t *testing.T) {
 		}
 	})
 
+	t.Run("nudge requires autonomous operation", func(t *testing.T) {
+		mgrNudge := ManagerNudge()
+		for _, want := range []string{
+			"Proceed autonomously",
+			"do not ask",
+			"task assignment",
+			"without long sleeps",
+			"Do not create memory files",
+		} {
+			if !strings.Contains(mgrNudge, want) {
+				t.Errorf("ManagerNudge should contain %q, got: %s", want, mgrNudge)
+			}
+		}
+	})
+
 	t.Run("prints startup progress with checkmarks", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		pidFile := filepath.Join(tmpDir, "oro.pid")
