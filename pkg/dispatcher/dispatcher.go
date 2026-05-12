@@ -1735,70 +1735,87 @@ func (d *Dispatcher) handleQGStuckDetected(ctx context.Context, workerID, beadID
 func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOutput string) {
 	d.touchProgress(workerID)
 
-	// Create typed QualityGateError for logging and potential error discrimination
-	qgErr := &protocol.QualityGateError{
-		BeadID:   beadID,
-		WorkerID: workerID,
-		Output:   qgOutput,
-		Attempt:  0, // Will be updated after lock
-	}
-	qgFingerprint, qgSummary := FingerprintQGFailure(qgOutput, QGFingerprintOptions{})
-	qgRecord := QGFailureRecord{
-		BeadID:      beadID,
-		WorkerID:    workerID,
-		Component:   "worker",
-		Fingerprint: qgFingerprint,
-		Summary:     qgSummary,
-		Output:      qgOutput,
-	}
-	qgClassification := d.classifyQGFailure(ctx, qgRecord, QGFailureHistory{})
-
-	_ = d.logEvent(ctx, "quality_gate_rejected", workerID, beadID, workerID,
-		fmt.Sprintf(`{"reason":"QualityGatePassed=false","error":%q,"fingerprint":%q,"summary":%q,"class":%q,"decision":%q,"confidence":%q,"classification_reason":%q}`,
-			qgErr.Error(), qgFingerprint, qgSummary, qgClassification.Class, qgClassification.Decision, qgClassification.Confidence, qgClassification.Reason))
+	qg := d.evaluateQGFailure(ctx, workerID, beadID, qgOutput)
+	d.logQGFailureRejection(ctx, workerID, beadID, qg)
 
 	// Check stuck detection: hash QGOutput and track consecutive identical hashes.
 	if d.isQGStuck(beadID, qgOutput) {
-		d.handleQGStuckDetected(ctx, workerID, beadID, qgOutput, qgFingerprint, qgSummary)
+		d.handleQGStuckDetected(ctx, workerID, beadID, qgOutput, qg.record.Fingerprint, qg.record.Summary)
 		return
 	}
 
 	// Transient and flaky failures use backoff retry — they do not increment
 	// attemptCounts and therefore do not burn the worker-fix retry budget.
-	if qgClassification.Decision == QGFailureDecisionBackoffRetry {
-		rec := QGFailureRecord{
-			BeadID:      beadID,
-			WorkerID:    workerID,
-			Component:   "worker",
-			Fingerprint: qgFingerprint,
-			Summary:     qgSummary,
-			Output:      qgOutput,
-		}
-		d.handleTransientQGFailure(ctx, workerID, beadID, rec, qgClassification)
+	if qg.classification.Decision == QGFailureDecisionBackoffRetry {
+		d.handleTransientQGFailure(ctx, workerID, beadID, qg.record, qg.classification)
 		return
 	}
 
+	retry := d.reserveQGRetryAttempt(workerID, beadID, qg.err)
+	if retry.exhausted {
+		d.handleQGExhausted(ctx, workerID, beadID, retry.assignmentID, qgOutput, retry.attempt)
+		return
+	}
+
+	d.recordQGFailureIncident(ctx, workerID, beadID, retry.assignmentID, retry.attempt, qgOutput, qg.record.Fingerprint, qg.record.Summary, qg.classification)
+	d.persistBeadCount(ctx, retry.assignmentID, beadID, "attempt_count", retry.attempt)
+	d.qgRetryWithReservation(ctx, workerID, beadID, qgOutput, retry.attempt)
+}
+
+type qgFailureEvaluation struct {
+	err            *protocol.QualityGateError
+	record         QGFailureRecord
+	classification QGFailureClassification
+}
+
+func (d *Dispatcher) evaluateQGFailure(ctx context.Context, workerID, beadID, qgOutput string) qgFailureEvaluation {
+	fingerprint, summary := FingerprintQGFailure(qgOutput, QGFingerprintOptions{})
+	record := QGFailureRecord{
+		BeadID:      beadID,
+		WorkerID:    workerID,
+		Component:   "worker",
+		Fingerprint: fingerprint,
+		Summary:     summary,
+		Output:      qgOutput,
+	}
+	return qgFailureEvaluation{
+		err: &protocol.QualityGateError{
+			BeadID:   beadID,
+			WorkerID: workerID,
+			Output:   qgOutput,
+		},
+		record:         record,
+		classification: d.classifyQGFailure(ctx, record, QGFailureHistory{}),
+	}
+}
+
+func (d *Dispatcher) logQGFailureRejection(ctx context.Context, workerID, beadID string, qg qgFailureEvaluation) {
+	_ = d.logEvent(ctx, "quality_gate_rejected", workerID, beadID, workerID,
+		fmt.Sprintf(`{"reason":"QualityGatePassed=false","error":%q,"fingerprint":%q,"summary":%q,"class":%q,"decision":%q,"confidence":%q,"classification_reason":%q}`,
+			qg.err.Error(), qg.record.Fingerprint, qg.record.Summary, qg.classification.Class, qg.classification.Decision, qg.classification.Confidence, qg.classification.Reason))
+}
+
+type qgRetryAttempt struct {
+	attempt      int
+	assignmentID int64
+	exhausted    bool
+}
+
+func (d *Dispatcher) reserveQGRetryAttempt(workerID, beadID string, qgErr *protocol.QualityGateError) qgRetryAttempt {
 	d.mu.Lock()
+	defer d.mu.Unlock()
+
 	d.attemptCounts[beadID]++
 	attempt := d.attemptCounts[beadID]
 	qgErr.Attempt = attempt
 	assignmentID := d.assignmentIDLocked(workerID, beadID)
-
 	if attempt >= maxQGRetries {
-		d.mu.Unlock()
-		d.handleQGExhausted(ctx, workerID, beadID, assignmentID, qgOutput, attempt)
-		return
+		return qgRetryAttempt{attempt: attempt, assignmentID: assignmentID, exhausted: true}
 	}
-
-	// Phase 1: Reserve the worker — heartbeat checker skips reserved workers.
 	if w, ok := d.workers[workerID]; ok {
 		w.state = protocol.WorkerReserved
 	}
-	d.mu.Unlock()
-
-	d.recordQGFailureIncident(ctx, workerID, beadID, assignmentID, attempt, qgOutput, qgFingerprint, qgSummary, qgClassification)
-	d.persistBeadCount(ctx, assignmentID, beadID, "attempt_count", attempt)
-	d.qgRetryWithReservation(ctx, workerID, beadID, qgOutput, attempt)
+	return qgRetryAttempt{attempt: attempt, assignmentID: assignmentID}
 }
 
 func (d *Dispatcher) recordQGFailureIncident(ctx context.Context, workerID, beadID string, assignmentID int64, attempt int, output, fingerprint, summary string, cls QGFailureClassification) {
