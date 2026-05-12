@@ -1,0 +1,9 @@
+./ac_prompt.go
+./decompose_prompt.go
+./dream_prompt.go
+./epic_fix_prompt.go
+./escalation_prompt.go
+./exec_spawner.go
+./ops.go
+./review_prompt.go
+./write_ac_prompt.go

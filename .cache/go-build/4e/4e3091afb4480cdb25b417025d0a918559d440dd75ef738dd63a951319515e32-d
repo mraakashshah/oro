@@ -1,0 +1,17 @@
+./detail.go
+./parade.go
+./ui_gradient.go
+./ui_hop.go
+./ui_sparkline.go
+./ui_styles.go
+./ui_symbols.go
+./ui_theme.go
+./viewport.go
+./detail_test.go
+./parade_test.go
+./render_test.go
+./ui_gradient_test.go
+./ui_hop_test.go
+./ui_sparkline_test.go
+./ui_symbols_test.go
+./ui_theme_test.go

@@ -1,0 +1,6 @@
+./embed.go
+./helpers.go
+./server.go
+./sse.go
+./export_test.go
+./sse_test.go

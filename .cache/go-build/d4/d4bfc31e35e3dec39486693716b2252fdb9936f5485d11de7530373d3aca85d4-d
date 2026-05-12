@@ -1,0 +1,8 @@
+./css_test.go
+./detail_template_test.go
+./embed_test.go
+./helpers_test.go
+./index_template_test.go
+./parade_template_test.go
+./server_test.go
+./workers_template_test.go

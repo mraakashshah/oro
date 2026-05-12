@@ -1,0 +1,4 @@
+./detail.go
+./main.go
+./cli_test.go
+./detail_test.go

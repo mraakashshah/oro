@@ -1,0 +1,7 @@
+./ac_test.go
+./backfill_coalesce_test.go
+./compatibility_test.go
+./read_tx_parity_test.go
+./shadow_test.go
+./store_test.go
+./testfake_test.go

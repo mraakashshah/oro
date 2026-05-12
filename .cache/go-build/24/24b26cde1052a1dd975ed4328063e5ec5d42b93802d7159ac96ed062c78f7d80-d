@@ -1,0 +1,5 @@
+./cards.go
+./legacy_writer.go
+./schema.go
+./scoring.go
+./store.go

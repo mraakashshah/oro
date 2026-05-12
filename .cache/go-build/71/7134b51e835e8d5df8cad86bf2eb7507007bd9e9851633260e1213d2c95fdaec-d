@@ -1,0 +1,6 @@
+./anchors.go
+./main.go
+./paraphrase.go
+./anchors_test.go
+./main_test.go
+./paraphrase_test.go

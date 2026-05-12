@@ -1,0 +1,9 @@
+./detail.go
+./parade.go
+./ui_gradient.go
+./ui_hop.go
+./ui_sparkline.go
+./ui_styles.go
+./ui_symbols.go
+./ui_theme.go
+./viewport.go

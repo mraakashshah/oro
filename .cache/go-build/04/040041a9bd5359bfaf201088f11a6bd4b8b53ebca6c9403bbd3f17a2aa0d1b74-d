@@ -1,0 +1,11 @@
+./astgrep_test.go
+./bypass_test.go
+./chunker_test.go
+./classifier_test.go
+./claude_spawner_test.go
+./format_test.go
+./index_test.go
+./lang_test.go
+./rerank_test.go
+./router_test.go
+./summarize_test.go

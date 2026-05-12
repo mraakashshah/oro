@@ -1,0 +1,2 @@
+# test log
+stat ../../scripts/verify-retroactive-gate.sh

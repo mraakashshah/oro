@@ -1,0 +1,17 @@
+./context_pct_test.go
+./drain_test.go
+./prompt_cards_section_test.go
+./prompt_code_structure_cgo_test.go
+./prompt_code_structure_test.go
+./prompt_done_test.go
+./prompt_golden_flags_test.go
+./prompt_merge_test.go
+./prompt_test.go
+./streamjson_test.go
+./subprocess_exit_test.go
+./testutil_test.go
+./worker_claim_race_test.go
+./worker_log_flush_test.go
+./worker_log_test.go
+./worker_rebase_test.go
+./worker_test.go

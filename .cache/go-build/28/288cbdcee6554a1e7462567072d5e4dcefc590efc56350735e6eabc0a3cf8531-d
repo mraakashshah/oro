@@ -1,0 +1,3 @@
+./acceptance_test.go
+./integration_test.go
+./query_test.go
