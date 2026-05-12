@@ -98,7 +98,7 @@ class MonitorState:
         )
 
     def _evaluate_idle_queue(self, actions: list[str], queue: int, active: int, idle: int) -> None:
-        if queue > 0 and active == 0 and idle > 0:
+        if queue > 0 and idle > 0:
             self.idle_queue_checks += 1
             actions.append("RESUME_ASSIGNMENT")
             return
