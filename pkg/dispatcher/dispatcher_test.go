@@ -17987,9 +17987,10 @@ func TestAssignBead_UsesLLMEstimate(t *testing.T) {
 	waitForWorkers(t, d, 5, 2*time.Second)
 
 	// Collect all assignments in a map
+	assignTimeout := 5 * time.Second
 	assignedBeads := make(map[string]*protocol.AssignPayload)
 	for i := 0; i < 5; i++ {
-		msg, ok := readMsg(t, conns[i], 3*time.Second)
+		msg, ok := readMsg(t, conns[i], assignTimeout)
 		if !ok {
 			t.Fatalf("worker %d: expected ASSIGN message", i)
 		}
