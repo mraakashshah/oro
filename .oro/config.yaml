@@ -26,9 +26,8 @@ agent:
       reasoning: xhigh
     spec_challenger:
       transport: cli
-      runtime: codex
-      model: gpt-5.5
-      reasoning: xhigh
+      runtime: claude
+      model: claude-opus-4-7
     worker:
       transport: cli
       runtime: codex

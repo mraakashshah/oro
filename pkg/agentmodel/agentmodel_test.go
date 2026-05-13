@@ -175,6 +175,11 @@ func TestProviderModeOverridesStaleRoleEntries(t *testing.T) {
 	if runtime != "claude" || model != "claude-opus-4-7" || reasoning != "" {
 		t.Fatalf("ResolveForRole(ops_review) = (%q, %q, %q), want claude review preset", runtime, model, reasoning)
 	}
+
+	runtime, model, reasoning = agentmodel.ResolveForRole("spec_challenger")
+	if runtime != "claude" || model != "claude-opus-4-7" || reasoning != "" {
+		t.Fatalf("ResolveForRole(spec_challenger) = (%q, %q, %q), want claude review preset", runtime, model, reasoning)
+	}
 }
 
 func TestProtocolPackageHasNoConfigImport(t *testing.T) {

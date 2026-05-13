@@ -307,6 +307,7 @@ func TestProviderModePresets(t *testing.T) {
 	cases := map[string]struct {
 		mode        config.ProviderMode
 		worker      config.RoleConfig
+		challenger  config.RoleConfig
 		review      config.RoleConfig
 		merge       config.RoleConfig
 		fastTier    config.TierConfig
@@ -314,32 +315,54 @@ func TestProviderModePresets(t *testing.T) {
 		invalidMode bool
 	}{
 		"codex only": {
-			mode:     config.ProviderModeCodexOnly,
-			worker:   config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
+			mode:   config.ProviderModeCodexOnly,
+			worker: config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
+			challenger: config.RoleConfig{
+				Transport: "cli",
+				Runtime:   "codex",
+				Model:     "gpt-5.5",
+				Reasoning: "xhigh",
+			},
 			review:   config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
 			merge:    config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
 			fastTier: config.TierConfig{Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
 			deepTier: config.TierConfig{Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
 		},
 		"claude only": {
-			mode:     config.ProviderModeClaudeOnly,
-			worker:   config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "claude-sonnet-4-6"},
+			mode:   config.ProviderModeClaudeOnly,
+			worker: config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "claude-sonnet-4-6"},
+			challenger: config.RoleConfig{
+				Transport: "cli",
+				Runtime:   "claude",
+				Model:     "claude-opus-4-7",
+			},
 			review:   config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
 			merge:    config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
 			fastTier: config.TierConfig{Runtime: "claude", Model: "claude-haiku-4-5-20251001"},
 			deepTier: config.TierConfig{Runtime: "claude", Model: "claude-opus-4-7"},
 		},
 		"codex coding claude review": {
-			mode:     config.ProviderModeCodexCodingClaudeReview,
-			worker:   config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
+			mode:   config.ProviderModeCodexCodingClaudeReview,
+			worker: config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
+			challenger: config.RoleConfig{
+				Transport: "cli",
+				Runtime:   "claude",
+				Model:     "claude-opus-4-7",
+			},
 			review:   config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
 			merge:    config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
 			fastTier: config.TierConfig{Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
 			deepTier: config.TierConfig{Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
 		},
 		"claude coding codex review": {
-			mode:     config.ProviderModeClaudeCodingCodexReview,
-			worker:   config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "claude-sonnet-4-6"},
+			mode:   config.ProviderModeClaudeCodingCodexReview,
+			worker: config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "claude-sonnet-4-6"},
+			challenger: config.RoleConfig{
+				Transport: "cli",
+				Runtime:   "codex",
+				Model:     "gpt-5.5",
+				Reasoning: "xhigh",
+			},
 			review:   config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
 			merge:    config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
 			fastTier: config.TierConfig{Runtime: "claude", Model: "claude-haiku-4-5-20251001"},
@@ -367,6 +390,9 @@ func TestProviderModePresets(t *testing.T) {
 			}
 			if got := cfg.Roles["worker"]; got != tc.worker {
 				t.Fatalf("worker role = %+v, want %+v", got, tc.worker)
+			}
+			if got := cfg.Roles["spec_challenger"]; got != tc.challenger {
+				t.Fatalf("spec_challenger role = %+v, want %+v", got, tc.challenger)
 			}
 			if got := cfg.Roles["ops_review"]; got != tc.review {
 				t.Fatalf("ops_review role = %+v, want %+v", got, tc.review)

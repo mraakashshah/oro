@@ -186,7 +186,7 @@ func tiersForProvider(p providerProfile) map[protocol.Tier]TierConfig {
 func rolesForProviderMode(coding, review providerProfile) map[string]RoleConfig {
 	roles := map[string]RoleConfig{
 		"spec_writer":         roleConfig(coding.runtime, coding.deepModel, coding.deepReasoning),
-		"spec_challenger":     roleConfig(coding.runtime, coding.deepModel, firstNonEmpty(coding.challengeReasoning, coding.deepReasoning)),
+		"spec_challenger":     roleConfig(review.runtime, review.deepModel, firstNonEmpty(review.challengeReasoning, review.deepReasoning)),
 		"worker":              roleConfig(coding.runtime, coding.balancedModel, coding.balancedReasoning),
 		"worker_escalation":   roleConfig(coding.runtime, coding.deepModel, firstNonEmpty(coding.escalationReasoning, coding.deepReasoning)),
 		"ops_review":          roleConfig(review.runtime, review.deepModel, review.deepReasoning),
