@@ -43,6 +43,41 @@ func TestHeartbeatFullStateBackup(t *testing.T) {
 	}
 }
 
+func TestWriteFileAtomicReplacesContentAndCleansTemp(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "full-state.jsonl")
+	if err := os.WriteFile(path, []byte("old\n"), 0o644); err != nil {
+		t.Fatalf("write seed file: %v", err)
+	}
+
+	if err := writeFileAtomic(path, []byte("new\n"), 0o640); err != nil {
+		t.Fatalf("writeFileAtomic: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read atomic output: %v", err)
+	}
+	if string(got) != "new\n" {
+		t.Fatalf("atomic output = %q, want %q", got, "new\n")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat atomic output: %v", err)
+	}
+	if gotMode := info.Mode().Perm(); gotMode != 0o640 {
+		t.Fatalf("atomic output mode = %v, want %v", gotMode, os.FileMode(0o640))
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, ".full-state.jsonl.*.tmp"))
+	if err != nil {
+		t.Fatalf("glob temp files: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temp files left behind: %v", matches)
+	}
+}
+
 func TestHeartbeatFullStateBackup_SkipsLegacyPathInSQLiteMode(t *testing.T) {
 	t.Parallel()
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)

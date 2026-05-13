@@ -15,11 +15,26 @@ import (
 // AgentConfig holds the agent runtime configuration: per-tier CLI settings,
 // API-only model keys, and per-role overrides.
 type AgentConfig struct {
-	Tiers     map[protocol.Tier]TierConfig `yaml:"tiers,omitempty"`
-	APIModels map[string]string            `yaml:"api_models,omitempty"`
-	Roles     map[string]RoleConfig        `yaml:"roles,omitempty"`
-	Transport TransportConfig              `yaml:"transport,omitempty"`
+	ProviderMode ProviderMode                 `yaml:"provider_mode,omitempty"`
+	Tiers        map[protocol.Tier]TierConfig `yaml:"tiers,omitempty"`
+	APIModels    map[string]string            `yaml:"api_models,omitempty"`
+	Roles        map[string]RoleConfig        `yaml:"roles,omitempty"`
+	Transport    TransportConfig              `yaml:"transport,omitempty"`
 }
+
+// ProviderMode names a built-in provider routing preset.
+type ProviderMode string
+
+const (
+	// ProviderModeCodexOnly routes coding and review roles to Codex.
+	ProviderModeCodexOnly ProviderMode = "codex-only"
+	// ProviderModeClaudeOnly routes coding and review roles to Claude.
+	ProviderModeClaudeOnly ProviderMode = "claude-only"
+	// ProviderModeCodexCodingClaudeReview routes coding roles to Codex and review roles to Claude.
+	ProviderModeCodexCodingClaudeReview ProviderMode = "codex-coding-claude-review"
+	// ProviderModeClaudeCodingCodexReview routes coding roles to Claude and review roles to Codex.
+	ProviderModeClaudeCodingCodexReview ProviderMode = "claude-coding-codex-review"
+)
 
 // TierConfig specifies the runtime and model for a provider-neutral routing tier.
 // Used by CLI-spawn roles (transport: cli).
@@ -84,6 +99,125 @@ func defaultAgentConfig() *AgentConfig {
 // DefaultAgentConfig returns Oro's built-in agent runtime configuration.
 func DefaultAgentConfig() *AgentConfig {
 	return defaultAgentConfig()
+}
+
+// ApplyProviderMode expands cfg.ProviderMode into explicit tier and role
+// routing. Unknown custom roles are preserved; known CLI roles are overwritten
+// so the preset is authoritative and not diluted by stale role entries.
+func ApplyProviderMode(cfg *AgentConfig) error {
+	if cfg == nil || cfg.ProviderMode == "" {
+		return nil
+	}
+
+	var coding providerProfile
+	var review providerProfile
+	switch cfg.ProviderMode {
+	case ProviderModeCodexOnly:
+		coding, review = codexProfile(), codexProfile()
+	case ProviderModeClaudeOnly:
+		coding, review = claudeProfile(), claudeProfile()
+	case ProviderModeCodexCodingClaudeReview:
+		coding, review = codexProfile(), claudeProfile()
+	case ProviderModeClaudeCodingCodexReview:
+		coding, review = claudeProfile(), codexProfile()
+	default:
+		return fmt.Errorf("unknown provider_mode %q", cfg.ProviderMode)
+	}
+
+	cfg.Tiers = tiersForProvider(coding)
+	if cfg.Roles == nil {
+		cfg.Roles = make(map[string]RoleConfig)
+	}
+	for role, rc := range rolesForProviderMode(coding, review) {
+		cfg.Roles[role] = rc
+	}
+	return nil
+}
+
+type providerProfile struct {
+	runtime             string
+	fastModel           string
+	balancedModel       string
+	deepModel           string
+	backgroundModel     string
+	fastReasoning       string
+	balancedReasoning   string
+	deepReasoning       string
+	backgroundReasoning string
+	escalationReasoning string
+	challengeReasoning  string
+}
+
+func codexProfile() providerProfile {
+	return providerProfile{
+		runtime:             "codex",
+		fastModel:           "gpt-5.5",
+		balancedModel:       "gpt-5.5",
+		deepModel:           "gpt-5.5",
+		backgroundModel:     "gpt-5.5",
+		fastReasoning:       "low",
+		balancedReasoning:   "low",
+		deepReasoning:       "high",
+		backgroundReasoning: "low",
+		escalationReasoning: "medium",
+		challengeReasoning:  "xhigh",
+	}
+}
+
+func claudeProfile() providerProfile {
+	return providerProfile{
+		runtime:         "claude",
+		fastModel:       "claude-haiku-4-5-20251001",
+		balancedModel:   "claude-sonnet-4-6",
+		deepModel:       "claude-opus-4-7",
+		backgroundModel: "claude-haiku-4-5-20251001",
+	}
+}
+
+func tiersForProvider(p providerProfile) map[protocol.Tier]TierConfig {
+	return map[protocol.Tier]TierConfig{
+		protocol.TierFast:       tierConfig(p.runtime, p.fastModel, p.fastReasoning),
+		protocol.TierBalanced:   tierConfig(p.runtime, p.balancedModel, p.balancedReasoning),
+		protocol.TierDeep:       tierConfig(p.runtime, p.deepModel, p.deepReasoning),
+		protocol.TierBackground: tierConfig(p.runtime, p.backgroundModel, p.backgroundReasoning),
+	}
+}
+
+func rolesForProviderMode(coding, review providerProfile) map[string]RoleConfig {
+	roles := map[string]RoleConfig{
+		"spec_writer":         roleConfig(coding.runtime, coding.deepModel, coding.deepReasoning),
+		"spec_challenger":     roleConfig(coding.runtime, coding.deepModel, firstNonEmpty(coding.challengeReasoning, coding.deepReasoning)),
+		"worker":              roleConfig(coding.runtime, coding.balancedModel, coding.balancedReasoning),
+		"worker_escalation":   roleConfig(coding.runtime, coding.deepModel, firstNonEmpty(coding.escalationReasoning, coding.deepReasoning)),
+		"ops_review":          roleConfig(review.runtime, review.deepModel, review.deepReasoning),
+		"ops_escalation":      roleConfig(coding.runtime, coding.deepModel, coding.deepReasoning),
+		"ops_merge":           roleConfig(coding.runtime, coding.deepModel, coding.deepReasoning),
+		"ops_diagnosis":       roleConfig(coding.runtime, coding.deepModel, coding.deepReasoning),
+		"ops_epic_fix":        roleConfig(coding.runtime, coding.deepModel, coding.deepReasoning),
+		"ops_write_ac":        roleConfig(coding.runtime, coding.deepModel, coding.deepReasoning),
+		"ops_decompose":       roleConfig(coding.runtime, coding.deepModel, coding.deepReasoning),
+		"ops_dream":           roleConfig(coding.runtime, coding.backgroundModel, coding.backgroundReasoning),
+		"memory_extractor":    roleConfig(coding.runtime, coding.fastModel, coding.fastReasoning),
+		"codesearch_reranker": roleConfig(coding.runtime, coding.fastModel, coding.fastReasoning),
+	}
+	return roles
+}
+
+func tierConfig(runtime, model, reasoning string) TierConfig {
+	return TierConfig{Runtime: runtime, Model: model, Reasoning: reasoning}
+}
+
+func roleConfig(runtime, model, reasoning string) RoleConfig {
+	return RoleConfig{Transport: "cli", Runtime: runtime, Model: model, Reasoning: reasoning}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func legacyDefaultAgentConfig() *AgentConfig {
@@ -192,6 +326,9 @@ func loadIfAgentBlock(path string) (*AgentConfig, bool, error) {
 	if f.Agent == nil {
 		return nil, false, nil
 	}
+	if err := ApplyProviderMode(f.Agent); err != nil {
+		return nil, false, fmt.Errorf("agent provider mode in %s: %w", path, err)
+	}
 	return f.Agent, true, nil
 }
 
@@ -211,6 +348,9 @@ func Validate(c *AgentConfig) error {
 	}
 
 	var errs []string
+	if msg := validateProviderMode(c.ProviderMode); msg != "" {
+		errs = append(errs, msg)
+	}
 
 	for tier, tc := range c.Tiers {
 		errs = append(errs, validateTier(tier, tc)...)
@@ -224,6 +364,15 @@ func Validate(c *AgentConfig) error {
 		return nil
 	}
 	return fmt.Errorf("invalid agent config:\n  %s", strings.Join(errs, "\n  "))
+}
+
+func validateProviderMode(mode ProviderMode) string {
+	switch mode {
+	case "", ProviderModeCodexOnly, ProviderModeClaudeOnly, ProviderModeCodexCodingClaudeReview, ProviderModeClaudeCodingCodexReview:
+		return ""
+	default:
+		return fmt.Sprintf("provider_mode %q is invalid", mode)
+	}
 }
 
 func validateTier(tier protocol.Tier, tc TierConfig) []string {

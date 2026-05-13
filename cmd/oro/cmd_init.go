@@ -17,7 +17,6 @@ import (
 
 	"oro/pkg/config"
 	"oro/pkg/langprofile"
-	"oro/pkg/protocol"
 
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
@@ -319,45 +318,8 @@ func interactivePrompt(w io.Writer, question, def string) (string, error) {
 	return def, nil
 }
 
-// defaultTierConfig returns the default agent tier configuration.
-func defaultTierConfig() map[protocol.Tier]config.TierConfig {
-	return map[protocol.Tier]config.TierConfig{
-		protocol.TierFast:       {Runtime: "claude", Model: "claude-haiku-4-5-20251001"},
-		protocol.TierBalanced:   {Runtime: "claude", Model: "claude-sonnet-4-6"},
-		protocol.TierDeep:       {Runtime: "claude", Model: "claude-opus-4-7"},
-		protocol.TierBackground: {Runtime: "claude", Model: "claude-haiku-4-5-20251001"},
-	}
-}
-
-// runTierWizard prompts the user for each tier's runtime and model (5 prompts
-// total) and returns the resulting tier map.
-func runTierWizard(w io.Writer, prompt func(io.Writer, string, string) (string, error)) (map[protocol.Tier]config.TierConfig, error) {
-	rt, err := prompt(w, "Primary runtime", "claude")
-	if err != nil {
-		return nil, err
-	}
-	fast, err := prompt(w, "Model for fast tier (quick tool calls)", "claude-haiku-4-5-20251001")
-	if err != nil {
-		return nil, err
-	}
-	balanced, err := prompt(w, "Model for balanced tier (main workers)", "claude-sonnet-4-6")
-	if err != nil {
-		return nil, err
-	}
-	deep, err := prompt(w, "Model for deep tier (ops/escalation)", "claude-opus-4-7")
-	if err != nil {
-		return nil, err
-	}
-	background, err := prompt(w, "Model for background tier (background tasks)", "claude-haiku-4-5-20251001")
-	if err != nil {
-		return nil, err
-	}
-	return map[protocol.Tier]config.TierConfig{
-		protocol.TierFast:       {Runtime: rt, Model: fast},
-		protocol.TierBalanced:   {Runtime: rt, Model: balanced},
-		protocol.TierDeep:       {Runtime: rt, Model: deep},
-		protocol.TierBackground: {Runtime: rt, Model: background},
-	}, nil
+func defaultProviderMode() config.ProviderMode {
+	return config.ProviderModeCodexCodingClaudeReview
 }
 
 // resolveInitConfigPath returns the path to config.yaml for the just-bootstrapped project.
@@ -372,30 +334,39 @@ func resolveInitConfigPath(stealth bool, projectRoot, oroHome string) (string, e
 	return filepath.Join(projectRoot, ".oro", "config.yaml"), nil
 }
 
-// writeInitAgentTiers writes agent.tiers to configPath.
+// runProviderModeWizard prompts for one of Oro's built-in provider routing presets.
+func runProviderModeWizard(w io.Writer, prompt func(io.Writer, string, string) (string, error)) (config.ProviderMode, error) {
+	mode, err := prompt(w, "Provider mode (codex-only, claude-only, codex-coding-claude-review, claude-coding-codex-review)", string(defaultProviderMode()))
+	if err != nil {
+		return "", err
+	}
+	return config.ProviderMode(mode), nil
+}
+
+// writeInitAgentProviderMode writes agent.provider_mode to configPath.
 // When TTY and not skipping: runs the interactive wizard.
-// When non-TTY and not skipping: writes defaults and prints a stderr notice.
-// When skipping: writes defaults silently.
-func writeInitAgentTiers(w, errW io.Writer, configPath string, skipWizard bool, deps *initDeps) error {
-	var tiers map[protocol.Tier]config.TierConfig
+// When non-TTY and not skipping: writes the default mode and prints a stderr notice.
+// When skipping: writes the default mode silently.
+func writeInitAgentProviderMode(w, errW io.Writer, configPath string, skipWizard bool, deps *initDeps) error {
+	mode := defaultProviderMode()
 	isTTY := deps.isTTY()
 
-	switch {
-	case !skipWizard && isTTY:
+	if !skipWizard && isTTY {
 		var err error
-		tiers, err = runTierWizard(w, deps.prompt)
+		mode, err = runProviderModeWizard(w, deps.prompt)
 		if err != nil {
 			return err
 		}
-	case !skipWizard && !isTTY:
-		tiers = defaultTierConfig()
-		fmt.Fprintf(errW, "oro: non-interactive session — writing default agent tiers. Run 'oro init' interactively to customize.\n")
-	default:
-		tiers = defaultTierConfig()
+	} else if !skipWizard && !isTTY {
+		fmt.Fprintf(errW, "oro: non-interactive session — writing default agent provider mode. Run 'oro init' interactively to customize.\n")
 	}
 
-	if err := config.MergeKey(configPath, "agent", map[string]any{"tiers": tiers}); err != nil {
-		return fmt.Errorf("write agent tiers: %w", err)
+	cfg := &config.AgentConfig{ProviderMode: mode}
+	if err := config.Validate(cfg); err != nil {
+		return fmt.Errorf("validate agent provider mode: %w", err)
+	}
+	if err := config.MergeKey(configPath, "agent", map[string]any{"provider_mode": mode}); err != nil {
+		return fmt.Errorf("write agent provider mode: %w", err)
 	}
 	return nil
 }
@@ -435,7 +406,7 @@ Flags:
   --local         In-repo mode: create .oro/ directory in the project root.
                   By default oro uses stealth mode (zero footprint).
   --project-root  Specify a different project directory (default: current directory).
-  --skip-wizard   Skip interactive setup wizard and write default agent tiers silently.`,
+  --skip-wizard   Skip interactive setup wizard and write the default agent provider mode silently.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := cmd.OutOrStdout()
@@ -453,7 +424,7 @@ Flags:
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress output, just exit code")
 	cmd.Flags().BoolVar(&local, "local", false, "in-repo mode: create .oro/ in project root (default: stealth)")
 	cmd.Flags().StringVar(&projectRoot, "project-root", ".", "project root directory for config generation")
-	cmd.Flags().BoolVar(&skipWizard, "skip-wizard", false, "skip interactive setup wizard (write default agent tiers silently)")
+	cmd.Flags().BoolVar(&skipWizard, "skip-wizard", false, "skip interactive setup wizard (write default agent provider mode silently)")
 
 	return cmd
 }
@@ -507,14 +478,14 @@ func runInitWithDeps(w, errW io.Writer, checkOnly, quiet, stealth, skipWizard bo
 		return err
 	}
 
-	// Write agent tiers to config (wizard, defaults, or skip).
+	// Write agent provider mode to config (wizard, defaults, or skip).
 	cfgPath, err := resolveInitConfigPath(stealth, projectRoot, oroHome)
 	if err != nil {
-		fmt.Fprintf(errW, "warning: could not resolve config path for agent tiers: %v\n", err)
+		fmt.Fprintf(errW, "warning: could not resolve config path for agent provider mode: %v\n", err)
 		return nil
 	}
-	if err := writeInitAgentTiers(w, errW, cfgPath, skipWizard, deps); err != nil {
-		fmt.Fprintf(errW, "warning: agent tier config: %v\n", err)
+	if err := writeInitAgentProviderMode(w, errW, cfgPath, skipWizard, deps); err != nil {
+		fmt.Fprintf(errW, "warning: agent provider mode config: %v\n", err)
 	}
 	return nil
 }

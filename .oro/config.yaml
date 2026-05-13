@@ -1,5 +1,6 @@
 project: oro
 agent:
+  provider_mode: codex-coding-claude-review
   tiers:
     fast:
       runtime: codex
@@ -40,9 +41,8 @@ agent:
       reasoning: medium
     ops_review:
       transport: cli
-      runtime: codex
-      model: gpt-5.5
-      reasoning: high
+      runtime: claude
+      model: claude-opus-4-7
     ops_escalation:
       transport: cli
       runtime: codex

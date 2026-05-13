@@ -303,6 +303,87 @@ func TestDefaultAgentConfigLockedProviderRoleTable(t *testing.T) {
 	}
 }
 
+func TestProviderModePresets(t *testing.T) {
+	cases := map[string]struct {
+		mode        config.ProviderMode
+		worker      config.RoleConfig
+		review      config.RoleConfig
+		merge       config.RoleConfig
+		fastTier    config.TierConfig
+		deepTier    config.TierConfig
+		invalidMode bool
+	}{
+		"codex only": {
+			mode:     config.ProviderModeCodexOnly,
+			worker:   config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
+			review:   config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
+			merge:    config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
+			fastTier: config.TierConfig{Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
+			deepTier: config.TierConfig{Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
+		},
+		"claude only": {
+			mode:     config.ProviderModeClaudeOnly,
+			worker:   config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "claude-sonnet-4-6"},
+			review:   config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+			merge:    config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+			fastTier: config.TierConfig{Runtime: "claude", Model: "claude-haiku-4-5-20251001"},
+			deepTier: config.TierConfig{Runtime: "claude", Model: "claude-opus-4-7"},
+		},
+		"codex coding claude review": {
+			mode:     config.ProviderModeCodexCodingClaudeReview,
+			worker:   config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
+			review:   config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+			merge:    config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
+			fastTier: config.TierConfig{Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
+			deepTier: config.TierConfig{Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
+		},
+		"claude coding codex review": {
+			mode:     config.ProviderModeClaudeCodingCodexReview,
+			worker:   config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "claude-sonnet-4-6"},
+			review:   config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
+			merge:    config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+			fastTier: config.TierConfig{Runtime: "claude", Model: "claude-haiku-4-5-20251001"},
+			deepTier: config.TierConfig{Runtime: "claude", Model: "claude-opus-4-7"},
+		},
+		"unknown": {
+			mode:        config.ProviderMode("both"),
+			invalidMode: true,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := config.DefaultAgentConfig()
+			cfg.ProviderMode = tc.mode
+			err := config.ApplyProviderMode(cfg)
+			if tc.invalidMode {
+				if err == nil {
+					t.Fatalf("ApplyProviderMode(%q) error = nil, want error", tc.mode)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ApplyProviderMode(%q): %v", tc.mode, err)
+			}
+			if got := cfg.Roles["worker"]; got != tc.worker {
+				t.Fatalf("worker role = %+v, want %+v", got, tc.worker)
+			}
+			if got := cfg.Roles["ops_review"]; got != tc.review {
+				t.Fatalf("ops_review role = %+v, want %+v", got, tc.review)
+			}
+			if got := cfg.Roles["ops_merge"]; got != tc.merge {
+				t.Fatalf("ops_merge role = %+v, want %+v", got, tc.merge)
+			}
+			if got := cfg.Tiers[protocol.TierFast]; got != tc.fastTier {
+				t.Fatalf("fast tier = %+v, want %+v", got, tc.fastTier)
+			}
+			if got := cfg.Tiers[protocol.TierDeep]; got != tc.deepTier {
+				t.Fatalf("deep tier = %+v, want %+v", got, tc.deepTier)
+			}
+		})
+	}
+}
+
 func TestAgentConfigLoadSurfacesParseErrors(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.yaml")
@@ -331,6 +412,17 @@ func TestAgentConfigLoadMissingFileReturnsDefaults(t *testing.T) {
 }
 
 func TestAgentConfigPartialOverrideRejected(t *testing.T) {
+	t.Run("unknown provider mode rejected", func(t *testing.T) {
+		cfg := &config.AgentConfig{ProviderMode: config.ProviderMode("both")}
+		err := config.Validate(cfg)
+		if err == nil {
+			t.Fatal("expected validation error for unknown provider mode, got nil")
+		}
+		if !strings.Contains(err.Error(), "provider_mode") || !strings.Contains(err.Error(), "both") {
+			t.Errorf("error must name the invalid provider mode; got: %v", err)
+		}
+	})
+
 	t.Run("runtime set without model", func(t *testing.T) {
 		cfg := &config.AgentConfig{
 			Roles: map[string]config.RoleConfig{

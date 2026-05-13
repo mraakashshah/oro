@@ -2466,10 +2466,10 @@ func cannedPrompt(answers []string) func(io.Writer, string, string) (string, err
 	}
 }
 
-// TestInitWizardWritesAgentTiers verifies that a TTY-detected init session
-// presents the 5-prompt wizard and writes the collected values to agent.tiers
+// TestInitWizardWritesProviderMode verifies that a TTY-detected init session
+// presents the provider-mode wizard and writes the selected agent.provider_mode
 // in config.yaml.
-func TestInitWizardWritesAgentTiers(t *testing.T) {
+func TestInitWizardWritesProviderMode(t *testing.T) {
 	overrideToolDefs(t)
 	tmpDir := t.TempDir()
 	t.Setenv("ORO_HOME", t.TempDir())
@@ -2477,11 +2477,7 @@ func TestInitWizardWritesAgentTiers(t *testing.T) {
 	deps := &initDeps{
 		isTTY: func() bool { return true },
 		prompt: cannedPrompt([]string{
-			"claude",                    // primary runtime
-			"claude-haiku-4-5-20251001", // fast
-			"claude-sonnet-4-6",         // balanced
-			"claude-opus-4-7",           // deep
-			"claude-haiku-4-5-20251001", // background
+			"claude-coding-codex-review",
 		}),
 	}
 
@@ -2501,7 +2497,7 @@ func TestInitWizardWritesAgentTiers(t *testing.T) {
 	}
 	content := string(data)
 
-	for _, want := range []string{"agent:", "tiers:", "fast:", "balanced:", "deep:", "background:"} {
+	for _, want := range []string{"agent:", "provider_mode:", "claude-coding-codex-review"} {
 		if !strings.Contains(content, want) {
 			t.Errorf("config.yaml should contain %q after wizard, got:\n%s", want, content)
 		}
@@ -2509,7 +2505,7 @@ func TestInitWizardWritesAgentTiers(t *testing.T) {
 }
 
 // TestInitNonTTYWritesDefaults verifies that a non-TTY session skips the
-// wizard, writes default agent.tiers silently, and emits a notice to stderr.
+// wizard, writes the default agent.provider_mode, and emits a notice to stderr.
 func TestInitNonTTYWritesDefaults(t *testing.T) {
 	overrideToolDefs(t)
 	tmpDir := t.TempDir()
@@ -2537,7 +2533,7 @@ func TestInitNonTTYWritesDefaults(t *testing.T) {
 	}
 	content := string(data)
 
-	for _, want := range []string{"agent:", "tiers:"} {
+	for _, want := range []string{"agent:", "provider_mode:", "codex-coding-claude-review"} {
 		if !strings.Contains(content, want) {
 			t.Errorf("config.yaml should contain %q (defaults), got:\n%s", want, content)
 		}
@@ -2577,7 +2573,7 @@ func TestInitSkipWizardFlag(t *testing.T) {
 	}
 	content := string(data)
 
-	for _, want := range []string{"agent:", "tiers:"} {
+	for _, want := range []string{"agent:", "provider_mode:", "codex-coding-claude-review"} {
 		if !strings.Contains(content, want) {
 			t.Errorf("config.yaml should contain %q (defaults), got:\n%s", want, content)
 		}

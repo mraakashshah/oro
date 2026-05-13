@@ -151,6 +151,32 @@ func TestLockedRoleResolution(t *testing.T) {
 	}
 }
 
+func TestProviderModeOverridesStaleRoleEntries(t *testing.T) {
+	writeAgentConfig(t, `agent:
+  provider_mode: codex-coding-claude-review
+  roles:
+    worker:
+      transport: cli
+      runtime: claude
+      model: claude-sonnet-4-6
+    ops_review:
+      transport: cli
+      runtime: codex
+      model: gpt-5.5
+      reasoning: high
+`)
+
+	runtime, model, reasoning := agentmodel.ResolveForRole("worker")
+	if runtime != "codex" || model != "gpt-5.5" || reasoning != "low" {
+		t.Fatalf("ResolveForRole(worker) = (%q, %q, %q), want codex coding preset", runtime, model, reasoning)
+	}
+
+	runtime, model, reasoning = agentmodel.ResolveForRole("ops_review")
+	if runtime != "claude" || model != "claude-opus-4-7" || reasoning != "" {
+		t.Fatalf("ResolveForRole(ops_review) = (%q, %q, %q), want claude review preset", runtime, model, reasoning)
+	}
+}
+
 func TestProtocolPackageHasNoConfigImport(t *testing.T) {
 	// Covered by the acceptance shell command; this test keeps the requirement
 	// visible in package-local output.
