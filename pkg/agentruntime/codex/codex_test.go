@@ -3,6 +3,7 @@ package codex_test
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -77,6 +78,73 @@ func TestCodexWorkerSpawnerSetsPWDToWorkdir(t *testing.T) {
 	if got := string(gotBytes); got != workdir+"|unset" {
 		t.Fatalf("env report = %q, want %q", got, workdir+"|unset")
 	}
+}
+
+func TestCodexWorkerSpawnerAddsGitCommonDirForWorktree(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "oro-test@example.invalid")
+	runGit(t, repo, "config", "user.name", "Oro Test")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("test\n"), 0o644); err != nil {
+		t.Fatalf("write readme: %v", err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "init")
+
+	worktree := filepath.Join(t.TempDir(), "wt")
+	runGit(t, repo, "worktree", "add", "-b", "agent/test", worktree)
+
+	binDir := t.TempDir()
+	report := filepath.Join(t.TempDir(), "args.txt")
+	fakeCodex := filepath.Join(binDir, "codex")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ORO_TEST_ARGS\"\n"
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("ORO_TEST_ARGS", report)
+
+	spawner := codexruntime.NewWorkerSpawner()
+	proc, stdout, _, err := spawner.Spawn(context.Background(), "gpt-5.5", "finish the bead", worktree)
+	if err != nil {
+		t.Fatalf("Spawn() error = %v", err)
+	}
+	defer stdout.Close()
+	if err := proc.Wait(); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+
+	gotBytes, err := os.ReadFile(report)
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	gotArgs := strings.Split(strings.TrimSpace(string(gotBytes)), "\n")
+	wantGitDir := strings.TrimSpace(runGitOutput(t, worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+	for i := 0; i+1 < len(gotArgs); i++ {
+		if gotArgs[i] == "--add-dir" && gotArgs[i+1] == wantGitDir {
+			return
+		}
+	}
+	t.Fatalf("codex args missing --add-dir %q: %v", wantGitDir, gotArgs)
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // test helper uses fixed git binary
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, out)
+	}
+}
+
+func runGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // test helper uses fixed git binary
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v failed: %v", args, err)
+	}
+	return string(out)
 }
 
 func codexruntimeTestBuildExecArgs(model, prompt string) []string {

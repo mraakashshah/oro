@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"oro/pkg/ops"
 	"oro/pkg/processenv"
@@ -40,7 +41,7 @@ func (s *WorkerSpawner) Spawn(ctx context.Context, model, prompt, workdir string
 
 // SpawnWithReasoning starts Codex with an optional model reasoning effort.
 func (s *WorkerSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning, prompt, workdir string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
-	cmd := exec.CommandContext(ctx, s.binary(), buildExecArgsWithReasoning(model, reasoning, BuildBootstrapPrompt(prompt, workdir))...) //nolint:gosec // args built internally
+	cmd := exec.CommandContext(ctx, s.binary(), buildWorkerExecArgsWithReasoning(model, reasoning, BuildBootstrapPrompt(prompt, workdir), workdir)...) //nolint:gosec // args built internally
 	cmd.Dir = workdir
 	cmd.Stderr = os.Stderr
 	cmd.Env = processenv.ForWorkdir(os.Environ(), workdir)
@@ -84,6 +85,21 @@ func buildExecArgs(model, prompt string) []string {
 }
 
 func buildExecArgsWithReasoning(model, reasoning, prompt string) []string {
+	args := buildExecArgPrefix(model, reasoning)
+	args = append(args, prompt)
+	return args
+}
+
+func buildWorkerExecArgsWithReasoning(model, reasoning, prompt, workdir string) []string {
+	args := buildExecArgPrefix(model, reasoning)
+	if gitCommonDir := resolveGitCommonDir(workdir); gitCommonDir != "" {
+		args = append(args, "--add-dir", gitCommonDir)
+	}
+	args = append(args, prompt)
+	return args
+}
+
+func buildExecArgPrefix(model, reasoning string) []string {
 	args := []string{"exec", "--skip-git-repo-check", "--sandbox", "workspace-write"}
 	model = normalizeCodexModel(model)
 	if model != "" {
@@ -93,8 +109,30 @@ func buildExecArgsWithReasoning(model, reasoning, prompt string) []string {
 	if reasoning != "" {
 		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", reasoning))
 	}
-	args = append(args, prompt)
 	return args
+}
+
+func resolveGitCommonDir(workdir string) string {
+	if strings.TrimSpace(workdir) == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", workdir, "rev-parse", "--path-format=absolute", "--git-common-dir") //nolint:gosec // fixed git invocation
+	cmd.Env = processenv.ForWorkdir(os.Environ(), workdir)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	dir := strings.TrimSpace(string(out))
+	if dir == "" {
+		return ""
+	}
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return ""
+	}
+	return dir
 }
 
 func normalizeCodexModel(model string) string {
