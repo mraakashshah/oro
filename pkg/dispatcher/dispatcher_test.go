@@ -14335,6 +14335,46 @@ func TestStatusJSONDoesNotCountClosedQGIncidentBeads(t *testing.T) {
 	}
 }
 
+func TestStatusJSONDoesNotCountMissingQGIncidentBeads(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+	incident, err := RecordQGFailureOccurrence(ctx, d.db, QGFailureRecord{
+		Output: "FAIL: missing incident bead\nTestAlreadyGone",
+		BeadID: "oro-original",
+	}, QGFailureClassification{
+		Class:      QGFailureClassSystemic,
+		Decision:   QGFailureDecisionCreateOrReuseInfra,
+		Confidence: QGFailureConfidenceHigh,
+		Reason:     "shared infra failure",
+	})
+	if err != nil {
+		t.Fatalf("record qg failure occurrence: %v", err)
+	}
+
+	infraID := fmt.Sprintf("oro-qg-incident-%d", incident.ID)
+	beadSrc.mu.Lock()
+	beadSrc.showErrFn = map[string]error{infraID: &protocol.BeadNotFoundError{BeadID: infraID}}
+	beadSrc.mu.Unlock()
+
+	raw := d.buildStatusJSON()
+	var status statusResponse
+	if err := json.Unmarshal([]byte(raw), &status); err != nil {
+		t.Fatalf("parse status json: %v", err)
+	}
+	if status.QGFailureIncidentsOpen != 0 {
+		t.Fatalf("qg_failure_incidents_open = %d, want 0", status.QGFailureIncidentsOpen)
+	}
+
+	var dbStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM qg_failure_incidents WHERE id=?`, incident.ID).Scan(&dbStatus); err != nil {
+		t.Fatalf("query qg incident status: %v", err)
+	}
+	if dbStatus != "closed" {
+		t.Fatalf("qg incident db status = %q, want closed", dbStatus)
+	}
+}
+
 // mockCodeIndex implements CodeIndex for testing.
 type mockCodeIndex struct {
 	mu             sync.Mutex

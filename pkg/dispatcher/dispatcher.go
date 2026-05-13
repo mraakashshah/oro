@@ -5626,10 +5626,17 @@ func (d *Dispatcher) qgIncidentBeadClosed(ctx context.Context, incidentID int64)
 		return false
 	}
 	detail, err := d.beads.Show(ctx, fmt.Sprintf("oro-qg-incident-%d", incidentID))
-	if err != nil || detail == nil {
-		return false
+	if err != nil {
+		var notFound *protocol.BeadNotFoundError
+		return errors.As(err, &notFound)
 	}
-	return detail.Status == "closed"
+	if detail == nil {
+		return true
+	}
+	if detail.Status == "closed" {
+		return true
+	}
+	return false
 }
 
 func (d *Dispatcher) closeQGIncidentRow(ctx context.Context, incidentID int64) error {
