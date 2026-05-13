@@ -4258,6 +4258,14 @@ func (d *Dispatcher) handleClosedAssignment(ctx context.Context, workerID, beadI
 	case detail.Status == "closed":
 		_ = d.logEvent(ctx, "bead_closed_externally", "dispatcher", beadID, workerID,
 			"bead closed while worker assigned; sending shutdown")
+	case detail.Status == "open":
+		if err := d.updateBeadStatus(ctx, beadID, "in_progress"); err != nil {
+			_ = d.logEvent(ctx, "assigned_bead_status_reconcile_failed", "dispatcher", beadID, workerID, err.Error())
+			return
+		}
+		_ = d.logEvent(ctx, "assigned_bead_status_reconciled", "dispatcher", beadID, workerID,
+			`{"from":"open","to":"in_progress"}`)
+		return
 	default:
 		// Bead exists and is not explicitly closed — keep worker assigned.
 		return
@@ -5130,6 +5138,11 @@ type QGFailureStatus struct {
 	TopFingerprints []string
 }
 
+type qgIncidentStatusRow struct {
+	ID          int64
+	Fingerprint string
+}
+
 // statusResponse is the JSON structure returned by the status directive.
 type statusResponse struct {
 	State       string            `json:"state"`
@@ -5517,13 +5530,12 @@ func (d *Dispatcher) qgFailureStatus(ctx context.Context) QGFailureStatus {
 		return QGFailureStatus{}
 	}
 
-	var open int
-	if err := d.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM qg_failure_incidents WHERE status = 'open'`,
-	).Scan(&open); err != nil {
-		fmt.Fprintf(os.Stderr, "qgFailureStatus: count open incidents: %v\n", err)
+	openRows, err := d.openQGIncidentRows(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "qgFailureStatus: open incidents: %v\n", err)
 		return QGFailureStatus{}
 	}
+	openRows = d.filterClosedQGIncidentBeads(ctx, openRows)
 
 	var occ30m int
 	if err := d.db.QueryRowContext(ctx, `
@@ -5535,7 +5547,7 @@ SELECT COUNT(*) FROM qg_failure_occurrences
 	}
 
 	rows, err := d.db.QueryContext(ctx, `
-SELECT fingerprint FROM qg_failure_incidents
+SELECT id, fingerprint FROM qg_failure_incidents
  WHERE status = 'open'
  ORDER BY occurrence_count DESC
  LIMIT 5`)
@@ -5547,12 +5559,16 @@ SELECT fingerprint FROM qg_failure_incidents
 
 	var fps []string
 	for rows.Next() {
-		var fp string
-		if err := rows.Scan(&fp); err != nil {
+		var row qgIncidentStatusRow
+		if err := rows.Scan(&row.ID, &row.Fingerprint); err != nil {
 			fmt.Fprintf(os.Stderr, "qgFailureStatus: scan fingerprint: %v\n", err)
 			return QGFailureStatus{}
 		}
-		fps = append(fps, fp)
+		if d.qgIncidentBeadClosed(ctx, row.ID) {
+			_ = d.closeQGIncidentRow(ctx, row.ID)
+			continue
+		}
+		fps = append(fps, row.Fingerprint)
 	}
 	if err := rows.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "qgFailureStatus: rows error: %v\n", err)
@@ -5560,10 +5576,71 @@ SELECT fingerprint FROM qg_failure_incidents
 	}
 
 	return QGFailureStatus{
-		OpenIncidents:   open,
+		OpenIncidents:   len(openRows),
 		Occurrences30m:  occ30m,
 		TopFingerprints: fps,
 	}
+}
+
+func (d *Dispatcher) openQGIncidentRows(ctx context.Context) ([]qgIncidentStatusRow, error) {
+	rows, err := d.db.QueryContext(ctx, `
+SELECT id, fingerprint FROM qg_failure_incidents
+ WHERE status = 'open'
+ ORDER BY occurrence_count DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("query open qg incidents: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []qgIncidentStatusRow
+	for rows.Next() {
+		var row qgIncidentStatusRow
+		if err := rows.Scan(&row.ID, &row.Fingerprint); err != nil {
+			return nil, fmt.Errorf("scan open qg incident: %w", err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate open qg incidents: %w", err)
+	}
+	return out, nil
+}
+
+func (d *Dispatcher) filterClosedQGIncidentBeads(ctx context.Context, rows []qgIncidentStatusRow) []qgIncidentStatusRow {
+	if len(rows) == 0 {
+		return rows
+	}
+	open := rows[:0]
+	for _, row := range rows {
+		if d.qgIncidentBeadClosed(ctx, row.ID) {
+			_ = d.closeQGIncidentRow(ctx, row.ID)
+			continue
+		}
+		open = append(open, row)
+	}
+	return open
+}
+
+func (d *Dispatcher) qgIncidentBeadClosed(ctx context.Context, incidentID int64) bool {
+	if d.beads == nil || incidentID <= 0 {
+		return false
+	}
+	detail, err := d.beads.Show(ctx, fmt.Sprintf("oro-qg-incident-%d", incidentID))
+	if err != nil || detail == nil {
+		return false
+	}
+	return detail.Status == "closed"
+}
+
+func (d *Dispatcher) closeQGIncidentRow(ctx context.Context, incidentID int64) error {
+	_, err := d.db.ExecContext(ctx, `
+UPDATE qg_failure_incidents
+   SET status = 'closed'
+ WHERE id = ? AND status = 'open'`, incidentID)
+	if err != nil {
+		return fmt.Errorf("close qg incident row: %w", err)
+	}
+	return nil
 }
 
 func (d *Dispatcher) buildStatusJSON() string {

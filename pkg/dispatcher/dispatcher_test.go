@@ -14288,6 +14288,53 @@ func TestStatusJSONIncludesQGFailureIncidents(t *testing.T) {
 	})
 }
 
+func TestStatusJSONDoesNotCountClosedQGIncidentBeads(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+	incident, err := RecordQGFailureOccurrence(ctx, d.db, QGFailureRecord{
+		Output: "FAIL: fixed incident\nTestAlreadyFixed",
+		BeadID: "oro-original",
+	}, QGFailureClassification{
+		Class:      QGFailureClassSystemic,
+		Decision:   QGFailureDecisionCreateOrReuseInfra,
+		Confidence: QGFailureConfidenceHigh,
+		Reason:     "shared infra failure",
+	})
+	if err != nil {
+		t.Fatalf("record qg failure occurrence: %v", err)
+	}
+
+	infraID := fmt.Sprintf("oro-qg-incident-%d", incident.ID)
+	beadSrc.mu.Lock()
+	beadSrc.shown[infraID] = &protocol.BeadDetail{
+		Title:              infraID,
+		Status:             "closed",
+		AcceptanceCriteria: "done",
+	}
+	beadSrc.mu.Unlock()
+
+	raw := d.buildStatusJSON()
+	var status statusResponse
+	if err := json.Unmarshal([]byte(raw), &status); err != nil {
+		t.Fatalf("parse status json: %v", err)
+	}
+	if status.QGFailureIncidentsOpen != 0 {
+		t.Fatalf("qg_failure_incidents_open = %d, want 0", status.QGFailureIncidentsOpen)
+	}
+	if len(status.QGFailureTopFingerprints) != 0 {
+		t.Fatalf("top fingerprints = %v, want none", status.QGFailureTopFingerprints)
+	}
+
+	var dbStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM qg_failure_incidents WHERE id=?`, incident.ID).Scan(&dbStatus); err != nil {
+		t.Fatalf("query qg incident status: %v", err)
+	}
+	if dbStatus != "closed" {
+		t.Fatalf("qg incident db status = %q, want closed", dbStatus)
+	}
+}
+
 // mockCodeIndex implements CodeIndex for testing.
 type mockCodeIndex struct {
 	mu             sync.Mutex
@@ -16201,6 +16248,36 @@ func TestDispatcherCleansUpClosedBeadAssignments(t *testing.T) {
 	_, beadAfter, _ := d.WorkerInfo("w1")
 	if beadAfter != "" {
 		t.Errorf("expected worker beadID to be cleared after external close, got %q", beadAfter)
+	}
+}
+
+func TestDispatcherRestoresAssignedOpenBeadToInProgress(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	const beadID = "oro-assigned-open"
+
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "open"}
+	beadSrc.mu.Unlock()
+
+	d.mu.Lock()
+	d.workers["w-open"] = &trackedWorker{
+		id:     "w-open",
+		state:  protocol.WorkerBusy,
+		beadID: beadID,
+	}
+	d.mu.Unlock()
+
+	d.checkClosedBeadAssignments(ctx)
+
+	beadSrc.mu.Lock()
+	got := beadSrc.updated[beadID]
+	beadSrc.mu.Unlock()
+	if got != "in_progress" {
+		t.Fatalf("assigned open bead status = %q, want in_progress", got)
+	}
+	if eventCount(t, d.db, "assigned_bead_status_reconciled") != 1 {
+		t.Fatalf("expected assigned_bead_status_reconciled event")
 	}
 }
 
