@@ -7,6 +7,7 @@ WORKERS="${WORKERS:-2}"
 MAX_WORKERS="${MAX_WORKERS:-2}"
 INTERVAL_SECS="${INTERVAL_SECS:-60}"
 STUCK_CHECKS_BEFORE_RESTART="${STUCK_CHECKS_BEFORE_RESTART:-2}"
+STALE_WORKER_GRACE_SECS="${STALE_WORKER_GRACE_SECS:-300}"
 
 stuck_idle_checks=0
 
@@ -38,6 +39,8 @@ while true; do
 	idle="$(jq -r '.idle_count' <<<"$status")"
 	queue="$(jq -r '.queue_depth' <<<"$status")"
 	qg_open="$(jq -r '.qg_failure_incidents_open' <<<"$status")"
+	progress_timeout="$(jq -r '.progress_timeout_secs // 600' <<<"$status")"
+	stale_progress_threshold=$((progress_timeout + STALE_WORKER_GRACE_SECS))
 	log "state=$state active=$active idle=$idle queue=$queue qg_open=$qg_open"
 
 	if [[ "$state" != "running" ]]; then
@@ -70,7 +73,7 @@ while true; do
 		[[ -z "$worker" ]] && continue
 		log "worker $worker on $bead is stale with context=$context progress=${progress}s; restarting worker"
 		(cd "$PROJECT_DIR" && "$ORO_BIN" directive restart-worker "$worker") || log "restart-worker $worker failed"
-	done < <(jq -r '.workers[]? | select(.state == "busy" and (.last_progress_secs > 900) and (.context_pct > 80)) | [.id, .bead_id, (.last_progress_secs|tostring), (.context_pct|tostring)] | @tsv' <<<"$status")
+	done < <(jq -r --argjson threshold "$stale_progress_threshold" '.workers[]? | select(.state == "busy" and (.last_progress_secs > $threshold)) | [.id, .bead_id, (.last_progress_secs|tostring), (.context_pct|tostring)] | @tsv' <<<"$status")
 
 	sleep "$INTERVAL_SECS"
 done
