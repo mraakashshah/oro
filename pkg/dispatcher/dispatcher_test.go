@@ -385,6 +385,7 @@ type mockWorktreeManager struct {
 	updateBranchRefFn func(target, source string) error
 	existsFn          func(ctx context.Context, path string) bool
 	currentBranchFn   func(ctx context.Context, path string) (string, error)
+	prepareReuseFn    func(ctx context.Context, worktree, branch, baseBranch string) (bool, error)
 	createBranchFn    func(ctx context.Context, name, from string) error
 	gcClosedFn        func(ctx context.Context, isBeadClosed func(string) bool) error
 }
@@ -516,6 +517,16 @@ func (m *mockWorktreeManager) CurrentBranch(ctx context.Context, path string) (s
 		return protocol.BranchPrefix + "oro-" + strings.TrimPrefix(name, "wt-"), nil
 	}
 	return "", fmt.Errorf("current branch for %s not configured", path)
+}
+
+func (m *mockWorktreeManager) PrepareExistingForReuse(ctx context.Context, worktree, branch, baseBranch string) (bool, error) {
+	m.mu.Lock()
+	fn := m.prepareReuseFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, worktree, branch, baseBranch)
+	}
+	return false, nil
 }
 
 func (m *mockWorktreeManager) RebaseOnto(_ context.Context, _, _ string) error {

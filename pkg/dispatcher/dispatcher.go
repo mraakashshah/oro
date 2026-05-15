@@ -197,6 +197,10 @@ type WorktreeManager interface {
 	CreateBranch(ctx context.Context, name string, from string) error
 }
 
+type existingWorktreeReusePreparer interface {
+	PrepareExistingForReuse(ctx context.Context, worktree, branch, baseBranch string) (fastForwarded bool, err error)
+}
+
 // Escalator sends messages to the Manager. Production impl uses tmux send-keys.
 type Escalator interface {
 	Escalate(ctx context.Context, msg string) error
@@ -5364,7 +5368,7 @@ func (d *Dispatcher) prepareAssignmentWorktree(
 ) (worktree, branch string, created bool) {
 	if existingWorktree != "" {
 		expectedBranch := protocol.BranchPrefix + beadID
-		if !d.validateExistingWorktreeForReuse(ctx, beadID, workerID, existingWorktree, expectedBranch) {
+		if !d.validateExistingWorktreeForReuse(ctx, beadID, workerID, existingWorktree, expectedBranch, baseBranch) {
 			return "", "", false
 		}
 		_ = d.logEvent(ctx, "worktree_reused", "dispatcher", beadID, workerID,
@@ -5402,25 +5406,50 @@ func (d *Dispatcher) createFreshAssignmentWorktreeAllowed(ctx context.Context, b
 	return true
 }
 
-func (d *Dispatcher) validateExistingWorktreeForReuse(ctx context.Context, beadID, workerID, worktree, expectedBranch string) bool {
+func (d *Dispatcher) validateExistingWorktreeForReuse(ctx context.Context, beadID, workerID, worktree, expectedBranch, baseBranch string) bool {
 	currentBranch, currentErr := d.worktrees.CurrentBranch(ctx, worktree)
-	if currentErr == nil && currentBranch == expectedBranch {
+	if currentErr != nil || currentBranch != expectedBranch {
+		d.quarantineUnsafeRecoveryWork(ctx, recoveryQuarantine{
+			BeadID:   beadID,
+			WorkerID: workerID,
+			Worktree: worktree,
+			Branch:   expectedBranch,
+			Reason:   "branch_worktree_mismatch",
+			Details:  "tracked worktree is not checked out on expected agent branch during assignment",
+		})
+		d.recordAssignmentFailure(beadID)
+		_ = d.updateBeadStatus(ctx, beadID, "open")
+		d.mu.Lock()
+		delete(d.assigningBeads, beadID)
+		d.mu.Unlock()
+		return false
+	}
+	preparer, ok := d.worktrees.(existingWorktreeReusePreparer)
+	if !ok {
 		return true
 	}
-	d.quarantineUnsafeRecoveryWork(ctx, recoveryQuarantine{
-		BeadID:   beadID,
-		WorkerID: workerID,
-		Worktree: worktree,
-		Branch:   expectedBranch,
-		Reason:   "branch_worktree_mismatch",
-		Details:  "tracked worktree is not checked out on expected agent branch during assignment",
-	})
-	d.recordAssignmentFailure(beadID)
-	_ = d.updateBeadStatus(ctx, beadID, "open")
-	d.mu.Lock()
-	delete(d.assigningBeads, beadID)
-	d.mu.Unlock()
-	return false
+	fastForwarded, err := preparer.PrepareExistingForReuse(ctx, worktree, expectedBranch, baseBranch)
+	if err != nil {
+		d.quarantineUnsafeRecoveryWork(ctx, recoveryQuarantine{
+			BeadID:   beadID,
+			WorkerID: workerID,
+			Worktree: worktree,
+			Branch:   expectedBranch,
+			Reason:   "unsafe_stale_branch",
+			Details:  err.Error(),
+		})
+		d.recordAssignmentFailure(beadID)
+		_ = d.updateBeadStatus(ctx, beadID, "open")
+		d.mu.Lock()
+		delete(d.assigningBeads, beadID)
+		d.mu.Unlock()
+		return false
+	}
+	if fastForwarded {
+		_ = d.logEvent(ctx, "worktree_fast_forwarded", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"worktree":%q,"branch":%q,"base_branch":%q}`, worktree, expectedBranch, baseBranch))
+	}
+	return true
 }
 
 func (d *Dispatcher) focusChangedSince(version uint64) bool {

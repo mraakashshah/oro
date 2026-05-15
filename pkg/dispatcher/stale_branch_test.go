@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -146,6 +147,123 @@ func TestDeleteStaleAgentBranch_BranchCheckedOut_AbortsAssignmentOnCleanupFailur
 	if createCalled {
 		t.Error("Create was called even though stale branch cleanup failed")
 	}
+}
+
+func TestPrepareExistingForReuse_FastForwardsBehindCleanBranch(t *testing.T) {
+	var calls []string
+	runner := &mockCommandRunner{
+		callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			call := strings.Join(args, " ")
+			calls = append(calls, call)
+			switch call {
+			case "-C /repo/root rev-parse agent/oro-stale":
+				return []byte("old\n"), nil
+			case "-C /repo/root rev-parse main":
+				return []byte("new\n"), nil
+			case "-C /repo/root merge-base --is-ancestor agent/oro-stale main":
+				return nil, nil
+			case "-C /repo/root/.worktrees/oro-stale status --porcelain --untracked-files=no":
+				return nil, nil
+			case "-C /repo/root/.worktrees/oro-stale merge --ff-only main":
+				return nil, nil
+			default:
+				return nil, fmt.Errorf("unexpected git call: %s", call)
+			}
+		},
+	}
+	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
+
+	fastForwarded, err := mgr.PrepareExistingForReuse(context.Background(),
+		"/repo/root/.worktrees/oro-stale", "agent/oro-stale", "main")
+	if err != nil {
+		t.Fatalf("PrepareExistingForReuse: %v", err)
+	}
+	if !fastForwarded {
+		t.Fatal("fastForwarded = false, want true")
+	}
+	if !containsCall(calls, "-C /repo/root/.worktrees/oro-stale merge --ff-only main") {
+		t.Fatalf("merge --ff-only not called, calls=%v", calls)
+	}
+}
+
+func TestPrepareExistingForReuse_BehindDirtyTrackedBranchBlocks(t *testing.T) {
+	runner := &mockCommandRunner{
+		callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			call := strings.Join(args, " ")
+			switch call {
+			case "-C /repo/root rev-parse agent/oro-dirty":
+				return []byte("old\n"), nil
+			case "-C /repo/root rev-parse main":
+				return []byte("new\n"), nil
+			case "-C /repo/root merge-base --is-ancestor agent/oro-dirty main":
+				return nil, nil
+			case "-C /repo/root/.worktrees/oro-dirty status --porcelain --untracked-files=no":
+				return []byte(" M pkg/worker/worker_test.go\n"), nil
+			default:
+				return nil, fmt.Errorf("unexpected git call: %s", call)
+			}
+		},
+	}
+	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
+
+	fastForwarded, err := mgr.PrepareExistingForReuse(context.Background(),
+		"/repo/root/.worktrees/oro-dirty", "agent/oro-dirty", "main")
+	if err == nil {
+		t.Fatal("expected dirty tracked worktree to block reuse")
+	}
+	if fastForwarded {
+		t.Fatal("fastForwarded = true, want false on blocked dirty worktree")
+	}
+	if !strings.Contains(err.Error(), "tracked changes") {
+		t.Fatalf("error = %v, want tracked changes context", err)
+	}
+}
+
+func TestValidateExistingWorktreeForReuse_PreparerFailureQuarantines(t *testing.T) {
+	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	beadID := "oro-stale-reuse"
+	worktree := "/repo/root/.worktrees/" + beadID
+	branch := protocol.BranchPrefix + beadID
+
+	wtMgr.currentBranchFn = func(_ context.Context, path string) (string, error) {
+		if path != worktree {
+			t.Fatalf("current branch path = %q, want %q", path, worktree)
+		}
+		return branch, nil
+	}
+	wtMgr.prepareReuseFn = func(_ context.Context, gotWorktree, gotBranch, gotBase string) (bool, error) {
+		if gotWorktree != worktree || gotBranch != branch || gotBase != "main" {
+			t.Fatalf("prepare args = %q %q %q", gotWorktree, gotBranch, gotBase)
+		}
+		return false, fmt.Errorf("stale branch behind base with tracked changes")
+	}
+
+	if d.validateExistingWorktreeForReuse(ctx, beadID, "worker-1", worktree, branch, "main") {
+		t.Fatal("validateExistingWorktreeForReuse returned true, want quarantine")
+	}
+
+	var reason, details string
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT reason, details FROM recovery_quarantines WHERE bead_id=? AND status='open'`,
+		beadID).Scan(&reason, &details); err != nil {
+		t.Fatalf("query quarantine: %v", err)
+	}
+	if reason != "unsafe_stale_branch" {
+		t.Fatalf("reason = %q, want unsafe_stale_branch", reason)
+	}
+	if !strings.Contains(details, "tracked changes") {
+		t.Fatalf("details = %q, want tracked changes context", details)
+	}
+}
+
+func containsCall(calls []string, want string) bool {
+	for _, call := range calls {
+		if call == want {
+			return true
+		}
+	}
+	return false
 }
 
 // TestWorktreeManager_PruneStale_RemovesWorktreeBeforeBranchDelete verifies the command

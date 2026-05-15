@@ -220,6 +220,73 @@ func (g *GitWorktreeManager) CurrentBranch(ctx context.Context, path string) (st
 	return strings.TrimSpace(string(out)), nil
 }
 
+// PrepareExistingForReuse verifies that an already-preserved assignment
+// worktree is safe to hand to another worker. If the agent branch has no unique
+// commits and is only behind the assignment base, it fast-forwards the worktree
+// after proving there are no tracked dirty changes. Untracked artifacts are
+// preserved.
+func (g *GitWorktreeManager) PrepareExistingForReuse(ctx context.Context, worktree, branch, baseBranch string) (bool, error) {
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+	branchHead, err := g.revParse(ctx, g.repoRoot, branch)
+	if err != nil {
+		return false, err
+	}
+	baseHead, err := g.revParse(ctx, g.repoRoot, baseBranch)
+	if err != nil {
+		return false, err
+	}
+	if branchHead == baseHead {
+		return false, nil
+	}
+
+	branchBehind, err := g.isAncestor(ctx, branch, baseBranch)
+	if err == nil && branchBehind {
+		dirty, dirtyErr := g.trackedStatus(ctx, worktree)
+		if dirtyErr != nil {
+			return false, dirtyErr
+		}
+		if dirty != "" {
+			return false, fmt.Errorf("stale branch %s is behind %s but worktree has tracked changes: %s", branch, baseBranch, dirty)
+		}
+		if _, mergeErr := g.runner.Run(ctx, "git", "-C", worktree, "merge", "--ff-only", baseBranch); mergeErr != nil {
+			return false, fmt.Errorf("fast-forward existing worktree %s to %s: %w", worktree, baseBranch, mergeErr)
+		}
+		return true, nil
+	}
+
+	baseBehind, err := g.isAncestor(ctx, baseBranch, branch)
+	if err == nil && baseBehind {
+		return false, nil
+	}
+	return false, fmt.Errorf("agent branch %s diverged from base %s", branch, baseBranch)
+}
+
+func (g *GitWorktreeManager) revParse(ctx context.Context, dir, ref string) (string, error) {
+	out, err := g.runner.Run(ctx, "git", "-C", dir, "rev-parse", ref)
+	if err != nil {
+		return "", fmt.Errorf("rev-parse %s: %w", ref, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func (g *GitWorktreeManager) isAncestor(ctx context.Context, older, newer string) (bool, error) {
+	_, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "merge-base", "--is-ancestor", older, newer)
+	if err == nil {
+		return true, nil
+	}
+	return false, fmt.Errorf("merge-base --is-ancestor %s %s: %w", older, newer, err)
+}
+
+func (g *GitWorktreeManager) trackedStatus(ctx context.Context, worktree string) (string, error) {
+	out, err := g.runner.Run(ctx, "git", "-C", worktree, "status", "--porcelain", "--untracked-files=no")
+	if err != nil {
+		return "", fmt.Errorf("tracked status %s: %w", worktree, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // BranchExists reports whether the named branch exists in the local repository.
 // Returns (false, nil) when the branch is simply absent — not found is not an error.
 // Returns (false, err) only when git itself fails (e.g., not a git repo).
