@@ -43,6 +43,7 @@ const (
 type workConfig struct {
 	beadID        string
 	model         string
+	runtime       string
 	timeout       time.Duration
 	reviewTimeout time.Duration
 	skipReview    bool
@@ -84,6 +85,7 @@ automatically. Exit code 0 means the task landed on main.`,
 	}
 
 	cmd.Flags().StringVar(&cfg.model, "model", "", "routing tier (fast/balanced/deep/background) or provider-native model override; empty uses task metadata")
+	cmd.Flags().StringVar(&cfg.runtime, "runtime", "", "force worker runtime (claude or codex); empty uses agent model resolution")
 	cmd.Flags().DurationVar(&cfg.timeout, "timeout", 15*time.Minute, "per-claude-spawn timeout")
 	cmd.Flags().DurationVar(&cfg.reviewTimeout, "review-timeout", 0, "ops review process timeout override (default: ops review default)")
 	cmd.Flags().BoolVar(&cfg.skipReview, "skip-review", false, "skip ops review gate")
@@ -310,7 +312,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		}
 	}
 	// Resolve runtime, model, and reasoning using standard bead resolution.
-	runtime, model, reasoning := agentmodel.ResolveForBead("worker", *cfg.bead)
+	runtime, model, reasoning := resolveWorkerRuntimeModel(cfg)
 
 	if cfg.dryRun {
 		logStep("Dry run — would execute bead %s with model=%s, timeout=%s, skip-review=%t",
@@ -491,6 +493,14 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	}
 
 	return nil
+}
+
+func resolveWorkerRuntimeModel(cfg *workConfig) (runtime, model, reasoning string) {
+	runtime, model, reasoning = agentmodel.ResolveForBead("worker", *cfg.bead)
+	if cfg.runtime != "" {
+		runtime = cfg.runtime
+	}
+	return runtime, model, reasoning
 }
 
 func recordWorkQGFailure(ctx context.Context, cfg *workConfig, deps *workDeps, component, output string) {
@@ -785,6 +795,9 @@ func handleReviewRejection(ctx context.Context, cfg *workConfig, deps *workDeps,
 	}
 
 	runtime, escalationModel, reasoning := agentmodel.ResolveForRole("worker_escalation")
+	if cfg.runtime != "" {
+		runtime = cfg.runtime
+	}
 	*model = escalationModel
 	*attempt = rejects
 	*feedback = result.Feedback

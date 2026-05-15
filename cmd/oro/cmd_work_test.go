@@ -40,6 +40,7 @@ func TestNewWorkCmd_Flags(t *testing.T) {
 		{"dry-run", "false"},
 		{"dry-run-spawn", "false"},
 		{"auto", "false"},
+		{"runtime", ""},
 	}
 	for _, tt := range tests {
 		f := cmd.Flag(tt.name)
@@ -49,6 +50,26 @@ func TestNewWorkCmd_Flags(t *testing.T) {
 		if f.DefValue != tt.defValue {
 			t.Fatalf("--%s default: expected %q, got %q", tt.name, tt.defValue, f.DefValue)
 		}
+	}
+}
+
+func TestResolveWorkerRuntimeModelHonorsRuntimeOverride(t *testing.T) {
+	cfg := &workConfig{
+		runtime: runtimeCodex,
+		bead: &protocol.Bead{
+			ID:    "oro-test",
+			Title: "Runtime override",
+			Tier:  protocol.TierFast,
+		},
+	}
+
+	runtime, model, _ := resolveWorkerRuntimeModel(cfg)
+
+	if runtime != runtimeCodex {
+		t.Fatalf("runtime = %q, want override %q", runtime, runtimeCodex)
+	}
+	if model == "" {
+		t.Fatal("model should still resolve from bead metadata")
 	}
 }
 
@@ -653,10 +674,24 @@ func TestWorkDepsMemoryAndCodeIndex(t *testing.T) {
 	})
 }
 
-type testRuntimeWorkerSpawner struct{}
+type testRuntimeWorkerSpawner struct {
+	calls      int
+	models     []string
+	reasonings []string
+}
 
-func (s *testRuntimeWorkerSpawner) Spawn(_ context.Context, _, _, _ string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
-	return nil, nil, nil, nil
+func (s *testRuntimeWorkerSpawner) Spawn(_ context.Context, model, _, _ string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
+	s.calls++
+	s.models = append(s.models, model)
+	s.reasonings = append(s.reasonings, "")
+	return &mockProcess{}, io.NopCloser(strings.NewReader("")), nil, nil
+}
+
+func (s *testRuntimeWorkerSpawner) SpawnWithReasoning(_ context.Context, model, reasoning, _, _ string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
+	s.calls++
+	s.models = append(s.models, model)
+	s.reasonings = append(s.reasonings, reasoning)
+	return &mockProcess{}, io.NopCloser(strings.NewReader("")), nil, nil
 }
 
 func (s *testRuntimeWorkerSpawner) StreamFormat() worker.StreamFormat {
@@ -664,11 +699,22 @@ func (s *testRuntimeWorkerSpawner) StreamFormat() worker.StreamFormat {
 }
 
 type testRuntimeOpsSpawner struct {
-	calls int
+	calls      int
+	models     []string
+	reasonings []string
 }
 
-func (s *testRuntimeOpsSpawner) Spawn(_ context.Context, _, _, _ string) (ops.Process, error) {
+func (s *testRuntimeOpsSpawner) Spawn(_ context.Context, model, _, _ string) (ops.Process, error) {
 	s.calls++
+	s.models = append(s.models, model)
+	s.reasonings = append(s.reasonings, "")
+	return nil, nil
+}
+
+func (s *testRuntimeOpsSpawner) SpawnWithReasoning(_ context.Context, model, reasoning, _, _ string) (ops.Process, error) {
+	s.calls++
+	s.models = append(s.models, model)
+	s.reasonings = append(s.reasonings, reasoning)
 	return nil, nil
 }
 
@@ -756,6 +802,109 @@ func TestBuildDepsResolvesRuntime(t *testing.T) {
 			t.Fatalf("codex ops calls = %d, want 1", wantOps.calls)
 		}
 	})
+}
+
+func TestNewProductionDepsHoldsBothRuntimes(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+	t.Setenv(agentRuntimeEnvVar, "")
+	t.Setenv("ORO_HOME", tmpDir)
+	t.Setenv("ORO_PROJECT", "")
+
+	claudeWorker := &testRuntimeWorkerSpawner{}
+	codexWorker := &testRuntimeWorkerSpawner{}
+	claudeOps := &testRuntimeOpsSpawner{}
+	codexOps := &testRuntimeOpsSpawner{}
+
+	prevClaudeWorker := newClaudeWorkerSpawner
+	prevCodexWorker := newCodexWorkerSpawner
+	prevClaudeOps := newClaudeOpsSpawner
+	prevCodexOps := newCodexOpsSpawner
+	newClaudeWorkerSpawner = func() worker.StreamingSpawner { return claudeWorker }
+	newCodexWorkerSpawner = func() worker.StreamingSpawner { return codexWorker }
+	newClaudeOpsSpawner = func() ops.BatchSpawner { return claudeOps }
+	newCodexOpsSpawner = func() ops.BatchSpawner { return codexOps }
+	defer func() {
+		newClaudeWorkerSpawner = prevClaudeWorker
+		newCodexWorkerSpawner = prevCodexWorker
+		newClaudeOpsSpawner = prevClaudeOps
+		newCodexOpsSpawner = prevCodexOps
+	}()
+
+	deps, err := newProductionDeps(0)
+	if err != nil {
+		t.Fatalf("newProductionDeps: %v", err)
+	}
+	if deps.runtimeSpawner == nil {
+		t.Fatal("runtimeSpawner is nil; want router backed by both worker runtimes")
+	}
+	if _, _, _, _, err := deps.runtimeSpawner.Spawn(context.Background(), runtimeClaude, "claude-opus-4-7", "", "prompt", tmpDir); err != nil {
+		t.Fatalf("spawn claude worker through runtime router: %v", err)
+	}
+	if _, _, _, _, err := deps.runtimeSpawner.Spawn(context.Background(), runtimeCodex, "gpt-5.5", "high", "prompt", tmpDir); err != nil {
+		t.Fatalf("spawn codex worker through runtime router: %v", err)
+	}
+	if claudeWorker.calls != 1 {
+		t.Fatalf("claude worker calls = %d, want 1", claudeWorker.calls)
+	}
+	if codexWorker.calls != 1 {
+		t.Fatalf("codex worker calls = %d, want 1", codexWorker.calls)
+	}
+	if got := codexWorker.reasonings[0]; got != "high" {
+		t.Fatalf("codex worker reasoning = %q, want high", got)
+	}
+
+	rt, err := resolveProductionRuntime()
+	if err != nil {
+		t.Fatalf("resolveProductionRuntime: %v", err)
+	}
+	router, ok := rt.opsSpawn.(ops.RuntimeBatchSpawner)
+	if !ok {
+		t.Fatalf("ops spawner = %#v, want runtime router", rt.opsSpawn)
+	}
+	if _, err := router.SpawnRuntime(context.Background(), runtimeClaude, "claude-opus-4-7", "", "prompt", tmpDir); err != nil {
+		t.Fatalf("spawn claude ops through router: %v", err)
+	}
+	if _, err := router.SpawnRuntime(context.Background(), runtimeCodex, "gpt-5.5", "high", "prompt", tmpDir); err != nil {
+		t.Fatalf("spawn codex ops through router: %v", err)
+	}
+	if claudeOps.calls != 1 {
+		t.Fatalf("claude ops calls = %d, want 1", claudeOps.calls)
+	}
+	if codexOps.calls != 1 {
+		t.Fatalf("codex ops calls = %d, want 1", codexOps.calls)
+	}
+}
+
+func TestSpawnAndWaitTakesRuntimeParam(t *testing.T) {
+	ctx := context.Background()
+	claudeWorker := &testRuntimeWorkerSpawner{}
+	codexWorker := &testRuntimeWorkerSpawner{}
+	deps := &workDeps{
+		spawner:        claudeWorker,
+		runtimeSpawner: worker.NewRuntimeSpawnerRouter(claudeWorker, codexWorker),
+	}
+	cfg := &workConfig{
+		beadID:  "oro-test",
+		timeout: 5 * time.Second,
+		bead:    testBead(),
+	}
+
+	if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", runtimeCodex, "gpt-5-codex", "medium", 0, "", nil); err != nil {
+		t.Fatalf("spawnAndWait codex: %v", err)
+	}
+	if codexWorker.calls != 1 {
+		t.Fatalf("codex calls = %d, want 1", codexWorker.calls)
+	}
+	if claudeWorker.calls != 0 {
+		t.Fatalf("claude calls = %d, want 0 for codex runtime", claudeWorker.calls)
+	}
+	if got := codexWorker.models[0]; got != "gpt-5-codex" {
+		t.Fatalf("codex model = %q, want gpt-5-codex", got)
+	}
+	if got := codexWorker.reasonings[0]; got != "medium" {
+		t.Fatalf("codex reasoning = %q, want medium", got)
+	}
 }
 
 func TestCodexBootstrapWithoutHooks(t *testing.T) {
