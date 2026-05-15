@@ -43,7 +43,8 @@ func (s *WorkerSpawner) Spawn(ctx context.Context, model, prompt, workdir string
 func (s *WorkerSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning, prompt, workdir string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
 	cmd := exec.CommandContext(ctx, s.binary(), buildWorkerExecArgsWithReasoning(model, reasoning, BuildBootstrapPrompt(prompt, workdir), workdir)...) //nolint:gosec // args built internally
 	cmd.Dir = workdir
-	cmd.Stderr = os.Stderr
+	stderrTail := worker.NewLineTailBuffer(100)
+	cmd.Stderr = io.MultiWriter(os.Stderr, stderrTail)
 	cmd.Env = processenv.ForWorkdir(os.Environ(), workdir)
 
 	devNull, err := os.Open(os.DevNull)
@@ -61,7 +62,7 @@ func (s *WorkerSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning
 	if err := cmd.Start(); err != nil {
 		return nil, nil, nil, wrapStartError(err)
 	}
-	return &worker.CmdProcess{Cmd: cmd}, stdoutPipe, nil, nil
+	return &worker.CmdProcess{Cmd: cmd, Runtime: commandName, Stderr: stderrTail}, stdoutPipe, nil, nil
 }
 
 func (s *WorkerSpawner) binary() string {

@@ -167,10 +167,22 @@ type HandoffPayload struct {
 
 // DonePayload is sent by a worker when it completes its bead.
 type DonePayload struct {
-	BeadID            string `json:"bead_id"`
-	WorkerID          string `json:"worker_id"`
-	QualityGatePassed bool   `json:"quality_gate_passed"`
-	QGOutput          string `json:"qg_output,omitempty"`
+	BeadID            string                 `json:"bead_id"`
+	WorkerID          string                 `json:"worker_id"`
+	QualityGatePassed bool                   `json:"quality_gate_passed"`
+	QGOutput          string                 `json:"qg_output,omitempty"`
+	FailureReason     string                 `json:"failure_reason,omitempty"`
+	SubprocessExit    *SubprocessExitPayload `json:"subprocess_exit,omitempty"`
+}
+
+// SubprocessExitPayload captures forensic evidence when a worker runtime exits
+// before completing the assigned bead.
+type SubprocessExitPayload struct {
+	Runtime    string `json:"runtime,omitempty"`
+	Model      string `json:"model,omitempty"`
+	ExitCode   int    `json:"exit_code"`
+	ExitError  string `json:"exit_error,omitempty"`
+	StderrTail string `json:"stderr_tail,omitempty"`
 }
 
 // CheckpointAckPayload is sent by a worker to acknowledge a checkpoint_requested signal.

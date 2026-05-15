@@ -117,6 +117,21 @@ type Process interface {
 	Kill() error
 }
 
+type processExitDiagnostics interface {
+	ExitCode() int
+	StderrTail() string
+}
+
+type subprocessExitSnapshot struct {
+	Runtime    string
+	Model      string
+	ExitCode   int
+	ExitError  string
+	StderrTail string
+}
+
+const subprocessDiedReason = "subprocess_died"
+
 // DefaultContextPollInterval controls how often the context watcher polls <worktree>/.oro/context_pct.
 const DefaultContextPollInterval = 5 * time.Second
 
@@ -171,6 +186,7 @@ type Worker struct {
 	proc                   Process
 	beadID                 string
 	worktree               string
+	runtime                string
 	model                  string
 	streamFormat           StreamFormat
 	mu                     sync.Mutex
@@ -190,6 +206,9 @@ type Worker struct {
 	isEpicDecomposition    bool           // true when current assignment is an epic decomposition
 	subprocExitCh          chan struct{}  // closed when subprocess exits
 	subprocExitClosed      bool           // true if subprocExitCh has been closed
+	subprocExitErr         string         // Process.Wait error captured for diagnostics
+	subprocExitCode        int            // process exit code captured after Wait
+	subprocStderrTail      string         // final runtime stderr tail captured after Wait
 	handleExitClaimed      bool           // true if a handler claimed subprocess exit handling
 	subprocKilledByUs      bool           // true if we intentionally killed the subprocess
 	connWriteMu            sync.Mutex     // serializes conn writes so heartbeat deadlines don't leak
@@ -521,7 +540,7 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	if err != nil {
 		return fmt.Errorf("spawn %s: %w", runtime, err)
 	}
-	w.recordSpawnedProc(proc, model, format)
+	w.recordSpawnedProc(proc, runtime, model, format)
 
 	if stdout != nil {
 		w.mu.Lock()
@@ -586,14 +605,18 @@ func clearAssignmentLocalState(worktree string) {
 
 // recordSpawnedProc captures the freshly spawned subprocess + model and resets
 // the exit-coordination flags under the worker lock.
-func (w *Worker) recordSpawnedProc(proc Process, model string, format StreamFormat) {
+func (w *Worker) recordSpawnedProc(proc Process, runtime, model string, format StreamFormat) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.proc = proc
+	w.runtime = runtime
 	w.model = model
 	w.streamFormat = format
 	w.subprocExitCh = make(chan struct{})
 	w.subprocExitClosed = false
+	w.subprocExitErr = ""
+	w.subprocExitCode = 0
+	w.subprocStderrTail = ""
 	w.handleExitClaimed = false
 	w.subprocKilledByUs = false
 }
@@ -640,8 +663,21 @@ func BuildAssignPrompt(a *protocol.AssignPayload) (prompt, model string) {
 
 // monitorSubprocessExit waits for the subprocess to exit and signals the exit channel.
 func (w *Worker) monitorSubprocessExit(proc Process) {
-	_ = proc.Wait()
+	waitErr := proc.Wait()
+	exitCode := 0
+	stderrTail := ""
+	if diagnostics, ok := proc.(processExitDiagnostics); ok {
+		exitCode = diagnostics.ExitCode()
+		stderrTail = trimLastLines(diagnostics.StderrTail(), 100)
+	}
+	waitErrText := ""
+	if waitErr != nil {
+		waitErrText = waitErr.Error()
+	}
 	w.mu.Lock()
+	w.subprocExitErr = waitErrText
+	w.subprocExitCode = exitCode
+	w.subprocStderrTail = stderrTail
 	if w.subprocExitCh != nil && !w.subprocExitClosed {
 		close(w.subprocExitCh)
 		w.subprocExitClosed = true
@@ -1001,7 +1037,7 @@ func (w *Worker) watchContext(ctx context.Context) {
 			}
 
 			// Check for unexpected subprocess death
-			if w.checkSubprocessHealth(ctx, &subprocExitDetectedAt) {
+			if w.checkSubprocessHealth(&subprocExitDetectedAt) {
 				return
 			}
 
@@ -1079,13 +1115,17 @@ func (w *Worker) handleContextThreshold(ctx context.Context, wt string, threshol
 
 // checkSubprocessHealth checks if the subprocess has died unexpectedly.
 // Returns true if unexpected death was detected and DONE was sent.
-func (w *Worker) checkSubprocessHealth(ctx context.Context, detectedAt *time.Time) bool {
+func (w *Worker) checkSubprocessHealth(detectedAt *time.Time) bool {
 	w.mu.Lock()
 	exitClosed := w.subprocExitClosed
 	claimed := w.handleExitClaimed
+	exitSnapshot := w.subprocessExitSnapshotLocked()
 	w.mu.Unlock()
 
 	if !exitClosed || claimed {
+		return false
+	}
+	if exitSnapshot.ExitError == "" && exitSnapshot.ExitCode == 0 {
 		return false
 	}
 
@@ -1102,7 +1142,7 @@ func (w *Worker) checkSubprocessHealth(ctx context.Context, detectedAt *time.Tim
 	if !w.handleExitClaimed {
 		w.handleExitClaimed = true
 		w.mu.Unlock()
-		_ = w.SendDone(ctx, false, "subprocess died unexpectedly")
+		_ = w.sendSubprocessDied(exitSnapshot)
 		return true
 	}
 	w.mu.Unlock()
@@ -1336,8 +1376,32 @@ func (w *Worker) SendStatus(_ context.Context, state, result string) error {
 	})
 }
 
+func (w *Worker) subprocessExitSnapshotLocked() subprocessExitSnapshot {
+	return subprocessExitSnapshot{
+		Runtime:    w.runtime,
+		Model:      w.model,
+		ExitCode:   w.subprocExitCode,
+		ExitError:  w.subprocExitErr,
+		StderrTail: w.subprocStderrTail,
+	}
+}
+
+func (w *Worker) sendSubprocessDied(snapshot subprocessExitSnapshot) error {
+	return w.sendDone(false, formatSubprocessDiedOutput(snapshot), subprocessDiedReason, &protocol.SubprocessExitPayload{
+		Runtime:    snapshot.Runtime,
+		Model:      snapshot.Model,
+		ExitCode:   snapshot.ExitCode,
+		ExitError:  snapshot.ExitError,
+		StderrTail: snapshot.StderrTail,
+	})
+}
+
 // SendDone sends a DONE message to the Dispatcher with the quality gate result.
 func (w *Worker) SendDone(ctx context.Context, qualityGatePassed bool, qgOutput string) error {
+	return w.sendDone(qualityGatePassed, qgOutput, "", nil)
+}
+
+func (w *Worker) sendDone(qualityGatePassed bool, qgOutput, failureReason string, subprocessExit *protocol.SubprocessExitPayload) error {
 	w.mu.Lock()
 	beadID := w.beadID
 	w.mu.Unlock()
@@ -1349,8 +1413,46 @@ func (w *Worker) SendDone(ctx context.Context, qualityGatePassed bool, qgOutput 
 			WorkerID:          w.ID,
 			QualityGatePassed: qualityGatePassed,
 			QGOutput:          qgOutput,
+			FailureReason:     failureReason,
+			SubprocessExit:    subprocessExit,
 		},
 	})
+}
+
+func formatSubprocessDiedOutput(snapshot subprocessExitSnapshot) string {
+	var b strings.Builder
+	b.WriteString("oro worker failure\n")
+	b.WriteString("reason: subprocess_died\n")
+	if snapshot.Runtime != "" {
+		fmt.Fprintf(&b, "runtime: %s\n", snapshot.Runtime)
+	}
+	if snapshot.Model != "" {
+		fmt.Fprintf(&b, "model: %s\n", snapshot.Model)
+	}
+	fmt.Fprintf(&b, "exit_code: %d\n", snapshot.ExitCode)
+	if snapshot.ExitError != "" {
+		fmt.Fprintf(&b, "exit_error: %s\n", snapshot.ExitError)
+	}
+	if snapshot.StderrTail != "" {
+		b.WriteString("stderr_tail:\n")
+		b.WriteString(snapshot.StderrTail)
+		if !strings.HasSuffix(snapshot.StderrTail, "\n") {
+			b.WriteString("\n")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func trimLastLines(s string, maxLines int) string {
+	s = strings.TrimRight(s, "\r\n")
+	if s == "" || maxLines <= 0 {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // SendHandoff sends a HANDOFF message to the Dispatcher.
@@ -1586,7 +1688,8 @@ func (s *ClaudeSpawner) Spawn(ctx context.Context, model, prompt, workdir string
 	args := buildClaudeArgs(model, prompt)
 	cmd := exec.CommandContext(ctx, "claude", args...) //nolint:gosec // args are constructed internally by buildClaudeArgs, not user input
 	cmd.Dir = workdir
-	cmd.Stderr = os.Stderr
+	stderrTail := NewLineTailBuffer(100)
+	cmd.Stderr = io.MultiWriter(os.Stderr, stderrTail)
 	cmd.Env = buildClaudeEnv(workdir)
 
 	// Open /dev/null for stdin to prevent the spawned process from inheriting parent stdin,
@@ -1606,20 +1709,42 @@ func (s *ClaudeSpawner) Spawn(ctx context.Context, model, prompt, workdir string
 	if err := cmd.Start(); err != nil {
 		return nil, nil, nil, fmt.Errorf("start claude: %w", err)
 	}
-	return &CmdProcess{Cmd: cmd}, stdoutPipe, nil, nil
+	return &CmdProcess{Cmd: cmd, Runtime: agentruntime.RuntimeClaude, Stderr: stderrTail}, stdoutPipe, nil, nil
 }
 
 // CmdProcess wraps *exec.Cmd to implement the Process interface.
 type CmdProcess struct {
-	Cmd *exec.Cmd
+	Cmd     *exec.Cmd
+	Runtime string
+	Stderr  *LineTailBuffer
 }
 
 // Wait blocks until the subprocess exits.
 func (p *CmdProcess) Wait() error {
 	if err := p.Cmd.Wait(); err != nil {
-		return fmt.Errorf("claude process wait: %w", err)
+		runtime := p.Runtime
+		if runtime == "" {
+			runtime = agentruntime.RuntimeClaude
+		}
+		return fmt.Errorf("%s process wait: %w", runtime, err)
 	}
 	return nil
+}
+
+// ExitCode returns the subprocess exit code after Wait has completed.
+func (p *CmdProcess) ExitCode() int {
+	if p.Cmd == nil || p.Cmd.ProcessState == nil {
+		return 0
+	}
+	return p.Cmd.ProcessState.ExitCode()
+}
+
+// StderrTail returns the retained subprocess stderr tail.
+func (p *CmdProcess) StderrTail() string {
+	if p.Stderr == nil {
+		return ""
+	}
+	return p.Stderr.String()
 }
 
 // Kill terminates the subprocess immediately.

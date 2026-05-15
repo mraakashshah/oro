@@ -238,11 +238,15 @@ pkg/dispatcher/foo.go imports are not sorted`,
 			wantDecision: dispatcher.QGFailureDecisionRetryOriginal,
 		},
 		{
-			name: "unexpected subprocess death stops for triage",
-			output: `quality gate subprocess died unexpectedly
+			name: "unexpected subprocess death retries original even when repeated",
+			output: `reason: subprocess_died
+runtime: claude
+model: sonnet
+exit_code: 137
 signal: killed`,
-			wantClass:    dispatcher.QGFailureClassUnknown,
-			wantDecision: dispatcher.QGFailureDecisionStopForTriage,
+			history:      dispatcher.QGFailureHistory{AffectedBeads: 3},
+			wantClass:    dispatcher.QGFailureClass("worker_transient"),
+			wantDecision: dispatcher.QGFailureDecisionRetryOriginal,
 		},
 	}
 

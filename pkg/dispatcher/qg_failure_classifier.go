@@ -42,6 +42,8 @@ type QGFailureClass string
 const (
 	// QGFailureClassWorkerDeterministic means the failure is tied to worker changes.
 	QGFailureClassWorkerDeterministic QGFailureClass = "worker_deterministic"
+	// QGFailureClassWorkerTransient means worker runtime infrastructure failed before QG completed.
+	QGFailureClassWorkerTransient QGFailureClass = "worker_transient"
 	// QGFailureClassSystemic means the failure appears shared across beads or infrastructure.
 	QGFailureClassSystemic QGFailureClass = "systemic"
 	// QGFailureClassFlaky means the failure matches known flaky or rerun-sensitive behavior.
@@ -136,6 +138,9 @@ func ClassifyQGFailure(record QGFailureRecord, history QGFailureHistory) QGFailu
 	case isImpossibleQGFailure(text):
 		return qgClassification(QGFailureClassImpossible, QGFailureDecisionBumpOriginal, QGFailureConfidenceHigh,
 			"failure indicates missing or impossible task acceptance")
+	case isWorkerTransientQGFailure(text):
+		return qgClassification(QGFailureClassWorkerTransient, QGFailureDecisionRetryOriginal, QGFailureConfidenceHigh,
+			"worker subprocess exited before completing; retry original with preserved diagnostics")
 	case history.AffectedBeads > 1 || isSystemicQGFailure(text):
 		return qgClassification(QGFailureClassSystemic, QGFailureDecisionCreateOrReuseInfra, QGFailureConfidenceHigh,
 			"failure appears systemic across beads or shared infrastructure")
@@ -182,6 +187,12 @@ func isSystemicQGFailure(text string) bool {
 		strings.Contains(text, "no such table") ||
 		strings.Contains(text, "database panic") ||
 		strings.Contains(text, "cannot load stdlib")
+}
+
+func isWorkerTransientQGFailure(text string) bool {
+	return strings.Contains(text, "reason: subprocess_died") ||
+		strings.Contains(text, "subprocess_died") ||
+		strings.Contains(text, "subprocess died unexpectedly")
 }
 
 func isFlakyQGFailure(text string) bool {

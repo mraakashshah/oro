@@ -24,10 +24,12 @@ import (
 
 // mockProcess implements worker.Process for testing.
 type mockProcess struct {
-	mu      sync.Mutex
-	killed  bool
-	waitCh  chan struct{} // close to unblock Wait
-	waitErr error
+	mu       sync.Mutex
+	killed   bool
+	waitCh   chan struct{} // close to unblock Wait
+	waitErr  error
+	exitCode int
+	stderr   string
 }
 
 func newMockProcess() *mockProcess {
@@ -57,6 +59,18 @@ func (p *mockProcess) Killed() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.killed
+}
+
+func (p *mockProcess) ExitCode() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.exitCode
+}
+
+func (p *mockProcess) StderrTail() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.stderr
 }
 
 // mockSpawner implements worker.StreamingSpawner for testing.
@@ -4175,6 +4189,9 @@ func TestSubprocessHealthCheck(t *testing.T) {
 
 	// Create a mock process that will not exit on its own (stays alive)
 	proc := newMockProcess()
+	proc.waitErr = fmt.Errorf("signal: killed")
+	proc.exitCode = 137
+	proc.stderr = numberedLines("stderr line", 101)
 	spawner.process = proc
 
 	dispatcherConn, workerConn := net.Pipe()
@@ -4246,24 +4263,75 @@ func TestSubprocessHealthCheck(t *testing.T) {
 				continue
 			}
 
-			if msg.Type == protocol.MsgDone {
-				doneReceived = true
-				if msg.Done.QualityGatePassed {
-					t.Error("expected QualityGatePassed=false when subprocess dies unexpectedly")
-				}
-				if msg.Done.QGOutput == "" {
-					t.Error("expected error message in QGOutput when subprocess dies")
-				}
-				if !strings.Contains(msg.Done.QGOutput, "subprocess") && !strings.Contains(msg.Done.QGOutput, "died") {
-					t.Errorf("expected error message about subprocess death, got: %q", msg.Done.QGOutput)
-				}
+			if msg.Type != protocol.MsgDone {
+				// Ignore other message types (like HEARTBEAT)
+				continue
 			}
-			// Ignore other message types (like HEARTBEAT)
+			doneReceived = true
+			assertSubprocessDiedDone(t, msg)
 		}
 	}
 
 	cancel()
 	<-errCh
+}
+
+func assertSubprocessDiedDone(t *testing.T, msg protocol.Message) {
+	t.Helper()
+
+	if msg.Done.QualityGatePassed {
+		t.Error("expected QualityGatePassed=false when subprocess dies unexpectedly")
+	}
+	if msg.Done.QGOutput == "subprocess died unexpectedly" {
+		t.Fatal("expected structured subprocess diagnostics, got bare message")
+	}
+	if !strings.Contains(msg.Done.QGOutput, "reason: subprocess_died") {
+		t.Errorf("expected subprocess_died reason in QGOutput, got: %q", msg.Done.QGOutput)
+	}
+	if !strings.Contains(msg.Done.QGOutput, "exit_code: 137") {
+		t.Errorf("expected exit code in QGOutput, got: %q", msg.Done.QGOutput)
+	}
+	if !strings.Contains(msg.Done.QGOutput, "exit_error: signal: killed") {
+		t.Errorf("expected wait error in QGOutput, got: %q", msg.Done.QGOutput)
+	}
+	if strings.Contains(msg.Done.QGOutput, "stderr line 001") {
+		t.Errorf("expected stderr tail to drop oldest lines, got: %q", msg.Done.QGOutput)
+	}
+	if !strings.Contains(msg.Done.QGOutput, "stderr line 002") ||
+		!strings.Contains(msg.Done.QGOutput, "stderr line 101") {
+		t.Errorf("expected last 100 stderr lines in QGOutput, got: %q", msg.Done.QGOutput)
+	}
+
+	var raw map[string]any
+	data, err := json.Marshal(msg.Done)
+	if err != nil {
+		t.Fatalf("marshal done payload: %v", err)
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal done payload: %v", err)
+	}
+	if raw["failure_reason"] != "subprocess_died" {
+		t.Fatalf("failure_reason = %#v, want subprocess_died", raw["failure_reason"])
+	}
+	subprocess, ok := raw["subprocess_exit"].(map[string]any)
+	if !ok {
+		t.Fatalf("subprocess_exit missing from DONE payload: %#v", raw)
+	}
+	if subprocess["exit_code"] != float64(137) {
+		t.Errorf("subprocess_exit.exit_code = %#v, want 137", subprocess["exit_code"])
+	}
+	stderrTail, _ := subprocess["stderr_tail"].(string)
+	if !strings.Contains(stderrTail, "stderr line 101") || strings.Contains(stderrTail, "stderr line 001") {
+		t.Errorf("subprocess_exit.stderr_tail did not preserve last 100 lines: %q", stderrTail)
+	}
+}
+
+func numberedLines(prefix string, count int) string {
+	var b strings.Builder
+	for i := 1; i <= count; i++ {
+		fmt.Fprintf(&b, "%s %03d\n", prefix, i)
+	}
+	return b.String()
 }
 
 func TestWatchContext_SendsPeriodicHeartbeats(t *testing.T) {
