@@ -201,6 +201,10 @@ type existingWorktreeReusePreparer interface {
 	PrepareExistingForReuse(ctx context.Context, worktree, branch, baseBranch string) (fastForwarded bool, err error)
 }
 
+type assignmentBaseBranchPreparer interface {
+	PrepareBaseBranchForAssignment(ctx context.Context, branch, baseBranch string) (fastForwarded bool, err error)
+}
+
 // Escalator sends messages to the Manager. Production impl uses tmux send-keys.
 type Escalator interface {
 	Escalate(ctx context.Context, msg string) error
@@ -5060,6 +5064,34 @@ func (d *Dispatcher) ensureEpicBranchReady(ctx context.Context, bead protocol.Be
 	// that resolve with an empty epic ID — those skip lazy creation.
 	if !exists && resolvedEpicID != "" {
 		return d.lazyCreateEpicBranch(ctx, bead.ID, baseBranch)
+	}
+	if exists && resolvedEpicID != "" {
+		if !d.prepareEpicBranchForAssignment(ctx, bead.ID, w.id, baseBranch) {
+			return false
+		}
+	}
+	return true
+}
+
+func (d *Dispatcher) prepareEpicBranchForAssignment(ctx context.Context, beadID, workerID, baseBranch string) bool {
+	preparer, ok := d.worktrees.(assignmentBaseBranchPreparer)
+	if !ok {
+		return true
+	}
+	fastForwarded, err := preparer.PrepareBaseBranchForAssignment(ctx, baseBranch, d.cfg.DefaultBranch)
+	if err != nil {
+		_ = d.logEvent(ctx, "epic_branch_prepare_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"branch":%q,"base_branch":%q,"error":%q}`, baseBranch, d.cfg.DefaultBranch, err.Error()))
+		_ = d.updateBeadStatus(ctx, beadID, "open")
+		d.mu.Lock()
+		delete(d.assigningBeads, beadID)
+		d.mu.Unlock()
+		d.recordAssignmentFailure(beadID)
+		return false
+	}
+	if fastForwarded {
+		_ = d.logEvent(ctx, "epic_branch_fast_forwarded", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"branch":%q,"base_branch":%q}`, baseBranch, d.cfg.DefaultBranch))
 	}
 	return true
 }

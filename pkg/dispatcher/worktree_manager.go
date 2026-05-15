@@ -263,6 +263,81 @@ func (g *GitWorktreeManager) PrepareExistingForReuse(ctx context.Context, worktr
 	return false, fmt.Errorf("agent branch %s diverged from base %s", branch, baseBranch)
 }
 
+// PrepareBaseBranchForAssignment refreshes an assignment base branch before a
+// child worktree is reused. It only mutates branch when branch is strictly
+// behind baseBranch; branches with unique commits are left untouched.
+func (g *GitWorktreeManager) PrepareBaseBranchForAssignment(ctx context.Context, branch, baseBranch string) (bool, error) {
+	if branch == "" || baseBranch == "" || branch == baseBranch {
+		return false, nil
+	}
+	relation, err := g.branchRelationToBase(ctx, branch, baseBranch)
+	if err != nil {
+		return false, err
+	}
+	if relation != branchStrictlyBehind {
+		return false, nil
+	}
+	if _, updateErr := g.runner.Run(ctx, "git", "-C", g.repoRoot, "branch", "-f", branch, baseBranch); updateErr != nil {
+		return false, fmt.Errorf("fast-forward base branch %s to %s: %w", branch, baseBranch, updateErr)
+	}
+	return true, nil
+}
+
+type branchBaseRelation int
+
+const (
+	branchSame branchBaseRelation = iota
+	branchStrictlyBehind
+	branchContainsBase
+	branchDiverged
+)
+
+func (g *GitWorktreeManager) branchRelationToBase(ctx context.Context, branch, baseBranch string) (branchBaseRelation, error) {
+	branchHead, err := g.revParse(ctx, g.repoRoot, branch)
+	if err != nil {
+		return branchDiverged, err
+	}
+	baseHead, err := g.revParse(ctx, g.repoRoot, baseBranch)
+	if err != nil {
+		return branchDiverged, err
+	}
+	if branchHead == baseHead {
+		return branchSame, nil
+	}
+
+	branchBehind, err := g.isAncestorOrUnrelated(ctx, branch, baseBranch)
+	if err != nil {
+		return branchDiverged, err
+	}
+	if branchBehind {
+		return branchStrictlyBehind, nil
+	}
+
+	baseBehind, err := g.isAncestorOrUnrelated(ctx, baseBranch, branch)
+	if err != nil {
+		return branchDiverged, err
+	}
+	if baseBehind {
+		return branchContainsBase, nil
+	}
+	return branchDiverged, nil
+}
+
+func (g *GitWorktreeManager) isAncestorOrUnrelated(ctx context.Context, older, newer string) (bool, error) {
+	ok, err := g.isAncestor(ctx, older, newer)
+	if err == nil {
+		return ok, nil
+	}
+	if isMergeBaseNotAncestor(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func isMergeBaseNotAncestor(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "exit status 1")
+}
+
 func (g *GitWorktreeManager) revParse(ctx context.Context, dir, ref string) (string, error) {
 	out, err := g.runner.Run(ctx, "git", "-C", dir, "rev-parse", ref)
 	if err != nil {

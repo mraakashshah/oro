@@ -219,6 +219,74 @@ func TestPrepareExistingForReuse_BehindDirtyTrackedBranchBlocks(t *testing.T) {
 	}
 }
 
+func TestPrepareBaseBranchForAssignment_FastForwardsBehindBranch(t *testing.T) {
+	var calls []string
+	runner := &mockCommandRunner{
+		callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			call := strings.Join(args, " ")
+			calls = append(calls, call)
+			switch call {
+			case "-C /repo/root rev-parse epic/oro-stale":
+				return []byte("old\n"), nil
+			case "-C /repo/root rev-parse main":
+				return []byte("new\n"), nil
+			case "-C /repo/root merge-base --is-ancestor epic/oro-stale main":
+				return nil, nil
+			case "-C /repo/root branch -f epic/oro-stale main":
+				return nil, nil
+			default:
+				return nil, fmt.Errorf("unexpected git call: %s", call)
+			}
+		},
+	}
+	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
+
+	fastForwarded, err := mgr.PrepareBaseBranchForAssignment(context.Background(), "epic/oro-stale", "main")
+	if err != nil {
+		t.Fatalf("PrepareBaseBranchForAssignment: %v", err)
+	}
+	if !fastForwarded {
+		t.Fatal("fastForwarded = false, want true")
+	}
+	if !containsCall(calls, "-C /repo/root branch -f epic/oro-stale main") {
+		t.Fatalf("branch -f not called, calls=%v", calls)
+	}
+}
+
+func TestPrepareBaseBranchForAssignment_DivergedBranchIsPreserved(t *testing.T) {
+	var calls []string
+	runner := &mockCommandRunner{
+		callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			call := strings.Join(args, " ")
+			calls = append(calls, call)
+			switch call {
+			case "-C /repo/root rev-parse epic/oro-diverged":
+				return []byte("epic\n"), nil
+			case "-C /repo/root rev-parse main":
+				return []byte("main\n"), nil
+			case "-C /repo/root merge-base --is-ancestor epic/oro-diverged main":
+				return nil, fmt.Errorf("exit status 1")
+			case "-C /repo/root merge-base --is-ancestor main epic/oro-diverged":
+				return nil, fmt.Errorf("exit status 1")
+			default:
+				return nil, fmt.Errorf("unexpected git call: %s", call)
+			}
+		},
+	}
+	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
+
+	fastForwarded, err := mgr.PrepareBaseBranchForAssignment(context.Background(), "epic/oro-diverged", "main")
+	if err != nil {
+		t.Fatalf("PrepareBaseBranchForAssignment: %v", err)
+	}
+	if fastForwarded {
+		t.Fatal("fastForwarded = true, want false for diverged branch")
+	}
+	if containsCall(calls, "-C /repo/root branch -f epic/oro-diverged main") {
+		t.Fatalf("diverged branch should not be moved, calls=%v", calls)
+	}
+}
+
 func TestValidateExistingWorktreeForReuse_PreparerFailureQuarantines(t *testing.T) {
 	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()

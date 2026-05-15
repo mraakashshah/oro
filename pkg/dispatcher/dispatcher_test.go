@@ -383,6 +383,7 @@ type mockWorktreeManager struct {
 	branchExistsFn    func(ctx context.Context, branch string) (bool, error)
 	mergeFFOnlyFn     func(branch, target string) (string, error)
 	updateBranchRefFn func(target, source string) error
+	prepareBaseFn     func(ctx context.Context, branch, baseBranch string) (bool, error)
 	existsFn          func(ctx context.Context, path string) bool
 	currentBranchFn   func(ctx context.Context, path string) (string, error)
 	prepareReuseFn    func(ctx context.Context, worktree, branch, baseBranch string) (bool, error)
@@ -525,6 +526,16 @@ func (m *mockWorktreeManager) PrepareExistingForReuse(ctx context.Context, workt
 	m.mu.Unlock()
 	if fn != nil {
 		return fn(ctx, worktree, branch, baseBranch)
+	}
+	return false, nil
+}
+
+func (m *mockWorktreeManager) PrepareBaseBranchForAssignment(ctx context.Context, branch, baseBranch string) (bool, error) {
+	m.mu.Lock()
+	fn := m.prepareBaseFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, branch, baseBranch)
 	}
 	return false, nil
 }
@@ -11339,6 +11350,96 @@ func TestStartupRecoversFromActiveAssignmentBranchState(t *testing.T) {
 	}
 	if gotHandoffs != 2 {
 		t.Fatalf("handoffCounts[oro-recover] = %d, want 2", gotHandoffs)
+	}
+}
+
+func TestAssignBeadRefreshesSafeBehindEpicBranchBeforeReusedWorktree(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	d.cfg.DefaultBranch = "main"
+	d.shutdownRunner = &mockCommandRunner{err: errors.New("exit status 1")}
+
+	const (
+		epicID   = "oro-epic"
+		beadID   = "oro-child"
+		workerID = "w1"
+	)
+	worktree := t.TempDir()
+	epicBranch := protocol.EpicBranchPrefix + epicID
+	agentBranch := protocol.BranchPrefix + beadID
+
+	beadSrc.mu.Lock()
+	beadSrc.shown[epicID] = &protocol.BeadDetail{ID: epicID, Type: "epic"}
+	beadSrc.mu.Unlock()
+
+	d.mu.Lock()
+	d.worktreeByBead[beadID] = worktree
+	d.mu.Unlock()
+
+	var prepared []string
+	wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
+		return branch == epicBranch, nil
+	}
+	wtMgr.existsFn = func(_ context.Context, path string) bool {
+		return path == worktree
+	}
+	wtMgr.currentBranchFn = func(_ context.Context, path string) (string, error) {
+		if path != worktree {
+			return "", fmt.Errorf("unexpected worktree %s", path)
+		}
+		return agentBranch, nil
+	}
+	wtMgr.prepareBaseFn = func(_ context.Context, branch, baseBranch string) (bool, error) {
+		prepared = append(prepared, branch+"<-"+baseBranch)
+		return true, nil
+	}
+	wtMgr.prepareReuseFn = func(_ context.Context, gotWorktree, branch, baseBranch string) (bool, error) {
+		if gotWorktree != worktree {
+			t.Fatalf("PrepareExistingForReuse worktree = %q, want %q", gotWorktree, worktree)
+		}
+		if branch != agentBranch {
+			t.Fatalf("PrepareExistingForReuse branch = %q, want %q", branch, agentBranch)
+		}
+		if baseBranch != epicBranch {
+			t.Fatalf("PrepareExistingForReuse baseBranch = %q, want %q", baseBranch, epicBranch)
+		}
+		return false, nil
+	}
+
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: workerID, ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, time.Second)
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, time.Second)
+
+	beadSrc.SetBeads([]protocol.Bead{{
+		ID:       beadID,
+		Title:    "Child on stale epic",
+		Priority: 1,
+		Epic:     epicID,
+	}})
+
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+	if msg.Assign.Worktree != worktree {
+		t.Fatalf("ASSIGN worktree = %q, want preserved %q", msg.Assign.Worktree, worktree)
+	}
+
+	if len(prepared) != 1 || prepared[0] != epicBranch+"<-main" {
+		t.Fatalf("prepared base branches = %v, want [%s<-main]", prepared, epicBranch)
+	}
+	if eventCount(t, d.db, "epic_branch_fast_forwarded") != 1 {
+		t.Fatal("expected epic_branch_fast_forwarded event")
 	}
 }
 
