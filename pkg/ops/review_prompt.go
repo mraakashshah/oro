@@ -210,6 +210,7 @@ func instructionCandidates(root, agentInstructionsPath, claudeMDPath string) []s
 	if root != "" {
 		candidates = append(candidates,
 			filepath.Join(root, sharedInstructionsFilename),
+			filepath.Join(root, "assets", sharedInstructionsFilename),
 		)
 	}
 	if claudeMDPath != "" {
@@ -219,6 +220,7 @@ func instructionCandidates(root, agentInstructionsPath, claudeMDPath string) []s
 		candidates = append(candidates,
 			filepath.Join(root, "CLAUDE.md"),
 			filepath.Join(root, ".claude", "CLAUDE.md"),
+			filepath.Join(root, "assets", "CLAUDE.md"),
 		)
 	}
 	return candidates

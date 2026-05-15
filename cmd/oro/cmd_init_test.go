@@ -1388,8 +1388,9 @@ func TestExtractAgentAssetsSharedSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CLAUDE.md compatibility wrapper not generated: %v", err)
 	}
-	if string(claudeData) != string(sharedData) {
-		t.Fatalf("CLAUDE.md should be generated from shared source.\nshared=%q\nclaude=%q", string(sharedData), string(claudeData))
+	claude := string(claudeData)
+	if !strings.Contains(claude, "# Shared Oro Instructions") || !strings.Contains(claude, "../ORO_AGENT.md") {
+		t.Fatalf("CLAUDE.md should be a wrapper generated from shared source, got %q", claude)
 	}
 
 	if _, err := os.Stat(filepath.Join(dest, ".claude", "skills", "brainstorming", "SKILL.md")); err != nil {
@@ -1427,8 +1428,9 @@ func TestOroInitGeneratesSharedAndClaudeViews(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Claude compatibility view not created: %v", err)
 	}
-	if string(claudeData) != string(sharedData) {
-		t.Fatalf("Claude compatibility view should mirror shared instructions.\nshared=%q\nclaude=%q", string(sharedData), string(claudeData))
+	claude := string(claudeData)
+	if !strings.Contains(claude, "# Shared Oro Instructions") || !strings.Contains(claude, "../ORO_AGENT.md") {
+		t.Fatalf("Claude compatibility view should be a wrapper generated from shared instructions, got %q", claude)
 	}
 
 	if _, err := os.Stat(filepath.Join(oroHome, ".claude", "skills", "brainstorming", "SKILL.md")); err != nil {
@@ -2304,8 +2306,9 @@ func TestInitEmitsBothClaudeAndAgentsMD(t *testing.T) {
 	if err != nil {
 		t.Fatalf(".claude/CLAUDE.md not extracted: %v", err)
 	}
-	if string(claudeData) != string(sharedData) {
-		t.Errorf(".claude/CLAUDE.md should mirror ORO_AGENT.md\ngot  %q\nwant %q", string(claudeData), string(sharedData))
+	claude := string(claudeData)
+	if !strings.Contains(claude, "# Oro Agent Instructions") || !strings.Contains(claude, "../ORO_AGENT.md") {
+		t.Errorf(".claude/CLAUDE.md should be a wrapper generated from ORO_AGENT.md, got %q", claude)
 	}
 
 	agentsPath := filepath.Join(dest, "AGENTS.md")
@@ -2315,6 +2318,45 @@ func TestInitEmitsBothClaudeAndAgentsMD(t *testing.T) {
 	}
 	if string(agentsData) != string(sharedData) {
 		t.Errorf("AGENTS.md should mirror ORO_AGENT.md\ngot  %q\nwant %q", string(agentsData), string(sharedData))
+	}
+}
+
+func TestInitGeneratesClaudeWrapperFromShared(t *testing.T) {
+	const shared = "# Oro Agent Instructions\n\nportable content\n"
+	assets := fstest.MapFS{
+		"ORO_AGENT.md":                 &fstest.MapFile{Data: []byte(shared)},
+		"skills/using-skills/SKILL.md": &fstest.MapFile{Data: []byte("# skill\n")},
+		"hooks/placeholder.sh":         &fstest.MapFile{Data: []byte("#!/bin/sh\n")},
+		"beacons/placeholder.md":       &fstest.MapFile{Data: []byte("# beacon\n")},
+		"commands/placeholder/cmd.md":  &fstest.MapFile{Data: []byte("# cmd\n")},
+	}
+	dest := t.TempDir()
+
+	if err := extractAssets(dest, assets, false); err != nil {
+		t.Fatalf("extractAssets failed: %v", err)
+	}
+
+	agentsData, err := os.ReadFile(filepath.Join(dest, "AGENTS.md")) //nolint:gosec // test-created file
+	if err != nil {
+		t.Fatalf("AGENTS.md not extracted: %v", err)
+	}
+	if string(agentsData) != shared {
+		t.Fatalf("AGENTS.md should mirror ORO_AGENT.md\ngot  %q\nwant %q", string(agentsData), shared)
+	}
+
+	claudeData, err := os.ReadFile(filepath.Join(dest, ".claude", "CLAUDE.md")) //nolint:gosec // test-created file
+	if err != nil {
+		t.Fatalf(".claude/CLAUDE.md not extracted: %v", err)
+	}
+	claude := string(claudeData)
+	if claude == shared {
+		t.Fatalf(".claude/CLAUDE.md should be a wrapper, not a duplicate of ORO_AGENT.md")
+	}
+	if !strings.Contains(claude, "../ORO_AGENT.md") {
+		t.Fatalf(".claude/CLAUDE.md should reference ../ORO_AGENT.md, got:\n%s", claude)
+	}
+	if !strings.Contains(claude, "# Oro Agent Instructions") {
+		t.Fatalf(".claude/CLAUDE.md should derive its title from ORO_AGENT.md, got:\n%s", claude)
 	}
 }
 
@@ -2437,8 +2479,16 @@ func TestRegenerationPolicyOnDivergence(t *testing.T) {
 			}
 		}
 		checkOverwritten(filepath.Join(dest, "ORO_AGENT.md"))
-		checkOverwritten(filepath.Join(claudeDir, "CLAUDE.md"))
 		checkOverwritten(filepath.Join(dest, "AGENTS.md"))
+
+		claudeData, err := os.ReadFile(filepath.Join(claudeDir, "CLAUDE.md")) //nolint:gosec // test-created file
+		if err != nil {
+			t.Fatalf("read CLAUDE.md: %v", err)
+		}
+		claude := string(claudeData)
+		if !strings.Contains(claude, "# updated by oro upgrade") || !strings.Contains(claude, "../ORO_AGENT.md") {
+			t.Errorf("CLAUDE.md should be overwritten with regenerated wrapper, got %q", claude)
+		}
 	})
 }
 

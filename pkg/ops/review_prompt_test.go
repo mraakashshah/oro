@@ -114,30 +114,60 @@ func TestReviewPromptResolvesSharedInstructions(t *testing.T) {
 }
 
 func TestReviewPromptPrefersSharedInstructions(t *testing.T) {
-	tmpDir := t.TempDir()
+	t.Run("uses assets ORO_AGENT before assets CLAUDE", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		assetsDir := filepath.Join(tmpDir, "assets")
+		if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
 
-	//nolint:gosec // test file permissions
-	if err := os.WriteFile(filepath.Join(tmpDir, sharedInstructionsFilename), []byte("shared instructions win"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	//nolint:gosec // test file permissions
-	if err := os.WriteFile(filepath.Join(tmpDir, "CLAUDE.md"), []byte("legacy claude instructions"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+		//nolint:gosec // test file permissions
+		if err := os.WriteFile(filepath.Join(assetsDir, sharedInstructionsFilename), []byte("shared asset instructions win"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		//nolint:gosec // test file permissions
+		if err := os.WriteFile(filepath.Join(assetsDir, "CLAUDE.md"), []byte("legacy asset claude instructions"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 
-	prompt := buildReviewPrompt(ReviewOpts{
-		BeadID:      "oro-test",
-		Worktree:    tmpDir,
-		BaseBranch:  "main",
-		ProjectRoot: tmpDir,
+		prompt := buildReviewPrompt(ReviewOpts{
+			BeadID:      "oro-test",
+			Worktree:    tmpDir,
+			BaseBranch:  "main",
+			ProjectRoot: tmpDir,
+		})
+
+		if !strings.Contains(prompt, "shared asset instructions win") {
+			t.Fatal("prompt missing shared asset instructions content")
+		}
+		if strings.Contains(prompt, "legacy asset claude instructions") {
+			t.Fatal("prompt should not prefer assets/CLAUDE.md when assets/ORO_AGENT.md exists")
+		}
 	})
 
-	if !strings.Contains(prompt, "shared instructions win") {
-		t.Fatal("prompt missing shared instructions content")
-	}
-	if strings.Contains(prompt, "legacy claude instructions") {
-		t.Fatal("prompt should not prefer CLAUDE.md when shared instructions exist")
-	}
+	t.Run("falls back to assets CLAUDE when shared asset is missing", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		assetsDir := filepath.Join(tmpDir, "assets")
+		if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		//nolint:gosec // test file permissions
+		if err := os.WriteFile(filepath.Join(assetsDir, "CLAUDE.md"), []byte("legacy asset claude fallback"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		prompt := buildReviewPrompt(ReviewOpts{
+			BeadID:      "oro-test",
+			Worktree:    tmpDir,
+			BaseBranch:  "main",
+			ProjectRoot: tmpDir,
+		})
+
+		if !strings.Contains(prompt, "legacy asset claude fallback") {
+			t.Fatal("prompt missing assets/CLAUDE.md fallback content")
+		}
+	})
 }
 
 func TestReviewPromptPrefersAcceptanceCommand(t *testing.T) {

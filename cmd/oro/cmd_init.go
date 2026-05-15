@@ -1148,10 +1148,18 @@ func extractSharedAgentInstructionsW(dest string, assets fs.FS, force bool, w io
 // ORO_AGENT.md is the canonical source; falls back to a direct CLAUDE.md asset for
 // older bundles. Uses the content-aware regeneration policy.
 func extractClaudeMDW(dest string, assets fs.FS, force bool, w io.Writer) error {
-	data, err := fs.ReadFile(assets, sharedAgentInstructionsFile)
-	if err != nil {
-		data, err = fs.ReadFile(assets, "CLAUDE.md")
+	sharedData, err := fs.ReadFile(assets, sharedAgentInstructionsFile)
+	if err == nil {
+		data := generateClaudeWrapper(sharedData)
+		claudeDir := filepath.Join(dest, ".claude")
+		if err := os.MkdirAll(claudeDir, 0o755); err != nil { //nolint:gosec // needs to be readable
+			return fmt.Errorf("create .claude dir: %w", err)
+		}
+		claudePath := filepath.Join(claudeDir, "CLAUDE.md")
+		return writeFileWithPolicy(w, claudePath, data, force)
 	}
+
+	data, err := fs.ReadFile(assets, "CLAUDE.md")
 	if err != nil {
 		return nil //nolint:nilerr // CLAUDE.md is optional in assets
 	}
@@ -1161,6 +1169,29 @@ func extractClaudeMDW(dest string, assets fs.FS, force bool, w io.Writer) error 
 	}
 	claudePath := filepath.Join(claudeDir, "CLAUDE.md")
 	return writeFileWithPolicy(w, claudePath, data, force)
+}
+
+func generateClaudeWrapper(sharedData []byte) []byte {
+	title := firstMarkdownHeading(sharedData)
+	if title == "" {
+		title = "# Oro Project Instructions"
+	}
+
+	return fmt.Appendf(nil, "%s\n\nThis Claude compatibility file is generated from `../%s`.\nRead `../%s` for the canonical Oro agent instructions.\n",
+		title,
+		sharedAgentInstructionsFile,
+		sharedAgentInstructionsFile,
+	)
+}
+
+func firstMarkdownHeading(data []byte) string {
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") {
+			return line
+		}
+	}
+	return ""
 }
 
 // extractAgentsMDW extracts the AGENTS.md compatibility view to dest/AGENTS.md.

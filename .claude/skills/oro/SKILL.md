@@ -2,8 +2,8 @@
 name: oro
 description: >
   Use when working in an oro-managed project. Two modes:
-  "use oro" / "oro work" → single worker on one task (lightweight, no dispatcher).
-  "launch oro" → full swarm with dispatcher, tmux, multiple workers.
+  "use oro" / "oro work" → one task in a single execution tier (lightweight, no dispatcher).
+  "launch oro" → full swarm with dispatcher, tmux, and multiple execution tiers.
 
   Workflow-specific sub-skills:
   - Running the swarm and monitoring → /watching-oro
@@ -18,7 +18,7 @@ user-invocable: true
 
 ## Mode 1: Work a Task (`oro work`)
 
-Single worker executes one task end-to-end. No dispatcher, no tmux, no swarm.
+One agent executes one task end-to-end in a single execution tier. No dispatcher, no tmux, no swarm.
 
 ```bash
 oro work <task-id>                              # work a task against default branch
@@ -26,13 +26,13 @@ oro work <task-id> --base-branch feature/auth   # target a specific branch
 oro work <task-id> --timeout 20m                # extend timeout for complex tasks
 ```
 
-**What happens:** Worker claims task → creates worktree → TDD implementation → quality gate (tests + lint + format) → ops review → merge to target branch → cleanup.
+**What happens:** Agent claims task → creates worktree → TDD implementation → quality gate (tests + lint + format) → ops review → merge to target branch → cleanup.
 
 **When to use:** Default for single tasks. Say "use oro" or "oro work" to trigger this.
 
 ## Mode 2: Launch Swarm (`oro start`)
 
-Full system: tmux session, dispatcher daemon, multiple parallel workers.
+Full system: tmux session, dispatcher daemon, multiple parallel execution tiers.
 
 ```bash
 oro start --workers 3 --detach                  # launch swarm (detached tmux)
@@ -42,13 +42,13 @@ oro attach                                      # connect to running swarm UI
 ORO_HUMAN_CONFIRMED=1 oro stop --force          # shutdown (non-TTY safe)
 ```
 
-**What happens:** Dispatcher polls `oro task ready` → assigns tasks to idle workers in isolated worktrees → quality gate → ops review → merge → next task. Workers loop until queue is empty or context exhausted (handoff to fresh worker).
+**What happens:** Dispatcher polls `oro task ready` → assigns tasks to idle agents in isolated worktrees → quality gate → ops review → merge → next task. Agents loop until queue is empty or their tier context is exhausted (handoff to a fresh agent).
 
 **When to use:** Multiple tasks to execute in parallel. Say "launch oro" to trigger this.
 
 ## Monitoring
 
-After launching the swarm, **always set up monitoring** to catch stuck workers and tasks.
+After launching the swarm, **always set up monitoring** to catch stuck agents, saturated tiers, and tasks.
 
 ### Option A: In-session (`/watching-oro`)
 
@@ -65,7 +65,7 @@ Lightweight automated monitoring. Set up immediately after `oro start`:
 The monitoring prompt should:
 
 1. Run `oro status` and `oro logs --tail 100 | grep -v heartbeat | grep -v directive | grep -v missing_accept | tail -15`
-2. Report worker state and task assignments
+2. Report agent state, tier, and task assignments
 3. Detect and fix stuck states (see table below)
 4. Report tasks completed since last check
 
@@ -73,18 +73,18 @@ The monitoring prompt should:
 
 | Signal | Meaning | Auto-fix |
 |--------|---------|----------|
-| Worker idle + queue > 0 for 2+ checks | Assignment stuck | Check `oro task ready`, restart dispatcher |
-| Same task on same worker for 3+ checks (>15min) | Worker stuck | Check context %, kill if >80% |
-| `REJECTED` repeating >2x for same task | Worker can't pass review | Read rejection feedback, check if task AC is achievable |
-| `QG_FAILED` repeating >3x for same task | Worker can't pass QG | Check QG output, may be flaky test vs real failure |
+| Agent idle + queue > 0 for 2+ checks | Assignment stuck | Check `oro task ready`, restart dispatcher |
+| Same task on same agent for 3+ checks (>15min) | Agent stuck | Check tier context %, kill if >80% |
+| `REJECTED` repeating >2x for same task | Agent can't pass review | Read rejection feedback, check if task AC is achievable |
+| `QG_FAILED` repeating >3x for same task | Agent can't pass QG | Check QG output, may be flaky test vs real failure |
 | `merge_failed` repeating for same task | Stale agent branch | Clean branch: `git branch -D agent/<task-id>`, reopen task |
-| Task `IN_PROGRESS` but no worker assigned | Orphaned task | `oro task update <id> --status open` to re-queue |
+| Task `IN_PROGRESS` but no agent assigned | Orphaned task | `oro task update <id> --status open` to re-queue |
 | `progress_timeout` → re-assign → timeout loop | Task merged but not closed | Check if code is on main/epic branch, `oro task close <id>` manually |
-| Workers idle, queue 0, tasks still open | All work done or blocked | Check `oro task ready` — if empty, epic may need closing |
+| Agents idle, queue 0, tasks still open | All work done or blocked | Check `oro task ready` — if empty, epic may need closing |
 
 ### When to stop monitoring
 
-- Queue empty + workers idle for 3+ consecutive checks → stop cron, stop swarm
+- Queue empty + agents idle for 3+ consecutive checks → stop cron, stop swarm
 - All target tasks/epic closed → stop cron, stop swarm
 
 ## Commands
@@ -94,7 +94,7 @@ The monitoring prompt should:
 | `oro work <task-id>` | Execute one task (lightweight, no dispatcher) |
 | `oro start [--workers N] [--detach]` | Launch swarm |
 | `oro stop` | Graceful shutdown |
-| `oro status` | Dispatcher state, workers, active tasks |
+| `oro status` | Dispatcher state, agents, tiers, active tasks |
 | `oro attach` | Connect to tmux session |
 | `oro logs [-f] [--tail N]` | Query event logs |
 | `oro directive <op>` | Control dispatcher: `status`, `pause`, `resume`, `scale N` |
@@ -105,24 +105,24 @@ Run `oro <command> --help` for flags.
 ## Branch Targeting
 
 Both modes support `--base-branch`:
-- **`oro work`**: `--base-branch feature/auth` — worker branches from and merges to that branch
-- **`oro start`**: `--base-branch feature/auth` — all workers default to that branch (per-task override via `--metadata branch=X`)
+- **`oro work`**: `--base-branch feature/auth` — the agent branch starts from and merges to that branch
+- **`oro start`**: `--base-branch feature/auth` — all tiers default to that branch (per-task override via `--metadata branch=X`)
 
 Without `--base-branch`, defaults to current HEAD at startup (falls back to `main`).
 
 ## Philosophy
 
-1. **Less Context, Better Work** — Workers see only their task's AC, relevant memories, and a clean worktree. Context is a budget: spend it on signal.
-2. **Compound Learnings** — Every session leaves the system smarter. Workers emit learnings, the dispatcher extracts patterns, memory consolidation scores and surfaces them.
-3. **Loop Until Done** — Context exhausted → handoff → fresh worker continues. Review fails → feedback → retry. Merge conflicts → ops agent resolves. No work is lost.
+1. **Less Context, Better Work** — Agents see only their task's AC, relevant memories, and a clean worktree. Context is a tier budget: spend it on signal.
+2. **Compound Learnings** — Every session leaves the system smarter. Agents emit learnings, the dispatcher extracts patterns, memory consolidation scores and surfaces them.
+3. **Loop Until Done** — Tier context exhausted → handoff → fresh agent continues. Review fails → feedback → retry. Merge conflicts → ops agent resolves. No work is lost.
 4. **Better Specs, Better Outcomes** — Spend tokens upstream: brainstorm alternatives, premortem designs, write validated specs before code.
 5. **Guards Over Trust** — TDD, quality gate, ops review, evidence-based verification. Guards aren't overhead — they're what enable fearless execution.
 
 ## Architecture
 
 ```
-oro work <task-id>           # lightweight — single worker, no dispatcher
-  └─ worker process
+oro work <task-id>           # lightweight — single execution tier, no dispatcher
+  └─ agent process
        ├─ creates worktree
        ├─ TDD implementation
        ├─ quality gate
@@ -132,11 +132,11 @@ oro work <task-id>           # lightweight — single worker, no dispatcher
 oro start --workers 3        # full swarm
   └─ tmux session "oro"
        ├─ pane 0: manager (task triage, reviews)
-       └─ panes 1+: workers (one per task)
+       └─ panes 1+: agents (one per task)
 
   Dispatcher (background daemon)
     ├─ polls oro task ready for unblocked tasks
-    ├─ assigns to idle workers in isolated worktrees
+    ├─ assigns to idle agents in isolated worktrees
     ├─ runs quality gates (tests, lint, format)
     ├─ sends to ops review → merge to target branch
     └─ communicates via UDS (Unix domain sockets)

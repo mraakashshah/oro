@@ -3986,17 +3986,184 @@ func (d *Dispatcher) assignLoopPoll(ctx context.Context) {
 	}
 }
 
+type schedulingUnitKind int
+
+const (
+	unitSpawnFor schedulingUnitKind = iota
+	unitFocused
+	unitIndependent
+	unitEpic
+)
+
+type schedulingUnit struct {
+	kind          schedulingUnitKind
+	epicID        string
+	epicPriority  int
+	epicCreatedAt string
+	beads         []protocol.Bead
+}
+
+type schedulingPlan struct {
+	units []schedulingUnit
+}
+
+type schedulingEpicRoot struct {
+	id        string
+	priority  int
+	createdAt string
+	ok        bool
+}
+
+// buildSchedulingPlan groups ready beads into assignment units. Independent
+// work is scheduled before epic units, while epic units are ordered by their
+// root epic priority so one epic's frontier stays contiguous.
+func (d *Dispatcher) buildSchedulingPlan(ctx context.Context, beads []protocol.Bead) (plan schedulingPlan, prioritySnapshot map[string]bool, focusVersion uint64) {
+	d.mu.Lock()
+	epic := d.focusedEpic
+	focusVersion = d.focusVersion
+	prioritySnapshot = make(map[string]bool, len(d.priorityBeads))
+	for id := range d.priorityBeads {
+		prioritySnapshot[id] = true
+	}
+	d.mu.Unlock()
+
+	focused := d.focusedDescendants(ctx, beads, epic)
+	parentCache := make(map[string]*protocol.BeadDetail)
+	epicUnitIndexes := make(map[string]int)
+
+	for _, bead := range beads {
+		switch {
+		case prioritySnapshot[bead.ID]:
+			plan.appendUnit(unitSpawnFor, bead)
+		case focused[bead.ID]:
+			plan.appendUnit(unitFocused, bead)
+		case bead.Epic == "":
+			plan.appendUnit(unitIndependent, bead)
+		default:
+			plan.appendEpicUnit(d.schedulingEpicRoot(ctx, bead.Epic, parentCache), bead, epicUnitIndexes)
+		}
+	}
+	plan.sort()
+
+	return plan, prioritySnapshot, focusVersion
+}
+
+func (p *schedulingPlan) appendUnit(kind schedulingUnitKind, bead protocol.Bead) {
+	p.units = append(p.units, schedulingUnit{
+		kind:  kind,
+		beads: []protocol.Bead{bead},
+	})
+}
+
+func (p *schedulingPlan) appendEpicUnit(root schedulingEpicRoot, bead protocol.Bead, unitIndexes map[string]int) {
+	if !root.ok {
+		p.appendUnit(unitIndependent, bead)
+		return
+	}
+	unitIdx, ok := unitIndexes[root.id]
+	if !ok {
+		p.units = append(p.units, schedulingUnit{
+			kind:          unitEpic,
+			epicID:        root.id,
+			epicPriority:  root.priority,
+			epicCreatedAt: root.createdAt,
+		})
+		unitIdx = len(p.units) - 1
+		unitIndexes[root.id] = unitIdx
+	}
+	p.units[unitIdx].beads = append(p.units[unitIdx].beads, bead)
+}
+
+func (p *schedulingPlan) sort() {
+	for i := range p.units {
+		sort.SliceStable(p.units[i].beads, func(a, b int) bool {
+			return p.units[i].beads[a].Priority < p.units[i].beads[b].Priority
+		})
+	}
+	sort.SliceStable(p.units, func(i, j int) bool {
+		return schedulingUnitLess(p.units[i], p.units[j])
+	})
+}
+
+func (p schedulingPlan) beads() []protocol.Bead {
+	total := 0
+	for _, unit := range p.units {
+		total += len(unit.beads)
+	}
+	beads := make([]protocol.Bead, 0, total)
+	for _, unit := range p.units {
+		beads = append(beads, unit.beads...)
+	}
+	return beads
+}
+
+func schedulingUnitLess(left, right schedulingUnit) bool {
+	if left.kind != right.kind {
+		return left.kind < right.kind
+	}
+	if left.kind != unitEpic {
+		return left.beads[0].Priority < right.beads[0].Priority
+	}
+	if left.epicPriority != right.epicPriority {
+		return left.epicPriority < right.epicPriority
+	}
+	if left.epicCreatedAt != right.epicCreatedAt {
+		return left.epicCreatedAt < right.epicCreatedAt
+	}
+	return left.epicID < right.epicID
+}
+
+func (d *Dispatcher) schedulingEpicRoot(ctx context.Context, parentID string, parentCache map[string]*protocol.BeadDetail) schedulingEpicRoot {
+	visited := make(map[string]bool)
+	var root schedulingEpicRoot
+	current := parentID
+	for current != "" {
+		if visited[current] {
+			return fallbackSchedulingEpicRoot(parentID)
+		}
+		visited[current] = true
+
+		parent, ok := parentCache[current]
+		if !ok {
+			detail, err := d.beads.Show(ctx, current)
+			if err != nil || detail == nil {
+				return fallbackSchedulingEpicRoot(parentID)
+			}
+			parent = detail
+			parentCache[current] = detail
+		}
+		if parent.Type == "epic" {
+			root = schedulingEpicRoot{
+				id:        current,
+				priority:  parent.Priority,
+				createdAt: parent.CreatedAt,
+				ok:        true,
+			}
+		}
+		current = parent.Epic
+	}
+	if !root.ok {
+		return fallbackSchedulingEpicRoot(parentID)
+	}
+	return root
+}
+
+func fallbackSchedulingEpicRoot(parentID string) schedulingEpicRoot {
+	return schedulingEpicRoot{
+		id:       parentID,
+		priority: int(^uint(0) >> 1),
+		ok:       true,
+	}
+}
+
 // sortBeadsByPriority sorts beads into four groups (all ties broken by priority):
 //  1. spawn-for beads (explicit priorityBeads map)
 //  2. focused epic descendants
 //  3. non-epic standalone beads (Epic == "")
 //  4. unfocused epic children, oldest epic first (lower ID = older)
-//
-// Returns a snapshot of priorityBeads for cleanup.
-func (d *Dispatcher) sortBeadsByPriority(ctx context.Context, beads []protocol.Bead) (prioritySnapshot map[string]bool, focusVersion uint64) {
+func (d *Dispatcher) sortBeadsByPriority(ctx context.Context, beads []protocol.Bead) {
 	d.mu.Lock()
 	epic := d.focusedEpic
-	focusVersion = d.focusVersion
 	pbSnapshot := make(map[string]bool, len(d.priorityBeads))
 	for id := range d.priorityBeads {
 		pbSnapshot[id] = true
@@ -4030,7 +4197,6 @@ func (d *Dispatcher) sortBeadsByPriority(ctx context.Context, beads []protocol.B
 		}
 		return bi.Priority < bj.Priority
 	})
-	return pbSnapshot, focusVersion
 }
 
 func (d *Dispatcher) focusedDescendants(ctx context.Context, beads []protocol.Bead, focusedEpic string) map[string]bool {
@@ -4117,7 +4283,8 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 
 	beads := d.filterAssignable(ctx, allBeads)
 
-	pbSnapshot, focusVersion := d.sortBeadsByPriority(ctx, beads)
+	plan, pbSnapshot, focusVersion := d.buildSchedulingPlan(ctx, beads)
+	beads = plan.beads()
 	reservedTargets, hasPendingSpawnFor := d.reservedSpawnForTargets()
 
 	// Auto-scale: if we have assignable beads but no idle workers, scale up to MaxWorkers.

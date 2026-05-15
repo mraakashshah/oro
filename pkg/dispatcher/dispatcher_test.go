@@ -18545,7 +18545,7 @@ func TestSortBeadsByPriority_EpicFinishing(t *testing.T) {
 			{ID: "b-focus-p1", Priority: 1, Epic: "epic-focus"},
 		}
 
-		_, _ = d.sortBeadsByPriority(context.Background(), beads)
+		d.sortBeadsByPriority(context.Background(), beads)
 
 		want := []string{
 			"b-spawn-p0",    // group 1: spawn-for, P0
@@ -18586,7 +18586,7 @@ func TestSortBeadsByPriority_EpicFinishing(t *testing.T) {
 			{ID: "p1", Priority: 1, Epic: ""},
 		}
 
-		_, _ = d.sortBeadsByPriority(context.Background(), beads)
+		d.sortBeadsByPriority(context.Background(), beads)
 
 		want := []string{"p0", "p1", "p2"}
 		for i, id := range want {
@@ -18620,7 +18620,7 @@ func TestSortBeadsByPriority_EpicFinishing(t *testing.T) {
 			{ID: "nested-p2", Priority: 2, Epic: "epic-child"},
 		}
 
-		_, _ = d.sortBeadsByPriority(context.Background(), beads)
+		d.sortBeadsByPriority(context.Background(), beads)
 
 		if got := beads[0].ID; got != "nested-p2" {
 			t.Fatalf("first bead after focused sort = %q, want nested descendant nested-p2", got)
@@ -18636,7 +18636,7 @@ func TestSortBeadsByPriority_EpicFinishing(t *testing.T) {
 			{ID: "p1", Priority: 1, Epic: "epic-one"},
 		}
 
-		_, _ = d.sortBeadsByPriority(context.Background(), beads)
+		d.sortBeadsByPriority(context.Background(), beads)
 
 		want := []string{"p0", "p1", "p2"}
 		for i, id := range want {
@@ -18645,6 +18645,45 @@ func TestSortBeadsByPriority_EpicFinishing(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestBuildSchedulingPlan_IndependentBeforeEpics(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	beadSrc.shown["epic-root-a"] = &protocol.BeadDetail{
+		ID:        "epic-root-a",
+		Title:     "Root A",
+		Type:      "epic",
+		Priority:  0,
+		CreatedAt: "2026-05-01T00:00:00Z",
+	}
+	beadSrc.shown["epic-root-b"] = &protocol.BeadDetail{
+		ID:        "epic-root-b",
+		Title:     "Root B",
+		Type:      "epic",
+		Priority:  1,
+		CreatedAt: "2026-05-02T00:00:00Z",
+	}
+
+	beads := []protocol.Bead{
+		{ID: "epic-b-child", Priority: 0, Epic: "epic-root-b"},
+		{ID: "epic-a-child", Priority: 0, Epic: "epic-root-a"},
+		{ID: "independent", Priority: 2},
+	}
+
+	plan, _, _ := d.buildSchedulingPlan(context.Background(), beads)
+
+	if len(plan.units) != 3 {
+		t.Fatalf("plan units = %d, want 3: %#v", len(plan.units), plan.units)
+	}
+	if got := plan.units[0].beads[0].ID; got != "independent" {
+		t.Fatalf("first unit bead = %q, want independent", got)
+	}
+	if got := plan.units[1].epicID; got != "epic-root-a" {
+		t.Fatalf("second unit epic = %q, want epic-root-a", got)
+	}
+	if got := plan.units[2].epicID; got != "epic-root-b" {
+		t.Fatalf("third unit epic = %q, want epic-root-b", got)
+	}
 }
 
 func TestDirective_MaxWorkers(t *testing.T) {
