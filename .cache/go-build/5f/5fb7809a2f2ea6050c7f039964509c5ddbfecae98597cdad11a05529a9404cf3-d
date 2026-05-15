@@ -1,5 +1,0 @@
-./efallthrough_test.go
-./go_corpus_test.go
-./non_go_corpus_test.go
-./per_lang_splice_test.go
-./splice_test.go

@@ -1,8 +1,0 @@
-./constants.go
-./directive.go
-./errors.go
-./fts.go
-./message.go
-./schema.go
-./tables.go
-./types.go

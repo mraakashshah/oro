@@ -1,8 +1,0 @@
-./compare_impl.go
-./corpus.go
-./extract.go
-./harness.go
-./metrics.go
-./openevaldb.go
-./paraphrase_cache.go
-./paraphrase_validator.go

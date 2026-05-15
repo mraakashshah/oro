@@ -1,3 +1,0 @@
-./cli_binary_test.go
-./dispatcher_worker_test.go
-./e2e_lifecycle_test.go

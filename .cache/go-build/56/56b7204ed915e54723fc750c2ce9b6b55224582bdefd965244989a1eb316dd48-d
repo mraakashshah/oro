@@ -1,6 +1,0 @@
-./bench_test.go
-./call_graph_test.go
-./impact_cgo_test.go
-./impact_test.go
-./multilang_symbol_map_test.go
-./symbol_map_test.go

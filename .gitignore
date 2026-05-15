@@ -34,6 +34,10 @@ coverage.out
 report.json
 state.db
 __pycache__/
+.cache/
+.gocache/
+.tmp/
+.tmp-test/
 .claude/hooks/oro-search-hook
 cmd/oro/_assets/
 

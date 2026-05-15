@@ -1,9 +1,0 @@
-./ac.go
-./backfill_coalesce.go
-./readtx.go
-./shadow.go
-./sqlite.go
-./store.go
-./testfake.go
-./v3methods.go
-./v3types.go

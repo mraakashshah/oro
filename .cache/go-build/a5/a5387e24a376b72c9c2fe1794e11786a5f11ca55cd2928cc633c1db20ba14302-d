@@ -1,6 +1,0 @@
-./bge_embedder_test.go
-./bge_reranker_test.go
-./models_test.go
-./retention_test.go
-./vec_index_test.go
-./vec_integration_test.go

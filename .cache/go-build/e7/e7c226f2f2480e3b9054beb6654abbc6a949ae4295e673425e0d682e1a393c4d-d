@@ -1,7 +1,0 @@
-./call_graph.go
-./go_extractor.go
-./impact.go
-./js_extractor.go
-./python_extractor.go
-./symbol.go
-./typescript_extractor.go
