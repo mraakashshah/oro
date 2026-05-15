@@ -171,8 +171,8 @@ func TestPreMergeQGFailureClassifiedBeforeReopen(t *testing.T) {
 // QG fails the dispatcher:
 //  1. Records a "qg_failed" event with the actionable QG output.
 //  2. Requeues the bead to "open" (visible retryable state).
-//  3. Completes the assignment in the DB so no in-progress bead is left with
-//     an idle worker (no orphan).
+//  3. Marks the assignment requeued so no active bead is left with an idle
+//     worker, while the failed work remains resumable.
 func TestPreMergeQGFailureDoesNotOrphan(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
@@ -220,14 +220,14 @@ func TestPreMergeQGFailureDoesNotOrphan(t *testing.T) {
 		t.Errorf("bead status after QG fail = %q (updated=%v), want \"open\"", status, hasUpdate)
 	}
 
-	// (3) Assignment completed — no orphan in-progress assignment left.
+	// (3) Assignment requeued — no active in-progress assignment left.
 	var assignStatus string
 	err = d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignStatus)
 	if err != nil {
 		t.Fatalf("query assignment status: %v", err)
 	}
-	if assignStatus != "completed" {
-		t.Errorf("assignment status = %q after QG fail, want \"completed\" (orphan guard)", assignStatus)
+	if assignStatus != "requeued" {
+		t.Errorf("assignment status = %q after QG fail, want \"requeued\" (orphan guard)", assignStatus)
 	}
 }
 
@@ -236,7 +236,7 @@ func TestPreMergeQGFailureDoesNotOrphan(t *testing.T) {
 // before the pre-merge QG result arrives, the dispatcher does NOT reopen the
 // bead to "open". Cleanup (assignment completion, worktree removal) still runs.
 func TestClosedBeadNotReopenedByStaleAssignment(t *testing.T) {
-	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
 	const beadID = "bead-closed-stale"
@@ -284,14 +284,23 @@ func TestClosedBeadNotReopenedByStaleAssignment(t *testing.T) {
 	if assignStatus != "completed" {
 		t.Errorf("assignment status = %q after closed-bead QG fail, want \"completed\"", assignStatus)
 	}
+
+	wtMgr.mu.Lock()
+	removed := append([]string(nil), wtMgr.removed...)
+	wtMgr.mu.Unlock()
+	if len(removed) != 0 {
+		t.Fatalf("closed-bead QG failure has no merge proof; worktree should be preserved, removed=%v", removed)
+	}
+	if eventCount(t, d.db, "pre_merge_qg_work_preserved") == 0 {
+		t.Fatalf("expected pre_merge_qg_work_preserved event for closed-bead QG failure")
+	}
 }
 
-// TestPreMergeQGErrorClassifiedBeforeCleanup verifies that when checkPreMergeQG
+// TestPreMergeQGErrorClassifiedBeforePreservation verifies that when checkPreMergeQG
 // encounters a qgErr (infrastructure failure, not just a test failure), the dispatcher
-// records a classified occurrence — with its incident class — before invoking worktree
-// removal. This ensures the classification is observable even if cleanup fails.
-func TestPreMergeQGErrorClassifiedBeforeCleanup(t *testing.T) {
-	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+// records a classified occurrence before logging that it preserved the work.
+func TestPreMergeQGErrorClassifiedBeforePreservation(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
 	const beadID = "bead-qg-classify"
@@ -308,21 +317,6 @@ func TestPreMergeQGErrorClassifiedBeforeCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("last insert id: %v", err)
 	}
-
-	// Track whether the classification event was already recorded when Remove is called.
-	var classifiedBeforeCleanup bool
-	var cleanupHappened bool
-	wtMgr.mu.Lock()
-	wtMgr.removeFn = func(rctx context.Context, _ string) error {
-		cleanupHappened = true
-		var count int
-		_ = d.db.QueryRowContext(rctx,
-			`SELECT COUNT(*) FROM events WHERE type='pre_merge_qg_error_classified' AND bead_id=?`,
-			beadID).Scan(&count)
-		classifiedBeforeCleanup = count > 0
-		return nil
-	}
-	wtMgr.mu.Unlock()
 
 	// Simulate a systemic infrastructure error: quality_gate.sh not found.
 	d.qgRunner = &mockQGRunner{err: fmt.Errorf("run quality gate: %w", os.ErrNotExist)}
@@ -348,12 +342,20 @@ func TestPreMergeQGErrorClassifiedBeforeCleanup(t *testing.T) {
 		t.Errorf("classification payload = %q, want class='systemic' for missing QG script", payload)
 	}
 
-	// (2) Classification must have been recorded before worktree cleanup.
-	if !cleanupHappened {
-		t.Errorf("worktree Remove was never called — cannot verify ordering")
+	// (2) Classification must have been recorded before preservation.
+	var classID, preserveID int64
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT id FROM events WHERE type='pre_merge_qg_error_classified' AND bead_id=?`,
+		beadID).Scan(&classID); err != nil {
+		t.Fatalf("query classification event id: %v", err)
 	}
-	if !classifiedBeforeCleanup {
-		t.Errorf("classification event not recorded before worktree cleanup")
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT id FROM events WHERE type='pre_merge_qg_work_preserved' AND bead_id=?`,
+		beadID).Scan(&preserveID); err != nil {
+		t.Fatalf("query preservation event id: %v", err)
+	}
+	if classID >= preserveID {
+		t.Errorf("classification event id %d must precede preservation event id %d", classID, preserveID)
 	}
 }
 
@@ -408,5 +410,22 @@ func TestPreMergeQGFailurePreservesRejectedWork(t *testing.T) {
 		if b == branch {
 			t.Errorf("branch %q was deleted for systemic error; want preserved for discovery", branch)
 		}
+	}
+
+	wtMgr.mu.Lock()
+	removedWorktrees := append([]string(nil), wtMgr.removed...)
+	wtMgr.mu.Unlock()
+	for _, removed := range removedWorktrees {
+		if removed == worktree {
+			t.Errorf("worktree %q was removed for systemic error; want preserved for retry/inspection", worktree)
+		}
+	}
+
+	var status, storedWorktree string
+	if err := d.db.QueryRowContext(ctx, `SELECT status, worktree FROM assignments WHERE id=?`, assignmentID).Scan(&status, &storedWorktree); err != nil {
+		t.Fatalf("query assignment after QG error: %v", err)
+	}
+	if status != "requeued" || storedWorktree != worktree {
+		t.Fatalf("assignment status/worktree = %s/%s, want requeued/%s", status, storedWorktree, worktree)
 	}
 }

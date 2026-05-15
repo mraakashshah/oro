@@ -8,6 +8,8 @@ import (
 	"sort"
 	"time"
 
+	"oro/pkg/factoryhealth"
+
 	"github.com/spf13/cobra"
 )
 
@@ -48,9 +50,10 @@ type statusResponse struct {
 	ProgressTimeoutSecs float64        `json:"progress_timeout_secs"`
 
 	// QG incidents
-	QGFailureIncidentsOpen   int      `json:"qg_failure_incidents_open"`
-	QGFailureOccurrences30m  int      `json:"qg_failure_occurrences_30m"`
-	QGFailureTopFingerprints []string `json:"qg_failure_top_fingerprints,omitempty"`
+	QGFailureIncidentsOpen   int                          `json:"qg_failure_incidents_open"`
+	QGFailureOccurrences30m  int                          `json:"qg_failure_occurrences_30m"`
+	QGFailureTopFingerprints []string                     `json:"qg_failure_top_fingerprints,omitempty"`
+	Health                   *factoryhealth.FactoryHealth `json:"health,omitempty"`
 }
 
 // statusSocketTimeout is how long to wait for the dispatcher socket round-trip.
@@ -58,46 +61,97 @@ const statusSocketTimeout = 3 * time.Second
 
 // newStatusCmd creates the "oro status" subcommand.
 func newStatusCmd() *cobra.Command {
-	return &cobra.Command{
+	var jsonOut bool
+	var verbose bool
+	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show current swarm state",
 		Long:  "Displays dispatcher status, worker count and active beads,\nmanager state, and bead summary.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			paths, err := ResolveDaemonPaths()
-			if err != nil {
-				return fmt.Errorf("resolve paths: %w", err)
-			}
-
-			w := cmd.OutOrStdout()
-
-			status, pid, err := DaemonStatus(paths.PIDPath, paths.SocketPath)
-			if err != nil {
-				return fmt.Errorf("get daemon status: %w", err)
-			}
-
-			switch status {
-			case StatusRunning:
-				fmt.Fprintf(w, "dispatcher: running (PID %d)\n", pid)
-				queryDispatcherStatus(cmd.Context(), w)
-			case StatusStale:
-				fmt.Fprintf(w, "dispatcher: stale (PID %d, process dead)\n", pid)
-			case StatusStopped:
-				fmt.Fprintln(w, "dispatcher: stopped")
-			}
-
-			return nil
+			return runStatusCommand(cmd.Context(), cmd.OutOrStdout(), jsonOut, verbose)
 		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit status as JSON")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "show extended status")
+	return cmd
+}
+
+func runStatusCommand(ctx context.Context, w io.Writer, jsonOut, verbose bool) error {
+	paths, err := ResolveDaemonPaths()
+	if err != nil {
+		return fmt.Errorf("resolve paths: %w", err)
+	}
+	status, pid, err := DaemonStatus(paths.PIDPath, paths.SocketPath)
+	if err != nil {
+		return fmt.Errorf("get daemon status: %w", err)
+	}
+	switch status {
+	case StatusRunning:
+		return printRunningStatus(ctx, w, paths.StateDBPath, pid, jsonOut, verbose)
+	case StatusStale:
+		return printLocalStatus(ctx, w, paths.StateDBPath, string(StatusStale), pid, jsonOut)
+	case StatusStopped:
+		return printLocalStatus(ctx, w, paths.StateDBPath, string(StatusStopped), 0, jsonOut)
+	default:
+		return nil
 	}
 }
 
-// queryDispatcherStatus connects to the dispatcher socket, sends a status
-// directive, and prints the parsed response. On any failure it prints a
-// graceful fallback message instead of returning an error.
-func queryDispatcherStatus(ctx context.Context, w io.Writer) {
-	paths, err := ResolveDaemonPaths()
+func printRunningStatus(ctx context.Context, w io.Writer, stateDBPath string, pid int, jsonOut, verbose bool) error {
+	resp, fetchOK := fetchDispatcherStatusForDisplay(ctx, w)
+	if jsonOut {
+		if !fetchOK {
+			return printStatusJSONFromLocalHealth(ctx, w, stateDBPath, string(StatusRunning), pid, true)
+		}
+		formatStatusJSON(w, resp)
+		return nil
+	}
+	fmt.Fprintf(w, "dispatcher: running (PID %d)\n", pid)
+	if !fetchOK {
+		return nil
+	}
+	if verbose {
+		formatStatusVerbose(w, resp)
+	} else {
+		formatStatusResponse(w, resp)
+	}
+	return nil
+}
+
+func printLocalStatus(ctx context.Context, w io.Writer, stateDBPath, state string, pid int, jsonOut bool) error {
+	if jsonOut {
+		return printStatusJSONFromLocalHealth(ctx, w, stateDBPath, state, pid, false)
+	}
+	if state == string(StatusStale) {
+		fmt.Fprintf(w, "dispatcher: stale (PID %d, process dead)\n", pid)
+		return nil
+	}
+	fmt.Fprintln(w, "dispatcher: stopped")
+	return nil
+}
+
+func printStatusJSONFromLocalHealth(ctx context.Context, w io.Writer, stateDBPath, state string, pid int, daemonRunning bool) error {
+	health, err := loadLocalFactoryHealth(ctx, stateDBPath, daemonRunning, pid, state)
+	if err != nil {
+		return fmt.Errorf("load local factory health: %w", err)
+	}
+	formatStatusJSON(w, &statusResponse{State: state, PID: pid, Health: &health})
+	return nil
+}
+
+func fetchDispatcherStatusForDisplay(ctx context.Context, w io.Writer) (*statusResponse, bool) {
+	resp, err := fetchDispatcherStatus(ctx)
 	if err != nil {
 		fmt.Fprintln(w, "  dispatcher detail unavailable")
-		return
+		return nil, false
+	}
+	return resp, true
+}
+
+func fetchDispatcherStatus(ctx context.Context) (*statusResponse, error) {
+	paths, err := ResolveDaemonPaths()
+	if err != nil {
+		return nil, fmt.Errorf("resolve paths: %w", err)
 	}
 	sockPath := paths.SocketPath
 
@@ -106,29 +160,24 @@ func queryDispatcherStatus(ctx context.Context, w io.Writer) {
 
 	conn, err := dialDispatcher(ctx, sockPath)
 	if err != nil {
-		fmt.Fprintln(w, "  dispatcher detail unavailable")
-		return
+		return nil, fmt.Errorf("dial dispatcher: %w", err)
 	}
 	defer conn.Close()
 
 	if err := sendDirective(conn, "status", ""); err != nil {
-		fmt.Fprintln(w, "  dispatcher detail unavailable")
-		return
+		return nil, fmt.Errorf("send status directive: %w", err)
 	}
 
 	ack, err := readACK(conn)
 	if err != nil {
-		fmt.Fprintln(w, "  dispatcher detail unavailable")
-		return
+		return nil, fmt.Errorf("read status ack: %w", err)
 	}
 
 	resp, err := parseStatusFromACK(ack.Detail)
 	if err != nil {
-		fmt.Fprintln(w, "  dispatcher detail unavailable")
-		return
+		return nil, err
 	}
-
-	formatStatusResponse(w, resp)
+	return resp, nil
 }
 
 // parseStatusFromACK parses the status JSON from an ACK detail string.
@@ -149,21 +198,20 @@ func formatAlerts(w io.Writer, resp *statusResponse) bool {
 	}
 	var alerts []alert
 
-	// Stuck worker alerts: use minimum of progress and heartbeat staleness.
-	// A recent heartbeat means the worker is alive even if progress is stale.
-	halfTimeout := resp.ProgressTimeoutSecs / 2
+	progressTimeout := effectiveProgressTimeout(resp.ProgressTimeoutSecs)
+	halfTimeout := progressTimeout / 2
 	for _, ws := range resp.Workers {
 		if ws.State != "busy" || ws.LastProgressSecs <= 0 {
 			continue
 		}
-		staleness := ws.LastProgressSecs
-		if ws.LastHeartbeatSecs > 0 && ws.LastHeartbeatSecs < staleness {
-			staleness = ws.LastHeartbeatSecs
-		}
-		if staleness >= resp.ProgressTimeoutSecs {
-			alerts = append(alerts, alert{"!", fmt.Sprintf("%s: no progress (%s) CRITICAL", ws.ID, formatDuration(staleness))})
-		} else if staleness >= halfTimeout {
-			alerts = append(alerts, alert{"!", fmt.Sprintf("%s: no progress (%s)", ws.ID, formatDuration(staleness))})
+		if ws.LastProgressSecs >= progressTimeout {
+			if ws.LastHeartbeatSecs > 0 && ws.LastHeartbeatSecs < progressTimeout {
+				alerts = append(alerts, alert{"!", fmt.Sprintf("%s: alive_no_progress (%s)", ws.ID, formatDuration(ws.LastProgressSecs))})
+			} else {
+				alerts = append(alerts, alert{"!", fmt.Sprintf("%s: no progress (%s) CRITICAL", ws.ID, formatDuration(ws.LastProgressSecs))})
+			}
+		} else if ws.LastProgressSecs >= halfTimeout {
+			alerts = append(alerts, alert{"!", fmt.Sprintf("%s: no progress (%s)", ws.ID, formatDuration(ws.LastProgressSecs))})
 		}
 	}
 
@@ -207,6 +255,13 @@ func formatDuration(secs float64) string {
 	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 }
 
+func effectiveProgressTimeout(secs float64) float64 {
+	if secs > 0 {
+		return secs
+	}
+	return 600
+}
+
 // filterActiveWorkers returns workers in busy or reviewing state.
 func filterActiveWorkers(workers []workerStatus) []workerStatus {
 	var active []workerStatus
@@ -241,6 +296,8 @@ func formatQGIncidents(w io.Writer, resp *statusResponse) {
 // formatStatusResponse writes a human-readable status summary with alerts.
 func formatStatusResponse(w io.Writer, resp *statusResponse) {
 	formatAlerts(w, resp)
+
+	formatStatusHealthSummary(w, resp.Health)
 
 	fmt.Fprintf(w, "  state:       %s\n", resp.State)
 
@@ -284,6 +341,20 @@ func formatStatusResponse(w io.Writer, resp *statusResponse) {
 	}
 }
 
+func formatStatusHealthSummary(w io.Writer, health *factoryhealth.FactoryHealth) {
+	if health == nil {
+		return
+	}
+	fmt.Fprintf(w, "  health:      %s (%s)\n", health.State, health.Posture)
+	for i, finding := range health.Findings {
+		if i >= 3 {
+			fmt.Fprintf(w, "    ... %d more finding(s)\n", len(health.Findings)-i)
+			break
+		}
+		fmt.Fprintf(w, "    %s: %s\n", finding.Code, finding.Message)
+	}
+}
+
 // formatInProgressBeads writes the in-progress beads section using enriched worker data.
 func formatInProgressBeads(w io.Writer, resp *statusResponse) {
 	// Filter to busy workers only.
@@ -301,16 +372,17 @@ func formatInProgressBeads(w io.Writer, resp *statusResponse) {
 	sort.Slice(busy, func(i, j int) bool { return busy[i].ID < busy[j].ID })
 
 	fmt.Fprintln(w, "  in_progress beads:")
-	halfTimeout := resp.ProgressTimeoutSecs / 2
+	progressTimeout := effectiveProgressTimeout(resp.ProgressTimeoutSecs)
+	halfTimeout := progressTimeout / 2
 	for _, ws := range busy {
-		staleness := ws.LastProgressSecs
-		if ws.LastHeartbeatSecs > 0 && ws.LastHeartbeatSecs < staleness {
-			staleness = ws.LastHeartbeatSecs
-		}
 		health := "healthy"
-		if staleness >= resp.ProgressTimeoutSecs {
-			health = "STUCK"
-		} else if staleness >= halfTimeout {
+		if ws.LastProgressSecs >= progressTimeout {
+			if ws.LastHeartbeatSecs > 0 && ws.LastHeartbeatSecs < progressTimeout {
+				health = "alive_no_progress"
+			} else {
+				health = "STUCK"
+			}
+		} else if ws.LastProgressSecs >= halfTimeout {
 			health = "slow"
 		}
 		fmt.Fprintf(w, "    %s -> %s (%s, %s ago)\n", ws.ID, ws.BeadID, health, formatDuration(ws.LastProgressSecs))

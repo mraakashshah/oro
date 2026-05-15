@@ -8,7 +8,7 @@ import (
 	"oro/pkg/protocol"
 )
 
-// TestAbandonStaleActiveAssignments_ResetsOpenBeads regression-tests oro-tczh.
+// TestAbandonStaleActiveAssignments_QuarantinesRecoveryState regression-tests oro-tczh.
 //
 // Background: dispatcher PID 48471 silently died on 2026-05-05; the new
 // dispatcher came up with 9 'active' assignment rows still pointing at dead
@@ -16,12 +16,11 @@ import (
 // those 9 beads vanished from the queue (1 ready vs 55 open) and the factory
 // stalled until manually unstuck.
 //
-// The fix: after startup, the dispatcher walks every status='active'
-// assignment and abandons any whose worker is not in the connected pool. For
-// in_progress beads, it also resets the bead to 'open' so beads_ready sees
-// them again. Tested directly without the grace-window timer so the test is
-// fast and deterministic.
-func TestAbandonStaleActiveAssignments_ResetsOpenBeads(t *testing.T) {
+// The recovery-safe behavior: after startup, the dispatcher walks every
+// status='active' assignment and quarantines any whose worker is not in the
+// connected pool. This keeps the branch/worktree visible through health before
+// the bead can be reassigned.
+func TestAbandonStaleActiveAssignments_QuarantinesRecoveryState(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
@@ -58,15 +57,15 @@ func TestAbandonStaleActiveAssignments_ResetsOpenBeads(t *testing.T) {
 		t.Errorf("expected 2 abandoned assignments (the two with dead workers), got %d", abandoned)
 	}
 
-	// Stale assignments are now status='abandoned'.
+	// Stale assignments are now recovery quarantined.
 	for _, beadID := range []string{"bead-stale-inprog", "bead-stale-open"} {
 		var status string
 		if err := d.db.QueryRowContext(ctx,
 			`SELECT status FROM assignments WHERE bead_id=?`, beadID).Scan(&status); err != nil {
 			t.Fatalf("query %s assignment: %v", beadID, err)
 		}
-		if status != "abandoned" {
-			t.Errorf("assignment for %s: expected status='abandoned', got %q", beadID, status)
+		if status != "quarantined" {
+			t.Errorf("assignment for %s: expected status='quarantined', got %q", beadID, status)
 		}
 	}
 
@@ -80,15 +79,14 @@ func TestAbandonStaleActiveAssignments_ResetsOpenBeads(t *testing.T) {
 		t.Errorf("live assignment: expected status='active', got %q", liveStatus)
 	}
 
-	// in_progress bead with stale assignment should have been Update()d to
-	// status='open' so beads_ready picks it up again.
+	// Quarantined beads should not be reopened by the stale assignment sweep.
 	beadSrc.mu.Lock()
 	got := beadSrc.updated["bead-stale-inprog"]
 	openOpen := beadSrc.updated["bead-stale-open"]
 	live := beadSrc.updated["bead-live"]
 	beadSrc.mu.Unlock()
-	if got != "open" {
-		t.Errorf("bead-stale-inprog: expected Update(status='open') after stale-assignment cleanup, got %q", got)
+	if got != "" {
+		t.Errorf("bead-stale-inprog: expected no Update after quarantine, got %q", got)
 	}
 	// open bead doesn't need a status flip — the fix should not Update it.
 	if openOpen != "" {
@@ -97,6 +95,15 @@ func TestAbandonStaleActiveAssignments_ResetsOpenBeads(t *testing.T) {
 	// Live in_progress bead should be untouched.
 	if live != "" {
 		t.Errorf("bead-live: expected no Update (live worker still connected), got %q", live)
+	}
+
+	var quarantines int
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM recovery_quarantines WHERE reason='stale_active_assignment' AND status='open'`).Scan(&quarantines); err != nil {
+		t.Fatalf("count recovery quarantines: %v", err)
+	}
+	if quarantines != 2 {
+		t.Fatalf("open stale_active_assignment quarantines = %d, want 2", quarantines)
 	}
 }
 
@@ -128,7 +135,7 @@ func TestStaleAssignmentSweepRepeatsAfterStartupGrace(t *testing.T) {
 			`SELECT status FROM assignments WHERE bead_id='bead-late-open'`).Scan(&status); err != nil {
 			t.Fatalf("query late assignment: %v", err)
 		}
-		if status == "abandoned" {
+		if status == "quarantined" {
 			return
 		}
 		time.Sleep(d.cfg.HeartbeatTimeout / 2)
@@ -139,7 +146,7 @@ func TestStaleAssignmentSweepRepeatsAfterStartupGrace(t *testing.T) {
 		`SELECT status FROM assignments WHERE bead_id='bead-late-open'`).Scan(&status); err != nil {
 		t.Fatalf("query late assignment after deadline: %v", err)
 	}
-	t.Fatalf("late stale assignment status = %q, want abandoned by recurring sweep", status)
+	t.Fatalf("late stale assignment status = %q, want quarantined by recurring sweep", status)
 }
 
 func mustExec(t *testing.T, d *Dispatcher, query string, args ...any) {

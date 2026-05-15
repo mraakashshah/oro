@@ -14,6 +14,7 @@ import (
 type mockPaneRestartRunner struct {
 	calls []paneRestartCall
 	err   error
+	out   []byte
 }
 
 type paneRestartCall struct {
@@ -23,7 +24,7 @@ type paneRestartCall struct {
 
 func (m *mockPaneRestartRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
 	m.calls = append(m.calls, paneRestartCall{name: name, args: args})
-	return nil, m.err
+	return m.out, m.err
 }
 
 func TestTmuxPaneRestarter_Restart(t *testing.T) {
@@ -125,5 +126,34 @@ func TestTmuxPaneRestarter_Restart(t *testing.T) {
 	t.Run("implements PaneRestarter interface", func(t *testing.T) {
 		runner := &mockPaneRestartRunner{}
 		var _ dispatcher.PaneRestarter = dispatcher.NewTmuxPaneRestarter("oro", "oro worker", runner)
+	})
+}
+
+func TestTmuxPaneRestarter_Alive(t *testing.T) {
+	t.Run("true when tmux reports live non-shell command", func(t *testing.T) {
+		runner := &mockPaneRestartRunner{out: []byte("0 codex\n")}
+		r := dispatcher.NewTmuxPaneRestarter("oro", "oro worker", runner)
+
+		if !r.Alive(context.Background(), "manager") {
+			t.Fatal("expected live codex manager pane to be alive")
+		}
+	})
+
+	t.Run("false when tmux reports dead pane", func(t *testing.T) {
+		runner := &mockPaneRestartRunner{out: []byte("1 codex\n")}
+		r := dispatcher.NewTmuxPaneRestarter("oro", "oro worker", runner)
+
+		if r.Alive(context.Background(), "manager") {
+			t.Fatal("expected dead manager pane to be not alive")
+		}
+	})
+
+	t.Run("false when pane has fallen back to shell", func(t *testing.T) {
+		runner := &mockPaneRestartRunner{out: []byte("0 zsh\n")}
+		r := dispatcher.NewTmuxPaneRestarter("oro", "oro worker", runner)
+
+		if r.Alive(context.Background(), "manager") {
+			t.Fatal("expected shell manager pane to be not alive")
+		}
 	})
 }

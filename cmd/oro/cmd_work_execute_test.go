@@ -180,6 +180,11 @@ func (m *mockWorktreeManager) DeleteBranch(_ context.Context, branch string) err
 	return m.deleteBranchErr
 }
 
+func (m *mockWorktreeManager) ForceDeleteBranch(_ context.Context, branch string) error {
+	m.deletedBranches = append(m.deletedBranches, branch)
+	return m.deleteBranchErr
+}
+
 func (m *mockWorktreeManager) BranchExists(_ context.Context, _ string) (bool, error) {
 	return false, nil
 }
@@ -198,6 +203,10 @@ func (m *mockWorktreeManager) GCClosedWorktrees(_ context.Context, _ func(string
 
 func (m *mockWorktreeManager) Exists(_ context.Context, _ string) bool {
 	return true // default: paths are valid
+}
+
+func (m *mockWorktreeManager) CurrentBranch(_ context.Context, _ string) (string, error) {
+	return m.createBranch, nil
 }
 
 func (m *mockWorktreeManager) RebaseOnto(_ context.Context, _, _ string) error {

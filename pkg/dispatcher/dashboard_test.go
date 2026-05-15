@@ -30,11 +30,11 @@ func TestDashboardDataHealth(t *testing.T) {
 			t.Fatalf("unmarshal applyHealth: %v", err)
 		}
 
-		if health.Daemon.PID != expected.Daemon.PID {
-			t.Errorf("Health().Daemon.PID = %d, want %d", health.Daemon.PID, expected.Daemon.PID)
+		if health.State != expected.State {
+			t.Errorf("Health().State = %q, want %q", health.State, expected.State)
 		}
-		if health.Daemon.State != expected.Daemon.State {
-			t.Errorf("Health().Daemon.State = %q, want %q", health.Daemon.State, expected.Daemon.State)
+		if health.Metrics.DaemonPID != expected.Metrics.DaemonPID {
+			t.Errorf("Health().Metrics.DaemonPID = %d, want %d", health.Metrics.DaemonPID, expected.Metrics.DaemonPID)
 		}
 	})
 

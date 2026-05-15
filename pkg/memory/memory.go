@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"oro/pkg/protocol"
@@ -48,13 +49,14 @@ func (c *SemanticConfig) rerankParams() (topK, finalK int) {
 
 // Store manages the memories table in SQLite.
 type Store struct {
-	db              *sql.DB
-	embedder        Embedder
-	reranker        Reranker
-	semCfg          SemanticConfig
-	vecIndex        VectorIndex // optional HNSW index; nil uses linear-scan fallback
-	project         string      // current project scope for queries and inserts
-	backfillLimiter interface{ Wait(context.Context) error }
+	db               *sql.DB
+	embedder         Embedder
+	reranker         Reranker
+	semCfg           SemanticConfig
+	vecIndex         VectorIndex // optional HNSW index; nil uses linear-scan fallback
+	project          string      // current project scope for queries and inserts
+	backfillLimiter  interface{ Wait(context.Context) error }
+	telemetryLogOnce sync.Once
 	// testCompleteBackfillFault, if non-nil and returns true, aborts
 	// completeBackfill between the final Exec and Commit so tests can verify
 	// the single-tx atomicity guarantee (both side effects roll back together).
@@ -732,10 +734,16 @@ func (s *Store) HybridSearch(ctx context.Context, query string, opts SearchOpts)
 		UsedRerank:    usedRerank,
 		ANNCandidates: annCandidates,
 	}); logErr != nil {
-		log.Printf("memory: telemetry write failed: %v", logErr)
+		s.logTelemetryFailure(logErr)
 	}
 
 	return results, nil
+}
+
+func (s *Store) logTelemetryFailure(err error) {
+	s.telemetryLogOnce.Do(func() {
+		log.Printf("memory: telemetry write failed: %v", err)
+	})
 }
 
 // hybridVectorPath runs phases 2-4 of HybridSearch when an embedder is set:

@@ -6,10 +6,36 @@ import (
 	"net"
 	"sync"
 	"testing"
+	"time"
 
+	"oro/pkg/factoryhealth"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
 )
+
+type blockingCodeIndex struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingCodeIndex) FTS5Search(_ context.Context, _ string, _ int) ([]CodeChunk, error) {
+	return nil, nil
+}
+
+func (b *blockingCodeIndex) Search(ctx context.Context, query string, topK int) ([]SearchResult, error) {
+	return b.SearchInWorkdir(ctx, query, topK, "")
+}
+
+func (b *blockingCodeIndex) SearchInWorkdir(ctx context.Context, _ string, _ int, _ string) ([]SearchResult, error) {
+	b.once.Do(func() { close(b.started) })
+	select {
+	case <-b.release:
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
 
 // TestReservationPattern_HeartbeatSkipsReserved verifies that checkHeartbeats
 // does NOT delete a worker in protocol.WorkerReserved state, even when the heartbeat
@@ -153,6 +179,85 @@ func TestReservationPattern_RegisterWorkerUsesReserved(t *testing.T) {
 	if msgs := esc.Messages(); len(msgs) > 0 {
 		t.Fatalf("expected no escalation, got %d: %v", len(msgs), msgs)
 	}
+}
+
+func TestReservationPattern_AssignBeadReservesWorkerBeforeSlowContext(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	blocker := &blockingCodeIndex{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	d.codeIndex = blocker
+
+	cancel := startDispatcher(t, d)
+	defer cancel()
+	d.setState(StateRunning)
+
+	const beadID = "reservation-assign-bead"
+	const workerID = "reservation-assign-worker"
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: beadID, Title: "slow context assignment", Priority: 1, Type: "task"},
+	})
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID: workerID,
+		},
+	})
+
+	select {
+	case <-blocker.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("assignment did not reach blocking code search")
+	}
+
+	var activeAssignments int
+	if err := d.db.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM assignments WHERE bead_id=? AND status='active'`,
+		beadID,
+	).Scan(&activeAssignments); err != nil {
+		t.Fatalf("count active assignments: %v", err)
+	}
+	if activeAssignments != 1 {
+		t.Fatalf("active assignment count during slow context lookup = %d, want 1", activeAssignments)
+	}
+
+	state, assignedBead, ok := d.WorkerInfo(workerID)
+	if !ok {
+		t.Fatal("worker missing during slow assignment context lookup")
+	}
+	if state != protocol.WorkerReserved {
+		t.Fatalf("worker state during slow assignment context lookup = %s, want %s", state, protocol.WorkerReserved)
+	}
+	if assignedBead != beadID {
+		t.Fatalf("worker bead during slow assignment context lookup = %q, want %q", assignedBead, beadID)
+	}
+
+	healthJSON, err := d.applyHealth()
+	if err != nil {
+		t.Fatalf("apply health: %v", err)
+	}
+	var health factoryhealth.FactoryHealth
+	if err := json.Unmarshal([]byte(healthJSON), &health); err != nil {
+		t.Fatalf("unmarshal health: %v", err)
+	}
+	for _, finding := range health.Findings {
+		if finding.Code == factoryhealth.FindingOrphanActiveAssignment {
+			t.Fatalf("health reported orphan active assignment while worker was reserved: %+v", finding)
+		}
+	}
+
+	close(blocker.release)
+	msg, got := readMsg(t, conn, 2*time.Second)
+	if !got {
+		t.Fatal("expected ASSIGN after releasing blocking code search")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN after releasing blocking code search, got %s", msg.Type)
+	}
+	waitForWorkerState(t, d, workerID, protocol.WorkerBusy, 2*time.Second)
 }
 
 // TestReservationPattern_HandleQGFailureUsesReserved verifies that

@@ -6,32 +6,37 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
+
+	"oro/pkg/factoryhealth"
 )
 
-// SwarmHealth represents the health status of all oro components.
-type SwarmHealth struct {
-	Daemon      DaemonStatus   `json:"daemon"`
-	ManagerPane PaneStatus     `json:"manager_pane"`
-	Workers     []workerStatus `json:"workers"`
-}
+// SwarmHealth is the dispatcher-facing alias for the shared factory health contract.
+type SwarmHealth = factoryhealth.FactoryHealth
 
-// DaemonStatus represents the health of the dispatcher daemon.
-type DaemonStatus struct {
-	PID           int     `json:"pid"`
-	UptimeSeconds float64 `json:"uptime_seconds"`
-	State         string  `json:"state"`
-}
-
-// PaneStatus represents the health of a tmux pane.
-type PaneStatus struct {
-	Name         string `json:"name"`
-	Alive        bool   `json:"alive"`
-	LastActivity string `json:"last_activity,omitempty"` // ISO 8601 timestamp
+type factoryHealthInput struct {
+	daemonRunning           bool
+	daemonPID               int
+	dispatcherState         string
+	managerPaneAlive        bool
+	workers                 []workerStatus
+	queueDepth              int
+	targetWorkers           int
+	maxWorkers              int
+	pendingWorkerCount      int
+	pendingHandoffCount     int
+	qgStatus                QGFailureStatus
+	openRecoveryQuarantines int
+	progressTimeoutSecs     float64
+	heartbeatTimeoutSecs    float64
 }
 
 // paneAlive reports whether the given pane has a pane_activity row whose
 // last_seen unix timestamp is within the past 60 seconds of nowUnix.
 func paneAlive(ctx context.Context, db *sql.DB, nowUnix int64) bool {
+	if db == nil {
+		return false
+	}
 	var lastSeen int64
 	err := db.QueryRowContext(ctx, `SELECT last_seen FROM pane_activity WHERE pane = 'manager'`).Scan(&lastSeen)
 	if err != nil {
@@ -44,34 +49,109 @@ func (d *Dispatcher) maybeRecoverDolt(ctx context.Context) {
 	_ = ctx
 }
 
-// applyHealth returns a JSON representation of the swarm health status.
-// It includes daemon status, pane statuses, and worker statuses.
+// applyHealth returns the repo-owned FactoryHealth JSON contract.
 func (d *Dispatcher) applyHealth() (string, error) {
 	now := d.nowFunc()
-	nowUnix := now.Unix()
+	ctx := context.Background()
 
-	managerAlive := paneAlive(context.Background(), d.db, nowUnix)
+	readyBeads, err := d.beads.Ready(ctx)
+	if err != nil {
+		readyBeads = nil
+	}
+	readyBeads = d.statusQueueBeads(ctx, readyBeads)
+	qgStatus := d.qgFailureStatus(ctx)
+	openRecoveryQuarantines, err := factoryhealth.LoadRecoveryQuarantineMetrics(ctx, d.db)
+	if err != nil {
+		_ = d.logEvent(ctx, "factory_health_recovery_quarantine_load_failed", "dispatcher", "", "", err.Error())
+	}
+	managerPaneAlive := d.managerPaneAlive(ctx, now.Unix())
 
 	d.mu.Lock()
 	workers, _, _, _ := d.snapshotWorkers(now)
-
-	health := SwarmHealth{
-		Daemon: DaemonStatus{
-			PID:           os.Getpid(),
-			UptimeSeconds: now.Sub(d.startTime).Seconds(),
-			State:         string(d.state),
-		},
-		ManagerPane: PaneStatus{
-			Name:  "manager",
-			Alive: managerAlive,
-		},
-		Workers: workers,
+	queueDepth := calculateLiveQueueDepth(readyBeads, d.workers)
+	input := factoryHealthInput{
+		daemonRunning:           true,
+		daemonPID:               os.Getpid(),
+		dispatcherState:         string(d.state),
+		managerPaneAlive:        managerPaneAlive,
+		workers:                 workers,
+		queueDepth:              queueDepth,
+		targetWorkers:           d.targetWorkers,
+		maxWorkers:              d.cfg.MaxWorkers,
+		pendingWorkerCount:      len(d.pendingManagedIDs) + len(d.pendingExternalIDs),
+		pendingHandoffCount:     len(d.pendingHandoffs),
+		qgStatus:                qgStatus,
+		openRecoveryQuarantines: openRecoveryQuarantines,
+		progressTimeoutSecs:     d.cfg.ProgressTimeout.Seconds(),
+		heartbeatTimeoutSecs:    d.cfg.HeartbeatTimeout.Seconds(),
 	}
 	d.mu.Unlock()
 
+	health := d.evaluateFactoryHealth(ctx, now, input)
 	data, err := json.Marshal(health)
 	if err != nil {
 		return "", fmt.Errorf("marshal health: %w", err)
 	}
 	return string(data), nil
+}
+
+func (d *Dispatcher) managerPaneAlive(ctx context.Context, nowUnix int64) bool {
+	if paneAlive(ctx, d.db, nowUnix) {
+		return true
+	}
+	d.mu.Lock()
+	restarter := d.paneRestarter
+	d.mu.Unlock()
+	checker, ok := restarter.(PaneLivenessChecker)
+	return ok && checker.Alive(ctx, "manager")
+}
+
+func (d *Dispatcher) evaluateFactoryHealth(ctx context.Context, now time.Time, input factoryHealthInput) factoryhealth.FactoryHealth {
+	activeAssignments, err := factoryhealth.LoadActiveAssignments(ctx, d.db, now)
+	if err != nil {
+		_ = d.logEvent(ctx, "factory_health_assignment_load_failed", "dispatcher", "", "", err.Error())
+	}
+	throughput, err := factoryhealth.LoadThroughputMetrics(ctx, d.db, now, 30*time.Minute)
+	if err != nil {
+		_ = d.logEvent(ctx, "factory_health_throughput_load_failed", "dispatcher", "", "", err.Error())
+	}
+	qgFingerprints := input.qgStatus.RecentFingerprints
+	if len(qgFingerprints) == 0 {
+		qgFingerprints = input.qgStatus.TopFingerprints
+	}
+	return factoryhealth.Evaluate(factoryhealth.Snapshot{
+		DaemonRunning:           input.daemonRunning,
+		DaemonPID:               input.daemonPID,
+		DispatcherState:         input.dispatcherState,
+		ManagerPaneAlive:        input.managerPaneAlive,
+		Workers:                 toFactoryWorkers(input.workers),
+		ReadyQueue:              input.queueDepth,
+		TargetWorkers:           input.targetWorkers,
+		MaxWorkers:              input.maxWorkers,
+		PendingWorkerCount:      input.pendingWorkerCount,
+		PendingHandoffCount:     input.pendingHandoffCount,
+		ActiveAssignments:       activeAssignments,
+		OpenQGIncidents:         input.qgStatus.OpenIncidents,
+		QGOccurrences30m:        input.qgStatus.Occurrences30m,
+		QGTopFingerprints:       qgFingerprints,
+		OpenRecoveryQuarantines: input.openRecoveryQuarantines,
+		ProgressTimeoutSecs:     input.progressTimeoutSecs,
+		HeartbeatTimeoutSecs:    input.heartbeatTimeoutSecs,
+		Throughput:              throughput,
+	})
+}
+
+func toFactoryWorkers(workers []workerStatus) []factoryhealth.WorkerSnapshot {
+	out := make([]factoryhealth.WorkerSnapshot, 0, len(workers))
+	for _, worker := range workers {
+		out = append(out, factoryhealth.WorkerSnapshot{
+			ID:                worker.ID,
+			State:             worker.State,
+			BeadID:            worker.BeadID,
+			LastProgressSecs:  worker.LastProgressSecs,
+			LastHeartbeatSecs: worker.LastHeartbeatSecs,
+			Managed:           worker.Managed,
+		})
+	}
+	return out
 }

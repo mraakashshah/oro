@@ -130,6 +130,14 @@ func TestClassifyQGFailureDecisionMatrix(t *testing.T) {
 			wantDecision: dispatcher.QGFailureDecisionCreateOrReuseInfra,
 		},
 		{
+			name: "memory telemetry schema failure creates infra",
+			record: dispatcher.QGFailureRecord{
+				Output: "memory: telemetry write failed: insert memory_search_events: SQL logic error: no such table: memory_search_events",
+			},
+			wantClass:    dispatcher.QGFailureClassSystemic,
+			wantDecision: dispatcher.QGFailureDecisionCreateOrReuseInfra,
+		},
+		{
 			name: "known flaky backs off",
 			record: dispatcher.QGFailureRecord{
 				Output: "race detected under parallel load",

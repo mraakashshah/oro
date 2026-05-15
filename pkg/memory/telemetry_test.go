@@ -1,11 +1,14 @@
 package memory //nolint:testpackage // white-box test: accesses unexported logSearchEvent
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
+	"strings"
 	"testing"
 
 	"oro/pkg/dbutil"
@@ -41,6 +44,117 @@ func TestNewStoreMigratesSearchEventsOnEmptyDB(t *testing.T) {
 
 	if _, err := db.Exec("INSERT INTO memory_search_events (query_hash) VALUES ('x')"); err != nil {
 		t.Fatalf("memory_search_events must be writable after NewStore: %v", err)
+	}
+}
+
+func TestHybridSearchWritesTelemetryWithBaseSchemaOnly(t *testing.T) {
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
+		t.Fatalf("exec schema: %v", err)
+	}
+	store := NewStore(db)
+
+	if _, err := store.Insert(ctx, InsertParams{
+		Content:    "base schema telemetry content",
+		Type:       "lesson",
+		Source:     "test",
+		Confidence: 0.9,
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	if _, err := store.HybridSearch(ctx, "base schema telemetry", SearchOpts{Limit: 5}); err != nil {
+		t.Fatalf("HybridSearch: %v", err)
+	}
+	if n := countSearchEvents(t, db); n != 1 {
+		t.Fatalf("want 1 search event row, got %d", n)
+	}
+}
+
+func TestHybridSearchRecreatesMissingTelemetryTable(t *testing.T) {
+	ctx := context.Background()
+	db := setupTelemetryDB(t)
+	store := NewStore(db)
+
+	if _, err := store.Insert(ctx, InsertParams{
+		Content:    "runtime telemetry repair content",
+		Type:       "lesson",
+		Source:     "test",
+		Confidence: 0.9,
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "DROP TABLE memory_search_events"); err != nil {
+		t.Fatalf("drop memory_search_events: %v", err)
+	}
+
+	results, err := store.HybridSearch(ctx, "runtime telemetry repair", SearchOpts{Limit: 5})
+	if err != nil {
+		t.Fatalf("HybridSearch: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("HybridSearch returned no results")
+	}
+	if n := countSearchEvents(t, db); n != 1 {
+		t.Fatalf("want 1 telemetry row after self-repair, got %d", n)
+	}
+}
+
+func TestHybridSearchTelemetryFailureLogsOnlyOnce(t *testing.T) {
+	ctx := context.Background()
+	db := setupTelemetryDB(t)
+	store := NewStore(db)
+
+	if _, err := store.Insert(ctx, InsertParams{
+		Content:    "telemetry broken view content",
+		Type:       "lesson",
+		Source:     "test",
+		Confidence: 0.9,
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "DROP TABLE memory_search_events"); err != nil {
+		t.Fatalf("drop memory_search_events: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+CREATE VIEW memory_search_events AS
+SELECT
+    1 AS id,
+    datetime('now') AS ts,
+    '' AS project,
+    '' AS query_hash,
+    '[]' AS top_k_ids,
+    '[]' AS top_k_scores,
+    0 AS latency_ms,
+    0 AS used_rerank,
+    0 AS used_bge,
+    0 AS ann_candidates
+`); err != nil {
+		t.Fatalf("create blocking telemetry view: %v", err)
+	}
+
+	var logs bytes.Buffer
+	originalWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(originalWriter) })
+
+	for i := 0; i < 2; i++ {
+		results, err := store.HybridSearch(ctx, "telemetry broken view", SearchOpts{Limit: 5})
+		if err != nil {
+			t.Fatalf("HybridSearch %d: %v", i+1, err)
+		}
+		if len(results) == 0 {
+			t.Fatalf("HybridSearch %d returned no results", i+1)
+		}
+	}
+	if got := strings.Count(logs.String(), "memory: telemetry write failed"); got != 1 {
+		t.Fatalf("telemetry failure log count = %d, want 1\nlogs:\n%s", got, logs.String())
 	}
 }
 

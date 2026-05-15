@@ -149,6 +149,42 @@ CREATE TABLE IF NOT EXISTS qg_failure_occurrences (
 CREATE INDEX IF NOT EXISTS idx_qg_failure_occurrences_incident ON qg_failure_occurrences(incident_id);
 CREATE INDEX IF NOT EXISTS idx_qg_failure_incidents_status ON qg_failure_incidents(status);
 
+-- Durable recovery quarantine queue for unsafe or ambiguous recovery state.
+CREATE TABLE IF NOT EXISTS recovery_quarantines (
+    id INTEGER PRIMARY KEY,
+    bead_id TEXT NOT NULL,
+    assignment_id INTEGER,
+    worker_id TEXT,
+    worktree TEXT,
+    branch TEXT,
+    reason TEXT NOT NULL,
+    details TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_recovery_quarantines_open_unique
+ON recovery_quarantines(bead_id, reason)
+WHERE status = 'open';
+
+CREATE INDEX IF NOT EXISTS idx_recovery_quarantines_status
+ON recovery_quarantines(status);
+
+-- Durable ledger of bounded monitor --act decisions. The monitor consults this
+-- across process restarts so repeated health findings do not cause repeated
+-- mutations in the same recovery window.
+CREATE TABLE IF NOT EXISTS monitor_actions (
+    id INTEGER PRIMARY KEY,
+    action TEXT NOT NULL,
+    action_key TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_monitor_actions_action_key_created
+ON monitor_actions(action, action_key, created_at);
+
 -- Tracks which epic fix beads have been created per (epic_id, fingerprint).
 -- Prevents duplicate fix beads when the same QG fingerprint reappears for the same epic.
 CREATE TABLE IF NOT EXISTS qg_epic_fix_beads (

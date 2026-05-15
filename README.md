@@ -311,6 +311,12 @@ This creates a tmux session with a manager pane, starts the dispatcher daemon, a
 # Check swarm status
 oro status
 
+# Inspect health findings
+oro health
+
+# Observe health continuously
+oro monitor --target 2 --max-workers 2 --interval 60s
+
 # Scale workers up
 oro directive scale 4
 
@@ -360,6 +366,9 @@ oro stop
 | Command | Description | Example |
 |---------|-------------|---------|
 | `oro status` | Show current swarm state | `oro status` |
+| `oro health` | Show factory health findings | `oro health --json` |
+| `oro monitor` | Observe health and optionally perform bounded recovery | `oro monitor --target 2 --max-workers 2 --interval 60s` |
+| `oro throughput` | Report swarm throughput health | `oro throughput --window 2h` |
 | `oro logs` | Query and tail dispatcher event logs | `oro logs --tail 50 -f` |
 | `oro dashboard` | Show the local web dashboard | `oro dashboard` |
 

@@ -56,6 +56,26 @@ func TestStartReadsProjectConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("start project name preserves explicit ORO_PROJECT", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		oroDir := filepath.Join(tmpDir, ".oro")
+		if err := os.MkdirAll(oroDir, 0o755); err != nil { //nolint:gosec // test dir
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(oroDir, "config.yaml"), []byte("project: config-project\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("ORO_PROJECT", "env-project")
+
+		name, err := startProjectName(tmpDir)
+		if err != nil {
+			t.Fatalf("startProjectName failed: %v", err)
+		}
+		if name != "env-project" {
+			t.Errorf("expected env project, got %q", name)
+		}
+	})
+
 	t.Run("ORO_HOME is set for child processes", func(t *testing.T) {
 		// resolveOroHome should return ORO_HOME when set
 		t.Setenv("ORO_HOME", "/custom/oro")
@@ -1213,6 +1233,20 @@ func TestWireDependencies_DaemonOnly_SkipsPaneRestarter(t *testing.T) {
 		}
 	})
 
+	t.Run("tmux-managed daemon mode: paneRestarter is set", func(t *testing.T) {
+		t.Setenv(tmuxManagedDaemonEnv, "1")
+		d := &dispatcher.Dispatcher{}
+		sockPath := "/tmp/test-daemon.sock"
+		oroHome := "/tmp/oro-daemon"
+		runner := &fakeCommandRunner{}
+
+		wireDependencies(d, sockPath, oroHome, runner, true /* daemonOnly */)
+
+		if d.GetPaneRestarter() == nil {
+			t.Fatal("expected paneRestarter to be set for tmux-managed daemon mode")
+		}
+	})
+
 	t.Run("non-daemon mode: paneRestarter is set", func(t *testing.T) {
 		d := &dispatcher.Dispatcher{}
 		sockPath := "/tmp/test-nodaemon.sock"
@@ -1225,6 +1259,33 @@ func TestWireDependencies_DaemonOnly_SkipsPaneRestarter(t *testing.T) {
 			t.Fatal("expected paneRestarter to be set in non-daemon mode, but got nil")
 		}
 	})
+}
+
+func TestDaemonChildEnvMarksTmuxManagedDaemon(t *testing.T) {
+	got := daemonChildEnv([]string{
+		"CLAUDECODE=1",
+		tmuxManagedDaemonEnv + "=0",
+		"ORO_HOME=/tmp/oro",
+	})
+
+	if !containsEnvEntry(got, tmuxManagedDaemonEnv+"=1") {
+		t.Fatalf("expected daemon child env to include %s=1, got %v", tmuxManagedDaemonEnv, got)
+	}
+	if containsEnvEntry(got, "CLAUDECODE=1") {
+		t.Fatalf("expected daemon child env to remove CLAUDECODE, got %v", got)
+	}
+	if containsEnvEntry(got, tmuxManagedDaemonEnv+"=0") {
+		t.Fatalf("expected daemon child env to replace stale tmux marker, got %v", got)
+	}
+}
+
+func containsEnvEntry(env []string, want string) bool {
+	for _, entry := range env {
+		if entry == want {
+			return true
+		}
+	}
+	return false
 }
 
 // TestAbsoluteBeadsDir verifies that absoluteBeadsDir returns an absolute path

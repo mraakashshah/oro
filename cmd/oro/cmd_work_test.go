@@ -824,6 +824,10 @@ func (m *envCapturingWorktreeManager) Create(_ context.Context, _, _ string) (st
 func (m *envCapturingWorktreeManager) Remove(_ context.Context, _ string) error       { return nil }
 func (m *envCapturingWorktreeManager) Prune(_ context.Context) error                  { return nil }
 func (m *envCapturingWorktreeManager) DeleteBranch(_ context.Context, _ string) error { return nil }
+func (m *envCapturingWorktreeManager) ForceDeleteBranch(_ context.Context, _ string) error {
+	return nil
+}
+
 func (m *envCapturingWorktreeManager) BranchExists(_ context.Context, _ string) (bool, error) {
 	return false, nil
 }
@@ -842,6 +846,10 @@ func (m *envCapturingWorktreeManager) GCClosedWorktrees(_ context.Context, _ fun
 
 func (m *envCapturingWorktreeManager) Exists(_ context.Context, _ string) bool {
 	return true // default: paths are valid
+}
+
+func (m *envCapturingWorktreeManager) CurrentBranch(_ context.Context, _ string) (string, error) {
+	return m.createBranch, nil
 }
 
 func (m *envCapturingWorktreeManager) RebaseOnto(_ context.Context, _, _ string) error {
@@ -1675,6 +1683,10 @@ func (m *branchCapturingWorktreeManager) Create(_ context.Context, _, branch str
 func (m *branchCapturingWorktreeManager) Remove(_ context.Context, _ string) error       { return nil }
 func (m *branchCapturingWorktreeManager) Prune(_ context.Context) error                  { return nil }
 func (m *branchCapturingWorktreeManager) DeleteBranch(_ context.Context, _ string) error { return nil }
+func (m *branchCapturingWorktreeManager) ForceDeleteBranch(_ context.Context, _ string) error {
+	return nil
+}
+
 func (m *branchCapturingWorktreeManager) BranchExists(_ context.Context, _ string) (bool, error) {
 	return false, nil
 }
@@ -1689,6 +1701,10 @@ func (m *branchCapturingWorktreeManager) GCClosedWorktrees(_ context.Context, _ 
 
 func (m *branchCapturingWorktreeManager) Exists(_ context.Context, _ string) bool {
 	return false // default: worktree doesn't exist, so Create() will be called
+}
+
+func (m *branchCapturingWorktreeManager) CurrentBranch(_ context.Context, _ string) (string, error) {
+	return m.createBranch, nil
 }
 
 func (m *branchCapturingWorktreeManager) UpdateBranchRef(_ context.Context, _, _ string) error {

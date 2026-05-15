@@ -9,8 +9,8 @@ import (
 
 // TestWorkerAbandonClearsBeadAssignment proves that when a worker is
 // reassigned mid-run (its prior bead never reached DONE), the dispatcher
-// finalizes the prior assignment row and returns the prior bead's status to
-// "open" so it remains visible to oro task ready. Covers oro-xqrh: in the
+// requeues the prior assignment row and returns the prior bead's status to
+// "open" so it remains visible and resumable. Covers oro-xqrh: in the
 // 2026-05-04 dispatcher proof run, two beads (oro-m1nv, oro-v5km) were
 // observed stuck status=in_progress with worker_id pointing at a worker that
 // had moved on to a different bead. Without this release, the bead is leaked
@@ -54,8 +54,8 @@ func TestWorkerAbandonClearsBeadAssignment(t *testing.T) {
 		`SELECT status FROM assignments WHERE id=?`, priorAssignmentID).Scan(&assignmentStatus); err != nil {
 		t.Fatalf("query assignment status: %v", err)
 	}
-	if assignmentStatus != "completed" {
-		t.Fatalf("prior assignment status = %q, want %q", assignmentStatus, "completed")
+	if assignmentStatus != "requeued" {
+		t.Fatalf("prior assignment status = %q, want %q", assignmentStatus, "requeued")
 	}
 }
 
@@ -95,8 +95,8 @@ func TestWorkerAbandonUsesPersistedAssignmentWhenBeadStateCleared(t *testing.T) 
 		`SELECT status FROM assignments WHERE id=?`, priorAssignmentID).Scan(&assignmentStatus); err != nil {
 		t.Fatalf("query assignment status: %v", err)
 	}
-	if assignmentStatus != "completed" {
-		t.Fatalf("prior assignment status = %q, want %q", assignmentStatus, "completed")
+	if assignmentStatus != "requeued" {
+		t.Fatalf("prior assignment status = %q, want %q", assignmentStatus, "requeued")
 	}
 
 	beadSrc.mu.Lock()

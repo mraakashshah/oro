@@ -54,6 +54,8 @@ trap 'exit 143' TERM
 # Keep the golangci-lint cache inside the QG temp directory. Shared
 # golangci-lint caches can collide across concurrent workers.
 export GOLANGCI_LINT_CACHE="$QG_DIR/golangci-lint-cache"
+export GOCACHE="${GOCACHE:-$QG_DIR/go-build-cache}"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$QG_DIR/uv-cache}"
 
 # Resolve repo root node_modules (works from worktrees too).
 # Worktrees don't have their own node_modules — resolve via git-common-dir.
@@ -804,7 +806,7 @@ lane_python() {
 	# --- Tier 4: Testing ---
 	header "PYTHON TIER 4: TESTING"
 	if compgen -G "tests/test_*.py" >/dev/null 2>&1 || compgen -G "tests/**/test_*.py" >/dev/null 2>&1; then
-		if check "pytest" "uv run pytest"; then
+		if check "pytest" "qg_run_python_tool pytest"; then
 			pass=$((pass + 1))
 		else
 			fail=$((fail + 1))

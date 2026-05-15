@@ -20,6 +20,8 @@ Lifecycle:
 
 Monitoring:
   status     Show current swarm state
+  health     Show factory health findings
+  monitor    Observe factory health and optionally perform bounded recovery
   throughput Report swarm throughput health
   logs       Query and tail dispatcher event logs
   events     Query dispatcher events

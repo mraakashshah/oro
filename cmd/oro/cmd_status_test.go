@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/factoryhealth"
 	"oro/pkg/protocol"
 )
 
@@ -517,15 +518,14 @@ func TestFormatStatusResponse_VerboseFlag(t *testing.T) {
 	}
 }
 
-// TestFormatAlerts_HeartbeatingWorkerNotFlagged verifies that a worker with a
-// recent heartbeat is NOT shown in alerts as slow/stuck, even if LastProgressSecs
-// exceeds the threshold.
-func TestFormatAlerts_HeartbeatingWorkerNotFlagged(t *testing.T) {
+// TestFormatAlerts_HeartbeatingWorkerWithStaleProgress verifies that a worker
+// with a recent heartbeat is still shown as alive_no_progress when meaningful
+// progress exceeds the timeout.
+func TestFormatAlerts_HeartbeatingWorkerWithStaleProgress(t *testing.T) {
 	resp := statusResponse{
 		ProgressTimeoutSecs: 600, // halfTimeout = 300
 		Workers: []workerStatus{
-			// Would trigger "slow" alert without heartbeat check (400 > 300).
-			{ID: "worker-1", State: "busy", BeadID: "bead-abc", LastProgressSecs: 400, LastHeartbeatSecs: 5},
+			{ID: "worker-1", State: "busy", BeadID: "bead-abc", LastProgressSecs: 601, LastHeartbeatSecs: 5},
 		},
 	}
 
@@ -533,11 +533,11 @@ func TestFormatAlerts_HeartbeatingWorkerNotFlagged(t *testing.T) {
 	hadAlerts := formatAlerts(&buf, &resp)
 	got := buf.String()
 
-	if hadAlerts {
-		t.Errorf("expected no alerts for heartbeating worker, but got alerts:\n%s", got)
+	if !hadAlerts {
+		t.Fatalf("expected alive_no_progress alert for heartbeating worker")
 	}
-	if strings.Contains(got, "worker-1") {
-		t.Errorf("heartbeating worker should not appear in alerts, got:\n%s", got)
+	if !strings.Contains(got, "alive_no_progress") {
+		t.Errorf("expected alive_no_progress finding in alerts, got:\n%s", got)
 	}
 }
 
@@ -564,14 +564,13 @@ func TestFormatAlerts_StuckWorkerWithStaleHeartbeatStillFlagged(t *testing.T) {
 	}
 }
 
-// TestFormatInProgressBeads_HeartbeatingWorkerShowsHealthy verifies that a worker
-// emitting heartbeats is labeled "healthy" even when LastProgressSecs is high.
-func TestFormatInProgressBeads_HeartbeatingWorkerShowsHealthy(t *testing.T) {
+// TestFormatInProgressBeads_HeartbeatingWorkerShowsAliveNoProgress verifies
+// that heartbeat freshness does not mask stale progress.
+func TestFormatInProgressBeads_HeartbeatingWorkerShowsAliveNoProgress(t *testing.T) {
 	resp := statusResponse{
 		ProgressTimeoutSecs: 600, // halfTimeout = 300
 		Workers: []workerStatus{
-			// Without heartbeat check this would be "slow"; with it, "healthy".
-			{ID: "worker-1", State: "busy", BeadID: "bead-abc", LastProgressSecs: 400, LastHeartbeatSecs: 5},
+			{ID: "worker-1", State: "busy", BeadID: "bead-abc", LastProgressSecs: 601, LastHeartbeatSecs: 5},
 		},
 	}
 
@@ -579,26 +578,23 @@ func TestFormatInProgressBeads_HeartbeatingWorkerShowsHealthy(t *testing.T) {
 	formatInProgressBeads(&buf, &resp)
 	got := buf.String()
 
-	if strings.Contains(got, "slow") {
-		t.Errorf("heartbeating worker should not be 'slow', got:\n%s", got)
+	if strings.Contains(got, "healthy") {
+		t.Errorf("heartbeating worker with stale progress should not be 'healthy', got:\n%s", got)
 	}
-	if strings.Contains(got, "STUCK") {
-		t.Errorf("heartbeating worker should not be 'STUCK', got:\n%s", got)
-	}
-	if !strings.Contains(got, "healthy") {
-		t.Errorf("heartbeating worker should be 'healthy', got:\n%s", got)
+	if !strings.Contains(got, "alive_no_progress") {
+		t.Errorf("expected alive_no_progress label, got:\n%s", got)
 	}
 }
 
-// TestStatusDisplay_HealthyWithRecentHeartbeat verifies end-to-end that a worker
-// with stale progress but recent heartbeat shows "healthy" in full status output.
-func TestStatusDisplay_HealthyWithRecentHeartbeat(t *testing.T) {
+// TestStatusDisplay_AliveNoProgressWithRecentHeartbeat verifies end-to-end that
+// a worker with stale progress but recent heartbeat is not labeled healthy.
+func TestStatusDisplay_AliveNoProgressWithRecentHeartbeat(t *testing.T) {
 	resp := statusResponse{
 		State:               "running",
 		WorkerCount:         1,
 		ProgressTimeoutSecs: 600, // halfTimeout = 300
 		Workers: []workerStatus{
-			{ID: "worker-1", State: "busy", BeadID: "oro-abc", LastProgressSecs: 400, LastHeartbeatSecs: 50},
+			{ID: "worker-1", State: "busy", BeadID: "oro-abc", LastProgressSecs: 601, LastHeartbeatSecs: 50},
 		},
 		ActiveCount: 1,
 		TargetCount: 1,
@@ -608,11 +604,41 @@ func TestStatusDisplay_HealthyWithRecentHeartbeat(t *testing.T) {
 	formatStatusResponse(&buf, &resp)
 	got := buf.String()
 
-	if !strings.Contains(got, "healthy") {
-		t.Errorf("expected health label 'healthy', got:\n%s", got)
+	if strings.Contains(got, "healthy") {
+		t.Errorf("should not show 'healthy' when progress is stale, got:\n%s", got)
 	}
-	if strings.Contains(got, "slow") {
-		t.Errorf("should not show 'slow' when heartbeat is recent, got:\n%s", got)
+	if !strings.Contains(got, "alive_no_progress") {
+		t.Errorf("expected alive_no_progress label, got:\n%s", got)
+	}
+}
+
+func TestStatusShowsRecoveryQuarantineSummary(t *testing.T) {
+	resp := statusResponse{
+		State:               "running",
+		ProgressTimeoutSecs: 600,
+		Health: &factoryhealth.FactoryHealth{
+			State:   factoryhealth.StateUnsafe,
+			Posture: "operator action required before more automation",
+			Metrics: factoryhealth.Metrics{OpenRecoveryQuarantines: 1},
+			Findings: []factoryhealth.Finding{
+				{
+					Code:              factoryhealth.FindingRecoveryQuarantineOpen,
+					Severity:          factoryhealth.SeverityCritical,
+					Message:           "1 recovery quarantine is open",
+					RecommendedAction: "inspect recovery quarantine before automation",
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	formatStatusResponse(&buf, &resp)
+	got := buf.String()
+	if !strings.Contains(got, "recovery_quarantine_open") {
+		t.Fatalf("status output missing recovery quarantine finding:\n%s", got)
+	}
+	if !strings.Contains(got, "operator action required") {
+		t.Fatalf("status output missing unsafe posture:\n%s", got)
 	}
 }
 

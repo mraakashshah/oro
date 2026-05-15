@@ -65,26 +65,26 @@ Escalate to active incident cadence when any of these occur:
 | `update_status_failed` or DB write error | Any repeat | Stop swarm before store spam; inspect SQLite schema/state |
 | `goroutine_panic` | Any occurrence | Follow Panic Policy |
 
-For unattended runs, use the outcome-based autopilot monitor so this policy is
-enforced continuously:
+For unattended runs, use the supported CLI monitor so this policy is enforced
+continuously and survives daemon restarts:
 
 ```bash
-tmux -L oro-autopilot new-session -d -s oro-autopilot \
-  'python3 ~/.oro/.claude/skills/watching-oro/scripts/oro_autopilot_monitor.py \
-     --oro "$(command -v oro)" \
-     --repo "$PWD" \
-     --target 2 \
-     --max-workers 2'
+oro monitor --target 2 --max-workers 2 --interval 60s
 ```
 
-Use the `oro-autopilot` tmux socket so the monitor is isolated from the Oro
-factory tmux server. When the monitor restarts the factory, it must not kill its
-own session. Inspect it with `tmux -L oro-autopilot attach -t oro-autopilot`.
+Default mode is observe-only: it prints health findings and recommended actions
+without changing dispatcher state. Add `--act` only when the operator wants the
+monitor to resume a paused ready queue, maintain the requested worker count, and
+restart the daemon after repeated stalled or unsafe findings:
 
-The monitor logs `THROUGHPUT_STALL` when workers stay busy without productive
-closures, logs `QG_INCIDENT_INCREASE` when new QG incidents appear, captures
-ready/closed/log snapshots, keeps the worker pool at target, and restarts the
-factory if throughput stalls persist.
+```bash
+oro monitor --target 2 --max-workers 2 --interval 60s --act
+```
+
+The previous skill-local Python autopilot and
+`scripts/oro-factory-watchdog.sh` are deprecated operator aids. Prefer
+`oro health`, `oro status --json`, and `oro monitor` for supported health
+policy and recovery actions.
 
 ## QG Failure Policy
 
@@ -171,7 +171,7 @@ Closed recurrence policy:
   reopen the infra bug when the output is materially the same.
 - Create a recurrence child only when the new output shows a changed root cause
   or the original fix no longer describes the failure.
-- Do not reopen closed duplicate P0 beads; link them from the active incident as
+- Do not reopen closed duplicate P0 tasks; link them from the active incident as
   historical evidence.
 
 ## Fix And Relaunch

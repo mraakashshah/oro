@@ -90,7 +90,7 @@ func TestExternalCloseRecoversWorktree(t *testing.T) {
 // the branch SHA so the manager can recover the work manually instead of
 // silently dropping it.
 func TestExternalCloseEscalatesOnMergeConflict(t *testing.T) {
-	d, beadSrc, _, esc, gitRunner, _ := newTestDispatcher(t)
+	d, beadSrc, wtMgr, esc, gitRunner, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
 	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
@@ -146,5 +146,15 @@ func TestExternalCloseEscalatesOnMergeConflict(t *testing.T) {
 
 	if len(esc.Messages()) == 0 {
 		t.Fatal("expected escalation on external_close merge conflict, got none")
+	}
+
+	wtMgr.mu.Lock()
+	removed := append([]string(nil), wtMgr.removed...)
+	wtMgr.mu.Unlock()
+	if len(removed) != 0 {
+		t.Fatalf("external close recovery failed; worktree should be preserved, removed=%v", removed)
+	}
+	if eventCount(t, d.db, "recovery_work_quarantined") == 0 {
+		t.Fatalf("expected recovery_work_quarantined event")
 	}
 }

@@ -82,21 +82,73 @@ func TestGitWorktreeManager_Remove_Success(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Expect 2 calls: git status (returns clean) + git worktree remove
-	if len(runner.calls) != 2 {
-		t.Fatalf("expected 2 command calls, got %d", len(runner.calls))
+	// Expect exactly one call: git worktree remove. Remove must not inspect,
+	// stage, or auto-commit worker changes before cleanup.
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 command call, got %d: %+v", len(runner.calls), runner.calls)
 	}
 
-	// Call 1: git status --porcelain (auto-commit check)
-	statusCall := runner.calls[0]
-	if !containsAll(statusCall.Args, "status", "--porcelain") {
-		t.Fatalf("call[0] should be git status --porcelain, got: %v", statusCall.Args)
-	}
-
-	// Call 2: git worktree remove
-	removeCall := runner.calls[1]
+	removeCall := runner.calls[0]
 	if !containsAll(removeCall.Args, "worktree", "remove", "--force") {
-		t.Fatalf("call[1] should contain worktree remove --force, got: %v", removeCall.Args)
+		t.Fatalf("call[0] should contain worktree remove --force, got: %v", removeCall.Args)
+	}
+}
+
+func TestRemoveDoesNotAutoCommitBeforeWorktreeRemoval(t *testing.T) {
+	tmpDir := t.TempDir()
+	wtPath := filepath.Join(tmpDir, "worktree")
+	if err := os.MkdirAll(wtPath, 0o755); err != nil {
+		t.Fatalf("create worktree dir: %v", err)
+	}
+
+	runner := &mockCommandRunner{}
+	mgr := NewGitWorktreeManager(tmpDir, "", "", runner)
+
+	if err := mgr.Remove(context.Background(), wtPath); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	for _, call := range runner.calls {
+		if call.Name != "git" || !containsAll(call.Args, "-C", tmpDir, "worktree", "remove", wtPath, "--force") {
+			t.Fatalf("Remove ran unexpected command: %s %v", call.Name, call.Args)
+		}
+	}
+}
+
+func TestDeleteBranchUsesSafeDelete(t *testing.T) {
+	runner := &mockCommandRunner{}
+	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
+
+	if err := mgr.DeleteBranch(context.Background(), "agent/oro-safe"); err != nil {
+		t.Fatalf("DeleteBranch: %v", err)
+	}
+
+	if len(runner.calls) != 1 {
+		t.Fatalf("calls = %+v, want one git branch call", runner.calls)
+	}
+	if !containsAll(runner.calls[0].Args, "branch", "-d", "agent/oro-safe") {
+		t.Fatalf("DeleteBranch args = %v, want safe -d delete", runner.calls[0].Args)
+	}
+	for _, arg := range runner.calls[0].Args {
+		if strings.Contains(arg, "D") || strings.Contains(strings.ToLower(arg), "force") {
+			t.Fatalf("DeleteBranch used force delete arg %q in args: %v", arg, runner.calls[0].Args)
+		}
+	}
+}
+
+func TestForceDeleteBranchUsesExplicitAPI(t *testing.T) {
+	runner := &mockCommandRunner{}
+	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
+
+	if err := mgr.ForceDeleteBranch(context.Background(), "agent/oro-merged"); err != nil {
+		t.Fatalf("ForceDeleteBranch: %v", err)
+	}
+
+	if len(runner.calls) != 1 {
+		t.Fatalf("calls = %+v, want one git branch call", runner.calls)
+	}
+	if !containsAll(runner.calls[0].Args, "branch", "-D", "agent/oro-merged") {
+		t.Fatalf("ForceDeleteBranch args = %v, want explicit -D delete", runner.calls[0].Args)
 	}
 }
 
@@ -176,7 +228,7 @@ func TestGitWorktreeManager_ImplementsInterface(t *testing.T) {
 	var _ WorktreeManager = NewGitWorktreeManager("/repo", "", "", runner)
 }
 
-func TestGitWorktreeManager_Prune_CleansOrphanDirs(t *testing.T) {
+func TestGitWorktreeManager_PrunePreservesOrphanDirs(t *testing.T) {
 	tmpDir := t.TempDir()
 	worktreesDir := filepath.Join(tmpDir, ".worktrees")
 	if err := os.MkdirAll(worktreesDir, 0o750); err != nil {
@@ -222,17 +274,15 @@ func TestGitWorktreeManager_Prune_CleansOrphanDirs(t *testing.T) {
 		}
 	}
 
-	// Verify all orphan directories were removed.
+	// Verify orphan directories are preserved for forensic recovery. Git
+	// bookkeeping may be stale after a crash, but the directory can still hold
+	// worker changes.
 	entries, err := os.ReadDir(worktreesDir)
 	if err != nil {
 		t.Fatalf("reading .worktrees after Prune: %v", err)
 	}
-	if len(entries) != 0 {
-		var names []string
-		for _, e := range entries {
-			names = append(names, e.Name())
-		}
-		t.Fatalf("expected .worktrees to be empty, still has: %v", names)
+	if len(entries) != len(orphans) {
+		t.Fatalf("expected orphan dirs to be preserved, got %d entries want %d", len(entries), len(orphans))
 	}
 }
 
@@ -248,9 +298,8 @@ func TestGitWorktreeManager_Prune_NoWorktreesDir(t *testing.T) {
 		t.Fatalf("Prune with no .worktrees dir should not error, got: %v", err)
 	}
 
-	// git worktree prune/list should still be called (safe even without .worktrees/).
-	if len(runner.calls) != 2 {
-		t.Fatalf("expected 2 command calls for git worktree cleanup, got %d", len(runner.calls))
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected 1 command call for git worktree prune, got %d", len(runner.calls))
 	}
 }
 
@@ -265,8 +314,8 @@ func TestGitWorktreeManager_Prune_GitPruneErrorLogged(t *testing.T) {
 		t.Fatalf("mkdir orphan: %v", err)
 	}
 
-	// git worktree prune fails, but Prune should still list registered worktrees,
-	// remove orphan dirs, and not return error.
+	// git worktree prune fails, but Prune should not remove directories or return
+	// an error. Recovery-owned worktrees must remain inspectable.
 	runner := &mockCommandRunner{
 		callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			if containsAll(args, "worktree", "prune") {
@@ -282,13 +331,8 @@ func TestGitWorktreeManager_Prune_GitPruneErrorLogged(t *testing.T) {
 		t.Fatalf("Prune should not return error even if git prune fails, got: %v", err)
 	}
 
-	// Orphan dir should still be removed even though git prune failed.
-	entries, err := os.ReadDir(worktreesDir)
-	if err != nil {
-		t.Fatalf("reading .worktrees after Prune: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("expected .worktrees to be empty after Prune, got %d entries", len(entries))
+	if _, err := os.Stat(filepath.Join(worktreesDir, "stale-1")); err != nil {
+		t.Fatalf("orphan dir should be preserved after prune failure: %v", err)
 	}
 }
 
@@ -319,8 +363,8 @@ func TestGitWorktreeManager_Prune_PreservesRegisteredWorktrees(t *testing.T) {
 	if _, err := os.Stat(preserved); err != nil {
 		t.Fatalf("registered worktree should be preserved: %v", err)
 	}
-	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
-		t.Fatalf("orphan worktree should be removed, stat err: %v", err)
+	if _, err := os.Stat(orphan); err != nil {
+		t.Fatalf("orphan worktree should be preserved: %v", err)
 	}
 }
 
@@ -359,7 +403,7 @@ func TestWorktreeManager_PrunesStaleBeforeCreate(t *testing.T) {
 	// 1. git worktree add (fails - branch already exists)
 	// 2. git worktree remove <path> --force
 	// 3. git worktree prune
-	// 4. git branch -D agent/oro-stale
+	// 4. git branch -d agent/oro-stale
 	// 5. git worktree add (succeeds)
 	// 6. make stage-assets (best-effort)
 	if len(runner.calls) != 7 {
@@ -388,10 +432,10 @@ func TestWorktreeManager_PrunesStaleBeforeCreate(t *testing.T) {
 		t.Fatalf("call[3] should be git worktree prune, got: %s %v", c3.Name, c3.Args)
 	}
 
-	// Call 4 (index 4): git branch -D agent/oro-stale
+	// Call 4 (index 4): git branch -d agent/oro-stale
 	c4 := runner.calls[4]
-	if c4.Name != "git" || !containsAll(c4.Args, "branch", "-D", "agent/oro-stale") {
-		t.Fatalf("call[4] should be git branch -D agent/oro-stale, got: %s %v", c4.Name, c4.Args)
+	if c4.Name != "git" || !containsAll(c4.Args, "branch", "-d", "agent/oro-stale") {
+		t.Fatalf("call[4] should be git branch -d agent/oro-stale, got: %s %v", c4.Name, c4.Args)
 	}
 
 	// Call 5 (index 5): retry worktree add (succeeds)
@@ -548,10 +592,7 @@ func TestGitWorktreeManager_Remove_ErrorWrapsPath(t *testing.T) {
 	}
 }
 
-// TestGitWorktreeManager_Prune_SkipsNonDirEntries kills mutants .go.6 / .go.12:
-// "continue" removed in Prune loop — non-dir entries would be passed to os.RemoveAll.
-// Verifies that a plain file inside .worktrees/ is NOT removed.
-func TestGitWorktreeManager_Prune_SkipsNonDirEntries(t *testing.T) {
+func TestGitWorktreeManager_PrunePreservesLocalEntries(t *testing.T) {
 	tmpDir := t.TempDir()
 	worktreesDir := filepath.Join(tmpDir, ".worktrees")
 	if err := os.MkdirAll(worktreesDir, 0o750); err != nil {
@@ -564,7 +605,7 @@ func TestGitWorktreeManager_Prune_SkipsNonDirEntries(t *testing.T) {
 		t.Fatalf("write README: %v", err)
 	}
 
-	// Create an orphan directory (should be removed).
+	// Create an orphan directory (should be preserved).
 	orphanDir := filepath.Join(worktreesDir, "old-bead")
 	if err := os.MkdirAll(orphanDir, 0o750); err != nil {
 		t.Fatalf("mkdir orphan: %v", err)
@@ -582,9 +623,8 @@ func TestGitWorktreeManager_Prune_SkipsNonDirEntries(t *testing.T) {
 		t.Fatalf("Prune removed non-dir file %q — should have been skipped", keepFile)
 	}
 
-	// The orphan directory must be gone.
-	if _, err := os.Stat(orphanDir); !os.IsNotExist(err) {
-		t.Fatalf("Prune did not remove orphan dir %q", orphanDir)
+	if _, err := os.Stat(orphanDir); err != nil {
+		t.Fatalf("Prune removed orphan dir %q: %v", orphanDir, err)
 	}
 }
 
@@ -603,18 +643,12 @@ func TestGitWorktreeManager_Prune_NoWorktreesDirReturnsNilNoOtherCalls(t *testin
 		t.Fatalf("Prune with missing .worktrees should return nil, got: %v", err)
 	}
 
-	// The safe startup path prunes git metadata and lists registered
-	// worktrees before it discovers the local worktrees directory is absent.
-	if len(runner.calls) != 2 {
-		t.Fatalf("expected exactly 2 git calls (worktree prune/list), got %d", len(runner.calls))
+	if len(runner.calls) != 1 {
+		t.Fatalf("expected exactly 1 git call (worktree prune), got %d", len(runner.calls))
 	}
 }
 
-// TestGitWorktreeManager_Prune_RemovesOrphanDirsViaRemoveAll kills mutant .go.16:
-// "os.RemoveAll(...)" removed in Prune loop.
-// Verifies orphan dirs are physically gone after Prune (complements existing test,
-// but uses a single orphan so the assertion is unambiguous).
-func TestGitWorktreeManager_Prune_RemovesOrphanDirsViaRemoveAll(t *testing.T) {
+func TestGitWorktreeManager_PruneDoesNotRemoveOrphanDirs(t *testing.T) {
 	tmpDir := t.TempDir()
 	worktreesDir := filepath.Join(tmpDir, ".worktrees")
 	orphanDir := filepath.Join(worktreesDir, "single-orphan")
@@ -633,16 +667,16 @@ func TestGitWorktreeManager_Prune_RemovesOrphanDirsViaRemoveAll(t *testing.T) {
 		t.Fatalf("Prune error: %v", err)
 	}
 
-	if _, err := os.Stat(orphanDir); !os.IsNotExist(err) {
-		t.Fatalf("orphan dir %q should be removed by Prune", orphanDir)
+	if _, err := os.Stat(orphanDir); err != nil {
+		t.Fatalf("orphan dir %q should be preserved by Prune: %v", orphanDir, err)
 	}
 }
 
-// TestGitWorktreeManager_PruneStale_CallsWorktreeRemove kills mutant .go.13 (prune call) and .go.14 (branch -D):
+// TestGitWorktreeManager_PruneStale_CallsWorktreeRemove kills mutant .go.13 (prune call) and .go.14 (branch -d):
 // verifies that pruneStale (invoked via Create retry) calls:
 //   - git worktree remove <path> --force
 //   - git worktree prune
-//   - git branch -D <branch>
+//   - git branch -d <branch>
 func TestGitWorktreeManager_PruneStale_CommandSequence(t *testing.T) {
 	callCount := 0
 	runner := &mockCommandRunner{
@@ -690,17 +724,17 @@ func TestGitWorktreeManager_PruneStale_CommandSequence(t *testing.T) {
 		t.Fatalf("call[3] must be 'worktree prune', not 'worktree remove', got: %v", c2.Args)
 	}
 
-	// call[4]: git branch -D agent/seq-bead  (kills .go.14)
+	// call[4]: git branch -d agent/seq-bead  (kills .go.14)
 	c3 := runner.calls[4]
-	if !containsAll(c3.Args, "branch", "-D", "agent/seq-bead") {
-		t.Fatalf("call[4] should be git branch -D agent/seq-bead, got: %v", c3.Args)
+	if !containsAll(c3.Args, "branch", "-d", "agent/seq-bead") {
+		t.Fatalf("call[4] should be git branch -d agent/seq-bead, got: %v", c3.Args)
 	}
 }
 
 // TestGitWorktreeManager_Create_PruneStaleCalledOnAlreadyExists kills mutant .go.10:
 // "g.pruneStale(ctx, path, branch)" call removed — retry happens but cleanup is skipped.
 // Verifies that when "already exists" fires, at least 4 extra calls are made
-// (remove --force, prune, branch -D, retry add) before success.
+// (remove --force, prune, branch -d, retry add) before success.
 func TestGitWorktreeManager_Create_PruneStaleCalledOnAlreadyExists(t *testing.T) {
 	callCount := 0
 	runner := &mockCommandRunner{
@@ -735,17 +769,17 @@ func TestGitWorktreeManager_Create_PruneStaleCalledOnAlreadyExists(t *testing.T)
 		for i, c := range runner.calls {
 			descs = append(descs, fmt.Sprintf("[%d] %s %v", i, c.Name, c.Args))
 		}
-		t.Fatalf("expected 7 calls (fetch, initial add, remove --force, prune, branch -D, retry add, stage-assets), got %d:\n%s",
+		t.Fatalf("expected 7 calls (fetch, initial add, remove --force, prune, branch -d, retry add, stage-assets), got %d:\n%s",
 			len(runner.calls), strings.Join(descs, "\n"))
 	}
 
 	// Verify calls[2..4] contain the stale cleanup operations (not just two worktree-add calls).
 	hasWorktreeRemove := containsAll(runner.calls[2].Args, "worktree", "remove", "--force")
 	hasWorktreePrune := containsAll(runner.calls[3].Args, "worktree", "prune")
-	hasBranchDelete := containsAll(runner.calls[4].Args, "branch", "-D")
+	hasBranchDelete := containsAll(runner.calls[4].Args, "branch", "-d")
 
 	if !hasWorktreeRemove || !hasWorktreePrune || !hasBranchDelete {
-		t.Fatalf("pruneStale sequence not found: remove=%v prune=%v branch-D=%v",
+		t.Fatalf("pruneStale sequence not found: remove=%v prune=%v branch-d=%v",
 			hasWorktreeRemove, hasWorktreePrune, hasBranchDelete)
 	}
 }
@@ -792,7 +826,7 @@ func TestWorktreeManager_PruneStaleUnlocksAndRemovesBeforeRetry(t *testing.T) {
 	// 1. git worktree add (fails)
 	// 2. git worktree remove <path> --force
 	// 3. git worktree prune
-	// 4. git branch -D <branch>
+	// 4. git branch -d <branch>
 	// 5. git worktree add (succeeds)
 	// 6. make stage-assets (best-effort)
 	if len(runner.calls) != 7 {
@@ -818,10 +852,10 @@ func TestWorktreeManager_PruneStaleUnlocksAndRemovesBeforeRetry(t *testing.T) {
 		t.Fatalf("call[3] should be git worktree prune, got: %s %v", c3.Name, c3.Args)
 	}
 
-	// Call 4 (index 4): git branch -D <branch>
+	// Call 4 (index 4): git branch -d <branch>
 	c4 := runner.calls[4]
-	if c4.Name != "git" || !containsAll(c4.Args, "branch", "-D", wantBranch) {
-		t.Fatalf("call[4] should be git branch -D, got: %s %v", c4.Name, c4.Args)
+	if c4.Name != "git" || !containsAll(c4.Args, "branch", "-d", wantBranch) {
+		t.Fatalf("call[4] should be git branch -d, got: %s %v", c4.Name, c4.Args)
 	}
 }
 
@@ -841,7 +875,7 @@ func TestGitWorktreeManager_DeleteBranch_Success(t *testing.T) {
 	if call.Name != "git" {
 		t.Fatalf("name: got %q, want %q", call.Name, "git")
 	}
-	wantArgs := []string{"-C", "/repo/root", "branch", "-D", "agent/oro-test"}
+	wantArgs := []string{"-C", "/repo/root", "branch", "-d", "agent/oro-test"}
 	if len(call.Args) != len(wantArgs) {
 		t.Fatalf("args: got %v, want %v", call.Args, wantArgs)
 	}
@@ -983,13 +1017,13 @@ func TestPruneStaleReturnsFirstError(t *testing.T) {
 		}
 	})
 
-	// Subtest 2: only the third step (branch -D) fails → that error is returned.
+	// Subtest 2: only the third step (branch -d) fails → that error is returned.
 	t.Run("branch_delete_fails_returns_error", func(t *testing.T) {
 		callCount := 0
 		runner := &mockCommandRunner{
 			callFn: func(_ context.Context, _ string, _ ...string) ([]byte, error) {
 				callCount++
-				if callCount == 3 { // worktree remove=1, prune=2, branch -D=3
+				if callCount == 3 { // worktree remove=1, prune=2, branch -d=3
 					return nil, fmt.Errorf("error: branch not yet merged")
 				}
 				return nil, nil
@@ -998,7 +1032,7 @@ func TestPruneStaleReturnsFirstError(t *testing.T) {
 		mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
 		err := mgr.pruneStale(context.Background(), "/repo/root/.worktrees/prune-err", "agent/prune-err")
 		if err == nil {
-			t.Fatal("expected pruneStale to return error when branch -D fails")
+			t.Fatal("expected pruneStale to return error when branch -d fails")
 		}
 		if !strings.Contains(err.Error(), "branch not yet merged") {
 			t.Fatalf("expected error about 'branch not yet merged', got: %v", err)
@@ -1027,7 +1061,7 @@ func TestPruneStaleReturnsFirstError(t *testing.T) {
 				if callCount == 3 {
 					return nil, fmt.Errorf("fatal: worktree is locked")
 				}
-				// Calls 4+ (prune, branch -D, retry add, stage-assets) → succeed
+				// Calls 4+ (prune, branch -d, retry add, stage-assets) → succeed
 				return nil, nil
 			},
 		}
@@ -1106,6 +1140,22 @@ func TestBranchExists(t *testing.T) {
 			t.Fatalf("expected args to contain branch --list agent/abc123, got %v", call.Args)
 		}
 	})
+}
+
+func TestCurrentBranch(t *testing.T) {
+	runner := &mockCommandRunner{output: []byte("agent/oro-current\n")}
+	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
+
+	got, err := mgr.CurrentBranch(context.Background(), "/repo/root/.worktrees/oro-current")
+	if err != nil {
+		t.Fatalf("CurrentBranch: %v", err)
+	}
+	if got != "agent/oro-current" {
+		t.Fatalf("CurrentBranch = %q, want agent/oro-current", got)
+	}
+	if len(runner.calls) != 1 || !containsAll(runner.calls[0].Args, "-C", "/repo/root/.worktrees/oro-current", "rev-parse", "--abbrev-ref", "HEAD") {
+		t.Fatalf("CurrentBranch git call = %+v", runner.calls)
+	}
 }
 
 func TestMergeFFOnly(t *testing.T) {
@@ -1241,8 +1291,8 @@ func TestWorktreeManager_CustomDir(t *testing.T) {
 		if err := mgr.Prune(context.Background()); err != nil {
 			t.Fatalf("Prune returned error: %v", err)
 		}
-		if _, err := os.Stat(orphanDir); !os.IsNotExist(err) {
-			t.Fatal("Prune should have removed orphan dir in custom worktrees dir")
+		if _, err := os.Stat(orphanDir); err != nil {
+			t.Fatalf("Prune should preserve orphan dir in custom worktrees dir: %v", err)
 		}
 	})
 
@@ -1261,7 +1311,7 @@ func TestWorktreeManager_CustomDir(t *testing.T) {
 		}
 		branchDeleteCalled := false
 		for _, call := range runner.calls {
-			if call.Name == "git" && containsAll(call.Args, "branch", "-D", "agent/oro-closed1") {
+			if call.Name == "git" && containsAll(call.Args, "branch", "-d", "agent/oro-closed1") {
 				branchDeleteCalled = true
 			}
 		}
@@ -1320,13 +1370,13 @@ func TestGCClosedWorktrees(t *testing.T) {
 			if containsAll(call.Args, "worktree", "remove") && slices.Contains(call.Args, closedPath) {
 				worktreeRemoveCalled = true
 			}
-			if containsAll(call.Args, "branch", "-D", "agent/oro-closed1") {
+			if containsAll(call.Args, "branch", "-d", "agent/oro-closed1") {
 				branchDeleteCalled = true
 			}
 			if slices.Contains(call.Args, openPath) {
 				t.Fatalf("should not process open bead path, got call: %v", call.Args)
 			}
-			if containsAll(call.Args, "branch", "-D", "agent/oro-open1") {
+			if containsAll(call.Args, "branch", "-d", "agent/oro-open1") {
 				t.Fatalf("should not delete open bead branch, got call: %v", call.Args)
 			}
 		}
@@ -1381,7 +1431,7 @@ func TestGCClosedWorktrees(t *testing.T) {
 		// oro-ok1 should still be processed even after oro-fail1 failed.
 		branchDeleteOK1 := false
 		for _, call := range runner.calls {
-			if call.Name == "git" && containsAll(call.Args, "branch", "-D", "agent/oro-ok1") {
+			if call.Name == "git" && containsAll(call.Args, "branch", "-d", "agent/oro-ok1") {
 				branchDeleteOK1 = true
 			}
 		}
@@ -1435,7 +1485,7 @@ func TestGCClosedWorktrees(t *testing.T) {
 		}
 
 		for _, call := range runner.calls {
-			if call.Name == "git" && (containsAll(call.Args, "worktree", "remove") || containsAll(call.Args, "branch", "-D")) {
+			if call.Name == "git" && (containsAll(call.Args, "worktree", "remove") || containsAll(call.Args, "branch", "-d")) {
 				t.Fatalf("should not call remove/delete-branch for open bead, got: %v", call.Args)
 			}
 		}

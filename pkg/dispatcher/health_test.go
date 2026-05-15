@@ -7,6 +7,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"oro/pkg/factoryhealth"
 )
 
 func TestApplyHealth(t *testing.T) {
@@ -45,30 +47,22 @@ func TestApplyHealth(t *testing.T) {
 	}
 
 	// Assert: Returns daemon PID
-	if health.Daemon.PID != os.Getpid() {
-		t.Errorf("Expected daemon PID %d, got %d", os.Getpid(), health.Daemon.PID)
+	if health.Metrics.DaemonPID != os.Getpid() {
+		t.Errorf("Expected daemon PID %d, got %d", os.Getpid(), health.Metrics.DaemonPID)
 	}
 
 	// Assert: Returns daemon state
-	if health.Daemon.State == "" {
+	if health.State == "" {
 		t.Error("Expected daemon state to be set")
 	}
 
 	// Assert: Returns worker statuses
-	if len(health.Workers) != 1 {
-		t.Errorf("Expected 1 worker, got %d", len(health.Workers))
+	if health.Metrics.WorkerCount != 1 {
+		t.Errorf("Expected 1 worker, got %d", health.Metrics.WorkerCount)
 	}
 
-	if len(health.Workers) > 0 {
-		worker := health.Workers[0]
-		if worker.ID != "worker-1" {
-			t.Errorf("Expected worker ID 'worker-1', got '%s'", worker.ID)
-		}
-	}
-
-	// Assert: Daemon uptime is positive
-	if health.Daemon.UptimeSeconds <= 0 {
-		t.Errorf("Expected positive uptime, got %f", health.Daemon.UptimeSeconds)
+	if health.Metrics.DaemonRunning != true {
+		t.Error("Expected daemon_running=true")
 	}
 
 	// Note: PaneStatus assertions require DB setup and will be validated in integration tests
@@ -93,8 +87,81 @@ func TestApplyHealthViaDirective(t *testing.T) {
 	}
 
 	// Assert: Returns daemon PID
-	if health.Daemon.PID != os.Getpid() {
-		t.Errorf("Expected daemon PID %d, got %d", os.Getpid(), health.Daemon.PID)
+	if health.Metrics.DaemonPID != os.Getpid() {
+		t.Errorf("Expected daemon PID %d, got %d", os.Getpid(), health.Metrics.DaemonPID)
+	}
+}
+
+func TestApplyHealthReportsRecoveryQuarantine(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	if _, err := d.db.ExecContext(ctx, `
+INSERT INTO recovery_quarantines (bead_id, branch, reason, details, status)
+VALUES ('oro-q', 'agent/oro-q', 'missing_worktree_path', 'missing path', 'open');
+`); err != nil {
+		t.Fatalf("insert recovery quarantine: %v", err)
+	}
+
+	result, err := d.applyHealth()
+	if err != nil {
+		t.Fatalf("applyHealth: %v", err)
+	}
+
+	var health SwarmHealth
+	if err := json.Unmarshal([]byte(result), &health); err != nil {
+		t.Fatalf("unmarshal health: %v", err)
+	}
+	if health.Metrics.OpenRecoveryQuarantines != 1 {
+		t.Fatalf("open recovery quarantines = %d, want 1", health.Metrics.OpenRecoveryQuarantines)
+	}
+	if !hasHealthFinding(health, factoryhealth.FindingRecoveryQuarantineOpen) {
+		t.Fatalf("missing recovery quarantine finding: %+v", health.Findings)
+	}
+}
+
+func TestBuildStatusJSONReportsRecoveryQuarantineHealth(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	if _, err := d.db.ExecContext(ctx, `
+INSERT INTO recovery_quarantines (bead_id, branch, reason, details, status)
+VALUES ('oro-status-q', 'agent/oro-status-q', 'missing_worktree_path', 'missing path', 'open');
+`); err != nil {
+		t.Fatalf("insert recovery quarantine: %v", err)
+	}
+
+	var status statusResponse
+	if err := json.Unmarshal([]byte(d.buildStatusJSON()), &status); err != nil {
+		t.Fatalf("unmarshal status JSON: %v", err)
+	}
+	if status.Health == nil {
+		t.Fatal("status health missing")
+	}
+	if status.Health.Metrics.OpenRecoveryQuarantines != 1 {
+		t.Fatalf("status health open recovery quarantines = %d, want 1", status.Health.Metrics.OpenRecoveryQuarantines)
+	}
+	if !hasHealthFinding(*status.Health, factoryhealth.FindingRecoveryQuarantineOpen) {
+		t.Fatalf("status health missing recovery quarantine finding: %+v", status.Health.Findings)
+	}
+}
+
+func TestBuildStatusJSONUsesManagerPaneLivenessChecker(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.SetPaneRestarter(&healthPaneRestarter{alive: true})
+
+	var status statusResponse
+	if err := json.Unmarshal([]byte(d.buildStatusJSON()), &status); err != nil {
+		t.Fatalf("unmarshal status JSON: %v", err)
+	}
+	if status.Health == nil {
+		t.Fatal("status health missing")
+	}
+	if !status.Health.Metrics.ManagerPaneAlive {
+		t.Fatal("expected status health manager pane alive via liveness checker")
+	}
+	if hasHealthFinding(*status.Health, factoryhealth.FindingManagerPaneUnhealthy) {
+		t.Fatalf("status health should not emit manager_pane_unhealthy: %+v", status.Health.Findings)
 	}
 }
 
@@ -121,7 +188,7 @@ func TestHealthPaneAlive(t *testing.T) {
 			t.Fatalf("unmarshal: %v", err)
 		}
 
-		if !health.ManagerPane.Alive {
+		if !health.Metrics.ManagerPaneAlive {
 			t.Error("expected ManagerPane.Alive=true for recent pane_activity row")
 		}
 	})
@@ -144,8 +211,11 @@ func TestHealthPaneAlive(t *testing.T) {
 			t.Fatalf("unmarshal: %v", err)
 		}
 
-		if health.ManagerPane.Alive {
+		if health.Metrics.ManagerPaneAlive {
 			t.Error("expected ManagerPane.Alive=false for stale pane_activity row")
+		}
+		if !hasHealthFinding(health, factoryhealth.FindingManagerPaneUnhealthy) {
+			t.Fatalf("expected manager_pane_unhealthy finding, got %+v", health.Findings)
 		}
 	})
 
@@ -161,8 +231,29 @@ func TestHealthPaneAlive(t *testing.T) {
 			t.Fatalf("unmarshal: %v", err)
 		}
 
-		if health.ManagerPane.Alive {
+		if health.Metrics.ManagerPaneAlive {
 			t.Error("expected ManagerPane.Alive=false when no pane_activity row")
+		}
+	})
+
+	t.Run("alive when pane_activity missing but manager pane process is live", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		d.SetPaneRestarter(&healthPaneRestarter{alive: true})
+
+		result, err := d.applyHealth()
+		if err != nil {
+			t.Fatalf("applyHealth: %v", err)
+		}
+		var health SwarmHealth
+		if err := json.Unmarshal([]byte(result), &health); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		if !health.Metrics.ManagerPaneAlive {
+			t.Error("expected ManagerPane.Alive=true when pane process is live")
+		}
+		if hasHealthFinding(health, factoryhealth.FindingManagerPaneUnhealthy) {
+			t.Fatalf("live manager pane should not emit manager_pane_unhealthy: %+v", health.Findings)
 		}
 	})
 
@@ -186,7 +277,7 @@ func TestHealthPaneAlive(t *testing.T) {
 			t.Fatalf("unmarshal: %v", err)
 		}
 
-		if !health.ManagerPane.Alive {
+		if !health.Metrics.ManagerPaneAlive {
 			t.Error("expected ManagerPane.Alive=true when last_seen exactly 60s ago (inclusive <= 60 window)")
 		}
 	})
@@ -210,10 +301,31 @@ func TestHealthPaneAlive(t *testing.T) {
 			t.Fatalf("unmarshal: %v", err)
 		}
 
-		if health.ManagerPane.Alive {
+		if health.Metrics.ManagerPaneAlive {
 			t.Error("expected ManagerPane.Alive=false when last_seen 61s ago")
 		}
 	})
+}
+
+type healthPaneRestarter struct {
+	alive bool
+}
+
+func (h *healthPaneRestarter) Restart(string) error {
+	return nil
+}
+
+func (h *healthPaneRestarter) Alive(context.Context, string) bool {
+	return h.alive
+}
+
+func hasHealthFinding(health SwarmHealth, code string) bool {
+	for _, finding := range health.Findings {
+		if finding.Code == code {
+			return true
+		}
+	}
+	return false
 }
 
 // TestPaneAliveDirect tests the paneAlive function directly to kill boundary

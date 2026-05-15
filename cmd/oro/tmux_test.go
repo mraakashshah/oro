@@ -876,6 +876,28 @@ func TestExecEnvCmd(t *testing.T) {
 			t.Errorf("expected codex command to avoid CLAUDE_CONFIG_DIR, got: %s", cmd)
 		}
 	})
+
+	t.Run("preserves daemon env overrides for manager pane", func(t *testing.T) {
+		t.Setenv("ORO_HOME", "/tmp/oro-home")
+		t.Setenv("ORO_DB_PATH", "/tmp/oro-state.db")
+		t.Setenv("ORO_SOCKET_PATH", "/tmp/oro.sock")
+		t.Setenv("ORO_PID_PATH", "/tmp/oro.pid")
+		t.Setenv("ORO_BEADSOURCE_MODE", "sqlite")
+
+		cmd := execEnvCmd("manager", "envproj")
+
+		for _, envVar := range []string{
+			"ORO_HOME=/tmp/oro-home",
+			"ORO_DB_PATH=/tmp/oro-state.db",
+			"ORO_SOCKET_PATH=/tmp/oro.sock",
+			"ORO_PID_PATH=/tmp/oro.pid",
+			"ORO_BEADSOURCE_MODE=sqlite",
+		} {
+			if !strings.Contains(cmd, envVar) {
+				t.Errorf("expected manager execEnvCmd to preserve %s, got: %s", envVar, cmd)
+			}
+		}
+	})
 }
 
 func TestExecEnvCmdWithProject(t *testing.T) {
@@ -1865,6 +1887,7 @@ func TestCreate_ExecEnvPattern(t *testing.T) {
 func TestPaneDiedHooks(t *testing.T) {
 	t.Run("RegisterPaneDiedHooks registers hook for manager pane only", func(t *testing.T) {
 		fake := newFakeCmd()
+		fake.output[key("tmux", "show-hooks", "-g")] = "pane-died\n"
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 
 		err := sess.RegisterPaneDiedHooks()
@@ -1885,6 +1908,23 @@ func TestPaneDiedHooks(t *testing.T) {
 		}
 		if !managerHookSet {
 			t.Error("expected set-hook to be called for manager pane")
+		}
+	})
+
+	t.Run("RegisterPaneDiedHooks skips unsupported pane-died hook", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "show-hooks", "-g")] = "after-new-session\n"
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
+
+		err := sess.RegisterPaneDiedHooks()
+		if err != nil {
+			t.Fatalf("RegisterPaneDiedHooks returned error: %v", err)
+		}
+
+		for _, call := range fake.calls {
+			if len(call) >= 2 && call[0] == "tmux" && call[1] == "set-hook" {
+				t.Fatalf("unsupported pane-died hook should not call set-hook, got %v", call)
+			}
 		}
 	})
 
@@ -1951,6 +1991,7 @@ func TestPaneDiedHooks(t *testing.T) {
 	t.Run("CleanupPaneDiedHooks unregisters hook for manager pane only", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
+		fake.output[key("tmux", "show-hooks", "-g")] = "pane-died\n"
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 
@@ -3074,6 +3115,7 @@ func TestSingleWindowLayout(t *testing.T) {
 
 	t.Run("RegisterPaneDiedHooks registers manager pane only", func(t *testing.T) {
 		fake := newFakeCmd()
+		fake.output[key("tmux", "show-hooks", "-g")] = "pane-died\n"
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
 		err := sess.RegisterPaneDiedHooks()
 		if err != nil {

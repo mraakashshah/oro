@@ -256,6 +256,7 @@ func execEnvCmd(role, project string) string {
 	if project != "" {
 		base += fmt.Sprintf(" ORO_PROJECT=%s", project)
 	}
+	base = appendDaemonEnvOverrides(base)
 
 	if !runtimeUsesClaudeConfig() {
 		return base + " " + runtimeBinary()
@@ -275,6 +276,22 @@ func execEnvCmd(role, project string) string {
 	settingsPath := filepath.Join(oroHome, "projects", project, "settings.json")
 	return fmt.Sprintf("%s CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 claude --add-dir %s --settings %s",
 		base, oroHome, settingsPath)
+}
+
+func appendDaemonEnvOverrides(base string) string {
+	for _, name := range []string{
+		"ORO_HOME",
+		"ORO_DB_PATH",
+		"ORO_SOCKET_PATH",
+		"ORO_PID_PATH",
+		"ORO_BEADSOURCE_MODE",
+		"ORO_MEMORY_DB",
+	} {
+		if value := os.Getenv(name); value != "" {
+			base += fmt.Sprintf(" %s=%s", name, value)
+		}
+	}
+	return base
 }
 
 // killStaleSession kills the session if it needs to be replaced (pre-collapse
@@ -872,12 +889,29 @@ func (s *TmuxSession) AttachInteractive() error {
 // detect when it crashes or closes. The hook respawns the pane and logs the
 // event to the dispatcher via the UDS socket.
 func (s *TmuxSession) RegisterPaneDiedHooks() error {
+	if !s.supportsHook("pane-died") {
+		return nil
+	}
 	managerPane := s.Name + ":manager"
 	managerHook := buildPaneDiedHook(s.Name, s.Project)
 	if _, err := s.Runner.Run("tmux", "set-hook", "-t", managerPane, "pane-died", managerHook); err != nil {
 		return fmt.Errorf("register pane-died hook for manager: %w", err)
 	}
 	return nil
+}
+
+func (s *TmuxSession) supportsHook(hookName string) bool {
+	out, err := s.Runner.Run("tmux", "show-hooks", "-g")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == hookName {
+			return true
+		}
+	}
+	return false
 }
 
 // buildPaneDiedHook constructs a tmux hook command for pane-died events.
@@ -926,6 +960,9 @@ func escapeForShell(s string) string {
 //nolint:unparam // error return kept for interface consistency; errors are logged not propagated
 func (s *TmuxSession) CleanupPaneDiedHooks() error {
 	if !s.Exists() {
+		return nil
+	}
+	if !s.supportsHook("pane-died") {
 		return nil
 	}
 

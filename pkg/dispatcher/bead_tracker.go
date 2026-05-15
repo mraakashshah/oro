@@ -156,7 +156,21 @@ func (d *Dispatcher) deleteOrphanedTracking(activeBeads map[string]bool) int {
 // It calls GCClosedWorktrees with an isBeadClosed callback that uses
 // beads.Show to check status; Show failures return false (conservative).
 func (d *Dispatcher) gcWorktrees(ctx context.Context) {
+	quarantined := map[string]bool{}
+	if d.db != nil {
+		var err error
+		quarantined, err = d.openRecoveryQuarantineBeads(ctx)
+		if err != nil {
+			_ = d.logEvent(ctx, "gc_worktrees_quarantine_filter_failed", "dispatcher", "", "", err.Error())
+			return
+		}
+	}
 	isBeadClosed := func(beadID string) bool {
+		if quarantined[beadID] {
+			_ = d.logEvent(ctx, "gc_skipped_recovery_quarantined", "dispatcher", beadID, "",
+				`{"reason":"open_recovery_quarantine"}`)
+			return false
+		}
 		detail, err := d.beads.Show(ctx, beadID)
 		if err != nil {
 			return false

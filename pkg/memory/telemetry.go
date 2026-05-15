@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+
+	"oro/pkg/protocol"
 )
 
 // SearchEvent records the inputs and outputs of a single hybrid-search call.
@@ -30,6 +33,21 @@ func (s *Store) logSearchEvent(ctx context.Context, evt SearchEvent) error {
 		return fmt.Errorf("marshal top_k_scores: %w", err)
 	}
 
+	if err := s.insertSearchEvent(ctx, evt, string(ids), string(scores)); err != nil {
+		if !memorySearchEventsMissing(err) {
+			return err
+		}
+		if _, migrateErr := s.db.ExecContext(ctx, protocol.MigrateSemanticMemorySearchEvents); migrateErr != nil {
+			return fmt.Errorf("repair memory_search_events after missing table: %w", migrateErr)
+		}
+		if retryErr := s.insertSearchEvent(ctx, evt, string(ids), string(scores)); retryErr != nil {
+			return retryErr
+		}
+	}
+	return nil
+}
+
+func (s *Store) insertSearchEvent(ctx context.Context, evt SearchEvent, ids, scores string) error {
 	boolToInt := func(b bool) int {
 		if b {
 			return 1
@@ -37,15 +55,15 @@ func (s *Store) logSearchEvent(ctx context.Context, evt SearchEvent) error {
 		return 0
 	}
 
-	_, err = s.db.ExecContext(ctx, `
+	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO memory_search_events
 			(project, query_hash, top_k_ids, top_k_scores, latency_ms, used_rerank, used_bge, ann_candidates)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		evt.Project,
 		evt.QueryHash,
-		string(ids),
-		string(scores),
+		ids,
+		scores,
 		evt.LatencyMs,
 		boolToInt(evt.UsedRerank),
 		boolToInt(evt.UsedBGE),
@@ -55,4 +73,8 @@ func (s *Store) logSearchEvent(ctx context.Context, evt SearchEvent) error {
 		return fmt.Errorf("insert memory_search_events: %w", err)
 	}
 	return nil
+}
+
+func memorySearchEventsMissing(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no such table: memory_search_events")
 }

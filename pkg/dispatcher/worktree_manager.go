@@ -140,9 +140,9 @@ func (g *GitWorktreeManager) linkQualityGate(ctx context.Context, worktreePath s
 	}
 }
 
-// pruneStale cleans up a stale worktree and branch left by a previous crash.
-// It force-removes the worktree directory first (handles locked worktrees),
-// then prunes stale git metadata, then deletes the branch.
+// pruneStale cleans up stale git worktree metadata left by a previous crash.
+// It removes the registered worktree, prunes stale git metadata, then asks git
+// to safe-delete the branch. Unmerged branches are preserved by git branch -d.
 // Returns the first non-nil error from any git step; all steps still run.
 func (g *GitWorktreeManager) pruneStale(ctx context.Context, path, branch string) error {
 	var firstErr error
@@ -154,16 +154,15 @@ func (g *GitWorktreeManager) pruneStale(ctx context.Context, path, branch string
 	if _, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "worktree", "prune"); err != nil && firstErr == nil {
 		firstErr = err
 	}
-	// Delete the stale branch now that it's no longer checked out.
-	if _, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "branch", "-D", branch); err != nil && firstErr == nil {
+	// Delete the stale branch now that it's no longer checked out, but only
+	// when git can prove it is merged.
+	if _, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "branch", "-d", branch); err != nil && firstErr == nil {
 		firstErr = err
 	}
 	return firstErr
 }
 
 // Remove runs `git worktree remove <path> --force`.
-// Before removing, it automatically commits any uncommitted changes in the
-// worktree to prevent losing work when workers are killed or time out.
 // If the worktree path does not exist, Remove returns nil (idempotent).
 func (g *GitWorktreeManager) Remove(ctx context.Context, path string) error {
 	// Check if path exists. If it doesn't, the worktree is already gone (idempotent).
@@ -175,13 +174,6 @@ func (g *GitWorktreeManager) Remove(ctx context.Context, path string) error {
 		// (let git report the actual error).
 	}
 
-	// Auto-commit any uncommitted changes before removal to prevent data loss.
-	if err := g.autoCommitUncommittedChanges(ctx, path); err != nil {
-		// Log the error but don't fail the removal — stale worktree cleanup
-		// is more important than preserving uncommitted changes in edge cases.
-		_ = err // Errors are non-fatal
-	}
-
 	_, err := g.runner.Run(ctx, "git", "-C", g.repoRoot,
 		"worktree", "remove", path, "--force",
 	)
@@ -191,43 +183,23 @@ func (g *GitWorktreeManager) Remove(ctx context.Context, path string) error {
 	return nil
 }
 
-// autoCommitUncommittedChanges checks if the worktree has uncommitted changes
-// and commits them with a descriptive message. This prevents losing work when
-// a worker is killed or times out.
-func (g *GitWorktreeManager) autoCommitUncommittedChanges(ctx context.Context, path string) error {
-	// Check if worktree has uncommitted changes.
-	output, err := g.runner.Run(ctx, "git", "-C", path, "status", "--porcelain")
-	if err != nil {
-		return fmt.Errorf("git status in %s: %w", path, err)
-	}
-
-	// If output is empty, worktree is clean — nothing to commit.
-	if strings.TrimSpace(string(output)) == "" {
-		return nil
-	}
-
-	// Stage all changes.
-	_, err = g.runner.Run(ctx, "git", "-C", path, "add", "-A")
-	if err != nil {
-		return fmt.Errorf("git add in %s: %w", path, err)
-	}
-
-	// Commit with descriptive message.
-	_, err = g.runner.Run(ctx, "git", "-C", path, "commit", "-m",
-		"auto-commit: preserve uncommitted changes before worktree removal")
-	if err != nil {
-		return fmt.Errorf("git commit in %s: %w", path, err)
-	}
-
-	return nil
-}
-
 // DeleteBranch runs `git branch -d <branch>` to delete a merged branch.
 // Uses -d (not -D) so git refuses if the branch is not fully merged — a safety net.
 func (g *GitWorktreeManager) DeleteBranch(ctx context.Context, branch string) error {
-	_, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "branch", "-D", branch)
+	_, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "branch", "-d", branch)
 	if err != nil {
 		return fmt.Errorf("branch delete %s: %w", branch, err)
+	}
+	return nil
+}
+
+// ForceDeleteBranch runs `git branch -D <branch>`.
+// Callers must only use this after separately proving that deleting the branch
+// cannot discard unmerged work.
+func (g *GitWorktreeManager) ForceDeleteBranch(ctx context.Context, branch string) error {
+	_, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "branch", "-D", branch)
+	if err != nil {
+		return fmt.Errorf("force branch delete %s: %w", branch, err)
 	}
 	return nil
 }
@@ -236,6 +208,16 @@ func (g *GitWorktreeManager) DeleteBranch(ctx context.Context, branch string) er
 func (g *GitWorktreeManager) Exists(_ context.Context, path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// CurrentBranch returns the branch checked out in path. Detached HEAD is
+// returned as "HEAD", matching git rev-parse --abbrev-ref HEAD.
+func (g *GitWorktreeManager) CurrentBranch(ctx context.Context, path string) (string, error) {
+	out, err := g.runner.Run(ctx, "git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("worktree current branch %s: %w", path, err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // BranchExists reports whether the named branch exists in the local repository.
@@ -314,57 +296,16 @@ func (g *GitWorktreeManager) GCClosedWorktrees(ctx context.Context, isBeadClosed
 	return nil
 }
 
-// Prune cleans up orphaned worktree state left by a previous crash.
-// It runs `git worktree prune` to clean git's internal tracking, then removes
-// only directories under .worktrees/ that are not still registered git
-// worktrees. Errors are logged but do not prevent startup — this method always
-// returns nil.
+// Prune asks git to clean stale internal worktree bookkeeping.
+// It intentionally does not remove directories under .worktrees/: after a
+// crash, an unregistered directory can still contain recovery-owned work.
+// Errors are logged but do not prevent startup.
 func (g *GitWorktreeManager) Prune(ctx context.Context) error {
-	// Step 1: Ask git to prune its internal worktree bookkeeping.
-	// Errors are non-fatal — the directory cleanup below handles the rest.
-	_, _ = g.runner.Run(ctx, "git", "-C", g.repoRoot, "worktree", "prune")
-
-	registered, err := g.registeredWorktreePaths(ctx)
-	if err != nil {
-		slog.WarnContext(ctx, "worktree_list_failed", "error", err.Error())
-		return nil
-	}
-
-	// Step 2: Remove orphan directories under worktreesDir.
-	entries, err := os.ReadDir(g.worktreesDir)
-	if err != nil {
-		// Directory doesn't exist or is unreadable — nothing to clean.
-		return nil //nolint:nilerr // missing dir is expected, not an error
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		path := filepath.Join(g.worktreesDir, entry.Name())
-		if registered[filepath.Clean(path)] {
-			continue
-		}
-		_ = os.RemoveAll(path)
+	if _, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "worktree", "prune"); err != nil {
+		slog.WarnContext(ctx, "worktree_prune_failed", "error", err.Error())
 	}
 
 	return nil
-}
-
-func (g *GitWorktreeManager) registeredWorktreePaths(ctx context.Context) (map[string]bool, error) {
-	out, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "worktree", "list", "--porcelain")
-	if err != nil {
-		return nil, fmt.Errorf("git worktree list: %w", err)
-	}
-	paths := make(map[string]bool)
-	for _, line := range strings.Split(string(out), "\n") {
-		path, ok := strings.CutPrefix(line, "worktree ")
-		if !ok {
-			continue
-		}
-		paths[filepath.Clean(path)] = true
-	}
-	return paths, nil
 }
 
 // RebaseOnto rebases branch onto onto using `git rebase --onto onto branch`.

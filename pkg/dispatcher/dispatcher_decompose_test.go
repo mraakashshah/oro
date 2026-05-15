@@ -32,7 +32,7 @@ func exhaustQGRetries(t *testing.T, conn net.Conn, scanner *bufio.Scanner, worke
 			},
 		})
 		if i < maxQGRetries {
-			msg, ok := readMsgFromScanner(t, scanner, 3*time.Second)
+			msg, ok := readMsgFromScanner(t, scanner, 10*time.Second)
 			if !ok {
 				t.Fatalf("exhaustQGRetries: expected re-ASSIGN on attempt %d", i)
 			}

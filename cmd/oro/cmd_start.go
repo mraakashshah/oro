@@ -87,7 +87,7 @@ func (e *ExecDaemonSpawner) SpawnDaemon(pidPath string, workers, maxWorkers int)
 	child.Stdout = logFile
 	child.Stderr = logFile
 
-	child.Env = cleanEnvForDaemon(os.Environ())
+	child.Env = daemonChildEnv(os.Environ())
 	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := child.Start(); err != nil {
 		_ = logFile.Close()
@@ -186,6 +186,22 @@ func cleanEnvForDaemon(env []string) []string {
 	return processenv.ForWorkdir(cleaned, "")
 }
 
+func daemonChildEnv(env []string) []string {
+	return withEnvValue(cleanEnvForDaemon(env), tmuxManagedDaemonEnv, "1")
+}
+
+func withEnvValue(env []string, name, value string) []string {
+	prefix := name + "="
+	out := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, prefix+value)
+}
+
 // socketPollTimeout is the maximum time to wait for the dispatcher socket.
 // 15s allows for DB migrations, code indexing, and schema init on first run.
 const socketPollTimeout = 15 * time.Second
@@ -193,7 +209,10 @@ const socketPollTimeout = 15 * time.Second
 // socketPollInterval is how often to check for the socket file.
 const socketPollInterval = 50 * time.Millisecond
 
-const daemonSkipPreflightEnv = "ORO_DAEMON_SKIP_PREFLIGHT"
+const (
+	daemonSkipPreflightEnv = "ORO_DAEMON_SKIP_PREFLIGHT"
+	tmuxManagedDaemonEnv   = "ORO_TMUX_MANAGED_DAEMON"
+)
 
 var runDaemonOnlyFn = runDaemonOnly //nolint:gochecknoglobals // test seam for start command flag handoff
 
@@ -589,7 +608,7 @@ func newStartCmd() *cobra.Command {
 
 // startFreshSwarm sets up project env vars and launches the full swarm (daemon + tmux).
 func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach bool, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool) error {
-	project, err := readProjectConfig(".")
+	project, err := startProjectName(".")
 	if err != nil {
 		return fmt.Errorf("read project config: %w", err)
 	}
@@ -614,6 +633,13 @@ func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach 
 		func(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) },
 		socketPollTimeout, nil, 0, isDetached(detach),
 	)
+}
+
+func startProjectName(dir string) (string, error) {
+	if project := strings.TrimSpace(os.Getenv("ORO_PROJECT")); project != "" {
+		return project, nil
+	}
+	return readProjectConfig(dir)
 }
 
 // cleanStaleWorkerLogs deletes worker log directories older than maxAge.
@@ -853,7 +879,7 @@ func wireDependencies(d *dispatcher.Dispatcher, sockPath, oroHome string, runner
 	d.SetProcessManager(dispatcher.NewOroProcessManager(sockPath, oroHome))
 	// Skip pane restarter in daemon-only mode: no tmux session exists, so
 	// attempting to restart panes would spam pane_restart_failed events.
-	if !daemonOnly {
+	if !daemonOnly || os.Getenv(tmuxManagedDaemonEnv) == "1" {
 		// Build the manager pane command using execEnvCmd with the project context
 		project := os.Getenv("ORO_PROJECT")
 		managerCmd := execEnvCmd("manager", project)

@@ -2,7 +2,6 @@ package dispatcher //nolint:testpackage // white-box tests need access to unexpo
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -12,10 +11,11 @@ import (
 	"oro/pkg/protocol"
 )
 
-// TestDeleteStaleAgentBranch_BranchCheckedOut_RemovesWorktreeBeforeDelete verifies that
-// when git refuses to delete a branch because it is checked out in a worktree,
-// deleteStaleAgentBranch removes the worktree at the expected path and retries the delete.
-func TestDeleteStaleAgentBranch_BranchCheckedOut_RemovesWorktreeBeforeDelete(t *testing.T) {
+// TestDeleteStaleAgentBranch_BranchCheckedOutQuarantines verifies that when
+// git refuses to safely delete a branch because it is checked out in a
+// worktree, deleteStaleAgentBranch preserves the worktree and records a
+// recovery quarantine.
+func TestDeleteStaleAgentBranch_BranchCheckedOutQuarantines(t *testing.T) {
 	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
 	d.repoRoot = "/repo/root"
 
@@ -23,43 +23,23 @@ func TestDeleteStaleAgentBranch_BranchCheckedOut_RemovesWorktreeBeforeDelete(t *
 	expectedWorktreePath := filepath.Join(d.repoRoot, ".worktrees", beadID)
 
 	var mu sync.Mutex
-	var ops []string // records "remove:<path>" and "delete:<branch>" in call order
+	var ops []string // records attempted branch deletes
 
 	// BranchExists: branch is present.
 	wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
 		return branch == protocol.BranchPrefix+beadID, nil
 	}
 
-	deleteCalls := 0
 	wtMgr.deleteBranchFn = func(branch string) error {
-		mu.Lock()
-		deleteCalls++
-		call := deleteCalls
-		mu.Unlock()
-		if call == 1 {
-			// First call: branch is checked out — git refuses.
-			mu.Lock()
-			ops = append(ops, "delete:"+branch)
-			mu.Unlock()
-			return fmt.Errorf("error: Cannot delete branch '%s' checked out at '%s'",
-				branch, expectedWorktreePath)
-		}
-		// Second call: branch is no longer checked out after Remove.
 		mu.Lock()
 		ops = append(ops, "delete:"+branch)
 		mu.Unlock()
-		return nil
+		return fmt.Errorf("error: Cannot delete branch '%s' checked out at '%s'",
+			branch, expectedWorktreePath)
 	}
 
-	wtMgr.removeFn = func(_ context.Context, path string) error {
-		mu.Lock()
-		ops = append(ops, "remove:"+path)
-		mu.Unlock()
-		return nil
-	}
-
-	if err := d.deleteStaleAgentBranch(context.Background(), beadID, "w-1"); err != nil {
-		t.Fatalf("deleteStaleAgentBranch should succeed after remove+retry, got: %v", err)
+	if err := d.deleteStaleAgentBranch(context.Background(), beadID, "w-1"); err == nil {
+		t.Fatal("expected deleteStaleAgentBranch to quarantine checked-out branch")
 	}
 
 	mu.Lock()
@@ -67,26 +47,24 @@ func TestDeleteStaleAgentBranch_BranchCheckedOut_RemovesWorktreeBeforeDelete(t *
 	copy(snapshot, ops)
 	mu.Unlock()
 
-	// Expect: first delete (fails) → remove → second delete (succeeds).
-	if len(snapshot) < 3 {
-		t.Fatalf("expected at least 3 ops, got %v", snapshot)
+	wantOps := []string{"delete:" + protocol.BranchPrefix + beadID}
+	if len(snapshot) != len(wantOps) || snapshot[0] != wantOps[0] {
+		t.Fatalf("ops = %v, want %v", snapshot, wantOps)
 	}
-	wantOps := []string{
-		"delete:" + protocol.BranchPrefix + beadID,
-		"remove:" + expectedWorktreePath,
-		"delete:" + protocol.BranchPrefix + beadID,
+	var reason string
+	if err := d.db.QueryRowContext(context.Background(),
+		`SELECT reason FROM recovery_quarantines WHERE bead_id=? AND status='open'`,
+		beadID).Scan(&reason); err != nil {
+		t.Fatalf("query recovery quarantine: %v", err)
 	}
-	for i, want := range wantOps {
-		if snapshot[i] != want {
-			t.Errorf("ops[%d]: got %q, want %q", i, snapshot[i], want)
-		}
+	if reason != "branch_worktree_mismatch" {
+		t.Fatalf("quarantine reason = %q, want branch_worktree_mismatch", reason)
 	}
 }
 
-// TestDeleteStaleAgentBranch_BranchCheckedOut_LogsStaleBranchCleanupFailed verifies that
-// when the worktree removal fails (or the branch delete still fails after removal),
-// stale_branch_cleanup_failed is written to the event log.
-func TestDeleteStaleAgentBranch_BranchCheckedOut_LogsStaleBranchCleanupFailed(t *testing.T) {
+// TestDeleteStaleAgentBranch_BranchCheckedOutLogsQuarantine verifies that a
+// checked-out branch is surfaced through the event log instead of being cleaned.
+func TestDeleteStaleAgentBranch_BranchCheckedOutLogsQuarantine(t *testing.T) {
 	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
 	d.repoRoot = "/repo/root"
 
@@ -101,18 +79,13 @@ func TestDeleteStaleAgentBranch_BranchCheckedOut_LogsStaleBranchCleanupFailed(t 
 		return fmt.Errorf("error: Cannot delete branch '%s' checked out at '/some/path'", branch)
 	}
 
-	// Remove also fails.
-	wtMgr.removeFn = func(_ context.Context, _ string) error {
-		return errors.New("worktree remove: permission denied")
-	}
-
 	err := d.deleteStaleAgentBranch(context.Background(), beadID, "w-1")
 	if err == nil {
 		t.Fatal("expected error when cleanup fails, got nil")
 	}
 
-	if eventCount(t, d.db, "stale_branch_cleanup_failed") == 0 {
-		t.Error("expected stale_branch_cleanup_failed event to be logged")
+	if eventCount(t, d.db, "stale_agent_branch_quarantined") == 0 {
+		t.Error("expected stale_agent_branch_quarantined event to be logged")
 	}
 }
 
@@ -133,11 +106,6 @@ func TestDeleteStaleAgentBranch_BranchCheckedOut_AbortsAssignmentOnCleanupFailur
 	// DeleteBranch always fails with "checked out".
 	wtMgr.deleteBranchFn = func(branch string) error {
 		return fmt.Errorf("error: Cannot delete branch '%s' checked out at '/stale/path'", branch)
-	}
-
-	// Remove also fails — cleanup is impossible.
-	wtMgr.removeFn = func(_ context.Context, _ string) error {
-		return errors.New("permission denied")
 	}
 
 	var createCalled bool
@@ -181,7 +149,7 @@ func TestDeleteStaleAgentBranch_BranchCheckedOut_AbortsAssignmentOnCleanupFailur
 }
 
 // TestWorktreeManager_PruneStale_RemovesWorktreeBeforeBranchDelete verifies the command
-// sequence inside pruneStale: worktree remove → worktree prune → branch -D.
+// sequence inside pruneStale: worktree remove → worktree prune → branch -d.
 // This is the order that prevents "Cannot delete branch checked out" errors.
 func TestWorktreeManager_PruneStale_RemovesWorktreeBeforeBranchDelete(t *testing.T) {
 	var ops []string
@@ -209,31 +177,31 @@ func TestWorktreeManager_PruneStale_RemovesWorktreeBeforeBranchDelete(t *testing
 		t.Fatalf("pruneStale: %v", err)
 	}
 
-	// Expected: worktree:remove → worktree:prune → branch:-D
+	// Expected: worktree:remove → worktree:prune → branch:-d
 	if len(ops) < 3 {
 		t.Fatalf("expected 3 ops, got %v", ops)
 	}
-	wantOps := []string{"worktree:remove", "worktree:prune", "branch:-D"}
+	wantOps := []string{"worktree:remove", "worktree:prune", "branch:-d"}
 	for i, want := range wantOps {
 		if ops[i] != want {
 			t.Errorf("ops[%d]: got %q, want %q", i, ops[i], want)
 		}
 	}
-	// remove MUST come before -D.
+	// remove MUST come before safe branch deletion.
 	removeIdx := -1
 	deleteIdx := -1
 	for i, op := range ops {
 		if op == "worktree:remove" {
 			removeIdx = i
 		}
-		if op == "branch:-D" {
+		if op == "branch:-d" {
 			deleteIdx = i
 		}
 	}
 	if removeIdx == -1 || deleteIdx == -1 {
-		t.Fatalf("did not find both remove and branch -D in ops: %v", ops)
+		t.Fatalf("did not find both remove and branch -d in ops: %v", ops)
 	}
 	if removeIdx >= deleteIdx {
-		t.Errorf("worktree remove (%d) must happen before branch -D (%d)", removeIdx, deleteIdx)
+		t.Errorf("worktree remove (%d) must happen before branch -d (%d)", removeIdx, deleteIdx)
 	}
 }

@@ -833,6 +833,11 @@ func (d *Dispatcher) handleShutdownTimeout(workerID string) {
 			_ = d.logEvent(ctx, "scale_down_bead_reset_failed", "dispatcher", beadID, workerID,
 				fmt.Sprintf(`{"error":%q}`, err.Error()))
 		}
+		if d.state == StateStopping {
+			_ = d.logEvent(ctx, "bead_requeued_shutdown_timeout", "dispatcher", beadID, workerID,
+				`{"reason":"shutdown_timeout"}`)
+			return
+		}
 		_ = d.completeAssignment(ctx, assignmentID, beadID)
 		d.clearBeadTracking(beadID)
 		_ = d.logEvent(ctx, "bead_requeued_scale_down", "dispatcher", beadID, workerID,

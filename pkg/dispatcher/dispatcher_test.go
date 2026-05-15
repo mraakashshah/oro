@@ -19,6 +19,7 @@ import (
 
 	"oro/pkg/beadstore"
 	"oro/pkg/dbutil"
+	"oro/pkg/factoryhealth"
 	"oro/pkg/memory"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
@@ -85,6 +86,7 @@ type fakeBeadStore struct {
 	beads                []protocol.Bead
 	shown                map[string]*protocol.BeadDetail
 	closed               []string
+	closeFn              func(ctx context.Context, id, reason string) error
 	updated              map[string]string // beadID -> status
 	created              []createCall
 	createID             string // ID returned by Create; defaults to "oro-new1"
@@ -156,7 +158,15 @@ func (m *fakeBeadStore) Show(_ context.Context, id string) (*protocol.BeadDetail
 	}, nil
 }
 
-func (m *fakeBeadStore) Close(_ context.Context, id string, reason string) error {
+func (m *fakeBeadStore) Close(ctx context.Context, id string, reason string) error {
+	m.mu.Lock()
+	closeFn := m.closeFn
+	m.mu.Unlock()
+	if closeFn != nil {
+		if err := closeFn(ctx, id, reason); err != nil {
+			return err
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.closed = append(m.closed, id)
@@ -374,7 +384,9 @@ type mockWorktreeManager struct {
 	mergeFFOnlyFn     func(branch, target string) (string, error)
 	updateBranchRefFn func(target, source string) error
 	existsFn          func(ctx context.Context, path string) bool
+	currentBranchFn   func(ctx context.Context, path string) (string, error)
 	createBranchFn    func(ctx context.Context, name, from string) error
+	gcClosedFn        func(ctx context.Context, isBeadClosed func(string) bool) error
 }
 
 func (m *mockWorktreeManager) Create(ctx context.Context, beadID, baseBranch string) (string, string, error) {
@@ -417,6 +429,10 @@ func (m *mockWorktreeManager) DeleteBranch(_ context.Context, branch string) err
 	return nil
 }
 
+func (m *mockWorktreeManager) ForceDeleteBranch(_ context.Context, branch string) error {
+	return m.DeleteBranch(context.Background(), branch)
+}
+
 func (m *mockWorktreeManager) Prune(ctx context.Context) error {
 	return nil
 }
@@ -457,7 +473,13 @@ func (m *mockWorktreeManager) UpdateBranchRef(_ context.Context, targetBranch, s
 	return nil
 }
 
-func (m *mockWorktreeManager) GCClosedWorktrees(_ context.Context, _ func(string) bool) error {
+func (m *mockWorktreeManager) GCClosedWorktrees(ctx context.Context, isBeadClosed func(string) bool) error {
+	m.mu.Lock()
+	fn := m.gcClosedFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, isBeadClosed)
+	}
 	return nil
 }
 
@@ -469,6 +491,31 @@ func (m *mockWorktreeManager) Exists(ctx context.Context, path string) bool {
 		return fn(ctx, path)
 	}
 	return true // default: path is valid (preserves existing test behaviour)
+}
+
+func (m *mockWorktreeManager) CurrentBranch(ctx context.Context, path string) (string, error) {
+	m.mu.Lock()
+	fn := m.currentBranchFn
+	if fn == nil {
+		for beadID, worktree := range m.created {
+			if worktree == path {
+				m.mu.Unlock()
+				return protocol.BranchPrefix + beadID, nil
+			}
+		}
+	}
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, path)
+	}
+	name := filepath.Base(path)
+	if strings.HasPrefix(name, "worktree-") {
+		return protocol.BranchPrefix + strings.TrimPrefix(name, "worktree-"), nil
+	}
+	if strings.HasPrefix(name, "wt-") {
+		return protocol.BranchPrefix + "oro-" + strings.TrimPrefix(name, "wt-"), nil
+	}
+	return "", fmt.Errorf("current branch for %s not configured", path)
 }
 
 func (m *mockWorktreeManager) RebaseOnto(_ context.Context, _, _ string) error {
@@ -833,6 +880,18 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *fakeBeadStore, *mockWorktree
 	// Use a short escalation retry interval so loop-panic tests don't wait 2 minutes.
 	d.escalationRetryInterval = 50 * time.Millisecond
 	return d, beadSrc, wtMgr, esc, gitRunner, spawnMock
+}
+
+func TestNewUsesOroHomeForPanesDir(t *testing.T) {
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	want := filepath.Join(oroHome, "panes")
+	if d.panesDir != want {
+		t.Fatalf("panesDir = %q, want %q", d.panesDir, want)
+	}
 }
 
 // startDispatcher starts the dispatcher in the background and returns a cancel func.
@@ -2206,15 +2265,13 @@ FAIL oro/pkg/dispatcher`
 	if got := eventCount(t, d.db, "qg_infra_incident_reused"); got != 1 {
 		t.Fatalf("expected repeated cross-bead fingerprint to create/reuse infra incident, got %d", got)
 	}
-	removed := false
 	for _, path := range wtMgr.removed {
 		if path == "/tmp/current-worktree" {
-			removed = true
-			break
+			t.Fatalf("pre-merge QG failure should preserve worktree, removed=%v", wtMgr.removed)
 		}
 	}
-	if !removed {
-		t.Fatalf("pre-merge QG failure should still clean up worktree, removed=%v", wtMgr.removed)
+	if got := eventCount(t, d.db, "pre_merge_qg_work_preserved"); got != 1 {
+		t.Fatalf("expected pre_merge_qg_work_preserved event, got %d", got)
 	}
 	var class, decision string
 	if err := d.db.QueryRowContext(ctx,
@@ -4255,6 +4312,55 @@ func TestHandleHandoff_NilPayload(t *testing.T) {
 	}
 }
 
+func TestHandleHandoff_EmptyBeadIDRejected(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	d.handleHandoff(ctx, "w1", protocol.Message{
+		Type:    protocol.MsgHandoff,
+		Handoff: &protocol.HandoffPayload{WorkerID: "w1"},
+	})
+	if eventCount(t, d.db, "handoff") != 0 {
+		t.Fatal("expected no handoff event for empty bead ID")
+	}
+	if eventCount(t, d.db, "handoff_rejected") != 1 {
+		t.Fatal("expected handoff_rejected event for empty bead ID")
+	}
+}
+
+func TestHandleHandoff_NilBeadDetailDoesNotPanic(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const beadID = "bead-nil-detail"
+	const workerID = "w-nil-detail"
+	beadSrc.shownNil = map[string]bool{beadID: true}
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+	go drainConn(clientConn)
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:       workerID,
+		conn:     serverConn,
+		state:    protocol.WorkerBusy,
+		beadID:   beadID,
+		worktree: "/tmp/bead-nil-detail",
+		lastSeen: d.nowFunc(),
+	}
+	d.mu.Unlock()
+
+	d.handleHandoff(ctx, workerID, protocol.Message{
+		Type:    protocol.MsgHandoff,
+		Handoff: &protocol.HandoffPayload{BeadID: beadID, WorkerID: workerID},
+	})
+
+	d.mu.Lock()
+	_, hasPending := d.pendingHandoffs[beadID]
+	d.mu.Unlock()
+	if !hasPending {
+		t.Fatal("expected pending handoff despite nil bead detail")
+	}
+}
+
 func TestHandleReadyForReview_NilPayload(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
@@ -4762,7 +4868,7 @@ func TestHandleDone_EpicDecompositionCompletesAssignmentAndReopensEpic(t *testin
 func TestHandleDone_TypeChangedToEpic(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("skips merge and cleans up when type changed to epic", func(t *testing.T) {
+	t.Run("skips merge and quarantines work when type changed to epic", func(t *testing.T) {
 		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
 
 		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
@@ -4815,17 +4921,15 @@ func TestHandleDone_TypeChangedToEpic(t *testing.T) {
 			t.Error("expected no merge when bead type changed to epic mid-flight")
 		}
 
-		// removeWorktreeAndClearTracking must have removed the worktree.
-		waitFor(t, func() bool {
-			wtMgr.mu.Lock()
-			defer wtMgr.mu.Unlock()
-			for _, p := range wtMgr.removed {
-				if p == worktree {
-					return true
-				}
-			}
-			return false
-		}, 2*time.Second)
+		wtMgr.mu.Lock()
+		removed := append([]string(nil), wtMgr.removed...)
+		wtMgr.mu.Unlock()
+		if len(removed) != 0 {
+			t.Fatalf("type change has no merge proof; worktree should be preserved, removed=%v", removed)
+		}
+		if eventCount(t, d.db, "recovery_work_quarantined") == 0 {
+			t.Fatalf("expected recovery_work_quarantined event")
+		}
 	})
 
 	t.Run("falls through to normal merge when Show returns error", func(t *testing.T) {
@@ -5602,7 +5706,7 @@ func TestDispatcherShutdownOpsCleanup(t *testing.T) {
 	}
 }
 
-func TestDispatcherShutdownWorktreeCleanup(t *testing.T) {
+func TestDispatcherShutdownPreservesWorktrees(t *testing.T) {
 	db := newTestDB(t)
 	gitRunner := &mockGitRunner{}
 	merger := merge.NewCoordinator(gitRunner)
@@ -5664,20 +5768,27 @@ func TestDispatcherShutdownWorktreeCleanup(t *testing.T) {
 	// Trigger shutdown
 	cancel()
 
-	// Wait for worktrees to be removed
+	// Wait for active assignment rows to be requeued, while worktrees stay
+	// available for restart recovery.
 	waitFor(t, func() bool {
-		wtMgr.mu.Lock()
-		n := len(wtMgr.removed)
-		wtMgr.mu.Unlock()
-		return n >= 2
+		var requeued int
+		_ = d.db.QueryRow(`SELECT COUNT(*) FROM assignments WHERE status='requeued'`).Scan(&requeued)
+		return requeued >= 2
 	}, 2*time.Second)
+
+	wtMgr.mu.Lock()
+	removed := append([]string(nil), wtMgr.removed...)
+	wtMgr.mu.Unlock()
+	if len(removed) != 0 {
+		t.Fatalf("shutdown should preserve active worktrees, removed=%v", removed)
+	}
 }
 
-func TestShutdown_WorktreesRemovedAfterWorkerStop(t *testing.T) {
+func TestShutdown_SendsPrepareBeforePreservingWorktrees(t *testing.T) {
 	// This test verifies that during shutdown, PREPARE_SHUTDOWN is sent to
-	// workers BEFORE worktrees are removed. Previously, shutdownCleanup()
-	// removed worktrees first, causing active workers to crash when their
-	// working directories disappeared.
+	// workers and active worktrees are preserved. Previously, shutdownCleanup()
+	// removed worktrees, causing active workers to crash when their working
+	// directories disappeared.
 
 	db := newTestDB(t)
 	gitRunner := &mockGitRunner{}
@@ -5737,8 +5848,6 @@ func TestShutdown_WorktreesRemovedAfterWorkerStop(t *testing.T) {
 	}
 	beadSrc.SetBeads(nil)
 
-	// Track whether PREPARE_SHUTDOWN was sent before worktree removal.
-	// We read messages from both worker connections in goroutines.
 	var shutdownSent atomic.Int32
 
 	go func() {
@@ -5754,33 +5863,21 @@ func TestShutdown_WorktreesRemovedAfterWorkerStop(t *testing.T) {
 		}
 	}()
 
-	// Install a removeFn that checks ordering: by the time Remove is called,
-	// PREPARE_SHUTDOWN should already have been sent to workers.
-	var worktreeRemovedBeforeShutdown atomic.Bool
-	wtMgr.mu.Lock()
-	wtMgr.removeFn = func(_ context.Context, _ string) error {
-		// If PREPARE_SHUTDOWN hasn't been sent to ANY worker yet, flag the error.
-		if shutdownSent.Load() == 0 {
-			worktreeRemovedBeforeShutdown.Store(true)
-		}
-		return nil
-	}
-	wtMgr.mu.Unlock()
-
 	// Trigger shutdown.
 	cancel()
 
-	// Wait for worktrees to be removed.
+	// Wait for shutdown preparation and assignment requeue to complete.
 	waitFor(t, func() bool {
-		wtMgr.mu.Lock()
-		n := len(wtMgr.removed)
-		wtMgr.mu.Unlock()
-		return n >= 2
+		var requeued int
+		_ = d.db.QueryRow(`SELECT COUNT(*) FROM assignments WHERE status='requeued'`).Scan(&requeued)
+		return shutdownSent.Load() >= 2 && requeued >= 2
 	}, 10*time.Second)
 
-	if worktreeRemovedBeforeShutdown.Load() {
-		t.Fatal("worktrees were removed BEFORE PREPARE_SHUTDOWN was sent to workers — " +
-			"shutdown must stop workers before cleaning up worktrees")
+	wtMgr.mu.Lock()
+	removed := append([]string(nil), wtMgr.removed...)
+	wtMgr.mu.Unlock()
+	if len(removed) != 0 {
+		t.Fatalf("shutdown should not remove active worktrees, removed=%v", removed)
 	}
 }
 
@@ -8524,6 +8621,72 @@ func TestShutdownResetsInProgressBeads(t *testing.T) {
 	if status, ok := beadSrc.updated["bead-done"]; ok {
 		t.Errorf("expected completed bead to be left alone, but store update was called with status=%q", status)
 	}
+
+	var activeAssignments int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM assignments WHERE status='active'`).Scan(&activeAssignments); err != nil {
+		t.Fatalf("count active assignments after shutdown: %v", err)
+	}
+	if activeAssignments != 0 {
+		t.Fatalf("active assignments after shutdown = %d, want 0", activeAssignments)
+	}
+	if got := eventCount(t, d.db, "shutdown_assignment_requeued"); got != 2 {
+		t.Fatalf("shutdown_assignment_requeued events = %d, want 2", got)
+	}
+}
+
+func TestShutdownPreservesRequeuedWorktrees(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	d.cfg.ShutdownTimeout = 10 * time.Millisecond
+
+	const (
+		beadID   = "bead-preserve-shutdown"
+		workerID = "w-preserve-shutdown"
+		worktree = "/tmp/worktree-preserve-shutdown"
+	)
+	res, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`,
+		beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("insert assignment: %v", err)
+	}
+	assignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("assignment id: %v", err)
+	}
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         &mockConn{},
+		state:        protocol.WorkerBusy,
+		assignmentID: assignmentID,
+		beadID:       beadID,
+		worktree:     worktree,
+	}
+	d.worktreeByBead[beadID] = worktree
+	d.mu.Unlock()
+
+	d.shutdownSequence()
+
+	if got := beadSrc.updated[beadID]; got != "open" {
+		t.Fatalf("bead status update = %q, want open", got)
+	}
+	var status string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&status); err != nil {
+		t.Fatalf("query assignment status: %v", err)
+	}
+	if status != "requeued" {
+		t.Fatalf("assignment status = %q, want requeued", status)
+	}
+	wtMgr.mu.Lock()
+	removed := append([]string(nil), wtMgr.removed...)
+	wtMgr.mu.Unlock()
+	for _, path := range removed {
+		if path == worktree {
+			t.Fatalf("shutdown removed requeued worktree %q; removed=%v", worktree, removed)
+		}
+	}
 }
 
 // TestShutdownResetBeadUsesSelectedStore verifies that shutdownResetActiveBeads
@@ -8576,6 +8739,13 @@ func TestShutdownResetBeadUsesSelectedStore(t *testing.T) {
 	}
 	if got := beadSrc.updated["bead-root-check"]; got != "open" {
 		t.Fatalf("selected store update for bead-root-check = %q, want open", got)
+	}
+	var assignmentStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE bead_id='bead-root-check'`).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("query assignment status: %v", err)
+	}
+	if assignmentStatus == "active" {
+		t.Fatalf("assignment status remains active after shutdown reset")
 	}
 }
 
@@ -9016,7 +9186,7 @@ func TestMergeAndComplete_RunsPreMergeQG(t *testing.T) {
 		}
 	})
 
-	t.Run("QG fail - merge aborted, bead reset to open, worktree cleaned up", func(t *testing.T) {
+	t.Run("QG fail - merge aborted, bead reset to open, worktree preserved", func(t *testing.T) {
 		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
 		ctx := context.Background()
 		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
@@ -9070,31 +9240,26 @@ func TestMergeAndComplete_RunsPreMergeQG(t *testing.T) {
 			t.Errorf("beads.Update(%q) status = %q, want \"open\"", beadID, status)
 		}
 
-		// Worktree cleaned up.
+		// Worktree preserved for retry/inspection.
 		wtMgr.mu.Lock()
 		removed := append([]string(nil), wtMgr.removed...)
 		wtMgr.mu.Unlock()
-		foundRemoved := false
 		for _, r := range removed {
 			if r == worktree {
-				foundRemoved = true
-				break
+				t.Errorf("expected worktree %q to be preserved on QG fail, removed=%v", worktree, removed)
 			}
 		}
-		if !foundRemoved {
-			t.Errorf("expected worktrees.Remove(%q) on QG fail, got removed=%v", worktree, removed)
-		}
 
-		// worktreeByBead cleared.
+		// worktreeByBead kept so the next assignment can reuse the failed work.
 		d.mu.Lock()
 		trackedPath := d.worktreeByBead[beadID]
 		d.mu.Unlock()
-		if trackedPath != "" {
-			t.Errorf("worktreeByBead[%q] = %q, want empty after QG fail cleanup", beadID, trackedPath)
+		if trackedPath != worktree {
+			t.Errorf("worktreeByBead[%q] = %q, want %q after QG fail preservation", beadID, trackedPath, worktree)
 		}
 	})
 
-	t.Run("QG error (script missing) - escalate EscStuck, abort merge, cleanup worktree", func(t *testing.T) {
+	t.Run("QG error (script missing) - escalate EscStuck, abort merge, preserve worktree", func(t *testing.T) {
 		d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)
 		ctx := context.Background()
 		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
@@ -9149,19 +9314,17 @@ func TestMergeAndComplete_RunsPreMergeQG(t *testing.T) {
 			t.Errorf("expected EscStuck escalation on QG error, got msgs=%v", msgs)
 		}
 
-		// Worktree cleaned up.
+		// Worktree preserved.
 		wtMgr.mu.Lock()
 		removed := append([]string(nil), wtMgr.removed...)
 		wtMgr.mu.Unlock()
-		foundRemoved := false
 		for _, r := range removed {
 			if r == worktree {
-				foundRemoved = true
-				break
+				t.Errorf("expected worktree %q to be preserved on QG error, removed=%v", worktree, removed)
 			}
 		}
-		if !foundRemoved {
-			t.Errorf("expected worktrees.Remove(%q) on QG error, got removed=%v", worktree, removed)
+		if eventCount(t, d.db, "pre_merge_qg_work_preserved") == 0 {
+			t.Errorf("expected pre_merge_qg_work_preserved event on QG error")
 		}
 	})
 }
@@ -9246,6 +9409,9 @@ func TestAssignUsesRichPrompt(t *testing.T) {
 		lastSeen: d.nowFunc(),
 		encoder:  json.NewEncoder(srvConn),
 	}
+	d.mu.Lock()
+	d.workers[w.id] = w
+	d.mu.Unlock()
 
 	bead := protocol.Bead{ID: "rich-bead", Title: "Implement widget parser", Priority: 1}
 
@@ -9822,10 +9988,10 @@ func TestMergeConflict_OpsAgent_WorktreeNotDeletedBeforeSpawn(t *testing.T) {
 	}
 }
 
-// TestMergeConflictFailureCleanup verifies that when the ops merge-conflict agent
-// returns a non-Resolved verdict, the dispatcher removes the worktree, clears
-// the worktreeByBead tracking entry, and resets the bead status to "open".
-func TestMergeConflictFailureCleanup(t *testing.T) {
+// TestMergeConflictFailurePreservesWorktree verifies that when the ops
+// merge-conflict agent returns a non-Resolved verdict, the dispatcher
+// quarantines the worktree/branch instead of deleting evidence.
+func TestMergeConflictFailurePreservesWorktree(t *testing.T) {
 	d, beadSrc, wtMgr, _, gitRunner, spawnMock := newTestDispatcher(t)
 
 	// Configure git runner to return conflict on rebase
@@ -9869,41 +10035,26 @@ func TestMergeConflictFailureCleanup(t *testing.T) {
 		return eventCount(t, d.db, "merge_conflict_failed") > 0
 	}, 3*time.Second)
 
-	// Verify worktree was removed
+	// Verify worktree was preserved and quarantined.
 	expectedWorktree := "/tmp/worktree-" + beadID
-	waitFor(t, func() bool {
-		wtMgr.mu.Lock()
-		defer wtMgr.mu.Unlock()
-		for _, p := range wtMgr.removed {
-			if p == expectedWorktree {
-				return true
-			}
-		}
-		return false
-	}, 2*time.Second)
-
 	wtMgr.mu.Lock()
 	removed := make([]string, len(wtMgr.removed))
 	copy(removed, wtMgr.removed)
 	wtMgr.mu.Unlock()
-
-	found := false
 	for _, p := range removed {
 		if p == expectedWorktree {
-			found = true
-			break
+			t.Fatalf("merge conflict failure has no merge proof; worktree should be preserved, removed=%v", removed)
 		}
 	}
-	if !found {
-		t.Errorf("expected worktree %q to be removed, removed: %v", expectedWorktree, removed)
+	if eventCount(t, d.db, "recovery_work_quarantined") == 0 {
+		t.Fatalf("expected recovery_work_quarantined event")
 	}
 
-	// Verify worktreeByBead tracking was cleared
 	d.mu.Lock()
-	_, trackingExists := d.worktreeByBead[beadID]
+	tracked := d.worktreeByBead[beadID]
 	d.mu.Unlock()
-	if trackingExists {
-		t.Error("expected worktreeByBead[beadID] to be cleared after merge conflict failure")
+	if tracked != expectedWorktree {
+		t.Fatalf("worktreeByBead[%q] = %q, want %q", beadID, tracked, expectedWorktree)
 	}
 
 	// Verify bead was reset to "open"
@@ -11077,8 +11228,8 @@ func TestRestoreStateOnStartup(t *testing.T) {
 	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE bead_id='oro-quarantine'`).Scan(&quarantineStatus); err != nil {
 		t.Fatalf("query quarantine status: %v", err)
 	}
-	if quarantineStatus != "completed" {
-		t.Fatalf("quarantined assignment status = %q, want completed", quarantineStatus)
+	if quarantineStatus != "quarantined" {
+		t.Fatalf("quarantined assignment status = %q, want quarantined", quarantineStatus)
 	}
 }
 
@@ -11091,6 +11242,12 @@ func TestStartupDoesNotPruneRecoverableAgentBranch(t *testing.T) {
 	wtMgr.existsFn = func(_ context.Context, path string) bool { return path == worktree }
 	wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
 		return branch == "agent/oro-recover", nil
+	}
+	wtMgr.currentBranchFn = func(_ context.Context, path string) (string, error) {
+		if path == worktree {
+			return "agent/oro-recover", nil
+		}
+		return "", fmt.Errorf("unexpected worktree %s", path)
 	}
 
 	d.shutdownRunner = &mockCommandRunner{
@@ -11133,6 +11290,12 @@ func TestStartupRecoversFromActiveAssignmentBranchState(t *testing.T) {
 	wtMgr.existsFn = func(_ context.Context, path string) bool { return path == worktree }
 	wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
 		return branch == "agent/oro-recover", nil
+	}
+	wtMgr.currentBranchFn = func(_ context.Context, path string) (string, error) {
+		if path == worktree {
+			return "agent/oro-recover", nil
+		}
+		return "", fmt.Errorf("unexpected worktree %s", path)
 	}
 
 	if _, err := d.db.ExecContext(ctx,
@@ -11198,8 +11361,8 @@ func TestStartupQuarantinesInconsistentRecoveryState(t *testing.T) {
 	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE bead_id='oro-bad'`).Scan(&status); err != nil {
 		t.Fatalf("query status: %v", err)
 	}
-	if status != "completed" {
-		t.Fatalf("quarantined assignment status = %q, want completed", status)
+	if status != "quarantined" {
+		t.Fatalf("quarantined assignment status = %q, want quarantined", status)
 	}
 
 	var eventCount int
@@ -11220,6 +11383,12 @@ func TestResetOrphanedBeadsOnlyReopensDispatcherOwnedClaims(t *testing.T) {
 	wtMgr.existsFn = func(_ context.Context, path string) bool { return path == worktree }
 	wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
 		return branch == "agent/oro-owned", nil
+	}
+	wtMgr.currentBranchFn = func(_ context.Context, path string) (string, error) {
+		if path == worktree {
+			return "agent/oro-owned", nil
+		}
+		return "", fmt.Errorf("unexpected worktree %s", path)
 	}
 
 	if _, err := d.db.ExecContext(ctx,
@@ -11267,6 +11436,12 @@ func TestStartupReconciliationEmitsRecoverySummary(t *testing.T) {
 	wtMgr.existsFn = func(_ context.Context, path string) bool { return path == worktree }
 	wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
 		return branch == "agent/oro-owned", nil
+	}
+	wtMgr.currentBranchFn = func(_ context.Context, path string) (string, error) {
+		if path == worktree {
+			return "agent/oro-owned", nil
+		}
+		return "", fmt.Errorf("unexpected worktree %s", path)
 	}
 
 	if _, err := d.db.ExecContext(ctx,
@@ -14324,6 +14499,22 @@ func TestStatusJSONDoesNotCountClosedQGIncidentBeads(t *testing.T) {
 	}
 	if len(status.QGFailureTopFingerprints) != 0 {
 		t.Fatalf("top fingerprints = %v, want none", status.QGFailureTopFingerprints)
+	}
+	if status.Health == nil {
+		t.Fatal("status health missing")
+	}
+	var churnFinding *factoryhealth.Finding
+	for i := range status.Health.Findings {
+		if status.Health.Findings[i].Code == factoryhealth.FindingQGIncidentIncrease {
+			churnFinding = &status.Health.Findings[i]
+			break
+		}
+	}
+	if churnFinding == nil {
+		t.Fatalf("missing qg incident increase finding in health: %+v", status.Health.Findings)
+	}
+	if churnFinding.Fingerprint != incident.Fingerprint {
+		t.Fatalf("health qg churn fingerprint = %q, want %q", churnFinding.Fingerprint, incident.Fingerprint)
 	}
 
 	var dbStatus string
@@ -20256,7 +20447,7 @@ func TestDispatcherBranchesFromMainNotStaleAgent(t *testing.T) {
 }
 
 // TestPruneStaleAgentBranches_DeletesAllAtStartup verifies that the startup
-// prune path deletes every agent/* branch returned by `git branch --list agent/*`,
+// prune path safe-deletes every merged agent/* branch returned by `git branch --list agent/*`,
 // including the one marked as current with a "*" prefix. This covers AC part (a):
 // "oro start: delete any pre-existing agent/* branches at startup".
 func TestPruneStaleAgentBranches_DeletesAllAtStartup(t *testing.T) {
@@ -20282,7 +20473,7 @@ func TestPruneStaleAgentBranches_DeletesAllAtStartup(t *testing.T) {
 			case "--list":
 				// Simulate two stale agent branches; one is the currently checked-out branch.
 				return []byte("  agent/oro-foo\n* agent/oro-bar\n"), nil
-			case "-D":
+			case "-d":
 				// Last arg is the branch to delete.
 				mu.Lock()
 				deleted = append(deleted, args[len(args)-1])
@@ -20362,7 +20553,7 @@ func TestPruneStaleAgentBranches_StripsPlusPrefix(t *testing.T) {
 				// Simulate three stale agent branches with different prefixes:
 				// no prefix, * (current), + (checked out in another worktree).
 				return []byte("  agent/oro-z\n* agent/oro-y\n+ agent/oro-x\n"), nil
-			case "-D":
+			case "-d":
 				// Last arg is the branch to delete.
 				mu.Lock()
 				deleted = append(deleted, args[len(args)-1])

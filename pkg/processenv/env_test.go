@@ -1,6 +1,9 @@
 package processenv_test
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"oro/pkg/processenv"
@@ -45,7 +48,73 @@ func TestForWorkdirNormalizesPWDAndStripsGitEnv(t *testing.T) {
 
 func TestForWorkdirAddsPWDWhenMissing(t *testing.T) {
 	got := processenv.ForWorkdir([]string{"PATH=/bin"}, "/assigned/worktree")
-	if len(got) != 2 || got[1] != "PWD=/assigned/worktree" {
+	if envMap(got)["PWD"] != "/assigned/worktree" {
 		t.Fatalf("ForWorkdir() = %v, want PWD appended", got)
 	}
+}
+
+func TestForWorkdirIsolatesCacheAndTempOutsideWorktree(t *testing.T) {
+	worktree := filepath.Join(t.TempDir(), "worktree")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+
+	got := processenv.ForWorkdir([]string{
+		"PATH=/bin",
+		"PWD=/wrong/root",
+		"GOCACHE=" + filepath.Join(worktree, ".gocache"),
+		"GOLANGCI_LINT_CACHE=" + filepath.Join(worktree, ".cache", "golangci-lint"),
+		"UV_CACHE_DIR=" + filepath.Join(worktree, ".cache", "uv"),
+		"TMPDIR=" + filepath.Join(worktree, ".tmp"),
+		"TMP=" + filepath.Join(worktree, ".tmp"),
+		"TEMP=" + filepath.Join(worktree, ".tmp"),
+		"GOMODCACHE=" + filepath.Join(worktree, ".gomodcache"),
+	}, worktree)
+	env := envMap(got)
+
+	for _, key := range []string{"GOCACHE", "GOLANGCI_LINT_CACHE", "UV_CACHE_DIR", "TMPDIR", "TMP", "TEMP", "GOMODCACHE"} {
+		value := env[key]
+		if value == "" {
+			t.Fatalf("%s not set in %v", key, got)
+		}
+		if pathInside(value, worktree) {
+			t.Fatalf("%s=%q still points inside worktree %q", key, value, worktree)
+		}
+	}
+	if _, err := os.Stat(env["TMPDIR"]); err != nil {
+		t.Fatalf("TMPDIR %q was not created: %v", env["TMPDIR"], err)
+	}
+}
+
+func TestForWorkdirPreservesExternalGOMODCACHE(t *testing.T) {
+	worktree := filepath.Join(t.TempDir(), "worktree")
+	externalModCache := filepath.Join(t.TempDir(), "gomodcache")
+
+	got := processenv.ForWorkdir([]string{
+		"PATH=/bin",
+		"GOMODCACHE=" + externalModCache,
+	}, worktree)
+	env := envMap(got)
+	if env["GOMODCACHE"] != externalModCache {
+		t.Fatalf("GOMODCACHE = %q, want preserved external value %q", env["GOMODCACHE"], externalModCache)
+	}
+}
+
+func envMap(env []string) map[string]string {
+	out := make(map[string]string, len(env))
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func pathInside(path, root string) bool {
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (!strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && rel != "..")
 }

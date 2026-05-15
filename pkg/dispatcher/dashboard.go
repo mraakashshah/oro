@@ -134,8 +134,8 @@ func (d *Dispatcher) HealthError() error {
 	if err != nil {
 		return err
 	}
-	if h.Daemon.State != "running" {
-		return fmt.Errorf("daemon state: %s", h.Daemon.State)
+	if h.State != "healthy" && h.State != "degraded" {
+		return fmt.Errorf("factory health state: %s", h.State)
 	}
 	return nil
 }

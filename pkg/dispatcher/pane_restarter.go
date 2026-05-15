@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ErrNoCmdStr is returned by TmuxPaneRestarter.Restart when cmdStr is empty.
@@ -12,6 +13,11 @@ var ErrNoCmdStr = errors.New("cmdStr is required")
 // PaneRestarter restarts a named tmux pane.
 type PaneRestarter interface {
 	Restart(role string) error
+}
+
+// PaneLivenessChecker reports whether a pane is still running the runtime CLI.
+type PaneLivenessChecker interface {
+	Alive(ctx context.Context, role string) bool
 }
 
 // TmuxPaneRestarter implements PaneRestarter by respawning a tmux pane with a
@@ -71,4 +77,28 @@ func (r *TmuxPaneRestarter) Restart(role string) error {
 		return fmt.Errorf("tmux respawn-pane %s: %w", target, err)
 	}
 	return nil
+}
+
+// Alive reports whether the tmux pane exists, is not dead, and has not fallen
+// back to a shell after the runtime process exited.
+func (r *TmuxPaneRestarter) Alive(ctx context.Context, role string) bool {
+	target := r.sessionName + ":" + role
+	out, err := r.runner.Run(ctx, "tmux", "display-message", "-p", "-t", target, "#{pane_dead} #{pane_current_command}")
+	if err != nil {
+		return false
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) < 2 || fields[0] != "0" {
+		return false
+	}
+	return !isShellCommand(fields[1])
+}
+
+func isShellCommand(cmd string) bool {
+	switch strings.TrimSpace(cmd) {
+	case "sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh":
+		return true
+	default:
+		return false
+	}
 }

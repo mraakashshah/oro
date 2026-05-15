@@ -1,4 +1,4 @@
-package dispatcher //nolint:testpackage // white-box: asserts releasePriorAssignment cleans up + preserves external close
+package dispatcher //nolint:testpackage // white-box: asserts releasePriorAssignment preserves work + external close
 
 import (
 	"context"
@@ -7,14 +7,10 @@ import (
 	"oro/pkg/protocol"
 )
 
-// TestReleasePriorAssignmentCleansWorktreeAndBranch asserts that when a
-// worker is reassigned away from a bead, the prior bead's worktree is
-// removed and its agent branch is deleted. Otherwise the orphan branch can
-// be picked up later (e.g. by a re-assignment cycle) and merged on top of
-// an already-closed bead — exactly what oro-jev9 was observed doing live.
-//
-// Regression: oro-wp74.
-func TestReleasePriorAssignmentCleansWorktreeAndBranch(t *testing.T) {
+// TestReleasePriorAssignmentPreservesWorktreeAndBranch asserts that when a
+// worker is reassigned away from a bead, the prior assignment is requeued and
+// its worktree/agent branch remain available for inspection or retry.
+func TestReleasePriorAssignmentPreservesWorktreeAndBranch(t *testing.T) {
 	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
@@ -44,34 +40,30 @@ func TestReleasePriorAssignmentCleansWorktreeAndBranch(t *testing.T) {
 	deletedBranches := append([]string(nil), wtMgr.deletedBranches...)
 	wtMgr.mu.Unlock()
 
-	foundRemove := false
-	for _, p := range removed {
-		if p == priorWorktree {
-			foundRemove = true
-			break
-		}
+	if len(removed) != 0 {
+		t.Fatalf("prior worktree should be preserved, removed=%v", removed)
 	}
-	if !foundRemove {
-		t.Fatalf("expected prior worktree %q to be removed, removed=%v", priorWorktree, removed)
+	if len(deletedBranches) != 0 {
+		t.Fatalf("prior branch should be preserved, deletedBranches=%v", deletedBranches)
 	}
 
-	wantBranch := protocol.BranchPrefix + priorID
-	foundDelete := false
-	for _, b := range deletedBranches {
-		if b == wantBranch {
-			foundDelete = true
-			break
-		}
+	var status string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, priorAssignmentID).Scan(&status); err != nil {
+		t.Fatalf("query assignment status: %v", err)
 	}
-	if !foundDelete {
-		t.Fatalf("expected prior branch %q to be deleted, deletedBranches=%v", wantBranch, deletedBranches)
+	if status != "requeued" {
+		t.Fatalf("assignment status = %q, want requeued", status)
 	}
 
 	d.mu.Lock()
-	_, stillTracked := d.worktreeByBead[priorID]
+	tracked := d.worktreeByBead[priorID]
 	d.mu.Unlock()
-	if stillTracked {
-		t.Fatalf("worktreeByBead[%q] must be cleared after release", priorID)
+	if tracked != priorWorktree {
+		t.Fatalf("worktreeByBead[%q] = %q, want %q", priorID, tracked, priorWorktree)
+	}
+
+	if eventCount(t, d.db, "worker_abandon_work_preserved") == 0 {
+		t.Fatal("expected worker_abandon_work_preserved event")
 	}
 }
 

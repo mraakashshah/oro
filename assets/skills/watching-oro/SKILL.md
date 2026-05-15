@@ -29,30 +29,26 @@ make build && ./oro start --workers 3 --detach
 
 **No sleep loops.** Use event-driven techniques:
 
-### Outcome-based autopilot
+### Supported CLI monitor
 
-For unattended monitoring, start the installed autopilot monitor. It treats
-fresh heartbeats as liveness only; throughput is healthy only when tasks close
-or the queue shrinks within a bounded window.
+For unattended monitoring, start the supported Oro monitor. It treats fresh
+heartbeats as liveness only; throughput is healthy only when tasks close or the
+queue shrinks within a bounded window.
 
 ```bash
-tmux -L oro-autopilot new-session -d -s oro-autopilot \
-  'python3 ~/.oro/.claude/skills/watching-oro/scripts/oro_autopilot_monitor.py \
-     --oro "$(command -v oro)" \
-     --repo "$PWD" \
-     --target 2 \
-     --max-workers 2'
+oro monitor --target 2 --max-workers 2 --interval 60s
 ```
 
-Run the autopilot on the `oro-autopilot` tmux socket, not the default socket.
-Factory restarts may kill the default tmux server, and the monitor must survive
-the restart it requested. Inspect it with `tmux -L oro-autopilot attach -t
-oro-autopilot`.
+Default mode is observe-only. Add `--act` only when the operator wants bounded
+recovery actions:
 
-The monitor logs `THROUGHPUT_STALL` when workers stay busy without productive
-closures for repeated checks, logs `QG_INCIDENT_INCREASE` when new QG incidents
-appear, captures ready/closed/log snapshots, scales back to the target worker
-count, and restarts the factory if throughput stalls persist.
+```bash
+oro monitor --target 2 --max-workers 2 --interval 60s --act
+```
+
+The old skill-local Python autopilot remains only as historical context; prefer
+`oro health`, `oro status --json`, and `oro monitor` for supported factory
+health policy.
 
 ### Tail-based observation loop
 
