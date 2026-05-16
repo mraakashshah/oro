@@ -2660,14 +2660,8 @@ func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) 
 		return
 	}
 
-	// Fetch the epic's acceptance criteria to look for an executable Cmd:.
-	detail, showErr := d.beads.Show(ctx, epicID)
-	if showErr != nil {
-		_ = d.logEvent(ctx, "epic_ac_fetch_failed", "dispatcher", epicID, workerID,
-			fmt.Sprintf(`{"error":%q}`, showErr.Error()))
-		// Fall back to count-based close so a transient Show error doesn't block.
-		// Use DefaultBranch since we have no detail metadata to inspect.
-		d.completeEpicClose(ctx, epicID, workerID, "All children completed (AC fetch failed)", d.cfg.DefaultBranch)
+	detail, ok := d.fetchEpicCloseDetail(ctx, epicID, workerID)
+	if !ok {
 		return
 	}
 
@@ -2711,6 +2705,26 @@ func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) 
 		Cmd:    cmd,
 		Output: output,
 	})
+}
+
+func (d *Dispatcher) fetchEpicCloseDetail(ctx context.Context, epicID, workerID string) (*protocol.Bead, bool) {
+	// Fetch the epic's acceptance criteria to look for an executable Cmd:.
+	detail, showErr := d.beads.Show(ctx, epicID)
+	if showErr != nil {
+		_ = d.logEvent(ctx, "epic_ac_fetch_failed", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"error":%q}`, showErr.Error()))
+		// Fall back to count-based close so a transient Show error doesn't block.
+		// Use DefaultBranch since we have no detail metadata to inspect.
+		d.completeEpicClose(ctx, epicID, workerID, "All children completed (AC fetch failed)", d.cfg.DefaultBranch)
+		return nil, false
+	}
+	if detail == nil {
+		_ = d.logEvent(ctx, "epic_ac_fetch_failed", "dispatcher", epicID, workerID,
+			`{"error":"show returned nil epic"}`)
+		d.completeEpicClose(ctx, epicID, workerID, "All children completed (AC fetch failed)", d.cfg.DefaultBranch)
+		return nil, false
+	}
+	return detail, true
 }
 
 // ffMergeEpicBranch merges the epic branch into targetBranch and deletes it.
@@ -2952,7 +2966,7 @@ func (d *Dispatcher) shutdownWorkerForHandoff(workerID string) workerAssignmentS
 func (d *Dispatcher) suppressScaleDownHandoff(ctx context.Context, workerID, beadID string) bool {
 	d.mu.Lock()
 	w, ok := d.workers[workerID]
-	suppress := ok && w.shutdownReason == shutdownReasonScaleDown
+	suppress := ok && w != nil && w.shutdownReason == shutdownReasonScaleDown
 	d.mu.Unlock()
 	if !suppress {
 		return false
@@ -2993,9 +3007,12 @@ func (d *Dispatcher) handleHandoffExhaustion(ctx context.Context, beadID, worker
 		ParentID:           beadID,
 		AcceptanceCriteria: parentAC,
 	})
-	if createErr != nil {
+	switch {
+	case createErr != nil:
 		_ = d.logEvent(ctx, "continuation_bead_create_failed", "dispatcher", beadID, workerID, createErr.Error())
-	} else {
+	case created == nil:
+		_ = d.logEvent(ctx, "continuation_bead_create_failed", "dispatcher", beadID, workerID, "bead store returned nil continuation bead")
+	default:
 		_ = d.logEvent(ctx, "continuation_bead_created", "dispatcher", beadID, workerID,
 			fmt.Sprintf(`{"new_bead_id":%q}`, created.ID))
 	}
@@ -3426,7 +3443,7 @@ func (d *Dispatcher) reviewingWorkerMatches(workerID, beadID string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	w, ok := d.workers[workerID]
-	return ok && w.beadID == beadID && w.state == protocol.WorkerReviewing
+	return ok && w != nil && w.beadID == beadID && w.state == protocol.WorkerReviewing
 }
 
 func (d *Dispatcher) handleReviewBlocked(ctx context.Context, workerID, beadID string, result ops.Result) {
@@ -5506,7 +5523,7 @@ func (d *Dispatcher) assignmentReservationHeld(workerID, beadID string) bool {
 
 func (d *Dispatcher) assignmentReservationHeldLocked(workerID, beadID string) bool {
 	w, ok := d.workers[workerID]
-	return ok && w.state == protocol.WorkerReserved && w.beadID == beadID
+	return ok && w != nil && w.state == protocol.WorkerReserved && w.beadID == beadID
 }
 
 func (d *Dispatcher) attachAssignmentToReservation(workerID, beadID string, assignmentID int64, worktree, baseBranch, targetBranch, epicID string, isEpicDecomp bool) bool {
@@ -5516,6 +5533,9 @@ func (d *Dispatcher) attachAssignmentToReservation(workerID, beadID string, assi
 		return false
 	}
 	w := d.workers[workerID]
+	if w == nil {
+		return false
+	}
 	w.assignmentID = assignmentID
 	w.worktree = worktree
 	w.baseBranch = baseBranch

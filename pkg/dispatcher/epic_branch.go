@@ -41,6 +41,9 @@ func resolveEpicBranch(ctx context.Context, beads beadstore.Store, parentID, def
 		if showErr != nil {
 			return defaultBranch, "", fmt.Errorf("resolveEpicBranch: show %q: %w", current, showErr)
 		}
+		if detail == nil {
+			return defaultBranch, "", fmt.Errorf("resolveEpicBranch: show %q returned nil bead", current)
+		}
 
 		if detail.Type == "epic" {
 			return protocol.EpicBranchPrefix + current, current, nil

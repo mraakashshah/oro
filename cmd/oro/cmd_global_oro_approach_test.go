@@ -81,6 +81,32 @@ func TestRunGlobalOroApproach_CopiesSkillsExcludingBlocked(t *testing.T) {
 	}
 }
 
+func TestUpdateGlobalSettingsTreatsJSONNullAsEmptyObject(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := agentAssetsConfig{
+		settingsPath: filepath.Join(tmp, "settings.json"),
+	}
+	if err := os.WriteFile(cfg.settingsPath, []byte("null"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := updateGlobalSettings(cfg, os.Stdout); err != nil {
+		t.Fatalf("updateGlobalSettings: %v", err)
+	}
+
+	data, err := os.ReadFile(cfg.settingsPath)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	var settings map[string]json.RawMessage
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("settings JSON invalid: %v", err)
+	}
+	if _, ok := settings["hooks"]; !ok {
+		t.Fatalf("settings missing hooks after null input: %s", string(data))
+	}
+}
+
 func TestRunGlobalOroApproach_CopiesPortableHooks(t *testing.T) {
 	tmp := t.TempDir()
 

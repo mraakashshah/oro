@@ -18,6 +18,9 @@ func CreateBeadGraph(ctx context.Context, store beadstore.Store, parentID string
 		if err != nil {
 			return nil, fmt.Errorf("create graph child under %s: %w", parentID, err)
 		}
+		if bead == nil {
+			return nil, fmt.Errorf("create graph child under %s: nil bead returned", parentID)
+		}
 		created = append(created, *bead)
 	}
 	return created, nil

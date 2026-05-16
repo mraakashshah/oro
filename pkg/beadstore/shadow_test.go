@@ -424,6 +424,75 @@ func TestShadowStore(t *testing.T) {
 		}
 	})
 
+	t.Run("journey operations delegate to primary", func(t *testing.T) {
+		ctx := context.Background()
+		parent := protocol.Bead{ID: "epic", Title: "epic", Type: "epic", Status: "open"}
+		child := protocol.Bead{ID: "task", Title: "task", Epic: "epic", Status: "open"}
+		primary := beadstore.NewFakeStore(parent, child)
+		secondary := beadstore.NewFakeStore(parent)
+		store := beadstore.NewShadowStore(primary, secondary)
+
+		first := beadstore.JourneyEvent{
+			Ts:    "2026-05-16T10:00:00Z",
+			Actor: "worker",
+			Event: "started",
+		}
+		second := beadstore.JourneyEvent{
+			Ts:    "2026-05-16T10:01:00Z",
+			Actor: "worker",
+			Event: "finished",
+		}
+		if err := store.AppendJourney(ctx, "task", first); err != nil {
+			t.Fatalf("AppendJourney first: %v", err)
+		}
+		if err := store.AppendJourney(ctx, "task", second); err != nil {
+			t.Fatalf("AppendJourney second: %v", err)
+		}
+
+		events, err := store.Journey(ctx, "task", time.Date(2026, 5, 16, 10, 1, 0, 0, time.UTC))
+		if err != nil {
+			t.Fatalf("Journey: %v", err)
+		}
+		if len(events) != 1 || events[0].Event != "finished" {
+			t.Fatalf("Journey returned %#v, want only finished event from primary", events)
+		}
+
+		latest, err := store.LatestJourney(ctx, "task", 2)
+		if err != nil {
+			t.Fatalf("LatestJourney: %v", err)
+		}
+		if len(latest) != 2 || latest[0].Event != "started" || latest[1].Event != "finished" {
+			t.Fatalf("LatestJourney returned %#v, want primary events in order", latest)
+		}
+
+		if err := store.TransitionPipelineStage(ctx, "task", beadstore.PipelineStage(""), beadstore.StageAssess); err != nil {
+			t.Fatalf("TransitionPipelineStage: %v", err)
+		}
+		latest, err = store.LatestJourney(ctx, "task", 1)
+		if err != nil {
+			t.Fatalf("LatestJourney after transition: %v", err)
+		}
+		if len(latest) != 1 || latest[0].Event != "pipeline_stage_changed" {
+			t.Fatalf("latest after transition = %#v, want pipeline_stage_changed event", latest)
+		}
+
+		childCount, err := store.CountChildren(ctx, "epic")
+		if err != nil {
+			t.Fatalf("CountChildren: %v", err)
+		}
+		if childCount != 1 {
+			t.Fatalf("CountChildren = %d, want primary child count 1", childCount)
+		}
+
+		secondaryEvents, err := secondary.LatestJourney(ctx, "task", 10)
+		if err != nil {
+			t.Fatalf("secondary LatestJourney: %v", err)
+		}
+		if len(secondaryEvents) != 0 {
+			t.Fatalf("secondary events = %#v, want no journey writes", secondaryEvents)
+		}
+	})
+
 	t.Run("WithReadTx passes closure errors through unwrapped", func(t *testing.T) {
 		ctx := context.Background()
 		store := beadstore.NewShadowStore(beadstore.NewFakeStore(), beadstore.NewFakeStore())

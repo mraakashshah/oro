@@ -87,6 +87,27 @@ func TestBeadDepCommandHelpExposesSubcommands(t *testing.T) {
 	}
 }
 
+type nilCreateBeadStore struct {
+	*beadstore.FakeStore
+}
+
+func (s nilCreateBeadStore) Create(context.Context, beadstore.CreateParams) (*protocol.Bead, error) {
+	return nil, nil
+}
+
+func TestCreateBeadFromParamsRejectsNilCreatedBead(t *testing.T) {
+	_, err := createBeadFromParams(context.Background(), nilCreateBeadStore{FakeStore: beadstore.NewFakeStore()}, beadstore.CreateParams{
+		Title: "nil create",
+		Type:  "task",
+	})
+	if err == nil {
+		t.Fatal("createBeadFromParams error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "nil bead") {
+		t.Fatalf("createBeadFromParams error = %v, want nil bead detail", err)
+	}
+}
+
 func TestBeadShowJSONEmitsOroNativeSchema(t *testing.T) {
 	store := beadstore.NewFakeStore(protocol.Bead{
 		ID:                 "oro-json1",

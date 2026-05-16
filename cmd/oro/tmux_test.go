@@ -1059,6 +1059,30 @@ func TestPreTrustProject(t *testing.T) {
 			t.Errorf("expected .claude.json to be created: %v", err)
 		}
 	})
+
+	t.Run("treats JSON null config as empty object", func(t *testing.T) {
+		roleDir := t.TempDir()
+		cwd := "/Users/test/proj"
+		if err := os.WriteFile(filepath.Join(roleDir, ".claude.json"), []byte("null"), 0o600); err != nil {
+			t.Fatalf("write .claude.json: %v", err)
+		}
+
+		if err := preTrustProject(roleDir, cwd); err != nil {
+			t.Fatalf("preTrustProject failed: %v", err)
+		}
+
+		data, err := os.ReadFile(filepath.Join(roleDir, ".claude.json"))
+		if err != nil {
+			t.Fatalf("read .claude.json: %v", err)
+		}
+		content := string(data)
+		if !strings.Contains(content, cwd) {
+			t.Fatalf("expected cwd %q in .claude.json, got: %s", cwd, content)
+		}
+		if !strings.Contains(content, `"hasTrustDialogAccepted":true`) && !strings.Contains(content, `"hasTrustDialogAccepted": true`) {
+			t.Fatalf("expected hasTrustDialogAccepted:true in .claude.json, got: %s", content)
+		}
+	})
 }
 
 func TestExecEnvCmdBackwardCompat(t *testing.T) {

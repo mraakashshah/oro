@@ -34,6 +34,23 @@ func mustCreateBead(t *testing.T, s *SQLiteStore, id, title string) {
 // TestV3Methods is the acceptance test for the v3 Store methods:
 // AppendJourney, Journey, LatestJourney, TransitionPipelineStage.
 func TestV3Methods(t *testing.T) {
+	t.Run("LatestJourney_no_events_returns_empty_slice", func(t *testing.T) {
+		ctx := context.Background()
+		store := newV3TestStore(t)
+		mustCreateBead(t, store, "empty", "empty bead")
+
+		events, err := store.LatestJourney(ctx, "empty", 10)
+		if err != nil {
+			t.Fatalf("LatestJourney: %v", err)
+		}
+		if events == nil {
+			t.Fatal("LatestJourney returned nil slice for successful empty result")
+		}
+		if len(events) != 0 {
+			t.Fatalf("LatestJourney returned %d events, want 0", len(events))
+		}
+	})
+
 	t.Run("AppendJourney_single_insert", func(t *testing.T) {
 		ctx := context.Background()
 		store := newV3TestStore(t)

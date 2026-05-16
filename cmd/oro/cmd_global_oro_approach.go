@@ -308,6 +308,9 @@ func updateGlobalSettings(cfg agentAssetsConfig, w io.Writer) error {
 	if err := json.Unmarshal(data, &settings); err != nil {
 		return fmt.Errorf("parse %s: %w", cfg.settingsPath, err)
 	}
+	if settings == nil {
+		settings = make(map[string]json.RawMessage)
+	}
 
 	// Build and encode the hooks section.
 	// Always use tilde notation so the commands work on any machine.

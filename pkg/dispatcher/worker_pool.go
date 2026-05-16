@@ -106,26 +106,25 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 	delete(d.pendingExternalIDs, id)
 	delete(d.pendingExternalSince, id)
 	d.upsertWorker(id, conn, managed)
-	if spawnFor {
-		d.workers[id].spawnFor = true
+	w, ok := d.workers[id]
+	if !ok || w == nil {
+		d.mu.Unlock()
+		return
 	}
-	if pendingTargetBeadID != "" {
-		d.workers[id].targetBeadID = pendingTargetBeadID
-	}
+	applyPendingWorkerRegistration(w, spawnFor, pendingTargetBeadID)
 	if d.cfg.MaxWorkers > 0 && d.liveWorkerCountLocked() > d.cfg.MaxWorkers {
-		w := d.workers[id]
 		w.markShuttingDownWithoutAssignment()
 		sendShutdownWithoutBuffering(w)
 		d.mu.Unlock()
 		return
 	}
-	if w := d.workers[id]; w.spawnFor && w.state == protocol.WorkerShuttingDown {
+	if w.spawnFor && w.state == protocol.WorkerShuttingDown {
 		w.markShuttingDownWithoutAssignment()
 		sendShutdownWithoutBuffering(w)
 		d.mu.Unlock()
 		return
 	}
-	targetBeadID := d.workers[id].targetBeadID
+	targetBeadID := w.targetBeadID
 
 	// Check for pending ralph handoffs. Spawn-for workers may only consume a
 	// handoff for their target bead; unrelated handoffs must wait for a general
@@ -160,12 +159,28 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 	}
 }
 
+func applyPendingWorkerRegistration(w *trackedWorker, spawnFor bool, pendingTargetBeadID string) {
+	if spawnFor {
+		w.spawnFor = true
+	}
+	if pendingTargetBeadID != "" {
+		w.targetBeadID = pendingTargetBeadID
+	}
+}
+
 // assignHandoffToWorker assigns pending handoff h to the just-registered worker id.
 // Caller must hold d.mu; on return d.mu is unlocked. The function temporarily
 // releases d.mu during memory retrieval. handoffBeadID is the key for h in
 // d.pendingHandoffs.
 func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingHandoff) {
 	w := d.workers[id]
+	if w == nil {
+		if _, exists := d.pendingHandoffs[handoffBeadID]; !exists {
+			d.pendingHandoffs[handoffBeadID] = h
+		}
+		d.mu.Unlock()
+		return
+	}
 	// Phase 1: Reserve the worker — heartbeat checker skips reserved workers.
 	w.state = protocol.WorkerReserved
 	w.assignmentID = h.assignmentID
@@ -190,7 +205,7 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 
 	// Phase 2: Verify reservation still valid, then transition to Busy.
 	w, ok := d.workers[id]
-	if !ok || w.state != protocol.WorkerReserved {
+	if !ok || w == nil || w.state != protocol.WorkerReserved {
 		if _, exists := d.pendingHandoffs[handoffBeadID]; !exists {
 			d.pendingHandoffs[handoffBeadID] = h
 		}
@@ -638,6 +653,9 @@ func (d *Dispatcher) removeDeadWorkersLocked(ctx context.Context, dead []string)
 	deadWorkers = make([]workerExitInfo, 0, len(dead))
 	for _, id := range dead {
 		w := d.workers[id]
+		if w == nil {
+			continue
+		}
 		deadWorkers = append(deadWorkers, workerExitInfo{workerID: id, beadID: w.beadID, assignmentID: w.assignmentID, prevSession: w.prevSession, managed: w.managed})
 		if w.managed && !w.spawnFor {
 			managedExits++
@@ -652,6 +670,9 @@ func (d *Dispatcher) removeDeadWorkersLocked(ctx context.Context, dead []string)
 func (d *Dispatcher) removeStoppedSpawnForWorkersLocked(ctx context.Context, stoppedSpawnFor []string) {
 	for _, id := range stoppedSpawnFor {
 		w := d.workers[id]
+		if w == nil {
+			continue
+		}
 		_ = d.logEventLocked(ctx, "spawn_for_shutdown_timeout", "dispatcher", "", id, "")
 		_ = w.conn.Close()
 		delete(d.workers, id)
@@ -662,6 +683,9 @@ func (d *Dispatcher) removeStuckWorkersLocked(ctx context.Context, stuck []strin
 	stuckWorkers = make([]workerExitInfo, 0, len(stuck))
 	for _, id := range stuck {
 		w := d.workers[id]
+		if w == nil {
+			continue
+		}
 		stuckWorkers = append(stuckWorkers, workerExitInfo{workerID: id, beadID: w.beadID, assignmentID: w.assignmentID, managed: w.managed})
 		if w.managed && !w.spawnFor {
 			managedExits++

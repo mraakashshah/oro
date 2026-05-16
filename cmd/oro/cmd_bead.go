@@ -119,6 +119,9 @@ func createBeadFromParams(ctx context.Context, s beadstore.Store, params beadsto
 	if err != nil {
 		return nil, fmt.Errorf("Store.Create: %w", err)
 	}
+	if bead == nil {
+		return nil, fmt.Errorf("Store.Create: nil bead returned")
+	}
 	return bead, nil
 }
 

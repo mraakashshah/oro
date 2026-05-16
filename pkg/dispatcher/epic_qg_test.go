@@ -3,6 +3,7 @@ package dispatcher //nolint:testpackage // white-box tests for checkEpicQG
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -192,6 +193,45 @@ func epicQGTestSetup(t *testing.T, epicID string) (*Dispatcher, *fakeBeadStore, 
 	wtMgr.mu.Unlock()
 
 	return d, beadSrc, wtMgr
+}
+
+func TestTryCloseEpicFallsBackWhenEpicDetailFetchFails(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		showErr  error
+		shownNil bool
+	}{
+		{name: "show error", showErr: fmt.Errorf("show failed")},
+		{name: "nil detail", shownNil: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const epicID = "epic-fetch-fallback"
+			const workerID = "w-fetch-fallback"
+
+			d, beadSrc, _ := epicQGTestSetup(t, epicID)
+			runner := &mockAcceptanceRunner{passed: true}
+			d.acceptance = runner
+			beadSrc.mu.Lock()
+			beadSrc.showErr = tc.showErr
+			beadSrc.shownNil = map[string]bool{epicID: tc.shownNil}
+			beadSrc.mu.Unlock()
+
+			d.tryCloseEpic(context.Background(), epicID, workerID)
+
+			beadSrc.mu.Lock()
+			closed := append([]string(nil), beadSrc.closed...)
+			beadSrc.mu.Unlock()
+			if !slices.Contains(closed, epicID) {
+				t.Fatalf("closed beads = %v, want %q", closed, epicID)
+			}
+			runner.mu.Lock()
+			calls := runner.calls
+			runner.mu.Unlock()
+			if calls != 0 {
+				t.Fatalf("acceptance calls = %d, want 0 when epic detail fetch fails", calls)
+			}
+		})
+	}
 }
 
 // TestEpicQGErrorCreatesOrReusesIncident verifies that when the QG runner

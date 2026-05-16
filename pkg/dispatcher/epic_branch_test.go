@@ -92,6 +92,20 @@ func TestResolveEpicBranch_ShowError_ReturnsMainWithError(t *testing.T) {
 	}
 }
 
+func TestResolveEpicBranch_NilShowResult_ReturnsMainWithError(t *testing.T) {
+	bs := beadstore.NewFakeStore()
+	branch, epicID, err := resolveEpicBranch(context.Background(), bs, "missing-parent", "main")
+	if err == nil {
+		t.Fatal("expected error, got none")
+	}
+	if branch != "main" {
+		t.Errorf("branch on error = %q; want %q", branch, "main")
+	}
+	if epicID != "" {
+		t.Errorf("epicID on error = %q; want empty", epicID)
+	}
+}
+
 // TestResolveEpicBranch_DefaultBranch verifies that resolveEpicBranch returns
 // defaultBranch (not hardcoded "main") in all 4 non-epic return paths.
 func TestResolveEpicBranch_DefaultBranch(t *testing.T) {

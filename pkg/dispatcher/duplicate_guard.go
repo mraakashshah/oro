@@ -79,6 +79,9 @@ func (d *Dispatcher) electAndEvictLocked(beadID string, candidates []beadCandida
 			continue
 		}
 		w := d.workers[c.workerID]
+		if w == nil {
+			continue
+		}
 		losers = append(losers, duplicateLoser{
 			workerID:     c.workerID,
 			assignmentID: c.assignmentID,

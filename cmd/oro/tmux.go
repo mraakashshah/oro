@@ -224,6 +224,9 @@ func preTrustProject(roleDir, projectPath string) error {
 	} else {
 		config = make(map[string]any)
 	}
+	if config == nil {
+		config = make(map[string]any)
+	}
 
 	// Ensure projects map exists.
 	projects, _ := config["projects"].(map[string]any)

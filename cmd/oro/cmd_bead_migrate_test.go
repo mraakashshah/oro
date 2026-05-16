@@ -18,6 +18,10 @@ import (
 
 var beadMigrationDefaultDoltCountArgs = []string{"sql", "--result-format", "json", "-q", beadMigrationDoltCountQuery}
 
+func TestCheckInitialMigrationTargetForPlanAllowsNilPlan(t *testing.T) {
+	checkInitialMigrationTargetForPlan(t.Context(), nil)
+}
+
 func TestBeadMigrateFromDoltDryRunFixturePrintsPlanWithoutMutatingDB(t *testing.T) {
 	repoRoot := findRepoRoot(t)
 	fixture := filepath.Join(repoRoot, "testdata", "dolt-100")

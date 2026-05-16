@@ -380,6 +380,9 @@ func runBeadMigration(ctx context.Context, data []byte) (beadMigrationValidation
 }
 
 func checkInitialMigrationTargetForPlan(ctx context.Context, plan *beadMigrationPlan) {
+	if plan == nil {
+		return
+	}
 	existingRows, err := countExistingNativeBeads(ctx)
 	if err != nil {
 		plan.Errors = append(plan.Errors, fmt.Sprintf("target validation: %v", err))

@@ -120,7 +120,7 @@ func (s *SQLiteStore) CountChildren(ctx context.Context, parentID string) (int, 
 }
 
 func scanJourneyEvents(rows *sql.Rows) ([]JourneyEvent, error) {
-	var events []JourneyEvent
+	events := make([]JourneyEvent, 0)
 	for rows.Next() {
 		var e JourneyEvent
 		if err := rows.Scan(&e.ID, &e.BeadID, &e.Ts, &e.Actor, &e.Event, &e.Payload); err != nil {

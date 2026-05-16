@@ -52,7 +52,7 @@ func classifySnippet(orig, snippet []string, contMarker string) []classifiedLine
 // findAnchorPositions maps each anchor in classified (snippet order) to its position
 // in orig using forward-progress search, ensuring original-body order is respected.
 func findAnchorPositions(orig []string, classified []classifiedLine) ([]int, error) {
-	var positions []int
+	positions := make([]int, 0)
 	searchFrom := 0
 	for _, cl := range classified {
 		if cl.kind != lineAnchor {
@@ -76,11 +76,12 @@ func findAnchorPositions(orig []string, classified []classifiedLine) ([]int, err
 
 // splitByAnchors partitions classified into:
 //   - pre: lines before the first anchor
-//   - anchorTexts: text of each anchor line in order
 //   - inter: segments between consecutive anchors (len = len(anchors)-1)
 //   - post: lines after the last anchor
-func splitByAnchors(classified []classifiedLine) (pre []classifiedLine, anchorTexts []string, inter [][]classifiedLine, post []classifiedLine) {
-	var current []classifiedLine
+func splitByAnchors(classified []classifiedLine) (pre []classifiedLine, inter [][]classifiedLine, post []classifiedLine) {
+	pre = make([]classifiedLine, 0)
+	inter = make([][]classifiedLine, 0)
+	current := make([]classifiedLine, 0)
 	anchorSeen := false
 	for _, cl := range classified {
 		if cl.kind == lineAnchor {
@@ -90,14 +91,13 @@ func splitByAnchors(classified []classifiedLine) (pre []classifiedLine, anchorTe
 			} else {
 				inter = append(inter, current)
 			}
-			anchorTexts = append(anchorTexts, cl.text)
-			current = nil
+			current = make([]classifiedLine, 0)
 		} else {
 			current = append(current, cl)
 		}
 	}
 	post = current
-	return pre, anchorTexts, inter, post
+	return pre, inter, post
 }
 
 // contCount returns the number of continuation markers in seg.
@@ -189,7 +189,7 @@ func Splice(orig, snippet []string, contMarker string) ([]string, error) {
 		return nil, err
 	}
 
-	pre, _, inter, post := splitByAnchors(classified)
+	pre, inter, post := splitByAnchors(classified)
 
 	if err := validateEligibility(anchorPositions, pre, inter, post); err != nil {
 		return nil, err
