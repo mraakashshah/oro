@@ -156,10 +156,20 @@ type mockWorktreeManager struct {
 	createBranch       string
 	createErr          error
 	capturedBaseBranch string
+	currentBranch      string
 	removed            []string
 	removeErr          error
 	deletedBranches    []string
 	deleteBranchErr    error
+	preparedBranch     string
+	preparedBaseBranch string
+	prepareFastForward bool
+	prepareErr         error
+	reuseWorktree      string
+	reuseBranch        string
+	reuseBaseBranch    string
+	reuseFastForward   bool
+	reuseErr           error
 }
 
 func (m *mockWorktreeManager) Create(_ context.Context, _, baseBranch string) (string, string, error) {
@@ -206,7 +216,23 @@ func (m *mockWorktreeManager) Exists(_ context.Context, _ string) bool {
 }
 
 func (m *mockWorktreeManager) CurrentBranch(_ context.Context, _ string) (string, error) {
+	if m.currentBranch != "" {
+		return m.currentBranch, nil
+	}
 	return m.createBranch, nil
+}
+
+func (m *mockWorktreeManager) PrepareBaseBranchForAssignment(_ context.Context, branch, baseBranch string) (bool, error) {
+	m.preparedBranch = branch
+	m.preparedBaseBranch = baseBranch
+	return m.prepareFastForward, m.prepareErr
+}
+
+func (m *mockWorktreeManager) PrepareExistingForReuse(_ context.Context, worktree, branch, baseBranch string) (bool, error) {
+	m.reuseWorktree = worktree
+	m.reuseBranch = branch
+	m.reuseBaseBranch = baseBranch
+	return m.reuseFastForward, m.reuseErr
 }
 
 func (m *mockWorktreeManager) RebaseOnto(_ context.Context, _, _ string) error {

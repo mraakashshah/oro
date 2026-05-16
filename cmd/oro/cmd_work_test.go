@@ -277,6 +277,63 @@ func TestSetupWorktree_ExistingWorktreeAutoResumes(t *testing.T) {
 	}
 }
 
+func TestPrepareStandaloneWorkTargetBranchRefreshesEpicBase(t *testing.T) {
+	wt := &mockWorktreeManager{prepareFastForward: true}
+	deps := &workDeps{wtMgr: wt}
+
+	fastForwarded, err := prepareStandaloneWorkTargetBranch(context.Background(), deps, "epic/oro-parent", "main", "oro-parent")
+	if err != nil {
+		t.Fatalf("prepareStandaloneWorkTargetBranch: %v", err)
+	}
+	if !fastForwarded {
+		t.Fatal("expected stale epic branch to be reported as fast-forwarded")
+	}
+	if wt.preparedBranch != "epic/oro-parent" {
+		t.Fatalf("prepared branch = %q, want epic/oro-parent", wt.preparedBranch)
+	}
+	if wt.preparedBaseBranch != "main" {
+		t.Fatalf("prepared base branch = %q, want main", wt.preparedBaseBranch)
+	}
+}
+
+func TestSetupWorktree_ExistingWorktreeFastForwardsWhenBehindBase(t *testing.T) {
+	cfg := &workConfig{beadID: "oro-test"}
+	repoRoot := t.TempDir()
+	wtDir := filepath.Join(repoRoot, ".worktrees", "oro-test")
+	if err := os.MkdirAll(wtDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	wtMgr := &mockWorktreeManager{
+		createBranch:     protocol.BranchPrefix + "oro-test",
+		currentBranch:    protocol.BranchPrefix + "oro-test",
+		reuseFastForward: true,
+	}
+	deps := &workDeps{
+		repoRoot: repoRoot,
+		wtMgr:    wtMgr,
+	}
+
+	gotPath, gotBranch, err := setupWorktree(context.Background(), cfg, deps, "epic/oro-parent")
+	if err != nil {
+		t.Fatalf("setupWorktree: %v", err)
+	}
+	if gotPath != wtDir {
+		t.Fatalf("worktree path = %s, want %s", gotPath, wtDir)
+	}
+	if gotBranch != protocol.BranchPrefix+"oro-test" {
+		t.Fatalf("branch = %s, want %s", gotBranch, protocol.BranchPrefix+"oro-test")
+	}
+	if wtMgr.reuseWorktree != wtDir {
+		t.Fatalf("reuse worktree = %q, want %q", wtMgr.reuseWorktree, wtDir)
+	}
+	if wtMgr.reuseBranch != protocol.BranchPrefix+"oro-test" {
+		t.Fatalf("reuse branch = %q, want %q", wtMgr.reuseBranch, protocol.BranchPrefix+"oro-test")
+	}
+	if wtMgr.reuseBaseBranch != "epic/oro-parent" {
+		t.Fatalf("reuse base branch = %q, want epic/oro-parent", wtMgr.reuseBaseBranch)
+	}
+}
+
 func TestSetupWorktree_NoWorktreeCreatesNew(t *testing.T) {
 	// When worktree dir does not exist, setupWorktree should call Create.
 	cfg := &workConfig{beadID: "oro-test", bead: &protocol.BeadDetail{ID: "oro-test"}}
@@ -904,6 +961,87 @@ func TestSpawnAndWaitTakesRuntimeParam(t *testing.T) {
 	}
 	if got := codexWorker.reasonings[0]; got != "medium" {
 		t.Fatalf("codex reasoning = %q, want medium", got)
+	}
+}
+
+func TestQGRetryEscalatesRuntimeAndModel(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+	t.Setenv("ORO_PROJECT", "")
+	writeWorkAgentModelConfig(t, tmpDir, `
+agent:
+  tiers:
+    balanced:
+      runtime: claude
+      model: claude-sonnet-test
+    deep:
+      runtime: codex
+      model: gpt-5.5-test
+  roles:
+    worker:
+      tier: balanced
+      transport: cli
+    worker_escalation:
+      tier: deep
+      transport: cli
+`)
+
+	worktree := filepath.Join(tmpDir, ".worktrees", "oro-test")
+	claudeWorker := &testRuntimeWorkerSpawner{}
+	codexWorker := &testRuntimeWorkerSpawner{}
+	hasNewWorkCalls := 0
+	qgCalls := 0
+	deps := &workDeps{
+		beadSrc: &fakeBeadStore{showDetail: testBead()},
+		wtMgr: &mockWorktreeManager{
+			createPath:   worktree,
+			createBranch: protocol.BranchPrefix + "oro-test",
+		},
+		spawner:        claudeWorker,
+		runtimeSpawner: worker.NewRuntimeSpawnerRouter(claudeWorker, codexWorker),
+		merger:         &mockMerger{result: &merge.Result{CommitSHA: "abc123"}},
+		repoRoot:       tmpDir,
+		defaultBranch:  "main",
+		hasNewWork: func(_, _, _ string) bool {
+			hasNewWorkCalls++
+			return hasNewWorkCalls > 1
+		},
+		runQG: func(_ context.Context, _ string, _ bool) (bool, string, error) {
+			qgCalls++
+			if qgCalls <= maxQGRetriesPerTier {
+				return false, "qg failed", nil
+			}
+			return true, "", nil
+		},
+	}
+	cfg := &workConfig{
+		beadID:     "oro-test",
+		timeout:    5 * time.Second,
+		skipReview: true,
+	}
+
+	if err := executeWork(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("executeWork: %v", err)
+	}
+	if codexWorker.calls != 1 {
+		t.Fatalf("codex escalation calls = %d, want 1", codexWorker.calls)
+	}
+	if got := codexWorker.models[0]; got != "gpt-5.5-test" {
+		t.Fatalf("codex escalation model = %q, want gpt-5.5-test", got)
+	}
+	if claudeWorker.calls != maxQGRetriesPerTier {
+		t.Fatalf("claude calls before escalation = %d, want %d", claudeWorker.calls, maxQGRetriesPerTier)
+	}
+}
+
+func writeWorkAgentModelConfig(t *testing.T, dir, content string) {
+	t.Helper()
+	oroDir := filepath.Join(dir, ".oro")
+	if err := os.MkdirAll(oroDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oroDir, "config.yaml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -126,6 +126,14 @@ type workDeps struct {
 	stdout          io.Writer
 }
 
+type standaloneBaseBranchPreparer interface {
+	PrepareBaseBranchForAssignment(ctx context.Context, branch, baseBranch string) (fastForwarded bool, err error)
+}
+
+type standaloneExistingWorktreePreparer interface {
+	PrepareExistingForReuse(ctx context.Context, worktree, branch, baseBranch string) (fastForwarded bool, err error)
+}
+
 func updateWorkBeadStatus(ctx context.Context, beads beadstore.Store, id, status string) error {
 	if err := beads.Update(ctx, id, beadstore.UpdateParams{Status: &status}); err != nil {
 		return fmt.Errorf("update bead %s status to %s: %w", id, status, err)
@@ -370,9 +378,12 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	}
 	// Resolve targetBranch by walking the parent chain: returns "epic/<id>" only when
 	// an epic-type ancestor exists. Non-epic parents (tasks, features) resolve to defaultBranch.
-	targetBranch, _, resolveErr := dispatcher.ResolveEpicBranch(ctx, deps.beadSrc, cfg.bead.Epic, defaultBranch)
+	targetBranch, resolvedEpicID, resolveErr := dispatcher.ResolveEpicBranch(ctx, deps.beadSrc, cfg.bead.Epic, defaultBranch)
 	if resolveErr != nil {
 		return fmt.Errorf("resolve epic branch: %w", resolveErr)
+	}
+	if _, prepareErr := prepareStandaloneWorkTargetBranch(ctx, deps, targetBranch, defaultBranch, resolvedEpicID); prepareErr != nil {
+		return fmt.Errorf("prepare target branch: %w", prepareErr)
 	}
 	worktree, branch, err := setupWorktree(ctx, cfg, deps, targetBranch)
 	if err != nil {
@@ -381,6 +392,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 
 	var feedback string
 	var attempt int
+	var escalated bool
 
 	// Auto-resume: if worktree has commits ahead of targetBranch, skip first claude spawn.
 	skipClaude := deps.hasNewWork(deps.repoRoot, branch, targetBranch)
@@ -399,7 +411,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 			if err := spawnAndWait(ctx, cfg, deps, worktree, runtime, model, reasoning, attempt, feedback, logFile); err != nil {
 				return fmt.Errorf("%s spawn: %w", runtime, err)
 			}
-			logStep("Claude completed")
+			logStep("%s completed", runtime)
 
 			// Guard: bail out if claude produced no commits.
 			if !deps.hasNewWork(deps.repoRoot, branch, targetBranch) {
@@ -424,11 +436,11 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		feedback = qgOutput
 		logStep("Quality gate failed (attempt %d)", attempt)
 
-		// Model escalation: after maxQGRetriesPerTier on sonnet, switch to opus.
-		if attempt >= maxQGRetriesPerTier && model != protocol.ModelOpus {
-			logStep("Escalating to opus")
-			model = protocol.ModelOpus
+		if attempt >= maxQGRetriesPerTier && !escalated {
+			runtime, model, reasoning = resolveWorkerEscalationRuntimeModel(cfg)
+			logStep("Escalating to %s (%s)", runtime, modelShort(model))
 			attempt = 0
+			escalated = true
 		}
 		if attempt >= maxQGRetriesPerTier {
 			recordWorkQGFailure(ctx, cfg, deps, "oro-work-implementation", qgOutput)
@@ -495,8 +507,34 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	return nil
 }
 
+func prepareStandaloneWorkTargetBranch(ctx context.Context, deps *workDeps, targetBranch, defaultBranch, resolvedEpicID string) (bool, error) {
+	if deps == nil || deps.wtMgr == nil || resolvedEpicID == "" || targetBranch == "" || targetBranch == defaultBranch {
+		return false, nil
+	}
+	preparer, ok := deps.wtMgr.(standaloneBaseBranchPreparer)
+	if !ok {
+		return false, nil
+	}
+	fastForwarded, err := preparer.PrepareBaseBranchForAssignment(ctx, targetBranch, defaultBranch)
+	if err != nil {
+		return false, fmt.Errorf("prepare target branch %s from %s: %w", targetBranch, defaultBranch, err)
+	}
+	if fastForwarded {
+		logStep("Fast-forwarded target branch %s to %s", targetBranch, defaultBranch)
+	}
+	return fastForwarded, nil
+}
+
 func resolveWorkerRuntimeModel(cfg *workConfig) (runtime, model, reasoning string) {
 	runtime, model, reasoning = agentmodel.ResolveForBead("worker", *cfg.bead)
+	if cfg.runtime != "" {
+		runtime = cfg.runtime
+	}
+	return runtime, model, reasoning
+}
+
+func resolveWorkerEscalationRuntimeModel(cfg *workConfig) (runtime, model, reasoning string) {
+	runtime, model, reasoning = agentmodel.ResolveForRole("worker_escalation")
 	if cfg.runtime != "" {
 		runtime = cfg.runtime
 	}
@@ -570,6 +608,9 @@ func setupWorktree(ctx context.Context, cfg *workConfig, deps *workDeps, baseBra
 
 	if _, statErr := os.Stat(wtPath); statErr == nil {
 		logStep("Resuming worktree: %s", wtPath)
+		if err := prepareExistingStandaloneWorktree(ctx, deps, wtPath, branch, baseBranch); err != nil {
+			return "", "", err
+		}
 		return wtPath, branch, nil
 	}
 
@@ -579,6 +620,31 @@ func setupWorktree(ctx context.Context, cfg *workConfig, deps *workDeps, baseBra
 	}
 	logStep("Worktree: %s (branch %s)", wtPath, branch)
 	return wtPath, branch, nil
+}
+
+func prepareExistingStandaloneWorktree(ctx context.Context, deps *workDeps, worktree, branch, baseBranch string) error {
+	if deps == nil || deps.wtMgr == nil {
+		return nil
+	}
+	currentBranch, err := deps.wtMgr.CurrentBranch(ctx, worktree)
+	if err != nil {
+		return fmt.Errorf("inspect existing worktree branch: %w", err)
+	}
+	if currentBranch != branch {
+		return fmt.Errorf("existing worktree %s is on branch %s, want %s", worktree, currentBranch, branch)
+	}
+	preparer, ok := deps.wtMgr.(standaloneExistingWorktreePreparer)
+	if !ok {
+		return nil
+	}
+	fastForwarded, err := preparer.PrepareExistingForReuse(ctx, worktree, branch, baseBranch)
+	if err != nil {
+		return fmt.Errorf("prepare existing worktree for reuse: %w", err)
+	}
+	if fastForwarded {
+		logStep("Fast-forwarded worktree %s (%s) to %s", worktree, branch, baseBranch)
+	}
+	return nil
 }
 
 // hasCommitsAhead checks if a branch has commits ahead of targetBranch.
@@ -794,10 +860,7 @@ func handleReviewRejection(ctx context.Context, cfg *workConfig, deps *workDeps,
 		}
 	}
 
-	runtime, escalationModel, reasoning := agentmodel.ResolveForRole("worker_escalation")
-	if cfg.runtime != "" {
-		runtime = cfg.runtime
-	}
+	runtime, escalationModel, reasoning := resolveWorkerEscalationRuntimeModel(cfg)
 	*model = escalationModel
 	*attempt = rejects
 	*feedback = result.Feedback
