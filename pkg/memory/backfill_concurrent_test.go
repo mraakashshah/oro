@@ -50,14 +50,18 @@ func setupFileBackedBackfillDB(t *testing.T) *sql.DB {
 type countingFakeEmbedder struct {
 	dim   int
 	count atomic.Int64
+	block <-chan struct{}
 }
 
-func newCountingFakeEmbedder(dim int) *countingFakeEmbedder {
-	return &countingFakeEmbedder{dim: dim}
+func newBlockingCountingFakeEmbedder(dim int, block <-chan struct{}) *countingFakeEmbedder {
+	return &countingFakeEmbedder{dim: dim, block: block}
 }
 
 func (e *countingFakeEmbedder) Embed(content string) []float32 {
 	e.count.Add(1)
+	if e.block != nil {
+		<-e.block
+	}
 	// Return a dummy embedding.
 	vec := make([]float32, e.dim)
 	for i := range e.dim {
@@ -94,7 +98,10 @@ func TestBackfillConcurrentClaim(t *testing.T) {
 			content, "lesson", "self_report", 0.8)
 	}
 
-	embedder := newCountingFakeEmbedder(128)
+	releaseWorker := make(chan struct{})
+	var releaseWorkerOnce sync.Once
+	defer releaseWorkerOnce.Do(func() { close(releaseWorker) })
+	embedder := newBlockingCountingFakeEmbedder(128, releaseWorker)
 	store := NewStore(db)
 	store.SetEmbedder(embedder)
 	store.backfillLimiter = rate.NewLimiter(rate.Inf, 1) // unlimited for speed
@@ -111,9 +118,6 @@ func TestBackfillConcurrentClaim(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-
-	// Wait for backfill to complete.
-	time.Sleep(500 * time.Millisecond)
 
 	// Exactly one goroutine should see nil (winner); the other sees ErrBackfillLocked (loser).
 	nilCount := 0
@@ -134,12 +138,33 @@ func TestBackfillConcurrentClaim(t *testing.T) {
 	if lockedCount != 1 {
 		t.Errorf("expected exactly 1 loser (ErrBackfillLocked), got %d", lockedCount)
 	}
+	releaseWorkerOnce.Do(func() { close(releaseWorker) })
 
 	// The countingFakeEmbedder should show that exactly one worker ran and embedded rows.
-	embedCount := embedder.EmbedCount()
+	var embedCount int64
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		embedCount = embedder.EmbedCount()
+		if embedCount > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if embedCount == 0 {
 		t.Error("expected embedder to be called at least once (worker should have processed batch)")
 	}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		var state string
+		err := db.QueryRowContext(ctx,
+			`SELECT value FROM kv_store WHERE key = ?`, backfillStateKey,
+		).Scan(&state)
+		if err == nil && state == backfillStateComplete {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("backfill worker did not complete before test cleanup")
 }
 
 // TestBackfillConcurrentStaleOwnerSteal verifies that when two goroutines
