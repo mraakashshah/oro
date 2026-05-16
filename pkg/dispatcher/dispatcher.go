@@ -2770,6 +2770,7 @@ func (d *Dispatcher) ffMergeEpicBranch(ctx context.Context, epicID, workerID, ta
 			Priority:    1,
 			Description: fmt.Sprintf("FF merge of %s failed: %s. Rebase the epic branch onto %s and re-trigger close.", epicBranch, wrapped.Error(), targetBranch),
 			ParentID:    epicID,
+			Tier:        parentTierForCreate(ctx, d.beads, epicID),
 		})
 		return wrapped
 	}
@@ -2989,10 +2990,11 @@ func (d *Dispatcher) handleHandoffExhaustion(ctx context.Context, beadID, worker
 	d.safeGo(func() { d.handleDiagnosisResult(ctx, beadID, workerID, resultCh) })
 
 	// Fetch parent bead details to inherit AC and title.
-	var parentTitle, parentAC string
+	var parentTitle, parentAC, parentTier string
 	if detail, showErr := d.beads.Show(ctx, beadID); showErr == nil && detail != nil {
 		parentTitle = detail.Title
 		parentAC = detail.AcceptanceCriteria
+		parentTier = string(detail.Tier)
 	}
 
 	// Create a continuation bead to capture remaining work from the exhausted handoff.
@@ -3005,6 +3007,7 @@ func (d *Dispatcher) handleHandoffExhaustion(ctx context.Context, beadID, worker
 		Priority:           1,
 		Description:        contDesc,
 		ParentID:           beadID,
+		Tier:               parentTier,
 		AcceptanceCriteria: parentAC,
 	})
 	switch {

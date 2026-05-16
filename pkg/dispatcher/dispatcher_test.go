@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net"
 	"os"
 	"os/exec"
@@ -75,6 +78,7 @@ type createCall struct {
 	priority            int
 	description, parent string
 	acceptanceCriteria  string
+	tier                string
 }
 
 type deferCall struct {
@@ -234,6 +238,7 @@ func (m *fakeBeadStore) Create(_ context.Context, params beadstore.CreateParams)
 		description:        params.Description,
 		parent:             params.ParentID,
 		acceptanceCriteria: params.AcceptanceCriteria,
+		tier:               params.Tier,
 	})
 	id := "oro-new1"
 	if m.createID != "" {
@@ -20863,4 +20868,174 @@ func TestReviewPatternCandidateCaptureFailureDoesNotBlockApproval(t *testing.T) 
 	if rejectionCountPresent {
 		t.Fatal("rejection count was not cleared after approved review")
 	}
+}
+
+func TestProgrammaticBeadCreateInheritsTier(t *testing.T) {
+	t.Run("dispatcher create params with parent include tier field", func(t *testing.T) {
+		assertCreateParamsParentLiteralsSetTier(t, "dispatcher.go")
+	})
+
+	t.Run("create bead graph children inherit parent tier", func(t *testing.T) {
+		ctx := context.Background()
+		store := beadstore.NewFakeStore()
+		if _, err := store.Create(ctx, beadstore.CreateParams{
+			ID:    "oro-tiered-parent",
+			Title: "tiered parent",
+			Type:  "epic",
+			Tier:  string(protocol.TierDeep),
+		}); err != nil {
+			t.Fatalf("create parent: %v", err)
+		}
+
+		got, err := CreateBeadGraph(ctx, store, "oro-tiered-parent", []beadstore.CreateParams{
+			{ID: "oro-tiered-child", Title: "tiered child", Type: "task"},
+		})
+		if err != nil {
+			t.Fatalf("CreateBeadGraph: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("len(got) = %d, want 1", len(got))
+		}
+		if got[0].Tier != protocol.TierDeep {
+			t.Fatalf("child tier = %q, want %q", got[0].Tier, protocol.TierDeep)
+		}
+	})
+
+	t.Run("epic rebase child inherits epic tier", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		const epicID = "oro-tiered-epic-rebase"
+		beadSrc.mu.Lock()
+		beadSrc.shown[epicID] = &protocol.BeadDetail{ID: epicID, Title: "Tiered Epic", Tier: protocol.TierFast}
+		beadSrc.mu.Unlock()
+		wtMgr.mergeFFOnlyFn = func(_, _ string) (string, error) {
+			return "", errors.New("not a fast-forward")
+		}
+
+		err := d.ffMergeEpicBranch(ctx, epicID, "worker-tier", d.cfg.DefaultBranch)
+		if err == nil {
+			t.Fatal("ffMergeEpicBranch error = nil, want merge failure")
+		}
+		call := requireCreatedCall(t, beadSrc, func(call createCall) bool {
+			return call.parent == epicID && strings.HasPrefix(call.title, "Rebase ")
+		})
+		if call.tier != string(protocol.TierFast) {
+			t.Fatalf("rebase child tier = %q, want %q", call.tier, protocol.TierFast)
+		}
+	})
+
+	t.Run("handoff continuation inherits bead tier", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		const beadID = "oro-tiered-handoff"
+		beadSrc.mu.Lock()
+		beadSrc.shown[beadID] = &protocol.BeadDetail{
+			ID:                 beadID,
+			Title:              "Tiered Handoff",
+			Tier:               protocol.TierBackground,
+			AcceptanceCriteria: "Test: inherited | Assert: PASS",
+		}
+		beadSrc.mu.Unlock()
+
+		d.handleHandoffExhaustion(ctx, beadID, "worker-tier", 3, "/tmp/oro-tiered-handoff", protocol.Message{
+			Handoff: &protocol.HandoffPayload{ContextSummary: "remaining work"},
+		})
+
+		call := requireCreatedCall(t, beadSrc, func(call createCall) bool {
+			return call.parent == beadID && strings.HasPrefix(call.title, "Continue: ")
+		})
+		if call.tier != string(protocol.TierBackground) {
+			t.Fatalf("continuation child tier = %q, want %q", call.tier, protocol.TierBackground)
+		}
+	})
+
+	t.Run("epic qg fix bead inherits epic tier", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		const epicID = "oro-tiered-epic-qg"
+		beadSrc.mu.Lock()
+		beadSrc.shown[epicID] = &protocol.BeadDetail{ID: epicID, Title: "Tiered QG Epic", Tier: protocol.TierDeep}
+		beadSrc.mu.Unlock()
+
+		d.handleEpicQGFailure(ctx, epicID, "worker-tier", protocol.EpicBranchPrefix+epicID,
+			"--- FAIL: TestTiered (0.01s)\n    tiered_test.go:42: deterministic failure\ngolangci-lint: unused variable\nFAIL")
+
+		created := createdCallsSnapshot(beadSrc)
+		fixBeads := fixBeadsForEpic(created, epicID)
+		if len(fixBeads) != 1 {
+			t.Fatalf("fix bead count = %d, want 1: %+v", len(fixBeads), created)
+		}
+		if fixBeads[0].tier != string(protocol.TierDeep) {
+			t.Fatalf("epic qg fix tier = %q, want %q", fixBeads[0].tier, protocol.TierDeep)
+		}
+	})
+}
+
+func assertCreateParamsParentLiteralsSetTier(t *testing.T, path string) {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	var missing []string
+	ast.Inspect(file, func(node ast.Node) bool {
+		lit, ok := node.(*ast.CompositeLit)
+		if !ok || !isBeadstoreCreateParamsLiteral(lit) {
+			return true
+		}
+		hasParentID := false
+		hasTier := false
+		for _, elt := range lit.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			key, ok := kv.Key.(*ast.Ident)
+			if !ok {
+				continue
+			}
+			switch key.Name {
+			case "ParentID":
+				hasParentID = true
+			case "Tier":
+				hasTier = true
+			}
+		}
+		if hasParentID && !hasTier {
+			pos := fset.Position(lit.Lbrace)
+			missing = append(missing, fmt.Sprintf("%s:%d", path, pos.Line))
+		}
+		return true
+	})
+	if len(missing) > 0 {
+		t.Fatalf("CreateParams literals with ParentID must set Tier: %s", strings.Join(missing, ", "))
+	}
+}
+
+func isBeadstoreCreateParamsLiteral(lit *ast.CompositeLit) bool {
+	sel, ok := lit.Type.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "CreateParams" {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "beadstore"
+}
+
+func createdCallsSnapshot(store *fakeBeadStore) []createCall {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return append([]createCall(nil), store.created...)
+}
+
+func requireCreatedCall(t *testing.T, store *fakeBeadStore, match func(createCall) bool) createCall {
+	t.Helper()
+	created := createdCallsSnapshot(store)
+	for _, call := range created {
+		if match(call) {
+			return call
+		}
+	}
+	t.Fatalf("no matching created call in %+v", created)
+	return createCall{}
 }
