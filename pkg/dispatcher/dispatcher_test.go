@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -7178,8 +7179,8 @@ func TestDispatcher_NoFocus_PriorityOnly(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	// No focus set — oldest epic (lower ID string) assigned first; epic-a < epic-b.
-	// Within the same epic, priority breaks ties, but across epics epic-age wins.
+	// No focus set and no confirmed epic details — both beads sort as
+	// independent work, so priority wins.
 	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "bead-p2", Title: "Medium", Priority: 2, Epic: "epic-a"},
 		{ID: "bead-p0", Title: "Critical", Priority: 0, Epic: "epic-b"},
@@ -7189,10 +7190,8 @@ func TestDispatcher_NoFocus_PriorityOnly(t *testing.T) {
 	if !ok {
 		t.Fatal("expected ASSIGN")
 	}
-	// epic-a sorts before epic-b (older epic), so bead-p2 (epic-a) is assigned first
-	// even though bead-p0 has higher priority — finishing oldest epics takes precedence.
-	if msg.Assign.BeadID != "bead-p2" {
-		t.Fatalf("expected oldest-epic bead bead-p2, got %s", msg.Assign.BeadID)
+	if msg.Assign.BeadID != "bead-p0" {
+		t.Fatalf("expected highest-priority independent bead bead-p0, got %s", msg.Assign.BeadID)
 	}
 }
 
@@ -18801,6 +18800,143 @@ func TestBuildSchedulingPlan_IndependentBeforeEpics(t *testing.T) {
 	if got := plan.units[2].epicID; got != "epic-root-b" {
 		t.Fatalf("third unit epic = %q, want epic-root-b", got)
 	}
+}
+
+func TestBuildSchedulingPlan_EpicUnitKeepsFrontierContiguous(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	beadSrc.shown["epic-root-a"] = &protocol.BeadDetail{
+		ID:        "epic-root-a",
+		Type:      "epic",
+		Priority:  0,
+		CreatedAt: "2026-05-01T00:00:00Z",
+	}
+	beadSrc.shown["epic-root-b"] = &protocol.BeadDetail{
+		ID:        "epic-root-b",
+		Type:      "epic",
+		Priority:  1,
+		CreatedAt: "2026-05-02T00:00:00Z",
+	}
+
+	beads := []protocol.Bead{
+		{ID: "a-slower", Priority: 2, Epic: "epic-root-a"},
+		{ID: "b-middle", Priority: 1, Epic: "epic-root-b"},
+		{ID: "a-faster", Priority: 0, Epic: "epic-root-a"},
+	}
+
+	plan, _, _ := d.buildSchedulingPlan(context.Background(), beads)
+
+	want := []string{"a-faster", "a-slower", "b-middle"}
+	if got := schedulingPlanBeadIDs(plan); !slices.Equal(got, want) {
+		t.Fatalf("plan bead order = %v, want contiguous epic frontier %v", got, want)
+	}
+}
+
+func TestBuildSchedulingPlan_NestedEpicUsesRootPriority(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	beadSrc.shown["epic-child"] = &protocol.BeadDetail{
+		ID:        "epic-child",
+		Type:      "epic",
+		Epic:      "epic-root",
+		Priority:  9,
+		CreatedAt: "2026-05-03T00:00:00Z",
+	}
+	beadSrc.shown["epic-root"] = &protocol.BeadDetail{
+		ID:        "epic-root",
+		Type:      "epic",
+		Priority:  0,
+		CreatedAt: "2026-05-02T00:00:00Z",
+	}
+	beadSrc.shown["epic-other"] = &protocol.BeadDetail{
+		ID:        "epic-other",
+		Type:      "epic",
+		Priority:  1,
+		CreatedAt: "2026-05-01T00:00:00Z",
+	}
+
+	beads := []protocol.Bead{
+		{ID: "other-child", Priority: 0, Epic: "epic-other"},
+		{ID: "nested-child", Priority: 0, Epic: "epic-child"},
+	}
+
+	plan, _, _ := d.buildSchedulingPlan(context.Background(), beads)
+
+	if len(plan.units) != 2 {
+		t.Fatalf("plan units = %d, want 2: %#v", len(plan.units), plan.units)
+	}
+	if got := plan.units[0].epicID; got != "epic-root" {
+		t.Fatalf("first epic unit = %q, want root epic epic-root", got)
+	}
+	if got := plan.units[0].beads[0].ID; got != "nested-child" {
+		t.Fatalf("first unit bead = %q, want nested-child", got)
+	}
+	if got := plan.units[1].epicID; got != "epic-other" {
+		t.Fatalf("second epic unit = %q, want epic-other", got)
+	}
+}
+
+func TestBuildSchedulingPlan_NonEpicParentIsIndependent(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	beadSrc.shown["parent-task"] = &protocol.BeadDetail{
+		ID:        "parent-task",
+		Type:      "task",
+		Priority:  0,
+		CreatedAt: "2026-05-01T00:00:00Z",
+	}
+
+	beads := []protocol.Bead{
+		{ID: "standalone", Priority: 1},
+		{ID: "child-of-task", Priority: 0, Epic: "parent-task"},
+	}
+
+	plan, _, _ := d.buildSchedulingPlan(context.Background(), beads)
+
+	want := []string{"child-of-task", "standalone"}
+	if got := schedulingPlanBeadIDs(plan); !slices.Equal(got, want) {
+		t.Fatalf("plan bead order = %v, want non-epic-parented bead to sort as independent %v", got, want)
+	}
+	for i, unit := range plan.units {
+		if unit.kind != unitIndependent {
+			t.Fatalf("unit %d kind = %v, want unitIndependent: %#v", i, unit.kind, plan.units)
+		}
+	}
+}
+
+func TestBuildSchedulingPlan_EpicPriorityBeatsEpicAge(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	beadSrc.shown["epic-old"] = &protocol.BeadDetail{
+		ID:        "epic-old",
+		Type:      "epic",
+		Priority:  1,
+		CreatedAt: "2026-05-01T00:00:00Z",
+	}
+	beadSrc.shown["epic-new"] = &protocol.BeadDetail{
+		ID:        "epic-new",
+		Type:      "epic",
+		Priority:  0,
+		CreatedAt: "2026-05-02T00:00:00Z",
+	}
+
+	beads := []protocol.Bead{
+		{ID: "old-child", Priority: 0, Epic: "epic-old"},
+		{ID: "new-child", Priority: 0, Epic: "epic-new"},
+	}
+
+	plan, _, _ := d.buildSchedulingPlan(context.Background(), beads)
+
+	want := []string{"new-child", "old-child"}
+	if got := schedulingPlanBeadIDs(plan); !slices.Equal(got, want) {
+		t.Fatalf("plan bead order = %v, want epic priority before age %v", got, want)
+	}
+}
+
+func schedulingPlanBeadIDs(plan schedulingPlan) []string {
+	ids := make([]string, 0)
+	for _, unit := range plan.units {
+		for _, bead := range unit.beads {
+			ids = append(ids, bead.ID)
+		}
+	}
+	return ids
 }
 
 func TestDirective_MaxWorkers(t *testing.T) {

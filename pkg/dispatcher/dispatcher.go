@@ -4147,7 +4147,7 @@ func (d *Dispatcher) schedulingEpicRoot(ctx context.Context, parentID string, pa
 	current := parentID
 	for current != "" {
 		if visited[current] {
-			return fallbackSchedulingEpicRoot(parentID)
+			return schedulingEpicRoot{}
 		}
 		visited[current] = true
 
@@ -4155,12 +4155,12 @@ func (d *Dispatcher) schedulingEpicRoot(ctx context.Context, parentID string, pa
 		if !ok {
 			detail, err := d.beads.Show(ctx, current)
 			if err != nil || detail == nil {
-				return fallbackSchedulingEpicRoot(parentID)
+				return schedulingEpicRoot{}
 			}
 			parent = detail
 			parentCache[current] = detail
 		}
-		if parent.Type == "epic" {
+		if strings.EqualFold(parent.Type, "epic") {
 			root = schedulingEpicRoot{
 				id:        current,
 				priority:  parent.Priority,
@@ -4170,18 +4170,7 @@ func (d *Dispatcher) schedulingEpicRoot(ctx context.Context, parentID string, pa
 		}
 		current = parent.Epic
 	}
-	if !root.ok {
-		return fallbackSchedulingEpicRoot(parentID)
-	}
 	return root
-}
-
-func fallbackSchedulingEpicRoot(parentID string) schedulingEpicRoot {
-	return schedulingEpicRoot{
-		id:       parentID,
-		priority: int(^uint(0) >> 1),
-		ok:       true,
-	}
 }
 
 // sortBeadsByPriority sorts beads into four groups (all ties broken by priority):
