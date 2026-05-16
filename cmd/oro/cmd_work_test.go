@@ -15,6 +15,7 @@ import (
 	codexruntime "oro/pkg/agentruntime/codex"
 	"oro/pkg/beadstore"
 	"oro/pkg/codesearch"
+	"oro/pkg/dispatcher"
 	"oro/pkg/memory"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
@@ -294,6 +295,168 @@ func TestPrepareStandaloneWorkTargetBranchRefreshesEpicBase(t *testing.T) {
 	if wt.preparedBaseBranch != "main" {
 		t.Fatalf("prepared base branch = %q, want main", wt.preparedBaseBranch)
 	}
+}
+
+func TestStandaloneWorkRefusesDivergedEpicBase(t *testing.T) {
+	runGit := func(t *testing.T, dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...) //nolint:gosec // test helper with controlled args
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, string(out))
+		}
+		return strings.TrimSpace(string(out))
+	}
+	writeCommit := func(t *testing.T, dir, name, body string) string {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, dir, "add", name)
+		runGit(t, dir, "commit", "-m", "commit "+name)
+		return runGit(t, dir, "rev-parse", "HEAD")
+	}
+	setupRepo := func(t *testing.T) (repoRoot, baseSHA, mainSHA, epicSHA, epicBranch string) {
+		t.Helper()
+		repoRoot = t.TempDir()
+		runGit(t, repoRoot, "init", "-b", "main")
+		runGit(t, repoRoot, "config", "user.email", "test@example.com")
+		runGit(t, repoRoot, "config", "user.name", "Test User")
+		baseSHA = writeCommit(t, repoRoot, "base.txt", "base\n")
+		runGit(t, repoRoot, "branch", "epic/oro-epic")
+		mainSHA = writeCommit(t, repoRoot, "main.txt", "main\n")
+		runGit(t, repoRoot, "checkout", "epic/oro-epic")
+		epicSHA = writeCommit(t, repoRoot, "epic.txt", "epic\n")
+		runGit(t, repoRoot, "checkout", "main")
+		return repoRoot, baseSHA, mainSHA, epicSHA, "epic/oro-epic"
+	}
+	runWork := func(t *testing.T, repoRoot string) (*mockSpawner, *mockMerger, error) {
+		t.Helper()
+		child := &protocol.BeadDetail{
+			ID:                 "oro-child",
+			Title:              "Child",
+			AcceptanceCriteria: "Tests pass",
+			Epic:               "oro-epic",
+		}
+		bs := &fakeBeadStore{
+			showDetail: child,
+			shownByID: map[string]*protocol.BeadDetail{
+				"oro-child": child,
+				"oro-epic":  {ID: "oro-epic", Title: "Epic", Type: "epic"},
+			},
+		}
+		sp := &mockSpawner{proc: &mockProcess{}}
+		mg := &mockMerger{result: &merge.Result{CommitSHA: "merged"}}
+		deps := &workDeps{
+			beadSrc:       bs,
+			wtMgr:         dispatcher.NewGitWorktreeManager(repoRoot, "", "", &dispatcher.ExecCommandRunner{}),
+			spawner:       sp,
+			merger:        mg,
+			repoRoot:      repoRoot,
+			defaultBranch: "main",
+			hasNewWork:    func(_, _, _ string) bool { return true },
+			runQG:         func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+		}
+		err := executeWork(context.Background(), &workConfig{
+			beadID:     "oro-child",
+			bead:       child,
+			model:      "sonnet",
+			timeout:    5 * time.Second,
+			skipReview: true,
+		}, deps)
+		return sp, mg, err
+	}
+
+	t.Run("strict-behind epic branch fast-forwards to default branch", func(t *testing.T) {
+		repoRoot, baseSHA, mainSHA, _, epicBranch := setupRepo(t)
+		runGit(t, repoRoot, "update-ref", "refs/heads/"+epicBranch, baseSHA)
+
+		_, mg, err := runWork(t, repoRoot)
+		if err != nil {
+			t.Fatalf("executeWork: %v", err)
+		}
+		if got := runGit(t, repoRoot, "rev-parse", epicBranch); got != mainSHA {
+			t.Fatalf("epic branch HEAD = %s, want %s", got, mainSHA)
+		}
+		if !mg.called {
+			t.Fatal("expected merge path to continue after fast-forward refresh")
+		}
+	})
+
+	t.Run("same-head epic branch continues without mutation", func(t *testing.T) {
+		repoRoot, _, mainSHA, _, epicBranch := setupRepo(t)
+		runGit(t, repoRoot, "update-ref", "refs/heads/"+epicBranch, mainSHA)
+
+		_, mg, err := runWork(t, repoRoot)
+		if err != nil {
+			t.Fatalf("executeWork: %v", err)
+		}
+		if got := runGit(t, repoRoot, "rev-parse", epicBranch); got != mainSHA {
+			t.Fatalf("epic branch HEAD = %s, want %s", got, mainSHA)
+		}
+		if !mg.called {
+			t.Fatal("expected merge path to continue for same-head epic branch")
+		}
+	})
+
+	t.Run("diverged epic branch aborts before spawn review merge or mutation", func(t *testing.T) {
+		repoRoot, _, _, epicSHA, epicBranch := setupRepo(t)
+
+		sp, mg, err := runWork(t, repoRoot)
+		if err == nil {
+			t.Fatal("expected divergent epic branch error")
+		}
+		msg := err.Error()
+		for _, want := range []string{"preserved divergent branch/worktree", "aborted before worker spawn", "git log --oneline --graph", epicBranch} {
+			if !strings.Contains(msg, want) {
+				t.Fatalf("error %q does not contain %q", msg, want)
+			}
+		}
+		if sp.called {
+			t.Fatal("worker spawned despite divergent epic branch")
+		}
+		if mg.called {
+			t.Fatal("merge was attempted for divergent epic branch")
+		}
+		if got := runGit(t, repoRoot, "rev-parse", epicBranch); got != epicSHA {
+			t.Fatalf("divergent epic branch mutated: got %s, want %s", got, epicSHA)
+		}
+		if _, statErr := os.Stat(filepath.Join(repoRoot, ".worktrees", "oro-child")); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("worktree stat error = %v, want not exist", statErr)
+		}
+	})
+
+	t.Run("ahead epic branch aborts before spawn review merge or mutation", func(t *testing.T) {
+		repoRoot, _, mainSHA, _, epicBranch := setupRepo(t)
+		runGit(t, repoRoot, "update-ref", "refs/heads/"+epicBranch, mainSHA)
+		runGit(t, repoRoot, "checkout", epicBranch)
+		aheadSHA := writeCommit(t, repoRoot, "epic-ahead.txt", "ahead\n")
+		runGit(t, repoRoot, "checkout", "main")
+
+		sp, mg, err := runWork(t, repoRoot)
+		if err == nil {
+			t.Fatal("expected ahead epic branch error")
+		}
+		msg := err.Error()
+		for _, want := range []string{"has unique commits", "aborted before worker spawn", epicBranch} {
+			if !strings.Contains(msg, want) {
+				t.Fatalf("error %q does not contain %q", msg, want)
+			}
+		}
+		if sp.called {
+			t.Fatal("worker spawned despite ahead epic branch")
+		}
+		if mg.called {
+			t.Fatal("merge was attempted for ahead epic branch")
+		}
+		if got := runGit(t, repoRoot, "rev-parse", epicBranch); got != aheadSHA {
+			t.Fatalf("ahead epic branch mutated: got %s, want %s", got, aheadSHA)
+		}
+		if _, statErr := os.Stat(filepath.Join(repoRoot, ".worktrees", "oro-child")); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("worktree stat error = %v, want not exist", statErr)
+		}
+	})
 }
 
 func TestSetupWorktree_ExistingWorktreeFastForwardsWhenBehindBase(t *testing.T) {

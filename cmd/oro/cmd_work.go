@@ -130,6 +130,10 @@ type standaloneBaseBranchPreparer interface {
 	PrepareBaseBranchForAssignment(ctx context.Context, branch, baseBranch string) (fastForwarded bool, err error)
 }
 
+type standaloneBaseBranchSafetyChecker interface {
+	BaseBranchHasUniqueCommits(ctx context.Context, branch, baseBranch string) (bool, error)
+}
+
 type standaloneExistingWorktreePreparer interface {
 	PrepareExistingForReuse(ctx context.Context, worktree, branch, baseBranch string) (fastForwarded bool, err error)
 }
@@ -522,7 +526,26 @@ func prepareStandaloneWorkTargetBranch(ctx context.Context, deps *workDeps, targ
 	if fastForwarded {
 		logStep("Fast-forwarded target branch %s to %s", targetBranch, defaultBranch)
 	}
+	if err := validateStandaloneEpicBranchSafe(ctx, deps, targetBranch, defaultBranch); err != nil {
+		return fastForwarded, err
+	}
 	return fastForwarded, nil
+}
+
+func validateStandaloneEpicBranchSafe(ctx context.Context, deps *workDeps, targetBranch, defaultBranch string) error {
+	checker, ok := deps.wtMgr.(standaloneBaseBranchSafetyChecker)
+	if !ok {
+		return nil
+	}
+	hasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, targetBranch, defaultBranch)
+	if err != nil {
+		return fmt.Errorf("check whether %s has unique commits relative to %s: %w", targetBranch, defaultBranch, err)
+	}
+	if hasUniqueCommits {
+		return fmt.Errorf("epic branch %q has unique commits relative to %q; preserved divergent branch/worktree state and aborted before worker spawn. Inspect `git log --oneline --graph %s %s`, then preserve or port wanted commits before resetting %s to %s",
+			targetBranch, defaultBranch, defaultBranch, targetBranch, targetBranch, defaultBranch)
+	}
+	return nil
 }
 
 func resolveWorkerRuntimeModel(cfg *workConfig) (runtime, model, reasoning string) {

@@ -283,6 +283,19 @@ func (g *GitWorktreeManager) PrepareBaseBranchForAssignment(ctx context.Context,
 	return true, nil
 }
 
+// BaseBranchHasUniqueCommits reports whether branch contains work that is not
+// reachable from baseBranch. The branch is left untouched.
+func (g *GitWorktreeManager) BaseBranchHasUniqueCommits(ctx context.Context, branch, baseBranch string) (bool, error) {
+	if branch == "" || baseBranch == "" || branch == baseBranch {
+		return false, nil
+	}
+	relation, err := g.branchRelationToBase(ctx, branch, baseBranch)
+	if err != nil {
+		return false, err
+	}
+	return relation == branchContainsBase || relation == branchDiverged, nil
+}
+
 type branchBaseRelation int
 
 const (
