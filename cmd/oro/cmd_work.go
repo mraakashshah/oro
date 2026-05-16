@@ -122,6 +122,7 @@ type workDeps struct {
 	hasNewWork      func(repoRoot, branch, targetBranch string) bool                                    // defaults to hasCommitsAhead
 	runQG           func(ctx context.Context, worktree string, skipMutation bool) (bool, string, error) // defaults to worker.RunQualityGate
 	runShellCmd     func(ctx context.Context, dir, cmd string) (bool, error)                            // defaults to defaultRunShellCmd
+	worktreeDirty   func(ctx context.Context, worktree string) (bool, string, error)                    // defaults to worktreeHasUncommittedChanges
 	recordQGFailure func(ctx context.Context, rec dispatcher.QGFailureRecord, cls dispatcher.QGFailureClassification) error
 	stdout          io.Writer
 }
@@ -240,6 +241,7 @@ func newProductionDeps(reviewTimeout time.Duration) (*workDeps, error) {
 		hasNewWork:      hasCommitsAhead,
 		runQG:           worker.RunQualityGate,
 		runShellCmd:     defaultRunShellCmd,
+		worktreeDirty:   worktreeHasUncommittedChanges,
 		recordQGFailure: newStateDBQGFailureRecorder(beadDB),
 		stdout:          os.Stdout,
 	}, nil
@@ -1013,6 +1015,18 @@ func mergeToMain(ctx context.Context, cfg *workConfig, deps *workDeps, worktree,
 // specific AC test file exists and the AC command passes, the code is already on
 // main — close the bead. Otherwise return an error.
 func noCommitsResult(ctx context.Context, cfg *workConfig, deps *workDeps, worktree string, merged *bool) error {
+	dirty, dirtyStatus, dirtyErr := noCommitWorktreeDirty(ctx, deps, worktree)
+	if dirtyErr != nil {
+		logStep("No commits on branch — preserving worktree because cleanliness check failed: %v", dirtyErr)
+		return fmt.Errorf("worker exited without producing commits on bead %s; preserved worktree %s because cleanliness check failed: %w",
+			cfg.beadID, worktree, dirtyErr)
+	}
+	if dirty {
+		logStep("No commits on branch — preserving worktree with uncommitted changes")
+		return fmt.Errorf("worker exited without producing commits on bead %s; preserved worktree %s because it has uncommitted changes:\n%s",
+			cfg.beadID, worktree, dirtyStatus)
+	}
+
 	if acAlreadySatisfied(ctx, cfg, deps, worktree) {
 		logStep("AC already satisfied — closing bead (code already on main)")
 		*merged = true
@@ -1024,6 +1038,23 @@ func noCommitsResult(ctx context.Context, cfg *workConfig, deps *workDeps, workt
 	logStep("No commits on branch — claude produced no work")
 	_ = deps.wtMgr.Remove(ctx, worktree)
 	return fmt.Errorf("claude exited without producing commits on bead %s", cfg.beadID)
+}
+
+func noCommitWorktreeDirty(ctx context.Context, deps *workDeps, worktree string) (dirty bool, status string, err error) {
+	if deps == nil || deps.worktreeDirty == nil {
+		return false, "", nil
+	}
+	return deps.worktreeDirty(ctx, worktree)
+}
+
+func worktreeHasUncommittedChanges(ctx context.Context, worktree string) (dirty bool, status string, err error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", worktree, "status", "--porcelain") //nolint:gosec // worktree is an internally managed path
+	out, runErr := cmd.CombinedOutput()
+	status = strings.TrimSpace(string(out))
+	if runErr != nil {
+		return false, status, fmt.Errorf("git status --porcelain: %w: %s", runErr, status)
+	}
+	return status != "", status, nil
 }
 
 // acAlreadySatisfied checks if the bead's structured acceptance criteria

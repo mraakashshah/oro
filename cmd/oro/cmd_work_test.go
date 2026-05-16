@@ -629,6 +629,62 @@ func TestWorkNoCommits_ACAlreadySatisfied(t *testing.T) {
 	}
 }
 
+func TestWorkNoCommits_PreservesDirtyWorktreeEvenWhenACPasses(t *testing.T) {
+	bead := &protocol.BeadDetail{
+		ID:                 "oro-test",
+		Title:              "Test bead",
+		AcceptanceCriteria: "Test: pkg/foo/foo_test.go:TestFoo | Cmd: go test ./pkg/foo/... -run TestFoo | Assert: PASS",
+	}
+
+	wtDir := t.TempDir()
+	testFileDir := filepath.Join(wtDir, "pkg", "foo")
+	if err := os.MkdirAll(testFileDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(testFileDir, "foo_test.go"), []byte("package foo"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	bs := &fakeBeadStore{showDetail: bead}
+	wt := &mockWorktreeManager{createPath: wtDir, createBranch: "bead/oro-test"}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
+	deps := testDeps(bs, wt, sp, mg, false, true)
+	deps.runShellCmd = func(_ context.Context, _, _ string) (bool, error) {
+		return true, nil
+	}
+	deps.worktreeDirty = func(_ context.Context, gotWorktree string) (bool, string, error) {
+		if gotWorktree != wtDir {
+			t.Fatalf("dirty check worktree = %q, want %q", gotWorktree, wtDir)
+		}
+		return true, " M pkg/foo/foo_test.go", nil
+	}
+
+	err := executeWork(context.Background(), &workConfig{
+		beadID:     "oro-test",
+		model:      "sonnet",
+		timeout:    5 * time.Second,
+		skipReview: true,
+	}, deps)
+	if err == nil {
+		t.Fatal("expected dirty no-commit worktree error")
+	}
+	for _, want := range []string{"without producing commits", "preserved worktree", "uncommitted changes"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not contain %q", err, want)
+		}
+	}
+	if bs.closeID != "" {
+		t.Fatalf("bead closed despite dirty uncommitted worktree: %q", bs.closeID)
+	}
+	if mg.called {
+		t.Fatal("merger should not be called when dirty worktree has no commits")
+	}
+	if len(wt.removed) != 0 {
+		t.Fatalf("dirty worktree was removed: %v", wt.removed)
+	}
+}
+
 func TestWorkNoCommits_ACAlreadySatisfied_TestFileMissing(t *testing.T) {
 	// When AC has structured Cmd:/Test: but the test file doesn't exist
 	// on main, the feature is NOT done — return error as usual.
