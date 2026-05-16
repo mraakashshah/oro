@@ -36,3 +36,11 @@ operators, and future agents.
 - Keep generated handoff snapshots under `handoffs/`; do not manually curate
   ignored snapshot copies.
 - Update links whenever a doc moves.
+
+## Review Pattern Inbox
+
+Ops review pattern capture no longer appends directly to the curated
+`assets/review-patterns.md` file during normal operation. That direct append
+behavior is superseded by the resolved `review-pattern-candidates` inbox:
+inspect candidates with `oro review-patterns candidates`, then promote deduped
+entries intentionally with `oro review-patterns promote --all`.

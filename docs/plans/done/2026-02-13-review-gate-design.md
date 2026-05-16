@@ -1,7 +1,12 @@
 # Code Review Gate Design
 
 **Date:** 2026-02-13
-**Status:** DONE (stale)
+**Status:** DONE (superseded)
+
+**Current behavior note:** Direct appends to `assets/review-patterns.md`
+are superseded by the review-pattern-candidates inbox. Approved-review
+`PATTERN:` lines are captured to the resolved candidate inbox, and operators
+promote curated entries explicitly with `oro review-patterns promote --all`.
 
 ## Goal
 
@@ -83,7 +88,9 @@ PATTERN: tag: trigger → fix
 
 ### Pattern Capture (Living Anti-Pattern File)
 
-When the reviewer outputs `PATTERN:` lines, the dispatcher appends them to `assets/review-patterns.md`. Format:
+Historical design: when the reviewer outputs `PATTERN:` lines, the dispatcher
+appends them to `assets/review-patterns.md`. This direct append path is now
+superseded by candidate inbox capture plus explicit promotion. Format:
 
 ```
 loose-match: strings.Contains for exact lookup → use map key or ==
