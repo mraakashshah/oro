@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"oro/pkg/agentruntime"
+	oroconfig "oro/pkg/config"
+	"oro/pkg/protocol"
 )
 
 // CmdRunner abstracts command execution for testability.
@@ -121,7 +123,44 @@ func (s *TmuxSession) isHealthy() bool {
 }
 
 func activeRuntime() string {
+	if runtime, ok := configuredManagerRuntime(); ok {
+		return runtime
+	}
 	return agentruntime.ReadRuntime()
+}
+
+var managerRuntimeConfigPath = defaultManagerRuntimeConfigPath //nolint:gochecknoglobals // injectable for hermetic tmux runtime tests
+
+func defaultManagerRuntimeConfigPath() string {
+	paths, err := ResolvePaths(currentRepoRoot())
+	if err != nil {
+		return ""
+	}
+	return paths.ConfigYAML
+}
+
+func configuredManagerRuntime() (string, bool) {
+	path := managerRuntimeConfigPath()
+	if path == "" {
+		return "", false
+	}
+	if !oroconfig.HasAgentBlockWithPrecedence(path) {
+		return "", false
+	}
+	cfg, err := oroconfig.LoadWithPrecedence(path)
+	if err != nil || cfg == nil {
+		return "", false
+	}
+	tier, ok := cfg.Tiers[protocol.TierBalanced]
+	if !ok {
+		return "", false
+	}
+	switch runtime := strings.ToLower(strings.TrimSpace(tier.Runtime)); runtime {
+	case agentruntime.RuntimeClaude, agentruntime.RuntimeCodex:
+		return runtime, true
+	default:
+		return "", false
+	}
 }
 
 func runtimeBinary() string {

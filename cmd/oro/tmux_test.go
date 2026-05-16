@@ -13,6 +13,64 @@ import (
 // noopSleep is a no-op sleeper for tests to avoid real delays.
 func noopSleep(time.Duration) {}
 
+func TestMain(m *testing.M) {
+	tempRoot, err := os.MkdirTemp("", "oro-manager-runtime-test-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mkdir manager runtime test root: %v\n", err)
+		os.Exit(1)
+	}
+
+	home := filepath.Join(tempRoot, "home")
+	oroHome := filepath.Join(tempRoot, "oro-home")
+	for _, dir := range []string{home, oroHome} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			fmt.Fprintf(os.Stderr, "mkdir manager runtime test dir: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	previousConfigPath := managerRuntimeConfigPath
+	managerRuntimeConfigPath = func() string {
+		return filepath.Join(tempRoot, "project", ".oro", "config.yaml")
+	}
+	if err := os.Setenv("HOME", home); err != nil {
+		fmt.Fprintf(os.Stderr, "set HOME for manager runtime tests: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.Setenv("ORO_HOME", oroHome); err != nil {
+		fmt.Fprintf(os.Stderr, "set ORO_HOME for manager runtime tests: %v\n", err)
+		os.Exit(1)
+	}
+
+	code := m.Run()
+	managerRuntimeConfigPath = previousConfigPath
+	_ = os.RemoveAll(tempRoot)
+	os.Exit(code)
+}
+
+func isolateAgentRuntimeConfig(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	oroHome := filepath.Join(home, "oro-home")
+	if err := os.MkdirAll(oroHome, 0o700); err != nil {
+		t.Fatalf("mkdir oro home: %v", err)
+	}
+	projectConfigPath := filepath.Join(home, "project", ".oro", "config.yaml")
+	previousConfigPath := managerRuntimeConfigPath
+	managerRuntimeConfigPath = func() string { return projectConfigPath }
+	t.Cleanup(func() { managerRuntimeConfigPath = previousConfigPath })
+	t.Setenv("HOME", home)
+	t.Setenv("ORO_HOME", oroHome)
+	return oroHome
+}
+
+func writeAgentRuntimeConfig(t *testing.T, oroHome, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(oroHome, "config.yaml"), []byte(content), 0o600); err != nil {
+		t.Fatalf("write agent config: %v", err)
+	}
+}
+
 // fakeCmd records exec calls for testing without real tmux.
 // It supports both single-value and sequential (multi-value) outputs per key.
 // The mu mutex makes it safe for concurrent use (e.g., parallel SendKeys tests).
@@ -125,6 +183,8 @@ func callHasArgPair(call []string, arg, val string) bool {
 }
 
 func TestTmuxLayout(t *testing.T) {
+	isolateAgentRuntimeConfig(t)
+
 	t.Run("Create builds session with one manager window", func(t *testing.T) {
 		fake := newFakeCmd()
 		// has-session returns error (session does not exist)
@@ -806,7 +866,70 @@ func TestCreateVerifiesBeaconAfterInjection(t *testing.T) {
 	})
 }
 
+func TestManagerBinaryReadsConfiguredRuntime(t *testing.T) {
+	t.Run("agent balanced runtime overrides env var", func(t *testing.T) {
+		oroHome := isolateAgentRuntimeConfig(t)
+		t.Setenv(agentRuntimeEnvVar, runtimeClaude)
+		writeAgentRuntimeConfig(t, oroHome, `
+agent:
+  tiers:
+    balanced:
+      runtime: codex
+      model: gpt-5.5
+`)
+
+		if got := activeRuntime(); got != runtimeCodex {
+			t.Fatalf("activeRuntime() = %q, want %q", got, runtimeCodex)
+		}
+		if got := runtimeBinary(); got != "codex" {
+			t.Fatalf("runtimeBinary() = %q, want codex", got)
+		}
+		if got := execEnvCmd("manager", ""); strings.HasSuffix(got, " claude") || strings.Contains(got, "CLAUDE_CONFIG_DIR=") {
+			t.Fatalf("manager command should use codex and omit Claude config, got: %s", got)
+		}
+	})
+
+	t.Run("agent balanced claude overrides codex env var", func(t *testing.T) {
+		oroHome := isolateAgentRuntimeConfig(t)
+		t.Setenv(agentRuntimeEnvVar, runtimeCodex)
+		writeAgentRuntimeConfig(t, oroHome, `
+agent:
+  tiers:
+    balanced:
+      runtime: claude
+      model: claude-sonnet-4-6
+`)
+
+		if got := activeRuntime(); got != runtimeClaude {
+			t.Fatalf("activeRuntime() = %q, want %q", got, runtimeClaude)
+		}
+		if got := runtimeBinary(); got != "claude" {
+			t.Fatalf("runtimeBinary() = %q, want claude", got)
+		}
+	})
+
+	t.Run("no agent block falls back to env runtime", func(t *testing.T) {
+		isolateAgentRuntimeConfig(t)
+		t.Setenv(agentRuntimeEnvVar, runtimeCodex)
+
+		if got := activeRuntime(); got != runtimeCodex {
+			t.Fatalf("activeRuntime() = %q, want %q", got, runtimeCodex)
+		}
+	})
+
+	t.Run("no agent block defaults to claude", func(t *testing.T) {
+		isolateAgentRuntimeConfig(t)
+		t.Setenv(agentRuntimeEnvVar, "")
+
+		if got := activeRuntime(); got != runtimeClaude {
+			t.Fatalf("activeRuntime() = %q, want %q", got, runtimeClaude)
+		}
+	})
+}
+
 func TestExecEnvCmd(t *testing.T) {
+	isolateAgentRuntimeConfig(t)
+
 	t.Run("architect role sets all three env vars", func(t *testing.T) {
 		cmd := execEnvCmd("architect", "")
 		for _, envVar := range []string{"ORO_ROLE=architect", "BD_ACTOR=architect", "GIT_AUTHOR_NAME=architect"} {
@@ -901,6 +1024,8 @@ func TestExecEnvCmd(t *testing.T) {
 }
 
 func TestExecEnvCmdWithProject(t *testing.T) {
+	isolateAgentRuntimeConfig(t)
+
 	t.Run("includes add-dir and settings when project is provided", func(t *testing.T) {
 		// Set ORO_HOME for deterministic test output
 		t.Setenv("ORO_HOME", "/tmp/test-oro-home")
@@ -1086,6 +1211,8 @@ func TestPreTrustProject(t *testing.T) {
 }
 
 func TestExecEnvCmdBackwardCompat(t *testing.T) {
+	isolateAgentRuntimeConfig(t)
+
 	t.Run("empty project produces same output as before", func(t *testing.T) {
 		cmd := execEnvCmd("architect", "")
 
@@ -1147,6 +1274,8 @@ func TestExecEnvCmdBackwardCompat(t *testing.T) {
 }
 
 func TestExecEnvCmdRoleHistory(t *testing.T) {
+	isolateAgentRuntimeConfig(t)
+
 	t.Run("different roles get different CLAUDE_CONFIG_DIR", func(t *testing.T) {
 		archCmd := execEnvCmd("architect", "")
 		mgrCmd := execEnvCmd("manager", "")
@@ -1802,6 +1931,8 @@ func TestTmuxStatusBarColor(t *testing.T) {
 }
 
 func TestCreate_ExecEnvPattern(t *testing.T) {
+	isolateAgentRuntimeConfig(t)
+
 	// stubExecEnvReady stubs only WaitForPrompt + SendKeysVerified for exec-env
 	// pattern (no WaitForCommand needed since Claude IS the initial process).
 	stubExecEnvReady := func(fake *fakeCmd, sessionName, managerNudge string) {
