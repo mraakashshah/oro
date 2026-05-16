@@ -1253,6 +1253,82 @@ agent:
 	}
 }
 
+func TestEscalationCrossesRuntimeInOneWorker(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+	t.Setenv("HOME", filepath.Join(tmpDir, "home"))
+	t.Setenv("ORO_HOME", filepath.Join(tmpDir, "oro-home"))
+	t.Setenv("ORO_PROJECT", "")
+	writeWorkAgentModelConfig(t, tmpDir, `
+agent:
+  tiers:
+    balanced:
+      runtime: claude
+      model: claude-sonnet-test
+    deep:
+      runtime: codex
+      model: gpt-5.5-test
+      reasoning: high
+  roles:
+    worker:
+      tier: balanced
+      transport: cli
+    worker_escalation:
+      tier: deep
+      transport: cli
+`)
+
+	worktree := filepath.Join(tmpDir, ".worktrees", "oro-test")
+	claudeWorker := &testRuntimeWorkerSpawner{}
+	codexWorker := &testRuntimeWorkerSpawner{}
+	hasNewWorkCalls := 0
+	deps := &workDeps{
+		beadSrc: &fakeBeadStore{showDetail: testBead()},
+		wtMgr: &mockWorktreeManager{
+			createPath:   worktree,
+			createBranch: protocol.BranchPrefix + "oro-test",
+		},
+		spawner:        claudeWorker,
+		runtimeSpawner: worker.NewRuntimeSpawnerRouter(claudeWorker, codexWorker),
+		opsMgr: &sequentialOpsReviewer{results: []ops.Result{
+			{Verdict: ops.VerdictRejected, Feedback: "exercise cross-runtime escalation"},
+			{Verdict: ops.VerdictApproved},
+		}},
+		merger:        &mockMerger{result: &merge.Result{CommitSHA: "abc123"}},
+		repoRoot:      tmpDir,
+		defaultBranch: "main",
+		hasNewWork: func(_, _, _ string) bool {
+			hasNewWorkCalls++
+			return hasNewWorkCalls > 1
+		},
+		runQG: func(_ context.Context, _ string, _ bool) (bool, string, error) { return true, "", nil },
+	}
+	cfg := &workConfig{
+		beadID:  "oro-test",
+		timeout: 5 * time.Second,
+		bead:    testBead(),
+	}
+
+	if err := executeWork(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("executeWork: %v", err)
+	}
+	if claudeWorker.calls != 1 {
+		t.Fatalf("initial Claude worker calls = %d, want 1", claudeWorker.calls)
+	}
+	if got := claudeWorker.models[0]; got != "claude-sonnet-test" {
+		t.Fatalf("initial worker model = %q, want claude-sonnet-test", got)
+	}
+	if codexWorker.calls != 1 {
+		t.Fatalf("escalated Codex worker calls = %d, want 1", codexWorker.calls)
+	}
+	if got := codexWorker.models[0]; got != "gpt-5.5-test" {
+		t.Fatalf("escalated worker model = %q, want gpt-5.5-test", got)
+	}
+	if got := codexWorker.reasonings[0]; got != "high" {
+		t.Fatalf("escalated worker reasoning = %q, want high", got)
+	}
+}
+
 func writeWorkAgentModelConfig(t *testing.T, dir, content string) {
 	t.Helper()
 	oroDir := filepath.Join(dir, ".oro")

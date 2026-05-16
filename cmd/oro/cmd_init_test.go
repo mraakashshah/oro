@@ -12,7 +12,9 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"oro/pkg/config"
 	"oro/pkg/langprofile"
+	"oro/pkg/protocol"
 
 	"github.com/spf13/cobra"
 )
@@ -2551,6 +2553,52 @@ func TestInitWizardWritesProviderMode(t *testing.T) {
 		if !strings.Contains(content, want) {
 			t.Errorf("config.yaml should contain %q after wizard, got:\n%s", want, content)
 		}
+	}
+}
+
+func TestInitWizardWritesAgentTiers(t *testing.T) {
+	overrideToolDefs(t)
+	tmpDir := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", filepath.Join(home, "home"))
+	t.Setenv("ORO_HOME", filepath.Join(home, "oro-home"))
+
+	deps := &initDeps{
+		isTTY: func() bool { return true },
+		prompt: cannedPrompt([]string{
+			"claude-coding-codex-review",
+		}),
+	}
+
+	root := newTestRootForInitDeps(deps)
+	root.SetArgs([]string{"init", "--project-root", tmpDir, "--local"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	configPath := filepath.Join(tmpDir, ".oro", "config.yaml")
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load agent config: %v", err)
+	}
+	if cfg.ProviderMode != config.ProviderModeClaudeCodingCodexReview {
+		t.Fatalf("provider_mode = %q, want %q", cfg.ProviderMode, config.ProviderModeClaudeCodingCodexReview)
+	}
+	for _, tier := range []protocol.Tier{protocol.TierFast, protocol.TierBalanced, protocol.TierDeep, protocol.TierBackground} {
+		tierCfg, ok := cfg.Tiers[tier]
+		if !ok {
+			t.Fatalf("missing tier %q in hydrated agent config", tier)
+		}
+		if tierCfg.Runtime != runtimeClaude {
+			t.Fatalf("tier %q runtime = %q, want %q", tier, tierCfg.Runtime, runtimeClaude)
+		}
+		if tierCfg.Model == "" {
+			t.Fatalf("tier %q model is empty", tier)
+		}
+	}
+	if got := cfg.Roles["ops_review"].Runtime; got != runtimeCodex {
+		t.Fatalf("ops_review runtime = %q, want %q", got, runtimeCodex)
 	}
 }
 
