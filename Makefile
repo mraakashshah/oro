@@ -1,10 +1,13 @@
-.PHONY: build build-search-hook install install-git-hooks setup test test-all test-integration lint fmt vet gate clean stage-assets clean-assets dev-sync release mutate-go mutate-go-diff mutate-py mutate-py-full verify-bundled-libs download-ort vendor-sqlite-vec vendor-sqlite-vec-release test-vendor-sqlite-vec
+.PHONY: build build-search-hook install install-git-hooks setup test test-all test-integration lint nilaway fmt vet gate clean stage-assets clean-assets dev-sync release mutate-go mutate-go-diff mutate-py mutate-py-full verify-bundled-libs download-ort vendor-sqlite-vec vendor-sqlite-vec-release test-vendor-sqlite-vec
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 GO_BUILD_FLAGS ?= -buildvcs=false
 LDFLAGS := -ldflags "-X oro/internal/appversion.version=$(VERSION)"
 ORO_HOME ?= $(HOME)/.oro
 GOLANGCI_LINT_VERSION ?= v2.10.1
+NILAWAY_VERSION ?= v0.0.0-20260318203545-ad240b12fb4c
+NILAWAY_PACKAGES ?= ./cmd/... ./internal/... ./pkg/...
+NILAWAY_FLAGS ?= -pretty-print=false -exclude-test-files -include-pkgs=oro
 
 SQLITE_VEC_VERSION         ?= 0.1.6
 SQLITE_VEC_REPO            := asg017/sqlite-vec
@@ -123,7 +126,11 @@ test-integration:
 	@$(MAKE) clean-assets
 
 lint:
-	golangci-lint run --timeout 5m
+	GOCACHE="$(CURDIR)/.cache/go-build" GOLANGCI_LINT_CACHE="$(CURDIR)/.cache/golangci-lint" golangci-lint run --timeout 5m
+	$(MAKE) nilaway
+
+nilaway:
+	GOCACHE="$(CURDIR)/.cache/go-build" nilaway $(NILAWAY_FLAGS) $(NILAWAY_PACKAGES)
 
 fmt:
 	go tool gofumpt -w .
@@ -300,6 +307,7 @@ test-vendor-sqlite-vec:
 # setup installs all dev tooling required by the quality gate:
 #   - npm deps (biome, markdownlint-cli2) from package.json
 #   - golangci-lint at the pinned version via the official install script
+#   - NilAway at the pinned version via go install
 #   - git hooks via install-git-hooks
 #   Go tool deps (gofumpt, goimports, go-mutesting, govulncheck, shfmt) are pinned in
 #   go.mod and auto-fetched on first use via `go tool <name>`.
@@ -310,6 +318,8 @@ setup: install-git-hooks
 	npm install
 	@echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."
 	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(shell go env GOPATH)/bin $(GOLANGCI_LINT_VERSION)
+	@echo "Installing NilAway $(NILAWAY_VERSION)..."
+	go install go.uber.org/nilaway/cmd/nilaway@$(NILAWAY_VERSION)
 	@echo "Installing Python dependencies..."
 	uv sync
 	@echo "✓ Setup complete."

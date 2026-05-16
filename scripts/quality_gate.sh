@@ -54,7 +54,7 @@ trap 'exit 143' TERM
 # Keep the golangci-lint cache inside the QG temp directory. Shared
 # golangci-lint caches can collide across concurrent workers.
 export GOLANGCI_LINT_CACHE="$QG_DIR/golangci-lint-cache"
-export GOCACHE="${GOCACHE:-$QG_DIR/go-build-cache}"
+export GOCACHE="$QG_DIR/go-build-cache"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$QG_DIR/uv-cache}"
 
 # Resolve repo root node_modules (works from worktrees too).
@@ -590,6 +590,7 @@ lane_go() {
 
 	local tier2_checks=(
 		"golangci-lint" "GOCACHE=$QG_DIR/golangci-go-cache GOFLAGS=-buildvcs=false golangci-lint run --timeout 5m --allow-parallel-runners ./cmd/... ./internal/... ./pkg/..."
+		"nilaway" "nilaway -pretty-print=false -exclude-test-files -include-pkgs=oro ./cmd/... ./internal/... ./pkg/..."
 		"dead exports" "check_dead_exports"
 		"beadstore imports" "scripts/check-beadstore-imports.sh"
 	)
