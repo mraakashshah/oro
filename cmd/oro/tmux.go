@@ -172,6 +172,15 @@ func runtimeBinary() string {
 	}
 }
 
+func interactiveRuntimeCommand() string {
+	switch activeRuntime() {
+	case agentruntime.RuntimeCodex:
+		return "codex --sandbox danger-full-access --ask-for-approval never"
+	default:
+		return "claude"
+	}
+}
+
 func runtimeUsesClaudeConfig() bool {
 	return activeRuntime() == agentruntime.RuntimeClaude
 }
@@ -301,7 +310,7 @@ func execEnvCmd(role, project string) string {
 	base = appendDaemonEnvOverrides(base)
 
 	if !runtimeUsesClaudeConfig() {
-		return base + " " + runtimeBinary()
+		return base + " " + interactiveRuntimeCommand()
 	}
 
 	configBase := claudeConfigBase()

@@ -1098,13 +1098,13 @@ func TestExecEnvCmdWithProject(t *testing.T) {
 		t.Setenv(agentRuntimeEnvVar, runtimeCodex)
 		t.Setenv("ORO_HOME", "/tmp/test-oro-home")
 
-		cmd := execEnvCmd("architect", "myproject")
+		cmd := execEnvCmd("manager", "myproject")
 
 		if !strings.Contains(cmd, " ORO_PROJECT=myproject ") {
 			t.Errorf("expected ORO_PROJECT=myproject env var, got: %s", cmd)
 		}
-		if !strings.HasSuffix(cmd, " codex") {
-			t.Errorf("expected codex command suffix, got: %s", cmd)
+		if !strings.HasSuffix(cmd, " codex --sandbox danger-full-access --ask-for-approval never") {
+			t.Errorf("expected full-access autonomous codex command suffix, got: %s", cmd)
 		}
 		if strings.Contains(cmd, "--add-dir") || strings.Contains(cmd, "--settings") {
 			t.Errorf("expected codex command to avoid claude project flags, got: %s", cmd)
@@ -1263,8 +1263,8 @@ func TestExecEnvCmdBackwardCompat(t *testing.T) {
 
 		for _, role := range []string{"architect", "manager", "worker"} {
 			cmd := execEnvCmd(role, "")
-			if !strings.HasSuffix(cmd, " codex") {
-				t.Errorf("execEnvCmd(%q, \"\") should end with ' codex', got: %s", role, cmd)
+			if !strings.HasSuffix(cmd, " codex --sandbox danger-full-access --ask-for-approval never") {
+				t.Errorf("execEnvCmd(%q, \"\") should end with autonomous codex command, got: %s", role, cmd)
 			}
 			if strings.Contains(cmd, "CLAUDE_CONFIG_DIR=") {
 				t.Errorf("execEnvCmd(%q, \"\") should not include CLAUDE_CONFIG_DIR for codex, got: %s", role, cmd)
