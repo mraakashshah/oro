@@ -273,6 +273,51 @@ VALUES ('oro-human-owned', 'agent/oro-human-owned', 'unsafe_stale_branch', 'oper
 	}
 }
 
+func TestRecoveryResolveAfterMergeCanReleaseHumanOwnedQuarantine(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "state.db")
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "oro.pid"))
+	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+
+	db, err := openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	res, err := db.ExecContext(context.Background(), `
+INSERT INTO recovery_quarantines (bead_id, branch, reason, details, status, resolved_at)
+VALUES ('oro-human-owned', 'agent/oro-human-owned', 'unsafe_stale_branch', 'operator took branch', 'human_owned', datetime('now'))`)
+	if err != nil {
+		t.Fatalf("seed human-owned recovery quarantine: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("quarantine id: %v", err)
+	}
+	db.Close()
+
+	root := newRootCmd()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetArgs([]string{"recovery", "resolve", strconv.FormatInt(id, 10), "--mode", "resolved-after-merge"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("recovery resolve --mode resolved-after-merge: %v", err)
+	}
+
+	db, err = openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("reopen state db: %v", err)
+	}
+	defer db.Close()
+	var status string
+	if err := db.QueryRowContext(context.Background(), `SELECT status FROM recovery_quarantines WHERE id=?`, id).Scan(&status); err != nil {
+		t.Fatalf("query status: %v", err)
+	}
+	if status != "resolved" {
+		t.Fatalf("status = %q, want resolved", status)
+	}
+}
+
 func initRecoveryTestRepo(t *testing.T, dir, branch string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
