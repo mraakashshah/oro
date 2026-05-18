@@ -245,12 +245,6 @@ func NewWithRuntimeSpawner(id, socketPath string, spawner RuntimeStreamingSpawne
 	}, nil
 }
 
-// NewWithBothSpawners creates a Worker that connects to the Dispatcher at socketPath,
-// holding separate spawners for the claude and codex runtimes.
-func NewWithBothSpawners(id, socketPath string, claude, codex StreamingSpawner) (*Worker, error) {
-	return NewWithRuntimeSpawner(id, socketPath, NewRuntimeSpawnerRouter(claude, codex))
-}
-
 // NewWithConn creates a Worker with a pre-established connection (for testing).
 // spawner is treated as the claude runtime spawner.
 //
