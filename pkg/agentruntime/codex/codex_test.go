@@ -128,6 +128,38 @@ func TestCodexWorkerSpawnerAddsGitDirsForWorktree(t *testing.T) {
 	}
 }
 
+func TestCodexWorkerSpawnerUsesFullAccessSandbox(t *testing.T) {
+	workdir := t.TempDir()
+	binDir := t.TempDir()
+	report := filepath.Join(t.TempDir(), "args.txt")
+	fakeCodex := filepath.Join(binDir, "codex")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ORO_TEST_ARGS\"\n"
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("ORO_TEST_ARGS", report)
+
+	spawner := codexruntime.NewWorkerSpawner()
+	proc, stdout, _, err := spawner.Spawn(context.Background(), "gpt-5.5", "finish the bead", workdir)
+	if err != nil {
+		t.Fatalf("Spawn() error = %v", err)
+	}
+	defer stdout.Close()
+	if err := proc.Wait(); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+
+	gotBytes, err := os.ReadFile(report)
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	gotArgs := strings.Split(strings.TrimSpace(string(gotBytes)), "\n")
+	if !argPairPresent(gotArgs, "--sandbox", "danger-full-access") {
+		t.Fatalf("codex worker args must use full-access sandbox for git/state writes, got %v", gotArgs)
+	}
+}
+
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // test helper uses fixed git binary

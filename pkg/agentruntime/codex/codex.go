@@ -92,7 +92,7 @@ func buildExecArgsWithReasoning(model, reasoning, prompt string) []string {
 }
 
 func buildWorkerExecArgsWithReasoning(model, reasoning, prompt, workdir string) []string {
-	args := buildExecArgPrefix(model, reasoning)
+	args := buildExecArgPrefixWithSandbox(model, reasoning, "danger-full-access")
 	if gitCommonDir := resolveGitCommonDir(workdir); gitCommonDir != "" {
 		args = append(args, "--add-dir", gitCommonDir)
 		if gitDir := resolveGitDir(workdir); gitDir != "" && gitDir != gitCommonDir {
@@ -104,7 +104,11 @@ func buildWorkerExecArgsWithReasoning(model, reasoning, prompt, workdir string) 
 }
 
 func buildExecArgPrefix(model, reasoning string) []string {
-	args := []string{"exec", "--skip-git-repo-check", "--sandbox", "workspace-write"}
+	return buildExecArgPrefixWithSandbox(model, reasoning, "workspace-write")
+}
+
+func buildExecArgPrefixWithSandbox(model, reasoning, sandbox string) []string {
+	args := []string{"exec", "--skip-git-repo-check", "--sandbox", sandbox}
 	model = normalizeCodexModel(model)
 	if model != "" {
 		args = append(args, "--model", model)
