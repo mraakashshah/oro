@@ -80,7 +80,7 @@ func TestCodexWorkerSpawnerSetsPWDToWorkdir(t *testing.T) {
 	}
 }
 
-func TestCodexWorkerSpawnerAddsGitCommonDirForWorktree(t *testing.T) {
+func TestCodexWorkerSpawnerAddsGitDirsForWorktree(t *testing.T) {
 	repo := t.TempDir()
 	runGit(t, repo, "init")
 	runGit(t, repo, "config", "user.email", "oro-test@example.invalid")
@@ -119,13 +119,13 @@ func TestCodexWorkerSpawnerAddsGitCommonDirForWorktree(t *testing.T) {
 		t.Fatalf("read report: %v", err)
 	}
 	gotArgs := strings.Split(strings.TrimSpace(string(gotBytes)), "\n")
-	wantGitDir := strings.TrimSpace(runGitOutput(t, worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"))
-	for i := 0; i+1 < len(gotArgs); i++ {
-		if gotArgs[i] == "--add-dir" && gotArgs[i+1] == wantGitDir {
-			return
+	wantCommonDir := strings.TrimSpace(runGitOutput(t, worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+	wantGitDir := strings.TrimSpace(runGitOutput(t, worktree, "rev-parse", "--path-format=absolute", "--git-dir"))
+	for _, wantDir := range []string{wantCommonDir, wantGitDir} {
+		if !argPairPresent(gotArgs, "--add-dir", wantDir) {
+			t.Fatalf("codex args missing --add-dir %q: %v", wantDir, gotArgs)
 		}
 	}
-	t.Fatalf("codex args missing --add-dir %q: %v", wantGitDir, gotArgs)
 }
 
 func runGit(t *testing.T, dir string, args ...string) {
@@ -145,6 +145,15 @@ func runGitOutput(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %v failed: %v", args, err)
 	}
 	return string(out)
+}
+
+func argPairPresent(args []string, key, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == key && args[i+1] == value {
+			return true
+		}
+	}
+	return false
 }
 
 func codexruntimeTestBuildExecArgs(model, prompt string) []string {

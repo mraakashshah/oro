@@ -95,6 +95,9 @@ func buildWorkerExecArgsWithReasoning(model, reasoning, prompt, workdir string) 
 	args := buildExecArgPrefix(model, reasoning)
 	if gitCommonDir := resolveGitCommonDir(workdir); gitCommonDir != "" {
 		args = append(args, "--add-dir", gitCommonDir)
+		if gitDir := resolveGitDir(workdir); gitDir != "" && gitDir != gitCommonDir {
+			args = append(args, "--add-dir", gitDir)
+		}
 	}
 	args = append(args, prompt)
 	return args
@@ -114,12 +117,20 @@ func buildExecArgPrefix(model, reasoning string) []string {
 }
 
 func resolveGitCommonDir(workdir string) string {
+	return resolveGitDirFlag(workdir, "--git-common-dir")
+}
+
+func resolveGitDir(workdir string) string {
+	return resolveGitDirFlag(workdir, "--git-dir")
+}
+
+func resolveGitDirFlag(workdir, flag string) string {
 	if strings.TrimSpace(workdir) == "" {
 		return ""
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", workdir, "rev-parse", "--path-format=absolute", "--git-common-dir") //nolint:gosec // fixed git invocation
+	cmd := exec.CommandContext(ctx, "git", "-C", workdir, "rev-parse", "--path-format=absolute", flag) //nolint:gosec // fixed git invocation
 	cmd.Env = processenv.ForWorkdir(os.Environ(), workdir)
 	out, err := cmd.Output()
 	if err != nil {
