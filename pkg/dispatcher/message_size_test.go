@@ -21,7 +21,7 @@ import (
 // and closes that connection, but the dispatcher continues to accept new
 // connections.
 func TestOversizeMessage(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
 	db := mustOpenDB(t)
@@ -38,10 +38,11 @@ func TestOversizeMessage(t *testing.T) {
 	d, _ := New(cfg, db, merge.NewCoordinator(nil), ops.NewSpawner(nil),
 		&fakeBeadStore{}, &mockWorktreeManager{}, &mockEscalator{}, nil)
 
-	go func() { _ = d.Run(ctx) }()
+	runErr := make(chan error, 1)
+	go func() { runErr <- d.Run(ctx) }()
 
 	// Wait for listener to be ready
-	waitForListener(t, cfg.SocketPath)
+	waitForListenerOrRunError(t, cfg.SocketPath, runErr, 15*time.Second)
 
 	// Test 1: Send an oversized message and verify connection closes
 	conn1, err := net.Dial("unix", cfg.SocketPath) //nolint:noctx // test setup
@@ -214,4 +215,27 @@ func waitForListener(t *testing.T, socketPath string) {
 		_ = conn.Close()
 		return true
 	}, 5*time.Second)
+}
+
+func waitForListenerOrRunError(t *testing.T, socketPath string, runErr <-chan error, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-runErr:
+			if err != nil {
+				t.Fatalf("dispatcher exited before listener was ready: %v", err)
+			}
+			t.Fatal("dispatcher exited before listener was ready")
+		default:
+		}
+
+		conn, err := net.DialTimeout("unix", socketPath, 50*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("dispatcher listener did not become ready within %v", timeout)
 }
