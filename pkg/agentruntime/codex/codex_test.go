@@ -5,13 +5,52 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"oro/pkg/agentruntime"
 	codexruntime "oro/pkg/agentruntime/codex"
 	"oro/pkg/ops"
+	"oro/pkg/protocol"
 	"oro/pkg/worker"
 )
+
+func TestCodexRuntimeImplementsInterface(t *testing.T) {
+	var _ agentruntime.Runtime = (*codexruntime.Runtime)(nil)
+}
+
+func TestCodexRuntimeDescriptors(t *testing.T) {
+	runtime := codexruntime.NewRuntime()
+
+	if got := runtime.ID(); got != agentruntime.RuntimeIDCodex {
+		t.Fatalf("ID() = %q, want %q", got, agentruntime.RuntimeIDCodex)
+	}
+	if got := runtime.StreamFormat(); got != agentruntime.StreamFormatLineText {
+		t.Fatalf("StreamFormat() = %q, want %q", got, agentruntime.StreamFormatLineText)
+	}
+	if runtime.SupportsHooks() {
+		t.Fatal("SupportsHooks() = true, want false")
+	}
+	if runtime.SupportsProjectSkillInstall() {
+		t.Fatal("SupportsProjectSkillInstall() = true, want false")
+	}
+	for _, tc := range []struct {
+		role string
+		tier protocol.Tier
+	}{
+		{role: "", tier: ""},
+		{role: "worker", tier: protocol.TierFast},
+		{role: "spec_challenger", tier: protocol.TierDeep},
+	} {
+		if got := runtime.DefaultTierModel(tc.role, tc.tier); got != "" {
+			t.Fatalf("DefaultTierModel(%q, %q) = %q, want empty string", tc.role, tc.tier, got)
+		}
+	}
+	if got := runtime.InstructionLayout(); !reflect.DeepEqual(got, agentruntime.InstructionLayout{}) {
+		t.Fatalf("InstructionLayout() = %#v, want zero value", got)
+	}
+}
 
 func TestCodexRuntimeSpawnContract(t *testing.T) {
 	t.Parallel()

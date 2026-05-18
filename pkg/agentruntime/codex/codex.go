@@ -12,12 +12,54 @@ import (
 	"strings"
 	"time"
 
+	"oro/pkg/agentruntime"
 	"oro/pkg/ops"
 	"oro/pkg/processenv"
+	"oro/pkg/protocol"
 	"oro/pkg/worker"
 )
 
 const commandName = "codex"
+
+// Runtime describes Codex runtime capabilities and defaults.
+type Runtime struct{}
+
+// NewRuntime creates a Codex runtime descriptor.
+//
+//oro:testonly — production registry wiring is deferred to oro-hmm8 spawn unification.
+func NewRuntime() *Runtime {
+	return &Runtime{}
+}
+
+// ID reports the stable Codex runtime identifier.
+func (r *Runtime) ID() agentruntime.RuntimeID {
+	return agentruntime.RuntimeIDCodex
+}
+
+// DefaultTierModel leaves model resolution to the configured role/tier resolver.
+func (r *Runtime) DefaultTierModel(role string, tier protocol.Tier) string {
+	return ""
+}
+
+// StreamFormat reports Codex's plain line-oriented stdout contract.
+func (r *Runtime) StreamFormat() agentruntime.StreamFormat {
+	return agentruntime.StreamFormatLineText
+}
+
+// InstructionLayout returns the default instruction layout placeholder.
+func (r *Runtime) InstructionLayout() agentruntime.InstructionLayout {
+	return agentruntime.InstructionLayout{}
+}
+
+// SupportsHooks reports that Codex does not support project hook configuration.
+func (r *Runtime) SupportsHooks() bool {
+	return false
+}
+
+// SupportsProjectSkillInstall reports that Codex does not support project skill installs.
+func (r *Runtime) SupportsProjectSkillInstall() bool {
+	return false
+}
 
 // WorkerSpawner implements the worker.StreamingSpawner contract for Codex.
 type WorkerSpawner struct {
