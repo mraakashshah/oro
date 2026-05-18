@@ -12038,6 +12038,192 @@ func TestProgressTimeoutTriggersEscalation(t *testing.T) {
 		}
 	})
 
+	t.Run("dirty timed-out worktree is recovery quarantined", func(t *testing.T) {
+		d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
+
+		d.cfg.ProgressTimeout = 1 * time.Second
+		d.shutdownRunner = &mockCommandRunner{
+			callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+				if name == "git" && strings.Join(args, " ") == "-C /tmp/worktree-dirty status --porcelain" {
+					return []byte(" M pkg/dispatcher/worker_pool.go\n?? recovery-notes.md\n"), nil
+				}
+				return nil, nil
+			},
+		}
+
+		now := time.Now()
+		d.nowFunc = func() time.Time { return now }
+
+		beadID := "bead-dirty-stalled"
+		workerID := "w-dirty-stalled"
+		beadSrc.mu.Lock()
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+		beadSrc.mu.Unlock()
+
+		if _, err := d.db.ExecContext(context.Background(),
+			`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`,
+			beadID, workerID, "/tmp/worktree-dirty"); err != nil {
+			t.Fatalf("insert active assignment: %v", err)
+		}
+		var assignmentID int64
+		if err := d.db.QueryRowContext(context.Background(),
+			`SELECT id FROM assignments WHERE bead_id=?`, beadID).Scan(&assignmentID); err != nil {
+			t.Fatalf("query assignment id: %v", err)
+		}
+
+		server, client := net.Pipe()
+		t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
+
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:           workerID,
+			conn:         server,
+			state:        protocol.WorkerBusy,
+			beadID:       beadID,
+			worktree:     "/tmp/worktree-dirty",
+			assignmentID: assignmentID,
+			lastSeen:     now,
+			lastProgress: now.Add(-2 * time.Second),
+			encoder:      json.NewEncoder(server),
+		}
+		d.attemptCounts[beadID] = 1
+		d.handoffCounts[beadID] = 1
+		d.mu.Unlock()
+
+		d.checkHeartbeats(context.Background())
+
+		var assignmentStatus string
+		if err := d.db.QueryRowContext(context.Background(),
+			`SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+			t.Fatalf("query assignment status: %v", err)
+		}
+		if assignmentStatus != "quarantined" {
+			t.Fatalf("dirty timed-out assignment status = %q, want quarantined", assignmentStatus)
+		}
+
+		beadSrc.mu.Lock()
+		_, reopened := beadSrc.updated[beadID]
+		beadSrc.mu.Unlock()
+		if reopened {
+			t.Fatal("dirty timed-out bead was reopened; dirty work must stay non-assignable")
+		}
+
+		if got := eventCount(t, d.db, "recovery_work_quarantined"); got != 1 {
+			t.Fatalf("recovery_work_quarantined events = %d, want 1", got)
+		}
+
+		var quarantines int
+		if err := d.db.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM recovery_quarantines WHERE bead_id=? AND reason='progress_timeout_recovery_blocked' AND status='open'`,
+			beadID).Scan(&quarantines); err != nil {
+			t.Fatalf("count recovery quarantines: %v", err)
+		}
+		if quarantines != 1 {
+			t.Fatalf("open progress timeout recovery quarantines = %d, want 1", quarantines)
+		}
+
+		healthJSON, err := d.applyHealth()
+		if err != nil {
+			t.Fatalf("applyHealth: %v", err)
+		}
+		if !strings.Contains(healthJSON, `"recovery_quarantines_open":1`) {
+			t.Fatalf("health did not report open recovery quarantine: %s", healthJSON)
+		}
+
+		if len(esc.Messages()) != 1 {
+			t.Fatalf("expected stuck-worker escalation, got %d messages", len(esc.Messages()))
+		}
+	})
+
+	t.Run("clean timed-out worktree with unmerged branch is recovery quarantined", func(t *testing.T) {
+		d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
+
+		d.cfg.ProgressTimeout = 1 * time.Second
+		d.shutdownRunner = &mockCommandRunner{
+			callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+				if name == "git" && strings.Join(args, " ") == "-C /tmp/worktree-branch-ahead status --porcelain" {
+					return nil, nil
+				}
+				if name == "git" && strings.Join(args, " ") == "-C /tmp/worktree-branch-ahead rev-list --count epic/parent..agent/bead-branch-stalled" {
+					return []byte("2\n"), nil
+				}
+				return nil, nil
+			},
+		}
+
+		now := time.Now()
+		d.nowFunc = func() time.Time { return now }
+
+		beadID := "bead-branch-stalled"
+		workerID := "w-branch-stalled"
+		beadSrc.mu.Lock()
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+		beadSrc.mu.Unlock()
+
+		if _, err := d.db.ExecContext(context.Background(),
+			`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`,
+			beadID, workerID, "/tmp/worktree-branch-ahead"); err != nil {
+			t.Fatalf("insert active assignment: %v", err)
+		}
+		var assignmentID int64
+		if err := d.db.QueryRowContext(context.Background(),
+			`SELECT id FROM assignments WHERE bead_id=?`, beadID).Scan(&assignmentID); err != nil {
+			t.Fatalf("query assignment id: %v", err)
+		}
+
+		server, client := net.Pipe()
+		t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
+
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:           workerID,
+			conn:         server,
+			state:        protocol.WorkerBusy,
+			beadID:       beadID,
+			worktree:     "/tmp/worktree-branch-ahead",
+			assignmentID: assignmentID,
+			baseBranch:   "epic/parent",
+			lastSeen:     now,
+			lastProgress: now.Add(-2 * time.Second),
+			encoder:      json.NewEncoder(server),
+		}
+		d.attemptCounts[beadID] = 1
+		d.handoffCounts[beadID] = 1
+		d.mu.Unlock()
+
+		d.checkHeartbeats(context.Background())
+
+		var assignmentStatus string
+		if err := d.db.QueryRowContext(context.Background(),
+			`SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+			t.Fatalf("query assignment status: %v", err)
+		}
+		if assignmentStatus != "quarantined" {
+			t.Fatalf("branch-ahead timed-out assignment status = %q, want quarantined", assignmentStatus)
+		}
+
+		beadSrc.mu.Lock()
+		_, reopened := beadSrc.updated[beadID]
+		beadSrc.mu.Unlock()
+		if reopened {
+			t.Fatal("branch-ahead timed-out bead was reopened; branch work must stay non-assignable")
+		}
+
+		var quarantines int
+		if err := d.db.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM recovery_quarantines WHERE bead_id=? AND reason='progress_timeout_recovery_blocked' AND status='open'`,
+			beadID).Scan(&quarantines); err != nil {
+			t.Fatalf("count recovery quarantines: %v", err)
+		}
+		if quarantines != 1 {
+			t.Fatalf("open progress timeout recovery quarantines = %d, want 1", quarantines)
+		}
+
+		if len(esc.Messages()) != 1 {
+			t.Fatalf("expected stuck-worker escalation, got %d messages", len(esc.Messages()))
+		}
+	})
+
 	t.Run("busy worker with recent progress is not stuck", func(t *testing.T) {
 		d, _, _, esc, _, _ := newTestDispatcher(t)
 

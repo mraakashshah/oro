@@ -325,6 +325,8 @@ func (d *Dispatcher) touchProgress(workerID string) {
 type workerExitInfo struct {
 	workerID     string
 	beadID       string
+	worktree     string
+	baseBranch   string
 	assignmentID int64
 	prevSession  bool // worker is from a previous dispatcher session
 	managed      bool // worker was spawned by the dispatcher (procMgr)
@@ -357,19 +359,48 @@ func (d *Dispatcher) escalateTimedOutWorkers(ctx context.Context, dead, stuck []
 		}
 	}
 	for _, sw := range stuck {
-		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuckWorker, sw.beadID,
-			"worker stalled with no progress", "progress timeout for worker "+sw.workerID), sw.beadID, sw.workerID)
-		if sw.beadID != "" {
-			// Reset the bead to "open" so it can be reassigned, mirroring the
-			// graceful-disconnect path in dispatcher.go.
-			if err := d.updateBeadStatus(ctx, sw.beadID, "open"); err != nil {
-				_ = d.logEvent(ctx, "progress_timeout_bead_reset_failed", "dispatcher", sw.beadID, sw.workerID,
-					fmt.Sprintf(`{"error":%q}`, err.Error()))
+		d.handleStuckTimedOutWorker(ctx, sw)
+	}
+}
+
+func (d *Dispatcher) handleStuckTimedOutWorker(ctx context.Context, sw workerExitInfo) {
+	d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuckWorker, sw.beadID,
+		"worker stalled with no progress", "progress timeout for worker "+sw.workerID), sw.beadID, sw.workerID)
+	if sw.beadID == "" {
+		return
+	}
+
+	if sw.assignmentID > 0 {
+		blocked, details, err := d.recoveryWorkBlocked(ctx, sw.beadID, sw.worktree, sw.baseBranch)
+		if blocked || err != nil {
+			if err != nil {
+				details = appendRecoveryDetail(details, "error: "+err.Error())
 			}
-			_ = d.completeAssignment(ctx, sw.assignmentID, sw.beadID)
+			if details == "" {
+				details = "progress timeout could not prove worker recovery state safe"
+			}
+			d.quarantineUnsafeRecoveryWork(ctx, recoveryQuarantine{
+				BeadID:       sw.beadID,
+				AssignmentID: sw.assignmentID,
+				WorkerID:     sw.workerID,
+				Worktree:     sw.worktree,
+				Branch:       protocol.BranchPrefix + sw.beadID,
+				Reason:       "progress_timeout_recovery_blocked",
+				Details:      details,
+			})
 			d.clearBeadTracking(sw.beadID)
+			return
 		}
 	}
+
+	// Reset the bead to "open" so it can be reassigned, mirroring the
+	// graceful-disconnect path in dispatcher.go.
+	if err := d.updateBeadStatus(ctx, sw.beadID, "open"); err != nil {
+		_ = d.logEvent(ctx, "progress_timeout_bead_reset_failed", "dispatcher", sw.beadID, sw.workerID,
+			fmt.Sprintf(`{"error":%q}`, err.Error()))
+	}
+	_ = d.completeAssignment(ctx, sw.assignmentID, sw.beadID)
+	d.clearBeadTracking(sw.beadID)
 }
 
 // heartbeatLoop checks for workers that have exceeded the heartbeat timeout
@@ -656,7 +687,7 @@ func (d *Dispatcher) removeDeadWorkersLocked(ctx context.Context, dead []string)
 		if w == nil {
 			continue
 		}
-		deadWorkers = append(deadWorkers, workerExitInfo{workerID: id, beadID: w.beadID, assignmentID: w.assignmentID, prevSession: w.prevSession, managed: w.managed})
+		deadWorkers = append(deadWorkers, workerExitInfo{workerID: id, beadID: w.beadID, worktree: w.worktree, baseBranch: w.baseBranch, assignmentID: w.assignmentID, prevSession: w.prevSession, managed: w.managed})
 		if w.managed && !w.spawnFor {
 			managedExits++
 		}
@@ -686,7 +717,7 @@ func (d *Dispatcher) removeStuckWorkersLocked(ctx context.Context, stuck []strin
 		if w == nil {
 			continue
 		}
-		stuckWorkers = append(stuckWorkers, workerExitInfo{workerID: id, beadID: w.beadID, assignmentID: w.assignmentID, managed: w.managed})
+		stuckWorkers = append(stuckWorkers, workerExitInfo{workerID: id, beadID: w.beadID, worktree: w.worktree, baseBranch: w.baseBranch, assignmentID: w.assignmentID, managed: w.managed})
 		if w.managed && !w.spawnFor {
 			managedExits++
 		}

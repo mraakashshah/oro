@@ -7675,6 +7675,66 @@ func (d *Dispatcher) processQuarantined(ctx context.Context, quarantined []quara
 	}
 }
 
+func (d *Dispatcher) recoveryWorkBlocked(ctx context.Context, beadID, worktree, baseBranch string) (bool, string, error) {
+	if worktree == "" {
+		return true, "missing worktree path", nil
+	}
+	if !d.worktrees.Exists(ctx, worktree) {
+		return true, "worktree path missing: " + worktree, nil
+	}
+
+	dirty, dirtyStatus, dirtyErr := d.worktreeDirty(ctx, worktree)
+	if dirty || dirtyErr != nil {
+		return dirty, dirtyStatus, dirtyErr
+	}
+	return d.branchHasUnmergedWork(ctx, beadID, worktree, baseBranch)
+}
+
+func (d *Dispatcher) worktreeDirty(ctx context.Context, worktree string) (dirty bool, status string, err error) {
+	out, err := d.shutdownRunner.Run(ctx, "git", "-C", worktree, "status", "--porcelain")
+	if err != nil {
+		return false, "", fmt.Errorf("git status in %s: %w", worktree, err)
+	}
+	status = strings.TrimSpace(string(out))
+	return status != "", status, nil
+}
+
+func (d *Dispatcher) branchHasUnmergedWork(ctx context.Context, beadID, worktree, baseBranch string) (bool, string, error) {
+	if beadID == "" {
+		return false, "", nil
+	}
+	if baseBranch == "" {
+		baseBranch = d.cfg.DefaultBranch
+	}
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+	branch := protocol.BranchPrefix + beadID
+	out, err := d.shutdownRunner.Run(ctx, "git", "-C", worktree, "rev-list", "--count", baseBranch+".."+branch)
+	if err != nil {
+		return false, "", fmt.Errorf("git rev-list %s..%s in %s: %w", baseBranch, branch, worktree, err)
+	}
+	countText := strings.TrimSpace(string(out))
+	if countText == "" {
+		return false, "", nil
+	}
+	count, err := strconv.Atoi(countText)
+	if err != nil {
+		return false, "", fmt.Errorf("parse git rev-list count %q for %s..%s: %w", countText, baseBranch, branch, err)
+	}
+	if count == 0 {
+		return false, "", nil
+	}
+	return true, fmt.Sprintf("%s has %d commit(s) not in %s", branch, count, baseBranch), nil
+}
+
+func appendRecoveryDetail(details, extra string) string {
+	if details == "" {
+		return extra
+	}
+	return details + "; " + extra
+}
+
 // staleAssignmentSweepLoop sweeps stale active assignments after a startup
 // grace window, then keeps sweeping periodically for long-lived dispatcher
 // sessions. The initial grace preserves time for workers from a surviving
