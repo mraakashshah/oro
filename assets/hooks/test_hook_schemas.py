@@ -93,8 +93,21 @@ def _codex_stop(transcript_path: str = "/nonexistent/transcript.jsonl") -> dict:
     """Codex adds tool_use_id and turn_id to Stop."""
     return {
         **_claude_stop(transcript_path),
+        "hook_event_name": "Stop",
+        "cwd": "/nonexistent/project",
         "tool_use_id": "tu_last",
         "turn_id": "turn-999",
+    }
+
+
+def _codex_user_prompt_submit() -> dict:
+    return {
+        "hook_event_name": "UserPromptSubmit",
+        "cwd": "/nonexistent/project",
+        "session_id": "sess-abc123",
+        "transcript_path": "/nonexistent/transcript.jsonl",
+        "turn_id": "turn-001",
+        "prompt": "continue",
     }
 
 
@@ -241,15 +254,20 @@ class TestStopChecklistSchema:
         r = _run_hook(self._cmd, _codex_stop())
         assert r.returncode == 0
 
-    def test_outputs_empty_json_for_claude_shape(self) -> None:
+    def test_outputs_continue_true_for_claude_shape(self) -> None:
         r = _run_hook(self._cmd, _claude_stop())
         assert r.returncode == 0
-        assert json.loads(r.stdout) == {}
+        assert json.loads(r.stdout) == {"continue": True}
 
-    def test_outputs_empty_json_for_codex_shape(self) -> None:
+    def test_outputs_continue_true_for_codex_shape(self) -> None:
         r = _run_hook(self._cmd, _codex_stop())
         assert r.returncode == 0
-        assert json.loads(r.stdout) == {}
+        assert json.loads(r.stdout) == {"continue": True}
+
+    def test_outputs_continue_true_for_user_prompt_submit_shape(self) -> None:
+        r = _run_hook(self._cmd, _codex_user_prompt_submit())
+        assert r.returncode == 0
+        assert json.loads(r.stdout) == {"continue": True}
 
 
 # ── enforce_skills.py ─────────────────────────────────────────────────────────

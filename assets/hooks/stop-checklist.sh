@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Stop hook: landing-the-plane checklist
 # Stop hooks cannot inject context (fires after response).
-# Output empty JSON to satisfy hook schema without errors.
+# Always continue so Stop/UserPromptSubmit hook use can never block the user.
 set -euo pipefail
 
-echo '{}'
+echo '{"continue":true}'

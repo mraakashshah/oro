@@ -12,7 +12,7 @@ Hooks under test:
   enforce_skills        — skill check fires for qualifying tools
   prompt_injection_guard — warning fires for injection patterns
   auto-format           — formatter runs for supported extensions
-  stop-checklist        — outputs {} for both shapes
+  stop-checklist        — outputs {"continue": true} for both shapes
   context_pruner        — nudge fires for large outputs
   session_start_global  — injects Superpowers into additionalContext
   oro-search-hook       — deny large code files; allow small/test/config
@@ -119,6 +119,8 @@ def _codex_stop(transcript_path: str = "/nonexistent/transcript.jsonl") -> dict:
     """Codex adds tool_use_id and turn_id to Stop."""
     return {
         **_claude_stop(transcript_path),
+        "hook_event_name": "Stop",
+        "cwd": "/nonexistent/project",
         "tool_use_id": "tu_last",
         "turn_id": "turn-999",
     }
@@ -509,35 +511,35 @@ class TestAutoFormatParity:
 
 
 class TestStopChecklistParity:
-    """stop-checklist.sh always outputs {} for both runtimes."""
+    """stop-checklist.sh always emits non-blocking output for both runtimes."""
 
     _cmd: ClassVar[list[str]] = ["bash", str(HOOKS_DIR / "stop-checklist.sh")]
 
-    def test_claude_stop_outputs_empty_json(self) -> None:
+    def test_claude_stop_outputs_continue_true(self) -> None:
         r = _run_hook(self._cmd, _claude_stop())
         assert r.returncode == 0
-        assert json.loads(r.stdout) == {}
+        assert json.loads(r.stdout) == {"continue": True}
 
-    def test_codex_stop_outputs_empty_json(self) -> None:
+    def test_codex_stop_outputs_continue_true(self) -> None:
         r = _run_hook(self._cmd, _codex_stop())
         assert r.returncode == 0
-        assert json.loads(r.stdout) == {}
+        assert json.loads(r.stdout) == {"continue": True}
 
-    def test_claude_stop_json_has_no_extra_keys(self) -> None:
+    def test_claude_stop_json_has_only_continue_key(self) -> None:
         r = _run_hook(self._cmd, _claude_stop())
         assert r.returncode == 0
-        assert list(json.loads(r.stdout).keys()) == []
+        assert list(json.loads(r.stdout).keys()) == ["continue"]
 
-    def test_codex_stop_json_has_no_extra_keys(self) -> None:
+    def test_codex_stop_json_has_only_continue_key(self) -> None:
         r = _run_hook(self._cmd, _codex_stop())
         assert r.returncode == 0
-        assert list(json.loads(r.stdout).keys()) == []
+        assert list(json.loads(r.stdout).keys()) == ["continue"]
 
     def test_claude_and_codex_produce_identical_output(self) -> None:
         r_claude = _run_hook(self._cmd, _claude_stop())
         r_codex = _run_hook(self._cmd, _codex_stop())
         assert r_claude.returncode == r_codex.returncode == 0
-        assert json.loads(r_claude.stdout) == json.loads(r_codex.stdout) == {}
+        assert json.loads(r_claude.stdout) == json.loads(r_codex.stdout) == {"continue": True}
 
 
 # ── context_pruner.py ─────────────────────────────────────────────────────────

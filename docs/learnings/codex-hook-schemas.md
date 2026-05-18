@@ -254,9 +254,12 @@ All four fields are **ABSENT** from Stop hook stdin.
 
 ### Output Shape
 ```json
-{}
+{
+  "continue": true
+}
 ```
-(No context injection possible — session has ended.)
+No context injection is possible because the session has ended. The explicit `continue: true`
+keeps the hook fail-open if reused for Codex `Stop` or `UserPromptSubmit` input shapes.
 
 ---
 
@@ -284,12 +287,13 @@ None registered in Oro (`.claude/settings.json` has no `UserPromptSubmit` key).
 ### Output Shape (if a hook were registered)
 ```json
 {
-  "hookSpecificOutput": {
-    "hookEventName": "UserPromptSubmit",
-    "additionalContext": "..."
-  }
+  "continue": true
 }
 ```
+
+Oro hooks registered on `UserPromptSubmit` must not block the user's prompt submission. If Codex
+skips a `Stop` hook during server-side compaction, Oro relies on next-turn handoff capture rather
+than Stop-time injection.
 
 ---
 
