@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -17,7 +18,7 @@ func ForWorkdir(env []string, workdir string) []string {
 	pwdSet := workdir == ""
 	values := envValues(env)
 	cacheRoot := runtimeRoot(values["ORO_SUBPROCESS_CACHE_ROOT"], workdir, defaultCacheRoot())
-	tmpRoot := runtimeRoot(values["ORO_SUBPROCESS_TMP_ROOT"], workdir, filepath.Join(os.TempDir(), "oro-subprocess"))
+	tmpRoot := runtimeRoot(values["ORO_SUBPROCESS_TMP_ROOT"], workdir, defaultTmpRoot())
 	token := runtimeToken(workdir)
 	rewriteGOMODCACHE := workdir != "" && pathInside(values["GOMODCACHE"], workdir)
 
@@ -108,6 +109,14 @@ func defaultCacheRoot() string {
 		return filepath.Join(os.TempDir(), "oro-subprocess-cache")
 	}
 	return filepath.Join(dir, "oro", "subprocess")
+}
+
+func defaultTmpRoot() string {
+	root := os.TempDir()
+	if runtime.GOOS == "darwin" {
+		root = "/tmp"
+	}
+	return filepath.Join(root, "oro-subprocess")
 }
 
 func runtimeRoot(configured, workdir, fallback string) string {

@@ -3,6 +3,7 @@ package processenv_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -83,6 +84,32 @@ func TestForWorkdirIsolatesCacheAndTempOutsideWorktree(t *testing.T) {
 	}
 	if _, err := os.Stat(env["TMPDIR"]); err != nil {
 		t.Fatalf("TMPDIR %q was not created: %v", env["TMPDIR"], err)
+	}
+}
+
+func TestForWorkdirUsesShortTmpRootOnDarwin(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin has a short Unix socket path limit")
+	}
+
+	longTmpRoot := filepath.Join(t.TempDir(), strings.Repeat("very-long-temp-root-", 5))
+	t.Setenv("TMPDIR", longTmpRoot)
+
+	worktree := filepath.Join(t.TempDir(), "worktree")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+
+	got := processenv.ForWorkdir([]string{"PATH=/bin"}, worktree)
+	tmpDir := envMap(got)["TMPDIR"]
+	wantPrefix := filepath.Join("/tmp", "oro-subprocess") + string(os.PathSeparator)
+	if !strings.HasPrefix(tmpDir, wantPrefix) {
+		t.Fatalf("TMPDIR = %q, want short /tmp oro subprocess root prefix %q", tmpDir, wantPrefix)
+	}
+
+	sampleSocket := filepath.Join(tmpDir, "TestOversizeMessage", "001", "oro-test.sock")
+	if len(sampleSocket) >= 104 {
+		t.Fatalf("sample Unix socket path is too long for darwin: len(%q) = %d", sampleSocket, len(sampleSocket))
 	}
 }
 
