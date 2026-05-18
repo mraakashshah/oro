@@ -205,18 +205,6 @@ func tempSocket(t *testing.T) string {
 	return t.TempDir() + "/oro-test.sock"
 }
 
-func waitForListener(t *testing.T, socketPath string) {
-	t.Helper()
-	waitFor(t, func() bool {
-		conn, err := net.Dial("unix", socketPath) //nolint:noctx // test setup
-		if err != nil {
-			return false
-		}
-		_ = conn.Close()
-		return true
-	}, 5*time.Second)
-}
-
 func waitForListenerOrRunError(t *testing.T, socketPath string, runErr <-chan error, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
