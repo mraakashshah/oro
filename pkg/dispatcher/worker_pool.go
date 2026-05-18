@@ -370,29 +370,40 @@ func (d *Dispatcher) handleStuckTimedOutWorker(ctx context.Context, sw workerExi
 		return
 	}
 
-	if sw.assignmentID > 0 {
-		blocked, details, err := d.recoveryWorkBlocked(ctx, sw.beadID, sw.worktree, sw.baseBranch)
-		if blocked || err != nil {
-			if err != nil {
-				details = appendRecoveryDetail(details, "error: "+err.Error())
-			}
-			if details == "" {
-				details = "progress timeout could not prove worker recovery state safe"
-			}
-			d.quarantineUnsafeRecoveryWork(ctx, recoveryQuarantine{
-				BeadID:       sw.beadID,
-				AssignmentID: sw.assignmentID,
-				WorkerID:     sw.workerID,
-				Worktree:     sw.worktree,
-				Branch:       protocol.BranchPrefix + sw.beadID,
-				Reason:       "progress_timeout_recovery_blocked",
-				Details:      details,
-			})
-			d.clearBeadTracking(sw.beadID)
-			return
-		}
+	if sw.assignmentID <= 0 {
+		d.reopenTimedOutWorkerBead(ctx, sw)
+		return
 	}
 
+	blocked, details, err := d.recoveryWorkBlocked(ctx, sw.beadID, sw.worktree, sw.baseBranch)
+	if blocked || err != nil {
+		d.quarantineProgressTimeoutRecovery(ctx, sw, details, err)
+		return
+	}
+
+	d.reopenTimedOutWorkerBead(ctx, sw)
+}
+
+func (d *Dispatcher) quarantineProgressTimeoutRecovery(ctx context.Context, sw workerExitInfo, details string, err error) {
+	if err != nil {
+		details = appendRecoveryDetail(details, "error: "+err.Error())
+	}
+	if details == "" {
+		details = "progress timeout could not prove worker recovery state safe"
+	}
+	d.quarantineUnsafeRecoveryWork(ctx, recoveryQuarantine{
+		BeadID:       sw.beadID,
+		AssignmentID: sw.assignmentID,
+		WorkerID:     sw.workerID,
+		Worktree:     sw.worktree,
+		Branch:       protocol.BranchPrefix + sw.beadID,
+		Reason:       "progress_timeout_recovery_blocked",
+		Details:      details,
+	})
+	d.clearBeadTracking(sw.beadID)
+}
+
+func (d *Dispatcher) reopenTimedOutWorkerBead(ctx context.Context, sw workerExitInfo) {
 	// Reset the bead to "open" so it can be reassigned, mirroring the
 	// graceful-disconnect path in dispatcher.go.
 	if err := d.updateBeadStatus(ctx, sw.beadID, "open"); err != nil {

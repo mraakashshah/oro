@@ -672,6 +672,10 @@ type Dispatcher struct {
 	// cachedQueueDepth stores the last-known count from beads.Ready() in the assign loop.
 	cachedQueueDepth int
 
+	// lastRecoveryAssignmentBlockLog throttles noisy assignment-block events while
+	// open recovery quarantines keep automation stopped.
+	lastRecoveryAssignmentBlockLog time.Time
+
 	// lastBackupBeadCount stores the bead count at the time of the last change-detection backup.
 	// Used by maybeChangeDetectionBackup to detect when the queue size changes by >=5.
 	lastBackupBeadCount int
@@ -4271,6 +4275,10 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	// Detect beads closed externally while a worker is assigned and clean up.
 	d.checkClosedBeadAssignments(ctx)
 
+	if d.assignmentBlockedByRecoveryQuarantine(ctx) {
+		return
+	}
+
 	// Reconcile worker pool size (spawns/removes workers to match target).
 	d.reconcileScale()
 	d.assignPendingHandoffsToIdleWorkers()
@@ -4322,6 +4330,36 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 
 	assignedBeads := d.assignTargetedIdleWorkers(ctx, idle, beads, focusVersion)
 	d.assignGeneralIdleWorkers(ctx, idle, beads, pbSnapshot, assignedBeads, reservedTargets, focusVersion)
+}
+
+func (d *Dispatcher) assignmentBlockedByRecoveryQuarantine(ctx context.Context) bool {
+	if d.db == nil {
+		return false
+	}
+	openQuarantines, err := factoryhealth.LoadRecoveryQuarantineMetrics(ctx, d.db)
+	if err != nil {
+		d.logRecoveryAssignmentBlocked(ctx, 0, "recovery_quarantine_metric_load_failed: "+err.Error())
+		return true
+	}
+	if openQuarantines == 0 {
+		return false
+	}
+	d.logRecoveryAssignmentBlocked(ctx, openQuarantines, "open_recovery_quarantine")
+	return true
+}
+
+func (d *Dispatcher) logRecoveryAssignmentBlocked(ctx context.Context, openQuarantines int, reason string) {
+	now := d.nowFunc()
+	d.mu.Lock()
+	if !d.lastRecoveryAssignmentBlockLog.IsZero() && now.Sub(d.lastRecoveryAssignmentBlockLog) < time.Minute {
+		d.mu.Unlock()
+		return
+	}
+	d.lastRecoveryAssignmentBlockLog = now
+	d.mu.Unlock()
+
+	_ = d.logEvent(ctx, "assignment_blocked_by_recovery_quarantine", "dispatcher", "", "",
+		fmt.Sprintf(`{"open_recovery_quarantines":%d,"reason":%q}`, openQuarantines, reason))
 }
 
 func (d *Dispatcher) reservedSpawnForTargets() (map[string]bool, bool) {
@@ -7675,7 +7713,7 @@ func (d *Dispatcher) processQuarantined(ctx context.Context, quarantined []quara
 	}
 }
 
-func (d *Dispatcher) recoveryWorkBlocked(ctx context.Context, beadID, worktree, baseBranch string) (bool, string, error) {
+func (d *Dispatcher) recoveryWorkBlocked(ctx context.Context, beadID, worktree, baseBranch string) (blocked bool, details string, err error) {
 	if worktree == "" {
 		return true, "missing worktree path", nil
 	}
@@ -7699,7 +7737,7 @@ func (d *Dispatcher) worktreeDirty(ctx context.Context, worktree string) (dirty 
 	return status != "", status, nil
 }
 
-func (d *Dispatcher) branchHasUnmergedWork(ctx context.Context, beadID, worktree, baseBranch string) (bool, string, error) {
+func (d *Dispatcher) branchHasUnmergedWork(ctx context.Context, beadID, worktree, baseBranch string) (blocked bool, details string, err error) {
 	if beadID == "" {
 		return false, "", nil
 	}

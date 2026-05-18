@@ -3,6 +3,7 @@ package dispatcher //nolint:testpackage // white-box tests for recovery quaranti
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -375,6 +376,77 @@ VALUES ('oro-quarantined', 'agent/oro-quarantined', 'unsafe_stale_branch', 'unme
 	}
 	if eventCount(t, d.db, "recovery_quarantined_bead_skipped") == 0 {
 		t.Fatalf("expected recovery_quarantined_bead_skipped event")
+	}
+}
+
+func TestTryAssignBlocksFreshWorkWhenRecoveryQuarantineOpen(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	if _, err := d.db.ExecContext(ctx, `
+INSERT INTO recovery_quarantines (bead_id, branch, reason, details, status)
+VALUES ('oro-quarantined', 'agent/oro-quarantined', 'unsafe_stale_branch', 'unmerged branch', 'open');
+`); err != nil {
+		t.Fatalf("insert recovery quarantine: %v", err)
+	}
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "oro-ready", Status: "open", Priority: 1, Type: "task"},
+	})
+
+	server, client := net.Pipe()
+	t.Cleanup(func() {
+		_ = server.Close()
+		_ = client.Close()
+	})
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			if _, err := client.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	d.mu.Lock()
+	d.state = StateRunning
+	d.workers["w-idle"] = &trackedWorker{
+		id:      "w-idle",
+		conn:    server,
+		state:   protocol.WorkerIdle,
+		encoder: json.NewEncoder(server),
+	}
+	d.mu.Unlock()
+
+	d.tryAssign(ctx)
+
+	beadSrc.mu.Lock()
+	status := beadSrc.updated["oro-ready"]
+	beadSrc.mu.Unlock()
+	if status == "in_progress" {
+		t.Fatalf("ready bead was assigned while recovery quarantine is open")
+	}
+
+	d.mu.Lock()
+	workerState := d.workers["w-idle"].state
+	workerBead := d.workers["w-idle"].beadID
+	d.mu.Unlock()
+	if workerState != protocol.WorkerIdle || workerBead != "" {
+		t.Fatalf("idle worker = state %s bead %q, want idle with no bead", workerState, workerBead)
+	}
+
+	if _, err := d.db.ExecContext(ctx, `
+UPDATE recovery_quarantines SET status='resolved', resolved_at=datetime('now') WHERE status='open';
+`); err != nil {
+		t.Fatalf("resolve recovery quarantine: %v", err)
+	}
+
+	d.tryAssign(ctx)
+
+	beadSrc.mu.Lock()
+	status = beadSrc.updated["oro-ready"]
+	beadSrc.mu.Unlock()
+	if status != "in_progress" {
+		t.Fatalf("ready bead status after resolving quarantines = %q, want in_progress", status)
 	}
 }
 
