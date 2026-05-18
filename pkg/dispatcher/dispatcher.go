@@ -1234,8 +1234,8 @@ func (d *Dispatcher) startupRecovery(ctx context.Context) error {
 	}
 	reopened, skipped := d.resetOrphanedBeads(ctx, recoverableBeads)
 	_ = d.logEvent(ctx, "startup_reconciliation_summary", "dispatcher", "", "",
-		fmt.Sprintf(`{"recovered_attempts":%d,"quarantined_assignments":%d,"reopened_beads":%d,"skipped_in_progress":%d}`,
-			recoveryStats.recoverable, recoveryStats.quarantined, reopened, skipped))
+		fmt.Sprintf(`{"recovered_attempts":%d,"quarantined_assignments":%d,"retired_closed_assignments":%d,"reopened_beads":%d,"skipped_in_progress":%d}`,
+			recoveryStats.recoverable, recoveryStats.quarantined, recoveryStats.retiredClosed, reopened, skipped))
 	if d.shouldRunZombieDeferredRepair() {
 		if fixed, err := d.detectZombieDeferred(ctx); err == nil && fixed > 0 {
 			_ = d.logEvent(ctx, "startup_zombie_defer_summary", "dispatcher", "", "",
@@ -7594,8 +7594,9 @@ func (d *Dispatcher) resetOrphanedBeads(ctx context.Context, recoverable map[str
 // tracking state survives a dispatcher restart without reopening inconsistent
 // rows that would destroy or overwrite recoverable work.
 type startupRecoveryStats struct {
-	recoverable int
-	quarantined int
+	recoverable   int
+	quarantined   int
+	retiredClosed int
 }
 
 type restoredAssignment struct {
@@ -7615,38 +7616,56 @@ type quarantinedAssignment struct {
 	reason   string
 }
 
+type retiredClosedAssignment struct {
+	id     int64
+	beadID string
+}
+
 func (d *Dispatcher) restoreState(ctx context.Context) (map[string]bool, startupRecoveryStats, error) {
-	restored, quarantined, err := d.loadActiveAssignments(ctx)
+	restored, quarantined, retiredClosed, err := d.loadActiveAssignments(ctx)
 	if err != nil {
 		return nil, startupRecoveryStats{}, err
 	}
+	d.processRetiredClosedAssignments(ctx, retiredClosed)
 	d.processQuarantined(ctx, quarantined)
 	recoverable := d.applyRestoredAssignments(restored)
 	d.restoreInflightCheckpoints(ctx, restored)
-	stats := startupRecoveryStats{recoverable: len(restored), quarantined: len(quarantined)}
+	stats := startupRecoveryStats{
+		recoverable:   len(restored),
+		quarantined:   len(quarantined),
+		retiredClosed: len(retiredClosed),
+	}
 	return recoverable, stats, nil
 }
 
 // loadActiveAssignments reads active and shutdown-requeued assignments and
 // partitions them into restorable (worktree + branch present) and quarantinable
 // sets. Generic completed assignments are intentionally ignored.
-func (d *Dispatcher) loadActiveAssignments(ctx context.Context) ([]restoredAssignment, []quarantinedAssignment, error) {
+func (d *Dispatcher) loadActiveAssignments(ctx context.Context) ([]restoredAssignment, []quarantinedAssignment, []retiredClosedAssignment, error) {
 	rows, err := d.db.QueryContext(ctx,
 		`SELECT id, bead_id, worker_id, worktree, attempt_count, handoff_count FROM assignments WHERE status IN ('active', 'requeued')`)
 	if err != nil {
-		return nil, nil, fmt.Errorf("query active assignments: %w", err)
+		return nil, nil, nil, fmt.Errorf("query active assignments: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
 	var (
-		restored    []restoredAssignment
-		quarantined []quarantinedAssignment
+		restored      []restoredAssignment
+		quarantined   []quarantinedAssignment
+		retiredClosed []retiredClosedAssignment
 	)
 	for rows.Next() {
 		var a restoredAssignment
 		var workerID string
 		if err := rows.Scan(&a.id, &a.beadID, &workerID, &a.worktree, &a.attemptCount, &a.handoffCount); err != nil {
-			return nil, nil, fmt.Errorf("scan assignment: %w", err)
+			return nil, nil, nil, fmt.Errorf("scan assignment: %w", err)
+		}
+		if d.assignmentHasMergedClosedBead(ctx, a.beadID) {
+			retiredClosed = append(retiredClosed, retiredClosedAssignment{
+				id:     a.id,
+				beadID: a.beadID,
+			})
+			continue
 		}
 		if reason := d.classifyAssignment(ctx, a); reason != "" {
 			quarantined = append(quarantined, quarantinedAssignment{
@@ -7662,9 +7681,21 @@ func (d *Dispatcher) loadActiveAssignments(ctx context.Context) ([]restoredAssig
 		restored = append(restored, a)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("iterate assignments: %w", err)
+		return nil, nil, nil, fmt.Errorf("iterate assignments: %w", err)
 	}
-	return restored, quarantined, nil
+	return restored, quarantined, retiredClosed, nil
+}
+
+func (d *Dispatcher) assignmentHasMergedClosedBead(ctx context.Context, beadID string) bool {
+	detail, err := d.beads.Show(ctx, beadID)
+	if err != nil {
+		_ = d.logEvent(ctx, "startup_closed_assignment_lookup_failed", "dispatcher", beadID, "", err.Error())
+		return false
+	}
+	if detail == nil || !strings.EqualFold(detail.Status, "closed") {
+		return false
+	}
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(detail.CloseReason)), "merged:")
 }
 
 // classifyAssignment returns "" if the assignment is recoverable, or a
@@ -7710,6 +7741,17 @@ func (d *Dispatcher) processQuarantined(ctx context.Context, quarantined []quara
 		}
 		_ = d.logEvent(ctx, "startup_recovery_quarantined", "dispatcher", q.beadID, "",
 			fmt.Sprintf(`{"assignment_id":%d,"reason":%q}`, q.id, q.reason))
+	}
+}
+
+func (d *Dispatcher) processRetiredClosedAssignments(ctx context.Context, retired []retiredClosedAssignment) {
+	for _, assignment := range retired {
+		if err := d.completeAssignment(ctx, assignment.id, assignment.beadID); err != nil {
+			_ = d.logEvent(ctx, "startup_closed_assignment_retire_failed", "dispatcher", assignment.beadID, "", err.Error())
+			continue
+		}
+		_ = d.logEvent(ctx, "startup_closed_assignment_retired", "dispatcher", assignment.beadID, "",
+			fmt.Sprintf(`{"assignment_id":%d,"reason":"closed_merged_bead"}`, assignment.id))
 	}
 }
 

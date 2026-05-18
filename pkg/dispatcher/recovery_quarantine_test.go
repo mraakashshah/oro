@@ -316,6 +316,59 @@ func TestProcessQuarantinedContinuesAfterRowFailure(t *testing.T) {
 	}
 }
 
+func TestRestoreStateCompletesClosedMergedAssignmentWithoutQuarantine(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	beadSrc.shown["oro-closed-merged"] = &protocol.BeadDetail{
+		ID:          "oro-closed-merged",
+		Status:      "closed",
+		CloseReason: "Merged: deadbeef",
+		ClosedAt:    "2026-05-18T16:03:43Z",
+	}
+	wtMgr.existsFn = func(_ context.Context, path string) bool {
+		t.Fatalf("closed merged assignment should not inspect missing worktree %q", path)
+		return false
+	}
+
+	res, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES ('oro-closed-merged', 'w1', '/tmp/missing-closed', 'active')`)
+	if err != nil {
+		t.Fatalf("insert assignment: %v", err)
+	}
+	assignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("assignment id: %v", err)
+	}
+
+	recoverable, stats, err := d.restoreState(ctx)
+	if err != nil {
+		t.Fatalf("restore state: %v", err)
+	}
+	if len(recoverable) != 0 {
+		t.Fatalf("recoverable = %+v, want none", recoverable)
+	}
+	if stats.recoverable != 0 || stats.quarantined != 0 || stats.retiredClosed != 1 {
+		t.Fatalf("stats = %+v, want one retired closed assignment only", stats)
+	}
+
+	var assignmentStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("query assignment status: %v", err)
+	}
+	if assignmentStatus != "completed" {
+		t.Fatalf("assignment status = %q, want completed", assignmentStatus)
+	}
+
+	var openQuarantines int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_quarantines WHERE status='open'`).Scan(&openQuarantines); err != nil {
+		t.Fatalf("count recovery quarantines: %v", err)
+	}
+	if openQuarantines != 0 {
+		t.Fatalf("open recovery quarantines = %d, want 0", openQuarantines)
+	}
+}
+
 func TestDeleteStaleAgentBranchQuarantinesUnmergedBranch(t *testing.T) {
 	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
