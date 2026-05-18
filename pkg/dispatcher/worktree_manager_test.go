@@ -500,6 +500,70 @@ func TestCreateWithBaseBranch(t *testing.T) {
 	})
 }
 
+func TestCreateWithMissingEpicBaseBranchCreatesBaseBeforeWorktree(t *testing.T) {
+	const (
+		repoRoot   = "/repo/root"
+		beadID     = "oro-z0av-qg"
+		baseBranch = "epic/oro-z0av"
+	)
+
+	epicBranchCreated := false
+	runner := &mockCommandRunner{
+		callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			switch {
+			case containsAll(args, "fetch", "origin", baseBranch):
+				return nil, fmt.Errorf("fatal: couldn't find remote ref %s", baseBranch)
+			case containsAll(args, "branch", "--list", baseBranch):
+				if epicBranchCreated {
+					return []byte("  " + baseBranch + "\n"), nil
+				}
+				return nil, nil
+			case containsAll(args, "branch", baseBranch, "main"):
+				epicBranchCreated = true
+				return nil, nil
+			case containsAll(args, "worktree", "add"):
+				if !epicBranchCreated {
+					return nil, fmt.Errorf("fatal: not a valid object name: '%s'", baseBranch)
+				}
+				return nil, nil
+			default:
+				return nil, nil
+			}
+		},
+	}
+	mgr := NewGitWorktreeManager(repoRoot, "", "", runner)
+
+	path, branch, err := mgr.Create(context.Background(), beadID, baseBranch)
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	if path != filepath.Join(repoRoot, ".worktrees", beadID) {
+		t.Fatalf("path = %q", path)
+	}
+	if branch != "agent/"+beadID {
+		t.Fatalf("branch = %q", branch)
+	}
+
+	var sawCreateBranch, sawWorktreeAdd bool
+	for _, call := range runner.calls {
+		if containsAll(call.Args, "branch", baseBranch, "main") {
+			sawCreateBranch = true
+		}
+		if containsAll(call.Args, "worktree", "add") {
+			sawWorktreeAdd = true
+			if call.Args[len(call.Args)-1] != baseBranch {
+				t.Fatalf("worktree add base = %q, want %q", call.Args[len(call.Args)-1], baseBranch)
+			}
+		}
+	}
+	if !sawCreateBranch {
+		t.Fatalf("expected missing epic branch %q to be created from main; calls=%v", baseBranch, runner.calls)
+	}
+	if !sawWorktreeAdd {
+		t.Fatalf("expected worktree add call; calls=%v", runner.calls)
+	}
+}
+
 // TestGitWorktreeManager_Create_PathContainsBeadID kills mutant .go.7:
 // "path = filepath.Join(...)" assignment removed.
 // Verifies the git worktree add command receives the constructed path.

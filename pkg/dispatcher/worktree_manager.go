@@ -44,8 +44,9 @@ func NewGitWorktreeManager(repoRoot, worktreesDir, qualityGatePath string, runne
 // Before creating the worktree, Create performs a best-effort `git fetch origin
 // <baseBranch>` so that the new agent branch always starts from the current
 // remote HEAD, not a potentially-stale local ref. On success the worktree is
-// branched from `origin/<baseBranch>`; if the fetch fails (e.g. no remote) the
-// local ref is used as a fallback.
+// branched from `origin/<baseBranch>`; if the fetch fails (e.g. no remote), epic
+// base branches are created locally when missing and the local ref is used as a
+// fallback.
 func (g *GitWorktreeManager) Create(ctx context.Context, beadID, baseBranch string) (path, branch string, err error) {
 	// Validate bead ID before using it in filepath operations to prevent
 	// directory traversal attacks.
@@ -62,8 +63,11 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID, baseBranch stri
 	// On success use origin/<baseBranch>; fall back to the local ref if there is
 	// no remote or the fetch fails (e.g. local-only repos, no network).
 	effectiveBase := baseBranch
-	if _, fetchErr := g.runner.Run(ctx, "git", "-C", g.repoRoot, "fetch", "origin", baseBranch); fetchErr == nil {
+	_, fetchErr := g.runner.Run(ctx, "git", "-C", g.repoRoot, "fetch", "origin", baseBranch)
+	if fetchErr == nil {
 		effectiveBase = "origin/" + baseBranch
+	} else if err := g.ensureLocalEpicBaseBranch(ctx, baseBranch); err != nil {
+		return "", "", err
 	}
 
 	path = filepath.Join(g.worktreesDir, beadID)
@@ -95,6 +99,20 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID, baseBranch stri
 	}
 	g.stageAssets(ctx, path)
 	return path, branch, nil
+}
+
+func (g *GitWorktreeManager) ensureLocalEpicBaseBranch(ctx context.Context, baseBranch string) error {
+	if !strings.HasPrefix(baseBranch, protocol.EpicBranchPrefix) {
+		return nil
+	}
+	exists, branchErr := g.BranchExists(ctx, baseBranch)
+	if branchErr != nil {
+		return branchErr
+	}
+	if exists {
+		return nil
+	}
+	return g.CreateBranch(ctx, baseBranch, "main")
 }
 
 // stageAssets runs `make stage-assets` in the worktree to prepare embedded
