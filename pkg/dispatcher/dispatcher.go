@@ -1230,6 +1230,9 @@ func (d *Dispatcher) startupRecovery(ctx context.Context) error {
 	if err := d.reconcileOpsRunsOnStartup(ctx); err != nil {
 		return fmt.Errorf("reconcile ops runs: %w", err)
 	}
+	if err := d.routePendingRoutableEscalations(ctx); err != nil {
+		return fmt.Errorf("route pending routable escalations: %w", err)
+	}
 
 	recoverableBeads, recoveryStats, err := d.restoreState(ctx)
 	if err != nil {
@@ -7114,18 +7117,19 @@ func (d *Dispatcher) escalate(ctx context.Context, msg, beadID, workerID string)
 	// Extract escalation type for database storage (separate from one-shot determination).
 	dbEscType := extractEscalationType(msg)
 
-	// Persist escalation to SQLite before attempting tmux delivery.
-	var escalationID int64
-	if res, err := d.db.ExecContext(ctx,
-		`INSERT INTO escalations (type, bead_id, worker_id, message) VALUES (?, ?, ?, ?)`,
-		dbEscType, beadID, workerID, msg); err == nil {
-		escalationID, _ = res.LastInsertId()
-	}
-
 	oneShot := ""
 	if d.ops != nil {
 		oneShot = parseEscalationType(msg)
 	}
+	if protocol.EscalationType(oneShot) == protocol.EscOversizedBead {
+		if d.routeNewRoutableEscalation(ctx, protocol.EscalationType(oneShot), beadID, workerID, msg) {
+			return
+		}
+	}
+
+	// Persist escalation to SQLite before attempting tmux delivery.
+	escalationID := d.insertEscalation(ctx, dbEscType, beadID, workerID, msg)
+
 	if protocol.EscalationType(oneShot) == protocol.EscOversizedBead {
 		d.spawnEscalationOneShot(ctx, escalationID, oneShot, beadID, workerID, msg)
 		return
@@ -7141,6 +7145,45 @@ func (d *Dispatcher) escalate(ctx context.Context, msg, beadID, workerID string)
 	if oneShot != "" {
 		d.spawnEscalationOneShot(ctx, escalationID, oneShot, beadID, workerID, msg)
 	}
+}
+
+func (d *Dispatcher) insertEscalation(ctx context.Context, escType, beadID, workerID, msg string) int64 {
+	res, err := d.db.ExecContext(ctx,
+		`INSERT INTO escalations (type, bead_id, worker_id, message) VALUES (?, ?, ?, ?)`,
+		escType, beadID, workerID, msg)
+	if err != nil {
+		return 0
+	}
+	escalationID, _ := res.LastInsertId()
+	return escalationID
+}
+
+func (d *Dispatcher) routeNewRoutableEscalation(ctx context.Context, escType protocol.EscalationType, beadID, workerID, msg string) bool {
+	if d.ops == nil || !isRoutableEscalationType(escType) || beadID == "" {
+		return false
+	}
+
+	rec, wasCreated, err := d.createRoutableOpsRun(ctx, 0, escType, beadID, workerID, msg)
+	if err != nil {
+		_ = d.logEvent(ctx, "ops_run_route_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"type":%q,"error":%q}`, escType, err.Error()))
+		return false
+	}
+	if !wasCreated {
+		d.logOpsRunBlockedAssignment(ctx, rec, 0, escType, beadID, workerID)
+		return true
+	}
+
+	escalationID := d.insertEscalation(ctx, string(escType), beadID, workerID, msg)
+	if escalationID > 0 {
+		if _, err := d.db.ExecContext(ctx, `UPDATE ops_runs SET escalation_id=? WHERE id=?`, escalationID, rec.ID); err != nil {
+			_ = d.logEvent(ctx, "ops_run_route_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"ops_run_id":%d,"type":%q,"error":%q}`, rec.ID, escType, err.Error()))
+		}
+	}
+
+	d.spawnEscalationOneShot(ctx, escalationID, string(escType), beadID, workerID, msg)
+	return true
 }
 
 // applyPendingEscalations returns all unacked escalations as JSON.
@@ -7230,6 +7273,11 @@ func (d *Dispatcher) escalationRetryLoop(ctx context.Context) {
 }
 
 func (d *Dispatcher) retryPendingEscalations(ctx context.Context) {
+	if err := d.routePendingRoutableEscalations(ctx); err != nil {
+		_ = d.logEvent(ctx, "pending_escalation_route_failed", "dispatcher", "", "",
+			fmt.Sprintf(`{"error":%q}`, err.Error()))
+	}
+
 	rows, err := d.db.QueryContext(ctx,
 		`SELECT id, type, bead_id, message FROM escalations
 		 WHERE status = 'pending' AND retry_count < 5
@@ -7290,6 +7338,122 @@ func (d *Dispatcher) retryPendingEscalations(ctx context.Context) {
 			`UPDATE escalations SET retry_count = retry_count + 1, last_retry_at = datetime('now') WHERE id = ?`,
 			esc.id)
 	}
+}
+
+func (d *Dispatcher) routePendingRoutableEscalations(ctx context.Context) error {
+	if d.ops == nil {
+		return nil
+	}
+	rows, err := d.db.QueryContext(ctx,
+		`SELECT id, type, bead_id, worker_id, message
+		 FROM escalations
+		 WHERE status = 'pending' AND retry_count < 5
+		 ORDER BY id`)
+	if err != nil {
+		return fmt.Errorf("query pending routable escalations: %w", err)
+	}
+	defer rows.Close()
+
+	type pendingRoutableEscalation struct {
+		id       int64
+		escType  protocol.EscalationType
+		beadID   string
+		workerID string
+		msg      string
+	}
+	var pending []pendingRoutableEscalation
+	for rows.Next() {
+		var (
+			id       int64
+			escType  string
+			beadID   sql.NullString
+			workerID sql.NullString
+			msg      string
+		)
+		if err := rows.Scan(&id, &escType, &beadID, &workerID, &msg); err != nil {
+			return fmt.Errorf("scan pending routable escalation: %w", err)
+		}
+		if !isRoutableEscalationType(protocol.EscalationType(escType)) || !beadID.Valid || beadID.String == "" {
+			continue
+		}
+		pending = append(pending, pendingRoutableEscalation{
+			id:       id,
+			escType:  protocol.EscalationType(escType),
+			beadID:   beadID.String,
+			workerID: workerID.String,
+			msg:      msg,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate pending routable escalations: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close pending routable escalations: %w", err)
+	}
+
+	for _, esc := range pending {
+		if !d.shouldRetryEscalation(ctx, string(esc.escType), esc.beadID) {
+			d.ackEscalation(ctx, esc.id, esc.beadID, esc.workerID)
+			continue
+		}
+		if err := d.routeExistingRoutableEscalation(ctx, esc.id, esc.escType, esc.beadID, esc.workerID, esc.msg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d *Dispatcher) routeExistingRoutableEscalation(ctx context.Context, escalationID int64, escType protocol.EscalationType, beadID, workerID, msg string) error {
+	rec, wasCreated, err := d.createRoutableOpsRun(ctx, escalationID, escType, beadID, workerID, msg)
+	if err != nil {
+		return err
+	}
+	if !wasCreated {
+		d.logOpsRunBlockedAssignment(ctx, rec, escalationID, escType, beadID, workerID)
+		d.ackEscalation(ctx, escalationID, beadID, workerID)
+		return nil
+	}
+	d.spawnEscalationOneShot(ctx, escalationID, string(escType), beadID, workerID, msg)
+	return nil
+}
+
+func (d *Dispatcher) createRoutableOpsRun(ctx context.Context, escalationID int64, escType protocol.EscalationType, beadID, workerID, msg string) (OpsRunRecord, bool, error) {
+	runType, ok := routedOpsRunType(escType)
+	if !ok {
+		return OpsRunRecord{}, false, fmt.Errorf("unsupported routable escalation type %q", escType)
+	}
+	rec, wasCreated, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
+		EscalationID:  escalationID,
+		Type:          string(runType),
+		BeadID:        beadID,
+		WorkerID:      workerID,
+		DispatcherPID: os.Getpid(),
+		Status:        opsRunStatusRunning,
+		Error:         msg,
+	})
+	if err != nil {
+		return OpsRunRecord{}, false, err
+	}
+	return rec, wasCreated, nil
+}
+
+func isRoutableEscalationType(escType protocol.EscalationType) bool {
+	_, ok := routedOpsRunType(escType)
+	return ok
+}
+
+func routedOpsRunType(escType protocol.EscalationType) (ops.Type, bool) {
+	switch escType {
+	case protocol.EscOversizedBead:
+		return ops.OpsDecompose, true
+	default:
+		return "", false
+	}
+}
+
+func (d *Dispatcher) logOpsRunBlockedAssignment(ctx context.Context, rec OpsRunRecord, escalationID int64, escType protocol.EscalationType, beadID, workerID string) {
+	_ = d.logEvent(ctx, "ops_run_blocked_assignment", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"ops_run_id":%d,"escalation_id":%d,"type":%q,"escalation_type":%q}`, rec.ID, escalationID, rec.Type, escType))
 }
 
 // shouldRetryEscalation checks if an escalation's underlying condition still

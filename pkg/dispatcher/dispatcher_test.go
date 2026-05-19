@@ -3007,6 +3007,200 @@ func TestEscalateOversizedRoutesToDecomposeProductionPath(t *testing.T) {
 	}
 }
 
+func TestRetryPendingEscalations_RoutesLegacyOversizedToOpsRun(t *testing.T) {
+	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const routedBeadID = "oro-legacy-big"
+	beadSrc.shown[routedBeadID] = &protocol.BeadDetail{
+		ID:                 routedBeadID,
+		Title:              "Legacy oversized task",
+		Description:        "Predates managerless routing.",
+		AcceptanceCriteria: oversizedAcceptanceForTest(),
+	}
+	seedValidDecomposeResultForTest(t, d.db, routedBeadID)
+	routedEscID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, routedBeadID, "w-legacy")
+
+	d.retryPendingEscalations(ctx)
+
+	waitFor(t, func() bool {
+		return spawnMock.SpawnCount() > 0 &&
+			dispatcherTestEscalationStatus(t, d.db, routedEscID) == "acked"
+	}, 2*time.Second)
+
+	if got := len(esc.Messages()); got != 0 {
+		t.Fatalf("retry routed OVERSIZED_BEAD pasted to tmux, got %d messages: %v", got, esc.Messages())
+	}
+	if status := dispatcherTestEscalationStatus(t, d.db, routedEscID); status != "acked" {
+		t.Fatalf("routed escalation status = %q, want acked", status)
+	}
+	if got := dispatcherTestOpsRunCount(t, d.db, ops.OpsDecompose, routedBeadID); got != 1 {
+		t.Fatalf("decompose ops_run count = %d, want 1", got)
+	}
+
+	const resolvedBeadID = "oro-resolved-big"
+	beadSrc.shown[resolvedBeadID] = &protocol.BeadDetail{
+		ID:                 resolvedBeadID,
+		Title:              "No longer oversized",
+		AcceptanceCriteria: tddAcceptanceForTest() + "\nRead: pkg/dispatcher/dispatcher.go:1",
+	}
+	resolvedEscID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, resolvedBeadID, "w-resolved")
+
+	d.retryPendingEscalations(ctx)
+
+	if status := dispatcherTestEscalationStatus(t, d.db, resolvedEscID); status != "acked" {
+		t.Fatalf("resolved escalation status = %q, want acked", status)
+	}
+	if got := dispatcherTestOpsRunCount(t, d.db, ops.OpsDecompose, resolvedBeadID); got != 0 {
+		t.Fatalf("resolved bead decompose ops_run count = %d, want 0", got)
+	}
+}
+
+func TestStartupConvertsLegacyPendingOversizedToOpsRun(t *testing.T) {
+	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const beadID = "oro-startup-big"
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Startup legacy oversized task",
+		Description:        "Pending before dispatcher restart.",
+		AcceptanceCriteria: oversizedAcceptanceForTest(),
+	}
+	seedValidDecomposeResultForTest(t, d.db, beadID)
+	escID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, "w-startup")
+
+	if err := d.startupRecovery(ctx); err != nil {
+		t.Fatalf("startupRecovery: %v", err)
+	}
+
+	waitFor(t, func() bool {
+		return spawnMock.SpawnCount() > 0 &&
+			dispatcherTestEscalationStatus(t, d.db, escID) == "acked"
+	}, 2*time.Second)
+
+	if got := len(esc.Messages()); got != 0 {
+		t.Fatalf("startup routed OVERSIZED_BEAD pasted to tmux, got %d messages: %v", got, esc.Messages())
+	}
+	if status := dispatcherTestEscalationStatus(t, d.db, escID); status != "acked" {
+		t.Fatalf("startup routed escalation status = %q, want acked", status)
+	}
+	if got := dispatcherTestOpsRunCount(t, d.db, ops.OpsDecompose, beadID); got != 1 {
+		t.Fatalf("startup decompose ops_run count = %d, want 1", got)
+	}
+}
+
+func TestEscalateNoOpWhenBlockingOpsRunExists(t *testing.T) {
+	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const beadID = "oro-blocked-big"
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Already decomposing",
+		AcceptanceCriteria: oversizedAcceptanceForTest(),
+	}
+	insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, "w-existing")
+
+	msg := protocol.FormatEscalation(protocol.EscOversizedBead, beadID, "touches 3 modules — needs decomposition", "")
+	d.escalate(ctx, msg, beadID, "w-new")
+
+	if got := dispatcherTestEscalationCount(t, d.db, protocol.EscOversizedBead, beadID); got != 0 {
+		t.Fatalf("escalation count with blocking ops_run = %d, want 0", got)
+	}
+	if got := dispatcherTestOpsRunCount(t, d.db, ops.OpsDecompose, beadID); got != 1 {
+		t.Fatalf("ops_run count with blocking ops_run = %d, want 1", got)
+	}
+	if got := spawnMock.SpawnCount(); got != 0 {
+		t.Fatalf("spawn count with blocking ops_run = %d, want 0", got)
+	}
+	if got := len(esc.Messages()); got != 0 {
+		t.Fatalf("blocking ops_run escalation pasted to tmux, got %d messages: %v", got, esc.Messages())
+	}
+	if got := eventCount(t, d.db, "ops_run_blocked_assignment"); got != 1 {
+		t.Fatalf("ops_run_blocked_assignment events = %d, want 1", got)
+	}
+}
+
+func TestConcurrentEscalateCreatesOneOpsRun(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	slowSpawner := &slowBatchSpawner{}
+	d.ops = ops.NewSpawner(slowSpawner)
+
+	const beadID = "oro-concurrent-big"
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Concurrent oversized task",
+		AcceptanceCriteria: oversizedAcceptanceForTest(),
+	}
+	msg := protocol.FormatEscalation(protocol.EscOversizedBead, beadID, "touches 3 modules — needs decomposition", "")
+
+	const attempts = 12
+	var wg sync.WaitGroup
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d.escalate(ctx, msg, beadID, "w-concurrent")
+		}()
+	}
+	wg.Wait()
+
+	waitFor(t, func() bool {
+		return dispatcherTestOpsRunCount(t, d.db, ops.OpsDecompose, beadID) == 1
+	}, 2*time.Second)
+
+	if got := dispatcherTestOpsRunCount(t, d.db, ops.OpsDecompose, beadID); got != 1 {
+		t.Fatalf("concurrent decompose ops_run count = %d, want 1", got)
+	}
+	if got := dispatcherTestEscalationCount(t, d.db, protocol.EscOversizedBead, beadID); got != 1 {
+		t.Fatalf("concurrent escalation rows = %d, want 1", got)
+	}
+	if got := eventCount(t, d.db, "ops_run_blocked_assignment"); got != attempts-1 {
+		t.Fatalf("ops_run_blocked_assignment events = %d, want %d", got, attempts-1)
+	}
+
+	slowSpawner.mu.Lock()
+	processes := append([]*slowProcess(nil), slowSpawner.processes...)
+	slowSpawner.mu.Unlock()
+	for _, p := range processes {
+		_ = p.Kill()
+	}
+}
+
+func TestRetryPendingEscalations_DoesNotRepasteRoutedOpsRun(t *testing.T) {
+	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const beadID = "oro-already-routed"
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Already routed oversized task",
+		AcceptanceCriteria: oversizedAcceptanceForTest(),
+	}
+	escID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, "w-legacy")
+	insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, "w-existing")
+
+	d.retryPendingEscalations(ctx)
+
+	if got := len(esc.Messages()); got != 0 {
+		t.Fatalf("retry pasted routed OVERSIZED_BEAD to tmux, got %d messages: %v", got, esc.Messages())
+	}
+	if got := spawnMock.SpawnCount(); got != 0 {
+		t.Fatalf("retry spawned duplicate decompose agent = %d, want 0", got)
+	}
+	if status := dispatcherTestEscalationStatus(t, d.db, escID); status != "acked" {
+		t.Fatalf("already-routed escalation status = %q, want acked", status)
+	}
+	if got := dispatcherTestOpsRunCount(t, d.db, ops.OpsDecompose, beadID); got != 1 {
+		t.Fatalf("already-routed decompose ops_run count = %d, want 1", got)
+	}
+	if got := eventCount(t, d.db, "ops_run_blocked_assignment"); got != 1 {
+		t.Fatalf("ops_run_blocked_assignment events = %d, want 1", got)
+	}
+}
+
 func TestOversizedDecomposeResultAcksOnlyAfterValidation(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
@@ -21664,6 +21858,18 @@ func tddAcceptanceForTest() string {
 	return "Test: pkg/dispatcher/dispatcher_test.go:TestExample | Cmd: go test ./pkg/dispatcher | Assert: PASS"
 }
 
+func oversizedAcceptanceForTest() string {
+	return tddAcceptanceForTest() + "\nRead: pkg/a/a.go:1, pkg/b/b.go:1, pkg/c/c.go:1"
+}
+
+func seedValidDecomposeResultForTest(t *testing.T, db *sql.DB, parentID string) {
+	t.Helper()
+	childID := parentID + "-child"
+	insertDispatcherTestBead(t, db, parentID, "task", "", oversizedAcceptanceForTest())
+	insertDispatcherTestBead(t, db, childID, "task", parentID, tddAcceptanceForTest())
+	insertDispatcherTestDependency(t, db, parentID, childID, "blocks")
+}
+
 func insertDispatcherTestBead(t *testing.T, db *sql.DB, id, beadType, parentID, acceptance string) {
 	t.Helper()
 	if err := protocol.MigrateBeadSchema(context.Background(), db); err != nil {
@@ -21724,6 +21930,24 @@ func dispatcherTestEscalationStatus(t *testing.T, db *sql.DB, escalationID int64
 		t.Fatalf("query escalation %d status: %v", escalationID, err)
 	}
 	return status
+}
+
+func dispatcherTestEscalationCount(t *testing.T, db *sql.DB, escType protocol.EscalationType, beadID string) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM escalations WHERE type=? AND bead_id=?`, escType, beadID).Scan(&count); err != nil {
+		t.Fatalf("count escalations for %s/%s: %v", escType, beadID, err)
+	}
+	return count
+}
+
+func dispatcherTestOpsRunCount(t *testing.T, db *sql.DB, runType ops.Type, beadID string) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM ops_runs WHERE type=? AND bead_id=?`, runType, beadID).Scan(&count); err != nil {
+		t.Fatalf("count ops_runs for %s/%s: %v", runType, beadID, err)
+	}
+	return count
 }
 
 func dispatcherTestOpsRunStatus(t *testing.T, db *sql.DB, runType ops.Type, beadID string) string {
