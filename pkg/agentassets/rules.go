@@ -1,10 +1,13 @@
 package agentassets
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path"
+	"path/filepath"
 	"slices"
 	"strings"
 )
@@ -55,6 +58,48 @@ func ClaudeRuleAssets(source fs.FS) ([]RuleAsset, error) {
 	}
 
 	return assets, nil
+}
+
+// InstallClaudeRules writes Oro-owned Claude rule assets below targetDir.
+func InstallClaudeRules(ctx context.Context, targetDir string, assets []RuleAsset) error {
+	for _, asset := range assets {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("install claude rules: %w", err)
+		}
+
+		cleanTarget, err := cleanClaudeRuleTarget(asset.Target)
+		if err != nil {
+			return err
+		}
+
+		destPath := filepath.Join(targetDir, filepath.FromSlash(cleanTarget))
+		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil { //nolint:gosec // rules need to be readable
+			return fmt.Errorf("create claude rules dir: %w", err)
+		}
+		if err := os.WriteFile(destPath, asset.Content, 0o644); err != nil { //nolint:gosec // rules need to be readable
+			return fmt.Errorf("write %s: %w", cleanTarget, err)
+		}
+	}
+
+	return nil
+}
+
+func cleanClaudeRuleTarget(target string) (string, error) {
+	if target == "" || path.IsAbs(target) || filepath.IsAbs(target) {
+		return "", fmt.Errorf("claude rule target %q escapes %s", target, claudeRulesTargetDir)
+	}
+
+	cleanTarget := path.Clean(filepath.ToSlash(target))
+	if !strings.HasPrefix(cleanTarget, claudeRulesTargetDir+"/") {
+		return "", fmt.Errorf("claude rule target %q escapes %s", target, claudeRulesTargetDir)
+	}
+
+	name := path.Base(cleanTarget)
+	if !strings.HasPrefix(name, "oro-") || !strings.HasSuffix(name, ".md") {
+		return "", fmt.Errorf("claude rule target %q must match %s/oro-*.md", target, claudeRulesTargetDir)
+	}
+
+	return cleanTarget, nil
 }
 
 func isMissingDir(err error) bool {

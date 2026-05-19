@@ -1409,6 +1409,16 @@ func TestExtractAssetsClaudeRules(t *testing.T) {
 		"rules/claude/oro-worker.md": &fstest.MapFile{Data: []byte("# Worker\n")},
 	}
 	dest := t.TempDir()
+	rulesDir := filepath.Join(dest, ".claude", "rules")
+	if err := os.MkdirAll(rulesDir, 0o755); err != nil {
+		t.Fatalf("setup rules dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rulesDir, "standards.md"), []byte("user standards\n"), 0o644); err != nil {
+		t.Fatalf("setup user rule: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rulesDir, "oro-worker.md"), []byte("old worker\n"), 0o644); err != nil {
+		t.Fatalf("setup stale oro rule: %v", err)
+	}
 
 	if err := extractAssets(dest, assets, false); err != nil {
 		t.Fatalf("extractAssets failed: %v", err)
@@ -1421,6 +1431,13 @@ func TestExtractAssetsClaudeRules(t *testing.T) {
 	}
 	if string(data) != "# Worker\n" {
 		t.Fatalf("claude rule content = %q, want %q", data, "# Worker\n")
+	}
+	userData, err := os.ReadFile(filepath.Join(rulesDir, "standards.md")) //nolint:gosec // test-created file
+	if err != nil {
+		t.Fatalf("user rule not preserved: %v", err)
+	}
+	if string(userData) != "user standards\n" {
+		t.Fatalf("user rule content = %q, want %q", userData, "user standards\n")
 	}
 }
 
