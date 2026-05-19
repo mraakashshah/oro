@@ -144,7 +144,7 @@ func TestOpsCommands(t *testing.T) {
 }
 
 func TestOpsListHandlesLargeFeedback(t *testing.T) {
-	largeFeedback := strings.Repeat("feedback ", 9000)
+	largeFeedback := strings.Repeat("feedback ", 140000)
 	detail := fmt.Sprintf(`[
 		{"id":7,"type":"review","bead_id":"oro-a","worker_id":"w-a","status":"failed","feedback":%q},
 		{"id":8,"type":"diagnosis","bead_id":"oro-b","worker_id":"w-b","status":"running","error":"still running"}
