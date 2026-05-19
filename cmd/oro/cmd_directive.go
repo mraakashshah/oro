@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -130,16 +129,11 @@ func sendDirective(conn net.Conn, op, opArgs string) error {
 
 // readACK reads and parses the ACK response from the dispatcher.
 func readACK(conn net.Conn) (*protocol.ACKPayload, error) {
-	scanner := bufio.NewScanner(conn)
-	if !scanner.Scan() {
-		if err := scanner.Err(); err != nil {
-			return nil, fmt.Errorf("read ack: %w", err)
-		}
-		return nil, fmt.Errorf("no ack received")
-	}
-
 	var ack protocol.Message
-	if err := json.Unmarshal(scanner.Bytes(), &ack); err != nil {
+	if err := json.NewDecoder(conn).Decode(&ack); err != nil {
+		if err == io.EOF {
+			return nil, fmt.Errorf("no ack received")
+		}
 		return nil, fmt.Errorf("unmarshal ack: %w", err)
 	}
 
