@@ -165,6 +165,56 @@ func TestOpsRoutingUsesLockedRoleModels(t *testing.T) {
 	}
 }
 
+func TestDecomposeOpsUsesRepoRootWorkdir(t *testing.T) {
+	repoRoot := t.TempDir()
+	mock := &mockBatchSpawner{process: newReadyMockProcess("VERDICT: resolved", nil)}
+	s := NewSpawner(mock)
+
+	<-s.Decompose(context.Background(), DecomposeOpts{BeadID: "oro-big7", Workdir: repoRoot})
+
+	calls := mock.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("spawn calls = %d, want 1", len(calls))
+	}
+	if calls[0].workdir != repoRoot {
+		t.Fatalf("decompose workdir = %q, want %q", calls[0].workdir, repoRoot)
+	}
+}
+
+func TestRuntimeSpawnerRoutesDecomposeThroughConfiguredRuntime(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.MkdirAll(filepath.Join(dir, ".oro"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".oro", "config.yaml"), []byte(`agent:
+  roles:
+    ops_decompose:
+      transport: cli
+      runtime: codex
+      model: gpt-5.5
+      reasoning: high
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockBatchSpawner{process: newReadyMockProcess("VERDICT: resolved", nil)}
+	s := NewSpawner(mock)
+	<-s.Decompose(context.Background(), DecomposeOpts{BeadID: "oro-big8", Workdir: dir})
+
+	calls := mock.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("spawn calls = %d, want 1", len(calls))
+	}
+	got := calls[0]
+	if got.runtime != "codex" || got.model != "gpt-5.5" || got.reasoning != "high" {
+		t.Fatalf("decompose runtime spawn = (%q, %q, %q), want (codex, gpt-5.5, high)", got.runtime, got.model, got.reasoning)
+	}
+	if got.workdir != dir {
+		t.Fatalf("decompose workdir = %q, want %q", got.workdir, dir)
+	}
+}
+
 // multiProcessSpawner returns different processes on each Spawn call.
 type multiProcessSpawner struct {
 	mu        sync.Mutex

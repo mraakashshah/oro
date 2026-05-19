@@ -7122,6 +7122,15 @@ func (d *Dispatcher) escalate(ctx context.Context, msg, beadID, workerID string)
 		escalationID, _ = res.LastInsertId()
 	}
 
+	oneShot := ""
+	if d.ops != nil {
+		oneShot = parseEscalationType(msg)
+	}
+	if protocol.EscalationType(oneShot) == protocol.EscOversizedBead {
+		d.spawnEscalationOneShot(ctx, escalationID, oneShot, beadID, workerID, msg)
+		return
+	}
+
 	if err := d.escalator.Escalate(ctx, msg); err != nil {
 		_ = d.logEvent(ctx, "escalation_failed", "dispatcher", beadID, workerID,
 			fmt.Sprintf(`{"error":%q,"message":%q}`, err.Error(), msg))
@@ -7129,10 +7138,8 @@ func (d *Dispatcher) escalate(ctx context.Context, msg, beadID, workerID string)
 
 	// Spawn one-shot manager agent for actionable escalation types.
 	// Only spawn for types with a one-shot playbook (use parseEscalationType, not extractEscalationType).
-	if d.ops != nil {
-		if oneShot := parseEscalationType(msg); oneShot != "" {
-			d.spawnEscalationOneShot(ctx, escalationID, oneShot, beadID, workerID, msg)
-		}
+	if oneShot != "" {
+		d.spawnEscalationOneShot(ctx, escalationID, oneShot, beadID, workerID, msg)
 	}
 }
 
@@ -7337,7 +7344,7 @@ func parseEscalationType(msg string) string {
 	}
 	switch protocol.EscalationType(escType) {
 	case protocol.EscStuckWorker, protocol.EscMergeConflict,
-		protocol.EscPriorityContention, protocol.EscMissingAC:
+		protocol.EscPriorityContention, protocol.EscMissingAC, protocol.EscOversizedBead:
 		return escType
 	default:
 		return ""
@@ -7381,7 +7388,8 @@ func (d *Dispatcher) spawnEscalationOneShot(ctx context.Context, escalationID in
 	}
 
 	var resultCh <-chan ops.Result
-	if protocol.EscalationType(escType) == protocol.EscMissingAC {
+	switch protocol.EscalationType(escType) {
+	case protocol.EscMissingAC:
 		// Dedup guard: skip if a WriteAC agent is already running for this bead.
 		if d.ops.HasActiveForBead(beadID) {
 			return
@@ -7392,7 +7400,16 @@ func (d *Dispatcher) spawnEscalationOneShot(ctx context.Context, escalationID in
 			BeadDescription: beadContext,
 			Workdir:         workdir,
 		})
-	} else {
+	case protocol.EscOversizedBead:
+		if d.ops.HasActiveForBead(beadID) {
+			return
+		}
+		resultCh = d.ops.Decompose(ctx, ops.DecomposeOpts{
+			BeadID:  beadID,
+			Workdir: d.workdirForOpsRun(beadID),
+			Reason:  msg,
+		})
+	default:
 		resultCh = d.ops.Escalate(ctx, ops.EscalationOpts{
 			EscalationType: escType,
 			BeadID:         beadID,

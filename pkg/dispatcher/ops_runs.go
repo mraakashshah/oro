@@ -212,7 +212,11 @@ func (d *Dispatcher) routeOpsRun(ctx context.Context, rec OpsRunRecord) bool {
 	}
 	switch ops.Type(rec.Type) {
 	case ops.OpsDecompose:
-		d.ops.Decompose(ctx, ops.DecomposeOpts{BeadID: rec.BeadID})
+		d.ops.Decompose(ctx, ops.DecomposeOpts{
+			BeadID:  rec.BeadID,
+			Workdir: d.workdirForOpsRun(rec.BeadID),
+			Reason:  rec.Error,
+		})
 	case ops.OpsWriteAC:
 		title, description := d.beadContextForOpsRun(ctx, rec.BeadID)
 		d.ops.WriteAC(ctx, ops.WriteACOpts{

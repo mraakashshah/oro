@@ -1445,21 +1445,19 @@ func TestCheckBeadReady_RejectsOversizedBead(t *testing.T) {
 	beadSrc.mu.Unlock()
 	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-oversize", Title: "Oversized bead", Priority: 1}})
 
-	// Bead must NOT be assigned — OVERSIZED_BEAD escalation fires instead.
+	// Bead must NOT be assigned — OVERSIZED_BEAD routes to decompose ops instead.
 	msg, ok := readMsg(t, conn, 1*time.Second)
 	if ok && msg.Type == protocol.MsgAssign {
 		t.Fatal("oversized bead should not be assigned; OVERSIZED_BEAD escalation should fire instead")
 	}
 
-	// OVERSIZED_BEAD escalation must be emitted.
+	// OVERSIZED_BEAD is handled by ops decompose, not tmux.
 	waitFor(t, func() bool {
-		for _, m := range esc.Messages() {
-			if strings.Contains(m, string(protocol.EscOversizedBead)) {
-				return true
-			}
-		}
-		return false
+		return len(d.ops.Active()) == 0
 	}, 2*time.Second)
+	if got := len(esc.Messages()); got != 0 {
+		t.Fatalf("oversized bead should not paste to tmux when ops decompose is routed, got %d messages: %v", got, esc.Messages())
+	}
 
 	// Bead must enter worktreeFailure cooldown (same mechanism as MISSING_AC).
 	d.mu.Lock()
@@ -1467,6 +1465,48 @@ func TestCheckBeadReady_RejectsOversizedBead(t *testing.T) {
 	d.mu.Unlock()
 	if !inCooldown {
 		t.Error("oversized bead should be in worktreeFailures cooldown after rejection")
+	}
+}
+
+func TestCheckBeadReady_OversizedBeadDoesNotEscalateToTmuxWhenOpsRouted(t *testing.T) {
+	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const beadID = "oro-big1"
+	oversizedAC := "Test: pkg/a/a_test.go:TestA | Cmd: go test ./pkg/a | Assert: PASS\n" +
+		"Read: pkg/a/a.go:1, pkg/b/b.go:1, pkg/c/c.go:1"
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Oversized task",
+		AcceptanceCriteria: oversizedAC,
+	}
+
+	_, _, ok := d.checkBeadReady(ctx, protocol.Bead{ID: beadID, Title: "Oversized task", Type: "task"}, "w1")
+	if ok {
+		t.Fatal("checkBeadReady returned ok=true for oversized bead, want false")
+	}
+	if got := len(esc.Messages()); got != 0 {
+		t.Fatalf("OVERSIZED_BEAD should route to ops without tmux paste, got %d messages: %v", got, esc.Messages())
+	}
+
+	waitFor(t, func() bool {
+		return spawnMock.SpawnCount() > 0
+	}, 2*time.Second)
+
+	spawnMock.mu.Lock()
+	spawns := append([]spawnCall(nil), spawnMock.spawns...)
+	spawnMock.mu.Unlock()
+	if len(spawns) != 1 {
+		t.Fatalf("spawn count = %d, want 1 decompose spawn", len(spawns))
+	}
+	if strings.Contains(spawns[0].prompt, "You are the oro ops manager") {
+		t.Fatalf("OVERSIZED_BEAD routed to generic escalation prompt, want decompose prompt")
+	}
+	if !strings.Contains(spawns[0].prompt, "task decomposition agent") {
+		t.Fatalf("OVERSIZED_BEAD prompt does not look like decompose prompt:\n%s", spawns[0].prompt)
+	}
+	if spawns[0].workdir != d.repoRoot {
+		t.Fatalf("decompose workdir = %q, want repo root %q", spawns[0].workdir, d.repoRoot)
 	}
 }
 
@@ -2610,6 +2650,13 @@ func TestParseEscalationType(t *testing.T) {
 	}
 }
 
+func TestParseEscalationTypeRecognizesOversized(t *testing.T) {
+	msg := protocol.FormatEscalation(protocol.EscOversizedBead, "oro-big2", "touches 3 modules", "")
+	if got := parseEscalationType(msg); got != string(protocol.EscOversizedBead) {
+		t.Fatalf("parseEscalationType(OVERSIZED_BEAD) = %q, want %q", got, protocol.EscOversizedBead)
+	}
+}
+
 func TestEscalateSpawnsOneShotForTargetTypes(t *testing.T) {
 	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
 
@@ -2866,6 +2913,92 @@ func TestSpawnEscalationOneShot_UsesWorktreeDir(t *testing.T) {
 			t.Errorf("expected workdir %q, got %q", ".", lastSpawn.workdir)
 		}
 	})
+}
+
+func TestSpawnEscalationOneShotRoutesOversizedToDecompose(t *testing.T) {
+	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const beadID = "oro-big3"
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Large task",
+		Description:        "Touches dispatcher, ops, and protocol.",
+		AcceptanceCriteria: "Test: x | Cmd: y | Assert: z",
+	}
+	d.mu.Lock()
+	d.worktreeByBead[beadID] = "/tmp/specific-worktree"
+	d.mu.Unlock()
+
+	msg := protocol.FormatEscalation(protocol.EscOversizedBead, beadID, "touches 3 modules — needs decomposition", "")
+	d.spawnEscalationOneShot(ctx, 0, string(protocol.EscOversizedBead), beadID, "w1", msg)
+
+	waitFor(t, func() bool {
+		return spawnMock.SpawnCount() > 0
+	}, 2*time.Second)
+
+	spawnMock.mu.Lock()
+	spawns := append([]spawnCall(nil), spawnMock.spawns...)
+	spawnMock.mu.Unlock()
+	if len(spawns) != 1 {
+		t.Fatalf("spawn count = %d, want 1", len(spawns))
+	}
+	got := spawns[0]
+	if got.workdir != "/tmp/specific-worktree" {
+		t.Fatalf("decompose workdir = %q, want worktree path", got.workdir)
+	}
+	if !strings.Contains(got.prompt, "OVERSIZED_BEAD") {
+		t.Fatalf("decompose prompt must include oversized reason, got:\n%s", got.prompt)
+	}
+	if strings.Contains(got.prompt, "You are the oro ops manager") {
+		t.Fatalf("OVERSIZED_BEAD must not route to generic OpsEscalation prompt")
+	}
+}
+
+func TestEscalateOversizedRoutesToDecomposeProductionPath(t *testing.T) {
+	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const beadID = "oro-big4"
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:          beadID,
+		Title:       "Large production task",
+		Description: "Needs decomposition before worker execution.",
+	}
+
+	msg := protocol.FormatEscalation(protocol.EscOversizedBead, beadID, "touches 4 modules — needs decomposition", "")
+	d.escalate(ctx, msg, beadID, "w-prod")
+
+	waitFor(t, func() bool {
+		return spawnMock.SpawnCount() > 0
+	}, 2*time.Second)
+
+	if got := len(esc.Messages()); got != 0 {
+		t.Fatalf("OVERSIZED_BEAD should not paste to tmux when decompose ops is available, got %d messages: %v", got, esc.Messages())
+	}
+
+	spawnMock.mu.Lock()
+	spawns := append([]spawnCall(nil), spawnMock.spawns...)
+	spawnMock.mu.Unlock()
+	if len(spawns) != 1 {
+		t.Fatalf("spawn count = %d, want 1", len(spawns))
+	}
+	if !strings.Contains(spawns[0].prompt, "task decomposition agent") {
+		t.Fatalf("expected decompose prompt, got:\n%s", spawns[0].prompt)
+	}
+	if strings.Contains(spawns[0].prompt, "You are the oro ops manager") {
+		t.Fatalf("OVERSIZED_BEAD routed to generic OpsEscalation prompt")
+	}
+
+	var storedType string
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT type FROM escalations WHERE bead_id=? ORDER BY id DESC LIMIT 1`, beadID,
+	).Scan(&storedType); err != nil {
+		t.Fatalf("query stored escalation: %v", err)
+	}
+	if storedType != string(protocol.EscOversizedBead) {
+		t.Fatalf("stored escalation type = %q, want %q", storedType, protocol.EscOversizedBead)
+	}
 }
 
 func TestDispatcher_ConcurrentWorkers(t *testing.T) {

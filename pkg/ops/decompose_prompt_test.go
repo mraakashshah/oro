@@ -111,3 +111,33 @@ func TestDecomposePromptIncludesTier(t *testing.T) {
 		}
 	})
 }
+
+func TestDecomposePromptSupportsOversizedReason(t *testing.T) {
+	prompt := buildDecomposePrompt(DecomposeOpts{
+		BeadID: "oro-big5",
+		Reason: "OVERSIZED_BEAD: touches 3 modules — needs decomposition",
+	})
+	if !strings.Contains(prompt, "OVERSIZED_BEAD") {
+		t.Fatalf("prompt must include oversized reason, got:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "exhausted all worker retry attempts") {
+		t.Fatalf("oversized decomposition prompt should not claim retry exhaustion, got:\n%s", prompt)
+	}
+}
+
+func TestDecomposePromptRequiresParentEpicOrChildren(t *testing.T) {
+	prompt := buildDecomposePrompt(DecomposeOpts{BeadID: "oro-big6"})
+	required := []string{
+		"Convert parent to epic",
+		"Create 2-4 smaller child tasks",
+		"Test:",
+		"Cmd:",
+		"Assert:",
+		"oro task dep add oro-big6 <child-id>",
+	}
+	for _, want := range required {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q; got:\n%s", want, prompt)
+		}
+	}
+}

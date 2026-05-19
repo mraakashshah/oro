@@ -212,6 +212,8 @@ type WriteACOpts struct {
 // DecomposeOpts configures a bead decomposition agent.
 type DecomposeOpts struct {
 	BeadID   string
+	Workdir  string
+	Reason   string // dispatcher reason that triggered decomposition (for example OVERSIZED_BEAD)
 	QGOutput string // quality gate output that triggered decomposition
 	Tier     string // parent bead's routing tier; included in oro task create when non-empty
 }
@@ -318,7 +320,7 @@ func (s *Spawner) WriteAC(ctx context.Context, opts WriteACOpts) <-chan Result {
 // tasks when a task has exhausted all worker retry attempts.
 func (s *Spawner) Decompose(ctx context.Context, opts DecomposeOpts) <-chan Result {
 	prompt := buildDecomposePrompt(opts)
-	return s.run(ctx, OpsDecompose, opts.BeadID, "", prompt)
+	return s.run(ctx, OpsDecompose, opts.BeadID, opts.Workdir, prompt)
 }
 
 // Dream spawns a lightweight memory-consolidation agent. The agent reviews the
