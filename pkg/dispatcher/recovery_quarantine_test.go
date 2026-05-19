@@ -327,7 +327,9 @@ func TestRestoreStateCompletesClosedMergedAssignmentWithoutQuarantine(t *testing
 		ClosedAt:    "2026-05-18T16:03:43Z",
 	}
 	wtMgr.existsFn = func(_ context.Context, path string) bool {
-		t.Fatalf("closed merged assignment should not inspect missing worktree %q", path)
+		if path != "/tmp/missing-closed" {
+			t.Fatalf("inspected unexpected worktree %q", path)
+		}
 		return false
 	}
 
@@ -366,6 +368,112 @@ func TestRestoreStateCompletesClosedMergedAssignmentWithoutQuarantine(t *testing
 	}
 	if openQuarantines != 0 {
 		t.Fatalf("open recovery quarantines = %d, want 0", openQuarantines)
+	}
+}
+
+func TestStartupRecoveryRetiresClosedAssignmentWithEmptyState(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const preservedWorktree = "/tmp/worktree-oro-closed-preserved"
+
+	beadSrc.shown["oro-closed-active"] = &protocol.BeadDetail{
+		ID:          "oro-closed-active",
+		Status:      "closed",
+		CloseReason: "Manually merged into epic/oro-recov-hardening by the coordinator.",
+		ClosedAt:    "2026-05-19T12:00:00Z",
+	}
+	beadSrc.shown["oro-closed-requeued"] = &protocol.BeadDetail{
+		ID:          "oro-closed-requeued",
+		Status:      "closed",
+		CloseReason: "Manually merged into epic/oro-recov-hardening by the coordinator.",
+		ClosedAt:    "2026-05-19T12:01:00Z",
+	}
+	beadSrc.shown["oro-open-missing"] = &protocol.BeadDetail{
+		ID:     "oro-open-missing",
+		Status: "open",
+	}
+	beadSrc.shown["oro-closed-preserved"] = &protocol.BeadDetail{
+		ID:          "oro-closed-preserved",
+		Status:      "closed",
+		CloseReason: "Manually merged into epic/oro-recov-hardening by the coordinator.",
+		ClosedAt:    "2026-05-19T12:02:00Z",
+	}
+	wtMgr.existsFn = func(_ context.Context, path string) bool {
+		return path == preservedWorktree
+	}
+	wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
+		return branch == "agent/oro-closed-preserved", nil
+	}
+	wtMgr.currentBranchFn = func(_ context.Context, path string) (string, error) {
+		if path == preservedWorktree {
+			return "agent/oro-closed-preserved", nil
+		}
+		return "", nil
+	}
+
+	for _, assignment := range []struct {
+		beadID   string
+		workerID string
+		worktree string
+		status   string
+	}{
+		{beadID: "oro-closed-active", workerID: "w-closed-active", worktree: "/tmp/missing-closed-active", status: "active"},
+		{beadID: "oro-closed-requeued", workerID: "w-closed-requeued", worktree: "", status: "requeued"},
+		{beadID: "oro-open-missing", workerID: "w-open-missing", worktree: "/tmp/missing-open", status: "active"},
+		{beadID: "oro-closed-preserved", workerID: "w-closed-preserved", worktree: preservedWorktree, status: "active"},
+	} {
+		if _, err := d.db.ExecContext(ctx,
+			`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, ?)`,
+			assignment.beadID, assignment.workerID, assignment.worktree, assignment.status); err != nil {
+			t.Fatalf("insert assignment %s: %v", assignment.beadID, err)
+		}
+	}
+
+	recoverable, stats, err := d.restoreState(ctx)
+	if err != nil {
+		t.Fatalf("restore state: %v", err)
+	}
+	if !recoverable["oro-closed-preserved"] || len(recoverable) != 1 {
+		t.Fatalf("recoverable = %+v, want only preserved closed assignment", recoverable)
+	}
+	if stats.recoverable != 1 || stats.quarantined != 1 || stats.retiredClosed != 2 {
+		t.Fatalf("stats = %+v, want one recoverable, one quarantined, two retired closed", stats)
+	}
+
+	for _, beadID := range []string{"oro-closed-active", "oro-closed-requeued"} {
+		var assignmentStatus string
+		if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE bead_id=?`, beadID).Scan(&assignmentStatus); err != nil {
+			t.Fatalf("query assignment status for %s: %v", beadID, err)
+		}
+		if assignmentStatus != "completed" {
+			t.Fatalf("%s assignment status = %q, want completed", beadID, assignmentStatus)
+		}
+		var openQuarantines int
+		if err := d.db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM recovery_quarantines WHERE bead_id=? AND status='open'`, beadID).Scan(&openQuarantines); err != nil {
+			t.Fatalf("count closed bead quarantines for %s: %v", beadID, err)
+		}
+		if openQuarantines != 0 {
+			t.Fatalf("%s open recovery quarantines = %d, want 0", beadID, openQuarantines)
+		}
+	}
+
+	var openReason string
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT reason FROM recovery_quarantines WHERE bead_id='oro-open-missing' AND status='open'`).Scan(&openReason); err != nil {
+		t.Fatalf("query open bead quarantine: %v", err)
+	}
+	if openReason != "missing_worktree_path" {
+		t.Fatalf("open bead quarantine reason = %q, want missing_worktree_path", openReason)
+	}
+
+	var preservedStatus string
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT status FROM assignments WHERE bead_id='oro-closed-preserved'`).Scan(&preservedStatus); err != nil {
+		t.Fatalf("query preserved assignment status: %v", err)
+	}
+	if preservedStatus != "active" {
+		t.Fatalf("preserved closed assignment status = %q, want active", preservedStatus)
 	}
 }
 

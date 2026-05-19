@@ -8058,7 +8058,7 @@ func (d *Dispatcher) loadActiveAssignments(ctx context.Context) ([]restoredAssig
 		if err := rows.Scan(&a.id, &a.beadID, &workerID, &a.worktree, &a.attemptCount, &a.handoffCount); err != nil {
 			return nil, nil, nil, fmt.Errorf("scan assignment: %w", err)
 		}
-		if d.assignmentHasMergedClosedBead(ctx, a.beadID) {
+		if d.assignmentHasRetirableClosedBead(ctx, a.beadID, a) {
 			retiredClosed = append(retiredClosed, retiredClosedAssignment{
 				id:     a.id,
 				beadID: a.beadID,
@@ -8084,7 +8084,7 @@ func (d *Dispatcher) loadActiveAssignments(ctx context.Context) ([]restoredAssig
 	return restored, quarantined, retiredClosed, nil
 }
 
-func (d *Dispatcher) assignmentHasMergedClosedBead(ctx context.Context, beadID string) bool {
+func (d *Dispatcher) assignmentHasRetirableClosedBead(ctx context.Context, beadID string, a restoredAssignment) bool {
 	detail, err := d.beads.Show(ctx, beadID)
 	if err != nil {
 		_ = d.logEvent(ctx, "startup_closed_assignment_lookup_failed", "dispatcher", beadID, "", err.Error())
@@ -8093,7 +8093,12 @@ func (d *Dispatcher) assignmentHasMergedClosedBead(ctx context.Context, beadID s
 	if detail == nil || !strings.EqualFold(detail.Status, "closed") {
 		return false
 	}
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(detail.CloseReason)), "merged:")
+	switch d.classifyAssignment(ctx, a) {
+	case "missing_worktree", "missing_worktree_path", "missing_branch":
+		return true
+	default:
+		return false
+	}
 }
 
 // classifyAssignment returns "" if the assignment is recoverable, or a
@@ -8149,7 +8154,7 @@ func (d *Dispatcher) processRetiredClosedAssignments(ctx context.Context, retire
 			continue
 		}
 		_ = d.logEvent(ctx, "startup_closed_assignment_retired", "dispatcher", assignment.beadID, "",
-			fmt.Sprintf(`{"assignment_id":%d,"reason":"closed_merged_bead"}`, assignment.id))
+			fmt.Sprintf(`{"assignment_id":%d,"reason":"closed_empty_state"}`, assignment.id))
 	}
 }
 
