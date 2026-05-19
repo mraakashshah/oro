@@ -14854,6 +14854,81 @@ func TestTryCloseEpic_FFMergeToMain(t *testing.T) {
 	})
 }
 
+func TestEpicFFMergeFailureCreatesActionableRebaseChild(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const (
+		epicID       = "oro-recov-rebaseac"
+		workerID     = "worker-rebaseac"
+		targetBranch = "epic/recovery-parent"
+	)
+	epicBranch := protocol.EpicBranchPrefix + epicID
+
+	beadSrc.mu.Lock()
+	beadSrc.shown[epicID] = &protocol.BeadDetail{
+		ID:    epicID,
+		Title: "Recovery Epic",
+	}
+	beadSrc.mu.Unlock()
+
+	wtMgr.mu.Lock()
+	wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
+		return branch == epicBranch, nil
+	}
+	wtMgr.updateBranchRefFn = func(_, _ string) error {
+		return errors.New("ref update rejected")
+	}
+	wtMgr.mu.Unlock()
+
+	err := d.ffMergeEpicBranch(ctx, epicID, workerID, targetBranch)
+	if err == nil {
+		t.Fatal("ffMergeEpicBranch error = nil, want merge failure")
+	}
+
+	rebaseBead := requireCreatedCall(t, beadSrc, func(call createCall) bool {
+		return call.parent == epicID && strings.HasPrefix(call.title, "Rebase ")
+	})
+	if strings.TrimSpace(rebaseBead.acceptanceCriteria) == "" {
+		t.Fatal("rebase child acceptance criteria is empty")
+	}
+	for _, marker := range []string{"Test:", "Cmd:", "Assert:", "Read:"} {
+		if !strings.Contains(rebaseBead.acceptanceCriteria, marker) {
+			t.Errorf("rebase child acceptance criteria missing %q: %s", marker, rebaseBead.acceptanceCriteria)
+		}
+	}
+	for _, branch := range []string{epicBranch, targetBranch} {
+		if !strings.Contains(rebaseBead.acceptanceCriteria, branch) {
+			t.Errorf("rebase child acceptance criteria does not name branch %q: %s", branch, rebaseBead.acceptanceCriteria)
+		}
+	}
+
+	const rebaseChildID = "oro-rebase-child"
+	beadSrc.mu.Lock()
+	beadSrc.shown[rebaseChildID] = &protocol.BeadDetail{
+		ID:                 rebaseChildID,
+		Title:              rebaseBead.title,
+		AcceptanceCriteria: rebaseBead.acceptanceCriteria,
+	}
+	beadSrc.mu.Unlock()
+
+	_, _, ok := d.checkBeadReady(ctx, protocol.Bead{ID: rebaseChildID, Title: rebaseBead.title, Priority: rebaseBead.priority}, workerID)
+	if !ok {
+		t.Fatal("rebase child triggered readiness rejection; want assignable actionable acceptance")
+	}
+
+	var missingACEvents int
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM events WHERE type='bead_skipped_missing_ac' AND bead_id=?`,
+		rebaseChildID,
+	).Scan(&missingACEvents); err != nil {
+		t.Fatalf("query missing AC events: %v", err)
+	}
+	if missingACEvents != 0 {
+		t.Fatalf("rebase child triggered missing acceptance path %d time(s), want 0", missingACEvents)
+	}
+}
+
 // TestEpicClose_TargetBranch verifies that tryCloseEpic reads Metadata[MetaBranch]
 // from the epic detail, passes it through completeEpicClose → ffMergeEpicBranch,
 // and that ffMergeEpicBranch routes to UpdateBranchRef for non-HEAD targets and

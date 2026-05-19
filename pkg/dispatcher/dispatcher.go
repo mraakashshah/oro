@@ -2775,12 +2775,13 @@ func (d *Dispatcher) ffMergeEpicBranch(ctx context.Context, epicID, workerID, ta
 			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, wrapped.Error()))
 		// Create a rebase child bead so the epic is retried after the rebase.
 		_, _ = d.beads.Create(ctx, beadstore.CreateParams{
-			Title:       fmt.Sprintf("Rebase %s onto %s", epicBranch, targetBranch),
-			Type:        "task",
-			Priority:    1,
-			Description: fmt.Sprintf("FF merge of %s failed: %s. Rebase the epic branch onto %s and re-trigger close.", epicBranch, wrapped.Error(), targetBranch),
-			ParentID:    epicID,
-			Tier:        parentTierForCreate(ctx, d.beads, epicID),
+			Title:              fmt.Sprintf("Rebase %s onto %s", epicBranch, targetBranch),
+			Type:               "task",
+			Priority:           1,
+			Description:        fmt.Sprintf("FF merge of %s failed: %s. Rebase the epic branch onto %s and re-trigger close.", epicBranch, wrapped.Error(), targetBranch),
+			ParentID:           epicID,
+			AcceptanceCriteria: rebaseChildAcceptance(epicID, epicBranch, targetBranch),
+			Tier:               parentTierForCreate(ctx, d.beads, epicID),
 		})
 		return wrapped
 	}
@@ -2793,6 +2794,15 @@ func (d *Dispatcher) ffMergeEpicBranch(ctx context.Context, epicID, workerID, ta
 			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, delErr.Error()))
 	}
 	return nil
+}
+
+func rebaseChildAcceptance(epicID, epicBranch, targetBranch string) string {
+	return strings.Join([]string{
+		fmt.Sprintf("Test: epic %s rebase task keeps %s integration-ready for %s", epicID, epicBranch, targetBranch),
+		fmt.Sprintf("Cmd: git fetch --all --prune && git checkout %s && git rebase %s && go test ./...", epicBranch, targetBranch),
+		fmt.Sprintf("Assert: %s is rebased onto %s, tests pass, and the epic can retry close without requiring the original merge failure to still exist.", epicBranch, targetBranch),
+		"Read: pkg/dispatcher/dispatcher.go:ffMergeEpicBranch, pkg/dispatcher/dispatcher_test.go:TestEpicFFMergeFailureCreatesActionableRebaseChild",
+	}, " | ")
 }
 
 // completeEpicClose FF-merges the epic branch to targetBranch, then closes the
