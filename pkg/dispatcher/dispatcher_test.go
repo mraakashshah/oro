@@ -1423,7 +1423,7 @@ func TestDispatcher_AssignBead_SkipsBeadWithoutAcceptance(t *testing.T) {
 }
 
 func TestCheckBeadReady_RejectsOversizedBead(t *testing.T) {
-	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
+	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
 	startDispatcher(t, d)
 
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
@@ -1451,12 +1451,18 @@ func TestCheckBeadReady_RejectsOversizedBead(t *testing.T) {
 		t.Fatal("oversized bead should not be assigned; OVERSIZED_BEAD escalation should fire instead")
 	}
 
-	// OVERSIZED_BEAD is handled by ops decompose, not tmux.
+	// OVERSIZED_BEAD is handled by ops decompose, not tmux. The dispatcher
+	// heartbeat loop may emit unrelated worker-liveness escalations while this
+	// integration-style test waits on assignment state, so assert the oversized
+	// route specifically instead of requiring the shared mock escalator to stay
+	// completely empty.
 	waitFor(t, func() bool {
-		return len(d.ops.Active()) == 0
+		return spawnMock.SpawnCount() > 0 && len(d.ops.Active()) == 0
 	}, 2*time.Second)
-	if got := len(esc.Messages()); got != 0 {
-		t.Fatalf("oversized bead should not paste to tmux when ops decompose is routed, got %d messages: %v", got, esc.Messages())
+	for _, got := range esc.Messages() {
+		if strings.Contains(got, string(protocol.EscOversizedBead)) {
+			t.Fatalf("oversized bead should not paste to tmux when ops decompose is routed, got message: %s", got)
+		}
 	}
 
 	// Bead must enter worktreeFailure cooldown (same mechanism as MISSING_AC).
