@@ -21,7 +21,17 @@ func newRootCmd() *cobra.Command {
 
 	cmd.SetVersionTemplate("{{.Version}}\n")
 
-	cmd.AddCommand(
+	cmd.AddCommand(rootSubcommands(cmd)...)
+
+	for _, alias := range editRootAliases() {
+		cmd.AddCommand(alias)
+	}
+
+	return cmd
+}
+
+func rootSubcommands(root *cobra.Command) []*cobra.Command {
+	return []*cobra.Command{
 		newInitCmd(),
 		newSetupCmd(),
 		newStartCmd(),
@@ -31,6 +41,7 @@ func newRootCmd() *cobra.Command {
 		newStopCmd(),
 		newStatusCmd(),
 		newHealthCmd(),
+		newOpsCmd(),
 		newRecoveryCmd(),
 		newMonitorCmd(),
 		newThroughputCmd(),
@@ -45,7 +56,7 @@ func newRootCmd() *cobra.Command {
 		newEventsCmd(),
 		newIndexCmd(),
 		newCleanupCmd(),
-		newHelpCmd(cmd),
+		newHelpCmd(root),
 		newWorkCmd(),
 		newBeadCmd(),
 		newTaskCmd(),
@@ -63,11 +74,5 @@ func newRootCmd() *cobra.Command {
 		newHandoffCmd(),
 		newResumeCmd(),
 		newReviewPatternsCmd(),
-	)
-
-	for _, alias := range editRootAliases() {
-		cmd.AddCommand(alias)
 	}
-
-	return cmd
 }
