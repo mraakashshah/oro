@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"time"
 
 	"oro/pkg/factoryhealth"
@@ -298,6 +299,7 @@ func formatStatusResponse(w io.Writer, resp *statusResponse) {
 	formatAlerts(w, resp)
 
 	formatStatusHealthSummary(w, resp.Health)
+	formatStatusOpsRuns(w, resp.Health)
 
 	fmt.Fprintf(w, "  state:       %s\n", resp.State)
 
@@ -353,6 +355,79 @@ func formatStatusHealthSummary(w io.Writer, health *factoryhealth.FactoryHealth)
 		}
 		fmt.Fprintf(w, "    %s: %s\n", finding.Code, finding.Message)
 	}
+}
+
+func formatStatusOpsRuns(w io.Writer, health *factoryhealth.FactoryHealth) {
+	if health == nil {
+		return
+	}
+	metrics := health.Metrics.OpsRuns
+	if metrics.Running+metrics.Failed+metrics.Stale == 0 {
+		return
+	}
+	fmt.Fprintf(w, "  ops runs:   %s\n", formatOpsRunCounts(metrics.Running, metrics.Failed, metrics.Stale))
+
+	if len(metrics.ByType) > 0 {
+		types := make([]string, 0, len(metrics.ByType))
+		for runType := range metrics.ByType {
+			types = append(types, runType)
+		}
+		sort.Strings(types)
+		for _, runType := range types {
+			counts := metrics.ByType[runType]
+			fmt.Fprintf(w, "    %s: %s\n", runType, formatOpsRunCounts(counts.Running, counts.Failed, counts.Stale))
+		}
+	}
+
+	for _, run := range metrics.Runs {
+		if run.Status != "failed" && run.Status != "stale" {
+			continue
+		}
+		fmt.Fprintf(w, "    #%d %s %s %s", run.ID, run.Type, run.BeadID, run.Status)
+		if run.AgeSecs > 0 {
+			fmt.Fprintf(w, " (%s ago)", formatDuration(run.AgeSecs))
+		}
+		fmt.Fprintf(w, " | action: %s\n", opsRunAction(health, run))
+	}
+}
+
+func formatOpsRunCounts(running, failed, stale int) string {
+	parts := make([]string, 0, 3)
+	if running > 0 {
+		parts = append(parts, fmt.Sprintf("%d running", running))
+	}
+	if failed > 0 {
+		parts = append(parts, fmt.Sprintf("%d failed", failed))
+	}
+	if stale > 0 {
+		parts = append(parts, fmt.Sprintf("%d stale", stale))
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ", ")
+}
+
+func opsRunAction(health *factoryhealth.FactoryHealth, run factoryhealth.OpsRunSnapshot) string {
+	code := factoryhealth.FindingOpsRunFailed
+	if run.Status == "stale" {
+		code = factoryhealth.FindingOpsRunStale
+	}
+	for _, finding := range health.Findings {
+		if finding.Code != code {
+			continue
+		}
+		if finding.Type != "" && finding.Type != run.Type {
+			continue
+		}
+		if finding.BeadID != "" && finding.BeadID != run.BeadID {
+			continue
+		}
+		if finding.RecommendedAction != "" {
+			return finding.RecommendedAction
+		}
+	}
+	return factoryhealth.OpsRunRecommendedAction(run)
 }
 
 // formatInProgressBeads writes the in-progress beads section using enriched worker data.

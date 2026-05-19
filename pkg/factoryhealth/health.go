@@ -431,7 +431,7 @@ func opsRunFindings(metrics OpsRunMetrics) []Finding {
 				BeadID:            run.BeadID,
 				Type:              run.Type,
 				AgeSecs:           run.AgeSecs,
-				RecommendedAction: "inspect the run feedback and task graph, then resolve or retry explicitly",
+				RecommendedAction: OpsRunRecommendedAction(run),
 			})
 		case "stale":
 			findings = append(findings, Finding{
@@ -442,7 +442,7 @@ func opsRunFindings(metrics OpsRunMetrics) []Finding {
 				BeadID:            run.BeadID,
 				Type:              run.Type,
 				AgeSecs:           run.AgeSecs,
-				RecommendedAction: "inspect the ops subprocess and retry or resolve the run explicitly",
+				RecommendedAction: OpsRunRecommendedAction(run),
 			})
 		}
 	}
@@ -455,7 +455,7 @@ func opsRunFindings(metrics OpsRunMetrics) []Finding {
 			Severity:          SeverityError,
 			Component:         "ops",
 			Message:           fmt.Sprintf("%d ops run(s) failed", metrics.Failed),
-			RecommendedAction: "inspect the run feedback and task graph, then resolve or retry explicitly",
+			RecommendedAction: "run oro ops list, then use oro ops retry <id> or oro ops resolve <id> <reason>",
 		})
 	}
 	if metrics.Stale > 0 {
@@ -464,10 +464,18 @@ func opsRunFindings(metrics OpsRunMetrics) []Finding {
 			Severity:          SeverityError,
 			Component:         "ops",
 			Message:           fmt.Sprintf("%d ops run(s) are stale", metrics.Stale),
-			RecommendedAction: "inspect the ops subprocess and retry or resolve the run explicitly",
+			RecommendedAction: "run oro ops list, then use oro ops retry <id> or oro ops resolve <id> <reason>",
 		})
 	}
 	return findings
+}
+
+// OpsRunRecommendedAction returns the explicit operator commands for a blocking ops run.
+func OpsRunRecommendedAction(run OpsRunSnapshot) string {
+	if run.ID > 0 {
+		return fmt.Sprintf("run oro ops list, then oro ops retry %d or oro ops resolve %d <reason>", run.ID, run.ID)
+	}
+	return "run oro ops list, then use oro ops retry <id> or oro ops resolve <id> <reason>"
 }
 
 func defaultFloat(v, fallback float64) float64 {

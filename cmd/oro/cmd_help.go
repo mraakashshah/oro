@@ -37,6 +37,7 @@ Memory:
 
 Control:
   directive  Send a directive to the dispatcher (scale, focus, pause, resume)
+  ops        Inspect and recover dispatcher ops runs
 
 Search:
   index      Semantic code search (build, search)

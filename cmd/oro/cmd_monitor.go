@@ -154,6 +154,10 @@ func runMonitorIteration(ctx context.Context, w io.Writer, cfg monitorConfig, ru
 		fmt.Fprintf(w, "blocked_by_unsafe_health action=%q\n", "inspect oro health findings and resolve critical state before monitor mutates workers")
 		return nil
 	}
+	if hasBlockingOpsRuns(health) {
+		writeOpsRunsBlocked(w, health)
+		return nil
+	}
 	return actOnMonitorHealth(ctx, w, cfg, runner, state, health)
 }
 
@@ -394,12 +398,46 @@ func writeQGChurnBlocked(w io.Writer, state *monitorState, health factoryhealth.
 	fmt.Fprintf(w, "blocked_by_qg_churn fingerprint=%q occurrences_30m=%d action=%q\n", fingerprint, occurrences, action)
 }
 
+func writeOpsRunsBlocked(w io.Writer, health factoryhealth.FactoryHealth) {
+	if w == nil {
+		return
+	}
+	action := blockingOpsRunAction(health)
+	fmt.Fprintf(w, "blocked_by_ops_runs failed=%d stale=%d action=%q\n", health.Metrics.OpsRuns.Failed, health.Metrics.OpsRuns.Stale, action)
+}
+
+func blockingOpsRunAction(health factoryhealth.FactoryHealth) string {
+	for _, run := range health.Metrics.OpsRuns.Runs {
+		if run.Status == "failed" || run.Status == "stale" {
+			return factoryhealth.OpsRunRecommendedAction(run)
+		}
+	}
+	for _, finding := range health.Findings {
+		if (finding.Code == factoryhealth.FindingOpsRunFailed || finding.Code == factoryhealth.FindingOpsRunStale) && finding.RecommendedAction != "" {
+			return finding.RecommendedAction
+		}
+	}
+	return "run oro ops list, then use oro ops retry <id> or oro ops resolve <id> <reason>"
+}
+
 func hasRecoveryQuarantineFinding(health factoryhealth.FactoryHealth) bool {
 	if health.Metrics.OpenRecoveryQuarantines > 0 {
 		return true
 	}
 	for _, finding := range health.Findings {
 		if finding.Code == factoryhealth.FindingRecoveryQuarantineOpen {
+			return true
+		}
+	}
+	return false
+}
+
+func hasBlockingOpsRuns(health factoryhealth.FactoryHealth) bool {
+	if health.Metrics.OpsRuns.Failed > 0 || health.Metrics.OpsRuns.Stale > 0 {
+		return true
+	}
+	for _, finding := range health.Findings {
+		if finding.Code == factoryhealth.FindingOpsRunFailed || finding.Code == factoryhealth.FindingOpsRunStale {
 			return true
 		}
 	}

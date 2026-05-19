@@ -513,6 +513,54 @@ func TestMonitorActRefusesMutationWhenRecoveryQuarantineOpen(t *testing.T) {
 	}
 }
 
+func TestMonitorActDoesNotResolveFailedOpsRuns(t *testing.T) {
+	runner := &fakeMonitorRunner{health: factoryhealth.FactoryHealth{
+		State: factoryhealth.StateStalled,
+		Findings: []factoryhealth.Finding{
+			{
+				Code:              factoryhealth.FindingOpsRunFailed,
+				Severity:          factoryhealth.SeverityError,
+				Message:           "decompose ops run for oro-failed failed",
+				RecommendedAction: "run oro ops list, then oro ops retry 42 or oro ops resolve 42 <reason>",
+			},
+			{Code: factoryhealth.FindingPausedWithReadyQueue, Severity: factoryhealth.SeverityWarning},
+			{Code: factoryhealth.FindingThroughputStall, Severity: factoryhealth.SeverityError},
+		},
+		Metrics: factoryhealth.Metrics{
+			DaemonRunning: true,
+			ReadyQueue:    3,
+			WorkerCount:   0,
+			TargetWorkers: 1,
+			MaxWorkers:    1,
+			OpsRuns: factoryhealth.OpsRunMetrics{
+				Failed: 1,
+				Runs: []factoryhealth.OpsRunSnapshot{
+					{ID: 42, Type: "decompose", BeadID: "oro-failed", Status: "failed"},
+				},
+			},
+		},
+	}}
+
+	var buf bytes.Buffer
+	state := newMonitorState()
+	cfg := monitorConfig{targetWorkers: 2, maxWorkers: 2, act: true, restartAfter: 1}
+	if err := runMonitorIteration(context.Background(), &buf, cfg, runner, state); err != nil {
+		t.Fatalf("monitor iteration: %v", err)
+	}
+
+	if len(runner.calls) != 0 {
+		t.Fatalf("monitor --act mutated failed ops runs via calls %v", runner.calls)
+	}
+	got := buf.String()
+	assertContainsAll(t, got, []string{
+		factoryhealth.FindingOpsRunFailed,
+		"blocked_by_ops_runs",
+		"oro ops list",
+		"oro ops retry 42",
+		"oro ops resolve 42",
+	})
+}
+
 func TestMonitorActPrintsRecoveryQuarantineBlockedOncePerCount(t *testing.T) {
 	runner := &fakeMonitorRunner{health: factoryhealth.FactoryHealth{
 		State: factoryhealth.StateUnsafe,

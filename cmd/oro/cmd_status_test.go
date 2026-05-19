@@ -642,6 +642,80 @@ func TestStatusShowsRecoveryQuarantineSummary(t *testing.T) {
 	}
 }
 
+func TestStatusShowsFailedOpsRuns(t *testing.T) {
+	t.Run("summarizes active failed and stale ops runs", func(t *testing.T) {
+		resp := statusResponse{
+			State:               "running",
+			ProgressTimeoutSecs: 600,
+			Health: &factoryhealth.FactoryHealth{
+				State:   factoryhealth.StateStalled,
+				Posture: "operator attention recommended",
+				Metrics: factoryhealth.Metrics{
+					OpsRuns: factoryhealth.OpsRunMetrics{
+						Running: 1,
+						Failed:  1,
+						Stale:   1,
+						ByType: map[string]factoryhealth.OpsRunTypeMetrics{
+							"decompose": {Running: 1, Failed: 1},
+							"diagnosis": {Stale: 1},
+						},
+						Runs: []factoryhealth.OpsRunSnapshot{
+							{ID: 41, Type: "decompose", BeadID: "oro-active", Status: "running", AgeSecs: 12},
+							{ID: 42, Type: "decompose", BeadID: "oro-failed", Status: "failed", AgeSecs: 75},
+							{ID: 43, Type: "diagnosis", BeadID: "oro-stale", Status: "stale", AgeSecs: 1900},
+						},
+					},
+				},
+				Findings: []factoryhealth.Finding{
+					{
+						Code:              factoryhealth.FindingOpsRunFailed,
+						Severity:          factoryhealth.SeverityError,
+						Message:           "decompose ops run for oro-failed failed",
+						RecommendedAction: "run oro ops list, then oro ops retry 42 or oro ops resolve 42 <reason>",
+					},
+					{
+						Code:              factoryhealth.FindingOpsRunStale,
+						Severity:          factoryhealth.SeverityError,
+						Message:           "diagnosis ops run for oro-stale is stale",
+						RecommendedAction: "run oro ops list, then oro ops retry 43 or oro ops resolve 43 <reason>",
+					},
+				},
+			},
+		}
+
+		var buf bytes.Buffer
+		formatStatusResponse(&buf, &resp)
+		got := buf.String()
+
+		assertContainsAll(t, got, []string{
+			"ops runs:   1 running, 1 failed, 1 stale",
+			"decompose: 1 running, 1 failed",
+			"diagnosis: 1 stale",
+			"#42 decompose oro-failed failed",
+			"#43 diagnosis oro-stale stale",
+			"oro ops list",
+			"oro ops retry 42",
+			"oro ops resolve 42",
+		})
+	})
+
+	t.Run("omits ops run section when empty", func(t *testing.T) {
+		resp := statusResponse{
+			State: "running",
+			Health: &factoryhealth.FactoryHealth{
+				State:   factoryhealth.StateHealthy,
+				Posture: "no findings",
+			},
+		}
+
+		var buf bytes.Buffer
+		formatStatusResponse(&buf, &resp)
+		if got := buf.String(); strings.Contains(got, "ops runs") {
+			t.Fatalf("status output should not contain empty ops run section:\n%s", got)
+		}
+	})
+}
+
 // TestStatusCommand verifies that the header active count matches the number of
 // table rows (busy + reviewing). Reviewing workers must appear in both.
 func TestStatusCommand(t *testing.T) {
