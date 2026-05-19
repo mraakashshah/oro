@@ -582,13 +582,14 @@ func (m *mockWorktreeManager) CreateBranch(ctx context.Context, name, from strin
 type mockEscalator struct {
 	mu       sync.Mutex
 	messages []string
+	err      error
 }
 
 func (m *mockEscalator) Escalate(_ context.Context, msg string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.messages = append(m.messages, msg)
-	return nil
+	return m.err
 }
 
 func (m *mockEscalator) Messages() []string {
@@ -9770,6 +9771,75 @@ func TestMergeCompleteEscalationAutoAcked(t *testing.T) {
 	}
 	if mergeCompleteCount != 1 {
 		t.Errorf("manager received %d MERGE_COMPLETE notifications, want 1", mergeCompleteCount)
+	}
+}
+
+func TestMergeCompleteDoesNotFailEscalationWhenManagerMissing(t *testing.T) {
+	d, _, _, esc, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	esc.mu.Lock()
+	esc.err = errors.New("manager session missing")
+	esc.mu.Unlock()
+
+	beadID := "bead-managerless-merge"
+	workerID := "w-managerless"
+	worktree := "/tmp/worktree-" + beadID
+	branch := "agent/" + beadID
+
+	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "", 0)
+
+	var escID int64
+	var escStatus string
+	err = d.db.QueryRowContext(ctx,
+		`SELECT id, status FROM escalations WHERE bead_id = ? AND type = ?`,
+		beadID, string(protocol.EscMergeComplete)).
+		Scan(&escID, &escStatus)
+	if err != nil {
+		t.Fatalf("failed to query MERGE_COMPLETE escalation: %v", err)
+	}
+	if escID == 0 {
+		t.Fatal("MERGE_COMPLETE escalation was not persisted")
+	}
+	if escStatus != "pending" {
+		t.Fatalf("initial escalation status = %q, want pending", escStatus)
+	}
+
+	if got := eventCount(t, d.db, "escalation_failed"); got != 0 {
+		t.Fatalf("escalation_failed events = %d, want 0", got)
+	}
+	if got := eventCount(t, d.db, "notification_skipped"); got != 1 {
+		t.Fatalf("notification_skipped events = %d, want 1", got)
+	}
+	var failedOpsRuns int
+	err = d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM ops_runs WHERE bead_id = ? AND status = ?`,
+		beadID, opsRunStatusFailed).
+		Scan(&failedOpsRuns)
+	if err != nil {
+		t.Fatalf("count failed ops_runs: %v", err)
+	}
+	if failedOpsRuns != 0 {
+		t.Fatalf("failed ops_runs = %d, want 0", failedOpsRuns)
+	}
+
+	d.retryPendingEscalations(ctx)
+
+	var ackedStatus string
+	err = d.db.QueryRowContext(ctx,
+		`SELECT status FROM escalations WHERE id = ?`,
+		escID).
+		Scan(&ackedStatus)
+	if err != nil {
+		t.Fatalf("failed to query escalation after retry: %v", err)
+	}
+	if ackedStatus != "acked" {
+		t.Fatalf("after retryPendingEscalations, escalation status = %q, want acked", ackedStatus)
 	}
 }
 

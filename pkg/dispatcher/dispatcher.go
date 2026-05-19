@@ -7180,6 +7180,11 @@ func (d *Dispatcher) escalate(ctx context.Context, msg, beadID, workerID string)
 	}
 
 	if err := d.escalator.Escalate(ctx, msg); err != nil {
+		if isInformationalEscalation(protocol.EscalationType(dbEscType)) {
+			_ = d.logEvent(ctx, "notification_skipped", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"error":%q,"message":%q,"type":%q}`, err.Error(), msg, dbEscType))
+			return
+		}
 		_ = d.logEvent(ctx, "escalation_failed", "dispatcher", beadID, workerID,
 			fmt.Sprintf(`{"error":%q,"message":%q}`, err.Error(), msg))
 	}
@@ -7542,6 +7547,15 @@ func (d *Dispatcher) shouldRetryEscalation(ctx context.Context, escType, beadID 
 		return false
 	default:
 		return true
+	}
+}
+
+func isInformationalEscalation(escType protocol.EscalationType) bool {
+	switch escType {
+	case protocol.EscMergeComplete, protocol.EscManualIntegration:
+		return true
+	default:
+		return false
 	}
 }
 
