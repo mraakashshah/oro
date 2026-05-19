@@ -30,6 +30,8 @@ type TmuxPaneRestarter struct {
 }
 
 // NewTmuxPaneRestarter creates a TmuxPaneRestarter for the given session and command.
+//
+//oro:testonly
 func NewTmuxPaneRestarter(sessionName, cmdStr string, runner CommandRunner) *TmuxPaneRestarter {
 	return &TmuxPaneRestarter{
 		sessionName: sessionName,
@@ -47,8 +49,8 @@ func (r *TmuxPaneRestarter) CmdStr() string {
 }
 
 // SetPaneRestarter sets the PaneRestarter on a Dispatcher.
-// This is used by cmd/oro to wire up the production TmuxPaneRestarter
-// after constructing the Dispatcher.
+//
+//oro:testonly
 func (d *Dispatcher) SetPaneRestarter(r PaneRestarter) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

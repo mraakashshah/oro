@@ -328,15 +328,15 @@ func runFullStart(w io.Writer, workers, maxWorkers int, model, project string, s
 		return fmt.Errorf("send start directive: %w", err)
 	}
 
-	// 3. Create tmux session with short nudges (full role context injected by SessionStart hook).
+	// 3. Create tmux attach surface. Workers are managed by the daemon; no
+	// manager runtime is launched by default.
 	sess := &TmuxSession{Name: TmuxSessionName(project), Project: project, Runner: tmuxRunner, Sleeper: sleeper, BeaconTimeout: beaconTimeout}
-	if err := sess.Create(ManagerNudge()); err != nil {
+	if err := sess.Create(""); err != nil {
 		cleanupOrphans()
 		return fmt.Errorf("create tmux session: %w", err)
 	}
 
 	log.Step("Tmux session created")
-	log.Step("Beacon verified")
 	fmt.Fprintf(w, "oro swarm started (PID %d, workers=%d, model=%s)\n", pid, workers, model)
 
 	return attachOrDetach(w, sess, detach)
@@ -514,7 +514,7 @@ func reconnectTmux(w io.Writer, runner CmdRunner, project string, detach bool, s
 		fmt.Fprintf(w, "session unhealthy — recreating tmux panes\n")
 	}
 
-	if err := sess.Create(ManagerNudge()); err != nil {
+	if err := sess.Create(""); err != nil {
 		return fmt.Errorf("recreate tmux session: %w", err)
 	}
 
@@ -687,7 +687,7 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers, maxWorkers int, 
 	}
 	defer db.Close()
 
-	wireDependencies(d, paths.SocketPath, paths.OroHome, &dispatcher.ExecCommandRunner{}, true /* daemonOnly */)
+	wireDependencies(d, paths.SocketPath, paths.OroHome)
 
 	ctx := cmd.Context()
 	shutdownCtx, cleanup := SetupSignalHandler(ctx, pidPath, d.ShutdownAuthorized())
@@ -875,16 +875,8 @@ func resolveReviewPatternCandidatesPath(repoRoot string) string {
 }
 
 // wireDependencies attaches production components to the dispatcher.
-func wireDependencies(d *dispatcher.Dispatcher, sockPath, oroHome string, runner dispatcher.CommandRunner, daemonOnly bool) {
+func wireDependencies(d *dispatcher.Dispatcher, sockPath, oroHome string) {
 	d.SetProcessManager(dispatcher.NewOroProcessManager(sockPath, oroHome))
-	// Skip pane restarter in daemon-only mode: no tmux session exists, so
-	// attempting to restart panes would spam pane_restart_failed events.
-	if !daemonOnly || os.Getenv(tmuxManagedDaemonEnv) == "1" {
-		// Build the manager pane command using execEnvCmd with the project context
-		project := os.Getenv("ORO_PROJECT")
-		managerCmd := execEnvCmd("manager", project)
-		d.SetPaneRestarter(dispatcher.NewTmuxPaneRestarter(TmuxSessionName(project), managerCmd, runner))
-	}
 }
 
 // readProjectConfig reads the project name from .oro/config.yaml in the given directory.

@@ -306,26 +306,12 @@ func TestRunFullStartKillsDaemonOnSessionCreateError(t *testing.T) {
 	sockPath := fmt.Sprintf("/tmp/oro-kill-%d.sock", time.Now().UnixNano())
 	t.Cleanup(func() { _ = os.Remove(sockPath) })
 
-	// Use a deterministic CLAUDE_CONFIG_DIR so we can compute the exact
-	// fakeCmd key for the tmux new-session call.
-	claudeConfigDir := filepath.Join(tmpDir, "claude-config")
-	if err := os.MkdirAll(claudeConfigDir, 0o750); err != nil {
-		t.Fatal(err)
-	}
-
 	t.Setenv("ORO_PID_PATH", pidFile)
 	t.Setenv("ORO_SOCKET_PATH", sockPath)
 	t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))
-	t.Setenv("CLAUDE_CONFIG_DIR", claudeConfigDir)
 
 	// Compute the exact key that fakeCmd will see for new-session.
-	// execEnvCmd("architect", "") uses CLAUDE_CONFIG_DIR to build the command.
-	archConfigDir := filepath.Join(claudeConfigDir, "roles", "architect")
-	newSessionCmd := fmt.Sprintf(
-		"exec env ORO_ROLE=architect BD_ACTOR=architect GIT_AUTHOR_NAME=architect CLAUDE_CONFIG_DIR=%s claude",
-		archConfigDir,
-	)
-	newSessionKey := key("tmux", "new-session", "-d", "-s", "oro", "-n", "architect", newSessionCmd)
+	newSessionKey := key("tmux", "new-session", "-d", "-s", "oro", "-n", defaultTmuxWindowName)
 
 	// Spawner starts a real sleep 1000 child and returns its PID.
 	var spawnedPID int
@@ -437,74 +423,23 @@ func (s *killTestSpawner) SpawnDaemon(pidPath string, workers, _ int) (int, erro
 	return pid, nil
 }
 
-// TestWireDependencies_SetsPaneRestarter verifies that wireDependencies
-// wires up a PaneRestarter using execEnvCmd to build the manager cmdStr.
-func TestWireDependencies_SetsPaneRestarter(t *testing.T) {
-	t.Run("sets PaneRestarter with manager cmdStr", func(t *testing.T) {
-		// Create a mock dispatcher to capture the SetPaneRestarter call.
-		mockDispatcher := &dispatcher.Dispatcher{}
-		sockPath := "/tmp/test.sock"
-		oroHome := "/tmp/oro"
+func TestWireDependenciesDoesNotSetPaneRestarter(t *testing.T) {
+	t.Run("non-daemon mode leaves PaneRestarter nil", func(t *testing.T) {
+		d := &dispatcher.Dispatcher{}
+		wireDependencies(d, "/tmp/test.sock", "/tmp/oro")
 
-		// Set ORO_PROJECT env var for execEnvCmd.
-		t.Setenv("ORO_PROJECT", "test-project")
-
-		// Create a mock command runner.
-		runner := &fakeCommandRunner{}
-
-		// Call wireDependencies.
-		wireDependencies(mockDispatcher, sockPath, oroHome, runner, false /* daemonOnly */)
-
-		// Assert: paneRestarter must be set (non-nil).
-		if mockDispatcher.GetPaneRestarter() == nil {
-			t.Fatal("expected paneRestarter to be set, but got nil")
-		}
-
-		// Assert: the cmdStr should use execEnvCmd to include manager role
-		pr := mockDispatcher.GetPaneRestarter()
-		tmuxRestarter, ok := pr.(*dispatcher.TmuxPaneRestarter)
-		if !ok {
-			t.Fatalf("expected TmuxPaneRestarter, got %T", pr)
-		}
-
-		// The cmdStr should contain "claude" from the execEnvCmd output
-		cmdStr := tmuxRestarter.CmdStr()
-		if cmdStr == "" {
-			t.Fatal("expected non-empty cmdStr")
-		}
-		// Should contain elements from execEnvCmd result
-		if !strings.Contains(cmdStr, "claude") {
-			t.Errorf("expected cmdStr to contain 'claude', got: %s", cmdStr)
-		}
-		if !strings.Contains(cmdStr, "ORO_ROLE=manager") {
-			t.Errorf("expected cmdStr to contain 'ORO_ROLE=manager', got: %s", cmdStr)
+		if d.GetPaneRestarter() != nil {
+			t.Fatal("expected paneRestarter to be nil by default")
 		}
 	})
 
-	t.Run("uses codex pane command when codex runtime is configured", func(t *testing.T) {
-		t.Setenv(agentRuntimeEnvVar, runtimeCodex)
-		t.Setenv("ORO_PROJECT", "test-project")
+	t.Run("tmux-managed daemon mode leaves PaneRestarter nil", func(t *testing.T) {
+		t.Setenv(tmuxManagedDaemonEnv, "1")
+		d := &dispatcher.Dispatcher{}
+		wireDependencies(d, "/tmp/test.sock", "/tmp/oro")
 
-		mockDispatcher := &dispatcher.Dispatcher{}
-		runner := &fakeCommandRunner{}
-
-		wireDependencies(mockDispatcher, "/tmp/test.sock", "/tmp/oro", runner, false)
-
-		pr := mockDispatcher.GetPaneRestarter()
-		if pr == nil {
-			t.Fatal("expected paneRestarter to be set, but got nil")
-		}
-		tmuxRestarter, ok := pr.(*dispatcher.TmuxPaneRestarter)
-		if !ok {
-			t.Fatalf("expected TmuxPaneRestarter, got %T", pr)
-		}
-
-		cmdStr := tmuxRestarter.CmdStr()
-		if !strings.Contains(cmdStr, "codex") {
-			t.Errorf("expected cmdStr to contain 'codex', got: %s", cmdStr)
-		}
-		if strings.Contains(cmdStr, "CLAUDE_CONFIG_DIR=") {
-			t.Errorf("expected codex cmdStr to avoid CLAUDE_CONFIG_DIR, got: %s", cmdStr)
+		if d.GetPaneRestarter() != nil {
+			t.Fatal("expected paneRestarter to be nil for tmux-managed daemon")
 		}
 	})
 }
@@ -1209,13 +1144,6 @@ func TestBuildDispatcherResolvesOpsRuntime(t *testing.T) {
 	})
 }
 
-// fakeCommandRunner is a mock CommandRunner for testing.
-type fakeCommandRunner struct{}
-
-func (f *fakeCommandRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return []byte{}, nil
-}
-
 // TestWireDependencies_DaemonOnly_SkipsPaneRestarter verifies that when
 // daemonOnly=true, wireDependencies does NOT set a PaneRestarter on the
 // dispatcher, preventing pane_restart_failed spam in daemon mode.
@@ -1224,41 +1152,49 @@ func TestWireDependencies_DaemonOnly_SkipsPaneRestarter(t *testing.T) {
 		d := &dispatcher.Dispatcher{}
 		sockPath := "/tmp/test-daemon.sock"
 		oroHome := "/tmp/oro-daemon"
-		runner := &fakeCommandRunner{}
 
-		wireDependencies(d, sockPath, oroHome, runner, true /* daemonOnly */)
+		wireDependencies(d, sockPath, oroHome)
 
 		if d.GetPaneRestarter() != nil {
 			t.Fatal("expected paneRestarter to be nil in daemon mode, but it was set")
 		}
 	})
 
-	t.Run("tmux-managed daemon mode: paneRestarter is set", func(t *testing.T) {
+	t.Run("tmux-managed daemon mode: paneRestarter is nil", func(t *testing.T) {
 		t.Setenv(tmuxManagedDaemonEnv, "1")
 		d := &dispatcher.Dispatcher{}
 		sockPath := "/tmp/test-daemon.sock"
 		oroHome := "/tmp/oro-daemon"
-		runner := &fakeCommandRunner{}
 
-		wireDependencies(d, sockPath, oroHome, runner, true /* daemonOnly */)
+		wireDependencies(d, sockPath, oroHome)
 
-		if d.GetPaneRestarter() == nil {
-			t.Fatal("expected paneRestarter to be set for tmux-managed daemon mode")
+		if d.GetPaneRestarter() != nil {
+			t.Fatal("expected paneRestarter to be nil for tmux-managed daemon mode")
 		}
 	})
 
-	t.Run("non-daemon mode: paneRestarter is set", func(t *testing.T) {
+	t.Run("non-daemon mode: paneRestarter is nil", func(t *testing.T) {
 		d := &dispatcher.Dispatcher{}
 		sockPath := "/tmp/test-nodaemon.sock"
 		oroHome := "/tmp/oro-nodaemon"
-		runner := &fakeCommandRunner{}
 
-		wireDependencies(d, sockPath, oroHome, runner, false /* daemonOnly */)
+		wireDependencies(d, sockPath, oroHome)
 
-		if d.GetPaneRestarter() == nil {
-			t.Fatal("expected paneRestarter to be set in non-daemon mode, but got nil")
+		if d.GetPaneRestarter() != nil {
+			t.Fatal("expected paneRestarter to be nil in non-daemon mode")
 		}
 	})
+}
+
+func TestWireDependenciesDoesNotSetManagerRestarterByDefault(t *testing.T) {
+	t.Setenv(tmuxManagedDaemonEnv, "1")
+	d := &dispatcher.Dispatcher{}
+
+	wireDependencies(d, "/tmp/test.sock", "/tmp/oro")
+
+	if d.GetPaneRestarter() != nil {
+		t.Fatal("default wireDependencies must not set manager pane restarter")
+	}
 }
 
 func TestDaemonChildEnvMarksTmuxManagedDaemon(t *testing.T) {

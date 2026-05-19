@@ -87,7 +87,6 @@ func TestFullStart(t *testing.T) {
 		fakeTmux := newFakeCmd()
 		// has-session returns error (session does not exist)
 		fakeTmux.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fakeTmux, "oro", ManagerNudge())
 
 		spawner := &fakeSpawner{
 			returnPID:  12345,
@@ -125,42 +124,20 @@ func TestFullStart(t *testing.T) {
 			t.Fatal("expected tmux new-session to be called")
 		}
 
-		// 3. Verify manager window launches interactive claude with role env vars via new-session.
-		mgrCmd := newSessionCall[len(newSessionCall)-1]
-		for _, envVar := range []string{"ORO_ROLE=manager", "BD_ACTOR=manager", "GIT_AUTHOR_NAME=manager"} {
-			if !strings.Contains(mgrCmd, envVar) {
-				t.Errorf("new-session command should set %s, got: %s", envVar, mgrCmd)
-			}
-		}
-		if !strings.Contains(mgrCmd, "claude") {
-			t.Errorf("new-session command should launch claude, got: %s", mgrCmd)
-		}
-		if strings.Contains(mgrCmd, "claude -p") {
-			t.Errorf("should use interactive claude, not 'claude -p', got: %s", mgrCmd)
+		// 3. Verify default startup creates a managerless tmux window.
+		if !callHasArgPair(newSessionCall, "-n", defaultTmuxWindowName) {
+			t.Errorf("new-session should name the default window %q, got: %v", defaultTmuxWindowName, newSessionCall)
 		}
 
-		// 4. Verify no new-window call (single-window architecture).
+		// 4. Verify no manager window or manager nudge is created by default.
 		for _, call := range tmuxCalls {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "new-window" {
-				t.Errorf("Create must not call new-window (single manager window), got: %v", call)
+				t.Errorf("Create must not call new-window, got: %v", call)
 			}
-		}
-
-		// 5. Verify manager nudge is injected via send-keys.
-		var managerCalls [][]string
-		for _, call := range tmuxCalls {
-			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
-				if strings.Contains(strings.Join(call, " "), "oro:manager") {
-					managerCalls = append(managerCalls, call)
-				}
+			joined := strings.Join(call, " ")
+			if strings.Contains(joined, "oro:manager") || strings.Contains(joined, "ORO_ROLE=manager") || strings.Contains(joined, ManagerNudge()) {
+				t.Errorf("default start must not launch or nudge manager, got: %v", call)
 			}
-		}
-		if len(managerCalls) < 1 {
-			t.Fatalf("expected at least 1 send-keys to manager window, got %d", len(managerCalls))
-		}
-		mgrNudge := strings.Join(managerCalls[0], " ")
-		if !strings.Contains(mgrNudge, "oro manager") {
-			t.Errorf("manager window nudge should contain 'oro manager', got: %s", mgrNudge)
 		}
 
 		// 5. Verify status output.
@@ -232,7 +209,7 @@ func TestFullStart(t *testing.T) {
 		// has-session returns error (no session)
 		fakeTmux.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		// new-session fails — key must include the execEnvCmd arg that production code passes.
-		fakeTmux.errs[key("tmux", "new-session", "-d", "-s", "oro", "-n", "manager", execEnvCmd("manager", ""))] = fmt.Errorf("tmux not installed")
+		fakeTmux.errs[key("tmux", "new-session", "-d", "-s", "oro", "-n", defaultTmuxWindowName)] = fmt.Errorf("tmux not installed")
 
 		spawner := &fakeSpawner{
 			returnPID:  12345,
@@ -248,6 +225,69 @@ func TestFullStart(t *testing.T) {
 			t.Errorf("expected error to mention tmux, got: %v", err)
 		}
 	})
+}
+
+func TestStartDoesNotCreateManagerPaneByDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+	pidFile := filepath.Join(tmpDir, "oro.pid")
+	sockPath := fmt.Sprintf("/tmp/oro-no-mgr-%d.sock", time.Now().UnixNano())
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
+	dbPath := filepath.Join(tmpDir, "state.db")
+
+	t.Setenv("ORO_PID_PATH", pidFile)
+	t.Setenv("ORO_SOCKET_PATH", sockPath)
+	t.Setenv("ORO_DB_PATH", dbPath)
+
+	fakeTmux := newFakeCmd()
+	fakeTmux.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+
+	spawner := &fakeSpawner{
+		returnPID:  12345,
+		socketPath: sockPath,
+	}
+
+	var stdout bytes.Buffer
+	err := runFullStart(&stdout, 3, 3, "sonnet", "", spawner, fakeTmux, func(int) error { return nil }, 100*time.Millisecond, noopSleep, 50*time.Millisecond, true)
+	if err != nil {
+		t.Fatalf("runFullStart returned error: %v", err)
+	}
+
+	for _, call := range fakeTmux.getCalls() {
+		joined := strings.Join(call, " ")
+		if strings.Contains(joined, "oro:manager") {
+			t.Fatalf("default start must not target manager pane, got call: %v", call)
+		}
+		if strings.Contains(joined, "ORO_ROLE=manager") {
+			t.Fatalf("default start must not launch manager role, got call: %v", call)
+		}
+		if strings.Contains(joined, ManagerNudge()) {
+			t.Fatalf("default start must not send ManagerNudge, got call: %v", call)
+		}
+		if callHasArgPair(call, "-n", "manager") {
+			t.Fatalf("default start must not create manager window, got call: %v", call)
+		}
+	}
+}
+
+func TestReconnectRunningDaemonDoesNotNudgeManagerByDefault(t *testing.T) {
+	fake := newFakeCmd()
+	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+
+	var buf bytes.Buffer
+	err := reconnectTmux(&buf, fake, "", true, noopSleep, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("reconnectTmux returned error: %v", err)
+	}
+
+	for _, call := range fake.getCalls() {
+		joined := strings.Join(call, " ")
+		if strings.Contains(joined, "oro:manager") {
+			t.Fatalf("reconnect must not target manager pane by default, got call: %v", call)
+		}
+		if strings.Contains(joined, ManagerNudge()) {
+			t.Fatalf("reconnect must not send ManagerNudge by default, got call: %v", call)
+		}
+	}
 }
 
 func TestCreateWithNudges(t *testing.T) {
@@ -369,7 +409,6 @@ func TestCreateWithNudges(t *testing.T) {
 			"✓ Daemon started (PID 12345)",
 			"✓ Dispatcher socket ready",
 			"✓ Tmux session created",
-			"✓ Beacon verified",
 			"oro swarm started",
 		}
 

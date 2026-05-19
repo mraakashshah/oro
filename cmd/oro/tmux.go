@@ -51,6 +51,8 @@ const sendKeysDebounceMs = 2000
 // defaultBeaconTimeout is the default time to wait for beacon verification.
 const defaultBeaconTimeout = 60 * time.Second
 
+const defaultTmuxWindowName = "oro"
+
 // sessionNudgeLocks provides per-target mutexes to serialize concurrent nudges.
 // Prevents interleaved send-keys when multiple goroutines nudge the same pane.
 var sessionNudgeLocks sync.Map //nolint:gochecknoglobals // process-wide lock registry for pane targets
@@ -89,9 +91,30 @@ func (s *TmuxSession) Exists() bool {
 	return err == nil
 }
 
+// hasManagerWindow returns true when the session still has the legacy manager
+// window and should be migrated to the managerless default layout.
+// Returns (false, nil) when the session does not exist; (false, err) on
+// list-windows failure — callers should continue the normal path on error.
+func (s *TmuxSession) hasManagerWindow() (bool, error) {
+	if !s.Exists() {
+		return false, nil
+	}
+	out, err := s.Runner.Run("tmux", "list-windows", "-t", s.Name, "-F", "#{window_name}")
+	if err != nil {
+		return false, fmt.Errorf("tmux list-windows: %w", err)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		name := strings.TrimSpace(line)
+		if name == "manager" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // isPreCollapseLayout returns true when the session has any window other than
 // "manager", indicating it was created by the old two-window layout and needs
-// migration to the single-window design.
+// migration to the single-window manager design.
 // Returns (false, nil) when the session does not exist; (false, err) on
 // list-windows failure — callers should continue the normal path on error.
 func (s *TmuxSession) isPreCollapseLayout() (bool, error) {
@@ -111,15 +134,30 @@ func (s *TmuxSession) isPreCollapseLayout() (bool, error) {
 	return false, nil
 }
 
-// isHealthy checks whether the runtime CLI is running in the manager pane. Returns
-// false if the pane shows a shell (zombie session — agent crashed back to shell).
+// isHealthy checks whether the managerless tmux session exists and is not using
+// the legacy manager-window layout. Runtime health lives with the daemon and
+// workers; the tmux session is only an attach surface.
 func (s *TmuxSession) isHealthy() bool {
-	pane := s.Name + ":manager"
-	out, err := s.Runner.Run("tmux", "display-message", "-p", "-t", pane, "#{pane_current_command}")
+	if !s.Exists() {
+		return false
+	}
+
+	managerPane := s.Name + ":manager"
+	if out, err := s.Runner.Run("tmux", "display-message", "-p", "-t", managerPane, "#{pane_current_command}"); err == nil {
+		return !isShell(strings.TrimSpace(out))
+	}
+
+	out, err := s.Runner.Run("tmux", "list-windows", "-t", s.Name, "-F", "#{window_name}")
 	if err != nil {
 		return false
 	}
-	return !isShell(strings.TrimSpace(out))
+	for _, line := range strings.Split(out, "\n") {
+		name := strings.TrimSpace(line)
+		if name != "" && name != "manager" {
+			return true
+		}
+	}
+	return false
 }
 
 func activeRuntime() string {
@@ -345,8 +383,8 @@ func appendDaemonEnvOverrides(base string) string {
 	return base
 }
 
-// killStaleSession kills the session if it needs to be replaced (pre-collapse
-// layout or zombie manager pane). Returns true when the session was killed
+// killStaleSession kills the session if it needs to be replaced (legacy manager
+// layout). Returns true when the session was killed
 // (caller should recreate), false when the session is healthy (caller should
 // return without creating a new one).
 func (s *TmuxSession) killStaleSession() bool {
@@ -368,11 +406,52 @@ func (s *TmuxSession) killStaleSession() bool {
 	return true
 }
 
-// Create creates the Oro tmux session with a single manager window.
-// If the session already exists and the manager pane is healthy, it is a no-op.
-// If the session uses the old two-window layout it is killed and recreated as a
-// single-window session, printing a one-line migration notice.
+func (s *TmuxSession) killLegacyManagerSession() bool {
+	hasManager, _ := s.hasManagerWindow()
+	if !hasManager {
+		return false
+	}
+	w := s.Output
+	if w == nil {
+		w = os.Stdout
+	}
+	fmt.Fprintln(w, "migrating legacy manager session to managerless layout...")
+	_ = s.Kill()
+	return true
+}
+
+// Create creates the Oro tmux session. With an empty managerNudge it creates the
+// default managerless attach surface. A non-empty managerNudge explicitly opts
+// into the legacy manager runtime path.
 func (s *TmuxSession) Create(managerNudge string) error {
+	if managerNudge != "" {
+		return s.createManagerSession(managerNudge)
+	}
+	return s.createManagerlessSession()
+}
+
+// createManagerlessSession creates the Oro tmux session without launching a manager runtime.
+// If the session already exists and is managerless, it is a no-op. If the
+// session has the legacy manager window it is killed and recreated, printing a
+// one-line migration notice.
+func (s *TmuxSession) createManagerlessSession() error {
+	if s.Exists() && !s.killLegacyManagerSession() {
+		return nil
+	}
+
+	if _, err := s.Runner.Run("tmux", "new-session", "-d", "-s", s.Name, "-n", defaultTmuxWindowName); err != nil {
+		return fmt.Errorf("tmux new-session: %w", err)
+	}
+
+	if err := s.configureSessionOptions(); err != nil {
+		_ = s.Kill()
+		return err
+	}
+
+	return nil
+}
+
+func (s *TmuxSession) createManagerSession(managerNudge string) error {
 	if s.Exists() && !s.killStaleSession() {
 		return nil
 	}
