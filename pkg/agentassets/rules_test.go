@@ -256,6 +256,40 @@ func TestClaudeRulesInstallHonorsContextCancellation(t *testing.T) {
 	}
 }
 
+func TestClaudeRulesSyncWiredIntoClaudeGenerator(t *testing.T) {
+	source := fstest.MapFS{
+		"rules/claude/oro-worker.md":   {Data: []byte("# Worker\n")},
+		"rules/claude/oro-reviewer.md": {Data: []byte("# Reviewer\n")},
+		"rules/codex/oro-worker.md":    {Data: []byte("ignored\n")},
+	}
+
+	assets, err := (agentassets.ClaudeGenerator{Source: source}).RuleAssets()
+	if err != nil {
+		t.Fatalf("RuleAssets returned error: %v", err)
+	}
+
+	want := []agentassets.RuleAsset{
+		{
+			Source:  "rules/claude/oro-reviewer.md",
+			Target:  ".claude/rules/oro-reviewer.md",
+			Content: []byte("# Reviewer\n"),
+		},
+		{
+			Source:  "rules/claude/oro-worker.md",
+			Target:  ".claude/rules/oro-worker.md",
+			Content: []byte("# Worker\n"),
+		},
+	}
+	assertRuleAssets(t, assets, want)
+
+	for _, asset := range assets {
+		name := filepath.Base(asset.Target)
+		if !strings.HasPrefix(name, "oro-") {
+			t.Fatalf("Claude rule target %q would overwrite a user-authored non-oro rule", asset.Target)
+		}
+	}
+}
+
 func assertRuleAssets(t *testing.T, got, want []agentassets.RuleAsset) {
 	t.Helper()
 

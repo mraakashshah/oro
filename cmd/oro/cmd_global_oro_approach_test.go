@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -721,4 +722,155 @@ func TestAgentAssetsSyncAllRuntimes(t *testing.T) {
 	t.Parallel()
 
 	TestAgentAssetsSyncSupportsClaudeAndCodex(t)
+}
+
+func TestAgentAssetsSyncInstallsClaudeRulesOnlyForClaudeRuntime(t *testing.T) {
+	tmp := t.TempDir()
+	srcSkills := filepath.Join(tmp, "src", "skills")
+	srcHooks := filepath.Join(tmp, "src", "hooks")
+	srcRules := filepath.Join(tmp, "src", "rules", "claude")
+	makeSkillsDir(t, srcSkills, []string{"using-skills"})
+	makeHooksDir(t, srcHooks, map[string]string{
+		"session_start_global.py": "# global session start\n",
+	})
+	if err := os.MkdirAll(srcRules, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcRules, "oro-worker.md"), []byte("# Worker\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	claudeSettings := filepath.Join(tmp, "claude-home", ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(claudeSettings), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	rulesDir := filepath.Join(filepath.Dir(claudeSettings), "rules")
+	if err := os.MkdirAll(rulesDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rulesDir, "standards.md"), []byte("user rule\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(claudeSettings, []byte(`{}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	claudeCfg := agentAssetsConfig{
+		runtime:         agentRuntimeClaude,
+		oroSkillsDir:    srcSkills,
+		oroHooksDir:     srcHooks,
+		oroAssetsDir:    filepath.Join(tmp, "src"),
+		destSkillsDir:   filepath.Join(tmp, "claude-home", ".claude", "skills"),
+		destHooksDir:    filepath.Join(tmp, "claude-home", ".claude", "hooks"),
+		claudeRulesRoot: filepath.Join(tmp, "claude-home"),
+		settingsPath:    claudeSettings,
+		portableHooks:   []string{"session_start_global.py"},
+	}
+	if err := runAgentAssetsSync(claudeCfg, &bytes.Buffer{}); err != nil {
+		t.Fatalf("Claude sync failed: %v", err)
+	}
+	if err := runAgentAssetsSync(claudeCfg, &bytes.Buffer{}); err != nil {
+		t.Fatalf("repeated Claude sync failed: %v", err)
+	}
+	assertFileContent(t, filepath.Join(tmp, "claude-home", ".claude", "rules", "oro-worker.md"), "# Worker\n")
+	assertFileContent(t, filepath.Join(tmp, "claude-home", ".claude", "rules", "standards.md"), "user rule\n")
+
+	codexCfg := agentAssetsConfig{
+		runtime:       agentRuntimeCodex,
+		oroSkillsDir:  srcSkills,
+		oroHooksDir:   srcHooks,
+		oroAssetsDir:  filepath.Join(tmp, "src"),
+		destSkillsDir: filepath.Join(tmp, "codex-home", "skills"),
+	}
+	if err := runAgentAssetsSync(codexCfg, &bytes.Buffer{}); err != nil {
+		t.Fatalf("Codex sync failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "codex-home", ".claude", "rules", "oro-worker.md")); !os.IsNotExist(err) {
+		t.Fatalf("Codex runtime should not install Claude rules, stat err = %v", err)
+	}
+
+	allCfg := claudeCfg
+	allCfg.runtime = agentRuntimeAll
+	allCfg.destSkillsDir = filepath.Join(tmp, "all-claude-home", ".claude", "skills")
+	allCfg.destHooksDir = filepath.Join(tmp, "all-claude-home", ".claude", "hooks")
+	allCfg.claudeRulesRoot = filepath.Join(tmp, "all-claude-home")
+	allCfg.settingsPath = filepath.Join(tmp, "all-claude-home", ".claude", "settings.json")
+	allCfg.codexSkillsDir = filepath.Join(tmp, "all-codex-home", "skills")
+	if err := os.MkdirAll(filepath.Dir(allCfg.settingsPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(allCfg.settingsPath, []byte(`{}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := runAgentAssetsSync(allCfg, &bytes.Buffer{}); err != nil {
+		t.Fatalf("all-runtime sync failed: %v", err)
+	}
+	assertFileContent(t, filepath.Join(tmp, "all-claude-home", ".claude", "rules", "oro-worker.md"), "# Worker\n")
+	if _, err := os.Stat(filepath.Join(allCfg.codexSkillsDir, "using-skills", "SKILL.md")); err != nil {
+		t.Fatalf("runtime=all should install Codex skills too: %v", err)
+	}
+}
+
+func TestDefaultAgentAssetsConfigAllRuntime(t *testing.T) {
+	t.Setenv("CODEX_HOME", filepath.Join("custom", "codex"))
+
+	cfg := defaultAgentAssetsConfig(filepath.Join("home", "user"), agentRuntimeAll)
+
+	if cfg.runtime != agentRuntimeAll {
+		t.Fatalf("runtime = %q, want %q", cfg.runtime, agentRuntimeAll)
+	}
+	if cfg.oroAssetsDir != filepath.Join("home", "user", ".oro") {
+		t.Fatalf("oroAssetsDir = %q", cfg.oroAssetsDir)
+	}
+	if cfg.destSkillsDir != filepath.Join("home", "user", ".claude", "skills") {
+		t.Fatalf("Claude skills dir = %q", cfg.destSkillsDir)
+	}
+	if cfg.codexSkillsDir != filepath.Join("custom", "codex", "skills") {
+		t.Fatalf("Codex skills dir = %q", cfg.codexSkillsDir)
+	}
+	if cfg.claudeRulesRoot != filepath.Join("home", "user") {
+		t.Fatalf("Claude rules root = %q", cfg.claudeRulesRoot)
+	}
+}
+
+func TestInstallClaudeRuleAssetsHandlesNoopAndDiscoveryErrors(t *testing.T) {
+	t.Run("empty config is no-op", func(t *testing.T) {
+		if err := installClaudeRuleAssets(agentAssetsConfig{}, &bytes.Buffer{}); err != nil {
+			t.Fatalf("empty config should be a no-op: %v", err)
+		}
+	})
+
+	t.Run("invalid bundled filename is wrapped", func(t *testing.T) {
+		tmp := t.TempDir()
+		rulesDir := filepath.Join(tmp, "rules", "claude")
+		if err := os.MkdirAll(rulesDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(rulesDir, "standards.md"), []byte("bad\n"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+
+		err := installClaudeRuleAssets(agentAssetsConfig{
+			oroAssetsDir:    tmp,
+			claudeRulesRoot: filepath.Join(tmp, "home"),
+		}, &bytes.Buffer{})
+		if err == nil {
+			t.Fatal("expected invalid rule asset to fail")
+		}
+		if !jsonContains(err.Error(), "generate Claude rule assets") {
+			t.Fatalf("expected wrapped generator error, got %v", err)
+		}
+	})
+}
+
+func assertFileContent(t *testing.T, path, want string) {
+	t.Helper()
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if string(got) != want {
+		t.Fatalf("%s = %q, want %q", path, got, want)
+	}
 }
