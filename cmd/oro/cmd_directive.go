@@ -131,6 +131,7 @@ func sendDirective(conn net.Conn, op, opArgs string) error {
 // readACK reads and parses the ACK response from the dispatcher.
 func readACK(conn net.Conn) (*protocol.ACKPayload, error) {
 	scanner := bufio.NewScanner(conn)
+	scanner.Buffer(make([]byte, 0, 64*1024), protocol.MaxMessageSize)
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
 			return nil, fmt.Errorf("read ack: %w", err)

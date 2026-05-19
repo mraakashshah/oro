@@ -143,6 +143,59 @@ func TestOpsCommands(t *testing.T) {
 	})
 }
 
+func TestOpsListHandlesLargeFeedback(t *testing.T) {
+	largeFeedback := strings.Repeat("feedback ", 9000)
+	detail := fmt.Sprintf(`[
+		{"id":7,"type":"review","bead_id":"oro-a","worker_id":"w-a","status":"failed","feedback":%q},
+		{"id":8,"type":"diagnosis","bead_id":"oro-b","worker_id":"w-b","status":"running","error":"still running"}
+	]`, largeFeedback)
+
+	jsonOut, got := runOpsCommandWithMock(t, mockOpsDirectiveResponse{
+		args:   []string{"ops", "list", "--json"},
+		detail: detail,
+	})
+	if got.Op != string(protocol.DirectiveOpsRuns) || got.Args != "" {
+		t.Fatalf("directive = %s %q, want ops-runs with empty args", got.Op, got.Args)
+	}
+	var runs []struct {
+		ID       int64  `json:"id"`
+		Type     string `json:"type"`
+		BeadID   string `json:"bead_id"`
+		Status   string `json:"status"`
+		Feedback string `json:"feedback"`
+		Error    string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(jsonOut)), &runs); err != nil {
+		t.Fatalf("ops list --json emitted invalid JSON: %v\n%s", err, jsonOut)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("ops list --json emitted %d runs, want 2", len(runs))
+	}
+	if runs[0].ID != 7 || runs[0].Type != "review" || runs[0].BeadID != "oro-a" || runs[0].Status != "failed" {
+		t.Fatalf("failed run fields = %+v, want id/type/bead/status preserved", runs[0])
+	}
+	if runs[0].Feedback != largeFeedback {
+		t.Fatalf("feedback length = %d, want %d", len(runs[0].Feedback), len(largeFeedback))
+	}
+	if runs[1].ID != 8 || runs[1].Type != "diagnosis" || runs[1].BeadID != "oro-b" || runs[1].Status != "running" || runs[1].Error != "still running" {
+		t.Fatalf("running run fields = %+v, want id/type/bead/status/error preserved", runs[1])
+	}
+
+	humanOut, _ := runOpsCommandWithMock(t, mockOpsDirectiveResponse{
+		args:   []string{"ops", "list"},
+		detail: detail,
+	})
+	if !strings.Contains(humanOut, "7\treview\toro-a\tfailed") || !strings.Contains(humanOut, "8\tdiagnosis\toro-b\trunning") {
+		t.Fatalf("human ops list output missing failed/running rows:\n%s", humanOut)
+	}
+	if strings.Contains(humanOut, largeFeedback) {
+		t.Fatalf("human ops list output was not truncated")
+	}
+	if !strings.Contains(humanOut, "truncated") {
+		t.Fatalf("human ops list output should mark truncated detail:\n%s", humanOut)
+	}
+}
+
 type mockOpsDirectiveResponse struct {
 	args   []string
 	fail   bool

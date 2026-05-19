@@ -50,6 +50,8 @@ type opsResolveView struct {
 	Reason   string `json:"reason,omitempty"`
 }
 
+const maxOpsRunDetailLen = 240
+
 // newOpsCmd creates the "oro ops" operator command.
 func newOpsCmd() *cobra.Command {
 	opts := &opsCommandOptions{}
@@ -234,6 +236,10 @@ func formatOpsResolve(w io.Writer, detail string) error {
 }
 
 func opsRunDetail(run opsRunView) string {
+	return truncateOpsRunDetail(opsRunFullDetail(run))
+}
+
+func opsRunFullDetail(run opsRunView) string {
 	switch {
 	case run.Error != "":
 		return run.Error
@@ -244,4 +250,11 @@ func opsRunDetail(run opsRunView) string {
 	default:
 		return "-"
 	}
+}
+
+func truncateOpsRunDetail(detail string) string {
+	if len(detail) <= maxOpsRunDetailLen {
+		return detail
+	}
+	return detail[:maxOpsRunDetailLen] + "... (truncated)"
 }
