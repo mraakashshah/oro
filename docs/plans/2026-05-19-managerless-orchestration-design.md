@@ -134,6 +134,7 @@ CREATE TABLE IF NOT EXISTS ops_runs (
     bead_id TEXT,
     worker_id TEXT,
     dispatcher_pid INTEGER,
+    process_pid INTEGER,
     runtime TEXT,
     model TEXT,
     status TEXT NOT NULL DEFAULT 'running',
@@ -179,6 +180,17 @@ The retry loop may only inspect `pending` rows. It must not paste by default:
 routable pending rows create ops runs, unroutable pending rows surface health
 findings, and `routed`, `failed`, or `acked` rows are ignored by retry.
 
+Blocking-run rule:
+
+- Before inserting a new escalation row, `escalate` checks for an open blocking
+  `ops_runs` row matching `(type, bead_id)` where status is `running`, `failed`,
+  or `stale`.
+- If one exists, `escalate` does not insert another escalation row, does not
+  paste to tmux, and logs one `ops_run_blocked_assignment` event containing the
+  blocking run ID and status.
+- A failed decompose run records assignment-failure cooldown for the parent
+  task. `oro ops retry` and successful `oro ops resolve` clear that cooldown.
+
 ### Ops Spawner
 
 Reuse `pkg/ops.Spawner` and `RuntimeBatchSpawner`:
@@ -219,6 +231,27 @@ does require removing the pane from the default correctness path.
 | `MANUAL_INTEGRATION` | Manager notification | Durable integration incident with branch/worktree details |
 | Unknown type | Paste to manager | Durable pending escalation with health finding; no repeated tmux paste |
 
+## Production Routing Chain
+
+`OVERSIZED_BEAD` must use the existing dispatcher escalation entry point. The
+implementation task is not complete unless the actual production call chain is
+wired end to end:
+
+1. `checkBeadReady` calls `escalate` with an `OVERSIZED_BEAD` message.
+2. `parseEscalationType` recognizes `protocol.EscOversizedBead` as a routable
+   one-shot type.
+3. `spawnEscalationOneShot` has an explicit `EscOversizedBead` branch that calls
+   `d.ops.Decompose`, not `d.ops.Escalate` and not `d.ops.WriteAC`.
+4. `ops.Spawner.Decompose` passes `DecomposeOpts.Workdir` as the workdir
+   argument to `s.run`.
+5. `handleEscalationResult` branches on `EscOversizedBead` and calls the
+   decomposition post-validator before acking.
+6. `retryPendingEscalations` routes legacy `pending` routable rows through the
+   same helper, instead of calling `d.escalator.Escalate`.
+
+The acceptance tests must exercise this chain from `escalate(...)` or
+`retryPendingEscalations(...)`, not only isolated helper methods.
+
 ## Oversized-Bead Flow
 
 1. `checkBeadReady` detects `CountDistinctModules(acceptance) > 2`, non-epic
@@ -240,11 +273,13 @@ does require removing the pane from the default correctness path.
 
 5. The escalation row is marked `routed`. While a blocking `ops_runs` row
    exists, retry logic does not paste or launch another run.
-6. When the run exits, dispatcher validates the state:
+6. When the run exits, dispatcher validates the state. All clauses are required:
    - Parent task exists.
    - Parent is type `epic` OR parent has open children.
-   - Child tasks have acceptance criteria with Test/Cmd/Assert shape.
-   - Parent depends on the child tasks in the correct direction.
+   - Each open child task has acceptance criteria with Test/Cmd/Assert shape.
+   - Parent depends on each child task in the correct direction.
+   - Parent is now type `epic`, OR `CountDistinctModules(parent.Acceptance)`
+     is less than or equal to 2.
    - The parent itself is no longer assignable as a ready oversized task.
 7. If validation passes:
    - Mark ops run `resolved`.
@@ -253,6 +288,7 @@ does require removing the pane from the default correctness path.
 8. If validation fails:
    - Mark ops run `failed` with the validation reason.
    - Mark escalation `failed`, not `pending`.
+   - Record assignment-failure cooldown for the parent task.
    - Surface an `ops_run_failed` health finding.
    - Do not paste to manager and do not assign the parent.
 
@@ -262,14 +298,39 @@ Ops subprocess ownership is in memory, but `ops_runs` is durable. On dispatcher
 startup:
 
 1. Load `ops_runs` rows with `status='running'`.
-2. If no in-process agent owns the row, mark it `stale` with a restart note.
-3. Keep any related escalation in `failed` or `routed` non-retry state.
-4. Surface `ops_run_stale` in health/status.
-5. Do not auto-launch a replacement run unless a later explicit retry command
-   first marks the stale row `superseded`.
+2. If no in-process agent owns the row, inspect `process_pid` when available.
+3. If the process is still alive, mark the row `stale` and surface
+   `ops_run_stale`; do not launch a replacement because duplicate task mutation
+   is unsafe.
+4. If the process is absent, dead, or older than the configured stale grace
+   period, mark the row `superseded` and re-route the still-true escalation
+   condition through a fresh ops run.
+5. Keep related escalations in `routed` while a replacement is running,
+   `acked` when the condition has disappeared, or `failed` when validation or
+   reroute fails.
 
-This prevents duplicate one-shot agents after a daemon crash while keeping the
-blocked task visible.
+This prevents duplicate one-shot agents after a daemon crash while allowing
+managerless recovery when the orphaned process is provably gone.
+
+### Legacy Pending Escalations
+
+Upgrade must handle live factories that already have pending manager-routed
+escalations.
+
+On startup and on each retry-loop tick, dispatcher calls a single helper,
+`routePendingRoutableEscalations`, that:
+
+1. Selects `pending` escalation rows with routable types such as
+   `OVERSIZED_BEAD` and `MISSING_AC`.
+2. Runs the existing precheck for that escalation type. If the condition is
+   resolved, mark the row `acked`.
+3. If the condition still holds and no blocking `ops_runs` row exists for
+   `(type, bead_id)`, insert an `ops_runs` row and mark the escalation `routed`
+   in one transaction.
+4. If a blocking run exists, leave the escalation unchanged and log
+   `ops_run_blocked_assignment`; do not paste to tmux.
+5. If the type is not routable, keep it pending and expose
+   `pending_escalation_unrouted` in health.
 
 ## Health And Status
 
@@ -330,10 +391,12 @@ Add an explicit CLI recovery path for failed or stale ops runs:
 
 - `oro ops list` shows running, failed, and stale ops runs.
 - `oro ops retry <run-id>` marks the blocking run `superseded`, returns the
-  related escalation to `pending`, and lets the dispatcher route a new run.
+  related escalation to `pending`, clears the parent assignment-failure
+  cooldown, and lets the dispatcher route a new run.
 - `oro ops resolve <run-id> --reason=<text>` re-runs the relevant
   post-condition validation; it only marks the run `resolved` and acks the
-  escalation when validation passes.
+  escalation when validation passes, and then clears the parent
+  assignment-failure cooldown.
 
 ## Startup And Runtime Changes
 
@@ -375,7 +438,8 @@ Schema migration must be additive:
 Existing pending escalations after upgrade:
 
 - Resolved conditions auto-ack through current precheck helpers.
-- Routable unresolved conditions create ops runs.
+- Routable unresolved conditions create ops runs through
+  `routePendingRoutableEscalations` at startup or retry-loop time.
 - Unroutable unresolved conditions remain pending and are shown in health as
   `pending_escalation_unrouted`.
 
@@ -399,31 +463,57 @@ Existing pending escalations after upgrade:
    has a running, stale, or failed run.
 10. Ops agents that execute `oro ...` commands run with an explicit project
     workdir, not the daemon's incidental current directory.
+11. `parseEscalationType`, `spawnEscalationOneShot`,
+    `handleEscalationResult`, and `retryPendingEscalations` are all part of
+    the managerless routing contract and must be covered by production-path
+    tests.
+12. If a blocking ops run already exists for `(type, bead_id)`, the dispatcher
+    does not insert duplicate escalation rows or paste to tmux.
+13. Live factories with pre-existing pending `OVERSIZED_BEAD` rows are converted
+    to routed ops runs without requiring a manager pane.
 
 ## Acceptance Tests
 
 Epic-level verification:
 
 ```bash
-go test ./cmd/oro ./pkg/dispatcher/... ./pkg/factoryhealth ./pkg/ops ./pkg/protocol -count=1 && ./scripts/quality_gate.sh
+./scripts/test_managerless_oversized_e2e.sh && go test ./cmd/oro ./pkg/dispatcher/... ./pkg/factoryhealth ./pkg/ops ./pkg/protocol -count=1 && ./scripts/quality_gate.sh
 ```
 
 Binary assertions:
 
+- `test_managerless_oversized_e2e.sh` seeds an oversized fixture, runs the
+  dispatcher loop, and exits 0 only when:
+  - an `ops_runs` row of type `decompose` reaches `resolved`
+  - the parent is an epic or has child tasks
+  - every child has Test/Cmd/Assert acceptance criteria
+  - no tmux manager paste was attempted, proven by a counting fake escalator or
+    by asserting no tmux-escalation event/call was recorded
+  - no duplicate pending `OVERSIZED_BEAD` rows were inserted
 - `go test` passes.
 - `quality_gate.sh` exits 0.
-- A fixture oversized task causes a decompose ops run, not a tmux manager paste.
 - Health remains healthy when no manager pane exists and no ops/recovery/QG
   incidents are open.
 
 Targeted tests:
 
 1. `pkg/dispatcher`
+   - `TestParseEscalationTypeRecognizesOversized`
+   - `TestEscalateOversizedRoutesToDecomposeProductionPath`
+   - `TestSpawnEscalationOneShotRoutesOversizedToDecompose`
    - `TestCheckBeadReady_OversizedBeadStartsDecomposeOpsRun`
    - `TestCheckBeadReady_OversizedBeadDoesNotEscalateToTmuxWhenOpsRouted`
    - `TestOversizedDecomposeResultAcksOnlyAfterValidation`
    - `TestOversizedDecomposeResultFailsWhenNoChildrenCreated`
+   - `TestHandleEscalationResult_OversizedFailsOpsRunOnMissingChildren`
+   - `TestDecomposeValidator_FailsWhenChildHasNoTDDAcceptance`
+   - `TestDecomposeValidator_FailsWhenParentDoesNotDependOnChildren`
    - `TestRetryPendingEscalations_DoesNotRepasteRoutedOpsRun`
+   - `TestRetryPendingEscalations_RoutesLegacyOversizedToOpsRun`
+   - `TestStartupConvertsLegacyPendingOversizedToOpsRun`
+   - `TestEscalateNoOpWhenBlockingOpsRunExists`
+   - `TestFailedDecomposeOpsRunSetsAssignmentCooldown`
+   - `TestConcurrentEscalateCreatesOneOpsRun`
    - `TestDispatcherStartupMarksOrphanedOpsRunsStale`
    - `TestOneShotFailureCreatesOpsRunFailureWithoutManagerFallback`
    - `TestPendingUnknownEscalationSurfacesUnroutedHealthFinding`
@@ -445,10 +535,11 @@ Targeted tests:
 5. `cmd/oro`
    - `TestStartDoesNotCreateManagerPaneByDefault`
    - `TestWireDependenciesDoesNotSetManagerRestarterByDefault`
+   - `TestReconnectRunningDaemonDoesNotNudgeManagerByDefault`
    - `TestAttachExplainsManagerlessModeWhenNoPaneExists`
    - `TestStatusShowsFailedOpsRuns`
-   - `TestOpsRetrySupersedesBlockingRun`
-   - `TestOpsResolveValidatesBeforeAck`
+   - `TestOpsRetrySupersedesBlockingRunAndClearsCooldown`
+   - `TestOpsResolveValidatesBeforeAckAndClearsCooldown`
    - `TestMonitorActDoesNotResolveFailedOpsRuns`
 
 Dogfood acceptance:
@@ -483,7 +574,10 @@ Build:
 - Add `ops_runs` schema and table model.
 - Add helper functions to create, complete, fail, and list open ops runs
   idempotently.
+- Store `dispatcher_pid` and subprocess `process_pid` when available.
 - Add startup reconciliation that marks orphaned `running` rows `stale`.
+- Add startup conversion for legacy pending routable escalations by calling the
+  same `routePendingRoutableEscalations` helper used by retry.
 - Add new escalation statuses or status helpers so routed/failed rows are not
   retried through tmux.
 - Add health metrics and findings for failed/stale/running ops runs.
@@ -493,6 +587,7 @@ Tests:
 - `TestSchemaCreatesOpsRunsTable`
 - `TestOpsRunUniqueEscalationTypeBead`
 - `TestDispatcherStartupMarksOrphanedOpsRunsStale`
+- `TestStartupConvertsLegacyPendingOversizedToOpsRun`
 - `TestEvaluateFailedOpsRunFinding`
 - `TestEvaluateStaleOpsRunFinding`
 
@@ -500,7 +595,11 @@ Tests:
 
 Read:
 
-- `pkg/dispatcher/dispatcher.go`
+- `pkg/dispatcher/dispatcher.go:escalate`
+- `pkg/dispatcher/dispatcher.go:parseEscalationType`
+- `pkg/dispatcher/dispatcher.go:spawnEscalationOneShot`
+- `pkg/dispatcher/dispatcher.go:handleEscalationResult`
+- `pkg/dispatcher/dispatcher.go:retryPendingEscalations`
 - `pkg/dispatcher/escalation_precheck.go`
 - `pkg/ops/ops.go`
 - `pkg/ops/decompose_prompt.go`
@@ -510,24 +609,44 @@ Build:
 
 - Route `OVERSIZED_BEAD` through `OpsDecompose`.
 - Add `Workdir` to `ops.DecomposeOpts` and pass `d.cfg.RepoRoot`.
+- Make `ops.Spawner.Decompose` pass `opts.Workdir` as the workdir argument to
+  `s.run`.
 - Deduplicate blocking decompose runs by type/bead, not only escalation ID.
-- Validate decomposition post-conditions before acking.
+- Validate the full post-condition predicate before acking:
+  parent exists; parent is epic or has open children; every child has
+  Test/Cmd/Assert acceptance criteria; parent depends on every child; parent is
+  epic or has no more than two distinct acceptance modules; parent is no longer
+  assignable as an oversized ready task.
 - Mark ops runs failed on timeout, failed verdict, or validation failure.
+- Set assignment-failure cooldown when decompose validation fails.
+- Short-circuit `escalate` when a blocking ops run exists for `(type, bead_id)`.
+- Route pre-upgrade pending `OVERSIZED_BEAD` rows through ops in the retry loop.
 - Mark routed/failed escalation rows so retry does not paste to tmux.
 
 Tests:
 
 - `TestCheckBeadReady_OversizedBeadStartsDecomposeOpsRun`
+- `TestParseEscalationTypeRecognizesOversized`
+- `TestEscalateOversizedRoutesToDecomposeProductionPath`
+- `TestSpawnEscalationOneShotRoutesOversizedToDecompose`
 - `TestOversizedDecomposeResultAcksOnlyAfterValidation`
 - `TestOversizedDecomposeResultFailsWhenNoChildrenCreated`
+- `TestHandleEscalationResult_OversizedFailsOpsRunOnMissingChildren`
+- `TestDecomposeValidator_FailsWhenChildHasNoTDDAcceptance`
+- `TestDecomposeValidator_FailsWhenParentDoesNotDependOnChildren`
 - `TestRetryPendingEscalations_DoesNotRepasteRoutedOpsRun`
+- `TestRetryPendingEscalations_RoutesLegacyOversizedToOpsRun`
+- `TestEscalateNoOpWhenBlockingOpsRunExists`
+- `TestFailedDecomposeOpsRunSetsAssignmentCooldown`
+- `TestConcurrentEscalateCreatesOneOpsRun`
 - `TestDecomposeOpsUsesRepoRootWorkdir`
 
 ### Task 3: Remove manager fallback from autonomous escalation handling
 
 Read:
 
-- `pkg/dispatcher/dispatcher.go`
+- `pkg/dispatcher/dispatcher.go:handleEscalationResult`
+- `pkg/dispatcher/dispatcher.go:retryPendingEscalations`
 - `pkg/ops/escalation_prompt.go`
 - `pkg/dispatcher/escalator.go`
 - `pkg/dispatcher/escalator_test.go`
@@ -549,8 +668,10 @@ Tests:
 
 Read:
 
-- `cmd/oro/tmux.go`
+- `cmd/oro/tmux.go:TmuxSession.Create`
+- `cmd/oro/tmux.go:ForwardCommandToManager`
 - `cmd/oro/cmd_start.go`
+- `cmd/oro/cmd_start.go:reconnectTmux`
 - `cmd/oro/cmd_attach.go`
 - `cmd/oro/start_full_test.go`
 - `cmd/oro/cmd_start_test.go`
@@ -564,12 +685,14 @@ Build:
 - If optional manager mode remains, guard tmux session creation behind a flag
   and mark it non-authoritative.
 - Make `oro attach` managerless-aware.
+- Make reconnect to an already-running daemon avoid `ManagerNudge()` by default.
 - Update CLI help for `--model` and startup output.
 
 Tests:
 
 - `TestStartDoesNotCreateManagerPaneByDefault`
 - `TestWireDependenciesDoesNotSetManagerRestarterByDefault`
+- `TestReconnectRunningDaemonDoesNotNudgeManagerByDefault`
 - `TestAttachExplainsManagerlessModeWhenNoPaneExists`
 - Optional manager-mode tests if a flag is retained.
 
@@ -599,8 +722,8 @@ Tests:
 
 - `TestEvaluateNoManagerPaneFindingByDefault`
 - `TestStatusShowsFailedOpsRuns`
-- `TestOpsRetrySupersedesBlockingRun`
-- `TestOpsResolveValidatesBeforeAck`
+- `TestOpsRetrySupersedesBlockingRunAndClearsCooldown`
+- `TestOpsResolveValidatesBeforeAckAndClearsCooldown`
 - `TestMonitorActDoesNotResolveFailedOpsRuns`
 
 ### Task 6: Documentation and asset cleanup
@@ -612,6 +735,7 @@ Read:
 - `assets/skills/watching-oro/SKILL.md`
 - `assets/skills/watching-oro/references/deep-observation.md`
 - `cmd/oro/router.go`
+- `cmd/oro/tmux.go:ForwardCommandToManager`
 - `docs/decisions&discoveries.md`
 
 Build:
@@ -621,6 +745,9 @@ Build:
 - Update watching docs to inspect dispatcher health, ops runs, workers, and
   events instead of manager pane activity.
 - Replace "forwarded to manager" user-facing text.
+- Remove `ForwardCommandToManager` and `FormatForwardMessage` if they have no
+  production caller, or explicitly mark them legacy with tests proving default
+  flows do not call them.
 - Record the architecture decision.
 
 Tests:
@@ -628,6 +755,33 @@ Tests:
 - Existing init/router/doc tests updated.
 - Search check: default docs should not instruct operators to depend on
   `oro:manager` for routine progress.
+- Router/help tests prove "forwarded to manager" is absent from default user
+  output.
+
+### Task 7: End-to-end oversized routing fixture
+
+Read:
+
+- `scripts/quality_gate.sh`
+- `cmd/oro/cmd_start.go`
+- `pkg/dispatcher/dispatcher.go:checkBeadReady`
+- `pkg/dispatcher/dispatcher.go:escalate`
+- `pkg/ops/ops.go:Spawner.Decompose`
+
+Build:
+
+- Add `scripts/test_managerless_oversized_e2e.sh`.
+- The script creates an isolated state directory, seeds one oversized ready task,
+  starts a dispatcher with a fake or controlled ops spawner, advances the
+  dispatcher loop, and asserts the task graph and `ops_runs` state.
+- The script fails if any tmux manager paste is attempted, measured by a
+  counting fake escalator or an event/call assertion, or if duplicate pending
+  `OVERSIZED_BEAD` escalation rows appear.
+
+Tests:
+
+- The script itself is the epic acceptance command's first gate.
+- `./scripts/test_managerless_oversized_e2e.sh`
 
 ## Premortem
 
@@ -637,8 +791,9 @@ Critical risks:
   Mitigation: dispatcher validates task graph and AC shape before ack.
 
 - A hung one-shot blocks decomposition forever.
-  Mitigation: durable `running` ops run has timeout/stale health and explicit
-  retry/resolve command.
+  Mitigation: durable `running` ops run records subprocess ownership, startup
+  marks orphaned rows stale, dead stale runs can be superseded and rerouted, and
+  failed runs have explicit retry/resolve commands.
 
 - Removing manager health hides a broken operator UI.
   Mitigation: optional UI mode can report UI-specific health without making
@@ -666,7 +821,13 @@ Important risks:
 
 - Live factories with pending manager escalations upgrade mid-run.
   Mitigation: migration keeps escalations, prechecks auto-ack resolved rows, and
-  unresolved routable rows create ops runs.
+  unresolved routable rows create ops runs through the startup/retry
+  `routePendingRoutableEscalations` helper.
+
+- Stale live orphan processes may still mutate tasks after dispatcher restart.
+  Mitigation: startup only auto-reroutes when the stored process is absent,
+  dead, or past the stale grace period; otherwise health reports a stale run and
+  suppresses duplicate escalation churn.
 
 Non-goals:
 
@@ -685,7 +846,8 @@ Recommended defaults:
 2. Use `ops_runs` rather than overloading `escalations.status`; this preserves
    the original durable escalation and allows multiple attempts later.
 3. Do not make `oro monitor --act` automatically retry failed ops runs in this
-   phase. A retry command can be added after failures are observable.
+   phase. Stale runs whose process is provably gone may be superseded and
+   rerouted; failed runs require explicit `oro ops retry` or `oro ops resolve`.
 
 ## Rollout Order
 
@@ -694,5 +856,6 @@ Recommended defaults:
 3. Remove manager fallback from one-shot failure handling.
 4. Make manager pane optional or absent by default at startup.
 5. Update health/status/monitor surfaces.
-6. Update docs/assets and run dogfood against the current oversized-ready-task
+6. Add the managerless oversized end-to-end fixture.
+7. Update docs/assets and run dogfood against the current oversized-ready-task
    failure mode.
