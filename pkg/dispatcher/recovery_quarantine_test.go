@@ -73,6 +73,94 @@ func TestCreateRecoveryQuarantineIdempotent(t *testing.T) {
 	}
 }
 
+func TestCreateRecoveryQuarantineCoalescesOpenRowsByAssignment(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	res, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES ('oro-q', 'w1', '/tmp/wt-q', 'active')`)
+	if err != nil {
+		t.Fatalf("insert assignment: %v", err)
+	}
+	assignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("assignment id: %v", err)
+	}
+
+	first, err := d.createRecoveryQuarantine(ctx, recoveryQuarantine{
+		BeadID:       "oro-q",
+		AssignmentID: assignmentID,
+		WorkerID:     "w1",
+		Worktree:     "/tmp/wt-q",
+		Branch:       "agent/oro-q",
+		Reason:       "stale_active_assignment",
+		Details:      "startup saw a disconnected active assignment",
+	})
+	if err != nil {
+		t.Fatalf("create stale active quarantine: %v", err)
+	}
+	second, err := d.createRecoveryQuarantine(ctx, recoveryQuarantine{
+		BeadID:       "oro-q",
+		AssignmentID: assignmentID,
+		WorkerID:     "w2",
+		Worktree:     "/tmp/wt-q2",
+		Branch:       "agent/oro-q",
+		Reason:       "progress_timeout_recovery_blocked",
+		Details:      "latest recovery inspection details",
+	})
+	if err != nil {
+		t.Fatalf("create progress timeout quarantine: %v", err)
+	}
+	if first != second {
+		t.Fatalf("quarantine IDs = %d and %d, want same open row for assignment", first, second)
+	}
+
+	var openCount int
+	var reason, details, workerID, worktree string
+	if err := d.db.QueryRowContext(ctx, `
+SELECT COUNT(*), COALESCE(MAX(reason), ''), COALESCE(MAX(details), ''), COALESCE(MAX(worker_id), ''), COALESCE(MAX(worktree), '')
+FROM recovery_quarantines
+WHERE assignment_id=? AND status='open'`, assignmentID).Scan(&openCount, &reason, &details, &workerID, &worktree); err != nil {
+		t.Fatalf("query open quarantines: %v", err)
+	}
+	if openCount != 1 {
+		t.Fatalf("open quarantines for assignment = %d, want 1", openCount)
+	}
+	if reason != "progress_timeout_recovery_blocked" || details != "latest recovery inspection details" {
+		t.Fatalf("latest quarantine reason/details = %q/%q, want progress timeout latest details", reason, details)
+	}
+	if workerID != "w2" || worktree != "/tmp/wt-q2" {
+		t.Fatalf("latest quarantine worker/worktree = %q/%q, want w2 /tmp/wt-q2", workerID, worktree)
+	}
+
+	var assignmentStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("query assignment status: %v", err)
+	}
+	if assignmentStatus != "quarantined" {
+		t.Fatalf("assignment status = %q, want quarantined", assignmentStatus)
+	}
+
+	if err := d.resolveRecoveryQuarantine(ctx, first); err != nil {
+		t.Fatalf("resolve recovery quarantine: %v", err)
+	}
+	reopened, err := d.createRecoveryQuarantine(ctx, recoveryQuarantine{
+		BeadID:       "oro-q",
+		AssignmentID: assignmentID,
+		WorkerID:     "w3",
+		Worktree:     "/tmp/wt-q3",
+		Branch:       "agent/oro-q",
+		Reason:       "stale_active_assignment",
+		Details:      "new unresolved observation",
+	})
+	if err != nil {
+		t.Fatalf("create quarantine after resolved row: %v", err)
+	}
+	if reopened == first {
+		t.Fatalf("reopened quarantine id = %d, want new row after resolved id %d", reopened, first)
+	}
+}
+
 func TestCompleteAssignmentDoesNotHideQuarantinedAssignment(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()

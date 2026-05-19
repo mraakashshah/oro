@@ -46,8 +46,12 @@ func (d *Dispatcher) createRecoveryQuarantine(ctx context.Context, q recoveryQua
 	}
 
 	if q.AssignmentID > 0 {
-		if err := d.markAssignmentQuarantined(ctx, q.AssignmentID); err != nil {
+		id, ok, err := d.coalesceOpenRecoveryQuarantineForAssignment(ctx, q)
+		if err != nil {
 			return 0, err
+		}
+		if ok {
+			return id, nil
 		}
 	}
 
@@ -73,6 +77,48 @@ ON CONFLICT(bead_id, reason) WHERE status='open' DO UPDATE SET
 		return 0, fmt.Errorf("lookup recovery quarantine: %w", err)
 	}
 	return id, nil
+}
+
+func (d *Dispatcher) coalesceOpenRecoveryQuarantineForAssignment(ctx context.Context, q recoveryQuarantine) (id int64, ok bool, err error) {
+	if err := d.markAssignmentQuarantined(ctx, q.AssignmentID); err != nil {
+		return 0, false, err
+	}
+
+	id, ok, err = d.findOpenRecoveryQuarantineForAssignment(ctx, q.AssignmentID)
+	if err != nil || !ok {
+		return id, ok, err
+	}
+
+	if _, err := d.db.ExecContext(ctx, `
+UPDATE recovery_quarantines
+SET bead_id=?, worker_id=?, worktree=?, branch=?, reason=?, details=?
+WHERE id=? AND status='open'`,
+		q.BeadID, q.WorkerID, q.Worktree, q.Branch, q.Reason, q.Details, id); err != nil {
+		return 0, false, fmt.Errorf("update recovery quarantine: %w", err)
+	}
+	return id, true, nil
+}
+
+func (d *Dispatcher) findOpenRecoveryQuarantineForAssignment(ctx context.Context, assignmentID int64) (id int64, found bool, err error) {
+	if d.db == nil {
+		return 0, false, fmt.Errorf("find recovery quarantine: db is nil")
+	}
+	if assignmentID <= 0 {
+		return 0, false, nil
+	}
+
+	if err := d.db.QueryRowContext(ctx, `
+SELECT id
+FROM recovery_quarantines
+WHERE assignment_id=? AND status='open'
+ORDER BY id
+LIMIT 1`, assignmentID).Scan(&id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("find recovery quarantine: %w", err)
+	}
+	return id, true, nil
 }
 
 func (d *Dispatcher) quarantineUnsafeRecoveryWork(ctx context.Context, q recoveryQuarantine) {
