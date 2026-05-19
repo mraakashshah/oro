@@ -241,6 +241,27 @@ func TestPendingUnknownEscalationSurfacesUnroutedHealthFinding(t *testing.T) {
 	}
 }
 
+func TestPendingEscalationFindingFallsBackToAggregateCount(t *testing.T) {
+	got := Evaluate(Snapshot{
+		DaemonRunning:   true,
+		DispatcherState: "running",
+		PendingEscalations: EscalationMetrics{
+			Unrouted: 2,
+		},
+	})
+
+	finding, ok := findingByCode(got, FindingPendingEscalationUnrouted)
+	if !ok {
+		t.Fatalf("missing aggregate pending_escalation_unrouted finding in %+v", got.Findings)
+	}
+	if finding.Message != "2 pending escalation(s) have no route" {
+		t.Fatalf("aggregate finding message = %q", finding.Message)
+	}
+	if finding.BeadID != "" || finding.WorkerID != "" || finding.Type != "" {
+		t.Fatalf("aggregate finding should not include row payload: %+v", finding)
+	}
+}
+
 func TestLoadPendingEscalationMetrics(t *testing.T) {
 	ctx := context.Background()
 	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
@@ -277,6 +298,87 @@ VALUES
 	}
 	if escalation.AgeSecs != 120 {
 		t.Fatalf("unrouted escalation age = %.0f, want 120", escalation.AgeSecs)
+	}
+}
+
+func TestLoadPendingEscalationMetricsHandlesMissingInputs(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 19, 0, 0, 0, 0, time.UTC)
+
+	got, err := LoadPendingEscalationMetrics(ctx, nil, now)
+	if err != nil {
+		t.Fatalf("LoadPendingEscalationMetrics nil db: %v", err)
+	}
+	if got.Unrouted != 0 || len(got.Escalations) != 0 {
+		t.Fatalf("nil db metrics = %+v, want zero", got)
+	}
+
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	got, err = LoadPendingEscalationMetrics(ctx, db, now)
+	if err != nil {
+		t.Fatalf("LoadPendingEscalationMetrics missing table: %v", err)
+	}
+	if got.Unrouted != 0 || len(got.Escalations) != 0 {
+		t.Fatalf("missing table metrics = %+v, want zero", got)
+	}
+}
+
+func TestLoadPendingEscalationMetricsClampsFutureAge(t *testing.T) {
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO escalations (type, bead_id, worker_id, message, status, created_at)
+VALUES ('FUTURE_ESCALATION', 'oro-future-age', 'w-future-age', 'future route', 'pending', '2026-05-19 00:05:00');
+`); err != nil {
+		t.Fatalf("seed escalation: %v", err)
+	}
+
+	got, err := LoadPendingEscalationMetrics(ctx, db, time.Date(2026, 5, 19, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("LoadPendingEscalationMetrics: %v", err)
+	}
+	if len(got.Escalations) != 1 {
+		t.Fatalf("unrouted escalations = %+v, want exactly one", got.Escalations)
+	}
+	if got.Escalations[0].AgeSecs != 0 {
+		t.Fatalf("future escalation age = %.0f, want 0", got.Escalations[0].AgeSecs)
+	}
+}
+
+func TestIsKnownEscalationType(t *testing.T) {
+	for _, escType := range []protocol.EscalationType{
+		protocol.EscMergeConflict,
+		protocol.EscStuck,
+		protocol.EscStuckWorker,
+		protocol.EscPriorityContention,
+		protocol.EscWorkerCrash,
+		protocol.EscStatus,
+		protocol.EscDrainComplete,
+		protocol.EscMissingAC,
+		protocol.EscEpicComplete,
+		protocol.EscMergeComplete,
+		protocol.EscOversizedBead,
+		protocol.EscNonTDDAC,
+		protocol.EscManualIntegration,
+	} {
+		if !IsKnownEscalationType(string(escType)) {
+			t.Fatalf("IsKnownEscalationType(%q) = false, want true", escType)
+		}
+	}
+	if IsKnownEscalationType("FUTURE_ESCALATION") {
+		t.Fatal("IsKnownEscalationType(FUTURE_ESCALATION) = true, want false")
 	}
 }
 

@@ -7614,8 +7614,8 @@ func (d *Dispatcher) spawnEscalationOneShot(ctx context.Context, escalationID in
 }
 
 // handleEscalationResult logs the one-shot escalation agent's outcome.
-// If the one-shot fails (timeout, error, or non-zero exit), it escalates
-// to the persistent manager for manual intervention.
+// If the one-shot fails (timeout, error, or non-zero exit), it records a
+// failed ops run so health reporting can surface the failure.
 var errDecomposeValidationUnavailable = errors.New("decompose validation unavailable")
 
 func (d *Dispatcher) handleEscalationResult(ctx context.Context, escalationID int64, escType, beadID, workerID string, resultCh <-chan ops.Result) {
