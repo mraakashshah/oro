@@ -9115,7 +9115,7 @@ func TestDispatcher_ReviewRejection_MemoryContextAccumulatesFeedback(t *testing.
 	_ = d // used for db access if needed
 }
 
-func TestMergeAndCompleteNoopMergeReopensBead(t *testing.T) {
+func TestMergeAndCompleteNoopMergeClosesBeadWithoutEscalation(t *testing.T) {
 	d, beadSrc, _, esc, gitRunner, _ := newTestDispatcher(t)
 	ctx := context.Background()
 
@@ -9137,26 +9137,27 @@ func TestMergeAndCompleteNoopMergeReopensBead(t *testing.T) {
 
 	beadSrc.mu.Lock()
 	closed := append([]string(nil), beadSrc.closed...)
-	status := beadSrc.updated[beadID]
-	notes := ""
-	if detail := beadSrc.shown[beadID]; detail != nil {
-		notes = detail.Notes
+	updates := map[string]string{}
+	for id, status := range beadSrc.updated {
+		updates[id] = status
 	}
 	beadSrc.mu.Unlock()
 
+	foundClosed := false
 	for _, id := range closed {
 		if id == beadID {
-			t.Fatalf("no-op merge must not close bead %q; closed=%v", beadID, closed)
+			foundClosed = true
+			break
 		}
 	}
-	if status != "open" {
-		t.Fatalf("no-op merge status = %q, want open", status)
+	if !foundClosed {
+		t.Fatalf("no-op merge must close bead %q; closed=%v", beadID, closed)
 	}
-	if !strings.Contains(notes, "merge_noop:") || !strings.Contains(notes, targetBranch) {
-		t.Fatalf("no-op merge note missing structured details:\n%s", notes)
+	if status, ok := updates[beadID]; ok {
+		t.Fatalf("no-op merge must not reopen bead %q; status update=%q updates=%v", beadID, status, updates)
 	}
-	if len(esc.Messages()) == 0 {
-		t.Fatal("expected no-op merge to escalate for follow-up")
+	if len(esc.Messages()) != 0 {
+		t.Fatalf("no-op merge must not escalate, got messages: %v", esc.Messages())
 	}
 }
 
