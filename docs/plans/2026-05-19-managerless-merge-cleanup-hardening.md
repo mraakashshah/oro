@@ -19,39 +19,39 @@ Add or replace the existing no-op merge test with:
 
 ```go
 func TestMergeAndCompleteNoopMergeClosesBeadWithoutEscalation(t *testing.T) {
-	d, beadSrc, _, esc, gitRunner, _ := newTestDispatcher(t)
-	ctx := context.Background()
+    d, beadSrc, _, esc, gitRunner, _ := newTestDispatcher(t)
+    ctx := context.Background()
 
-	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
-		t.Fatalf("init schema: %v", err)
-	}
+    if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+        t.Fatalf("init schema: %v", err)
+    }
 
-	beadID := "bead-noop-merge"
-	workerID := "w-noop"
-	worktree := "/tmp/worktree-" + beadID
-	branch := "agent/" + beadID
-	targetBranch := protocol.EpicBranchPrefix + "epic-noop"
+    beadID := "bead-noop-merge"
+    workerID := "w-noop"
+    worktree := "/tmp/worktree-" + beadID
+    branch := "agent/" + beadID
+    targetBranch := protocol.EpicBranchPrefix + "epic-noop"
 
-	gitRunner.mu.Lock()
-	gitRunner.revListCount = "0"
-	gitRunner.mu.Unlock()
+    gitRunner.mu.Lock()
+    gitRunner.revListCount = "0"
+    gitRunner.mu.Unlock()
 
-	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "epic-noop", targetBranch, 0)
+    d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "epic-noop", targetBranch, 0)
 
-	beadSrc.mu.Lock()
-	closed := append([]string(nil), beadSrc.closed...)
-	status := beadSrc.updated[beadID]
-	beadSrc.mu.Unlock()
+    beadSrc.mu.Lock()
+    closed := append([]string(nil), beadSrc.closed...)
+    status := beadSrc.updated[beadID]
+    beadSrc.mu.Unlock()
 
-	if !slices.Contains(closed, beadID) {
-		t.Fatalf("no-op merge must close bead %q; closed=%v", beadID, closed)
-	}
-	if status == "open" {
-		t.Fatal("no-op merge reopened bead; want terminal close")
-	}
-	if len(esc.Messages()) != 0 {
-		t.Fatalf("no-op merge must not escalate, got messages: %v", esc.Messages())
-	}
+    if !slices.Contains(closed, beadID) {
+        t.Fatalf("no-op merge must close bead %q; closed=%v", beadID, closed)
+    }
+    if status == "open" {
+        t.Fatal("no-op merge reopened bead; want terminal close")
+    }
+    if len(esc.Messages()) != 0 {
+        t.Fatalf("no-op merge must not escalate, got messages: %v", esc.Messages())
+    }
 }
 ```
 
@@ -95,20 +95,20 @@ Add:
 
 ```go
 func TestDeleteBranchMergedIntoUsesTargetProofBeforeSafeDelete(t *testing.T) {
-	runner := &recordingRunner{}
-	mgr := &GitWorktreeManager{repoRoot: "/repo", runner: runner}
+    runner := &recordingRunner{}
+    mgr := &GitWorktreeManager{repoRoot: "/repo", runner: runner}
 
-	if err := mgr.DeleteBranchMergedInto(context.Background(), "agent/oro-child", "epic/oro-parent"); err != nil {
-		t.Fatalf("DeleteBranchMergedInto: %v", err)
-	}
+    if err := mgr.DeleteBranchMergedInto(context.Background(), "agent/oro-child", "epic/oro-parent"); err != nil {
+        t.Fatalf("DeleteBranchMergedInto: %v", err)
+    }
 
-	want := [][]string{
-		{"git", "-C", "/repo", "merge-base", "--is-ancestor", "agent/oro-child", "epic/oro-parent"},
-		{"git", "-C", "/repo", "branch", "-d", "agent/oro-child"},
-	}
-	if !reflect.DeepEqual(runner.callsArgs(), want) {
-		t.Fatalf("calls = %#v, want %#v", runner.callsArgs(), want)
-	}
+    want := [][]string{
+        {"git", "-C", "/repo", "merge-base", "--is-ancestor", "agent/oro-child", "epic/oro-parent"},
+        {"git", "-C", "/repo", "branch", "-d", "agent/oro-child"},
+    }
+    if !reflect.DeepEqual(runner.callsArgs(), want) {
+        t.Fatalf("calls = %#v, want %#v", runner.callsArgs(), want)
+    }
 }
 ```
 
@@ -117,20 +117,20 @@ Add:
 
 ```go
 func TestRemoveWorktreeAndClearTrackingDeletesBranchMergedIntoTarget(t *testing.T) {
-	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+    d, _, wtMgr, _, _, _ := newTestDispatcher(t)
 
-	d.removeWorktreeAndClearTracking(context.Background(), "oro-child", "w1", "/tmp/worktree-oro-child", "epic/oro-parent")
+    d.removeWorktreeAndClearTracking(context.Background(), "oro-child", "w1", "/tmp/worktree-oro-child", "epic/oro-parent")
 
-	wtMgr.mu.Lock()
-	defer wtMgr.mu.Unlock()
+    wtMgr.mu.Lock()
+    defer wtMgr.mu.Unlock()
 
-	if len(wtMgr.deletedBranchesInto) != 1 {
-		t.Fatalf("target-aware delete calls = %v, want one", wtMgr.deletedBranchesInto)
-	}
-	call := wtMgr.deletedBranchesInto[0]
-	if call.branch != "agent/oro-child" || call.target != "epic/oro-parent" {
-		t.Fatalf("target-aware delete = %+v, want agent/oro-child into epic/oro-parent", call)
-	}
+    if len(wtMgr.deletedBranchesInto) != 1 {
+        t.Fatalf("target-aware delete calls = %v, want one", wtMgr.deletedBranchesInto)
+    }
+    call := wtMgr.deletedBranchesInto[0]
+    if call.branch != "agent/oro-child" || call.target != "epic/oro-parent" {
+        t.Fatalf("target-aware delete = %+v, want agent/oro-child into epic/oro-parent", call)
+    }
 }
 ```
 
@@ -178,24 +178,24 @@ Add:
 
 ```go
 func TestMergeCompleteDoesNotFailEscalationWhenManagerMissing(t *testing.T) {
-	d, _, _, esc, _, _ := newTestDispatcher(t)
-	ctx := context.Background()
+    d, _, _, esc, _, _ := newTestDispatcher(t)
+    ctx := context.Background()
 
-	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
-		t.Fatalf("init schema: %v", err)
-	}
-	esc.fail = true
+    if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+        t.Fatalf("init schema: %v", err)
+    }
+    esc.fail = true
 
-	d.mergeAndComplete(ctx, "bead-managerless", "w1", "/tmp/wt-managerless", "agent/bead-managerless", "", "", 0)
+    d.mergeAndComplete(ctx, "bead-managerless", "w1", "/tmp/wt-managerless", "agent/bead-managerless", "", "", 0)
 
-	var failed int
-	if err := d.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM events WHERE type='escalation_failed' AND bead_id='bead-managerless'`).Scan(&failed); err != nil {
-		t.Fatalf("query escalation_failed: %v", err)
-	}
-	if failed != 0 {
-		t.Fatalf("MERGE_COMPLETE managerless notification logged escalation_failed = %d, want 0", failed)
-	}
+    var failed int
+    if err := d.db.QueryRowContext(ctx,
+        `SELECT COUNT(*) FROM events WHERE type='escalation_failed' AND bead_id='bead-managerless'`).Scan(&failed); err != nil {
+        t.Fatalf("query escalation_failed: %v", err)
+    }
+    if failed != 0 {
+        t.Fatalf("MERGE_COMPLETE managerless notification logged escalation_failed = %d, want 0", failed)
+    }
 }
 ```
 
@@ -213,7 +213,7 @@ Expected: FAIL because `escalate` currently logs `escalation_failed` for manager
 
 ```go
 func isInformationalEscalation(escType protocol.EscalationType) bool {
-	return escType == protocol.EscMergeComplete || escType == protocol.EscManualIntegration
+    return escType == protocol.EscMergeComplete || escType == protocol.EscManualIntegration
 }
 ```
 
