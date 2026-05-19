@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"oro/pkg/protocol"
@@ -112,7 +113,8 @@ func (d *Dispatcher) retryOversizedBead(ctx context.Context, beadID string) bool
 		return false
 	}
 	if hasChildren, hcErr := d.beads.HasChildren(ctx, beadID); hcErr == nil && hasChildren {
-		return false
+		err := d.validateDecomposeResult(ctx, beadID)
+		return err != nil && !errors.Is(err, errDecomposeValidationUnavailable)
 	}
 	return protocol.CountDistinctModules(detail.AcceptanceCriteria) > 2
 }

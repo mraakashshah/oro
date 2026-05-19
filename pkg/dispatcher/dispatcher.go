@@ -7271,6 +7271,10 @@ func (d *Dispatcher) retryPendingEscalations(ctx context.Context) {
 
 	// Process escalations after closing the query
 	for _, esc := range pending {
+		if protocol.EscalationType(esc.escType) == protocol.EscOversizedBead && d.ops != nil {
+			continue
+		}
+
 		// Check if the underlying condition is resolved
 		if !d.shouldRetryEscalation(ctx, esc.escType, esc.beadID) {
 			// Condition resolved - auto-ack the escalation
@@ -7428,13 +7432,18 @@ func (d *Dispatcher) spawnEscalationOneShot(ctx context.Context, escalationID in
 // handleEscalationResult logs the one-shot escalation agent's outcome.
 // If the one-shot fails (timeout, error, or non-zero exit), it escalates
 // to the persistent manager for manual intervention.
+var errDecomposeValidationUnavailable = errors.New("decompose validation unavailable")
+
 func (d *Dispatcher) handleEscalationResult(ctx context.Context, escalationID int64, escType, beadID, workerID string, resultCh <-chan ops.Result) {
 	result := <-resultCh
 	if result.Err != nil {
 		_ = d.logEvent(ctx, "oneshot_escalation_failed", "ops", beadID, workerID,
 			fmt.Sprintf(`{"type":%q,"error":%q}`, escType, result.Err.Error()))
-		if protocol.EscalationType(escType) == protocol.EscMissingAC {
+		if protocol.EscalationType(escType) == protocol.EscMissingAC || protocol.EscalationType(escType) == protocol.EscOversizedBead {
 			d.recordAssignmentFailure(beadID)
+		}
+		if protocol.EscalationType(escType) == protocol.EscOversizedBead {
+			d.completeDecomposeOpsRunBestEffort(ctx, beadID, opsRunStatusFailed, string(result.Verdict), result.Feedback, result.Err.Error())
 		}
 
 		// Escalate to persistent manager when one-shot fails.
@@ -7450,8 +7459,149 @@ func (d *Dispatcher) handleEscalationResult(ctx context.Context, escalationID in
 	_ = d.logEvent(ctx, "oneshot_escalation_complete", "ops", beadID, workerID,
 		fmt.Sprintf(`{"type":%q,"verdict":%q,"feedback":%q}`, escType, result.Verdict, result.Feedback))
 
+	if protocol.EscalationType(escType) == protocol.EscOversizedBead {
+		if err := d.validateDecomposeResult(ctx, beadID); err != nil {
+			if errors.Is(err, errDecomposeValidationUnavailable) {
+				_ = d.logEvent(ctx, "oneshot_escalation_validation_skipped", "ops", beadID, workerID,
+					fmt.Sprintf(`{"type":%q,"error":%q}`, escType, err.Error()))
+				d.clearAssignmentFailure(beadID)
+				d.completeDecomposeOpsRunBestEffort(ctx, beadID, opsRunStatusResolved, string(result.Verdict), result.Feedback, "")
+				d.ackEscalation(ctx, escalationID, beadID, workerID)
+				return
+			}
+			d.recordAssignmentFailure(beadID)
+			d.completeDecomposeOpsRunBestEffort(ctx, beadID, opsRunStatusFailed, string(result.Verdict), result.Feedback, err.Error())
+			_ = d.logEvent(ctx, "oneshot_escalation_validation_failed", "ops", beadID, workerID,
+				fmt.Sprintf(`{"type":%q,"error":%q}`, escType, err.Error()))
+			return
+		}
+		d.clearAssignmentFailure(beadID)
+		d.completeDecomposeOpsRunBestEffort(ctx, beadID, opsRunStatusResolved, string(result.Verdict), result.Feedback, "")
+	}
+
 	// Ack the escalation in the persistent queue so the retry loop doesn't re-deliver it.
 	d.ackEscalation(ctx, escalationID, beadID, workerID)
+}
+
+func (d *Dispatcher) validateDecomposeResult(ctx context.Context, beadID string) error {
+	if d == nil || d.db == nil {
+		return fmt.Errorf("%w for %s: dispatcher db is nil", errDecomposeValidationUnavailable, beadID)
+	}
+
+	var parent struct {
+		ID     string
+		Type   string
+		Status string
+	}
+	err := d.db.QueryRowContext(ctx, `
+SELECT id, COALESCE(type, ''), COALESCE(status, '')
+FROM beads
+WHERE id=? AND deleted=0`, beadID).Scan(&parent.ID, &parent.Type, &parent.Status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("decompose validation failed for %s: parent bead missing", beadID)
+	}
+	if err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return fmt.Errorf("%w for %s: %w", errDecomposeValidationUnavailable, beadID, err)
+		}
+		return fmt.Errorf("decompose validation failed for %s: load parent: %w", beadID, err)
+	}
+
+	children, err := d.loadDecomposeChildren(ctx, beadID)
+	if err != nil {
+		return err
+	}
+	if len(children) == 0 {
+		if strings.EqualFold(parent.Type, "epic") || parent.Status == "closed" {
+			return nil
+		}
+		return fmt.Errorf("decompose validation failed for %s: non-epic parent has no child tasks", beadID)
+	}
+
+	for _, child := range children {
+		if !hasTDDAcceptance(child.AcceptanceCriteria) {
+			return fmt.Errorf("decompose validation failed for %s: child %s acceptance criteria must include Test:, Cmd:, and Assert: markers", beadID, child.ID)
+		}
+		hasDep, err := d.parentDependsOnChild(ctx, beadID, child.ID)
+		if err != nil {
+			return err
+		}
+		if !hasDep {
+			return fmt.Errorf("decompose validation failed for %s: parent does not depend on child %s", beadID, child.ID)
+		}
+	}
+	return nil
+}
+
+func (d *Dispatcher) loadDecomposeChildren(ctx context.Context, beadID string) ([]protocol.Bead, error) {
+	rows, err := d.db.QueryContext(ctx, `
+SELECT id, COALESCE(type, ''), COALESCE(acceptance_criteria, '')
+FROM beads
+WHERE parent_id=? AND deleted=0
+ORDER BY id`, beadID)
+	if err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return nil, fmt.Errorf("%w for %s: %w", errDecomposeValidationUnavailable, beadID, err)
+		}
+		return nil, fmt.Errorf("decompose validation failed for %s: load children: %w", beadID, err)
+	}
+	defer rows.Close()
+
+	var children []protocol.Bead
+	for rows.Next() {
+		var child protocol.Bead
+		if err := rows.Scan(&child.ID, &child.Type, &child.AcceptanceCriteria); err != nil {
+			return nil, fmt.Errorf("decompose validation failed for %s: scan child: %w", beadID, err)
+		}
+		children = append(children, child)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("decompose validation failed for %s: iterate children: %w", beadID, err)
+	}
+	return children, nil
+}
+
+func hasTDDAcceptance(acceptance string) bool {
+	return strings.Contains(acceptance, "Test:") &&
+		strings.Contains(acceptance, "Cmd:") &&
+		strings.Contains(acceptance, "Assert:")
+}
+
+func (d *Dispatcher) parentDependsOnChild(ctx context.Context, parentID, childID string) (bool, error) {
+	var n int
+	err := d.db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM bead_deps
+WHERE bead_id=? AND depends_on_id=? AND type IN ('blocks', 'conditional-blocks')`, parentID, childID).Scan(&n)
+	if err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return false, fmt.Errorf("%w for %s: %w", errDecomposeValidationUnavailable, parentID, err)
+		}
+		return false, fmt.Errorf("decompose validation failed for %s: check dependency on %s: %w", parentID, childID, err)
+	}
+	return n > 0, nil
+}
+
+func (d *Dispatcher) clearAssignmentFailure(beadID string) {
+	d.mu.Lock()
+	delete(d.worktreeFailures, beadID)
+	d.mu.Unlock()
+}
+
+func (d *Dispatcher) completeDecomposeOpsRunBestEffort(ctx context.Context, beadID, status, verdict, feedback, errorText string) {
+	rec, err := FindBlockingOpsRun(ctx, d.db, string(ops.OpsDecompose), beadID)
+	if err != nil {
+		_ = d.logEvent(ctx, "ops_run_complete_failed", "dispatcher", beadID, "",
+			fmt.Sprintf(`{"type":%q,"status":%q,"error":%q}`, ops.OpsDecompose, status, err.Error()))
+		return
+	}
+	if rec == nil {
+		return
+	}
+	if err := CompleteOpsRun(ctx, d.db, rec.ID, status, verdict, feedback, errorText); err != nil {
+		_ = d.logEvent(ctx, "ops_run_complete_failed", "dispatcher", beadID, "",
+			fmt.Sprintf(`{"ops_run_id":%d,"type":%q,"status":%q,"error":%q}`, rec.ID, ops.OpsDecompose, status, err.Error()))
+	}
 }
 
 func (d *Dispatcher) ackEscalation(ctx context.Context, escalationID int64, beadID, workerID string) {

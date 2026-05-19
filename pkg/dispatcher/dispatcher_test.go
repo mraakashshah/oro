@@ -3007,6 +3007,165 @@ func TestEscalateOversizedRoutesToDecomposeProductionPath(t *testing.T) {
 	}
 }
 
+func TestOversizedDecomposeResultAcksOnlyAfterValidation(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const (
+		beadID   = "oro-decompose-parent"
+		childID  = "oro-decompose-child"
+		workerID = "w-decompose"
+	)
+
+	insertDispatcherTestBead(t, d.db, beadID, "task", "", tddAcceptanceForTest())
+	invalidEscID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, workerID)
+	insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, workerID)
+
+	invalidResultCh := make(chan ops.Result, 1)
+	invalidResultCh <- ops.Result{Type: ops.OpsDecompose, BeadID: beadID, Verdict: ops.VerdictResolved}
+
+	d.handleEscalationResult(ctx, invalidEscID, string(protocol.EscOversizedBead), beadID, workerID, invalidResultCh)
+
+	if got := dispatcherTestEscalationStatus(t, d.db, invalidEscID); got != "pending" {
+		t.Fatalf("invalid decompose escalation status = %q, want pending", got)
+	}
+
+	insertDispatcherTestBead(t, d.db, childID, "task", beadID, tddAcceptanceForTest())
+	insertDispatcherTestDependency(t, d.db, beadID, childID, "blocks")
+	validEscID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, workerID)
+	insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, workerID)
+
+	d.mu.Lock()
+	d.worktreeFailures[beadID] = time.Now()
+	d.mu.Unlock()
+
+	validResultCh := make(chan ops.Result, 1)
+	validResultCh <- ops.Result{Type: ops.OpsDecompose, BeadID: beadID, Verdict: ops.VerdictResolved}
+
+	d.handleEscalationResult(ctx, validEscID, string(protocol.EscOversizedBead), beadID, workerID, validResultCh)
+
+	if got := dispatcherTestEscalationStatus(t, d.db, validEscID); got != "acked" {
+		t.Fatalf("valid decompose escalation status = %q, want acked", got)
+	}
+	if got := dispatcherTestOpsRunStatus(t, d.db, ops.OpsDecompose, beadID); got != opsRunStatusResolved {
+		t.Fatalf("decompose ops_run status = %q, want %q", got, opsRunStatusResolved)
+	}
+	d.mu.Lock()
+	_, inCooldown := d.worktreeFailures[beadID]
+	d.mu.Unlock()
+	if inCooldown {
+		t.Fatalf("successful decompose validation should clear assignment cooldown for %s", beadID)
+	}
+}
+
+func TestHandleEscalationResult_OversizedFailsOpsRunOnMissingChildren(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const (
+		beadID   = "oro-decompose-empty"
+		workerID = "w-decompose-empty"
+	)
+
+	insertDispatcherTestBead(t, d.db, beadID, "task", "", tddAcceptanceForTest())
+	escalationID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, workerID)
+	insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, workerID)
+
+	resultCh := make(chan ops.Result, 1)
+	resultCh <- ops.Result{Type: ops.OpsDecompose, BeadID: beadID, Verdict: ops.VerdictResolved}
+
+	d.handleEscalationResult(ctx, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
+
+	if got := dispatcherTestEscalationStatus(t, d.db, escalationID); got != "pending" {
+		t.Fatalf("escalation status = %q, want pending until validation passes", got)
+	}
+	if got := dispatcherTestOpsRunStatus(t, d.db, ops.OpsDecompose, beadID); got != opsRunStatusFailed {
+		t.Fatalf("decompose ops_run status = %q, want %q", got, opsRunStatusFailed)
+	}
+	d.mu.Lock()
+	_, inCooldown := d.worktreeFailures[beadID]
+	d.mu.Unlock()
+	if !inCooldown {
+		t.Fatalf("failed decompose validation should put %s in assignment cooldown", beadID)
+	}
+}
+
+func TestDecomposeValidator_FailsWhenChildHasNoTDDAcceptance(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const (
+		beadID  = "oro-parent-child-ac"
+		childID = "oro-child-no-tdd-ac"
+	)
+
+	insertDispatcherTestBead(t, d.db, beadID, "task", "", tddAcceptanceForTest())
+	insertDispatcherTestBead(t, d.db, childID, "task", beadID, "Cmd: go test ./pkg/dispatcher | Assert: PASS")
+	insertDispatcherTestDependency(t, d.db, beadID, childID, "blocks")
+
+	err := d.validateDecomposeResult(ctx, beadID)
+	if err == nil {
+		t.Fatal("validateDecomposeResult error = nil, want child acceptance validation failure")
+	}
+	if !strings.Contains(err.Error(), "Test:") || !strings.Contains(err.Error(), "Cmd:") || !strings.Contains(err.Error(), "Assert:") {
+		t.Fatalf("validateDecomposeResult error = %q, want Test/Cmd/Assert guidance", err.Error())
+	}
+}
+
+func TestDecomposeValidator_FailsWhenParentDoesNotDependOnChildren(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const (
+		beadID  = "oro-parent-no-dep"
+		childID = "oro-child-no-parent-dep"
+	)
+
+	insertDispatcherTestBead(t, d.db, beadID, "task", "", tddAcceptanceForTest())
+	insertDispatcherTestBead(t, d.db, childID, "task", beadID, tddAcceptanceForTest())
+
+	err := d.validateDecomposeResult(ctx, beadID)
+	if err == nil {
+		t.Fatal("validateDecomposeResult error = nil, want missing dependency failure")
+	}
+	if !strings.Contains(err.Error(), "depend on child") {
+		t.Fatalf("validateDecomposeResult error = %q, want missing parent dependency failure", err.Error())
+	}
+}
+
+func TestFailedDecomposeOpsRunSetsAssignmentCooldown(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const (
+		beadID   = "oro-decompose-agent-failed"
+		workerID = "w-decompose-agent-failed"
+	)
+
+	escalationID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, workerID)
+	insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, workerID)
+
+	resultCh := make(chan ops.Result, 1)
+	resultCh <- ops.Result{
+		Type:    ops.OpsDecompose,
+		BeadID:  beadID,
+		Verdict: ops.VerdictFailed,
+		Err:     errors.New("decompose agent failed"),
+	}
+
+	d.handleEscalationResult(ctx, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
+
+	if got := dispatcherTestOpsRunStatus(t, d.db, ops.OpsDecompose, beadID); got != opsRunStatusFailed {
+		t.Fatalf("decompose ops_run status = %q, want %q", got, opsRunStatusFailed)
+	}
+	d.mu.Lock()
+	_, inCooldown := d.worktreeFailures[beadID]
+	d.mu.Unlock()
+	if !inCooldown {
+		t.Fatalf("failed decompose ops run should put %s in assignment cooldown", beadID)
+	}
+}
+
 func TestDispatcher_ConcurrentWorkers(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
@@ -21499,4 +21658,84 @@ func requireCreatedCall(t *testing.T, store *fakeBeadStore, match func(createCal
 	}
 	t.Fatalf("no matching created call in %+v", created)
 	return createCall{}
+}
+
+func tddAcceptanceForTest() string {
+	return "Test: pkg/dispatcher/dispatcher_test.go:TestExample | Cmd: go test ./pkg/dispatcher | Assert: PASS"
+}
+
+func insertDispatcherTestBead(t *testing.T, db *sql.DB, id, beadType, parentID, acceptance string) {
+	t.Helper()
+	if err := protocol.MigrateBeadSchema(context.Background(), db); err != nil {
+		t.Fatalf("migrate bead schema: %v", err)
+	}
+	_, err := db.Exec(`
+INSERT INTO beads (id, title, status, priority, type, parent_id, acceptance_criteria)
+VALUES (?, ?, 'open', 1, ?, NULLIF(?, ''), ?)`,
+		id, id, beadType, parentID, acceptance)
+	if err != nil {
+		t.Fatalf("insert bead %s: %v", id, err)
+	}
+}
+
+func insertDispatcherTestDependency(t *testing.T, db *sql.DB, beadID, dependsOnID, depType string) {
+	t.Helper()
+	_, err := db.Exec(`INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES (?, ?, ?)`,
+		beadID, dependsOnID, depType)
+	if err != nil {
+		t.Fatalf("insert dependency %s -> %s: %v", beadID, dependsOnID, err)
+	}
+}
+
+func insertDispatcherTestEscalation(t *testing.T, db *sql.DB, escType protocol.EscalationType, beadID, workerID string) int64 {
+	t.Helper()
+	res, err := db.Exec(
+		`INSERT INTO escalations (type, bead_id, worker_id, message) VALUES (?, ?, ?, ?)`,
+		escType, beadID, workerID, protocol.FormatEscalation(escType, beadID, "test escalation", ""))
+	if err != nil {
+		t.Fatalf("insert escalation for %s: %v", beadID, err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("insert escalation id for %s: %v", beadID, err)
+	}
+	return id
+}
+
+func insertDispatcherTestOpsRun(t *testing.T, d *Dispatcher, runType ops.Type, beadID, workerID string) int64 {
+	t.Helper()
+	rec, _, err := CreateOpsRun(context.Background(), d.db, OpsRunRecord{
+		Type:          string(runType),
+		BeadID:        beadID,
+		WorkerID:      workerID,
+		DispatcherPID: os.Getpid(),
+		Status:        opsRunStatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("insert ops_run for %s: %v", beadID, err)
+	}
+	return rec.ID
+}
+
+func dispatcherTestEscalationStatus(t *testing.T, db *sql.DB, escalationID int64) string {
+	t.Helper()
+	var status string
+	if err := db.QueryRow(`SELECT status FROM escalations WHERE id=?`, escalationID).Scan(&status); err != nil {
+		t.Fatalf("query escalation %d status: %v", escalationID, err)
+	}
+	return status
+}
+
+func dispatcherTestOpsRunStatus(t *testing.T, db *sql.DB, runType ops.Type, beadID string) string {
+	t.Helper()
+	var status string
+	if err := db.QueryRow(`
+SELECT status
+FROM ops_runs
+WHERE type=? AND bead_id=?
+ORDER BY id DESC
+LIMIT 1`, runType, beadID).Scan(&status); err != nil {
+		t.Fatalf("query ops_run status for %s/%s: %v", runType, beadID, err)
+	}
+	return status
 }
