@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -202,7 +204,12 @@ func mustOpenDB(t *testing.T) *sql.DB {
 
 func tempSocket(t *testing.T) string {
 	t.Helper()
-	return t.TempDir() + "/oro-test.sock"
+	dir, err := os.MkdirTemp("/tmp", "oro-sock-*")
+	if err != nil {
+		t.Fatalf("create temp socket dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, "oro-test.sock")
 }
 
 func waitForListenerOrRunError(t *testing.T, socketPath string, runErr <-chan error, timeout time.Duration) {
