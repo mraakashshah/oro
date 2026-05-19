@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/mattn/go-isatty"
@@ -15,11 +16,12 @@ type attachConfig struct {
 	tmuxName string
 	runner   CmdRunner
 	isTTY    func() bool
+	output   io.Writer
 	attachFn func() error // calls AttachInteractive; injectable for testing
 }
 
-// runAttach executes the attach flow: checks daemon status, tmux session health,
-// TTY, then delegates to attachFn.
+// runAttach executes the attach flow: checks daemon status, attaches to an
+// optional tmux surface when present, or explains managerless mode when absent.
 func runAttach(cfg *attachConfig) error {
 	// 1. Check daemon status.
 	status, _, err := DaemonStatus(cfg.pidPath, cfg.sockPath)
@@ -38,7 +40,13 @@ func runAttach(cfg *attachConfig) error {
 	// 2. Check tmux session exists.
 	sess := &TmuxSession{Name: cfg.tmuxName, Runner: cfg.runner}
 	if !sess.Exists() {
-		return fmt.Errorf("dispatcher running in daemon-only mode, no tmux session")
+		w := cfg.output
+		if w == nil {
+			w = os.Stdout
+		}
+		fmt.Fprintln(w, "oro is running in managerless mode; there is no tmux attach surface.")
+		fmt.Fprintln(w, "Use `oro status` to inspect the factory or `oro monitor` to watch and recover it.")
+		return nil
 	}
 
 	// 3. Check session health.
@@ -73,6 +81,7 @@ func newAttachCmd() *cobra.Command {
 				tmuxName: sess.Name,
 				runner:   sess.Runner,
 				isTTY:    func() bool { return isatty.IsTerminal(os.Stdin.Fd()) },
+				output:   cmd.OutOrStdout(),
 				attachFn: sess.AttachInteractive,
 			}
 			return runAttach(cfg)

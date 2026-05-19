@@ -4,12 +4,9 @@ package main
 
 import "strings"
 
-// FormatForwardMessage creates a user-facing message indicating the command was forwarded.
-// Shows "[forwarded to manager]" for oro commands, "[forwarded]" for other commands.
+// FormatForwardMessage creates a managerless user-facing message indicating
+// the command was forwarded.
 func FormatForwardMessage(command string) string {
 	trimmed := strings.TrimSpace(command)
-	if strings.HasPrefix(trimmed, "oro ") {
-		return "[forwarded to manager] " + trimmed
-	}
 	return "[forwarded] " + trimmed
 }

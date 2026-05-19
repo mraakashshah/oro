@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -13,12 +14,12 @@ func TestFormatForwardMessage(t *testing.T) {
 		{
 			name:    "oro directive scale",
 			command: "oro directive scale 3",
-			want:    "[forwarded to manager] oro directive scale 3",
+			want:    "[forwarded] oro directive scale 3",
 		},
 		{
 			name:    "oro status",
 			command: "oro status",
-			want:    "[forwarded to manager] oro status",
+			want:    "[forwarded] oro status",
 		},
 		{
 			name:    "git status",
@@ -37,6 +38,17 @@ func TestFormatForwardMessage(t *testing.T) {
 			got := FormatForwardMessage(tt.command)
 			if got != tt.want {
 				t.Errorf("FormatForwardMessage(%q) = %q, want %q", tt.command, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRouterDoesNotSayForwardedToManager(t *testing.T) {
+	for _, command := range []string{"oro status", "oro directive scale 3", "git status"} {
+		t.Run(command, func(t *testing.T) {
+			got := FormatForwardMessage(command)
+			if strings.Contains(got, "manager") {
+				t.Fatalf("default forwarding text should be managerless, got %q", got)
 			}
 		})
 	}

@@ -56,7 +56,7 @@ func TestAttachStale(t *testing.T) {
 	}
 }
 
-func TestAttachDaemonOnly(t *testing.T) {
+func TestAttachExplainsManagerlessModeWhenNoPaneExists(t *testing.T) {
 	tmpDir := t.TempDir()
 	pidFile := filepath.Join(tmpDir, "oro.pid")
 	if err := WritePIDFile(pidFile, os.Getpid()); err != nil {
@@ -64,19 +64,32 @@ func TestAttachDaemonOnly(t *testing.T) {
 	}
 	fake := newFakeCmd()
 	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no such session")
+	var out bytes.Buffer
+	attached := false
 	cfg := &attachConfig{
 		pidPath:  pidFile,
 		sockPath: filepath.Join(tmpDir, "nonexistent.sock"),
 		tmuxName: TmuxSessionName(""),
 		runner:   fake,
 		isTTY:    func() bool { return true },
+		output:   &out,
+		attachFn: func() error { attached = true; return nil },
 	}
 	err := runAttach(cfg)
-	if err == nil {
-		t.Fatal("expected error for daemon-only mode")
+	if err != nil {
+		t.Fatalf("expected managerless guidance without fatal error, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "daemon-only mode") {
-		t.Errorf("expected 'daemon-only mode' in error, got: %v", err)
+	if attached {
+		t.Fatal("attachFn should not be called when no tmux session exists")
+	}
+	output := out.String()
+	for _, want := range []string{"managerless mode", "oro status", "oro monitor"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("expected %q in managerless guidance, got: %q", want, output)
+		}
+	}
+	if strings.Contains(output, "daemon-only mode") {
+		t.Errorf("managerless guidance should not use legacy daemon-only wording, got: %q", output)
 	}
 }
 

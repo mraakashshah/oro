@@ -2740,7 +2740,7 @@ func TestStatusBarShowsQuitHint(t *testing.T) {
 // commands to the correct pane via tmux send-keys and returns the correct
 // feedback message.
 func TestForwardCommandToManager(t *testing.T) {
-	t.Run("oro command is forwarded to manager pane with feedback", func(t *testing.T) {
+	t.Run("oro command is forwarded to legacy manager pane with managerless feedback", func(t *testing.T) {
 		fake := newFakeCmd()
 		// Session is attached; no SIGWINCH needed.
 		fake.output[key("tmux", "display-message", "-p", "-t", "mysession:manager", "#{session_attached}")] = "1"
@@ -2751,8 +2751,9 @@ func TestForwardCommandToManager(t *testing.T) {
 			t.Fatalf("ForwardCommandToManager returned error: %v", err)
 		}
 
-		// Feedback should be "[forwarded to manager] oro directive scale 3"
-		want := "[forwarded to manager] oro directive scale 3"
+		// Feedback should use the default managerless router text even though
+		// this legacy API still targets a manager pane.
+		want := "[forwarded] oro directive scale 3"
 		if feedback != want {
 			t.Errorf("feedback = %q, want %q", feedback, want)
 		}
@@ -2826,6 +2827,23 @@ func TestForwardCommandToManager(t *testing.T) {
 			t.Fatal("expected error when send-keys fails, got nil")
 		}
 	})
+}
+
+func TestForwardCommandToManagerRemovedOrLegacy(t *testing.T) {
+	fake := newFakeCmd()
+	fake.output[key("tmux", "display-message", "-p", "-t", "mysession:manager", "#{session_attached}")] = "1"
+
+	sess := &TmuxSession{Name: "mysession", Runner: fake, Sleeper: noopSleep}
+	feedback, err := sess.ForwardCommandToManager("oro status")
+	if err != nil {
+		t.Fatalf("unexpected legacy forward error: %v", err)
+	}
+	if strings.Contains(feedback, "manager") {
+		t.Fatalf("legacy forward feedback should not be default user-facing manager text, got %q", feedback)
+	}
+	if feedback != "[forwarded] oro status" {
+		t.Fatalf("feedback = %q, want %q", feedback, "[forwarded] oro status")
+	}
 }
 
 // TestForwardCommandToManager_RoutesArchitectCommands verifies that
