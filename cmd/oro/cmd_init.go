@@ -1251,22 +1251,13 @@ func extractThresholdsJSON(dest string, assets fs.FS, force bool) error {
 	return nil
 }
 
-func extractClaudeRuleAssets(dest string, assets fs.FS, force bool) error {
+func extractClaudeRuleAssets(dest string, assets fs.FS) error {
 	rules, err := agentassets.ClaudeRuleAssets(assets)
 	if err != nil {
 		return fmt.Errorf("generate claude rule assets: %w", err)
 	}
-	for _, rule := range rules {
-		destPath := filepath.Join(dest, filepath.FromSlash(rule.Target))
-		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil { //nolint:gosec // needs to be readable
-			return fmt.Errorf("create claude rules dir: %w", err)
-		}
-		if !force && fileExists(destPath) {
-			continue
-		}
-		if err := os.WriteFile(destPath, rule.Content, 0o644); err != nil { //nolint:gosec // rules need to be readable
-			return fmt.Errorf("write %s: %w", rule.Target, err)
-		}
+	if err := agentassets.InstallClaudeRules(context.Background(), dest, rules); err != nil {
+		return fmt.Errorf("install claude rule assets: %w", err)
 	}
 	return nil
 }
@@ -1295,7 +1286,7 @@ func extractAssetsW(dest string, assets fs.FS, force bool, w io.Writer) error {
 	if err := extractThresholdsJSON(dest, assets, force); err != nil {
 		return err
 	}
-	if err := extractClaudeRuleAssets(dest, assets, force); err != nil {
+	if err := extractClaudeRuleAssets(dest, assets); err != nil {
 		return err
 	}
 

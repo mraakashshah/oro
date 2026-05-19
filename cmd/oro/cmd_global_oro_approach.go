@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"oro/pkg/agentassets"
 
 	"github.com/spf13/cobra"
 )
@@ -31,16 +34,20 @@ var portableHooks = []string{ //nolint:gochecknoglobals // static config
 const (
 	agentRuntimeClaude = "claude"
 	agentRuntimeCodex  = "codex"
+	agentRuntimeAll    = "all"
 )
 
 // agentAssetsConfig holds injectable paths for testability.
 type agentAssetsConfig struct {
-	runtime       string
-	oroSkillsDir  string // source bundle under ~/.oro/
-	oroHooksDir   string // source hooks under ~/.oro/
-	destSkillsDir string // runtime-specific destination for skills
-	destHooksDir  string // runtime-specific destination for hooks; empty when unsupported
-	settingsPath  string // runtime-specific settings.json; empty when unsupported
+	runtime         string
+	oroAssetsDir    string // source bundle root under ~/.oro/
+	oroSkillsDir    string // source bundle under ~/.oro/
+	oroHooksDir     string // source hooks under ~/.oro/
+	destSkillsDir   string // runtime-specific destination for skills
+	destHooksDir    string // runtime-specific destination for hooks; empty when unsupported
+	claudeRulesRoot string // home/root where .claude/rules should be installed
+	codexSkillsDir  string // optional Codex destination when runtime=all
+	settingsPath    string // runtime-specific settings.json; empty when unsupported
 	// Legacy Claude-specific aliases kept for test and caller compatibility.
 	claudeSkillsDir string
 	claudeHooksDir  string
@@ -86,27 +93,36 @@ Editing existing skills doesn't require re-running (symlinks are live).`,
 		},
 	}
 
-	cmd.Flags().StringVar(&runtimeID, "runtime", agentRuntimeClaude, "target runtime for synced agent assets (claude or codex)")
+	cmd.Flags().StringVar(&runtimeID, "runtime", agentRuntimeClaude, "target runtime for synced agent assets (claude, codex, or all)")
 	return cmd
 }
 
 func defaultAgentAssetsConfig(homeDir, runtimeID string) agentAssetsConfig {
+	codexHome := os.Getenv("CODEX_HOME")
+	if codexHome == "" {
+		codexHome = filepath.Join(homeDir, ".codex")
+	}
+
 	cfg := agentAssetsConfig{
 		runtime:      runtimeID,
+		oroAssetsDir: filepath.Join(homeDir, ".oro"),
 		oroSkillsDir: filepath.Join(homeDir, ".oro", ".claude", "skills"),
 		oroHooksDir:  filepath.Join(homeDir, ".oro", "hooks"),
 	}
 	switch runtimeID {
 	case agentRuntimeCodex:
-		codexHome := os.Getenv("CODEX_HOME")
-		if codexHome == "" {
-			codexHome = filepath.Join(homeDir, ".codex")
-		}
 		cfg.destSkillsDir = filepath.Join(codexHome, "skills")
+	case agentRuntimeAll:
+		cfg.destSkillsDir = filepath.Join(homeDir, ".claude", "skills")
+		cfg.destHooksDir = filepath.Join(homeDir, ".claude", "hooks")
+		cfg.claudeRulesRoot = homeDir
+		cfg.codexSkillsDir = filepath.Join(codexHome, "skills")
+		cfg.settingsPath = filepath.Join(homeDir, ".claude", "settings.json")
 	default:
 		cfg.runtime = agentRuntimeClaude
 		cfg.destSkillsDir = filepath.Join(homeDir, ".claude", "skills")
 		cfg.destHooksDir = filepath.Join(homeDir, ".claude", "hooks")
+		cfg.claudeRulesRoot = homeDir
 		cfg.settingsPath = filepath.Join(homeDir, ".claude", "settings.json")
 	}
 	return cfg
@@ -125,6 +141,29 @@ func runGlobalOroApproach(cfg globalOroApproachConfig, w io.Writer) error {
 
 // runAgentAssetsSync syncs portable Oro assets into the chosen runtime home.
 func runAgentAssetsSync(cfg agentAssetsConfig, w io.Writer) error {
+	if cfg.runtime == agentRuntimeAll {
+		claudeCfg := cfg
+		claudeCfg.runtime = agentRuntimeClaude
+		if err := syncAgentRuntimeAssets(claudeCfg, w); err != nil {
+			return err
+		}
+
+		codexCfg := cfg
+		codexCfg.runtime = agentRuntimeCodex
+		if cfg.codexSkillsDir != "" {
+			codexCfg.destSkillsDir = cfg.codexSkillsDir
+		}
+		codexCfg.destHooksDir = ""
+		codexCfg.claudeHooksDir = ""
+		codexCfg.settingsPath = ""
+		codexCfg.claudeRulesRoot = ""
+		return syncAgentRuntimeAssets(codexCfg, w)
+	}
+
+	return syncAgentRuntimeAssets(cfg, w)
+}
+
+func syncAgentRuntimeAssets(cfg agentAssetsConfig, w io.Writer) error {
 	if err := copySkills(cfg, w); err != nil {
 		return err
 	}
@@ -135,7 +174,26 @@ func runAgentAssetsSync(cfg agentAssetsConfig, w io.Writer) error {
 	if err := copyHooks(cfg, w); err != nil {
 		return err
 	}
-	return updateGlobalSettings(cfg, w)
+	if err := updateGlobalSettings(cfg, w); err != nil {
+		return err
+	}
+	return installClaudeRuleAssets(cfg, w)
+}
+
+func installClaudeRuleAssets(cfg agentAssetsConfig, w io.Writer) error {
+	if cfg.oroAssetsDir == "" || cfg.claudeRulesRoot == "" {
+		return nil
+	}
+
+	assets, err := (agentassets.ClaudeGenerator{Source: os.DirFS(cfg.oroAssetsDir)}).RuleAssets()
+	if err != nil {
+		return fmt.Errorf("generate Claude rule assets: %w", err)
+	}
+	if err := agentassets.InstallClaudeRules(context.Background(), cfg.claudeRulesRoot, assets); err != nil {
+		return fmt.Errorf("install Claude rule assets: %w", err)
+	}
+	fmt.Fprintf(w, "rules: installed %d Claude rules to %s\n", len(assets), filepath.Join(cfg.claudeRulesRoot, ".claude", "rules"))
+	return nil
 }
 
 func runtimeSupportsHooks(cfg agentAssetsConfig) bool {
