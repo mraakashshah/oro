@@ -1227,6 +1227,9 @@ func (d *Dispatcher) startupRecovery(ctx context.Context) error {
 	}
 	d.logAssignmentInvariantViolations(ctx)
 	d.detectAndResolveDuplicateActiveAssignments(ctx)
+	if err := d.reconcileOpsRunsOnStartup(ctx); err != nil {
+		return fmt.Errorf("reconcile ops runs: %w", err)
+	}
 
 	recoverableBeads, recoveryStats, err := d.restoreState(ctx)
 	if err != nil {

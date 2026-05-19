@@ -1,0 +1,387 @@
+package dispatcher
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"os"
+	"syscall"
+
+	"oro/pkg/agentmodel"
+	"oro/pkg/ops"
+)
+
+const (
+	opsRunStatusRunning    = "running"
+	opsRunStatusFailed     = "failed"
+	opsRunStatusStale      = "stale"
+	opsRunStatusResolved   = "resolved"
+	opsRunStatusSuperseded = "superseded"
+)
+
+// OpsRunRecord is the dispatcher-owned durable representation of an ops agent
+// lifecycle row.
+type OpsRunRecord struct {
+	ID            int64
+	EscalationID  int64
+	Type          string
+	BeadID        string
+	WorkerID      string
+	DispatcherPID int
+	ProcessPID    int
+	Runtime       string
+	Model         string
+	Status        string
+	Verdict       string
+	Feedback      string
+	Error         string
+	StartedAt     string
+	CompletedAt   string
+}
+
+// CreateOpsRun inserts an ops run unless an existing blocking run already owns
+// the same type/bead key. The returned bool is true only for a newly inserted
+// row.
+func CreateOpsRun(ctx context.Context, db *sql.DB, rec OpsRunRecord) (OpsRunRecord, bool, error) {
+	if db == nil {
+		return OpsRunRecord{}, false, errors.New("create ops run: db is nil")
+	}
+	rec = normalizeOpsRunRecord(rec)
+	if err := validateOpsRunStatus(rec.Status); err != nil {
+		return OpsRunRecord{}, false, err
+	}
+
+	result, err := db.ExecContext(ctx, `
+INSERT INTO ops_runs (
+  escalation_id, type, bead_id, worker_id, dispatcher_pid, process_pid,
+  runtime, model, status, verdict, feedback, error
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		nullableInt64(rec.EscalationID), rec.Type, rec.BeadID, rec.WorkerID,
+		nullableInt(rec.DispatcherPID), nullableInt(rec.ProcessPID),
+		rec.Runtime, rec.Model, rec.Status, rec.Verdict, rec.Feedback, rec.Error)
+	if err != nil {
+		blocking, findErr := FindBlockingOpsRun(ctx, db, rec.Type, rec.BeadID)
+		if findErr == nil && blocking != nil {
+			return *blocking, false, nil
+		}
+		return OpsRunRecord{}, false, fmt.Errorf("create ops run: %w", err)
+	}
+
+	id, err := result.LastInsertId()
+	if err != nil {
+		return OpsRunRecord{}, false, fmt.Errorf("create ops run id: %w", err)
+	}
+	created, err := loadOpsRunByID(ctx, db, id)
+	if err != nil {
+		return OpsRunRecord{}, false, err
+	}
+	return created, true, nil
+}
+
+// FindBlockingOpsRun returns the active blocking row for type/bead, if any.
+// Resolved and superseded rows intentionally do not block a fresh run.
+func FindBlockingOpsRun(ctx context.Context, db *sql.DB, runType, beadID string) (*OpsRunRecord, error) {
+	if db == nil {
+		return nil, errors.New("find blocking ops run: db is nil")
+	}
+	rec, err := scanOpsRun(db.QueryRowContext(ctx, `
+SELECT id, escalation_id, type, bead_id, worker_id, dispatcher_pid, process_pid, runtime, model, status, verdict, feedback, error, started_at, completed_at
+FROM ops_runs
+WHERE type = ?
+  AND bead_id = ?
+  AND status IN ('running', 'failed', 'stale')
+ORDER BY id DESC
+LIMIT 1`, runType, beadID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find blocking ops run: %w", err)
+	}
+	return &rec, nil
+}
+
+// CompleteOpsRun records the terminal outcome of an ops run. Failed and stale
+// outcomes remain blocking until a later operator or dispatcher action resolves
+// or supersedes them.
+func CompleteOpsRun(ctx context.Context, db *sql.DB, id int64, status, verdict, feedback, errorText string) error {
+	if db == nil {
+		return errors.New("complete ops run: db is nil")
+	}
+	if err := validateOpsRunCompletionStatus(status); err != nil {
+		return err
+	}
+	result, err := db.ExecContext(ctx, `
+UPDATE ops_runs
+SET status = ?,
+    verdict = ?,
+    feedback = ?,
+    error = ?,
+    completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
+WHERE id = ?`, status, verdict, feedback, errorText, id)
+	if err != nil {
+		return fmt.Errorf("complete ops run %d: %w", id, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("complete ops run %d rows affected: %w", id, err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("complete ops run %d: not found", id)
+	}
+	return nil
+}
+
+func (d *Dispatcher) reconcileOpsRunsOnStartup(ctx context.Context) error {
+	if d == nil || d.db == nil {
+		return errors.New("reconcile ops runs: dispatcher db is nil")
+	}
+	rows, err := d.db.QueryContext(ctx, `
+SELECT id, escalation_id, type, bead_id, worker_id, dispatcher_pid, process_pid, runtime, model, status, verdict, feedback, error, started_at, completed_at
+FROM ops_runs
+WHERE status = 'running'
+ORDER BY id`)
+	if err != nil {
+		return fmt.Errorf("query running ops runs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var running []OpsRunRecord
+	for rows.Next() {
+		rec, scanErr := scanOpsRun(rows)
+		if scanErr != nil {
+			return fmt.Errorf("scan running ops run: %w", scanErr)
+		}
+		running = append(running, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate running ops runs: %w", err)
+	}
+
+	for _, rec := range running {
+		if rec.DispatcherPID == os.Getpid() {
+			continue
+		}
+		if isProcessAlive(rec.ProcessPID) {
+			if err := CompleteOpsRun(ctx, d.db, rec.ID, opsRunStatusStale, rec.Verdict, rec.Feedback, fmt.Sprintf("orphaned live process pid %d", rec.ProcessPID)); err != nil {
+				return err
+			}
+			_ = d.logEvent(ctx, "ops_run_marked_stale", "dispatcher", rec.BeadID, rec.WorkerID,
+				fmt.Sprintf(`{"ops_run_id":%d,"type":%q,"process_pid":%d}`, rec.ID, rec.Type, rec.ProcessPID))
+			continue
+		}
+		if err := d.supersedeAndRerouteOpsRun(ctx, rec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d *Dispatcher) supersedeAndRerouteOpsRun(ctx context.Context, rec OpsRunRecord) error {
+	if err := CompleteOpsRun(ctx, d.db, rec.ID, opsRunStatusSuperseded, rec.Verdict, rec.Feedback, "orphaned dead process superseded on dispatcher startup"); err != nil {
+		return err
+	}
+	next := rec
+	next.ID = 0
+	next.Status = opsRunStatusRunning
+	next.DispatcherPID = os.Getpid()
+	next.ProcessPID = 0
+	next.Verdict = ""
+	next.Feedback = ""
+	next.Error = ""
+	next.StartedAt = ""
+	next.CompletedAt = ""
+	fillOpsRunRuntimeModel(&next)
+	created, wasCreated, err := CreateOpsRun(ctx, d.db, next)
+	if err != nil {
+		return err
+	}
+	if !wasCreated {
+		return nil
+	}
+	routed := d.routeOpsRun(ctx, created)
+	_ = d.logEvent(ctx, "ops_run_superseded", "dispatcher", rec.BeadID, rec.WorkerID,
+		fmt.Sprintf(`{"ops_run_id":%d,"new_ops_run_id":%d,"type":%q,"routed":%t}`, rec.ID, created.ID, rec.Type, routed))
+	return nil
+}
+
+func (d *Dispatcher) routeOpsRun(ctx context.Context, rec OpsRunRecord) bool {
+	if d.ops == nil {
+		return false
+	}
+	switch ops.Type(rec.Type) {
+	case ops.OpsDecompose:
+		d.ops.Decompose(ctx, ops.DecomposeOpts{BeadID: rec.BeadID})
+	case ops.OpsWriteAC:
+		title, description := d.beadContextForOpsRun(ctx, rec.BeadID)
+		d.ops.WriteAC(ctx, ops.WriteACOpts{
+			BeadID:          rec.BeadID,
+			BeadTitle:       title,
+			BeadDescription: description,
+			Workdir:         d.workdirForOpsRun(rec.BeadID),
+		})
+	case ops.OpsDiagnosis:
+		d.ops.Diagnose(ctx, ops.DiagOpts{
+			BeadID:   rec.BeadID,
+			Worktree: d.workdirForOpsRun(rec.BeadID),
+			Symptom:  "orphaned ops run rerouted on dispatcher startup",
+		})
+	case ops.OpsEscalation:
+		title, description := d.beadContextForOpsRun(ctx, rec.BeadID)
+		d.ops.Escalate(ctx, ops.EscalationOpts{
+			EscalationType: "ORPHANED_OPS_RUN",
+			BeadID:         rec.BeadID,
+			BeadTitle:      title,
+			BeadContext:    description,
+			RecentHistory:  rec.Error,
+			Workdir:        d.workdirForOpsRun(rec.BeadID),
+		})
+	case ops.OpsDream:
+		d.ops.Dream(ctx, ops.DreamOpts{Memories: d.dumpMemoriesForDream(ctx)})
+	default:
+		return false
+	}
+	return true
+}
+
+func (d *Dispatcher) beadContextForOpsRun(ctx context.Context, beadID string) (title, description string) {
+	if d == nil || d.beads == nil || beadID == "" {
+		return "", ""
+	}
+	detail, err := d.beads.Show(ctx, beadID)
+	if err != nil || detail == nil {
+		return "", ""
+	}
+	return detail.Title, detail.Description
+}
+
+func (d *Dispatcher) workdirForOpsRun(beadID string) string {
+	if d == nil {
+		return "."
+	}
+	d.mu.Lock()
+	workdir := d.worktreeByBead[beadID]
+	d.mu.Unlock()
+	if workdir != "" {
+		return workdir
+	}
+	if d.repoRoot != "" {
+		return d.repoRoot
+	}
+	return "."
+}
+
+func normalizeOpsRunRecord(rec OpsRunRecord) OpsRunRecord {
+	if rec.Status == "" {
+		rec.Status = opsRunStatusRunning
+	}
+	if rec.DispatcherPID == 0 {
+		rec.DispatcherPID = os.Getpid()
+	}
+	fillOpsRunRuntimeModel(&rec)
+	return rec
+}
+
+func fillOpsRunRuntimeModel(rec *OpsRunRecord) {
+	if rec == nil || (rec.Runtime != "" && rec.Model != "") {
+		return
+	}
+	runtime, model, _ := agentmodel.ResolveForRole(ops.Type(rec.Type).Role())
+	if rec.Runtime == "" {
+		rec.Runtime = runtime
+	}
+	if rec.Model == "" {
+		rec.Model = model
+	}
+}
+
+func validateOpsRunStatus(status string) error {
+	switch status {
+	case opsRunStatusRunning, opsRunStatusFailed, opsRunStatusStale, opsRunStatusResolved, opsRunStatusSuperseded:
+		return nil
+	default:
+		return fmt.Errorf("invalid ops run status %q", status)
+	}
+}
+
+func validateOpsRunCompletionStatus(status string) error {
+	switch status {
+	case opsRunStatusFailed, opsRunStatusStale, opsRunStatusResolved, opsRunStatusSuperseded:
+		return nil
+	default:
+		return fmt.Errorf("invalid ops run completion status %q", status)
+	}
+}
+
+func loadOpsRunByID(ctx context.Context, db *sql.DB, id int64) (OpsRunRecord, error) {
+	rec, err := scanOpsRun(db.QueryRowContext(ctx, `
+SELECT id, escalation_id, type, bead_id, worker_id, dispatcher_pid, process_pid, runtime, model, status, verdict, feedback, error, started_at, completed_at
+FROM ops_runs
+WHERE id = ?`, id))
+	if err != nil {
+		return OpsRunRecord{}, fmt.Errorf("load ops run %d: %w", id, err)
+	}
+	return rec, nil
+}
+
+type opsRunScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanOpsRun(row opsRunScanner) (OpsRunRecord, error) {
+	var (
+		rec           OpsRunRecord
+		escalationID  sql.NullInt64
+		beadID        sql.NullString
+		workerID      sql.NullString
+		dispatcherPID sql.NullInt64
+		processPID    sql.NullInt64
+		runtime       sql.NullString
+		model         sql.NullString
+		verdict       sql.NullString
+		feedback      sql.NullString
+		errorText     sql.NullString
+		startedAt     sql.NullString
+		completedAt   sql.NullString
+	)
+	if err := row.Scan(
+		&rec.ID, &escalationID, &rec.Type, &beadID, &workerID, &dispatcherPID,
+		&processPID, &runtime, &model, &rec.Status, &verdict, &feedback,
+		&errorText, &startedAt, &completedAt,
+	); err != nil {
+		return OpsRunRecord{}, fmt.Errorf("scan ops run: %w", err)
+	}
+	rec.EscalationID = escalationID.Int64
+	rec.BeadID = beadID.String
+	rec.WorkerID = workerID.String
+	rec.DispatcherPID = int(dispatcherPID.Int64)
+	rec.ProcessPID = int(processPID.Int64)
+	rec.Runtime = runtime.String
+	rec.Model = model.String
+	rec.Verdict = verdict.String
+	rec.Feedback = feedback.String
+	rec.Error = errorText.String
+	rec.StartedAt = startedAt.String
+	rec.CompletedAt = completedAt.String
+	return rec, nil
+}
+
+func nullableInt(v int) any {
+	if v == 0 {
+		return nil
+	}
+	return v
+}
+
+func isProcessAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	err = proc.Signal(syscall.Signal(0))
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
