@@ -5,6 +5,7 @@ package ops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -574,18 +575,7 @@ func parseResult(opsType Type, beadID, stdout string, waitErr error) Result {
 	}
 
 	if waitErr != nil {
-		if opsType == OpsMerge {
-			verdict, feedback := parseMergeOutput(stdout)
-			if verdict == VerdictResolved {
-				r.Verdict = verdict
-				r.Feedback = feedback
-				return r
-			}
-		}
-		r.Verdict = VerdictFailed
-		r.Err = fmt.Errorf("ops: process exited with error: %w", waitErr)
-		r.Feedback = stdout
-		return r
+		return parseFailedResult(r, opsType, stdout, waitErr)
 	}
 
 	switch opsType {
@@ -603,6 +593,48 @@ func parseResult(opsType Type, beadID, stdout string, waitErr error) Result {
 	}
 
 	return r
+}
+
+func parseFailedResult(r Result, opsType Type, stdout string, waitErr error) Result {
+	if opsType == OpsMerge {
+		verdict, feedback := parseMergeOutput(stdout)
+		if verdict == VerdictResolved {
+			r.Verdict = verdict
+			r.Feedback = feedback
+			return r
+		}
+	}
+	if sandbox := sandboxDenialResult(stdout); sandbox.detected {
+		r.Verdict = VerdictFailed
+		r.Err = sandbox.err
+		r.Feedback = sandbox.feedback
+		return r
+	}
+	r.Verdict = VerdictFailed
+	r.Err = fmt.Errorf("ops: process exited with error: %w", waitErr)
+	r.Feedback = stdout
+	return r
+}
+
+type sandboxDenial struct {
+	detected bool
+	feedback string
+	err      error
+}
+
+func sandboxDenialResult(stdout string) sandboxDenial {
+	lower := strings.ToLower(stdout)
+	if !strings.Contains(lower, "sandbox") && !strings.Contains(lower, "readonly database") {
+		return sandboxDenial{}
+	}
+	if !strings.Contains(lower, "attempt to write a readonly database") &&
+		!strings.Contains(lower, "sandbox blocked") &&
+		!strings.Contains(lower, "operation not permitted") &&
+		!strings.Contains(lower, "permission denied") {
+		return sandboxDenial{}
+	}
+	msg := "ops: sandbox blocked Oro state DB write; run decompose ops with full filesystem access and preserve ORO_HOME/ORO_DB_PATH"
+	return sandboxDenial{detected: true, feedback: msg, err: errors.New(msg)}
 }
 
 // parseReviewOutput requires the final non-empty stdout line to be an exact

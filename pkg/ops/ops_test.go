@@ -215,6 +215,129 @@ func TestRuntimeSpawnerRoutesDecomposeThroughConfiguredRuntime(t *testing.T) {
 	}
 }
 
+func TestDecomposeRuntimeCanMutateOroStateDB(t *testing.T) {
+	repoRoot := t.TempDir()
+	oroHome := filepath.Join(t.TempDir(), "home")
+	stateDB := filepath.Join(t.TempDir(), "project-state.db")
+	binDir := t.TempDir()
+	capturePath := filepath.Join(t.TempDir(), "oro-calls.log")
+
+	if err := os.MkdirAll(oroHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "oro"), []byte("#!/bin/sh\necho repo-local ./oro must not be used >&2\nexit 42\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".oro"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, ".oro", "config.yaml"), []byte(`agent:
+  roles:
+    ops_decompose:
+      transport: cli
+      runtime: codex
+      model: gpt-5.5
+      reasoning: high
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repoRoot)
+	fakeOro := `#!/bin/sh
+{
+  printf 'argv0=%s\n' "$0"
+  printf 'pwd=%s\n' "$PWD"
+  printf 'ORO_HOME=%s\n' "$ORO_HOME"
+  printf 'ORO_DB_PATH=%s\n' "$ORO_DB_PATH"
+  printf 'args=%s\n' "$*"
+} >> "$ORO_CAPTURE"
+case "$1 $2" in
+  "task create"|"task update") exit 0 ;;
+  *) exit 7 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(binDir, "oro"), []byte(fakeOro), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agent := `#!/bin/sh
+set -eu
+oro task create --title="child" --type=task --parent=oro-parent --acceptance="Test: pkg/x_test.go:TestX | Cmd: go test ./pkg/x -run TestX -count=1 | Assert: child works" --estimate=5
+oro task update oro-parent --type=epic
+printf 'VERDICT: resolved\n'
+`
+	agentPath := filepath.Join(binDir, "decompose-agent")
+	if err := os.WriteFile(agentPath, []byte(agent), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("ORO_HOME", oroHome)
+	t.Setenv("ORO_DB_PATH", stateDB)
+	t.Setenv("ORO_CAPTURE", capturePath)
+
+	spawner := NewRuntimeSpawnerRouter(nil, NewExecSpawner(RuntimeSpec{
+		Command: agentPath,
+		BuildArgsWithReasoning: func(_, _, _ string) []string {
+			return nil
+		},
+	}))
+	s := NewSpawner(spawner)
+
+	result := waitResult(t, s.Decompose(context.Background(), DecomposeOpts{
+		BeadID:  "oro-parent",
+		Workdir: repoRoot,
+	}))
+	if result.Err != nil {
+		t.Fatalf("decompose result error: %v; feedback=%s", result.Err, result.Feedback)
+	}
+	if result.Verdict != VerdictResolved {
+		t.Fatalf("decompose verdict = %q, want %q; feedback=%s", result.Verdict, VerdictResolved, result.Feedback)
+	}
+
+	capturedBytes, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read capture: %v", err)
+	}
+	captured := string(capturedBytes)
+	if strings.Contains(captured, "argv0="+filepath.Join(repoRoot, "oro")) {
+		t.Fatalf("decompose used repo-local ./oro; captured:\n%s", captured)
+	}
+	for _, want := range []string{
+		"argv0=" + filepath.Join(binDir, "oro"),
+		"pwd=" + repoRoot,
+		"ORO_HOME=" + oroHome,
+		"ORO_DB_PATH=" + stateDB,
+		"args=task create",
+		"args=task update",
+	} {
+		if !strings.Contains(captured, want) {
+			t.Fatalf("capture missing %q:\n%s", want, captured)
+		}
+	}
+}
+
+func TestDecomposeSandboxDenialIsShortActionableError(t *testing.T) {
+	fullPrompt := buildDecomposePrompt(DecomposeOpts{BeadID: "oro-denied", QGOutput: strings.Repeat("full prompt transcript ", 40)})
+	stdout := fullPrompt + "\nerror: Landlock sandbox blocked write to /tmp/oro/state.db\nattempt to write a readonly database\n"
+
+	result := parseResult(OpsDecompose, "oro-denied", stdout, errors.New("exit status 1"))
+
+	if result.Verdict != VerdictFailed {
+		t.Fatalf("verdict = %q, want failed", result.Verdict)
+	}
+	if result.Err == nil {
+		t.Fatal("expected sanitized sandbox error")
+	}
+	if !strings.Contains(result.Err.Error(), "sandbox blocked Oro state DB write") {
+		t.Fatalf("error = %q, want actionable sandbox message", result.Err.Error())
+	}
+	if strings.Contains(result.Feedback, "full prompt transcript") {
+		t.Fatalf("feedback stored full prompt transcript: %q", result.Feedback)
+	}
+	if len(result.Feedback) > 240 {
+		t.Fatalf("feedback too long: %d bytes: %q", len(result.Feedback), result.Feedback)
+	}
+}
+
 // multiProcessSpawner returns different processes on each Spawn call.
 type multiProcessSpawner struct {
 	mu        sync.Mutex

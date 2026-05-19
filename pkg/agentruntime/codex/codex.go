@@ -146,7 +146,7 @@ func buildWorkerExecArgsWithReasoning(model, reasoning, prompt, workdir string) 
 }
 
 func buildExecArgPrefix(model, reasoning string) []string {
-	return buildExecArgPrefixWithSandbox(model, reasoning, "workspace-write")
+	return buildExecArgPrefixWithSandbox(model, reasoning, "danger-full-access")
 }
 
 func buildExecArgPrefixWithSandbox(model, reasoning, sandbox string) []string {
