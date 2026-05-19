@@ -1400,6 +1400,30 @@ func TestExtractAgentAssetsSharedSource(t *testing.T) {
 	}
 }
 
+func TestExtractAssetsClaudeRules(t *testing.T) {
+	assets := fstest.MapFS{
+		"skills/.keep":               &fstest.MapFile{Data: []byte("")},
+		"hooks/.keep":                &fstest.MapFile{Data: []byte("")},
+		"beacons/.keep":              &fstest.MapFile{Data: []byte("")},
+		"commands/.keep":             &fstest.MapFile{Data: []byte("")},
+		"rules/claude/oro-worker.md": &fstest.MapFile{Data: []byte("# Worker\n")},
+	}
+	dest := t.TempDir()
+
+	if err := extractAssets(dest, assets, false); err != nil {
+		t.Fatalf("extractAssets failed: %v", err)
+	}
+
+	rulePath := filepath.Join(dest, ".claude", "rules", "oro-worker.md")
+	data, err := os.ReadFile(rulePath) //nolint:gosec // test-created file
+	if err != nil {
+		t.Fatalf("claude rule not extracted: %v", err)
+	}
+	if string(data) != "# Worker\n" {
+		t.Fatalf("claude rule content = %q, want %q", data, "# Worker\n")
+	}
+}
+
 func TestOroInitGeneratesSharedAndClaudeViews(t *testing.T) {
 	assets := fstest.MapFS{
 		"ORO_AGENT.md":                            &fstest.MapFile{Data: []byte("# Shared Oro Instructions\nUse portable skills.\n")},

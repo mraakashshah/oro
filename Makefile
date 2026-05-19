@@ -36,10 +36,11 @@ stage-assets:
 	trap 'cleanup 130' INT; \
 	trap 'cleanup 143' TERM; \
 	rm -rf "$$tmp" "$$old"; \
-	mkdir -p "$$tmp/skills" "$$tmp/hooks" "$$tmp/beacons" "$$tmp/commands"; \
+	mkdir -p "$$tmp/skills" "$$tmp/hooks" "$$tmp/beacons" "$$tmp/commands" "$$tmp/rules"; \
 	if [ -d assets/skills ] && [ "$$(find assets/skills -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" -gt 0 ]; then cp -R assets/skills/. "$$tmp/skills/"; fi; \
 	if [ -d assets/beacons ] && [ "$$(find assets/beacons -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" -gt 0 ]; then cp -R assets/beacons/. "$$tmp/beacons/"; fi; \
 	if [ -d assets/commands ] && [ "$$(find assets/commands -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" -gt 0 ]; then cp -R assets/commands/. "$$tmp/commands/"; fi; \
+	if [ -d assets/rules ] && [ "$$(find assets/rules -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" -gt 0 ]; then cp -R assets/rules/. "$$tmp/rules/"; fi; \
 	if [ -d assets/hooks ]; then find assets/hooks -maxdepth 1 -type f \( -name '*.py' -o -name '*.sh' \) >"$$tmp/.hooks"; while IFS= read -r hook; do cp "$$hook" "$$tmp/hooks/"; done <"$$tmp/.hooks"; fi; \
 	if [ -f assets/ORO_AGENT.md ]; then cp assets/ORO_AGENT.md "$$tmp/"; fi; \
 	if [ -f assets/CLAUDE.md ]; then cp assets/CLAUDE.md "$$tmp/"; fi; \
