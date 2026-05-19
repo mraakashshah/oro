@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"oro/pkg/dbutil"
 	"oro/pkg/factoryhealth"
+	"oro/pkg/protocol"
 )
 
 func TestApplyHealth(t *testing.T) {
@@ -165,6 +168,71 @@ func TestBuildStatusJSONUsesManagerPaneLivenessChecker(t *testing.T) {
 	}
 }
 
+func TestLoadOpsRunMetrics(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 19, 14, 0, 0, 0, time.UTC)
+
+	t.Run("missing ops_runs table returns zero metrics", func(t *testing.T) {
+		db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
+		if err != nil {
+			t.Fatalf("OpenDB: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+
+		got, err := LoadOpsRunMetrics(ctx, db, now)
+		if err != nil {
+			t.Fatalf("LoadOpsRunMetrics: %v", err)
+		}
+		if got.Running != 0 || got.Failed != 0 || got.Stale != 0 {
+			t.Fatalf("metrics = %+v, want zero counts", got)
+		}
+	})
+
+	t.Run("counts running failed and stale rows", func(t *testing.T) {
+		db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
+		if err != nil {
+			t.Fatalf("OpenDB: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		if _, err := db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+			t.Fatalf("schema: %v", err)
+		}
+
+		freshStarted := now.Add(-time.Minute).Format("2006-01-02 15:04:05")
+		oldStarted := now.Add(-factoryhealth.OpsRunStaleAfter - time.Second).Format("2006-01-02 15:04:05")
+		failedStarted := now.Add(-5 * time.Minute).Format("2006-01-02 15:04:05")
+		if _, err := db.ExecContext(ctx, `
+INSERT INTO ops_runs (type, bead_id, status, started_at)
+VALUES
+    ('decompose', 'oro-running', 'running', ?),
+    ('decompose', 'oro-failed', 'failed', ?),
+    ('diagnosis', 'oro-stale', 'running', ?);
+`, freshStarted, failedStarted, oldStarted); err != nil {
+			t.Fatalf("seed ops_runs: %v", err)
+		}
+
+		got, err := LoadOpsRunMetrics(ctx, db, now)
+		if err != nil {
+			t.Fatalf("LoadOpsRunMetrics: %v", err)
+		}
+		if got.Running != 1 || got.Failed != 1 || got.Stale != 1 {
+			t.Fatalf("metrics = %+v, want running=1 failed=1 stale=1", got)
+		}
+		if got.ByType["decompose"].Running != 1 || got.ByType["decompose"].Failed != 1 {
+			t.Fatalf("decompose metrics = %+v, want running=1 failed=1", got.ByType["decompose"])
+		}
+		if got.ByType["diagnosis"].Stale != 1 {
+			t.Fatalf("diagnosis metrics = %+v, want stale=1", got.ByType["diagnosis"])
+		}
+		if !hasOpsRun(got, "oro-failed", "decompose", "failed") {
+			t.Fatalf("failed ops run detail missing from %+v", got.Runs)
+		}
+		if !hasOpsRun(got, "oro-stale", "diagnosis", "stale") {
+			t.Fatalf("stale ops run detail missing from %+v", got.Runs)
+		}
+	})
+}
+
 // TestHealthPaneAlive verifies that applyHealth sets Alive=true for panes whose
 // pane_activity last_seen is within 60s, and Alive=false otherwise.
 func TestHealthPaneAlive(t *testing.T) {
@@ -214,8 +282,8 @@ func TestHealthPaneAlive(t *testing.T) {
 		if health.Metrics.ManagerPaneAlive {
 			t.Error("expected ManagerPane.Alive=false for stale pane_activity row")
 		}
-		if !hasHealthFinding(health, factoryhealth.FindingManagerPaneUnhealthy) {
-			t.Fatalf("expected manager_pane_unhealthy finding, got %+v", health.Findings)
+		if hasHealthFinding(health, factoryhealth.FindingManagerPaneUnhealthy) {
+			t.Fatalf("stale manager pane should not be unhealthy by default: %+v", health.Findings)
 		}
 	})
 
@@ -322,6 +390,15 @@ func (h *healthPaneRestarter) Alive(context.Context, string) bool {
 func hasHealthFinding(health SwarmHealth, code string) bool {
 	for _, finding := range health.Findings {
 		if finding.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+func hasOpsRun(metrics factoryhealth.OpsRunMetrics, beadID, runType, status string) bool {
+	for _, run := range metrics.Runs {
+		if run.BeadID == beadID && run.Type == runType && run.Status == status {
 			return true
 		}
 	}

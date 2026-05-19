@@ -99,6 +99,10 @@ func loadLocalFactoryHealth(ctx context.Context, stateDBPath string, daemonRunni
 	if err != nil {
 		return factoryhealth.FactoryHealth{}, fmt.Errorf("load throughput metrics: %w", err)
 	}
+	opsRuns, err := factoryhealth.LoadOpsRunMetrics(ctx, db, now)
+	if err != nil {
+		return factoryhealth.FactoryHealth{}, fmt.Errorf("load ops run metrics: %w", err)
+	}
 	readyQueue := 0
 	store := beadstore.NewSQLiteStore(db)
 	if ready, readyErr := store.Ready(ctx); readyErr == nil {
@@ -115,6 +119,7 @@ func loadLocalFactoryHealth(ctx context.Context, stateDBPath string, daemonRunni
 		QGTopFingerprints:       topFingerprints,
 		OpenRecoveryQuarantines: openRecoveryQuarantines,
 		Throughput:              throughput,
+		OpsRuns:                 opsRuns,
 	}), nil
 }
 

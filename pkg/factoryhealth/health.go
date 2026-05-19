@@ -47,7 +47,13 @@ const (
 	FindingQGIncidentIncrease                 = "qg_incident_increase"
 	FindingManagerPaneUnhealthy               = "manager_pane_unhealthy"
 	FindingRecoveryQuarantineOpen             = "recovery_quarantine_open"
+	FindingOpsRunFailed                       = "ops_run_failed"
+	FindingOpsRunStale                        = "ops_run_stale"
 )
+
+// OpsRunStaleAfter is the age threshold after which a running ops run is
+// reported as stale in factory health.
+const OpsRunStaleAfter = 30 * time.Minute
 
 // FactoryHealth is the JSON contract emitted by `oro health --json`.
 type FactoryHealth struct {
@@ -65,6 +71,7 @@ type Finding struct {
 	Message           string   `json:"message"`
 	WorkerID          string   `json:"worker_id,omitempty"`
 	BeadID            string   `json:"bead_id,omitempty"`
+	Type              string   `json:"type,omitempty"`
 	Fingerprint       string   `json:"fingerprint,omitempty"`
 	AgeSecs           float64  `json:"age_secs,omitempty"`
 	RecommendedAction string   `json:"recommended_action,omitempty"`
@@ -88,6 +95,7 @@ type Metrics struct {
 	QGOccurrences30m        int               `json:"qg_occurrences_30m"`
 	OpenRecoveryQuarantines int               `json:"recovery_quarantines_open"`
 	ThroughputWindow        ThroughputMetrics `json:"throughput_window"`
+	OpsRuns                 OpsRunMetrics     `json:"ops_runs"`
 	PendingWorkerCount      int               `json:"pending_worker_count,omitempty"`
 	PendingHandoffCount     int               `json:"pending_handoff_count,omitempty"`
 }
@@ -99,6 +107,31 @@ type ThroughputMetrics struct {
 	ProductiveClosures int     `json:"productive_closures"`
 	ProgressTimeouts   int     `json:"progress_timeouts"`
 	LastEventAgeSecs   float64 `json:"last_event_age_secs,omitempty"`
+}
+
+// OpsRunMetrics summarizes active and blocking ops subprocess runs.
+type OpsRunMetrics struct {
+	Running int                          `json:"running"`
+	Failed  int                          `json:"failed"`
+	Stale   int                          `json:"stale"`
+	ByType  map[string]OpsRunTypeMetrics `json:"by_type,omitempty"`
+	Runs    []OpsRunSnapshot             `json:"runs,omitempty"`
+}
+
+// OpsRunTypeMetrics counts ops runs of one type by health-relevant status.
+type OpsRunTypeMetrics struct {
+	Running int `json:"running,omitempty"`
+	Failed  int `json:"failed,omitempty"`
+	Stale   int `json:"stale,omitempty"`
+}
+
+// OpsRunSnapshot is a health-relevant ops subprocess sample.
+type OpsRunSnapshot struct {
+	ID      int64   `json:"id,omitempty"`
+	Type    string  `json:"type"`
+	BeadID  string  `json:"bead_id,omitempty"`
+	Status  string  `json:"status"`
+	AgeSecs float64 `json:"age_secs,omitempty"`
 }
 
 // WorkerSnapshot is a worker state sample used by the evaluator.
@@ -126,6 +159,7 @@ type Snapshot struct {
 	DaemonPID               int
 	DispatcherState         string
 	ManagerPaneAlive        bool
+	ManagerPaneRequired     bool
 	Workers                 []WorkerSnapshot
 	ReadyQueue              int
 	TargetWorkers           int
@@ -140,6 +174,7 @@ type Snapshot struct {
 	ProgressTimeoutSecs     float64
 	HeartbeatTimeoutSecs    float64
 	Throughput              ThroughputMetrics
+	OpsRuns                 OpsRunMetrics
 }
 
 // Evaluate converts an observed snapshot into the FactoryHealth contract.
@@ -170,6 +205,7 @@ func metricsFromSnapshot(snapshot Snapshot) Metrics {
 		QGOccurrences30m:        snapshot.QGOccurrences30m,
 		OpenRecoveryQuarantines: snapshot.OpenRecoveryQuarantines,
 		ThroughputWindow:        snapshot.Throughput,
+		OpsRuns:                 snapshot.OpsRuns,
 		PendingWorkerCount:      snapshot.PendingWorkerCount,
 		PendingHandoffCount:     snapshot.PendingHandoffCount,
 	}
@@ -195,6 +231,7 @@ func evaluateFindings(snapshot Snapshot, metrics *Metrics) []Finding {
 			RecommendedAction: "run oro health --json, inspect recovery_quarantines and preserved worktrees/branches, then resolve after preserving or merging work",
 		})
 	}
+	findings = append(findings, opsRunFindings(snapshot.OpsRuns)...)
 	if !snapshot.DaemonRunning {
 		if len(snapshot.ActiveAssignments) > 0 {
 			findings = append(findings, Finding{
@@ -208,7 +245,7 @@ func evaluateFindings(snapshot Snapshot, metrics *Metrics) []Finding {
 		return findings
 	}
 
-	if !snapshot.ManagerPaneAlive {
+	if snapshot.ManagerPaneRequired && !snapshot.ManagerPaneAlive {
 		findings = append(findings, Finding{
 			Code:              FindingManagerPaneUnhealthy,
 			Severity:          SeverityWarning,
@@ -381,6 +418,58 @@ func throughputStalled(metrics ThroughputMetrics) bool {
 		metrics.ProgressTimeouts > 0
 }
 
+func opsRunFindings(metrics OpsRunMetrics) []Finding {
+	findings := make([]Finding, 0, metrics.Failed+metrics.Stale)
+	for _, run := range metrics.Runs {
+		switch run.Status {
+		case "failed":
+			findings = append(findings, Finding{
+				Code:              FindingOpsRunFailed,
+				Severity:          SeverityError,
+				Component:         "ops",
+				Message:           fmt.Sprintf("%s ops run for %s failed", run.Type, run.BeadID),
+				BeadID:            run.BeadID,
+				Type:              run.Type,
+				AgeSecs:           run.AgeSecs,
+				RecommendedAction: "inspect the run feedback and task graph, then resolve or retry explicitly",
+			})
+		case "stale":
+			findings = append(findings, Finding{
+				Code:              FindingOpsRunStale,
+				Severity:          SeverityError,
+				Component:         "ops",
+				Message:           fmt.Sprintf("%s ops run for %s is stale", run.Type, run.BeadID),
+				BeadID:            run.BeadID,
+				Type:              run.Type,
+				AgeSecs:           run.AgeSecs,
+				RecommendedAction: "inspect the ops subprocess and retry or resolve the run explicitly",
+			})
+		}
+	}
+	if len(findings) > 0 {
+		return findings
+	}
+	if metrics.Failed > 0 {
+		findings = append(findings, Finding{
+			Code:              FindingOpsRunFailed,
+			Severity:          SeverityError,
+			Component:         "ops",
+			Message:           fmt.Sprintf("%d ops run(s) failed", metrics.Failed),
+			RecommendedAction: "inspect the run feedback and task graph, then resolve or retry explicitly",
+		})
+	}
+	if metrics.Stale > 0 {
+		findings = append(findings, Finding{
+			Code:              FindingOpsRunStale,
+			Severity:          SeverityError,
+			Component:         "ops",
+			Message:           fmt.Sprintf("%d ops run(s) are stale", metrics.Stale),
+			RecommendedAction: "inspect the ops subprocess and retry or resolve the run explicitly",
+		})
+	}
+	return findings
+}
+
 func defaultFloat(v, fallback float64) float64 {
 	if v > 0 {
 		return v
@@ -549,6 +638,73 @@ SELECT COUNT(*)
 		}
 	}
 	return metrics, nil
+}
+
+// LoadOpsRunMetrics reads health-relevant ops run counts from the state database.
+func LoadOpsRunMetrics(ctx context.Context, db *sql.DB, now time.Time) (OpsRunMetrics, error) {
+	var metrics OpsRunMetrics
+	if db == nil {
+		return metrics, nil
+	}
+	rows, err := db.QueryContext(ctx, `
+SELECT id, type, COALESCE(bead_id, ''), status, COALESCE(started_at, '')
+  FROM ops_runs
+ WHERE status IN ('running', 'failed', 'stale')
+ ORDER BY id`)
+	if err != nil {
+		if tableMissing(err) {
+			return metrics, nil
+		}
+		return metrics, fmt.Errorf("query ops run metrics: %w", err)
+	}
+	defer rows.Close()
+
+	metrics.ByType = make(map[string]OpsRunTypeMetrics)
+	for rows.Next() {
+		var (
+			run       OpsRunSnapshot
+			startedAt string
+		)
+		if err := rows.Scan(&run.ID, &run.Type, &run.BeadID, &run.Status, &startedAt); err != nil {
+			return metrics, fmt.Errorf("scan ops run metrics: %w", err)
+		}
+		if ts, ok := parseSQLiteTime(startedAt); ok && !now.IsZero() {
+			run.AgeSecs = now.Sub(ts).Seconds()
+			if run.AgeSecs < 0 {
+				run.AgeSecs = 0
+			}
+		}
+		if run.Status == "running" && run.AgeSecs >= OpsRunStaleAfter.Seconds() {
+			run.Status = "stale"
+		}
+		addOpsRunMetric(&metrics, run)
+	}
+	if err := rows.Err(); err != nil {
+		return metrics, fmt.Errorf("iterate ops run metrics: %w", err)
+	}
+	if len(metrics.ByType) == 0 {
+		metrics.ByType = nil
+	}
+	return metrics, nil
+}
+
+func addOpsRunMetric(metrics *OpsRunMetrics, run OpsRunSnapshot) {
+	counts := metrics.ByType[run.Type]
+	switch run.Status {
+	case "running":
+		metrics.Running++
+		counts.Running++
+	case "failed":
+		metrics.Failed++
+		counts.Failed++
+	case "stale":
+		metrics.Stale++
+		counts.Stale++
+	default:
+		return
+	}
+	metrics.ByType[run.Type] = counts
+	metrics.Runs = append(metrics.Runs, run)
 }
 
 func parseSQLiteTime(raw string) (time.Time, bool) {

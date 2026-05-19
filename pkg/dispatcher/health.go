@@ -115,6 +115,10 @@ func (d *Dispatcher) evaluateFactoryHealth(ctx context.Context, now time.Time, i
 	if err != nil {
 		_ = d.logEvent(ctx, "factory_health_throughput_load_failed", "dispatcher", "", "", err.Error())
 	}
+	opsRuns, err := LoadOpsRunMetrics(ctx, d.db, now)
+	if err != nil {
+		_ = d.logEvent(ctx, "factory_health_ops_runs_load_failed", "dispatcher", "", "", err.Error())
+	}
 	qgFingerprints := input.qgStatus.RecentFingerprints
 	if len(qgFingerprints) == 0 {
 		qgFingerprints = input.qgStatus.TopFingerprints
@@ -138,7 +142,17 @@ func (d *Dispatcher) evaluateFactoryHealth(ctx context.Context, now time.Time, i
 		ProgressTimeoutSecs:     input.progressTimeoutSecs,
 		HeartbeatTimeoutSecs:    input.heartbeatTimeoutSecs,
 		Throughput:              throughput,
+		OpsRuns:                 opsRuns,
 	})
+}
+
+// LoadOpsRunMetrics reads health-relevant ops run counts from the state database.
+func LoadOpsRunMetrics(ctx context.Context, db *sql.DB, now time.Time) (factoryhealth.OpsRunMetrics, error) {
+	metrics, err := factoryhealth.LoadOpsRunMetrics(ctx, db, now)
+	if err != nil {
+		return metrics, fmt.Errorf("load ops run metrics: %w", err)
+	}
+	return metrics, nil
 }
 
 func toFactoryWorkers(workers []workerStatus) []factoryhealth.WorkerSnapshot {
