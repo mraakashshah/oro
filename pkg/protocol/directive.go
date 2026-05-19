@@ -23,12 +23,15 @@ const (
 	DirectiveRestartDaemon      Directive = "restart-daemon"      // Manual daemon restart.
 	DirectiveWorkerLogs         Directive = "worker-logs"         // Read last N lines from worker output.log.
 	DirectiveMaxWorkers         Directive = "max-workers"         // Set the maximum worker pool size at runtime.
+	DirectiveOpsRuns            Directive = "ops-runs"            // List durable ops runs.
+	DirectiveOpsRetry           Directive = "ops-retry"           // Supersede and retry a blocking ops run by ID.
+	DirectiveOpsResolve         Directive = "ops-resolve"         // Resolve an ops run by ID after validation.
 )
 
 // Valid reports whether d is one of the known directive values.
 func (d Directive) Valid() bool {
 	switch d {
-	case DirectiveStart, DirectiveStop, DirectivePause, DirectiveResume, DirectiveScale, DirectiveFocus, DirectiveStatus, DirectiveShutdown, DirectiveKillWorker, DirectiveSpawnFor, DirectiveRestartWorker, DirectivePreempt, DirectivePendingEscalations, DirectiveAckEscalation, DirectiveHealth, DirectiveRestartDaemon, DirectiveWorkerLogs, DirectiveMaxWorkers:
+	case DirectiveStart, DirectiveStop, DirectivePause, DirectiveResume, DirectiveScale, DirectiveFocus, DirectiveStatus, DirectiveShutdown, DirectiveKillWorker, DirectiveSpawnFor, DirectiveRestartWorker, DirectivePreempt, DirectivePendingEscalations, DirectiveAckEscalation, DirectiveHealth, DirectiveRestartDaemon, DirectiveWorkerLogs, DirectiveMaxWorkers, DirectiveOpsRuns, DirectiveOpsRetry, DirectiveOpsResolve:
 		return true
 	default:
 		return false

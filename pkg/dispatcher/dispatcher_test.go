@@ -3252,6 +3252,191 @@ func TestOversizedDecomposeResultAcksOnlyAfterValidation(t *testing.T) {
 	}
 }
 
+func TestOpsRunDirectives(t *testing.T) {
+	t.Run("list returns ops runs as JSON", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+
+		runID := insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, "oro-ops-list", "w-ops-list")
+
+		detail, err := d.applyDirective(protocol.Directive("ops-runs"), "")
+		if err != nil {
+			t.Fatalf("ops-runs directive: %v", err)
+		}
+
+		var got []struct {
+			ID       int64  `json:"id"`
+			Type     string `json:"type"`
+			BeadID   string `json:"bead_id"`
+			WorkerID string `json:"worker_id"`
+			Status   string `json:"status"`
+		}
+		if err := json.Unmarshal([]byte(detail), &got); err != nil {
+			t.Fatalf("unmarshal ops-runs detail: %v\n%s", err, detail)
+		}
+		if len(got) != 1 {
+			t.Fatalf("ops-runs count = %d, want 1: %+v", len(got), got)
+		}
+		if got[0].ID != runID || got[0].Type != string(ops.OpsDecompose) || got[0].BeadID != "oro-ops-list" || got[0].WorkerID != "w-ops-list" || got[0].Status != opsRunStatusRunning {
+			t.Fatalf("ops-runs row = %+v, want inserted running decompose row", got[0])
+		}
+	})
+
+	t.Run("retry supersedes blocking row and clears cooldown", func(t *testing.T) {
+		d, _, _, _, _, spawner := newTestDispatcher(t)
+		ctx := context.Background()
+		const beadID = "oro-ops-retry"
+		runID := insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, "w-ops-retry")
+		if err := CompleteOpsRun(ctx, d.db, runID, opsRunStatusFailed, "", "", "previous failure"); err != nil {
+			t.Fatalf("fail ops run: %v", err)
+		}
+		d.mu.Lock()
+		d.worktreeFailures[beadID] = time.Now()
+		d.mu.Unlock()
+
+		detail, err := d.applyDirective(protocol.Directive("ops-retry"), fmt.Sprint(runID))
+		if err != nil {
+			t.Fatalf("ops-retry directive: %v", err)
+		}
+
+		var got struct {
+			ID          int64  `json:"id"`
+			Retried     bool   `json:"retried"`
+			Status      string `json:"status"`
+			NewOpsRunID int64  `json:"new_ops_run_id"`
+		}
+		if err := json.Unmarshal([]byte(detail), &got); err != nil {
+			t.Fatalf("unmarshal ops-retry detail: %v\n%s", err, detail)
+		}
+		if !got.Retried || got.ID != runID || got.Status != opsRunStatusSuperseded || got.NewOpsRunID == 0 || got.NewOpsRunID == runID {
+			t.Fatalf("ops-retry detail = %+v, want superseded original and new run", got)
+		}
+		if status := dispatcherTestOpsRunStatusByID(t, d.db, runID); status != opsRunStatusSuperseded {
+			t.Fatalf("old ops_run status = %q, want %q", status, opsRunStatusSuperseded)
+		}
+		if status := dispatcherTestOpsRunStatusByID(t, d.db, got.NewOpsRunID); status != opsRunStatusRunning {
+			t.Fatalf("new ops_run status = %q, want %q", status, opsRunStatusRunning)
+		}
+		d.mu.Lock()
+		_, inCooldown := d.worktreeFailures[beadID]
+		d.mu.Unlock()
+		if inCooldown {
+			t.Fatalf("ops-retry should clear assignment cooldown for %s", beadID)
+		}
+		waitFor(t, func() bool { return spawner.SpawnCount() == 1 }, time.Second)
+		if got := spawner.SpawnCount(); got != 1 {
+			t.Fatalf("ops-retry spawn count = %d, want 1", got)
+		}
+
+		resolvedID := insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, "oro-ops-retry-resolved", "w-resolved")
+		if err := CompleteOpsRun(ctx, d.db, resolvedID, opsRunStatusResolved, "", "", ""); err != nil {
+			t.Fatalf("resolve ops run: %v", err)
+		}
+		detail, err = d.applyDirective(protocol.Directive("ops-retry"), fmt.Sprint(resolvedID))
+		if err != nil {
+			t.Fatalf("ops-retry resolved directive: %v", err)
+		}
+		got = struct {
+			ID          int64  `json:"id"`
+			Retried     bool   `json:"retried"`
+			Status      string `json:"status"`
+			NewOpsRunID int64  `json:"new_ops_run_id"`
+		}{}
+		if err := json.Unmarshal([]byte(detail), &got); err != nil {
+			t.Fatalf("unmarshal resolved ops-retry detail: %v\n%s", err, detail)
+		}
+		if got.Retried || got.Status != opsRunStatusResolved || got.NewOpsRunID != 0 {
+			t.Fatalf("resolved ops-retry detail = %+v, want no-op", got)
+		}
+
+		if _, err := d.applyDirective(protocol.Directive("ops-retry"), "999999"); err == nil {
+			t.Fatal("ops-retry unknown run error = nil, want error")
+		}
+	})
+
+	t.Run("resolve validates before ack and clears cooldown only on success", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		const (
+			invalidBeadID = "oro-ops-resolve-invalid"
+			validBeadID   = "oro-ops-resolve-valid"
+			workerID      = "w-ops-resolve"
+		)
+
+		insertDispatcherTestBead(t, d.db, invalidBeadID, "task", "", tddAcceptanceForTest())
+		invalidEscID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, invalidBeadID, workerID)
+		invalidRunID := insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, invalidBeadID, workerID)
+		if err := CompleteOpsRun(ctx, d.db, invalidRunID, opsRunStatusFailed, "", "", "needs operator"); err != nil {
+			t.Fatalf("fail invalid ops run: %v", err)
+		}
+		d.mu.Lock()
+		d.worktreeFailures[invalidBeadID] = time.Now()
+		d.mu.Unlock()
+
+		if _, err := d.db.ExecContext(ctx, `UPDATE ops_runs SET escalation_id=? WHERE id=?`, invalidEscID, invalidRunID); err != nil {
+			t.Fatalf("link invalid ops run escalation: %v", err)
+		}
+
+		if _, err := d.applyDirective(protocol.Directive("ops-resolve"), fmt.Sprintf("%d operator checked", invalidRunID)); err == nil {
+			t.Fatal("ops-resolve invalid decompose error = nil, want validation error")
+		}
+		if status := dispatcherTestOpsRunStatusByID(t, d.db, invalidRunID); status != opsRunStatusFailed {
+			t.Fatalf("invalid ops_run status = %q, want %q", status, opsRunStatusFailed)
+		}
+		if got := dispatcherTestEscalationStatus(t, d.db, invalidEscID); got != "pending" {
+			t.Fatalf("invalid escalation status = %q, want pending", got)
+		}
+		d.mu.Lock()
+		_, invalidInCooldown := d.worktreeFailures[invalidBeadID]
+		d.mu.Unlock()
+		if !invalidInCooldown {
+			t.Fatalf("failed ops-resolve validation should keep cooldown for %s", invalidBeadID)
+		}
+
+		seedValidDecomposeResultForTest(t, d.db, validBeadID)
+		validEscID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, validBeadID, workerID)
+		validRunID := insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, validBeadID, workerID)
+		if err := CompleteOpsRun(ctx, d.db, validRunID, opsRunStatusFailed, "", "", "needs operator"); err != nil {
+			t.Fatalf("fail valid ops run: %v", err)
+		}
+		if _, err := d.db.ExecContext(ctx, `UPDATE ops_runs SET escalation_id=? WHERE id=?`, validEscID, validRunID); err != nil {
+			t.Fatalf("link valid ops run escalation: %v", err)
+		}
+		d.mu.Lock()
+		d.worktreeFailures[validBeadID] = time.Now()
+		d.mu.Unlock()
+
+		detail, err := d.applyDirective(protocol.Directive("ops-resolve"), fmt.Sprintf("%d operator checked", validRunID))
+		if err != nil {
+			t.Fatalf("ops-resolve valid directive: %v", err)
+		}
+		var got struct {
+			ID       int64  `json:"id"`
+			Resolved bool   `json:"resolved"`
+			Status   string `json:"status"`
+			Reason   string `json:"reason"`
+		}
+		if err := json.Unmarshal([]byte(detail), &got); err != nil {
+			t.Fatalf("unmarshal ops-resolve detail: %v\n%s", err, detail)
+		}
+		if !got.Resolved || got.ID != validRunID || got.Status != opsRunStatusResolved || got.Reason != "operator checked" {
+			t.Fatalf("ops-resolve detail = %+v, want resolved run", got)
+		}
+		if got := dispatcherTestEscalationStatus(t, d.db, validEscID); got != "acked" {
+			t.Fatalf("valid escalation status = %q, want acked", got)
+		}
+		d.mu.Lock()
+		_, validInCooldown := d.worktreeFailures[validBeadID]
+		d.mu.Unlock()
+		if validInCooldown {
+			t.Fatalf("successful ops-resolve should clear assignment cooldown for %s", validBeadID)
+		}
+
+		if _, err := d.applyDirective(protocol.Directive("ops-resolve"), "999999 operator checked"); err == nil {
+			t.Fatal("ops-resolve unknown run error = nil, want error")
+		}
+	})
+}
+
 func TestHandleEscalationResult_OversizedFailsOpsRunOnMissingChildren(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
@@ -21960,6 +22145,15 @@ WHERE type=? AND bead_id=?
 ORDER BY id DESC
 LIMIT 1`, runType, beadID).Scan(&status); err != nil {
 		t.Fatalf("query ops_run status for %s/%s: %v", runType, beadID, err)
+	}
+	return status
+}
+
+func dispatcherTestOpsRunStatusByID(t *testing.T, db *sql.DB, runID int64) string {
+	t.Helper()
+	var status string
+	if err := db.QueryRow(`SELECT status FROM ops_runs WHERE id=?`, runID).Scan(&status); err != nil {
+		t.Fatalf("query ops_run %d status: %v", runID, err)
 	}
 	return status
 }

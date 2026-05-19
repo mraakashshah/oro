@@ -5782,6 +5782,12 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 	if detail, handled, err := d.applyCapacityDirective(dir, args); handled {
 		return detail, err
 	}
+	if detail, handled, err := d.applyOpsDirective(dir, args); handled {
+		return detail, err
+	}
+	if detail, handled, err := d.applyEscalationDirective(dir, args); handled {
+		return detail, err
+	}
 	switch dir {
 	case protocol.DirectiveScale:
 		return d.applyScaleDirective(args)
@@ -5793,10 +5799,6 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 		return d.applyRestartWorker(args)
 	case protocol.DirectivePreempt:
 		return d.applyPreempt(args)
-	case protocol.DirectivePendingEscalations:
-		return d.applyPendingEscalations()
-	case protocol.DirectiveAckEscalation:
-		return d.applyAckEscalation(args)
 	case protocol.DirectiveHealth:
 		return d.applyHealth()
 	case protocol.DirectiveWorkerLogs:
@@ -5821,6 +5823,19 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 		return d.applyRestartDaemon()
 	default:
 		return fmt.Sprintf("applied %s", dir), nil
+	}
+}
+
+func (d *Dispatcher) applyEscalationDirective(dir protocol.Directive, args string) (detail string, handled bool, err error) {
+	switch dir {
+	case protocol.DirectivePendingEscalations:
+		detail, err := d.applyPendingEscalations()
+		return detail, true, err
+	case protocol.DirectiveAckEscalation:
+		detail, err := d.applyAckEscalation(args)
+		return detail, true, err
+	default:
+		return "", false, nil
 	}
 }
 

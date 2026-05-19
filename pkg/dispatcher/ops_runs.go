@@ -3,13 +3,17 @@ package dispatcher
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"oro/pkg/agentmodel"
 	"oro/pkg/ops"
+	"oro/pkg/protocol"
 )
 
 const (
@@ -131,6 +135,246 @@ WHERE id = ?`, status, verdict, feedback, errorText, id)
 		return fmt.Errorf("complete ops run %d: not found", id)
 	}
 	return nil
+}
+
+func (d *Dispatcher) applyOpsDirective(dir protocol.Directive, args string) (detail string, handled bool, err error) {
+	switch dir {
+	case protocol.DirectiveOpsRuns:
+		detail, err := d.applyOpsRuns()
+		return detail, true, err
+	case protocol.DirectiveOpsRetry:
+		detail, err := d.applyOpsRetry(args)
+		return detail, true, err
+	case protocol.DirectiveOpsResolve:
+		detail, err := d.applyOpsResolve(args)
+		return detail, true, err
+	default:
+		return "", false, nil
+	}
+}
+
+func (d *Dispatcher) applyOpsRuns() (string, error) {
+	if d == nil || d.db == nil {
+		return "", errors.New("ops-runs: dispatcher db is nil")
+	}
+	rows, err := d.db.QueryContext(context.Background(), `
+SELECT id, escalation_id, type, bead_id, worker_id, dispatcher_pid, process_pid, runtime, model, status, verdict, feedback, error, started_at, completed_at
+FROM ops_runs
+ORDER BY id`)
+	if err != nil {
+		return "", fmt.Errorf("query ops runs: %w", err)
+	}
+	defer rows.Close()
+
+	runs := make([]opsRunJSON, 0)
+	for rows.Next() {
+		rec, scanErr := scanOpsRun(rows)
+		if scanErr != nil {
+			return "", scanErr
+		}
+		runs = append(runs, newOpsRunJSON(rec))
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("iterate ops runs: %w", err)
+	}
+
+	b, err := json.Marshal(runs)
+	if err != nil {
+		return "", fmt.Errorf("marshal ops runs: %w", err)
+	}
+	return string(b), nil
+}
+
+func (d *Dispatcher) applyOpsRetry(args string) (string, error) {
+	runID, err := parseOpsRunIDArg(args, "ops-retry")
+	if err != nil {
+		return "", err
+	}
+	rec, err := loadOpsRunByID(context.Background(), d.db, runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("ops run %d not found", runID)
+	}
+	if err != nil {
+		return "", err
+	}
+
+	resp := opsRetryResponse{
+		ID:     rec.ID,
+		Status: rec.Status,
+	}
+	if !isBlockingOpsRunStatus(rec.Status) {
+		b, marshalErr := json.Marshal(resp)
+		if marshalErr != nil {
+			return "", fmt.Errorf("marshal ops retry response: %w", marshalErr)
+		}
+		return string(b), nil
+	}
+
+	created, routed, err := d.supersedeOpsRunForRetry(rec)
+	if err != nil {
+		return "", err
+	}
+	resp.Retried = true
+	resp.Status = opsRunStatusSuperseded
+	resp.NewOpsRunID = created.ID
+	resp.Routed = routed
+
+	b, err := json.Marshal(resp)
+	if err != nil {
+		return "", fmt.Errorf("marshal ops retry response: %w", err)
+	}
+	return string(b), nil
+}
+
+func (d *Dispatcher) supersedeOpsRunForRetry(rec OpsRunRecord) (OpsRunRecord, bool, error) {
+	if err := CompleteOpsRun(context.Background(), d.db, rec.ID, opsRunStatusSuperseded, rec.Verdict, rec.Feedback, fmt.Sprintf("manual retry superseded ops run %d", rec.ID)); err != nil {
+		return OpsRunRecord{}, false, err
+	}
+
+	next := rec
+	next.ID = 0
+	next.EscalationID = 0
+	next.Status = opsRunStatusRunning
+	next.DispatcherPID = os.Getpid()
+	next.ProcessPID = 0
+	next.Verdict = ""
+	next.Feedback = ""
+	next.Error = fmt.Sprintf("manual retry of ops run %d", rec.ID)
+	next.StartedAt = ""
+	next.CompletedAt = ""
+	fillOpsRunRuntimeModel(&next)
+
+	created, wasCreated, err := CreateOpsRun(context.Background(), d.db, next)
+	if err != nil {
+		return OpsRunRecord{}, false, err
+	}
+	if !wasCreated {
+		return OpsRunRecord{}, false, fmt.Errorf("retry ops run %d: blocking ops run %d already exists", rec.ID, created.ID)
+	}
+
+	d.clearAssignmentFailure(rec.BeadID)
+	return created, d.routeOpsRun(context.Background(), created), nil
+}
+
+func (d *Dispatcher) applyOpsResolve(args string) (string, error) {
+	runID, reason, err := parseOpsResolveArgs(args)
+	if err != nil {
+		return "", err
+	}
+	rec, err := loadOpsRunByID(context.Background(), d.db, runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("ops run %d not found", runID)
+	}
+	if err != nil {
+		return "", err
+	}
+
+	resp := opsResolveResponse{
+		ID:     rec.ID,
+		Status: rec.Status,
+		Reason: reason,
+	}
+	if rec.Status == opsRunStatusResolved {
+		resp.Resolved = true
+		b, marshalErr := json.Marshal(resp)
+		if marshalErr != nil {
+			return "", fmt.Errorf("marshal ops resolve response: %w", marshalErr)
+		}
+		return string(b), nil
+	}
+
+	if ops.Type(rec.Type) == ops.OpsDecompose {
+		if err := d.validateDecomposeResult(context.Background(), rec.BeadID); err != nil {
+			return "", err
+		}
+	}
+	if err := CompleteOpsRun(context.Background(), d.db, rec.ID, opsRunStatusResolved, rec.Verdict, rec.Feedback, reason); err != nil {
+		return "", err
+	}
+	d.ackEscalation(context.Background(), rec.EscalationID, rec.BeadID, rec.WorkerID)
+	d.clearAssignmentFailure(rec.BeadID)
+
+	resp.Resolved = true
+	resp.Status = opsRunStatusResolved
+	b, err := json.Marshal(resp)
+	if err != nil {
+		return "", fmt.Errorf("marshal ops resolve response: %w", err)
+	}
+	return string(b), nil
+}
+
+type opsRunJSON struct {
+	ID            int64  `json:"id"`
+	EscalationID  int64  `json:"escalation_id,omitempty"`
+	Type          string `json:"type"`
+	BeadID        string `json:"bead_id,omitempty"`
+	WorkerID      string `json:"worker_id,omitempty"`
+	DispatcherPID int    `json:"dispatcher_pid,omitempty"`
+	ProcessPID    int    `json:"process_pid,omitempty"`
+	Runtime       string `json:"runtime,omitempty"`
+	Model         string `json:"model,omitempty"`
+	Status        string `json:"status"`
+	Verdict       string `json:"verdict,omitempty"`
+	Feedback      string `json:"feedback,omitempty"`
+	Error         string `json:"error,omitempty"`
+	StartedAt     string `json:"started_at,omitempty"`
+	CompletedAt   string `json:"completed_at,omitempty"`
+}
+
+type opsRetryResponse struct {
+	ID          int64  `json:"id"`
+	Retried     bool   `json:"retried"`
+	Status      string `json:"status"`
+	NewOpsRunID int64  `json:"new_ops_run_id,omitempty"`
+	Routed      bool   `json:"routed,omitempty"`
+}
+
+type opsResolveResponse struct {
+	ID       int64  `json:"id"`
+	Resolved bool   `json:"resolved"`
+	Status   string `json:"status"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+func newOpsRunJSON(rec OpsRunRecord) opsRunJSON {
+	return opsRunJSON(rec)
+}
+
+func parseOpsRunIDArg(args, directive string) (int64, error) {
+	id := strings.TrimSpace(args)
+	if id == "" {
+		return 0, fmt.Errorf("%s requires an ops run ID", directive)
+	}
+	runID, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || runID <= 0 {
+		return 0, fmt.Errorf("%s requires a numeric ops run ID", directive)
+	}
+	return runID, nil
+}
+
+func parseOpsResolveArgs(args string) (runID int64, reason string, err error) {
+	fields := strings.Fields(strings.TrimSpace(args))
+	if len(fields) < 2 {
+		return 0, "", errors.New("ops-resolve requires an ops run ID and reason")
+	}
+	runID, err = parseOpsRunIDArg(fields[0], "ops-resolve")
+	if err != nil {
+		return 0, "", err
+	}
+	reason = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(args), fields[0]))
+	if reason == "" {
+		return 0, "", errors.New("ops-resolve requires a reason")
+	}
+	return runID, reason, nil
+}
+
+func isBlockingOpsRunStatus(status string) bool {
+	switch status {
+	case opsRunStatusRunning, opsRunStatusFailed, opsRunStatusStale:
+		return true
+	default:
+		return false
+	}
 }
 
 func (d *Dispatcher) reconcileOpsRunsOnStartup(ctx context.Context) error {
