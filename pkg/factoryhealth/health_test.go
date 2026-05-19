@@ -205,6 +205,81 @@ func TestEvaluateOpsRunFindings(t *testing.T) {
 	}
 }
 
+func TestPendingUnknownEscalationSurfacesUnroutedHealthFinding(t *testing.T) {
+	got := Evaluate(Snapshot{
+		DaemonRunning:   true,
+		DispatcherState: "running",
+		PendingEscalations: EscalationMetrics{
+			Unrouted: 1,
+			Escalations: []EscalationSnapshot{
+				{
+					ID:       9,
+					Type:     "FUTURE_ESCALATION",
+					BeadID:   "oro-future",
+					WorkerID: "w-future",
+					AgeSecs:  90,
+				},
+				{
+					ID:     10,
+					Type:   string(protocol.EscWorkerCrash),
+					BeadID: "oro-known",
+				},
+			},
+		},
+	})
+
+	finding, ok := findingByCode(got, FindingPendingEscalationUnrouted)
+	if !ok {
+		t.Fatalf("missing pending_escalation_unrouted finding in %+v", got.Findings)
+	}
+	if finding.BeadID != "oro-future" || finding.WorkerID != "w-future" || finding.Type != "FUTURE_ESCALATION" {
+		t.Fatalf("unrouted finding payload bead/worker/type = %q/%q/%q, want oro-future/w-future/FUTURE_ESCALATION",
+			finding.BeadID, finding.WorkerID, finding.Type)
+	}
+	if got.State != StateStalled {
+		t.Fatalf("state = %q, want stalled for unrouted pending escalation", got.State)
+	}
+}
+
+func TestLoadPendingEscalationMetrics(t *testing.T) {
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO escalations (type, bead_id, worker_id, message, status, created_at)
+VALUES
+    ('FUTURE_ESCALATION', 'oro-future', 'w-future', 'future route', 'pending', '2026-05-19 00:00:00'),
+    ('WORKER_CRASH', 'oro-known', 'w-known', 'known route', 'pending', '2026-05-19 00:00:00'),
+    ('OTHER_ESCALATION', 'oro-acked', 'w-acked', 'acked route', 'acked', '2026-05-19 00:00:00');
+`); err != nil {
+		t.Fatalf("seed escalations: %v", err)
+	}
+
+	got, err := LoadPendingEscalationMetrics(ctx, db, time.Date(2026, 5, 19, 0, 2, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("LoadPendingEscalationMetrics: %v", err)
+	}
+	if got.Unrouted != 1 {
+		t.Fatalf("unrouted count = %d, want 1", got.Unrouted)
+	}
+	if len(got.Escalations) != 1 {
+		t.Fatalf("unrouted escalations = %+v, want exactly one", got.Escalations)
+	}
+	escalation := got.Escalations[0]
+	if escalation.Type != "FUTURE_ESCALATION" || escalation.BeadID != "oro-future" || escalation.WorkerID != "w-future" {
+		t.Fatalf("unrouted escalation payload = %+v", escalation)
+	}
+	if escalation.AgeSecs != 120 {
+		t.Fatalf("unrouted escalation age = %.0f, want 120", escalation.AgeSecs)
+	}
+}
+
 func TestLoadQGMetricsReportsRecentFingerprintsForClosedIncidents(t *testing.T) {
 	ctx := context.Background()
 	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))

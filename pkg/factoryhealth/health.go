@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"oro/pkg/protocol"
 )
 
 // State is the top-level factory health state.
@@ -49,6 +51,7 @@ const (
 	FindingRecoveryQuarantineOpen             = "recovery_quarantine_open"
 	FindingOpsRunFailed                       = "ops_run_failed"
 	FindingOpsRunStale                        = "ops_run_stale"
+	FindingPendingEscalationUnrouted          = "pending_escalation_unrouted"
 )
 
 // OpsRunStaleAfter is the age threshold after which a running ops run is
@@ -96,6 +99,7 @@ type Metrics struct {
 	OpenRecoveryQuarantines int               `json:"recovery_quarantines_open"`
 	ThroughputWindow        ThroughputMetrics `json:"throughput_window"`
 	OpsRuns                 OpsRunMetrics     `json:"ops_runs"`
+	PendingEscalations      EscalationMetrics `json:"pending_escalations"`
 	PendingWorkerCount      int               `json:"pending_worker_count,omitempty"`
 	PendingHandoffCount     int               `json:"pending_handoff_count,omitempty"`
 }
@@ -132,6 +136,22 @@ type OpsRunSnapshot struct {
 	BeadID  string  `json:"bead_id,omitempty"`
 	Status  string  `json:"status"`
 	AgeSecs float64 `json:"age_secs,omitempty"`
+}
+
+// EscalationMetrics summarizes pending escalations that need operator or
+// routing attention.
+type EscalationMetrics struct {
+	Unrouted    int                  `json:"unrouted"`
+	Escalations []EscalationSnapshot `json:"escalations,omitempty"`
+}
+
+// EscalationSnapshot is a health-relevant pending escalation sample.
+type EscalationSnapshot struct {
+	ID       int64   `json:"id,omitempty"`
+	Type     string  `json:"type"`
+	BeadID   string  `json:"bead_id,omitempty"`
+	WorkerID string  `json:"worker_id,omitempty"`
+	AgeSecs  float64 `json:"age_secs,omitempty"`
 }
 
 // WorkerSnapshot is a worker state sample used by the evaluator.
@@ -175,6 +195,7 @@ type Snapshot struct {
 	HeartbeatTimeoutSecs    float64
 	Throughput              ThroughputMetrics
 	OpsRuns                 OpsRunMetrics
+	PendingEscalations      EscalationMetrics
 }
 
 // Evaluate converts an observed snapshot into the FactoryHealth contract.
@@ -206,6 +227,7 @@ func metricsFromSnapshot(snapshot Snapshot) Metrics {
 		OpenRecoveryQuarantines: snapshot.OpenRecoveryQuarantines,
 		ThroughputWindow:        snapshot.Throughput,
 		OpsRuns:                 snapshot.OpsRuns,
+		PendingEscalations:      snapshot.PendingEscalations,
 		PendingWorkerCount:      snapshot.PendingWorkerCount,
 		PendingHandoffCount:     snapshot.PendingHandoffCount,
 	}
@@ -232,6 +254,7 @@ func evaluateFindings(snapshot Snapshot, metrics *Metrics) []Finding {
 		})
 	}
 	findings = append(findings, opsRunFindings(snapshot.OpsRuns)...)
+	findings = append(findings, pendingEscalationFindings(snapshot.PendingEscalations)...)
 	if !snapshot.DaemonRunning {
 		if len(snapshot.ActiveAssignments) > 0 {
 			findings = append(findings, Finding{
@@ -470,6 +493,39 @@ func opsRunFindings(metrics OpsRunMetrics) []Finding {
 	return findings
 }
 
+func pendingEscalationFindings(metrics EscalationMetrics) []Finding {
+	findings := make([]Finding, 0, metrics.Unrouted)
+	for _, escalation := range metrics.Escalations {
+		if IsKnownEscalationType(escalation.Type) {
+			continue
+		}
+		findings = append(findings, Finding{
+			Code:              FindingPendingEscalationUnrouted,
+			Severity:          SeverityError,
+			Component:         "escalation",
+			Message:           fmt.Sprintf("pending escalation type %q has no route", escalation.Type),
+			WorkerID:          escalation.WorkerID,
+			BeadID:            escalation.BeadID,
+			Type:              escalation.Type,
+			AgeSecs:           escalation.AgeSecs,
+			RecommendedAction: "inspect oro pending-escalations, then add routing support or ack the escalation if obsolete",
+		})
+	}
+	if len(findings) > 0 {
+		return findings
+	}
+	if metrics.Unrouted > 0 {
+		findings = append(findings, Finding{
+			Code:              FindingPendingEscalationUnrouted,
+			Severity:          SeverityError,
+			Component:         "escalation",
+			Message:           fmt.Sprintf("%d pending escalation(s) have no route", metrics.Unrouted),
+			RecommendedAction: "inspect oro pending-escalations, then add routing support or ack obsolete escalations",
+		})
+	}
+	return findings
+}
+
 // OpsRunRecommendedAction returns the explicit operator commands for a blocking ops run.
 func OpsRunRecommendedAction(run OpsRunSnapshot) string {
 	if run.ID > 0 {
@@ -648,6 +704,52 @@ SELECT COUNT(*)
 	return metrics, nil
 }
 
+// LoadPendingEscalationMetrics reads pending escalations that have no known
+// dispatcher route and should remain visible in factory health.
+func LoadPendingEscalationMetrics(ctx context.Context, db *sql.DB, now time.Time) (EscalationMetrics, error) {
+	var metrics EscalationMetrics
+	if db == nil {
+		return metrics, nil
+	}
+	rows, err := db.QueryContext(ctx, `
+SELECT id, type, COALESCE(bead_id, ''), COALESCE(worker_id, ''), COALESCE(created_at, '')
+  FROM escalations
+ WHERE status = 'pending'
+ ORDER BY id`)
+	if err != nil {
+		if tableMissing(err) {
+			return metrics, nil
+		}
+		return metrics, fmt.Errorf("query pending escalation metrics: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			escalation EscalationSnapshot
+			createdAt  string
+		)
+		if err := rows.Scan(&escalation.ID, &escalation.Type, &escalation.BeadID, &escalation.WorkerID, &createdAt); err != nil {
+			return metrics, fmt.Errorf("scan pending escalation metrics: %w", err)
+		}
+		if IsKnownEscalationType(escalation.Type) {
+			continue
+		}
+		if ts, ok := parseSQLiteTime(createdAt); ok && !now.IsZero() {
+			escalation.AgeSecs = now.Sub(ts).Seconds()
+			if escalation.AgeSecs < 0 {
+				escalation.AgeSecs = 0
+			}
+		}
+		metrics.Unrouted++
+		metrics.Escalations = append(metrics.Escalations, escalation)
+	}
+	if err := rows.Err(); err != nil {
+		return metrics, fmt.Errorf("iterate pending escalation metrics: %w", err)
+	}
+	return metrics, nil
+}
+
 // LoadOpsRunMetrics reads health-relevant ops run counts from the state database.
 func LoadOpsRunMetrics(ctx context.Context, db *sql.DB, now time.Time) (OpsRunMetrics, error) {
 	var metrics OpsRunMetrics
@@ -694,6 +796,29 @@ SELECT id, type, COALESCE(bead_id, ''), status, COALESCE(started_at, '')
 		metrics.ByType = nil
 	}
 	return metrics, nil
+}
+
+// IsKnownEscalationType reports whether an escalation type is part of the
+// dispatcher protocol known to this build.
+func IsKnownEscalationType(escType string) bool {
+	switch protocol.EscalationType(escType) {
+	case protocol.EscMergeConflict,
+		protocol.EscStuck,
+		protocol.EscStuckWorker,
+		protocol.EscPriorityContention,
+		protocol.EscWorkerCrash,
+		protocol.EscStatus,
+		protocol.EscDrainComplete,
+		protocol.EscMissingAC,
+		protocol.EscEpicComplete,
+		protocol.EscMergeComplete,
+		protocol.EscOversizedBead,
+		protocol.EscNonTDDAC,
+		protocol.EscManualIntegration:
+		return true
+	default:
+		return false
+	}
 }
 
 func addOpsRunMetric(metrics *OpsRunMetrics, run OpsRunSnapshot) {

@@ -119,6 +119,10 @@ func (d *Dispatcher) evaluateFactoryHealth(ctx context.Context, now time.Time, i
 	if err != nil {
 		_ = d.logEvent(ctx, "factory_health_ops_runs_load_failed", "dispatcher", "", "", err.Error())
 	}
+	pendingEscalations, err := factoryhealth.LoadPendingEscalationMetrics(ctx, d.db, now)
+	if err != nil {
+		_ = d.logEvent(ctx, "factory_health_pending_escalations_load_failed", "dispatcher", "", "", err.Error())
+	}
 	qgFingerprints := input.qgStatus.RecentFingerprints
 	if len(qgFingerprints) == 0 {
 		qgFingerprints = input.qgStatus.TopFingerprints
@@ -143,6 +147,7 @@ func (d *Dispatcher) evaluateFactoryHealth(ctx context.Context, now time.Time, i
 		HeartbeatTimeoutSecs:    input.heartbeatTimeoutSecs,
 		Throughput:              throughput,
 		OpsRuns:                 opsRuns,
+		PendingEscalations:      pendingEscalations,
 	})
 }
 

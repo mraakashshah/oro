@@ -7334,7 +7334,7 @@ func (d *Dispatcher) retryPendingEscalations(ctx context.Context) {
 
 	// Process escalations after closing the query
 	for _, esc := range pending {
-		if protocol.EscalationType(esc.escType) == protocol.EscOversizedBead && d.ops != nil {
+		if d.shouldSkipPendingEscalationRetry(esc.escType) {
 			continue
 		}
 
@@ -7353,6 +7353,11 @@ func (d *Dispatcher) retryPendingEscalations(ctx context.Context) {
 			`UPDATE escalations SET retry_count = retry_count + 1, last_retry_at = datetime('now') WHERE id = ?`,
 			esc.id)
 	}
+}
+
+func (d *Dispatcher) shouldSkipPendingEscalationRetry(escType string) bool {
+	return !factoryhealth.IsKnownEscalationType(escType) ||
+		(protocol.EscalationType(escType) == protocol.EscOversizedBead && d.ops != nil)
 }
 
 func (d *Dispatcher) routePendingRoutableEscalations(ctx context.Context) error {
@@ -7621,17 +7626,7 @@ func (d *Dispatcher) handleEscalationResult(ctx context.Context, escalationID in
 		if protocol.EscalationType(escType) == protocol.EscMissingAC || protocol.EscalationType(escType) == protocol.EscOversizedBead {
 			d.recordAssignmentFailure(beadID)
 		}
-		if protocol.EscalationType(escType) == protocol.EscOversizedBead {
-			d.completeDecomposeOpsRunBestEffort(ctx, beadID, opsRunStatusFailed, string(result.Verdict), result.Feedback, result.Err.Error())
-		}
-
-		// Escalate to persistent manager when one-shot fails.
-		failMsg := fmt.Sprintf("[ORO-DISPATCH] ONESHOT_FAILED: %s — One-shot %s agent failed: %v",
-			beadID, escType, result.Err)
-		if err := d.escalator.Escalate(ctx, failMsg); err != nil {
-			_ = d.logEvent(ctx, "escalation_failed", "dispatcher", beadID, workerID,
-				fmt.Sprintf(`{"error":%q,"message":%q}`, err.Error(), failMsg))
-		}
+		d.completeOneShotOpsRunFailureBestEffort(ctx, escalationID, escType, beadID, workerID, result)
 		d.ackEscalation(ctx, escalationID, beadID, workerID)
 		return
 	}
@@ -7780,6 +7775,60 @@ func (d *Dispatcher) completeDecomposeOpsRunBestEffort(ctx context.Context, bead
 	if err := CompleteOpsRun(ctx, d.db, rec.ID, status, verdict, feedback, errorText); err != nil {
 		_ = d.logEvent(ctx, "ops_run_complete_failed", "dispatcher", beadID, "",
 			fmt.Sprintf(`{"ops_run_id":%d,"type":%q,"status":%q,"error":%q}`, rec.ID, ops.OpsDecompose, status, err.Error()))
+	}
+}
+
+func (d *Dispatcher) completeOneShotOpsRunFailureBestEffort(ctx context.Context, escalationID int64, escType, beadID, workerID string, result ops.Result) {
+	runType, ok := opsRunTypeForEscalationResult(escType, result)
+	if !ok || beadID == "" {
+		return
+	}
+	errorText := ""
+	if result.Err != nil {
+		errorText = result.Err.Error()
+	}
+	rec, err := FindBlockingOpsRun(ctx, d.db, string(runType), beadID)
+	if err != nil {
+		_ = d.logEvent(ctx, "ops_run_complete_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"type":%q,"status":%q,"error":%q}`, runType, opsRunStatusFailed, err.Error()))
+		return
+	}
+	if rec != nil {
+		if err := CompleteOpsRun(ctx, d.db, rec.ID, opsRunStatusFailed, string(result.Verdict), result.Feedback, errorText); err != nil {
+			_ = d.logEvent(ctx, "ops_run_complete_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"ops_run_id":%d,"type":%q,"status":%q,"error":%q}`, rec.ID, runType, opsRunStatusFailed, err.Error()))
+		}
+		return
+	}
+	if _, _, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
+		EscalationID:  escalationID,
+		Type:          string(runType),
+		BeadID:        beadID,
+		WorkerID:      workerID,
+		DispatcherPID: os.Getpid(),
+		Status:        opsRunStatusFailed,
+		Verdict:       string(result.Verdict),
+		Feedback:      result.Feedback,
+		Error:         errorText,
+	}); err != nil {
+		_ = d.logEvent(ctx, "ops_run_complete_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"type":%q,"status":%q,"error":%q}`, runType, opsRunStatusFailed, err.Error()))
+	}
+}
+
+func opsRunTypeForEscalationResult(escType string, result ops.Result) (ops.Type, bool) {
+	if result.Type != "" {
+		return result.Type, true
+	}
+	switch protocol.EscalationType(escType) {
+	case protocol.EscMissingAC:
+		return ops.OpsWriteAC, true
+	case protocol.EscOversizedBead:
+		return ops.OpsDecompose, true
+	case protocol.EscStuckWorker, protocol.EscMergeConflict, protocol.EscPriorityContention:
+		return ops.OpsEscalation, true
+	default:
+		return "", false
 	}
 }
 

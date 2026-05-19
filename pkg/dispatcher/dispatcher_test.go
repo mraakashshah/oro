@@ -2727,7 +2727,7 @@ func TestEscalateDoesNotSpawnForNonTargetTypes(t *testing.T) {
 	}, 500*time.Millisecond)
 }
 
-func TestOneShotTimeoutEscalatesToPersistentManager(t *testing.T) {
+func TestOneShotTimeoutCreatesOpsRunFailureWithoutManagerFallback(t *testing.T) {
 	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
 
 	// Provide bead detail for context.
@@ -2751,27 +2751,30 @@ func TestOneShotTimeoutEscalatesToPersistentManager(t *testing.T) {
 	msg := protocol.FormatEscalation(protocol.EscStuckWorker, "bead-timeout", "worker stalled", "no progress")
 	d.escalate(ctx, msg, "bead-timeout", "w1")
 
-	// The initial tmux escalation should be sent.
+	// The initial tmux escalation should still be sent for non-routable escalations.
 	msgs := esc.Messages()
 	if len(msgs) < 1 {
 		t.Fatalf("expected at least 1 escalation message, got %d", len(msgs))
 	}
 
 	// Wait for the async one-shot goroutine to process the timeout.
-	// After timeout, it should escalate again to the persistent manager.
 	waitFor(t, func() bool {
-		return len(esc.Messages()) >= 2 // initial + timeout escalation
+		var status string
+		err := d.db.QueryRowContext(ctx, `
+SELECT status
+FROM ops_runs
+WHERE type=? AND bead_id=?
+ORDER BY id DESC
+LIMIT 1`, ops.OpsEscalation, "bead-timeout").Scan(&status)
+		return err == nil && status == opsRunStatusFailed
 	}, 2*time.Second)
 
 	msgs = esc.Messages()
-	if len(msgs) < 2 {
-		t.Fatalf("expected at least 2 escalation messages (initial + timeout), got %d", len(msgs))
+	if len(msgs) != 1 {
+		t.Fatalf("one-shot timeout should not paste fallback to manager, got %d messages: %v", len(msgs), msgs)
 	}
-
-	// The second message should mention the one-shot failure.
-	secondMsg := msgs[1]
-	if !containsIgnoreCase(secondMsg, "one-shot") && !containsIgnoreCase(secondMsg, "timeout") {
-		t.Fatalf("second escalation should mention one-shot failure or timeout, got: %q", secondMsg)
+	if got := dispatcherTestOpsRunStatus(t, d.db, ops.OpsEscalation, "bead-timeout"); got != opsRunStatusFailed {
+		t.Fatalf("escalation ops_run status = %q, want %q", got, opsRunStatusFailed)
 	}
 }
 
@@ -3198,6 +3201,100 @@ func TestRetryPendingEscalations_DoesNotRepasteRoutedOpsRun(t *testing.T) {
 	}
 	if got := eventCount(t, d.db, "ops_run_blocked_assignment"); got != 1 {
 		t.Fatalf("ops_run_blocked_assignment events = %d, want 1", got)
+	}
+}
+
+func TestPendingUnknownEscalationSurfacesUnroutedHealthFinding(t *testing.T) {
+	d, _, _, esc, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const (
+		beadID   = "oro-unknown-escalation"
+		workerID = "w-unknown-escalation"
+		escType  = protocol.EscalationType("FUTURE_ESCALATION")
+	)
+
+	escalationID := insertDispatcherTestEscalation(t, d.db, escType, beadID, workerID)
+
+	d.retryPendingEscalations(ctx)
+
+	if got := len(esc.Messages()); got != 0 {
+		t.Fatalf("unknown escalation pasted to manager, got %d messages: %v", got, esc.Messages())
+	}
+	if status := dispatcherTestEscalationStatus(t, d.db, escalationID); status != "pending" {
+		t.Fatalf("unknown escalation status = %q, want pending for health reporting", status)
+	}
+	var retryCount int
+	if err := d.db.QueryRowContext(ctx, `SELECT retry_count FROM escalations WHERE id=?`, escalationID).Scan(&retryCount); err != nil {
+		t.Fatalf("query unknown escalation retry count: %v", err)
+	}
+	if retryCount != 0 {
+		t.Fatalf("unknown escalation retry_count = %d, want 0", retryCount)
+	}
+
+	healthJSON, err := d.applyHealth()
+	if err != nil {
+		t.Fatalf("applyHealth: %v", err)
+	}
+	var health factoryhealth.FactoryHealth
+	if err := json.Unmarshal([]byte(healthJSON), &health); err != nil {
+		t.Fatalf("unmarshal health: %v", err)
+	}
+	finding, ok := factoryHealthFindingByCode(health, "pending_escalation_unrouted")
+	if !ok {
+		t.Fatalf("missing pending_escalation_unrouted finding in %+v", health.Findings)
+	}
+	if finding.BeadID != beadID || finding.WorkerID != workerID || finding.Type != string(escType) {
+		t.Fatalf("unrouted finding payload bead/worker/type = %q/%q/%q, want %q/%q/%q",
+			finding.BeadID, finding.WorkerID, finding.Type, beadID, workerID, escType)
+	}
+}
+
+func TestOneShotFailureCreatesOpsRunFailureWithoutManagerFallback(t *testing.T) {
+	d, _, _, esc, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const (
+		beadID   = "oro-write-ac-failed"
+		workerID = "w-write-ac-failed"
+	)
+
+	escalationID := insertDispatcherTestEscalation(t, d.db, protocol.EscMissingAC, beadID, workerID)
+	resultCh := make(chan ops.Result, 1)
+	resultCh <- ops.Result{
+		Type:     ops.OpsWriteAC,
+		BeadID:   beadID,
+		Verdict:  ops.VerdictFailed,
+		Feedback: "unable to write acceptance criteria",
+		Err:      errors.New("write-ac agent exited 1"),
+	}
+
+	d.handleEscalationResult(ctx, escalationID, string(protocol.EscMissingAC), beadID, workerID, resultCh)
+
+	if got := len(esc.Messages()); got != 0 {
+		t.Fatalf("one-shot failure pasted fallback to manager, got %d messages: %v", got, esc.Messages())
+	}
+	if got := dispatcherTestOpsRunStatus(t, d.db, ops.OpsWriteAC, beadID); got != opsRunStatusFailed {
+		t.Fatalf("write_ac ops_run status = %q, want %q", got, opsRunStatusFailed)
+	}
+	opsRuns, err := LoadOpsRunMetrics(ctx, d.db, time.Now())
+	if err != nil {
+		t.Fatalf("LoadOpsRunMetrics: %v", err)
+	}
+	health := factoryhealth.Evaluate(factoryhealth.Snapshot{
+		DaemonRunning:       true,
+		DispatcherState:     "running",
+		ManagerPaneRequired: true,
+		ManagerPaneAlive:    false,
+		OpsRuns:             opsRuns,
+	})
+	finding, ok := factoryHealthFindingByCode(health, factoryhealth.FindingOpsRunFailed)
+	if !ok {
+		t.Fatalf("missing ops_run_failed finding in %+v", health.Findings)
+	}
+	if finding.BeadID != beadID || finding.Type != string(ops.OpsWriteAC) {
+		t.Fatalf("ops_run_failed finding bead/type = %q/%q, want %q/%q",
+			finding.BeadID, finding.Type, beadID, ops.OpsWriteAC)
 	}
 }
 
@@ -5878,8 +5975,13 @@ func containsStr(s, substr string) bool {
 	return false
 }
 
-func containsIgnoreCase(s, substr string) bool {
-	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
+func factoryHealthFindingByCode(health factoryhealth.FactoryHealth, code string) (factoryhealth.Finding, bool) {
+	for _, finding := range health.Findings {
+		if finding.Code == code {
+			return finding, true
+		}
+	}
+	return factoryhealth.Finding{}, false
 }
 
 func TestDispatcher_GracefulShutdown_WaitsForApproval(t *testing.T) {
