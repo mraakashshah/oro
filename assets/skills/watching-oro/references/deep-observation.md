@@ -119,31 +119,41 @@ fswatch .worktrees/ 2>/dev/null | while read -r path; do
 done
 ```
 
-## 3. Manager Pane
+## 3. Ops Runs
 
-The manager is a Claude session in `oro:1` (window 1). It receives `[ORO-DISPATCH]` messages from the dispatcher and can issue directives.
+Managerless recovery work is tracked through durable `ops_runs` rows and
+factory health findings. Treat these as the authoritative source for bounded
+decomposition, recovery, and integration helpers.
 
-### Scrape pane content
+### Active and failed ops runs
 ```bash
-# Last 200 lines
-tmux capture-pane -t oro:1 -p -S -200
+DB="$HOME/.oro/state.db"
 
-# Watch for dispatch messages
-tmux capture-pane -t oro:1 -p -S -200 | grep '\[ORO-DISPATCH\]'
+# Open ops runs that can block recovery
+sqlite3 "$DB" \
+  "SELECT id, type, bead_id, status, attempt_count, started_at, finished_at
+   FROM ops_runs
+   WHERE status IN ('running','failed','stale')
+   ORDER BY started_at DESC;"
 
-# Continuous mirror (refreshes on DB changes)
-while true; do
-  tmux capture-pane -t oro:1 -p -S -40 2>/dev/null
-  echo "--- $(date +%H:%M:%S) ---"
-  fswatch -1 ~/.oro/state.db 2>/dev/null || sleep 5
-done
+# Recent resolved ops runs
+sqlite3 "$DB" \
+  "SELECT id, type, bead_id, status, finished_at
+   FROM ops_runs
+   ORDER BY COALESCE(finished_at, started_at) DESC LIMIT 20;"
 ```
 
-### Manager activity tracking
+### Health contract
 ```bash
-# When was manager last active?
-sqlite3 ~/.oro/state.db "SELECT * FROM pane_activity WHERE pane='manager';"
+# Health summarizes ops_runs, quarantines, worker liveness, and active findings.
+./oro health --json
+
+# Monitor reports repeated findings and can take bounded recovery actions with --act.
+oro monitor --target 2 --max-workers 2 --interval 60s
 ```
+
+Historical optional UI panes may still write `pane_activity`, but that table is
+not a routine progress dependency.
 
 ## 4. Dashboard
 
@@ -222,7 +232,7 @@ sqlite3 ~/.oro/state.db \
 | `WORKER_CRASH` | Process died — check worker output.log |
 | `QG_FAILED` repeating for same task | Worker can't pass quality gate |
 | `MERGE_CONFLICT` without `MERGED` | Unresolved conflict — needs manual intervention |
-| `escalation_failed` | Manager pane unreachable |
+| `ops_run_failed` | Bounded recovery helper failed — inspect `ops_runs` and `oro health --json` |
 | `ASSIGN` spam (same task) | Assignment loop — check rejection counts |
 | `context_pct > 80` in heartbeats | Worker running low on context |
 

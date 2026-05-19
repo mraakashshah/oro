@@ -47,16 +47,28 @@ oro monitor --target 2 --max-workers 2 --interval 60s --act
 ```
 
 The old skill-local Python autopilot remains only as historical context; prefer
-`oro health`, `oro status --json`, and `oro monitor` for supported factory
-health policy.
+`oro health`, `oro status --json`, `ops_runs`, and `oro monitor` for supported
+factory health policy.
 
 ### Tail-based observation loop
 
-The primary observation pattern is a poll-on-demand loop using `./oro logs --tail` and `./oro directive status`:
+The primary observation pattern is a poll-on-demand loop using `./oro logs --tail`,
+`./oro health --json`, and `./oro directive status`:
 
 ```bash
 # Snapshot key events (filter out noise)
 ./oro logs --tail 300 | grep -v heartbeat | grep -v directive | grep -v missing_accept | tail -20
+
+# Factory health, including ops runs and recovery/quarantine findings
+./oro health --json | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print(f'health={d[\"state\"]} posture={d.get(\"posture\", \"\")}')
+ops=d.get('metrics', {}).get('ops_runs', {})
+print('ops_runs', ops)
+for f in d.get('findings', []):
+    print(f'{f[\"severity\"]:8s} {f[\"code\"]}: {f[\"message\"]}')
+"
 
 # Worker context % and state (JSON — pipe through python or jq)
 ./oro directive status | python3 -c "
@@ -74,9 +86,6 @@ for wt in .worktrees/oro-*/; do
   git -C "$wt" log --oneline -3
   git -C "$wt" diff --stat | tail -3
 done
-
-# Manager pane
-tmux capture-pane -t oro:1 -p -S -30   # manager
 ```
 
 ### When to poll
@@ -99,7 +108,7 @@ tmux capture-pane -t oro:1 -p -S -30   # manager
 | `QG_FAILED` repeating for same task | Worker can't pass QG — check prompt or test |
 | `MERGE_CONFLICT` without later `MERGED` | Stale worktree — needs manual rebase |
 | Heartbeat `context_pct > 80` | Worker degrading — will likely fail |
-| Pane activity stale >10min | Manager crashed — check pane |
+| `ops_run_failed` / stale `ops_runs` finding | Bounded recovery failed — inspect `oro health --json` and `ops_runs` |
 | Assignment spam (same task >3x) | Rejection loop — check AC or worker prompt |
 
 ## Phase 3: Detect + Spec

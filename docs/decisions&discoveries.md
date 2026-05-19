@@ -1,5 +1,20 @@
 # Decisions and Discoveries
 
+## 2026-05-19: Managerless operation is the default
+**Tags:** #managerless #dispatcher #ops-runs #operations
+**Context:** The managerless orchestration design moved routine factory progress
+off an optional legacy manager console and onto durable dispatcher-owned state.
+**Decision:** Default operator guidance must use `oro health --json`,
+`oro status`, `oro monitor`, events, and `ops_runs` for routine progress.
+Optional legacy manager-console material is non-authoritative, and
+historical `pane_activity` notes are not a default liveness or progress
+dependency.
+**Implications:** New runbooks, skills, and user-facing text should not tell
+operators to depend on an optional legacy manager pane for task assignment,
+decomposition, escalation handling, health reporting, or recovery. If optional
+console support remains, label it non-authoritative and keep
+health/status/ops-run surfaces as the source of truth.
+
 ## 2026-05-02: Phase 10 supersedes historical runtime Dolt guidance
 **Tags:** #beadstore #phase10 #dolt #sqlite
 **Context:** Phase 10 moved normal Oro operation onto the native SQLite beadstore and removed runtime bd/Dolt lifecycle helpers from the active command surface.
