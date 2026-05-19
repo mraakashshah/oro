@@ -136,6 +136,33 @@ func TestDeleteBranchUsesSafeDelete(t *testing.T) {
 	}
 }
 
+func TestDeleteBranchMergedIntoUsesTargetProofBeforeSafeDelete(t *testing.T) {
+	runner := &mockCommandRunner{}
+	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
+
+	err := mgr.DeleteBranchMergedInto(context.Background(), "agent/oro-safe", "epic/parent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantCalls := [][]string{
+		{"-C", "/repo/root", "merge-base", "--is-ancestor", "agent/oro-safe", "epic/parent"},
+		{"-C", "/repo/root", "branch", "-d", "agent/oro-safe"},
+	}
+	if len(runner.calls) != len(wantCalls) {
+		t.Fatalf("expected %d command calls, got %d: %#v", len(wantCalls), len(runner.calls), runner.calls)
+	}
+	for i, wantArgs := range wantCalls {
+		call := runner.calls[i]
+		if call.Name != "git" {
+			t.Fatalf("call[%d] name = %q, want git", i, call.Name)
+		}
+		if !slices.Equal(call.Args, wantArgs) {
+			t.Fatalf("call[%d] args = %v, want %v", i, call.Args, wantArgs)
+		}
+	}
+}
+
 func TestForceDeleteBranchUsesExplicitAPI(t *testing.T) {
 	runner := &mockCommandRunner{}
 	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)

@@ -1406,6 +1406,10 @@ func (m *envCapturingWorktreeManager) Create(_ context.Context, _, _ string) (st
 func (m *envCapturingWorktreeManager) Remove(_ context.Context, _ string) error       { return nil }
 func (m *envCapturingWorktreeManager) Prune(_ context.Context) error                  { return nil }
 func (m *envCapturingWorktreeManager) DeleteBranch(_ context.Context, _ string) error { return nil }
+func (m *envCapturingWorktreeManager) DeleteBranchMergedInto(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func (m *envCapturingWorktreeManager) ForceDeleteBranch(_ context.Context, _ string) error {
 	return nil
 }
@@ -2265,6 +2269,10 @@ func (m *branchCapturingWorktreeManager) Create(_ context.Context, _, branch str
 func (m *branchCapturingWorktreeManager) Remove(_ context.Context, _ string) error       { return nil }
 func (m *branchCapturingWorktreeManager) Prune(_ context.Context) error                  { return nil }
 func (m *branchCapturingWorktreeManager) DeleteBranch(_ context.Context, _ string) error { return nil }
+func (m *branchCapturingWorktreeManager) DeleteBranchMergedInto(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func (m *branchCapturingWorktreeManager) ForceDeleteBranch(_ context.Context, _ string) error {
 	return nil
 }

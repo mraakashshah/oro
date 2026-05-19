@@ -211,6 +211,15 @@ func (g *GitWorktreeManager) DeleteBranch(ctx context.Context, branch string) er
 	return nil
 }
 
+// DeleteBranchMergedInto proves branch is an ancestor of targetBranch before
+// asking git to safe-delete it. The delete still uses -d, never -D.
+func (g *GitWorktreeManager) DeleteBranchMergedInto(ctx context.Context, branch, targetBranch string) error {
+	if _, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "merge-base", "--is-ancestor", branch, targetBranch); err != nil {
+		return fmt.Errorf("prove branch %s merged into %s: %w", branch, targetBranch, err)
+	}
+	return g.DeleteBranch(ctx, branch)
+}
+
 // ForceDeleteBranch runs `git branch -D <branch>`.
 // Callers must only use this after separately proving that deleting the branch
 // cannot discard unmerged work.

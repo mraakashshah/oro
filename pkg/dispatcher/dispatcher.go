@@ -174,6 +174,7 @@ type WorktreeManager interface {
 	Remove(ctx context.Context, path string) error
 	Prune(ctx context.Context) error
 	DeleteBranch(ctx context.Context, branch string) error
+	DeleteBranchMergedInto(ctx context.Context, branch, targetBranch string) error
 	ForceDeleteBranch(ctx context.Context, branch string) error
 	BranchExists(ctx context.Context, branch string) (bool, error)
 	MergeFFOnly(ctx context.Context, branch string, target string) (commitSHA string, err error)
@@ -2449,7 +2450,7 @@ func (d *Dispatcher) handleNoopMerge(ctx context.Context, beadID, workerID, work
 		d.mu.Unlock()
 	}
 	d.autoCloseEpicIfComplete(ctx, workerID, epicID)
-	d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
+	d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree, targetBranch)
 	d.maybeConsolidateMemory(ctx)
 	d.maybeTriggerDream(ctx)
 }
@@ -2492,7 +2493,7 @@ func (d *Dispatcher) finalizeSuccessfulMerge(ctx context.Context, beadID, worker
 		d.mu.Unlock()
 	}
 	d.autoCloseEpicIfComplete(ctx, workerID, epicID)
-	d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
+	d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree, targetBranch)
 
 	d.maybeConsolidateMemory(ctx)
 	d.maybeTriggerDream(ctx)
@@ -2618,7 +2619,7 @@ func (d *Dispatcher) handleDreamResult(ctx context.Context, resultCh <-chan ops.
 // removeWorktreeAndClearTracking removes a worktree, deletes the agent branch,
 // and clears the tracking entry. Safe to call after successful merge completion.
 // Logs but does not return errors.
-func (d *Dispatcher) removeWorktreeAndClearTracking(ctx context.Context, beadID, workerID, worktree string) {
+func (d *Dispatcher) removeWorktreeAndClearTracking(ctx context.Context, beadID, workerID, worktree, targetBranch string) {
 	if err := d.worktrees.Remove(ctx, worktree); err != nil {
 		_ = d.logEvent(ctx, "worktree_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
 	}
@@ -2631,7 +2632,11 @@ func (d *Dispatcher) removeWorktreeAndClearTracking(ctx context.Context, beadID,
 
 	// Best-effort branch cleanup — branch was merged, safe to delete.
 	branch := protocol.BranchPrefix + beadID
-	if err := d.worktrees.DeleteBranch(ctx, branch); err != nil {
+	target := targetBranch
+	if target == "" {
+		target = d.cfg.DefaultBranch
+	}
+	if err := d.worktrees.DeleteBranchMergedInto(ctx, branch, target); err != nil {
 		_ = d.logEvent(ctx, "branch_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
 	}
 }
@@ -4691,7 +4696,7 @@ func (d *Dispatcher) finalizeExternalClose(ctx context.Context, workerID, beadID
 				_ = d.completeAssignment(ctx, assignmentID, beadID)
 				// removeWorktreeAndClearTracking is a no-op if the merger already
 				// took the worktree on a successful recovery merge.
-				d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree)
+				d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree, targetBranch)
 				d.clearBeadTracking(beadID)
 			} else {
 				d.quarantineUnsafeRecoveryWork(ctx, recoveryQuarantine{

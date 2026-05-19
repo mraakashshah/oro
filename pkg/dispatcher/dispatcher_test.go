@@ -376,11 +376,16 @@ type updateBranchRefCall struct {
 	target, source string
 }
 
+type deleteBranchMergedIntoCall struct {
+	branch, targetBranch string
+}
+
 type mockWorktreeManager struct {
 	mu                sync.Mutex
 	created           map[string]string // beadID -> worktree path
 	removed           []string
 	deletedBranches   []string
+	deletedInto       []deleteBranchMergedIntoCall
 	mergedBranches    []string // branches passed to MergeFFOnly
 	updatedBranchRefs []updateBranchRefCall
 	createFn          func(ctx context.Context, beadID, baseBranch string) (string, string, error)
@@ -434,6 +439,16 @@ func (m *mockWorktreeManager) DeleteBranch(_ context.Context, branch string) err
 		return m.deleteBranchFn(branch)
 	}
 	m.deletedBranches = append(m.deletedBranches, branch)
+	return nil
+}
+
+func (m *mockWorktreeManager) DeleteBranchMergedInto(ctx context.Context, branch, targetBranch string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.deleteBranchFn != nil {
+		return m.deleteBranchFn(branch)
+	}
+	m.deletedInto = append(m.deletedInto, deleteBranchMergedIntoCall{branch: branch, targetBranch: targetBranch})
 	return nil
 }
 
@@ -17816,7 +17831,7 @@ func TestRemoveWorktreeAndClearTracking_DeletesBranch(t *testing.T) {
 	t.Run("happy path: Remove succeeds then DeleteBranch called", func(t *testing.T) {
 		d, _, wtMgr, _, _, _ := newTestDispatcher(t)
 
-		d.removeWorktreeAndClearTracking(context.Background(), "oro-test", "w1", "/tmp/worktree-oro-test")
+		d.removeWorktreeAndClearTracking(context.Background(), "oro-test", "w1", "/tmp/worktree-oro-test", "")
 
 		wtMgr.mu.Lock()
 		defer wtMgr.mu.Unlock()
@@ -17826,9 +17841,9 @@ func TestRemoveWorktreeAndClearTracking_DeletesBranch(t *testing.T) {
 			t.Fatalf("expected Remove called with /tmp/worktree-oro-test, got: %v", wtMgr.removed)
 		}
 
-		// Verify DeleteBranch was called with correct branch name
-		if len(wtMgr.deletedBranches) != 1 || wtMgr.deletedBranches[0] != "agent/oro-test" {
-			t.Fatalf("expected DeleteBranch called with agent/oro-test, got: %v", wtMgr.deletedBranches)
+		// Verify DeleteBranchMergedInto was called with correct branch name and default target.
+		if len(wtMgr.deletedInto) != 1 || wtMgr.deletedInto[0].branch != "agent/oro-test" || wtMgr.deletedInto[0].targetBranch != d.cfg.DefaultBranch {
+			t.Fatalf("expected DeleteBranchMergedInto called with agent/oro-test into %s, got: %v", d.cfg.DefaultBranch, wtMgr.deletedInto)
 		}
 	})
 
@@ -17838,14 +17853,14 @@ func TestRemoveWorktreeAndClearTracking_DeletesBranch(t *testing.T) {
 			return fmt.Errorf("worktree stuck")
 		}
 
-		d.removeWorktreeAndClearTracking(context.Background(), "oro-fail", "w2", "/tmp/worktree-oro-fail")
+		d.removeWorktreeAndClearTracking(context.Background(), "oro-fail", "w2", "/tmp/worktree-oro-fail", "")
 
 		wtMgr.mu.Lock()
 		defer wtMgr.mu.Unlock()
 
-		// DeleteBranch should still be attempted even though Remove failed
-		if len(wtMgr.deletedBranches) != 1 || wtMgr.deletedBranches[0] != "agent/oro-fail" {
-			t.Fatalf("expected DeleteBranch called despite Remove failure, got: %v", wtMgr.deletedBranches)
+		// DeleteBranchMergedInto should still be attempted even though Remove failed.
+		if len(wtMgr.deletedInto) != 1 || wtMgr.deletedInto[0].branch != "agent/oro-fail" {
+			t.Fatalf("expected DeleteBranchMergedInto called despite Remove failure, got: %v", wtMgr.deletedInto)
 		}
 	})
 
@@ -17859,8 +17874,28 @@ func TestRemoveWorktreeAndClearTracking_DeletesBranch(t *testing.T) {
 		}
 
 		// Should not panic — both errors are logged, not returned.
-		d.removeWorktreeAndClearTracking(context.Background(), "oro-both", "w3", "/tmp/worktree-oro-both")
+		d.removeWorktreeAndClearTracking(context.Background(), "oro-both", "w3", "/tmp/worktree-oro-both", "")
 	})
+}
+
+func TestRemoveWorktreeAndClearTrackingDeletesBranchMergedIntoTarget(t *testing.T) {
+	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+
+	d.removeWorktreeAndClearTracking(context.Background(), "oro-child", "w1", "/tmp/worktree-oro-child", "epic/parent")
+
+	wtMgr.mu.Lock()
+	defer wtMgr.mu.Unlock()
+
+	if len(wtMgr.deletedInto) != 1 {
+		t.Fatalf("expected one DeleteBranchMergedInto call, got %d: %v", len(wtMgr.deletedInto), wtMgr.deletedInto)
+	}
+	got := wtMgr.deletedInto[0]
+	if got.branch != "agent/oro-child" {
+		t.Fatalf("DeleteBranchMergedInto branch = %q, want %q", got.branch, "agent/oro-child")
+	}
+	if got.targetBranch != "epic/parent" {
+		t.Fatalf("DeleteBranchMergedInto targetBranch = %q, want %q", got.targetBranch, "epic/parent")
+	}
 }
 
 // TestRemoveWorktreeAndClearTracking_ClearsTrackingOnRemoveError verifies that
@@ -17882,7 +17917,7 @@ func TestRemoveWorktreeAndClearTracking_ClearsTrackingOnRemoveError(t *testing.T
 	}
 
 	// Call the function under test.
-	d.removeWorktreeAndClearTracking(context.Background(), beadID, "w1", worktreePath)
+	d.removeWorktreeAndClearTracking(context.Background(), beadID, "w1", worktreePath, "")
 
 	// Verify that worktreeByBead[beadID] was deleted even though Remove failed.
 	d.mu.Lock()

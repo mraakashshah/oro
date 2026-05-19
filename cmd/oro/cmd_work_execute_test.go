@@ -190,6 +190,11 @@ func (m *mockWorktreeManager) DeleteBranch(_ context.Context, branch string) err
 	return m.deleteBranchErr
 }
 
+func (m *mockWorktreeManager) DeleteBranchMergedInto(_ context.Context, branch, _ string) error {
+	m.deletedBranches = append(m.deletedBranches, branch)
+	return m.deleteBranchErr
+}
+
 func (m *mockWorktreeManager) ForceDeleteBranch(_ context.Context, branch string) error {
 	m.deletedBranches = append(m.deletedBranches, branch)
 	return m.deleteBranchErr

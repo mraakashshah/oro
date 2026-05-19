@@ -59,6 +59,10 @@ func (m *mockWorktreeManager) DeleteBranch(_ context.Context, _ string) error {
 	return nil
 }
 
+func (m *mockWorktreeManager) DeleteBranchMergedInto(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func (m *mockWorktreeManager) ForceDeleteBranch(_ context.Context, _ string) error {
 	return nil
 }
