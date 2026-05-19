@@ -100,6 +100,33 @@ CREATE TABLE IF NOT EXISTS escalations (
     last_retry_at TEXT
 );
 
+-- Durable ops subprocess runs for managerless orchestration.
+CREATE TABLE IF NOT EXISTS ops_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escalation_id INTEGER,
+    type TEXT NOT NULL,
+    bead_id TEXT,
+    worker_id TEXT,
+    dispatcher_pid INTEGER,
+    process_pid INTEGER,
+    runtime TEXT,
+    model TEXT,
+    status TEXT NOT NULL DEFAULT 'running',
+    verdict TEXT,
+    feedback TEXT,
+    error TEXT,
+    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    completed_at DATETIME,
+    UNIQUE(escalation_id, type, bead_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ops_runs_open
+ON ops_runs(status, type, bead_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ops_runs_blocking_key
+ON ops_runs(type, bead_id)
+WHERE status IN ('running', 'failed', 'stale');
+
 -- Persistent key-value store for dispatcher runtime state (e.g. embedder vocab)
 CREATE TABLE IF NOT EXISTS kv_store (
     key TEXT PRIMARY KEY,

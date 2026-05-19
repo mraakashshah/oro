@@ -129,6 +129,115 @@ func TestSchemaIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestSchemaCreatesOpsRunsTable(t *testing.T) {
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	_, err = db.Exec(protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("exec schema DDL: %v", err)
+	}
+
+	expectedColumns := map[string]string{
+		"id":             "INTEGER",
+		"escalation_id":  "INTEGER",
+		"type":           "TEXT",
+		"bead_id":        "TEXT",
+		"worker_id":      "TEXT",
+		"dispatcher_pid": "INTEGER",
+		"process_pid":    "INTEGER",
+		"runtime":        "TEXT",
+		"model":          "TEXT",
+		"status":         "TEXT",
+		"verdict":        "TEXT",
+		"feedback":       "TEXT",
+		"error":          "TEXT",
+		"started_at":     "DATETIME",
+		"completed_at":   "DATETIME",
+	}
+	rows, err := db.Query(`PRAGMA table_info(ops_runs)`)
+	if err != nil {
+		t.Fatalf("pragma table_info(ops_runs): %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	columns := make(map[string]string)
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, pk int
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			t.Fatalf("scan column info: %v", err)
+		}
+		columns[name] = columnType
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate column info: %v", err)
+	}
+
+	for name, expectedType := range expectedColumns {
+		if columns[name] != expectedType {
+			t.Errorf("ops_runs column %q type = %q, want %q", name, columns[name], expectedType)
+		}
+	}
+
+	assertSQLiteObjectExists(t, db, "index", "idx_ops_runs_open")
+	assertSQLiteObjectExists(t, db, "index", "idx_ops_runs_blocking_key")
+}
+
+func TestOpsRunUniqueBlockingIndex(t *testing.T) {
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	_, err = db.Exec(protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("exec schema DDL: %v", err)
+	}
+
+	for _, status := range []string{"running", "failed", "stale"} {
+		if _, err := db.Exec(
+			`INSERT INTO ops_runs (type, bead_id, status) VALUES ('decompose', 'oro-blocked', ?)`,
+			status,
+		); err != nil {
+			t.Fatalf("insert first blocking status %q: %v", status, err)
+		}
+		if _, err := db.Exec(
+			`INSERT INTO ops_runs (type, bead_id, status) VALUES ('decompose', 'oro-blocked', ?)`,
+			status,
+		); err == nil {
+			t.Fatalf("duplicate blocking status %q succeeded, want unique constraint failure", status)
+		}
+		if _, err := db.Exec(`DELETE FROM ops_runs`); err != nil {
+			t.Fatalf("clear ops_runs after status %q: %v", status, err)
+		}
+	}
+
+	for _, status := range []string{"resolved", "superseded"} {
+		if _, err := db.Exec(
+			`INSERT INTO ops_runs (type, bead_id, status) VALUES ('decompose', 'oro-finished', ?)`,
+			status,
+		); err != nil {
+			t.Fatalf("insert first non-blocking status %q: %v", status, err)
+		}
+		if _, err := db.Exec(
+			`INSERT INTO ops_runs (type, bead_id, status) VALUES ('decompose', 'oro-finished', ?)`,
+			status,
+		); err != nil {
+			t.Fatalf("duplicate non-blocking status %q failed: %v", status, err)
+		}
+		if _, err := db.Exec(`DELETE FROM ops_runs`); err != nil {
+			t.Fatalf("clear ops_runs after status %q: %v", status, err)
+		}
+	}
+}
+
 func TestMigration11(t *testing.T) {
 	testBeadSchemaMigration(t)
 }
