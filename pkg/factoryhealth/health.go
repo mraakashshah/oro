@@ -448,7 +448,7 @@ func opsRunFindings(metrics OpsRunMetrics) []Finding {
 		case "failed":
 			findings = append(findings, Finding{
 				Code:              FindingOpsRunFailed,
-				Severity:          SeverityError,
+				Severity:          SeverityCritical,
 				Component:         "ops",
 				Message:           fmt.Sprintf("%s ops run for %s failed", run.Type, run.BeadID),
 				BeadID:            run.BeadID,
@@ -459,7 +459,7 @@ func opsRunFindings(metrics OpsRunMetrics) []Finding {
 		case "stale":
 			findings = append(findings, Finding{
 				Code:              FindingOpsRunStale,
-				Severity:          SeverityError,
+				Severity:          SeverityCritical,
 				Component:         "ops",
 				Message:           fmt.Sprintf("%s ops run for %s is stale", run.Type, run.BeadID),
 				BeadID:            run.BeadID,
@@ -475,7 +475,7 @@ func opsRunFindings(metrics OpsRunMetrics) []Finding {
 	if metrics.Failed > 0 {
 		findings = append(findings, Finding{
 			Code:              FindingOpsRunFailed,
-			Severity:          SeverityError,
+			Severity:          SeverityCritical,
 			Component:         "ops",
 			Message:           fmt.Sprintf("%d ops run(s) failed", metrics.Failed),
 			RecommendedAction: "run oro ops list, then use oro ops retry <id> or oro ops resolve <id> <reason>",
@@ -484,7 +484,7 @@ func opsRunFindings(metrics OpsRunMetrics) []Finding {
 	if metrics.Stale > 0 {
 		findings = append(findings, Finding{
 			Code:              FindingOpsRunStale,
-			Severity:          SeverityError,
+			Severity:          SeverityCritical,
 			Component:         "ops",
 			Message:           fmt.Sprintf("%d ops run(s) are stale", metrics.Stale),
 			RecommendedAction: "run oro ops list, then use oro ops retry <id> or oro ops resolve <id> <reason>",

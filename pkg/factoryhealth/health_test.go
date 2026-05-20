@@ -187,6 +187,9 @@ func TestEvaluateOpsRunFindings(t *testing.T) {
 	if got.Metrics.OpsRuns.Stale != 1 {
 		t.Fatalf("stale ops runs metric = %d, want 1", got.Metrics.OpsRuns.Stale)
 	}
+	if got.State != StateUnsafe {
+		t.Fatalf("state = %q, want unsafe; findings=%+v", got.State, got.Findings)
+	}
 
 	failed, ok := findingByCode(got, FindingOpsRunFailed)
 	if !ok {
@@ -195,6 +198,9 @@ func TestEvaluateOpsRunFindings(t *testing.T) {
 	if failed.BeadID != "oro-failed" || failed.Type != "decompose" {
 		t.Fatalf("failed finding payload bead/type = %q/%q, want oro-failed/decompose", failed.BeadID, failed.Type)
 	}
+	if failed.RecommendedAction != "run oro ops list, then oro ops retry 2 or oro ops resolve 2 <reason>" {
+		t.Fatalf("failed recommended action = %q", failed.RecommendedAction)
+	}
 
 	stale, ok := findingByCode(got, FindingOpsRunStale)
 	if !ok {
@@ -202,6 +208,61 @@ func TestEvaluateOpsRunFindings(t *testing.T) {
 	}
 	if stale.BeadID != "oro-stale" || stale.Type != "diagnosis" {
 		t.Fatalf("stale finding payload bead/type = %q/%q, want oro-stale/diagnosis", stale.BeadID, stale.Type)
+	}
+	if stale.RecommendedAction != "run oro ops list, then oro ops retry 3 or oro ops resolve 3 <reason>" {
+		t.Fatalf("stale recommended action = %q", stale.RecommendedAction)
+	}
+}
+
+func TestEvaluateOpsRunFindingsFromAggregateCounts(t *testing.T) {
+	got := Evaluate(Snapshot{
+		DaemonRunning:   true,
+		DispatcherState: "running",
+		OpsRuns: OpsRunMetrics{
+			Failed: 2,
+			Stale:  1,
+		},
+	})
+
+	if got.State != StateUnsafe {
+		t.Fatalf("state = %q, want unsafe; findings=%+v", got.State, got.Findings)
+	}
+	failed, ok := findingByCode(got, FindingOpsRunFailed)
+	if !ok {
+		t.Fatalf("missing aggregate failed ops run finding in %+v", got.Findings)
+	}
+	if failed.Message != "2 ops run(s) failed" {
+		t.Fatalf("failed aggregate message = %q", failed.Message)
+	}
+	if failed.RecommendedAction != "run oro ops list, then use oro ops retry <id> or oro ops resolve <id> <reason>" {
+		t.Fatalf("failed aggregate action = %q", failed.RecommendedAction)
+	}
+	stale, ok := findingByCode(got, FindingOpsRunStale)
+	if !ok {
+		t.Fatalf("missing aggregate stale ops run finding in %+v", got.Findings)
+	}
+	if stale.Message != "1 ops run(s) are stale" {
+		t.Fatalf("stale aggregate message = %q", stale.Message)
+	}
+	if stale.RecommendedAction != "run oro ops list, then use oro ops retry <id> or oro ops resolve <id> <reason>" {
+		t.Fatalf("stale aggregate action = %q", stale.RecommendedAction)
+	}
+}
+
+func TestEvaluateOpsRunFindingsIgnoresEmptyCounts(t *testing.T) {
+	got := Evaluate(Snapshot{
+		DaemonRunning:   true,
+		DispatcherState: "running",
+		OpsRuns: OpsRunMetrics{
+			Running: 1,
+			Runs: []OpsRunSnapshot{
+				{ID: 4, Type: "decompose", BeadID: "oro-running", Status: "running"},
+			},
+		},
+	})
+
+	if hasFinding(got, FindingOpsRunFailed) || hasFinding(got, FindingOpsRunStale) {
+		t.Fatalf("unexpected ops run finding in %+v", got.Findings)
 	}
 }
 
