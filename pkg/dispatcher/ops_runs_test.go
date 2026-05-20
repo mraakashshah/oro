@@ -5,8 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
+
+	"oro/pkg/protocol"
 )
 
 func TestOpsRunPersistenceLifecycle(t *testing.T) {
@@ -231,6 +234,126 @@ func TestDispatcherStartupMarksOrphanedOpsRunsStale(t *testing.T) {
 	waitFor(t, func() bool {
 		return spawnMock.SpawnCount() > 0
 	}, time.Second)
+}
+
+func TestRouteOpsRunRoutesReviewOpsRun(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+
+	beadID := "oro-review-retry"
+	workerID := "w-review"
+	worktree := t.TempDir()
+	targetBranch := "epic/review-target"
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Review retried ops run",
+		AcceptanceCriteria: "Test: pkg/dispatcher/ops_runs_test.go:TestRouteOpsRunRoutesReviewOpsRun | Assert: routed",
+	}
+
+	d.mu.Lock()
+	d.worktreeByBead[beadID] = worktree
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		beadID:       beadID,
+		worktree:     worktree,
+		targetBranch: targetBranch,
+	}
+	d.mu.Unlock()
+
+	routed := d.routeOpsRun(ctx, OpsRunRecord{
+		Type:     "review",
+		BeadID:   beadID,
+		WorkerID: workerID,
+	})
+	if !routed {
+		t.Fatal("routeOpsRun review = false, want true")
+	}
+
+	waitFor(t, func() bool { return spawnMock.SpawnCount() > 0 }, time.Second)
+
+	spawnMock.mu.Lock()
+	if len(spawnMock.spawns) != 1 {
+		spawnMock.mu.Unlock()
+		t.Fatalf("review spawn count = %d, want 1", len(spawnMock.spawns))
+	}
+	spawn := spawnMock.spawns[0]
+	spawnMock.mu.Unlock()
+	if spawn.workdir != worktree {
+		t.Fatalf("review workdir = %q, want %q", spawn.workdir, worktree)
+	}
+	for _, want := range []string{
+		beadID,
+		"Review retried ops run",
+		"Test: pkg/dispatcher/ops_runs_test.go:TestRouteOpsRunRoutesReviewOpsRun",
+		"merge to " + targetBranch,
+	} {
+		if !strings.Contains(spawn.prompt, want) {
+			t.Fatalf("review prompt missing %q\nprompt:\n%s", want, spawn.prompt)
+		}
+	}
+
+	defaultBranchBeadID := "oro-review-default-branch"
+	defaultBranchWorktree := t.TempDir()
+	d.cfg.DefaultBranch = "develop"
+	beadSrc.shown[defaultBranchBeadID] = &protocol.BeadDetail{
+		ID:                 defaultBranchBeadID,
+		Title:              "Review default branch",
+		AcceptanceCriteria: "Assert: uses dispatcher default branch",
+	}
+	d.mu.Lock()
+	d.worktreeByBead[defaultBranchBeadID] = defaultBranchWorktree
+	d.workers["w-default-branch"] = &trackedWorker{
+		id:       "w-default-branch",
+		beadID:   defaultBranchBeadID,
+		worktree: defaultBranchWorktree,
+	}
+	d.mu.Unlock()
+
+	if !d.routeOpsRun(ctx, OpsRunRecord{
+		Type:     "review",
+		BeadID:   defaultBranchBeadID,
+		WorkerID: "w-default-branch",
+	}) {
+		t.Fatal("routeOpsRun review with default branch = false, want true")
+	}
+	waitFor(t, func() bool { return spawnMock.SpawnCount() > 1 }, time.Second)
+
+	spawnMock.mu.Lock()
+	defaultBranchPrompt := spawnMock.spawns[1].prompt
+	spawnMock.mu.Unlock()
+	if !strings.Contains(defaultBranchPrompt, "merge to develop") {
+		t.Fatalf("review prompt should use dispatcher default branch; prompt:\n%s", defaultBranchPrompt)
+	}
+
+	if d.routeOpsRun(ctx, OpsRunRecord{
+		Type:   "review",
+		BeadID: "oro-review-no-worktree",
+	}) {
+		t.Fatal("routeOpsRun review without tracked worktree = true, want false")
+	}
+	if got := spawnMock.SpawnCount(); got != 2 {
+		t.Fatalf("review spawn count after missing worktree = %d, want 2", got)
+	}
+
+	missingDetailBeadID := "oro-review-missing-detail"
+	missingDetailWorktree := t.TempDir()
+	d.mu.Lock()
+	d.worktreeByBead[missingDetailBeadID] = missingDetailWorktree
+	d.workers["w-missing-detail"] = &trackedWorker{
+		id:           "w-missing-detail",
+		beadID:       missingDetailBeadID,
+		worktree:     missingDetailWorktree,
+		targetBranch: "epic/missing-detail",
+	}
+	d.mu.Unlock()
+	if !d.routeOpsRun(ctx, OpsRunRecord{
+		Type:     "review",
+		BeadID:   missingDetailBeadID,
+		WorkerID: "w-missing-detail",
+	}) {
+		t.Fatal("routeOpsRun review with missing bead detail = false, want true")
+	}
+	waitFor(t, func() bool { return spawnMock.SpawnCount() > 2 }, time.Second)
 }
 
 func fetchOpsRunForTest(t *testing.T, db *sql.DB, id int64) OpsRunRecord {

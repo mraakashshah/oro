@@ -469,6 +469,20 @@ func (d *Dispatcher) routeOpsRun(ctx context.Context, rec OpsRunRecord) bool {
 			BeadDescription: description,
 			Workdir:         d.workdirForOpsRun(rec.BeadID),
 		})
+	case ops.OpsReview:
+		worktree, baseBranch := d.reviewContextForOpsRun(rec)
+		if worktree == "" {
+			return false
+		}
+		title, acceptance, _ := d.lookupBeadDetail(ctx, rec.BeadID, rec.WorkerID)
+		d.ops.Review(ctx, ops.ReviewOpts{
+			BeadID:             rec.BeadID,
+			BeadTitle:          title,
+			Worktree:           worktree,
+			AcceptanceCriteria: acceptance,
+			BaseBranch:         baseBranch,
+			ProjectRoot:        worktree,
+		})
 	case ops.OpsDiagnosis:
 		d.ops.Diagnose(ctx, ops.DiagOpts{
 			BeadID:   rec.BeadID,
@@ -491,6 +505,35 @@ func (d *Dispatcher) routeOpsRun(ctx context.Context, rec OpsRunRecord) bool {
 		return false
 	}
 	return true
+}
+
+func (d *Dispatcher) reviewContextForOpsRun(rec OpsRunRecord) (worktree, baseBranch string) {
+	if d == nil || rec.BeadID == "" {
+		return "", ""
+	}
+	d.mu.Lock()
+	trackedWorktree := d.worktreeByBead[rec.BeadID]
+	if rec.WorkerID != "" {
+		if w := d.workers[rec.WorkerID]; w != nil && w.beadID == rec.BeadID {
+			baseBranch = w.targetBranch
+		}
+	}
+	if baseBranch == "" {
+		for _, w := range d.workers {
+			if w != nil && w.beadID == rec.BeadID {
+				baseBranch = w.targetBranch
+				break
+			}
+		}
+	}
+	d.mu.Unlock()
+	if trackedWorktree == "" {
+		return "", ""
+	}
+	if baseBranch == "" {
+		baseBranch = d.cfg.DefaultBranch
+	}
+	return d.workdirForOpsRun(rec.BeadID), baseBranch
 }
 
 func (d *Dispatcher) beadContextForOpsRun(ctx context.Context, beadID string) (title, description string) {
