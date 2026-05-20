@@ -739,7 +739,7 @@ test_quality_gate_stage_assets_fail_closed() {
 	fi
 	if ! grep -q "export GOLANGCI_LINT_CACHE=\"\$QG_DIR/golangci-lint-cache\"" "$SCRIPT_DIR/quality_gate.sh" ||
 		! grep -q "export GOCACHE=\"\$QG_DIR/go-build-cache\"" "$SCRIPT_DIR/quality_gate.sh" ||
-		! grep -q 'export UV_CACHE_DIR="${UV_CACHE_DIR:-$QG_DIR/uv-cache}"' "$SCRIPT_DIR/quality_gate.sh" ||
+		! grep -q "export UV_CACHE_DIR=\"\${UV_CACHE_DIR:-\$QG_DIR/uv-cache}\"" "$SCRIPT_DIR/quality_gate.sh" ||
 		! grep -q "GOCACHE=\$QG_DIR/golangci-go-cache GOFLAGS=-buildvcs=false golangci-lint run" "$SCRIPT_DIR/quality_gate.sh"; then
 		echo "FAIL: quality_gate.sh does not isolate lint, Go build, and uv caches"
 		return 1

@@ -332,7 +332,7 @@ func TestConsolidation_TriggeredAfterNCompletions(t *testing.T) {
 	cancel := startDispatcher(t, d)
 	defer cancel()
 
-	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	conn, scanner := connectWorker(t, d.cfg.SocketPath)
 	sendMsg(t, conn, protocol.Message{
 		Type:      protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
@@ -342,11 +342,24 @@ func TestConsolidation_TriggeredAfterNCompletions(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-con1", Title: "Consol test 1", Priority: 1, Type: "task"}})
+
 	// Complete 2 beads — should trigger consolidation after the 2nd.
 	for i := 1; i <= 2; i++ {
 		beadID := fmt.Sprintf("bead-con%d", i)
-		beadSrc.SetBeads([]protocol.Bead{{ID: beadID, Title: fmt.Sprintf("Consol test %d", i), Priority: 1, Type: "task"}})
-		readMsg(t, conn, 2*time.Second) // drain ASSIGN
+		msg, ok := readMsgFromScanner(t, scanner, 5*time.Second)
+		if !ok {
+			t.Fatalf("expected ASSIGN for %s", beadID)
+		}
+		if msg.Type != protocol.MsgAssign || msg.Assign == nil || msg.Assign.BeadID != beadID {
+			t.Fatalf("assignment message = %+v, want ASSIGN for %s", msg, beadID)
+		}
+		if i < 2 {
+			nextID := fmt.Sprintf("bead-con%d", i+1)
+			beadSrc.SetBeads([]protocol.Bead{{ID: nextID, Title: fmt.Sprintf("Consol test %d", i+1), Priority: 1, Type: "task"}})
+		} else {
+			beadSrc.SetBeads(nil)
+		}
 
 		sendMsg(t, conn, protocol.Message{
 			Type: protocol.MsgDone,
@@ -365,7 +378,7 @@ func TestConsolidation_TriggeredAfterNCompletions(t *testing.T) {
 				`SELECT status FROM assignments WHERE bead_id=?`, bid,
 			).Scan(&s)
 			return err == nil && s == "completed"
-		}, 2*time.Second)
+		}, 5*time.Second)
 	}
 
 	// Wait for the consolidation goroutine to complete and log its event.
