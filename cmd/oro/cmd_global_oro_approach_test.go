@@ -653,10 +653,11 @@ func TestAgentAssetsSyncSupportsClaudeAndCodex(t *testing.T) {
 	}
 
 	codexCfg := agentAssetsConfig{
-		runtime:       agentRuntimeCodex,
-		oroSkillsDir:  srcSkills,
-		oroHooksDir:   srcHooks,
-		destSkillsDir: filepath.Join(tmp, "codex", "skills"),
+		runtime:         agentRuntimeCodex,
+		oroSkillsDir:    srcSkills,
+		oroHooksDir:     srcHooks,
+		destSkillsDir:   filepath.Join(tmp, "codex", "skills"),
+		codexPluginRoot: filepath.Join(tmp, "codex", "oro-marketplace"),
 	}
 	if err := runAgentAssetsSync(codexCfg, os.Stdout); err != nil {
 		t.Fatalf("Codex sync failed: %v", err)
@@ -671,6 +672,100 @@ func TestAgentAssetsSyncSupportsClaudeAndCodex(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(tmp, "codex", "hooks")); err == nil {
 		t.Fatal("Codex runtime should not require hooks to be installed")
 	}
+	assertFileContent(t, filepath.Join(codexCfg.codexPluginRoot, ".agents", "plugins", "marketplace.json"), `{
+	"name": "oro-local",
+	"interface": {
+		"displayName": "Oro Local"
+	},
+	"plugins": [
+		{
+			"name": "oro",
+			"source": {
+				"source": "local",
+				"path": "./plugins/oro"
+			},
+			"policy": {
+				"installation": "AVAILABLE",
+				"authentication": "ON_INSTALL"
+			},
+			"category": "Productivity"
+		}
+	]
+}
+`)
+	assertFileContent(t, filepath.Join(codexCfg.codexPluginRoot, "plugins", "oro", "hooks.json"), `{
+	"hooks": {
+		"PostToolUse": [
+			{
+				"matcher": "Bash",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "python3 `+filepath.ToSlash(srcHooks)+`/prompt_injection_guard.py"
+					},
+					{
+						"type": "command",
+						"command": "python3 `+filepath.ToSlash(srcHooks)+`/context_pruner.py"
+					}
+				]
+			},
+			{
+				"matcher": "apply_patch",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "`+filepath.ToSlash(srcHooks)+`/auto-format.sh"
+					}
+				]
+			}
+		],
+		"PreToolUse": [
+			{
+				"matcher": "Bash",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "python3 `+filepath.ToSlash(srcHooks)+`/enforce_skills.py"
+					}
+				]
+			}
+		],
+		"SessionStart": [
+			{
+				"matcher": "",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "python3 `+filepath.ToSlash(srcHooks)+`/session_start_global.py"
+					}
+				]
+			}
+		],
+		"Stop": [
+			{
+				"matcher": "",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "`+filepath.ToSlash(srcHooks)+`/stop-checklist.sh"
+					}
+				]
+			}
+		],
+		"UserPromptSubmit": [
+			{
+				"matcher": "",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "python3 `+filepath.ToSlash(srcHooks)+`/enforce_skills.py"
+					}
+				]
+			}
+		]
+	}
+}
+`)
 
 	globalAliasCfg := agentAssetsConfig{
 		runtime:       agentRuntimeClaude,
@@ -827,6 +922,9 @@ func TestDefaultAgentAssetsConfigAllRuntime(t *testing.T) {
 	}
 	if cfg.codexSkillsDir != filepath.Join("custom", "codex", "skills") {
 		t.Fatalf("Codex skills dir = %q", cfg.codexSkillsDir)
+	}
+	if cfg.codexPluginRoot != filepath.Join("custom", "codex", "oro-marketplace") {
+		t.Fatalf("Codex plugin root = %q", cfg.codexPluginRoot)
 	}
 	if cfg.claudeRulesRoot != filepath.Join("home", "user") {
 		t.Fatalf("Claude rules root = %q", cfg.claudeRulesRoot)

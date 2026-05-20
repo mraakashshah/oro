@@ -47,6 +47,7 @@ type agentAssetsConfig struct {
 	destHooksDir    string // runtime-specific destination for hooks; empty when unsupported
 	claudeRulesRoot string // home/root where .claude/rules should be installed
 	codexSkillsDir  string // optional Codex destination when runtime=all
+	codexPluginRoot string // local marketplace root for Codex plugin package
 	settingsPath    string // runtime-specific settings.json; empty when unsupported
 	// Legacy Claude-specific aliases kept for test and caller compatibility.
 	claudeSkillsDir string
@@ -112,11 +113,13 @@ func defaultAgentAssetsConfig(homeDir, runtimeID string) agentAssetsConfig {
 	switch runtimeID {
 	case agentRuntimeCodex:
 		cfg.destSkillsDir = filepath.Join(codexHome, "skills")
+		cfg.codexPluginRoot = filepath.Join(codexHome, "oro-marketplace")
 	case agentRuntimeAll:
 		cfg.destSkillsDir = filepath.Join(homeDir, ".claude", "skills")
 		cfg.destHooksDir = filepath.Join(homeDir, ".claude", "hooks")
 		cfg.claudeRulesRoot = homeDir
 		cfg.codexSkillsDir = filepath.Join(codexHome, "skills")
+		cfg.codexPluginRoot = filepath.Join(codexHome, "oro-marketplace")
 		cfg.settingsPath = filepath.Join(homeDir, ".claude", "settings.json")
 	default:
 		cfg.runtime = agentRuntimeClaude
@@ -167,6 +170,11 @@ func syncAgentRuntimeAssets(cfg agentAssetsConfig, w io.Writer) error {
 	if err := copySkills(cfg, w); err != nil {
 		return err
 	}
+	if cfg.runtime == agentRuntimeCodex {
+		if err := installCodexPluginPackage(cfg, w); err != nil {
+			return err
+		}
+	}
 	if !runtimeSupportsHooks(cfg) {
 		fmt.Fprintf(w, "hooks: skipped for runtime %s\n", cfg.runtime)
 		return nil
@@ -178,6 +186,22 @@ func syncAgentRuntimeAssets(cfg agentAssetsConfig, w io.Writer) error {
 		return err
 	}
 	return installClaudeRuleAssets(cfg, w)
+}
+
+func installCodexPluginPackage(cfg agentAssetsConfig, w io.Writer) error {
+	if cfg.codexPluginRoot == "" {
+		return nil
+	}
+
+	assets, err := (agentassets.CodexGenerator{}).PluginPackage(cfg.oroHooksDir)
+	if err != nil {
+		return fmt.Errorf("generate Codex plugin package: %w", err)
+	}
+	if err := agentassets.InstallCodexPluginPackage(context.Background(), cfg.codexPluginRoot, assets); err != nil {
+		return fmt.Errorf("install Codex plugin package: %w", err)
+	}
+	fmt.Fprintf(w, "plugin: installed Codex local marketplace package to %s\n", cfg.codexPluginRoot)
+	return nil
 }
 
 func installClaudeRuleAssets(cfg agentAssetsConfig, w io.Writer) error {
