@@ -290,6 +290,60 @@ func TestClaudeRulesSyncWiredIntoClaudeGenerator(t *testing.T) {
 	}
 }
 
+func TestCodexRulesAssets(t *testing.T) {
+	assets := agentassets.CodexRuleAssets()
+	if len(assets) != 1 {
+		t.Fatalf("CodexRuleAssets returned %d assets, want 1", len(assets))
+	}
+
+	asset := assets[0]
+	if asset.Source != "rules/codex/oro.rules" {
+		t.Fatalf("Codex rule source = %q", asset.Source)
+	}
+	if asset.Target != "rules/oro.rules" {
+		t.Fatalf("Codex rule target = %q", asset.Target)
+	}
+
+	content := string(asset.Content)
+	for _, want := range []string{
+		`prefix_rule(pattern=["oro"], decision="allow")`,
+		`prefix_rule(pattern=["go", "test"], decision="allow")`,
+		`prefix_rule(pattern=["golangci-lint"], decision="allow")`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("Codex rules missing %q:\n%s", want, content)
+		}
+	}
+}
+
+func TestInstallCodexRulesWritesOnlyOroRules(t *testing.T) {
+	ctx := context.Background()
+	targetDir := t.TempDir()
+
+	if err := agentassets.InstallCodexRules(ctx, targetDir, agentassets.CodexRuleAssets()); err != nil {
+		t.Fatalf("InstallCodexRules returned error: %v", err)
+	}
+
+	rulesPath := filepath.Join(targetDir, "rules", "oro.rules")
+	assertFileContent(t, rulesPath, string(agentassets.CodexRuleAssets()[0].Content))
+
+	for _, target := range []string{
+		"rules/../oro.rules",
+		"rules/default.rules",
+		filepath.Join(targetDir, "rules", "oro.rules"),
+		"",
+	} {
+		err := agentassets.InstallCodexRules(ctx, targetDir, []agentassets.RuleAsset{{
+			Source:  "rules/codex/bad.rules",
+			Target:  target,
+			Content: []byte("bad\n"),
+		}})
+		if err == nil {
+			t.Fatalf("expected invalid Codex rule target %q to fail", target)
+		}
+	}
+}
+
 func assertRuleAssets(t *testing.T, got, want []agentassets.RuleAsset) {
 	t.Helper()
 

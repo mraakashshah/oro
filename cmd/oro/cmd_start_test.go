@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -147,6 +148,95 @@ func TestDaemonSpawnerUsesResolvedSelfExecutable(t *testing.T) {
 	if got != want {
 		t.Fatalf("resolved executable = %q, want %q", got, want)
 	}
+}
+
+func TestCodexHookConfigBlockReplacement(t *testing.T) {
+	hooksDir := filepath.Join(t.TempDir(), "hooks")
+	block := codexHookConfigBlock(hooksDir)
+
+	if !strings.Contains(block, "SessionStart") ||
+		!strings.Contains(block, "PreToolUse") ||
+		!strings.Contains(block, "PostToolUse") ||
+		!strings.Contains(block, "Stop") {
+		t.Fatalf("Codex hook config block missing required event wiring:\n%s", block)
+	}
+	if !strings.Contains(block, "oro-search-hook") {
+		t.Fatalf("Codex hook config block missing oro-search-hook wiring:\n%s", block)
+	}
+
+	existing := strings.Join([]string{
+		`model = "gpt-5.5"`,
+		"",
+		codexOroHooksBegin,
+		"[hooks]",
+		"SessionStart = []",
+		codexOroHooksEnd,
+		"",
+		`approval_policy = "never"`,
+	}, "\n")
+
+	got := replaceManagedCodexHookBlock(existing, block)
+
+	if strings.Count(got, codexOroHooksBegin) != 1 || strings.Count(got, codexOroHooksEnd) != 1 {
+		t.Fatalf("managed hook block markers not replaced exactly once:\n%s", got)
+	}
+	if strings.Contains(got, "SessionStart = []") {
+		t.Fatalf("old managed hook body survived replacement:\n%s", got)
+	}
+	if !strings.Contains(got, `model = "gpt-5.5"`) || !strings.Contains(got, `approval_policy = "never"`) {
+		t.Fatalf("user Codex config outside managed block was not preserved:\n%s", got)
+	}
+}
+
+func TestInstallCodexHookConfigWritesManagedBlock(t *testing.T) {
+	codexHome := t.TempDir()
+	hooksDir := filepath.Join(t.TempDir(), "hooks")
+	configPath := filepath.Join(codexHome, "config.toml")
+	if err := os.WriteFile(configPath, []byte("model = \"gpt-5.5\"\n"), 0o600); err != nil {
+		t.Fatalf("setup Codex config: %v", err)
+	}
+
+	if err := installCodexHookConfig(codexHome, hooksDir); err != nil {
+		t.Fatalf("installCodexHookConfig returned error: %v", err)
+	}
+	first, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read Codex config: %v", err)
+	}
+	if !strings.Contains(string(first), "model = \"gpt-5.5\"") ||
+		!strings.Contains(string(first), "oro-search-hook") ||
+		!strings.Contains(string(first), "stop-checklist.sh") {
+		t.Fatalf("Codex config missing preserved settings or hook commands:\n%s", first)
+	}
+
+	if err := installCodexHookConfig(codexHome, hooksDir); err != nil {
+		t.Fatalf("second installCodexHookConfig returned error: %v", err)
+	}
+	second, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read Codex config after second install: %v", err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatalf("Codex hook config install must be idempotent:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+}
+
+func TestMaybeRunRepoPreflightChecksHonorsFlag(t *testing.T) {
+	t.Run("skips when disabled", func(t *testing.T) {
+		if err := maybeRunRepoPreflightChecks(io.Discard, filepath.Join(t.TempDir(), "missing"), false); err != nil {
+			t.Fatalf("maybeRunRepoPreflightChecks returned error when disabled: %v", err)
+		}
+	})
+
+	t.Run("runs when enabled", func(t *testing.T) {
+		oroHome := filepath.Join(t.TempDir(), "oro-home")
+		if err := maybeRunRepoPreflightChecks(io.Discard, oroHome, true); err != nil {
+			t.Fatalf("maybeRunRepoPreflightChecks returned error when enabled: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(oroHome, "hooks", "oro-search-hook")); err != nil {
+			t.Fatalf("enabled repo preflight should build oro-search-hook: %v", err)
+		}
+	})
 }
 
 func TestCleanStaleWorkerLogs(t *testing.T) {

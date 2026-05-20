@@ -729,6 +729,15 @@ func TestAgentAssetsSyncSupportsClaudeAndCodex(t *testing.T) {
 						"command": "python3 `+filepath.ToSlash(srcHooks)+`/enforce_skills.py"
 					}
 				]
+			},
+			{
+				"matcher": "str_replace_based_edit_tool",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "`+filepath.ToSlash(srcHooks)+`/oro-search-hook"
+					}
+				]
 			}
 		],
 		"SessionStart": [

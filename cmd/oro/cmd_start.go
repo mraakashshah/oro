@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -14,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"oro/pkg/agentassets"
+	"oro/pkg/agentmodel"
 	"oro/pkg/beadstore"
 	"oro/pkg/codesearch"
 	"oro/pkg/dispatcher"
@@ -403,10 +406,11 @@ func preflightAndCheckRunningWith(w io.Writer, preflight func() error, runRepoCh
 		regenerateProjectSettings(w, paths.OroHome, readProjectNameCWD())
 	}
 
-	if runRepoChecks {
-		if err := runRepoPreflightChecks(w, paths.OroHome); err != nil {
-			return "", err
-		}
+	if err := maybeRunRepoPreflightChecks(w, paths.OroHome, runRepoChecks); err != nil {
+		return "", err
+	}
+	if err := ensureRuntimeProjectAssets(w, paths.OroHome); err != nil {
+		return "", err
 	}
 
 	pidPath = paths.PIDPath
@@ -429,6 +433,135 @@ func preflightAndCheckRunningWith(w io.Writer, preflight func() error, runRepoCh
 	}
 
 	return pidPath, nil
+}
+
+func maybeRunRepoPreflightChecks(w io.Writer, oroHome string, runRepoChecks bool) error {
+	if !runRepoChecks {
+		return nil
+	}
+	return runRepoPreflightChecks(w, oroHome)
+}
+
+func ensureRuntimeProjectAssets(w io.Writer, oroHome string) error {
+	assets, err := fs.Sub(EmbeddedAssets, "_assets")
+	if err != nil {
+		return fmt.Errorf("access embedded assets: %w", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get working dir for runtime assets: %w", err)
+	}
+	projectRoot := walkUpForGoMod(cwd)
+	if err := extractAgentsMDW(projectRoot, assets, false, w); err != nil {
+		return fmt.Errorf("extract AGENTS.md: %w", err)
+	}
+
+	runtime, _, _ := agentmodel.ResolveForRole("worker")
+	if runtime != agentRuntimeCodex {
+		return nil
+	}
+
+	codexHome := os.Getenv("CODEX_HOME")
+	if codexHome == "" {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("resolve user home for Codex assets: %w", err)
+		}
+		codexHome = filepath.Join(homeDir, ".codex")
+	}
+	if err := agentassets.InstallCodexRules(context.Background(), codexHome, agentassets.CodexRuleAssets()); err != nil {
+		return fmt.Errorf("install Codex rules: %w", err)
+	}
+	if err := ensureSearchHook(os.Stderr, filepath.Join(oroHome, "hooks", "oro-search-hook"), filepath.Join(projectRoot, "cmd", "oro-search-hook")); err != nil {
+		return fmt.Errorf("install Codex search hook: %w", err)
+	}
+	if err := installCodexHookConfig(codexHome, filepath.Join(oroHome, "hooks")); err != nil {
+		return fmt.Errorf("install Codex hook config: %w", err)
+	}
+	pluginAssets, err := (agentassets.CodexGenerator{}).PluginPackage(filepath.Join(oroHome, "hooks"))
+	if err != nil {
+		return fmt.Errorf("generate Codex plugin package: %w", err)
+	}
+	if err := agentassets.InstallCodexPluginPackage(context.Background(), filepath.Join(codexHome, "oro-marketplace"), pluginAssets); err != nil {
+		return fmt.Errorf("install Codex plugin package: %w", err)
+	}
+	return nil
+}
+
+const (
+	codexOroHooksBegin = "# BEGIN managed by oro: hooks"
+	codexOroHooksEnd   = "# END managed by oro: hooks"
+)
+
+func installCodexHookConfig(codexHome, hooksDir string) error {
+	cleanCodexHome, err := filepath.Abs(codexHome)
+	if err != nil {
+		return fmt.Errorf("resolve Codex config dir: %w", err)
+	}
+	codexHome = cleanCodexHome
+	configPath := filepath.Join(codexHome, "config.toml")
+	data, err := os.ReadFile(configPath) //nolint:gosec // CODEX_HOME-controlled config path
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read Codex config: %w", err)
+	}
+	next := replaceManagedCodexHookBlock(string(data), codexHookConfigBlock(hooksDir))
+	if err := os.MkdirAll(codexHome, 0o700); err != nil { //nolint:gosec // CODEX_HOME is intentionally user-controlled.
+		return fmt.Errorf("create Codex config dir: %w", err)
+	}
+	if err := os.WriteFile(configPath, []byte(next), 0o600); err != nil { //nolint:gosec // config can contain user-local settings
+		return fmt.Errorf("write Codex config: %w", err)
+	}
+	return nil
+}
+
+func replaceManagedCodexHookBlock(existing, block string) string {
+	existing = strings.TrimRight(existing, "\n")
+	begin := strings.Index(existing, codexOroHooksBegin)
+	end := strings.Index(existing, codexOroHooksEnd)
+	if begin >= 0 && end >= begin {
+		end += len(codexOroHooksEnd)
+		prefix := strings.TrimRight(existing[:begin], "\n")
+		suffix := strings.TrimLeft(existing[end:], "\n")
+		parts := []string{}
+		if prefix != "" {
+			parts = append(parts, prefix)
+		}
+		parts = append(parts, block)
+		if suffix != "" {
+			parts = append(parts, suffix)
+		}
+		return strings.Join(parts, "\n\n") + "\n"
+	}
+	if existing == "" {
+		return block + "\n"
+	}
+	return existing + "\n\n" + block + "\n"
+}
+
+func codexHookConfigBlock(hooksDir string) string {
+	q := strconv.Quote
+	py := func(name string) string { return q("python3 " + filepath.Join(hooksDir, name)) }
+	sh := func(name string) string { return q(filepath.Join(hooksDir, name)) }
+
+	return strings.Join([]string{
+		codexOroHooksBegin,
+		"[hooks]",
+		"SessionStart = [",
+		"  { matcher = \"\", hooks = [ { type = \"command\", command = " + py("session_start_global.py") + ", async = false } ] },",
+		"]",
+		"PreToolUse = [",
+		"  { matcher = \"Bash\", hooks = [ { type = \"command\", command = " + py("enforce_skills.py") + ", async = false } ] },",
+		"  { matcher = \"str_replace_based_edit_tool\", hooks = [ { type = \"command\", command = " + sh("oro-search-hook") + ", async = false, timeoutSec = 5, statusMessage = \"Searching codebase...\" } ] },",
+		"]",
+		"PostToolUse = [",
+		"  { matcher = \"Bash\", hooks = [ { type = \"command\", command = " + py("prompt_injection_guard.py") + ", async = false }, { type = \"command\", command = " + py("context_pruner.py") + ", async = false } ] },",
+		"  { matcher = \"apply_patch\", hooks = [ { type = \"command\", command = " + sh("auto-format.sh") + ", async = false } ] },",
+		"]",
+		"Stop = [",
+		"  { matcher = \"\", hooks = [ { type = \"command\", command = " + sh("stop-checklist.sh") + ", async = false } ] },",
+		"]",
+		codexOroHooksEnd,
+	}, "\n")
 }
 
 // runRepoPreflightChecks performs repo-rooted preflight steps:

@@ -95,6 +95,9 @@ func (g CodexGenerator) Hooks(hooksDir string) map[string][]HookGroup {
 		"PreToolUse": {{
 			Matcher: "Bash",
 			Hooks:   []HookSpec{{Type: "command", Command: py("enforce_skills.py")}},
+		}, {
+			Matcher: "str_replace_based_edit_tool",
+			Hooks:   []HookSpec{{Type: "command", Command: sh("oro-search-hook")}},
 		}},
 		"PostToolUse": {
 			{Matcher: "Bash", Hooks: []HookSpec{

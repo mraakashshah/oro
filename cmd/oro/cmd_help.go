@@ -63,6 +63,8 @@ Renders:
 
 Global:
   agent-assets         Sync oro skills and runtime assets for agent sessions
+  global-skills        Deprecated alias for Claude agent assets sync
+  global-oro-approach  Deprecated alias for Claude agent assets sync
 
 Maintenance:
   doctor     Diagnose oro installation issues
