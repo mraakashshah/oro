@@ -49,6 +49,7 @@ type agentAssetsConfig struct {
 	codexSkillsDir  string // optional Codex destination when runtime=all
 	codexPluginRoot string // local marketplace root for Codex plugin package
 	settingsPath    string // runtime-specific settings.json; empty when unsupported
+	deprecationOut  io.Writer
 	// Legacy Claude-specific aliases kept for test and caller compatibility.
 	claudeSkillsDir string
 	claudeHooksDir  string
@@ -60,11 +61,18 @@ type agentAssetsConfig struct {
 type globalOroApproachConfig = agentAssetsConfig
 
 func newGlobalOroApproachCmd() *cobra.Command {
+	return newAgentAssetsCmd("agent-assets", false)
+}
+
+func newGlobalOroApproachAliasCmd(use string) *cobra.Command {
+	return newAgentAssetsCmd(use, true)
+}
+
+func newAgentAssetsCmd(use string, legacyAlias bool) *cobra.Command {
 	var runtimeID string
 	cmd := &cobra.Command{
-		Use:     "agent-assets",
-		Aliases: []string{"global-skills", "global-oro-approach"},
-		Short:   "Sync oro skills and runtime bootstrap assets to agent homes",
+		Use:   use,
+		Short: "Sync oro skills and runtime bootstrap assets to agent homes",
 		Long: `Syncs shared oro skills and portable runtime bootstrap assets from ~/.oro/
 into a runtime-specific agent home.
 
@@ -89,8 +97,14 @@ Editing existing skills doesn't require re-running (symlinks are live).`,
 			if err != nil {
 				return fmt.Errorf("get home dir: %w", err)
 			}
+			if legacyAlias {
+				cfg := defaultAgentAssetsConfig(homeDir, agentRuntimeClaude)
+				cfg.runtime = agentRuntimeClaude
+				cfg.deprecationOut = cmd.ErrOrStderr()
+				return runGlobalOroApproach(cfg, cmd.OutOrStdout())
+			}
 			cfg := defaultAgentAssetsConfig(homeDir, runtimeID)
-			return runGlobalOroApproach(cfg, cmd.OutOrStdout())
+			return runAgentAssetsSync(cfg, cmd.OutOrStdout())
 		},
 	}
 
@@ -137,7 +151,11 @@ func runGlobalOroApproach(cfg globalOroApproachConfig, w io.Writer) error {
 		cfg.runtime = agentRuntimeClaude
 	}
 	if cfg.runtime == agentRuntimeClaude {
-		fmt.Fprintln(w, "warning: `oro global-skills` is deprecated; use `oro agent-assets --runtime claude`.")
+		deprecationOut := cfg.deprecationOut
+		if deprecationOut == nil {
+			deprecationOut = w
+		}
+		fmt.Fprintln(deprecationOut, "warning: `oro global-skills` is deprecated; use `oro agent-assets --runtime claude`.")
 	}
 	return runAgentAssetsSync(cfg, w)
 }

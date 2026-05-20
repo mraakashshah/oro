@@ -912,9 +912,96 @@ func TestCodexPluginInstallPreservesUserFiles(t *testing.T) {
 }
 
 func TestAgentAssetsSyncAllRuntimes(t *testing.T) {
-	t.Parallel()
+	tmp := t.TempDir()
+	srcSkills := filepath.Join(tmp, "home", ".oro", ".claude", "skills")
+	srcHooks := filepath.Join(tmp, "home", ".oro", "hooks")
+	makeSkillsDir(t, srcSkills, []string{"using-skills", "brainstorming", "restart-oro"})
+	makeHooksDir(t, srcHooks, map[string]string{
+		"session_start_global.py": "# global session start\n",
+	})
+	if err := os.MkdirAll(filepath.Join(tmp, "home", ".claude"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "home", ".claude", "settings.json"), []byte(`{}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", filepath.Join(tmp, "home"))
+	t.Setenv("CODEX_HOME", filepath.Join(tmp, "codex-home"))
 
-	TestAgentAssetsSyncSupportsClaudeAndCodex(t)
+	root := newRootCmd()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{"agent-assets", "--runtime", "all"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("agent-assets --runtime all failed: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmp, "home", ".claude", "skills", "using-skills", "SKILL.md")); err != nil {
+		t.Fatalf("runtime=all should install Claude skills: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "home", ".claude", "hooks", "session_start_global.py")); err != nil {
+		t.Fatalf("runtime=all should install Claude hooks: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "codex-home", "skills", "brainstorming", "SKILL.md")); err != nil {
+		t.Fatalf("runtime=all should install Codex skills: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "codex-home", "skills", "restart-oro")); err == nil {
+		t.Fatal("runtime=all should not install blocked skills for Codex")
+	}
+	if got := stderr.String(); jsonContains(got, "deprecated") {
+		t.Fatalf("canonical agent-assets command should not print alias deprecation notice to stderr: %q", got)
+	}
+	if got := stdout.String(); jsonContains(got, "deprecated") {
+		t.Fatalf("canonical agent-assets command should not print alias deprecation notice to stdout: %q", got)
+	}
+}
+
+func TestGlobalSkillsRemainsAlias(t *testing.T) {
+	tmp := t.TempDir()
+	srcSkills := filepath.Join(tmp, "home", ".oro", ".claude", "skills")
+	srcHooks := filepath.Join(tmp, "home", ".oro", "hooks")
+	makeSkillsDir(t, srcSkills, []string{"using-skills"})
+	makeHooksDir(t, srcHooks, map[string]string{
+		"session_start_global.py": "# global session start\n",
+	})
+	if err := os.MkdirAll(filepath.Join(tmp, "home", ".claude"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "home", ".claude", "settings.json"), []byte(`{}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", filepath.Join(tmp, "home"))
+	t.Setenv("CODEX_HOME", filepath.Join(tmp, "codex-home"))
+
+	root := newRootCmd()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{"global-skills", "--runtime", "codex"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("global-skills alias failed: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmp, "home", ".claude", "skills", "using-skills", "SKILL.md")); err != nil {
+		t.Fatalf("global-skills alias should sync Claude skills: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "home", ".claude", "hooks", "session_start_global.py")); err != nil {
+		t.Fatalf("global-skills alias should sync Claude hooks: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "codex-home", "skills", "using-skills")); err == nil {
+		t.Fatal("global-skills alias should ignore --runtime codex and remain Claude-targeted")
+	}
+	if got := stderr.String(); !jsonContains(got, "deprecated") || !jsonContains(got, "oro agent-assets --runtime claude") {
+		t.Fatalf("global-skills alias should print deprecation notice to stderr, got %q", got)
+	}
+	if got := stdout.String(); jsonContains(got, "deprecated") {
+		t.Fatalf("global-skills alias should not print deprecation notice to stdout: %q", got)
+	}
 }
 
 func TestAgentAssetsSyncInstallsClaudeRulesOnlyForClaudeRuntime(t *testing.T) {

@@ -61,6 +61,8 @@ func rootSubcommands(root *cobra.Command) []*cobra.Command {
 		newBeadCmd(),
 		newTaskCmd(),
 		newGlobalOroApproachCmd(),
+		newGlobalOroApproachAliasCmd("global-skills"),
+		newGlobalOroApproachAliasCmd("global-oro-approach"),
 		newDoctorCmd(),
 		newUninstallCmd(),
 		newModelsCmd(),
