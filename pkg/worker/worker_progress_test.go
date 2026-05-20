@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -114,6 +116,116 @@ func TestProgressTickWriteDoesNotBlockContextWatcher(t *testing.T) {
 	<-errCh
 }
 
+func TestWorkerEmitsProgressDuringQualityGate(t *testing.T) {
+	dispatcherConn, workerConn := net.Pipe()
+	defer dispatcherConn.Close()
+	defer workerConn.Close()
+
+	proc := newMockProcess()
+	spawner := &mockSpawner{process: proc, stdout: io.NopCloser(strings.NewReader("assignment done\n"))}
+	w := worker.NewWithConn("w-qg-progress", workerConn, spawner)
+	w.SetContextPollInterval(40 * time.Millisecond)
+	w.SetHeartbeatInterval(time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	worktree := validAssignWorktree(t, "qg-progress")
+	writeQualityGateScript(t, worktree, "#!/bin/sh\necho qg-start\nsleep 0.25\necho qg-done\nexit 0\n")
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-qg-progress",
+			Worktree: worktree,
+		},
+	})
+
+	decoder := json.NewDecoder(dispatcherConn)
+	_, running := readNextStatus(t, dispatcherConn, decoder, 2*time.Second)
+	if running.Status.State != "running" {
+		t.Fatalf("first STATUS state = %q, want running", running.Status.State)
+	}
+
+	close(proc.waitCh)
+
+	_, awaitingReview := readNextStatus(t, dispatcherConn, decoder, 2*time.Second)
+	if awaitingReview.Status.State != "awaiting_review" {
+		t.Fatalf("second STATUS state = %q, want awaiting_review", awaitingReview.Status.State)
+	}
+
+	_, progress := readNextStatus(t, dispatcherConn, decoder, 2*time.Second)
+	if progress.Status.State != "running_progress" {
+		t.Fatalf("quality gate STATUS state = %q, want running_progress", progress.Status.State)
+	}
+	assertProgressAges(t, progress)
+
+	cancel()
+	<-errCh
+}
+
+func TestWorkerEmitsProgressDuringCodexPlainTextSubprocess(t *testing.T) {
+	dispatcherConn, workerConn := net.Pipe()
+	defer dispatcherConn.Close()
+	defer workerConn.Close()
+
+	claudeSpawner := newMockSpawner()
+	codexProc := newMockProcess()
+	codexSpawner := &mockSpawner{
+		process: codexProc,
+		stdout:  io.NopCloser(strings.NewReader("codex plain text output\n")),
+		format:  worker.StreamFormatLineText,
+	}
+	w := worker.NewWithConnAndRuntimeSpawners("w-codex-progress", workerConn, claudeSpawner, codexSpawner)
+	w.SetContextPollInterval(40 * time.Millisecond)
+	w.SetHeartbeatInterval(time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+	worktree := validAssignWorktree(t, "codex-progress")
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:    "bead-codex-progress",
+			Worktree:  worktree,
+			Runtime:   "codex",
+			Model:     "gpt-5.5",
+			Reasoning: "medium",
+		},
+	})
+
+	decoder := json.NewDecoder(dispatcherConn)
+	_, running := readNextStatus(t, dispatcherConn, decoder, 2*time.Second)
+	if running.Status.State != "running" {
+		t.Fatalf("first STATUS state = %q, want running", running.Status.State)
+	}
+
+	_, progress := readNextStatus(t, dispatcherConn, decoder, 2*time.Second)
+	if progress.Status.State != "running_progress" {
+		t.Fatalf("codex STATUS state = %q, want running_progress", progress.Status.State)
+	}
+	assertProgressAges(t, progress)
+
+	calls := codexSpawner.SpawnCalls()
+	if len(calls) != 1 {
+		t.Fatalf("codex spawn calls = %d, want 1", len(calls))
+	}
+	if calls[0].Reasoning != "medium" || calls[0].Workdir != worktree {
+		t.Fatalf("codex spawn call = %+v, want reasoning medium workdir %s", calls[0], worktree)
+	}
+	if len(claudeSpawner.SpawnCalls()) != 0 {
+		t.Fatalf("claude spawn calls = %d, want 0", len(claudeSpawner.SpawnCalls()))
+	}
+
+	cancel()
+	codexProc.Kill()
+	<-errCh
+}
+
 func readNextWorkerMessage(t *testing.T, conn *deadlineBlockingConn, timeout time.Duration, matches func(protocol.Message) bool) protocol.Message {
 	t.Helper()
 
@@ -149,6 +261,29 @@ func readNextStatus(t *testing.T, conn net.Conn, decoder *json.Decoder, timeout 
 		if msg.Type == protocol.MsgStatus {
 			return time.Now(), msg
 		}
+	}
+}
+
+func assertProgressAges(t *testing.T, msg protocol.Message) {
+	t.Helper()
+
+	if !strings.Contains(msg.Status.Result, "command_age_ms") {
+		t.Fatalf("progress result missing command age: %q", msg.Status.Result)
+	}
+	if !strings.Contains(msg.Status.Result, "last_output_age_ms") {
+		t.Fatalf("progress result missing last output age: %q", msg.Status.Result)
+	}
+}
+
+func writeQualityGateScript(t *testing.T, worktree, body string) {
+	t.Helper()
+
+	script := filepath.Join(worktree, "quality_gate.sh")
+	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
+		t.Fatalf("write quality gate script: %v", err)
+	}
+	if err := os.Chmod(script, 0o755); err != nil {
+		t.Fatalf("chmod quality gate script: %v", err)
 	}
 }
 

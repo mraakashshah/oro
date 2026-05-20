@@ -2,6 +2,7 @@ package worker
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -777,7 +778,7 @@ func (w *Worker) runQGAndReport(ctx context.Context) {
 	// surface legitimate failures without blocking the worker indefinitely.
 	_ = rebaseOntoTarget(ctx, wt, target)
 
-	passed, output, err := RunQualityGate(ctx, wt, false)
+	passed, output, err := w.runQualityGateWithProgress(ctx, wt, false)
 	if err != nil {
 		// Script missing or cannot start — report as failed with error detail.
 		_ = w.SendDone(ctx, false, err.Error())
@@ -798,6 +799,55 @@ func (w *Worker) runQGAndReport(ctx context.Context) {
 	w.mu.Unlock()
 
 	_ = w.SendReadyForReview(ctx)
+}
+
+func (w *Worker) runQualityGateWithProgress(ctx context.Context, worktree string, skipMutation bool) (passed bool, output string, err error) {
+	scriptPath, statErr := findQualityGateScript(ctx, worktree)
+	if statErr != nil {
+		return false, "", statErr
+	}
+
+	cmd := exec.CommandContext(ctx, "bash", scriptPath) //nolint:gosec // script path constructed from worktree, not user input
+	cmd.Dir = worktree
+	cmd.Env = qualityGateEnv(worktree, skipMutation)
+
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+
+	if err := cmd.Start(); err != nil {
+		return false, "", fmt.Errorf("run quality gate: %w", err)
+	}
+	w.recordSpawnedProc(&commandProcess{cmd: cmd}, "quality_gate", "quality_gate", StreamFormatLineText)
+
+	err = cmd.Wait()
+	output = out.String()
+
+	w.mu.Lock()
+	w.subprocExitErr = ""
+	w.subprocExitCode = 0
+	w.handleExitClaimed = true
+	if err != nil {
+		w.subprocExitErr = err.Error()
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			w.subprocExitCode = exitErr.ExitCode()
+		}
+	}
+	if w.subprocExitCh != nil && !w.subprocExitClosed {
+		close(w.subprocExitCh)
+		w.subprocExitClosed = true
+	}
+	w.mu.Unlock()
+
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return false, output, nil
+		}
+		return false, output, fmt.Errorf("run quality gate: %w", err)
+	}
+	return true, output, nil
 }
 
 // processOutput reads subprocess stdout according to the runtime stream format,
@@ -1681,6 +1731,29 @@ func RunQualityGate(ctx context.Context, worktree string, skipMutation bool) (pa
 		return false, output, fmt.Errorf("run quality gate: %w", err)
 	}
 	return true, output, nil
+}
+
+type commandProcess struct {
+	cmd *exec.Cmd
+}
+
+// Wait waits for the wrapped command to exit.
+func (p *commandProcess) Wait() error {
+	if err := p.cmd.Wait(); err != nil {
+		return fmt.Errorf("wait command: %w", err)
+	}
+	return nil
+}
+
+// Kill terminates the wrapped command process.
+func (p *commandProcess) Kill() error {
+	if p.cmd.Process == nil {
+		return nil
+	}
+	if err := p.cmd.Process.Kill(); err != nil {
+		return fmt.Errorf("kill command: %w", err)
+	}
+	return nil
 }
 
 func qualityGateEnv(worktree string, skipMutation bool) []string {
