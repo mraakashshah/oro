@@ -46,7 +46,7 @@ require_literal "$runbook" "prefix_rule entries are Codex command-permission rul
 require_literal "$runbook" "Case B (interactive Codex sessions) is deferred to a future spec"
 require_literal "$runbook" "../plans/2026-05-06-codex-harness-parity-design.md"
 require_literal "$runbook" "../learnings/codex-plugin-discovery.md"
-require_literal "$runbook" 'codex plugin marketplace add "$CODEX_HOME/oro-marketplace"'
+require_literal "$runbook" "codex plugin marketplace add \"\$CODEX_HOME/oro-marketplace\""
 require_literal "$runbook" ".agents/plugins/marketplace.json"
 require_literal "$runbook" "plugins/oro/.codex-plugin/plugin.json"
 require_literal "$runbook" "plugins/oro/hooks.json"
