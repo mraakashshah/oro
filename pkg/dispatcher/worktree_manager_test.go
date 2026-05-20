@@ -136,31 +136,55 @@ func TestDeleteBranchUsesSafeDelete(t *testing.T) {
 	}
 }
 
-func TestDeleteBranchMergedIntoUsesTargetProofBeforeSafeDelete(t *testing.T) {
-	runner := &mockCommandRunner{}
-	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
+func TestDeleteBranchMergedIntoUsesTargetProofBeforeForcedDelete(t *testing.T) {
+	t.Run("force deletes only after target ancestry proof succeeds", func(t *testing.T) {
+		runner := &mockCommandRunner{}
+		mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
 
-	err := mgr.DeleteBranchMergedInto(context.Background(), "agent/oro-safe", "epic/parent")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+		err := mgr.DeleteBranchMergedInto(context.Background(), "agent/oro-safe", "epic/parent")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
-	wantCalls := [][]string{
-		{"-C", "/repo/root", "merge-base", "--is-ancestor", "agent/oro-safe", "epic/parent"},
-		{"-C", "/repo/root", "branch", "-d", "agent/oro-safe"},
-	}
-	if len(runner.calls) != len(wantCalls) {
-		t.Fatalf("expected %d command calls, got %d: %#v", len(wantCalls), len(runner.calls), runner.calls)
-	}
-	for i, wantArgs := range wantCalls {
-		call := runner.calls[i]
-		if call.Name != "git" {
-			t.Fatalf("call[%d] name = %q, want git", i, call.Name)
+		wantCalls := [][]string{
+			{"-C", "/repo/root", "merge-base", "--is-ancestor", "agent/oro-safe", "epic/parent"},
+			{"-C", "/repo/root", "branch", "-D", "agent/oro-safe"},
 		}
-		if !slices.Equal(call.Args, wantArgs) {
-			t.Fatalf("call[%d] args = %v, want %v", i, call.Args, wantArgs)
+		if len(runner.calls) != len(wantCalls) {
+			t.Fatalf("expected %d command calls, got %d: %#v", len(wantCalls), len(runner.calls), runner.calls)
 		}
-	}
+		for i, wantArgs := range wantCalls {
+			call := runner.calls[i]
+			if call.Name != "git" {
+				t.Fatalf("call[%d] name = %q, want git", i, call.Name)
+			}
+			if !slices.Equal(call.Args, wantArgs) {
+				t.Fatalf("call[%d] args = %v, want %v", i, call.Args, wantArgs)
+			}
+		}
+	})
+
+	t.Run("returns proof error and skips delete when proof fails", func(t *testing.T) {
+		proofErr := fmt.Errorf("not an ancestor")
+		runner := &mockCommandRunner{err: proofErr}
+		mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
+
+		err := mgr.DeleteBranchMergedInto(context.Background(), "agent/oro-safe", "epic/parent")
+		if err == nil {
+			t.Fatal("expected proof error")
+		}
+		if !strings.Contains(err.Error(), "prove branch agent/oro-safe merged into epic/parent") {
+			t.Fatalf("error = %v, want proof context", err)
+		}
+
+		wantArgs := []string{"-C", "/repo/root", "merge-base", "--is-ancestor", "agent/oro-safe", "epic/parent"}
+		if len(runner.calls) != 1 {
+			t.Fatalf("calls = %#v, want only ancestry proof", runner.calls)
+		}
+		if call := runner.calls[0]; call.Name != "git" || !slices.Equal(call.Args, wantArgs) {
+			t.Fatalf("proof call = %s %v, want git %v", runner.calls[0].Name, runner.calls[0].Args, wantArgs)
+		}
+	})
 }
 
 func TestForceDeleteBranchUsesExplicitAPI(t *testing.T) {
