@@ -7779,6 +7779,74 @@ func TestDispatcher_FocusImmediatePreemptsAssignedNonFocusedWorker(t *testing.T)
 	}
 }
 
+func TestImmediateFocus(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+	focusedConn := newMockConn()
+	otherConn := newMockConn()
+
+	beadSrc.shown["bead-focused"] = &protocol.BeadDetail{ID: "bead-focused", Epic: "epic-focus"}
+	beadSrc.shown["bead-other"] = &protocol.BeadDetail{ID: "bead-other", Epic: "epic-other"}
+
+	d.mu.Lock()
+	d.workers["worker-focused"] = &trackedWorker{
+		id:      "worker-focused",
+		conn:    focusedConn,
+		state:   protocol.WorkerBusy,
+		beadID:  "bead-focused",
+		encoder: json.NewEncoder(focusedConn),
+	}
+	d.workers["worker-other"] = &trackedWorker{
+		id:      "worker-other",
+		conn:    otherConn,
+		state:   protocol.WorkerBusy,
+		beadID:  "bead-other",
+		managed: true,
+		encoder: json.NewEncoder(otherConn),
+	}
+	d.mu.Unlock()
+
+	detail, err := d.applyFocus("--immediate epic-focus")
+	if err != nil {
+		t.Fatalf("applyFocus() error = %v", err)
+	}
+	if detail != "focused on epic-focus; preempted 1 non-focused worker" {
+		t.Fatalf("applyFocus() detail = %q, want immediate preemption detail", detail)
+	}
+
+	d.mu.Lock()
+	focusedState := d.workers["worker-focused"].state
+	_, otherExists := d.workers["worker-other"]
+	_, pendingManaged := d.pendingManagedIDs["worker-other"]
+	epic := d.focusedEpic
+	d.mu.Unlock()
+
+	if epic != "epic-focus" {
+		t.Fatalf("focusedEpic = %q, want epic-focus", epic)
+	}
+	if focusedState != protocol.WorkerBusy {
+		t.Fatalf("focused worker state = %s, want busy", focusedState)
+	}
+	if otherExists {
+		t.Fatal("non-focused worker still exists after immediate focus, want removed/restarted")
+	}
+	if !pendingManaged {
+		t.Fatal("non-focused managed worker was not marked pending for respawn")
+	}
+	if len(focusedConn.written) != 0 {
+		t.Fatalf("focused worker received %d messages, want none", len(focusedConn.written))
+	}
+	if !otherConn.closed {
+		t.Fatal("non-focused worker connection was not closed")
+	}
+	beadSrc.mu.Lock()
+	gotStatus := beadSrc.updated["bead-other"]
+	beadSrc.mu.Unlock()
+	if gotStatus != "open" {
+		t.Fatalf("non-focused bead status = %q, want open", gotStatus)
+	}
+}
+
 type blockingOnceEstimator struct {
 	started chan struct{}
 	release chan struct{}
@@ -20085,6 +20153,49 @@ func TestBuildSchedulingPlan_NestedEpicUsesRootPriority(t *testing.T) {
 	}
 	if got := plan.units[1].epicID; got != "epic-other" {
 		t.Fatalf("second epic unit = %q, want epic-other", got)
+	}
+}
+
+func TestBuildSchedulingPlan_FocusOverridesIndependent(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	d.mu.Lock()
+	d.focusedEpic = "epic-focus-root"
+	d.priorityBeads["spawn-for"] = true
+	d.mu.Unlock()
+
+	beadSrc.shown["epic-focus-child"] = &protocol.BeadDetail{
+		ID:        "epic-focus-child",
+		Type:      "epic",
+		Epic:      "epic-focus-root",
+		Priority:  9,
+		CreatedAt: "2026-05-03T00:00:00Z",
+	}
+	beadSrc.shown["epic-focus-root"] = &protocol.BeadDetail{
+		ID:        "epic-focus-root",
+		Type:      "epic",
+		Priority:  9,
+		CreatedAt: "2026-05-02T00:00:00Z",
+	}
+	beadSrc.shown["epic-backfill-root"] = &protocol.BeadDetail{
+		ID:        "epic-backfill-root",
+		Type:      "epic",
+		Priority:  0,
+		CreatedAt: "2026-05-01T00:00:00Z",
+	}
+
+	beads := []protocol.Bead{
+		{ID: "epic-backfill", Priority: 0, Epic: "epic-backfill-root"},
+		{ID: "independent-p1", Priority: 1},
+		{ID: "focused-nested", Priority: 2, Epic: "epic-focus-child"},
+		{ID: "spawn-for", Priority: 2},
+		{ID: "independent-p0", Priority: 0},
+	}
+
+	plan, _, _ := d.buildSchedulingPlan(context.Background(), beads)
+
+	want := []string{"spawn-for", "focused-nested", "independent-p0", "independent-p1", "epic-backfill"}
+	if got := schedulingPlanBeadIDs(plan); !slices.Equal(got, want) {
+		t.Fatalf("plan bead order = %v, want focus before independent and independent backfill before epics %v", got, want)
 	}
 }
 
