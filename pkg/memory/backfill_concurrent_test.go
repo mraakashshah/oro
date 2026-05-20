@@ -153,6 +153,7 @@ func TestBackfillConcurrentClaim(t *testing.T) {
 	if embedCount == 0 {
 		t.Error("expected embedder to be called at least once (worker should have processed batch)")
 	}
+	completed := false
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		var state string
@@ -160,11 +161,17 @@ func TestBackfillConcurrentClaim(t *testing.T) {
 			`SELECT value FROM kv_store WHERE key = ?`, backfillStateKey,
 		).Scan(&state)
 		if err == nil && state == backfillStateComplete {
-			return
+			completed = true
+			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("backfill worker did not complete before test cleanup")
+	if !completed {
+		t.Fatal("backfill worker did not complete before test cleanup")
+	}
+	if embedCount := embedder.EmbedCount(); embedCount != 10 {
+		t.Errorf("expected exactly one worker to embed 10 rows, got %d calls", embedCount)
+	}
 }
 
 // TestBackfillConcurrentStaleOwnerSteal verifies that when two goroutines

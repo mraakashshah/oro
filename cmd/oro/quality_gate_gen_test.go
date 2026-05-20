@@ -236,6 +236,8 @@ func TestGenerateQualityGateScript(t *testing.T) {
 			`cmd/oro embeds _assets but Makefile stage-assets target is unavailable`,
 			`expected_rc_files=(`,
 			`FAIL: missing lane result`,
+			`export GOCACHE="$QG_DIR/go-build-cache"`,
+			`export UV_CACHE_DIR="${UV_CACHE_DIR:-$QG_DIR/uv-cache}"`,
 		} {
 			if !strings.Contains(script, want) {
 				t.Errorf("generated Go script missing %q", want)
@@ -283,6 +285,7 @@ func TestGenerateQualityGateScript(t *testing.T) {
 		for _, want := range []string{
 			`should_run_mutation_tests()`,
 			`PYTHON TIER 5: MUTATION TESTING (incremental)`,
+			`check "pytest" "qg_run_python_tool pytest"`,
 			`uv run cosmic-ray exec`,
 			`uv run cr-rate`,
 		} {

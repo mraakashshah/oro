@@ -738,8 +738,10 @@ test_quality_gate_stage_assets_fail_closed() {
 		return 1
 	fi
 	if ! grep -q "export GOLANGCI_LINT_CACHE=\"\$QG_DIR/golangci-lint-cache\"" "$SCRIPT_DIR/quality_gate.sh" ||
+		! grep -q "export GOCACHE=\"\$QG_DIR/go-build-cache\"" "$SCRIPT_DIR/quality_gate.sh" ||
+		! grep -q 'export UV_CACHE_DIR="${UV_CACHE_DIR:-$QG_DIR/uv-cache}"' "$SCRIPT_DIR/quality_gate.sh" ||
 		! grep -q "GOCACHE=\$QG_DIR/golangci-go-cache GOFLAGS=-buildvcs=false golangci-lint run" "$SCRIPT_DIR/quality_gate.sh"; then
-		echo "FAIL: quality_gate.sh does not isolate golangci-lint cache and Go build cache"
+		echo "FAIL: quality_gate.sh does not isolate lint, Go build, and uv caches"
 		return 1
 	fi
 	if ! grep -q 'QG_STAGE_ASSETS_LOCK=""' "$SCRIPT_DIR/quality_gate.sh" ||
@@ -902,6 +904,10 @@ test_quality_gate_python_tools_avoid_pyenv_shims() {
 		echo "FAIL: quality_gate.sh pyright lane does not use source-scoped qg_pyright wrapper"
 		return 1
 	fi
+	if ! grep -q 'check "pytest" "qg_run_python_tool pytest"' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: quality_gate.sh pytest lane does not use qg_run_python_tool wrapper"
+		return 1
+	fi
 	local helpers
 	helpers=$(mktemp "${TMPDIR:-/tmp}/qg-helpers.XXXXXX")
 	write_quality_gate_python_helpers "$helpers"
@@ -937,6 +943,10 @@ test_generated_quality_gate_python_tools_avoid_pyenv_shims() {
 	if ! grep -q 'qg_pyright --version' "$gen" ||
 		! grep -q 'check "pyright" "qg_run_pyright_source"' "$gen"; then
 		echo "FAIL: generated quality gate template pyright lane does not use source-scoped qg_pyright wrapper"
+		return 1
+	fi
+	if ! grep -q 'check "pytest" "qg_run_python_tool pytest"' "$gen"; then
+		echo "FAIL: generated quality gate template pytest lane does not use qg_run_python_tool wrapper"
 		return 1
 	fi
 	local helpers
