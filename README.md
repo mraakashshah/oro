@@ -271,6 +271,19 @@ oro setup
 
 `oro setup` checks prerequisites, detects project languages, installs missing dev tools, bootstraps `.oro/` config, and runs a health check. By default it uses stealth mode — zero footprint in the project directory.
 
+For Codex workers, install and authenticate the Codex CLI before setup:
+
+```bash
+codex --version
+```
+
+Codex assets are installed under `$CODEX_HOME` when set, otherwise `~/.codex`.
+Oro writes portable Codex skills, Codex `prefix_rule` command-permission rules,
+an Oro local marketplace package, and project `AGENTS.md` instructions. See
+[docs/runbooks/codex-setup.md](docs/runbooks/codex-setup.md) for the plugin
+discovery path, `.codex-plugin/plugin.json` layout, marketplace registration,
+and current limitations. Case B (interactive Codex sessions) is deferred to a future spec; the current parity scope is dispatcher-spawned Codex workers.
+
 ### Uninstall
 
 ```bash
