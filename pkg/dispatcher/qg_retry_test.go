@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -819,6 +820,62 @@ func TestQGExhaustion_ReopensOriginalForDeterministicFailure(t *testing.T) {
 
 // --- Transient QG Backoff Test (oro-34e5) ---
 
+func TestHandleQGFailureRecordsOneTransientRetryPerFailure(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	d.transientBackoffFn = func(_ int) time.Duration { return 0 }
+
+	const (
+		workerID = "w-transient-once"
+		beadID   = "bead-transient-once"
+	)
+	beadSrc.SetBeads([]protocol.Bead{{ID: beadID, Title: "Transient QG once", Priority: 1, Type: "task", Model: protocol.ModelOpus}})
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: "Transient QG once", Status: "in_progress"}
+
+	serverConn, clientConn := net.Pipe()
+	defer func() { _ = serverConn.Close() }()
+	defer func() { _ = clientConn.Close() }()
+
+	msgCh := make(chan protocol.Message, 1)
+	go func() {
+		var msg protocol.Message
+		if err := json.NewDecoder(clientConn).Decode(&msg); err == nil {
+			msgCh <- msg
+		}
+	}()
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         serverConn,
+		state:        protocol.WorkerBusy,
+		assignmentID: 1,
+		beadID:       beadID,
+		worktree:     t.TempDir(),
+		model:        protocol.ModelOpus,
+		lastSeen:     d.nowFunc(),
+		encoder:      json.NewEncoder(serverConn),
+	}
+	d.mu.Unlock()
+
+	d.handleQGFailure(t.Context(), workerID, beadID, "network timeout: dial tcp 127.0.0.1:3000: connect: connection refused")
+
+	select {
+	case msg := <-msgCh:
+		if msg.Type != protocol.MsgAssign {
+			t.Fatalf("expected ASSIGN after transient retry, got %s", msg.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected ASSIGN after transient retry")
+	}
+
+	d.mu.Lock()
+	transientCount := d.transientCounts[beadID]
+	d.mu.Unlock()
+	if transientCount != 1 {
+		t.Fatalf("one transient QG failure must record one transient retry, got %d", transientCount)
+	}
+}
+
 func TestTransientQGFailureBacksOffWithoutBurningWorkerAttempt(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	// Zero-duration backoff so the test completes without sleeping.
@@ -873,6 +930,13 @@ func TestTransientQGFailureBacksOffWithoutBurningWorkerAttempt(t *testing.T) {
 	}
 	if msg.Type != protocol.MsgAssign {
 		t.Fatalf("expected ASSIGN after transient retry, got %s", msg.Type)
+	}
+
+	d.mu.Lock()
+	transientCount := d.transientCounts["bead-transient1"]
+	d.mu.Unlock()
+	if transientCount != 1 {
+		t.Fatalf("one transient QG failure must record one transient retry, got %d", transientCount)
 	}
 }
 
