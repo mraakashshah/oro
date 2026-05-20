@@ -17,35 +17,35 @@ This preserves fast handling for standalone work while preventing the factory fr
 
 Files read:
 
-- `pkg/dispatcher/dispatcher.go:sortBeadsByPriority`
+- `pkg/dispatcher/dispatcher.go:buildSchedulingPlan`
 - `pkg/dispatcher/dispatcher.go:tryAssign`
 - `pkg/dispatcher/dispatcher.go:filterExecutableBeads`
 - `pkg/dispatcher/dispatcher.go:assignGeneralIdleWorkers`
 - `pkg/dispatcher/dispatcher.go:assignBead`
 - `pkg/dispatcher/epic_branch.go:resolveEpicBranch`
 - `pkg/protocol/types.go:Bead`
-- `pkg/dispatcher/dispatcher_test.go:TestSortBeadsByPriority_EpicFinishing`
+- `pkg/dispatcher/dispatcher_test.go:TestBuildSchedulingPlan_PriorityFirstEpicUnits`
 - `pkg/beadstore/sqlite.go:Ready`
 - `pkg/beadstore/migrations/migrate_v3.go:v3ViewsDDL`
 - `docs/plans/notes/bd-ready-semantics.md`
 - `docs/decisions&discoveries.md`
 
-Current scheduler behavior:
+Scheduler behavior observed before this plan:
 
 - `Ready()` returns ready open beads ordered by bead priority and created time.
 - `filterExecutableBeads` excludes already-decomposed epic beads because those epic beads are not directly executable.
 - `protocol.Bead.Epic` is the raw JSON `parent` field. It may point to any parent bead type, not necessarily an epic.
 - `assignBead` already uses `resolveEpicBranch` to walk the parent chain and find the nearest epic-type ancestor for branch selection.
-- `sortBeadsByPriority` then mutates the flat ready child list into four groups:
+- The old flat sorter mutated the ready child list into four groups:
   1. spawn-for priority beads
   2. focused epic descendants
   3. standalone beads where `Epic == ""`
-  4. unfocused epic children grouped by oldest epic ID
-- `TestSortBeadsByPriority_EpicFinishing` documents this old order explicitly.
+  4. unfocused epic children using age/ID before parent epic priority
+- `TestBuildSchedulingPlan_PriorityFirstEpicUnits` now documents the replacement order: explicit spawn-for work, focused descendants, independent beads, then epic units by epic priority with oldest-first only as a same-priority tie-breaker.
 
-The problem:
+The problem this plan addressed:
 
-- Unfocused epic scheduling is based primarily on epic ID/age, not the epic's priority.
+- Unfocused epic scheduling was based primarily on epic ID/age, not the epic's priority.
 - Child bead priority can make the dispatcher sample multiple epics instead of pushing one epic forward.
 - The scheduler cannot express "this epic is the work unit; drain its ready frontier."
 
@@ -179,7 +179,7 @@ Caching is per assignment tick only. Persistent caching risks stale priority aft
 
 ## Proposed Code Shape
 
-Replace `sortBeadsByPriority` with a scheduling plan builder:
+Replace the flat priority sorter with a scheduling plan builder:
 
 ```go
 type schedulingUnitKind int
@@ -299,7 +299,7 @@ The first implementation can still return a flattened ordered list if it preserv
 
 ### Integration/Regression Tests
 
-`pkg/dispatcher/dispatcher_test.go:TestSortBeadsByPriority_EpicFinishing` should be replaced or renamed. It currently asserts the behavior this spec removes.
+`pkg/dispatcher/dispatcher_test.go:TestBuildSchedulingPlan_PriorityFirstEpicUnits` covers the replacement regression. It asserts priority-first epic units and keeps oldest-first only as a same-priority tie-breaker.
 
 `pkg/beadstore/sqlite.go:Ready` should not need changes for this feature. Add no beadstore tests unless implementation touches readiness.
 
@@ -358,14 +358,14 @@ requirements_traceability:
     tests: ["TestBuildSchedulingPlan_FocusOverridesIndependent"]
     status: covered
 negative_space:
-  - scenario: "All tasks pass but old flat `sortBeadsByPriority` still used by tryAssign"
+  - scenario: "All tasks pass but old flat sorter still used by tryAssign"
     coverage: "Task requires mixed production tryAssign ASSIGN assertions with old-sort-distinguishing fixture data, not just helper tests."
   - scenario: "Nested epic child sorted by nested child priority instead of root epic priority"
     coverage: "Nested root-priority test covers parent-chain walking."
   - scenario: "Raw parent_id pointing to a non-epic bead is misclassified as epic work"
     coverage: "Spec requires type-aware parent resolution shared with resolveEpicBranch semantics."
   - scenario: "Old test still asserts oldest epic first as the primary rule"
-    coverage: "Spec requires revising that regression test so oldest-first is only a same-priority tie-breaker."
+    coverage: "Spec requires the replacement regression to assert priority-first epic units; oldest-first is only a same-priority tie-breaker."
 ```
 
 ## Task Graph
@@ -376,7 +376,7 @@ Epic: Implement dispatcher scheduling units.
    - Test: `pkg/dispatcher/dispatcher_test.go:TestBuildSchedulingPlan_IndependentBeforeEpics`
    - Cmd: `go test ./pkg/dispatcher -run TestBuildSchedulingPlan_IndependentBeforeEpics -count=1 -v`
    - Assert: independent ready beads schedule before epic units; epic units sort by root epic priority.
-   - Read: `pkg/dispatcher/dispatcher.go:sortBeadsByPriority`, `pkg/dispatcher/dispatcher.go:focusedDescendants`, `pkg/dispatcher/epic_branch.go:resolveEpicBranch`, `pkg/protocol/types.go:Bead`, `pkg/dispatcher/dispatcher_test.go:TestSortBeadsByPriority_EpicFinishing`
+   - Read: `pkg/dispatcher/dispatcher.go:buildSchedulingPlan`, `pkg/dispatcher/dispatcher.go:focusedDescendants`, `pkg/dispatcher/epic_branch.go:resolveEpicBranch`, `pkg/protocol/types.go:Bead`, `pkg/dispatcher/dispatcher_test.go:TestBuildSchedulingPlan_PriorityFirstEpicUnits`
    - Signature: `func (d *Dispatcher) buildSchedulingPlan(ctx context.Context, beads []protocol.Bead) (schedulingPlan, map[string]bool, uint64)`
    - Edges: no focused epic, empty queue, parent lookup failure, raw parent_id points to non-epic bead.
 
@@ -398,14 +398,14 @@ Epic: Implement dispatcher scheduling units.
    - Test: `pkg/dispatcher/dispatcher_test.go:TestBuildSchedulingPlan_FocusOverridesIndependent`
    - Cmd: `go test ./pkg/dispatcher -run 'TestBuildSchedulingPlan_FocusOverridesIndependent|TestImmediateFocus' -count=1 -v`
    - Assert: focus descendants outrank independent work, and backfill after focused work uses independent-then-epic scheduling.
-   - Read: `pkg/dispatcher/dispatcher.go:sortBeadsByPriority`, `pkg/dispatcher/dispatcher.go:applyFocusDirective`, existing focus tests.
+   - Read: `pkg/dispatcher/dispatcher.go:buildSchedulingPlan`, `pkg/dispatcher/dispatcher.go:applyFocusDirective`, existing focus tests.
    - Edges: nested focused epic, immediate focus preemption, backfill when focused frontier is empty.
 
 5. Revise oldest-epic regression tests and docs
    - Test: `pkg/dispatcher/dispatcher_test.go:TestBuildSchedulingPlan_EpicPriorityBeatsEpicAge`
    - Cmd: `go test ./pkg/dispatcher -run 'TestBuildSchedulingPlan|TestTryAssign_FillsSelectedEpicBeforeNextEpic' -count=1 -v`
    - Assert: no test or comment claims unfocused epics are ordered by oldest epic ID before epic priority; same-priority epic tie-breaks may remain oldest-first.
-   - Read: `pkg/dispatcher/dispatcher_test.go:TestSortBeadsByPriority_EpicFinishing`, `docs/plans/2026-05-06-dispatcher-scheduling-units-design.md`
+   - Read: `pkg/dispatcher/dispatcher_test.go:TestBuildSchedulingPlan_PriorityFirstEpicUnits`, `docs/plans/2026-05-06-dispatcher-scheduling-units-design.md`
    - Edges: stale comments, stale test names, old helper still referenced.
 
 ## Acceptance

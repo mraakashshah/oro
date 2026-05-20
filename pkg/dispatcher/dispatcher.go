@@ -4212,49 +4212,6 @@ func (d *Dispatcher) schedulingEpicRoot(ctx context.Context, parentID string, pa
 	return root
 }
 
-// sortBeadsByPriority sorts beads into four groups (all ties broken by priority):
-//  1. spawn-for beads (explicit priorityBeads map)
-//  2. focused epic descendants
-//  3. non-epic standalone beads (Epic == "")
-//  4. unfocused epic children, oldest epic first (lower ID = older)
-func (d *Dispatcher) sortBeadsByPriority(ctx context.Context, beads []protocol.Bead) {
-	d.mu.Lock()
-	epic := d.focusedEpic
-	pbSnapshot := make(map[string]bool, len(d.priorityBeads))
-	for id := range d.priorityBeads {
-		pbSnapshot[id] = true
-	}
-	d.mu.Unlock()
-
-	focused := d.focusedDescendants(ctx, beads, epic)
-
-	group := func(b protocol.Bead) int {
-		if pbSnapshot[b.ID] {
-			return 0 // spawn-for
-		}
-		if focused[b.ID] {
-			return 1 // focused epic descendant
-		}
-		if b.Epic == "" {
-			return 2 // non-epic standalone
-		}
-		return 3 // unfocused epic child
-	}
-
-	sort.SliceStable(beads, func(i, j int) bool {
-		bi, bj := beads[i], beads[j]
-		gi, gj := group(bi), group(bj)
-		if gi != gj {
-			return gi < gj
-		}
-		// Within group 4: finish oldest epics first (lower ID = older).
-		if gi == 3 && bi.Epic != bj.Epic {
-			return bi.Epic < bj.Epic
-		}
-		return bi.Priority < bj.Priority
-	})
-}
-
 func (d *Dispatcher) focusedDescendants(ctx context.Context, beads []protocol.Bead, focusedEpic string) map[string]bool {
 	focused := make(map[string]bool)
 	if focusedEpic == "" {

@@ -19917,13 +19917,13 @@ func TestAllAssignPayloadSitesUseBuildAssignPayload(t *testing.T) {
 	})
 }
 
-// TestSortBeadsByPriority_EpicFinishing verifies the full sort order:
-// (1) spawn-for beads, (2) focused epic children, (3) non-epic beads,
-// (4) oldest unfocused epic children (lowest epic ID = oldest), then next oldest.
-// Within each group, sort by priority P0→P1→P2.
-func TestSortBeadsByPriority_EpicFinishing(t *testing.T) {
+// TestBuildSchedulingPlan_PriorityFirstEpicUnits verifies the full scheduling
+// unit order: (1) spawn-for beads, (2) focused epic children,
+// (3) independent beads, (4) unfocused epic units by epic priority.
+// Same-priority epic units use creation time and then epic ID as tie-breakers.
+func TestBuildSchedulingPlan_PriorityFirstEpicUnits(t *testing.T) {
 	t.Run("full ordering", func(t *testing.T) {
-		d, _, _, _, _, _ := newTestDispatcher(t)
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 
 		d.mu.Lock()
 		d.focusedEpic = "epic-focus"
@@ -19931,47 +19931,59 @@ func TestSortBeadsByPriority_EpicFinishing(t *testing.T) {
 		d.priorityBeads["b-spawn-p1"] = true
 		d.mu.Unlock()
 
+		beadSrc.shown["epic-focus"] = &protocol.BeadDetail{
+			ID:        "epic-focus",
+			Type:      "epic",
+			Priority:  9,
+			CreatedAt: "2026-05-01T00:00:00Z",
+		}
+		beadSrc.shown["epic-high-old"] = &protocol.BeadDetail{
+			ID:        "epic-high-old",
+			Type:      "epic",
+			Priority:  1,
+			CreatedAt: "2026-05-01T00:00:00Z",
+		}
+		beadSrc.shown["epic-low-new"] = &protocol.BeadDetail{
+			ID:        "epic-low-new",
+			Type:      "epic",
+			Priority:  0,
+			CreatedAt: "2026-05-03T00:00:00Z",
+		}
+		beadSrc.shown["epic-low-old"] = &protocol.BeadDetail{
+			ID:        "epic-low-old",
+			Type:      "epic",
+			Priority:  0,
+			CreatedAt: "2026-05-02T00:00:00Z",
+		}
+
 		beads := []protocol.Bead{
-			{ID: "b-new-epic-p1", Priority: 1, Epic: "epic-zzz"},
+			{ID: "b-low-new-p1", Priority: 1, Epic: "epic-low-new"},
 			{ID: "b-focus-p2", Priority: 2, Epic: "epic-focus"},
 			{ID: "b-noepic-p0", Priority: 0, Epic: ""},
-			{ID: "b-old-epic-p0", Priority: 0, Epic: "epic-aaa"},
-			{ID: "b-spawn-p1", Priority: 1, Epic: "epic-z"},
+			{ID: "b-high-old-p0", Priority: 0, Epic: "epic-high-old"},
+			{ID: "b-spawn-p1", Priority: 1, Epic: "epic-high-old"},
 			{ID: "b-noepic-p1", Priority: 1, Epic: ""},
-			{ID: "b-old-epic-p2", Priority: 2, Epic: "epic-aaa"},
+			{ID: "b-low-old-p2", Priority: 2, Epic: "epic-low-old"},
 			{ID: "b-spawn-p0", Priority: 0, Epic: ""},
 			{ID: "b-focus-p1", Priority: 1, Epic: "epic-focus"},
 		}
 
-		d.sortBeadsByPriority(context.Background(), beads)
+		plan, _, _ := d.buildSchedulingPlan(context.Background(), beads)
 
 		want := []string{
 			"b-spawn-p0",    // group 1: spawn-for, P0
 			"b-spawn-p1",    // group 1: spawn-for, P1
 			"b-focus-p1",    // group 2: focused epic, P1
 			"b-focus-p2",    // group 2: focused epic, P2
-			"b-noepic-p0",   // group 3: non-epic, P0
-			"b-noepic-p1",   // group 3: non-epic, P1
-			"b-old-epic-p0", // group 4: oldest unfocused epic "epic-aaa", P0
-			"b-old-epic-p2", // group 4: oldest unfocused epic "epic-aaa", P2
-			"b-new-epic-p1", // group 4: newer unfocused epic "epic-zzz", P1
+			"b-noepic-p0",   // group 3: independent, P0
+			"b-noepic-p1",   // group 3: independent, P1
+			"b-low-old-p2",  // group 4: P0 epic, older same-priority epic first
+			"b-low-new-p1",  // group 4: P0 epic, newer same-priority epic second
+			"b-high-old-p0", // group 4: P1 epic after P0 epics despite older age
 		}
 
-		got := make([]string, len(beads))
-		for i, b := range beads {
-			got[i] = b.ID
-		}
-
-		for i, id := range want {
-			if i >= len(got) || got[i] != id {
-				t.Errorf("position %d: got %q, want %q\nfull got:  %v\nfull want: %v", i, func() string {
-					if i < len(got) {
-						return got[i]
-					}
-					return "<missing>"
-				}(), id, got, want)
-				return
-			}
+		if got := schedulingPlanBeadIDs(plan); !slices.Equal(got, want) {
+			t.Fatalf("plan bead order = %v, want priority-first epic units %v", got, want)
 		}
 	})
 
@@ -19984,13 +19996,11 @@ func TestSortBeadsByPriority_EpicFinishing(t *testing.T) {
 			{ID: "p1", Priority: 1, Epic: ""},
 		}
 
-		d.sortBeadsByPriority(context.Background(), beads)
+		plan, _, _ := d.buildSchedulingPlan(context.Background(), beads)
 
 		want := []string{"p0", "p1", "p2"}
-		for i, id := range want {
-			if beads[i].ID != id {
-				t.Errorf("position %d: got %q, want %q", i, beads[i].ID, id)
-			}
+		if got := schedulingPlanBeadIDs(plan); !slices.Equal(got, want) {
+			t.Fatalf("plan bead order = %v, want %v", got, want)
 		}
 	})
 
@@ -20018,15 +20028,21 @@ func TestSortBeadsByPriority_EpicFinishing(t *testing.T) {
 			{ID: "nested-p2", Priority: 2, Epic: "epic-child"},
 		}
 
-		d.sortBeadsByPriority(context.Background(), beads)
+		plan, _, _ := d.buildSchedulingPlan(context.Background(), beads)
 
-		if got := beads[0].ID; got != "nested-p2" {
+		if got := schedulingPlanBeadIDs(plan)[0]; got != "nested-p2" {
 			t.Fatalf("first bead after focused sort = %q, want nested descendant nested-p2", got)
 		}
 	})
 
 	t.Run("all same epic sorts by priority", func(t *testing.T) {
-		d, _, _, _, _, _ := newTestDispatcher(t)
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		beadSrc.shown["epic-one"] = &protocol.BeadDetail{
+			ID:        "epic-one",
+			Type:      "epic",
+			Priority:  0,
+			CreatedAt: "2026-05-01T00:00:00Z",
+		}
 
 		beads := []protocol.Bead{
 			{ID: "p2", Priority: 2, Epic: "epic-one"},
@@ -20034,13 +20050,11 @@ func TestSortBeadsByPriority_EpicFinishing(t *testing.T) {
 			{ID: "p1", Priority: 1, Epic: "epic-one"},
 		}
 
-		d.sortBeadsByPriority(context.Background(), beads)
+		plan, _, _ := d.buildSchedulingPlan(context.Background(), beads)
 
 		want := []string{"p0", "p1", "p2"}
-		for i, id := range want {
-			if beads[i].ID != id {
-				t.Errorf("position %d: got %q, want %q", i, beads[i].ID, id)
-			}
+		if got := schedulingPlanBeadIDs(plan); !slices.Equal(got, want) {
+			t.Fatalf("plan bead order = %v, want %v", got, want)
 		}
 	})
 }
