@@ -1,6 +1,7 @@
 package agentassets
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -125,6 +126,7 @@ func marshalCodexAsset(v any) ([]byte, error) {
 
 // InstallCodexPluginPackage writes a Codex local marketplace package below targetDir.
 func InstallCodexPluginPackage(ctx context.Context, targetDir string, assets []RuleAsset) error {
+	allow := make(map[string]bool, len(assets))
 	for _, asset := range assets {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("install codex plugin package: %w", err)
@@ -134,16 +136,64 @@ func InstallCodexPluginPackage(ctx context.Context, targetDir string, assets []R
 		if err != nil {
 			return err
 		}
+		allow[cleanTarget] = true
 
 		destPath := filepath.Join(targetDir, filepath.FromSlash(cleanTarget))
 		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil { //nolint:gosec // plugin package files must be readable
 			return fmt.Errorf("create codex plugin dir: %w", err)
 		}
-		if err := os.WriteFile(destPath, asset.Content, 0o644); err != nil { //nolint:gosec // plugin package files must be readable
+		if err := writeCodexAssetFile(destPath, asset.Content); err != nil {
 			return fmt.Errorf("write %s: %w", cleanTarget, err)
 		}
 	}
 
+	return removeStaleCodexPluginFiles(targetDir, allow)
+}
+
+func writeCodexAssetFile(destPath string, content []byte) error {
+	existing, err := os.ReadFile(destPath) //nolint:gosec // path is validated by cleanCodexPluginTarget
+	if err == nil && bytes.Equal(existing, content) {
+		if info, statErr := os.Stat(destPath); statErr == nil && info.Mode().Perm() == 0o644 {
+			return nil
+		}
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read existing codex asset: %w", err)
+	}
+	if err := os.WriteFile(destPath, content, 0o644); err != nil { //nolint:gosec // plugin package files must be readable
+		return fmt.Errorf("write codex asset: %w", err)
+	}
+	return nil
+}
+
+func removeStaleCodexPluginFiles(targetDir string, allow map[string]bool) error {
+	managedDirs := []string{
+		filepath.Dir(codexMarketplaceManifestTarget),
+		codexPluginRoot,
+		filepath.Dir(codexPluginManifestTarget),
+	}
+	for _, managedDir := range managedDirs {
+		dirPath := filepath.Join(targetDir, filepath.FromSlash(managedDir))
+		entries, err := os.ReadDir(dirPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("read codex plugin dir %s: %w", managedDir, err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			cleanTarget := path.Join(managedDir, entry.Name())
+			if allow[cleanTarget] || path.Ext(entry.Name()) != ".json" {
+				continue
+			}
+			if err := os.Remove(filepath.Join(dirPath, entry.Name())); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove stale codex plugin file %s: %w", cleanTarget, err)
+			}
+		}
+	}
 	return nil
 }
 
