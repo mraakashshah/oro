@@ -10024,6 +10024,84 @@ func TestMergeAndCompleteUsesTargetBranch(t *testing.T) {
 	})
 }
 
+func TestMergeCompletionCleanupUsesEpicTargetForSuccessAndNoop(t *testing.T) {
+	ctx := context.Background()
+	const (
+		epicID       = "oro-parent"
+		targetBranch = "epic/oro-parent"
+		workerID     = "w-target-cleanup"
+	)
+
+	t.Run("successful merge uses epic target for cleanup", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+		beadSrc.allChildrenClosedMap = map[string]bool{epicID: false}
+
+		const beadID = "oro-success-child"
+		worktree := "/tmp/worktree-" + beadID
+
+		d.finalizeSuccessfulMerge(ctx, beadID, workerID, worktree, epicID, targetBranch, 0, "abc123")
+
+		wtMgr.mu.Lock()
+		deletedInto := append([]deleteBranchMergedIntoCall(nil), wtMgr.deletedInto...)
+		wtMgr.mu.Unlock()
+
+		if len(deletedInto) != 1 {
+			t.Fatalf("DeleteBranchMergedInto calls = %d, want 1: %v", len(deletedInto), deletedInto)
+		}
+		if deletedInto[0].branch != protocol.BranchPrefix+beadID {
+			t.Fatalf("cleanup branch = %q, want %q", deletedInto[0].branch, protocol.BranchPrefix+beadID)
+		}
+		if deletedInto[0].targetBranch != targetBranch {
+			t.Fatalf("cleanup targetBranch = %q, want %q", deletedInto[0].targetBranch, targetBranch)
+		}
+	})
+
+	t.Run("noop merge uses epic target for cleanup", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+		beadSrc.allChildrenClosedMap = map[string]bool{epicID: false}
+
+		const beadID = "oro-noop-child"
+		worktree := "/tmp/worktree-" + beadID
+		branch := protocol.BranchPrefix + beadID
+
+		d.handleNoopMerge(ctx, beadID, workerID, worktree, branch, epicID, targetBranch, 0, "def456")
+
+		wtMgr.mu.Lock()
+		deletedInto := append([]deleteBranchMergedIntoCall(nil), wtMgr.deletedInto...)
+		wtMgr.mu.Unlock()
+
+		if len(deletedInto) != 1 {
+			t.Fatalf("DeleteBranchMergedInto calls = %d, want 1: %v", len(deletedInto), deletedInto)
+		}
+		if deletedInto[0].branch != branch {
+			t.Fatalf("cleanup branch = %q, want %q", deletedInto[0].branch, branch)
+		}
+		if deletedInto[0].targetBranch != targetBranch {
+			t.Fatalf("cleanup targetBranch = %q, want %q", deletedInto[0].targetBranch, targetBranch)
+		}
+	})
+
+	t.Run("empty target defaults cleanup to default branch", func(t *testing.T) {
+		d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+
+		const beadID = "oro-default-target"
+		worktree := "/tmp/worktree-" + beadID
+
+		d.finalizeSuccessfulMerge(ctx, beadID, workerID, worktree, "", "", 0, "fed789")
+
+		wtMgr.mu.Lock()
+		deletedInto := append([]deleteBranchMergedIntoCall(nil), wtMgr.deletedInto...)
+		wtMgr.mu.Unlock()
+
+		if len(deletedInto) != 1 {
+			t.Fatalf("DeleteBranchMergedInto calls = %d, want 1: %v", len(deletedInto), deletedInto)
+		}
+		if deletedInto[0].targetBranch != d.cfg.DefaultBranch {
+			t.Fatalf("cleanup targetBranch = %q, want default %q", deletedInto[0].targetBranch, d.cfg.DefaultBranch)
+		}
+	})
+}
+
 // TestMergeAndComplete_NonConflictMergeFailurePreservesRecoveryContext verifies
 // that when merger.Merge returns a non-ConflictError (e.g. ff-only merge failure
 // after a rebase retry), the dispatcher preserves the worktree/branch for the
