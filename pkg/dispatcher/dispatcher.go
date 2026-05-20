@@ -2467,7 +2467,7 @@ func (d *Dispatcher) handleNoopMerge(ctx context.Context, beadID, workerID, work
 		d.mu.Unlock()
 	}
 	d.autoCloseEpicIfComplete(ctx, workerID, epicID)
-	d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree, targetBranch)
+	d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree, target)
 	d.maybeConsolidateMemory(ctx)
 	d.maybeTriggerDream(ctx)
 }
