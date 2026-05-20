@@ -4863,18 +4863,41 @@ func (d *Dispatcher) assignmentCandidatesLocked(allBeads []protocol.Bead, now ti
 }
 
 func (d *Dispatcher) filterAlreadyMergedBranches(ctx context.Context, candidates []protocol.Bead) []protocol.Bead {
-	// Second pass: check whether the agent branch is already merged to main.
+	// Second pass: check whether the agent branch is already merged to the
+	// branch this bead would target if assigned.
 	// This requires a git subprocess, so it runs outside the lock.
 	out := make([]protocol.Bead, 0, len(candidates))
 	for _, b := range candidates {
-		if d.isBranchMerged(ctx, b.ID) {
-			_ = d.CloseBead(ctx, b.ID, "branch already merged to main")
+		targetBranch, err := d.assignmentTargetBranch(ctx, b)
+		if err != nil {
+			_ = d.logEvent(ctx, "assignment_target_resolve_error", "dispatcher", b.ID, "", err.Error())
+			out = append(out, b)
+			continue
+		}
+		if d.isBranchMergedInto(ctx, b.ID, targetBranch) {
+			_ = d.CloseBead(ctx, b.ID, fmt.Sprintf("branch already merged to %s", targetBranch))
 			_ = d.logEvent(ctx, "bead_branch_already_merged", "dispatcher", b.ID, "", "")
 			continue
 		}
 		out = append(out, b)
 	}
 	return out
+}
+
+func (d *Dispatcher) assignmentTargetBranch(ctx context.Context, bead protocol.Bead) (string, error) {
+	defaultBranch := d.cfg.DefaultBranch
+	if bead.Metadata != nil {
+		if v, ok := bead.Metadata[MetaBranch]; ok {
+			if s, ok := v.(string); ok && s != "" {
+				defaultBranch = s
+			}
+		}
+	}
+	targetBranch, _, err := resolveEpicBranch(ctx, d.beads, bead.Epic, defaultBranch)
+	if err != nil {
+		return "", err
+	}
+	return targetBranch, nil
 }
 
 // processEpicSkip handles an epic found in the ready queue that must not be
@@ -4904,31 +4927,31 @@ func (d *Dispatcher) processEpicSkip(ctx context.Context, bead protocol.Bead) {
 	d.completeEpicClose(ctx, bead.ID, "", "All children completed", targetBranch)
 }
 
-// isBranchMerged reports whether agent/<beadID> represents work that has been
-// merged into the default branch. A branch is considered merged only when it
-// (1) has at least one commit beyond its merge-base with the default branch
-// AND (2) is an ancestor of the default branch.
+// isBranchMergedInto reports whether agent/<beadID> represents work that has
+// been merged into targetBranch. A branch is considered merged only when it
+// (1) has at least one commit beyond its merge-base with targetBranch AND
+// (2) is an ancestor of targetBranch.
 //
 // The empty-branch guard (1) prevents a destructive false positive: a stale
-// agent branch sitting at a commit already in main's history (e.g., the worker
-// never committed implementation) would otherwise satisfy --is-ancestor
+// agent branch sitting at a commit already in targetBranch's history (e.g., the
+// worker never committed implementation) would otherwise satisfy --is-ancestor
 // trivially, causing the dispatcher to close the bead as "branch already
 // merged" and orphan any earlier worker's implementation commits. Returns false
 // when the branch does not exist or any git command fails.
-func (d *Dispatcher) isBranchMerged(ctx context.Context, beadID string) bool {
+func (d *Dispatcher) isBranchMergedInto(ctx context.Context, beadID, targetBranch string) bool {
 	branch := protocol.BranchPrefix + beadID // "agent/<beadID>"
 	tipOut, err := d.shutdownRunner.Run(ctx, "git", "rev-parse", branch)
 	if err != nil {
 		return false
 	}
-	baseOut, err := d.shutdownRunner.Run(ctx, "git", "merge-base", branch, d.cfg.DefaultBranch)
+	baseOut, err := d.shutdownRunner.Run(ctx, "git", "merge-base", branch, targetBranch)
 	if err != nil {
 		return false
 	}
 	if strings.TrimSpace(string(tipOut)) == strings.TrimSpace(string(baseOut)) {
 		return false
 	}
-	_, err = d.shutdownRunner.Run(ctx, "git", "merge-base", "--is-ancestor", branch, d.cfg.DefaultBranch)
+	_, err = d.shutdownRunner.Run(ctx, "git", "merge-base", "--is-ancestor", branch, targetBranch)
 	return err == nil
 }
 
@@ -5344,7 +5367,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 			fmt.Sprintf(`{"stale_path":%q}`, stalePath))
 	}
 
-	worktree, branch, createdWorktree = d.prepareAssignmentWorktree(ctx, bead.ID, w.id, existingWorktree, baseBranch)
+	worktree, branch, createdWorktree = d.prepareAssignmentWorktree(ctx, bead.ID, w.id, existingWorktree, baseBranch, targetBranch)
 	if worktree == "" {
 		d.releaseAssignmentReservation(w.id, bead.ID)
 		return nil
@@ -5478,7 +5501,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 
 func (d *Dispatcher) prepareAssignmentWorktree(
 	ctx context.Context,
-	beadID, workerID, existingWorktree, baseBranch string,
+	beadID, workerID, existingWorktree, baseBranch, targetBranch string,
 ) (worktree, branch string, created bool) {
 	if existingWorktree != "" {
 		expectedBranch := protocol.BranchPrefix + beadID
@@ -5489,7 +5512,7 @@ func (d *Dispatcher) prepareAssignmentWorktree(
 			fmt.Sprintf(`{"worktree":%q}`, existingWorktree))
 		return existingWorktree, expectedBranch, false
 	}
-	if !d.createFreshAssignmentWorktreeAllowed(ctx, beadID, workerID) {
+	if !d.createFreshAssignmentWorktreeAllowed(ctx, beadID, workerID, targetBranch) {
 		return "", "", false
 	}
 	worktree, branch, err := d.worktrees.Create(ctx, beadID, baseBranch)
@@ -5508,8 +5531,8 @@ func (d *Dispatcher) prepareAssignmentWorktree(
 	return worktree, branch, true
 }
 
-func (d *Dispatcher) createFreshAssignmentWorktreeAllowed(ctx context.Context, beadID, workerID string) bool {
-	if cleanErr := d.deleteStaleAgentBranch(ctx, beadID, workerID); cleanErr != nil {
+func (d *Dispatcher) createFreshAssignmentWorktreeAllowed(ctx context.Context, beadID, workerID, targetBranch string) bool {
+	if cleanErr := d.deleteStaleAgentBranch(ctx, beadID, workerID, targetBranch); cleanErr != nil {
 		d.recordAssignmentFailure(beadID)
 		_ = d.updateBeadStatus(ctx, beadID, "open")
 		d.mu.Lock()
@@ -7993,21 +8016,29 @@ func (d *Dispatcher) pruneStaleAgentBranches(ctx context.Context) {
 	}
 }
 
-// deleteStaleAgentBranch deletes agent/<beadID> if it exists, logging the outcome.
-// Called before worktree.Create to ensure the new worktree always branches from main HEAD.
+// deleteStaleAgentBranch deletes agent/<beadID> if it exists and is already
+// merged into targetBranch, logging the outcome.
+// Called before worktree.Create to ensure the new worktree always branches from
+// the resolved assignment target HEAD.
 // If git cannot safely delete the branch, the branch is recovery-quarantined
 // and assignment aborts. Startup/retry recovery must preserve ambiguous branch
 // state instead of force-deleting or removing the checked-out worktree.
-func (d *Dispatcher) deleteStaleAgentBranch(ctx context.Context, beadID, workerID string) error {
+func (d *Dispatcher) deleteStaleAgentBranch(ctx context.Context, beadID, workerID, targetBranch string) error {
 	branch := protocol.BranchPrefix + beadID
-	exists, _ := d.worktrees.BranchExists(ctx, branch)
+	if targetBranch == "" {
+		targetBranch = d.cfg.DefaultBranch
+	}
+	exists, err := d.worktrees.BranchExists(ctx, branch)
+	if err != nil {
+		return fmt.Errorf("check stale branch %s exists: %w", branch, err)
+	}
 	if !exists {
 		return nil
 	}
-	err := d.worktrees.DeleteBranch(ctx, branch)
+	err = d.worktrees.DeleteBranchMergedInto(ctx, branch, targetBranch)
 	if err == nil {
 		_ = d.logEvent(ctx, "stale_agent_branch_deleted", "dispatcher", beadID, workerID,
-			fmt.Sprintf(`{"branch":%q}`, branch))
+			fmt.Sprintf(`{"branch":%q,"target_branch":%q}`, branch, targetBranch))
 		return nil
 	}
 	reason := "unsafe_stale_branch"

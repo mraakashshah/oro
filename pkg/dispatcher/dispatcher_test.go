@@ -21634,7 +21634,7 @@ func TestAssignBead_MetadataBranch(t *testing.T) {
 	})
 }
 
-// TestIsBranchMerged_DefaultBranch verifies that isBranchMerged checks against
+// TestIsBranchMerged_DefaultBranch verifies that isBranchMergedInto checks against
 // d.cfg.DefaultBranch, not the hardcoded string "main".
 func TestIsBranchMerged_DefaultBranch(t *testing.T) {
 	// Mock that returns distinct SHAs for rev-parse vs merge-base so the
@@ -21662,9 +21662,9 @@ func TestIsBranchMerged_DefaultBranch(t *testing.T) {
 		var gotArgs []string
 		d.shutdownRunner = mergedRunner(&gotArgs)
 
-		result := d.isBranchMerged(context.Background(), "bead-abc")
+		result := d.isBranchMergedInto(context.Background(), "bead-abc", d.cfg.DefaultBranch)
 		if !result {
-			t.Error("isBranchMerged should return true when runner exits 0")
+			t.Error("isBranchMergedInto should return true when runner exits 0")
 		}
 
 		// The last arg must be "develop", not "main".
@@ -21673,7 +21673,7 @@ func TestIsBranchMerged_DefaultBranch(t *testing.T) {
 		}
 		last := gotArgs[len(gotArgs)-1]
 		if last != "develop" {
-			t.Errorf("isBranchMerged checked against %q, want %q", last, "develop")
+			t.Errorf("isBranchMergedInto checked against %q, want %q", last, "develop")
 		}
 	})
 
@@ -21684,21 +21684,21 @@ func TestIsBranchMerged_DefaultBranch(t *testing.T) {
 		var gotArgs []string
 		d.shutdownRunner = mergedRunner(&gotArgs)
 
-		_ = d.isBranchMerged(context.Background(), "bead-xyz")
+		_ = d.isBranchMergedInto(context.Background(), "bead-xyz", d.cfg.DefaultBranch)
 
 		if len(gotArgs) == 0 {
 			t.Fatal("no args passed to runner")
 		}
 		last := gotArgs[len(gotArgs)-1]
 		if last != "main" {
-			t.Errorf("isBranchMerged checked against %q, want %q", last, "main")
+			t.Errorf("isBranchMergedInto checked against %q, want %q", last, "main")
 		}
 	})
 }
 
 // TestIsBranchMerged_EmptyBranch verifies the fix for the false-merge bug:
 // when agent/<bead> exists but has zero commits beyond its merge-base with main
-// (e.g., the worker never committed implementation work), isBranchMerged must
+// (e.g., the worker never committed implementation work), isBranchMergedInto must
 // return false. The previous behavior used `git merge-base --is-ancestor` alone,
 // which trivially returns true for an empty branch sitting at a commit already
 // in main's history — falsely closing beads as "branch already merged" and
@@ -21723,8 +21723,8 @@ func TestIsBranchMerged_EmptyBranch(t *testing.T) {
 			},
 		}
 
-		if d.isBranchMerged(context.Background(), "oro-bl08") {
-			t.Error("isBranchMerged should return false for empty branch (tip == merge-base)")
+		if d.isBranchMergedInto(context.Background(), "oro-bl08", d.cfg.DefaultBranch) {
+			t.Error("isBranchMergedInto should return false for empty branch (tip == merge-base)")
 		}
 	})
 
@@ -21746,8 +21746,8 @@ func TestIsBranchMerged_EmptyBranch(t *testing.T) {
 			},
 		}
 
-		if !d.isBranchMerged(context.Background(), "oro-real") {
-			t.Error("isBranchMerged should return true when branch has commits and is ancestor")
+		if !d.isBranchMergedInto(context.Background(), "oro-real", d.cfg.DefaultBranch) {
+			t.Error("isBranchMergedInto should return true when branch has commits and is ancestor")
 		}
 	})
 
@@ -21769,8 +21769,8 @@ func TestIsBranchMerged_EmptyBranch(t *testing.T) {
 			},
 		}
 
-		if d.isBranchMerged(context.Background(), "oro-unmerged") {
-			t.Error("isBranchMerged should return false when branch has commits but is not ancestor")
+		if d.isBranchMergedInto(context.Background(), "oro-unmerged", d.cfg.DefaultBranch) {
+			t.Error("isBranchMergedInto should return false when branch has commits but is not ancestor")
 		}
 	})
 
@@ -21786,8 +21786,8 @@ func TestIsBranchMerged_EmptyBranch(t *testing.T) {
 			},
 		}
 
-		if d.isBranchMerged(context.Background(), "oro-missing") {
-			t.Error("isBranchMerged should return false when branch does not exist")
+		if d.isBranchMergedInto(context.Background(), "oro-missing", d.cfg.DefaultBranch) {
+			t.Error("isBranchMergedInto should return false when branch does not exist")
 		}
 	})
 }

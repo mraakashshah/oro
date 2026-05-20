@@ -577,7 +577,7 @@ func TestDeleteStaleAgentBranchQuarantinesUnmergedBranch(t *testing.T) {
 		return assertSafeDeleteFailure(branch)
 	}
 
-	err := d.deleteStaleAgentBranch(ctx, beadID, "w1")
+	err := d.deleteStaleAgentBranch(ctx, beadID, "w1", d.cfg.DefaultBranch)
 	if err == nil {
 		t.Fatal("expected unsafe stale branch to block assignment")
 	}

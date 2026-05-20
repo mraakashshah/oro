@@ -2,6 +2,7 @@ package dispatcher //nolint:testpackage // white-box tests need access to unexpo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,65 @@ import (
 
 	"oro/pkg/protocol"
 )
+
+func TestFilterAlreadyMergedBranchesUsesResolvedTargetBranch(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const (
+		epicID = "oro-parent"
+		beadID = "oro-child"
+		target = protocol.EpicBranchPrefix + epicID
+	)
+	beadSrc.shown[epicID] = &protocol.BeadDetail{
+		ID:   epicID,
+		Type: "epic",
+	}
+
+	var closeReason string
+	beadSrc.closeFn = func(_ context.Context, id, reason string) error {
+		if id != beadID {
+			t.Fatalf("CloseBead id = %q, want %q", id, beadID)
+		}
+		closeReason = reason
+		return nil
+	}
+
+	var calls []string
+	d.shutdownRunner = &mockCommandRunner{
+		callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			call := strings.Join(args, " ")
+			calls = append(calls, call)
+			switch call {
+			case "rev-parse agent/oro-child":
+				return []byte("child-tip\n"), nil
+			case "merge-base agent/oro-child " + target:
+				return []byte("merge-base\n"), nil
+			case "merge-base --is-ancestor agent/oro-child " + target:
+				return nil, nil
+			default:
+				return nil, fmt.Errorf("unexpected git call: %s", call)
+			}
+		},
+	}
+
+	candidates := []protocol.Bead{{
+		ID:   beadID,
+		Epic: epicID,
+	}}
+	got := d.filterAlreadyMergedBranches(ctx, candidates)
+	if len(got) != 0 {
+		t.Fatalf("filtered candidates = %v, want none", got)
+	}
+	if closeReason != "branch already merged to "+target {
+		t.Fatalf("CloseBead reason = %q, want resolved target %q", closeReason, target)
+	}
+	for _, call := range calls {
+		if strings.HasSuffix(call, " main") {
+			t.Fatalf("checked main instead of resolved target, calls=%v", calls)
+		}
+	}
+}
 
 // TestDeleteStaleAgentBranch_BranchCheckedOutQuarantines verifies that when
 // git refuses to safely delete a branch because it is checked out in a
@@ -39,7 +99,7 @@ func TestDeleteStaleAgentBranch_BranchCheckedOutQuarantines(t *testing.T) {
 			branch, expectedWorktreePath)
 	}
 
-	if err := d.deleteStaleAgentBranch(context.Background(), beadID, "w-1"); err == nil {
+	if err := d.deleteStaleAgentBranch(context.Background(), beadID, "w-1", d.cfg.DefaultBranch); err == nil {
 		t.Fatal("expected deleteStaleAgentBranch to quarantine checked-out branch")
 	}
 
@@ -80,7 +140,7 @@ func TestDeleteStaleAgentBranch_BranchCheckedOutLogsQuarantine(t *testing.T) {
 		return fmt.Errorf("error: Cannot delete branch '%s' checked out at '/some/path'", branch)
 	}
 
-	err := d.deleteStaleAgentBranch(context.Background(), beadID, "w-1")
+	err := d.deleteStaleAgentBranch(context.Background(), beadID, "w-1", d.cfg.DefaultBranch)
 	if err == nil {
 		t.Fatal("expected error when cleanup fails, got nil")
 	}
@@ -146,6 +206,100 @@ func TestDeleteStaleAgentBranch_BranchCheckedOut_AbortsAssignmentOnCleanupFailur
 
 	if createCalled {
 		t.Error("Create was called even though stale branch cleanup failed")
+	}
+}
+
+func TestDeleteStaleAgentBranchUsesAssignmentTargetBranch(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	beadID := "oro-merged-child"
+	branch := protocol.BranchPrefix + beadID
+	target := "epic/oro-parent"
+
+	var calls []string
+	d.worktrees = NewGitWorktreeManager("/repo/root", "", "", &mockCommandRunner{
+		callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			call := strings.Join(args, " ")
+			calls = append(calls, call)
+			switch call {
+			case "-C /repo/root branch --list " + branch:
+				return []byte(branch + "\n"), nil
+			case "-C /repo/root merge-base --is-ancestor " + branch + " " + target:
+				return nil, nil
+			case "-C /repo/root branch -d " + branch:
+				return nil, nil
+			default:
+				return nil, fmt.Errorf("unexpected git call: %s", call)
+			}
+		},
+	})
+
+	if err := d.deleteStaleAgentBranch(ctx, beadID, "w-1", target); err != nil {
+		t.Fatalf("deleteStaleAgentBranch: %v", err)
+	}
+	if !containsCall(calls, "-C /repo/root merge-base --is-ancestor "+branch+" "+target) {
+		t.Fatalf("did not prove stale branch merged into assignment target, calls=%v", calls)
+	}
+	if containsCall(calls, "-C /repo/root merge-base --is-ancestor "+branch+" main") {
+		t.Fatalf("proved against main instead of assignment target, calls=%v", calls)
+	}
+
+	var quarantineCount int
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM recovery_quarantines WHERE bead_id=? AND reason='unsafe_stale_branch'`,
+		beadID).Scan(&quarantineCount); err != nil {
+		t.Fatalf("query quarantine count: %v", err)
+	}
+	if quarantineCount != 0 {
+		t.Fatalf("unsafe_stale_branch quarantines = %d, want 0", quarantineCount)
+	}
+}
+
+func TestDeleteStaleAgentBranch_DivergedFromTargetQuarantines(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	beadID := "oro-diverged-child"
+	branch := protocol.BranchPrefix + beadID
+	target := "epic/oro-parent"
+
+	var calls []string
+	d.worktrees = NewGitWorktreeManager("/repo/root", "", "", &mockCommandRunner{
+		callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			call := strings.Join(args, " ")
+			calls = append(calls, call)
+			switch call {
+			case "-C /repo/root branch --list " + branch:
+				return []byte(branch + "\n"), nil
+			case "-C /repo/root merge-base --is-ancestor " + branch + " " + target:
+				return nil, errors.New("exit status 1")
+			default:
+				return nil, fmt.Errorf("unexpected git call: %s", call)
+			}
+		},
+	})
+
+	err := d.deleteStaleAgentBranch(ctx, beadID, "w-1", target)
+	if err == nil {
+		t.Fatal("expected diverged stale branch to be quarantined")
+	}
+	if !containsCall(calls, "-C /repo/root merge-base --is-ancestor "+branch+" "+target) {
+		t.Fatalf("did not check target ancestry, calls=%v", calls)
+	}
+	if containsCall(calls, "-C /repo/root branch -d "+branch) {
+		t.Fatalf("diverged branch should be preserved, calls=%v", calls)
+	}
+
+	var reason, details string
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT reason, details FROM recovery_quarantines WHERE bead_id=? AND status='open'`,
+		beadID).Scan(&reason, &details); err != nil {
+		t.Fatalf("query quarantine: %v", err)
+	}
+	if reason != "unsafe_stale_branch" {
+		t.Fatalf("reason = %q, want unsafe_stale_branch", reason)
+	}
+	if !strings.Contains(details, target) {
+		t.Fatalf("details = %q, want resolved target %q", details, target)
 	}
 }
 
