@@ -219,6 +219,8 @@ type Worker struct {
 	assignmentGeneration   uint64         // guarded by mu: rejects stale stdout context from prior assignments
 	tier                   protocol.Tier  // routing tier from bead assignment; empty for legacy beads
 	targetBranch           string         // branch to rebase onto before QG; defaults to "main"
+	subprocStartedAt       time.Time      // subprocess start time for progress diagnostics
+	lastSubprocOutputAt    time.Time      // latest stdout activity for progress diagnostics
 }
 
 // New creates a Worker that connects to the Dispatcher at socketPath.
@@ -621,6 +623,8 @@ func (w *Worker) recordSpawnedProc(proc Process, runtime, model string, format S
 	w.subprocStderrTail = ""
 	w.handleExitClaimed = false
 	w.subprocKilledByUs = false
+	w.subprocStartedAt = time.Now()
+	w.lastSubprocOutputAt = time.Time{}
 }
 
 // BuildAssignPrompt constructs the prompt and resolves the model from an ASSIGN payload.
@@ -908,6 +912,7 @@ func (w *Worker) flushCompleteLines(ctx context.Context, buf *strings.Builder) {
 // any [MEMORY] marker from it.
 func (w *Worker) processTextLine(ctx context.Context, line string) {
 	w.mu.Lock()
+	w.lastSubprocOutputAt = time.Now()
 	w.sessionText.WriteString(line)
 	w.sessionText.WriteString("\n")
 	store := w.memStore
@@ -1025,6 +1030,7 @@ func (w *Worker) watchContext(ctx context.Context) {
 
 	var subprocExitDetectedAt time.Time
 	lastHeartbeat := time.Now() // start counting from now; first heartbeat after hbInterval
+	lastProgress := time.Now()  // initial running STATUS was sent by handleAssign
 
 	for {
 		select {
@@ -1041,6 +1047,11 @@ func (w *Worker) watchContext(ctx context.Context) {
 			// Check for unexpected subprocess death
 			if w.checkSubprocessHealth(&subprocExitDetectedAt) {
 				return
+			}
+
+			if time.Since(lastProgress) >= interval {
+				w.trySendSubprocessProgress(ctx)
+				lastProgress = time.Now()
 			}
 
 			w.mu.Lock()
@@ -1376,6 +1387,33 @@ func (w *Worker) SendStatus(_ context.Context, state, result string) error {
 			Result:   result,
 		},
 	})
+}
+
+func (w *Worker) trySendSubprocessProgress(ctx context.Context) {
+	w.mu.Lock()
+	procRunning := w.proc != nil && !w.subprocExitClosed
+	startedAt := w.subprocStartedAt
+	lastOutputAt := w.lastSubprocOutputAt
+	w.mu.Unlock()
+
+	if !procRunning || startedAt.IsZero() {
+		return
+	}
+
+	now := time.Now()
+	_ = w.SendStatus(ctx, "running_progress", formatSubprocessProgressResult(now, startedAt, lastOutputAt))
+}
+
+func formatSubprocessProgressResult(now, startedAt, lastOutputAt time.Time) string {
+	lastOutputAge := now.Sub(startedAt)
+	if !lastOutputAt.IsZero() {
+		lastOutputAge = now.Sub(lastOutputAt)
+	}
+	return fmt.Sprintf(
+		`{"command_age_ms":%d,"last_output_age_ms":%d}`,
+		now.Sub(startedAt).Milliseconds(),
+		lastOutputAge.Milliseconds(),
+	)
 }
 
 func (w *Worker) subprocessExitSnapshotLocked() subprocessExitSnapshot {
