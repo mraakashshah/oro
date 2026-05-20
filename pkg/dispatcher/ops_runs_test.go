@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"oro/pkg/ops"
 	"oro/pkg/protocol"
 )
 
@@ -354,6 +356,127 @@ func TestRouteOpsRunRoutesReviewOpsRun(t *testing.T) {
 		t.Fatal("routeOpsRun review with missing bead detail = false, want true")
 	}
 	waitFor(t, func() bool { return spawnMock.SpawnCount() > 2 }, time.Second)
+}
+
+func TestSupersedeOpsReviewRetryPreservesContext(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+	beadID := "oro-review-retry"
+	workerID := "w-review-retry"
+	worktree := t.TempDir()
+
+	beadSrc.shown[beadID] = &protocol.Bead{
+		ID:                 beadID,
+		Title:              "Review retry",
+		AcceptanceCriteria: "Test: retry review | Assert: context is preserved",
+	}
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		state:        protocol.WorkerReviewing,
+		assignmentID: 42,
+		beadID:       beadID,
+		worktree:     worktree,
+		targetBranch: "epic/retry-review",
+		runtime:      "codex",
+		model:        "gpt-5.5",
+	}
+	d.worktreeByBead[beadID] = worktree
+	d.worktreeFailures[beadID] = time.Now()
+	d.mu.Unlock()
+
+	original, _, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
+		EscalationID:  77,
+		Type:          string(ops.OpsReview),
+		BeadID:        beadID,
+		WorkerID:      workerID,
+		DispatcherPID: 123,
+		ProcessPID:    456,
+		Runtime:       "codex",
+		Model:         "gpt-5.5",
+		Status:        opsRunStatusRunning,
+	})
+	if err != nil {
+		t.Fatalf("CreateOpsRun original: %v", err)
+	}
+	if err := CompleteOpsRun(ctx, d.db, original.ID, opsRunStatusFailed, "failed", "old feedback", "review crashed"); err != nil {
+		t.Fatalf("CompleteOpsRun original failed: %v", err)
+	}
+	failed := fetchOpsRunForTest(t, d.db, original.ID)
+
+	replacement, routed, err := d.supersedeOpsRunForRetry(failed)
+	if err != nil {
+		t.Fatalf("supersedeOpsRunForRetry: %v", err)
+	}
+	if !routed {
+		t.Fatal("routed = false, want true")
+	}
+	waitFor(t, func() bool { return spawnMock.SpawnCount() == 1 }, time.Second)
+	if got := spawnMock.SpawnCount(); got != 1 {
+		t.Fatalf("spawn count = %d, want 1", got)
+	}
+
+	superseded := fetchOpsRunForTest(t, d.db, original.ID)
+	if superseded.Status != opsRunStatusSuperseded {
+		t.Fatalf("original status = %q, want superseded", superseded.Status)
+	}
+	if superseded.Verdict != "failed" || superseded.Feedback != "old feedback" {
+		t.Fatalf("original audit context = verdict %q feedback %q, want preserved", superseded.Verdict, superseded.Feedback)
+	}
+	if !strings.Contains(superseded.Error, fmt.Sprintf("manual retry superseded ops run %d", original.ID)) {
+		t.Fatalf("original error = %q, want manual retry supersede note", superseded.Error)
+	}
+
+	if replacement.Type != string(ops.OpsReview) ||
+		replacement.BeadID != beadID ||
+		replacement.WorkerID != workerID ||
+		replacement.Runtime != "codex" ||
+		replacement.Model != "gpt-5.5" {
+		t.Fatalf("replacement context = %#v, want review/bead/worker/runtime/model preserved", replacement)
+	}
+	if replacement.Status != opsRunStatusRunning {
+		t.Fatalf("replacement status = %q, want running", replacement.Status)
+	}
+	if replacement.Verdict != "" || replacement.Feedback != "" {
+		t.Fatalf("replacement verdict/feedback = %q/%q, want cleared", replacement.Verdict, replacement.Feedback)
+	}
+	if !strings.Contains(replacement.Error, fmt.Sprintf("manual retry of ops run %d", original.ID)) {
+		t.Fatalf("replacement error = %q, want manual retry note", replacement.Error)
+	}
+
+	blocking, err := FindBlockingOpsRun(ctx, d.db, string(ops.OpsReview), beadID)
+	if err != nil {
+		t.Fatalf("FindBlockingOpsRun after retry: %v", err)
+	}
+	if blocking == nil || blocking.ID != replacement.ID {
+		t.Fatalf("blocking after retry = %#v, want replacement %d", blocking, replacement.ID)
+	}
+	var count int
+	if err := d.db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM ops_runs
+WHERE type = ? AND bead_id = ? AND status = ?`, string(ops.OpsReview), beadID, opsRunStatusRunning).Scan(&count); err != nil {
+		t.Fatalf("count running replacements: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("running replacement count = %d, want 1", count)
+	}
+	d.mu.Lock()
+	_, failureStillPresent := d.worktreeFailures[beadID]
+	d.mu.Unlock()
+	if failureStillPresent {
+		t.Fatal("worktree failure context was not cleared after retry")
+	}
+
+	staleOriginal := superseded
+	_, _, err = d.supersedeOpsRunForRetry(staleOriginal)
+	if err == nil {
+		t.Fatal("second supersedeOpsRunForRetry error = nil, want existing replacement error")
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("retry ops run %d", original.ID)) ||
+		!strings.Contains(err.Error(), fmt.Sprintf("blocking ops run %d", replacement.ID)) {
+		t.Fatalf("second retry error = %q, want original and replacement IDs", err)
+	}
 }
 
 func fetchOpsRunForTest(t *testing.T, db *sql.DB, id int64) OpsRunRecord {
