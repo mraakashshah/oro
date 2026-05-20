@@ -376,6 +376,10 @@ func preflightAndCheckRunningWith(w io.Writer, preflight func() error, runRepoCh
 	// and blocks nested claude sessions in tmux panes and workers.
 	os.Unsetenv("CLAUDECODE")
 
+	if alreadyRunning := reportAlreadyRunningBeforePreflight(w); alreadyRunning {
+		return "", nil
+	}
+
 	if err := preflight(); err != nil {
 		return "", fmt.Errorf("preflight checks failed: %w", err)
 	}
@@ -416,15 +420,25 @@ func preflightAndCheckRunningWith(w io.Writer, preflight func() error, runRepoCh
 	pidPath = paths.PIDPath
 	sockPath := paths.SocketPath
 
+	if alreadyRunning, err := handleDaemonStatusForStart(w, pidPath, sockPath); err != nil {
+		return "", err
+	} else if alreadyRunning {
+		return "", nil
+	}
+
+	return pidPath, nil
+}
+
+func handleDaemonStatusForStart(w io.Writer, pidPath, sockPath string) (bool, error) {
 	status, pid, err := DaemonStatus(pidPath, sockPath)
 	if err != nil {
-		return "", fmt.Errorf("get daemon status: %w", err)
+		return false, fmt.Errorf("get daemon status: %w", err)
 	}
 
 	switch status {
 	case StatusRunning:
 		fmt.Fprintf(w, "dispatcher already running (PID %d)\n", pid)
-		return "", nil
+		return true, nil
 	case StatusStale:
 		_ = RemovePIDFile(pidPath)
 		_ = os.Remove(sockPath)
@@ -432,7 +446,32 @@ func preflightAndCheckRunningWith(w io.Writer, preflight func() error, runRepoCh
 		// Good to go.
 	}
 
-	return pidPath, nil
+	return false, nil
+}
+
+// reportAlreadyRunningBeforePreflight reports an existing live daemon before
+// startup preflight mutates assets or builds helper binaries. Starting an
+// already running factory should be an observation, not a repo-preflight
+// operation.
+func reportAlreadyRunningBeforePreflight(w io.Writer) bool {
+	paths, pathErr := ResolveDaemonPaths()
+	if pathErr != nil {
+		return false
+	}
+	status, pid, statusErr := DaemonStatus(paths.PIDPath, paths.SocketPath)
+	if statusErr != nil {
+		return false
+	}
+	switch status {
+	case StatusRunning:
+		fmt.Fprintf(w, "dispatcher already running (PID %d)\n", pid)
+		return true
+	case StatusStale:
+		_ = RemovePIDFile(paths.PIDPath)
+		_ = os.Remove(paths.SocketPath)
+	case StatusStopped:
+	}
+	return false
 }
 
 func maybeRunRepoPreflightChecks(w io.Writer, oroHome string, runRepoChecks bool) error {

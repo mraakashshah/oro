@@ -175,7 +175,8 @@ func (e *llmEstimator) callAPI(ctx context.Context, title, acceptance string) (i
 	req.Header.Set("x-api-key", e.apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
-	resp, err := e.client.Do(req) //nolint:gosec // G704: request URL is set from trusted construction-time config, not from user input
+	client := estimatorHTTPClient(e.client)
+	resp, err := client.Do(req) //nolint:gosec // G704: request URL is set from trusted construction-time config, not from user input
 	if err != nil {
 		return 0, fmt.Errorf("call estimate API: %w", err)
 	}
@@ -208,4 +209,15 @@ func (e *llmEstimator) callAPI(ctx context.Context, title, acceptance string) (i
 	}
 
 	return n, nil
+}
+
+func estimatorHTTPClient(base *http.Client) *http.Client {
+	if base == nil {
+		base = http.DefaultClient
+	}
+	client := *base
+	if client.Timeout == 0 || client.Timeout > estimatorTimeout {
+		client.Timeout = estimatorTimeout
+	}
+	return &client
 }

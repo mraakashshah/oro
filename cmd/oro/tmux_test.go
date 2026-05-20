@@ -19,6 +19,13 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "mkdir manager runtime test root: %v\n", err)
 		os.Exit(1)
 	}
+	originalHome := os.Getenv("HOME")
+	if os.Getenv("GOMODCACHE") == "" && originalHome != "" {
+		if err := os.Setenv("GOMODCACHE", filepath.Join(originalHome, "go", "pkg", "mod")); err != nil {
+			fmt.Fprintf(os.Stderr, "set GOMODCACHE for manager runtime tests: %v\n", err)
+			os.Exit(1)
+		}
+	}
 
 	home := filepath.Join(tempRoot, "home")
 	oroHome := filepath.Join(tempRoot, "oro-home")
