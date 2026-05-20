@@ -18104,6 +18104,53 @@ func TestRemoveWorktreeAndClearTrackingDeletesBranchMergedIntoTarget(t *testing.
 	}
 }
 
+func TestRemoveWorktreeAndClearTrackingDeletesBranchMergedIntoTargetWithoutCleanupFailure(t *testing.T) {
+	ctx := context.Background()
+	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+	beadID := "oro-child"
+	worktreePath := "/tmp/worktree-oro-child"
+
+	d.mu.Lock()
+	d.worktreeByBead[beadID] = worktreePath
+	d.mu.Unlock()
+
+	d.removeWorktreeAndClearTracking(ctx, beadID, "w1", worktreePath, "epic/parent")
+
+	wtMgr.mu.Lock()
+	removed := append([]string(nil), wtMgr.removed...)
+	deletedInto := append([]deleteBranchMergedIntoCall(nil), wtMgr.deletedInto...)
+	wtMgr.mu.Unlock()
+
+	if len(removed) != 1 || removed[0] != worktreePath {
+		t.Fatalf("Remove calls = %v, want [%q]", removed, worktreePath)
+	}
+
+	d.mu.Lock()
+	_, tracked := d.worktreeByBead[beadID]
+	d.mu.Unlock()
+	if tracked {
+		t.Fatalf("worktreeByBead[%q] still tracked after cleanup", beadID)
+	}
+
+	if len(deletedInto) != 1 {
+		t.Fatalf("DeleteBranchMergedInto calls = %v, want one call", deletedInto)
+	}
+	if got := deletedInto[0]; got.branch != "agent/oro-child" || got.targetBranch != "epic/parent" {
+		t.Fatalf("DeleteBranchMergedInto call = %+v, want branch agent/oro-child into epic/parent", got)
+	}
+
+	var cleanupFailures int
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM events WHERE type='branch_cleanup_failed' AND bead_id=?`,
+		beadID,
+	).Scan(&cleanupFailures); err != nil {
+		t.Fatalf("query branch cleanup failures: %v", err)
+	}
+	if cleanupFailures != 0 {
+		t.Fatalf("branch_cleanup_failed events = %d, want 0", cleanupFailures)
+	}
+}
+
 // TestRemoveWorktreeAndClearTracking_ClearsTrackingOnRemoveError verifies that
 // worktreeByBead is deleted even when d.worktrees.Remove returns an error.
 func TestRemoveWorktreeAndClearTracking_ClearsTrackingOnRemoveError(t *testing.T) {
