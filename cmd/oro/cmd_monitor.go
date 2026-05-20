@@ -433,15 +433,7 @@ func hasRecoveryQuarantineFinding(health factoryhealth.FactoryHealth) bool {
 }
 
 func hasBlockingOpsRuns(health factoryhealth.FactoryHealth) bool {
-	if health.Metrics.OpsRuns.Failed > 0 || health.Metrics.OpsRuns.Stale > 0 {
-		return true
-	}
-	for _, finding := range health.Findings {
-		if finding.Code == factoryhealth.FindingOpsRunFailed || finding.Code == factoryhealth.FindingOpsRunStale {
-			return true
-		}
-	}
-	return false
+	return health.Metrics.OpsRuns.Failed > 0 || health.Metrics.OpsRuns.Stale > 0
 }
 
 func shouldScaleMonitor(cfg monitorConfig, metrics factoryhealth.Metrics) bool {

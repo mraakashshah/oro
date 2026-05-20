@@ -555,10 +555,43 @@ func TestMonitorActDoesNotResolveFailedOpsRuns(t *testing.T) {
 	assertContainsAll(t, got, []string{
 		factoryhealth.FindingOpsRunFailed,
 		"blocked_by_ops_runs",
+		"failed=1 stale=0",
 		"oro ops list",
 		"oro ops retry 42",
 		"oro ops resolve 42",
 	})
+}
+
+func TestMonitorActIgnoresStaleOpsRunFindingWhenCountsAreZero(t *testing.T) {
+	runner := &fakeMonitorRunner{health: factoryhealth.FactoryHealth{
+		State: factoryhealth.StateStalled,
+		Findings: []factoryhealth.Finding{
+			{Code: factoryhealth.FindingOpsRunStale, Severity: factoryhealth.SeverityWarning},
+			{Code: factoryhealth.FindingPausedWithReadyQueue, Severity: factoryhealth.SeverityWarning},
+		},
+		Metrics: factoryhealth.Metrics{
+			DaemonRunning: true,
+			ReadyQueue:    3,
+			WorkerCount:   1,
+			TargetWorkers: 1,
+			MaxWorkers:    2,
+			OpsRuns:       factoryhealth.OpsRunMetrics{},
+		},
+	}}
+
+	var buf bytes.Buffer
+	state := newMonitorState()
+	cfg := monitorConfig{targetWorkers: 1, maxWorkers: 2, act: true, restartAfter: 1}
+	if err := runMonitorIteration(context.Background(), &buf, cfg, runner, state); err != nil {
+		t.Fatalf("monitor iteration: %v", err)
+	}
+
+	if strings.Contains(buf.String(), "blocked_by_ops_runs") {
+		t.Fatalf("monitor blocked despite zero failed/stale ops runs:\n%s", buf.String())
+	}
+	if strings.Join(runner.calls, ",") != "resume" {
+		t.Fatalf("calls = %v, want resume", runner.calls)
+	}
 }
 
 func TestMonitorActPrintsRecoveryQuarantineBlockedOncePerCount(t *testing.T) {
