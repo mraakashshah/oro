@@ -4364,7 +4364,7 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	}
 
 	assignedBeads := d.assignTargetedIdleWorkers(ctx, idle, beads, focusVersion)
-	d.assignGeneralIdleWorkers(ctx, idle, beads, pbSnapshot, assignedBeads, reservedTargets, focusVersion)
+	d.assignGeneralIdleWorkers(ctx, idle, plan, pbSnapshot, assignedBeads, reservedTargets, focusVersion)
 }
 
 func (d *Dispatcher) assignmentBlockedByRecoveryQuarantine(ctx context.Context) bool {
@@ -4518,46 +4518,72 @@ func (d *Dispatcher) assignTargetedIdleWorkers(ctx context.Context, idle []idleW
 	return assignedBeads
 }
 
-func (d *Dispatcher) assignGeneralIdleWorkers(ctx context.Context, idle []idleWorker, beads []protocol.Bead, pbSnapshot, assignedBeads, reservedTargets map[string]bool, focusVersion uint64) {
+func (d *Dispatcher) assignGeneralIdleWorkers(ctx context.Context, idle []idleWorker, plan schedulingPlan, pbSnapshot, assignedBeads, reservedTargets map[string]bool, focusVersion uint64) {
 	// Assign beads to idle workers. Advance the idle cursor only when a worker is
 	// actually claimed — epics skipped in assignBead leave the worker idle so the
 	// next bead in the list can still be paired with it.
 	idleIdx := 0
-	for _, bead := range beads {
+	for _, unit := range plan.units {
+		unitConsumed, nextIdleIdx := d.assignGeneralSchedulingUnit(ctx, idle, idleIdx, unit, pbSnapshot, assignedBeads, reservedTargets, focusVersion)
+		idleIdx = nextIdleIdx
+		if unit.kind == unitEpic && unitConsumed {
+			return
+		}
+	}
+}
+
+func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idleWorker, idleIdx int, unit schedulingUnit, pbSnapshot, assignedBeads, reservedTargets map[string]bool, focusVersion uint64) (unitConsumed bool, nextIdleIdx int) {
+	nextIdleIdx = idleIdx
+	for _, bead := range unit.beads {
 		if assignedBeads[bead.ID] {
+			unitConsumed = true
 			continue
 		}
 		if reservedTargets[bead.ID] {
+			unitConsumed = true
 			continue
 		}
-		if idleIdx >= len(idle) {
+		nextIdleIdx = d.nextGeneralIdleIndex(idle, nextIdleIdx)
+		if nextIdleIdx >= len(idle) {
 			break
 		}
-		for idleIdx < len(idle) {
-			d.mu.Lock()
-			isAssignableIdle := idle[idleIdx].worker.state == protocol.WorkerIdle &&
-				idle[idleIdx].worker.targetBeadID == "" &&
-				!idle[idleIdx].worker.spawnFor
-			d.mu.Unlock()
-			if isAssignableIdle {
-				break
-			}
-			idleIdx++
+		_ = d.assignBead(ctx, idle[nextIdleIdx].worker, bead, focusVersion)
+		var claimed bool
+		claimed, nextIdleIdx = d.advanceAssignedGeneralIdle(idle, nextIdleIdx, bead.ID, pbSnapshot)
+		if claimed {
+			unitConsumed = true
 		}
-		if idleIdx >= len(idle) {
-			break
-		}
-		_ = d.assignBead(ctx, idle[idleIdx].worker, bead, focusVersion)
-		// Advance idle cursor and clean up priority snapshot under a single lock.
-		d.mu.Lock()
-		if idle[idleIdx].worker.state != protocol.WorkerIdle {
-			idleIdx++
-		}
-		if pbSnapshot[bead.ID] {
-			delete(d.priorityBeads, bead.ID)
-		}
-		d.mu.Unlock()
 	}
+	return unitConsumed, nextIdleIdx
+}
+
+func (d *Dispatcher) nextGeneralIdleIndex(idle []idleWorker, idleIdx int) int {
+	for idleIdx < len(idle) {
+		d.mu.Lock()
+		isAssignableIdle := idle[idleIdx].worker.state == protocol.WorkerIdle &&
+			idle[idleIdx].worker.targetBeadID == "" &&
+			!idle[idleIdx].worker.spawnFor
+		d.mu.Unlock()
+		if isAssignableIdle {
+			return idleIdx
+		}
+		idleIdx++
+	}
+	return idleIdx
+}
+
+func (d *Dispatcher) advanceAssignedGeneralIdle(idle []idleWorker, idleIdx int, beadID string, pbSnapshot map[string]bool) (claimed bool, nextIdleIdx int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	nextIdleIdx = idleIdx
+	claimed = idle[idleIdx].worker.state != protocol.WorkerIdle
+	if claimed {
+		nextIdleIdx++
+	}
+	if pbSnapshot[beadID] {
+		delete(d.priorityBeads, beadID)
+	}
+	return claimed, nextIdleIdx
 }
 
 // checkClosedBeadAssignments detects beads that have been closed externally

@@ -20254,6 +20254,123 @@ func TestBuildSchedulingPlan_EpicPriorityBeatsEpicAge(t *testing.T) {
 	}
 }
 
+func TestTryAssign_FillsSelectedEpicBeforeNextEpic(t *testing.T) {
+	d, beadSrc, workers := setupTryAssignSchedulingTest(t, 3)
+	seedTryAssignEpic(t, beadSrc, "epic-a", 0, "2026-05-01T00:00:00Z")
+	seedTryAssignEpic(t, beadSrc, "epic-b", 1, "2026-05-02T00:00:00Z")
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "a-fast", Priority: 0, Epic: "epic-a"})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "a-slow", Priority: 1, Epic: "epic-a"})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "b-fast", Priority: 0, Epic: "epic-b"})
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "b-fast", Priority: 0, Epic: "epic-b"},
+		{ID: "a-slow", Priority: 1, Epic: "epic-a"},
+		{ID: "a-fast", Priority: 0, Epic: "epic-a"},
+	})
+
+	d.tryAssign(context.Background())
+
+	got := assignedBeadIDsByCreation(t, d.db)
+	want := []string{"a-fast", "a-slow"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("assigned beads = %v, want only selected epic frontier %v", got, want)
+	}
+	assertMockWorkerAssignCount(t, workers, len(want))
+}
+
+func TestTryAssign_IndependentBeforeEpicUnits(t *testing.T) {
+	d, beadSrc, workers := setupTryAssignSchedulingTest(t, 3)
+	seedTryAssignEpic(t, beadSrc, "epic-a", 0, "2026-05-01T00:00:00Z")
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "epic-child", Priority: 0, Epic: "epic-a"})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "independent-p1", Priority: 1})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "independent-p0", Priority: 0})
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "epic-child", Priority: 0, Epic: "epic-a"},
+		{ID: "independent-p1", Priority: 1},
+		{ID: "independent-p0", Priority: 0},
+	})
+
+	d.tryAssign(context.Background())
+
+	got := assignedBeadIDsByCreation(t, d.db)
+	want := []string{"independent-p0", "independent-p1", "epic-child"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("assigned beads = %v, want independent units before epic unit %v", got, want)
+	}
+	assertMockWorkerAssignCount(t, workers, len(want))
+}
+
+func TestTryAssign_EpicPriorityBeatsEpicAge(t *testing.T) {
+	d, beadSrc, workers := setupTryAssignSchedulingTest(t, 1)
+	seedTryAssignEpic(t, beadSrc, "epic-old", 1, "2026-05-01T00:00:00Z")
+	seedTryAssignEpic(t, beadSrc, "epic-new", 0, "2026-05-02T00:00:00Z")
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "old-child", Priority: 0, Epic: "epic-old"})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "new-child", Priority: 0, Epic: "epic-new"})
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "old-child", Priority: 0, Epic: "epic-old"},
+		{ID: "new-child", Priority: 0, Epic: "epic-new"},
+	})
+
+	d.tryAssign(context.Background())
+
+	got := assignedBeadIDsByCreation(t, d.db)
+	want := []string{"new-child"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("assigned beads = %v, want priority epic before older epic %v", got, want)
+	}
+	assertMockWorkerAssignCount(t, workers, len(want))
+}
+
+func TestTryAssign_UnassignableEpicUnitDoesNotBlockNextEpic(t *testing.T) {
+	d, beadSrc, workers := setupTryAssignSchedulingTest(t, 1)
+	seedTryAssignEpic(t, beadSrc, "epic-blocked", 0, "2026-05-01T00:00:00Z")
+	seedTryAssignEpic(t, beadSrc, "epic-ready", 1, "2026-05-02T00:00:00Z")
+	beadSrc.shown["blocked-child"] = &protocol.BeadDetail{
+		ID:       "blocked-child",
+		Title:    "blocked-child",
+		Type:     "task",
+		Epic:     "epic-blocked",
+		Priority: 0,
+		Status:   "open",
+	}
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "ready-child", Priority: 0, Epic: "epic-ready"})
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "blocked-child", Priority: 0, Epic: "epic-blocked"},
+		{ID: "ready-child", Priority: 0, Epic: "epic-ready"},
+	})
+
+	d.tryAssign(context.Background())
+
+	got := assignedBeadIDsByCreation(t, d.db)
+	want := []string{"ready-child"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("assigned beads = %v, want next epic after unassignable epic unit %v", got, want)
+	}
+	assertMockWorkerAssignCount(t, workers, len(want))
+}
+
+func TestTryAssign_ReservedEpicUnitBlocksNextEpic(t *testing.T) {
+	d, beadSrc, workers := setupTryAssignSchedulingTest(t, 2)
+	seedTryAssignEpic(t, beadSrc, "epic-reserved", 0, "2026-05-01T00:00:00Z")
+	seedTryAssignEpic(t, beadSrc, "epic-next", 1, "2026-05-02T00:00:00Z")
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "reserved-child", Priority: 0, Epic: "epic-reserved"})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "next-child", Priority: 0, Epic: "epic-next"})
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "reserved-child", Priority: 0, Epic: "epic-reserved"},
+		{ID: "next-child", Priority: 0, Epic: "epic-next"},
+	})
+	d.mu.Lock()
+	d.pendingWorkerTargets["w-reserved-pending"] = "reserved-child"
+	d.mu.Unlock()
+
+	d.tryAssign(context.Background())
+
+	got := assignedBeadIDsByCreation(t, d.db)
+	if len(got) != 0 {
+		t.Fatalf("assigned beads = %v, want reserved epic unit to block next epic", got)
+	}
+	assertMockWorkerAssignCount(t, workers, 0)
+}
+
 func schedulingPlanBeadIDs(plan schedulingPlan) []string {
 	ids := make([]string, 0)
 	for _, unit := range plan.units {
@@ -20262,6 +20379,100 @@ func schedulingPlanBeadIDs(plan schedulingPlan) []string {
 		}
 	}
 	return ids
+}
+
+func setupTryAssignSchedulingTest(t *testing.T, workerCount int) (*Dispatcher, *fakeBeadStore, []*mockConn) {
+	t.Helper()
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+	workers := make([]*mockConn, 0, workerCount)
+	d.mu.Lock()
+	d.targetWorkers = workerCount
+	for i := range workerCount {
+		id := fmt.Sprintf("w-sched-%d", i)
+		conn := newMockConn()
+		workers = append(workers, conn)
+		d.workers[id] = &trackedWorker{
+			id:      id,
+			conn:    conn,
+			state:   protocol.WorkerIdle,
+			managed: true,
+		}
+	}
+	d.mu.Unlock()
+	return d, beadSrc, workers
+}
+
+func seedTryAssignEpic(t *testing.T, beadSrc *fakeBeadStore, id string, priority int, createdAt string) {
+	t.Helper()
+	beadSrc.shown[id] = &protocol.BeadDetail{
+		ID:        id,
+		Title:     id,
+		Type:      "epic",
+		Priority:  priority,
+		CreatedAt: createdAt,
+		Status:    "open",
+	}
+}
+
+func seedTryAssignBead(t *testing.T, beadSrc *fakeBeadStore, bead protocol.Bead) {
+	t.Helper()
+	beadSrc.shown[bead.ID] = &protocol.BeadDetail{
+		ID:                 bead.ID,
+		Title:              bead.ID,
+		Type:               "task",
+		Epic:               bead.Epic,
+		Priority:           bead.Priority,
+		Status:             "open",
+		AcceptanceCriteria: "Test: scheduler | Cmd: go test ./pkg/dispatcher | Assert: assigned",
+	}
+}
+
+func assignedBeadIDsByCreation(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+	rows, err := db.Query(`SELECT bead_id FROM assignments ORDER BY id`)
+	if err != nil {
+		t.Fatalf("query assignments: %v", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			t.Fatalf("close assignment rows: %v", err)
+		}
+	}()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan assignment bead id: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate assignment rows: %v", err)
+	}
+	return ids
+}
+
+func assertMockWorkerAssignCount(t *testing.T, workers []*mockConn, want int) {
+	t.Helper()
+	got := 0
+	for _, conn := range workers {
+		conn.mu.Lock()
+		writes := append([][]byte(nil), conn.written...)
+		conn.mu.Unlock()
+		for _, data := range writes {
+			var msg protocol.Message
+			if err := json.Unmarshal(data, &msg); err != nil {
+				t.Fatalf("decode worker message: %v", err)
+			}
+			if msg.Type == protocol.MsgAssign && msg.Assign != nil {
+				got++
+			}
+		}
+	}
+	if got != want {
+		t.Fatalf("worker ASSIGN messages = %d, want %d", got, want)
+	}
 }
 
 func TestDirective_MaxWorkers(t *testing.T) {
