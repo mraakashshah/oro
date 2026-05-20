@@ -1389,19 +1389,43 @@ func (w *Worker) SendStatus(_ context.Context, state, result string) error {
 	})
 }
 
-func (w *Worker) trySendSubprocessProgress(ctx context.Context) {
+func (w *Worker) trySendSubprocessProgress(_ context.Context) {
 	w.mu.Lock()
 	procRunning := w.proc != nil && !w.subprocExitClosed
 	startedAt := w.subprocStartedAt
 	lastOutputAt := w.lastSubprocOutputAt
+	beadID := w.beadID
+	conn := w.conn
+	disconnected := w.disconnected
 	w.mu.Unlock()
 
 	if !procRunning || startedAt.IsZero() {
 		return
 	}
+	if disconnected {
+		return
+	}
 
 	now := time.Now()
-	_ = w.SendStatus(ctx, "running_progress", formatSubprocessProgressResult(now, startedAt, lastOutputAt))
+	data, err := json.Marshal(protocol.Message{
+		Type: protocol.MsgStatus,
+		Status: &protocol.StatusPayload{
+			BeadID:   beadID,
+			WorkerID: w.ID,
+			State:    "running_progress",
+			Result:   formatSubprocessProgressResult(now, startedAt, lastOutputAt),
+		},
+	})
+	if err != nil {
+		return
+	}
+	data = append(data, '\n')
+
+	w.connWriteMu.Lock()
+	_ = conn.SetWriteDeadline(time.Now().Add(200 * time.Millisecond))
+	_, _ = conn.Write(data)
+	_ = conn.SetWriteDeadline(time.Time{})
+	w.connWriteMu.Unlock()
 }
 
 func formatSubprocessProgressResult(now, startedAt, lastOutputAt time.Time) string {
