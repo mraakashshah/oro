@@ -318,39 +318,8 @@ func copyHooks(cfg agentAssetsConfig, w io.Writer) error {
 }
 
 // globalHooks returns the portable hooks wiring for ~/.claude/settings.json.
-func globalHooks(hooksDir string) map[string][]hookGroup {
-	py := func(s string) string { return "python3 " + hooksDir + "/" + s }
-	sh := func(s string) string { return hooksDir + "/" + s }
-
-	return map[string][]hookGroup{
-		"SessionStart": {{
-			Matcher: "",
-			Hooks:   []hookEntry{{Type: "command", Command: py("session_start_global.py")}},
-		}},
-		"PreCompact": {{
-			Matcher: "",
-			Hooks:   []hookEntry{{Type: "command", Command: py("pre_compact.py")}},
-		}},
-		"PreToolUse": {{
-			Matcher: "",
-			Hooks:   []hookEntry{{Type: "command", Command: py("enforce_skills.py")}},
-		}},
-		"PostToolUse": {
-			{Matcher: "Read|WebFetch|Bash", Hooks: []hookEntry{
-				{Type: "command", Command: py("prompt_injection_guard.py")},
-			}},
-			{Matcher: "Edit|Write", Hooks: []hookEntry{
-				{Type: "command", Command: sh("auto-format.sh")},
-			}},
-			{Matcher: "", Hooks: []hookEntry{
-				{Type: "command", Command: py("context_pruner.py")},
-			}},
-		},
-		"Stop": {{
-			Matcher: "",
-			Hooks:   []hookEntry{{Type: "command", Command: sh("stop-checklist.sh")}},
-		}},
-	}
+func globalHooks(hooksDir string) map[string][]agentassets.HookGroup {
+	return (agentassets.ClaudeGenerator{}).Hooks(hooksDir)
 }
 
 // updateGlobalSettings merges the portable hooks into ~/.claude/settings.json,
