@@ -39,7 +39,7 @@ func NewGitWorktreeManager(repoRoot, worktreesDir, qualityGatePath string, runne
 
 // Create runs `git worktree add <path> -b agent/<beadID> <baseBranch>` and returns
 // the worktree path and branch name. baseBranch is the branch to branch from
-// (e.g. "main" for standalone beads, "agent/<epicID>" for epic child beads).
+// (e.g. "main" for standalone beads, "epic/<epicID>" for epic child beads).
 //
 // Before creating the worktree, Create performs a best-effort `git fetch origin
 // <baseBranch>` so that the new agent branch always starts from the current
