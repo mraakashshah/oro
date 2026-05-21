@@ -634,6 +634,7 @@ type Dispatcher struct {
 	listener                    net.Listener
 	focusedEpic                 string
 	focusVersion                uint64
+	epicQGWorktreeSeq           uint64
 	targetWorkers               int
 	explicitScaleTarget         bool
 	completionsSinceConsolidate int // counts completed beads since last context consolidation
@@ -2229,7 +2230,7 @@ func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, work
 // tryCloseEpic should proceed to completeEpicClose. On failure or error it
 // handles logging/escalation and returns false.
 func (d *Dispatcher) checkEpicQG(ctx context.Context, epicID, workerID, epicBranch string) bool {
-	wtID := epicQGWorktreeID(epicID)
+	wtID := d.epicQGWorktreeID(epicID)
 	worktree, _, err := d.worktrees.Create(ctx, wtID, epicBranch)
 	if err != nil {
 		_ = d.logEvent(ctx, "epic_qg_worktree_failed", "dispatcher", epicID, workerID,
@@ -2251,10 +2252,8 @@ func (d *Dispatcher) checkEpicQG(ctx context.Context, epicID, workerID, epicBran
 	return true
 }
 
-var epicQGWorktreeSeq uint64
-
-func epicQGWorktreeID(epicID string) string {
-	suffix := strconv.FormatInt(time.Now().UnixNano(), 36) + "-" + strconv.FormatUint(atomic.AddUint64(&epicQGWorktreeSeq, 1), 36)
+func (d *Dispatcher) epicQGWorktreeID(epicID string) string {
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36) + "-" + strconv.FormatUint(atomic.AddUint64(&d.epicQGWorktreeSeq, 1), 36)
 	maxPrefixLen := 63 - len("-qg-") - len(suffix)
 	if maxPrefixLen < 1 {
 		maxPrefixLen = 1

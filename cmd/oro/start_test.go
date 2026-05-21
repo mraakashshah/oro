@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -294,62 +295,94 @@ func TestStartCommandPreflightChecks(t *testing.T) {
 	// Since we can't easily mock exec.LookPath, this test verifies that with all
 	// tools present, preflight doesn't block the start command.
 	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(filepath.Join(projectDir, ".oro"), 0o755); err != nil {
+		t.Fatalf("mkdir project config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".oro", "config.yaml"), []byte("project: preflight-test\n"), 0o644); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", projectDir, "init").CombinedOutput(); err != nil {
+		t.Fatalf("git init temp project: %v\n%s", err, out)
+	}
+
 	pidFile := filepath.Join(tmpDir, "oro.pid")
 	sockPath := filepath.Join(tmpDir, "oro.sock")
 	dbPath := filepath.Join(tmpDir, "state.db")
+	oroHome := filepath.Join(tmpDir, "oro-home")
+	if err := os.MkdirAll(filepath.Join(oroHome, "hooks"), 0o755); err != nil {
+		t.Fatalf("mkdir hooks dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(oroHome, "hooks", "oro-search-hook"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write fake search hook: %v", err)
+	}
 
 	cmd := newStartCmd()
 
+	t.Setenv("ORO_HOME", oroHome)
 	t.Setenv("ORO_PID_PATH", pidFile)
 	t.Setenv("ORO_SOCKET_PATH", sockPath)
 	t.Setenv("ORO_DB_PATH", dbPath)
 
-	// Try to run with daemon-only mode (simpler than full start).
-	cmd.SetArgs([]string{"--daemon-only", "--workers", "1"})
+	withChdir(t, projectDir, func() {
+		// Try to run with daemon-only mode (simpler than full start).
+		cmd.SetArgs([]string{"--daemon-only", "--workers", "1"})
 
-	var stdout bytes.Buffer
-	cmd.SetOut(&stdout)
-	cmd.SetErr(&stdout)
+		var stdout bytes.Buffer
+		cmd.SetOut(&stdout)
+		cmd.SetErr(&stdout)
 
-	// Run in background since it blocks.
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Execute()
-	}()
+		// Run in background since it blocks.
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- cmd.Execute()
+		}()
 
-	// Wait for socket to appear (confirms preflight passed and dispatcher started).
-	waitForSocket(t, sockPath, 5*time.Second)
+		// Wait for socket to appear (confirms preflight passed and dispatcher started).
+		waitForSocket(t, sockPath, 5*time.Second)
 
-	// If socket exists, preflight checks passed.
-	if _, err := os.Stat(sockPath); err != nil {
-		t.Fatalf("preflight may have failed - socket not created: %v", err)
-	}
+		// If socket exists, preflight checks passed.
+		if _, err := os.Stat(sockPath); err != nil {
+			t.Fatalf("preflight may have failed - socket not created: %v", err)
+		}
 
-	// Clean up - send interrupt to stop daemon.
-	pid, err := ReadPIDFile(pidFile)
-	if err != nil {
-		t.Fatalf("read PID file: %v", err)
-	}
+		// Clean up - send interrupt to stop daemon.
+		pid, err := ReadPIDFile(pidFile)
+		if err != nil {
+			t.Fatalf("read PID file: %v", err)
+		}
 
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		t.Fatalf("find process: %v", err)
-	}
-	_ = proc.Signal(os.Interrupt)
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			t.Fatalf("find process: %v", err)
+		}
+		_ = proc.Signal(os.Interrupt)
 
-	// Wait for shutdown.
-	select {
-	case <-errCh:
-		// OK
-	case <-time.After(5 * time.Second):
-		t.Fatal("daemon did not exit")
-	}
+		// Wait for shutdown.
+		select {
+		case <-errCh:
+			// OK
+		case <-time.After(5 * time.Second):
+			t.Fatal("daemon did not exit")
+		}
+	})
 }
 
 func TestDaemonOnlyStartsDispatcher(t *testing.T) {
 	skipIfToolsMissing(t)
 
 	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
+	if err := os.MkdirAll(filepath.Join(projectDir, ".oro"), 0o755); err != nil {
+		t.Fatalf("mkdir project config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".oro", "config.yaml"), []byte("project: daemon-test\n"), 0o644); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", projectDir, "init").CombinedOutput(); err != nil {
+		t.Fatalf("git init temp project: %v\n%s", err, out)
+	}
+
 	pidFile := filepath.Join(tmpDir, "oro.pid")
 	sockPath := filepath.Join(tmpDir, "oro.sock")
 	dbPath := filepath.Join(tmpDir, "state.db")
@@ -357,80 +390,85 @@ func TestDaemonOnlyStartsDispatcher(t *testing.T) {
 	cmd := newStartCmd()
 
 	// Override paths via environment for testability.
+	t.Setenv("ORO_HOME", filepath.Join(tmpDir, "oro-home"))
 	t.Setenv("ORO_PID_PATH", pidFile)
 	t.Setenv("ORO_SOCKET_PATH", sockPath)
 	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_BEADSOURCE_MODE", "sqlite")
+	t.Setenv(daemonSkipPreflightEnv, "1")
 
-	cmd.SetArgs([]string{"--daemon-only", "--workers", "2"})
+	withChdir(t, projectDir, func() {
+		cmd.SetArgs([]string{"--daemon-only", "--workers", "2"})
 
-	var stdout bytes.Buffer
-	cmd.SetOut(&stdout)
-	cmd.SetErr(&stdout)
+		var stdout bytes.Buffer
+		cmd.SetOut(&stdout)
+		cmd.SetErr(&stdout)
 
-	// Run command in background — it blocks until context cancels.
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Execute()
-	}()
+		// Run command in background — it blocks until context cancels.
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- cmd.Execute()
+		}()
 
-	// Wait for socket file to appear (dispatcher is listening).
-	waitForSocket(t, sockPath, 5*time.Second)
+		// Wait for socket file to appear (dispatcher is listening).
+		waitForSocket(t, sockPath, 5*time.Second)
 
-	// Verify socket file exists.
-	if _, err := os.Stat(sockPath); err != nil {
-		t.Fatalf("socket file %s not created: %v\nstdout: %s", sockPath, err, stdout.String())
-	}
-
-	// Verify we can connect to the socket.
-	conn, err := net.DialTimeout("unix", sockPath, 2*time.Second)
-	if err != nil {
-		t.Fatalf("cannot connect to dispatcher socket: %v", err)
-	}
-	_ = conn.Close()
-
-	// Verify PID file was written.
-	if _, err := os.Stat(pidFile); err != nil {
-		t.Fatalf("PID file not created: %v", err)
-	}
-
-	// Send SIGTERM to stop the daemon.
-	pid, err := ReadPIDFile(pidFile)
-	if err != nil {
-		t.Fatalf("read PID file: %v", err)
-	}
-
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		t.Fatalf("find process: %v", err)
-	}
-	if err := proc.Signal(os.Interrupt); err != nil {
-		t.Fatalf("send interrupt: %v", err)
-	}
-
-	// Wait for command to finish.
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Fatalf("command failed: %v", err)
+		// Verify socket file exists.
+		if _, err := os.Stat(sockPath); err != nil {
+			t.Fatalf("socket file %s not created: %v\nstdout: %s", sockPath, err, stdout.String())
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("command did not exit after signal")
-	}
 
-	// Verify output mentions dispatcher.
-	out := stdout.String()
-	if !contains(out, "starting dispatcher") {
-		t.Errorf("expected 'starting dispatcher' in output, got: %s", out)
-	}
-	if !contains(out, "dispatcher stopped") {
-		t.Errorf("expected 'dispatcher stopped' in output, got: %s", out)
-	}
+		// Verify we can connect to the socket.
+		conn, err := net.DialTimeout("unix", sockPath, 2*time.Second)
+		if err != nil {
+			t.Fatalf("cannot connect to dispatcher socket: %v", err)
+		}
+		_ = conn.Close()
 
-	// Verify socket is cleaned up (listener closed).
-	_, err = net.DialTimeout("unix", sockPath, 500*time.Millisecond)
-	if err == nil {
-		t.Error("socket should be closed after shutdown")
-	}
+		// Verify PID file was written.
+		if _, err := os.Stat(pidFile); err != nil {
+			t.Fatalf("PID file not created: %v", err)
+		}
+
+		// Send SIGTERM to stop the daemon.
+		pid, err := ReadPIDFile(pidFile)
+		if err != nil {
+			t.Fatalf("read PID file: %v", err)
+		}
+
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			t.Fatalf("find process: %v", err)
+		}
+		if err := proc.Signal(os.Interrupt); err != nil {
+			t.Fatalf("send interrupt: %v", err)
+		}
+
+		// Wait for command to finish.
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("command failed: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("command did not exit after signal")
+		}
+
+		// Verify output mentions dispatcher.
+		out := stdout.String()
+		if !contains(out, "starting dispatcher") {
+			t.Errorf("expected 'starting dispatcher' in output, got: %s", out)
+		}
+		if !contains(out, "dispatcher stopped") {
+			t.Errorf("expected 'dispatcher stopped' in output, got: %s", out)
+		}
+
+		// Verify socket is cleaned up (listener closed).
+		_, err = net.DialTimeout("unix", sockPath, 500*time.Millisecond)
+		if err == nil {
+			t.Error("socket should be closed after shutdown")
+		}
+	})
 }
 
 // TestStartSendsDirective verifies that runFullStart sends a "start" directive
