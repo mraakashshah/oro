@@ -106,6 +106,76 @@ func TestContextCommandsUseTaskTerminology(t *testing.T) {
 	}
 }
 
+func TestPromptAssetsUseTaskTerminology(t *testing.T) {
+	repoRoot := terminologyRepoRoot(t)
+
+	tests := []struct {
+		name string
+		path string
+		want []string
+	}{
+		{
+			name: "manager beacon recommends task commands and marks worker launch legacy flag compatibility-only",
+			path: filepath.Join("assets", "beacons", "manager.md"),
+			want: []string{
+				"`oro task ready`",
+				"`oro task create`",
+				"`oro task show <task-id>`",
+				"`oro task close <task-id> --reason \"...\"`",
+				"`oro task dep add <task-id> <depends-on-id>`",
+				"`oro worker launch --bead <task-id>`",
+				"compatibility-only",
+			},
+		},
+		{
+			name: "restart command describes task progress and P0 task filing",
+			path: filepath.Join("assets", "commands", "restart-oro.md"),
+			want: []string{
+				"tracking task progress",
+				"filing P0 bugs",
+				"missing_acceptance",
+				"task has no AC",
+				"Task progress",
+				"`oro task create --title=\"P0: <description>\" --type=bug --priority=0`",
+			},
+		},
+		{
+			name: "embedded manager beacon mirror stays task canonical",
+			path: filepath.Join("cmd", "oro", "_assets", "beacons", "manager.md"),
+			want: []string{
+				"`oro task ready`",
+				"`oro task create`",
+				"`oro worker launch --bead <task-id>`",
+				"compatibility-only",
+			},
+		},
+		{
+			name: "embedded restart command mirror stays task canonical",
+			path: filepath.Join("cmd", "oro", "_assets", "commands", "restart-oro.md"),
+			want: []string{
+				"tracking task progress",
+				"task has no AC",
+				"Task progress",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content, err := os.ReadFile(filepath.Join(repoRoot, tt.path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := string(content)
+			for _, want := range tt.want {
+				if !strings.Contains(text, want) {
+					t.Fatalf("%s does not contain %q", tt.path, want)
+				}
+			}
+		})
+	}
+}
+
 func TestTaskTerminologyGuard(t *testing.T) {
 	repoRoot := terminologyRepoRoot(t)
 	script := filepath.Join(repoRoot, "scripts", "check-task-terminology.sh")

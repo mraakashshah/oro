@@ -60,8 +60,8 @@ update durable work:
 - `oro task list` - list tasks by status.
 
 For P0 work that needs immediate capacity, `oro worker launch --bead <task-id>`
-requests targeted dispatcher capacity. The `--bead` spelling is a legacy flag
-name and still accepts a task id.
+requests targeted dispatcher capacity. The `--bead` spelling is a
+compatibility-only legacy flag name and still accepts a task id.
 
 ## Optional Legacy Console
 
