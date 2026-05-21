@@ -58,7 +58,6 @@ func rootSubcommands(root *cobra.Command) []*cobra.Command {
 		newCleanupCmd(),
 		newHelpCmd(root),
 		newWorkCmd(),
-		newBeadCmd(),
 		newTaskCmd(),
 		newGlobalOroApproachCmd(),
 		newGlobalOroApproachAliasCmd("global-skills"),

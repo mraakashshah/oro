@@ -58,6 +58,23 @@ func TestHelpIncludesTaskCommand(t *testing.T) {
 	}
 }
 
+func TestTaskCommandIsCanonical(t *testing.T) {
+	root := newRootCmd()
+
+	var foundTask bool
+	for _, cmd := range root.Commands() {
+		switch cmd.Name() {
+		case "task":
+			foundTask = true
+		case "bead":
+			t.Fatal("root command registered retired bead compatibility alias")
+		}
+	}
+	if !foundTask {
+		t.Fatal("root command did not register canonical task subcommand")
+	}
+}
+
 func TestTaskCommandSubcommandParity(t *testing.T) {
 	beadCmd := newBeadCmdWithStore(nil)
 	taskCmd := newTaskCmdWithStore(nil)
@@ -147,6 +164,45 @@ func TestTaskCommandRejectsMigrationAlias(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "migrate-from-dolt") {
 		t.Fatalf("task migrate-from-dolt error = %v, want unavailable migration command named", err)
+	}
+}
+
+func TestBeadCommandRemovedFromRoot(t *testing.T) {
+	root := newRootCmd()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"help"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("root help error: %v", err)
+	}
+	if strings.Contains(out.String(), "\n  bead ") {
+		t.Fatalf("root help should omit bead command:\n%s", out.String())
+	}
+
+	root = newRootCmd()
+	out.Reset()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"bead", "status"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatalf("oro bead status unexpectedly succeeded:\n%s", out.String())
+	}
+	if !strings.Contains(err.Error(), "unknown command") || !strings.Contains(err.Error(), "bead") {
+		t.Fatalf("oro bead status error = %v, want unknown bead command", err)
+	}
+
+	root = newRootCmd()
+	out.Reset()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"task", "status"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("oro task status error: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "open\t") {
+		t.Fatalf("oro task status output missing status counts:\n%s", out.String())
 	}
 }
 

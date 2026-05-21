@@ -17,10 +17,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newBeadCmd() *cobra.Command {
-	return newBeadCmdWithStore(nil)
-}
-
 func newBeadCmdWithStore(store beadstore.Store) *cobra.Command {
 	var jsonOutput bool
 

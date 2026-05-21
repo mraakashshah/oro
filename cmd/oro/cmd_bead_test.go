@@ -16,26 +16,24 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func TestRootCommandIncludesBead(t *testing.T) {
+func TestRootCommandOmitsBead(t *testing.T) {
 	root := newRootCmd()
 
 	for _, cmd := range root.Commands() {
 		if cmd.Name() == "bead" {
-			return
+			t.Fatal("root command registered retired bead subcommand")
 		}
 	}
-
-	t.Fatal("root command did not register bead subcommand")
 }
 
 func TestBeadCommandHelpExposesSubcommands(t *testing.T) {
-	root := newRootCmd()
+	cmd := newBeadCmdWithStore(nil)
 	var buf bytes.Buffer
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"bead", "--help"})
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"--help"})
 
-	if err := root.Execute(); err != nil {
+	if err := cmd.Execute(); err != nil {
 		t.Fatalf("unexpected help error: %v", err)
 	}
 
@@ -69,13 +67,13 @@ func TestBeadCommandHelpExposesSubcommands(t *testing.T) {
 }
 
 func TestBeadDepCommandHelpExposesSubcommands(t *testing.T) {
-	root := newRootCmd()
+	cmd := newBeadCmdWithStore(nil)
 	var buf bytes.Buffer
-	root.SetOut(&buf)
-	root.SetErr(&buf)
-	root.SetArgs([]string{"bead", "dep", "--help"})
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"dep", "--help"})
 
-	if err := root.Execute(); err != nil {
+	if err := cmd.Execute(); err != nil {
 		t.Fatalf("unexpected dep help error: %v", err)
 	}
 
@@ -379,7 +377,7 @@ func TestBeadCreateShowSQLiteRoundTripsParentWithoutDependency(t *testing.T) {
 	}
 }
 
-func TestCmdBeadCreateShowUpdateCloseRoundTripThroughBinary(t *testing.T) {
+func TestCmdTaskCreateShowUpdateCloseRoundTripThroughBinary(t *testing.T) {
 	tmpDir := t.TempDir()
 	binPath := filepath.Join(tmpDir, "oro")
 	dbPath := filepath.Join(tmpDir, "state.db")
@@ -414,9 +412,9 @@ func TestCmdBeadCreateShowUpdateCloseRoundTripThroughBinary(t *testing.T) {
 	}
 
 	created := decodeBeadJSONObject(t, run(
-		"bead", "create",
+		"task", "create",
 		"--id", "oro-e2e1",
-		"--title", "Binary bead",
+		"--title", "Binary task",
 		"--type", "task",
 		"--priority", "2",
 		"--description", "created through the oro binary",
@@ -425,16 +423,16 @@ func TestCmdBeadCreateShowUpdateCloseRoundTripThroughBinary(t *testing.T) {
 		"--json",
 	))
 	if created["id"] != "oro-e2e1" || created["status"] != "open" {
-		t.Fatalf("created bead = %#v, want open oro-e2e1", created)
+		t.Fatalf("created task = %#v, want open oro-e2e1", created)
 	}
 
-	shown := decodeBeadJSONObject(t, run("bead", "show", "oro-e2e1", "--json"))
-	if shown["title"] != "Binary bead" || shown["acceptance_criteria"] != "create show update close" {
-		t.Fatalf("shown bead did not round-trip create fields: %#v", shown)
+	shown := decodeBeadJSONObject(t, run("task", "show", "oro-e2e1", "--json"))
+	if shown["title"] != "Binary task" || shown["acceptance_criteria"] != "create show update close" {
+		t.Fatalf("shown task did not round-trip create fields: %#v", shown)
 	}
 
 	updated := decodeBeadJSONObject(t, run(
-		"bead", "update", "oro-e2e1",
+		"task", "update", "oro-e2e1",
 		"--status", "in_progress",
 		"--priority", "0",
 		"--type", "bug",
@@ -444,15 +442,15 @@ func TestCmdBeadCreateShowUpdateCloseRoundTripThroughBinary(t *testing.T) {
 		"--json",
 	))
 	if updated["status"] != "in_progress" || updated["priority"] != float64(0) || updated["type"] != "bug" || updated["owner"] != "worker" {
-		t.Fatalf("updated bead did not round-trip update fields: %#v", updated)
+		t.Fatalf("updated task did not round-trip update fields: %#v", updated)
 	}
 	if updated["acceptance_criteria"] != "updated acceptance" || updated["notes"] != "updated by e2e" {
-		t.Fatalf("updated bead did not round-trip text fields: %#v", updated)
+		t.Fatalf("updated task did not round-trip text fields: %#v", updated)
 	}
 
-	closed := decodeBeadJSONObject(t, run("bead", "close", "oro-e2e1", "--reason", "verified", "--json"))
+	closed := decodeBeadJSONObject(t, run("task", "close", "oro-e2e1", "--reason", "verified", "--json"))
 	if closed["status"] != "closed" || closed["close_reason"] != "verified" {
-		t.Fatalf("closed bead did not round-trip close fields: %#v", closed)
+		t.Fatalf("closed task did not round-trip close fields: %#v", closed)
 	}
 }
 

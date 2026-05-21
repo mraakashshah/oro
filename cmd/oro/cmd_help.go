@@ -50,7 +50,6 @@ Codebase:
 Workflow:
   work       Execute a task through the full lifecycle
   task       Manage native Oro tasks
-  bead       Manage native Oro beads (legacy alias for task)
   shell      Launch an interactive agent session with oro settings
 
 Reviews:
