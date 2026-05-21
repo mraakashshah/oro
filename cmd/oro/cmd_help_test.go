@@ -115,43 +115,30 @@ func TestHelpUnknownCommand(t *testing.T) {
 	}
 }
 
-// TestHelpTaskTerminology verifies that helpText is task-primary: "task" is the
-// primary Workflow entry and "bead" is described as a legacy alias.
-func TestHelpTaskTerminology(t *testing.T) {
+// TestWorkflowHelpUsesTaskCanonicalCopy verifies that helpText is task-canonical:
+// "task" is the Workflow command and normal user-facing copy does not route users
+// through historical bead wording.
+func TestWorkflowHelpUsesTaskCanonicalCopy(t *testing.T) {
 	workflowIdx := strings.Index(helpText, "Workflow:")
 	if workflowIdx < 0 {
 		t.Fatal("expected Workflow section in helpText")
 	}
 	workflowSection := helpText[workflowIdx:]
+	if nextSectionIdx := strings.Index(workflowSection[len("Workflow:"):], "\n\n"); nextSectionIdx >= 0 {
+		workflowSection = workflowSection[:len("Workflow:")+nextSectionIdx]
+	}
 
-	// "task" must appear in the Workflow section.
-	taskIdx := strings.Index(workflowSection, "  task")
-	if taskIdx < 0 {
+	if !strings.Contains(workflowSection, "  task") {
 		t.Error("expected 'task' command in Workflow section of helpText")
 	}
-
-	// If "bead" also appears in the Workflow section, "task" must come first.
-	beadIdx := strings.Index(workflowSection, "  bead")
-	if beadIdx >= 0 && taskIdx > beadIdx {
-		t.Error("'task' entry must appear before 'bead' in Workflow section (task is primary)")
+	if strings.Contains(workflowSection, "  bead") {
+		t.Errorf("Workflow section must not list bead as a command:\n%s", workflowSection)
 	}
-
-	// The bead entry, if present, must signal legacy/alias status.
-	if beadIdx >= 0 {
-		// Grab the bead line from the workflow section.
-		beadLine := workflowSection[beadIdx:]
-		if nl := strings.IndexByte(beadLine, '\n'); nl >= 0 {
-			beadLine = beadLine[:nl]
-		}
-		beadLine = strings.ToLower(beadLine)
-		if !strings.Contains(beadLine, "legacy") && !strings.Contains(beadLine, "alias") && !strings.Contains(beadLine, "compat") {
-			t.Errorf("bead entry in Workflow section should indicate legacy/alias status, got: %q", beadLine)
-		}
+	if strings.Contains(helpText, "oro bead") {
+		t.Errorf("helpText must not direct normal users to oro bead:\n%s", helpText)
 	}
-
-	// "task" must appear in the Workflow section description as the primary command.
-	if !strings.Contains(workflowSection, "task") {
-		t.Error("expected 'task' in Workflow section of helpText")
+	if strings.Contains(helpText, "bead") || strings.Contains(helpText, "Bead") {
+		t.Errorf("helpText must use task terminology in user-facing copy:\n%s", helpText)
 	}
 }
 

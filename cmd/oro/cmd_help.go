@@ -56,9 +56,9 @@ Reviews:
   review-patterns  Inspect and promote candidate review patterns captured from approved reviews
 
 Renders:
-  current    Show current work context (in-progress beads, journey, cards)
-  handoff    Show session-scoped work context (in-progress beads, recent journey, cards)
-  resume     Drop into a bead's context (title, status, AC, recent journey, cards)
+  current    Show current work context (in-progress tasks, journey, cards)
+  handoff    Show session-scoped work context (in-progress tasks, recent journey, cards)
+  resume     Drop into a task's context (title, status, AC, recent journey, cards)
 
 Global:
   agent-assets         Sync oro skills and runtime assets for agent sessions
