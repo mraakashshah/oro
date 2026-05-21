@@ -133,6 +133,62 @@ VALUES ('oro-q', 12, 'w1', '/tmp/wt-q', 'agent/oro-q', 'missing_worktree_path', 
 	}
 }
 
+func TestHealthCmdJSONReconcilesClosedQGIncidentBeads(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "oro.pid"))
+	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+	t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))
+
+	db, err := openStateDB(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO qg_failure_incidents
+    (id, fingerprint, class, decision, confidence, reason, summary, status, occurrence_count)
+VALUES
+    (1, 'qg:already-fixed', 'systemic', 'create_or_reuse_infra', 'high', 'fixed elsewhere', 'already fixed', 'open', 1);
+INSERT INTO beads (id, title, status, type)
+VALUES ('oro-qg-incident-1', 'QG incident 1', 'closed', 'bug');
+`); err != nil {
+		t.Fatalf("seed qg incident: %v", err)
+	}
+
+	root := newRootCmd()
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetArgs([]string{"health", "--json"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("health command failed: %v", err)
+	}
+
+	var got factoryhealth.FactoryHealth
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("health --json invalid JSON: %v\nraw: %s", err, buf.String())
+	}
+	if got.Metrics.OpenQGIncidents != 0 {
+		t.Fatalf("open qg incidents = %d, want 0; health=%+v", got.Metrics.OpenQGIncidents, got)
+	}
+	if healthHasFinding(got, factoryhealth.FindingQGIncidentsOpen) {
+		t.Fatalf("closed qg incident bead should not emit qg_incidents_open finding: %+v", got.Findings)
+	}
+
+	var dbStatus string
+	if err := db.QueryRowContext(ctx, `SELECT status FROM qg_failure_incidents WHERE id=1`).Scan(&dbStatus); err != nil {
+		t.Fatalf("query qg incident status: %v", err)
+	}
+	if dbStatus != "closed" {
+		t.Fatalf("qg incident db status = %q, want closed", dbStatus)
+	}
+}
+
 func TestHealthJSONIncludesOpsRunMetrics(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "oro.pid"))

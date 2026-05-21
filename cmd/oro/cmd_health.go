@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"time"
 
 	"oro/pkg/beadstore"
 	"oro/pkg/factoryhealth"
+	"oro/pkg/protocol"
 
 	"github.com/spf13/cobra"
 )
@@ -83,9 +86,13 @@ func loadLocalFactoryHealth(ctx context.Context, stateDBPath string, daemonRunni
 	defer db.Close()
 
 	now := time.Now()
+	store := beadstore.NewSQLiteStore(db)
 	activeAssignments, err := factoryhealth.LoadActiveAssignments(ctx, db, now)
 	if err != nil {
 		return factoryhealth.FactoryHealth{}, fmt.Errorf("load active assignments: %w", err)
+	}
+	if err := reconcileLocalQGIncidentRows(ctx, db, store); err != nil {
+		return factoryhealth.FactoryHealth{}, fmt.Errorf("reconcile qg incidents: %w", err)
 	}
 	openQG, qgOccurrences, topFingerprints, err := factoryhealth.LoadQGMetrics(ctx, db)
 	if err != nil {
@@ -104,7 +111,6 @@ func loadLocalFactoryHealth(ctx context.Context, stateDBPath string, daemonRunni
 		return factoryhealth.FactoryHealth{}, fmt.Errorf("load ops run metrics: %w", err)
 	}
 	readyQueue := 0
-	store := beadstore.NewSQLiteStore(db)
 	if ready, readyErr := store.Ready(ctx); readyErr == nil {
 		readyQueue = len(ready)
 	}
@@ -121,6 +127,52 @@ func loadLocalFactoryHealth(ctx context.Context, stateDBPath string, daemonRunni
 		Throughput:              throughput,
 		OpsRuns:                 opsRuns,
 	}), nil
+}
+
+func reconcileLocalQGIncidentRows(ctx context.Context, db *sql.DB, store beadstore.Store) error {
+	if db == nil || store == nil {
+		return nil
+	}
+	rows, err := db.QueryContext(ctx, `SELECT id FROM qg_failure_incidents WHERE status='open'`)
+	if err != nil {
+		return fmt.Errorf("query open qg incidents: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var closedIDs []int64
+	for rows.Next() {
+		var incidentID int64
+		if err := rows.Scan(&incidentID); err != nil {
+			return fmt.Errorf("scan qg incident id: %w", err)
+		}
+		if localQGIncidentBeadClosed(ctx, store, incidentID) {
+			closedIDs = append(closedIDs, incidentID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate open qg incidents: %w", err)
+	}
+	for _, incidentID := range closedIDs {
+		if _, err := db.ExecContext(ctx, `
+UPDATE qg_failure_incidents
+   SET status = 'closed'
+ WHERE id = ? AND status = 'open'`, incidentID); err != nil {
+			return fmt.Errorf("close qg incident row %d: %w", incidentID, err)
+		}
+	}
+	return nil
+}
+
+func localQGIncidentBeadClosed(ctx context.Context, store beadstore.Store, incidentID int64) bool {
+	if incidentID <= 0 {
+		return false
+	}
+	detail, err := store.Show(ctx, fmt.Sprintf("oro-qg-incident-%d", incidentID))
+	if err != nil {
+		var notFound *protocol.BeadNotFoundError
+		return errors.As(err, &notFound)
+	}
+	return detail == nil || detail.Status == "closed"
 }
 
 func writeFactoryHealthJSON(w io.Writer, health factoryhealth.FactoryHealth) error {

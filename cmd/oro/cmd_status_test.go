@@ -39,6 +39,57 @@ func TestStatusCmd_Stopped(t *testing.T) {
 	}
 }
 
+func TestStatusJSONLocalHealthMirrorsQGMetrics(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "oro.pid"))
+	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "nonexistent.sock"))
+	t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))
+
+	db, err := openStateDB(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(context.Background(), protocol.SchemaDDL); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	if _, err := db.ExecContext(context.Background(), `
+INSERT INTO qg_failure_incidents
+    (id, fingerprint, class, decision, confidence, reason, summary, status, occurrence_count)
+VALUES
+    (1, 'qg:still-open', 'systemic', 'create_or_reuse_infra', 'high', 'needs work', 'still open', 'open', 1);
+INSERT INTO qg_failure_occurrences (id, incident_id, bead_id, output_hash)
+VALUES ('occ-1', 1, 'oro-a', 'hash-1');
+INSERT INTO beads (id, title, status, type)
+VALUES ('oro-qg-incident-1', 'QG incident 1', 'open', 'bug');
+`); err != nil {
+		t.Fatalf("seed qg incident: %v", err)
+	}
+
+	root := newRootCmd()
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetArgs([]string{"status", "--json"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("status command failed: %v", err)
+	}
+
+	var got statusResponse
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("status --json invalid JSON: %v\nraw: %s", err, buf.String())
+	}
+	if got.Health == nil {
+		t.Fatal("status health missing")
+	}
+	if got.QGFailureIncidentsOpen != got.Health.Metrics.OpenQGIncidents {
+		t.Fatalf("top-level qg incidents = %d, nested health = %d", got.QGFailureIncidentsOpen, got.Health.Metrics.OpenQGIncidents)
+	}
+	if got.QGFailureOccurrences30m != got.Health.Metrics.QGOccurrences30m {
+		t.Fatalf("top-level qg occurrences = %d, nested health = %d", got.QGFailureOccurrences30m, got.Health.Metrics.QGOccurrences30m)
+	}
+}
+
 func TestStatusCmd_Stale(t *testing.T) {
 	tmpDir := t.TempDir()
 	pidFile := filepath.Join(tmpDir, "oro.pid")

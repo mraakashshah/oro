@@ -136,7 +136,14 @@ func printStatusJSONFromLocalHealth(ctx context.Context, w io.Writer, stateDBPat
 	if err != nil {
 		return fmt.Errorf("load local factory health: %w", err)
 	}
-	formatStatusJSON(w, &statusResponse{State: state, PID: pid, Health: &health})
+	formatStatusJSON(w, &statusResponse{
+		State:                   state,
+		PID:                     pid,
+		QueueDepth:              health.Metrics.ReadyQueue,
+		QGFailureIncidentsOpen:  health.Metrics.OpenQGIncidents,
+		QGFailureOccurrences30m: health.Metrics.QGOccurrences30m,
+		Health:                  &health,
+	})
 	return nil
 }
 
