@@ -7841,6 +7841,7 @@ func (d *Dispatcher) completeOneShotOpsRunFailureBestEffort(ctx context.Context,
 		return
 	}
 	if rec != nil {
+		d.populateOpsRunEscalationIDBestEffort(ctx, rec.ID, escalationID, runType, beadID, workerID)
 		if err := CompleteOpsRun(ctx, d.db, rec.ID, opsRunStatusFailed, verdict, result.Feedback, errorText); err != nil {
 			_ = d.logEvent(ctx, "ops_run_complete_failed", "dispatcher", beadID, workerID,
 				fmt.Sprintf(`{"ops_run_id":%d,"type":%q,"status":%q,"error":%q}`, rec.ID, runType, opsRunStatusFailed, err.Error()))
@@ -7860,6 +7861,26 @@ func (d *Dispatcher) completeOneShotOpsRunFailureBestEffort(ctx context.Context,
 	}); err != nil {
 		_ = d.logEvent(ctx, "ops_run_complete_failed", "dispatcher", beadID, workerID,
 			fmt.Sprintf(`{"type":%q,"status":%q,"error":%q}`, runType, opsRunStatusFailed, err.Error()))
+	}
+}
+
+func (d *Dispatcher) populateOpsRunEscalationIDBestEffort(ctx context.Context, opsRunID, escalationID int64, runType ops.Type, beadID, workerID string) {
+	if escalationID <= 0 {
+		return
+	}
+	result, err := d.db.ExecContext(ctx, `
+UPDATE ops_runs
+SET escalation_id = ?
+WHERE id = ?
+  AND escalation_id IS NULL`, escalationID, opsRunID)
+	if err != nil {
+		_ = d.logEvent(ctx, "ops_run_update_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"ops_run_id":%d,"escalation_id":%d,"type":%q,"error":%q}`, opsRunID, escalationID, runType, err.Error()))
+		return
+	}
+	if _, err := result.RowsAffected(); err != nil {
+		_ = d.logEvent(ctx, "ops_run_update_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"ops_run_id":%d,"escalation_id":%d,"type":%q,"error":%q}`, opsRunID, escalationID, runType, err.Error()))
 	}
 }
 

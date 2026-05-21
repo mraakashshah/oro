@@ -3381,6 +3381,87 @@ LIMIT 1`, ops.OpsDecompose, beadID).Scan(
 	}
 }
 
+func TestDecomposeOpsRunSpawnFailureCompletesExistingRunningRow(t *testing.T) {
+	d, _, _, esc, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const (
+		beadID   = "oro-decompose-existing-spawn-failed"
+		workerID = "w-decompose-existing-spawn-failed"
+	)
+
+	existingRunID := insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, workerID)
+	escalationID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, workerID)
+	resultCh := make(chan ops.Result, 1)
+	resultCh <- ops.Result{
+		Type:     ops.OpsDecompose,
+		BeadID:   beadID,
+		Feedback: "unable to spawn decompose worker",
+		Err:      errors.New("spawn failed: executable not found"),
+	}
+
+	d.handleEscalationResult(ctx, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
+
+	if got := len(esc.Messages()); got != 0 {
+		t.Fatalf("decompose spawn failure pasted fallback to manager, got %d messages: %v", got, esc.Messages())
+	}
+	if got := dispatcherTestOpsRunCount(t, d.db, ops.OpsDecompose, beadID); got != 1 {
+		t.Fatalf("decompose ops_run count = %d, want 1", got)
+	}
+
+	var (
+		rec              OpsRunRecord
+		recEscalationID  sql.NullInt64
+		recCompletedAtID sql.NullString
+	)
+	if err := d.db.QueryRowContext(ctx, `
+SELECT id, escalation_id, status, verdict, feedback, error, completed_at
+FROM ops_runs
+WHERE type=? AND bead_id=?
+ORDER BY id DESC
+LIMIT 1`, ops.OpsDecompose, beadID).Scan(
+		&rec.ID, &recEscalationID, &rec.Status, &rec.Verdict,
+		&rec.Feedback, &rec.Error, &recCompletedAtID,
+	); err != nil {
+		t.Fatalf("query decompose ops_run: %v", err)
+	}
+	if recEscalationID.Valid {
+		rec.EscalationID = recEscalationID.Int64
+	}
+	if recCompletedAtID.Valid {
+		rec.CompletedAt = recCompletedAtID.String
+	}
+	if rec.ID != existingRunID {
+		t.Fatalf("completed ops_run id = %d, want existing row %d", rec.ID, existingRunID)
+	}
+	if rec.EscalationID != escalationID {
+		t.Fatalf("decompose ops_run escalation_id = %d, want %d", rec.EscalationID, escalationID)
+	}
+	if rec.Status != opsRunStatusFailed {
+		t.Fatalf("decompose ops_run status = %q, want %q", rec.Status, opsRunStatusFailed)
+	}
+	if rec.Verdict != string(ops.VerdictFailed) {
+		t.Fatalf("decompose ops_run verdict = %q, want %q", rec.Verdict, ops.VerdictFailed)
+	}
+	if rec.Feedback != "unable to spawn decompose worker" {
+		t.Fatalf("decompose ops_run feedback = %q, want spawn feedback", rec.Feedback)
+	}
+	if !strings.Contains(rec.Error, "spawn failed: executable not found") {
+		t.Fatalf("decompose ops_run error = %q, want original spawn failure", rec.Error)
+	}
+	if rec.CompletedAt == "" {
+		t.Fatal("decompose ops_run completed_at is empty")
+	}
+
+	blocking, err := FindBlockingOpsRun(ctx, d.db, string(ops.OpsDecompose), beadID)
+	if err != nil {
+		t.Fatalf("FindBlockingOpsRun: %v", err)
+	}
+	if blocking == nil || blocking.ID != existingRunID || blocking.Status != opsRunStatusFailed {
+		t.Fatalf("FindBlockingOpsRun = %#v, want failed blocking row %d", blocking, existingRunID)
+	}
+}
+
 func TestOversizedDecomposeResultAcksOnlyAfterValidation(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
