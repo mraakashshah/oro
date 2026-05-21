@@ -887,6 +887,110 @@ func TestTaskTerminologyGuard(t *testing.T) {
 	})
 }
 
+func TestTaskCanonicalRegressionGuard(t *testing.T) {
+	repoRoot := terminologyRepoRoot(t)
+	script := filepath.Join(repoRoot, "scripts", "check-task-terminology.sh")
+
+	tests := []struct {
+		name     string
+		relPath  string
+		content  string
+		wantText []string
+	}{
+		{
+			name:    "rejects root help exposing oro bead",
+			relPath: filepath.Join("cmd", "oro", "root.go"),
+			content: `package main
+
+// Public command registration must not expose oro bead for normal work.
+func rootSubcommands() string {
+	return "oro bead"
+}
+`,
+			wantText: []string{"oro bead"},
+		},
+		{
+			name:    "rejects active prompt recommending normal oro bead command",
+			relPath: filepath.Join("pkg", "worker", "prompt.go"),
+			content: `package worker
+
+const workerPrompt = "Use ` + "`oro bead ready`" + ` to pick normal public work."
+`,
+			wantText: []string{"oro bead ready"},
+		},
+		{
+			name:    "rejects public cli copy saying beads without allowlist reason",
+			relPath: filepath.Join("cmd", "oro", "cmd_help.go"),
+			content: `package main
+
+const helpText = ` + "`" + `Workflow:
+  task       Manage beads
+` + "`" + `
+`,
+			wantText: []string{"Manage beads"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tempRoot := newTerminologyGuardTempRepo(t, script)
+			path := filepath.Join(tempRoot, tt.relPath)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(tt.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := exec.Command(filepath.Join(tempRoot, "scripts", "check-task-terminology.sh"))
+			cmd.Dir = tempRoot
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("terminology guard accepted non-canonical public task wording:\n%s", string(output))
+			}
+			for _, want := range tt.wantText {
+				if !strings.Contains(string(output), want) {
+					t.Fatalf("terminology guard rejection did not cite %q:\n%s", want, string(output))
+				}
+			}
+		})
+	}
+}
+
+func newTerminologyGuardTempRepo(t *testing.T, script string) string {
+	t.Helper()
+
+	tempRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tempRoot, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scriptBytes, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tempRoot, "scripts", "check-task-terminology.sh"), scriptBytes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	readme := strings.Join([]string{
+		"### Task Terminology",
+		"- **Task:** preferred public term for an Oro work item.",
+		"- **Bead:** legacy/internal term still visible in storage, historical docs, compatibility CLI, and migration artifacts.",
+		"- **Task type:** the `type` field, whose values include `task`, `bug`, `epic`, `research`, and `chore`.",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(tempRoot, "README.md"), []byte(readme), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(tempRoot, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tempRoot, "docs", "INSTALL.md"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	return tempRoot
+}
+
 func terminologyRepoRoot(t *testing.T) string {
 	t.Helper()
 	wd, err := os.Getwd()

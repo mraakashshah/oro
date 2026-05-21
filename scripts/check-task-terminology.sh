@@ -25,10 +25,11 @@ require_readme_glossary() {
 scan_files() {
 	local files=("$@")
 	local normal_commands='create|show|update|close|reopen|defer|undefer|list|status|ready|blocked|closed|dep|deps|tag|meta|note|comment|search|export|import|doctor|work'
+	local public_bead_cli_regex='\boro bead(?![[:space:]]+migrate-from-dolt)\b'
 	local command_regex='\boro bead[[:space:]]+('"$normal_commands"')\b'
 	local argv_command_regex='(?s)["'\'']bead["'\''][[:space:]]*,[[:space:]]*["'\'']('"$normal_commands"')["'\'']'
 	local docs_regex="native \`oro bead\`|primary .*oro bead|work items through \`oro bead\`|tracked by the native \`oro bead\` CLI"
-	local primary_term_regex='one bead|execute beads|assigns beads|assign new beads|prioritize beads|requeue its bead|work is tracked as beads|all beads are visible|Bead in progress|continuation bead|bead queue|bead progress|bead completion|per-bead|bead dependency graph|Bead Anatomy|No beads ready|Stale Beads|Same bead|P0 bead|create a bead|blocker bead|test bead assigned|worker proof beads|controlled test bead|smoke bead|restart beads|ready bead|worker bead|bead has no AC|worker and bead are stuck|fix beads|child beads|smaller child beads|bead metadata export|export bead metadata|Diagnose why bead|Search beads|Import bead snapshot|Beads In Progress|BEAD CRAFT|SPEC/BEAD|Beads CLI'
+	local primary_term_regex='one bead|execute beads|assigns beads|assign new beads|prioritize beads|requeue its bead|work is tracked as beads|all beads are visible|Manage beads|Bead in progress|continuation bead|bead queue|bead progress|bead completion|per-bead|bead dependency graph|Bead Anatomy|No beads ready|Stale Beads|Same bead|P0 bead|create a bead|blocker bead|test bead assigned|worker proof beads|controlled test bead|smoke bead|restart beads|ready bead|worker bead|bead has no AC|worker and bead are stuck|fix beads|child beads|smaller child beads|bead metadata export|export bead metadata|Diagnose why bead|Search beads|Import bead snapshot|Beads In Progress|BEAD CRAFT|SPEC/BEAD|Beads CLI'
 	local false_rename_regex='task/(abc|def|ghi|jkl)\b|\.worktrees/task|task/<id>|task branch'
 	local junk_smoke_regex='oro task create[^`'\''"]*--title[=[:space:]]t\b|oro task create[^`'\''"]*--description[=[:space:]]d\b|oro task create[^`'\''"]*--acceptance-criteria[=[:space:]]ac\b'
 
@@ -38,6 +39,12 @@ scan_files() {
 
 	if rg -n -U --pcre2 "$command_regex" "${files[@]}"; then
 		printf "terminology: public docs/prompts must use \`oro task\` for normal work-item operations; \`oro bead migrate-from-dolt\` remains migration-only.\n" >&2
+		bad=1
+	fi
+	if rg -n -U --pcre2 "$public_bead_cli_regex" "${files[@]}" |
+		rg -v '(^|/)docs/runbooks/(beadstore-|migrate-bd-)' |
+		rg -vi 'internal|archive|archived|storage|compatibility|migration|legacy|historical'; then
+		printf "terminology: public CLI copy must not expose \`oro bead\` as a normal workflow; bead wording needs an explicit internal, archive, storage, compatibility, or migration reason.\n" >&2
 		bad=1
 	fi
 	if rg -n -U --pcre2 "$argv_command_regex" "${files[@]}" | rg -v '(^|/)(architect_router|notify_manager_on_bead_create|bd_create_notifier|pre_compact)\.py:'; then
@@ -131,7 +138,7 @@ done < <(
 		find_hook_files assets/hooks .claude/hooks
 		find_embedded_files cmd/oro/_assets/beacons cmd/oro/_assets/commands cmd/oro/_assets/hooks cmd/oro/_assets/skills
 		printf '%s\n' cmd/oro/_assets/CLAUDE.md cmd/oro/_assets/ORO_AGENT.md
-		printf '%s\n' pkg/worker/prompt.go cmd/oro/architect.go cmd/oro/manager.go cmd/oro/cmd_directive.go cmd/oro/cmd_task.go pkg/ops/ops.go
+		printf '%s\n' pkg/worker/prompt.go cmd/oro/architect.go cmd/oro/manager.go cmd/oro/root.go cmd/oro/cmd_help.go cmd/oro/cmd_directive.go cmd/oro/cmd_task.go pkg/ops/ops.go
 		find pkg/ops -maxdepth 1 -type f -name '*prompt.go' 2>/dev/null
 	} | sort -u
 )
