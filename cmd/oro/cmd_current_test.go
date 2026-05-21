@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,4 +173,36 @@ func TestCurrentCommandRegisteredInRoot(t *testing.T) {
 		}
 	}
 	t.Fatal("root command did not register current subcommand")
+}
+
+func TestRenderCurrentTextCoversEmptyAndPopulatedViews(t *testing.T) {
+	var empty bytes.Buffer
+	if err := renderCurrentText(&empty, currentViewJSON{Snapshot: "2026-05-21T00:00:00Z"}); err != nil {
+		t.Fatalf("render empty current text: %v", err)
+	}
+	if !strings.Contains(empty.String(), "No in-progress work.") {
+		t.Fatalf("empty current text = %q, want no-work message", empty.String())
+	}
+
+	view := currentViewJSON{
+		Snapshot:   "2026-05-21T00:00:00Z",
+		InProgress: []string{"oro-a", "oro-b"},
+		RecentJourney: []journeyItemJSON{
+			{Ts: "2026-05-21T00:00:02Z", Actor: "worker", Event: "checkpoint"},
+			{Ts: "2026-05-21T00:00:01Z", Actor: "dispatcher", Event: "assign"},
+		},
+		Cards: []cardSummaryJSON{
+			{ID: "card-1", Title: "Preserve recovery work"},
+		},
+	}
+	var populated bytes.Buffer
+	if err := renderCurrentText(&populated, view); err != nil {
+		t.Fatalf("render populated current text: %v", err)
+	}
+	out := populated.String()
+	for _, want := range []string{"**In Progress:** [oro-a oro-b]", "**Recent Events:**", "worker] checkpoint", "**Cards:**", "[card-1] Preserve recovery work"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("populated current text missing %q:\n%s", want, out)
+		}
+	}
 }

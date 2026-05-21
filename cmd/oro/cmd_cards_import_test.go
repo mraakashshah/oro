@@ -153,3 +153,18 @@ func TestImportFromMemoryIdempotent(t *testing.T) {
 		t.Errorf("card count after second import: got %d, want %d (same as after first run)", len(all2), len(all1))
 	}
 }
+
+func TestMemoryImportTextHelpers(t *testing.T) {
+	if got := firstNonEmptyLine("\n\t\n  title line  \nnext"); got != "title line" {
+		t.Fatalf("firstNonEmptyLine() = %q, want title line", got)
+	}
+	if got := firstNonEmptyLine("\n \t"); got != "" {
+		t.Fatalf("firstNonEmptyLine(blank) = %q, want empty", got)
+	}
+	if got := memTruncate("short", 10); got != "short" {
+		t.Fatalf("memTruncate short = %q", got)
+	}
+	if got := memTruncate("longer text", 6); got != "longer…" {
+		t.Fatalf("memTruncate long = %q", got)
+	}
+}

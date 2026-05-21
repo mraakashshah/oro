@@ -154,7 +154,7 @@ func TestExternalCloseEscalatesOnMergeConflict(t *testing.T) {
 	if len(removed) != 0 {
 		t.Fatalf("external close recovery failed; worktree should be preserved, removed=%v", removed)
 	}
-	if eventCount(t, d.db, "recovery_work_quarantined") == 0 {
-		t.Fatalf("expected recovery_work_quarantined event")
-	}
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "recovery_work_quarantined") > 0
+	}, 2*time.Second)
 }

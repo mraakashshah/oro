@@ -874,10 +874,12 @@ func (d *Dispatcher) handleShutdownTimeout(workerID string) {
 	d.mu.Lock()
 	var beadID string
 	var assignmentID int64
+	dispatcherStopping := false
 	w, ok := d.workers[workerID]
 	if ok {
 		beadID = w.beadID // capture before clearing
 		assignmentID = w.assignmentID
+		dispatcherStopping = d.state == StateStopping
 		if w.shutdownReason == shutdownReasonScaleDown || w.spawnFor {
 			sendShutdownWithoutBuffering(w)
 			w.markShuttingDownWithoutAssignment()
@@ -899,7 +901,7 @@ func (d *Dispatcher) handleShutdownTimeout(workerID string) {
 			_ = d.logEvent(ctx, "scale_down_bead_reset_failed", "dispatcher", beadID, workerID,
 				fmt.Sprintf(`{"error":%q}`, err.Error()))
 		}
-		if d.state == StateStopping {
+		if dispatcherStopping {
 			_ = d.logEvent(ctx, "bead_requeued_shutdown_timeout", "dispatcher", beadID, workerID,
 				`{"reason":"shutdown_timeout"}`)
 			return

@@ -166,6 +166,84 @@ VALUES ('oro-inspect', ?, 'worker-1', ?, 'agent/oro-inspect', 'stale_active_assi
 	}
 }
 
+func TestRecoveryInspectionFormattingAndDiscardSafety(t *testing.T) {
+	inspection := recoveryInspection{
+		Quarantine: recoveryQuarantineCLIRecord{
+			ID:      17,
+			BeadID:  "oro-recover-format",
+			Reason:  "external_close_recovery_failed",
+			Details: "merge conflict preserved work",
+			Status:  "open",
+		},
+		Bead: &recoveryBeadInspection{
+			Title:  "Recover formatting",
+			Status: "open",
+			Type:   "task",
+		},
+		Assignment: &recoveryAssignmentInspection{
+			ID:           99,
+			Status:       "quarantined",
+			WorkerID:     "worker-1",
+			AttemptCount: 2,
+		},
+		Branch: recoveryBranchInspection{
+			Name:   "agent/oro-recover-format",
+			Exists: true,
+			Ahead:  3,
+			Behind: 1,
+			Error:  "branch warning",
+		},
+		Worktree: recoveryWorktreeInspection{
+			Path:             "/tmp/oro-recover-format",
+			Exists:           true,
+			CheckedOutBranch: "agent/oro-recover-format",
+			Error:            "worktree warning",
+		},
+		Dirty: recoveryDirtyInspection{
+			Total:     2,
+			Staged:    1,
+			Modified:  1,
+			Untracked: 1,
+			Sample:    []string{"M tracked.txt", "?? new.txt"},
+		},
+		RecommendedAction: "preserve and requeue",
+	}
+	if discardEmptySafe(inspection) {
+		t.Fatal("dirty recovery inspection should not be discard-empty-safe")
+	}
+
+	var out bytes.Buffer
+	writeRecoveryInspection(&out, inspection)
+	got := out.String()
+	for _, want := range []string{
+		"#17 oro-recover-format external_close_recovery_failed status=open",
+		"details: merge conflict preserved work",
+		"bead: Recover formatting (open, task)",
+		"assignment: #99 quarantined worker=worker-1 attempts=2",
+		"branch: agent/oro-recover-format exists=true ahead=3 behind=1 error=\"branch warning\"",
+		"worktree: /tmp/oro-recover-format exists=true branch=agent/oro-recover-format error=\"worktree warning\"",
+		"dirty: total=2 staged=1 modified=1 deleted=0 untracked=1",
+		"M tracked.txt",
+		"?? new.txt",
+		"action: preserve and requeue",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("recovery inspection output missing %q:\n%s", want, got)
+		}
+	}
+
+	clean := recoveryInspection{
+		Branch: recoveryBranchInspection{Exists: true},
+	}
+	if !discardEmptySafe(clean) {
+		t.Fatal("clean branch with no ahead commits should be discard-empty-safe")
+	}
+	clean.Branch.Ahead = 1
+	if discardEmptySafe(clean) {
+		t.Fatal("branch with ahead commits should not be discard-empty-safe")
+	}
+}
+
 func TestRecoveryResolveRequeuePreservedRequeuesAssignment(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "state.db")

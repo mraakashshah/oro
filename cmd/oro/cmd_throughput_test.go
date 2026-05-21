@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"strings"
@@ -118,6 +119,48 @@ func TestThroughputCommandMaxThresholdDefaultsDisabled(t *testing.T) {
 		}
 		if flag.DefValue != "-1" {
 			t.Fatalf("%s default = %q, want -1 so omitted max thresholds are disabled", name, flag.DefValue)
+		}
+	}
+}
+
+func TestFormatThroughputHealthIncludesCountsAndRepeatedItems(t *testing.T) {
+	health := ThroughputHealth{
+		WindowStart:                   time.Date(2026, 5, 21, 10, 0, 0, 0, time.UTC),
+		WindowEnd:                     time.Date(2026, 5, 21, 11, 0, 0, 0, time.UTC),
+		Assignments:                   4,
+		ProductiveClosures:            2,
+		DeferredClosures:              1,
+		QGRejections:                  3,
+		ReviewRejections:              1,
+		ProgressTimeouts:              1,
+		TimestampWarningCount:         2,
+		ProductivePerAssignment:       0.5,
+		QGRejectionsPerAssignment:     0.75,
+		ReviewRejectionsPerAssignment: 0.25,
+		ProgressTimeoutsPerAssignment: 0.25,
+		Baseline: ThroughputBaselineComparison{
+			Name:                         "May-11",
+			ProductivePerAssignmentDelta: -0.125,
+		},
+		TopRepeatedBeads: []ThroughputCount{{Key: "oro-a", Count: 3}},
+	}
+
+	var out bytes.Buffer
+	formatThroughputHealth(&out, health)
+	got := out.String()
+	for _, want := range []string{
+		"throughput health (2026-05-21T10:00:00Z to 2026-05-21T11:00:00Z)",
+		"assignments: 4",
+		"closures: productive=2 deferred=1",
+		"ratios: productive_per_assignment=0.500",
+		"timestamp warnings: 2",
+		"baseline May-11: productive_per_assignment_delta=-0.125",
+		"repeated beads:",
+		"oro-a 3",
+		"repeated fingerprints: none",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("formatThroughputHealth output missing %q:\n%s", want, got)
 		}
 	}
 }
