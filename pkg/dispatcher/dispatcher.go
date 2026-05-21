@@ -7830,6 +7830,10 @@ func (d *Dispatcher) completeOneShotOpsRunFailureBestEffort(ctx context.Context,
 	if result.Err != nil {
 		errorText = result.Err.Error()
 	}
+	verdict := string(result.Verdict)
+	if verdict == "" {
+		verdict = string(ops.VerdictFailed)
+	}
 	rec, err := FindBlockingOpsRun(ctx, d.db, string(runType), beadID)
 	if err != nil {
 		_ = d.logEvent(ctx, "ops_run_complete_failed", "dispatcher", beadID, workerID,
@@ -7837,7 +7841,7 @@ func (d *Dispatcher) completeOneShotOpsRunFailureBestEffort(ctx context.Context,
 		return
 	}
 	if rec != nil {
-		if err := CompleteOpsRun(ctx, d.db, rec.ID, opsRunStatusFailed, string(result.Verdict), result.Feedback, errorText); err != nil {
+		if err := CompleteOpsRun(ctx, d.db, rec.ID, opsRunStatusFailed, verdict, result.Feedback, errorText); err != nil {
 			_ = d.logEvent(ctx, "ops_run_complete_failed", "dispatcher", beadID, workerID,
 				fmt.Sprintf(`{"ops_run_id":%d,"type":%q,"status":%q,"error":%q}`, rec.ID, runType, opsRunStatusFailed, err.Error()))
 		}
@@ -7850,7 +7854,7 @@ func (d *Dispatcher) completeOneShotOpsRunFailureBestEffort(ctx context.Context,
 		WorkerID:      workerID,
 		DispatcherPID: os.Getpid(),
 		Status:        opsRunStatusFailed,
-		Verdict:       string(result.Verdict),
+		Verdict:       verdict,
 		Feedback:      result.Feedback,
 		Error:         errorText,
 	}); err != nil {
