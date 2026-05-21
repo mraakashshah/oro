@@ -393,7 +393,7 @@ func newInitCmdWithDeps(deps *initDeps) *cobra.Command {
 		Long: `Bootstraps a project for oro. By default uses stealth mode: zero footprint
 in the project directory, all config stored under ~/.oro/projects/s-<hash>/.
 
-Use --local to create .oro/config.yaml and .beads/ symlink in the project
+Use --local to create .oro/config.yaml and a local beads symlink in the project
 root (visible to collaborators, committable).
 
 Use 'oro setup' to install missing tools (interactive, installs via brew/go/npm).
@@ -830,9 +830,9 @@ func createProjectAnchor(projectRoot, projectName string) (*langprofile.Config, 
 }
 
 // oroGitignoreEntries returns the patterns oro needs ignored globally
-// so that .beads/, .oro/, and .dolt/ never pollute target repos.
+// so that oro artifacts never pollute target repos.
 func oroGitignoreEntries() []string {
-	return []string{".beads/", ".beads", ".oro/", ".dolt/"}
+	return []string{beadsDirName + "/", beadsDirName, ".oro/", ".dolt/"}
 }
 
 // ensureGlobalGitignore adds oro-related entries to the user's global

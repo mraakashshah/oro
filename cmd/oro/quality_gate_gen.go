@@ -246,7 +246,9 @@ type qualityGateData struct {
 	HasGo        bool
 	HasPython    bool
 	WorktreesDir string // find exclusion path; defaults to "./.worktrees"
-	BeadsDir     string // biome scan path; defaults to ".beads/"
+	BeadsDir     string // biome scan path; defaults to local beads dir
+	BeadsExclude string // git pathspec exclusion for the local beads dir
+	BeadsFindDir string // find exclusion path for the local beads dir
 	OroDocsDir   string // biome scan path; defaults to "docs/"
 }
 
@@ -267,7 +269,9 @@ func generateQualityGateScript(cfg *langprofile.Config) (string, error) {
 		HasGo:        hasGo,
 		HasPython:    hasPython,
 		WorktreesDir: "./.worktrees",
-		BeadsDir:     ".beads/",
+		BeadsDir:     beadsDirName + "/",
+		BeadsExclude: beadsDirName + "/**",
+		BeadsFindDir: "./" + beadsDirName + "/*",
 		OroDocsDir:   "docs/",
 	}
 
@@ -307,7 +311,7 @@ func readQGConfig(configPath string) (*langprofile.Config, error) {
 // writeQualityGateScript renders quality_gate.sh to w using paths for dynamic
 // path substitution in find exclusions and biome scan paths.
 // Language detection reads paths.ConfigYAML; falls back to shell-only when absent.
-// Empty path fields fall back to standard defaults (./.worktrees, .beads/, docs/).
+// Empty path fields fall back to standard defaults (./.worktrees, local beads dir, docs/).
 func writeQualityGateScript(w io.Writer, paths ProjectPaths) error {
 	cfg, err := readQGConfig(paths.ConfigYAML)
 	if err != nil {
@@ -320,7 +324,7 @@ func writeQualityGateScript(w io.Writer, paths ProjectPaths) error {
 	}
 	beadsDir := paths.BeadsDir
 	if beadsDir == "" {
-		beadsDir = ".beads/"
+		beadsDir = beadsDirName + "/"
 	}
 	oroDocsDir := paths.OroDocsDir
 	if oroDocsDir == "" {
@@ -348,6 +352,8 @@ func writeQualityGateScript(w io.Writer, paths ProjectPaths) error {
 		HasPython:    hasPython,
 		WorktreesDir: worktreesDir,
 		BeadsDir:     beadsDir,
+		BeadsExclude: beadsDirName + "/**",
+		BeadsFindDir: "./" + beadsDirName + "/*",
 		OroDocsDir:   oroDocsDir,
 	}
 
@@ -521,7 +527,7 @@ qg_python_source_files() {
 
 # shellcheck disable=SC2317,SC2329
 qg_yaml_source_files() {
-    qg_source_files '*.yml' '*.yaml' ':(exclude).beads/**'
+    qg_source_files '*.yml' '*.yaml' ':(exclude){{.BeadsExclude}}'
 }
 
 # shellcheck disable=SC2317,SC2329
@@ -1051,7 +1057,7 @@ lane_other() {
 
     if $has_shell; then
         header "SHELL: LINT"
-        if check "shellcheck" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.tmp-test/*' -not -path './.cache/*' -not -path './.worktrees/*' -not -path './.claude/worktrees/*' -not -path './.venv/*' -not -path './node_modules/*' -not -path './.beads/*' -not -path './cmd/oro/_assets/*' -exec shellcheck --severity=info {} +"; then
+        if check "shellcheck" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.tmp-test/*' -not -path './.cache/*' -not -path './.worktrees/*' -not -path './.claude/worktrees/*' -not -path './.venv/*' -not -path './node_modules/*' -not -path '{{.BeadsFindDir}}' -not -path './cmd/oro/_assets/*' -exec shellcheck --severity=info {} +"; then
             pass=$((pass + 1))
         else
             fail=$((fail + 1))

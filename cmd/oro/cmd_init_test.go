@@ -827,7 +827,7 @@ func TestEnsureGlobalGitignore(t *testing.T) {
 		}
 
 		content := string(data)
-		for _, entry := range []string{".beads/", ".beads", ".oro/", ".dolt/"} {
+		for _, entry := range []string{beadsDirName + "/", beadsDirName, ".oro/", ".dolt/"} {
 			if !strings.Contains(content, entry) {
 				t.Errorf("global gitignore should contain %q, got:\n%s", entry, content)
 			}
@@ -858,7 +858,7 @@ func TestEnsureGlobalGitignore(t *testing.T) {
 			t.Error("original content should be preserved")
 		}
 		// New entries added
-		for _, entry := range []string{".beads/", ".beads", ".oro/", ".dolt/"} {
+		for _, entry := range []string{beadsDirName + "/", beadsDirName, ".oro/", ".dolt/"} {
 			if !strings.Contains(content, entry) {
 				t.Errorf("global gitignore should contain %q, got:\n%s", entry, content)
 			}
@@ -869,7 +869,7 @@ func TestEnsureGlobalGitignore(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, ".gitignore_global")
 
-		existing := ".beads/\n.oro/\n"
+		existing := beadsDirName + "/\n.oro/\n"
 		if err := os.WriteFile(path, []byte(existing), 0o644); err != nil { //nolint:gosec // test file
 			t.Fatal(err)
 		}
@@ -884,14 +884,14 @@ func TestEnsureGlobalGitignore(t *testing.T) {
 		}
 
 		content := string(data)
-		if strings.Count(content, ".beads/") != 1 {
-			t.Errorf(".beads/ should appear exactly once, got:\n%s", content)
+		if strings.Count(content, beadsDirName+"/") != 1 {
+			t.Errorf("%s should appear exactly once, got:\n%s", beadsDirName+"/", content)
 		}
 		if strings.Count(content, ".oro/") != 1 {
 			t.Errorf(".oro/ should appear exactly once, got:\n%s", content)
 		}
-		// .beads (without slash) and .dolt/ should be added
-		if !strings.Contains(content, "\n.beads\n") && !strings.HasPrefix(content, ".beads\n") {
+		// beads dir name without slash and .dolt/ should be added
+		if !strings.Contains(content, "\n"+beadsDirName+"\n") && !strings.HasPrefix(content, beadsDirName+"\n") {
 			// Just check it exists somewhere as a line
 			found := false
 			for _, line := range strings.Split(content, "\n") {
@@ -2060,14 +2060,14 @@ func TestInitBeadsDB(t *testing.T) {
 		t.Fatal("os.Stat should return directory info for symlink")
 	}
 
-	// Call initBeadsDB - should detect existing .beads/ directory and return early
+	// Call initBeadsDB - should detect existing beads directory and return early
 	initBeadsDB(projectRoot)
 
 	// Verify that bd init was NOT called by checking that beads.db doesn't exist
 	// (if it existed, bd init would have created it)
 	dbPath := filepath.Join(projectRoot, ".beads", "beads.db")
 	if _, err := os.Stat(dbPath); err == nil {
-		t.Error("beads.db should not exist after initBeadsDB with existing .beads/")
+		t.Error("beads.db should not exist after initBeadsDB with existing beads directory")
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("unexpected error checking beads.db: %v", err)
 	}

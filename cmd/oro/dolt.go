@@ -14,7 +14,7 @@ const (
 	doltPortRange = 1000
 )
 
-// doltMeta holds the fields from .beads/metadata.json relevant to dolt lifecycle.
+// doltMeta holds the fields from beads metadata relevant to dolt lifecycle.
 type doltMeta struct {
 	Backend        string `json:"backend"`
 	DoltServerPort int    `json:"dolt_server_port"`
@@ -35,7 +35,7 @@ func DerivePort(beadsDir string) int {
 	return doltPortBase + int(h.Sum32()%doltPortRange)
 }
 
-// readDoltMeta reads .beads/metadata.json and returns its contents if the
+// readDoltMeta reads beads metadata and returns its contents if the
 // backend is "dolt". Returns nil (no error) for missing directories, missing
 // metadata.json, or any non-dolt backend.
 func readDoltMeta(beadsDir string) (*doltMeta, error) {

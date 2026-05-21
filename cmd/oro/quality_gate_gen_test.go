@@ -368,8 +368,8 @@ func TestQualityGateScript_StealthPaths(t *testing.T) {
 	// Script must NOT use hardcoded defaults when stealth paths are set, except
 	// repo-relative .worktrees exclusions. Those are safe because find/git only
 	// traverse the current repository, not external stealth worktree roots.
-	if strings.Contains(script, " .beads/") {
-		t.Error("script should not contain hardcoded .beads/ when stealth BeadsDir is set")
+	if strings.Contains(script, " "+beadsDirName+"/") {
+		t.Error("script should not contain hardcoded beads dir when stealth BeadsDir is set")
 	}
 
 	// Empty paths must produce the standard defaults.

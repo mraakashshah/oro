@@ -16,7 +16,7 @@
 
 ## Dolt
 - **Never `rm -rf` dolt dir** — use `dolt fsck` then `dolt fsck --revive-journal-with-data-loss`
-- "multiple .doltcfg directories" error → `rm .beads/.doltcfg` (not the data dir)
+- "multiple .doltcfg directories" error → remove the stale `.doltcfg` inside the local beads dir (not the data dir)
 - Multiple oro instances: Dolt handles concurrent reads/writes (MVCC), but two dispatchers on the same project will double-assign tasks — no cross-process task lock
 - Shared dolt server runs on port 13307 (`~/.oro/dolt/`)
 

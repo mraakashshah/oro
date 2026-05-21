@@ -32,7 +32,7 @@ func newUninstallCmd() *cobra.Command {
 		Long: `Cleanly removes all oro artifacts:
   - Stops running daemons and tmux sessions
   - Removes launchd agent (dolt server)
-  - Cleans project artifacts (.beads symlinks, .oro/ dirs, .worktrees/, git hooks)
+  - Cleans project artifacts (.oro/ dirs, .worktrees/, git hooks)
   - Removes oro entries from global gitignore
   - Removes ~/.oro/ directory (with confirmation)
   - Removes the oro binary itself
@@ -120,8 +120,7 @@ func stopDaemons(w io.Writer, oroHome string) {
 	}
 }
 
-// cleanProjectArtifacts removes legacy .beads artifacts, .oro/ dirs,
-// .worktrees/, and git hooks for all known projects.
+// cleanProjectArtifacts removes .oro/ dirs, .worktrees/, and git hooks for all known projects.
 func cleanProjectArtifacts(w io.Writer, oroHome string) {
 	fmt.Fprintln(w, "Cleaning project artifacts...")
 	projectsDir := filepath.Join(oroHome, "projects")
@@ -146,17 +145,6 @@ func cleanProjectArtifacts(w io.Writer, oroHome string) {
 		}
 
 		fmt.Fprintf(w, "  cleaning %s (%s)...\n", e.Name(), root)
-
-		// Remove legacy .beads artifacts. Pre-replatform projects can have a
-		// real directory; post-replatform projects usually have a symlink.
-		beadsLink := filepath.Join(root, beadsDirName)
-		if fi, err := os.Lstat(beadsLink); err == nil { //nolint:gosec // root validated as absolute path from trusted project.root
-			if fi.Mode()&os.ModeSymlink != 0 {
-				_ = os.Remove(beadsLink) //nolint:gosec // root validated as absolute path from trusted project.root
-			} else if fi.IsDir() {
-				_ = os.RemoveAll(beadsLink) //nolint:gosec // root validated as absolute path from trusted project.root
-			}
-		}
 
 		// Remove .oro/ anchor dir.
 		_ = os.RemoveAll(filepath.Join(root, ".oro")) //nolint:gosec // root validated as absolute path from trusted project.root

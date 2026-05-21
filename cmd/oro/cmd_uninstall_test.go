@@ -58,7 +58,7 @@ func TestUninstall_CleansGlobalGitignore(t *testing.T) {
 	oroHome := t.TempDir()
 	gitignorePath := filepath.Join(t.TempDir(), "gitignore_global")
 
-	content := "# user entries\n*.log\n\n# Oro / Beads (managed by oro init)\n.beads/\n.beads\n.oro/\n.dolt/\n"
+	content := "# user entries\n*.log\n\n# Oro / Beads (managed by oro init)\n" + beadsDirName + "/\n" + beadsDirName + "\n.oro/\n.dolt/\n"
 	if err := os.WriteFile(gitignorePath, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -101,16 +101,6 @@ func TestUninstall_CleansProjectArtifacts(t *testing.T) {
 	projDir := filepath.Join(oroHome, "projects", projectName)
 	mkFile(t, projDir, "project.root", projectRoot)
 
-	// Create .beads symlink in project root
-	beadsTarget := filepath.Join(projDir, "beads")
-	if err := os.MkdirAll(beadsTarget, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	beadsLink := filepath.Join(projectRoot, ".beads")
-	if err := os.Symlink(beadsTarget, beadsLink); err != nil {
-		t.Fatal(err)
-	}
-
 	// Create .oro/ anchor dir in project root
 	oroAnchor := filepath.Join(projectRoot, ".oro")
 	if err := os.MkdirAll(oroAnchor, 0o755); err != nil {
@@ -147,11 +137,6 @@ func TestUninstall_CleansProjectArtifacts(t *testing.T) {
 		t.Fatalf("runUninstall: %v", err)
 	}
 
-	// .beads symlink should be removed
-	if _, err := os.Lstat(beadsLink); !os.IsNotExist(err) {
-		t.Error("expected .beads symlink to be removed")
-	}
-
 	// .oro/ anchor should be removed
 	if _, err := os.Stat(oroAnchor); !os.IsNotExist(err) {
 		t.Error("expected .oro/ anchor dir to be removed")
@@ -165,35 +150,6 @@ func TestUninstall_CleansProjectArtifacts(t *testing.T) {
 	// pre-push hook should be removed
 	if _, err := os.Stat(filepath.Join(gitDir, "hooks", "pre-push")); !os.IsNotExist(err) {
 		t.Error("expected pre-push hook to be removed")
-	}
-}
-
-func TestUninstall_RemovesBeadsDirectory(t *testing.T) {
-	oroHome := t.TempDir()
-	projectRoot := t.TempDir()
-	projectName := "legacy-project"
-
-	projDir := filepath.Join(oroHome, "projects", projectName)
-	mkFile(t, projDir, "project.root", projectRoot)
-
-	legacyBeadsDir := filepath.Join(projectRoot, ".beads")
-	mkFile(t, legacyBeadsDir, "issues.jsonl", "{}\n")
-	mkFile(t, legacyBeadsDir, "dolt/config.json", "{}\n")
-
-	var buf bytes.Buffer
-	opts := uninstallOptions{
-		oroHome:  oroHome,
-		force:    true,
-		keepData: true,
-		w:        &buf,
-	}
-
-	if err := runUninstall(opts); err != nil {
-		t.Fatalf("runUninstall: %v", err)
-	}
-
-	if _, err := os.Stat(legacyBeadsDir); !os.IsNotExist(err) {
-		t.Fatalf("expected legacy .beads directory to be removed, got err=%v", err)
 	}
 }
 

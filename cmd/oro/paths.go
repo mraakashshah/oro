@@ -83,7 +83,7 @@ func ResolveProjectDBPaths() (*Paths, error) {
 type ProjectPaths struct {
 	Mode                    string // "standard" | "stealth"
 	RepoRoot                string // absolute path to repo root
-	BeadsDir                string // .beads/ or ~/.oro/projects/s-<hash>/beads/
+	BeadsDir                string // local beads dir or ~/.oro/projects/s-<hash>/beads/
 	WorktreesDir            string // .worktrees/ or ~/.oro/projects/s-<hash>/worktrees/
 	OroDocsDir              string // docs/ or ~/.oro/projects/s-<hash>/docs/
 	QualityGate             string // scripts/quality_gate.sh or ~/.oro/projects/s-<hash>/quality_gate.sh
