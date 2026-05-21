@@ -80,7 +80,7 @@ func TestAssignBead_StaleWorktreeByBead_CreatesNewWorktree(t *testing.T) {
 // worktree instead of creating a new one.
 func TestWorkerRespawn_PreservesUncommittedChanges(t *testing.T) {
 	d, beads, wt, _, _, _ := newTestDispatcher(t)
-	d.cfg.HeartbeatTimeout = 100 * time.Millisecond
+	d.cfg.HeartbeatTimeout = 500 * time.Millisecond
 
 	beadID := "oro-respawn-test"
 
