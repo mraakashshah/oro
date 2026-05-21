@@ -5536,7 +5536,11 @@ func TestHandleDoneManualIntegrationSkipsMergeAndPreservesWorktree(t *testing.T)
 	if status != "completed" {
 		t.Fatalf("assignment status = %q, want completed", status)
 	}
-	msgs := esc.Messages()
+	var msgs []string
+	waitFor(t, func() bool {
+		msgs = esc.Messages()
+		return len(msgs) > 0
+	}, 2*time.Second)
 	if len(msgs) != 1 || !strings.Contains(msgs[0], "MANUAL_INTEGRATION") || !strings.Contains(msgs[0], "agent/bead-manual") {
 		t.Fatalf("manual integration escalation = %v", msgs)
 	}
