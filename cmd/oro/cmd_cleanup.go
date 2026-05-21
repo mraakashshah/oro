@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"oro/pkg/beadstore"
@@ -16,7 +18,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const cleanupDispatcherExitWait = 5 * time.Second
+const (
+	cleanupDispatcherExitWait = 5 * time.Second
+	cleanupPIDLockMaxAge      = time.Hour
+)
 
 // cleanupConfig holds injectable dependencies for the cleanup command.
 type cleanupConfig struct {
@@ -275,7 +280,7 @@ func cleanupStateDBLock(cfg *cleanupConfig) bool {
 	if cfg.stateDBPath == "" {
 		return false
 	}
-	canonicalStateDBPath, err := canonicalBeadMigrationStateDBPath(cfg.stateDBPath)
+	canonicalStateDBPath, err := cleanupCanonicalStateDBPath(cfg.stateDBPath)
 	if err != nil {
 		fmt.Fprintf(cfg.w, "warning: canonicalize state DB lock: %v\n", err)
 		return false
@@ -298,6 +303,112 @@ func cleanupStateDBLock(cfg *cleanupConfig) bool {
 		fmt.Fprintf(cfg.w, "removed stale state DB lock %s\n", lockPath)
 	}
 	return removed
+}
+
+func cleanupCanonicalStateDBPath(dbPath string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(dbPath)
+	if err == nil {
+		return resolved, nil
+	}
+	parent := filepath.Dir(dbPath)
+	if resolvedParent, parentErr := filepath.EvalSymlinks(parent); parentErr == nil {
+		return filepath.Join(resolvedParent, filepath.Base(dbPath)), nil
+	}
+	abs, absErr := filepath.Abs(dbPath)
+	if absErr != nil {
+		return "", fmt.Errorf("canonicalize state db path %s: %w", dbPath, absErr)
+	}
+	return abs, nil
+}
+
+type inspectedPIDLock struct {
+	path    string
+	pid     int
+	exists  bool
+	alive   bool
+	old     bool
+	stale   bool
+	modTime time.Time
+}
+
+func inspectPIDLock(lockPath string) (inspectedPIDLock, error) {
+	info, err := os.Stat(lockPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return inspectedPIDLock{path: lockPath, stale: true}, nil
+		}
+		return inspectedPIDLock{}, fmt.Errorf("stat lock file %s: %w", lockPath, err)
+	}
+	data, err := os.ReadFile(lockPath) //nolint:gosec // lock path is derived from StateDBPath
+	if err != nil {
+		return inspectedPIDLock{}, fmt.Errorf("read lock file %s: %w", lockPath, err)
+	}
+	pid := parsePIDLockText(data)
+	if pid <= 0 {
+		return staleExistingPIDLock(lockPath, info.ModTime()), nil
+	}
+	alive := processAlive(pid)
+	old := time.Since(info.ModTime()) > cleanupPIDLockMaxAge
+	return inspectedPIDLock{
+		path:    lockPath,
+		pid:     pid,
+		exists:  true,
+		alive:   alive,
+		old:     old,
+		stale:   !alive || old,
+		modTime: info.ModTime(),
+	}, nil
+}
+
+func parsePIDLockText(data []byte) int {
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0
+	}
+	return pid
+}
+
+func staleExistingPIDLock(lockPath string, modTime time.Time) inspectedPIDLock {
+	return inspectedPIDLock{path: lockPath, exists: true, old: true, stale: true, modTime: modTime}
+}
+
+func removeInspectedPIDLock(lock inspectedPIDLock) (bool, error) {
+	current, err := inspectPIDLock(lock.path)
+	if err != nil {
+		return false, err
+	}
+	if !current.exists {
+		return true, nil
+	}
+	if current.pid != lock.pid || !current.modTime.Equal(lock.modTime) || current.stale != lock.stale {
+		return false, nil
+	}
+	stalePath := fmt.Sprintf("%s.stale.%d.%d", lock.path, os.Getpid(), time.Now().UnixNano())
+	if err := os.Rename(lock.path, stalePath); err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, fmt.Errorf("rename stale lock %s: %w", lock.path, err)
+	}
+	moved, err := inspectPIDLock(stalePath)
+	if err != nil {
+		return false, err
+	}
+	if moved.pid != lock.pid || !moved.modTime.Equal(lock.modTime) || moved.stale != lock.stale {
+		if restoreErr := os.Rename(stalePath, lock.path); restoreErr != nil {
+			return false, fmt.Errorf("restore changed lock %s: %w", lock.path, restoreErr)
+		}
+		return false, nil
+	}
+	if err := os.Remove(stalePath); err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("remove stale lock %s: %w", stalePath, err)
+	}
+	return true, nil
+}
+
+func processAlive(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 // cleanupWorktrees runs git worktree prune.

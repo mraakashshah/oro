@@ -4,6 +4,8 @@ import "strings"
 
 // ExtractAndStripAC extracts an Acceptance Criteria markdown section from a
 // description and returns the remaining description without that section.
+//
+//oro:testonly
 func ExtractAndStripAC(description string) (acceptanceCriteria, strippedDescription string, err error) {
 	return extractAndStripAC(description)
 }

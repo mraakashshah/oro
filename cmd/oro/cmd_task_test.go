@@ -72,18 +72,15 @@ func TestTaskCommandSubcommandParity(t *testing.T) {
 		taskSubs[sub.Name()] = sub
 	}
 
-	if migrate, ok := taskSubs["migrate-from-dolt"]; ok && !migrate.Hidden {
-		t.Fatal("task command must not visibly expose migrate-from-dolt")
+	if _, ok := taskSubs["migrate-from-dolt"]; ok {
+		t.Fatal("task command must not expose migrate-from-dolt")
 	}
 
-	if !beadSubs["migrate-from-dolt"] {
-		t.Fatal("bead command must retain migrate-from-dolt")
+	if beadSubs["migrate-from-dolt"] {
+		t.Fatal("bead command must not expose migrate-from-dolt")
 	}
 
 	for name := range beadSubs {
-		if name == "migrate-from-dolt" {
-			continue
-		}
 		if taskSubs[name] == nil {
 			t.Fatalf("task command missing subcommand %q that bead has", name)
 		}
@@ -150,26 +147,6 @@ func TestTaskCommandRejectsMigrationAlias(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "migrate-from-dolt") {
 		t.Fatalf("task migrate-from-dolt error = %v, want unavailable migration command named", err)
-	}
-}
-
-func TestTaskCommandRejectsMigrationAliasHelp(t *testing.T) {
-	out, _, err := executeCommand("task", "migrate-from-dolt", "--help")
-	if err == nil {
-		t.Fatalf("task migrate-from-dolt --help unexpectedly succeeded:\n%s", out)
-	}
-	if !strings.Contains(err.Error(), "migrate-from-dolt") {
-		t.Fatalf("task migrate-from-dolt --help error = %v, want unavailable migration command named", err)
-	}
-}
-
-func TestTaskCommandRejectsMigrationAliasViaHelpCommand(t *testing.T) {
-	out, _, err := executeCommand("help", "task", "migrate-from-dolt")
-	if err == nil {
-		t.Fatalf("help task migrate-from-dolt unexpectedly succeeded:\n%s", out)
-	}
-	if !strings.Contains(err.Error(), "migrate-from-dolt") {
-		t.Fatalf("help task migrate-from-dolt error = %v, want unavailable migration command named", err)
 	}
 }
 

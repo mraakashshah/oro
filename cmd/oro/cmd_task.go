@@ -20,7 +20,7 @@ func newTaskCmdWithStore(store beadstore.Store) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "task",
 		Short: "Manage native Oro tasks",
-		Long:  "Manage native Oro tasks. The bead command is the legacy alias; migrate-from-dolt is only available via bead.",
+		Long:  "Manage native Oro tasks. The bead command is the legacy alias.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
 				return fmt.Errorf("unknown task command %q", args[0])
@@ -52,23 +52,10 @@ func newTaskCmdWithStore(store beadstore.Store) *cobra.Command {
 		newBeadStubCmd(store, "import <path>", "Import task snapshot", cobra.ExactArgs(1)),
 		newBeadStubCmd(store, "doctor", "Check task store health", cobra.NoArgs),
 		newBeadStatusCmd(store),
-		newTaskMigrationUnavailableCmd(),
 	)
 	adaptTaskCommandHelp(cmd)
 
 	return cmd
-}
-
-func newTaskMigrationUnavailableCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:                "migrate-from-dolt",
-		Hidden:             true,
-		DisableFlagParsing: true,
-		Args:               cobra.ArbitraryArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return fmt.Errorf("task migrate-from-dolt is unavailable; use oro bead migrate-from-dolt")
-		},
-	}
 }
 
 func adaptTaskCommandHelp(cmd *cobra.Command) {
