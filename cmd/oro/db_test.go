@@ -1,7 +1,9 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"oro/pkg/dbutil"
@@ -238,6 +240,94 @@ END;`); err != nil {
 	defer func() { _ = db.Close() }()
 	if _, err := db.Exec(`UPDATE beads SET status='in_progress' WHERE id='repair-target'`); err != nil {
 		t.Fatalf("update bead after startup repair: %v", err)
+	}
+}
+
+func TestBackupStateDBForV4ReturnsErrorForMissingSource(t *testing.T) {
+	backupPath, err := backupStateDBForV4(filepath.Join(t.TempDir(), "missing-state.db"))
+	if err == nil {
+		t.Fatal("expected missing source error")
+	}
+	if backupPath != "" {
+		t.Fatalf("backupPath = %q, want empty on error", backupPath)
+	}
+	if !strings.Contains(err.Error(), "open state db for v4 backup") {
+		t.Fatalf("error = %q, want open state db context", err)
+	}
+}
+
+func TestBackupStateDBForV4CopiesSource(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	want := []byte("state-v3\nwith content")
+	if err := os.WriteFile(dbPath, want, 0o600); err != nil {
+		t.Fatalf("write source db: %v", err)
+	}
+
+	backupPath, err := backupStateDBForV4(dbPath)
+	if err != nil {
+		t.Fatalf("backupStateDBForV4: %v", err)
+	}
+	if backupPath == dbPath {
+		t.Fatal("backup path must differ from source path")
+	}
+	if !strings.HasPrefix(backupPath, dbPath+".pre-v4-") {
+		t.Fatalf("backup path = %q, want %q prefix", backupPath, dbPath+".pre-v4-")
+	}
+	got, err := os.ReadFile(backupPath) // #nosec G304 -- backupPath was returned by the function under test.
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("backup content = %q, want %q", got, want)
+	}
+	info, err := os.Stat(backupPath)
+	if err != nil {
+		t.Fatalf("stat backup: %v", err)
+	}
+	if gotMode := info.Mode().Perm(); gotMode != 0o600 {
+		t.Fatalf("backup mode = %o, want 600", gotMode)
+	}
+}
+
+func TestBackupStateDBForV4ReturnsErrorWhenBackupCreateFails(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, strings.Repeat("a", 240))
+	if err := os.WriteFile(dbPath, []byte("state"), 0o600); err != nil {
+		t.Fatalf("write source db: %v", err)
+	}
+
+	backupPath, err := backupStateDBForV4(dbPath)
+	if err == nil {
+		t.Fatal("expected backup create error")
+	}
+	if backupPath != "" {
+		t.Fatalf("backupPath = %q, want empty on create error", backupPath)
+	}
+	if !strings.Contains(err.Error(), "create v4 backup") {
+		t.Fatalf("error = %q, want create v4 backup context", err)
+	}
+}
+
+func TestBackupStateDBForV4RemovesPartialBackupOnCopyFailure(t *testing.T) {
+	dir := t.TempDir()
+	sourceDir := filepath.Join(dir, "state.db")
+	if err := os.Mkdir(sourceDir, 0o700); err != nil {
+		t.Fatalf("make source dir: %v", err)
+	}
+
+	backupPath, err := backupStateDBForV4(sourceDir)
+	if err == nil {
+		t.Fatal("expected copy error for directory source")
+	}
+	if backupPath != "" {
+		t.Fatalf("backupPath = %q, want empty on copy error", backupPath)
+	}
+	matches, globErr := filepath.Glob(sourceDir + ".pre-v4-*")
+	if globErr != nil {
+		t.Fatalf("glob backups: %v", globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("partial backups were not removed: %v", matches)
 	}
 }
 

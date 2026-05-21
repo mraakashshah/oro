@@ -227,6 +227,14 @@ linters:
         linters:
           - gosec
 
+      # The SQLite state DB path is local configuration, not request data.
+      # gosec's G703 taint rule flags the v4 backup cleanup path even though
+      # it is derived from that configured DB path and created with O_EXCL.
+      - path: cmd/oro/db\.go
+        text: "G703: Path traversal via taint analysis"
+        linters:
+          - gosec
+
 formatters:
   enable:
     - goimports

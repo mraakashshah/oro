@@ -11745,13 +11745,10 @@ func TestPriorityContention(t *testing.T) {
 		},
 	})
 
-	// Worker should go back to idle
-	waitForWorkerState(t, d, "worker-1", protocol.WorkerIdle, 1*time.Second)
-
 	// Wait for P0 assignment (dispatcher polls every 50ms)
 	msg, ok = readMsg(t, conn, 2*time.Second)
 	if !ok {
-		t.Fatal("expected ASSIGN for P0 bead after worker became idle")
+		t.Fatal("expected ASSIGN for P0 bead after worker completed P1")
 	}
 	if msg.Type != protocol.MsgAssign {
 		t.Fatalf("expected ASSIGN, got %s", msg.Type)
@@ -11759,6 +11756,10 @@ func TestPriorityContention(t *testing.T) {
 	if msg.Assign.BeadID != "bead-p0" {
 		t.Fatalf("expected bead-p0 to be assigned, got %s", msg.Assign.BeadID)
 	}
+	waitFor(t, func() bool {
+		st, beadID, ok := d.WorkerInfo("worker-1")
+		return ok && st == protocol.WorkerBusy && beadID == "bead-p0"
+	}, 2*time.Second)
 
 	// Verify the escalation flag was cleared on assignment
 	d.mu.Lock()
@@ -11813,6 +11814,7 @@ func TestPriorityContention_StableUnderLoad(t *testing.T) {
 	beadSrc.SetBeads(p1Beads)
 
 	// Drain one ASSIGN per worker (sequential reads from the test goroutine are safe).
+	assignedBeads := make([]string, numWorkers)
 	for i := 0; i < numWorkers; i++ {
 		msg, ok := readMsg(t, conns[i], 3*time.Second)
 		if !ok {
@@ -11821,6 +11823,7 @@ func TestPriorityContention_StableUnderLoad(t *testing.T) {
 		if msg.Type != protocol.MsgAssign {
 			t.Fatalf("worker %d: expected ASSIGN, got %s", i, msg.Type)
 		}
+		assignedBeads[i] = msg.Assign.BeadID
 	}
 	for i := 0; i < numWorkers; i++ {
 		waitForWorkerState(t, d, fmt.Sprintf("load-w%d", i), protocol.WorkerBusy, 2*time.Second)
@@ -11859,7 +11862,7 @@ func TestPriorityContention_StableUnderLoad(t *testing.T) {
 				Type: protocol.MsgDone,
 				Done: &protocol.DonePayload{
 					WorkerID:          fmt.Sprintf("load-w%d", i),
-					BeadID:            fmt.Sprintf("load-bead-p1-%d", i),
+					BeadID:            assignedBeads[i],
 					QualityGatePassed: true,
 				},
 			}
