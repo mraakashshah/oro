@@ -196,6 +196,66 @@ func TestOpsListHandlesLargeFeedback(t *testing.T) {
 	}
 }
 
+func TestOpsRetrySurfacesRoutingResult(t *testing.T) {
+	routedDetail := `{"id":42,"retried":true,"status":"superseded","new_ops_run_id":43,"routed":true}`
+	humanOut, got := runOpsCommandWithMock(t, mockOpsDirectiveResponse{
+		args:   []string{"ops", "retry", "42"},
+		detail: routedDetail,
+	})
+	if got.Op != string(protocol.DirectiveOpsRetry) || got.Args != "42" {
+		t.Fatalf("directive = %s %q, want ops-retry 42", got.Op, got.Args)
+	}
+	if !strings.Contains(humanOut, "routed=true") {
+		t.Fatalf("ops retry human output missing routed=true:\n%s", humanOut)
+	}
+
+	jsonOut, got := runOpsCommandWithMock(t, mockOpsDirectiveResponse{
+		args:   []string{"ops", "retry", "42", "--json"},
+		detail: routedDetail,
+	})
+	if got.Op != string(protocol.DirectiveOpsRetry) || got.Args != "42" {
+		t.Fatalf("json directive = %s %q, want ops-retry 42", got.Op, got.Args)
+	}
+	var resp struct {
+		ID     int64 `json:"id"`
+		Routed bool  `json:"routed"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(jsonOut)), &resp); err != nil {
+		t.Fatalf("ops retry --json emitted invalid JSON: %v\n%s", err, jsonOut)
+	}
+	if resp.ID != 42 || !resp.Routed {
+		t.Fatalf("ops retry --json = %+v, want routed=true preserved", resp)
+	}
+
+	stdout, _, err := executeOpsCommandWithMock(t, mockOpsDirectiveResponse{
+		args:   []string{"ops", "retry", "42"},
+		detail: `{"id":42,"retried":true,"status":"superseded","new_ops_run_id":43,"routed":false}`,
+	})
+	if err == nil {
+		t.Fatal("ops retry unrouted response error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "not routed") {
+		t.Fatalf("ops retry unrouted response error = %v, want routing failure", err)
+	}
+	if stdout != "" {
+		t.Fatalf("ops retry unrouted response stdout = %q, want empty", stdout)
+	}
+
+	stdout, _, err = executeOpsCommandWithMock(t, mockOpsDirectiveResponse{
+		args:   []string{"ops", "retry", "42", "--json"},
+		detail: `{"id":`,
+	})
+	if err == nil {
+		t.Fatal("ops retry malformed json error = nil, want parse error")
+	}
+	if !strings.Contains(err.Error(), "parse ops-retry response") {
+		t.Fatalf("ops retry malformed json error = %v, want parse error", err)
+	}
+	if stdout != "" {
+		t.Fatalf("ops retry malformed json stdout = %q, want empty", stdout)
+	}
+}
+
 type mockOpsDirectiveResponse struct {
 	args   []string
 	fail   bool

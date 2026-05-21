@@ -102,6 +102,9 @@ func newOpsRetryCmd(opts *opsCommandOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if _, err := parseOpsRetryDetail(detail); err != nil {
+				return err
+			}
 			if opts.jsonOut {
 				writeJSONDetail(cmd.OutOrStdout(), detail)
 				return nil
@@ -189,6 +192,17 @@ func writeJSONDetail(w io.Writer, detail string) {
 	fmt.Fprintln(w, strings.TrimSpace(detail))
 }
 
+func parseOpsRetryDetail(detail string) (opsRetryView, error) {
+	var resp opsRetryView
+	if err := json.Unmarshal([]byte(detail), &resp); err != nil {
+		return opsRetryView{}, fmt.Errorf("parse ops-retry response: %w", err)
+	}
+	if resp.Retried && !resp.Routed {
+		return opsRetryView{}, fmt.Errorf("ops run %d retry was not routed", resp.ID)
+	}
+	return resp, nil
+}
+
 func formatOpsRuns(w io.Writer, detail string) error {
 	var runs []opsRunView
 	if err := json.Unmarshal([]byte(detail), &runs); err != nil {
@@ -206,9 +220,9 @@ func formatOpsRuns(w io.Writer, detail string) error {
 }
 
 func formatOpsRetry(w io.Writer, detail string) error {
-	var resp opsRetryView
-	if err := json.Unmarshal([]byte(detail), &resp); err != nil {
-		return fmt.Errorf("parse ops-retry response: %w", err)
+	resp, err := parseOpsRetryDetail(detail)
+	if err != nil {
+		return err
 	}
 	if !resp.Retried {
 		fmt.Fprintf(w, "ops run %d not retried: status=%s\n", resp.ID, resp.Status)
