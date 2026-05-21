@@ -413,7 +413,7 @@ func (s *Spawner) run(ctx context.Context, opsType Type, beadID, worktree, promp
 				Type:    opsType,
 				BeadID:  beadID,
 				Verdict: VerdictFailed,
-				Err:     fmt.Errorf("ops: spawn failed: %w", err),
+				Err:     fmt.Errorf("ops: spawn failed for runtime %q model %q reasoning %q: %w", runtime, model, reasoning, err),
 			}
 			return
 		}

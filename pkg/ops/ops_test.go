@@ -215,6 +215,57 @@ func TestRuntimeSpawnerRoutesDecomposeThroughConfiguredRuntime(t *testing.T) {
 	}
 }
 
+func TestDecomposeSpawnFailureIncludesRuntimeContext(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.MkdirAll(filepath.Join(dir, ".oro"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".oro", "config.yaml"), []byte(`agent:
+  roles:
+    ops_decompose:
+      transport: cli
+      runtime: codex
+      model: gpt-5.5
+      reasoning: high
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockBatchSpawner{err: errors.New("pre-start spawn error")}
+	s := NewSpawner(mock)
+
+	result := <-s.Decompose(context.Background(), DecomposeOpts{BeadID: "oro-big9", Workdir: dir})
+
+	if result.Type != OpsDecompose {
+		t.Fatalf("result Type = %q, want %q", result.Type, OpsDecompose)
+	}
+	if result.BeadID != "oro-big9" {
+		t.Fatalf("result BeadID = %q, want oro-big9", result.BeadID)
+	}
+	if result.Verdict != VerdictFailed {
+		t.Fatalf("result Verdict = %q, want %q", result.Verdict, VerdictFailed)
+	}
+	if result.Err == nil {
+		t.Fatal("result Err = nil, want spawn failure")
+	}
+	errText := result.Err.Error()
+	for _, want := range []string{
+		"ops: spawn failed",
+		`runtime "codex"`,
+		`model "gpt-5.5"`,
+		`reasoning "high"`,
+		"pre-start spawn error",
+	} {
+		if !strings.Contains(errText, want) {
+			t.Fatalf("result Err = %q, want substring %q", errText, want)
+		}
+	}
+	if active := s.Active(); len(active) != 0 {
+		t.Fatalf("active ops agents = %v, want none", active)
+	}
+}
+
 func TestDecomposeRuntimeCanMutateOroStateDB(t *testing.T) {
 	repoRoot := t.TempDir()
 	oroHome := filepath.Join(t.TempDir(), "home")
