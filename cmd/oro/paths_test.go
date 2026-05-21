@@ -27,9 +27,6 @@ func TestResolvePaths_Standard(t *testing.T) {
 	if paths.BeadsDir != filepath.Join(repoRoot, ".beads") {
 		t.Errorf("BeadsDir = %q, want %q", paths.BeadsDir, filepath.Join(repoRoot, ".beads"))
 	}
-	if paths.LegacyBeadsDir != filepath.Join(repoRoot, ".beads") {
-		t.Errorf("LegacyBeadsDir = %q, want %q", paths.LegacyBeadsDir, filepath.Join(repoRoot, ".beads"))
-	}
 	if paths.WorktreesDir != filepath.Join(repoRoot, ".worktrees") {
 		t.Errorf("WorktreesDir = %q, want %q", paths.WorktreesDir, filepath.Join(repoRoot, ".worktrees"))
 	}
@@ -71,9 +68,6 @@ func TestResolvePaths_Stealth(t *testing.T) {
 	// All data dirs must live under stealthDir.
 	if paths.BeadsDir != filepath.Join(stealthDir, "beads") {
 		t.Errorf("BeadsDir = %q, want %q", paths.BeadsDir, filepath.Join(stealthDir, "beads"))
-	}
-	if paths.LegacyBeadsDir != filepath.Join(stealthDir, "beads") {
-		t.Errorf("LegacyBeadsDir = %q, want %q", paths.LegacyBeadsDir, filepath.Join(stealthDir, "beads"))
 	}
 	if paths.WorktreesDir != filepath.Join(stealthDir, "worktrees") {
 		t.Errorf("WorktreesDir = %q, want %q", paths.WorktreesDir, filepath.Join(stealthDir, "worktrees"))
@@ -699,12 +693,16 @@ func TestMigrateGlobalDBsToProject(t *testing.T) {
 //
 // Acceptance: grep -rn '"\.beads"\|"\.worktrees"\|"\.oro/config' cmd/oro/*.go
 // returns 0 hits outside of ResolvePaths itself and tests.
-// TestLegacyBeadsDirRetained guards that LegacyBeadsDir is not accidentally removed
-// from paths.go. Downstream migration and archive tooling depend on this constant.
-func TestLegacyBeadsDirRetained(t *testing.T) {
-	const want = ".beads"
-	if LegacyBeadsDir != want {
-		t.Errorf("LegacyBeadsDir = %q, want %q", LegacyBeadsDir, want)
+// TestLegacyBeadsAliasDeleted guards the Phase 11 cleanup requirement that the
+// legacy beads alias is no longer present in paths.go.
+func TestLegacyBeadsAliasDeleted(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("paths.go"))
+	if err != nil {
+		t.Fatalf("read paths.go: %v", err)
+	}
+	legacyAliasName := "Legacy" + "BeadsDir"
+	if strings.Contains(string(data), legacyAliasName) {
+		t.Fatalf("paths.go still contains %s", legacyAliasName)
 	}
 }
 

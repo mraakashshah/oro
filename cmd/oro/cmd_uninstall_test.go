@@ -168,7 +168,7 @@ func TestUninstall_CleansProjectArtifacts(t *testing.T) {
 	}
 }
 
-func TestUninstall_RemovesLegacyBeadsDirectory(t *testing.T) {
+func TestUninstall_RemovesBeadsDirectory(t *testing.T) {
 	oroHome := t.TempDir()
 	projectRoot := t.TempDir()
 	projectName := "legacy-project"

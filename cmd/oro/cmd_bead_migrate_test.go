@@ -1187,7 +1187,7 @@ func TestMigrateFromDoltCorruptionPreflight(t *testing.T) {
 }
 
 func TestBeadMigrationDoltCountArgs(t *testing.T) {
-	t.Run("project resolver uses legacy beads dir", func(t *testing.T) {
+	t.Run("project resolver uses beads dir", func(t *testing.T) {
 		repoRoot := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(repoRoot, ".oro"), 0o750); err != nil {
 			t.Fatalf("setup .oro dir: %v", err)
@@ -1195,7 +1195,7 @@ func TestBeadMigrationDoltCountArgs(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(repoRoot, ".oro", "config.yaml"), []byte("project: test\n"), 0o600); err != nil {
 			t.Fatalf("setup config: %v", err)
 		}
-		beadsDir := filepath.Join(repoRoot, LegacyBeadsDir)
+		beadsDir := filepath.Join(repoRoot, ".beads")
 		if err := os.MkdirAll(beadsDir, 0o750); err != nil {
 			t.Fatalf("setup legacy beads dir: %v", err)
 		}
@@ -1210,7 +1210,7 @@ func TestBeadMigrationDoltCountArgs(t *testing.T) {
 			t.Fatalf("beadMigrationDoltCountArgs error: %v", err)
 		}
 		want := []string{
-			"--data-dir", filepath.Join(repoRoot, LegacyBeadsDir, "dolt"),
+			"--data-dir", filepath.Join(repoRoot, ".beads", "dolt"),
 			"--use-db", "legacy_beads",
 			"sql",
 			"--result-format", "json",
