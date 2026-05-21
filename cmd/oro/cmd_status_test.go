@@ -177,9 +177,9 @@ func TestStatusCmd_RunningWithDispatcherInfo(t *testing.T) {
 		t.Errorf("output should contain 'target: 3', got: %q", got)
 	}
 
-	// Should show in_progress beads with assignments.
-	if !strings.Contains(got, "in_progress beads:") {
-		t.Errorf("output should contain 'in_progress beads:', got: %q", got)
+	// Should show in_progress tasks with assignments.
+	if !strings.Contains(got, "in_progress tasks:") {
+		t.Errorf("output should contain 'in_progress tasks:', got: %q", got)
 	}
 	if !strings.Contains(got, "oro-abc") {
 		t.Errorf("output should contain bead assignment 'oro-abc', got: %q", got)
@@ -331,7 +331,7 @@ func TestFormatStatusResponse(t *testing.T) {
 			},
 			checks: []string{
 				"workers:     0 active",
-				"in_progress beads: none",
+				"in_progress tasks: none",
 			},
 		},
 		{
@@ -350,7 +350,7 @@ func TestFormatStatusResponse(t *testing.T) {
 			},
 			checks: []string{
 				"workers:     0 active",
-				"in_progress beads: none",
+				"in_progress tasks: none",
 			},
 		},
 	}
@@ -476,9 +476,9 @@ func TestFormatStatusResponse_DefaultWithAlerts(t *testing.T) {
 		t.Errorf("expected queue depth '5', got:\n%s", got)
 	}
 
-	// Should use "in_progress beads:" label (not "active beads:")
-	if !strings.Contains(got, "in_progress beads:") {
-		t.Errorf("expected 'in_progress beads:' section header, got:\n%s", got)
+	// Should use "in_progress tasks:" label (not "active tasks:")
+	if !strings.Contains(got, "in_progress tasks:") {
+		t.Errorf("expected 'in_progress tasks:' section header, got:\n%s", got)
 	}
 }
 
