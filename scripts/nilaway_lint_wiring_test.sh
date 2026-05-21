@@ -15,12 +15,18 @@ fail() {
 [ -f "$makefile" ] || fail "Makefile not found"
 [ -f "$qg_script" ] || fail "scripts/quality_gate.sh not found"
 
-make_nilaway_output="$(cd "$repo_root" && make -n nilaway 2>&1 || true)"
+make_nilaway_output="$(
+	cd "$repo_root"
+	make -n nilaway 2>&1 || true
+)"
 if ! grep -q 'nilaway .*pretty-print=false.*exclude-test-files.*include-pkgs=oro.*\./cmd/\.\.\..*\./internal/\.\.\..*\./pkg/\.\.\.' <<<"$make_nilaway_output"; then
 	fail "make -n nilaway does not invoke the expected NilAway command"
 fi
 
-lint_output="$(cd "$repo_root" && make -n lint 2>&1 || true)"
+lint_output="$(
+	cd "$repo_root"
+	make -n lint 2>&1 || true
+)"
 if ! grep -q 'golangci-lint run --timeout 5m' <<<"$lint_output"; then
 	fail "make -n lint does not run golangci-lint"
 fi
