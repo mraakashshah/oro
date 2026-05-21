@@ -1,5 +1,22 @@
 # Decisions and Discoveries
 
+## 2026-05-21: Phase 11 complete
+**Final scan result:** `git grep -i 'LegacyBeadsDir\|migrate-from-dolt'`
+has no live implementation references to the deleted alias or migration command.
+**Tags:** #beadstore #phase-11 #migration #cleanup
+**Context:** Replatform Phase 11 was the deferred cleanup pass after Phase 10,
+covering the legacy `.beads`/Dolt migration surface after one release cycle of
+operator runway.
+**Decision:** Phase 11 is complete and the replatform epic is closed. The
+`LegacyBeadsDir` alias and `oro bead migrate-from-dolt` command are no longer
+live product surfaces; normal operation is native Oro task storage.
+**Scan notes:** Remaining hits are historical/operator docs, terminology and
+Phase 8 test fixtures, and explicit negative tests proving the migration
+command stays unavailable.
+**Implications:** Future work should treat bd/Dolt migration support as
+archival evidence only. Do not reintroduce `LegacyBeadsDir` or
+`migrate-from-dolt` without a new documented compatibility decision.
+
 ## 2026-05-19: Managerless operation is the default
 **Tags:** #managerless #dispatcher #ops-runs #operations
 **Context:** The managerless orchestration design moved routine factory progress
