@@ -107,6 +107,7 @@ func TestTaskCommandSubcommandParity(t *testing.T) {
 func TestTaskCommandHelpUsesTaskTerminology(t *testing.T) {
 	cmd := newTaskCmdWithStore(nil)
 	for _, args := range [][]string{
+		{"--help"},
 		{"ready", "--help"},
 		{"list", "--help"},
 		{"show", "--help"},

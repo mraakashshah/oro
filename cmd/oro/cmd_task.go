@@ -20,7 +20,7 @@ func newTaskCmdWithStore(store beadstore.Store) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "task",
 		Short: "Manage native Oro tasks",
-		Long:  "Manage native Oro tasks. The bead command is the legacy alias.",
+		Long:  "Manage native Oro tasks.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
 				return fmt.Errorf("unknown task command %q", args[0])
