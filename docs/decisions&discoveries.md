@@ -24,7 +24,7 @@ health/status/ops-run surfaces as the source of truth.
 ## 2026-05-02: Phase 10 signoff assigns Phase 11 owner
 **Tags:** #beadstore #phase-10 #phase-11 #migration
 **Context:** Phase 10 cleanup can close only if Phase 11 has a named owner and a 90-day follow-up reminder. Phase 11 is intentionally deferred so late-migrating operators still have `LegacyBeadsDir` and migration tooling available for one release cycle.
-**Decision:** Phase 11 owner is Akash Shah (`mraakashshah@users.noreply.github.com`). The follow-up bead is `oro-23m2`, deferred in the native tracker until 2026-07-31T13:00:00Z, which is 90 days after the 2026-05-02 Phase 10 signoff.
+**Decision:** Phase 11 owner is Akash Shah (`mraakashshah@users.noreply.github.com`). The follow-up task is `oro-23m2`, deferred in the native tracker until 2026-07-31T13:00:00Z, which is 90 days after the 2026-05-02 Phase 10 signoff.
 **Implications:** Do not silently delete `LegacyBeadsDir` or the migration command before `oro-23m2`. On 2026-07-31, run the Phase 11 survey, decide whether legacy migration paths are still needed, and either complete Phase 11 or document a deliberate extension.
 
 ## 2026-04-28: Phase 0 schema sign-off
@@ -48,8 +48,8 @@ health/status/ops-run surfaces as the source of truth.
 
 ## 2026-04-01: Epic QG check before ff-merge to main
 **Tags:** #dispatcher #quality #epic #merge
-**Context:** Workers merged code to epic branches with per-bead QG, but the final epic→main ff-merge had NO quality gate. Lint issues (staticcheck) landed on main unchecked. Observed during swarm session when `fmt.Fprintf` vs `WriteString(Sprintf)` broke CI after epic merge.
-**Decision:** Added `checkEpicQG` — creates temp worktree from epic branch, runs full QG, removes worktree. Called in `tryCloseEpic` before `completeEpicClose`. QG failure creates a fix bead (same pattern as per-bead QG failure). Merged in commit b7bdc1e.
+**Context:** Workers merged code to epic branches with per-task QG, but the final epic→main ff-merge had NO quality gate. Lint issues (staticcheck) landed on main unchecked. Observed during swarm session when `fmt.Fprintf` vs `WriteString(Sprintf)` broke CI after epic merge.
+**Decision:** Added `checkEpicQG` — creates temp worktree from epic branch, runs full QG, removes worktree. Called in `tryCloseEpic` before `completeEpicClose`. QG failure creates a fix task (same pattern as per-task QG failure). Merged in commit b7bdc1e.
 **Implications:** No code reaches main without passing QG. Adds ~2min to epic close (acceptable tradeoff).
 
 ## 2026-04-01: Stealth mode epics should open PRs, not ff-merge
@@ -102,7 +102,7 @@ Hook inventory (same in both files):
 | PostToolUse | Task | validate_agent_completion.py |
 | Stop | (all) | stop-checklist.sh |
 
-**Implications:** No follow-up beads needed for missing hooks. Files appear to be kept in sync. Future changes to either file should be mirrored in the other. Consider consolidating to a single source of truth or adding a CI check to detect drift.
+**Implications:** No follow-up tasks needed for missing hooks. Files appear to be kept in sync. Future changes to either file should be mirrored in the other. Consider consolidating to a single source of truth or adding a CI check to detect drift.
 
 ## 2026-02-18: Workers receive context7 MCP permissions in generated settings.json
 **Tags:** #workers #mcp #context7 #settings #permissions
@@ -132,15 +132,15 @@ Hook inventory (same in both files):
 
 ## 2026-02-07: Parallel agents skip quality gate — need pre-push hook
 **Tags:** #agents #quality-gate #hooks #process-gap
-**Context:** Dispatched two parallel agents to implement protocol beads. Both committed and pushed code that passed tests but failed golangci-lint, go-arch-lint, and gofumpt. Pre-commit hook only checks per-file lint on staged files, not cross-cutting checks.
-**Decision:** Created P0 bead (oro-t3u) for a pre-push hook that runs the full 18-check quality gate. Agent prompts must also include quality gate as a bead completion step.
+**Context:** Dispatched two parallel agents to implement protocol tasks. Both committed and pushed code that passed tests but failed golangci-lint, go-arch-lint, and gofumpt. Pre-commit hook only checks per-file lint on staged files, not cross-cutting checks.
+**Decision:** Created P0 task (oro-t3u) for a pre-push hook that runs the full 18-check quality gate. Agent prompts must also include quality gate as a task completion step.
 **Implications:** Until the hook exists, manually run `./quality_gate.sh` after agent work before pushing. Never trust agent commits without verification.
 
-## 2026-02-07: Use bead annotations, not output files, for agent results
+## 2026-02-07: Use task annotations, not output files, for agent results
 **Tags:** #agents #beads #dispatching #file-debt
-**Context:** Dispatching skill recommended agents write `docs/agent-output-*.md` files. This creates file debt — orphan files nobody cleans up, duplicating what bead annotations already capture.
-**Decision:** Agents close beads with `bd close <id> --reason="summary"`. Task completion notifications provide session-level summaries. Updated dispatching-parallel-agents skill.
-**Implications:** No output files to clean up. Bead is the durable, queryable record. Fallback to tmp files only when no issue tracker exists.
+**Context:** Dispatching skill recommended agents write `docs/agent-output-*.md` files. This creates file debt — orphan files nobody cleans up, duplicating what task annotations already capture.
+**Decision:** Agents close tasks with `bd close <id> --reason="summary"`. Task completion notifications provide session-level summaries. Updated dispatching-parallel-agents skill.
+**Implications:** No output files to clean up. The task is the durable, queryable record. Fallback to tmp files only when no issue tracker exists.
 
 ## 2026-02-07: go-arch-lint pkg component needs self-dependency
 **Tags:** #go #go-arch-lint #gotcha
@@ -214,4 +214,4 @@ Hook inventory (same in both files):
 **Tags:** #workers #debugging #oro-work
 **Context:** Handoff flagged "4 tool calls then quit" pattern in worker runs. Investigated all available worker logs (oro-tm8m.2, .14, .17, .19).
 **Discovery:** All early-exit runs were the same root cause — code already implemented on main. Workers confirmed AC satisfied, produced zero commits, oro work reported failure. No distinct "premature quit" pattern exists beyond already-done detection. Scanner buffer overflow (fixed with 10MB buffer in prior session) may have been a separate historical issue but is no longer reproducing.
-**Implications:** Fixed in commit 1393331 (bd-oro-ummw). `noCommitsResult` now parses structured AC (Test:/Cmd: fields), verifies test file exists, runs the specific AC command, and closes the bead on success. No further investigation needed.
+**Implications:** Fixed in commit 1393331 (bd-oro-ummw). `noCommitsResult` now parses structured AC (Test:/Cmd: fields), verifies test file exists, runs the specific AC command, and closes the task on success. No further investigation needed.

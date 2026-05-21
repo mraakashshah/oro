@@ -176,6 +176,182 @@ func TestPromptAssetsUseTaskTerminology(t *testing.T) {
 	}
 }
 
+func TestActiveDocsUseTaskTerminology(t *testing.T) {
+	repoRoot := terminologyRepoRoot(t)
+	forbidden := []string{
+		"oro bead create",
+		"oro bead show",
+		"oro bead update",
+		"oro bead close",
+		"oro bead reopen",
+		"oro bead defer",
+		"oro bead undefer",
+		"oro bead list",
+		"oro bead status",
+		"oro bead ready",
+		"oro bead blocked",
+		"oro bead closed",
+		"oro bead dep",
+		"oro bead deps",
+		"oro bead tag",
+		"oro bead meta",
+		"oro bead note",
+		"oro bead comment",
+		"oro bead search",
+		"oro bead export",
+		"oro bead import",
+		"oro bead doctor",
+		"oro bead work",
+		"one bead",
+		"execute beads",
+		"assigns beads",
+		"work is tracked as beads",
+		"bead queue",
+		"bead progress",
+		"bead completion",
+		"per-bead",
+		"bead dependency graph",
+		"no beads ready",
+		"stale beads",
+		"p0 bead",
+		"create a bead",
+		"blocker bead",
+		"test bead",
+		"worker proof beads",
+		"controlled test bead",
+		"smoke bead",
+		"ready bead",
+		"worker bead",
+		"fix beads",
+		"child beads",
+		"smaller child beads",
+		"diagnose why bead",
+		"search beads",
+		"import bead snapshot",
+		"beads in progress",
+		"beads cli",
+	}
+	allowedLegacy := map[string][]string{
+		filepath.Join("docs", "decisions&discoveries.md"): {
+			"bead is `oro-23m2`",
+			"replatform beads spec",
+			"beads_ready",
+			"deferred-bead behavior",
+			".beads/backup/full-state.jsonl",
+			".beads/full-state.jsonl",
+			"bead_closed_externally",
+			"bead Type",
+			"10 completed beads",
+			"Creates temp worktree from epic branch",
+			"fix bead",
+			".beads/metadata.json",
+			".beads/.doltcfg",
+			"follow-up beads needed",
+			"work-bead execution",
+			".worktrees/bead-oro-by8/",
+			"work-bead and using-git-worktrees",
+			"protocol beads",
+			"P0 bead (oro-t3u)",
+			"bead completion step",
+			"bead annotations",
+			"bead metadata before committing",
+			"bd-oro-ummw",
+			"closes the bead",
+		},
+		filepath.Join("docs", "runbooks", "archive-dolt.md"): {
+			".beads",
+		},
+		filepath.Join("docs", "runbooks", "beadstore-native-cutover.md"): {
+			"oro bead migrate-from-dolt",
+			"native bead table",
+			"bd-tracked bead",
+			"beads WHERE",
+		},
+		filepath.Join("docs", "runbooks", "beadstore-recovery.md"): {
+			"oro bead migrate-from-dolt",
+			"native bead",
+			"legacy `oro bead` compatibility",
+			"beads WHERE",
+			"FROM beads",
+			"DELETE FROM beads",
+			"FTS triggers on `beads`",
+		},
+		filepath.Join("docs", "runbooks", "migrate-bd-dolt-projects-to-oro-tasks.md"): {
+			"oro bead migrate-from-dolt",
+			"beads/dolt",
+			"beads_",
+			"beads WHERE",
+		},
+	}
+
+	activeDocs := []string{
+		filepath.Join("docs", "decisions&discoveries.md"),
+	}
+	for _, dir := range []string{filepath.Join(repoRoot, "docs", "runbooks")} {
+		err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				rel, relErr := filepath.Rel(repoRoot, path)
+				if relErr != nil {
+					return relErr
+				}
+				switch rel {
+				case filepath.Join("docs", "runbooks", "logs"),
+					filepath.Join("docs", "runbooks", "incidents"),
+					filepath.Join("docs", "runbooks", "drills"):
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if filepath.Ext(path) != ".md" {
+				return nil
+			}
+			rel, relErr := filepath.Rel(repoRoot, path)
+			if relErr != nil {
+				return relErr
+			}
+			activeDocs = append(activeDocs, rel)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, rel := range activeDocs {
+		t.Run(rel, func(t *testing.T) {
+			content, err := os.ReadFile(filepath.Join(repoRoot, rel))
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(string(content), "\n")
+			for lineNo, line := range lines {
+				lowerLine := strings.ToLower(line)
+				for _, phrase := range forbidden {
+					if !strings.Contains(lowerLine, phrase) {
+						continue
+					}
+					if allowedDocLine(allowedLegacy[rel], line) {
+						continue
+					}
+					t.Fatalf("%s:%d uses legacy bead terminology %q in active guidance: %s", rel, lineNo+1, phrase, line)
+				}
+			}
+		})
+	}
+}
+
+func allowedDocLine(allowed []string, line string) bool {
+	for _, phrase := range allowed {
+		if strings.Contains(line, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestTaskTerminologyGuard(t *testing.T) {
 	repoRoot := terminologyRepoRoot(t)
 	script := filepath.Join(repoRoot, "scripts", "check-task-terminology.sh")

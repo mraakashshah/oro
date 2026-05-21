@@ -21,7 +21,7 @@ git -C <worktree> status --short
 git log --oneline --decorate --max-count=20 <branch>
 ```
 
-A bead can have more than one open quarantine when it has multiple unsafe
+A task can have more than one open quarantine when it has multiple unsafe
 conditions. Inspect and resolve each row separately.
 
 ## Preserve Work
@@ -36,12 +36,12 @@ Before resolving, choose one explicit preservation outcome:
 Useful commands:
 
 ```sh
-git branch recovery/<bead>-<id> <branch>
-git -C <worktree> diff > /tmp/<bead>-<id>.patch
+git branch recovery/<task>-<id> <branch>
+git -C <worktree> diff > /tmp/<task>-<id>.patch
 git -C <worktree> status --short
 ```
 
-After the work is preserved, clean the branch/worktree deliberately if the bead
+After the work is preserved, clean the branch/worktree deliberately if the task
 should be re-readied. Prefer safe deletion:
 
 ```sh
@@ -63,7 +63,7 @@ oro recovery resolve <id>
 
 Resolving a quarantine only closes the `recovery_quarantines` row. Historical
 assignment rows may remain `quarantined`; create a fresh assignment by returning
-the bead to the normal ready path after the work is preserved or merged.
+the task to the normal ready path after the work is preserved or merged.
 
 Then rerun:
 
@@ -72,6 +72,6 @@ oro health --json
 oro status
 ```
 
-Do not force-delete an `agent/<bead>` branch or remove a worktree just to clear
+Do not force-delete an `agent/<task>` branch or remove a worktree just to clear
 the finding. If the branch is unmerged or ambiguous, preserve it outside the
 factory first.
