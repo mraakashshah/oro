@@ -1,12 +1,110 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"oro/pkg/beadstore"
+	"oro/pkg/protocol"
 )
+
+func TestContextCommandsUseTaskTerminology(t *testing.T) {
+	store := beadstore.NewFakeStore(protocol.Bead{
+		ID:                 "oro-task-1",
+		Title:              "Task terminology",
+		Status:             "in_progress",
+		Type:               "task",
+		AcceptanceCriteria: "copy says task",
+	})
+
+	tests := []struct {
+		name   string
+		render func(t *testing.T) string
+	}{
+		{
+			name: "status output",
+			render: func(t *testing.T) string {
+				t.Helper()
+				var buf bytes.Buffer
+				formatStatusResponse(&buf, &statusResponse{
+					State:       "running",
+					QueueDepth:  1,
+					TargetCount: 1,
+					Workers: []workerStatus{
+						{ID: "worker-1", State: "busy", BeadID: "oro-task-1", LastProgressSecs: 5},
+					},
+					ProgressTimeoutSecs: 600,
+				})
+				return buf.String()
+			},
+		},
+		{
+			name: "current help and output",
+			render: func(t *testing.T) string {
+				t.Helper()
+				cmd := newCurrentCmdWithStore(store)
+				var help bytes.Buffer
+				cmd.SetOut(&help)
+				if err := cmd.Help(); err != nil {
+					t.Fatalf("current help: %v", err)
+				}
+				var buf bytes.Buffer
+				if err := runCurrent(context.Background(), store, "text", &buf); err != nil {
+					t.Fatalf("runCurrent: %v", err)
+				}
+				return help.String() + "\n" + buf.String()
+			},
+		},
+		{
+			name: "handoff help",
+			render: func(t *testing.T) string {
+				t.Helper()
+				cmd := newHandoffCmdWithStore(store)
+				var buf bytes.Buffer
+				cmd.SetOut(&buf)
+				if err := cmd.Help(); err != nil {
+					t.Fatalf("handoff help: %v", err)
+				}
+				return buf.String()
+			},
+		},
+		{
+			name: "resume help and output",
+			render: func(t *testing.T) string {
+				t.Helper()
+				cmd := newResumeCmdWithStore(store)
+				var help bytes.Buffer
+				cmd.SetOut(&help)
+				if err := cmd.Help(); err != nil {
+					t.Fatalf("resume help: %v", err)
+				}
+				var out bytes.Buffer
+				if err := runResume(context.Background(), store, "oro-task-1", &out); err != nil {
+					t.Fatalf("runResume: %v", err)
+				}
+				return help.String() + "\n" + out.String()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := tt.render(t)
+			lower := strings.ToLower(output)
+			if strings.Contains(lower, "bead") || strings.Contains(lower, "beads") {
+				t.Fatalf("output contains public bead wording:\n%s", output)
+			}
+			if !strings.Contains(lower, "task") && !strings.Contains(lower, "tasks") {
+				t.Fatalf("output does not contain task terminology:\n%s", output)
+			}
+		})
+	}
+}
 
 func TestTaskTerminologyGuard(t *testing.T) {
 	repoRoot := terminologyRepoRoot(t)

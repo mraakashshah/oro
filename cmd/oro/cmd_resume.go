@@ -17,8 +17,8 @@ func newResumeCmd() *cobra.Command {
 
 func newResumeCmdWithStore(store beadstore.Store) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:          "resume <bead-id>",
-		Short:        "Drop into a bead's context (title, status, AC, recent journey, cards)",
+		Use:          "resume <task-id>",
+		Short:        "Drop into a task's context (title, status, AC, recent journey, cards)",
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {

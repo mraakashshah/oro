@@ -21,7 +21,7 @@ func newHandoffCmdWithStore(store beadstore.Store) *cobra.Command {
 	var since string
 	cmd := &cobra.Command{
 		Use:          "handoff",
-		Short:        "Show session-scoped work context (in-progress beads, recent journey, cards)",
+		Short:        "Show session-scoped work context (in-progress tasks, recent journey, cards)",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {

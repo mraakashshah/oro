@@ -23,7 +23,7 @@ func newCurrentCmdWithStore(store beadstore.Store) *cobra.Command {
 	var format string
 	cmd := &cobra.Command{
 		Use:          "current",
-		Short:        "Show current work context (in-progress beads, journey, cards)",
+		Short:        "Show current work context (in-progress tasks, journey, cards)",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {

@@ -67,7 +67,7 @@ func newStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show current swarm state",
-		Long:  "Displays dispatcher status, worker count and active beads,\nmanager state, and bead summary.",
+		Long:  "Displays dispatcher status, worker count and active tasks,\nmanager state, and task summary.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runStatusCommand(cmd.Context(), cmd.OutOrStdout(), jsonOut, verbose)
 		},
@@ -336,7 +336,7 @@ func formatStatusResponse(w io.Writer, resp *statusResponse) {
 		formatInProgressBeads(w, resp)
 	case len(resp.Assignments) > 0:
 		// Legacy fallback: flat assignments map.
-		fmt.Fprintln(w, "  in_progress beads:")
+		fmt.Fprintln(w, "  in_progress tasks:")
 		ids := make([]string, 0, len(resp.Assignments))
 		for wID := range resp.Assignments {
 			ids = append(ids, wID)
@@ -346,7 +346,7 @@ func formatStatusResponse(w io.Writer, resp *statusResponse) {
 			fmt.Fprintf(w, "    %s -> %s\n", wID, resp.Assignments[wID])
 		}
 	default:
-		fmt.Fprintln(w, "  in_progress beads: none")
+		fmt.Fprintln(w, "  in_progress tasks: none")
 	}
 }
 
@@ -447,13 +447,13 @@ func formatInProgressBeads(w io.Writer, resp *statusResponse) {
 		}
 	}
 	if len(busy) == 0 {
-		fmt.Fprintln(w, "  in_progress beads: none")
+		fmt.Fprintln(w, "  in_progress tasks: none")
 		return
 	}
 
 	sort.Slice(busy, func(i, j int) bool { return busy[i].ID < busy[j].ID })
 
-	fmt.Fprintln(w, "  in_progress beads:")
+	fmt.Fprintln(w, "  in_progress tasks:")
 	progressTimeout := effectiveProgressTimeout(resp.ProgressTimeoutSecs)
 	halfTimeout := progressTimeout / 2
 	for _, ws := range busy {
