@@ -518,32 +518,12 @@ func (d *Dispatcher) reviewContextForOpsRun(rec OpsRunRecord) (worktree, targetB
 		return "", ""
 	}
 	d.mu.Lock()
-	trackedWorktree := d.worktreeByBead[rec.BeadID]
-	if w, ok := d.workers[rec.WorkerID]; ok && w != nil && w.beadID == rec.BeadID {
-		w.state = protocol.WorkerReviewing
-		worktree = w.worktree
-		targetBranch = w.targetBranch
-	}
-	if worktree == "" || targetBranch == "" {
-		for _, w := range d.workers {
-			if w == nil || w.beadID != rec.BeadID {
-				continue
-			}
-			if worktree == "" {
-				worktree = w.worktree
-			}
-			if targetBranch == "" {
-				targetBranch = w.targetBranch
-			}
-			if worktree != "" && targetBranch != "" {
-				break
-			}
-		}
-	}
+	worktree, targetBranch = d.reviewContextFromWorkerLocked(rec)
 	if worktree == "" {
-		worktree = trackedWorktree
+		worktree = d.worktreeByBead[rec.BeadID]
 	}
 	d.mu.Unlock()
+
 	if worktree == "" {
 		return "", ""
 	}
@@ -551,6 +531,35 @@ func (d *Dispatcher) reviewContextForOpsRun(rec OpsRunRecord) (worktree, targetB
 		targetBranch = d.cfg.DefaultBranch
 	}
 	return worktree, targetBranch
+}
+
+func (d *Dispatcher) reviewContextFromWorkerLocked(rec OpsRunRecord) (worktree, targetBranch string) {
+	if w, ok := d.workers[rec.WorkerID]; ok && w != nil && w.beadID == rec.BeadID {
+		w.state = protocol.WorkerReviewing
+		return w.worktree, w.targetBranch
+	}
+	return d.reviewContextFromAnyWorkerLocked(rec.BeadID)
+}
+
+func (d *Dispatcher) reviewContextFromAnyWorkerLocked(beadID string) (worktree, targetBranch string) {
+	for _, w := range d.workers {
+		if w == nil || w.beadID != beadID {
+			continue
+		}
+		worktree = firstNonEmpty(worktree, w.worktree)
+		targetBranch = firstNonEmpty(targetBranch, w.targetBranch)
+		if worktree != "" && targetBranch != "" {
+			return worktree, targetBranch
+		}
+	}
+	return worktree, targetBranch
+}
+
+func firstNonEmpty(current, candidate string) string {
+	if current != "" {
+		return current
+	}
+	return candidate
 }
 
 func (d *Dispatcher) beadContextForOpsRun(ctx context.Context, beadID string) (title, description string) {
