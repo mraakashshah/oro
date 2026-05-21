@@ -449,20 +449,21 @@ func TestWorktreeManager_PrunesStaleBeforeCreate(t *testing.T) {
 		t.Fatalf("branch: got %q, want %q", branch, wantBranch)
 	}
 
-	// Expect 7 calls:
+	// Expect 8 calls:
 	// 0. git fetch origin main (best-effort, succeeds)
 	// 1. git worktree add (fails - branch already exists)
 	// 2. git worktree remove <path> --force
 	// 3. git worktree prune
-	// 4. git branch -d agent/oro-stale
-	// 5. git worktree add (succeeds)
-	// 6. make stage-assets (best-effort)
-	if len(runner.calls) != 7 {
+	// 4. git merge-base --is-ancestor agent/oro-stale origin/main
+	// 5. git branch -D agent/oro-stale
+	// 6. git worktree add (succeeds)
+	// 7. make stage-assets (best-effort)
+	if len(runner.calls) != 8 {
 		var callDescs []string
 		for i, c := range runner.calls {
 			callDescs = append(callDescs, fmt.Sprintf("  [%d] %s %s", i, c.Name, strings.Join(c.Args, " ")))
 		}
-		t.Fatalf("expected 7 command calls, got %d:\n%s", len(runner.calls), strings.Join(callDescs, "\n"))
+		t.Fatalf("expected 8 command calls, got %d:\n%s", len(runner.calls), strings.Join(callDescs, "\n"))
 	}
 
 	// Call 1 (index 1): initial worktree add (fails)
@@ -483,16 +484,94 @@ func TestWorktreeManager_PrunesStaleBeforeCreate(t *testing.T) {
 		t.Fatalf("call[3] should be git worktree prune, got: %s %v", c3.Name, c3.Args)
 	}
 
-	// Call 4 (index 4): git branch -d agent/oro-stale
+	// Call 4 (index 4): git merge-base --is-ancestor agent/oro-stale origin/main
 	c4 := runner.calls[4]
-	if c4.Name != "git" || !containsAll(c4.Args, "branch", "-d", "agent/oro-stale") {
-		t.Fatalf("call[4] should be git branch -d agent/oro-stale, got: %s %v", c4.Name, c4.Args)
+	if c4.Name != "git" || !slices.Equal(c4.Args, []string{"-C", "/repo/root", "merge-base", "--is-ancestor", "agent/oro-stale", "origin/main"}) {
+		t.Fatalf("call[4] should prove stale branch merged into origin/main, got: %s %v", c4.Name, c4.Args)
 	}
 
-	// Call 5 (index 5): retry worktree add (succeeds)
+	// Call 5 (index 5): git branch -D agent/oro-stale after target proof
 	c5 := runner.calls[5]
-	if c5.Name != "git" || !containsAll(c5.Args, "worktree", "add") {
-		t.Fatalf("call[5] should be git worktree add (retry), got: %s %v", c5.Name, c5.Args)
+	if c5.Name != "git" || !slices.Equal(c5.Args, []string{"-C", "/repo/root", "branch", "-D", "agent/oro-stale"}) {
+		t.Fatalf("call[5] should be git branch -D agent/oro-stale after proof, got: %s %v", c5.Name, c5.Args)
+	}
+
+	// Call 6 (index 6): retry worktree add (succeeds)
+	c6 := runner.calls[6]
+	if c6.Name != "git" || !containsAll(c6.Args, "worktree", "add") {
+		t.Fatalf("call[6] should be git worktree add (retry), got: %s %v", c6.Name, c6.Args)
+	}
+}
+
+func TestWorktreeManager_PrunesStaleBranchMergedIntoBaseBeforeCreate(t *testing.T) {
+	const (
+		repoRoot    = "/repo/root"
+		beadID      = "oro-stale-qg"
+		baseBranch  = "epic/oro-parent"
+		agentBranch = "agent/oro-stale-qg"
+	)
+	var staleBranchDeleted bool
+	runner := &mockCommandRunner{
+		callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "make" {
+				return nil, nil
+			}
+			if name != "git" {
+				return nil, nil
+			}
+			switch {
+			case slices.Equal(args, []string{"-C", repoRoot, "fetch", "origin", baseBranch}):
+				return nil, fmt.Errorf("no remote epic branch")
+			case slices.Equal(args, []string{"-C", repoRoot, "branch", "--list", baseBranch}):
+				return []byte("  " + baseBranch + "\n"), nil
+			case containsAll(args, "worktree", "add", "-b", agentBranch, baseBranch):
+				if staleBranchDeleted {
+					return nil, nil
+				}
+				return nil, fmt.Errorf("fatal: a branch named %q already exists", agentBranch)
+			case containsAll(args, "worktree", "remove", "--force"):
+				return nil, nil
+			case containsAll(args, "worktree", "prune"):
+				return nil, nil
+			case slices.Equal(args, []string{"-C", repoRoot, "merge-base", "--is-ancestor", agentBranch, baseBranch}):
+				return nil, nil
+			case slices.Equal(args, []string{"-C", repoRoot, "branch", "-D", agentBranch}):
+				staleBranchDeleted = true
+				return nil, nil
+			case slices.Equal(args, []string{"-C", repoRoot, "branch", "-d", agentBranch}):
+				return nil, fmt.Errorf("error: branch %q is not fully merged", agentBranch)
+			default:
+				return nil, nil
+			}
+		},
+	}
+	mgr := NewGitWorktreeManager(repoRoot, "", "", runner)
+
+	path, branch, err := mgr.Create(context.Background(), beadID, baseBranch)
+	if err != nil {
+		t.Fatalf("Create should delete stale branch after target proof and retry, got: %v", err)
+	}
+	if path != filepath.Join(repoRoot, ".worktrees", beadID) {
+		t.Fatalf("path = %q", path)
+	}
+	if branch != agentBranch {
+		t.Fatalf("branch = %q, want %q", branch, agentBranch)
+	}
+	if !staleBranchDeleted {
+		t.Fatal("expected stale branch to be deleted with explicit target proof")
+	}
+
+	var sawProof, sawForceDelete bool
+	for _, call := range runner.calls {
+		if slices.Equal(call.Args, []string{"-C", repoRoot, "merge-base", "--is-ancestor", agentBranch, baseBranch}) {
+			sawProof = true
+		}
+		if slices.Equal(call.Args, []string{"-C", repoRoot, "branch", "-D", agentBranch}) {
+			sawForceDelete = true
+		}
+	}
+	if !sawProof || !sawForceDelete {
+		t.Fatalf("expected target proof and force-delete calls, sawProof=%v sawForceDelete=%v calls=%#v", sawProof, sawForceDelete, runner.calls)
 	}
 }
 
@@ -787,11 +866,12 @@ func TestGitWorktreeManager_PruneDoesNotRemoveOrphanDirs(t *testing.T) {
 	}
 }
 
-// TestGitWorktreeManager_PruneStale_CallsWorktreeRemove kills mutant .go.13 (prune call) and .go.14 (branch -d):
+// TestGitWorktreeManager_PruneStale_CallsWorktreeRemove kills mutant .go.13 (prune call) and .go.14 (branch delete):
 // verifies that pruneStale (invoked via Create retry) calls:
 //   - git worktree remove <path> --force
 //   - git worktree prune
-//   - git branch -d <branch>
+//   - git merge-base --is-ancestor <branch> <target>
+//   - git branch -D <branch>
 func TestGitWorktreeManager_PruneStale_CommandSequence(t *testing.T) {
 	callCount := 0
 	runner := &mockCommandRunner{
@@ -812,12 +892,12 @@ func TestGitWorktreeManager_PruneStale_CommandSequence(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	if len(runner.calls) != 7 {
+	if len(runner.calls) != 8 {
 		var descs []string
 		for i, c := range runner.calls {
 			descs = append(descs, fmt.Sprintf("[%d] %s %s", i, c.Name, strings.Join(c.Args, " ")))
 		}
-		t.Fatalf("expected 7 calls, got %d:\n%s", len(runner.calls), strings.Join(descs, "\n"))
+		t.Fatalf("expected 8 calls, got %d:\n%s", len(runner.calls), strings.Join(descs, "\n"))
 	}
 
 	// call[2]: git worktree remove <path> --force  (pruneStale step 1)
@@ -839,17 +919,23 @@ func TestGitWorktreeManager_PruneStale_CommandSequence(t *testing.T) {
 		t.Fatalf("call[3] must be 'worktree prune', not 'worktree remove', got: %v", c2.Args)
 	}
 
-	// call[4]: git branch -d agent/seq-bead  (kills .go.14)
+	// call[4]: git merge-base --is-ancestor agent/seq-bead origin/main
 	c3 := runner.calls[4]
-	if !containsAll(c3.Args, "branch", "-d", "agent/seq-bead") {
-		t.Fatalf("call[4] should be git branch -d agent/seq-bead, got: %v", c3.Args)
+	if !slices.Equal(c3.Args, []string{"-C", "/repo/root", "merge-base", "--is-ancestor", "agent/seq-bead", "origin/main"}) {
+		t.Fatalf("call[4] should prove agent/seq-bead merged into origin/main, got: %v", c3.Args)
+	}
+
+	// call[5]: git branch -D agent/seq-bead after proof (kills .go.14)
+	c4 := runner.calls[5]
+	if !slices.Equal(c4.Args, []string{"-C", "/repo/root", "branch", "-D", "agent/seq-bead"}) {
+		t.Fatalf("call[5] should be git branch -D agent/seq-bead, got: %v", c4.Args)
 	}
 }
 
 // TestGitWorktreeManager_Create_PruneStaleCalledOnAlreadyExists kills mutant .go.10:
-// "g.pruneStale(ctx, path, branch)" call removed — retry happens but cleanup is skipped.
+// "g.pruneStale(ctx, path, branch, targetBranch)" call removed — retry happens but cleanup is skipped.
 // Verifies that when "already exists" fires, at least 4 extra calls are made
-// (remove --force, prune, branch -d, retry add) before success.
+// (remove --force, prune, target proof, branch -D, retry add) before success.
 func TestGitWorktreeManager_Create_PruneStaleCalledOnAlreadyExists(t *testing.T) {
 	callCount := 0
 	runner := &mockCommandRunner{
@@ -878,24 +964,25 @@ func TestGitWorktreeManager_Create_PruneStaleCalledOnAlreadyExists(t *testing.T)
 	}
 
 	// Without pruneStale call (mutant .go.10), only 3 calls occur: fetch + initial add + retry.
-	// With pruneStale, 7 calls occur. Verify we got all 7.
-	if len(runner.calls) != 7 {
+	// With pruneStale, 8 calls occur. Verify we got all 8.
+	if len(runner.calls) != 8 {
 		var descs []string
 		for i, c := range runner.calls {
 			descs = append(descs, fmt.Sprintf("[%d] %s %v", i, c.Name, c.Args))
 		}
-		t.Fatalf("expected 7 calls (fetch, initial add, remove --force, prune, branch -d, retry add, stage-assets), got %d:\n%s",
+		t.Fatalf("expected 8 calls (fetch, initial add, remove --force, prune, proof, branch -D, retry add, stage-assets), got %d:\n%s",
 			len(runner.calls), strings.Join(descs, "\n"))
 	}
 
 	// Verify calls[2..4] contain the stale cleanup operations (not just two worktree-add calls).
 	hasWorktreeRemove := containsAll(runner.calls[2].Args, "worktree", "remove", "--force")
 	hasWorktreePrune := containsAll(runner.calls[3].Args, "worktree", "prune")
-	hasBranchDelete := containsAll(runner.calls[4].Args, "branch", "-d")
+	hasProof := slices.Equal(runner.calls[4].Args, []string{"-C", "/repo/root", "merge-base", "--is-ancestor", "agent/prune-bead", "origin/main"})
+	hasBranchDelete := slices.Equal(runner.calls[5].Args, []string{"-C", "/repo/root", "branch", "-D", "agent/prune-bead"})
 
-	if !hasWorktreeRemove || !hasWorktreePrune || !hasBranchDelete {
-		t.Fatalf("pruneStale sequence not found: remove=%v prune=%v branch-d=%v",
-			hasWorktreeRemove, hasWorktreePrune, hasBranchDelete)
+	if !hasWorktreeRemove || !hasWorktreePrune || !hasProof || !hasBranchDelete {
+		t.Fatalf("pruneStale sequence not found: remove=%v prune=%v proof=%v branch-D=%v",
+			hasWorktreeRemove, hasWorktreePrune, hasProof, hasBranchDelete)
 	}
 }
 
@@ -941,15 +1028,16 @@ func TestWorktreeManager_PruneStaleUnlocksAndRemovesBeforeRetry(t *testing.T) {
 	// 1. git worktree add (fails)
 	// 2. git worktree remove <path> --force
 	// 3. git worktree prune
-	// 4. git branch -d <branch>
-	// 5. git worktree add (succeeds)
-	// 6. make stage-assets (best-effort)
-	if len(runner.calls) != 7 {
+	// 4. git merge-base --is-ancestor <branch> origin/main
+	// 5. git branch -D <branch>
+	// 6. git worktree add (succeeds)
+	// 7. make stage-assets (best-effort)
+	if len(runner.calls) != 8 {
 		var callDescs []string
 		for i, c := range runner.calls {
 			callDescs = append(callDescs, fmt.Sprintf("  [%d] %s %s", i, c.Name, strings.Join(c.Args, " ")))
 		}
-		t.Fatalf("expected 7 command calls, got %d:\n%s", len(runner.calls), strings.Join(callDescs, "\n"))
+		t.Fatalf("expected 8 command calls, got %d:\n%s", len(runner.calls), strings.Join(callDescs, "\n"))
 	}
 
 	// Call 2 (index 2): git worktree remove <path> --force
@@ -967,10 +1055,16 @@ func TestWorktreeManager_PruneStaleUnlocksAndRemovesBeforeRetry(t *testing.T) {
 		t.Fatalf("call[3] should be git worktree prune, got: %s %v", c3.Name, c3.Args)
 	}
 
-	// Call 4 (index 4): git branch -d <branch>
+	// Call 4 (index 4): git merge-base --is-ancestor <branch> origin/main
 	c4 := runner.calls[4]
-	if c4.Name != "git" || !containsAll(c4.Args, "branch", "-d", wantBranch) {
-		t.Fatalf("call[4] should be git branch -d, got: %s %v", c4.Name, c4.Args)
+	if c4.Name != "git" || !slices.Equal(c4.Args, []string{"-C", "/repo/root", "merge-base", "--is-ancestor", wantBranch, "origin/main"}) {
+		t.Fatalf("call[4] should prove branch merged into origin/main, got: %s %v", c4.Name, c4.Args)
+	}
+
+	// Call 5 (index 5): git branch -D <branch> after proof
+	c5 := runner.calls[5]
+	if c5.Name != "git" || !slices.Equal(c5.Args, []string{"-C", "/repo/root", "branch", "-D", wantBranch}) {
+		t.Fatalf("call[5] should be git branch -D after proof, got: %s %v", c5.Name, c5.Args)
 	}
 }
 
@@ -1123,7 +1217,7 @@ func TestPruneStaleReturnsFirstError(t *testing.T) {
 			},
 		}
 		mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
-		err := mgr.pruneStale(context.Background(), "/repo/root/.worktrees/prune-err", "agent/prune-err")
+		err := mgr.pruneStale(context.Background(), "/repo/root/.worktrees/prune-err", "agent/prune-err", "main")
 		if err == nil {
 			t.Fatal("expected pruneStale to return error when worktree remove fails")
 		}
@@ -1132,22 +1226,22 @@ func TestPruneStaleReturnsFirstError(t *testing.T) {
 		}
 	})
 
-	// Subtest 2: only the third step (branch -d) fails → that error is returned.
+	// Subtest 2: only the proof step fails -> that error is returned.
 	t.Run("branch_delete_fails_returns_error", func(t *testing.T) {
 		callCount := 0
 		runner := &mockCommandRunner{
 			callFn: func(_ context.Context, _ string, _ ...string) ([]byte, error) {
 				callCount++
-				if callCount == 3 { // worktree remove=1, prune=2, branch -d=3
+				if callCount == 3 { // worktree remove=1, prune=2, merge-base proof=3
 					return nil, fmt.Errorf("error: branch not yet merged")
 				}
 				return nil, nil
 			},
 		}
 		mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
-		err := mgr.pruneStale(context.Background(), "/repo/root/.worktrees/prune-err", "agent/prune-err")
+		err := mgr.pruneStale(context.Background(), "/repo/root/.worktrees/prune-err", "agent/prune-err", "main")
 		if err == nil {
-			t.Fatal("expected pruneStale to return error when branch -d fails")
+			t.Fatal("expected pruneStale to return error when target proof fails")
 		}
 		if !strings.Contains(err.Error(), "branch not yet merged") {
 			t.Fatalf("expected error about 'branch not yet merged', got: %v", err)
@@ -1176,7 +1270,7 @@ func TestPruneStaleReturnsFirstError(t *testing.T) {
 				if callCount == 3 {
 					return nil, fmt.Errorf("fatal: worktree is locked")
 				}
-				// Calls 4+ (prune, branch -d, retry add, stage-assets) → succeed
+				// Calls 4+ (prune, merge-base proof, branch -D, retry add, stage-assets) -> succeed
 				return nil, nil
 			},
 		}
@@ -1191,9 +1285,9 @@ func TestPruneStaleReturnsFirstError(t *testing.T) {
 			t.Fatalf("expected worktree_create_prune_failed to be logged, got: %q", logBuf.String())
 		}
 
-		// Verify retry still executed (7 total calls: fetch, initial add, 3 prune steps, retry add, stage-assets).
-		if callCount != 7 {
-			t.Fatalf("expected 7 total calls (retry ran), got %d", callCount)
+		// Verify retry still executed (8 total calls: fetch, initial add, 4 prune steps, retry add, stage-assets).
+		if callCount != 8 {
+			t.Fatalf("expected 8 total calls (retry ran), got %d", callCount)
 		}
 	})
 }

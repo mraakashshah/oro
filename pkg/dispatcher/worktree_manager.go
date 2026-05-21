@@ -87,7 +87,7 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID, baseBranch stri
 	}
 
 	// Branch already exists from a previous crashed run: prune stale state and retry once.
-	if pruneErr := g.pruneStale(ctx, path, branch); pruneErr != nil {
+	if pruneErr := g.pruneStale(ctx, path, branch, effectiveBase); pruneErr != nil {
 		slog.WarnContext(ctx, "worktree_create_prune_failed", "error", pruneErr.Error())
 	}
 
@@ -162,7 +162,7 @@ func (g *GitWorktreeManager) linkQualityGate(ctx context.Context, worktreePath s
 // It removes the registered worktree, prunes stale git metadata, then asks git
 // to safe-delete the branch. Unmerged branches are preserved by git branch -d.
 // Returns the first non-nil error from any git step; all steps still run.
-func (g *GitWorktreeManager) pruneStale(ctx context.Context, path, branch string) error {
+func (g *GitWorktreeManager) pruneStale(ctx context.Context, path, branch, targetBranch string) error {
 	var firstErr error
 	// Force-remove worktree reference (handles locked or stale worktrees).
 	if _, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "worktree", "remove", path, "--force"); err != nil {
@@ -172,9 +172,10 @@ func (g *GitWorktreeManager) pruneStale(ctx context.Context, path, branch string
 	if _, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "worktree", "prune"); err != nil && firstErr == nil {
 		firstErr = err
 	}
-	// Delete the stale branch now that it's no longer checked out, but only
-	// when git can prove it is merged.
-	if _, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "branch", "-d", branch); err != nil && firstErr == nil {
+	// Delete the stale branch only when it is proven merged into the branch
+	// Create is about to use as its base; git branch -d checks HEAD/upstream,
+	// which is too broad for epic-targeted worktrees.
+	if err := g.DeleteBranchMergedInto(ctx, branch, targetBranch); err != nil && firstErr == nil {
 		firstErr = err
 	}
 	return firstErr

@@ -358,36 +358,37 @@ func TestWorktreeManager_PruneStale_RemovesWorktreeBeforeBranchDelete(t *testing
 	}
 
 	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
-	err := mgr.pruneStale(context.Background(), "/repo/root/.worktrees/oro-x", "agent/oro-x")
+	err := mgr.pruneStale(context.Background(), "/repo/root/.worktrees/oro-x", "agent/oro-x", "epic/oro-parent")
 	if err != nil {
 		t.Fatalf("pruneStale: %v", err)
 	}
 
-	// Expected: worktree:remove → worktree:prune → branch:-d
+	// Expected: worktree:remove -> worktree:prune -> branch:-D
+	// with a merge-base proof before the branch delete.
 	if len(ops) < 3 {
-		t.Fatalf("expected 3 ops, got %v", ops)
+		t.Fatalf("expected at least 3 ops, got %v", ops)
 	}
-	wantOps := []string{"worktree:remove", "worktree:prune", "branch:-d"}
+	wantOps := []string{"worktree:remove", "worktree:prune", "branch:-D"}
 	for i, want := range wantOps {
 		if ops[i] != want {
 			t.Errorf("ops[%d]: got %q, want %q", i, ops[i], want)
 		}
 	}
-	// remove MUST come before safe branch deletion.
+	// remove MUST come before target-proven branch deletion.
 	removeIdx := -1
 	deleteIdx := -1
 	for i, op := range ops {
 		if op == "worktree:remove" {
 			removeIdx = i
 		}
-		if op == "branch:-d" {
+		if op == "branch:-D" {
 			deleteIdx = i
 		}
 	}
 	if removeIdx == -1 || deleteIdx == -1 {
-		t.Fatalf("did not find both remove and branch -d in ops: %v", ops)
+		t.Fatalf("did not find both remove and branch -D in ops: %v", ops)
 	}
 	if removeIdx >= deleteIdx {
-		t.Errorf("worktree remove (%d) must happen before branch -d (%d)", removeIdx, deleteIdx)
+		t.Errorf("worktree remove (%d) must happen before branch -D (%d)", removeIdx, deleteIdx)
 	}
 }

@@ -2229,7 +2229,7 @@ func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, work
 // tryCloseEpic should proceed to completeEpicClose. On failure or error it
 // handles logging/escalation and returns false.
 func (d *Dispatcher) checkEpicQG(ctx context.Context, epicID, workerID, epicBranch string) bool {
-	wtID := epicID + "-qg"
+	wtID := epicQGWorktreeID(epicID)
 	worktree, _, err := d.worktrees.Create(ctx, wtID, epicBranch)
 	if err != nil {
 		_ = d.logEvent(ctx, "epic_qg_worktree_failed", "dispatcher", epicID, workerID,
@@ -2249,6 +2249,24 @@ func (d *Dispatcher) checkEpicQG(ctx context.Context, epicID, workerID, epicBran
 		return d.handleEpicQGFailure(ctx, epicID, workerID, epicBranch, qgOutput)
 	}
 	return true
+}
+
+var epicQGWorktreeSeq uint64
+
+func epicQGWorktreeID(epicID string) string {
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36) + "-" + strconv.FormatUint(atomic.AddUint64(&epicQGWorktreeSeq, 1), 36)
+	maxPrefixLen := 63 - len("-qg-") - len(suffix)
+	if maxPrefixLen < 1 {
+		maxPrefixLen = 1
+	}
+	prefix := epicID
+	if len(prefix) > maxPrefixLen {
+		prefix = strings.TrimRight(prefix[:maxPrefixLen], "-._")
+	}
+	if prefix == "" {
+		prefix = "q"
+	}
+	return prefix + "-qg-" + suffix
 }
 
 // handleEpicQGFailure classifies a QG failure on an epic branch and takes the

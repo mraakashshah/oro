@@ -282,7 +282,7 @@ func TestEpicQGWorktreeCreateFailureCreatesOrReusesIncident(t *testing.T) {
 	// Override: QG worktree creation fails.
 	wtMgr.mu.Lock()
 	wtMgr.createFn = func(_ context.Context, beadID, baseBranch string) (string, string, error) {
-		if strings.HasSuffix(beadID, "-qg") {
+		if strings.HasPrefix(beadID, epicID+"-qg-") {
 			return "", "", fmt.Errorf("out of memory: cannot create worktree")
 		}
 		return "/tmp/worktree-" + beadID, "agent/" + beadID, nil
@@ -313,7 +313,7 @@ func TestEpicQGWorktreeCreateFailureCreatesOrReusesIncident(t *testing.T) {
 
 // TestEpicQGPassesThenMerges covers all assertion points from the acceptance criteria:
 //
-//  1. checkEpicQG creates temp worktree via Create(epicID+"-qg", epicBranch), runs
+//  1. checkEpicQG creates a unique temp worktree via Create(epicID+"-qg-*", epicBranch), runs
 //     qgRunner.Run without the legacy skipMutation override, removes worktree on completion.
 //  2. QG passes  → returns true, tryCloseEpic proceeds to completeEpicClose.
 //  3. QG fails   → logs epic_qg_failed, creates fix bead, returns false (no close).
@@ -383,7 +383,7 @@ func TestEpicQGPassesThenMerges(t *testing.T) {
 			creates = append(creates, createArgs{beadID, baseBranch})
 			createsMu.Unlock()
 			// Return qgWorktreePath only for the QG worktree; use default for others.
-			if strings.HasSuffix(beadID, "-qg") {
+			if strings.HasPrefix(beadID, epicID+"-qg-") {
 				return qgWorktreePath, "agent/" + beadID, nil
 			}
 			return "/tmp/worktree-" + beadID, "agent/" + beadID, nil
@@ -396,11 +396,11 @@ func TestEpicQGPassesThenMerges(t *testing.T) {
 
 		d.tryCloseEpic(ctx, epicID, workerID)
 
-		// Assert (1): worktree created with epicID+"-qg" and epicBranch as base.
+		// Assert (1): worktree created with a unique epic QG ID and epicBranch as base.
 		var qgCreate *createArgs
 		createsMu.Lock()
 		for i := range creates {
-			if creates[i].beadID == epicID+"-qg" {
+			if strings.HasPrefix(creates[i].beadID, epicID+"-qg-") {
 				c := creates[i]
 				qgCreate = &c
 				break
@@ -408,7 +408,10 @@ func TestEpicQGPassesThenMerges(t *testing.T) {
 		}
 		createsMu.Unlock()
 		if qgCreate == nil {
-			t.Fatalf("expected worktrees.Create called with beadID=%q, got creates=%v", epicID+"-qg", creates)
+			t.Fatalf("expected worktrees.Create called with beadID prefix %q, got creates=%v", epicID+"-qg-", creates)
+		}
+		if qgCreate.beadID == epicID+"-qg" {
+			t.Fatalf("QG worktree ID must be unique, got fixed ID %q", qgCreate.beadID)
 		}
 		if qgCreate.baseBranch != epicBranch {
 			t.Errorf("Create baseBranch = %q, want %q", qgCreate.baseBranch, epicBranch)
@@ -614,7 +617,7 @@ func TestEpicQGPassesThenMerges(t *testing.T) {
 		wtMgr.mu.Lock()
 		origBranchExistsFn := wtMgr.branchExistsFn
 		wtMgr.createFn = func(_ context.Context, beadID, baseBranch string) (string, string, error) {
-			if strings.HasSuffix(beadID, "-qg") {
+			if strings.HasPrefix(beadID, epicID+"-qg-") {
 				return "", "", fmt.Errorf("failed to create worktree: disk full")
 			}
 			return "/tmp/worktree-" + beadID, "agent/" + beadID, nil
