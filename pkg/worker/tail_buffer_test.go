@@ -1,12 +1,14 @@
-package worker
+package worker_test
 
 import (
 	"strings"
 	"testing"
+
+	"oro/pkg/worker"
 )
 
 func TestLineTailBufferKeepsLastCompleteLinesAndPartial(t *testing.T) {
-	buf := NewLineTailBuffer(2)
+	buf := worker.NewLineTailBuffer(2)
 	if n, err := buf.Write([]byte("one\ntwo\r\nthree")); err != nil || n != len("one\ntwo\r\nthree") {
 		t.Fatalf("Write returned n=%d err=%v", n, err)
 	}
@@ -23,7 +25,7 @@ func TestLineTailBufferKeepsLastCompleteLinesAndPartial(t *testing.T) {
 }
 
 func TestLineTailBufferDefaultLimit(t *testing.T) {
-	buf := NewLineTailBuffer(0)
+	buf := worker.NewLineTailBuffer(0)
 	for i := 0; i < 105; i++ {
 		if _, err := buf.Write([]byte("x\n")); err != nil {
 			t.Fatalf("Write line %d: %v", i, err)
