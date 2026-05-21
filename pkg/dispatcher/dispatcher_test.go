@@ -5745,9 +5745,9 @@ func TestHandleDone_TypeChangedToEpic(t *testing.T) {
 		if len(removed) != 0 {
 			t.Fatalf("type change has no merge proof; worktree should be preserved, removed=%v", removed)
 		}
-		if eventCount(t, d.db, "recovery_work_quarantined") == 0 {
-			t.Fatalf("expected recovery_work_quarantined event")
-		}
+		waitFor(t, func() bool {
+			return eventCount(t, d.db, "recovery_work_quarantined") > 0
+		}, 2*time.Second)
 	})
 
 	t.Run("falls through to normal merge when Show returns error", func(t *testing.T) {
@@ -11151,9 +11151,9 @@ func TestMergeConflictFailurePreservesWorktree(t *testing.T) {
 			t.Fatalf("merge conflict failure has no merge proof; worktree should be preserved, removed=%v", removed)
 		}
 	}
-	if eventCount(t, d.db, "recovery_work_quarantined") == 0 {
-		t.Fatalf("expected recovery_work_quarantined event")
-	}
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "recovery_work_quarantined") > 0
+	}, 2*time.Second)
 
 	d.mu.Lock()
 	tracked := d.worktreeByBead[beadID]
