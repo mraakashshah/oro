@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest  # type: ignore[import-not-found]
@@ -35,6 +37,13 @@ def _write_skill(path: Path, description: str | None) -> Path:
     return skill_path
 
 
+def _cso_description_examples() -> dict[str, str]:
+    return {
+        "BAD": "Use when executing plans - dispatches subagent per task with code review",
+        "GOOD": "Use when you have a written implementation plan to execute",
+    }
+
+
 def test_check_skill_description_reports_missing_frontmatter(tmp_path: Path) -> None:
     checker = _load_checker()
     skill_path = _write_skill(tmp_path / "missing-frontmatter", None)
@@ -50,6 +59,28 @@ def test_check_skill_description_accepts_trigger_only_description(tmp_path: Path
     )
 
     assert checker.check_skill_description(skill_path) == []
+
+
+def test_skill_description_lint_accepts_documented_cso_good_description(
+    tmp_path: Path,
+) -> None:
+    checker = _load_checker()
+    skill_path = _write_skill(
+        tmp_path / "documented-cso-good",
+        _cso_description_examples()["GOOD"],
+    )
+    assert checker.__file__ is not None
+
+    result = subprocess.run(
+        [sys.executable, str(Path(checker.__file__)), str(skill_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
 
 
 @pytest.mark.parametrize("dash", ["-", "\u2013", "\u2014"])
