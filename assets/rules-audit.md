@@ -40,7 +40,7 @@ agent action or stop event, the same practical tier as pre-commit hooks.
 | R016 | Use git worktrees for isolated feature work and avoid editing shared roots for parallel work. | `assets/skills/using-git-worktrees/SKILL.md`, `assets/skills/work-bead/SKILL.md`, `assets/skills/dispatching-parallel-agents/SKILL.md` | 4 | 4 | `assets/hooks/worktree_guard.py`, `assets/hooks/enforce_worktree.py`, and worktree workflow docs cover this. |
 | R017 | Do not remove a worktree until all useful work is committed to its branch. | `assets/skills/using-git-worktrees/SKILL.md`, `assets/skills/work-bead/SKILL.md` | 4 | 4 | Worktree guards and Oro cleanup preserve this in managed paths. Keep hook-level protection. |
 | R018 | Do not use interactive task editing; use explicit `oro task update` flags. | `assets/skills/oro/references/gotchas.md` | 6 | 1 | Low-hanging fruit: static grep docs/prompts for "interactive task editing" and CLI-level deprecation if an interactive path exists. |
-| R019 | `oro task create --parent` only sets hierarchy; add dependency edges explicitly. | `assets/skills/oro/references/gotchas.md`, `assets/skills/oro/SKILL.md`, `assets/skills/beadcraft/SKILL.md` | 6 | 5 | Native beadstore invariant checks already verify ready/blocked relationships. Add a task creation warning when a parent epic has no child blocker edge. |
+| R019 | `oro task create --parent` only sets hierarchy; add dependency edges explicitly. | `assets/skills/oro/references/gotchas.md`, `assets/skills/oro/SKILL.md`, `assets/skills/beadcraft/SKILL.md`, `scripts/check-native-beadstore-invariants.py` | 6 | 5 | `check-native-beadstore-invariants.py` enforces that open epic children have explicit `blocks` or `conditional-blocks` edges from the child to the epic; hierarchy alone is not a blocker dependency. |
 | R020 | Use `rg`/fast search primitives during exploration. | `assets/skills/explore/SKILL.md` | 6 | 6 | Tool choice depends on availability and user request. Keep best effort. |
 | R021 | Exploration is read-only unless explicitly moving to implementation. | `assets/skills/explore/SKILL.md`, `assets/skills/observe-before-editing/SKILL.md` | 6 | 4 | Could be partially enforced by mode-aware hooks, but current workflow is prompt-only. |
 | R022 | Observe actual failure output before editing a bug fix. | `assets/skills/observe-before-editing/SKILL.md`, `assets/skills/systematic-debugging/SKILL.md` | 6 | 6 | Requires reasoning over causality and evidence. Keep best effort. |
@@ -94,7 +94,7 @@ agent action or stop event, the same practical tier as pre-commit hooks.
 | R013 | Level 4 | Add Bash pre-tool confirmation gate for `rm`, `git reset`, `git checkout`, and force push. |
 | R015 | Level 4 | Add Bash pre-tool denial for manual `git branch -D` unless an override env var is present. |
 | R018 | Level 1 | Add CLI/docs scan for interactive task editing references or code paths. |
-| R019 | Level 5 | Warn when an epic has open children but no explicit child blocker edges. |
+| R019 | Level 5 | Native invariant check flags an epic with open children but no explicit child blocker edges; keep CLI guidance clear that `--parent` only records hierarchy. |
 | R025 | Level 5 | Store spec-review artifacts and require them before running high-priority epics. |
 | R030 | Level 5 | Validate handoff YAML includes `tasks.completed`, `tasks.in_progress`, and `tasks.remaining`. |
 | R043 | Level 4 | Add browser state and credential patterns to pre-commit/CI secret scanning. |
