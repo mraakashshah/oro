@@ -823,6 +823,63 @@ func TestSpawnError(t *testing.T) {
 	}
 }
 
+func TestSpawnerEscalateRuntimeConfigFailureReturnsTypedResult(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.MkdirAll(filepath.Join(dir, ".oro"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".oro", "config.yaml"), []byte("agent: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockBatchSpawner{
+		process: nil,
+		err:     errors.New("codex profile missing API key"),
+	}
+	s := NewSpawner(mock)
+
+	ch := s.Escalate(context.Background(), EscalationOpts{
+		BeadID:  "oro-runtime-config",
+		Workdir: dir,
+	})
+
+	result := waitResult(t, ch)
+	if result.Type != OpsEscalation {
+		t.Fatalf("expected Type %q, got %q", OpsEscalation, result.Type)
+	}
+	if result.BeadID != "oro-runtime-config" {
+		t.Fatalf("expected BeadID %q, got %q", "oro-runtime-config", result.BeadID)
+	}
+	if result.Verdict != VerdictFailed {
+		t.Fatalf("expected VerdictFailed on runtime config error, got %q", result.Verdict)
+	}
+	if result.Err == nil {
+		t.Fatal("expected runtime config error")
+	}
+	errText := result.Err.Error()
+	for _, want := range []string{
+		`ops: spawn failed for runtime "codex"`,
+		"spawn codex ops runtime",
+		"codex profile missing API key",
+	} {
+		if !strings.Contains(errText, want) {
+			t.Fatalf("expected error %q to contain %q", errText, want)
+		}
+	}
+
+	calls := mock.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 spawn call, got %d", len(calls))
+	}
+	if calls[0].runtime != "codex" {
+		t.Fatalf("expected codex runtime spawn, got %q", calls[0].runtime)
+	}
+	if active := s.Active(); len(active) != 0 {
+		t.Fatalf("expected no active ops agents after spawn failure, got %v", active)
+	}
+}
+
 func TestReviewPromptContainsCriteria(t *testing.T) {
 	proc := newReadyMockProcess("VERDICT: APPROVED", nil)
 	mock := &mockBatchSpawner{process: proc}
