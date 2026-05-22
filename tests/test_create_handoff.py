@@ -6,10 +6,38 @@ before .oro/handoff_done is touched, so that continuation beads receive context.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 # write_context_summary is in assets/hooks/ — added to sys.path by conftest.py
 from write_context_summary import write_context_summary
+
+CREATE_HANDOFF_SKILL = Path("assets/skills/create-handoff/SKILL.md")
+
+
+def test_create_handoff_skill_requires_tasks_state() -> None:
+    """Multi-session handoff docs require explicit Oro task-state fields."""
+    content = CREATE_HANDOFF_SKILL.read_text(encoding="utf-8")
+    yaml_blocks = re.findall(r"```yaml\n(.*?)\n```", content, re.DOTALL)
+    assert yaml_blocks, "create-handoff skill must include a YAML template"
+
+    tasks_block = re.search(
+        r"^tasks:\n"
+        r"  completed: \[[^\]]*\]\n"
+        r"  in_progress: \[[^\]]*\]\n"
+        r"  remaining: \[[^\]]*\]\n"
+        r"  epic: \S+",
+        yaml_blocks[0],
+        re.MULTILINE,
+    )
+    assert tasks_block, (
+        "YAML template must include tasks.completed, tasks.in_progress, "
+        "tasks.remaining, and tasks.epic; list fields must remain valid when empty"
+    )
+
+    field_guide = content.split("### 3. Field Guide", maxsplit=1)[1].split("### 4.", maxsplit=1)[0]
+    for field in ("tasks.completed", "tasks.in_progress", "tasks.remaining", "tasks.epic"):
+        assert field in field_guide
 
 
 class TestCreateHandoffWritesContextSummary:

@@ -82,6 +82,10 @@ tasks:
 | `worked:` / `failed:` | What to repeat vs avoid |
 | `next:` | Action items for next session |
 | `tasks:` | Task state for multi-session work (completed/in_progress/remaining/epic) |
+| `tasks.completed:` | Completed Oro task IDs; use `[]` when none |
+| `tasks.in_progress:` | Oro task IDs currently in progress; use `[]` when none |
+| `tasks.remaining:` | Remaining Oro task IDs; use `[]` when none |
+| `tasks.epic:` | Parent epic/task ID for the handoff |
 
 ### 4. Capture Learnings
 
