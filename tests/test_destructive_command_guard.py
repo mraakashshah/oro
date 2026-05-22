@@ -48,6 +48,49 @@ def test_destructive_command_guard_blocks_pretooluse_bash_payloads() -> None:
         assert "destructive" in result["systemMessage"]
 
 
+def test_destructive_command_guard_blocks_dangerous_commands() -> None:
+    dangerous_commands = [
+        "rm tmp.txt",
+        "rmdir old-dir",
+        "unlink stale-link",
+        "git reset HEAD~1",
+        "git checkout -- src/main.py",
+        "git clean -fd",
+        "git rebase main",
+        "git merge feature",
+        "git commit --amend",
+        "git branch -D stale-branch",
+        "git push --force origin HEAD",
+        "git push -f origin HEAD",
+        "git status && rm tmp.txt",
+        "rm 'two words.txt'",
+        "rm",
+        "git reset --",
+    ]
+    malformed_dangerous_commands = [
+        "rm 'unterminated",
+        "git reset 'unterminated",
+    ]
+
+    for command in dangerous_commands + malformed_dangerous_commands:
+        result = build_decision(_bash_input(command, codex=True))
+
+        assert result is not None, command
+        assert result["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    for command in [
+        "",
+        "git status",
+        "git log --oneline",
+        "git diff --stat",
+        "git branch -d stale-branch",
+        'printf "git reset --hard HEAD"',
+        'printf "rm tmp.txt"',
+    ]:
+        assert build_decision(_bash_input(command, codex=True)) is None, command
+
+
 def test_destructive_command_guard_allows_non_bash_missing_empty_and_read_only() -> None:
     for hook_input in [
         {"tool_name": "Read", "tool_input": {"command": "rm -rf build"}},

@@ -10,22 +10,63 @@ import sys
 
 _CHAIN_RE = re.compile(r"\s*(?:&&|\|\||;|\n)+\s*")
 
-_DESTRUCTIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"^git\s+reset\s+--hard(?:\s|$)"), "git reset --hard"),
-    (re.compile(r"^git\s+clean\s+.*(?:^|\s)-[^\s]*[fF][^\s]*(?:\s|$)"), "git clean -f"),
-    (re.compile(r"^git\s+branch\s+-D(?:\s|$)"), "git branch -D"),
-    (re.compile(r"^git\s+checkout\s+.*(?:^|\s)-[^\s]*[fF][^\s]*(?:\s|$)"), "git checkout -f"),
-    (re.compile(r"^git\s+restore\s+.*(?:^|\s)--(?:source|staged|worktree)\b"), "git restore destructive"),
+_DANGEROUS_PREFIXES = (
+    ("rm",),
+    ("rmdir",),
+    ("unlink",),
+    ("git", "reset"),
+    ("git", "checkout"),
+    ("git", "clean"),
+    ("git", "rebase"),
+    ("git", "merge"),
 )
 
 
-def _rm_label(tokens: list[str]) -> str | None:
-    if not tokens or tokens[0] != "rm":
+def _has_option(tokens: list[str], *options: str) -> bool:
+    return any(token in options for token in tokens)
+
+
+def _is_force_push(tokens: list[str]) -> bool:
+    if len(tokens) < 2 or tokens[:2] != ["git", "push"]:
+        return False
+    if _has_option(tokens[2:], "--force", "--force-with-lease"):
+        return True
+    return any(token.startswith("-") and "f" in token[1:] for token in tokens[2:] if token != "--")
+
+
+def _classify_tokens(tokens: list[str]) -> str | None:
+    if not tokens:
         return None
 
-    flags = "".join(token[1:] for token in tokens[1:] if token.startswith("-") and token != "--")
-    if "r" in flags.lower() and "f" in flags.lower():
-        return "rm -rf"
+    if tokens[0] in {"rm", "rmdir", "unlink"}:
+        return tokens[0]
+
+    if len(tokens) < 2 or tokens[0] != "git":
+        return None
+
+    subcommand = tokens[1]
+    if subcommand in {"reset", "checkout", "clean", "rebase", "merge"}:
+        return f"git {subcommand}"
+    if subcommand == "commit" and _has_option(tokens[2:], "--amend"):
+        return "git commit --amend"
+    if subcommand == "branch" and _has_option(tokens[2:], "-D"):
+        return "git branch -D"
+    if _is_force_push(tokens):
+        return "git push --force"
+    return None
+
+
+def _classify_malformed(command_part: str) -> str | None:
+    words = command_part.strip().split()
+    for prefix in _DANGEROUS_PREFIXES:
+        if tuple(words[: len(prefix)]) == prefix:
+            return " ".join(prefix)
+    if len(words) >= 3 and words[:2] == ["git", "commit"] and "--amend" in words[2:]:
+        return "git commit --amend"
+    if len(words) >= 3 and words[:2] == ["git", "branch"] and "-D" in words[2:]:
+        return "git branch -D"
+    if _is_force_push(words):
+        return "git push --force"
     return None
 
 
@@ -33,17 +74,9 @@ def _classify_part(command_part: str) -> str | None:
     try:
         tokens = shlex.split(command_part)
     except ValueError:
-        tokens = command_part.split()
+        return _classify_malformed(command_part)
 
-    label = _rm_label(tokens)
-    if label is not None:
-        return label
-
-    normalized = command_part.strip()
-    for pattern, label in _DESTRUCTIVE_PATTERNS:
-        if pattern.search(normalized):
-            return label
-    return None
+    return _classify_tokens(tokens)
 
 
 def classify_command(command: str) -> str | None:
