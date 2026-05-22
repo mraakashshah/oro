@@ -4,8 +4,8 @@ import json
 import subprocess
 import sys
 
-from test_hook_schemas import _claude_pre_tool_use, _codex_pre_tool_use
 from destructive_command_guard import build_decision
+from test_hook_schemas import _claude_pre_tool_use, _codex_pre_tool_use
 
 
 def _bash_input(command: str, *, codex: bool = False) -> dict:
