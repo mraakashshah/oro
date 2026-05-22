@@ -49,13 +49,14 @@ func (g ClaudeGenerator) Hooks(hooksDir string) map[string][]HookGroup {
 			Matcher: "",
 			Hooks:   []HookSpec{{Type: "command", Command: py("pre_compact.py")}},
 		}},
-		"PreToolUse": {{
-			Matcher: "",
-			Hooks: []HookSpec{
+		"PreToolUse": {
+			{Matcher: "", Hooks: []HookSpec{
 				{Type: "command", Command: py("enforce_skills.py")},
+			}},
+			{Matcher: "Bash", Hooks: []HookSpec{
 				{Type: "command", Command: py("destructive_command_guard.py")},
-			},
-		}},
+			}},
+		},
 		"PostToolUse": {
 			{Matcher: "Read|WebFetch|Bash", Hooks: []HookSpec{
 				{Type: "command", Command: py("prompt_injection_guard.py")},
