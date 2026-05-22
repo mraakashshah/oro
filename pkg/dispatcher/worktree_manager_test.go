@@ -1817,7 +1817,7 @@ func TestRebaseOnto_Success(t *testing.T) {
 	if call.Name != "git" {
 		t.Fatalf("expected command name 'git', got %q", call.Name)
 	}
-	wantArgs := []string{"-C", "/repo/root", "rebase", "--onto", "main", "agent/feature"}
+	wantArgs := []string{"-C", "/repo/root", "rebase", "main", "agent/feature"}
 	if len(call.Args) != len(wantArgs) {
 		t.Fatalf("args length: got %d, want %d", len(call.Args), len(wantArgs))
 	}
