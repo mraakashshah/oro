@@ -54,6 +54,30 @@ tasks:
     assert valid_result.stderr == ""
 
 
+def test_handoff_schema_requires_tasks_section(tmp_path: Path) -> None:
+    handoff = tmp_path / "handoff.yaml"
+    handoff.write_text(
+        """
+goal: continue work
+tasks:
+  done: []
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), str(handoff)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "missing required key: tasks.completed" in result.stderr
+    assert "missing required key: tasks.in_progress" in result.stderr
+    assert "missing required key: tasks.remaining" in result.stderr
+
+
 def test_check_handoff_schema_cli_rejects_missing_file(tmp_path: Path) -> None:
     missing = tmp_path / "missing.yaml"
 
