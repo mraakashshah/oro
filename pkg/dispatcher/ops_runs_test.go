@@ -655,6 +655,114 @@ func TestRouteOpsRunRetriesDecomposeIncident(t *testing.T) {
 	}
 }
 
+func TestRouteOpsRunRetriesEscalationIncident(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+	beadID := "oro-escalation-retry"
+	workerID := "w-escalation-retry"
+	worktree := t.TempDir()
+	incidentErr := protocol.FormatEscalation(protocol.EscStuckWorker, beadID, "worker stopped reporting progress", "runtime retry context")
+
+	beadSrc.shown[beadID] = &protocol.Bead{
+		ID:          beadID,
+		Title:       "Escalation retry",
+		Description: "Original escalation incident context",
+	}
+	d.mu.Lock()
+	d.worktreeByBead[beadID] = worktree
+	d.mu.Unlock()
+
+	original, _, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
+		Type:     string(ops.OpsEscalation),
+		BeadID:   beadID,
+		WorkerID: workerID,
+		Status:   opsRunStatusRunning,
+		Error:    incidentErr,
+	})
+	if err != nil {
+		t.Fatalf("CreateOpsRun original: %v", err)
+	}
+	if err := CompleteOpsRun(ctx, d.db, original.ID, opsRunStatusFailed, "failed", "old feedback", incidentErr); err != nil {
+		t.Fatalf("CompleteOpsRun original failed: %v", err)
+	}
+	failed := fetchOpsRunForTest(t, d.db, original.ID)
+
+	replacement, routed, err := d.supersedeOpsRunForRetry(failed)
+	if err != nil {
+		t.Fatalf("supersedeOpsRunForRetry: %v", err)
+	}
+	if !routed {
+		t.Fatal("routeOpsRun escalation retry = false, want true")
+	}
+	waitFor(t, func() bool { return spawnMock.SpawnCount() == 1 }, time.Second)
+
+	spawnMock.mu.Lock()
+	if len(spawnMock.spawns) != 1 {
+		spawnMock.mu.Unlock()
+		t.Fatalf("spawn count = %d, want 1", len(spawnMock.spawns))
+	}
+	spawn := spawnMock.spawns[0]
+	spawnMock.mu.Unlock()
+
+	if replacement.Type != string(ops.OpsEscalation) ||
+		replacement.BeadID != beadID ||
+		replacement.WorkerID != workerID {
+		t.Fatalf("replacement context = %#v, want escalation/bead/worker preserved", replacement)
+	}
+	if replacement.Error != incidentErr {
+		t.Fatalf("replacement error = %q, want original runtime incident error", replacement.Error)
+	}
+	if spawn.workdir != worktree {
+		t.Fatalf("escalation retry workdir = %q, want %q", spawn.workdir, worktree)
+	}
+	for _, want := range []string{
+		"Escalation type: " + string(protocol.EscStuckWorker),
+		beadID,
+		"Escalation retry",
+		"Original escalation incident context",
+		"Recent history: " + incidentErr,
+	} {
+		if !strings.Contains(spawn.prompt, want) {
+			t.Fatalf("escalation retry prompt missing %q\nprompt:\n%s", want, spawn.prompt)
+		}
+	}
+	if strings.Contains(spawn.prompt, "You are a task decomposition agent") {
+		t.Fatalf("escalation retry invoked decompose prompt:\n%s", spawn.prompt)
+	}
+
+	fallbackBeadID := "oro-escalation-retry-fallback"
+	fallbackWorktree := t.TempDir()
+	d.mu.Lock()
+	d.worktreeByBead[fallbackBeadID] = fallbackWorktree
+	d.mu.Unlock()
+
+	if !d.routeOpsRun(ctx, OpsRunRecord{
+		Type:   string(ops.OpsEscalation),
+		BeadID: fallbackBeadID,
+		Error:  "runtime incident without formatted escalation type",
+	}) {
+		t.Fatal("routeOpsRun fallback escalation retry = false, want true")
+	}
+	waitFor(t, func() bool { return spawnMock.SpawnCount() == 2 }, time.Second)
+
+	spawnMock.mu.Lock()
+	fallbackSpawn := spawnMock.spawns[1]
+	spawnMock.mu.Unlock()
+
+	if fallbackSpawn.workdir != fallbackWorktree {
+		t.Fatalf("fallback escalation retry workdir = %q, want %q", fallbackSpawn.workdir, fallbackWorktree)
+	}
+	for _, want := range []string{
+		"Escalation type: ORPHANED_OPS_RUN",
+		fallbackBeadID,
+		"Recent history: runtime incident without formatted escalation type",
+	} {
+		if !strings.Contains(fallbackSpawn.prompt, want) {
+			t.Fatalf("fallback escalation retry prompt missing %q\nprompt:\n%s", want, fallbackSpawn.prompt)
+		}
+	}
+}
+
 func fetchOpsRunForTest(t *testing.T, db *sql.DB, id int64) OpsRunRecord {
 	t.Helper()
 	rec, err := scanOpsRun(db.QueryRowContext(context.Background(), `

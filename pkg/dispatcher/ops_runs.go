@@ -239,7 +239,7 @@ func (d *Dispatcher) supersedeOpsRunForRetry(rec OpsRunRecord) (OpsRunRecord, bo
 	next.Verdict = ""
 	next.Feedback = ""
 	next.Error = fmt.Sprintf("manual retry of ops run %d", rec.ID)
-	if ops.Type(rec.Type) == ops.OpsDecompose {
+	if ops.Type(rec.Type) == ops.OpsDecompose || ops.Type(rec.Type) == ops.OpsEscalation {
 		next.Error = rec.Error
 	}
 	next.StartedAt = ""
@@ -481,8 +481,12 @@ func (d *Dispatcher) routeOpsRun(ctx context.Context, rec OpsRunRecord) bool {
 		})
 	case ops.OpsEscalation:
 		title, description := d.beadContextForOpsRun(ctx, rec.BeadID)
+		escType := extractEscalationType(rec.Error)
+		if escType == "" {
+			escType = "ORPHANED_OPS_RUN"
+		}
 		d.ops.Escalate(ctx, ops.EscalationOpts{
-			EscalationType: "ORPHANED_OPS_RUN",
+			EscalationType: escType,
 			BeadID:         rec.BeadID,
 			BeadTitle:      title,
 			BeadContext:    description,
