@@ -15,6 +15,7 @@ def test_resume_handoff_skill_reads_task_state() -> None:
         "tasks.in_progress",
         "tasks.remaining",
         "tasks.epic",
+        "Extract `tasks.completed`, `tasks.in_progress`, `tasks.remaining`, and `tasks.epic` before continuing",
         "Verify tracked task state before continuing",
         "Handoffs without a `tasks:` section are incomplete state",
         "Complete `tasks.in_progress` entries before starting `tasks.remaining`",

@@ -16,7 +16,7 @@ Resume work from a handoff document by reading it fully, verifying current state
 1. Read the handoff document completely
 2. Read any referenced plans or research documents
 3. Read key files mentioned in the handoff
-4. Extract: `tasks.completed`, `tasks.in_progress`, `tasks.remaining`, `tasks.epic`, decisions, learnings, next steps
+4. Extract `tasks.completed`, `tasks.in_progress`, `tasks.remaining`, and `tasks.epic` before continuing, along with decisions, learnings, and next steps
 
 Handoffs without a `tasks:` section are incomplete state; reconstruct tracked task state before continuing.
 
