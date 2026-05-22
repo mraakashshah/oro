@@ -233,7 +233,6 @@ func (d *Dispatcher) supersedeOpsRunForRetry(rec OpsRunRecord) (OpsRunRecord, bo
 
 	next := rec
 	next.ID = 0
-	next.EscalationID = 0
 	next.Status = opsRunStatusRunning
 	next.DispatcherPID = os.Getpid()
 	next.ProcessPID = 0

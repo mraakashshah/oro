@@ -116,8 +116,7 @@ CREATE TABLE IF NOT EXISTS ops_runs (
     feedback TEXT,
     error TEXT,
     started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    completed_at DATETIME,
-    UNIQUE(escalation_id, type, bead_id)
+    completed_at DATETIME
 );
 
 CREATE INDEX IF NOT EXISTS idx_ops_runs_open
