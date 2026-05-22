@@ -2679,6 +2679,81 @@ func TestParseEscalationTypeRecognizesOversized(t *testing.T) {
 	}
 }
 
+func TestOpsRunTypeForEscalationResult(t *testing.T) {
+	tests := []struct {
+		name     string
+		escType  protocol.EscalationType
+		result   ops.Result
+		wantType ops.Type
+		wantOK   bool
+	}{
+		{
+			name:     "explicit result type overrides escalation type",
+			escType:  protocol.EscMissingAC,
+			result:   ops.Result{Type: ops.OpsReview},
+			wantType: ops.OpsReview,
+			wantOK:   true,
+		},
+		{
+			name:     "missing acceptance criteria routes to write ac",
+			escType:  protocol.EscMissingAC,
+			wantType: ops.OpsWriteAC,
+			wantOK:   true,
+		},
+		{
+			name:     "oversized bead routes to decompose",
+			escType:  protocol.EscOversizedBead,
+			wantType: ops.OpsDecompose,
+			wantOK:   true,
+		},
+		{
+			name:     "stuck worker routes to escalation",
+			escType:  protocol.EscStuckWorker,
+			wantType: ops.OpsEscalation,
+			wantOK:   true,
+		},
+		{
+			name:     "merge conflict routes to escalation",
+			escType:  protocol.EscMergeConflict,
+			wantType: ops.OpsEscalation,
+			wantOK:   true,
+		},
+		{
+			name:     "priority contention routes to escalation",
+			escType:  protocol.EscPriorityContention,
+			wantType: ops.OpsEscalation,
+			wantOK:   true,
+		},
+		{
+			name:    "merge complete informational escalation is unsupported",
+			escType: protocol.EscMergeComplete,
+			wantOK:  false,
+		},
+		{
+			name:    "manual integration informational escalation is unsupported",
+			escType: protocol.EscManualIntegration,
+			wantOK:  false,
+		},
+		{
+			name:    "unknown escalation without result type is unsupported",
+			escType: protocol.EscalationType("UNKNOWN"),
+			wantOK:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotType, gotOK := opsRunTypeForEscalationResult(string(tt.escType), tt.result)
+			if gotOK != tt.wantOK {
+				t.Fatalf("opsRunTypeForEscalationResult(%q, %+v) ok = %v, want %v", tt.escType, tt.result, gotOK, tt.wantOK)
+			}
+			if gotType != tt.wantType {
+				t.Fatalf("opsRunTypeForEscalationResult(%q, %+v) type = %q, want %q", tt.escType, tt.result, gotType, tt.wantType)
+			}
+		})
+	}
+}
+
 func TestEscalateSpawnsOneShotForTargetTypes(t *testing.T) {
 	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
 
