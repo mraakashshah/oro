@@ -16,7 +16,9 @@ Resume work from a handoff document by reading it fully, verifying current state
 1. Read the handoff document completely
 2. Read any referenced plans or research documents
 3. Read key files mentioned in the handoff
-4. Extract: tasks, decisions, learnings, next steps
+4. Extract: `tasks.completed`, `tasks.in_progress`, `tasks.remaining`, `tasks.epic`, decisions, learnings, next steps
+
+Handoffs without a `tasks:` section are incomplete state; reconstruct tracked task state before continuing.
 
 ### Step 2: Verify Current State
 
@@ -28,6 +30,13 @@ Check for each of the 4 scenarios:
 | **Diverged codebase** | Changes missing or modified since handoff | Reconcile differences, adapt plan |
 | **Incomplete work** | Tasks marked in_progress | Complete unfinished work first |
 | **Stale handoff** | Significant time passed, major refactoring occurred | Re-evaluate strategy entirely |
+
+Verify tracked task state before continuing:
+
+- Confirm `tasks.completed` entries are actually present in the current codebase or task tracker
+- Complete `tasks.in_progress` entries before starting `tasks.remaining`
+- Use `tasks.remaining` as the next work queue only after unfinished in-progress work is resolved
+- Preserve `tasks.epic` as the parent context when creating or resuming tracked tasks
 
 ### Step 3: Present Analysis
 
@@ -49,6 +58,7 @@ Shall I proceed, or adjust the approach?
 - Convert `next:` items from handoff into tasks
 - Add new tasks discovered during analysis
 - Check `oro task ready` for any tracked work
+- Reconcile the extracted `tasks.completed`, `tasks.in_progress`, `tasks.remaining`, and `tasks.epic` state with tracked tasks before selecting the next task
 - Get user confirmation before starting
 
 ## Principles
