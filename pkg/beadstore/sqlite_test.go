@@ -103,7 +103,11 @@ func TestSQLiteStoreCreateShowExportAndMemory(t *testing.T) {
 		}
 		rows = append(rows, bead)
 	}
-	if len(rows) != 2 || rows[1].ID != "oro-sql1" {
+	gotExported := map[string]protocol.Bead{}
+	for _, row := range rows {
+		gotExported[row.ID] = row
+	}
+	if len(rows) != 2 || gotExported["oro-sql1"].ID != "oro-sql1" {
 		t.Fatalf("exported rows = %#v", rows)
 	}
 }
