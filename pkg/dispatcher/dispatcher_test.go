@@ -3455,6 +3455,71 @@ LIMIT 1`, ops.OpsEscalation, beadID).Scan(
 	}
 }
 
+func TestEscalationSpawnFailureKeepsEmptyIdentifiers(t *testing.T) {
+	d, _, _, esc, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const (
+		escalationID = int64(84)
+		spawnFailure = "spawn failed: executable not found"
+	)
+
+	if _, err := d.db.ExecContext(ctx,
+		`INSERT INTO escalations (id, type, bead_id, worker_id, message) VALUES (?, ?, ?, ?, ?)`,
+		escalationID, protocol.EscStuckWorker, "", "",
+		protocol.FormatEscalation(protocol.EscStuckWorker, "", "worker stalled", ""),
+	); err != nil {
+		t.Fatalf("insert escalation: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		resultCh := make(chan ops.Result, 1)
+		resultCh <- ops.Result{
+			Err: errors.New(spawnFailure),
+		}
+
+		d.handleEscalationResult(ctx, escalationID, string(protocol.EscStuckWorker), "", "", resultCh)
+	}
+
+	if got := len(esc.Messages()); got != 0 {
+		t.Fatalf("one-shot spawn failure pasted fallback to manager, got %d messages: %v", got, esc.Messages())
+	}
+	if status := dispatcherTestEscalationStatus(t, d.db, escalationID); status != "acked" {
+		t.Fatalf("escalation status = %q, want acked", status)
+	}
+	if got := dispatcherTestOpsRunCount(t, d.db, ops.OpsEscalation, ""); got != 1 {
+		t.Fatalf("empty-identifier escalation ops_run count = %d, want 1", got)
+	}
+
+	var rec OpsRunRecord
+	if err := d.db.QueryRowContext(ctx, `
+SELECT escalation_id, type, bead_id, worker_id, status, verdict, error
+FROM ops_runs
+WHERE type=? AND bead_id=?
+ORDER BY id DESC
+LIMIT 1`, ops.OpsEscalation, "").Scan(
+		&rec.EscalationID, &rec.Type, &rec.BeadID, &rec.WorkerID,
+		&rec.Status, &rec.Verdict, &rec.Error,
+	); err != nil {
+		t.Fatalf("query empty-identifier escalation ops_run: %v", err)
+	}
+	if rec.EscalationID != escalationID {
+		t.Fatalf("ops_run escalation_id = %d, want %d", rec.EscalationID, escalationID)
+	}
+	if rec.Type != string(ops.OpsEscalation) || rec.BeadID != "" || rec.WorkerID != "" {
+		t.Fatalf("ops_run identity = type %q bead %q worker %q, want %q/empty/empty",
+			rec.Type, rec.BeadID, rec.WorkerID, ops.OpsEscalation)
+	}
+	if rec.Status != opsRunStatusFailed {
+		t.Fatalf("ops_run status = %q, want %q", rec.Status, opsRunStatusFailed)
+	}
+	if rec.Verdict != string(ops.VerdictFailed) {
+		t.Fatalf("ops_run verdict = %q, want %q", rec.Verdict, ops.VerdictFailed)
+	}
+	if !strings.Contains(rec.Error, spawnFailure) {
+		t.Fatalf("ops_run error = %q, want spawn failure text %q", rec.Error, spawnFailure)
+	}
+}
+
 func TestDecomposeOpsRunSpawnFailureCreatesFailedIncident(t *testing.T) {
 	d, _, _, esc, _, _ := newTestDispatcher(t)
 	ctx := context.Background()

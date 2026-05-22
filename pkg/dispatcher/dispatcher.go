@@ -7823,7 +7823,7 @@ func (d *Dispatcher) completeDecomposeOpsRunBestEffort(ctx context.Context, bead
 
 func (d *Dispatcher) completeOneShotOpsRunFailureBestEffort(ctx context.Context, escalationID int64, escType, beadID, workerID string, result ops.Result) {
 	runType, ok := opsRunTypeForEscalationResult(escType, result)
-	if !ok || beadID == "" {
+	if !ok {
 		return
 	}
 	errorText := ""
