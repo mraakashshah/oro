@@ -49,7 +49,7 @@ func newHarnessCmd() *cobra.Command {
 		Long:         "oro harness runs multi-phase E2E verification tests defined in §18 of the harness architecture spec.",
 		SilenceUsage: true,
 	}
-	cmd.AddCommand(newHarnessVerifyCheckpointCmd())
+	cmd.AddCommand(newHarnessVerifyCheckpointCmd(), newHarnessDogfoodCmd())
 	return cmd
 }
 
