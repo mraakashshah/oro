@@ -32,3 +32,9 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if any(test_file in str(item.fspath) for test_file in hook_dependent_tests):
                 item.add_marker(skip_oro)
+
+
+@pytest.fixture
+def repo_root() -> Path:
+    """Return the repository root for tests that execute repo-local scripts."""
+    return Path(__file__).parent.parent
