@@ -7,9 +7,11 @@ import argparse
 import os
 import sqlite3
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
-CHECKS: tuple[tuple[str, str, object | None], ...] = (
+CheckQuery = str | Callable[[sqlite3.Connection], list[str]]
+CHECKS: tuple[tuple[str, CheckQuery, object | None], ...] = (
     (
         "integrity_check",
         "PRAGMA integrity_check;",
@@ -155,13 +157,6 @@ CHECKS: tuple[tuple[str, str, object | None], ...] = (
 )
 
 
-def scalar(conn: sqlite3.Connection, sql: str) -> object:
-    row = conn.execute(sql).fetchone()
-    if row is None:
-        raise RuntimeError("query returned no rows")
-    return row[0]
-
-
 def check_epic_child_blocker_edges(conn: sqlite3.Connection) -> list[str]:
     rows = conn.execute(
         """
@@ -186,6 +181,23 @@ def check_epic_child_blocker_edges(conn: sqlite3.Connection) -> list[str]:
     return [f"epic child blocker edge missing: epic={epic_id} child={child_id}" for epic_id, child_id in rows]
 
 
+CHECKS = (
+    *CHECKS,
+    (
+        "epic_child_blocker_edges",
+        check_epic_child_blocker_edges,
+        0,
+    ),
+)
+
+
+def scalar(conn: sqlite3.Connection, sql: str) -> object:
+    row = conn.execute(sql).fetchone()
+    if row is None:
+        raise RuntimeError("query returned no rows")
+    return row[0]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -206,15 +218,22 @@ def main() -> int:
     ok = True
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
-        for name, sql, expected in CHECKS:
-            actual = scalar(conn, sql)
+        for name, query, expected in CHECKS:
+            if callable(query):
+                messages = query(conn)
+                actual = len(messages)
+                print(f"{name}={actual}")
+                if expected is not None and actual != expected:
+                    ok = False
+                    for message in messages:
+                        print(f"FAIL {name}: {message}", file=sys.stderr)
+                continue
+
+            actual = scalar(conn, query)
             print(f"{name}={actual}")
             if expected is not None and actual != expected:
                 ok = False
                 print(f"FAIL {name}: expected {expected!r}, got {actual!r}", file=sys.stderr)
-        for message in check_epic_child_blocker_edges(conn):
-            ok = False
-            print(f"FAIL {message}", file=sys.stderr)
     finally:
         conn.close()
 
