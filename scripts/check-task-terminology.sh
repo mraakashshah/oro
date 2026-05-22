@@ -27,6 +27,7 @@ scan_files() {
 	local normal_commands='create|show|update|close|reopen|defer|undefer|list|status|ready|blocked|closed|dep|deps|tag|meta|note|comment|search|export|import|doctor|work'
 	local public_bead_cli_regex='\boro bead(?![[:space:]]+migrate-from-dolt)\b'
 	local command_regex='\boro bead[[:space:]]+('"$normal_commands"')\b'
+	local shell_command_regex='(?s)(^|[[:space:]])["'\'']?\$[A-Za-z_][A-Za-z0-9_]*["'\'']?[[:space:]]+bead[[:space:]]+('"$normal_commands"')\b'
 	local argv_command_regex='(?s)["'\'']bead["'\''][[:space:]]*,[[:space:]]*["'\'']('"$normal_commands"')["'\'']'
 	local docs_regex="native \`oro bead\`|primary .*oro bead|work items through \`oro bead\`|tracked by the native \`oro bead\` CLI"
 	local primary_term_regex='one bead|execute beads|assigns beads|assign new beads|prioritize beads|requeue its bead|work is tracked as beads|all beads are visible|Manage beads|Bead in progress|continuation bead|bead queue|bead progress|bead completion|per-bead|bead dependency graph|Bead Anatomy|No beads ready|Stale Beads|Same bead|P0 bead|create a bead|blocker bead|test bead assigned|worker proof beads|controlled test bead|smoke bead|restart beads|ready bead|worker bead|bead has no AC|worker and bead are stuck|fix beads|child beads|smaller child beads|bead metadata export|export bead metadata|Diagnose why bead|Search beads|Import bead snapshot|Beads In Progress|BEAD CRAFT|SPEC/BEAD|Beads CLI'
@@ -39,6 +40,10 @@ scan_files() {
 
 	if rg -n -U --pcre2 "$command_regex" "${files[@]}"; then
 		printf "terminology: public docs/prompts must use \`oro task\` for normal work-item operations; \`oro bead migrate-from-dolt\` remains migration-only.\n" >&2
+		bad=1
+	fi
+	if rg -n -U --pcre2 "$shell_command_regex" "${files[@]}"; then
+		printf "terminology: active scripts must not invoke normal work-item operations through shell-split \`oro bead\`; use \`oro task\`.\n" >&2
 		bad=1
 	fi
 	if rg -n -U --pcre2 "$public_bead_cli_regex" "${files[@]}" |
@@ -133,6 +138,7 @@ while IFS= read -r file; do
 done < <(
 	{
 		printf '%s\n' README.md docs/INSTALL.md assets/review-patterns.md assets/CLAUDE.md assets/ORO_AGENT.md
+		printf '%s\n' scripts/check-phase10-no-bd-install.sh
 		find_text_files docs/runbooks assets/beacons assets/commands .claude/commands .claude/hooks/beacons
 		find_skill_files assets/skills .claude/skills
 		find_hook_files assets/hooks .claude/hooks

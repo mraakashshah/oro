@@ -929,6 +929,14 @@ const helpText = ` + "`" + `Workflow:
 `,
 			wantText: []string{"Manage beads"},
 		},
+		{
+			name:    "rejects shell split normal oro bead command",
+			relPath: filepath.Join("scripts", "check-phase10-no-bd-install.sh"),
+			content: `#!/usr/bin/env bash
+"$oro_bin" bead create --type task --title smoke
+`,
+			wantText: []string{"bead create"},
+		},
 	}
 
 	for _, tt := range tests {

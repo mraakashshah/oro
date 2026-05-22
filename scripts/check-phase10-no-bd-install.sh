@@ -58,7 +58,7 @@ smoke_id="$(
 		ORO_HOME="$oro_home" \
 		ORO_DB_PATH="$db_path" \
 		ORO_BEADSOURCE_MODE=sqlite \
-		"$oro_bin" bead create \
+		"$oro_bin" task create \
 		--type task \
 		--title phase10-no-bd-install-smoke \
 		--description "Phase 10 no-bd install smoke" \
@@ -70,7 +70,7 @@ show_open="$(
 		ORO_HOME="$oro_home" \
 		ORO_DB_PATH="$db_path" \
 		ORO_BEADSOURCE_MODE=sqlite \
-		"$oro_bin" bead show "$smoke_id" --json
+		"$oro_bin" task show "$smoke_id" --json
 )"
 printf '%s\n' "$show_open" | grep -q "\"id\": \"$smoke_id\""
 printf '%s\n' "$show_open" | grep -q '"status": "open"'
@@ -79,14 +79,14 @@ PATH="$gobin:$controlled_path" \
 	ORO_HOME="$oro_home" \
 	ORO_DB_PATH="$db_path" \
 	ORO_BEADSOURCE_MODE=sqlite \
-	"$oro_bin" bead close "$smoke_id" --reason "Phase 10 no-bd install smoke passed" >/dev/null
+	"$oro_bin" task close "$smoke_id" --reason "Phase 10 no-bd install smoke passed" >/dev/null
 
 show_closed="$(
 	PATH="$gobin:$controlled_path" \
 		ORO_HOME="$oro_home" \
 		ORO_DB_PATH="$db_path" \
 		ORO_BEADSOURCE_MODE=sqlite \
-		"$oro_bin" bead show "$smoke_id" --json
+		"$oro_bin" task show "$smoke_id" --json
 )"
 printf '%s\n' "$show_closed" | grep -q '"status": "closed"'
 
