@@ -3,10 +3,14 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from pathlib import Path
 
 DASH_SUMMARY_RE = re.compile(r"\s[-\u2013\u2014]\s")
 WORKFLOW_SUMMARY_ERROR = "description must contain triggering conditions only, not a workflow summary"
+ISSUE_CODES = {
+    WORKFLOW_SUMMARY_ERROR: "workflow-summary",
+}
 
 
 def _frontmatter(content: str) -> dict[str, object] | None:
@@ -58,7 +62,11 @@ def main() -> int:
     for path in args.paths:
         for issue in check_skill_description(path):
             failed = True
-            print(f"{path}: {issue}")
+            code = ISSUE_CODES.get(issue)
+            if code is None:
+                print(f"{path}: {issue}", file=sys.stderr)
+            else:
+                print(f"{path}: {code}: {issue}", file=sys.stderr)
 
     return 1 if failed else 0
 

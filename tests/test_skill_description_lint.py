@@ -95,6 +95,26 @@ def test_skill_description_lint_rejects_documented_cso_bad_description(
     assert checker.check_skill_description(skill_path) == [WORKFLOW_SUMMARY_ERROR]
 
 
+def test_skill_description_lint_cli_reports_documented_cso_bad_description_on_stderr(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checker = _load_checker()
+    skill_path = _write_skill(
+        tmp_path / "documented-cso-bad",
+        _cso_description_examples()["bad"],
+    )
+
+    monkeypatch.setattr("sys.argv", ["check-skill-descriptions.py", str(skill_path)])
+
+    assert checker.main() == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "workflow-summary" in captured.err
+    assert str(skill_path) in captured.err
+
+
 @pytest.mark.parametrize("dash", ["-", "\u2013", "\u2014"])
 def test_check_skill_description_rejects_dash_separated_workflow_summary(
     dash: str,
