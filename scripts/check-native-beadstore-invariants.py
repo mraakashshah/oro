@@ -162,6 +162,30 @@ def scalar(conn: sqlite3.Connection, sql: str) -> object:
     return row[0]
 
 
+def check_epic_child_blocker_edges(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT epic.id, child.id
+        FROM beads epic
+        JOIN beads child ON child.parent_id = epic.id
+        WHERE epic.deleted = 0
+          AND epic.type = 'epic'
+          AND epic.status = 'open'
+          AND child.deleted = 0
+          AND child.status != 'closed'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM bead_deps d
+            WHERE d.bead_id = child.id
+              AND d.depends_on_id = epic.id
+              AND d.type IN ('blocks','conditional-blocks')
+          )
+        ORDER BY epic.id, child.id;
+        """
+    ).fetchall()
+    return [f"epic child blocker edge missing: epic={epic_id} child={child_id}" for epic_id, child_id in rows]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -188,6 +212,9 @@ def main() -> int:
             if expected is not None and actual != expected:
                 ok = False
                 print(f"FAIL {name}: expected {expected!r}, got {actual!r}", file=sys.stderr)
+        for message in check_epic_child_blocker_edges(conn):
+            ok = False
+            print(f"FAIL {message}", file=sys.stderr)
     finally:
         conn.close()
 
