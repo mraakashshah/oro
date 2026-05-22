@@ -1,9 +1,12 @@
+"""Tests for skill description linting."""
+# pylint: disable=import-error
+
 from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
 
-import pytest
+import pytest  # type: ignore[import-not-found]
 
 WORKFLOW_SUMMARY_ERROR = "description must contain triggering conditions only, not a workflow summary"
 
