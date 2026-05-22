@@ -226,7 +226,7 @@ func TestDeleteStaleAgentBranchUsesAssignmentTargetBranch(t *testing.T) {
 				return []byte(branch + "\n"), nil
 			case "-C /repo/root merge-base --is-ancestor " + branch + " " + target:
 				return nil, nil
-			case "-C /repo/root branch -d " + branch:
+			case "-C /repo/root branch -D " + branch:
 				return nil, nil
 			default:
 				return nil, fmt.Errorf("unexpected git call: %s", call)
