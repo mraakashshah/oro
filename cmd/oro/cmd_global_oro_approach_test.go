@@ -116,13 +116,14 @@ func TestRunGlobalOroApproach_CopiesPortableHooks(t *testing.T) {
 	dstHooks := filepath.Join(tmp, "dst", "hooks")
 
 	makeHooksDir(t, srcHooks, map[string]string{
-		"auto-format.sh":            "#!/bin/bash\n",
-		"prompt_injection_guard.py": "# guard\n",
-		"pre_compact.py":            "# compact\n",
-		"context_pruner.py":         "# pruner\n",
-		"stop-checklist.sh":         "#!/bin/bash\necho '{}'\n",
-		"enforce_skills.py":         "# marker\n",
-		"bd_create_notifier.py":     "# oro-specific - should not copy\n",
+		"auto-format.sh":               "#!/bin/bash\n",
+		"prompt_injection_guard.py":    "# guard\n",
+		"pre_compact.py":               "# compact\n",
+		"context_pruner.py":            "# pruner\n",
+		"stop-checklist.sh":            "#!/bin/bash\necho '{}'\n",
+		"enforce_skills.py":            "# marker\n",
+		"destructive_command_guard.py": "# destructive guard\n",
+		"bd_create_notifier.py":        "# oro-specific - should not copy\n",
 	})
 
 	cfg := globalOroApproachConfig{
@@ -147,7 +148,7 @@ func TestRunGlobalOroApproach_CopiesPortableHooks(t *testing.T) {
 	// Portable hooks should be present
 	for _, want := range []string{
 		"auto-format.sh", "prompt_injection_guard.py", "pre_compact.py",
-		"context_pruner.py", "stop-checklist.sh", "enforce_skills.py",
+		"context_pruner.py", "stop-checklist.sh", "enforce_skills.py", "destructive_command_guard.py",
 	} {
 		if _, err := os.Stat(filepath.Join(dstHooks, want)); err != nil {
 			t.Errorf("expected hook %q to be copied, got: %v", want, err)
@@ -556,13 +557,14 @@ func TestRunGlobalOroApproach_CopiesSessionStartGlobalHook(t *testing.T) {
 	dstHooks := filepath.Join(tmp, "dst", "hooks")
 
 	allHooks := map[string]string{
-		"auto-format.sh":            "#!/bin/bash\n",
-		"prompt_injection_guard.py": "# guard\n",
-		"pre_compact.py":            "# compact\n",
-		"context_pruner.py":         "# pruner\n",
-		"stop-checklist.sh":         "#!/bin/bash\n",
-		"enforce_skills.py":         "# marker\n",
-		"session_start_global.py":   "# global session start\n",
+		"auto-format.sh":               "#!/bin/bash\n",
+		"prompt_injection_guard.py":    "# guard\n",
+		"pre_compact.py":               "# compact\n",
+		"context_pruner.py":            "# pruner\n",
+		"stop-checklist.sh":            "#!/bin/bash\n",
+		"enforce_skills.py":            "# marker\n",
+		"destructive_command_guard.py": "# destructive guard\n",
+		"session_start_global.py":      "# global session start\n",
 	}
 	makeHooksDir(t, srcHooks, allHooks)
 
@@ -617,13 +619,14 @@ func TestAgentAssetsSyncSupportsClaudeAndCodex(t *testing.T) {
 	srcHooks := filepath.Join(tmp, "src", "hooks")
 	makeSkillsDir(t, srcSkills, []string{"using-skills", "brainstorming", "restart-oro"})
 	makeHooksDir(t, srcHooks, map[string]string{
-		"auto-format.sh":            "#!/bin/bash\n",
-		"prompt_injection_guard.py": "# guard\n",
-		"pre_compact.py":            "# compact\n",
-		"context_pruner.py":         "# pruner\n",
-		"stop-checklist.sh":         "#!/bin/bash\n",
-		"enforce_skills.py":         "# marker\n",
-		"session_start_global.py":   "# global session start\n",
+		"auto-format.sh":               "#!/bin/bash\n",
+		"prompt_injection_guard.py":    "# guard\n",
+		"pre_compact.py":               "# compact\n",
+		"context_pruner.py":            "# pruner\n",
+		"stop-checklist.sh":            "#!/bin/bash\n",
+		"enforce_skills.py":            "# marker\n",
+		"destructive_command_guard.py": "# destructive guard\n",
+		"session_start_global.py":      "# global session start\n",
 	})
 
 	claudeSettings := filepath.Join(tmp, "claude", "settings.json")
@@ -727,6 +730,10 @@ func TestAgentAssetsSyncSupportsClaudeAndCodex(t *testing.T) {
 					{
 						"type": "command",
 						"command": "python3 `+filepath.ToSlash(srcHooks)+`/enforce_skills.py"
+					},
+					{
+						"type": "command",
+						"command": "python3 `+filepath.ToSlash(srcHooks)+`/destructive_command_guard.py"
 					}
 				]
 			},
@@ -829,12 +836,13 @@ func TestCodexPluginInstallIdempotent(t *testing.T) {
 	srcHooks := filepath.Join(tmp, "src", "hooks")
 	makeSkillsDir(t, srcSkills, []string{"using-skills"})
 	makeHooksDir(t, srcHooks, map[string]string{
-		"auto-format.sh":            "#!/bin/bash\n",
-		"prompt_injection_guard.py": "# guard\n",
-		"context_pruner.py":         "# pruner\n",
-		"stop-checklist.sh":         "#!/bin/bash\n",
-		"enforce_skills.py":         "# marker\n",
-		"session_start_global.py":   "# global session start\n",
+		"auto-format.sh":               "#!/bin/bash\n",
+		"prompt_injection_guard.py":    "# guard\n",
+		"context_pruner.py":            "# pruner\n",
+		"stop-checklist.sh":            "#!/bin/bash\n",
+		"enforce_skills.py":            "# marker\n",
+		"destructive_command_guard.py": "# destructive guard\n",
+		"session_start_global.py":      "# global session start\n",
 	})
 
 	cfg := agentAssetsConfig{
@@ -879,12 +887,13 @@ func TestCodexPluginInstallPreservesUserFiles(t *testing.T) {
 	srcHooks := filepath.Join(tmp, "src", "hooks")
 	makeSkillsDir(t, srcSkills, []string{"using-skills"})
 	makeHooksDir(t, srcHooks, map[string]string{
-		"auto-format.sh":            "#!/bin/bash\n",
-		"prompt_injection_guard.py": "# guard\n",
-		"context_pruner.py":         "# pruner\n",
-		"stop-checklist.sh":         "#!/bin/bash\n",
-		"enforce_skills.py":         "# marker\n",
-		"session_start_global.py":   "# global session start\n",
+		"auto-format.sh":               "#!/bin/bash\n",
+		"prompt_injection_guard.py":    "# guard\n",
+		"context_pruner.py":            "# pruner\n",
+		"stop-checklist.sh":            "#!/bin/bash\n",
+		"enforce_skills.py":            "# marker\n",
+		"destructive_command_guard.py": "# destructive guard\n",
+		"session_start_global.py":      "# global session start\n",
 	})
 
 	cfg := agentAssetsConfig{

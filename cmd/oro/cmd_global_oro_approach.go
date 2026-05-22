@@ -28,6 +28,7 @@ var portableHooks = []string{ //nolint:gochecknoglobals // static config
 	"context_pruner.py",
 	"stop-checklist.sh",
 	"enforce_skills.py",
+	"destructive_command_guard.py",
 	"session_start_global.py",
 }
 

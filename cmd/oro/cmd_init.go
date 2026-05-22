@@ -1023,6 +1023,7 @@ func buildHookConfig(hooksDir string) map[string][]hookGroup {
 				{Type: "command", Command: py("worktree_guard.py")},
 				{Type: "command", Command: py("no_cd_guard.py")},
 				{Type: "command", Command: py("rebase_worktree_guard.py")},
+				{Type: "command", Command: py("destructive_command_guard.py")},
 			}},
 			{Matcher: "Read", Hooks: []hookEntry{
 				{Type: "command", Command: sh("oro-search-hook"), Timeout: 5000, StatusMessage: "Searching codebase..."},
