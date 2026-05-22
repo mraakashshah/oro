@@ -506,7 +506,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 
 	// Step 12: Delete branch (best-effort).
 	branchName := protocol.BranchPrefix + cfg.beadID
-	if err := deps.wtMgr.DeleteBranch(ctx, branchName); err != nil {
+	if err := deps.wtMgr.DeleteBranchMergedInto(ctx, branchName, targetBranch); err != nil {
 		logStep("Warning: branch cleanup failed: %v", err)
 	}
 

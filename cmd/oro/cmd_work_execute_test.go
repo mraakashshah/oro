@@ -160,6 +160,8 @@ type mockWorktreeManager struct {
 	removed            []string
 	removeErr          error
 	deletedBranches    []string
+	deleteBranchCalls  []string
+	deletedInto        []deleteBranchIntoCall
 	deleteBranchErr    error
 	preparedBranch     string
 	preparedBaseBranch string
@@ -170,6 +172,11 @@ type mockWorktreeManager struct {
 	reuseBaseBranch    string
 	reuseFastForward   bool
 	reuseErr           error
+}
+
+type deleteBranchIntoCall struct {
+	branch       string
+	targetBranch string
 }
 
 func (m *mockWorktreeManager) Create(_ context.Context, _, baseBranch string) (string, string, error) {
@@ -187,11 +194,13 @@ func (m *mockWorktreeManager) Remove(_ context.Context, path string) error {
 func (m *mockWorktreeManager) Prune(_ context.Context) error { return nil }
 func (m *mockWorktreeManager) DeleteBranch(_ context.Context, branch string) error {
 	m.deletedBranches = append(m.deletedBranches, branch)
+	m.deleteBranchCalls = append(m.deleteBranchCalls, branch)
 	return m.deleteBranchErr
 }
 
-func (m *mockWorktreeManager) DeleteBranchMergedInto(_ context.Context, branch, _ string) error {
+func (m *mockWorktreeManager) DeleteBranchMergedInto(_ context.Context, branch, targetBranch string) error {
 	m.deletedBranches = append(m.deletedBranches, branch)
+	m.deletedInto = append(m.deletedInto, deleteBranchIntoCall{branch: branch, targetBranch: targetBranch})
 	return m.deleteBranchErr
 }
 
@@ -282,10 +291,12 @@ type mockMerger struct {
 	result *merge.Result
 	err    error
 	called bool
+	opts   merge.Opts
 }
 
-func (m *mockMerger) Merge(_ context.Context, _ merge.Opts) (*merge.Result, error) {
+func (m *mockMerger) Merge(_ context.Context, opts merge.Opts) (*merge.Result, error) {
 	m.called = true
+	m.opts = opts
 	return m.result, m.err
 }
 
@@ -1450,6 +1461,55 @@ func TestExecuteWork_DeletesBranchAfterMerge(t *testing.T) {
 		t.Error("expected DeleteBranch to be called after merge")
 	} else if wt.deletedBranches[0] != expectedBranch {
 		t.Errorf("expected DeleteBranch(%q), got DeleteBranch(%q)", expectedBranch, wt.deletedBranches[0])
+	}
+}
+
+func TestExecuteWork_DeletesBranchMergedIntoTargetAfterMerge(t *testing.T) {
+	child := testBead()
+	child.ID = "oro-child"
+	child.Epic = "oro-32g4"
+	epic := &protocol.BeadDetail{
+		ID:                 "oro-32g4",
+		Type:               "epic",
+		Title:              "Epic target",
+		AcceptanceCriteria: "Epic exists",
+		Status:             "open",
+	}
+
+	bs := &fakeBeadStore{
+		showDetail: child,
+		shownByID:  map[string]*protocol.BeadDetail{epic.ID: epic},
+	}
+	wt := &mockWorktreeManager{createPath: "/tmp/wt-child", createBranch: "agent/oro-child"}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
+	deps := testDeps(bs, wt, sp, mg, true, true)
+	deps.defaultBranch = "main"
+
+	cfg := &workConfig{
+		beadID:     child.ID,
+		model:      "sonnet",
+		timeout:    5 * time.Second,
+		skipReview: true,
+	}
+
+	err := executeWork(context.Background(), cfg, deps)
+	if err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+
+	if mg.opts.TargetBranch != "epic/oro-32g4" {
+		t.Fatalf("merge target branch = %q, want %q", mg.opts.TargetBranch, "epic/oro-32g4")
+	}
+	if wt.deleteBranchCalls != nil {
+		t.Fatalf("DeleteBranch calls = %v, want none", wt.deleteBranchCalls)
+	}
+	if len(wt.deletedInto) != 1 {
+		t.Fatalf("DeleteBranchMergedInto calls = %d, want 1: %v", len(wt.deletedInto), wt.deletedInto)
+	}
+	got := wt.deletedInto[0]
+	if got.branch != "agent/oro-child" || got.targetBranch != "epic/oro-32g4" {
+		t.Fatalf("DeleteBranchMergedInto call = %+v, want branch %q target %q", got, "agent/oro-child", "epic/oro-32g4")
 	}
 }
 
