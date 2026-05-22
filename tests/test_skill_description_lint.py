@@ -115,6 +115,16 @@ def test_skill_description_lint_cli_reports_documented_cso_bad_description_on_st
     assert str(skill_path) in captured.err
 
 
+def test_skill_description_lint_builds_documented_cso_good_fixture(tmp_path: Path) -> None:
+    good, bad = _cso_description_examples()
+    skill_path = _write_skill(tmp_path / "documented-good", good)
+
+    skill_text = skill_path.read_text(encoding="utf-8")
+
+    assert f"description: {good}" in skill_text
+    assert f"description: {bad}" not in skill_text
+
+
 @pytest.mark.parametrize("dash", ["-", "\u2013", "\u2014"])
 def test_check_skill_description_rejects_dash_separated_workflow_summary(
     dash: str,
