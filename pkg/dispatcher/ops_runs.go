@@ -239,6 +239,9 @@ func (d *Dispatcher) supersedeOpsRunForRetry(rec OpsRunRecord) (OpsRunRecord, bo
 	next.Verdict = ""
 	next.Feedback = ""
 	next.Error = fmt.Sprintf("manual retry of ops run %d", rec.ID)
+	if ops.Type(rec.Type) == ops.OpsDecompose {
+		next.Error = rec.Error
+	}
 	next.StartedAt = ""
 	next.CompletedAt = ""
 	fillOpsRunRuntimeModel(&next)

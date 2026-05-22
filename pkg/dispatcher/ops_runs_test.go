@@ -563,8 +563,8 @@ func TestSupersedeRuntimeIncidentRetryPreservesContext(t *testing.T) {
 	if replacement.Verdict != "" || replacement.Feedback != "" {
 		t.Fatalf("replacement verdict/feedback = %q/%q, want cleared", replacement.Verdict, replacement.Feedback)
 	}
-	if !strings.Contains(replacement.Error, fmt.Sprintf("manual retry of ops run %d", original.ID)) {
-		t.Fatalf("replacement error = %q, want manual retry note", replacement.Error)
+	if replacement.Error != "runtime crashed" {
+		t.Fatalf("replacement error = %q, want runtime incident error preserved", replacement.Error)
 	}
 
 	blocking, err := FindBlockingOpsRun(ctx, d.db, string(ops.OpsDecompose), beadID)
@@ -592,6 +592,66 @@ WHERE type = ? AND bead_id = ? AND status = ?`, string(ops.OpsDecompose), beadID
 	if !strings.Contains(err.Error(), fmt.Sprintf("retry ops run %d", original.ID)) ||
 		!strings.Contains(err.Error(), fmt.Sprintf("blocking ops run %d", replacement.ID)) {
 		t.Fatalf("second retry error = %q, want original and replacement IDs", err)
+	}
+}
+
+func TestRouteOpsRunRetriesDecomposeIncident(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, spawnMock := newTestDispatcher(t)
+	beadID := "oro-decompose-retry"
+	worktree := t.TempDir()
+	incidentErr := "runtime incident: worker exceeded retry budget"
+
+	d.mu.Lock()
+	d.worktreeByBead[beadID] = worktree
+	d.mu.Unlock()
+
+	original, _, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
+		Type:   string(ops.OpsDecompose),
+		BeadID: beadID,
+		Status: opsRunStatusRunning,
+		Error:  incidentErr,
+	})
+	if err != nil {
+		t.Fatalf("CreateOpsRun original: %v", err)
+	}
+	if err := CompleteOpsRun(ctx, d.db, original.ID, opsRunStatusFailed, "failed", "old feedback", incidentErr); err != nil {
+		t.Fatalf("CompleteOpsRun original failed: %v", err)
+	}
+	failed := fetchOpsRunForTest(t, d.db, original.ID)
+
+	replacement, routed, err := d.supersedeOpsRunForRetry(failed)
+	if err != nil {
+		t.Fatalf("supersedeOpsRunForRetry: %v", err)
+	}
+	if !routed {
+		t.Fatal("routeOpsRun decompose retry = false, want true")
+	}
+	waitFor(t, func() bool { return spawnMock.SpawnCount() == 1 }, time.Second)
+
+	spawnMock.mu.Lock()
+	if len(spawnMock.spawns) != 1 {
+		spawnMock.mu.Unlock()
+		t.Fatalf("spawn count = %d, want 1", len(spawnMock.spawns))
+	}
+	spawn := spawnMock.spawns[0]
+	spawnMock.mu.Unlock()
+
+	if spawn.workdir != worktree {
+		t.Fatalf("decompose retry workdir = %q, want %q", spawn.workdir, worktree)
+	}
+	for _, want := range []string{beadID, incidentErr} {
+		if !strings.Contains(spawn.prompt, want) {
+			t.Fatalf("decompose retry prompt missing %q\nprompt:\n%s", want, spawn.prompt)
+		}
+	}
+	if strings.Contains(spawn.prompt, "ORPHANED_OPS_RUN") {
+		t.Fatalf("decompose retry invoked escalation prompt:\n%s", spawn.prompt)
+	}
+
+	persisted := fetchOpsRunForTest(t, d.db, replacement.ID)
+	if persisted.Status != opsRunStatusRunning {
+		t.Fatalf("replacement status = %q, want running", persisted.Status)
 	}
 }
 
