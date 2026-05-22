@@ -5,7 +5,23 @@ import subprocess
 import sys
 
 from destructive_command_guard import build_decision
-from test_hook_schemas import _claude_pre_tool_use, _codex_pre_tool_use
+
+
+def _claude_pre_tool_use(tool_name: str = "Read", file_path: str = "/nonexistent/file.go") -> dict:
+    return {
+        "hook_type": "PreToolUse",
+        "tool_name": tool_name,
+        "tool_input": {"file_path": file_path},
+    }
+
+
+def _codex_pre_tool_use(tool_name: str = "Read", file_path: str = "/nonexistent/file.go") -> dict:
+    return {
+        **_claude_pre_tool_use(tool_name, file_path),
+        "tool_use_id": "tu_abc123",
+        "turn_id": "turn-001",
+        "transcript_path": "/nonexistent/transcript.jsonl",
+    }
 
 
 def _bash_input(command: str, *, codex: bool = False) -> dict:
