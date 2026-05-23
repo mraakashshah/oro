@@ -165,14 +165,28 @@ def test_writing_skills_description_is_normalized_trigger_only() -> None:
     assert checker.check_skill_description(skill_path) == []
 
 
-def test_using_skills_description_is_normalized_trigger_only() -> None:
+def test_using_skills_description_is_normalized_trigger_only(tmp_path: Path) -> None:
     checker = _load_checker()
-    skill_path = Path(__file__).resolve().parents[1] / "assets/skills/using-skills/SKILL.md"
+    repo_root = Path(__file__).resolve().parents[1]
+    skill_path = repo_root / "assets/skills/using-skills/SKILL.md"
     skill_text = skill_path.read_text(encoding="utf-8")
     frontmatter = skill_text.split("\n---\n", maxsplit=1)[0].splitlines()
 
     assert "description: Use when checking which skills apply before starting a task" in frontmatter
     assert checker.check_skill_description(skill_path) == []
+
+    workflow_summary = _write_skill(
+        tmp_path / "using-skills-workflow-summary",
+        "Use at the start of any task - check which skills apply before acting",
+    )
+    mandatory_rule = _write_skill(
+        tmp_path / "using-skills-mandatory-rule",
+        "Use at the start of any task and you MUST invoke relevant skills before any action",
+    )
+
+    assert checker.check_skill_description(workflow_summary) == [WORKFLOW_SUMMARY_ERROR]
+    assert checker.check_skill_description(mandatory_rule) == [WORKFLOW_SUMMARY_ERROR]
+
 
 @pytest.mark.parametrize("dash", ["-", "\u2013", "\u2014"])
 def test_check_skill_description_rejects_dash_separated_workflow_summary(

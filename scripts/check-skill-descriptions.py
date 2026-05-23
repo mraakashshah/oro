@@ -7,7 +7,10 @@ import sys
 from pathlib import Path
 
 DASH_SUMMARY_RE = re.compile(r"\s[-\u2013\u2014]\s")
-MANDATORY_RULE_RE = re.compile(r"\b(?:must|always|no exceptions)\b", re.IGNORECASE)
+MANDATORY_RULE_RE = re.compile(
+    r"\b(?:must|always|required|before any action|invoke relevant skills|no exceptions)\b",
+    re.IGNORECASE,
+)
 WORKFLOW_SUMMARY_ERROR = "description must contain triggering conditions only, not a workflow summary"
 ISSUE_CODES = {
     WORKFLOW_SUMMARY_ERROR: "workflow-summary",
