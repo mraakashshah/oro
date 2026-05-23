@@ -154,8 +154,9 @@ def test_writing_skills_description_is_normalized_trigger_only() -> None:
     checker = _load_checker()
     skill_path = Path(__file__).resolve().parents[1] / "assets/skills/writing-skills/SKILL.md"
     skill_text = skill_path.read_text(encoding="utf-8")
+    frontmatter = skill_text.split("\n---\n", maxsplit=1)[0].splitlines()
 
-    assert "description: Use when creating or editing Codex skills" in skill_text.split("\n---\n", maxsplit=1)[0]
+    assert "description: Use when creating or editing Codex skills" in frontmatter
     assert checker.check_skill_description(skill_path) == []
 
 
