@@ -116,7 +116,8 @@ def test_skill_description_lint_cli_reports_documented_cso_bad_description_on_st
 
 
 def test_skill_description_lint_builds_documented_cso_good_fixture(tmp_path: Path) -> None:
-    good, bad = _cso_description_examples()
+    examples = _cso_description_examples()
+    good, bad = examples["good"], examples["bad"]
     skill_path = _write_skill(tmp_path / "documented-good", good)
 
     skill_text = skill_path.read_text(encoding="utf-8")
