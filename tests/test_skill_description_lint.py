@@ -61,6 +61,13 @@ def test_check_skill_description_accepts_trigger_only_description(tmp_path: Path
     assert checker.check_skill_description(skill_path) == []
 
 
+def test_check_skill_description_accepts_writing_skills_trigger_description() -> None:
+    checker = _load_checker()
+    skill_path = Path("assets/skills/writing-skills/SKILL.md")
+
+    assert checker.check_skill_description(skill_path) == []
+
+
 def test_skill_description_lint_accepts_documented_cso_good_description(
     tmp_path: Path,
 ) -> None:
