@@ -2828,7 +2828,7 @@ func (d *Dispatcher) ffMergeEpicBranch(ctx context.Context, epicID, workerID, ta
 func rebaseChildAcceptance(epicID, epicBranch, targetBranch string) string {
 	return strings.Join([]string{
 		fmt.Sprintf("Test: epic %s rebase task keeps %s integration-ready for %s", epicID, epicBranch, targetBranch),
-		fmt.Sprintf("Cmd: git fetch --all --prune && git checkout %s && git rebase %s && go test ./...", epicBranch, targetBranch),
+		fmt.Sprintf("Cmd: tmp=$(mktemp -d) && git fetch --all --prune && git worktree add \"$tmp\" %s && git -C \"$tmp\" rebase %s && git worktree remove \"$tmp\" && go test ./...", epicBranch, targetBranch),
 		fmt.Sprintf("Assert: %s is rebased onto %s, tests pass, and the epic can retry close without requiring the original merge failure to still exist.", epicBranch, targetBranch),
 		"Read: pkg/dispatcher/dispatcher.go:ffMergeEpicBranch, pkg/dispatcher/dispatcher_test.go:TestEpicFFMergeFailureCreatesActionableRebaseChild",
 	}, " | ")
