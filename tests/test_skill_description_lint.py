@@ -133,6 +133,23 @@ def test_skill_description_lint_builds_documented_cso_good_fixture(tmp_path: Pat
     assert f"description: {bad}" not in skill_text
 
 
+def test_skill_description_lint_accepts_writing_skills_trigger_description() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    script_path = repo_root / "scripts" / "check-skill-descriptions.py"
+    skill_path = repo_root / "assets" / "skills" / "writing-skills" / "SKILL.md"
+
+    result = subprocess.run(
+        [sys.executable, str(script_path), str(skill_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
 @pytest.mark.parametrize("dash", ["-", "\u2013", "\u2014"])
 def test_check_skill_description_rejects_dash_separated_workflow_summary(
     dash: str,
