@@ -3,6 +3,7 @@ package protocol_test
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 
 	"oro/pkg/dbutil"
@@ -236,6 +237,90 @@ func TestOpsRunUniqueBlockingIndex(t *testing.T) {
 			t.Fatalf("clear ops_runs after status %q: %v", status, err)
 		}
 	}
+}
+
+func TestMigrateBeadSchemaDropsLegacyOpsRunsEscalationUnique(t *testing.T) {
+	db, err := dbutil.OpenDB(t.TempDir() + "/state.db")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("exec runtime schema: %v", err)
+	}
+	_, err = db.ExecContext(ctx, `
+DROP INDEX IF EXISTS idx_ops_runs_blocking_key;
+DROP INDEX IF EXISTS idx_ops_runs_open;
+DROP TABLE ops_runs;
+CREATE TABLE ops_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escalation_id INTEGER,
+    type TEXT NOT NULL,
+    bead_id TEXT,
+    worker_id TEXT,
+    dispatcher_pid INTEGER,
+    process_pid INTEGER,
+    runtime TEXT,
+    model TEXT,
+    status TEXT NOT NULL DEFAULT 'running',
+    verdict TEXT,
+    feedback TEXT,
+    error TEXT,
+    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    completed_at DATETIME,
+    UNIQUE(escalation_id, type, bead_id)
+);
+CREATE INDEX idx_ops_runs_open
+ON ops_runs(status, type, bead_id);
+CREATE UNIQUE INDEX idx_ops_runs_blocking_key
+ON ops_runs(type, bead_id)
+WHERE status IN ('running', 'failed', 'stale');
+INSERT INTO ops_runs (escalation_id, type, bead_id, status, error)
+VALUES (2675, 'decompose', 'oro-nkse', 'superseded', 'orphaned dead process superseded on dispatcher startup');
+`)
+	if err != nil {
+		t.Fatalf("seed legacy ops_runs schema: %v", err)
+	}
+
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("migrate bead schema: %v", err)
+	}
+
+	var tableSQL string
+	if err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_schema WHERE type='table' AND name='ops_runs'`).Scan(&tableSQL); err != nil {
+		t.Fatalf("query ops_runs sql: %v", err)
+	}
+	normalized := strings.NewReplacer(" ", "", "\n", "", "\t", "").Replace(strings.ToLower(tableSQL))
+	if strings.Contains(normalized, "unique(escalation_id,type,bead_id)") {
+		t.Fatalf("legacy ops_runs escalation unique constraint still present: %s", tableSQL)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO ops_runs (escalation_id, type, bead_id, status, error)
+VALUES (2675, 'decompose', 'oro-nkse', 'running', 'replacement ops run');
+`); err != nil {
+		t.Fatalf("insert replacement ops_run with same escalation key: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO ops_runs (escalation_id, type, bead_id, status)
+VALUES (9999, 'decompose', 'oro-nkse', 'failed');
+`); err == nil {
+		t.Fatal("duplicate blocking ops_run succeeded, want partial unique index failure")
+	}
+	var supersededCount int
+	if err := db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM ops_runs
+WHERE escalation_id=2675 AND type='decompose' AND bead_id='oro-nkse' AND status='superseded';
+`).Scan(&supersededCount); err != nil {
+		t.Fatalf("count preserved superseded ops_run: %v", err)
+	}
+	if supersededCount != 1 {
+		t.Fatalf("preserved superseded ops_runs = %d, want 1", supersededCount)
+	}
+	assertSQLiteObjectExists(t, db, "index", "idx_ops_runs_open")
+	assertSQLiteObjectExists(t, db, "index", "idx_ops_runs_blocking_key")
 }
 
 func TestMigration11(t *testing.T) {

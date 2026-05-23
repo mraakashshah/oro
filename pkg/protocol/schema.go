@@ -567,6 +567,9 @@ func MigrateBeadSchema(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("migrate bead status constraint: %w", err)
 	}
+	if err := ensureOpsRunsDropsLegacyEscalationUnique(ctx, db); err != nil {
+		return fmt.Errorf("migrate ops_runs legacy uniqueness: %w", err)
+	}
 	_, err = db.ExecContext(ctx, beadSchemaDDL)
 	if err != nil {
 		return fmt.Errorf("refresh bead schema: %w", err)
@@ -575,6 +578,83 @@ func MigrateBeadSchema(ctx context.Context, db *sql.DB) error {
 		if _, err := db.ExecContext(ctx, `INSERT INTO beads_fts(beads_fts) VALUES('rebuild')`); err != nil {
 			return fmt.Errorf("rebuild beads fts: %w", err)
 		}
+	}
+	return nil
+}
+
+const currentOpsRunsTableDDL = `CREATE TABLE IF NOT EXISTS ops_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    escalation_id INTEGER,
+    type TEXT NOT NULL,
+    bead_id TEXT,
+    worker_id TEXT,
+    dispatcher_pid INTEGER,
+    process_pid INTEGER,
+    runtime TEXT,
+    model TEXT,
+    status TEXT NOT NULL DEFAULT 'running',
+    verdict TEXT,
+    feedback TEXT,
+    error TEXT,
+    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    completed_at DATETIME
+);`
+
+const currentOpsRunsIndexesDDL = `CREATE INDEX IF NOT EXISTS idx_ops_runs_open
+ON ops_runs(status, type, bead_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ops_runs_blocking_key
+ON ops_runs(type, bead_id)
+WHERE status IN ('running', 'failed', 'stale');`
+
+func ensureOpsRunsDropsLegacyEscalationUnique(ctx context.Context, db *sql.DB) error {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire sqlite connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	var tableSQL string
+	err = conn.QueryRowContext(ctx, `SELECT sql FROM sqlite_schema WHERE type='table' AND name='ops_runs'`).Scan(&tableSQL)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect ops_runs table: %w", err)
+	}
+	if !hasLegacyOpsRunsEscalationUnique(tableSQL) {
+		return nil
+	}
+	return runOpsRunsLegacyUniqueRebuild(ctx, conn)
+}
+
+func hasLegacyOpsRunsEscalationUnique(tableSQL string) bool {
+	normalized := strings.NewReplacer(" ", "", "\n", "", "\t", "").Replace(strings.ToLower(tableSQL))
+	return strings.Contains(normalized, "unique(escalation_id,type,bead_id)")
+}
+
+func runOpsRunsLegacyUniqueRebuild(ctx context.Context, conn *sql.Conn) error {
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin ops_runs rebuild tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	const opsRunsColumns = `id, escalation_id, type, bead_id, worker_id, dispatcher_pid, process_pid, runtime, model, status, verdict, feedback, error, started_at, completed_at`
+	rebuildSteps := []string{
+		`DROP INDEX IF EXISTS idx_ops_runs_blocking_key`,
+		`DROP INDEX IF EXISTS idx_ops_runs_open`,
+		`ALTER TABLE ops_runs RENAME TO ops_runs_legacy_unique_old`,
+		currentOpsRunsTableDDL,
+		`INSERT INTO ops_runs (` + opsRunsColumns + `) SELECT ` + opsRunsColumns + ` FROM ops_runs_legacy_unique_old`,
+		`DROP TABLE ops_runs_legacy_unique_old`,
+		currentOpsRunsIndexesDDL,
+	}
+	if err := execStmts(ctx, tx, rebuildSteps); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit ops_runs rebuild tx: %w", err)
 	}
 	return nil
 }
