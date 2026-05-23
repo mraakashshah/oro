@@ -2291,6 +2291,12 @@ func (d *Dispatcher) handleEpicQGFailure(ctx context.Context, epicID, workerID, 
 		return false
 	}
 
+	// Impossible acceptance/state failures need the existing epic state fixed;
+	// creating another epic child repeats the missing-AC loop.
+	if cls.Decision == QGFailureDecisionBumpOriginal {
+		return false
+	}
+
 	// Deterministic or unknown: one fix bead per (epic, fingerprint); skip if already created.
 	if !d.epicFixBeadExists(ctx, epicID, fp) {
 		beads, err := CreateBeadGraph(ctx, d.beads, epicID, []beadstore.CreateParams{{

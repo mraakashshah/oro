@@ -147,6 +147,31 @@ func TestEpicQGFailureClassifiedBeforeFixBeadCreation(t *testing.T) {
 			t.Errorf("expected 0 epic fix beads for flaky failure, got %d: %v", got, created)
 		}
 	})
+
+	t.Run("impossible missing acceptance does not create another epic fix bead", func(t *testing.T) {
+		d, beadSrc := setup(t)
+		ctx := context.Background()
+		const epicID = "epic-cls-impossible"
+		const epicBranch = protocol.EpicBranchPrefix + epicID
+		const impossibleOut = "missing acceptance criteria: no Cmd field for child oro-no-ac"
+
+		beadSrc.mu.Lock()
+		beadSrc.shown[epicID] = &protocol.BeadDetail{ID: epicID, Title: "Impossible Epic"}
+		beadSrc.mu.Unlock()
+
+		result := d.handleEpicQGFailure(ctx, epicID, "worker-impossible", epicBranch, impossibleOut)
+		if result {
+			t.Error("handleEpicQGFailure must return false (epic stays open on impossible QG failure)")
+		}
+
+		beadSrc.mu.Lock()
+		created := append([]createCall(nil), beadSrc.created...)
+		beadSrc.mu.Unlock()
+
+		if got := len(fixBeadsForEpic(created, epicID)); got != 0 {
+			t.Fatalf("expected 0 epic fix beads for impossible missing-AC failure, got %d: %v", got, created)
+		}
+	})
 }
 
 // fixBeadsForEpic returns createCalls that have parent == epicID.
