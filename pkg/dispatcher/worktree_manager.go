@@ -492,12 +492,12 @@ func (g *GitWorktreeManager) Prune(ctx context.Context) error {
 	return nil
 }
 
-// RebaseOnto rebases branch onto onto using `git rebase onto branch`.
+// RebaseOnto checks out branch and rebases it onto onto.
 func (g *GitWorktreeManager) RebaseOnto(ctx context.Context, branch, onto string) error {
-	_, err := g.runner.Run(ctx, "git", "-C", g.repoRoot,
-		"rebase", onto, branch,
-	)
-	if err != nil {
+	if _, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "checkout", branch); err != nil {
+		return fmt.Errorf("checkout branch %s: %w", branch, err)
+	}
+	if _, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "rebase", onto); err != nil {
 		return fmt.Errorf("rebase %s onto %s: %w", branch, onto, err)
 	}
 	return nil

@@ -1809,15 +1809,29 @@ func TestRebaseOnto_Success(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify the git rebase command was called with correct arguments
-	if len(runner.calls) != 1 {
-		t.Fatalf("expected 1 command call, got %d", len(runner.calls))
+	// Verify the branch is checked out before rebasing onto the target.
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected 2 command calls, got %d", len(runner.calls))
 	}
-	call := runner.calls[0]
+	checkoutCall := runner.calls[0]
+	if checkoutCall.Name != "git" {
+		t.Fatalf("expected checkout command name 'git', got %q", checkoutCall.Name)
+	}
+	wantCheckoutArgs := []string{"-C", "/repo/root", "checkout", "agent/feature"}
+	if len(checkoutCall.Args) != len(wantCheckoutArgs) {
+		t.Fatalf("checkout args length: got %d, want %d", len(checkoutCall.Args), len(wantCheckoutArgs))
+	}
+	for i, arg := range checkoutCall.Args {
+		if arg != wantCheckoutArgs[i] {
+			t.Fatalf("checkout args[%d]: got %q, want %q", i, arg, wantCheckoutArgs[i])
+		}
+	}
+
+	call := runner.calls[1]
 	if call.Name != "git" {
 		t.Fatalf("expected command name 'git', got %q", call.Name)
 	}
-	wantArgs := []string{"-C", "/repo/root", "rebase", "main", "agent/feature"}
+	wantArgs := []string{"-C", "/repo/root", "rebase", "main"}
 	if len(call.Args) != len(wantArgs) {
 		t.Fatalf("args length: got %d, want %d", len(call.Args), len(wantArgs))
 	}
