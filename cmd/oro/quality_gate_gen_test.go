@@ -337,7 +337,6 @@ func TestQualityGateScript_StealthPaths(t *testing.T) {
 		Mode:         "stealth",
 		RepoRoot:     "/home/testuser/myproject",
 		WorktreesDir: filepath.Join(stealthBase, "worktrees"),
-		BeadsDir:     filepath.Join(stealthBase, "beads"),
 		OroDocsDir:   filepath.Join(stealthBase, "docs"),
 	}
 
@@ -351,7 +350,7 @@ func TestQualityGateScript_StealthPaths(t *testing.T) {
 	// repository-relative command arguments. WorktreesDir may be outside the
 	// repo in stealth mode; git pathspecs must not include absolute external
 	// paths because git rejects them before producing any source file list.
-	for _, want := range []string{paths.BeadsDir, paths.OroDocsDir} {
+	for _, want := range []string{paths.OroDocsDir} {
 		if !strings.Contains(script, want) {
 			t.Errorf("expected %q in script", want)
 		}
@@ -368,8 +367,8 @@ func TestQualityGateScript_StealthPaths(t *testing.T) {
 	// Script must NOT use hardcoded defaults when stealth paths are set, except
 	// repo-relative .worktrees exclusions. Those are safe because find/git only
 	// traverse the current repository, not external stealth worktree roots.
-	if strings.Contains(script, " "+beadsDirName+"/") {
-		t.Error("script should not contain hardcoded beads dir when stealth BeadsDir is set")
+	if strings.Contains(script, ".beads") {
+		t.Error("script should not contain legacy .beads paths")
 	}
 
 	// Empty paths must produce the standard defaults.
@@ -381,8 +380,8 @@ func TestQualityGateScript_StealthPaths(t *testing.T) {
 	if !strings.Contains(defScript, "./.worktrees") {
 		t.Error("empty WorktreesDir should default to ./.worktrees")
 	}
-	if !strings.Contains(defScript, ".beads") {
-		t.Error("empty BeadsDir should default to .beads")
+	if strings.Contains(defScript, ".beads") {
+		t.Error("empty paths should not reintroduce legacy .beads paths")
 	}
 	if !strings.Contains(defScript, "for p in docs/") {
 		t.Error("empty OroDocsDir should default to docs/ in biome loop")
@@ -397,7 +396,6 @@ func TestQualityGateScript_StealthPaths(t *testing.T) {
 			Mode:         "standard",
 			RepoRoot:     "/home/testuser/myproject",
 			WorktreesDir: "/home/testuser/myproject/.worktrees",
-			BeadsDir:     "/home/testuser/myproject/.beads",
 			OroDocsDir:   "/home/testuser/myproject/docs",
 		}
 
@@ -416,8 +414,8 @@ func TestQualityGateScript_StealthPaths(t *testing.T) {
 		}
 
 		// Biome loop should use relative paths.
-		if !strings.Contains(stdScript, "./.beads") {
-			t.Error("standard mode: biome loop should use relative ./.beads path")
+		if strings.Contains(stdScript, ".beads") {
+			t.Error("standard mode: script should not include legacy .beads path")
 		}
 		if !strings.Contains(stdScript, "./docs") {
 			t.Error("standard mode: biome loop should use relative ./docs path")

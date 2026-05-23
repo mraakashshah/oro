@@ -31,13 +31,13 @@ func newUninstallCmd() *cobra.Command {
 		Short: "Remove oro and all its artifacts from this machine",
 		Long: `Cleanly removes all oro artifacts:
   - Stops running daemons and tmux sessions
-  - Removes launchd agent (dolt server)
+  - Removes launchd agents
   - Cleans project artifacts (.oro/ dirs, .worktrees/, git hooks)
   - Removes oro entries from global gitignore
   - Removes ~/.oro/ directory (with confirmation)
   - Removes the oro binary itself
 
-Use --force to skip confirmation. Use --keep-data to preserve ~/.oro/ (databases, bead history).`,
+Use --force to skip confirmation. Use --keep-data to preserve ~/.oro/ (databases, task history).`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			oroHome, err := resolveOroHome()
 			if err != nil {
@@ -184,27 +184,16 @@ func cleanGlobalGitignore(w io.Writer, overridePath string) {
 		return
 	}
 
-	oroEntries := make(map[string]bool)
-	for _, e := range oroGitignoreEntries() {
-		oroEntries[e] = true
-	}
+	oroEntries := globalGitignoreEntriesToRemove()
 
 	var kept []string
 	skipHeader := false
 	for _, line := range strings.Split(string(data), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "# Oro / Beads (managed by oro init)" {
-			skipHeader = true
+		var keep bool
+		keep, skipHeader = keepGlobalGitignoreLine(line, oroEntries, skipHeader)
+		if !keep {
 			continue
 		}
-		if oroEntries[trimmed] {
-			continue
-		}
-		if skipHeader && trimmed == "" {
-			skipHeader = false
-			continue
-		}
-		skipHeader = false
 		kept = append(kept, line)
 	}
 
@@ -225,6 +214,31 @@ func cleanGlobalGitignore(w io.Writer, overridePath string) {
 	fmt.Fprintln(w, "  done.")
 }
 
+func globalGitignoreEntriesToRemove() map[string]bool {
+	entries := make(map[string]bool)
+	for _, e := range oroGitignoreEntries() {
+		entries[e] = true
+	}
+	for _, e := range oroLegacyGitignoreEntries() {
+		entries[e] = true
+	}
+	return entries
+}
+
+func keepGlobalGitignoreLine(line string, oroEntries map[string]bool, skipHeader bool) (keep, nextSkipHeader bool) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "# Oro (managed by oro init)" || trimmed == "# Oro / Beads (managed by oro init)" {
+		return false, true
+	}
+	if oroEntries[trimmed] {
+		return false, skipHeader
+	}
+	if skipHeader && trimmed == "" {
+		return false, false
+	}
+	return true, false
+}
+
 // removeOroHome removes ~/.oro/ with confirmation.
 func removeOroHome(w io.Writer, opts uninstallOptions) error {
 	if _, err := os.Stat(opts.oroHome); os.IsNotExist(err) {
@@ -233,7 +247,7 @@ func removeOroHome(w io.Writer, opts uninstallOptions) error {
 	}
 
 	if !opts.force {
-		fmt.Fprintf(w, "Remove %s? This will delete databases and bead history. [y/N] ", opts.oroHome)
+		fmt.Fprintf(w, "Remove %s? This will delete databases and task history. [y/N] ", opts.oroHome)
 		reader := bufio.NewReader(opts.stdin)
 		answer, _ := reader.ReadString('\n')
 		answer = strings.TrimSpace(strings.ToLower(answer))

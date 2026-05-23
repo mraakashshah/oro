@@ -62,21 +62,6 @@
 {"query":"What's the proper way to handle SQL LIKE wildcards?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
 {"query":"What's the proper way to handle SQL LIKE wildcards?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
 {"query":"What's the proper way to handle SQL LIKE wildcards?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
-{"query":"How does oro detect when the dolt database is corrupted?","candidate_memory_id":161,"relevant":true,"source":"anchor"}
-{"query":"How does oro detect when the dolt database is corrupted?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
-{"query":"How does oro detect when the dolt database is corrupted?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
-{"query":"How does oro detect when the dolt database is corrupted?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
-{"query":"How does oro detect when the dolt database is corrupted?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
-{"query":"What naming convention does oro use for corrupted dolt backups?","candidate_memory_id":161,"relevant":true,"source":"anchor"}
-{"query":"What naming convention does oro use for corrupted dolt backups?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
-{"query":"What naming convention does oro use for corrupted dolt backups?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
-{"query":"What naming convention does oro use for corrupted dolt backups?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
-{"query":"What naming convention does oro use for corrupted dolt backups?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
-{"query":"How do you restore a corrupted dolt repository in oro?","candidate_memory_id":161,"relevant":true,"source":"anchor"}
-{"query":"How do you restore a corrupted dolt repository in oro?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
-{"query":"How do you restore a corrupted dolt repository in oro?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
-{"query":"How do you restore a corrupted dolt repository in oro?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
-{"query":"How do you restore a corrupted dolt repository in oro?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
 {"query":"Should you write tests before implementing concurrency fixes?","candidate_memory_id":466,"relevant":true,"source":"anchor"}
 {"query":"Should you write tests before implementing concurrency fixes?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
 {"query":"Should you write tests before implementing concurrency fixes?","candidate_memory_id":610,"relevant":false,"source":"distractor"}

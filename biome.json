@@ -1,13 +1,7 @@
 {
 	"$schema": "https://biomejs.dev/schemas/2.4.4/schema.json",
 	"files": {
-		"includes": [
-			"**/*.json",
-			"**/*.jsonl",
-			"!.beads",
-			"!.worktrees",
-			"!node_modules"
-		]
+		"includes": ["**/*.json", "**/*.jsonl", "!.worktrees", "!node_modules"]
 	},
 	"vcs": {
 		"enabled": true,

@@ -28,7 +28,7 @@ If an invoked skill turns out to be wrong for the situation, you don't need to f
 
 **Orchestration:** dispatching-parallel-agents, workflow-routing, premortem, completion-check, explore, watching-oro
 
-**Tools:** tasks, git-commits, tmux, github, session-logs, agent-browser
+**Tools:** tasks, git-commits, tmux, github, session-logs, agent-browser, tufte-viz
 
 **Continuity:** create-handoff, resume-handoff, documenting-solutions, refactor, using-git-worktrees, writing-skills, context-checkpoint
 

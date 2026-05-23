@@ -103,7 +103,7 @@ qg_python_source_files() {
 
 # shellcheck disable=SC2317,SC2329
 qg_yaml_source_files() {
-	qg_source_files '*.yml' '*.yaml' ':(exclude).beads/**'
+	qg_source_files '*.yml' '*.yaml'
 }
 
 # shellcheck disable=SC2317,SC2329
@@ -871,17 +871,13 @@ lane_other() {
 	if $HAS_SHELL; then
 		header "SHELL: FORMAT + LINT"
 		parallel_checks \
-			"shfmt" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.tmp-test/*' -not -path './.cache/*' -not -path './.worktrees/*' -not -path './.claude/worktrees/*' -not -path './.venv/*' -not -path './node_modules/*' -not -path './.beads/*' -not -path './cmd/oro/_assets/*' -exec shfmt -d {} +" \
-			"shellcheck" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.tmp-test/*' -not -path './.cache/*' -not -path './.worktrees/*' -not -path './.claude/worktrees/*' -not -path './.venv/*' -not -path './node_modules/*' -not -path './.beads/*' -not -path './cmd/oro/_assets/*' -exec shellcheck --severity=info {} +"
+			"shfmt" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.tmp-test/*' -not -path './.cache/*' -not -path './.worktrees/*' -not -path './.claude/worktrees/*' -not -path './.venv/*' -not -path './node_modules/*' -not -path './cmd/oro/_assets/*' -exec shfmt -d {} +" \
+			"shellcheck" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.tmp-test/*' -not -path './.cache/*' -not -path './.worktrees/*' -not -path './.claude/worktrees/*' -not -path './.venv/*' -not -path './node_modules/*' -not -path './cmd/oro/_assets/*' -exec shellcheck --severity=info {} +"
 		pass=$((pass + TIER_PASS))
 		fail=$((fail + TIER_FAIL))
 	fi
 
 	header "DOCS & CONFIG"
-	# Build biome paths
-	# Note: .beads/ is intentionally excluded — bd writes metadata.json/issues.jsonl
-	# in a format biome rejects (tabs vs spaces) and re-writes them on every command.
-	# Linting these auto-generated files would block every bead's QG.
 	local BIOME_PATHS=""
 	for p in docs/ .github/; do
 		[ -d "$p" ] && BIOME_PATHS="$BIOME_PATHS $p"

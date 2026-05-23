@@ -418,7 +418,7 @@ func TestParseIssuesCLIOutputIgnoresIDsWithoutPrefixes(t *testing.T) {
 func TestSourceUsesProjectPaths(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Set up a custom beads dir (not the default .beads/)
+	// Set up a custom task metadata dir.
 	customBeadsDir := filepath.Join(tmpDir, "custom-beads")
 	if err := os.MkdirAll(customBeadsDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -440,13 +440,13 @@ func TestSourceUsesProjectPaths(t *testing.T) {
 		t.Errorf("Mode = %v, want SourceCLI", src.Mode)
 	}
 
-	// LoadIssuePrefix uses configurable beads dir (not hardcoded .beads)
+	// LoadIssuePrefix uses configurable task metadata dir.
 	prefix := LoadIssuePrefix(tmpDir, customBeadsDir)
 	if prefix != "pp" {
 		t.Errorf("LoadIssuePrefix(tmpDir, customBeadsDir) = %q, want %q", prefix, "pp")
 	}
 
-	// LoadMetadataSchema uses configurable beads dir
+	// LoadMetadataSchema uses configurable task metadata dir.
 	schema := LoadMetadataSchema(tmpDir, customBeadsDir)
 	if schema != nil {
 		t.Errorf("LoadMetadataSchema(tmpDir, customBeadsDir) = %v, want nil (no metadata section)", schema)

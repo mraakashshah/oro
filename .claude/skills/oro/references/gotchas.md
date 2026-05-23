@@ -14,12 +14,6 @@
 - Workers at >45% context may degrade — kill proactively if stuck
 - `oro work` requires acceptance criteria to be set on the task
 
-## Dolt
-- **Never `rm -rf` dolt dir** — use `dolt fsck` then `dolt fsck --revive-journal-with-data-loss`
-- "multiple .doltcfg directories" error → remove the stale `.doltcfg` inside the local beads dir (not the data dir)
-- Multiple oro instances: Dolt handles concurrent reads/writes (MVCC), but two dispatchers on the same project will double-assign tasks — no cross-process task lock
-- Shared dolt server runs on port 13307 (`~/.oro/dolt/`)
-
 ## Tasks
 - `oro task close <id>` then let the pre-commit hook sync task metadata before adding task state for clean commits
 - Close multiple tasks one at a time; `oro task close` accepts exactly one id.
@@ -29,8 +23,6 @@
 
 ## Shutdown
 - `oro stop` requires an interactive TTY — use `oro attach` first, then stop from there
-- Stop sequence flushes Dolt metadata but intentionally leaves the Dolt server running for standalone task commands.
-- Dolt server persists across sessions by design — it's managed by LaunchAgent, not the swarm lifecycle
 
 ## Dispatcher
 - `clearBeadTracking` does NOT clear `worktreeByBead` (intentional for respawn)

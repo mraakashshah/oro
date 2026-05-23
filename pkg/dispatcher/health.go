@@ -45,10 +45,6 @@ func paneAlive(ctx context.Context, db *sql.DB, nowUnix int64) bool {
 	return nowUnix-lastSeen <= 60
 }
 
-func (d *Dispatcher) maybeRecoverDolt(ctx context.Context) {
-	_ = ctx
-}
-
 // applyHealth returns the repo-owned FactoryHealth JSON contract.
 func (d *Dispatcher) applyHealth() (string, error) {
 	now := d.nowFunc()

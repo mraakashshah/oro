@@ -8,8 +8,10 @@ const (
 	// OroDir is the user-level state directory (e.g., ~/.oro).
 	OroDir = ".oro"
 
-	// BeadsDir is the directory watched for bead file changes.
-	BeadsDir = ".beads"
+	// BeadsDir is the historical internal name for Oro's task data directory.
+	// New installs use .oro/tasks; the exported name remains for compatibility
+	// with internal APIs that have not been renamed yet.
+	BeadsDir = ".oro/tasks"
 
 	// BranchPrefix is the git branch prefix for agent worktrees.
 	BranchPrefix = "agent/"

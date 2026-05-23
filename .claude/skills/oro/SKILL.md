@@ -199,15 +199,13 @@ go test ./pkg/dispatcher/... -count=1 -timeout 180s
 go test ./pkg/worker/... -v -count=1
 ```
 
-## Native Beadstore Recovery
+## Native Task Store Recovery
 
 **NEVER run `force-initialization commands`.** It destroys all task history. This has happened 3 times.
 
-bd/Dolt is an import, audit, and rollback reference only. When native beadstore
-errors occur, inspect the SQLite state directly, verify `oro task ready`,
+When native task-store errors occur, inspect the SQLite state directly, verify `oro task ready`,
 `oro task blocked`, and `oro task show`, and follow
-`docs/runbooks/beadstore-recovery.md` for backup or restore operations. Do not
-restart or repair Dolt from Oro; the `oro dolt` operator commands are removed.
+`docs/runbooks/beadstore-recovery.md` for backup or restore operations.
 
 If the native store cannot be recovered with the reviewed runbook, **ask the
 user**. Never nuke the database autonomously.

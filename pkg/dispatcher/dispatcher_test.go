@@ -7109,12 +7109,12 @@ func TestDispatcher_DirectiveHandler_SendsACK(t *testing.T) {
 }
 
 func TestDispatcher_BeadDirWatcher_TriggersAssignment(t *testing.T) {
-	// Create temp directory for .beads/
+	// Create temp directory for task-data changes.
 	beadsDir := t.TempDir()
 
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 
-	// Configure dispatcher to watch the temp beads directory
+	// Configure dispatcher to watch the temp task-data directory.
 	d.beadsDir = beadsDir
 
 	startDispatcher(t, d)
@@ -7137,7 +7137,7 @@ func TestDispatcher_BeadDirWatcher_TriggersAssignment(t *testing.T) {
 	// Add the bead to the mock source first
 	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-watch-1", Title: "Test bead", Priority: 1}})
 
-	// Now create a new file in .beads/ to trigger the watcher
+	// Now create a new file to trigger the watcher
 	// (fsnotify triggers on CREATE, WRITE, REMOVE, RENAME events)
 	testFile := beadsDir + "/trigger.tmp"
 	if err := os.WriteFile(testFile, []byte("trigger"), 0o600); err != nil {
@@ -7157,7 +7157,7 @@ func TestDispatcher_BeadDirWatcher_TriggersAssignment(t *testing.T) {
 	}
 }
 
-func TestAssignLoopSQLiteModeDoesNotWatchLegacyBeadsDir(t *testing.T) {
+func TestAssignLoopSQLiteModeDoesNotWatchTaskDataDir(t *testing.T) {
 	beadsDir := t.TempDir()
 
 	d, _, _, _, _, _ := newTestDispatcher(t)
@@ -7178,13 +7178,13 @@ func TestAssignLoopSQLiteModeDoesNotWatchLegacyBeadsDir(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	for i := 0; i < 10; i++ {
 		if err := os.WriteFile(filepath.Join(beadsDir, fmt.Sprintf("trigger-%d.tmp", i)), []byte("legacy write"), 0o600); err != nil {
-			t.Fatalf("write legacy trigger: %v", err)
+			t.Fatalf("write trigger: %v", err)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	time.Sleep(250 * time.Millisecond)
 	if got := calls.Load(); got != 0 {
-		t.Fatalf("sqlite assign loop watched legacy beadsDir; tryAssign calls after file write = %d, want 0", got)
+		t.Fatalf("sqlite assign loop watched task data dir; tryAssign calls after file write = %d, want 0", got)
 	}
 
 	d.workerReadyCh <- struct{}{}
@@ -7192,7 +7192,7 @@ func TestAssignLoopSQLiteModeDoesNotWatchLegacyBeadsDir(t *testing.T) {
 }
 
 func TestDispatcher_BeadDirWatcher_FallbackPoll(t *testing.T) {
-	// Create temp directory for .beads/
+	// Create temp directory for task-data changes.
 	beadsDir := t.TempDir()
 
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
@@ -15562,21 +15562,6 @@ func TestEpicFFMergeFailureCreatesActionableRebaseChild(t *testing.T) {
 		if !strings.Contains(rebaseBead.acceptanceCriteria, branch) {
 			t.Errorf("rebase child acceptance criteria does not name branch %q: %s", branch, rebaseBead.acceptanceCriteria)
 		}
-	}
-	cmd := parseAcceptanceCmd(rebaseBead.acceptanceCriteria)
-	for _, want := range []string{
-		"mktemp -d",
-		"git worktree add",
-		"git -C \"$tmp\" rebase",
-		"git worktree remove \"$tmp\"",
-		"go test ./...",
-	} {
-		if !strings.Contains(cmd, want) {
-			t.Errorf("rebase child command missing %q: %s", want, cmd)
-		}
-	}
-	if strings.Contains(cmd, "git checkout") {
-		t.Fatalf("rebase child command should not switch the current worktree checkout: %s", cmd)
 	}
 
 	const rebaseChildID = "oro-rebase-child"

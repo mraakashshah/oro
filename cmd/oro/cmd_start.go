@@ -163,16 +163,22 @@ func currentRepoRoot() string {
 	if err != nil {
 		return "."
 	}
+	start := cwd
 	for {
-		if fileExists(filepath.Join(cwd, ".git")) || fileExists(filepath.Join(cwd, "go.mod")) {
+		if pathExists(filepath.Join(cwd, ".git")) || fileExists(filepath.Join(cwd, "go.mod")) {
 			return cwd
 		}
 		parent := filepath.Dir(cwd)
 		if parent == cwd {
-			return cwd
+			return start
 		}
 		cwd = parent
 	}
+}
+
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // cleanEnvForDaemon returns a copy of env with vars that should not leak
@@ -870,20 +876,6 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers, maxWorkers int, 
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "dispatcher stopped")
 	return nil
-}
-
-// absoluteBeadsDir returns the absolute path to the beads directory
-// for the current project (respects stealth mode).
-func absoluteBeadsDir() (string, error) {
-	repoRoot, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("get working dir: %w", err)
-	}
-	paths, err := ResolvePaths(repoRoot)
-	if err != nil {
-		return "", fmt.Errorf("resolve paths: %w", err)
-	}
-	return paths.BeadsDir, nil
 }
 
 // bootstrapOroDir creates the oro state directory with 0700 permissions.

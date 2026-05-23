@@ -58,7 +58,7 @@ func TestUninstall_CleansGlobalGitignore(t *testing.T) {
 	oroHome := t.TempDir()
 	gitignorePath := filepath.Join(t.TempDir(), "gitignore_global")
 
-	content := "# user entries\n*.log\n\n# Oro / Beads (managed by oro init)\n" + beadsDirName + "/\n" + beadsDirName + "\n.oro/\n.dolt/\n"
+	content := "# user entries\n*.log\n\n# Oro / Beads (managed by oro init)\n.beads/\n.beads\n.oro/\n.dolt/\n"
 	if err := os.WriteFile(gitignorePath, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -84,6 +84,11 @@ func TestUninstall_CleansGlobalGitignore(t *testing.T) {
 	for _, entry := range oroGitignoreEntries() {
 		if strings.Contains(string(cleaned), entry) {
 			t.Errorf("expected entry %q to be removed from gitignore", entry)
+		}
+	}
+	for _, entry := range []string{".beads/", ".beads", ".dolt/"} {
+		if strings.Contains(string(cleaned), entry) {
+			t.Errorf("expected legacy entry %q to be removed from gitignore", entry)
 		}
 	}
 

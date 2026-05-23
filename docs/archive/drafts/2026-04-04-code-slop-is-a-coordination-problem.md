@@ -1,6 +1,6 @@
 # Code Slop Is a Coordination Problem
 
-Thirty minutes into a coding session, the agent starts drifting. The function signatures stop matching the architecture it established twenty minutes ago. The variable names contradict the conventions from ten minutes ago. The code still compiles. It just isn't what you asked for anymore.
+Thirty minutes into a coding session, the agent starts drifting. The code still compiles. It just isn't what you asked for anymore.
 
 I watched this happen dozens of times at Wyndly, shipping production features with an LLM coding agent in long single-agent sessions. The pattern was always the same: sharp start, clean decisions, then a slow decay as the context window filled with abandoned approaches, stale error messages, and files the agent read once and never referenced again. Every token of noise competing with the tokens that matter.
 

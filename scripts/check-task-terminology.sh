@@ -11,8 +11,7 @@ require_readme_glossary() {
 	local missing=0
 	for pattern in \
 		'^### Task Terminology$' \
-		'\*\*Task:\*\* preferred public term for an Oro work item' \
-		'\*\*Bead:\*\* legacy/internal term' \
+		'\*\*Task:\*\* an Oro work item' \
 		"\\*\\*Task type:\\*\\* the \`type\` field"; do
 		if ! rg -q "$pattern" "$readme"; then
 			printf 'terminology: README glossary missing pattern: %s\n' "$pattern" >&2
@@ -25,7 +24,7 @@ require_readme_glossary() {
 scan_files() {
 	local files=("$@")
 	local normal_commands='create|show|update|close|reopen|defer|undefer|list|status|ready|blocked|closed|dep|deps|tag|meta|note|comment|search|export|import|doctor|work'
-	local public_bead_cli_regex='\boro bead(?![[:space:]]+migrate-from-dolt)\b'
+	local public_bead_cli_regex='\boro bead\b'
 	local command_regex='\boro bead[[:space:]]+('"$normal_commands"')\b'
 	local shell_command_regex='(?s)(^|[[:space:]])["'\'']?\$[A-Za-z_][A-Za-z0-9_]*["'\'']?[[:space:]]+bead[[:space:]]+('"$normal_commands"')\b'
 	local argv_command_regex='(?s)["'\'']bead["'\''][[:space:]]*,[[:space:]]*["'\'']('"$normal_commands"')["'\'']'
@@ -39,21 +38,19 @@ scan_files() {
 	fi
 
 	if rg -n -U --pcre2 "$command_regex" "${files[@]}"; then
-		printf "terminology: public docs/prompts must use \`oro task\` for normal work-item operations; \`oro bead migrate-from-dolt\` remains migration-only.\n" >&2
+		printf "terminology: public docs/prompts must use \`oro task\` for work-item operations.\n" >&2
 		bad=1
 	fi
 	if rg -n -U --pcre2 "$shell_command_regex" "${files[@]}"; then
 		printf "terminology: active scripts must not invoke normal work-item operations through shell-split \`oro bead\`; use \`oro task\`.\n" >&2
 		bad=1
 	fi
-	if rg -n -U --pcre2 "$public_bead_cli_regex" "${files[@]}" |
-		rg -v '(^|/)docs/runbooks/(beadstore-|migrate-bd-)' |
-		rg -vi 'internal|archive|archived|storage|compatibility|migration|legacy|historical'; then
+	if rg -n -U --pcre2 "$public_bead_cli_regex" "${files[@]}"; then
 		printf "terminology: public CLI copy must not expose \`oro bead\` as a normal workflow; bead wording needs an explicit internal, archive, storage, compatibility, or migration reason.\n" >&2
 		bad=1
 	fi
 	if rg -n -U --pcre2 "$argv_command_regex" "${files[@]}" | rg -v '(^|/)(architect_router|notify_manager_on_bead_create|bd_create_notifier|pre_compact)\.py:'; then
-		printf "terminology: active hooks/prompts must not invoke normal work-item operations through argv-form \`oro bead\`; use \`oro task\` unless the file is an explicit legacy compatibility parser.\n" >&2
+		printf "terminology: active hooks/prompts must not invoke work-item operations through argv-form \`oro bead\`; use \`oro task\`.\n" >&2
 		bad=1
 	fi
 	if rg -n --pcre2 "$docs_regex" "${files[@]}"; then
@@ -123,7 +120,7 @@ scan_runtime_command_comments() {
 		return 0
 	fi
 	if rg -n -U --pcre2 "$command_regex" "${files[@]}"; then
-		printf "terminology: current runtime comments must use \`oro task\` for normal work-item command paths; \`oro bead migrate-from-dolt\` remains migration-only.\n" >&2
+		printf "terminology: current runtime comments must use \`oro task\` for work-item command paths.\n" >&2
 		bad=1
 	fi
 	if rg -n --pcre2 "$stale_runtime_comment_regex" "${files[@]}"; then

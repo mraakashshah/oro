@@ -12,6 +12,7 @@ func TestLegacySourceFilesDeleted(t *testing.T) {
 	legacyFiles := []string{
 		"cmd/oro/cmd_dolt.go",
 		"cmd/oro/cmd_bd.go",
+		"cmd/oro/dolt.go",
 		"pkg/dispatcher/dolt_recovery.go",
 		"pkg/dispatcher/beadsource.go",
 		"cmd/oro/port_registry.go",

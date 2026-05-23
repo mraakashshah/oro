@@ -10,13 +10,13 @@ import (
 	"oro/pkg/protocol"
 )
 
-// beadsDirName and worktreesDirName are the conventional relative directory names
-// used when walking directory trees to locate project roots.  Walk utilities
+// taskDataDirName and worktreesDirName are the conventional relative directory names
+// used when walking directory trees to locate project roots. Walk utilities
 // reference these constants instead of string literals so that the grep-based
 // acceptance check (which enforces all call-sites use ProjectPaths) can exclude
 // this file and still pass.
 const (
-	beadsDirName     = ".beads"
+	taskDataDirName  = "tasks"
 	worktreesDirName = ".worktrees"
 )
 
@@ -83,7 +83,7 @@ func ResolveProjectDBPaths() (*Paths, error) {
 type ProjectPaths struct {
 	Mode                    string // "standard" | "stealth"
 	RepoRoot                string // absolute path to repo root
-	BeadsDir                string // local beads dir or ~/.oro/projects/s-<hash>/beads/
+	BeadsDir                string // task data dir; field name is retained for internal compatibility.
 	WorktreesDir            string // .worktrees/ or ~/.oro/projects/s-<hash>/worktrees/
 	OroDocsDir              string // docs/ or ~/.oro/projects/s-<hash>/docs/
 	QualityGate             string // scripts/quality_gate.sh or ~/.oro/projects/s-<hash>/quality_gate.sh
@@ -161,7 +161,7 @@ func standardProjectPaths(repoRoot string) ProjectPaths {
 	return ProjectPaths{
 		Mode:                    "standard",
 		RepoRoot:                repoRoot,
-		BeadsDir:                filepath.Join(repoRoot, beadsDirName),
+		BeadsDir:                filepath.Join(repoRoot, protocol.OroDir, taskDataDirName),
 		WorktreesDir:            filepath.Join(repoRoot, ".worktrees"),
 		OroDocsDir:              filepath.Join(repoRoot, "docs"),
 		QualityGate:             filepath.Join(repoRoot, "scripts", "quality_gate.sh"),
@@ -179,7 +179,7 @@ func stealthProjectPaths(repoRoot, stealthDir string) ProjectPaths {
 	return ProjectPaths{
 		Mode:                    "stealth",
 		RepoRoot:                repoRoot,
-		BeadsDir:                filepath.Join(stealthDir, "beads"),
+		BeadsDir:                filepath.Join(stealthDir, taskDataDirName),
 		WorktreesDir:            filepath.Join(stealthDir, "worktrees"),
 		OroDocsDir:              filepath.Join(stealthDir, "docs"),
 		QualityGate:             filepath.Join(stealthDir, "quality_gate.sh"),

@@ -290,7 +290,7 @@ and current limitations. Case B (interactive Codex sessions) is deferred to a fu
 oro uninstall
 ```
 
-Removes the binary, `~/.oro/`, launchd agents, legacy `.beads` symlinks in known projects, `.oro/` anchor dirs, oro-managed git hooks (restores `.user` backups), and oro entries from the global gitignore. Use `--force` to skip the confirmation prompt, or `--keep-data` to preserve `~/.oro/` (databases, task history).
+Removes the binary, `~/.oro/`, launchd agents, `.oro/` anchor dirs, oro-managed git hooks (restores `.user` backups), and oro entries from the global gitignore. Use `--force` to skip the confirmation prompt, or `--keep-data` to preserve `~/.oro/` (databases, task history).
 
 ### Build from Source
 
@@ -454,8 +454,7 @@ Work items tracked by the native `oro task` CLI. Each task has a title, descript
 
 ### Task Terminology
 
-- **Task:** preferred public term for an Oro work item.
-- **Bead:** legacy/internal term still visible in storage, historical docs, compatibility CLI, and migration artifacts.
+- **Task:** an Oro work item.
 - **Task type:** the `type` field, whose values include `task`, `bug`, `epic`, `research`, and `chore`.
 
 ### Epics
@@ -539,7 +538,7 @@ oro/
 
 Oro is runtime-agnostic — workers dispatch tasks to whatever AI agent CLI is configured. Claude (`claude`) is the current primary runtime; Codex (`codex`) is also supported.
 
-The `--model` flag and the bead `model` field accept **tier names** (preferred) or provider-specific model names (accepted for explicit overrides):
+The `--model` flag and task `model` field accept **tier names** (preferred) or provider-specific model names (accepted for explicit overrides):
 
 | Tier | Claude model | Typical use |
 |------|-------------|-------------|
@@ -565,5 +564,4 @@ Oro builds on foundational work and ideas from the AI coding agent community:
 - **[Every's Compound Engineering](https://every.to/guides/compound-engineering)** — Making each unit of work compound into the next through systematic learning loops
 - **[Teresa Torres - Context Rot](https://www.producttalk.org/context-rot/)** — Why institutional knowledge decays and how to prevent it
 - **[Continuous Claude v3](https://github.com/parcadei/Continuous-Claude-v3)** — Context management pattern for persistent agent workflows using ledgers and handoffs
-- **[Steve Yegge - Beads](https://github.com/steveyegge/beads)** — Git-backed issue tracker designed as external memory for coding agents
 - **[Obra - Superpowers](https://github.com/obra/superpowers)** — Agent skill framework for building disciplined AI coding workflows

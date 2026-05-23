@@ -22,7 +22,6 @@ func TestREADMEContainsReferencesSection(t *testing.T) {
 	// Check for required links
 	requiredLinks := map[string]string{
 		"Continuous Claude v3":         "github.com/parcadei/Continuous-Claude-v3",
-		"Steve Yegge - Beads":          "github.com/steveyegge/beads",
 		"Obra - Superpowers":           "github.com/obra/superpowers",
 		"Teresa Torres - Context Rot":  "https://www.producttalk.org/context-rot/",
 		"Every's Compound Engineering": "every.to/guides/compound-engineering",

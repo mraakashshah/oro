@@ -173,20 +173,20 @@ make build
 
 **Note:** `./oro stop` requires an interactive terminal. In agent/non-TTY contexts, use `ORO_HUMAN_CONFIRMED=1 ./oro stop --force`.
 
-## Native Beadstore Errors During Monitoring
+## Native Task Store Errors During Monitoring
 
 **NEVER run `force-initialization commands`.** It destroys all task history. This has happened 3 times.
 
-When native beadstore errors occur during observation:
+When native task-store errors occur during observation:
 
 1. Inspect `./oro status`, logs, and event output for the failing component.
 2. Verify the active SQLite state path and run `./oro task ready`,
    `./oro task blocked`, and `./oro task show <id>` directly.
 3. If the store is damaged, follow `docs/runbooks/beadstore-recovery.md` and
-   restore only from reviewed JSONL or SQLite backups.
+   restore only from reviewed SQLite backups.
 4. If still broken: **ask the user**
 
-Do not restart or repair Dolt from Oro. Don't panic. Don't nuke.
+Don't panic. Don't nuke.
 
 ## Context Management
 

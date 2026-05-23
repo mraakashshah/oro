@@ -17,13 +17,13 @@ func TestLoadMetadataSchemaNoConfig(t *testing.T) {
 	dir := t.TempDir()
 	schema := LoadMetadataSchema(dir)
 	if schema != nil {
-		t.Fatal("expected nil schema when no .beads/config.yaml")
+		t.Fatal("expected nil schema when no task metadata config exists")
 	}
 }
 
 func TestLoadMetadataSchemaNoValidation(t *testing.T) {
 	dir := t.TempDir()
-	beadsDir := filepath.Join(dir, ".beads")
+	beadsDir := filepath.Join(dir, ".oro", "tasks")
 	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestLoadMetadataSchemaNoValidation(t *testing.T) {
 
 func TestLoadMetadataSchemaBasic(t *testing.T) {
 	dir := t.TempDir()
-	beadsDir := filepath.Join(dir, ".beads")
+	beadsDir := filepath.Join(dir, ".oro", "tasks")
 	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -125,9 +125,9 @@ validation:
 func TestLoadMetadataSchemaRedirect(t *testing.T) {
 	dir := t.TempDir()
 
-	// Create the actual beads dir elsewhere
-	actualBeads := filepath.Join(dir, "actual-beads")
-	if err := os.MkdirAll(actualBeads, 0o755); err != nil {
+	// Create the actual task metadata dir elsewhere.
+	actualTasks := filepath.Join(dir, "actual-tasks")
+	if err := os.MkdirAll(actualTasks, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	config := `
@@ -140,16 +140,16 @@ validation:
         values: [dev, staging, prod]
         required: true
 `
-	if err := os.WriteFile(filepath.Join(actualBeads, "config.yaml"), []byte(config), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(actualTasks, "config.yaml"), []byte(config), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Create .beads/ with redirect
-	beadsDir := filepath.Join(dir, ".beads")
+	// Create task metadata directory with redirect
+	beadsDir := filepath.Join(dir, ".oro", "tasks")
 	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(beadsDir, "redirect"), []byte("../actual-beads"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(beadsDir, "redirect"), []byte("../../actual-tasks"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -238,7 +238,7 @@ func TestSortedFieldNames(t *testing.T) {
 
 func TestDefaultModeIsNone(t *testing.T) {
 	dir := t.TempDir()
-	beadsDir := filepath.Join(dir, ".beads")
+	beadsDir := filepath.Join(dir, ".oro", "tasks")
 	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestLoadIssuePrefixEmpty(t *testing.T) {
 
 func TestLoadIssuePrefixPrefersConfig(t *testing.T) {
 	dir := t.TempDir()
-	beadsDir := filepath.Join(dir, ".beads")
+	beadsDir := filepath.Join(dir, ".oro", "tasks")
 	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -285,26 +285,22 @@ validation:
 	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(config), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), []byte(`{"dolt_database":"beads_vv"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
 	if got := LoadIssuePrefix(dir); got != "mg" {
 		t.Fatalf("LoadIssuePrefix() = %q, want %q", got, "mg")
 	}
 }
 
-func TestLoadIssuePrefixFallsBackToMetadata(t *testing.T) {
+func TestLoadIssuePrefixIgnoresLegacyMetadataFallback(t *testing.T) {
 	dir := t.TempDir()
-	beadsDir := filepath.Join(dir, ".beads")
+	beadsDir := filepath.Join(dir, ".oro", "tasks")
 	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), []byte(`{"dolt_database":"beads_mg"}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), []byte(`{"legacy_database":"tasks_mg"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	if got := LoadIssuePrefix(dir); got != "mg" {
-		t.Fatalf("LoadIssuePrefix() = %q, want %q", got, "mg")
+	if got := LoadIssuePrefix(dir); got != "" {
+		t.Fatalf("LoadIssuePrefix() = %q, want empty without config issue-prefix", got)
 	}
 }

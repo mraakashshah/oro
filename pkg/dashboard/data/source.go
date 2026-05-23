@@ -18,7 +18,7 @@ import (
 type SourceMode int
 
 const (
-	SourceJSONL SourceMode = iota // Legacy: read from .beads/issues.jsonl (or --path)
+	SourceJSONL SourceMode = iota // Read from an explicit JSONL path.
 	SourceCLI                     // Preferred: read from beadstore.Store
 )
 

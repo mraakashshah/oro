@@ -67,11 +67,6 @@
 {"query":"What is the purpose of doctor in this codebase?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
 {"query":"What is the purpose of doctor in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
 {"query":"What is the purpose of doctor in this codebase?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
-{"query":"How does recover-dolt interact with other components here?","candidate_memory_id":161,"relevant":true,"source":"anchor"}
-{"query":"How does recover-dolt interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
-{"query":"How does recover-dolt interact with other components here?","candidate_memory_id":610,"relevant":false,"source":"distractor"}
-{"query":"How does recover-dolt interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
-{"query":"How does recover-dolt interact with other components here?","candidate_memory_id":538,"relevant":false,"source":"distractor"}
 {"query":"Describe the design decision around corrupt.","candidate_memory_id":161,"relevant":true,"source":"anchor"}
 {"query":"Describe the design decision around corrupt.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
 {"query":"Describe the design decision around corrupt.","candidate_memory_id":610,"relevant":false,"source":"distractor"}
@@ -667,11 +662,6 @@
 {"query":"What is the purpose of committed in this codebase?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
 {"query":"What is the purpose of committed in this codebase?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
 {"query":"What is the purpose of committed in this codebase?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
-{"query":"How does `.beads/` interact with other components here?","candidate_memory_id":534,"relevant":true,"source":"anchor"}
-{"query":"How does `.beads/` interact with other components here?","candidate_memory_id":305,"relevant":false,"source":"distractor"}
-{"query":"How does `.beads/` interact with other components here?","candidate_memory_id":233,"relevant":false,"source":"distractor"}
-{"query":"How does `.beads/` interact with other components here?","candidate_memory_id":161,"relevant":false,"source":"distractor"}
-{"query":"How does `.beads/` interact with other components here?","candidate_memory_id":466,"relevant":false,"source":"distractor"}
 {"query":"Describe the design decision around directory.","candidate_memory_id":534,"relevant":true,"source":"anchor"}
 {"query":"Describe the design decision around directory.","candidate_memory_id":305,"relevant":false,"source":"distractor"}
 {"query":"Describe the design decision around directory.","candidate_memory_id":233,"relevant":false,"source":"distractor"}

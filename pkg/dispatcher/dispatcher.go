@@ -448,7 +448,7 @@ type Config struct {
 	SocketPath              string        // UDS socket path.
 	DBPath                  string        // SQLite database path.
 	RepoRoot                string        // Absolute path to the repository root. Used so oro task commands run from the right directory even when the process is started from a worktree. Falls back to os.Getwd() if empty.
-	BeadsDir                string        // Path to the beads directory (defaults to protocol.BeadsDir when empty). Set from ProjectPaths.BeadsDir for stealth-mode support.
+	BeadsDir                string        // Internal task data directory (defaults to protocol.BeadsDir when empty). Set from ProjectPaths.BeadsDir for stealth-mode support.
 	MaxWorkers              int           // Worker pool ceiling for auto-scale (default 10).
 	InitialWorkers          int           // Initial targetWorkers on startup (default: MaxWorkers).
 	AllowZeroWorkers        bool          // When true, InitialWorkers=0 is treated as an explicit target (not auto-defaulted) so daemon-only manual-worker mode keeps a zero baseline. Combined with MaxWorkers>0 in New(), this also seeds explicitScaleTarget so maybeAutoScale will not raise the target from zero.
@@ -466,8 +466,6 @@ type Config struct {
 	ReviewTimeout           time.Duration // Max time a reviewing worker can stall before STUCK_WORKER escalation (default 15m).
 	ReviewDeadGrace         time.Duration // Grace period before removing a reviewing worker whose ops review subprocess has exited (default 30s).
 	ManualIntegration       bool          // If true, completed worker branches wait for manual coordinator integration instead of auto-merge.
-	BackupInterval          time.Duration // Interval between full-state JSONL backups to .beads/backup/full-state.jsonl (default 5m).
-	DoltHealthInterval      time.Duration // Interval between dolt reachability probes in heartbeatLoop (default 30s).
 	Estimator               BeadEstimator // LLM-based bead complexity estimator (default NewBeadEstimator()).
 	WorkerProgram           string        // Absolute path to worker-program.md. Defaults to <RepoRoot>/worker-program.md.
 	ReviewPatterns          string        // Absolute path for review patterns. Populated from ProjectPaths.ReviewPatterns.
@@ -541,8 +539,6 @@ func (c *Config) withDefaults() Config {
 	out.PaneInactivityTimeout = durationDefault(out.PaneInactivityTimeout, 10*time.Minute)
 	out.ReviewTimeout = durationDefault(out.ReviewTimeout, 15*time.Minute)
 	out.ReviewDeadGrace = durationDefault(out.ReviewDeadGrace, 30*time.Second)
-	out.BackupInterval = durationDefault(out.BackupInterval, 5*time.Minute)
-	out.DoltHealthInterval = durationDefault(out.DoltHealthInterval, 30*time.Second)
 	out.CheckpointThreshold = intDefault(out.CheckpointThreshold, 75)
 	if out.Estimator == nil {
 		out.Estimator = NewBeadEstimator()
@@ -599,7 +595,8 @@ type Dispatcher struct {
 	cardStore cards.Store // dual-write mirror; nil means D.3 shim disabled
 	codeIndex CodeIndex   // interface for FTS5 code search (nil means no search)
 	// beadSourceMode is the normalized ORO_BEADSOURCE_MODE captured at startup.
-	// It controls legacy bd/Dolt safety loops that must not run after sqlite cutover.
+	// It controls whether the dispatcher watches a filesystem task-data source
+	// or the native SQLite store.
 	beadSourceMode string
 
 	// embedder fields — populated by the warm-up goroutine (next bead).
@@ -628,7 +625,6 @@ type Dispatcher struct {
 
 	mu               sync.Mutex
 	reconcilingScale atomic.Bool // prevents concurrent reconcileScale() calls (oro-ovpc.1)
-	doltRecovering   atomic.Bool // pauses tryAssign while dolt crash-recovery is in progress (oro-cb6y)
 
 	state                       State
 	listener                    net.Listener
@@ -653,7 +649,8 @@ type Dispatcher struct {
 	// overridable in tests.
 	shutdownRunner CommandRunner
 
-	// beadsDir is the directory to watch for bead changes (defaults to protocol.BeadsDir)
+	// beadsDir is the internal task data directory to watch when using a
+	// filesystem-backed source (defaults to protocol.BeadsDir).
 	beadsDir string
 
 	// panesDir is the directory to watch for pane context_pct files (defaults to ~/.oro/panes)
@@ -677,10 +674,6 @@ type Dispatcher struct {
 	// lastRecoveryAssignmentBlockLog throttles noisy assignment-block events while
 	// open recovery quarantines keep automation stopped.
 	lastRecoveryAssignmentBlockLog time.Time
-
-	// lastBackupBeadCount stores the bead count at the time of the last change-detection backup.
-	// Used by maybeChangeDetectionBackup to detect when the queue size changes by >=5.
-	lastBackupBeadCount int
 
 	// nowFunc allows tests to control time.
 	nowFunc func() time.Time
@@ -2364,7 +2357,7 @@ func (d *Dispatcher) handleEpicQGInfraFailure(ctx context.Context, epicID, worke
 }
 
 func epicQGFixAcceptance(epicID, epicBranch string) string {
-	return fmt.Sprintf("Test: epic QG failure for %s | Cmd: git branch --list %s | grep -q '^..%s$' && ORO_QG_CONTEXT=local ./scripts/quality_gate.sh | Assert: quality gate passes on %s without creating another missing-AC child bead.\nRead: scripts/quality_gate.sh, .beads/beads_oro\nEdges: reproduce the failing QG on %s before changing code; do not close %s directly; fix the underlying QG failure, then let the dispatcher retry epic auto-close.",
+	return fmt.Sprintf("Test: epic QG failure for %s | Cmd: git branch --list %s | grep -q '^..%s$' && ORO_QG_CONTEXT=local ./scripts/quality_gate.sh | Assert: quality gate passes on %s without creating another missing-AC child task.\nRead: scripts/quality_gate.sh, docs/runbooks/beadstore-recovery.md\nEdges: reproduce the failing QG on %s before changing code; do not close %s directly; fix the underlying QG failure, then let the dispatcher retry epic auto-close.",
 		epicID, epicBranch, epicBranch, epicBranch, epicBranch, epicID)
 }
 
@@ -2835,7 +2828,7 @@ func (d *Dispatcher) ffMergeEpicBranch(ctx context.Context, epicID, workerID, ta
 func rebaseChildAcceptance(epicID, epicBranch, targetBranch string) string {
 	return strings.Join([]string{
 		fmt.Sprintf("Test: epic %s rebase task keeps %s integration-ready for %s", epicID, epicBranch, targetBranch),
-		fmt.Sprintf("Cmd: tmp=$(mktemp -d) && git fetch --all --prune && git worktree add \"$tmp\" %s && git -C \"$tmp\" rebase %s && git worktree remove \"$tmp\" && go test ./...", epicBranch, targetBranch),
+		fmt.Sprintf("Cmd: git fetch --all --prune && git checkout %s && git rebase %s && go test ./...", epicBranch, targetBranch),
 		fmt.Sprintf("Assert: %s is rebased onto %s, tests pass, and the epic can retry close without requiring the original merge failure to still exist.", epicBranch, targetBranch),
 		"Read: pkg/dispatcher/dispatcher.go:ffMergeEpicBranch, pkg/dispatcher/dispatcher_test.go:TestEpicFFMergeFailureCreatesActionableRebaseChild",
 	}, " | ")
@@ -3953,11 +3946,10 @@ func (d *Dispatcher) handleDirectiveWithACK(ctx context.Context, conn net.Conn, 
 
 // --- Priority queue / assignment loop ---
 
-// assignLoop watches the legacy beads directory and assigns work when files
-// change. Native sqlite mode skips that watch so cutover daemons do not keep
-// bd/Dolt-era paths open.
+// assignLoop watches the filesystem task-data directory and assigns work when
+// files change. Native sqlite mode skips that watch.
 func (d *Dispatcher) assignLoop(ctx context.Context) {
-	if d.shouldSkipLegacyBeadsWatch() {
+	if d.shouldSkipTaskDataWatch() {
 		d.assignLoopPoll(ctx)
 		return
 	}
@@ -3990,7 +3982,7 @@ func (d *Dispatcher) assignLoop(ctx context.Context) {
 	}
 }
 
-func (d *Dispatcher) shouldSkipLegacyBeadsWatch() bool {
+func (d *Dispatcher) shouldSkipTaskDataWatch() bool {
 	return strings.EqualFold(strings.TrimSpace(d.beadSourceMode), "sqlite")
 }
 
@@ -4016,7 +4008,7 @@ func (d *Dispatcher) assignLoopIter(
 	case <-d.shutdownCh:
 		return true
 	case <-watcher.Events:
-		// File changed in .beads/ directory
+		// File changed in task-data directory.
 		d.callTryAssign(ctx)
 	case err := <-watcher.Errors:
 		if err != nil {
@@ -4272,12 +4264,6 @@ func (d *Dispatcher) isFocusedDescendant(ctx context.Context, parentID, focusedE
 func (d *Dispatcher) tryAssign(ctx context.Context) {
 	// Only assign in running state.
 	if d.GetState() != StateRunning {
-		return
-	}
-
-	// Pause assignment while dolt crash-recovery is in progress (oro-cb6y).
-	// Lock-free: doltRecovering is an atomic.Bool.
-	if d.doltRecovering.Load() {
 		return
 	}
 

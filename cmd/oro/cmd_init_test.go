@@ -702,94 +702,10 @@ func TestOroInit(t *testing.T) {
 	})
 }
 
-// --- Beads symlink tests (oro-6v9z) ---
-
-func TestSetupBeadsSymlink(t *testing.T) {
-	t.Run("creates symlink from project .beads to oroHome beads dir", func(t *testing.T) {
-		projectDir := t.TempDir()
-		beadsTarget := filepath.Join(t.TempDir(), "beads")
-
-		err := setupBeadsSymlink(projectDir, beadsTarget)
-		if err != nil {
-			t.Fatalf("setupBeadsSymlink failed: %v", err)
-		}
-
-		// Target directory should exist
-		info, err := os.Stat(beadsTarget)
-		if err != nil {
-			t.Fatalf("beads target dir not created: %v", err)
-		}
-		if !info.IsDir() {
-			t.Error("beads target should be a directory")
-		}
-
-		// .beads in project should be a symlink
-		linkPath := filepath.Join(projectDir, ".beads")
-		linkTarget, err := os.Readlink(linkPath)
-		if err != nil {
-			t.Fatalf(".beads should be a symlink: %v", err)
-		}
-		if linkTarget != beadsTarget {
-			t.Errorf("symlink target = %q, want %q", linkTarget, beadsTarget)
-		}
-	})
-
-	t.Run("idempotent when symlink already correct", func(t *testing.T) {
-		projectDir := t.TempDir()
-		beadsTarget := filepath.Join(t.TempDir(), "beads")
-
-		// First call
-		if err := setupBeadsSymlink(projectDir, beadsTarget); err != nil {
-			t.Fatalf("first call failed: %v", err)
-		}
-
-		// Put a file in the beads dir to verify it survives
-		testFile := filepath.Join(beadsTarget, "issues.jsonl")
-		if err := os.WriteFile(testFile, []byte(`{"id":"test"}`), 0o644); err != nil { //nolint:gosec // test file
-			t.Fatalf("write test file: %v", err)
-		}
-
-		// Second call (idempotent)
-		if err := setupBeadsSymlink(projectDir, beadsTarget); err != nil {
-			t.Fatalf("second call failed: %v", err)
-		}
-
-		// File should survive
-		if _, err := os.Stat(testFile); err != nil {
-			t.Errorf("test file should survive idempotent re-run: %v", err)
-		}
-	})
-
-	t.Run("skips when .beads is a real directory", func(t *testing.T) {
-		projectDir := t.TempDir()
-		beadsTarget := filepath.Join(t.TempDir(), "beads")
-
-		// Pre-create .beads as a real directory with data
-		realBeads := filepath.Join(projectDir, ".beads")
-		if err := os.Mkdir(realBeads, 0o750); err != nil { //nolint:gosec // test directory
-			t.Fatalf("mkdir .beads: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(realBeads, "issues.jsonl"), []byte("data"), 0o644); err != nil { //nolint:gosec // test file
-			t.Fatalf("write file: %v", err)
-		}
-
-		// Should not error — just skip
-		if err := setupBeadsSymlink(projectDir, beadsTarget); err != nil {
-			t.Fatalf("should not error on existing real dir: %v", err)
-		}
-
-		// .beads should still be a real directory, not a symlink
-		_, err := os.Readlink(realBeads)
-		if err == nil {
-			t.Error(".beads should remain a real directory, not become a symlink")
-		}
-	})
-}
-
-func TestBootstrapProject_CreatesBeadsSymlink(t *testing.T) {
+func TestBootstrapProject_DoesNotCreateLegacyBeadsSymlink(t *testing.T) {
 	assets := testAssets()
 
-	t.Run("bootstrapProject creates beads symlink", func(t *testing.T) {
+	t.Run("bootstrapProject leaves project .beads absent", func(t *testing.T) {
 		projectDir := t.TempDir()
 		oroHome := t.TempDir()
 
@@ -798,16 +714,11 @@ func TestBootstrapProject_CreatesBeadsSymlink(t *testing.T) {
 			t.Fatalf("bootstrapProject failed: %v", err)
 		}
 
-		// .beads should be a symlink pointing to oroHome/projects/myproject/beads
-		linkPath := filepath.Join(projectDir, ".beads")
-		linkTarget, err := os.Readlink(linkPath)
-		if err != nil {
-			t.Fatalf(".beads should be a symlink: %v", err)
+		if _, err := os.Lstat(filepath.Join(projectDir, ".beads")); !os.IsNotExist(err) {
+			t.Fatalf("bootstrapProject created legacy .beads artifact; stat err=%v", err)
 		}
-
-		expectedTarget := filepath.Join(oroHome, "projects", "myproject", "beads")
-		if linkTarget != expectedTarget {
-			t.Errorf("symlink target = %q, want %q", linkTarget, expectedTarget)
+		if _, err := os.Stat(filepath.Join(oroHome, "projects", "myproject", "beads")); !os.IsNotExist(err) {
+			t.Fatalf("bootstrapProject created legacy beads store under ORO_HOME; stat err=%v", err)
 		}
 	})
 }
@@ -827,9 +738,14 @@ func TestEnsureGlobalGitignore(t *testing.T) {
 		}
 
 		content := string(data)
-		for _, entry := range []string{beadsDirName + "/", beadsDirName, ".oro/", ".dolt/"} {
+		for _, entry := range []string{".oro/"} {
 			if !strings.Contains(content, entry) {
 				t.Errorf("global gitignore should contain %q, got:\n%s", entry, content)
+			}
+		}
+		for _, entry := range []string{".beads/", ".beads", ".dolt/"} {
+			if strings.Contains(content, entry) {
+				t.Errorf("global gitignore should not contain legacy entry %q, got:\n%s", entry, content)
 			}
 		}
 	})
@@ -858,9 +774,14 @@ func TestEnsureGlobalGitignore(t *testing.T) {
 			t.Error("original content should be preserved")
 		}
 		// New entries added
-		for _, entry := range []string{beadsDirName + "/", beadsDirName, ".oro/", ".dolt/"} {
+		for _, entry := range []string{".oro/"} {
 			if !strings.Contains(content, entry) {
 				t.Errorf("global gitignore should contain %q, got:\n%s", entry, content)
+			}
+		}
+		for _, entry := range []string{".beads/", ".beads", ".dolt/"} {
+			if strings.Contains(content, entry) {
+				t.Errorf("global gitignore should not contain legacy entry %q, got:\n%s", entry, content)
 			}
 		}
 	})
@@ -869,7 +790,7 @@ func TestEnsureGlobalGitignore(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, ".gitignore_global")
 
-		existing := beadsDirName + "/\n.oro/\n"
+		existing := ".oro/\n"
 		if err := os.WriteFile(path, []byte(existing), 0o644); err != nil { //nolint:gosec // test file
 			t.Fatal(err)
 		}
@@ -884,24 +805,12 @@ func TestEnsureGlobalGitignore(t *testing.T) {
 		}
 
 		content := string(data)
-		if strings.Count(content, beadsDirName+"/") != 1 {
-			t.Errorf("%s should appear exactly once, got:\n%s", beadsDirName+"/", content)
-		}
 		if strings.Count(content, ".oro/") != 1 {
 			t.Errorf(".oro/ should appear exactly once, got:\n%s", content)
 		}
-		// beads dir name without slash and .dolt/ should be added
-		if !strings.Contains(content, "\n"+beadsDirName+"\n") && !strings.HasPrefix(content, beadsDirName+"\n") {
-			// Just check it exists somewhere as a line
-			found := false
-			for _, line := range strings.Split(content, "\n") {
-				if strings.TrimSpace(line) == ".beads" {
-					found = true
-					break
-				}
-			}
-			if !found {
-				t.Errorf(".beads (no slash) should be added, got:\n%s", content)
+		for _, entry := range []string{".beads/", ".beads", ".dolt/"} {
+			if strings.Contains(content, entry) {
+				t.Errorf("legacy entry %q should not be added, got:\n%s", entry, content)
 			}
 		}
 	})
@@ -2039,37 +1948,6 @@ func TestBuildHookConfigContainsCompactTrigger(t *testing.T) {
 	if idxPctWriter >= idxCompact || idxCompact >= idxPruner {
 		t.Errorf("order wrong: context_pct_writer.py[%d] < compact_trigger.py[%d] < context_pruner.py[%d] not satisfied",
 			idxPctWriter, idxCompact, idxPruner)
-	}
-}
-
-func TestInitBeadsDB(t *testing.T) {
-	// Setup: create temporary project root and beads directory
-	projectRoot := t.TempDir()
-	beadsDir := t.TempDir()
-
-	// Create .beads symlink pointing to beads directory
-	beadsLink := filepath.Join(projectRoot, ".beads")
-	if err := os.Symlink(beadsDir, beadsLink); err != nil {
-		t.Fatalf("failed to create .beads symlink: %v", err)
-	}
-
-	// Verify symlink is followed by os.Stat (directory exists)
-	if info, err := os.Stat(beadsLink); err != nil {
-		t.Fatalf("os.Stat should follow symlink and find directory: %v", err)
-	} else if !info.IsDir() {
-		t.Fatal("os.Stat should return directory info for symlink")
-	}
-
-	// Call initBeadsDB - should detect existing beads directory and return early
-	initBeadsDB(projectRoot)
-
-	// Verify that bd init was NOT called by checking that beads.db doesn't exist
-	// (if it existed, bd init would have created it)
-	dbPath := filepath.Join(projectRoot, ".beads", "beads.db")
-	if _, err := os.Stat(dbPath); err == nil {
-		t.Error("beads.db should not exist after initBeadsDB with existing beads directory")
-	} else if !os.IsNotExist(err) {
-		t.Fatalf("unexpected error checking beads.db: %v", err)
 	}
 }
 

@@ -4,10 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"time"
@@ -430,12 +427,6 @@ func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
 	gcTicker := time.NewTicker(1 * time.Hour)
 	defer gcTicker.Stop()
 
-	backupTicker := time.NewTicker(d.cfg.BackupInterval)
-	defer backupTicker.Stop()
-
-	doltHealthTicker := time.NewTicker(d.cfg.DoltHealthInterval)
-	defer doltHealthTicker.Stop()
-
 	var restartCount int
 	var lastPanicTime time.Time
 
@@ -455,110 +446,17 @@ func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
 				return true
 			case <-ticker.C:
 				d.callCheckHeartbeats(ctx)
-				d.maybeChangeDetectionBackup(ctx)
 			case <-pruneTicker.C:
 				d.pruneStaleTracking(ctx)
 				d.detectAndResolveDuplicateActiveAssignments(ctx)
 			case <-gcTicker.C:
 				d.gcWorktrees(ctx)
-			case <-backupTicker.C:
-				d.backupFullState(ctx)
-			case <-doltHealthTicker.C:
-				d.maybeRecoverDolt(ctx)
 			}
 			return false
 		}()
 		if exit {
 			return
 		}
-	}
-}
-
-// backupFullState runs oro bead export and writes all issues (open + closed) to
-// the legacy beads backup path. Native sqlite mode skips this path so cutover
-// daemons do not touch bd/Dolt-era state after migration.
-func (d *Dispatcher) backupFullState(ctx context.Context) {
-	if d.shouldSkipLegacyBeadsWatch() {
-		return
-	}
-
-	data, err := d.beads.Export(ctx)
-	if err != nil {
-		slog.WarnContext(ctx, "full_state_backup_export_failed", "error", err.Error())
-		return
-	}
-	if len(data) == 0 {
-		return
-	}
-	backupDir := filepath.Join(d.beadsDir, "backup")
-	if err := os.MkdirAll(backupDir, 0o755); err != nil { //nolint:gosec // backupDir derives from trusted beadsDir
-		slog.WarnContext(ctx, "full_state_backup_mkdir_failed", "error", err.Error())
-		return
-	}
-	backupPath := filepath.Join(backupDir, "full-state.jsonl")
-	if err := writeFileAtomic(backupPath, data, 0o644); err != nil { //nolint:gosec // backupPath derives from trusted beadsDir
-		slog.WarnContext(ctx, "full_state_backup_write_failed", "error", err.Error())
-	}
-}
-
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write temp file: %w", err)
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("chmod temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp file: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil { //nolint:gosec // path derives from trusted dispatcher beadsDir
-		return fmt.Errorf("rename temp file: %w", err)
-	}
-	cleanup = false
-	return nil
-}
-
-// maybeChangeDetectionBackup triggers a full backup when the bead count changes by >=5
-// since the last backup. This provides a faster detection mechanism for large queue
-// changes compared to the fixed-interval backup. The current bead count is computed as
-// cachedQueueDepth + (beads.InProgress count or 0 on error). If abs(delta) >= 5,
-// backupFullState is called and lastBackupBeadCount is updated.
-func (d *Dispatcher) maybeChangeDetectionBackup(ctx context.Context) {
-	d.mu.Lock()
-	cachedDepth := d.cachedQueueDepth
-	lastCount := d.lastBackupBeadCount
-	d.mu.Unlock()
-
-	// Get in-progress count; if it fails, use cachedDepth alone as a best-effort estimate.
-	inProgressBeads, err := d.beads.InProgress(ctx)
-	if err != nil {
-		inProgressBeads = []protocol.Bead{}
-	}
-
-	currentCount := cachedDepth + len(inProgressBeads)
-	delta := currentCount - lastCount
-
-	// Trigger backup if absolute delta >= 5
-	if delta >= 5 || delta <= -5 {
-		d.backupFullState(ctx)
-		d.mu.Lock()
-		d.lastBackupBeadCount = currentCount
-		d.mu.Unlock()
 	}
 }
 

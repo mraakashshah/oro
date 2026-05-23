@@ -560,7 +560,7 @@ def _format_output(stale: list[dict], merged: list[dict], learnings: list[dict])
 
 def main() -> None:
     # Worker agents get minimal context: superpowers + skills only.
-    # Check first to skip all subprocess calls (prevents dolt grandchild pipe hangs).
+    # Check first to skip all subprocess calls in worker sessions.
     is_worker = os.environ.get("ORO_WORKER") == "1"
     if is_worker:
         with contextlib.suppress(json.JSONDecodeError, ValueError):

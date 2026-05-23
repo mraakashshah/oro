@@ -11,7 +11,7 @@ import (
 
 const (
 	// launchAgentLabel is the reverse-DNS label used for the launchd plist.
-	launchAgentLabel = "dev.getoro.dolt"
+	launchAgentLabel = "dev.getoro.oro"
 )
 
 // errLaunchctlNotFound is returned by runLaunchctl when launchctl is not in PATH.

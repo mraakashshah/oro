@@ -591,8 +591,7 @@ func TestTaskTerminologyGuard(t *testing.T) {
 				}
 				readme := strings.Join([]string{
 					"### Task Terminology",
-					"- **Task:** preferred public term for an Oro work item.",
-					"- **Bead:** legacy/internal term still visible in storage, historical docs, compatibility CLI, and migration artifacts.",
+					"- **Task:** an Oro work item.",
 					"- **Task type:** the `type` field, whose values include `task`, `bug`, `epic`, `research`, and `chore`.",
 					"",
 				}, "\n")
@@ -764,8 +763,7 @@ func TestTaskTerminologyGuard(t *testing.T) {
 		}
 		readme := strings.Join([]string{
 			"### Task Terminology",
-			"- **Task:** preferred public term for an Oro work item.",
-			"- **Bead:** legacy/internal term still visible in storage, historical docs, compatibility CLI, and migration artifacts.",
+			"- **Task:** an Oro work item.",
 			"- **Task type:** the `type` field, whose values include `task`, `bug`, `epic`, `research`, and `chore`.",
 			"",
 		}, "\n")
@@ -835,11 +833,10 @@ func TestTaskTerminologyGuard(t *testing.T) {
 		}
 	})
 
-	t.Run("allows storage and migration compatibility terms", func(t *testing.T) {
+	t.Run("allows internal storage compatibility terms", func(t *testing.T) {
 		allowedDoc := filepath.Join(t.TempDir(), "allowed.md")
 		content := strings.Join([]string{
 			"Storage keeps bead_id and beadstore names for compatibility.",
-			"Migration operators still run `oro bead migrate-from-dolt --help`.",
 			"Historical bd/Dolt backups remain audit evidence.",
 			"",
 		}, "\n")
@@ -981,8 +978,7 @@ func newTerminologyGuardTempRepo(t *testing.T, script string) string {
 	}
 	readme := strings.Join([]string{
 		"### Task Terminology",
-		"- **Task:** preferred public term for an Oro work item.",
-		"- **Bead:** legacy/internal term still visible in storage, historical docs, compatibility CLI, and migration artifacts.",
+		"- **Task:** an Oro work item.",
 		"- **Task type:** the `type` field, whose values include `task`, `bug`, `epic`, `research`, and `chore`.",
 		"",
 	}, "\n")

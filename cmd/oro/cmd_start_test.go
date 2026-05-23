@@ -150,6 +150,59 @@ func TestDaemonSpawnerUsesResolvedSelfExecutable(t *testing.T) {
 	}
 }
 
+func TestCurrentRepoRootRecognizesGitDirectory(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
+		t.Fatalf("create .git directory: %v", err)
+	}
+	nested := filepath.Join(repoRoot, "subdir", "package")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("create nested directory: %v", err)
+	}
+	wantRoot, err := filepath.EvalSymlinks(repoRoot)
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(nested); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(origDir)
+	})
+
+	if got := currentRepoRoot(); got != wantRoot {
+		t.Fatalf("currentRepoRoot() = %q, want git root %q", got, wantRoot)
+	}
+}
+
+func TestCurrentRepoRootFallsBackToStartingDirectory(t *testing.T) {
+	startDir := t.TempDir()
+	wantDir, err := filepath.EvalSymlinks(startDir)
+	if err != nil {
+		t.Fatalf("resolve start directory: %v", err)
+	}
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(startDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(origDir)
+	})
+
+	if got := currentRepoRoot(); got != wantDir {
+		t.Fatalf("currentRepoRoot() = %q, want starting directory %q", got, wantDir)
+	}
+}
+
 func TestCodexHookConfigBlockReplacement(t *testing.T) {
 	hooksDir := filepath.Join(t.TempDir(), "hooks")
 	block := codexHookConfigBlock(hooksDir)
@@ -1312,42 +1365,6 @@ func containsEnvEntry(env []string, want string) bool {
 		}
 	}
 	return false
-}
-
-// TestAbsoluteBeadsDir verifies that absoluteBeadsDir returns an absolute path
-// ending in .beads, rooted at the current working directory.
-func TestAbsoluteBeadsDir(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	origDir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(tmpDir); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = os.Chdir(origDir)
-	})
-
-	got, err := absoluteBeadsDir()
-	if err != nil {
-		t.Fatalf("absoluteBeadsDir() error: %v", err)
-	}
-
-	if !filepath.IsAbs(got) {
-		t.Errorf("expected absolute path, got: %s", got)
-	}
-
-	// Resolve symlinks (macOS /var → /private/var) for comparison.
-	resolved, err := filepath.EvalSymlinks(tmpDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.Join(resolved, ".beads")
-	if got != want {
-		t.Errorf("absoluteBeadsDir() = %s, want %s", got, want)
-	}
 }
 
 // TestPollForSocketConnectCheck verifies that pollForSocket uses a UDS connect

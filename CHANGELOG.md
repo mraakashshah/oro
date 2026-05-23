@@ -157,12 +157,6 @@ Dispatcher/merge/protocol fixes landed alongside the overhaul, mostly self-filed
 - `fix(dispatcher)`: delete stale agent branches before worktree creation (oro-t6h7)
 - `fix(dispatcher)`: restore `resetOrphanedBeads` doc + cover startup prune (oro-t6h7)
 
-### Dolt health probe + recovery
-- `feat(dispatcher)`: `checkDoltHealth` — dolt-reachability probe (oro-ryco)
-- `feat(dispatcher)`: `recoverDolt` — backoff + escalation (oro-lh9u)
-- `feat(dispatcher)`: wire dolt probe + recovery into `heartbeatLoop` (oro-i3ky)
-- `feat(dispatcher)`: `maybeChangeDetectionBackup` for heartbeat-triggered backups
-
 ### OVERSIZED_BEAD guard fixes
 - `fix(protocol)`: strip parentheticals and handle semicolons in `CountDistinctModules` (oro-c6w9)
 - `fix(protocol)`: skip bare line numbers + symbol/non-path continuations (oro-vpjt)

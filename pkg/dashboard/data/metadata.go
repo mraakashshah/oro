@@ -1,7 +1,6 @@
 package data
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -38,30 +37,26 @@ type MetadataSchema struct {
 	Fields map[string]MetadataFieldSchema `yaml:"fields"`
 }
 
-// beadsConfig represents the top-level .beads/config.yaml structure,
+// taskConfig represents the top-level task metadata config structure,
 // only parsing the validation.metadata section we care about.
-type beadsConfig struct {
+type taskConfig struct {
 	IssuePrefix string `yaml:"issue-prefix"`
 	Validation  struct {
 		Metadata MetadataSchema `yaml:"metadata"`
 	} `yaml:"validation"`
 }
 
-type beadsMetadata struct {
-	DoltDatabase string `json:"dolt_database"`
-}
-
-// LoadMetadataSchema loads validation.metadata from .beads/config.yaml,
+// LoadMetadataSchema loads validation.metadata from the task metadata config,
 // resolving redirect if present. Returns nil if not configured.
-// An optional beadsDir argument overrides the default projectDir/.beads path.
+// An optional taskDataDir argument overrides the default projectDir/.oro/tasks path.
 //
 //oro:testonly
-func LoadMetadataSchema(projectDir string, beadsDir ...string) *MetadataSchema {
+func LoadMetadataSchema(projectDir string, taskDataDir ...string) *MetadataSchema {
 	bd := ""
-	if len(beadsDir) > 0 && beadsDir[0] != "" {
-		bd = beadsDir[0]
+	if len(taskDataDir) > 0 && taskDataDir[0] != "" {
+		bd = taskDataDir[0]
 	} else if projectDir != "" {
-		bd = filepath.Join(projectDir, ".beads")
+		bd = filepath.Join(projectDir, ".oro", "tasks")
 	}
 	if bd == "" {
 		return nil
@@ -75,7 +70,7 @@ func LoadMetadataSchema(projectDir string, beadsDir ...string) *MetadataSchema {
 		return nil
 	}
 
-	var cfg beadsConfig
+	var cfg taskConfig
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return nil
 	}
@@ -93,17 +88,16 @@ func LoadMetadataSchema(projectDir string, beadsDir ...string) *MetadataSchema {
 }
 
 // LoadIssuePrefix returns the configured issue prefix when it can be resolved
-// from the local Beads metadata. It prefers config.yaml and falls back to the
-// conventional dolt database name in metadata.json (beads_<prefix>).
-// An optional beadsDir argument overrides the default projectDir/.beads path.
+// from the local task metadata config.
+// An optional taskDataDir argument overrides the default projectDir/.oro/tasks path.
 //
 //oro:testonly
-func LoadIssuePrefix(projectDir string, beadsDir ...string) string {
+func LoadIssuePrefix(projectDir string, taskDataDir ...string) string {
 	bd := ""
-	if len(beadsDir) > 0 && beadsDir[0] != "" {
-		bd = beadsDir[0]
+	if len(taskDataDir) > 0 && taskDataDir[0] != "" {
+		bd = taskDataDir[0]
 	} else if projectDir != "" {
-		bd = filepath.Join(projectDir, ".beads")
+		bd = filepath.Join(projectDir, ".oro", "tasks")
 	}
 	if bd == "" {
 		return ""
@@ -113,7 +107,7 @@ func LoadIssuePrefix(projectDir string, beadsDir ...string) string {
 	configPath := filepath.Join(resolvedBeadsDir, "config.yaml")
 	raw, err := os.ReadFile(configPath)
 	if err == nil {
-		var cfg beadsConfig
+		var cfg taskConfig
 		if yaml.Unmarshal(raw, &cfg) == nil {
 			if prefix := strings.TrimSpace(cfg.IssuePrefix); prefix != "" {
 				return prefix
@@ -121,28 +115,11 @@ func LoadIssuePrefix(projectDir string, beadsDir ...string) string {
 		}
 	}
 
-	metadataPath := filepath.Join(resolvedBeadsDir, "metadata.json")
-	raw, err = os.ReadFile(metadataPath)
-	if err != nil {
-		return ""
-	}
-
-	var meta beadsMetadata
-	if json.Unmarshal(raw, &meta) != nil {
-		return ""
-	}
-	return issuePrefixFromDatabase(meta.DoltDatabase)
-}
-
-func issuePrefixFromDatabase(name string) string {
-	if !strings.HasPrefix(name, "beads_") {
-		return ""
-	}
-	return strings.TrimPrefix(name, "beads_")
+	return ""
 }
 
 // ResolveBeadsDir follows a redirect file if present.
-// .beads/redirect contains a relative path to the actual beads directory.
+// redirect contains a relative path to the actual task metadata directory.
 func ResolveBeadsDir(beadsDir string) string {
 	redirectPath := filepath.Join(beadsDir, "redirect")
 	content, err := os.ReadFile(redirectPath)

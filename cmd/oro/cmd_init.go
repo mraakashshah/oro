@@ -393,8 +393,8 @@ func newInitCmdWithDeps(deps *initDeps) *cobra.Command {
 		Long: `Bootstraps a project for oro. By default uses stealth mode: zero footprint
 in the project directory, all config stored under ~/.oro/projects/s-<hash>/.
 
-Use --local to create .oro/config.yaml and a local beads symlink in the project
-root (visible to collaborators, committable).
+Use --local to create .oro/config.yaml in the project root (visible to
+collaborators, committable).
 
 Use 'oro setup' to install missing tools (interactive, installs via brew/go/npm).
 
@@ -607,10 +607,10 @@ func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS) error { 
 	// 5. Ensure git repo (fail-open).
 	ensureGitRepo(projectRoot)
 
-	// 6. Create beads directory directly (no symlink — zero footprint in project).
-	beadsDir := filepath.Join(stealthDir, "beads")
-	if err := os.MkdirAll(beadsDir, 0o755); err != nil { //nolint:gosec // needs to be readable
-		return fmt.Errorf("create stealth beads dir: %w", err)
+	// 6. Create task data directory directly (no symlink — zero footprint in project).
+	tasksDir := filepath.Join(stealthDir, "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil { //nolint:gosec // needs to be readable
+		return fmt.Errorf("create stealth task data dir: %w", err)
 	}
 
 	// 7. Install git hooks to prevent accidental leakage in stealth mode.
@@ -697,12 +697,6 @@ func ensureGitRepo(projectRoot string) {
 	}
 }
 
-// initBeadsDB is retained for legacy callers. Phase 10 sqlite-only init does
-// not shell out to bd; the database is created by normal bead operations.
-func initBeadsDB(projectRoot string) {
-	_ = projectRoot
-}
-
 // resolveProjectName returns the project name from the argument or derives it from the directory.
 func resolveProjectName(projectRoot, projectName string) (string, error) {
 	if projectName != "" {
@@ -728,7 +722,7 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 		return nil, fmt.Errorf("create project anchor: %w", err)
 	}
 
-	// 2. Add .oro/, .beads, .dolt/ to global gitignore (not per-repo).
+	// 2. Add .oro/ to global gitignore (not per-repo).
 	if err := ensureGlobalGitignore(); err != nil {
 		// Fail-open: warn but don't block init.
 		fmt.Fprintf(os.Stderr, "warning: could not update global gitignore: %v\n", err)
@@ -742,7 +736,6 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 	}
 
 	// 3a. Write project.root with the absolute path of the project root.
-	// Used by runStopAll to locate the project's .beads directory.
 	absProjectRoot, err := filepath.Abs(projectRoot)
 	if err != nil {
 		return nil, fmt.Errorf("resolve absolute project root: %w", err)
@@ -753,12 +746,6 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 
 	// 3b. Initialize git repo if not already present.
 	ensureGitRepo(projectRoot)
-
-	// 4. Set up beads symlink: .beads → oroHome/projects/<name>/beads/
-	beadsTarget := filepath.Join(projectDir, "beads")
-	if err := setupBeadsSymlink(projectRoot, beadsTarget); err != nil {
-		return nil, fmt.Errorf("setup beads symlink: %w", err)
-	}
 
 	// 5. Generate settings.json (always overwrite — idempotent).
 	settingsData, err := generateSettings("$HOME/.oro")
@@ -832,7 +819,11 @@ func createProjectAnchor(projectRoot, projectName string) (*langprofile.Config, 
 // oroGitignoreEntries returns the patterns oro needs ignored globally
 // so that oro artifacts never pollute target repos.
 func oroGitignoreEntries() []string {
-	return []string{beadsDirName + "/", beadsDirName, ".oro/", ".dolt/"}
+	return []string{".oro/"}
+}
+
+func oroLegacyGitignoreEntries() []string {
+	return []string{".beads/", ".beads", ".dolt/"}
 }
 
 // ensureGlobalGitignore adds oro-related entries to the user's global
@@ -919,7 +910,7 @@ func ensureGlobalGitignoreAt(path string) error {
 			buf.WriteByte('\n')
 		}
 	}
-	buf.WriteString("\n# Oro / Beads (managed by oro init)\n")
+	buf.WriteString("\n# Oro (managed by oro init)\n")
 	for _, entry := range missing {
 		buf.WriteString(entry)
 		buf.WriteByte('\n')
@@ -927,55 +918,6 @@ func ensureGlobalGitignoreAt(path string) error {
 
 	if err := os.WriteFile(path, []byte(buf.String()), 0o644); err != nil { //nolint:gosec // gitignore needs to be readable
 		return fmt.Errorf("write global gitignore: %w", err)
-	}
-	return nil
-}
-
-// setupBeadsSymlink creates a beads data directory under oroHome and symlinks
-// <projectRoot>/.beads to it. This keeps beads data centralized in ~/.oro/
-// rather than polluting the target project.
-//
-// If .beads already exists as a real directory (not a symlink), it is left
-// alone to avoid data loss during migration.
-func setupBeadsSymlink(projectRoot, beadsTarget string) error {
-	// Ensure the target directory exists.
-	if err := os.MkdirAll(beadsTarget, 0o755); err != nil { //nolint:gosec // needs to be readable
-		return fmt.Errorf("create beads dir: %w", err)
-	}
-
-	projPaths, err := ResolvePaths(projectRoot)
-	if err != nil {
-		return fmt.Errorf("resolve paths: %w", err)
-	}
-	linkPath := projPaths.BeadsDir
-
-	// Nothing exists yet — create the symlink.
-	fi, err := os.Lstat(linkPath)
-	if err != nil {
-		if err := os.Symlink(beadsTarget, linkPath); err != nil {
-			return fmt.Errorf("create .beads symlink: %w", err)
-		}
-		return nil
-	}
-
-	// It's a real directory — don't clobber it.
-	if fi.IsDir() {
-		return nil
-	}
-
-	// It's already the correct symlink — no-op.
-	if fi.Mode()&os.ModeSymlink != 0 {
-		if target, readErr := os.Readlink(linkPath); readErr == nil && target == beadsTarget {
-			return nil
-		}
-		// Wrong target — remove stale symlink and recreate.
-		if err := os.Remove(linkPath); err != nil {
-			return fmt.Errorf("remove stale symlink: %w", err)
-		}
-	}
-
-	if err := os.Symlink(beadsTarget, linkPath); err != nil {
-		return fmt.Errorf("create .beads symlink: %w", err)
 	}
 	return nil
 }

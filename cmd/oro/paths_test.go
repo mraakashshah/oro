@@ -24,8 +24,8 @@ func TestResolvePaths_Standard(t *testing.T) {
 	if paths.Mode != "standard" {
 		t.Errorf("Mode = %q, want %q", paths.Mode, "standard")
 	}
-	if paths.BeadsDir != filepath.Join(repoRoot, ".beads") {
-		t.Errorf("BeadsDir = %q, want %q", paths.BeadsDir, filepath.Join(repoRoot, ".beads"))
+	if paths.BeadsDir != filepath.Join(repoRoot, protocol.OroDir, "tasks") {
+		t.Errorf("BeadsDir = %q, want %q", paths.BeadsDir, filepath.Join(repoRoot, protocol.OroDir, "tasks"))
 	}
 	if paths.WorktreesDir != filepath.Join(repoRoot, ".worktrees") {
 		t.Errorf("WorktreesDir = %q, want %q", paths.WorktreesDir, filepath.Join(repoRoot, ".worktrees"))
@@ -66,8 +66,8 @@ func TestResolvePaths_Stealth(t *testing.T) {
 		t.Errorf("Mode = %q, want %q", paths.Mode, "stealth")
 	}
 	// All data dirs must live under stealthDir.
-	if paths.BeadsDir != filepath.Join(stealthDir, "beads") {
-		t.Errorf("BeadsDir = %q, want %q", paths.BeadsDir, filepath.Join(stealthDir, "beads"))
+	if paths.BeadsDir != filepath.Join(stealthDir, "tasks") {
+		t.Errorf("BeadsDir = %q, want %q", paths.BeadsDir, filepath.Join(stealthDir, "tasks"))
 	}
 	if paths.WorktreesDir != filepath.Join(stealthDir, "worktrees") {
 		t.Errorf("WorktreesDir = %q, want %q", paths.WorktreesDir, filepath.Join(stealthDir, "worktrees"))

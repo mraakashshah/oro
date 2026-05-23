@@ -1,22 +1,5 @@
 # Decisions and Discoveries
 
-## 2026-05-21: Phase 11 complete
-**Final scan result:** `git grep -i 'LegacyBeadsDir\|migrate-from-dolt'`
-has no live implementation references to the deleted alias or migration command.
-**Tags:** #beadstore #phase-11 #migration #cleanup
-**Context:** Replatform Phase 11 was the deferred cleanup pass after Phase 10,
-covering the legacy `.beads`/Dolt migration surface after one release cycle of
-operator runway.
-**Decision:** Phase 11 is complete and the replatform epic is closed. The
-`LegacyBeadsDir` alias and `oro bead migrate-from-dolt` command are no longer
-live product surfaces; normal operation is native Oro task storage.
-**Scan notes:** Remaining hits are historical/operator docs, terminology and
-Phase 8 test fixtures, and explicit negative tests proving the migration
-command stays unavailable.
-**Implications:** Future work should treat bd/Dolt migration support as
-archival evidence only. Do not reintroduce `LegacyBeadsDir` or
-`migrate-from-dolt` without a new documented compatibility decision.
-
 ## 2026-05-19: Managerless operation is the default
 **Tags:** #managerless #dispatcher #ops-runs #operations
 **Context:** The managerless orchestration design moved routine factory progress
@@ -32,24 +15,12 @@ decomposition, escalation handling, health reporting, or recovery. If optional
 console support remains, label it non-authoritative and keep
 health/status/ops-run surfaces as the source of truth.
 
-## 2026-05-02: Phase 10 supersedes historical runtime Dolt guidance
-**Tags:** #beadstore #phase10 #dolt #sqlite
-**Context:** Phase 10 moved normal Oro operation onto the native SQLite beadstore and removed runtime bd/Dolt lifecycle helpers from the active command surface.
-**Decision:** Historical March/April notes that describe `oro dolt` setup/start/stop, runtime Dolt launchd ownership, shared Dolt persistence, or bd/Dolt as the active beadstore are retained only as migration history and failure analysis. Do not use those entries as current implementation guidance unless a Phase 11 legacy-migration task explicitly calls them out.
-**Implications:** Treat new post-cutover failures as native SQLite/Oro bugs first. Fall back to bd/Dolt only for import audit or rollback evidence when data corruption is shown.
-
-## 2026-05-02: Phase 10 signoff assigns Phase 11 owner
-**Tags:** #beadstore #phase-10 #phase-11 #migration
-**Context:** Phase 10 cleanup can close only if Phase 11 has a named owner and a 90-day follow-up reminder. Phase 11 is intentionally deferred so late-migrating operators still have `LegacyBeadsDir` and migration tooling available for one release cycle.
-**Decision:** Phase 11 owner is Akash Shah (`mraakashshah@users.noreply.github.com`). The follow-up task is `oro-23m2`, deferred in the native tracker until 2026-07-31T13:00:00Z, which is 90 days after the 2026-05-02 Phase 10 signoff.
-**Implications:** Do not silently delete `LegacyBeadsDir` or the migration command before `oro-23m2`. On 2026-07-31, run the Phase 11 survey, decide whether legacy migration paths are still needed, and either complete Phase 11 or document a deliberate extension.
-
 ## 2026-04-28: Phase 0 schema sign-off
 **Reviewer:** Codex manual adversarial review (GPT-5 coding agent), 2026-04-28.
 **Scope:** Replatform beads spec sections 6, 9.6, and 12.1.
 **Decision:** Sign off for Phase 1 implementation with the Phase 0 audit notes treated as required inputs, not optional commentary.
-**Review:** The core tables, bd-to-SQLite field mapping, tombstone handling, two-pass import, and trigger envelope are structurally sound for the replatform path. The review did find material readiness and interface-drift risks, but those are already captured in `docs/plans/notes/bd-ready-semantics.md`, `docs/plans/notes/beadsource-interface.md`, and `docs/plans/notes/jsonl-inventory.md`.
-**Comments resolved/escalated:** Phase 1 must implement bd parity beyond the simple `beads_ready` sketch: pinned exclusions, default type filters, `waits-for`, child-of-deferred-parent, child-of-blocked-parent, and bd sort/limit behavior. Phase 1 must also explicitly preserve deferred-bead behavior from legacy `Defer` and `Undefer` even though the target store interface is reshaped. The JSONL fallback implementation must prefer `.beads/backup/full-state.jsonl` and treat `.beads/full-state.jsonl` only as a legacy alias.
+**Review:** The core tables, tombstone handling, two-pass import, and trigger envelope are structurally sound for the replatform path. The review did find material readiness and interface-drift risks, but those are already captured in the related plan notes.
+**Comments resolved/escalated:** Phase 1 must preserve ready/blocked/deferred task semantics while reshaping the target store interface.
 
 ## 2026-04-01: Epic management has 6 failure modes — design doc written
 **Tags:** #dispatcher #epic #bugs #architecture
@@ -74,18 +45,6 @@ health/status/ops-run surfaces as the source of truth.
 **Context:** Stealth mode leaves zero footprint on the repo. But `completeEpicClose` ff-merges to local main silently — contradicts stealth's promise. A PR gives the human a review gate before code hits main.
 **Decision:** In stealth mode: rebase epic branch onto main (no conflicts), push to origin, `gh pr create`, fire and forget. Epic marked complete, human merges when ready. Non-stealth: existing ff-merge unchanged. In progress (oro-552k).
 **Implications:** Stealth mode gains a human review gate. Requires `gh` CLI installed. Non-stealth behavior unchanged.
-
-## 2026-03-17: Dolt server persists across oro sessions — stop tests updated
-**Tags:** #dolt #testing #ci #architecture
-**Context:** Commit 38ffe1f removed dolt-stop from `runStopSequence` so dolt persists across sessions (standalone `bd` commands keep working). But 4 stop tests in `cmd_stop_test.go` were not updated and still expected `stopDoltFn` to be called, breaking CI. Additional CI failures: `startDoltServer` checked `LookPath("dolt")` before `isDoltServerRunning(port)` so adoption failed in CI (no dolt installed); UDS test spawners only accepted one connection but `pollForSocket` consumed it first; child processes in stop-all tests weren't reaped causing zombie timeouts.
-**Decision/Discovery:** (1) Dolt is intentionally NOT stopped during `oro stop` — it's a shared resource. (2) `startDoltServer` must check `isDoltServerRunning` before `LookPath` so adoption works without dolt in PATH. (3) All UDS test helpers must accept connections in a loop. (4) Test subprocesses must be reaped with `go cmd.Wait()` to prevent zombies.
-**Implications:** Tests now verify dolt is NOT stopped. Future dolt lifecycle changes must audit both `cmd_stop.go` and `cmd_stop_test.go`. The `stopDoltFn` field in `stopConfig` is now dead code — candidate for removal.
-
-## 2026-03-17: bd stderr may contain warning lines before JSON error
-**Tags:** #bd #mg #error-handling #resilience
-**Context:** `bd list --json` emitted a "dolt_server_port deprecated" warning to stderr before the JSON error object. `parseBdStderr` tried `json.Unmarshal` on the full stderr, failed, and fell back to showing the first line (the warning) instead of the real error. Users saw "Warning: dolt_server_port..." instead of "dolt circuit breaker is open".
-**Decision/Discovery:** `parseBdStderr` now scans for the first `{` in stderr and tries to parse JSON from there. Also removed the deprecated `dolt_server_port` field from `.beads/metadata.json` and cleaned up a stale `.beads/.doltcfg` directory that prevented dolt startup.
-**Implications:** bd error messages are now correctly surfaced even when warnings are present. The `.beads/.doltcfg` stale directory issue may recur if dolt upgrades change config layout — monitor after dolt version bumps.
 
 ## 2026-03-13: Per-project daemon isolation (PID/socket scoping)
 **Tags:** #architecture #multi-project #daemon #paths
@@ -182,7 +141,7 @@ Hook inventory (same in both files):
 **Tags:** #tooling #biome #json
 **Context:** biome v2.3.11 rejected `ignores` key in `files` section. Only `includes`, `maxSize`, `ignoreUnknown`, `experimentalScannerIgnores` are valid.
 **Discovery:** biome v2 removed the simple `ignore` field. VCS integration (`useIgnoreFile: true`) handles gitignored dirs, but submodules and tracked dirs need explicit scoping in the CLI command or `experimentalScannerIgnores`.
-**Fix:** Scope biome in the quality gate command: `biome check --files-ignore-unknown=true docs/ .github/ .beads/ *.json` rather than scanning `.`.
+**Fix:** Scope biome in the quality gate command to project source and config paths rather than scanning `.`.
 **Implications:** When biome can't exclude via config, scope via CLI args. Always run `biome migrate --write` after version bumps.
 
 ## 2026-02-07: Quality gate scoping — never scan . for tools that walk directories

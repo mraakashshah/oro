@@ -1,8 +1,8 @@
 ---
 name: use sqlite for beadstore
-description: SQLite chosen over Dolt for simplicity
+description: SQLite chosen for simpler local state
 type: project
 ---
 
 Decided to use SQLite with modernc driver as the beadstore backend.
-Dolt was too heavy and caused too many migration issues.
+The previous state backend was too heavy and caused too many migration issues.
