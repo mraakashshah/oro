@@ -174,7 +174,6 @@ def test_using_skills_description_is_normalized_trigger_only() -> None:
     assert "description: Use when checking which skills apply before starting a task" in frontmatter
     assert checker.check_skill_description(skill_path) == []
 
-
 @pytest.mark.parametrize("dash", ["-", "\u2013", "\u2014"])
 def test_check_skill_description_rejects_dash_separated_workflow_summary(
     dash: str,
