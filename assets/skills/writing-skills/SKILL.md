@@ -1,6 +1,6 @@
 ---
 name: writing-skills
-description: Use when creating new skills, editing existing skills, or verifying skills work
+description: Use when creating or editing Codex skills
 ---
 
 # Writing Skills

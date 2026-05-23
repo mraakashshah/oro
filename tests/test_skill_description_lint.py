@@ -150,6 +150,15 @@ def test_skill_description_lint_accepts_writing_skills_trigger_description() -> 
     assert result.stderr == ""
 
 
+def test_writing_skills_description_is_normalized_trigger_only() -> None:
+    checker = _load_checker()
+    skill_path = Path(__file__).resolve().parents[1] / "assets/skills/writing-skills/SKILL.md"
+    skill_text = skill_path.read_text(encoding="utf-8")
+
+    assert "description: Use when creating or editing Codex skills" in skill_text.split("\n---\n", maxsplit=1)[0]
+    assert checker.check_skill_description(skill_path) == []
+
+
 @pytest.mark.parametrize("dash", ["-", "\u2013", "\u2014"])
 def test_check_skill_description_rejects_dash_separated_workflow_summary(
     dash: str,
