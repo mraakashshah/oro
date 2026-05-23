@@ -2685,10 +2685,6 @@ func (d *Dispatcher) epicMergeIsFailed(epicID string) bool {
 }
 
 func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) {
-	if d.epicMergeIsFailed(epicID) {
-		_ = d.logEvent(ctx, "epic_close_skipped_merge_failed", "dispatcher", epicID, workerID, "")
-		return
-	}
 	allClosed, err := d.beads.AllChildrenClosed(ctx, epicID)
 	if err != nil {
 		_ = d.logEvent(ctx, "epic_auto_close_check_failed", "dispatcher", epicID, workerID,
@@ -2696,8 +2692,14 @@ func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) 
 		return
 	}
 	if !allClosed {
+		if d.epicMergeIsFailed(epicID) {
+			_ = d.logEvent(ctx, "epic_close_skipped_merge_failed", "dispatcher", epicID, workerID, "")
+		}
 		return
 	}
+	d.mu.Lock()
+	delete(d.epicMergeFailed, epicID)
+	d.mu.Unlock()
 
 	detail, ok := d.fetchEpicCloseDetail(ctx, epicID, workerID)
 	if !ok {

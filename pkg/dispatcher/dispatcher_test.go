@@ -22351,8 +22351,8 @@ func TestEpicFFMergeFailure_EscalatesAndBlocks(t *testing.T) {
 		}
 	})
 
-	t.Run("tryCloseEpic skips when epicMergeFailed is set", func(t *testing.T) {
-		d, beadSource, _, _, _, _ := newTestDispatcher(t)
+	t.Run("tryCloseEpic skips when epicMergeFailed is set and children remain open", func(t *testing.T) {
+		d, beadSource, wtMgr, _, _, _ := newTestDispatcher(t)
 		ctx := context.Background()
 
 		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
@@ -22368,8 +22368,14 @@ func TestEpicFFMergeFailure_EscalatesAndBlocks(t *testing.T) {
 		d.epicMergeFailed[epicID] = true
 		d.mu.Unlock()
 
-		// All children are closed — would normally trigger close.
-		beadSource.allChildrenClosedMap = map[string]bool{epicID: true}
+		// A rebase child is still open — the failed epic merge should stay deferred.
+		beadSource.allChildrenClosedMap = map[string]bool{epicID: false}
+		wtMgr.mu.Lock()
+		wtMgr.branchExistsFn = func(_ context.Context, _ string) (bool, error) {
+			t.Fatal("tryCloseEpic should not check the epic branch while rebase children remain open")
+			return false, nil
+		}
+		wtMgr.mu.Unlock()
 
 		d.tryCloseEpic(ctx, epicID, workerID)
 
@@ -22382,6 +22388,61 @@ func TestEpicFFMergeFailure_EscalatesAndBlocks(t *testing.T) {
 			}
 		}
 		beadSource.mu.Unlock()
+	})
+
+	t.Run("tryCloseEpic retries close when rebase child completed after epicMergeFailed", func(t *testing.T) {
+		d, beadSource, wtMgr, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		epicID := "epic-rebased"
+		workerID := "worker-retry1"
+		epicBranch := protocol.EpicBranchPrefix + epicID
+
+		// Mark this epic as having a prior failed merge. The rebase child has
+		// now closed, so the original failure latch must not block retry.
+		d.mu.Lock()
+		d.epicMergeFailed[epicID] = true
+		d.mu.Unlock()
+
+		beadSource.allChildrenClosedMap = map[string]bool{epicID: true}
+		beadSource.mu.Lock()
+		beadSource.shown[epicID] = &protocol.BeadDetail{
+			ID: epicID, Title: "Rebased Epic", AcceptanceCriteria: "",
+		}
+		beadSource.mu.Unlock()
+
+		wtMgr.mu.Lock()
+		wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
+			return branch == epicBranch, nil
+		}
+		wtMgr.mergeFFOnlyFn = func(branch, _ string) (string, error) {
+			if branch != epicBranch {
+				t.Fatalf("MergeFFOnly branch = %q, want %q", branch, epicBranch)
+			}
+			return "merged-sha", nil
+		}
+		wtMgr.mu.Unlock()
+
+		d.tryCloseEpic(ctx, epicID, workerID)
+
+		beadSource.mu.Lock()
+		epicClosed := slices.Contains(beadSource.closed, epicID)
+		beadSource.mu.Unlock()
+		if !epicClosed {
+			t.Fatal("expected epic to close after rebase child completion clears merge failure latch")
+		}
+
+		d.mu.Lock()
+		failed := d.epicMergeFailed[epicID]
+		d.mu.Unlock()
+		if failed {
+			t.Error("expected epicMergeFailed latch to be cleared after retrying close")
+		}
 	})
 }
 
