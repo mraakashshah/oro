@@ -20567,6 +20567,17 @@ func TestDispatcher_AssignIncludesCardsContext(t *testing.T) {
 		sendDirective(t, d.cfg.SocketPath, "start")
 		waitForState(t, d, StateRunning, time.Second)
 
+		beadSrc.mu.Lock()
+		beadSrc.shown["bead-card-assign"] = &protocol.BeadDetail{
+			ID:                 "bead-card-assign",
+			Title:              "Populate assignment cards",
+			Description:        "First assignment should use the shared payload builder.",
+			Type:               "task",
+			AcceptanceCriteria: "Test: cards | Assert: shared payload",
+			Labels:             []string{"dispatcher", "cards"},
+		}
+		beadSrc.mu.Unlock()
+
 		beadSrc.SetBeads([]protocol.Bead{{
 			ID:       "bead-card-assign",
 			Title:    "Populate assignment cards",
@@ -20580,6 +20591,9 @@ func TestDispatcher_AssignIncludesCardsContext(t *testing.T) {
 			t.Fatal("expected ASSIGN")
 		}
 		assertAssignHasOnlyCardsContext(t, msg, "card-assign")
+		if msg.Assign.Description != "First assignment should use the shared payload builder." {
+			t.Fatalf("Description = %q, want rich bead detail from buildAssignPayload", msg.Assign.Description)
+		}
 	})
 }
 
