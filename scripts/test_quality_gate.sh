@@ -938,6 +938,132 @@ test_quality_gate_caps_go_scheduler_fanout() {
 }
 
 # shellcheck disable=SC2317,SC2329 # invoked by name through the test runner
+test_go_coverage_threshold_skips_uncovered_go_surfaces() {
+	local script="$SCRIPT_DIR/quality_gate.sh"
+	local gen="$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go"
+	for file in "$script" "$gen"; do
+		if ! grep -q 'should_enforce_go_coverage_threshold()' "$file"; then
+			echo "FAIL: $file lacks should_enforce_go_coverage_threshold helper"
+			return 1
+		fi
+		if ! grep -q 'Skipping 85% Go coverage threshold' "$file"; then
+			echo "FAIL: $file does not explain skipped Go coverage threshold"
+			return 1
+		fi
+	done
+
+	local tmpdir helpers oldpwd output_file
+	tmpdir=$(mktemp -d)
+	helpers="$tmpdir/helpers.sh"
+	output_file="$tmpdir/output.txt"
+	oldpwd="$PWD"
+	# shellcheck disable=SC2064
+	trap "rm -rf '$tmpdir'" RETURN
+
+	{
+		sed -n '/^qg_git()/,/^}/p' "$script"
+		sed -n '/^should_run_mutation_tests()/,/^}/p' "$script"
+		sed -n '/^mutation_base_ref()/,/^}/p' "$script"
+		sed -n '/^should_enforce_go_coverage_threshold()/,/^}/p' "$script"
+	} >"$helpers"
+
+	git init --initial-branch=main "$tmpdir/repo" >/dev/null 2>&1
+	cd "$tmpdir/repo"
+	git config user.email qg-test@example.invalid
+	git config user.name "QG Test"
+	mkdir -p cmd/oro internal/core pkg/lib docs .oro
+	printf 'package main\n' >cmd/oro/main.go
+	printf 'package core\n' >internal/core/core.go
+	printf 'package lib\n' >pkg/lib/lib.go
+	printf 'baseline\n' >docs/readme.md
+	printf 'baseline\n' >.oro/config.yaml
+	git add .
+	git commit -m init >/dev/null 2>&1
+	git checkout -b change >/dev/null 2>&1
+
+	run_helper() {
+		bash -c '
+			set -euo pipefail
+			QG_IS_WORKTREE=false
+			source "$1"
+			should_enforce_go_coverage_threshold
+		' _ "$helpers"
+	}
+
+	printf '// cmd-only change\n' >>cmd/oro/main.go
+	if run_helper >"$output_file" 2>&1; then
+		echo "FAIL: cmd-only changes should skip Go coverage threshold"
+		cat "$output_file"
+		cd "$oldpwd"
+		return 1
+	fi
+	if ! grep -q 'outside measured ./internal and ./pkg production surface' "$output_file"; then
+		echo "FAIL: cmd-only skip did not explain measured production surface"
+		cat "$output_file"
+		cd "$oldpwd"
+		return 1
+	fi
+	git checkout -- cmd/oro/main.go
+
+	printf 'docs change\n' >>docs/readme.md
+	if run_helper >"$output_file" 2>&1; then
+		echo "FAIL: docs-only changes should skip Go coverage threshold"
+		cat "$output_file"
+		cd "$oldpwd"
+		return 1
+	fi
+	git checkout -- docs/readme.md
+
+	printf 'config change\n' >>.oro/config.yaml
+	if run_helper >"$output_file" 2>&1; then
+		echo "FAIL: config-only changes should skip Go coverage threshold"
+		cat "$output_file"
+		cd "$oldpwd"
+		return 1
+	fi
+	git checkout -- .oro/config.yaml
+
+	printf 'package core\n' >internal/core/core_test.go
+	git add internal/core/core_test.go
+	if run_helper >"$output_file" 2>&1; then
+		echo "FAIL: *_test.go changes should skip Go coverage threshold"
+		cat "$output_file"
+		cd "$oldpwd"
+		return 1
+	fi
+	git reset -q internal/core/core_test.go
+	rm -f internal/core/core_test.go
+
+	printf '// production change\n' >>internal/core/core.go
+	if ! run_helper >"$output_file" 2>&1; then
+		echo "FAIL: internal non-test Go changes should enforce Go coverage threshold"
+		cat "$output_file"
+		cd "$oldpwd"
+		return 1
+	fi
+	git checkout -- internal/core/core.go
+
+	printf '// production change\n' >>pkg/lib/lib.go
+	if ! run_helper >"$output_file" 2>&1; then
+		echo "FAIL: pkg non-test Go changes should enforce Go coverage threshold"
+		cat "$output_file"
+		cd "$oldpwd"
+		return 1
+	fi
+	git checkout -- pkg/lib/lib.go
+
+	git branch -D main >/dev/null 2>&1
+	printf '// missing base\n' >>cmd/oro/main.go
+	if ! run_helper >"$output_file" 2>&1; then
+		echo "FAIL: missing base ref should enforce Go coverage threshold"
+		cat "$output_file"
+		cd "$oldpwd"
+		return 1
+	fi
+	cd "$oldpwd"
+}
+
+# shellcheck disable=SC2317,SC2329 # invoked by name through the test runner
 write_quality_gate_python_helpers() {
 	local out="$1"
 	sed -n '/^qg_python_tool_path()/,/^# Run multiple checks/p' "$SCRIPT_DIR/quality_gate.sh" |
@@ -1336,6 +1462,7 @@ test_case "no SC2086 disable for \$changed" test_no_sc2086_disable_for_changed
 test_case "quality_gate.sh \$changed is quoted" test_quality_gate_changed_is_quoted
 test_case "quality_gate.sh stage-assets failures fail closed" test_quality_gate_stage_assets_fail_closed
 test_case "quality_gate.sh caps Go scheduler fanout" test_quality_gate_caps_go_scheduler_fanout
+test_case "go coverage threshold skips uncovered Go surfaces" test_go_coverage_threshold_skips_uncovered_go_surfaces
 test_case "quality_gate.sh Python tools avoid pyenv shims" test_quality_gate_python_tools_avoid_pyenv_shims
 test_case "generated quality gate Python tools avoid pyenv shims" test_generated_quality_gate_python_tools_avoid_pyenv_shims
 test_case "quality_gate.sh filesystem walkers are source scoped" test_quality_gate_filesystem_walkers_are_source_scoped

@@ -614,6 +614,25 @@ mutation_base_ref() {
 }
 
 # shellcheck disable=SC2317,SC2329
+should_enforce_go_coverage_threshold() {
+    local coverage_base changed
+    coverage_base=$(mutation_base_ref)
+    if ! qg_git rev-parse --verify "$coverage_base" >/dev/null 2>&1; then
+        echo "WARNING: Cannot find coverage base $coverage_base — enforcing 85% Go coverage threshold"
+        return 0
+    fi
+    changed=$(qg_git diff --name-only "$coverage_base" -- internal/ pkg/ 2>/dev/null |
+        grep '\.go$' |
+        grep -v '_test\.go$' ||
+        true)
+    if [ -z "$changed" ]; then
+        echo "Skipping 85% Go coverage threshold: changed files are outside measured ./internal and ./pkg production surface"
+        return 1
+    fi
+    return 0
+}
+
+# shellcheck disable=SC2317,SC2329
 restore_go_mutation_worktree() {
     local unstaged_patch="$1"
     local -a restore_paths=()
@@ -911,6 +930,9 @@ lane_go() {
         local cov
         cov=$(go tool cover -func="$COVERAGE_FILE" | grep total | awk '{print $3}' | sed 's/%//')
         echo "Coverage: ${cov}%"
+        if ! should_enforce_go_coverage_threshold; then
+            return 0
+        fi
         if [ "$(echo "$cov < 85" | bc -l)" -eq 1 ]; then
             echo "FAIL: coverage ${cov}% is below 85% threshold"
             return 1
