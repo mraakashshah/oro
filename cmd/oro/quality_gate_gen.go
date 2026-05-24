@@ -497,19 +497,20 @@ NODE_BIN="$REPO_ROOT/node_modules/.bin"
 # internal lanes in parallel; concurrent worker gates overload dispatcher socket
 # timing tests and create non-actionable QG incidents.
 acquire_quality_gate_lock() {
-    QG_RUN_LOCK="$REPO_ROOT/.oro-quality-gate.lock"
+    local lock_dir="$REPO_ROOT/.oro-quality-gate.lock"
     local waited=0
-    while ! mkdir "$QG_RUN_LOCK" 2>/dev/null; do
+    while ! mkdir "$lock_dir" 2>/dev/null; do
         if [ "$waited" -eq 0 ]; then
             echo "Waiting for another quality gate to finish..."
         fi
         sleep 2
         waited=$((waited + 2))
         if [ "$waited" -ge "${ORO_QG_LOCK_TIMEOUT_SECONDS:-1800}" ]; then
-            echo "FAIL: timed out waiting for quality gate lock: $QG_RUN_LOCK" >&2
+            echo "FAIL: timed out waiting for quality gate lock: $lock_dir" >&2
             return 1
         fi
     done
+    QG_RUN_LOCK="$lock_dir"
 }
 
 acquire_quality_gate_lock

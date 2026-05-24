@@ -879,7 +879,8 @@ test_quality_gate_stage_assets_fail_closed() {
 		return 1
 	fi
 	if ! grep -q 'acquire_quality_gate_lock()' "$SCRIPT_DIR/quality_gate.sh" ||
-		! grep -q 'QG_RUN_LOCK="$REPO_ROOT/.oro-quality-gate.lock"' "$SCRIPT_DIR/quality_gate.sh" ||
+		! grep -q 'local lock_dir="$REPO_ROOT/.oro-quality-gate.lock"' "$SCRIPT_DIR/quality_gate.sh" ||
+		! grep -q 'QG_RUN_LOCK="$lock_dir"' "$SCRIPT_DIR/quality_gate.sh" ||
 		! grep -q 'acquire_quality_gate_lock' "$SCRIPT_DIR/quality_gate.sh"; then
 		echo "FAIL: quality_gate.sh does not serialize concurrent quality gates across worktrees"
 		return 1
@@ -925,6 +926,52 @@ test_quality_gate_stage_assets_fail_closed() {
 		echo "FAIL: quality_gate.sh still deletes staged embed assets"
 		return 1
 	fi
+	return 0
+}
+
+# Test: a process that times out waiting for the repo-wide QG lock must not
+# clean up another process's lock directory.
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_run_lock_timeout_preserves_holder() {
+	if ! grep -q 'local lock_dir="$REPO_ROOT/.oro-quality-gate.lock"' "$SCRIPT_DIR/quality_gate.sh" ||
+		! grep -q 'QG_RUN_LOCK="$lock_dir"' "$SCRIPT_DIR/quality_gate.sh" ||
+		! grep -q 'local lock_dir="$REPO_ROOT/.oro-quality-gate.lock"' "$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go" ||
+		! grep -q 'QG_RUN_LOCK="$lock_dir"' "$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go"; then
+		echo "FAIL: quality gate run lock is not promoted to QG_RUN_LOCK only after acquisition"
+		return 1
+	fi
+
+	local tmpdir lockdir harness
+	tmpdir=$(mktemp -d)
+	lockdir="$tmpdir/.oro-quality-gate.lock"
+	harness="$tmpdir/run-lock-timeout.sh"
+	mkdir "$lockdir"
+	{
+		echo 'set -euo pipefail'
+		printf 'REPO_ROOT=%q\n' "$tmpdir"
+		printf 'QG_DIR=%q\n' "$tmpdir/qg"
+		echo 'QG_STAGE_ASSETS_LOCK=""'
+		echo 'QG_RUN_LOCK=""'
+		echo 'ORO_QG_LOCK_TIMEOUT_SECONDS=1'
+		echo 'mkdir -p "$QG_DIR"'
+		sed -n '/^cleanup_qg()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^acquire_quality_gate_lock()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		echo 'trap cleanup_qg EXIT'
+		echo 'acquire_quality_gate_lock'
+	} >"$harness"
+
+	if bash "$harness" >/dev/null 2>"$tmpdir/err"; then
+		echo "FAIL: acquire_quality_gate_lock unexpectedly succeeded against a held lock"
+		rm -rf "$tmpdir"
+		return 1
+	fi
+	if [ ! -d "$lockdir" ]; then
+		echo "FAIL: timed-out quality gate cleanup removed another process's run lock"
+		cat "$tmpdir/err"
+		rm -rf "$tmpdir"
+		return 1
+	fi
+	rm -rf "$tmpdir"
 	return 0
 }
 
@@ -1468,6 +1515,7 @@ echo "=============================================="
 test_case "no SC2086 disable for \$changed" test_no_sc2086_disable_for_changed
 test_case "quality_gate.sh \$changed is quoted" test_quality_gate_changed_is_quoted
 test_case "quality_gate.sh stage-assets failures fail closed" test_quality_gate_stage_assets_fail_closed
+test_case "quality_gate.sh run lock timeout preserves holder" test_quality_gate_run_lock_timeout_preserves_holder
 test_case "quality_gate.sh caps Go scheduler fanout" test_quality_gate_caps_go_scheduler_fanout
 test_case "go coverage threshold skips uncovered Go surfaces" test_go_coverage_threshold_skips_uncovered_go_surfaces
 test_case "quality_gate.sh Python tools avoid pyenv shims" test_quality_gate_python_tools_avoid_pyenv_shims
