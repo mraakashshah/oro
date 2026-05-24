@@ -872,9 +872,16 @@ test_quality_gate_stage_assets_fail_closed() {
 		return 1
 	fi
 	if ! grep -q 'QG_STAGE_ASSETS_LOCK=""' "$SCRIPT_DIR/quality_gate.sh" ||
+		! grep -q 'QG_RUN_LOCK=""' "$SCRIPT_DIR/quality_gate.sh" ||
 		! grep -q 'trap cleanup_qg EXIT' "$SCRIPT_DIR/quality_gate.sh" ||
 		! grep -q "trap 'exit 130' INT" "$SCRIPT_DIR/quality_gate.sh"; then
 		echo "FAIL: quality_gate.sh does not clean up the stage-assets lock on exit/interrupt"
+		return 1
+	fi
+	if ! grep -q 'acquire_quality_gate_lock()' "$SCRIPT_DIR/quality_gate.sh" ||
+		! grep -q 'QG_RUN_LOCK="$REPO_ROOT/.oro-quality-gate.lock"' "$SCRIPT_DIR/quality_gate.sh" ||
+		! grep -q 'acquire_quality_gate_lock' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: quality_gate.sh does not serialize concurrent quality gates across worktrees"
 		return 1
 	fi
 	if ! grep -q 'cmd/oro embeds _assets but Makefile stage-assets target is unavailable' "$SCRIPT_DIR/quality_gate.sh"; then

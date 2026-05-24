@@ -43,12 +43,16 @@ NC='\033[0m'
 # Temp directory for all check outputs (cleaned up on exit)
 QG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/qg-$$-XXXXXX")
 QG_STAGE_ASSETS_LOCK=""
+QG_RUN_LOCK=""
 QG_EXIT_STATUS=0
 # shellcheck disable=SC2317,SC2329
 cleanup_qg() {
 	local status=$?
 	if [ -n "${QG_STAGE_ASSETS_LOCK:-}" ]; then
 		rmdir "$QG_STAGE_ASSETS_LOCK" 2>/dev/null || true
+	fi
+	if [ -n "${QG_RUN_LOCK:-}" ]; then
+		rmdir "$QG_RUN_LOCK" 2>/dev/null || true
 	fi
 	rm -rf "$QG_DIR"
 	return "$status"
@@ -64,10 +68,36 @@ export GOCACHE="$QG_DIR/go-build-cache"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$QG_DIR/uv-cache}"
 export GOMAXPROCS="${ORO_QG_GOMAXPROCS:-2}"
 
-# Resolve repo root node_modules (works from worktrees too).
-# Worktrees don't have their own node_modules — resolve via git-common-dir.
-REPO_ROOT="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)"
+# Resolve repo root node_modules (works from worktrees too). Non-git harness
+# tests copy this script into temporary projects, so fall back to the current
+# project directory when no git common dir exists.
+if QG_COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null)"; then
+	REPO_ROOT="$(cd "$QG_COMMON_DIR/.." && pwd)"
+else
+	REPO_ROOT="$PWD"
+fi
 NODE_BIN="$REPO_ROOT/node_modules/.bin"
+
+# Serialize full quality gates across sibling worktrees. The gate already runs
+# internal lanes in parallel; concurrent worker gates overload dispatcher socket
+# timing tests and create non-actionable QG incidents.
+acquire_quality_gate_lock() {
+	QG_RUN_LOCK="$REPO_ROOT/.oro-quality-gate.lock"
+	local waited=0
+	while ! mkdir "$QG_RUN_LOCK" 2>/dev/null; do
+		if [ "$waited" -eq 0 ]; then
+			echo "Waiting for another quality gate to finish..."
+		fi
+		sleep 2
+		waited=$((waited + 2))
+		if [ "$waited" -ge "${ORO_QG_LOCK_TIMEOUT_SECONDS:-1800}" ]; then
+			echo "FAIL: timed out waiting for quality gate lock: $QG_RUN_LOCK" >&2
+			return 1
+		fi
+	done
+}
+
+acquire_quality_gate_lock
 
 # =============================================================================
 # PRIMITIVES

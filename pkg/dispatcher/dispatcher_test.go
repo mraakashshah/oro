@@ -9381,10 +9381,11 @@ func TestDispatcher_ReviewRejection_WorkerIdleAfterMaxRejections(t *testing.T) {
 
 func TestDispatcher_Handoff_SpawnsNewWorkerInSameWorktree(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	const handoffTestTimeout = 10 * time.Second
 	// Widen heartbeat timeout: the test sends one heartbeat then goes through
 	// multiple synchronization steps + DB writes before the handoff completes.
 	// Under CI with race detector, 500ms is too tight.
-	d.cfg.HeartbeatTimeout = 10 * time.Second
+	d.cfg.HeartbeatTimeout = handoffTestTimeout
 	d.cfg.MaxWorkers = 10
 	pm := &mockProcessManager{}
 	d.procMgr = pm
@@ -9402,7 +9403,7 @@ func TestDispatcher_Handoff_SpawnsNewWorkerInSameWorktree(t *testing.T) {
 	waitForState(t, d, StateRunning, 1*time.Second)
 
 	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-ralph", Title: "Ralph test", Priority: 1}})
-	assignMsg, ok := readMsg(t, conn1, 2*time.Second)
+	assignMsg, ok := readMsg(t, conn1, handoffTestTimeout)
 	if !ok {
 		t.Fatal("expected ASSIGN")
 	}
@@ -9449,7 +9450,7 @@ func TestDispatcher_Handoff_SpawnsNewWorkerInSameWorktree(t *testing.T) {
 	})
 
 	// New worker should receive ASSIGN with the SAME bead and worktree.
-	msg2, ok := readMsg(t, conn2, 3*time.Second)
+	msg2, ok := readMsg(t, conn2, handoffTestTimeout)
 	if !ok {
 		t.Fatal("expected ASSIGN for new worker after handoff")
 	}
