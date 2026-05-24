@@ -17927,6 +17927,48 @@ func TestParseAcceptanceCmd_LineFormat(t *testing.T) {
 	}
 }
 
+// TestParseAcceptanceCmd_CmdFirstLineFormat verifies that a multiline
+// acceptance criterion can start with Cmd: without swallowing later fields.
+func TestParseAcceptanceCmd_CmdFirstLineFormat(t *testing.T) {
+	cases := []struct {
+		name string
+		ac   string
+		want string
+	}{
+		{
+			name: "cmd first multiline",
+			ac: `Cmd: scripts/run-rule-conversions.sh
+Assert: generated rules match
+Read: docs/rules.md`,
+			want: "scripts/run-rule-conversions.sh",
+		},
+		{
+			name: "inline pipe",
+			ac:   "Test: foo | Cmd: go test ./... | Assert: PASS",
+			want: "go test ./...",
+		},
+		{
+			name: "single line cmd",
+			ac:   "Cmd: make test",
+			want: "make test",
+		},
+		{
+			name: "no cmd",
+			ac:   "Test: only | Assert: PASS",
+			want: "",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := parseAcceptanceCmd(c.ac)
+			if got != c.want {
+				t.Errorf("parseAcceptanceCmd(%q): got %q, want %q", c.ac, got, c.want)
+			}
+		})
+	}
+}
+
 // TestCalculateLiveQueueDepth_ExcludesAssigned verifies that beads assigned
 // to workers are not counted in queue depth. This tests the core logic.
 func TestCalculateLiveQueueDepth_ExcludesAssigned(t *testing.T) {

@@ -2887,14 +2887,17 @@ func (d *Dispatcher) completeEpicClose(ctx context.Context, epicID, workerID, re
 // It supports both pipe-separated inline format ("... | Cmd: go test | ...")
 // and line-per-field format. Returns "" if no Cmd: is present.
 func parseAcceptanceCmd(ac string) string {
+	if strings.Contains(ac, "\n") {
+		for _, line := range strings.Split(ac, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "Cmd:") {
+				return strings.TrimSpace(strings.TrimPrefix(trimmed, "Cmd:"))
+			}
+		}
+		return ""
+	}
 	for _, part := range strings.Split(ac, "|") {
 		trimmed := strings.TrimSpace(part)
-		if strings.HasPrefix(trimmed, "Cmd:") {
-			return strings.TrimSpace(strings.TrimPrefix(trimmed, "Cmd:"))
-		}
-	}
-	for _, line := range strings.Split(ac, "\n") {
-		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "Cmd:") {
 			return strings.TrimSpace(strings.TrimPrefix(trimmed, "Cmd:"))
 		}
