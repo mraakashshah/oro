@@ -234,12 +234,24 @@ func TestSQLiteStoreListsUseStatusAndDependencySemantics(t *testing.T) {
 	mustUpdate(t, store, "oro-progress", UpdateParams{Status: strPtr("in_progress")})
 	mustClose(t, store, "oro-closed1", "done")
 	mustClose(t, store, "oro-closed2", "done")
+	mustExec(t, store.db, `
+UPDATE beads
+   SET created_at='2026-01-01T00:00:00Z'
+ WHERE id IN (
+       'oro-parent',
+       'oro-child',
+       'oro-missing-parent-child',
+       'oro-past-deferred-blocked',
+       'oro-blocked',
+       'oro-blocker',
+       'oro-ready'
+ )`)
 
 	ready, err := store.Ready(ctx)
 	if err != nil {
 		t.Fatalf("Ready: %v", err)
 	}
-	if ids(ready) != "oro-parent,oro-child,oro-missing-parent-child,oro-past-deferred-blocked,oro-blocker,oro-ready" {
+	if ids(ready) != "oro-child,oro-missing-parent-child,oro-parent,oro-past-deferred-blocked,oro-blocker,oro-ready" {
 		t.Fatalf("Ready ids = %s", ids(ready))
 	}
 

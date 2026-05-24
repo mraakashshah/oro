@@ -23,7 +23,7 @@ func (r *readTxImpl) Cards() cards.ReadTx { return r.cardsTx }
 
 // Ready implements ReadTx with the same assignment-filtering behavior as Store.Ready.
 func (r *readTxImpl) Ready(ctx context.Context) ([]protocol.Bead, error) {
-	beads, err := queryBeadsInTx(ctx, r.tx, `SELECT `+beadColumns+` FROM beads_ready ORDER BY priority ASC, created_at ASC`)
+	beads, err := queryBeadsInTx(ctx, r.tx, `SELECT `+beadColumns+` FROM beads_ready ORDER BY priority ASC, created_at ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}

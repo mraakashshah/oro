@@ -69,7 +69,7 @@ func NewSQLiteStore(db *sql.DB, opts ...Option) *SQLiteStore {
 
 // Ready returns open beads with no active blockers or active assignment.
 func (s *SQLiteStore) Ready(ctx context.Context) ([]protocol.Bead, error) {
-	beads, err := s.queryBeads(ctx, `SELECT `+beadColumns+` FROM beads_ready ORDER BY priority ASC, created_at ASC`)
+	beads, err := s.queryBeads(ctx, `SELECT `+beadColumns+` FROM beads_ready ORDER BY priority ASC, created_at ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
