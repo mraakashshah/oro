@@ -230,13 +230,14 @@ def test_writing_skills_description_is_normalized_trigger_only() -> None:
     opening_marker, _, remainder = skill_text.partition("---\n")
     assert opening_marker == ""
 
-    frontmatter_text, closing_marker, _ignored_markdown_body = remainder.partition("\n---\n")
+    frontmatter_text, closing_marker, markdown_body = remainder.partition("\n---\n")
     frontmatter = frontmatter_text.splitlines()
-    normalized_description = "description: Use when creating or editing Codex skills"
+    normalized_description = "Use when creating or editing Codex skills"
 
     assert closing_marker == "\n---\n"
     assert "---" not in frontmatter
-    assert normalized_description in frontmatter
+    assert f"description: {normalized_description}" in frontmatter
+    assert normalized_description not in markdown_body
     assert checker.check_skill_description(skill_path) == []
 
 
