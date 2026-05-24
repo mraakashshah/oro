@@ -215,6 +215,16 @@ def test_skill_description_lint_cli_accepts_writing_skills_trigger_description()
     assert result.stderr == ""
 
 
+def test_check_skill_descriptions_quiet_success_for_valid_writing_skills_asset() -> None:
+    skill_path = _repo_root() / "assets/skills/writing-skills/SKILL.md"
+
+    result = _run_skill_description_lint(skill_path)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
 def test_read_skill_description_extracts_frontmatter_description(tmp_path: Path) -> None:
     skill_path = _write_skill(
         tmp_path / "agent-browser-trigger",
