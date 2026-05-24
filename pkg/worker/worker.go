@@ -1047,7 +1047,7 @@ func (w *Worker) closeLogFile() {
 // If memoryContext is non-empty, it is appended as a section so the worker
 // benefits from cross-session memories retrieved by the dispatcher.
 func BuildPrompt(beadID, worktree, memoryContext string) string {
-	base := fmt.Sprintf("Execute bead %s in worktree %s. Before completing, run ./scripts/quality_gate.sh and ensure it passes.", beadID, worktree)
+	base := fmt.Sprintf("Execute bead %s in worktree %s. Before completing, run ./quality_gate.sh if present; otherwise run ./scripts/quality_gate.sh. Ensure the gate passes.", beadID, worktree)
 	if memoryContext == "" {
 		return base
 	}
@@ -1676,13 +1676,13 @@ func rebaseOntoTarget(ctx context.Context, worktree, target string) error {
 	return fmt.Errorf("rebase onto %s: %w\n%s", target, err, out)
 }
 
-// findQualityGateScript locates quality_gate.sh in the worktree, trying
-// scripts/quality_gate.sh first (canonical), then quality_gate.sh at root
-// (legacy). If neither exists, it attempts a git restore before giving up.
+// findQualityGateScript locates quality_gate.sh in the worktree, trying the
+// dispatcher-managed root quality_gate.sh first, then scripts/quality_gate.sh.
+// If neither exists, it attempts a git restore before giving up.
 func findQualityGateScript(ctx context.Context, worktree string) (string, error) {
 	candidates := []string{
-		filepath.Join(worktree, "scripts", "quality_gate.sh"),
 		filepath.Join(worktree, "quality_gate.sh"),
+		filepath.Join(worktree, "scripts", "quality_gate.sh"),
 	}
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
@@ -1690,7 +1690,7 @@ func findQualityGateScript(ctx context.Context, worktree string) (string, error)
 		}
 	}
 	// Neither found — try git restore for each candidate in order.
-	gitPaths := []string{"scripts/quality_gate.sh", "quality_gate.sh"}
+	gitPaths := []string{"quality_gate.sh", "scripts/quality_gate.sh"}
 	for i, gitPath := range gitPaths {
 		restoreCmd := exec.CommandContext(ctx, "git", "checkout", "HEAD", "--", gitPath) //nolint:gosec // gitPath is from hardcoded constant slice above
 		restoreCmd.Dir = worktree

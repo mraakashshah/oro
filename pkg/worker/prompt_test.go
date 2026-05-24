@@ -272,8 +272,11 @@ func TestAssemblePrompt_QualityGateContent(t *testing.T) {
 
 	prompt := worker.AssemblePrompt(params)
 
+	if !strings.Contains(prompt, "./quality_gate.sh") {
+		t.Error("expected Quality Gate section to prefer './quality_gate.sh'")
+	}
 	if !strings.Contains(prompt, "./scripts/quality_gate.sh") {
-		t.Error("expected Quality Gate section to contain './scripts/quality_gate.sh'")
+		t.Error("expected Quality Gate section to mention './scripts/quality_gate.sh' fallback")
 	}
 	if strings.Contains(prompt, "ORO_SKIP_MUTATION") {
 		t.Error("Quality Gate section should not teach agents to use ORO_SKIP_MUTATION for local QG")

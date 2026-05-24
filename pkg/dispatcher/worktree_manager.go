@@ -156,11 +156,10 @@ func (g *GitWorktreeManager) stageAssets(ctx context.Context, path string) {
 	g.linkQualityGate(ctx, path)
 }
 
-// linkQualityGate creates a symlink at <worktreePath>/quality_gate.sh pointing
-// to g.qualityGatePath, unless the worktree already has its own quality gate
-// (scripts/quality_gate.sh or quality_gate.sh). It is a no-op when
-// qualityGatePath is empty. If qualityGatePath does not exist on disk, a
-// warning is logged and no symlink is created.
+// linkQualityGate creates a dispatcher-managed symlink at
+// <worktreePath>/quality_gate.sh pointing to g.qualityGatePath. This root
+// script intentionally coexists with a tracked scripts/quality_gate.sh so old
+// epic branches cannot bypass current factory safety fixes.
 func (g *GitWorktreeManager) linkQualityGate(ctx context.Context, worktreePath string) {
 	if g.qualityGatePath == "" {
 		return
@@ -173,14 +172,20 @@ func (g *GitWorktreeManager) linkQualityGate(ctx context.Context, worktreePath s
 		return
 	}
 
-	// Skip if the worktree already has scripts/quality_gate.sh.
-	if _, err := os.Stat(filepath.Join(worktreePath, "scripts", "quality_gate.sh")); err == nil {
-		return
-	}
-
-	// Skip if the worktree already has quality_gate.sh at root.
 	linkPath := filepath.Join(worktreePath, "quality_gate.sh")
-	if _, err := os.Lstat(linkPath); err == nil {
+	info, err := os.Lstat(linkPath)
+	if err == nil {
+		if existingQualityGateLinkCurrent(info, linkPath, g.qualityGatePath) {
+			return
+		}
+		if removeErr := os.Remove(linkPath); removeErr != nil {
+			slog.WarnContext(ctx, "link_quality_gate_remove_stale_symlink_failed",
+				"link", linkPath, "target", g.qualityGatePath, "error", removeErr.Error())
+			return
+		}
+	} else if !os.IsNotExist(err) {
+		slog.WarnContext(ctx, "link_quality_gate_lstat_failed",
+			"link", linkPath, "target", g.qualityGatePath, "error", err.Error())
 		return
 	}
 
@@ -188,6 +193,18 @@ func (g *GitWorktreeManager) linkQualityGate(ctx context.Context, worktreePath s
 		slog.WarnContext(ctx, "link_quality_gate_symlink_failed",
 			"link", linkPath, "target", g.qualityGatePath, "error", err.Error())
 	}
+}
+
+func existingQualityGateLinkCurrent(info os.FileInfo, linkPath, target string) bool {
+	if info.Mode()&os.ModeSymlink == 0 {
+		return true
+	}
+	return symlinkTargetMatches(linkPath, target)
+}
+
+func symlinkTargetMatches(linkPath, target string) bool {
+	dest, err := os.Readlink(linkPath)
+	return err == nil && dest == target
 }
 
 // pruneStale cleans up stale git worktree metadata left by a previous crash.

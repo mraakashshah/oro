@@ -1014,6 +1014,35 @@ sh -c 'printf "PWD=%s\nACTUAL=%s\nGIT_DIR=%s\nGIT_WORK_TREE=%s\nGIT_INDEX_FILE=%
 	}
 }
 
+func TestRunQualityGate_PrefersDispatcherManagedRootScript(t *testing.T) {
+	worktree := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(worktree, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	staleScript := filepath.Join(worktree, "scripts", "quality_gate.sh")
+	if err := os.WriteFile(staleScript, []byte("#!/bin/sh\necho stale branch qg\nexit 0\n"), 0o755); err != nil { //nolint:gosec // test script
+		t.Fatal(err)
+	}
+	rootScript := filepath.Join(worktree, "quality_gate.sh")
+	if err := os.WriteFile(rootScript, []byte("#!/bin/sh\necho dispatcher managed qg\nexit 0\n"), 0o755); err != nil { //nolint:gosec // test script
+		t.Fatal(err)
+	}
+
+	passed, output, err := worker.RunQualityGate(context.Background(), worktree, false)
+	if err != nil {
+		t.Fatalf("RunQualityGate: %v", err)
+	}
+	if !passed {
+		t.Fatalf("expected quality gate to pass, output: %q", output)
+	}
+	if !strings.Contains(output, "dispatcher managed qg") {
+		t.Fatalf("expected root quality gate output, got: %q", output)
+	}
+	if strings.Contains(output, "stale branch qg") {
+		t.Fatalf("stale scripts/quality_gate.sh was used, output: %q", output)
+	}
+}
+
 func TestRunQualityGate_RestoreFails_ReturnsError(t *testing.T) {
 	t.Parallel()
 
@@ -1075,8 +1104,11 @@ func TestBuildPrompt_IncludesQualityGateInstruction(t *testing.T) {
 	t.Parallel()
 
 	prompt := worker.BuildPrompt("bead-123", "/tmp/wt-123", "")
-	if !strings.Contains(prompt, "quality_gate.sh") {
-		t.Error("expected prompt to contain quality_gate.sh instruction")
+	if !strings.Contains(prompt, "./quality_gate.sh") {
+		t.Error("expected prompt to prefer root quality_gate.sh instruction")
+	}
+	if !strings.Contains(prompt, "./scripts/quality_gate.sh") {
+		t.Error("expected prompt to include scripts/quality_gate.sh fallback")
 	}
 }
 

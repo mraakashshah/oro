@@ -1784,7 +1784,7 @@ func TestGitWorktreeManager_LinkQualityGate(t *testing.T) {
 		}
 	})
 
-	t.Run("skips_when_scripts_quality_gate_exists", func(t *testing.T) {
+	t.Run("creates_symlink_when_scripts_quality_gate_exists", func(t *testing.T) {
 		worktree := t.TempDir()
 		scriptsDir := filepath.Join(worktree, "scripts")
 		if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
@@ -1805,8 +1805,12 @@ func TestGitWorktreeManager_LinkQualityGate(t *testing.T) {
 		mgr.linkQualityGate(context.Background(), worktree)
 
 		link := filepath.Join(worktree, "quality_gate.sh")
-		if _, err := os.Lstat(link); err == nil {
-			t.Fatalf("expected no symlink at %s, but it exists", link)
+		dest, err := os.Readlink(link)
+		if err != nil {
+			t.Fatalf("expected symlink at %s, got error: %v", link, err)
+		}
+		if dest != target {
+			t.Fatalf("symlink target: got %q, want %q", dest, target)
 		}
 	})
 
