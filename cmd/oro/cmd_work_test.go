@@ -1863,7 +1863,7 @@ func TestNewWorkerBeadStoreDoesNotFetchLegacyPromptMemory(t *testing.T) {
 func TestWorkPromptUsesCardsContext(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("spawn prompt renders relevant cards and ignores legacy prompt memory", func(t *testing.T) {
+	t.Run("spawn_prompt_renders_relevant_cards", func(t *testing.T) {
 		db := setupTestMemoryDB(t)
 		memStore := memory.NewStore(db)
 		if _, err := memStore.Insert(ctx, memory.InsertParams{
@@ -1919,6 +1919,15 @@ func TestWorkPromptUsesCardsContext(t *testing.T) {
 
 		if cardStore.calls != 1 {
 			t.Fatalf("Relevant calls = %d, want 1", cardStore.calls)
+		}
+		if cardStore.lastQuery.BeadType != "task" {
+			t.Fatalf("Relevant query BeadType = %q, want task", cardStore.lastQuery.BeadType)
+		}
+		if strings.Join(cardStore.lastQuery.BeadTags, ",") != "cards" {
+			t.Fatalf("Relevant query BeadTags = %v, want [cards]", cardStore.lastQuery.BeadTags)
+		}
+		if cardStore.lastQuery.BeadDescription != "Build prompt from card context" {
+			t.Fatalf("Relevant query BeadDescription = %q, want bead description", cardStore.lastQuery.BeadDescription)
 		}
 		cardsSection := extractPromptSection(t, sp.capturedPrompt, "## Cards")
 		if !strings.Contains(cardsSection, "Use cards for local work") {
