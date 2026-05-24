@@ -1800,13 +1800,13 @@ func TestNewWorkerBeadStoreDoesNotFetchLegacyPromptMemory(t *testing.T) {
 		t.Fatalf("migrate bead schema: %v", err)
 	}
 	memStore := memory.NewStore(db)
-	beadID := "oro-worker-memory"
-	description := "Implement worker prompt memory cutover"
+	beadID := "oro-no-legacy-memory"
+	description := "Stop standalone work store prompt memory reads"
 
 	store := newWorkerBeadStore(db, memStore)
 	if _, err := store.Create(ctx, beadstore.CreateParams{
 		ID:          beadID,
-		Title:       "Worker memory cutover",
+		Title:       "No legacy memory reads",
 		Description: description,
 		Tags:        []string{"worker", "memory"},
 		Type:        "task",
@@ -1814,7 +1814,7 @@ func TestNewWorkerBeadStoreDoesNotFetchLegacyPromptMemory(t *testing.T) {
 		t.Fatalf("seed bead: %v", err)
 	}
 	if _, err := memStore.Insert(ctx, memory.InsertParams{
-		Content:    "Worker prompt memory cutover should use cards instead",
+		Content:    "Stop standalone work store prompt memory reads",
 		Type:       "lesson",
 		Source:     "test",
 		Confidence: 0.9,
