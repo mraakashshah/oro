@@ -91,7 +91,7 @@ type DeferredStore interface {
 	Undefer(ctx context.Context, id string) error
 }
 
-func selectStore(ctx context.Context, mode string, primary DeferredStore, db *sql.DB, memories *memory.Store) (DeferredStore, error) {
+func selectStore(ctx context.Context, mode string, primary DeferredStore, db *sql.DB) (DeferredStore, error) {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "", "cli":
 		return primary, nil
@@ -107,12 +107,7 @@ func selectStore(ctx context.Context, mode string, primary DeferredStore, db *sq
 				return nil, fmt.Errorf("select bead source %q: migrate kv store: %w", mode, err)
 			}
 		}
-		sqliteStore := beadstore.NewSQLiteStore(db, beadstore.WithMemoryFetcher(func(ctx context.Context, tags []string, description string, maxTokens int) (string, error) {
-			if memories == nil {
-				return "", nil
-			}
-			return memory.ForPrompt(ctx, memories, tags, description, maxTokens)
-		}))
+		sqliteStore := beadstore.NewSQLiteStore(db)
 		if strings.EqualFold(strings.TrimSpace(mode), "sqlite") {
 			return sqliteStore, nil
 		}
@@ -808,7 +803,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 	memStore.SetEmbedder(memory.NewEmbedder())
 	cardStore, _ := cards.NewStore(db) // non-fatal; nil disables D.3 dual-write
 	beadSourceMode := normalizeBeadSourceModeForPrimary(os.Getenv("ORO_BEADSOURCE_MODE"), beads)
-	selectedBeads, err := selectStore(context.Background(), beadSourceMode, beads, db, memStore)
+	selectedBeads, err := selectStore(context.Background(), beadSourceMode, beads, db)
 	if err != nil {
 		return nil, err
 	}

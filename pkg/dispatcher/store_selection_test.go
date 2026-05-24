@@ -12,6 +12,7 @@ import (
 	"unsafe"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/memory"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
@@ -73,6 +74,46 @@ func TestSelectStore(t *testing.T) {
 	}
 }
 
+func TestSelectStoreSQLiteDoesNotInstallMemoryFetcher(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("migrate bead schema: %v", err)
+	}
+	seedStore := beadstore.NewSQLiteStore(db)
+	if _, err := seedStore.Create(ctx, beadstore.CreateParams{
+		ID:          "oro-no-dispatcher-memory",
+		Title:       "sqlite",
+		Description: "dispatch selected store should not enrich show",
+		Tags:        []string{"sqlite"},
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	memories := memory.NewStore(db)
+	if _, err := memories.Insert(ctx, memory.InsertParams{
+		Content:    "dispatch selected store should not enrich show",
+		Type:       "lesson",
+		Tags:       []string{"sqlite"},
+		Source:     "self_report",
+		Confidence: 0.9,
+	}); err != nil {
+		t.Fatalf("insert memory: %v", err)
+	}
+
+	store, err := selectStore(ctx, "sqlite", beadstore.NewFakeStore(), db)
+	if err != nil {
+		t.Fatalf("selectStore: %v", err)
+	}
+	shown, err := store.Show(ctx, "oro-no-dispatcher-memory")
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if shown.Memory != "" {
+		t.Fatalf("selected sqlite store Show Memory = %q, want empty", shown.Memory)
+	}
+}
+
 func TestSelectStoreShadowLogsDivergenceEvent(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
@@ -91,7 +132,7 @@ func TestSelectStoreShadowLogsDivergenceEvent(t *testing.T) {
 		UpdatedAt: "2026-04-28T09:00:00Z",
 	})
 
-	store, err := selectStore(ctx, "shadow", primary, db, nil)
+	store, err := selectStore(ctx, "shadow", primary, db)
 	if err != nil {
 		t.Fatalf("selectStore: %v", err)
 	}
@@ -131,7 +172,7 @@ func TestSelectStorePersistsShadowStartedAt(t *testing.T) {
 	db := newTestDB(t)
 	primary := beadstore.NewFakeStore()
 
-	first, err := selectStore(ctx, "shadow", primary, db, nil)
+	first, err := selectStore(ctx, "shadow", primary, db)
 	if err != nil {
 		t.Fatalf("first selectStore: %v", err)
 	}
@@ -158,7 +199,7 @@ func TestSelectStorePersistsShadowStartedAt(t *testing.T) {
 		Priority:  1,
 		UpdatedAt: updatedAfterWindow,
 	})
-	second, err := selectStore(ctx, "shadow", primary, db, nil)
+	second, err := selectStore(ctx, "shadow", primary, db)
 	if err != nil {
 		t.Fatalf("second selectStore: %v", err)
 	}
@@ -208,7 +249,7 @@ func TestSelectStoreCreatesShadowStartedAtOnLegacyDB(t *testing.T) {
 		t.Fatalf("drop kv_store: %v", err)
 	}
 
-	store, err := selectStore(ctx, "shadow", beadstore.NewFakeStore(), db, nil)
+	store, err := selectStore(ctx, "shadow", beadstore.NewFakeStore(), db)
 	if err != nil {
 		t.Fatalf("selectStore shadow on legacy db: %v", err)
 	}
@@ -231,7 +272,7 @@ func TestSelectStoreRejectsMalformedShadowStartedAt(t *testing.T) {
 		t.Fatalf("seed malformed shadow start: %v", err)
 	}
 
-	if _, err := selectStore(ctx, "shadow", beadstore.NewFakeStore(), db, nil); err == nil {
+	if _, err := selectStore(ctx, "shadow", beadstore.NewFakeStore(), db); err == nil {
 		t.Fatalf("selectStore shadow succeeded with malformed shadow start")
 	} else if !strings.Contains(err.Error(), "beadstore_shadow_started_at") {
 		t.Fatalf("error = %v, want shadow start key", err)

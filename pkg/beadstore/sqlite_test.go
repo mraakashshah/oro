@@ -704,6 +704,60 @@ func TestSQLiteStoreOptionsAndGeneratedID(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreExplicitMemoryFetcherStillEnrichesShow(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("migrate bead schema: %v", err)
+	}
+
+	plainStore := NewSQLiteStore(db)
+	created, err := plainStore.Create(ctx, CreateParams{
+		ID:          "oro-memory",
+		Title:       "memory",
+		Description: "show should enrich explicitly",
+		Tags:        []string{"memory", "sqlite"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if created.Memory != "" {
+		t.Fatalf("Create returned Memory = %q, want empty without fetcher", created.Memory)
+	}
+
+	var calls int
+	store := NewSQLiteStore(db, WithMemoryFetcher(func(_ context.Context, tags []string, description string, maxTokens int) (string, error) {
+		calls++
+		if !reflect.DeepEqual(tags, []string{"memory", "sqlite"}) || description != "show should enrich explicitly" || maxTokens != 2000 {
+			t.Fatalf("memory fetch inputs tags=%#v description=%q maxTokens=%d", tags, description, maxTokens)
+		}
+		return "explicit memory", nil
+	}))
+
+	shown, err := store.Show(ctx, "oro-memory")
+	if err != nil {
+		t.Fatalf("Show with fetcher: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("memory fetch calls = %d, want 1", calls)
+	}
+	if shown.Memory != "explicit memory" {
+		t.Fatalf("Show Memory = %q, want callback result", shown.Memory)
+	}
+
+	plainShown, err := plainStore.Show(ctx, "oro-memory")
+	if err != nil {
+		t.Fatalf("Show without fetcher: %v", err)
+	}
+	if plainShown.Memory != "" {
+		t.Fatalf("Show without fetcher Memory = %q, want empty", plainShown.Memory)
+	}
+}
+
 func TestRaceSQLiteStoreConcurrentReadyShowClose(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
