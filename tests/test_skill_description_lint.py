@@ -258,6 +258,21 @@ def test_agent_browser_description_lint_accepts_canonical_file() -> None:
     assert checker.check_skill_description(skill_path) == []
 
 
+def test_agent_browser_canonical_description_is_normalized_trigger_only() -> None:
+    checker = _load_checker()
+    skill_path = _repo_root() / "assets/skills/agent-browser/SKILL.md"
+    skill_text = skill_path.read_text(encoding="utf-8")
+    description = _read_skill_description(skill_path)
+    _frontmatter_text, closing_marker, markdown_body = skill_text[4:].partition("\n---\n")
+
+    assert closing_marker == "\n---\n"
+    assert description is not None
+    assert description.startswith("Use when the user needs to interact with websites")
+    assert not description.startswith("Browser automation CLI for AI agents.")
+    assert description not in markdown_body
+    assert checker.check_skill_description(skill_path) == []
+
+
 def test_using_skills_description_is_normalized_trigger_only(tmp_path: Path) -> None:
     checker = _load_checker()
     skill_path = _repo_root() / "assets/skills/using-skills/SKILL.md"
