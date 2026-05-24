@@ -13,14 +13,42 @@ import pytest  # type: ignore[import-not-found]
 WORKFLOW_SUMMARY_ERROR = "description must contain triggering conditions only, not a workflow summary"
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
 def _load_checker():
-    script_path = Path(__file__).resolve().parents[1] / "scripts" / "check-skill-descriptions.py"
+    script_path = _repo_root() / "scripts" / "check-skill-descriptions.py"
     spec = importlib.util.spec_from_file_location("check_skill_descriptions", script_path)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _run_skill_description_lint(skill_path: Path) -> subprocess.CompletedProcess[str]:
+    script_path = _repo_root() / "scripts" / "check-skill-descriptions.py"
+    return subprocess.run(
+        [sys.executable, str(script_path), str(skill_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _read_skill_description(skill_path: Path) -> str | None:
+    checker = _load_checker()
+    frontmatter = checker._frontmatter(skill_path.read_text(encoding="utf-8"))
+    if frontmatter is None:
+        return None
+
+    description = frontmatter.get("description")
+    if not isinstance(description, str):
+        return None
+
+    description = description.strip()
+    return description or None
 
 
 def _write_skill(path: Path, description: str | None) -> Path:
@@ -64,6 +92,13 @@ def test_check_skill_description_accepts_trigger_only_description(tmp_path: Path
 def test_check_skill_description_accepts_writing_skills_trigger_description() -> None:
     checker = _load_checker()
     skill_path = Path("assets/skills/writing-skills/SKILL.md")
+
+    assert checker.check_skill_description(skill_path) == []
+
+
+def test_check_skill_description_accepts_writing_skills_trigger_description_via_api() -> None:
+    checker = _load_checker()
+    skill_path = _repo_root() / "assets/skills/writing-skills/SKILL.md"
 
     assert checker.check_skill_description(skill_path) == []
 
@@ -134,25 +169,63 @@ def test_skill_description_lint_builds_documented_cso_good_fixture(tmp_path: Pat
 
 
 def test_skill_description_lint_accepts_writing_skills_trigger_description() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    script_path = repo_root / "scripts" / "check-skill-descriptions.py"
-    skill_path = repo_root / "assets" / "skills" / "writing-skills" / "SKILL.md"
+    skill_path = _repo_root() / "assets" / "skills" / "writing-skills" / "SKILL.md"
 
-    result = subprocess.run(
-        [sys.executable, str(script_path), str(skill_path)],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    result = _run_skill_description_lint(skill_path)
 
     assert result.returncode == 0
     assert result.stdout == ""
     assert result.stderr == ""
 
 
+def test_skill_description_lint_accepts_writing_skills_cli() -> None:
+    skill_path = _repo_root() / "assets/skills/writing-skills/SKILL.md"
+
+    result = _run_skill_description_lint(skill_path)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+def test_skill_description_lint_accepts_writing_skills_trigger_description_cli() -> None:
+    skill_path = _repo_root() / "assets/skills/writing-skills/SKILL.md"
+
+    result = _run_skill_description_lint(skill_path)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+def test_skill_description_lint_cli_accepts_writing_skills_trigger_description() -> None:
+    skill_path = _repo_root() / "assets/skills/writing-skills/SKILL.md"
+
+    result = _run_skill_description_lint(skill_path)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+def test_read_skill_description_extracts_frontmatter_description(tmp_path: Path) -> None:
+    skill_path = _write_skill(
+        tmp_path / "agent-browser-trigger",
+        "  Use when the user needs to interact with websites  ",
+    )
+    missing_frontmatter = _write_skill(tmp_path / "missing-frontmatter", None)
+    missing_description = tmp_path / "missing-description" / "SKILL.md"
+    missing_description.parent.mkdir(parents=True)
+    missing_description.write_text("---\nname: missing-description\n---\n\n# Skill\n", encoding="utf-8")
+
+    assert _read_skill_description(skill_path) == "Use when the user needs to interact with websites"
+    assert _read_skill_description(missing_frontmatter) is None
+    assert _read_skill_description(missing_description) is None
+
+
 def test_writing_skills_description_is_normalized_trigger_only() -> None:
     checker = _load_checker()
-    skill_path = Path(__file__).resolve().parents[1] / "assets/skills/writing-skills/SKILL.md"
+    skill_path = _repo_root() / "assets/skills/writing-skills/SKILL.md"
     skill_text = skill_path.read_text(encoding="utf-8")
     opening_marker, _, remainder = skill_text.partition("---\n")
     assert opening_marker == ""
@@ -167,10 +240,27 @@ def test_writing_skills_description_is_normalized_trigger_only() -> None:
     assert checker.check_skill_description(skill_path) == []
 
 
+def test_writing_skills_asset_is_lint_clean() -> None:
+    checker = _load_checker()
+    skill_path = _repo_root() / "assets/skills/writing-skills/SKILL.md"
+
+    assert checker.check_skill_description(skill_path) == []
+
+
+def test_agent_browser_description_lint_accepts_canonical_file() -> None:
+    checker = _load_checker()
+    skill_path = _repo_root() / "assets/skills/agent-browser/SKILL.md"
+    description = _read_skill_description(skill_path)
+
+    assert description is not None
+    assert description.startswith("Use when the user needs to interact with websites")
+    assert not description.startswith("Browser automation CLI for AI agents.")
+    assert checker.check_skill_description(skill_path) == []
+
+
 def test_using_skills_description_is_normalized_trigger_only(tmp_path: Path) -> None:
     checker = _load_checker()
-    repo_root = Path(__file__).resolve().parents[1]
-    skill_path = repo_root / "assets/skills/using-skills/SKILL.md"
+    skill_path = _repo_root() / "assets/skills/using-skills/SKILL.md"
     skill_text = skill_path.read_text(encoding="utf-8")
     frontmatter = skill_text.split("\n---\n", maxsplit=1)[0].splitlines()
 
