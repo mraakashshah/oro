@@ -70,3 +70,33 @@ func TestNoBdInstallInstructions(t *testing.T) {
 		}
 	}
 }
+
+func TestDocsREADMEHandoffsAreRenders(t *testing.T) {
+	content, err := os.ReadFile("docs/README.md")
+	if err != nil {
+		t.Fatalf("Failed to read docs/README.md: %v", err)
+	}
+
+	text := string(content)
+	required := []string{
+		"`handoffs/` - legacy generated handoff snapshots",
+		"`oro handoff`",
+		"renders, not stored artifacts",
+		"no longer maintained as canonical session state",
+	}
+	for _, phrase := range required {
+		if !strings.Contains(text, phrase) {
+			t.Errorf("docs/README.md missing render-based handoff guidance %q", phrase)
+		}
+	}
+
+	forbidden := []string{
+		"`handoffs/` - generated session handoff state",
+		"Keep generated handoff snapshots under `handoffs/`",
+	}
+	for _, phrase := range forbidden {
+		if strings.Contains(text, phrase) {
+			t.Errorf("docs/README.md still contains stored handoff guidance %q", phrase)
+		}
+	}
+}

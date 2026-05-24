@@ -20,7 +20,8 @@ operators, and future agents.
 - `learnings/` - synthesized learnings from prior art and project work.
 - `proofs/` - proof artifacts for critical workflows.
 - `solutions/` - solved problem writeups.
-- `handoffs/` - generated session handoff state; most snapshots are ignored.
+- `handoffs/` - legacy generated handoff snapshots; `oro handoff`
+  renders, not stored artifacts, are the current handoff mechanism.
 - `archive/` - superseded, compatibility-only, or noncanonical docs.
 
 ## Naming Conventions
@@ -33,8 +34,8 @@ operators, and future agents.
   `runbooks/logs/` and incident-specific notes under `runbooks/incidents/`.
 - Prefer archiving over deleting unless a file is an exact duplicate with a
   canonical copy already present.
-- Keep generated handoff snapshots under `handoffs/`; do not manually curate
-  ignored snapshot copies.
+- Do not add handoff snapshots to `handoffs/`; the directory is legacy
+  generated state and is no longer maintained as canonical session state.
 - Update links whenever a doc moves.
 
 ## Review Pattern Inbox
