@@ -288,14 +288,14 @@ func TestHandleDone_QGFailRetryAttemptCountResetsOnSuccess(t *testing.T) {
 	}
 }
 
-// --- QG Re-assign Memory Inclusion Tests (oro-8l6) ---
+// --- QG Re-assign Cards Context Tests (oro-8l6) ---
 
-func TestHandleDone_QGFailReassignIncludesMemories(t *testing.T) {
+func TestQGRetryReassignIncludesCardsAndEmptyMemoryContext(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	cancel := startDispatcher(t, d)
 	defer cancel()
 
-	// Insert a memory whose content matches the bead title for FTS5 search.
+	// Seed a card whose content matches the bead title for FTS5 search.
 	ctx := context.Background()
 	seedDispatcherCard(ctx, t, d, cards.CardCreateParams{
 		ID:          "card-qgmem",

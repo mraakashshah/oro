@@ -17903,26 +17903,48 @@ func TestWithDefaults_PositiveDurations(t *testing.T) {
 	}
 }
 
-// TestBuildRejectionMemoryContext_Format verifies that the returned string
-// contains the rejection section separated from memory context by "\n\n".
-// This kills the arithmetic mutation that would produce a compile error
-// (string subtraction) and also the format mutation.
+// TestBuildRejectionMemoryContext_WithBothSections verifies that rejection
+// retry context is built only from the current review feedback plus
+// rejection_history. Legacy memories must not leak into MemoryContext after the
+// Cards cutover.
 func TestBuildRejectionMemoryContext_WithBothSections(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 
-	// Simulate a bead with a title (for memory search).
 	ctx := context.Background()
+	beadID := "oro-test1"
+	priorFeedback := "prior rejection from rejection_history"
 	feedback := "tests are missing edge cases"
 
-	result := d.buildRejectionMemoryContext(ctx, "oro-test1", feedback)
+	if err := d.memories.InsertRejection(ctx, beadID, "worker-prior", priorFeedback); err != nil {
+		t.Fatalf("InsertRejection: %v", err)
+	}
+	_, err := d.memories.Insert(ctx, memory.InsertParams{
+		Content:    "legacy memory must stay out of rejection MemoryContext",
+		Type:       "lesson",
+		Source:     "test",
+		BeadID:     beadID,
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("Insert legacy memory: %v", err)
+	}
 
-	// Result must contain the rejection header.
+	result := d.buildRejectionMemoryContext(ctx, beadID, feedback)
+
 	if !strings.Contains(result, "## Review Rejection Feedback") {
 		t.Errorf("result should contain rejection header, got: %q", result)
 	}
-	// Result must contain the feedback.
 	if !strings.Contains(result, feedback) {
 		t.Errorf("result should contain feedback %q, got: %q", feedback, result)
+	}
+	if !strings.Contains(result, "## Prior Rejection History") {
+		t.Errorf("result should contain prior rejection header, got: %q", result)
+	}
+	if !strings.Contains(result, priorFeedback) {
+		t.Errorf("result should contain prior feedback %q, got: %q", priorFeedback, result)
+	}
+	if strings.Contains(result, "legacy memory must stay out") {
+		t.Errorf("result should not contain legacy memory content, got: %q", result)
 	}
 }
 
