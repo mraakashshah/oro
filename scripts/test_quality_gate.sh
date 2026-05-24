@@ -1045,6 +1045,7 @@ test_quality_gate_invalid_locale_bootstraps_before_bash() {
 		echo "FAIL: quality_gate.sh does not guard the Bash bootstrap"
 		return 1
 	fi
+	# shellcheck disable=SC2016
 	if ! head -25 "$SCRIPT_DIR/quality_gate.sh" | grep -q 'exec /usr/bin/env bash "$0" "$@"'; then
 		echo "FAIL: quality_gate.sh does not exec Bash after locale normalization"
 		return 1
