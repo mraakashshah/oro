@@ -1,16 +1,6 @@
 ---
 name: oro
-description: >
-  Use when working in an oro-managed project. Two modes:
-  "use oro" / "oro work" → one task in a single execution tier (lightweight, no dispatcher).
-  "launch oro" → full swarm with dispatcher, tmux, and multiple execution tiers.
-
-  Workflow-specific sub-skills:
-  - Running the swarm and monitoring → /watching-oro
-  - Restarting after crash or stuck state → /restart-oro
-  - Decomposing a spec into tasks → /beadcraft
-  - Creating a handoff for session continuity → /create-handoff
-  - Resuming from a handoff → /resume-handoff
+description: Use when working in an oro-managed project, running an oro task, or launching the oro swarm
 user-invocable: true
 ---
 

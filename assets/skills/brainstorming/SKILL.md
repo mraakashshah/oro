@@ -1,6 +1,6 @@
 ---
 name: brainstorming
-description: Use before any creative work -- creating features, building components, adding functionality, or modifying behavior
+description: Use when doing creative product, feature, component, functionality, or behavior design work
 ---
 
 # Brainstorming Ideas Into Designs

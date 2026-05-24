@@ -1,6 +1,6 @@
 ---
 name: premortem
-description: Use before committing to any design decision or plan — at decision level during brainstorming AND at plan level before implementation
+description: Use when evaluating a design decision or implementation plan before committing to it
 ---
 
 # Pre-Mortem

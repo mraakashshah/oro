@@ -1,6 +1,6 @@
 ---
 name: context-checkpoint
-description: Use after every task completion to monitor context consumption and trigger proactive handoff before context degrades
+description: Use when task completion or context usage requires a handoff readiness check
 user-invocable: false
 ---
 

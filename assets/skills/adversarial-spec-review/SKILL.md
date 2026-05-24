@@ -1,6 +1,6 @@
 ---
 name: adversarial-spec-review
-description: Use after writing a spec or decomposing into tasks — adversarially verifies the spec is complete, wired, and will actually work when all tasks pass
+description: Use when reviewing a spec or task graph for completeness before implementation
 user-invocable: true
 ---
 

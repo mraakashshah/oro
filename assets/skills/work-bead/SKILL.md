@@ -1,6 +1,6 @@
 ---
 name: work-bead
-description: Use when picking up a task to execute end-to-end — from claim through worktree, TDD, merge to main, and cleanup
+description: Use when picking up a tracked task to execute end-to-end
 ---
 
 # Work Task

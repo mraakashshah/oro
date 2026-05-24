@@ -12,9 +12,17 @@ MANDATORY_RULE_RE = re.compile(
     re.IGNORECASE,
 )
 WORKFLOW_SUMMARY_ERROR = "description must contain triggering conditions only, not a workflow summary"
+DUPLICATE_SKILL_NAME_ERROR = "duplicate skill name"
 ISSUE_CODES = {
     WORKFLOW_SUMMARY_ERROR: "workflow-summary",
+    DUPLICATE_SKILL_NAME_ERROR: "duplicate-skill-name",
 }
+ALLOWED_DUPLICATE_SKILL_NAME_PATHS = frozenset(
+    {
+        Path("assets/skills/agent-browser/SKILL.md"),
+        Path("assets/skills/agent-browser/agent-browser/SKILL.md"),
+    }
+)
 
 
 def _frontmatter(content: str) -> dict[str, object] | None:
@@ -31,6 +39,36 @@ def _frontmatter(content: str) -> dict[str, object] | None:
         if separator:
             data[key.strip()] = value.strip()
     return data
+
+
+def _display_path(path: Path) -> Path:
+    try:
+        return path.resolve().relative_to(Path.cwd().resolve())
+    except ValueError:
+        return path
+
+
+def _iter_skill_paths(paths: list[Path]) -> list[Path]:
+    skill_paths: list[Path] = []
+    for path in paths:
+        if path.is_dir():
+            skill_paths.extend(sorted(path.rglob("SKILL.md")))
+        else:
+            skill_paths.append(path)
+    return skill_paths
+
+
+def _skill_name(path: Path) -> str | None:
+    frontmatter = _frontmatter(path.read_text(encoding="utf-8"))
+    if frontmatter is None:
+        return None
+
+    name = frontmatter.get("name")
+    if not isinstance(name, str):
+        return None
+
+    name = name.strip()
+    return name or None
 
 
 def _is_trigger_only_description(description: str) -> bool:
@@ -63,7 +101,9 @@ def main() -> int:
     args = parser.parse_args()
 
     failed = False
-    for path in args.paths:
+    paths = _iter_skill_paths(args.paths)
+    names: dict[str, list[Path]] = {}
+    for path in paths:
         for issue in check_skill_description(path):
             failed = True
             code = ISSUE_CODES.get(issue)
@@ -71,6 +111,23 @@ def main() -> int:
                 print(f"{path}: {issue}", file=sys.stderr)
             else:
                 print(f"{path}: {code}: {issue}", file=sys.stderr)
+
+        name = _skill_name(path)
+        if name is not None:
+            names.setdefault(name, []).append(path)
+
+    for name, duplicate_paths in names.items():
+        if len(duplicate_paths) < 2:
+            continue
+
+        display_paths = frozenset(_display_path(path) for path in duplicate_paths)
+        if display_paths == ALLOWED_DUPLICATE_SKILL_NAME_PATHS:
+            continue
+
+        failed = True
+        code = ISSUE_CODES[DUPLICATE_SKILL_NAME_ERROR]
+        for path in duplicate_paths:
+            print(f"{path}: {code}: {DUPLICATE_SKILL_NAME_ERROR}: {name}", file=sys.stderr)
 
     return 1 if failed else 0
 

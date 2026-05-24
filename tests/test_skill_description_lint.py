@@ -185,6 +185,26 @@ def test_skill_description_lint_accepts_writing_skills_trigger_description() -> 
     assert result.stderr == ""
 
 
+def test_skill_description_lint_accepts_current_assets() -> None:
+    result = _run_skill_description_lint(_repo_root() / "assets/skills")
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+def test_skill_description_lint_rejects_unallowlisted_duplicate_skill_names(tmp_path: Path) -> None:
+    first = _write_skill(tmp_path / "first", "Use when testing duplicate skill names")
+    second = _write_skill(tmp_path / "second", "Use when testing duplicate skill names")
+    assert first != second
+
+    result = _run_skill_description_lint(tmp_path)
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "duplicate-skill-name" in result.stderr
+
+
 def test_skill_description_lint_accepts_writing_skills_cli() -> None:
     skill_path = _repo_root() / "assets/skills/writing-skills/SKILL.md"
 

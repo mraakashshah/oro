@@ -1,6 +1,6 @@
 ---
 name: review-docs
-description: Use after code changes land -- checks documentation for staleness, contradictions, and missing coverage
+description: Use when code changes may require documentation updates or stale documentation review
 ---
 
 # Review Docs

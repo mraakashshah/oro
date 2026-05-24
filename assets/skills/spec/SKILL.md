@@ -1,6 +1,6 @@
 ---
 name: spec
-description: Use when the user says "make a spec", "spec out X", or "brainstorm X" — turns intent into a validated task dependency graph
+description: Use when the user asks to make a spec, spec out work, or brainstorm a validated task graph
 ---
 
 # Spec

@@ -1,6 +1,6 @@
 ---
 name: executing-beads
-description: Use when work is tracked as tasks — executes one task at a time through the full TDD-commit-verify lifecycle
+description: Use when executing tracked tasks through the full implementation lifecycle
 ---
 
 # Executing Tasks
