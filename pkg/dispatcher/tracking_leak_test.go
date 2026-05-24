@@ -404,6 +404,7 @@ func TestTrackingMaps_ClearedOnEscalation(t *testing.T) {
 
 		beadSrc.SetBeads([]protocol.Bead{{ID: beadID, Title: "Success test", Priority: 1, Type: "task"}})
 		readMsg(t, conn, 2*time.Second)
+		beadSrc.SetBeads(nil)
 
 		// Seed non-QG maps (socket-safe: no pendingHandoffs or attemptCounts).
 		seedNonQGTrackingMaps(d, beadID)
