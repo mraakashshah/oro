@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 DASH_SUMMARY_RE = re.compile(r"\s[-\u2013\u2014]\s")
+MANDATORY_RULE_RE = re.compile(r"\b(?:must|always|no exceptions)\b", re.IGNORECASE)
 WORKFLOW_SUMMARY_ERROR = "description must contain triggering conditions only, not a workflow summary"
 ISSUE_CODES = {
     WORKFLOW_SUMMARY_ERROR: "workflow-summary",
@@ -44,7 +45,7 @@ def check_skill_description(path: Path) -> list[str]:
         return ["missing description"]
 
     description = description.strip()
-    if DASH_SUMMARY_RE.search(description):
+    if DASH_SUMMARY_RE.search(description) or MANDATORY_RULE_RE.search(description):
         return [WORKFLOW_SUMMARY_ERROR]
 
     if _is_trigger_only_description(description):

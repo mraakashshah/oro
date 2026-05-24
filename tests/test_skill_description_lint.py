@@ -172,3 +172,36 @@ def test_check_skill_description_rejects_dash_separated_workflow_summary(
     )
 
     assert checker.check_skill_description(skill_path) == [WORKFLOW_SUMMARY_ERROR]
+
+
+def test_using_skills_description_rejects_non_trigger_descriptions(
+    tmp_path: Path,
+) -> None:
+    checker = _load_checker()
+    valid_skill_path = _write_skill(
+        tmp_path / "trigger-only",
+        "Use when checking which skills apply before starting a task",
+    )
+    workflow_summary_path = _write_skill(
+        tmp_path / "workflow-summary",
+        "Use when checking skills - always invoke applicable skills before action",
+    )
+    mandatory_rule_paths = [
+        _write_skill(
+            tmp_path / "must-rule",
+            "You must invoke using-skills before any action.",
+        ),
+        _write_skill(
+            tmp_path / "always-rule",
+            "Always invoke using-skills before any action.",
+        ),
+        _write_skill(
+            tmp_path / "no-exceptions-rule",
+            "Invoke using-skills before any action. No exceptions.",
+        ),
+    ]
+
+    assert checker.check_skill_description(valid_skill_path) == []
+    assert checker.check_skill_description(workflow_summary_path) == [WORKFLOW_SUMMARY_ERROR]
+    for mandatory_rule_path in mandatory_rule_paths:
+        assert checker.check_skill_description(mandatory_rule_path) == [WORKFLOW_SUMMARY_ERROR]
