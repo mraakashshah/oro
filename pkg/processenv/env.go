@@ -2,12 +2,15 @@
 package processenv
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // ForWorkdir returns env with git worktree override variables stripped and PWD
@@ -23,25 +26,13 @@ func ForWorkdir(env []string, workdir string) []string {
 	rewriteGOMODCACHE := workdir != "" && pathInside(values["GOMODCACHE"], workdir)
 
 	for _, e := range env {
-		key, _, ok := strings.Cut(e, "=")
-		if !ok {
-			out = append(out, e)
-			continue
-		}
-		if isGitOverrideEnv(key) {
-			continue
-		}
-		if key == "PWD" {
-			if workdir != "" {
-				out = append(out, "PWD="+workdir)
-			}
+		entry, keep, handledPWD := normalizeEnvEntry(e, workdir, rewriteGOMODCACHE)
+		if handledPWD {
 			pwdSet = true
-			continue
 		}
-		if workdir != "" && isolatesRuntimeEnv(key, rewriteGOMODCACHE) {
-			continue
+		if keep {
+			out = append(out, entry)
 		}
-		out = append(out, e)
 	}
 	if !pwdSet {
 		out = append(out, "PWD="+workdir)
@@ -70,6 +61,52 @@ func ForWorkdir(env []string, workdir string) []string {
 		}
 	}
 	return out
+}
+
+func normalizeEnvEntry(entry, workdir string, rewriteGOMODCACHE bool) (normalized string, keep, handledPWD bool) {
+	key, value, ok := strings.Cut(entry, "=")
+	if !ok {
+		return entry, true, false
+	}
+	if isGitOverrideEnv(key) {
+		return "", false, false
+	}
+	if key == "PWD" {
+		if workdir == "" {
+			return "", false, true
+		}
+		return "PWD=" + workdir, true, true
+	}
+	if workdir != "" && isolatesRuntimeEnv(key, rewriteGOMODCACHE) {
+		return "", false, false
+	}
+	if isLocaleEnv(key) && value != "" && !localeAvailable(value) {
+		return key + "=C", true, false
+	}
+	return entry, true, false
+}
+
+func isLocaleEnv(key string) bool {
+	return key == "LC_ALL" || key == "LANG"
+}
+
+func localeAvailable(locale string) bool {
+	switch locale {
+	case "C", "POSIX":
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "locale", "-a").Output() //nolint:gosec // fixed command and args
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.TrimSpace(line) == locale {
+			return true
+		}
+	}
+	return false
 }
 
 func isGitOverrideEnv(key string) bool {
