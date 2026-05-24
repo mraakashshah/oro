@@ -704,6 +704,35 @@ func TestSQLiteStoreOptionsAndGeneratedID(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreShowWithoutMemoryFetcherLeavesMemoryEmpty(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+
+	created, err := store.Create(ctx, CreateParams{
+		ID:          "oro-no-memory",
+		Title:       "no memory fetcher",
+		Description: "description should not trigger memory enrichment",
+		Tags:        []string{"memory", "opt-in"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if created.Memory != "" {
+		t.Fatalf("Create Memory = %q, want empty without memory fetcher", created.Memory)
+	}
+
+	shown, err := store.Show(ctx, "oro-no-memory")
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if shown == nil {
+		t.Fatal("Show returned nil for existing bead")
+	}
+	if shown.Memory != "" {
+		t.Fatalf("Show Memory = %q, want empty without memory fetcher", shown.Memory)
+	}
+}
+
 func TestSQLiteStoreExplicitMemoryFetcherStillEnrichesShow(t *testing.T) {
 	ctx := context.Background()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "state.db"))
