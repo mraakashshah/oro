@@ -103,6 +103,13 @@ def test_check_skill_description_accepts_writing_skills_trigger_description_via_
     assert checker.check_skill_description(skill_path) == []
 
 
+def test_check_skill_description_accepts_writing_skills_asset() -> None:
+    checker = _load_checker()
+    skill_path = _repo_root() / "assets/skills/writing-skills/SKILL.md"
+
+    assert checker.check_skill_description(skill_path) == []
+
+
 def test_skill_description_lint_accepts_documented_cso_good_description(
     tmp_path: Path,
 ) -> None:
@@ -269,6 +276,7 @@ def test_agent_browser_canonical_description_is_normalized_trigger_only() -> Non
     assert closing_marker == "\n---\n"
     assert description is not None
     assert description.startswith("Use when the user needs to interact with websites")
+    assert "Browser automation CLI for AI agents." not in skill_text
     assert not description.startswith("Browser automation CLI for AI agents.")
     assert description not in markdown_body
     assert checker.check_skill_description(skill_path) == []
