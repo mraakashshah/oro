@@ -108,6 +108,7 @@ type fakeBeadStore struct {
 	closedBeads          []protocol.Bead  // returned by Closed(); nil means no beads
 	closedErr            error            // if set, Closed() returns this error
 	updateErrs           map[string]error // beadID -> error returned by Update()
+	updateFn             func(ctx context.Context, id string, params beadstore.UpdateParams) error
 	showErr              error            // if set, Show() returns this error for all IDs
 	showErrFn            map[string]error // per-ID Show errors (takes precedence over showErr)
 	shownNil             map[string]bool  // per-ID nil detail (returns nil, nil)
@@ -185,7 +186,13 @@ func (m *fakeBeadStore) Delete(_ context.Context, id string, _ string) error {
 	return nil
 }
 
-func (m *fakeBeadStore) Update(_ context.Context, id string, params beadstore.UpdateParams) error {
+func (m *fakeBeadStore) Update(ctx context.Context, id string, params beadstore.UpdateParams) error {
+	m.mu.Lock()
+	updateFn := m.updateFn
+	m.mu.Unlock()
+	if updateFn != nil {
+		return updateFn(ctx, id, params)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.updateErrs != nil {
@@ -16925,21 +16932,15 @@ func TestDispatcher_FilterClosedBeads(t *testing.T) {
 // for the worker's assigned beadID.
 func TestHandleConnCleanupPrunesBeadTracking(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
-	cancel := startDispatcher(t, d)
-	defer cancel()
 
-	// Provide a bead for assignment
-	beadSrc.SetBeads([]protocol.Bead{
-		{ID: "oro-test", Title: "Test bead", Status: "open", Priority: 2, Type: "task", AcceptanceCriteria: "Test: pass"},
-	})
+	serverConn, clientConn := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		d.handleConn(context.Background(), serverConn)
+		close(done)
+	}()
 
-	// Start dispatcher
-	sendDirective(t, d.cfg.SocketPath, "start")
-	waitForState(t, d, StateRunning, 1*time.Second)
-
-	// Connect worker
-	conn, _ := connectWorker(t, d.cfg.SocketPath)
-	sendMsg(t, conn, protocol.Message{
+	sendMsg(t, clientConn, protocol.Message{
 		Type: protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{
 			WorkerID:   "w1",
@@ -16947,24 +16948,24 @@ func TestHandleConnCleanupPrunesBeadTracking(t *testing.T) {
 		},
 	})
 
-	// Wait for worker to be registered and assigned oro-test.
-	waitForWorkers(t, d, 1, 1*time.Second)
+	// Wait for worker to be registered, then seed the active-assignment state
+	// directly. This keeps the EOF cleanup regression independent of assignLoop,
+	// worktree creation, branch state, and other shuffled test cleanup.
 	waitFor(t, func() bool {
 		d.mu.Lock()
 		defer d.mu.Unlock()
-		w, ok := d.workers["w1"]
-		return ok && w.beadID == "oro-test"
-	}, 2*time.Second)
+		_, ok := d.workers["w1"]
+		return ok
+	}, time.Second)
 
-	// Verify worker was assigned oro-test
 	d.mu.Lock()
 	w, exists := d.workers["w1"]
-	if !exists || w.beadID != "oro-test" {
+	if !exists {
 		d.mu.Unlock()
-		t.Fatalf("worker w1 not assigned oro-test: exists=%v, beadID=%v", exists, w.beadID)
+		t.Fatal("worker w1 not registered")
 	}
-
-	// Populate tracking maps to simulate dispatcher activity
+	w.state = protocol.WorkerBusy
+	w.beadID = "oro-test"
 	d.attemptCounts["oro-test"] = 1
 	d.qgStuckTracker["oro-test"] = &qgHistory{hashes: []string{"abc123"}}
 	d.escalatedBeads["oro-test"] = true
@@ -16973,7 +16974,14 @@ func TestHandleConnCleanupPrunesBeadTracking(t *testing.T) {
 	d.mu.Unlock()
 
 	// Close connection to trigger handleConn's deferred cleanup
-	_ = conn.Close()
+	_ = clientConn.Close()
+	defer func() {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("handleConn did not exit after client close")
+		}
+	}()
 
 	// Wait for full cleanup: worker removed AND tracking maps cleared.
 	// handleConn's defer deletes the worker and releases the lock BEFORE
@@ -17021,6 +17029,11 @@ func TestHandleConnCleanupPrunesBeadTracking(t *testing.T) {
 
 	// Assert: BeadSource.Update must have been called with ("oro-test", "open")
 	// to reset the bead for reassignment after the connection drop.
+	waitFor(t, func() bool {
+		beadSrc.mu.Lock()
+		defer beadSrc.mu.Unlock()
+		return beadSrc.updated["oro-test"] == "open"
+	}, time.Second)
 	beadSrc.mu.Lock()
 	updatedStatus, updatedOK := beadSrc.updated["oro-test"]
 	beadSrc.mu.Unlock()
@@ -17029,6 +17042,83 @@ func TestHandleConnCleanupPrunesBeadTracking(t *testing.T) {
 		t.Error("BeadSource.Update not called for oro-test after connection drop")
 	} else if updatedStatus != "open" {
 		t.Errorf("BeadSource.Update called with status %q for oro-test, want %q", updatedStatus, "open")
+	}
+}
+
+func TestHandleConnCleanupDoesNotWaitForBeadStatusUpdate(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+	updateStarted := make(chan struct{})
+	releaseUpdate := make(chan struct{})
+	beadSrc.updateFn = func(ctx context.Context, id string, params beadstore.UpdateParams) error {
+		if id == "oro-test" && params.Status != nil && *params.Status == "open" {
+			close(updateStarted)
+			select {
+			case <-releaseUpdate:
+			case <-ctx.Done():
+			}
+		}
+		return nil
+	}
+	defer close(releaseUpdate)
+
+	serverConn, clientConn := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		d.handleConn(context.Background(), serverConn)
+		close(done)
+	}()
+
+	sendMsg(t, clientConn, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   "w1",
+			ContextPct: 5,
+		},
+	})
+
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		_, ok := d.workers["w1"]
+		return ok
+	}, time.Second)
+
+	d.mu.Lock()
+	w := d.workers["w1"]
+	w.state = protocol.WorkerReserved
+	w.beadID = "oro-test"
+	d.attemptCounts["oro-test"] = 1
+	d.qgStuckTracker["oro-test"] = &qgHistory{hashes: []string{"abc123"}}
+	d.escalatedBeads["oro-test"] = true
+	d.worktreeFailures["oro-test"] = time.Now()
+	d.assigningBeads["oro-test"] = true
+	d.mu.Unlock()
+
+	_ = clientConn.Close()
+
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		_, workerExists := d.workers["w1"]
+		_, attemptExists := d.attemptCounts["oro-test"]
+		_, qgExists := d.qgStuckTracker["oro-test"]
+		_, escExists := d.escalatedBeads["oro-test"]
+		_, wtExists := d.worktreeFailures["oro-test"]
+		_, assignExists := d.assigningBeads["oro-test"]
+		return !workerExists && !attemptExists && !qgExists && !escExists && !wtExists && !assignExists
+	}, time.Second)
+
+	select {
+	case <-updateStarted:
+	case <-time.After(time.Second):
+		t.Fatal("bead status update did not start")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("handleConn cleanup waited for bead status update")
 	}
 }
 

@@ -1391,7 +1391,9 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 
 	if beadID != "" {
 		d.clearBeadTracking(beadID)
-		_ = d.updateBeadStatus(context.Background(), beadID, "open")
+		d.safeGo(func() {
+			_ = d.updateBeadStatus(context.Background(), beadID, "open")
+		})
 	}
 
 	// Wake the assign loop so reconcileScale can spawn a replacement immediately
