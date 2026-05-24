@@ -15563,13 +15563,12 @@ func TestEpicFFMergeFailureCreatesActionableRebaseChild(t *testing.T) {
 			t.Errorf("rebase child acceptance criteria does not name branch %q: %s", branch, rebaseBead.acceptanceCriteria)
 		}
 	}
-	for _, marker := range []string{`mktemp -d`, `git worktree add`, `git -C "$tmp" rebase`, `git worktree remove "$tmp"`} {
-		if !strings.Contains(rebaseBead.acceptanceCriteria, marker) {
-			t.Errorf("rebase child acceptance criteria missing worktree-safe marker %q: %s", marker, rebaseBead.acceptanceCriteria)
-		}
+	wantCmd := fmt.Sprintf("Cmd: tmp=$(mktemp -d) && git fetch --all --prune && git worktree add \"$tmp\" %s && git -C \"$tmp\" rebase %s && git worktree remove \"$tmp\" && go test ./...", epicBranch, targetBranch)
+	if !strings.Contains(rebaseBead.acceptanceCriteria, wantCmd) {
+		t.Errorf("rebase child acceptance criteria command = %q, want to contain %q", rebaseBead.acceptanceCriteria, wantCmd)
 	}
-	if strings.Contains(rebaseBead.acceptanceCriteria, "git checkout") {
-		t.Errorf("rebase child acceptance criteria must not switch the active worktree branch: %s", rebaseBead.acceptanceCriteria)
+	if strings.Contains(rebaseBead.acceptanceCriteria, "git checkout ") {
+		t.Errorf("rebase child acceptance criteria should not check out the epic branch in-place: %s", rebaseBead.acceptanceCriteria)
 	}
 
 	const rebaseChildID = "oro-rebase-child"
