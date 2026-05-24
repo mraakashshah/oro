@@ -511,6 +511,54 @@ func TestShadowStore(t *testing.T) {
 	})
 }
 
+func TestShadowStoreShowReturnsPrimaryWhenSecondaryMemoryDiffers(t *testing.T) {
+	ctx := context.Background()
+	updatedAt := "2026-04-28T09:00:00Z"
+	primary := beadstore.NewFakeStore(protocol.Bead{
+		ID:        "shown",
+		Title:     "primary",
+		Status:    "open",
+		Memory:    "primary memory",
+		UpdatedAt: updatedAt,
+	})
+	secondary := beadstore.NewFakeStore(protocol.Bead{
+		ID:        "shown",
+		Title:     "secondary",
+		Status:    "open",
+		Memory:    "secondary memory",
+		UpdatedAt: updatedAt,
+	})
+	var events []beadstore.ShadowDivergence
+	store := beadstore.NewShadowStore(
+		primary,
+		secondary,
+		beadstore.WithShadowStartedAt(mustParseTime(t, "2026-04-28T10:00:00Z")),
+		beadstore.WithShadowDivergenceReporter(func(event beadstore.ShadowDivergence) {
+			events = append(events, event)
+		}),
+	)
+
+	shown, err := store.Show(ctx, "shown")
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if shown == nil {
+		t.Fatal("Show returned nil, want primary bead")
+	}
+	if shown.Title != "primary" {
+		t.Fatalf("Show Title = %q, want primary", shown.Title)
+	}
+	if shown.Memory != "primary memory" {
+		t.Fatalf("Show Memory = %q, want primary memory unchanged", shown.Memory)
+	}
+	if len(events) != 1 {
+		t.Fatalf("reported %d divergences, want 1: %#v", len(events), events)
+	}
+	if events[0].Operation != "Show" || events[0].Kind != beadstore.ShadowDivergenceReal {
+		t.Fatalf("divergence = %#v, want real Show divergence", events[0])
+	}
+}
+
 type recordingStore struct {
 	beadstore.Store
 
