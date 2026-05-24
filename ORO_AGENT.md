@@ -1,7 +1,5 @@
 # Oro Project Instructions
 
-- **Compatibility note**: Claude-compatible installs may also expose `~/.claude/CLAUDE.md` and files in `~/.claude/rules/`.
-
 ## Oro Renders
 
 - Use `oro current` to inspect the live task queue and active work state.
