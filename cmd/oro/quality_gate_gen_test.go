@@ -246,6 +246,7 @@ func TestGenerateQualityGateScript(t *testing.T) {
 			`FAIL: missing lane result`,
 			`export GOCACHE="$QG_DIR/go-build-cache"`,
 			`export UV_CACHE_DIR="${UV_CACHE_DIR:-$QG_DIR/uv-cache}"`,
+			`export GOMAXPROCS="${ORO_QG_GOMAXPROCS:-2}"`,
 		} {
 			if !strings.Contains(script, want) {
 				t.Errorf("generated Go script missing %q", want)

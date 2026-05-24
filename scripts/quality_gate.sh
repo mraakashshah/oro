@@ -62,6 +62,7 @@ trap 'exit 143' TERM
 export GOLANGCI_LINT_CACHE="$QG_DIR/golangci-lint-cache"
 export GOCACHE="$QG_DIR/go-build-cache"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$QG_DIR/uv-cache}"
+export GOMAXPROCS="${ORO_QG_GOMAXPROCS:-2}"
 
 # Resolve repo root node_modules (works from worktrees too).
 # Worktrees don't have their own node_modules — resolve via git-common-dir.

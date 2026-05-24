@@ -902,6 +902,22 @@ test_quality_gate_stage_assets_fail_closed() {
 	return 0
 }
 
+# Test: Go quality checks cap scheduler fanout by default so parallel worker
+# gates do not starve dispatcher integration tests under load.
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_caps_go_scheduler_fanout() {
+	# shellcheck disable=SC2016
+	if ! grep -q 'export GOMAXPROCS="${ORO_QG_GOMAXPROCS:-2}"' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: quality_gate.sh does not cap Go scheduler fanout for local quality gates"
+		return 1
+	fi
+	if ! grep -q 'ORO_QG_GOMAXPROCS' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: quality_gate.sh does not expose ORO_QG_GOMAXPROCS override"
+		return 1
+	fi
+	return 0
+}
+
 # shellcheck disable=SC2317,SC2329 # invoked by name through the test runner
 write_quality_gate_python_helpers() {
 	local out="$1"
@@ -1300,6 +1316,7 @@ echo "=============================================="
 test_case "no SC2086 disable for \$changed" test_no_sc2086_disable_for_changed
 test_case "quality_gate.sh \$changed is quoted" test_quality_gate_changed_is_quoted
 test_case "quality_gate.sh stage-assets failures fail closed" test_quality_gate_stage_assets_fail_closed
+test_case "quality_gate.sh caps Go scheduler fanout" test_quality_gate_caps_go_scheduler_fanout
 test_case "quality_gate.sh Python tools avoid pyenv shims" test_quality_gate_python_tools_avoid_pyenv_shims
 test_case "generated quality gate Python tools avoid pyenv shims" test_generated_quality_gate_python_tools_avoid_pyenv_shims
 test_case "quality_gate.sh filesystem walkers are source scoped" test_quality_gate_filesystem_walkers_are_source_scoped
