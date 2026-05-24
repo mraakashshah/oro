@@ -342,6 +342,22 @@ func (m *contentSpawner) StreamFormat() worker.StreamFormat { return worker.Stre
 
 // --- Tests ---
 
+func TestUpdateWorkBeadStatusPropagatesUpdateError(t *testing.T) {
+	updateErr := errors.New("store update failed")
+	store := &fakeBeadStore{updateErr: updateErr}
+
+	err := updateWorkBeadStatus(context.Background(), store, "oro-test", "in_progress")
+	if err == nil {
+		t.Fatal("updateWorkBeadStatus error = nil, want update error")
+	}
+	if !errors.Is(err, updateErr) {
+		t.Fatalf("updateWorkBeadStatus error = %v, want wrapped %v", err, updateErr)
+	}
+	if !strings.Contains(err.Error(), "oro-test") || !strings.Contains(err.Error(), "in_progress") {
+		t.Fatalf("updateWorkBeadStatus error = %q, want bead id and target status", err.Error())
+	}
+}
+
 func TestExecuteWork_NoCommits_BailsOut(t *testing.T) {
 	// When claude exits cleanly but produces no commits, executeWork should:
 	// 1. NOT proceed to quality gate or merge
