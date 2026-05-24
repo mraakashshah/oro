@@ -3,6 +3,9 @@ package worker
 import (
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 
 	"oro/pkg/cards"
@@ -243,36 +246,34 @@ func collectCodingRules(projectRoot string) []string {
 	return rules
 }
 
-const codingRulesDoctrine = `# Enforcement Doctrine
+const fallbackCodingRulesDoctrine = "# Enforcement Doctrine\n\nDoctrine asset unavailable; promote coding rules to deterministic enforcement when practical."
 
-Rules are strongest when tools enforce them. Promote rules upward whenever a deterministic enforcement path is practical.
+func loadCodingRulesDoctrine(projectRoot string) string {
+	for _, candidate := range doctrinePathCandidates(projectRoot) {
+		data, err := os.ReadFile(candidate) //nolint:gosec // candidate paths are internal repo/project asset locations.
+		if err == nil {
+			return strings.TrimSpace(string(data))
+		}
+	}
+	return fallbackCodingRulesDoctrine
+}
 
-LEVEL 1 - Lint: A custom or configured linter fails CI or IDE checks when violated.
-Example: no fmt.Errorf without %w when preserving a wrapped error cause.
-Implementation: golangci-lint custom analyzer.
-
-LEVEL 2 - Types: The compiler or type-checker rejects the violation.
-Example: context.Context is the first argument of every RPC handler.
-Implementation: interface signature.
-
-LEVEL 3 - Formatter: Formatting always rewrites the code into the preferred shape.
-Example: imports are grouped as standard library, third-party, then internal packages.
-Implementation: goimports, black, prettier, or equivalent formatter config.
-
-LEVEL 4 - Pre-commit: The local commit hook blocks the violation before it enters history.
-Example: no committed binary blobs in source directories.
-Implementation: pre-commit hook checking staged file contents.
-
-LEVEL 5 - CI: The merge gate blocks the violation before it reaches the target branch.
-Example: all tests pass before merge.
-Implementation: CI quality gate.
-
-LEVEL 6 - Prompt (BEST EFFORT): A worker prompt asks for the behavior when no deterministic enforcement is feasible.
-Example: when ambiguous, prefer simpler abstractions.
-Implementation: prompt guidance in AGENTS.md, CLAUDE.md, or worker instructions.`
+func doctrinePathCandidates(projectRoot string) []string {
+	var candidates []string
+	if projectRoot != "" {
+		candidates = append(candidates, filepath.Join(projectRoot, "assets", "doctrine.md"))
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(cwd, "assets", "doctrine.md"))
+	}
+	if _, file, _, ok := runtime.Caller(0); ok {
+		candidates = append(candidates, filepath.Join(filepath.Dir(file), "..", "..", "assets", "doctrine.md"))
+	}
+	return candidates
+}
 
 func renderCodingRules(projectRoot string) string {
-	parts := []string{codingRulesDoctrine}
+	parts := []string{loadCodingRulesDoctrine(projectRoot)}
 	rules := collectCodingRules(projectRoot)
 	if len(rules) > 0 {
 		parts = append(parts, "Project rules:", strings.Join(rules, "\n"))

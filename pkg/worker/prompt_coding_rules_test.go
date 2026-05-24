@@ -56,6 +56,10 @@ func TestPromptCodingRules(t *testing.T) {
 	})
 	codingRules := extractSection(t, prompt, "## Coding Rules")
 
+	if !strings.Contains(codingRules, strings.TrimSpace(doctrine)+"\n\nProject rules:") {
+		t.Fatalf("Coding Rules section should consume published doctrine before project rules:\n%s", codingRules)
+	}
+
 	for _, want := range []string{
 		"Enforcement Doctrine",
 		"LEVEL 1 - Lint",
