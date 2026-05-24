@@ -186,6 +186,10 @@ def test_using_skills_description_rejects_non_trigger_descriptions(
         tmp_path / "workflow-summary",
         "Use when checking skills - always invoke applicable skills before action",
     )
+    ordinary_prose_path = _write_skill(
+        tmp_path / "ordinary-prose",
+        "Checks which skills apply before starting a task.",
+    )
     mandatory_rule_paths = [
         _write_skill(
             tmp_path / "must-rule",
@@ -203,5 +207,6 @@ def test_using_skills_description_rejects_non_trigger_descriptions(
 
     assert checker.check_skill_description(valid_skill_path) == []
     assert checker.check_skill_description(workflow_summary_path) == [WORKFLOW_SUMMARY_ERROR]
+    assert checker.check_skill_description(ordinary_prose_path) == [WORKFLOW_SUMMARY_ERROR]
     for mandatory_rule_path in mandatory_rule_paths:
         assert checker.check_skill_description(mandatory_rule_path) == [WORKFLOW_SUMMARY_ERROR]

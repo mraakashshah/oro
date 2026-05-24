@@ -48,8 +48,8 @@ def check_skill_description(path: Path) -> list[str]:
     if DASH_SUMMARY_RE.search(description) or MANDATORY_RULE_RE.search(description):
         return [WORKFLOW_SUMMARY_ERROR]
 
-    if _is_trigger_only_description(description):
-        return []
+    if not _is_trigger_only_description(description):
+        return [WORKFLOW_SUMMARY_ERROR]
 
     return []
 
