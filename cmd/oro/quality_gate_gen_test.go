@@ -215,8 +215,8 @@ func TestGenerateQualityGateScript(t *testing.T) {
 		}
 		for _, want := range []string{
 			`should_run_mutation_tests()`,
-			`ORO_QG_CONTEXT:-local`,
 			`ORO_RUN_MUTATION`,
+			`mutation disabled by default; set ORO_RUN_MUTATION=1`,
 			`QG_STAGE_ASSETS_LOCK=""`,
 			`QG_EXIT_STATUS=0`,
 			`trap cleanup_qg EXIT`,
@@ -250,6 +250,14 @@ func TestGenerateQualityGateScript(t *testing.T) {
 		} {
 			if !strings.Contains(script, want) {
 				t.Errorf("generated Go script missing %q", want)
+			}
+		}
+		for _, forbidden := range []string{
+			`push | pre-push`,
+			`GITHUB_EVENT_NAME`,
+		} {
+			if strings.Contains(script, forbidden) {
+				t.Errorf("generated Go script should not enable mutation by default via %q", forbidden)
 			}
 		}
 		for _, forbidden := range []string{

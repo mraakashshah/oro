@@ -435,7 +435,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		}
 		skipClaude = false // Only skip the first iteration.
 
-		logStep("Running local quality gate (mutation deferred to push)...")
+		logStep("Running local quality gate (mutation opt-in)...")
 		passed, qgOutput, qgErr := deps.runQG(ctx, worktree, false)
 		if qgErr != nil {
 			recordWorkQGFailure(ctx, cfg, deps, "oro-work-implementation", qgErr.Error())
@@ -443,7 +443,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		}
 
 		if passed {
-			logStep("Quality gate passed (mutation deferred to push)")
+			logStep("Quality gate passed (mutation opt-in)")
 			break
 		}
 
@@ -475,8 +475,8 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		logStep("Skipping review (--skip-review)")
 	}
 
-	// Step 9: Pre-merge quality gate. Mutation testing is deferred to push.
-	logStep("Running pre-merge quality gate (mutation deferred to push)...")
+	// Step 9: Pre-merge quality gate. Mutation testing is opt-in via ORO_RUN_MUTATION=1.
+	logStep("Running pre-merge quality gate (mutation opt-in)...")
 	mutPassed, mutOutput, mutErr := deps.runQG(ctx, worktree, false)
 	if mutErr != nil {
 		recordWorkQGFailure(ctx, cfg, deps, "oro-work-pre-merge", mutErr.Error())
@@ -915,7 +915,7 @@ func handleReviewRejection(ctx context.Context, cfg *workConfig, deps *workDeps,
 		return rejects, fmt.Errorf("%s re-spawn after review: %w", runtime, err)
 	}
 
-	logStep("Re-running local quality gate (mutation deferred to push)...")
+	logStep("Re-running local quality gate (mutation opt-in)...")
 	passed, qgOutput, qgErr := deps.runQG(ctx, worktree, false)
 	if qgErr != nil {
 		recordWorkQGFailure(ctx, cfg, deps, "oro-work-implementation", qgErr.Error())

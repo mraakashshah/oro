@@ -10703,7 +10703,7 @@ func TestMergeAndComplete_RunsPreMergeQG(t *testing.T) {
 			t.Errorf("QGRunner.Run worktree = %q, want %q", calls[0], worktree)
 		}
 		if skipMutations[0] {
-			t.Error("pre-merge QG should use local context without ORO_SKIP_MUTATION; mutation is deferred by quality_gate.sh itself")
+			t.Error("pre-merge QG should not force ORO_SKIP_MUTATION; mutation is opt-in by quality_gate.sh itself")
 		}
 
 		// Merge proceeded: bead closed.

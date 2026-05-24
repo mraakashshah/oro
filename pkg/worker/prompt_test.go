@@ -278,8 +278,11 @@ func TestAssemblePrompt_QualityGateContent(t *testing.T) {
 	if strings.Contains(prompt, "ORO_SKIP_MUTATION") {
 		t.Error("Quality Gate section should not teach agents to use ORO_SKIP_MUTATION for local QG")
 	}
-	if !strings.Contains(prompt, "Mutation runs in the push quality gate") {
-		t.Error("expected Quality Gate section to explain mutation is deferred to push")
+	if strings.Contains(prompt, "Mutation runs in the push quality gate") {
+		t.Error("Quality Gate section should not say mutation runs by default on push")
+	}
+	if !strings.Contains(prompt, "Mutation is opt-in with ORO_RUN_MUTATION=1") {
+		t.Error("expected Quality Gate section to explain mutation is opt-in")
 	}
 }
 

@@ -513,37 +513,56 @@ test_mutation_missing_main_warning_message() {
 }
 
 # shellcheck disable=SC2317,SC2329
-test_mutation_default_local_context_skips() {
+test_mutation_default_all_contexts_skip() {
 	if ! grep -q 'should_run_mutation_tests()' "$SCRIPT_DIR/quality_gate.sh"; then
 		echo "FAIL: quality_gate.sh lacks should_run_mutation_tests helper"
 		return 1
 	fi
-	if ! grep -q 'ORO_QG_CONTEXT:-local' "$SCRIPT_DIR/quality_gate.sh"; then
-		echo "FAIL: mutation context does not default to local"
+	if ! grep -q 'mutation disabled by default; set ORO_RUN_MUTATION=1' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: default mutation skip reason is missing"
 		return 1
 	fi
-	if ! grep -q 'non-push context; set ORO_QG_CONTEXT=push or ORO_RUN_MUTATION=1' "$SCRIPT_DIR/quality_gate.sh"; then
-		echo "FAIL: local mutation skip reason is missing"
+	local helper
+	helper=$(mktemp)
+	sed -n '/^should_run_mutation_tests()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh" >"$helper"
+	if ORO_QG_CONTEXT=push /bin/bash -c 'source "$1"; should_run_mutation_tests' _ "$helper"; then
+		echo "FAIL: push context enables mutation by default"
+		rm -f "$helper"
 		return 1
 	fi
+	if GITHUB_EVENT_NAME=push /bin/bash -c 'source "$1"; should_run_mutation_tests' _ "$helper"; then
+		echo "FAIL: GitHub push event enables mutation by default"
+		rm -f "$helper"
+		return 1
+	fi
+	rm -f "$helper"
 }
 
 # shellcheck disable=SC2317,SC2329
-test_mutation_push_context_runs() {
+test_mutation_opt_in_flag_runs() {
 	local helper
 	helper=$(sed -n '/^should_run_mutation_tests()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh")
-	if ! echo "$helper" | grep -q 'push | pre-push'; then
-		echo "FAIL: mutation helper does not run in push/pre-push context"
+	if echo "$helper" | grep -q 'push | pre-push'; then
+		echo "FAIL: mutation helper still runs in push/pre-push context by default"
 		return 1
 	fi
-	if ! echo "$helper" | grep -q 'GITHUB_EVENT_NAME.*push'; then
-		echo "FAIL: mutation helper does not run for GitHub push context"
+	if echo "$helper" | grep -q 'GITHUB_EVENT_NAME.*push'; then
+		echo "FAIL: mutation helper still runs for GitHub push events by default"
 		return 1
 	fi
 	if ! echo "$helper" | grep -q 'ORO_RUN_MUTATION'; then
 		echo "FAIL: mutation helper lacks explicit ORO_RUN_MUTATION override"
 		return 1
 	fi
+	local helper_file
+	helper_file=$(mktemp)
+	printf '%s\n' "$helper" >"$helper_file"
+	if ! ORO_RUN_MUTATION=1 /bin/bash -c 'source "$1"; should_run_mutation_tests' _ "$helper_file"; then
+		echo "FAIL: ORO_RUN_MUTATION=1 does not enable mutation"
+		rm -f "$helper_file"
+		return 1
+	fi
+	rm -f "$helper_file"
 	if ! grep -q 'go tool -n go-mutesting' "$SCRIPT_DIR/quality_gate.sh"; then
 		echo "FAIL: Go mutation availability must use pinned go tool lookup"
 		return 1
@@ -555,13 +574,13 @@ test_mutation_push_context_runs() {
 }
 
 # shellcheck disable=SC2317,SC2329
-test_pre_push_enables_mutation_context() {
-	if ! grep -q 'ORO_QG_CONTEXT=push scripts/quality_gate.sh' "$SCRIPT_DIR/../git/hooks/pre-push"; then
-		echo "FAIL: pre-push hook does not run quality_gate.sh in push mutation context"
+test_pre_push_leaves_mutation_opt_in() {
+	if grep -vE '^[[:space:]]*(#|echo)' "$SCRIPT_DIR/../git/hooks/pre-push" | grep -q 'ORO_RUN_MUTATION=1'; then
+		echo "FAIL: pre-push hook enables mutation by default"
 		return 1
 	fi
-	if ! grep -q 'all checks; mutation enabled on push' "$SCRIPT_DIR/../git/hooks/pre-push"; then
-		echo "FAIL: pre-push hook does not advertise all checks with mutation on push"
+	if ! grep -q 'all checks; mutation opt-in with ORO_RUN_MUTATION=1' "$SCRIPT_DIR/../git/hooks/pre-push"; then
+		echo "FAIL: pre-push hook does not advertise mutation opt-in"
 		return 1
 	fi
 }
@@ -1281,9 +1300,9 @@ test_case "mutation checks main branch existence" test_mutation_checks_main_bran
 test_case "mutation crash flagged as FAIL" test_mutation_crash_flagged_as_fail
 test_case "mutation zero-total report skips" test_mutation_zero_total_skips
 test_case "mutation missing-main warning message" test_mutation_missing_main_warning_message
-test_case "mutation skips by default outside push" test_mutation_default_local_context_skips
-test_case "mutation runs in push context" test_mutation_push_context_runs
-test_case "pre-push enables mutation context" test_pre_push_enables_mutation_context
+test_case "mutation skips by default in all contexts" test_mutation_default_all_contexts_skip
+test_case "mutation runs only with opt-in flag" test_mutation_opt_in_flag_runs
+test_case "pre-push leaves mutation opt-in" test_pre_push_leaves_mutation_opt_in
 
 echo ""
 echo "Testing Python mutation missing main branch (oro-xgwr)"

@@ -22,18 +22,18 @@ while IFS= read -r line; do
     esac
 done
 
-# Run Oro's full quality gate before push. quality_gate.sh only enables
-# mutation tiers in this push context; local branch merges skip them.
+# Run Oro's full quality gate before push. The push context is for load-guarded
+# checks; mutation tiers remain opt-in with ORO_RUN_MUTATION=1.
 if [ "${ORO_PRE_PUSH_QG:-1}" != "0" ]; then
     oro_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
     oro_qg=`
 
 const oroPrePushCheckSuffix = `
     if [ -x "$oro_qg" ]; then
-        echo "oro: running quality gate (all checks; mutation enabled on push)" >&2
+        echo "oro: running quality gate (all checks; mutation opt-in with ORO_RUN_MUTATION=1)" >&2
         (cd "$oro_root" && ORO_QG_CONTEXT=push "$oro_qg") || exit $?
     elif [ -x "$oro_root/scripts/quality_gate.sh" ]; then
-        echo "oro: running quality gate (all checks; mutation enabled on push)" >&2
+        echo "oro: running quality gate (all checks; mutation opt-in with ORO_RUN_MUTATION=1)" >&2
         (cd "$oro_root" && ORO_QG_CONTEXT=push "$oro_root/scripts/quality_gate.sh") || exit $?
     fi
 fi`
@@ -44,9 +44,9 @@ const oroPrePushCheck = oroPrePushCheckPrefix + `"$oro_root/scripts/quality_gate
 
 // buildOroPrePushCheck returns the shell snippet injected into the pre-push wrapper.
 // It blocks pushes of agent/* and epic/* branches to prevent oro work-branches
-// from appearing in the shared remote, then runs QG in push context so mutation
-// tiers stay off local merges but on pushes. Installed for ALL oro projects
-// (not just stealth).
+// from appearing in the shared remote, then runs QG in push context without
+// enabling mutation unless the caller explicitly exports ORO_RUN_MUTATION=1.
+// Installed for ALL oro projects (not just stealth).
 func buildOroPrePushCheck(qualityGatePath string) string {
 	if qualityGatePath == "" {
 		return oroPrePushCheck

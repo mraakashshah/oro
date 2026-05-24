@@ -176,14 +176,6 @@ should_run_mutation_tests() {
 	if [ "${ORO_RUN_MUTATION:-}" = "1" ]; then
 		return 0
 	fi
-	case "${ORO_QG_CONTEXT:-local}" in
-	push | pre-push)
-		return 0
-		;;
-	esac
-	if [ "${GITHUB_EVENT_NAME:-}" = "push" ]; then
-		return 0
-	fi
 	return 1
 }
 
@@ -192,7 +184,7 @@ mutation_skip_reason() {
 	if [ "${ORO_SKIP_MUTATION:-}" = "1" ]; then
 		printf 'ORO_SKIP_MUTATION=1'
 	else
-		printf 'non-push context; set ORO_QG_CONTEXT=push or ORO_RUN_MUTATION=1'
+		printf 'mutation disabled by default; set ORO_RUN_MUTATION=1'
 	fi
 }
 

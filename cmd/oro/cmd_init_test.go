@@ -2051,11 +2051,14 @@ func TestOroInitStealth_EndToEnd(t *testing.T) {
 	if !strings.Contains(string(prePushData), "ORO_QG_CONTEXT=push") {
 		t.Error("pre-push hook must run quality gate in push context")
 	}
+	if strings.Contains(string(prePushData), "ORO_RUN_MUTATION=1 ") || strings.Contains(string(prePushData), "ORO_RUN_MUTATION=1\"") {
+		t.Error("pre-push hook must not enable mutation by default")
+	}
 	if !strings.Contains(string(prePushData), "scripts/quality_gate.sh") {
 		t.Error("pre-push hook must run scripts/quality_gate.sh")
 	}
-	if !strings.Contains(string(prePushData), "all checks; mutation enabled on push") {
-		t.Error("pre-push hook must explain push QG mutation behavior")
+	if !strings.Contains(string(prePushData), "all checks; mutation opt-in with ORO_RUN_MUTATION=1") {
+		t.Error("pre-push hook must explain mutation is opt-in")
 	}
 	stealthQG := filepath.Join(stealthDir, "quality_gate.sh")
 	if !strings.Contains(string(prePushData), stealthQG) {

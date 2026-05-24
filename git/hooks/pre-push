@@ -2,12 +2,12 @@
 
 set -e
 
-# Run Oro's full quality gate before push. quality_gate.sh only enables
-# mutation tiers in this push context; local branch merges skip them.
+# Run Oro's full quality gate before push. The push context is for load-guarded
+# checks; mutation tiers remain opt-in with ORO_RUN_MUTATION=1.
 if [ "${ORO_PRE_PUSH_QG:-1}" != "0" ]; then
   _oro_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
   if [ -x "$_oro_root/scripts/quality_gate.sh" ]; then
-    echo >&2 "oro: running quality gate (all checks; mutation enabled on push)"
+    echo >&2 "oro: running quality gate (all checks; mutation opt-in with ORO_RUN_MUTATION=1)"
     (cd "$_oro_root" && ORO_QG_CONTEXT=push scripts/quality_gate.sh) || exit $?
   fi
 fi

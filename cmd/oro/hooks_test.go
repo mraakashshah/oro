@@ -241,11 +241,14 @@ func TestInstallHookWrapper(t *testing.T) {
 		if !strings.Contains(oroPrePushCheck, "ORO_QG_CONTEXT=push") {
 			t.Error("oroPrePushCheck should run quality gate in push context")
 		}
+		if strings.Contains(oroPrePushCheck, "ORO_RUN_MUTATION=1 ") || strings.Contains(oroPrePushCheck, "ORO_RUN_MUTATION=1\"") {
+			t.Error("oroPrePushCheck should not enable mutation by default")
+		}
 		if !strings.Contains(oroPrePushCheck, "scripts/quality_gate.sh") {
 			t.Error("oroPrePushCheck should run scripts/quality_gate.sh")
 		}
-		if !strings.Contains(oroPrePushCheck, "all checks; mutation enabled on push") {
-			t.Error("oroPrePushCheck should describe push QG mutation behavior")
+		if !strings.Contains(oroPrePushCheck, "all checks; mutation opt-in with ORO_RUN_MUTATION=1") {
+			t.Error("oroPrePushCheck should describe mutation as opt-in")
 		}
 	})
 
@@ -283,7 +286,7 @@ func TestInstallHookWrapper(t *testing.T) {
 		marker := filepath.Join(tmpDir, "qg-context.txt")
 		qgPath := filepath.Join(tmpDir, "stealth-quality_gate.sh")
 		qgScript := `#!/bin/sh
-printf '%s' "${ORO_QG_CONTEXT:-}" > "$MARKER"
+printf '%s:%s' "${ORO_RUN_MUTATION:-unset}" "${ORO_QG_CONTEXT:-unset}" > "$MARKER"
 `
 		if err := os.WriteFile(qgPath, []byte(qgScript), 0o755); err != nil { //nolint:gosec // test hook script
 			t.Fatal(err)
@@ -307,8 +310,8 @@ printf '%s' "${ORO_QG_CONTEXT:-}" > "$MARKER"
 		if err != nil {
 			t.Fatalf("read marker: %v", err)
 		}
-		if string(got) != "push" {
-			t.Fatalf("expected explicit quality gate to run with ORO_QG_CONTEXT=push, got %q", string(got))
+		if string(got) != "unset:push" {
+			t.Fatalf("expected explicit quality gate to run in push context without mutation opt-in, got %q", string(got))
 		}
 	})
 }

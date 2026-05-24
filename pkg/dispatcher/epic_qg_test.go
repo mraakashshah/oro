@@ -452,7 +452,7 @@ func TestEpicQGPassesThenMerges(t *testing.T) {
 			if c == qgWorktreePath {
 				foundQGCall = true
 				if skipMutations[i] {
-					t.Error("epic local QG should use local context without ORO_SKIP_MUTATION; mutation is deferred by quality_gate.sh itself")
+					t.Error("epic local QG should not force ORO_SKIP_MUTATION; mutation is opt-in by quality_gate.sh itself")
 				}
 				break
 			}

@@ -3659,8 +3659,8 @@ func TestWorkerFlow_SendsReadyForReview(t *testing.T) { //nolint:funlen // integ
 		t.Parallel()
 
 		// Create temp worktree with a passing quality_gate.sh. The worker's
-		// local QG path must not set ORO_SKIP_MUTATION; mutation is deferred by
-		// the quality gate's local context instead.
+		// local QG path must not set ORO_SKIP_MUTATION; mutation remains opt-in
+		// in the quality gate itself.
 		tmpDir := t.TempDir()
 		script := filepath.Join(tmpDir, "quality_gate.sh")
 		if err := os.WriteFile(script, []byte("#!/bin/sh\nif [ \"${ORO_SKIP_MUTATION:-}\" = \"1\" ]; then echo 'unexpected ORO_SKIP_MUTATION'; exit 1; fi\necho 'all checks passed'\nexit 0\n"), 0o600); err != nil { //nolint:gosec // test file
