@@ -2,8 +2,11 @@ package dispatcher //nolint:testpackage // white-box test needs internal access
 
 import (
 	"context"
+	"database/sql"
 	"testing"
+	"time"
 
+	"oro/pkg/dbutil"
 	"oro/pkg/protocol"
 )
 
@@ -167,6 +170,76 @@ func TestCompleteAssignmentTargetsSpecificAttempt(t *testing.T) {
 	}
 	if secondStatus != "active" {
 		t.Fatalf("second assignment status: got %q, want active", secondStatus)
+	}
+}
+
+func TestCompleteAssignmentRetriesTransientSQLiteBusy(t *testing.T) {
+	ctx := context.Background()
+	dbPath := t.TempDir() + "/dispatcher.sqlite"
+
+	db, err := dbutil.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout=1`); err != nil {
+		t.Fatalf("set dispatcher busy timeout: %v", err)
+	}
+
+	d := &Dispatcher{db: db}
+	assignmentID, err := d.createAssignment(ctx, "bead-busy-complete", "worker-busy", "/tmp/busy")
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+
+	lockDB, err := dbutil.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("open lock db: %v", err)
+	}
+	t.Cleanup(func() { _ = lockDB.Close() })
+	if _, err := lockDB.ExecContext(ctx, `PRAGMA busy_timeout=1`); err != nil {
+		t.Fatalf("set lock busy timeout: %v", err)
+	}
+
+	lockConn, err := lockDB.Conn(ctx)
+	if err != nil {
+		t.Fatalf("lock conn: %v", err)
+	}
+	defer lockConn.Close()
+	if _, err := lockConn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		t.Fatalf("begin immediate lock: %v", err)
+	}
+
+	releaseLock := make(chan struct{})
+	lockReleased := make(chan struct{})
+	go func() {
+		defer close(lockReleased)
+		<-releaseLock
+		_, _ = lockConn.ExecContext(context.Background(), `COMMIT`)
+	}()
+	time.AfterFunc(25*time.Millisecond, func() { close(releaseLock) })
+
+	if err := d.completeAssignment(ctx, assignmentID, "bead-busy-complete"); err != nil {
+		t.Fatalf("complete assignment should retry through transient SQLite busy: %v", err)
+	}
+	<-lockReleased
+
+	var status string
+	var completedAt sql.NullString
+	if err := db.QueryRowContext(ctx,
+		`SELECT status, completed_at FROM assignments WHERE id=?`,
+		assignmentID,
+	).Scan(&status, &completedAt); err != nil {
+		t.Fatalf("query assignment: %v", err)
+	}
+	if status != "completed" {
+		t.Fatalf("status = %q, want completed", status)
+	}
+	if !completedAt.Valid || completedAt.String == "" {
+		t.Fatal("completed_at was not set")
 	}
 }
 

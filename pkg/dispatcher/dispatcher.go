@@ -8495,6 +8495,26 @@ func (d *Dispatcher) activeAssignmentBead(ctx context.Context, assignmentID int6
 }
 
 func (d *Dispatcher) completeAssignment(ctx context.Context, assignmentID int64, beadID string) error {
+	const maxSQLiteBusyRetries = 20
+	for attempt := 0; ; attempt++ {
+		err := d.completeAssignmentOnce(ctx, assignmentID, beadID)
+		if err == nil || !isSQLiteBusyError(err) {
+			return err
+		}
+		if attempt >= maxSQLiteBusyRetries {
+			return err
+		}
+		timer := time.NewTimer(time.Duration(attempt+1) * 10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("complete assignment retry canceled: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func (d *Dispatcher) completeAssignmentOnce(ctx context.Context, assignmentID int64, beadID string) error {
 	var (
 		err error
 		res sql.Result
@@ -8523,6 +8543,16 @@ func (d *Dispatcher) completeAssignment(ctx context.Context, assignmentID int64,
 		}
 	}
 	return nil
+}
+
+func isSQLiteBusyError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "sqlite_busy") ||
+		strings.Contains(text, "database is locked") ||
+		strings.Contains(text, "database table is locked")
 }
 
 func (d *Dispatcher) assignmentIsQuarantined(ctx context.Context, assignmentID int64) bool {
