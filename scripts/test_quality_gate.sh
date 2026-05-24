@@ -709,6 +709,19 @@ test_go_mutation_limits_changed_files_to_qg_go_surface() {
 	fi
 }
 
+# shellcheck disable=SC2317,SC2329
+test_go_mutation_match_pattern_anchors_touched_functions() {
+	local mutation_body
+	mutation_body=$(grep -A 90 'run_go_mutation_test()' "$SCRIPT_DIR/quality_gate.sh" | head -90)
+
+	# shellcheck disable=SC2016
+	if ! echo "$mutation_body" | grep -Fq 'match_pattern="^($touched_funcs)$"'; then
+		echo "FAIL: Go mutation match pattern is not anchored to exact function names"
+		echo "  Unanchored names like Closed also mutate AllChildrenClosed"
+		return 1
+	fi
+}
+
 # Test: GIT_DIR/GIT_WORK_TREE do not leak into test subprocesses after QG env setup
 # shellcheck disable=SC2317,SC2329
 test_worktree_env_no_leak_to_subprocesses() {
@@ -1217,6 +1230,7 @@ echo "=============================================="
 test_case "worktree env restores GIT_DIR" test_worktree_ref_resolution_after_env_cleanup
 test_case "worktree rev-parse main works" test_worktree_rev_parse_main_functional
 test_case "go mutation limits QG Go surface" test_go_mutation_limits_changed_files_to_qg_go_surface
+test_case "go mutation anchors touched function match" test_go_mutation_match_pattern_anchors_touched_functions
 test_case "worktree env no GIT_WORK_TREE leak" test_worktree_env_no_leak_to_subprocesses
 
 echo ""

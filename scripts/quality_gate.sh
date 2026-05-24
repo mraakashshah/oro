@@ -742,7 +742,7 @@ lane_go() {
 				sed -E 's/.*func[[:space:]]+(\([^)]*\)[[:space:]]+)?([A-Za-z0-9_]+).*/\2/' |
 				grep -v '^$' | sort -u | paste -sd'|' - || true)
 			if [ -n "$touched_funcs" ]; then
-				match_pattern="($touched_funcs)"
+				match_pattern="^($touched_funcs)$"
 				echo "Limiting mutations to touched functions: $touched_funcs"
 			fi
 

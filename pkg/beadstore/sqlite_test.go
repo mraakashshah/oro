@@ -1057,6 +1057,21 @@ func TestParityClosedLimitSemantics(t *testing.T) {
 	}
 }
 
+func TestSQLiteClosedNonPositiveLimitDoesNotTouchDB(t *testing.T) {
+	ctx := context.Background()
+	store := &SQLiteStore{}
+
+	for _, limit := range []int{0, -1} {
+		closed, err := store.Closed(ctx, limit)
+		if err != nil {
+			t.Fatalf("Closed(%d) error = %v, want nil", limit, err)
+		}
+		if len(closed) != 0 {
+			t.Fatalf("Closed(%d) len = %d, want 0", limit, len(closed))
+		}
+	}
+}
+
 func TestParityChildQueries(t *testing.T) {
 	for _, fixture := range newParityFixtures(t) {
 		t.Run(fixture.name, func(t *testing.T) {
