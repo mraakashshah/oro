@@ -656,7 +656,10 @@ snapshot_go_mutation_side_effects() {
     if hooks_dir=$(go_mutation_hooks_dir); then
         # Protect the local .git/hooks/pre-push hook from mutation-test side effects.
         mkdir -p "$snapshot_dir/git-hooks"
-        if [ -f "$hooks_dir/pre-push" ]; then
+        if [ -L "$hooks_dir/pre-push" ]; then
+            readlink "$hooks_dir/pre-push" > "$snapshot_dir/git-hooks/pre-push.target"
+            printf 'symlink\n' > "$snapshot_dir/git-hooks/pre-push.state"
+        elif [ -f "$hooks_dir/pre-push" ]; then
             cp -p "$hooks_dir/pre-push" "$snapshot_dir/git-hooks/pre-push"
             printf 'file\n' > "$snapshot_dir/git-hooks/pre-push.state"
         else
@@ -674,7 +677,12 @@ restore_go_mutation_side_effects() {
         state=$(cat "$snapshot_dir/git-hooks/pre-push.state")
         if [ "$state" = "file" ]; then
             mkdir -p "$hooks_dir"
+            rm -f "$hooks_dir/pre-push"
             cp -p "$snapshot_dir/git-hooks/pre-push" "$hooks_dir/pre-push"
+        elif [ "$state" = "symlink" ]; then
+            mkdir -p "$hooks_dir"
+            rm -f "$hooks_dir/pre-push"
+            ln -s "$(cat "$snapshot_dir/git-hooks/pre-push.target")" "$hooks_dir/pre-push"
         elif [ "$state" = "missing" ]; then
             rm -f "$hooks_dir/pre-push"
         fi

@@ -327,6 +327,58 @@ test_quality_gate_mutation_restores_side_effects() {
 	return 0
 }
 
+# Test: mutation hook restore preserves symlinked pre-push hooks.
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_mutation_restores_symlinked_pre_push_hook() {
+	local tmpdir oldpwd snapshot_dir target original_target_content
+	tmpdir=$(mktemp -d)
+	oldpwd="$PWD"
+
+	# shellcheck disable=SC2064
+	trap "rm -rf '$tmpdir'" RETURN
+
+	mkdir -p "$tmpdir/repo/git/hooks"
+	cd "$tmpdir/repo"
+	git init -q
+
+	target="$tmpdir/repo/git/hooks/pre-push"
+	original_target_content='existing shared hook'
+	printf '%s\n' "$original_target_content" >"$target"
+	ln -s "$target" .git/hooks/pre-push
+
+	eval "$(
+		sed -n '/^go_mutation_hooks_dir()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^snapshot_go_mutation_side_effects()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^restore_go_mutation_side_effects()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+	)"
+
+	snapshot_dir="$tmpdir/snapshot"
+	snapshot_go_mutation_side_effects "$snapshot_dir"
+
+	rm .git/hooks/pre-push
+	printf '%s\n' 'generated wrapper' >.git/hooks/pre-push
+
+	restore_go_mutation_side_effects "$snapshot_dir"
+
+	if [ ! -L .git/hooks/pre-push ]; then
+		echo "FAIL: restored .git/hooks/pre-push is not a symlink"
+		cd "$oldpwd"
+		return 1
+	fi
+	if [ "$(readlink .git/hooks/pre-push)" != "$target" ]; then
+		echo "FAIL: restored symlink target changed"
+		cd "$oldpwd"
+		return 1
+	fi
+	if [ "$(cat "$target")" != "$original_target_content" ]; then
+		echo "FAIL: symlink target content was overwritten"
+		cd "$oldpwd"
+		return 1
+	fi
+
+	cd "$oldpwd"
+}
+
 # Test: mutation restore trap preserves parent-owned QG_DIR cleanup.
 # shellcheck disable=SC2317,SC2329
 test_quality_gate_mutation_trap_preserves_qg_dir_cleanup() {
@@ -1200,6 +1252,7 @@ echo "=============================================="
 test_case "quality_gate.sh mutation has trap EXIT" test_quality_gate_mutation_trap_present
 test_case "quality_gate.sh mutation preserves unstaged work" test_quality_gate_mutation_cleanup_preserves_unstaged_work
 test_case "quality_gate.sh mutation restores hook/temp side effects" test_quality_gate_mutation_restores_side_effects
+test_case "quality_gate.sh mutation restores symlinked pre-push hook" test_quality_gate_mutation_restores_symlinked_pre_push_hook
 test_case "quality_gate.sh mutation trap preserves QG_DIR cleanup" test_quality_gate_mutation_trap_preserves_qg_dir_cleanup
 test_case "Makefile mutate-go has trap" test_makefile_mutate_go_trap_present
 test_case "Makefile mutate-go-diff has trap" test_makefile_mutate_go_diff_trap_present
