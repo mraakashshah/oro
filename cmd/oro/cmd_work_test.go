@@ -1863,7 +1863,7 @@ func TestNewWorkerBeadStoreDoesNotFetchLegacyPromptMemory(t *testing.T) {
 func TestWorkPromptUsesCardsContext(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("spawn_prompt_renders_relevant_cards", func(t *testing.T) {
+	t.Run("spawn prompt renders relevant cards and ignores legacy prompt memory", func(t *testing.T) {
 		db := setupTestMemoryDB(t)
 		memStore := memory.NewStore(db)
 		if _, err := memStore.Insert(ctx, memory.InsertParams{
@@ -1938,6 +1938,9 @@ func TestWorkPromptUsesCardsContext(t *testing.T) {
 		}
 		if strings.Contains(sp.capturedPrompt, "legacy memory prompt context") {
 			t.Fatalf("spawn prompt rendered legacy memory context:\n%s", sp.capturedPrompt)
+		}
+		if strings.Contains(sp.capturedPrompt, "## Memory") || strings.Contains(sp.capturedPrompt, "## Previous Feedback") {
+			t.Fatalf("spawn prompt rendered legacy memory sections:\n%s", sp.capturedPrompt)
 		}
 		var promptReads int
 		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_read_events WHERE operation = 'for_prompt'`).Scan(&promptReads); err != nil {
