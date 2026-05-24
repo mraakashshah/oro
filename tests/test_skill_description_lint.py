@@ -144,6 +144,21 @@ def test_skill_description_lint_rejects_documented_cso_bad_description(
     assert checker.check_skill_description(skill_path) == [WORKFLOW_SUMMARY_ERROR]
 
 
+def test_skill_description_lint_rejects_workflow_summary(tmp_path: Path) -> None:
+    checker = _load_checker()
+    missing_trigger = _write_skill(
+        tmp_path / "missing-trigger",
+        "Runs the full skill workflow.",
+    )
+    workflow_summary = _write_skill(
+        tmp_path / "workflow-summary",
+        "Use when executing plans - dispatches subagent per task with code review",
+    )
+
+    assert checker.check_skill_description(missing_trigger) == [WORKFLOW_SUMMARY_ERROR]
+    assert checker.check_skill_description(workflow_summary) == [WORKFLOW_SUMMARY_ERROR]
+
+
 def test_skill_description_lint_cli_reports_documented_cso_bad_description_on_stderr(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
