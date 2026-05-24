@@ -2,6 +2,7 @@ package dispatcher //nolint:testpackage // white-box: asserts releasePriorAssign
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"oro/pkg/protocol"
@@ -109,5 +110,103 @@ func TestReleasePriorAssignmentPreservesExternalClose(t *testing.T) {
 	beadSrc.mu.Unlock()
 	if recorded {
 		t.Fatalf("releasePriorAssignment must NOT reopen externally-closed bead, but updated[%q]=%q", priorID, gotStatus)
+	}
+}
+
+// TestAbortAssignmentReservationLostPreservesExternalClose asserts that losing
+// a worker reservation does not reopen a bead that was closed externally while
+// the assignment path was in flight. The assignment still completes and the
+// reservation is released so dispatcher state does not remain stuck.
+func TestAbortAssignmentReservationLostPreservesExternalClose(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	const beadID = "oro-reservation-lost-deduped"
+	const workerID = "worker-reservation-lost"
+	const worktree = "/tmp/wt-oro-reservation-lost-deduped"
+
+	assignmentID, err := d.createAssignment(ctx, beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("createAssignment: %v", err)
+	}
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		state:        protocol.WorkerReserved,
+		beadID:       beadID,
+		assignmentID: assignmentID,
+		worktree:     worktree,
+	}
+	d.assigningBeads[beadID] = true
+	d.mu.Unlock()
+
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "closed"}
+	beadSrc.mu.Unlock()
+
+	d.abortAssignmentReservationLost(ctx, beadID, workerID, worktree, false, assignmentID)
+
+	beadSrc.mu.Lock()
+	gotStatus, recorded := beadSrc.updated[beadID]
+	beadSrc.mu.Unlock()
+	if recorded {
+		t.Fatalf("abortAssignmentReservationLost must NOT reopen externally-closed bead, but updated[%q]=%q", beadID, gotStatus)
+	}
+
+	var assignmentStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("query assignment status: %v", err)
+	}
+	if assignmentStatus != "completed" {
+		t.Fatalf("assignment status = %q, want completed", assignmentStatus)
+	}
+
+	d.mu.Lock()
+	w := d.workers[workerID]
+	assigning := d.assigningBeads[beadID]
+	d.mu.Unlock()
+	if assigning {
+		t.Fatalf("assigningBeads[%q] still set after abort", beadID)
+	}
+	if w == nil {
+		t.Fatalf("worker %q missing", workerID)
+	}
+	if w.state != protocol.WorkerIdle || w.beadID != "" || w.assignmentID != 0 {
+		t.Fatalf("worker not released: state=%s beadID=%q assignmentID=%d", w.state, w.beadID, w.assignmentID)
+	}
+}
+
+func TestAbortAssignmentReservationLostReopensWhenShowErrors(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	const beadID = "oro-reservation-lost-show-error"
+	const workerID = "worker-reservation-lost-show-error"
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:     workerID,
+		state:  protocol.WorkerReserved,
+		beadID: beadID,
+	}
+	d.assigningBeads[beadID] = true
+	d.mu.Unlock()
+
+	beadSrc.mu.Lock()
+	beadSrc.showErr = errors.New("bead source unavailable")
+	beadSrc.mu.Unlock()
+
+	d.abortAssignmentReservationLost(ctx, beadID, workerID, "", false, 0)
+
+	beadSrc.mu.Lock()
+	gotStatus, recorded := beadSrc.updated[beadID]
+	beadSrc.mu.Unlock()
+	if !recorded || gotStatus != "open" {
+		t.Fatalf("abortAssignmentReservationLost must reopen when Show errors, updated[%q]=%q recorded=%t", beadID, gotStatus, recorded)
 	}
 }

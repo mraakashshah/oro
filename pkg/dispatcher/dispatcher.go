@@ -5628,7 +5628,9 @@ func (d *Dispatcher) abortAssignmentReservationLost(ctx context.Context, beadID,
 	if assignmentID != 0 {
 		_ = d.completeAssignment(ctx, assignmentID, beadID)
 	}
-	_ = d.updateBeadStatus(ctx, beadID, "open")
+	if !d.isBeadClosed(ctx, beadID) {
+		_ = d.updateBeadStatus(ctx, beadID, "open")
+	}
 	if removeWorktree && worktree != "" {
 		_ = d.worktrees.Remove(ctx, worktree)
 		d.mu.Lock()
@@ -5647,7 +5649,9 @@ func (d *Dispatcher) abortAssignmentForFocusChange(ctx context.Context, beadID, 
 	if assignmentID != 0 {
 		_ = d.completeAssignment(ctx, assignmentID, beadID)
 	}
-	_ = d.updateBeadStatus(ctx, beadID, "open")
+	if !d.isBeadClosed(ctx, beadID) {
+		_ = d.updateBeadStatus(ctx, beadID, "open")
+	}
 	if removeWorktree && worktree != "" {
 		_ = d.worktrees.Remove(ctx, worktree)
 		d.mu.Lock()
@@ -5660,6 +5664,11 @@ func (d *Dispatcher) abortAssignmentForFocusChange(ctx context.Context, beadID, 
 	d.mu.Unlock()
 	_ = d.logEvent(ctx, "assignment_aborted_focus_changed", "dispatcher", beadID, workerID, "")
 	d.notifyAssignLoop()
+}
+
+func (d *Dispatcher) isBeadClosed(ctx context.Context, beadID string) bool {
+	detail, err := d.beads.Show(ctx, beadID)
+	return err == nil && detail != nil && detail.Status == "closed"
 }
 
 func (d *Dispatcher) searchCodeInWorkdir(ctx context.Context, query string, topK int, worktree string) ([]SearchResult, error) {
