@@ -324,6 +324,16 @@ def test_agent_browser_descriptions_are_normalized_trigger_only() -> None:
         assert checker.check_skill_description(skill_path) == []
 
 
+def test_agent_browser_descriptions_are_identical() -> None:
+    repo_root = _repo_root()
+    canonical_description = _read_skill_description(repo_root / "assets/skills/agent-browser/SKILL.md")
+    nested_description = _read_skill_description(repo_root / "assets/skills/agent-browser/agent-browser/SKILL.md")
+
+    assert canonical_description is not None
+    assert nested_description is not None
+    assert canonical_description == nested_description
+
+
 def test_using_skills_description_is_normalized_trigger_only(tmp_path: Path) -> None:
     checker = _load_checker()
     skill_path = _repo_root() / "assets/skills/using-skills/SKILL.md"
