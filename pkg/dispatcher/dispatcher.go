@@ -5370,7 +5370,6 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	_ = d.logEvent(ctx, "assign", "dispatcher", bead.ID, w.id,
 		fmt.Sprintf(`{"worktree":%q,"branch":%q}`, worktree, branch))
 
-	cardsCtx := d.buildCardContext(ctx, bead)
 	var codeCtx string
 	if d.codeIndex != nil {
 		ctx5s, cancel5s := context.WithTimeout(ctx, 5*time.Second)
@@ -5393,6 +5392,23 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	if isEpicDecomp {
 		resolvedRuntime, resolvedModel, resolvedReasoning = agentmodel.ResolveForRole("ops_decompose")
 	}
+	payload := d.buildAssignPayload(ctx, &trackedWorker{
+		id:           w.id,
+		beadID:       bead.ID,
+		worktree:     worktree,
+		runtime:      resolvedRuntime,
+		model:        resolvedModel,
+		reasoning:    resolvedReasoning,
+		isEpicDecomp: isEpicDecomp,
+		targetBranch: targetBranch,
+	}, 0, "", "")
+	if payload.Title == "" {
+		payload.Title = title
+	}
+	if payload.AcceptanceCriteria == "" {
+		payload.AcceptanceCriteria = acceptance
+	}
+	payload.CodeSearchContext = codeCtx
 	// Release any prior bead this worker was carrying — the new assignment is
 	// committed, so any leftover in_progress state on the old bead must be
 	// cleared (oro-xqrh).
@@ -5421,20 +5437,8 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	w.reasoning = resolvedReasoning
 	w.lastProgress = d.nowFunc()
 	err = d.sendToWorker(w, protocol.Message{
-		Type: protocol.MsgAssign,
-		Assign: &protocol.AssignPayload{
-			BeadID:              bead.ID,
-			Worktree:            worktree,
-			Runtime:             resolvedRuntime,
-			Model:               resolvedModel,
-			Reasoning:           resolvedReasoning,
-			Cards:               cardsCtx,
-			CodeSearchContext:   codeCtx,
-			Title:               title,
-			AcceptanceCriteria:  acceptance,
-			IsEpicDecomposition: isEpicDecomp,
-			TargetBranch:        targetBranch,
-		},
+		Type:   protocol.MsgAssign,
+		Assign: payload,
 	})
 	if err != nil {
 		// Socket is dead — remove worker entirely to prevent tryAssign from
