@@ -670,9 +670,9 @@ func TestSQLiteStoreOptionsAndGeneratedID(t *testing.T) {
 		t.Fatalf("migrate bead schema: %v", err)
 	}
 
-	var fetched bool
+	var fetchCalls int
 	store := NewSQLiteStore(db, WithMemoryFetcher(func(_ context.Context, tags []string, description string, maxTokens int) (string, error) {
-		fetched = true
+		fetchCalls++
 		if !reflect.DeepEqual(tags, []string{"generated"}) || description != "created without explicit id" || maxTokens != 2000 {
 			t.Fatalf("memory fetch inputs tags=%#v description=%q maxTokens=%d", tags, description, maxTokens)
 		}
@@ -694,13 +694,16 @@ func TestSQLiteStoreOptionsAndGeneratedID(t *testing.T) {
 	if !strings.HasPrefix(created.ID, "oro-") || len(created.ID) <= len("oro-") {
 		t.Fatalf("generated ID = %q, want nonempty oro-* id", created.ID)
 	}
+	if fetchCalls != 0 || created.Memory != "" {
+		t.Fatalf("Create memory fetch calls=%d memory=%q, want no memory enrichment before Show", fetchCalls, created.Memory)
+	}
 
 	shown, err := store.Show(ctx, created.ID)
 	if err != nil {
 		t.Fatalf("Show generated id: %v", err)
 	}
-	if !fetched || shown.Memory != "memory for generated bead" {
-		t.Fatalf("Show memory fetched=%v memory=%q, want callback result", fetched, shown.Memory)
+	if fetchCalls != 1 || shown.Memory != "memory for generated bead" {
+		t.Fatalf("Show memory fetch calls=%d memory=%q, want one callback result", fetchCalls, shown.Memory)
 	}
 }
 

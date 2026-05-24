@@ -133,6 +133,10 @@ func (s *SQLiteStore) Closed(ctx context.Context, limit int) ([]protocol.Bead, e
 
 // Show returns the bead for id, or nil when it does not exist.
 func (s *SQLiteStore) Show(ctx context.Context, id string) (*protocol.Bead, error) {
+	return s.show(ctx, id, true)
+}
+
+func (s *SQLiteStore) show(ctx context.Context, id string, includeMemory bool) (*protocol.Bead, error) {
 	beads, err := s.queryBeads(ctx, `SELECT `+beadColumns+` FROM beads WHERE deleted=0 AND id=?`, id)
 	if err != nil {
 		return nil, err
@@ -144,7 +148,7 @@ func (s *SQLiteStore) Show(ctx context.Context, id string) (*protocol.Bead, erro
 	if err := s.enrichRuntime(ctx, bead); err != nil {
 		return nil, err
 	}
-	if s.memory != nil {
+	if includeMemory && s.memory != nil {
 		if memory, err := s.memory(ctx, bead.Tags, bead.Description, s.memMaxTokens); err == nil {
 			bead.Memory = memory
 		}
@@ -211,7 +215,7 @@ VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("beadstore: commit create %s: %w", params.ID, err)
 	}
-	return s.Show(ctx, params.ID)
+	return s.show(ctx, params.ID, false)
 }
 
 // Update applies non-nil fields from params to id.
