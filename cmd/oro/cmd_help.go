@@ -67,6 +67,7 @@ Global:
 
 Maintenance:
   doctor     Diagnose oro installation issues
+  doctrine   Inspect enforcement doctrine artifacts
   uninstall  Remove oro and all its artifacts from this machine
   harness    Run Oro harness verification tests (§18)
 
