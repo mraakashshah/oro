@@ -898,6 +898,19 @@ CREATE TABLE IF NOT EXISTS memory_search_events (
 CREATE INDEX IF NOT EXISTS idx_mse_ts ON memory_search_events(ts);
 `
 
+// MigrateSemanticMemoryReadEvents creates the memory_read_events table for
+// recording legacy memory reads by operation and project. Idempotent.
+const MigrateSemanticMemoryReadEvents = `
+CREATE TABLE IF NOT EXISTS memory_read_events (
+    id INTEGER PRIMARY KEY,
+    ts DATETIME NOT NULL DEFAULT (datetime('now')),
+    project TEXT,
+    operation TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mre_ts ON memory_read_events(ts);
+`
+
 // MigrateSemanticMemoryChunks creates the memory_chunks table for storing
 // chunked semantic memory embeddings. Each chunk belongs to a parent memory
 // and includes the text and its embedding vector. ON DELETE CASCADE ensures

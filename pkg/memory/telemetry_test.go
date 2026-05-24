@@ -158,6 +158,137 @@ SELECT
 	}
 }
 
+func TestLegacyMemoryReadTelemetry(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("ReadPathsLogOperationProjectAndTimestamp", func(t *testing.T) {
+		db := setupTelemetryDB(t)
+		store := NewStore(db)
+		store.SetProject("telemetry-project")
+
+		if _, err := store.Insert(ctx, InsertParams{
+			Content:    "legacy read telemetry unique list search hybrid prompt",
+			Type:       "lesson",
+			Source:     "test",
+			Confidence: 0.9,
+		}); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+		clearReadEvents(t, db)
+
+		if _, err := store.List(ctx, ListOpts{Limit: 5}); err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if _, err := store.Search(ctx, "legacy read telemetry", SearchOpts{Limit: 5}); err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		if _, err := store.HybridSearch(ctx, "legacy read telemetry", SearchOpts{Limit: 5}); err != nil {
+			t.Fatalf("HybridSearch: %v", err)
+		}
+		if _, err := ForPrompt(ctx, store, nil, "legacy read telemetry", 500); err != nil {
+			t.Fatalf("ForPrompt: %v", err)
+		}
+
+		rows, err := db.QueryContext(ctx, `
+			SELECT operation, project, ts
+			FROM memory_read_events
+			ORDER BY id
+		`)
+		if err != nil {
+			t.Fatalf("query read events: %v", err)
+		}
+		defer func() { _ = rows.Close() }()
+
+		got := map[string]int{}
+		for rows.Next() {
+			var operation, project, ts string
+			if err := rows.Scan(&operation, &project, &ts); err != nil {
+				t.Fatalf("scan read event: %v", err)
+			}
+			got[operation]++
+			if project != "telemetry-project" {
+				t.Errorf("project for %s: got %q, want telemetry-project", operation, project)
+			}
+			if ts == "" {
+				t.Errorf("timestamp for %s is empty", operation)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("read event rows: %v", err)
+		}
+
+		want := map[string]int{
+			"list":          1,
+			"search":        1,
+			"hybrid_search": 1,
+			"for_prompt":    1,
+		}
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("read operations = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("MissingReadEventsTableIsRecreated", func(t *testing.T) {
+		db := setupTelemetryDB(t)
+		store := NewStore(db)
+
+		if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS memory_read_events"); err != nil {
+			t.Fatalf("drop memory_read_events: %v", err)
+		}
+		if _, err := store.List(ctx, ListOpts{Limit: 5}); err != nil {
+			t.Fatalf("List with missing telemetry table: %v", err)
+		}
+		if n := countReadEvents(t, db); n != 1 {
+			t.Fatalf("want 1 read event after self-repair, got %d", n)
+		}
+	})
+
+	t.Run("TelemetryFailureLogsOnceAndReadStillSucceeds", func(t *testing.T) {
+		db := setupTelemetryDB(t)
+		store := NewStore(db)
+
+		if _, err := store.Insert(ctx, InsertParams{
+			Content:    "legacy read telemetry broken sink content",
+			Type:       "lesson",
+			Source:     "test",
+			Confidence: 0.9,
+		}); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+		if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS memory_read_events"); err != nil {
+			t.Fatalf("drop memory_read_events: %v", err)
+		}
+		if _, err := db.ExecContext(ctx, `
+CREATE VIEW memory_read_events AS
+SELECT
+    1 AS id,
+    datetime('now') AS ts,
+    '' AS project,
+    '' AS operation
+`); err != nil {
+			t.Fatalf("create blocking telemetry view: %v", err)
+		}
+
+		var logs bytes.Buffer
+		originalWriter := log.Writer()
+		log.SetOutput(&logs)
+		t.Cleanup(func() { log.SetOutput(originalWriter) })
+
+		for i := 0; i < 2; i++ {
+			results, err := store.List(ctx, ListOpts{Limit: 5})
+			if err != nil {
+				t.Fatalf("List %d: %v", i+1, err)
+			}
+			if len(results) == 0 {
+				t.Fatalf("List %d returned no results", i+1)
+			}
+		}
+		if got := strings.Count(logs.String(), "memory: telemetry write failed"); got != 1 {
+			t.Fatalf("telemetry failure log count = %d, want 1\nlogs:\n%s", got, logs.String())
+		}
+	})
+}
+
 func TestLogSearchEventWritesRow(t *testing.T) {
 	db := setupTelemetryDB(t)
 	store := NewStore(db)
@@ -287,6 +418,22 @@ func countSearchEvents(t *testing.T, db *sql.DB) int {
 		t.Fatalf("count search events: %v", err)
 	}
 	return n
+}
+
+func countReadEvents(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM memory_read_events").Scan(&n); err != nil {
+		t.Fatalf("count read events: %v", err)
+	}
+	return n
+}
+
+func clearReadEvents(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.ExecContext(context.Background(), "DELETE FROM memory_read_events"); err != nil {
+		t.Fatalf("clear read events: %v", err)
+	}
 }
 
 // TestHybridSearchLogsOneRow verifies that HybridSearch writes exactly one

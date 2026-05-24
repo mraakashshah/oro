@@ -70,6 +70,7 @@ type Store struct {
 // NewStore creates a new Store backed by the given SQLite database.
 func NewStore(db *sql.DB) *Store {
 	_, _ = db.ExecContext(context.Background(), protocol.MigrateSemanticMemorySearchEvents)
+	_, _ = db.ExecContext(context.Background(), protocol.MigrateSemanticMemoryReadEvents)
 	return &Store{db: db}
 }
 
@@ -638,6 +639,10 @@ func searchSQL(query string, opts SearchOpts, project string) (stmt string, args
 // Note: bm25() returns negligible values with modernc.org/sqlite (pure-Go),
 // so we use FTS5 rank for ordering and compute scores in Go.
 func (s *Store) Search(ctx context.Context, query string, opts SearchOpts) ([]ScoredMemory, error) {
+	return s.search(ctx, query, opts, true)
+}
+
+func (s *Store) search(ctx context.Context, query string, opts SearchOpts, logRead bool) ([]ScoredMemory, error) {
 	if query == "" {
 		return nil, nil
 	}
@@ -668,6 +673,9 @@ func (s *Store) Search(ctx context.Context, query string, opts SearchOpts) ([]Sc
 	}
 
 	sortByScoreDesc(results)
+	if logRead {
+		s.logReadEventNonFatal(ctx, "search")
+	}
 	return results, nil
 }
 
@@ -693,10 +701,10 @@ func (s *Store) HybridSearch(ctx context.Context, query string, opts SearchOpts)
 	start := time.Now()
 
 	// Phase 1: FTS5 text search (always available).
-	ftsResults, err := s.Search(ctx, query, SearchOpts{
+	ftsResults, err := s.search(ctx, query, SearchOpts{
 		Limit: maxHybridCandidates(opts.Limit),
 		Type:  opts.Type,
-	})
+	}, false)
 	if err != nil {
 		return nil, fmt.Errorf("hybrid fts search: %w", err)
 	}
@@ -736,8 +744,19 @@ func (s *Store) HybridSearch(ctx context.Context, query string, opts SearchOpts)
 	}); logErr != nil {
 		s.logTelemetryFailure(logErr)
 	}
+	s.logReadEventNonFatal(logCtx, "hybrid_search")
 
 	return results, nil
+}
+
+func (s *Store) logReadEventNonFatal(ctx context.Context, operation string) {
+	logCtx := ctx
+	if ctx.Err() != nil {
+		logCtx = context.Background()
+	}
+	if err := s.logReadEvent(logCtx, operation); err != nil {
+		s.logTelemetryFailure(err)
+	}
 }
 
 func (s *Store) logTelemetryFailure(err error) {
@@ -1335,6 +1354,7 @@ func (s *Store) List(ctx context.Context, opts ListOpts) ([]protocol.Memory, err
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("memory list rows: %w", err)
 	}
+	s.logReadEventNonFatal(ctx, "list")
 	return results, nil
 }
 
@@ -1670,14 +1690,15 @@ func ForPrompt(ctx context.Context, store *Store, beadTags []string, beadDesc st
 			Tags:  beadTags,
 		})
 	} else {
-		results, err = store.Search(ctx, beadDesc, SearchOpts{
+		results, err = store.search(ctx, beadDesc, SearchOpts{
 			Limit: 10,
 			Tags:  beadTags,
-		})
+		}, false)
 	}
 	if err != nil {
 		return "", fmt.Errorf("for prompt search: %w", err)
 	}
+	store.logReadEventNonFatal(ctx, "for_prompt")
 
 	if len(results) == 0 {
 		return "", nil

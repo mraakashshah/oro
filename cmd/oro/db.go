@@ -203,5 +203,6 @@ func migrateStateDB(db *sql.DB) {
 	_, _ = db.ExecContext(ctx, protocol.MigrateSemanticMemoryDense)
 	_, _ = db.ExecContext(ctx, protocol.MigrateSemanticMemoryBackfillState)
 	_, _ = db.ExecContext(ctx, protocol.MigrateSemanticMemorySearchEvents)
+	_, _ = db.ExecContext(ctx, protocol.MigrateSemanticMemoryReadEvents)
 	_, _ = db.ExecContext(ctx, protocol.MigrateSemanticMemoryChunks)
 }

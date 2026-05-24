@@ -78,3 +78,34 @@ func (s *Store) insertSearchEvent(ctx context.Context, evt SearchEvent, ids, sco
 func memorySearchEventsMissing(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "no such table: memory_search_events")
 }
+
+// logReadEvent inserts one row into memory_read_events for legacy read-path usage.
+func (s *Store) logReadEvent(ctx context.Context, operation string) error {
+	if err := s.insertReadEvent(ctx, operation); err != nil {
+		if !memoryReadEventsMissing(err) {
+			return err
+		}
+		if _, migrateErr := s.db.ExecContext(ctx, protocol.MigrateSemanticMemoryReadEvents); migrateErr != nil {
+			return fmt.Errorf("repair memory_read_events after missing table: %w", migrateErr)
+		}
+		if retryErr := s.insertReadEvent(ctx, operation); retryErr != nil {
+			return retryErr
+		}
+	}
+	return nil
+}
+
+func (s *Store) insertReadEvent(ctx context.Context, operation string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO memory_read_events (project, operation)
+		VALUES (?, ?)
+	`, s.project, operation)
+	if err != nil {
+		return fmt.Errorf("insert memory_read_events: %w", err)
+	}
+	return nil
+}
+
+func memoryReadEventsMissing(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no such table: memory_read_events")
+}
