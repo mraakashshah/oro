@@ -647,6 +647,7 @@ func BuildAssignPrompt(a *protocol.AssignPayload) (prompt, model string) {
 			Description:          a.Description,
 			AcceptanceCriteria:   a.AcceptanceCriteria,
 			MemoryContext:        a.MemoryContext,
+			Cards:                a.Cards,
 			CodeSearchContext:    a.CodeSearchContext,
 			CodeStructureContext: a.CodeStructureContext,
 			WorktreePath:         a.Worktree,

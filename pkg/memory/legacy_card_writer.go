@@ -1,4 +1,4 @@
-package cards
+package memory
 
 import (
 	"context"
@@ -6,27 +6,27 @@ import (
 	"log"
 	"strings"
 
-	"oro/pkg/memory"
+	"oro/pkg/cards"
 )
 
 const dualWriteTag = "legacy_memory_dual_write"
 
-// LegacyWriter wraps memory.Store to dual-write each Insert into the cards store.
+// LegacyCardWriter wraps Store to dual-write each Insert into the cards store.
 // A cards write failure logs a warning but does NOT fail the memory insert.
-type LegacyWriter struct {
-	mem   *memory.Store
-	cards Store
+type LegacyCardWriter struct {
+	mem   *Store
+	cards cards.Store
 	logf  func(format string, args ...any)
 }
 
-// NewLegacyWriter creates a LegacyWriter that mirrors memory writes to cards.
-func NewLegacyWriter(mem *memory.Store, cards Store) *LegacyWriter {
-	return &LegacyWriter{mem: mem, cards: cards, logf: log.Printf}
+// NewLegacyCardWriter creates a LegacyCardWriter that mirrors memory writes to cards.
+func NewLegacyCardWriter(mem *Store, cardStore cards.Store) *LegacyCardWriter {
+	return &LegacyCardWriter{mem: mem, cards: cardStore, logf: log.Printf}
 }
 
 // Insert writes to memory, then synchronously mirrors to cards.
 // Cards write failures are logged as warnings and do not fail the insert.
-func (w *LegacyWriter) Insert(ctx context.Context, m memory.InsertParams) (int64, error) {
+func (w *LegacyCardWriter) Insert(ctx context.Context, m InsertParams) (int64, error) {
 	id, err := w.mem.Insert(ctx, m)
 	if err != nil {
 		return 0, fmt.Errorf("memory insert: %w", err)
@@ -39,14 +39,14 @@ func (w *LegacyWriter) Insert(ctx context.Context, m memory.InsertParams) (int64
 
 // mirrorToCards creates a pattern card mirroring the memory entry.
 // Tags include dualWriteTag, the memory ID tag for drift correlation, and original tags.
-func (w *LegacyWriter) mirrorToCards(ctx context.Context, memID int64, m memory.InsertParams) error {
+func (w *LegacyCardWriter) mirrorToCards(ctx context.Context, memID int64, m InsertParams) error {
 	tags := make([]string, 0, 2+len(m.Tags))
 	tags = append(tags, dualWriteTag, fmt.Sprintf("mem-id:%d", memID))
 	tags = append(tags, m.Tags...)
 
 	title := firstNonEmptyLine(m.Content)
-	_, err := w.cards.Create(ctx, CardCreateParams{
-		Type:        CardTypePattern,
+	_, err := w.cards.Create(ctx, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
 		Title:       title,
 		BodySummary: title,
 		BodyFull:    m.Content,
@@ -78,16 +78,16 @@ type DriftResult struct {
 	Content  string
 }
 
-// CheckDrift returns one DriftResult for each memory entry that lacks a
+// CheckCardDrift returns one DriftResult for each memory entry that lacks a
 // corresponding card with the legacy_memory_dual_write tag. These represent
 // dual-write failures that require investigation.
-func CheckDrift(ctx context.Context, mem *memory.Store, cs Store) ([]DriftResult, error) {
+func CheckCardDrift(ctx context.Context, mem *Store, cs cards.Store) ([]DriftResult, error) {
 	covered, err := coveredMemoryIDs(ctx, cs)
 	if err != nil {
 		return nil, fmt.Errorf("check drift list cards: %w", err)
 	}
 
-	all, err := mem.List(ctx, memory.ListOpts{Limit: 100000})
+	all, err := mem.List(ctx, ListOpts{Limit: 100000})
 	if err != nil {
 		return nil, fmt.Errorf("check drift list memories: %w", err)
 	}
@@ -103,8 +103,8 @@ func CheckDrift(ctx context.Context, mem *memory.Store, cs Store) ([]DriftResult
 
 // coveredMemoryIDs returns the set of memory IDs that have been mirrored to cards,
 // identified by the "mem-id:<id>" tag on pattern cards with the dual-write tag.
-func coveredMemoryIDs(ctx context.Context, cs Store) (map[int64]bool, error) {
-	all, err := cs.List(ctx, ListQuery{Type: CardTypePattern})
+func coveredMemoryIDs(ctx context.Context, cs cards.Store) (map[int64]bool, error) {
+	all, err := cs.List(ctx, cards.ListQuery{Type: cards.CardTypePattern})
 	if err != nil {
 		return nil, fmt.Errorf("list pattern cards: %w", err)
 	}

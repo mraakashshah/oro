@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"oro/pkg/cards"
 	"oro/pkg/protocol"
 )
 
@@ -71,6 +72,76 @@ func TestAssignPayload_CodeSearchContext(t *testing.T) {
 
 	if decoded.CodeSearchContext != original.CodeSearchContext {
 		t.Errorf("CodeSearchContext mismatch: got %q, want %q", decoded.CodeSearchContext, original.CodeSearchContext)
+	}
+}
+
+func TestAssignPayloadCardsContextRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := protocol.AssignPayload{
+		BeadID:   "oro-cards-1",
+		Worktree: "/tmp/worktree",
+		Cards: cards.RelevantCards{
+			Deck: []cards.CardSummary{
+				{
+					ID:          "card-deck-1",
+					Type:        cards.CardTypePattern,
+					Title:       "Run targeted tests first",
+					BodySummary: "Use the task acceptance command before the full gate.",
+					Score:       12.5,
+					Tags:        []string{"go", "tests"},
+				},
+			},
+			Inlined: []cards.CardSummary{
+				{
+					ID:          "card-inline-1",
+					Type:        cards.CardTypeDecision,
+					Title:       "Render cards instead of memory",
+					BodySummary: "Worker prompts consume cards.",
+					BodyFull:    "Worker assignments should carry cards through the protocol and render them in ## Cards.",
+					Score:       22.25,
+					Tags:        []string{"prompt"},
+				},
+			},
+		},
+		MemoryContext: "legacy memory remains wire-compatible",
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal AssignPayload: %v", err)
+	}
+	if !strings.Contains(string(data), `"cards"`) {
+		t.Fatalf("AssignPayload JSON missing cards: %s", string(data))
+	}
+
+	var decoded protocol.AssignPayload
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal AssignPayload: %v", err)
+	}
+
+	if len(decoded.Cards.Deck) != 1 {
+		t.Fatalf("decoded Cards.Deck len = %d, want 1", len(decoded.Cards.Deck))
+	}
+	if got, want := decoded.Cards.Deck[0].Title, original.Cards.Deck[0].Title; got != want {
+		t.Fatalf("decoded deck title = %q, want %q", got, want)
+	}
+	if len(decoded.Cards.Inlined) != 1 {
+		t.Fatalf("decoded Cards.Inlined len = %d, want 1", len(decoded.Cards.Inlined))
+	}
+	if got, want := decoded.Cards.Inlined[0].BodyFull, original.Cards.Inlined[0].BodyFull; got != want {
+		t.Fatalf("decoded inline body = %q, want %q", got, want)
+	}
+	if decoded.MemoryContext != original.MemoryContext {
+		t.Fatalf("decoded MemoryContext = %q, want %q", decoded.MemoryContext, original.MemoryContext)
+	}
+
+	var empty protocol.AssignPayload
+	if err := json.Unmarshal([]byte(`{"bead_id":"oro-empty","worktree":"/tmp/wt"}`), &empty); err != nil {
+		t.Fatalf("unmarshal empty cards AssignPayload: %v", err)
+	}
+	if len(empty.Cards.Deck) != 0 || len(empty.Cards.Inlined) != 0 {
+		t.Fatalf("empty Cards decoded as %#v, want zero value", empty.Cards)
 	}
 }
 

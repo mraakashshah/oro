@@ -37,7 +37,7 @@ func newCheckDriftCmd() *cobra.Command {
 			}
 
 			ctx := context.Background()
-			failures, err := cards.CheckDrift(ctx, memStore, cardStore)
+			failures, err := memory.CheckCardDrift(ctx, memStore, cardStore)
 			if err != nil {
 				return fmt.Errorf("check-drift: %w", err)
 			}

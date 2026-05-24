@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"oro/pkg/cards"
 	"oro/pkg/protocol"
 	"oro/pkg/worker"
 )
@@ -1003,6 +1004,50 @@ func TestBuildAssignPrompt_MapsNewFields(t *testing.T) {
 			t.Error("expected prompt to contain worker program content")
 		}
 	})
+}
+
+func TestBuildAssignPrompt_UsesCardsContext(t *testing.T) {
+	t.Parallel()
+
+	prompt, _ := worker.BuildAssignPrompt(&protocol.AssignPayload{
+		BeadID:             "oro-cards-1",
+		Worktree:           "/tmp/wt-cards",
+		Title:              "Carry cards",
+		Description:        "Render relevant cards in worker assignment prompts",
+		AcceptanceCriteria: "Cards are rendered",
+		MemoryContext:      "legacy memory context should not render",
+		Cards: cards.RelevantCards{
+			Deck: []cards.CardSummary{
+				{
+					ID:          "card-deck-1",
+					Type:        cards.CardTypePattern,
+					Title:       "Seeded deck card",
+					BodySummary: "Deck summary should be available.",
+					Score:       8.5,
+				},
+			},
+			Inlined: []cards.CardSummary{
+				{
+					ID:       "card-inline-1",
+					Type:     cards.CardTypeDecision,
+					Title:    "Seeded inline card",
+					BodyFull: "Use cards as the worker prompt knowledge source.",
+					Score:    13.75,
+				},
+			},
+		},
+	})
+
+	cardsSection := extractSection(t, prompt, "## Cards")
+	if !strings.Contains(cardsSection, "Seeded inline card") {
+		t.Fatalf("Cards section missing inlined card title:\n%s", cardsSection)
+	}
+	if !strings.Contains(cardsSection, "Use cards as the worker prompt knowledge source.") {
+		t.Fatalf("Cards section missing inlined card body:\n%s", cardsSection)
+	}
+	if strings.Contains(prompt, "legacy memory context should not render") {
+		t.Fatalf("legacy MemoryContext rendered in prompt:\n%s", prompt)
+	}
 }
 
 // extractSection returns the content from the start of header to the start of

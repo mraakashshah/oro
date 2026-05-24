@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"regexp"
 	"time"
+
+	"oro/pkg/cards"
 )
 
 // MaxMessageSize is the maximum size in bytes for a single UDS message.
@@ -86,25 +88,26 @@ type Message struct {
 // GitLog contains the git log context for the bead (omitted when empty).
 // WorkerProgram contains the worker program invocation string (omitted when empty).
 type AssignPayload struct {
-	BeadID               string `json:"bead_id"`
-	Worktree             string `json:"worktree"`
-	Runtime              string `json:"runtime,omitempty"`
-	Model                string `json:"model,omitempty"`
-	Reasoning            string `json:"reasoning,omitempty"`
-	Tier                 Tier   `json:"tier,omitempty"`
-	MemoryContext        string `json:"memory_context,omitempty"`
-	CodeSearchContext    string `json:"code_search_context,omitempty"`
-	CodeStructureContext string `json:"code_structure_context,omitempty"`
-	Feedback             string `json:"feedback,omitempty"`
-	Title                string `json:"title,omitempty"`
-	Description          string `json:"description,omitempty"`
-	AcceptanceCriteria   string `json:"acceptance_criteria,omitempty"`
-	Attempt              int    `json:"attempt,omitempty"`
-	IsEpicDecomposition  bool   `json:"is_epic_decomposition,omitempty"`
-	ProjectRoot          string `json:"project_root,omitempty"`
-	TargetBranch         string `json:"target_branch,omitempty"`
-	GitLog               string `json:"git_log,omitempty"`
-	WorkerProgram        string `json:"worker_program,omitempty"`
+	BeadID               string              `json:"bead_id"`
+	Worktree             string              `json:"worktree"`
+	Runtime              string              `json:"runtime,omitempty"`
+	Model                string              `json:"model,omitempty"`
+	Reasoning            string              `json:"reasoning,omitempty"`
+	Tier                 Tier                `json:"tier,omitempty"`
+	MemoryContext        string              `json:"memory_context,omitempty"`
+	Cards                cards.RelevantCards `json:"cards,omitempty"`
+	CodeSearchContext    string              `json:"code_search_context,omitempty"`
+	CodeStructureContext string              `json:"code_structure_context,omitempty"`
+	Feedback             string              `json:"feedback,omitempty"`
+	Title                string              `json:"title,omitempty"`
+	Description          string              `json:"description,omitempty"`
+	AcceptanceCriteria   string              `json:"acceptance_criteria,omitempty"`
+	Attempt              int                 `json:"attempt,omitempty"`
+	IsEpicDecomposition  bool                `json:"is_epic_decomposition,omitempty"`
+	ProjectRoot          string              `json:"project_root,omitempty"`
+	TargetBranch         string              `json:"target_branch,omitempty"`
+	GitLog               string              `json:"git_log,omitempty"`
+	WorkerProgram        string              `json:"worker_program,omitempty"`
 }
 
 // Validate checks that the AssignPayload has required fields populated.

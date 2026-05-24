@@ -3174,7 +3174,7 @@ func (d *Dispatcher) persistHandoffContext(ctx context.Context, h *protocol.Hand
 		Insert(ctx context.Context, m memory.InsertParams) (int64, error)
 	} = d.memories
 	if d.cardStore != nil {
-		inserter = cards.NewLegacyWriter(d.memories, d.cardStore)
+		inserter = memory.NewLegacyCardWriter(d.memories, d.cardStore)
 	}
 
 	for _, learning := range h.Learnings {

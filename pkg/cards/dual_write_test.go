@@ -35,7 +35,7 @@ func TestDualWrite(t *testing.T) {
 	t.Run("every_insert_produces_matching_card", func(t *testing.T) {
 		memStore := newMemoryStore(t)
 		cardStore := newTestStore(t)
-		writer := cards.NewLegacyWriter(memStore, cardStore)
+		writer := memory.NewLegacyCardWriter(memStore, cardStore)
 
 		type result struct {
 			memID  int64
@@ -103,7 +103,7 @@ func TestDualWrite(t *testing.T) {
 	t.Run("drift_detector_zero_failures_over_7_days", func(t *testing.T) {
 		memStore := newMemoryStore(t)
 		cardStore := newTestStore(t)
-		writer := cards.NewLegacyWriter(memStore, cardStore)
+		writer := memory.NewLegacyCardWriter(memStore, cardStore)
 
 		// Insert 7 distinct memories via the dual-write shim.
 		// Content is intentionally varied to avoid FTS5 write-time dedup.
@@ -130,7 +130,7 @@ func TestDualWrite(t *testing.T) {
 		}
 
 		// Drift detector must find zero failures.
-		failures, err := cards.CheckDrift(ctx, memStore, cardStore)
+		failures, err := memory.CheckCardDrift(ctx, memStore, cardStore)
 		if err != nil {
 			t.Fatalf("CheckDrift: %v", err)
 		}
@@ -142,7 +142,7 @@ func TestDualWrite(t *testing.T) {
 	t.Run("cards_failure_does_not_fail_memory_insert", func(t *testing.T) {
 		memStore := newMemoryStore(t)
 		// Use a broken card store that always errors on Create.
-		writer := cards.NewLegacyWriter(memStore, &alwaysFailCardStore{})
+		writer := memory.NewLegacyCardWriter(memStore, &alwaysFailCardStore{})
 
 		id, err := writer.Insert(ctx, memory.InsertParams{
 			Content:    "Resilience test: memory insert must succeed even when cards store is down",
@@ -174,7 +174,7 @@ func TestDualWrite(t *testing.T) {
 			t.Fatalf("direct Insert: %v", err)
 		}
 
-		failures, err := cards.CheckDrift(ctx, memStore, cardStore)
+		failures, err := memory.CheckCardDrift(ctx, memStore, cardStore)
 		if err != nil {
 			t.Fatalf("CheckDrift: %v", err)
 		}
