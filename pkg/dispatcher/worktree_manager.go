@@ -87,18 +87,50 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID, baseBranch stri
 	}
 
 	// Branch already exists from a previous crashed run: prune stale state and retry once.
+	pruneFailed := false
 	if pruneErr := g.pruneStale(ctx, path, branch, effectiveBase); pruneErr != nil {
+		pruneFailed = true
 		slog.WarnContext(ctx, "worktree_create_prune_failed", "error", pruneErr.Error())
 	}
 
-	_, err = g.runner.Run(ctx, "git", "-C", g.repoRoot,
-		"worktree", "add", path, "-b", branch, effectiveBase,
-	)
-	if err != nil {
+	if err := g.retryCreateAfterPrune(ctx, path, branch, effectiveBase, pruneFailed); err != nil {
 		return "", "", fmt.Errorf("worktree add %s (after prune): %w", beadID, err)
 	}
 	g.stageAssets(ctx, path)
 	return path, branch, nil
+}
+
+func (g *GitWorktreeManager) retryCreateAfterPrune(ctx context.Context, path, branch, effectiveBase string, pruneFailed bool) error {
+	if !pruneFailed {
+		_, err := g.runner.Run(ctx, "git", "-C", g.repoRoot,
+			"worktree", "add", path, "-b", branch, effectiveBase,
+		)
+		if err != nil {
+			return fmt.Errorf("retry create new branch: %w", err)
+		}
+		return nil
+	}
+
+	branchExists, err := g.BranchExists(ctx, branch)
+	if err != nil {
+		return fmt.Errorf("branch check: %w", err)
+	}
+	if branchExists {
+		_, err = g.runner.Run(ctx, "git", "-C", g.repoRoot,
+			"worktree", "add", path, branch,
+		)
+		if err != nil {
+			return fmt.Errorf("retry existing branch: %w", err)
+		}
+		return nil
+	}
+	_, err = g.runner.Run(ctx, "git", "-C", g.repoRoot,
+		"worktree", "add", path, "-b", branch, effectiveBase,
+	)
+	if err != nil {
+		return fmt.Errorf("retry create branch after prune: %w", err)
+	}
+	return nil
 }
 
 func (g *GitWorktreeManager) ensureLocalEpicBaseBranch(ctx context.Context, baseBranch string) error {
