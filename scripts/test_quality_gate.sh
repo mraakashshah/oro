@@ -858,7 +858,7 @@ test_quality_gate_changed_is_quoted() {
 }
 
 # Test: asset staging failures fail closed instead of disappearing as a missing lane rc.
-# shellcheck disable=SC2317,SC2329
+# shellcheck disable=SC2016,SC2317,SC2329
 test_quality_gate_stage_assets_fail_closed() {
 	if ! grep -q 'ensure_stage_assets()' "$SCRIPT_DIR/quality_gate.sh"; then
 		echo "FAIL: quality_gate.sh lacks ensure_stage_assets helper"
@@ -931,7 +931,7 @@ test_quality_gate_stage_assets_fail_closed() {
 
 # Test: a process that times out waiting for the repo-wide QG lock must not
 # clean up another process's lock directory.
-# shellcheck disable=SC2317,SC2329
+# shellcheck disable=SC2016,SC2317,SC2329
 test_quality_gate_run_lock_timeout_preserves_holder() {
 	if ! grep -q 'local lock_dir="$REPO_ROOT/.oro-quality-gate.lock"' "$SCRIPT_DIR/quality_gate.sh" ||
 		! grep -q 'QG_RUN_LOCK="$lock_dir"' "$SCRIPT_DIR/quality_gate.sh" ||
