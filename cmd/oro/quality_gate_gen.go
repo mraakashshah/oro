@@ -638,6 +638,54 @@ restore_go_mutation_worktree() {
     fi
 }
 
+# shellcheck disable=SC2317,SC2329
+go_mutation_hooks_dir() {
+    local common_dir
+    common_dir=$(git rev-parse --git-common-dir 2>/dev/null || true)
+    if [ -z "$common_dir" ]; then
+        return 1
+    fi
+    printf '%s/hooks\n' "$common_dir"
+}
+
+# shellcheck disable=SC2317,SC2329
+snapshot_go_mutation_side_effects() {
+    local snapshot_dir="$1"
+    local hooks_dir
+    mkdir -p "$snapshot_dir"
+    if hooks_dir=$(go_mutation_hooks_dir); then
+        # Protect the local .git/hooks/pre-push hook from mutation-test side effects.
+        mkdir -p "$snapshot_dir/git-hooks"
+        if [ -f "$hooks_dir/pre-push" ]; then
+            cp -p "$hooks_dir/pre-push" "$snapshot_dir/git-hooks/pre-push"
+            printf 'file\n' > "$snapshot_dir/git-hooks/pre-push.state"
+        else
+            printf 'missing\n' > "$snapshot_dir/git-hooks/pre-push.state"
+        fi
+    fi
+    find cmd internal pkg -type f -name '*.go.tmp' -print > "$snapshot_dir/go-tmp.before" 2>/dev/null || true
+}
+
+# shellcheck disable=SC2317,SC2329
+restore_go_mutation_side_effects() {
+    local snapshot_dir="$1"
+    local hooks_dir state tmp_file
+    if [ -f "$snapshot_dir/git-hooks/pre-push.state" ] && hooks_dir=$(go_mutation_hooks_dir); then
+        state=$(cat "$snapshot_dir/git-hooks/pre-push.state")
+        if [ "$state" = "file" ]; then
+            mkdir -p "$hooks_dir"
+            cp -p "$snapshot_dir/git-hooks/pre-push" "$hooks_dir/pre-push"
+        elif [ "$state" = "missing" ]; then
+            rm -f "$hooks_dir/pre-push"
+        fi
+    fi
+    while IFS= read -r tmp_file; do
+        if [ -n "$tmp_file" ] && ! grep -Fxq -- "$tmp_file" "$snapshot_dir/go-tmp.before"; then
+            rm -f "$tmp_file"
+        fi
+    done < <(find cmd internal pkg -type f -name '*.go.tmp' -print 2>/dev/null || true)
+}
+
 header() {
     echo ""
     echo "═══════════════════════════════════════════════════════════════"
@@ -904,13 +952,19 @@ lane_go() {
             local -a changed_files
             mapfile -t changed_files <<< "$changed"
             local pre_mutation_patch="$QG_DIR/go-mutation-pre-${RANDOM}.patch"
+            local side_effect_snapshot="$QG_DIR/go-mutation-side-effects-${RANDOM}"
             git diff -- $GO_DIRS > "$pre_mutation_patch" || true
+            snapshot_go_mutation_side_effects "$side_effect_snapshot"
             GO_MUTATION_PRE_PATCH="$pre_mutation_patch"
-            trap 'QG_EXIT_STATUS=$?; restore_go_mutation_worktree "$GO_MUTATION_PRE_PATCH" >/dev/null 2>&1 || true; exit "$QG_EXIT_STATUS"' EXIT
+            GO_MUTATION_SIDE_EFFECT_SNAPSHOT="$side_effect_snapshot"
+            trap 'QG_EXIT_STATUS=$?; restore_go_mutation_worktree "$GO_MUTATION_PRE_PATCH" >/dev/null 2>&1 || true; restore_go_mutation_side_effects "$GO_MUTATION_SIDE_EFFECT_SNAPSHOT" >/dev/null 2>&1 || true; exit "$QG_EXIT_STATUS"' EXIT
             local output mutesting_exit=0
             output=$(timeout 480 go tool go-mutesting --exec-timeout=60 "${changed_files[@]}" 2>&1) || mutesting_exit=$?
-            if ! restore_go_mutation_worktree "$pre_mutation_patch"; then
-                echo "FAIL: failed to restore pre-existing unstaged changes after mutation testing"
+            local restore_failed=0
+            restore_go_mutation_worktree "$pre_mutation_patch" || restore_failed=1
+            restore_go_mutation_side_effects "$side_effect_snapshot" || restore_failed=1
+            if [ "$restore_failed" -ne 0 ]; then
+                echo "FAIL: failed to restore pre-existing unstaged changes or mutation side effects"
                 return 1
             fi
             if [ "$mutesting_exit" -eq 124 ]; then

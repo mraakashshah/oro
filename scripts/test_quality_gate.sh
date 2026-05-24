@@ -284,6 +284,49 @@ test_quality_gate_mutation_cleanup_preserves_unstaged_work() {
 	return 0
 }
 
+# Test: quality_gate.sh mutation cleanup restores hook/temp side effects.
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_mutation_restores_side_effects() {
+	local script="$SCRIPT_DIR/quality_gate.sh"
+	local generated="$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go"
+	local mutation_body trap_line
+	mutation_body=$(grep -A 130 'run_go_mutation_test()' "$script" | head -130)
+	trap_line=$(echo "$mutation_body" | grep "trap .*EXIT" | head -1 || true)
+
+	for target in "$script" "$generated"; do
+		if ! grep -q 'snapshot_go_mutation_side_effects()' "$target"; then
+			echo "FAIL: $target lacks mutation side-effect snapshot helper"
+			return 1
+		fi
+		if ! grep -q 'restore_go_mutation_side_effects()' "$target"; then
+			echo "FAIL: $target lacks mutation side-effect restore helper"
+			return 1
+		fi
+		if ! grep -q 'git/hooks/pre-push' "$target"; then
+			echo "FAIL: $target does not protect the local pre-push hook"
+			return 1
+		fi
+		if ! grep -q '\\*.go.tmp' "$target"; then
+			echo "FAIL: $target does not clean up go-mutesting *.go.tmp artifacts"
+			return 1
+		fi
+	done
+
+	if [ -z "$trap_line" ] || ! echo "$trap_line" | grep -q 'restore_go_mutation_side_effects'; then
+		echo "FAIL: mutation EXIT trap does not restore hook/temp side effects"
+		return 1
+	fi
+	if ! echo "$mutation_body" | grep -q 'side_effect_snapshot'; then
+		echo "FAIL: run_go_mutation_test does not capture mutation side-effect baseline"
+		return 1
+	fi
+	if ! echo "$mutation_body" | grep -q 'restore_go_mutation_side_effects'; then
+		echo "FAIL: run_go_mutation_test does not restore mutation side effects after go-mutesting"
+		return 1
+	fi
+	return 0
+}
+
 # Test: mutation restore trap preserves parent-owned QG_DIR cleanup.
 # shellcheck disable=SC2317,SC2329
 test_quality_gate_mutation_trap_preserves_qg_dir_cleanup() {
@@ -1143,6 +1186,7 @@ echo "=============================================="
 
 test_case "quality_gate.sh mutation has trap EXIT" test_quality_gate_mutation_trap_present
 test_case "quality_gate.sh mutation preserves unstaged work" test_quality_gate_mutation_cleanup_preserves_unstaged_work
+test_case "quality_gate.sh mutation restores hook/temp side effects" test_quality_gate_mutation_restores_side_effects
 test_case "quality_gate.sh mutation trap preserves QG_DIR cleanup" test_quality_gate_mutation_trap_preserves_qg_dir_cleanup
 test_case "Makefile mutate-go has trap" test_makefile_mutate_go_trap_present
 test_case "Makefile mutate-go-diff has trap" test_makefile_mutate_go_diff_trap_present
