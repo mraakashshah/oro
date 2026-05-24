@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
 	"oro/pkg/cards"
@@ -214,16 +215,26 @@ func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
 	return b.String()
 }
 
-// collectCodingRules returns coding rules from .oro/config.yaml when ProjectRoot
-// is set and the config contains non-empty rules. Falls back to hardcoded defaults
-// when ProjectRoot is empty, the config file is absent, ReadConfig errors, or
-// all language coding_rules fields are empty.
-func collectCodingRules(projectRoot string) []string {
-	fallback := []string{
-		"- Functional first: pure functions, immutability, early returns",
-		"- Pure core (business logic), impure edges (I/O, CLI)",
-		"- Go: gofumpt, golangci-lint, go-arch-lint",
-		"- Python: PEP 8, ruff, pyright, pytest fixtures > classes",
+type codingRuleSet struct {
+	language string
+	rules    []string
+}
+
+// collectCodingRuleSets returns coding rules from .oro/config.yaml when
+// ProjectRoot is set and the config contains non-empty rules. Falls back to
+// hardcoded defaults when ProjectRoot is empty, the config file is absent,
+// ReadConfig errors, or all language coding_rules fields are empty.
+func collectCodingRuleSets(projectRoot string) []codingRuleSet {
+	fallback := []codingRuleSet{
+		{
+			language: "Default",
+			rules: []string{
+				"- Functional first: pure functions, immutability, early returns",
+				"- Pure core (business logic), impure edges (I/O, CLI)",
+				"- Go: gofumpt, golangci-lint, go-arch-lint",
+				"- Python: PEP 8, ruff, pyright, pytest fixtures > classes",
+			},
+		},
 	}
 	if projectRoot == "" {
 		return fallback
@@ -236,14 +247,45 @@ func collectCodingRules(projectRoot string) []string {
 	if cfg == nil {
 		return fallback
 	}
-	var rules []string
-	for _, langCfg := range cfg.Languages {
-		rules = append(rules, langCfg.CodingRules...)
+	languages := make([]string, 0, len(cfg.Languages))
+	for language := range cfg.Languages {
+		languages = append(languages, language)
 	}
-	if len(rules) == 0 {
+	sort.Strings(languages)
+
+	var sets []codingRuleSet
+	for _, language := range languages {
+		rules := cfg.Languages[language].CodingRules
+		if len(rules) == 0 {
+			continue
+		}
+		sets = append(sets, codingRuleSet{
+			language: displayLanguageName(language),
+			rules:    rules,
+		})
+	}
+	if len(sets) == 0 {
 		return fallback
 	}
-	return rules
+	return sets
+}
+
+func displayLanguageName(language string) string {
+	switch strings.ToLower(language) {
+	case "go":
+		return "Go"
+	case "js", "javascript":
+		return "JavaScript"
+	case "py", "python":
+		return "Python"
+	case "ts", "typescript":
+		return "TypeScript"
+	default:
+		if language == "" {
+			return "Unspecified"
+		}
+		return strings.ToUpper(language[:1]) + language[1:]
+	}
 }
 
 const fallbackCodingRulesDoctrine = "# Enforcement Doctrine\n\nDoctrine asset unavailable; promote coding rules to deterministic enforcement when practical."
@@ -274,9 +316,17 @@ func doctrinePathCandidates(projectRoot string) []string {
 
 func renderCodingRules(projectRoot string) string {
 	parts := []string{loadCodingRulesDoctrine(projectRoot)}
-	rules := collectCodingRules(projectRoot)
-	if len(rules) > 0 {
-		parts = append(parts, "Project rules:", strings.Join(rules, "\n"))
+	ruleSets := collectCodingRuleSets(projectRoot)
+	if len(ruleSets) > 0 {
+		var b strings.Builder
+		b.WriteString("Per-language rules:")
+		for _, set := range ruleSets {
+			b.WriteString("\n\n")
+			b.WriteString(set.language)
+			b.WriteString(":\n")
+			b.WriteString(strings.Join(set.rules, "\n"))
+		}
+		parts = append(parts, b.String())
 	}
 	return strings.Join(parts, "\n\n")
 }

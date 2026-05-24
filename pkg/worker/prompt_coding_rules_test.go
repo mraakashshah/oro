@@ -27,7 +27,7 @@ func TestPromptCodingRules(t *testing.T) {
 		"LEVEL 3 - Formatter",
 		"LEVEL 4 - Pre-commit",
 		"LEVEL 5 - CI",
-		"LEVEL 6 - Prompt (BEST EFFORT)",
+		"LEVEL 6 - CLAUDE.md (BEST EFFORT)",
 		"Example:",
 		"Implementation:",
 	} {
@@ -56,15 +56,17 @@ func TestPromptCodingRules(t *testing.T) {
 	})
 	codingRules := extractSection(t, prompt, "## Coding Rules")
 
-	if !strings.Contains(codingRules, strings.TrimSpace(doctrine)+"\n\nProject rules:") {
-		t.Fatalf("Coding Rules section should consume published doctrine before project rules:\n%s", codingRules)
+	if !strings.Contains(codingRules, strings.TrimSpace(doctrine)+"\n\nPer-language rules:") {
+		t.Fatalf("Coding Rules section should consume published doctrine before per-language rules:\n%s", codingRules)
 	}
 
 	for _, want := range []string{
 		"Enforcement Doctrine",
 		"LEVEL 1 - Lint",
-		"LEVEL 6 - Prompt (BEST EFFORT)",
+		"LEVEL 6 - CLAUDE.md (BEST EFFORT)",
+		"Go:",
 		"- Go: wrap errors with %w when preserving cause",
+		"Python:",
 		"- Python: prefer pytest fixtures over test classes",
 	} {
 		if !strings.Contains(codingRules, want) {

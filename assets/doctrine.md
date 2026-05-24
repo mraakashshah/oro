@@ -22,6 +22,6 @@ LEVEL 5 - CI: The merge gate blocks the violation before it reaches the target b
 Example: all tests pass before merge.
 Implementation: CI quality gate.
 
-LEVEL 6 - Prompt (BEST EFFORT): A worker prompt asks for the behavior when no deterministic enforcement is feasible.
+LEVEL 6 - CLAUDE.md (BEST EFFORT): A worker prompt asks for the behavior when no deterministic enforcement is feasible.
 Example: when ambiguous, prefer simpler abstractions.
 Implementation: prompt guidance in `AGENTS.md`, `CLAUDE.md`, or worker instructions.
