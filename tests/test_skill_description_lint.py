@@ -187,6 +187,7 @@ def test_using_skills_description_is_normalized_trigger_only(tmp_path: Path) -> 
     assert checker.check_skill_description(workflow_summary) == [WORKFLOW_SUMMARY_ERROR]
     assert checker.check_skill_description(mandatory_rule) == [WORKFLOW_SUMMARY_ERROR]
 
+
 @pytest.mark.parametrize("dash", ["-", "\u2013", "\u2014"])
 def test_check_skill_description_rejects_dash_separated_workflow_summary(
     dash: str,
