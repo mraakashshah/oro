@@ -1667,6 +1667,73 @@ func TestBeadHelper() string {
 	})
 }
 
+func TestNewWorkerBeadStoreDoesNotFetchLegacyPromptMemory(t *testing.T) {
+	ctx := context.Background()
+	db := setupTestMemoryDB(t)
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("migrate bead schema: %v", err)
+	}
+	memStore := memory.NewStore(db)
+	beadID := "oro-worker-memory"
+	description := "Implement worker prompt memory cutover"
+
+	store := newWorkerBeadStore(db, memStore)
+	if _, err := store.Create(ctx, beadstore.CreateParams{
+		ID:          beadID,
+		Title:       "Worker memory cutover",
+		Description: description,
+		Tags:        []string{"worker", "memory"},
+		Type:        "task",
+	}); err != nil {
+		t.Fatalf("seed bead: %v", err)
+	}
+	if _, err := memStore.Insert(ctx, memory.InsertParams{
+		Content:    "Worker prompt memory cutover should use cards instead",
+		Type:       "lesson",
+		Source:     "test",
+		Confidence: 0.9,
+		Tags:       []string{"worker", "memory"},
+	}); err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM memory_read_events`); err != nil {
+		t.Fatalf("clear memory read events: %v", err)
+	}
+
+	bead, err := store.Show(ctx, beadID)
+	if err != nil {
+		t.Fatalf("Show with memory store: %v", err)
+	}
+	if bead == nil {
+		t.Fatal("Show returned nil bead")
+	}
+	if bead.Memory != "" {
+		t.Fatalf("bead.Memory = %q, want empty", bead.Memory)
+	}
+	var promptReads int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_read_events WHERE operation = 'for_prompt'`).Scan(&promptReads); err != nil {
+		t.Fatalf("count for_prompt read events: %v", err)
+	}
+	if promptReads != 0 {
+		t.Fatalf("Show called memory.ForPrompt %d times, want 0", promptReads)
+	}
+
+	withoutMemoryStore := newWorkerBeadStore(db, nil)
+	bead, err = withoutMemoryStore.Show(ctx, beadID)
+	if err != nil {
+		t.Fatalf("Show with nil memory store: %v", err)
+	}
+	if bead == nil {
+		t.Fatal("Show with nil memory store returned nil bead")
+	}
+	if bead.ID != beadID {
+		t.Fatalf("Show with nil memory store returned bead ID %q, want %q", bead.ID, beadID)
+	}
+	if bead.Memory != "" {
+		t.Fatalf("nil memory store bead.Memory = %q, want empty", bead.Memory)
+	}
+}
+
 func TestWorkPromptUsesCardsContext(t *testing.T) {
 	ctx := context.Background()
 

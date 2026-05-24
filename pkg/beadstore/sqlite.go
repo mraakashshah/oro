@@ -25,6 +25,8 @@ type MemoryFetcher func(ctx context.Context, tags []string, description string, 
 type Option func(*SQLiteStore)
 
 // WithMemoryFetcher configures runtime memory enrichment for shown beads.
+//
+//oro:testonly
 func WithMemoryFetcher(fetch MemoryFetcher) Option {
 	return func(s *SQLiteStore) {
 		s.memory = fetch

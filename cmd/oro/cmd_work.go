@@ -148,13 +148,8 @@ func updateWorkBeadStatus(ctx context.Context, beads beadstore.Store, id, status
 	return nil
 }
 
-func newWorkerBeadStore(db *sql.DB, memories *memory.Store) *beadstore.SQLiteStore {
-	return beadstore.NewSQLiteStore(db, beadstore.WithMemoryFetcher(func(ctx context.Context, tags []string, description string, maxTokens int) (string, error) {
-		if memories == nil {
-			return "", nil
-		}
-		return memory.ForPrompt(ctx, memories, tags, description, maxTokens)
-	}))
+func newWorkerBeadStore(db *sql.DB, _ *memory.Store) *beadstore.SQLiteStore {
+	return beadstore.NewSQLiteStore(db)
 }
 
 func openWorkerCardStore(db *sql.DB) cards.Store {

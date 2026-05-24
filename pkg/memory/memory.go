@@ -1675,6 +1675,8 @@ const maxInjectedMemories = 5
 // Returns a markdown table with ID, Type, and Title (truncated content).
 // Workers can fetch full details with 'oro recall --id=N'.
 // Token estimation uses len(content)/4 (~4 chars per token for English).
+//
+//oro:testonly
 func ForPrompt(ctx context.Context, store *Store, beadTags []string, beadDesc string, maxTokens int) (string, error) {
 	_ = maxTokens // reserved for future token budget enforcement in compact mode
 
