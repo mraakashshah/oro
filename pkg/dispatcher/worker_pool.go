@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"oro/pkg/memory"
+	"oro/pkg/cards"
 	"oro/pkg/protocol"
 )
 
@@ -74,20 +74,6 @@ func (d *Dispatcher) upsertWorker(id string, conn net.Conn, managed bool) {
 			d.workers[id].managed = true
 		}
 	}
-}
-
-// buildHandoffMemoryContext retrieves memory context for a handoff using the bead title and labels.
-// Falls back to beadID if title is empty.
-func (d *Dispatcher) buildHandoffMemoryContext(h *pendingHandoff) string {
-	if d.memories == nil {
-		return ""
-	}
-	searchQuery := buildSearchQuery(h.title, h.labels)
-	if searchQuery == "" {
-		searchQuery = h.beadID
-	}
-	memCtx, _ := memory.ForPrompt(context.Background(), d.memories, nil, searchQuery, 0)
-	return memCtx
 }
 
 func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
@@ -167,7 +153,7 @@ func applyPendingWorkerRegistration(w *trackedWorker, spawnFor bool, pendingTarg
 
 // assignHandoffToWorker assigns pending handoff h to the just-registered worker id.
 // Caller must hold d.mu; on return d.mu is unlocked. The function temporarily
-// releases d.mu during memory retrieval. handoffBeadID is the key for h in
+// releases d.mu during card retrieval. handoffBeadID is the key for h in
 // d.pendingHandoffs.
 func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingHandoff) {
 	w := d.workers[id]
@@ -191,13 +177,7 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 	w.targetBranch = h.targetBranch
 	w.lastProgress = d.nowFunc()
 
-	// Retrieve relevant memories (best-effort, outside lock).
-	d.mu.Unlock()
-	if d.testUnlockHook != nil {
-		d.testUnlockHook()
-	}
-	memCtx := d.buildHandoffMemoryContext(h)
-	d.mu.Lock()
+	cardsCtx := d.buildHandoffCardContext(h)
 	defer d.mu.Unlock()
 
 	// Phase 2: Verify reservation still valid, then transition to Busy.
@@ -213,15 +193,15 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 	if err := d.sendToWorker(w, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
-			BeadID:        h.beadID,
-			Worktree:      h.worktree,
-			Runtime:       h.runtime,
-			Model:         h.model,
-			Reasoning:     h.reasoning,
-			MemoryContext: memCtx,
-			TargetBranch:  h.targetBranch,
-			Feedback:      h.nextAction,
-			Attempt:       h.checkpointTurn,
+			BeadID:       h.beadID,
+			Worktree:     h.worktree,
+			Runtime:      h.runtime,
+			Model:        h.model,
+			Reasoning:    h.reasoning,
+			Cards:        cardsCtx,
+			TargetBranch: h.targetBranch,
+			Feedback:     h.nextAction,
+			Attempt:      h.checkpointTurn,
 		},
 	}); err != nil {
 		_ = w.conn.Close()
@@ -232,6 +212,20 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 		return
 	}
 	delete(d.pendingHandoffs, handoffBeadID)
+}
+
+func (d *Dispatcher) buildHandoffCardContext(h *pendingHandoff) cards.RelevantCards {
+	d.mu.Unlock()
+	if d.testUnlockHook != nil {
+		d.testUnlockHook()
+	}
+	cardsCtx := d.buildCardContext(context.Background(), protocol.Bead{
+		ID:     h.beadID,
+		Title:  h.title,
+		Labels: h.labels,
+	})
+	d.mu.Lock()
+	return cardsCtx
 }
 
 func (d *Dispatcher) assignPendingHandoffsToIdleWorkers() {

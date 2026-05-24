@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/cards"
 	"oro/pkg/dbutil"
 	"oro/pkg/factoryhealth"
 	"oro/pkg/memory"
@@ -1792,19 +1793,15 @@ func TestDispatcher_AssignBead_MarksInProgress(t *testing.T) {
 func TestWorkerReceivesMemoryInPrompt(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 
-	// Seed a memory whose content contains terms identical to the bead title,
-	// guaranteeing FTS5 match without flakiness (SanitizeFTS5Query uses OR per term).
 	ctx := context.Background()
-	memContent := "always run golangci lint before committing"
-	_, err := d.memories.Insert(ctx, memory.InsertParams{
-		Content:    memContent,
-		Type:       "lesson",
-		Source:     "self_report",
-		Confidence: 0.9,
+	seedDispatcherCard(ctx, t, d, cards.CardCreateParams{
+		ID:          "card-lint",
+		Type:        cards.CardTypePattern,
+		Title:       "Lint card",
+		BodySummary: "always run golangci lint before committing",
+		BodyFull:    "Always run golangci lint before committing.",
+		Tags:        []string{"lint"},
 	})
-	if err != nil {
-		t.Fatalf("seed memory: %v", err)
-	}
 
 	startDispatcher(t, d)
 
@@ -1818,9 +1815,8 @@ func TestWorkerReceivesMemoryInPrompt(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	// Bead title shares terms with the memory content so ForPrompt finds it via FTS5.
 	beadSrc.SetBeads([]protocol.Bead{
-		{ID: "bead-lint", Title: "golangci lint checks", Priority: 1},
+		{ID: "bead-lint", Title: "golangci lint checks", Priority: 1, Labels: []string{"lint"}},
 	})
 
 	msg, ok := readMsg(t, conn, 2*time.Second)
@@ -1830,11 +1826,11 @@ func TestWorkerReceivesMemoryInPrompt(t *testing.T) {
 	if msg.Type != protocol.MsgAssign {
 		t.Fatalf("expected MsgAssign, got %s", msg.Type)
 	}
-	if !containsStr(msg.Assign.MemoryContext, "Relevant Memories") {
-		t.Errorf("MemoryContext missing 'Relevant Memories' header; got: %q", msg.Assign.MemoryContext)
+	if msg.Assign.MemoryContext != "" {
+		t.Errorf("MemoryContext = %q, want empty", msg.Assign.MemoryContext)
 	}
-	if !containsStr(msg.Assign.MemoryContext, "golangci lint") {
-		t.Errorf("MemoryContext missing memory content; got: %q", msg.Assign.MemoryContext)
+	if len(msg.Assign.Cards.Deck) == 0 || msg.Assign.Cards.Deck[0].ID != "card-lint" {
+		t.Fatalf("Cards.Deck = %#v, want first card-lint", msg.Assign.Cards.Deck)
 	}
 }
 
@@ -6303,16 +6299,14 @@ func TestDispatcher_ReassignIncludesForPromptOutput(t *testing.T) { //nolint:fun
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
-	// Pre-seed a memory that matches the bead title
-	_, err := d.db.Exec(
-		`INSERT INTO memories (content, type, tags, source, bead_id, confidence)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		"ruff must run before pyright for linting", "lesson", `["python"]`,
-		"self_report", "bead-reassign", 0.9,
-	)
-	if err != nil {
-		t.Fatalf("seed memory: %v", err)
-	}
+	seedDispatcherCard(context.Background(), t, d, cards.CardCreateParams{
+		ID:          "card-ruff",
+		Type:        cards.CardTypePattern,
+		Title:       "Python lint card",
+		BodySummary: "ruff must run before pyright for linting",
+		BodyFull:    "Run ruff before pyright for linting.",
+		Tags:        []string{"python"},
+	})
 
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
 	sendMsg(t, conn, protocol.Message{
@@ -6324,10 +6318,8 @@ func TestDispatcher_ReassignIncludesForPromptOutput(t *testing.T) { //nolint:fun
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	// Set bead with title that matches the memory
-	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-reassign", Title: "fix linting with ruff and pyright", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-reassign", Title: "fix linting with ruff and pyright", Priority: 1, Labels: []string{"python"}}})
 
-	// Read ASSIGN — should include MemoryContext
 	msg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -6335,14 +6327,11 @@ func TestDispatcher_ReassignIncludesForPromptOutput(t *testing.T) { //nolint:fun
 	if msg.Type != protocol.MsgAssign {
 		t.Fatalf("expected ASSIGN, got %s", msg.Type)
 	}
-	if msg.Assign.MemoryContext == "" {
-		t.Fatal("expected non-empty MemoryContext in ASSIGN after seeding relevant memories")
+	if msg.Assign.MemoryContext != "" {
+		t.Fatalf("MemoryContext = %q, want empty", msg.Assign.MemoryContext)
 	}
-	if !containsStr(msg.Assign.MemoryContext, "ruff") {
-		t.Errorf("expected MemoryContext to contain 'ruff', got: %s", msg.Assign.MemoryContext)
-	}
-	if !containsStr(msg.Assign.MemoryContext, "Relevant Memories") {
-		t.Errorf("expected MemoryContext header, got: %s", msg.Assign.MemoryContext)
+	if len(msg.Assign.Cards.Deck) == 0 || msg.Assign.Cards.Deck[0].ID != "card-ruff" {
+		t.Fatalf("Cards.Deck = %#v, want first card-ruff", msg.Assign.Cards.Deck)
 	}
 }
 
@@ -6500,16 +6489,14 @@ func TestAssignIncludesMemories(t *testing.T) { //nolint:funlen // integration t
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
-	// Pre-seed memories that match the bead title.
-	_, err := d.db.Exec(
-		`INSERT INTO memories (content, type, tags, source, bead_id, confidence)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		"always run go vet before committing", "lesson", `["go"]`,
-		"self_report", "bead-prev", 0.9,
-	)
-	if err != nil {
-		t.Fatalf("seed memory: %v", err)
-	}
+	seedDispatcherCard(context.Background(), t, d, cards.CardCreateParams{
+		ID:          "card-go-vet",
+		Type:        cards.CardTypePattern,
+		Title:       "Go vet card",
+		BodySummary: "always run go vet before committing",
+		BodyFull:    "Always run go vet before committing.",
+		Tags:        []string{"go"},
+	})
 
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
 	sendMsg(t, conn, protocol.Message{
@@ -6521,10 +6508,8 @@ func TestAssignIncludesMemories(t *testing.T) { //nolint:funlen // integration t
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	// Set bead with title that matches the memory
-	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-mem-inject", Title: "run go vet and lint checks", Priority: 1}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-mem-inject", Title: "run go vet and lint checks", Priority: 1, Labels: []string{"go"}}})
 
-	// Read ASSIGN — should include non-empty MemoryContext
 	msg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected ASSIGN")
@@ -6532,14 +6517,11 @@ func TestAssignIncludesMemories(t *testing.T) { //nolint:funlen // integration t
 	if msg.Type != protocol.MsgAssign {
 		t.Fatalf("expected ASSIGN, got %s", msg.Type)
 	}
-	if msg.Assign.MemoryContext == "" {
-		t.Fatal("expected non-empty MemoryContext in ASSIGN payload when relevant memories exist")
+	if msg.Assign.MemoryContext != "" {
+		t.Fatalf("MemoryContext = %q, want empty", msg.Assign.MemoryContext)
 	}
-	if !containsStr(msg.Assign.MemoryContext, "go vet") {
-		t.Errorf("expected MemoryContext to contain 'go vet', got: %s", msg.Assign.MemoryContext)
-	}
-	if !containsStr(msg.Assign.MemoryContext, "Relevant Memories") {
-		t.Errorf("expected MemoryContext to contain header 'Relevant Memories', got: %s", msg.Assign.MemoryContext)
+	if len(msg.Assign.Cards.Deck) == 0 || msg.Assign.Cards.Deck[0].ID != "card-go-vet" {
+		t.Fatalf("Cards.Deck = %#v, want first card-go-vet", msg.Assign.Cards.Deck)
 	}
 }
 
@@ -20043,22 +20025,20 @@ func TestBuildAssignPayload_PopulatesAllFields(t *testing.T) {
 
 // TestHandoffRespawn_UsesTitle verifies that:
 // 1. pendingHandoff.title is populated from bead title at handoff time
-// 2. registerWorker's memory search uses h.title+labels (not h.beadID)
-// 3. Labels are included in the search query via buildSearchQuery
+// 2. registerWorker's card search uses h.title+labels (not h.beadID)
+// 3. Labels are included in the relevance query
 func TestHandoffRespawn_UsesTitle(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
-	// Seed a memory that matches the bead title
-	_, err := d.db.Exec(
-		`INSERT INTO memories (content, type, tags, source, bead_id, confidence)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		"always check this when fixing tests", "lesson", `["testing"]`,
-		"self_report", "old-bead", 0.9,
-	)
-	if err != nil {
-		t.Fatalf("seed memory: %v", err)
-	}
+	seedDispatcherCard(context.Background(), t, d, cards.CardCreateParams{
+		ID:          "card-handoff-title",
+		Type:        cards.CardTypePattern,
+		Title:       "Testing handoff card",
+		BodySummary: "always check this when fixing tests",
+		BodyFull:    "Always check this when fixing tests.",
+		Tags:        []string{"testing"},
+	})
 
 	// Connect first worker
 	conn1, _ := connectWorker(t, d.cfg.SocketPath)
@@ -20141,7 +20121,7 @@ func TestHandoffRespawn_UsesTitle(t *testing.T) {
 	d.mu.Unlock()
 
 	// Connect second worker — this will trigger registerWorker which should
-	// use the pending handoff with title+labels for memory search
+	// use the pending handoff with title+labels for card search.
 	conn2, _ := connectWorker(t, d.cfg.SocketPath)
 	sendMsg(t, conn2, protocol.Message{
 		Type:      protocol.MsgHeartbeat,
@@ -20150,7 +20130,7 @@ func TestHandoffRespawn_UsesTitle(t *testing.T) {
 	waitForWorkers(t, d, 2, 2*time.Second)
 
 	// Second worker should receive ASSIGN for the pending handoff,
-	// and it should include MemoryContext populated from the title+labels search
+	// and it should include Cards populated from the title+labels search.
 	msg, ok = readMsg(t, conn2, 3*time.Second)
 	if !ok {
 		t.Fatal("expected ASSIGN for second worker")
@@ -20161,13 +20141,11 @@ func TestHandoffRespawn_UsesTitle(t *testing.T) {
 	if msg.Assign.BeadID != "bead-handoff" {
 		t.Fatalf("expected BeadID 'bead-handoff', got %q", msg.Assign.BeadID)
 	}
-	// The key assertion: MemoryContext should contain the seeded memory because
-	// registerWorker used title+labels to search (not just beadID)
-	if msg.Assign.MemoryContext == "" {
-		t.Fatal("expected non-empty MemoryContext when searching by title+labels for respawned bead")
+	if msg.Assign.MemoryContext != "" {
+		t.Fatalf("MemoryContext = %q, want empty", msg.Assign.MemoryContext)
 	}
-	if !containsStr(msg.Assign.MemoryContext, "always check this") {
-		t.Errorf("expected MemoryContext to contain 'always check this', got: %s", msg.Assign.MemoryContext)
+	if len(msg.Assign.Cards.Deck) == 0 || msg.Assign.Cards.Deck[0].ID != "card-handoff-title" {
+		t.Fatalf("Cards.Deck = %#v, want first card-handoff-title", msg.Assign.Cards.Deck)
 	}
 }
 
@@ -20540,6 +20518,208 @@ func TestAllAssignPayloadSitesUseBuildAssignPayload(t *testing.T) {
 			t.Errorf("review rejection AcceptanceCriteria = %q, want %q", msg.Assign.AcceptanceCriteria, beadAC)
 		}
 	})
+}
+
+func TestDispatcher_AssignIncludesCardsContext(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("first assignment includes cards and leaves MemoryContext empty", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		startDispatcher(t, d)
+		seedDispatcherCard(ctx, t, d, cards.CardCreateParams{
+			ID:          "card-assign",
+			Type:        cards.CardTypePattern,
+			Title:       "Assignment card",
+			BodySummary: "card store assignment guidance",
+			BodyFull:    "Use the card store for assignment context.",
+			Tags:        []string{"dispatcher", "cards"},
+		})
+		seedDispatcherMemory(t, d, "card store assignment guidance")
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-card-assign", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, time.Second)
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, time.Second)
+
+		beadSrc.SetBeads([]protocol.Bead{{
+			ID:       "bead-card-assign",
+			Title:    "Populate assignment cards",
+			Type:     "task",
+			Priority: 1,
+			Labels:   []string{"dispatcher", "cards"},
+		}})
+
+		msg, ok := readMsg(t, conn, 2*time.Second)
+		if !ok {
+			t.Fatal("expected ASSIGN")
+		}
+		assertAssignHasOnlyCardsContext(t, msg, "card-assign")
+	})
+}
+
+func TestDispatcher_ReassignIncludesCardsContext(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+	seedDispatcherCard(ctx, t, d, cards.CardCreateParams{
+		ID:          "card-reassign",
+		Type:        cards.CardTypePattern,
+		Title:       "Retry card",
+		BodySummary: "retry assignments use cards",
+		BodyFull:    "QG retry assignments should carry selected cards.",
+		Tags:        []string{"qg", "cards"},
+	})
+	seedDispatcherMemory(t, d, "retry assignments use cards")
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-card-reassign", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, time.Second)
+
+	beadSrc.mu.Lock()
+	beadSrc.shown["bead-card-reassign"] = &protocol.BeadDetail{
+		ID:                 "bead-card-reassign",
+		Title:              "Retry cards",
+		Type:               "task",
+		AcceptanceCriteria: "Test: retry | Assert: cards",
+		Labels:             []string{"qg", "cards"},
+	}
+	beadSrc.mu.Unlock()
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, time.Second)
+	beadSrc.SetBeads([]protocol.Bead{{
+		ID:       "bead-card-reassign",
+		Title:    "Retry cards",
+		Type:     "task",
+		Priority: 1,
+		Model:    protocol.ModelOpus,
+		Labels:   []string{"qg", "cards"},
+	}})
+	if _, ok := readMsg(t, conn, 2*time.Second); !ok {
+		t.Fatal("expected initial ASSIGN")
+	}
+	beadSrc.SetBeads(nil)
+
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			WorkerID:          "w-card-reassign",
+			BeadID:            "bead-card-reassign",
+			QualityGatePassed: false,
+			QGOutput:          "review retry",
+		},
+	})
+
+	msg, ok := readMsg(t, conn, 3*time.Second)
+	if !ok {
+		t.Fatal("expected QG retry ASSIGN")
+	}
+	assertAssignHasOnlyCardsContext(t, msg, "card-reassign")
+}
+
+func TestDispatcher_HandoffIncludesCardsContext(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	seedDispatcherCard(ctx, t, d, cards.CardCreateParams{
+		ID:          "card-handoff",
+		Type:        cards.CardTypePattern,
+		Title:       "Handoff card",
+		BodySummary: "handoffs use cards",
+		BodyFull:    "Handoff assignments should carry selected cards.",
+		Tags:        []string{"handoff", "cards"},
+	})
+	seedDispatcherMemory(t, d, "handoffs use cards")
+
+	srvConn, clientConn := net.Pipe()
+	defer func() { _ = srvConn.Close(); _ = clientConn.Close() }()
+	msgCh := make(chan protocol.Message, 1)
+	go func() {
+		scanner := bufio.NewScanner(clientConn)
+		if scanner.Scan() {
+			var msg protocol.Message
+			_ = json.Unmarshal(scanner.Bytes(), &msg)
+			msgCh <- msg
+		}
+	}()
+
+	d.mu.Lock()
+	d.workers["w-card-handoff"] = &trackedWorker{
+		id:       "w-card-handoff",
+		conn:     srvConn,
+		state:    protocol.WorkerIdle,
+		encoder:  json.NewEncoder(srvConn),
+		lastSeen: d.nowFunc(),
+	}
+	d.pendingHandoffs["bead-card-handoff"] = &pendingHandoff{
+		beadID:         "bead-card-handoff",
+		assignmentID:   42,
+		worktree:       "/tmp/handoff",
+		title:          "Handoff cards",
+		labels:         []string{"handoff", "cards"},
+		targetBranch:   "main",
+		nextAction:     "continue",
+		checkpointTurn: 2,
+	}
+	h := d.pendingHandoffs["bead-card-handoff"]
+	d.assignHandoffToWorker("w-card-handoff", "bead-card-handoff", h)
+
+	select {
+	case msg := <-msgCh:
+		assertAssignHasOnlyCardsContext(t, msg, "card-handoff")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handoff ASSIGN")
+	}
+}
+
+func seedDispatcherCard(ctx context.Context, t *testing.T, d *Dispatcher, p cards.CardCreateParams) {
+	t.Helper()
+	if d.cardStore == nil {
+		t.Fatal("dispatcher cardStore is nil")
+	}
+	if _, err := d.cardStore.Create(ctx, p); err != nil {
+		t.Fatalf("seed card: %v", err)
+	}
+}
+
+func seedDispatcherMemory(t *testing.T, d *Dispatcher, content string) {
+	t.Helper()
+	_, err := d.db.Exec(
+		`INSERT INTO memories (content, type, tags, source, bead_id, confidence)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		content, "pattern", `["cards"]`, "test", "legacy-memory", 1.0,
+	)
+	if err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+}
+
+func assertAssignHasOnlyCardsContext(t *testing.T, msg protocol.Message, wantCardID string) {
+	t.Helper()
+	if msg.Type != protocol.MsgAssign || msg.Assign == nil {
+		t.Fatalf("expected ASSIGN, got %#v", msg)
+	}
+	if msg.Assign.MemoryContext != "" {
+		t.Fatalf("MemoryContext = %q, want empty", msg.Assign.MemoryContext)
+	}
+	if len(msg.Assign.Cards.Deck) == 0 {
+		t.Fatal("expected card deck in ASSIGN")
+	}
+	if got := msg.Assign.Cards.Deck[0].ID; got != wantCardID {
+		t.Fatalf("Cards.Deck[0].ID = %q, want %q", got, wantCardID)
+	}
+	if len(msg.Assign.Cards.Inlined) == 0 {
+		t.Fatal("expected inlined card context in ASSIGN")
+	}
+	if got := msg.Assign.Cards.Inlined[0].ID; got != wantCardID {
+		t.Fatalf("Cards.Inlined[0].ID = %q, want %q", got, wantCardID)
+	}
 }
 
 // TestBuildSchedulingPlan_PriorityFirstEpicUnits verifies the full scheduling

@@ -1926,11 +1926,10 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 
 	var payload *protocol.AssignPayload
 	success := d.withReservation(workerID,
-		// I/O function: fetch memories and build full payload outside lock.
+		// I/O function: build full payload outside lock.
 		func() string {
-			memCtx := d.fetchBeadMemories(ctx, beadID)
-			payload = d.buildAssignPayload(ctx, &snap, attempt, qgOutput, memCtx)
-			return memCtx
+			payload = d.buildAssignPayload(ctx, &snap, attempt, qgOutput, "")
+			return ""
 		},
 		// Assign function: update state and send message under lock.
 		func(w *trackedWorker, memCtx string) bool {
@@ -1969,26 +1968,6 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 	}
 }
 
-// fetchBeadMemories retrieves relevant memories for a bead (best-effort).
-// Returns empty string if memories are unavailable.
-func (d *Dispatcher) fetchBeadMemories(ctx context.Context, beadID string) string {
-	if d.memories == nil {
-		return ""
-	}
-	searchTerm := beadID
-	detail, showErr := d.beads.Show(ctx, beadID)
-	if showErr != nil {
-		// Log BeadNotFoundError for visibility (best-effort, non-fatal)
-		bnfErr := &protocol.BeadNotFoundError{BeadID: beadID}
-		_ = d.logEvent(ctx, "bead_lookup_failed", "dispatcher", beadID, "",
-			fmt.Sprintf(`{"error":%q}`, bnfErr.Error()))
-	} else if detail != nil && detail.Title != "" {
-		searchTerm = detail.Title
-	}
-	memCtx, _ := memory.ForPrompt(ctx, d.memories, nil, searchTerm, 0)
-	return memCtx
-}
-
 // storeRejectionFeedback persists reviewer feedback in the rejection_history
 // table (not memories), so rejections accumulate across retry cycles without
 // polluting the memory search index. Best-effort: errors are silently ignored.
@@ -2000,17 +1979,9 @@ func (d *Dispatcher) storeRejectionFeedback(ctx context.Context, beadID, feedbac
 }
 
 // buildRejectionMemoryContext stores the current reviewer feedback in
-// rejection_history and returns a MemoryContext that combines:
-//   - a "## Review Rejection Feedback" section with the current feedback
-//   - prior rejections fetched from rejection_history via GetRejections
-//   - general bead memories fetched from memories via ForPrompt
-//
-// This ensures the worker always sees why it was rejected even when the
-// memory store has no prior entries.
+// rejection_history and returns a MemoryContext containing current and prior
+// rejection feedback. General bead knowledge is supplied through Cards.
 func (d *Dispatcher) buildRejectionMemoryContext(ctx context.Context, beadID, feedback string) string {
-	// Fetch general memories via ForPrompt.
-	generalMemCtx := d.fetchBeadMemories(ctx, beadID)
-
 	// Fetch prior rejections BEFORE storing the current one so "prior"
 	// truly means prior and the current feedback doesn't appear twice.
 	var priorCtx string
@@ -2030,7 +2001,7 @@ func (d *Dispatcher) buildRejectionMemoryContext(ctx context.Context, beadID, fe
 
 	// Always prepend the current rejection section.
 	if feedback == "" {
-		return generalMemCtx
+		return priorCtx
 	}
 
 	rejectionSection := fmt.Sprintf("## Review Rejection Feedback\n%s", feedback)
@@ -2038,9 +2009,6 @@ func (d *Dispatcher) buildRejectionMemoryContext(ctx context.Context, beadID, fe
 	parts := []string{rejectionSection}
 	if priorCtx != "" {
 		parts = append(parts, priorCtx)
-	}
-	if generalMemCtx != "" {
-		parts = append(parts, generalMemCtx)
 	}
 	return strings.Join(parts, "\n\n")
 }
@@ -3249,7 +3217,7 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 			payload = []byte(`{"files":[]}`)
 		}
 		_ = d.logEvent(ctx, "pre_review_git_dirty", "dispatcher", beadID, workerID, string(payload))
-		d.sendPreReviewGitDirtyFeedback(ctx, workerID, beadID, feedback)
+		d.sendPreReviewGitDirtyFeedback(ctx, workerID, feedback)
 		return
 	}
 
@@ -3327,7 +3295,7 @@ func parseGitStatusPorcelainZ(out []byte) []string {
 	return files
 }
 
-func (d *Dispatcher) sendPreReviewGitDirtyFeedback(ctx context.Context, workerID, beadID, feedback string) {
+func (d *Dispatcher) sendPreReviewGitDirtyFeedback(ctx context.Context, workerID, feedback string) {
 	d.mu.Lock()
 	if w, ok := d.workers[workerID]; ok {
 		w.state = protocol.WorkerReserved
@@ -3335,8 +3303,7 @@ func (d *Dispatcher) sendPreReviewGitDirtyFeedback(ctx context.Context, workerID
 	snap := d.opusEscalationSnapshotLocked(workerID)
 	d.mu.Unlock()
 
-	memCtx := d.fetchBeadMemories(ctx, beadID)
-	payload := d.buildAssignPayload(ctx, &snap, 0, feedback, memCtx)
+	payload := d.buildAssignPayload(ctx, &snap, 0, feedback, "")
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -3616,8 +3583,8 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 	var payload *protocol.AssignPayload
 	d.withReservation(workerID,
 		// I/O function: store rejection feedback and build full payload outside lock.
-		// Persisting the feedback before ForPrompt ensures the current rejection reason
-		// is retrievable in subsequent retry cycles via the memory store.
+		// Persisting the feedback keeps it retrievable in subsequent retry cycles
+		// without consulting general memory context.
 		func() string {
 			memCtx := d.buildRejectionMemoryContext(ctx, beadID, feedback)
 			payload = d.buildAssignPayload(ctx, &snap, count, feedback, memCtx)
@@ -5408,10 +5375,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	_ = d.logEvent(ctx, "assign", "dispatcher", bead.ID, w.id,
 		fmt.Sprintf(`{"worktree":%q,"branch":%q}`, worktree, branch))
 
-	var memCtx string
-	if d.memories != nil {
-		memCtx, _ = memory.ForPrompt(ctx, d.memories, nil, buildSearchQuery(bead.Title, bead.Labels), 0)
-	}
+	cardsCtx := d.buildCardContext(ctx, bead)
 	var codeCtx string
 	if d.codeIndex != nil {
 		ctx5s, cancel5s := context.WithTimeout(ctx, 5*time.Second)
@@ -5469,7 +5433,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 			Runtime:             resolvedRuntime,
 			Model:               resolvedModel,
 			Reasoning:           resolvedReasoning,
-			MemoryContext:       memCtx,
+			Cards:               cardsCtx,
 			CodeSearchContext:   codeCtx,
 			Title:               title,
 			AcceptanceCriteria:  acceptance,

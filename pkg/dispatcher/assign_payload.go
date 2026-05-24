@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"oro/pkg/cards"
 	"oro/pkg/protocol"
 )
 
@@ -30,6 +31,7 @@ const gitLogTimeout = 2 * time.Second
 //   - worker-program.md >32KB → truncate with log warning.
 //   - isEpicDecomp=true → GitLog and WorkerProgram are always empty.
 func (d *Dispatcher) buildAssignPayload(ctx context.Context, w *trackedWorker, attempt int, feedback, memCtx string) *protocol.AssignPayload {
+	var bead protocol.Bead
 	p := &protocol.AssignPayload{
 		BeadID:              w.beadID,
 		Worktree:            w.worktree,
@@ -54,7 +56,14 @@ func (d *Dispatcher) buildAssignPayload(ctx context.Context, w *trackedWorker, a
 		p.Title = detail.Title
 		p.Description = detail.Description
 		p.AcceptanceCriteria = detail.AcceptanceCriteria
+		bead = *detail
 	}
+	if bead.ID == "" {
+		bead.ID = w.beadID
+		bead.Title = p.Title
+		bead.Description = p.Description
+	}
+	p.Cards = d.buildCardContext(ctx, bead)
 
 	// Epic decomposition workers don't need git history or the worker program.
 	if w.isEpicDecomp {
@@ -87,4 +96,22 @@ func (d *Dispatcher) buildAssignPayload(ctx context.Context, w *trackedWorker, a
 	// Missing file: WorkerProgram stays empty.
 
 	return p
+}
+
+func (d *Dispatcher) buildCardContext(ctx context.Context, bead protocol.Bead) cards.RelevantCards {
+	if d.cardStore == nil {
+		return cards.RelevantCards{}
+	}
+	result, err := d.cardStore.Relevant(ctx, cards.RelevanceQuery{
+		BeadType:        bead.Type,
+		BeadTags:        bead.Labels,
+		BeadDescription: strings.TrimSpace(bead.Title + " " + bead.Description),
+		MaxTokens:       2000,
+	})
+	if err != nil {
+		_ = d.logEvent(ctx, "card_context_failed", "dispatcher", bead.ID, "",
+			fmt.Sprintf(`{"error":%q}`, err.Error()))
+		return cards.RelevantCards{}
+	}
+	return result
 }

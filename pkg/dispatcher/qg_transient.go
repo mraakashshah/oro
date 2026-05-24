@@ -103,9 +103,8 @@ func (d *Dispatcher) reassignAfterTransientBackoff(
 
 	assigned := d.withReservation(workerID,
 		func() string {
-			memCtx := d.fetchBeadMemories(ctx, beadID)
-			payload = d.buildAssignPayload(ctx, &snap, attempt, rec.Output, memCtx)
-			return memCtx
+			payload = d.buildAssignPayload(ctx, &snap, attempt, rec.Output, "")
+			return ""
 		},
 		func(w *trackedWorker, _ string) bool {
 			return d.sendTransientReassign(ctx, w, beadID, payload, attempt, transientCount, &sendFailed)

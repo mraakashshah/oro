@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/cards"
 	"oro/pkg/dbutil"
-	"oro/pkg/memory"
 	"oro/pkg/protocol"
 )
 
@@ -297,17 +297,14 @@ func TestHandleDone_QGFailReassignIncludesMemories(t *testing.T) {
 
 	// Insert a memory whose content matches the bead title for FTS5 search.
 	ctx := context.Background()
-	_, err := d.memories.Insert(ctx, memory.InsertParams{
-		Content:    "QG memory bead always requires format check before submit",
-		Type:       "lesson",
-		Source:     "self_report",
-		BeadID:     "bead-qgmem",
-		WorkerID:   "w-prev",
-		Confidence: 0.9,
+	seedDispatcherCard(ctx, t, d, cards.CardCreateParams{
+		ID:          "card-qgmem",
+		Type:        cards.CardTypePattern,
+		Title:       "QG retry card",
+		BodySummary: "QG memory bead always requires format check before submit",
+		BodyFull:    "QG retry assignments should include the format check card.",
+		Tags:        []string{"qg"},
 	})
-	if err != nil {
-		t.Fatalf("insert memory: %v", err)
-	}
 
 	conn, scanner := connectWorker(t, d.cfg.SocketPath)
 	sendMsg(t, conn, protocol.Message{
@@ -325,15 +322,16 @@ func TestHandleDone_QGFailReassignIncludesMemories(t *testing.T) {
 		ID:                 "bead-qgmem",
 		Title:              "QG memory bead",
 		AcceptanceCriteria: "Test: auto | Cmd: go test | Assert: PASS",
+		Labels:             []string{"qg"},
 	}
 	beadSrc.mu.Unlock()
 
-	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-qgmem", Title: "QG memory bead", Priority: 1, Type: "task"}})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-qgmem", Title: "QG memory bead", Priority: 1, Type: "task", Labels: []string{"qg"}}})
 
 	// Drain initial ASSIGN.
 	readMsg(t, conn, 2*time.Second)
 
-	// Send QG failure — the re-ASSIGN should include MemoryContext.
+	// Send QG failure — the re-ASSIGN should include Cards.
 	sendMsg(t, conn, protocol.Message{
 		Type: protocol.MsgDone,
 		Done: &protocol.DonePayload{
@@ -344,19 +342,19 @@ func TestHandleDone_QGFailReassignIncludesMemories(t *testing.T) {
 		},
 	})
 
-	// Read re-ASSIGN — MemoryContext should be non-empty.
+	// Read re-ASSIGN — Cards should be non-empty and legacy MemoryContext empty.
 	msg, ok := readMsgFromScanner(t, scanner, 2*time.Second)
 	if !ok {
-		t.Fatal("expected re-ASSIGN with memory context")
+		t.Fatal("expected re-ASSIGN with card context")
 	}
 	if msg.Type != protocol.MsgAssign {
 		t.Fatalf("expected ASSIGN, got %s", msg.Type)
 	}
-	if msg.Assign.MemoryContext == "" {
-		t.Fatal("expected non-empty MemoryContext in QG re-assign, got empty string")
+	if msg.Assign.MemoryContext != "" {
+		t.Fatalf("MemoryContext = %q, want empty", msg.Assign.MemoryContext)
 	}
-	if !strings.Contains(msg.Assign.MemoryContext, "format check") {
-		t.Fatalf("MemoryContext should contain memory content, got %q", msg.Assign.MemoryContext)
+	if len(msg.Assign.Cards.Deck) == 0 || msg.Assign.Cards.Deck[0].ID != "card-qgmem" {
+		t.Fatalf("Cards.Deck = %#v, want first card-qgmem", msg.Assign.Cards.Deck)
 	}
 }
 
