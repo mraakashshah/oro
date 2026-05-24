@@ -1951,43 +1951,62 @@ func TestWorkPromptUsesCardsContext(t *testing.T) {
 		}
 	})
 
-	t.Run("nil card store still spawns with empty cards", func(t *testing.T) {
-		sp := &captureSpawner{proc: &mockProcess{}}
-		deps := &workDeps{spawner: sp}
+	t.Run("missing_card_context_renders_empty_cards", func(t *testing.T) {
 		cfg := &workConfig{
 			beadID:  "oro-test",
 			timeout: 5 * time.Second,
 			bead:    testBead(),
 		}
 
-		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "claude", "sonnet", "", 0, "", nil); err != nil {
-			t.Fatalf("spawnAndWait with nil cardStore: %v", err)
-		}
-		cardsSection := extractPromptSection(t, sp.capturedPrompt, "## Cards")
-		if !strings.Contains(cardsSection, "No relevant cards") {
-			t.Fatalf("nil cardStore should render empty Cards placeholder, got:\n%s", cardsSection)
-		}
-	})
+		t.Run("nil card store", func(t *testing.T) {
+			sp := &captureSpawner{proc: &mockProcess{}}
+			deps := &workDeps{spawner: sp}
 
-	t.Run("card relevant error does not fail spawn", func(t *testing.T) {
-		sp := &captureSpawner{proc: &mockProcess{}}
-		deps := &workDeps{
-			spawner:   sp,
-			cardStore: &stubWorkCardStore{err: errors.New("cards unavailable")},
-		}
-		cfg := &workConfig{
-			beadID:  "oro-test",
-			timeout: 5 * time.Second,
-			bead:    testBead(),
-		}
+			if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "claude", "sonnet", "", 0, "", nil); err != nil {
+				t.Fatalf("spawnAndWait with nil cardStore: %v", err)
+			}
+			cardsSection := extractPromptSection(t, sp.capturedPrompt, "## Cards")
+			if !strings.Contains(cardsSection, "No relevant cards") {
+				t.Fatalf("nil cardStore should render empty Cards placeholder, got:\n%s", cardsSection)
+			}
+		})
 
-		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "claude", "sonnet", "", 0, "", nil); err != nil {
-			t.Fatalf("spawnAndWait with Relevant error: %v", err)
-		}
-		cardsSection := extractPromptSection(t, sp.capturedPrompt, "## Cards")
-		if !strings.Contains(cardsSection, "No relevant cards") {
-			t.Fatalf("Relevant error should fall back to empty Cards placeholder, got:\n%s", cardsSection)
-		}
+		t.Run("relevant error", func(t *testing.T) {
+			sp := &captureSpawner{proc: &mockProcess{}}
+			deps := &workDeps{
+				spawner:   sp,
+				cardStore: &stubWorkCardStore{err: errors.New("cards unavailable")},
+			}
+
+			if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "claude", "sonnet", "", 0, "", nil); err != nil {
+				t.Fatalf("spawnAndWait with Relevant error: %v", err)
+			}
+			cardsSection := extractPromptSection(t, sp.capturedPrompt, "## Cards")
+			if !strings.Contains(cardsSection, "No relevant cards") {
+				t.Fatalf("Relevant error should fall back to empty Cards placeholder, got:\n%s", cardsSection)
+			}
+		})
+
+		t.Run("helper empty edges", func(t *testing.T) {
+			bead := testBead()
+			for name, deps := range map[string]*workDeps{
+				"nil deps":       nil,
+				"nil card store": {},
+				"relevant error": {cardStore: &stubWorkCardStore{err: errors.New("cards unavailable")}},
+			} {
+				t.Run(name, func(t *testing.T) {
+					relevant := relevantCardsForWorkPrompt(ctx, deps, bead)
+					if len(relevant.Deck) != 0 || len(relevant.Inlined) != 0 {
+						t.Fatalf("relevantCardsForWorkPrompt returned %#v, want empty", relevant)
+					}
+				})
+			}
+
+			relevant := relevantCardsForWorkPrompt(ctx, &workDeps{cardStore: &stubWorkCardStore{}}, nil)
+			if len(relevant.Deck) != 0 || len(relevant.Inlined) != 0 {
+				t.Fatalf("nil bead returned %#v, want empty", relevant)
+			}
+		})
 	})
 }
 
