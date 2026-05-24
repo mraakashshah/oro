@@ -1,4 +1,5 @@
-#!/usr/bin/env bash
+#!/bin/sh
+# shellcheck shell=bash
 # =============================================================================
 # Oro Quality Gate — Parallel lanes with early exit
 #
@@ -8,12 +9,17 @@
 # Wall-clock time ≈ max(lane) instead of sum(all checks).
 # =============================================================================
 
-set -euo pipefail
-
-if [ -n "${LC_ALL:-}" ] && ! locale -a 2>/dev/null | grep -qx "$LC_ALL"; then
-	export LC_ALL=C
-	export LANG=C
+if [ "${ORO_QG_BASH_BOOTSTRAPPED:-}" != "1" ]; then
+	if [ -n "${LC_ALL:-}" ] && ! locale -a 2>/dev/null | grep -qx "$LC_ALL"; then
+		export LC_ALL=C
+		export LANG=C
+	fi
+	export ORO_QG_BASH_BOOTSTRAPPED=1
+	exec /usr/bin/env bash "$0" "$@"
 fi
+unset ORO_QG_BASH_BOOTSTRAPPED
+
+set -euo pipefail
 
 # Prevent hook env leakage into test subprocesses.
 # Save worktree state BEFORE unsetting — mutation testing needs this later to

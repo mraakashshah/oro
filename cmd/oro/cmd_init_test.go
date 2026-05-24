@@ -1082,8 +1082,8 @@ func TestBootstrapGeneratesQualityGate(t *testing.T) {
 			t.Fatalf("quality_gate.sh should be created even when no languages detected: %v", err)
 		}
 		script := string(data)
-		if !strings.HasPrefix(script, "#!/usr/bin/env bash") {
-			t.Error("generated script should start with shebang")
+		if !strings.HasPrefix(script, "#!/bin/sh\n# shellcheck shell=bash") {
+			t.Error("generated script should start with sh Bash bootstrap")
 		}
 		if strings.Contains(script, "lane_go") {
 			t.Error("shell-only script should not contain lane_go")

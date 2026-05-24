@@ -1033,6 +1033,28 @@ test_quality_gate_invalid_locale_sanitized() {
 	fi
 }
 
+# Test: direct ./scripts/quality_gate.sh starts under sh so invalid LC_ALL is
+# sanitized before Bash can emit setlocale warnings.
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_invalid_locale_bootstraps_before_bash() {
+	if [ "$(head -1 "$SCRIPT_DIR/quality_gate.sh")" != "#!/bin/sh" ]; then
+		echo "FAIL: quality_gate.sh must use /bin/sh bootstrap before Bash"
+		return 1
+	fi
+	if ! head -25 "$SCRIPT_DIR/quality_gate.sh" | grep -q 'ORO_QG_BASH_BOOTSTRAPPED'; then
+		echo "FAIL: quality_gate.sh does not guard the Bash bootstrap"
+		return 1
+	fi
+	if ! head -25 "$SCRIPT_DIR/quality_gate.sh" | grep -q 'exec /usr/bin/env bash "$0" "$@"'; then
+		echo "FAIL: quality_gate.sh does not exec Bash after locale normalization"
+		return 1
+	fi
+	if ! grep -q '^const qualityGateTmpl = `#!/bin/sh' "$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go"; then
+		echo "FAIL: generated quality gate template must use /bin/sh bootstrap before Bash"
+		return 1
+	fi
+}
+
 # Test: Makefile mutate-go-diff git diff has 2>/dev/null
 # shellcheck disable=SC2317,SC2329
 test_makefile_git_diff_stderr_redirect() {
@@ -1170,6 +1192,7 @@ test_case "quality_gate.sh Python tools avoid pyenv shims" test_quality_gate_pyt
 test_case "generated quality gate Python tools avoid pyenv shims" test_generated_quality_gate_python_tools_avoid_pyenv_shims
 test_case "quality_gate.sh filesystem walkers are source scoped" test_quality_gate_filesystem_walkers_are_source_scoped
 test_case "quality_gate.sh invalid locale sanitized" test_quality_gate_invalid_locale_sanitized
+test_case "quality_gate.sh invalid locale bootstraps before bash" test_quality_gate_invalid_locale_bootstraps_before_bash
 test_case "Makefile git diff has 2>/dev/null" test_makefile_git_diff_stderr_redirect
 test_case "Makefile \$\$changed is quoted" test_makefile_changed_is_quoted
 test_case "Makefile mutate-py uses PID-isolated path" test_makefile_mutate_py_pid_isolated

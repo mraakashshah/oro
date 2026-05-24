@@ -201,8 +201,11 @@ func TestGenerateQualityGateScript(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.HasPrefix(script, "#!/usr/bin/env bash") {
-			t.Error("script should start with #!/usr/bin/env bash")
+		if !strings.HasPrefix(script, "#!/bin/sh\n# shellcheck shell=bash") {
+			t.Error("script should start with /bin/sh Bash bootstrap")
+		}
+		if !strings.Contains(script, `exec /usr/bin/env bash "$0" "$@"`) {
+			t.Error("script should exec Bash after bootstrap")
 		}
 		if !strings.Contains(script, "lane_go") {
 			t.Error("go-only config should include lane_go function")
@@ -273,8 +276,11 @@ func TestGenerateQualityGateScript(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.HasPrefix(script, "#!/usr/bin/env bash") {
-			t.Error("script should start with #!/usr/bin/env bash")
+		if !strings.HasPrefix(script, "#!/bin/sh\n# shellcheck shell=bash") {
+			t.Error("script should start with /bin/sh Bash bootstrap")
+		}
+		if !strings.Contains(script, `exec /usr/bin/env bash "$0" "$@"`) {
+			t.Error("script should exec Bash after bootstrap")
 		}
 		if strings.Contains(script, "lane_go") {
 			t.Error("python-only config should not include lane_go function")
@@ -315,8 +321,11 @@ func TestGenerateQualityGateScript(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.HasPrefix(script, "#!/usr/bin/env bash") {
-			t.Error("script should start with #!/usr/bin/env bash")
+		if !strings.HasPrefix(script, "#!/bin/sh\n# shellcheck shell=bash") {
+			t.Error("script should start with /bin/sh Bash bootstrap")
+		}
+		if !strings.Contains(script, `exec /usr/bin/env bash "$0" "$@"`) {
+			t.Error("script should exec Bash after bootstrap")
 		}
 		if !strings.Contains(script, "lane_go") {
 			t.Error("both-lang config should include lane_go function")
@@ -452,8 +461,8 @@ func TestWriteQualityGateScriptFile_ZeroLanguages(t *testing.T) {
 	}
 
 	script := string(data)
-	if !strings.HasPrefix(script, "#!/usr/bin/env bash") {
-		t.Errorf("expected shebang, got: %q", script[:min(len(script), 40)])
+	if !strings.HasPrefix(script, "#!/bin/sh\n# shellcheck shell=bash") {
+		t.Errorf("expected sh Bash bootstrap, got: %q", script[:min(len(script), 40)])
 	}
 
 	// Shell-only: no language lanes.
