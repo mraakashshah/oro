@@ -8219,6 +8219,105 @@ func TestDispatcher_FocusImmediateAbortsStateTransitionRace(t *testing.T) {
 	assertFocusImmediateAbortsEstimatorBlockedAssignment(t, "state-transition")
 }
 
+func TestDispatcherFullSuiteStateDoesNotStarveEstimateAssignments(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("migrate bead schema: %v", err)
+	}
+	sqliteStore := beadstore.NewSQLiteStore(db)
+	if _, err := sqliteStore.Create(ctx, beadstore.CreateParams{
+		ID:                 "oro-estimate-sqlite",
+		Title:              "Estimate without memory fetch",
+		Description:        "assignment should not run implicit memory prompt search",
+		AcceptanceCriteria: "Test: named regression | Cmd: go test ./pkg/dispatcher | Assert: PASS",
+		Tags:               []string{"sqlite", "memory"},
+		Priority:           1,
+	}); err != nil {
+		t.Fatalf("Create bead: %v", err)
+	}
+	memories := memory.NewStore(db)
+	if _, err := memories.Insert(ctx, memory.InsertParams{
+		Content:    "assignment should not run implicit memory prompt search",
+		Type:       "lesson",
+		Tags:       []string{"sqlite", "memory"},
+		Source:     "self_report",
+		Confidence: 0.9,
+	}); err != nil {
+		t.Fatalf("insert memory: %v", err)
+	}
+
+	gitRunner := &mockGitRunner{}
+	spawnMock := &mockBatchSpawner{verdict: "looks good\n\nVERDICT: APPROVED"}
+	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
+	sockPath := fmt.Sprintf("/tmp/oro-sqlite-estimate-%d.sock", time.Now().UnixNano())
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
+	d, err := New(
+		Config{
+			SocketPath:       sockPath,
+			DBPath:           ":memory:",
+			MaxWorkers:       1,
+			HeartbeatTimeout: 500 * time.Millisecond,
+			PollInterval:     50 * time.Millisecond,
+			ShutdownTimeout:  200 * time.Millisecond,
+		},
+		db,
+		merge.NewCoordinator(gitRunner),
+		ops.NewSpawner(spawnMock),
+		sqliteStore,
+		wtMgr,
+		&mockEscalator{},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	d.qgRunner = &mockQGRunner{passed: true}
+	estimator := &blockingOnceEstimator{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	d.estimator = estimator
+
+	startDispatcher(t, d)
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendDirective(t, d.cfg.SocketPath, "start")
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, time.Second)
+
+	select {
+	case <-estimator.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("estimator did not start for SQLite assignment")
+	}
+	close(estimator.release)
+
+	msg, ok := readMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN after estimator released")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN, got %s", msg.Type)
+	}
+	if msg.Assign.BeadID != "oro-estimate-sqlite" {
+		t.Fatalf("assigned bead = %s, want oro-estimate-sqlite", msg.Assign.BeadID)
+	}
+	if msg.Assign.MemoryContext != "" {
+		t.Fatalf("MemoryContext = %q, want empty", msg.Assign.MemoryContext)
+	}
+
+	var searchEvents int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_search_events`).Scan(&searchEvents); err != nil {
+		t.Fatalf("count memory search events: %v", err)
+	}
+	if searchEvents != 0 {
+		t.Fatalf("memory search events = %d, want 0 implicit ForPrompt reads during assignment", searchEvents)
+	}
+}
+
 func assertFocusImmediateAbortsEstimatorBlockedAssignment(t *testing.T, label string) {
 	t.Helper()
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
