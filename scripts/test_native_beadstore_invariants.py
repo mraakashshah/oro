@@ -166,9 +166,9 @@ def test_epic_child_blocker_query_flags_open_children_without_edges() -> None:
 
 
 def test_main_fails_when_epic_child_blocker_edges_missing(
-	tmp_path: Path,
-	monkeypatch,
-	capsys,
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
 ) -> None:
     module = load_invariants_module()
     db_path = tmp_path / "state.db"
