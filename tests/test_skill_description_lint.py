@@ -313,12 +313,15 @@ def test_agent_browser_descriptions_are_normalized_trigger_only() -> None:
         repo_root / "assets/skills/agent-browser/SKILL.md",
         repo_root / "assets/skills/agent-browser/agent-browser/SKILL.md",
     ]
+    descriptions = [_read_skill_description(skill_path) for skill_path in skill_paths]
 
-    for skill_path in skill_paths:
+    assert descriptions[0] is not None
+    assert descriptions[0] == descriptions[1]
+    for skill_path, description in zip(skill_paths, descriptions, strict=True):
         skill_text = skill_path.read_text(encoding="utf-8")
-        description = _read_skill_description(skill_path)
 
         assert description is not None
+        assert "\n" not in description
         assert description.startswith("Use when the user needs to interact with websites")
         assert "Browser automation CLI for AI agents." not in skill_text
         assert checker.check_skill_description(skill_path) == []
