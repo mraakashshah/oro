@@ -69,6 +69,7 @@ func rootSubcommands(root *cobra.Command) []*cobra.Command {
 		newImpactCmd(),
 		newEditCmd(),
 		newCardsCmd(),
+		newDoctrineCmd(),
 		newTestContextSafetyCmd(),
 		newHarnessCmd(),
 		newCurrentCmd(),
