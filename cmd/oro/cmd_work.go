@@ -17,6 +17,7 @@ import (
 
 	"oro/pkg/agentmodel"
 	"oro/pkg/beadstore"
+	"oro/pkg/cards"
 	"oro/pkg/codesearch"
 	"oro/pkg/codestruct"
 	"oro/pkg/dispatcher"
@@ -125,6 +126,7 @@ type workDeps struct {
 	worktreeDirty   func(ctx context.Context, worktree string) (bool, string, error)                    // defaults to worktreeHasUncommittedChanges
 	recordQGFailure func(ctx context.Context, rec dispatcher.QGFailureRecord, cls dispatcher.QGFailureClassification) error
 	stdout          io.Writer
+	cardStore       cards.Store
 }
 
 type standaloneBaseBranchPreparer interface {
@@ -153,6 +155,15 @@ func newWorkerBeadStore(db *sql.DB, memories *memory.Store) *beadstore.SQLiteSto
 		}
 		return memory.ForPrompt(ctx, memories, tags, description, maxTokens)
 	}))
+}
+
+func openWorkerCardStore(db *sql.DB) cards.Store {
+	store, err := cards.NewStore(db)
+	if err != nil {
+		logStep("cards store unavailable for work prompts: %v", err)
+		return nil
+	}
+	return store
 }
 
 // exitError carries an exit code through the normal error return path,
@@ -203,6 +214,7 @@ func newProductionDeps(reviewTimeout time.Duration) (*workDeps, error) {
 	// The native beadstore is required; memory/code index degrade gracefully.
 	var beadDB *sql.DB
 	var memStore *memory.Store
+	var cardStore cards.Store
 	var codeIdx *codesearch.CodeIndex
 	paths, pathsErr := ResolveProjectDBPaths()
 	if pathsErr != nil {
@@ -213,6 +225,7 @@ func newProductionDeps(reviewTimeout time.Duration) (*workDeps, error) {
 		return nil, fmt.Errorf("open beadstore db: %w", dbErr)
 	}
 	memStore = openWorkerMemoryStore(beadDB)
+	cardStore = openWorkerCardStore(beadDB)
 	if paths.CodeIndexDBPath != "" {
 		if idx, idxErr := codesearch.NewCodeIndex(paths.CodeIndexDBPath); idxErr == nil {
 			codeIdx = idx
@@ -236,6 +249,7 @@ func newProductionDeps(reviewTimeout time.Duration) (*workDeps, error) {
 		merger:          merge.NewCoordinator(&merge.ExecGitRunner{}),
 		repoRoot:        repoRoot,
 		memStore:        memStore,
+		cardStore:       cardStore,
 		codeIndex:       codeIdx,
 		defaultBranch:   defaultBranch,
 		hasNewWork:      hasCommitsAhead,
@@ -605,16 +619,30 @@ func dryRunSpawnPrompt(cfg *workConfig, deps *workDeps, model string) (string, e
 		return "", fmt.Errorf("resolve paths: %w", err)
 	}
 	worktree := filepath.Join(projPaths.WorktreesDir, cfg.beadID)
+	cardCtx := relevantCardsForWorkPrompt(context.Background(), deps, cfg.bead)
 
 	return worker.AssemblePrompt(worker.PromptParams{
 		BeadID:             cfg.beadID,
 		Title:              cfg.bead.Title,
 		Description:        cfg.bead.Description,
 		AcceptanceCriteria: cfg.bead.AcceptanceCriteria,
+		Cards:              cardCtx,
 		WorktreePath:       worktree,
 		Model:              model,
 		ProjectRoot:        deps.repoRoot,
 	}), nil
+}
+
+func relevantCardsForWorkPrompt(ctx context.Context, deps *workDeps, bead *protocol.Bead) cards.RelevantCards {
+	if deps == nil || deps.cardStore == nil || bead == nil {
+		return cards.RelevantCards{}
+	}
+	relevant, err := deps.cardStore.Relevant(ctx, beadRelevanceQuery(*bead))
+	if err != nil {
+		logStep("cards relevant context unavailable for %s: %v", bead.ID, err)
+		return cards.RelevantCards{}
+	}
+	return relevant
 }
 
 // setupWorktree auto-detects worktree state:
@@ -740,10 +768,7 @@ func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree
 		projectRoot = resolved
 	}
 
-	var memCtx string
-	if deps.memStore != nil {
-		memCtx, _ = memory.ForPrompt(ctx, deps.memStore, nil, buildSearchQuery(cfg.bead.Title, cfg.bead.Labels), 0)
-	}
+	cardCtx := relevantCardsForWorkPrompt(ctx, deps, cfg.bead)
 
 	var codeCtx string
 	if deps.codeIndex != nil {
@@ -757,7 +782,7 @@ func spawnAndWait(ctx context.Context, cfg *workConfig, deps *workDeps, worktree
 		Title:                cfg.bead.Title,
 		Description:          cfg.bead.Description,
 		AcceptanceCriteria:   cfg.bead.AcceptanceCriteria,
-		MemoryContext:        memCtx,
+		Cards:                cardCtx,
 		CodeSearchContext:    codeCtx,
 		CodeStructureContext: codeStructCtx,
 		WorktreePath:         worktree,

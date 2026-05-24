@@ -14,6 +14,7 @@ import (
 	"oro/pkg/agentmodel"
 	codexruntime "oro/pkg/agentruntime/codex"
 	"oro/pkg/beadstore"
+	"oro/pkg/cards"
 	"oro/pkg/codesearch"
 	"oro/pkg/dispatcher"
 	"oro/pkg/memory"
@@ -159,6 +160,56 @@ exit 64
 	}
 	if _, err := os.Stat(markerPath); !os.IsNotExist(err) {
 		t.Fatalf("dry-run spawn invoked bd fallback, marker stat err=%v", err)
+	}
+}
+
+func TestDryRunSpawnPromptUsesCardsContext(t *testing.T) {
+	cardStore := &stubWorkCardStore{
+		relevant: cards.RelevantCards{
+			Deck: []cards.CardSummary{{
+				ID:       "card-local-1",
+				Type:     cards.CardTypePattern,
+				Title:    "Prefer local card context",
+				BodyFull: "Local oro work prompts should render relevant card bodies.",
+			}},
+			Inlined: []cards.CardSummary{{
+				ID:       "card-local-1",
+				Type:     cards.CardTypePattern,
+				Title:    "Prefer local card context",
+				BodyFull: "Local oro work prompts should render relevant card bodies.",
+			}},
+		},
+	}
+	cfg := &workConfig{
+		beadID: "oro-test",
+		bead: &protocol.BeadDetail{
+			ID:                 "oro-test",
+			Title:              "Use card prompts",
+			Description:        "Build prompt from card context",
+			AcceptanceCriteria: "Cards are rendered",
+			Tags:               []string{"cards"},
+			Type:               "task",
+		},
+	}
+	deps := &workDeps{repoRoot: t.TempDir(), cardStore: cardStore}
+
+	prompt, err := dryRunSpawnPrompt(cfg, deps, "sonnet")
+	if err != nil {
+		t.Fatalf("dryRunSpawnPrompt: %v", err)
+	}
+
+	if cardStore.calls != 1 {
+		t.Fatalf("Relevant calls = %d, want 1", cardStore.calls)
+	}
+	if cardStore.lastQuery.BeadDescription != cfg.bead.Description {
+		t.Fatalf("Relevant BeadDescription = %q, want %q", cardStore.lastQuery.BeadDescription, cfg.bead.Description)
+	}
+	cardsSection := extractPromptSection(t, prompt, "## Cards")
+	if !strings.Contains(cardsSection, "Prefer local card context") {
+		t.Fatalf("Cards section missing card title:\n%s", cardsSection)
+	}
+	if !strings.Contains(cardsSection, "Local oro work prompts should render relevant card bodies.") {
+		t.Fatalf("Cards section missing card body:\n%s", cardsSection)
 	}
 }
 
@@ -1614,6 +1665,179 @@ func TestBeadHelper() string {
 			t.Errorf("DrainOutput did not receive memStore: [MEMORY] marker not captured (got %d memories)", len(mems))
 		}
 	})
+}
+
+func TestWorkPromptUsesCardsContext(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("spawn prompt renders relevant cards and ignores legacy prompt memory", func(t *testing.T) {
+		db := setupTestMemoryDB(t)
+		memStore := memory.NewStore(db)
+		if _, err := memStore.Insert(ctx, memory.InsertParams{
+			Content:    "legacy memory prompt context must not be queried or rendered",
+			Type:       "lesson",
+			Source:     "test",
+			Confidence: 0.9,
+		}); err != nil {
+			t.Fatalf("seed memory: %v", err)
+		}
+		if _, err := db.ExecContext(ctx, `DELETE FROM memory_read_events`); err != nil {
+			t.Fatalf("clear memory read events: %v", err)
+		}
+
+		cardStore := &stubWorkCardStore{
+			relevant: cards.RelevantCards{
+				Deck: []cards.CardSummary{{
+					ID:       "card-work-1",
+					Type:     cards.CardTypeDecision,
+					Title:    "Use cards for local work",
+					BodyFull: "spawnAndWait should pass relevant cards into worker prompt params.",
+				}},
+				Inlined: []cards.CardSummary{{
+					ID:       "card-work-1",
+					Type:     cards.CardTypeDecision,
+					Title:    "Use cards for local work",
+					BodyFull: "spawnAndWait should pass relevant cards into worker prompt params.",
+				}},
+			},
+		}
+		sp := &captureSpawner{proc: &mockProcess{}}
+		deps := &workDeps{
+			spawner:   sp,
+			memStore:  memStore,
+			cardStore: cardStore,
+		}
+		cfg := &workConfig{
+			beadID:  "oro-test",
+			timeout: 5 * time.Second,
+			bead: &protocol.BeadDetail{
+				ID:                 "oro-test",
+				Title:              "Use card prompts",
+				Description:        "Build prompt from card context",
+				AcceptanceCriteria: "Cards are rendered",
+				Tags:               []string{"cards"},
+				Type:               "task",
+			},
+		}
+
+		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "claude", "sonnet", "", 0, "", nil); err != nil {
+			t.Fatalf("spawnAndWait: %v", err)
+		}
+
+		if cardStore.calls != 1 {
+			t.Fatalf("Relevant calls = %d, want 1", cardStore.calls)
+		}
+		cardsSection := extractPromptSection(t, sp.capturedPrompt, "## Cards")
+		if !strings.Contains(cardsSection, "Use cards for local work") {
+			t.Fatalf("Cards section missing card title:\n%s", cardsSection)
+		}
+		if !strings.Contains(cardsSection, "spawnAndWait should pass relevant cards into worker prompt params.") {
+			t.Fatalf("Cards section missing card body:\n%s", cardsSection)
+		}
+		if strings.Contains(sp.capturedPrompt, "legacy memory prompt context") {
+			t.Fatalf("spawn prompt rendered legacy memory context:\n%s", sp.capturedPrompt)
+		}
+		var promptReads int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_read_events WHERE operation = 'for_prompt'`).Scan(&promptReads); err != nil {
+			t.Fatalf("count for_prompt read events: %v", err)
+		}
+		if promptReads != 0 {
+			t.Fatalf("spawn prompt called memory.ForPrompt %d times, want 0", promptReads)
+		}
+	})
+
+	t.Run("nil card store still spawns with empty cards", func(t *testing.T) {
+		sp := &captureSpawner{proc: &mockProcess{}}
+		deps := &workDeps{spawner: sp}
+		cfg := &workConfig{
+			beadID:  "oro-test",
+			timeout: 5 * time.Second,
+			bead:    testBead(),
+		}
+
+		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "claude", "sonnet", "", 0, "", nil); err != nil {
+			t.Fatalf("spawnAndWait with nil cardStore: %v", err)
+		}
+		cardsSection := extractPromptSection(t, sp.capturedPrompt, "## Cards")
+		if !strings.Contains(cardsSection, "No relevant cards") {
+			t.Fatalf("nil cardStore should render empty Cards placeholder, got:\n%s", cardsSection)
+		}
+	})
+
+	t.Run("card relevant error does not fail spawn", func(t *testing.T) {
+		sp := &captureSpawner{proc: &mockProcess{}}
+		deps := &workDeps{
+			spawner:   sp,
+			cardStore: &stubWorkCardStore{err: errors.New("cards unavailable")},
+		}
+		cfg := &workConfig{
+			beadID:  "oro-test",
+			timeout: 5 * time.Second,
+			bead:    testBead(),
+		}
+
+		if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "claude", "sonnet", "", 0, "", nil); err != nil {
+			t.Fatalf("spawnAndWait with Relevant error: %v", err)
+		}
+		cardsSection := extractPromptSection(t, sp.capturedPrompt, "## Cards")
+		if !strings.Contains(cardsSection, "No relevant cards") {
+			t.Fatalf("Relevant error should fall back to empty Cards placeholder, got:\n%s", cardsSection)
+		}
+	})
+}
+
+type stubWorkCardStore struct {
+	relevant  cards.RelevantCards
+	err       error
+	calls     int
+	lastQuery cards.RelevanceQuery
+}
+
+func (s *stubWorkCardStore) Relevant(_ context.Context, q cards.RelevanceQuery) (cards.RelevantCards, error) {
+	s.calls++
+	s.lastQuery = q
+	if s.err != nil {
+		return cards.RelevantCards{}, s.err
+	}
+	return s.relevant, nil
+}
+
+func (s *stubWorkCardStore) Show(context.Context, string) (*cards.Card, error) {
+	return nil, errors.New("unexpected Show")
+}
+
+func (s *stubWorkCardStore) List(context.Context, cards.ListQuery) ([]cards.Card, error) {
+	return nil, errors.New("unexpected List")
+}
+
+func (s *stubWorkCardStore) RecordCardEvent(context.Context, cards.CardEvent) error {
+	return errors.New("unexpected RecordCardEvent")
+}
+
+func (s *stubWorkCardStore) Create(context.Context, cards.CardCreateParams) (*cards.Card, error) {
+	return nil, errors.New("unexpected Create")
+}
+
+func (s *stubWorkCardStore) Retire(context.Context, string, string, string) error {
+	return errors.New("unexpected Retire")
+}
+
+func (s *stubWorkCardStore) WithReadTx(context.Context, func(cards.ReadTx) error) error {
+	return errors.New("unexpected WithReadTx")
+}
+
+func extractPromptSection(t *testing.T, prompt, header string) string {
+	t.Helper()
+	start := strings.Index(prompt, header)
+	if start < 0 {
+		t.Fatalf("prompt missing %s section:\n%s", header, prompt)
+	}
+	rest := prompt[start+len(header):]
+	next := strings.Index(rest, "\n## ")
+	if next >= 0 {
+		rest = rest[:next]
+	}
+	return rest
 }
 
 // --- Epic branch test helpers ---
