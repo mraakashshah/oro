@@ -4,7 +4,6 @@ import re
 import subprocess
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNNER = REPO_ROOT / "scripts" / "run-rule-conversions.sh"
 LEDGER = REPO_ROOT / "assets" / "rules-converted.md"
@@ -28,9 +27,7 @@ def test_run_rule_conversions_executes_all_checks() -> None:
     ledger_text = LEDGER.read_text()
     assert "| Rule ID | Converted By | Verification |" in ledger_text
     for rule_id in CONVERTED_RULE_IDS:
-        assert re.search(rf"^\| {rule_id} \|", ledger_text, re.MULTILINE), (
-            f"{rule_id} missing from conversion ledger"
-        )
+        assert re.search(rf"^\| {rule_id} \|", ledger_text, re.MULTILINE), f"{rule_id} missing from conversion ledger"
 
     result = subprocess.run(
         [str(RUNNER)],
