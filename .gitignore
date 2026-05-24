@@ -41,6 +41,7 @@ pkg/dispatcher/workers/
 /.oro/context_pct
 /.oro/review-pattern-candidates.md
 /.oro/review-pattern-candidates.promoted.md
+/.oro/state.sqlite
 
 # Local config
 .claude/settings.local.json
