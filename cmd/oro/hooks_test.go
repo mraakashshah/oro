@@ -153,6 +153,90 @@ func TestInstallHookWrapper(t *testing.T) {
 		}
 	})
 
+	t.Run("existing_oro_distributed_pre_push_symlink_not_backed_up", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		gitDir := filepath.Join(tmpDir, ".git")
+		hooksDir := filepath.Join(gitDir, "hooks")
+		repoHooksDir := filepath.Join(tmpDir, "git", "hooks")
+		if err := os.MkdirAll(hooksDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(repoHooksDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		repoHookPath := filepath.Join(repoHooksDir, "pre-push")
+		repoHookContent := []byte("#!/usr/bin/env sh\n\nset -e\n\n# Run Oro's full quality gate before push. The push context is for load-guarded\n# checks; mutation tiers remain opt-in with ORO_RUN_MUTATION=1.\nORO_QG_CONTEXT=push scripts/quality_gate.sh\n")
+		if err := os.WriteFile(repoHookPath, repoHookContent, 0o755); err != nil { //nolint:gosec // test hook
+			t.Fatal(err)
+		}
+
+		hookPath := filepath.Join(hooksDir, "pre-push")
+		if err := os.Symlink(repoHookPath, hookPath); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := installHookWrapper(gitDir, "pre-push", oroPrePushCheck); err != nil {
+			t.Fatalf("installHookWrapper pre-push: %v", err)
+		}
+
+		if _, err := os.Lstat(hookPath + ".user"); err == nil {
+			t.Fatal("oro-distributed pre-push hook must not be preserved as pre-push.user")
+		}
+
+		info, err := os.Lstat(hookPath)
+		if err != nil {
+			t.Fatalf("stat installed hook: %v", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			t.Fatal("installed wrapper must replace the symlink instead of writing through it")
+		}
+
+		gotRepoHook, err := os.ReadFile(repoHookPath) //nolint:gosec // test hook
+		if err != nil {
+			t.Fatalf("read repo hook: %v", err)
+		}
+		if string(gotRepoHook) != string(repoHookContent) {
+			t.Fatal("install must not overwrite the repository's distributed hook target")
+		}
+	})
+
+	t.Run("idempotent_reinstall_removes_oro_distributed_pre_push_user_hook", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		gitDir := filepath.Join(tmpDir, ".git")
+		hooksDir := filepath.Join(gitDir, "hooks")
+		repoHooksDir := filepath.Join(tmpDir, "git", "hooks")
+		if err := os.MkdirAll(hooksDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(repoHooksDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		repoHookPath := filepath.Join(repoHooksDir, "pre-push")
+		repoHookContent := []byte("#!/usr/bin/env sh\n\nset -e\n\n# Run Oro's full quality gate before push. The push context is for load-guarded\n# checks; mutation tiers remain opt-in with ORO_RUN_MUTATION=1.\nORO_QG_CONTEXT=push scripts/quality_gate.sh\n")
+		if err := os.WriteFile(repoHookPath, repoHookContent, 0o755); err != nil { //nolint:gosec // test hook
+			t.Fatal(err)
+		}
+
+		hookPath := filepath.Join(hooksDir, "pre-push")
+		wrapper := buildWrapperScript("pre-push", oroPrePushCheck)
+		if err := os.WriteFile(hookPath, []byte(wrapper), 0o755); err != nil { //nolint:gosec // test hook
+			t.Fatal(err)
+		}
+		if err := os.Symlink(repoHookPath, hookPath+".user"); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := installHookWrapper(gitDir, "pre-push", oroPrePushCheck); err != nil {
+			t.Fatalf("installHookWrapper pre-push: %v", err)
+		}
+
+		if _, err := os.Lstat(hookPath + ".user"); err == nil {
+			t.Fatal("reinstall must remove stale oro-distributed pre-push.user")
+		}
+	})
+
 	t.Run("core_hooksPath_respected", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		gitDir := filepath.Join(tmpDir, ".git")
