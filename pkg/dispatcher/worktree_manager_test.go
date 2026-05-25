@@ -1893,6 +1893,57 @@ func TestGitWorktreeManager_LinkQualityGate(t *testing.T) {
 	})
 }
 
+func TestLinkQualityGateCreatesIsolatedManagedCopy(t *testing.T) {
+	worktree := t.TempDir()
+	rootDir := t.TempDir()
+	rootScript := filepath.Join(rootDir, "scripts", "quality_gate.sh")
+	if err := os.MkdirAll(filepath.Dir(rootScript), 0o755); err != nil {
+		t.Fatalf("mkdir scripts: %v", err)
+	}
+	rootContent := []byte("#!/bin/sh\necho root\n")
+	if err := os.WriteFile(rootScript, rootContent, 0o755); err != nil {
+		t.Fatalf("create root quality gate: %v", err)
+	}
+
+	worktreeScript := filepath.Join(worktree, "quality_gate.sh")
+	if err := os.Symlink(rootScript, worktreeScript); err != nil {
+		t.Fatalf("create stale worktree symlink: %v", err)
+	}
+
+	mgr := NewGitWorktreeManager(rootDir, "", rootScript, &mockCommandRunner{})
+	mgr.linkQualityGate(context.Background(), worktree)
+
+	info, err := os.Lstat(worktreeScript)
+	if err != nil {
+		t.Fatalf("expected worktree quality gate at %s: %v", worktreeScript, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("worktree quality gate must be an isolated copy, got symlink")
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("worktree quality gate is not executable: mode %v", info.Mode().Perm())
+	}
+
+	worktreeContent, err := os.ReadFile(worktreeScript)
+	if err != nil {
+		t.Fatalf("read worktree quality gate: %v", err)
+	}
+	if !bytes.Equal(worktreeContent, rootContent) {
+		t.Fatalf("worktree quality gate content = %q, want %q", worktreeContent, rootContent)
+	}
+
+	if err := os.WriteFile(worktreeScript, []byte("#!/bin/sh\necho worktree edit\n"), 0o755); err != nil {
+		t.Fatalf("edit worktree quality gate: %v", err)
+	}
+	rootAfterEdit, err := os.ReadFile(rootScript)
+	if err != nil {
+		t.Fatalf("read root quality gate after worktree edit: %v", err)
+	}
+	if !bytes.Equal(rootAfterEdit, rootContent) {
+		t.Fatalf("editing worktree quality gate mutated root script: got %q, want %q", rootAfterEdit, rootContent)
+	}
+}
+
 func TestNewGitWorktreeManager_StoresQualityGatePath(t *testing.T) {
 	runner := &mockCommandRunner{}
 	wantQG := "/path/to/quality_gate.sh"
