@@ -91,6 +91,40 @@ func removeOroDistributedHook(path, hookName string) (bool, error) {
 	return true, nil
 }
 
+func removeHookPath(path, hookName string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove oro-distributed %s hook: %w", hookName, err)
+	}
+	return nil
+}
+
+func hookIsExecutable(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode()&0o111 != 0
+}
+
+func backupExecutableHook(path, hookName string) error {
+	if !hookIsExecutable(path) {
+		return nil
+	}
+	if err := os.Rename(path, path+".user"); err != nil {
+		return fmt.Errorf("backup existing %s hook: %w", hookName, err)
+	}
+	return nil
+}
+
+func prepareExistingHookForWrapper(path, hookName string, content []byte, readErr error) error {
+	if readErr == nil {
+		if strings.Contains(string(content), "managed by oro") {
+			return nil
+		}
+		if isOroDistributedHook(hookName, content) {
+			return removeHookPath(path, hookName)
+		}
+	}
+	return backupExecutableHook(path, hookName)
+}
+
 // installHookWrapper installs an oro git hook wrapper for the given hookName
 // inside gitDir's effective hooks directory (respecting core.hooksPath).
 //
@@ -115,19 +149,8 @@ func installHookWrapper(gitDir, hookName, oroCheck string) error {
 	// Check whether an existing hook is already an oro wrapper (idempotent reinstall)
 	// or a genuine user hook that needs backup.
 	content, readErr := os.ReadFile(hookPath) //nolint:gosec // hookPath constructed from trusted inputs
-	isOroWrapper := readErr == nil && strings.Contains(string(content), "managed by oro")
-	isOroDistributed := readErr == nil && isOroDistributedHook(hookName, content)
-	if !isOroWrapper {
-		if isOroDistributed {
-			if err := os.Remove(hookPath); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("remove oro-distributed %s hook: %w", hookName, err)
-			}
-		} else if info, statErr := os.Stat(hookPath); statErr == nil && info.Mode()&0o111 != 0 {
-			// Genuine executable user hook — back it up.
-			if err := os.Rename(hookPath, hookPath+".user"); err != nil {
-				return fmt.Errorf("backup existing %s hook: %w", hookName, err)
-			}
-		}
+	if err := prepareExistingHookForWrapper(hookPath, hookName, content, readErr); err != nil {
+		return err
 	}
 
 	wrapper := buildWrapperScript(hookName, oroCheck)
