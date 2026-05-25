@@ -517,6 +517,9 @@ func (g *GitWorktreeManager) MergeFFOnly(ctx context.Context, branch, target str
 // using `git update-ref`. This does not require sourceBranch to be checked out,
 // making it suitable for advancing non-HEAD branches (e.g. an epic's parent branch).
 func (g *GitWorktreeManager) UpdateBranchRef(ctx context.Context, targetBranch, sourceBranch string) error {
+	if _, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "merge-base", "--is-ancestor", targetBranch, sourceBranch); err != nil {
+		return fmt.Errorf("refuse non-fast-forward update of %s to %s: %w", targetBranch, sourceBranch, err)
+	}
 	_, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "update-ref",
 		"refs/heads/"+targetBranch, sourceBranch)
 	if err != nil {

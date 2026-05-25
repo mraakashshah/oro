@@ -1525,6 +1525,33 @@ func TestMergeFFOnly(t *testing.T) {
 	})
 }
 
+func TestUpdateBranchRefRequiresFastForward(t *testing.T) {
+	var calls []string
+	runner := &mockCommandRunner{
+		callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			call := strings.Join(args, " ")
+			calls = append(calls, call)
+			switch call {
+			case "-C /repo/root merge-base --is-ancestor epic/parent epic/child":
+				return nil, fmt.Errorf("exit status 1")
+			case "-C /repo/root update-ref refs/heads/epic/parent epic/child":
+				return nil, nil
+			default:
+				return nil, fmt.Errorf("unexpected git call: %s", call)
+			}
+		},
+	}
+	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
+
+	err := mgr.UpdateBranchRef(context.Background(), "epic/parent", "epic/child")
+	if err == nil {
+		t.Fatal("expected non-fast-forward UpdateBranchRef to fail")
+	}
+	if containsCall(calls, "-C /repo/root update-ref refs/heads/epic/parent epic/child") {
+		t.Fatalf("UpdateBranchRef moved non-ancestor target; calls=%v", calls)
+	}
+}
+
 func TestWorktreeManager_CustomDir(t *testing.T) {
 	t.Run("create_uses_custom_worktrees_dir", func(t *testing.T) {
 		runner := &mockCommandRunner{}
