@@ -114,6 +114,60 @@ func TestSelectStoreSQLiteDoesNotInstallMemoryFetcher(t *testing.T) {
 	}
 }
 
+func TestSelectStoreSQLiteDoesNotFetchLegacyPromptMemory(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("migrate bead schema: %v", err)
+	}
+	seedStore := beadstore.NewSQLiteStore(db)
+	if _, err := seedStore.Create(ctx, beadstore.CreateParams{
+		ID:          "oro-no-legacy-memory",
+		Title:       "sqlite",
+		Description: "sqlite show must not fetch legacy prompt memory",
+		Tags:        []string{"sqlite"},
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	memories := memory.NewStore(db)
+	if _, err := memories.Insert(ctx, memory.InsertParams{
+		Content:    "sqlite show must not fetch legacy prompt memory",
+		Type:       "lesson",
+		Tags:       []string{"sqlite"},
+		Source:     "self_report",
+		Confidence: 0.9,
+	}); err != nil {
+		t.Fatalf("insert memory: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM memory_read_events`); err != nil {
+		t.Fatalf("clear memory_read_events: %v", err)
+	}
+
+	store, err := selectStore(ctx, "sqlite", beadstore.NewFakeStore(), db)
+	if err != nil {
+		t.Fatalf("selectStore: %v", err)
+	}
+	shown, err := store.Show(ctx, "oro-no-legacy-memory")
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if shown == nil {
+		t.Fatalf("Show returned nil, want sqlite bead")
+	}
+	if shown.Memory != "" {
+		t.Fatalf("selected sqlite store Show Memory = %q, want empty", shown.Memory)
+	}
+
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_read_events WHERE operation = "for_prompt"`).Scan(&count); err != nil {
+		t.Fatalf("count for_prompt memory_read_events: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("for_prompt memory_read_events count = %d, want 0", count)
+	}
+}
+
 func TestPromptTelemetryFixtureCountsForPromptReads(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
