@@ -5606,6 +5606,12 @@ func (d *Dispatcher) validateExistingWorktreeForReuse(ctx context.Context, beadI
 	}
 	fastForwarded, err := preparer.PrepareExistingForReuse(ctx, worktree, expectedBranch, baseBranch)
 	if err != nil {
+		if isBranchDivergedFromBase(err) && d.isEpicRebaseChildForBase(ctx, beadID, baseBranch) {
+			_ = d.logEvent(ctx, "epic_rebase_child_reuse_diverged", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"worktree":%q,"branch":%q,"base_branch":%q,"error":%q}`,
+					worktree, expectedBranch, baseBranch, err.Error()))
+			return true
+		}
 		d.quarantineUnsafeRecoveryWork(ctx, recoveryQuarantine{
 			BeadID:   beadID,
 			WorkerID: workerID,
@@ -5626,6 +5632,22 @@ func (d *Dispatcher) validateExistingWorktreeForReuse(ctx context.Context, beadI
 			fmt.Sprintf(`{"worktree":%q,"branch":%q,"base_branch":%q}`, worktree, expectedBranch, baseBranch))
 	}
 	return true
+}
+
+func (d *Dispatcher) isEpicRebaseChildForBase(ctx context.Context, beadID, baseBranch string) bool {
+	if !strings.HasPrefix(baseBranch, protocol.EpicBranchPrefix) {
+		return false
+	}
+	detail, err := d.beads.Show(ctx, beadID)
+	if err != nil || detail == nil {
+		return false
+	}
+	epicID := strings.TrimPrefix(baseBranch, protocol.EpicBranchPrefix)
+	return isEpicRebaseChild(detail, epicID, baseBranch)
+}
+
+func isBranchDivergedFromBase(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "diverged from base")
 }
 
 func (d *Dispatcher) focusChangedSince(version uint64) bool {

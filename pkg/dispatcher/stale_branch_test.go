@@ -479,6 +479,51 @@ func TestValidateExistingWorktreeForReuse_PreparerFailureQuarantines(t *testing.
 	}
 }
 
+func TestValidateExistingWorktreeForReuse_AllowsEpicRebaseChildDivergence(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		epicID   = "oro-mp9r"
+		beadID   = "oro-aeaw"
+		worktree = "/repo/root/.worktrees/oro-aeaw"
+		branch   = "agent/oro-aeaw"
+		base     = "epic/oro-mp9r"
+	)
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Rebase epic/oro-mp9r onto main",
+		Type:               "task",
+		Status:             "open",
+		AcceptanceCriteria: rebaseChildAcceptance(epicID, base, "main"),
+	}
+	wtMgr.currentBranchFn = func(_ context.Context, path string) (string, error) {
+		if path != worktree {
+			t.Fatalf("current branch path = %q, want %q", path, worktree)
+		}
+		return branch, nil
+	}
+	wtMgr.prepareReuseFn = func(_ context.Context, gotWorktree, gotBranch, gotBase string) (bool, error) {
+		if gotWorktree != worktree || gotBranch != branch || gotBase != base {
+			t.Fatalf("prepare args = %q %q %q", gotWorktree, gotBranch, gotBase)
+		}
+		return false, fmt.Errorf("agent branch %s diverged from base %s", branch, base)
+	}
+
+	if !d.validateExistingWorktreeForReuse(ctx, beadID, "worker-1", worktree, branch, base) {
+		t.Fatal("validateExistingWorktreeForReuse returned false, want rebase child reuse allowed")
+	}
+
+	var quarantines int
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM recovery_quarantines WHERE bead_id=? AND status='open'`,
+		beadID).Scan(&quarantines); err != nil {
+		t.Fatalf("count quarantines: %v", err)
+	}
+	if quarantines != 0 {
+		t.Fatalf("open quarantines = %d, want 0", quarantines)
+	}
+}
+
 func containsCall(calls []string, want string) bool {
 	for _, call := range calls {
 		if call == want {
