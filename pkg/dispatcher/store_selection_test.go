@@ -74,7 +74,7 @@ func TestSelectStore(t *testing.T) {
 	}
 }
 
-func TestSelectStoreSQLiteDoesNotInstallMemoryFetcher(t *testing.T) {
+func TestSelectStoreSQLiteReturnsPlainStoreWithoutMemoryFetcher(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
 	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
@@ -99,6 +99,17 @@ func TestSelectStoreSQLiteDoesNotInstallMemoryFetcher(t *testing.T) {
 		Confidence: 0.9,
 	}); err != nil {
 		t.Fatalf("insert memory: %v", err)
+	}
+
+	withMemory := beadstore.NewSQLiteStore(db, beadstore.WithMemoryFetcher(func(ctx context.Context, tags []string, description string, maxTokens int) (string, error) {
+		return memory.ForPrompt(ctx, memories, tags, description, maxTokens)
+	}))
+	enriched, err := withMemory.Show(ctx, "oro-no-dispatcher-memory")
+	if err != nil {
+		t.Fatalf("control Show with memory fetcher: %v", err)
+	}
+	if enriched.Memory == "" {
+		t.Fatalf("control Show with memory fetcher left Memory empty; seeded memory is not observable")
 	}
 
 	store, err := selectStore(ctx, "sqlite", beadstore.NewFakeStore(), db)
