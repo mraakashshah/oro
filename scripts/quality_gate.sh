@@ -226,16 +226,18 @@ first_quality_gate_queue_ticket() {
 acquire_quality_gate_lock() {
 	local lock_dir="$REPO_ROOT/.oro-quality-gate.lock"
 	local queue_dir="$REPO_ROOT/.oro-quality-gate.queue"
-	local ticket_name poll_seconds
+	local ticket_name poll_seconds reported_waiting
 	local waited=0
+	reported_waiting=false
 	create_quality_gate_queue_ticket "$queue_dir"
 	while :; do
-		if [ "$waited" -eq 0 ]; then
-			echo "Waiting for another quality gate to finish..."
-		fi
 		cleanup_stale_quality_gate_queue_tickets "$queue_dir"
 		ticket_name=$(basename "$QG_RUN_QUEUE_TICKET")
 		if [ "$(first_quality_gate_queue_ticket "$queue_dir")" != "$ticket_name" ]; then
+			if [ "$reported_waiting" = false ]; then
+				echo "Waiting for another quality gate to finish..."
+				reported_waiting=true
+			fi
 			poll_seconds=$(quality_gate_lock_poll_seconds)
 			sleep "$poll_seconds"
 			waited=$((waited + poll_seconds))
@@ -251,6 +253,10 @@ acquire_quality_gate_lock() {
 		if quality_gate_lock_stale "$lock_dir"; then
 			archive_stale_quality_gate_lock "$lock_dir" || true
 			continue
+		fi
+		if [ "$reported_waiting" = false ]; then
+			echo "Waiting for another quality gate to finish..."
+			reported_waiting=true
 		fi
 		poll_seconds=$(quality_gate_lock_poll_seconds)
 		sleep "$poll_seconds"

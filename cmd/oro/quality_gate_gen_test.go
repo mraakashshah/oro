@@ -572,6 +572,39 @@ func TestQualityGateRunLockArchivesDeadOwnerAndStartsWithoutTimeout(t *testing.T
 	}
 }
 
+func TestQualityGateRunLockDoesNotReportWaitingWhenUncontended(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "quality_gate.sh")
+
+	var buf bytes.Buffer
+	if err := writeQualityGateScript(&buf, ProjectPaths{}); err != nil {
+		t.Fatalf("writeQualityGateScript: %v", err)
+	}
+	script := buf.String()
+	acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
+	acquireIdx := strings.Index(script, acquireCall)
+	if acquireIdx < 0 {
+		t.Fatalf("generated quality gate missing acquire call marker")
+	}
+	harness := script[:acquireIdx+len("acquire_quality_gate_lock")] + "\n"
+	if err := os.WriteFile(scriptPath, []byte(harness), 0o755); err != nil {
+		t.Fatalf("write quality gate script: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, scriptPath) //nolint:gosec // scriptPath is a test-owned temp file
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("quality gate should acquire an uncontended lock, got %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "Waiting for another quality gate to finish") {
+		t.Fatalf("uncontended quality gate reported lock waiting:\n%s", out)
+	}
+}
+
 func TestQualityGateRunLockFIFOQueuePreventsLateArrivalStarvation(t *testing.T) {
 	dir := t.TempDir()
 	eventsPath := filepath.Join(dir, "events")
