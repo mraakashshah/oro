@@ -15,7 +15,7 @@ import (
 	"oro/pkg/protocol"
 )
 
-// setupTelemetryDB creates an in-memory SQLite DB with base schema + search events migration.
+// setupTelemetryDB creates an in-memory SQLite DB with base schema + telemetry migrations.
 func setupTelemetryDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := dbutil.OpenDB(":memory:")
@@ -39,12 +39,8 @@ func setupTelemetryDB(t *testing.T) *sql.DB {
 func TestSetupTelemetryDBMigratesReadEvents(t *testing.T) {
 	db := setupTelemetryDB(t)
 
-	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM memory_read_events`).Scan(&count); err != nil {
-		t.Fatalf("memory_read_events must be queryable from setupTelemetryDB: %v", err)
-	}
-	if count != 0 {
-		t.Fatalf("initial memory_read_events count = %d, want 0", count)
+	if n := countReadEvents(t, db); n != 0 {
+		t.Fatalf("want 0 read events before store initialization, got %d", n)
 	}
 }
 
