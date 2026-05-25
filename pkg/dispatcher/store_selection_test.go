@@ -119,7 +119,7 @@ func TestSelectStoreSQLiteReturnsPlainSQLiteStore(t *testing.T) {
 	db := newTestDB(t)
 	primary := beadstore.NewFakeStore()
 
-	store, err := selectStore(ctx, "sqlite", primary, db)
+	store, err := selectStore(ctx, " sqlite ", primary, db)
 	if err != nil {
 		t.Fatalf("selectStore: %v", err)
 	}
@@ -131,6 +131,13 @@ func TestSelectStoreSQLiteReturnsPlainSQLiteStore(t *testing.T) {
 	}
 	if _, ok := store.(*beadstore.SQLiteStore); !ok {
 		t.Fatalf("selectStore returned %T, want *beadstore.SQLiteStore", store)
+	}
+
+	if _, err := store.Create(ctx, beadstore.CreateParams{
+		ID:    "oro-sqlite-selection",
+		Title: "sqlite selection",
+	}); err != nil {
+		t.Fatalf("Create after selectStore migration: %v", err)
 	}
 }
 
