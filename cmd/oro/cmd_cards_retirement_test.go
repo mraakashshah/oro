@@ -126,6 +126,17 @@ func TestMemoryRetirementReadinessGate(t *testing.T) {
 		}
 	})
 
+	t.Run("ad hoc ignore is top level scan behavior only", func(t *testing.T) {
+		for _, name := range []string{"vendor", ".git", ".worktrees"} {
+			if !isMemoryRetirementIgnoredDir(name) {
+				t.Fatalf("%s must remain an always-ignored directory", name)
+			}
+		}
+		if isMemoryRetirementIgnoredDir("ad_hoc") {
+			t.Fatal("ad_hoc requires scan root context and must not be ignored by name alone")
+		}
+	})
+
 	t.Run("malformed import file returns scan error", func(t *testing.T) {
 		db := newRetirementTelemetryDB(t)
 		insertMemoryReadEvent(t, db, now.Add(-15*24*time.Hour))
