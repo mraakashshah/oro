@@ -134,6 +134,26 @@ func TestSelectStoreSQLiteReturnsPlainSQLiteStore(t *testing.T) {
 	}
 }
 
+func TestSelectStoreSQLiteLeavesMemoryFetcherNil(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	store, err := selectStore(ctx, "sqlite", beadstore.NewFakeStore(), db)
+	if err != nil {
+		t.Fatalf("selectStore: %v", err)
+	}
+	sqliteStore, ok := store.(*beadstore.SQLiteStore)
+	if !ok {
+		t.Fatalf("selectStore returned %T, want *beadstore.SQLiteStore", store)
+	}
+
+	memoryField := reflect.ValueOf(sqliteStore).Elem().FieldByName("memory")
+	memoryField = reflect.NewAt(memoryField.Type(), unsafe.Pointer(memoryField.UnsafeAddr())).Elem()
+	if !memoryField.IsNil() {
+		t.Fatalf("selected sqlite store memory fetcher is installed, want nil")
+	}
+}
+
 func TestSelectStoreShadowLogsDivergenceEvent(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)

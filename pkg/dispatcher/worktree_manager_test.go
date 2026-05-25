@@ -1891,6 +1891,56 @@ func TestGitWorktreeManager_LinkQualityGate(t *testing.T) {
 			t.Fatalf("expected slog.Warn to be called, got: %q", logBuf.String())
 		}
 	})
+
+	t.Run("keeps_current_existing_symlink", func(t *testing.T) {
+		worktree := t.TempDir()
+		targetDir := t.TempDir()
+		target := filepath.Join(targetDir, "quality_gate.sh")
+		if err := os.WriteFile(target, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatalf("create target: %v", err)
+		}
+		link := filepath.Join(worktree, "quality_gate.sh")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatalf("create existing symlink: %v", err)
+		}
+
+		runner := &mockCommandRunner{}
+		mgr := NewGitWorktreeManager("/repo", "", target, runner)
+		mgr.linkQualityGate(context.Background(), worktree)
+
+		dest, err := os.Readlink(link)
+		if err != nil {
+			t.Fatalf("read symlink: %v", err)
+		}
+		if dest != target {
+			t.Fatalf("symlink target: got %q, want %q", dest, target)
+		}
+	})
+
+	t.Run("keeps_existing_regular_file", func(t *testing.T) {
+		worktree := t.TempDir()
+		link := filepath.Join(worktree, "quality_gate.sh")
+		if err := os.WriteFile(link, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatalf("create existing file: %v", err)
+		}
+		targetDir := t.TempDir()
+		target := filepath.Join(targetDir, "quality_gate.sh")
+		if err := os.WriteFile(target, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatalf("create target: %v", err)
+		}
+
+		runner := &mockCommandRunner{}
+		mgr := NewGitWorktreeManager("/repo", "", target, runner)
+		mgr.linkQualityGate(context.Background(), worktree)
+
+		info, err := os.Lstat(link)
+		if err != nil {
+			t.Fatalf("stat existing file: %v", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("quality_gate.sh became a symlink; want existing regular file preserved")
+		}
+	})
 }
 
 func TestLinkQualityGateCreatesIsolatedManagedCopy(t *testing.T) {
