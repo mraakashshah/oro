@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"oro/pkg/langprofile"
 )
@@ -506,6 +508,64 @@ func TestWriteQualityGateScriptFile_AbsentConfig(t *testing.T) {
 
 	if _, err := os.Stat(qgPath); !os.IsNotExist(err) {
 		t.Error("quality_gate.sh should not be created when config.yaml is absent")
+	}
+}
+
+func TestQualityGateRunLockArchivesDeadOwnerAndStartsWithoutTimeout(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "quality_gate.sh")
+
+	var buf bytes.Buffer
+	if err := writeQualityGateScript(&buf, ProjectPaths{}); err != nil {
+		t.Fatalf("writeQualityGateScript: %v", err)
+	}
+	script := buf.String()
+	acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
+	acquireIdx := strings.Index(script, acquireCall)
+	if acquireIdx < 0 {
+		t.Fatalf("generated quality gate missing acquire call marker")
+	}
+	harness := script[:acquireIdx+len("acquire_quality_gate_lock")] + "\n"
+	if err := os.WriteFile(scriptPath, []byte(harness), 0o755); err != nil {
+		t.Fatalf("write quality gate script: %v", err)
+	}
+
+	lockDir := filepath.Join(dir, ".oro-quality-gate.lock")
+	if err := os.Mkdir(lockDir, 0o755); err != nil {
+		t.Fatalf("create stale lock: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(lockDir, "owner"), []byte("pid=999999\n"), 0o644); err != nil {
+		t.Fatalf("write stale lock owner: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, scriptPath) //nolint:gosec // scriptPath is a test-owned temp file
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "ORO_QG_LOCK_TIMEOUT_SECONDS=2")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("quality gate should archive stale dead-owner lock and start, got %v\n%s", err, out)
+	}
+
+	output := string(out)
+	if strings.Contains(output, "timed out waiting for quality gate lock") {
+		t.Fatalf("quality gate timed out instead of archiving stale lock:\n%s", output)
+	}
+	if !strings.Contains(output, "archived stale quality gate lock") {
+		t.Fatalf("quality gate did not report stale lock archival:\n%s", output)
+	}
+
+	matches, err := filepath.Glob(lockDir + ".stale.*")
+	if err != nil {
+		t.Fatalf("glob stale lock archives: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected one stale lock archive, got %d: %v", len(matches), matches)
+	}
+	if _, err := os.Stat(lockDir); !os.IsNotExist(err) {
+		t.Fatalf("active quality gate lock should be cleaned up after run, stat err=%v", err)
 	}
 }
 
