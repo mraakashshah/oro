@@ -15738,9 +15738,12 @@ func TestEpicFFMergeFailureCreatesActionableRebaseChild(t *testing.T) {
 			t.Errorf("rebase child acceptance criteria does not name branch %q: %s", branch, rebaseBead.acceptanceCriteria)
 		}
 	}
-	wantCmd := fmt.Sprintf("Cmd: tmp=$(mktemp -d) && git fetch --all --prune && git worktree add \"$tmp\" %s && git -C \"$tmp\" rebase %s && git worktree remove \"$tmp\" && go test ./...", epicBranch, targetBranch)
+	wantCmd := fmt.Sprintf("Cmd: git fetch --all --prune && git rebase %s && go test ./...", targetBranch)
 	if !strings.Contains(rebaseBead.acceptanceCriteria, wantCmd) {
 		t.Errorf("rebase child acceptance criteria command = %q, want to contain %q", rebaseBead.acceptanceCriteria, wantCmd)
+	}
+	if strings.Contains(rebaseBead.acceptanceCriteria, "git worktree add") {
+		t.Errorf("rebase child acceptance criteria should not rewrite the epic branch directly: %s", rebaseBead.acceptanceCriteria)
 	}
 	if strings.Contains(rebaseBead.acceptanceCriteria, "git checkout ") {
 		t.Errorf("rebase child acceptance criteria should not check out the epic branch in-place: %s", rebaseBead.acceptanceCriteria)
