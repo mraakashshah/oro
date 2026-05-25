@@ -114,6 +114,37 @@ func TestSelectStoreSQLiteDoesNotInstallMemoryFetcher(t *testing.T) {
 	}
 }
 
+func TestPromptTelemetryFixtureCountsForPromptReads(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	memories := memory.NewStore(db)
+
+	if _, err := memories.Insert(ctx, memory.InsertParams{
+		Content:    "dispatch selected store should not enrich show",
+		Type:       "lesson",
+		Tags:       []string{"sqlite"},
+		Source:     "self_report",
+		Confidence: 0.9,
+	}); err != nil {
+		t.Fatalf("insert memory: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM memory_read_events`); err != nil {
+		t.Fatalf("clear memory_read_events: %v", err)
+	}
+
+	if _, err := memory.ForPrompt(ctx, memories, []string{"sqlite"}, "dispatch selected store should not enrich show", 500); err != nil {
+		t.Fatalf("ForPrompt: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_read_events WHERE operation = "for_prompt"`).Scan(&count); err != nil {
+		t.Fatalf("count for_prompt memory_read_events: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("for_prompt memory_read_events count = %d, want 1", count)
+	}
+}
+
 func TestSelectStoreSQLiteReturnsPlainSQLiteStore(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
