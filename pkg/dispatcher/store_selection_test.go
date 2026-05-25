@@ -161,6 +161,47 @@ func TestSelectStoreSQLiteLeavesMemoryFetcherNil(t *testing.T) {
 	}
 }
 
+func TestSelectStoreSQLiteReadsSQLiteStoreNotPrimary(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("migrate bead schema: %v", err)
+	}
+	sqliteStore := beadstore.NewSQLiteStore(db)
+	if _, err := sqliteStore.Create(ctx, beadstore.CreateParams{
+		ID:          "oro-sqlite-selected",
+		Title:       "sqlite title",
+		Description: "stored in sqlite",
+	}); err != nil {
+		t.Fatalf("seed sqlite bead: %v", err)
+	}
+	primary := beadstore.NewFakeStore(protocol.Bead{
+		ID:        "oro-sqlite-selected",
+		Title:     "primary title",
+		Status:    "open",
+		Priority:  1,
+		UpdatedAt: "2026-05-25T00:00:00Z",
+	})
+
+	store, err := selectStore(ctx, "sqlite", primary, db)
+	if err != nil {
+		t.Fatalf("selectStore: %v", err)
+	}
+	if _, ok := store.(*beadstore.ShadowStore); ok {
+		t.Fatalf("selectStore returned %T, want direct sqlite store", store)
+	}
+	shown, err := store.Show(ctx, "oro-sqlite-selected")
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if shown == nil {
+		t.Fatalf("Show returned nil, want sqlite bead")
+	}
+	if shown.Title != "sqlite title" {
+		t.Fatalf("Show title = %q, want sqlite title", shown.Title)
+	}
+}
+
 func TestSelectStoreShadowLogsDivergenceEvent(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
