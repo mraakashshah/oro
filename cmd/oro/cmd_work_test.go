@@ -1667,6 +1667,85 @@ func TestBeadHelper() string {
 	})
 }
 
+func TestSpawnAndWaitPreservesCaptureWithoutPromptMemory(t *testing.T) {
+	ctx := context.Background()
+	db := setupTestMemoryDB(t)
+	store := memory.NewStore(db)
+	seededPromptMemory := "seeded legacy prompt memory must stay isolated from spawn prompts"
+	runtimeMemory := "runtime drain should persist this isolated marker"
+
+	if _, err := store.Insert(ctx, memory.InsertParams{
+		Content:    seededPromptMemory,
+		Type:       "lesson",
+		Source:     "test",
+		Confidence: 0.9,
+		Tags:       []string{"spawn", "memory"},
+	}); err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM memory_read_events`); err != nil {
+		t.Fatalf("clear memory read events: %v", err)
+	}
+
+	sp := &captureSpawner{
+		proc:   &mockProcess{},
+		stdout: sjNDJSON(sjTextDelta("[MEMORY] type=lesson tags=spawn,memory: " + runtimeMemory + "\n")),
+	}
+	deps := &workDeps{
+		spawner:  sp,
+		memStore: store,
+	}
+	cfg := &workConfig{
+		beadID:  "oro-test",
+		timeout: 5 * time.Second,
+		bead: &protocol.BeadDetail{
+			ID:                 "oro-test",
+			Title:              "Guard prompt memory isolation",
+			Description:        "Ensure runtime capture uses memory without prompt seeding",
+			AcceptanceCriteria: "Runtime memory is captured and prompt memory is isolated",
+			Tags:               []string{"spawn", "memory"},
+			Type:               "task",
+		},
+	}
+
+	if err := spawnAndWait(ctx, cfg, deps, "/tmp/wt", "claude", "sonnet", "", 0, "", nil); err != nil {
+		t.Fatalf("spawnAndWait: %v", err)
+	}
+
+	if strings.Contains(sp.capturedPrompt, seededPromptMemory) {
+		t.Fatalf("seeded memory content leaked into prompt:\n%s", sp.capturedPrompt)
+	}
+	if strings.Contains(sp.capturedPrompt, "## Memory") {
+		t.Fatalf("legacy Memory section still present in prompt:\n%s", sp.capturedPrompt)
+	}
+	if strings.Contains(sp.capturedPrompt, "## Previous Feedback") {
+		t.Fatalf("legacy Previous Feedback section still present in prompt:\n%s", sp.capturedPrompt)
+	}
+
+	mems, err := store.List(ctx, memory.ListOpts{Limit: 10})
+	if err != nil {
+		t.Fatalf("store.List: %v", err)
+	}
+	foundRuntimeMarker := false
+	for _, mem := range mems {
+		if mem.BeadID == "oro-test" && strings.Contains(mem.Content, runtimeMemory) {
+			foundRuntimeMarker = true
+			break
+		}
+	}
+	if !foundRuntimeMarker {
+		t.Fatalf("runtime [MEMORY] marker was not captured through deps.memStore; got %#v", mems)
+	}
+
+	var promptReads int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_read_events WHERE operation = 'for_prompt'`).Scan(&promptReads); err != nil {
+		t.Fatalf("count for_prompt read events: %v", err)
+	}
+	if promptReads != 0 {
+		t.Fatalf("spawnAndWait called memory.ForPrompt %d times, want 0", promptReads)
+	}
+}
+
 func TestDrainRuntimeOutputPassesMemStore(t *testing.T) {
 	ctx := context.Background()
 	db := setupTestMemoryDB(t)
