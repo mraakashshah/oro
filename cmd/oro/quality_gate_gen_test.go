@@ -220,7 +220,7 @@ func TestGenerateQualityGateScript(t *testing.T) {
 		for _, want := range []string{
 			`should_run_mutation_tests()`,
 			`--mutation-testing`,
-			`ORO_RUN_MUTATION`,
+			`QG_MUTATION_TESTING=true`,
 			`mutation disabled by default; use --mutation-testing`,
 			`QG_STAGE_ASSETS_LOCK=""`,
 			`QG_EXIT_STATUS=0`,
@@ -256,6 +256,9 @@ func TestGenerateQualityGateScript(t *testing.T) {
 			if !strings.Contains(script, want) {
 				t.Errorf("generated Go script missing %q", want)
 			}
+		}
+		if strings.Contains(script, "ORO_RUN_MUTATION") {
+			t.Error("generated Go script must not enable mutation testing from ambient ORO_RUN_MUTATION")
 		}
 		for _, forbidden := range []string{
 			`push | pre-push`,

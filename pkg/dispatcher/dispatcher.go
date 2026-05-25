@@ -306,7 +306,11 @@ func (r *ShellQGRunner) Run(ctx context.Context, worktree string, skipMutation b
 		return false, "", fmt.Errorf("quality gate script not found in scripts/quality_gate.sh or quality_gate.sh")
 	}
 
-	cmd := exec.CommandContext(ctx, "bash", scriptPath) //nolint:gosec // script path constructed from worktree, not user input
+	args := []string{scriptPath}
+	if !skipMutation {
+		args = append(args, "--mutation-testing")
+	}
+	cmd := exec.CommandContext(ctx, "bash", args...) //nolint:gosec // script path constructed from worktree, not user input
 	cmd.Dir = worktree
 	cmd.Env = qgRunnerEnv(skipMutation, worktree)
 	out, runErr := cmd.CombinedOutput()
@@ -334,8 +338,6 @@ func qgRunnerEnv(skipMutation bool, worktree string) []string {
 	}
 	if skipMutation {
 		env = append(env, "ORO_SKIP_MUTATION=1")
-	} else {
-		env = append(env, "ORO_RUN_MUTATION=1")
 	}
 	return processenv.ForWorkdir(env, worktree)
 }

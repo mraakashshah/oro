@@ -21,10 +21,12 @@ unset ORO_QG_BASH_BOOTSTRAPPED
 
 set -euo pipefail
 
+QG_MUTATION_TESTING=false
+
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 	--mutation-testing)
-		export ORO_RUN_MUTATION=1
+		QG_MUTATION_TESTING=true
 		shift
 		;;
 	-h | --help)
@@ -381,7 +383,7 @@ should_run_mutation_tests() {
 	if [ "${ORO_SKIP_MUTATION:-}" = "1" ]; then
 		return 1
 	fi
-	if [ "${ORO_RUN_MUTATION:-}" = "1" ]; then
+	if [ "${QG_MUTATION_TESTING:-false}" = "true" ]; then
 		return 0
 	fi
 	return 1

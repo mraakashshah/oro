@@ -10885,6 +10885,27 @@ func TestShellQGRunner_SkipMutationScrubsRunMutationEnv(t *testing.T) {
 	}
 }
 
+func TestShellQGRunner_MutationTestingUsesFlagNotAmbientEnv(t *testing.T) {
+	t.Setenv("ORO_RUN_MUTATION", "1")
+
+	tmpDir := t.TempDir()
+	script := filepath.Join(tmpDir, "quality_gate.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nif [ \"${1:-}\" != \"--mutation-testing\" ]; then echo missing flag: \"$@\"; exit 1; fi\nif [ -n \"${ORO_RUN_MUTATION:-}\" ]; then echo inherited run mutation; exit 1; fi\necho clean\nexit 0\n"), 0o600); err != nil { //nolint:gosec // test script
+		t.Fatal(err)
+	}
+	if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+		t.Fatal(err)
+	}
+
+	passed, output, err := (&ShellQGRunner{}).Run(context.Background(), tmpDir, false)
+	if err != nil {
+		t.Fatalf("ShellQGRunner.Run: %v", err)
+	}
+	if !passed {
+		t.Fatalf("expected QG to pass with explicit mutation flag and no ambient env, output: %s", output)
+	}
+}
+
 func TestCheckPreMergeQG_MutationTestingOptIn(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()

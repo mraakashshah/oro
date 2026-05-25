@@ -554,15 +554,20 @@ test_mutation_opt_in_flag_runs() {
 		echo "FAIL: mutation helper still runs for GitHub push events by default"
 		return 1
 	fi
-	if ! echo "$helper" | grep -q 'ORO_RUN_MUTATION'; then
-		echo "FAIL: mutation helper lacks explicit ORO_RUN_MUTATION override"
+	if echo "$helper" | grep -q 'ORO_RUN_MUTATION'; then
+		echo "FAIL: mutation helper still honors ambient ORO_RUN_MUTATION"
 		return 1
 	fi
 	local helper_file
 	helper_file=$(mktemp)
 	printf '%s\n' "$helper" >"$helper_file"
-	if ! ORO_RUN_MUTATION=1 /bin/bash -c 'source "$1"; should_run_mutation_tests' _ "$helper_file"; then
-		echo "FAIL: ORO_RUN_MUTATION=1 does not enable mutation"
+	if ORO_RUN_MUTATION=1 /bin/bash -c 'source "$1"; should_run_mutation_tests' _ "$helper_file"; then
+		echo "FAIL: ORO_RUN_MUTATION=1 enables mutation without --mutation-testing"
+		rm -f "$helper_file"
+		return 1
+	fi
+	if ! QG_MUTATION_TESTING=true /bin/bash -c 'source "$1"; should_run_mutation_tests' _ "$helper_file"; then
+		echo "FAIL: --mutation-testing flag marker does not enable mutation"
 		rm -f "$helper_file"
 		return 1
 	fi

@@ -1159,6 +1159,39 @@ exit 0
 	}
 }
 
+func TestRunQualityGate_MutationTestingUsesFlagNotAmbientEnv(t *testing.T) {
+	t.Setenv("ORO_RUN_MUTATION", "1")
+
+	tmpDir := t.TempDir()
+	script := filepath.Join(tmpDir, "quality_gate.sh")
+	scriptContent := `#!/bin/sh
+if [ "${1:-}" != "--mutation-testing" ]; then
+  echo "FAIL: missing --mutation-testing flag: $*"
+  exit 1
+fi
+if [ -n "${ORO_RUN_MUTATION:-}" ]; then
+  echo "FAIL: ORO_RUN_MUTATION inherited"
+  exit 1
+fi
+echo "PASS: mutation enabled by flag only"
+exit 0
+`
+	if err := os.WriteFile(script, []byte(scriptContent), 0o600); err != nil { //nolint:gosec // test file
+		t.Fatal(err)
+	}
+	if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+		t.Fatal(err)
+	}
+
+	passed, output, err := worker.RunQualityGate(context.Background(), tmpDir, false)
+	if err != nil {
+		t.Fatalf("RunQualityGate: %v", err)
+	}
+	if !passed {
+		t.Fatalf("expected quality gate to pass with flag-based mutation opt-in, output: %s", output)
+	}
+}
+
 func TestBuildPrompt_IncludesQualityGateInstruction(t *testing.T) {
 	t.Parallel()
 
@@ -3750,11 +3783,10 @@ func TestWorkerFlow_SendsReadyForReview(t *testing.T) { //nolint:funlen // integ
 		t.Parallel()
 
 		// Create temp worktree with a passing quality_gate.sh. The worker's
-		// local QG path must not set ORO_SKIP_MUTATION; mutation remains opt-in
-		// in the quality gate itself.
+		// local QG path must keep mutation testing disabled by default.
 		tmpDir := t.TempDir()
 		script := filepath.Join(tmpDir, "quality_gate.sh")
-		if err := os.WriteFile(script, []byte("#!/bin/sh\nif [ \"${ORO_SKIP_MUTATION:-}\" = \"1\" ]; then echo 'unexpected ORO_SKIP_MUTATION'; exit 1; fi\necho 'all checks passed'\nexit 0\n"), 0o600); err != nil { //nolint:gosec // test file
+		if err := os.WriteFile(script, []byte("#!/bin/sh\nif [ \"${ORO_SKIP_MUTATION:-}\" != \"1\" ]; then echo 'missing ORO_SKIP_MUTATION'; exit 1; fi\necho 'all checks passed'\nexit 0\n"), 0o600); err != nil { //nolint:gosec // test file
 			t.Fatal(err)
 		}
 		if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable

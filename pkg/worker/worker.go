@@ -779,7 +779,7 @@ func (w *Worker) runQGAndReport(ctx context.Context) {
 	// surface legitimate failures without blocking the worker indefinitely.
 	_ = rebaseOntoTarget(ctx, wt, target)
 
-	passed, output, err := w.runQualityGateWithProgress(ctx, wt, false)
+	passed, output, err := w.runQualityGateWithProgress(ctx, wt, true)
 	if err != nil {
 		// Script missing or cannot start — report as failed with error detail.
 		_ = w.SendDone(ctx, false, err.Error())
@@ -808,7 +808,11 @@ func (w *Worker) runQualityGateWithProgress(ctx context.Context, worktree string
 		return false, "", statErr
 	}
 
-	cmd := exec.CommandContext(ctx, "bash", scriptPath) //nolint:gosec // script path constructed from worktree, not user input
+	args := []string{scriptPath}
+	if !skipMutation {
+		args = append(args, "--mutation-testing")
+	}
+	cmd := exec.CommandContext(ctx, "bash", args...) //nolint:gosec // script path constructed from worktree, not user input
 	cmd.Dir = worktree
 	cmd.Env = qualityGateEnv(worktree, skipMutation)
 
@@ -1709,7 +1713,8 @@ func findQualityGateScript(ctx context.Context, worktree string) (string, error)
 // it exits non-zero, and (false, "", err) if the script cannot be found or started.
 // Output contains combined stdout and stderr from the script.
 // When skipMutation is true, ORO_SKIP_MUTATION=1 is set so the script skips
-// the slow mutation-testing tiers.
+// the slow mutation-testing tiers. When false, --mutation-testing is passed
+// explicitly; ambient ORO_RUN_MUTATION never enables mutation testing.
 func RunQualityGate(ctx context.Context, worktree string, skipMutation bool) (passed bool, output string, err error) {
 	// Canonical location is scripts/quality_gate.sh; fall back to root for legacy repos.
 	scriptPath, statErr := findQualityGateScript(ctx, worktree)
@@ -1717,7 +1722,11 @@ func RunQualityGate(ctx context.Context, worktree string, skipMutation bool) (pa
 		return false, "", statErr
 	}
 
-	cmd := exec.CommandContext(ctx, "bash", scriptPath) //nolint:gosec // script path constructed from worktree, not user input
+	args := []string{scriptPath}
+	if !skipMutation {
+		args = append(args, "--mutation-testing")
+	}
+	cmd := exec.CommandContext(ctx, "bash", args...) //nolint:gosec // script path constructed from worktree, not user input
 	cmd.Dir = worktree
 	cmd.Env = qualityGateEnv(worktree, skipMutation)
 
@@ -1773,8 +1782,6 @@ func qualityGateEnv(worktree string, skipMutation bool) []string {
 	}
 	if skipMutation {
 		env = append(env, "ORO_SKIP_MUTATION=1")
-	} else {
-		env = append(env, "ORO_RUN_MUTATION=1")
 	}
 	env = append(env, "ORO_QG_LOCK_TIMEOUT_SECONDS=300")
 	return processenv.ForWorkdir(env, worktree)
