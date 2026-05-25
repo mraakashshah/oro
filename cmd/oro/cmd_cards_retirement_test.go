@@ -94,6 +94,7 @@ func TestMemoryRetirementReadinessGate(t *testing.T) {
 			"vendor/example.com/dep/dep.go":          "package dep\n\nimport \"oro/pkg/memory\"\n",
 			".git/ignored.go":                        "package git\n\nimport \"oro/pkg/memory\"\n",
 			".worktrees/agent/pkg/ignored.go":        "package ignored\n\nimport \"oro/pkg/memory\"\n",
+			"ad_hoc/memory_eval/harness.go":          "package memoryeval\n\nimport \"oro/pkg/memory\"\n",
 			"pkg/migrate/migrate_memory.go":          "package migrate\n\nimport \"oro/pkg/memory\"\n",
 			"pkg/migrations/memory_migration.go":     "package migrations\n\nimport \"oro/pkg/memory\"\n",
 			"pkg/migration/memory_migration_file.go": "package migration\n\nimport \"oro/pkg/memory\"\n",
@@ -117,6 +118,7 @@ func TestMemoryRetirementReadinessGate(t *testing.T) {
 				strings.Contains(live.Path, "vendor/") ||
 				strings.Contains(live.Path, ".git/") ||
 				strings.Contains(live.Path, ".worktrees/") ||
+				strings.Contains(live.Path, "ad_hoc/memory_eval/") ||
 				live.Path == "cmd/oro/cmd_cards_check_drift.go" ||
 				live.Path == "pkg/cards/legacy_writer.go" {
 				t.Fatalf("ignored or allowlisted import reported live: %+v", live)

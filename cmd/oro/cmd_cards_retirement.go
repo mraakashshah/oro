@@ -124,7 +124,7 @@ func scanLiveMemoryImports(root string) ([]MemoryRetirementImport, error) {
 		}
 		name := entry.Name()
 		if entry.IsDir() {
-			if isMemoryRetirementIgnoredDir(name) {
+			if shouldSkipMemoryRetirementDir(root, path, name) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -161,7 +161,17 @@ func scanLiveMemoryImports(root string) ([]MemoryRetirementImport, error) {
 }
 
 func isMemoryRetirementIgnoredDir(name string) bool {
-	return name == "vendor" || name == ".git" || name == worktreesDirName
+	return name == "vendor" || name == ".git" || name == worktreesDirName || name == "ad_hoc"
+}
+
+func shouldSkipMemoryRetirementDir(root, path, name string) bool {
+	if !isMemoryRetirementIgnoredDir(name) {
+		return false
+	}
+	if name != "ad_hoc" {
+		return true
+	}
+	return path == filepath.Join(root, name)
 }
 
 func isMemoryRetirementImportAllowlisted(path string) bool {
