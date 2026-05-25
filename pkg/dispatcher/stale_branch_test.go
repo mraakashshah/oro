@@ -401,6 +401,67 @@ func TestRebaseDivergedExistingForReuse_CleanBranchRebasesInWorktree(t *testing.
 	}
 }
 
+func TestRebaseDivergedExistingForReuse_AbortsFailedRebase(t *testing.T) {
+	var calls []string
+	rebaseErr := errors.New("rebase conflict")
+	runner := &mockCommandRunner{
+		callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			call := strings.Join(args, " ")
+			calls = append(calls, call)
+			switch call {
+			case "-C /repo/root/.worktrees/oro-ebzg status --porcelain --untracked-files=no":
+				return nil, nil
+			case "-C /repo/root/.worktrees/oro-ebzg rebase epic/oro-ebzp":
+				return nil, rebaseErr
+			case "-C /repo/root/.worktrees/oro-ebzg rebase --abort":
+				return nil, nil
+			default:
+				return nil, fmt.Errorf("unexpected git call: %s", call)
+			}
+		},
+	}
+	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
+
+	err := mgr.RebaseDivergedExistingForReuse(context.Background(),
+		"/repo/root/.worktrees/oro-ebzg", "agent/oro-ebzg", "epic/oro-ebzp")
+	if !errors.Is(err, rebaseErr) {
+		t.Fatalf("RebaseDivergedExistingForReuse error = %v, want wrapped rebase error", err)
+	}
+	if !containsCall(calls, "-C /repo/root/.worktrees/oro-ebzg rebase --abort") {
+		t.Fatalf("failed rebase did not abort, calls=%v", calls)
+	}
+}
+
+func TestRebaseDivergedExistingForReuse_WrapsAbortFailure(t *testing.T) {
+	rebaseErr := errors.New("rebase conflict")
+	abortErr := errors.New("abort failed")
+	runner := &mockCommandRunner{
+		callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			call := strings.Join(args, " ")
+			switch call {
+			case "-C /repo/root/.worktrees/oro-ebzg status --porcelain --untracked-files=no":
+				return nil, nil
+			case "-C /repo/root/.worktrees/oro-ebzg rebase epic/oro-ebzp":
+				return nil, rebaseErr
+			case "-C /repo/root/.worktrees/oro-ebzg rebase --abort":
+				return nil, abortErr
+			default:
+				return nil, fmt.Errorf("unexpected git call: %s", call)
+			}
+		},
+	}
+	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
+
+	err := mgr.RebaseDivergedExistingForReuse(context.Background(),
+		"/repo/root/.worktrees/oro-ebzg", "agent/oro-ebzg", "epic/oro-ebzp")
+	if !errors.Is(err, rebaseErr) {
+		t.Fatalf("RebaseDivergedExistingForReuse error = %v, want wrapped rebase error", err)
+	}
+	if !errors.Is(err, abortErr) {
+		t.Fatalf("RebaseDivergedExistingForReuse error = %v, want wrapped abort error", err)
+	}
+}
+
 func TestRebaseDivergedExistingForReuse_DirtyTrackedBranchBlocks(t *testing.T) {
 	runner := &mockCommandRunner{
 		callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {

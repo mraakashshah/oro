@@ -362,6 +362,10 @@ func (g *GitWorktreeManager) RebaseDivergedExistingForReuse(ctx context.Context,
 		return fmt.Errorf("diverged branch %s cannot rebase onto %s with tracked changes: %s", branch, baseBranch, dirty)
 	}
 	if _, err := g.runner.Run(ctx, "git", "-C", worktree, "rebase", baseBranch); err != nil {
+		if _, abortErr := g.runner.Run(ctx, "git", "-C", worktree, "rebase", "--abort"); abortErr != nil {
+			return fmt.Errorf("rebase existing worktree %s branch %s onto %s: %w; abort failed: %w",
+				worktree, branch, baseBranch, err, abortErr)
+		}
 		return fmt.Errorf("rebase existing worktree %s branch %s onto %s: %w", worktree, branch, baseBranch, err)
 	}
 	return nil
