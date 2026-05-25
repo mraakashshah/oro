@@ -8,13 +8,13 @@ import (
 	"strings"
 	"testing"
 
-	"oro/pkg/memory"
+	"oro/pkg/modelartifacts"
 )
 
 // testModelSpec builds a ModelSpec whose SHA256 matches the given content bytes.
-func testModelSpec(name, filename string, content []byte) memory.ModelSpec {
+func testModelSpec(name, filename string, content []byte) modelartifacts.ModelSpec {
 	h := sha256.Sum256(content)
-	return memory.ModelSpec{
+	return modelartifacts.ModelSpec{
 		Name:     name,
 		URL:      "http://fake.example.com/" + name + "/" + filename,
 		SHA256:   hex.EncodeToString(h[:]),
@@ -25,7 +25,7 @@ func testModelSpec(name, filename string, content []byte) memory.ModelSpec {
 func TestCmdModelsList(t *testing.T) {
 	t.Run("prints_header_and_one_row_per_spec", func(t *testing.T) {
 		modelDir := t.TempDir()
-		specs := []memory.ModelSpec{
+		specs := []modelartifacts.ModelSpec{
 			{Name: "bge-small", URL: "http://example.com/bge-small/model.onnx", SHA256: "abc123def456", Filename: "model.onnx"},
 		}
 
@@ -61,7 +61,7 @@ func TestCmdModelsList(t *testing.T) {
 	})
 
 	t.Run("empty_specs_exits_0", func(t *testing.T) {
-		cmd := newModelsListCmdWithSpecs([]memory.ModelSpec{}, t.TempDir())
+		cmd := newModelsListCmdWithSpecs([]modelartifacts.ModelSpec{}, t.TempDir())
 		if err := cmd.Execute(); err != nil {
 			t.Fatalf("expected exit 0 with no specs: %v", err)
 		}
@@ -69,7 +69,7 @@ func TestCmdModelsList(t *testing.T) {
 
 	t.Run("present_true_when_file_exists", func(t *testing.T) {
 		modelDir := t.TempDir()
-		spec := memory.ModelSpec{Name: "tok", URL: "http://x/tok.json", SHA256: "aaa", Filename: "tokenizer.json"}
+		spec := modelartifacts.ModelSpec{Name: "tok", URL: "http://x/tok.json", SHA256: "aaa", Filename: "tokenizer.json"}
 
 		dir := filepath.Join(modelDir, spec.Name)
 		if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -79,7 +79,7 @@ func TestCmdModelsList(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		cmd := newModelsListCmdWithSpecs([]memory.ModelSpec{spec}, modelDir)
+		cmd := newModelsListCmdWithSpecs([]modelartifacts.ModelSpec{spec}, modelDir)
 		var out strings.Builder
 		cmd.SetOut(&out)
 		if err := cmd.Execute(); err != nil {
@@ -92,7 +92,7 @@ func TestCmdModelsList(t *testing.T) {
 
 	t.Run("multiple_specs_each_get_a_row", func(t *testing.T) {
 		modelDir := t.TempDir()
-		specs := []memory.ModelSpec{
+		specs := []modelartifacts.ModelSpec{
 			{Name: "model-a", URL: "http://x/a.onnx", SHA256: "sha_a", Filename: "model.onnx"},
 			{Name: "model-b", URL: "http://x/b.onnx", SHA256: "sha_b", Filename: "model.onnx"},
 		}
@@ -113,7 +113,7 @@ func TestCmdModelsList(t *testing.T) {
 
 func TestCmdModelsVerify(t *testing.T) {
 	t.Run("exit_0_when_no_specs", func(t *testing.T) {
-		cmd := newModelsVerifyCmdWithSpecs([]memory.ModelSpec{}, t.TempDir())
+		cmd := newModelsVerifyCmdWithSpecs([]modelartifacts.ModelSpec{}, t.TempDir())
 		cmd.SilenceErrors = true
 		if err := cmd.Execute(); err != nil {
 			t.Fatalf("expected exit 0 with no specs: %v", err)
@@ -133,7 +133,7 @@ func TestCmdModelsVerify(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		cmd := newModelsVerifyCmdWithSpecs([]memory.ModelSpec{spec}, modelDir)
+		cmd := newModelsVerifyCmdWithSpecs([]modelartifacts.ModelSpec{spec}, modelDir)
 		cmd.SilenceErrors = true
 		if err := cmd.Execute(); err != nil {
 			t.Fatalf("expected exit 0 for matching model: %v", err)
@@ -142,7 +142,7 @@ func TestCmdModelsVerify(t *testing.T) {
 
 	t.Run("exit_1_on_sha256_mismatch_with_stderr_line", func(t *testing.T) {
 		modelDir := t.TempDir()
-		spec := memory.ModelSpec{Name: "bad-model", URL: "http://x/bad.onnx", SHA256: "wrongdigest", Filename: "model.onnx"}
+		spec := modelartifacts.ModelSpec{Name: "bad-model", URL: "http://x/bad.onnx", SHA256: "wrongdigest", Filename: "model.onnx"}
 
 		dir := filepath.Join(modelDir, spec.Name)
 		if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -152,7 +152,7 @@ func TestCmdModelsVerify(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		cmd := newModelsVerifyCmdWithSpecs([]memory.ModelSpec{spec}, modelDir)
+		cmd := newModelsVerifyCmdWithSpecs([]modelartifacts.ModelSpec{spec}, modelDir)
 		cmd.SilenceErrors = true
 		var errBuf strings.Builder
 		cmd.SetErr(&errBuf)
@@ -167,9 +167,9 @@ func TestCmdModelsVerify(t *testing.T) {
 
 	t.Run("exit_1_on_missing_file_with_stderr_line", func(t *testing.T) {
 		modelDir := t.TempDir()
-		spec := memory.ModelSpec{Name: "missing-model", URL: "http://x/m.onnx", SHA256: "abc", Filename: "model.onnx"}
+		spec := modelartifacts.ModelSpec{Name: "missing-model", URL: "http://x/m.onnx", SHA256: "abc", Filename: "model.onnx"}
 
-		cmd := newModelsVerifyCmdWithSpecs([]memory.ModelSpec{spec}, modelDir)
+		cmd := newModelsVerifyCmdWithSpecs([]modelartifacts.ModelSpec{spec}, modelDir)
 		cmd.SilenceErrors = true
 		var errBuf strings.Builder
 		cmd.SetErr(&errBuf)
@@ -184,7 +184,7 @@ func TestCmdModelsVerify(t *testing.T) {
 
 	t.Run("multiple_failures_each_get_a_stderr_line", func(t *testing.T) {
 		modelDir := t.TempDir()
-		specs := []memory.ModelSpec{
+		specs := []modelartifacts.ModelSpec{
 			{Name: "fail-a", URL: "http://x/a.onnx", SHA256: "wrong_a", Filename: "model.onnx"},
 			{Name: "fail-b", URL: "http://x/b.onnx", SHA256: "wrong_b", Filename: "model.onnx"},
 		}
@@ -213,14 +213,14 @@ func TestCmdModelsVerify(t *testing.T) {
 func TestCmdModelsPrefetchDryRun(t *testing.T) {
 	t.Run("prints_url_and_target_path_without_writing", func(t *testing.T) {
 		modelDir := t.TempDir()
-		spec := memory.ModelSpec{
+		spec := modelartifacts.ModelSpec{
 			Name:     "test-model",
 			URL:      "http://fake.example.com/test-model/model.onnx",
 			SHA256:   "abc123",
 			Filename: "model.onnx",
 		}
 
-		cmd := newModelsPrefetchCmdWithSpecs([]memory.ModelSpec{spec}, modelDir)
+		cmd := newModelsPrefetchCmdWithSpecs([]modelartifacts.ModelSpec{spec}, modelDir)
 		var out strings.Builder
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{"--dry-run"})
@@ -244,7 +244,7 @@ func TestCmdModelsPrefetchDryRun(t *testing.T) {
 	})
 
 	t.Run("empty_specs_dry_run_exits_0", func(t *testing.T) {
-		cmd := newModelsPrefetchCmdWithSpecs([]memory.ModelSpec{}, t.TempDir())
+		cmd := newModelsPrefetchCmdWithSpecs([]modelartifacts.ModelSpec{}, t.TempDir())
 		cmd.SetArgs([]string{"--dry-run"})
 		if err := cmd.Execute(); err != nil {
 			t.Fatalf("expected exit 0 with no specs: %v", err)
@@ -253,7 +253,7 @@ func TestCmdModelsPrefetchDryRun(t *testing.T) {
 
 	t.Run("multiple_specs_each_printed", func(t *testing.T) {
 		modelDir := t.TempDir()
-		specs := []memory.ModelSpec{
+		specs := []modelartifacts.ModelSpec{
 			{Name: "alpha", URL: "http://x/alpha.onnx", SHA256: "s1", Filename: "model.onnx"},
 			{Name: "beta", URL: "http://x/beta.json", SHA256: "s2", Filename: "tokenizer.json"},
 		}

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"oro/pkg/memory"
+	"oro/pkg/modelartifacts"
 
 	"github.com/spf13/cobra"
 )
@@ -30,7 +30,7 @@ func resolveModelDir(dir string) string {
 }
 
 // modelLocalPath returns the expected local path for a spec under modelDir.
-func modelLocalPath(modelDir string, spec memory.ModelSpec) string {
+func modelLocalPath(modelDir string, spec modelartifacts.ModelSpec) string {
 	return filepath.Join(modelDir, spec.Name, spec.Filename)
 }
 
@@ -55,7 +55,7 @@ func newModelsListCmd() *cobra.Command {
 		Short: "List known ONNX models and their local presence",
 		Long:  "Print one row per known model with columns: NAME, FILENAME, SHA256, PRESENT, PATH.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runModelsList(cmd, memory.KnownModels, resolveModelDir(modelDir))
+			return runModelsList(cmd, modelartifacts.KnownModels, resolveModelDir(modelDir))
 		},
 	}
 	cmd.Flags().StringVar(&modelDir, "model-dir", "", "model directory (default ~/.oro/models)")
@@ -63,7 +63,7 @@ func newModelsListCmd() *cobra.Command {
 }
 
 // newModelsListCmdWithSpecs creates the "oro models list" subcommand with injected specs/dir (for testing).
-func newModelsListCmdWithSpecs(specs []memory.ModelSpec, modelDir string) *cobra.Command {
+func newModelsListCmdWithSpecs(specs []modelartifacts.ModelSpec, modelDir string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "list",
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -74,7 +74,7 @@ func newModelsListCmdWithSpecs(specs []memory.ModelSpec, modelDir string) *cobra
 }
 
 // runModelsList prints a table of model specs and their local presence.
-func runModelsList(cmd *cobra.Command, specs []memory.ModelSpec, modelDir string) error {
+func runModelsList(cmd *cobra.Command, specs []modelartifacts.ModelSpec, modelDir string) error {
 	const colFmt = "%-30s %-16s %-20s %-7s %s\n"
 	fmt.Fprintf(cmd.OutOrStdout(), colFmt, "NAME", "FILENAME", "SHA256", "PRESENT", "PATH")
 	fmt.Fprintf(cmd.OutOrStdout(), "%s\n", strings.Repeat("-", 100))
@@ -94,7 +94,7 @@ func newModelsVerifyCmd() *cobra.Command {
 		Short: "Verify SHA256 digests of downloaded models",
 		Long:  "Check each known model's SHA256. Exits 0 if all present files match; exits 1 on any mismatch.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runModelsVerify(cmd, memory.KnownModels, resolveModelDir(modelDir))
+			return runModelsVerify(cmd, modelartifacts.KnownModels, resolveModelDir(modelDir))
 		},
 	}
 	cmd.Flags().StringVar(&modelDir, "model-dir", "", "model directory (default ~/.oro/models)")
@@ -102,7 +102,7 @@ func newModelsVerifyCmd() *cobra.Command {
 }
 
 // newModelsVerifyCmdWithSpecs creates the "oro models verify" subcommand with injected specs/dir (for testing).
-func newModelsVerifyCmdWithSpecs(specs []memory.ModelSpec, modelDir string) *cobra.Command {
+func newModelsVerifyCmdWithSpecs(specs []modelartifacts.ModelSpec, modelDir string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "verify",
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -114,11 +114,11 @@ func newModelsVerifyCmdWithSpecs(specs []memory.ModelSpec, modelDir string) *cob
 
 // runModelsVerify checks SHA256 of each spec and writes one stderr line per failure.
 // Returns an error (exit 1) if any check fails.
-func runModelsVerify(cmd *cobra.Command, specs []memory.ModelSpec, modelDir string) error {
+func runModelsVerify(cmd *cobra.Command, specs []modelartifacts.ModelSpec, modelDir string) error {
 	var failures int
 	for _, s := range specs {
 		path := modelLocalPath(modelDir, s)
-		if err := memory.VerifyModel(path, s.SHA256); err != nil {
+		if err := modelartifacts.VerifyModel(path, s.SHA256); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "%s: %v\n", s.Name, err)
 			failures++
 		}
@@ -138,7 +138,7 @@ func newModelsPrefetchCmd() *cobra.Command {
 		Short: "Download missing or outdated ONNX model artifacts",
 		Long:  "Download and verify each known model into the model directory. Use --dry-run to preview without downloading.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runModelsPrefetch(cmd, memory.KnownModels, resolveModelDir(modelDir), dryRun)
+			return runModelsPrefetch(cmd, modelartifacts.KnownModels, resolveModelDir(modelDir), dryRun)
 		},
 	}
 	cmd.Flags().StringVar(&modelDir, "model-dir", "", "model directory (default ~/.oro/models)")
@@ -147,7 +147,7 @@ func newModelsPrefetchCmd() *cobra.Command {
 }
 
 // newModelsPrefetchCmdWithSpecs creates the "oro models prefetch" subcommand with injected specs/dir (for testing).
-func newModelsPrefetchCmdWithSpecs(specs []memory.ModelSpec, modelDir string) *cobra.Command {
+func newModelsPrefetchCmdWithSpecs(specs []modelartifacts.ModelSpec, modelDir string) *cobra.Command {
 	var dryRun bool
 	cmd := &cobra.Command{
 		Use: "prefetch",
@@ -160,7 +160,7 @@ func newModelsPrefetchCmdWithSpecs(specs []memory.ModelSpec, modelDir string) *c
 }
 
 // runModelsPrefetch downloads models or (in dry-run) prints what it would fetch.
-func runModelsPrefetch(cmd *cobra.Command, specs []memory.ModelSpec, modelDir string, dryRun bool) error {
+func runModelsPrefetch(cmd *cobra.Command, specs []modelartifacts.ModelSpec, modelDir string, dryRun bool) error {
 	if dryRun {
 		for _, s := range specs {
 			path := modelLocalPath(modelDir, s)
@@ -168,7 +168,7 @@ func runModelsPrefetch(cmd *cobra.Command, specs []memory.ModelSpec, modelDir st
 		}
 		return nil
 	}
-	if err := memory.PrefetchModels(context.Background(), modelDir, specs); err != nil {
+	if err := modelartifacts.PrefetchModels(context.Background(), modelDir, specs); err != nil {
 		return fmt.Errorf("prefetch: %w", err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "All models up to date.\n")

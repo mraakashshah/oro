@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"oro/pkg/memory"
+	"oro/pkg/modelartifacts"
 )
 
 func TestModelPathHelpers(t *testing.T) {
@@ -20,7 +20,7 @@ func TestModelPathHelpers(t *testing.T) {
 		t.Fatalf("resolveModelDir(default) = %q, want .oro/models suffix", defaultDir)
 	}
 
-	spec := memory.ModelSpec{Name: "bge-small", Filename: "model.onnx"}
+	spec := modelartifacts.ModelSpec{Name: "bge-small", Filename: "model.onnx"}
 	if got, want := modelLocalPath("/models", spec), filepath.Join("/models", "bge-small", "model.onnx"); got != want {
 		t.Fatalf("modelLocalPath() = %q, want %q", got, want)
 	}
