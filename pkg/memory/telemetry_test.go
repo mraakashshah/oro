@@ -30,7 +30,22 @@ func setupTelemetryDB(t *testing.T) *sql.DB {
 	if _, err := db.Exec(protocol.MigrateSemanticMemorySearchEvents); err != nil {
 		t.Fatalf("exec search events migration: %v", err)
 	}
+	if _, err := db.Exec(protocol.MigrateSemanticMemoryReadEvents); err != nil {
+		t.Fatalf("exec read events migration: %v", err)
+	}
 	return db
+}
+
+func TestSetupTelemetryDBMigratesReadEvents(t *testing.T) {
+	db := setupTelemetryDB(t)
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM memory_read_events`).Scan(&count); err != nil {
+		t.Fatalf("memory_read_events must be queryable from setupTelemetryDB: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("initial memory_read_events count = %d, want 0", count)
+	}
 }
 
 func TestNewStoreMigratesSearchEventsOnEmptyDB(t *testing.T) {
