@@ -2,12 +2,15 @@ package dispatcher //nolint:testpackage // white-box test: needs access to reran
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"oro/pkg/memory"
 	"oro/pkg/memory/testhelpers"
@@ -33,6 +36,44 @@ func TestRerankHandlerDoesNotImportMemory(t *testing.T) {
 	}
 	if strings.Contains(string(src), `"oro/pkg/memory"`) {
 		t.Fatal("rerank_handler.go must depend on dispatcher.Reranker, not memory.Reranker")
+	}
+}
+
+func TestHandleRerankByIDsWithResponseWritesRerankResponse(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+
+	d := &Dispatcher{
+		rerankerFactory: func(_ string) (Reranker, error) {
+			return &fakeReranker{scores: []float64{0.7}}, nil
+		},
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer server.Close()
+		d.handleRerankByIDsWithResponse(context.Background(), server, protocol.Message{
+			RerankReq: &protocol.RerankByIDsRequest{Query: "query"},
+		})
+	}()
+
+	var got protocol.Message
+	if err := json.NewDecoder(client).Decode(&got); err != nil {
+		t.Fatalf("decode rerank response: %v", err)
+	}
+	<-done
+
+	if got.Type != protocol.MsgRerankByIDsResponse {
+		t.Fatalf("Type = %q, want %q", got.Type, protocol.MsgRerankByIDsResponse)
+	}
+	if got.RerankResp == nil {
+		t.Fatal("RerankResp is nil")
+	}
+	if len(got.RerankResp.Scores) != 1 || got.RerankResp.Scores[0] != 0.7 {
+		t.Fatalf("Scores = %#v, want [0.7]", got.RerankResp.Scores)
 	}
 }
 
