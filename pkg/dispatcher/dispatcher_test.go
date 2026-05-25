@@ -118,6 +118,7 @@ type fakeBeadStore struct {
 	deferCalls           []deferCall
 	undeferCalls         []string
 	beadOps              []string
+	deferred             map[string]string
 	deferErrs            map[string]error
 	undeferErrs          map[string]error
 	readyCalled          int // incremented on every Ready() call
@@ -130,8 +131,18 @@ func (m *fakeBeadStore) Ready(_ context.Context) ([]protocol.Bead, error) {
 	if m.readyErr != nil {
 		return nil, m.readyErr
 	}
-	out := make([]protocol.Bead, len(m.beads))
-	copy(out, m.beads)
+	now := time.Now().UTC()
+	out := make([]protocol.Bead, 0, len(m.beads))
+	for _, bead := range m.beads {
+		if until, ok := m.deferred[bead.ID]; ok {
+			untilTime, err := time.Parse(time.RFC3339, until)
+			if err != nil || untilTime.After(now) {
+				continue
+			}
+			delete(m.deferred, bead.ID)
+		}
+		out = append(out, bead)
+	}
 	return out, nil
 }
 
@@ -333,6 +344,10 @@ func (m *fakeBeadStore) Defer(_ context.Context, id, until string) error {
 	if m.deferErrs != nil {
 		return m.deferErrs[id]
 	}
+	if m.deferred == nil {
+		m.deferred = make(map[string]string)
+	}
+	m.deferred[id] = until
 	return nil
 }
 
@@ -344,7 +359,40 @@ func (m *fakeBeadStore) Undefer(_ context.Context, id string) error {
 	if m.undeferErrs != nil {
 		return m.undeferErrs[id]
 	}
+	delete(m.deferred, id)
 	return nil
+}
+
+func TestFakeBeadStoreDeferFiltersReadyBeads(t *testing.T) {
+	store := &fakeBeadStore{}
+	store.SetBeads([]protocol.Bead{
+		{ID: "deferred-bead", Priority: 1},
+		{ID: "ready-bead", Priority: 2},
+	})
+
+	if err := store.Defer(t.Context(), "deferred-bead", time.Now().Add(time.Hour).UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("defer bead: %v", err)
+	}
+
+	ready, err := store.Ready(t.Context())
+	if err != nil {
+		t.Fatalf("ready after defer: %v", err)
+	}
+	if len(ready) != 1 || ready[0].ID != "ready-bead" {
+		t.Fatalf("ready after defer = %+v, want only ready-bead", ready)
+	}
+
+	if err := store.Undefer(t.Context(), "deferred-bead"); err != nil {
+		t.Fatalf("undefer bead: %v", err)
+	}
+
+	ready, err = store.Ready(t.Context())
+	if err != nil {
+		t.Fatalf("ready after undefer: %v", err)
+	}
+	if len(ready) != 2 {
+		t.Fatalf("ready after undefer = %+v, want both beads", ready)
+	}
 }
 
 func (m *fakeBeadStore) AppendJourney(_ context.Context, _ string, _ beadstore.JourneyEvent) error {
