@@ -125,6 +125,23 @@ func TestSelectStoreSQLiteReturnsPlainStoreWithoutMemoryFetcher(t *testing.T) {
 	}
 }
 
+func TestSelectStoreSQLiteTelemetryTableAvailable(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	if _, err := selectStore(ctx, "sqlite", beadstore.NewFakeStore(), db); err != nil {
+		t.Fatalf("selectStore: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_read_events`).Scan(&count); err != nil {
+		t.Fatalf("count memory_read_events before memory operation: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("initial memory_read_events count = %d, want 0", count)
+	}
+}
+
 func TestSelectStoreSQLiteDoesNotFetchLegacyPromptMemory(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
