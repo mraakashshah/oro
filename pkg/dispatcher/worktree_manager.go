@@ -37,6 +37,12 @@ func NewGitWorktreeManager(repoRoot, worktreesDir, qualityGatePath string, runne
 	}
 }
 
+// ManagedQualityGatePath returns the dispatcher-managed quality gate target
+// linked into worker worktrees.
+func (g *GitWorktreeManager) ManagedQualityGatePath() string {
+	return g.qualityGatePath
+}
+
 // Create runs `git worktree add <path> -b agent/<beadID> <baseBranch>` and returns
 // the worktree path and branch name. baseBranch is the branch to branch from
 // (e.g. "main" for standalone beads, "epic/<epicID>" for epic child beads).

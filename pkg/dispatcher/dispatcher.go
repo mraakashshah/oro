@@ -3262,7 +3262,14 @@ func (d *Dispatcher) checkPreReviewGitHygiene(ctx context.Context, _, worktree s
 		return PreReviewGitHygieneResult{}, fmt.Errorf("pre-review git status: %w", err)
 	}
 
-	files := parseGitStatusPorcelainZ(out)
+	entries := parseGitStatusPorcelainZ(out)
+	files := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if d.isIgnorableManagedQualityGateStatus(worktree, entry) {
+			continue
+		}
+		files = append(files, entry.Path)
+	}
 	if len(files) == 0 {
 		return PreReviewGitHygieneResult{}, nil
 	}
@@ -3270,24 +3277,54 @@ func (d *Dispatcher) checkPreReviewGitHygiene(ctx context.Context, _, worktree s
 	return PreReviewGitHygieneResult{Dirty: true, Files: files}, nil
 }
 
-func parseGitStatusPorcelainZ(out []byte) []string {
+type gitStatusPorcelainEntry struct {
+	Code string
+	Path string
+}
+
+func parseGitStatusPorcelainZ(out []byte) []gitStatusPorcelainEntry {
 	entries := strings.Split(string(out), "\x00")
-	files := make([]string, 0, len(entries))
+	parsed := make([]gitStatusPorcelainEntry, 0, len(entries))
 	for i := 0; i < len(entries); i++ {
 		entry := entries[i]
 		if len(entry) < 4 {
 			continue
 		}
+		code := entry[:2]
 		path := strings.TrimSpace(entry[3:])
 		if path == "" {
 			continue
 		}
-		files = append(files, path)
+		parsed = append(parsed, gitStatusPorcelainEntry{Code: code, Path: path})
 		if entry[0] == 'R' || entry[1] == 'R' {
 			i++
 		}
 	}
-	return files
+	return parsed
+}
+
+type managedQualityGateProvider interface {
+	ManagedQualityGatePath() string
+}
+
+func (d *Dispatcher) isIgnorableManagedQualityGateStatus(worktree string, entry gitStatusPorcelainEntry) bool {
+	if entry.Code != "??" || entry.Path != "quality_gate.sh" {
+		return false
+	}
+	provider, ok := d.worktrees.(managedQualityGateProvider)
+	if !ok {
+		return false
+	}
+	managedPath := provider.ManagedQualityGatePath()
+	if managedPath == "" {
+		return false
+	}
+	linkPath := filepath.Join(worktree, entry.Path)
+	info, err := os.Lstat(linkPath)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return false
+	}
+	return symlinkTargetMatches(linkPath, managedPath)
 }
 
 func (d *Dispatcher) sendPreReviewGitDirtyFeedback(ctx context.Context, workerID, feedback string) {

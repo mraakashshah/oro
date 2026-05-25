@@ -2327,6 +2327,39 @@ func TestReadyForReviewRejectsUntrackedTaskFilesBeforeOpsReview(t *testing.T) {
 	}
 }
 
+func TestPreReviewGitHygieneIgnoresManagedQualityGateSymlink(t *testing.T) {
+	ctx := context.Background()
+	repoRoot := t.TempDir()
+	scriptsDir := filepath.Join(repoRoot, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatalf("mkdir scripts: %v", err)
+	}
+	managedQG := filepath.Join(scriptsDir, "quality_gate.sh")
+	if err := os.WriteFile(managedQG, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write managed quality gate: %v", err)
+	}
+
+	worktree := t.TempDir()
+	if err := exec.Command("git", "-C", worktree, "init").Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	if err := os.Symlink(managedQG, filepath.Join(worktree, "quality_gate.sh")); err != nil {
+		t.Fatalf("symlink managed quality gate: %v", err)
+	}
+
+	d := &Dispatcher{
+		repoRoot:  repoRoot,
+		worktrees: NewGitWorktreeManager(repoRoot, "", managedQG, &mockCommandRunner{}),
+	}
+	hygiene, err := d.checkPreReviewGitHygiene(ctx, "bead-clean", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene: %v", err)
+	}
+	if hygiene.Dirty {
+		t.Fatalf("managed quality_gate.sh symlink marked dirty: %#v", hygiene.Files)
+	}
+}
+
 func TestDispatcherQGClassificationLoadsCrossBeadHistory(t *testing.T) {
 	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
