@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"strings"
 	"testing"
 
@@ -10,6 +12,19 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+func TestForgetCmdDoesNotImportMemory(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "cmd_forget.go", nil, parser.ImportsOnly)
+	if err != nil {
+		t.Fatalf("parse cmd_forget.go imports: %v", err)
+	}
+	for _, imp := range file.Imports {
+		if imp.Path.Value == `"oro/pkg/memory"` {
+			t.Fatalf("cmd_forget.go imports oro/pkg/memory at %s", fset.Position(imp.Pos()))
+		}
+	}
+}
 
 func TestForgetCmd(t *testing.T) {
 	t.Run("delete existing ID prints confirmation", func(t *testing.T) {
