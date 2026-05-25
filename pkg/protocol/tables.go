@@ -68,3 +68,17 @@ type Memory struct {
 	FilesModified string  `json:"files_modified"`
 	Pinned        bool    `json:"pinned"`
 }
+
+// MemoryInsertParams holds parameters for inserting a new memory.
+type MemoryInsertParams struct {
+	Content       string
+	Type          string // lesson | decision | gotcha | pattern | preference | summary | self_report
+	Tags          []string
+	Source        string // self_report | daemon_extracted
+	BeadID        string
+	WorkerID      string
+	Confidence    float64
+	FilesRead     []string
+	FilesModified []string
+	Pinned        bool
+}

@@ -296,18 +296,7 @@ func (s *Store) LoadVocab(ctx context.Context) error {
 }
 
 // InsertParams holds parameters for inserting a new memory.
-type InsertParams struct {
-	Content       string
-	Type          string // lesson | decision | gotcha | pattern | preference | summary | self_report
-	Tags          []string
-	Source        string // self_report | daemon_extracted
-	BeadID        string
-	WorkerID      string
-	Confidence    float64
-	FilesRead     []string
-	FilesModified []string
-	Pinned        bool
-}
+type InsertParams = protocol.MemoryInsertParams
 
 // SearchOpts configures a FTS5 search query.
 type SearchOpts struct {

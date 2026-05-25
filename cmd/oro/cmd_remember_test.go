@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"go/parser"
+	"go/token"
 	"strings"
 	"testing"
 
@@ -37,6 +39,19 @@ func TestRememberCmdWithStoreNil(t *testing.T) {
 	// but we can verify the command structure is correct.
 	if cmd.Use != "remember <text>" {
 		t.Errorf("expected Use='remember <text>', got %q", cmd.Use)
+	}
+}
+
+func TestRememberCmdDoesNotImportMemory(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "cmd_remember.go", nil, parser.ImportsOnly)
+	if err != nil {
+		t.Fatalf("parse cmd_remember.go imports: %v", err)
+	}
+	for _, imp := range file.Imports {
+		if imp.Path.Value == `"oro/pkg/memory"` {
+			t.Fatal("cmd_remember.go must not import oro/pkg/memory")
+		}
 	}
 }
 

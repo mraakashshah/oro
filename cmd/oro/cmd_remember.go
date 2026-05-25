@@ -5,10 +5,14 @@ import (
 	"fmt"
 	"strings"
 
-	"oro/pkg/memory"
+	"oro/pkg/protocol"
 
 	"github.com/spf13/cobra"
 )
+
+type rememberMemoryStore interface {
+	Insert(context.Context, protocol.MemoryInsertParams) (int64, error)
+}
 
 // parseTypePrefix extracts a type hint prefix from the text.
 // Returns (memoryType, remainingText). If no prefix matches, returns
@@ -50,7 +54,7 @@ func parseTagsFlag(tagsStr string) []string {
 
 // newRememberCmdWithStore creates the "oro remember" subcommand.
 // If store is nil, the command lazily opens the default store on execution.
-func newRememberCmdWithStore(store *memory.Store) *cobra.Command {
+func newRememberCmdWithStore(store rememberMemoryStore) *cobra.Command {
 	var pin bool
 	var tags string
 	cmd := &cobra.Command{
@@ -72,7 +76,7 @@ func newRememberCmdWithStore(store *memory.Store) *cobra.Command {
 			text := strings.Join(args, " ")
 			memType, content := parseTypePrefix(text)
 
-			id, err := s.Insert(context.Background(), memory.InsertParams{
+			id, err := s.Insert(context.Background(), protocol.MemoryInsertParams{
 				Content:    content,
 				Type:       memType,
 				Tags:       parseTagsFlag(tags),
