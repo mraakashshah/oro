@@ -460,10 +460,16 @@ QG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/qg-$$-XXXXXX")
 QG_STAGE_ASSETS_LOCK=""
 QG_RUN_LOCK=""
 QG_RUN_LOCK_TOKEN=""
+QG_RUN_QUEUE_TICKET=""
 QG_EXIT_STATUS=0
 # shellcheck disable=SC2329
 cleanup_qg() {
     local status=$?
+    if [ -n "${QG_RUN_QUEUE_TICKET:-}" ]; then
+        rm -f "$QG_RUN_QUEUE_TICKET/owner" 2>/dev/null || true
+        rmdir "$QG_RUN_QUEUE_TICKET" 2>/dev/null || true
+        rmdir "$(dirname "$QG_RUN_QUEUE_TICKET")" 2>/dev/null || true
+    fi
     if [ -n "${QG_STAGE_ASSETS_LOCK:-}" ]; then
         rmdir "$QG_STAGE_ASSETS_LOCK" 2>/dev/null || true
     fi
@@ -563,19 +569,90 @@ write_quality_gate_lock_owner() {
     } >"$lock_dir/owner"
 }
 
+quality_gate_lock_poll_seconds() {
+    printf '%s\n' "${ORO_QG_LOCK_POLL_SECONDS:-2}"
+}
+
+create_quality_gate_queue_ticket() {
+    local queue_dir="$1"
+    local ticket_dir
+    mkdir -p "$queue_dir"
+    while :; do
+        ticket_dir="$queue_dir/$(date +%s)-$$-$RANDOM"
+        if mkdir "$ticket_dir" 2>/dev/null; then
+            {
+                echo "pid=$$"
+                echo "created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            } >"$ticket_dir/owner"
+            QG_RUN_QUEUE_TICKET="$ticket_dir"
+            return 0
+        fi
+    done
+}
+
+quality_gate_queue_ticket_stale() {
+    local ticket_dir="$1"
+    local owner="$ticket_dir/owner"
+    local pid
+    if [ ! -f "$owner" ]; then
+        return 0
+    fi
+    pid=$(sed -n 's/^pid=//p' "$owner" | head -1)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        return 1
+    fi
+    return 0
+}
+
+cleanup_stale_quality_gate_queue_tickets() {
+    local queue_dir="$1"
+    local ticket
+    for ticket in "$queue_dir"/*; do
+        [ -d "$ticket" ] || continue
+        if quality_gate_queue_ticket_stale "$ticket"; then
+            rm -f "$ticket/owner" 2>/dev/null || true
+            rmdir "$ticket" 2>/dev/null || true
+        fi
+    done
+}
+
+first_quality_gate_queue_ticket() {
+    local queue_dir="$1"
+    find "$queue_dir" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null | LC_ALL=C sort | head -1
+}
+
 acquire_quality_gate_lock() {
     local lock_dir="$REPO_ROOT/.oro-quality-gate.lock"
+    local queue_dir="$REPO_ROOT/.oro-quality-gate.queue"
+    local ticket_name poll_seconds
     local waited=0
-    while ! mkdir "$lock_dir" 2>/dev/null; do
+    create_quality_gate_queue_ticket "$queue_dir"
+    while :; do
         if [ "$waited" -eq 0 ]; then
             echo "Waiting for another quality gate to finish..."
+        fi
+        cleanup_stale_quality_gate_queue_tickets "$queue_dir"
+        ticket_name=$(basename "$QG_RUN_QUEUE_TICKET")
+        if [ "$(first_quality_gate_queue_ticket "$queue_dir")" != "$ticket_name" ]; then
+            poll_seconds=$(quality_gate_lock_poll_seconds)
+            sleep "$poll_seconds"
+            waited=$((waited + poll_seconds))
+            if [ "$waited" -ge "${ORO_QG_LOCK_TIMEOUT_SECONDS:-1800}" ]; then
+                echo "FAIL: timed out waiting for quality gate FIFO queue: $queue_dir" >&2
+                return 1
+            fi
+            continue
+        fi
+        if mkdir "$lock_dir" 2>/dev/null; then
+            break
         fi
         if quality_gate_lock_stale "$lock_dir"; then
             archive_stale_quality_gate_lock "$lock_dir" || true
             continue
         fi
-        sleep 2
-        waited=$((waited + 2))
+        poll_seconds=$(quality_gate_lock_poll_seconds)
+        sleep "$poll_seconds"
+        waited=$((waited + poll_seconds))
         if [ "$waited" -ge "${ORO_QG_LOCK_TIMEOUT_SECONDS:-1800}" ]; then
             echo "FAIL: timed out waiting for quality gate lock: $lock_dir" >&2
             return 1
@@ -584,6 +661,10 @@ acquire_quality_gate_lock() {
     QG_RUN_LOCK="$lock_dir"
     QG_RUN_LOCK_TOKEN="$$-$(date +%s)-$RANDOM"
     write_quality_gate_lock_owner "$lock_dir" "$QG_RUN_LOCK_TOKEN"
+    rm -f "$QG_RUN_QUEUE_TICKET/owner" 2>/dev/null || true
+    rmdir "$QG_RUN_QUEUE_TICKET" 2>/dev/null || true
+    rmdir "$queue_dir" 2>/dev/null || true
+    QG_RUN_QUEUE_TICKET=""
 }
 
 acquire_quality_gate_lock

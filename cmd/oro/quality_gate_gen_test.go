@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -567,6 +569,119 @@ func TestQualityGateRunLockArchivesDeadOwnerAndStartsWithoutTimeout(t *testing.T
 	if _, err := os.Stat(lockDir); !os.IsNotExist(err) {
 		t.Fatalf("active quality gate lock should be cleaned up after run, stat err=%v", err)
 	}
+}
+
+func TestQualityGateRunLockFIFOQueuePreventsLateArrivalStarvation(t *testing.T) {
+	dir := t.TempDir()
+	eventsPath := filepath.Join(dir, "events")
+
+	var buf bytes.Buffer
+	if err := writeQualityGateScript(&buf, ProjectPaths{}); err != nil {
+		t.Fatalf("writeQualityGateScript: %v", err)
+	}
+	script := buf.String()
+	acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
+	acquireIdx := strings.Index(script, acquireCall)
+	if acquireIdx < 0 {
+		t.Fatalf("generated quality gate missing acquire call marker")
+	}
+	harness := script[:acquireIdx+len("acquire_quality_gate_lock")] + `
+echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
+`
+
+	earlyScript := filepath.Join(dir, "early.sh")
+	if err := os.WriteFile(earlyScript, []byte(harness), 0o755); err != nil {
+		t.Fatalf("write early harness: %v", err)
+	}
+	lateScript := filepath.Join(dir, "late.sh")
+	if err := os.WriteFile(lateScript, []byte(harness), 0o755); err != nil {
+		t.Fatalf("write late harness: %v", err)
+	}
+
+	lockDir := filepath.Join(dir, ".oro-quality-gate.lock")
+	if err := os.Mkdir(lockDir, 0o755); err != nil {
+		t.Fatalf("create held lock: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(lockDir, "owner"), []byte(fmt.Sprintf("pid=%d\n", os.Getpid())), 0o644); err != nil {
+		t.Fatalf("write held lock owner: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	early := exec.CommandContext(ctx, earlyScript) //nolint:gosec // test-owned temp script
+	early.Dir = dir
+	early.Env = append(os.Environ(),
+		"ORO_QG_TEST_NAME=early",
+		"ORO_QG_TEST_EVENTS="+eventsPath,
+		"ORO_QG_LOCK_POLL_SECONDS=1",
+		"ORO_QG_LOCK_TIMEOUT_SECONDS=8",
+	)
+	if err := early.Start(); err != nil {
+		t.Fatalf("start early waiter: %v", err)
+	}
+
+	queueDir := filepath.Join(dir, ".oro-quality-gate.queue")
+	if !waitForQualityGateQueueEntries(queueDir, 1, 2*time.Second) {
+		_ = os.Remove(filepath.Join(lockDir, "owner"))
+		_ = os.Remove(lockDir)
+		_ = early.Wait()
+		t.Fatalf("early waiter did not create a quality gate FIFO queue ticket")
+	}
+
+	late := exec.CommandContext(ctx, lateScript) //nolint:gosec // test-owned temp script
+	late.Dir = dir
+	late.Env = append(os.Environ(),
+		"ORO_QG_TEST_NAME=late",
+		"ORO_QG_TEST_EVENTS="+eventsPath,
+		"ORO_QG_LOCK_POLL_SECONDS=1",
+		"ORO_QG_LOCK_TIMEOUT_SECONDS=8",
+	)
+	if err := late.Start(); err != nil {
+		t.Fatalf("start late waiter: %v", err)
+	}
+	if !waitForQualityGateQueueEntries(queueDir, 2, 2*time.Second) {
+		_ = os.Remove(filepath.Join(lockDir, "owner"))
+		_ = os.Remove(lockDir)
+		_ = early.Wait()
+		_ = late.Wait()
+		t.Fatalf("late waiter did not join quality gate FIFO queue")
+	}
+
+	if err := os.Remove(filepath.Join(lockDir, "owner")); err != nil {
+		t.Fatalf("remove held lock owner: %v", err)
+	}
+	if err := os.Remove(lockDir); err != nil {
+		t.Fatalf("release held lock: %v", err)
+	}
+
+	if err := early.Wait(); err != nil {
+		t.Fatalf("early waiter failed: %v", err)
+	}
+	if err := late.Wait(); err != nil {
+		t.Fatalf("late waiter failed: %v", err)
+	}
+
+	events, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatalf("read acquisition events: %v", err)
+	}
+	got := strings.Fields(string(events))
+	if !reflect.DeepEqual(got, []string{"early", "late"}) {
+		t.Fatalf("quality gate acquisition order = %v, want FIFO early before late", got)
+	}
+}
+
+func waitForQualityGateQueueEntries(queueDir string, want int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		entries, err := os.ReadDir(queueDir)
+		if err == nil && len(entries) >= want {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
 }
 
 // checkBashSyntax writes the script to a temp file and runs bash -n to verify
