@@ -947,6 +947,9 @@ func newTestDB(t *testing.T) *sql.DB {
 	if _, err := db.Exec(protocol.MigrateSemanticMemorySearchEvents); err != nil {
 		t.Fatalf("init semantic memory search events: %v", err)
 	}
+	if _, err := db.Exec(protocol.MigrateSemanticMemoryReadEvents); err != nil {
+		t.Fatalf("init semantic memory read events: %v", err)
+	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
@@ -956,6 +959,22 @@ func TestNewTestDBMigratesMemorySearchEvents(t *testing.T) {
 
 	if _, err := db.Exec("INSERT INTO memory_search_events (query_hash) VALUES ('deadbeef')"); err != nil {
 		t.Fatalf("memory_search_events must be writable after newTestDB: %v", err)
+	}
+}
+
+func TestNewTestDBMigratesMemoryReadEvents(t *testing.T) {
+	db := newTestDB(t)
+
+	if _, err := db.Exec("INSERT INTO memory_read_events (operation) VALUES (?)", "for_prompt"); err != nil {
+		t.Fatalf("memory_read_events must be writable after newTestDB: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM memory_read_events WHERE operation = ?`, "for_prompt").Scan(&count); err != nil {
+		t.Fatalf("memory_read_events count query must not error: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("memory_read_events count = %d, want 1", count)
 	}
 }
 
