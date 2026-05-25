@@ -100,7 +100,10 @@ func removeHookPath(path, hookName string) error {
 
 func hookIsExecutable(path string) bool {
 	info, err := os.Stat(path)
-	return err == nil && info.Mode()&0o111 != 0
+	if err != nil {
+		return false
+	}
+	return info.Mode()&0o111 != 0
 }
 
 func backupExecutableHook(path, hookName string) error {
