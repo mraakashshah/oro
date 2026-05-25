@@ -866,6 +866,36 @@ func TestMigrateSemanticMemorySearchEvents(t *testing.T) {
 	}
 }
 
+func TestMigrateSemanticMemoryReadEventsCreatesEmptyTable(t *testing.T) {
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
+		t.Fatalf("exec schema DDL: %v", err)
+	}
+
+	if _, err := db.Exec(protocol.MigrateSemanticMemoryReadEvents); err != nil {
+		t.Fatalf("exec MigrateSemanticMemoryReadEvents: %v", err)
+	}
+	if _, err := db.Exec(protocol.MigrateSemanticMemoryReadEvents); err != nil {
+		t.Fatalf("second exec MigrateSemanticMemoryReadEvents: %v", err)
+	}
+
+	assertSQLiteObjectExists(t, db, "table", "memory_read_events")
+	assertSQLiteObjectExists(t, db, "index", "idx_mre_ts")
+
+	var count int64
+	if err := db.QueryRow(`SELECT COUNT(*) FROM memory_read_events`).Scan(&count); err != nil {
+		t.Fatalf("count memory_read_events: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("memory_read_events count = %d, want 0", count)
+	}
+}
+
 func ptr(s string) *string { return &s }
 
 func TestMigrateSemanticMemoryChunksConstant(t *testing.T) {
