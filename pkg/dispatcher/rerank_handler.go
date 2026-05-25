@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net"
 
-	"oro/pkg/memory"
 	"oro/pkg/protocol"
 )
 
@@ -17,7 +16,7 @@ var ErrRerankerUnavailable = errors.New("reranker unavailable")
 // lazyLoadReranker loads the BGE reranker via rerankerFactory on the first call,
 // caches the result (success or failure) in sync.Once, and returns it on every
 // subsequent call without re-invoking the factory.
-func (d *Dispatcher) lazyLoadReranker() (memory.Reranker, error) {
+func (d *Dispatcher) lazyLoadReranker() (Reranker, error) {
 	d.rerankerOnce.Do(func() {
 		if d.rerankerFactory == nil {
 			d.rerankerErr = ErrRerankerUnavailable

@@ -3,6 +3,8 @@ package dispatcher //nolint:testpackage // white-box test: needs access to reran
 import (
 	"context"
 	"errors"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,7 +14,7 @@ import (
 	"oro/pkg/protocol"
 )
 
-// fakeReranker implements memory.Reranker. Returns zero scores without loading any model.
+// fakeReranker implements Reranker. Returns zero scores without loading any model.
 type fakeReranker struct {
 	scores []float64 // optional fixed scores; nil → zero-fill
 }
@@ -22,6 +24,16 @@ func (r *fakeReranker) Rerank(_ string, docs []string) []float64 {
 		return r.scores
 	}
 	return make([]float64, len(docs))
+}
+
+func TestRerankHandlerDoesNotImportMemory(t *testing.T) {
+	src, err := os.ReadFile("rerank_handler.go")
+	if err != nil {
+		t.Fatalf("read rerank_handler.go: %v", err)
+	}
+	if strings.Contains(string(src), `"oro/pkg/memory"`) {
+		t.Fatal("rerank_handler.go must depend on dispatcher.Reranker, not memory.Reranker")
+	}
 }
 
 // TestRerankByIDsNotLoadedAtWarmup asserts that warmupEmbedder does NOT touch the
@@ -56,7 +68,7 @@ func TestRerankByIDsLazyLoad(t *testing.T) {
 		fakeR := &fakeReranker{}
 		var calls atomic.Int32
 		d := &Dispatcher{
-			rerankerFactory: func(_ string) (memory.Reranker, error) {
+			rerankerFactory: func(_ string) (Reranker, error) {
 				calls.Add(1)
 				return fakeR, nil
 			},
@@ -85,7 +97,7 @@ func TestRerankByIDsLazyLoad(t *testing.T) {
 		fakeR := &fakeReranker{}
 		var calls atomic.Int32
 		d := &Dispatcher{
-			rerankerFactory: func(_ string) (memory.Reranker, error) {
+			rerankerFactory: func(_ string) (Reranker, error) {
 				calls.Add(1)
 				return fakeR, nil
 			},
@@ -112,7 +124,7 @@ func TestRerankByIDsLazyLoad(t *testing.T) {
 		factoryEntered := make(chan struct{}, 1)
 
 		d := &Dispatcher{
-			rerankerFactory: func(_ string) (memory.Reranker, error) {
+			rerankerFactory: func(_ string) (Reranker, error) {
 				calls.Add(1)
 				select {
 				case factoryEntered <- struct{}{}:
@@ -153,7 +165,7 @@ func TestRerankByIDsLazyLoad(t *testing.T) {
 	t.Run("factory error caches failure — no retry", func(t *testing.T) {
 		var calls atomic.Int32
 		d := &Dispatcher{
-			rerankerFactory: func(_ string) (memory.Reranker, error) {
+			rerankerFactory: func(_ string) (Reranker, error) {
 				calls.Add(1)
 				return nil, errors.New("model missing")
 			},
@@ -191,7 +203,7 @@ func TestRerankByIDsLazyLoad(t *testing.T) {
 		fakeR := &fakeReranker{scores: []float64{0.9, 0.1}}
 		d := &Dispatcher{
 			memories: memory.NewStore(db),
-			rerankerFactory: func(_ string) (memory.Reranker, error) {
+			rerankerFactory: func(_ string) (Reranker, error) {
 				return fakeR, nil
 			},
 		}

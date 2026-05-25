@@ -85,6 +85,11 @@ var ErrEmbedderUnavailable = errors.New("embedder unavailable")
 
 // --- Interfaces for testability ---
 
+// Reranker re-scores a set of candidate documents against a query.
+type Reranker interface {
+	Rerank(query string, docs []string) []float64
+}
+
 // DeferredStore is the dispatcher-local extension for deferred bead repair.
 type DeferredStore interface {
 	beadstore.Store
@@ -618,10 +623,10 @@ type Dispatcher struct {
 
 	// reranker fields — populated lazily on first RerankByIDsRequest (sync.Once-guarded).
 	// rerankerFactory == nil means reranker is unavailable for this session.
-	reranker        memory.Reranker
+	reranker        Reranker
 	rerankerOnce    sync.Once
 	rerankerErr     error
-	rerankerFactory func(modelDir string) (memory.Reranker, error)
+	rerankerFactory func(modelDir string) (Reranker, error)
 	procMgr         ProcessManager
 	acceptance      AcceptanceRunner   // runs epic acceptance test commands
 	qgRunner        QGRunner           // runs quality gate before merge (defaults to &ShellQGRunner{})
