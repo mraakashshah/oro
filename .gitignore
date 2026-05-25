@@ -36,6 +36,7 @@ cmd/oro/_assets/
 .claude/scheduled_tasks.lock
 .claude/worktrees/
 /.oro-quality-gate.lock*
+/.oro-quality-gate.queue/
 **/dispatcher.exit.log
 .gstack/
 pkg/dispatcher/workers/
