@@ -198,6 +198,10 @@ type existingWorktreeReusePreparer interface {
 	PrepareExistingForReuse(ctx context.Context, worktree, branch, baseBranch string) (fastForwarded bool, err error)
 }
 
+type existingWorktreeDivergedRebaser interface {
+	RebaseDivergedExistingForReuse(ctx context.Context, worktree, branch, baseBranch string) error
+}
+
 type assignmentBaseBranchPreparer interface {
 	PrepareBaseBranchForAssignment(ctx context.Context, branch, baseBranch string) (fastForwarded bool, err error)
 }
@@ -5606,11 +5610,13 @@ func (d *Dispatcher) validateExistingWorktreeForReuse(ctx context.Context, beadI
 	}
 	fastForwarded, err := preparer.PrepareExistingForReuse(ctx, worktree, expectedBranch, baseBranch)
 	if err != nil {
-		if isBranchDivergedFromBase(err) && d.isEpicRebaseChildForBase(ctx, beadID, baseBranch) {
-			_ = d.logEvent(ctx, "epic_rebase_child_reuse_diverged", "dispatcher", beadID, workerID,
-				fmt.Sprintf(`{"worktree":%q,"branch":%q,"base_branch":%q,"error":%q}`,
-					worktree, expectedBranch, baseBranch, err.Error()))
+		recovered, recoveryErr := d.recoverExistingWorktreeReuseDivergence(ctx,
+			beadID, workerID, worktree, expectedBranch, baseBranch, err)
+		if recovered {
 			return true
+		}
+		if recoveryErr != nil {
+			err = recoveryErr
 		}
 		d.quarantineUnsafeRecoveryWork(ctx, recoveryQuarantine{
 			BeadID:   beadID,
@@ -5632,6 +5638,29 @@ func (d *Dispatcher) validateExistingWorktreeForReuse(ctx context.Context, beadI
 			fmt.Sprintf(`{"worktree":%q,"branch":%q,"base_branch":%q}`, worktree, expectedBranch, baseBranch))
 	}
 	return true
+}
+
+func (d *Dispatcher) recoverExistingWorktreeReuseDivergence(ctx context.Context, beadID, workerID, worktree, expectedBranch, baseBranch string, prepareErr error) (bool, error) {
+	if !isBranchDivergedFromBase(prepareErr) {
+		return false, prepareErr
+	}
+	if d.isEpicRebaseChildForBase(ctx, beadID, baseBranch) {
+		_ = d.logEvent(ctx, "epic_rebase_child_reuse_diverged", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"worktree":%q,"branch":%q,"base_branch":%q,"error":%q}`,
+				worktree, expectedBranch, baseBranch, prepareErr.Error()))
+		return true, nil
+	}
+	rebaser, ok := d.worktrees.(existingWorktreeDivergedRebaser)
+	if !ok {
+		return false, prepareErr
+	}
+	if err := rebaser.RebaseDivergedExistingForReuse(ctx, worktree, expectedBranch, baseBranch); err != nil {
+		return false, fmt.Errorf("%w; rebase diverged existing worktree: %w", prepareErr, err)
+	}
+	_ = d.logEvent(ctx, "worktree_rebased_for_reuse", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"worktree":%q,"branch":%q,"base_branch":%q}`,
+			worktree, expectedBranch, baseBranch))
+	return true, nil
 }
 
 func (d *Dispatcher) isEpicRebaseChildForBase(ctx context.Context, beadID, baseBranch string) bool {

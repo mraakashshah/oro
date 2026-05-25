@@ -407,6 +407,7 @@ type mockWorktreeManager struct {
 	existsFn          func(ctx context.Context, path string) bool
 	currentBranchFn   func(ctx context.Context, path string) (string, error)
 	prepareReuseFn    func(ctx context.Context, worktree, branch, baseBranch string) (bool, error)
+	rebaseReuseFn     func(ctx context.Context, worktree, branch, baseBranch string) error
 	createBranchFn    func(ctx context.Context, name, from string) error
 	gcClosedFn        func(ctx context.Context, isBeadClosed func(string) bool) error
 }
@@ -568,6 +569,16 @@ func (m *mockWorktreeManager) PrepareExistingForReuse(ctx context.Context, workt
 		return fn(ctx, worktree, branch, baseBranch)
 	}
 	return false, nil
+}
+
+func (m *mockWorktreeManager) RebaseDivergedExistingForReuse(ctx context.Context, worktree, branch, baseBranch string) error {
+	m.mu.Lock()
+	fn := m.rebaseReuseFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, worktree, branch, baseBranch)
+	}
+	return nil
 }
 
 func (m *mockWorktreeManager) PrepareBaseBranchForAssignment(ctx context.Context, branch, baseBranch string) (bool, error) {

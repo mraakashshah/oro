@@ -347,6 +347,26 @@ func (g *GitWorktreeManager) PrepareExistingForReuse(ctx context.Context, worktr
 	return false, fmt.Errorf("agent branch %s diverged from base %s", branch, baseBranch)
 }
 
+// RebaseDivergedExistingForReuse rebases a clean preserved assignment
+// worktree onto its current base branch. It leaves untracked artifacts in
+// place, but refuses to run over tracked worktree changes.
+func (g *GitWorktreeManager) RebaseDivergedExistingForReuse(ctx context.Context, worktree, branch, baseBranch string) error {
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+	dirty, err := g.trackedStatus(ctx, worktree)
+	if err != nil {
+		return err
+	}
+	if dirty != "" {
+		return fmt.Errorf("diverged branch %s cannot rebase onto %s with tracked changes: %s", branch, baseBranch, dirty)
+	}
+	if _, err := g.runner.Run(ctx, "git", "-C", worktree, "rebase", baseBranch); err != nil {
+		return fmt.Errorf("rebase existing worktree %s branch %s onto %s: %w", worktree, branch, baseBranch, err)
+	}
+	return nil
+}
+
 // PrepareBaseBranchForAssignment refreshes an assignment base branch before a
 // child worktree is reused. It only mutates branch when branch is strictly
 // behind baseBranch; branches with unique commits are left untouched.

@@ -373,6 +373,58 @@ func TestPrepareExistingForReuse_BehindDirtyTrackedBranchBlocks(t *testing.T) {
 	}
 }
 
+func TestRebaseDivergedExistingForReuse_CleanBranchRebasesInWorktree(t *testing.T) {
+	var calls []string
+	runner := &mockCommandRunner{
+		callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			call := strings.Join(args, " ")
+			calls = append(calls, call)
+			switch call {
+			case "-C /repo/root/.worktrees/oro-ebzg status --porcelain --untracked-files=no":
+				return nil, nil
+			case "-C /repo/root/.worktrees/oro-ebzg rebase epic/oro-ebzp":
+				return nil, nil
+			default:
+				return nil, fmt.Errorf("unexpected git call: %s", call)
+			}
+		},
+	}
+	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
+
+	err := mgr.RebaseDivergedExistingForReuse(context.Background(),
+		"/repo/root/.worktrees/oro-ebzg", "agent/oro-ebzg", "epic/oro-ebzp")
+	if err != nil {
+		t.Fatalf("RebaseDivergedExistingForReuse: %v", err)
+	}
+	if !containsCall(calls, "-C /repo/root/.worktrees/oro-ebzg rebase epic/oro-ebzp") {
+		t.Fatalf("worktree rebase not called, calls=%v", calls)
+	}
+}
+
+func TestRebaseDivergedExistingForReuse_DirtyTrackedBranchBlocks(t *testing.T) {
+	runner := &mockCommandRunner{
+		callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			call := strings.Join(args, " ")
+			switch call {
+			case "-C /repo/root/.worktrees/oro-ebzg status --porcelain --untracked-files=no":
+				return []byte(" M pkg/memory/memory.go\n"), nil
+			default:
+				return nil, fmt.Errorf("unexpected git call: %s", call)
+			}
+		},
+	}
+	mgr := NewGitWorktreeManager("/repo/root", "", "", runner)
+
+	err := mgr.RebaseDivergedExistingForReuse(context.Background(),
+		"/repo/root/.worktrees/oro-ebzg", "agent/oro-ebzg", "epic/oro-ebzp")
+	if err == nil {
+		t.Fatal("expected dirty tracked worktree to block rebase")
+	}
+	if !strings.Contains(err.Error(), "tracked changes") {
+		t.Fatalf("error = %v, want tracked changes context", err)
+	}
+}
+
 func TestPrepareBaseBranchForAssignment_FastForwardsBehindBranch(t *testing.T) {
 	var calls []string
 	runner := &mockCommandRunner{
@@ -479,6 +531,54 @@ func TestValidateExistingWorktreeForReuse_PreparerFailureQuarantines(t *testing.
 	}
 }
 
+func TestValidateExistingWorktreeForReuse_RebasesRegularDivergedBranch(t *testing.T) {
+	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		beadID   = "oro-ebzg"
+		worktree = "/repo/root/.worktrees/oro-ebzg"
+		branch   = "agent/oro-ebzg"
+		base     = "epic/oro-ebzp"
+	)
+	wtMgr.currentBranchFn = func(_ context.Context, path string) (string, error) {
+		if path != worktree {
+			t.Fatalf("current branch path = %q, want %q", path, worktree)
+		}
+		return branch, nil
+	}
+	wtMgr.prepareReuseFn = func(_ context.Context, gotWorktree, gotBranch, gotBase string) (bool, error) {
+		if gotWorktree != worktree || gotBranch != branch || gotBase != base {
+			t.Fatalf("prepare args = %q %q %q", gotWorktree, gotBranch, gotBase)
+		}
+		return false, fmt.Errorf("agent branch %s diverged from base %s", branch, base)
+	}
+	rebased := false
+	wtMgr.rebaseReuseFn = func(_ context.Context, gotWorktree, gotBranch, gotBase string) error {
+		if gotWorktree != worktree || gotBranch != branch || gotBase != base {
+			t.Fatalf("rebase args = %q %q %q", gotWorktree, gotBranch, gotBase)
+		}
+		rebased = true
+		return nil
+	}
+
+	if !d.validateExistingWorktreeForReuse(ctx, beadID, "worker-1", worktree, branch, base) {
+		t.Fatal("validateExistingWorktreeForReuse returned false, want reuse after rebase")
+	}
+	if !rebased {
+		t.Fatal("regular diverged branch was not rebased")
+	}
+
+	var quarantines int
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM recovery_quarantines WHERE bead_id=? AND status='open'`,
+		beadID).Scan(&quarantines); err != nil {
+		t.Fatalf("count quarantines: %v", err)
+	}
+	if quarantines != 0 {
+		t.Fatalf("open quarantines = %d, want 0", quarantines)
+	}
+}
+
 func TestValidateExistingWorktreeForReuse_AllowsEpicRebaseChildDivergence(t *testing.T) {
 	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
@@ -507,6 +607,10 @@ func TestValidateExistingWorktreeForReuse_AllowsEpicRebaseChildDivergence(t *tes
 			t.Fatalf("prepare args = %q %q %q", gotWorktree, gotBranch, gotBase)
 		}
 		return false, fmt.Errorf("agent branch %s diverged from base %s", branch, base)
+	}
+	wtMgr.rebaseReuseFn = func(_ context.Context, _, _, _ string) error {
+		t.Fatal("rebase child should not be rebased onto its epic base during reuse")
+		return nil
 	}
 
 	if !d.validateExistingWorktreeForReuse(ctx, beadID, "worker-1", worktree, branch, base) {
