@@ -1667,6 +1667,49 @@ func TestBeadHelper() string {
 	})
 }
 
+func TestDrainRuntimeOutputPassesMemStore(t *testing.T) {
+	ctx := context.Background()
+	db := setupTestMemoryDB(t)
+	store := memory.NewStore(db)
+	marker := sjNDJSON(sjTextDelta("[MEMORY] type=gotcha tags=test: runtime drain should persist marker memory\n"))
+
+	deps := &workDeps{memStore: store}
+	drainRuntimeOutput(
+		ctx,
+		deps,
+		io.NopCloser(strings.NewReader(marker)),
+		worker.StreamFormatClaudeJSON,
+		"oro-runtime-drain",
+		t.TempDir(),
+		nil,
+	)
+
+	mems, err := store.List(ctx, memory.ListOpts{Limit: 10})
+	if err != nil {
+		t.Fatalf("store.List: %v", err)
+	}
+	found := false
+	for _, m := range mems {
+		if m.BeadID == "oro-runtime-drain" && strings.Contains(m.Content, "runtime drain should persist marker memory") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("drainRuntimeOutput did not persist memory marker through deps.memStore; got %d memories", len(mems))
+	}
+
+	drainRuntimeOutput(
+		ctx,
+		&workDeps{},
+		io.NopCloser(strings.NewReader(marker)),
+		worker.StreamFormatClaudeJSON,
+		"oro-runtime-drain-nil",
+		t.TempDir(),
+		nil,
+	)
+}
+
 func TestNewWorkerBeadStoreDoesNotFetchLegacyPromptMemory(t *testing.T) {
 	ctx := context.Background()
 	db := setupTestMemoryDB(t)
