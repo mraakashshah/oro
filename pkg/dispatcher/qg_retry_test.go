@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -829,41 +828,30 @@ func TestHandleQGFailureRecordsOneTransientRetryPerFailure(t *testing.T) {
 	beadSrc.SetBeads([]protocol.Bead{{ID: beadID, Title: "Transient QG once", Priority: 1, Type: "task", Model: protocol.ModelOpus}})
 	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: "Transient QG once", Status: "in_progress"}
 
-	serverConn, clientConn := net.Pipe()
-	defer func() { _ = serverConn.Close() }()
-	defer func() { _ = clientConn.Close() }()
-
-	msgCh := make(chan protocol.Message, 1)
-	go func() {
-		var msg protocol.Message
-		if err := json.NewDecoder(clientConn).Decode(&msg); err == nil {
-			msgCh <- msg
-		}
-	}()
+	workerConn := newMockConn()
 
 	d.mu.Lock()
 	d.workers[workerID] = &trackedWorker{
 		id:           workerID,
-		conn:         serverConn,
+		conn:         workerConn,
 		state:        protocol.WorkerBusy,
 		assignmentID: 1,
 		beadID:       beadID,
 		worktree:     t.TempDir(),
 		model:        protocol.ModelOpus,
 		lastSeen:     d.nowFunc(),
-		encoder:      json.NewEncoder(serverConn),
+		encoder:      json.NewEncoder(workerConn),
 	}
 	d.mu.Unlock()
 
 	d.handleQGFailure(t.Context(), workerID, beadID, "network timeout: dial tcp 127.0.0.1:3000: connect: connection refused")
 
-	select {
-	case msg := <-msgCh:
-		if msg.Type != protocol.MsgAssign {
-			t.Fatalf("expected ASSIGN after transient retry, got %s", msg.Type)
-		}
-	case <-time.After(2 * time.Second):
+	msg, ok := firstWrittenMsg(workerConn)
+	if !ok {
 		t.Fatal("expected ASSIGN after transient retry")
+	}
+	if msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected ASSIGN after transient retry, got %s", msg.Type)
 	}
 
 	d.mu.Lock()
