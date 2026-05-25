@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"go/parser"
+	"go/token"
 	"io"
 	"os"
 	"os/exec"
@@ -23,6 +25,19 @@ import (
 	"oro/pkg/protocol"
 	"oro/pkg/worker"
 )
+
+func TestCmdWorkDoesNotImportMemory(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "cmd_work.go", nil, parser.ImportsOnly)
+	if err != nil {
+		t.Fatalf("parse cmd_work.go imports: %v", err)
+	}
+	for _, imp := range file.Imports {
+		if imp.Path.Value == `"oro/pkg/memory"` {
+			t.Fatalf("cmd_work.go imports oro/pkg/memory at %s", fset.Position(imp.Pos()))
+		}
+	}
+}
 
 func TestNewWorkCmd_Flags(t *testing.T) {
 	cmd := newWorkCmd()

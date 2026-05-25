@@ -87,6 +87,10 @@ func workerSpawnerForRuntime() worker.RuntimeStreamingSpawner {
 	return worker.NewRuntimeSpawnerRouter(newClaudeWorkerSpawner(), newCodexWorkerSpawner())
 }
 
+func newWorkerMemoryExtractSpawner() memory.Spawner {
+	return &memory.CLISpawner{}
+}
+
 // openWorkerMemoryStore creates a memory.Store from an open DB connection.
 // It attaches a fresh Embedder and restores the accumulated vocabulary from
 // the database so embeddings from prior sessions remain in the same vector

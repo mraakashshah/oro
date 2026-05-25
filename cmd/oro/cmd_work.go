@@ -22,7 +22,6 @@ import (
 	"oro/pkg/codestruct"
 	"oro/pkg/dispatcher"
 	"oro/pkg/langprofile"
-	"oro/pkg/memory"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
@@ -117,6 +116,11 @@ type opsReviewer interface {
 	Review(ctx context.Context, opts ops.ReviewOpts) <-chan ops.Result
 }
 
+type workMemoryStore interface {
+	worker.MemoryInserter
+	SaveVocab(context.Context) error
+}
+
 // workDeps holds injectable dependencies for testability.
 type workDeps struct {
 	beadSrc         beadstore.Store
@@ -126,7 +130,7 @@ type workDeps struct {
 	opsMgr          opsReviewer
 	merger          merger
 	repoRoot        string
-	memStore        *memory.Store
+	memStore        workMemoryStore
 	codeIndex       *codesearch.CodeIndex
 	defaultBranch   string
 	hasNewWork      func(repoRoot, branch, targetBranch string) bool                                    // defaults to hasCommitsAhead
@@ -157,7 +161,7 @@ func updateWorkBeadStatus(ctx context.Context, beads beadstore.Store, id, status
 	return nil
 }
 
-func newWorkerBeadStore(db *sql.DB, _ *memory.Store) *beadstore.SQLiteStore {
+func newWorkerBeadStore(db *sql.DB, _ workMemoryStore) *beadstore.SQLiteStore {
 	return beadstore.NewSQLiteStore(db)
 }
 
@@ -217,7 +221,7 @@ func newProductionDeps(reviewTimeout time.Duration) (*workDeps, error) {
 	// Initialize memory store and code index from project-scoped DB paths.
 	// The native beadstore is required; memory/code index degrade gracefully.
 	var beadDB *sql.DB
-	var memStore *memory.Store
+	var memStore workMemoryStore
 	var cardStore cards.Store
 	var codeIdx *codesearch.CodeIndex
 	paths, pathsErr := ResolveProjectDBPaths()
@@ -843,7 +847,7 @@ func drainRuntimeOutput(ctx context.Context, deps *workDeps, stdout io.ReadClose
 		if deps.memStore != nil {
 			memInserter = deps.memStore
 		}
-		worker.DrainOutputInWorkdir(ctx, stdout, streamFormat, memInserter, beadID, &memory.CLISpawner{}, worktree, writers...)
+		worker.DrainOutputInWorkdir(ctx, stdout, streamFormat, memInserter, beadID, newWorkerMemoryExtractSpawner(), worktree, writers...)
 	}
 }
 
