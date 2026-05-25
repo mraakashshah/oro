@@ -1762,11 +1762,11 @@ func TestGCClosedWorktrees(t *testing.T) {
 }
 
 func TestGitWorktreeManager_LinkQualityGate(t *testing.T) {
-	t.Run("creates_symlink_when_neither_file_exists", func(t *testing.T) {
+	t.Run("copies_snapshot_when_neither_file_exists", func(t *testing.T) {
 		worktree := t.TempDir()
 		targetDir := t.TempDir()
 		target := filepath.Join(targetDir, "quality_gate.sh")
-		if err := os.WriteFile(target, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		if err := os.WriteFile(target, []byte("#!/bin/sh\necho original\n"), 0o755); err != nil {
 			t.Fatalf("create target: %v", err)
 		}
 
@@ -1775,16 +1775,26 @@ func TestGitWorktreeManager_LinkQualityGate(t *testing.T) {
 		mgr.linkQualityGate(context.Background(), worktree)
 
 		link := filepath.Join(worktree, "quality_gate.sh")
-		dest, err := os.Readlink(link)
+		info, err := os.Lstat(link)
 		if err != nil {
-			t.Fatalf("expected symlink at %s, got error: %v", link, err)
+			t.Fatalf("expected quality gate at %s, got error: %v", link, err)
 		}
-		if dest != target {
-			t.Fatalf("symlink target: got %q, want %q", dest, target)
+		if info.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("quality gate must be an isolated copy, got symlink")
+		}
+		if err := os.WriteFile(target, []byte("#!/bin/sh\necho mutated\n"), 0o755); err != nil {
+			t.Fatalf("mutate target: %v", err)
+		}
+		got, err := os.ReadFile(link)
+		if err != nil {
+			t.Fatalf("read copied quality gate: %v", err)
+		}
+		if strings.Contains(string(got), "mutated") || !strings.Contains(string(got), "original") {
+			t.Fatalf("quality gate copy changed after target mutation:\n%s", got)
 		}
 	})
 
-	t.Run("creates_symlink_when_scripts_quality_gate_exists", func(t *testing.T) {
+	t.Run("copies_snapshot_when_scripts_quality_gate_exists", func(t *testing.T) {
 		worktree := t.TempDir()
 		scriptsDir := filepath.Join(worktree, "scripts")
 		if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
@@ -1805,12 +1815,48 @@ func TestGitWorktreeManager_LinkQualityGate(t *testing.T) {
 		mgr.linkQualityGate(context.Background(), worktree)
 
 		link := filepath.Join(worktree, "quality_gate.sh")
-		dest, err := os.Readlink(link)
+		info, err := os.Lstat(link)
 		if err != nil {
-			t.Fatalf("expected symlink at %s, got error: %v", link, err)
+			t.Fatalf("expected quality gate at %s, got error: %v", link, err)
 		}
-		if dest != target {
-			t.Fatalf("symlink target: got %q, want %q", dest, target)
+		if info.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("quality gate must be an isolated copy, got symlink")
+		}
+	})
+
+	t.Run("replaces_stale_symlink_with_snapshot", func(t *testing.T) {
+		worktree := t.TempDir()
+		oldTarget := filepath.Join(t.TempDir(), "old_quality_gate.sh")
+		if err := os.WriteFile(oldTarget, []byte("#!/bin/sh\necho old\n"), 0o755); err != nil {
+			t.Fatalf("create old target: %v", err)
+		}
+		link := filepath.Join(worktree, "quality_gate.sh")
+		if err := os.Symlink(oldTarget, link); err != nil {
+			t.Fatalf("create stale symlink: %v", err)
+		}
+
+		target := filepath.Join(t.TempDir(), "quality_gate.sh")
+		if err := os.WriteFile(target, []byte("#!/bin/sh\necho new\n"), 0o755); err != nil {
+			t.Fatalf("create target: %v", err)
+		}
+
+		runner := &mockCommandRunner{}
+		mgr := NewGitWorktreeManager("/repo", "", target, runner)
+		mgr.linkQualityGate(context.Background(), worktree)
+
+		info, err := os.Lstat(link)
+		if err != nil {
+			t.Fatalf("expected quality gate at %s, got error: %v", link, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("quality gate must be an isolated copy, got symlink")
+		}
+		got, err := os.ReadFile(link)
+		if err != nil {
+			t.Fatalf("read copied quality gate: %v", err)
+		}
+		if !strings.Contains(string(got), "new") || strings.Contains(string(got), "old") {
+			t.Fatalf("quality gate copy = %q, want new target content only", got)
 		}
 	})
 
