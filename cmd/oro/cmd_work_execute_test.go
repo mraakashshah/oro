@@ -221,6 +221,10 @@ func (m *mockWorktreeManager) UpdateBranchRef(_ context.Context, _, _ string) er
 	return nil
 }
 
+func (m *mockWorktreeManager) BranchHead(_ context.Context, branch string) (string, error) {
+	return branch, nil
+}
+
 func (m *mockWorktreeManager) GCClosedWorktrees(_ context.Context, _ func(string) bool) error {
 	return nil
 }

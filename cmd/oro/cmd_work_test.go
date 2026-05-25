@@ -1477,6 +1477,10 @@ func (m *envCapturingWorktreeManager) UpdateBranchRef(_ context.Context, _, _ st
 	return nil
 }
 
+func (m *envCapturingWorktreeManager) BranchHead(_ context.Context, branch string) (string, error) {
+	return branch, nil
+}
+
 func (m *envCapturingWorktreeManager) GCClosedWorktrees(_ context.Context, _ func(string) bool) error {
 	return nil
 }
@@ -2712,6 +2716,10 @@ func (m *branchCapturingWorktreeManager) CurrentBranch(_ context.Context, _ stri
 
 func (m *branchCapturingWorktreeManager) UpdateBranchRef(_ context.Context, _, _ string) error {
 	return nil
+}
+
+func (m *branchCapturingWorktreeManager) BranchHead(_ context.Context, branch string) (string, error) {
+	return branch, nil
 }
 
 func (m *branchCapturingWorktreeManager) RebaseOnto(_ context.Context, _, _ string) error {

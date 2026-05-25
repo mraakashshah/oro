@@ -499,6 +499,15 @@ func (g *GitWorktreeManager) UpdateBranchRef(ctx context.Context, targetBranch, 
 	return nil
 }
 
+// BranchHead returns the commit SHA at the tip of branch.
+func (g *GitWorktreeManager) BranchHead(ctx context.Context, branch string) (string, error) {
+	out, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "rev-parse", branch)
+	if err != nil {
+		return "", fmt.Errorf("rev-parse %s: %w", branch, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // GCClosedWorktrees removes worktree directories and branches for beads that
 // are closed. It calls isBeadClosed for each directory found under .worktrees/;
 // entries for which isBeadClosed returns false are skipped conservatively.

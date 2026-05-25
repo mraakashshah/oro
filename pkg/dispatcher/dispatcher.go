@@ -177,6 +177,7 @@ type WorktreeManager interface {
 	// without requiring sourceBranch to be checked out. Used when the target is
 	// not the HEAD branch (i.e., not the branch checked out in the main worktree).
 	UpdateBranchRef(ctx context.Context, targetBranch, sourceBranch string) error
+	BranchHead(ctx context.Context, branch string) (string, error)
 	GCClosedWorktrees(ctx context.Context, isBeadClosed func(string) bool) error
 	// Exists reports whether the worktree at path is still present on disk.
 	// Returns false if the path does not exist or cannot be accessed.
@@ -2339,7 +2340,8 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 	// assignment and review (e.g. manager dedup-closed it as a duplicate),
 	// abort before merging. Otherwise the worker's commit lands on the target
 	// branch even though the bead is already resolved.
-	if detail, showErr := d.beads.Show(ctx, beadID); showErr == nil && detail != nil && detail.Status == "closed" {
+	detail, showErr := d.beads.Show(ctx, beadID)
+	if showErr == nil && detail != nil && detail.Status == "closed" {
 		_ = d.logEvent(ctx, "merge_aborted_closed_bead", "dispatcher", beadID, workerID,
 			fmt.Sprintf(`{"branch":%q,"target":%q}`, branch, targetBranch))
 		d.quarantineUnsafeRecoveryWork(ctx, recoveryQuarantine{
@@ -2356,6 +2358,9 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 	}
 
 	if !d.checkPreMergeQG(ctx, beadID, workerID, worktree, assignmentID) {
+		return
+	}
+	if showErr == nil && d.completeEpicRebaseChild(ctx, detail, beadID, workerID, worktree, branch, epicID, targetBranch, assignmentID) {
 		return
 	}
 
@@ -2434,6 +2439,41 @@ func (d *Dispatcher) handleNoopMerge(ctx context.Context, beadID, workerID, work
 	d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree, target)
 	d.maybeConsolidateMemory(ctx)
 	d.maybeTriggerDream(ctx)
+}
+
+func (d *Dispatcher) completeEpicRebaseChild(ctx context.Context, detail *protocol.BeadDetail, beadID, workerID, worktree, branch, epicID, targetBranch string, assignmentID int64) bool {
+	if !isEpicRebaseChild(detail, epicID, targetBranch) {
+		return false
+	}
+	if err := d.worktrees.UpdateBranchRef(ctx, targetBranch, branch); err != nil {
+		_ = d.completeAssignment(ctx, assignmentID, beadID)
+		if updateErr := d.updateBeadStatus(ctx, beadID, "open"); updateErr != nil {
+			_ = d.logEvent(ctx, "merge_failed_reopen_failed", "dispatcher", beadID, workerID, updateErr.Error())
+		}
+		d.escalate(ctx, protocol.FormatEscalation(protocol.EscMergeConflict, beadID, "epic rebase child update failed", err.Error()), beadID, workerID)
+		_ = d.logEvent(ctx, "merge_failed", "dispatcher", beadID, workerID, err.Error())
+		d.releaseWorkerAfterDoneTerminal(workerID, beadID, assignmentID)
+		return true
+	}
+	sha, err := d.worktrees.BranchHead(ctx, branch)
+	if err != nil || strings.TrimSpace(sha) == "" {
+		sha = branch
+	}
+	_ = d.logEvent(ctx, "epic_rebase_child_ref_updated", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"epic":%q,"branch":%q,"source":%q}`, epicID, targetBranch, branch))
+	d.finalizeSuccessfulMerge(ctx, beadID, workerID, worktree, epicID, targetBranch, assignmentID, sha)
+	return true
+}
+
+func isEpicRebaseChild(detail *protocol.BeadDetail, epicID, targetBranch string) bool {
+	if detail == nil || epicID == "" || targetBranch == "" {
+		return false
+	}
+	epicBranch := protocol.EpicBranchPrefix + epicID
+	if targetBranch != epicBranch {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(detail.Title), "Rebase "+epicBranch+" onto ")
 }
 
 func (d *Dispatcher) finalizeSuccessfulMerge(ctx context.Context, beadID, workerID, worktree, epicID, targetBranch string, assignmentID int64, sha string) {

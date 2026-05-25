@@ -402,6 +402,7 @@ type mockWorktreeManager struct {
 	branchExistsFn    func(ctx context.Context, branch string) (bool, error)
 	mergeFFOnlyFn     func(branch, target string) (string, error)
 	updateBranchRefFn func(target, source string) error
+	branchHeadFn      func(branch string) (string, error)
 	prepareBaseFn     func(ctx context.Context, branch, baseBranch string) (bool, error)
 	existsFn          func(ctx context.Context, path string) bool
 	currentBranchFn   func(ctx context.Context, path string) (string, error)
@@ -502,6 +503,16 @@ func (m *mockWorktreeManager) UpdateBranchRef(_ context.Context, targetBranch, s
 	m.updatedBranchRefs = append(m.updatedBranchRefs, updateBranchRefCall{targetBranch, sourceBranch})
 	m.mu.Unlock()
 	return nil
+}
+
+func (m *mockWorktreeManager) BranchHead(_ context.Context, branch string) (string, error) {
+	m.mu.Lock()
+	fn := m.branchHeadFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(branch)
+	}
+	return "sha-" + strings.TrimPrefix(branch, "agent/"), nil
 }
 
 func (m *mockWorktreeManager) GCClosedWorktrees(ctx context.Context, isBeadClosed func(string) bool) error {
@@ -10502,6 +10513,48 @@ func TestMergeAndCompleteUsesTargetBranch(t *testing.T) {
 			t.Errorf("rebase target = %q, want %q (default)", last[1], "main")
 		}
 	})
+}
+
+func TestMergeAndCompleteRebaseChildUpdatesEpicRefWithoutGenericRebase(t *testing.T) {
+	d, beadSrc, wtMgr, _, gitRunner, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+	if err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	const (
+		epicID       = "oro-mp9r"
+		beadID       = "oro-aeaw"
+		workerID     = "w-rebase-child"
+		worktree     = "/tmp/worktree-oro-aeaw"
+		branch       = "agent/oro-aeaw"
+		targetBranch = "epic/oro-mp9r"
+	)
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Rebase epic/oro-mp9r onto main",
+		Type:               "task",
+		Status:             "open",
+		AcceptanceCriteria: rebaseChildAcceptance(epicID, targetBranch, "main"),
+	}
+	beadSrc.allChildrenClosedMap = map[string]bool{epicID: false}
+
+	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, epicID, targetBranch, 0)
+
+	if calls := gitRunner.RebaseCalls(); len(calls) != 0 {
+		t.Fatalf("generic merge rebased rebase child %d time(s), want direct epic ref update; calls=%v", len(calls), calls)
+	}
+	if got, want := wtMgr.updatedBranchRefs, []updateBranchRefCall{{target: targetBranch, source: branch}}; !slices.Equal(got, want) {
+		t.Fatalf("updated branch refs = %+v, want %+v", got, want)
+	}
+	if !slices.Contains(beadSrc.closed, beadID) {
+		t.Fatalf("closed beads = %v, want %s closed", beadSrc.closed, beadID)
+	}
+	if got, want := wtMgr.deletedInto, []deleteBranchMergedIntoCall{{branch: branch, targetBranch: targetBranch}}; !slices.Equal(got, want) {
+		t.Fatalf("deleted merged branch calls = %+v, want %+v", got, want)
+	}
 }
 
 func TestMergeCompletionCleanupUsesEpicTargetForSuccessAndNoop(t *testing.T) {
