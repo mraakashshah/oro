@@ -169,7 +169,7 @@ Useful for CI environments or manual worker management (--workers 0 disables aut
 // 4. Print PID and status
 //
 // No tmux session is created. The spawner is injected for testability.
-func runDispatcherStart(w io.Writer, workers int, manualIntegration bool, mutationTesting bool, spawner DaemonSpawner, socketTimeout time.Duration) error {
+func runDispatcherStart(w io.Writer, workers int, manualIntegration, mutationTesting bool, spawner DaemonSpawner, socketTimeout time.Duration) error {
 	paths, err := ResolveDaemonPaths()
 	if err != nil {
 		return fmt.Errorf("resolve paths: %w", err)
