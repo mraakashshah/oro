@@ -975,6 +975,56 @@ test_quality_gate_run_lock_timeout_preserves_holder() {
 	return 0
 }
 
+# Test: abandoned lock directories without owner metadata are archived after
+# the stale threshold so worker gates do not wait forever on a crashed gate.
+# shellcheck disable=SC2016,SC2317,SC2329
+test_quality_gate_run_lock_archives_stale_legacy_lock() {
+	if ! grep -q 'archive_stale_quality_gate_lock()' "$SCRIPT_DIR/quality_gate.sh" ||
+		! grep -q 'write_quality_gate_lock_owner()' "$SCRIPT_DIR/quality_gate.sh" ||
+		! grep -q 'archive_stale_quality_gate_lock()' "$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go" ||
+		! grep -q 'write_quality_gate_lock_owner()' "$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go"; then
+		echo "FAIL: quality gate run lock lacks stale lock archival and owner metadata"
+		return 1
+	fi
+
+	local tmpdir lockdir harness
+	tmpdir=$(mktemp -d)
+	lockdir="$tmpdir/.oro-quality-gate.lock"
+	harness="$tmpdir/run-lock-stale.sh"
+	mkdir "$lockdir"
+	sleep 2
+	{
+		echo 'set -euo pipefail'
+		printf 'REPO_ROOT=%q\n' "$tmpdir"
+		printf 'QG_DIR=%q\n' "$tmpdir/qg"
+		echo 'QG_STAGE_ASSETS_LOCK=""'
+		echo 'QG_RUN_LOCK=""'
+		echo 'ORO_QG_LOCK_TIMEOUT_SECONDS=3'
+		echo 'ORO_QG_STALE_LOCK_SECONDS=1'
+		echo 'mkdir -p "$QG_DIR"'
+		sed -n '/^cleanup_qg()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_lock_age_seconds()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_lock_stale()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^archive_stale_quality_gate_lock()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^write_quality_gate_lock_owner()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^acquire_quality_gate_lock()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		echo 'trap cleanup_qg EXIT'
+		echo 'acquire_quality_gate_lock'
+		echo '[ -f "$QG_RUN_LOCK/owner" ]'
+		echo 'find "$REPO_ROOT" -maxdepth 1 -name ".oro-quality-gate.lock.stale.*" | grep -q .'
+	} >"$harness"
+
+	if ! bash "$harness" >"$tmpdir/out" 2>"$tmpdir/err"; then
+		echo "FAIL: acquire_quality_gate_lock did not recover a stale legacy lock"
+		cat "$tmpdir/out"
+		cat "$tmpdir/err"
+		rm -rf "$tmpdir"
+		return 1
+	fi
+	rm -rf "$tmpdir"
+	return 0
+}
+
 # Test: Go quality checks cap scheduler fanout by default so parallel worker
 # gates do not starve dispatcher integration tests under load.
 # shellcheck disable=SC2317,SC2329
@@ -1516,6 +1566,7 @@ test_case "no SC2086 disable for \$changed" test_no_sc2086_disable_for_changed
 test_case "quality_gate.sh \$changed is quoted" test_quality_gate_changed_is_quoted
 test_case "quality_gate.sh stage-assets failures fail closed" test_quality_gate_stage_assets_fail_closed
 test_case "quality_gate.sh run lock timeout preserves holder" test_quality_gate_run_lock_timeout_preserves_holder
+test_case "quality_gate.sh archives stale legacy run lock" test_quality_gate_run_lock_archives_stale_legacy_lock
 test_case "quality_gate.sh caps Go scheduler fanout" test_quality_gate_caps_go_scheduler_fanout
 test_case "go coverage threshold skips uncovered Go surfaces" test_go_coverage_threshold_skips_uncovered_go_surfaces
 test_case "quality_gate.sh Python tools avoid pyenv shims" test_quality_gate_python_tools_avoid_pyenv_shims

@@ -459,6 +459,7 @@ NC='\033[0m'
 QG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/qg-$$-XXXXXX")
 QG_STAGE_ASSETS_LOCK=""
 QG_RUN_LOCK=""
+QG_RUN_LOCK_TOKEN=""
 QG_EXIT_STATUS=0
 # shellcheck disable=SC2329
 cleanup_qg() {
@@ -467,7 +468,14 @@ cleanup_qg() {
         rmdir "$QG_STAGE_ASSETS_LOCK" 2>/dev/null || true
     fi
     if [ -n "${QG_RUN_LOCK:-}" ]; then
-        rmdir "$QG_RUN_LOCK" 2>/dev/null || true
+        if [ -n "${QG_RUN_LOCK_TOKEN:-}" ] && [ -f "$QG_RUN_LOCK/owner" ]; then
+            if grep -qx "token=$QG_RUN_LOCK_TOKEN" "$QG_RUN_LOCK/owner" 2>/dev/null; then
+                rm -f "$QG_RUN_LOCK/owner" 2>/dev/null || true
+                rmdir "$QG_RUN_LOCK" 2>/dev/null || true
+            fi
+        else
+            rmdir "$QG_RUN_LOCK" 2>/dev/null || true
+        fi
     fi
     rm -rf "$QG_DIR"
     return "$status"
@@ -496,12 +504,75 @@ NODE_BIN="$REPO_ROOT/node_modules/.bin"
 # Serialize full quality gates across sibling worktrees. The gate already runs
 # internal lanes in parallel; concurrent worker gates overload dispatcher socket
 # timing tests and create non-actionable QG incidents.
+quality_gate_lock_age_seconds() {
+    local lock_dir="$1"
+    local now mtime
+    now=$(date +%s)
+    if mtime=$(stat -f %m "$lock_dir" 2>/dev/null); then
+        :
+    elif mtime=$(stat -c %Y "$lock_dir" 2>/dev/null); then
+        :
+    else
+        return 1
+    fi
+    if [ "$now" -ge "$mtime" ]; then
+        printf '%s\n' "$((now - mtime))"
+    else
+        printf '0\n'
+    fi
+}
+
+quality_gate_lock_stale() {
+    local lock_dir="$1"
+    local owner="$lock_dir/owner"
+    local pid age stale_after
+    if [ -f "$owner" ]; then
+        pid=$(sed -n 's/^pid=//p' "$owner" | head -1)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            return 1
+        fi
+        return 0
+    fi
+
+    stale_after="${ORO_QG_STALE_LOCK_SECONDS:-600}"
+    if ! age=$(quality_gate_lock_age_seconds "$lock_dir"); then
+        return 1
+    fi
+    [ "$age" -ge "$stale_after" ]
+}
+
+archive_stale_quality_gate_lock() {
+    local lock_dir="$1"
+    local stale_dir
+    stale_dir="${lock_dir}.stale.$(date +%s).$$"
+    if mv "$lock_dir" "$stale_dir" 2>/dev/null; then
+        echo "WARNING: archived stale quality gate lock: $stale_dir" >&2
+        return 0
+    fi
+    return 1
+}
+
+write_quality_gate_lock_owner() {
+    local lock_dir="$1"
+    local token="$2"
+    {
+        echo "pid=$$"
+        echo "token=$token"
+        echo "repo=$REPO_ROOT"
+        echo "created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } >"$lock_dir/owner"
+}
+
 acquire_quality_gate_lock() {
     local lock_dir="$REPO_ROOT/.oro-quality-gate.lock"
     local waited=0
     while ! mkdir "$lock_dir" 2>/dev/null; do
         if [ "$waited" -eq 0 ]; then
             echo "Waiting for another quality gate to finish..."
+        fi
+        if quality_gate_lock_stale "$lock_dir"; then
+            archive_stale_quality_gate_lock "$lock_dir" || true
+            continue
         fi
         sleep 2
         waited=$((waited + 2))
@@ -511,6 +582,8 @@ acquire_quality_gate_lock() {
         fi
     done
     QG_RUN_LOCK="$lock_dir"
+    QG_RUN_LOCK_TOKEN="$$-$(date +%s)-$RANDOM"
+    write_quality_gate_lock_owner "$lock_dir" "$QG_RUN_LOCK_TOKEN"
 }
 
 acquire_quality_gate_lock

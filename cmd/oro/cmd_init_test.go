@@ -2203,6 +2203,25 @@ func TestReviewPatternCandidateFilesIgnored(t *testing.T) {
 	}
 }
 
+// TestQualityGateRuntimeLockIgnored verifies that the repo-level ignore covers
+// local quality-gate lock directories and stale lock archives.
+func TestQualityGateRuntimeLockIgnored(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot determine test file path")
+	}
+	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..")
+	gitignorePath := filepath.Join(repoRoot, ".gitignore")
+
+	data, err := os.ReadFile(gitignorePath) //nolint:gosec // test reads a known repo file
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	if !strings.Contains(string(data), "/.oro-quality-gate.lock*") {
+		t.Error("repo .gitignore must ignore quality-gate lock directories and stale archives")
+	}
+}
+
 // TestInitEmitsBothClaudeAndAgentsMD verifies that extractAssets materialises
 // both .claude/CLAUDE.md and AGENTS.md from the ORO_AGENT.md shared source.
 func TestInitEmitsBothClaudeAndAgentsMD(t *testing.T) {

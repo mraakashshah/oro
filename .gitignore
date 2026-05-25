@@ -35,6 +35,7 @@ cmd/oro/_assets/
 # Runtime artifacts (not tracked — vary per machine/session)
 .claude/scheduled_tasks.lock
 .claude/worktrees/
+/.oro-quality-gate.lock*
 **/dispatcher.exit.log
 .gstack/
 pkg/dispatcher/workers/
