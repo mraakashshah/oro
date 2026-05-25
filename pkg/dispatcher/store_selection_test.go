@@ -114,6 +114,26 @@ func TestSelectStoreSQLiteDoesNotInstallMemoryFetcher(t *testing.T) {
 	}
 }
 
+func TestSelectStoreSQLiteReturnsPlainSQLiteStore(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	primary := beadstore.NewFakeStore()
+
+	store, err := selectStore(ctx, "sqlite", primary, db)
+	if err != nil {
+		t.Fatalf("selectStore: %v", err)
+	}
+	if store == primary {
+		t.Fatalf("selectStore returned primary FakeStore, want plain SQLiteStore")
+	}
+	if _, ok := store.(*beadstore.ShadowStore); ok {
+		t.Fatalf("selectStore returned %T, want plain SQLiteStore", store)
+	}
+	if _, ok := store.(*beadstore.SQLiteStore); !ok {
+		t.Fatalf("selectStore returned %T, want *beadstore.SQLiteStore", store)
+	}
+}
+
 func TestSelectStoreShadowLogsDivergenceEvent(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
