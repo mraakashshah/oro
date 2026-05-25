@@ -113,6 +113,39 @@ func TestSQLiteStoreCreateShowExportAndMemory(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreShowReturnsMigratedSQLiteBead(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
+
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("MigrateBeadSchema: %v", err)
+	}
+	store := NewSQLiteStore(db)
+
+	if _, err := store.Create(ctx, CreateParams{ID: "oro-sqlite-selected", Title: "sqlite title"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := store.Show(ctx, "oro-sqlite-selected")
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if got == nil {
+		t.Fatal("Show returned nil for migrated SQLite bead")
+	}
+	if got.ID != "oro-sqlite-selected" {
+		t.Fatalf("Show ID = %q, want oro-sqlite-selected", got.ID)
+	}
+	if got.Title != "sqlite title" {
+		t.Fatalf("Show Title = %q, want sqlite title", got.Title)
+	}
+}
+
 func TestSQLiteStoreCreateRejectsMissingOrDeletedParent(t *testing.T) {
 	ctx := context.Background()
 	store := newTestSQLiteStore(t)
