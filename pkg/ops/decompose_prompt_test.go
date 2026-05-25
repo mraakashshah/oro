@@ -125,6 +125,20 @@ func TestDecomposePromptSupportsOversizedReason(t *testing.T) {
 	}
 }
 
+func TestDecomposePromptRequiresGoalSatisfactionGate(t *testing.T) {
+	prompt := buildDecomposePrompt(DecomposeOpts{BeadID: "oro-big6"})
+	required := []string{
+		"Run the current Cmd: acceptance command before creating child tasks",
+		"If the command passes, do not create child tasks",
+		"oro task close oro-big6",
+	}
+	for _, want := range required {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q; got:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestDecomposePromptRequiresParentEpicOrChildren(t *testing.T) {
 	prompt := buildDecomposePrompt(DecomposeOpts{BeadID: "oro-big6"})
 	required := []string{

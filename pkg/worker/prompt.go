@@ -119,10 +119,11 @@ func AssemblePrompt(params PromptParams) string {
 
 // EpicPromptParams contains inputs for building an epic decomposition prompt.
 type EpicPromptParams struct {
-	BeadID      string
-	Title       string
-	Description string
-	ParentTier  string // routing tier of the epic; included in oro task create when non-empty
+	BeadID             string
+	Title              string
+	Description        string
+	AcceptanceCriteria string
+	ParentTier         string // routing tier of the epic; included in oro task create when non-empty
 }
 
 // buildBranchAndRebaseBead builds the Branch & Rebase Task section for epic decomposition.
@@ -150,6 +151,22 @@ func buildBranchAndRebaseBead(epicID string) string {
 	}, "\n")
 }
 
+func epicDecompositionWorkflow(epicID string) string {
+	return strings.Join([]string{
+		"1. **Goal-satisfaction gate**: Run `oro task show " + epicID + "` and inspect the acceptance criteria. If it contains `Cmd:`, Run the epic acceptance command before decomposing. Do NOT create child tasks if the command passes; close the epic with `oro task close " + epicID + " --reason \"Acceptance command already passes\"` and exit.",
+		"2. **Explore**: Read the codebase to understand what this epic requires.",
+		"3. **Premortem**: Before decomposing, identify what could go wrong — tigers (likely failures), elephants (unlikely but catastrophic), paper tigers (seem scary but aren't).",
+		"4. **Decompose with beadcraft**: Break the epic into task/bug tasks using `oro task create`.",
+		"   - Each task must have full acceptance criteria: `Test: | Cmd: | Assert:`",
+		"   - Use neutral runtime tier language when a task needs routing guidance: `fast`, `balanced`, `deep`, `background`",
+		"   - Each task must have `Read:`, `Signature:` (when adding functions), and `Edges:` fields",
+		"   - Run the Rule of Five (P1-P5) on every task before creating it",
+		"   - Size limit: <=7 min estimate, 1-3 source files, single-purpose title",
+		"5. **Wire dependencies**: `oro task dep add <later> <earlier>` where ordering matters.",
+		"6. **Verify**: Run `oro task show " + epicID + "` to confirm the tree looks correct.",
+	}, "\n")
+}
+
 // BuildEpicDecompositionPrompt builds a prompt for decomposing an epic into
 // child tasks using beadcraft. No TDD/QG/worktree sections — this is planning only.
 func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
@@ -157,22 +174,11 @@ func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
 
 	section(&b, "Role", "You are an oro worker in epic decomposition mode. Your job is to break this epic into executable child tasks.")
 
-	epicBody := fmt.Sprintf("- **ID:** %s\n- **Title:** %s\n- **Description:** %s",
-		params.BeadID, params.Title, params.Description)
+	epicBody := fmt.Sprintf("- **ID:** %s\n- **Title:** %s\n- **Description:** %s\n- **Acceptance Criteria:** %s",
+		params.BeadID, params.Title, params.Description, params.AcceptanceCriteria)
 	section(&b, "Epic", epicBody)
 
-	section(&b, "Workflow", strings.Join([]string{
-		"1. **Explore**: Read the codebase to understand what this epic requires.",
-		"2. **Premortem**: Before decomposing, identify what could go wrong — tigers (likely failures), elephants (unlikely but catastrophic), paper tigers (seem scary but aren't).",
-		"3. **Decompose with beadcraft**: Break the epic into task/bug tasks using `oro task create`.",
-		"   - Each task must have full acceptance criteria: `Test: | Cmd: | Assert:`",
-		"   - Use neutral runtime tier language when a task needs routing guidance: `fast`, `balanced`, `deep`, `background`",
-		"   - Each task must have `Read:`, `Signature:` (when adding functions), and `Edges:` fields",
-		"   - Run the Rule of Five (P1-P5) on every task before creating it",
-		"   - Size limit: <=7 min estimate, 1-3 source files, single-purpose title",
-		"4. **Wire dependencies**: `oro task dep add <later> <earlier>` where ordering matters.",
-		"5. **Verify**: Run `oro task show " + params.BeadID + "` to confirm the tree looks correct.",
-	}, "\n"))
+	section(&b, "Workflow", epicDecompositionWorkflow(params.BeadID))
 
 	if params.BeadID != "" {
 		section(&b, "Branch & Rebase Task", buildBranchAndRebaseBead(params.BeadID))
@@ -204,7 +210,7 @@ func BuildEpicDecompositionPrompt(params EpicPromptParams) string {
 
 	section(&b, "Constraints", strings.Join([]string{
 		"- Do NOT write code or create worktrees — only create tasks",
-		"- Do NOT close the epic — children must complete first",
+		"- Do NOT close the epic unless the goal-satisfaction gate passes before decomposition",
 		"- Do NOT push to git",
 		"- Prefer neutral routing tiers over provider names: `fast`, `balanced`, `deep`, `background`",
 		"- Every task must pass beadcraft Rule of Five before creation",

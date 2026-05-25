@@ -636,9 +636,10 @@ func BuildAssignPrompt(a *protocol.AssignPayload) (prompt, model string) {
 	switch {
 	case a.IsEpicDecomposition:
 		prompt = BuildEpicDecompositionPrompt(EpicPromptParams{
-			BeadID:      a.BeadID,
-			Title:       a.Title,
-			Description: a.Description,
+			BeadID:             a.BeadID,
+			Title:              a.Title,
+			Description:        a.Description,
+			AcceptanceCriteria: a.AcceptanceCriteria,
 		})
 	case a.Title != "":
 		prompt = AssemblePrompt(PromptParams{

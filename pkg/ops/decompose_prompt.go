@@ -34,9 +34,11 @@ func buildDecomposePrompt(opts DecomposeOpts) string {
 
 	b.WriteString("## Steps\n")
 	fmt.Fprintf(&b, "1. Run `oro task show %s` to read the full task details and acceptance criteria.\n", opts.BeadID)
-	b.WriteString("2. Analyze why the task is too large or ambiguous.\n")
-	b.WriteString("3. Convert parent to epic or confirm it already has child tasks.\n")
-	b.WriteString("4. Create 2-4 smaller child tasks:\n")
+	b.WriteString("2. Run the current Cmd: acceptance command before creating child tasks. If the command passes, do not create child tasks; close the parent with ")
+	fmt.Fprintf(&b, "`oro task close %s --reason \"Acceptance command already passes\"`, then print `VERDICT: resolved` and exit.\n", opts.BeadID)
+	b.WriteString("3. Analyze why the task is too large or ambiguous.\n")
+	b.WriteString("4. Convert parent to epic or confirm it already has child tasks.\n")
+	b.WriteString("5. Create 2-4 smaller child tasks:\n")
 	b.WriteString("   For each child task:\n")
 	tierFlag := ""
 	if opts.Tier != "" {
@@ -46,14 +48,14 @@ func buildDecomposePrompt(opts DecomposeOpts) string {
 	b.WriteString("      Acceptance criteria for each child must include Test:, Cmd:, and Assert: fields.\n")
 	fmt.Fprintf(&b, "      (`--parent` sets hierarchy only, no dep)\n")
 	fmt.Fprintf(&b, "   b. `oro task dep add %s <child-id>`  (epic depends on child — correct direction)\n", opts.BeadID)
-	fmt.Fprintf(&b, "5. Convert parent to epic: `oro task update %s --type=epic`\n", opts.BeadID)
-	b.WriteString("6. If all steps succeed, print exactly:\n")
+	fmt.Fprintf(&b, "6. Convert parent to epic: `oro task update %s --type=epic`\n", opts.BeadID)
+	b.WriteString("7. If all steps succeed, print exactly:\n")
 	b.WriteString("   VERDICT: resolved\n\n")
 	b.WriteString("   If unable to decompose, print:\n")
 	b.WriteString("   VERDICT: failed: <one-line reason>\n\n")
 
 	b.WriteString("## Constraint\n")
-	b.WriteString("Do not write code. Only create tasks and update task type.\n")
+	b.WriteString("Do not write code. Only create tasks/update task type, or close the parent when its current acceptance command already passes.\n")
 
 	return b.String()
 }

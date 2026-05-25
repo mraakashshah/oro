@@ -17941,6 +17941,66 @@ func TestAssignEpicDecomposition(t *testing.T) {
 		}
 	})
 
+	t.Run("childless epic with passing acceptance command closes instead of decomposition", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		d.cfg.HeartbeatTimeout = 10 * time.Second
+		d.shutdownRunner = &mockCommandRunner{err: errors.New("branch missing")}
+		runner := &mockAcceptanceRunner{passed: true, output: "ok"}
+		d.acceptance = runner
+		startDispatcher(t, d)
+
+		conn, _ := connectWorker(t, d.cfg.SocketPath)
+		sendMsg(t, conn, protocol.Message{
+			Type:      protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+		})
+		waitForWorkers(t, d, 1, 1*time.Second)
+
+		beadSrc.mu.Lock()
+		beadSrc.hasChildrenMap = map[string]bool{"oro-epic-satisfied": false}
+		beadSrc.shown["oro-epic-satisfied"] = &protocol.BeadDetail{
+			ID:                 "oro-epic-satisfied",
+			Title:              "Epic: Already satisfied",
+			AcceptanceCriteria: "Test: pkg/dispatcher/store_selection_test.go:TestSelectStoreSQLiteLeavesMemoryFetcherNil | Cmd: go test ./pkg/dispatcher -run TestSelectStoreSQLiteLeavesMemoryFetcherNil -count=1 | Assert: PASS",
+		}
+		beadSrc.mu.Unlock()
+
+		sendDirective(t, d.cfg.SocketPath, "start")
+		waitForState(t, d, StateRunning, 1*time.Second)
+
+		d.mu.Lock()
+		worker := d.workers["w1"]
+		d.mu.Unlock()
+		if worker == nil {
+			t.Fatal("worker w1 not registered")
+		}
+		if err := d.assignBead(context.Background(), worker, protocol.Bead{
+			ID:    "oro-epic-satisfied",
+			Title: "Epic: Already satisfied",
+			Type:  "epic",
+		}); err != nil {
+			t.Fatalf("assignBead: %v", err)
+		}
+
+		if msg, ok := readMsg(t, conn, 500*time.Millisecond); ok {
+			t.Fatalf("satisfied childless epic should not be assigned for decomposition, got %s", msg.Type)
+		}
+
+		runner.mu.Lock()
+		calls := runner.calls
+		runner.mu.Unlock()
+		if calls == 0 {
+			t.Fatal("expected acceptance command to run before decomposition")
+		}
+
+		beadSrc.mu.Lock()
+		closed := slices.Contains(beadSrc.closed, "oro-epic-satisfied")
+		beadSrc.mu.Unlock()
+		if !closed {
+			t.Fatal("expected satisfied childless epic to be closed")
+		}
+	})
+
 	t.Run("epic with open children skipped", func(t *testing.T) {
 		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 		d.cfg.HeartbeatTimeout = 10 * time.Second
@@ -22632,6 +22692,101 @@ func TestCheckEpicAssignable_RetriesOnError(t *testing.T) {
 	if isDecomp || skip {
 		t.Errorf("Non-epic bead: got (%v, %v), want (false, false)", isDecomp, skip)
 	}
+}
+
+func TestCheckEpicAssignable_ChildlessEpicAcceptanceGate(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("passing acceptance closes instead of decomposes", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		epicID := "epic-childless-pass"
+		runner := &mockAcceptanceRunner{passed: true, output: "ok"}
+		d.acceptance = runner
+		beadSrc.hasChildrenMap = map[string]bool{epicID: false}
+		beadSrc.shown[epicID] = &protocol.BeadDetail{
+			ID:                 epicID,
+			AcceptanceCriteria: "Test: foo | Cmd: go test ./foo | Assert: PASS",
+		}
+
+		isDecomp, skip := d.checkEpicAssignable(ctx, protocol.Bead{ID: epicID, Type: "epic"}, "w-gate")
+		if isDecomp || !skip {
+			t.Fatalf("passing acceptance: got (%v, %v), want (false, true)", isDecomp, skip)
+		}
+		runner.mu.Lock()
+		calls := runner.calls
+		runner.mu.Unlock()
+		if calls != 1 {
+			t.Fatalf("acceptance calls = %d, want 1", calls)
+		}
+		beadSrc.mu.Lock()
+		closed := slices.Contains(beadSrc.closed, epicID)
+		beadSrc.mu.Unlock()
+		if !closed {
+			t.Fatal("expected passing childless epic to close")
+		}
+	})
+
+	t.Run("failing acceptance still decomposes", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		epicID := "epic-childless-fail"
+		runner := &mockAcceptanceRunner{passed: false, output: "FAIL"}
+		d.acceptance = runner
+		beadSrc.hasChildrenMap = map[string]bool{epicID: false}
+		beadSrc.shown[epicID] = &protocol.BeadDetail{
+			ID:                 epicID,
+			AcceptanceCriteria: "Test: foo | Cmd: go test ./foo | Assert: PASS",
+		}
+
+		isDecomp, skip := d.checkEpicAssignable(ctx, protocol.Bead{ID: epicID, Type: "epic"}, "w-gate")
+		if !isDecomp || skip {
+			t.Fatalf("failing acceptance: got (%v, %v), want (true, false)", isDecomp, skip)
+		}
+		beadSrc.mu.Lock()
+		closed := slices.Contains(beadSrc.closed, epicID)
+		beadSrc.mu.Unlock()
+		if closed {
+			t.Fatal("failing childless epic should not close")
+		}
+	})
+
+	t.Run("acceptance run error still decomposes", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		epicID := "epic-childless-error"
+		d.acceptance = &mockAcceptanceRunner{err: errors.New("runner unavailable")}
+		beadSrc.hasChildrenMap = map[string]bool{epicID: false}
+		beadSrc.shown[epicID] = &protocol.BeadDetail{
+			ID:                 epicID,
+			AcceptanceCriteria: "Test: foo | Cmd: go test ./foo | Assert: PASS",
+		}
+
+		isDecomp, skip := d.checkEpicAssignable(ctx, protocol.Bead{ID: epicID, Type: "epic"}, "w-gate")
+		if !isDecomp || skip {
+			t.Fatalf("acceptance error: got (%v, %v), want (true, false)", isDecomp, skip)
+		}
+	})
+
+	t.Run("missing command does not run acceptance", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		epicID := "epic-childless-no-cmd"
+		runner := &mockAcceptanceRunner{passed: true, output: "ok"}
+		d.acceptance = runner
+		beadSrc.hasChildrenMap = map[string]bool{epicID: false}
+		beadSrc.shown[epicID] = &protocol.BeadDetail{
+			ID:                 epicID,
+			AcceptanceCriteria: "Test: foo | Assert: PASS",
+		}
+
+		isDecomp, skip := d.checkEpicAssignable(ctx, protocol.Bead{ID: epicID, Type: "epic"}, "w-gate")
+		if !isDecomp || skip {
+			t.Fatalf("missing Cmd: got (%v, %v), want (true, false)", isDecomp, skip)
+		}
+		runner.mu.Lock()
+		calls := runner.calls
+		runner.mu.Unlock()
+		if calls != 0 {
+			t.Fatalf("acceptance calls = %d, want 0", calls)
+		}
+	})
 }
 
 func TestFilterExecutableBeadsIgnoresPremortemGate(t *testing.T) {

@@ -883,6 +883,7 @@ func TestBuildAssignPromptUsesEpicDecomposition(t *testing.T) {
 			Worktree:            "/tmp/wt-epic",
 			Title:               "Epic: Add auth",
 			Description:         "Add JWT authentication",
+			AcceptanceCriteria:  "Test: auth_test.go:TestJWT | Cmd: go test ./auth -run TestJWT -count=1 | Assert: PASS",
 			Model:               "opus",
 			IsEpicDecomposition: true,
 		})
@@ -904,6 +905,15 @@ func TestBuildAssignPromptUsesEpicDecomposition(t *testing.T) {
 		}
 		if strings.Contains(prompt, "## Worktree") {
 			t.Error("epic decomp prompt must NOT contain '## Worktree'")
+		}
+		if !strings.Contains(prompt, "Cmd: go test ./auth -run TestJWT -count=1") {
+			t.Errorf("expected epic decomp prompt to include acceptance criteria, got:\n%s", prompt)
+		}
+		if !strings.Contains(prompt, "Run the epic acceptance command") {
+			t.Errorf("expected epic decomp prompt to require goal-satisfaction gate, got:\n%s", prompt)
+		}
+		if !strings.Contains(prompt, "Do NOT create child tasks if the command passes") {
+			t.Errorf("expected epic decomp prompt to stop creating duplicate children when satisfied, got:\n%s", prompt)
 		}
 	})
 

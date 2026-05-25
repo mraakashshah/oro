@@ -5847,7 +5847,7 @@ func (d *Dispatcher) checkEpicAssignable(ctx context.Context, bead protocol.Bead
 		return false, true
 	}
 	if !hasChildren {
-		return true, false // no children → assign for decomposition
+		return d.checkChildlessEpicAssignable(ctx, bead, workerID)
 	}
 	// Epic has children: auto-close if all done, otherwise skip.
 	allClosed, err := d.beads.AllChildrenClosed(ctx, bead.ID)
@@ -5859,6 +5859,48 @@ func (d *Dispatcher) checkEpicAssignable(ctx context.Context, bead protocol.Bead
 		targetBranch := resolveEpicTargetBranch(bead.Metadata, d.cfg.DefaultBranch)
 		d.completeEpicClose(ctx, bead.ID, workerID, "All children completed", targetBranch)
 	}
+	return false, true
+}
+
+func (d *Dispatcher) checkChildlessEpicAssignable(ctx context.Context, bead protocol.Bead, workerID string) (isEpicDecomp, skip bool) {
+	detail, err := d.beads.Show(ctx, bead.ID)
+	if err != nil {
+		_ = d.logEvent(ctx, "epic_pre_decompose_ac_fetch_failed", "dispatcher", bead.ID, workerID,
+			fmt.Sprintf(`{"error":%q}`, err.Error()))
+		return true, false
+	}
+	if detail == nil {
+		_ = d.logEvent(ctx, "epic_pre_decompose_ac_fetch_failed", "dispatcher", bead.ID, workerID,
+			`{"error":"show returned nil epic"}`)
+		return true, false
+	}
+
+	cmd := parseAcceptanceCmd(detail.AcceptanceCriteria)
+	if cmd == "" {
+		return true, false
+	}
+	if d.acceptance == nil {
+		_ = d.logEvent(ctx, "epic_pre_decompose_acceptance_unavailable", "dispatcher", bead.ID, workerID,
+			fmt.Sprintf(`{"cmd":%q}`, cmd))
+		return true, false
+	}
+
+	output, passed, runErr := d.acceptance.Run(ctx, cmd)
+	if runErr != nil {
+		_ = d.logEvent(ctx, "epic_pre_decompose_acceptance_error", "dispatcher", bead.ID, workerID,
+			fmt.Sprintf(`{"cmd":%q,"error":%q}`, cmd, runErr.Error()))
+		return true, false
+	}
+	if !passed {
+		_ = d.logEvent(ctx, "epic_pre_decompose_acceptance_failed", "dispatcher", bead.ID, workerID,
+			fmt.Sprintf(`{"cmd":%q,"output":%q}`, cmd, output))
+		return true, false
+	}
+
+	_ = d.logEvent(ctx, "epic_pre_decompose_acceptance_passed", "dispatcher", bead.ID, workerID,
+		fmt.Sprintf(`{"cmd":%q}`, cmd))
+	targetBranch := resolveEpicTargetBranch(detail.Metadata, d.cfg.DefaultBranch)
+	d.completeEpicClose(ctx, bead.ID, workerID, "Acceptance test passed before decomposition", targetBranch)
 	return false, true
 }
 
