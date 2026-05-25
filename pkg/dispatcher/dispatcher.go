@@ -11,6 +11,7 @@ package dispatcher
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -3364,11 +3365,19 @@ func (d *Dispatcher) isIgnorableManagedQualityGateStatus(worktree string, entry 
 		return false
 	}
 	linkPath := filepath.Join(worktree, entry.Path)
-	info, err := os.Lstat(linkPath)
-	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+	return managedQualityGateSnapshotMatches(linkPath, managedPath)
+}
+
+func managedQualityGateSnapshotMatches(linkPath, managedPath string) bool {
+	got, err := os.ReadFile(linkPath) //nolint:gosec // path is from git status for the worker worktree.
+	if err != nil {
 		return false
 	}
-	return symlinkTargetMatches(linkPath, managedPath)
+	want, err := os.ReadFile(managedPath) //nolint:gosec // path is dispatcher-managed project configuration.
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(got, want)
 }
 
 func (d *Dispatcher) sendPreReviewGitDirtyFeedback(ctx context.Context, workerID, feedback string) {

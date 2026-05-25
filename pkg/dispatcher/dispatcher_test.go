@@ -2397,7 +2397,7 @@ func TestReadyForReviewRejectsUntrackedTaskFilesBeforeOpsReview(t *testing.T) {
 	}
 }
 
-func TestPreReviewGitHygieneIgnoresManagedQualityGateSymlink(t *testing.T) {
+func TestPreReviewGitHygieneIgnoresManagedQualityGateSnapshot(t *testing.T) {
 	ctx := context.Background()
 	repoRoot := t.TempDir()
 	scriptsDir := filepath.Join(repoRoot, "scripts")
@@ -2413,8 +2413,8 @@ func TestPreReviewGitHygieneIgnoresManagedQualityGateSymlink(t *testing.T) {
 	if err := exec.Command("git", "-C", worktree, "init").Run(); err != nil {
 		t.Fatalf("git init: %v", err)
 	}
-	if err := os.Symlink(managedQG, filepath.Join(worktree, "quality_gate.sh")); err != nil {
-		t.Fatalf("symlink managed quality gate: %v", err)
+	if err := os.WriteFile(filepath.Join(worktree, "quality_gate.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write managed quality gate snapshot: %v", err)
 	}
 
 	d := &Dispatcher{
@@ -2426,7 +2426,36 @@ func TestPreReviewGitHygieneIgnoresManagedQualityGateSymlink(t *testing.T) {
 		t.Fatalf("checkPreReviewGitHygiene: %v", err)
 	}
 	if hygiene.Dirty {
-		t.Fatalf("managed quality_gate.sh symlink marked dirty: %#v", hygiene.Files)
+		t.Fatalf("managed quality_gate.sh snapshot marked dirty: %#v", hygiene.Files)
+	}
+}
+
+func TestManagedQualityGateSnapshotMatches(t *testing.T) {
+	dir := t.TempDir()
+	managed := filepath.Join(dir, "managed.sh")
+	snapshot := filepath.Join(dir, "quality_gate.sh")
+	if err := os.WriteFile(managed, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
+		t.Fatalf("write managed: %v", err)
+	}
+	if err := os.WriteFile(snapshot, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
+		t.Fatalf("write snapshot: %v", err)
+	}
+
+	if !managedQualityGateSnapshotMatches(snapshot, managed) {
+		t.Fatal("expected identical managed quality gate snapshot to match")
+	}
+
+	if err := os.WriteFile(snapshot, []byte("#!/bin/sh\nexit 1\n"), 0o600); err != nil {
+		t.Fatalf("mutate snapshot: %v", err)
+	}
+	if managedQualityGateSnapshotMatches(snapshot, managed) {
+		t.Fatal("expected changed quality gate snapshot not to match")
+	}
+	if managedQualityGateSnapshotMatches(filepath.Join(dir, "missing.sh"), managed) {
+		t.Fatal("expected missing quality gate snapshot not to match")
+	}
+	if managedQualityGateSnapshotMatches(snapshot, filepath.Join(dir, "missing-managed.sh")) {
+		t.Fatal("expected missing managed quality gate not to match")
 	}
 }
 

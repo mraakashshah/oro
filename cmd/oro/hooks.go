@@ -62,6 +62,69 @@ fi
 `, hookName, hookName, oroCheck)
 }
 
+func isOroDistributedHook(hookName string, data []byte) bool {
+	content := string(data)
+	switch hookName {
+	case "pre-push":
+		return strings.Contains(content, "Run Oro's full quality gate before push") &&
+			strings.Contains(content, "ORO_RUN_MUTATION=1") &&
+			strings.Contains(content, "ORO_QG_CONTEXT=push")
+	default:
+		return false
+	}
+}
+
+func removeOroDistributedHook(path, hookName string) (bool, error) {
+	content, err := os.ReadFile(path) //nolint:gosec // hook path constructed by caller
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read %s hook: %w", hookName, err)
+	}
+	if !isOroDistributedHook(hookName, content) {
+		return false, nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("remove oro-distributed %s hook: %w", hookName, err)
+	}
+	return true, nil
+}
+
+func removeHookPath(path, hookName string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove oro-distributed %s hook: %w", hookName, err)
+	}
+	return nil
+}
+
+func hookIsExecutable(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode()&0o111 != 0
+}
+
+func backupExecutableHook(path, hookName string) error {
+	if !hookIsExecutable(path) {
+		return nil
+	}
+	if err := os.Rename(path, path+".user"); err != nil {
+		return fmt.Errorf("backup existing %s hook: %w", hookName, err)
+	}
+	return nil
+}
+
+func prepareExistingHookForWrapper(path, hookName string, content []byte, readErr error) error {
+	if readErr == nil {
+		if strings.Contains(string(content), "managed by oro") {
+			return nil
+		}
+		if isOroDistributedHook(hookName, content) {
+			return removeHookPath(path, hookName)
+		}
+	}
+	return backupExecutableHook(path, hookName)
+}
+
 // installHookWrapper installs an oro git hook wrapper for the given hookName
 // inside gitDir's effective hooks directory (respecting core.hooksPath).
 //
@@ -79,17 +142,15 @@ func installHookWrapper(gitDir, hookName, oroCheck string) error {
 
 	hookPath := filepath.Join(hooksDir, hookName)
 
+	if _, err := removeOroDistributedHook(hookPath+".user", hookName); err != nil {
+		return err
+	}
+
 	// Check whether an existing hook is already an oro wrapper (idempotent reinstall)
 	// or a genuine user hook that needs backup.
 	content, readErr := os.ReadFile(hookPath) //nolint:gosec // hookPath constructed from trusted inputs
-	isOroWrapper := readErr == nil && strings.Contains(string(content), "managed by oro")
-	if !isOroWrapper {
-		if info, statErr := os.Stat(hookPath); statErr == nil && info.Mode()&0o111 != 0 {
-			// Genuine executable user hook — back it up.
-			if err := os.Rename(hookPath, hookPath+".user"); err != nil {
-				return fmt.Errorf("backup existing %s hook: %w", hookName, err)
-			}
-		}
+	if err := prepareExistingHookForWrapper(hookPath, hookName, content, readErr); err != nil {
+		return err
 	}
 
 	wrapper := buildWrapperScript(hookName, oroCheck)
