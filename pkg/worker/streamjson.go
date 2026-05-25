@@ -49,6 +49,7 @@ func ParseStreamEvent(line []byte) Activity {
 		Type    string          `json:"type"`
 		Subtype string          `json:"subtype"`
 		Message json.RawMessage `json:"message"`
+		Delta   json.RawMessage `json:"delta"`
 		Result  string          `json:"result"`
 		IsError bool            `json:"is_error"`
 
@@ -78,9 +79,29 @@ func ParseStreamEvent(line []byte) Activity {
 		}
 	case "assistant":
 		return parseAssistantContent(top.Message)
+	case "content_block_delta":
+		return parseContentBlockDelta(top.Delta)
 	default:
 		return Activity{Kind: ActivityUnknown}
 	}
+}
+
+func parseContentBlockDelta(raw json.RawMessage) Activity {
+	if len(raw) == 0 {
+		return Activity{Kind: ActivityUnknown}
+	}
+
+	var delta struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &delta); err != nil {
+		return Activity{Kind: ActivityUnknown}
+	}
+	if delta.Type != "text_delta" {
+		return Activity{Kind: ActivityUnknown}
+	}
+	return Activity{Kind: ActivityTextDelta, Text: delta.Text}
 }
 
 // parseAssistantContent drills into an assistant message's content blocks.

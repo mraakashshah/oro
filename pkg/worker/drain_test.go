@@ -306,6 +306,48 @@ func TestDrainOutputInWorkdir_BindsLLMExtractionToWorkdir(t *testing.T) {
 	}
 }
 
+func TestDrainOutputInWorkdirCapturesMemoryMarkers(t *testing.T) {
+	input := ndjsonInput(
+		`{"type":"content_block_delta","delta":{"type":"text_delta","text":"starting drain\n"}}`,
+		`{"type":"content_block_delta","delta":{"type":"text_delta","text":"[MEMORY] type=lesson tags=drain,claude-json: capture markers from JSON deltas\n"}}`,
+		`{"type":"content_block_delta","delta":{"type":"text_delta","text":"normal stream output\n[MEMORY] type=gotcha: trailing partial marker"}}`,
+	)
+	store := &mockMemStore{}
+	var buf bytes.Buffer
+
+	worker.DrainOutputInWorkdir(context.Background(), io.NopCloser(strings.NewReader(input)),
+		worker.StreamFormatClaudeJSON, store, "oro-cz9c", nil, t.TempDir(), &buf)
+
+	if len(store.inserted) != 2 {
+		t.Fatalf("expected 2 memory inserts, got %d: %#v", len(store.inserted), store.inserted)
+	}
+	for _, mem := range store.inserted {
+		if mem.BeadID != "oro-cz9c" {
+			t.Fatalf("memory BeadID = %q, want oro-cz9c", mem.BeadID)
+		}
+	}
+	if store.inserted[0].Type != "lesson" {
+		t.Fatalf("first memory Type = %q, want lesson", store.inserted[0].Type)
+	}
+	if !strings.Contains(store.inserted[0].Content, "capture markers from JSON deltas") {
+		t.Fatalf("first memory Content = %q, want JSON delta marker content", store.inserted[0].Content)
+	}
+	if store.inserted[1].Type != "gotcha" {
+		t.Fatalf("second memory Type = %q, want gotcha", store.inserted[1].Type)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "starting drain") || !strings.Contains(got, "normal stream output") {
+		t.Fatalf("expected normal text deltas echoed to output, got %q", got)
+	}
+
+	worker.DrainOutputInWorkdir(context.Background(),
+		io.NopCloser(strings.NewReader(ndjsonInput(
+			`{"type":"content_block_delta","delta":{"type":"text_delta","text":"[MEMORY] type=lesson: nil store skips insert\n"}}`,
+		))),
+		worker.StreamFormatClaudeJSON, nil, "oro-cz9c", nil, t.TempDir(), io.Discard)
+}
+
 func TestDrainOutput_NilSpawner(t *testing.T) {
 	// With nil spawner, ExtractWithLLM should be skipped (no panic, no LLM call).
 	store := &mockMemStore{}
