@@ -545,6 +545,84 @@ func TestParseMarker_InvalidLines(t *testing.T) {
 	}
 }
 
+func TestParseMarkerSelfReportContract(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want *InsertParams
+	}{
+		{
+			name: "valid marker with type and tags",
+			line: "[MEMORY] type=decision tags=go,testing: table-driven tests keep parser contracts readable",
+			want: &InsertParams{
+				Content:    "table-driven tests keep parser contracts readable",
+				Type:       "decision",
+				Tags:       []string{"go", "testing"},
+				Source:     "self_report",
+				Confidence: 0.8,
+			},
+		},
+		{
+			name: "valid marker with empty tags",
+			line: "[MEMORY] type=lesson tags=: empty tags are accepted as an empty slice",
+			want: &InsertParams{
+				Content:    "empty tags are accepted as an empty slice",
+				Type:       "lesson",
+				Tags:       []string{},
+				Source:     "self_report",
+				Confidence: 0.8,
+			},
+		},
+		{
+			name: "malformed marker",
+			line: "[MEMORY] type=lesson tags=go missing colon",
+		},
+		{
+			name: "marker prefixed with other content",
+			line: "prefix [MEMORY] type=gotcha: marker must start the line",
+		},
+		{
+			name: "marker prefixed with whitespace",
+			line: " [MEMORY] type=gotcha: marker must start at byte zero",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ParseMarker(tt.line)
+			if tt.want == nil {
+				if got != nil {
+					t.Fatalf("ParseMarker(%q) = %#v, want nil", tt.line, got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("ParseMarker(%q) = nil, want %#v", tt.line, tt.want)
+			}
+			if got.Content != tt.want.Content {
+				t.Errorf("Content = %q, want %q", got.Content, tt.want.Content)
+			}
+			if got.Type != tt.want.Type {
+				t.Errorf("Type = %q, want %q", got.Type, tt.want.Type)
+			}
+			if got.Source != tt.want.Source {
+				t.Errorf("Source = %q, want %q", got.Source, tt.want.Source)
+			}
+			if got.Confidence != tt.want.Confidence {
+				t.Errorf("Confidence = %f, want %f", got.Confidence, tt.want.Confidence)
+			}
+			if len(got.Tags) != len(tt.want.Tags) {
+				t.Fatalf("len(Tags) = %d, want %d (%#v)", len(got.Tags), len(tt.want.Tags), got.Tags)
+			}
+			for i := range tt.want.Tags {
+				if got.Tags[i] != tt.want.Tags[i] {
+					t.Errorf("Tags[%d] = %q, want %q", i, got.Tags[i], tt.want.Tags[i])
+				}
+			}
+		})
+	}
+}
+
 func TestExtractMarkers(t *testing.T) {
 	input := `Starting worker...
 Processing bead oro-abc

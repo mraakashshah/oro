@@ -1606,12 +1606,11 @@ func (s *Store) executeMergeAtomic(ctx context.Context, params InsertParams, del
 
 // markerRe matches [MEMORY] marker lines.
 // Format: [MEMORY] type=<type>[ tags=<tag1,tag2>]: <content>
-var markerRe = regexp.MustCompile(`^\[MEMORY\]\s+type=(\w+)(?:\s+tags=([^\s:]+))?:\s+(.+)$`)
+var markerRe = regexp.MustCompile(`^\[MEMORY\]\s+type=(\w+)(?:\s+tags=([^\s:]*))?:\s+(.+)$`)
 
 // ParseMarker extracts a memory from a [MEMORY] marker line.
 // Returns nil if the line doesn't contain a valid marker.
 func ParseMarker(line string) *InsertParams {
-	line = strings.TrimSpace(line)
 	m := markerRe.FindStringSubmatch(line)
 	if m == nil {
 		return nil
@@ -1624,6 +1623,8 @@ func ParseMarker(line string) *InsertParams {
 	var tags []string
 	if tagsStr != "" {
 		tags = strings.Split(tagsStr, ",")
+	} else if strings.Contains(line, " tags=") {
+		tags = []string{}
 	}
 
 	return &InsertParams{
