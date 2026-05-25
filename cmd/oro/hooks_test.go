@@ -166,7 +166,7 @@ func TestInstallHookWrapper(t *testing.T) {
 		}
 
 		repoHookPath := filepath.Join(repoHooksDir, "pre-push")
-		repoHookContent := []byte("#!/usr/bin/env sh\n\nset -e\n\n# Run Oro's full quality gate before push. The push context is for load-guarded\n# checks; mutation tiers remain opt-in with ORO_RUN_MUTATION=1.\nORO_QG_CONTEXT=push scripts/quality_gate.sh\n")
+		repoHookContent := []byte("#!/usr/bin/env sh\n\nset -e\n\n# Run Oro's full quality gate before push. Mutation testing remains disabled\n# unless the quality gate is run separately with --mutation-testing.\nORO_QG_CONTEXT=push scripts/quality_gate.sh\n")
 		if err := os.WriteFile(repoHookPath, repoHookContent, 0o755); err != nil { //nolint:gosec // test hook
 			t.Fatal(err)
 		}
@@ -214,7 +214,7 @@ func TestInstallHookWrapper(t *testing.T) {
 		}
 
 		repoHookPath := filepath.Join(repoHooksDir, "pre-push")
-		repoHookContent := []byte("#!/usr/bin/env sh\n\nset -e\n\n# Run Oro's full quality gate before push. The push context is for load-guarded\n# checks; mutation tiers remain opt-in with ORO_RUN_MUTATION=1.\nORO_QG_CONTEXT=push scripts/quality_gate.sh\n")
+		repoHookContent := []byte("#!/usr/bin/env sh\n\nset -e\n\n# Run Oro's full quality gate before push. Mutation testing remains disabled\n# unless the quality gate is run separately with --mutation-testing.\nORO_QG_CONTEXT=push scripts/quality_gate.sh\n")
 		if err := os.WriteFile(repoHookPath, repoHookContent, 0o755); err != nil { //nolint:gosec // test hook
 			t.Fatal(err)
 		}
@@ -331,8 +331,8 @@ func TestInstallHookWrapper(t *testing.T) {
 		if !strings.Contains(oroPrePushCheck, "scripts/quality_gate.sh") {
 			t.Error("oroPrePushCheck should run scripts/quality_gate.sh")
 		}
-		if !strings.Contains(oroPrePushCheck, "all checks; mutation opt-in with ORO_RUN_MUTATION=1") {
-			t.Error("oroPrePushCheck should describe mutation as opt-in")
+		if !strings.Contains(oroPrePushCheck, "mutation testing disabled by default") {
+			t.Error("oroPrePushCheck should describe mutation testing as disabled by default")
 		}
 	})
 
@@ -395,7 +395,7 @@ printf '%s:%s' "${ORO_RUN_MUTATION:-unset}" "${ORO_QG_CONTEXT:-unset}" > "$MARKE
 			t.Fatalf("read marker: %v", err)
 		}
 		if string(got) != "unset:push" {
-			t.Fatalf("expected explicit quality gate to run in push context without mutation opt-in, got %q", string(got))
+			t.Fatalf("expected explicit quality gate to run in push context with mutation disabled by default, got %q", string(got))
 		}
 	})
 }

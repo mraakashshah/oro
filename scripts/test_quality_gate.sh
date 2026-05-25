@@ -518,8 +518,12 @@ test_mutation_default_all_contexts_skip() {
 		echo "FAIL: quality_gate.sh lacks should_run_mutation_tests helper"
 		return 1
 	fi
-	if ! grep -q 'mutation disabled by default; set ORO_RUN_MUTATION=1' "$SCRIPT_DIR/quality_gate.sh"; then
+	if ! grep -q 'mutation disabled by default; use --mutation-testing' "$SCRIPT_DIR/quality_gate.sh"; then
 		echo "FAIL: default mutation skip reason is missing"
+		return 1
+	fi
+	if ! grep -q -- '--mutation-testing' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: quality_gate.sh lacks --mutation-testing opt-in flag"
 		return 1
 	fi
 	local helper
@@ -579,8 +583,8 @@ test_pre_push_leaves_mutation_opt_in() {
 		echo "FAIL: pre-push hook enables mutation by default"
 		return 1
 	fi
-	if ! grep -q 'all checks; mutation opt-in with ORO_RUN_MUTATION=1' "$SCRIPT_DIR/../git/hooks/pre-push"; then
-		echo "FAIL: pre-push hook does not advertise mutation opt-in"
+	if ! grep -q 'mutation testing disabled by default' "$SCRIPT_DIR/../git/hooks/pre-push"; then
+		echo "FAIL: pre-push hook does not advertise mutation default-off behavior"
 		return 1
 	fi
 }
@@ -1542,7 +1546,7 @@ test_case "mutation zero-total report skips" test_mutation_zero_total_skips
 test_case "mutation missing-main warning message" test_mutation_missing_main_warning_message
 test_case "mutation skips by default in all contexts" test_mutation_default_all_contexts_skip
 test_case "mutation runs only with opt-in flag" test_mutation_opt_in_flag_runs
-test_case "pre-push leaves mutation opt-in" test_pre_push_leaves_mutation_opt_in
+test_case "pre-push leaves mutation disabled" test_pre_push_leaves_mutation_opt_in
 
 echo ""
 echo "Testing Python mutation missing main branch (oro-xgwr)"

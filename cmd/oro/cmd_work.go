@@ -42,17 +42,18 @@ const (
 
 // workConfig holds parsed flags and loaded bead for the work command.
 type workConfig struct {
-	beadID        string
-	model         string
-	runtime       string
-	timeout       time.Duration
-	reviewTimeout time.Duration
-	skipReview    bool
-	dryRun        bool
-	dryRunSpawn   bool
-	auto          bool
-	baseBranch    string
-	bead          *protocol.Bead
+	beadID          string
+	model           string
+	runtime         string
+	timeout         time.Duration
+	reviewTimeout   time.Duration
+	skipReview      bool
+	dryRun          bool
+	dryRunSpawn     bool
+	auto            bool
+	baseBranch      string
+	mutationTesting bool
+	bead            *protocol.Bead
 }
 
 // validate checks that the loaded bead has the required fields.
@@ -64,6 +65,13 @@ func (c *workConfig) validate() error {
 		return fmt.Errorf("task %s has no acceptance criteria — add with: oro task update %s --acceptance \"...\"", c.bead.ID, c.bead.ID)
 	}
 	return nil
+}
+
+func workMutationMode(cfg *workConfig) string {
+	if cfg != nil && cfg.mutationTesting {
+		return "mutation testing enabled"
+	}
+	return "mutation testing disabled"
 }
 
 // newWorkCmd creates the "oro work" subcommand.
@@ -94,6 +102,7 @@ automatically. Exit code 0 means the task landed on main.`,
 	cmd.Flags().BoolVar(&cfg.dryRunSpawn, "dry-run-spawn", false, "print the worker spawn prompt without running")
 	cmd.Flags().BoolVar(&cfg.auto, "auto", false, "run non-interactively")
 	cmd.Flags().StringVar(&cfg.baseBranch, "base-branch", "", "base branch for worktree (default: config default_branch, or current HEAD)")
+	cmd.Flags().BoolVar(&cfg.mutationTesting, "mutation-testing", false, "run mutation-testing tiers in quality gates (off by default)")
 
 	return cmd
 }
@@ -435,15 +444,16 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		}
 		skipClaude = false // Only skip the first iteration.
 
-		logStep("Running local quality gate (mutation opt-in)...")
-		passed, qgOutput, qgErr := deps.runQG(ctx, worktree, false)
+		mutationMode := workMutationMode(cfg)
+		logStep("Running local quality gate (%s)...", mutationMode)
+		passed, qgOutput, qgErr := deps.runQG(ctx, worktree, !cfg.mutationTesting)
 		if qgErr != nil {
 			recordWorkQGFailure(ctx, cfg, deps, "oro-work-implementation", qgErr.Error())
 			return fmt.Errorf("quality gate error: %w", qgErr)
 		}
 
 		if passed {
-			logStep("Quality gate passed (mutation opt-in)")
+			logStep("Quality gate passed (%s)", mutationMode)
 			break
 		}
 
@@ -475,9 +485,9 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		logStep("Skipping review (--skip-review)")
 	}
 
-	// Step 9: Pre-merge quality gate. Mutation testing is opt-in via ORO_RUN_MUTATION=1.
-	logStep("Running pre-merge quality gate (mutation opt-in)...")
-	mutPassed, mutOutput, mutErr := deps.runQG(ctx, worktree, false)
+	// Step 9: Pre-merge quality gate. Mutation testing is disabled unless explicitly requested.
+	logStep("Running pre-merge quality gate (%s)...", workMutationMode(cfg))
+	mutPassed, mutOutput, mutErr := deps.runQG(ctx, worktree, !cfg.mutationTesting)
 	if mutErr != nil {
 		recordWorkQGFailure(ctx, cfg, deps, "oro-work-pre-merge", mutErr.Error())
 		return fmt.Errorf("pre-merge quality gate error: %w", mutErr)
@@ -915,8 +925,8 @@ func handleReviewRejection(ctx context.Context, cfg *workConfig, deps *workDeps,
 		return rejects, fmt.Errorf("%s re-spawn after review: %w", runtime, err)
 	}
 
-	logStep("Re-running local quality gate (mutation opt-in)...")
-	passed, qgOutput, qgErr := deps.runQG(ctx, worktree, false)
+	logStep("Re-running local quality gate (%s)...", workMutationMode(cfg))
+	passed, qgOutput, qgErr := deps.runQG(ctx, worktree, !cfg.mutationTesting)
 	if qgErr != nil {
 		recordWorkQGFailure(ctx, cfg, deps, "oro-work-implementation", qgErr.Error())
 		return rejects, fmt.Errorf("quality gate error: %w", qgErr)

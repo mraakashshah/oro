@@ -219,8 +219,9 @@ func TestGenerateQualityGateScript(t *testing.T) {
 		}
 		for _, want := range []string{
 			`should_run_mutation_tests()`,
+			`--mutation-testing`,
 			`ORO_RUN_MUTATION`,
-			`mutation disabled by default; set ORO_RUN_MUTATION=1`,
+			`mutation disabled by default; use --mutation-testing`,
 			`QG_STAGE_ASSETS_LOCK=""`,
 			`QG_EXIT_STATUS=0`,
 			`trap cleanup_qg EXIT`,

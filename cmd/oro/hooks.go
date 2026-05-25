@@ -67,7 +67,8 @@ func isOroDistributedHook(hookName string, data []byte) bool {
 	switch hookName {
 	case "pre-push":
 		return strings.Contains(content, "Run Oro's full quality gate before push") &&
-			strings.Contains(content, "ORO_RUN_MUTATION=1") &&
+			strings.Contains(content, "Mutation testing remains disabled") &&
+			strings.Contains(content, "--mutation-testing") &&
 			strings.Contains(content, "ORO_QG_CONTEXT=push")
 	default:
 		return false

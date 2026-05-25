@@ -726,12 +726,14 @@ func TestStartReviewTimeoutFlagsAreDistinct(t *testing.T) {
 			OpsReviewTimeout:   35 * time.Minute,
 			ReviewStallTimeout: 15 * time.Minute,
 			ManualIntegration:  true,
+			MutationTesting:    true,
 		}
 		argStr := strings.Join(spawner.buildArgs(2, 2), " ")
 		for _, want := range []string{
 			"--ops-review-timeout=35m0s",
 			"--review-stall-timeout=15m0s",
 			"--manual-integration",
+			"--mutation-testing",
 		} {
 			if !strings.Contains(argStr, want) {
 				t.Errorf("daemon args missing %q: %s", want, argStr)
@@ -749,7 +751,7 @@ func TestStartReviewTimeoutFlagsAreDistinct(t *testing.T) {
 		t.Setenv("ORO_PROJECT", "")
 		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
 
-		d, db, err := buildDispatcherWithReviewTimeouts(1, 1, 7*time.Minute, 35*time.Minute, 15*time.Minute, true, "", false, "")
+		d, db, err := buildDispatcherWithReviewTimeouts(1, 1, 7*time.Minute, 35*time.Minute, 15*time.Minute, true, "", false, false, "")
 		if err != nil {
 			t.Fatalf("buildDispatcherWithReviewTimeouts: %v", err)
 		}
@@ -778,7 +780,7 @@ func TestStartReviewTimeoutFlagsAreDistinct(t *testing.T) {
 		t.Setenv("ORO_BEADSOURCE_MODE", "")
 		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
 
-		d, db, err := buildDispatcherWithReviewTimeouts(0, 0, 0, 0, 0, false, "", false, "")
+		d, db, err := buildDispatcherWithReviewTimeouts(0, 0, 0, 0, 0, false, "", false, false, "")
 		if err != nil {
 			t.Fatalf("buildDispatcherWithReviewTimeouts: %v", err)
 		}
@@ -804,7 +806,7 @@ func TestStartReviewTimeoutFlagsAreDistinct(t *testing.T) {
 		t.Setenv("ORO_BEADSOURCE_MODE", "cli")
 		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
 
-		_, _, err := buildDispatcherWithReviewTimeouts(0, 0, 0, 0, 0, false, "", false, "")
+		_, _, err := buildDispatcherWithReviewTimeouts(0, 0, 0, 0, 0, false, "", false, false, "")
 		if err == nil {
 			t.Fatal("buildDispatcherWithReviewTimeouts succeeded with legacy cli beadsource mode")
 		}
@@ -843,7 +845,7 @@ func TestStartZeroWorkersPreservesMaxWorkersCeiling(t *testing.T) {
 	t.Setenv("ORO_BEADSOURCE_MODE", "")
 	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
 
-	d, db, err := buildDispatcherWithReviewTimeouts(0, 2, 0, 0, 0, false, "", false, "")
+	d, db, err := buildDispatcherWithReviewTimeouts(0, 2, 0, 0, 0, false, "", false, false, "")
 	if err != nil {
 		t.Fatalf("buildDispatcherWithReviewTimeouts: %v", err)
 	}
@@ -893,22 +895,24 @@ func TestStartManualIntegrationDaemonHandoffForwardsFlagAndConfig(t *testing.T) 
 	t.Setenv(daemonSkipPreflightEnv, "1")
 
 	var capturedManualIntegration bool
+	var capturedMutationTesting bool
 	var capturedWorkers int
 	var capturedMaxWorkers int
 	previousRunDaemonOnly := runDaemonOnlyFn
-	runDaemonOnlyFn = func(_ *cobra.Command, gotPIDPath string, workers, maxWorkers int, _ time.Duration, _ time.Duration, _ time.Duration, manualIntegration bool, _ string, _ bool, _ string) error {
+	runDaemonOnlyFn = func(_ *cobra.Command, gotPIDPath string, workers, maxWorkers int, _ time.Duration, _ time.Duration, _ time.Duration, manualIntegration bool, _ string, mutationTesting bool, _ bool, _ string) error {
 		if gotPIDPath != pidPath {
 			t.Fatalf("pidPath: got %q, want %q", gotPIDPath, pidPath)
 		}
 		capturedWorkers = workers
 		capturedMaxWorkers = maxWorkers
 		capturedManualIntegration = manualIntegration
+		capturedMutationTesting = mutationTesting
 		return nil
 	}
 	t.Cleanup(func() { runDaemonOnlyFn = previousRunDaemonOnly })
 
 	cmd := newStartCmd()
-	cmd.SetArgs([]string{"--daemon-only", "--workers", "0", "--manual-integration"})
+	cmd.SetArgs([]string{"--daemon-only", "--workers", "0", "--manual-integration", "--mutation-testing"})
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stdout)
@@ -918,6 +922,9 @@ func TestStartManualIntegrationDaemonHandoffForwardsFlagAndConfig(t *testing.T) 
 	}
 	if !capturedManualIntegration {
 		t.Fatal("start command did not forward parsed --manual-integration into runDaemonOnly")
+	}
+	if !capturedMutationTesting {
+		t.Fatal("start command did not forward parsed --mutation-testing into runDaemonOnly")
 	}
 	if capturedWorkers != 0 || capturedMaxWorkers != 0 {
 		t.Fatalf("workers/maxWorkers = %d/%d, want 0/0", capturedWorkers, capturedMaxWorkers)
@@ -946,7 +953,7 @@ func TestStartManualIntegrationDaemonHandoffForwardsFlagAndConfig(t *testing.T) 
 	t.Setenv("ORO_HOME", oroHome)
 	t.Setenv("ORO_PROJECT", "")
 
-	d, db, err := buildDispatcherWithReviewTimeouts(1, 1, 7*time.Minute, 35*time.Minute, 15*time.Minute, true, "", false, "")
+	d, db, err := buildDispatcherWithReviewTimeouts(1, 1, 7*time.Minute, 35*time.Minute, 15*time.Minute, true, "", false, false, "")
 	if err != nil {
 		t.Fatalf("buildDispatcherWithReviewTimeouts: %v", err)
 	}
@@ -1012,6 +1019,20 @@ func TestStartBaseBranchFlag(t *testing.T) {
 			t.Errorf("DefaultBranch: got %q, want %q", got, "feature-base")
 		}
 	})
+}
+
+func TestStartMutationTestingFlag(t *testing.T) {
+	cmd := newStartCmd()
+	if err := cmd.ParseFlags([]string{"--mutation-testing"}); err != nil {
+		t.Fatalf("ParseFlags --mutation-testing: %v", err)
+	}
+	enabled, err := cmd.Flags().GetBool("mutation-testing")
+	if err != nil {
+		t.Fatalf("GetBool mutation-testing: %v", err)
+	}
+	if !enabled {
+		t.Fatal("mutation-testing flag parsed false, want true")
+	}
 }
 
 // TestStartWebFlags verifies that --web and --web-addr flags exist on the start

@@ -10864,6 +10864,48 @@ func TestShellQGRunner_DoesNotInheritMutationSkipWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestShellQGRunner_SkipMutationScrubsRunMutationEnv(t *testing.T) {
+	t.Setenv("ORO_RUN_MUTATION", "1")
+
+	tmpDir := t.TempDir()
+	script := filepath.Join(tmpDir, "quality_gate.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nif [ \"${ORO_SKIP_MUTATION:-}\" != \"1\" ]; then echo missing skip; exit 1; fi\nif [ -n \"${ORO_RUN_MUTATION:-}\" ]; then echo inherited run mutation; exit 1; fi\necho clean\nexit 0\n"), 0o600); err != nil { //nolint:gosec // test script
+		t.Fatal(err)
+	}
+	if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+		t.Fatal(err)
+	}
+
+	passed, output, err := (&ShellQGRunner{}).Run(context.Background(), tmpDir, true)
+	if err != nil {
+		t.Fatalf("ShellQGRunner.Run: %v", err)
+	}
+	if !passed {
+		t.Fatalf("expected QG to pass with mutation forcibly disabled, output: %s", output)
+	}
+}
+
+func TestCheckPreMergeQG_MutationTestingOptIn(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	qgRunner := &mockQGRunner{passed: true, output: "all green"}
+	d.qgRunner = qgRunner
+	d.cfg.MutationTesting = true
+
+	if !d.checkPreMergeQG(ctx, "bead-mutation-opt-in", "worker-mutation-opt-in", "/tmp/wt", 0) {
+		t.Fatal("expected pre-merge QG to pass")
+	}
+
+	qgRunner.mu.Lock()
+	defer qgRunner.mu.Unlock()
+	if len(qgRunner.skipMutations) != 1 {
+		t.Fatalf("expected one QG call, got %d", len(qgRunner.skipMutations))
+	}
+	if qgRunner.skipMutations[0] {
+		t.Fatal("pre-merge QG skipped mutation despite dispatcher opt-in")
+	}
+}
+
 // TestMergeAndComplete_RunsPreMergeQG verifies that mergeAndComplete calls the
 // QGRunner before attempting to merge, and handles pass/fail/error correctly.
 func TestMergeAndComplete_RunsPreMergeQG(t *testing.T) {
@@ -10896,8 +10938,8 @@ func TestMergeAndComplete_RunsPreMergeQG(t *testing.T) {
 		if calls[0] != worktree {
 			t.Errorf("QGRunner.Run worktree = %q, want %q", calls[0], worktree)
 		}
-		if skipMutations[0] {
-			t.Error("pre-merge QG should not force ORO_SKIP_MUTATION; mutation is opt-in by quality_gate.sh itself")
+		if !skipMutations[0] {
+			t.Error("pre-merge QG should force mutation testing off by default")
 		}
 
 		// Merge proceeded: bead closed.

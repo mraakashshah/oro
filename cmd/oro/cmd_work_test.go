@@ -43,6 +43,7 @@ func TestNewWorkCmd_Flags(t *testing.T) {
 		{"dry-run-spawn", "false"},
 		{"auto", "false"},
 		{"runtime", ""},
+		{"mutation-testing", "false"},
 	}
 	for _, tt := range tests {
 		f := cmd.Flag(tt.name)

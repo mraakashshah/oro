@@ -276,7 +276,8 @@ func (r *ShellAcceptanceRunner) Run(ctx context.Context, cmd string) (output str
 }
 
 // QGRunner executes the quality gate script in a worktree and reports
-// whether it passed. skipMutation true means mutation testing is skipped.
+// whether it passed. skipMutation true means mutation testing is skipped;
+// false means the caller explicitly opted into mutation testing.
 type QGRunner interface {
 	Run(ctx context.Context, worktree string, skipMutation bool) (passed bool, output string, err error)
 }
@@ -326,10 +327,15 @@ func qgRunnerEnv(skipMutation bool, worktree string) []string {
 		if strings.HasPrefix(kv, "ORO_SKIP_MUTATION=") {
 			continue
 		}
+		if strings.HasPrefix(kv, "ORO_RUN_MUTATION=") {
+			continue
+		}
 		env = append(env, kv)
 	}
 	if skipMutation {
 		env = append(env, "ORO_SKIP_MUTATION=1")
+	} else {
+		env = append(env, "ORO_RUN_MUTATION=1")
 	}
 	return processenv.ForWorkdir(env, worktree)
 }
@@ -467,6 +473,7 @@ type Config struct {
 	ReviewTimeout           time.Duration // Max time a reviewing worker can stall before STUCK_WORKER escalation (default 15m).
 	ReviewDeadGrace         time.Duration // Grace period before removing a reviewing worker whose ops review subprocess has exited (default 30s).
 	ManualIntegration       bool          // If true, completed worker branches wait for manual coordinator integration instead of auto-merge.
+	MutationTesting         bool          // If true, dispatcher quality gates run mutation-testing tiers. Defaults false.
 	Estimator               BeadEstimator // LLM-based bead complexity estimator (default NewBeadEstimator()).
 	WorkerProgram           string        // Absolute path to worker-program.md. Defaults to <RepoRoot>/worker-program.md.
 	ReviewPatterns          string        // Absolute path for review patterns. Populated from ProjectPaths.ReviewPatterns.
@@ -2178,7 +2185,7 @@ func (d *Dispatcher) recordPreMergeDeterministicFailure(ctx context.Context, rec
 // It returns true when the gate passes and the merge should proceed. On failure
 // or error it handles cleanup and returns false so the caller can return early.
 func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, worktree string, assignmentID int64) bool {
-	qgPassed, qgOutput, qgErr := d.qgRunner.Run(ctx, worktree, false)
+	qgPassed, qgOutput, qgErr := d.qgRunner.Run(ctx, worktree, !d.cfg.MutationTesting)
 	if qgErr != nil {
 		return d.handlePreMergeQGError(ctx, beadID, workerID, worktree, assignmentID, qgErr)
 	}
@@ -2189,7 +2196,7 @@ func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, work
 }
 
 // checkEpicQG creates a temporary worktree from epicBranch, runs the local
-// quality gate against it with mutation testing left opt-in, and cleans up
+// quality gate against it with mutation testing disabled unless configured, and cleans up
 // the worktree on completion. It returns true when the gate passes and
 // tryCloseEpic should proceed to completeEpicClose. On failure or error it
 // handles logging/escalation and returns false.
@@ -2203,7 +2210,7 @@ func (d *Dispatcher) checkEpicQG(ctx context.Context, epicID, workerID, epicBran
 	}
 	defer func() { _ = d.worktrees.Remove(context.Background(), worktree) }()
 
-	passed, qgOutput, qgErr := d.qgRunner.Run(ctx, worktree, false)
+	passed, qgOutput, qgErr := d.qgRunner.Run(ctx, worktree, !d.cfg.MutationTesting)
 	if qgErr != nil {
 		_ = d.logEvent(ctx, "epic_qg_error", "dispatcher", epicID, workerID,
 			fmt.Sprintf(`{"error":%q}`, qgErr.Error()))

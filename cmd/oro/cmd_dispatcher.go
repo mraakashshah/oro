@@ -127,6 +127,7 @@ func newDispatcherStartCmd() *cobra.Command {
 		workers           int
 		force             bool
 		manualIntegration bool
+		mutationTesting   bool
 	)
 
 	cmd := &cobra.Command{
@@ -148,7 +149,7 @@ Useful for CI environments or manual worker management (--workers 0 disables aut
 			}
 
 			return withDaemonPreflightBypass(force, func() error {
-				return runDispatcherStart(w, workers, manualIntegration, newDispatcherDaemonSpawner(), socketPollTimeout)
+				return runDispatcherStart(w, workers, manualIntegration, mutationTesting, newDispatcherDaemonSpawner(), socketPollTimeout)
 			})
 		},
 	}
@@ -156,6 +157,7 @@ Useful for CI environments or manual worker management (--workers 0 disables aut
 	cmd.Flags().IntVarP(&workers, "workers", "w", 0, "number of workers to auto-spawn (0 = manual mode)")
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "skip running check")
 	cmd.Flags().BoolVar(&manualIntegration, "manual-integration", false, "leave completed worker branches/worktrees for coordinator review instead of auto-merging")
+	cmd.Flags().BoolVar(&mutationTesting, "mutation-testing", false, "run mutation-testing tiers in dispatcher quality gates (off by default)")
 
 	return cmd
 }
@@ -167,7 +169,7 @@ Useful for CI environments or manual worker management (--workers 0 disables aut
 // 4. Print PID and status
 //
 // No tmux session is created. The spawner is injected for testability.
-func runDispatcherStart(w io.Writer, workers int, manualIntegration bool, spawner DaemonSpawner, socketTimeout time.Duration) error {
+func runDispatcherStart(w io.Writer, workers int, manualIntegration bool, mutationTesting bool, spawner DaemonSpawner, socketTimeout time.Duration) error {
 	paths, err := ResolveDaemonPaths()
 	if err != nil {
 		return fmt.Errorf("resolve paths: %w", err)
@@ -181,6 +183,13 @@ func runDispatcherStart(w io.Writer, workers int, manualIntegration bool, spawne
 			return fmt.Errorf("spawner does not support manual integration")
 		}
 		configurable.SetManualIntegration(true)
+	}
+	if mutationTesting {
+		configurable, ok := spawner.(interface{ SetMutationTesting(bool) })
+		if !ok {
+			return fmt.Errorf("spawner does not support mutation testing opt-in")
+		}
+		configurable.SetMutationTesting(true)
 	}
 
 	// Spawn the daemon subprocess.

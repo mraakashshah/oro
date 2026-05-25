@@ -1126,6 +1126,39 @@ exit 0
 	}
 }
 
+func TestRunQualityGate_SkipMutationScrubsRunMutationEnv(t *testing.T) {
+	t.Setenv("ORO_RUN_MUTATION", "1")
+
+	tmpDir := t.TempDir()
+	script := filepath.Join(tmpDir, "quality_gate.sh")
+	scriptContent := `#!/bin/sh
+if [ "${ORO_SKIP_MUTATION:-}" != "1" ]; then
+  echo "FAIL: ORO_SKIP_MUTATION not set"
+  exit 1
+fi
+if [ -n "${ORO_RUN_MUTATION:-}" ]; then
+  echo "FAIL: ORO_RUN_MUTATION inherited"
+  exit 1
+fi
+echo "PASS: mutation disabled"
+exit 0
+`
+	if err := os.WriteFile(script, []byte(scriptContent), 0o600); err != nil { //nolint:gosec // test file
+		t.Fatal(err)
+	}
+	if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+		t.Fatal(err)
+	}
+
+	passed, output, err := worker.RunQualityGate(context.Background(), tmpDir, true)
+	if err != nil {
+		t.Fatalf("RunQualityGate: %v", err)
+	}
+	if !passed {
+		t.Fatalf("expected quality gate to pass with inherited mutation opt-in scrubbed, output: %s", output)
+	}
+}
+
 func TestBuildPrompt_IncludesQualityGateInstruction(t *testing.T) {
 	t.Parallel()
 

@@ -437,6 +437,23 @@ unset ORO_QG_BASH_BOOTSTRAPPED
 
 set -euo pipefail
 
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --mutation-testing)
+            export ORO_RUN_MUTATION=1
+            shift
+            ;;
+        -h|--help)
+            echo "Usage: $0 [--mutation-testing]"
+            exit 0
+            ;;
+        *)
+            echo "Unknown quality gate argument: $1" >&2
+            exit 2
+            ;;
+    esac
+done
+
 # Unset git hook env vars that leak into test subprocesses.
 # Save worktree state first so mutation testing can still resolve refs after
 # hook env cleanup.
@@ -780,7 +797,7 @@ mutation_skip_reason() {
     if [ "${ORO_SKIP_MUTATION:-}" = "1" ]; then
         printf 'ORO_SKIP_MUTATION=1'
     else
-        printf 'mutation disabled by default; set ORO_RUN_MUTATION=1'
+        printf 'mutation disabled by default; use --mutation-testing'
     fi
 }
 

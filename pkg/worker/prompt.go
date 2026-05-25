@@ -338,7 +338,7 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 		section(b, "Worker Program", params.WorkerProgram)
 	}
 	section(b, "TDD", "Write tests FIRST. Red-green-refactor. Every feature/fix needs a test.")
-	section(b, "Quality Gate", "Before completing, run `./quality_gate.sh` if present; otherwise run `./scripts/quality_gate.sh`. Ensure it passes. Mutation is opt-in with ORO_RUN_MUTATION=1.")
+	section(b, "Quality Gate", "Before completing, run `./quality_gate.sh` if present; otherwise run `./scripts/quality_gate.sh`. Ensure it passes. Mutation testing is off by default; use `--mutation-testing` only when explicitly requested.")
 	section(b, "Worktree", fmt.Sprintf(
 		"You are in `%s`. Commit to branch `%s%s`.", params.WorktreePath, protocol.BranchPrefix, params.BeadID,
 	))

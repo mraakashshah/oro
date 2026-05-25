@@ -829,8 +829,42 @@ func TestExecuteWork_Success_NoReset(t *testing.T) {
 		t.Fatalf("expected implementation and pre-merge QG calls, got %d", len(qgSkipMutations))
 	}
 	for i, skipMutation := range qgSkipMutations {
+		if !skipMutation {
+			t.Fatalf("QG call %d did not force mutation testing off by default", i)
+		}
+	}
+}
+
+func TestExecuteWork_MutationTestingOptIn(t *testing.T) {
+	bs := &fakeBeadStore{showDetail: testBead()}
+	wt := &mockWorktreeManager{createPath: "/tmp/wt-test", createBranch: "bead/oro-test"}
+	sp := &mockSpawner{proc: &mockProcess{}}
+	mg := &mockMerger{result: &merge.Result{CommitSHA: "abc123"}}
+
+	deps := testDeps(bs, wt, sp, mg, true, true)
+	var qgSkipMutations []bool
+	deps.runQG = func(_ context.Context, _ string, skipMutation bool) (bool, string, error) {
+		qgSkipMutations = append(qgSkipMutations, skipMutation)
+		return true, "qg output", nil
+	}
+
+	cfg := &workConfig{
+		beadID:          "oro-test",
+		model:           "sonnet",
+		timeout:         5 * time.Second,
+		skipReview:      true,
+		mutationTesting: true,
+	}
+
+	if err := executeWork(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+	if len(qgSkipMutations) != 2 {
+		t.Fatalf("expected implementation and pre-merge QG calls, got %d", len(qgSkipMutations))
+	}
+	for i, skipMutation := range qgSkipMutations {
 		if skipMutation {
-			t.Fatalf("QG call %d used ORO_SKIP_MUTATION; local quality_gate.sh should defer mutation by context without disabling other tiers", i)
+			t.Fatalf("QG call %d skipped mutation despite opt-in", i)
 		}
 	}
 }

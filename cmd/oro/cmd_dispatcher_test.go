@@ -101,7 +101,7 @@ func TestDispatcherStartSpawnsDaemon(t *testing.T) {
 		}
 
 		var stdout bytes.Buffer
-		err := runDispatcherStart(&stdout, 0, false, spawner, socketPollTimeout)
+		err := runDispatcherStart(&stdout, 0, false, false, spawner, socketPollTimeout)
 		if err != nil {
 			t.Fatalf("runDispatcherStart returned error: %v", err)
 		}
@@ -160,7 +160,7 @@ func TestDispatcherStartSpawnsDaemon(t *testing.T) {
 
 		// Inject fake spawner via the command's spawner field.
 		// We call runDispatcherStart directly to verify the default.
-		err := runDispatcherStart(&stdout, 0, false, spawner, 100*time.Millisecond)
+		err := runDispatcherStart(&stdout, 0, false, false, spawner, 100*time.Millisecond)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -255,7 +255,7 @@ func TestDispatcherStartSpawnsDaemon(t *testing.T) {
 		}
 
 		var stdout bytes.Buffer
-		err := runDispatcherStart(&stdout, 0, false, spawner, 50*time.Millisecond) // short timeout
+		err := runDispatcherStart(&stdout, 0, false, false, spawner, 50*time.Millisecond) // short timeout
 		if err == nil {
 			t.Fatal("expected error when socket never appears")
 		}
