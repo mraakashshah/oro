@@ -176,6 +176,95 @@ func TestBackfillMemoryDriftMirrorsLegacyRows(t *testing.T) {
 	})
 }
 
+func TestCheckDriftDoesNotWriteMemoryReadEvents(t *testing.T) {
+	ctx := context.Background()
+	db, memStore, cardStore := newMemoryAndCardStoresWithDB(t)
+
+	mirroredID, err := memStore.Insert(ctx, memory.InsertParams{
+		Content:    "Mirrored memory should not be reported as drift",
+		Type:       "lesson",
+		Tags:       []string{"drift-check"},
+		Source:     "self_report",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("insert mirrored memory: %v", err)
+	}
+	driftID, err := memStore.Insert(ctx, memory.InsertParams{
+		Content:    "Unmirrored memory should be reported as drift",
+		Type:       "gotcha",
+		Tags:       []string{"drift-check"},
+		Source:     "self_report",
+		Confidence: 0.8,
+	})
+	if err != nil {
+		t.Fatalf("insert drift memory: %v", err)
+	}
+	if _, err := cardStore.Create(ctx, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "already mirrored",
+		BodySummary: "already mirrored",
+		BodyFull:    "already mirrored",
+		Tags:        []string{"legacy_memory_dual_write", fmt.Sprintf("mem-id:%d", mirroredID)},
+	}); err != nil {
+		t.Fatalf("create mirror card: %v", err)
+	}
+	clearMemoryReadEvents(t, db)
+	before := countMemoryReadEvents(t, db)
+
+	failures, err := checkCardDriftWithoutReadTelemetry(ctx, db, cardStore)
+	if err != nil {
+		t.Fatalf("check drift: %v", err)
+	}
+	if got, want := driftMemoryIDs(failures), []int64{driftID}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("drift memory IDs = %v, want %v", got, want)
+	}
+	if count := countMemoryReadEvents(t, db); count != before {
+		t.Fatalf("memory_read_events count after drift check = %d, want %d", count, before)
+	}
+
+	if _, err := cardStore.Create(ctx, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "drift now mirrored",
+		BodySummary: "drift now mirrored",
+		BodyFull:    "drift now mirrored",
+		Tags:        []string{"legacy_memory_dual_write", fmt.Sprintf("mem-id:%d", driftID)},
+	}); err != nil {
+		t.Fatalf("create drift mirror card: %v", err)
+	}
+	failures, err = checkCardDriftWithoutReadTelemetry(ctx, db, cardStore)
+	if err != nil {
+		t.Fatalf("check no drift: %v", err)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("drift failures after mirror = %+v, want none", failures)
+	}
+	if count := countMemoryReadEvents(t, db); count != before {
+		t.Fatalf("memory_read_events count after no-drift check = %d, want %d", count, before)
+	}
+
+	bareDB, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open bare db: %v", err)
+	}
+	t.Cleanup(func() { _ = bareDB.Close() })
+	bareDB.SetMaxOpenConns(1)
+	if _, err := bareDB.ExecContext(ctx, protocol.MigrateSemanticMemoryReadEvents); err != nil {
+		t.Fatalf("migrate read events on bare db: %v", err)
+	}
+	bareCards, err := cards.NewStore(bareDB)
+	if err != nil {
+		t.Fatalf("new bare card store: %v", err)
+	}
+	_, err = checkCardDriftWithoutReadTelemetry(ctx, bareDB, bareCards)
+	if err == nil {
+		t.Fatal("check drift on missing memories table error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "memories") {
+		t.Fatalf("missing memories error = %q, want memories context", err)
+	}
+}
+
 func findCardByTag(all []cards.Card, tag string) *cards.Card {
 	for i := range all {
 		if containsTag(all[i].Tags, tag) {
@@ -191,4 +280,46 @@ type failingCreateCardStore struct {
 
 func (s *failingCreateCardStore) Create(_ context.Context, _ cards.CardCreateParams) (*cards.Card, error) {
 	return nil, sql.ErrConnDone
+}
+
+func newMemoryAndCardStoresWithDB(t *testing.T) (*sql.DB, *memory.Store, cards.Store) {
+	t.Helper()
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
+		t.Fatalf("apply memory schema: %v", err)
+	}
+	cardStore, err := cards.NewStore(db)
+	if err != nil {
+		t.Fatalf("new card store: %v", err)
+	}
+	return db, memory.NewStore(db), cardStore
+}
+
+func clearMemoryReadEvents(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.ExecContext(context.Background(), `DELETE FROM memory_read_events`); err != nil {
+		t.Fatalf("clear memory_read_events: %v", err)
+	}
+}
+
+func countMemoryReadEvents(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM memory_read_events`).Scan(&count); err != nil {
+		t.Fatalf("count memory_read_events: %v", err)
+	}
+	return count
+}
+
+func driftMemoryIDs(failures []memory.DriftResult) []int64 {
+	ids := make([]int64, 0, len(failures))
+	for _, f := range failures {
+		ids = append(ids, f.MemoryID)
+	}
+	return ids
 }

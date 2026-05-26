@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -64,11 +65,11 @@ func runCheckDrift(cmd *cobra.Command, backfill, dryRun bool) error {
 		}
 	}
 
-	return reportCardDrift(cmd, memStore, cardStore)
+	return reportCardDrift(cmd, db, cardStore)
 }
 
-func reportCardDrift(cmd *cobra.Command, memStore *memory.Store, cardStore cards.Store) error {
-	failures, err := memory.CheckCardDrift(cmd.Context(), memStore, cardStore)
+func reportCardDrift(cmd *cobra.Command, db *sql.DB, cardStore cards.Store) error {
+	failures, err := checkCardDriftWithoutReadTelemetry(cmd.Context(), db, cardStore)
 	if err != nil {
 		return fmt.Errorf("check-drift: %w", err)
 	}
@@ -80,6 +81,14 @@ func reportCardDrift(cmd *cobra.Command, memStore *memory.Store, cardStore cards
 		fmt.Fprintf(cmd.OutOrStdout(), "DRIFT: memory %d — %s\n", f.MemoryID, truncateLine(f.Content, 80))
 	}
 	return fmt.Errorf("%d unmirrored memory entry(s) detected", len(failures))
+}
+
+func checkCardDriftWithoutReadTelemetry(ctx context.Context, db *sql.DB, cs cards.Store) ([]memory.DriftResult, error) {
+	failures, err := memory.CheckCardDrift(ctx, memory.NewStore(db), cs)
+	if err != nil {
+		return nil, fmt.Errorf("check card drift without read telemetry: %w", err)
+	}
+	return failures, nil
 }
 
 // backfillMemoryCardMirrors creates missing dual-write card mirrors for legacy

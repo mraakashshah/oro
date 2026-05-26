@@ -87,16 +87,29 @@ func CheckCardDrift(ctx context.Context, mem *Store, cs cards.Store) ([]DriftRes
 		return nil, fmt.Errorf("check drift list cards: %w", err)
 	}
 
-	all, err := mem.List(ctx, ListOpts{Limit: 100000})
+	rows, err := mem.db.QueryContext(ctx, `
+		SELECT id, content
+		FROM memories
+		ORDER BY created_at DESC, id DESC
+		LIMIT 100000
+	`)
 	if err != nil {
 		return nil, fmt.Errorf("check drift list memories: %w", err)
 	}
+	defer func() { _ = rows.Close() }()
 
 	var failures []DriftResult
-	for _, m := range all {
-		if !covered[m.ID] {
-			failures = append(failures, DriftResult{MemoryID: m.ID, Content: m.Content})
+	for rows.Next() {
+		var result DriftResult
+		if err := rows.Scan(&result.MemoryID, &result.Content); err != nil {
+			return nil, fmt.Errorf("check drift scan memory: %w", err)
 		}
+		if !covered[result.MemoryID] {
+			failures = append(failures, result)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("check drift memory rows: %w", err)
 	}
 	return failures, nil
 }
