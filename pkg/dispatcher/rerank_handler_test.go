@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"oro/pkg/memory"
-	"oro/pkg/memory/testhelpers"
 	"oro/pkg/protocol"
 )
 
@@ -21,6 +19,12 @@ import (
 type fakeReranker struct {
 	scores []float64 // optional fixed scores; nil → zero-fill
 }
+
+type fakeEmbedder struct{}
+
+func (fakeEmbedder) Embed(string) []float32 { return []float32{0} }
+func (fakeEmbedder) Dim() int               { return 1 }
+func (fakeEmbedder) Name() string           { return "fake" }
 
 func (r *fakeReranker) Rerank(_ string, docs []string) []float64 {
 	if r.scores != nil {
@@ -80,7 +84,7 @@ func TestHandleRerankByIDsWithResponseWritesRerankResponse(t *testing.T) {
 // TestRerankByIDsNotLoadedAtWarmup asserts that warmupEmbedder does NOT touch the
 // reranker field. The dispatcher must be nil-reranker immediately after warmup.
 func TestRerankByIDsNotLoadedAtWarmup(t *testing.T) {
-	fakeEmb := testhelpers.NewFakeEmbedder(0)
+	fakeEmb := fakeEmbedder{}
 	readyCh := make(chan struct{})
 	d := &Dispatcher{
 		embedderReady: readyCh,
@@ -243,7 +247,7 @@ func TestRerankByIDsLazyLoad(t *testing.T) {
 
 		fakeR := &fakeReranker{scores: []float64{0.9, 0.1}}
 		d := &Dispatcher{
-			memories: memory.NewStore(db),
+			memories: &testMemoryStore{db: db},
 			rerankerFactory: func(_ string) (Reranker, error) {
 				return fakeR, nil
 			},
@@ -251,7 +255,7 @@ func TestRerankByIDsLazyLoad(t *testing.T) {
 
 		// Insert one real memory; the second ID does not exist.
 		ctx := context.Background()
-		realID, err := d.memories.Insert(ctx, memory.InsertParams{
+		realID, err := d.memories.Insert(ctx, protocol.MemoryInsertParams{
 			Content: "relevant doc", Type: "summary",
 		})
 		if err != nil {

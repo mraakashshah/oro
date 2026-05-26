@@ -91,15 +91,6 @@ func TestDefaultMemoryStoreUsesProjectPaths(t *testing.T) {
 		t.Errorf("Expected StateDBPath %s, got %s", expectedDBPath, paths.StateDBPath)
 	}
 
-	// Verify the database was created at the project-scoped location
-	if _, err := os.Stat(expectedDBPath); err != nil {
-		t.Fatalf("Expected database to exist at %s: %v", expectedDBPath, err)
-	}
-
-	// Also verify that the global path was NOT used
-	globalDBPath := filepath.Join(oroHome, "state.db")
-	if _, err := os.Stat(globalDBPath); err == nil {
-		// The global database shouldn't be created when a project is specified
-		t.Errorf("Global database should not exist at %s when project is set", globalDBPath)
-	}
+	// Memory retirement leaves the legacy store disabled; resolving the project
+	// path remains important, but defaultMemoryStore no longer opens a DB.
 }

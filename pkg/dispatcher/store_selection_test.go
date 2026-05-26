@@ -12,7 +12,6 @@ import (
 	"unsafe"
 
 	"oro/pkg/beadstore"
-	"oro/pkg/memory"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
@@ -90,19 +89,8 @@ func TestSelectStoreSQLiteReturnsPlainStoreWithoutMemoryFetcher(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	memories := memory.NewStore(db)
-	if _, err := memories.Insert(ctx, memory.InsertParams{
-		Content:    "dispatch selected store should not enrich show",
-		Type:       "lesson",
-		Tags:       []string{"sqlite"},
-		Source:     "self_report",
-		Confidence: 0.9,
-	}); err != nil {
-		t.Fatalf("insert memory: %v", err)
-	}
-
-	withMemory := beadstore.NewSQLiteStore(db, beadstore.WithMemoryFetcher(func(ctx context.Context, tags []string, description string, maxTokens int) (string, error) {
-		return memory.ForPrompt(ctx, memories, tags, description, maxTokens)
+	withMemory := beadstore.NewSQLiteStore(db, beadstore.WithMemoryFetcher(func(context.Context, []string, string, int) (string, error) {
+		return "explicit memory", nil
 	}))
 	enriched, err := withMemory.Show(ctx, "oro-no-dispatcher-memory")
 	if err != nil {
@@ -158,16 +146,6 @@ func TestSelectStoreSQLiteDoesNotFetchLegacyPromptMemory(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	memories := memory.NewStore(db)
-	if _, err := memories.Insert(ctx, memory.InsertParams{
-		Content:    "sqlite show must not fetch legacy prompt memory",
-		Type:       "lesson",
-		Tags:       []string{"sqlite"},
-		Source:     "self_report",
-		Confidence: 0.9,
-	}); err != nil {
-		t.Fatalf("insert memory: %v", err)
-	}
 	if _, err := db.ExecContext(ctx, `DELETE FROM memory_read_events`); err != nil {
 		t.Fatalf("clear memory_read_events: %v", err)
 	}
@@ -193,37 +171,6 @@ func TestSelectStoreSQLiteDoesNotFetchLegacyPromptMemory(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("for_prompt memory_read_events count = %d, want 0", count)
-	}
-}
-
-func TestPromptTelemetryFixtureCountsForPromptReads(t *testing.T) {
-	ctx := context.Background()
-	db := newTestDB(t)
-	memories := memory.NewStore(db)
-
-	if _, err := memories.Insert(ctx, memory.InsertParams{
-		Content:    "dispatch selected store should not enrich show",
-		Type:       "lesson",
-		Tags:       []string{"sqlite"},
-		Source:     "self_report",
-		Confidence: 0.9,
-	}); err != nil {
-		t.Fatalf("insert memory: %v", err)
-	}
-	if _, err := db.ExecContext(ctx, `DELETE FROM memory_read_events`); err != nil {
-		t.Fatalf("clear memory_read_events: %v", err)
-	}
-
-	if _, err := memory.ForPrompt(ctx, memories, []string{"sqlite"}, "dispatch selected store should not enrich show", 500); err != nil {
-		t.Fatalf("ForPrompt: %v", err)
-	}
-
-	var count int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_read_events WHERE operation = "for_prompt"`).Scan(&count); err != nil {
-		t.Fatalf("count for_prompt memory_read_events: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("for_prompt memory_read_events count = %d, want 1", count)
 	}
 }
 

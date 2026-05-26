@@ -183,15 +183,6 @@ type exitError struct {
 
 func (e *exitError) Error() string { return e.msg }
 
-// newDegradedQGFailureRecorder returns a recorder that logs the event but
-// does not persist it. Used when the state DB is unavailable.
-func newDegradedQGFailureRecorder() func(context.Context, dispatcher.QGFailureRecord, dispatcher.QGFailureClassification) error {
-	return func(_ context.Context, rec dispatcher.QGFailureRecord, cls dispatcher.QGFailureClassification) error {
-		logStep("qg failure recorder degraded: no state db (component=%s bead=%s class=%s)", rec.Component, rec.BeadID, cls.Class)
-		return nil
-	}
-}
-
 // newStateDBQGFailureRecorder returns a recorder that persists QG failure
 // incidents and occurrences to the state DB.
 func newStateDBQGFailureRecorder(db *sql.DB) func(context.Context, dispatcher.QGFailureRecord, dispatcher.QGFailureClassification) error {

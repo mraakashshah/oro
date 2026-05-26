@@ -6,8 +6,6 @@ import (
 	"os"
 	"testing"
 	"time"
-
-	"oro/pkg/memory/testhelpers"
 )
 
 func TestWaitForEmbedderReturnsSentinelWhenDisabled(t *testing.T) {
@@ -23,7 +21,7 @@ func TestWaitForEmbedderReturnsSentinelWhenDisabled(t *testing.T) {
 }
 
 func TestWaitForEmbedderBlocksUntilReady(t *testing.T) {
-	fakeEmb := testhelpers.NewFakeEmbedder(0)
+	fakeEmb := fakeEmbedder{}
 	readyCh := make(chan struct{})
 	d := &Dispatcher{
 		embedder:      fakeEmb,
@@ -65,7 +63,7 @@ func TestWaitForEmbedderBlocksUntilReady(t *testing.T) {
 }
 
 func TestWarmupEmbedderHappyPath(t *testing.T) {
-	fakeEmb := testhelpers.NewFakeEmbedder(0)
+	fakeEmb := fakeEmbedder{}
 	readyCh := make(chan struct{})
 	d := &Dispatcher{
 		embedderReady: readyCh,

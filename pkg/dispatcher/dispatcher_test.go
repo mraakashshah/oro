@@ -25,7 +25,6 @@ import (
 	"oro/pkg/cards"
 	"oro/pkg/dbutil"
 	"oro/pkg/factoryhealth"
-	"oro/pkg/memory"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
@@ -955,52 +954,161 @@ func newTestDB(t *testing.T) *sql.DB {
 }
 
 func newTestMemoryServices(db *sql.DB) MemoryServices {
-	store := memory.NewStore(db)
-	store.SetEmbedder(memory.NewEmbedder())
+	store := &testMemoryStore{db: db, hasEmbedder: true}
 	return MemoryServices{
 		Store: store,
 		InsertRejection: func(ctx context.Context, beadID, workerID, feedback string) error {
-			return store.InsertRejection(ctx, beadID, workerID, feedback)
+			_, err := db.ExecContext(ctx, `
+INSERT INTO rejection_history (bead_id, worker_id, feedback)
+VALUES (?, ?, ?)`, beadID, workerID, feedback)
+			if err != nil {
+				return fmt.Errorf("insert rejection history: %w", err)
+			}
+			return nil
 		},
 		GetRejections: func(ctx context.Context, beadID string) ([]MemoryRejection, error) {
-			rejections, err := store.GetRejections(ctx, beadID)
+			rows, err := db.QueryContext(ctx, `
+SELECT id, bead_id, worker_id, feedback, created_at
+FROM rejection_history
+WHERE bead_id = ?
+ORDER BY id`, beadID)
 			if err != nil {
 				return nil, err
 			}
-			out := make([]MemoryRejection, 0, len(rejections))
-			for _, r := range rejections {
-				out = append(out, MemoryRejection{
-					ID:        r.ID,
-					BeadID:    r.BeadID,
-					WorkerID:  r.WorkerID,
-					Feedback:  r.Feedback,
-					CreatedAt: r.CreatedAt,
-				})
+			defer func() { _ = rows.Close() }()
+			var out []MemoryRejection
+			for rows.Next() {
+				var r MemoryRejection
+				if err := rows.Scan(&r.ID, &r.BeadID, &r.WorkerID, &r.Feedback, &r.CreatedAt); err != nil {
+					return nil, err
+				}
+				out = append(out, r)
 			}
-			return out, nil
+			return out, rows.Err()
 		},
 		Consolidate: func(ctx context.Context) (int, int, error) {
-			return memory.Consolidate(ctx, store, memory.ConsolidateOpts{})
+			return 0, 0, nil
 		},
 		TrimSearchEvents: func(ctx context.Context, maxAge time.Duration) (int64, error) {
-			return memory.TrimSearchEvents(ctx, db, maxAge)
+			cutoff := time.Now().Add(-maxAge).UTC().Format("2006-01-02 15:04:05")
+			result, err := db.ExecContext(ctx, `DELETE FROM memory_search_events WHERE created_at < ?`, cutoff)
+			if err != nil {
+				return 0, err
+			}
+			return result.RowsAffected()
 		},
 		ExecuteDream: func(ctx context.Context, actions []DreamAction, logFn func(string)) error {
-			memoryActions := make([]memory.DreamAction, 0, len(actions))
 			for _, a := range actions {
-				memoryActions = append(memoryActions, memory.DreamAction{
-					Kind:   a.Kind,
-					ID:     a.ID,
-					IDs:    a.IDs,
-					Params: a.Params,
-				})
+				if err := store.applyDreamAction(ctx, a); err != nil {
+					return err
+				}
+				if logFn != nil {
+					logFn(fmt.Sprintf("%s memory action", a.Kind))
+				}
 			}
-			return memory.ExecuteActions(ctx, memoryActions, store, logFn)
+			return nil
 		},
 		HandoffInserter: func(cardStore cards.Store) MemoryInserter {
-			return memory.NewLegacyCardWriter(store, cardStore)
+			return store
 		},
 	}
+}
+
+type testMemoryStore struct {
+	db          *sql.DB
+	hasEmbedder bool
+}
+
+func (s *testMemoryStore) Insert(ctx context.Context, m protocol.MemoryInsertParams) (int64, error) {
+	tags, err := json.Marshal(m.Tags)
+	if err != nil {
+		return 0, fmt.Errorf("marshal tags: %w", err)
+	}
+	filesRead, err := json.Marshal(m.FilesRead)
+	if err != nil {
+		return 0, fmt.Errorf("marshal files read: %w", err)
+	}
+	filesModified, err := json.Marshal(m.FilesModified)
+	if err != nil {
+		return 0, fmt.Errorf("marshal files modified: %w", err)
+	}
+	result, err := s.db.ExecContext(ctx, `
+INSERT INTO memories (content, type, tags, source, bead_id, worker_id, confidence, files_read, files_modified, pinned)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.Content, m.Type, string(tags), m.Source, m.BeadID, m.WorkerID, m.Confidence, string(filesRead), string(filesModified), boolToInt(m.Pinned))
+	if err != nil {
+		return 0, fmt.Errorf("insert memory: %w", err)
+	}
+	return result.LastInsertId()
+}
+
+func (s *testMemoryStore) GetByID(ctx context.Context, id int64) (protocol.Memory, error) {
+	var m protocol.Memory
+	err := s.db.QueryRowContext(ctx, `
+SELECT id, content, type, COALESCE(tags, '[]'), source, COALESCE(bead_id, ''),
+       COALESCE(worker_id, ''), confidence, created_at, COALESCE(files_read, '[]'),
+       COALESCE(files_modified, '[]'), pinned
+FROM memories
+WHERE id = ?`, id).Scan(
+		&m.ID, &m.Content, &m.Type, &m.Tags, &m.Source, &m.BeadID, &m.WorkerID,
+		&m.Confidence, &m.CreatedAt, &m.FilesRead, &m.FilesModified, &m.Pinned,
+	)
+	if err != nil {
+		return protocol.Memory{}, fmt.Errorf("get memory %d: %w", id, err)
+	}
+	return m, nil
+}
+
+func (s *testMemoryStore) DumpAll(ctx context.Context) ([]protocol.Memory, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, content, type, COALESCE(tags, '[]'), source, COALESCE(bead_id, ''),
+       COALESCE(worker_id, ''), confidence, created_at, COALESCE(files_read, '[]'),
+       COALESCE(files_modified, '[]'), pinned
+FROM memories
+ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var memories []protocol.Memory
+	for rows.Next() {
+		var m protocol.Memory
+		if err := rows.Scan(
+			&m.ID, &m.Content, &m.Type, &m.Tags, &m.Source, &m.BeadID, &m.WorkerID,
+			&m.Confidence, &m.CreatedAt, &m.FilesRead, &m.FilesModified, &m.Pinned,
+		); err != nil {
+			return nil, err
+		}
+		memories = append(memories, m)
+	}
+	return memories, rows.Err()
+}
+
+func (s *testMemoryStore) HasEmbedder() bool {
+	return s.hasEmbedder
+}
+
+func (s *testMemoryStore) applyDreamAction(ctx context.Context, action DreamAction) error {
+	switch action.Kind {
+	case "create":
+		_, err := s.Insert(ctx, action.Params)
+		return err
+	case "delete":
+		_, err := s.db.ExecContext(ctx, `DELETE FROM memories WHERE id = ?`, action.ID)
+		return err
+	case "merge":
+		_, err := s.Insert(ctx, action.Params)
+		return err
+	default:
+		return nil
+	}
+}
+
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 func TestNewTestDBMigratesMemorySearchEvents(t *testing.T) {
@@ -8456,17 +8564,6 @@ func TestDispatcherFullSuiteStateDoesNotStarveEstimateAssignments(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("Create bead: %v", err)
 	}
-	memories := memory.NewStore(db)
-	if _, err := memories.Insert(ctx, memory.InsertParams{
-		Content:    "assignment should not run implicit memory prompt search",
-		Type:       "lesson",
-		Tags:       []string{"sqlite", "memory"},
-		Source:     "self_report",
-		Confidence: 0.9,
-	}); err != nil {
-		t.Fatalf("insert memory: %v", err)
-	}
-
 	gitRunner := &mockGitRunner{}
 	spawnMock := &mockBatchSpawner{verdict: "looks good\n\nVERDICT: APPROVED"}
 	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
@@ -18410,7 +18507,7 @@ func TestBuildRejectionMemoryContext_WithBothSections(t *testing.T) {
 	if err := d.memoryServices.InsertRejection(ctx, beadID, "worker-prior", priorFeedback); err != nil {
 		t.Fatalf("InsertRejection: %v", err)
 	}
-	_, err := d.memories.Insert(ctx, memory.InsertParams{
+	_, err := d.memories.Insert(ctx, protocol.MemoryInsertParams{
 		Content:    "legacy memory must stay out of rejection MemoryContext",
 		Type:       "lesson",
 		Source:     "test",
@@ -18461,7 +18558,7 @@ func TestBuildRejectionMemoryContext_SeparatorIsDoubleNewline(t *testing.T) {
 	ctx := context.Background()
 
 	// Insert a memory that will be retrieved.
-	_, _ = d.memories.Insert(ctx, memory.InsertParams{
+	_, _ = d.memories.Insert(ctx, protocol.MemoryInsertParams{
 		Content:    "important context about this project",
 		Type:       "lesson",
 		Source:     "test",

@@ -1,6 +1,0 @@
-# source: test
-# APPROVED
-{"query": "ruff pyright linting CI", "candidate_memory_id": 1, "relevant": null, "source": "test"}
-{"query": "ruff pyright linting CI", "candidate_memory_id": 2, "relevant": null, "source": "test"}
-{"query": "sqlite wal consistency", "candidate_memory_id": 2, "relevant": null, "source": "test"}
-{"query": "sqlite wal consistency", "candidate_memory_id": 1, "relevant": null, "source": "test"}

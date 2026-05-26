@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"oro/pkg/beadstore/migrations"
-	"oro/pkg/memory"
 	"oro/pkg/protocol"
 
 	_ "modernc.org/sqlite"
@@ -785,18 +784,6 @@ func TestSQLiteStoreShowLeavesMemoryEmptyWithoutFetcher(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
-	}
-
-	memStore := memory.NewStore(store.db)
-	if _, err := memStore.Insert(ctx, memory.InsertParams{
-		Content:    "matching row should not populate Show without an explicit fetcher",
-		Type:       "lesson",
-		Tags:       []string{"memory", "sqlite"},
-		Source:     "self_report",
-		BeadID:     "oro-no-fetcher-memory",
-		Confidence: 0.9,
-	}); err != nil {
-		t.Fatalf("insert memory: %v", err)
 	}
 
 	shown, err := store.Show(ctx, "oro-no-fetcher-memory")

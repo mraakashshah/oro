@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -138,8 +139,8 @@ func TestCLICommands(t *testing.T) {
 
 	t.Run("remember accepts text argument", func(t *testing.T) {
 		_, _, err := executeCommand("remember", "always use TDD")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+		if err == nil || !strings.Contains(err.Error(), "legacy memory has been retired") {
+			t.Fatalf("remember error = %v, want retired memory error", err)
 		}
 	})
 
@@ -162,8 +163,8 @@ func TestCLICommands(t *testing.T) {
 
 	t.Run("recall accepts query argument", func(t *testing.T) {
 		_, _, err := executeCommand("recall", "TDD workflow")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+		if err == nil || !strings.Contains(err.Error(), "legacy memory has been retired") {
+			t.Fatalf("recall error = %v, want retired memory error", err)
 		}
 	})
 

@@ -3,55 +3,24 @@ package main
 import (
 	"context"
 	"database/sql"
-	"fmt"
+	"errors"
 	"io"
-	"os"
 
-	"oro/internal/memoryboundary"
 	"oro/pkg/dispatcher"
 	"oro/pkg/protocol"
 )
+
+var errLegacyMemoryRetired = errors.New("legacy memory has been retired; use cards instead")
+
+type retiredMemoryStore struct{}
 
 // defaultMemoryStore opens (or creates) the default SQLite memory store at
 // ~/.oro/state.db (or ~/.oro/projects/<project>/state.db if a project is set)
 // and ensures the schema is applied.
 // Uses ResolveProjectDBPaths to respect project context, so that CLI commands
 // read and write the same database as running workers in the current project.
-func defaultMemoryStore() (*memoryboundary.Store, error) {
-	paths, err := ResolveProjectDBPaths()
-	if err != nil {
-		return nil, fmt.Errorf("resolve paths: %w", err)
-	}
-	dbPath := paths.StateDBPath
-
-	db, err := openStateDB(dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("open memory db: %w", err)
-	}
-
-	// Apply store-specific migrations not covered by migrateStateDB.
-	_, _ = db.ExecContext(context.Background(), protocol.MigrateProjectColumn)
-	// Backfill project column for existing rows
-	_, _ = db.ExecContext(context.Background(), `UPDATE memories SET project = 'oro' WHERE project IS NULL OR project = ''`)
-
-	store := memoryboundary.NewStore(db)
-
-	// Set project scope from environment if ORO_PROJECT is set.
-	// If not set, fallback to reading project name from .oro/config.yaml.
-	// If neither exists, no project filtering is applied (all memories accessible).
-	project := os.Getenv("ORO_PROJECT")
-	if project == "" {
-		// Fallback to .oro/config.yaml in current directory
-		configProject, err := readProjectConfig(".")
-		if err == nil && configProject != "" {
-			project = configProject
-		}
-	}
-	if project != "" {
-		store.SetProject(project)
-	}
-
-	return store, nil
+func defaultMemoryStore() (*retiredMemoryStore, error) {
+	return &retiredMemoryStore{}, nil
 }
 
 func defaultMemoriesStore() (memoriesStore, error) {
@@ -63,7 +32,7 @@ func defaultMemoriesStore() (memoriesStore, error) {
 }
 
 func newWorkerMemoryExtractSpawner() workerMemoryExtractSpawner {
-	return memoryboundary.NewExtractSpawner()
+	return nil
 }
 
 type workerMemoryExtractSpawner interface {
@@ -76,10 +45,42 @@ type workerMemoryExtractSpawner interface {
 // space. LoadVocab failure is non-fatal: the embedder starts with an empty
 // vocab and degrades gracefully (new memories embed correctly; cosine
 // similarity against old embeddings may be noisy until vocab re-accumulates).
-func openWorkerMemoryStore(db *sql.DB) *memoryboundary.Store {
-	return memoryboundary.NewWorkerStore(db)
+func openWorkerMemoryStore(_ *sql.DB) workMemoryStore {
+	return nil
 }
 
 func newDispatcherMemoryServices(db *sql.DB) dispatcher.MemoryServices {
-	return memoryboundary.NewDispatcherMemoryServices(db)
+	return dispatcher.MemoryServices{}
 }
+
+func (retiredMemoryStore) Insert(context.Context, protocol.MemoryInsertParams) (int64, error) {
+	return 0, errLegacyMemoryRetired
+}
+
+func (retiredMemoryStore) GetByID(context.Context, int64) (protocol.Memory, error) {
+	return protocol.Memory{}, errLegacyMemoryRetired
+}
+
+func (retiredMemoryStore) Delete(context.Context, int64) error {
+	return errLegacyMemoryRetired
+}
+
+func (retiredMemoryStore) Search(context.Context, string, protocol.MemorySearchOpts) ([]protocol.ScoredMemory, error) {
+	return nil, errLegacyMemoryRetired
+}
+
+func (retiredMemoryStore) SetProject(string) {}
+
+func (retiredMemoryStore) SaveVocab(context.Context) error {
+	return nil
+}
+
+func (retiredMemoryStore) ListMemories(context.Context, protocol.MemoryListOpts) ([]protocol.Memory, error) {
+	return nil, errLegacyMemoryRetired
+}
+
+func (retiredMemoryStore) ConsolidateMemories(context.Context, protocol.MemoryConsolidateOpts) (merged, pruned int, err error) {
+	return 0, 0, errLegacyMemoryRetired
+}
+
+func (retiredMemoryStore) ClearMemoryProjectScope() {}

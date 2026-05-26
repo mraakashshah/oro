@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"oro/pkg/cards"
-	"oro/pkg/memory"
 	"oro/pkg/protocol"
 
 	"github.com/spf13/cobra"
@@ -46,7 +45,6 @@ func runCheckDrift(cmd *cobra.Command, backfill, dryRun bool) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	memStore := memory.NewStore(db)
 	cardStore, err := cards.NewStore(db)
 	if err != nil {
 		return fmt.Errorf("init card store: %w", err)
@@ -54,7 +52,7 @@ func runCheckDrift(cmd *cobra.Command, backfill, dryRun bool) error {
 
 	ctx := cmd.Context()
 	if backfill {
-		n, err := backfillMemoryCardMirrors(ctx, memStore, cardStore, dryRun)
+		n, err := backfillMemoryCardMirrors(ctx, db, cardStore, dryRun)
 		if err != nil {
 			return fmt.Errorf("backfill memory card mirrors: %w", err)
 		}
@@ -83,23 +81,38 @@ func reportCardDrift(cmd *cobra.Command, db *sql.DB, cardStore cards.Store) erro
 	return fmt.Errorf("%d unmirrored memory entry(s) detected", len(failures))
 }
 
-func checkCardDriftWithoutReadTelemetry(ctx context.Context, db *sql.DB, cs cards.Store) ([]memory.DriftResult, error) {
-	failures, err := memory.CheckCardDrift(ctx, memory.NewStore(db), cs)
+type memoryDriftResult struct {
+	MemoryID int64
+	Content  string
+}
+
+func checkCardDriftWithoutReadTelemetry(ctx context.Context, db *sql.DB, cs cards.Store) ([]memoryDriftResult, error) {
+	covered, err := coveredMemoryCardMirrorIDs(ctx, cs)
 	if err != nil {
-		return nil, fmt.Errorf("check card drift without read telemetry: %w", err)
+		return nil, fmt.Errorf("list existing card mirrors: %w", err)
+	}
+	all, err := listLegacyMemories(ctx, db, 100000)
+	if err != nil {
+		return nil, fmt.Errorf("list legacy memories: %w", err)
+	}
+	var failures []memoryDriftResult
+	for _, m := range all {
+		if !covered[m.ID] {
+			failures = append(failures, memoryDriftResult{MemoryID: m.ID, Content: m.Content})
+		}
 	}
 	return failures, nil
 }
 
 // backfillMemoryCardMirrors creates missing dual-write card mirrors for legacy
 // memory rows. It uses mem-id tags as the idempotency key.
-func backfillMemoryCardMirrors(ctx context.Context, mem *memory.Store, cs cards.Store, dryRun bool) (int, error) {
+func backfillMemoryCardMirrors(ctx context.Context, db *sql.DB, cs cards.Store, dryRun bool) (int, error) {
 	covered, err := coveredMemoryCardMirrorIDs(ctx, cs)
 	if err != nil {
 		return 0, fmt.Errorf("list existing card mirrors: %w", err)
 	}
 
-	all, err := mem.List(ctx, memory.ListOpts{Limit: 100000})
+	all, err := listLegacyMemories(ctx, db, 100000)
 	if err != nil {
 		return 0, fmt.Errorf("list memories: %w", err)
 	}
@@ -119,6 +132,46 @@ func backfillMemoryCardMirrors(ctx context.Context, mem *memory.Store, cs cards.
 		covered[m.ID] = true
 	}
 	return count, nil
+}
+
+func listLegacyMemories(ctx context.Context, db *sql.DB, limit int) ([]protocol.Memory, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT id, content, type, COALESCE(tags, '[]'), source, COALESCE(bead_id, ''),
+       COALESCE(worker_id, ''), confidence, created_at, COALESCE(files_read, '[]'),
+       COALESCE(files_modified, '[]'), pinned
+FROM memories
+ORDER BY id
+LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query memories: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var memories []protocol.Memory
+	for rows.Next() {
+		var m protocol.Memory
+		if err := rows.Scan(
+			&m.ID,
+			&m.Content,
+			&m.Type,
+			&m.Tags,
+			&m.Source,
+			&m.BeadID,
+			&m.WorkerID,
+			&m.Confidence,
+			&m.CreatedAt,
+			&m.FilesRead,
+			&m.FilesModified,
+			&m.Pinned,
+		); err != nil {
+			return nil, fmt.Errorf("scan memory: %w", err)
+		}
+		memories = append(memories, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate memories: %w", err)
+	}
+	return memories, nil
 }
 
 func coveredMemoryCardMirrorIDs(ctx context.Context, cs cards.Store) (map[int64]bool, error) {

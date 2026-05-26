@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"oro/pkg/memory"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
@@ -235,7 +234,7 @@ func TestDreamPassesMemories(t *testing.T) {
 	}
 
 	// Seed the memory store with a test memory.
-	_, err := d.memories.Insert(ctx, memory.InsertParams{
+	_, err := d.memories.Insert(ctx, protocol.MemoryInsertParams{
 		Content:    "always run tests before committing code changes",
 		Type:       "lesson",
 		Tags:       []string{"testing"},

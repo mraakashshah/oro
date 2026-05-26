@@ -8,21 +8,21 @@ import (
 	"strings"
 	"testing"
 
-	"oro/pkg/memory"
+	"oro/pkg/protocol"
 	"oro/pkg/worker"
 )
 
 // mockMemStore captures Insert calls without a real DB.
 type mockMemStore struct {
-	inserted []memory.InsertParams
+	inserted []protocol.MemoryInsertParams
 }
 
-func (m *mockMemStore) Insert(_ context.Context, p memory.InsertParams) (int64, error) {
+func (m *mockMemStore) Insert(_ context.Context, p protocol.MemoryInsertParams) (int64, error) {
 	m.inserted = append(m.inserted, p)
 	return int64(len(m.inserted)), nil
 }
 
-// mockLLMSpawner implements memory.Spawner for testing. It records whether Spawn
+// mockLLMSpawner implements worker.MemoryExtractSpawner for testing. It records whether Spawn
 // was called and returns canned output.
 type mockLLMSpawner struct {
 	called      bool

@@ -64,8 +64,10 @@ func runWorker(ctx context.Context, socketPath, id string) error {
 		if dbErr == nil {
 			defer func() { _ = db.Close() }()
 			memStore := openWorkerMemoryStore(db)
-			w.SetMemoryStore(memStore)
-			saveVocab = memStore.SaveVocab
+			if memStore != nil {
+				w.SetMemoryStore(memStore)
+				saveVocab = memStore.SaveVocab
+			}
 		}
 	}
 	w.SetExtractSpawner(newWorkerMemoryExtractSpawner())
