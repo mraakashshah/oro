@@ -261,7 +261,7 @@ func TestDrainOutput_LLMExtraction(t *testing.T) {
 	if spawner.modelGiven != "haiku" {
 		t.Fatalf("extraction model = %q, want haiku", spawner.modelGiven)
 	}
-	if !strings.Contains(spawner.promptGiven, "You are a learning extractor.") {
+	if !strings.Contains(spawner.promptGiven, "insights — things a developer") {
 		t.Fatalf("extraction prompt did not preserve memory extractor behavior: %q", spawner.promptGiven)
 	}
 	if !strings.Contains(spawner.promptGiven, "doing work") {

@@ -21,7 +21,7 @@ const (
 
 const memoryExtractionPrompt = `You are a learning extractor. Given a worker session log, identify 0-5 genuine
 discoveries worth remembering for future sessions. Only extract non-obvious
-insights -- things a developer working on this codebase would benefit from knowing.
+insights — things a developer working on this codebase would benefit from knowing.
 
 Categories:
 - lesson: something that worked or a technique discovered
