@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"go/parser"
+	"go/token"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,6 +14,20 @@ import (
 	"oro/pkg/memory"
 	"oro/pkg/protocol"
 )
+
+func TestMemoriesCmdDoesNotImportMemory(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "cmd_memories.go", nil, parser.ImportsOnly)
+	if err != nil {
+		t.Fatalf("parse cmd_memories.go: %v", err)
+	}
+
+	for _, spec := range file.Imports {
+		if spec.Path.Value == `"oro/pkg/memory"` {
+			t.Fatalf("cmd_memories.go must use the cmd/oro store boundary, not import oro/pkg/memory directly")
+		}
+	}
+}
 
 // newTestMemoryStoreAndDB creates an in-memory SQLite-backed memory.Store for testing.
 // Returns both the raw *sql.DB (for inserting records with specific timestamps)
@@ -54,7 +70,7 @@ func TestMemoriesCmd(t *testing.T) {
 		_, store := newTestMemoryStoreAndDB(t)
 		seedMemoriesCmd(t, store)
 
-		cmd := newMemoriesListCmdWithStore(store)
+		cmd := newMemoriesListCmdWithStore(newMemoriesStoreAdapter(store))
 		var out strings.Builder
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{})
@@ -106,7 +122,7 @@ func TestMemoriesCmd(t *testing.T) {
 		_, store := newTestMemoryStoreAndDB(t)
 		seedMemoriesCmd(t, store)
 
-		cmd := newMemoriesListCmdWithStore(store)
+		cmd := newMemoriesListCmdWithStore(newMemoriesStoreAdapter(store))
 		var out strings.Builder
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{"--type", "gotcha"})
@@ -131,7 +147,7 @@ func TestMemoriesCmd(t *testing.T) {
 		_, store := newTestMemoryStoreAndDB(t)
 		seedMemoriesCmd(t, store)
 
-		cmd := newMemoriesListCmdWithStore(store)
+		cmd := newMemoriesListCmdWithStore(newMemoriesStoreAdapter(store))
 		var out strings.Builder
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{"--tag", "performance"})
@@ -152,7 +168,7 @@ func TestMemoriesCmd(t *testing.T) {
 		_, store := newTestMemoryStoreAndDB(t)
 		seedMemoriesCmd(t, store)
 
-		cmd := newMemoriesListCmdWithStore(store)
+		cmd := newMemoriesListCmdWithStore(newMemoriesStoreAdapter(store))
 		var out strings.Builder
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{"--limit", "2"})
@@ -187,7 +203,7 @@ func TestMemoriesCmd(t *testing.T) {
 			t.Fatalf("insert: %v", err)
 		}
 
-		cmd := newMemoriesConsolidateCmdWithStore(store)
+		cmd := newMemoriesConsolidateCmdWithStore(newMemoriesStoreAdapter(store))
 		var out strings.Builder
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{})
@@ -237,7 +253,7 @@ func TestMemoriesCmd(t *testing.T) {
 			t.Fatalf("list before: %v", err)
 		}
 
-		cmd := newMemoriesConsolidateCmdWithStore(store)
+		cmd := newMemoriesConsolidateCmdWithStore(newMemoriesStoreAdapter(store))
 		var out strings.Builder
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{"--dry-run"})
@@ -299,7 +315,7 @@ func TestMemoriesCmd(t *testing.T) {
 	t.Run("empty_list_prints_no_memories_found", func(t *testing.T) {
 		_, store := newTestMemoryStoreAndDB(t)
 
-		cmd := newMemoriesListCmdWithStore(store)
+		cmd := newMemoriesListCmdWithStore(newMemoriesStoreAdapter(store))
 		var out strings.Builder
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{})
@@ -316,7 +332,7 @@ func TestMemoriesCmd(t *testing.T) {
 	t.Run("consolidate_with_no_memories_zero_pruned_zero_merged", func(t *testing.T) {
 		_, store := newTestMemoryStoreAndDB(t)
 
-		cmd := newMemoriesConsolidateCmdWithStore(store)
+		cmd := newMemoriesConsolidateCmdWithStore(newMemoriesStoreAdapter(store))
 		var out strings.Builder
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{})
@@ -344,7 +360,7 @@ func TestMemoriesListJSON(t *testing.T) {
 		_, store := newTestMemoryStoreAndDB(t)
 		seedMemoriesCmd(t, store)
 
-		cmd := newMemoriesListCmdWithStore(store)
+		cmd := newMemoriesListCmdWithStore(newMemoriesStoreAdapter(store))
 		var out strings.Builder
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{"--format=json", "--limit=3"})
@@ -386,7 +402,7 @@ func TestMemoriesListJSON(t *testing.T) {
 			t.Fatalf("insert: %v", err)
 		}
 
-		cmd := newMemoriesListCmdWithStore(store)
+		cmd := newMemoriesListCmdWithStore(newMemoriesStoreAdapter(store))
 		var out strings.Builder
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{"--format=json"})
@@ -417,7 +433,7 @@ func TestMemoriesListJSON(t *testing.T) {
 	t.Run("json_format_empty_db_outputs_empty_array", func(t *testing.T) {
 		_, store := newTestMemoryStoreAndDB(t)
 
-		cmd := newMemoriesListCmdWithStore(store)
+		cmd := newMemoriesListCmdWithStore(newMemoriesStoreAdapter(store))
 		var out strings.Builder
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{"--format=json"})

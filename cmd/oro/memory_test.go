@@ -185,7 +185,7 @@ func TestMemoriesList(t *testing.T) {
 	}
 
 	t.Run("lists all memories with default limit", func(t *testing.T) {
-		cmd := newMemoriesListCmdWithStore(store)
+		cmd := newMemoriesListCmdWithStore(newMemoriesStoreAdapter(store))
 		var out strings.Builder
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{})
@@ -214,7 +214,7 @@ func TestMemoriesList(t *testing.T) {
 	})
 
 	t.Run("filter by type", func(t *testing.T) {
-		cmd := newMemoriesListCmdWithStore(store)
+		cmd := newMemoriesListCmdWithStore(newMemoriesStoreAdapter(store))
 		var out strings.Builder
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{"--type", "gotcha"})
@@ -231,7 +231,7 @@ func TestMemoriesList(t *testing.T) {
 	})
 
 	t.Run("filter by tag", func(t *testing.T) {
-		cmd := newMemoriesListCmdWithStore(store)
+		cmd := newMemoriesListCmdWithStore(newMemoriesStoreAdapter(store))
 		var out strings.Builder
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{"--tag", "performance"})
@@ -248,7 +248,7 @@ func TestMemoriesList(t *testing.T) {
 	})
 
 	t.Run("limit flag restricts count", func(t *testing.T) {
-		cmd := newMemoriesListCmdWithStore(store)
+		cmd := newMemoriesListCmdWithStore(newMemoriesStoreAdapter(store))
 		var out strings.Builder
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{"--limit", "2"})
@@ -271,7 +271,7 @@ func TestMemoriesList(t *testing.T) {
 	})
 
 	t.Run("empty result prints message", func(t *testing.T) {
-		cmd := newMemoriesListCmdWithStore(store)
+		cmd := newMemoriesListCmdWithStore(newMemoriesStoreAdapter(store))
 		var out strings.Builder
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{"--type", "nonexistent_type"})
@@ -291,7 +291,7 @@ func TestMemoriesList(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("insert long memory: %v", err)
 		}
-		cmd := newMemoriesListCmdWithStore(store)
+		cmd := newMemoriesListCmdWithStore(newMemoriesStoreAdapter(store))
 		var out strings.Builder
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{"--type", "lesson"})
@@ -356,7 +356,7 @@ func TestConsolidate(t *testing.T) {
 		}
 
 		// Run consolidate command
-		cmd := newMemoriesConsolidateCmdWithStore(store)
+		cmd := newMemoriesConsolidateCmdWithStore(newMemoriesStoreAdapter(store))
 		var out strings.Builder
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{})
@@ -434,7 +434,7 @@ func TestConsolidate(t *testing.T) {
 		}
 
 		// Run consolidate with dry-run flag
-		cmd := newMemoriesConsolidateCmdWithStore(store)
+		cmd := newMemoriesConsolidateCmdWithStore(newMemoriesStoreAdapter(store))
 		var out strings.Builder
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{"--dry-run"})
@@ -463,7 +463,7 @@ func TestConsolidate(t *testing.T) {
 		db := setupTestMemoryDB(t)
 		store := memory.NewStore(db)
 
-		cmd := newMemoriesConsolidateCmdWithStore(store)
+		cmd := newMemoriesConsolidateCmdWithStore(newMemoriesStoreAdapter(store))
 		var out strings.Builder
 		cmd.SetOut(&out)
 		cmd.SetArgs([]string{"--min-score", "0.05", "--similarity", "0.9"})

@@ -92,6 +92,21 @@ type MemorySearchOpts struct {
 	FilePath string   // optional: filter memories touching this file path
 }
 
+// MemoryListOpts configures a memory list query.
+type MemoryListOpts struct {
+	Type   string
+	Tag    string
+	Limit  int
+	Offset int
+}
+
+// MemoryConsolidateOpts configures memory consolidation.
+type MemoryConsolidateOpts struct {
+	SimilarityThreshold float64
+	MinDecayedScore     float64
+	DryRun              bool
+}
+
 // ScoredMemory is a Memory with an associated relevance score.
 type ScoredMemory struct {
 	Memory

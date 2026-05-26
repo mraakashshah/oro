@@ -6,11 +6,16 @@ import (
 	"fmt"
 	"strings"
 
-	"oro/pkg/memory"
 	"oro/pkg/protocol"
 
 	"github.com/spf13/cobra"
 )
+
+type memoriesStore interface {
+	ListMemories(context.Context, protocol.MemoryListOpts) ([]protocol.Memory, error)
+	ConsolidateMemories(context.Context, protocol.MemoryConsolidateOpts) (merged, pruned int, err error)
+	ClearMemoryProjectScope()
+}
 
 // truncateContent truncates s to maxLen characters, appending "..." if truncated.
 func truncateContent(s string, maxLen int) string {
@@ -70,8 +75,8 @@ func formatMemoriesJSON(memories []protocol.Memory) (string, error) {
 	return string(b) + "\n", nil
 }
 
-// newMemoriesListCmdWithStore creates the "oro memories list" subcommand wired to a memory.Store.
-func newMemoriesListCmdWithStore(store *memory.Store) *cobra.Command {
+// newMemoriesListCmdWithStore creates the "oro memories list" subcommand wired to a memory store.
+func newMemoriesListCmdWithStore(store memoriesStore) *cobra.Command {
 	var typeFilter string
 	var tagFilter string
 	var limit int
@@ -82,7 +87,7 @@ func newMemoriesListCmdWithStore(store *memory.Store) *cobra.Command {
 		Short: "List memories",
 		Long:  "List memories from the store with optional filtering by type and tag.\nOutputs a table with id, type, content (truncated), confidence, and created_at.\nUse --format=json for machine-readable output.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			results, err := store.List(context.Background(), memory.ListOpts{
+			results, err := store.ListMemories(context.Background(), protocol.MemoryListOpts{
 				Type:  typeFilter,
 				Tag:   tagFilter,
 				Limit: limit,
@@ -113,8 +118,8 @@ func newMemoriesListCmdWithStore(store *memory.Store) *cobra.Command {
 	return cmd
 }
 
-// newMemoriesConsolidateCmdWithStore creates the "oro memories consolidate" subcommand wired to a memory.Store.
-func newMemoriesConsolidateCmdWithStore(store *memory.Store) *cobra.Command {
+// newMemoriesConsolidateCmdWithStore creates the "oro memories consolidate" subcommand wired to a memory store.
+func newMemoriesConsolidateCmdWithStore(store memoriesStore) *cobra.Command {
 	var minScore float64
 	var similarity float64
 	var dryRun bool
@@ -130,32 +135,13 @@ The decayed score is calculated as: confidence * 0.5^(age_days/30)
 
 Use --dry-run to preview what would be changed without modifying the store.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			opts := memory.ConsolidateOpts{
+			opts := protocol.MemoryConsolidateOpts{
 				MinDecayedScore:     minScore,
 				SimilarityThreshold: similarity,
 				DryRun:              dryRun,
 			}
 
-			merged, pruned, err := memory.Consolidate(context.Background(), store, opts)
-			if err != nil {
-				return fmt.Errorf("consolidate: %w", err)
-			}
-
-			// Count remaining memories
-			remaining, err := store.List(context.Background(), memory.ListOpts{})
-			if err != nil {
-				return fmt.Errorf("consolidate list: %w", err)
-			}
-
-			if dryRun {
-				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN - No changes made\n")
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Consolidation complete:\n")
-			fmt.Fprintf(cmd.OutOrStdout(), "  Pruned:    %d\n", pruned)
-			fmt.Fprintf(cmd.OutOrStdout(), "  Merged:    %d\n", merged)
-			fmt.Fprintf(cmd.OutOrStdout(), "  Remaining: %d\n", len(remaining))
-
-			return nil
+			return runMemoriesConsolidate(cmd, store, opts)
 		},
 	}
 
@@ -183,37 +169,18 @@ The decayed score is calculated as: confidence * 0.5^(age_days/30)
 
 Use --dry-run to preview what would be changed without modifying the store.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			store, err := defaultMemoryStore()
+			store, err := defaultMemoriesStore()
 			if err != nil {
 				return fmt.Errorf("consolidate: %w", err)
 			}
 
-			opts := memory.ConsolidateOpts{
+			opts := protocol.MemoryConsolidateOpts{
 				MinDecayedScore:     minScore,
 				SimilarityThreshold: similarity,
 				DryRun:              dryRun,
 			}
 
-			merged, pruned, err := memory.Consolidate(context.Background(), store, opts)
-			if err != nil {
-				return fmt.Errorf("consolidate: %w", err)
-			}
-
-			// Count remaining memories
-			remaining, err := store.List(context.Background(), memory.ListOpts{})
-			if err != nil {
-				return fmt.Errorf("consolidate list: %w", err)
-			}
-
-			if dryRun {
-				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN - No changes made\n")
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Consolidation complete:\n")
-			fmt.Fprintf(cmd.OutOrStdout(), "  Pruned:    %d\n", pruned)
-			fmt.Fprintf(cmd.OutOrStdout(), "  Merged:    %d\n", merged)
-			fmt.Fprintf(cmd.OutOrStdout(), "  Remaining: %d\n", len(remaining))
-
-			return nil
+			return runMemoriesConsolidate(cmd, store, opts)
 		},
 	}
 
@@ -222,6 +189,28 @@ Use --dry-run to preview what would be changed without modifying the store.`,
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without modifying the store")
 
 	return cmd
+}
+
+func runMemoriesConsolidate(cmd *cobra.Command, store memoriesStore, opts protocol.MemoryConsolidateOpts) error {
+	merged, pruned, err := store.ConsolidateMemories(context.Background(), opts)
+	if err != nil {
+		return fmt.Errorf("consolidate: %w", err)
+	}
+
+	remaining, err := store.ListMemories(context.Background(), protocol.MemoryListOpts{})
+	if err != nil {
+		return fmt.Errorf("consolidate list: %w", err)
+	}
+
+	if opts.DryRun {
+		fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN - No changes made\n")
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Consolidation complete:\n")
+	fmt.Fprintf(cmd.OutOrStdout(), "  Pruned:    %d\n", pruned)
+	fmt.Fprintf(cmd.OutOrStdout(), "  Merged:    %d\n", merged)
+	fmt.Fprintf(cmd.OutOrStdout(), "  Remaining: %d\n", len(remaining))
+
+	return nil
 }
 
 // newMemoriesCmd creates the "oro memories" parent command with subcommands.
@@ -250,17 +239,17 @@ func newMemoriesListCmd() *cobra.Command {
 		Short: "List memories",
 		Long:  "List memories from the store with optional filtering by type and tag.\nOutputs a table with id, type, content (truncated), confidence, and created_at.\nUse --all-projects to list memories across all projects.\nUse --format=json for machine-readable output.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			store, err := defaultMemoryStore()
+			store, err := defaultMemoriesStore()
 			if err != nil {
 				return fmt.Errorf("memories list: %w", err)
 			}
 
 			// Override project scope if --all-projects is set
 			if allProjects {
-				store.SetProject("")
+				store.ClearMemoryProjectScope()
 			}
 
-			results, listErr := store.List(context.Background(), memory.ListOpts{
+			results, listErr := store.ListMemories(context.Background(), protocol.MemoryListOpts{
 				Type:  typeFilter,
 				Tag:   tagFilter,
 				Limit: limit,
