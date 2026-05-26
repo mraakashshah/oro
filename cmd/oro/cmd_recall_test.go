@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"strings"
 	"testing"
 
@@ -22,6 +24,19 @@ func TestRecallCmdWithStoreNil(t *testing.T) {
 	// but we can verify the command structure is correct.
 	if cmd.Use != "recall <query>" {
 		t.Errorf("expected Use='recall <query>', got %q", cmd.Use)
+	}
+}
+
+func TestRecallCmdDoesNotImportMemory(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "cmd_recall.go", nil, parser.ImportsOnly)
+	if err != nil {
+		t.Fatalf("parse cmd_recall.go imports: %v", err)
+	}
+	for _, imp := range file.Imports {
+		if imp.Path.Value == `"oro/pkg/memory"` {
+			t.Fatalf("cmd_recall.go imports oro/pkg/memory at %s", fset.Position(imp.Pos()))
+		}
 	}
 }
 

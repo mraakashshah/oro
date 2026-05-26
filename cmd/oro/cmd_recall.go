@@ -5,13 +5,19 @@ import (
 	"fmt"
 	"strings"
 
-	"oro/pkg/memory"
+	"oro/pkg/protocol"
 
 	"github.com/spf13/cobra"
 )
 
+type recallMemoryStore interface {
+	GetByID(context.Context, int64) (protocol.Memory, error)
+	Search(context.Context, string, protocol.MemorySearchOpts) ([]protocol.ScoredMemory, error)
+	SetProject(string)
+}
+
 // formatRecallResults formats search results for CLI output.
-func formatRecallResults(results []memory.ScoredMemory) string {
+func formatRecallResults(results []protocol.ScoredMemory) string {
 	if len(results) == 0 {
 		return "No memories found.\n"
 	}
@@ -38,7 +44,7 @@ func formatCreatedAt(createdAt string) string {
 }
 
 // recallByID fetches and formats a single memory by ID.
-func recallByID(ctx context.Context, s *memory.Store, memoryID int64, out interface{ Write([]byte) (int, error) }) error {
+func recallByID(ctx context.Context, s recallMemoryStore, memoryID int64, out interface{ Write([]byte) (int, error) }) error {
 	mem, err := s.GetByID(ctx, memoryID)
 	if err != nil {
 		return fmt.Errorf("recall: %w", err)
@@ -54,8 +60,8 @@ func recallByID(ctx context.Context, s *memory.Store, memoryID int64, out interf
 }
 
 // recallByQuery searches memories by text query and formats results.
-func recallByQuery(ctx context.Context, s *memory.Store, query, filePath string, out interface{ Write([]byte) (int, error) }) error {
-	results, err := s.Search(ctx, query, memory.SearchOpts{Limit: 5, FilePath: filePath})
+func recallByQuery(ctx context.Context, s recallMemoryStore, query, filePath string, out interface{ Write([]byte) (int, error) }) error {
+	results, err := s.Search(ctx, query, protocol.MemorySearchOpts{Limit: 5, FilePath: filePath})
 	if err != nil {
 		return fmt.Errorf("recall: %w", err)
 	}
@@ -65,7 +71,7 @@ func recallByQuery(ctx context.Context, s *memory.Store, query, filePath string,
 
 // newRecallCmdWithStore creates the "oro recall" subcommand.
 // If store is nil, the command lazily opens the default store on execution.
-func newRecallCmdWithStore(store *memory.Store) *cobra.Command {
+func newRecallCmdWithStore(store recallMemoryStore) *cobra.Command {
 	var filePath string
 	var memoryID int64
 	var allProjects bool

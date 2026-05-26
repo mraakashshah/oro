@@ -82,3 +82,18 @@ type MemoryInsertParams struct {
 	FilesModified []string
 	Pinned        bool
 }
+
+// MemorySearchOpts configures memory search queries.
+type MemorySearchOpts struct {
+	Limit    int      // default 10
+	Type     string   // optional filter
+	Tags     []string // optional tag filter (any match)
+	MinScore float64  // minimum combined score threshold
+	FilePath string   // optional: filter memories touching this file path
+}
+
+// ScoredMemory is a Memory with an associated relevance score.
+type ScoredMemory struct {
+	Memory
+	Score float64
+}

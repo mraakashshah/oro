@@ -299,19 +299,10 @@ func (s *Store) LoadVocab(ctx context.Context) error {
 type InsertParams = protocol.MemoryInsertParams
 
 // SearchOpts configures a FTS5 search query.
-type SearchOpts struct {
-	Limit    int      // default 10
-	Type     string   // optional filter
-	Tags     []string // optional tag filter (any match)
-	MinScore float64  // minimum combined score threshold
-	FilePath string   // optional: filter memories touching this file path
-}
+type SearchOpts = protocol.MemorySearchOpts
 
 // ScoredMemory is a Memory with an associated relevance score.
-type ScoredMemory struct {
-	protocol.Memory
-	Score float64
-}
+type ScoredMemory = protocol.ScoredMemory
 
 // ListOpts configures a list query.
 type ListOpts struct {
