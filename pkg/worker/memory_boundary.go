@@ -14,19 +14,28 @@ import (
 )
 
 const (
-	memoryExtractionModel = "sonnet"
+	memoryExtractionModel = "haiku"
 	memoryExtractTimeout  = 30 * time.Second
 	maxMemorySessionBytes = 50_000
 )
 
-const memoryExtractionPrompt = `Extract durable learnings from this worker session.
+const memoryExtractionPrompt = `You are a learning extractor. Given a worker session log, identify 0-5 genuine
+discoveries worth remembering for future sessions. Only extract non-obvious
+insights -- things a developer working on this codebase would benefit from knowing.
 
-Return only lines in this exact format:
-[MEMORY] type=<lesson|decision|gotcha|pattern|preference|summary> tags=<comma-separated-tags>: <content>
+Categories:
+- lesson: something that worked or a technique discovered
+- gotcha: something surprising or counterintuitive
+- decision: an architectural choice and why it was made
+- pattern: a reusable approach that emerged
 
-If the session contains no genuine learnings, output nothing.
+For each discovery, output exactly one line in this format:
+[MEMORY] type=<type> tags=<comma-separated>: <concise description>
 
-Session log:
+If the session contains no genuine learnings (routine coding, straightforward
+fixes), output nothing. Most sessions will have 0-2 learnings. Do not fabricate.
+
+Session log (last ~12K tokens):
 `
 
 var memoryMarkerRe = regexp.MustCompile(`^\[MEMORY\]\s+type=(\w+)(?:\s+tags=([^\s:]*))?:\s+(.+)$`)

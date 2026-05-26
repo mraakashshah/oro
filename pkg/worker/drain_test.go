@@ -26,12 +26,14 @@ func (m *mockMemStore) Insert(_ context.Context, p memory.InsertParams) (int64, 
 // was called and returns canned output.
 type mockLLMSpawner struct {
 	called      bool
+	modelGiven  string
 	promptGiven string
 	output      string
 }
 
-func (m *mockLLMSpawner) Spawn(_ context.Context, _, prompt string) (io.ReadCloser, error) {
+func (m *mockLLMSpawner) Spawn(_ context.Context, model, prompt string) (io.ReadCloser, error) {
 	m.called = true
+	m.modelGiven = model
 	m.promptGiven = prompt
 	return io.NopCloser(strings.NewReader(m.output)), nil
 }
@@ -42,9 +44,10 @@ type mockWorkdirLLMSpawner struct {
 	workdir       string
 }
 
-func (m *mockWorkdirLLMSpawner) SpawnInWorkdir(_ context.Context, _, prompt, workdir string) (io.ReadCloser, error) {
+func (m *mockWorkdirLLMSpawner) SpawnInWorkdir(_ context.Context, model, prompt, workdir string) (io.ReadCloser, error) {
 	m.workdirCalled = true
 	m.called = true
+	m.modelGiven = model
 	m.promptGiven = prompt
 	m.workdir = workdir
 	return io.NopCloser(strings.NewReader(m.output)), nil
@@ -255,6 +258,12 @@ func TestDrainOutput_LLMExtraction(t *testing.T) {
 	}
 
 	// The accumulated session text should contain all input lines.
+	if spawner.modelGiven != "haiku" {
+		t.Fatalf("extraction model = %q, want haiku", spawner.modelGiven)
+	}
+	if !strings.Contains(spawner.promptGiven, "You are a learning extractor.") {
+		t.Fatalf("extraction prompt did not preserve memory extractor behavior: %q", spawner.promptGiven)
+	}
 	if !strings.Contains(spawner.promptGiven, "doing work") {
 		t.Errorf("expected prompt to contain accumulated text, got %q", spawner.promptGiven)
 	}
