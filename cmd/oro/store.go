@@ -4,10 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"io"
 
 	"oro/pkg/dispatcher"
 	"oro/pkg/protocol"
+	"oro/pkg/worker"
 )
 
 var errLegacyMemoryRetired = errors.New("legacy memory has been retired; use cards instead")
@@ -31,12 +31,8 @@ func defaultMemoriesStore() (memoriesStore, error) {
 	return store, nil
 }
 
-func newWorkerMemoryExtractSpawner() workerMemoryExtractSpawner {
+func newWorkerMemoryExtractSpawner() worker.MemoryExtractSpawner {
 	return nil
-}
-
-type workerMemoryExtractSpawner interface {
-	Spawn(ctx context.Context, model, prompt string) (io.ReadCloser, error)
 }
 
 // openWorkerMemoryStore creates a memory boundary store from an open DB connection.
