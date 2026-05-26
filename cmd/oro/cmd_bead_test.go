@@ -454,6 +454,37 @@ func TestCmdTaskCreateShowUpdateCloseRoundTripThroughBinary(t *testing.T) {
 	}
 }
 
+func TestBeadNoteAddAppendsNotes(t *testing.T) {
+	store := beadstore.NewFakeStore()
+
+	created := decodeBeadJSONObject(t, executeTaskCommand(t, store,
+		"create",
+		"--id", "oro-note1",
+		"--title", "Note task",
+		"--type", "task",
+		"--json",
+	))
+	if created["id"] != "oro-note1" {
+		t.Fatalf("created task = %#v, want oro-note1", created)
+	}
+
+	updated := decodeBeadJSONObject(t, executeTaskCommand(t, store,
+		"update", "oro-note1",
+		"--notes", "first note",
+		"--json",
+	))
+	if updated["notes"] != "first note" {
+		t.Fatalf("updated notes = %#v, want first note", updated["notes"])
+	}
+
+	executeTaskCommand(t, store, "note", "add", "oro-note1", "second note")
+
+	shown := decodeBeadJSONObject(t, executeTaskCommand(t, store, "show", "oro-note1", "--json"))
+	if shown["notes"] != "first note\n\nsecond note" {
+		t.Fatalf("shown notes = %#v, want appended notes", shown["notes"])
+	}
+}
+
 func TestBeadUpdateAndCloseJSONEmitMutatedBead(t *testing.T) {
 	store := beadstore.NewFakeStore(protocol.Bead{
 		ID:       "oro-mutate",

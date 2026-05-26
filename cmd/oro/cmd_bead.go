@@ -561,10 +561,29 @@ func newBeadMetaCmd(store beadstore.Store) *cobra.Command {
 func newBeadNoteCmd(store beadstore.Store) *cobra.Command {
 	cmd := &cobra.Command{Use: "note", Short: "Manage bead notes"}
 	cmd.AddCommand(
-		newBeadStubCmd(store, "add <bead-id> <text>", "Add a note to a bead", cobra.ExactArgs(2)),
+		newBeadNoteAddCmd(store),
 		newBeadStubCmd(store, "list <bead-id>", "List bead notes", cobra.ExactArgs(1)),
 	)
 	return cmd
+}
+
+func newBeadNoteAddCmd(store beadstore.Store) *cobra.Command {
+	return &cobra.Command{
+		Use:   "add <bead-id> <text>",
+		Short: "Add a note to a bead",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := resolveBeadStore(store)
+			if err != nil {
+				return writeBeadCommandErrorIfJSON(cmd, "store", err)
+			}
+			note := args[1]
+			if err := s.Update(cmd.Context(), args[0], beadstore.UpdateParams{Notes: &note}); err != nil {
+				return writeBeadCommandErrorIfJSON(cmd, "note_add", err)
+			}
+			return writeBeadMutationResult(cmd, s, args[0])
+		},
+	}
 }
 
 func newBeadStatusCmd(store beadstore.Store) *cobra.Command {
