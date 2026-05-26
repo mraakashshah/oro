@@ -1012,7 +1012,8 @@ func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressT
 		WebAddr:                 webAddr,
 	}
 
-	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, codeIdx)
+	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, codeIdx,
+		dispatcher.WithMemoryServices(newDispatcherMemoryServices(db)))
 	if err != nil {
 		return nil, nil, fmt.Errorf("create dispatcher: %w", err)
 	}

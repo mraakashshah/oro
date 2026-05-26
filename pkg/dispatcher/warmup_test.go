@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"oro/pkg/memory"
 	"oro/pkg/memory/testhelpers"
 )
 
@@ -70,7 +69,7 @@ func TestWarmupEmbedderHappyPath(t *testing.T) {
 	readyCh := make(chan struct{})
 	d := &Dispatcher{
 		embedderReady: readyCh,
-		embedderFactory: func(modelDir string) (memory.Embedder, error) {
+		embedderFactory: func(modelDir string) (Embedder, error) {
 			return fakeEmb, nil
 		},
 		cfg: Config{SemanticModelDir: "/fake/models"},
@@ -96,7 +95,7 @@ func TestWarmupWithoutModelDoesNotBlockWorkers(t *testing.T) {
 	readyCh := make(chan struct{})
 	d := &Dispatcher{
 		embedderReady: readyCh,
-		embedderFactory: func(modelDir string) (memory.Embedder, error) {
+		embedderFactory: func(modelDir string) (Embedder, error) {
 			return nil, &os.PathError{Op: "open", Path: modelDir + "/model.onnx", Err: os.ErrNotExist}
 		},
 		cfg: Config{SemanticModelDir: "/fake/models"},

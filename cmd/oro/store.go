@@ -5,7 +5,10 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"time"
 
+	"oro/pkg/cards"
+	"oro/pkg/dispatcher"
 	"oro/pkg/memory"
 	"oro/pkg/protocol"
 )
@@ -113,4 +116,52 @@ func openWorkerMemoryStore(db *sql.DB) *memory.Store {
 	store.SetEmbedder(memory.NewEmbedder())
 	_ = store.LoadVocab(context.Background()) // non-fatal: empty vocab is valid
 	return store
+}
+
+func newDispatcherMemoryServices(db *sql.DB) dispatcher.MemoryServices {
+	store := openWorkerMemoryStore(db)
+	return dispatcher.MemoryServices{
+		Store: store,
+		InsertRejection: func(ctx context.Context, beadID, workerID, feedback string) error {
+			return store.InsertRejection(ctx, beadID, workerID, feedback)
+		},
+		GetRejections: func(ctx context.Context, beadID string) ([]dispatcher.MemoryRejection, error) {
+			rejections, err := store.GetRejections(ctx, beadID)
+			if err != nil {
+				return nil, fmt.Errorf("get memory rejections: %w", err)
+			}
+			out := make([]dispatcher.MemoryRejection, 0, len(rejections))
+			for _, r := range rejections {
+				out = append(out, dispatcher.MemoryRejection{
+					ID:        r.ID,
+					BeadID:    r.BeadID,
+					WorkerID:  r.WorkerID,
+					Feedback:  r.Feedback,
+					CreatedAt: r.CreatedAt,
+				})
+			}
+			return out, nil
+		},
+		Consolidate: func(ctx context.Context) (int, int, error) {
+			return memory.Consolidate(ctx, store, memory.ConsolidateOpts{})
+		},
+		TrimSearchEvents: func(ctx context.Context, maxAge time.Duration) (int64, error) {
+			return memory.TrimSearchEvents(ctx, db, maxAge)
+		},
+		ExecuteDream: func(ctx context.Context, actions []dispatcher.DreamAction, logFn func(string)) error {
+			memoryActions := make([]memory.DreamAction, 0, len(actions))
+			for _, a := range actions {
+				memoryActions = append(memoryActions, memory.DreamAction{
+					Kind:   a.Kind,
+					ID:     a.ID,
+					IDs:    a.IDs,
+					Params: a.Params,
+				})
+			}
+			return memory.ExecuteActions(ctx, memoryActions, store, logFn)
+		},
+		HandoffInserter: func(cardStore cards.Store) dispatcher.MemoryInserter {
+			return memory.NewLegacyCardWriter(store, cardStore)
+		},
+	}
 }

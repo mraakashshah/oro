@@ -48,7 +48,8 @@ func newDreamTestDispatcher(t *testing.T, dreamInterval int) (*Dispatcher, *fake
 		DreamInterval:    dreamInterval,
 	}
 
-	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
+	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil,
+		WithMemoryServices(newTestMemoryServices(db)))
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -70,7 +71,7 @@ func TestDreamTriggersAfterNBeads(t *testing.T) {
 
 		var mu sync.Mutex
 		var dreamCalls int
-		d.dreamExecuteFn = func(_ context.Context, _ []memory.DreamAction, _ *memory.Store, _ func(string)) error {
+		d.dreamExecuteFn = func(_ context.Context, _ []DreamAction, _ MemoryStore, _ func(string)) error {
 			mu.Lock()
 			dreamCalls++
 			mu.Unlock()
@@ -127,7 +128,7 @@ func TestDreamTriggersAfterNBeads(t *testing.T) {
 
 		var mu sync.Mutex
 		var dreamCalls int
-		d.dreamExecuteFn = func(_ context.Context, _ []memory.DreamAction, _ *memory.Store, _ func(string)) error {
+		d.dreamExecuteFn = func(_ context.Context, _ []DreamAction, _ MemoryStore, _ func(string)) error {
 			mu.Lock()
 			dreamCalls++
 			mu.Unlock()
@@ -163,7 +164,7 @@ func TestDreamTriggerCompleteEpicClose(t *testing.T) {
 
 		var mu sync.Mutex
 		var dreamCalls int
-		d.dreamExecuteFn = func(_ context.Context, _ []memory.DreamAction, _ *memory.Store, _ func(string)) error {
+		d.dreamExecuteFn = func(_ context.Context, _ []DreamAction, _ MemoryStore, _ func(string)) error {
 			mu.Lock()
 			dreamCalls++
 			mu.Unlock()
@@ -199,7 +200,7 @@ func TestDreamTriggerCompleteEpicClose(t *testing.T) {
 
 		var mu sync.Mutex
 		var dreamCalls int
-		d.dreamExecuteFn = func(_ context.Context, _ []memory.DreamAction, _ *memory.Store, _ func(string)) error {
+		d.dreamExecuteFn = func(_ context.Context, _ []DreamAction, _ MemoryStore, _ func(string)) error {
 			mu.Lock()
 			dreamCalls++
 			mu.Unlock()
@@ -277,8 +278,8 @@ func TestHandleDreamResult(t *testing.T) {
 		ctx := context.Background()
 
 		var mu sync.Mutex
-		var capturedActions []memory.DreamAction
-		d.dreamExecuteFn = func(_ context.Context, actions []memory.DreamAction, _ *memory.Store, _ func(string)) error {
+		var capturedActions []DreamAction
+		d.dreamExecuteFn = func(_ context.Context, actions []DreamAction, _ MemoryStore, _ func(string)) error {
 			mu.Lock()
 			capturedActions = append(capturedActions, actions...)
 			mu.Unlock()
@@ -311,7 +312,7 @@ func TestHandleDreamResult(t *testing.T) {
 
 		var mu sync.Mutex
 		var executeCalled bool
-		d.dreamExecuteFn = func(_ context.Context, _ []memory.DreamAction, _ *memory.Store, _ func(string)) error {
+		d.dreamExecuteFn = func(_ context.Context, _ []DreamAction, _ MemoryStore, _ func(string)) error {
 			mu.Lock()
 			executeCalled = true
 			mu.Unlock()
@@ -334,4 +335,59 @@ func TestHandleDreamResult(t *testing.T) {
 			t.Error("expected executeActions not to be called on error result")
 		}
 	})
+}
+
+func TestParseDreamActions(t *testing.T) {
+	actions := ParseDreamActions(strings.Join([]string{
+		"[DELETE] 12",
+		"[CREATE] type=lesson tags=go,tdd: write tests first",
+		"[MERGE] 1 2 type=pattern tags=memory: consolidate duplicate notes",
+		"not an action",
+		"[DELETE] nope",
+	}, "\n"))
+
+	if len(actions) != 3 {
+		t.Fatalf("actions len = %d, want 3: %+v", len(actions), actions)
+	}
+	if actions[0].Kind != "DELETE" || actions[0].ID != 12 {
+		t.Fatalf("delete action = %+v", actions[0])
+	}
+	if actions[1].Kind != "CREATE" || actions[1].Params.Type != "lesson" || actions[1].Params.Source != "dreamer" {
+		t.Fatalf("create action = %+v", actions[1])
+	}
+	if got := strings.Join(actions[1].Params.Tags, ","); got != "go,tdd" {
+		t.Fatalf("create tags = %q", got)
+	}
+	if actions[2].Kind != "MERGE" || len(actions[2].IDs) != 2 || actions[2].IDs[0] != 1 || actions[2].IDs[1] != 2 {
+		t.Fatalf("merge action = %+v", actions[2])
+	}
+	if got := strings.Join(actions[2].Params.Tags, ","); got != "memory" {
+		t.Fatalf("merge tags = %q", got)
+	}
+}
+
+func TestDreamAndConsolidationNoopWithoutMemoryServices(t *testing.T) {
+	db := newTestDB(t)
+	d := &Dispatcher{
+		db: db,
+		cfg: Config{
+			DreamInterval:     1,
+			ConsolidateAfterN: 1,
+		},
+		ops:        ops.NewSpawner(&mockBatchSpawner{}),
+		shutdownCh: make(chan struct{}),
+		nowFunc:    time.Now,
+	}
+	ctx := context.Background()
+
+	d.maybeConsolidateMemory(ctx)
+	d.wg.Wait()
+	d.triggerDream(ctx)
+	d.handleDreamResult(ctx, chanWithDreamResult("[CREATE] type=lesson: ignored without adapter"))
+}
+
+func chanWithDreamResult(feedback string) <-chan ops.Result {
+	ch := make(chan ops.Result, 1)
+	ch <- ops.Result{Type: ops.OpsDream, Feedback: feedback}
+	return ch
 }

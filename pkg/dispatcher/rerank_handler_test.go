@@ -84,7 +84,7 @@ func TestRerankByIDsNotLoadedAtWarmup(t *testing.T) {
 	readyCh := make(chan struct{})
 	d := &Dispatcher{
 		embedderReady: readyCh,
-		embedderFactory: func(_ string) (memory.Embedder, error) {
+		embedderFactory: func(_ string) (Embedder, error) {
 			return fakeEmb, nil
 		},
 		cfg: Config{SemanticModelDir: "/fake/models"},

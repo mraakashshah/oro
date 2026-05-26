@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -34,7 +35,6 @@ import (
 	"oro/pkg/beadstore"
 	"oro/pkg/cards"
 	"oro/pkg/factoryhealth"
-	"oro/pkg/memory"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/processenv"
@@ -88,6 +88,125 @@ var ErrEmbedderUnavailable = errors.New("embedder unavailable")
 // Reranker re-scores a set of candidate documents against a query.
 type Reranker interface {
 	Rerank(query string, docs []string) []float64
+}
+
+// Embedder computes dense embedding vectors for semantic memory.
+type Embedder interface {
+	Embed(text string) []float32
+	Dim() int
+	Name() string
+}
+
+// MemoryRejection is dispatcher-owned rejection history read from the memory boundary.
+type MemoryRejection struct {
+	ID        int64
+	BeadID    string
+	WorkerID  string
+	Feedback  string
+	CreatedAt string
+}
+
+// DreamAction is a dispatcher-local memory mutation requested by a dream agent.
+type DreamAction struct {
+	Kind   string
+	ID     int64
+	IDs    []int64
+	Params protocol.MemoryInsertParams
+}
+
+// MemoryStore is the dispatcher-owned subset of memory behavior.
+type MemoryStore interface {
+	Insert(ctx context.Context, m protocol.MemoryInsertParams) (int64, error)
+	GetByID(ctx context.Context, id int64) (protocol.Memory, error)
+	DumpAll(ctx context.Context) ([]protocol.Memory, error)
+	HasEmbedder() bool
+}
+
+// MemoryServices contains memory-specific operations supplied by outer packages.
+type MemoryServices struct {
+	Store            MemoryStore
+	InsertRejection  func(ctx context.Context, beadID, workerID, feedback string) error
+	GetRejections    func(ctx context.Context, beadID string) ([]MemoryRejection, error)
+	Consolidate      func(ctx context.Context) (merged, pruned int, err error)
+	TrimSearchEvents func(ctx context.Context, maxAge time.Duration) (int64, error)
+	ExecuteDream     func(ctx context.Context, actions []DreamAction, logFn func(string)) error
+	HandoffInserter  func(cardStore cards.Store) MemoryInserter
+}
+
+// MemoryInserter persists memories; adapters may dual-write to cards.
+type MemoryInserter interface {
+	Insert(ctx context.Context, m protocol.MemoryInsertParams) (int64, error)
+}
+
+var (
+	dreamDeleteRe = regexp.MustCompile(`^\[DELETE\]\s+(\d+)$`)
+	dreamCreateRe = regexp.MustCompile(`^\[CREATE\]\s+type=(\w+)(?:\s+tags=([^\s:]+))?:\s+(.+)$`)
+	dreamMergeRe  = regexp.MustCompile(`^\[MERGE\]\s+(\d+)\s+(\d+)\s+type=(\w+)(?:\s+tags=([^\s:]+))?:\s+(.+)$`)
+)
+
+// ParseDreamActions scans dream output and extracts memory mutation requests.
+func ParseDreamActions(output string) []DreamAction {
+	var actions []DreamAction
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if action, ok := parseDreamLine(line); ok {
+			actions = append(actions, action)
+		}
+	}
+	return actions
+}
+
+func parseDreamLine(line string) (DreamAction, bool) {
+	if m := dreamDeleteRe.FindStringSubmatch(line); m != nil {
+		id, err := strconv.ParseInt(m[1], 10, 64)
+		if err != nil {
+			return DreamAction{}, false
+		}
+		return DreamAction{Kind: "DELETE", ID: id}, true
+	}
+	if m := dreamCreateRe.FindStringSubmatch(line); m != nil {
+		params := protocol.MemoryInsertParams{
+			Type:    m[1],
+			Content: m[3],
+			Source:  "dreamer",
+		}
+		if m[2] != "" {
+			params.Tags = strings.Split(m[2], ",")
+		}
+		return DreamAction{Kind: "CREATE", Params: params}, true
+	}
+	if m := dreamMergeRe.FindStringSubmatch(line); m != nil {
+		id1, err1 := strconv.ParseInt(m[1], 10, 64)
+		id2, err2 := strconv.ParseInt(m[2], 10, 64)
+		if err1 != nil || err2 != nil {
+			return DreamAction{}, false
+		}
+		params := protocol.MemoryInsertParams{
+			Type:    m[3],
+			Content: m[5],
+			Source:  "dreamer",
+		}
+		if m[4] != "" {
+			params.Tags = strings.Split(m[4], ",")
+		}
+		return DreamAction{Kind: "MERGE", IDs: []int64{id1, id2}, Params: params}, true
+	}
+	return DreamAction{}, false
+}
+
+// Option customizes Dispatcher construction without changing existing call sites.
+type Option func(*Dispatcher)
+
+// WithMemoryServices wires memory behavior through dispatcher-owned interfaces.
+func WithMemoryServices(services MemoryServices) Option {
+	return func(d *Dispatcher) {
+		d.memories = services.Store
+		d.memoryServices = services
+	}
 }
 
 // DeferredStore is the dispatcher-local extension for deferred bead repair.
@@ -599,16 +718,17 @@ func (c Config) validate() error {
 // directly (e.g. d.workers, d.attemptCounts). Both embedded structs share
 // the Dispatcher-level mu for synchronisation.
 type Dispatcher struct {
-	cfg       Config
-	db        *sql.DB
-	merger    *merge.Coordinator
-	ops       *ops.Spawner
-	beads     DeferredStore
-	worktrees WorktreeManager
-	escalator Escalator
-	memories  *memory.Store
-	cardStore cards.Store // dual-write mirror; nil means D.3 shim disabled
-	codeIndex CodeIndex   // interface for FTS5 code search (nil means no search)
+	cfg            Config
+	db             *sql.DB
+	merger         *merge.Coordinator
+	ops            *ops.Spawner
+	beads          DeferredStore
+	worktrees      WorktreeManager
+	escalator      Escalator
+	memories       MemoryStore
+	memoryServices MemoryServices
+	cardStore      cards.Store // dual-write mirror; nil means D.3 shim disabled
+	codeIndex      CodeIndex   // interface for FTS5 code search (nil means no search)
 	// beadSourceMode is the normalized ORO_BEADSOURCE_MODE captured at startup.
 	// It controls whether the dispatcher watches a filesystem task-data source
 	// or the native SQLite store.
@@ -616,10 +736,10 @@ type Dispatcher struct {
 
 	// embedder fields — populated by the warm-up goroutine (next bead).
 	// embedderReady == nil means semantic search is disabled for this session.
-	embedder        memory.Embedder
+	embedder        Embedder
 	embedderReady   chan struct{}
 	embedderErr     error
-	embedderFactory func(modelDir string) (memory.Embedder, error)
+	embedderFactory func(modelDir string) (Embedder, error)
 
 	// reranker fields — populated lazily on first RerankByIDsRequest (sync.Once-guarded).
 	// rerankerFactory == nil means reranker is unavailable for this session.
@@ -652,8 +772,8 @@ type Dispatcher struct {
 	beadsSinceDream             int // counts completed beads since last dream trigger
 
 	// dreamExecuteFn, if non-nil, is called by handleDreamResult instead of
-	// memory.ExecuteActions. Tests inject this to capture calls without a real Store.
-	dreamExecuteFn func(ctx context.Context, actions []memory.DreamAction, store *memory.Store, logFn func(string)) error
+	// memoryServices.ExecuteDream. Tests inject this to capture calls.
+	dreamExecuteFn func(ctx context.Context, actions []DreamAction, store MemoryStore, logFn func(string)) error
 
 	// repoRoot is the effective repository root (cfg.RepoRoot with cwd fallback).
 	// Used as the target directory for git operations on the primary repo (e.g. epic FF merge).
@@ -804,7 +924,7 @@ func (d *Dispatcher) updateBeadStatus(ctx context.Context, id, status string) er
 // codeIdx may be nil to disable code search context injection.
 //
 //nolint:funlen // factory initialization
-func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spawner, beads DeferredStore, wt WorktreeManager, esc Escalator, codeIdx CodeIndex) (*Dispatcher, error) {
+func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spawner, beads DeferredStore, wt WorktreeManager, esc Escalator, codeIdx CodeIndex, opts ...Option) (*Dispatcher, error) {
 	resolved := cfg.withDefaults()
 	if err := resolved.validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
@@ -818,16 +938,13 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 	if beadsDir == "" {
 		beadsDir = protocol.BeadsDir
 	}
-	memStore := memory.NewStore(db)
-	// NewEmbedder returns the default *TFIDFEmbedder implementation of the Embedder interface.
-	memStore.SetEmbedder(memory.NewEmbedder())
 	cardStore, _ := cards.NewStore(db) // non-fatal; nil disables D.3 dual-write
 	beadSourceMode := normalizeBeadSourceModeForPrimary(os.Getenv("ORO_BEADSOURCE_MODE"), beads)
 	selectedBeads, err := selectStore(context.Background(), beadSourceMode, beads, db)
 	if err != nil {
 		return nil, err
 	}
-	return &Dispatcher{
+	d := &Dispatcher{
 		cfg:            resolved,
 		db:             db,
 		merger:         merger,
@@ -835,7 +952,6 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		beads:          selectedBeads,
 		worktrees:      wt,
 		escalator:      esc,
-		memories:       memStore,
 		cardStore:      cardStore,
 		codeIndex:      codeIdx,
 		beadSourceMode: beadSourceMode,
@@ -886,7 +1002,13 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		checkpoints:            newCheckpointTracker(),
 		nowFunc:                time.Now,
 		acceptSem:              make(chan struct{}, 100), // limit to 100 concurrent connection handlers
-	}, nil
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(d)
+		}
+	}
+	return d, nil
 }
 
 func defaultPanesDir() string {
@@ -900,14 +1022,14 @@ func defaultPanesDir() string {
 // embedder warm-up gate. Callers (e.g. semantic-search HTTP handlers) use this
 // interface to block until the embedder is ready without importing the full Dispatcher.
 type EmbedderWaiter interface {
-	WaitForEmbedder(ctx context.Context) (memory.Embedder, error)
+	WaitForEmbedder(ctx context.Context) (Embedder, error)
 }
 
 // WaitForEmbedder blocks until the embedder warm-up goroutine signals readiness,
 // then returns the initialised Embedder. It returns ErrSemanticDisabled immediately
 // when embedderReady is nil (semantic search not configured). ctx cancellation is
 // honoured — the caller receives ctx.Err() if the context is cancelled first.
-func (d *Dispatcher) WaitForEmbedder(ctx context.Context) (memory.Embedder, error) {
+func (d *Dispatcher) WaitForEmbedder(ctx context.Context) (Embedder, error) {
 	if d.embedderReady == nil {
 		return nil, ErrSemanticDisabled
 	}
@@ -1987,10 +2109,10 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 // table (not memories), so rejections accumulate across retry cycles without
 // polluting the memory search index. Best-effort: errors are silently ignored.
 func (d *Dispatcher) storeRejectionFeedback(ctx context.Context, beadID, feedback string) {
-	if d.memories == nil || feedback == "" {
+	if d.memoryServices.InsertRejection == nil || feedback == "" {
 		return
 	}
-	_ = d.memories.InsertRejection(ctx, beadID, "", feedback)
+	_ = d.memoryServices.InsertRejection(ctx, beadID, "", feedback)
 }
 
 // buildRejectionMemoryContext stores the current reviewer feedback in
@@ -2000,8 +2122,8 @@ func (d *Dispatcher) buildRejectionMemoryContext(ctx context.Context, beadID, fe
 	// Fetch prior rejections BEFORE storing the current one so "prior"
 	// truly means prior and the current feedback doesn't appear twice.
 	var priorCtx string
-	if d.memories != nil {
-		if rejections, err := d.memories.GetRejections(ctx, beadID); err == nil && len(rejections) > 0 {
+	if d.memoryServices.GetRejections != nil {
+		if rejections, err := d.memoryServices.GetRejections(ctx, beadID); err == nil && len(rejections) > 0 {
 			lines := make([]string, 0, len(rejections)+2)
 			lines = append(lines, "## Prior Rejection History")
 			for _, r := range rejections {
@@ -2552,7 +2674,10 @@ func (d *Dispatcher) maybeConsolidateMemory(ctx context.Context) {
 
 	if shouldConsolidate {
 		d.safeGo(func() {
-			merged, pruned, err := memory.Consolidate(ctx, d.memories, memory.ConsolidateOpts{})
+			if d.memoryServices.Consolidate == nil {
+				return
+			}
+			merged, pruned, err := d.memoryServices.Consolidate(ctx)
 			if err != nil {
 				_ = d.logEvent(ctx, "memory_consolidation_failed", "dispatcher", "", "",
 					fmt.Sprintf(`{"error":%q}`, err.Error()))
@@ -2592,12 +2717,15 @@ func (d *Dispatcher) triggerDream(ctx context.Context) {
 	if d.cfg.DreamInterval <= 0 {
 		return
 	}
-	if n, err := memory.TrimSearchEvents(ctx, d.db, 30*24*time.Hour); err != nil {
-		_ = d.logEvent(ctx, "retention_trim_failed", "dispatcher", "", "",
-			fmt.Sprintf(`{"error":%q}`, err.Error()))
-	} else if n > 0 {
-		_ = d.logEvent(ctx, "retention_trim", "dispatcher", "", "",
-			fmt.Sprintf(`{"deleted":%d}`, n))
+	if d.memoryServices.TrimSearchEvents != nil {
+		n, err := d.memoryServices.TrimSearchEvents(ctx, 30*24*time.Hour)
+		if err != nil {
+			_ = d.logEvent(ctx, "retention_trim_failed", "dispatcher", "", "",
+				fmt.Sprintf(`{"error":%q}`, err.Error()))
+		} else if n > 0 {
+			_ = d.logEvent(ctx, "retention_trim", "dispatcher", "", "",
+				fmt.Sprintf(`{"deleted":%d}`, n))
+		}
 	}
 	memories := d.dumpMemoriesForDream(ctx)
 	resultCh := d.ops.Dream(ctx, ops.DreamOpts{Memories: memories})
@@ -2628,7 +2756,7 @@ func (d *Dispatcher) dumpMemoriesForDream(ctx context.Context) string {
 
 // handleDreamResult waits for the dream agent result, parses any dream actions
 // from the feedback, and applies them via dreamExecuteFn (defaults to
-// memory.ExecuteActions). Ops errors are logged; the function never panics.
+// memoryServices.ExecuteDream). Ops errors are logged; the function never panics.
 func (d *Dispatcher) handleDreamResult(ctx context.Context, resultCh <-chan ops.Result) {
 	select {
 	case <-ctx.Done():
@@ -2639,10 +2767,15 @@ func (d *Dispatcher) handleDreamResult(ctx context.Context, resultCh <-chan ops.
 				fmt.Sprintf(`{"error":%q}`, result.Err.Error()))
 			return
 		}
-		actions := memory.ParseDreamActions(result.Feedback)
+		actions := ParseDreamActions(result.Feedback)
 		execFn := d.dreamExecuteFn
 		if execFn == nil {
-			execFn = memory.ExecuteActions
+			execFn = func(ctx context.Context, actions []DreamAction, _ MemoryStore, logFn func(string)) error {
+				if d.memoryServices.ExecuteDream == nil {
+					return nil
+				}
+				return d.memoryServices.ExecuteDream(ctx, actions, logFn)
+			}
 		}
 		logFn := func(msg string) {
 			_ = d.logEvent(ctx, "dream_execute_error", "dispatcher", "", "", msg)
@@ -3192,15 +3325,13 @@ func (d *Dispatcher) persistHandoffContext(ctx context.Context, h *protocol.Hand
 	if d.memories == nil {
 		return
 	}
-	var inserter interface {
-		Insert(ctx context.Context, m memory.InsertParams) (int64, error)
-	} = d.memories
-	if d.cardStore != nil {
-		inserter = memory.NewLegacyCardWriter(d.memories, d.cardStore)
+	var inserter MemoryInserter = d.memories
+	if d.cardStore != nil && d.memoryServices.HandoffInserter != nil {
+		inserter = d.memoryServices.HandoffInserter(d.cardStore)
 	}
 
 	for _, learning := range h.Learnings {
-		_, _ = inserter.Insert(ctx, memory.InsertParams{
+		_, _ = inserter.Insert(ctx, protocol.MemoryInsertParams{
 			Content:       learning,
 			Type:          "lesson",
 			Source:        "self_report",
@@ -3212,7 +3343,7 @@ func (d *Dispatcher) persistHandoffContext(ctx context.Context, h *protocol.Hand
 	}
 
 	for _, decision := range h.Decisions {
-		_, _ = inserter.Insert(ctx, memory.InsertParams{
+		_, _ = inserter.Insert(ctx, protocol.MemoryInsertParams{
 			Content:       decision,
 			Type:          "decision",
 			Source:        "self_report",
@@ -3225,7 +3356,7 @@ func (d *Dispatcher) persistHandoffContext(ctx context.Context, h *protocol.Hand
 
 	// Persist structured session summary as type=summary for bead continuity.
 	if h.Summary != nil {
-		_, _ = inserter.Insert(ctx, memory.InsertParams{
+		_, _ = inserter.Insert(ctx, protocol.MemoryInsertParams{
 			Content:    h.Summary.FormatContent(),
 			Type:       "summary",
 			Source:     "self_report",

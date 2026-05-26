@@ -954,6 +954,55 @@ func newTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
+func newTestMemoryServices(db *sql.DB) MemoryServices {
+	store := memory.NewStore(db)
+	store.SetEmbedder(memory.NewEmbedder())
+	return MemoryServices{
+		Store: store,
+		InsertRejection: func(ctx context.Context, beadID, workerID, feedback string) error {
+			return store.InsertRejection(ctx, beadID, workerID, feedback)
+		},
+		GetRejections: func(ctx context.Context, beadID string) ([]MemoryRejection, error) {
+			rejections, err := store.GetRejections(ctx, beadID)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]MemoryRejection, 0, len(rejections))
+			for _, r := range rejections {
+				out = append(out, MemoryRejection{
+					ID:        r.ID,
+					BeadID:    r.BeadID,
+					WorkerID:  r.WorkerID,
+					Feedback:  r.Feedback,
+					CreatedAt: r.CreatedAt,
+				})
+			}
+			return out, nil
+		},
+		Consolidate: func(ctx context.Context) (int, int, error) {
+			return memory.Consolidate(ctx, store, memory.ConsolidateOpts{})
+		},
+		TrimSearchEvents: func(ctx context.Context, maxAge time.Duration) (int64, error) {
+			return memory.TrimSearchEvents(ctx, db, maxAge)
+		},
+		ExecuteDream: func(ctx context.Context, actions []DreamAction, logFn func(string)) error {
+			memoryActions := make([]memory.DreamAction, 0, len(actions))
+			for _, a := range actions {
+				memoryActions = append(memoryActions, memory.DreamAction{
+					Kind:   a.Kind,
+					ID:     a.ID,
+					IDs:    a.IDs,
+					Params: a.Params,
+				})
+			}
+			return memory.ExecuteActions(ctx, memoryActions, store, logFn)
+		},
+		HandoffInserter: func(cardStore cards.Store) MemoryInserter {
+			return memory.NewLegacyCardWriter(store, cardStore)
+		},
+	}
+}
+
 func TestNewTestDBMigratesMemorySearchEvents(t *testing.T) {
 	db := newTestDB(t)
 
@@ -975,6 +1024,25 @@ func TestNewTestDBMigratesMemoryReadEvents(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("memory_read_events count = %d, want 1", count)
+	}
+}
+
+func TestDispatcherPackageDoesNotImportMemory(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("glob dispatcher files: %v", err)
+	}
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		if strings.Contains(string(src), `"oro/pkg/memory"`) {
+			t.Fatalf("%s imports oro/pkg/memory; production dispatcher code must use dispatcher-owned memory boundaries", file)
+		}
 	}
 }
 
@@ -1010,7 +1078,8 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *fakeBeadStore, *mockWorktree
 		ShutdownTimeout:  200 * time.Millisecond,
 	}
 
-	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
+	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil,
+		WithMemoryServices(newTestMemoryServices(db)))
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -11386,9 +11455,11 @@ func TestTryAssignSkipsBeadAfterWorktreeFailure(t *testing.T) {
 
 func TestPersistHandoffWithSummary(t *testing.T) {
 	db := newTestDB(t)
+	services := newTestMemoryServices(db)
 	d := &Dispatcher{
-		db:       db,
-		memories: memory.NewStore(db),
+		db:             db,
+		memories:       services.Store,
+		memoryServices: services,
 	}
 	ctx := context.Background()
 
@@ -11453,9 +11524,11 @@ func TestPersistHandoffWithSummary(t *testing.T) {
 
 func TestPersistHandoffWithSummary_NilSummary(t *testing.T) {
 	db := newTestDB(t)
+	services := newTestMemoryServices(db)
 	d := &Dispatcher{
-		db:       db,
-		memories: memory.NewStore(db),
+		db:             db,
+		memories:       services.Store,
+		memoryServices: services,
 	}
 	ctx := context.Background()
 
@@ -18334,7 +18407,7 @@ func TestBuildRejectionMemoryContext_WithBothSections(t *testing.T) {
 	priorFeedback := "prior rejection from rejection_history"
 	feedback := "tests are missing edge cases"
 
-	if err := d.memories.InsertRejection(ctx, beadID, "worker-prior", priorFeedback); err != nil {
+	if err := d.memoryServices.InsertRejection(ctx, beadID, "worker-prior", priorFeedback); err != nil {
 		t.Fatalf("InsertRejection: %v", err)
 	}
 	_, err := d.memories.Insert(ctx, memory.InsertParams{
