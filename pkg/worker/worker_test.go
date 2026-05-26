@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"io"
 	"net"
 	"os"
@@ -21,6 +23,24 @@ import (
 	"oro/pkg/protocol"
 	"oro/pkg/worker"
 )
+
+func TestWorkerPackageDoesNotImportMemory(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{"worker.go", "drain.go"} {
+		path := filepath.Join("..", "..", "pkg", "worker", path)
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		for _, spec := range file.Imports {
+			if spec.Path.Value == `"oro/pkg/memory"` {
+				t.Fatalf("%s imports oro/pkg/memory at %s", path, fset.Position(spec.Pos()))
+			}
+		}
+	}
+}
 
 // mockProcess implements worker.Process for testing.
 type mockProcess struct {

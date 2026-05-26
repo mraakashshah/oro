@@ -182,6 +182,8 @@ func ExtractWithLLM(_ context.Context, spawner Spawner, sessionText, beadID stri
 
 // ExtractWithLLMInWorkdir runs extraction with a workdir-aware spawner when the
 // spawner supports it, falling back to the legacy Spawner contract otherwise.
+//
+//oro:testonly
 func ExtractWithLLMInWorkdir(_ context.Context, spawner Spawner, sessionText, beadID string, store Inserter, workdir string) error {
 	return extractWithLLM(spawner, sessionText, beadID, store, workdir)
 }

@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"oro/pkg/agentruntime"
-	"oro/pkg/memory"
 	"oro/pkg/processenv"
 	"oro/pkg/protocol"
 )
@@ -123,6 +122,21 @@ type processExitDiagnostics interface {
 	StderrTail() string
 }
 
+// MemoryInserter abstracts memory insertion at the worker package boundary.
+type MemoryInserter interface {
+	Insert(context.Context, protocol.MemoryInsertParams) (int64, error)
+}
+
+// MemoryExtractSpawner starts an LLM extraction subprocess.
+type MemoryExtractSpawner interface {
+	Spawn(ctx context.Context, model, prompt string) (io.ReadCloser, error)
+}
+
+// WorkdirMemoryExtractSpawner binds extraction subprocesses to a worktree.
+type WorkdirMemoryExtractSpawner interface {
+	SpawnInWorkdir(ctx context.Context, model, prompt, workdir string) (io.ReadCloser, error)
+}
+
 type subprocessExitSnapshot struct {
 	Runtime    string
 	Model      string
@@ -197,8 +211,8 @@ type Worker struct {
 	disconnected           bool
 	contextPollInterval    time.Duration
 	reconnectInterval      time.Duration // base retry interval for reconnection
-	memStore               *memory.Store
-	extractSpawner         memory.Spawner
+	memStore               MemoryInserter
+	extractSpawner         MemoryExtractSpawner
 	sessionText            strings.Builder
 	outputWg               sync.WaitGroup // tracks processOutput goroutine completion
 	reconnectDialHook      func(net.Conn) // test hook: called after dial, before sendMessage
@@ -327,17 +341,17 @@ func (w *Worker) SetReconnectTimerStopHook(fn func()) {
 // SetMemoryStore attaches a memory store to the worker for memory extraction.
 // When set, [MEMORY] markers in subprocess stdout are captured in real-time,
 // and implicit patterns are extracted on handoff/completion.
-func (w *Worker) SetMemoryStore(s *memory.Store) {
+func (w *Worker) SetMemoryStore(s MemoryInserter) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.memStore = s
 }
 
-// SetExtractSpawner attaches a memory.Spawner for LLM-based memory extraction.
+// SetExtractSpawner attaches a spawner for LLM-based memory extraction.
 // When set, extractImplicitMemories uses ExtractWithLLM instead of the regex-based fallback.
 //
 //oro:testonly — wired into production by bead oro-eyrq.8 (Wire CLISpawner into CLI commands)
-func (w *Worker) SetExtractSpawner(s memory.Spawner) {
+func (w *Worker) SetExtractSpawner(s MemoryExtractSpawner) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.extractSpawner = s
@@ -977,7 +991,7 @@ func (w *Worker) processTextLine(ctx context.Context, line string) {
 	w.mu.Unlock()
 
 	if store != nil {
-		if params := memory.ParseMarker(line); params != nil {
+		if params := ParseMemoryMarker(line); params != nil {
 			params.WorkerID = workerID
 			params.BeadID = beadID
 			_, _ = store.Insert(ctx, *params)
@@ -1002,7 +1016,7 @@ func (w *Worker) extractImplicitMemories(ctx context.Context) {
 		return
 	}
 
-	if err := memory.ExtractWithLLMInWorkdir(ctx, spawner, text, beadID, store, worktree); err != nil {
+	if err := ExtractMemoriesWithLLMInWorkdir(ctx, spawner, text, beadID, store, worktree); err != nil {
 		fmt.Fprintf(os.Stderr, "worker %s: extract implicit memories: %v\n", w.ID, err)
 	}
 }

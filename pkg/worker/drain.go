@@ -6,30 +6,23 @@ import (
 	"fmt"
 	"io"
 	"strings"
-
-	"oro/pkg/memory"
 )
-
-// MemoryInserter abstracts memory insertion for testing.
-type MemoryInserter interface {
-	Insert(ctx context.Context, m memory.InsertParams) (int64, error)
-}
 
 // DrainOutput reads subprocess stdout according to format, writes formatted
 // activity and/or text content to writers, and extracts [MEMORY] markers
 // from text in real time. After the stream is fully drained, it runs
-// LLM-based extraction on the accumulated text via memory.ExtractWithLLM.
+// LLM-based extraction on the accumulated text.
 // Safe when store or spawner is nil. Nil writers in the slice are filtered out.
 // Empty writers slice is a no-op for output.
 //
 //oro:testonly
-func DrainOutput(ctx context.Context, stdout io.ReadCloser, format StreamFormat, store MemoryInserter, beadID string, spawner memory.Spawner, writers ...io.Writer) {
+func DrainOutput(ctx context.Context, stdout io.ReadCloser, format StreamFormat, store MemoryInserter, beadID string, spawner MemoryExtractSpawner, writers ...io.Writer) {
 	DrainOutputInWorkdir(ctx, stdout, format, store, beadID, spawner, "", writers...)
 }
 
 // DrainOutputInWorkdir is DrainOutput with a worktree binding for post-drain
 // LLM memory extraction subprocesses.
-func DrainOutputInWorkdir(ctx context.Context, stdout io.ReadCloser, format StreamFormat, store MemoryInserter, beadID string, spawner memory.Spawner, workdir string, writers ...io.Writer) {
+func DrainOutputInWorkdir(ctx context.Context, stdout io.ReadCloser, format StreamFormat, store MemoryInserter, beadID string, spawner MemoryExtractSpawner, workdir string, writers ...io.Writer) {
 	defer func() { _ = stdout.Close() }()
 
 	out := filterWriters(writers)
@@ -68,7 +61,7 @@ func DrainOutputInWorkdir(ctx context.Context, stdout io.ReadCloser, format Stre
 
 	// Post-drain LLM extraction on accumulated session text.
 	if spawner != nil && store != nil {
-		_ = memory.ExtractWithLLMInWorkdir(ctx, spawner, accumulated.String(), beadID, store, workdir)
+		_ = ExtractMemoriesWithLLMInWorkdir(ctx, spawner, accumulated.String(), beadID, store, workdir)
 	}
 }
 
@@ -84,7 +77,7 @@ func drainAccumulatePlaintext(ctx context.Context, line string, accumulated *str
 	accumulated.WriteString(line)
 	accumulated.WriteString("\n")
 	if store != nil {
-		if params := memory.ParseMarker(line); params != nil {
+		if params := ParseMemoryMarker(line); params != nil {
 			params.BeadID = beadID
 			_, _ = store.Insert(ctx, *params)
 		}
@@ -139,7 +132,7 @@ func drainFlushRemaining(ctx context.Context, lineBuf, accumulated *strings.Buil
 	accumulated.WriteString(remaining)
 	accumulated.WriteString("\n")
 	if store != nil {
-		if params := memory.ParseMarker(remaining); params != nil {
+		if params := ParseMemoryMarker(remaining); params != nil {
 			params.BeadID = beadID
 			_, _ = store.Insert(ctx, *params)
 		}
@@ -163,7 +156,7 @@ func drainFlushLines(ctx context.Context, buf, accumulated *strings.Builder, sto
 		accumulated.WriteString(line)
 		accumulated.WriteString("\n")
 		if store != nil {
-			if params := memory.ParseMarker(line); params != nil {
+			if params := ParseMemoryMarker(line); params != nil {
 				params.BeadID = beadID
 				_, _ = store.Insert(ctx, *params)
 			}
