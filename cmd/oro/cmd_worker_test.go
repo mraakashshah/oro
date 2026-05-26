@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,5 +151,15 @@ func TestWorkerMemoryStoreHasEmbedder(t *testing.T) {
 	store := openWorkerMemoryStore(db)
 	if !store.HasEmbedder() {
 		t.Fatal("expected non-nil embedder in worker memory store")
+	}
+}
+
+func TestWorkerCmdDoesNotImportMemory(t *testing.T) {
+	src, err := os.ReadFile("cmd_worker.go")
+	if err != nil {
+		t.Fatalf("read cmd_worker.go: %v", err)
+	}
+	if strings.Contains(string(src), `"oro/pkg/memory"`) {
+		t.Fatal("cmd_worker.go must not import oro/pkg/memory")
 	}
 }

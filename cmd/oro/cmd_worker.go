@@ -2,12 +2,10 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os/signal"
 	"syscall"
 
-	"oro/pkg/memory"
 	"oro/pkg/worker"
 
 	"github.com/spf13/cobra"
@@ -59,17 +57,18 @@ func runWorker(ctx context.Context, socketPath, id string) error {
 	}
 
 	// Wire memory store so [MEMORY] markers and implicit patterns are captured.
-	var memStore *memory.Store
+	var saveVocab func(context.Context) error
 	paths, pathsErr := ResolveProjectDBPaths()
 	if pathsErr == nil {
 		db, dbErr := openStateDB(paths.StateDBPath)
 		if dbErr == nil {
 			defer func() { _ = db.Close() }()
-			memStore = openWorkerMemoryStore(db)
+			memStore := openWorkerMemoryStore(db)
 			w.SetMemoryStore(memStore)
+			saveVocab = memStore.SaveVocab
 		}
 	}
-	w.SetExtractSpawner(&memory.CLISpawner{})
+	w.SetExtractSpawner(newWorkerMemoryExtractSpawner())
 
 	if err := w.Run(ctx); err != nil {
 		return fmt.Errorf("worker %s: %w", id, err)
@@ -77,30 +76,12 @@ func runWorker(ctx context.Context, socketPath, id string) error {
 
 	// Persist the embedder vocabulary so the next session starts with the same
 	// vector space. Non-fatal: the next session degrades gracefully if missing.
-	if memStore != nil {
-		_ = memStore.SaveVocab(context.Background())
+	if saveVocab != nil {
+		_ = saveVocab(context.Background())
 	}
 	return nil
 }
 
 func workerSpawnerForRuntime() worker.RuntimeStreamingSpawner {
 	return worker.NewRuntimeSpawnerRouter(newClaudeWorkerSpawner(), newCodexWorkerSpawner())
-}
-
-func newWorkerMemoryExtractSpawner() memory.Spawner {
-	return &memory.CLISpawner{}
-}
-
-// openWorkerMemoryStore creates a memory.Store from an open DB connection.
-// It attaches a fresh Embedder and restores the accumulated vocabulary from
-// the database so embeddings from prior sessions remain in the same vector
-// space. LoadVocab failure is non-fatal: the embedder starts with an empty
-// vocab and degrades gracefully (new memories embed correctly; cosine
-// similarity against old embeddings may be noisy until vocab re-accumulates).
-func openWorkerMemoryStore(db *sql.DB) *memory.Store {
-	store := memory.NewStore(db)
-	// NewEmbedder returns the default *TFIDFEmbedder implementation of the Embedder interface.
-	store.SetEmbedder(memory.NewEmbedder())
-	_ = store.LoadVocab(context.Background()) // non-fatal: empty vocab is valid
-	return store
 }
