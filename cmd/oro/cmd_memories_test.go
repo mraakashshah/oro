@@ -508,7 +508,7 @@ func TestCLIAndDispatcherUseSameDB(t *testing.T) {
 		t.Fatalf("defaultMemoryStore: %v", err)
 	}
 
-	mems, err := cliStore.List(ctx, memory.ListOpts{})
+	mems, err := cliStore.ListMemories(ctx, protocol.MemoryListOpts{})
 	if err != nil {
 		t.Fatalf("list via CLI store: %v", err)
 	}

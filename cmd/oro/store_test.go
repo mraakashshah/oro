@@ -3,8 +3,19 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestCmdStoreDoesNotImportMemory(t *testing.T) {
+	src, err := os.ReadFile("store.go")
+	if err != nil {
+		t.Fatalf("read store.go: %v", err)
+	}
+	if strings.Contains(string(src), `"oro/pkg/memory"`) {
+		t.Fatal("cmd/oro/store.go must not import oro/pkg/memory directly")
+	}
+}
 
 // TestDefaultMemoryStoreUsesProjectPaths verifies that defaultMemoryStore()
 // uses ResolveProjectDBPaths to respect the current project context,

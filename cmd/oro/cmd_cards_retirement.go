@@ -165,7 +165,9 @@ func isMemoryRetirementIgnoredDir(name string) bool {
 }
 
 func isMemoryRetirementImportAllowlisted(path string) bool {
-	return path == "cmd/oro/cmd_cards_check_drift.go" || path == "pkg/cards/legacy_writer.go"
+	return path == "cmd/oro/cmd_cards_check_drift.go" ||
+		path == "pkg/cards/legacy_writer.go" ||
+		path == "internal/memoryboundary/store.go"
 }
 
 func fileImportsMemory(path string) (bool, error) {
