@@ -13,6 +13,75 @@ import (
 	"oro/pkg/protocol"
 )
 
+func TestMemoryRetirementReadinessZeroWaitAllowsRecentTelemetry(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 26, 12, 0, 0, 0, time.UTC)
+
+	t.Run("recent telemetry and clean scan is ready", func(t *testing.T) {
+		db := newRetirementTelemetryDB(t)
+		insertMemoryReadEvent(t, db, now.Add(-time.Hour))
+		root := writeRetirementFixture(t, map[string]string{
+			"go.mod":     "module example.com/fixture\n\ngo 1.23\n",
+			"pkg/app.go": "package pkg\n",
+		})
+
+		report, err := EvaluateMemoryRetirementReadiness(ctx, db, now, root)
+		if err != nil {
+			t.Fatalf("EvaluateMemoryRetirementReadiness: %v", err)
+		}
+		if !report.Ready {
+			t.Fatalf("recent telemetry with a clean import scan should be ready, blockers=%v", report.Blockers)
+		}
+		if retirementBlockersContain(report, "recent memory reads") {
+			t.Fatalf("recent telemetry should not be a blocker with zero wait, blockers=%v", report.Blockers)
+		}
+	})
+
+	t.Run("missing telemetry still fails closed", func(t *testing.T) {
+		db := newRetirementTelemetryDB(t)
+		root := writeRetirementFixture(t, map[string]string{
+			"go.mod":     "module example.com/fixture\n\ngo 1.23\n",
+			"pkg/app.go": "package pkg\n",
+		})
+
+		report, err := EvaluateMemoryRetirementReadiness(ctx, db, now, root)
+		if err != nil {
+			t.Fatalf("EvaluateMemoryRetirementReadiness: %v", err)
+		}
+		if report.Ready {
+			t.Fatal("missing telemetry should fail closed")
+		}
+		if !retirementBlockersContain(report, "no memory read telemetry") {
+			t.Fatalf("blockers = %v, want missing telemetry blocker", report.Blockers)
+		}
+	})
+
+	t.Run("live imports still fail closed", func(t *testing.T) {
+		db := newRetirementTelemetryDB(t)
+		insertMemoryReadEvent(t, db, now.Add(-time.Hour))
+		root := writeRetirementFixture(t, map[string]string{
+			"go.mod": "module example.com/fixture\n\ngo 1.23\n",
+			"pkg/live/live.go": `package live
+
+import "oro/pkg/memory"
+
+var _ = memory.Store{}
+`,
+		})
+
+		report, err := EvaluateMemoryRetirementReadiness(ctx, db, now, root)
+		if err != nil {
+			t.Fatalf("EvaluateMemoryRetirementReadiness: %v", err)
+		}
+		if report.Ready {
+			t.Fatal("live production imports should fail closed")
+		}
+		if !retirementBlockersContain(report, "live pkg/memory imports") {
+			t.Fatalf("blockers = %v, want live import blocker", report.Blockers)
+		}
+	})
+}
+
 func TestMemoryRetirementReadinessGate(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC)
@@ -62,9 +131,9 @@ func TestMemoryRetirementReadinessGate(t *testing.T) {
 		}
 	})
 
-	t.Run("recent read telemetry fails closed inside fourteen day window", func(t *testing.T) {
+	t.Run("recent read telemetry satisfies telemetry requirement", func(t *testing.T) {
 		db := newRetirementTelemetryDB(t)
-		insertMemoryReadEvent(t, db, now.Add(-13*24*time.Hour))
+		insertMemoryReadEvent(t, db, now.Add(-time.Hour))
 		root := writeRetirementFixture(t, map[string]string{
 			"go.mod":     "module example.com/fixture\n\ngo 1.23\n",
 			"pkg/app.go": "package pkg\n",
@@ -74,11 +143,11 @@ func TestMemoryRetirementReadinessGate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EvaluateMemoryRetirementReadiness: %v", err)
 		}
-		if report.Ready {
-			t.Fatal("read telemetry newer than 14 days must fail closed")
+		if !report.Ready {
+			t.Fatalf("recent read telemetry with clean imports should be ready, blockers=%v", report.Blockers)
 		}
-		if !retirementBlockersContain(report, "recent memory reads") {
-			t.Fatalf("blockers = %v, want recent reads blocker", report.Blockers)
+		if retirementBlockersContain(report, "recent memory reads") {
+			t.Fatalf("recent reads should not block with zero wait, got %v", report.Blockers)
 		}
 	})
 
@@ -178,7 +247,7 @@ func TestMemoryRetirementReadinessGate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("openStateDB: %v", err)
 		}
-		insertMemoryReadEvent(t, db, time.Now().Add(-15*24*time.Hour))
+		insertMemoryReadEvent(t, db, time.Now())
 		if err := db.Close(); err != nil {
 			t.Fatalf("close state db: %v", err)
 		}

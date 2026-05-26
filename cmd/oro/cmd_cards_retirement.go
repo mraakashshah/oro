@@ -16,7 +16,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const memoryRetirementWindow = 14 * 24 * time.Hour
+const memoryRetirementWindow = 0 * time.Hour
 
 // MemoryRetirementReadiness reports whether legacy pkg/memory can be retired.
 type MemoryRetirementReadiness struct {
@@ -36,7 +36,7 @@ func newMemoryRetirementCheckCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "memory-retirement-check",
 		Short: "Check whether legacy memory is ready to retire",
-		Long: "Fails closed until memory read telemetry is older than 14 days\n" +
+		Long: "Fails closed until memory read telemetry exists\n" +
 			"and no production code imports oro/pkg/memory outside the retirement allowlist.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			paths, err := ResolveProjectDBPaths()
@@ -95,7 +95,6 @@ func evaluateMemoryReadTelemetry(ctx context.Context, db *sql.DB, now time.Time)
 	if db == nil {
 		return []string{"telemetry database unavailable"}
 	}
-	cutoff := now.UTC().Add(-memoryRetirementWindow).Format("2006-01-02 15:04:05")
 
 	var total int64
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_read_events`).Scan(&total); err != nil {
@@ -104,13 +103,17 @@ func evaluateMemoryReadTelemetry(ctx context.Context, db *sql.DB, now time.Time)
 	if total == 0 {
 		return []string{"no memory read telemetry found"}
 	}
+	if memoryRetirementWindow <= 0 {
+		return nil
+	}
 
+	cutoff := now.UTC().Add(-memoryRetirementWindow).Format("2006-01-02 15:04:05")
 	var recent int64
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_read_events WHERE ts >= ?`, cutoff).Scan(&recent); err != nil {
 		return []string{fmt.Sprintf("memory read telemetry unavailable: %v", err)}
 	}
 	if recent > 0 {
-		return []string{fmt.Sprintf("recent memory reads inside 14-day retirement window: %d", recent)}
+		return []string{fmt.Sprintf("recent memory reads inside %s retirement window: %d", memoryRetirementWindow, recent)}
 	}
 	return nil
 }
