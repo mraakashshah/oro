@@ -36,6 +36,7 @@ import (
 	"oro/pkg/beadstore"
 	"oro/pkg/cards"
 	"oro/pkg/factoryhealth"
+	"oro/pkg/leakscan"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/processenv"
@@ -600,6 +601,7 @@ type Config struct {
 	ReviewDeadGrace         time.Duration // Grace period before removing a reviewing worker whose ops review subprocess has exited (default 30s).
 	ManualIntegration       bool          // If true, completed worker branches wait for manual coordinator integration instead of auto-merge.
 	MutationTesting         bool          // If true, dispatcher quality gates run mutation-testing tiers. Defaults false.
+	LeakScan                LeakScanConfig
 	Estimator               BeadEstimator // LLM-based bead complexity estimator (default NewBeadEstimator()).
 	WorkerProgram           string        // Absolute path to worker-program.md. Defaults to <RepoRoot>/worker-program.md.
 	ReviewPatterns          string        // Absolute path for review patterns. Populated from ProjectPaths.ReviewPatterns.
@@ -616,6 +618,14 @@ type Config struct {
 	// ContextSafety holds the configurable warning/checkpoint thresholds (§9.4).
 	// Expressed as fractions in [0, 1]. Zero values fall back to package defaults.
 	ContextSafety ContextSafetyConfig
+}
+
+type LeakScanConfig struct {
+	Enabled        bool
+	BlockOn        string
+	EntropyMinBits float64
+	EntropyAction  string
+	AllowlistPath  string
 }
 
 // intDefault returns v if non-zero, otherwise dflt.
@@ -2336,6 +2346,88 @@ func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, work
 	return true
 }
 
+func (d *Dispatcher) checkPreMergeLeaks(ctx context.Context, beadID, workerID, worktree, branch, targetBranch string, assignmentID int64) bool {
+	cfg := d.cfg.LeakScan
+	if !cfg.Enabled {
+		return true
+	}
+	target := targetBranch
+	if target == "" {
+		target = d.cfg.DefaultBranch
+	}
+	diff, err := d.shutdownRunner.Run(ctx, "git", "-C", worktree, "diff", target+".."+branch)
+	if err != nil {
+		_ = d.logEvent(ctx, "pre_merge_leakscan_error", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"branch":%q,"target":%q,"error":%q}`, branch, target, err.Error()))
+		return true
+	}
+	allow, err := d.loadLeakScanAllowlist()
+	if err != nil {
+		_ = d.logEvent(ctx, "pre_merge_leakscan_error", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"branch":%q,"target":%q,"error":%q}`, branch, target, err.Error()))
+		return true
+	}
+	minEntropy := cfg.EntropyMinBits
+	if minEntropy == 0 {
+		minEntropy = 4.0
+	}
+	result := leakscan.ScanDiffWithMinEntropy(string(diff), leakscan.DefaultPatterns(), allow, minEntropy)
+	if len(result.Matches) == 0 {
+		return true
+	}
+	summary := leakscan.Summarize(result)
+	_ = d.logEvent(ctx, "pre_merge_leakscan_warn", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"branch":%q,"target":%q,"matches":%q}`, branch, target, summary))
+	if !preMergeLeakShouldBlock(cfg.BlockOn, result) {
+		return true
+	}
+	return d.blockPreMergeLeak(ctx, beadID, workerID, worktree, branch, assignmentID, summary)
+}
+
+func (d *Dispatcher) loadLeakScanAllowlist() (leakscan.Allowlist, error) {
+	if d.cfg.LeakScan.AllowlistPath == "" {
+		return leakscan.Allowlist{}, nil
+	}
+	allow, err := leakscan.LoadAllowlist(d.cfg.LeakScan.AllowlistPath)
+	if err != nil {
+		return leakscan.Allowlist{}, fmt.Errorf("load pre-merge leakscan allowlist: %w", err)
+	}
+	return allow, nil
+}
+
+func preMergeLeakShouldBlock(blockOn string, result leakscan.Result) bool {
+	switch strings.ToLower(strings.TrimSpace(blockOn)) {
+	case "", "none":
+		return false
+	case "critical":
+		for _, match := range result.Matches {
+			if match.Severity == leakscan.SeverityCritical && match.Action == leakscan.ActionBlock {
+				return true
+			}
+		}
+		return false
+	default:
+		return result.ShouldBlock
+	}
+}
+
+func (d *Dispatcher) blockPreMergeLeak(ctx context.Context, beadID, workerID, worktree, branch string, assignmentID int64, summary string) bool {
+	_ = d.logEvent(ctx, "merge_blocked_secret_leak", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"branch":%q,"worktree":%q,"matches":%q}`, branch, worktree, summary))
+	d.quarantineUnsafeRecoveryWork(ctx, recoveryQuarantine{
+		BeadID:       beadID,
+		AssignmentID: assignmentID,
+		WorkerID:     workerID,
+		Worktree:     worktree,
+		Branch:       branch,
+		Reason:       "pre_merge_secret_leak",
+		Details:      summary,
+	})
+	d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID, "pre-merge secret leak", summary), beadID, workerID)
+	d.releaseWorkerAfterDoneTerminal(workerID, beadID, assignmentID)
+	return false
+}
+
 // checkEpicQG creates a temporary worktree from epicBranch, runs the local
 // quality gate against it with mutation testing disabled unless configured, and cleans up
 // the worktree on completion. It returns true when the gate passes and
@@ -2511,6 +2603,9 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 	}
 
 	if !d.checkPreMergeQG(ctx, beadID, workerID, worktree, assignmentID) {
+		return
+	}
+	if !d.checkPreMergeLeaks(ctx, beadID, workerID, worktree, branch, targetBranch, assignmentID) {
 		return
 	}
 	if showErr == nil && d.completeEpicRebaseChild(ctx, detail, beadID, workerID, worktree, branch, epicID, targetBranch, assignmentID) {

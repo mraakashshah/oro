@@ -160,8 +160,6 @@ func LoadAllowlist(path string) (Allowlist, error) {
 }
 
 // ScanDiff detects secrets only on added diff lines, ignoring removed lines and file headers.
-//
-//oro:testonly — production integration is deferred to the leakscan boundary wiring bead.
 func ScanDiff(diff string, patterns []Pattern, allow Allowlist) Result {
 	return ScanDiffWithMinEntropy(diff, patterns, allow, 4.0)
 }
