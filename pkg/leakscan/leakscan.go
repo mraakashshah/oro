@@ -129,6 +129,8 @@ func ScanWithMinEntropy(content string, patterns []Pattern, allow Allowlist, min
 }
 
 // LoadAllowlist reads a YAML leakscan allowlist from path.
+//
+//oro:testonly — production integration is deferred to the leakscan boundary wiring bead.
 func LoadAllowlist(path string) (Allowlist, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // caller supplies the allowlist path
 	if err != nil {
