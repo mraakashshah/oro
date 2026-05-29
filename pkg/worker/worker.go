@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"oro/pkg/agentruntime"
+	"oro/pkg/cards"
 	"oro/pkg/processenv"
 	"oro/pkg/protocol"
 )
@@ -122,9 +123,9 @@ type processExitDiagnostics interface {
 	StderrTail() string
 }
 
-// MemoryInserter abstracts memory insertion at the worker package boundary.
-type MemoryInserter interface {
-	Insert(context.Context, protocol.MemoryInsertParams) (int64, error)
+// LearningSink abstracts pending learning insertion at the worker package boundary.
+type LearningSink interface {
+	AppendLearningPending(ctx context.Context, beadID string, c cards.CardCandidate) (int64, error)
 }
 
 // MemoryExtractSpawner starts an LLM extraction subprocess.
@@ -213,7 +214,7 @@ type Worker struct {
 	disconnected           bool
 	contextPollInterval    time.Duration
 	reconnectInterval      time.Duration // base retry interval for reconnection
-	memStore               MemoryInserter
+	memStore               LearningSink
 	extractSpawner         MemoryExtractSpawner
 	sessionText            strings.Builder
 	outputWg               sync.WaitGroup // tracks processOutput goroutine completion
@@ -340,10 +341,10 @@ func (w *Worker) SetReconnectTimerStopHook(fn func()) {
 	w.reconnectTimerStopHook = fn
 }
 
-// SetMemoryStore attaches a memory store to the worker for memory extraction.
+// SetMemoryStore attaches a learning sink to the worker for learning extraction.
 // When set, [MEMORY] markers in subprocess stdout are captured in real-time,
 // and implicit patterns are extracted on handoff/completion.
-func (w *Worker) SetMemoryStore(s MemoryInserter) {
+func (w *Worker) SetMemoryStore(s LearningSink) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.memStore = s
@@ -1040,17 +1041,10 @@ func (w *Worker) processTextLine(ctx context.Context, line string) {
 	w.sessionText.WriteString(line)
 	w.sessionText.WriteString("\n")
 	store := w.memStore
-	workerID := w.ID
 	beadID := w.beadID
 	w.mu.Unlock()
 
-	if store != nil {
-		if params := ParseMemoryMarker(line); params != nil {
-			params.WorkerID = workerID
-			params.BeadID = beadID
-			_, _ = store.Insert(ctx, *params)
-		}
-	}
+	appendMemoryMarker(ctx, store, beadID, line, 0.8)
 }
 
 // extractImplicitMemories runs LLM-based memory extraction on accumulated

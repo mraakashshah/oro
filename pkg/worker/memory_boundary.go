@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"oro/pkg/cards"
 	"oro/pkg/protocol"
 )
 
@@ -66,7 +67,7 @@ func ParseMemoryMarker(line string) *protocol.MemoryInsertParams {
 
 // ExtractMemoriesWithLLMInWorkdir runs best-effort LLM extraction over session
 // text and inserts any returned memory markers into store.
-func ExtractMemoriesWithLLMInWorkdir(_ context.Context, spawner MemoryExtractSpawner, sessionText, beadID string, store MemoryInserter, workdir string) error {
+func ExtractMemoriesWithLLMInWorkdir(_ context.Context, spawner MemoryExtractSpawner, sessionText, beadID string, store LearningSink, workdir string) error {
 	if spawner == nil || store == nil || sessionText == "" {
 		return nil
 	}
@@ -87,21 +88,55 @@ func ExtractMemoriesWithLLMInWorkdir(_ context.Context, spawner MemoryExtractSpa
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		params := ParseMemoryMarker(scanner.Text())
-		if params == nil {
-			continue
-		}
-		params.BeadID = beadID
-		params.Source = "llm_extracted"
-		params.Confidence = 0.7
-		if _, err := store.Insert(extractCtx, *params); err != nil {
-			log.Printf("worker memory extract: insert error: %v", err)
-		}
+		appendMemoryMarker(extractCtx, store, beadID, scanner.Text(), 0.7)
 	}
 	if err := scanner.Err(); err != nil {
 		log.Printf("worker memory extract: scan error: %v", err)
 	}
 	return nil
+}
+
+func appendMemoryMarker(ctx context.Context, store LearningSink, beadID, line string, confidence float64) {
+	if store == nil || beadID == "" {
+		return
+	}
+	params := ParseMemoryMarker(line)
+	if params == nil {
+		return
+	}
+	candidate := cardCandidateFromMemoryMarker(*params, line, confidence)
+	if _, err := store.AppendLearningPending(ctx, beadID, candidate); err != nil {
+		log.Printf("worker memory extract: append pending learning error: %v", err)
+	}
+}
+
+func cardCandidateFromMemoryMarker(params protocol.MemoryInsertParams, markerLine string, confidence float64) cards.CardCandidate {
+	cardType := string(cards.CardTypePattern)
+	if params.Type == string(cards.CardTypeDecision) {
+		cardType = string(cards.CardTypeDecision)
+	}
+	summary := truncateForCandidate(params.Content, 200)
+	tags := append([]string{}, params.Tags...)
+	return cards.CardCandidate{
+		Type:        cardType,
+		Title:       summary,
+		BodySummary: summary,
+		BodyFull:    params.Content,
+		Confidence:  confidence,
+		Evidence:    []string{markerLine},
+		Tags:        tags,
+	}
+}
+
+func truncateForCandidate(s string, limit int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= limit {
+		return s
+	}
+	if limit <= 0 {
+		return ""
+	}
+	return strings.TrimSpace(s[:limit])
 }
 
 func spawnMemoryExtractor(ctx context.Context, spawner MemoryExtractSpawner, model, prompt, workdir string) (io.ReadCloser, error) {
