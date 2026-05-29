@@ -108,16 +108,27 @@ shared across all ops types).
   with `os.Pipe`. Update `opsProcess.lastOutputAt` per line; still accumulate the
   full output for parsing. Implement `LastOutputAt()` from B0.
 - **B2.** Emit `--verbose --output-format stream-json` **scoped to OpsReview
-  only** (per-type `BuildArgs` or a review-specific spawner — do NOT change the
-  shared `buildClaudeOpsArgs` globally, or merge/decompose/escalation parsers
-  break). Reuse `pkg/worker.ParseStreamEvent` to extract the assistant's final
-  text from the `result` event, then feed **that text** to `parseReviewOutput`.
-  Keep a text-scan fallback. Merge/decompose/escalation stay on plain output.
+  only.** Mechanism (the ops `Type` is dropped before the spawner today —
+  `spawnOps`/`SpawnRuntime`/`Spawn`/`BuildArgs` take no `Type`): add a
+  **review-scoped spawner** — a second `ClaudeOpsSpawner` built with stream-json
+  args + stream-aware output — held as a new field on `Spawner`, and have
+  `run()` select it when `opsType == OpsReview`. `run()` already has the `Type`
+  (it computes `effectiveTimeout(opsType)`), so selection happens there with
+  **no change to the `BatchSpawner`/`ReasoningBatchSpawner`/`RuntimeBatchSpawner`/
+  `RuntimeSpawnerRouter` signatures** and no per-call `Type` threading. The
+  shared `buildClaudeOpsArgs` stays plain; merge/decompose/escalation keep their
+  spawner and parsers untouched. Reuse `pkg/worker.ParseStreamEvent` to extract
+  the assistant's final text from the `result` event
+  (`Activity{Kind: ActivityResult, Text}`), then feed **that text** to
+  `parseReviewOutput`; keep a text-scan fallback.
 - **B3.** `ops.go:waitForProcess` — keep the 35-min ceiling, **add an
-  idle-watchdog** that reads `LastOutputAt()` (B0) and kills early with a
-  distinct "review wedged (no output for Nm)" error. **Steady streaming must NOT
-  trigger it** — only a true gap. Idle threshold configurable (like
-  `--ops-review-timeout`).
+  idle-watchdog gated to OpsReview** that reads `LastOutputAt()` (B0) and kills
+  early with a distinct "review wedged (no output for Nm)" error. Gate it per
+  type (mirroring the existing per-type `Timeout()`): a zero/disabled idle
+  threshold for non-review ops, because only the streaming review path updates
+  `LastOutputAt` — a shared watchdog would false-kill plain-output
+  merge/decompose. **Steady streaming must NOT trigger it** — only a true gap.
+  Idle threshold configurable (like `--ops-review-timeout`).
 
 ### Acceptance tests (machine-verifiable)
 
@@ -164,9 +175,11 @@ production, so B1/B2/B3 reuse a proven path rather than a new bet.
 1. **Part A** (skill markdown) — unblocks the P0 review path, no oro code risk, reversible.
 2. **Part B** (`pkg/ops` Go) — durable; TDD, decomposed into beads. Dependency
    order: **B0 → B1 → B2**, **B0 → B3** (B0 unblocks both; B2 needs B1's stream
-   infra). Blast radius confined to `pkg/ops` (B2 is OpsReview-scoped, so
-   merge/decompose/escalation are untouched); output-parsing change is
-   medium-reversibility (behind the spawner interface, with text-scan fallback).
+   infra). Blast radius confined to `pkg/ops` (B2 adds a review-scoped spawner
+   field + `run()` selection by `Type`; no `BatchSpawner` signature change, so
+   merge/decompose/escalation and their fakes are untouched). B0 changes the
+   `Process` interface (one method `LastOutputAt()`) — all implementers/fakes
+   update. Output-parsing change is medium-reversibility (text-scan fallback).
 
 ## Out of scope
 
