@@ -124,6 +124,10 @@ func (s *staticRelevantCardStore) PendingLearnings(context.Context, string) ([]c
 	return nil, errors.New("not implemented")
 }
 
+func (s *staticRelevantCardStore) ReviewQueue(context.Context) ([]cards.PendingLearning, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (s *staticRelevantCardStore) RecordCardEvent(context.Context, cards.CardEvent) error {
 	return errors.New("not implemented")
 }
@@ -134,6 +138,14 @@ func (s *staticRelevantCardStore) AppendLearningPending(context.Context, string,
 
 func (s *staticRelevantCardStore) PromoteLearning(context.Context, int64) (string, error) {
 	return "", errors.New("not implemented")
+}
+
+func (s *staticRelevantCardStore) RejectLearning(context.Context, int64, string) error {
+	return errors.New("not implemented")
+}
+
+func (s *staticRelevantCardStore) DeferToReviewQueue(context.Context, int64, string) error {
+	return errors.New("not implemented")
 }
 
 func (s *staticRelevantCardStore) Create(context.Context, cards.CardCreateParams) (*cards.Card, error) {

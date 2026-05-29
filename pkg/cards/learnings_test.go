@@ -2,8 +2,10 @@ package cards_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
+	"time"
 
 	"oro/pkg/cards"
 )
@@ -144,4 +146,132 @@ func TestPromoteLearning(t *testing.T) {
 			t.Fatalf("card/event counts = %d/%d, want 0/0 after rollback", cardCount, eventCount)
 		}
 	})
+}
+
+func TestRejectAndReviewQueue(t *testing.T) {
+	ctx := context.Background()
+	store, db := newTestStoreWithBeads(t)
+	if _, err := db.ExecContext(ctx, `INSERT INTO beads (id) VALUES (?)`, "bead-1"); err != nil {
+		t.Fatalf("insert bead: %v", err)
+	}
+	candidate := cards.CardCandidate{
+		Type:        string(cards.CardTypePattern),
+		Title:       "Review queued learnings",
+		BodySummary: "Only unresolved queued learnings are reviewable.",
+		BodyFull:    "ReviewQueue uses the same terminal-state filter as the review SLA sweeper.",
+		Confidence:  0.8,
+		Evidence:    []string{"go test ./pkg/cards/... -run TestRejectAndReviewQueue -count=1"},
+		Tags:        []string{"cards", "review"},
+	}
+
+	rejectedID, err := store.AppendLearningPending(ctx, "bead-1", candidate)
+	if err != nil {
+		t.Fatalf("AppendLearningPending rejected fixture: %v", err)
+	}
+	queuedID, err := store.AppendLearningPending(ctx, "bead-1", candidate)
+	if err != nil {
+		t.Fatalf("AppendLearningPending queued fixture: %v", err)
+	}
+	unqueuedID, err := store.AppendLearningPending(ctx, "bead-1", candidate)
+	if err != nil {
+		t.Fatalf("AppendLearningPending unqueued fixture: %v", err)
+	}
+	promotedQueuedID, err := store.AppendLearningPending(ctx, "bead-1", candidate)
+	if err != nil {
+		t.Fatalf("AppendLearningPending promoted fixture: %v", err)
+	}
+	rejectedQueuedID, err := store.AppendLearningPending(ctx, "bead-1", candidate)
+	if err != nil {
+		t.Fatalf("AppendLearningPending rejected queued fixture: %v", err)
+	}
+
+	if err := store.RejectLearning(ctx, rejectedID, "duplicate"); err != nil {
+		t.Fatalf("RejectLearning: %v", err)
+	}
+	assertRejectedLearning(t, db, rejectedID, "duplicate")
+
+	if err := store.DeferToReviewQueue(ctx, queuedID, "needs human review"); err != nil {
+		t.Fatalf("DeferToReviewQueue: %v", err)
+	}
+	assertQueuedLearning(t, db, queuedID, "needs human review")
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO cards (id, type, title, body_summary, body_full, tags, decay_anchor, created_at, updated_at)
+		 VALUES ('card-promoted', 'pattern', 'terminal', 's', 'b', '[]', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("insert terminal card: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`UPDATE bead_learnings_pending SET queued_for_review_at = ?, promoted_to = 'card-promoted' WHERE id = ?`,
+		time.Now().UTC().Format(time.RFC3339Nano), promotedQueuedID,
+	); err != nil {
+		t.Fatalf("mark promoted queued: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`UPDATE bead_learnings_pending SET queued_for_review_at = ?, rejected_at = ?, reason = 'noisy' WHERE id = ?`,
+		time.Now().UTC().Format(time.RFC3339Nano),
+		time.Now().UTC().Format(time.RFC3339Nano),
+		rejectedQueuedID,
+	); err != nil {
+		t.Fatalf("mark rejected queued: %v", err)
+	}
+
+	queue, err := store.ReviewQueue(ctx)
+	if err != nil {
+		t.Fatalf("ReviewQueue: %v", err)
+	}
+	if len(queue) != 1 {
+		t.Fatalf("ReviewQueue count = %d, want 1: %+v", len(queue), queue)
+	}
+	if queue[0].ID != queuedID {
+		t.Fatalf("ReviewQueue ID = %d, want queued ID %d; unqueued ID was %d", queue[0].ID, queuedID, unqueuedID)
+	}
+	if queue[0].QueuedForReviewAt == nil || queue[0].PromotedTo != nil || queue[0].RejectedAt != nil {
+		t.Fatalf("ReviewQueue row terminal fields = %+v, want queued unresolved", queue[0])
+	}
+
+	if err := store.RejectLearning(ctx, rejectedID, "again"); !errors.Is(err, cards.ErrAlreadyResolved) {
+		t.Fatalf("RejectLearning resolved err = %v, want ErrAlreadyResolved", err)
+	}
+	if err := store.DeferToReviewQueue(ctx, rejectedID, "again"); !errors.Is(err, cards.ErrAlreadyResolved) {
+		t.Fatalf("DeferToReviewQueue resolved err = %v, want ErrAlreadyResolved", err)
+	}
+}
+
+func assertRejectedLearning(t *testing.T, db *sql.DB, id int64, wantReason string) {
+	t.Helper()
+	var rejectedAt, reason sql.NullString
+	if err := db.QueryRowContext(context.Background(),
+		`SELECT rejected_at, reason FROM bead_learnings_pending WHERE id = ?`, id,
+	).Scan(&rejectedAt, &reason); err != nil {
+		t.Fatalf("query rejected learning: %v", err)
+	}
+	if !rejectedAt.Valid {
+		t.Fatal("rejected_at is NULL, want timestamp")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, rejectedAt.String); err != nil {
+		t.Fatalf("rejected_at = %q, want RFC3339Nano: %v", rejectedAt.String, err)
+	}
+	if !reason.Valid || reason.String != wantReason {
+		t.Fatalf("reason = %v/%q, want %q", reason.Valid, reason.String, wantReason)
+	}
+}
+
+func assertQueuedLearning(t *testing.T, db *sql.DB, id int64, wantReason string) {
+	t.Helper()
+	var queuedAt, reason sql.NullString
+	if err := db.QueryRowContext(context.Background(),
+		`SELECT queued_for_review_at, reason FROM bead_learnings_pending WHERE id = ?`, id,
+	).Scan(&queuedAt, &reason); err != nil {
+		t.Fatalf("query queued learning: %v", err)
+	}
+	if !queuedAt.Valid {
+		t.Fatal("queued_for_review_at is NULL, want timestamp")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, queuedAt.String); err != nil {
+		t.Fatalf("queued_for_review_at = %q, want RFC3339Nano: %v", queuedAt.String, err)
+	}
+	if !reason.Valid || reason.String != wantReason {
+		t.Fatalf("reason = %v/%q, want %q", reason.Valid, reason.String, wantReason)
+	}
 }
