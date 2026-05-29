@@ -126,6 +126,8 @@ func Scan(content string, patterns []Pattern, allow Allowlist) Result {
 }
 
 // LoadAllowlist reads a YAML leakscan allowlist from path.
+//
+//oro:testonly — production integration is deferred to the leakscan boundary wiring bead.
 func LoadAllowlist(path string) (Allowlist, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // caller supplies the allowlist path
 	if err != nil {
@@ -230,7 +232,7 @@ func scanMatches(content string, patterns []Pattern, allow Allowlist) []Match {
 		}
 		for _, loc := range pattern.Re.FindAllStringIndex(content, -1) {
 			raw := content[loc[0]:loc[1]]
-			if allow.contains(pattern.Name, raw) {
+			if allow.contains(raw) {
 				continue
 			}
 			matches = append(matches, Match{
@@ -258,7 +260,7 @@ func entropyCandidates(content string, minBits float64, allow Allowlist) []Match
 		if len(candidate) < 20 {
 			continue
 		}
-		if allow.contains("high_entropy_token", candidate) {
+		if allow.contains(candidate) {
 			continue
 		}
 		if shannonBits(candidate) < minBits {
@@ -304,7 +306,7 @@ func startsAfterEncodedBoundary(content string, start int) bool {
 	return r == '%' || unicode.Is(unicode.Cf, r)
 }
 
-func entropyCandidateValue(raw string, start int) (string, int) {
+func entropyCandidateValue(raw string, start int) (candidate string, candidateStart int) {
 	trimmed := strings.TrimRight(raw, "=")
 	if idx := strings.LastIndex(trimmed, "="); idx >= 0 {
 		return raw[idx+1:], start + idx + 1
@@ -336,7 +338,7 @@ func hasPrefix(content, prefix string) bool {
 	return strings.Contains(strings.ToLower(content), strings.ToLower(prefix))
 }
 
-func (allow Allowlist) contains(pattern, secret string) bool {
+func (allow Allowlist) contains(secret string) bool {
 	if allow.Literals[secret] {
 		return true
 	}

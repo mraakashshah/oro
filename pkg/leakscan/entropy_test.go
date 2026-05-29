@@ -1,3 +1,4 @@
+//nolint:testpackage // verifies unexported entropy/path helpers required by task acceptance.
 package leakscan
 
 import (
@@ -40,7 +41,7 @@ func TestAllowlist_PathGlobsAndPlaceholders(t *testing.T) {
 	if !allow.containsPath("fixtures/secrets.txt") {
 		t.Fatalf("custom path glob did not match")
 	}
-	if !allow.contains("aws_access_key", "AKIAIOSFODNN7EXAMPLE") {
+	if !allow.contains("AKIAIOSFODNN7EXAMPLE") {
 		t.Fatalf("placeholder regex did not exempt donor example key")
 	}
 }
