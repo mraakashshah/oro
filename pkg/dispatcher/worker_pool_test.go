@@ -1637,6 +1637,46 @@ func TestSendToWorker_BuffersMessageOnFailure(t *testing.T) {
 	}
 }
 
+func TestSendToWorker_TimesOutBlockedWrite(t *testing.T) {
+	t.Parallel()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	w := &trackedWorker{
+		id:      "blocked-worker",
+		conn:    serverConn,
+		beadID:  "bead-blocked",
+		encoder: json.NewEncoder(serverConn),
+	}
+	d.mu.Lock()
+	d.workers[w.id] = w
+	d.mu.Unlock()
+
+	errCh := make(chan error, 1)
+	go func() {
+		d.mu.Lock()
+		errCh <- d.sendToWorker(w, protocol.Message{Type: protocol.MsgAssign, Assign: &protocol.AssignPayload{BeadID: "bead-blocked"}})
+		d.mu.Unlock()
+	}()
+
+	select {
+	case err := <-errCh:
+		var unreachable *protocol.WorkerUnreachableError
+		if !errors.As(err, &unreachable) {
+			t.Fatalf("sendToWorker error = %T %[1]v, want WorkerUnreachableError", err)
+		}
+		if len(w.pendingMsgs) != 1 {
+			t.Fatalf("pendingMsgs length = %d, want 1", len(w.pendingMsgs))
+		}
+	case <-time.After(directWorkerWriteTimeout * 4):
+		_ = clientConn.Close()
+		t.Fatal("sendToWorker blocked past direct worker write timeout")
+	}
+}
+
 // TestSendToWorker_RemovesWorkerAtMaxPendingMessages verifies that exceeding
 // maxPendingMessages causes the worker to be removed.
 // Kills mutations 24, 35, 59, 66, 119, 120.

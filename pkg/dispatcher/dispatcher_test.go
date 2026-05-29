@@ -8225,7 +8225,8 @@ func (deadConn) Write([]byte) (int, error) {
 	return 0, errors.New("connection dead")
 }
 
-func (deadConn) Close() error { return nil }
+func (deadConn) Close() error                     { return nil }
+func (deadConn) SetWriteDeadline(time.Time) error { return nil }
 
 func TestQGRetry_DeadWorker_RequeuesBead(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)

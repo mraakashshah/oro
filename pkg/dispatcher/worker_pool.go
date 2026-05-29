@@ -664,6 +664,10 @@ func (d *Dispatcher) sendToWorker(w *trackedWorker, msg protocol.Message) error 
 		return fmt.Errorf("marshal message: %w", err)
 	}
 	data = append(data, '\n')
+
+	if err := w.conn.SetWriteDeadline(time.Now().Add(directWorkerWriteTimeout)); err == nil {
+		defer func() { _ = w.conn.SetWriteDeadline(time.Time{}) }()
+	}
 	_, err = w.conn.Write(data)
 	if err != nil {
 		// Connection is broken — buffer the message
