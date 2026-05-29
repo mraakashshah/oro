@@ -588,6 +588,7 @@ type Config struct {
 	ProgressTimeout         time.Duration // Max time without meaningful progress before STUCK_WORKER escalation (default 15m).
 	PollInterval            time.Duration // oro task ready poll interval (default 10s).
 	FallbackPollInterval    time.Duration // Fallback poll interval for fsnotify safety net (default 60s).
+	CycleScanInterval       time.Duration // Dependency-cycle pre-flight scan interval (default 60s).
 	ShutdownTimeout         time.Duration // Graceful shutdown timeout (default 10s).
 	ConsolidateAfterN       int           // Trigger context consolidation after N completed beads (default 5).
 	DreamInterval           int           // Spawn a dream memory-consolidation agent after N completed beads (default 10; 0 disables).
@@ -662,6 +663,7 @@ func (c *Config) withDefaults() Config {
 	out.ProgressTimeout = durationDefault(out.ProgressTimeout, 10*time.Minute)
 	out.PollInterval = durationDefault(out.PollInterval, 10*time.Second)
 	out.FallbackPollInterval = durationDefault(out.FallbackPollInterval, 60*time.Second)
+	out.CycleScanInterval = durationDefault(out.CycleScanInterval, 60*time.Second)
 	out.ShutdownTimeout = durationDefault(out.ShutdownTimeout, 10*time.Second)
 	out.ConsolidateAfterN = intDefault(out.ConsolidateAfterN, 5)
 	out.PaneContextThreshold = intDefault(out.PaneContextThreshold, 40)
@@ -702,6 +704,9 @@ func (c Config) validate() error {
 	}
 	if c.FallbackPollInterval <= 0 {
 		return fmt.Errorf("FallbackPollInterval must be positive, got %v", c.FallbackPollInterval)
+	}
+	if c.CycleScanInterval <= 0 {
+		return fmt.Errorf("CycleScanInterval must be positive, got %v", c.CycleScanInterval)
 	}
 	if c.ShutdownTimeout <= 0 {
 		return fmt.Errorf("ShutdownTimeout must be positive, got %v", c.ShutdownTimeout)
@@ -803,7 +808,10 @@ type Dispatcher struct {
 	checkpoints *checkpointTracker
 
 	// cachedQueueDepth stores the last-known count from beads.Ready() in the assign loop.
-	cachedQueueDepth int
+	cachedQueueDepth  int
+	cachedIdleWorkers int
+	lastCycleScanAt   time.Time
+	escalatedCycles   map[string]bool
 
 	// lastRecoveryAssignmentBlockLog throttles noisy assignment-block events while
 	// open recovery quarantines keep automation stopped.
@@ -998,6 +1006,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		panesDir:               defaultPanesDir(),
 		signaledPanes:          make(map[string]bool),
 		paneStates:             make(map[string]*paneState),
+		escalatedCycles:        make(map[string]bool),
 		checkpoints:            newCheckpointTracker(),
 		nowFunc:                time.Now,
 		acceptSem:              make(chan struct{}, 100), // limit to 100 concurrent connection handlers
@@ -4512,7 +4521,12 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	// Cache queue depth for status reporting.
 	d.mu.Lock()
 	d.cachedQueueDepth = len(allBeads)
+	d.cachedIdleWorkers = len(idle)
 	d.mu.Unlock()
+
+	if d.shouldScanForCycles() {
+		d.scanDependencyCycles(ctx)
+	}
 
 	beads := d.filterAssignable(ctx, allBeads)
 
@@ -4568,6 +4582,87 @@ func (d *Dispatcher) logRecoveryAssignmentBlocked(ctx context.Context, openQuara
 
 	_ = d.logEvent(ctx, "assignment_blocked_by_recovery_quarantine", "dispatcher", "", "",
 		fmt.Sprintf(`{"open_recovery_quarantines":%d,"reason":%q}`, openQuarantines, reason))
+}
+
+func (d *Dispatcher) shouldScanForCycles() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.cachedQueueDepth == 0 || d.cachedIdleWorkers == 0 {
+		return false
+	}
+	return d.lastCycleScanAt.IsZero() || d.nowFunc().Sub(d.lastCycleScanAt) >= d.cfg.CycleScanInterval
+}
+
+func (d *Dispatcher) scanDependencyCycles(ctx context.Context) {
+	d.mu.Lock()
+	d.lastCycleScanAt = d.nowFunc()
+	d.mu.Unlock()
+
+	cycles, err := d.beads.DependencyCycles(ctx)
+	if err != nil {
+		_ = d.logEvent(ctx, "dependency_cycle_scan_failed", "dispatcher", "", "",
+			fmt.Sprintf(`{"error":%q}`, err.Error()))
+		return
+	}
+	for _, cycle := range cycles {
+		d.escalateDependencyCycle(ctx, cycle)
+	}
+}
+
+func (d *Dispatcher) escalateDependencyCycle(ctx context.Context, cycle beadstore.Cycle) {
+	path := canonicalDependencyCyclePath(cycle)
+	if len(path) < 2 {
+		return
+	}
+	key := strings.Join(path, "\x00")
+	d.mu.Lock()
+	if d.escalatedCycles[key] {
+		d.mu.Unlock()
+		return
+	}
+	d.escalatedCycles[key] = true
+	d.mu.Unlock()
+
+	anchor := path[0]
+	pathText := strings.Join(path, " -> ")
+	msg := protocol.FormatEscalation(
+		protocol.EscDependencyCycle,
+		anchor,
+		"blocking dependency cycle detected",
+		fmt.Sprintf("Path: %s", pathText),
+	)
+	_ = d.beads.AppendJourney(ctx, anchor, beadstore.JourneyEvent{
+		Ts:      d.nowFunc().UTC().Format(time.RFC3339Nano),
+		Actor:   "dispatcher",
+		Event:   "dependency_cycle_detected",
+		Payload: fmt.Sprintf(`{"cycle_key":%q,"path":%q}`, key, pathText),
+	})
+	d.escalate(ctx, msg, anchor, "")
+}
+
+func canonicalDependencyCyclePath(cycle beadstore.Cycle) []string {
+	if len(cycle) == 0 {
+		return nil
+	}
+	nodes := append([]string(nil), cycle...)
+	if len(nodes) > 1 && nodes[0] == nodes[len(nodes)-1] {
+		nodes = nodes[:len(nodes)-1]
+	}
+	if len(nodes) == 0 {
+		return nil
+	}
+	start := 0
+	for i := 1; i < len(nodes); i++ {
+		if nodes[i] < nodes[start] {
+			start = i
+		}
+	}
+	out := make([]string, 0, len(nodes)+1)
+	for i := range nodes {
+		out = append(out, nodes[(start+i)%len(nodes)])
+	}
+	out = append(out, out[0])
+	return out
 }
 
 func (d *Dispatcher) reservedSpawnForTargets() (map[string]bool, bool) {
@@ -7866,7 +7961,7 @@ func (d *Dispatcher) shouldRetryEscalation(ctx context.Context, escType, beadID 
 		return d.retryOversizedBead(ctx, beadID)
 	case protocol.EscNonTDDAC:
 		return d.retryNonTDDAC(ctx, beadID)
-	case protocol.EscMergeComplete, protocol.EscManualIntegration:
+	case protocol.EscMergeComplete, protocol.EscManualIntegration, protocol.EscDependencyCycle:
 		return false
 	default:
 		return true

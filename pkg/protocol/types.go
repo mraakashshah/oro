@@ -191,6 +191,7 @@ const (
 	EscOversizedBead      EscalationType = "OVERSIZED_BEAD"
 	EscNonTDDAC           EscalationType = "NON_TDD_AC"
 	EscManualIntegration  EscalationType = "MANUAL_INTEGRATION"
+	EscDependencyCycle    EscalationType = "DEPENDENCY_CYCLE"
 )
 
 // FormatEscalation produces a structured escalation message in the form:

@@ -122,6 +122,8 @@ type fakeBeadStore struct {
 	deferErrs            map[string]error
 	undeferErrs          map[string]error
 	readyCalled          int // incremented on every Ready() call
+	dependencyCycles     []beadstore.Cycle
+	journeys             map[string][]beadstore.JourneyEvent
 }
 
 func (m *fakeBeadStore) Ready(_ context.Context) ([]protocol.Bead, error) {
@@ -395,7 +397,14 @@ func TestFakeBeadStoreDeferFiltersReadyBeads(t *testing.T) {
 	}
 }
 
-func (m *fakeBeadStore) AppendJourney(_ context.Context, _ string, _ beadstore.JourneyEvent) error {
+func (m *fakeBeadStore) AppendJourney(_ context.Context, beadID string, evt beadstore.JourneyEvent) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.journeys == nil {
+		m.journeys = make(map[string][]beadstore.JourneyEvent)
+	}
+	evt.BeadID = beadID
+	m.journeys[beadID] = append(m.journeys[beadID], evt)
 	return nil
 }
 
@@ -414,7 +423,11 @@ func (m *fakeBeadStore) TransitionPipelineStage(_ context.Context, _ string, _, 
 func (m *fakeBeadStore) CountChildren(_ context.Context, _ string) (int, error) { return 0, nil }
 
 func (m *fakeBeadStore) DependencyCycles(_ context.Context) ([]beadstore.Cycle, error) {
-	return nil, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]beadstore.Cycle, len(m.dependencyCycles))
+	copy(out, m.dependencyCycles)
+	return out, nil
 }
 
 func (m *fakeBeadStore) WithReadTx(_ context.Context, _ func(tx beadstore.ReadTx) error) error {
@@ -22282,6 +22295,51 @@ func TestTryAssign_ReservedEpicUnitBlocksNextEpic(t *testing.T) {
 		t.Fatalf("assigned beads = %v, want reserved epic unit to block next epic", got)
 	}
 	assertMockWorkerAssignCount(t, workers, 0)
+}
+
+func TestTryAssign_EscalatesDependencyCycle(t *testing.T) {
+	d, beadSrc, _ := setupTryAssignSchedulingTest(t, 2)
+	d.cfg.CycleScanInterval = time.Nanosecond
+	d.nowFunc = func() time.Time { return time.Unix(100, 0).UTC() }
+	beadSrc.SetBeads([]protocol.Bead{{ID: "oro-cycle-a", Priority: 0}})
+	beadSrc.dependencyCycles = []beadstore.Cycle{{"oro-cycle-b", "oro-cycle-a", "oro-cycle-b"}}
+
+	ctx := context.Background()
+	d.tryAssign(ctx)
+	d.mu.Lock()
+	d.lastCycleScanAt = time.Time{}
+	for _, w := range d.workers {
+		if w.state == protocol.WorkerIdle {
+			continue
+		}
+		w.state = protocol.WorkerIdle
+		w.beadID = ""
+		w.assignmentID = 0
+	}
+	d.mu.Unlock()
+	d.tryAssign(ctx)
+
+	msgs := d.escalator.(*mockEscalator).Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("dependency cycle escalations = %d, want 1: %v", len(msgs), msgs)
+	}
+	msg := msgs[0]
+	if !strings.Contains(msg, "[ORO-DISPATCH] DEPENDENCY_CYCLE: oro-cycle-a") {
+		t.Fatalf("escalation message = %q, want DEPENDENCY_CYCLE anchored to oro-cycle-a", msg)
+	}
+	if !strings.Contains(msg, "oro-cycle-a -> oro-cycle-b -> oro-cycle-a") {
+		t.Fatalf("escalation message = %q, want masked ordered path", msg)
+	}
+
+	beadSrc.mu.Lock()
+	journey := append([]beadstore.JourneyEvent(nil), beadSrc.journeys["oro-cycle-a"]...)
+	beadSrc.mu.Unlock()
+	if len(journey) != 1 {
+		t.Fatalf("anchor journey events = %d, want 1: %+v", len(journey), journey)
+	}
+	if journey[0].Event != "dependency_cycle_detected" {
+		t.Fatalf("journey event = %q, want dependency_cycle_detected", journey[0].Event)
+	}
 }
 
 func schedulingPlanBeadIDs(plan schedulingPlan) []string {
