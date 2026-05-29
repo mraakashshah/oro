@@ -18,6 +18,7 @@ var ErrInvalidCardType = errors.New("invalid card type")
 
 // ErrAlreadyResolved is returned when a pending learning was already promoted or rejected.
 var ErrAlreadyResolved = errors.New("learning already resolved")
+
 // CardType is the closed enum of card types.
 type CardType string
 
@@ -62,6 +63,18 @@ type CardCandidate struct {
 	Evidence    []string `json:"evidence"`
 	Tags        []string `json:"tags"`
 	Confirmed   bool     `json:"confirmed,omitempty"`
+}
+
+// PendingLearning is a bead-scoped card candidate awaiting promotion or rejection.
+type PendingLearning struct {
+	ID                int64
+	BeadID            string
+	TS                time.Time
+	Candidate         CardCandidate
+	PromotedTo        *string
+	RejectedAt        *time.Time
+	Reason            *string
+	QueuedForReviewAt *time.Time
 }
 
 // PendingLearning is a bead-scoped card candidate awaiting promotion or rejection.
