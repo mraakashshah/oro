@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,7 +32,7 @@ func newLeakscanCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			content, sourcePath, err := readLeakscanInput(cmd.InOrStdin(), fromStdin, diffRange, filePath)
+			content, sourcePath, err := readLeakscanInput(cmd.Context(), cmd.InOrStdin(), fromStdin, diffRange, filePath)
 			if err != nil {
 				return err
 			}
@@ -40,11 +41,12 @@ func newLeakscanCmd() *cobra.Command {
 				return err
 			}
 			result := leakscan.Result{}
-			if sourcePath != "" && allow.AllowsPath(sourcePath) {
+			switch {
+			case sourcePath != "" && allow.AllowsPath(sourcePath):
 				result.Redacted = content
-			} else if diffRange != "" {
+			case diffRange != "":
 				result = leakscan.ScanDiffWithMinEntropy(content, leakscan.DefaultPatterns(), allow, minEntropy)
-			} else {
+			default:
 				result = leakscan.ScanWithMinEntropy(content, leakscan.DefaultPatterns(), allow, minEntropy)
 			}
 			if err := writeLeakscanJSON(cmd.OutOrStdout(), result); err != nil {
@@ -64,7 +66,7 @@ func newLeakscanCmd() *cobra.Command {
 	return cmd
 }
 
-func readLeakscanInput(stdin io.Reader, fromStdin bool, diffRange, filePath string) (content string, sourcePath string, err error) {
+func readLeakscanInput(ctx context.Context, stdin io.Reader, fromStdin bool, diffRange, filePath string) (content, sourcePath string, err error) {
 	sources := 0
 	for _, enabled := range []bool{fromStdin, diffRange != "", filePath != ""} {
 		if enabled {
@@ -82,7 +84,7 @@ func readLeakscanInput(stdin io.Reader, fromStdin bool, diffRange, filePath stri
 		return string(data), "", nil
 	}
 	if diffRange != "" {
-		data, err := exec.Command("git", "diff", diffRange).Output() //nolint:gosec // diffRange is an explicit CLI argument passed to git as one argv value
+		data, err := exec.CommandContext(ctx, "git", "diff", diffRange).Output() //nolint:gosec // diffRange is an explicit CLI argument passed to git as one argv value
 		if err != nil {
 			return "", "", fmt.Errorf("git diff %s: %w", diffRange, err)
 		}
@@ -101,7 +103,7 @@ func loadLeakscanAllowlist(path string) (leakscan.Allowlist, error) {
 	}
 	allow, err := leakscan.LoadAllowlist(path)
 	if err != nil {
-		return leakscan.Allowlist{}, err
+		return leakscan.Allowlist{}, fmt.Errorf("load leakscan allowlist: %w", err)
 	}
 	return allow, nil
 }
