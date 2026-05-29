@@ -241,6 +241,7 @@ type Spawner struct {
 	mu            sync.Mutex
 	active        map[string]*Agent
 	spawner       BatchSpawner
+	reviewSpawner BatchSpawner
 	timeout       time.Duration // one-shot process timeout (defaults to 5 minutes)
 	reviewTimeout time.Duration // optional OpsReview override; zero preserves Type.Timeout().
 }
@@ -261,6 +262,12 @@ func NewSpawnerWithReviewTimeout(sp BatchSpawner, reviewTimeout time.Duration) *
 	s := NewSpawner(sp)
 	s.reviewTimeout = reviewTimeout
 	return s
+}
+
+// SetReviewSpawner configures the BatchSpawner used only for OpsReview runs.
+// A nil review spawner preserves the default spawner path.
+func (s *Spawner) SetReviewSpawner(sp BatchSpawner) {
+	s.reviewSpawner = sp
 }
 
 // Review spawns a two-stage review agent. The result is delivered on the
@@ -408,7 +415,11 @@ func (s *Spawner) run(ctx context.Context, opsType Type, beadID, worktree, promp
 		}()
 
 		runtime, model, reasoning := agentmodel.ResolveForRole(opsType.Role())
-		proc, err := spawnOps(ctx, s.spawner, runtime, model, reasoning, prompt, worktree)
+		sp := s.spawner
+		if opsType == OpsReview && s.reviewSpawner != nil {
+			sp = s.reviewSpawner
+		}
+		proc, err := spawnOps(ctx, sp, runtime, model, reasoning, prompt, worktree)
 		if err != nil {
 			ch <- Result{
 				Type:    opsType,

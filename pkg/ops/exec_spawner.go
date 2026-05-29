@@ -131,6 +131,18 @@ func NewClaudeOpsSpawner() *ClaudeOpsSpawner {
 	}
 }
 
+// NewClaudeReviewOpsSpawner creates the Claude-specific review ops spawner.
+// Review output is streamed as JSON so callers can parse Claude event streams.
+func NewClaudeReviewOpsSpawner() *ClaudeOpsSpawner {
+	return &ClaudeOpsSpawner{
+		ExecSpawner: NewExecSpawner(RuntimeSpec{
+			Command:   "claude",
+			BuildArgs: buildClaudeReviewArgs,
+			BuildEnv:  filteredEnv,
+		}),
+	}
+}
+
 // Spawn starts a `claude -p` subprocess with the given model and prompt.
 func (s *ClaudeOpsSpawner) Spawn(ctx context.Context, model, prompt, workdir string) (Process, error) {
 	if s == nil || s.ExecSpawner == nil {
@@ -222,6 +234,10 @@ func scanLinesPreservingEnd(data []byte, atEOF bool) (advance int, token []byte,
 
 func buildClaudeOpsArgs(model, prompt string) []string {
 	return []string{"-p", prompt, "--model", model}
+}
+
+func buildClaudeReviewArgs(model, prompt string) []string {
+	return []string{"-p", prompt, "--model", model, "--verbose", "--output-format", "stream-json"}
 }
 
 // filteredEnv returns the current environment with CLAUDECODE stripped,

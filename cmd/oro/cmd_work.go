@@ -244,7 +244,7 @@ func newProductionDeps(reviewTimeout time.Duration) (*workDeps, error) {
 		wtMgr:           dispatcher.NewGitWorktreeManager(repoRoot, "", projectPaths.QualityGate, runner),
 		spawner:         runtime.workerSpawn,
 		runtimeSpawner:  workerSpawnerForRuntime(),
-		opsMgr:          ops.NewSpawnerWithReviewTimeout(runtime.opsSpawn, reviewTimeout),
+		opsMgr:          newProductionOpsManager(runtime, reviewTimeout),
 		merger:          merge.NewCoordinator(&merge.ExecGitRunner{}),
 		repoRoot:        repoRoot,
 		memStore:        memStore,
@@ -258,6 +258,12 @@ func newProductionDeps(reviewTimeout time.Duration) (*workDeps, error) {
 		recordQGFailure: newStateDBQGFailureRecorder(beadDB),
 		stdout:          os.Stdout,
 	}, nil
+}
+
+func newProductionOpsManager(runtime *productionRuntime, reviewTimeout time.Duration) *ops.Spawner {
+	opsMgr := ops.NewSpawnerWithReviewTimeout(runtime.opsSpawn, reviewTimeout)
+	opsMgr.SetReviewSpawner(runtime.reviewOpsSpawn)
+	return opsMgr
 }
 
 // readDefaultBranch reads the default_branch field from .oro/config.yaml in the given directory.

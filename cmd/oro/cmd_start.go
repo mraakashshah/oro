@@ -991,6 +991,7 @@ func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressT
 	esc := dispatcher.NewTmuxEscalator(TmuxSessionName(readProjectNameCWD()), TmuxPaneTarget(readProjectNameCWD(), "manager"), runner)
 	merger := merge.NewCoordinator(&merge.ExecGitRunner{})
 	opsSpawner := ops.NewSpawnerWithReviewTimeout(runtime.opsSpawn, opsReviewTimeout)
+	opsSpawner.SetReviewSpawner(runtime.reviewOpsSpawn)
 
 	cfg := dispatcher.Config{
 		SocketPath:              sockPath,

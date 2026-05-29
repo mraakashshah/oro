@@ -393,6 +393,46 @@ func TestDecomposeSandboxDenialIsShortActionableError(t *testing.T) {
 	}
 }
 
+func TestRunSelectsReviewSpawner(t *testing.T) {
+	reviewArgs := buildClaudeReviewArgs("claude-opus", "review prompt")
+	wantReviewArgs := []string{"-p", "review prompt", "--model", "claude-opus", "--verbose", "--output-format", "stream-json"}
+	if strings.Join(reviewArgs, "\x00") != strings.Join(wantReviewArgs, "\x00") {
+		t.Fatalf("buildClaudeReviewArgs = %q, want %q", reviewArgs, wantReviewArgs)
+	}
+	plainArgs := buildClaudeOpsArgs("claude-opus", "plain prompt")
+	if strings.Contains(strings.Join(plainArgs, " "), "stream-json") {
+		t.Fatalf("buildClaudeOpsArgs = %q, want plain non-streaming args", plainArgs)
+	}
+
+	defaultSpawner := &mockBatchSpawner{process: newReadyMockProcess("VERDICT: resolved", nil)}
+	reviewSpawner := &mockBatchSpawner{process: newReadyMockProcess("VERDICT: APPROVED", nil)}
+	s := NewSpawner(defaultSpawner)
+	s.reviewSpawner = reviewSpawner
+
+	<-s.run(context.Background(), OpsReview, "oro-review", "/tmp/review", "review prompt")
+	<-s.run(context.Background(), OpsMerge, "oro-merge", "/tmp/merge", "merge prompt")
+	<-s.run(context.Background(), OpsDecompose, "oro-decompose", "/tmp/decompose", "decompose prompt")
+
+	reviewCalls := reviewSpawner.getCalls()
+	if len(reviewCalls) != 1 {
+		t.Fatalf("review spawner calls = %d, want 1", len(reviewCalls))
+	}
+	if reviewCalls[0].prompt != "review prompt" {
+		t.Fatalf("review spawner prompt = %q, want review prompt", reviewCalls[0].prompt)
+	}
+
+	defaultCalls := defaultSpawner.getCalls()
+	if len(defaultCalls) != 2 {
+		t.Fatalf("default spawner calls = %d, want 2", len(defaultCalls))
+	}
+	if defaultCalls[0].prompt != "merge prompt" {
+		t.Fatalf("default call[0] prompt = %q, want merge prompt", defaultCalls[0].prompt)
+	}
+	if defaultCalls[1].prompt != "decompose prompt" {
+		t.Fatalf("default call[1] prompt = %q, want decompose prompt", defaultCalls[1].prompt)
+	}
+}
+
 // multiProcessSpawner returns different processes on each Spawn call.
 type multiProcessSpawner struct {
 	mu        sync.Mutex
