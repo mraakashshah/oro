@@ -1,6 +1,9 @@
 package edit
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestSplitByAnchorsReturnsNonNilEmptySegments(t *testing.T) {
 	classified := []classifiedLine{
@@ -55,8 +58,8 @@ func TestFindAnchorPositionsRejectsAmbiguousAnchor(t *testing.T) {
 	if positions != nil {
 		t.Fatalf("positions = %v, want nil on error", positions)
 	}
-	fallthroughErr, ok := err.(*FallthroughError)
-	if !ok {
+	var fallthroughErr *FallthroughError
+	if !errors.As(err, &fallthroughErr) {
 		t.Fatalf("error type = %T, want *FallthroughError", err)
 	}
 	if fallthroughErr.Reason != "ambiguous anchor: line occurs more than once in original body" {

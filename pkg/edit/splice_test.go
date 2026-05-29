@@ -19,6 +19,7 @@ func TestSpliceAlgorithm(t *testing.T) {
 		marker  string
 		want    []string
 		wantErr error
+		reason  string
 	}{
 		// ── Eligible cases ───────────────────────────────────────────────────
 
@@ -98,6 +99,7 @@ func TestSpliceAlgorithm(t *testing.T) {
 			snippet: []string{"x", "replaced", "x", goMarker},
 			marker:  goMarker,
 			wantErr: edit.ErrFallthrough,
+			reason:  "ambiguous",
 		},
 		{
 			name:    "unique anchors still splice when unrelated original text repeats",
@@ -220,12 +222,7 @@ func TestSpliceAlgorithm(t *testing.T) {
 				if got != nil {
 					t.Fatalf("Splice() body = %v, want nil on error", got)
 				}
-				var fallthroughErr *edit.FallthroughError
-				if tc.name == "EFALLTHROUGH: duplicate anchor text in original is ambiguous" && errors.As(err, &fallthroughErr) {
-					if !strings.Contains(fallthroughErr.Reason, "ambiguous") {
-						t.Fatalf("FallthroughError.Reason = %q, want ambiguous", fallthroughErr.Reason)
-					}
-				}
+				assertFallthroughReason(t, err, tc.reason)
 				return
 			}
 
@@ -236,6 +233,20 @@ func TestSpliceAlgorithm(t *testing.T) {
 				t.Fatalf("Splice() =\n  %v\nwant\n  %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func assertFallthroughReason(t *testing.T, err error, reason string) {
+	t.Helper()
+	if reason == "" {
+		return
+	}
+	var fallthroughErr *edit.FallthroughError
+	if !errors.As(err, &fallthroughErr) {
+		t.Fatalf("error type = %T, want *FallthroughError", err)
+	}
+	if !strings.Contains(fallthroughErr.Reason, reason) {
+		t.Fatalf("FallthroughError.Reason = %q, want %q", fallthroughErr.Reason, reason)
 	}
 }
 
