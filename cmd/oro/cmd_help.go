@@ -47,6 +47,7 @@ Search:
 Codebase:
   outline    Print a symbol outline for a Go source file
   impact     Show call-graph blast radius of a symbol
+  leakscan   Scan content for credential leaks
   edit       AST-aware file editing operations (replace, after, delete, rename, …)
 
 Workflow:

@@ -82,8 +82,6 @@ type SummaryMatch struct {
 }
 
 // DefaultPatterns returns the built-in RE2-compatible secret detectors.
-//
-//oro:testonly — production integration is deferred to the leakscan boundary wiring bead.
 func DefaultPatterns() []Pattern {
 	return []Pattern{
 		mustPattern("openai_api_key", `sk-(?:proj-)?[a-zA-Z0-9]{20,}(?:T3BlbkFJ[a-zA-Z0-9_-]*)?`, SeverityCritical, ActionBlock, "sk-"),
@@ -110,8 +108,13 @@ func DefaultPatterns() []Pattern {
 
 // Scan detects secrets in content using the supplied patterns and allowlist.
 func Scan(content string, patterns []Pattern, allow Allowlist) Result {
+	return ScanWithMinEntropy(content, patterns, allow, 4.0)
+}
+
+// ScanWithMinEntropy detects secrets using the supplied entropy threshold.
+func ScanWithMinEntropy(content string, patterns []Pattern, allow Allowlist, minEntropy float64) Result {
 	matches := scanMatches(content, patterns, allow)
-	matches = appendNonOverlapping(matches, entropyCandidates(content, 4.0, allow)...)
+	matches = appendNonOverlapping(matches, entropyCandidates(content, minEntropy, allow)...)
 	result := Result{
 		Matches:  matches,
 		Redacted: redact(content, matches),
@@ -126,8 +129,6 @@ func Scan(content string, patterns []Pattern, allow Allowlist) Result {
 }
 
 // LoadAllowlist reads a YAML leakscan allowlist from path.
-//
-//oro:testonly — production integration is deferred to the leakscan boundary wiring bead.
 func LoadAllowlist(path string) (Allowlist, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // caller supplies the allowlist path
 	if err != nil {
@@ -162,6 +163,11 @@ func LoadAllowlist(path string) (Allowlist, error) {
 //
 //oro:testonly — production integration is deferred to the leakscan boundary wiring bead.
 func ScanDiff(diff string, patterns []Pattern, allow Allowlist) Result {
+	return ScanDiffWithMinEntropy(diff, patterns, allow, 4.0)
+}
+
+// ScanDiffWithMinEntropy detects secrets on added diff lines using minEntropy.
+func ScanDiffWithMinEntropy(diff string, patterns []Pattern, allow Allowlist, minEntropy float64) Result {
 	var added []string
 	for _, line := range strings.Split(diff, "\n") {
 		if strings.HasPrefix(line, "+++") {
@@ -171,7 +177,7 @@ func ScanDiff(diff string, patterns []Pattern, allow Allowlist) Result {
 			added = append(added, strings.TrimPrefix(line, "+"))
 		}
 	}
-	return Scan(strings.Join(added, "\n"), patterns, allow)
+	return ScanWithMinEntropy(strings.Join(added, "\n"), patterns, allow, minEntropy)
 }
 
 // Mask returns a first-four/last-four mask for a raw secret.
@@ -195,8 +201,6 @@ func Summarize(result Result) string {
 }
 
 // SummaryJSON returns a JSON summary that never includes raw secrets.
-//
-//oro:testonly — production integration is deferred to the leakscan boundary wiring bead.
 func SummaryJSON(result Result) []byte {
 	summary := make([]SummaryMatch, 0, len(result.Matches))
 	for _, match := range result.Matches {
@@ -355,6 +359,11 @@ func (allow Allowlist) containsPath(path string) bool {
 		}
 	}
 	return false
+}
+
+// AllowsPath reports whether path is suppressed by the allowlist path globs.
+func (allow Allowlist) AllowsPath(path string) bool {
+	return allow.containsPath(path)
 }
 
 func matchPathGlob(glob, path string) bool {
