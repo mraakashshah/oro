@@ -134,12 +134,40 @@ type MemoryServices struct {
 	Consolidate      func(ctx context.Context) (merged, pruned int, err error)
 	TrimSearchEvents func(ctx context.Context, maxAge time.Duration) (int64, error)
 	ExecuteDream     func(ctx context.Context, actions []DreamAction, logFn func(string)) error
-	HandoffInserter  func(cardStore cards.Store) MemoryInserter
+	HandoffInserter  func(cardStore cards.Store) LearningSink
 }
 
-// MemoryInserter persists memories; adapters may dual-write to cards.
-type MemoryInserter interface {
-	Insert(ctx context.Context, m protocol.MemoryInsertParams) (int64, error)
+// LearningSink persists worker-emitted learning candidates for card review.
+type LearningSink interface {
+	AppendLearningPending(ctx context.Context, beadID string, c cards.CardCandidate) (int64, error)
+}
+
+type noopLearningSink struct{}
+
+// AppendLearningPending ignores pending learning writes when cards are unavailable.
+func (noopLearningSink) AppendLearningPending(context.Context, string, cards.CardCandidate) (int64, error) {
+	return 0, nil
+}
+
+type handoffLearningSink struct {
+	cardStore cards.Store
+}
+
+// HandoffInserter adapts handoff memory params into pending card candidates.
+func HandoffInserter(cardStore cards.Store) LearningSink {
+	if cardStore == nil {
+		return noopLearningSink{}
+	}
+	return handoffLearningSink{cardStore: cardStore}
+}
+
+// AppendLearningPending forwards handoff learning candidates to the card store.
+func (s handoffLearningSink) AppendLearningPending(ctx context.Context, beadID string, c cards.CardCandidate) (int64, error) {
+	id, err := s.cardStore.AppendLearningPending(ctx, beadID, c)
+	if err != nil {
+		return 0, fmt.Errorf("append handoff pending learning: %w", err)
+	}
+	return id, nil
 }
 
 var (
@@ -3430,19 +3458,19 @@ func (d *Dispatcher) handleDiagnosisResult(ctx context.Context, beadID, workerID
 	}
 }
 
-// persistHandoffContext stores learnings and decisions from a HandoffPayload
-// into the memory store for cross-session retrieval.
+// persistHandoffContext stores handoff context for cross-session retrieval.
 func (d *Dispatcher) persistHandoffContext(ctx context.Context, h *protocol.HandoffPayload) {
+	if d.cardStore != nil && d.memoryServices.HandoffInserter != nil {
+		sink := d.memoryServices.HandoffInserter(d.cardStore)
+		d.persistHandoffContextToCards(ctx, h, sink)
+		return
+	}
 	if d.memories == nil {
 		return
 	}
-	var inserter MemoryInserter = d.memories
-	if d.cardStore != nil && d.memoryServices.HandoffInserter != nil {
-		inserter = d.memoryServices.HandoffInserter(d.cardStore)
-	}
 
 	for _, learning := range h.Learnings {
-		_, _ = inserter.Insert(ctx, protocol.MemoryInsertParams{
+		_, _ = d.memories.Insert(ctx, protocol.MemoryInsertParams{
 			Content:       learning,
 			Type:          "lesson",
 			Source:        "self_report",
@@ -3454,7 +3482,7 @@ func (d *Dispatcher) persistHandoffContext(ctx context.Context, h *protocol.Hand
 	}
 
 	for _, decision := range h.Decisions {
-		_, _ = inserter.Insert(ctx, protocol.MemoryInsertParams{
+		_, _ = d.memories.Insert(ctx, protocol.MemoryInsertParams{
 			Content:       decision,
 			Type:          "decision",
 			Source:        "self_report",
@@ -3467,7 +3495,7 @@ func (d *Dispatcher) persistHandoffContext(ctx context.Context, h *protocol.Hand
 
 	// Persist structured session summary as type=summary for bead continuity.
 	if h.Summary != nil {
-		_, _ = inserter.Insert(ctx, protocol.MemoryInsertParams{
+		_, _ = d.memories.Insert(ctx, protocol.MemoryInsertParams{
 			Content:    h.Summary.FormatContent(),
 			Type:       "summary",
 			Source:     "self_report",
@@ -3476,6 +3504,63 @@ func (d *Dispatcher) persistHandoffContext(ctx context.Context, h *protocol.Hand
 			Confidence: 0.9,
 		})
 	}
+}
+
+func (d *Dispatcher) persistHandoffContextToCards(ctx context.Context, h *protocol.HandoffPayload, sink LearningSink) {
+	if sink == nil {
+		return
+	}
+	for _, learning := range h.Learnings {
+		_, _ = sink.AppendLearningPending(ctx, h.BeadID, handoffCardCandidate(protocol.MemoryInsertParams{
+			Content:       learning,
+			Type:          "lesson",
+			Source:        "self_report",
+			BeadID:        h.BeadID,
+			WorkerID:      h.WorkerID,
+			Confidence:    0.8,
+			FilesModified: h.FilesModified,
+		}))
+	}
+	for _, decision := range h.Decisions {
+		_, _ = sink.AppendLearningPending(ctx, h.BeadID, handoffCardCandidate(protocol.MemoryInsertParams{
+			Content:       decision,
+			Type:          "decision",
+			Source:        "self_report",
+			BeadID:        h.BeadID,
+			WorkerID:      h.WorkerID,
+			Confidence:    0.8,
+			FilesModified: h.FilesModified,
+		}))
+	}
+}
+
+func handoffCardCandidate(params protocol.MemoryInsertParams) cards.CardCandidate {
+	cardType := string(cards.CardTypePattern)
+	if params.Type == string(cards.CardTypeDecision) {
+		cardType = string(cards.CardTypeDecision)
+	}
+	title := truncateHandoffCandidate(params.Content, 200)
+	tags := append([]string{"source:" + params.Source}, params.Tags...)
+	if params.WorkerID != "" {
+		tags = append(tags, "worker:"+params.WorkerID)
+	}
+	return cards.CardCandidate{
+		Type:        cardType,
+		Title:       title,
+		BodySummary: title,
+		BodyFull:    params.Content,
+		Confidence:  params.Confidence,
+		Evidence:    params.FilesModified,
+		Tags:        tags,
+	}
+}
+
+func truncateHandoffCandidate(s string, limit int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= limit {
+		return s
+	}
+	return strings.TrimSpace(s[:limit])
 }
 
 func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, msg protocol.Message) {

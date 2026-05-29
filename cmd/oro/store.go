@@ -45,8 +45,10 @@ func openWorkerMemoryStore(_ *sql.DB) workMemoryStore {
 	return nil
 }
 
-func newDispatcherMemoryServices(db *sql.DB) dispatcher.MemoryServices {
-	return dispatcher.MemoryServices{}
+func newDispatcherMemoryServices(_ *sql.DB) dispatcher.MemoryServices {
+	return dispatcher.MemoryServices{
+		HandoffInserter: dispatcher.HandoffInserter,
+	}
 }
 
 func (retiredMemoryStore) Insert(context.Context, protocol.MemoryInsertParams) (int64, error) {

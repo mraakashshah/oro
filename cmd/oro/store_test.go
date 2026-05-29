@@ -1,10 +1,15 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"oro/pkg/cards"
+	"oro/pkg/dbutil"
+	"oro/pkg/protocol"
 )
 
 func TestCmdStoreDoesNotImportMemory(t *testing.T) {
@@ -14,6 +19,53 @@ func TestCmdStoreDoesNotImportMemory(t *testing.T) {
 	}
 	if strings.Contains(string(src), `"oro/pkg/memory"`) {
 		t.Fatal("cmd/oro/store.go must not import oro/pkg/memory directly")
+	}
+}
+
+func TestNewDispatcherMemoryServicesProvidesHandoffInserter(t *testing.T) {
+	ctx := context.Background()
+	db, err := dbutil.OpenDB("file:dispatcher_memory_services?mode=memory&cache=shared")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("migrate bead schema: %v", err)
+	}
+	_, err = db.ExecContext(ctx, `
+INSERT INTO beads (id, title, status, priority, type)
+VALUES ('bead-handoff-service', 'handoff service', 'open', 1, 'task')`)
+	if err != nil {
+		t.Fatalf("insert bead: %v", err)
+	}
+	cardStore, err := cards.NewStore(db)
+	if err != nil {
+		t.Fatalf("new cards store: %v", err)
+	}
+	services := newDispatcherMemoryServices(db)
+	if services.HandoffInserter == nil {
+		t.Fatal("HandoffInserter is nil")
+	}
+	sink := services.HandoffInserter(cardStore)
+	if sink == nil {
+		t.Fatal("HandoffInserter returned nil sink")
+	}
+	_, err = sink.AppendLearningPending(ctx, "bead-handoff-service", cards.CardCandidate{
+		Type:        string(cards.CardTypePattern),
+		Title:       "handoff learning",
+		BodySummary: "handoff learning",
+		BodyFull:    "handoff learning",
+		Confidence:  0.8,
+	})
+	if err != nil {
+		t.Fatalf("append pending learning: %v", err)
+	}
+	pending, err := cardStore.PendingLearnings(ctx, "bead-handoff-service")
+	if err != nil {
+		t.Fatalf("pending learnings: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending count = %d, want 1", len(pending))
 	}
 }
 
