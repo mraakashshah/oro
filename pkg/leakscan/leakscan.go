@@ -4,9 +4,16 @@ package leakscan
 import (
 	"encoding/json"
 	"fmt"
+	"math"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Severity describes the risk level of a matched leak pattern.
@@ -59,10 +66,11 @@ type Result struct {
 	Redacted    string
 }
 
-// Allowlist suppresses matches by pattern name or exact raw secret.
+// Allowlist suppresses matches by exact raw secret, fixture path, or placeholder.
 type Allowlist struct {
-	Secrets  []string
-	Patterns []string
+	Literals      map[string]bool
+	PathGlobs     []string
+	PlaceholderRe *regexp.Regexp
 }
 
 // SummaryMatch is the JSON-safe summary representation of a match.
@@ -103,6 +111,7 @@ func DefaultPatterns() []Pattern {
 // Scan detects secrets in content using the supplied patterns and allowlist.
 func Scan(content string, patterns []Pattern, allow Allowlist) Result {
 	matches := scanMatches(content, patterns, allow)
+	matches = appendNonOverlapping(matches, entropyCandidates(content, 4.0, allow)...)
 	result := Result{
 		Matches:  matches,
 		Redacted: redact(content, matches),
@@ -114,6 +123,37 @@ func Scan(content string, patterns []Pattern, allow Allowlist) Result {
 		}
 	}
 	return result
+}
+
+// LoadAllowlist reads a YAML leakscan allowlist from path.
+func LoadAllowlist(path string) (Allowlist, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // caller supplies the allowlist path
+	if err != nil {
+		return Allowlist{}, fmt.Errorf("read leakscan allowlist: %w", err)
+	}
+	var raw struct {
+		Literals         []string `yaml:"literals"`
+		PathGlobs        []string `yaml:"path_globs"`
+		PlaceholderRegex string   `yaml:"placeholder_regex"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return Allowlist{}, fmt.Errorf("parse leakscan allowlist: %w", err)
+	}
+	allow := Allowlist{
+		Literals:  make(map[string]bool, len(raw.Literals)),
+		PathGlobs: append(defaultAllowlistPathGlobs(), raw.PathGlobs...),
+	}
+	for _, literal := range raw.Literals {
+		allow.Literals[literal] = true
+	}
+	if raw.PlaceholderRegex != "" {
+		re, err := regexp.Compile(raw.PlaceholderRegex)
+		if err != nil {
+			return Allowlist{}, fmt.Errorf("compile placeholder regex: %w", err)
+		}
+		allow.PlaceholderRe = re
+	}
+	return allow, nil
 }
 
 // ScanDiff detects secrets only on added diff lines, ignoring removed lines and file headers.
@@ -206,6 +246,89 @@ func scanMatches(content string, patterns []Pattern, allow Allowlist) []Match {
 	return matches
 }
 
+func entropyCandidates(content string, minBits float64, allow Allowlist) []Match {
+	var matches []Match
+	entropyRunRe := regexp.MustCompile(`[A-Za-z0-9+/=_-]{20,}`)
+	for _, loc := range entropyRunRe.FindAllStringIndex(content, -1) {
+		if startsAfterEncodedBoundary(content, loc[0]) {
+			continue
+		}
+		raw := content[loc[0]:loc[1]]
+		candidate, start := entropyCandidateValue(raw, loc[0])
+		if len(candidate) < 20 {
+			continue
+		}
+		if allow.contains("high_entropy_token", candidate) {
+			continue
+		}
+		if shannonBits(candidate) < minBits {
+			continue
+		}
+		matches = append(matches, Match{
+			Pattern:  "high_entropy_token",
+			Severity: SeverityMedium,
+			Action:   ActionWarn,
+			Masked:   Mask(candidate),
+			Start:    start,
+			End:      start + len(candidate),
+		})
+	}
+	return matches
+}
+
+func appendNonOverlapping(existing []Match, candidates ...Match) []Match {
+	matches := existing
+	for _, candidate := range candidates {
+		if overlapsAny(candidate, existing) {
+			continue
+		}
+		matches = append(matches, candidate)
+	}
+	return matches
+}
+
+func overlapsAny(candidate Match, existing []Match) bool {
+	for _, match := range existing {
+		if candidate.Start < match.End && candidate.End > match.Start {
+			return true
+		}
+	}
+	return false
+}
+
+func startsAfterEncodedBoundary(content string, start int) bool {
+	if start == 0 {
+		return false
+	}
+	r, _ := utf8.DecodeLastRuneInString(content[:start])
+	return r == '%' || unicode.Is(unicode.Cf, r)
+}
+
+func entropyCandidateValue(raw string, start int) (string, int) {
+	trimmed := strings.TrimRight(raw, "=")
+	if idx := strings.LastIndex(trimmed, "="); idx >= 0 {
+		return raw[idx+1:], start + idx + 1
+	}
+	return raw, start
+}
+
+func shannonBits(value string) float64 {
+	if value == "" {
+		return 0
+	}
+	counts := make(map[rune]int)
+	for _, ch := range value {
+		counts[ch]++
+	}
+	var entropy float64
+	length := float64(len(value))
+	for _, count := range counts {
+		p := float64(count) / length
+		entropy -= p * math.Log2(p)
+	}
+	return entropy
+}
+
 func hasPrefix(content, prefix string) bool {
 	if prefix == "" {
 		return true
@@ -214,17 +337,40 @@ func hasPrefix(content, prefix string) bool {
 }
 
 func (allow Allowlist) contains(pattern, secret string) bool {
-	for _, allowedPattern := range allow.Patterns {
-		if allowedPattern == pattern {
-			return true
-		}
+	if allow.Literals[secret] {
+		return true
 	}
-	for _, allowedSecret := range allow.Secrets {
-		if allowedSecret == secret {
+	if allow.PlaceholderRe != nil && allow.PlaceholderRe.MatchString(secret) {
+		return true
+	}
+	return false
+}
+
+func (allow Allowlist) containsPath(path string) bool {
+	for _, glob := range append(defaultAllowlistPathGlobs(), allow.PathGlobs...) {
+		if matchPathGlob(glob, path) {
 			return true
 		}
 	}
 	return false
+}
+
+func matchPathGlob(glob, path string) bool {
+	slashPath := filepath.ToSlash(path)
+	if strings.HasSuffix(glob, "/**") {
+		prefix := strings.TrimSuffix(glob, "**")
+		return strings.HasPrefix(slashPath, prefix) || strings.Contains(slashPath, "/"+prefix)
+	}
+	matched, err := filepath.Match(glob, slashPath)
+	if err == nil && matched {
+		return true
+	}
+	matched, err = filepath.Match(glob, filepath.Base(slashPath))
+	return err == nil && matched
+}
+
+func defaultAllowlistPathGlobs() []string {
+	return []string{"testdata/**", "*_test.go"}
 }
 
 func redact(content string, matches []Match) string {

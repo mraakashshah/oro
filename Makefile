@@ -45,6 +45,7 @@ stage-assets:
 	if [ -f assets/ORO_AGENT.md ]; then cp assets/ORO_AGENT.md "$$tmp/"; fi; \
 	if [ -f assets/CLAUDE.md ]; then cp assets/CLAUDE.md "$$tmp/"; fi; \
 	if [ -f assets/thresholds.json ]; then cp assets/thresholds.json "$$tmp/"; fi; \
+	if [ -f assets/leakscan-allowlist.yaml ]; then cp assets/leakscan-allowlist.yaml "$$tmp/"; fi; \
 	if [ -f assets/.test-marker ]; then cp assets/.test-marker "$$tmp/"; fi; \
 	rm -f "$$tmp/.hooks"; \
 	echo "$(VERSION)" > "$$tmp/.version"; \

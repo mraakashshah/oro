@@ -2,6 +2,9 @@ package leakscan_test
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -136,6 +139,99 @@ func TestPercentEncoded_NotCaught(t *testing.T) {
 	if len(result.Matches) != 0 {
 		t.Fatalf("percent-encoded key unexpectedly caught: %#v", result.Matches)
 	}
+}
+
+func TestEntropy_HighEntropyBase64Warns(t *testing.T) {
+	t.Parallel()
+
+	secret := "qwertyuiopASDFGHJKLzxcvbnm123456"
+	result := leakscan.Scan("session="+secret, leakscan.DefaultPatterns(), leakscan.Allowlist{})
+	if result.ShouldBlock {
+		t.Fatalf("ShouldBlock = true, want false for entropy warning")
+	}
+	if len(result.Matches) != 1 {
+		t.Fatalf("matches=%d, want 1: %#v", len(result.Matches), result.Matches)
+	}
+	match := result.Matches[0]
+	if match.Pattern != "high_entropy_token" {
+		t.Fatalf("pattern=%q, want high_entropy_token", match.Pattern)
+	}
+	if match.Action != leakscan.ActionWarn {
+		t.Fatalf("action=%q, want warn", match.Action)
+	}
+	assertNoRawSecret(t, result, secret)
+}
+
+func TestEntropy_LowEntropyRunIgnored(t *testing.T) {
+	t.Parallel()
+
+	result := leakscan.Scan("fixture="+strings.Repeat("a", 32), leakscan.DefaultPatterns(), leakscan.Allowlist{})
+	if len(result.Matches) != 0 {
+		t.Fatalf("matches=%d, want 0: %#v", len(result.Matches), result.Matches)
+	}
+}
+
+func TestAllowlist_LiteralAndPlaceholderExemptEntropy(t *testing.T) {
+	t.Parallel()
+
+	literal := "qwertyuiopASDFGHJKLzxcvbnm123456"
+	placeholder := "AKIAIOSFODNN7EXAMPLE"
+	allow := leakscan.Allowlist{
+		Literals:      map[string]bool{literal: true},
+		PlaceholderRe: regexp.MustCompile(`EXAMPLE$`),
+	}
+
+	for _, token := range []string{literal, placeholder} {
+		t.Run(token, func(t *testing.T) {
+			result := leakscan.Scan("token="+token, leakscan.DefaultPatterns(), allow)
+			if len(result.Matches) != 0 {
+				t.Fatalf("matches=%d, want 0: %#v", len(result.Matches), result.Matches)
+			}
+		})
+	}
+}
+
+func TestAllowlist_LoadsYAML(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "leakscan-allowlist.yaml")
+	err := os.WriteFile(path, []byte(strings.Join([]string{
+		"literals:",
+		"  - qwertyuiopASDFGHJKLzxcvbnm123456",
+		"path_globs:",
+		"  - testdata/**",
+		"  - '*_test.go'",
+		"placeholder_regex: 'EXAMPLE$'",
+		"",
+	}, "\n")), 0o600)
+	if err != nil {
+		t.Fatalf("write allowlist: %v", err)
+	}
+
+	allow, err := leakscan.LoadAllowlist(path)
+	if err != nil {
+		t.Fatalf("LoadAllowlist: %v", err)
+	}
+	if !allow.Literals["qwertyuiopASDFGHJKLzxcvbnm123456"] {
+		t.Fatalf("literal allowlist missing loaded token: %#v", allow.Literals)
+	}
+	for _, want := range []string{"testdata/**", "*_test.go"} {
+		if !containsString(allow.PathGlobs, want) {
+			t.Fatalf("PathGlobs=%#v, missing %q", allow.PathGlobs, want)
+		}
+	}
+	if allow.PlaceholderRe == nil || !allow.PlaceholderRe.MatchString("AKIAIOSFODNN7EXAMPLE") {
+		t.Fatalf("PlaceholderRe did not match donor example key")
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func assertNoRawSecret(t *testing.T, result leakscan.Result, secret string) {

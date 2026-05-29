@@ -1,0 +1,7 @@
+literals:
+  - AKIAIOSFODNN7EXAMPLE
+  - AKIAIOSFODNN7EXAMPLEKEY
+path_globs:
+  - testdata/**
+  - "*_test.go"
+placeholder_regex: "(?i)(example|placeholder|dummy|fake|test)"
