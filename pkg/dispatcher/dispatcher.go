@@ -30,6 +30,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"oro/pkg/agentmodel"
 	"oro/pkg/beadstore"
@@ -70,6 +71,8 @@ const statusThrottleWindow = 5 * time.Second
 // qgOriginalReopenDeferDuration keeps deterministic QG-exhausted beads out of
 // the ready queue long enough for another task or an operator to make progress.
 const qgOriginalReopenDeferDuration = time.Hour
+
+const maxCodeSearchContextSize = 128 * 1024
 
 // ErrSemanticDisabled is returned by WaitForEmbedder when semantic search has
 // not been configured (embedderReady channel was never created).
@@ -9310,8 +9313,36 @@ func formatSearchResults(results []SearchResult) string {
 			fmt.Fprintf(&b, "_Relevance: %s_\n", r.Reason)
 		}
 		b.WriteString("\n")
+		if b.Len() >= maxCodeSearchContextSize {
+			return truncateCodeSearchContext(b.String())
+		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func truncateCodeSearchContext(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= maxCodeSearchContextSize {
+		return s
+	}
+
+	truncated := trimValidUTF8(s[:maxCodeSearchContextSize])
+	truncated = strings.TrimSpace(truncated)
+	if strings.Count(truncated, "```")%2 != 0 {
+		truncated += "\n```"
+	}
+	return truncated + "\n\n[code search context truncated]"
+}
+
+func trimValidUTF8(s string) string {
+	for s != "" {
+		r, size := utf8.DecodeLastRuneInString(s)
+		if r != utf8.RuneError || size != 1 {
+			return s
+		}
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 // buildSearchQuery combines a bead title and labels into a single search string.

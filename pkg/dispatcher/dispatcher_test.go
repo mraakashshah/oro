@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"oro/pkg/beadstore"
 	"oro/pkg/cards"
@@ -17181,6 +17182,66 @@ func TestAssignBead_InjectsCodeContext(t *testing.T) {
 	}
 	if len(workdirs) == 0 || workdirs[0] != "/tmp/worktree-bead-code1" {
 		t.Fatalf("expected code search to run in assigned worktree, got %v", workdirs)
+	}
+}
+
+func TestFormatSearchResultsKeepsAssignMessageUnderProtocolLimit(t *testing.T) {
+	t.Parallel()
+
+	results := []SearchResult{
+		{
+			CodeChunk: CodeChunk{
+				FilePath:  "pkg/huge.go",
+				Name:      "Huge",
+				Kind:      "function",
+				StartLine: 1,
+				EndLine:   2,
+				Content:   strings.Repeat("x", protocol.MaxMessageSize+1024),
+			},
+			Reason: strings.Repeat("reason ", 1024),
+		},
+	}
+
+	codeSearchContext := formatSearchResults(results)
+	if !strings.Contains(codeSearchContext, "[code search context truncated]") {
+		t.Fatalf("formatted context missing truncation marker")
+	}
+	if strings.Count(codeSearchContext, "```")%2 != 0 {
+		t.Fatalf("formatted context has unbalanced code fences:\n%s", codeSearchContext[len(codeSearchContext)-256:])
+	}
+	if !utf8.ValidString(codeSearchContext) {
+		t.Fatalf("formatted context is not valid UTF-8")
+	}
+
+	msg := protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:            "oro-huge",
+			Worktree:          "/tmp/oro-huge",
+			WorkerProgram:     strings.Repeat("w", maxWorkerProgramSize),
+			CodeSearchContext: codeSearchContext,
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal assign message: %v", err)
+	}
+	if len(data) >= protocol.MaxMessageSize {
+		t.Fatalf("ASSIGN message size = %d, want < MaxMessageSize %d", len(data), protocol.MaxMessageSize)
+	}
+}
+
+func TestTruncateCodeSearchContextKeepsUTF8Valid(t *testing.T) {
+	t.Parallel()
+
+	input := strings.Repeat("a", maxCodeSearchContextSize-1) + "界" + strings.Repeat("b", 16)
+
+	got := truncateCodeSearchContext(input)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncated context is not valid UTF-8")
+	}
+	if !strings.Contains(got, "[code search context truncated]") {
+		t.Fatalf("truncated context missing truncation marker")
 	}
 }
 
