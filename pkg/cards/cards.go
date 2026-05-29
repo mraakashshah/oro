@@ -62,6 +62,7 @@ type CardCandidate struct {
 	Confidence  float64  `json:"confidence"`
 	Evidence    []string `json:"evidence"`
 	Tags        []string `json:"tags"`
+	Confirmed   bool     `json:"confirmed,omitempty"`
 }
 
 // PendingLearning is a bead-scoped card candidate awaiting promotion or rejection.
