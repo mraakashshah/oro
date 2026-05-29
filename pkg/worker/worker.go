@@ -193,6 +193,8 @@ const reconnectJitter = 500 * time.Millisecond
 // maxBufferedMessages is the maximum number of messages buffered during reconnection.
 const maxBufferedMessages = 100
 
+const workerMessageWriteTimeout = 200 * time.Millisecond
+
 // Worker is the Oro worker agent. It holds a UDS connection to the Dispatcher,
 // manages a subprocess (claude or codex), and monitors context usage.
 type Worker struct {
@@ -373,7 +375,9 @@ func (w *Worker) Run(ctx context.Context) error {
 
 	// Announce ourselves so the dispatcher can register this worker.
 	if err := w.SendHeartbeat(ctx, 0); err != nil {
-		return fmt.Errorf("send initial heartbeat: %w", err)
+		if w.socketPath == "" {
+			return fmt.Errorf("send initial heartbeat: %w", err)
+		}
 	}
 
 	// Idle heartbeat ticker keeps the dispatcher from timing us out
@@ -1420,13 +1424,28 @@ func (w *Worker) sendMessage(msg protocol.Message) error {
 	w.mu.Unlock()
 
 	w.connWriteMu.Lock()
+	deadlineSet := conn.SetWriteDeadline(time.Now().Add(workerMessageWriteTimeout)) == nil
 	_, err = conn.Write(data)
+	if deadlineSet {
+		_ = conn.SetWriteDeadline(time.Time{})
+	}
 	w.connWriteMu.Unlock()
 
 	if err != nil {
+		w.handleWriteFailure(conn, msg)
 		return fmt.Errorf("write message: %w", err)
 	}
 	return nil
+}
+
+func (w *Worker) handleWriteFailure(conn net.Conn, msg protocol.Message) {
+	w.mu.Lock()
+	if w.conn == conn {
+		w.disconnected = true
+	}
+	w.mu.Unlock()
+	w.buffer.Add(msg)
+	_ = conn.Close()
 }
 
 // trySendHeartbeat sends a best-effort heartbeat with a short write deadline.
@@ -1470,7 +1489,7 @@ func (w *Worker) trySendHeartbeat(_ context.Context) {
 	data = append(data, '\n')
 
 	w.connWriteMu.Lock()
-	_ = conn.SetWriteDeadline(time.Now().Add(200 * time.Millisecond))
+	_ = conn.SetWriteDeadline(time.Now().Add(workerMessageWriteTimeout))
 	_, _ = conn.Write(data)
 	_ = conn.SetWriteDeadline(time.Time{})
 	w.connWriteMu.Unlock()
@@ -1542,7 +1561,7 @@ func (w *Worker) trySendSubprocessProgress(_ context.Context) {
 	data = append(data, '\n')
 
 	w.connWriteMu.Lock()
-	_ = conn.SetWriteDeadline(time.Now().Add(200 * time.Millisecond))
+	_ = conn.SetWriteDeadline(time.Now().Add(workerMessageWriteTimeout))
 	_, _ = conn.Write(data)
 	_ = conn.SetWriteDeadline(time.Time{})
 	w.connWriteMu.Unlock()

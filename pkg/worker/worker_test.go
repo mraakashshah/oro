@@ -521,6 +521,35 @@ func TestWorkerHeartbeatDuringSlowAssignSpawn(t *testing.T) {
 	<-errCh
 }
 
+func TestSendHeartbeat_TimesOutBlockedWrite(t *testing.T) {
+	t.Parallel()
+
+	conn := newDeadlineBlockingConn()
+	conn.BlockWrites()
+	defer func() { _ = conn.Close() }()
+
+	w := worker.NewWithConn("w-blocked-heartbeat", conn, newMockSpawner())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- w.SendHeartbeat(context.Background(), 0)
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected blocked heartbeat write to return an error")
+		}
+	case <-time.After(time.Second):
+		_ = conn.Close()
+		t.Fatal("SendHeartbeat blocked past write deadline")
+	}
+
+	if err := w.SendHeartbeat(context.Background(), 0); err != nil {
+		t.Fatalf("second heartbeat after write timeout should buffer during disconnect, got %v", err)
+	}
+}
+
 func TestWorkerSpawnHeartbeatStopsWhenSpawnContextCancelled(t *testing.T) {
 	t.Parallel()
 
