@@ -399,12 +399,32 @@ func (w *Worker) Run(ctx context.Context) error {
 			}
 
 		case err := <-errCh:
-			if handleErr := w.handleConnectionError(ctx, err); handleErr != nil {
-				return fmt.Errorf("handle connection error: %w", handleErr)
+			nextMsgCh, nextErrCh, done, handleErr := w.restartReadLoopAfterConnectionError(ctx, err)
+			if handleErr != nil {
+				return handleErr
 			}
-			return nil
+			if done {
+				return nil
+			}
+			msgCh, errCh = nextMsgCh, nextErrCh
 		}
 	}
+}
+
+func (w *Worker) restartReadLoopAfterConnectionError(ctx context.Context, err error) (msgs <-chan protocol.Message, readErr <-chan error, done bool, runErr error) {
+	if handleErr := w.handleConnectionError(ctx, err); handleErr != nil {
+		if ctx.Err() != nil {
+			w.killProc()
+			return nil, nil, true, nil //nolint:nilerr // context cancellation is clean shutdown
+		}
+		return nil, nil, false, fmt.Errorf("handle connection error: %w", handleErr)
+	}
+	if ctx.Err() != nil {
+		w.killProc()
+		return nil, nil, true, nil //nolint:nilerr // connection closed during context cancellation
+	}
+	msgCh, errCh := w.readMessages()
+	return msgCh, errCh, false, nil
 }
 
 // readMessages starts a goroutine that reads line-delimited JSON from the
@@ -448,11 +468,7 @@ func (w *Worker) handleConnectionError(ctx context.Context, err error) error {
 		// No socketPath means we can't reconnect (test with net.Pipe)
 		return fmt.Errorf("connection error (no reconnect possible): %w", err)
 	}
-	if reconnErr := w.reconnect(ctx); reconnErr != nil {
-		return reconnErr
-	}
-	// After reconnect, restart the read loop with the new connection
-	return w.Run(ctx)
+	return w.reconnect(ctx)
 }
 
 // handleMessage processes a single incoming message. Returns (true, nil) on shutdown.

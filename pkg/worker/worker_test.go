@@ -1586,6 +1586,117 @@ func TestReconnection_BuffersAndResends(t *testing.T) { //nolint:funlen // integ
 	<-errCh
 }
 
+func TestReconnectDoesNotNestRunLoops(t *testing.T) { //nolint:funlen // integration test requires sequential reconnect setup
+	t.Parallel()
+
+	spawner := newMockSpawner()
+
+	sockDir, err := os.MkdirTemp("/tmp", "oro-test-single-loop-")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(sockDir) }()
+	sockPath := filepath.Join(sockDir, "w.sock")
+
+	listener, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	acceptCh := make(chan net.Conn, 5)
+	go func() {
+		for {
+			c, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			acceptCh <- c
+		}
+	}()
+
+	w, err := worker.New("w-single-loop", sockPath, spawner)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	w.SetReconnectInterval(50 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- w.Run(ctx) }()
+
+	var dispConn1 net.Conn
+	select {
+	case dispConn1 = <-acceptCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for first connection")
+	}
+	_ = readMessage(t, dispConn1)
+
+	_ = dispConn1.Close()
+
+	var dispConn2 net.Conn
+	select {
+	case dispConn2 = <-acceptCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for first reconnect")
+	}
+
+	msg := readMessage(t, dispConn2)
+	if msg.Type != protocol.MsgReconnect {
+		t.Fatalf("expected RECONNECT after first reconnect, got %s", msg.Type)
+	}
+	if msg, ok := readMessageWithin(t, dispConn2, 200*time.Millisecond); ok {
+		t.Fatalf("unexpected nested Run message after reconnect: %+v", msg)
+	}
+
+	worktree := validAssignWorktree(t, "wt-single-loop")
+	sendMessage(t, dispConn2, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-single-loop",
+			Worktree: worktree,
+		},
+	})
+	msg = readMessage(t, dispConn2)
+	if msg.Type != protocol.MsgStatus || msg.Status == nil || msg.Status.State != "running" {
+		t.Fatalf("expected running STATUS after reconnect assignment, got %+v", msg)
+	}
+	if calls := spawner.SpawnCalls(); len(calls) != 1 {
+		t.Fatalf("expected reconnect assignment to spawn once, got %d calls", len(calls))
+	}
+
+	_ = dispConn2.Close()
+
+	var dispConn3 net.Conn
+	select {
+	case dispConn3 = <-acceptCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for second reconnect")
+	}
+	defer func() { _ = dispConn3.Close() }()
+
+	msg = readMessage(t, dispConn3)
+	if msg.Type != protocol.MsgReconnect {
+		t.Fatalf("expected RECONNECT after second reconnect, got %s", msg.Type)
+	}
+	if msg, ok := readMessageWithin(t, dispConn3, 200*time.Millisecond); ok {
+		t.Fatalf("unexpected nested Run message after second reconnect: %+v", msg)
+	}
+
+	sendMessage(t, dispConn3, protocol.Message{Type: protocol.MsgShutdown})
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("expected nil error on shutdown after reconnects, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not exit after shutdown")
+	}
+}
+
 func TestContextWatcher_TriggersHandoffAbove70(t *testing.T) { //nolint:funlen // integration test requires sequential setup
 	t.Parallel()
 
@@ -2396,8 +2507,8 @@ func TestReconnect_ContextCancelled(t *testing.T) {
 
 	select {
 	case err := <-errCh:
-		if err == nil {
-			t.Fatal("expected error from reconnect with cancelled context, got nil")
+		if err != nil {
+			t.Fatalf("expected nil error from reconnect with cancelled context, got %v", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("worker did not exit after cancel during reconnect")
