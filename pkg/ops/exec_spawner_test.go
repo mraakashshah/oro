@@ -104,6 +104,74 @@ func TestOpsProcessLastOutputAt(t *testing.T) {
 	}
 }
 
+func TestExecSpawnerStreamsIncrementally(t *testing.T) {
+	workdir := t.TempDir()
+	spawner := NewExecSpawner(RuntimeSpec{
+		Command: "sh",
+		BuildArgs: func(_, _ string) []string {
+			return []string{"-c", "printf partial; sleep 0.2; printf '\\n'; sleep 0.2; printf second\\\\n; sleep 0.2"}
+		},
+	})
+
+	proc, err := spawner.Spawn(context.Background(), "balanced", "review this", workdir)
+	if err != nil {
+		t.Fatalf("Spawn() error = %v", err)
+	}
+	waited := false
+	t.Cleanup(func() {
+		if waited {
+			return
+		}
+		if err := proc.Kill(); err != nil {
+			t.Logf("cleanup Kill() error: %v", err)
+		}
+		_ = proc.Wait()
+	})
+
+	time.Sleep(50 * time.Millisecond)
+	if got := proc.LastOutputAt(); !got.IsZero() {
+		t.Fatalf("LastOutputAt() after partial stdout = %v, want zero until a line is complete", got)
+	}
+
+	firstLineAt := waitForLastOutputAt(t, proc, time.Time{})
+	secondLineAt := waitForLastOutputAt(t, proc, firstLineAt)
+	if !secondLineAt.After(firstLineAt) {
+		t.Fatalf("second line LastOutputAt() = %v, want after first line time %v", secondLineAt, firstLineAt)
+	}
+
+	if err := proc.Wait(); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	waited = true
+	afterWait := time.Now()
+	lastOutputAt := proc.LastOutputAt()
+	if lastOutputAt.After(afterWait) {
+		t.Fatalf("LastOutputAt() = %v, want final line timestamp before Wait() returned at %v", lastOutputAt, afterWait)
+	}
+
+	output, err := proc.Output()
+	if err != nil {
+		t.Fatalf("Output() error = %v", err)
+	}
+	if output != "partial\nsecond\n" {
+		t.Fatalf("Output() = %q, want full stdout", output)
+	}
+}
+
+func waitForLastOutputAt(t *testing.T, proc Process, after time.Time) time.Time {
+	t.Helper()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		got := proc.LastOutputAt()
+		if got.After(after) {
+			return got
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("LastOutputAt() did not advance after %v", after)
+	return time.Time{}
+}
+
 func TestOpsProcessWaitNilSuccess(t *testing.T) {
 	// "true" exits 0 — cmd.Wait() returns nil.
 	cmd := exec.Command("true")

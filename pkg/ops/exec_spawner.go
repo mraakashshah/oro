@@ -1,8 +1,11 @@
 package ops
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -54,12 +57,17 @@ func (s *ExecSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning, 
 	}
 
 	proc := &opsProcess{cmd: cmd}
-	cmd.Stdout = proc
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdout pipe %s: %w", s.spec.Command, err)
+	}
 	cmd.Stderr = proc
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("spawn %s: %w", s.spec.Command, err)
 	}
+	proc.stdoutDone = make(chan error, 1)
+	go proc.scanStdout(stdoutPipe)
 	return proc, nil
 }
 
@@ -137,12 +145,19 @@ type opsProcess struct {
 	cmd          *exec.Cmd
 	output       strings.Builder
 	lastOutputAt time.Time
+	stdoutDone   chan error
 }
 
 // Wait waits for the subprocess to exit.
 func (p *opsProcess) Wait() error {
-	if err := p.cmd.Wait(); err != nil {
-		return fmt.Errorf("wait: %w", err)
+	waitErr := p.cmd.Wait()
+	if p.stdoutDone != nil {
+		if err := <-p.stdoutDone; err != nil && waitErr == nil {
+			return err
+		}
+	}
+	if waitErr != nil {
+		return fmt.Errorf("wait: %w", waitErr)
 	}
 	return nil
 }
@@ -155,17 +170,31 @@ func (p *opsProcess) Kill() error {
 	return nil
 }
 
+func (p *opsProcess) scanStdout(stdout io.Reader) {
+	scanner := bufio.NewScanner(stdout)
+	scanner.Split(scanLinesPreservingEnd)
+	for scanner.Scan() {
+		p.appendOutput(scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		p.stdoutDone <- fmt.Errorf("read stdout: %w", err)
+		return
+	}
+	p.stdoutDone <- nil
+}
+
 func (p *opsProcess) Write(data []byte) (int, error) {
+	return p.appendOutput(string(data)), nil
+}
+
+func (p *opsProcess) appendOutput(data string) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	n, err := p.output.Write(data)
+	n, _ := p.output.WriteString(data)
 	if n > 0 {
 		p.lastOutputAt = time.Now()
 	}
-	if err != nil {
-		return n, fmt.Errorf("write output: %w", err)
-	}
-	return n, nil
+	return n
 }
 
 func (p *opsProcess) Output() (string, error) { //nolint:revive // interface impl
@@ -179,6 +208,16 @@ func (p *opsProcess) LastOutputAt() time.Time {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.lastOutputAt
+}
+
+func scanLinesPreservingEnd(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		return i + 1, data[:i+1], nil
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
 }
 
 func buildClaudeOpsArgs(model, prompt string) []string {
