@@ -1285,6 +1285,7 @@ Replace mode preserves the symbol's signature and only modifies the body. The al
    - At least 2 anchor lines (otherwise we're unsure where to splice)
    - Anchors appear in original-body order (otherwise it's a reorder, not a splice)
    - Continuation markers are unambiguous (their position relative to anchors is clear)
+   - Markerless segments drop at most 20 original lines; larger gaps require a continuation marker
 4. **Splice** — rebuild the body by walking the original; for each original line, output it unless a snippet sequence overrides it.
 5. **Re-parse** — run tree-sitter on the resulting file; it must still parse without errors. If it doesn't, the operation rolls back.
 
