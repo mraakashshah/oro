@@ -620,6 +620,7 @@ type Config struct {
 	ContextSafety ContextSafetyConfig
 }
 
+// LeakScanConfig controls the dispatcher's pre-merge secret scan.
 type LeakScanConfig struct {
 	Enabled        bool
 	BlockOn        string
@@ -2367,11 +2368,7 @@ func (d *Dispatcher) checkPreMergeLeaks(ctx context.Context, beadID, workerID, w
 			fmt.Sprintf(`{"branch":%q,"target":%q,"error":%q}`, branch, target, err.Error()))
 		return true
 	}
-	minEntropy := cfg.EntropyMinBits
-	if minEntropy == 0 {
-		minEntropy = 4.0
-	}
-	result := leakscan.ScanDiffWithMinEntropy(string(diff), leakscan.DefaultPatterns(), allow, minEntropy)
+	result := scanPreMergeDiff(string(diff), cfg, allow)
 	if len(result.Matches) == 0 {
 		return true
 	}
@@ -2382,6 +2379,13 @@ func (d *Dispatcher) checkPreMergeLeaks(ctx context.Context, beadID, workerID, w
 		return true
 	}
 	return d.blockPreMergeLeak(ctx, beadID, workerID, worktree, branch, assignmentID, summary)
+}
+
+func scanPreMergeDiff(diff string, cfg LeakScanConfig, allow leakscan.Allowlist) leakscan.Result {
+	if cfg.EntropyMinBits == 0 {
+		return leakscan.ScanDiff(diff, leakscan.DefaultPatterns(), allow)
+	}
+	return leakscan.ScanDiffWithMinEntropy(diff, leakscan.DefaultPatterns(), allow, cfg.EntropyMinBits)
 }
 
 func (d *Dispatcher) loadLeakScanAllowlist() (leakscan.Allowlist, error) {
