@@ -25,6 +25,7 @@ type Store interface {
 
 	RecordCardEvent(ctx context.Context, e CardEvent) error
 	AppendLearningPending(ctx context.Context, beadID string, c CardCandidate) (int64, error)
+	PromoteLearning(ctx context.Context, learningID int64) (cardID string, err error)
 	Create(ctx context.Context, c CardCreateParams) (*Card, error)
 	Retire(ctx context.Context, id, reason string, supersededBy string) error
 
@@ -34,6 +35,10 @@ type Store interface {
 // SQLiteCardStore is the SQLite-backed implementation of Store.
 type SQLiteCardStore struct {
 	db *sql.DB
+}
+
+type sqlExecutor interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
 // NewStore opens a cards store against an existing *sql.DB and applies the schema.
@@ -326,6 +331,20 @@ func (s *SQLiteCardStore) PendingLearnings(ctx context.Context, beadID string) (
 	return pending, nil
 }
 
+func queryPendingLearningForUpdate(ctx context.Context, tx *sql.Tx, learningID int64) (PendingLearning, error) {
+	row := tx.QueryRowContext(ctx, `SELECT`+pendingLearningSelectCols+`
+		FROM bead_learnings_pending
+		WHERE id = ?`, learningID)
+	learning, err := scanPendingLearning(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PendingLearning{}, fmt.Errorf("%w: learning %d", ErrNotFound, learningID)
+	}
+	if err != nil {
+		return PendingLearning{}, err
+	}
+	return learning, nil
+}
+
 // Relevant returns cards relevant to the query, sorted by effective score × relevance weight.
 func (s *SQLiteCardStore) Relevant(ctx context.Context, q RelevanceQuery) (RelevantCards, error) {
 	rows, err := s.db.QueryContext(ctx,
@@ -565,8 +584,7 @@ func (s *SQLiteCardStore) AppendLearningPending(ctx context.Context, beadID stri
 	return id, nil
 }
 
-// Create inserts a new card and returns it.
-func (s *SQLiteCardStore) Create(ctx context.Context, p CardCreateParams) (*Card, error) {
+func insertCard(ctx context.Context, exec sqlExecutor, p CardCreateParams) (string, error) {
 	id := p.ID
 	if id == "" {
 		id = newCardID()
@@ -587,7 +605,7 @@ func (s *SQLiteCardStore) Create(ctx context.Context, p CardCreateParams) (*Card
 		promotionConf = p.PromotionConfidence
 	}
 
-	_, err := s.db.ExecContext(ctx, `
+	_, err := exec.ExecContext(ctx, `
 		INSERT INTO cards (
 			id, type, title, body_summary, body_full, body_deep,
 			tags, score, promotion_confidence, decay_anchor,
@@ -597,18 +615,75 @@ func (s *SQLiteCardStore) Create(ctx context.Context, p CardCreateParams) (*Card
 		tags, promotionConf, now, now, now, emergedFrom,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("create card: %w", err)
+		return "", fmt.Errorf("create card: %w", err)
 	}
 
 	// Record the created event.
-	_, err = s.db.ExecContext(ctx, `
+	_, err = exec.ExecContext(ctx, `
 		INSERT INTO card_events (card_id, ts, actor, kind)
 		VALUES (?, ?, 'system', 'created')`, id, now)
 	if err != nil {
-		return nil, fmt.Errorf("record created event: %w", err)
+		return "", fmt.Errorf("record created event: %w", err)
+	}
+	return id, nil
+}
+
+// Create inserts a new card and returns it.
+func (s *SQLiteCardStore) Create(ctx context.Context, p CardCreateParams) (*Card, error) {
+	id, err := insertCard(ctx, s.db, p)
+	if err != nil {
+		return nil, err
 	}
 
 	return s.Show(ctx, id)
+}
+
+// PromoteLearning creates a card from a pending learning and marks it resolved.
+func (s *SQLiteCardStore) PromoteLearning(ctx context.Context, learningID int64) (cardID string, err error) {
+	err = s.withTx(ctx, func(tx *sql.Tx) error {
+		learning, err := queryPendingLearningForUpdate(ctx, tx, learningID)
+		if err != nil {
+			return err
+		}
+		if learning.PromotedTo != nil || learning.RejectedAt != nil {
+			return ErrAlreadyResolved
+		}
+		confidence := learning.Candidate.Confidence
+		emergedFrom := learning.BeadID
+		id, err := insertCard(ctx, tx, CardCreateParams{
+			Type:                CardType(learning.Candidate.Type),
+			Title:               learning.Candidate.Title,
+			BodySummary:         learning.Candidate.BodySummary,
+			BodyFull:            learning.Candidate.BodyFull,
+			Tags:                learning.Candidate.Tags,
+			EmergedFrom:         &emergedFrom,
+			PromotionConfidence: &confidence,
+		})
+		if err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, `
+			UPDATE bead_learnings_pending
+			   SET promoted_to = ?
+			 WHERE id = ? AND promoted_to IS NULL AND rejected_at IS NULL`,
+			id, learningID)
+		if err != nil {
+			return fmt.Errorf("mark learning promoted: %w", err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("mark learning promoted rows affected: %w", err)
+		}
+		if affected != 1 {
+			return ErrAlreadyResolved
+		}
+		cardID = id
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return cardID, nil
 }
 
 // RecordCardEvent atomically records an event and updates the card's score.
