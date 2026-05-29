@@ -32,6 +32,8 @@ type PromotionDecision struct {
 }
 
 // DecidePromotion applies the conservative §5.7 promotion rules without side effects.
+//
+//oro:testonly — production wiring deferred to bead-close promotion flow.
 func DecidePromotion(c CardCandidate, verdict string, existing []CardSummary) PromotionDecision {
 	confidence := clampConfidence(c.Confidence)
 	switch verdict {

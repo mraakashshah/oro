@@ -77,18 +77,6 @@ type PendingLearning struct {
 	QueuedForReviewAt *time.Time
 }
 
-// PendingLearning is a bead-scoped card candidate awaiting promotion or rejection.
-type PendingLearning struct {
-	ID                int64
-	BeadID            string
-	TS                time.Time
-	Candidate         CardCandidate
-	PromotedTo        *string
-	RejectedAt        *time.Time
-	Reason            *string
-	QueuedForReviewAt *time.Time
-}
-
 // ParseCardCandidate unmarshals and normalizes a candidate JSON payload.
 //
 //oro:testonly — production wiring deferred to learning-pending persistence (§4.2).
