@@ -424,6 +424,19 @@ func (s *SQLiteStore) AddDependency(ctx context.Context, beadID, dependsOnID, de
 	if err := ensureBeadExists(ctx, tx, dependsOnID); err != nil {
 		return err
 	}
+	if isBlockingDepType(depType) {
+		graph, err := loadBlockingGraph(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if path := reachablePath(graph, dependsOnID, beadID); len(path) > 0 {
+			return &protocol.DependencyCycleError{
+				BeadID:      beadID,
+				DependsOnID: dependsOnID,
+				Path:        append([]string{beadID}, path...),
+			}
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT OR IGNORE INTO bead_deps (bead_id, depends_on_id, type, created_by)
 VALUES (?, ?, ?, 'oro')`, beadID, dependsOnID, depType); err != nil {

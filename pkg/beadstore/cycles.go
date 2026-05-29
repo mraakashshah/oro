@@ -61,22 +61,26 @@ ORDER BY b.id, blocker.id`, blockingTypes[0], blockingTypes[1])
 }
 
 func reachable(g depGraph, from, to string) bool {
+	return len(reachablePath(g, from, to)) > 0
+}
+
+func reachablePath(g depGraph, from, to string) []string {
 	seen := map[string]struct{}{}
-	var visit func(string) bool
-	visit = func(id string) bool {
+	var visit func(string) []string
+	visit = func(id string) []string {
 		if id == to {
-			return true
+			return []string{id}
 		}
 		if _, ok := seen[id]; ok {
-			return false
+			return nil
 		}
 		seen[id] = struct{}{}
 		for _, next := range sortedNeighbors(g, id) {
-			if visit(next) {
-				return true
+			if path := visit(next); len(path) > 0 {
+				return append([]string{id}, path...)
 			}
 		}
-		return false
+		return nil
 	}
 	return visit(from)
 }
@@ -157,4 +161,13 @@ func sortedNeighbors(g depGraph, id string) []string {
 
 func blockingDepTypes() []string {
 	return []string{"blocks", "conditional-blocks"}
+}
+
+func isBlockingDepType(depType string) bool {
+	for _, blockingType := range blockingDepTypes() {
+		if depType == blockingType {
+			return true
+		}
+	}
+	return false
 }

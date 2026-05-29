@@ -39,3 +39,15 @@ type BeadNotFoundError struct {
 func (e *BeadNotFoundError) Error() string {
 	return fmt.Sprintf("bead %s not found", e.BeadID)
 }
+
+// DependencyCycleError reports a rejected dependency edge that would create a
+// blocking dependency cycle.
+type DependencyCycleError struct {
+	BeadID      string
+	DependsOnID string
+	Path        []string
+}
+
+func (e *DependencyCycleError) Error() string {
+	return fmt.Sprintf("dependency %s -> %s would create cycle: %v", e.BeadID, e.DependsOnID, e.Path)
+}

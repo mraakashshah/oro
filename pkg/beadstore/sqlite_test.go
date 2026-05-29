@@ -1533,6 +1533,60 @@ func TestSQLiteStoreAddDependencyRejectsSelfBlock(t *testing.T) {
 	}
 }
 
+func TestAddDependency_RejectsCycle(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+
+	mustCreate(t, store, CreateParams{ID: "A", Title: "A"})
+	mustCreate(t, store, CreateParams{ID: "B", Title: "B"})
+
+	if err := store.AddDependency(ctx, "A", "B", "blocks"); err != nil {
+		t.Fatalf("seed A -> B: %v", err)
+	}
+	before := beadDepsCount(t, store.db)
+
+	err := store.AddDependency(ctx, "B", "A", "blocks")
+	var cycleErr *protocol.DependencyCycleError
+	if !errors.As(err, &cycleErr) {
+		t.Fatalf("AddDependency B -> A error = %v, want *protocol.DependencyCycleError", err)
+	}
+	if cycleErr.BeadID != "B" || cycleErr.DependsOnID != "A" {
+		t.Fatalf("cycle error ids = %#v, want bead B depends_on A", cycleErr)
+	}
+	if !reflect.DeepEqual(cycleErr.Path, []string{"B", "A", "B"}) {
+		t.Fatalf("cycle path = %#v, want [B A B]", cycleErr.Path)
+	}
+	if after := beadDepsCount(t, store.db); after != before {
+		t.Fatalf("bead_deps count = %d, want unchanged %d", after, before)
+	}
+}
+
+func TestAddDependency_AllowsParentChildEvenIfCyclicShape(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+
+	mustCreate(t, store, CreateParams{ID: "A", Title: "A"})
+	mustCreate(t, store, CreateParams{ID: "B", Title: "B"})
+
+	if err := store.AddDependency(ctx, "A", "B", "blocks"); err != nil {
+		t.Fatalf("seed A -> B: %v", err)
+	}
+	if err := store.AddDependency(ctx, "B", "A", "parent-child"); err != nil {
+		t.Fatalf("parent-child B -> A: %v", err)
+	}
+	if err := store.AddDependency(ctx, "A", "A", "parent-child"); err == nil {
+		t.Fatal("self-edge parent-child succeeded, want self-edge rejection first")
+	}
+
+	deps, err := store.ListDependencies(ctx, "B")
+	if err != nil {
+		t.Fatalf("ListDependencies B: %v", err)
+	}
+	if got, want := dependencySummary(deps), "A:parent-child"; got != want {
+		t.Fatalf("B dependencies = %s, want %s", got, want)
+	}
+}
+
 func newTestSQLiteStore(t *testing.T) *SQLiteStore {
 	t.Helper()
 
@@ -1693,6 +1747,15 @@ func mustExec(t *testing.T, db *sql.DB, query string, args ...any) {
 	if _, err := db.ExecContext(context.Background(), query, args...); err != nil {
 		t.Fatalf("exec %q: %v", query, err)
 	}
+}
+
+func beadDepsCount(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM bead_deps`).Scan(&count); err != nil {
+		t.Fatalf("count bead_deps: %v", err)
+	}
+	return count
 }
 
 func eventCount(t *testing.T, db *sql.DB, eventType string) int {
