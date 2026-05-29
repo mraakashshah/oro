@@ -1,9 +1,11 @@
-package leakscan
+package leakscan_test
 
 import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"oro/pkg/leakscan"
 )
 
 func TestScan_DefaultPatternsDetectsCredentialFamilies(t *testing.T) {
@@ -35,7 +37,7 @@ func TestScan_DefaultPatternsDetectsCredentialFamilies(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			result := Scan("token="+tc.secret, DefaultPatterns(), Allowlist{})
+			result := leakscan.Scan("token="+tc.secret, leakscan.DefaultPatterns(), leakscan.Allowlist{})
 			if !result.ShouldBlock {
 				t.Fatalf("ShouldBlock = false, want true; matches=%v", result.Matches)
 			}
@@ -54,7 +56,7 @@ func TestScan_RedactActionsDoNotBlock(t *testing.T) {
 	t.Parallel()
 
 	secret := "Bearer " + strings.Repeat("a", 24)
-	result := Scan("Authorization: "+secret, DefaultPatterns(), Allowlist{})
+	result := leakscan.Scan("Authorization: "+secret, leakscan.DefaultPatterns(), leakscan.Allowlist{})
 	if result.ShouldBlock {
 		t.Fatalf("ShouldBlock = true, want false")
 	}
@@ -77,15 +79,15 @@ func TestScanDiff_OnlyAddedLines(t *testing.T) {
 		" context",
 	}, "\n")
 
-	result := ScanDiff(diff, DefaultPatterns(), Allowlist{})
+	result := leakscan.ScanDiff(diff, leakscan.DefaultPatterns(), leakscan.Allowlist{})
 	if !result.ShouldBlock {
 		t.Fatalf("ShouldBlock = false, want true")
 	}
 	if len(result.Matches) != 1 {
 		t.Fatalf("matches=%d, want 1: %#v", len(result.Matches), result.Matches)
 	}
-	if result.Matches[0].Secret != Mask(blocked) {
-		t.Fatalf("matched secret=%q, want mask for added secret", result.Matches[0].Secret)
+	if result.Matches[0].Masked != leakscan.Mask(blocked) {
+		t.Fatalf("matched secret=%q, want mask for added secret", result.Matches[0].Masked)
 	}
 	if strings.Contains(result.Redacted, removed) {
 		t.Fatalf("removed-line secret was redacted/scanned: %q", result.Redacted)
@@ -96,24 +98,24 @@ func TestSummarize_NeverLeaksRawSecret(t *testing.T) {
 	t.Parallel()
 
 	secret := "github_pat_" + strings.Repeat("A", 22) + "_" + strings.Repeat("B", 59)
-	result := Scan(secret, DefaultPatterns(), Allowlist{})
-	summary := Summarize(result)
+	result := leakscan.Scan(secret, leakscan.DefaultPatterns(), leakscan.Allowlist{})
+	summary := leakscan.Summarize(result)
 	if strings.Contains(summary, secret) {
 		t.Fatalf("summary leaked raw secret")
 	}
-	if !strings.Contains(summary, Mask(secret)) {
-		t.Fatalf("summary=%q missing mask %q", summary, Mask(secret))
+	if !strings.Contains(summary, leakscan.Mask(secret)) {
+		t.Fatalf("summary=%q missing mask %q", summary, leakscan.Mask(secret))
 	}
 
-	data := SummaryJSON(result)
+	data := leakscan.SummaryJSON(result)
 	if strings.Contains(string(data), secret) {
 		t.Fatalf("summary JSON leaked raw secret")
 	}
-	var decoded []SummaryMatch
+	var decoded []leakscan.SummaryMatch
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal summary JSON: %v", err)
 	}
-	if len(decoded) != 1 || decoded[0].Secret != Mask(secret) {
+	if len(decoded) != 1 || decoded[0].Masked != leakscan.Mask(secret) {
 		t.Fatalf("decoded summary=%#v, want masked secret", decoded)
 	}
 }
@@ -121,7 +123,7 @@ func TestSummarize_NeverLeaksRawSecret(t *testing.T) {
 func TestZWSP_NotCaught(t *testing.T) {
 	t.Parallel()
 
-	result := Scan("sk-\u200babcdefghijklmnopqrstuvwxyz123456", DefaultPatterns(), Allowlist{})
+	result := leakscan.Scan("sk-\u200babcdefghijklmnopqrstuvwxyz123456", leakscan.DefaultPatterns(), leakscan.Allowlist{})
 	if len(result.Matches) != 0 {
 		t.Fatalf("ZWSP-split key unexpectedly caught: %#v", result.Matches)
 	}
@@ -130,19 +132,19 @@ func TestZWSP_NotCaught(t *testing.T) {
 func TestPercentEncoded_NotCaught(t *testing.T) {
 	t.Parallel()
 
-	result := Scan("sk%2Dabcdefghijklmnopqrstuvwxyz123456", DefaultPatterns(), Allowlist{})
+	result := leakscan.Scan("sk%2Dabcdefghijklmnopqrstuvwxyz123456", leakscan.DefaultPatterns(), leakscan.Allowlist{})
 	if len(result.Matches) != 0 {
 		t.Fatalf("percent-encoded key unexpectedly caught: %#v", result.Matches)
 	}
 }
 
-func assertNoRawSecret(t *testing.T, result Result, secret string) {
+func assertNoRawSecret(t *testing.T, result leakscan.Result, secret string) {
 	t.Helper()
 	if strings.Contains(result.Redacted, secret) {
 		t.Fatalf("redacted content leaked raw secret")
 	}
 	for _, match := range result.Matches {
-		if match.Secret == secret {
+		if match.Masked == secret {
 			t.Fatalf("match leaked raw secret: %#v", match)
 		}
 	}
