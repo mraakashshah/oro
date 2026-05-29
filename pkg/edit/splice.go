@@ -16,6 +16,8 @@ const (
 	lineCont                   // continuation marker: "preserve original lines here"
 )
 
+const maxMarkerlessDrop = 20
+
 type classifiedLine struct {
 	text string
 	kind lineKind
@@ -150,7 +152,7 @@ func validateEligibility(anchorPositions []int, pre []classifiedLine, inter [][]
 //   - No continuation marker, empty segment  → preserve origRegion unchanged.
 //   - No continuation marker, non-empty segment → replace origRegion with new lines.
 //   - One continuation marker → linesBeforeMarker + origRegion + linesAfterMarker.
-func processSegment(seg []classifiedLine, origRegion []string) []string {
+func processSegment(seg []classifiedLine, origRegion []string) ([]string, error) {
 	contIdx := -1
 	for i, cl := range seg {
 		if cl.kind == lineCont {
@@ -160,14 +162,17 @@ func processSegment(seg []classifiedLine, origRegion []string) []string {
 	}
 
 	if contIdx == -1 {
+		if len(origRegion) > maxMarkerlessDrop {
+			return nil, &FallthroughError{Reason: "markerless segment would drop more than 20 original lines; add a continuation marker"}
+		}
 		newLines := make([]string, 0, len(seg))
 		for _, cl := range seg {
 			newLines = append(newLines, cl.text)
 		}
 		if len(newLines) == 0 {
-			return origRegion
+			return origRegion, nil
 		}
-		return newLines
+		return newLines, nil
 	}
 
 	result := make([]string, 0, len(seg)-1+len(origRegion))
@@ -178,7 +183,7 @@ func processSegment(seg []classifiedLine, origRegion []string) []string {
 	for _, cl := range seg[contIdx+1:] {
 		result = append(result, cl.text)
 	}
-	return result
+	return result, nil
 }
 
 // Splice applies the anchor-splice algorithm described in §7.3.
@@ -212,19 +217,31 @@ func Splice(orig, snippet []string, contMarker string) ([]string, error) {
 	var result []string
 
 	// Region before first anchor.
-	result = append(result, processSegment(pre, orig[:firstPos])...)
+	preLines, err := processSegment(pre, orig[:firstPos])
+	if err != nil {
+		return nil, err
+	}
+	result = append(result, preLines...)
 
 	// Each anchor line, followed by the inter-anchor gap (if not the last anchor).
 	for i, anchorPos := range anchorPositions {
 		result = append(result, orig[anchorPos])
 		if i < anchorCount-1 {
 			nextPos := anchorPositions[i+1]
-			result = append(result, processSegment(inter[i], orig[anchorPos+1:nextPos])...)
+			interLines, err := processSegment(inter[i], orig[anchorPos+1:nextPos])
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, interLines...)
 		}
 	}
 
 	// Region after last anchor.
-	result = append(result, processSegment(post, orig[lastPos+1:])...)
+	postLines, err := processSegment(post, orig[lastPos+1:])
+	if err != nil {
+		return nil, err
+	}
+	result = append(result, postLines...)
 
 	return result, nil
 }

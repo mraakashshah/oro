@@ -2,6 +2,7 @@ package edit_test
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -143,6 +144,34 @@ func TestSpliceAlgorithm(t *testing.T) {
 			marker:  goMarker,
 			want:    []string{"start", "new1", "new2", "end"},
 		},
+		{
+			name:    "markerless empty segment preserves 20 original lines",
+			orig:    append(append([]string{"start"}, numberedLines("old", 20)...), "end"),
+			snippet: []string{"start", "end"},
+			marker:  goMarker,
+			want:    append(append([]string{"start"}, numberedLines("old", 20)...), "end"),
+		},
+		{
+			name:    "markerless replacement drops exactly 20 original lines",
+			orig:    append(append([]string{"start"}, numberedLines("old", 20)...), "end"),
+			snippet: []string{"start", "replacement", "end"},
+			marker:  goMarker,
+			want:    []string{"start", "replacement", "end"},
+		},
+		{
+			name:    "markerless empty segment preserves 0-line gap",
+			orig:    []string{"start", "end"},
+			snippet: []string{"start", "end"},
+			marker:  goMarker,
+			want:    []string{"start", "end"},
+		},
+		{
+			name:    "single continuation marker preserves 100-line gap",
+			orig:    append(append([]string{"start"}, numberedLines("old", 100)...), "end"),
+			snippet: []string{"start", goMarker, "end"},
+			marker:  goMarker,
+			want:    append(append([]string{"start"}, numberedLines("old", 100)...), "end"),
+		},
 
 		// ── EFALLTHROUGH cases ───────────────────────────────────────────────
 
@@ -209,6 +238,22 @@ func TestSpliceAlgorithm(t *testing.T) {
 			marker:  goMarker,
 			wantErr: edit.ErrFallthrough,
 		},
+		{
+			name:    "EFALLTHROUGH: markerless empty segment would drop more than 20 original lines",
+			orig:    append(append([]string{"start"}, numberedLines("old", 21)...), "end"),
+			snippet: []string{"start", "end"},
+			marker:  goMarker,
+			wantErr: edit.ErrFallthrough,
+			reason:  "add a continuation marker",
+		},
+		{
+			name:    "EFALLTHROUGH: markerless replacement would drop more than 20 original lines",
+			orig:    append(append([]string{"start"}, numberedLines("old", 21)...), "end"),
+			snippet: []string{"start", "replacement", "end"},
+			marker:  goMarker,
+			wantErr: edit.ErrFallthrough,
+			reason:  "add a continuation marker",
+		},
 	}
 
 	for _, tc := range tests {
@@ -234,6 +279,14 @@ func TestSpliceAlgorithm(t *testing.T) {
 			}
 		})
 	}
+}
+
+func numberedLines(prefix string, count int) []string {
+	lines := make([]string, count)
+	for i := range lines {
+		lines[i] = prefix + strconv.Itoa(i)
+	}
+	return lines
 }
 
 func assertFallthroughReason(t *testing.T, err error, reason string) {
