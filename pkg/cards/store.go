@@ -22,10 +22,13 @@ type Store interface {
 	Show(ctx context.Context, id string) (*Card, error)
 	List(ctx context.Context, q ListQuery) ([]Card, error)
 	PendingLearnings(ctx context.Context, beadID string) ([]PendingLearning, error)
+	ReviewQueue(ctx context.Context) ([]PendingLearning, error)
 
 	RecordCardEvent(ctx context.Context, e CardEvent) error
 	AppendLearningPending(ctx context.Context, beadID string, c CardCandidate) (int64, error)
 	PromoteLearning(ctx context.Context, learningID int64) (cardID string, err error)
+	RejectLearning(ctx context.Context, id int64, reason string) error
+	DeferToReviewQueue(ctx context.Context, id int64, reason string) error
 	Create(ctx context.Context, c CardCreateParams) (*Card, error)
 	Retire(ctx context.Context, id, reason string, supersededBy string) error
 
@@ -327,6 +330,33 @@ func (s *SQLiteCardStore) PendingLearnings(ctx context.Context, beadID string) (
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("pending learnings rows: %w", err)
+	}
+	return pending, nil
+}
+
+// ReviewQueue returns unresolved learning candidates explicitly queued for review.
+func (s *SQLiteCardStore) ReviewQueue(ctx context.Context) ([]PendingLearning, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT`+pendingLearningSelectCols+`
+		FROM bead_learnings_pending
+		WHERE queued_for_review_at IS NOT NULL
+		  AND promoted_to IS NULL
+		  AND rejected_at IS NULL
+		ORDER BY queued_for_review_at ASC, id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("query review queue: %w", err)
+	}
+	defer rows.Close()
+
+	var pending []PendingLearning
+	for rows.Next() {
+		learning, err := scanPendingLearning(rows)
+		if err != nil {
+			return nil, err
+		}
+		pending = append(pending, learning)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("review queue rows: %w", err)
 	}
 	return pending, nil
 }
@@ -684,6 +714,64 @@ func (s *SQLiteCardStore) PromoteLearning(ctx context.Context, learningID int64)
 		return "", err
 	}
 	return cardID, nil
+}
+
+// RejectLearning marks an unresolved pending learning as rejected.
+func (s *SQLiteCardStore) RejectLearning(ctx context.Context, id int64, reason string) error {
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		learning, err := queryPendingLearningForUpdate(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if learning.PromotedTo != nil || learning.RejectedAt != nil {
+			return ErrAlreadyResolved
+		}
+		result, err := tx.ExecContext(ctx, `
+			UPDATE bead_learnings_pending
+			   SET rejected_at = ?, reason = ?
+			 WHERE id = ? AND promoted_to IS NULL AND rejected_at IS NULL`,
+			nowRFC3339(), reason, id)
+		if err != nil {
+			return fmt.Errorf("reject learning: %w", err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("reject learning rows affected: %w", err)
+		}
+		if affected != 1 {
+			return ErrAlreadyResolved
+		}
+		return nil
+	})
+}
+
+// DeferToReviewQueue marks an unresolved pending learning for manual review.
+func (s *SQLiteCardStore) DeferToReviewQueue(ctx context.Context, id int64, reason string) error {
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		learning, err := queryPendingLearningForUpdate(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if learning.PromotedTo != nil || learning.RejectedAt != nil {
+			return ErrAlreadyResolved
+		}
+		result, err := tx.ExecContext(ctx, `
+			UPDATE bead_learnings_pending
+			   SET queued_for_review_at = ?, reason = ?
+			 WHERE id = ? AND promoted_to IS NULL AND rejected_at IS NULL`,
+			nowRFC3339(), reason, id)
+		if err != nil {
+			return fmt.Errorf("defer learning to review queue: %w", err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("defer learning rows affected: %w", err)
+		}
+		if affected != 1 {
+			return ErrAlreadyResolved
+		}
+		return nil
+	})
 }
 
 // RecordCardEvent atomically records an event and updates the card's score.
