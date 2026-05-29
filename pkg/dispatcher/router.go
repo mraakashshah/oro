@@ -67,5 +67,8 @@ func (d *Dispatcher) CloseBead(ctx context.Context, beadID, reason string) error
 	if err := PromoteChildrenOnParentClose(ctx, d.beads, beadID); err != nil {
 		d.warnSweepFailure(ctx, beadID, err)
 	}
+	if err := d.runLearningPromotion(ctx, beadID, promotionVerdictFromCloseReason(reason)); err != nil {
+		return fmt.Errorf("run learning promotion for %s: %w", beadID, err)
+	}
 	return nil
 }

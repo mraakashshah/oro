@@ -1,0 +1,113 @@
+package dispatcher
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"oro/pkg/beadstore"
+	"oro/pkg/cards"
+)
+
+func promotionVerdictFromCloseReason(reason string) string {
+	lower := strings.ToLower(strings.TrimSpace(reason))
+	switch {
+	case strings.HasPrefix(lower, "merged:"):
+		return "pass"
+	case strings.Contains(lower, "branch already merged"):
+		return "pass"
+	case strings.Contains(lower, "review failed"):
+		return "fail"
+	case strings.Contains(lower, "review rejected"):
+		return "fail"
+	default:
+		return ""
+	}
+}
+
+func (d *Dispatcher) runLearningPromotion(ctx context.Context, beadID, verdict string) error {
+	if d.cardStore == nil {
+		return nil
+	}
+	pending, err := d.cardStore.PendingLearnings(ctx, beadID)
+	if err != nil {
+		return fmt.Errorf("pending learnings for %s: %w", beadID, err)
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+	existing, err := d.cardStore.List(ctx, cards.ListQuery{IncludeRetired: false})
+	if err != nil {
+		return fmt.Errorf("list cards for promotion: %w", err)
+	}
+	summaries := cardSummaries(existing)
+	for _, learning := range pending {
+		decision := cards.DecidePromotion(learning.Candidate, verdict, summaries)
+		if err := d.applyLearningPromotionDecision(ctx, beadID, learning.ID, decision); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d *Dispatcher) applyLearningPromotionDecision(ctx context.Context, beadID string, learningID int64, decision cards.PromotionDecision) error {
+	switch decision.Action {
+	case cards.PromotionActionPromote:
+		cardID, err := d.cardStore.PromoteLearning(ctx, learningID)
+		if err != nil {
+			return fmt.Errorf("promote learning %d: %w", learningID, err)
+		}
+		return d.appendLearningPromotionEvent(ctx, beadID, "learning_promoted", learningID, decision, cardID)
+	case cards.PromotionActionReject:
+		if err := d.cardStore.RejectLearning(ctx, learningID, decision.Reason); err != nil {
+			return fmt.Errorf("reject learning %d: %w", learningID, err)
+		}
+		return nil
+	case cards.PromotionActionDefer:
+		if err := d.cardStore.DeferToReviewQueue(ctx, learningID, decision.Reason); err != nil {
+			return fmt.Errorf("defer learning %d to review queue: %w", learningID, err)
+		}
+		return d.appendLearningPromotionEvent(ctx, beadID, "learning_deferred_to_review", learningID, decision, "")
+	default:
+		return fmt.Errorf("unknown promotion action %q for learning %d", decision.Action, learningID)
+	}
+}
+
+func (d *Dispatcher) appendLearningPromotionEvent(ctx context.Context, beadID, event string, learningID int64, decision cards.PromotionDecision, cardID string) error {
+	payload, err := json.Marshal(map[string]any{
+		"learning_id": learningID,
+		"card_id":     cardID,
+		"reason":      decision.Reason,
+		"confidence":  decision.Confidence,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal %s payload: %w", event, err)
+	}
+	if err := d.beads.AppendJourney(ctx, beadID, beadstore.JourneyEvent{
+		Ts:      time.Now().UTC().Format(time.RFC3339Nano),
+		Actor:   "dispatcher",
+		Event:   event,
+		Payload: string(payload),
+	}); err != nil {
+		return fmt.Errorf("append %s journey event: %w", event, err)
+	}
+	return nil
+}
+
+func cardSummaries(in []cards.Card) []cards.CardSummary {
+	out := make([]cards.CardSummary, 0, len(in))
+	for _, card := range in {
+		out = append(out, cards.CardSummary{
+			ID:          card.ID,
+			Type:        card.Type,
+			Title:       card.Title,
+			BodySummary: card.BodySummary,
+			BodyFull:    card.BodyFull,
+			Score:       card.Score,
+			Tags:        card.Tags,
+		})
+	}
+	return out
+}
