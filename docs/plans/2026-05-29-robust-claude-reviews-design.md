@@ -104,7 +104,7 @@ shared across all ops types).
   interface) cannot read it — the idle-watchdog would have nothing to watch.
   **Blocks B1 and B3.**
 - **B1.** `exec_spawner.go` — stream stdout incrementally via `cmd.StdoutPipe()`
-  + `bufio.Scanner`, **mirroring `pkg/worker`'s proven pattern**, not reinventing
+  and `bufio.Scanner`, **mirroring `pkg/worker`'s proven pattern**, not reinventing
   with `os.Pipe`. Update `opsProcess.lastOutputAt` per line; still accumulate the
   full output for parsing. Implement `LastOutputAt()` from B0.
 - **B2.** Emit `--verbose --output-format stream-json` **scoped to OpsReview
