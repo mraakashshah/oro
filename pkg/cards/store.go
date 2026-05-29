@@ -847,13 +847,20 @@ func (s *SQLiteCardStore) Retire(ctx context.Context, id, reason, supersededBy s
 		if supersededBy != "" {
 			superBy = &supersededBy
 		}
-		_, err := tx.ExecContext(ctx, `
+		result, err := tx.ExecContext(ctx, `
 			UPDATE cards
 			   SET retired_at = ?, retired_reason = ?, superseded_by = ?, updated_at = ?
 			 WHERE id = ? AND retired_at IS NULL`,
 			now, reason, superBy, now, id)
 		if err != nil {
 			return fmt.Errorf("retire card: %w", err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("retire card rows affected: %w", err)
+		}
+		if affected != 1 {
+			return fmt.Errorf("%w: %s", ErrNotFound, id)
 		}
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO card_events (card_id, ts, actor, kind, payload)
