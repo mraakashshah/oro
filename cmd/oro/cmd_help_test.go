@@ -23,7 +23,8 @@ func TestHelpOutput(t *testing.T) {
 	categories := []string{
 		"Lifecycle:",
 		"Monitoring:",
-		"Memory:",
+		"Knowledge:",
+		"Retired:",
 		"Control:",
 		"Search:",
 	}
@@ -65,6 +66,62 @@ func TestHelpOutput(t *testing.T) {
 	if !strings.Contains(out, "oro <command> --help") {
 		t.Errorf("expected footer hint in output, got:\n%s", out)
 	}
+}
+
+func TestHelpNoLiveMemoryGroup(t *testing.T) {
+	root := newRootCmd()
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"help"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if strings.Contains(out, "\nMemory:\n") {
+		t.Fatalf("help output must not present retired commands under a live Memory group:\n%s", out)
+	}
+
+	knowledgeSection := sectionFromHelp(t, out, "Knowledge:")
+	for _, want := range []string{"cards", "models"} {
+		if !strings.Contains(knowledgeSection, want) {
+			t.Errorf("expected %q in Knowledge section:\n%s", want, knowledgeSection)
+		}
+	}
+
+	retiredSection := sectionFromHelp(t, out, "Retired:")
+	for _, want := range []string{"remember", "recall", "forget", "memories"} {
+		if !sectionCommandLineContains(retiredSection, want, "(retired)") {
+			t.Errorf("expected retired command %q to be annotated in Retired section:\n%s", want, retiredSection)
+		}
+	}
+}
+
+func sectionFromHelp(t *testing.T, helpOutput, heading string) string {
+	t.Helper()
+
+	sectionIdx := strings.Index(helpOutput, heading)
+	if sectionIdx < 0 {
+		t.Fatalf("expected %q section in help output:\n%s", heading, helpOutput)
+	}
+
+	section := helpOutput[sectionIdx:]
+	if nextSectionIdx := strings.Index(section[len(heading):], "\n\n"); nextSectionIdx >= 0 {
+		section = section[:len(heading)+nextSectionIdx]
+	}
+	return section
+}
+
+func sectionCommandLineContains(section, command, text string) bool {
+	for _, line := range strings.Split(section, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == command && strings.Contains(line, text) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestHelpFallthrough(t *testing.T) {

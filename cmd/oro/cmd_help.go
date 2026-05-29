@@ -27,13 +27,15 @@ Monitoring:
   events     Query dispatcher events
   dashboard  Show the local web dashboard (requires 'oro start --web')
 
-Memory:
-  remember   Store a memory
-  recall     Search memories
-  forget     Delete memories by ID
-  memories   Browse and manage the memory store
-  models     Manage embedding/reranker model files (list, verify, prefetch)
+Knowledge:
   cards      Manage knowledge cards
+  models     Manage embedding/reranker model files (list, verify, prefetch)
+
+Retired:
+  remember   (retired) Legacy memory store command
+  recall     (retired) Legacy memory search command
+  forget     (retired) Legacy memory deletion command
+  memories   (retired) Legacy memory browser command
 
 Control:
   directive  Send a directive to the dispatcher (scale, focus, pause, resume)
