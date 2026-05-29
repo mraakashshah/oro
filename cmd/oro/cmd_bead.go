@@ -454,6 +454,7 @@ func newBeadDepCmd(store beadstore.Store) *cobra.Command {
 		newBeadDepAddCmd(store),
 		newBeadDepRemoveCmd(store),
 		newBeadDepListCmd(store),
+		newBeadDepCyclesCmd(store),
 	)
 
 	return cmd
@@ -537,6 +538,34 @@ func newBeadDepListCmd(store beadstore.Store) *cobra.Command {
 		},
 	}
 	return listCmd
+}
+
+func newBeadDepCyclesCmd(store beadstore.Store) *cobra.Command {
+	cyclesCmd := &cobra.Command{
+		Use:           "cycles",
+		Short:         "Find dependency cycles",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			s, err := resolveBeadStore(store)
+			if err != nil {
+				return writeBeadCommandErrorIfJSON(cmd, "store", err)
+			}
+			cycles, err := s.DependencyCycles(cmd.Context())
+			if err != nil {
+				return writeBeadCommandErrorIfJSON(cmd, "dep_cycles", err)
+			}
+			if err := writeDependencyCycles(cmd, cycles); err != nil {
+				return writeBeadCommandErrorIfJSON(cmd, "dep_cycles", err)
+			}
+			if len(cycles) > 0 {
+				return fmt.Errorf("dependency cycles found")
+			}
+			return nil
+		},
+	}
+	return cyclesCmd
 }
 
 func newBeadTagCmd(store beadstore.Store) *cobra.Command {
@@ -667,6 +696,24 @@ func writeDependencies(cmd *cobra.Command, deps []protocol.Dependency) error {
 	}
 	for _, dep := range deps {
 		fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", dep.IssueID, dep.DependsOnID, dep.Type)
+	}
+	return nil
+}
+
+func writeDependencyCycles(cmd *cobra.Command, cycles []beadstore.Cycle) error {
+	if isJSONOutput(cmd) {
+		if cycles == nil {
+			cycles = []beadstore.Cycle{}
+		}
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(map[string][]beadstore.Cycle{"cycles": cycles}); err != nil {
+			return fmt.Errorf("encode dependency cycles JSON: %w", err)
+		}
+		return nil
+	}
+	for _, cycle := range cycles {
+		fmt.Fprintln(cmd.OutOrStdout(), strings.Join(cycle, " → "))
 	}
 	return nil
 }

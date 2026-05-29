@@ -1587,6 +1587,48 @@ func TestAddDependency_AllowsParentChildEvenIfCyclicShape(t *testing.T) {
 	}
 }
 
+func TestDependencyCycles_FindsPreExisting(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+
+	mustCreate(t, store, CreateParams{ID: "A", Title: "A"})
+	mustCreate(t, store, CreateParams{ID: "B", Title: "B"})
+	mustCreate(t, store, CreateParams{ID: "C", Title: "C"})
+	if err := store.AddDependency(ctx, "C", "A", "blocks"); err != nil {
+		t.Fatalf("seed acyclic C -> A: %v", err)
+	}
+	mustExec(t, store.db, `INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES (?, ?, ?)`, "A", "B", "blocks")
+	mustExec(t, store.db, `INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES (?, ?, ?)`, "B", "A", "blocks")
+
+	cycles, err := store.DependencyCycles(ctx)
+	if err != nil {
+		t.Fatalf("DependencyCycles: %v", err)
+	}
+	want := []Cycle{{"A", "B", "A"}}
+	if !reflect.DeepEqual(cycles, want) {
+		t.Fatalf("DependencyCycles() = %#v, want %#v", cycles, want)
+	}
+}
+
+func TestDependencyCycles_AcyclicReturnsEmpty(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+
+	mustCreate(t, store, CreateParams{ID: "A", Title: "A"})
+	mustCreate(t, store, CreateParams{ID: "B", Title: "B"})
+	if err := store.AddDependency(ctx, "A", "B", "blocks"); err != nil {
+		t.Fatalf("seed A -> B: %v", err)
+	}
+
+	cycles, err := store.DependencyCycles(ctx)
+	if err != nil {
+		t.Fatalf("DependencyCycles: %v", err)
+	}
+	if len(cycles) != 0 {
+		t.Fatalf("DependencyCycles() = %#v, want empty", cycles)
+	}
+}
+
 func newTestSQLiteStore(t *testing.T) *SQLiteStore {
 	t.Helper()
 

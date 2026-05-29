@@ -39,6 +39,8 @@ type Store interface {
 	FindByParentAndTag(ctx context.Context, parentID, tag string) ([]protocol.Bead, error)
 	// CountChildren returns the total number of non-deleted child beads for parentID.
 	CountChildren(ctx context.Context, parentID string) (int, error)
+	// DependencyCycles returns active blocking dependency cycles, if any.
+	DependencyCycles(ctx context.Context) ([]Cycle, error)
 
 	// Export returns a JSONL backup snapshot.
 	Export(ctx context.Context) ([]byte, error)

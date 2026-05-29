@@ -303,6 +303,12 @@ func (s *ShadowStore) CountChildren(ctx context.Context, parentID string) (int, 
 	return n, wrapPrimaryStoreError("count children", err)
 }
 
+// DependencyCycles delegates to primary only.
+func (s *ShadowStore) DependencyCycles(ctx context.Context) ([]Cycle, error) {
+	cycles, err := s.primary.DependencyCycles(ctx)
+	return cycles, wrapPrimaryStoreError("dependency cycles", err)
+}
+
 // WithReadTx delegates to primary so reads see a consistent snapshot from the
 // authoritative store. Errors returned from fn are passed through unwrapped —
 // only BeginTx/Commit failures are framed as primary-store malfunctions.

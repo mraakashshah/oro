@@ -469,6 +469,40 @@ func (s *FakeStore) ListDependencies(ctx context.Context, beadID string) ([]prot
 	return cloneDependencies(bead.Dependencies), nil
 }
 
+// DependencyCycles returns cycles in active blocking dependencies.
+func (s *FakeStore) DependencyCycles(ctx context.Context) ([]Cycle, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("dependency cycles context: %w", err)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	graph := depGraph{}
+	for id, bead := range s.beads {
+		if bead.Status == "closed" {
+			continue
+		}
+		if _, ok := graph[id]; !ok {
+			graph[id] = map[string]struct{}{}
+		}
+		for _, dep := range bead.Dependencies {
+			if !isBlockingDepType(dep.Type) {
+				continue
+			}
+			blocker, ok := s.beads[dep.DependsOnID]
+			if !ok || blocker.Status == "closed" {
+				continue
+			}
+			graph[id][dep.DependsOnID] = struct{}{}
+			if _, ok := graph[dep.DependsOnID]; !ok {
+				graph[dep.DependsOnID] = map[string]struct{}{}
+			}
+		}
+	}
+	return findCycles(graph), nil
+}
+
 // CountByStatus returns counts for open, in-progress, and closed beads.
 func (s *FakeStore) CountByStatus(ctx context.Context) (StatusCounts, error) {
 	if err := ctx.Err(); err != nil {

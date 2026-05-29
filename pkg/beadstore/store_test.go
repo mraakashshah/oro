@@ -18,8 +18,8 @@ func TestStoreContractMatchesReplatformSpec(t *testing.T) {
 		methods[method.Name] = method.Type
 	}
 
-	if len(methods) != 19 {
-		t.Fatalf("Store has %d methods, want 19: %v", len(methods), methodNames(methods))
+	if len(methods) != 20 {
+		t.Fatalf("Store has %d methods, want 20: %v", len(methods), methodNames(methods))
 	}
 
 	ctxType := reflect.TypeOf((*context.Context)(nil)).Elem()
@@ -32,6 +32,7 @@ func TestStoreContractMatchesReplatformSpec(t *testing.T) {
 	boolType := reflect.TypeOf(false)
 	createParamsType := reflect.TypeOf(beadstore.CreateParams{})
 	updateParamsType := reflect.TypeOf(beadstore.UpdateParams{})
+	cycleSliceType := reflect.TypeOf([]beadstore.Cycle{})
 
 	assertSignature(t, methods, "Ready", []reflect.Type{ctxType}, []reflect.Type{beadSliceType, errType})
 	assertSignature(t, methods, "InProgress", []reflect.Type{ctxType}, []reflect.Type{beadSliceType, errType})
@@ -47,6 +48,7 @@ func TestStoreContractMatchesReplatformSpec(t *testing.T) {
 	assertSignature(t, methods, "FindByParentAndTag", []reflect.Type{ctxType, stringType, stringType}, []reflect.Type{beadSliceType, errType})
 	assertSignature(t, methods, "Export", []reflect.Type{ctxType}, []reflect.Type{bytesType, errType})
 	assertSignature(t, methods, "CountChildren", []reflect.Type{ctxType, stringType}, []reflect.Type{intType, errType})
+	assertSignature(t, methods, "DependencyCycles", []reflect.Type{ctxType}, []reflect.Type{cycleSliceType, errType})
 }
 
 func TestStoreInterfaceDeleteSignature(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/dbutil"
 	"oro/pkg/protocol"
 
 	"github.com/spf13/cobra"
@@ -78,7 +79,7 @@ func TestBeadDepCommandHelpExposesSubcommands(t *testing.T) {
 	}
 
 	out := buf.String()
-	for _, want := range []string{"add", "rm", "list"} {
+	for _, want := range []string{"add", "cycles", "rm", "list"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("bead dep help missing %q:\n%s", want, out)
 		}
@@ -846,6 +847,93 @@ func TestBeadDepAddEpicDecompAllowed(t *testing.T) {
 	}
 }
 
+func TestBeadDepCyclesPrintsCycleAndExitsOne(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	store, err := beadstore.OpenSQLiteStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore: %v", err)
+	}
+
+	executeBeadCommand(t, store, "create", "--id", "A", "--title", "A")
+	executeBeadCommand(t, store, "create", "--id", "B", "--title", "B")
+	mustExecBeadTest(t, dbPath, `INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES (?, ?, ?)`, "A", "B", "blocks")
+	mustExecBeadTest(t, dbPath, `INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES (?, ?, ?)`, "B", "A", "blocks")
+
+	cmd := newBeadCmdWithStore(store)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"dep", "cycles"})
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatalf("bead dep cycles error = nil, want non-zero exit; output=%s", out.String())
+	}
+	if !strings.Contains(out.String(), "A → B → A") {
+		t.Fatalf("bead dep cycles output = %q, want cycle", out.String())
+	}
+}
+
+func TestBeadDepCyclesJSON(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	store, err := beadstore.OpenSQLiteStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore: %v", err)
+	}
+
+	executeBeadCommand(t, store, "create", "--id", "A", "--title", "A")
+	executeBeadCommand(t, store, "create", "--id", "B", "--title", "B")
+	mustExecBeadTest(t, dbPath, `INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES (?, ?, ?)`, "A", "B", "blocks")
+	mustExecBeadTest(t, dbPath, `INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES (?, ?, ?)`, "B", "A", "blocks")
+
+	cmd := newBeadCmdWithStore(store)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"dep", "cycles", "--json"})
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatalf("bead dep cycles --json error = nil, want non-zero exit; output=%s", out.String())
+	}
+	var got struct {
+		Cycles [][]string `json:"cycles"`
+	}
+	if json.Unmarshal(out.Bytes(), &got) != nil {
+		t.Fatalf("bead dep cycles --json emitted invalid JSON: %s", out.String())
+	}
+	if len(got.Cycles) != 1 || strings.Join(got.Cycles[0], " -> ") != "A -> B -> A" {
+		t.Fatalf("cycles = %#v, want [[A B A]]", got.Cycles)
+	}
+}
+
+func TestBeadDepCyclesAcyclicExitsZero(t *testing.T) {
+	ctx := context.Background()
+	store, err := beadstore.OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore: %v", err)
+	}
+
+	executeBeadCommand(t, store, "create", "--id", "A", "--title", "A")
+	executeBeadCommand(t, store, "create", "--id", "B", "--title", "B")
+	executeBeadCommand(t, store, "dep", "add", "A", "B")
+
+	cmd := newBeadCmdWithStore(store)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"dep", "cycles"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("bead dep cycles error = %v; output=%s", err, out.String())
+	}
+	if strings.TrimSpace(out.String()) != "" {
+		t.Fatalf("bead dep cycles output = %q, want empty", out.String())
+	}
+}
+
 func executeBeadCommand(t *testing.T, store beadstore.Store, args ...string) string {
 	t.Helper()
 
@@ -859,6 +947,19 @@ func executeBeadCommand(t *testing.T, store beadstore.Store, args ...string) str
 		t.Fatalf("bead %s error: %v\n%s", strings.Join(args, " "), err, out.String())
 	}
 	return out.String()
+}
+
+func mustExecBeadTest(t *testing.T, dbPath, query string, args ...any) {
+	t.Helper()
+
+	db, err := dbutil.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(context.Background(), query, args...); err != nil {
+		t.Fatalf("exec %q: %v", query, err)
+	}
 }
 
 func decodeBeadJSONObject(t *testing.T, out string) map[string]any {

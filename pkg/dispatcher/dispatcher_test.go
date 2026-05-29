@@ -413,6 +413,10 @@ func (m *fakeBeadStore) TransitionPipelineStage(_ context.Context, _ string, _, 
 
 func (m *fakeBeadStore) CountChildren(_ context.Context, _ string) (int, error) { return 0, nil }
 
+func (m *fakeBeadStore) DependencyCycles(_ context.Context) ([]beadstore.Cycle, error) {
+	return nil, nil
+}
+
 func (m *fakeBeadStore) WithReadTx(_ context.Context, _ func(tx beadstore.ReadTx) error) error {
 	// Loud failure: fakeBeadStore does not embed FakeStore, so naively delegating
 	// to a fresh FakeStore would silently expose an empty snapshot to the dispatcher

@@ -494,6 +494,15 @@ func (s *SQLiteStore) ListDependencies(ctx context.Context, beadID string) ([]pr
 	return bead.Dependencies, nil
 }
 
+// DependencyCycles returns cycles in active blocking dependencies.
+func (s *SQLiteStore) DependencyCycles(ctx context.Context) ([]Cycle, error) {
+	graph, err := loadBlockingGraph(ctx, s.db)
+	if err != nil {
+		return nil, err
+	}
+	return findCycles(graph), nil
+}
+
 // CountByStatus returns open, in-progress, and closed bead counts.
 func (s *SQLiteStore) CountByStatus(ctx context.Context) (StatusCounts, error) {
 	var counts StatusCounts
