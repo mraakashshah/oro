@@ -2,7 +2,10 @@ package cards_test
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +35,113 @@ func mustCreate(t *testing.T, store *cards.SQLiteCardStore, p cards.CardCreatePa
 		t.Fatalf("create card: %v", err)
 	}
 	return card
+}
+
+func newTestStoreWithBeads(t *testing.T) (*cards.SQLiteCardStore, *sql.DB) {
+	t.Helper()
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(context.Background(), `PRAGMA foreign_keys=ON`); err != nil {
+		t.Fatalf("enable foreign keys: %v", err)
+	}
+	if _, err := db.ExecContext(context.Background(), `
+		CREATE TABLE beads (
+			id TEXT PRIMARY KEY
+		)`); err != nil {
+		t.Fatalf("create beads table: %v", err)
+	}
+	store, err := cards.NewStore(db)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	return store, db
+}
+
+func TestAppendAndQueryPending(t *testing.T) {
+	ctx := context.Background()
+	store, db := newTestStoreWithBeads(t)
+	if _, err := db.ExecContext(ctx, `INSERT INTO beads (id) VALUES (?)`, "bead-1"); err != nil {
+		t.Fatalf("insert bead: %v", err)
+	}
+	candidate := cards.CardCandidate{
+		Type:        string(cards.CardTypePattern),
+		Title:       "Prefer focused card APIs",
+		BodySummary: "Store pending learnings before promotion",
+		BodyFull:    "Workers append card candidates to bead_learnings_pending for later review.",
+		Confidence:  0.82,
+		Evidence:    []string{"go test ./pkg/cards/..."},
+		Tags:        []string{"cards", "learning"},
+	}
+
+	id, err := store.AppendLearningPending(ctx, "bead-1", candidate)
+	if err != nil {
+		t.Fatalf("AppendLearningPending: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("AppendLearningPending id = 0, want inserted row id")
+	}
+
+	var rawCandidate string
+	if err := db.QueryRowContext(ctx,
+		`SELECT candidate FROM bead_learnings_pending WHERE id = ?`, id,
+	).Scan(&rawCandidate); err != nil {
+		t.Fatalf("query raw candidate: %v", err)
+	}
+	var decoded cards.CardCandidate
+	if err := json.Unmarshal([]byte(rawCandidate), &decoded); err != nil {
+		t.Fatalf("candidate JSON: %v", err)
+	}
+	if decoded.Title != candidate.Title || decoded.Confidence != candidate.Confidence {
+		t.Fatalf("candidate persisted = %+v, want %+v", decoded, candidate)
+	}
+
+	promotedID, err := store.AppendLearningPending(ctx, "bead-1", candidate)
+	if err != nil {
+		t.Fatalf("AppendLearningPending promoted fixture: %v", err)
+	}
+	rejectedID, err := store.AppendLearningPending(ctx, "bead-1", candidate)
+	if err != nil {
+		t.Fatalf("AppendLearningPending rejected fixture: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO cards (id, type, title, body_summary, body_full, tags, decay_anchor, created_at, updated_at)
+		 VALUES ('card-terminal', 'pattern', 'terminal', 's', 'b', '[]', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatalf("insert terminal card: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`UPDATE bead_learnings_pending SET promoted_to = 'card-terminal' WHERE id = ?`, promotedID,
+	); err != nil {
+		t.Fatalf("mark promoted: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`UPDATE bead_learnings_pending SET rejected_at = '2026-01-01T00:00:00Z', reason = 'duplicate' WHERE id = ?`, rejectedID,
+	); err != nil {
+		t.Fatalf("mark rejected: %v", err)
+	}
+
+	pending, err := store.PendingLearnings(ctx, "bead-1")
+	if err != nil {
+		t.Fatalf("PendingLearnings: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("PendingLearnings count = %d, want 1", len(pending))
+	}
+	if pending[0].ID != id || pending[0].BeadID != "bead-1" {
+		t.Fatalf("PendingLearnings row = %+v, want id %d bead-1", pending[0], id)
+	}
+	if pending[0].Candidate.Title != candidate.Title {
+		t.Fatalf("PendingLearnings candidate title = %q, want %q", pending[0].Candidate.Title, candidate.Title)
+	}
+
+	_, err = store.AppendLearningPending(ctx, "missing-bead", candidate)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "foreign key") {
+		t.Fatalf("AppendLearningPending missing bead err = %v, want foreign key error", err)
+	}
 }
 
 func TestCardStoreRead(t *testing.T) {
