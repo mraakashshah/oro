@@ -1,3 +1,4 @@
+// Package leakscan detects credential-like strings and returns masked findings.
 package leakscan
 
 import (
@@ -12,18 +13,24 @@ import (
 type Severity string
 
 const (
+	// SeverityCritical marks credentials that should usually block output.
 	SeverityCritical Severity = "critical"
-	SeverityHigh     Severity = "high"
-	SeverityMedium   Severity = "medium"
+	// SeverityHigh marks credentials that are serious but may have redaction policies.
+	SeverityHigh Severity = "high"
+	// SeverityMedium marks suspicious values that usually warn.
+	SeverityMedium Severity = "medium"
 )
 
 // Action describes how callers should handle a matched leak.
 type Action string
 
 const (
-	ActionBlock  Action = "block"
+	// ActionBlock means callers should reject the scanned content.
+	ActionBlock Action = "block"
+	// ActionRedact means callers may continue with the redacted content.
 	ActionRedact Action = "redact"
-	ActionWarn   Action = "warn"
+	// ActionWarn means callers may continue after surfacing a warning.
+	ActionWarn Action = "warn"
 )
 
 // Pattern defines one secret detector.
@@ -35,12 +42,12 @@ type Pattern struct {
 	prefix   string
 }
 
-// Match is a single secret finding. Secret is always masked.
+// Match is a single secret finding. Masked is always first-four/last-four masked.
 type Match struct {
 	Pattern  string   `json:"pattern"`
 	Severity Severity `json:"severity"`
 	Action   Action   `json:"action"`
-	Secret   string   `json:"secret"`
+	Masked   string   `json:"masked"`
 	Start    int      `json:"start"`
 	End      int      `json:"end"`
 }
@@ -63,10 +70,12 @@ type SummaryMatch struct {
 	Pattern  string   `json:"pattern"`
 	Severity Severity `json:"severity"`
 	Action   Action   `json:"action"`
-	Secret   string   `json:"secret"`
+	Masked   string   `json:"masked"`
 }
 
 // DefaultPatterns returns the built-in RE2-compatible secret detectors.
+//
+//oro:testonly — production integration is deferred to the leakscan boundary wiring bead.
 func DefaultPatterns() []Pattern {
 	return []Pattern{
 		mustPattern("openai_api_key", `sk-(?:proj-)?[a-zA-Z0-9]{20,}(?:T3BlbkFJ[a-zA-Z0-9_-]*)?`, SeverityCritical, ActionBlock, "sk-"),
@@ -108,6 +117,8 @@ func Scan(content string, patterns []Pattern, allow Allowlist) Result {
 }
 
 // ScanDiff detects secrets only on added diff lines, ignoring removed lines and file headers.
+//
+//oro:testonly — production integration is deferred to the leakscan boundary wiring bead.
 func ScanDiff(diff string, patterns []Pattern, allow Allowlist) Result {
 	var added []string
 	for _, line := range strings.Split(diff, "\n") {
@@ -136,12 +147,14 @@ func Summarize(result Result) string {
 	}
 	parts := make([]string, 0, len(result.Matches))
 	for _, match := range result.Matches {
-		parts = append(parts, fmt.Sprintf("%s %s %s", match.Pattern, match.Action, match.Secret))
+		parts = append(parts, fmt.Sprintf("%s %s %s", match.Pattern, match.Action, match.Masked))
 	}
 	return strings.Join(parts, "\n")
 }
 
 // SummaryJSON returns a JSON summary that never includes raw secrets.
+//
+//oro:testonly — production integration is deferred to the leakscan boundary wiring bead.
 func SummaryJSON(result Result) []byte {
 	summary := make([]SummaryMatch, 0, len(result.Matches))
 	for _, match := range result.Matches {
@@ -149,7 +162,7 @@ func SummaryJSON(result Result) []byte {
 			Pattern:  match.Pattern,
 			Severity: match.Severity,
 			Action:   match.Action,
-			Secret:   match.Secret,
+			Masked:   match.Masked,
 		})
 	}
 	data, err := json.Marshal(summary)
@@ -177,14 +190,14 @@ func scanMatches(content string, patterns []Pattern, allow Allowlist) []Match {
 		}
 		for _, loc := range pattern.Re.FindAllStringIndex(content, -1) {
 			raw := content[loc[0]:loc[1]]
-			if allow.Contains(pattern.Name, raw) {
+			if allow.contains(pattern.Name, raw) {
 				continue
 			}
 			matches = append(matches, Match{
 				Pattern:  pattern.Name,
 				Severity: pattern.Severity,
 				Action:   pattern.Action,
-				Secret:   Mask(raw),
+				Masked:   Mask(raw),
 				Start:    loc[0],
 				End:      loc[1],
 			})
@@ -200,7 +213,7 @@ func hasPrefix(content, prefix string) bool {
 	return strings.Contains(strings.ToLower(content), strings.ToLower(prefix))
 }
 
-func (allow Allowlist) Contains(pattern, secret string) bool {
+func (allow Allowlist) contains(pattern, secret string) bool {
 	for _, allowedPattern := range allow.Patterns {
 		if allowedPattern == pattern {
 			return true
@@ -229,7 +242,7 @@ func redact(content string, matches []Match) string {
 			continue
 		}
 		b.WriteString(content[cursor:match.Start])
-		b.WriteString(match.Secret)
+		b.WriteString(match.Masked)
 		cursor = match.End
 	}
 	b.WriteString(content[cursor:])
