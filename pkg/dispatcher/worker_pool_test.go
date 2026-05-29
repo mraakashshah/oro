@@ -591,6 +591,122 @@ func TestReconnectStaleConnCleanupPreservesLiveWorker(t *testing.T) {
 	}
 }
 
+func TestWorkerReachableThroughAssignment(t *testing.T) {
+	t.Parallel()
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+
+	ctx := context.Background()
+	workerID := "worker-assignment-reconnect"
+	beadID := "bead-assignment-reconnect"
+	conn1 := newMockConn()
+
+	wtMgr.createFn = func(_ context.Context, gotBeadID, _ string) (string, string, error) {
+		if gotBeadID != beadID {
+			t.Fatalf("worktree create beadID = %q, want %q", gotBeadID, beadID)
+		}
+		return "/tmp/" + beadID, "branch-" + beadID, nil
+	}
+
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Assignment reconnect",
+		Status:             "open",
+		AcceptanceCriteria: "Test: reachable | Cmd: go test ./pkg/dispatcher | Assert: pass",
+	}
+	beadSrc.mu.Unlock()
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:      workerID,
+		conn:    conn1,
+		state:   protocol.WorkerIdle,
+		encoder: json.NewEncoder(conn1),
+	}
+	w := d.workers[workerID]
+	d.mu.Unlock()
+
+	if err := d.assignBead(ctx, w, protocol.Bead{ID: beadID, Title: "Assignment reconnect", Priority: 0}); err != nil {
+		t.Fatalf("assignBead: %v", err)
+	}
+	if got := beadSrc.updated[beadID]; got != "in_progress" {
+		t.Fatalf("assigned bead status = %q, want in_progress", got)
+	}
+	conn1.mu.Lock()
+	conn1Writes := len(conn1.written)
+	conn1.mu.Unlock()
+
+	conn2 := newMockConn()
+	d.registerWorker(workerID, conn2)
+	d.connCloseCleanup(workerID, conn1)
+
+	d.mu.Lock()
+	live, exists := d.workers[workerID]
+	if !exists {
+		d.mu.Unlock()
+		t.Fatal("worker disappeared after reconnect and stale cleanup")
+	}
+	if live.conn != conn2 {
+		d.mu.Unlock()
+		t.Fatal("live worker is not using reconnected conn2")
+	}
+	if live.beadID != beadID || live.state != protocol.WorkerBusy {
+		d.mu.Unlock()
+		t.Fatalf("assignment metadata not preserved after reconnect: bead=%q state=%s", live.beadID, live.state)
+	}
+	err := d.sendToWorker(live, protocol.Message{
+		Type: protocol.MsgPrepareShutdown,
+		PrepareShutdown: &protocol.PrepareShutdownPayload{
+			Timeout: time.Second,
+		},
+	})
+	pending := len(live.pendingMsgs)
+	d.mu.Unlock()
+	if err != nil {
+		t.Fatalf("dispatcher write to reconnected worker returned error: %v", err)
+	}
+	if pending != 0 {
+		t.Fatalf("pendingMsgs length = %d, want 0", pending)
+	}
+	conn2.mu.Lock()
+	conn2Writes := append([][]byte(nil), conn2.written...)
+	conn2.mu.Unlock()
+	if len(conn2Writes) == 0 {
+		t.Fatal("dispatcher write was not delivered to conn2")
+	}
+	var delivered protocol.Message
+	if err := json.Unmarshal(conn2Writes[len(conn2Writes)-1], &delivered); err != nil {
+		t.Fatalf("decode conn2 write: %v", err)
+	}
+	if delivered.Type != protocol.MsgPrepareShutdown {
+		t.Fatalf("conn2 delivered message = %s, want PREPARE_SHUTDOWN", delivered.Type)
+	}
+	conn1.mu.Lock()
+	conn1WritesAfter := len(conn1.written)
+	conn1.mu.Unlock()
+	if conn1WritesAfter != conn1Writes {
+		t.Fatalf("stale conn1 received dispatcher write: before=%d after=%d", conn1Writes, conn1WritesAfter)
+	}
+
+	statusTime := time.Now().Add(time.Hour)
+	d.nowFunc = func() time.Time { return statusTime }
+	d.handleMessage(ctx, workerID, protocol.Message{
+		Type: protocol.MsgStatus,
+		Status: &protocol.StatusPayload{
+			WorkerID: workerID,
+			BeadID:   beadID,
+			State:    "running",
+		},
+	})
+
+	d.mu.Lock()
+	gotProgress := d.workers[workerID].lastProgress
+	d.mu.Unlock()
+	if !gotProgress.Equal(statusTime) {
+		t.Fatalf("worker STATUS did not round-trip through dispatcher progress: got %v want %v", gotProgress, statusTime)
+	}
+}
+
 // --- ConnectedWorkers tests ---
 
 // TestConnectedWorkers_ReturnsCorrectCount verifies the count is accurate.
