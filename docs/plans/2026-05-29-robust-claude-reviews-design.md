@@ -44,7 +44,12 @@ Four compounding causes:
 | `pkg/ops/exec_spawner.go:54-61, 155-157` | `claude -p <prompt> --model <model>`, no streaming; stdout buffered, read post-`Wait()` |
 | `pkg/ops/ops.go:126-137, 470-506` | `OpsReview` timeout 35 min, `--ops-review-timeout` override; `waitForProcess` is wall-clock only |
 | `pkg/ops/review_prompt.go` | Review prompt mandates `git diff` + file reads + acceptance command — cannot be tool-free |
-| `pkg/codesearch/claude_spawner.go:60` | Precedent: `--output-format json` already used |
+| `pkg/worker/worker.go:1884` | **Real stream-json precedent:** `["-p", prompt, "--model", model, "--verbose", "--output-format", "stream-json"]` |
+| `pkg/worker/streamjson.go:43` | `ParseStreamEvent(line []byte) Activity` — the NDJSON line parser to reuse (NOT codesearch's single-envelope `json.Unmarshal`) |
+| `pkg/worker/worker.go:240,1039,1535,1942` | Proven idle-tracking pattern: `lastSubprocOutputAt` updated per `StdoutPipe` line |
+| `pkg/ops/exec_spawner.go:118,155` | `buildClaudeOpsArgs` is the **shared** `BuildArgs` for ALL ops types (review/merge/decompose/escalation) — a global switch breaks the others |
+| `pkg/ops/ops.go:28` | `Process` interface = `Wait/Kill/Output` only — no accessor for an idle timestamp |
+| `pkg/ops/ops.go:~642` (parseReviewOutput) / `decompose_prompt.go:64` | Review verdict parse scans final line; decompose uses `strings.Contains` — both consume raw stdout, both break on NDJSON unless result text is extracted first |
 | `~/.claude/skills/adversarial-spec-review/SKILL.md:236-247` | "Running as a Subagent" gives the invocation with NO budget/streaming/early-flush guidance |
 | `docs/decisions&discoveries.md`, `docs/plans/*` | No prior decision/design on review streaming or timeout — genuinely new |
 
@@ -87,15 +92,46 @@ Streaming** subsection:
 
 ### Part B — Durable oro ops-review fix (`pkg/ops`)
 
-- **B1.** `exec_spawner.go` — stream stdout incrementally (`os.Pipe` +
-  `bufio.Scanner`) instead of buffer-then-read-post-`Wait()`; accumulate full
-  output **and** track a last-output timestamp.
-- **B2.** `buildClaudeOpsArgs` — add `--output-format stream-json --verbose`;
-  parse the `result` event for the terminal `VERDICT`, with a **fallback** to
-  the existing text `VERDICT:` scan for robustness.
+**Coupling note:** plain `claude -p` only flushes at completion, so incremental
+reading is worthless without stream-json. B1 and B2 are therefore coupled, and
+stream-json is mandatory for any progress signal. Adversarial review added B0
+(the idle signal had no consumer) and forced OpsReview-scoping (the args are
+shared across all ops types).
+
+- **B0. Extend the `Process` interface** (`ops.go:28`) with
+  `LastOutputAt() time.Time` (or an idle channel). Without this, B1's timestamp
+  lives on the concrete `opsProcess` and `waitForProcess` (holding only the
+  interface) cannot read it — the idle-watchdog would have nothing to watch.
+  **Blocks B1 and B3.**
+- **B1.** `exec_spawner.go` — stream stdout incrementally via `cmd.StdoutPipe()`
+  + `bufio.Scanner`, **mirroring `pkg/worker`'s proven pattern**, not reinventing
+  with `os.Pipe`. Update `opsProcess.lastOutputAt` per line; still accumulate the
+  full output for parsing. Implement `LastOutputAt()` from B0.
+- **B2.** Emit `--verbose --output-format stream-json` **scoped to OpsReview
+  only** (per-type `BuildArgs` or a review-specific spawner — do NOT change the
+  shared `buildClaudeOpsArgs` globally, or merge/decompose/escalation parsers
+  break). Reuse `pkg/worker.ParseStreamEvent` to extract the assistant's final
+  text from the `result` event, then feed **that text** to `parseReviewOutput`.
+  Keep a text-scan fallback. Merge/decompose/escalation stay on plain output.
 - **B3.** `ops.go:waitForProcess` — keep the 35-min ceiling, **add an
-  idle-watchdog** that kills early with a distinct "review wedged (no output for
-  Nm)" error, so a truly hung review fails fast instead of burning 35 min.
+  idle-watchdog** that reads `LastOutputAt()` (B0) and kills early with a
+  distinct "review wedged (no output for Nm)" error. **Steady streaming must NOT
+  trigger it** — only a true gap. Idle threshold configurable (like
+  `--ops-review-timeout`).
+
+### Acceptance tests (machine-verifiable)
+
+- **B0/B1/B2 boundary:** feed a recorded real stream-json review transcript
+  through `opsProcess.Output()` → `parseReviewOutput` → dispatcher
+  `handleReviewResult`; assert `VerdictApproved`/`VerdictRejected`, **not**
+  `VerdictFailed`. (Catches the NDJSON-breaks-final-line-scan regression.)
+- **B3 idle-watchdog (time-driven):** a `Process` fake that emits lines then
+  stalls → asserts the distinct "wedged" error before the 35-min ceiling; a fake
+  that streams steadily for >threshold → asserts **no** kill.
+- **Regression:** `parseMergeOutput`/`parseDecomposeOutput` still parse correctly
+  (their path is unchanged — proves B2 scoping held).
+- Cmd (epic acceptance): `go test ./pkg/ops/... ./pkg/dispatcher/... -count=1`
+  Assert: exit 0 with the above tests present and green.
 
 ### Deferred — B4 (tracked as follow-up bead, NOT built now)
 
@@ -112,16 +148,25 @@ dispatcher blast radius + review starvation.
 | stream-json schema drift across claude versions | real | Parse defensively; keep text `VERDICT:` scan fallback (B2) |
 | Idle-watchdog false-positive on a long silent think | real | Verified `thinking_tokens` + assistant deltas stream → real work emits output; idle threshold ≥120-180s |
 | "Streaming changes the output contract" | paper tiger | stream-json is transport; final verdict still emitted, parsed from `result` |
-| Skill is just markdown — operator may not follow it | real | Part B enforces the same behavior durably in code; A is necessary-not-sufficient |
+| Skill is just markdown — operator may not follow it | real | **Part A is advisory-only / unverifiable by an automated gate.** Part B enforces the same behavior durably in code; A is necessary-not-sufficient |
 | Saturation still blows even a bigger budget | real | A3 serialize + A4 bounded reading reduce review cost, not just raise the ceiling |
+| Global stream-json switch breaks merge/decompose/escalation parsers | critical (adversarial) | B2 scopes stream-json to OpsReview **only**; regression test proves merge/decompose unchanged |
+| B1 idle signal has no consumer (interface boundary) | critical (adversarial) | B0 extends `Process` with `LastOutputAt()`; B3 reads it; B0 blocks B1/B3 |
+| stream-json final line is a JSON `result` event → `parseReviewOutput` returns `VerdictFailed` | critical (adversarial) | B2 extracts result-event text via `ParseStreamEvent` first, then parses; boundary integration test asserts `VerdictApproved` |
+| Idle-watchdog false-kill during long final tool exec (acceptance command) | important (adversarial) | Measure max inter-event gap on a representative multi-package review **before** fixing threshold; make it configurable; ≥120-180s floor |
 
 **Load-bearing assumption (VERIFIED):** `claude -p --output-format stream-json
---verbose` emits incrementally.
+--verbose` emits incrementally — and `pkg/worker` already depends on this in
+production, so B1/B2/B3 reuse a proven path rather than a new bet.
 
 ## Sequencing & blast radius
 
 1. **Part A** (skill markdown) — unblocks the P0 review path, no oro code risk, reversible.
-2. **Part B** (`pkg/ops` Go) — durable; TDD, decomposed into beads. Blast radius confined to `pkg/ops`; B2 output-parsing change is medium-reversibility (behind the spawner interface, with fallback).
+2. **Part B** (`pkg/ops` Go) — durable; TDD, decomposed into beads. Dependency
+   order: **B0 → B1 → B2**, **B0 → B3** (B0 unblocks both; B2 needs B1's stream
+   infra). Blast radius confined to `pkg/ops` (B2 is OpsReview-scoped, so
+   merge/decompose/escalation are untouched); output-parsing change is
+   medium-reversibility (behind the spawner interface, with text-scan fallback).
 
 ## Out of scope
 
