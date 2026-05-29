@@ -546,7 +546,7 @@ func TestDispatcherWorker_GracefulShutdown(t *testing.T) {
 }
 
 // TestDispatcherWorker_Heartbeat verifies that the worker's heartbeat messages
-// are received and processed by the dispatcher, keeping the worker alive.
+// are received and processed by the dispatcher without durable heartbeat writes.
 func TestDispatcherWorker_Heartbeat(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")
@@ -621,18 +621,16 @@ func TestDispatcherWorker_Heartbeat(t *testing.T) {
 		return d.ConnectedWorkers() >= 1
 	})
 
-	// Verify heartbeat event was logged
-	waitFor(t, 2*time.Second, "heartbeat event logged", func() bool {
-		return eventCount(t, db, "heartbeat") > 0
-	})
+	if got := eventCount(t, db, "heartbeat"); got != 0 {
+		t.Fatalf("heartbeat events persisted durably = %d, want 0", got)
+	}
 
 	// Send a second heartbeat with higher context usage
 	if err := w.SendHeartbeat(ctx, 45); err != nil {
 		t.Fatalf("send second heartbeat: %v", err)
 	}
 
-	// Verify second heartbeat was also recorded
-	waitFor(t, 2*time.Second, "second heartbeat logged", func() bool {
-		return eventCount(t, db, "heartbeat") >= 2
+	waitFor(t, 2*time.Second, "worker remains registered after second heartbeat", func() bool {
+		return d.ConnectedWorkers() >= 1 && eventCount(t, db, "heartbeat") == 0
 	})
 }

@@ -1394,6 +1394,168 @@ func eventCount(t *testing.T, db *sql.DB, evType string) int {
 	return count
 }
 
+func sseEventCount(bc *mockSSEBroadcaster, evType string) int {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	var count int
+	for _, call := range bc.sendCalls {
+		if call.EventType == evType {
+			count++
+		}
+	}
+	return count
+}
+
+func TestHeartbeatsNotPersistedDurably(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	defer func() {
+		if d.db != nil {
+			_ = d.db.Close()
+		}
+	}()
+	d.sseBroadcaster = &mockSSEBroadcaster{}
+	d.cfg.CheckpointThreshold = 75
+	now := time.Date(2026, 5, 29, 1, 0, 0, 0, time.UTC)
+	d.nowFunc = func() time.Time { return now }
+
+	ctx := context.Background()
+	workerID := "worker-heartbeat"
+	beadID := "oro-heartbeat"
+	previousProgress := now.Add(-time.Minute)
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		state:        protocol.WorkerBusy,
+		lastSeen:     now.Add(-time.Hour),
+		lastProgress: previousProgress,
+		contextPct:   10,
+	}
+	d.mu.Unlock()
+
+	for _, pct := range []int{50, 80} {
+		d.handleHeartbeat(ctx, workerID, protocol.Message{
+			Type: protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{
+				WorkerID:   workerID,
+				BeadID:     beadID,
+				ContextPct: pct,
+			},
+		})
+	}
+
+	if got := eventCount(t, d.db, "heartbeat"); got != 0 {
+		t.Fatalf("heartbeat events persisted durably = %d, want 0", got)
+	}
+	if got := eventCount(t, d.db, "checkpoint_requested"); got != 1 {
+		t.Fatalf("checkpoint_requested events = %d, want 1", got)
+	}
+	if cp := d.checkpoints.get(beadID); cp == nil {
+		t.Fatal("expected checkpoint threshold trigger to remain wired")
+	}
+
+	d.mu.Lock()
+	worker := d.workers[workerID]
+	if !worker.lastSeen.Equal(now) {
+		t.Errorf("lastSeen = %s, want %s", worker.lastSeen, now)
+	}
+	if worker.contextPct != 80 {
+		t.Errorf("contextPct = %d, want 80", worker.contextPct)
+	}
+	if !worker.lastProgress.Equal(now) {
+		t.Errorf("lastProgress = %s, want %s", worker.lastProgress, now)
+	}
+	d.mu.Unlock()
+
+	mockBc := d.sseBroadcaster.(*mockSSEBroadcaster)
+	var heartbeatBroadcasts int
+	for _, call := range mockBc.sendCalls {
+		if call.EventType == "heartbeat" && call.BeadID == beadID && call.WorkerID == workerID {
+			heartbeatBroadcasts++
+		}
+	}
+	if heartbeatBroadcasts != 2 {
+		t.Fatalf("heartbeat SSE broadcasts = %d, want 2", heartbeatBroadcasts)
+	}
+
+	d.handleStatus(ctx, workerID, protocol.Message{
+		Type: protocol.MsgStatus,
+		Status: &protocol.StatusPayload{
+			WorkerID: workerID,
+			BeadID:   beadID,
+			State:    "running",
+			Result:   "ok",
+		},
+	})
+	if got := eventCount(t, d.db, "status"); got != 0 {
+		t.Fatalf("routine status events persisted durably = %d, want 0", got)
+	}
+
+	d.handleStatus(ctx, workerID, protocol.Message{
+		Type: protocol.MsgStatus,
+		Status: &protocol.StatusPayload{
+			WorkerID: workerID,
+			BeadID:   beadID,
+			State:    "qg_retry_received",
+			Result:   "retry",
+		},
+	})
+	if got := eventCount(t, d.db, "qg_retry_received"); got != 1 {
+		t.Fatalf("qg_retry_received events = %d, want 1", got)
+	}
+}
+
+func TestEventRetention(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	ts := func(t time.Time) string {
+		return t.Format("2006-01-02 15:04:05")
+	}
+
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO events (type, source, created_at) VALUES
+			('old', 'test', ?),
+			('inside', 'test', ?),
+			('boundary', 'test', ?)`,
+		ts(now.Add(-48*time.Hour)), ts(now.Add(-12*time.Hour)), ts(now))
+	if err != nil {
+		t.Fatalf("seed events: %v", err)
+	}
+
+	pruned, err := PruneEvents(ctx, db, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("PruneEvents: %v", err)
+	}
+	if pruned != 1 {
+		t.Fatalf("PruneEvents pruned %d rows, want 1", pruned)
+	}
+	if got := eventCount(t, db, "boundary"); got != 1 {
+		t.Fatalf("boundary event count = %d, want 1", got)
+	}
+
+	pruned, err = PruneEvents(ctx, db, 0)
+	if err != nil {
+		t.Fatalf("PruneEvents zero retention: %v", err)
+	}
+	if pruned != 0 {
+		t.Fatalf("zero retention pruned %d rows, want 0", pruned)
+	}
+	if got := eventCount(t, db, "boundary"); got != 1 {
+		t.Fatalf("boundary event count after zero retention = %d, want 1", got)
+	}
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO events (type, source, created_at) VALUES ('sweep_old', 'test', ?)`,
+		ts(now.Add(-72*time.Hour))); err != nil {
+		t.Fatalf("seed sweep event: %v", err)
+	}
+	run60MinSweepers(ctx, db, 24*time.Hour, 60)
+	if got := eventCount(t, db, "sweep_old"); got != 0 {
+		t.Fatalf("60-minute sweep retained %d old events, want 0", got)
+	}
+}
+
 // getLogEvents retrieves all event types and payloads from the dispatcher's event log.
 // Returns formatted strings like "epic_branch_pending: ..."
 func getLogEvents(t *testing.T, d *Dispatcher) []string {
@@ -5322,8 +5484,10 @@ func TestState_Constants(t *testing.T) {
 
 // --- New coverage tests ---
 
-func TestHandleStatus_LogsEvent(t *testing.T) {
+func TestHandleStatus_BroadcastsRoutineStatus(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
+	mockBc := &mockSSEBroadcaster{}
+	d.sseBroadcaster = mockBc
 	startDispatcher(t, d)
 
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
@@ -5344,10 +5508,14 @@ func TestHandleStatus_LogsEvent(t *testing.T) {
 		},
 	})
 
-	// Wait for status event
+	// Routine status is live-only: broadcast for dashboards/log followers, but
+	// not written to the durable events table.
 	waitFor(t, func() bool {
-		return eventCount(t, d.db, "status") > 0
+		return sseEventCount(mockBc, "status") > 0
 	}, 1*time.Second)
+	if got := eventCount(t, d.db, "status"); got != 0 {
+		t.Fatalf("routine status events persisted durably = %d, want 0", got)
+	}
 }
 
 func TestHandleStatus_QGRetryReceivedLogsSpecificEvent(t *testing.T) {
@@ -5582,6 +5750,8 @@ func TestHandleReconnect_IdleState(t *testing.T) {
 
 func TestHandleReconnect_WithBufferedEvents(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
+	mockBc := &mockSSEBroadcaster{}
+	d.sseBroadcaster = mockBc
 	startDispatcher(t, d)
 
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
@@ -5605,10 +5775,13 @@ func TestHandleReconnect_WithBufferedEvents(t *testing.T) {
 
 	waitForWorkerState(t, d, "w-buffered", protocol.WorkerBusy, 1*time.Second)
 
-	// The buffered heartbeat should have been processed — check event
+	// The buffered heartbeat should be processed as live-only state.
 	waitFor(t, func() bool {
-		return eventCount(t, d.db, "heartbeat") > 0
+		return sseEventCount(mockBc, "heartbeat") > 0
 	}, 1*time.Second)
+	if got := eventCount(t, d.db, "heartbeat"); got != 0 {
+		t.Fatalf("buffered heartbeat events persisted durably = %d, want 0", got)
+	}
 }
 
 func TestHandleReconnect_NilPayload(t *testing.T) {

@@ -180,6 +180,28 @@ func SweepDeletedBeadLearnings(ctx context.Context, db *sql.DB) (int64, error) {
 	return n, nil
 }
 
+// PruneEvents removes durable dispatcher events older than retain.
+// A non-positive retain duration is a no-op so a missing config cannot delete
+// the full event log on the first sweep.
+func PruneEvents(ctx context.Context, db *sql.DB, retain time.Duration) (int64, error) {
+	if db == nil || retain <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().UTC().Add(-retain).Format("2006-01-02 15:04:05")
+	res, err := db.ExecContext(ctx, `
+		DELETE FROM events
+		 WHERE datetime(created_at) < datetime(?)`,
+		cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("sweep: prune events: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("sweep: prune events rows affected: %w", err)
+	}
+	return n, nil
+}
+
 // exportBeads calls store.Export and decodes the JSONL result.
 func exportBeads(ctx context.Context, store beadstore.Store) ([]protocol.Bead, error) {
 	out, err := store.Export(ctx)

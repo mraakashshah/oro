@@ -1694,7 +1694,7 @@ func (d *Dispatcher) handleHeartbeat(ctx context.Context, workerID string, msg p
 	}
 	d.mu.Unlock()
 
-	_ = d.logEvent(ctx, "heartbeat", workerID, msg.Heartbeat.BeadID, workerID, "")
+	d.broadcastEvent("heartbeat", msg.Heartbeat.BeadID, workerID)
 
 	// Trigger a checkpoint when context usage crosses the configured threshold
 	// and no checkpoint is already in-flight for this bead (§9.3).
@@ -1715,8 +1715,12 @@ func (d *Dispatcher) handleStatus(ctx context.Context, workerID string, msg prot
 	if msg.Status.State == "qg_retry_received" {
 		evType = "qg_retry_received"
 	}
-	_ = d.logEvent(ctx, evType, workerID, msg.Status.BeadID, workerID,
-		fmt.Sprintf(`{"state":%q,"result":%q}`, msg.Status.State, msg.Status.Result))
+	payload := fmt.Sprintf(`{"state":%q,"result":%q}`, msg.Status.State, msg.Status.Result)
+	if evType == "qg_retry_received" {
+		_ = d.logEvent(ctx, evType, workerID, msg.Status.BeadID, workerID, payload)
+		return
+	}
+	d.broadcastEvent(evType, msg.Status.BeadID, workerID)
 }
 
 func (d *Dispatcher) handleDone(ctx context.Context, workerID string, msg protocol.Message) {
@@ -7447,9 +7451,7 @@ func (d *Dispatcher) logEvent(ctx context.Context, evType, source, beadID, worke
 	if err != nil {
 		return fmt.Errorf("log event: %w", err)
 	}
-	if d.sseBroadcaster != nil {
-		d.sseBroadcaster.Send(evType, beadID, workerID)
-	}
+	d.broadcastEvent(evType, beadID, workerID)
 	return nil
 }
 
@@ -7462,10 +7464,14 @@ func (d *Dispatcher) logEventLocked(ctx context.Context, evType, source, beadID,
 	if err != nil {
 		return fmt.Errorf("log event: %w", err)
 	}
+	d.broadcastEvent(evType, beadID, workerID)
+	return nil
+}
+
+func (d *Dispatcher) broadcastEvent(evType, beadID, workerID string) {
 	if d.sseBroadcaster != nil {
 		d.sseBroadcaster.Send(evType, beadID, workerID)
 	}
-	return nil
 }
 
 // escalate sends a message to the Manager via the escalator and logs any

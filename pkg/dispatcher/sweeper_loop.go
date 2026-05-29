@@ -10,9 +10,10 @@ import (
 // SweepConfig controls tick intervals for the sweep loop.
 // Zero values are replaced by production defaults via withDefaults.
 type SweepConfig struct {
-	Interval5m  time.Duration // 5-min sweeper tick interval (default 5 minutes)
-	Interval60m time.Duration // 60-min sweeper tick interval (default 60 minutes)
-	SLADays     int           // review-queue SLA in days for ExpireReviewQueueSLA (default 60)
+	Interval5m     time.Duration // 5-min sweeper tick interval (default 5 minutes)
+	Interval60m    time.Duration // 60-min sweeper tick interval (default 60 minutes)
+	EventRetention time.Duration // event-log retention window for PruneEvents (default 7 days)
+	SLADays        int           // review-queue SLA in days for ExpireReviewQueueSLA (default 60)
 }
 
 func (c SweepConfig) withDefaults() SweepConfig {
@@ -21,6 +22,9 @@ func (c SweepConfig) withDefaults() SweepConfig {
 	}
 	if c.Interval60m == 0 {
 		c.Interval60m = 60 * time.Minute
+	}
+	if c.EventRetention == 0 {
+		c.EventRetention = 7 * 24 * time.Hour
 	}
 	if c.SLADays == 0 {
 		c.SLADays = 60
@@ -35,7 +39,7 @@ func (c SweepConfig) withDefaults() SweepConfig {
 //
 //	SweepDeletedBeadLearnings (when db != nil)
 //
-// Every Interval60m: ExpireReviewQueueSLA (when db != nil)
+// Every Interval60m: PruneEvents and ExpireReviewQueueSLA (when db != nil)
 func RunSweepLoop(ctx context.Context, store DeferredStore, db *sql.DB, cfg SweepConfig) {
 	cfg = cfg.withDefaults()
 
@@ -51,7 +55,7 @@ func RunSweepLoop(ctx context.Context, store DeferredStore, db *sql.DB, cfg Swee
 		case <-t5.C:
 			run5MinSweepers(ctx, store, db)
 		case <-t60.C:
-			run60MinSweepers(ctx, db, cfg.SLADays)
+			run60MinSweepers(ctx, db, cfg.EventRetention, cfg.SLADays)
 		}
 	}
 }
@@ -70,9 +74,12 @@ func run5MinSweepers(ctx context.Context, store DeferredStore, db *sql.DB) {
 	}
 }
 
-func run60MinSweepers(ctx context.Context, db *sql.DB, slaDays int) {
+func run60MinSweepers(ctx context.Context, db *sql.DB, eventRetention time.Duration, slaDays int) {
 	if db == nil {
 		return
+	}
+	if _, err := PruneEvents(ctx, db, eventRetention); err != nil {
+		slog.WarnContext(ctx, "sweep: PruneEvents failed", "err", err)
 	}
 	if _, err := ExpireReviewQueueSLA(ctx, db, slaDays); err != nil {
 		slog.WarnContext(ctx, "sweep: ExpireReviewQueueSLA failed", "err", err)

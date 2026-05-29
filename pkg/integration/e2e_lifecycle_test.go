@@ -130,8 +130,9 @@ func TestE2E_FullLifecycle(t *testing.T) {
 	if err := w.SendHeartbeat(ctx, 25); err != nil {
 		t.Fatalf("mid-work heartbeat: %v", err)
 	}
-	waitFor(t, 2*time.Second, "heartbeat event logged", func() bool {
-		return eventCount(t, db, "heartbeat") >= 2
+	waitFor(t, 2*time.Second, "heartbeat processed without durable log", func() bool {
+		st, bid, ok := d.WorkerInfo("w-e2e-1")
+		return ok && st == protocol.WorkerBusy && bid == "e2e-bead-1" && eventCount(t, db, "heartbeat") == 0
 	})
 
 	// --- Phase 5: Done with QG passed ---
