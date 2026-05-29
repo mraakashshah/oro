@@ -21,8 +21,10 @@ type Store interface {
 	Relevant(ctx context.Context, q RelevanceQuery) (RelevantCards, error)
 	Show(ctx context.Context, id string) (*Card, error)
 	List(ctx context.Context, q ListQuery) ([]Card, error)
+	PendingLearnings(ctx context.Context, beadID string) ([]PendingLearning, error)
 
 	RecordCardEvent(ctx context.Context, e CardEvent) error
+	AppendLearningPending(ctx context.Context, beadID string, c CardCandidate) (int64, error)
 	Create(ctx context.Context, c CardCreateParams) (*Card, error)
 	Retire(ctx context.Context, id, reason string, supersededBy string) error
 
@@ -175,11 +177,64 @@ func scanCard(row interface { //nolint:funlen // 18-column SELECT requires 18 Sc
 	return c, nil
 }
 
+func scanPendingLearning(row interface {
+	Scan(...any) error
+},
+) (PendingLearning, error) {
+	var (
+		pending           PendingLearning
+		ts                string
+		rawCandidate      string
+		promotedTo        sql.NullString
+		rejectedAt        sql.NullString
+		reason            sql.NullString
+		queuedForReviewAt sql.NullString
+	)
+	if err := row.Scan(
+		&pending.ID, &pending.BeadID, &ts, &rawCandidate,
+		&promotedTo, &rejectedAt, &reason, &queuedForReviewAt,
+	); err != nil {
+		return PendingLearning{}, fmt.Errorf("scan pending learning row: %w", err)
+	}
+	parsedTS, err := parseTime(ts)
+	if err != nil {
+		return PendingLearning{}, fmt.Errorf("parse pending learning ts: %w", err)
+	}
+	pending.TS = parsedTS
+	if err := json.Unmarshal([]byte(rawCandidate), &pending.Candidate); err != nil {
+		return PendingLearning{}, fmt.Errorf("parse pending learning candidate: %w", err)
+	}
+	if promotedTo.Valid {
+		pending.PromotedTo = &promotedTo.String
+	}
+	if rejectedAt.Valid {
+		parsedRejectedAt, err := parseTime(rejectedAt.String)
+		if err != nil {
+			return PendingLearning{}, fmt.Errorf("parse pending learning rejected_at: %w", err)
+		}
+		pending.RejectedAt = &parsedRejectedAt
+	}
+	if reason.Valid {
+		pending.Reason = &reason.String
+	}
+	if queuedForReviewAt.Valid {
+		parsedQueuedAt, err := parseTime(queuedForReviewAt.String)
+		if err != nil {
+			return PendingLearning{}, fmt.Errorf("parse pending learning queued_for_review_at: %w", err)
+		}
+		pending.QueuedForReviewAt = &parsedQueuedAt
+	}
+	return pending, nil
+}
+
 const cardSelectCols = `
   id, type, title, body_summary, body_full, body_deep,
   tags, score, promotion_confidence, decay_anchor,
   last_contradicted_at, last_nacked_at, created_at, updated_at,
   retired_at, superseded_by, emerged_from, retired_reason`
+
+const pendingLearningSelectCols = `
+  id, bead_id, ts, candidate, promoted_to, rejected_at, reason, queued_for_review_at`
 
 // --- Store methods ---
 
@@ -244,6 +299,31 @@ func (s *SQLiteCardStore) List(ctx context.Context, q ListQuery) ([]Card, error)
 		return nil, fmt.Errorf("list cards rows: %w", err)
 	}
 	return cards, nil
+}
+
+// PendingLearnings returns pending, non-terminal learning candidates for a bead.
+func (s *SQLiteCardStore) PendingLearnings(ctx context.Context, beadID string) ([]PendingLearning, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT`+pendingLearningSelectCols+`
+		FROM bead_learnings_pending
+		WHERE bead_id = ? AND promoted_to IS NULL AND rejected_at IS NULL
+		ORDER BY id ASC`, beadID)
+	if err != nil {
+		return nil, fmt.Errorf("query pending learnings: %w", err)
+	}
+	defer rows.Close()
+
+	var pending []PendingLearning
+	for rows.Next() {
+		learning, err := scanPendingLearning(rows)
+		if err != nil {
+			return nil, err
+		}
+		pending = append(pending, learning)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pending learnings rows: %w", err)
+	}
+	return pending, nil
 }
 
 // Relevant returns cards relevant to the query, sorted by effective score × relevance weight.
@@ -464,6 +544,25 @@ func beadTypeMatch(cardType CardType, beadType string) float64 {
 func estimateTokens(s string) int {
 	// Rough approximation: 1 token ≈ 4 characters.
 	return int(math.Ceil(float64(len(s)) / 4.0))
+}
+
+// AppendLearningPending inserts a worker-emitted card candidate for later review.
+func (s *SQLiteCardStore) AppendLearningPending(ctx context.Context, beadID string, c CardCandidate) (int64, error) {
+	candidate, err := json.Marshal(c)
+	if err != nil {
+		return 0, fmt.Errorf("marshal pending learning candidate: %w", err)
+	}
+	result, err := s.db.ExecContext(ctx, `
+		INSERT INTO bead_learnings_pending (bead_id, ts, candidate)
+		VALUES (?, ?, ?)`, beadID, nowRFC3339(), string(candidate))
+	if err != nil {
+		return 0, fmt.Errorf("append pending learning: %w", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("pending learning last insert id: %w", err)
+	}
+	return id, nil
 }
 
 // Create inserts a new card and returns it.
