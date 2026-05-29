@@ -1027,9 +1027,7 @@ ORDER BY id`, beadID)
 			}
 			return nil
 		},
-		HandoffInserter: func(cardStore cards.Store) MemoryInserter {
-			return store
-		},
+		HandoffInserter: HandoffInserter,
 	}
 }
 
@@ -6905,8 +6903,9 @@ func TestHandleHandoffPreservesEpicContext(t *testing.T) {
 	}
 }
 
-func TestDispatcher_Handoff_PersistsLearningsAsMemories(t *testing.T) {
+func TestDispatcher_Handoff_PersistsLearningsAsCards(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	insertDispatcherTestBead(t, d.db, "bead-mem", "task", "", "memory handoff test")
 	startDispatcher(t, d)
 
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
@@ -6953,31 +6952,39 @@ func TestDispatcher_Handoff_PersistsLearningsAsMemories(t *testing.T) {
 		return eventCount(t, d.db, "handoff") > 0
 	}, 1*time.Second)
 
-	// Verify memories were persisted: 2 learnings + 1 decision = 3 memories
-	var memCount int
-	err := d.db.QueryRow(`SELECT COUNT(*) FROM memories WHERE bead_id='bead-mem'`).Scan(&memCount)
+	// Verify pending card learnings were persisted: 2 learnings + 1 decision = 3 candidates.
+	pending, err := d.cardStore.PendingLearnings(context.Background(), "bead-mem")
 	if err != nil {
-		t.Fatalf("count memories: %v", err)
+		t.Fatalf("pending learnings: %v", err)
 	}
-	if memCount != 3 {
-		t.Fatalf("expected 3 memories persisted from handoff, got %d", memCount)
+	if len(pending) != 3 {
+		t.Fatalf("expected 3 pending card learnings from handoff, got %d", len(pending))
 	}
 
 	// Verify types: 2 lesson, 1 decision
 	var lessonCount, decisionCount int
-	err = d.db.QueryRow(`SELECT COUNT(*) FROM memories WHERE bead_id='bead-mem' AND type='lesson'`).Scan(&lessonCount)
-	if err != nil {
-		t.Fatalf("count lessons: %v", err)
-	}
-	err = d.db.QueryRow(`SELECT COUNT(*) FROM memories WHERE bead_id='bead-mem' AND type='decision'`).Scan(&decisionCount)
-	if err != nil {
-		t.Fatalf("count decisions: %v", err)
+	for _, p := range pending {
+		switch p.Candidate.Type {
+		case string(cards.CardTypePattern):
+			lessonCount++
+		case string(cards.CardTypeDecision):
+			decisionCount++
+		}
 	}
 	if lessonCount != 2 {
 		t.Errorf("expected 2 lessons, got %d", lessonCount)
 	}
 	if decisionCount != 1 {
 		t.Errorf("expected 1 decision, got %d", decisionCount)
+	}
+
+	var memCount int
+	err = d.db.QueryRow(`SELECT COUNT(*) FROM memories WHERE bead_id='bead-mem'`).Scan(&memCount)
+	if err != nil {
+		t.Fatalf("count memories: %v", err)
+	}
+	if memCount != 0 {
+		t.Fatalf("expected no legacy memories persisted from handoff, got %d", memCount)
 	}
 }
 
@@ -12015,6 +12022,79 @@ func TestPersistHandoffWithSummary_NilSummary(t *testing.T) {
 	}
 	if summaryCount != 0 {
 		t.Errorf("expected 0 summary memories for nil Summary, got %d", summaryCount)
+	}
+}
+
+func TestPersistLearningToCards(t *testing.T) {
+	db := newTestDB(t)
+	insertDispatcherTestBead(t, db, "bead-cards-handoff", "task", "", "persist handoff learnings")
+	cardStore, err := cards.NewStore(db)
+	if err != nil {
+		t.Fatalf("new cards store: %v", err)
+	}
+	services := newTestMemoryServices(db)
+	services.HandoffInserter = HandoffInserter
+	d := &Dispatcher{
+		db:             db,
+		memories:       services.Store,
+		memoryServices: services,
+		cardStore:      cardStore,
+	}
+
+	handoff := &protocol.HandoffPayload{
+		BeadID:        "bead-cards-handoff",
+		WorkerID:      "worker-cards",
+		Learnings:     []string{"handoff learnings are reviewed as pending cards"},
+		Decisions:     []string{"keep the dispatcher card cutover local to handoff persistence"},
+		FilesModified: []string{"pkg/dispatcher/dispatcher.go"},
+	}
+	d.persistHandoffContext(context.Background(), handoff)
+
+	pending, err := cardStore.PendingLearnings(context.Background(), "bead-cards-handoff")
+	if err != nil {
+		t.Fatalf("pending learnings: %v", err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("pending learnings count = %d, want 2", len(pending))
+	}
+	gotByType := map[string]cards.CardCandidate{}
+	for _, p := range pending {
+		gotByType[p.Candidate.Type] = p.Candidate
+	}
+	lesson := gotByType[string(cards.CardTypePattern)]
+	if lesson.BodyFull != "handoff learnings are reviewed as pending cards" {
+		t.Fatalf("lesson body = %q", lesson.BodyFull)
+	}
+	if !slices.Contains(lesson.Tags, "source:self_report") {
+		t.Fatalf("lesson tags = %v, want source:self_report", lesson.Tags)
+	}
+	decision := gotByType[string(cards.CardTypeDecision)]
+	if decision.BodyFull != "keep the dispatcher card cutover local to handoff persistence" {
+		t.Fatalf("decision body = %q", decision.BodyFull)
+	}
+
+	var memoryCount int
+	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM memories`).Scan(&memoryCount); err != nil {
+		t.Fatalf("count memories: %v", err)
+	}
+	if memoryCount != 0 {
+		t.Fatalf("legacy memories count = %d, want 0", memoryCount)
+	}
+}
+
+func TestHandoffInserterNilCardStoreNoop(t *testing.T) {
+	sink := HandoffInserter(nil)
+	if sink == nil {
+		t.Fatal("HandoffInserter(nil) returned nil")
+	}
+	if _, err := sink.AppendLearningPending(context.Background(), "bead-no-store", cards.CardCandidate{
+		Type:        string(cards.CardTypePattern),
+		Title:       "no-op",
+		BodySummary: "no-op",
+		BodyFull:    "no-op",
+		Confidence:  0.8,
+	}); err != nil {
+		t.Fatalf("AppendLearningPending with nil card store returned error: %v", err)
 	}
 }
 
