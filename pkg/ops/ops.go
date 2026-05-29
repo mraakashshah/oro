@@ -245,6 +245,7 @@ type Spawner struct {
 	reviewSpawner BatchSpawner
 	timeout       time.Duration // one-shot process timeout (defaults to 5 minutes)
 	reviewTimeout time.Duration // optional OpsReview override; zero preserves Type.Timeout().
+	reviewIdle    time.Duration // optional OpsReview idle watchdog; zero disables it.
 }
 
 // NewSpawner creates a Spawner backed by the given BatchSpawner.
@@ -489,33 +490,72 @@ func (s *Spawner) waitForProcess(ctx context.Context, proc Process, opsType Type
 		done <- proc.Wait()
 	}()
 
+	startedAt := time.Now()
 	timeout := s.effectiveTimeout(opsType)
+	idle := s.effectiveIdle(opsType)
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
-	select {
-	case waitErr := <-done:
-		return true, waitErr
-	case <-timer.C:
-		_ = proc.Kill()
-		ch <- Result{
-			Type:    opsType,
-			BeadID:  beadID,
-			Verdict: VerdictFailed,
-			Err:     fmt.Errorf("ops: process exceeded %v timeout", timeout),
+	idleC, stopIdle := idleWatchdog(idle)
+	defer stopIdle()
+
+	for {
+		select {
+		case waitErr := <-done:
+			return true, waitErr
+		case <-idleC:
+			if !reviewIdleExceeded(proc, startedAt, idle) {
+				continue
+			}
+			_ = proc.Kill()
+			ch <- Result{
+				Type:    opsType,
+				BeadID:  beadID,
+				Verdict: VerdictFailed,
+				Err:     fmt.Errorf("ops: review wedged (no output for %v)", idle),
+			}
+			return false, nil
+		case <-timer.C:
+			_ = proc.Kill()
+			ch <- Result{
+				Type:    opsType,
+				BeadID:  beadID,
+				Verdict: VerdictFailed,
+				Err:     fmt.Errorf("ops: process exceeded %v timeout", timeout),
+			}
+			return false, nil
+		case <-ctx.Done():
+			_ = proc.Kill()
+			ch <- Result{
+				Type:    opsType,
+				BeadID:  beadID,
+				Verdict: VerdictFailed,
+				Err:     ctx.Err(),
+			}
+			return false, nil
 		}
-		return false, nil
-	case <-ctx.Done():
-		_ = proc.Kill()
-		ch <- Result{
-			Type:    opsType,
-			BeadID:  beadID,
-			Verdict: VerdictFailed,
-			Err:     ctx.Err(),
-		}
-		return false, nil
 	}
+}
+
+func idleWatchdog(idle time.Duration) (ticks <-chan time.Time, stop func()) {
+	if idle <= 0 {
+		return nil, func() {}
+	}
+	interval := idle / 2
+	if interval <= 0 {
+		interval = idle
+	}
+	ticker := time.NewTicker(interval)
+	return ticker.C, ticker.Stop
+}
+
+func reviewIdleExceeded(proc Process, startedAt time.Time, idle time.Duration) bool {
+	lastOutputAt := proc.LastOutputAt()
+	if lastOutputAt.IsZero() {
+		lastOutputAt = startedAt
+	}
+	return time.Since(lastOutputAt) > idle
 }
 
 func (s *Spawner) effectiveTimeout(opsType Type) time.Duration {
@@ -527,6 +567,13 @@ func (s *Spawner) effectiveTimeout(opsType Type) time.Duration {
 		timeout = s.reviewTimeout
 	}
 	return timeout
+}
+
+func (s *Spawner) effectiveIdle(opsType Type) time.Duration {
+	if opsType != OpsReview || s.reviewIdle <= 0 {
+		return 0
+	}
+	return s.reviewIdle
 }
 
 func isDocsOnlyDiff(ctx context.Context, worktree, baseBranch string) (bool, error) {

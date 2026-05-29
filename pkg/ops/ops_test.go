@@ -19,11 +19,12 @@ import (
 
 // mockProcess simulates a claude -p subprocess.
 type mockProcess struct {
-	mu       sync.Mutex
-	stdout   string
-	waitErr  error
-	killed   bool
-	waitDone chan struct{} // closed when Wait should return
+	mu           sync.Mutex
+	stdout       string
+	waitErr      error
+	killed       bool
+	lastOutputAt time.Time
+	waitDone     chan struct{} // closed when Wait should return
 }
 
 func newMockProcess(stdout string, waitErr error) *mockProcess {
@@ -63,13 +64,21 @@ func (m *mockProcess) Output() (string, error) {
 }
 
 func (m *mockProcess) LastOutputAt() time.Time {
-	return time.Time{}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastOutputAt
 }
 
 func (m *mockProcess) wasKilled() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.killed
+}
+
+func (m *mockProcess) setLastOutputAt(t time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastOutputAt = t
 }
 
 // mockBatchSpawner records spawn calls and returns preconfigured processes.
@@ -1461,6 +1470,115 @@ func TestOneShotTimeout(t *testing.T) {
 	if !proc.wasKilled() {
 		t.Fatal("expected process to be killed after timeout")
 	}
+}
+
+func TestWaitForProcessIdleWatchdog(t *testing.T) {
+	t.Run("stalled review killed with wedged error", func(t *testing.T) {
+		proc := newMockProcess("", nil)
+		mock := &mockBatchSpawner{process: proc}
+		s := NewSpawner(mock)
+		s.reviewIdle = 20 * time.Millisecond
+
+		ch := s.Review(context.Background(), ReviewOpts{BeadID: "oro-idle", Worktree: "/tmp/wt"})
+
+		result := waitResult(t, ch)
+		if result.Verdict != VerdictFailed {
+			t.Fatalf("result Verdict = %q, want %q", result.Verdict, VerdictFailed)
+		}
+		if result.Err == nil {
+			t.Fatal("result Err = nil, want wedged error")
+		}
+		if got, want := result.Err.Error(), "ops: review wedged (no output for 20ms)"; got != want {
+			t.Fatalf("result Err = %q, want %q", got, want)
+		}
+		if !proc.wasKilled() {
+			t.Fatal("review process was not killed after idle watchdog fired")
+		}
+	})
+
+	t.Run("steadily streaming review is not killed by idle watchdog", func(t *testing.T) {
+		proc := newMockProcess("VERDICT: APPROVED", nil)
+		mock := &mockBatchSpawner{process: proc}
+		s := NewSpawner(mock)
+		s.reviewIdle = 25 * time.Millisecond
+
+		ch := s.Review(context.Background(), ReviewOpts{BeadID: "oro-stream", Worktree: "/tmp/wt"})
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			ticker := time.NewTicker(5 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					proc.setLastOutputAt(time.Now())
+				case <-done:
+					return
+				}
+			}
+		}()
+
+		time.Sleep(75 * time.Millisecond)
+		if proc.wasKilled() {
+			t.Fatal("streaming review process was killed by idle watchdog")
+		}
+		if err := proc.Kill(); err != nil {
+			t.Fatalf("Kill() returned error: %v", err)
+		}
+
+		result := waitResult(t, ch)
+		if result.Err != nil {
+			t.Fatalf("streaming review result Err = %v, want nil", result.Err)
+		}
+		if result.Verdict != VerdictApproved {
+			t.Fatalf("streaming review Verdict = %q, want %q", result.Verdict, VerdictApproved)
+		}
+	})
+
+	t.Run("stalled merge is not killed by review idle watchdog", func(t *testing.T) {
+		proc := newMockProcess("RESOLVED", nil)
+		mock := &mockBatchSpawner{process: proc}
+		s := NewSpawner(mock)
+		s.reviewIdle = 20 * time.Millisecond
+		s.timeout = 250 * time.Millisecond
+
+		ch := s.ResolveMergeConflict(context.Background(), MergeOpts{BeadID: "oro-merge", Worktree: "/tmp/wt"})
+
+		time.Sleep(75 * time.Millisecond)
+		if proc.wasKilled() {
+			t.Fatal("merge process was killed by review idle watchdog")
+		}
+		if err := proc.Kill(); err != nil {
+			t.Fatalf("Kill() returned error: %v", err)
+		}
+
+		result := waitResult(t, ch)
+		if result.Err != nil {
+			t.Fatalf("merge result Err = %v, want nil", result.Err)
+		}
+		if result.Verdict != VerdictResolved {
+			t.Fatalf("merge Verdict = %q, want %q", result.Verdict, VerdictResolved)
+		}
+	})
+
+	t.Run("zero last output measures idle from process start", func(t *testing.T) {
+		proc := newMockProcess("", nil)
+		mock := &mockBatchSpawner{process: proc}
+		s := NewSpawner(mock)
+		s.reviewIdle = 35 * time.Millisecond
+
+		start := time.Now()
+		ch := s.Review(context.Background(), ReviewOpts{BeadID: "oro-zero", Worktree: "/tmp/wt"})
+		result := waitResult(t, ch)
+		elapsed := time.Since(start)
+
+		if result.Err == nil || !strings.Contains(result.Err.Error(), "ops: review wedged") {
+			t.Fatalf("result Err = %v, want review wedged error", result.Err)
+		}
+		if elapsed < s.reviewIdle {
+			t.Fatalf("watchdog fired after %v, want at least %v", elapsed, s.reviewIdle)
+		}
+	})
 }
 
 // --- Helpers ---
