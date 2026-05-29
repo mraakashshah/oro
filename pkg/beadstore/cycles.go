@@ -14,6 +14,7 @@ type rowQuerier interface {
 
 type depGraph map[string]map[string]struct{}
 
+// Cycle is an ordered dependency cycle with the start node repeated at the end.
 type Cycle []string
 
 var blockingDepTypes = map[string]struct{}{
@@ -22,19 +23,20 @@ var blockingDepTypes = map[string]struct{}{
 }
 
 func loadBlockingGraph(ctx context.Context, q rowQuerier) (depGraph, error) {
+	blockingTypes := blockingDepTypeList()
 	rows, err := q.QueryContext(ctx, `
 SELECT b.id, blocker.id
 FROM beads b
 LEFT JOIN bead_deps d
   ON d.bead_id = b.id
- AND d.type IN ('blocks', 'conditional-blocks')
+ AND d.type IN (?, ?)
 LEFT JOIN beads blocker
   ON blocker.id = d.depends_on_id
  AND blocker.deleted = 0
  AND blocker.status != 'closed'
 WHERE b.deleted = 0
   AND b.status != 'closed'
-ORDER BY b.id, blocker.id`)
+ORDER BY b.id, blocker.id`, blockingTypes[0], blockingTypes[1])
 	if err != nil {
 		return nil, fmt.Errorf("beadstore: query blocking graph: %w", err)
 	}
@@ -156,4 +158,13 @@ func sortedNeighbors(g depGraph, id string) []string {
 	}
 	sort.Strings(neighbors)
 	return neighbors
+}
+
+func blockingDepTypeList() []string {
+	types := make([]string, 0, len(blockingDepTypes))
+	for depType := range blockingDepTypes {
+		types = append(types, depType)
+	}
+	sort.Strings(types)
+	return types
 }
