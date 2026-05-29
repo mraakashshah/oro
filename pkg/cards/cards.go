@@ -4,12 +4,17 @@ package cards
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 )
 
 // ErrNotFound is returned when a card ID does not exist.
 var ErrNotFound = errors.New("card not found")
+
+// ErrInvalidCardType is returned when a candidate uses an unknown card type.
+var ErrInvalidCardType = errors.New("invalid card type")
 
 // CardType is the closed enum of card types.
 type CardType string
@@ -43,6 +48,55 @@ type Card struct {
 	SupersededBy        *string
 	EmergedFrom         *string
 	RetiredReason       *string
+}
+
+// CardCandidate is the JSON shape emitted by workers before promotion.
+type CardCandidate struct {
+	Type        string   `json:"type"`
+	Title       string   `json:"title"`
+	BodySummary string   `json:"body_summary"`
+	BodyFull    string   `json:"body_full"`
+	Confidence  float64  `json:"confidence"`
+	Evidence    []string `json:"evidence"`
+	Tags        []string `json:"tags"`
+}
+
+// ParseCardCandidate unmarshals and normalizes a candidate JSON payload.
+//
+//oro:testonly — production wiring deferred to learning-pending persistence (§4.2).
+func ParseCardCandidate(b []byte) (CardCandidate, error) {
+	var candidate CardCandidate
+	if err := json.Unmarshal(b, &candidate); err != nil {
+		return CardCandidate{}, fmt.Errorf("parse card candidate: %w", err)
+	}
+	if !isValidCardType(CardType(candidate.Type)) {
+		return CardCandidate{}, ErrInvalidCardType
+	}
+	candidate.Confidence = clampConfidence(candidate.Confidence)
+	if len(candidate.Evidence) == 0 && candidate.Confidence > 0.4 {
+		candidate.Confidence = 0.4
+	}
+	return candidate, nil
+}
+
+func isValidCardType(cardType CardType) bool {
+	switch cardType {
+	case CardTypeRule, CardTypePattern, CardTypeTaste, CardTypeDecision, CardTypeFact:
+		return true
+	default:
+		return false
+	}
+}
+
+func clampConfidence(confidence float64) float64 {
+	switch {
+	case confidence < 0:
+		return 0
+	case confidence > 1:
+		return 1
+	default:
+		return confidence
+	}
 }
 
 // CardSummary is the deck-view representation of a card.
