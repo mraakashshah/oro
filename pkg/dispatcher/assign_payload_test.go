@@ -2,10 +2,14 @@ package dispatcher //nolint:testpackage // internal white-box tests need access 
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"oro/pkg/cards"
 	"oro/pkg/protocol"
 )
 
@@ -46,4 +50,88 @@ func TestAssignPayloadUsesProjectPaths(t *testing.T) {
 		t.Errorf("WorkerProgram = %q, want %q\n(cfg.WorkerProgram should be used, not filepath.Join(repoRoot, \"worker-program.md\"))",
 			got.WorkerProgram, wpContent)
 	}
+}
+
+func TestBuildCardContextKeepsAssignPayloadUnderProtocolLimit(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	deck := make([]cards.CardSummary, 0, 5000)
+	for i := 0; i < cap(deck); i++ {
+		deck = append(deck, cards.CardSummary{
+			ID:          "card-large",
+			Type:        cards.CardTypePattern,
+			Title:       "Large card deck",
+			BodySummary: strings.Repeat("summary ", 30),
+			BodyFull:    strings.Repeat("full ", 40),
+			Score:       1.0,
+			Tags:        []string{"dispatcher", "cards"},
+		})
+	}
+	d.cardStore = &staticRelevantCardStore{
+		result: cards.RelevantCards{
+			Deck:    deck,
+			Inlined: deck[:5],
+		},
+	}
+
+	got := d.buildCardContext(context.Background(), protocol.Bead{ID: "bead-large-cards", Title: "large card deck"})
+	if len(got.Deck) >= len(deck) {
+		t.Fatalf("card deck length = %d, want capped below %d", len(got.Deck), len(deck))
+	}
+	if len(got.Deck) == 0 {
+		t.Fatal("expected capped deck to retain top cards")
+	}
+	if got.Deck[0].ID != "card-large" {
+		t.Fatalf("first deck card = %q, want card-large", got.Deck[0].ID)
+	}
+
+	msg := protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:            "bead-large-cards",
+			Worktree:          "/tmp/bead-large-cards",
+			WorkerProgram:     strings.Repeat("w", maxWorkerProgramSize),
+			CodeSearchContext: strings.Repeat("c", maxCodeSearchContextSize),
+			Cards:             got,
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal assign message: %v", err)
+	}
+	if len(data) >= protocol.MaxMessageSize {
+		t.Fatalf("ASSIGN message size = %d, want < MaxMessageSize %d", len(data), protocol.MaxMessageSize)
+	}
+}
+
+type staticRelevantCardStore struct {
+	result cards.RelevantCards
+}
+
+func (s *staticRelevantCardStore) Relevant(context.Context, cards.RelevanceQuery) (cards.RelevantCards, error) {
+	return s.result, nil
+}
+
+func (s *staticRelevantCardStore) Show(context.Context, string) (*cards.Card, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *staticRelevantCardStore) List(context.Context, cards.ListQuery) ([]cards.Card, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *staticRelevantCardStore) RecordCardEvent(context.Context, cards.CardEvent) error {
+	return errors.New("not implemented")
+}
+
+func (s *staticRelevantCardStore) Create(context.Context, cards.CardCreateParams) (*cards.Card, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *staticRelevantCardStore) Retire(context.Context, string, string, string) error {
+	return errors.New("not implemented")
+}
+
+func (s *staticRelevantCardStore) WithReadTx(context.Context, func(cards.ReadTx) error) error {
+	return errors.New("not implemented")
 }

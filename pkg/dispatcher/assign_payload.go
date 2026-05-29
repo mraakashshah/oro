@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,11 @@ import (
 // maxWorkerProgramSize is the maximum number of bytes read from worker-program.md.
 // Content exceeding this limit is truncated with a warning logged.
 const maxWorkerProgramSize = 32 * 1024
+
+const (
+	maxAssignmentCardDeckJSONSize    = 192 * 1024
+	maxAssignmentCardInlinedJSONSize = 128 * 1024
+)
 
 // gitLogTimeout is the maximum time allowed for the git log command.
 const gitLogTimeout = 2 * time.Second
@@ -113,5 +119,36 @@ func (d *Dispatcher) buildCardContext(ctx context.Context, bead protocol.Bead) c
 			fmt.Sprintf(`{"error":%q}`, err.Error()))
 		return cards.RelevantCards{}
 	}
-	return result
+	return trimAssignmentCardContext(result)
+}
+
+func trimAssignmentCardContext(result cards.RelevantCards) cards.RelevantCards {
+	return cards.RelevantCards{
+		Deck:    trimCardSummariesByJSONSize(result.Deck, maxAssignmentCardDeckJSONSize),
+		Inlined: trimCardSummariesByJSONSize(result.Inlined, maxAssignmentCardInlinedJSONSize),
+	}
+}
+
+func trimCardSummariesByJSONSize(in []cards.CardSummary, maxSize int) []cards.CardSummary {
+	if maxSize <= 0 || len(in) == 0 {
+		return nil
+	}
+	out := make([]cards.CardSummary, 0, len(in))
+	size := 2 // JSON array brackets.
+	for _, summary := range in {
+		data, err := json.Marshal(summary)
+		if err != nil {
+			break
+		}
+		nextSize := size + len(data)
+		if len(out) > 0 {
+			nextSize++ // comma between array elements.
+		}
+		if nextSize > maxSize {
+			break
+		}
+		out = append(out, summary)
+		size = nextSize
+	}
+	return out
 }
