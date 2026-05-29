@@ -16,6 +16,9 @@ var ErrNotFound = errors.New("card not found")
 // ErrInvalidCardType is returned when a candidate uses an unknown card type.
 var ErrInvalidCardType = errors.New("invalid card type")
 
+// ErrAlreadyResolved is returned when a pending learning was already promoted or rejected.
+var ErrAlreadyResolved = errors.New("learning already resolved")
+
 // CardType is the closed enum of card types.
 type CardType string
 

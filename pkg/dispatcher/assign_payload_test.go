@@ -132,6 +132,10 @@ func (s *staticRelevantCardStore) AppendLearningPending(context.Context, string,
 	return 0, errors.New("not implemented")
 }
 
+func (s *staticRelevantCardStore) PromoteLearning(context.Context, int64) (string, error) {
+	return "", errors.New("not implemented")
+}
+
 func (s *staticRelevantCardStore) Create(context.Context, cards.CardCreateParams) (*cards.Card, error) {
 	return nil, errors.New("not implemented")
 }
