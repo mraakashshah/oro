@@ -52,11 +52,21 @@ func classifySnippet(orig, snippet []string, contMarker string) []classifiedLine
 // findAnchorPositions maps each anchor in classified (snippet order) to its position
 // in orig using forward-progress search, ensuring original-body order is respected.
 func findAnchorPositions(orig []string, classified []classifiedLine) ([]int, error) {
+	origCount := make(map[string]int, len(orig))
+	for _, l := range orig {
+		if l != "" {
+			origCount[l]++
+		}
+	}
+
 	positions := make([]int, 0)
 	searchFrom := 0
 	for _, cl := range classified {
 		if cl.kind != lineAnchor {
 			continue
+		}
+		if origCount[cl.text] > 1 {
+			return nil, &FallthroughError{Reason: "ambiguous anchor: line occurs more than once in original body"}
 		}
 		found := -1
 		for i := searchFrom; i < len(orig); i++ {

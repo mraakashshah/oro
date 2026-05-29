@@ -20,7 +20,7 @@ import (
 //	PE (15)  Python: classmethod / staticmethod (§7.4 gotcha)
 //	PF (10)  Python: default args with function calls (§7.4 gotcha)
 //	PG (8)   Python: EFALLTHROUGH
-//	PH (2)   Python: forward-search & wrong-lang marker positive cases
+//	PH (2)   Python: repeated original text and wrong-lang marker positive cases
 //
 //	TA (20)  TypeScript: two-anchor basic replace
 //	TB (15)  TypeScript: continuation marker
@@ -1335,14 +1335,14 @@ func TestNonGoCorpus(t *testing.T) {
 			snippet: []string{py, py, "    a = 2", "    b = 3"},
 			wantErr: edit.ErrFallthrough,
 		},
-		// ── PH: Python forward-search & wrong-lang marker positive cases (2) ──
+		// ── PH: Python repeated original text and wrong-lang marker positive cases (2) ──
 
 		{
-			name:    "PH01 duplicate anchor resolves via forward search",
+			name:    "PH01 repeated original non-anchor text still splices",
 			lang:    edit.LangPython,
-			orig:    []string{"    a = 1", "    b = 2", "    a = 1"},
-			snippet: []string{"    a = 1", "    new = 7", "    a = 1"},
-			want:    []string{"    a = 1", "    new = 7", "    a = 1"},
+			orig:    []string{"    start = 0", "    a = 1", "    b = 2", "    a = 1", "    end = 9"},
+			snippet: []string{"    start = 0", "    new = 7", "    end = 9"},
+			want:    []string{"    start = 0", "    new = 7", "    end = 9"},
 		},
 		{
 			name:    "PH02 wrong-language marker treated as new line",

@@ -717,38 +717,7 @@ func TestGoCorpus(t *testing.T) {
 				"}",
 				"return out",
 			},
-			// "out := make([]T, 0, len(in))" anchor@0
-			// "for _, v := range in {" anchor@1
-			// "if oldPred(v) {" → NOT in snippet (snippet has "if newPred(v) {") → lineNew in snippet
-			// "if newPred(v) {" → NOT in origSet → lineNew
-			// "out = append(out, v)" anchor@3
-			// "}" anchor@4 (but appears twice in orig!)
-			// origSet = {"out := ...", "for ...", "if oldPred(v) {", "out = append...", "}", "return out"}
-			// "}" appears at positions 4 and 5 in orig
-			// Snippet:
-			//   "out := make([]T, 0, len(in))" → anchor
-			//   "for _, v := range in {" → anchor
-			//   "if newPred(v) {" → lineNew (not in origSet)
-			//   "out = append(out, v)" → anchor (in origSet)
-			//   "}" → anchor (in origSet, searchFrom=4 → found at 4)
-			//   "}" → anchor (searchFrom=5 → found at 5)
-			//   "return out" → anchor
-			// 6 anchors in order (0,1,3,4,5,6)
-			// inter[0]=[] b/w anchor@0,anchor@1: processSegment([], orig[1:1]=[]) → []
-			// inter[1]=[{newPred lineNew}] b/w anchor@1,anchor@3: processSegment([newPred], orig[2:3]=["if oldPred..."]) → ["if newPred(v) {"]
-			// inter[2]=[] b/w anchor@3,anchor@4: processSegment([], orig[4:4]=[]) → []
-			// inter[3]=[] b/w anchor@4,anchor@5: processSegment([], orig[5:5]=[]) → []
-			// inter[4]=[] b/w anchor@5,anchor@6: processSegment([], orig[6:6]=[]) → []
-			// result: ["out := ...", "for ...", "if newPred(v) {", "out = append...", "}", "}", "return out"]
-			want: []string{
-				"out := make([]T, 0, len(in))",
-				"for _, v := range in {",
-				"if newPred(v) {",
-				"out = append(out, v)",
-				"}",
-				"}",
-				"return out",
-			},
+			wantErr: edit.ErrFallthrough,
 		},
 		{
 			name:    "F06 generic func: continuation preserves existing loop",
@@ -1074,14 +1043,10 @@ func TestGoCorpus(t *testing.T) {
 		// ── I: Edge cases ─────────────────────────────────────────────────────
 
 		{
-			name:    "I01 duplicate anchor text in orig: forward progress picks first",
+			name:    "I01 duplicate anchor text in orig is ambiguous",
 			orig:    []string{"x", "mid", "x", "end"},
 			snippet: []string{"x", "replaced", "x", m},
-			// origSet has "x","mid","end"
-			// "x"@0 anchor, "replaced" new, "x" anchor (searchFrom=1; found at 2), cont
-			// 2 anchors at 0,2; inter[0]=[replaced] b/w @0,@2 → orig[1:2]=["mid"] → ["replaced"]
-			// post=[cont] → processSegment([cont], orig[3:]=["end"]) → ["end"]
-			want: []string{"x", "replaced", "x", "end"},
+			wantErr: edit.ErrFallthrough,
 		},
 		{
 			name:    "I02 duplicate anchor text: second occurrence used for second anchor",

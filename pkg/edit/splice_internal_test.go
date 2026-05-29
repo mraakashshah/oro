@@ -41,3 +41,25 @@ func TestFindAnchorPositionsReturnsNonNilEmptySlice(t *testing.T) {
 		t.Fatalf("positions length = %d, want 0", len(positions))
 	}
 }
+
+func TestFindAnchorPositionsRejectsAmbiguousAnchor(t *testing.T) {
+	classified := []classifiedLine{
+		{text: "start", kind: lineAnchor},
+		{text: "repeat", kind: lineAnchor},
+	}
+
+	positions, err := findAnchorPositions([]string{"start", "repeat", "end", "repeat"}, classified)
+	if err == nil {
+		t.Fatal("findAnchorPositions error = nil, want ambiguous anchor fallthrough")
+	}
+	if positions != nil {
+		t.Fatalf("positions = %v, want nil on error", positions)
+	}
+	fallthroughErr, ok := err.(*FallthroughError)
+	if !ok {
+		t.Fatalf("error type = %T, want *FallthroughError", err)
+	}
+	if fallthroughErr.Reason != "ambiguous anchor: line occurs more than once in original body" {
+		t.Fatalf("FallthroughError.Reason = %q, want ambiguous anchor reason", fallthroughErr.Reason)
+	}
+}

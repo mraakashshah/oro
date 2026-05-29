@@ -2,6 +2,7 @@ package edit_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"oro/pkg/edit"
@@ -92,11 +93,18 @@ func TestSpliceAlgorithm(t *testing.T) {
 			want:    []string{"a", "inserted", "b", "c"},
 		},
 		{
-			name:    "duplicate anchor text in original: forward-progress picks first occurrence",
+			name:    "EFALLTHROUGH: duplicate anchor text in original is ambiguous",
 			orig:    []string{"x", "mid", "x", "end"},
 			snippet: []string{"x", "replaced", "x", goMarker},
 			marker:  goMarker,
-			want:    []string{"x", "replaced", "x", "end"},
+			wantErr: edit.ErrFallthrough,
+		},
+		{
+			name:    "unique anchors still splice when unrelated original text repeats",
+			orig:    []string{"start", "repeat", "middle", "repeat", "end"},
+			snippet: []string{"start", "new middle", "end"},
+			marker:  goMarker,
+			want:    []string{"start", "new middle", "end"},
 		},
 		{
 			name:    "python continuation marker works the same way",
@@ -192,6 +200,13 @@ func TestSpliceAlgorithm(t *testing.T) {
 			marker:  goMarker,
 			wantErr: edit.ErrFallthrough,
 		},
+		{
+			name:    "EFALLTHROUGH: two anchors with one ambiguous in original",
+			orig:    []string{"a", "mid", "b", "tail", "b"},
+			snippet: []string{"a", "new", "b"},
+			marker:  goMarker,
+			wantErr: edit.ErrFallthrough,
+		},
 	}
 
 	for _, tc := range tests {
@@ -204,6 +219,12 @@ func TestSpliceAlgorithm(t *testing.T) {
 				}
 				if got != nil {
 					t.Fatalf("Splice() body = %v, want nil on error", got)
+				}
+				var fallthroughErr *edit.FallthroughError
+				if tc.name == "EFALLTHROUGH: duplicate anchor text in original is ambiguous" && errors.As(err, &fallthroughErr) {
+					if !strings.Contains(fallthroughErr.Reason, "ambiguous") {
+						t.Fatalf("FallthroughError.Reason = %q, want ambiguous", fallthroughErr.Reason)
+					}
 				}
 				return
 			}
