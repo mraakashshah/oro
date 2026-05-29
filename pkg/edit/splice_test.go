@@ -166,6 +166,13 @@ func TestSpliceAlgorithm(t *testing.T) {
 			want:    []string{"start", "end"},
 		},
 		{
+			name:    "markerless empty segment preserves 21 original lines",
+			orig:    append(append([]string{"start"}, numberedLines("old", 21)...), "end"),
+			snippet: []string{"start", "end"},
+			marker:  goMarker,
+			want:    append(append([]string{"start"}, numberedLines("old", 21)...), "end"),
+		},
+		{
 			name:    "single continuation marker preserves 100-line gap",
 			orig:    append(append([]string{"start"}, numberedLines("old", 100)...), "end"),
 			snippet: []string{"start", goMarker, "end"},
@@ -237,14 +244,6 @@ func TestSpliceAlgorithm(t *testing.T) {
 			snippet: []string{"a", "new", "b"},
 			marker:  goMarker,
 			wantErr: edit.ErrFallthrough,
-		},
-		{
-			name:    "EFALLTHROUGH: markerless empty segment would drop more than 20 original lines",
-			orig:    append(append([]string{"start"}, numberedLines("old", 21)...), "end"),
-			snippet: []string{"start", "end"},
-			marker:  goMarker,
-			wantErr: edit.ErrFallthrough,
-			reason:  "add a continuation marker",
 		},
 		{
 			name:    "EFALLTHROUGH: markerless replacement would drop more than 20 original lines",

@@ -162,15 +162,15 @@ func processSegment(seg []classifiedLine, origRegion []string) ([]string, error)
 	}
 
 	if contIdx == -1 {
-		if len(origRegion) > maxMarkerlessDrop {
-			return nil, &FallthroughError{Reason: "markerless segment would drop more than 20 original lines; add a continuation marker"}
-		}
 		newLines := make([]string, 0, len(seg))
 		for _, cl := range seg {
 			newLines = append(newLines, cl.text)
 		}
 		if len(newLines) == 0 {
 			return origRegion, nil
+		}
+		if len(origRegion) > maxMarkerlessDrop {
+			return nil, &FallthroughError{Reason: "markerless replacement spans more than 20 original lines; add a continuation marker to preserve original lines explicitly"}
 		}
 		return newLines, nil
 	}
