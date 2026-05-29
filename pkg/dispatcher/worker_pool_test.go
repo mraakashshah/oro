@@ -515,6 +515,82 @@ func TestRegisterWorkerRetainsPendingHandoffOnSendFailure(t *testing.T) {
 	}
 }
 
+func TestReconnectStaleConnCleanupPreservesLiveWorker(t *testing.T) {
+	t.Parallel()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	workerID := "worker-reconnect-cleanup"
+	conn1 := newMockConn()
+	conn2 := newMockConn()
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:       workerID,
+		conn:     conn1,
+		state:    protocol.WorkerBusy,
+		beadID:   "bead-reconnect",
+		worktree: "/tmp/reconnect-worktree",
+		runtime:  "claude",
+		model:    "sonnet",
+		encoder:  json.NewEncoder(conn1),
+	}
+	d.mu.Unlock()
+
+	d.registerWorker(workerID, conn2)
+	d.connCloseCleanup(workerID, conn1)
+
+	d.mu.Lock()
+	w, exists := d.workers[workerID]
+	if !exists {
+		d.mu.Unlock()
+		t.Fatal("stale connection cleanup deleted reconnected worker")
+	}
+	if w.conn != conn2 {
+		d.mu.Unlock()
+		t.Fatal("worker conn was not preserved as conn2")
+	}
+	if w.beadID != "bead-reconnect" || w.state != protocol.WorkerBusy || w.worktree != "/tmp/reconnect-worktree" {
+		d.mu.Unlock()
+		t.Fatalf("reconnect did not preserve assignment metadata: bead=%q state=%s worktree=%q", w.beadID, w.state, w.worktree)
+	}
+	err := d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
+	pending := len(w.pendingMsgs)
+	d.mu.Unlock()
+
+	if err != nil {
+		t.Fatalf("sendToWorker on live reconnect conn returned error: %v", err)
+	}
+	if pending != 0 {
+		t.Fatalf("pendingMsgs length = %d, want 0", pending)
+	}
+	if len(conn2.written) == 0 {
+		t.Fatal("expected sendToWorker to write to conn2")
+	}
+	if len(conn1.written) != 0 {
+		t.Fatal("sendToWorker wrote to stale conn1")
+	}
+
+	activeWorkerID := "worker-active-cleanup"
+	activeConn := newMockConn()
+	d.mu.Lock()
+	d.workers[activeWorkerID] = &trackedWorker{
+		id:      activeWorkerID,
+		conn:    activeConn,
+		state:   protocol.WorkerIdle,
+		encoder: json.NewEncoder(activeConn),
+	}
+	d.mu.Unlock()
+
+	d.connCloseCleanup(activeWorkerID, activeConn)
+
+	d.mu.Lock()
+	_, activeExists := d.workers[activeWorkerID]
+	d.mu.Unlock()
+	if activeExists {
+		t.Fatal("cleanup for active connection did not remove worker")
+	}
+}
+
 // --- ConnectedWorkers tests ---
 
 // TestConnectedWorkers_ReturnsCorrectCount verifies the count is accurate.
