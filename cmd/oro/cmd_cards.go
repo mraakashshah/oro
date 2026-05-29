@@ -12,5 +12,8 @@ func newCardsCmd() *cobra.Command {
 	cmd.AddCommand(newImportFromMemoryCmd())
 	cmd.AddCommand(newCheckDriftCmd())
 	cmd.AddCommand(newMemoryRetirementCheckCmd())
+	cmd.AddCommand(newCardsReviewQueueCmd())
+	cmd.AddCommand(newCardsPromoteCmd())
+	cmd.AddCommand(newCardsRejectCmd())
 	return cmd
 }
