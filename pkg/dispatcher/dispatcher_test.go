@@ -21131,6 +21131,7 @@ func TestExtractBeadID_ReconnectNilPayloadReturnsEmpty(t *testing.T) {
 // appropriate and the result is used for model routing.
 func TestAssignBead_UsesLLMEstimate(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	d.cfg.HeartbeatTimeout = 10 * time.Second
 
 	// Mock estimator that tracks calls and returns canned results
 	mockEstimator := &mockBeadEstimator{
