@@ -555,7 +555,9 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	// inherits this process's env via buildClaudeEnv) can be identified by the
 	// `oro task close` self-close guard. See oro-t5ha.
 	_ = os.Setenv("ORO_WORKER_BEAD_ID", msg.Assign.BeadID)
+	stopSpawnHeartbeat := w.startSpawnHeartbeat(ctx)
 	proc, stdout, _, format, err := w.spawner.Spawn(ctx, runtime, model, msg.Assign.Reasoning, prompt, msg.Assign.Worktree)
+	stopSpawnHeartbeat()
 	if err != nil {
 		return fmt.Errorf("spawn %s: %w", runtime, err)
 	}
@@ -575,6 +577,38 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	go w.watchContext(ctx)
 	go w.awaitSubprocessAndReport(ctx) // wait for exit, run QG, send DONE
 	return nil
+}
+
+func (w *Worker) startSpawnHeartbeat(ctx context.Context) func() {
+	w.mu.Lock()
+	interval := w.heartbeatInterval
+	w.mu.Unlock()
+	if interval == 0 {
+		interval = DefaultHeartbeatInterval
+	}
+
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-done:
+				return
+			case <-ticker.C:
+				w.trySendHeartbeat(ctx)
+			}
+		}
+	}()
+
+	return func() {
+		close(done)
+		<-stopped
+	}
 }
 
 func validateAssignedWorktree(worktree string) error {

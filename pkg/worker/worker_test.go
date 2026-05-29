@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/parser"
 	"go/token"
@@ -147,6 +148,21 @@ func (s *mockSpawner) SpawnCalls() []spawnCall {
 	return dst
 }
 
+type contextBlockingSpawner struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (s *contextBlockingSpawner) Spawn(ctx context.Context, _, _, _ string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
+	s.once.Do(func() { close(s.started) })
+	<-ctx.Done()
+	return nil, nil, nil, ctx.Err()
+}
+
+func (s *contextBlockingSpawner) StreamFormat() worker.StreamFormat {
+	return worker.StreamFormatClaudeJSON
+}
+
 func validAssignWorktree(t *testing.T, name string) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), name)
@@ -171,6 +187,29 @@ func readMessage(t *testing.T, conn net.Conn) protocol.Message {
 		t.Fatalf("failed to unmarshal message: %v", err)
 	}
 	return msg
+}
+
+func readMessageWithin(t *testing.T, conn net.Conn, timeout time.Duration) (protocol.Message, bool) {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	scanner := bufio.NewScanner(conn)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				return protocol.Message{}, false
+			}
+			t.Fatalf("failed to read message: %v", err)
+		}
+		return protocol.Message{}, false
+	}
+	var msg protocol.Message
+	if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+		t.Fatalf("failed to unmarshal message: %v", err)
+	}
+	return msg, true
 }
 
 // readMessageAsync reads a message in a goroutine and sends it on the returned channel.
@@ -408,6 +447,134 @@ func TestReceiveAssign_QGRetryReportsReceipt(t *testing.T) {
 
 	cancel()
 	<-errCh
+}
+
+func TestWorkerHeartbeatDuringSlowAssignSpawn(t *testing.T) {
+	t.Parallel()
+
+	spawner := newMockSpawner()
+	spawnStarted := make(chan struct{})
+	releaseSpawn := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseSpawn) }) }
+	defer release()
+
+	spawner.onSpawn = func(_, _, _ string) error {
+		close(spawnStarted)
+		<-releaseSpawn
+		return nil
+	}
+
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-slow-spawn", workerConn, spawner)
+	w.SetHeartbeatInterval(50 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+	worktree := validAssignWorktree(t, "wt-slow-spawn")
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-slow-spawn",
+			Worktree: worktree,
+		},
+	})
+
+	select {
+	case <-spawnStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("spawn did not start")
+	}
+
+	msg, ok := readMessageWithin(t, dispatcherConn, 500*time.Millisecond)
+	if !ok {
+		t.Fatal("expected heartbeat while assignment spawn was blocked")
+	}
+	if msg.Type != protocol.MsgHeartbeat || msg.Heartbeat == nil {
+		t.Fatalf("expected HEARTBEAT while spawn blocked, got %+v", msg)
+	}
+	if msg.Heartbeat.BeadID != "bead-slow-spawn" {
+		t.Fatalf("heartbeat bead_id = %q, want bead-slow-spawn", msg.Heartbeat.BeadID)
+	}
+
+	release()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatal("expected running STATUS after spawn released")
+		}
+		msg, ok := readMessageWithin(t, dispatcherConn, time.Until(deadline))
+		if !ok {
+			t.Fatal("expected running STATUS after spawn released")
+		}
+		if msg.Type == protocol.MsgStatus && msg.Status != nil && msg.Status.State == "running" {
+			break
+		}
+	}
+
+	cancel()
+	<-errCh
+}
+
+func TestWorkerSpawnHeartbeatStopsWhenSpawnContextCancelled(t *testing.T) {
+	t.Parallel()
+
+	spawner := &contextBlockingSpawner{started: make(chan struct{})}
+	dispatcherConn, workerConn := net.Pipe()
+	defer func() { _ = dispatcherConn.Close() }()
+
+	w := worker.NewWithConn("w-cancel-spawn", workerConn, spawner)
+	w.SetHeartbeatInterval(50 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+	worktree := validAssignWorktree(t, "wt-cancel-spawn")
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgAssign,
+		Assign: &protocol.AssignPayload{
+			BeadID:   "bead-cancel-spawn",
+			Worktree: worktree,
+		},
+	})
+
+	select {
+	case <-spawner.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("spawn did not start")
+	}
+
+	msg, ok := readMessageWithin(t, dispatcherConn, 500*time.Millisecond)
+	if !ok {
+		t.Fatal("expected heartbeat while assignment spawn was blocked")
+	}
+	if msg.Type != protocol.MsgHeartbeat || msg.Heartbeat == nil {
+		t.Fatalf("expected HEARTBEAT while spawn blocked, got %+v", msg)
+	}
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected spawn context cancellation to return an assign error")
+		}
+		if !strings.Contains(err.Error(), "spawn claude") || !strings.Contains(err.Error(), context.Canceled.Error()) {
+			t.Fatalf("expected spawn context cancellation error, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not exit after spawn context cancellation")
+	}
+
+	if msg, ok := readMessageWithin(t, dispatcherConn, 150*time.Millisecond); ok {
+		t.Fatalf("unexpected message after spawn heartbeat stopped: %+v", msg)
+	}
 }
 
 func TestWorkerUsesRuntimeSpawn(t *testing.T) {
@@ -2158,6 +2325,9 @@ func TestHandleAssign_SpawnError(t *testing.T) {
 	case err := <-errCh:
 		if err == nil {
 			t.Fatal("expected error for spawn failure, got nil")
+		}
+		if !strings.Contains(err.Error(), "spawn claude") || !strings.Contains(err.Error(), "spawn failed") {
+			t.Fatalf("expected wrapped spawn failure, got %v", err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("worker did not exit after spawn error")
