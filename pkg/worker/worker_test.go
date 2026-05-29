@@ -4371,25 +4371,50 @@ func TestClaudeSpawnerSetsStdinToDevNull(t *testing.T) {
 	}
 }
 
-// TestHardStopThresholds verifies that each model family triggers a hard stop
-// at exactly threshold+10, derived from thresholds.json:
-//
-//	opus:   40 + 10 = 50
-//	sonnet: 40 + 10 = 50
-//	haiku:  40 + 10 = 50
+// TestHardStopThresholds verifies hard stop parity for tier-first threshold
+// lookup, model-family fallback, and default fallback when threshold data is
+// missing or invalid.
 func TestHardStopThresholds(t *testing.T) { //nolint:funlen // table-driven integration test with parallel subtests
 	t.Parallel()
 
-	thresholdsData := `{"opus": 40, "sonnet": 40, "haiku": 40}`
-
 	cases := []struct {
-		name     string
-		model    string
-		hardStop int
+		name           string
+		thresholdsData string
+		writeThreshold bool
+		tier           protocol.Tier
+		model          string
+		hardStop       int
 	}{
-		{name: "opus", model: "opus", hardStop: 50},     // 40 + 10
-		{name: "sonnet", model: "sonnet", hardStop: 50}, // 40 + 10
-		{name: "haiku", model: "haiku", hardStop: 50},   // 40 + 10
+		{
+			name:           "known tier wins over model family",
+			thresholdsData: `{"fast": 35, "balanced": 45, "sonnet": 55}`,
+			writeThreshold: true,
+			tier:           protocol.TierFast,
+			model:          "claude-3-5-sonnet-20241022",
+			hardStop:       45, // fast 35 + 10
+		},
+		{
+			name:           "unknown tier falls back to sonnet model family",
+			thresholdsData: `{"fast": 35, "balanced": 45, "sonnet": 55}`,
+			writeThreshold: true,
+			tier:           "experimental",
+			model:          "claude-3-5-sonnet-20241022",
+			hardStop:       65, // sonnet 55 + 10
+		},
+		{
+			name:           "missing threshold file falls back to default",
+			writeThreshold: false,
+			model:          "gpt-5.5",
+			hardStop:       50, // default 40 + 10
+		},
+		{
+			name:           "invalid threshold value falls back to default",
+			thresholdsData: `{"fast": 0, "balanced": 45, "sonnet": 55}`,
+			writeThreshold: true,
+			tier:           protocol.TierFast,
+			model:          "claude-3-5-sonnet-20241022",
+			hardStop:       50, // invalid fast value falls back to default 40 + 10
+		},
 	}
 
 	for _, tc := range cases {
@@ -4409,8 +4434,10 @@ func TestHardStopThresholds(t *testing.T) { //nolint:funlen // table-driven inte
 			if err := os.MkdirAll(oroDir, 0o750); err != nil { //nolint:gosec // test directory
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(tmpDir, "thresholds.json"), []byte(thresholdsData), 0o600); err != nil {
-				t.Fatal(err)
+			if tc.writeThreshold {
+				if err := os.WriteFile(filepath.Join(tmpDir, "thresholds.json"), []byte(tc.thresholdsData), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 
 			ctx, cancel := context.WithCancel(context.Background())
@@ -4424,6 +4451,7 @@ func TestHardStopThresholds(t *testing.T) { //nolint:funlen // table-driven inte
 					BeadID:   "bead-" + tc.name,
 					Worktree: tmpDir,
 					Model:    tc.model,
+					Tier:     tc.tier,
 				},
 			})
 
@@ -4440,6 +4468,7 @@ func TestHardStopThresholds(t *testing.T) { //nolint:funlen // table-driven inte
 			if spawner.process.Killed() {
 				t.Fatalf("%s: subprocess killed at pct=%d (hard stop boundary); expected no kill", tc.name, tc.hardStop)
 			}
+			assertNoHandoffWithin(t, dispatcherConn, 100*time.Millisecond)
 
 			// Write pct ABOVE hard stop — should trigger handoff + kill
 			if err := os.WriteFile(filepath.Join(oroDir, "context_pct"), fmt.Appendf(nil, "%d", tc.hardStop+1), 0o600); err != nil {
@@ -4472,6 +4501,35 @@ func TestHardStopThresholds(t *testing.T) { //nolint:funlen // table-driven inte
 			cancel()
 			<-errCh
 		})
+	}
+}
+
+func assertNoHandoffWithin(t *testing.T, conn net.Conn, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	scanner := bufio.NewScanner(conn)
+	for scanner.Scan() {
+		var msg protocol.Message
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if msg.Type == protocol.MsgHandoff {
+			t.Fatalf("unexpected HANDOFF before hard stop threshold")
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return
+		}
+		t.Fatalf("read message: %v", err)
 	}
 }
 

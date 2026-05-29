@@ -165,6 +165,9 @@ type thresholds struct {
 // For returns the threshold for the given model, falling back to DefaultThreshold.
 func (t thresholds) For(model string) int {
 	if v, ok := t.models[model]; ok {
+		if v <= 0 {
+			return DefaultThreshold
+		}
 		return v
 	}
 	return DefaultThreshold
