@@ -620,7 +620,7 @@ func codexHookConfigBlock(hooksDir string) string {
 		"  { matcher = \"apply_patch\", hooks = [ { type = \"command\", command = " + sh("auto-format.sh") + ", async = false } ] },",
 		"]",
 		"Stop = [",
-		"  { matcher = \"\", hooks = [ { type = \"command\", command = " + sh("stop-checklist.sh") + ", async = false } ] },",
+		"  { matcher = \"\", hooks = [ { type = \"command\", command = " + py("context_block_stop.py") + ", async = false }, { type = \"command\", command = " + sh("stop-checklist.sh") + ", async = false } ] },",
 		"]",
 		codexOroHooksEnd,
 	}, "\n")
