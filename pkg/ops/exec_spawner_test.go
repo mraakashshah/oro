@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOpsSpawnerUsesRuntime(t *testing.T) {
@@ -65,15 +66,52 @@ func TestOpsSpawnerSetsPWDWhenBuildEnvProvided(t *testing.T) {
 	}
 }
 
+func TestOpsProcessLastOutputAt(t *testing.T) {
+	workdir := t.TempDir()
+	spawner := NewExecSpawner(RuntimeSpec{
+		Command: "sh",
+		BuildArgs: func(_, _ string) []string {
+			return []string{"-c", "sleep 0.1; printf first; sleep 0.05; printf second"}
+		},
+	})
+
+	proc, err := spawner.Spawn(context.Background(), "balanced", "review this", workdir)
+	if err != nil {
+		t.Fatalf("Spawn() error = %v", err)
+	}
+	if got := proc.LastOutputAt(); !got.IsZero() {
+		t.Fatalf("LastOutputAt() before output = %v, want zero", got)
+	}
+
+	beforeWait := time.Now()
+	if err := proc.Wait(); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	afterWait := time.Now()
+	got := proc.LastOutputAt()
+	if got.IsZero() {
+		t.Fatal("LastOutputAt() after output = zero, want last-output time")
+	}
+	if got.Before(beforeWait) || got.After(afterWait) {
+		t.Fatalf("LastOutputAt() = %v, want between %v and %v", got, beforeWait, afterWait)
+	}
+	output, err := proc.Output()
+	if err != nil {
+		t.Fatalf("Output() error = %v", err)
+	}
+	if output != "firstsecond" {
+		t.Fatalf("Output() = %q, want firstsecond", output)
+	}
+}
+
 func TestOpsProcessWaitNilSuccess(t *testing.T) {
 	// "true" exits 0 — cmd.Wait() returns nil.
 	cmd := exec.Command("true")
-	var buf strings.Builder
-	cmd.Stdout = &buf
+	p := &opsProcess{cmd: cmd}
+	cmd.Stdout = p
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	p := &opsProcess{cmd: cmd, output: &buf}
 
 	err := p.Wait()
 	if err != nil {
@@ -84,12 +122,11 @@ func TestOpsProcessWaitNilSuccess(t *testing.T) {
 func TestOpsProcessWaitErrorWrapped(t *testing.T) {
 	// "false" exits 1 — cmd.Wait() returns a non-nil error.
 	cmd := exec.Command("false")
-	var buf strings.Builder
-	cmd.Stdout = &buf
+	p := &opsProcess{cmd: cmd}
+	cmd.Stdout = p
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	p := &opsProcess{cmd: cmd, output: &buf}
 
 	err := p.Wait()
 	if err == nil {
@@ -103,12 +140,11 @@ func TestOpsProcessWaitErrorWrapped(t *testing.T) {
 func TestOpsProcessKillNilSuccess(t *testing.T) {
 	// Start a long-running process so Kill() has a live process to kill.
 	cmd := exec.Command("sleep", "60")
-	var buf strings.Builder
-	cmd.Stdout = &buf
+	p := &opsProcess{cmd: cmd}
+	cmd.Stdout = p
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	p := &opsProcess{cmd: cmd, output: &buf}
 
 	err := p.Kill()
 	if err != nil {

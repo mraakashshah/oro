@@ -61,6 +61,10 @@ func (m *mockProcess) Output() (string, error) {
 	return m.stdout, nil
 }
 
+func (m *mockProcess) LastOutputAt() time.Time {
+	return time.Time{}
+}
+
 func (m *mockProcess) wasKilled() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()

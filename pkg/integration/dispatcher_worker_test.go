@@ -148,6 +148,7 @@ type mockOpsProcess struct{}
 func (m *mockOpsProcess) Wait() error             { return nil }
 func (m *mockOpsProcess) Kill() error             { return nil }
 func (m *mockOpsProcess) Output() (string, error) { return "looks good\n\nVERDICT: APPROVED", nil }
+func (m *mockOpsProcess) LastOutputAt() time.Time { return time.Time{} }
 
 // mockWorkerProcess implements worker.Process for testing.
 type mockWorkerProcess struct {

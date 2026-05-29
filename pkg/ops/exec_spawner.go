@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"time"
 
 	"oro/pkg/processenv"
 )
@@ -51,14 +53,14 @@ func (s *ExecSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning, 
 		cmd.Env = processenv.ForWorkdir(os.Environ(), workdir)
 	}
 
-	var outBuf strings.Builder
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &outBuf
+	proc := &opsProcess{cmd: cmd}
+	cmd.Stdout = proc
+	cmd.Stderr = proc
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("spawn %s: %w", s.spec.Command, err)
 	}
-	return &opsProcess{cmd: cmd, output: &outBuf}, nil
+	return proc, nil
 }
 
 // RuntimeSpawnerRouter selects a Claude or Codex ops spawner per role resolution.
@@ -131,8 +133,10 @@ func (s *ClaudeOpsSpawner) Spawn(ctx context.Context, model, prompt, workdir str
 
 // opsProcess wraps exec.Cmd to implement Process.
 type opsProcess struct {
-	cmd    *exec.Cmd
-	output *strings.Builder
+	mu           sync.Mutex
+	cmd          *exec.Cmd
+	output       strings.Builder
+	lastOutputAt time.Time
 }
 
 // Wait waits for the subprocess to exit.
@@ -150,7 +154,32 @@ func (p *opsProcess) Kill() error {
 	}
 	return nil
 }
-func (p *opsProcess) Output() (string, error) { return p.output.String(), nil } //nolint:revive // interface impl
+
+func (p *opsProcess) Write(data []byte) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n, err := p.output.Write(data)
+	if n > 0 {
+		p.lastOutputAt = time.Now()
+	}
+	if err != nil {
+		return n, fmt.Errorf("write output: %w", err)
+	}
+	return n, nil
+}
+
+func (p *opsProcess) Output() (string, error) { //nolint:revive // interface impl
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.output.String(), nil
+}
+
+// LastOutputAt returns when the subprocess last wrote stdout or stderr.
+func (p *opsProcess) LastOutputAt() time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastOutputAt
+}
 
 func buildClaudeOpsArgs(model, prompt string) []string {
 	return []string{"-p", prompt, "--model", model}

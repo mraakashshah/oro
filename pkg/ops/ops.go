@@ -29,6 +29,7 @@ type Process interface {
 	Wait() error
 	Kill() error
 	Output() (string, error) // read stdout after completion
+	LastOutputAt() time.Time
 }
 
 // BatchSpawner creates new claude -p processes.

@@ -803,6 +803,7 @@ type mockProcess struct {
 func (m *mockProcess) Wait() error             { return nil }
 func (m *mockProcess) Kill() error             { return nil }
 func (m *mockProcess) Output() (string, error) { return m.output, nil }
+func (m *mockProcess) LastOutputAt() time.Time { return time.Time{} }
 
 // --- Test helpers ---
 
@@ -7285,6 +7286,8 @@ func (p *slowProcess) Kill() error {
 }
 
 func (p *slowProcess) Output() (string, error) { return "ok\n\nVERDICT: APPROVED", nil }
+
+func (p *slowProcess) LastOutputAt() time.Time { return time.Time{} }
 
 type slowBatchSpawner struct {
 	mu        sync.Mutex
