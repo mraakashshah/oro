@@ -355,10 +355,6 @@ type CodeIndex interface {
 	Search(ctx context.Context, query string, topK int) ([]SearchResult, error)
 }
 
-type workdirCodeIndex interface {
-	SearchInWorkdir(ctx context.Context, query string, topK int, workdir string) ([]SearchResult, error)
-}
-
 // CodeChunk represents a code search result.
 type CodeChunk struct {
 	FilePath  string
@@ -5960,17 +5956,17 @@ func (d *Dispatcher) isBeadClosed(ctx context.Context, beadID string) bool {
 	return err == nil && detail != nil && detail.Status == "closed"
 }
 
-func (d *Dispatcher) searchCodeInWorkdir(ctx context.Context, query string, topK int, worktree string) ([]SearchResult, error) {
-	if idx, ok := d.codeIndex.(workdirCodeIndex); ok {
-		results, err := idx.SearchInWorkdir(ctx, query, topK, worktree)
-		if err != nil {
-			return nil, fmt.Errorf("search code in workdir: %w", err)
-		}
-		return results, nil
-	}
-	results, err := d.codeIndex.Search(ctx, query, topK)
+func (d *Dispatcher) searchCodeInWorkdir(ctx context.Context, query string, topK int, _ string) ([]SearchResult, error) {
+	chunks, err := d.codeIndex.FTS5Search(ctx, query, topK)
 	if err != nil {
-		return nil, fmt.Errorf("search code: %w", err)
+		return nil, fmt.Errorf("search code fts5: %w", err)
+	}
+	results := make([]SearchResult, 0, len(chunks))
+	for i, chunk := range chunks {
+		results = append(results, SearchResult{
+			CodeChunk: chunk,
+			Score:     1.0 / float64(i+1),
+		})
 	}
 	return results, nil
 }

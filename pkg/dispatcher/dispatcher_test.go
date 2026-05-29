@@ -17119,15 +17119,63 @@ func (m *mockCodeIndex) SearchInWorkdir(_ context.Context, query string, _ int, 
 	return m.searchResults, nil
 }
 
-// TestAssignBead_InjectsCodeContext verifies that assignBead runs Search
+func TestSearchCodeInWorkdirUsesFTSOnlyForAssignmentContext(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	codeIdx := &mockCodeIndex{
+		chunks: []CodeChunk{
+			{
+				FilePath:  "pkg/dispatcher/dispatcher.go",
+				Name:      "assignBead",
+				Kind:      "function",
+				StartLine: 5600,
+				EndLine:   5700,
+				Content:   "func (d *Dispatcher) assignBead(...) {}",
+			},
+		},
+		searchResults: []SearchResult{
+			{
+				CodeChunk: CodeChunk{
+					FilePath: "pkg/slow/reranker.go",
+					Content:  "func SlowReranker() {}",
+				},
+				Reason: "returned by reranker path",
+			},
+		},
+	}
+	d.codeIndex = codeIdx
+
+	results, err := d.searchCodeInWorkdir(context.Background(), "assignment context", 5, "/tmp/worktree-bead")
+	if err != nil {
+		t.Fatalf("searchCodeInWorkdir: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results length = %d, want 1", len(results))
+	}
+	if results[0].FilePath != "pkg/dispatcher/dispatcher.go" {
+		t.Fatalf("result FilePath = %q, want FTS result", results[0].FilePath)
+	}
+	if results[0].Reason != "" {
+		t.Fatalf("result Reason = %q, want no reranker reason", results[0].Reason)
+	}
+
+	codeIdx.mu.Lock()
+	defer codeIdx.mu.Unlock()
+	if len(codeIdx.searchQueries) != 0 {
+		t.Fatalf("SearchInWorkdir was called for assignment context: queries=%v workdirs=%v", codeIdx.searchQueries, codeIdx.searchWorkdirs)
+	}
+	if len(codeIdx.queries) != 1 || codeIdx.queries[0] != "assignment context" {
+		t.Fatalf("FTS5Search queries = %v, want [assignment context]", codeIdx.queries)
+	}
+}
+
+// TestAssignBead_InjectsCodeContext verifies that assignBead runs FTS search
 // on bead title and injects formatted results into AssignPayload.CodeSearchContext.
 func TestAssignBead_InjectsCodeContext(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 
-	// Inject a mock code index with test search results.
 	codeIdx := &mockCodeIndex{
-		searchResults: []SearchResult{
-			{CodeChunk: CodeChunk{FilePath: "pkg/foo/bar.go", Name: "DoStuff", Kind: "function", StartLine: 10, EndLine: 20, Content: "func DoStuff() {}"}, Score: 1.0},
+		chunks: []CodeChunk{
+			{FilePath: "pkg/foo/bar.go", Name: "DoStuff", Kind: "function", StartLine: 10, EndLine: 20, Content: "func DoStuff() {}"},
 		},
 	}
 	d.codeIndex = codeIdx
@@ -17169,19 +17217,18 @@ func TestAssignBead_InjectsCodeContext(t *testing.T) {
 		t.Errorf("expected CodeSearchContext to contain chunk content, got: %s", msg.Assign.CodeSearchContext)
 	}
 
-	// Verify Search was called with the bead title.
 	codeIdx.mu.Lock()
-	queries := codeIdx.searchQueries
-	workdirs := codeIdx.searchWorkdirs
+	queries := codeIdx.queries
+	searchQueries := codeIdx.searchQueries
 	codeIdx.mu.Unlock()
 	if len(queries) == 0 {
-		t.Fatal("expected Search to be called")
+		t.Fatal("expected FTS5Search to be called")
 	}
 	if queries[0] != "Add code search" {
-		t.Errorf("expected Search query to be bead title %q, got %q", "Add code search", queries[0])
+		t.Errorf("expected FTS5Search query to be bead title %q, got %q", "Add code search", queries[0])
 	}
-	if len(workdirs) == 0 || workdirs[0] != "/tmp/worktree-bead-code1" {
-		t.Fatalf("expected code search to run in assigned worktree, got %v", workdirs)
+	if len(searchQueries) != 0 {
+		t.Fatalf("expected assignment code context to avoid reranker search, got queries %v", searchQueries)
 	}
 }
 
@@ -17245,23 +17292,28 @@ func TestTruncateCodeSearchContextKeepsUTF8Valid(t *testing.T) {
 	}
 }
 
-// TestAssignBeadInjectsRerankedCodeContext verifies that when mock codeIndex.Search()
-// returns SearchResult with non-empty Reason, the assembled worker prompt contains that Reason string.
-func TestAssignBeadInjectsRerankedCodeContext(t *testing.T) {
+// TestAssignBeadInjectsFTSCodeContextWithoutReranker verifies that assignment
+// context avoids reranker-only reasons that require a slow subprocess.
+func TestAssignBeadInjectsFTSCodeContextWithoutReranker(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 
-	// Inject a mock code index whose Search() returns a result with a Reason.
 	const wantReason = "implements the core assignment algorithm"
 	codeIdx := &mockCodeIndex{
+		chunks: []CodeChunk{
+			{
+				FilePath:  "pkg/dispatcher/dispatcher.go",
+				Name:      "assignBead",
+				Kind:      "function",
+				StartLine: 1700,
+				EndLine:   1810,
+				Content:   "func (d *Dispatcher) assignBead(...) {}",
+			},
+		},
 		searchResults: []SearchResult{
 			{
 				CodeChunk: CodeChunk{
-					FilePath:  "pkg/dispatcher/dispatcher.go",
-					Name:      "assignBead",
-					Kind:      "function",
-					StartLine: 1700,
-					EndLine:   1810,
-					Content:   "func (d *Dispatcher) assignBead(...) {}",
+					FilePath: "pkg/reranker/only.go",
+					Content:  "func RerankerOnly() {}",
 				},
 				Score:  0.95,
 				Reason: wantReason,
@@ -17293,9 +17345,17 @@ func TestAssignBeadInjectsRerankedCodeContext(t *testing.T) {
 		t.Fatalf("expected ASSIGN, got %s", msg.Type)
 	}
 
-	// Assert: CodeSearchContext contains the Reason string from the SearchResult.
-	if !strings.Contains(msg.Assign.CodeSearchContext, wantReason) {
-		t.Errorf("expected CodeSearchContext to contain Reason %q, got: %s", wantReason, msg.Assign.CodeSearchContext)
+	if !strings.Contains(msg.Assign.CodeSearchContext, "pkg/dispatcher/dispatcher.go") {
+		t.Fatalf("expected CodeSearchContext to contain FTS result, got: %s", msg.Assign.CodeSearchContext)
+	}
+	if strings.Contains(msg.Assign.CodeSearchContext, wantReason) {
+		t.Fatalf("expected CodeSearchContext to avoid reranker reason %q, got: %s", wantReason, msg.Assign.CodeSearchContext)
+	}
+
+	codeIdx.mu.Lock()
+	defer codeIdx.mu.Unlock()
+	if len(codeIdx.searchQueries) != 0 {
+		t.Fatalf("expected assignment code context to avoid reranker search, got queries %v", codeIdx.searchQueries)
 	}
 }
 

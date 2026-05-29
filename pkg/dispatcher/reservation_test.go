@@ -19,8 +19,14 @@ type blockingCodeIndex struct {
 	once    sync.Once
 }
 
-func (b *blockingCodeIndex) FTS5Search(_ context.Context, _ string, _ int) ([]CodeChunk, error) {
-	return nil, nil
+func (b *blockingCodeIndex) FTS5Search(ctx context.Context, _ string, _ int) ([]CodeChunk, error) {
+	b.once.Do(func() { close(b.started) })
+	select {
+	case <-b.release:
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (b *blockingCodeIndex) Search(ctx context.Context, query string, topK int) ([]SearchResult, error) {
