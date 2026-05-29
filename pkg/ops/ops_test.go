@@ -2,6 +2,7 @@ package ops //nolint:testpackage // internal test needs access to unexported typ
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -1138,6 +1139,88 @@ func TestParseReviewOutputRequiresVerdictPrefix(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestParseReviewOutputStreamJSON(t *testing.T) {
+	streamResult := reviewStreamJSONLine(t, "result", "Interpreting output\n\nVERDICT: APPROVED")
+	streamText := reviewStreamJSONLine(t, "content_block_delta", "Review complete.\n\nVERDICT: APPROVED")
+
+	tests := []struct {
+		name        string
+		stdout      string
+		wantVerdict Verdict
+	}{
+		{
+			name:        "result event text controls verdict",
+			stdout:      streamText + "\n" + streamResult + "\n",
+			wantVerdict: VerdictApproved,
+		},
+		{
+			name:        "plain text fallback still works",
+			stdout:      "Review complete.\n\nVERDICT: APPROVED",
+			wantVerdict: VerdictApproved,
+		},
+		{
+			name:        "no result scans accumulated assistant text",
+			stdout:      streamText + "\n",
+			wantVerdict: VerdictApproved,
+		},
+		{
+			name:        "malformed stream falls back to raw scan",
+			stdout:      "not-json\nVERDICT: APPROVED\n",
+			wantVerdict: VerdictApproved,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			verdict, _ := parseReviewOutput(tt.stdout)
+			if verdict != tt.wantVerdict {
+				t.Fatalf("parseReviewOutput() verdict = %q, want %q", verdict, tt.wantVerdict)
+			}
+		})
+	}
+}
+
+func reviewStreamJSONLine(t *testing.T, kind string, text string) string {
+	t.Helper()
+
+	var payload any
+	switch kind {
+	case "result":
+		payload = struct {
+			Type   string `json:"type"`
+			Result string `json:"result"`
+		}{
+			Type:   "result",
+			Result: text,
+		}
+	case "content_block_delta":
+		payload = struct {
+			Type  string `json:"type"`
+			Delta struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"delta"`
+		}{
+			Type: "content_block_delta",
+			Delta: struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}{
+				Type: "text_delta",
+				Text: text,
+			},
+		}
+	default:
+		t.Fatalf("unknown stream event kind %q", kind)
+	}
+
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal stream event: %v", err)
+	}
+	return string(encoded)
 }
 
 // --- Non-zero exit code with verdict in stdout ---

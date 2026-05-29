@@ -17,6 +17,7 @@ import (
 	"oro/pkg/agentmodel"
 	"oro/pkg/processenv"
 	"oro/pkg/protocol"
+	"oro/pkg/worker"
 
 	"github.com/google/uuid"
 )
@@ -652,6 +653,7 @@ func sandboxDenialResult(stdout string) sandboxDenial {
 // parseReviewOutput requires the final non-empty stdout line to be an exact
 // machine-readable verdict line.
 func parseReviewOutput(stdout string) (verdict Verdict, feedback string) {
+	stdout = reviewOutputText(stdout)
 	finalLine := ""
 	for line := range strings.SplitSeq(stdout, "\n") {
 		if trimmed := strings.TrimSpace(line); trimmed != "" {
@@ -667,6 +669,35 @@ func parseReviewOutput(stdout string) (verdict Verdict, feedback string) {
 	default:
 		return VerdictFailed, stdout
 	}
+}
+
+func reviewOutputText(stdout string) string {
+	var text strings.Builder
+	recognized := false
+
+	for line := range strings.SplitSeq(stdout, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		activity := worker.ParseStreamEvent([]byte(line))
+		switch activity.Kind {
+		case worker.ActivityResult:
+			return activity.Text
+		case worker.ActivityTextDelta:
+			recognized = true
+			text.WriteString(activity.Text)
+		case worker.ActivityToolUse:
+			recognized = true
+		default:
+			return stdout
+		}
+	}
+
+	if recognized && text.Len() > 0 {
+		return text.String()
+	}
+	return stdout
 }
 
 // parseMergeOutput looks for RESOLVED or FAILED in the output.
