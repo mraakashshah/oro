@@ -8,18 +8,31 @@ import (
 	"strings"
 	"testing"
 
+	"oro/pkg/cards"
 	"oro/pkg/protocol"
 	"oro/pkg/worker"
 )
 
-// mockMemStore captures Insert calls without a real DB.
+// mockMemStore captures pending learning appends without a real DB.
 type mockMemStore struct {
-	inserted []protocol.MemoryInsertParams
+	inserted   []protocol.MemoryInsertParams
+	candidates []cards.CardCandidate
+	beadIDs    []string
 }
 
-func (m *mockMemStore) Insert(_ context.Context, p protocol.MemoryInsertParams) (int64, error) {
-	m.inserted = append(m.inserted, p)
-	return int64(len(m.inserted)), nil
+func (m *mockMemStore) AppendLearningPending(_ context.Context, beadID string, c cards.CardCandidate) (int64, error) {
+	m.candidates = append(m.candidates, c)
+	m.beadIDs = append(m.beadIDs, beadID)
+	if len(c.Evidence) > 0 {
+		if params := worker.ParseMemoryMarker(c.Evidence[0]); params != nil {
+			params.BeadID = beadID
+			if c.Confidence == 0.7 {
+				params.Source = "llm_extracted"
+			}
+			m.inserted = append(m.inserted, *params)
+		}
+	}
+	return int64(len(m.candidates)), nil
 }
 
 // mockLLMSpawner implements worker.MemoryExtractSpawner for testing. It records whether Spawn
@@ -107,6 +120,58 @@ func TestDrainOutput_FormatsToolActivity(t *testing.T) {
 	}
 	if !strings.Contains(got, "reading file...") {
 		t.Fatalf("expected text echo in output, got %q", got)
+	}
+}
+
+func TestDrainEmitsCardCandidate(t *testing.T) {
+	input := ndjsonInput(
+		textDeltaLine("doing work\n"),
+		textDeltaLine("[MEMORY] type=lesson tags=drain,claude-json: capture markers as pending card candidates\n"),
+	)
+	sink := &mockMemStore{}
+
+	worker.DrainOutput(context.Background(), io.NopCloser(strings.NewReader(input)),
+		worker.StreamFormatClaudeJSON, sink, "oro-card1", nil, io.Discard)
+
+	if len(sink.candidates) != 1 {
+		t.Fatalf("expected 1 card candidate appended, got %d", len(sink.candidates))
+	}
+	if sink.beadIDs[0] != "oro-card1" {
+		t.Fatalf("beadID = %q, want oro-card1", sink.beadIDs[0])
+	}
+	got := sink.candidates[0]
+	if got.Type != string(cards.CardTypePattern) {
+		t.Fatalf("candidate Type = %q, want pattern", got.Type)
+	}
+	if !strings.Contains(got.BodyFull, "capture markers as pending card candidates") {
+		t.Fatalf("candidate BodyFull = %q, want marker content", got.BodyFull)
+	}
+	if !strings.Contains(got.BodySummary, "capture markers as pending card candidates") {
+		t.Fatalf("candidate BodySummary = %q, want marker content", got.BodySummary)
+	}
+	if got.Confidence != 0.8 {
+		t.Fatalf("candidate Confidence = %v, want 0.8", got.Confidence)
+	}
+	if len(got.Evidence) == 0 || !strings.Contains(got.Evidence[0], "[MEMORY]") {
+		t.Fatalf("candidate Evidence = %#v, want original marker", got.Evidence)
+	}
+	if strings.Join(got.Tags, ",") != "drain,claude-json" {
+		t.Fatalf("candidate Tags = %#v, want drain and claude-json", got.Tags)
+	}
+}
+
+func TestDrainSkipsMalformedMarkerAndEmptyBeadID(t *testing.T) {
+	input := ndjsonInput(
+		textDeltaLine("[MEMORY] malformed marker without type prefix\n"),
+		textDeltaLine("[MEMORY] type=lesson: valid marker has no bead\n"),
+	)
+	sink := &mockMemStore{}
+
+	worker.DrainOutput(context.Background(), io.NopCloser(strings.NewReader(input)),
+		worker.StreamFormatClaudeJSON, sink, "", nil, io.Discard)
+
+	if len(sink.candidates) != 0 {
+		t.Fatalf("expected no card candidates for malformed or empty-bead markers, got %#v", sink.candidates)
 	}
 }
 

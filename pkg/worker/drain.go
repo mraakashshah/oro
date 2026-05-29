@@ -16,13 +16,13 @@ import (
 // Empty writers slice is a no-op for output.
 //
 //oro:testonly
-func DrainOutput(ctx context.Context, stdout io.ReadCloser, format StreamFormat, store MemoryInserter, beadID string, spawner MemoryExtractSpawner, writers ...io.Writer) {
+func DrainOutput(ctx context.Context, stdout io.ReadCloser, format StreamFormat, store LearningSink, beadID string, spawner MemoryExtractSpawner, writers ...io.Writer) {
 	DrainOutputInWorkdir(ctx, stdout, format, store, beadID, spawner, "", writers...)
 }
 
 // DrainOutputInWorkdir is DrainOutput with a worktree binding for post-drain
 // LLM memory extraction subprocesses.
-func DrainOutputInWorkdir(ctx context.Context, stdout io.ReadCloser, format StreamFormat, store MemoryInserter, beadID string, spawner MemoryExtractSpawner, workdir string, writers ...io.Writer) {
+func DrainOutputInWorkdir(ctx context.Context, stdout io.ReadCloser, format StreamFormat, store LearningSink, beadID string, spawner MemoryExtractSpawner, workdir string, writers ...io.Writer) {
 	defer func() { _ = stdout.Close() }()
 
 	out := filterWriters(writers)
@@ -73,15 +73,10 @@ func drainWritePlaintext(out io.Writer, line string) {
 	_, _ = io.WriteString(out, "\n")
 }
 
-func drainAccumulatePlaintext(ctx context.Context, line string, accumulated *strings.Builder, store MemoryInserter, beadID string) {
+func drainAccumulatePlaintext(ctx context.Context, line string, accumulated *strings.Builder, store LearningSink, beadID string) {
 	accumulated.WriteString(line)
 	accumulated.WriteString("\n")
-	if store != nil {
-		if params := ParseMemoryMarker(line); params != nil {
-			params.BeadID = beadID
-			_, _ = store.Insert(ctx, *params)
-		}
-	}
+	appendMemoryMarker(ctx, store, beadID, line, 0.8)
 }
 
 // filterWriters returns a multi-writer for non-nil writers, or nil.
@@ -115,7 +110,7 @@ func drainWriteActivity(out io.Writer, activity Activity) {
 }
 
 // drainAccumulateText buffers text content and flushes complete lines for memory extraction.
-func drainAccumulateText(ctx context.Context, activity Activity, lineBuf, accumulated *strings.Builder, store MemoryInserter, beadID string) {
+func drainAccumulateText(ctx context.Context, activity Activity, lineBuf, accumulated *strings.Builder, store LearningSink, beadID string) {
 	if activity.Text == "" {
 		return
 	}
@@ -124,24 +119,19 @@ func drainAccumulateText(ctx context.Context, activity Activity, lineBuf, accumu
 }
 
 // drainFlushRemaining flushes any buffered text that doesn't end with a newline.
-func drainFlushRemaining(ctx context.Context, lineBuf, accumulated *strings.Builder, store MemoryInserter, beadID string) {
+func drainFlushRemaining(ctx context.Context, lineBuf, accumulated *strings.Builder, store LearningSink, beadID string) {
 	if lineBuf.Len() == 0 {
 		return
 	}
 	remaining := lineBuf.String()
 	accumulated.WriteString(remaining)
 	accumulated.WriteString("\n")
-	if store != nil {
-		if params := ParseMemoryMarker(remaining); params != nil {
-			params.BeadID = beadID
-			_, _ = store.Insert(ctx, *params)
-		}
-	}
+	appendMemoryMarker(ctx, store, beadID, remaining, 0.8)
 }
 
 // drainFlushLines extracts complete newline-terminated lines from buf,
 // appends each to accumulated, and checks for [MEMORY] markers.
-func drainFlushLines(ctx context.Context, buf, accumulated *strings.Builder, store MemoryInserter, beadID string) {
+func drainFlushLines(ctx context.Context, buf, accumulated *strings.Builder, store LearningSink, beadID string) {
 	content := buf.String()
 	lastNL := strings.LastIndex(content, "\n")
 	if lastNL < 0 {
@@ -155,11 +145,6 @@ func drainFlushLines(ctx context.Context, buf, accumulated *strings.Builder, sto
 	for _, line := range strings.Split(complete, "\n") {
 		accumulated.WriteString(line)
 		accumulated.WriteString("\n")
-		if store != nil {
-			if params := ParseMemoryMarker(line); params != nil {
-				params.BeadID = beadID
-				_, _ = store.Insert(ctx, *params)
-			}
-		}
+		appendMemoryMarker(ctx, store, beadID, line, 0.8)
 	}
 }

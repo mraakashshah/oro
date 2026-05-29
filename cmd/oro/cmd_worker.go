@@ -56,17 +56,15 @@ func runWorker(ctx context.Context, socketPath, id string) error {
 		return fmt.Errorf("create worker %s: %w", id, err)
 	}
 
-	// Wire memory store so [MEMORY] markers and implicit patterns are captured.
-	var saveVocab func(context.Context) error
+	// Wire card store so [MEMORY] markers and implicit patterns are captured.
 	paths, pathsErr := ResolveProjectDBPaths()
 	if pathsErr == nil {
 		db, dbErr := openStateDB(paths.StateDBPath)
 		if dbErr == nil {
 			defer func() { _ = db.Close() }()
-			memStore := openWorkerMemoryStore(db)
-			if memStore != nil {
-				w.SetMemoryStore(memStore)
-				saveVocab = memStore.SaveVocab
+			cardStore := openWorkerCardStore(db)
+			if cardStore != nil {
+				w.SetMemoryStore(cardStore)
 			}
 		}
 	}
@@ -76,11 +74,6 @@ func runWorker(ctx context.Context, socketPath, id string) error {
 		return fmt.Errorf("worker %s: %w", id, err)
 	}
 
-	// Persist the embedder vocabulary so the next session starts with the same
-	// vector space. Non-fatal: the next session degrades gracefully if missing.
-	if saveVocab != nil {
-		_ = saveVocab(context.Background())
-	}
 	return nil
 }
 

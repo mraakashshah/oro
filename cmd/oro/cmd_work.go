@@ -117,7 +117,7 @@ type opsReviewer interface {
 }
 
 type workMemoryStore interface {
-	worker.MemoryInserter
+	worker.LearningSink
 	SaveVocab(context.Context) error
 }
 
@@ -840,11 +840,11 @@ func drainRuntimeOutput(ctx context.Context, deps *workDeps, stdout io.ReadClose
 		if logFile != nil {
 			writers = append(writers, logFile)
 		}
-		var memInserter worker.MemoryInserter
-		if deps.memStore != nil {
-			memInserter = deps.memStore
+		var learningSink worker.LearningSink
+		if deps.cardStore != nil {
+			learningSink = deps.cardStore
 		}
-		worker.DrainOutputInWorkdir(ctx, stdout, streamFormat, memInserter, beadID, newWorkerMemoryExtractSpawner(), worktree, writers...)
+		worker.DrainOutputInWorkdir(ctx, stdout, streamFormat, learningSink, beadID, newWorkerMemoryExtractSpawner(), worktree, writers...)
 	}
 }
 
