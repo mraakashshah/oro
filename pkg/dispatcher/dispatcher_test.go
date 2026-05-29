@@ -5924,6 +5924,172 @@ func TestHandleReviewResult_FailedVerdictReassignsReviewingWorker(t *testing.T) 
 	}
 }
 
+func TestHandleReviewResultStreamJSON(t *testing.T) {
+	tests := []struct {
+		name       string
+		transcript string
+		assert     func(t *testing.T, d *Dispatcher, esc *mockEscalator, conn *mockConn)
+	}{
+		{
+			name: "approved result reaches dispatcher as approved",
+			transcript: streamJSONReviewResult(strings.Join([]string{
+				"Reviewed the change.",
+				"VERDICT: APPROVED",
+			}, "\n")),
+			assert: func(t *testing.T, d *Dispatcher, esc *mockEscalator, conn *mockConn) {
+				t.Helper()
+				if eventCount(t, d.db, "review_approved") != 1 {
+					t.Fatal("expected one review_approved event")
+				}
+				if eventCount(t, d.db, "review_failed") != 0 {
+					t.Fatal("stream-json approved transcript routed as review_failed")
+				}
+				if len(esc.Messages()) != 0 {
+					t.Fatalf("expected no escalation for approved review, got %q", esc.Messages())
+				}
+				msg := lastMockConnMessage(t, conn)
+				if msg.Type != protocol.MsgReviewResult {
+					t.Fatalf("last worker message type = %s, want %s", msg.Type, protocol.MsgReviewResult)
+				}
+				if msg.ReviewResult == nil || msg.ReviewResult.Verdict != "approved" {
+					t.Fatalf("review result = %#v, want approved", msg.ReviewResult)
+				}
+			},
+		},
+		{
+			name: "rejected result reaches dispatcher as rejection",
+			transcript: streamJSONReviewResult(strings.Join([]string{
+				"Found a regression.",
+				"VERDICT: REJECTED",
+			}, "\n")),
+			assert: func(t *testing.T, d *Dispatcher, esc *mockEscalator, conn *mockConn) {
+				t.Helper()
+				if eventCount(t, d.db, "review_rejected") != 1 {
+					t.Fatal("expected one review_rejected event")
+				}
+				if eventCount(t, d.db, "review_failed") != 0 {
+					t.Fatal("stream-json rejected transcript routed as review_failed")
+				}
+				if len(esc.Messages()) != 0 {
+					t.Fatalf("expected no escalation for first rejected review, got %q", esc.Messages())
+				}
+				msg := lastMockConnMessage(t, conn)
+				if msg.Type != protocol.MsgAssign {
+					t.Fatalf("last worker message type = %s, want %s", msg.Type, protocol.MsgAssign)
+				}
+				if msg.Assign == nil || !strings.Contains(msg.Assign.Feedback, "VERDICT: REJECTED") {
+					t.Fatalf("assign payload feedback = %#v, want rejected transcript", msg.Assign)
+				}
+			},
+		},
+		{
+			name:       "missing verdict routes as failure",
+			transcript: streamJSONReviewResult("Reviewed the change, but omitted the verdict line."),
+			assert: func(t *testing.T, d *Dispatcher, esc *mockEscalator, conn *mockConn) {
+				t.Helper()
+				if eventCount(t, d.db, "review_failed") != 1 {
+					t.Fatal("expected one review_failed event")
+				}
+				if eventCount(t, d.db, "review_approved") != 0 {
+					t.Fatal("no-verdict stream-json transcript routed as approved")
+				}
+				if len(esc.Messages()) == 0 {
+					t.Fatal("expected escalation for no-verdict review")
+				}
+				msg := lastMockConnMessage(t, conn)
+				if msg.Type != protocol.MsgAssign {
+					t.Fatalf("last worker message type = %s, want %s", msg.Type, protocol.MsgAssign)
+				}
+				if msg.Assign == nil || !strings.Contains(msg.Assign.Feedback, "Review failed:") {
+					t.Fatalf("assign payload feedback = %#v, want review failure feedback", msg.Assign)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
+			d.repoRoot = t.TempDir()
+			const (
+				workerID = "w-stream-json-review"
+				beadID   = "bead-stream-json-review"
+				worktree = "/tmp/stream-json-review"
+			)
+			ctx := context.Background()
+			conn := registerReviewingWorker(t, d, beadSrc, workerID, beadID, worktree)
+
+			spawner := ops.NewSpawner(&mockBatchSpawner{verdict: tt.transcript})
+			resultCh := spawner.Review(ctx, ops.ReviewOpts{
+				BeadID:             beadID,
+				BeadTitle:          "Stream JSON review",
+				Worktree:           worktree,
+				AcceptanceCriteria: "Test: stream-json review verdict reaches dispatcher",
+				BaseBranch:         "main",
+				ProjectRoot:        t.TempDir(),
+			})
+
+			d.handleReviewResult(ctx, workerID, beadID, resultCh)
+
+			tt.assert(t, d, esc, conn)
+		})
+	}
+}
+
+func streamJSONReviewResult(result string) string {
+	b, err := json.Marshal(result)
+	if err != nil {
+		panic(err)
+	}
+	return fmt.Sprintf(`{"type":"result","subtype":"success","result":%s,"is_error":false}`, b)
+}
+
+func registerReviewingWorker(t *testing.T, d *Dispatcher, beadSrc *fakeBeadStore, workerID, beadID, worktree string) *mockConn {
+	t.Helper()
+	ctx := context.Background()
+	assignmentID, err := d.createAssignment(ctx, beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	conn := newMockConn()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		encoder:      json.NewEncoder(conn),
+		state:        protocol.WorkerReviewing,
+		beadID:       beadID,
+		assignmentID: assignmentID,
+		worktree:     worktree,
+		baseBranch:   "main",
+		targetBranch: "main",
+	}
+	d.mu.Unlock()
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Stream JSON review",
+		AcceptanceCriteria: "Test: stream-json review verdict reaches dispatcher",
+		Status:             "in_progress",
+	}
+	beadSrc.mu.Unlock()
+	return conn
+}
+
+func lastMockConnMessage(t *testing.T, conn *mockConn) protocol.Message {
+	t.Helper()
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if len(conn.written) == 0 {
+		t.Fatal("expected worker message")
+	}
+	var msg protocol.Message
+	if err := json.Unmarshal(conn.written[len(conn.written)-1], &msg); err != nil {
+		t.Fatalf("decode last worker message: %v", err)
+	}
+	return msg
+}
+
 // TestHandleReviewApprovedError verifies that when handleReviewResult receives a
 // result with VerdictApproved AND a non-nil Err (i.e. the subprocess exited
 // nonzero but "VERDICT: APPROVED" appeared in stdout), the dispatcher fails closed:
