@@ -13,7 +13,7 @@ func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "oro",
 		Short:         "Oro agent swarm orchestrator",
-		Long:          "oro is the single entry point for the Oro agent swarm.\nIt manages session orchestration and the memory interface.",
+		Long:          "oro is the single entry point for the Oro agent swarm.\nIt manages session orchestration and knowledge cards.",
 		Version:       fmt.Sprintf("oro %s", appversion.String()),
 		SilenceUsage:  true,
 		SilenceErrors: true,

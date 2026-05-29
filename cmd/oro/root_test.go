@@ -4,8 +4,20 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestRootLongNoMemoryInterface(t *testing.T) {
+	long := newRootCmd().Long
+
+	if strings.Contains(strings.ToLower(long), "memory interface") {
+		t.Fatalf("root Long must not describe retired legacy memory as live:\n%s", long)
+	}
+	if !strings.Contains(strings.ToLower(long), "knowledge cards") {
+		t.Fatalf("root Long should describe the current knowledge cards surface:\n%s", long)
+	}
+}
 
 func TestLegacySourceFilesDeleted(t *testing.T) {
 	root := repoRootForSourceDeletionTest(t)
