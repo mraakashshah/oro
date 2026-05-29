@@ -991,6 +991,7 @@ func buildHookConfig(hooksDir string) map[string][]hookGroup {
 			}},
 		},
 		"Stop": {{Matcher: "", Hooks: []hookEntry{
+			{Type: "command", Command: py("context_block_stop.py")},
 			{Type: "command", Command: sh("stop-checklist.sh")},
 		}}},
 	}

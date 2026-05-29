@@ -93,6 +93,7 @@ def test_agent_asset_mirrors() -> None:
             Path("test_architect_router.py"),
             Path("test_architect_router_new.py"),
             Path("test_context_pct_writer.py"),
+            Path("test_context_block_stop.py"),
             Path("test_hook_paths.py"),
             Path("test_notify_manager_on_bead_create.py"),
             Path("test_pane_handoff_reminder.py"),

@@ -138,6 +138,10 @@
 				"hooks": [
 					{
 						"type": "command",
+						"command": "python3 .claude/hooks/context_block_stop.py"
+					},
+					{
+						"type": "command",
 						"command": ".claude/hooks/stop-checklist.sh"
 					}
 				]
