@@ -52,10 +52,11 @@ func runForget(cmd *cobra.Command, store forgetMemoryStore, args []string) error
 // newForgetCmd creates the "oro forget" subcommand.
 func newForgetCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "forget <id> [id...]",
-		Short: "Delete one or more memories by ID",
-		Long:  "Remove memories from the store by their numeric IDs.\nPrints confirmation for each deleted memory. Returns an error for nonexistent IDs.",
-		Args:  cobra.MinimumNArgs(1),
+		Use:    "forget <id> [id...]",
+		Short:  "Delete one or more memories by ID",
+		Long:   "Remove memories from the store by their numeric IDs.\nPrints confirmation for each deleted memory. Returns an error for nonexistent IDs.",
+		Hidden: true,
+		Args:   cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			store, err := defaultMemoryStore()
 			if err != nil {

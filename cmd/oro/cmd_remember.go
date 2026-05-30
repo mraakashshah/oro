@@ -58,10 +58,11 @@ func newRememberCmdWithStore(store rememberMemoryStore) *cobra.Command {
 	var pin bool
 	var tags string
 	cmd := &cobra.Command{
-		Use:   "remember <text>",
-		Short: "Store a memory",
-		Long:  "Insert a memory into the store. Supports type hints via prefix\n(lesson:, decision:, gotcha:, pattern:). Default type: self_report.\nUse --pin to mark memory as permanent (no time decay).",
-		Args:  cobra.MinimumNArgs(1),
+		Use:    "remember <text>",
+		Short:  "Store a memory",
+		Long:   "Insert a memory into the store. Supports type hints via prefix\n(lesson:, decision:, gotcha:, pattern:). Default type: self_report.\nUse --pin to mark memory as permanent (no time decay).",
+		Hidden: true,
+		Args:   cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Lazy store initialization if not provided
 			s := store

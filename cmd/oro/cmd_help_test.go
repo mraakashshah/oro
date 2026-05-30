@@ -24,7 +24,6 @@ func TestHelpOutput(t *testing.T) {
 		"Lifecycle:",
 		"Monitoring:",
 		"Knowledge:",
-		"Retired:",
 		"Control:",
 		"Search:",
 	}
@@ -42,10 +41,7 @@ func TestHelpOutput(t *testing.T) {
 		"cleanup",
 		"status",
 		"logs",
-		"remember",
-		"recall",
-		"forget",
-		"memories",
+		"cards",
 		"directive",
 		"index",
 		"worker",
@@ -68,7 +64,7 @@ func TestHelpOutput(t *testing.T) {
 	}
 }
 
-func TestHelpNoLiveMemoryGroup(t *testing.T) {
+func TestHelpDoesNotAdvertiseLegacyMemoryCommands(t *testing.T) {
 	root := newRootCmd()
 	var buf bytes.Buffer
 	root.SetOut(&buf)
@@ -83,6 +79,9 @@ func TestHelpNoLiveMemoryGroup(t *testing.T) {
 	if strings.Contains(out, "\nMemory:\n") {
 		t.Fatalf("help output must not present retired commands under a live Memory group:\n%s", out)
 	}
+	if strings.Contains(out, "\nRetired:\n") {
+		t.Fatalf("help output must not advertise a retired memory command group:\n%s", out)
+	}
 
 	knowledgeSection := sectionFromHelp(t, out, "Knowledge:")
 	for _, want := range []string{"cards", "models"} {
@@ -90,13 +89,7 @@ func TestHelpNoLiveMemoryGroup(t *testing.T) {
 			t.Errorf("expected %q in Knowledge section:\n%s", want, knowledgeSection)
 		}
 	}
-
-	retiredSection := sectionFromHelp(t, out, "Retired:")
-	for _, want := range []string{"remember", "recall", "forget", "memories"} {
-		if !sectionCommandLineContains(retiredSection, want, "(retired)") {
-			t.Errorf("expected retired command %q to be annotated in Retired section:\n%s", want, retiredSection)
-		}
-	}
+	assertHelpOmitsCommandLines(t, out, []string{"remember", "recall", "forget", "memories"})
 }
 
 func sectionFromHelp(t *testing.T, helpOutput, heading string) string {
@@ -112,16 +105,6 @@ func sectionFromHelp(t *testing.T, helpOutput, heading string) string {
 		section = section[:len(heading)+nextSectionIdx]
 	}
 	return section
-}
-
-func sectionCommandLineContains(section, command, text string) bool {
-	for _, line := range strings.Split(section, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) > 0 && fields[0] == command && strings.Contains(line, text) {
-			return true
-		}
-	}
-	return false
 }
 
 func TestHelpFallthrough(t *testing.T) {
