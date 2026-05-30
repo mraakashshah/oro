@@ -63,7 +63,7 @@ jobs:
           go install github.com/fe3dback/go-arch-lint@v1.14.0
           go-arch-lint check --project-path .
 
-      # Tier 4: Testing + Coverage (83% minimum, excluding dashboard TUI packages)
+      # Tier 4: Testing + Coverage (82% minimum, matching local quality gate package scope)
       - name: Install ast-grep
         run: npm install -g @ast-grep/cli
 
@@ -71,9 +71,10 @@ jobs:
         run: |
           # Run all tests for correctness (including dashboard TUI)
           go test -race -shuffle=on ./internal/... ./pkg/... ./cmd/...
-          # Measure coverage excluding dashboard views (terminal UI — low testability by design)
-          NON_TUI=$(go list ./internal/... ./pkg/... ./cmd/... | grep -v 'pkg/dashboard/views')
-          go test -race -shuffle=on -coverprofile=coverage.out $NON_TUI
+          # Measure coverage for library packages, excluding dashboard TUI packages.
+          # Command packages are still tested above, but are not part of the coverage gate.
+          COVERAGE_PKGS=$(go list ./internal/... ./pkg/... | grep -v 'pkg/dashboard/' | tr '\n' ' ')
+          go test -race -shuffle=on -coverprofile=coverage.out $COVERAGE_PKGS
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Total coverage (non-TUI): ${COVERAGE}%"
           awk "BEGIN {exit ($COVERAGE < 82)}"

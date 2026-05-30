@@ -9810,10 +9810,16 @@ func TestDispatcher_RespawnsWorkersToTarget(t *testing.T) {
 // Returns the dispatcher, conn, escalator, and spawnMock for further assertions.
 func setupReviewRejection(t *testing.T) (*Dispatcher, net.Conn, *mockEscalator, *mockBatchSpawner) {
 	t.Helper()
+	return setupReviewRejectionWithProcessManager(t, nil)
+}
+
+func setupReviewRejectionWithProcessManager(t *testing.T, procMgr ProcessManager) (*Dispatcher, net.Conn, *mockEscalator, *mockBatchSpawner) {
+	t.Helper()
 	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
 	spawnMock.mu.Lock()
 	spawnMock.verdict = "missing edge case tests\n\nVERDICT: REJECTED"
 	spawnMock.mu.Unlock()
+	d.procMgr = procMgr
 
 	startDispatcher(t, d)
 
@@ -9960,9 +9966,8 @@ func TestDispatcher_ReviewRejection_EscalatesAfterTwoRejections(t *testing.T) {
 }
 
 func TestDispatcher_ReviewRejection_WorkerIdleAfterMaxRejections(t *testing.T) {
-	d, conn, _, _ := setupReviewRejection(t)
 	pm := &mockProcessManager{}
-	d.procMgr = pm
+	d, conn, _, _ := setupReviewRejectionWithProcessManager(t, pm)
 
 	// First rejection cycle — worker gets re-ASSIGN
 	sendMsg(t, conn, protocol.Message{
@@ -12979,8 +12984,9 @@ func TestPriorityContention(t *testing.T) {
 		},
 	})
 
-	// Wait for P0 assignment (dispatcher polls every 50ms)
-	msg, ok = readMsg(t, conn, 2*time.Second)
+	// Wait for P0 assignment. DONE releases the worker after the async merge/close
+	// path completes, which can be slower under -race plus coverage.
+	msg, ok = readMsg(t, conn, 5*time.Second)
 	if !ok {
 		t.Fatal("expected ASSIGN for P0 bead after worker completed P1")
 	}
