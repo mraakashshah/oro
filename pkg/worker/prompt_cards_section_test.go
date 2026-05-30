@@ -77,3 +77,70 @@ func TestPromptCardsSection(t *testing.T) {
 		}
 	})
 }
+
+func TestPromptCardsSectionDeckFooterReferencesCardsShow(t *testing.T) {
+	t.Parallel()
+
+	const footer = "To see full body of any card: `oro cards show <id>`"
+
+	t.Run("empty_deck_has_placeholder_only", func(t *testing.T) {
+		t.Parallel()
+		prompt := worker.AssemblePrompt(worker.PromptParams{
+			BeadID: "bead-c04",
+			Title:  "Empty cards test",
+		})
+
+		if !strings.Contains(prompt, "No relevant cards for this task.") {
+			t.Fatal("empty deck must render the no relevant cards placeholder")
+		}
+		if strings.Contains(prompt, footer) {
+			t.Fatal("empty deck must not render a deck footer")
+		}
+	})
+
+	t.Run("all_inlined_has_no_deck_footer", func(t *testing.T) {
+		t.Parallel()
+		inlined := []cards.CardSummary{{
+			ID:       "card-inline-01",
+			Type:     cards.CardTypeRule,
+			Title:    "Inline only",
+			BodyFull: "Inline body",
+			Score:    1.2,
+		}}
+		prompt := worker.AssemblePrompt(worker.PromptParams{
+			BeadID: "bead-c05",
+			Title:  "All inline cards test",
+			Cards: cards.RelevantCards{
+				Deck:    inlined,
+				Inlined: inlined,
+			},
+		})
+
+		if strings.Contains(prompt, footer) {
+			t.Fatal("all-inlined cards must not render a deck footer")
+		}
+	})
+
+	t.Run("deck_only_footer_uses_registered_cards_show_command", func(t *testing.T) {
+		t.Parallel()
+		prompt := worker.AssemblePrompt(worker.PromptParams{
+			BeadID: "bead-c06",
+			Title:  "Deck footer test",
+			Cards: cards.RelevantCards{
+				Deck: []cards.CardSummary{{
+					ID:    "card-deck-01",
+					Type:  cards.CardTypePattern,
+					Title: "Deck only",
+					Score: 1.1,
+				}},
+			},
+		})
+
+		if !strings.Contains(prompt, footer) {
+			t.Fatalf("deck-only cards must render footer %q", footer)
+		}
+		if strings.Contains(prompt, "oro card show <id>") {
+			t.Fatal("deck footer must not use stale singular card command")
+		}
+	})
+}
