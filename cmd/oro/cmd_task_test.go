@@ -169,6 +169,9 @@ func TestTaskHelpOmitsUnsupportedStubs(t *testing.T) {
 		if err == nil {
 			t.Fatalf("task %s unexpectedly succeeded", strings.Join(args, " "))
 		}
+		if !strings.Contains(err.Error(), "unknown command") {
+			t.Fatalf("task %s returned non-Cobra unknown-command error:\nerr=%v\nout=%s", strings.Join(args, " "), err, unsupportedOut.String())
+		}
 		if strings.Contains(err.Error(), "not implemented yet") || strings.Contains(unsupportedOut.String(), "not implemented yet") {
 			t.Fatalf("task %s returned stub error instead of Cobra unknown-command behavior:\nerr=%v\nout=%s", strings.Join(args, " "), err, unsupportedOut.String())
 		}

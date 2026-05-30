@@ -57,10 +57,8 @@ func newTaskNoteCmd(store beadstore.Store) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "note",
 		Short: "Manage bead notes",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return fmt.Errorf("unknown task note command %q", args[0])
-			}
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
 	}
