@@ -44,17 +44,27 @@ func newTaskCmdWithStore(store beadstore.Store) *cobra.Command {
 		newBeadBlockedCmd(store),
 		newBeadClosedCmd(store),
 		newBeadDepCmd(store),
-		newBeadTagCmd(store),
-		newBeadMetaCmd(store),
-		newBeadNoteCmd(store),
-		newBeadStubCmd(store, "search <query>", "Search tasks", cobra.ExactArgs(1)),
+		newTaskNoteCmd(store),
 		newBeadExportCmd(store),
-		newBeadStubCmd(store, "import <path>", "Import task snapshot", cobra.ExactArgs(1)),
-		newBeadStubCmd(store, "doctor", "Check task store health", cobra.NoArgs),
 		newBeadStatusCmd(store),
 	)
 	adaptTaskCommandHelp(cmd)
 
+	return cmd
+}
+
+func newTaskNoteCmd(store beadstore.Store) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "note",
+		Short: "Manage bead notes",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return fmt.Errorf("unknown task note command %q", args[0])
+			}
+			return cmd.Help()
+		},
+	}
+	cmd.AddCommand(newBeadNoteAddCmd(store))
 	return cmd
 }
 
