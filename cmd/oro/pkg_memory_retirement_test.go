@@ -18,6 +18,42 @@ func TestPkgMemoryRetiredFromRepository(t *testing.T) {
 		t.Fatalf("pkg/memory must be removed after retirement, stat error = %v", err)
 	}
 
+	imports, err := scanPkgMemoryImports(repoRoot)
+	if err != nil {
+		t.Fatalf("scan repo imports: %v", err)
+	}
+	if len(imports) > 0 {
+		t.Fatalf("oro/pkg/memory imports remain after retirement: %v", imports)
+	}
+}
+
+func TestPkgMemoryRetiredScanSkipsIgnoredCacheDirs(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		".cache/go-mod/cache/download/example.com/broken.go": "package broken\n\nimport (",
+		"pkg/live/live.go":     "package live\n\nimport \"oro/pkg/memory\"\n",
+		"pkg/source/source.go": "package source\n",
+	}
+	for name, content := range files {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	imports, err := scanPkgMemoryImports(root)
+	if err != nil {
+		t.Fatalf("scanPkgMemoryImports: %v", err)
+	}
+	if got, want := imports, []string{"pkg/live/live.go"}; !sameStrings(got, want) {
+		t.Fatalf("imports = %v, want %v", got, want)
+	}
+}
+
+func scanPkgMemoryImports(repoRoot string) ([]string, error) {
 	var imports []string
 	err := filepath.WalkDir(repoRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -25,7 +61,7 @@ func TestPkgMemoryRetiredFromRepository(t *testing.T) {
 		}
 		if entry.IsDir() {
 			switch entry.Name() {
-			case ".git", ".worktrees", "ad_hoc", "vendor":
+			case ".cache", ".git", ".worktrees", "ad_hoc", "vendor":
 				return filepath.SkipDir
 			}
 			return nil
@@ -49,9 +85,19 @@ func TestPkgMemoryRetiredFromRepository(t *testing.T) {
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("scan repo imports: %v", err)
+		return nil, err
 	}
-	if len(imports) > 0 {
-		t.Fatalf("oro/pkg/memory imports remain after retirement: %v", imports)
+	return imports, nil
+}
+
+func sameStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
 	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
