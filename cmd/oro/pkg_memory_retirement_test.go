@@ -28,21 +28,28 @@ func TestPkgMemoryRetiredFromRepository(t *testing.T) {
 }
 
 func TestPkgMemoryRetiredScanSkipsIgnoredCacheDirs(t *testing.T) {
-	repoRoot := t.TempDir()
-	cacheDir := filepath.Join(repoRoot, ".cache", "go-mod", "example")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		t.Fatal(err)
+	root := t.TempDir()
+	files := map[string]string{
+		".cache/go-mod/cache/download/example.com/broken.go": "package broken\n\nimport (",
+		"pkg/live/live.go":     "package live\n\nimport \"oro/pkg/memory\"\n",
+		"pkg/source/source.go": "package source\n",
 	}
-	if err := os.WriteFile(filepath.Join(cacheDir, "bad.go"), []byte("package bad\nimport ,\n"), 0o644); err != nil {
-		t.Fatal(err)
+	for name, content := range files {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
 	}
 
-	imports, err := scanPkgMemoryImports(repoRoot)
+	imports, err := scanPkgMemoryImports(root)
 	if err != nil {
-		t.Fatalf("scan repo imports: %v", err)
+		t.Fatalf("scanPkgMemoryImports: %v", err)
 	}
-	if len(imports) > 0 {
-		t.Fatalf("oro/pkg/memory imports remain after retirement: %v", imports)
+	if got, want := imports, []string{"pkg/live/live.go"}; !sameStrings(got, want) {
+		t.Fatalf("imports = %v, want %v", got, want)
 	}
 }
 
@@ -86,4 +93,16 @@ func shouldSkipPkgMemoryScanDir(name string) bool {
 	default:
 		return false
 	}
+}
+
+func sameStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
