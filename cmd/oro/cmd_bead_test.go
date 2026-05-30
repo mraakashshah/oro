@@ -383,15 +383,18 @@ func TestCmdTaskCreateShowUpdateCloseRoundTripThroughBinary(t *testing.T) {
 	binPath := filepath.Join(tmpDir, "oro")
 	dbPath := filepath.Join(tmpDir, "state.db")
 	oroHome := filepath.Join(tmpDir, "oro-home")
+	root := repoRoot(t)
+	cmdDir := filepath.Join(root, "cmd", "oro")
 
 	stage := exec.Command("make", "stage-assets")
-	stage.Dir = filepath.Join("..", "..")
+	stage.Dir = root
 	stage.Env = os.Environ()
 	if out, err := stage.CombinedOutput(); err != nil {
 		t.Fatalf("stage assets: %v\n%s", err, out)
 	}
 
 	build := exec.Command("go", "build", "-o", binPath, ".")
+	build.Dir = cmdDir
 	build.Env = os.Environ()
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build oro binary: %v\n%s", err, out)

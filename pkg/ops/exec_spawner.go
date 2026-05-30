@@ -162,11 +162,13 @@ type opsProcess struct {
 
 // Wait waits for the subprocess to exit.
 func (p *opsProcess) Wait() error {
-	waitErr := p.cmd.Wait()
+	var stdoutErr error
 	if p.stdoutDone != nil {
-		if err := <-p.stdoutDone; err != nil && waitErr == nil {
-			return err
-		}
+		stdoutErr = <-p.stdoutDone
+	}
+	waitErr := p.cmd.Wait()
+	if stdoutErr != nil && waitErr == nil {
+		return stdoutErr
 	}
 	if waitErr != nil {
 		return fmt.Errorf("wait: %w", waitErr)
