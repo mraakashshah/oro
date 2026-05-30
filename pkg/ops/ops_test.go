@@ -1153,6 +1153,7 @@ func TestParseReviewOutputRequiresVerdictPrefix(t *testing.T) {
 func TestParseReviewOutputStreamJSON(t *testing.T) {
 	streamResult := reviewStreamJSONLine(t, "result", "Interpreting output\n\nVERDICT: APPROVED")
 	streamText := reviewStreamJSONLine(t, "content_block_delta", "Review complete.\n\nVERDICT: APPROVED")
+	systemHook := `{"type":"system","subtype":"hook_started","hook_name":"SessionStart:startup"}`
 
 	tests := []struct {
 		name        string
@@ -1177,6 +1178,11 @@ func TestParseReviewOutputStreamJSON(t *testing.T) {
 		{
 			name:        "malformed stream falls back to raw scan",
 			stdout:      "not-json\nVERDICT: APPROVED\n",
+			wantVerdict: VerdictApproved,
+		},
+		{
+			name:        "system hook noise does not hide result verdict",
+			stdout:      systemHook + "\n" + streamText + "\n" + streamResult + "\n",
 			wantVerdict: VerdictApproved,
 		},
 	}

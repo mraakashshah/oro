@@ -5,6 +5,7 @@ package ops
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -737,6 +738,10 @@ func reviewOutputText(stdout string) string {
 		case worker.ActivityToolUse:
 			recognized = true
 		default:
+			if isStreamJSONEnvelope(line) {
+				recognized = true
+				continue
+			}
 			return stdout
 		}
 	}
@@ -745,6 +750,16 @@ func reviewOutputText(stdout string) string {
 		return text.String()
 	}
 	return stdout
+}
+
+func isStreamJSONEnvelope(line string) bool {
+	var top struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(line), &top); err != nil {
+		return false
+	}
+	return top.Type != ""
 }
 
 // parseMergeOutput looks for RESOLVED or FAILED in the output.
