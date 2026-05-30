@@ -124,16 +124,16 @@ func (d *Dispatcher) buildCardContext(ctx context.Context, bead protocol.Bead) c
 
 func trimAssignmentCardContext(result cards.RelevantCards) cards.RelevantCards {
 	return cards.RelevantCards{
-		Deck:    trimCardSummariesByJSONSize(result.Deck, maxAssignmentCardDeckJSONSize),
-		Inlined: trimCardSummariesByJSONSize(result.Inlined, maxAssignmentCardInlinedJSONSize),
+		Deck:    trimCardsByJSONSize(result.Deck, maxAssignmentCardDeckJSONSize),
+		Inlined: trimCardsByJSONSize(result.Inlined, maxAssignmentCardInlinedJSONSize),
 	}
 }
 
-func trimCardSummariesByJSONSize(in []cards.CardSummary, maxSize int) []cards.CardSummary {
+func trimCardsByJSONSize[T cards.DeckCard | cards.InlinedCard](in []T, maxSize int) []T {
 	if maxSize <= 0 || len(in) == 0 {
 		return nil
 	}
-	out := make([]cards.CardSummary, 0, len(in))
+	out := make([]T, 0, len(in))
 	size := 2 // JSON array brackets.
 	for _, summary := range in {
 		data, err := json.Marshal(summary)

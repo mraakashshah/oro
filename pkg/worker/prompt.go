@@ -59,7 +59,7 @@ func cardsBody(rc cards.RelevantCards) string {
 	for _, c := range rc.Inlined {
 		inlinedIDs[c.ID] = true
 	}
-	var deckOnly []cards.CardSummary
+	var deckOnly []cards.DeckCard
 	for _, c := range rc.Deck {
 		if !inlinedIDs[c.ID] {
 			deckOnly = append(deckOnly, c)

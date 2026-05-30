@@ -266,7 +266,7 @@ func (s *SQLiteCardStore) Relevant(ctx context.Context, q RelevanceQuery) (Relev
 	})
 
 	return RelevantCards{
-		Deck:    toSummaries(candidates),
+		Deck:    toDeckCards(candidates),
 		Inlined: buildInlined(candidates, q.MaxTokens),
 	}, nil
 }
@@ -326,20 +326,31 @@ func toSummary(c Card) CardSummary {
 	}
 }
 
-func toSummaries(candidates []scoredCard) []CardSummary {
-	out := make([]CardSummary, 0, len(candidates))
+func toDeckCard(c Card) DeckCard {
+	return DeckCard{
+		ID:          c.ID,
+		Type:        c.Type,
+		Title:       c.Title,
+		BodySummary: c.BodySummary,
+		Score:       c.Score,
+		Tags:        c.Tags,
+	}
+}
+
+func toDeckCards(candidates []scoredCard) []DeckCard {
+	out := make([]DeckCard, 0, len(candidates))
 	for _, sc := range candidates {
-		out = append(out, toSummary(sc.card))
+		out = append(out, toDeckCard(sc.card))
 	}
 	return out
 }
 
 // buildInlined returns cards whose body_full fits within maxTokens budget.
-func buildInlined(candidates []scoredCard, maxTokens int) []CardSummary {
+func buildInlined(candidates []scoredCard, maxTokens int) []InlinedCard {
 	if maxTokens <= 0 {
 		return nil
 	}
-	var out []CardSummary
+	var out []InlinedCard
 	budget := maxTokens
 	for _, sc := range candidates {
 		tokens := estimateTokens(sc.card.BodyFull)
@@ -727,7 +738,7 @@ func (r *readTxImpl) Relevant(ctx context.Context, q RelevanceQuery) (RelevantCa
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].score > candidates[j].score })
 	return RelevantCards{
-		Deck:    toSummaries(candidates),
+		Deck:    toDeckCards(candidates),
 		Inlined: buildInlined(candidates, q.MaxTokens),
 	}, nil
 }

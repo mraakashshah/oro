@@ -45,8 +45,18 @@ type Card struct {
 	RetiredReason       *string
 }
 
-// CardSummary is the deck-view representation of a card.
-type CardSummary struct {
+// DeckCard is the deck-view representation of a relevant card.
+type DeckCard struct {
+	ID          string
+	Type        CardType
+	Title       string
+	BodySummary string
+	Score       float64
+	Tags        []string
+}
+
+// InlinedCard is the inline representation of a relevant card.
+type InlinedCard struct {
 	ID          string
 	Type        CardType
 	Title       string
@@ -55,6 +65,10 @@ type CardSummary struct {
 	Score       float64
 	Tags        []string
 }
+
+// CardSummary is retained for callers that work with fully populated card
+// summaries outside the relevance wire payload.
+type CardSummary = InlinedCard
 
 // CardEvent represents an event to record against a card.
 type CardEvent struct {
@@ -100,8 +114,8 @@ type RelevanceQuery struct {
 
 // RelevantCards is the result of a Relevant query.
 type RelevantCards struct {
-	Deck    []CardSummary // body_summary only, all relevant
-	Inlined []CardSummary // body_full inlined, fits within MaxTokens
+	Deck    []DeckCard    // body_summary only, all relevant
+	Inlined []InlinedCard // body_full inlined, fits within MaxTokens
 }
 
 // ReadTx exposes read methods within a transaction.

@@ -55,22 +55,32 @@ func TestAssignPayloadUsesProjectPaths(t *testing.T) {
 func TestBuildCardContextKeepsAssignPayloadUnderProtocolLimit(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 
-	deck := make([]cards.CardSummary, 0, 5000)
+	deck := make([]cards.DeckCard, 0, 5000)
 	for i := 0; i < cap(deck); i++ {
-		deck = append(deck, cards.CardSummary{
+		deck = append(deck, cards.DeckCard{
 			ID:          "card-large",
 			Type:        cards.CardTypePattern,
 			Title:       "Large card deck",
 			BodySummary: strings.Repeat("summary ", 30),
-			BodyFull:    strings.Repeat("full ", 40),
 			Score:       1.0,
 			Tags:        []string{"dispatcher", "cards"},
 		})
 	}
+	inlined := []cards.InlinedCard{
+		{
+			ID:          "card-large-inline",
+			Type:        cards.CardTypePattern,
+			Title:       "Large inline card",
+			BodySummary: strings.Repeat("summary ", 30),
+			BodyFull:    strings.Repeat("full ", 40),
+			Score:       1.0,
+			Tags:        []string{"dispatcher", "cards"},
+		},
+	}
 	d.cardStore = &staticRelevantCardStore{
 		result: cards.RelevantCards{
 			Deck:    deck,
-			Inlined: deck[:5],
+			Inlined: inlined,
 		},
 	}
 

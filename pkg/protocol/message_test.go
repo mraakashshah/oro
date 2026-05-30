@@ -2,6 +2,7 @@ package protocol_test
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -78,11 +79,18 @@ func TestAssignPayload_CodeSearchContext(t *testing.T) {
 func TestAssignPayloadCardsContextRoundTrip(t *testing.T) {
 	t.Parallel()
 
+	if _, ok := reflect.TypeOf(cards.DeckCard{}).FieldByName("BodyFull"); ok {
+		t.Fatal("DeckCard must not expose BodyFull")
+	}
+	if _, ok := reflect.TypeOf(cards.InlinedCard{}).FieldByName("BodyFull"); !ok {
+		t.Fatal("InlinedCard must expose BodyFull")
+	}
+
 	original := protocol.AssignPayload{
 		BeadID:   "oro-cards-1",
 		Worktree: "/tmp/worktree",
 		Cards: cards.RelevantCards{
-			Deck: []cards.CardSummary{
+			Deck: []cards.DeckCard{
 				{
 					ID:          "card-deck-1",
 					Type:        cards.CardTypePattern,
@@ -92,7 +100,7 @@ func TestAssignPayloadCardsContextRoundTrip(t *testing.T) {
 					Tags:        []string{"go", "tests"},
 				},
 			},
-			Inlined: []cards.CardSummary{
+			Inlined: []cards.InlinedCard{
 				{
 					ID:          "card-inline-1",
 					Type:        cards.CardTypeDecision,
@@ -142,6 +150,41 @@ func TestAssignPayloadCardsContextRoundTrip(t *testing.T) {
 	}
 	if len(empty.Cards.Deck) != 0 || len(empty.Cards.Inlined) != 0 {
 		t.Fatalf("empty Cards decoded as %#v, want zero value", empty.Cards)
+	}
+
+	rawWithDeckBody := []byte(`{
+		"bead_id": "oro-extra",
+		"worktree": "/tmp/wt",
+		"cards": {
+			"Deck": [{
+				"ID": "card-deck-extra",
+				"Type": "pattern",
+				"Title": "deck title",
+				"BodySummary": "deck summary",
+				"BodyFull": "ignored deck body",
+				"Score": 1.5,
+				"Tags": ["deck"]
+			}],
+			"Inlined": [{
+				"ID": "card-inline-extra",
+				"Type": "decision",
+				"Title": "inline title",
+				"BodySummary": "inline summary",
+				"BodyFull": "kept inline body",
+				"Score": 2.5,
+				"Tags": ["inline"]
+			}]
+		}
+	}`)
+	var extra protocol.AssignPayload
+	if err := json.Unmarshal(rawWithDeckBody, &extra); err != nil {
+		t.Fatalf("unmarshal extra BodyFull deck payload: %v", err)
+	}
+	if len(extra.Cards.Deck) != 1 || len(extra.Cards.Inlined) != 1 {
+		t.Fatalf("extra Cards decoded as %#v, want one deck and one inline", extra.Cards)
+	}
+	if extra.Cards.Inlined[0].BodyFull != "kept inline body" {
+		t.Fatalf("inline BodyFull = %q, want kept inline body", extra.Cards.Inlined[0].BodyFull)
 	}
 }
 
