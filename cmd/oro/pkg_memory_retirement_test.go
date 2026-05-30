@@ -18,14 +18,42 @@ func TestPkgMemoryRetiredFromRepository(t *testing.T) {
 		t.Fatalf("pkg/memory must be removed after retirement, stat error = %v", err)
 	}
 
+	imports, err := scanPkgMemoryImports(repoRoot)
+	if err != nil {
+		t.Fatalf("scan repo imports: %v", err)
+	}
+	if len(imports) > 0 {
+		t.Fatalf("oro/pkg/memory imports remain after retirement: %v", imports)
+	}
+}
+
+func TestPkgMemoryRetiredScanSkipsIgnoredCacheDirs(t *testing.T) {
+	repoRoot := t.TempDir()
+	cacheDir := filepath.Join(repoRoot, ".cache", "go-mod", "example")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, "bad.go"), []byte("package bad\nimport ,\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	imports, err := scanPkgMemoryImports(repoRoot)
+	if err != nil {
+		t.Fatalf("scan repo imports: %v", err)
+	}
+	if len(imports) > 0 {
+		t.Fatalf("oro/pkg/memory imports remain after retirement: %v", imports)
+	}
+}
+
+func scanPkgMemoryImports(repoRoot string) ([]string, error) {
 	var imports []string
 	err := filepath.WalkDir(repoRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if entry.IsDir() {
-			switch entry.Name() {
-			case ".git", ".worktrees", "ad_hoc", "vendor":
+			if shouldSkipPkgMemoryScanDir(entry.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -48,10 +76,14 @@ func TestPkgMemoryRetiredFromRepository(t *testing.T) {
 		}
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("scan repo imports: %v", err)
-	}
-	if len(imports) > 0 {
-		t.Fatalf("oro/pkg/memory imports remain after retirement: %v", imports)
+	return imports, err
+}
+
+func shouldSkipPkgMemoryScanDir(name string) bool {
+	switch name {
+	case ".git", ".worktrees", "ad_hoc", "vendor", ".cache":
+		return true
+	default:
+		return false
 	}
 }
