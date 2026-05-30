@@ -28,6 +28,11 @@ pane_handoff = _mod.pane_handoff
 latest_handoff = _mod.latest_handoff
 
 
+def test_superpowers_commit_instruction_is_non_interactive():
+    assert "git commit -m" in _mod._SUPERPOWERS
+    assert "git add` → `git commit`" not in _mod._SUPERPOWERS
+
+
 # --- find_stale_beads ---
 
 

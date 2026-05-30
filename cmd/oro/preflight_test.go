@@ -352,6 +352,12 @@ func TestPreflightWarnsUntrackedQualityGate(t *testing.T) {
 		if !strings.Contains(output, "quality_gate.sh") || !strings.Contains(output, "untracked") {
 			t.Errorf("expected warning about untracked quality_gate.sh, got: %q", output)
 		}
+		if !strings.Contains(output, "git commit -m") {
+			t.Errorf("expected warning to suggest non-interactive git commit, got: %q", output)
+		}
+		if strings.Contains(output, "&& git commit\n") {
+			t.Errorf("warning must not suggest bare git commit, got: %q", output)
+		}
 	})
 
 	t.Run("warns when quality_gate.sh is missing", func(t *testing.T) {

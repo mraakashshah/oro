@@ -1426,11 +1426,11 @@ func TestAssemblePrompt_EndToEnd(t *testing.T) {
 	}
 }
 
-// TestPromptSoftThresholdSaysGitCommit verifies that the Context Handoff section
-// explicitly instructs agents to run 'git add' and 'git commit' at the soft threshold,
-// rather than the ambiguous 'commit current work' which haiku agents misinterpreted
-// as "write files to disk" (oro-3eve).
-func TestPromptSoftThresholdSaysGitCommit(t *testing.T) {
+// TestPromptSoftThresholdUsesNonInteractiveGitCommit verifies that the Context
+// Handoff section explicitly instructs agents to run git add and a
+// non-interactive git commit at the soft threshold. A bare `git commit` opens
+// $EDITOR for the message and can strand workers in an editor.
+func TestPromptSoftThresholdUsesNonInteractiveGitCommit(t *testing.T) {
 	t.Parallel()
 
 	params := worker.PromptParams{
@@ -1462,9 +1462,13 @@ func TestPromptSoftThresholdSaysGitCommit(t *testing.T) {
 		t.Errorf("soft threshold instruction must contain 'git add' (not just 'commit current work'). Got:\n%s", handoffSection)
 	}
 
-	// Must explicitly say 'git commit' — not just 'commit current work'
-	if !strings.Contains(handoffSection, "git commit") {
+	// Must explicitly say 'git commit -m' — not just bare 'git commit' or
+	// 'commit current work'.
+	if !strings.Contains(handoffSection, "git commit -m") {
 		t.Errorf("soft threshold instruction must contain 'git commit' (not just 'commit current work'). Got:\n%s", handoffSection)
+	}
+	if strings.Contains(handoffSection, "git add && git commit`") {
+		t.Errorf("soft threshold instruction must not contain bare git commit. Got:\n%s", handoffSection)
 	}
 }
 

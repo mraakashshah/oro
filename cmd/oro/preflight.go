@@ -137,7 +137,7 @@ func warnIfQualityGateUntracked(w io.Writer, dir string) {
 			return
 		}
 		if !isTracked {
-			fmt.Fprintf(w, "warning: %s exists but is untracked in git — commit it with: git add %s && git commit\n", c.gitPath, c.gitPath)
+			fmt.Fprintf(w, "warning: %s exists but is untracked in git — commit it with: git add %s && git commit -m \"chore: track %s\"\n", c.gitPath, c.gitPath, c.gitPath)
 		}
 		return
 	}

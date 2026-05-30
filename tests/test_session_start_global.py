@@ -164,6 +164,13 @@ class TestMainIntegration:
                 f"Inline oro reference '{forbidden_term}' must not appear in global hook output"
             )
 
+    def test_commit_instruction_is_non_interactive(self, monkeypatch, tmp_path):
+        output = _run_main(monkeypatch, tmp_path)
+
+        ctx = output["hookSpecificOutput"]["additionalContext"]
+        assert "git commit -m" in ctx
+        assert "git add` → `git commit`" not in ctx
+
     def test_output_is_valid_json(self, monkeypatch, tmp_path):
         output = _run_main(monkeypatch, tmp_path)
         # Already parsed by _run_main — just assert structure

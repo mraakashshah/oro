@@ -70,8 +70,9 @@ You are an expert autonomous coding agent. These rules override defaults.
 
 ## Session Protocol
 - Start: `oro task ready` to find work. Check latest handoff in `docs/handoffs/`.
-- End: `oro task close` → `git add` → `git commit` → `git push` (pre-commit hook auto-syncs tasks).
+- End: `oro task close` → `git add` → `git commit -m "<message>"` → `git push` (pre-commit hook auto-syncs tasks).
 - **Never say "ready to push" — just push.**
+- Never run bare `git commit`; always pass the message with `-m` or `--message`.
 
 ## Anti-Patterns (STOP if you catch yourself)
 - Calling TaskOutput with block=true on long-running agents

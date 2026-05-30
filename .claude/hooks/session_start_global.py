@@ -41,8 +41,9 @@ You are an expert autonomous coding agent. These rules override defaults.
 
 ## Session Protocol
 - Start: Check for pending work. Review any handoff notes.
-- End: `git add` → `git commit` → `git push`.
+- End: `git add` → `git commit -m "<message>"` → `git push`.
 - **Never say "ready to push" — just push.**
+- Never run bare `git commit`; always pass the message with `-m` or `--message`.
 
 ## Anti-Patterns (STOP if you catch yourself)
 - Calling TaskOutput with block=true on long-running agents

@@ -356,7 +356,7 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 	}
 	section(b, "Merge Target", fmt.Sprintf("Your work merges to branch `%s`.", targetBranch))
 
-	section(b, "Git", "Use conventional commits (`feat(scope): msg`, `fix(scope): msg`, `test(scope): msg`).\nNo amend, new commits only.")
+	section(b, "Git", "Use conventional commits (`feat(scope): msg`, `fix(scope): msg`, `test(scope): msg`).\nNo amend, new commits only.\nNever run bare `git commit`; always provide the message non-interactively with `git commit -m \"<message>\"` or `git commit --message \"<message>\"`.")
 	section(b, "Task Tools",
 		"- `oro task create` — decompose a task into smaller child tasks\n"+
 			"- `oro task dep add` — declare a blocker dependency")
@@ -428,7 +428,7 @@ func appendContextHandoffSection(b *strings.Builder) {
 		"| deep       | 40%         | 50%         |",
 		"| background | 40%         | 50%         |",
 		"",
-		"At the soft threshold: run `git add && git commit` to save your work, then invoke the `create-handoff` skill. After creating the handoff, exit immediately — do not continue working.",
+		"At the soft threshold: run `git add <relevant files> && git commit -m \"<type>(<scope>): <desc>\"` to save your work, then invoke the `create-handoff` skill. After creating the handoff, exit immediately — do not continue working.",
 		"At the hard threshold: the dispatcher will force-stop the worker.",
 	}, "\n"))
 }
