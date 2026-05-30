@@ -54,6 +54,27 @@ func TestForWorkdirAddsPWDWhenMissing(t *testing.T) {
 	}
 }
 
+func TestForWorkdirDisablesInteractiveGitEditors(t *testing.T) {
+	got := processenv.ForWorkdir([]string{
+		"PATH=/bin",
+		"GIT_EDITOR=subl -w",
+		"GIT_SEQUENCE_EDITOR=code --wait",
+		"VISUAL=vim",
+		"EDITOR=nano",
+		"GIT_MERGE_AUTOEDIT=yes",
+	}, "/assigned/worktree")
+	env := envMap(got)
+
+	for _, key := range []string{"GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "VISUAL", "EDITOR"} {
+		if env[key] != "true" {
+			t.Fatalf("%s = %q, want true in %v", key, env[key], got)
+		}
+	}
+	if env["GIT_MERGE_AUTOEDIT"] != "no" {
+		t.Fatalf("GIT_MERGE_AUTOEDIT = %q, want no in %v", env["GIT_MERGE_AUTOEDIT"], got)
+	}
+}
+
 func TestForWorkdirIsolatesCacheAndTempOutsideWorktree(t *testing.T) {
 	worktree := filepath.Join(t.TempDir(), "worktree")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {

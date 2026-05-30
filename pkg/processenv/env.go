@@ -17,7 +17,7 @@ import (
 // aligned with workdir. cmd.Dir changes the process cwd, but many nested tools
 // inspect env PWD or git override variables before consulting the OS cwd.
 func ForWorkdir(env []string, workdir string) []string {
-	out := make([]string, 0, len(env)+6)
+	out := make([]string, 0, len(env)+11)
 	pwdSet := workdir == ""
 	values := envValues(env)
 	cacheRoot := runtimeRoot(values["ORO_SUBPROCESS_CACHE_ROOT"], workdir, defaultCacheRoot())
@@ -60,6 +60,13 @@ func ForWorkdir(env []string, workdir string) []string {
 			out = append(out, "GOMODCACHE="+modCache)
 		}
 	}
+	out = append(out,
+		"GIT_EDITOR=true",
+		"GIT_SEQUENCE_EDITOR=true",
+		"GIT_MERGE_AUTOEDIT=no",
+		"VISUAL=true",
+		"EDITOR=true",
+	)
 	return out
 }
 
@@ -69,6 +76,9 @@ func normalizeEnvEntry(entry, workdir string, rewriteGOMODCACHE bool) (normalize
 		return entry, true, false
 	}
 	if isGitOverrideEnv(key) {
+		return "", false, false
+	}
+	if isInteractiveGitEditorEnv(key) {
 		return "", false, false
 	}
 	if key == "PWD" {
@@ -84,6 +94,15 @@ func normalizeEnvEntry(entry, workdir string, rewriteGOMODCACHE bool) (normalize
 		return key + "=C", true, false
 	}
 	return entry, true, false
+}
+
+func isInteractiveGitEditorEnv(key string) bool {
+	switch key {
+	case "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_MERGE_AUTOEDIT", "VISUAL", "EDITOR":
+		return true
+	default:
+		return false
+	}
 }
 
 func isLocaleEnv(key string) bool {
