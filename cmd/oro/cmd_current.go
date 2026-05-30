@@ -176,8 +176,8 @@ func beadRelevanceQuery(b protocol.Bead) cards.RelevanceQuery {
 	}
 }
 
-// cardSummaryFromSummary converts a cards.CardSummary to the JSON shape.
-func cardSummaryFromSummary(c cards.CardSummary) cardSummaryJSON {
+// cardSummaryFromSummary converts a deck card to the JSON shape.
+func cardSummaryFromSummary(c cards.DeckCard) cardSummaryJSON {
 	return cardSummaryJSON{
 		ID:          c.ID,
 		Type:        string(c.Type),
