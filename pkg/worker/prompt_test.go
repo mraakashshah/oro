@@ -1036,7 +1036,7 @@ func TestBuildAssignPrompt_UsesCardsContext(t *testing.T) {
 		AcceptanceCriteria: "Cards are rendered",
 		MemoryContext:      "legacy memory context should not render",
 		Cards: cards.RelevantCards{
-			Deck: []cards.CardSummary{
+			Deck: []cards.DeckCard{
 				{
 					ID:          "card-deck-1",
 					Type:        cards.CardTypePattern,
@@ -1045,7 +1045,7 @@ func TestBuildAssignPrompt_UsesCardsContext(t *testing.T) {
 					Score:       8.5,
 				},
 			},
-			Inlined: []cards.CardSummary{
+			Inlined: []cards.InlinedCard{
 				{
 					ID:       "card-inline-1",
 					Type:     cards.CardTypeDecision,

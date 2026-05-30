@@ -1004,15 +1004,15 @@ func (f *fakeCardsReadTx) Relevant(_ context.Context, q cards.RelevanceQuery) (c
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].score > candidates[j].score
 	})
-	deck := make([]cards.CardSummary, 0, len(candidates))
-	var inlined []cards.CardSummary
+	deck := make([]cards.DeckCard, 0, len(candidates))
+	var inlined []cards.InlinedCard
 	budget := q.MaxTokens
 	for _, sc := range candidates {
-		deck = append(deck, toFakeCardSummary(sc.card))
+		deck = append(deck, toFakeDeckCard(sc.card))
 		if budget > 0 {
 			tokens := (len(sc.card.BodyFull) + 3) / 4
 			if tokens <= budget {
-				inlined = append(inlined, toFakeCardSummary(sc.card))
+				inlined = append(inlined, toFakeInlinedCard(sc.card))
 				budget -= tokens
 			}
 		}
@@ -1020,8 +1020,19 @@ func (f *fakeCardsReadTx) Relevant(_ context.Context, q cards.RelevanceQuery) (c
 	return cards.RelevantCards{Deck: deck, Inlined: inlined}, nil
 }
 
-func toFakeCardSummary(c cards.Card) cards.CardSummary {
-	return cards.CardSummary{
+func toFakeDeckCard(c cards.Card) cards.DeckCard {
+	return cards.DeckCard{
+		ID:          c.ID,
+		Type:        c.Type,
+		Title:       c.Title,
+		BodySummary: c.BodySummary,
+		Score:       c.Score,
+		Tags:        c.Tags,
+	}
+}
+
+func toFakeInlinedCard(c cards.Card) cards.InlinedCard {
+	return cards.InlinedCard{
 		ID:          c.ID,
 		Type:        c.Type,
 		Title:       c.Title,

@@ -46,7 +46,7 @@ func TestPromptCardsSection(t *testing.T) {
 
 	t.Run("deck_shows_for_cards_beyond_inline_budget", func(t *testing.T) {
 		t.Parallel()
-		inlined := []cards.CardSummary{
+		inlined := []cards.InlinedCard{
 			{
 				ID:          "card-inline-01",
 				Type:        cards.CardTypeRule,
@@ -56,13 +56,22 @@ func TestPromptCardsSection(t *testing.T) {
 				Score:       2.4,
 			},
 		}
-		deck := append(inlined, cards.CardSummary{
-			ID:          "card-deck-02",
-			Type:        cards.CardTypePattern,
-			Title:       "Auth middleware pattern",
-			BodySummary: "Auth uses middleware X then validation Y",
-			Score:       1.8,
-		})
+		deck := []cards.DeckCard{
+			{
+				ID:          "card-inline-01",
+				Type:        cards.CardTypeRule,
+				Title:       "Always wrap errors",
+				BodySummary: "Use %w to preserve error chain",
+				Score:       2.4,
+			},
+			{
+				ID:          "card-deck-02",
+				Type:        cards.CardTypePattern,
+				Title:       "Auth middleware pattern",
+				BodySummary: "Auth uses middleware X then validation Y",
+				Score:       1.8,
+			},
+		}
 		params := worker.PromptParams{
 			BeadID: "bead-c03",
 			Title:  "Deck overflow test",
@@ -100,18 +109,24 @@ func TestPromptCardsSectionDeckFooterReferencesCardsShow(t *testing.T) {
 
 	t.Run("all_inlined_has_no_deck_footer", func(t *testing.T) {
 		t.Parallel()
-		inlined := []cards.CardSummary{{
+		inlined := []cards.InlinedCard{{
 			ID:       "card-inline-01",
 			Type:     cards.CardTypeRule,
 			Title:    "Inline only",
 			BodyFull: "Inline body",
 			Score:    1.2,
 		}}
+		deck := []cards.DeckCard{{
+			ID:    "card-inline-01",
+			Type:  cards.CardTypeRule,
+			Title: "Inline only",
+			Score: 1.2,
+		}}
 		prompt := worker.AssemblePrompt(worker.PromptParams{
 			BeadID: "bead-c05",
 			Title:  "All inline cards test",
 			Cards: cards.RelevantCards{
-				Deck:    inlined,
+				Deck:    deck,
 				Inlined: inlined,
 			},
 		})
@@ -127,7 +142,7 @@ func TestPromptCardsSectionDeckFooterReferencesCardsShow(t *testing.T) {
 			BeadID: "bead-c06",
 			Title:  "Deck footer test",
 			Cards: cards.RelevantCards{
-				Deck: []cards.CardSummary{{
+				Deck: []cards.DeckCard{{
 					ID:    "card-deck-01",
 					Type:  cards.CardTypePattern,
 					Title: "Deck only",
