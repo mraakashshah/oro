@@ -76,10 +76,11 @@ func newRecallCmdWithStore(store recallMemoryStore) *cobra.Command {
 	var memoryID int64
 	var allProjects bool
 	cmd := &cobra.Command{
-		Use:   "recall <query>",
-		Short: "Search memories",
-		Long:  "Search the memory store by text query.\nDisplays top 5 results with type, content, confidence, score, and source.\nUse --id to fetch a single memory by ID.\nUse --all-projects to search across all projects.",
-		Args:  cobra.ArbitraryArgs,
+		Use:    "recall <query>",
+		Short:  "Search memories",
+		Long:   "Search the memory store by text query.\nDisplays top 5 results with type, content, confidence, score, and source.\nUse --id to fetch a single memory by ID.\nUse --all-projects to search across all projects.",
+		Hidden: true,
+		Args:   cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Lazy store initialization if not provided
 			s := store

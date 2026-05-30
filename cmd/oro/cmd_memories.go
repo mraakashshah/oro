@@ -139,9 +139,10 @@ func runMemoriesConsolidate(cmd *cobra.Command, store memoriesStore, opts protoc
 // newMemoriesCmd creates the "oro memories" parent command with subcommands.
 func newMemoriesCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "memories",
-		Short: "Browse and manage memories",
-		Long:  "Commands for browsing and managing the project memory store.",
+		Use:    "memories",
+		Short:  "Browse and manage memories",
+		Long:   "Commands for browsing and managing the project memory store.",
+		Hidden: true,
 	}
 
 	cmd.AddCommand(newMemoriesListCmd())

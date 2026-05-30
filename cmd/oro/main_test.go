@@ -23,7 +23,7 @@ func TestCLICommands(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !containsAll(out, "oro", "start", "stop", "status", "remember", "recall") {
+		if !containsAll(out, "oro", "start", "stop", "status", "cards") {
 			t.Errorf("expected root help to list all subcommands, got:\n%s", out)
 		}
 	})
@@ -120,16 +120,6 @@ func TestCLICommands(t *testing.T) {
 		}
 	})
 
-	t.Run("remember --help works", func(t *testing.T) {
-		out, _, err := executeCommand("remember", "--help")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if !contains(out, "remember") {
-			t.Errorf("expected remember help to mention 'remember', got:\n%s", out)
-		}
-	})
-
 	t.Run("remember requires text argument", func(t *testing.T) {
 		_, _, err := executeCommand("remember")
 		if err == nil {
@@ -141,16 +131,6 @@ func TestCLICommands(t *testing.T) {
 		_, _, err := executeCommand("remember", "always use TDD")
 		if err == nil || !strings.Contains(err.Error(), "legacy memory has been retired") {
 			t.Fatalf("remember error = %v, want retired memory error", err)
-		}
-	})
-
-	t.Run("recall --help works", func(t *testing.T) {
-		out, _, err := executeCommand("recall", "--help")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if !contains(out, "recall") {
-			t.Errorf("expected recall help to mention 'recall', got:\n%s", out)
 		}
 	})
 
@@ -174,6 +154,72 @@ func TestCLICommands(t *testing.T) {
 			t.Fatal("expected error for unknown command")
 		}
 	})
+}
+
+func TestLegacyMemoryCommandsAreNotAdvertised(t *testing.T) {
+	legacyCommands := []string{"remember", "recall", "forget", "memories"}
+
+	t.Run("root help hides legacy memory commands", func(t *testing.T) {
+		out, _, err := executeCommand("--help")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !contains(out, "cards") {
+			t.Fatalf("expected cards to remain advertised in root help:\n%s", out)
+		}
+		assertHelpOmitsCommandLines(t, out, legacyCommands)
+	})
+
+	t.Run("custom help hides legacy memory commands", func(t *testing.T) {
+		out, _, err := executeCommand("help")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !contains(out, "cards") {
+			t.Fatalf("expected cards to remain advertised in custom help:\n%s", out)
+		}
+		assertHelpOmitsCommandLines(t, out, legacyCommands)
+		if contains(out, "Legacy memory") {
+			t.Fatalf("custom help should not advertise retired legacy memory commands:\n%s", out)
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "remember", args: []string{"remember", "always use cards"}},
+		{name: "recall", args: []string{"recall", "workflow"}},
+		{name: "forget", args: []string{"forget", "1"}},
+		{name: "memories", args: []string{"memories", "list"}},
+	} {
+		t.Run(tc.name+" direct invocation gives migration guidance", func(t *testing.T) {
+			_, _, err := executeCommand(tc.args...)
+			if err == nil {
+				t.Fatalf("%s unexpectedly succeeded", tc.name)
+			}
+			if !strings.Contains(err.Error(), "legacy memory has been retired") ||
+				!strings.Contains(err.Error(), "use cards instead") {
+				t.Fatalf("%s error = %v, want explicit cards migration guidance", tc.name, err)
+			}
+		})
+	}
+}
+
+func assertHelpOmitsCommandLines(t *testing.T, help string, commands []string) {
+	t.Helper()
+
+	for _, line := range strings.Split(help, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		for _, command := range commands {
+			if fields[0] == command {
+				t.Fatalf("help advertises legacy memory command %q in line %q:\n%s", command, line, help)
+			}
+		}
+	}
 }
 
 // contains checks if s contains substr.

@@ -31,12 +31,6 @@ Knowledge:
   cards      Manage knowledge cards
   models     Manage embedding/reranker model files (list, verify, prefetch)
 
-Retired:
-  remember   (retired) Legacy memory store command
-  recall     (retired) Legacy memory search command
-  forget     (retired) Legacy memory deletion command
-  memories   (retired) Legacy memory browser command
-
 Control:
   directive  Send a directive to the dispatcher (scale, focus, pause, resume)
   ops        Inspect and recover dispatcher ops runs
