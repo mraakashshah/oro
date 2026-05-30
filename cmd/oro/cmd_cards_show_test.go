@@ -25,7 +25,7 @@ func TestCardsShowPrintsBody(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runCardsShow(ctx, store, seeded.ID, &out); err != nil {
+	if err := runCardsShow(ctx, store, seeded.ID, &out, false); err != nil {
 		t.Fatalf("runCardsShow: %v", err)
 	}
 
@@ -47,7 +47,7 @@ func TestCardsShowPrintsBody(t *testing.T) {
 
 func TestCardsShowNilStoreErrors(t *testing.T) {
 	var out bytes.Buffer
-	err := runCardsShow(context.Background(), nil, "card-show-1", &out)
+	err := runCardsShow(context.Background(), nil, "card-show-1", &out, false)
 	if err == nil {
 		t.Fatal("runCardsShow with nil store returned nil error")
 	}
