@@ -206,7 +206,7 @@ func copyQualityGateSnapshot(src, dst string) error {
 	if err != nil {
 		return fmt.Errorf("read quality gate target: %w", err)
 	}
-	if err := os.WriteFile(dst, data, 0o600); err != nil {
+	if err := os.WriteFile(dst, data, 0o600); err != nil { //nolint:gosec // G703: dst is the dispatcher-managed quality_gate.sh path for a validated worktree.
 		return fmt.Errorf("write quality gate snapshot: %w", err)
 	}
 	if err := os.Chmod(dst, 0o755); err != nil { //nolint:gosec // worker quality gate snapshots must be executable scripts.
