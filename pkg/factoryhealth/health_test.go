@@ -136,7 +136,7 @@ func TestEvaluateRecoveryQuarantineOpenIsUnsafe(t *testing.T) {
 	}
 }
 
-func TestLoadRecoveryQuarantineMetricsCountsHumanOwned(t *testing.T) {
+func TestLoadRecoveryQuarantineMetricsIgnoresHumanOwned(t *testing.T) {
 	ctx := context.Background()
 	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
@@ -157,8 +157,8 @@ VALUES ('oro-human-owned', 'unsafe_stale_branch', 'operator owns branch', 'human
 	if err != nil {
 		t.Fatalf("LoadRecoveryQuarantineMetrics: %v", err)
 	}
-	if got != 1 {
-		t.Fatalf("blocking recovery quarantines = %d, want 1", got)
+	if got != 0 {
+		t.Fatalf("open recovery quarantines = %d, want 0", got)
 	}
 }
 
