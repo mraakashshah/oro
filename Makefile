@@ -93,7 +93,6 @@ build:
 		go build $(GO_BUILD_FLAGS) -o .claude/hooks/oro-search-hook ./cmd/oro-search-hook && \
 		cp .claude/hooks/oro-search-hook $(ORO_HOME)/hooks/oro-search-hook; \
 	fi
-	@$(MAKE) clean-assets
 
 install:
 	@$(MAKE) stage-assets

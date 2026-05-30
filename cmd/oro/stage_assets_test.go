@@ -108,6 +108,27 @@ func TestStageAssetsBuildsTempDirBeforeSwap(t *testing.T) {
 	}
 }
 
+func TestBuildTargetKeepsStagedAssetsForLaterTests(t *testing.T) {
+	repoRoot := filepath.Join("..", "..")
+	makefile, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	text := string(makefile)
+	buildStart := strings.Index(text, "\nbuild:")
+	if buildStart < 0 {
+		t.Fatal("Makefile missing build target")
+	}
+	installStart := strings.Index(text[buildStart+1:], "\ninstall:")
+	if installStart < 0 {
+		t.Fatal("Makefile missing install target after build target")
+	}
+	buildTarget := text[buildStart : buildStart+1+installStart]
+	if strings.Contains(buildTarget, "clean-assets") {
+		t.Fatal("build target should leave cmd/oro/_assets staged for subsequent go test commands")
+	}
+}
+
 func TestStageAssetsRestoresOldAssetsWhenSwapFails(t *testing.T) {
 	repoRoot := filepath.Join("..", "..")
 	makefile, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
