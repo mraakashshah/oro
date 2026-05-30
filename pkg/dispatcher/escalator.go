@@ -59,6 +59,13 @@ func (e *TmuxEscalator) Escalate(ctx context.Context, msg string) error {
 		fmt.Fprintf(os.Stderr, "[oro] warning: tmux session %s not found, skipping tmux escalation: %v\n", e.sessionName, err)
 		return nil
 	}
+	if _, err := e.runner.Run(ctx, "tmux", "display-message", "-p", "-t", e.paneTarget, "#{pane_id}"); err != nil {
+		// Managerless starts can leave a tmux attach surface without a manager
+		// pane. Treat that the same as a missing session so ops routing can
+		// continue without marking the task escalation as failed.
+		fmt.Fprintf(os.Stderr, "[oro] warning: tmux pane %s not found, skipping tmux escalation: %v\n", e.paneTarget, err)
+		return nil
+	}
 
 	// Step 0.5: Clear any pending input from a previous partial delivery.
 	// Without this, paste-buffer appends to leftover text, garbling the message.

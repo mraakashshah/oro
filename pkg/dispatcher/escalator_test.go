@@ -17,6 +17,7 @@ type mockEscRunner struct {
 	inputCalls     []escInputCall
 	err            error
 	hasSessionErr  error  // separate error for has-session check
+	paneTargetErr  error  // separate error for target-pane liveness check
 	detachedOutput []byte // output for display-message #{session_attached} (nil = "attached")
 }
 
@@ -40,8 +41,13 @@ func (m *mockEscRunner) Run(_ context.Context, name string, args ...string) ([]b
 	}
 
 	// If this is a display-message check for attached status, return detachedOutput.
-	if name == "tmux" && len(args) > 0 && args[0] == "display-message" && m.detachedOutput != nil {
-		return m.detachedOutput, nil
+	if name == "tmux" && len(args) > 0 && args[0] == "display-message" {
+		if len(args) > 0 && args[len(args)-1] == "#{pane_id}" {
+			return []byte("%0\n"), m.paneTargetErr
+		}
+		if m.detachedOutput != nil {
+			return m.detachedOutput, nil
+		}
 	}
 
 	// Otherwise return the general err
@@ -564,6 +570,26 @@ func TestEscalatorSkipsWhenManagerMissing(t *testing.T) {
 	}
 }
 
+func TestEscalatorSkipsWhenSessionExistsButManagerPaneMissing(t *testing.T) {
+	runner := &mockEscRunner{paneTargetErr: fmt.Errorf("can't find window: manager")}
+	esc := dispatcher.NewTmuxEscalator("oro-oro", "oro-oro:manager", runner)
+
+	err := esc.Escalate(context.Background(), "STUCK: oro-v6k5")
+	if err != nil {
+		t.Fatalf("Escalate must return nil when manager pane is missing, got: %v", err)
+	}
+
+	if len(runner.calls) != 2 {
+		t.Fatalf("expected session and pane probes only, got %d calls: %+v", len(runner.calls), runner.calls)
+	}
+	if runner.calls[0].args[0] != "has-session" {
+		t.Fatalf("expected first call to check session, got %v", runner.calls[0].args)
+	}
+	if runner.calls[1].args[0] != "display-message" {
+		t.Fatalf("expected second call to check pane target, got %v", runner.calls[1].args)
+	}
+}
+
 // --- Shell Injection Tests (oro-dfe.4) ---
 
 func TestEscalation_NoInjection(t *testing.T) {
@@ -720,11 +746,13 @@ func TestSanitizeForTmux_NewlineReplacement(t *testing.T) {
 			esc := dispatcher.NewTmuxEscalator("oro", "oro:manager", runner)
 			// Call Escalate and check the set-buffer call contains sanitized text.
 			_ = esc.Escalate(context.Background(), tc.input)
-			// set-buffer is index 2 in runner.calls (has-session=0, send-keys C-u=1, set-buffer=2)
-			if len(runner.calls) < 3 {
-				t.Fatalf("expected at least 3 calls, got %d", len(runner.calls))
+			// set-buffer is index 2 in the core delivery protocol
+			// (has-session=0, send-keys C-u=1, set-buffer=2).
+			calls := coreCalls(runner.calls)
+			if len(calls) < 3 {
+				t.Fatalf("expected at least 3 core calls, got %d from calls %v", len(calls), runner.calls)
 			}
-			setCall := runner.calls[2]
+			setCall := calls[2]
 			if setCall.args[0] != "set-buffer" {
 				t.Fatalf("call 2 should be set-buffer, got %s", setCall.args[0])
 			}
