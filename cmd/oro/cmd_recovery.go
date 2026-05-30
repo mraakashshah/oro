@@ -198,7 +198,7 @@ func listRecoveryQuarantines(ctx context.Context, db *sql.DB) ([]recoveryQuarant
 SELECT id, bead_id, COALESCE(assignment_id, 0), COALESCE(worker_id, ''), COALESCE(worktree, ''),
        COALESCE(branch, ''), reason, details, created_at
 FROM recovery_quarantines
-WHERE status='open'
+WHERE status IN ('open', 'human_owned')
 ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list recovery quarantines: %w", err)

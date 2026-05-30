@@ -651,7 +651,7 @@ func LoadRecoveryQuarantineMetrics(ctx context.Context, db *sql.DB) (openQuarant
 	if db == nil {
 		return 0, nil
 	}
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_quarantines WHERE status='open'`).Scan(&openQuarantines); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_quarantines WHERE status IN ('open', 'human_owned')`).Scan(&openQuarantines); err != nil {
 		if tableMissing(err) {
 			return 0, nil
 		}

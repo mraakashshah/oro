@@ -136,6 +136,32 @@ func TestEvaluateRecoveryQuarantineOpenIsUnsafe(t *testing.T) {
 	}
 }
 
+func TestLoadRecoveryQuarantineMetricsCountsHumanOwned(t *testing.T) {
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO recovery_quarantines (bead_id, reason, details, status, resolved_at)
+VALUES ('oro-human-owned', 'unsafe_stale_branch', 'operator owns branch', 'human_owned', datetime('now'));
+`); err != nil {
+		t.Fatalf("seed recovery quarantine: %v", err)
+	}
+
+	got, err := LoadRecoveryQuarantineMetrics(ctx, db)
+	if err != nil {
+		t.Fatalf("LoadRecoveryQuarantineMetrics: %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("blocking recovery quarantines = %d, want 1", got)
+	}
+}
+
 func TestEvaluateNoManagerPaneFindingByDefault(t *testing.T) {
 	got := Evaluate(Snapshot{
 		DaemonRunning:   true,

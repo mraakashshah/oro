@@ -351,6 +351,36 @@ VALUES ('oro-human-owned', 'agent/oro-human-owned', 'unsafe_stale_branch', 'oper
 	}
 }
 
+func TestRecoveryListIncludesHumanOwnedQuarantines(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "state.db")
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "oro.pid"))
+	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+
+	db, err := openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	if _, err := db.ExecContext(context.Background(), `
+INSERT INTO recovery_quarantines (bead_id, branch, reason, details, status, resolved_at)
+VALUES ('oro-human-owned', 'agent/oro-human-owned', 'unsafe_stale_branch', 'operator owns branch', 'human_owned', datetime('now'))`); err != nil {
+		t.Fatalf("seed human-owned recovery quarantine: %v", err)
+	}
+	db.Close()
+
+	root := newRootCmd()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetArgs([]string{"recovery", "list"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("recovery list: %v", err)
+	}
+	if !strings.Contains(out.String(), "oro-human-owned") {
+		t.Fatalf("recovery list output missing human-owned row:\n%s", out.String())
+	}
+}
+
 func TestRecoveryResolveAfterMergeCanReleaseHumanOwnedQuarantine(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "state.db")
