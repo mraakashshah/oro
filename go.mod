@@ -7,28 +7,23 @@ require (
 	github.com/charmbracelet/glamour v1.0.0
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/charmbracelet/x/ansi v0.11.6
-	github.com/daulet/tokenizers v1.27.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
 	github.com/lucasb-eyer/go-colorful v1.3.0
 	github.com/mattn/go-isatty v0.0.20
-	github.com/mattn/go-sqlite3 v1.14.42
 	github.com/pelletier/go-toml/v2 v2.2.4
 	github.com/sahilm/fuzzy v0.1.1
 	github.com/smacker/go-tree-sitter v0.0.0-20240827094217-dd81d9e9be82
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
 	github.com/stretchr/testify v1.9.0
-	github.com/yalue/onnxruntime_go v1.27.0
-	golang.org/x/time v0.15.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.44.3
 )
 
 require (
 	github.com/alecthomas/chroma/v2 v2.20.0 // indirect
-	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.2 // indirect
