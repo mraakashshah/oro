@@ -34,13 +34,15 @@ type DaemonSpawner interface {
 }
 
 // ExecDaemonSpawner spawns a real child process running `oro start --daemon-only`.
-// Optional timeout fields are forwarded as CLI flags to the child process.
+// Optional fields are forwarded as CLI flags to the child process.
 type ExecDaemonSpawner struct {
 	ProgressTimeout    time.Duration
 	OpsReviewTimeout   time.Duration
 	ReviewStallTimeout time.Duration
 	ManualIntegration  bool
 	MutationTesting    bool
+	WebEnabled         bool
+	WebAddr            string
 }
 
 // SetManualIntegration lets dispatcher-only startup configure the daemon
@@ -71,6 +73,12 @@ func (e *ExecDaemonSpawner) buildArgs(workers, maxWorkers int) []string {
 	}
 	if e.MutationTesting {
 		args = append(args, "--mutation-testing")
+	}
+	if e.WebEnabled {
+		args = append(args, "--web")
+	}
+	if e.WebAddr != "" {
+		args = append(args, "--web-addr="+e.WebAddr)
 	}
 	return args
 }
@@ -772,7 +780,7 @@ func newStartCmd() *cobra.Command {
 			if daemonOnly {
 				return runDaemonOnlyFn(cmd, pidPath, workers, maxWorkers, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, baseBranch, mutationTesting, webEnabled, webAddr)
 			}
-			return startFreshSwarm(cmd.OutOrStdout(), workers, maxWorkers, model, detach, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, mutationTesting)
+			return startFreshSwarm(cmd.OutOrStdout(), workers, maxWorkers, model, detach, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, mutationTesting, webEnabled, webAddr)
 		},
 	}
 
@@ -796,7 +804,7 @@ func newStartCmd() *cobra.Command {
 }
 
 // startFreshSwarm sets up project env vars and launches the full swarm (daemon + tmux).
-func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach bool, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration, mutationTesting bool) error {
+func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach bool, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration, mutationTesting, webEnabled bool, webAddr string) error {
 	project, err := startProjectName(".")
 	if err != nil {
 		return fmt.Errorf("read project config: %w", err)
@@ -817,7 +825,15 @@ func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach 
 		return err
 	}
 	return runFullStart(w, workers, maxWorkers, model, project,
-		&ExecDaemonSpawner{ProgressTimeout: progressTimeout, OpsReviewTimeout: opsReviewTimeout, ReviewStallTimeout: reviewStallTimeout, ManualIntegration: manualIntegration, MutationTesting: mutationTesting},
+		&ExecDaemonSpawner{
+			ProgressTimeout:    progressTimeout,
+			OpsReviewTimeout:   opsReviewTimeout,
+			ReviewStallTimeout: reviewStallTimeout,
+			ManualIntegration:  manualIntegration,
+			MutationTesting:    mutationTesting,
+			WebEnabled:         webEnabled,
+			WebAddr:            webAddr,
+		},
 		&ExecRunner{},
 		func(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) },
 		socketPollTimeout, nil, 0, isDetached(detach),

@@ -681,6 +681,22 @@ func TestStartProgressTimeoutFlag(t *testing.T) {
 			t.Errorf("expected --max-workers 3 in args, got: %s", argStr)
 		}
 	})
+
+	t.Run("ExecDaemonSpawner forwards web dashboard flags to child", func(t *testing.T) {
+		spawner := &ExecDaemonSpawner{
+			WebEnabled: true,
+			WebAddr:    "127.0.0.1:5555",
+		}
+		argStr := strings.Join(spawner.buildArgs(2, 2), " ")
+		for _, want := range []string{
+			"--web",
+			"--web-addr=127.0.0.1:5555",
+		} {
+			if !strings.Contains(argStr, want) {
+				t.Errorf("daemon args missing %q: %s", want, argStr)
+			}
+		}
+	})
 }
 
 func TestStartReviewTimeoutFlagsAreDistinct(t *testing.T) {
