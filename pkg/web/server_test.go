@@ -25,6 +25,7 @@ type mockDashboard struct {
 	healthErr  error
 	events     []protocol.Event
 	throughput *web.ThroughputData
+	epics      *web.EpicsData
 }
 
 func (m *mockDashboard) ReadyBeads(_ context.Context) ([]protocol.Bead, error) {
@@ -75,6 +76,10 @@ func (m *mockDashboard) Throughput(_ context.Context) (*web.ThroughputData, erro
 	return m.throughput, nil
 }
 
+func (m *mockDashboard) Epics(_ context.Context) (*web.EpicsData, error) {
+	return m.epics, nil
+}
+
 // testTemplates returns a minimal fs.FS with all required templates.
 func testTemplates() fstest.MapFS {
 	return fstest.MapFS{
@@ -84,6 +89,8 @@ func testTemplates() fstest.MapFS {
 <body>
 <header class="dashboard-header">{{if .HealthErr}}<span>Needs you</span><span id="health-error">{{.HealthErr}}</span>{{else}}<span>Healthy</span><span>{{.Throughput.BeadsPerHour}} beads/hr</span><span>{{.Throughput.CostPerHour}} cost/hr</span><span>{{.Throughput.ActiveWorkers}}/{{.Throughput.TotalWorkers}} workers</span><span>{{.Throughput.Uptime}} uptime</span>{{end}}</header>
 <div id="parade">{{template "parade-content" .Parade}}</div>
+<div id="epics">{{template "epics.html" .Epics}}</div>
+<div id="title-map">{{index .Titles "oro-r1"}}{{index .Titles "oro-ip1"}}</div>
 <div id="sidebar">{{template "workers.html" .Workers}}{{template "events.html" .Events}}</div>
 </body>
 </html>`),
@@ -117,6 +124,9 @@ Dependencies:
 		"throughput.html": &fstest.MapFile{
 			Data: []byte(`{{define "throughput.html"}}<div class="throughput"><div class="throughput__stat"><div class="throughput__value">{{.BeadsPerHour}}</div><div class="throughput__label">Beads / hour</div></div><div class="throughput__stat"><div class="throughput__value">{{.CostPerHour}}</div><div class="throughput__label">Cost / hour</div></div><div class="throughput__stat"><div class="throughput__value">{{.ActiveWorkers}}/{{.TotalWorkers}}</div><div class="throughput__label">Workers active</div></div><div class="throughput__stat"><div class="throughput__value">{{.Uptime}}</div><div class="throughput__label">Uptime</div></div></div>{{end}}`),
 		},
+		"epics.html": &fstest.MapFile{
+			Data: []byte(`{{define "epics.html"}}<section class="epics">{{range .InProgress}}<article class="epic-card" data-id="{{.ID}}"><h2>{{.Title}}</h2>{{.ActiveChildTitle}}</article>{{end}}{{range .Next}}<article class="epic-card epic-card--next" data-id="{{.ID}}"><h2>{{.Title}}</h2>{{.FirstBlockerTitle}}</article>{{end}}</section>{{end}}`),
+		},
 		"workers.html": &fstest.MapFile{
 			Data: []byte(`{{define "workers.html"}}{{range .Workers}}<div class="worker-row state-{{.State}}" data-id="{{.ID}}">
 <span class="worker-row__dot worker-row__dot--{{.State}}"></span>
@@ -136,6 +146,7 @@ func TestFullPageRender(t *testing.T) {
 		workers:    []web.WorkerInfo{{ID: "worker-1", State: "busy", BeadID: "oro-ip1", ContextPct: 42}},
 		events:     []protocol.Event{{Type: "merged", BeadID: "oro-ip1", CreatedAt: "2026-04-22T12:01:00Z"}},
 		throughput: &web.ThroughputData{BeadsPerHour: 3, CostPerHour: "—", ActiveWorkers: 1, TotalWorkers: 2, Uptime: "5m"},
+		epics:      &web.EpicsData{InProgress: []web.EpicSummary{{ID: "oro-epic-active", Title: "Active epic"}}},
 	}
 	h := web.NewHandler(data, testTemplates())
 
@@ -153,11 +164,61 @@ func TestFullPageRender(t *testing.T) {
 	if !strings.Contains(body, "sidebar") {
 		t.Errorf("GET / body missing 'sidebar'; got: %q", body)
 	}
-	for _, want := range []string{"worker-1", "oro-ip1", "Healthy", "3 beads/hr"} {
+	for _, want := range []string{"worker-1", "oro-ip1", "Healthy", "3 beads/hr", "Active epic", "Ready bead", "In progress"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("GET / body missing %q; got: %q", want, body)
 		}
 	}
+}
+
+func TestEpicsFragment(t *testing.T) {
+	t.Run("returns epics html from dashboard data", func(t *testing.T) {
+		data := &mockDashboard{
+			epics: &web.EpicsData{
+				InProgress: []web.EpicSummary{{
+					ID:               "oro-epic-active",
+					Title:            "Ship epics panel",
+					ActiveChildTitle: "Wire handler",
+				}},
+				Next: []web.EpicSummary{{
+					ID:                "oro-epic-next",
+					Title:             "Next epic",
+					Status:            "blocked",
+					FirstBlockerTitle: "Finish blocker",
+				}},
+			},
+		}
+		h := web.NewHandler(data, testTemplates())
+
+		req := httptest.NewRequest(http.MethodGet, "/fragments/epics", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /fragments/epics status = %d, want 200", rec.Code)
+		}
+		body := rec.Body.String()
+		for _, want := range []string{"epics", "Ship epics panel", "Wire handler", "Next epic", "Finish blocker"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("GET /fragments/epics body missing %q; body: %q", want, body)
+			}
+		}
+	})
+
+	t.Run("nil epics renders empty epics html", func(t *testing.T) {
+		h := web.NewHandler(&mockDashboard{}, testTemplates())
+
+		req := httptest.NewRequest(http.MethodGet, "/fragments/epics", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /fragments/epics status = %d, want 200", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "epics") {
+			t.Errorf("GET /fragments/epics body missing epics container; body: %q", rec.Body.String())
+		}
+	})
 }
 
 func TestFragmentParade(t *testing.T) {

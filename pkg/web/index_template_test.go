@@ -14,6 +14,7 @@ import (
 type indexTemplateData struct {
 	HealthErr  string
 	Parade     struct{}
+	Epics      struct{}
 	Workers    []struct{}
 	Events     []struct{}
 	Throughput struct {
@@ -41,13 +42,14 @@ func TestIndexTemplate(t *testing.T) {
 	tFS := fstest.MapFS{
 		"index.html":      {Data: indexContent},
 		"parade.html":     {Data: []byte(`{{define "parade-content"}}PARADE-STUB{{end}}`)},
+		"epics.html":      {Data: []byte(`{{define "epics.html"}}EPICS-STUB{{end}}`)},
 		"workers.html":    {Data: []byte(`{{define "workers.html"}}WORKERS-STUB{{end}}`)},
 		"events.html":     {Data: []byte(`{{define "events.html"}}EVENTS-STUB{{end}}`)},
 		"throughput.html": {Data: []byte(`{{define "throughput.html"}}THROUGHPUT-STUB{{end}}`)},
 	}
 
 	// Parse without a custom FuncMap — index.html must not use FuncMap helpers.
-	tmpl, err := template.New("").ParseFS(tFS, "index.html", "parade.html", "workers.html", "events.html", "throughput.html")
+	tmpl, err := template.New("").ParseFS(tFS, "index.html", "parade.html", "epics.html", "workers.html", "events.html", "throughput.html")
 	if err != nil {
 		t.Fatalf("template.ParseFS: %v", err)
 	}
@@ -97,8 +99,10 @@ func TestIndexTemplate(t *testing.T) {
 			"1h",
 			"uptime",
 			`id="parade"`,
+			`id="epics"`,
 			`id="sidebar"`,
 			"PARADE-STUB", // stub "parade-content" rendered inside #parade
+			"EPICS-STUB",
 			"WORKERS-STUB",
 			"EVENTS-STUB",
 			"/events", // SSE endpoint wired
@@ -147,11 +151,12 @@ func TestDetailSlideOverOutsideSwapTarget(t *testing.T) {
 	tFS := fstest.MapFS{
 		"index.html":      {Data: indexContent},
 		"parade.html":     {Data: []byte(`{{define "parade-content"}}PARADE-STUB{{end}}`)},
+		"epics.html":      {Data: []byte(`{{define "epics.html"}}EPICS-STUB{{end}}`)},
 		"workers.html":    {Data: []byte(`{{define "workers.html"}}WORKERS-STUB{{end}}`)},
 		"events.html":     {Data: []byte(`{{define "events.html"}}EVENTS-STUB{{end}}`)},
 		"throughput.html": {Data: []byte(`{{define "throughput.html"}}THROUGHPUT-STUB{{end}}`)},
 	}
-	tmpl, err := template.New("").ParseFS(tFS, "index.html", "parade.html", "workers.html", "events.html", "throughput.html")
+	tmpl, err := template.New("").ParseFS(tFS, "index.html", "parade.html", "epics.html", "workers.html", "events.html", "throughput.html")
 	if err != nil {
 		t.Fatalf("template.ParseFS: %v", err)
 	}

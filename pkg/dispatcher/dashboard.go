@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"oro/pkg/protocol"
@@ -23,6 +24,8 @@ type DashboardData interface {
 	BlockedBeads(ctx context.Context) ([]protocol.Bead, error)
 	// ClosedBeads returns the most recently closed beads, up to limit.
 	ClosedBeads(ctx context.Context, limit int) ([]protocol.Bead, error)
+	// Epics returns dashboard summaries for active and next epic work.
+	Epics(ctx context.Context) (*web.EpicsData, error)
 	// ShowBead returns extended detail for the given bead ID.
 	ShowBead(ctx context.Context, id string) (*protocol.BeadDetail, error)
 	// RecentEvents returns the n most recent events from the events table,
@@ -83,6 +86,95 @@ func (d *Dispatcher) ClosedBeads(ctx context.Context, limit int) ([]protocol.Bea
 		return nil, fmt.Errorf("closed beads: %w", err)
 	}
 	return beads, nil
+}
+
+// Epics implements web.DashboardData by deriving epic summaries from the bead
+// buckets already exposed to the dashboard.
+func (d *Dispatcher) Epics(ctx context.Context) (*web.EpicsData, error) {
+	inProgress, err := d.beads.InProgress(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("epics in-progress beads: %w", err)
+	}
+	ready, err := d.beads.Ready(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("epics ready beads: %w", err)
+	}
+	blocked, err := d.beads.Blocked(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("epics blocked beads: %w", err)
+	}
+	closed, err := d.beads.Closed(ctx, 200)
+	if err != nil {
+		return nil, fmt.Errorf("epics closed beads: %w", err)
+	}
+
+	data := &web.EpicsData{}
+	for _, bead := range inProgress {
+		if !isEpicBead(bead) {
+			continue
+		}
+		summary, summaryErr := d.epicSummary(ctx, bead, inProgress, blocked, closed)
+		if summaryErr != nil {
+			return nil, summaryErr
+		}
+		data.InProgress = append(data.InProgress, summary)
+	}
+	for _, bead := range append(ready, blocked...) {
+		if !isEpicBead(bead) {
+			continue
+		}
+		summary, summaryErr := d.epicSummary(ctx, bead, inProgress, blocked, closed)
+		if summaryErr != nil {
+			return nil, summaryErr
+		}
+		data.Next = append(data.Next, summary)
+	}
+	return data, nil
+}
+
+func (d *Dispatcher) epicSummary(
+	ctx context.Context,
+	epic protocol.Bead,
+	inProgress []protocol.Bead,
+	blocked []protocol.Bead,
+	closed []protocol.Bead,
+) (web.EpicSummary, error) {
+	total, err := d.beads.CountChildren(ctx, epic.ID)
+	if err != nil {
+		return web.EpicSummary{}, fmt.Errorf("epics count children %s: %w", epic.ID, err)
+	}
+	return web.EpicSummary{
+		ID:                epic.ID,
+		Title:             epic.Title,
+		Status:            epic.Status,
+		ClosedChildren:    countDirectChildren(closed, epic.ID),
+		TotalChildren:     total,
+		ActiveChildTitle:  firstDirectChildTitle(inProgress, epic.ID),
+		FirstBlockerTitle: firstDirectChildTitle(blocked, epic.ID),
+	}, nil
+}
+
+func isEpicBead(bead protocol.Bead) bool {
+	return strings.EqualFold(bead.Type, "epic")
+}
+
+func countDirectChildren(beads []protocol.Bead, parentID string) int {
+	count := 0
+	for _, bead := range beads {
+		if bead.Epic == parentID {
+			count++
+		}
+	}
+	return count
+}
+
+func firstDirectChildTitle(beads []protocol.Bead, parentID string) string {
+	for _, bead := range beads {
+		if bead.Epic == parentID {
+			return bead.Title
+		}
+	}
+	return ""
 }
 
 // ShowBead implements DashboardData.

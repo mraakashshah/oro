@@ -43,6 +43,7 @@ type DashboardData interface {
 	InProgressBeads(ctx context.Context) ([]protocol.Bead, error)
 	BlockedBeads(ctx context.Context) ([]protocol.Bead, error)
 	ClosedBeads(ctx context.Context, limit int) ([]protocol.Bead, error)
+	Epics(ctx context.Context) (*EpicsData, error)
 	ShowBead(ctx context.Context, id string) (*protocol.BeadDetail, error)
 	RecentEvents(ctx context.Context, limit int) ([]protocol.Event, error)
 	Workers(ctx context.Context) ([]WorkerInfo, error)
@@ -59,6 +60,8 @@ type DashboardData interface {
 type indexData struct {
 	HealthErr  string
 	Parade     ParadeData
+	Epics      EpicsData
+	Titles     map[string]string
 	Workers    WorkersData
 	Events     EventsData
 	Throughput *ThroughputData
@@ -103,6 +106,7 @@ type handler struct {
 	workersTmpl    *template.Template
 	detailTmpl     *template.Template
 	eventsTmpl     *template.Template
+	epicsTmpl      *template.Template
 	throughputTmpl *template.Template
 }
 
@@ -132,11 +136,12 @@ func NewHandler(data DashboardData, content fs.FS) http.Handler {
 
 	h := &handler{
 		data:           data,
-		indexTmpl:      mustParse("index.html", "parade.html", "workers.html", "events.html", "throughput.html"),
+		indexTmpl:      mustParse("index.html", "parade.html", "workers.html", "events.html", "epics.html", "throughput.html"),
 		paradeTmpl:     mustParse("parade.html"),
 		workersTmpl:    mustParse("workers.html"),
 		detailTmpl:     mustParse("detail.html"),
 		eventsTmpl:     mustParse("events.html"),
+		epicsTmpl:      mustParse("epics.html"),
 		throughputTmpl: mustParse("throughput.html"),
 	}
 
@@ -147,6 +152,7 @@ func NewHandler(data DashboardData, content fs.FS) http.Handler {
 	mux.HandleFunc("GET /fragments/workers", h.workersHandler)
 	mux.HandleFunc("GET /fragments/detail/{id}", h.detailHandler)
 	mux.HandleFunc("GET /fragments/events", h.eventsHandler)
+	mux.HandleFunc("GET /fragments/epics", h.epicsHandler)
 	mux.HandleFunc("GET /fragments/throughput", h.throughputHandler)
 	mux.HandleFunc("GET /events", h.sseHandler)
 
@@ -185,6 +191,11 @@ func (h *handler) indexHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	epics, err := h.loadEpicsData(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	workers, err := h.data.Workers(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -211,6 +222,8 @@ func (h *handler) indexHandler(w http.ResponseWriter, r *http.Request) {
 	h.renderTemplate(w, r, h.indexTmpl, "index.html", indexData{
 		HealthErr:  healthMsg,
 		Parade:     parade,
+		Epics:      epics,
+		Titles:     beadTitleMap(parade),
 		Workers:    workerData,
 		Events:     EventsData{Events: events, Titles: beadTitleMap(parade)},
 		Throughput: throughput,
@@ -309,6 +322,15 @@ func (h *handler) eventsHandler(w http.ResponseWriter, r *http.Request) {
 	h.renderTemplate(w, r, h.eventsTmpl, "events.html", EventsData{Events: events, Titles: beadTitleMap(parade)})
 }
 
+func (h *handler) epicsHandler(w http.ResponseWriter, r *http.Request) {
+	data, err := h.loadEpicsData(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	h.renderTemplate(w, r, h.epicsTmpl, "epics.html", data)
+}
+
 func (h *handler) throughputHandler(w http.ResponseWriter, r *http.Request) {
 	data, err := h.data.Throughput(r.Context())
 	if err != nil {
@@ -376,14 +398,29 @@ func (h *handler) loadParadeData(ctx context.Context) (ParadeData, error) {
 	}, nil
 }
 
+func (h *handler) loadEpicsData(ctx context.Context) (EpicsData, error) {
+	epics, err := h.data.Epics(ctx)
+	if err != nil {
+		return EpicsData{}, fmt.Errorf("epics: %w", err)
+	}
+	if epics == nil {
+		return EpicsData{}, nil
+	}
+	return *epics, nil
+}
+
 func beadTitleMap(data ParadeData) map[string]string {
 	titles := make(map[string]string)
-	for _, beads := range [][]protocol.Bead{data.Ready, data.InProgress, data.Blocked, data.Closed} {
+	add := func(beads []protocol.Bead) {
 		for _, bead := range beads {
 			if bead.ID != "" && bead.Title != "" {
 				titles[bead.ID] = bead.Title
 			}
 		}
 	}
+	add(data.Ready)
+	add(data.InProgress)
+	add(data.Blocked)
+	add(data.Closed)
 	return titles
 }

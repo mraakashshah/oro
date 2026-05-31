@@ -22,6 +22,12 @@
          hx-swap="innerHTML">
       {{template "parade-content" .Parade}}
     </div>
+    <div id="epics"
+         hx-get="/fragments/epics"
+         hx-trigger="dashboard-parade from:body"
+         hx-swap="innerHTML">
+      {{template "epics.html" .Epics}}
+    </div>
     <div id="detail"></div>
     <div id="sidebar">
       <div id="workers"
