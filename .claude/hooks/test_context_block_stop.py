@@ -56,6 +56,33 @@ def test_read_context_pct_sources(monkeypatch, tmp_path):
     assert hook.read_context_pct() is None
 
 
+def test_decide_blocks_allows_handoff_and_reentry(monkeypatch):
+    hook = _fresh_module("context_block_stop")
+
+    monkeypatch.setattr(hook, "read_context_pct", lambda: 99)
+    assert hook.decide({"stop_hook_active": True}) == {}
+
+    monkeypatch.setattr(hook, "hard_threshold", lambda: 50)
+    monkeypatch.setattr(hook, "handoff_exists", lambda: False)
+
+    monkeypatch.setattr(hook, "read_context_pct", lambda: 49)
+    assert hook.decide({}) == {}
+
+    monkeypatch.setattr(hook, "read_context_pct", lambda: None)
+    assert hook.decide({}) == {}
+
+    monkeypatch.setattr(hook, "read_context_pct", lambda: 50)
+    decision = hook.decide({})
+    assert decision["decision"] == "block"
+    assert "50%" in decision["reason"]
+    assert "create-handoff" in decision["reason"]
+    assert ".oro/handoff_done" in decision["reason"]
+
+    monkeypatch.setattr(hook, "handoff_exists", lambda: True)
+    monkeypatch.setattr(hook, "read_context_pct", lambda: 99)
+    assert hook.decide({}) == {}
+
+
 def test_hard_threshold_parity(monkeypatch, tmp_path):
     thresholds = tmp_path / "thresholds.json"
     thresholds.write_text(json.dumps({"fast": 35, "balanced": 45, "sonnet": 55}))

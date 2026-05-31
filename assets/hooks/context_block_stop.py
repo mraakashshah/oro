@@ -6,6 +6,8 @@ import os
 import sys
 from pathlib import Path
 
+import compact_trigger
+
 OVERRIDE_ENV = "ORO_CONTEXT_BLOCK_PCT"
 
 
@@ -41,6 +43,14 @@ def handoff_exists() -> bool:
     return (Path.cwd() / ".oro" / "handoff_done").exists()
 
 
+def resolve_tier_threshold() -> int:
+    return compact_trigger.resolve_tier_threshold()
+
+
+def hard_threshold() -> int:
+    return compact_trigger.hard_threshold()
+
+
 def decide(stdin: dict) -> dict:
     if stdin.get("stop_hook_active"):
         return {}
@@ -49,7 +59,16 @@ def decide(stdin: dict) -> dict:
         return {}
     if handoff_exists():
         return {}
-    return {}
+    threshold = hard_threshold()
+    if pct < threshold:
+        return {}
+    return {
+        "decision": "block",
+        "reason": (
+            f"Context at {pct}% (>= hard threshold {threshold}%). "
+            "Run the `create-handoff` skill or write .oro/handoff_done before stopping."
+        ),
+    }
 
 
 def main() -> None:
