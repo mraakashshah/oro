@@ -304,9 +304,9 @@ Keep htmx + SSE. The redesign re-partitions what each SSE event swaps so updates
 
 ---
 
-## 12. Open Items for Consultation (assumption ledger)
+## 12. Resolved Decisions (consultation 2026-05-30)
 
-- [ ] Vendor Inter (one woff2 in `static/`) vs. keep system font stack. RECOMMENDATION: system stack for v1 (zero new assets); revisit if it doesn't read as Linear-enough.
-- [ ] `Epics()` in v1 vs. fast-follow. RECOMMENDATION: v1, but decomposed so visual+stability can land first if perf bites.
-- [ ] Dedicated `NeedsAttention()` query vs. derive in handler. RECOMMENDATION: derive in v1, promote to a query only if logic grows.
+- [x] **Font:** keep the system font stack for v1 — zero new assets. Revisit Inter only if it doesn't read as Linear-enough.
+- [x] **`Epics()` scope:** full epic-centric v1. The epic rollups are the core of the reframe ("the epic matters more than the task"). Decomposition orders the visual system + both stability fixes first so they can land independently if `Epics()` perf needs tuning, but epic grouping/progress ships in v1.
+- [x] **Needs-you:** derive in the handler from existing lists + events for v1; promote to a dedicated `NeedsAttention()` query only if the logic grows.
 ```
