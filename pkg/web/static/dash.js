@@ -1,21 +1,17 @@
 (function () {
   var selected = 0;
-  var palette = null;
-  var paletteInput = null;
-  var paletteList = null;
+  var palette;
+  var paletteInput;
+  var paletteList;
   var paletteItems = [];
-
-  function cards() {
+  function allCards() {
     return Array.prototype.slice.call(document.querySelectorAll(".bead-card"));
   }
-
   function titleOf(card) {
     var title = card.querySelector(".bead-card__title");
-    var id = card.getAttribute("data-id") || "";
-    return (id + " " + (title ? title.textContent : "")).trim();
+    return ((card.getAttribute("data-id") || "") + " " + (title ? title.textContent : "")).trim();
   }
-
-  function score(text, query) {
+  function fuzzyScore(text, query) {
     text = text.toLowerCase();
     query = query.toLowerCase().trim();
     if (!query) return 1;
@@ -28,62 +24,66 @@
     }
     return 1000 - total;
   }
-
-  function setSelected(next) {
-    var all = cards();
-    if (!all.length) return;
-    selected = Math.max(0, Math.min(next, all.length - 1));
-    all.forEach(function (card, index) {
-      card.classList.toggle("is-selected", index === selected);
-      if (index === selected) card.setAttribute("tabindex", "0");
-      else card.removeAttribute("tabindex");
+  function visibleCards() {
+    return allCards().filter(function (card) {
+      return !card.classList.contains("is-hidden");
     });
-    all[selected].scrollIntoView({ block: "nearest" });
   }
-
-  function selectedCard() {
-    var all = cards();
-    if (!all.length) return null;
-    if (selected >= all.length) selected = all.length - 1;
-    return all[selected];
+  function setSelected(next) {
+    var cards = visibleCards();
+    if (!cards.length) return;
+    selected = Math.max(0, Math.min(next, cards.length - 1));
+    allCards().forEach(function (card) {
+      card.classList.remove("is-selected");
+      card.removeAttribute("tabindex");
+    });
+    cards[selected].classList.add("is-selected");
+    cards[selected].setAttribute("tabindex", "0");
+    cards[selected].scrollIntoView({ block: "nearest" });
   }
-
+  function detailPath(id) {
+    return "/fragments/detail/" + encodeURIComponent(id);
+  }
   function openDetail(id) {
-    if (!id) return;
     var detail = document.getElementById("detail");
-    if (!detail) return;
+    if (!id || !detail) return;
     detail.classList.add("is-open");
-    window.location.hash = id;
+    if (window.location.hash !== "#" + id) window.location.hash = id;
     if (window.htmx) {
-      window.htmx.ajax("GET", "/fragments/detail/" + encodeURIComponent(id), {
-        target: "#detail",
-        swap: "innerHTML",
-      });
+      window.htmx.ajax("GET", detailPath(id), { target: "#detail", swap: "innerHTML" });
       return;
     }
-    fetch("/fragments/detail/" + encodeURIComponent(id))
+    fetch(detailPath(id))
       .then(function (res) { return res.ok ? res.text() : ""; })
       .then(function (html) { if (html) detail.innerHTML = html; });
   }
-
   function closeDetail() {
     var detail = document.getElementById("detail");
-    if (!detail) return;
+    if (!detail || !detail.classList.contains("is-open")) return false;
     detail.classList.remove("is-open");
     detail.innerHTML = "";
     if (window.location.hash) history.replaceState(null, "", window.location.pathname + window.location.search);
+    return true;
   }
-
+  function applySearch() {
+    var search = document.querySelector("[data-dashboard-search]");
+    var query = search ? search.value : "";
+    allCards().forEach(function (card) {
+      card.classList.toggle("is-hidden", fuzzyScore(titleOf(card), query) === 0);
+    });
+    setSelected(0);
+  }
+  function closePalette() {
+    if (!palette || palette.hidden) return false;
+    palette.hidden = true;
+    return true;
+  }
   function ensurePalette() {
     if (palette) return;
     palette = document.createElement("div");
     palette.className = "dash-palette";
     palette.hidden = true;
-    palette.innerHTML =
-      '<div class="dash-palette__panel">' +
-      '<input class="dash-palette__input" type="search" placeholder="Type a command..." autocomplete="off">' +
-      '<div class="dash-palette__list"></div>' +
-      "</div>";
+    palette.innerHTML = '<div class="dash-palette__panel"><input class="dash-palette__input" type="search" placeholder="Type a command..." autocomplete="off"><div class="dash-palette__list"></div></div>';
     document.body.appendChild(palette);
     paletteInput = palette.querySelector(".dash-palette__input");
     paletteList = palette.querySelector(".dash-palette__list");
@@ -92,11 +92,12 @@
     });
     paletteInput.addEventListener("input", renderPalette);
   }
-
   function renderPalette() {
     var query = paletteInput.value;
-    paletteItems = cards()
-      .map(function (card) { return { card: card, label: titleOf(card), score: score(titleOf(card), query) }; })
+    paletteItems = allCards()
+      .map(function (card) {
+        return { card: card, label: titleOf(card), score: fuzzyScore(titleOf(card), query) };
+      })
       .filter(function (item) { return item.score > 0; })
       .sort(function (a, b) { return b.score - a.score; })
       .slice(0, 12);
@@ -113,7 +114,6 @@
       paletteList.appendChild(button);
     });
   }
-
   function openPalette() {
     ensurePalette();
     palette.hidden = false;
@@ -121,13 +121,6 @@
     renderPalette();
     paletteInput.focus();
   }
-
-  function closePalette() {
-    if (!palette || palette.hidden) return false;
-    palette.hidden = true;
-    return true;
-  }
-
   function paletteMove(delta) {
     if (!palette || palette.hidden || !paletteItems.length) return false;
     var current = paletteList.querySelector(".is-selected");
@@ -138,65 +131,61 @@
     });
     return true;
   }
-
   function paletteEnter() {
     if (!palette || palette.hidden || !paletteItems.length) return false;
     var current = paletteList.querySelector(".is-selected") || paletteList.children[0];
     if (current) current.click();
     return true;
   }
-
+  function moveSelection(delta) {
+    setSelected(selected + delta);
+  }
+  function openSelected() {
+    var card = visibleCards()[selected] || visibleCards()[0];
+    if (card) openDetail(card.getAttribute("data-id"));
+  }
   function handleKeydown(event) {
     var target = event.target;
     var typing = target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+    var key = event.key.toLowerCase();
+    if ((event.metaKey || event.ctrlKey) && key === "k") {
       event.preventDefault();
       openPalette();
-      return;
-    }
-    if (event.key === "Escape") {
-      if (closePalette()) return;
-      closeDetail();
-      return;
-    }
-    if (event.key === "/" && !typing) {
-      event.preventDefault();
-      openPalette();
-      return;
-    }
-    if (event.key === "j" && !typing) {
-      event.preventDefault();
-      if (!paletteMove(1)) setSelected(selected + 1);
-      return;
-    }
-    if (event.key === "k" && !typing) {
-      event.preventDefault();
-      if (!paletteMove(-1)) setSelected(selected - 1);
-      return;
-    }
-    if (event.key === "Enter" && !typing) {
-      event.preventDefault();
-      if (!paletteEnter()) {
-        var card = selectedCard();
-        if (card) openDetail(card.getAttribute("data-id"));
+    } else if (event.key === "Escape") {
+      if (!closePalette()) closeDetail();
+    } else if (event.key === "/" && !typing) {
+      var search = document.querySelector("[data-dashboard-search]");
+      if (search) {
+        event.preventDefault();
+        search.focus();
       }
+    } else if (key === "j" && !typing) {
+      event.preventDefault();
+      if (!paletteMove(1)) moveSelection(1);
+    } else if (key === "k" && !typing) {
+      event.preventDefault();
+      if (!paletteMove(-1)) moveSelection(-1);
+    } else if (event.key === "Enter" && !typing) {
+      event.preventDefault();
+      if (!paletteEnter()) openSelected();
     }
   }
-
   function boot() {
+    var search = document.querySelector("[data-dashboard-search]");
+    if (search) search.addEventListener("input", applySearch);
     setSelected(0);
     document.body.addEventListener("click", function (event) {
       var card = event.target.closest && event.target.closest(".bead-card");
       if (card) openDetail(card.getAttribute("data-id"));
     });
     document.body.addEventListener("htmx:afterSwap", function (event) {
-      if (event.detail && event.detail.target && event.detail.target.id === "parade") setSelected(0);
-      if (event.detail && event.detail.target && event.detail.target.id === "detail") event.detail.target.classList.add("is-open");
+      var target = event.detail && event.detail.target;
+      if (target && target.id === "parade") applySearch();
+      if (target && target.id === "detail") target.classList.add("is-open");
     });
     document.addEventListener("keydown", handleKeydown);
     if (window.location.hash.length > 1) openDetail(window.location.hash.slice(1));
   }
-
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
 })();

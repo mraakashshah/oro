@@ -71,8 +71,17 @@ func TestStaticAssetsServed(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /static/dash.js status = %d, want 200", rec.Code)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "keydown") {
-		t.Fatalf("GET /static/dash.js body missing keyboard handler; body: %q", body)
+	body := rec.Body.String()
+	for _, want := range []string{
+		"keydown",
+		"location.hash",
+		"data-dashboard-search",
+		"openPalette",
+		"openDetail",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("GET /static/dash.js body missing %q; body: %q", want, body)
+		}
 	}
 }
 

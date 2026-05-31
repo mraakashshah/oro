@@ -10,6 +10,11 @@
 </head>
 <body>
   {{template "dashboard-header" .}}
+  <header class="dashbar">
+    <span class="dashbar__brand">oro</span>
+    <input class="dashbar__search" data-dashboard-search type="search" placeholder="Search titles" autocomplete="off">
+    <span class="dashbar__key">⌘K</span>
+  </header>
   <div class="layout">
     <div id="parade"
          hx-get="/fragments/parade"

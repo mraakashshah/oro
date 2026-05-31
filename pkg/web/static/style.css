@@ -30,6 +30,44 @@ body {
   min-height: 100vh;
 }
 
+.dashbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: auto minmax(180px, 360px) auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 52px;
+  padding: 8px 20px;
+  background: #0A0A0B;
+  border-bottom: 1px solid #1a1a1d;
+}
+
+.dashbar__brand {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #E8E8E8;
+}
+
+.dashbar__search {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  color: #E8E8E8;
+  background: #101012;
+  border: 1px solid #24242a;
+  border-radius: 4px;
+  font: inherit;
+}
+
+.dashbar__key {
+  justify-self: end;
+  color: #777;
+  font-size: 12px;
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+}
+
 /* ── Typography ───────────────────────────────────────────── */
 
 h1, h2, h3 {
@@ -154,6 +192,10 @@ h2 {
 
 .bead-card:hover {
   background: var(--surface);
+}
+
+.bead-card.is-hidden {
+  display: none;
 }
 
 .bead-card.is-selected {
