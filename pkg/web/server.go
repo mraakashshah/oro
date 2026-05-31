@@ -310,6 +310,10 @@ func (h *handler) detailHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if detail == nil {
+		http.NotFound(w, r)
+		return
+	}
 	view := detailData{BeadDetail: detail}
 	if detail.Type == "epic" {
 		children, childErr := h.detailChildren(r.Context(), detail.ID)

@@ -310,6 +310,23 @@ func TestFragmentDetailNotFound(t *testing.T) {
 	}
 }
 
+func TestFragmentDetailNilShowsNotFound(t *testing.T) {
+	data := &mockDashboard{
+		detail: map[string]*protocol.BeadDetail{
+			"oro-nil": nil,
+		},
+	}
+	h := web.NewHandler(data, testTemplates())
+
+	req := httptest.NewRequest(http.MethodGet, "/fragments/detail/oro-nil", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /fragments/detail/oro-nil status = %d, want 404", rec.Code)
+	}
+}
+
 func TestSSEEndpoint(t *testing.T) {
 	data := &mockDashboard{}
 	h := web.NewHandler(data, testTemplates())
