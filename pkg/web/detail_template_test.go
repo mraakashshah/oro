@@ -50,8 +50,8 @@ func TestDetailTemplate(t *testing.T) {
 		assertContains(t, body, `id="oro-x1"`)
 		// .Title in <h2>
 		assertContains(t, body, "Test bead</h2>")
-		// .Status with status indicator
-		assertContains(t, body, "in_progress")
+		// .Status as a human-readable label
+		assertContains(t, body, "In progress")
 		assertContains(t, body, "detail-meta")
 		// .Description in prose block
 		assertContains(t, body, `detail-description`)
@@ -85,7 +85,7 @@ func TestDetailTemplate(t *testing.T) {
 		// Required fields still present
 		assertContains(t, body, `id="oro-x2"`)
 		assertContains(t, body, "Minimal bead</h2>")
-		assertContains(t, body, "open")
+		assertContains(t, body, "Open")
 
 		// Description section hidden when empty
 		assertNotContains(t, body, "detail-description")

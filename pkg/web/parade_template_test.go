@@ -47,12 +47,12 @@ func TestParadeTemplate(t *testing.T) {
 		}
 		html := buf.String()
 
-		// Section headers with status symbols
+		// Section headers
 		for _, want := range []string{
-			"Queued Up", "♪",
-			"Rolling", "●",
-			"Stalled", "⊘",
-			"Finished", "✓",
+			"Queued Up",
+			"Rolling",
+			"Stalled",
+			"Finished",
 		} {
 			if !strings.Contains(html, want) {
 				t.Errorf("missing %q in output; html: %s", want, html)

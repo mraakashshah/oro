@@ -1,7 +1,7 @@
 <div class="bead-detail" id="{{.ID}}">
   <h2 class="bead-detail__title">{{.Title}}</h2>
   <div class="detail-meta">
-    <span class="badge badge--priority">{{statusSymbol .Status}} {{.Status}}</span>
+    <span class="badge badge--priority">{{plainStatus .Status}}</span>
     {{if .Type}}<span class="badge">{{.Type}}</span>{{end}}
     {{if .Epic}}<span class="badge">epic {{.Epic}}</span>{{end}}
     {{if .Model}}<span class="badge">model {{.Model}}</span>{{end}}

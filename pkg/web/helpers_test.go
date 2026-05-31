@@ -16,11 +16,11 @@ func TestStatusSymbol(t *testing.T) {
 		status string
 		want   string
 	}{
-		{"open", "♪"},
-		{"in_progress", "●"},
-		{"blocked", "⊘"},
-		{"closed", "✓"},
-		{"unknown_status", "unknown_status"},
+		{"open", "Open"},
+		{"in_progress", "In progress"},
+		{"blocked", "Blocked"},
+		{"closed", "Closed"},
+		{"unknown_status", "Unknown status"},
 		{"", ""},
 	}
 	for _, tt := range tests {
@@ -31,51 +31,49 @@ func TestStatusSymbol(t *testing.T) {
 	}
 }
 
-func TestHeatColor(t *testing.T) {
+func TestEpicAndStatusHelpers(t *testing.T) {
 	fm := web.TemplateFuncMap()
-	fn := fm["heatColor"].(func(string) string)
-
-	now := time.Now()
-
-	// 3 days old → heat-green
-	recent := now.Add(-3 * 24 * time.Hour).Format(time.RFC3339)
-	if got := fn(recent); got != "heat-green" {
-		t.Errorf("heatColor(3d ago) = %q, want heat-green", got)
+	if _, ok := fm["heatColor"]; ok {
+		t.Fatal("TemplateFuncMap exposes obsolete heatColor helper")
 	}
 
-	// 7 days old → heat-green (boundary)
-	sevenDays := now.Add(-7 * 24 * time.Hour).Format(time.RFC3339)
-	if got := fn(sevenDays); got != "heat-green" {
-		t.Errorf("heatColor(7d ago) = %q, want heat-green", got)
+	epicProgressBar := fm["epicProgressBar"].(func(int, int) string)
+	bar := epicProgressBar(7, 9)
+	if len([]rune(bar)) != 8 {
+		t.Fatalf("epicProgressBar(7, 9) length = %d, want 8 segments; bar=%q", len([]rune(bar)), bar)
+	}
+	filled := 0
+	for _, r := range bar {
+		if r == '█' {
+			filled++
+		}
+	}
+	if filled < 6 || filled > 7 {
+		t.Fatalf("epicProgressBar(7, 9) filled segments = %d, want 6-7; bar=%q", filled, bar)
 	}
 
-	// 8 days old → heat-gold
-	eightDays := now.Add(-8 * 24 * time.Hour).Format(time.RFC3339)
-	if got := fn(eightDays); got != "heat-gold" {
-		t.Errorf("heatColor(8d ago) = %q, want heat-gold", got)
+	plainStatus := fm["plainStatus"].(func(string) string)
+	if got := plainStatus("in_progress"); got != "In progress" {
+		t.Errorf("plainStatus(in_progress) = %q, want In progress", got)
+	}
+	if got := plainStatus("surprise_state"); got != "Surprise state" {
+		t.Errorf("plainStatus(surprise_state) = %q, want Surprise state", got)
 	}
 
-	// 14 days old → heat-gold
-	twoWeeks := now.Add(-14 * 24 * time.Hour).Format(time.RFC3339)
-	if got := fn(twoWeeks); got != "heat-gold" {
-		t.Errorf("heatColor(14d ago) = %q, want heat-gold", got)
+	titleFor := fm["titleFor"].(func(map[string]string, string) string)
+	if got := titleFor(map[string]string{"oro-x": "Add cards show"}, "oro-x"); got != "Add cards show" {
+		t.Errorf("titleFor(existing) = %q, want Add cards show", got)
+	}
+	if got := titleFor(map[string]string{}, "oro-y"); got != "oro-y" {
+		t.Errorf("titleFor(missing) = %q, want oro-y", got)
 	}
 
-	// 21 days old → heat-gold (boundary)
-	twentyOne := now.Add(-21 * 24 * time.Hour).Format(time.RFC3339)
-	if got := fn(twentyOne); got != "heat-gold" {
-		t.Errorf("heatColor(21d ago) = %q, want heat-gold", got)
+	escalationSubtype := fm["escalationSubtype"].(func(string) string)
+	if got := escalationSubtype(`{"subtype":"STUCK"}`); got != "STUCK" {
+		t.Errorf("escalationSubtype(valid) = %q, want STUCK", got)
 	}
-
-	// 22 days old → heat-red
-	twentyTwo := now.Add(-22 * 24 * time.Hour).Format(time.RFC3339)
-	if got := fn(twentyTwo); got != "heat-red" {
-		t.Errorf("heatColor(22d ago) = %q, want heat-red", got)
-	}
-
-	// unparseable → heat-green
-	if got := fn("not-a-time"); got != "heat-green" {
-		t.Errorf("heatColor(bad) = %q, want heat-green", got)
+	if got := escalationSubtype(`{"subtype":`); got != "" {
+		t.Errorf("escalationSubtype(malformed) = %q, want empty", got)
 	}
 }
 

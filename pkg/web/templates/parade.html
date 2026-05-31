@@ -2,12 +2,11 @@
 <div class="parade">
   <div class="parade__section">
     <div class="parade__section-header">
-      <span class="parade__symbol">♪</span>
       <h2>Queued Up</h2>
     </div>
     {{range .Ready}}
     <div class="bead-card" data-id="{{.ID}}" hx-get="/fragments/detail/{{.ID}}" hx-target="#detail" hx-swap="innerHTML">
-      <span class="bead-card__id {{heatColor .CreatedAt}}">{{.ID}}</span>
+      <span class="bead-card__id">{{.ID}}</span>
       <span class="bead-card__title">{{truncTitle .Title 72}}</span>
       <div class="bead-card__badges">
         <span class="badge badge--priority">P{{.Priority}}</span>
@@ -19,12 +18,11 @@
 
   <div class="parade__section">
     <div class="parade__section-header">
-      <span class="parade__symbol">●</span>
       <h2>Rolling</h2>
     </div>
     {{range .InProgress}}
     <div class="bead-card" data-id="{{.ID}}" hx-get="/fragments/detail/{{.ID}}" hx-target="#detail" hx-swap="innerHTML">
-      <span class="bead-card__id {{heatColor .CreatedAt}}">{{.ID}}</span>
+      <span class="bead-card__id">{{.ID}}</span>
       <span class="bead-card__title">{{truncTitle .Title 72}}</span>
       <div class="bead-card__badges">
         <span class="badge badge--priority">P{{.Priority}}</span>
@@ -36,12 +34,11 @@
 
   <div class="parade__section">
     <div class="parade__section-header">
-      <span class="parade__symbol">⊘</span>
       <h2>Stalled</h2>
     </div>
     {{range .Blocked}}
     <div class="bead-card" data-id="{{.ID}}" hx-get="/fragments/detail/{{.ID}}" hx-target="#detail" hx-swap="innerHTML">
-      <span class="bead-card__id {{heatColor .CreatedAt}}">{{.ID}}</span>
+      <span class="bead-card__id">{{.ID}}</span>
       <span class="bead-card__title">{{truncTitle .Title 72}}</span>
       <div class="bead-card__badges">
         <span class="badge badge--priority">P{{.Priority}}</span>
@@ -54,12 +51,11 @@
 
   <div class="parade__section">
     <div class="parade__section-header">
-      <span class="parade__symbol">✓</span>
       <h2>Finished</h2>
     </div>
     {{range .Closed}}
     <div class="bead-card" data-id="{{.ID}}" hx-get="/fragments/detail/{{.ID}}" hx-target="#detail" hx-swap="innerHTML">
-      <span class="bead-card__id {{heatColor .CreatedAt}}">{{.ID}}</span>
+      <span class="bead-card__id">{{.ID}}</span>
       <span class="bead-card__title">{{truncTitle .Title 72}}</span>
       <div class="bead-card__badges">
         <span class="badge badge--priority">P{{.Priority}}</span>

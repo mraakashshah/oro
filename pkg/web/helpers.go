@@ -1,8 +1,11 @@
 package web
 
 import (
+	"encoding/json"
 	"fmt"
 	"html/template"
+	"math"
+	"strings"
 	"time"
 
 	"oro/pkg/protocol"
@@ -11,49 +14,68 @@ import (
 // TemplateFuncMap returns a template.FuncMap with dashboard helpers.
 func TemplateFuncMap() template.FuncMap {
 	return template.FuncMap{
-		"statusSymbol":     statusSymbol,
-		"heatColor":        heatColor,
-		"relativeTime":     relativeTime,
-		"truncTitle":       truncTitle,
-		"eventSymbol":      eventSymbol,
-		"eventSymbolClass": eventSymbolClass,
-		"eventSummary":     eventSummary,
-		"contextClass":     contextClass,
-		"heartbeatClass":   heartbeatClass,
-		"heartbeatLabel":   heartbeatLabel,
+		"statusSymbol":      statusSymbol,
+		"epicProgressBar":   epicProgressBar,
+		"plainStatus":       plainStatus,
+		"titleFor":          titleFor,
+		"escalationSubtype": escalationSubtype,
+		"relativeTime":      relativeTime,
+		"truncTitle":        truncTitle,
+		"eventSymbol":       eventSymbol,
+		"eventSymbolClass":  eventSymbolClass,
+		"eventSummary":      eventSummary,
+		"contextClass":      contextClass,
+		"heartbeatClass":    heartbeatClass,
+		"heartbeatLabel":    heartbeatLabel,
 	}
 }
 
 func statusSymbol(status string) string {
-	switch status {
-	case "open":
-		return "♪"
-	case "in_progress":
-		return "●"
-	case "blocked":
-		return "⊘"
-	case "closed":
-		return "✓"
-	default:
-		return status
-	}
+	return plainStatus(status)
 }
 
-func heatColor(createdAt string) string {
-	t, err := time.Parse(time.RFC3339, createdAt)
-	if err != nil {
-		return "heat-green"
+func epicProgressBar(closed, total int) string {
+	const segments = 8
+	if total <= 0 {
+		return strings.Repeat("░", segments)
 	}
-	age := time.Since(t)
-	days := int(age.Hours() / 24)
-	switch {
-	case days <= 7:
-		return "heat-green"
-	case days <= 21:
-		return "heat-gold"
-	default:
-		return "heat-red"
+	filled := int(math.Round(float64(closed) / float64(total) * segments))
+	if filled < 0 {
+		filled = 0
 	}
+	if filled > segments {
+		filled = segments
+	}
+	return strings.Repeat("█", filled) + strings.Repeat("░", segments-filled)
+}
+
+func plainStatus(s string) string {
+	if s == "" {
+		return ""
+	}
+	words := strings.Fields(strings.ReplaceAll(strings.ToLower(s), "_", " "))
+	if len(words) == 0 {
+		return ""
+	}
+	words[0] = strings.ToUpper(words[0][:1]) + words[0][1:]
+	return strings.Join(words, " ")
+}
+
+func titleFor(m map[string]string, id string) string {
+	if title := m[id]; title != "" {
+		return title
+	}
+	return id
+}
+
+func escalationSubtype(payload string) string {
+	var data struct {
+		Subtype protocol.EscalationType `json:"subtype"`
+	}
+	if err := json.Unmarshal([]byte(payload), &data); err != nil {
+		return ""
+	}
+	return string(data.Subtype)
 }
 
 func relativeTime(s string) string {
