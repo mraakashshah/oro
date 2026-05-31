@@ -159,3 +159,81 @@ func TestPromptCardsSectionDeckFooterReferencesCardsShow(t *testing.T) {
 		}
 	})
 }
+
+func TestCardsSectionProgressiveDisclosure(t *testing.T) {
+	t.Parallel()
+
+	t.Run("inline_and_deck_cards_render_at_expected_depth", func(t *testing.T) {
+		t.Parallel()
+		prompt := worker.AssemblePrompt(worker.PromptParams{
+			BeadID: "bead-c07",
+			Title:  "Progressive disclosure test",
+			Cards: cards.RelevantCards{
+				Inlined: []cards.InlinedCard{{
+					ID:          "card-inline-01",
+					Type:        cards.CardTypePattern,
+					Title:       "Inline card",
+					BodySummary: "Inline summary",
+					BodyFull:    "INLINE_FULL_BODY_SENTINEL",
+					Score:       1.9,
+				}},
+				Deck: []cards.DeckCard{
+					{
+						ID:          "card-inline-01",
+						Type:        cards.CardTypePattern,
+						Title:       "Inline card",
+						BodySummary: "Inline summary",
+						Score:       1.9,
+					},
+					{
+						ID:          "card-deck-02",
+						Type:        cards.CardTypePattern,
+						Title:       "Deck card",
+						BodySummary: "DECK_SUMMARY_SENTINEL",
+						Score:       1.5,
+					},
+				},
+			},
+		})
+
+		if !strings.Contains(prompt, "INLINE_FULL_BODY_SENTINEL") {
+			t.Fatal("inline cards must render full body")
+		}
+		if !strings.Contains(prompt, "card-deck-02") {
+			t.Fatal("deck-only cards must render in deck view")
+		}
+		if !strings.Contains(prompt, "DECK_SUMMARY_SENTINEL") {
+			t.Fatal("deck-only cards must render summary")
+		}
+		if strings.Contains(prompt, "DECK_FULL_BODY_SENTINEL") {
+			t.Fatal("deck-only cards must not render full body")
+		}
+		if strings.Count(prompt, "card-inline-01") != 1 {
+			t.Fatalf("inlined cards must not duplicate in deck view, got %d occurrences", strings.Count(prompt, "card-inline-01"))
+		}
+	})
+
+	t.Run("inline_cards_render_when_deck_is_empty", func(t *testing.T) {
+		t.Parallel()
+		prompt := worker.AssemblePrompt(worker.PromptParams{
+			BeadID: "bead-c08",
+			Title:  "Inline only test",
+			Cards: cards.RelevantCards{
+				Inlined: []cards.InlinedCard{{
+					ID:       "card-inline-only",
+					Type:     cards.CardTypePattern,
+					Title:    "Inline only",
+					BodyFull: "INLINE_FULL_BODY_SENTINEL",
+					Score:    1.2,
+				}},
+			},
+		})
+
+		if !strings.Contains(prompt, "INLINE_FULL_BODY_SENTINEL") {
+			t.Fatal("inline-only cards must render when deck is empty")
+		}
+		if strings.Contains(prompt, "No relevant cards for this task.") {
+			t.Fatal("inline-only cards must not render the empty-card placeholder")
+		}
+	})
+}

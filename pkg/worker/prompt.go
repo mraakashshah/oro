@@ -43,7 +43,7 @@ func section(b *strings.Builder, header, body string) {
 // Inlined cards show their full body; any deck entries beyond the inline set
 // appear in the deck-view format so the worker can request deep content on demand.
 func cardsBody(rc cards.RelevantCards) string {
-	if len(rc.Deck) == 0 {
+	if len(rc.Deck) == 0 && len(rc.Inlined) == 0 {
 		return "No relevant cards for this task."
 	}
 
@@ -68,7 +68,7 @@ func cardsBody(rc cards.RelevantCards) string {
 	if len(deckOnly) > 0 {
 		b.WriteString("=== Cards (deck view) ===\n\n")
 		for _, c := range deckOnly {
-			fmt.Fprintf(&b, "[%-8s] %-40s score %.1f   id %s\n", string(c.Type), c.Title, c.Score, c.ID)
+			fmt.Fprintf(&b, "[%-8s] %-40s score %.1f   id %s\n%s\n", string(c.Type), c.Title, c.Score, c.ID, c.BodySummary)
 		}
 		b.WriteString("\nTo see full body of any card: `oro cards show <id>`\n")
 	}
