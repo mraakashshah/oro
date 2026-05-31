@@ -1,6 +1,19 @@
-/* Oro Web Dashboard — dark theme with Mardi Gras accents */
+/* Oro Web Dashboard - dark Linear-inspired theme */
 
 /* ── Reset & base ─────────────────────────────────────────── */
+
+:root {
+  --bg: #08090A;
+  --surface: #0E0F11;
+  --border: #1C1D20;
+  --text: #F7F8F8;
+  --text-2: #9CA0A8;
+  --text-3: #62666D;
+  --accent: #5E6AD2;
+  --green: #4CB782;
+  --amber: #E2A336;
+  --red: #EB5757;
+}
 
 *, *::before, *::after {
   box-sizing: border-box;
@@ -9,8 +22,8 @@
 }
 
 body {
-  background-color: #0A0A0B;
-  color: #E0E0E0;
+  background-color: var(--bg);
+  color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   font-size: 14px;
   line-height: 1.6;
@@ -28,12 +41,12 @@ h2 {
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #888;
+  color: var(--text-2);
   padding: 8px 0 6px;
 }
 
 .muted {
-  color: #555;
+  color: var(--text-3);
 }
 
 /* ── Layout ───────────────────────────────────────────────── */
@@ -55,53 +68,12 @@ h2 {
   }
 }
 
-/* ── Bead string — decorative top separator ───────────────── */
-
-.bead-string {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 12px 16px;
-  overflow: hidden;
-  background: linear-gradient(
-    90deg,
-    #9B59B6 0%,
-    #F1C40F 25%,
-    #2ECC71 50%,
-    #9B59B6 75%,
-    #F1C40F 100%
-  );
-  background-size: 200% 100%;
-  animation: shimmer 7s linear infinite;
-  border-bottom: 1px solid #1a1a1d;
-}
-
-.bead-string__inner {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  font-size: 10px;
-  opacity: 0.6;
-  letter-spacing: 0.15em;
-  color: #0A0A0B;
-  font-weight: 700;
-}
-
-@keyframes shimmer {
-  0% {
-    background-position: 200% 0;
-  }
-  100% {
-    background-position: -200% 0;
-  }
-}
-
 /* ── Parade panel (left 2/3) ──────────────────────────────── */
 
 .parade {
   grid-area: parade;
   padding: 16px 20px;
-  border-right: 1px solid #1a1a1d;
+  border-right: 1px solid var(--border);
   overflow-y: auto;
 }
 
@@ -113,7 +85,7 @@ h2 {
   display: flex;
   align-items: center;
   gap: 8px;
-  border-bottom: 1px solid #1a1a1d;
+  border-bottom: 1px solid var(--border);
   margin-bottom: 8px;
 }
 
@@ -134,7 +106,7 @@ h2 {
 }
 
 .bead-card:hover {
-  background: #141416;
+  background: var(--surface);
 }
 
 .bead-card__id {
@@ -150,7 +122,7 @@ h2 {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: #C0C0C0;
+  color: var(--text);
 }
 
 .bead-card__badges {
@@ -170,27 +142,27 @@ h2 {
 
 .badge--priority {
   background: #1e1a2e;
-  color: #9B59B6;
+  color: var(--accent);
   border: 1px solid #3a2a5a;
 }
 
 .badge--worker {
   background: #0f1f12;
-  color: #2ECC71;
+  color: var(--green);
   border: 1px solid #1a4024;
 }
 
 .badge--blocker {
   background: #1f1600;
-  color: #F1C40F;
+  color: var(--amber);
   border: 1px solid #3d2e00;
 }
 
 /* ── Bead detail (expanded inline) ───────────────────────── */
 
 .bead-detail {
-  background: #101012;
-  border: 1px solid #1e1e22;
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 16px 20px;
   margin: 4px 0 8px 0;
@@ -199,7 +171,7 @@ h2 {
 .bead-detail__title {
   font-size: 15px;
   font-weight: 600;
-  color: #E8E8E8;
+  color: var(--text);
   margin-bottom: 8px;
 }
 
@@ -210,7 +182,7 @@ h2 {
 
 .bead-detail__description {
   font-size: 13px;
-  color: #999;
+  color: var(--text-2);
   line-height: 1.7;
   white-space: pre-wrap;
 }
@@ -218,14 +190,14 @@ h2 {
 .bead-detail__section {
   margin-top: 14px;
   padding-top: 12px;
-  border-top: 1px solid #1a1a1d;
+  border-top: 1px solid var(--border);
 }
 
 .bead-detail__label {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #555;
+  color: var(--text-3);
   margin-bottom: 6px;
 }
 
@@ -240,14 +212,14 @@ h2 {
 
 .sidebar__panel {
   padding: 16px;
-  border-bottom: 1px solid #1a1a1d;
+  border-bottom: 1px solid var(--border);
 }
 
 .sidebar__panel-title {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #555;
+  color: var(--text-3);
   margin-bottom: 10px;
 }
 
@@ -264,7 +236,7 @@ h2 {
 .worker-row__id {
   font-family: "SF Mono", "Fira Code", "Consolas", monospace;
   min-width: 70px;
-  color: #AAA;
+  color: var(--text-2);
 }
 
 .worker-row__dot {
@@ -275,8 +247,8 @@ h2 {
 }
 
 .worker-row__dot--busy {
-  background: #2ECC71;
-  box-shadow: 0 0 4px #2ECC7166;
+  background: var(--green);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--green) 40%, transparent);
 }
 
 .worker-row__dot--idle {
@@ -284,14 +256,14 @@ h2 {
 }
 
 .worker-row__dot--stuck {
-  background: #E67E22;
-  box-shadow: 0 0 4px #E67E2266;
+  background: var(--amber);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--amber) 40%, transparent);
 }
 
 .worker-row__bead {
   font-family: "SF Mono", "Fira Code", "Consolas", monospace;
   font-size: 11px;
-  color: #777;
+  color: var(--text-3);
   flex: 1;
   white-space: nowrap;
   overflow: hidden;
@@ -300,32 +272,32 @@ h2 {
 
 .worker-row__context {
   font-size: 11px;
-  color: #888;
+  color: var(--text-2);
   min-width: 38px;
   text-align: right;
 }
 
 .worker-row__context--warn {
-  color: #E67E22;
+  color: var(--amber);
 }
 
 .worker-row__context--danger {
-  color: #E74C3C;
+  color: var(--red);
 }
 
 .worker-row__heartbeat {
   min-width: 58px;
   text-align: right;
   font-size: 11px;
-  color: #666;
+  color: var(--text-3);
 }
 
 .worker-row__heartbeat--ok {
-  color: #888;
+  color: var(--text-2);
 }
 
 .worker-row__heartbeat--warn {
-  color: #E67E22;
+  color: var(--amber);
 }
 
 /* ── Event feed ───────────────────────────────────────────── */
@@ -335,7 +307,7 @@ h2 {
   max-height: 220px;
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: #222 transparent;
+  scrollbar-color: var(--border) transparent;
 }
 
 .event-feed__item {
@@ -344,13 +316,13 @@ h2 {
   gap: 8px;
   padding: 3px 0;
   font-size: 12px;
-  color: #888;
+  color: var(--text-2);
 }
 
 .event-feed__time {
   font-family: "SF Mono", "Fira Code", "Consolas", monospace;
   font-size: 11px;
-  color: #555;
+  color: var(--text-3);
   min-width: 40px;
   flex-shrink: 0;
 }
@@ -361,10 +333,10 @@ h2 {
   text-align: center;
 }
 
-.event-feed__symbol--ok    { color: #2ECC71; }
-.event-feed__symbol--fail  { color: #E74C3C; }
-.event-feed__symbol--warn  { color: #E67E22; }
-.event-feed__symbol--info  { color: #9B59B6; }
+.event-feed__symbol--ok    { color: var(--green); }
+.event-feed__symbol--fail  { color: var(--red); }
+.event-feed__symbol--warn  { color: var(--amber); }
+.event-feed__symbol--info  { color: var(--accent); }
 
 .event-feed__text {
   flex: 1;
@@ -390,40 +362,39 @@ h2 {
 .throughput__value {
   font-size: 18px;
   font-weight: 600;
-  color: #E0E0E0;
+  color: var(--text);
   font-variant-numeric: tabular-nums;
 }
 
 .throughput__label {
   font-size: 11px;
-  color: #555;
+  color: var(--text-3);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
 
 /* ── Status colors ────────────────────────────────────────── */
 
-/* open (queued) = purple */
-.status-open     { color: #9B59B6; }
+.status-open     { color: var(--accent); }
 /* in_progress   = green */
-.status-progress { color: #2ECC71; }
+.status-progress { color: var(--green); }
 /* blocked       = amber */
-.status-blocked  { color: #E67E22; }
+.status-blocked  { color: var(--amber); }
 /* closed        = muted */
-.status-closed   { color: #444; }
+.status-closed   { color: var(--text-3); }
 
 /* ── Age-based heat colors for bead IDs ───────────────────── */
 
-.heat-green { color: #2ECC71; }
-.heat-gold  { color: #F1C40F; }
-.heat-red   { color: #E74C3C; }
+.heat-green { color: var(--green); }
+.heat-gold  { color: var(--amber); }
+.heat-red   { color: var(--red); }
 
 /* ── Health error banner ──────────────────────────────────── */
 
 #health-error {
   background: #1a0000;
   border: 1px solid #4a1010;
-  color: #E74C3C;
+  color: var(--red);
   padding: 8px 16px;
   font-size: 13px;
   text-align: center;
@@ -441,10 +412,10 @@ h2 {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #222;
+  background: var(--border);
   border-radius: 2px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #333;
+  background: var(--text-3);
 }

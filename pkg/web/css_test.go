@@ -4,11 +4,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
 // TestCSSContainsKeySelectors verifies that the CSS stylesheet exists and contains
-// the required selectors, dark theme background, and Mardi Gras accent colors.
+// the required selectors and Linear-inspired visual tokens.
 func TestCSSContainsKeySelectors(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
@@ -31,69 +32,41 @@ func TestCSSContainsKeySelectors(t *testing.T) {
 		".bead-detail",
 		".event-feed",
 		".throughput",
-		".bead-string",
-		"@keyframes shimmer",
 	}
 	for _, sel := range selectors {
-		if !contains(css, sel) {
+		if !strings.Contains(css, sel) {
 			t.Errorf("style.css missing selector %q", sel)
 		}
 	}
 
-	// Dark background — #0A0A0B or similar (at minimum check for dark hex starting with #0)
-	darkColors := []string{"#0A0A0B", "#0a0a0b"}
-	foundDark := false
-	for _, c := range darkColors {
-		if contains(css, c) {
-			foundDark = true
-			break
+	tokens := []string{
+		"--bg: #08090A",
+		"--surface: #0E0F11",
+		"--border: #1C1D20",
+		"--text: #F7F8F8",
+		"--text-2: #9CA0A8",
+		"--text-3: #62666D",
+		"--accent: #5E6AD2",
+		"--green: #4CB782",
+		"--amber: #E2A336",
+		"--red: #EB5757",
+	}
+	for _, token := range tokens {
+		if !strings.Contains(css, token) {
+			t.Errorf("style.css missing visual token %q", token)
 		}
 	}
-	if !foundDark {
-		t.Errorf("style.css missing dark background color (#0A0A0B)")
-	}
 
-	// Mardi Gras accent colors: purple, gold, green
-	mardiGrasColors := []string{
-		// purple variants
+	forbidden := []string{
+		"@keyframes shimmer",
+		".bead-string",
 		"#9B59B6", "#9b59b6",
-		// gold variants
 		"#F1C40F", "#f1c40f",
-		// green variants
 		"#2ECC71", "#2ecc71",
 	}
-	type colorCheck struct {
-		name     string
-		variants []string
-	}
-	checks := []colorCheck{
-		{"purple", []string{"#9B59B6", "#9b59b6"}},
-		{"gold", []string{"#F1C40F", "#f1c40f"}},
-		{"green", []string{"#2ECC71", "#2ecc71"}},
-	}
-	for _, check := range checks {
-		found := false
-		for _, v := range check.variants {
-			if contains(css, v) {
-				found = true
-				break
-			}
-		}
-		_ = mardiGrasColors // used above
-		if !found {
-			t.Errorf("style.css missing Mardi Gras %s accent color", check.name)
+	for _, value := range forbidden {
+		if strings.Contains(css, value) {
+			t.Errorf("style.css contains removed token or selector %q", value)
 		}
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		func() bool {
-			for i := 0; i <= len(s)-len(substr); i++ {
-				if s[i:i+len(substr)] == substr {
-					return true
-				}
-			}
-			return false
-		}())
 }
