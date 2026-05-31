@@ -104,3 +104,49 @@ func TestIndexTemplate(t *testing.T) {
 		}
 	})
 }
+
+func TestDetailSlideOverOutsideSwapTarget(t *testing.T) {
+	indexContent, err := os.ReadFile("templates/index.html")
+	if err != nil {
+		t.Fatalf("read templates/index.html: %v", err)
+	}
+
+	tFS := fstest.MapFS{
+		"index.html":      {Data: indexContent},
+		"parade.html":     {Data: []byte(`{{define "parade-content"}}PARADE-STUB{{end}}`)},
+		"workers.html":    {Data: []byte(`{{define "workers.html"}}WORKERS-STUB{{end}}`)},
+		"events.html":     {Data: []byte(`{{define "events.html"}}EVENTS-STUB{{end}}`)},
+		"throughput.html": {Data: []byte(`{{define "throughput.html"}}THROUGHPUT-STUB{{end}}`)},
+	}
+	tmpl, err := template.New("").ParseFS(tFS, "index.html", "parade.html", "workers.html", "events.html", "throughput.html")
+	if err != nil {
+		t.Fatalf("template.ParseFS: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "index.html", indexTemplateData{}); err != nil {
+		t.Fatalf("execute index.html: %v", err)
+	}
+	body := buf.String()
+
+	paradeStart := strings.Index(body, `id="parade"`)
+	if paradeStart < 0 {
+		t.Fatalf("rendered index missing #parade; body:\n%s", body)
+	}
+	paradeClose := strings.Index(body[paradeStart:], "</div>")
+	if paradeClose < 0 {
+		t.Fatalf("rendered index missing #parade closing div; body:\n%s", body)
+	}
+	paradeClose += paradeStart
+
+	detailStart := strings.Index(body, `id="detail"`)
+	if detailStart < 0 {
+		t.Fatalf("rendered index missing #detail slide-over host; body:\n%s", body)
+	}
+	if detailStart < paradeClose {
+		t.Fatalf("#detail is inside the SSE-swapped #parade container; body:\n%s", body)
+	}
+	if strings.Contains(body[paradeStart:paradeClose], `id="detail"`) {
+		t.Fatalf("#detail must not be a descendant of #parade; body:\n%s", body)
+	}
+}

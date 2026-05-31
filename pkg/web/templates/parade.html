@@ -6,7 +6,7 @@
       <h2>Queued Up</h2>
     </div>
     {{range .Ready}}
-    <div class="bead-card" data-id="{{.ID}}" hx-get="/fragments/detail/{{.ID}}" hx-target="next .bead-detail-slot" hx-swap="innerHTML">
+    <div class="bead-card" data-id="{{.ID}}" hx-get="/fragments/detail/{{.ID}}" hx-target="#detail" hx-swap="innerHTML">
       <span class="bead-card__id {{heatColor .CreatedAt}}">{{.ID}}</span>
       <span class="bead-card__title">{{truncTitle .Title 72}}</span>
       <div class="bead-card__badges">
@@ -14,7 +14,6 @@
         {{if .Owner}}<span class="badge badge--worker">{{.Owner}}</span>{{end}}
       </div>
     </div>
-    <div class="bead-detail-slot"></div>
     {{end}}
   </div>
 
@@ -24,7 +23,7 @@
       <h2>Rolling</h2>
     </div>
     {{range .InProgress}}
-    <div class="bead-card" data-id="{{.ID}}" hx-get="/fragments/detail/{{.ID}}" hx-target="next .bead-detail-slot" hx-swap="innerHTML">
+    <div class="bead-card" data-id="{{.ID}}" hx-get="/fragments/detail/{{.ID}}" hx-target="#detail" hx-swap="innerHTML">
       <span class="bead-card__id {{heatColor .CreatedAt}}">{{.ID}}</span>
       <span class="bead-card__title">{{truncTitle .Title 72}}</span>
       <div class="bead-card__badges">
@@ -32,7 +31,6 @@
         {{if .Owner}}<span class="badge badge--worker">{{.Owner}}</span>{{end}}
       </div>
     </div>
-    <div class="bead-detail-slot"></div>
     {{end}}
   </div>
 
@@ -42,7 +40,7 @@
       <h2>Stalled</h2>
     </div>
     {{range .Blocked}}
-    <div class="bead-card" data-id="{{.ID}}" hx-get="/fragments/detail/{{.ID}}" hx-target="next .bead-detail-slot" hx-swap="innerHTML">
+    <div class="bead-card" data-id="{{.ID}}" hx-get="/fragments/detail/{{.ID}}" hx-target="#detail" hx-swap="innerHTML">
       <span class="bead-card__id {{heatColor .CreatedAt}}">{{.ID}}</span>
       <span class="bead-card__title">{{truncTitle .Title 72}}</span>
       <div class="bead-card__badges">
@@ -51,7 +49,6 @@
         {{range .Dependencies}}<span class="badge badge--blocker">→ {{.DependsOnID}}</span>{{end}}
       </div>
     </div>
-    <div class="bead-detail-slot"></div>
     {{end}}
   </div>
 
@@ -61,7 +58,7 @@
       <h2>Finished</h2>
     </div>
     {{range .Closed}}
-    <div class="bead-card" data-id="{{.ID}}" hx-get="/fragments/detail/{{.ID}}" hx-target="next .bead-detail-slot" hx-swap="innerHTML">
+    <div class="bead-card" data-id="{{.ID}}" hx-get="/fragments/detail/{{.ID}}" hx-target="#detail" hx-swap="innerHTML">
       <span class="bead-card__id {{heatColor .CreatedAt}}">{{.ID}}</span>
       <span class="bead-card__title">{{truncTitle .Title 72}}</span>
       <div class="bead-card__badges">
@@ -69,7 +66,6 @@
         {{if .Owner}}<span class="badge badge--worker">{{.Owner}}</span>{{end}}
       </div>
     </div>
-    <div class="bead-detail-slot"></div>
     {{end}}
   </div>
 </div>

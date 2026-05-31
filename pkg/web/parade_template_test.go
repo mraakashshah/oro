@@ -96,8 +96,11 @@ func TestParadeTemplate(t *testing.T) {
 		if !strings.Contains(html, `hx-get="/fragments/detail/oro-r1"`) {
 			t.Errorf("missing hx-get attribute on bead card; html: %s", html)
 		}
-		if !strings.Contains(html, "bead-detail-slot") {
-			t.Errorf("missing bead-detail-slot; html: %s", html)
+		if !strings.Contains(html, `hx-target="#detail"`) {
+			t.Errorf("missing shell-level detail target; html: %s", html)
+		}
+		if strings.Contains(html, "bead-detail-slot") {
+			t.Errorf("parade fragment should not render detail slots inside the SSE swap target; html: %s", html)
 		}
 	})
 
