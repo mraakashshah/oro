@@ -575,7 +575,7 @@ func markRecoveryQuarantineHumanOwned(ctx context.Context, db *sql.DB, id int64)
 
 func markRecoveryQuarantineResolvedTx(ctx context.Context, tx *sql.Tx, id int64) error {
 	res, err := tx.ExecContext(ctx,
-		`UPDATE recovery_quarantines SET status='resolved', resolved_at=datetime('now') WHERE id=? AND status='open'`,
+		`UPDATE recovery_quarantines SET status='resolved', resolved_at=datetime('now') WHERE id=? AND status IN ('open', 'human_owned')`,
 		id)
 	if err != nil {
 		return fmt.Errorf("resolve recovery quarantine: %w", err)
