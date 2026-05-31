@@ -17,43 +17,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newBeadCmdWithStore(store beadstore.Store) *cobra.Command {
-	var jsonOutput bool
-
-	cmd := &cobra.Command{
-		Use:   "bead",
-		Short: "Manage native Oro beads (legacy alias for task)",
-		Long:  "Manage native Oro beads. Legacy alias for the task command.",
-	}
-	cmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "emit machine-readable JSON output")
-
-	cmd.AddCommand(
-		newBeadReadyCmd(store),
-		newBeadListCmd(store),
-		newBeadShowCmd(store),
-		newBeadCreateCmd(store),
-		newBeadUpdateCmd(store),
-		newBeadCloseCmd(store),
-		newBeadDeleteCmd(store),
-		newBeadReopenCmd(store),
-		newBeadDeferCmd(store),
-		newBeadUndeferCmd(store),
-		newBeadBlockedCmd(store),
-		newBeadClosedCmd(store),
-		newBeadDepCmd(store),
-		newBeadTagCmd(store),
-		newBeadMetaCmd(store),
-		newBeadNoteCmd(store),
-		newBeadStubCmd(store, "search <query>", "Search beads", cobra.ExactArgs(1)),
-		newBeadExportCmd(store),
-		newBeadStubCmd(store, "import <path>", "Import bead snapshot", cobra.ExactArgs(1)),
-		newBeadStubCmd(store, "doctor", "Check bead-store health", cobra.NoArgs),
-		newBeadStatusCmd(store),
-	)
-
-	return cmd
-}
-
 func newBeadReadyCmd(store beadstore.Store) *cobra.Command {
 	return newBeadListLikeCmd(store, "ready", "List unblocked open beads", cobra.NoArgs, func(ctx context.Context, s beadstore.Store, _ *cobra.Command) ([]protocol.Bead, error) {
 		return s.Ready(ctx)
@@ -568,34 +531,6 @@ func newBeadDepCyclesCmd(store beadstore.Store) *cobra.Command {
 	return cyclesCmd
 }
 
-func newBeadTagCmd(store beadstore.Store) *cobra.Command {
-	cmd := &cobra.Command{Use: "tag", Short: "Manage bead tags"}
-	cmd.AddCommand(
-		newBeadStubCmd(store, "add <bead-id> <tag>...", "Add tags to a bead", cobra.MinimumNArgs(2)),
-		newBeadStubCmd(store, "rm <bead-id> <tag>...", "Remove tags from a bead", cobra.MinimumNArgs(2)),
-	)
-	return cmd
-}
-
-func newBeadMetaCmd(store beadstore.Store) *cobra.Command {
-	cmd := &cobra.Command{Use: "meta", Short: "Manage bead metadata"}
-	cmd.AddCommand(
-		newBeadStubCmd(store, "set <bead-id> <key=value>", "Set bead metadata", cobra.ExactArgs(2)),
-		newBeadStubCmd(store, "get <bead-id> <key>", "Get bead metadata", cobra.ExactArgs(2)),
-		newBeadStubCmd(store, "rm <bead-id> <key>", "Remove bead metadata", cobra.ExactArgs(2)),
-	)
-	return cmd
-}
-
-func newBeadNoteCmd(store beadstore.Store) *cobra.Command {
-	cmd := &cobra.Command{Use: "note", Short: "Manage bead notes"}
-	cmd.AddCommand(
-		newBeadNoteAddCmd(store),
-		newBeadStubCmd(store, "list <bead-id>", "List bead notes", cobra.ExactArgs(1)),
-	)
-	return cmd
-}
-
 func newBeadNoteAddCmd(store beadstore.Store) *cobra.Command {
 	return &cobra.Command{
 		Use:   "add <bead-id> <text>",
@@ -749,19 +684,6 @@ func beadStatusCounts(ctx context.Context, s beadstore.Store) (beadstore.StatusC
 		InProgress: len(inProgress),
 		Closed:     len(closed),
 	}, nil
-}
-
-func newBeadStubCmd(store beadstore.Store, use, short string, args cobra.PositionalArgs) *cobra.Command {
-	return &cobra.Command{
-		Use:   use,
-		Short: short,
-		Args:  args,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			_ = store
-			err := fmt.Errorf("%s is not implemented yet", cmd.CommandPath())
-			return writeBeadCommandErrorIfJSON(cmd, "unsupported", err)
-		},
-	}
 }
 
 type beadListFunc func(context.Context, beadstore.Store, *cobra.Command) ([]protocol.Bead, error)

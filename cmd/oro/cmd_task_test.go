@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -76,40 +77,90 @@ func TestTaskCommandIsCanonical(t *testing.T) {
 }
 
 func TestTaskCommandSubcommandParity(t *testing.T) {
-	beadCmd := newBeadCmdWithStore(nil)
 	taskCmd := newTaskCmdWithStore(nil)
-
-	beadSubs := map[string]bool{}
-	for _, sub := range beadCmd.Commands() {
-		beadSubs[sub.Name()] = true
-	}
 
 	taskSubs := map[string]*cobra.Command{}
 	for _, sub := range taskCmd.Commands() {
 		taskSubs[sub.Name()] = sub
 	}
 
-	if _, ok := taskSubs["migrate-from-dolt"]; ok {
-		t.Fatal("task command must not expose migrate-from-dolt")
+	want := []string{
+		"blocked",
+		"closed",
+		"close",
+		"create",
+		"defer",
+		"delete",
+		"dep",
+		"export",
+		"list",
+		"note",
+		"ready",
+		"reopen",
+		"show",
+		"status",
+		"undefer",
+		"update",
+	}
+	for _, name := range want {
+		if taskSubs[name] == nil {
+			t.Fatalf("task command missing supported subcommand %q", name)
+		}
 	}
 
-	if beadSubs["migrate-from-dolt"] {
-		t.Fatal("bead command must not expose migrate-from-dolt")
+	for _, unsupported := range []string{"doctor", "import", "meta", "migrate-from-dolt", "search", "tag"} {
+		if taskSubs[unsupported] != nil {
+			t.Fatalf("task command exposes unsupported legacy command %q", unsupported)
+		}
 	}
+}
 
-	unsupportedTaskStubs := map[string]bool{
-		"doctor": true,
-		"import": true,
-		"meta":   true,
-		"search": true,
-		"tag":    true,
+func TestTaskCommandDoesNotExposeLegacyBeadStubs(t *testing.T) {
+	for _, args := range [][]string{
+		{"search", "query"},
+		{"import", "snapshot.json"},
+		{"doctor"},
+		{"tag", "add", "oro-1", "cli"},
+		{"meta", "set", "oro-1", "key=value"},
+		{"note", "list", "oro-1"},
+	} {
+		cmd := newTaskCmdWithStore(beadstore.NewFakeStore())
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs(args)
+
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatalf("task %s unexpectedly succeeded", strings.Join(args, " "))
+		}
+		if !strings.Contains(err.Error(), "unknown command") {
+			t.Fatalf("task %s returned non-Cobra unknown-command error:\nerr=%v\nout=%s", strings.Join(args, " "), err, out.String())
+		}
+		if strings.Contains(err.Error(), "not implemented yet") || strings.Contains(out.String(), "not implemented yet") {
+			t.Fatalf("task %s returned stub error instead of Cobra unknown-command behavior:\nerr=%v\nout=%s", strings.Join(args, " "), err, out.String())
+		}
 	}
-	for name := range beadSubs {
-		if unsupportedTaskStubs[name] {
+}
+
+func TestBeadRootCommandFactoryIsTestOnly(t *testing.T) {
+	production, err := filepath.Glob("cmd_*.go")
+	if err != nil {
+		t.Fatalf("glob production command files: %v", err)
+	}
+	for _, path := range production {
+		if strings.HasSuffix(path, "_test.go") {
 			continue
 		}
-		if taskSubs[name] == nil {
-			t.Fatalf("task command missing subcommand %q that bead has", name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		src := string(data)
+		for _, retired := range []string{"func newBeadCmdWithStore", "func newBeadStubCmd"} {
+			if strings.Contains(src, retired) {
+				t.Fatalf("%s still compiles retired bead compatibility factory %q", path, retired)
+			}
 		}
 	}
 }
