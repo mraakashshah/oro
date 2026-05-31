@@ -118,10 +118,10 @@ Dependencies:
 			Data: []byte(`{{define "throughput.html"}}<div class="throughput"><div class="throughput__stat"><div class="throughput__value">{{.BeadsPerHour}}</div><div class="throughput__label">Beads / hour</div></div><div class="throughput__stat"><div class="throughput__value">{{.CostPerHour}}</div><div class="throughput__label">Cost / hour</div></div><div class="throughput__stat"><div class="throughput__value">{{.ActiveWorkers}}/{{.TotalWorkers}}</div><div class="throughput__label">Workers active</div></div><div class="throughput__stat"><div class="throughput__value">{{.Uptime}}</div><div class="throughput__label">Uptime</div></div></div>{{end}}`),
 		},
 		"workers.html": &fstest.MapFile{
-			Data: []byte(`{{define "workers.html"}}{{range .}}<div class="worker-row state-{{.State}}" data-id="{{.ID}}">
+			Data: []byte(`{{define "workers.html"}}{{range .Workers}}<div class="worker-row state-{{.State}}" data-id="{{.ID}}">
 <span class="worker-row__dot worker-row__dot--{{.State}}"></span>
 <span class="worker-row__id">{{.ID}}</span>
-<span class="worker-row__bead">{{if ne .BeadID ""}}{{.BeadID}}{{else}}idle{{end}}</span>
+<span class="worker-row__bead">{{if ne .BeadID ""}}{{titleFor $.Titles .BeadID}}{{else}}idle{{end}}</span>
 <span class="worker-row__context">{{.ContextPct}}%</span>
 <span class="worker-row__heartbeat">{{printf "%.0fs ago" .LastHeartbeatSecs}}</span>
 </div>{{end}}{{end}}`),

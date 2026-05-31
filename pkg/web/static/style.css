@@ -438,11 +438,19 @@ h2 {
 }
 
 .worker-row__bead {
-  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
-  font-size: 11px;
-  color: var(--text-3);
+  color: var(--text);
   flex: 1;
   min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.worker-row__bead-id {
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  font-size: 10px;
+  color: var(--text-3);
+  max-width: 64px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

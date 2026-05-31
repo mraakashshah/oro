@@ -30,6 +30,12 @@ type ThroughputData struct {
 	CostPerHour   string
 }
 
+// WorkersData is the template model for the worker fragment.
+type WorkersData struct {
+	Workers []WorkerInfo
+	Titles  map[string]string
+}
+
 // DashboardData is the read-only query interface for the web handler.
 // pkg/dispatcher.Dispatcher satisfies this interface.
 type DashboardData interface {
@@ -53,7 +59,7 @@ type DashboardData interface {
 type indexData struct {
 	HealthErr  string
 	Parade     ParadeData
-	Workers    []WorkerInfo
+	Workers    WorkersData
 	Events     []protocol.Event
 	Throughput *ThroughputData
 }
@@ -191,6 +197,7 @@ func (h *handler) indexHandler(w http.ResponseWriter, r *http.Request) {
 	if throughput == nil {
 		throughput = &ThroughputData{}
 	}
+	workerData := workersData(workers, parade.InProgress)
 	var healthMsg string
 	if herr := h.data.HealthError(); herr != nil {
 		healthMsg = herr.Error()
@@ -198,7 +205,7 @@ func (h *handler) indexHandler(w http.ResponseWriter, r *http.Request) {
 	h.renderTemplate(w, r, h.indexTmpl, "index.html", indexData{
 		HealthErr:  healthMsg,
 		Parade:     parade,
-		Workers:    workers,
+		Workers:    workerData,
 		Events:     events,
 		Throughput: throughput,
 	})
@@ -246,7 +253,25 @@ func (h *handler) workersHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	h.renderTemplate(w, r, h.workersTmpl, "workers.html", workers)
+	inProgress, err := h.data.InProgressBeads(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	h.renderTemplate(w, r, h.workersTmpl, "workers.html", workersData(workers, inProgress))
+}
+
+func workersData(workers []WorkerInfo, inProgress []protocol.Bead) WorkersData {
+	titles := make(map[string]string, len(inProgress))
+	for _, bead := range inProgress {
+		if bead.Title != "" {
+			titles[bead.ID] = bead.Title
+		}
+	}
+	return WorkersData{
+		Workers: workers,
+		Titles:  titles,
+	}
 }
 
 func (h *handler) detailHandler(w http.ResponseWriter, r *http.Request) {

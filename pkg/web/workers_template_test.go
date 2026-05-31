@@ -16,25 +16,27 @@ func TestWorkersTemplate(t *testing.T) {
 		t.Fatalf("parse workers.html: %v", err)
 	}
 
-	workers := []web.WorkerInfo{
-		{
-			ID:                "worker-1",
-			State:             "busy",
-			BeadID:            "oro-ip1",
-			ContextPct:        42,
-			LastHeartbeatSecs: 4,
-		},
-		{
-			ID:                "worker-2",
-			State:             "idle",
-			BeadID:            "",
-			ContextPct:        85,
-			LastHeartbeatSecs: 45,
+	data := web.WorkersData{
+		Workers: []web.WorkerInfo{
+			{
+				ID:                "worker-1",
+				State:             "busy",
+				BeadID:            "oro-ip1",
+				ContextPct:        42,
+				LastHeartbeatSecs: 4,
+			},
+			{
+				ID:                "worker-2",
+				State:             "idle",
+				BeadID:            "",
+				ContextPct:        85,
+				LastHeartbeatSecs: 45,
+			},
 		},
 	}
 
 	var buf bytes.Buffer
-	if err := tmpl.ExecuteTemplate(&buf, "workers.html", workers); err != nil {
+	if err := tmpl.ExecuteTemplate(&buf, "workers.html", data); err != nil {
 		t.Fatalf("execute workers.html: %v", err)
 	}
 	body := buf.String()
@@ -56,5 +58,38 @@ func TestWorkersTemplate(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("workers.html missing %q:\n%s", want, body)
 		}
+	}
+}
+
+func TestWorkerRowShowsTitle(t *testing.T) {
+	tmpl, err := template.New("").Funcs(web.TemplateFuncMap()).ParseFS(os.DirFS("templates"), "workers.html")
+	if err != nil {
+		t.Fatalf("parse workers.html: %v", err)
+	}
+
+	data := web.WorkersData{
+		Workers: []web.WorkerInfo{
+			{
+				ID:                "worker-1",
+				State:             "busy",
+				BeadID:            "oro-x",
+				ContextPct:        42,
+				LastHeartbeatSecs: 4,
+			},
+		},
+		Titles: map[string]string{"oro-x": "Add cards show command"},
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "workers.html", data); err != nil {
+		t.Fatalf("execute workers.html: %v", err)
+	}
+	body := buf.String()
+
+	if !strings.Contains(body, "Add cards show command") {
+		t.Fatalf("workers.html missing bead title; body:\n%s", body)
+	}
+	if strings.Contains(body, `<span class="worker-row__bead">oro-x</span>`) {
+		t.Fatalf("workers.html rendered raw bead ID as primary label; body:\n%s", body)
 	}
 }

@@ -1,8 +1,9 @@
-{{range .}}
+{{range .Workers}}
 <div class="worker-row state-{{.State}}" data-id="{{.ID}}">
   <span class="worker-row__dot worker-row__dot--{{.State}}"></span>
   <span class="worker-row__id">{{.ID}}</span>
-  <span class="worker-row__bead">{{if ne .BeadID ""}}{{.BeadID}}{{else}}idle{{end}}</span>
+  <span class="worker-row__bead">{{if ne .BeadID ""}}{{titleFor $.Titles .BeadID}}{{else}}idle{{end}}</span>
+  {{if ne .BeadID ""}}<span class="worker-row__bead-id">{{.BeadID}}</span>{{end}}
   <span class="worker-row__context {{contextClass .ContextPct}}">{{.ContextPct}}%</span>
   <span class="worker-row__heartbeat {{heartbeatClass .LastHeartbeatSecs}}">{{heartbeatLabel .LastHeartbeatSecs}}</span>
 </div>
