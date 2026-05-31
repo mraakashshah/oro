@@ -91,6 +91,42 @@ def test_destructive_command_guard_blocks_dangerous_commands() -> None:
         assert build_decision(_bash_input(command, codex=True)) is None, command
 
 
+def test_destructive_command_guard_blocks_interactive_git_commit_forms() -> None:
+    blocked_commands = [
+        "git commit",
+        "git commit --allow-empty",
+        "git status && git commit",
+        "git commit -a",
+        "git commit --edit -m 'fix: message'",
+        "git commit -e -m 'fix: message'",
+    ]
+
+    for command in blocked_commands:
+        result = build_decision(_bash_input(command, codex=True))
+
+        assert result is not None, command
+        assert result["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "interactive" in result["systemMessage"]
+
+
+def test_destructive_command_guard_allows_noninteractive_git_commit_messages() -> None:
+    allowed_commands = [
+        "git commit -m 'fix: message'",
+        "git commit --message 'fix: message'",
+        "git commit --file commit-message.txt",
+        "git commit -F commit-message.txt",
+        "git commit --reuse-message HEAD",
+        "git commit -C HEAD",
+        "git commit --fixup HEAD",
+        "git commit --no-edit",
+        "git status && git commit -m 'fix: message'",
+    ]
+
+    for command in allowed_commands:
+        assert build_decision(_bash_input(command, codex=True)) is None, command
+
+
 def test_destructive_command_guard_allows_non_bash_missing_empty_and_read_only() -> None:
     for hook_input in [
         {"tool_name": "Read", "tool_input": {"command": "rm -rf build"}},
