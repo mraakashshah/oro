@@ -124,9 +124,17 @@ func (d *Dispatcher) buildCardContext(ctx context.Context, bead protocol.Bead) c
 
 func trimAssignmentCardContext(result cards.RelevantCards) cards.RelevantCards {
 	return cards.RelevantCards{
-		Deck:    trimCardsByJSONSize(result.Deck, maxAssignmentCardDeckJSONSize),
-		Inlined: trimCardsByJSONSize(result.Inlined, maxAssignmentCardInlinedJSONSize),
+		Deck:    trimDeckCardsByJSONSize(result.Deck, maxAssignmentCardDeckJSONSize),
+		Inlined: trimInlinedCardsByJSONSize(result.Inlined, maxAssignmentCardInlinedJSONSize),
 	}
+}
+
+func trimDeckCardsByJSONSize(in []cards.DeckCard, maxSize int) []cards.DeckCard {
+	return trimCardsByJSONSize(in, maxSize)
+}
+
+func trimInlinedCardsByJSONSize(in []cards.InlinedCard, maxSize int) []cards.InlinedCard {
+	return trimCardsByJSONSize(in, maxSize)
 }
 
 func trimCardsByJSONSize[T cards.DeckCard | cards.InlinedCard](in []T, maxSize int) []T {
