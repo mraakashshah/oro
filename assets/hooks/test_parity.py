@@ -24,6 +24,7 @@ Run: uv run pytest assets/hooks/test_parity.py -v
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -841,3 +842,38 @@ class TestContextPctWriterParity:
         claude_pct = int((claude_wd / ".oro" / "context_pct").read_text().strip())
         codex_pct = int((codex_wd / ".oro" / "context_pct").read_text().strip())
         assert claude_pct == codex_pct == 25
+
+
+# ── compact_trigger.py mirror ─────────────────────────────────────────────────
+
+
+class TestCompactTriggerMirror:
+    """compact_trigger stays byte-identical across assets and dogfood hooks."""
+
+    def _load_module(self, path: Path, name: str):
+        spec = importlib.util.spec_from_file_location(name, path)
+        assert spec is not None
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        return module
+
+    def test_compact_trigger_mirrors_match(self, monkeypatch, tmp_path: Path) -> None:
+        asset = HOOKS_DIR / "compact_trigger.py"
+        dogfood = PROJECT_ROOT / ".claude" / "hooks" / "compact_trigger.py"
+        assert asset.read_bytes() == dogfood.read_bytes()
+
+        thresholds = tmp_path / "thresholds.json"
+        thresholds.write_text(json.dumps({"fast": 35, "balanced": 45, "sonnet": 55}))
+        asset_module = self._load_module(asset, "asset_compact_trigger")
+        dogfood_module = self._load_module(dogfood, "dogfood_compact_trigger")
+
+        monkeypatch.setenv("ORO_ROLE", "fast")
+        monkeypatch.setenv("ORO_MODEL", "claude-opus-4")
+        assert asset_module.resolve_tier_threshold(thresholds) == dogfood_module.resolve_tier_threshold(thresholds) == 35
+        assert asset_module.hard_threshold(thresholds) == dogfood_module.hard_threshold(thresholds) == 45
+
+        monkeypatch.setenv("ORO_ROLE", "unknown")
+        monkeypatch.setenv("ORO_MODEL", "claude-sonnet-4")
+        assert asset_module.resolve_tier_threshold(thresholds) == dogfood_module.resolve_tier_threshold(thresholds) == 55
+        assert asset_module.hard_threshold(thresholds) == dogfood_module.hard_threshold(thresholds) == 65
