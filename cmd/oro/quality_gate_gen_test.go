@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -605,6 +606,21 @@ func TestQualityGateRunLockDoesNotReportWaitingWhenUncontended(t *testing.T) {
 	}
 	if strings.Contains(string(out), "Waiting for another quality gate to finish") {
 		t.Fatalf("uncontended quality gate reported lock waiting:\n%s", out)
+	}
+}
+
+func TestQualityGateRunLockHasNoDefaultTimeoutForLiveContention(t *testing.T) {
+	var buf bytes.Buffer
+	if err := writeQualityGateScript(&buf, ProjectPaths{}); err != nil {
+		t.Fatalf("writeQualityGateScript: %v", err)
+	}
+	script := buf.String()
+
+	if regexp.MustCompile(`ORO_QG_LOCK_TIMEOUT_SECONDS:-[0-9]+`).MatchString(script) {
+		t.Fatalf("quality gate lock should not have a default live-contention timeout")
+	}
+	if !strings.Contains(script, "ORO_QG_LOCK_TIMEOUT_SECONDS") {
+		t.Fatalf("quality gate lock should still honor explicit ORO_QG_LOCK_TIMEOUT_SECONDS")
 	}
 }
 

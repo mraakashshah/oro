@@ -965,6 +965,7 @@ test_quality_gate_run_lock_timeout_preserves_holder() {
 		echo 'mkdir -p "$QG_DIR"'
 		sed -n '/^cleanup_qg()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^quality_gate_lock_poll_seconds()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_lock_timeout_reached()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^create_quality_gate_queue_ticket()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^quality_gate_queue_ticket_stale()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^cleanup_stale_quality_gate_queue_tickets()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
@@ -1022,6 +1023,7 @@ test_quality_gate_run_lock_archives_stale_legacy_lock() {
 		sed -n '/^archive_stale_quality_gate_lock()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^write_quality_gate_lock_owner()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^quality_gate_lock_poll_seconds()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_lock_timeout_reached()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^create_quality_gate_queue_ticket()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^quality_gate_queue_ticket_stale()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^cleanup_stale_quality_gate_queue_tickets()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"

@@ -177,6 +177,11 @@ quality_gate_lock_poll_seconds() {
 	printf '%s\n' "${ORO_QG_LOCK_POLL_SECONDS:-2}"
 }
 
+quality_gate_lock_timeout_reached() {
+	local waited="$1"
+	[ -n "${ORO_QG_LOCK_TIMEOUT_SECONDS:-}" ] && [ "$waited" -ge "$ORO_QG_LOCK_TIMEOUT_SECONDS" ]
+}
+
 create_quality_gate_queue_ticket() {
 	local queue_dir="$1"
 	local ticket_dir
@@ -243,7 +248,7 @@ acquire_quality_gate_lock() {
 			poll_seconds=$(quality_gate_lock_poll_seconds)
 			sleep "$poll_seconds"
 			waited=$((waited + poll_seconds))
-			if [ "$waited" -ge "${ORO_QG_LOCK_TIMEOUT_SECONDS:-1800}" ]; then
+			if quality_gate_lock_timeout_reached "$waited"; then
 				echo "FAIL: timed out waiting for quality gate FIFO queue: $queue_dir" >&2
 				return 1
 			fi
@@ -263,7 +268,7 @@ acquire_quality_gate_lock() {
 		poll_seconds=$(quality_gate_lock_poll_seconds)
 		sleep "$poll_seconds"
 		waited=$((waited + poll_seconds))
-		if [ "$waited" -ge "${ORO_QG_LOCK_TIMEOUT_SECONDS:-1800}" ]; then
+		if quality_gate_lock_timeout_reached "$waited"; then
 			echo "FAIL: timed out waiting for quality gate lock: $lock_dir" >&2
 			return 1
 		fi
