@@ -170,7 +170,7 @@ WHERE deleted = 0 AND parent_id IS NOT NULL
 GROUP BY parent_id;
 ```
 
-Plus: a query for epic beads themselves (`issue_type='epic'`), the active child per epic (`status='in_progress'`, with worker/context from the live worker snapshot), and the next child (lowest priority number among `status='open'` children; if none and work remains, the blocking dep title). Orphan beads (`parent_id IS NULL`) are grouped under a synthetic **"Unfiled"** epic so nothing is dropped. An epic with ≥1 in-progress child → "Epics in progress"; 0 started children → "Next epics" (`ready` if ≥1 open child, else `blocked`). Closed children beyond any window are still counted because the aggregate has no `LIMIT`.
+Plus: a query for epic beads themselves (`type='epic'` — the live SQLite column is `type`, `schema.go:256`; `issue_type` is only the JSONL wire-format name and does **not** exist in the DDL), the active child per epic (`status='in_progress'`, with worker/context from the live worker snapshot), and the next child (lowest priority number among `status='open'` children; if none and work remains, the blocking dep title). Orphan beads (`parent_id IS NULL`) are grouped under a synthetic **"Unfiled"** epic so nothing is dropped. An epic with ≥1 in-progress child → "Epics in progress"; 0 started children → "Next epics" (`ready` if ≥1 open child, else `blocked`). Closed children beyond any window are still counted because the aggregate has no `LIMIT`.
 
 This is additive — it does not change existing `ReadyBeads`/`InProgressBeads`/etc., which the slide-over and filters still use.
 
@@ -310,7 +310,7 @@ A test must assert that whatever trigger name the `#epics` container listens for
 
 | Risk (tiger) | Severity | Mitigation |
 |--------------|----------|------------|
-| `Epics()` is expensive / N+1 over the store on every SSE tick | High | Compute from a single bounded bead load; cache per render; SSE `epics-update` is debounced server-side (coalesce bursts). Measure with 200+ beads. |
+| `Epics()` is expensive / N+1 on every SSE tick | High | Single grouped SQL query (no per-epic round-trips); cache per render; the existing `parade-update` SSE trigger that drives `#epics` is debounced server-side (coalesce bursts). Measure with 200+ beads. |
 | Epic grouping wrong when beads lack `parent` | Medium | Synthetic "Unfiled" epic catches orphans; covered by a test with mixed parented/orphan beads. |
 | Slide-over + htmx swaps still race (panel references a row that got swapped away) | High | Panel content is fetched independently by ID and owns its own DOM subtree; list swaps can't touch it. Test: open detail, fire 3 list swaps, assert panel intact. |
 | Command palette / keyboard JS grows into a framework-shaped blob | Medium | Hard cap: one file, no deps; if it exceeds ~200 LOC, reconsider scope. |
@@ -356,7 +356,7 @@ Every file the redesign must touch, so no wiring is dropped. beadcraft must trac
 
 | File | Change | Why it's load-bearing |
 |------|--------|------------------------|
-| `pkg/dispatcher/dashboard.go` | Add `Epics()` via direct `d.db` SQL (§5.1) | Rollup data source; store can't do it |
+| `pkg/dispatcher/dashboard.go` | Add `Epics()` via direct `d.db` SQL (§5.1). Acceptance: `TestEpics` seeds an epic bead + children **through the real beadstore** (not hand-written INSERTs) and asserts title/status/progress resolve — this exercises the real `type='epic'` column and catches schema-name drift. Read `schema.go:256` / `beadColumns` (`sqlite.go:651`) to confirm live column names. | Rollup data source; store can't do it |
 | `pkg/web/server.go` | Add `Epics()` to `DashboardData` iface; add `EpicSummary`/`EpicProgress`/`EpicChildRef` types; new `/fragments/epics` handler; index handler passes epics + a beadID→title map (§5.2) + needs-you items + health state | Handler wiring |
 | `pkg/web/templates/index.html` | **Replace** the `#parade` block with `#epics` (hx-trigger `parade-update`); move the detail target to a **slide-over `#detail` sibling OUTSIDE the swapped container** (Defect-A structural fix); rework SSE JS bridge (lines 42-56) to map existing events to new containers; add `#needs-you` panel | Defect A lives here, not in detail.html |
 | `pkg/web/templates/epics.html` | **New** — epic cards (in-progress) + next-epics lane (§6.2/6.3) | Primary view |
