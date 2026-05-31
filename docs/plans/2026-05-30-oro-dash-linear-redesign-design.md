@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-30
 **Status:** Draft → Stage 2 Consultation pending → Adversarial review pending → beadcraft
-**Scope:** `pkg/web/` (web dashboard at `:4444`) + one additive aggregation query in `pkg/dispatcher/`. **No TUI** — the TUI is retired; `pkg/dashboard/views` and `cmd/oro-dash` are out of scope.
+**Scope:** `pkg/web/` (web dashboard at `:4444`) + one additive aggregation query in `pkg/dispatcher/`. **No TUI as a product surface.** `cmd/oro-dash` still exists in the tree as a live headless diff-test harness (`cmd/oro-dash/main.go`, `cli_test.go:TestHeadlessDiffTest`) and `pkg/dashboard/views` is its render lib — **both are out of scope and must not be modified** by this work, but they are not deleted/gone.
 
 ---
 
@@ -62,7 +62,12 @@ Two reported bugs, both diagnosed from the current code — neither is "random":
 
 ### Defect B — content overflows horizontally / "doesn't stay on screen"
 **Root cause:** detail renders acceptance criteria in `<pre class="detail-ac">` (no wrap) and long single-line signatures; `.bead-detail` has no `max-width`/overflow handling, so long lines run off the right edge and shove the sidebar (visible in the report screenshot).
-**Fix (by design):** detail panel has a fixed width with internal vertical scroll; all text wraps (`white-space: pre-wrap; overflow-wrap: anywhere` for code/AC); the main grid uses `min-width: 0` on flex/grid children so nothing can force horizontal page overflow. Acceptance: render a bead whose AC contains a 400-char single-line signature; no horizontal scrollbar appears on the page; text wraps inside the panel.
+**Fix (by design):** detail panel has a fixed width with internal vertical scroll; all text wraps (`white-space: pre-wrap; overflow-wrap: anywhere` for code/AC); the main grid uses `minmax(0, 1fr)` and **every truncating flex child gets `min-width: 0`** so nothing can force horizontal page overflow. This must cover *all* panels, not just detail — today `.event-feed__text` (`style.css:369`), `.worker-row__bead` (`:291`), and `.bead-card__title` (`:148`) use `white-space:nowrap` inside flex children with no `min-width:0`, so a long single-token event summary or worker bead title overflows just like the AC does.
+
+**Acceptance (testable in the httptest harness via CSS-content + template-structure assertions — see §11 on why a real layout assertion isn't available):**
+1. CSS-content test: assert `.layout` (or its successor) declares `minmax(0, 1fr)` and that *every* class that sets `text-overflow: ellipsis` also sets `min-width: 0` on itself or its flex parent.
+2. CSS-content test: assert the detail/AC rule uses `overflow-wrap: anywhere` (or `word-break`) and `white-space: pre-wrap`.
+3. Template-structure test: render a fixture where the detail AC, a recent-event summary, a worker bead field, **and** an epic title each contain a 400-char single-token string simultaneously; assert the rendered HTML places them inside the wrapping/scoped containers (not raw `<pre>` without the wrap class).
 
 ---
 
@@ -148,9 +153,28 @@ type EpicSummary struct {
 Epics(ctx context.Context) ([]EpicSummary, error)
 ```
 
-**Implementation note:** the dispatcher already queries beads from its store. `Epics()` loads all non-closed beads + a bounded window of closed beads, groups children by `Bead.Epic`, and computes counts. Epics with ≥1 in-progress child render in "Epics in progress"; epics with 0 started children render in "Next epics." An epic is "ready" if it has ≥1 ready child, "blocked" if all remaining children are blocked. **Beads with no epic** (`Epic == ""`) are grouped under a synthetic "Unfiled" epic so nothing is dropped.
+**Implementation note (CORRECTED after adversarial review — the original "load from the store" plan was non-viable).** The `beadstore` interface exposes only `Ready`/`InProgress`/`Blocked`/`Closed(limit)`/`AllChildrenClosed` — there is **no enumerate-all / list-epics / children-of method**, and `Closed` is limited, so a store-based rollup would *undercount done* for any epic with >limit closed children. Do **not** use the store for this.
+
+Instead, implement `Epics()` as a **direct SQL aggregation over `d.db`** (the `*sql.DB` on the Dispatcher, `dispatcher.go:737`), exactly mirroring the existing `RecentEvents()` (`dashboard.go:101`) and `Throughput()` (`dashboard.go:174`) which already run ad-hoc SQL. The `beads` table has `parent_id TEXT REFERENCES beads(id)` with index `idx_beads_parent` (`schema.go:258,301`). Rollups come from one grouped query, **no row limit**:
+
+```sql
+-- counts per epic (parent_id), all statuses, no limit
+SELECT parent_id,
+       COUNT(*)                                              AS total,
+       SUM(status='closed')                                  AS closed,
+       SUM(status='in_progress')                             AS in_progress,
+       SUM(status='blocked')                                 AS blocked,
+       SUM(status='open')                                    AS ready
+FROM beads
+WHERE deleted = 0 AND parent_id IS NOT NULL
+GROUP BY parent_id;
+```
+
+Plus: a query for epic beads themselves (`issue_type='epic'`), the active child per epic (`status='in_progress'`, with worker/context from the live worker snapshot), and the next child (lowest priority number among `status='open'` children; if none and work remains, the blocking dep title). Orphan beads (`parent_id IS NULL`) are grouped under a synthetic **"Unfiled"** epic so nothing is dropped. An epic with ≥1 in-progress child → "Epics in progress"; 0 started children → "Next epics" (`ready` if ≥1 open child, else `blocked`). Closed children beyond any window are still counted because the aggregate has no `LIMIT`.
 
 This is additive — it does not change existing `ReadyBeads`/`InProgressBeads`/etc., which the slide-over and filters still use.
+
+**Interface placement:** add `Epics()` to `web.DashboardData` (`pkg/web/server.go:35`, the handler's dependency) and implement it as a concrete method on `*Dispatcher` in `pkg/dispatcher/dashboard.go`. Note that `Workers`/`Throughput`/`HealthError` are concrete `*Dispatcher` methods that are **not** all mirrored in any second interface — follow that existing precedent; do not invent a parallel interface.
 
 ### 5.2 Event title resolution
 
@@ -188,7 +212,7 @@ The header consumes `HealthError()` (already present) + `Throughput()` (already 
 
 ### 6.4 Needs-you panel (right rail, top)
 Ranked list of items requiring a human, each as `<icon> <kind> · <age>` + human-readable title:
-- Escalations from the events table (types: `STUCK`, `STUCK_WORKER`, `MERGE_CONFLICT`, `WORKER_CRASH`, `MISSING_AC`, `DEPENDENCY_CYCLE`, `OVERSIZED_BEAD`, `NON_TDD_AC`, `MANUAL_INTEGRATION`, `PRIORITY_CONTENTION`) — see `pkg/protocol/types.go:181-194`.
+- Escalations from the events table. **Note:** an escalation event has `Event.Type == "escalation"` (see `helpers.go:98`); the *subtype* (`STUCK`, `STUCK_WORKER`, `MERGE_CONFLICT`, `WORKER_CRASH`, `MISSING_AC`, `DEPENDENCY_CYCLE`, `OVERSIZED_BEAD`, `NON_TDD_AC`, `MANUAL_INTEGRATION`, `PRIORITY_CONTENTION` — `pkg/protocol/types.go:181-194`) lives in `Event.Payload`, not the type column. The handler must parse `Payload` to classify and to decide which escalations are human-actionable vs. informational (e.g. `DRAIN_COMPLETE`/`MERGE_COMPLETE`/`EPIC_COMPLETE` are not "needs you").
 - Beads blocked beyond a threshold age.
 - Workers with stale heartbeat (> threshold).
 - Recovery quarantines (operator-owned).
@@ -256,12 +280,16 @@ Semantic colors appear only as small dots/symbols/text — never full-row fills.
 
 ## 8. Live Updates (SSE) — stability rules
 
-Keep htmx + SSE. The redesign re-partitions what each SSE event swaps so updates never destroy user state:
-- `epics-update` → swaps the **epics list fragment only** (`#epics`).
-- `workers-update` → swaps `#workers`.
-- `new-event` → swaps `#recent` + recomputes `#needs-you` + header counts.
-- The slide-over (`#detail`) and command palette are **never** SSE targets. They live outside the swapped containers.
+Keep htmx + SSE. **Reuse the existing emitted event names — do NOT invent new ones.** `formatSSEEvent`/`dashboardEventNames` (`pkg/web/sse.go:76-96`) emit exactly: `new-event` (always), `parade-update`, `worker-update`, and `throughput-update` (on merged/epic-acceptance). The browser bridge that turns these into htmx triggers lives in `index.html:42-56`. The redesign re-partitions *what each existing event swaps*, keeping the names:
+
+- `parade-update` → swaps the **epics list fragment** (`#epics`, served by a new `/fragments/epics` handler). (Same trigger that drives the list today; only the container/handler change. No `sse.go` edit needed.)
+- `worker-update` → swaps `#workers`.
+- `new-event` → swaps `#recent`, and re-triggers `#needs-you` + the header counts fragment.
+- `throughput-update` → refreshes the header throughput line.
+- The slide-over (`#detail`) and command palette are **never** SSE targets — they live outside every swapped container (this is the Defect-A fix; see §3A and the index.html structural change in §13).
 - Selection state (`j/k` cursor) is restored after a list swap via a stable `data-id` key, so live updates don't lose your place.
+
+A test must assert that whatever trigger name the `#epics` container listens for is exactly a name `dashboardEventNames` returns (single source of truth), so the epics list cannot silently go stale.
 
 ---
 
@@ -295,12 +323,22 @@ Keep htmx + SSE. The redesign re-partitions what each SSE event swaps so updates
 
 ---
 
-## 11. Adversarial Self-Review (pre-formal-review)
+## 11. Test Harness Reality & Adversarial Self-Review
 
-- **Acceptance test exists?** Each component below gets a Go test in `pkg/web` (template render asserts) + the two defect-regression tests (A: panel survives swap; B: no horizontal overflow with long AC). The headless render harness (`cmd/oro-dash --headless` is gone; web uses `httptest` against handlers) — use `httptest.Server` + golden HTML assertions.
-- **Wiring:** new `Epics()` must be added to the interface *and* implemented on Dispatcher *and* called by a handler *and* rendered by a template *and* wired to an SSE trigger. All five are named in §5/§6/§8. beadcraft must trace each.
-- **Negative space:** orphan beads (no epic), zero epics, zero workers, healthy-with-empty-needs-you, a 400-char AC line — all have specified states.
-- **Red team — "all tasks pass but feature fails":** templates could render perfectly while the page still overflows because a *different* element (e.g. the Recent panel's long event text) lacks `min-width:0`. Mitigation: Defect-B test asserts page-level `scrollWidth <= clientWidth` against a fixture containing long content in *every* panel, not just detail.
+**Harness facts (verified, correcting earlier draft errors):**
+- `pkg/web` tests use `httptest` + **substring assertions** over rendered HTML (`server_test.go`, `css_test.go` reads `style.css` and greps). There are **no golden-HTML files** and no browser/layout engine. So a true `scrollWidth <= clientWidth` layout assertion is **not available** in this harness, and adding a headless browser would violate the "no build step / no new deps" constraint (§9).
+- Therefore Defect-B is verified by **CSS-content + template-structure assertions** (§3B), in the same style as the existing `css_test.go`. This proves the wrap/`min-width:0`/`minmax(0,1fr)` rules are present and that long content is rendered into the wrapping containers — it does not pixel-measure layout. Accepted limitation, called out so beadcraft doesn't encode an untestable criterion.
+- `cmd/oro-dash` is **not gone** — it is a live headless diff-test harness and is simply out of scope here.
+
+**Self-review checks:**
+- **Acceptance test exists?** Each component gets a `pkg/web` template/handler test, plus the two defect-regression tests (A: detail survives ≥3 list swaps; B: §3B CSS-content + structure), plus a **page-level acceptance** (§13) asserting the epic layout *replaced* the parade.
+- **Wiring:** new `Epics()` must be (1) added to `web.DashboardData` (`server.go:35`), (2) implemented on `*Dispatcher` via direct `d.db` SQL (`dashboard.go`), (3) called by a new `/fragments/epics` handler + index handler, (4) rendered by `epics.html`, (5) the `#epics` container wired to the **existing** `parade-update` SSE trigger. All five are named in §5/§8/§13. beadcraft must trace each.
+- **CSS test:** `css_test.go` currently *requires* `.bead-string`, `@keyframes shimmer`, and the Mardi Gras hexes (`css_test.go:25-86`). The redesign deletes all of them, so this test **must be rewritten** as its own task (§13) or the theme literally cannot land green.
+- **Negative space:** orphan beads (→ "Unfiled" epic), zero epics, zero workers, healthy-with-empty-needs-you (positive empty state), epic with >limit closed children (rollup still correct because SQL has no `LIMIT`), an escalation whose subtype is informational (filtered out), a 400-char single token in every panel — all specified.
+- **Red team — "all tasks pass but feature fails":** see the three scenarios the formal review surfaced, each now mitigated:
+  1. *Page still shows old parade.* Mitigation: §13 page-level acceptance asserts GET `/` contains epic markers (`NEXT EPICS`, a `n / m` rollup) **and does NOT contain** `Queued Up`/`Rolling`/`Stalled`.
+  2. *Epics list renders once then goes stale.* Mitigation: §8 keeps the real `parade-update` name + a test asserting the `#epics` trigger equals a `dashboardEventNames` output.
+  3. *Detail fixed but page still overflows from another panel.* Mitigation: §3B fixture injects long content into **every** panel and asserts wrap/`min-width:0` rules on all truncating classes.
 
 ---
 
@@ -309,4 +347,38 @@ Keep htmx + SSE. The redesign re-partitions what each SSE event swaps so updates
 - [x] **Font:** keep the system font stack for v1 — zero new assets. Revisit Inter only if it doesn't read as Linear-enough.
 - [x] **`Epics()` scope:** full epic-centric v1. The epic rollups are the core of the reframe ("the epic matters more than the task"). Decomposition orders the visual system + both stability fixes first so they can land independently if `Epics()` perf needs tuning, but epic grouping/progress ships in v1.
 - [x] **Needs-you:** derive in the handler from existing lists + events for v1; promote to a dedicated `NeedsAttention()` query only if the logic grows.
+
+---
+
+## 13. Integration Touchpoints & Acceptance (for beadcraft)
+
+Every file the redesign must touch, so no wiring is dropped. beadcraft must trace each.
+
+| File | Change | Why it's load-bearing |
+|------|--------|------------------------|
+| `pkg/dispatcher/dashboard.go` | Add `Epics()` via direct `d.db` SQL (§5.1) | Rollup data source; store can't do it |
+| `pkg/web/server.go` | Add `Epics()` to `DashboardData` iface; add `EpicSummary`/`EpicProgress`/`EpicChildRef` types; new `/fragments/epics` handler; index handler passes epics + a beadID→title map (§5.2) + needs-you items + health state | Handler wiring |
+| `pkg/web/templates/index.html` | **Replace** the `#parade` block with `#epics` (hx-trigger `parade-update`); move the detail target to a **slide-over `#detail` sibling OUTSIDE the swapped container** (Defect-A structural fix); rework SSE JS bridge (lines 42-56) to map existing events to new containers; add `#needs-you` panel | Defect A lives here, not in detail.html |
+| `pkg/web/templates/epics.html` | **New** — epic cards (in-progress) + next-epics lane (§6.2/6.3) | Primary view |
+| `pkg/web/templates/detail.html` | Slide-over content; wrap AC (`pre-wrap`+`overflow-wrap:anywhere`); epic variant shows child list | Defect B |
+| `pkg/web/templates/needs-you.html` | **New** — ranked human-action items (§6.4) | Q7 |
+| `pkg/web/templates/workers.html` | Show bead **title** not ID; calm styling | Human-readable |
+| `pkg/web/templates/events.html` | Plain summaries with **titles** via the title map | Human-readable |
+| `pkg/web/templates/throughput.html` | Fold into header line | §6.1 |
+| `pkg/web/helpers.go` | Drop/repurpose `heatColor` (age-heat removed) and `statusSymbol`’s `♪/●/⊘/✓` parade glyphs; add epic-progress / plain-status / title-lookup / escalation-subtype-parse helpers. Coordinate the funcmap (`TemplateFuncMap`) with the templates that referenced the removed funcs | Funcmap + template must stay in sync or templates panic |
+| `pkg/web/static/style.css` | New Linear token system (§7); **delete** `.bead-string`, `@keyframes shimmer`, age-heat classes, Mardi Gras hexes; add `#epics`/epic-card/slide-over/needs-you rules; `minmax(0,1fr)` + `min-width:0` everywhere | Visual + Defect B |
+| `pkg/web/static/dash.js` | **New** ~150 LOC vanilla: ⌘K palette, j/k nav, slide-over toggle, deep-link `#id` (§6.8) | Navigation |
+| `pkg/web/css_test.go` | **Rewrite** — remove shimmer/bead-string/Mardi-Gras assertions; assert new tokens, `minmax(0,1fr)`, `min-width:0` on truncating classes, no `@keyframes shimmer` | Otherwise theme can't land green |
+| `pkg/web/embed.go` | Ensure new templates + `dash.js` are embedded | New assets must ship in binary |
+| `pkg/web/server_test.go` | Update substring expectations for new layout | Existing assertions reference old markup |
+
+**Page-level acceptance (the end-to-end test that catches "all tasks pass, feature still wrong"):**
+```
+GET /  (against a Dispatcher seeded with: 1 epic w/ in-progress child, 1 not-started epic, 1 orphan bead)
+ASSERT body contains:  "NEXT EPICS"  AND  a rollup count matching /\d+\s*\/\s*\d+/  AND the epic titles
+ASSERT body does NOT contain:  "Queued Up"  "Rolling"  "Stalled"  "bead-string"  "shimmer"
+ASSERT an epics-list SSE trigger name == one of dashboardEventNames(...) outputs
+```
+
+**Out of scope, do not modify:** `cmd/oro-dash/*`, `pkg/dashboard/views/*` (retired-from-product headless diff-test harness, still live in tree).
 ```
