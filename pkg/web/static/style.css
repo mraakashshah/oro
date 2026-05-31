@@ -143,7 +143,7 @@ h2 {
 .layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 1fr;
-  grid-template-areas: "parade sidebar";
+  grid-template-areas: "epics sidebar";
   gap: 0;
   min-height: 100vh;
 }
@@ -152,15 +152,15 @@ h2 {
   .layout {
     grid-template-columns: 1fr;
     grid-template-areas:
-      "parade"
+      "epics"
       "sidebar";
   }
 }
 
-/* ── Parade panel (left 2/3) ──────────────────────────────── */
+/* ── Epics panel (left 2/3) ───────────────────────────────── */
 
-.parade {
-  grid-area: parade;
+.epics {
+  grid-area: epics;
   padding: 16px 20px;
   border-right: 1px solid var(--border);
   overflow-y: auto;

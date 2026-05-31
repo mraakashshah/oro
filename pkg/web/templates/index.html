@@ -16,15 +16,9 @@
     <span class="dashbar__key">⌘K</span>
   </header>
   <div class="layout">
-    <div id="parade"
-         hx-get="/fragments/parade"
-         hx-trigger="dashboard-parade from:body"
-         hx-swap="innerHTML">
-      {{template "parade-content" .Parade}}
-    </div>
     <div id="epics"
          hx-get="/fragments/epics"
-         hx-trigger="dashboard-parade from:body"
+         hx-trigger="parade-update from:body"
          hx-swap="innerHTML">
       {{template "epics.html" .Epics}}
     </div>
@@ -32,13 +26,13 @@
     <div id="sidebar">
       <div id="workers"
            hx-get="/fragments/workers"
-           hx-trigger="dashboard-workers from:body"
+           hx-trigger="worker-update from:body"
            hx-swap="innerHTML">
         {{template "workers.html" .Workers}}
       </div>
       <div id="events"
            hx-get="/fragments/events"
-           hx-trigger="dashboard-events from:body"
+           hx-trigger="new-event from:body"
            hx-swap="innerHTML">
         {{template "events.html" .Events}}
       </div>
@@ -52,10 +46,10 @@
       function dispatch(name) {
         target.dispatchEvent(new CustomEvent(name));
       }
-      source.addEventListener("parade-update", function () { dispatch("dashboard-parade"); });
-      source.addEventListener("worker-update", function () { dispatch("dashboard-workers"); });
-      source.addEventListener("new-event", function () { dispatch("dashboard-events"); });
-      source.addEventListener("throughput-update", function () { dispatch("dashboard-throughput"); });
+      source.addEventListener("parade-update", function () { dispatch("parade-update"); });
+      source.addEventListener("worker-update", function () { dispatch("worker-update"); });
+      source.addEventListener("new-event", function () { dispatch("new-event"); });
+      source.addEventListener("throughput-update", function () { dispatch("throughput-update"); });
       window.addEventListener("beforeunload", function () { source.close(); });
     })();
   </script>
@@ -66,13 +60,10 @@
   <header id="dashboard-header"
           class="dashboard-header"
           hx-get="/fragments/header"
-          hx-trigger="dashboard-throughput from:body"
+          hx-trigger="new-event from:body, throughput-update from:body"
           hx-swap="outerHTML">
-    {{if .HealthErr}}
-    <div class="dashboard-header__status dashboard-header__status--degraded">Needs you</div>
-    <div id="health-error" class="dashboard-header__issue">{{.HealthErr}}</div>
-    {{else}}
-    <div class="dashboard-header__status dashboard-header__status--healthy">Healthy</div>
+    {{template "needs-you.html" .}}
+    {{if not .HealthErr}}
     <div class="dashboard-header__throughput">
       <span class="dashboard-header__metric">{{.Throughput.BeadsPerHour}} beads/hr</span>
       <span class="dashboard-header__metric">{{.Throughput.CostPerHour}} cost/hr</span>

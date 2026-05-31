@@ -5,10 +5,10 @@
   var paletteList;
   var paletteItems = [];
   function allCards() {
-    return Array.prototype.slice.call(document.querySelectorAll(".bead-card"));
+    return Array.prototype.slice.call(document.querySelectorAll(".bead-card, .epic-card"));
   }
   function titleOf(card) {
-    var title = card.querySelector(".bead-card__title");
+    var title = card.querySelector(".bead-card__title, .epic-card__title");
     return ((card.getAttribute("data-id") || "") + " " + (title ? title.textContent : "")).trim();
   }
   function fuzzyScore(text, query) {
@@ -175,12 +175,12 @@
     if (search) search.addEventListener("input", applySearch);
     setSelected(0);
     document.body.addEventListener("click", function (event) {
-      var card = event.target.closest && event.target.closest(".bead-card");
+      var card = event.target.closest && event.target.closest(".bead-card, .epic-card");
       if (card) openDetail(card.getAttribute("data-id"));
     });
     document.body.addEventListener("htmx:afterSwap", function (event) {
       var target = event.detail && event.detail.target;
-      if (target && target.id === "parade") applySearch();
+      if (target && target.id === "epics") applySearch();
       if (target && target.id === "detail") target.classList.add("is-open");
     });
     document.addEventListener("keydown", handleKeydown);

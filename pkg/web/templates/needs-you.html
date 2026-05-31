@@ -1,0 +1,13 @@
+{{define "needs-you.html"}}
+  <div id="needs-you"
+       hx-get="/fragments/needs-you"
+       hx-trigger="new-event from:body"
+       hx-swap="outerHTML">
+    {{if .HealthErr}}
+    <div class="dashboard-header__status dashboard-header__status--degraded">Needs you</div>
+    <div id="health-error" class="dashboard-header__issue">{{.HealthErr}}</div>
+    {{else}}
+    <div class="dashboard-header__status dashboard-header__status--healthy">Healthy</div>
+    {{end}}
+  </div>
+{{end}}

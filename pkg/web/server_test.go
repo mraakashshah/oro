@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -88,7 +89,6 @@ func testTemplates() fstest.MapFS {
 <html>
 <body>
 <header class="dashboard-header">{{if .HealthErr}}<span>Needs you</span><span id="health-error">{{.HealthErr}}</span>{{else}}<span>Healthy</span><span>{{.Throughput.BeadsPerHour}} beads/hr</span><span>{{.Throughput.CostPerHour}} cost/hr</span><span>{{.Throughput.ActiveWorkers}}/{{.Throughput.TotalWorkers}} workers</span><span>{{.Throughput.Uptime}} uptime</span>{{end}}</header>
-<div id="parade">{{template "parade-content" .Parade}}</div>
 <div id="epics">{{template "epics.html" .Epics}}</div>
 <div id="title-map">{{index .Titles "oro-r1"}}{{index .Titles "oro-ip1"}}</div>
 <div id="sidebar">{{template "workers.html" .Workers}}{{template "events.html" .Events}}</div>
@@ -124,6 +124,9 @@ Dependencies:
 		"throughput.html": &fstest.MapFile{
 			Data: []byte(`{{define "throughput.html"}}<div class="throughput"><div class="throughput__stat"><div class="throughput__value">{{.BeadsPerHour}}</div><div class="throughput__label">Beads / hour</div></div><div class="throughput__stat"><div class="throughput__value">{{.CostPerHour}}</div><div class="throughput__label">Cost / hour</div></div><div class="throughput__stat"><div class="throughput__value">{{.ActiveWorkers}}/{{.TotalWorkers}}</div><div class="throughput__label">Workers active</div></div><div class="throughput__stat"><div class="throughput__value">{{.Uptime}}</div><div class="throughput__label">Uptime</div></div></div>{{end}}`),
 		},
+		"needs-you.html": &fstest.MapFile{
+			Data: []byte(`{{define "needs-you.html"}}{{if .HealthErr}}<div id="needs-you">Needs you {{.HealthErr}}</div>{{else}}<div id="needs-you">Healthy</div>{{end}}{{end}}`),
+		},
 		"epics.html": &fstest.MapFile{
 			Data: []byte(`{{define "epics.html"}}<section class="epics">{{range .InProgress}}<article class="epic-card" data-id="{{.ID}}"><h2>{{.Title}}</h2>{{.ActiveChildTitle}}</article>{{end}}{{range .Next}}<article class="epic-card epic-card--next" data-id="{{.ID}}"><h2>{{.Title}}</h2>{{.FirstBlockerTitle}}</article>{{end}}</section>{{end}}`),
 		},
@@ -158,9 +161,6 @@ func TestFullPageRender(t *testing.T) {
 		t.Fatalf("GET / status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "parade") {
-		t.Errorf("GET / body missing 'parade'; got: %q", body)
-	}
 	if !strings.Contains(body, "sidebar") {
 		t.Errorf("GET / body missing 'sidebar'; got: %q", body)
 	}
@@ -168,6 +168,69 @@ func TestFullPageRender(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("GET / body missing %q; got: %q", want, body)
 		}
+	}
+}
+
+func TestPageLevelEpicLayout(t *testing.T) {
+	data := &mockDashboard{
+		ready: []protocol.Bead{{
+			ID:     "oro-orphan",
+			Title:  "Loose orphan bead",
+			Status: "open",
+		}},
+		inProgress: []protocol.Bead{{
+			ID:     "oro-child-active",
+			Title:  "Active epic child",
+			Status: "in_progress",
+			Epic:   "oro-epic-active",
+		}},
+		throughput: &web.ThroughputData{},
+		epics: &web.EpicsData{
+			InProgress: []web.EpicSummary{{
+				ID:               "oro-epic-active",
+				Title:            "Ship page-level epics",
+				Status:           "in_progress",
+				ClosedChildren:   2,
+				TotalChildren:    5,
+				ActiveChildTitle: "Active epic child",
+			}},
+			Next: []web.EpicSummary{{
+				ID:                "oro-epic-next",
+				Title:             "Prepare next epic",
+				Status:            "open",
+				FirstBlockerTitle: "Resolve first blocker",
+			}},
+		},
+	}
+	h := web.NewHandler(data, web.Content)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"NEXT EPICS", "Ship page-level epics", "Prepare next epic"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("GET / body missing %q; body:\n%s", want, body)
+		}
+	}
+	if !regexp.MustCompile(`[0-9]+ / [0-9]+`).MatchString(body) {
+		t.Errorf("GET / body missing epic rollup; body:\n%s", body)
+	}
+	for _, banned := range []string{"Queued Up", "Rolling", "Stalled", "bead-string", "shimmer"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("GET / body contains old parade marker %q; body:\n%s", banned, body)
+		}
+	}
+	epicsTag := regexp.MustCompile(`(?s)<div id="epics"[^>]*>`).FindString(body)
+	if epicsTag == "" {
+		t.Fatalf("GET / body missing #epics container; body:\n%s", body)
+	}
+	if !strings.Contains(epicsTag, `hx-trigger="parade-update from:body"`) {
+		t.Fatalf("#epics hx-trigger must reuse dashboard SSE event name; tag: %s", epicsTag)
 	}
 }
 

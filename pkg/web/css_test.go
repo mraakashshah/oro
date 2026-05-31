@@ -25,7 +25,7 @@ func TestCSSContainsKeySelectors(t *testing.T) {
 
 	selectors := []string{
 		"body",
-		".parade",
+		".epics",
 		".sidebar",
 		".bead-card",
 		".worker-row",

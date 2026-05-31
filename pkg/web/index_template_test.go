@@ -29,8 +29,8 @@ type indexTemplateData struct {
 // TestIndexTemplate validates that templates/index.html is a complete page shell
 // with SSE and htmx wiring per the acceptance criteria.
 //
-// Uses fstest.MapFS with the real index.html content + a stub parade.html so the
-// test exercises the actual template file without pulling in the full parade template.
+// Uses fstest.MapFS with the real index.html content + stub partials so the
+// test exercises the actual template file without pulling in full fragments.
 func TestIndexTemplate(t *testing.T) {
 	// Read the real index.html from the templates directory.
 	indexContent, err := os.ReadFile("templates/index.html")
@@ -38,18 +38,17 @@ func TestIndexTemplate(t *testing.T) {
 		t.Fatalf("read templates/index.html: %v", err)
 	}
 
-	// Build a MapFS: real index.html + stub parade.html defining "parade-content".
 	tFS := fstest.MapFS{
 		"index.html":      {Data: indexContent},
-		"parade.html":     {Data: []byte(`{{define "parade-content"}}PARADE-STUB{{end}}`)},
 		"epics.html":      {Data: []byte(`{{define "epics.html"}}EPICS-STUB{{end}}`)},
 		"workers.html":    {Data: []byte(`{{define "workers.html"}}WORKERS-STUB{{end}}`)},
 		"events.html":     {Data: []byte(`{{define "events.html"}}EVENTS-STUB{{end}}`)},
+		"needs-you.html":  {Data: []byte(`{{define "needs-you.html"}}{{if .HealthErr}}<div id="needs-you">Needs you</div><div id="health-error">{{.HealthErr}}</div>{{else}}<div id="needs-you">Healthy</div>{{end}}{{end}}`)},
 		"throughput.html": {Data: []byte(`{{define "throughput.html"}}THROUGHPUT-STUB{{end}}`)},
 	}
 
 	// Parse without a custom FuncMap — index.html must not use FuncMap helpers.
-	tmpl, err := template.New("").ParseFS(tFS, "index.html", "parade.html", "epics.html", "workers.html", "events.html", "throughput.html")
+	tmpl, err := template.New("").ParseFS(tFS, "index.html", "epics.html", "workers.html", "events.html", "needs-you.html", "throughput.html")
 	if err != nil {
 		t.Fatalf("template.ParseFS: %v", err)
 	}
@@ -98,18 +97,12 @@ func TestIndexTemplate(t *testing.T) {
 			"workers",
 			"1h",
 			"uptime",
-			`id="parade"`,
 			`id="epics"`,
 			`id="sidebar"`,
-			"PARADE-STUB", // stub "parade-content" rendered inside #parade
 			"EPICS-STUB",
 			"WORKERS-STUB",
 			"EVENTS-STUB",
 			"/events", // SSE endpoint wired
-			"dashboard-parade",
-			"dashboard-workers",
-			"dashboard-events",
-			"dashboard-throughput",
 			"EventSource",
 			"parade-update",
 			"worker-update",
@@ -150,13 +143,13 @@ func TestDetailSlideOverOutsideSwapTarget(t *testing.T) {
 
 	tFS := fstest.MapFS{
 		"index.html":      {Data: indexContent},
-		"parade.html":     {Data: []byte(`{{define "parade-content"}}PARADE-STUB{{end}}`)},
 		"epics.html":      {Data: []byte(`{{define "epics.html"}}EPICS-STUB{{end}}`)},
 		"workers.html":    {Data: []byte(`{{define "workers.html"}}WORKERS-STUB{{end}}`)},
 		"events.html":     {Data: []byte(`{{define "events.html"}}EVENTS-STUB{{end}}`)},
+		"needs-you.html":  {Data: []byte(`{{define "needs-you.html"}}{{if .HealthErr}}<div id="needs-you">Needs you</div><div id="health-error">{{.HealthErr}}</div>{{else}}<div id="needs-you">Healthy</div>{{end}}{{end}}`)},
 		"throughput.html": {Data: []byte(`{{define "throughput.html"}}THROUGHPUT-STUB{{end}}`)},
 	}
-	tmpl, err := template.New("").ParseFS(tFS, "index.html", "parade.html", "epics.html", "workers.html", "events.html", "throughput.html")
+	tmpl, err := template.New("").ParseFS(tFS, "index.html", "epics.html", "workers.html", "events.html", "needs-you.html", "throughput.html")
 	if err != nil {
 		t.Fatalf("template.ParseFS: %v", err)
 	}
@@ -167,24 +160,24 @@ func TestDetailSlideOverOutsideSwapTarget(t *testing.T) {
 	}
 	body := buf.String()
 
-	paradeStart := strings.Index(body, `id="parade"`)
-	if paradeStart < 0 {
-		t.Fatalf("rendered index missing #parade; body:\n%s", body)
+	epicsStart := strings.Index(body, `id="epics"`)
+	if epicsStart < 0 {
+		t.Fatalf("rendered index missing #epics; body:\n%s", body)
 	}
-	paradeClose := strings.Index(body[paradeStart:], "</div>")
-	if paradeClose < 0 {
-		t.Fatalf("rendered index missing #parade closing div; body:\n%s", body)
+	epicsClose := strings.Index(body[epicsStart:], "</div>")
+	if epicsClose < 0 {
+		t.Fatalf("rendered index missing #epics closing div; body:\n%s", body)
 	}
-	paradeClose += paradeStart
+	epicsClose += epicsStart
 
 	detailStart := strings.Index(body, `id="detail"`)
 	if detailStart < 0 {
 		t.Fatalf("rendered index missing #detail slide-over host; body:\n%s", body)
 	}
-	if detailStart < paradeClose {
-		t.Fatalf("#detail is inside the SSE-swapped #parade container; body:\n%s", body)
+	if detailStart < epicsClose {
+		t.Fatalf("#detail is inside the SSE-swapped #epics container; body:\n%s", body)
 	}
-	if strings.Contains(body[paradeStart:paradeClose], `id="detail"`) {
-		t.Fatalf("#detail must not be a descendant of #parade; body:\n%s", body)
+	if strings.Contains(body[epicsStart:epicsClose], `id="detail"`) {
+		t.Fatalf("#detail must not be a descendant of #epics; body:\n%s", body)
 	}
 }

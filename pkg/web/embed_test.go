@@ -23,6 +23,8 @@ func TestEmbedFS(t *testing.T) {
 			"workers.html":    false,
 			"detail.html":     false,
 			"events.html":     false,
+			"epics.html":      false,
+			"needs-you.html":  false,
 			"throughput.html": false,
 		}
 		for _, e := range entries {

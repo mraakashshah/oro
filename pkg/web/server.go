@@ -141,7 +141,7 @@ func NewHandler(data DashboardData, content fs.FS) http.Handler {
 
 	h := &handler{
 		data:           data,
-		indexTmpl:      mustParse("index.html", "parade.html", "workers.html", "events.html", "epics.html", "throughput.html"),
+		indexTmpl:      mustParse("index.html", "workers.html", "events.html", "epics.html", "needs-you.html", "throughput.html"),
 		paradeTmpl:     mustParse("parade.html"),
 		workersTmpl:    mustParse("workers.html"),
 		detailTmpl:     mustParse("detail.html"),
@@ -154,6 +154,7 @@ func NewHandler(data DashboardData, content fs.FS) http.Handler {
 	mux.HandleFunc("GET /", h.indexHandler)
 	mux.HandleFunc("GET /fragments/parade", h.paradeHandler)
 	mux.HandleFunc("GET /fragments/header", h.headerHandler)
+	mux.HandleFunc("GET /fragments/needs-you", h.needsYouHandler)
 	mux.HandleFunc("GET /fragments/workers", h.workersHandler)
 	mux.HandleFunc("GET /fragments/detail/{id}", h.detailHandler)
 	mux.HandleFunc("GET /fragments/events", h.eventsHandler)
@@ -242,6 +243,15 @@ func (h *handler) headerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.renderTemplate(w, r, h.indexTmpl, "dashboard-header", data)
+}
+
+func (h *handler) needsYouHandler(w http.ResponseWriter, r *http.Request) {
+	data, err := h.loadHeaderData(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	h.renderTemplate(w, r, h.indexTmpl, "needs-you.html", data)
 }
 
 func (h *handler) paradeHandler(w http.ResponseWriter, r *http.Request) {
