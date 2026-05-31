@@ -661,6 +661,51 @@ func TestFakeCardsReadTx_Filters(t *testing.T) {
 	})
 }
 
+func TestCardsRelevantDeckOmitsBodyFull(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	store := beadstore.NewFakeStore()
+	store.SetCards([]cards.Card{
+		{
+			ID: "card-with-body", Type: cards.CardTypePattern, Title: "wire shape",
+			BodySummary: "summary",
+			BodyFull:    "DECK_FULL_BODY_SENTINEL INLINE_FULL_BODY_SENTINEL",
+			Score:       1.0,
+			DecayAnchor: now,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		},
+	})
+
+	var rel cards.RelevantCards
+	if err := store.WithReadTx(ctx, func(readTx beadstore.ReadTx) error {
+		got, err := readTx.Cards().Relevant(ctx, cards.RelevanceQuery{
+			IncludeLowScore: true,
+			MaxTokens:       1000,
+		})
+		rel = got
+		return err
+	}); err != nil {
+		t.Fatalf("Relevant: %v", err)
+	}
+
+	deckJSON, err := json.Marshal(rel.Deck)
+	if err != nil {
+		t.Fatalf("marshal deck: %v", err)
+	}
+	if bytes.Contains(deckJSON, []byte("DECK_FULL_BODY_SENTINEL")) {
+		t.Fatalf("Relevant.Deck JSON includes full body: %s", deckJSON)
+	}
+
+	inlinedJSON, err := json.Marshal(rel.Inlined)
+	if err != nil {
+		t.Fatalf("marshal inlined: %v", err)
+	}
+	if !bytes.Contains(inlinedJSON, []byte("INLINE_FULL_BODY_SENTINEL")) {
+		t.Fatalf("Relevant.Inlined JSON = %s, want full body sentinel", inlinedJSON)
+	}
+}
+
 func assertIDs(t *testing.T, beads []protocol.Bead, want []string) {
 	t.Helper()
 	got := make([]string, 0, len(beads))
