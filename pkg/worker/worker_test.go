@@ -1011,7 +1011,7 @@ test -z "${ORO_QG_LOCK_TIMEOUT_SECONDS:-}"
 		t.Fatalf("RunQualityGate: %v", err)
 	}
 	if !passed {
-		t.Fatalf("expected quality gate to pass without ambient lock timeout, output: %s", output)
+		t.Fatalf("expected quality gate to pass without inherited lock timeout, output: %s", output)
 	}
 }
 
