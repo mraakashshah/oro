@@ -315,7 +315,11 @@ func collectScoredCards(rows *sql.Rows, q RelevanceQuery, now time.Time) ([]scor
 }
 
 func toSummary(c Card) CardSummary {
-	return CardSummary{
+	return toInlinedCard(c)
+}
+
+func toInlinedCard(c Card) InlinedCard {
+	return InlinedCard{
 		ID:          c.ID,
 		Type:        c.Type,
 		Title:       c.Title,
@@ -358,7 +362,7 @@ func buildInlined(candidates []scoredCard, maxTokens int) []InlinedCard {
 			break
 		}
 		budget -= tokens
-		out = append(out, toSummary(sc.card))
+		out = append(out, toInlinedCard(sc.card))
 	}
 	return out
 }
