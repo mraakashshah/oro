@@ -990,7 +990,9 @@ func TestRunQualityGate_NormalizesInvalidLocaleBeforeStartingBash(t *testing.T) 
 	}
 }
 
-func TestRunQualityGate_DoesNotInjectLockTimeout(t *testing.T) {
+func TestRunQualityGate_ScrubsAmbientLockTimeout(t *testing.T) {
+	t.Setenv("ORO_QG_LOCK_TIMEOUT_SECONDS", "300")
+
 	tmpDir := t.TempDir()
 	script := filepath.Join(tmpDir, "quality_gate.sh")
 	if err := os.WriteFile(script, []byte(`#!/usr/bin/env bash
@@ -1009,32 +1011,7 @@ test -z "${ORO_QG_LOCK_TIMEOUT_SECONDS:-}"
 		t.Fatalf("RunQualityGate: %v", err)
 	}
 	if !passed {
-		t.Fatalf("expected quality gate to pass without injected lock timeout, output: %s", output)
-	}
-}
-
-func TestRunQualityGate_HonorsExplicitLockTimeout(t *testing.T) {
-	t.Setenv("ORO_QG_LOCK_TIMEOUT_SECONDS", "9999")
-
-	tmpDir := t.TempDir()
-	script := filepath.Join(tmpDir, "quality_gate.sh")
-	if err := os.WriteFile(script, []byte(`#!/usr/bin/env bash
-set -euo pipefail
-printf 'lock-timeout=%s\n' "${ORO_QG_LOCK_TIMEOUT_SECONDS:-}"
-test "${ORO_QG_LOCK_TIMEOUT_SECONDS:-}" = "9999"
-`), 0o600); err != nil { //nolint:gosec // test file
-		t.Fatal(err)
-	}
-	if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
-		t.Fatal(err)
-	}
-
-	passed, output, err := worker.RunQualityGate(context.Background(), tmpDir, false)
-	if err != nil {
-		t.Fatalf("RunQualityGate: %v", err)
-	}
-	if !passed {
-		t.Fatalf("expected quality gate to pass with explicit lock timeout, output: %s", output)
+		t.Fatalf("expected quality gate to pass without ambient lock timeout, output: %s", output)
 	}
 }
 

@@ -32,7 +32,8 @@ convert valid live contention into a systemic QG incident.
 
 Keep stale lock recovery based on owner liveness, but make lock wait timeouts
 explicit-only. `ORO_QG_LOCK_TIMEOUT_SECONDS` is still honored in tests and
-manual harnesses, but normal worker gates wait for live holders to finish.
+manual harnesses, but worker-launched gates scrub inherited timeout values so
+normal worker gates wait for live holders to finish.
 
 ## Prevention
 
