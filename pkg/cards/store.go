@@ -443,10 +443,6 @@ func collectScoredCards(rows *sql.Rows, q RelevanceQuery, now time.Time) ([]scor
 	return out, nil
 }
 
-func toSummary(c Card) CardSummary {
-	return toInlinedCard(c)
-}
-
 func toInlinedCard(c Card) InlinedCard {
 	return InlinedCard{
 		ID:          c.ID,
