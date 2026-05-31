@@ -97,9 +97,83 @@ func TestTaskCommandSubcommandParity(t *testing.T) {
 		t.Fatal("bead command must not expose migrate-from-dolt")
 	}
 
+	unsupportedTaskStubs := map[string]bool{
+		"doctor": true,
+		"import": true,
+		"meta":   true,
+		"search": true,
+		"tag":    true,
+	}
 	for name := range beadSubs {
+		if unsupportedTaskStubs[name] {
+			continue
+		}
 		if taskSubs[name] == nil {
 			t.Fatalf("task command missing subcommand %q that bead has", name)
+		}
+	}
+}
+
+func TestTaskHelpOmitsUnsupportedStubs(t *testing.T) {
+	cmd := newTaskCmdWithStore(beadstore.NewFakeStore())
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("task --help error: %v\n%s", err, out.String())
+	}
+
+	help := out.String()
+	for _, unsupported := range []string{
+		"search",
+		"import",
+		"doctor",
+		"tag",
+		"meta",
+	} {
+		if strings.Contains(help, unsupported) {
+			t.Fatalf("task --help lists unsupported stub %q:\n%s", unsupported, help)
+		}
+	}
+	if !strings.Contains(help, "note") {
+		t.Fatalf("task --help must keep implemented note command reachable:\n%s", help)
+	}
+
+	noteHelpCmd := newTaskCmdWithStore(beadstore.NewFakeStore())
+	var noteOut bytes.Buffer
+	noteHelpCmd.SetOut(&noteOut)
+	noteHelpCmd.SetErr(&noteOut)
+	noteHelpCmd.SetArgs([]string{"note", "--help"})
+	if err := noteHelpCmd.Execute(); err != nil {
+		t.Fatalf("task note --help error: %v\n%s", err, noteOut.String())
+	}
+	if strings.Contains(noteOut.String(), "list") {
+		t.Fatalf("task note --help lists unsupported note list stub:\n%s", noteOut.String())
+	}
+
+	for _, args := range [][]string{
+		{"search", "query"},
+		{"import", "snapshot.json"},
+		{"doctor"},
+		{"tag", "add", "oro-1", "cli"},
+		{"meta", "set", "oro-1", "key=value"},
+		{"note", "list", "oro-1"},
+	} {
+		unsupportedCmd := newTaskCmdWithStore(beadstore.NewFakeStore())
+		var unsupportedOut bytes.Buffer
+		unsupportedCmd.SetOut(&unsupportedOut)
+		unsupportedCmd.SetErr(&unsupportedOut)
+		unsupportedCmd.SetArgs(args)
+		err := unsupportedCmd.Execute()
+		if err == nil {
+			t.Fatalf("task %s unexpectedly succeeded", strings.Join(args, " "))
+		}
+		if !strings.Contains(err.Error(), "unknown command") {
+			t.Fatalf("task %s returned non-Cobra unknown-command error:\nerr=%v\nout=%s", strings.Join(args, " "), err, unsupportedOut.String())
+		}
+		if strings.Contains(err.Error(), "not implemented yet") || strings.Contains(unsupportedOut.String(), "not implemented yet") {
+			t.Fatalf("task %s returned stub error instead of Cobra unknown-command behavior:\nerr=%v\nout=%s", strings.Join(args, " "), err, unsupportedOut.String())
 		}
 	}
 }
@@ -111,8 +185,6 @@ func TestTaskCommandHelpUsesTaskTerminology(t *testing.T) {
 		{"ready", "--help"},
 		{"list", "--help"},
 		{"show", "--help"},
-		{"search", "--help"},
-		{"doctor", "--help"},
 	} {
 		var out bytes.Buffer
 		cmd.SetOut(&out)
