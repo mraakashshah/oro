@@ -16,7 +16,13 @@ type indexTemplateData struct {
 	Parade     struct{}
 	Workers    []struct{}
 	Events     []struct{}
-	Throughput struct{}
+	Throughput struct {
+		BeadsPerHour  int
+		ActiveWorkers int
+		TotalWorkers  int
+		Uptime        string
+		CostPerHour   string
+	}
 }
 
 // TestIndexTemplate validates that templates/index.html is a complete page shell
@@ -56,29 +62,52 @@ func TestIndexTemplate(t *testing.T) {
 	}
 
 	t.Run("structural elements", func(t *testing.T) {
-		body := render(t, indexTemplateData{HealthErr: "", Parade: struct{}{}})
+		body := render(t, indexTemplateData{
+			HealthErr: "",
+			Parade:    struct{}{},
+			Throughput: struct {
+				BeadsPerHour  int
+				ActiveWorkers int
+				TotalWorkers  int
+				Uptime        string
+				CostPerHour   string
+			}{
+				BeadsPerHour:  4,
+				ActiveWorkers: 2,
+				TotalWorkers:  3,
+				Uptime:        "1h",
+				CostPerHour:   "$0.50",
+			},
+		})
 
 		wants := []string{
 			"<!DOCTYPE html>",
 			"<html",
 			"/static/style.css",
 			"/static/htmx.min.js",
+			`class="dashboard-header"`,
+			"Healthy",
+			"4",
+			"beads/hr",
+			"$0.50",
+			"cost/hr",
+			"2/3",
+			"workers",
+			"1h",
+			"uptime",
 			`id="parade"`,
 			`id="sidebar"`,
 			"PARADE-STUB", // stub "parade-content" rendered inside #parade
 			"WORKERS-STUB",
 			"EVENTS-STUB",
-			"THROUGHPUT-STUB",
 			"/events", // SSE endpoint wired
 			"dashboard-parade",
 			"dashboard-workers",
 			"dashboard-events",
-			"dashboard-throughput",
 			"EventSource",
 			"parade-update",
 			"worker-update",
 			"new-event",
-			"throughput-update",
 		}
 		for _, want := range wants {
 			if !strings.Contains(body, want) {

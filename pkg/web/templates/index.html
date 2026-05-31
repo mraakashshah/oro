@@ -8,9 +8,20 @@
   <script src="/static/htmx.min.js"></script>
 </head>
 <body>
-  {{if .HealthErr}}
-  <div id="health-error" class="health-banner">{{.HealthErr}}</div>
-  {{end}}
+  <header class="dashboard-header">
+    {{if .HealthErr}}
+    <div class="dashboard-header__status dashboard-header__status--degraded">Needs you</div>
+    <div id="health-error" class="dashboard-header__issue">{{.HealthErr}}</div>
+    {{else}}
+    <div class="dashboard-header__status dashboard-header__status--healthy">Healthy</div>
+    <div class="dashboard-header__throughput">
+      <span class="dashboard-header__metric">{{.Throughput.BeadsPerHour}} beads/hr</span>
+      <span class="dashboard-header__metric">{{.Throughput.CostPerHour}} cost/hr</span>
+      <span class="dashboard-header__metric">{{.Throughput.ActiveWorkers}}/{{.Throughput.TotalWorkers}} workers</span>
+      <span class="dashboard-header__metric">{{.Throughput.Uptime}} uptime</span>
+    </div>
+    {{end}}
+  </header>
   <div class="layout">
     <div id="parade"
          hx-get="/fragments/parade"
@@ -32,12 +43,6 @@
            hx-swap="innerHTML">
         {{template "events.html" .Events}}
       </div>
-      <div id="throughput"
-           hx-get="/fragments/throughput"
-           hx-trigger="dashboard-throughput from:body"
-           hx-swap="innerHTML">
-        {{template "throughput.html" .Throughput}}
-      </div>
     </div>
   </div>
   <script>
@@ -51,7 +56,6 @@
       source.addEventListener("parade-update", function () { dispatch("dashboard-parade"); });
       source.addEventListener("worker-update", function () { dispatch("dashboard-workers"); });
       source.addEventListener("new-event", function () { dispatch("dashboard-events"); });
-      source.addEventListener("throughput-update", function () { dispatch("dashboard-throughput"); });
       window.addEventListener("beforeunload", function () { source.close(); });
     })();
   </script>

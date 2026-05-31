@@ -49,6 +49,57 @@ h2 {
   color: var(--text-3);
 }
 
+/* -- Header -------------------------------------------------- */
+
+.dashboard-header {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-height: 48px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.dashboard-header__status {
+  flex: 0 0 auto;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.dashboard-header__status--healthy {
+  color: var(--green);
+}
+
+.dashboard-header__status--degraded {
+  color: var(--amber);
+}
+
+.dashboard-header__throughput {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.dashboard-header__metric {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.dashboard-header__issue {
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── Layout ───────────────────────────────────────────────── */
 
 .layout {

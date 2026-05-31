@@ -82,9 +82,9 @@ func testTemplates() fstest.MapFS {
 			Data: []byte(`<!DOCTYPE html>
 <html>
 <body>
-{{if .HealthErr}}<div id="health-error">{{.HealthErr}}</div>{{end}}
+<header class="dashboard-header">{{if .HealthErr}}<span>Needs you</span><span id="health-error">{{.HealthErr}}</span>{{else}}<span>Healthy</span><span>{{.Throughput.BeadsPerHour}} beads/hr</span><span>{{.Throughput.CostPerHour}} cost/hr</span><span>{{.Throughput.ActiveWorkers}}/{{.Throughput.TotalWorkers}} workers</span><span>{{.Throughput.Uptime}} uptime</span>{{end}}</header>
 <div id="parade">{{template "parade-content" .Parade}}</div>
-<div id="sidebar">{{template "workers.html" .Workers}}{{template "events.html" .Events}}{{template "throughput.html" .Throughput}}</div>
+<div id="sidebar">{{template "workers.html" .Workers}}{{template "events.html" .Events}}</div>
 </body>
 </html>`),
 		},
@@ -153,7 +153,7 @@ func TestFullPageRender(t *testing.T) {
 	if !strings.Contains(body, "sidebar") {
 		t.Errorf("GET / body missing 'sidebar'; got: %q", body)
 	}
-	for _, want := range []string{"worker-1", "oro-ip1", "Beads / hour", ">3<"} {
+	for _, want := range []string{"worker-1", "oro-ip1", "Healthy", "3 beads/hr"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("GET / body missing %q; got: %q", want, body)
 		}
