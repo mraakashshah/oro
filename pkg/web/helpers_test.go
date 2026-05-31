@@ -151,7 +151,7 @@ func TestEventHelpers(t *testing.T) {
 	fm := web.TemplateFuncMap()
 	symbol := fm["eventSymbol"].(func(string) string)
 	symbolClass := fm["eventSymbolClass"].(func(string) string)
-	summary := fm["eventSummary"].(func(protocol.Event) string)
+	summary := fm["eventSummary"].(func(protocol.Event, map[string]string) string)
 
 	if got := symbol("merged"); got != "✓" {
 		t.Errorf("eventSymbol(merged) = %q, want ✓", got)
@@ -159,7 +159,7 @@ func TestEventHelpers(t *testing.T) {
 	if got := symbolClass("merge_conflict"); got != "event-feed__symbol--warn" {
 		t.Errorf("eventSymbolClass(merge_conflict) = %q", got)
 	}
-	if got := summary(protocol.Event{Type: "handoff", BeadID: "oro-123"}); got != "handoff for oro-123" {
+	if got := summary(protocol.Event{Type: "handoff", BeadID: "oro-123"}, nil); got != "handoff for oro-123" {
 		t.Errorf("eventSummary(handoff) = %q", got)
 	}
 }

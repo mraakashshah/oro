@@ -112,7 +112,7 @@ Dependencies:
 </div>`),
 		},
 		"events.html": &fstest.MapFile{
-			Data: []byte(`{{define "events.html"}}<div class="event-feed">{{range .}}<div class="event-feed__item"><span class="event-feed__time">{{if gt (len .CreatedAt) 15}}{{slice .CreatedAt 11 16}}{{else}}{{.CreatedAt}}{{end}}</span><span class="event-feed__symbol">{{.Type}}</span>{{if .BeadID}}<span class="event-feed__text">{{.BeadID}}</span>{{end}}</div>{{end}}</div>{{end}}`),
+			Data: []byte(`{{define "events.html"}}<div class="event-feed">{{range .Events}}<div class="event-feed__item"><span class="event-feed__time">{{if gt (len .CreatedAt) 15}}{{slice .CreatedAt 11 16}}{{else}}{{.CreatedAt}}{{end}}</span><span class="event-feed__symbol">{{.Type}}</span>{{if .BeadID}}<span class="event-feed__text">{{.BeadID}}</span>{{end}}</div>{{end}}</div>{{end}}`),
 		},
 		"throughput.html": &fstest.MapFile{
 			Data: []byte(`{{define "throughput.html"}}<div class="throughput"><div class="throughput__stat"><div class="throughput__value">{{.BeadsPerHour}}</div><div class="throughput__label">Beads / hour</div></div><div class="throughput__stat"><div class="throughput__value">{{.CostPerHour}}</div><div class="throughput__label">Cost / hour</div></div><div class="throughput__stat"><div class="throughput__value">{{.ActiveWorkers}}/{{.TotalWorkers}}</div><div class="throughput__label">Workers active</div></div><div class="throughput__stat"><div class="throughput__value">{{.Uptime}}</div><div class="throughput__label">Uptime</div></div></div>{{end}}`),

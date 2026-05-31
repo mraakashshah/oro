@@ -137,27 +137,29 @@ func eventSymbolClass(eventType string) string {
 	}
 }
 
-func eventSummary(e protocol.Event) string {
+func eventSummary(e protocol.Event, titles map[string]string) string {
+	label := eventLabel(e.BeadID, "bead", titles)
+	epicLabel := eventLabel(e.BeadID, "epic", titles)
 	switch e.Type {
 	case "merged":
-		return fmt.Sprintf("merged %s", fallbackLabel(e.BeadID, "bead"))
+		return fmt.Sprintf("merged %s", label)
 	case "quality_gate_rejected":
-		return fmt.Sprintf("quality gate rejected %s", fallbackLabel(e.BeadID, "bead"))
+		return fmt.Sprintf("quality gate rejected %s", label)
 	case "merge_conflict":
-		return fmt.Sprintf("merge conflict on %s", fallbackLabel(e.BeadID, "bead"))
+		return fmt.Sprintf("merge conflict on %s", label)
 	case "qg_stuck_detected":
-		return fmt.Sprintf("quality gate stuck on %s", fallbackLabel(e.BeadID, "bead"))
+		return fmt.Sprintf("quality gate stuck on %s", label)
 	case "handoff":
-		return fmt.Sprintf("handoff for %s", fallbackLabel(e.BeadID, "bead"))
+		return fmt.Sprintf("handoff for %s", label)
 	case "escalation":
-		return fmt.Sprintf("escalation for %s", fallbackLabel(e.BeadID, "bead"))
+		return fmt.Sprintf("escalation for %s", label)
 	case "epic_acceptance_passed":
-		return fmt.Sprintf("epic acceptance passed for %s", fallbackLabel(e.BeadID, "epic"))
+		return fmt.Sprintf("epic acceptance passed for %s", epicLabel)
 	case "epic_acceptance_failed":
-		return fmt.Sprintf("epic acceptance failed for %s", fallbackLabel(e.BeadID, "epic"))
+		return fmt.Sprintf("epic acceptance failed for %s", epicLabel)
 	default:
 		if e.BeadID != "" {
-			return fmt.Sprintf("%s %s", e.Type, e.BeadID)
+			return fmt.Sprintf("%s %s", e.Type, titleFor(titles, e.BeadID))
 		}
 		return e.Type
 	}
@@ -192,9 +194,9 @@ func heartbeatLabel(secs float64) string {
 	return relativeTime(time.Now().Add(-time.Duration(secs * float64(time.Second))).Format(time.RFC3339))
 }
 
-func fallbackLabel(id, fallback string) string {
+func eventLabel(id, fallback string, titles map[string]string) string {
 	if id == "" {
 		return fallback
 	}
-	return id
+	return titleFor(titles, id)
 }

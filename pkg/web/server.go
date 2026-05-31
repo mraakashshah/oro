@@ -60,7 +60,7 @@ type indexData struct {
 	HealthErr  string
 	Parade     ParadeData
 	Workers    WorkersData
-	Events     []protocol.Event
+	Events     EventsData
 	Throughput *ThroughputData
 }
 
@@ -87,6 +87,12 @@ type EpicSummary struct {
 	TotalChildren     int
 	ActiveChildTitle  string
 	FirstBlockerTitle string
+}
+
+// EventsData is the template data for recent event rendering.
+type EventsData struct {
+	Events []protocol.Event
+	Titles map[string]string
 }
 
 // handler is the concrete http.Handler returned by NewHandler.
@@ -206,7 +212,7 @@ func (h *handler) indexHandler(w http.ResponseWriter, r *http.Request) {
 		HealthErr:  healthMsg,
 		Parade:     parade,
 		Workers:    workerData,
-		Events:     events,
+		Events:     EventsData{Events: events, Titles: beadTitleMap(parade)},
 		Throughput: throughput,
 	})
 }
@@ -295,7 +301,12 @@ func (h *handler) eventsHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	h.renderTemplate(w, r, h.eventsTmpl, "events.html", events)
+	parade, err := h.loadParadeData(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	h.renderTemplate(w, r, h.eventsTmpl, "events.html", EventsData{Events: events, Titles: beadTitleMap(parade)})
 }
 
 func (h *handler) throughputHandler(w http.ResponseWriter, r *http.Request) {
@@ -363,4 +374,16 @@ func (h *handler) loadParadeData(ctx context.Context) (ParadeData, error) {
 		Blocked:    blocked,
 		Closed:     closed,
 	}, nil
+}
+
+func beadTitleMap(data ParadeData) map[string]string {
+	titles := make(map[string]string)
+	for _, beads := range [][]protocol.Bead{data.Ready, data.InProgress, data.Blocked, data.Closed} {
+		for _, bead := range beads {
+			if bead.ID != "" && bead.Title != "" {
+				titles[bead.ID] = bead.Title
+			}
+		}
+	}
+	return titles
 }

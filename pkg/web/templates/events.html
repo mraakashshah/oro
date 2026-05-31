@@ -1,9 +1,10 @@
 <div class="event-feed">
-{{- range .}}
+{{- $titles := .Titles -}}
+{{- range .Events}}
   <div class="event-feed__item">
     <span class="event-feed__time">{{if gt (len .CreatedAt) 15}}{{slice .CreatedAt 11 16}}{{else}}{{.CreatedAt}}{{end}}</span>
     <span class="event-feed__symbol {{eventSymbolClass .Type}}">{{eventSymbol .Type}}</span>
-    <span class="event-feed__text">{{eventSummary .}}</span>
+    <span class="event-feed__text">{{eventSummary . $titles}}</span>
   </div>
 {{- end}}
 </div>
