@@ -356,8 +356,17 @@ func TestAssemblePrompt_ExitContent(t *testing.T) {
 	if !strings.Contains(prompt, "quality gate is green") {
 		t.Error("expected Exit section to contain 'quality gate is green'")
 	}
-	if !strings.Contains(prompt, "oro remember") {
-		t.Error("expected Exit section to contain 'oro remember'")
+	if !strings.Contains(prompt, "record learnings with the cards flow") {
+		t.Error("expected Exit section to tell workers to record learnings with the cards flow")
+	}
+	if !strings.Contains(prompt, "oro current") {
+		t.Error("expected Exit section to mention oro current for learning context")
+	}
+	if !strings.Contains(prompt, "oro cards review-queue") {
+		t.Error("expected Exit section to mention the cards review queue")
+	}
+	if strings.Contains(prompt, "oro remember") {
+		t.Error("Exit section must not mention retired oro remember command")
 	}
 }
 
