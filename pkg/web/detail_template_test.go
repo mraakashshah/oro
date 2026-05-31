@@ -11,6 +11,11 @@ import (
 	"oro/pkg/web"
 )
 
+type detailTemplateData struct {
+	*protocol.BeadDetail
+	Children []protocol.Bead
+}
+
 // TestDetailTemplate validates that the templates/detail.html template renders
 // *protocol.BeadDetail data with correct structure and conditional sections.
 func TestDetailTemplate(t *testing.T) {
@@ -96,6 +101,64 @@ func TestDetailTemplate(t *testing.T) {
 		// AcceptanceCriteria section hidden when empty
 		assertNotContains(t, body, "detail-ac")
 	})
+}
+
+func TestDetailWrapsLongAC(t *testing.T) {
+	tmpl, err := template.New("").Funcs(web.TemplateFuncMap()).ParseFS(os.DirFS("templates"), "detail.html")
+	if err != nil {
+		t.Fatalf("parse templates/detail.html: %v", err)
+	}
+
+	render := func(t *testing.T, detail detailTemplateData) string {
+		t.Helper()
+		var buf bytes.Buffer
+		if err := tmpl.ExecuteTemplate(&buf, "detail.html", detail); err != nil {
+			t.Fatalf("execute template: %v", err)
+		}
+		return buf.String()
+	}
+
+	longAC := strings.Repeat("x", 400)
+	body := render(t, detailTemplateData{
+		BeadDetail: &protocol.BeadDetail{
+			ID:                 "oro-long-ac",
+			Title:              "Long acceptance criteria",
+			Status:             "in_progress",
+			Type:               "task",
+			Description:        "single token AC should wrap",
+			AcceptanceCriteria: longAC,
+		},
+	})
+
+	assertContains(t, body, `class="bead-detail__title"`)
+	assertContains(t, body, "Long acceptance criteria</h2>")
+	assertContains(t, body, "In progress")
+	assertContains(t, body, `detail-ac`)
+	assertContains(t, body, "pre-wrap")
+	assertContains(t, body, "overflow-wrap")
+	assertContains(t, body, longAC)
+	assertNotContains(t, body, "<pre")
+
+	epicBody := render(t, detailTemplateData{
+		BeadDetail: &protocol.BeadDetail{
+			ID:                 "oro-epic",
+			Title:              "Epic bead",
+			Status:             "open",
+			Type:               "epic",
+			AcceptanceCriteria: "Do not render this for epics with children",
+		},
+		Children: []protocol.Bead{
+			{ID: "oro-child-1", Title: "First child", Status: "closed"},
+			{ID: "oro-child-2", Title: "Second child", Status: "in_progress"},
+		},
+	})
+
+	assertContains(t, epicBody, `id="children"`)
+	assertContains(t, epicBody, "First child")
+	assertContains(t, epicBody, "Closed")
+	assertContains(t, epicBody, "Second child")
+	assertContains(t, epicBody, "In progress")
+	assertNotContains(t, epicBody, "Do not render this")
 }
 
 func assertContains(t *testing.T, body, substr string) {

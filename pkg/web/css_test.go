@@ -103,6 +103,10 @@ func TestCSSOverflowSafety(t *testing.T) {
 	detailAC := cssRule(t, css, ".detail-ac")
 	assertDeclaration(t, detailAC, "overflow-wrap", "anywhere")
 	assertDeclaration(t, detailAC, "white-space", "pre-wrap")
+
+	detailWrap := cssRule(t, css, ".detail-wrap")
+	assertDeclaration(t, detailWrap, "overflow-wrap", "anywhere")
+	assertDeclaration(t, detailWrap, "white-space", "pre-wrap")
 }
 
 func readDashboardCSS(t *testing.T) string {

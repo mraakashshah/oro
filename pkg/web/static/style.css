@@ -309,6 +309,11 @@ h2 {
   white-space: pre-wrap;
 }
 
+.detail-wrap {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .detail-ac {
   overflow-wrap: anywhere;
   white-space: pre-wrap;

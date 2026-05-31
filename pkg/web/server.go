@@ -67,6 +67,11 @@ type indexData struct {
 	Throughput *ThroughputData
 }
 
+type detailData struct {
+	*protocol.BeadDetail
+	Children []protocol.Bead
+}
+
 // ParadeData holds the four bead buckets rendered by the parade fragment.
 type ParadeData struct {
 	Ready      []protocol.Bead
@@ -305,7 +310,37 @@ func (h *handler) detailHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	h.renderTemplate(w, r, h.detailTmpl, "detail.html", detail)
+	view := detailData{BeadDetail: detail}
+	if detail.Type == "epic" {
+		children, childErr := h.detailChildren(r.Context(), detail.ID)
+		if childErr != nil {
+			http.Error(w, childErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		view.Children = children
+	}
+	h.renderTemplate(w, r, h.detailTmpl, "detail.html", view)
+}
+
+func (h *handler) detailChildren(ctx context.Context, parentID string) ([]protocol.Bead, error) {
+	var children []protocol.Bead
+	for _, fetch := range []func(context.Context) ([]protocol.Bead, error){
+		h.data.ReadyBeads,
+		h.data.InProgressBeads,
+		h.data.BlockedBeads,
+		func(ctx context.Context) ([]protocol.Bead, error) { return h.data.ClosedBeads(ctx, 100) },
+	} {
+		beads, err := fetch(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("load detail children for %s: %w", parentID, err)
+		}
+		for _, bead := range beads {
+			if bead.Epic == parentID {
+				children = append(children, bead)
+			}
+		}
+	}
+	return children, nil
 }
 
 func (h *handler) eventsHandler(w http.ResponseWriter, r *http.Request) {
