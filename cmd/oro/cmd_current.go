@@ -130,7 +130,7 @@ func buildCurrentView(ctx context.Context, tx beadstore.ReadTx) (currentViewJSON
 			for _, c := range relevant.Deck {
 				if _, ok := seen[c.ID]; !ok {
 					seen[c.ID] = struct{}{}
-					view.Cards = append(view.Cards, cardSummaryFromSummary(c))
+					view.Cards = append(view.Cards, cardSummaryFromDeckCard(c))
 				}
 			}
 		}
@@ -176,8 +176,8 @@ func beadRelevanceQuery(b protocol.Bead) cards.RelevanceQuery {
 	}
 }
 
-// cardSummaryFromSummary converts a deck card to the JSON shape.
-func cardSummaryFromSummary(c cards.DeckCard) cardSummaryJSON {
+// cardSummaryFromDeckCard converts a deck card to the JSON shape.
+func cardSummaryFromDeckCard(c cards.DeckCard) cardSummaryJSON {
 	return cardSummaryJSON{
 		ID:          c.ID,
 		Type:        string(c.Type),
