@@ -21674,6 +21674,165 @@ func TestDispatcher_AssignIncludesCardsContext(t *testing.T) {
 	})
 }
 
+func TestAssignPayloadCardsUseSummaryOnlyDeck(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+	seedDispatcherCard(ctx, t, d, cards.CardCreateParams{
+		ID:          "card-dispatcher-deck",
+		Type:        cards.CardTypePattern,
+		Title:       "Dispatcher deck card",
+		BodySummary: "DISPATCHER_DECK_SUMMARY_SENTINEL",
+		BodyFull:    "DISPATCHER_DECK_FULL_BODY_SENTINEL " + strings.Repeat("oversized ", 9000),
+		Tags:        []string{"dispatcher", "deck"},
+	})
+	seedDispatcherCard(ctx, t, d, cards.CardCreateParams{
+		ID:          "card-dispatcher-inline",
+		Type:        cards.CardTypePattern,
+		Title:       "Dispatcher inline card",
+		BodySummary: "dispatcher inline summary",
+		BodyFull:    "DISPATCHER_INLINE_FULL_BODY_SENTINEL",
+		Tags:        []string{"dispatcher", "inline"},
+	})
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-card-wire", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, time.Second)
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, time.Second)
+
+	beadSrc.mu.Lock()
+	beadSrc.shown["bead-card-wire"] = &protocol.BeadDetail{
+		ID:                 "bead-card-wire",
+		Title:              "Verify assignment card payload",
+		Description:        "dispatcher deck inline cards",
+		Type:               "task",
+		AcceptanceCriteria: "Test: cards | Assert: payload",
+		Labels:             []string{"dispatcher", "deck", "inline"},
+	}
+	beadSrc.mu.Unlock()
+
+	beadSrc.SetBeads([]protocol.Bead{{
+		ID:       "bead-card-wire",
+		Title:    "Verify assignment card payload",
+		Type:     "task",
+		Priority: 1,
+		Labels:   []string{"dispatcher", "deck", "inline"},
+	}})
+
+	raw, msg, ok := readRawMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	if len(raw) >= protocol.MaxMessageSize {
+		t.Fatalf("marshaled ASSIGN length = %d, want < %d", len(raw), protocol.MaxMessageSize)
+	}
+	if msg.Type != protocol.MsgAssign || msg.Assign == nil {
+		t.Fatalf("expected ASSIGN, got %#v", msg)
+	}
+	if len(msg.Assign.Cards.Deck) == 0 {
+		t.Fatal("expected deck cards in ASSIGN")
+	}
+	var foundDeck bool
+	for _, deck := range msg.Assign.Cards.Deck {
+		if deck.ID != "card-dispatcher-deck" {
+			continue
+		}
+		foundDeck = true
+		if deck.BodySummary != "DISPATCHER_DECK_SUMMARY_SENTINEL" {
+			t.Fatalf("deck BodySummary = %q", deck.BodySummary)
+		}
+	}
+	if !foundDeck {
+		t.Fatalf("Cards.Deck = %#v, want card-dispatcher-deck", msg.Assign.Cards.Deck)
+	}
+	wire := string(raw)
+	if strings.Contains(wire, "DISPATCHER_DECK_FULL_BODY_SENTINEL") {
+		t.Fatal("ASSIGN wire payload included deck full body sentinel")
+	}
+	if !strings.Contains(wire, "DISPATCHER_INLINE_FULL_BODY_SENTINEL") {
+		t.Fatal("ASSIGN wire payload did not include inline full body sentinel")
+	}
+}
+
+func TestAssignPayloadCardsEmptyWhenCardStoreNil(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	d.cardStore = nil
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-card-nil", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, time.Second)
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, time.Second)
+
+	beadSrc.mu.Lock()
+	beadSrc.shown["bead-card-nil"] = &protocol.BeadDetail{
+		ID:                 "bead-card-nil",
+		Title:              "Nil card store",
+		Type:               "task",
+		AcceptanceCriteria: "Test: cards | Assert: empty",
+	}
+	beadSrc.mu.Unlock()
+	beadSrc.SetBeads([]protocol.Bead{{
+		ID:       "bead-card-nil",
+		Title:    "Nil card store",
+		Type:     "task",
+		Priority: 1,
+	}})
+
+	_, msg, ok := readRawMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	assertAssignHasEmptyCards(t, msg)
+}
+
+func TestAssignPayloadCardsEmptyAndLogsWhenRelevantFails(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	d.cardStore = failingRelevantCardStore{Store: d.cardStore}
+	startDispatcher(t, d)
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-card-error", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, time.Second)
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, time.Second)
+
+	beadSrc.mu.Lock()
+	beadSrc.shown["bead-card-error"] = &protocol.BeadDetail{
+		ID:                 "bead-card-error",
+		Title:              "Card relevance error",
+		Type:               "task",
+		AcceptanceCriteria: "Test: cards | Assert: empty",
+	}
+	beadSrc.mu.Unlock()
+	beadSrc.SetBeads([]protocol.Bead{{
+		ID:       "bead-card-error",
+		Title:    "Card relevance error",
+		Type:     "task",
+		Priority: 1,
+	}})
+
+	_, msg, ok := readRawMsg(t, conn, 2*time.Second)
+	if !ok {
+		t.Fatal("expected ASSIGN")
+	}
+	assertAssignHasEmptyCards(t, msg)
+	if got := eventCount(t, d.db, "card_context_failed"); got != 1 {
+		t.Fatalf("card_context_failed events = %d, want 1", got)
+	}
+}
+
 func TestDispatcher_ReassignIncludesCardsContext(t *testing.T) {
 	ctx := context.Background()
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
@@ -21833,6 +21992,43 @@ func assertAssignHasOnlyCardsContext(t *testing.T, msg protocol.Message, wantCar
 	if got := msg.Assign.Cards.Inlined[0].ID; got != wantCardID {
 		t.Fatalf("Cards.Inlined[0].ID = %q, want %q", got, wantCardID)
 	}
+}
+
+func assertAssignHasEmptyCards(t *testing.T, msg protocol.Message) {
+	t.Helper()
+	if msg.Type != protocol.MsgAssign || msg.Assign == nil {
+		t.Fatalf("expected ASSIGN, got %#v", msg)
+	}
+	if len(msg.Assign.Cards.Deck) != 0 {
+		t.Fatalf("Cards.Deck = %#v, want empty", msg.Assign.Cards.Deck)
+	}
+	if len(msg.Assign.Cards.Inlined) != 0 {
+		t.Fatalf("Cards.Inlined = %#v, want empty", msg.Assign.Cards.Inlined)
+	}
+}
+
+func readRawMsg(t *testing.T, conn net.Conn, timeout time.Duration) ([]byte, protocol.Message, bool) {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	scanner := bufio.NewScanner(conn)
+	scanner.Buffer(make([]byte, 0, 64*1024), protocol.MaxMessageSize)
+	if !scanner.Scan() {
+		return nil, protocol.Message{}, false
+	}
+	raw := append([]byte(nil), scanner.Bytes()...)
+	var msg protocol.Message
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return raw, msg, true
+}
+
+type failingRelevantCardStore struct {
+	cards.Store
+}
+
+func (f failingRelevantCardStore) Relevant(context.Context, cards.RelevanceQuery) (cards.RelevantCards, error) {
+	return cards.RelevantCards{}, errors.New("relevant cards failed")
 }
 
 // TestBuildSchedulingPlan_PriorityFirstEpicUnits verifies the full scheduling
