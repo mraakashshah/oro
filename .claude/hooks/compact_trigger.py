@@ -21,11 +21,51 @@ import subprocess
 import sys
 from pathlib import Path
 
-DEFAULT_THRESHOLD = 50
+DEFAULT_THRESHOLD = 40
 PANES_DIR = os.path.expanduser("~/.oro/panes")
 THRESHOLDS_FILE = Path(os.path.expanduser("~/.oro")) / "thresholds.json"
 
 _KNOWN_TIERS = frozenset({"fast", "balanced", "deep", "background"})
+_MODEL_FAMILIES = ("opus", "sonnet", "haiku")
+
+
+def _load_thresholds(thresholds_file: Path | None = None) -> dict:
+    if thresholds_file is None:
+        thresholds_file = THRESHOLDS_FILE
+    return json.loads(thresholds_file.read_text())
+
+
+def _model_family(model: str) -> str:
+    model = model.lower()
+    for family in _MODEL_FAMILIES:
+        if family in model:
+            return family
+    return "balanced"
+
+
+def _threshold_value(thresholds: dict, key: str) -> int:
+    value = thresholds.get(key, DEFAULT_THRESHOLD)
+    if isinstance(value, int):
+        return value
+    return DEFAULT_THRESHOLD
+
+
+def resolve_tier_threshold(thresholds_file: Path | None = None) -> int:
+    try:
+        thresholds = _load_thresholds(thresholds_file)
+    except (OSError, json.JSONDecodeError):
+        return DEFAULT_THRESHOLD
+
+    role = os.getenv("ORO_ROLE", "")
+    if role in _KNOWN_TIERS and role in thresholds:
+        return _threshold_value(thresholds, role)
+
+    model = os.getenv("ORO_MODEL", "")
+    return _threshold_value(thresholds, _model_family(model))
+
+
+def hard_threshold(thresholds_file: Path | None = None) -> int:
+    return resolve_tier_threshold(thresholds_file) + 10
 
 
 def load_threshold(
@@ -48,10 +88,10 @@ def load_threshold(
     if thresholds_file is None:
         thresholds_file = THRESHOLDS_FILE
     try:
-        thresholds = json.loads(thresholds_file.read_text())
+        thresholds = _load_thresholds(thresholds_file)
         if tier in _KNOWN_TIERS and tier in thresholds:
-            return thresholds[tier]
-        return thresholds.get(model_key, DEFAULT_THRESHOLD)
+            return _threshold_value(thresholds, tier)
+        return _threshold_value(thresholds, model_key)
     except (OSError, json.JSONDecodeError):
         return DEFAULT_THRESHOLD
 
