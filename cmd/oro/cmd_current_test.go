@@ -165,6 +165,164 @@ func TestCurrentRendersInProgressJourneyAndCards(t *testing.T) {
 	}
 }
 
+func TestCurrentRendersDeckCardSummariesWithoutFullBody(t *testing.T) {
+	ctx := context.Background()
+	beadStore, cardStore := openTestRenderStore(t)
+
+	_, err := beadStore.Create(ctx, beadstore.CreateParams{
+		ID:                 "bead-current-deck",
+		Title:              "Current Deck Bead",
+		Type:               "task",
+		AcceptanceCriteria: "current deck acceptance",
+	})
+	if err != nil {
+		t.Fatalf("Create bead: %v", err)
+	}
+	inProgress := "in_progress"
+	if err := beadStore.Update(ctx, "bead-current-deck", beadstore.UpdateParams{Status: &inProgress}); err != nil {
+		t.Fatalf("Update bead to in_progress: %v", err)
+	}
+
+	_, err = cardStore.Create(ctx, cards.CardCreateParams{
+		ID:          "card-current-deck",
+		Type:        cards.CardTypePattern,
+		Title:       "Current Deck Card",
+		BodySummary: "CURRENT_SUMMARY_SENTINEL",
+		BodyFull:    "CURRENT_FULL_BODY_SENTINEL",
+		Tags:        []string{"current-tag"},
+	})
+	if err != nil {
+		t.Fatalf("Create card: %v", err)
+	}
+
+	cmd := newCurrentCmdWithStore(beadStore)
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--format", "json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("oro current --format json: %v\nstderr: %s", err, stderr.String())
+	}
+
+	output := stdout.String()
+	if strings.Contains(output, "body_full") {
+		t.Fatalf("current JSON included body_full field:\n%s", output)
+	}
+	if strings.Contains(output, "CURRENT_FULL_BODY_SENTINEL") {
+		t.Fatalf("current JSON included full body sentinel:\n%s", output)
+	}
+
+	var result struct {
+		Cards []cardSummaryJSON `json:"cards"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal output: %v\noutput: %s", err, output)
+	}
+
+	for _, got := range result.Cards {
+		if got.ID != "card-current-deck" {
+			continue
+		}
+		if got.Title != "Current Deck Card" {
+			t.Fatalf("title = %q, want Current Deck Card", got.Title)
+		}
+		if got.BodySummary != "CURRENT_SUMMARY_SENTINEL" {
+			t.Fatalf("body_summary = %q, want CURRENT_SUMMARY_SENTINEL", got.BodySummary)
+		}
+		if got.Score == 0 {
+			t.Fatalf("score = %v, want non-zero score", got.Score)
+		}
+		for _, tag := range got.Tags {
+			if tag == "current-tag" {
+				return
+			}
+		}
+		t.Fatalf("tags = %v, want current-tag", got.Tags)
+	}
+	t.Fatalf("card-current-deck missing from cards: %#v", result.Cards)
+}
+
+func TestBuildCurrentViewDedupesDuplicateDeckCards(t *testing.T) {
+	ctx := context.Background()
+	tx := &currentReadTx{
+		beads: []protocol.Bead{
+			{ID: "bead-current-1", Type: "task"},
+			{ID: "bead-current-2", Type: "task"},
+		},
+		cards: &currentCardsReadTx{relevant: cards.RelevantCards{
+			Deck: []cards.DeckCard{
+				{ID: "card-duplicate-deck", Type: cards.CardTypePattern, Title: "Duplicate Deck Card", BodySummary: "summary", Score: 1, Tags: []string{"tag"}},
+			},
+		}},
+	}
+
+	view, err := buildCurrentView(ctx, tx)
+	if err != nil {
+		t.Fatalf("buildCurrentView: %v", err)
+	}
+
+	if len(view.Cards) != 1 {
+		t.Fatalf("cards len = %d, want 1; cards = %#v", len(view.Cards), view.Cards)
+	}
+	if view.Cards[0].ID != "card-duplicate-deck" {
+		t.Fatalf("card id = %q, want card-duplicate-deck", view.Cards[0].ID)
+	}
+}
+
+func TestBuildCurrentViewNilCardsRendersNoCards(t *testing.T) {
+	ctx := context.Background()
+	tx := &currentReadTx{
+		beads: []protocol.Bead{{ID: "bead-current-nil-cards", Type: "task"}},
+	}
+
+	view, err := buildCurrentView(ctx, tx)
+	if err != nil {
+		t.Fatalf("buildCurrentView: %v", err)
+	}
+
+	if len(view.InProgress) != 1 {
+		t.Fatalf("in_progress len = %d, want 1", len(view.InProgress))
+	}
+	if len(view.Cards) != 0 {
+		t.Fatalf("cards len = %d, want 0; cards = %#v", len(view.Cards), view.Cards)
+	}
+}
+
+type currentReadTx struct {
+	errorReadTx
+	beads []protocol.Bead
+	cards cards.ReadTx
+}
+
+func (tx *currentReadTx) InProgress(_ context.Context) ([]protocol.Bead, error) {
+	return tx.beads, nil
+}
+
+func (tx *currentReadTx) LatestJourney(_ context.Context, _ string, _ int) ([]beadstore.JourneyEvent, error) {
+	return nil, nil
+}
+
+func (tx *currentReadTx) Cards() cards.ReadTx {
+	return tx.cards
+}
+
+type currentCardsReadTx struct {
+	relevant cards.RelevantCards
+}
+
+func (tx *currentCardsReadTx) Show(_ context.Context, _ string) (*cards.Card, error) {
+	return nil, cards.ErrNotFound
+}
+
+func (tx *currentCardsReadTx) List(_ context.Context, _ cards.ListQuery) ([]cards.Card, error) {
+	return nil, nil
+}
+
+func (tx *currentCardsReadTx) Relevant(_ context.Context, _ cards.RelevanceQuery) (cards.RelevantCards, error) {
+	return tx.relevant, nil
+}
+
 func TestCurrentCommandRegisteredInRoot(t *testing.T) {
 	root := newRootCmd()
 	for _, cmd := range root.Commands() {

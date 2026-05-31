@@ -115,7 +115,7 @@ func buildHandoffView(ctx context.Context, tx beadstore.ReadTx, cutoff time.Time
 			for _, c := range relevant.Deck {
 				if _, ok := seen[c.ID]; !ok {
 					seen[c.ID] = struct{}{}
-					view.Cards = append(view.Cards, cardSummaryFromSummary(c))
+					view.Cards = append(view.Cards, cardSummaryFromDeckCard(c))
 				}
 			}
 		}

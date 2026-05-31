@@ -69,7 +69,7 @@ func runResume(ctx context.Context, store beadstore.Store, beadID string, w io.W
 				return fmt.Errorf("Cards.Relevant(%s): %w", beadID, err)
 			}
 			for _, c := range relevant.Deck {
-				data.cards = append(data.cards, cardSummaryFromSummary(c))
+				data.cards = append(data.cards, cardSummaryFromDeckCard(c))
 			}
 		}
 		return nil
