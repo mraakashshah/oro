@@ -4742,7 +4742,11 @@ func TestThresholdLookupAcceptsTierKey(t *testing.T) {
 		{"sonnet", 40},
 		{"haiku", 35},
 		{"unknown-key", worker.DefaultThreshold},
+		{"invalid-zero", worker.DefaultThreshold},
+		{"invalid-negative", worker.DefaultThreshold},
 	}
+	models["invalid-zero"] = 0
+	models["invalid-negative"] = -1
 
 	for _, tc := range lookupCases {
 		t.Run("lookup/"+tc.key, func(t *testing.T) {
