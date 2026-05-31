@@ -53,7 +53,7 @@ h2 {
 
 .layout {
   display: grid;
-  grid-template-columns: 2fr 1fr;
+  grid-template-columns: minmax(0, 1fr) 1fr;
   grid-template-areas: "parade sidebar";
   gap: 0;
   min-height: 100vh;
@@ -119,10 +119,18 @@ h2 {
 
 .bead-card__title {
   flex: 1;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--text);
+}
+
+.epic-title {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .bead-card__badges {
@@ -184,6 +192,11 @@ h2 {
   font-size: 13px;
   color: var(--text-2);
   line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.detail-ac {
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
@@ -265,6 +278,7 @@ h2 {
   font-size: 11px;
   color: var(--text-3);
   flex: 1;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -340,6 +354,7 @@ h2 {
 
 .event-feed__text {
   flex: 1;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

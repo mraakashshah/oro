@@ -70,3 +70,114 @@ func TestCSSContainsKeySelectors(t *testing.T) {
 		}
 	}
 }
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
+		func() bool {
+			for i := 0; i <= len(s)-len(substr); i++ {
+				if s[i:i+len(substr)] == substr {
+					return true
+				}
+			}
+			return false
+		}())
+}
+
+func TestCSSOverflowSafety(t *testing.T) {
+	css := readDashboardCSS(t)
+
+	layout := cssRule(t, css, ".layout")
+	assertDeclaration(t, layout, "grid-template-columns", "minmax(0, 1fr) 1fr")
+
+	for _, selector := range []string{
+		".bead-card__title",
+		".worker-row__bead",
+		".event-feed__text",
+		".epic-title",
+	} {
+		rule := cssRule(t, css, selector)
+		assertDeclaration(t, rule, "text-overflow", "ellipsis")
+		assertRuleOrFlexParentDeclaration(t, css, selector, "min-width", "0")
+	}
+
+	detailAC := cssRule(t, css, ".detail-ac")
+	assertDeclaration(t, detailAC, "overflow-wrap", "anywhere")
+	assertDeclaration(t, detailAC, "white-space", "pre-wrap")
+}
+
+func readDashboardCSS(t *testing.T) string {
+	t.Helper()
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not determine test file path")
+	}
+	cssPath := filepath.Join(filepath.Dir(thisFile), "static", "style.css")
+
+	data, err := os.ReadFile(cssPath)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q): %v", cssPath, err)
+	}
+	return string(data)
+}
+
+func cssRule(t *testing.T, css, selector string) map[string]string {
+	t.Helper()
+
+	start := strings.Index(css, selector+" {")
+	if start < 0 {
+		t.Fatalf("style.css missing rule for %s", selector)
+	}
+	bodyStart := strings.Index(css[start:], "{")
+	if bodyStart < 0 {
+		t.Fatalf("style.css malformed rule for %s", selector)
+	}
+	bodyStart += start + 1
+	bodyEnd := strings.Index(css[bodyStart:], "}")
+	if bodyEnd < 0 {
+		t.Fatalf("style.css malformed rule for %s", selector)
+	}
+
+	rule := make(map[string]string)
+	for _, declaration := range strings.Split(css[bodyStart:bodyStart+bodyEnd], ";") {
+		name, value, ok := strings.Cut(declaration, ":")
+		if !ok {
+			continue
+		}
+		rule[strings.TrimSpace(name)] = strings.Join(strings.Fields(value), " ")
+	}
+	return rule
+}
+
+func assertDeclaration(t *testing.T, rule map[string]string, name, want string) {
+	t.Helper()
+
+	if got := rule[name]; got != want {
+		t.Fatalf("%s = %q, want %q", name, got, want)
+	}
+}
+
+func assertRuleOrFlexParentDeclaration(t *testing.T, css, selector, name, want string) {
+	t.Helper()
+
+	rule := cssRule(t, css, selector)
+	if rule[name] == want {
+		return
+	}
+	parent := selectorParent(selector)
+	if parent != "" {
+		parentRule := cssRule(t, css, parent)
+		if parentRule["display"] == "flex" && parentRule[name] == want {
+			return
+		}
+	}
+	t.Fatalf("%s must declare %s:%s on itself or on flex parent %s", selector, name, want, parent)
+}
+
+func selectorParent(selector string) string {
+	base, _, ok := strings.Cut(selector, "__")
+	if !ok {
+		return ""
+	}
+	return base
+}
