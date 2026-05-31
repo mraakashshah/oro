@@ -114,6 +114,7 @@ func NewHandler(data DashboardData, content fs.FS) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", h.indexHandler)
 	mux.HandleFunc("GET /fragments/parade", h.paradeHandler)
+	mux.HandleFunc("GET /fragments/header", h.headerHandler)
 	mux.HandleFunc("GET /fragments/workers", h.workersHandler)
 	mux.HandleFunc("GET /fragments/detail/{id}", h.detailHandler)
 	mux.HandleFunc("GET /fragments/events", h.eventsHandler)
@@ -186,6 +187,15 @@ func (h *handler) indexHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *handler) headerHandler(w http.ResponseWriter, r *http.Request) {
+	data, err := h.loadHeaderData(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	h.renderTemplate(w, r, h.indexTmpl, "dashboard-header", data)
+}
+
 func (h *handler) paradeHandler(w http.ResponseWriter, r *http.Request) {
 	data, err := h.loadParadeData(r.Context())
 	if err != nil {
@@ -193,6 +203,24 @@ func (h *handler) paradeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.renderTemplate(w, r, h.paradeTmpl, "parade-content", data)
+}
+
+func (h *handler) loadHeaderData(ctx context.Context) (indexData, error) {
+	throughput, err := h.data.Throughput(ctx)
+	if err != nil {
+		return indexData{}, err
+	}
+	if throughput == nil {
+		throughput = &ThroughputData{}
+	}
+	var healthMsg string
+	if herr := h.data.HealthError(); herr != nil {
+		healthMsg = herr.Error()
+	}
+	return indexData{
+		HealthErr:  healthMsg,
+		Throughput: throughput,
+	}, nil
 }
 
 func (h *handler) workersHandler(w http.ResponseWriter, r *http.Request) {

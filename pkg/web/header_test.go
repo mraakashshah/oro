@@ -74,3 +74,48 @@ func TestHeaderHealthyVsDegraded(t *testing.T) {
 		}
 	})
 }
+
+func TestHeaderFragmentHealthyVsDegraded(t *testing.T) {
+	data := &mockDashboard{
+		throughput: &web.ThroughputData{
+			BeadsPerHour:  9,
+			CostPerHour:   "$2.00",
+			ActiveWorkers: 4,
+			TotalWorkers:  6,
+			Uptime:        "3h",
+		},
+	}
+	h := web.NewHandler(data, web.Content)
+
+	req := httptest.NewRequest(http.MethodGet, "/fragments/header", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /fragments/header status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"Healthy", "9 beads/hr", "$2.00 cost/hr", "4/6 workers", "3h uptime"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("healthy header fragment missing %q; body:\n%s", want, body)
+		}
+	}
+
+	data.healthErr = errors.New("worker heartbeat stale")
+	req = httptest.NewRequest(http.MethodGet, "/fragments/header", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /fragments/header degraded status = %d, want 200", rec.Code)
+	}
+	body = rec.Body.String()
+	for _, want := range []string{"Needs you", "worker heartbeat stale"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("degraded header fragment missing %q; body:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "9 beads/hr") {
+		t.Errorf("degraded header fragment should suppress throughput; body:\n%s", body)
+	}
+}

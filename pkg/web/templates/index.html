@@ -8,20 +8,7 @@
   <script src="/static/htmx.min.js"></script>
 </head>
 <body>
-  <header class="dashboard-header">
-    {{if .HealthErr}}
-    <div class="dashboard-header__status dashboard-header__status--degraded">Needs you</div>
-    <div id="health-error" class="dashboard-header__issue">{{.HealthErr}}</div>
-    {{else}}
-    <div class="dashboard-header__status dashboard-header__status--healthy">Healthy</div>
-    <div class="dashboard-header__throughput">
-      <span class="dashboard-header__metric">{{.Throughput.BeadsPerHour}} beads/hr</span>
-      <span class="dashboard-header__metric">{{.Throughput.CostPerHour}} cost/hr</span>
-      <span class="dashboard-header__metric">{{.Throughput.ActiveWorkers}}/{{.Throughput.TotalWorkers}} workers</span>
-      <span class="dashboard-header__metric">{{.Throughput.Uptime}} uptime</span>
-    </div>
-    {{end}}
-  </header>
+  {{template "dashboard-header" .}}
   <div class="layout">
     <div id="parade"
          hx-get="/fragments/parade"
@@ -56,8 +43,30 @@
       source.addEventListener("parade-update", function () { dispatch("dashboard-parade"); });
       source.addEventListener("worker-update", function () { dispatch("dashboard-workers"); });
       source.addEventListener("new-event", function () { dispatch("dashboard-events"); });
+      source.addEventListener("throughput-update", function () { dispatch("dashboard-throughput"); });
       window.addEventListener("beforeunload", function () { source.close(); });
     })();
   </script>
 </body>
 </html>
+
+{{define "dashboard-header"}}
+  <header id="dashboard-header"
+          class="dashboard-header"
+          hx-get="/fragments/header"
+          hx-trigger="dashboard-throughput from:body"
+          hx-swap="outerHTML">
+    {{if .HealthErr}}
+    <div class="dashboard-header__status dashboard-header__status--degraded">Needs you</div>
+    <div id="health-error" class="dashboard-header__issue">{{.HealthErr}}</div>
+    {{else}}
+    <div class="dashboard-header__status dashboard-header__status--healthy">Healthy</div>
+    <div class="dashboard-header__throughput">
+      <span class="dashboard-header__metric">{{.Throughput.BeadsPerHour}} beads/hr</span>
+      <span class="dashboard-header__metric">{{.Throughput.CostPerHour}} cost/hr</span>
+      <span class="dashboard-header__metric">{{.Throughput.ActiveWorkers}}/{{.Throughput.TotalWorkers}} workers</span>
+      <span class="dashboard-header__metric">{{.Throughput.Uptime}} uptime</span>
+    </div>
+    {{end}}
+  </header>
+{{end}}

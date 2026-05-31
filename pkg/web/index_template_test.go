@@ -104,10 +104,12 @@ func TestIndexTemplate(t *testing.T) {
 			"dashboard-parade",
 			"dashboard-workers",
 			"dashboard-events",
+			"dashboard-throughput",
 			"EventSource",
 			"parade-update",
 			"worker-update",
 			"new-event",
+			"throughput-update",
 		}
 		for _, want := range wants {
 			if !strings.Contains(body, want) {
