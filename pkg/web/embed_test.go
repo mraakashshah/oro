@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"oro/pkg/web"
@@ -36,7 +37,7 @@ func TestEmbedFS(t *testing.T) {
 		}
 	})
 
-	t.Run("static directory contains style.css and htmx.min.js", func(t *testing.T) {
+	t.Run("static directory contains style.css, htmx.min.js, and dash.js", func(t *testing.T) {
 		entries, err := fs.ReadDir(web.Content, "static")
 		if err != nil {
 			t.Fatalf("fs.ReadDir(web.Content, \"static\"): %v", err)
@@ -44,6 +45,7 @@ func TestEmbedFS(t *testing.T) {
 		want := map[string]bool{
 			"style.css":   false,
 			"htmx.min.js": false,
+			"dash.js":     false,
 		}
 		for _, e := range entries {
 			if _, ok := want[e.Name()]; ok {
@@ -56,6 +58,22 @@ func TestEmbedFS(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestStaticAssetsServed(t *testing.T) {
+	data := &mockDashboard{}
+	h := web.NewHandler(data, web.Content)
+
+	req := httptest.NewRequest(http.MethodGet, "/static/dash.js", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /static/dash.js status = %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "keydown") {
+		t.Fatalf("GET /static/dash.js body missing keyboard handler; body: %q", body)
+	}
 }
 
 // TestStaticFileServing verifies that NewHandler serves static assets from the embed.FS.

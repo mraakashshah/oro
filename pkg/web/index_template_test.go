@@ -85,6 +85,7 @@ func TestIndexTemplate(t *testing.T) {
 			"<html",
 			"/static/style.css",
 			"/static/htmx.min.js",
+			"/static/dash.js",
 			`class="dashboard-header"`,
 			"Healthy",
 			"4",
