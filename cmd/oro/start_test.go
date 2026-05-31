@@ -153,18 +153,39 @@ func TestCleanEnvForDaemon(t *testing.T) {
 				t.Error("GIT_DIR should be removed from daemon env")
 			}
 		}
-		if len(cleaned) != 2 {
-			t.Errorf("expected 2 env vars, got %d: %v", len(cleaned), cleaned)
+		cleanedEnv := startTestEnvMap(cleaned)
+		for _, key := range []string{"HOME", "PATH", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_MERGE_AUTOEDIT", "VISUAL", "EDITOR"} {
+			if _, ok := cleanedEnv[key]; !ok {
+				t.Fatalf("expected %s in cleaned env, got %v", key, cleaned)
+			}
 		}
 	})
 
 	t.Run("preserves env when CLAUDECODE absent", func(t *testing.T) {
 		env := []string{"HOME=/Users/test", "PATH=/usr/bin"}
 		cleaned := cleanEnvForDaemon(env)
-		if len(cleaned) != 2 {
-			t.Errorf("expected 2 env vars, got %d", len(cleaned))
+		cleanedEnv := startTestEnvMap(cleaned)
+		if cleanedEnv["HOME"] != "/Users/test" || cleanedEnv["PATH"] != "/usr/bin" {
+			t.Errorf("expected HOME and PATH preserved, got %v", cleaned)
+		}
+		for _, key := range []string{"GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_MERGE_AUTOEDIT", "VISUAL", "EDITOR"} {
+			if _, ok := cleanedEnv[key]; !ok {
+				t.Fatalf("expected %s in cleaned env, got %v", key, cleaned)
+			}
 		}
 	})
+}
+
+func startTestEnvMap(env []string) map[string]string {
+	out := make(map[string]string, len(env))
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		out[key] = value
+	}
+	return out
 }
 
 func TestStartPreflightAndCheckRunning_DaemonOnlyBypass(t *testing.T) {

@@ -71,7 +71,7 @@ Regression coverage was added in `pkg/ops/ops_test.go` for system hook noise bef
 
 ## Corrective Action
 
-1. Preserve this incident note and the completed task branch evidence.
+1. Preserve this incident note and the completed agent branch evidence.
 2. Continue monitoring rather than immediately stopping the factory when worker heartbeats remain fresh and review progression appears delayed.
 3. If a worker remains active with completed final output and no lifecycle event past the progress timeout, stop/restart the factory cleanly with `--web` enabled so dashboard behavior remains consistent with operator preference.
 4. Inspect whether completed branches are reprocessed, reviewed, merged, or need manual recovery.
