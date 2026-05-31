@@ -58,7 +58,7 @@ func TestBuildCardContextKeepsAssignPayloadUnderProtocolLimit(t *testing.T) {
 	deck := make([]cards.DeckCard, 0, 5000)
 	for i := 0; i < cap(deck); i++ {
 		deck = append(deck, cards.DeckCard{
-			ID:          "card-large",
+			ID:          "card-large-deck",
 			Type:        cards.CardTypePattern,
 			Title:       "Large card deck",
 			BodySummary: strings.Repeat("summary ", 30),
@@ -72,7 +72,7 @@ func TestBuildCardContextKeepsAssignPayloadUnderProtocolLimit(t *testing.T) {
 			Type:        cards.CardTypePattern,
 			Title:       "Large inline card",
 			BodySummary: strings.Repeat("summary ", 30),
-			BodyFull:    strings.Repeat("full ", 40),
+			BodyFull:    "INLINE_ONLY_FULL_BODY_SENTINEL " + strings.Repeat("full ", 40),
 			Score:       1.0,
 			Tags:        []string{"dispatcher", "cards"},
 		},
@@ -91,8 +91,8 @@ func TestBuildCardContextKeepsAssignPayloadUnderProtocolLimit(t *testing.T) {
 	if len(got.Deck) == 0 {
 		t.Fatal("expected capped deck to retain top cards")
 	}
-	if got.Deck[0].ID != "card-large" {
-		t.Fatalf("first deck card = %q, want card-large", got.Deck[0].ID)
+	if got.Deck[0].ID != "card-large-deck" {
+		t.Fatalf("first deck card = %q, want card-large-deck", got.Deck[0].ID)
 	}
 
 	msg := protocol.Message{
@@ -111,6 +111,25 @@ func TestBuildCardContextKeepsAssignPayloadUnderProtocolLimit(t *testing.T) {
 	}
 	if len(data) >= protocol.MaxMessageSize {
 		t.Fatalf("ASSIGN message size = %d, want < MaxMessageSize %d", len(data), protocol.MaxMessageSize)
+	}
+	marshaled := string(data)
+	if strings.Contains(marshaled, "DECK_ONLY_FULL_BODY_SENTINEL") {
+		t.Fatal("marshaled ASSIGN includes deck-only full body sentinel")
+	}
+	if !strings.Contains(marshaled, "INLINE_ONLY_FULL_BODY_SENTINEL") {
+		t.Fatal("marshaled ASSIGN excludes inline full body sentinel")
+	}
+}
+
+func TestTrimAssignmentCardContextEdges(t *testing.T) {
+	deck := []cards.DeckCard{{ID: "deck-1"}}
+	inlined := []cards.InlinedCard{{ID: "inline-1"}}
+
+	if got := trimDeckCardsByJSONSize(deck, 0); got != nil {
+		t.Fatalf("trimDeckCardsByJSONSize maxSize=0 = %#v, want nil", got)
+	}
+	if got := trimInlinedCardsByJSONSize(inlined, 0); got != nil {
+		t.Fatalf("trimInlinedCardsByJSONSize maxSize=0 = %#v, want nil", got)
 	}
 }
 
