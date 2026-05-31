@@ -66,6 +66,23 @@ type ParadeData struct {
 	Closed     []protocol.Bead
 }
 
+// EpicsData holds epic summaries rendered by the epics template.
+type EpicsData struct {
+	InProgress []EpicSummary
+	Next       []EpicSummary
+}
+
+// EpicSummary is the compact web view of an epic and its immediate work state.
+type EpicSummary struct {
+	ID                string
+	Title             string
+	Status            string
+	ClosedChildren    int
+	TotalChildren     int
+	ActiveChildTitle  string
+	FirstBlockerTitle string
+}
+
 // handler is the concrete http.Handler returned by NewHandler.
 type handler struct {
 	data           DashboardData

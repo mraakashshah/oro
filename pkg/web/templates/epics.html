@@ -1,0 +1,39 @@
+<section class="epics">
+  <div class="epics__lane epics__lane--active">
+    {{range .InProgress}}
+    <article class="epic-card" data-id="{{.ID}}">
+      <header class="epic-card__header">
+        <h2 class="epic-card__title">{{.Title}}</h2>
+        <span class="epic-card__id">{{.ID}}</span>
+      </header>
+      <div class="epic-card__progress">
+        <span class="epic-card__rollup">{{.ClosedChildren}} / {{.TotalChildren}}</span>
+        <span class="epic-progress__bar" aria-label="{{.ClosedChildren}} of {{.TotalChildren}} children closed">{{epicProgressBar .ClosedChildren .TotalChildren}}</span>
+      </div>
+      {{if .ActiveChildTitle}}<div class="epic-card__active-child">{{.ActiveChildTitle}}</div>{{end}}
+      <div class="epic-card__next">next -&gt;</div>
+    </article>
+    {{end}}
+  </div>
+
+  <div class="epics__divider">NEXT EPICS</div>
+
+  <div class="epics__lane epics__lane--next">
+    {{range .Next}}
+    <article class="epic-card epic-card--next" data-id="{{.ID}}">
+      <header class="epic-card__header">
+        <h2 class="epic-card__title">{{.Title}}</h2>
+        <span class="epic-card__id">{{.ID}}</span>
+      </header>
+      <div class="epic-card__badges">
+        {{if eq .Status "blocked"}}
+        <span class="badge badge--blocked">blocked</span>
+        {{else}}
+        <span class="badge badge--ready">ready</span>
+        {{end}}
+      </div>
+      {{if .FirstBlockerTitle}}<div class="epic-card__blocker">first needs {{.FirstBlockerTitle}}</div>{{end}}
+    </article>
+    {{end}}
+  </div>
+</section>
