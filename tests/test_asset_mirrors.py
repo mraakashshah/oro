@@ -80,6 +80,14 @@ def test_check_agent_asset_mirrors_script_exists() -> None:
     assert "make stage-assets" in script.read_text()
 
 
+def test_context_block_stop_test_lives_outside_claude_hook_mirror() -> None:
+    """The context block-stop tests must have a canonical asset-side copy."""
+    test_name = Path("test_context_block_stop.py")
+
+    assert (REPO_ROOT / "assets" / "hooks" / test_name).exists()
+    assert (REPO_ROOT / ".claude" / "hooks" / test_name).exists()
+
+
 def test_agent_asset_mirrors() -> None:
     """Active agent asset sources are mirrored to dogfood and embedded surfaces."""
     _ensure_staged_assets()
