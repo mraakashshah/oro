@@ -24,8 +24,9 @@ behind that holder. This was valid serialization, not a stale lock.
 ## Root Cause
 
 `scripts/quality_gate.sh` and the generated template enforced a default
-`ORO_QG_LOCK_TIMEOUT_SECONDS` fallback of 1800 seconds. Long but healthy gates
-could therefore convert valid live contention into a systemic QG incident.
+`ORO_QG_LOCK_TIMEOUT_SECONDS` fallback of 1800 seconds, and worker-run gates
+also injected a five-minute timeout. Long but healthy gates could therefore
+convert valid live contention into a systemic QG incident.
 
 ## Solution
 

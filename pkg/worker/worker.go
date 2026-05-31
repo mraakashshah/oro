@@ -1862,15 +1862,11 @@ func qualityGateEnv(worktree string, skipMutation bool) []string {
 		if strings.HasPrefix(kv, "ORO_RUN_MUTATION=") {
 			continue
 		}
-		if strings.HasPrefix(kv, "ORO_QG_LOCK_TIMEOUT_SECONDS=") {
-			continue
-		}
 		env = append(env, kv)
 	}
 	if skipMutation {
 		env = append(env, "ORO_SKIP_MUTATION=1")
 	}
-	env = append(env, "ORO_QG_LOCK_TIMEOUT_SECONDS=300")
 	return processenv.ForWorkdir(env, worktree)
 }
 
