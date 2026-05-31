@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/cards"
 )
 
 func TestHandoffScopedToSessionWindow(t *testing.T) {
@@ -93,6 +95,84 @@ func TestHandoffScopedToSessionWindow(t *testing.T) {
 			t.Fatalf("session_journey not sorted DESC: [%d]=%q < [%d]=%q", i-1, tsA, i, tsB)
 		}
 	}
+}
+
+func TestHandoffRendersDeckCardSummariesWithoutFullBody(t *testing.T) {
+	ctx := context.Background()
+	beadStore, cardStore := openTestRenderStore(t)
+
+	_, err := beadStore.Create(ctx, beadstore.CreateParams{
+		ID:                 "bead-handoff-deck",
+		Title:              "Handoff Deck Bead",
+		Type:               "task",
+		AcceptanceCriteria: "handoff deck acceptance",
+	})
+	if err != nil {
+		t.Fatalf("Create bead: %v", err)
+	}
+	inProgress := "in_progress"
+	if err := beadStore.Update(ctx, "bead-handoff-deck", beadstore.UpdateParams{Status: &inProgress}); err != nil {
+		t.Fatalf("Update bead to in_progress: %v", err)
+	}
+
+	_, err = cardStore.Create(ctx, cards.CardCreateParams{
+		ID:          "card-handoff-deck",
+		Type:        cards.CardTypePattern,
+		Title:       "Handoff Deck Card",
+		BodySummary: "HANDOFF_SUMMARY_SENTINEL",
+		BodyFull:    "HANDOFF_FULL_BODY_SENTINEL",
+		Tags:        []string{"handoff-tag"},
+	})
+	if err != nil {
+		t.Fatalf("Create card: %v", err)
+	}
+
+	cmd := newHandoffCmdWithStore(beadStore)
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--since", "1h"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("oro handoff --since 1h: %v\nstderr: %s", err, stderr.String())
+	}
+
+	output := stdout.String()
+	if strings.Contains(output, "body_full") {
+		t.Fatalf("handoff JSON included body_full field:\n%s", output)
+	}
+	if strings.Contains(output, "HANDOFF_FULL_BODY_SENTINEL") {
+		t.Fatalf("handoff JSON included full body sentinel:\n%s", output)
+	}
+
+	var result struct {
+		Cards []cardSummaryJSON `json:"cards"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal output: %v\noutput: %s", err, output)
+	}
+
+	for _, got := range result.Cards {
+		if got.ID != "card-handoff-deck" {
+			continue
+		}
+		if got.Title != "Handoff Deck Card" {
+			t.Fatalf("title = %q, want Handoff Deck Card", got.Title)
+		}
+		if got.BodySummary != "HANDOFF_SUMMARY_SENTINEL" {
+			t.Fatalf("body_summary = %q, want HANDOFF_SUMMARY_SENTINEL", got.BodySummary)
+		}
+		if got.Score == 0 {
+			t.Fatalf("score = %v, want non-zero score", got.Score)
+		}
+		for _, tag := range got.Tags {
+			if tag == "handoff-tag" {
+				return
+			}
+		}
+		t.Fatalf("tags = %v, want handoff-tag", got.Tags)
+	}
+	t.Fatalf("card-handoff-deck missing from cards: %#v", result.Cards)
 }
 
 func TestHandoffCommandRegisteredInRoot(t *testing.T) {
