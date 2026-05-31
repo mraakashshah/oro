@@ -227,6 +227,13 @@ h2 {
   text-overflow: ellipsis;
 }
 
+.epic-title {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .bead-card__badges {
   display: flex;
   gap: 6px;
