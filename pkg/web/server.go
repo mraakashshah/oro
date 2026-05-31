@@ -208,7 +208,7 @@ func (h *handler) paradeHandler(w http.ResponseWriter, r *http.Request) {
 func (h *handler) loadHeaderData(ctx context.Context) (indexData, error) {
 	throughput, err := h.data.Throughput(ctx)
 	if err != nil {
-		return indexData{}, err
+		return indexData{}, fmt.Errorf("load header throughput: %w", err)
 	}
 	if throughput == nil {
 		throughput = &ThroughputData{}
