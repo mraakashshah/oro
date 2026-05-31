@@ -1,6 +1,13 @@
 """Test that hook path resolution works with and without env vars."""
 
+import json
 import os
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SETTINGS = REPO_ROOT / ".claude" / "settings.json"
+HOOKS_DIR = REPO_ROOT / ".claude" / "hooks"
 
 
 def oro_home():
@@ -117,6 +124,29 @@ def test_learning_analysis_constant_with_env():
     finally:
         os.environ.pop("ORO_HOME", None)
         os.environ.pop("ORO_PROJECT", None)
+
+
+def test_stop_hooks_run_checklist_before_context_blocker():
+    """Stop hook runs checklist first so either hook can still block."""
+    settings = json.loads(SETTINGS.read_text(encoding="utf-8"))
+    stop_groups = settings["hooks"]["Stop"]
+    assert len(stop_groups) == 1
+
+    commands = [hook["command"] for hook in stop_groups[0]["hooks"]]
+    assert commands == [
+        ".claude/hooks/stop-checklist.sh",
+        "python3 .claude/hooks/context_block_stop.py",
+    ]
+
+
+def test_context_block_stop_path_resolves_and_is_mirrored():
+    """Registered context_block_stop hook points at a symlinked executable path."""
+    hook_path = HOOKS_DIR / "context_block_stop.py"
+
+    assert hook_path.exists()
+    assert hook_path.is_symlink()
+    assert os.access(hook_path.resolve(), os.X_OK)
+    assert hook_path.resolve() == (REPO_ROOT / "assets" / "hooks" / "context_block_stop.py").resolve()
 
 
 if __name__ == "__main__":
