@@ -105,6 +105,55 @@ func TestResumeDropsIntoBeadContext(t *testing.T) {
 	}
 }
 
+func TestResumeRendersDeckCardSummaryWithoutFullBody(t *testing.T) {
+	ctx := context.Background()
+	beadStore, cardStore := openTestRenderStore(t)
+
+	_, err := beadStore.Create(ctx, beadstore.CreateParams{
+		ID:                 "bead-resume-1",
+		Title:              "Resume Target",
+		Type:               "task",
+		AcceptanceCriteria: "resume deck acceptance",
+	})
+	if err != nil {
+		t.Fatalf("Create bead: %v", err)
+	}
+
+	_, err = cardStore.Create(ctx, cards.CardCreateParams{
+		ID:          "card-resume-deck",
+		Type:        cards.CardTypePattern,
+		Title:       "Resume Deck Card",
+		BodySummary: "RESUME_SUMMARY_SENTINEL",
+		BodyFull:    "RESUME_FULL_BODY_SENTINEL",
+		Tags:        []string{"resume-tag"},
+	})
+	if err != nil {
+		t.Fatalf("Create card: %v", err)
+	}
+
+	cmd := newResumeCmdWithStore(beadStore)
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"bead-resume-1"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("oro resume bead-resume-1: %v\nstderr: %s", err, stderr.String())
+	}
+
+	output := stdout.String()
+	for _, want := range []string{"Resume Deck Card", "RESUME_SUMMARY_SENTINEL"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("stdout missing %q; got:\n%s", want, output)
+		}
+	}
+	for _, forbidden := range []string{"body_full", "RESUME_FULL_BODY_SENTINEL"} {
+		if strings.Contains(output, forbidden) {
+			t.Fatalf("stdout included %q; got:\n%s", forbidden, output)
+		}
+	}
+}
+
 func TestResumeCommandRegisteredInRoot(t *testing.T) {
 	root := newRootCmd()
 	for _, cmd := range root.Commands() {
