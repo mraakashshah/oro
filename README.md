@@ -55,21 +55,21 @@ Also, our cute mascot is Oro, the *oro* ouroboros !
 
 ## Philosophy
 
-Oro exists because single-agent coding sessions don't scale. One agent hits context limits, loses track of prior decisions, and can't parallelize. Oro solves this with a swarm: multiple workers execute tasks (tracked work items) simultaneously, each in an isolated worktree, each with access to cross-session memory. When a worker exhausts its context window, it writes a handoff and a fresh worker picks up where it left off — the serpent eats its tail.
+Oro exists because single-agent coding sessions don't scale. One agent hits context limits, loses track of prior decisions, and can't parallelize. Oro solves this with a swarm: multiple workers execute tasks (tracked work items) simultaneously, each in an isolated worktree, each with relevant knowledge cards. When a worker exhausts its context window, it writes a handoff and a fresh worker picks up where it left off — the serpent eats its tail.
 
 Quality is not optional. Every task goes through TDD (red-green-refactor), an automated quality gate (tests + lint + format), and ops-agent code review before merging to main. Failed reviews get feedback and retry. Merge conflicts get an ops agent. Stuck workers get diagnosed. The system is opinionated about correctness because autonomous agents must earn trust through process, not promises.
 
-Memory persists across sessions. Workers emit learnings during execution, the dispatcher extracts patterns from logs, and a FTS5-backed memory store surfaces relevant context to future workers. Decisions, gotchas, and patterns accumulate over time — the swarm gets smarter as it works.
+Knowledge persists across sessions. Workers emit learnings during execution, handoffs preserve immediate task state, and durable cards surface relevant rules, patterns, decisions, facts, and taste to future workers. The swarm gets smarter as it works.
 
 ## Principles
 
 ### 1. Less Context, Better Work
 
-Agents produce better output when they see less. A worker that receives a tightly scoped task — clear acceptance criteria, relevant memories, no noise — outperforms one drowning in an entire codebase. Oro decomposes work into atomic tasks, assigns each to a worker in a clean worktree, and injects only the memories that match. Context is a budget: spend it on signal, not surface area.
+Agents produce better output when they see less. A worker that receives a tightly scoped task — clear acceptance criteria, relevant cards, no noise — outperforms one drowning in an entire codebase. Oro decomposes work into atomic tasks, assigns each to a worker in a clean worktree, and injects only the cards that match. Context is a budget: spend it on signal, not surface area.
 
 ### 2. Compound Learnings
 
-Every session leaves the system smarter. Workers emit learnings during execution. The dispatcher extracts patterns from logs. Memory consolidation deduplicates and scores entries over time. High-frequency patterns get proposed for codification — a recurring workaround becomes a rule, a repeated sequence becomes a skill, a solved problem becomes a documented decision. Knowledge compounds; the swarm never re-learns the same lesson.
+Every session leaves the system smarter. Workers emit learnings during execution. The dispatcher turns useful patterns into card candidates, and reviewed cards become durable rules, patterns, decisions, facts, or taste. High-frequency patterns get proposed for codification — a recurring workaround becomes a rule, a repeated sequence becomes a skill, a solved problem becomes a documented decision. Knowledge compounds; the swarm never re-learns the same lesson.
 
 ### 3. Loop Until Done
 
@@ -233,11 +233,11 @@ Three layers of persistent memory:
 |-------|---------|-------|--------|
 | **Task annotations** | Native task store | Per-work-item notes, acceptance criteria | `oro task show <id>` |
 | **Handoffs** | YAML files in worktree | Immediate task context for continuation | Auto-read by next worker |
-| **Project memory** | SQLite FTS5 | Cross-session learnings, patterns, decisions | `oro remember` / `oro recall` |
+| **Knowledge cards** | Card store | Durable rules, patterns, decisions, facts, and taste | `oro cards ...` |
 
-Workers emit `[MEMORY]` markers during execution. The dispatcher also runs LLM-based extraction (background tier) on session output to catch patterns workers didn't explicitly tag. Before assigning a task, the dispatcher queries the top relevant memories and injects them into the worker's prompt — annotated with age so workers verify stale claims (>7 days) against current code.
+Workers and handoffs can queue learning candidates during execution. Review commands promote the useful candidates into cards, and assignment prompts use relevant cards instead of the retired prompt-memory path.
 
-**Dreaming:** Every 10 completed tasks (or when an epic closes), the dispatcher spawns a dreaming ops agent that reads the entire memories table, synthesizes cross-session patterns, resolves contradictions, merges duplicates, and prunes obsolete entries. The swarm gets smarter over time without human curation.
+**Cards:** Cards carry type, summary, full body, tags, score, contradiction state, retirement metadata, and lineage. They are the long-lived knowledge layer that workers receive in prompt context and operators maintain through the `oro cards` command group.
 
 ## Quick Start
 
@@ -339,11 +339,11 @@ oro directive pause
 # Resume
 oro directive resume
 
-# Store a learning
-oro remember "lesson: always validate input at system boundaries"
+# Review queued learning candidates
+oro cards review-queue
 
-# Search memories
-oro recall "input validation"
+# Inspect a knowledge card
+oro cards show card-abc123
 
 # Graceful shutdown
 oro stop
@@ -393,19 +393,24 @@ oro stop
 
 | Command | Description | Example |
 |---------|-------------|---------|
-| `oro remember` | Store a memory | `oro remember "gotcha: FTS5 requires content sync triggers"` |
-| `oro recall` | Search memories | `oro recall "testing patterns"` |
-| `oro forget` | Delete memories by ID | `oro forget 1 2 3` |
-| `oro memories list` | Browse memories with filters | `oro memories list --type lesson --limit 10` |
-| `oro memories consolidate` | Deduplicate and prune stale entries | `oro memories consolidate --dry-run` |
+| `oro cards create` | Create a manual knowledge card | `oro cards create pattern "Validate inputs at boundaries" --summary "Check inputs before crossing system boundaries"` |
+| `oro cards list` | List active card summaries | `oro cards list --type pattern --limit 10` |
+| `oro cards show` | Show a full card | `oro cards show card-abc123 --json` |
+| `oro cards review-queue` | List queued learning candidates | `oro cards review-queue` |
+| `oro cards promote` | Promote a reviewed candidate to a card | `oro cards promote 42` |
+| `oro cards reject` | Reject a queued candidate | `oro cards reject 42` |
+| `oro cards retire` | Retire a stale or superseded card | `oro cards retire card-abc123 --reason "superseded"` |
+| `oro cards import-from-memory` | Import legacy markdown memory files into cards | `oro cards import-from-memory ~/.oro/memory --dry-run` |
+| `oro cards check-drift` | Check legacy migration mirror drift | `oro cards check-drift --backfill --dry-run` |
+| `oro cards memory-retirement-check` | Verify legacy memory retirement readiness | `oro cards memory-retirement-check` |
 
-**`oro remember`** flags: `--pin` (skip time decay). Supports type hints: `lesson:`, `decision:`, `gotcha:`, `pattern:`
+**`oro cards create`** flags: `--summary <text>` (required), `--body <text>`, `--tag <tag>` (repeatable), `--confidence <float>`
 
-**`oro recall`** flags: `--id <n>` (fetch by ID), `--file <path>` (filter by file)
+**`oro cards list`** flags: `--type <rule|pattern|taste|decision|fact>`, `--include-retired`, `--limit <n>`
 
-**`oro memories list`** flags: `--type <type>`, `--tag <tag>`, `--limit <n>` (default: 20)
+**`oro cards show`** flags: `--json`
 
-**`oro memories consolidate`** flags: `--min-score <f>` (default: 0.1), `--similarity <f>` (default: 0.8), `--dry-run`
+**`oro cards retire`** flags: `--reason <text>` (required), `--superseded-by <card-id>`
 
 ### Control
 
@@ -509,7 +514,8 @@ oro/
 ├── pkg/
 │   ├── dispatcher/       # Core orchestrator — state machine, worker pool, task tracking
 │   ├── worker/           # Worker agent — UDS connection, prompt assembly, subprocess
-│   ├── memory/           # FTS5 memory store — insert, search, consolidate
+│   ├── cards/            # Knowledge cards — durable rules, patterns, decisions
+│   ├── memory/           # Retired legacy memory boundary and migration helpers
 │   ├── ops/              # Ops agent spawner — review, merge resolution, diagnosis
 │   ├── merge/            # Merge coordinator — serialized rebase + ff-only
 │   ├── protocol/         # Shared types, UDS messages, SQLite schema, constants
