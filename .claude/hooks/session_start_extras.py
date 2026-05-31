@@ -10,7 +10,7 @@ Outputs additionalContext on SessionStart.
 Pure functions for testability:
   - find_stale_beads(bd_output, days_threshold=3)
   - find_merged_worktrees(worktrees_dir, main_branch="main")
-  - recent_memories_db(n=5)
+  - recent_memories_db(n=5)  # retired fallback
   - role_beacon(role, beacons_dir)
 """
 
@@ -227,30 +227,12 @@ def find_merged_worktrees(worktrees_dir: str, main_branch: str = "main") -> list
 
 
 def recent_memories_db(n: int = 5) -> list[dict]:
-    """Fetch recent memories from oro's SQLite store via the CLI.
+    """Retired legacy memory fallback.
 
-    Calls ``oro memories list --format=json --limit=N`` and parses the JSON output.
-    Returns empty list when oro is not on PATH, exits non-zero, or outputs invalid JSON.
+    Session-start hooks no longer shell out to retired memory CLI commands.
     """
-    try:
-        result = subprocess.run(
-            ["oro", "memories", "list", "--format=json", f"--limit={n}"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            start_new_session=True,
-        )
-        if result.returncode != 0:
-            return []
-    except (subprocess.TimeoutExpired, OSError):
-        return []
-
-    try:
-        entries = json.loads(result.stdout)
-    except (json.JSONDecodeError, ValueError):
-        return []
-
-    return entries if isinstance(entries, list) else []
+    _ = n
+    return []
 
 
 _CLOSED_LINE_RE = re.compile(r"^✓\s+([\w.-]+)\s+\[.*?\]\s+\[.*?\]\s+-\s+(.+)$")
@@ -614,7 +596,7 @@ def main() -> None:
     # 2. Merged worktree cleanup
     merged = find_merged_worktrees(WORKTREES_DIR)
 
-    # 3. Recent memories from memories.db
+    # 3. Retired memory fallback; intentionally returns no learnings.
     learnings = recent_memories_db(n=5)
 
     # 4. Update pane activity (if ORO_ROLE is set)

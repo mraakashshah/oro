@@ -729,78 +729,13 @@ class TestHandoffArchive:
 # --- recent_memories_db ---
 
 
-class TestRecentMemoriesDB:
-    def test_parses_valid_json_from_oro(self, monkeypatch):
-        """recent_memories_db returns parsed list from oro memories list --format=json."""
-        import subprocess
-
-        fake_json = json.dumps(
-            [
-                {"id": 1, "type": "lesson", "content": "use ruff", "confidence": 0.9, "created_at": "2026-01-01"},
-                {"id": 2, "type": "gotcha", "content": "beware cd", "confidence": 0.8, "created_at": "2026-01-02"},
-            ]
-        )
-
-        def fake_run(cmd, **kwargs):
-            result = subprocess.CompletedProcess(cmd, 0, stdout=fake_json + "\n", stderr="")
-            return result
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        result = recent_memories_db(n=5)
-        assert len(result) == 2
-        assert result[0]["content"] == "use ruff"
-        assert result[1]["type"] == "gotcha"
-
-    def test_oro_not_on_path_returns_empty(self, monkeypatch):
-        """When oro is not installed, returns empty list."""
+class TestRecentMemoryFallbackRetired:
+    def test_retired_lookup_returns_empty_without_spawning_oro_memories(self, monkeypatch):
+        """Retired memory fallback returns no learnings and never shells out."""
         import subprocess
 
         def fake_run(cmd, **kwargs):
-            raise OSError("No such file or directory: 'oro'")
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        assert recent_memories_db(n=5) == []
-
-    def test_oro_returns_nonzero_exit_returns_empty(self, monkeypatch):
-        """When oro exits with error, returns empty list."""
-        import subprocess
-
-        def fake_run(cmd, **kwargs):
-            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="error")
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        assert recent_memories_db(n=5) == []
-
-    def test_oro_returns_invalid_json_returns_empty(self, monkeypatch):
-        """When oro outputs invalid JSON, returns empty list."""
-        import subprocess
-
-        def fake_run(cmd, **kwargs):
-            return subprocess.CompletedProcess(cmd, 0, stdout="not json\n", stderr="")
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        assert recent_memories_db(n=5) == []
-
-    def test_passes_limit_to_oro(self, monkeypatch):
-        """Limit parameter is forwarded to oro --limit flag."""
-        import subprocess
-
-        captured_cmd = []
-
-        def fake_run(cmd, **kwargs):
-            captured_cmd.extend(cmd)
-            return subprocess.CompletedProcess(cmd, 0, stdout="[]\n", stderr="")
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        recent_memories_db(n=3)
-        assert "--limit=3" in captured_cmd
-
-    def test_timeout_returns_empty(self, monkeypatch):
-        """When oro times out, returns empty list."""
-        import subprocess
-
-        def fake_run(cmd, **kwargs):
-            raise subprocess.TimeoutExpired(cmd, 5)
+            raise AssertionError(f"retired memory lookup spawned: {cmd!r}")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
         assert recent_memories_db(n=5) == []
