@@ -23,8 +23,8 @@ Run: uv run pytest assets/hooks/test_parity.py -v
 
 from __future__ import annotations
 
-import json
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -870,10 +870,14 @@ class TestCompactTriggerMirror:
 
         monkeypatch.setenv("ORO_ROLE", "fast")
         monkeypatch.setenv("ORO_MODEL", "claude-opus-4")
-        assert asset_module.resolve_tier_threshold(thresholds) == dogfood_module.resolve_tier_threshold(thresholds) == 35
+        assert (
+            asset_module.resolve_tier_threshold(thresholds) == dogfood_module.resolve_tier_threshold(thresholds) == 35
+        )
         assert asset_module.hard_threshold(thresholds) == dogfood_module.hard_threshold(thresholds) == 45
 
         monkeypatch.setenv("ORO_ROLE", "unknown")
         monkeypatch.setenv("ORO_MODEL", "claude-sonnet-4")
-        assert asset_module.resolve_tier_threshold(thresholds) == dogfood_module.resolve_tier_threshold(thresholds) == 55
+        assert (
+            asset_module.resolve_tier_threshold(thresholds) == dogfood_module.resolve_tier_threshold(thresholds) == 55
+        )
         assert asset_module.hard_threshold(thresholds) == dogfood_module.hard_threshold(thresholds) == 65
