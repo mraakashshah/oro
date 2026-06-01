@@ -15,9 +15,9 @@ type qgBaselineEntry struct {
 }
 
 type qgRegression struct {
-	TestName string
-	Before   bool
-	After    bool
+	TestName       string
+	BaselinePassed bool
+	CurrentPassed  bool
 }
 
 var (
@@ -88,6 +88,26 @@ func cloneQGBaseline(baseline qgBaseline) qgBaseline {
 		}
 	}
 	return cloned
+}
+
+func compareQGRegressionBaseline(baseline qgBaseline, beadID string, current map[string]bool) []qgRegression {
+	entry, ok := baseline[beadID]
+	if !ok {
+		return nil
+	}
+	regressions := make([]qgRegression, 0)
+	for testName, baselinePassed := range entry.Outcomes {
+		currentPassed, exists := current[testName]
+		if !baselinePassed || !exists || currentPassed {
+			continue
+		}
+		regressions = append(regressions, qgRegression{
+			TestName:       testName,
+			BaselinePassed: baselinePassed,
+			CurrentPassed:  currentPassed,
+		})
+	}
+	return regressions
 }
 
 func parseTestOutcomes(output string) map[string]bool {
