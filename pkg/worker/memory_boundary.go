@@ -78,8 +78,7 @@ func ExtractMemoriesWithLLMInWorkdir(_ context.Context, spawner MemoryExtractSpa
 	candidates, err := ExtractMemoriesFromReader(context.Background(), strings.NewReader(sessionText), spawner, workdir)
 	if err != nil {
 		log.Printf("worker memory extract: reader error: %v", err)
-		// Preserve historical best-effort behavior for this compatibility wrapper.
-		//nolint:nilerr
+		//nolint:nilerr // Preserve historical best-effort behavior for this compatibility wrapper.
 		return nil
 	}
 	appendMemoryCandidates(context.Background(), store, beadID, candidates)
