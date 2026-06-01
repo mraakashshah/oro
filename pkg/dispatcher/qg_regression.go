@@ -69,6 +69,21 @@ func (d *Dispatcher) detectQGRegression(ctx context.Context, base qgBaseline, wo
 	return qgRegression{}, nil
 }
 
+func (d *Dispatcher) revertRegressedRetry(ctx context.Context, base qgBaseline, worktree string) error {
+	headSHA := ""
+	for _, entry := range base {
+		headSHA = entry.HeadSHA
+		break
+	}
+	if headSHA == "" {
+		return fmt.Errorf("revert regressed retry: missing baseline head")
+	}
+	if _, err := (&ExecCommandRunner{Dir: worktree}).Run(ctx, "git", "reset", "--hard", headSHA); err != nil {
+		return fmt.Errorf("revert regressed retry: %w", err)
+	}
+	return nil
+}
+
 func (d *Dispatcher) cachedQGBaseline(headSHA string) (qgBaseline, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

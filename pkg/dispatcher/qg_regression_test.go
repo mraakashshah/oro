@@ -3,7 +3,10 @@ package dispatcher //nolint:testpackage // parseTestOutcomes is an unexported pu
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -280,5 +283,70 @@ FAIL
 				t.Fatalf("detectQGRegression() = %#v, want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRevertRegressedRetry_IssuesResetHard(t *testing.T) {
+	ctx := context.Background()
+	worktree := t.TempDir()
+	binDir := t.TempDir()
+	recordPath := filepath.Join(t.TempDir(), "git-call")
+	gitPath := filepath.Join(binDir, "git")
+	script := "#!/bin/sh\nprintf '%s\\n%s\\n' \"$PWD\" \"$*\" > " + recordPath + "\n"
+	if err := os.WriteFile(gitPath, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	base := qgBaseline{
+		"bead-1": {
+			HeadSHA: "abc123",
+		},
+	}
+
+	d := &Dispatcher{}
+	if err := d.revertRegressedRetry(ctx, base, worktree); err != nil {
+		t.Fatalf("revertRegressedRetry() error = %v", err)
+	}
+
+	record, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatalf("read fake git record: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(record)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("record = %q, want dir and args lines", record)
+	}
+	if lines[0] != worktree {
+		t.Fatalf("git Dir = %q, want %q", lines[0], worktree)
+	}
+	if lines[1] != "reset --hard abc123" {
+		t.Fatalf("git args = %q, want %q", lines[1], "reset --hard abc123")
+	}
+}
+
+func TestRevertRegressedRetry_ReturnsResetFailure(t *testing.T) {
+	ctx := context.Background()
+	worktree := t.TempDir()
+	binDir := t.TempDir()
+	gitPath := filepath.Join(binDir, "git")
+	if err := os.WriteFile(gitPath, []byte("#!/bin/sh\nexit 42\n"), 0o700); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	base := qgBaseline{
+		"bead-1": {
+			HeadSHA: "abc123",
+		},
+	}
+
+	d := &Dispatcher{}
+	err := d.revertRegressedRetry(ctx, base, worktree)
+	if err == nil {
+		t.Fatal("revertRegressedRetry() error = nil, want reset failure")
+	}
+	if !strings.Contains(err.Error(), "revert regressed retry") {
+		t.Fatalf("revertRegressedRetry() error = %v, want revert context", err)
 	}
 }
