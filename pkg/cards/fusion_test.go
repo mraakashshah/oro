@@ -1,6 +1,8 @@
 package cards //nolint:testpackage // white-box tests pin the unexported fuse contract from the Phase 2 spec.
 
 import (
+	"errors"
+	"fmt"
 	"math"
 	"reflect"
 	"testing"
@@ -91,6 +93,67 @@ func TestFusion_DefaultsAndFloorOff(t *testing.T) {
 	assertScore(t, got, "semantic", 0.05*(0.7*(1.0/62.0+1.0/61.0)+0.3*0.99))
 }
 
+func TestRerank_FailOpenPreservesTail(t *testing.T) {
+	candidates := make([]ScoredCard, 35)
+	for i := range candidates {
+		candidates[i] = fusionCard(fmt.Sprintf("card-%02d", i+1), 1, float64(35-i), 0)
+	}
+	reranker := cardRerankerFunc(func(_ string, cards []ScoredCard) ([]float64, error) {
+		if len(cards) != 30 {
+			t.Fatalf("reranker saw %d candidates, want 30", len(cards))
+		}
+		scores := make([]float64, len(cards))
+		for i := range scores {
+			scores[i] = float64(i)
+		}
+		return scores, nil
+	})
+
+	got := rerankTopCandidates("query", candidates, rerankConfig{
+		Enabled: true,
+		TopN:    30,
+	}, reranker)
+
+	wantTop := reverseIDs(candidates[:30])
+	wantTail := idsOf(candidates[30:])
+	assertOrder(t, got[:30], wantTop)
+	assertOrder(t, got[30:], wantTail)
+
+	failed := rerankTopCandidates("query", candidates, rerankConfig{
+		Enabled: true,
+		TopN:    30,
+	}, cardRerankerFunc(func(_ string, _ []ScoredCard) ([]float64, error) {
+		return nil, errors.New("reranker unavailable")
+	}))
+
+	if !reflect.DeepEqual(failed, candidates) {
+		t.Fatalf("reranker error changed candidates:\ngot  %#v\nwant %#v", failed, candidates)
+	}
+}
+
+func TestRerank_TopNZeroNoop(t *testing.T) {
+	candidates := []ScoredCard{
+		fusionCard("first", 1, 3, 0),
+		fusionCard("second", 1, 2, 0),
+		fusionCard("third", 1, 1, 0),
+	}
+	called := false
+	got := rerankTopCandidates("query", candidates, rerankConfig{
+		Enabled: true,
+		TopN:    0,
+	}, cardRerankerFunc(func(_ string, _ []ScoredCard) ([]float64, error) {
+		called = true
+		return []float64{1, 2, 3}, nil
+	}))
+
+	if called {
+		t.Fatal("reranker should not be called when TopN is zero")
+	}
+	if !reflect.DeepEqual(got, candidates) {
+		t.Fatalf("TopN zero changed candidates:\ngot  %#v\nwant %#v", got, candidates)
+	}
+}
+
 func fusionCard(id string, effectiveScore, score, cosine float64) ScoredCard {
 	return ScoredCard{
 		Card: Card{
@@ -100,6 +163,22 @@ func fusionCard(id string, effectiveScore, score, cosine float64) ScoredCard {
 		Score:          score,
 		Cosine:         cosine,
 	}
+}
+
+func idsOf(cards []ScoredCard) []string {
+	ids := make([]string, len(cards))
+	for i := range cards {
+		ids[i] = cards[i].Card.ID
+	}
+	return ids
+}
+
+func reverseIDs(cards []ScoredCard) []string {
+	ids := idsOf(cards)
+	for i, j := 0, len(ids)-1; i < j; i, j = i+1, j-1 {
+		ids[i], ids[j] = ids[j], ids[i]
+	}
+	return ids
 }
 
 func assertScore(t *testing.T, cards []ScoredCard, id string, want float64) {

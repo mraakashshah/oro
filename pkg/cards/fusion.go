@@ -21,6 +21,22 @@ type ScoredCard struct {
 	Cosine         float64
 }
 
+type cardReranker interface {
+	rerankCards(query string, candidates []ScoredCard) ([]float64, error)
+}
+
+// TODO(oro-s08-p3c): wire the cross-encoder reranker into semantic card recall.
+type cardRerankerFunc func(query string, candidates []ScoredCard) ([]float64, error)
+
+func (f cardRerankerFunc) rerankCards(query string, candidates []ScoredCard) ([]float64, error) {
+	return f(query, candidates)
+}
+
+type rerankConfig struct {
+	Enabled bool
+	TopN    int
+}
+
 type fusionAccumulator struct {
 	card           Card
 	effectiveScore float64
@@ -59,6 +75,34 @@ func fuse(keyword, vector []ScoredCard, cfg FusionConfig) []ScoredCard {
 	sort.SliceStable(out, func(i, j int) bool {
 		return out[i].Score > out[j].Score
 	})
+	return out
+}
+
+func rerankTopCandidates(query string, candidates []ScoredCard, cfg rerankConfig, reranker cardReranker) []ScoredCard {
+	if !cfg.Enabled || reranker == nil || len(candidates) == 0 {
+		return candidates
+	}
+	topN := cfg.TopN
+	if topN <= 0 {
+		return candidates
+	}
+	if topN > len(candidates) {
+		topN = len(candidates)
+	}
+	head := append([]ScoredCard(nil), candidates[:topN]...)
+	scores, err := reranker.rerankCards(query, head)
+	if err != nil || len(scores) != len(head) {
+		return candidates
+	}
+	for i := range head {
+		head[i].Score = scores[i]
+	}
+	sort.SliceStable(head, func(i, j int) bool {
+		return head[i].Score > head[j].Score
+	})
+	out := make([]ScoredCard, 0, len(candidates))
+	out = append(out, head...)
+	out = append(out, candidates[topN:]...)
 	return out
 }
 
