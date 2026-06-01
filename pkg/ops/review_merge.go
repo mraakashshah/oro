@@ -1,9 +1,14 @@
 package ops
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
+	"time"
+
+	"oro/pkg/beadstore"
 )
 
 const cheapGateScore = 45
@@ -27,6 +32,15 @@ func mergeReports(reports []ReviewReport, m PromptManifest, opts ReviewOpts) Res
 	}
 
 	promoteFindings(merged)
+	if err := persistReviewFindings(context.Background(), opts, merged); err != nil {
+		return Result{
+			Type:     OpsReview,
+			BeadID:   opts.BeadID,
+			Verdict:  VerdictFailed,
+			Feedback: err.Error(),
+			Err:      err,
+		}
+	}
 	survivors := gateFindings(merged)
 	feedback, err := json.Marshal(reviewMergeFeedback{Findings: survivors})
 	if err != nil {
@@ -45,6 +59,29 @@ func mergeReports(reports []ReviewReport, m PromptManifest, opts ReviewOpts) Res
 		Verdict:  verdictForFindings(survivors),
 		Feedback: string(feedback),
 	}
+}
+
+func persistReviewFindings(ctx context.Context, opts ReviewOpts, findings []Finding) error {
+	if !opts.PersistFindings || opts.BeadStore == nil {
+		return nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, finding := range findings {
+		payload, err := json.Marshal(finding)
+		if err != nil {
+			return fmt.Errorf("marshal review finding: %w", err)
+		}
+		err = opts.BeadStore.AppendJourney(ctx, opts.BeadID, beadstore.JourneyEvent{
+			Ts:      now,
+			Actor:   "ops_review",
+			Event:   "review_finding",
+			Payload: string(payload),
+		})
+		if err != nil {
+			return fmt.Errorf("append review finding journey: %w", err)
+		}
+	}
+	return nil
 }
 
 func flattenReviewReports(reports []ReviewReport) []Finding {

@@ -1,6 +1,17 @@
 package ops //nolint:testpackage // tests unexported canonical helpers from the finding spine
 
-import "testing"
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"testing"
+
+	"oro/pkg/beadstore"
+	"oro/pkg/beadstore/migrations"
+	"oro/pkg/protocol"
+
+	_ "modernc.org/sqlite"
+)
 
 func TestFindingID_StableAcrossEvidenceReorder(t *testing.T) {
 	finding := Finding{
@@ -66,5 +77,90 @@ func TestFindingID_ChangesOnTitleOrCategoryOrFile(t *testing.T) {
 				t.Fatalf("FindingID did not change after changing %s: %q", tc.name, got)
 			}
 		})
+	}
+}
+
+func TestPersistFindings_WritesJourneyRows(t *testing.T) {
+	ctx := context.Background()
+	store := newFindingTestStore(t)
+	const beadID = "oro-review"
+	if _, err := store.Create(ctx, beadstore.CreateParams{ID: beadID, Title: "review bead"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	reports := []ReviewReport{
+		{
+			Reviewer: "persona:correctness",
+			Verdict:  VerdictApproved,
+			Findings: []Finding{
+				persistedFinding("pkg/ops/finding.go", 10, "first issue"),
+			},
+		},
+		{
+			Reviewer: "persona:security",
+			Verdict:  VerdictApproved,
+			Findings: []Finding{
+				persistedFinding("pkg/ops/finding.go", 20, "second issue"),
+			},
+		},
+	}
+
+	result := mergeReports(reports, reviewMergeManifest(), ReviewOpts{
+		BeadID:          beadID,
+		Worktree:        ".",
+		PersistFindings: true,
+		BeadStore:       store,
+	})
+	if result.Err != nil {
+		t.Fatalf("mergeReports: %v", result.Err)
+	}
+
+	events, err := store.LatestJourney(ctx, beadID, 10)
+	if err != nil {
+		t.Fatalf("LatestJourney: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("journey events = %d, want 2: %+v", len(events), events)
+	}
+	for _, evt := range events {
+		if evt.Actor != "ops_review" || evt.Event != "review_finding" {
+			t.Fatalf("event = (%q, %q), want ops_review review_finding", evt.Actor, evt.Event)
+		}
+		var finding Finding
+		if err := json.Unmarshal([]byte(evt.Payload), &finding); err != nil {
+			t.Fatalf("payload is not JSON Finding: %v\n%s", err, evt.Payload)
+		}
+		if finding.ID == "" || finding.ID != FindingID(beadID, finding) {
+			t.Fatalf("finding id = %q, want content-addressed id", finding.ID)
+		}
+	}
+}
+
+func newFindingTestStore(t *testing.T) *beadstore.SQLiteStore {
+	t.Helper()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := protocol.MigrateBeadSchema(context.Background(), db); err != nil {
+		t.Fatalf("MigrateBeadSchema: %v", err)
+	}
+	if err := migrations.MigrateToV3(context.Background(), db); err != nil {
+		t.Fatalf("MigrateToV3: %v", err)
+	}
+	return beadstore.NewSQLiteStore(db)
+}
+
+func persistedFinding(file string, line int, title string) Finding {
+	return Finding{
+		Severity:   SevImportant,
+		Category:   "correctness",
+		Title:      title,
+		Detail:     "detail",
+		Confidence: 90,
+		Evidence: []Evidence{
+			{File: file, LineStart: line, LineEnd: line},
+		},
 	}
 }
