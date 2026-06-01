@@ -77,6 +77,9 @@ func ExtractMemoriesWithLLMInWorkdir(_ context.Context, spawner MemoryExtractSpa
 
 	candidates, err := ExtractMemoriesFromReader(context.Background(), strings.NewReader(sessionText), spawner, workdir)
 	if err != nil {
+		log.Printf("worker memory extract: reader error: %v", err)
+		// Preserve historical best-effort behavior for this compatibility wrapper.
+		//nolint:nilerr
 		return nil
 	}
 	appendMemoryCandidates(context.Background(), store, beadID, candidates)
@@ -120,11 +123,11 @@ func ExtractMemoriesFromReader(ctx context.Context, src io.Reader, spawner Memor
 	return candidates, nil
 }
 
-func appendMemoryMarker(ctx context.Context, store LearningSink, beadID, line string, confidence float64) {
+func appendMemoryMarker(ctx context.Context, store LearningSink, beadID, line string) {
 	if store == nil || beadID == "" {
 		return
 	}
-	candidate := cardCandidateFromMemoryMarkerLine(line, confidence)
+	candidate := cardCandidateFromMemoryMarkerLine(line, 0.8)
 	if candidate == nil {
 		return
 	}

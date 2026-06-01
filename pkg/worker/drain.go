@@ -76,7 +76,7 @@ func drainWritePlaintext(out io.Writer, line string) {
 func drainAccumulatePlaintext(ctx context.Context, line string, accumulated *strings.Builder, store LearningSink, beadID string) {
 	accumulated.WriteString(line)
 	accumulated.WriteString("\n")
-	appendMemoryMarker(ctx, store, beadID, line, 0.8)
+	appendMemoryMarker(ctx, store, beadID, line)
 }
 
 // filterWriters returns a multi-writer for non-nil writers, or nil.
@@ -126,7 +126,7 @@ func drainFlushRemaining(ctx context.Context, lineBuf, accumulated *strings.Buil
 	remaining := lineBuf.String()
 	accumulated.WriteString(remaining)
 	accumulated.WriteString("\n")
-	appendMemoryMarker(ctx, store, beadID, remaining, 0.8)
+	appendMemoryMarker(ctx, store, beadID, remaining)
 }
 
 // drainFlushLines extracts complete newline-terminated lines from buf,
@@ -145,6 +145,6 @@ func drainFlushLines(ctx context.Context, buf, accumulated *strings.Builder, sto
 	for _, line := range strings.Split(complete, "\n") {
 		accumulated.WriteString(line)
 		accumulated.WriteString("\n")
-		appendMemoryMarker(ctx, store, beadID, line, 0.8)
+		appendMemoryMarker(ctx, store, beadID, line)
 	}
 }

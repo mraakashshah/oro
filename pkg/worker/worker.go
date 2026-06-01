@@ -1053,7 +1053,7 @@ func (w *Worker) processTextLine(ctx context.Context, line string) {
 	beadID := w.beadID
 	w.mu.Unlock()
 
-	appendMemoryMarker(ctx, store, beadID, line, 0.8)
+	appendMemoryMarker(ctx, store, beadID, line)
 	w.flushImplicitMemories(ctx, false)
 }
 
