@@ -1951,6 +1951,30 @@ func TestBuildHookConfigContainsCompactTrigger(t *testing.T) {
 	}
 }
 
+func TestBuildHookConfigCaptureHookOptIn(t *testing.T) {
+	defaultCfg := buildHookConfig("/hooks")
+	for _, group := range defaultCfg["PostToolUse"] {
+		for _, hook := range group.Hooks {
+			if strings.Contains(hook.Command, "oro-capture-hook") {
+				t.Fatalf("oro-capture-hook must be absent by default, got %#v", defaultCfg["PostToolUse"])
+			}
+		}
+	}
+
+	enabledCfg := buildHookConfigWithCapture("/hooks", true)
+	var found bool
+	for _, group := range enabledCfg["PostToolUse"] {
+		for _, hook := range group.Hooks {
+			if hook.Command == "/hooks/oro-capture-hook" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("oro-capture-hook missing when continuous capture enabled: %#v", enabledCfg["PostToolUse"])
+	}
+}
+
 // TestBuildHookConfig_NoStaleHookRefs verifies that every .py/.sh hook filename
 // referenced in buildHookConfig exists in the assets/hooks/ directory.
 // This catches stale references to deleted hooks (e.g. memory_capture.py).

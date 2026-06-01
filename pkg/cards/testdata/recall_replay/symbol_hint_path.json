@@ -1,0 +1,22 @@
+{
+  "cards": [
+    {
+      "id": "card-symbol-owner",
+      "type": "pattern",
+      "title": "Symbol hint card",
+      "body_summary": "card ranking can use exact symbol hints",
+      "body_full": "Symbol hints make file-scoped recall stable for code changes.",
+      "tags": ["cards", "symbols"]
+    },
+    {
+      "id": "card-symbol-peer",
+      "type": "pattern",
+      "title": "Generic card ranking",
+      "body_summary": "card ranking can use generic text hints",
+      "body_full": "Generic ranking is useful but less specific than symbol hints.",
+      "tags": ["cards", "ranking"]
+    }
+  ],
+  "query": "card ranking symbol hints",
+  "expected_top_k_ids": ["card-symbol-owner"]
+}

@@ -939,10 +939,14 @@ type hookGroup struct {
 // buildHookConfig returns the full hooks map for settings.json.
 // hooksDir is the absolute path prefix for hook scripts (e.g. "$HOME/.oro/hooks").
 func buildHookConfig(hooksDir string) map[string][]hookGroup {
+	return buildHookConfigWithCapture(hooksDir, false)
+}
+
+func buildHookConfigWithCapture(hooksDir string, continuousCapture bool) map[string][]hookGroup {
 	py := func(s string) string { return "python3 " + hooksDir + "/" + s }
 	sh := func(s string) string { return hooksDir + "/" + s }
 
-	return map[string][]hookGroup{
+	cfg := map[string][]hookGroup{
 		"SessionStart": {
 			{Matcher: "", Hooks: []hookEntry{
 				{Type: "command", Command: py("session_start_extras.py"), StatusMessage: "Loading project context..."},
@@ -974,26 +978,39 @@ func buildHookConfig(hooksDir string) map[string][]hookGroup {
 				{Type: "command", Command: py("enforce_worktree.py")},
 			}},
 		},
-		"PostToolUse": {
-			{Matcher: "", Hooks: []hookEntry{
-				{Type: "command", Command: py("context_pct_writer.py")},
-				{Type: "command", Command: py("compact_trigger.py")},
-				{Type: "command", Command: py("context_pruner.py")},
-			}},
-			{Matcher: "Read|WebFetch|Bash", Hooks: []hookEntry{
-				{Type: "command", Command: py("prompt_injection_guard.py")},
-			}},
-			{Matcher: "Edit|Write", Hooks: []hookEntry{
-				{Type: "command", Command: sh("auto-format.sh")},
-			}},
-			{Matcher: "Task", Hooks: []hookEntry{
-				{Type: "command", Command: py("validate_agent_completion.py")},
-			}},
-		},
+		"PostToolUse": postToolUseHookGroups(py, sh),
 		"Stop": {{Matcher: "", Hooks: []hookEntry{
 			{Type: "command", Command: py("context_block_stop.py")},
 			{Type: "command", Command: sh("stop-checklist.sh")},
 		}}},
+	}
+	if continuousCapture {
+		cfg["PostToolUse"] = append([]hookGroup{{
+			Matcher: "",
+			Hooks: []hookEntry{
+				{Type: "command", Command: sh("oro-capture-hook")},
+			},
+		}}, cfg["PostToolUse"]...)
+	}
+	return cfg
+}
+
+func postToolUseHookGroups(py, sh func(string) string) []hookGroup {
+	return []hookGroup{
+		{Matcher: "", Hooks: []hookEntry{
+			{Type: "command", Command: py("context_pct_writer.py")},
+			{Type: "command", Command: py("compact_trigger.py")},
+			{Type: "command", Command: py("context_pruner.py")},
+		}},
+		{Matcher: "Read|WebFetch|Bash", Hooks: []hookEntry{
+			{Type: "command", Command: py("prompt_injection_guard.py")},
+		}},
+		{Matcher: "Edit|Write", Hooks: []hookEntry{
+			{Type: "command", Command: sh("auto-format.sh")},
+		}},
+		{Matcher: "Task", Hooks: []hookEntry{
+			{Type: "command", Command: py("validate_agent_completion.py")},
+		}},
 	}
 }
 

@@ -1,10 +1,15 @@
 package cards_test
 
 import (
+	"context"
+	"database/sql"
+	"math"
+	"strconv"
 	"strings"
 	"testing"
 
 	"oro/pkg/cards"
+	"oro/pkg/dbutil"
 )
 
 func TestPromotionDecision(t *testing.T) {
@@ -203,4 +208,205 @@ func TestPromotionDecision(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPromotedLearning_EntersProposalQueue(t *testing.T) {
+	ctx := context.Background()
+	store, db := newTestStoreWithBeads(t)
+	if _, err := db.ExecContext(ctx, `INSERT INTO beads (id) VALUES (?)`, "bead-proposal"); err != nil {
+		t.Fatalf("insert bead: %v", err)
+	}
+	candidate := cards.CardCandidate{
+		Type:        string(cards.CardTypePattern),
+		Title:       "Promoted learnings enter proposals",
+		BodySummary: "Grade-gated promotions are queued as proposed cards.",
+		BodyFull:    "When the grade gate is enabled, DecidePromotion promote results should create proposed cards instead of direct active cards.",
+		Confidence:  0.91,
+		Evidence:    []string{"pkg/cards/promotion_test.go:TestPromotedLearning_EntersProposalQueue"},
+		Tags:        []string{"cards", "grade-gate"},
+	}
+	decision := cards.DecidePromotion(candidate, "pass", nil)
+	if decision.Action != cards.PromotionActionPromote {
+		t.Fatalf("promotion action = %q, want promote: %+v", decision.Action, decision)
+	}
+	learningID, err := store.AppendLearningPending(ctx, "bead-proposal", candidate)
+	if err != nil {
+		t.Fatalf("AppendLearningPending: %v", err)
+	}
+
+	cardID, err := store.PromoteLearningAsProposal(ctx, learningID)
+	if err != nil {
+		t.Fatalf("PromoteLearningAsProposal: %v", err)
+	}
+
+	var promotedTo string
+	if err := db.QueryRowContext(ctx,
+		`SELECT promoted_to FROM bead_learnings_pending WHERE id = ?`, learningID,
+	).Scan(&promotedTo); err != nil {
+		t.Fatalf("query promoted_to: %v", err)
+	}
+	if promotedTo != cardID {
+		t.Fatalf("promoted_to = %q, want %q", promotedTo, cardID)
+	}
+
+	var gradeState, proposalHash sql.NullString
+	if err := db.QueryRowContext(ctx,
+		`SELECT grade_state, proposal_hash FROM cards WHERE id = ?`, cardID,
+	).Scan(&gradeState, &proposalHash); err != nil {
+		t.Fatalf("query promoted proposal: %v", err)
+	}
+	if !gradeState.Valid || gradeState.String != string(cards.GradeStateProposed) {
+		t.Fatalf("grade_state = %q valid=%v, want proposed", gradeState.String, gradeState.Valid)
+	}
+	if !proposalHash.Valid || strings.TrimSpace(proposalHash.String) == "" {
+		t.Fatalf("proposal_hash = %q valid=%v, want non-empty", proposalHash.String, proposalHash.Valid)
+	}
+
+	card, err := store.Show(ctx, cardID)
+	if err != nil {
+		t.Fatalf("Show proposed card: %v", err)
+	}
+	if card.Title != candidate.Title || card.EmergedFrom == nil || *card.EmergedFrom != "bead-proposal" {
+		t.Fatalf("proposed card = %+v, want candidate title and bead provenance", card)
+	}
+}
+
+func TestCalibration_ReportsRates(t *testing.T) {
+	ctx := context.Background()
+	store, db := newCalibrationStore(t)
+
+	seedResolvedGrade(ctx, t, store, db, "pattern", "task", "correct")
+	seedResolvedGrade(ctx, t, store, db, "pattern", "task", "correct")
+	seedResolvedGrade(ctx, t, store, db, "pattern", "task", "correct")
+	seedResolvedGrade(ctx, t, store, db, "pattern", "task", "incorrect")
+	seedResolvedGrade(ctx, t, store, db, "rule", "bug", "incorrect")
+	seedResolvedGrade(ctx, t, store, db, "rule", "bug", "incorrect")
+	seedResolvedGrade(ctx, t, store, db, "rule", "bug", "partial")
+
+	scorecard, err := store.Calibration(ctx)
+	if err != nil {
+		t.Fatalf("Calibration: %v", err)
+	}
+	if scorecard.Skipped {
+		t.Fatalf("Calibration skipped with %d resolved verdicts", scorecard.Resolved)
+	}
+	if scorecard.Resolved != 7 {
+		t.Fatalf("Resolved = %d, want 7", scorecard.Resolved)
+	}
+
+	patternTask := findBucket(t, scorecard, cards.CardTypePattern, "task")
+	if patternTask.Resolved != 4 || patternTask.Correct != 3 {
+		t.Fatalf("pattern/task bucket = %+v, want 3/4 correct", patternTask)
+	}
+	assertFloat(t, patternTask.Accuracy, 0.75)
+	assertFloat(t, patternTask.Brier, 0.1875)
+
+	ruleBug := findBucket(t, scorecard, cards.CardTypeRule, "bug")
+	if ruleBug.Resolved != 3 || ruleBug.Correct != 0 {
+		t.Fatalf("rule/bug bucket = %+v, want 0/3 correct", ruleBug)
+	}
+	assertFloat(t, ruleBug.Accuracy, 0)
+	assertFloat(t, ruleBug.Brier, 0)
+	if !containsString(scorecard.ActiveBiasTags, "low_accuracy:rule:bug") {
+		t.Fatalf("ActiveBiasTags = %v, want low_accuracy:rule:bug", scorecard.ActiveBiasTags)
+	}
+
+	coldStore, _ := newCalibrationStore(t)
+	cold, err := coldStore.Calibration(ctx)
+	if err != nil {
+		t.Fatalf("cold Calibration: %v", err)
+	}
+	if !cold.Skipped || cold.Resolved != 0 || len(cold.Buckets) != 0 {
+		t.Fatalf("cold scorecard = %+v, want skipped empty scorecard", cold)
+	}
+}
+
+func newCalibrationStore(t *testing.T) (*cards.SQLiteCardStore, *sql.DB) {
+	t.Helper()
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(context.Background(), `
+		CREATE TABLE beads (
+			id TEXT PRIMARY KEY,
+			type TEXT NOT NULL
+		)`); err != nil {
+		t.Fatalf("create beads table: %v", err)
+	}
+	store, err := cards.NewStore(db)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	return store, db
+}
+
+func seedResolvedGrade(
+	ctx context.Context,
+	t *testing.T,
+	store *cards.SQLiteCardStore,
+	db *sql.DB,
+	cardType string,
+	beadType string,
+	verdict string,
+) {
+	t.Helper()
+	var existing int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM cards`).Scan(&existing); err != nil {
+		t.Fatalf("count cards: %v", err)
+	}
+	beadID := "bead-" + cardType + "-" + beadType + "-" + verdict + "-" +
+		strings.ReplaceAll(t.Name(), "/", "-") + "-" + strconv.Itoa(existing)
+	if _, err := db.ExecContext(ctx, `INSERT INTO beads (id, type) VALUES (?, ?)`, beadID, beadType); err != nil {
+		t.Fatalf("insert bead: %v", err)
+	}
+	card, err := store.Create(ctx, cards.CardCreateParams{
+		Type:        cards.CardType(cardType),
+		Title:       cardType + " " + beadType + " " + verdict,
+		BodySummary: "calibration fixture",
+		BodyFull:    "calibration fixture",
+		GradeState:  "applied",
+	})
+	if err != nil {
+		t.Fatalf("create card: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE cards
+		   SET grade_verdict = ?, grade_confidence = 0.8
+		 WHERE id = ?`, verdict, card.ID); err != nil {
+		t.Fatalf("update grade: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO card_events (card_id, ts, bead_id, actor, kind)
+		VALUES (?, '2026-01-01T00:00:00Z', ?, 'test', 'grade_resolved')`, card.ID, beadID); err != nil {
+		t.Fatalf("insert grade event: %v", err)
+	}
+}
+
+func findBucket(t *testing.T, scorecard cards.Scorecard, cardType cards.CardType, beadType string) cards.ScorecardBucket {
+	t.Helper()
+	for _, bucket := range scorecard.Buckets {
+		if bucket.CardType == cardType && bucket.BeadType == beadType {
+			return bucket
+		}
+	}
+	t.Fatalf("missing bucket %s/%s in %+v", cardType, beadType, scorecard.Buckets)
+	return cards.ScorecardBucket{}
+}
+
+func assertFloat(t *testing.T, got float64, want float64) {
+	t.Helper()
+	if math.Abs(got-want) > 0.000001 {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

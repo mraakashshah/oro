@@ -121,6 +121,26 @@ func TestBuildCardContextKeepsAssignPayloadUnderProtocolLimit(t *testing.T) {
 	}
 }
 
+func TestBuildCardContextPassesSymbolHints(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	store := &staticRelevantCardStore{}
+	d.cardStore = store
+	d.cfg.RepoRoot = filepath.Clean("../..")
+
+	d.buildCardContext(context.Background(), protocol.Bead{
+		ID:                 "bead-symbol-hints",
+		Title:              "route symbol-only card context",
+		AcceptanceCriteria: "Read: pkg/dispatcher/assign_payload.go:buildCardContext",
+	})
+
+	if len(store.query.SymbolHints) == 0 {
+		t.Fatal("SymbolHints is empty, want bead touched symbols passed to Relevant")
+	}
+	if !containsString(store.query.SymbolHints, "pkg/dispatcher/assign_payload.go:buildCardContext") {
+		t.Fatalf("SymbolHints = %#v, want touched file-qualified symbol", store.query.SymbolHints)
+	}
+}
+
 func TestTrimAssignmentCardContextEdges(t *testing.T) {
 	deck := []cards.DeckCard{{ID: "deck-1"}}
 	inlined := []cards.InlinedCard{{ID: "inline-1"}}
@@ -135,10 +155,21 @@ func TestTrimAssignmentCardContextEdges(t *testing.T) {
 
 type staticRelevantCardStore struct {
 	result cards.RelevantCards
+	query  cards.RelevanceQuery
 }
 
-func (s *staticRelevantCardStore) Relevant(context.Context, cards.RelevanceQuery) (cards.RelevantCards, error) {
+func (s *staticRelevantCardStore) Relevant(_ context.Context, q cards.RelevanceQuery) (cards.RelevantCards, error) {
+	s.query = q
 	return s.result, nil
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *staticRelevantCardStore) Show(context.Context, string) (*cards.Card, error) {
@@ -169,6 +200,10 @@ func (s *staticRelevantCardStore) PromoteLearning(context.Context, int64) (strin
 	return "", errors.New("not implemented")
 }
 
+func (s *staticRelevantCardStore) PromoteLearningAsProposal(context.Context, int64) (string, error) {
+	return "", errors.New("not implemented")
+}
+
 func (s *staticRelevantCardStore) RejectLearning(context.Context, int64, string) error {
 	return errors.New("not implemented")
 }
@@ -183,6 +218,26 @@ func (s *staticRelevantCardStore) Create(context.Context, cards.CardCreateParams
 
 func (s *staticRelevantCardStore) Retire(context.Context, string, string, string) error {
 	return errors.New("not implemented")
+}
+
+func (s *staticRelevantCardStore) AddRelation(context.Context, string, string, cards.RelationSignal) error {
+	return errors.New("not implemented")
+}
+
+func (s *staticRelevantCardStore) SeeAlso(context.Context, string, int) ([]cards.CardSummary, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *staticRelevantCardStore) Lineage(context.Context, string) ([]cards.Card, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *staticRelevantCardStore) LatestInChain(context.Context, string) (*cards.Card, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *staticRelevantCardStore) Reindex(context.Context) (int, error) {
+	return 0, errors.New("not implemented")
 }
 
 func (s *staticRelevantCardStore) WithReadTx(context.Context, func(cards.ReadTx) error) error {

@@ -13,7 +13,36 @@ import (
 	"oro/pkg/dbutil"
 )
 
+type recordingEmbedder struct {
+	model string
+	dim   int
+	texts []string
+}
+
+func (e *recordingEmbedder) Embed(text string) []float32 {
+	e.texts = append(e.texts, text)
+	vec := make([]float32, e.dim)
+	for i := range vec {
+		vec[i] = float32(len(e.texts) + i)
+	}
+	return vec
+}
+
+func (e *recordingEmbedder) Dim() int {
+	return e.dim
+}
+
+func (e *recordingEmbedder) Name() string {
+	return e.model
+}
+
 func newTestStore(t *testing.T) *cards.SQLiteCardStore {
+	t.Helper()
+	store, _ := newTestStoreWithDB(t)
+	return store
+}
+
+func newTestStoreWithDB(t *testing.T) (*cards.SQLiteCardStore, *sql.DB) {
 	t.Helper()
 	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
@@ -25,7 +54,7 @@ func newTestStore(t *testing.T) *cards.SQLiteCardStore {
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
-	return store
+	return store, db
 }
 
 func mustCreate(t *testing.T, store *cards.SQLiteCardStore, p cards.CardCreateParams) *cards.Card {
@@ -59,6 +88,126 @@ func newTestStoreWithBeads(t *testing.T) (*cards.SQLiteCardStore, *sql.DB) {
 		t.Fatalf("new store: %v", err)
 	}
 	return store, db
+}
+
+func TestCreate_EmbedsCard(t *testing.T) {
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	embedder := &recordingEmbedder{model: "test-model", dim: 3}
+	store, err := cards.NewStore(db, cards.WithEmbedder(embedder))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+
+	card, err := store.Create(ctx, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "Embed created cards",
+		BodySummary: "Create should embed the compact recall text",
+		BodyFull:    "Full text is intentionally not sent to the embedder.",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if len(embedder.texts) != 1 {
+		t.Fatalf("embed calls = %d, want 1", len(embedder.texts))
+	}
+	wantText := "Embed created cards\nCreate should embed the compact recall text"
+	if embedder.texts[0] != wantText {
+		t.Fatalf("embedded text = %q, want %q", embedder.texts[0], wantText)
+	}
+
+	var raw []byte
+	var model sql.NullString
+	if err := db.QueryRowContext(ctx,
+		`SELECT embedding, embedding_model FROM cards WHERE id = ?`, card.ID,
+	).Scan(&raw, &model); err != nil {
+		t.Fatalf("query embedding: %v", err)
+	}
+	if len(raw) != 12 {
+		t.Fatalf("embedding bytes len = %d, want 12 for 3 float32 values", len(raw))
+	}
+	if !model.Valid || model.String != "test-model" {
+		t.Fatalf("embedding_model = %v, want test-model", model)
+	}
+}
+
+func TestReindex_BackfillsNull(t *testing.T) {
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	storeWithoutEmbedder, err := cards.NewStore(db)
+	if err != nil {
+		t.Fatalf("new store without embedder: %v", err)
+	}
+	legacy, err := storeWithoutEmbedder.Create(ctx, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "Legacy card",
+		BodySummary: "Backfill this null embedding",
+		BodyFull:    "Legacy rows start with embedding NULL.",
+	})
+	if err != nil {
+		t.Fatalf("create legacy card: %v", err)
+	}
+
+	embedder := &recordingEmbedder{model: "backfill-model", dim: 2}
+	store, err := cards.NewStore(db, cards.WithEmbedder(embedder))
+	if err != nil {
+		t.Fatalf("new store with embedder: %v", err)
+	}
+	alreadyEmbedded, err := store.Create(ctx, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "Already embedded",
+		BodySummary: "Create embeds this row immediately",
+		BodyFull:    "This row should not be embedded twice.",
+	})
+	if err != nil {
+		t.Fatalf("create embedded card: %v", err)
+	}
+
+	backfilled, err := store.Reindex(ctx)
+	if err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	if backfilled != 1 {
+		t.Fatalf("Reindex backfilled = %d, want 1", backfilled)
+	}
+	wantTexts := []string{
+		"Already embedded\nCreate embeds this row immediately",
+		"Legacy card\nBackfill this null embedding",
+	}
+	if strings.Join(embedder.texts, "\x00") != strings.Join(wantTexts, "\x00") {
+		t.Fatalf("embed texts = %#v, want %#v", embedder.texts, wantTexts)
+	}
+
+	assertCardEmbeddingModel(t, db, legacy.ID, "backfill-model")
+	assertCardEmbeddingModel(t, db, alreadyEmbedded.ID, "backfill-model")
+}
+
+func assertCardEmbeddingModel(t *testing.T, db *sql.DB, id, want string) {
+	t.Helper()
+	var raw []byte
+	var model sql.NullString
+	if err := db.QueryRow(
+		`SELECT embedding, embedding_model FROM cards WHERE id = ?`, id,
+	).Scan(&raw, &model); err != nil {
+		t.Fatalf("query embedding for %s: %v", id, err)
+	}
+	if len(raw) == 0 {
+		t.Fatalf("card %s embedding is empty", id)
+	}
+	if !model.Valid || model.String != want {
+		t.Fatalf("card %s embedding_model = %v, want %s", id, model, want)
+	}
 }
 
 func TestAppendAndQueryPending(t *testing.T) {
@@ -1007,4 +1156,368 @@ func TestCardStoreRead(t *testing.T) {
 			t.Errorf("top card: got %q, want %q", result.Deck[0].Title, "Wrap errors")
 		}
 	})
+}
+
+func TestRelevant_SymbolHintsNowContributes(t *testing.T) {
+	ctx := context.Background()
+	store, db := newTestStoreWithDB(t)
+
+	withSymbol := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "with symbol",
+		BodySummary: "same summary",
+		BodyFull:    "same body",
+		Tags:        []string{"same-tag"},
+	})
+	withoutSymbol := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "without symbol",
+		BodySummary: "same summary",
+		BodyFull:    "same body",
+		Tags:        []string{"same-tag"},
+	})
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO card_symbols (card_id, symbol) VALUES (?, ?)`,
+		withSymbol.ID, "pkg/x:Foo",
+	); err != nil {
+		t.Fatalf("insert card symbol: %v", err)
+	}
+
+	result, err := store.Relevant(ctx, cards.RelevanceQuery{
+		BeadType:        "task",
+		BeadTags:        []string{"same-tag"},
+		BeadDescription: "same summary",
+		SymbolHints:     []string{"pkg/x:Foo"},
+		MaxTokens:       1000,
+	})
+	if err != nil {
+		t.Fatalf("Relevant: %v", err)
+	}
+
+	withIdx, withoutIdx := -1, -1
+	for i, c := range result.Deck {
+		switch c.ID {
+		case withSymbol.ID:
+			withIdx = i
+		case withoutSymbol.ID:
+			withoutIdx = i
+		}
+	}
+	if withIdx == -1 || withoutIdx == -1 {
+		t.Fatalf("expected both cards in deck: withIdx=%d withoutIdx=%d", withIdx, withoutIdx)
+	}
+	if withIdx > withoutIdx {
+		t.Fatalf("symbol-matching card ranked after non-matching card: withIdx=%d withoutIdx=%d", withIdx, withoutIdx)
+	}
+}
+
+func TestRelevant_WSeeAlsoZeroIsLegacyIdentical(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+
+	direct := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "direct keyword",
+		BodySummary: "retry timeout worker",
+		BodyFull:    "retry timeout worker details",
+		Tags:        []string{"dispatcher"},
+	})
+	related := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "related graph",
+		BodySummary: "socket cleanup",
+		BodyFull:    "socket cleanup details",
+		Tags:        []string{"network"},
+	})
+	other := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "other keyword",
+		BodySummary: "retry timeout",
+		BodyFull:    "retry timeout details",
+		Tags:        []string{"worker"},
+	})
+	if err := store.AddRelation(ctx, direct.ID, related.ID, cards.RelationSignalCall); err != nil {
+		t.Fatalf("AddRelation: %v", err)
+	}
+
+	got, err := store.Relevant(ctx, cards.RelevanceQuery{
+		BeadType:        string(cards.CardTypePattern),
+		BeadTags:        []string{"dispatcher", "worker"},
+		BeadDescription: "retry timeout worker",
+		MaxTokens:       1000,
+		WSeeAlso:        0,
+	})
+	if err != nil {
+		t.Fatalf("Relevant: %v", err)
+	}
+
+	wantOrder := []string{direct.ID, other.ID, related.ID}
+	if gotOrder := deckIDs(got.Deck); !sameStringSlice(gotOrder, wantOrder) {
+		t.Fatalf("deck order = %v, want legacy order %v", gotOrder, wantOrder)
+	}
+}
+
+func TestRelevant_SeeAlsoAdditiveButFloorPreserved(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+
+	direct := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "direct keyword",
+		BodySummary: "retry timeout worker",
+		BodyFull:    "retry timeout worker details",
+		Tags:        []string{"dispatcher"},
+	})
+	unrelated := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "unrelated",
+		BodySummary: "unmatched content",
+		BodyFull:    "unmatched content details",
+		Tags:        []string{"network"},
+	})
+	related := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "related graph",
+		BodySummary: "unmatched content",
+		BodyFull:    "unmatched content details",
+		Tags:        []string{"network"},
+	})
+	if err := store.AddRelation(ctx, direct.ID, related.ID, cards.RelationSignalCall); err != nil {
+		t.Fatalf("AddRelation call: %v", err)
+	}
+	if err := store.AddRelation(ctx, direct.ID, related.ID, cards.RelationSignalComention); err != nil {
+		t.Fatalf("AddRelation comention: %v", err)
+	}
+
+	withoutGraph, err := store.Relevant(ctx, cards.RelevanceQuery{
+		BeadType:        string(cards.CardTypePattern),
+		BeadTags:        []string{"dispatcher"},
+		BeadDescription: "retry timeout worker",
+		MaxTokens:       1000,
+		WSeeAlso:        0,
+	})
+	if err != nil {
+		t.Fatalf("Relevant without graph: %v", err)
+	}
+	withGraph, err := store.Relevant(ctx, cards.RelevanceQuery{
+		BeadType:        string(cards.CardTypePattern),
+		BeadTags:        []string{"dispatcher"},
+		BeadDescription: "retry timeout worker",
+		MaxTokens:       1000,
+		WSeeAlso:        1,
+	})
+	if err != nil {
+		t.Fatalf("Relevant with graph: %v", err)
+	}
+
+	if deckIndex(withoutGraph.Deck, related.ID) >= deckIndex(withoutGraph.Deck, unrelated.ID) {
+		t.Fatalf("related card should start no higher than unrelated without graph: %v", deckIDs(withoutGraph.Deck))
+	}
+	if deckIndex(withGraph.Deck, related.ID) >= deckIndex(withGraph.Deck, unrelated.ID) {
+		t.Fatalf("related card was not boosted above unrelated: %v", deckIDs(withGraph.Deck))
+	}
+	if deckIndex(withGraph.Deck, related.ID) <= deckIndex(withGraph.Deck, direct.ID) {
+		t.Fatalf("related card outranked direct keyword hit: %v", deckIDs(withGraph.Deck))
+	}
+}
+
+func TestRelevant_SeededSeeAlsoBoostsRelatedCards(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+
+	seed := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "dispatcher retry seed",
+		BodySummary: "dispatcher retry timeout",
+		BodyFull:    "dispatcher retry timeout details",
+		Tags:        []string{"dispatcher"},
+	})
+	related := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "related worker cleanup",
+		BodySummary: "worker cleanup",
+		BodyFull:    "worker cleanup details",
+		Tags:        []string{"worker"},
+	})
+	unrelated := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "unrelated worker cleanup",
+		BodySummary: "worker cleanup",
+		BodyFull:    "worker cleanup details",
+		Tags:        []string{"worker"},
+	})
+	if err := store.AddRelation(ctx, seed.ID, related.ID, cards.RelationSignalCall); err != nil {
+		t.Fatalf("AddRelation: %v", err)
+	}
+
+	got, err := store.Relevant(ctx, cards.RelevanceQuery{
+		BeadDescription: "dispatcher retry timeout",
+		IncludeLowScore: true,
+		MaxTokens:       1000,
+		SeededCardIDs:   []string{seed.ID},
+		WSeeAlso:        1,
+	})
+	if err != nil {
+		t.Fatalf("Relevant: %v", err)
+	}
+
+	if deckIndex(got.Deck, related.ID) >= deckIndex(got.Deck, unrelated.ID) {
+		t.Fatalf("seeded see-also did not boost related card above unrelated: %v", deckIDs(got.Deck))
+	}
+	if deckIndex(got.Deck, related.ID) <= deckIndex(got.Deck, seed.ID) {
+		t.Fatalf("seeded see-also boost exceeded seed floor: %v", deckIDs(got.Deck))
+	}
+}
+
+func TestProposalsExcludedFromRecall(t *testing.T) {
+	ctx := context.Background()
+	store, db := newTestStoreWithDB(t)
+
+	activeLegacy := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "legacy active",
+		BodySummary: "recall lifecycle marker",
+		BodyFull:    "legacy cards with NULL grade_state stay recall eligible",
+		Tags:        []string{"lifecycle"},
+	})
+	active := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "explicit active",
+		BodySummary: "recall lifecycle marker",
+		BodyFull:    "active cards stay recall eligible",
+		Tags:        []string{"lifecycle"},
+	})
+	graded := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "graded card",
+		BodySummary: "recall lifecycle marker",
+		BodyFull:    "graded cards stay recall eligible",
+		Tags:        []string{"lifecycle"},
+	})
+	applied := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "applied card",
+		BodySummary: "recall lifecycle marker",
+		BodyFull:    "applied cards stay recall eligible",
+		Tags:        []string{"lifecycle"},
+	})
+	proposed := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "proposed card",
+		BodySummary: "recall lifecycle marker",
+		BodyFull:    "proposed cards are queued and hidden from recall",
+		Tags:        []string{"lifecycle"},
+	})
+	rejected := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "rejected card",
+		BodySummary: "recall lifecycle marker",
+		BodyFull:    "rejected cards are hidden from recall",
+		Tags:        []string{"lifecycle"},
+	})
+
+	updates := map[string]string{
+		active.ID:   "active",
+		graded.ID:   "graded",
+		applied.ID:  "applied",
+		proposed.ID: "proposed",
+		rejected.ID: "rejected",
+	}
+	for id, state := range updates {
+		if _, err := db.ExecContext(ctx, `UPDATE cards SET grade_state = ? WHERE id = ?`, state, id); err != nil {
+			t.Fatalf("set grade_state %s for %s: %v", state, id, err)
+		}
+	}
+
+	result, err := store.Relevant(ctx, cards.RelevanceQuery{
+		BeadType:        string(cards.CardTypePattern),
+		BeadTags:        []string{"lifecycle"},
+		BeadDescription: "recall lifecycle marker",
+		MaxTokens:       1000,
+	})
+	if err != nil {
+		t.Fatalf("Relevant: %v", err)
+	}
+
+	got := deckIDs(result.Deck)
+	for _, id := range []string{activeLegacy.ID, active.ID, graded.ID, applied.ID} {
+		if deckIndex(result.Deck, id) < 0 {
+			t.Fatalf("expected recall-eligible card %s in deck %v", id, got)
+		}
+	}
+	for _, id := range []string{proposed.ID, rejected.ID} {
+		if deckIndex(result.Deck, id) >= 0 {
+			t.Fatalf("proposal lifecycle card %s should be excluded from deck %v", id, got)
+		}
+	}
+}
+
+func TestProposalHash_Dedups(t *testing.T) {
+	ctx := context.Background()
+	store, db := newTestStoreWithDB(t)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	proposalHash := "sha256:identical-proposal"
+
+	first := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "proposal one",
+		BodySummary: "same proposal",
+		BodyFull:    "same proposal body",
+	})
+	if _, err := db.ExecContext(ctx,
+		`UPDATE cards SET grade_state = 'proposed', proposal_hash = ? WHERE id = ?`,
+		proposalHash, first.ID,
+	); err != nil {
+		t.Fatalf("set proposal hash: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO cards (
+			id, type, title, body_summary, body_full, tags, score, decay_anchor,
+			created_at, updated_at, grade_state, proposal_hash
+		) VALUES (?, 'pattern', 'proposal two', 'same proposal', 'same proposal body',
+			'[]', 1.0, ?, ?, ?, 'proposed', ?)`,
+		"card-duplicate-proposal", now, now, now, proposalHash,
+	); err != nil {
+		t.Fatalf("insert duplicate proposal hash: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM cards WHERE proposal_hash = ?`, proposalHash,
+	).Scan(&count); err != nil {
+		t.Fatalf("count proposal hash: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("proposal hash row count = %d, want 1", count)
+	}
+}
+
+func deckIDs(deck []cards.DeckCard) []string {
+	ids := make([]string, 0, len(deck))
+	for _, card := range deck {
+		ids = append(ids, card.ID)
+	}
+	return ids
+}
+
+func deckIndex(deck []cards.DeckCard, id string) int {
+	for i, card := range deck {
+		if card.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func sameStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

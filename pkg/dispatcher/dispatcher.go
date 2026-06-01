@@ -13,7 +13,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +37,7 @@ import (
 	"oro/pkg/agentmodel"
 	"oro/pkg/beadstore"
 	"oro/pkg/cards"
+	embeddings "oro/pkg/embed"
 	"oro/pkg/factoryhealth"
 	"oro/pkg/leakscan"
 	"oro/pkg/merge"
@@ -621,6 +624,7 @@ type Config struct {
 	ShutdownTimeout         time.Duration // Graceful shutdown timeout (default 10s).
 	ConsolidateAfterN       int           // Trigger context consolidation after N completed beads (default 5).
 	DreamInterval           int           // Spawn a dream memory-consolidation agent after N completed beads (default 10; 0 disables).
+	GradeGateEnabled        bool          // When true, dream actions are queued as card proposals instead of directly applying memory mutations.
 	PaneContextThreshold    int           // Context percentage threshold for pane handoff (default 60).
 	PaneMonitorInterval     time.Duration // Pane context_pct poll interval (default 5s).
 	PaneRestartCooldown     time.Duration // Min time between manager pane restarts (default 2m).
@@ -1001,16 +1005,21 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		return nil, err
 	}
 	d := &Dispatcher{
-		cfg:             resolved,
-		db:              db,
-		merger:          merger,
-		ops:             opsSpawner,
-		beads:           selectedBeads,
-		worktrees:       wt,
-		escalator:       esc,
-		cardStore:       cardStore,
-		codeIndex:       codeIdx,
-		beadSourceMode:  beadSourceMode,
+		cfg:            resolved,
+		db:             db,
+		merger:         merger,
+		ops:            opsSpawner,
+		beads:          selectedBeads,
+		worktrees:      wt,
+		escalator:      esc,
+		cardStore:      cardStore,
+		codeIndex:      codeIdx,
+		beadSourceMode: beadSourceMode,
+		embedderReady:  defaultEmbedderReady(resolved),
+		embedderFactory: func(modelDir string) (Embedder, error) {
+			return embeddings.NewEmbedder(modelDir)
+		},
+		rerankerFactory: defaultRerankerFactory(resolved),
 		repoRoot:        rootDir,
 		shutdownRunner:  &ExecCommandRunner{Dir: rootDir},
 		acceptance:      &ShellAcceptanceRunner{},
@@ -1067,6 +1076,22 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		}
 	}
 	return d, nil
+}
+
+func defaultEmbedderReady(cfg Config) chan struct{} {
+	if cfg.SemanticModelDir == "" {
+		return nil
+	}
+	return make(chan struct{})
+}
+
+func defaultRerankerFactory(cfg Config) func(string) (Reranker, error) {
+	if cfg.RerankerModelDir == "" {
+		return nil
+	}
+	return func(modelDir string) (Reranker, error) {
+		return embeddings.NewReranker(modelDir)
+	}
 }
 
 func defaultPanesDir() string {
@@ -2929,9 +2954,31 @@ func (d *Dispatcher) triggerDream(ctx context.Context) {
 				fmt.Sprintf(`{"deleted":%d}`, n))
 		}
 	}
-	memories := d.dumpMemoriesForDream(ctx)
-	resultCh := d.ops.Dream(ctx, ops.DreamOpts{Memories: memories})
+	resultCh := d.ops.Dream(ctx, d.dreamOpts(ctx))
 	d.safeGo(func() { d.handleDreamResult(ctx, resultCh) })
+}
+
+func (d *Dispatcher) dreamOpts(ctx context.Context) ops.DreamOpts {
+	return ops.DreamOpts{
+		Memories:       d.dumpMemoriesForDream(ctx),
+		ActiveBiasTags: d.activeBiasTags(ctx),
+	}
+}
+
+type calibratingCardStore interface {
+	Calibration(context.Context) (cards.Scorecard, error)
+}
+
+func (d *Dispatcher) activeBiasTags(ctx context.Context) []string {
+	store, ok := d.cardStore.(calibratingCardStore)
+	if !ok {
+		return nil
+	}
+	scorecard, err := store.Calibration(ctx)
+	if err != nil || scorecard.Skipped {
+		return nil
+	}
+	return scorecard.ActiveBiasTags
 }
 
 // dumpMemoriesForDream serializes all memories as a text block for the dream agent.
@@ -2970,6 +3017,12 @@ func (d *Dispatcher) handleDreamResult(ctx context.Context, resultCh <-chan ops.
 			return
 		}
 		actions := ParseDreamActions(result.Feedback)
+		if d.cfg.GradeGateEnabled {
+			d.writeDreamProposals(ctx, actions)
+			_ = d.logEvent(ctx, "dream_complete", "dispatcher", "", "",
+				fmt.Sprintf(`{"actions":%d}`, len(actions)))
+			return
+		}
 		execFn := d.dreamExecuteFn
 		if execFn == nil {
 			execFn = func(ctx context.Context, actions []DreamAction, _ MemoryStore, logFn func(string)) error {
@@ -2989,6 +3042,82 @@ func (d *Dispatcher) handleDreamResult(ctx context.Context, resultCh <-chan ops.
 		_ = d.logEvent(ctx, "dream_complete", "dispatcher", "", "",
 			fmt.Sprintf(`{"actions":%d}`, len(actions)))
 	}
+}
+
+func (d *Dispatcher) writeDreamProposals(ctx context.Context, actions []DreamAction) {
+	if d.cardStore == nil {
+		return
+	}
+	for _, action := range actions {
+		if _, err := d.cardStore.Create(ctx, dreamProposalParams(action)); err != nil {
+			_ = d.logEvent(ctx, "dream_proposal_failed", "dispatcher", "", "",
+				fmt.Sprintf(`{"error":%q}`, err.Error()))
+		}
+	}
+}
+
+func dreamProposalParams(action DreamAction) cards.CardCreateParams {
+	content := dreamActionContent(action)
+	return cards.CardCreateParams{
+		Type:         dreamActionCardType(action),
+		Title:        dreamProposalTitle(content),
+		BodySummary:  content,
+		BodyFull:     content,
+		Tags:         action.Params.Tags,
+		GradeState:   "proposed",
+		ProposalHash: dreamProposalHash(action),
+	}
+}
+
+func dreamActionCardType(action DreamAction) cards.CardType {
+	if action.Params.Type == "decision" {
+		return cards.CardTypeDecision
+	}
+	return cards.CardTypePattern
+}
+
+func dreamActionContent(action DreamAction) string {
+	if action.Params.Content != "" {
+		return action.Params.Content
+	}
+	switch action.Kind {
+	case "DELETE":
+		return fmt.Sprintf("Dream proposed deleting memory %d", action.ID)
+	case "MERGE":
+		return fmt.Sprintf("Dream proposed merging memories %s", joinInt64s(action.IDs))
+	default:
+		return fmt.Sprintf("Dream proposed %s action", strings.ToLower(action.Kind))
+	}
+}
+
+func dreamProposalTitle(content string) string {
+	const maxTitleRunes = 80
+	runes := []rune(strings.TrimSpace(content))
+	if len(runes) <= maxTitleRunes {
+		return string(runes)
+	}
+	return string(runes[:maxTitleRunes])
+}
+
+func dreamProposalHash(action DreamAction) string {
+	h := sha256.Sum256([]byte(fmt.Sprintf(
+		"dream-proposal-v1|%s|%d|%v|%s|%s|%s",
+		action.Kind,
+		action.ID,
+		action.IDs,
+		action.Params.Type,
+		strings.Join(action.Params.Tags, ","),
+		action.Params.Content,
+	)))
+	return hex.EncodeToString(h[:])
+}
+
+func joinInt64s(values []int64) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, strconv.FormatInt(value, 10))
+	}
+	return strings.Join(parts, ",")
 }
 
 // removeWorktreeAndClearTracking removes a worktree, deletes the agent branch,

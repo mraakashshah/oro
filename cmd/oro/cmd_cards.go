@@ -27,6 +27,7 @@ func newCardsCmd() *cobra.Command {
 	cmd.AddCommand(newCardsCreateCmd())
 	cmd.AddCommand(newCardsRetireCmd())
 	cmd.AddCommand(newCardsListCmd())
+	cmd.AddCommand(newCardsReindexCmd())
 	return cmd
 }
 
@@ -120,6 +121,28 @@ func newCardsRetireCmd() *cobra.Command {
 	cmd.Flags().StringVar(&reason, "reason", "", "Retirement reason")
 	cmd.Flags().StringVar(&supersededBy, "superseded-by", "", "Replacement card ID")
 	return cmd
+}
+
+func newCardsReindexCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "reindex",
+		Short: "Backfill missing card embeddings",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			store, closeStore, err := openDefaultCardStore()
+			if err != nil {
+				return err
+			}
+			defer closeStore()
+
+			n, err := store.Reindex(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("reindex cards: %w", err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Reindexed %d card(s)\n", n)
+			return nil
+		},
+	}
 }
 
 func newCardsListCmd() *cobra.Command {

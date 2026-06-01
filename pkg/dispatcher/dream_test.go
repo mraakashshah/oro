@@ -2,6 +2,7 @@ package dispatcher //nolint:testpackage // internal white-box tests need access 
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/cards"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
@@ -334,6 +336,87 @@ func TestHandleDreamResult(t *testing.T) {
 			t.Error("expected executeActions not to be called on error result")
 		}
 	})
+}
+
+func TestHandleDreamResult_WritesProposalNotApplied(t *testing.T) {
+	d, _, _ := newDreamTestDispatcher(t, 10)
+	d.cfg.GradeGateEnabled = true
+	ctx := context.Background()
+
+	var executeCalled bool
+	d.dreamExecuteFn = func(_ context.Context, _ []DreamAction, _ MemoryStore, _ func(string)) error {
+		executeCalled = true
+		return nil
+	}
+
+	d.handleDreamResult(ctx, chanWithDreamResult("[CREATE] type=pattern tags=memory: propose memories before applying"))
+
+	if executeCalled {
+		t.Fatal("dreamExecuteFn called with grade gate enabled")
+	}
+	assertDreamProposal(t, d.db, d.cardStore, "propose memories before applying")
+}
+
+func TestGateOff_PreservesDirectApply(t *testing.T) {
+	d, _, _ := newDreamTestDispatcher(t, 10)
+	ctx := context.Background()
+
+	var capturedActions []DreamAction
+	d.dreamExecuteFn = func(_ context.Context, actions []DreamAction, _ MemoryStore, _ func(string)) error {
+		capturedActions = append(capturedActions, actions...)
+		return nil
+	}
+
+	d.handleDreamResult(ctx, chanWithDreamResult("[CREATE] type=pattern tags=memory: apply directly by default"))
+
+	if len(capturedActions) != 1 {
+		t.Fatalf("captured actions = %d, want 1", len(capturedActions))
+	}
+	if capturedActions[0].Params.Content != "apply directly by default" {
+		t.Fatalf("captured content = %q", capturedActions[0].Params.Content)
+	}
+	var count int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM cards WHERE grade_state = 'proposed'`).Scan(&count); err != nil {
+		t.Fatalf("count proposed cards: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("proposed cards = %d, want 0 with gate off", count)
+	}
+}
+
+func assertDreamProposal(t *testing.T, db *sql.DB, cardStore cards.Store, content string) {
+	t.Helper()
+
+	ctx := context.Background()
+	var gradeState, proposalHash, bodySummary string
+	if err := db.QueryRowContext(ctx, `
+		SELECT grade_state, proposal_hash, body_summary
+		  FROM cards
+		 WHERE body_full = ?`, content,
+	).Scan(&gradeState, &proposalHash, &bodySummary); err != nil {
+		t.Fatalf("query proposal card: %v", err)
+	}
+	if gradeState != "proposed" {
+		t.Fatalf("grade_state = %q, want proposed", gradeState)
+	}
+	if proposalHash == "" {
+		t.Fatal("proposal_hash is empty")
+	}
+	if bodySummary != content {
+		t.Fatalf("body_summary = %q, want %q", bodySummary, content)
+	}
+
+	relevant, err := cardStore.Relevant(ctx, cards.RelevanceQuery{
+		BeadDescription: content,
+		IncludeLowScore: true,
+		MaxTokens:       2000,
+	})
+	if err != nil {
+		t.Fatalf("Relevant: %v", err)
+	}
+	if len(relevant.Deck) != 0 || len(relevant.Inlined) != 0 {
+		t.Fatalf("proposed card appeared in recall: deck=%d inlined=%d", len(relevant.Deck), len(relevant.Inlined))
+	}
 }
 
 func TestParseDreamActions(t *testing.T) {

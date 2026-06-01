@@ -3,9 +3,13 @@ package codesearch
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
+	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,6 +22,7 @@ import (
 type CodeIndex struct {
 	db       *sql.DB
 	reranker *Reranker
+	embedder Embedder
 }
 
 // dbExecer abstracts database operations to support both *sql.DB and *sql.Tx.
@@ -39,6 +44,16 @@ type SearchResult struct {
 	Reason string
 }
 
+// Result is the public result shape returned by routed code search handlers.
+type Result = SearchResult
+
+// Embedder computes dense embedding vectors for semantic code search.
+type Embedder interface {
+	Embed(text string) []float32
+	Dim() int
+	Name() string
+}
+
 // indexSchemaDDL creates the chunks table for the code index.
 const indexSchemaDDL = `
 CREATE TABLE IF NOT EXISTS chunks (
@@ -49,6 +64,8 @@ CREATE TABLE IF NOT EXISTS chunks (
 	start_line INTEGER NOT NULL,
 	end_line INTEGER NOT NULL,
 	content TEXT NOT NULL,
+	embedding BLOB,
+	embedding_model TEXT,
 	updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_file_path ON chunks(file_path);
@@ -110,6 +127,14 @@ func NewCodeIndex(dbPath string) (*CodeIndex, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply code index schema: %w", err)
 	}
+	if err := ensureIndexColumn(ctx, db, "chunks", "embedding", "ALTER TABLE chunks ADD COLUMN embedding BLOB"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ensure chunk embedding: %w", err)
+	}
+	if err := ensureIndexColumn(ctx, db, "chunks", "embedding_model", "ALTER TABLE chunks ADD COLUMN embedding_model TEXT"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ensure chunk embedding model: %w", err)
+	}
 
 	return &CodeIndex{db: db}, nil
 }
@@ -119,6 +144,12 @@ func NewCodeIndex(dbPath string) (*CodeIndex, error) {
 // FTS5-only results.
 func (ci *CodeIndex) SetReranker(r *Reranker) {
 	ci.reranker = r
+}
+
+// SetEmbedder configures the embedder used by Build and SearchSemantic. If nil,
+// semantic search fails open to the existing FTS5 search path.
+func (ci *CodeIndex) SetEmbedder(embedder Embedder) {
+	ci.embedder = embedder
 }
 
 // Close closes the underlying database connection.
@@ -245,11 +276,19 @@ func (ci *CodeIndex) indexFile(ctx context.Context, exec dbExecer, path, rootDir
 
 // insertChunk stores a single chunk in the database.
 func (ci *CodeIndex) insertChunk(ctx context.Context, exec dbExecer, chunk Chunk) error {
+	var embedding []byte
+	var embeddingModel *string
+	if ci.embedder != nil {
+		embedding = encodeFloat32Vector(ci.embedder.Embed(chunkEmbeddingText(chunk)))
+		model := ci.embedder.Name()
+		embeddingModel = &model
+	}
+
 	_, err := exec.ExecContext(ctx,
-		`INSERT INTO chunks (file_path, name, kind, start_line, end_line, content, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO chunks (file_path, name, kind, start_line, end_line, content, embedding, embedding_model, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		chunk.FilePath, chunk.Name, string(chunk.Kind),
-		chunk.StartLine, chunk.EndLine, chunk.Content,
+		chunk.StartLine, chunk.EndLine, chunk.Content, embedding, embeddingModel,
 		time.Now().UTC().Format(time.RFC3339),
 	)
 	if err != nil {
@@ -263,6 +302,30 @@ func (ci *CodeIndex) insertChunk(ctx context.Context, exec dbExecer, chunk Chunk
 // rank position. FTS5 returns 0 candidates → returns empty without calling reranker.
 func (ci *CodeIndex) Search(ctx context.Context, query string, topK int) ([]SearchResult, error) {
 	return ci.SearchInWorkdir(ctx, query, topK, "")
+}
+
+// SearchSemantic ranks indexed chunks by embedding similarity. It fails open to
+// FTS5 search when no embedder is configured or no embedded chunks are present.
+func (ci *CodeIndex) SearchSemantic(ctx context.Context, query string) ([]Result, error) {
+	const defaultTopK = 10
+
+	if ci.embedder == nil {
+		return ci.Search(ctx, query, defaultTopK)
+	}
+
+	queryVec := ci.embedder.Embed(query)
+	if len(queryVec) == 0 {
+		return ci.Search(ctx, query, defaultTopK)
+	}
+
+	results, err := ci.searchSemanticVectors(ctx, queryVec, defaultTopK)
+	if err != nil {
+		return nil, err
+	}
+	if len(results) == 0 {
+		return ci.Search(ctx, query, defaultTopK)
+	}
+	return results, nil
 }
 
 // SearchInWorkdir performs Search with reranker subprocesses bound to workdir.
@@ -303,6 +366,43 @@ func (ci *CodeIndex) SearchInWorkdir(ctx context.Context, query string, topK int
 			Score:  1.0 / float64(sc.Rank),
 			Reason: sc.Reason,
 		}
+	}
+	return results, nil
+}
+
+func (ci *CodeIndex) searchSemanticVectors(ctx context.Context, queryVec []float32, limit int) ([]Result, error) {
+	rows, err := ci.db.QueryContext(ctx, `
+		SELECT id, file_path, name, kind, start_line, end_line, content, embedding
+		FROM chunks
+		WHERE embedding IS NOT NULL
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("semantic vector query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var results []Result
+	for rows.Next() {
+		var c Chunk
+		var id int64
+		var kind string
+		var raw []byte
+		if err := rows.Scan(&id, &c.FilePath, &c.Name, &kind, &c.StartLine, &c.EndLine, &c.Content, &raw); err != nil {
+			return nil, fmt.Errorf("scan semantic chunk: %w", err)
+		}
+		c.Kind = ChunkKind(kind)
+		score := cosineSimilarity(queryVec, decodeFloat32Vector(raw))
+		results = append(results, Result{Chunk: c, Score: score})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("semantic vector rows: %w", err)
+	}
+
+	sort.SliceStable(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+	if len(results) > limit {
+		results = results[:limit]
 	}
 	return results, nil
 }
@@ -352,4 +452,63 @@ func (ci *CodeIndex) FTS5Search(ctx context.Context, query string, limit int) ([
 	}
 
 	return results, nil
+}
+
+func chunkEmbeddingText(chunk Chunk) string {
+	return chunk.Name + "\n" + chunk.Content
+}
+
+func encodeFloat32Vector(vec []float32) []byte {
+	if len(vec) == 0 {
+		return nil
+	}
+	buf := make([]byte, len(vec)*4)
+	for i, v := range vec {
+		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(v))
+	}
+	return buf
+}
+
+func decodeFloat32Vector(raw []byte) []float32 {
+	if len(raw) == 0 || len(raw)%4 != 0 {
+		return nil
+	}
+	vec := make([]float32, len(raw)/4)
+	for i := range vec {
+		vec[i] = math.Float32frombits(binary.LittleEndian.Uint32(raw[i*4:]))
+	}
+	return vec
+}
+
+func cosineSimilarity(a, b []float32) float64 {
+	if len(a) == 0 || len(a) != len(b) {
+		return 0
+	}
+	var dot, normA, normB float64
+	for i := range a {
+		av := float64(a[i])
+		bv := float64(b[i])
+		dot += av * bv
+		normA += av * av
+		normB += bv * bv
+	}
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+func ensureIndexColumn(ctx context.Context, db *sql.DB, table, column, ddl string) error {
+	var name string
+	err := db.QueryRowContext(ctx, "SELECT name FROM pragma_table_info(?) WHERE name = ?", table, column).Scan(&name)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("inspect column %s.%s: %w", table, column, err)
+	}
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("add column %s.%s: %w", table, column, err)
+	}
+	return nil
 }

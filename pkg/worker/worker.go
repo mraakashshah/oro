@@ -1053,7 +1053,8 @@ func (w *Worker) processTextLine(ctx context.Context, line string) {
 	beadID := w.beadID
 	w.mu.Unlock()
 
-	appendMemoryMarker(ctx, store, beadID, line, 0.8)
+	appendMemoryMarker(ctx, store, beadID, line)
+	w.flushImplicitMemories(ctx, false)
 }
 
 // extractImplicitMemories runs LLM-based memory extraction on accumulated
@@ -1061,21 +1062,37 @@ func (w *Worker) processTextLine(ctx context.Context, line string) {
 // processOutput finishes (subprocess stdout closes). Requires both
 // extractSpawner and memStore to be set; no-op otherwise.
 func (w *Worker) extractImplicitMemories(ctx context.Context) {
+	w.flushImplicitMemories(ctx, true)
+}
+
+func (w *Worker) flushImplicitMemories(ctx context.Context, force bool) {
 	w.mu.Lock()
 	spawner := w.extractSpawner
 	store := w.memStore
+	if spawner == nil || store == nil {
+		w.mu.Unlock()
+		return
+	}
+	if !force && w.sessionText.Len() < maxMemorySessionBytes {
+		w.mu.Unlock()
+		return
+	}
 	text := w.sessionText.String()
+	if text == "" {
+		w.mu.Unlock()
+		return
+	}
+	w.sessionText.Reset()
 	beadID := w.beadID
 	worktree := w.worktree
 	w.mu.Unlock()
 
-	if spawner == nil || store == nil {
+	candidates, err := ExtractMemoriesFromReader(ctx, strings.NewReader(text), spawner, worktree)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "worker %s: extract implicit memories: %v\n", w.ID, err)
 		return
 	}
-
-	if err := ExtractMemoriesWithLLMInWorkdir(ctx, spawner, text, beadID, store, worktree); err != nil {
-		fmt.Fprintf(os.Stderr, "worker %s: extract implicit memories: %v\n", w.ID, err)
-	}
+	appendMemoryCandidates(ctx, store, beadID, candidates)
 }
 
 // openLogFile creates or opens ~/.oro/workers/<ID>/output.log for appending.

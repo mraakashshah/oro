@@ -237,7 +237,8 @@ type DecomposeOpts struct {
 
 // DreamOpts configures a memory-consolidation dream agent.
 type DreamOpts struct {
-	Memories string // serialized memories to process; may be empty
+	Memories       string   // serialized memories to process; may be empty
+	ActiveBiasTags []string // calibration tags to counter in the next proposal prompt
 }
 
 // EpicFixOpts configures an epic acceptance-failure diagnostic agent.

@@ -19,6 +19,9 @@ var ErrInvalidCardType = errors.New("invalid card type")
 // ErrAlreadyResolved is returned when a pending learning was already promoted or rejected.
 var ErrAlreadyResolved = errors.New("learning already resolved")
 
+// ErrCycleDetected is returned when a card lineage traversal finds a cycle.
+var ErrCycleDetected = errors.New("card lineage cycle detected")
+
 // CardType is the closed enum of card types.
 type CardType string
 
@@ -40,6 +43,7 @@ type Card struct {
 	BodyFull            string
 	BodyDeep            *string
 	Tags                []string
+	Symbols             []string
 	Score               float64
 	PromotionConfidence *float64
 	DecayAnchor         time.Time
@@ -160,6 +164,8 @@ type CardCreateParams struct {
 	Tags                []string
 	EmergedFrom         *string
 	PromotionConfidence *float64
+	GradeState          string
+	ProposalHash        string
 }
 
 // ListQuery filters for listing cards.
@@ -180,6 +186,9 @@ type RelevanceQuery struct {
 	MaxTokens         int
 	IncludeLowScore   bool
 	IncludeSuppressed bool
+	WSeeAlso          float64
+	SeededCardIDs     []string
+	Fusion            FusionConfig
 }
 
 // RelevantCards is the result of a Relevant query.

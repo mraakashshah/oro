@@ -75,38 +75,81 @@ func ExtractMemoriesWithLLMInWorkdir(_ context.Context, spawner MemoryExtractSpa
 		sessionText = sessionText[len(sessionText)-maxMemorySessionBytes:]
 	}
 
-	extractCtx, cancel := context.WithTimeout(context.Background(), memoryExtractTimeout)
-	defer cancel()
-
-	reader, err := spawnMemoryExtractor(extractCtx, spawner, memoryExtractionModel, memoryExtractionPrompt+sessionText, workdir)
+	candidates, err := ExtractMemoriesFromReader(context.Background(), strings.NewReader(sessionText), spawner, workdir)
 	if err != nil {
-		log.Printf("worker memory extract: spawn error: %v", err)
+		log.Printf("worker memory extract: reader error: %v", err)
+		//nolint:nilerr // Preserve historical best-effort behavior for this compatibility wrapper.
 		return nil
 	}
-	defer func() { _ = reader.Close() }()
-
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		appendMemoryMarker(extractCtx, store, beadID, scanner.Text(), 0.7)
-	}
-	if err := scanner.Err(); err != nil {
-		log.Printf("worker memory extract: scan error: %v", err)
-	}
+	appendMemoryCandidates(context.Background(), store, beadID, candidates)
 	return nil
 }
 
-func appendMemoryMarker(ctx context.Context, store LearningSink, beadID, line string, confidence float64) {
+// ExtractMemoriesFromReader runs best-effort LLM extraction over a bounded
+// reader source and returns card candidates parsed from memory marker output.
+func ExtractMemoriesFromReader(ctx context.Context, src io.Reader, spawner MemoryExtractSpawner, workdir string) ([]cards.CardCandidate, error) {
+	if spawner == nil || src == nil {
+		return nil, nil
+	}
+	sessionBytes, err := io.ReadAll(io.LimitReader(src, maxMemorySessionBytes))
+	if err != nil {
+		return nil, fmt.Errorf("read memory extraction source: %w", err)
+	}
+	if len(sessionBytes) == 0 {
+		return nil, nil
+	}
+
+	extractCtx, cancel := context.WithTimeout(ctx, memoryExtractTimeout)
+	defer cancel()
+
+	reader, err := spawnMemoryExtractor(extractCtx, spawner, memoryExtractionModel, memoryExtractionPrompt+string(sessionBytes), workdir)
+	if err != nil {
+		return nil, fmt.Errorf("spawn memory extractor: %w", err)
+	}
+	defer func() { _ = reader.Close() }()
+
+	var candidates []cards.CardCandidate
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		if candidate := cardCandidateFromMemoryMarkerLine(scanner.Text(), 0.7); candidate != nil {
+			candidates = append(candidates, *candidate)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return candidates, fmt.Errorf("scan memory extractor output: %w", err)
+	}
+	return candidates, nil
+}
+
+func appendMemoryMarker(ctx context.Context, store LearningSink, beadID, line string) {
 	if store == nil || beadID == "" {
 		return
 	}
-	params := ParseMemoryMarker(line)
-	if params == nil {
+	candidate := cardCandidateFromMemoryMarkerLine(line, 0.8)
+	if candidate == nil {
 		return
 	}
+	appendMemoryCandidates(ctx, store, beadID, []cards.CardCandidate{*candidate})
+}
+
+func cardCandidateFromMemoryMarkerLine(line string, confidence float64) *cards.CardCandidate {
+	params := ParseMemoryMarker(line)
+	if params == nil {
+		return nil
+	}
 	candidate := cardCandidateFromMemoryMarker(*params, line, confidence)
-	if _, err := store.AppendLearningPending(ctx, beadID, candidate); err != nil {
-		log.Printf("worker memory extract: append pending learning error: %v", err)
+	return &candidate
+}
+
+func appendMemoryCandidates(ctx context.Context, store LearningSink, beadID string, candidates []cards.CardCandidate) {
+	if store == nil || beadID == "" {
+		return
+	}
+	for _, candidate := range candidates {
+		if _, err := store.AppendLearningPending(ctx, beadID, candidate); err != nil {
+			log.Printf("worker memory extract: append pending learning error: %v", err)
+		}
 	}
 }
 

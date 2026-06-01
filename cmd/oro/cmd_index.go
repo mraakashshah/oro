@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"oro/pkg/codesearch"
+	embeddings "oro/pkg/embed"
 
 	"github.com/spf13/cobra"
 )
@@ -89,6 +90,7 @@ func runIndexBuild(w io.Writer, rootDir, dbPath string) error {
 		return fmt.Errorf("open code index: %w", err)
 	}
 	defer idx.Close()
+	configureCodeIndexEmbedder(idx)
 
 	fmt.Fprintf(w, "Building index for %s ...\n", rootDir)
 
@@ -113,14 +115,23 @@ func runIndexSearch(w io.Writer, query, dbPath string, topK int, spawner codesea
 		return fmt.Errorf("open code index: %w", err)
 	}
 	defer idx.Close()
+	configureCodeIndexEmbedder(idx)
 	if spawner != nil {
 		idx.SetReranker(codesearch.NewReranker(spawner))
 	}
 
 	ctx := context.Background()
-	results, err := idx.Search(ctx, query, topK)
+	var results []codesearch.Result
+	if codesearch.RouteGrep(query).Route == codesearch.RouteSemantic {
+		results, err = idx.SearchSemantic(ctx, query)
+	} else {
+		results, err = idx.Search(ctx, query, topK)
+	}
 	if err != nil {
 		return fmt.Errorf("search index: %w", err)
+	}
+	if topK > 0 && len(results) > topK {
+		results = results[:topK]
 	}
 
 	if len(results) == 0 {
@@ -140,4 +151,12 @@ func runIndexSearch(w io.Writer, query, dbPath string, topK int, spawner codesea
 	}
 
 	return nil
+}
+
+func configureCodeIndexEmbedder(idx *codesearch.CodeIndex) {
+	embedder, err := embeddings.NewEmbedder("")
+	if err != nil {
+		return
+	}
+	idx.SetEmbedder(embedder)
 }
