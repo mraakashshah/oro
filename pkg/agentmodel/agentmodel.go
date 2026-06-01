@@ -72,6 +72,7 @@ func legacyAgentConfig() *config.AgentConfig {
 		"worker":              {Tier: protocol.TierBalanced, Transport: "cli"},
 		"worker_escalation":   {Tier: protocol.TierDeep, Transport: "cli"},
 		"ops_review":          {Tier: protocol.TierDeep, Transport: "cli"},
+		"ops_review_triage":   {Tier: protocol.TierFast, Transport: "cli"},
 		"ops_merge":           {Tier: protocol.TierDeep, Transport: "cli"},
 		"ops_diagnosis":       {Tier: protocol.TierDeep, Transport: "cli"},
 		"ops_epic_fix":        {Tier: protocol.TierDeep, Transport: "cli"},

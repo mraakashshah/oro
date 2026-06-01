@@ -38,8 +38,10 @@ type Finding struct {
 	Evidence   []Evidence `json:"evidence"`
 	Confidence int        `json:"confidence"`
 	Sources    []string   `json:"sources"`
-	Origin     string     `json:"origin"`
-	Status     string     `json:"status,omitempty"`
+	// SourceFamilies names independent evidence families used by cheap triage.
+	SourceFamilies []string `json:"source_families,omitempty"`
+	Origin         string   `json:"origin"`
+	Status         string   `json:"status,omitempty"`
 }
 
 // ReviewReport is the parsed structured output of one reviewer pass.

@@ -124,6 +124,58 @@ func TestOnePersonaErrors_MergesSurvivors(t *testing.T) {
 	}
 }
 
+func TestCheapGate(t *testing.T) {
+	tests := []struct {
+		name       string
+		finding    Finding
+		wantStatus string
+		wantCount  int
+	}{
+		{
+			name: "score 50 single source advances",
+			finding: Finding{
+				Title:      "high enough",
+				Confidence: 50,
+				Sources:    []string{"correctness"},
+			},
+			wantCount: 1,
+		},
+		{
+			name: "score 30 with two source families advances",
+			finding: Finding{
+				Title:          "cross sourced",
+				Confidence:     30,
+				SourceFamilies: []string{"correctness", "security"},
+			},
+			wantCount: 1,
+		},
+		{
+			name: "score 30 single source is below gate",
+			finding: Finding{
+				Title:      "too weak",
+				Confidence: 30,
+				Sources:    []string{"correctness"},
+			},
+			wantStatus: "below_gate",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			candidates := []Finding{tt.finding}
+
+			survivors := cheapGate(candidates)
+
+			if len(survivors) != tt.wantCount {
+				t.Fatalf("survivors len = %d, want %d: %#v", len(survivors), tt.wantCount, survivors)
+			}
+			if tt.wantStatus != "" && candidates[0].Status != tt.wantStatus {
+				t.Fatalf("candidate status = %q, want %q", candidates[0].Status, tt.wantStatus)
+			}
+		})
+	}
+}
+
 func reviewMergeFinding(file string, line int, title string, severity Severity, confidence int, source string) Finding {
 	return Finding{
 		Severity:   severity,

@@ -3,7 +3,10 @@ package ops
 import (
 	"encoding/json"
 	"sort"
+	"strings"
 )
+
+const cheapGateScore = 45
 
 type reviewMergeFeedback struct {
 	Findings []Finding `json:"findings"`
@@ -159,6 +162,45 @@ func gateFindings(findings []Finding) []Finding {
 		}
 	}
 	return survivors
+}
+
+func cheapGate(candidates []Finding) (survivors []Finding) {
+	for i := range candidates {
+		if candidates[i].Confidence >= cheapGateScore || sourceFamilyCount(candidates[i]) >= 2 {
+			survivors = append(survivors, candidates[i])
+			continue
+		}
+		candidates[i].Status = "below_gate"
+	}
+	return survivors
+}
+
+func sourceFamilyCount(finding Finding) int {
+	seen := make(map[string]struct{})
+	for _, source := range finding.Sources {
+		family := sourceFamily(source)
+		if family != "" {
+			seen[family] = struct{}{}
+		}
+	}
+	for _, family := range finding.SourceFamilies {
+		family = strings.TrimSpace(family)
+		if family != "" {
+			seen[family] = struct{}{}
+		}
+	}
+	return len(seen)
+}
+
+func sourceFamily(source string) string {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return ""
+	}
+	if family, _, ok := strings.Cut(source, ":"); ok {
+		return strings.TrimSpace(family)
+	}
+	return source
 }
 
 func verdictForFindings(findings []Finding) Verdict {
