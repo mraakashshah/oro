@@ -135,7 +135,7 @@ func TestFullStart(t *testing.T) {
 				t.Errorf("Create must not call new-window, got: %v", call)
 			}
 			joined := strings.Join(call, " ")
-			if strings.Contains(joined, "oro:manager") || strings.Contains(joined, "ORO_ROLE=manager") || strings.Contains(joined, ManagerNudge()) {
+			if strings.Contains(joined, "oro:manager") || strings.Contains(joined, "ORO_ROLE=manager") || strings.Contains(joined, "manager nudge") {
 				t.Errorf("default start must not launch or nudge manager, got: %v", call)
 			}
 		}
@@ -260,8 +260,8 @@ func TestStartDoesNotCreateManagerPaneByDefault(t *testing.T) {
 		if strings.Contains(joined, "ORO_ROLE=manager") {
 			t.Fatalf("default start must not launch manager role, got call: %v", call)
 		}
-		if strings.Contains(joined, ManagerNudge()) {
-			t.Fatalf("default start must not send ManagerNudge, got call: %v", call)
+		if strings.Contains(joined, "manager nudge") {
+			t.Fatalf("default start must not send manager nudge, got call: %v", call)
 		}
 		if callHasArgPair(call, "-n", "manager") {
 			t.Fatalf("default start must not create manager window, got call: %v", call)
@@ -284,8 +284,8 @@ func TestReconnectRunningDaemonDoesNotNudgeManagerByDefault(t *testing.T) {
 		if strings.Contains(joined, "oro:manager") {
 			t.Fatalf("reconnect must not target manager pane by default, got call: %v", call)
 		}
-		if strings.Contains(joined, ManagerNudge()) {
-			t.Fatalf("reconnect must not send ManagerNudge by default, got call: %v", call)
+		if strings.Contains(joined, "manager nudge") {
+			t.Fatalf("reconnect must not send manager nudge by default, got call: %v", call)
 		}
 	}
 }
@@ -344,33 +344,6 @@ func TestCreateWithNudges(t *testing.T) {
 		}
 	})
 
-	t.Run("nudge is shorter than full beacon", func(t *testing.T) {
-		mgrNudge := ManagerNudge()
-		mgrBeacon := ManagerBeacon()
-		if len(mgrNudge) >= len(mgrBeacon) {
-			t.Errorf("ManagerNudge (%d chars) should be much shorter than ManagerBeacon (%d chars)",
-				len(mgrNudge), len(mgrBeacon))
-		}
-		if len(mgrNudge) > 500 {
-			t.Errorf("ManagerNudge should be a short nudge (<500 chars), got %d chars", len(mgrNudge))
-		}
-	})
-
-	t.Run("nudge requires autonomous operation", func(t *testing.T) {
-		mgrNudge := ManagerNudge()
-		for _, want := range []string{
-			"Proceed autonomously",
-			"do not ask",
-			"task assignment",
-			"without long sleeps",
-			"Do not create memory files",
-		} {
-			if !strings.Contains(mgrNudge, want) {
-				t.Errorf("ManagerNudge should contain %q, got: %s", want, mgrNudge)
-			}
-		}
-	})
-
 	t.Run("prints startup progress with checkmarks", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		pidFile := filepath.Join(tmpDir, "oro.pid")
@@ -388,7 +361,7 @@ func TestCreateWithNudges(t *testing.T) {
 		fakeTmux := newFakeCmd()
 		// has-session returns error (session does not exist)
 		fakeTmux.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fakeTmux, "oro", ManagerNudge())
+		stubPaneReady(fakeTmux, "oro", "manager nudge")
 
 		spawner := &fakeSpawner{
 			returnPID:  12345,

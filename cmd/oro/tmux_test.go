@@ -140,21 +140,21 @@ func (f *fakeCmd) getCalls() [][]string {
 // Claude IS the initial process. capture-pane is called sequentially: first by
 // WaitForPrompt, then by SendKeysVerified, so we use seqOut to return ❯ first,
 // then nudge text.
-func stubPaneReady(fake *fakeCmd, sessionName, managerNudge string) {
+func stubPaneReady(fake *fakeCmd, sessionName, sessionNudge string) {
 	mgrCapture := key("tmux", "capture-pane", "-p", "-t", sessionName+":manager")
 	fake.seqOut[mgrCapture] = []string{
 		"Welcome\n❯ \nstatus bar",                     // WaitForPrompt
-		"Welcome\n❯ " + managerNudge + "\nstatus bar", // SendKeysVerified
+		"Welcome\n❯ " + sessionNudge + "\nstatus bar", // SendKeysVerified
 		"oro task status\nrunning\n",                  // VerifyBeaconReceived (async goroutine)
 	}
 }
 
-func stubCodexPaneReady(fake *fakeCmd, sessionName, managerNudge string) {
+func stubCodexPaneReady(fake *fakeCmd, sessionName, sessionNudge string) {
 	fake.output[key("tmux", "display-message", "-p", "-t", sessionName+":manager", "#{pane_current_command}")] = "codex"
 
 	mgrCapture := key("tmux", "capture-pane", "-p", "-t", sessionName+":manager")
 	fake.seqOut[mgrCapture] = []string{
-		"Codex ready\n" + managerNudge + "\n",
+		"Codex ready\n" + sessionNudge + "\n",
 		"oro task status\nrunning\n",
 	}
 }
@@ -1942,11 +1942,11 @@ func TestCreate_ExecEnvPattern(t *testing.T) {
 
 	// stubExecEnvReady stubs only WaitForPrompt + SendKeysVerified for exec-env
 	// pattern (no WaitForCommand needed since Claude IS the initial process).
-	stubExecEnvReady := func(fake *fakeCmd, sessionName, managerNudge string) {
+	stubExecEnvReady := func(fake *fakeCmd, sessionName, sessionNudge string) {
 		mgrCapture := key("tmux", "capture-pane", "-p", "-t", sessionName+":manager")
 		fake.seqOut[mgrCapture] = []string{
 			"Welcome\n❯ \nstatus bar",                     // WaitForPrompt
-			"Welcome\n❯ " + managerNudge + "\nstatus bar", // SendKeysVerified
+			"Welcome\n❯ " + sessionNudge + "\nstatus bar", // SendKeysVerified
 		}
 	}
 
@@ -3018,7 +3018,7 @@ func TestCreateWithManagerOnly(t *testing.T) {
 }
 
 // TestCreateSingleSignature is a compile-time assertion that TmuxSession.Create
-// has exactly one parameter (managerNudge string) and returns error.
+// has exactly one parameter (sessionNudge string) and returns error.
 // If Create has two parameters, this file will not compile.
 func TestCreateSingleSignature(t *testing.T) {
 	var _ interface {
@@ -3190,20 +3190,7 @@ func TestCreateMigratesPreCollapseSession(t *testing.T) {
 	})
 }
 
-// TestTmuxManagerBeaconVerificationUsesTaskTerminology verifies that:
-//  1. ManagerNudge uses "oro task" commands (not "oro bead status").
-//  2. VerifyBeaconReceived succeeds when pane contains "oro task status".
-//  3. VerifyBeaconReceived fails when pane only contains "oro bead status"
-//     (because the beacon indicator is now task-based, not bead-based).
-func TestTmuxManagerBeaconVerificationUsesTaskTerminology(t *testing.T) {
-	nudge := ManagerNudge()
-	if strings.Contains(nudge, "oro bead status") {
-		t.Errorf("ManagerNudge must not reference legacy 'oro bead status'; got: %q", nudge)
-	}
-	if !strings.Contains(nudge, "oro task") {
-		t.Errorf("ManagerNudge must use 'oro task' commands; got: %q", nudge)
-	}
-
+func TestVerifyBeaconReceivedUsesTaskTerminology(t *testing.T) {
 	t.Run("beacon succeeds when pane contains oro task status", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = "Working...\noro task status\nrunning\n"
