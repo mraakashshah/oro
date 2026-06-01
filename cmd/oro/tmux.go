@@ -1104,17 +1104,3 @@ func (s *TmuxSession) CleanupPaneDiedHooks() error {
 
 	return nil
 }
-
-// ForwardCommandToManager is the legacy manager-pane forwarding API. Default
-// production flows are managerless; callers that explicitly opt into a manager
-// pane can still use this helper.
-//
-// Returns the feedback string (e.g. "[forwarded] oro directive scale 3") and
-// any send-keys error.
-func (s *TmuxSession) ForwardCommandToManager(command string) (string, error) {
-	managerPane := s.Name + ":manager"
-	if err := s.SendKeys(managerPane, command); err != nil {
-		return "", fmt.Errorf("forward command to manager: %w", err)
-	}
-	return FormatForwardMessage(command), nil
-}
