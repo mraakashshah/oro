@@ -12,6 +12,7 @@ import (
 type Severity string
 
 const (
+	// Finding severities used by structured review findings.
 	SevCritical  Severity = "critical"
 	SevImportant Severity = "important"
 	SevMinor     Severity = "minor"
@@ -48,6 +49,8 @@ type ReviewReport struct {
 }
 
 // FindingID returns the content-addressed identifier for a review finding.
+//
+//oro:testonly — wired into production by subsequent structured-review phases.
 func FindingID(beadID string, f Finding) string {
 	h := sha256.Sum256([]byte(strings.Join([]string{
 		beadID,
