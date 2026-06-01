@@ -2,7 +2,7 @@
 
 **Autonomous agent swarm orchestrator for software engineering.**
 
-Oro is a self-managing multi-agent system that coordinates AI workers to execute software engineering tasks. A manager judges, a dispatcher orchestrates, and workers write code — all running concurrently in isolated git worktrees with TDD, quality gates, and code review baked into every cycle.
+Oro is a self-managing multi-agent system that coordinates AI workers to execute software engineering tasks. A dispatcher orchestrates and workers write code — all running concurrently in isolated git worktrees with TDD, quality gates, and code review baked into every cycle.
 
 ## Table of Contents
 
@@ -28,6 +28,7 @@ Oro is a self-managing multi-agent system that coordinates AI workers to execute
   - [Monitoring](#monitoring)
   - [Memory](#memory)
   - [Control](#control)
+  - [Ops / Recovery](#ops--recovery)
   - [Search](#search)
   - [Single-Worker Mode](#single-worker-mode)
   - [Maintenance](#maintenance)
@@ -37,29 +38,30 @@ Oro is a self-managing multi-agent system that coordinates AI workers to execute
   - [Epics](#epics)
   - [Quality Gate](#quality-gate)
   - [Worktrees](#worktrees)
-  - [Handoffs](#handoffs)
+  - [Context Transfer](#context-transfer)
   - [Ops Agents](#ops-agents)
+  - [Escalations](#escalations)
 - [Development](#development)
   - [Build](#build)
   - [Project Structure](#project-structure)
-- [Claude Runtime Compatibility](#claude-runtime-compatibility)
+- [Runtime Compatibility](#runtime-compatibility)
 
 ## Why "Oro"?
 
 *Oro* is Spanish for **gold** — because that's what we're doing: mining. Sifting through the infinite possibility space of code, specs, and designs to extract the nuggets that actually work. Every task is a dig site. Every memory is a vein worth returning to.
 
-It's also the heart of ***ouro*boros** — the serpent that eats its own tail. Workers consume their own context, write a handoff, and a fresh worker picks up where they left off. The loop never ends. The serpent never stops eating. Context is finite; the work is not.
+It's also the heart of ***ouro*boros** — the serpent that eats its own tail. Workers consume their own context, checkpoint the state that matters, and a fresh worker picks up where they left off. The loop never ends. The serpent never stops eating. Context is finite; the work is not.
 
 Also, our cute mascot is Oro, the *oro* ouroboros !
 ![Oro, the *oro* ouroboros](assets/oro-mascot.png)
 
 ## Philosophy
 
-Oro exists because single-agent coding sessions don't scale. One agent hits context limits, loses track of prior decisions, and can't parallelize. Oro solves this with a swarm: multiple workers execute tasks (tracked work items) simultaneously, each in an isolated worktree, each with relevant knowledge cards. When a worker exhausts its context window, it writes a handoff and a fresh worker picks up where it left off — the serpent eats its tail.
+Oro exists because single-agent coding sessions don't scale. One agent hits context limits, loses track of prior decisions, and can't parallelize. Oro solves this with a swarm: multiple workers execute tasks (tracked work items) simultaneously, each in an isolated worktree, each with relevant knowledge cards. When a worker exhausts its context window, Oro carries the task/worktree forward with continuation context — the serpent eats its tail.
 
-Quality is not optional. Every task goes through TDD (red-green-refactor), an automated quality gate (tests + lint + format), and ops-agent code review before merging to main. Failed reviews get feedback and retry. Merge conflicts get an ops agent. Stuck workers get diagnosed. The system is opinionated about correctness because autonomous agents must earn trust through process, not promises.
+Quality is not optional. Every task goes through TDD (red-green-refactor), an automated quality gate (tests + lint + format + language-specific checks), and ops-agent code review before merging to main. Failed reviews get feedback and retry. Merge conflicts get an ops agent. Stuck workers get diagnosed. The system is opinionated about correctness because autonomous agents must earn trust through process, not promises.
 
-Knowledge persists across sessions. Workers emit learnings during execution, handoffs preserve immediate task state, and durable cards surface relevant rules, patterns, decisions, facts, and taste to future workers. The swarm gets smarter as it works.
+Knowledge persists across sessions. Workers emit learnings during execution, context renders preserve immediate task state, and durable cards surface relevant rules, patterns, decisions, facts, and taste to future workers. The swarm gets smarter as it works.
 
 ## Principles
 
@@ -73,7 +75,7 @@ Every session leaves the system smarter. Workers emit learnings during execution
 
 ### 3. Loop Until Done
 
-The ouroboros isn't a metaphor — it's the architecture. When a worker exhausts its context window, it writes a handoff and a fresh worker continues. When a task fails review, it gets feedback and retries. When a merge conflicts, an ops agent resolves it. The system loops — handoff loops, review loops, retry loops — until the work is done or explicitly abandoned. No work is lost to context limits, flaky failures, or transient state.
+The ouroboros isn't a metaphor — it's the architecture. When a worker exhausts its context window, Oro preserves enough context for a fresh worker to continue. When a task fails review, it gets feedback and retries. When a merge conflicts, an ops agent resolves it. The system loops — continuation loops, review loops, retry loops — until the work is done or explicitly abandoned. No work is lost to context limits, flaky failures, or transient state.
 
 ### 4. Better Specs, Better Outcomes
 
@@ -81,13 +83,13 @@ The most leveraged investment is upstream. Oro spends tokens on brainstorming al
 
 ### 5. Guards Over Trust
 
-Autonomous agents earn trust through mechanism, not promises. Oro wraps every task in guards: TDD (failing test before code), a 19-check quality gate (tests, lint, format, type-check, vulnerability scan), ops-agent code review, and evidence-based verification. These guards aren't overhead — they're what let the system execute fearlessly. When correctness is enforced mechanically, you stop worrying about whether the agent "did the right thing" and start compounding velocity.
+Autonomous agents earn trust through mechanism, not promises. Oro wraps every task in guards: TDD (failing test before code), a lane-based quality gate (tests, lint, format, builds, vulnerability checks, and language-specific checks), ops-agent code review, and evidence-based verification. These guards aren't overhead — they're what let the system execute fearlessly. When correctness is enforced mechanically, you stop worrying about whether the agent "did the right thing" and start compounding velocity.
 
 ## How Oro Creates Software
 
 Oro enforces a disciplined pipeline from idea to merged code. Every phase has a specific purpose, and no phase can be skipped — the system is designed so that cutting corners is harder than doing it right.
 
-```
+```text
  Idea
   │
   ▼
@@ -149,10 +151,10 @@ Oro enforces a disciplined pipeline from idea to merged code. Every phase has a 
                            │
                            ▼
  ┌─────────────────────────────────────────────────────────┐
- │  8. QUALITY GATE (19 checks)                            │
- │  go test -race · golangci-lint · gofumpt · goimports ·  │
- │  go vet · govulncheck · shellcheck · ruff · pyright ·   │
- │  markdownlint · yamllint · biome. All must pass.        │
+ │  8. QUALITY GATE                                        │
+ │  Lane-based checks: format, lint, tests, builds, vet,   │
+ │  vulnerability scan, shell/docs/config, and optional    │
+ │  mutation testing. All required lanes must pass.        │
  └─────────────────────────┬───────────────────────────────┘
                            │
                            ▼
@@ -161,7 +163,7 @@ Oro enforces a disciplined pipeline from idea to merged code. Every phase has a 
  │  Ops agent reviews against acceptance criteria and      │
  │  spec. Feedback triaged as Critical / Important /       │
  │  Minor. Critical blocks merge. Up to 2 review cycles    │
- │  before escalation to Manager.                          │
+ │  before dispatcher escalation.                          │
  └─────────────────────────┬───────────────────────────────┘
                            │
                            ▼
@@ -188,17 +190,13 @@ The key insight: autonomous agents are only as trustworthy as their process. Oro
 
 ## Architecture
 
-```
+```text
  ┌─────────────────────────────────────────────────────────┐
  │                    tmux session "oro"                   │
- │  ┌─────────────────────────────────────────────────┐   │
- │  │  Manager (pane 0)                               │   │
- │  │  Judgment calls, merge conflicts,               │   │
- │  │  stuck workers, scales swarm                    │   │
- │  └─────────────────────────────────────────────────┘   │
+ │  Attach surface for monitoring and operator control     │
  └─────────────────────────────────────────────────────────┘
                           │
-                    oro task CLI
+                    oro CLI / directives
                           │
                           ▼
  ┌─────────────────────────────────────────────────────────┐
@@ -223,19 +221,22 @@ The key insight: autonomous agents are only as trustworthy as their process. Oro
 
 **Worker lifecycle:** spawn → connect (UDS) → receive ASSIGN → execute task via the configured runtime adapter → run quality gate → send DONE → dispatcher merges to main → next task
 
-**Context exhaustion (ralph loop):** When a worker hits its context threshold, it writes a handoff file and signals the dispatcher. A fresh worker spawns in the same worktree, reads the handoff, and continues — no work lost.
+**Escalation path:** Escalation is dispatcher-managed, not a separate supervising pane. The dispatcher persists the event, routes supported cases to short-lived ops agents, and leaves anything unrouted visible through health and recovery commands. Missing acceptance criteria can spawn an AC writer; oversized tasks can spawn decomposition; stuck workers, merge conflicts, and priority contention can spawn one-shot triage.
+
+**Context exhaustion (ralph loop):** When a worker hits its context threshold, it sends structured continuation context to the dispatcher. A fresh worker can spawn in the same worktree with relevant context and cards, then continue — no work lost.
 
 ### Memory System
 
-Three layers of persistent memory:
+Four layers of persistent and operational memory:
 
 | Layer | Storage | Scope | Access |
 |-------|---------|-------|--------|
 | **Task annotations** | Native task store | Per-work-item notes, acceptance criteria | `oro task show <id>` |
-| **Handoffs** | YAML files in worktree | Immediate task context for continuation | Auto-read by next worker |
+| **Context render** | Current task/event/card state | Immediate task context for continuation | `oro current`, `oro handoff --since 4h` |
 | **Knowledge cards** | Card store | Durable rules, patterns, decisions, facts, and taste | `oro cards ...` |
+| **Event log** | SQLite event store | Dispatcher and worker history | `oro logs`, `oro events` |
 
-Workers and handoffs can queue learning candidates during execution. Review commands promote the useful candidates into cards, and assignment prompts use relevant cards instead of the retired prompt-memory path.
+Workers and continuation flows can queue learning candidates during execution. Review commands promote the useful candidates into cards, and assignment prompts use relevant cards instead of the retired prompt-memory path.
 
 **Cards:** Cards carry type, summary, full body, tags, score, contradiction state, retirement metadata, and lineage. They are the long-lived knowledge layer that workers receive in prompt context and operators maintain through the `oro cards` command group.
 
@@ -243,11 +244,17 @@ Workers and handoffs can queue learning candidates during execution. Review comm
 
 ### Prerequisites
 
-Runtime requirements (macOS only):
+Runtime requirements for release installs:
 
 ```bash
-# Supported agent runtime CLIs
+# macOS release archives are built for darwin amd64/arm64.
+
+# Required by oro setup
 claude --version
+git --version
+brew --version
+
+# Optional runtime when using Codex workers
 codex --version
 
 # tmux (for swarm sessions)
@@ -260,7 +267,7 @@ brew install tmux
 curl -fsSL https://raw.githubusercontent.com/mraakashshah/oro/main/scripts/install.sh | bash
 ```
 
-The installer downloads the latest `oro` binary (pre-built for macOS amd64/arm64), verifies its SHA-256 checksum, and places it in `/usr/local/bin` (or `~/.local/bin` if `/usr/local/bin` isn't writable). The binary is self-contained — assets (hooks, skills, beacons) auto-extract to `~/.oro/` on first run.
+The installer downloads the latest macOS release archive, verifies its SHA-256 checksum, installs `oro` into `/usr/local/bin` or `~/.local/bin`, installs `oro-search-hook` under `~/.oro/hooks`, and installs bundled dylibs under `~/.oro/lib` when they are present. Installer options include `--dry-run`, `--version VERSION`, and `--prefix DIR`.
 
 Then in your project:
 
@@ -269,20 +276,18 @@ cd your-project
 oro setup
 ```
 
-`oro setup` checks prerequisites, detects project languages, installs missing dev tools, bootstraps `.oro/` config, and runs a health check. By default it uses stealth mode — zero footprint in the project directory.
+`oro setup` checks prerequisites, detects project languages, installs missing dev tools, writes in-repo `.oro/config.yaml`, extracts assets to `~/.oro`, installs Oro git hooks, generates `scripts/quality_gate.sh`, and runs a health check.
 
-For Codex workers, install and authenticate the Codex CLI before setup:
+For zero-footprint mode, use `oro init` without `--local`. Use `oro init --local` when you want in-repo config.
+
+For Codex workers, install and authenticate the Codex CLI before selecting a Codex runtime:
 
 ```bash
 codex --version
+oro agent-assets --runtime codex
 ```
 
-Codex assets are installed under `$CODEX_HOME` when set, otherwise `~/.codex`.
-Oro writes portable Codex skills, Codex `prefix_rule` command-permission rules,
-an Oro local marketplace package, and project `AGENTS.md` instructions. See
-[docs/runbooks/codex-setup.md](docs/runbooks/codex-setup.md) for the plugin
-discovery path, `.codex-plugin/plugin.json` layout, marketplace registration,
-and current limitations. Case B (interactive Codex sessions) is deferred to a future spec; the current parity scope is dispatcher-spawned Codex workers.
+Codex assets are installed under `$CODEX_HOME` when set, otherwise `~/.codex`. Oro writes portable Codex skills, Codex command-permission rules, an Oro local marketplace package, and project `AGENTS.md` instructions. See [docs/runbooks/codex-setup.md](docs/runbooks/codex-setup.md) for the plugin discovery path, `.codex-plugin/plugin.json` layout, marketplace registration, and current limitations.
 
 ### Uninstall
 
@@ -297,26 +302,29 @@ Removes the binary, `~/.oro/`, launchd agents, `.oro/` anchor dirs, oro-managed 
 For development or contributing:
 
 ```bash
-# Prerequisites: Go 1.26, Node.js (for npm), Python (for uv)
+# Prerequisites: Go 1.26.3, Node.js/npm, Python 3.13+, and uv
 git clone https://github.com/mraakashshah/oro.git
 cd oro
-make setup      # npm deps, golangci-lint, git hooks
+make setup      # git hooks, npm deps, golangci-lint, NilAway, Python deps
 make install    # builds and installs oro, oro-search-hook, and runtime assets
 ```
 
 ### Launch
 
-Once `oro setup` has completed in your project:
+Once `oro setup` or `oro init` has completed in your project:
 
 ```bash
-# Start the swarm (opens tmux session)
+# Start the swarm
 oro start
 
 # Or start detached
 oro start --detach
+
+# Or start dashboard/health HTTP endpoints
+oro start --web
 ```
 
-This creates a tmux session with a manager pane, starts the dispatcher daemon, and spawns the worker pool. The manager monitors execution, and workers pick up tasks as they become ready.
+This starts the dispatcher daemon, creates a plain tmux attach surface, and spawns the worker pool. The dispatcher monitors execution, and workers pick up tasks as they become ready.
 
 ### Basic Operations
 
@@ -338,6 +346,10 @@ oro directive pause
 
 # Resume
 oro directive resume
+
+# Render live context and transfer material
+oro current
+oro handoff --since 4h
 
 # Review queued learning candidates
 oro cards review-queue
@@ -362,15 +374,15 @@ oro stop
 | `oro cleanup` | Clean stale state after a crash | `oro cleanup` |
 | `oro uninstall` | Remove oro and all its artifacts from this machine | `oro uninstall --force` |
 
-**`oro setup`** flags: `--project-root <dir>`, `--dev` (install dev-only tools), `--dry-run`, `--skip-tools`, `--force` (overwrite existing config)
+**`oro setup`** flags: `--project-root <dir>`, `--dev` (install dev-only tools), `--dry-run`, `--skip-tools`, `--force`
 
-**`oro init`** flags: `--check` (verify only), `--force` (overwrite config), `--project-root <dir>`, `--quiet`, `--local` (in-repo mode: create `.oro/` in project root). Default is stealth mode — zero footprint, config stored under `~/.oro/projects/s-<hash>/`.
+**`oro init`** flags: `--check` (verify only), `--force` (overwrite regenerated Oro assets and quality gate files), `--project-root <dir>`, `--quiet`, `--local` (in-repo mode: create `.oro/` in project root), `--skip-wizard`. Default is stealth mode — zero footprint, config stored under `~/.oro/projects/s-<hash>/`.
 
-**`oro start`** flags: `--workers, -w` (default: 2), `--max-workers` (hard ceiling for autoscale, scale directives, spawn-for, and manual `oro worker launch` reservations), `--model` (tier name or provider model name — default: `balanced`), `--detach, -D`, `--daemon-only, -d`, `--manual-integration` (leave completed worker branches/worktrees for coordinator review instead of auto-merging)
+**`oro start`** flags: `--workers, -w` (default: 2), `--max-workers` (default: same as `--workers`), `--model` (tier name or provider model name — default: `balanced`), `--detach, -D`, `--daemon-only, -d`, `--manual-integration`, `--base-branch`, `--mutation-testing`, `--web`, `--web-addr`, `--progress-timeout`, `--ops-review-timeout`, `--review-stall-timeout`
 
-**`oro dispatcher start`** flags: `--workers, -w` (default: 0), `--force, -f`, `--manual-integration` (leave completed worker branches/worktrees for coordinator review instead of auto-merging)
+**`oro dispatcher start`** flags: `--workers, -w` (default: 0), `--force, -f`, `--manual-integration`, `--mutation-testing`
 
-**`oro stop`** flags: `--force` (skip confirmation, requires `ORO_HUMAN_CONFIRMED=1`)
+**`oro stop`** flags: `--force` (skip confirmation, requires `ORO_HUMAN_CONFIRMED=1`), `--all`
 
 **`oro uninstall`** flags: `--force` (skip confirmation prompt), `--keep-data` (preserve `~/.oro/` — databases and task history)
 
@@ -383,9 +395,10 @@ oro stop
 | `oro monitor` | Observe health and optionally perform bounded recovery | `oro monitor --target 2 --max-workers 2 --interval 60s` |
 | `oro throughput` | Report swarm throughput health | `oro throughput --window 2h` |
 | `oro logs` | Query and tail dispatcher event logs | `oro logs --tail 50 -f` |
+| `oro events` | Query structured event history | `oro events --type WORKER_DONE --limit 20` |
 | `oro dashboard` | Show the local web dashboard | `oro dashboard` |
 
-**`oro logs`** flags: `--tail <n>` (default: 20), `-f, --follow` (poll for new events)
+**`oro logs`** flags: `--tail <n>` (default: 20), `-f, --follow` (poll for new events), `--raw`
 
 **`oro logs`** with worker filter: `oro logs w-01 --follow`
 
@@ -393,6 +406,8 @@ oro stop
 
 | Command | Description | Example |
 |---------|-------------|---------|
+| `oro current` | Render current task context and relevant cards | `oro current --format json` |
+| `oro handoff` | Render recent context for transfer | `oro handoff --since 4h` |
 | `oro cards create` | Create a manual knowledge card | `oro cards create pattern "Validate inputs at boundaries" --summary "Check inputs before crossing system boundaries"` |
 | `oro cards list` | List active card summaries | `oro cards list --type pattern --limit 10` |
 | `oro cards show` | Show a full card | `oro cards show card-abc123 --json` |
@@ -418,7 +433,17 @@ oro stop
 |---------|-------------|---------|
 | `oro directive` | Send a directive to the dispatcher | `oro directive scale 4` |
 
-**Operations:** `start`, `stop`, `pause`, `resume`, `scale <n>`, `focus <epic>`, `status`
+**Operations:** `start`, `stop`, `pause`, `resume`, `scale <n>`, `focus <epic>`, `status`, `restart-worker`, `preempt`, `worker-logs`, `max-workers`, `pending-escalations`, `ack-escalation`
+
+### Ops / Recovery
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `oro ops list` | List durable ops agent runs | `oro ops list --json` |
+| `oro ops retry` | Supersede and retry a failed or stale ops run | `oro ops retry 42` |
+| `oro ops resolve` | Mark an ops run resolved after validating the condition | `oro ops resolve 42 --reason "operator checked"` |
+| `oro directive pending-escalations` | List pending escalations that have not been acknowledged | `oro directive pending-escalations` |
+| `oro directive ack-escalation` | Acknowledge an obsolete pending escalation | `oro directive ack-escalation 7` |
 
 ### Search
 
@@ -437,40 +462,45 @@ oro stop
 |---------|-------------|---------|
 | `oro work` | Execute a single task interactively (no dispatcher) | `oro work oro-abc1 --model deep` |
 
-**`oro work`** flags: `--model` (tier name or provider model name — default: `balanced`), `--timeout` (default: 15m), `--skip-review`, `--base-branch`
+**`oro work`** flags: `--model` (tier name or provider model name — default: `balanced`), `--runtime claude|codex`, `--timeout`, `--review-timeout`, `--skip-review`, `--dry-run`, `--dry-run-spawn`, `--auto`, `--base-branch`, `--mutation-testing`
 
 ### Maintenance
 
 | Command | Description | Example |
 |---------|-------------|---------|
 | `oro doctor` | Diagnose oro installation issues | `oro doctor` |
+| `oro models` | Manage semantic model artifacts | `oro models list` |
+| `oro leakscan` | Scan stdin, diffs, or files for credential-looking material | `oro leakscan --diff HEAD~1..HEAD` |
 
 ### Internal
 
 | Command | Description | Example |
 |---------|-------------|---------|
 | `oro worker` | Run a worker process (used by dispatcher) | `oro worker --socket /tmp/oro.sock --id w-01` |
+| `oro agent-assets` | Install Claude/Codex runtime assets | `oro agent-assets --runtime all` |
 
 ## Key Concepts
 
 ### Tasks
 
-Work items tracked by the native `oro task` CLI. Each task has a title, description, acceptance criteria, priority (P0-P4), type (task/feature/bug/epic), and optional dependencies. The dispatcher assigns ready tasks (no unresolved blockers) to idle workers.
+Work items tracked by the native `oro task` CLI. Each task has a title, description, acceptance criteria, numeric priority, type, dependencies, parent, owner, notes, tags, and metadata. Priority `0` is highest; default create priority is `2`. The dispatcher assigns ready tasks (no unresolved blockers) to idle workers.
 
 ### Task Terminology
 
 - **Task:** an Oro work item.
-- **Task type:** the `type` field, whose values include `task`, `bug`, `epic`, `research`, and `chore`.
+- **Task type:** the `type` field. Dispatcher routing currently treats `task`, `bug`, and `chore` as executable; `research` is a stubbed oracle path; `epic` and `review` are non-executable.
 
 ### Epics
 
-Parent tasks that group related work. The dispatcher can `focus` on an epic to prioritize its children. When an epic is first assigned, a worker decomposes it into child tasks. Child tasks merge to an isolated `epic/<epicID>` branch (not main). When all children complete, the epic branch passes a quality gate check, then fast-forward merges to main.
+Parent tasks that group related work. The dispatcher can `focus` on an epic to prioritize its children. When an epic is first assigned, a worker decomposes it into child tasks. Child tasks merge to an isolated `epic/<epicID>` branch (not main). When all children complete, the epic branch can run an acceptance command, pass a quality gate check, then fast-forward merge to the target branch. If that fast-forward merge fails, Oro creates a rebase child task and leaves the epic open.
 
 ### Quality Gate
 
-An automated pipeline (`scripts/quality_gate.sh`) that every task must pass before merging: `go test ./... -race` + `golangci-lint` + `gofumpt` + `goimports`. Workers run the gate after implementation. Failed gates mean the task is not done.
+An automated lane-based pipeline (`scripts/quality_gate.sh`) that every automatically merged task must pass before merging. The repository gate includes Go formatting, `golangci-lint`, NilAway, dead-export checks, beadstore import checks, Go tests with coverage, Go builds, `go vet`, CGO-free builds, `govulncheck`, Python checks when Python files exist, shell checks, markdownlint, yamllint, Biome JSON checks, and optional mutation testing.
 
-The quality gate is generated during `oro init` / `oro setup` based on detected project languages. For projects with no recognized languages, a shell-only quality gate is still generated (shellcheck + markdownlint) so that tasks always have a gate to pass.
+The quality gate is generated during `oro init` / `oro setup` based on detected project languages. For projects with no recognized languages, a shell/docs/config gate is still generated so that tasks always have a gate to pass.
+
+Common environment controls include `ORO_QG_GOMAXPROCS`, `ORO_SKIP_MUTATION`, `ORO_MUTATION_BASE`, `ORO_PRE_PUSH_QG`, and `ORO_QG_CONTEXT`.
 
 ### Dead Pane Detection
 
@@ -478,51 +508,74 @@ When the dispatcher sends commands to worker tmux panes via `SendKeysVerified`, 
 
 ### Worktrees
 
-Each worker operates in an isolated git worktree on an `agent/<id>` branch. This prevents conflicts between concurrent workers. On completion, the dispatcher rebases onto main and fast-forward merges — maintaining linear history.
+Each worker operates in an isolated git worktree on an `agent/<id>` branch. This prevents conflicts between concurrent workers. On completion, the dispatcher rebases onto the base branch and fast-forward merges when automatic integration is enabled — maintaining linear history. Worker worktrees receive a dispatcher-managed `quality_gate.sh` snapshot so stale branches cannot bypass current quality gate fixes.
 
-### Handoffs
+### Context Transfer
 
-When a worker exhausts its context window, it writes a YAML handoff file capturing current progress, remaining work, and learnings. A fresh worker spawns in the same worktree and continues. This "ralph loop" means no task is limited by a single context window.
+Use `oro current` to inspect live task context and relevant cards. Use `oro handoff --since 4h` to render transfer context for continuation. This is a render, not the old stored YAML file workflow. Separately, the worker/dispatcher still has an internal `HANDOFF` protocol message for context-limit continuation.
 
 ### Ops Agents
 
-Short-lived runtime subprocesses spawned by the dispatcher for judgment-heavy tasks: code review (post-completion), merge conflict resolution, stuck-worker diagnosis, acceptance criteria writing, and memory dreaming (cross-session synthesis). Current default routing still maps review and diagnosis to the deep tier and dreaming to the background tier.
+Short-lived runtime subprocesses spawned by the dispatcher for judgment-heavy tasks: code review (post-completion), merge conflict resolution, stuck-worker diagnosis, acceptance criteria writing, and memory dreaming (cross-session synthesis). Routing depends on active agent configuration. Legacy/no-agent-block behavior defaults to Claude; initialized projects write an agent provider mode.
+
+### Escalations
+
+Escalations are exceptional dispatcher states. Every escalation is recorded before delivery or routing. Supported types are handled by ops agents when possible: `MISSING_AC` writes acceptance criteria, `OVERSIZED_BEAD` decomposes large tasks, and `STUCK_WORKER`, `MERGE_CONFLICT`, and `PRIORITY_CONTENTION` can run one-shot triage. Other pending escalations remain operator-visible through `oro health`, `oro ops list`, and `oro directive pending-escalations` until retried, resolved, or acknowledged.
 
 ## Development
 
 ### Build
 
 ```bash
-make setup          # Install dev tooling (npm deps, golangci-lint, git hooks)
-make build          # Build oro + oro-search-hook
-make install        # Build and install oro + oro-search-hook + runtime assets
-make test           # Run tests with race detector
-make lint           # Run golangci-lint
-make fmt            # Format Go files (gofumpt + goimports)
-make gate           # Full quality gate
-make release V=x.y.z # Tag and push (triggers GitHub Actions release)
+make setup           # Install dev tooling (npm deps, golangci-lint, NilAway, Python deps)
+make build           # Build oro + oro-search-hook
+make install         # Build and install oro + oro-search-hook + runtime assets
+make test            # Run tests with race detector and shuffle
+make lint            # Run golangci-lint plus NilAway
+make fmt             # Format Go and shell files
+make gate            # Full quality gate
+make release V=x.y.z # Tag and push vX.Y.Z
 ```
 
 ### Project Structure
 
-```
+```text
 oro/
 ├── cmd/
 │   ├── oro/              # Main binary — CLI commands + dispatcher
-│   ├── oro-dash/         # TUI dashboard helpers (library package)
+│   ├── oro-capture-hook/ # Capture hook binary
+│   ├── oro-dash/         # Headless dashboard snapshot/diff-test command
 │   └── oro-search-hook/  # Code search integration
+├── internal/
+│   └── appversion/       # Build/version metadata
 ├── pkg/
-│   ├── dispatcher/       # Core orchestrator — state machine, worker pool, task tracking
-│   ├── worker/           # Worker agent — UDS connection, prompt assembly, subprocess
+│   ├── agentassets/      # Claude/Codex runtime asset generation
+│   ├── agentmodel/       # Role/tier/model resolution
+│   ├── agentruntime/     # Claude/Codex runtime adapters
+│   ├── beadstore/        # Native SQLite task store
 │   ├── cards/            # Knowledge cards — durable rules, patterns, decisions
-│   ├── ops/              # Ops agent spawner — review, merge resolution, diagnosis
-│   ├── merge/            # Merge coordinator — serialized rebase + ff-only
-│   ├── protocol/         # Shared types, UDS messages, SQLite schema, constants
-│   ├── dashboard/        # Dashboard data and headless view helpers
 │   ├── codesearch/       # Semantic code search
+│   ├── codestruct/       # Code structure helpers
+│   ├── config/           # Agent runtime configuration
+│   ├── dashboard/        # Dashboard data and headless view helpers
+│   ├── dbutil/           # SQLite helpers
+│   ├── dispatcher/       # Core orchestrator — state machine, worker pool, task tracking
+│   ├── edit/             # Edit helpers
+│   ├── embed/            # Embedding/reranking factories
 │   ├── eventlog/         # Queryable event log
+│   ├── factoryhealth/    # Health findings
 │   ├── langprofile/      # Language detection for quality gate generation
-│   └── integration/      # End-to-end test harness
+│   ├── leakscan/         # Credential leak scanning
+│   ├── lint/             # Lint helpers
+│   ├── merge/            # Merge coordinator — serialized rebase + ff-only
+│   ├── modelartifacts/   # ONNX model artifact specs/downloads
+│   ├── ops/              # Ops agent spawner — review, merge resolution, diagnosis
+│   ├── processenv/       # Subprocess cache/temp env isolation
+│   ├── protocol/         # Shared types, UDS messages, task constants
+│   ├── testutil/         # Test utilities
+│   ├── web/              # Dashboard/health HTTP server
+│   └── worker/           # Worker agent — UDS connection, prompt assembly, subprocess
+├── assets/               # Embedded skills, hooks, rules, commands, beacons
 ├── scripts/
 │   ├── install.sh        # curl installer
 │   └── quality_gate.sh   # Automated quality gate runner
@@ -534,30 +587,49 @@ oro/
 │   ├── research/         # Comparative research
 │   ├── solutions/        # Documented solved problems
 │   └── archive/          # Superseded or compatibility-only docs
+├── git/hooks/            # Canonical repository git hooks
 ├── .goreleaser.yml       # Release build config
 ├── Makefile
 └── go.mod
 ```
 
-## Claude Runtime Compatibility
+## Runtime Compatibility
 
-Oro is runtime-agnostic — workers dispatch tasks to whatever AI agent CLI is configured. Claude (`claude`) is the current primary runtime; Codex (`codex`) is also supported.
+Oro is runtime-aware. Workers dispatch tasks to the configured AI agent CLI. Claude (`claude`) and Codex (`codex`) are supported.
 
 The `--model` flag and task `model` field accept **tier names** (preferred) or provider-specific model names (accepted for explicit overrides):
 
-| Tier | Claude model | Typical use |
-|------|-------------|-------------|
-| `fast` | `haiku` | Quick lookups, formatting, lightweight tasks |
-| `balanced` | `sonnet` | Standard implementation tasks (default) |
-| `deep` | `opus` | Complex architecture, multi-file refactors |
-| `background` | `haiku` | Memory extraction, dreaming, ops subtasks |
+| Tier | Typical use |
+|------|-------------|
+| `fast` | Quick lookups, formatting, lightweight tasks |
+| `balanced` | Standard implementation tasks |
+| `deep` | Complex architecture, multi-file refactors, review-heavy tasks |
+| `background` | Memory extraction, dreaming, ops subtasks |
 
-Tier names are the stable interface — they remain valid across Claude model generations. When the configured runtime is not Claude, tier names route to the runtime's equivalent capability level.
+Tier names are the stable interface. Concrete model names are resolved from the active agent config. Legacy/no-agent-block behavior defaults to Claude. `oro init` writes an `agent.provider_mode` by default; the default provider mode is `codex-coding-claude-review`.
 
-**Prerequisite for Claude runtime:**
+Provider modes:
 
-```bash
-claude --version   # must be installed and authenticated
+```text
+codex-only
+claude-only
+codex-coding-claude-review
+claude-coding-codex-review
+```
+
+Useful runtime environment variables:
+
+```text
+ORO_AGENT_RUNTIME=claude|codex
+ORO_HOME
+ORO_PROJECT
+ORO_DB_PATH
+ORO_SOCKET_PATH
+ORO_PID_PATH
+CODEX_HOME
+CLAUDE_CONFIG_DIR
+ORO_SQLITE_VEC_LIB
+ANTHROPIC_API_KEY
 ```
 
 ## References
@@ -567,6 +639,6 @@ Oro builds on foundational work and ideas from the AI coding agent community:
 - **[Garry Tan - Gstack](https://github.com/garrytan/gstack)** — An open source software factory
 - **[Teresa Torres - Context Rot](https://www.producttalk.org/context-rot/)** — Why AI gets worse the longer you chat
 - **[Every's Compound Engineering](https://every.to/guides/compound-engineering)** — Making each unit of work compound into the next through systematic learning loops
-- **[Teresa Torres - Context Rot](https://www.producttalk.org/context-rot/)** — Why institutional knowledge decays and how to prevent it
-- **[Continuous Claude v3](https://github.com/parcadei/Continuous-Claude-v3)** — Context management pattern for persistent agent workflows using ledgers and handoffs
+- **[Continuous Claude v3](https://github.com/parcadei/Continuous-Claude-v3)** — Context management pattern for persistent agent workflows using ledgers
+- **[Continuous Claude V4.7](https://github.com/parcadei/ContinuousClaudeV4.7)** — Updated context-management lineage for continuous Claude workflows
 - **[Obra - Superpowers](https://github.com/obra/superpowers)** — Agent skill framework for building disciplined AI coding workflows
