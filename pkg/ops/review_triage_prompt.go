@@ -2,6 +2,7 @@ package ops
 
 import "strings"
 
+//nolint:unused // P2a introduces the cheap triage prompt; P2b wires Review scoping.
 func buildCheapTriagePrompt(opts ReviewOpts) string {
 	var b strings.Builder
 	b.WriteString("You are the cheap code-review triage pass for Oro.\n")
