@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -165,6 +166,109 @@ func TestReviewMultiPersona_AllFailFallsBackToSinglePass(t *testing.T) {
 	}
 }
 
+func TestCheapThenDeep_SkipsBelowThreshold(t *testing.T) {
+	t.Run("small diff skips cheap pass", func(t *testing.T) {
+		worktree := testReviewRepo(t)
+		t.Chdir(worktree)
+		writePersonaAgentConfig(t, worktree)
+		writeFile(t, filepath.Join(worktree, "pkg", "worker.go"), "package pkg\n\nfunc Worker() string { return \"changed\" }\n")
+
+		personas := selectPersonas(ReviewOpts{Worktree: worktree, BaseBranch: "main"})
+		spawner := &recordingReviewSpawner{
+			stdout: structuredReviewOutput(t, ReviewReport{Reviewer: "reviewer", Verdict: VerdictApproved}),
+		}
+		s := NewSpawner(spawner)
+
+		result := waitResult(t, s.Review(context.Background(), ReviewOpts{
+			BeadID:             "oro-review",
+			Worktree:           worktree,
+			BaseBranch:         "main",
+			MultiPersona:       true,
+			CheapThenDeep:      true,
+			CheapGateThreshold: 400,
+		}))
+
+		if result.Verdict != VerdictApproved {
+			t.Fatalf("Review verdict = %q, want approved; feedback=%s err=%v", result.Verdict, result.Feedback, result.Err)
+		}
+		calls := spawner.getCalls()
+		if len(calls) != len(personas) {
+			t.Fatalf("spawn calls = %d, want only %d deep persona calls", len(calls), len(personas))
+		}
+		for _, call := range calls {
+			if call.role == "ops_review_triage" {
+				t.Fatalf("small diff spawned cheap triage unexpectedly: %#v", calls)
+			}
+		}
+	})
+
+	t.Run("large diff scopes deep prompts to cheap survivors", func(t *testing.T) {
+		worktree := testReviewRepo(t)
+		t.Chdir(worktree)
+		writePersonaAgentConfig(t, worktree)
+		writeLargeReviewDiff(t, worktree, 12)
+
+		personas := selectPersonas(ReviewOpts{Worktree: worktree, BaseBranch: "main"})
+		survivor := Finding{
+			Severity:   SevImportant,
+			Category:   "correctness",
+			Title:      "surviving cheap concern",
+			Detail:     "deep reviewers should investigate this candidate",
+			Evidence:   []Evidence{{File: "pkg/worker.go", LineStart: 3, LineEnd: 3}},
+			Confidence: 75,
+			Sources:    []string{"cheap:correctness"},
+			Origin:     "introduced",
+		}
+		belowGate := Finding{
+			Severity:   SevImportant,
+			Category:   "correctness",
+			Title:      "below gate concern",
+			Detail:     "deep reviewers should not see this candidate",
+			Evidence:   []Evidence{{File: "pkg/worker.go", LineStart: 4, LineEnd: 4}},
+			Confidence: 10,
+			Sources:    []string{"cheap:correctness"},
+			Origin:     "introduced",
+		}
+		spawner := &recordingReviewSpawner{outputs: append(
+			[]string{structuredReviewOutput(t, ReviewReport{
+				Reviewer: "ops_review_triage",
+				Verdict:  VerdictRejected,
+				Findings: []Finding{survivor, belowGate},
+			})},
+			repeatStructuredReviewOutputs(t, len(personas), ReviewReport{Reviewer: "reviewer", Verdict: VerdictApproved})...,
+		)}
+		s := NewSpawner(spawner)
+
+		result := waitResult(t, s.Review(context.Background(), ReviewOpts{
+			BeadID:             "oro-review",
+			Worktree:           worktree,
+			BaseBranch:         "main",
+			MultiPersona:       true,
+			CheapThenDeep:      true,
+			CheapGateThreshold: 10,
+		}))
+
+		if result.Verdict != VerdictApproved {
+			t.Fatalf("Review verdict = %q, want approved; feedback=%s err=%v", result.Verdict, result.Feedback, result.Err)
+		}
+		calls := spawner.getCalls()
+		if len(calls) != len(personas)+1 {
+			t.Fatalf("spawn calls = %d, want one cheap pass plus %d deep persona calls", len(calls), len(personas))
+		}
+		if calls[0].role != "ops_review_triage" {
+			t.Fatalf("first spawn role = %q, want cheap triage", calls[0].role)
+		}
+		for _, call := range calls[1:] {
+			if !strings.Contains(call.prompt, "surviving cheap concern") {
+				t.Fatalf("deep prompt for %q did not include cheap survivor scope:\n%s", call.role, call.prompt)
+			}
+			if strings.Contains(call.prompt, "below gate concern") {
+				t.Fatalf("deep prompt for %q included below-gate finding:\n%s", call.role, call.prompt)
+			}
+		}
+	})
+}
+
 func testReviewRepo(t *testing.T) string {
 	t.Helper()
 
@@ -189,6 +293,30 @@ func writeFile(t *testing.T, path, body string) {
 	}
 }
 
+func writeLargeReviewDiff(t *testing.T, worktree string, lines int) {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString("package pkg\n\n")
+	b.WriteString("func Worker() string {\n")
+	for i := 0; i < lines; i++ {
+		b.WriteString("\t_ = ")
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString("\n")
+	}
+	b.WriteString("\treturn \"changed\"\n")
+	b.WriteString("}\n")
+	writeFile(t, filepath.Join(worktree, "pkg", "worker.go"), b.String())
+}
+
+func repeatStructuredReviewOutputs(t *testing.T, n int, report ReviewReport) []string {
+	t.Helper()
+	outputs := make([]string, 0, n)
+	for range n {
+		outputs = append(outputs, structuredReviewOutput(t, report))
+	}
+	return outputs
+}
+
 func git(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.CommandContext(context.Background(), "git", args...) //nolint:gosec // fixed test helper command
@@ -206,6 +334,10 @@ func writePersonaAgentConfig(t *testing.T, dir string) {
     ops_review:
       transport: cli
       runtime: ops_review
+      model: review-model
+    ops_review_triage:
+      transport: cli
+      runtime: ops_review_triage
       model: review-model
     ops_review_correctness:
       transport: cli

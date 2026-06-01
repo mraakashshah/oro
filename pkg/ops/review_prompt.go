@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,7 @@ func buildReviewPrompt(opts ReviewOpts) string {
 	var b strings.Builder
 	writeHeader(&b, base)
 	writeContext(&b, opts)
+	writeReviewScope(&b, opts)
 	writeProjectContext(&b, opts)
 	writePhases(&b, base)
 	writeVerdictAndOutput(&b)
@@ -110,6 +112,20 @@ func writeContext(b *strings.Builder, opts ReviewOpts) {
 		}
 	}
 	b.WriteString("\n")
+}
+
+func writeReviewScope(b *strings.Builder, opts ReviewOpts) {
+	if len(opts.ScopedFindings) == 0 {
+		return
+	}
+	payload, err := json.Marshal(reviewMergeFeedback{Findings: opts.ScopedFindings})
+	if err != nil {
+		return
+	}
+	b.WriteString("## Cheap Triage Scope\n")
+	b.WriteString("Deep review is scoped to these cheap-pass survivor findings. Investigate these candidates and do not expand review to below-gate findings unless you find a direct critical regression while validating this scope.\n")
+	b.Write(payload)
+	b.WriteString("\n\n")
 }
 
 func acceptanceCommand(ac string) string {
