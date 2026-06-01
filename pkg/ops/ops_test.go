@@ -443,6 +443,55 @@ func TestRunSelectsReviewSpawner(t *testing.T) {
 	}
 }
 
+func TestRunWith_DefaultRoutingMatchesRun(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.MkdirAll(filepath.Join(dir, ".oro"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".oro", "config.yaml"), []byte(`agent:
+  roles:
+    ops_review:
+      transport: cli
+      runtime: codex
+      model: gpt-5.5
+      reasoning: high
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runMock := &mockBatchSpawner{process: newReadyMockProcess("VERDICT: APPROVED\n\nsame feedback", nil)}
+	runSpawner := NewSpawner(runMock)
+	runResult := <-runSpawner.run(context.Background(), OpsReview, "oro-review", dir, "same prompt")
+
+	runWithMock := &mockBatchSpawner{process: newReadyMockProcess("VERDICT: APPROVED\n\nsame feedback", nil)}
+	runWithSpawner := NewSpawner(runWithMock)
+	runWithResult := <-runWithSpawner.runWith(
+		context.Background(),
+		OpsReview,
+		spawnRouting{role: OpsReview.Role()},
+		"oro-review",
+		dir,
+		"same prompt",
+	)
+
+	if runResult.Type != runWithResult.Type ||
+		runResult.BeadID != runWithResult.BeadID ||
+		runResult.Verdict != runWithResult.Verdict ||
+		runResult.Feedback != runWithResult.Feedback {
+		t.Fatalf("runWith result = %#v, want run result %#v", runWithResult, runResult)
+	}
+
+	runCalls := runMock.getCalls()
+	runWithCalls := runWithMock.getCalls()
+	if len(runCalls) != 1 || len(runWithCalls) != 1 {
+		t.Fatalf("spawn calls = run:%d runWith:%d, want 1 each", len(runCalls), len(runWithCalls))
+	}
+	if runCalls[0] != runWithCalls[0] {
+		t.Fatalf("runWith spawn = %#v, want run spawn %#v", runWithCalls[0], runCalls[0])
+	}
+}
+
 // multiProcessSpawner returns different processes on each Spawn call.
 type multiProcessSpawner struct {
 	mu        sync.Mutex

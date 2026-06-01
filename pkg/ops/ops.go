@@ -50,6 +50,11 @@ type RuntimeBatchSpawner interface {
 	SpawnRuntime(ctx context.Context, runtime string, model string, reasoning string, prompt string, workdir string) (Process, error)
 }
 
+type spawnRouting struct {
+	role            string
+	runtimeOverride string
+}
+
 // --- Ops types and verdicts ---
 
 // Type identifies the kind of operational task.
@@ -406,6 +411,10 @@ func (s *Spawner) HasActiveForBead(beadID string) bool {
 
 // run is the internal engine that spawns a subprocess and manages its lifecycle.
 func (s *Spawner) run(ctx context.Context, opsType Type, beadID, worktree, prompt string) <-chan Result {
+	return s.runWith(ctx, opsType, spawnRouting{role: opsType.Role()}, beadID, worktree, prompt)
+}
+
+func (s *Spawner) runWith(ctx context.Context, opsType Type, routing spawnRouting, beadID, worktree, prompt string) <-chan Result {
 	ch := make(chan Result, 1)
 
 	taskID := uuid.New().String()
@@ -417,7 +426,14 @@ func (s *Spawner) run(ctx context.Context, opsType Type, beadID, worktree, promp
 			s.mu.Unlock()
 		}()
 
-		runtime, model, reasoning := agentmodel.ResolveForRole(opsType.Role())
+		role := routing.role
+		if role == "" {
+			role = opsType.Role()
+		}
+		runtime, model, reasoning := agentmodel.ResolveForRole(role)
+		if routing.runtimeOverride != "" {
+			runtime = routing.runtimeOverride
+		}
 		sp := s.spawner
 		if opsType == OpsReview && s.reviewSpawner != nil {
 			sp = s.reviewSpawner
