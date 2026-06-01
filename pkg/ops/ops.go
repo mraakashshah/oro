@@ -296,6 +296,13 @@ func (s *Spawner) Review(ctx context.Context, opts ReviewOpts) <-chan Result {
 	return s.run(ctx, OpsReview, opts.BeadID, opts.Worktree, prompt)
 }
 
+func (s *Spawner) runCheapTriage(ctx context.Context, opts ReviewOpts) []Finding {
+	prompt := buildCheapTriagePrompt(opts)
+	result := <-s.runWith(ctx, OpsReview, spawnRouting{role: "ops_review_triage"}, opts.BeadID, opts.Worktree, prompt)
+	report, _ := parseReviewReport(result.Feedback)
+	return cheapGate(report.Findings)
+}
+
 // ResolveMergeConflict spawns a merge conflict resolution agent.
 func (s *Spawner) ResolveMergeConflict(ctx context.Context, opts MergeOpts) <-chan Result {
 	prompt := buildMergePrompt(opts)
