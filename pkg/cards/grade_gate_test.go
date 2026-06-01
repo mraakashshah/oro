@@ -1,4 +1,4 @@
-package cards
+package cards //nolint:testpackage // white-box tests pin the unexported gradeGate contract from the Phase 3 spec.
 
 import "testing"
 
