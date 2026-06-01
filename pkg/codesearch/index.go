@@ -127,11 +127,11 @@ func NewCodeIndex(dbPath string) (*CodeIndex, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply code index schema: %w", err)
 	}
-	if err := ensureIndexColumn(db, "chunks", "embedding", "ALTER TABLE chunks ADD COLUMN embedding BLOB"); err != nil {
+	if err := ensureIndexColumn(ctx, db, "chunks", "embedding", "ALTER TABLE chunks ADD COLUMN embedding BLOB"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ensure chunk embedding: %w", err)
 	}
-	if err := ensureIndexColumn(db, "chunks", "embedding_model", "ALTER TABLE chunks ADD COLUMN embedding_model TEXT"); err != nil {
+	if err := ensureIndexColumn(ctx, db, "chunks", "embedding_model", "ALTER TABLE chunks ADD COLUMN embedding_model TEXT"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ensure chunk embedding model: %w", err)
 	}
@@ -498,16 +498,16 @@ func cosineSimilarity(a, b []float32) float64 {
 	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
 }
 
-func ensureIndexColumn(db *sql.DB, table, column, ddl string) error {
+func ensureIndexColumn(ctx context.Context, db *sql.DB, table, column, ddl string) error {
 	var name string
-	err := db.QueryRow("SELECT name FROM pragma_table_info(?) WHERE name = ?", table, column).Scan(&name)
+	err := db.QueryRowContext(ctx, "SELECT name FROM pragma_table_info(?) WHERE name = ?", table, column).Scan(&name)
 	if err == nil {
 		return nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("inspect column %s.%s: %w", table, column, err)
 	}
-	if _, err := db.Exec(ddl); err != nil {
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("add column %s.%s: %w", table, column, err)
 	}
 	return nil
