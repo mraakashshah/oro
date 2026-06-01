@@ -296,6 +296,7 @@ func (s *Spawner) Review(ctx context.Context, opts ReviewOpts) <-chan Result {
 	return s.run(ctx, OpsReview, opts.BeadID, opts.Worktree, prompt)
 }
 
+//nolint:unused // P2a introduces the cheap triage seam; P2b wires Review scoping.
 func (s *Spawner) runCheapTriage(ctx context.Context, opts ReviewOpts) []Finding {
 	prompt := buildCheapTriagePrompt(opts)
 	result := <-s.runWith(ctx, OpsReview, spawnRouting{role: "ops_review_triage"}, opts.BeadID, opts.Worktree, prompt)
