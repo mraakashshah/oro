@@ -629,6 +629,7 @@ type Config struct {
 	ReviewDeadGrace         time.Duration // Grace period before removing a reviewing worker whose ops review subprocess has exited (default 30s).
 	ManualIntegration       bool          // If true, completed worker branches wait for manual coordinator integration instead of auto-merge.
 	MutationTesting         bool          // If true, dispatcher quality gates run mutation-testing tiers. Defaults false.
+	RegressionRevert        bool          // If true, QG retries capture a pre-retry baseline for regression-revert checks. Defaults true.
 	LeakScan                LeakScanConfig
 	Estimator               BeadEstimator // LLM-based bead complexity estimator (default NewBeadEstimator()).
 	WorkerProgram           string        // Absolute path to worker-program.md. Defaults to <RepoRoot>/worker-program.md.
@@ -674,6 +675,13 @@ func durationDefault(v, dflt time.Duration) time.Duration {
 	return v
 }
 
+func boolDefault(v, dflt bool) bool {
+	if !v {
+		return dflt
+	}
+	return v
+}
+
 // defaultWorkerCounts returns the resolved (initialWorkers, maxWorkers) pair,
 // applying defaults: maxWorkers defaults to 10; initialWorkers defaults to maxWorkers.
 func defaultWorkerCounts(initial, ceiling int) (initialOut, ceilingOut int) {
@@ -713,6 +721,7 @@ func (c *Config) withDefaults() Config {
 	out.PaneInactivityTimeout = durationDefault(out.PaneInactivityTimeout, 10*time.Minute)
 	out.ReviewTimeout = durationDefault(out.ReviewTimeout, 15*time.Minute)
 	out.ReviewDeadGrace = durationDefault(out.ReviewDeadGrace, 30*time.Second)
+	out.RegressionRevert = boolDefault(out.RegressionRevert, true)
 	out.CheckpointThreshold = intDefault(out.CheckpointThreshold, 75)
 	if out.Estimator == nil {
 		out.Estimator = NewBeadEstimator()
@@ -2118,6 +2127,12 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 	success := d.withReservation(workerID,
 		// I/O function: build full payload outside lock.
 		func() string {
+			if d.cfg.RegressionRevert {
+				if _, err := d.captureQGBaseline(ctx, beadID, snap.worktree); err != nil {
+					_ = d.logEvent(ctx, "qg_baseline_capture_failed", workerID, beadID, workerID,
+						fmt.Sprintf(`{"error":%q,"attempt":%d}`, err.Error(), attempt))
+				}
+			}
 			payload = d.buildAssignPayload(ctx, &snap, attempt, qgOutput, "")
 			return ""
 		},
