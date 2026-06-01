@@ -186,6 +186,7 @@ type RelevanceQuery struct {
 	IncludeSuppressed bool
 	WSeeAlso          float64
 	SeededCardIDs     []string
+	Fusion            FusionConfig
 }
 
 // RelevantCards is the result of a Relevant query.
