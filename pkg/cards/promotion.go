@@ -31,6 +31,58 @@ type PromotionDecision struct {
 	Confidence float64
 }
 
+// GradeVerdictValue is the closed enum of judge verdicts for proposal grading.
+type GradeVerdictValue string
+
+// Grade verdict constants.
+const (
+	GradeVerdictCorrect      GradeVerdictValue = "correct"
+	GradeVerdictIncorrect    GradeVerdictValue = "incorrect"
+	GradeVerdictPartial      GradeVerdictValue = "partial"
+	GradeVerdictUnresolvable GradeVerdictValue = "unresolvable"
+)
+
+// GradeVerdict is a single judge's calibrated proposal grade.
+type GradeVerdict struct {
+	Verdict    GradeVerdictValue
+	Confidence float64
+}
+
+// GateConfig controls the proposal grade confidence gate.
+type GateConfig struct {
+	AutoApplyConfidence   float64
+	EnsembleMinConfidence float64
+}
+
+// GradeAction is the storage action implied by the grade gate.
+type GradeAction string
+
+// Grade action constants.
+const (
+	GradeActionApply           GradeAction = "apply"
+	GradeActionRejectAndRetire GradeAction = "reject_and_retire"
+	GradeActionQueue           GradeAction = "queue"
+)
+
+// GradeState is the card grade_state value selected by the gate.
+type GradeState string
+
+// Grade state constants.
+const (
+	GradeStateApplied  GradeState = "applied"
+	GradeStateRejected GradeState = "rejected"
+	GradeStateProposed GradeState = "proposed"
+)
+
+// GradeOutcome is the pure decision result for a graded proposal.
+type GradeOutcome struct {
+	Action     GradeAction
+	GradeState GradeState
+	Verdict    GradeVerdictValue
+	Confidence float64
+	Reason     string
+}
+
 // DecidePromotion applies the conservative §5.7 promotion rules without side effects.
 func DecidePromotion(c CardCandidate, verdict string, existing []CardSummary) PromotionDecision {
 	confidence := clampConfidence(c.Confidence)
@@ -64,6 +116,95 @@ func DecidePromotion(c CardCandidate, verdict string, existing []CardSummary) Pr
 		return deferPromotion(confidence, "fact_unconfirmed")
 	default:
 		return deferPromotion(confidence, "invalid_card_type")
+	}
+}
+
+func gradeGate(verdicts []GradeVerdict, cfg GateConfig) GradeOutcome {
+	if len(verdicts) == 0 {
+		return queueGrade(0, "", "no_verdicts")
+	}
+
+	if len(verdicts) == 1 {
+		return singleGradeGate(verdicts[0], cfg)
+	}
+	return ensembleGradeGate(verdicts, cfg)
+}
+
+func singleGradeGate(verdict GradeVerdict, cfg GateConfig) GradeOutcome {
+	confidence := clampConfidence(verdict.Confidence)
+	switch verdict.Verdict {
+	case GradeVerdictCorrect:
+		if confidence >= clampConfidence(cfg.AutoApplyConfidence) {
+			return applyGrade(confidence, GradeVerdictCorrect)
+		}
+		return queueGrade(confidence, GradeVerdictCorrect, "ensemble_required")
+	case GradeVerdictIncorrect:
+		return rejectAndRetireGrade(confidence, GradeVerdictIncorrect)
+	case GradeVerdictPartial:
+		return queueGrade(confidence, GradeVerdictPartial, "partial")
+	case GradeVerdictUnresolvable:
+		return queueGrade(confidence, GradeVerdictUnresolvable, "unresolvable")
+	default:
+		return queueGrade(confidence, verdict.Verdict, "unknown_verdict")
+	}
+}
+
+func ensembleGradeGate(verdicts []GradeVerdict, cfg GateConfig) GradeOutcome {
+	first := verdicts[0].Verdict
+	minConfidence := clampConfidence(verdicts[0].Confidence)
+	for _, verdict := range verdicts {
+		confidence := clampConfidence(verdict.Confidence)
+		if confidence < minConfidence {
+			minConfidence = confidence
+		}
+		if verdict.Verdict == GradeVerdictUnresolvable {
+			return queueGrade(minConfidence, GradeVerdictUnresolvable, "ensemble_unresolvable")
+		}
+		if verdict.Verdict != first {
+			return queueGrade(minConfidence, first, "ensemble_not_unanimous")
+		}
+	}
+
+	switch first {
+	case GradeVerdictCorrect:
+		if minConfidence >= clampConfidence(cfg.EnsembleMinConfidence) {
+			return applyGrade(minConfidence, GradeVerdictCorrect)
+		}
+		return queueGrade(minConfidence, GradeVerdictCorrect, "ensemble_confidence_below_threshold")
+	case GradeVerdictIncorrect:
+		return rejectAndRetireGrade(minConfidence, GradeVerdictIncorrect)
+	case GradeVerdictPartial:
+		return queueGrade(minConfidence, GradeVerdictPartial, "partial")
+	default:
+		return queueGrade(minConfidence, first, "unknown_verdict")
+	}
+}
+
+func applyGrade(confidence float64, verdict GradeVerdictValue) GradeOutcome {
+	return GradeOutcome{
+		Action:     GradeActionApply,
+		GradeState: GradeStateApplied,
+		Verdict:    verdict,
+		Confidence: confidence,
+	}
+}
+
+func rejectAndRetireGrade(confidence float64, verdict GradeVerdictValue) GradeOutcome {
+	return GradeOutcome{
+		Action:     GradeActionRejectAndRetire,
+		GradeState: GradeStateRejected,
+		Verdict:    verdict,
+		Confidence: confidence,
+	}
+}
+
+func queueGrade(confidence float64, verdict GradeVerdictValue, reason string) GradeOutcome {
+	return GradeOutcome{
+		Action:     GradeActionQueue,
+		GradeState: GradeStateProposed,
+		Verdict:    verdict,
+		Confidence: confidence,
+		Reason:     reason,
 	}
 }
 
