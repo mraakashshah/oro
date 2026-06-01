@@ -149,16 +149,6 @@ func stubPaneReady(fake *fakeCmd, sessionName, sessionNudge string) {
 	}
 }
 
-func stubCodexPaneReady(fake *fakeCmd, sessionName, sessionNudge string) {
-	fake.output[key("tmux", "display-message", "-p", "-t", sessionName+":manager", "#{pane_current_command}")] = "codex"
-
-	mgrCapture := key("tmux", "capture-pane", "-p", "-t", sessionName+":manager")
-	fake.seqOut[mgrCapture] = []string{
-		"Codex ready\n" + sessionNudge + "\n",
-		"oro task status\nrunning\n",
-	}
-}
-
 // findCall returns the first call matching the given tmux subcommand, or nil.
 func findCall(calls [][]string, subcmd string) []string {
 	for _, call := range calls {

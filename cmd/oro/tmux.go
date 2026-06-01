@@ -48,9 +48,6 @@ const pollInterval = 500 * time.Millisecond
 // sessions (where SIGWINCH timing adds latency). 2000ms is conservative.
 const sendKeysDebounceMs = 2000
 
-// defaultBeaconTimeout is the default time to wait for beacon verification.
-const defaultBeaconTimeout = 60 * time.Second
-
 const defaultTmuxWindowName = "oro"
 
 // sessionNudgeLocks provides per-target mutexes to serialize concurrent nudges.
@@ -76,7 +73,7 @@ type TmuxSession struct {
 	Sleeper       func(time.Duration) // optional; overrides time.Sleep for testing
 	Output        io.Writer           // optional; migration messages go here; nil means os.Stdout
 	ReadyTimeout  time.Duration       // timeout for Claude readiness polling; 0 means defaultReadyTimeout
-	BeaconTimeout time.Duration       // timeout for beacon verification polling; 0 means defaultBeaconTimeout
+	BeaconTimeout time.Duration       // optional timeout for callers that verify beacon delivery
 	beaconWg      sync.WaitGroup      // tracks background beacon verification goroutine
 }
 
@@ -381,29 +378,6 @@ func appendDaemonEnvOverrides(base string) string {
 		}
 	}
 	return base
-}
-
-// killStaleSession kills the session if it needs to be replaced (legacy manager
-// layout). Returns true when the session was killed
-// (caller should recreate), false when the session is healthy (caller should
-// return without creating a new one).
-func (s *TmuxSession) killStaleSession() bool {
-	if preCollapse, _ := s.isPreCollapseLayout(); preCollapse {
-		w := s.Output
-		if w == nil {
-			w = os.Stdout
-		}
-		fmt.Fprintln(w, "migrating pre-collapse session to single-window manager layout...")
-		_ = s.Kill()
-		return true
-	}
-	pane := s.Name + ":manager"
-	out, err := s.Runner.Run("tmux", "display-message", "-p", "-t", pane, "#{pane_current_command}")
-	if err == nil && !isShell(strings.TrimSpace(out)) {
-		return false
-	}
-	_ = s.Kill()
-	return true
 }
 
 func (s *TmuxSession) killLegacyManagerSession() bool {
