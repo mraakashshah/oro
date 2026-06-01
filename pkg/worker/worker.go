@@ -922,7 +922,7 @@ func (w *Worker) runQualityGateWithProgress(ctx context.Context, worktree string
 	w.mu.Unlock()
 
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return false, output, ctxErr
+		return false, output, fmt.Errorf("run quality gate canceled: %w", ctxErr)
 	}
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -1820,7 +1820,7 @@ func RunQualityGate(ctx context.Context, worktree string, skipMutation bool) (pa
 	out, err := cmd.CombinedOutput()
 	output = string(out)
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return false, output, ctxErr
+		return false, output, fmt.Errorf("run quality gate canceled: %w", ctxErr)
 	}
 	if err != nil {
 		// Non-zero exit is not an error — it means the gate failed
