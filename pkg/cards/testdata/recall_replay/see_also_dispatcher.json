@@ -1,0 +1,30 @@
+{
+  "cards": [
+    {
+      "id": "card-related-respawn",
+      "type": "decision",
+      "title": "Worker respawn preserves state",
+      "body_summary": "respawn state preservation belongs with worker lifecycle changes",
+      "body_full": "Worker respawn state preservation is related through the dispatcher heartbeat card.",
+      "tags": ["worker", "respawn"]
+    },
+    {
+      "id": "card-direct-dispatcher",
+      "type": "pattern",
+      "title": "Dispatcher heartbeat timeout",
+      "body_summary": "dispatcher heartbeat timeout handling should stay visible to replay queries",
+      "body_full": "When dispatcher heartbeat timeout behavior changes, also review [[Worker respawn preserves state]].",
+      "tags": ["dispatcher", "heartbeat"]
+    },
+    {
+      "id": "card-unrelated-docs",
+      "type": "decision",
+      "title": "Docs lint list numbering",
+      "body_summary": "markdown ordered list numbering uses one-dot style",
+      "body_full": "Documentation linting has no relationship to dispatcher heartbeat replay.",
+      "tags": ["docs"]
+    }
+  ],
+  "query": "dispatcher heartbeat timeout",
+  "expected_top_k_ids": ["card-direct-dispatcher", "card-related-respawn"]
+}
