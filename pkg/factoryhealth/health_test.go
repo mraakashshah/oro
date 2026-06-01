@@ -258,6 +258,114 @@ INSERT INTO events (type, source, created_at) VALUES
 	}
 }
 
+func TestMetricLoadersHandleMissingInputs(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 19, 14, 0, 0, 0, time.UTC)
+
+	assignments, err := LoadActiveAssignments(ctx, nil, now)
+	if err != nil {
+		t.Fatalf("LoadActiveAssignments nil db: %v", err)
+	}
+	if len(assignments) != 0 {
+		t.Fatalf("nil active assignments = %+v, want none", assignments)
+	}
+
+	openIncidents, occurrences, fingerprints, err := LoadQGMetrics(ctx, nil)
+	if err != nil {
+		t.Fatalf("LoadQGMetrics nil db: %v", err)
+	}
+	if openIncidents != 0 || occurrences != 0 || len(fingerprints) != 0 {
+		t.Fatalf("nil qg metrics = %d/%d/%v, want zero values", openIncidents, occurrences, fingerprints)
+	}
+
+	quarantines, err := LoadRecoveryQuarantineMetrics(ctx, nil)
+	if err != nil {
+		t.Fatalf("LoadRecoveryQuarantineMetrics nil db: %v", err)
+	}
+	if quarantines != 0 {
+		t.Fatalf("nil recovery quarantines = %d, want 0", quarantines)
+	}
+
+	throughput, err := LoadThroughputMetrics(ctx, nil, now, 30*time.Minute)
+	if err != nil {
+		t.Fatalf("LoadThroughputMetrics nil db: %v", err)
+	}
+	if throughput.WindowSecs != 1800 || throughput.AssignmentsStarted != 0 {
+		t.Fatalf("nil throughput metrics = %+v, want window only", throughput)
+	}
+
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	assignments, err = LoadActiveAssignments(ctx, db, now)
+	if err != nil {
+		t.Fatalf("LoadActiveAssignments missing table: %v", err)
+	}
+	if len(assignments) != 0 {
+		t.Fatalf("missing-table assignments = %+v, want none", assignments)
+	}
+
+	openIncidents, occurrences, fingerprints, err = LoadQGMetrics(ctx, db)
+	if err != nil {
+		t.Fatalf("LoadQGMetrics missing table: %v", err)
+	}
+	if openIncidents != 0 || occurrences != 0 || len(fingerprints) != 0 {
+		t.Fatalf("missing-table qg metrics = %d/%d/%v, want zero values", openIncidents, occurrences, fingerprints)
+	}
+
+	throughput, err = LoadThroughputMetrics(ctx, db, now, 30*time.Minute)
+	if err != nil {
+		t.Fatalf("LoadThroughputMetrics missing table: %v", err)
+	}
+	if throughput.AssignmentsStarted != 0 || throughput.ProductiveClosures != 0 || throughput.ProgressTimeouts != 0 {
+		t.Fatalf("missing-table throughput metrics = %+v, want zero counters", throughput)
+	}
+}
+
+func TestParseSQLiteTimeAcceptsStoredFormats(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want time.Time
+		ok   bool
+	}{
+		{
+			name: "sqlite datetime",
+			raw:  "2026-05-19 14:00:00",
+			want: time.Date(2026, 5, 19, 14, 0, 0, 0, time.UTC),
+			ok:   true,
+		},
+		{
+			name: "rfc3339 nano",
+			raw:  "2026-05-19T14:00:00.123456789Z",
+			want: time.Date(2026, 5, 19, 14, 0, 0, 123456789, time.UTC),
+			ok:   true,
+		},
+		{
+			name: "unix seconds",
+			raw:  "1789740000",
+			want: time.Unix(1789740000, 0),
+			ok:   true,
+		},
+		{name: "invalid", raw: "not-a-time"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := parseSQLiteTime(tt.raw)
+			if ok != tt.ok {
+				t.Fatalf("ok = %v, want %v", ok, tt.ok)
+			}
+			if ok && !got.Equal(tt.want) {
+				t.Fatalf("time = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEvaluateNoManagerPaneFindingByDefault(t *testing.T) {
 	got := Evaluate(Snapshot{
 		DaemonRunning:   true,
