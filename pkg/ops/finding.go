@@ -39,9 +39,18 @@ type Finding struct {
 	Confidence int        `json:"confidence"`
 	Sources    []string   `json:"sources"`
 	// SourceFamilies names independent evidence families used by cheap triage.
-	SourceFamilies []string `json:"source_families,omitempty"`
-	Origin         string   `json:"origin"`
-	Status         string   `json:"status,omitempty"`
+	SourceFamilies []string              `json:"source_families,omitempty"`
+	Origin         string                `json:"origin"`
+	Status         string                `json:"status,omitempty"`
+	History        []FindingHistoryEntry `json:"history,omitempty"`
+}
+
+// FindingHistoryEntry records an append-only triage status change for a finding.
+type FindingHistoryEntry struct {
+	Status string `json:"status"`
+	Actor  string `json:"actor,omitempty"`
+	Note   string `json:"note,omitempty"`
+	At     string `json:"at,omitempty"`
 }
 
 // ReviewReport is the parsed structured output of one reviewer pass.
