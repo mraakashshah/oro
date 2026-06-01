@@ -41,7 +41,10 @@ func fuse(keyword, vector []ScoredCard, cfg FusionConfig) []ScoredCard {
 	out := make([]ScoredCard, 0, len(byID))
 	topKeywordScore, floor := keywordFloor(keyword, cfg)
 	for _, id := range order {
-		acc := byID[id]
+		acc, ok := byID[id]
+		if !ok {
+			continue
+		}
 		score := acc.effectiveScore * (cfg.RRFWeight*acc.rrf + cfg.CosineWeight*acc.cosine)
 		if acc.effectiveScore < floor && score >= topKeywordScore {
 			score = math.Nextafter(topKeywordScore, 0)
@@ -110,12 +113,12 @@ func accumulatorFor(
 	return acc
 }
 
-func keywordFloor(keyword []ScoredCard, cfg FusionConfig) (float64, float64) {
+func keywordFloor(keyword []ScoredCard, cfg FusionConfig) (topScore, floor float64) {
 	if len(keyword) == 0 || cfg.FloorRatio == 0 {
 		return 0, 0
 	}
 	topEffective := keyword[0].EffectiveScore
-	topScore := keyword[0].EffectiveScore * cfg.RRFWeight / float64(cfg.RRFK+1)
+	topScore = keyword[0].EffectiveScore * cfg.RRFWeight / float64(cfg.RRFK+1)
 	for _, scored := range keyword[1:] {
 		if scored.EffectiveScore > topEffective {
 			topEffective = scored.EffectiveScore

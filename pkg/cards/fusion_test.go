@@ -1,4 +1,4 @@
-package cards
+package cards //nolint:testpackage // white-box tests pin the unexported fuse contract from the Phase 2 spec.
 
 import (
 	"math"
