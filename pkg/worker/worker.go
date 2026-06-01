@@ -853,6 +853,9 @@ func (w *Worker) runQGAndReport(ctx context.Context) {
 	_ = rebaseOntoTarget(ctx, wt, target)
 
 	passed, output, err := w.runQualityGateWithProgress(ctx, wt, true)
+	if ctx.Err() != nil {
+		return
+	}
 	if err != nil {
 		// Script missing or cannot start — report as failed with error detail.
 		_ = w.SendDone(ctx, false, err.Error())
@@ -918,6 +921,9 @@ func (w *Worker) runQualityGateWithProgress(ctx context.Context, worktree string
 	}
 	w.mu.Unlock()
 
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, output, ctxErr
+	}
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
@@ -1813,6 +1819,9 @@ func RunQualityGate(ctx context.Context, worktree string, skipMutation bool) (pa
 
 	out, err := cmd.CombinedOutput()
 	output = string(out)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, output, ctxErr
+	}
 	if err != nil {
 		// Non-zero exit is not an error — it means the gate failed
 		var exitErr *exec.ExitError

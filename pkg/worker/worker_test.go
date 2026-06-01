@@ -1102,6 +1102,62 @@ func TestRunQualityGate_CapturesOutput(t *testing.T) {
 	})
 }
 
+func TestRunQualityGate_ContextCancellationIsNotQGFailure(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	script := filepath.Join(tmpDir, "quality_gate.sh")
+	body := `#!/bin/sh
+echo "Waiting for another quality gate to finish..."
+echo "═══════════════════════════════════════════════════════════════"
+echo " ORO QUALITY GATE"
+echo "═══════════════════════════════════════════════════════════════"
+touch qg-started
+while :; do
+	:
+done
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil { //nolint:gosec // test script
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct {
+		passed bool
+		output string
+		err    error
+	}, 1)
+	go func() {
+		passed, output, err := worker.RunQualityGate(ctx, tmpDir, false)
+		done <- struct {
+			passed bool
+			output string
+			err    error
+		}{passed: passed, output: output, err: err}
+	}()
+
+	waitFor(t, func() bool {
+		_, err := os.Stat(filepath.Join(tmpDir, "qg-started"))
+		return err == nil
+	}, 2*time.Second)
+	cancel()
+
+	select {
+	case got := <-done:
+		if got.err == nil {
+			t.Fatalf("RunQualityGate returned nil error for context cancellation; passed=%v output=%q", got.passed, got.output)
+		}
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("RunQualityGate error = %v, want context.Canceled", got.err)
+		}
+		if got.passed {
+			t.Fatal("cancelled quality gate must not pass")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunQualityGate did not return after context cancellation")
+	}
+}
+
 func TestRunQualityGate_RestoresDeletedScript(t *testing.T) {
 	t.Parallel()
 
@@ -3508,6 +3564,78 @@ func TestWorkerFlow_SendsReadyForReview(t *testing.T) { //nolint:funlen // integ
 
 		cancel()
 		<-errCh
+	})
+
+	t.Run("QG context cancellation does not send failure Done", func(t *testing.T) {
+		t.Parallel()
+
+		tmpDir := t.TempDir()
+		script := filepath.Join(tmpDir, "quality_gate.sh")
+		body := `#!/bin/sh
+echo "Waiting for another quality gate to finish..."
+echo "═══════════════════════════════════════════════════════════════"
+echo " ORO QUALITY GATE"
+echo "═══════════════════════════════════════════════════════════════"
+touch qg-started
+while :; do
+	:
+done
+`
+		if err := os.WriteFile(script, []byte(body), 0o600); err != nil { //nolint:gosec // test file
+			t.Fatal(err)
+		}
+		if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+			t.Fatal(err)
+		}
+
+		pr, pw := io.Pipe()
+		proc := newMockProcess()
+		spawner := &mockSpawner{
+			process: proc,
+			stdout:  pr,
+		}
+
+		dispatcherConn, workerConn := net.Pipe()
+		defer func() { _ = dispatcherConn.Close() }()
+
+		w := worker.NewWithConn("w-rfr-qg-cancel", workerConn, spawner)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		errCh := startWorkerRun(ctx, t, w, dispatcherConn)
+
+		sendMessage(t, dispatcherConn, protocol.Message{
+			Type: protocol.MsgAssign,
+			Assign: &protocol.AssignPayload{
+				BeadID:   "bead-rfr-qg-cancel",
+				Worktree: tmpDir,
+			},
+		})
+		_ = readMessage(t, dispatcherConn) // drain STATUS running
+
+		_, _ = pw.Write([]byte(textDeltaLine("work done\n") + "\n"))
+		_ = pw.Close()
+		close(proc.waitCh)
+
+		_ = readMessage(t, dispatcherConn) // drain STATUS awaiting_review
+		waitFor(t, func() bool {
+			_, err := os.Stat(filepath.Join(tmpDir, "qg-started"))
+			return err == nil
+		}, 2*time.Second)
+
+		cancel()
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("worker Run returned error after cancellation: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("worker did not exit after QG context cancellation")
+		}
+
+		if msg, ok := readMessageWithin(t, dispatcherConn, 100*time.Millisecond); ok && msg.Type == protocol.MsgDone {
+			t.Fatalf("cancelled quality gate sent DONE with partial output: %+v", msg.Done)
+		}
 	})
 
 	t.Run("review rejection re-assigns worker", func(t *testing.T) {
