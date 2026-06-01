@@ -480,6 +480,12 @@ func (s *SQLiteCardStore) Relevant(ctx context.Context, q RelevanceQuery) (Relev
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].score > candidates[j].score
 	})
+	if q.WSeeAlso > 0 {
+		candidates, err = s.addGraphBonuses(ctx, candidates, q)
+		if err != nil {
+			return RelevantCards{}, err
+		}
+	}
 
 	return RelevantCards{
 		Deck:    toDeckCards(candidates),
@@ -528,6 +534,102 @@ func collectScoredCards(rows *sql.Rows, q RelevanceQuery, now time.Time) ([]scor
 		return nil, fmt.Errorf("iterate cards rows: %w", err)
 	}
 	return out, nil
+}
+
+func (s *SQLiteCardStore) addGraphBonuses(
+	ctx context.Context,
+	candidates []scoredCard,
+	q RelevanceQuery,
+) ([]scoredCard, error) {
+	if len(candidates) == 0 {
+		return candidates, nil
+	}
+	seeds := keywordSeedIDs(candidates, q.SeededCardIDs)
+	if len(seeds) == 0 {
+		return candidates, nil
+	}
+	strengths, err := s.relationStrengthsFromSeeds(ctx, seeds)
+	if err != nil {
+		return nil, err
+	}
+	if len(strengths) == 0 {
+		return candidates, nil
+	}
+	seedFloor := candidates[0].score
+	for i := range candidates {
+		bonus := q.WSeeAlso * graphBonus(candidates[i].card, seeds, strengths)
+		if bonus == 0 {
+			continue
+		}
+		candidates[i].score = math.Min(candidates[i].score+bonus, math.Nextafter(seedFloor, 0))
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
+	return candidates, nil
+}
+
+func keywordSeedIDs(candidates []scoredCard, seeded []string) []string {
+	if len(seeded) > 0 {
+		return seeded
+	}
+	var seeds []string
+	for _, candidate := range candidates {
+		if candidate.score <= 0 {
+			continue
+		}
+		seeds = append(seeds, candidate.card.ID)
+	}
+	return seeds
+}
+
+func (s *SQLiteCardStore) relationStrengthsFromSeeds(ctx context.Context, seeds []string) (map[string]int, error) {
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(seeds)), ",")
+	//nolint:gosec // placeholders are generated from seed count; values are still bound args.
+	query := `SELECT target_id, SUM(strength)
+		FROM card_relations
+		WHERE source_id IN (` + placeholders + `) AND target_id NOT IN (` + placeholders + `)
+		GROUP BY target_id`
+	args := make([]any, 0, len(seeds)*2)
+	for _, seed := range seeds {
+		args = append(args, seed)
+	}
+	for _, seed := range seeds {
+		args = append(args, seed)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query relation strengths from seeds: %w", err)
+	}
+	defer rows.Close()
+
+	strengths := make(map[string]int)
+	for rows.Next() {
+		var targetID string
+		var strength int
+		if err := rows.Scan(&targetID, &strength); err != nil {
+			return nil, fmt.Errorf("scan relation strength: %w", err)
+		}
+		strengths[targetID] = strength
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate relation strengths: %w", err)
+	}
+	return strengths, nil
+}
+
+func graphBonus(c Card, seeds []string, strengths map[string]int) float64 {
+	for _, seed := range seeds {
+		if c.ID == seed {
+			return 0
+		}
+	}
+	strength := strengths[c.ID]
+	if strength <= 0 {
+		return 0
+	}
+	return 1 + 0.1*math.Log1p(float64(strength))
 }
 
 func toInlinedCard(c Card) InlinedCard {

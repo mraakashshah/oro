@@ -184,6 +184,8 @@ type RelevanceQuery struct {
 	MaxTokens         int
 	IncludeLowScore   bool
 	IncludeSuppressed bool
+	WSeeAlso          float64
+	SeededCardIDs     []string
 }
 
 // RelevantCards is the result of a Relevant query.

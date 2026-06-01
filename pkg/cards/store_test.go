@@ -1210,3 +1210,142 @@ func TestRelevant_SymbolHintsNowContributes(t *testing.T) {
 		t.Fatalf("symbol-matching card ranked after non-matching card: withIdx=%d withoutIdx=%d", withIdx, withoutIdx)
 	}
 }
+
+func TestRelevant_WSeeAlsoZeroIsLegacyIdentical(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+
+	direct := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "direct keyword",
+		BodySummary: "retry timeout worker",
+		BodyFull:    "retry timeout worker details",
+		Tags:        []string{"dispatcher"},
+	})
+	related := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "related graph",
+		BodySummary: "socket cleanup",
+		BodyFull:    "socket cleanup details",
+		Tags:        []string{"network"},
+	})
+	other := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "other keyword",
+		BodySummary: "retry timeout",
+		BodyFull:    "retry timeout details",
+		Tags:        []string{"worker"},
+	})
+	if err := store.AddRelation(ctx, direct.ID, related.ID, cards.RelationSignalCall); err != nil {
+		t.Fatalf("AddRelation: %v", err)
+	}
+
+	got, err := store.Relevant(ctx, cards.RelevanceQuery{
+		BeadType:        string(cards.CardTypePattern),
+		BeadTags:        []string{"dispatcher", "worker"},
+		BeadDescription: "retry timeout worker",
+		MaxTokens:       1000,
+		WSeeAlso:        0,
+	})
+	if err != nil {
+		t.Fatalf("Relevant: %v", err)
+	}
+
+	wantOrder := []string{direct.ID, other.ID, related.ID}
+	if gotOrder := deckIDs(got.Deck); !sameStringSlice(gotOrder, wantOrder) {
+		t.Fatalf("deck order = %v, want legacy order %v", gotOrder, wantOrder)
+	}
+}
+
+func TestRelevant_SeeAlsoAdditiveButFloorPreserved(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+
+	direct := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "direct keyword",
+		BodySummary: "retry timeout worker",
+		BodyFull:    "retry timeout worker details",
+		Tags:        []string{"dispatcher"},
+	})
+	unrelated := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "unrelated",
+		BodySummary: "unmatched content",
+		BodyFull:    "unmatched content details",
+		Tags:        []string{"network"},
+	})
+	related := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "related graph",
+		BodySummary: "unmatched content",
+		BodyFull:    "unmatched content details",
+		Tags:        []string{"network"},
+	})
+	if err := store.AddRelation(ctx, direct.ID, related.ID, cards.RelationSignalCall); err != nil {
+		t.Fatalf("AddRelation call: %v", err)
+	}
+	if err := store.AddRelation(ctx, direct.ID, related.ID, cards.RelationSignalComention); err != nil {
+		t.Fatalf("AddRelation comention: %v", err)
+	}
+
+	withoutGraph, err := store.Relevant(ctx, cards.RelevanceQuery{
+		BeadType:        string(cards.CardTypePattern),
+		BeadTags:        []string{"dispatcher"},
+		BeadDescription: "retry timeout worker",
+		MaxTokens:       1000,
+		WSeeAlso:        0,
+	})
+	if err != nil {
+		t.Fatalf("Relevant without graph: %v", err)
+	}
+	withGraph, err := store.Relevant(ctx, cards.RelevanceQuery{
+		BeadType:        string(cards.CardTypePattern),
+		BeadTags:        []string{"dispatcher"},
+		BeadDescription: "retry timeout worker",
+		MaxTokens:       1000,
+		WSeeAlso:        1,
+	})
+	if err != nil {
+		t.Fatalf("Relevant with graph: %v", err)
+	}
+
+	if deckIndex(withoutGraph.Deck, related.ID) >= deckIndex(withoutGraph.Deck, unrelated.ID) {
+		t.Fatalf("related card should start no higher than unrelated without graph: %v", deckIDs(withoutGraph.Deck))
+	}
+	if deckIndex(withGraph.Deck, related.ID) >= deckIndex(withGraph.Deck, unrelated.ID) {
+		t.Fatalf("related card was not boosted above unrelated: %v", deckIDs(withGraph.Deck))
+	}
+	if deckIndex(withGraph.Deck, related.ID) <= deckIndex(withGraph.Deck, direct.ID) {
+		t.Fatalf("related card outranked direct keyword hit: %v", deckIDs(withGraph.Deck))
+	}
+}
+
+func deckIDs(deck []cards.DeckCard) []string {
+	ids := make([]string, 0, len(deck))
+	for _, card := range deck {
+		ids = append(ids, card.ID)
+	}
+	return ids
+}
+
+func deckIndex(deck []cards.DeckCard, id string) int {
+	for i, card := range deck {
+		if card.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func sameStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
