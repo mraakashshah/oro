@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"oro/pkg/agentmodel"
+	"oro/pkg/beadstore"
 	"oro/pkg/processenv"
 	"oro/pkg/protocol"
 	"oro/pkg/worker"
@@ -191,6 +192,8 @@ type ReviewOpts struct {
 	AgentInstructions  string // explicit shared instructions path; falls back to ProjectRoot/ORO_AGENT.md when empty
 	ClaudeMD           string // explicit path to CLAUDE.md; falls back to ProjectRoot/CLAUDE.md when empty
 	ReviewPatterns     string // explicit path to review-patterns.md; falls back to ProjectRoot/assets/review-patterns.md when empty
+	PersistFindings    bool   // when true, merged structured findings are appended to the bead journey
+	BeadStore          beadstore.Store
 }
 
 // MergeOpts configures a merge conflict agent.
