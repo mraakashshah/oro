@@ -420,12 +420,12 @@ func (s *TmuxSession) killLegacyManagerSession() bool {
 	return true
 }
 
-// Create creates the Oro tmux session. With an empty managerNudge it creates the
-// default managerless attach surface. A non-empty managerNudge explicitly opts
+// Create creates the Oro tmux session. With an empty sessionNudge it creates the
+// default managerless attach surface. A non-empty sessionNudge explicitly opts
 // into the legacy manager runtime path.
-func (s *TmuxSession) Create(managerNudge string) error {
-	if managerNudge != "" {
-		return s.createManagerSession(managerNudge)
+func (s *TmuxSession) Create(sessionNudge string) error {
+	if sessionNudge != "" {
+		return s.createManagerSession(sessionNudge)
 	}
 	return s.createManagerlessSession()
 }
@@ -451,7 +451,7 @@ func (s *TmuxSession) createManagerlessSession() error {
 	return nil
 }
 
-func (s *TmuxSession) createManagerSession(managerNudge string) error {
+func (s *TmuxSession) createManagerSession(sessionNudge string) error {
 	if s.Exists() && !s.killStaleSession() {
 		return nil
 	}
@@ -469,7 +469,7 @@ func (s *TmuxSession) createManagerSession(managerNudge string) error {
 		return err
 	}
 
-	if err := s.launchAndNudgeManagerOnly(managerNudge); err != nil {
+	if err := s.launchAndNudgeManagerOnly(sessionNudge); err != nil {
 		_ = s.Kill()
 		return err
 	}
