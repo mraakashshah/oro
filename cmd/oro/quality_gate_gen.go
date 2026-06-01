@@ -426,6 +426,11 @@ const qualityGateTmpl = `#!/bin/sh
 # =============================================================================
 
 if [ "${ORO_QG_BASH_BOOTSTRAPPED:-}" != "1" ]; then
+    if grep -n -E '^(<{7}|={7}|>{7})( |$)' "$0" >/dev/null 2>&1; then
+        echo "FAIL: quality_gate.sh contains unresolved git conflict markers" >&2
+        grep -n -E '^(<{7}|={7}|>{7})( |$)' "$0" >&2 || true
+        exit 2
+    fi
     if [ -n "${LC_ALL:-}" ] && ! locale -a 2>/dev/null | grep -qx "$LC_ALL"; then
         export LC_ALL=C
         export LANG=C

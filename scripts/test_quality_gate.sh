@@ -1450,6 +1450,45 @@ test_quality_gate_invalid_locale_bootstraps_before_bash() {
 	fi
 }
 
+# Test: unresolved git conflict markers are reported before Bash parses them.
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_conflict_markers_fail_preflight() {
+	local tmpdir script output
+	tmpdir=$(mktemp -d)
+	# shellcheck disable=SC2064
+	trap "rm -rf '$tmpdir'" RETURN
+
+	script="$tmpdir/quality_gate.sh"
+	awk 'NR == 25 {
+		print "<<<<<<< Updated upstream"
+		print "======="
+		print ">>>>>>> Stashed changes"
+	}
+	{ print }' "$SCRIPT_DIR/quality_gate.sh" >"$script"
+	chmod +x "$script"
+
+	set +e
+	output=$("$script" 2>&1)
+	local rc=$?
+	set -e
+
+	if [ "$rc" -ne 2 ]; then
+		echo "FAIL: conflicted quality_gate.sh exited $rc, want 2"
+		echo "$output"
+		return 1
+	fi
+	if ! echo "$output" | grep -q "FAIL: quality_gate.sh contains unresolved git conflict markers"; then
+		echo "FAIL: conflicted quality_gate.sh did not print conflict-marker diagnostic"
+		echo "$output"
+		return 1
+	fi
+	if echo "$output" | grep -q "syntax error near unexpected token"; then
+		echo "FAIL: conflicted quality_gate.sh still reached Bash parser error"
+		echo "$output"
+		return 1
+	fi
+}
+
 # Test: Makefile mutate-go-diff git diff has 2>/dev/null
 # shellcheck disable=SC2317,SC2329
 test_makefile_git_diff_stderr_redirect() {
@@ -1595,6 +1634,7 @@ test_case "generated quality gate Python tools avoid pyenv shims" test_generated
 test_case "quality_gate.sh filesystem walkers are source scoped" test_quality_gate_filesystem_walkers_are_source_scoped
 test_case "quality_gate.sh invalid locale sanitized" test_quality_gate_invalid_locale_sanitized
 test_case "quality_gate.sh invalid locale bootstraps before bash" test_quality_gate_invalid_locale_bootstraps_before_bash
+test_case "quality_gate.sh conflict markers fail preflight" test_quality_gate_conflict_markers_fail_preflight
 test_case "Makefile git diff has 2>/dev/null" test_makefile_git_diff_stderr_redirect
 test_case "Makefile \$\$changed is quoted" test_makefile_changed_is_quoted
 test_case "Makefile mutate-py uses PID-isolated path" test_makefile_mutate_py_pid_isolated
