@@ -1,10 +1,10 @@
-package embed_test
+package embeddings_test
 
 import (
 	"reflect"
 	"testing"
 
-	"oro/pkg/embed"
+	embed "oro/pkg/embed"
 )
 
 func TestONNXEmbedder_DimIs384(t *testing.T) {

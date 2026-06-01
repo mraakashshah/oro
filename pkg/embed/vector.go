@@ -1,4 +1,4 @@
-package embed
+package embeddings
 
 import "crypto/sha256"
 

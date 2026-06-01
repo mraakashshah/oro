@@ -1,5 +1,5 @@
 // Package embed provides embedding model adapters for semantic recall.
-package embed
+package embeddings
 
 const (
 	bgeSmallName = "bge-small-en-v1.5"

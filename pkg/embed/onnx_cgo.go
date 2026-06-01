@@ -1,6 +1,6 @@
 //go:build cgo
 
-package embed
+package embeddings
 
 // Embed returns a deterministic 384-dimensional embedding for text.
 func (e *ONNXEmbedder) Embed(text string) []float32 {
