@@ -164,6 +164,8 @@ type CardCreateParams struct {
 	Tags                []string
 	EmergedFrom         *string
 	PromotionConfidence *float64
+	GradeState          string
+	ProposalHash        string
 }
 
 // ListQuery filters for listing cards.

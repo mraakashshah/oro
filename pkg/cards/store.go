@@ -872,10 +872,12 @@ func insertCard(ctx context.Context, exec sqlExecutor, p CardCreateParams, embed
 		INSERT INTO cards (
 			id, type, title, body_summary, body_full, body_deep,
 			tags, score, promotion_confidence, decay_anchor,
-			created_at, updated_at, emerged_from, embedding, embedding_model
-		) VALUES (?, ?, ?, ?, ?, ?, ?, 1.0, ?, ?, ?, ?, ?, ?, ?)`,
+			created_at, updated_at, emerged_from, embedding, embedding_model,
+			grade_state, proposal_hash
+		) VALUES (?, ?, ?, ?, ?, ?, ?, 1.0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, string(p.Type), p.Title, p.BodySummary, p.BodyFull, bodyDeep,
 		tags, promotionConf, now, now, now, emergedFrom, embedding, embeddingModel,
+		nullableString(p.GradeState), nullableString(p.ProposalHash),
 	)
 	if err != nil {
 		return "", fmt.Errorf("create card: %w", err)
@@ -894,6 +896,13 @@ func insertCard(ctx context.Context, exec sqlExecutor, p CardCreateParams, embed
 		}
 	}
 	return id, nil
+}
+
+func nullableString(v string) any {
+	if v == "" {
+		return nil
+	}
+	return v
 }
 
 // Create inserts a new card and returns it.
