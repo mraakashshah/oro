@@ -95,30 +95,25 @@ func (s *SQLiteCardStore) loadMineableCards(ctx context.Context) ([]minedCard, e
 	}
 	defer func() { _ = rows.Close() }()
 
-	byID := make(map[string]*minedCard)
-	var ordered []string
+	byID := make(map[string]int)
+	var cards []minedCard
 	for rows.Next() {
 		var id, title, summary, full, symbol string
 		if err := rows.Scan(&id, &title, &summary, &full, &symbol); err != nil {
 			return nil, fmt.Errorf("scan mineable card: %w", err)
 		}
-		card, ok := byID[id]
+		cardIndex, ok := byID[id]
 		if !ok {
-			card = &minedCard{id: id, title: title, body: summary + "\n" + full}
-			byID[id] = card
-			ordered = append(ordered, id)
+			cardIndex = len(cards)
+			byID[id] = cardIndex
+			cards = append(cards, minedCard{id: id, title: title, body: summary + "\n" + full})
 		}
 		if symbol != "" {
-			card.symbols = append(card.symbols, symbol)
+			cards[cardIndex].symbols = append(cards[cardIndex].symbols, symbol)
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate mineable cards: %w", err)
-	}
-
-	cards := make([]minedCard, 0, len(ordered))
-	for _, id := range ordered {
-		cards = append(cards, *byID[id])
 	}
 	return cards, nil
 }
