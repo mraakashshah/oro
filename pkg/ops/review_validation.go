@@ -64,10 +64,7 @@ func validateEvidence(m PromptManifest, repoRoot string, ev Evidence) error {
 	if ev.Quote == "" {
 		return nil
 	}
-	if err := validateLiteralQuote(repoRoot, file, ev); err != nil {
-		return err
-	}
-	return nil
+	return validateLiteralQuote(repoRoot, file, ev)
 }
 
 func normalizeManifestPath(path string) (string, error) {
