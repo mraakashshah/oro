@@ -77,9 +77,17 @@ func (d *Dispatcher) applyLearningPromotionDecision(ctx context.Context, beadID 
 
 func (d *Dispatcher) promoteLearningCard(ctx context.Context, learningID int64) (string, error) {
 	if d.cfg.GradeGateEnabled {
-		return d.cardStore.PromoteLearningAsProposal(ctx, learningID)
+		cardID, err := d.cardStore.PromoteLearningAsProposal(ctx, learningID)
+		if err != nil {
+			return "", fmt.Errorf("promote learning as proposal: %w", err)
+		}
+		return cardID, nil
 	}
-	return d.cardStore.PromoteLearning(ctx, learningID)
+	cardID, err := d.cardStore.PromoteLearning(ctx, learningID)
+	if err != nil {
+		return "", fmt.Errorf("promote learning directly: %w", err)
+	}
+	return cardID, nil
 }
 
 func (d *Dispatcher) appendLearningPromotionEvent(ctx context.Context, beadID, event string, learningID int64, decision cards.PromotionDecision, cardID string) error {
