@@ -8,6 +8,7 @@ import (
 // RelationSignal identifies the evidence source for a card relation.
 type RelationSignal string
 
+// Relation signals supported by AddRelation.
 const (
 	RelationSignalCall      RelationSignal = "call"
 	RelationSignalComention RelationSignal = "comention"
