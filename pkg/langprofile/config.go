@@ -69,6 +69,8 @@ func (c *SemanticMemoryConfig) RerankOrDefault() bool {
 
 // RerankEnabled returns the production rerank flag. It defaults off so
 // semantic reranking remains an explicit rollout opt-in.
+//
+//oro:testonly
 func (c *SemanticMemoryConfig) RerankEnabled() bool {
 	if c.Rerank == nil {
 		return false

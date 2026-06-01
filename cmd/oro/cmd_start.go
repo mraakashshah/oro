@@ -20,7 +20,6 @@ import (
 	"oro/pkg/beadstore"
 	"oro/pkg/codesearch"
 	"oro/pkg/dispatcher"
-	"oro/pkg/langprofile"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/processenv"
@@ -994,9 +993,7 @@ func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressT
 	if idxErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to open code index: %v\n", idxErr)
 	} else {
-		if semanticRerankEnabledFromConfig(repoRoot) {
-			idx.SetReranker(codesearch.NewReranker(&codesearch.ClaudeRerankSpawner{}))
-		}
+		idx.SetReranker(codesearch.NewReranker(&codesearch.ClaudeRerankSpawner{}))
 		codeIdx = &codeIndexAdapter{idx: idx}
 		// Launch best-effort code index build in background (non-blocking).
 		go func() {
@@ -1069,14 +1066,6 @@ func resolveReviewPatternCandidatesPath(repoRoot string) string {
 		return filepath.Join(repoRoot, ".oro", "review-pattern-candidates.md")
 	}
 	return paths.ReviewPatternCandidates
-}
-
-func semanticRerankEnabledFromConfig(repoRoot string) bool {
-	cfg, err := langprofile.ReadConfig(repoRoot)
-	if err != nil || cfg == nil {
-		return false
-	}
-	return cfg.Memory.Semantic.RerankEnabled()
 }
 
 // wireDependencies attaches production components to the dispatcher.
