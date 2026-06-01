@@ -17,6 +17,7 @@ const tmuxSetBufferArgLimit = 64 * 1024
 // interface for managerless dispatcher starts.
 type NoopEscalator struct{}
 
+// Escalate accepts escalation messages without delivering them anywhere.
 func (NoopEscalator) Escalate(context.Context, string) error {
 	return nil
 }
@@ -33,6 +34,8 @@ type TmuxEscalator struct {
 
 // NewTmuxEscalator creates a TmuxEscalator. If sessionName or paneTarget are
 // empty, sensible defaults ("oro" and "oro:manager") are used.
+//
+//oro:testonly
 func NewTmuxEscalator(sessionName, paneTarget string, runner CommandRunner) *TmuxEscalator {
 	if sessionName == "" {
 		sessionName = "oro"
