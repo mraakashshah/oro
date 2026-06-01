@@ -7159,7 +7159,6 @@ func (d *Dispatcher) buildStatusJSON() string {
 		daemonRunning:           true,
 		daemonPID:               os.Getpid(),
 		dispatcherState:         state,
-		managerPaneAlive:        d.managerPaneAlive(ctx, now.Unix()),
 		workers:                 workers,
 		queueDepth:              queueDepth,
 		targetWorkers:           targetWorkers,
