@@ -290,56 +290,37 @@ func TestReconnectRunningDaemonDoesNotNudgeManagerByDefault(t *testing.T) {
 	}
 }
 
-func TestCreateWithNudges(t *testing.T) {
-	t.Run("injects manager nudge via send-keys", func(t *testing.T) {
+func TestCreateManagerlessAttachSurface(t *testing.T) {
+	t.Run("does not inject manager nudge", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fake, "oro", "You are a test manager.")
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("You are a test manager.")
+		err := sess.Create()
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
-		sess.WaitBeacon()
 
-		var managerCalls [][]string
 		for _, call := range fake.calls {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
-				joined := strings.Join(call, " ")
-				if strings.Contains(joined, "oro:manager") {
-					managerCalls = append(managerCalls, call)
-				}
+				t.Fatalf("Create should not send manager nudge keys, got: %v", call)
 			}
-		}
-
-		if len(managerCalls) < 1 {
-			t.Fatalf("expected at least 1 send-keys to manager window, got %d", len(managerCalls))
-		}
-		mgrNudge := strings.Join(managerCalls[0], " ")
-		if !strings.Contains(mgrNudge, "You are a test manager.") {
-			t.Errorf("manager window nudge should contain manager text, got: %s", mgrNudge)
 		}
 	})
 
-	t.Run("manager window does not use claude -p", func(t *testing.T) {
+	t.Run("does not launch manager runtime command", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fake, "oro", "manager nudge")
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("manager nudge")
+		err := sess.Create()
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
-		sess.WaitBeacon()
 
 		for _, call := range fake.calls {
-			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
-				joined := strings.Join(call, " ")
-				if strings.Contains(joined, "claude -p") {
-					t.Errorf("manager window should not use 'claude -p', got: %s", joined)
-				}
+			if strings.Contains(strings.Join(call, " "), "claude") {
+				t.Errorf("managerless Create should not launch claude, got: %v", call)
 			}
 		}
 	})

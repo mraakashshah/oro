@@ -420,13 +420,8 @@ func (s *TmuxSession) killLegacyManagerSession() bool {
 	return true
 }
 
-// Create creates the Oro tmux session. With an empty sessionNudge it creates the
-// default managerless attach surface. A non-empty sessionNudge explicitly opts
-// into the legacy manager runtime path.
-func (s *TmuxSession) Create(sessionNudge string) error {
-	if sessionNudge != "" {
-		return s.createManagerSession(sessionNudge)
-	}
+// Create creates the default managerless Oro tmux attach surface.
+func (s *TmuxSession) Create() error {
 	return s.createManagerlessSession()
 }
 
@@ -448,93 +443,6 @@ func (s *TmuxSession) createManagerlessSession() error {
 		return err
 	}
 
-	return nil
-}
-
-func (s *TmuxSession) createManagerSession(sessionNudge string) error {
-	if s.Exists() && !s.killStaleSession() {
-		return nil
-	}
-
-	if err := bootstrapRoleConfigs(); err != nil {
-		return err
-	}
-
-	if _, err := s.Runner.Run("tmux", "new-session", "-d", "-s", s.Name, "-n", "manager", execEnvCmd("manager", s.Project)); err != nil {
-		return fmt.Errorf("tmux new-session: %w", err)
-	}
-
-	if err := s.configureSessionOptions(); err != nil {
-		_ = s.Kill()
-		return err
-	}
-
-	if err := s.launchAndNudgeManagerOnly(sessionNudge); err != nil {
-		_ = s.Kill()
-		return err
-	}
-
-	if err := s.RegisterPaneDiedHooks(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to register pane-died hooks: %v\n", err)
-	}
-
-	return nil
-}
-
-// launchAndNudgeManagerOnly waits for the manager pane to be ready, sends the
-// nudge if non-empty, then starts async beacon verification.
-func (s *TmuxSession) launchAndNudgeManagerOnly(nudge string) error {
-	pane := s.Name + ":manager"
-	if runtimeUsesClaudeConfig() {
-		if err := s.WaitForPrompt(pane); err != nil {
-			return fmt.Errorf("wait for manager prompt: %w", err)
-		}
-	} else if err := s.WaitForCommand(pane); err != nil {
-		return fmt.Errorf("wait for manager runtime: %w", err)
-	}
-	if nudge != "" {
-		nudgeTimeout := s.ReadyTimeout
-		if nudgeTimeout == 0 {
-			nudgeTimeout = defaultReadyTimeout
-		}
-		if err := s.SendKeysVerified(pane, nudge, nudgeTimeout); err != nil {
-			return fmt.Errorf("manager nudge: %w", err)
-		}
-	}
-	beaconTimeout := s.BeaconTimeout
-	if beaconTimeout == 0 {
-		beaconTimeout = defaultBeaconTimeout
-	}
-	s.beaconWg.Add(1)
-	go func() {
-		defer s.beaconWg.Done()
-		if err := s.VerifyBeaconReceived(s.Name+":manager", "oro task status", beaconTimeout); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: manager nudge may not have been received: %v\n", err)
-		}
-	}()
-	return nil
-}
-
-// bootstrapRoleConfigs sets up the manager role-scoped Claude config directory so
-// it gets isolated input history (history.jsonl) while sharing all other config
-// via symlinks, then pre-trusts the current project so the workspace trust dialog
-// doesn't block headless panes. No-op when the active runtime does not use Claude config.
-func bootstrapRoleConfigs() error {
-	if !runtimeUsesClaudeConfig() {
-		return nil
-	}
-	configBase := claudeConfigBase()
-	cwd, _ := os.Getwd()
-	roleDir := roleConfigDir(configBase, "manager")
-	if err := setupRoleConfigDir(configBase, roleDir); err != nil {
-		return fmt.Errorf("setup manager config dir: %w", err)
-	}
-	if cwd == "" {
-		return nil
-	}
-	if err := preTrustProject(roleDir, cwd); err != nil {
-		return fmt.Errorf("pre-trust project for manager: %w", err)
-	}
 	return nil
 }
 
