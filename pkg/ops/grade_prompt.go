@@ -69,22 +69,31 @@ func runVoiceGateJudge(ctx context.Context, spawner BatchSpawner, card CardCandi
 		return voiceGateJudgeResult{}, false, err
 	}
 	var result voiceGateJudgeResult
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &result); err != nil {
+	if !parseVoiceGateJSON(out, &result) {
 		return voiceGateJudgeResult{}, false, nil
 	}
 	return result, true, nil
 }
 
-func runVoiceGateRegeneration(ctx context.Context, spawner BatchSpawner, card CardCandidate, feedback string) (CardCandidate, bool, error) {
+func runVoiceGateRegeneration(
+	ctx context.Context,
+	spawner BatchSpawner,
+	card CardCandidate,
+	feedback string,
+) (candidate CardCandidate, ok bool, err error) {
 	out, err := runVoiceGateProcess(ctx, spawner, buildVoiceGateRegenerationPrompt(card, feedback))
 	if err != nil {
 		return CardCandidate{}, false, err
 	}
 	var regenerated CardCandidate
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &regenerated); err != nil {
+	if !parseVoiceGateJSON(out, &regenerated) {
 		return CardCandidate{}, false, nil
 	}
 	return regenerated, true, nil
+}
+
+func parseVoiceGateJSON(out string, dst any) bool {
+	return json.Unmarshal([]byte(strings.TrimSpace(out)), dst) == nil
 }
 
 func runVoiceGateProcess(ctx context.Context, spawner BatchSpawner, prompt string) (string, error) {
