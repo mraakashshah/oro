@@ -27,7 +27,11 @@ CREATE TABLE IF NOT EXISTS cards (
   retired_at           TEXT,
   superseded_by        TEXT REFERENCES cards(id),
   emerged_from         TEXT,
-  retired_reason       TEXT
+  retired_reason       TEXT,
+  grade_state          TEXT,
+  grade_verdict        TEXT,
+  grade_confidence     REAL,
+  proposal_hash        TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_cards_type_score ON cards(type, score DESC) WHERE retired_at IS NULL;

@@ -1369,6 +1369,130 @@ func TestRelevant_SeededSeeAlsoBoostsRelatedCards(t *testing.T) {
 	}
 }
 
+func TestProposalsExcludedFromRecall(t *testing.T) {
+	ctx := context.Background()
+	store, db := newTestStoreWithDB(t)
+
+	activeLegacy := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "legacy active",
+		BodySummary: "recall lifecycle marker",
+		BodyFull:    "legacy cards with NULL grade_state stay recall eligible",
+		Tags:        []string{"lifecycle"},
+	})
+	active := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "explicit active",
+		BodySummary: "recall lifecycle marker",
+		BodyFull:    "active cards stay recall eligible",
+		Tags:        []string{"lifecycle"},
+	})
+	graded := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "graded card",
+		BodySummary: "recall lifecycle marker",
+		BodyFull:    "graded cards stay recall eligible",
+		Tags:        []string{"lifecycle"},
+	})
+	applied := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "applied card",
+		BodySummary: "recall lifecycle marker",
+		BodyFull:    "applied cards stay recall eligible",
+		Tags:        []string{"lifecycle"},
+	})
+	proposed := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "proposed card",
+		BodySummary: "recall lifecycle marker",
+		BodyFull:    "proposed cards are queued and hidden from recall",
+		Tags:        []string{"lifecycle"},
+	})
+	rejected := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "rejected card",
+		BodySummary: "recall lifecycle marker",
+		BodyFull:    "rejected cards are hidden from recall",
+		Tags:        []string{"lifecycle"},
+	})
+
+	updates := map[string]string{
+		active.ID:   "active",
+		graded.ID:   "graded",
+		applied.ID:  "applied",
+		proposed.ID: "proposed",
+		rejected.ID: "rejected",
+	}
+	for id, state := range updates {
+		if _, err := db.ExecContext(ctx, `UPDATE cards SET grade_state = ? WHERE id = ?`, state, id); err != nil {
+			t.Fatalf("set grade_state %s for %s: %v", state, id, err)
+		}
+	}
+
+	result, err := store.Relevant(ctx, cards.RelevanceQuery{
+		BeadType:        string(cards.CardTypePattern),
+		BeadTags:        []string{"lifecycle"},
+		BeadDescription: "recall lifecycle marker",
+		MaxTokens:       1000,
+	})
+	if err != nil {
+		t.Fatalf("Relevant: %v", err)
+	}
+
+	got := deckIDs(result.Deck)
+	for _, id := range []string{activeLegacy.ID, active.ID, graded.ID, applied.ID} {
+		if deckIndex(result.Deck, id) < 0 {
+			t.Fatalf("expected recall-eligible card %s in deck %v", id, got)
+		}
+	}
+	for _, id := range []string{proposed.ID, rejected.ID} {
+		if deckIndex(result.Deck, id) >= 0 {
+			t.Fatalf("proposal lifecycle card %s should be excluded from deck %v", id, got)
+		}
+	}
+}
+
+func TestProposalHash_Dedups(t *testing.T) {
+	ctx := context.Background()
+	store, db := newTestStoreWithDB(t)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	proposalHash := "sha256:identical-proposal"
+
+	first := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "proposal one",
+		BodySummary: "same proposal",
+		BodyFull:    "same proposal body",
+	})
+	if _, err := db.ExecContext(ctx,
+		`UPDATE cards SET grade_state = 'proposed', proposal_hash = ? WHERE id = ?`,
+		proposalHash, first.ID,
+	); err != nil {
+		t.Fatalf("set proposal hash: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO cards (
+			id, type, title, body_summary, body_full, tags, score, decay_anchor,
+			created_at, updated_at, grade_state, proposal_hash
+		) VALUES (?, 'pattern', 'proposal two', 'same proposal', 'same proposal body',
+			'[]', 1.0, ?, ?, ?, 'proposed', ?)`,
+		"card-duplicate-proposal", now, now, now, proposalHash,
+	); err != nil {
+		t.Fatalf("insert duplicate proposal hash: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM cards WHERE proposal_hash = ?`, proposalHash,
+	).Scan(&count); err != nil {
+		t.Fatalf("count proposal hash: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("proposal hash row count = %d, want 1", count)
+	}
+}
+
 func deckIDs(deck []cards.DeckCard) []string {
 	ids := make([]string, 0, len(deck))
 	for _, card := range deck {

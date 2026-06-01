@@ -87,6 +87,24 @@ func NewStore(db *sql.DB, opts ...StoreOption) (*SQLiteCardStore, error) {
 	if err := ensureColumn(db, "cards", "embedding_model", "ALTER TABLE cards ADD COLUMN embedding_model TEXT"); err != nil {
 		return nil, fmt.Errorf("ensure card embedding model: %w", err)
 	}
+	if err := ensureColumn(db, "cards", "grade_state", "ALTER TABLE cards ADD COLUMN grade_state TEXT"); err != nil {
+		return nil, fmt.Errorf("ensure card grade state: %w", err)
+	}
+	if err := ensureColumn(db, "cards", "grade_verdict", "ALTER TABLE cards ADD COLUMN grade_verdict TEXT"); err != nil {
+		return nil, fmt.Errorf("ensure card grade verdict: %w", err)
+	}
+	if err := ensureColumn(db, "cards", "grade_confidence", "ALTER TABLE cards ADD COLUMN grade_confidence REAL"); err != nil {
+		return nil, fmt.Errorf("ensure card grade confidence: %w", err)
+	}
+	if err := ensureColumn(db, "cards", "proposal_hash", "ALTER TABLE cards ADD COLUMN proposal_hash TEXT"); err != nil {
+		return nil, fmt.Errorf("ensure card proposal hash: %w", err)
+	}
+	if _, err := db.ExecContext(context.Background(), `
+		CREATE INDEX IF NOT EXISTS idx_cards_grade_state ON cards(grade_state) WHERE retired_at IS NULL;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_cards_proposal_hash ON cards(proposal_hash) WHERE proposal_hash IS NOT NULL;
+	`); err != nil {
+		return nil, fmt.Errorf("ensure card grade indexes: %w", err)
+	}
 	store := &SQLiteCardStore{db: db}
 	for _, opt := range opts {
 		opt(store)
@@ -695,7 +713,9 @@ func relevanceScore(c *Card, q RelevanceQuery) float64 {
 func relevantCardsQuery() string {
 	return `SELECT` + cardSelectCols + `,
 		(SELECT group_concat(symbol, char(31)) FROM card_symbols WHERE card_id = cards.id)
-		FROM cards WHERE retired_at IS NULL`
+		FROM cards
+		WHERE retired_at IS NULL
+		  AND (grade_state IS NULL OR grade_state NOT IN ('proposed', 'rejected'))`
 }
 
 func jaccardSimilarity(a, b []string) float64 {
