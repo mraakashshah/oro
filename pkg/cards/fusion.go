@@ -25,6 +25,7 @@ type cardReranker interface {
 	rerankCards(query string, candidates []ScoredCard) ([]float64, error)
 }
 
+// TODO(oro-s08-p3c): wire the cross-encoder reranker into semantic card recall.
 type cardRerankerFunc func(query string, candidates []ScoredCard) ([]float64, error)
 
 func (f cardRerankerFunc) rerankCards(query string, candidates []ScoredCard) ([]float64, error) {
@@ -82,7 +83,10 @@ func rerankTopCandidates(query string, candidates []ScoredCard, cfg rerankConfig
 		return candidates
 	}
 	topN := cfg.TopN
-	if topN <= 0 || topN > len(candidates) {
+	if topN <= 0 {
+		return candidates
+	}
+	if topN > len(candidates) {
 		topN = len(candidates)
 	}
 	head := append([]ScoredCard(nil), candidates[:topN]...)

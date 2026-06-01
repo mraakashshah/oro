@@ -131,6 +131,29 @@ func TestRerank_FailOpenPreservesTail(t *testing.T) {
 	}
 }
 
+func TestRerank_TopNZeroNoop(t *testing.T) {
+	candidates := []ScoredCard{
+		fusionCard("first", 1, 3, 0),
+		fusionCard("second", 1, 2, 0),
+		fusionCard("third", 1, 1, 0),
+	}
+	called := false
+	got := rerankTopCandidates("query", candidates, rerankConfig{
+		Enabled: true,
+		TopN:    0,
+	}, cardRerankerFunc(func(_ string, _ []ScoredCard) ([]float64, error) {
+		called = true
+		return []float64{1, 2, 3}, nil
+	}))
+
+	if called {
+		t.Fatal("reranker should not be called when TopN is zero")
+	}
+	if !reflect.DeepEqual(got, candidates) {
+		t.Fatalf("TopN zero changed candidates:\ngot  %#v\nwant %#v", got, candidates)
+	}
+}
+
 func fusionCard(id string, effectiveScore, score, cosine float64) ScoredCard {
 	return ScoredCard{
 		Card: Card{
