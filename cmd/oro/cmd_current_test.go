@@ -289,6 +289,42 @@ func TestBuildCurrentViewNilCardsRendersNoCards(t *testing.T) {
 	}
 }
 
+func TestBeadRelevanceQueryDerivesSymbolHints(t *testing.T) {
+	bead := protocol.Bead{
+		Type:        "task",
+		Tags:        []string{"cli", "cards"},
+		Description: "surface relevant cards for current work",
+		AcceptanceCriteria: strings.Join([]string{
+			"Test: cmd/oro/cmd_current_test.go:TestBeadRelevanceQueryDerivesSymbolHints",
+			"Read: cmd/oro/cmd_current.go:beadRelevanceQuery, pkg/codestruct/relate.go:ResolveCallee",
+			"Read: docs/current.md, missing-bare-symbol",
+			"Read: pkg/missing.go:/, pkg/line.go:25",
+		}, "\n"),
+	}
+
+	got := beadRelevanceQuery(bead)
+
+	if got.BeadType != bead.Type {
+		t.Fatalf("BeadType = %q, want %q", got.BeadType, bead.Type)
+	}
+	if strings.Join(got.BeadTags, ",") != strings.Join(bead.Tags, ",") {
+		t.Fatalf("BeadTags = %v, want %v", got.BeadTags, bead.Tags)
+	}
+	if got.BeadDescription != bead.Description {
+		t.Fatalf("BeadDescription = %q, want %q", got.BeadDescription, bead.Description)
+	}
+	if got.MaxTokens != 2000 {
+		t.Fatalf("MaxTokens = %d, want 2000", got.MaxTokens)
+	}
+	wantHints := []string{
+		"cmd/oro/cmd_current.go:beadRelevanceQuery",
+		"pkg/codestruct/relate.go:ResolveCallee",
+	}
+	if strings.Join(got.SymbolHints, ",") != strings.Join(wantHints, ",") {
+		t.Fatalf("SymbolHints = %v, want %v", got.SymbolHints, wantHints)
+	}
+}
+
 type currentReadTx struct {
 	errorReadTx
 	beads []protocol.Bead

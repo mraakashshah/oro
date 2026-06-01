@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"time"
 
 	"oro/pkg/beadstore"
 	"oro/pkg/cards"
+	"oro/pkg/codestruct"
 	"oro/pkg/protocol"
 
 	"github.com/spf13/cobra"
@@ -172,8 +174,101 @@ func beadRelevanceQuery(b protocol.Bead) cards.RelevanceQuery {
 		BeadType:        b.Type,
 		BeadTags:        b.Tags,
 		BeadDescription: b.Description,
+		SymbolHints:     beadSymbolHints(b),
 		MaxTokens:       2000,
 	}
+}
+
+func beadSymbolHints(b protocol.Bead) []string {
+	seen := make(map[string]struct{})
+	var hints []string
+	for _, ref := range readSymbolRefs(b.AcceptanceCriteria) {
+		edge, ok := symbolRefEdge(ref)
+		if !ok {
+			continue
+		}
+		hint, ok := codestruct.ResolveCallee(edge, nil, nil)
+		if !ok {
+			continue
+		}
+		if _, ok := seen[hint]; ok {
+			continue
+		}
+		seen[hint] = struct{}{}
+		hints = append(hints, hint)
+	}
+	return hints
+}
+
+func readSymbolRefs(acceptance string) []string {
+	var refs []string
+	for _, line := range strings.Split(acceptance, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "Read:") {
+			continue
+		}
+		content := strings.TrimPrefix(line, "Read:")
+		content = strings.ReplaceAll(content, ";", ",")
+		for _, part := range strings.Split(content, ",") {
+			if ref := strings.TrimSpace(stripReadAnnotation(part)); ref != "" {
+				refs = append(refs, ref)
+			}
+		}
+	}
+	return refs
+}
+
+func symbolRefEdge(ref string) (codestruct.CallEdge, bool) {
+	file, symbols, ok := strings.Cut(ref, ":")
+	if !ok || strings.TrimSpace(file) == "" {
+		return codestruct.CallEdge{}, false
+	}
+	symbol, ok := firstSymbolName(symbols)
+	if !ok {
+		return codestruct.CallEdge{}, false
+	}
+	file = strings.TrimSpace(file)
+	return codestruct.CallEdge{
+		CallerFile:   file,
+		CalleeName:   symbol,
+		CalleeFile:   file,
+		CalleeSymbol: symbol,
+		Resolved:     true,
+	}, true
+}
+
+func firstSymbolName(raw string) (string, bool) {
+	raw = strings.TrimSpace(stripReadAnnotation(raw))
+	if raw == "" {
+		return "", false
+	}
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '/' || r == ' ' || r == '\t'
+	})
+	if len(fields) == 0 {
+		return "", false
+	}
+	symbol := fields[0]
+	if symbol == "" || isDigitsOnly(symbol) {
+		return "", false
+	}
+	return symbol, true
+}
+
+func stripReadAnnotation(s string) string {
+	if i := strings.Index(s, " ("); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+func isDigitsOnly(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
 }
 
 // cardSummaryFromDeckCard converts a deck card to the JSON shape.
