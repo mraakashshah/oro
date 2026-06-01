@@ -180,40 +180,40 @@ All review-side changes live in `pkg/ops/`; the regression-revert lives in `pkg/
 // Severity mirrors the existing prompt vocabulary (review_prompt.go verdict section).
 type Severity string
 const (
-	SevCritical  Severity = "critical"
-	SevImportant Severity = "important"
-	SevMinor     Severity = "minor"
+    SevCritical  Severity = "critical"
+    SevImportant Severity = "important"
+    SevMinor     Severity = "minor"
 )
 
 // Evidence pins a finding to a file:line(:quote) the reviewer was shown.
 type Evidence struct {
-	File      string `json:"file"`
-	LineStart int    `json:"line_start"`
-	LineEnd   int    `json:"line_end"`
-	Quote     string `json:"quote,omitempty"` // if present, must match literally
+    File      string `json:"file"`
+    LineStart int    `json:"line_start"`
+    LineEnd   int    `json:"line_end"`
+    Quote     string `json:"quote,omitempty"` // if present, must match literally
 }
 
 // Finding is the unit every reviewer (persona, cheap, deep, codex) emits and
 // the Go merge consumes. Confidence uses CE anchors {0,25,50,75,100}.
 type Finding struct {
-	ID         string     `json:"id"`          // content-addressed; computed by FindingID()
-	Severity   Severity   `json:"severity"`
-	Category   string     `json:"category"`    // correctness|security|design|test|architecture|absence
-	Title      string     `json:"title"`
-	Detail     string     `json:"detail"`      // why_it_matters + fix direction
-	Evidence   []Evidence `json:"evidence"`
-	Confidence int        `json:"confidence"`  // 0|25|50|75|100
-	Sources    []string   `json:"sources"`     // reviewer/persona ids (unioned on dedup)
-	Origin     string     `json:"origin"`      // introduced|pre_existing
-	Status     string     `json:"status,omitempty"` // P4: open|false-positive|fixed|wont-fix|uncertain
+    ID         string     `json:"id"`          // content-addressed; computed by FindingID()
+    Severity   Severity   `json:"severity"`
+    Category   string     `json:"category"`    // correctness|security|design|test|architecture|absence
+    Title      string     `json:"title"`
+    Detail     string     `json:"detail"`      // why_it_matters + fix direction
+    Evidence   []Evidence `json:"evidence"`
+    Confidence int        `json:"confidence"`  // 0|25|50|75|100
+    Sources    []string   `json:"sources"`     // reviewer/persona ids (unioned on dedup)
+    Origin     string     `json:"origin"`      // introduced|pre_existing
+    Status     string     `json:"status,omitempty"` // P4: open|false-positive|fixed|wont-fix|uncertain
 }
 
 // ReviewReport is the parsed structured output of one reviewer pass.
 type ReviewReport struct {
-	Reviewer string    `json:"reviewer"`
-	Findings []Finding `json:"findings"`
-	Verdict  Verdict   `json:"verdict"` // self-verdict; merge recomputes the real one
-	Raw      string    // unparsed stdout, for fail-open + journey payload
+    Reviewer string    `json:"reviewer"`
+    Findings []Finding `json:"findings"`
+    Verdict  Verdict   `json:"verdict"` // self-verdict; merge recomputes the real one
+    Raw      string    // unparsed stdout, for fail-open + journey payload
 }
 ```
 
@@ -224,10 +224,10 @@ func canonicalEvidence(ev []Evidence) string // sort by File,LineStart,LineEnd; 
 func normalizeTitle(s string) string         // lowercase, collapse whitespace, strip trailing punct
 
 func FindingID(beadID string, f Finding) string {
-	h := sha256.Sum256([]byte(strings.Join([]string{
-		beadID, f.Category, normalizeTitle(f.Title), canonicalEvidence(f.Evidence),
-	}, "\x00")))
-	return "fnd_" + hex.EncodeToString(h[:8])
+    h := sha256.Sum256([]byte(strings.Join([]string{
+        beadID, f.Category, normalizeTitle(f.Title), canonicalEvidence(f.Evidence),
+    }, "\x00")))
+    return "fnd_" + hex.EncodeToString(h[:8])
 }
 ```
 
@@ -237,9 +237,9 @@ func FindingID(beadID string, f Finding) string {
 type PromptManifest struct{ Shown map[string][][2]int } // file -> shown [start,end] ranges
 
 type DroppedFinding struct {
-	Finding Finding
-	Layer   string // "validation" | "schema"
-	Reason  string
+    Finding Finding
+    Layer   string // "validation" | "schema"
+    Reason  string
 }
 
 func ValidateFinding(m PromptManifest, repoRoot string, f Finding) error
@@ -259,17 +259,17 @@ Only phase touching `pkg/dispatcher`. Operates on **test outcomes**, needs no fi
 ```go
 // qgBaseline is captured BEFORE a retry edit is dispatched.
 type qgBaseline struct {
-	beadID     string
-	worktree   string
-	headSHA    string          // git rev-parse HEAD
-	testRes    map[string]bool // test name -> passed, broader task-relevant set
-	capturedAt time.Time
+    beadID     string
+    worktree   string
+    headSHA    string          // git rev-parse HEAD
+    testRes    map[string]bool // test name -> passed, broader task-relevant set
+    capturedAt time.Time
 }
 
 // qgRegression is the verdict after a retry.
 type qgRegression struct {
-	regressed []string // green at baseline, red now
-	reverted  bool
+    regressed []string // green at baseline, red now
+    reverted  bool
 }
 
 func (d *Dispatcher) captureQGBaseline(ctx context.Context, beadID, worktree string) (qgBaseline, error)
@@ -295,9 +295,9 @@ func parseTestOutcomes(output string) map[string]bool // pure
 
 ```go
 type Persona struct {
-	ID       string // correctness|security|adversarial|design|test|architecture
-	Role     string // agentmodel role, e.g. "ops_review_correctness"
-	Fragment string // appended to the shared buildReviewPrompt body
+    ID       string // correctness|security|adversarial|design|test|architecture
+    Role     string // agentmodel role, e.g. "ops_review_correctness"
+    Fragment string // appended to the shared buildReviewPrompt body
 }
 func selectPersonas(opts ReviewOpts) []Persona // team selection; trivial/docs-only -> none
 ```
@@ -306,20 +306,20 @@ func selectPersonas(opts ReviewOpts) []Persona // team selection; trivial/docs-o
 
 ```go
 func (s *Spawner) Review(ctx context.Context, opts ReviewOpts) <-chan Result {
-	// docs-only short-circuit unchanged (ops.go:279-288)
-	if !opts.MultiPersona {
-		return s.run(ctx, OpsReview, opts.BeadID, opts.Worktree, buildReviewPrompt(opts)) // back-compat
-	}
-	personas := selectPersonas(opts)
-	manifest, prompt := buildStructuredReviewPrompt(opts) // emits finding schema + records manifest
-	chans := make([]<-chan Result, 0, len(personas))
-	for _, p := range personas {
-		chans = append(chans, s.runWith(ctx, OpsReview,
-			spawnRouting{role: p.Role}, opts.BeadID, opts.Worktree, prompt+p.Fragment))
-	}
-	out := make(chan Result, 1)
-	go func() { out <- mergeReports(collect(chans), manifest, opts) }()
-	return out
+    // docs-only short-circuit unchanged (ops.go:279-288)
+    if !opts.MultiPersona {
+        return s.run(ctx, OpsReview, opts.BeadID, opts.Worktree, buildReviewPrompt(opts)) // back-compat
+    }
+    personas := selectPersonas(opts)
+    manifest, prompt := buildStructuredReviewPrompt(opts) // emits finding schema + records manifest
+    chans := make([]<-chan Result, 0, len(personas))
+    for _, p := range personas {
+        chans = append(chans, s.runWith(ctx, OpsReview,
+            spawnRouting{role: p.Role}, opts.BeadID, opts.Worktree, prompt+p.Fragment))
+    }
+    out := make(chan Result, 1)
+    go func() { out <- mergeReports(collect(chans), manifest, opts) }()
+    return out
 }
 ```
 
@@ -330,14 +330,14 @@ func (s *Spawner) Review(ctx context.Context, opts ReviewOpts) <-chan Result {
 
 ```go
 func mergeReports(reports []ReviewReport, m PromptManifest, opts ReviewOpts) Result {
-	all := flatten(reports)                  // collect findings + Sources
-	all, _ = validateAndPartition(all, m)    // P0 evidence validation (drop hallucinated)
-	groups := dedup(all)                     // normalize(file)+bucket(line,±3)+normalize(title)
-	for _, g := range groups { unionSources(g) } // duplication strengthens, not noise
-	promote(groups)                          // 2+ distinct sources -> +1 confidence anchor
-	separatePreExisting(groups)              // origin==pre_existing -> report-only
-	survivors := gate(groups)                // confidence>=75 OR (critical at >=50); gate LAST
-	return toResult(survivors, opts.BeadID)  // any surviving Critical/Important -> REJECTED
+    all := flatten(reports)                  // collect findings + Sources
+    all, _ = validateAndPartition(all, m)    // P0 evidence validation (drop hallucinated)
+    groups := dedup(all)                     // normalize(file)+bucket(line,±3)+normalize(title)
+    for _, g := range groups { unionSources(g) } // duplication strengthens, not noise
+    promote(groups)                          // 2+ distinct sources -> +1 confidence anchor
+    separatePreExisting(groups)              // origin==pre_existing -> report-only
+    survivors := gate(groups)                // confidence>=75 OR (critical at >=50); gate LAST
+    return toResult(survivors, opts.BeadID)  // any surviving Critical/Important -> REJECTED
 }
 ```
 
@@ -349,9 +349,9 @@ Insert a cheap triage spawn *before* the deep personas, on large diffs only:
 
 ```go
 if opts.CheapThenDeep && diffSizeExceeds(opts, opts.CheapGateThreshold) {
-	cand := s.runCheapTriage(ctx, opts)       // one fast-tier spawn, scores concerns 0-100
-	survivors := cheapGate(cand)              // score>=45 OR >=2 source_families
-	opts = scopeToSurvivors(opts, survivors)  // deep personas only review survivor regions/concerns
+    cand := s.runCheapTriage(ctx, opts)       // one fast-tier spawn, scores concerns 0-100
+    survivors := cheapGate(cand)              // score>=45 OR >=2 source_families
+    opts = scopeToSurvivors(opts, survivors)  // deep personas only review survivor regions/concerns
 }
 // ... P1 fan-out over the (possibly narrowed) scope ...
 ```
