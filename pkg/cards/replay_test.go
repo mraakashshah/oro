@@ -42,8 +42,8 @@ func TestRecallReplay_HitRate(t *testing.T) {
 				})
 			}
 
-			baseline := replayRelevantIDs(t, ctx, store, fixture.data.Query, 0)
-			phase1 := replayRelevantIDs(t, ctx, store, fixture.data.Query, 0.25)
+			baseline := replayRelevantIDs(ctx, t, store, fixture.data.Query, 0)
+			phase1 := replayRelevantIDs(ctx, t, store, fixture.data.Query, 0.25)
 			k := len(fixture.data.ExpectedTopKIDs)
 
 			baselineRecall := recallAtK(baseline, fixture.data.ExpectedTopKIDs, k)
@@ -104,8 +104,8 @@ func loadRecallReplayFixtures(t *testing.T) []namedRecallReplayFixture {
 }
 
 func replayRelevantIDs(
-	t *testing.T,
 	ctx context.Context,
+	t *testing.T,
 	store *cards.SQLiteCardStore,
 	query string,
 	wSeeAlso float64,
