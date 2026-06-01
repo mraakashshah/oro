@@ -190,6 +190,14 @@ func (s *promotionCardStore) AddRelation(context.Context, string, string, cards.
 	return errors.New("not implemented")
 }
 
+func (s *promotionCardStore) Lineage(context.Context, string) ([]cards.Card, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *promotionCardStore) LatestInChain(context.Context, string) (*cards.Card, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (s *promotionCardStore) WithReadTx(context.Context, func(cards.ReadTx) error) error {
 	return errors.New("not implemented")
 }
