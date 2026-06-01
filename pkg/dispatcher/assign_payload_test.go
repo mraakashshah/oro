@@ -200,6 +200,10 @@ func (s *staticRelevantCardStore) PromoteLearning(context.Context, int64) (strin
 	return "", errors.New("not implemented")
 }
 
+func (s *staticRelevantCardStore) PromoteLearningAsProposal(context.Context, int64) (string, error) {
+	return "", errors.New("not implemented")
+}
+
 func (s *staticRelevantCardStore) RejectLearning(context.Context, int64, string) error {
 	return errors.New("not implemented")
 }

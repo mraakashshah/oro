@@ -3,6 +3,7 @@ package cards
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
@@ -28,6 +29,7 @@ type Store interface {
 	RecordCardEvent(ctx context.Context, e CardEvent) error
 	AppendLearningPending(ctx context.Context, beadID string, c CardCandidate) (int64, error)
 	PromoteLearning(ctx context.Context, learningID int64) (cardID string, err error)
+	PromoteLearningAsProposal(ctx context.Context, learningID int64) (cardID string, err error)
 	RejectLearning(ctx context.Context, id int64, reason string) error
 	DeferToReviewQueue(ctx context.Context, id int64, reason string) error
 	Create(ctx context.Context, c CardCreateParams) (*Card, error)
@@ -974,6 +976,15 @@ func (s *SQLiteCardStore) Reindex(ctx context.Context) (int, error) {
 
 // PromoteLearning creates a card from a pending learning and marks it resolved.
 func (s *SQLiteCardStore) PromoteLearning(ctx context.Context, learningID int64) (cardID string, err error) {
+	return s.promoteLearning(ctx, learningID, false)
+}
+
+// PromoteLearningAsProposal creates a proposed card from a pending learning and marks it resolved.
+func (s *SQLiteCardStore) PromoteLearningAsProposal(ctx context.Context, learningID int64) (cardID string, err error) {
+	return s.promoteLearning(ctx, learningID, true)
+}
+
+func (s *SQLiteCardStore) promoteLearning(ctx context.Context, learningID int64, asProposal bool) (cardID string, err error) {
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
 		learning, err := queryPendingLearningForUpdate(ctx, tx, learningID)
 		if err != nil {
@@ -984,7 +995,7 @@ func (s *SQLiteCardStore) PromoteLearning(ctx context.Context, learningID int64)
 		}
 		confidence := learning.Candidate.Confidence
 		emergedFrom := learning.BeadID
-		id, err := insertCard(ctx, tx, CardCreateParams{
+		params := CardCreateParams{
 			Type:                CardType(learning.Candidate.Type),
 			Title:               learning.Candidate.Title,
 			BodySummary:         learning.Candidate.BodySummary,
@@ -992,7 +1003,12 @@ func (s *SQLiteCardStore) PromoteLearning(ctx context.Context, learningID int64)
 			Tags:                learning.Candidate.Tags,
 			EmergedFrom:         &emergedFrom,
 			PromotionConfidence: &confidence,
-		}, s.embedder)
+		}
+		if asProposal {
+			params.GradeState = string(GradeStateProposed)
+			params.ProposalHash = learningProposalHash(learning.Candidate)
+		}
+		id, err := insertCard(ctx, tx, params, s.embedder)
 		if err != nil {
 			return err
 		}
@@ -1018,6 +1034,15 @@ func (s *SQLiteCardStore) PromoteLearning(ctx context.Context, learningID int64)
 		return "", err
 	}
 	return cardID, nil
+}
+
+func learningProposalHash(candidate CardCandidate) string {
+	payload, err := json.Marshal(candidate)
+	if err != nil {
+		payload = []byte(candidate.Type + "\x00" + candidate.Title + "\x00" + candidate.BodyFull)
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
 }
 
 // RejectLearning marks an unresolved pending learning as rejected.

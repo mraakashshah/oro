@@ -1,6 +1,8 @@
 package cards_test
 
 import (
+	"context"
+	"database/sql"
 	"strings"
 	"testing"
 
@@ -202,5 +204,66 @@ func TestPromotionDecision(t *testing.T) {
 				t.Fatalf("near duplicate promoted: %+v", got)
 			}
 		})
+	}
+}
+
+func TestPromotedLearning_EntersProposalQueue(t *testing.T) {
+	ctx := context.Background()
+	store, db := newTestStoreWithBeads(t)
+	if _, err := db.ExecContext(ctx, `INSERT INTO beads (id) VALUES (?)`, "bead-proposal"); err != nil {
+		t.Fatalf("insert bead: %v", err)
+	}
+	candidate := cards.CardCandidate{
+		Type:        string(cards.CardTypePattern),
+		Title:       "Promoted learnings enter proposals",
+		BodySummary: "Grade-gated promotions are queued as proposed cards.",
+		BodyFull:    "When the grade gate is enabled, DecidePromotion promote results should create proposed cards instead of direct active cards.",
+		Confidence:  0.91,
+		Evidence:    []string{"pkg/cards/promotion_test.go:TestPromotedLearning_EntersProposalQueue"},
+		Tags:        []string{"cards", "grade-gate"},
+	}
+	decision := cards.DecidePromotion(candidate, "pass", nil)
+	if decision.Action != cards.PromotionActionPromote {
+		t.Fatalf("promotion action = %q, want promote: %+v", decision.Action, decision)
+	}
+	learningID, err := store.AppendLearningPending(ctx, "bead-proposal", candidate)
+	if err != nil {
+		t.Fatalf("AppendLearningPending: %v", err)
+	}
+
+	cardID, err := store.PromoteLearningAsProposal(ctx, learningID)
+	if err != nil {
+		t.Fatalf("PromoteLearningAsProposal: %v", err)
+	}
+
+	var promotedTo string
+	if err := db.QueryRowContext(ctx,
+		`SELECT promoted_to FROM bead_learnings_pending WHERE id = ?`, learningID,
+	).Scan(&promotedTo); err != nil {
+		t.Fatalf("query promoted_to: %v", err)
+	}
+	if promotedTo != cardID {
+		t.Fatalf("promoted_to = %q, want %q", promotedTo, cardID)
+	}
+
+	var gradeState, proposalHash sql.NullString
+	if err := db.QueryRowContext(ctx,
+		`SELECT grade_state, proposal_hash FROM cards WHERE id = ?`, cardID,
+	).Scan(&gradeState, &proposalHash); err != nil {
+		t.Fatalf("query promoted proposal: %v", err)
+	}
+	if !gradeState.Valid || gradeState.String != string(cards.GradeStateProposed) {
+		t.Fatalf("grade_state = %q valid=%v, want proposed", gradeState.String, gradeState.Valid)
+	}
+	if !proposalHash.Valid || strings.TrimSpace(proposalHash.String) == "" {
+		t.Fatalf("proposal_hash = %q valid=%v, want non-empty", proposalHash.String, proposalHash.Valid)
+	}
+
+	card, err := store.Show(ctx, cardID)
+	if err != nil {
+		t.Fatalf("Show proposed card: %v", err)
+	}
+	if card.Title != candidate.Title || card.EmergedFrom == nil || *card.EmergedFrom != "bead-proposal" {
+		t.Fatalf("proposed card = %+v, want candidate title and bead provenance", card)
 	}
 }

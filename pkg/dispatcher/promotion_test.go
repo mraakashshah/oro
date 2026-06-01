@@ -40,6 +40,39 @@ func TestBeadCloseRunsPromotion(t *testing.T) {
 		assertJourneyEvent(t, store, "bead-pass", "learning_promoted")
 	})
 
+	t.Run("pass queues eligible learning as proposal when grade gate enabled", func(t *testing.T) {
+		store := beadstore.NewFakeStore(protocol.Bead{ID: "bead-proposed", Type: "task", Status: "open"})
+		cardStore := newPromotionCardStore(cards.PendingLearning{
+			ID:     14,
+			BeadID: "bead-proposed",
+			Candidate: cards.CardCandidate{
+				Type:        string(cards.CardTypePattern),
+				Title:       "Gate promotes to proposal",
+				BodySummary: "Grade-gated promotion enters proposal queue.",
+				BodyFull:    "When GradeGateEnabled is true, pending learning promotion creates a proposed card.",
+				Confidence:  0.91,
+				Evidence:    []string{"go test ./pkg/dispatcher/..."},
+			},
+		})
+		d := &Dispatcher{
+			beads:     store,
+			cardStore: cardStore,
+			cfg:       Config{GradeGateEnabled: true},
+		}
+
+		if err := d.CloseBead(ctx, "bead-proposed", "Merged: abc123"); err != nil {
+			t.Fatalf("CloseBead: %v", err)
+		}
+
+		if got := cardStore.promoted; len(got) != 0 {
+			t.Fatalf("direct promoted learnings = %v, want none", got)
+		}
+		if got := cardStore.proposed; !equalInt64s(got, []int64{14}) {
+			t.Fatalf("proposed learnings = %v, want [14]", got)
+		}
+		assertJourneyEvent(t, store, "bead-proposed", "learning_promoted")
+	})
+
 	t.Run("fail rejects pending learning", func(t *testing.T) {
 		store := beadstore.NewFakeStore(protocol.Bead{ID: "bead-fail", Type: "task", Status: "open"})
 		cardStore := newPromotionCardStore(cards.PendingLearning{
@@ -117,6 +150,7 @@ func TestBeadCloseRunsPromotion(t *testing.T) {
 type promotionCardStore struct {
 	pending   []cards.PendingLearning
 	promoted  []int64
+	proposed  []int64
 	rejected  []int64
 	deferred  []int64
 	decisions int
@@ -164,6 +198,12 @@ func (s *promotionCardStore) PromoteLearning(_ context.Context, id int64) (strin
 	s.decisions++
 	s.promoted = append(s.promoted, id)
 	return "card-promoted", nil
+}
+
+func (s *promotionCardStore) PromoteLearningAsProposal(_ context.Context, id int64) (string, error) {
+	s.decisions++
+	s.proposed = append(s.proposed, id)
+	return "card-proposed", nil
 }
 
 func (s *promotionCardStore) RejectLearning(_ context.Context, id int64, _ string) error {
