@@ -1,4 +1,4 @@
-// Package embed provides embedding model adapters for semantic recall.
+// Package embeddings provides embedding model adapters for semantic recall.
 package embeddings
 
 const (
