@@ -1,4 +1,4 @@
-package ops
+package ops //nolint:testpackage // internal test needs access to unexported mergeReports
 
 import (
 	"encoding/json"
