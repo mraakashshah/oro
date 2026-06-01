@@ -2,9 +2,12 @@ package ops //nolint:testpackage // selectPersonas is an internal review orchest
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"oro/pkg/agentmodel"
@@ -56,6 +59,112 @@ func TestSelectPersonas(t *testing.T) {
 	})
 }
 
+func TestReviewMultiPersona_SpawnsPerPersona(t *testing.T) {
+	worktree := testReviewRepo(t)
+	t.Chdir(worktree)
+	writePersonaAgentConfig(t, worktree)
+	writeFile(t, filepath.Join(worktree, "pkg", "worker.go"), "package pkg\n\nfunc Worker() string { return \"changed\" }\n")
+
+	personas := selectPersonas(ReviewOpts{Worktree: worktree, BaseBranch: "main"})
+	spawner := &recordingReviewSpawner{
+		stdout: structuredReviewOutput(t, ReviewReport{Reviewer: "reviewer", Verdict: VerdictApproved}),
+	}
+	s := NewSpawner(spawner)
+
+	result := waitResult(t, s.Review(context.Background(), ReviewOpts{
+		BeadID:       "oro-review",
+		Worktree:     worktree,
+		BaseBranch:   "main",
+		MultiPersona: true,
+		MaxReviewers: 2,
+	}))
+
+	if result.Verdict != VerdictApproved {
+		t.Fatalf("Review verdict = %q, want approved; feedback=%s err=%v", result.Verdict, result.Feedback, result.Err)
+	}
+	calls := spawner.getCalls()
+	if len(calls) != len(personas) {
+		t.Fatalf("spawn calls = %d, want %d", len(calls), len(personas))
+	}
+	seenRoles := make(map[string]bool, len(calls))
+	for _, call := range calls {
+		seenRoles[call.role] = true
+		if !strings.Contains(call.prompt, "Structured Review Output") {
+			t.Fatalf("prompt for role %q did not include structured review schema", call.role)
+		}
+	}
+	for _, persona := range personas {
+		if !seenRoles[persona.Role] {
+			t.Fatalf("missing spawn for persona role %q; saw %#v", persona.Role, seenRoles)
+		}
+	}
+}
+
+func TestReviewSinglePass_WhenMultiPersonaFalse(t *testing.T) {
+	worktree := testReviewRepo(t)
+	t.Chdir(worktree)
+	writePersonaAgentConfig(t, worktree)
+	writeFile(t, filepath.Join(worktree, "pkg", "worker.go"), "package pkg\n\nfunc Worker() string { return \"changed\" }\n")
+
+	spawner := &recordingReviewSpawner{stdout: "legacy review\nVERDICT: APPROVED\n"}
+	s := NewSpawner(spawner)
+
+	result := waitResult(t, s.Review(context.Background(), ReviewOpts{
+		BeadID:       "oro-review",
+		Worktree:     worktree,
+		BaseBranch:   "main",
+		MultiPersona: false,
+	}))
+
+	if result.Verdict != VerdictApproved {
+		t.Fatalf("Review verdict = %q, want approved; feedback=%s err=%v", result.Verdict, result.Feedback, result.Err)
+	}
+	calls := spawner.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("spawn calls = %d, want single legacy review pass", len(calls))
+	}
+	if calls[0].role != "ops_review" {
+		t.Fatalf("spawn role = %q, want ops_review", calls[0].role)
+	}
+	if strings.Contains(calls[0].prompt, "Persona focus:") {
+		t.Fatalf("single-pass prompt unexpectedly included persona fragment: %q", calls[0].prompt)
+	}
+}
+
+func TestReviewMultiPersona_AllFailFallsBackToSinglePass(t *testing.T) {
+	worktree := testReviewRepo(t)
+	t.Chdir(worktree)
+	writePersonaAgentConfig(t, worktree)
+	writeFile(t, filepath.Join(worktree, "pkg", "worker.go"), "package pkg\n\nfunc Worker() string { return \"changed\" }\n")
+
+	personas := selectPersonas(ReviewOpts{Worktree: worktree, BaseBranch: "main"})
+	outputs := make([]string, 0, len(personas)+1)
+	for range personas {
+		outputs = append(outputs, "reviewer crashed without a verdict")
+	}
+	outputs = append(outputs, "legacy fallback\nVERDICT: APPROVED\n")
+	spawner := &recordingReviewSpawner{outputs: outputs}
+	s := NewSpawner(spawner)
+
+	result := waitResult(t, s.Review(context.Background(), ReviewOpts{
+		BeadID:       "oro-review",
+		Worktree:     worktree,
+		BaseBranch:   "main",
+		MultiPersona: true,
+	}))
+
+	if result.Verdict != VerdictApproved {
+		t.Fatalf("Review verdict = %q, want approved from legacy fallback; feedback=%s err=%v", result.Verdict, result.Feedback, result.Err)
+	}
+	calls := spawner.getCalls()
+	if len(calls) != len(personas)+1 {
+		t.Fatalf("spawn calls = %d, want %d persona calls plus one fallback", len(calls), len(personas)+1)
+	}
+	if calls[len(calls)-1].role != "ops_review" {
+		t.Fatalf("fallback role = %q, want ops_review", calls[len(calls)-1].role)
+	}
+}
+
 func testReviewRepo(t *testing.T) string {
 	t.Helper()
 
@@ -88,4 +197,92 @@ func git(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %v failed: %v\n%s", args, err, out)
 	}
+}
+
+func writePersonaAgentConfig(t *testing.T, dir string) {
+	t.Helper()
+	body := `agent:
+  roles:
+    ops_review:
+      transport: cli
+      runtime: ops_review
+      model: review-model
+    ops_review_correctness:
+      transport: cli
+      runtime: ops_review_correctness
+      model: review-model
+    ops_review_security:
+      transport: cli
+      runtime: ops_review_security
+      model: review-model
+    ops_review_adversarial:
+      transport: cli
+      runtime: ops_review_adversarial
+      model: review-model
+    ops_review_design:
+      transport: cli
+      runtime: ops_review_design
+      model: review-model
+    ops_review_test:
+      transport: cli
+      runtime: ops_review_test
+      model: review-model
+    ops_review_architecture:
+      transport: cli
+      runtime: ops_review_architecture
+      model: review-model
+`
+	writeFile(t, filepath.Join(dir, ".oro", "config.yaml"), body)
+}
+
+type recordingReviewSpawner struct {
+	mu      sync.Mutex
+	calls   []recordingReviewCall
+	stdout  string
+	outputs []string
+}
+
+type recordingReviewCall struct {
+	role   string
+	prompt string
+}
+
+func (r *recordingReviewSpawner) SpawnRuntime(_ context.Context, runtime, _, _, prompt, _ string) (Process, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, recordingReviewCall{role: runtime, prompt: prompt})
+	return newReadyMockProcess(r.nextOutputLocked(), nil), nil
+}
+
+func (r *recordingReviewSpawner) Spawn(_ context.Context, _, prompt, _ string) (Process, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, recordingReviewCall{role: "legacy", prompt: prompt})
+	return newReadyMockProcess(r.nextOutputLocked(), nil), nil
+}
+
+func (r *recordingReviewSpawner) getCalls() []recordingReviewCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]recordingReviewCall, len(r.calls))
+	copy(out, r.calls)
+	return out
+}
+
+func structuredReviewOutput(t *testing.T, report ReviewReport) string {
+	t.Helper()
+	b, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "```json\n" + string(b) + "\n```\nVERDICT: APPROVED\n"
+}
+
+func (r *recordingReviewSpawner) nextOutputLocked() string {
+	if len(r.outputs) == 0 {
+		return r.stdout
+	}
+	out := r.outputs[0]
+	r.outputs = r.outputs[1:]
+	return out
 }

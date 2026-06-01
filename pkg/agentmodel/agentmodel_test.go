@@ -127,18 +127,24 @@ func TestLockedRoleResolution(t *testing.T) {
 		model     string
 		reasoning string
 	}{
-		"spec_writer":       {"claude", "claude-opus-4-7", ""},
-		"spec_challenger":   {"codex", "gpt-5.5", "xhigh"},
-		"worker":            {"codex", "gpt-5.5", "low"},
-		"worker_escalation": {"codex", "gpt-5.5", "medium"},
-		"ops_review":        {"claude", "claude-opus-4-7", ""},
-		"ops_escalation":    {"codex", "gpt-5.5", "high"},
-		"ops_merge":         {"codex", "gpt-5.5", "high"},
-		"ops_diagnosis":     {"codex", "gpt-5.5", "high"},
-		"ops_decompose":     {"claude", "claude-opus-4-7", ""},
-		"ops_epic_fix":      {"claude", "claude-opus-4-7", ""},
-		"ops_write_ac":      {"claude", "claude-opus-4-7", ""},
-		"ops_dream":         {"codex", "gpt-5.5", "low"},
+		"spec_writer":             {"claude", "claude-opus-4-7", ""},
+		"spec_challenger":         {"codex", "gpt-5.5", "xhigh"},
+		"worker":                  {"codex", "gpt-5.5", "low"},
+		"worker_escalation":       {"codex", "gpt-5.5", "medium"},
+		"ops_review":              {"claude", "claude-opus-4-7", ""},
+		"ops_review_correctness":  {"claude", "claude-opus-4-7", ""},
+		"ops_review_security":     {"claude", "claude-opus-4-7", ""},
+		"ops_review_adversarial":  {"claude", "claude-opus-4-7", ""},
+		"ops_review_design":       {"claude", "claude-sonnet-4-6", ""},
+		"ops_review_test":         {"claude", "claude-sonnet-4-6", ""},
+		"ops_review_architecture": {"claude", "claude-sonnet-4-6", ""},
+		"ops_escalation":          {"codex", "gpt-5.5", "high"},
+		"ops_merge":               {"codex", "gpt-5.5", "high"},
+		"ops_diagnosis":           {"codex", "gpt-5.5", "high"},
+		"ops_decompose":           {"claude", "claude-opus-4-7", ""},
+		"ops_epic_fix":            {"claude", "claude-opus-4-7", ""},
+		"ops_write_ac":            {"claude", "claude-opus-4-7", ""},
+		"ops_dream":               {"codex", "gpt-5.5", "low"},
 	}
 
 	for role, want := range cases {

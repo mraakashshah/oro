@@ -1,6 +1,7 @@
 package ops
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,53 @@ func buildReviewPrompt(opts ReviewOpts) string {
 	writePhases(&b, base)
 	writeVerdictAndOutput(&b)
 	return b.String()
+}
+
+func buildStructuredReviewPrompt(opts ReviewOpts) (PromptManifest, string) {
+	manifest := buildPromptManifest(opts)
+	prompt := buildReviewPrompt(opts) + strings.Join([]string{
+		"",
+		"## Structured Review Output",
+		"Return one JSON object in a fenced json block or as the full response body.",
+		"Schema:",
+		`{"reviewer":"<persona-id>","verdict":"approved|rejected|failed","findings":[{"severity":"critical|important|minor","category":"<category>","title":"<short title>","detail":"<specific issue and fix>","evidence":[{"file":"path/from/repo","line_start":1,"line_end":1,"quote":"literal shown text"}],"confidence":75,"origin":"introduced|pre_existing"}]}`,
+		"Every finding must cite evidence from lines shown in the prompt context.",
+		"Use an empty findings array when there are no findings.",
+		"",
+	}, "\n")
+	return manifest, prompt
+}
+
+func buildPromptManifest(opts ReviewOpts) PromptManifest {
+	paths, err := reviewDiffPaths(context.Background(), opts.Worktree, opts.BaseBranch)
+	if err != nil || len(paths) == 0 {
+		return PromptManifest{Shown: map[string][][2]int{}}
+	}
+
+	shown := make(map[string][][2]int, len(paths))
+	for _, path := range paths {
+		clean, err := normalizeManifestPath(path)
+		if err != nil {
+			continue
+		}
+		lines := countFileLines(filepath.Join(opts.Worktree, filepath.FromSlash(clean)))
+		if lines == 0 {
+			lines = 1
+		}
+		shown[clean] = [][2]int{{1, lines}}
+	}
+	return PromptManifest{Shown: shown}
+}
+
+func countFileLines(path string) int {
+	data, err := os.ReadFile(path) //nolint:gosec // path is derived from git diff output and normalized manifest-relative input.
+	if err != nil {
+		return 0
+	}
+	if len(data) == 0 {
+		return 1
+	}
+	return strings.Count(string(data), "\n") + 1
 }
 
 func writeHeader(b *strings.Builder, base string) {
