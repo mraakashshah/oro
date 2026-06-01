@@ -90,6 +90,29 @@ func TestStartReadsProjectConfig(t *testing.T) {
 	})
 }
 
+func TestSemanticRerankEnabledFromConfigDefaultsOff(t *testing.T) {
+	t.Run("missing config defaults off", func(t *testing.T) {
+		if semanticRerankEnabledFromConfig(t.TempDir()) {
+			t.Fatal("expected missing config to leave semantic rerank disabled")
+		}
+	})
+
+	t.Run("explicit true enables rerank", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		oroDir := filepath.Join(tmpDir, ".oro")
+		if err := os.MkdirAll(oroDir, 0o755); err != nil { //nolint:gosec // test dir
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(oroDir, "config.yaml"), []byte("memory:\n  semantic:\n    rerank: true\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		if !semanticRerankEnabledFromConfig(tmpDir) {
+			t.Fatal("expected explicit memory.semantic.rerank=true to enable rerank")
+		}
+	})
+}
+
 func TestStartRejectsRepoLocalOroShadow(t *testing.T) {
 	t.Run("PATH resolves to repo-local shadow", func(t *testing.T) {
 		repoRoot := t.TempDir()

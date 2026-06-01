@@ -408,6 +408,19 @@ func TestSemanticMemoryConfigDefaultsAndOverride(t *testing.T) {
 	})
 }
 
+func TestSemanticMemoryConfigRerankEnabledDefaultsOff(t *testing.T) {
+	var sem langprofile.SemanticMemoryConfig
+	if sem.RerankEnabled() {
+		t.Fatal("expected production rerank default = false")
+	}
+
+	enabled := true
+	sem.Rerank = &enabled
+	if !sem.RerankEnabled() {
+		t.Fatal("expected explicit rerank=true to enable production rerank")
+	}
+}
+
 func TestResolveProjectRoot(t *testing.T) {
 	t.Run("from worktree path returns main repo root", func(t *testing.T) {
 		// Create a temporary git repo with a worktree so the test is self-contained.
