@@ -1,6 +1,7 @@
-package ops
+package ops_test
 
 import (
+	"oro/pkg/ops"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,47 +18,47 @@ func TestValidateFinding_RejectsHallucinations(t *testing.T) {
 		"}",
 	}, "\n"))
 
-	manifest := PromptManifest{
+	manifest := ops.PromptManifest{
 		Shown: map[string][][2]int{
 			"pkg/worker/worker.go": {{3, 4}},
 		},
 	}
 
-	valid := Finding{
+	valid := ops.Finding{
 		Title: "valid line range",
-		Evidence: []Evidence{
+		Evidence: []ops.Evidence{
 			{File: "pkg/worker/worker.go", LineStart: 3, LineEnd: 4},
 		},
 	}
-	if err := ValidateFinding(manifest, repoRoot, valid); err != nil {
+	if err := ops.ValidateFinding(manifest, repoRoot, valid); err != nil {
 		t.Fatalf("valid line-range-only finding rejected: %v", err)
 	}
 
 	cases := []struct {
 		name    string
-		finding Finding
+		finding ops.Finding
 	}{
 		{
 			name: "path not in manifest",
-			finding: Finding{Evidence: []Evidence{
+			finding: ops.Finding{Evidence: []ops.Evidence{
 				{File: "pkg/worker/drain.go", LineStart: 3, LineEnd: 4},
 			}},
 		},
 		{
 			name: "line outside range",
-			finding: Finding{Evidence: []Evidence{
+			finding: ops.Finding{Evidence: []ops.Evidence{
 				{File: "pkg/worker/worker.go", LineStart: 2, LineEnd: 4},
 			}},
 		},
 		{
 			name: "quote not literal",
-			finding: Finding{Evidence: []Evidence{
+			finding: ops.Finding{Evidence: []ops.Evidence{
 				{File: "pkg/worker/worker.go", LineStart: 3, LineEnd: 4, Quote: "invented evidence"},
 			}},
 		},
 		{
 			name: "path escape",
-			finding: Finding{Evidence: []Evidence{
+			finding: ops.Finding{Evidence: []ops.Evidence{
 				{File: "../outside.go", LineStart: 1, LineEnd: 1},
 			}},
 		},
@@ -65,7 +66,7 @@ func TestValidateFinding_RejectsHallucinations(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := ValidateFinding(manifest, repoRoot, tc.finding); err == nil {
+			if err := ops.ValidateFinding(manifest, repoRoot, tc.finding); err == nil {
 				t.Fatalf("ValidateFinding accepted hallucinated finding: %#v", tc.finding)
 			}
 		})
@@ -80,25 +81,25 @@ func TestPartitionFindings(t *testing.T) {
 		"type Finding struct{}",
 	}, "\n"))
 
-	manifest := PromptManifest{
+	manifest := ops.PromptManifest{
 		Shown: map[string][][2]int{
 			"pkg/ops/finding.go": {{1, 3}},
 		},
 	}
-	valid := Finding{
+	valid := ops.Finding{
 		Title: "valid",
-		Evidence: []Evidence{
+		Evidence: []ops.Evidence{
 			{File: "pkg/ops/finding.go", LineStart: 1, LineEnd: 3},
 		},
 	}
-	invalid := Finding{
+	invalid := ops.Finding{
 		Title: "invalid",
-		Evidence: []Evidence{
+		Evidence: []ops.Evidence{
 			{File: "pkg/ops/other.go", LineStart: 1, LineEnd: 1},
 		},
 	}
 
-	kept, dropped := PartitionFindings(manifest, repoRoot, []Finding{valid, invalid})
+	kept, dropped := ops.PartitionFindings(manifest, repoRoot, []ops.Finding{valid, invalid})
 
 	if len(kept) != 1 || kept[0].Title != "valid" {
 		t.Fatalf("kept findings = %#v, want only valid finding", kept)
