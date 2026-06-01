@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"oro/pkg/beadstore"
 	"oro/pkg/beadstore/migrations"
@@ -133,6 +134,78 @@ func TestPersistFindings_WritesJourneyRows(t *testing.T) {
 		if finding.ID == "" || finding.ID != FindingID(beadID, finding) {
 			t.Fatalf("finding id = %q, want content-addressed id", finding.ID)
 		}
+	}
+}
+
+func TestReReviewPreservesTriage(t *testing.T) {
+	ctx := context.Background()
+	store := newFindingTestStore(t)
+	const beadID = "oro-review"
+	if _, err := store.Create(ctx, beadstore.CreateParams{ID: beadID, Title: "review bead"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	incoming := persistedFinding("pkg/ops/finding.go", 10, "same issue")
+	incoming.Detail = "refreshed explanation"
+	incoming.Confidence = 100
+	incoming.ID = FindingID(beadID, incoming)
+
+	prior := incoming
+	prior.Detail = "stale explanation"
+	prior.Confidence = 75
+	prior.Status = "false-positive"
+	prior.History = []FindingHistoryEntry{
+		{Status: "false-positive", Actor: "maintainer", Note: "reviewed and dismissed", At: "2026-05-31T10:00:00Z"},
+	}
+	priorPayload, err := json.Marshal(prior)
+	if err != nil {
+		t.Fatalf("marshal prior finding: %v", err)
+	}
+	if err := store.AppendJourney(ctx, beadID, beadstore.JourneyEvent{
+		Ts:      time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC).Format(time.RFC3339Nano),
+		Actor:   "ops_review",
+		Event:   "review_finding",
+		Payload: string(priorPayload),
+	}); err != nil {
+		t.Fatalf("AppendJourney prior: %v", err)
+	}
+
+	result := mergeReports([]ReviewReport{{
+		Reviewer: "persona:correctness",
+		Verdict:  VerdictRejected,
+		Findings: []Finding{incoming},
+	}}, reviewMergeManifest(), ReviewOpts{
+		BeadID:          beadID,
+		Worktree:        ".",
+		PersistFindings: true,
+		BeadStore:       store,
+	})
+	if result.Err != nil {
+		t.Fatalf("mergeReports: %v", result.Err)
+	}
+	if result.Verdict != VerdictApproved {
+		t.Fatalf("verdict = %q, want %q for triaged false-positive", result.Verdict, VerdictApproved)
+	}
+	if findings := reviewMergeFeedbackFindings(t, result); len(findings) != 0 {
+		t.Fatalf("gate findings = %#v, want none for triaged false-positive", findings)
+	}
+
+	events, err := store.LatestJourney(ctx, beadID, 10)
+	if err != nil {
+		t.Fatalf("LatestJourney: %v", err)
+	}
+	var refreshed Finding
+	if err := json.Unmarshal([]byte(events[len(events)-1].Payload), &refreshed); err != nil {
+		t.Fatalf("unmarshal refreshed finding: %v", err)
+	}
+	if refreshed.Detail != incoming.Detail {
+		t.Fatalf("detail = %q, want refreshed %q", refreshed.Detail, incoming.Detail)
+	}
+	if refreshed.Status != prior.Status {
+		t.Fatalf("status = %q, want preserved %q", refreshed.Status, prior.Status)
+	}
+	if len(refreshed.History) != 1 || refreshed.History[0] != prior.History[0] {
+		t.Fatalf("history = %#v, want preserved %#v", refreshed.History, prior.History)
 	}
 }
 

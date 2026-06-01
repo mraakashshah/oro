@@ -20,11 +20,24 @@ type reviewMergeFeedback struct {
 func mergeReports(reports []ReviewReport, m PromptManifest, opts ReviewOpts) Result {
 	findings := flattenReviewReports(reports)
 	findings, _ = PartitionFindings(m, opts.Worktree, findings)
+	priorFindings, err := priorReviewFindings(context.Background(), opts)
+	if err != nil {
+		return Result{
+			Type:     OpsReview,
+			BeadID:   opts.BeadID,
+			Verdict:  VerdictFailed,
+			Feedback: err.Error(),
+			Err:      err,
+		}
+	}
 
 	groups := dedupFindings(findings)
 	merged := make([]Finding, 0, len(groups))
 	for _, group := range groups {
 		finding := mergeFindingGroup(group, opts.BeadID)
+		if prior, ok := priorFindings[finding.ID]; ok {
+			finding = mergeFinding(prior, finding)
+		}
 		if finding.Origin == "pre_existing" {
 			continue
 		}
@@ -59,6 +72,30 @@ func mergeReports(reports []ReviewReport, m PromptManifest, opts ReviewOpts) Res
 		Verdict:  verdictForFindings(survivors),
 		Feedback: string(feedback),
 	}
+}
+
+func priorReviewFindings(ctx context.Context, opts ReviewOpts) (map[string]Finding, error) {
+	if opts.BeadStore == nil {
+		return nil, nil
+	}
+	events, err := opts.BeadStore.Journey(ctx, opts.BeadID, time.Time{})
+	if err != nil {
+		return nil, fmt.Errorf("load prior review findings: %w", err)
+	}
+	prior := make(map[string]Finding)
+	for _, event := range events {
+		if event.Actor != "ops_review" || event.Event != "review_finding" || event.Payload == "" {
+			continue
+		}
+		var finding Finding
+		if err := json.Unmarshal([]byte(event.Payload), &finding); err != nil {
+			return nil, fmt.Errorf("parse prior review finding: %w", err)
+		}
+		if finding.ID != "" {
+			prior[finding.ID] = finding
+		}
+	}
+	return prior, nil
 }
 
 func persistReviewFindings(ctx context.Context, opts ReviewOpts, findings []Finding) error {
@@ -166,6 +203,13 @@ func mergeFindingGroup(group []Finding, beadID string) Finding {
 	return merged
 }
 
+func mergeFinding(prior, incoming Finding) Finding {
+	merged := incoming
+	merged.Status = prior.Status
+	merged.History = append([]FindingHistoryEntry(nil), prior.History...)
+	return merged
+}
+
 func unionFindingSources(group []Finding) []string {
 	seen := make(map[string]struct{})
 	for _, finding := range group {
@@ -194,11 +238,25 @@ func promoteFindings(findings []Finding) {
 func gateFindings(findings []Finding) []Finding {
 	survivors := make([]Finding, 0, len(findings))
 	for _, finding := range findings {
+		if !findingBlocksGate(finding) {
+			continue
+		}
 		if finding.Confidence >= 75 || finding.Severity == SevCritical && finding.Confidence >= 50 {
 			survivors = append(survivors, finding)
 		}
 	}
 	return survivors
+}
+
+func findingBlocksGate(finding Finding) bool {
+	switch finding.Status {
+	case "", "open", "uncertain":
+		return true
+	case "false-positive", "fixed", "wont-fix":
+		return false
+	default:
+		return true
+	}
 }
 
 func cheapGate(candidates []Finding) (survivors []Finding) {
