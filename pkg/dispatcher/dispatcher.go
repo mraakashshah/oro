@@ -502,7 +502,12 @@ func qualityGateConflictMarkerOutput(scriptPath string) (string, error) {
 			if b.Len() == 0 {
 				b.WriteString("FAIL: quality_gate.sh contains unresolved git conflict markers\n")
 			}
-			fmt.Fprintf(&b, "%s:%d:%s\n", scriptPath, lineNo, line)
+			b.WriteString(scriptPath)
+			b.WriteByte(':')
+			b.WriteString(strconv.Itoa(lineNo))
+			b.WriteByte(':')
+			b.WriteString(line)
+			b.WriteByte('\n')
 		}
 	}
 	if err := scanner.Err(); err != nil {
