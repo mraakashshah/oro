@@ -395,7 +395,6 @@ func TestTmuxLayout(t *testing.T) {
 			t.Error("expected has-session to be called")
 		}
 	})
-
 }
 
 func TestWaitForCommand(t *testing.T) {
