@@ -1458,6 +1458,124 @@ func TestAttach(t *testing.T) {
 	})
 }
 
+func TestSendKeys_SendsEscapeBeforeEnter(t *testing.T) {
+	fake := newFakeCmd()
+	// wakeIfDetached: session is attached, so no resize signal is needed.
+	fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "1"
+
+	sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
+	err := sess.SendKeys("oro:architect", "hello world")
+	if err != nil {
+		t.Fatalf("SendKeys returned error: %v", err)
+	}
+
+	// Find the Escape and Enter send-keys calls, excluding the literal text call.
+	escapeIdx, enterIdx := -1, -1
+	for i, call := range fake.calls {
+		if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
+			lastArg := call[len(call)-1]
+			if lastArg == "Escape" {
+				escapeIdx = i
+			}
+			if lastArg == "Enter" && enterIdx == -1 {
+				enterIdx = i
+			}
+		}
+	}
+
+	if escapeIdx == -1 {
+		t.Fatal("expected Escape send-keys call, got none")
+	}
+	if enterIdx == -1 {
+		t.Fatal("expected Enter send-keys call, got none")
+	}
+	if escapeIdx >= enterIdx {
+		t.Errorf("Escape (call %d) should come before Enter (call %d)", escapeIdx, enterIdx)
+	}
+}
+
+func TestSendKeys_WakesAfterEscapeInDetachedSession(t *testing.T) {
+	fake := newFakeCmd()
+	// Session is detached, so wakeIfDetached should send SIGWINCH.
+	fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "0"
+	fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_pid}")] = "12345"
+
+	sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
+	err := sess.SendKeys("oro:architect", "hello world")
+	if err != nil {
+		t.Fatalf("SendKeys returned error: %v", err)
+	}
+
+	// Find Escape, Enter, and any wake signals between them.
+	escapeIdx, enterIdx := -1, -1
+	for i, call := range fake.calls {
+		if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
+			lastArg := call[len(call)-1]
+			if lastArg == "Escape" {
+				escapeIdx = i
+			}
+			if lastArg == "Enter" && enterIdx == -1 {
+				enterIdx = i
+			}
+		}
+	}
+
+	if escapeIdx == -1 {
+		t.Fatal("expected Escape send-keys call")
+	}
+	if enterIdx == -1 {
+		t.Fatal("expected Enter send-keys call")
+	}
+
+	var wakesBetween int
+	for i := escapeIdx + 1; i < enterIdx; i++ {
+		if len(fake.calls[i]) >= 2 && fake.calls[i][0] == "kill" && fake.calls[i][1] == "-WINCH" {
+			wakesBetween++
+		}
+	}
+	if wakesBetween == 0 {
+		t.Error("expected kill -WINCH between Escape and Enter in detached session")
+	}
+}
+
+func TestWakeIfDetached_SendsSIGWINCH(t *testing.T) {
+	t.Run("detached session sends kill -WINCH to pane PID", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "0"
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_pid}")] = "12345"
+
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
+		sess.wakeIfDetached("oro:architect")
+
+		var killCalls [][]string
+		for _, call := range fake.calls {
+			if len(call) >= 2 && call[0] == "kill" && call[1] == "-WINCH" {
+				killCalls = append(killCalls, call)
+			}
+		}
+		if len(killCalls) != 1 {
+			t.Fatalf("expected 1 kill -WINCH call, got %d: %v", len(killCalls), killCalls)
+		}
+		if killCalls[0][2] != "12345" {
+			t.Errorf("expected PID 12345, got %s", killCalls[0][2])
+		}
+	})
+
+	t.Run("attached session skips wake", func(t *testing.T) {
+		fake := newFakeCmd()
+		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "1"
+
+		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
+		sess.wakeIfDetached("oro:architect")
+
+		for _, call := range fake.calls {
+			if len(call) >= 1 && call[0] == "kill" {
+				t.Error("should not call kill when session is attached")
+			}
+		}
+	})
+}
+
 func TestTmuxStatusBarColor(t *testing.T) {
 	t.Run("Create sets single static manager color (no window-switch hook)", func(t *testing.T) {
 		fake := newFakeCmd()
