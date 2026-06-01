@@ -460,6 +460,11 @@ func (r *ShellQGRunner) Run(ctx context.Context, worktree string, skipMutation b
 	if scriptPath == "" {
 		return false, "", fmt.Errorf("quality gate script not found in scripts/quality_gate.sh or quality_gate.sh")
 	}
+	if output, conflictErr := qualityGateConflictMarkerOutput(scriptPath); conflictErr != nil {
+		return false, "", conflictErr
+	} else if output != "" {
+		return false, output, nil
+	}
 
 	args := []string{scriptPath}
 	if !skipMutation {
@@ -478,6 +483,32 @@ func (r *ShellQGRunner) Run(ctx context.Context, worktree string, skipMutation b
 		return false, output, fmt.Errorf("run quality gate: %w", runErr)
 	}
 	return true, output, nil
+}
+
+func qualityGateConflictMarkerOutput(scriptPath string) (string, error) {
+	file, err := os.Open(scriptPath) //nolint:gosec // path is the selected quality gate script inside a validated worktree.
+	if err != nil {
+		return "", fmt.Errorf("open quality gate script: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+
+	var b strings.Builder
+	scanner := bufio.NewScanner(file)
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := scanner.Text()
+		if strings.HasPrefix(line, "<<<<<<<") || strings.HasPrefix(line, "=======") || strings.HasPrefix(line, ">>>>>>>") {
+			if b.Len() == 0 {
+				b.WriteString("FAIL: quality_gate.sh contains unresolved git conflict markers\n")
+			}
+			fmt.Fprintf(&b, "%s:%d:%s\n", scriptPath, lineNo, line)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("scan quality gate script: %w", err)
+	}
+	return b.String(), nil
 }
 
 func qgRunnerEnv(skipMutation bool, worktree string) []string {

@@ -11403,6 +11403,31 @@ func TestShellQGRunner_DoesNotInheritMutationSkipWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestShellQGRunner_ConflictMarkersFailBeforeBash(t *testing.T) {
+	tmpDir := t.TempDir()
+	script := filepath.Join(tmpDir, "quality_gate.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho before\n<<<<<<< Updated upstream\n=======\n>>>>>>> Stashed changes\necho after\n"), 0o600); err != nil { //nolint:gosec // test script
+		t.Fatal(err)
+	}
+	if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+		t.Fatal(err)
+	}
+
+	passed, output, err := (&ShellQGRunner{}).Run(context.Background(), tmpDir, true)
+	if err != nil {
+		t.Fatalf("ShellQGRunner.Run: %v", err)
+	}
+	if passed {
+		t.Fatalf("expected conflicted QG script to fail")
+	}
+	if !strings.Contains(output, "FAIL: quality_gate.sh contains unresolved git conflict markers") {
+		t.Fatalf("expected conflict marker diagnostic, got: %s", output)
+	}
+	if strings.Contains(output, "syntax error near unexpected token") {
+		t.Fatalf("runner should fail before Bash parser error, got: %s", output)
+	}
+}
+
 func TestShellQGRunner_SkipMutationScrubsRunMutationEnv(t *testing.T) {
 	t.Setenv("ORO_RUN_MUTATION", "1")
 
