@@ -357,7 +357,7 @@ func runFullStart(w io.Writer, workers, maxWorkers int, model, project string, s
 	// 3. Create tmux attach surface. Workers are managed by the daemon; no
 	// manager runtime is launched by default.
 	sess := &TmuxSession{Name: TmuxSessionName(project), Project: project, Runner: tmuxRunner, Sleeper: sleeper, BeaconTimeout: beaconTimeout}
-	if err := sess.Create(""); err != nil {
+	if err := sess.Create(); err != nil {
 		cleanupOrphans()
 		return fmt.Errorf("create tmux session: %w", err)
 	}
@@ -709,7 +709,7 @@ func reconnectTmux(w io.Writer, runner CmdRunner, project string, detach bool, s
 		fmt.Fprintf(w, "session unhealthy — recreating tmux panes\n")
 	}
 
-	if err := sess.Create(""); err != nil {
+	if err := sess.Create(); err != nil {
 		return fmt.Errorf("recreate tmux session: %w", err)
 	}
 

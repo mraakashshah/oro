@@ -192,20 +192,18 @@ func callHasArgPair(call []string, arg, val string) bool {
 func TestTmuxLayout(t *testing.T) {
 	isolateAgentRuntimeConfig(t)
 
-	t.Run("Create builds session with one manager window", func(t *testing.T) {
+	t.Run("Create builds managerless attach session", func(t *testing.T) {
 		fake := newFakeCmd()
 		// has-session returns error (session does not exist)
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fake, "oro", "manager beacon")
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("manager beacon")
+		err := sess.Create()
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
-		sess.WaitBeacon()
 
-		// Verify: new-session was called with -d, -s oro, and -n manager
+		// Verify: new-session was called with -d, -s oro, and -n oro.
 		newSessionCall := findCall(fake.calls, "new-session")
 		if newSessionCall == nil {
 			t.Fatal("expected tmux new-session to be called")
@@ -216,14 +214,14 @@ func TestTmuxLayout(t *testing.T) {
 		if !callHasArgPair(newSessionCall, "-s", "oro") {
 			t.Error("new-session should name the session 'oro'")
 		}
-		if !callHasArgPair(newSessionCall, "-n", "manager") {
-			t.Error("new-session should name the window 'manager'")
+		if !callHasArgPair(newSessionCall, "-n", defaultTmuxWindowName) {
+			t.Errorf("new-session should name the window %q", defaultTmuxWindowName)
 		}
 
-		// Verify: new-window was NOT called (manager-only session has one window)
+		// Verify: new-window was NOT called (managerless attach surface has one window)
 		for _, call := range fake.calls {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "new-window" {
-				t.Error("new-window should not be called (manager-only session)")
+				t.Error("new-window should not be called")
 			}
 		}
 
@@ -246,7 +244,7 @@ func TestTmuxLayout(t *testing.T) {
 		fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_current_command}")] = "claude"
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
-		err := sess.Create("manager beacon")
+		err := sess.Create()
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
@@ -328,139 +326,31 @@ func TestTmuxLayout(t *testing.T) {
 		}
 	})
 
-	t.Run("Create sends commands to manager window", func(t *testing.T) {
+	t.Run("Create does not launch manager runtime", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fake, "oro", "manager nudge text")
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("manager nudge text")
+		err := sess.Create()
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
-		sess.WaitBeacon()
 
-		// Verify send-keys was called for manager window (nudge only, no launch):
-		// - manager: nudge literal + Escape + Enter (3)
-		// That's 3 send-keys calls total (1×3 nudge). No launch send-keys with exec-env.
-		sendKeysCount := 0
-		for _, call := range fake.calls {
-			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
-				sendKeysCount++
-			}
-		}
-		if sendKeysCount < 3 {
-			t.Errorf("expected at least 3 send-keys calls (1×3 nudge), got %d", sendKeysCount)
-		}
-	})
-
-	t.Run("Create launches interactive claude with role env vars via exec env", func(t *testing.T) {
-		fake := newFakeCmd()
-		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fake, "oro", "manager nudge")
-
-		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("manager nudge")
-		if err != nil {
-			t.Fatalf("Create returned error: %v", err)
-		}
-		sess.WaitBeacon()
-
-		// Manager: verify new-session command has exec env with role env vars.
 		newSessionCall := findCall(fake.calls, "new-session")
 		if newSessionCall == nil {
 			t.Fatal("expected tmux new-session to be called")
 		}
-		mgrCmd := newSessionCall[len(newSessionCall)-1]
-		for _, envVar := range []string{"ORO_ROLE=manager", "BD_ACTOR=manager", "GIT_AUTHOR_NAME=manager"} {
-			if !strings.Contains(mgrCmd, envVar) {
-				t.Errorf("new-session command should set %s, got: %s", envVar, mgrCmd)
+		for _, arg := range newSessionCall {
+			if strings.Contains(arg, "claude") || strings.Contains(arg, "codex") || strings.Contains(arg, "ORO_ROLE=manager") {
+				t.Errorf("managerless new-session should not launch a manager runtime, got: %v", newSessionCall)
 			}
-		}
-		if !strings.Contains(mgrCmd, "claude") {
-			t.Errorf("new-session command should run claude, got: %s", mgrCmd)
-		}
-		if strings.Contains(mgrCmd, "claude -p") {
-			t.Errorf("should use interactive claude, not 'claude -p', got: %s", mgrCmd)
-		}
-	})
-
-	t.Run("Create launches interactive codex when codex runtime is configured", func(t *testing.T) {
-		t.Setenv(agentRuntimeEnvVar, runtimeCodex)
-
-		fake := newFakeCmd()
-		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubCodexPaneReady(fake, "oro", "manager nudge")
-
-		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("manager nudge")
-		if err != nil {
-			t.Fatalf("Create returned error: %v", err)
-		}
-		sess.WaitBeacon()
-
-		// Manager: verify new-session runs codex without CLAUDE_CONFIG_DIR.
-		newSessionCall := findCall(fake.calls, "new-session")
-		if newSessionCall == nil {
-			t.Fatal("expected tmux new-session to be called")
-		}
-		mgrCmd := newSessionCall[len(newSessionCall)-1]
-		if !strings.Contains(mgrCmd, " codex") {
-			t.Errorf("new-session command should run codex, got: %s", mgrCmd)
-		}
-		if strings.Contains(mgrCmd, "CLAUDE_CONFIG_DIR=") {
-			t.Errorf("new-session command should avoid CLAUDE_CONFIG_DIR for codex, got: %s", mgrCmd)
 		}
 
 		// Verify new-window was NOT called.
 		for _, call := range fake.calls {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "new-window" {
-				t.Error("new-window should not be called (manager-only session)")
+				t.Error("new-window should not be called")
 			}
-		}
-	})
-
-	t.Run("Create injects nudge via SendKeys (literal + wake + debounce + Enter)", func(t *testing.T) {
-		fake := newFakeCmd()
-		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fake, "oro", "manager nudge text here")
-
-		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("manager nudge text here")
-		if err != nil {
-			t.Fatalf("Create returned error: %v", err)
-		}
-		sess.WaitBeacon()
-
-		// Collect send-keys calls for manager window.
-		var managerCalls [][]string
-		for _, call := range fake.calls {
-			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
-				joined := strings.Join(call, " ")
-				if strings.Contains(joined, "oro:manager") {
-					managerCalls = append(managerCalls, call)
-				}
-			}
-		}
-
-		// Manager: literal -l (0) + Escape (1) + Enter (2) = 3 send-keys calls (no launch).
-		if len(managerCalls) < 3 {
-			t.Fatalf("expected at least 3 send-keys to manager window, got %d", len(managerCalls))
-		}
-		mgrNudge := strings.Join(managerCalls[0], " ")
-		if !strings.Contains(mgrNudge, "-l") {
-			t.Errorf("manager nudge should use literal mode (-l), got: %s", mgrNudge)
-		}
-		if !strings.Contains(mgrNudge, "manager nudge text here") {
-			t.Errorf("manager nudge should contain nudge text, got: %s", mgrNudge)
-		}
-		mgrEscape := strings.Join(managerCalls[1], " ")
-		if !strings.Contains(mgrEscape, "Escape") {
-			t.Errorf("manager nudge should send Escape before Enter, got: %s", mgrEscape)
-		}
-		mgrEnter := strings.Join(managerCalls[2], " ")
-		if !strings.Contains(mgrEnter, "Enter") {
-			t.Errorf("manager nudge should send Enter separately, got: %s", mgrEnter)
 		}
 	})
 
@@ -506,47 +396,6 @@ func TestTmuxLayout(t *testing.T) {
 		}
 	})
 
-	t.Run("Create polls prompt readiness before injecting beacon", func(t *testing.T) {
-		fake := newFakeCmd()
-		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fake, "oro", "manager beacon")
-
-		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("manager beacon")
-		if err != nil {
-			t.Fatalf("Create returned error: %v", err)
-		}
-		sess.WaitBeacon()
-
-		// Verify capture-pane was called for manager window (WaitForPrompt).
-		var checkedManager bool
-		for _, call := range fake.calls {
-			joined := strings.Join(call, " ")
-			if strings.Contains(joined, "capture-pane") && strings.Contains(joined, "oro:manager") {
-				checkedManager = true
-			}
-		}
-		if !checkedManager {
-			t.Error("expected capture-pane to be called for manager window")
-		}
-	})
-
-	t.Run("Create times out when Claude prompt never appears", func(t *testing.T) {
-		fake := newFakeCmd()
-		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		// capture-pane never shows prompt indicator — Claude never becomes ready.
-		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = "loading..."
-
-		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: 50 * time.Millisecond}
-		err := sess.Create("manager beacon")
-		if err == nil {
-			t.Fatal("expected timeout error, got nil")
-		}
-		sess.WaitBeacon()
-		if !strings.Contains(err.Error(), "prompt") {
-			t.Errorf("expected 'prompt' in error, got: %v", err)
-		}
-	})
 }
 
 func TestWaitForCommand(t *testing.T) {
@@ -811,65 +660,6 @@ func TestVerifyBeaconReceived(t *testing.T) {
 		if err != nil {
 			t.Fatalf("VerifyBeaconReceived returned error: %v", err)
 		}
-	})
-}
-
-func TestCreateVerifiesBeaconAfterInjection(t *testing.T) {
-	t.Run("Create calls VerifyBeaconReceived for manager window after injection", func(t *testing.T) {
-		fake := newFakeCmd()
-		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fake, "oro", "manager nudge")
-
-		// capture-pane is used by WaitForPrompt (needs ❯), SendKeysVerified
-		// (needs nudge text), and VerifyBeaconReceived (needs "oro task status").
-		managerCapture := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
-		fake.seqOut[managerCapture] = []string{
-			"Welcome\n❯ \nstatus bar",              // WaitForPrompt
-			"Welcome\n❯ manager nudge\nstatus bar", // SendKeysVerified
-			"oro task status\n❯ output visible\n",  // VerifyBeaconReceived
-		}
-
-		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: time.Second}
-		err := sess.Create("manager nudge")
-		if err != nil {
-			t.Fatalf("Create returned error: %v", err)
-		}
-		sess.WaitBeacon()
-
-		// Verify that capture-pane was called for manager (WaitForPrompt + SendKeysVerified + VerifyBeacon).
-		managerCaptureCount := 0
-		for _, call := range fake.calls {
-			joined := strings.Join(call, " ")
-			if strings.Contains(joined, "capture-pane") && strings.Contains(joined, "oro:manager") {
-				managerCaptureCount++
-			}
-		}
-		if managerCaptureCount < 3 {
-			t.Errorf("expected at least 3 capture-pane calls for manager (WaitForPrompt + SendKeysVerified + VerifyBeacon), got %d", managerCaptureCount)
-		}
-	})
-
-	t.Run("Create does not fail when nudge verification times out (warning only)", func(t *testing.T) {
-		fake := newFakeCmd()
-		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubPaneReady(fake, "oro", "manager nudge")
-
-		// capture-pane is used by WaitForPrompt (needs ❯), SendKeysVerified
-		// (needs nudge text), then VerifyBeaconReceived (beacon not found → timeout).
-		managerCapture := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
-		fake.seqOut[managerCapture] = []string{
-			"Welcome\n❯ \nstatus bar",              // WaitForPrompt succeeds
-			"Welcome\n❯ manager nudge\nstatus bar", // SendKeysVerified succeeds
-			"no beacon output",                     // VerifyBeaconReceived times out
-		}
-
-		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		// Create should succeed even if nudge verification fails — it's a warning
-		err := sess.Create("manager nudge")
-		if err != nil {
-			t.Fatalf("Create should not fail on nudge verification timeout, got: %v", err)
-		}
-		sess.WaitBeacon()
 	})
 }
 
@@ -1679,225 +1469,6 @@ func TestAttach(t *testing.T) {
 	})
 }
 
-func TestCreate_KillsZombieSession(t *testing.T) {
-	t.Run("kills and recreates session when manager pane shows shell", func(t *testing.T) {
-		fake := newFakeCmd()
-
-		// has-session succeeds (session exists).
-		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
-
-		// Create checks manager pane_current_command: returns shell (zombie).
-		fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_current_command}")] = "zsh"
-
-		// wakeIfDetached session_attached check after recreation.
-		fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{session_attached}")] = "1"
-
-		// capture-pane for WaitForPrompt + SendKeysVerified + VerifyBeacon after recreation.
-		fake.seqOut[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = []string{
-			"Welcome\n❯ \nstatus bar",              // WaitForPrompt
-			"Welcome\n❯ manager nudge\nstatus bar", // SendKeysVerified
-			"oro task status\n❯ output\n",          // VerifyBeaconReceived
-		}
-
-		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: time.Second}
-		err := sess.Create("manager nudge")
-		if err != nil {
-			t.Fatalf("Create returned error: %v", err)
-		}
-		sess.WaitBeacon()
-
-		// Verify kill-session was called.
-		var killedSession bool
-		for _, call := range fake.calls {
-			if len(call) >= 3 && call[1] == "kill-session" && call[3] == "oro" {
-				killedSession = true
-				break
-			}
-		}
-		if !killedSession {
-			t.Error("expected kill-session to be called for zombie session")
-		}
-	})
-
-	t.Run("keeps session when Claude is running in manager pane", func(t *testing.T) {
-		fake := newFakeCmd()
-		// Session exists.
-		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
-
-		// Manager pane shows Claude (healthy session).
-		fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_current_command}")] = "claude"
-
-		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
-		err := sess.Create("manager nudge")
-		if err != nil {
-			t.Fatalf("Create returned error: %v", err)
-		}
-		sess.WaitBeacon()
-
-		// Verify kill-session was NOT called.
-		for _, call := range fake.calls {
-			if len(call) >= 2 && call[1] == "kill-session" {
-				t.Error("should NOT kill-session when Claude is running")
-			}
-		}
-
-		// Verify new-session was NOT called (reused existing).
-		for _, call := range fake.calls {
-			if len(call) >= 2 && call[1] == "new-session" {
-				t.Error("should NOT create new session when Claude is running")
-			}
-		}
-	})
-
-	t.Run("keeps session when Codex is running in manager pane", func(t *testing.T) {
-		t.Setenv(agentRuntimeEnvVar, runtimeCodex)
-
-		fake := newFakeCmd()
-		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
-		fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_current_command}")] = "codex"
-
-		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
-		err := sess.Create("manager nudge")
-		if err != nil {
-			t.Fatalf("Create returned error: %v", err)
-		}
-		sess.WaitBeacon()
-
-		for _, call := range fake.calls {
-			if len(call) >= 2 && call[1] == "kill-session" {
-				t.Error("should NOT kill-session when Codex is running")
-			}
-			if len(call) >= 2 && call[1] == "new-session" {
-				t.Error("should NOT create new session when Codex is running")
-			}
-		}
-	})
-}
-
-func TestSendKeys_SendsEscapeBeforeEnter(t *testing.T) {
-	fake := newFakeCmd()
-	// wakeIfDetached: session is attached (no resize needed)
-	fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "1"
-
-	sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
-	err := sess.SendKeys("oro:architect", "hello world")
-	if err != nil {
-		t.Fatalf("SendKeys returned error: %v", err)
-	}
-
-	// Find the Escape and Enter send-keys calls (not the literal text one)
-	var escapeIdx, enterIdx int
-	escapeIdx, enterIdx = -1, -1
-	for i, call := range fake.calls {
-		if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
-			lastArg := call[len(call)-1]
-			if lastArg == "Escape" {
-				escapeIdx = i
-			}
-			if lastArg == "Enter" && enterIdx == -1 {
-				enterIdx = i
-			}
-		}
-	}
-
-	if escapeIdx == -1 {
-		t.Fatal("expected Escape send-keys call, got none")
-	}
-	if enterIdx == -1 {
-		t.Fatal("expected Enter send-keys call, got none")
-	}
-	if escapeIdx >= enterIdx {
-		t.Errorf("Escape (call %d) should come before Enter (call %d)", escapeIdx, enterIdx)
-	}
-}
-
-func TestSendKeys_WakesAfterEscapeInDetachedSession(t *testing.T) {
-	fake := newFakeCmd()
-	// Session is detached — wakeIfDetached should send SIGWINCH.
-	fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "0"
-	fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_pid}")] = "12345"
-
-	sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
-	err := sess.SendKeys("oro:architect", "hello world")
-	if err != nil {
-		t.Fatalf("SendKeys returned error: %v", err)
-	}
-
-	// Find indices of: Escape send-keys, the kill -WINCH calls after Escape
-	// (wake after Escape), and Enter send-keys.
-	var escapeIdx, enterIdx int
-	escapeIdx, enterIdx = -1, -1
-	for i, call := range fake.calls {
-		if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
-			lastArg := call[len(call)-1]
-			if lastArg == "Escape" {
-				escapeIdx = i
-			}
-			if lastArg == "Enter" && enterIdx == -1 {
-				enterIdx = i
-			}
-		}
-	}
-
-	if escapeIdx == -1 {
-		t.Fatal("expected Escape send-keys call")
-	}
-	if enterIdx == -1 {
-		t.Fatal("expected Enter send-keys call")
-	}
-
-	// There must be a kill -WINCH (SIGWINCH wake) between Escape and Enter
-	// so Ink processes Escape before Enter arrives.
-	var wakesBetween int
-	for i := escapeIdx + 1; i < enterIdx; i++ {
-		if len(fake.calls[i]) >= 2 && fake.calls[i][0] == "kill" && fake.calls[i][1] == "-WINCH" {
-			wakesBetween++
-		}
-	}
-	if wakesBetween == 0 {
-		t.Error("expected kill -WINCH between Escape and Enter in detached session")
-	}
-}
-
-func TestWakeIfDetached_SendsSIGWINCH(t *testing.T) {
-	t.Run("detached session sends kill -WINCH to pane PID", func(t *testing.T) {
-		fake := newFakeCmd()
-		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "0"
-		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{pane_pid}")] = "12345"
-
-		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
-		sess.wakeIfDetached("oro:architect")
-
-		// Should call kill -WINCH 12345.
-		var killCalls [][]string
-		for _, call := range fake.calls {
-			if len(call) >= 2 && call[0] == "kill" && call[1] == "-WINCH" {
-				killCalls = append(killCalls, call)
-			}
-		}
-		if len(killCalls) != 1 {
-			t.Fatalf("expected 1 kill -WINCH call, got %d: %v", len(killCalls), killCalls)
-		}
-		if killCalls[0][2] != "12345" {
-			t.Errorf("expected PID 12345, got %s", killCalls[0][2])
-		}
-	})
-
-	t.Run("attached session skips wake", func(t *testing.T) {
-		fake := newFakeCmd()
-		fake.output[key("tmux", "display-message", "-p", "-t", "oro:architect", "#{session_attached}")] = "1"
-
-		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
-		sess.wakeIfDetached("oro:architect")
-
-		for _, call := range fake.calls {
-			if len(call) >= 1 && call[0] == "kill" {
-				t.Error("should not call kill when session is attached")
-			}
-		}
-	})
-}
-
 func TestTmuxStatusBarColor(t *testing.T) {
 	t.Run("Create sets single static manager color (no window-switch hook)", func(t *testing.T) {
 		fake := newFakeCmd()
@@ -1905,7 +1476,7 @@ func TestTmuxStatusBarColor(t *testing.T) {
 		stubPaneReady(fake, "oro", "manager nudge")
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("manager nudge")
+		err := sess.Create()
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
@@ -1932,115 +1503,6 @@ func TestTmuxStatusBarColor(t *testing.T) {
 				if strings.Contains(joined, "after-select-window") {
 					t.Errorf("must not set after-select-window hook (single static color), got: %s", joined)
 				}
-			}
-		}
-	})
-}
-
-func TestCreate_ExecEnvPattern(t *testing.T) {
-	isolateAgentRuntimeConfig(t)
-
-	// stubExecEnvReady stubs only WaitForPrompt + SendKeysVerified for exec-env
-	// pattern (no WaitForCommand needed since Claude IS the initial process).
-	stubExecEnvReady := func(fake *fakeCmd, sessionName, sessionNudge string) {
-		mgrCapture := key("tmux", "capture-pane", "-p", "-t", sessionName+":manager")
-		fake.seqOut[mgrCapture] = []string{
-			"Welcome\n❯ \nstatus bar",                     // WaitForPrompt
-			"Welcome\n❯ " + sessionNudge + "\nstatus bar", // SendKeysVerified
-		}
-	}
-
-	t.Run("new-session receives exec env command as last arg", func(t *testing.T) {
-		fake := newFakeCmd()
-		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubExecEnvReady(fake, "oro", "manager nudge")
-
-		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("manager nudge")
-		if err != nil {
-			t.Fatalf("Create returned error: %v", err)
-		}
-		sess.WaitBeacon()
-
-		// Verify new-session has exec env command for manager as last arg.
-		newSessionCall := findCall(fake.calls, "new-session")
-		if newSessionCall == nil {
-			t.Fatal("expected tmux new-session to be called")
-		}
-		lastArg := newSessionCall[len(newSessionCall)-1]
-		if !strings.Contains(lastArg, "exec env") {
-			t.Errorf("new-session last arg should contain 'exec env', got: %s", lastArg)
-		}
-		if !strings.Contains(lastArg, "ORO_ROLE=manager") {
-			t.Errorf("new-session command should set ORO_ROLE=manager, got: %s", lastArg)
-		}
-		if !strings.Contains(lastArg, "claude") {
-			t.Errorf("new-session command should launch claude, got: %s", lastArg)
-		}
-
-		// Verify fixed execEnvCmd: no --session-id, no --ide
-		if strings.Contains(lastArg, "--session-id") {
-			t.Errorf("new-session command should NOT contain --session-id (was removed), got: %s", lastArg)
-		}
-		if strings.Contains(lastArg, "--ide") {
-			t.Errorf("new-session command should NOT contain --ide (was removed), got: %s", lastArg)
-		}
-
-		// Verify exact format: exec env ORO_ROLE=manager BD_ACTOR=manager GIT_AUTHOR_NAME=manager claude
-		expectedMgr := execEnvCmd("manager", "")
-		if lastArg != expectedMgr {
-			t.Errorf("new-session exec env command mismatch:\nwant: %s\ngot:  %s", expectedMgr, lastArg)
-		}
-
-		// Verify new-window was NOT called.
-		for _, call := range fake.calls {
-			if len(call) >= 2 && call[0] == "tmux" && call[1] == "new-window" {
-				t.Error("new-window should not be called (manager-only session)")
-			}
-		}
-	})
-
-	t.Run("no send-keys for launch (exec env eliminates shell phase)", func(t *testing.T) {
-		fake := newFakeCmd()
-		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubExecEnvReady(fake, "oro", "mgr nudge")
-
-		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("mgr nudge")
-		if err != nil {
-			t.Fatalf("Create returned error: %v", err)
-		}
-		sess.WaitBeacon()
-
-		// No send-keys should contain export or execEnvCmd patterns.
-		for _, call := range fake.calls {
-			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
-				joined := strings.Join(call, " ")
-				if strings.Contains(joined, "export ORO_ROLE") {
-					t.Errorf("should not send-keys with shell export command (exec env eliminates this), got: %s", joined)
-				}
-			}
-		}
-	})
-
-	t.Run("no WaitForCommand polling (Claude is initial process)", func(t *testing.T) {
-		fake := newFakeCmd()
-		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		stubExecEnvReady(fake, "oro", "mgr nudge")
-
-		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("mgr nudge")
-		if err != nil {
-			t.Fatalf("Create returned error: %v", err)
-		}
-		sess.WaitBeacon()
-
-		// No display-message calls for pane_current_command during Create
-		// (health check is only on pre-existing sessions, not fresh creation).
-		for _, call := range fake.calls {
-			joined := strings.Join(call, " ")
-			if strings.Contains(joined, "display-message") && strings.Contains(joined, "pane_current_command") {
-				t.Errorf("should not poll pane_current_command during fresh Create with exec env, got: %s", joined)
 			}
 		}
 	})
@@ -2315,10 +1777,10 @@ func TestCreate_CleansUpOnPartialFailure(t *testing.T) {
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		// new-session succeeds (default: no error)
 		// set-option fails during configureSessionOptions
-		fake.errs[key("tmux", "set-option", "-t", "oro", "status-style", "bg=colour46,fg=black")] = fmt.Errorf("set-option failed")
+		fake.errs[key("tmux", "set-option", "-t", "oro", "status-style", "bg=colour208,fg=black")] = fmt.Errorf("set-option failed")
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second}
-		err := sess.Create("manager nudge")
+		err := sess.Create()
 		if err == nil {
 			t.Fatal("expected error from Create when configureSessionOptions fails, got nil")
 		}
@@ -2334,34 +1796,6 @@ func TestCreate_CleansUpOnPartialFailure(t *testing.T) {
 		}
 		if !killedSession {
 			t.Error("expected kill-session to be called for cleanup after configureSessionOptions failure")
-		}
-	})
-
-	t.Run("when WaitForPrompt fails, kill-session is called", func(t *testing.T) {
-		fake := newFakeCmd()
-		// has-session returns error (no session exists)
-		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		// new-session succeeds (default: no error)
-		// capture-pane never shows prompt indicator — WaitForPrompt times out.
-		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = "loading..."
-
-		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: 50 * time.Millisecond}
-		err := sess.Create("manager nudge")
-		if err == nil {
-			t.Fatal("expected error from Create when WaitForPrompt times out, got nil")
-		}
-		sess.WaitBeacon()
-
-		// Verify kill-session was called to clean up the session.
-		var killedSession bool
-		for _, call := range fake.calls {
-			if len(call) >= 4 && call[0] == "tmux" && call[1] == "kill-session" && call[2] == "-t" && call[3] == "oro" {
-				killedSession = true
-				break
-			}
-		}
-		if !killedSession {
-			t.Error("expected kill-session to be called for cleanup after WaitForPrompt timeout")
 		}
 	})
 }
@@ -2549,7 +1983,7 @@ func TestStatusBarLabels(t *testing.T) {
 		stubPaneReady(fake, "oro", "manager nudge")
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("manager nudge")
+		err := sess.Create()
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
@@ -2588,7 +2022,7 @@ func TestScrollbackConfiguration(t *testing.T) {
 		stubPaneReady(fake, "oro", "manager nudge")
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("manager nudge")
+		err := sess.Create()
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
@@ -2622,7 +2056,7 @@ func TestMouseModeEnabled(t *testing.T) {
 		stubPaneReady(fake, "oro", "manager nudge")
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("manager nudge")
+		err := sess.Create()
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
@@ -2656,7 +2090,7 @@ func TestRemainOnExit(t *testing.T) {
 		stubPaneReady(fake, "oro", "manager nudge")
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("manager nudge")
+		err := sess.Create()
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
@@ -2716,7 +2150,7 @@ func TestStatusBarShowsQuitHint(t *testing.T) {
 	stubPaneReady(fake, "oro", "manager nudge")
 
 	sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-	err := sess.Create("manager nudge")
+	err := sess.Create()
 	if err != nil {
 		t.Fatalf("Create returned error: %v", err)
 	}
@@ -2773,7 +2207,7 @@ func TestCreateAsyncBeacon(t *testing.T) {
 		}
 
 		start := time.Now()
-		err := sess.Create("mgr nudge")
+		err := sess.Create()
 		elapsed := time.Since(start)
 		if err != nil {
 			t.Fatalf("Create should not fail on beacon timeout (warning only), got: %v", err)
@@ -2789,111 +2223,11 @@ func TestCreateAsyncBeacon(t *testing.T) {
 	})
 }
 
-func TestCreateWithManagerOnly(t *testing.T) {
-	t.Run("creates session with exactly one window named manager", func(t *testing.T) {
-		fake := newFakeCmd()
-		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		mgrCapture := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
-		fake.seqOut[mgrCapture] = []string{
-			"Welcome\n❯ \nstatus bar",              // WaitForPrompt
-			"Welcome\n❯ manager nudge\nstatus bar", // SendKeysVerified
-			"oro task status\nrunning\n",           // VerifyBeaconReceived (async)
-		}
-
-		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("manager nudge")
-		if err != nil {
-			t.Fatalf("Create returned error: %v", err)
-		}
-		sess.WaitBeacon()
-
-		newSessionCall := findCall(fake.getCalls(), "new-session")
-		if newSessionCall == nil {
-			t.Fatal("expected tmux new-session to be called")
-		}
-		if !callHasArgPair(newSessionCall, "-n", "manager") {
-			t.Error("new-session should name the first window 'manager'")
-		}
-		if !callHasArg(newSessionCall, "-d") {
-			t.Error("new-session should be detached (-d)")
-		}
-
-		for _, call := range fake.getCalls() {
-			if len(call) >= 2 && call[0] == "tmux" && call[1] == "new-window" {
-				t.Error("Create must not call new-window (only one window)")
-			}
-		}
-	})
-
-	t.Run("no-op when session already exists and manager is healthy", func(t *testing.T) {
-		fake := newFakeCmd()
-		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
-		fake.output[key("tmux", "display-message", "-p", "-t", "oro:manager", "#{pane_current_command}")] = "claude"
-
-		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep}
-		err := sess.Create("manager nudge")
-		if err != nil {
-			t.Fatalf("Create should return nil for healthy session, got: %v", err)
-		}
-
-		for _, call := range fake.getCalls() {
-			if len(call) >= 2 && call[0] == "tmux" && call[1] == "new-session" {
-				t.Error("should not create new session when one already exists and is healthy")
-			}
-		}
-	})
-
-	t.Run("empty nudge creates session without sending keys", func(t *testing.T) {
-		fake := newFakeCmd()
-		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		mgrCapture := key("tmux", "capture-pane", "-p", "-t", "oro:manager")
-		fake.seqOut[mgrCapture] = []string{
-			"Welcome\n❯ \nstatus bar",    // WaitForPrompt
-			"oro task status\nrunning\n", // VerifyBeaconReceived (async)
-		}
-
-		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("")
-		if err != nil {
-			t.Fatalf("Create with empty nudge returned error: %v", err)
-		}
-		sess.WaitBeacon()
-
-		newSessionCall := findCall(fake.getCalls(), "new-session")
-		if newSessionCall == nil {
-			t.Fatal("expected tmux new-session to be called")
-		}
-
-		for _, call := range fake.getCalls() {
-			if len(call) >= 2 && call[0] == "tmux" && call[1] == "send-keys" {
-				t.Errorf("expected no send-keys calls for empty nudge, got: %v", call)
-			}
-		}
-	})
-
-	t.Run("propagates error when manager prompt never appears", func(t *testing.T) {
-		fake := newFakeCmd()
-		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
-		fake.output[key("tmux", "capture-pane", "-p", "-t", "oro:manager")] = "loading..."
-
-		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: 50 * time.Millisecond}
-		err := sess.Create("manager nudge")
-		if err == nil {
-			t.Fatal("expected timeout error, got nil")
-		}
-		sess.WaitBeacon()
-		if !strings.Contains(err.Error(), "prompt") {
-			t.Errorf("expected 'prompt' in error, got: %v", err)
-		}
-	})
-}
-
 // TestCreateSingleSignature is a compile-time assertion that TmuxSession.Create
-// has exactly one parameter (sessionNudge string) and returns error.
-// If Create has two parameters, this file will not compile.
+// has no parameters and returns error.
 func TestCreateSingleSignature(t *testing.T) {
 	var _ interface {
-		Create(string) error
+		Create() error
 	} = (*TmuxSession)(nil)
 }
 
@@ -2976,7 +2310,7 @@ func TestCreateMigratesPreCollapseSession(t *testing.T) {
 			ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond,
 			Output: &buf,
 		}
-		err := sess.Create("nudge")
+		err := sess.Create()
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
@@ -3000,7 +2334,7 @@ func TestCreateMigratesPreCollapseSession(t *testing.T) {
 		}
 	})
 
-	t.Run("early return without kill when session has manager-only and is healthy", func(t *testing.T) {
+	t.Run("migrates legacy manager-only session", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.output[key("tmux", "has-session", "-t", "oro")] = ""
 		fake.output[key("tmux", "list-windows", "-t", "oro", "-F", "#{window_name}")] = "manager"
@@ -3008,21 +2342,28 @@ func TestCreateMigratesPreCollapseSession(t *testing.T) {
 
 		var buf strings.Builder
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, Output: &buf}
-		err := sess.Create("nudge")
+		err := sess.Create()
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
 
+		var killed, recreated bool
 		for _, call := range fake.getCalls() {
 			if len(call) >= 2 && call[1] == "kill-session" {
-				t.Error("should not kill session when not pre-collapse and manager is healthy")
+				killed = true
 			}
 			if len(call) >= 2 && call[1] == "new-session" {
-				t.Error("should not create new session when not pre-collapse and manager is healthy")
+				recreated = true
 			}
 		}
-		if strings.Contains(buf.String(), "migrat") {
-			t.Errorf("should not print migration message for non-pre-collapse session, got: %q", buf.String())
+		if !killed {
+			t.Error("expected kill-session for legacy manager-only session")
+		}
+		if !recreated {
+			t.Error("expected new-session after killing legacy manager-only session")
+		}
+		if !strings.Contains(buf.String(), "migrat") {
+			t.Errorf("expected migration message for legacy manager-only session, got: %q", buf.String())
 		}
 	})
 
@@ -3041,7 +2382,7 @@ func TestCreateMigratesPreCollapseSession(t *testing.T) {
 			ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond,
 			Output: &buf,
 		}
-		err := sess.Create("nudge")
+		err := sess.Create()
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
@@ -3082,13 +2423,13 @@ func TestVerifyBeaconReceivedUsesTaskTerminology(t *testing.T) {
 }
 
 func TestSingleWindowLayout(t *testing.T) {
-	t.Run("session has exactly one window named manager", func(t *testing.T) {
+	t.Run("session has exactly one managerless window", func(t *testing.T) {
 		fake := newFakeCmd()
 		fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 		stubPaneReady(fake, "oro", "nudge")
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("nudge")
+		err := sess.Create()
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
@@ -3098,8 +2439,8 @@ func TestSingleWindowLayout(t *testing.T) {
 		if newSessionCall == nil {
 			t.Fatal("expected tmux new-session to be called")
 		}
-		if !callHasArgPair(newSessionCall, "-n", "manager") {
-			t.Error("session window must be named 'manager'")
+		if !callHasArgPair(newSessionCall, "-n", defaultTmuxWindowName) {
+			t.Errorf("session window must be named %q", defaultTmuxWindowName)
 		}
 		for _, call := range fake.calls {
 			if len(call) >= 2 && call[0] == "tmux" && call[1] == "new-window" {
@@ -3181,7 +2522,7 @@ func TestSingleWindowLayout(t *testing.T) {
 		stubPaneReady(fake, "oro", "nudge")
 
 		sess := &TmuxSession{Name: TmuxSessionName(""), Runner: fake, Sleeper: noopSleep, ReadyTimeout: time.Second, BeaconTimeout: 50 * time.Millisecond}
-		err := sess.Create("nudge")
+		err := sess.Create()
 		if err != nil {
 			t.Fatalf("Create returned error: %v", err)
 		}
