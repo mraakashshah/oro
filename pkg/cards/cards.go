@@ -19,6 +19,9 @@ var ErrInvalidCardType = errors.New("invalid card type")
 // ErrAlreadyResolved is returned when a pending learning was already promoted or rejected.
 var ErrAlreadyResolved = errors.New("learning already resolved")
 
+// ErrCycleDetected is returned when a card lineage traversal finds a cycle.
+var ErrCycleDetected = errors.New("card lineage cycle detected")
+
 // CardType is the closed enum of card types.
 type CardType string
 

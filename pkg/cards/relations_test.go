@@ -3,6 +3,8 @@ package cards_test
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"reflect"
 	"testing"
 
 	"oro/pkg/cards"
@@ -99,6 +101,97 @@ func TestSeeAlso_CycleSafe(t *testing.T) {
 	assertCardIDs(t, got, []string{second.ID})
 }
 
+func TestLineage_CycleDetected(t *testing.T) {
+	ctx := context.Background()
+	store, db := newRelationTestStore(t)
+	first := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "First",
+		BodySummary: "first summary",
+		BodyFull:    "first body",
+	})
+	second := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "Second",
+		BodySummary: "second summary",
+		BodyFull:    "second body",
+	})
+
+	setSupersededBy(t, db, first.ID, second.ID)
+	setSupersededBy(t, db, second.ID, first.ID)
+
+	if _, err := store.Lineage(ctx, first.ID); !errors.Is(err, cards.ErrCycleDetected) {
+		t.Fatalf("lineage error = %v, want ErrCycleDetected", err)
+	}
+}
+
+func TestLatestInChain_ReturnsTip(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newRelationTestStore(t)
+	first := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "Original",
+		BodySummary: "original summary",
+		BodyFull:    "original body",
+	})
+	second := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "Revision",
+		BodySummary: "revision summary",
+		BodyFull:    "revision body",
+	})
+	tip := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "Tip",
+		BodySummary: "tip summary",
+		BodyFull:    "tip body",
+	})
+
+	if err := store.Retire(ctx, first.ID, "superseded", second.ID); err != nil {
+		t.Fatalf("retire first: %v", err)
+	}
+	if err := store.Retire(ctx, second.ID, "superseded", tip.ID); err != nil {
+		t.Fatalf("retire second: %v", err)
+	}
+
+	got, err := store.LatestInChain(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("latest in chain: %v", err)
+	}
+	if got.ID != tip.ID {
+		t.Fatalf("latest id = %s, want %s", got.ID, tip.ID)
+	}
+	if got.RetiredAt != nil {
+		t.Fatal("latest card is retired, want active tip")
+	}
+}
+
+func TestParseWikilinks_Extracts(t *testing.T) {
+	got := cards.ParseWikilinks("see [[Foo]] and [[Bar/Baz]]")
+	want := []string{"Foo", "Bar/Baz"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ParseWikilinks() = %#v, want %#v", got, want)
+	}
+}
+
+func TestCreate_AddsWikilinkRelations(t *testing.T) {
+	store, db := newRelationTestStore(t)
+	target := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "Foo",
+		BodySummary: "target summary",
+		BodyFull:    "target body",
+	})
+	source := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "Source",
+		BodySummary: "source summary",
+		BodyFull:    "see [[Foo]]",
+	})
+
+	assertSignalStrength(t, db, source.ID, target.ID, cards.RelationSignalWikilink, 2)
+}
+
 func newRelationTestStore(t *testing.T) (*cards.SQLiteCardStore, *sql.DB) {
 	t.Helper()
 	db, err := dbutil.OpenDB(":memory:")
@@ -133,6 +226,25 @@ func assertCardIDs(t *testing.T, got []cards.CardSummary, want []string) {
 		if got[i].ID != want[i] {
 			t.Fatalf("card[%d] ID = %s, want %s", i, got[i].ID, want[i])
 		}
+	}
+}
+
+func setSupersededBy(t *testing.T, db *sql.DB, id, supersededBy string) {
+	t.Helper()
+	result, err := db.Exec(
+		`UPDATE cards SET superseded_by = ?, retired_at = COALESCE(retired_at, updated_at) WHERE id = ?`,
+		supersededBy,
+		id,
+	)
+	if err != nil {
+		t.Fatalf("set superseded_by: %v", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		t.Fatalf("set superseded_by rows affected: %v", err)
+	}
+	if affected != 1 {
+		t.Fatalf("set superseded_by affected %d rows, want 1", affected)
 	}
 }
 

@@ -193,6 +193,14 @@ func (s *staticRelevantCardStore) SeeAlso(context.Context, string, int) ([]cards
 	return nil, errors.New("not implemented")
 }
 
+func (s *staticRelevantCardStore) Lineage(context.Context, string) ([]cards.Card, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *staticRelevantCardStore) LatestInChain(context.Context, string) (*cards.Card, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (s *staticRelevantCardStore) WithReadTx(context.Context, func(cards.ReadTx) error) error {
 	return errors.New("not implemented")
 }
