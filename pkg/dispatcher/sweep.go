@@ -207,7 +207,7 @@ func tableExists(ctx context.Context, db *sql.DB, name string) (bool, error) {
 		return false, nil
 	}
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("inspect sqlite table %s: %w", name, err)
 	}
 	return true, nil
 }
