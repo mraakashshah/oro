@@ -7,6 +7,8 @@ import (
 
 // ResolveCallee returns a canonical file-qualified symbol reference for a call
 // edge when it can be resolved without falling back to global bare-name lookup.
+//
+//oro:testonly — production wiring deferred to Phase 1 SymbolHints/card relation feed.
 func ResolveCallee(e CallEdge, importsByFile map[string]map[string]string, symsByFile map[string][]Symbol) (ref string, ok bool) {
 	symName := edgeSymbolName(e)
 	if e.Resolved && e.CalleeFile != "" && symName != "" {
