@@ -172,6 +172,13 @@ linters:
           - gochecknoinits
           - gochecknoglobals
 
+      # Build-tag-only stub file; package documentation lives on cgo-enabled
+      # source files and this file should not force a production diff.
+      - path: pkg/codestruct/extractors_nocgo\.go
+        text: "package-comments:"
+        linters:
+          - revive
+
       # Bubbletea TUI: View/Update funcs are naturally long, models use
       # type assertions, package-level style vars, math/rand for
       # animations (not security), and nested conditionals in rendering.
