@@ -791,8 +791,9 @@ type Dispatcher struct {
 	rerankerErr     error
 	rerankerFactory func(modelDir string) (Reranker, error)
 	procMgr         ProcessManager
-	acceptance      AcceptanceRunner   // runs epic acceptance test commands
-	qgRunner        QGRunner           // runs quality gate before merge (defaults to &ShellQGRunner{})
+	acceptance      AcceptanceRunner // runs epic acceptance test commands
+	qgRunner        QGRunner         // runs quality gate before merge (defaults to &ShellQGRunner{})
+	qgBaselineCache map[string]qgBaseline
 	paneRestarter   PaneRestarter      // restarts named tmux panes (nil means no restart)
 	estimator       BeadEstimator      // estimates bead completion time (nil means no estimation)
 	sseBroadcaster  web.SSEBroadcaster // broadcasts server-sent events (never nil, initialized in New)
@@ -991,24 +992,25 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		return nil, err
 	}
 	d := &Dispatcher{
-		cfg:            resolved,
-		db:             db,
-		merger:         merger,
-		ops:            opsSpawner,
-		beads:          selectedBeads,
-		worktrees:      wt,
-		escalator:      esc,
-		cardStore:      cardStore,
-		codeIndex:      codeIdx,
-		beadSourceMode: beadSourceMode,
-		repoRoot:       rootDir,
-		shutdownRunner: &ExecCommandRunner{Dir: rootDir},
-		acceptance:     &ShellAcceptanceRunner{},
-		estimator:      resolved.Estimator,
-		qgRunner:       &ShellQGRunner{},
-		sseBroadcaster: web.NewSSEBroadcaster(),
-		state:          StateInert,
-		targetWorkers:  resolved.InitialWorkers,
+		cfg:             resolved,
+		db:              db,
+		merger:          merger,
+		ops:             opsSpawner,
+		beads:           selectedBeads,
+		worktrees:       wt,
+		escalator:       esc,
+		cardStore:       cardStore,
+		codeIndex:       codeIdx,
+		beadSourceMode:  beadSourceMode,
+		repoRoot:        rootDir,
+		shutdownRunner:  &ExecCommandRunner{Dir: rootDir},
+		acceptance:      &ShellAcceptanceRunner{},
+		estimator:       resolved.Estimator,
+		qgRunner:        &ShellQGRunner{},
+		qgBaselineCache: make(map[string]qgBaseline),
+		sseBroadcaster:  web.NewSSEBroadcaster(),
+		state:           StateInert,
+		targetWorkers:   resolved.InitialWorkers,
 		explicitScaleTarget: resolved.AllowZeroWorkers &&
 			resolved.InitialWorkers == 0 && resolved.MaxWorkers > 0,
 		WorkerPool: WorkerPool{
