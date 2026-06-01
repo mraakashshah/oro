@@ -18794,6 +18794,61 @@ func TestDispatcherSetsEmbedder(t *testing.T) {
 	}
 }
 
+func TestEmbedderFactoryRegistered(t *testing.T) {
+	db := newTestDB(t)
+	gitRunner := &mockGitRunner{}
+	merger := merge.NewCoordinator(gitRunner)
+	opsSpawner := ops.NewSpawner(&mockBatchSpawner{verdict: "looks good\n\nVERDICT: APPROVED"})
+	beadSrc := &fakeBeadStore{
+		beads: []protocol.Bead{},
+		shown: make(map[string]*protocol.BeadDetail),
+	}
+	wtMgr := &mockWorktreeManager{created: make(map[string]string)}
+	esc := &mockEscalator{}
+
+	d, err := New(Config{
+		SocketPath:       filepath.Join(t.TempDir(), "dispatcher.sock"),
+		DBPath:           ":memory:",
+		MaxWorkers:       1,
+		SemanticModelDir: t.TempDir(),
+		RerankerModelDir: t.TempDir(),
+		HeartbeatTimeout: time.Second,
+		PollInterval:     50 * time.Millisecond,
+		ShutdownTimeout:  200 * time.Millisecond,
+	}, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil,
+		WithMemoryServices(newTestMemoryServices(db)))
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	d.warmupEmbedder(context.Background())
+	emb, err := d.WaitForEmbedder(context.Background())
+	if errors.Is(err, ErrSemanticDisabled) {
+		t.Fatal("WaitForEmbedder returned ErrSemanticDisabled with SemanticModelDir configured")
+	}
+	if err != nil {
+		t.Fatalf("WaitForEmbedder returned error: %v", err)
+	}
+	if emb.Name() != "bge-small-en-v1.5" {
+		t.Fatalf("embedder Name() = %q, want bge-small-en-v1.5", emb.Name())
+	}
+	if emb.Dim() != 384 {
+		t.Fatalf("embedder Dim() = %d, want 384", emb.Dim())
+	}
+
+	reranker, err := d.rerankerFactory(d.cfg.RerankerModelDir)
+	if err != nil {
+		t.Fatalf("rerankerFactory returned error: %v", err)
+	}
+	named, ok := reranker.(interface{ Name() string })
+	if !ok {
+		t.Fatal("reranker does not expose Name()")
+	}
+	if named.Name() != "bge-reranker-base" {
+		t.Fatalf("reranker Name() = %q, want bge-reranker-base", named.Name())
+	}
+}
+
 // --- Mutation kill tests (oro-eclo.12) ---
 
 // TestScaleDown_ExactCount verifies that scaleDown removes exactly (connected - target)

@@ -9,4 +9,6 @@ const (
 // ONNXEmbedder embeds text with the bge-small-en-v1.5 ONNX model.
 //
 //oro:testonly -- wired into dispatcher semantic recall by the next Phase 2 bead.
-type ONNXEmbedder struct{}
+type ONNXEmbedder struct {
+	modelDir string
+}

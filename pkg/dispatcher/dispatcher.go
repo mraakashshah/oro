@@ -35,6 +35,7 @@ import (
 	"oro/pkg/agentmodel"
 	"oro/pkg/beadstore"
 	"oro/pkg/cards"
+	embeddings "oro/pkg/embed"
 	"oro/pkg/factoryhealth"
 	"oro/pkg/leakscan"
 	"oro/pkg/merge"
@@ -1001,14 +1002,19 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		cardStore:      cardStore,
 		codeIndex:      codeIdx,
 		beadSourceMode: beadSourceMode,
-		repoRoot:       rootDir,
-		shutdownRunner: &ExecCommandRunner{Dir: rootDir},
-		acceptance:     &ShellAcceptanceRunner{},
-		estimator:      resolved.Estimator,
-		qgRunner:       &ShellQGRunner{},
-		sseBroadcaster: web.NewSSEBroadcaster(),
-		state:          StateInert,
-		targetWorkers:  resolved.InitialWorkers,
+		embedderReady:  defaultEmbedderReady(resolved),
+		embedderFactory: func(modelDir string) (Embedder, error) {
+			return embeddings.NewEmbedder(modelDir)
+		},
+		rerankerFactory: defaultRerankerFactory(resolved),
+		repoRoot:        rootDir,
+		shutdownRunner:  &ExecCommandRunner{Dir: rootDir},
+		acceptance:      &ShellAcceptanceRunner{},
+		estimator:       resolved.Estimator,
+		qgRunner:        &ShellQGRunner{},
+		sseBroadcaster:  web.NewSSEBroadcaster(),
+		state:           StateInert,
+		targetWorkers:   resolved.InitialWorkers,
 		explicitScaleTarget: resolved.AllowZeroWorkers &&
 			resolved.InitialWorkers == 0 && resolved.MaxWorkers > 0,
 		WorkerPool: WorkerPool{
@@ -1056,6 +1062,22 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		}
 	}
 	return d, nil
+}
+
+func defaultEmbedderReady(cfg Config) chan struct{} {
+	if cfg.SemanticModelDir == "" {
+		return nil
+	}
+	return make(chan struct{})
+}
+
+func defaultRerankerFactory(cfg Config) func(string) (Reranker, error) {
+	if cfg.RerankerModelDir == "" {
+		return nil
+	}
+	return func(modelDir string) (Reranker, error) {
+		return embeddings.NewReranker(modelDir)
+	}
 }
 
 func defaultPanesDir() string {
