@@ -515,7 +515,6 @@ oro/
 │   ├── dispatcher/       # Core orchestrator — state machine, worker pool, task tracking
 │   ├── worker/           # Worker agent — UDS connection, prompt assembly, subprocess
 │   ├── cards/            # Knowledge cards — durable rules, patterns, decisions
-│   ├── memory/           # Retired legacy memory boundary and migration helpers
 │   ├── ops/              # Ops agent spawner — review, merge resolution, diagnosis
 │   ├── merge/            # Merge coordinator — serialized rebase + ff-only
 │   ├── protocol/         # Shared types, UDS messages, SQLite schema, constants
