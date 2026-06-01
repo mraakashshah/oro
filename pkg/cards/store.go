@@ -32,6 +32,7 @@ type Store interface {
 	Create(ctx context.Context, c CardCreateParams) (*Card, error)
 	Retire(ctx context.Context, id, reason string, supersededBy string) error
 	AddRelation(ctx context.Context, srcID, dstID string, sig RelationSignal) error
+	SeeAlso(ctx context.Context, cardID string, limit int) ([]CardSummary, error)
 
 	WithReadTx(ctx context.Context, fn func(tx ReadTx) error) error
 }

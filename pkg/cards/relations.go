@@ -76,6 +76,48 @@ func insertRelation(
 	return nil
 }
 
+// SeeAlso returns one-hop related cards ordered by total relation strength.
+func (s *SQLiteCardStore) SeeAlso(ctx context.Context, cardID string, limit int) ([]CardSummary, error) {
+	query := `
+		SELECT c.id, c.type, c.title, c.body_summary, c.body_full, c.body_deep,
+		       c.tags, c.score, c.promotion_confidence, c.decay_anchor,
+		       c.last_contradicted_at, c.last_nacked_at, c.created_at, c.updated_at,
+		       c.retired_at, c.superseded_by, c.emerged_from, c.retired_reason
+		  FROM cards c
+		  JOIN (
+			SELECT target_id, SUM(strength) AS total_strength
+			  FROM card_relations
+			 WHERE source_id = ? AND target_id != ?
+			 GROUP BY target_id
+		  ) related ON related.target_id = c.id
+		 WHERE c.retired_at IS NULL
+		 ORDER BY related.total_strength DESC, c.id ASC`
+	args := []any{cardID, cardID}
+	if limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query see also for %s: %w", cardID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var summaries []CardSummary
+	for rows.Next() {
+		card, err := scanCard(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan see also card: %w", err)
+		}
+		summaries = append(summaries, toInlinedCard(*card))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate see also cards: %w", err)
+	}
+	return summaries, nil
+}
+
 func isSymmetricRelation(sig RelationSignal) bool {
 	return sig == RelationSignalComention || sig == RelationSignalNamespace
 }

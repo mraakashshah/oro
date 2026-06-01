@@ -190,6 +190,10 @@ func (s *promotionCardStore) AddRelation(context.Context, string, string, cards.
 	return errors.New("not implemented")
 }
 
+func (s *promotionCardStore) SeeAlso(context.Context, string, int) ([]cards.CardSummary, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (s *promotionCardStore) WithReadTx(context.Context, func(cards.ReadTx) error) error {
 	return errors.New("not implemented")
 }

@@ -55,6 +55,50 @@ func TestAddRelation_RejectsSelf(t *testing.T) {
 	assertRelationRows(t, db, card.ID, card.ID, 0)
 }
 
+func TestSeeAlso_OrdersByStrength(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newRelationTestStore(t)
+	source := mustCreateRelationCard(t, store, "Source")
+	low := mustCreateRelationCard(t, store, "Low")
+	high := mustCreateRelationCard(t, store, "High")
+
+	if err := store.AddRelation(ctx, source.ID, low.ID, cards.RelationSignalCall); err != nil {
+		t.Fatalf("add low relation: %v", err)
+	}
+	if err := store.AddRelation(ctx, source.ID, high.ID, cards.RelationSignalCall); err != nil {
+		t.Fatalf("add high call relation: %v", err)
+	}
+	if err := store.AddRelation(ctx, source.ID, high.ID, cards.RelationSignalComention); err != nil {
+		t.Fatalf("add high comention relation: %v", err)
+	}
+
+	got, err := store.SeeAlso(ctx, source.ID, 10)
+	if err != nil {
+		t.Fatalf("see also: %v", err)
+	}
+	assertCardIDs(t, got, []string{high.ID, low.ID})
+}
+
+func TestSeeAlso_CycleSafe(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newRelationTestStore(t)
+	first := mustCreateRelationCard(t, store, "First")
+	second := mustCreateRelationCard(t, store, "Second")
+
+	if err := store.AddRelation(ctx, first.ID, second.ID, cards.RelationSignalCall); err != nil {
+		t.Fatalf("add forward relation: %v", err)
+	}
+	if err := store.AddRelation(ctx, second.ID, first.ID, cards.RelationSignalCall); err != nil {
+		t.Fatalf("add back relation: %v", err)
+	}
+
+	got, err := store.SeeAlso(ctx, first.ID, 10)
+	if err != nil {
+		t.Fatalf("see also: %v", err)
+	}
+	assertCardIDs(t, got, []string{second.ID})
+}
+
 func newRelationTestStore(t *testing.T) (*cards.SQLiteCardStore, *sql.DB) {
 	t.Helper()
 	db, err := dbutil.OpenDB(":memory:")
@@ -68,6 +112,28 @@ func newRelationTestStore(t *testing.T) (*cards.SQLiteCardStore, *sql.DB) {
 		t.Fatalf("new store: %v", err)
 	}
 	return store, db
+}
+
+func mustCreateRelationCard(t *testing.T, store *cards.SQLiteCardStore, title string) *cards.Card {
+	t.Helper()
+	return mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       title,
+		BodySummary: title + " summary",
+		BodyFull:    title + " body",
+	})
+}
+
+func assertCardIDs(t *testing.T, got []cards.CardSummary, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("card count = %d, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i].ID != want[i] {
+			t.Fatalf("card[%d] ID = %s, want %s", i, got[i].ID, want[i])
+		}
+	}
 }
 
 func assertRelationStrength(t *testing.T, db *sql.DB, sourceID, targetID string, want int) {
