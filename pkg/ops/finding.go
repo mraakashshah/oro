@@ -12,10 +12,12 @@ import (
 type Severity string
 
 const (
-	// Finding severities used by structured review findings.
-	SevCritical  Severity = "critical"
+	// SevCritical identifies a critical structured review finding.
+	SevCritical Severity = "critical"
+	// SevImportant identifies an important structured review finding.
 	SevImportant Severity = "important"
-	SevMinor     Severity = "minor"
+	// SevMinor identifies a minor structured review finding.
+	SevMinor Severity = "minor"
 )
 
 // Evidence pins a finding to a file:line(:quote) the reviewer was shown.
