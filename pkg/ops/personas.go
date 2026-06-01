@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"oro/pkg/processenv"
@@ -58,6 +59,56 @@ func selectPersonas(opts ReviewOpts) []Persona {
 			Fragment: "\n\nPersona focus: architecture. Check package boundaries, dependency direction, runtime wiring, and cross-module contracts.",
 		},
 	}
+}
+
+func diffSizeExceeds(opts ReviewOpts, n int) bool {
+	threshold := n
+	if threshold <= 0 {
+		threshold = 400
+	}
+	return diffSize(opts) > threshold
+}
+
+func diffSize(opts ReviewOpts) int {
+	if opts.Worktree == "" {
+		return 0
+	}
+	base := opts.BaseBranch
+	if base == "" {
+		base = "main"
+	}
+	out, err := gitOutput(context.Background(), opts.Worktree, "diff", "--numstat", base, "--")
+	if err != nil {
+		return 0
+	}
+	total := 0
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		total += numstatCount(fields[0]) + numstatCount(fields[1])
+	}
+	return total
+}
+
+func numstatCount(value string) int {
+	if value == "-" {
+		return 0
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func scopeToSurvivors(opts ReviewOpts, survivors []Finding) ReviewOpts {
+	opts.ScopedFindings = append([]Finding(nil), survivors...)
+	return opts
 }
 
 func reviewDiffPaths(ctx context.Context, worktree, baseBranch string) ([]string, error) {

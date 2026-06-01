@@ -188,6 +188,9 @@ type ReviewOpts struct {
 	BaseBranch         string // defaults to "main" if empty
 	MultiPersona       bool
 	MaxReviewers       int
+	CheapThenDeep      bool
+	CheapGateThreshold int
+	ScopedFindings     []Finding
 	ProjectRoot        string // for reading shared instructions, Claude compatibility files, .claude/rules/, assets/review-patterns.md
 	AgentInstructions  string // explicit shared instructions path; falls back to ProjectRoot/ORO_AGENT.md when empty
 	ClaudeMD           string // explicit path to CLAUDE.md; falls back to ProjectRoot/CLAUDE.md when empty
@@ -305,7 +308,6 @@ func (s *Spawner) Review(ctx context.Context, opts ReviewOpts) <-chan Result {
 	return s.run(ctx, OpsReview, opts.BeadID, opts.Worktree, prompt)
 }
 
-//nolint:unused // P2a introduces the cheap triage seam; P2b wires Review scoping.
 func (s *Spawner) runCheapTriage(ctx context.Context, opts ReviewOpts) []Finding {
 	prompt := buildCheapTriagePrompt(opts)
 	result := <-s.runWith(ctx, OpsReview, spawnRouting{role: "ops_review_triage"}, opts.BeadID, opts.Worktree, prompt)
@@ -317,6 +319,10 @@ func (s *Spawner) reviewMultiPersona(ctx context.Context, opts ReviewOpts) <-cha
 	personas := selectPersonas(opts)
 	if len(personas) == 0 {
 		return s.run(ctx, OpsReview, opts.BeadID, opts.Worktree, buildReviewPrompt(opts))
+	}
+
+	if opts.CheapThenDeep && diffSizeExceeds(opts, opts.CheapGateThreshold) {
+		opts = scopeToSurvivors(opts, s.runCheapTriage(ctx, opts))
 	}
 
 	manifest, prompt := buildStructuredReviewPrompt(opts)
