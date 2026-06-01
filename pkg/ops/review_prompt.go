@@ -27,9 +27,9 @@ func buildReviewPrompt(opts ReviewOpts) string {
 	return b.String()
 }
 
-func buildStructuredReviewPrompt(opts ReviewOpts) (PromptManifest, string) {
-	manifest := buildPromptManifest(opts)
-	prompt := buildReviewPrompt(opts) + strings.Join([]string{
+func buildStructuredReviewPrompt(opts ReviewOpts) (manifest PromptManifest, prompt string) {
+	manifest = buildPromptManifest(opts)
+	prompt = buildReviewPrompt(opts) + strings.Join([]string{
 		"",
 		"## Structured Review Output",
 		"Return one JSON object in a fenced json block or as the full response body.",
