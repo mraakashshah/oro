@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -206,6 +207,120 @@ func TestTransientRetry_SkipsRegressionCheck(t *testing.T) {
 	if revParseCalls(d.shutdownRunner.(*mockCommandRunner)) != 0 {
 		t.Fatalf("baseline rev-parse calls = %d, want 0", revParseCalls(d.shutdownRunner.(*mockCommandRunner)))
 	}
+}
+
+func TestRetryFlipsSiblingRed_Reverted(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, gitRunner, _ := newTestDispatcher(t)
+	beadID := "bead-regression"
+	workerID := "worker-regression"
+	worktree := t.TempDir()
+	assignmentID := int64(41)
+
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: "Regression retry", Status: "open"}
+	beadSrc.mu.Unlock()
+
+	d.cfg.RegressionRevert = true
+	d.qgRunner = &mockQGRunner{
+		passed: false,
+		output: `=== RUN   TestAcceptance
+--- PASS: TestAcceptance (0.00s)
+=== RUN   TestSibling
+--- FAIL: TestSibling (0.01s)
+FAIL
+`,
+	}
+	d.qgBaselineCache["baseline-head"] = qgBaseline{
+		beadID: {
+			HeadSHA:     "abc123",
+			SuitePassed: true,
+			Outcomes: map[string]bool{
+				"TestAcceptance": true,
+				"TestSibling":    true,
+			},
+		},
+	}
+	d.attemptCounts[beadID] = 1
+	installFakeGitReset(t, true)
+
+	d.mergeAndComplete(ctx, beadID, workerID, worktree, protocol.BranchPrefix+beadID, "", "main", assignmentID)
+
+	if len(gitRunner.RebaseCalls()) != 0 {
+		t.Fatalf("merge rebase calls = %d, want 0", len(gitRunner.RebaseCalls()))
+	}
+	if got := eventCount(t, d.db, "qg_regression_reverted"); got != 1 {
+		t.Fatalf("qg_regression_reverted events = %d, want 1", got)
+	}
+	if got := eventCount(t, d.db, "merged"); got != 0 {
+		t.Fatalf("merged events = %d, want 0", got)
+	}
+	if got := d.attemptCounts[beadID]; got != 1 {
+		t.Fatalf("attemptCounts[%s] = %d, want 1", beadID, got)
+	}
+}
+
+func TestRevertFailure_Escalates(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, esc, gitRunner, _ := newTestDispatcher(t)
+	beadID := "bead-revert-failure"
+	workerID := "worker-revert-failure"
+	worktree := t.TempDir()
+
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: "Revert failure", Status: "open"}
+	beadSrc.mu.Unlock()
+
+	d.cfg.RegressionRevert = true
+	d.qgRunner = &mockQGRunner{
+		passed: false,
+		output: `=== RUN   TestSibling
+--- FAIL: TestSibling (0.01s)
+FAIL
+`,
+	}
+	d.qgBaselineCache["baseline-head"] = qgBaseline{
+		beadID: {
+			HeadSHA:     "abc123",
+			SuitePassed: true,
+			Outcomes: map[string]bool{
+				"TestSibling": true,
+			},
+		},
+	}
+	installFakeGitReset(t, false)
+
+	d.mergeAndComplete(ctx, beadID, workerID, worktree, protocol.BranchPrefix+beadID, "", "main", 0)
+
+	if len(gitRunner.RebaseCalls()) != 0 {
+		t.Fatalf("merge rebase calls = %d, want 0", len(gitRunner.RebaseCalls()))
+	}
+	if got := eventCount(t, d.db, "merged"); got != 0 {
+		t.Fatalf("merged events = %d, want 0", got)
+	}
+	messages := esc.Messages()
+	if len(messages) != 1 {
+		t.Fatalf("escalations = %d, want 1: %#v", len(messages), messages)
+	}
+	if !strings.Contains(messages[0], "QG_REGRESSION_REVERT_FAILED") {
+		t.Fatalf("escalation message = %q, want QG_REGRESSION_REVERT_FAILED", messages[0])
+	}
+}
+
+func installFakeGitReset(t *testing.T, succeed bool) {
+	t.Helper()
+
+	binDir := t.TempDir()
+	gitPath := filepath.Join(binDir, "git")
+	exitCode := 0
+	if !succeed {
+		exitCode = 42
+	}
+	script := fmt.Sprintf("#!/bin/sh\nexit %d\n", exitCode)
+	if err := os.WriteFile(gitPath, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func newQGRetryBaselineTestDispatcher(t *testing.T, regressionRevert bool) (*Dispatcher, func()) {

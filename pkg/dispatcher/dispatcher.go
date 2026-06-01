@@ -2377,11 +2377,54 @@ func (d *Dispatcher) recordPreMergeDeterministicFailure(ctx context.Context, rec
 	}
 }
 
+func (d *Dispatcher) guardQGRegression(ctx context.Context, beadID, workerID, worktree string, assignmentID int64) bool {
+	if !d.cfg.RegressionRevert {
+		return true
+	}
+	base, ok := d.takeQGBaselineForBead(beadID)
+	if !ok {
+		return true
+	}
+
+	regression, err := d.detectQGRegression(ctx, base, worktree)
+	if err != nil {
+		return d.handlePreMergeQGError(ctx, beadID, workerID, worktree, assignmentID, err)
+	}
+	if regression == (qgRegression{}) {
+		return true
+	}
+
+	if err := d.revertRegressedRetry(ctx, base, worktree); err != nil {
+		_ = d.logEvent(ctx, "qg_regression_revert_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"test":%q,"error":%q}`, regression.TestName, err.Error()))
+		d.escalate(ctx,
+			protocol.FormatEscalation(protocol.EscStuck, beadID, "QG_REGRESSION_REVERT_FAILED", err.Error()),
+			beadID, workerID)
+		d.releaseWorkerAfterDoneTerminal(workerID, beadID, assignmentID)
+		return false
+	}
+
+	_ = d.logEvent(ctx, "qg_regression_reverted", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"test":%q,"baseline_passed":%t,"current_passed":%t}`,
+			regression.TestName, regression.BaselinePassed, regression.CurrentPassed))
+	if d.shouldReopenQGOriginal(ctx, beadID) {
+		_ = d.updateBeadStatus(ctx, beadID, "open")
+		_ = d.requeueAssignment(ctx, assignmentID)
+	} else {
+		_ = d.completeAssignment(ctx, assignmentID, beadID)
+	}
+	d.releaseWorkerAfterDoneTerminal(workerID, beadID, assignmentID)
+	return false
+}
+
 // checkPreMergeQG runs the local pre-merge quality gate before merging. Mutation
 // testing is opt-in so local branch merges do not pay that cost by default.
 // It returns true when the gate passes and the merge should proceed. On failure
 // or error it handles cleanup and returns false so the caller can return early.
 func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, worktree string, assignmentID int64) bool {
+	if !d.guardQGRegression(ctx, beadID, workerID, worktree, assignmentID) {
+		return false
+	}
 	qgPassed, qgOutput, qgErr := d.qgRunner.Run(ctx, worktree, !d.cfg.MutationTesting)
 	if qgErr != nil {
 		return d.handlePreMergeQGError(ctx, beadID, workerID, worktree, assignmentID, qgErr)
@@ -2651,6 +2694,9 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 		return
 	}
 
+	if !d.guardQGRegression(ctx, beadID, workerID, worktree, assignmentID) {
+		return
+	}
 	if !d.checkPreMergeQG(ctx, beadID, workerID, worktree, assignmentID) {
 		return
 	}

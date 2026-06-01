@@ -107,6 +107,23 @@ func (d *Dispatcher) storeQGBaseline(headSHA string, baseline qgBaseline) qgBase
 	return cloneQGBaseline(baseline)
 }
 
+func (d *Dispatcher) takeQGBaselineForBead(beadID string) (qgBaseline, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.qgBaselineCache == nil {
+		return nil, false
+	}
+	for headSHA, baseline := range d.qgBaselineCache {
+		entry, ok := baseline[beadID]
+		if !ok {
+			continue
+		}
+		delete(d.qgBaselineCache, headSHA)
+		return cloneQGBaseline(qgBaseline{beadID: entry}), true
+	}
+	return nil, false
+}
+
 func cloneQGBaseline(baseline qgBaseline) qgBaseline {
 	if baseline == nil {
 		return nil
