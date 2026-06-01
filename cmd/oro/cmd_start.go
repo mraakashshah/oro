@@ -1004,7 +1004,7 @@ func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressT
 	runner := &dispatcher.ExecCommandRunner{}
 	beadSrc := beadstore.NewSQLiteStore(db)
 	wtMgr := dispatcher.NewGitWorktreeManager(repoRoot, "", projectPaths.QualityGate, runner)
-	esc := dispatcher.NewTmuxEscalator(TmuxSessionName(readProjectNameCWD()), TmuxPaneTarget(readProjectNameCWD(), "manager"), runner)
+	esc := dispatcher.NoopEscalator{}
 	merger := merge.NewCoordinator(&merge.ExecGitRunner{})
 	opsSpawner := ops.NewSpawnerWithReviewTimeout(runtime.opsSpawn, opsReviewTimeout)
 	opsSpawner.SetReviewSpawner(runtime.reviewOpsSpawn)
