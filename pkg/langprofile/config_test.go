@@ -421,6 +421,43 @@ func TestSemanticMemoryConfigRerankEnabledDefaultsOff(t *testing.T) {
 	}
 }
 
+func TestCaptureMemoryConfigDefaultsOff(t *testing.T) {
+	t.Run("absent capture config defaults continuous capture off", func(t *testing.T) {
+		got := langprofile.Defaults()
+		if got.Memory.Capture.Continuous {
+			t.Fatal("expected continuous capture default = false")
+		}
+		if got.Memory.Capture.FlushBytes != 200_000 {
+			t.Fatalf("FlushBytes = %d, want 200000", got.Memory.Capture.FlushBytes)
+		}
+	})
+
+	t.Run("explicit capture config survives YAML round-trip", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		oroDir := filepath.Join(tmpDir, ".oro")
+		if err := os.MkdirAll(oroDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		yaml := "memory:\n  capture:\n    continuous: true\n    flush_bytes: 12345\n"
+		//nolint:gosec // Test file permissions are acceptable.
+		if err := os.WriteFile(filepath.Join(oroDir, "config.yaml"), []byte(yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg, err := langprofile.ReadConfig(tmpDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		got := cfg.WithDefaults()
+		if !got.Memory.Capture.Continuous {
+			t.Fatal("expected explicit continuous=true to survive round-trip")
+		}
+		if got.Memory.Capture.FlushBytes != 12345 {
+			t.Fatalf("FlushBytes = %d, want 12345", got.Memory.Capture.FlushBytes)
+		}
+	})
+}
+
 func TestResolveProjectRoot(t *testing.T) {
 	t.Run("from worktree path returns main repo root", func(t *testing.T) {
 		// Create a temporary git repo with a worktree so the test is self-contained.

@@ -34,6 +34,13 @@ type LanguageConfig struct {
 // MemoryConfig holds memory-related configuration nested under Config.
 type MemoryConfig struct {
 	Semantic SemanticMemoryConfig `yaml:"semantic"`
+	Capture  CaptureMemoryConfig  `yaml:"capture"`
+}
+
+// CaptureMemoryConfig holds configuration for hook-driven memory capture.
+type CaptureMemoryConfig struct {
+	Continuous bool `yaml:"continuous,omitempty"`
+	FlushBytes int  `yaml:"flush_bytes,omitempty"`
 }
 
 // SemanticMemoryConfig holds configuration for the semantic memory subsystem.
@@ -105,6 +112,12 @@ func (c *Config) WithDefaults() *Config {
 		sem.ModelDir = expandTilde(sem.ModelDir, homeDir)
 	}
 	out.Memory.Semantic = sem
+
+	capture := out.Memory.Capture
+	if capture.FlushBytes == 0 {
+		capture.FlushBytes = 200_000
+	}
+	out.Memory.Capture = capture
 
 	return &out
 }
