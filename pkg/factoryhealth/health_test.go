@@ -159,6 +159,105 @@ VALUES ('oro-human-owned', 'unsafe_stale_branch', 'operator owns branch', 'human
 	}
 }
 
+func TestLoadActiveAssignments(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 19, 14, 0, 0, 0, time.UTC)
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("bead schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO beads (id, title, status, type) VALUES
+    ('oro-open', 'open task', 'open', 'task'),
+    ('oro-progress', 'progress task', 'in_progress', 'task');
+INSERT INTO assignments (id, bead_id, worker_id, worktree, status, assigned_at) VALUES
+    (3, 'oro-progress', 'worker-progress', '/tmp/progress', 'active', '2026-05-19 13:50:00'),
+    (4, 'oro-open', 'worker-open', '/tmp/open', 'completed', '2026-05-19 13:45:00'),
+    (5, 'oro-missing', 'worker-missing', '/tmp/missing', 'active', '2026-05-19 14:05:00');
+`); err != nil {
+		t.Fatalf("seed assignments: %v", err)
+	}
+
+	got, err := LoadActiveAssignments(ctx, db, now)
+	if err != nil {
+		t.Fatalf("LoadActiveAssignments: %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("active assignments = %+v, want 2 rows", got)
+	}
+	if got[0].ID != 3 || got[0].BeadID != "oro-progress" || got[0].WorkerID != "worker-progress" {
+		t.Fatalf("first assignment payload = %+v", got[0])
+	}
+	if got[0].BeadStatus != "in_progress" || got[0].AgeSecs != 600 {
+		t.Fatalf("first assignment status/age = %q/%.0f, want in_progress/600", got[0].BeadStatus, got[0].AgeSecs)
+	}
+	if got[1].BeadID != "oro-missing" || got[1].BeadStatus != "" {
+		t.Fatalf("missing-bead assignment = %+v, want empty bead status", got[1])
+	}
+	if got[1].AgeSecs != 0 {
+		t.Fatalf("future assignment age = %.0f, want 0", got[1].AgeSecs)
+	}
+}
+
+func TestLoadThroughputMetrics(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 19, 14, 0, 0, 0, time.UTC)
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("bead schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree, status, assigned_at) VALUES
+    ('oro-started', 'worker-started', '/tmp/started', 'active', '2026-05-19 13:55:00'),
+    ('oro-old', 'worker-old', '/tmp/old', 'completed', '2026-05-19 12:30:00');
+INSERT INTO beads (id, title, status, type, close_reason, closed_at, updated_at) VALUES
+    ('oro-closed', 'closed task', 'closed', 'task', 'completed', '2026-05-19 13:58:00', '2026-05-19 13:58:00'),
+    ('oro-deferred', 'deferred task', 'closed', 'task', 'deferred', '2026-05-19 13:59:00', '2026-05-19 13:59:00'),
+    ('oro-open', 'open task', 'open', 'task', '', NULL, '2026-05-19 13:59:00');
+INSERT INTO events (type, source, created_at) VALUES
+    ('progress_timeout', 'dispatcher', '2026-05-19 13:57:00'),
+    ('worker_heartbeat', 'worker', '2026-05-19 13:59:30');
+`); err != nil {
+		t.Fatalf("seed throughput data: %v", err)
+	}
+
+	got, err := LoadThroughputMetrics(ctx, db, now, 30*time.Minute)
+	if err != nil {
+		t.Fatalf("LoadThroughputMetrics: %v", err)
+	}
+
+	if got.WindowSecs != 1800 {
+		t.Fatalf("window secs = %.0f, want 1800", got.WindowSecs)
+	}
+	if got.AssignmentsStarted != 1 {
+		t.Fatalf("assignments started = %d, want 1", got.AssignmentsStarted)
+	}
+	if got.ProductiveClosures != 1 {
+		t.Fatalf("productive closures = %d, want 1", got.ProductiveClosures)
+	}
+	if got.ProgressTimeouts != 1 {
+		t.Fatalf("progress timeouts = %d, want 1", got.ProgressTimeouts)
+	}
+	if got.LastEventAgeSecs != 30 {
+		t.Fatalf("last event age = %.0f, want 30", got.LastEventAgeSecs)
+	}
+}
+
 func TestEvaluateNoManagerPaneFindingByDefault(t *testing.T) {
 	got := Evaluate(Snapshot{
 		DaemonRunning:   true,
