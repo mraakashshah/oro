@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"oro/pkg/cards"
+	"oro/pkg/codestruct"
 	"oro/pkg/protocol"
 )
 
@@ -112,6 +114,7 @@ func (d *Dispatcher) buildCardContext(ctx context.Context, bead protocol.Bead) c
 		BeadType:        bead.Type,
 		BeadTags:        bead.Labels,
 		BeadDescription: strings.TrimSpace(bead.Title + " " + bead.Description),
+		SymbolHints:     d.assignmentSymbolHints(ctx, bead),
 		MaxTokens:       2000,
 	})
 	if err != nil {
@@ -120,6 +123,163 @@ func (d *Dispatcher) buildCardContext(ctx context.Context, bead protocol.Bead) c
 		return cards.RelevantCards{}
 	}
 	return trimAssignmentCardContext(result)
+}
+
+func (d *Dispatcher) assignmentSymbolHints(ctx context.Context, bead protocol.Bead) []string {
+	refs := touchedSymbolRefs(bead.AcceptanceCriteria)
+	if len(refs) == 0 {
+		return nil
+	}
+	hints, err := d.resolveAssignmentSymbolHints(refs)
+	if err != nil {
+		_ = d.logEvent(ctx, "card_context_symbol_hints_failed", "dispatcher", bead.ID, "",
+			fmt.Sprintf(`{"error":%q}`, err.Error()))
+		return nil
+	}
+	return hints
+}
+
+func (d *Dispatcher) resolveAssignmentSymbolHints(refs []symbolRef) ([]string, error) {
+	root := d.cfg.RepoRoot
+	if root == "" {
+		root = "."
+	}
+
+	files := uniqueTouchedFiles(refs)
+	symsByFile := make(map[string][]codestruct.Symbol, len(files))
+	for _, file := range files {
+		abs := filepath.Join(root, file)
+		syms, err := codestruct.ExtractGoSymbols(abs)
+		if err != nil {
+			return nil, fmt.Errorf("extract symbols %s: %w", file, err)
+		}
+		symsByFile[file] = syms
+	}
+
+	hints := make(map[string]struct{})
+	for _, ref := range refs {
+		addSymbolRefHints(hints, ref, symsByFile[ref.file])
+	}
+	addResolvedCalleeHints(hints, files, symsByFile)
+	return sortedSymbolHints(hints), nil
+}
+
+type symbolRef struct {
+	file   string
+	symbol string
+}
+
+func touchedSymbolRefs(acceptance string) []symbolRef {
+	var refs []symbolRef
+	for _, line := range strings.Split(acceptance, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "Read:") {
+			continue
+		}
+		content := strings.NewReplacer(";", ",").Replace(strings.TrimPrefix(line, "Read:"))
+		for _, part := range strings.Split(content, ",") {
+			if ref, ok := parseTouchedSymbolRef(part); ok {
+				refs = append(refs, ref)
+			}
+		}
+	}
+	return refs
+}
+
+func parseTouchedSymbolRef(part string) (symbolRef, bool) {
+	part = strings.TrimSpace(part)
+	if part == "" || !strings.Contains(part, "/") {
+		return symbolRef{}, false
+	}
+	file, suffix, _ := strings.Cut(part, ":")
+	file = filepath.ToSlash(strings.TrimSpace(file))
+	if file == "" {
+		return symbolRef{}, false
+	}
+	if !strings.HasSuffix(file, ".go") {
+		return symbolRef{}, false
+	}
+	return symbolRef{file: file, symbol: firstReadSymbol(suffix)}, true
+}
+
+func firstReadSymbol(suffix string) string {
+	suffix = strings.TrimSpace(suffix)
+	if suffix == "" || isDecimalString(suffix) {
+		return ""
+	}
+	symbol, _, _ := strings.Cut(suffix, "/")
+	return strings.TrimSpace(symbol)
+}
+
+func isDecimalString(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func uniqueTouchedFiles(refs []symbolRef) []string {
+	seen := make(map[string]struct{}, len(refs))
+	files := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if _, ok := seen[ref.file]; ok {
+			continue
+		}
+		seen[ref.file] = struct{}{}
+		files = append(files, ref.file)
+	}
+	return files
+}
+
+func addSymbolRefHints(hints map[string]struct{}, ref symbolRef, syms []codestruct.Symbol) {
+	if ref.symbol != "" {
+		addHint(hints, ref.symbol)
+		addHint(hints, ref.file+":"+ref.symbol)
+		return
+	}
+	for _, sym := range syms {
+		addHint(hints, sym.Name)
+		addHint(hints, ref.file+":"+sym.Name)
+	}
+}
+
+func addResolvedCalleeHints(hints map[string]struct{}, files []string, symsByFile map[string][]codestruct.Symbol) {
+	edges, _, err := codestruct.BuildCallGraph(files, symsByFile)
+	if err != nil {
+		return
+	}
+	for _, edge := range edges {
+		ref, ok := codestruct.ResolveCallee(edge, nil, symsByFile)
+		if !ok {
+			continue
+		}
+		addHint(hints, ref)
+		if _, symbol, ok := strings.Cut(ref, ":"); ok {
+			addHint(hints, symbol)
+		}
+	}
+}
+
+func addHint(hints map[string]struct{}, hint string) {
+	hint = strings.TrimSpace(hint)
+	if hint == "" {
+		return
+	}
+	hints[hint] = struct{}{}
+}
+
+func sortedSymbolHints(hints map[string]struct{}) []string {
+	out := make([]string, 0, len(hints))
+	for hint := range hints {
+		out = append(out, hint)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func trimAssignmentCardContext(result cards.RelevantCards) cards.RelevantCards {
