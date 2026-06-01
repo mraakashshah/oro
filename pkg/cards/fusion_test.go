@@ -75,6 +75,22 @@ func TestFusion_NilEmbedderEqualsPhase1(t *testing.T) {
 	}
 }
 
+func TestFusion_DefaultsAndFloorOff(t *testing.T) {
+	keyword := []ScoredCard{
+		fusionCard("keyword", 1, 0.2, 0),
+		fusionCard("semantic", 0, 0.05, 0),
+	}
+	vector := []ScoredCard{
+		fusionCard("semantic", 0.05, 0, 0.99),
+	}
+
+	got := fuse(keyword, vector, FusionConfig{FloorRatio: -1})
+
+	assertOrder(t, got, []string{"semantic", "keyword"})
+	assertScore(t, got, "keyword", 0.7/61.0)
+	assertScore(t, got, "semantic", 0.05*(0.7*(1.0/62.0+1.0/61.0)+0.3*0.99))
+}
+
 func fusionCard(id string, effectiveScore, score, cosine float64) ScoredCard {
 	return ScoredCard{
 		Card: Card{
