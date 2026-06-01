@@ -1,5 +1,6 @@
 //go:build !cgo
 
+// Package codestruct extracts symbols and call graph information from source code.
 package codestruct
 
 import "errors"
