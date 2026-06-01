@@ -1321,6 +1321,54 @@ func TestRelevant_SeeAlsoAdditiveButFloorPreserved(t *testing.T) {
 	}
 }
 
+func TestRelevant_SeededSeeAlsoBoostsRelatedCards(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+
+	seed := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "dispatcher retry seed",
+		BodySummary: "dispatcher retry timeout",
+		BodyFull:    "dispatcher retry timeout details",
+		Tags:        []string{"dispatcher"},
+	})
+	related := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "related worker cleanup",
+		BodySummary: "worker cleanup",
+		BodyFull:    "worker cleanup details",
+		Tags:        []string{"worker"},
+	})
+	unrelated := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "unrelated worker cleanup",
+		BodySummary: "worker cleanup",
+		BodyFull:    "worker cleanup details",
+		Tags:        []string{"worker"},
+	})
+	if err := store.AddRelation(ctx, seed.ID, related.ID, cards.RelationSignalCall); err != nil {
+		t.Fatalf("AddRelation: %v", err)
+	}
+
+	got, err := store.Relevant(ctx, cards.RelevanceQuery{
+		BeadDescription: "dispatcher retry timeout",
+		IncludeLowScore: true,
+		MaxTokens:       1000,
+		SeededCardIDs:   []string{seed.ID},
+		WSeeAlso:        1,
+	})
+	if err != nil {
+		t.Fatalf("Relevant: %v", err)
+	}
+
+	if deckIndex(got.Deck, related.ID) >= deckIndex(got.Deck, unrelated.ID) {
+		t.Fatalf("seeded see-also did not boost related card above unrelated: %v", deckIDs(got.Deck))
+	}
+	if deckIndex(got.Deck, related.ID) <= deckIndex(got.Deck, seed.ID) {
+		t.Fatalf("seeded see-also boost exceeded seed floor: %v", deckIDs(got.Deck))
+	}
+}
+
 func deckIDs(deck []cards.DeckCard) []string {
 	ids := make([]string, 0, len(deck))
 	for _, card := range deck {
