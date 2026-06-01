@@ -255,6 +255,18 @@ func TestSweepers(t *testing.T) {
 		}
 	})
 
+	t.Run("ExpireReviewQueueSLA/skips_db_without_learning_table", func(t *testing.T) {
+		db := newTestDB(t)
+
+		n, err := ExpireReviewQueueSLA(ctx, db, 60)
+		if err != nil {
+			t.Fatalf("ExpireReviewQueueSLA without learning table: %v", err)
+		}
+		if n != 0 {
+			t.Errorf("rows rejected = %d, want 0 without learning table", n)
+		}
+	})
+
 	// ─── SweepDeletedBeadLearnings ───────────────────────────────────────────
 
 	t.Run("SweepDeletedBeadLearnings/rejects_learnings_for_soft_deleted_bead", func(t *testing.T) {
@@ -308,6 +320,18 @@ func TestSweepers(t *testing.T) {
 		}
 		if n != 0 {
 			t.Errorf("second run rows rejected = %d, want 0 (idempotent)", n)
+		}
+	})
+
+	t.Run("SweepDeletedBeadLearnings/skips_db_without_learning_table", func(t *testing.T) {
+		db := newTestDB(t)
+
+		n, err := SweepDeletedBeadLearnings(ctx, db)
+		if err != nil {
+			t.Fatalf("SweepDeletedBeadLearnings without learning table: %v", err)
+		}
+		if n != 0 {
+			t.Errorf("rows rejected = %d, want 0 without learning table", n)
 		}
 	})
 
