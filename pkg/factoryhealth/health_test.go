@@ -323,6 +323,78 @@ func TestMetricLoadersHandleMissingInputs(t *testing.T) {
 	if throughput.AssignmentsStarted != 0 || throughput.ProductiveClosures != 0 || throughput.ProgressTimeouts != 0 {
 		t.Fatalf("missing-table throughput metrics = %+v, want zero counters", throughput)
 	}
+
+	throughput, err = LoadThroughputMetrics(ctx, db, now, 0)
+	if err != nil {
+		t.Fatalf("LoadThroughputMetrics zero window: %v", err)
+	}
+	if throughput.WindowSecs != 0 || throughput.AssignmentsStarted != 0 {
+		t.Fatalf("zero-window throughput metrics = %+v, want zero values", throughput)
+	}
+}
+
+func TestLoadQGMetricsHandlesPartialSchema(t *testing.T) {
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE qg_failure_incidents (
+    id INTEGER PRIMARY KEY,
+    fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL
+);
+INSERT INTO qg_failure_incidents (id, fingerprint, status)
+VALUES (1, 'qg:partial-schema', 'open');
+`); err != nil {
+		t.Fatalf("seed partial qg schema: %v", err)
+	}
+
+	openIncidents, occurrences, fingerprints, err := LoadQGMetrics(ctx, db)
+	if err != nil {
+		t.Fatalf("LoadQGMetrics: %v", err)
+	}
+	if openIncidents != 1 || occurrences != 0 || len(fingerprints) != 0 {
+		t.Fatalf("partial qg metrics = %d/%d/%v, want 1/0/[]", openIncidents, occurrences, fingerprints)
+	}
+
+	fingerprints, err = LoadRecentQGFingerprints(ctx, db)
+	if err != nil {
+		t.Fatalf("LoadRecentQGFingerprints partial schema: %v", err)
+	}
+	if len(fingerprints) != 0 {
+		t.Fatalf("partial-schema fingerprints = %v, want none", fingerprints)
+	}
+}
+
+func TestLoadRecoveryQuarantineMetricsCountsOpenRows(t *testing.T) {
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO recovery_quarantines (bead_id, reason, details, status) VALUES
+    ('oro-open-a', 'unsafe_stale_branch', 'first', 'open'),
+    ('oro-open-b', 'unsafe_stale_branch', 'second', 'open'),
+    ('oro-closed', 'unsafe_stale_branch', 'resolved', 'resolved');
+`); err != nil {
+		t.Fatalf("seed recovery quarantines: %v", err)
+	}
+
+	got, err := LoadRecoveryQuarantineMetrics(ctx, db)
+	if err != nil {
+		t.Fatalf("LoadRecoveryQuarantineMetrics: %v", err)
+	}
+	if got != 2 {
+		t.Fatalf("open recovery quarantines = %d, want 2", got)
+	}
 }
 
 func TestParseSQLiteTimeAcceptsStoredFormats(t *testing.T) {
