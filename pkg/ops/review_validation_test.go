@@ -1,11 +1,12 @@
 package ops_test
 
 import (
-	"oro/pkg/ops"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"oro/pkg/ops"
 )
 
 func TestValidateFinding_RejectsHallucinations(t *testing.T) {
