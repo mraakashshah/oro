@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -85,7 +86,7 @@ func gitOutput(ctx context.Context, worktree string, args ...string) (string, er
 	cmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
 	out, err := cmd.Output()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
 	return string(out), nil
 }
