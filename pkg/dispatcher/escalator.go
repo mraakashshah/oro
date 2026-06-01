@@ -11,7 +11,15 @@ import (
 
 const tmuxSetBufferArgLimit = 64 * 1024
 
-// EscalationType and FormatEscalation are now in pkg/protocol/types.go
+// EscalationType and FormatEscalation are now in pkg/protocol/types.go.
+
+// NoopEscalator records no side effects while satisfying the Escalator
+// interface for managerless dispatcher starts.
+type NoopEscalator struct{}
+
+func (NoopEscalator) Escalate(context.Context, string) error {
+	return nil
+}
 
 // TmuxEscalator implements the Escalator interface by sending messages to a
 // tmux pane via `tmux send-keys`. This is the production mechanism for

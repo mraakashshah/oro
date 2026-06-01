@@ -79,6 +79,17 @@ func coreCalls(calls []escCall) []escCall {
 
 // --- Tests ---
 
+func TestNoopEscalatorReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	var esc dispatcher.Escalator = dispatcher.NoopEscalator{}
+	for _, msg := range []string{"", "arbitrary escalation message"} {
+		if err := esc.Escalate(context.Background(), msg); err != nil {
+			t.Fatalf("NoopEscalator.Escalate(%q) returned error: %v", msg, err)
+		}
+	}
+}
+
 func TestEscalator_ClearsInputBeforePaste(t *testing.T) {
 	runner := &mockEscRunner{}
 	esc := dispatcher.NewTmuxEscalator("oro", "oro:manager", runner)
