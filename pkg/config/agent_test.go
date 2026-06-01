@@ -284,18 +284,24 @@ func TestDefaultAgentConfigLockedProviderRoleTable(t *testing.T) {
 	}
 
 	for role, want := range map[string]config.RoleConfig{
-		"spec_writer":       {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
-		"spec_challenger":   {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "xhigh"},
-		"worker":            {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
-		"worker_escalation": {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "medium"},
-		"ops_review":        {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
-		"ops_escalation":    {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
-		"ops_merge":         {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
-		"ops_diagnosis":     {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
-		"ops_decompose":     {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
-		"ops_epic_fix":      {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
-		"ops_write_ac":      {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
-		"ops_dream":         {Transport: "cli", Tier: protocol.TierFast},
+		"spec_writer":             {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+		"spec_challenger":         {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "xhigh"},
+		"worker":                  {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
+		"worker_escalation":       {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "medium"},
+		"ops_review":              {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+		"ops_review_correctness":  {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+		"ops_review_security":     {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+		"ops_review_adversarial":  {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+		"ops_review_design":       {Transport: "cli", Runtime: "claude", Model: "claude-sonnet-4-6"},
+		"ops_review_test":         {Transport: "cli", Runtime: "claude", Model: "claude-sonnet-4-6"},
+		"ops_review_architecture": {Transport: "cli", Runtime: "claude", Model: "claude-sonnet-4-6"},
+		"ops_escalation":          {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
+		"ops_merge":               {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
+		"ops_diagnosis":           {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
+		"ops_decompose":           {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+		"ops_epic_fix":            {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+		"ops_write_ac":            {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
+		"ops_dream":               {Transport: "cli", Tier: protocol.TierFast},
 	} {
 		if got := cfg.Roles[role]; got != want {
 			t.Fatalf("role %s = %+v, want %+v", role, got, want)

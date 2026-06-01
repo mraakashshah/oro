@@ -185,6 +185,8 @@ type ReviewOpts struct {
 	Worktree           string
 	AcceptanceCriteria string
 	BaseBranch         string // defaults to "main" if empty
+	MultiPersona       bool
+	MaxReviewers       int
 	ProjectRoot        string // for reading shared instructions, Claude compatibility files, .claude/rules/, assets/review-patterns.md
 	AgentInstructions  string // explicit shared instructions path; falls back to ProjectRoot/ORO_AGENT.md when empty
 	ClaudeMD           string // explicit path to CLAUDE.md; falls back to ProjectRoot/CLAUDE.md when empty
@@ -292,6 +294,10 @@ func (s *Spawner) Review(ctx context.Context, opts ReviewOpts) <-chan Result {
 		return ch
 	}
 
+	if opts.MultiPersona {
+		return s.reviewMultiPersona(ctx, opts)
+	}
+
 	prompt := buildReviewPrompt(opts)
 	return s.run(ctx, OpsReview, opts.BeadID, opts.Worktree, prompt)
 }
@@ -302,6 +308,78 @@ func (s *Spawner) runCheapTriage(ctx context.Context, opts ReviewOpts) []Finding
 	result := <-s.runWith(ctx, OpsReview, spawnRouting{role: "ops_review_triage"}, opts.BeadID, opts.Worktree, prompt)
 	report, _ := parseReviewReport(result.Feedback)
 	return cheapGate(report.Findings)
+}
+
+func (s *Spawner) reviewMultiPersona(ctx context.Context, opts ReviewOpts) <-chan Result {
+	personas := selectPersonas(opts)
+	if len(personas) == 0 {
+		return s.run(ctx, OpsReview, opts.BeadID, opts.Worktree, buildReviewPrompt(opts))
+	}
+
+	manifest, prompt := buildStructuredReviewPrompt(opts)
+	out := make(chan Result, 1)
+	go func() {
+		reports := s.collectPersonaReviews(ctx, opts, personas, prompt)
+		if allReviewReportsFailed(reports) {
+			out <- <-s.run(ctx, OpsReview, opts.BeadID, opts.Worktree, buildReviewPrompt(opts))
+			return
+		}
+		out <- mergeReports(reports, manifest, opts)
+	}()
+	return out
+}
+
+func (s *Spawner) collectPersonaReviews(ctx context.Context, opts ReviewOpts, personas []Persona, prompt string) []ReviewReport {
+	maxReviewers := opts.MaxReviewers
+	if maxReviewers <= 0 {
+		maxReviewers = 4
+	}
+	if maxReviewers > len(personas) {
+		maxReviewers = len(personas)
+	}
+
+	reports := make([]ReviewReport, 0, len(personas))
+	for start := 0; start < len(personas); start += maxReviewers {
+		end := start + maxReviewers
+		if end > len(personas) {
+			end = len(personas)
+		}
+		chans := make([]<-chan Result, 0, end-start)
+		for _, persona := range personas[start:end] {
+			chans = append(chans, s.runWith(
+				ctx,
+				OpsReview,
+				spawnRouting{role: persona.Role},
+				opts.BeadID,
+				opts.Worktree,
+				prompt+persona.Fragment,
+			))
+		}
+		for i, ch := range chans {
+			result := <-ch
+			report, _ := parseReviewReport(result.Feedback)
+			if report.Reviewer == "" {
+				report.Reviewer = personas[start+i].ID
+			}
+			if result.Err != nil || result.Verdict == VerdictFailed {
+				report.Verdict = VerdictFailed
+			}
+			reports = append(reports, report)
+		}
+	}
+	return reports
+}
+
+func allReviewReportsFailed(reports []ReviewReport) bool {
+	if len(reports) == 0 {
+		return true
+	}
+	for _, report := range reports {
+		if report.Verdict != VerdictFailed {
+			return false
+		}
+	}
+	return true
 }
 
 // ResolveMergeConflict spawns a merge conflict resolution agent.
