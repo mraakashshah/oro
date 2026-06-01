@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"oro/pkg/cards"
 )
 
 type sequenceBatchSpawner struct {
@@ -39,6 +41,86 @@ func (s *sequenceBatchSpawner) getCalls() []spawnCall {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]spawnCall(nil), s.calls...)
+}
+
+func TestBuildGradePrompt_IncludesEvidence(t *testing.T) {
+	proposal := cards.Card{
+		ID:          "card-proposal",
+		Type:        cards.CardTypePattern,
+		Title:       "Verify retry state",
+		BodySummary: "Run targeted acceptance before editing retry tasks.",
+		BodyFull:    "On retry tasks, inspect the branch and run the acceptance command before changing code.",
+		Tags:        []string{"retry", "qg"},
+	}
+	evidence := GradeEvidence{
+		Events: []cards.CardEvent{
+			{CardID: "card-prior", BeadID: "oro-old", Actor: "worker", Kind: "nack", Payload: "prior version contradicted acceptance output"},
+			{CardID: "card-prior", BeadID: "oro-old", Actor: "ops", Kind: "contradicted", Payload: "review found stale retry assumption"},
+		},
+		SeeAlso: []cards.CardSummary{
+			{
+				ID:          "card-related",
+				Type:        cards.CardTypePattern,
+				Title:       "Verify retry state before editing",
+				BodySummary: "Retry attempts can already contain the fix.",
+				BodyFull:    "Run the exact acceptance command first and inspect branch state before editing retry tasks.",
+				Score:       0.91,
+				Tags:        []string{"retry"},
+			},
+		},
+		VectorNeighbors: []cards.CardSummary{
+			{
+				ID:          "card-neighbor",
+				Type:        cards.CardTypeDecision,
+				Title:       "Keep prompt evidence local",
+				BodySummary: "Grade prompts should cite local Oro evidence.",
+				BodyFull:    "Use card history, related cards, vector neighbours, and bead outcomes.",
+				Score:       0.87,
+				Tags:        []string{"grade"},
+			},
+		},
+		OriginatingBead: GradeBeadEvidence{
+			ID:           "oro-s08-p3c",
+			Title:        "P3c: grade prompt + oro-native evidence retriever",
+			Type:         "task",
+			QGOutcome:    "passed",
+			MergeOutcome: "merged into epic/oro-spec08",
+			Summary:      "acceptance test proved the prompt included evidence",
+		},
+	}
+
+	got := buildGradePrompt(proposal, evidence)
+	for _, want := range []string{
+		"card-proposal",
+		"Verify retry state",
+		"On retry tasks, inspect the branch",
+		"card_events history",
+		"prior version contradicted acceptance output",
+		"SeeAlso related cards",
+		"card-related",
+		"Phase 2 vector neighbours",
+		"card-neighbor",
+		"originating bead",
+		"oro-s08-p3c",
+		"passed",
+		"merged into epic/oro-spec08",
+		"Return only JSON",
+		"verdict",
+		"confidence",
+		"reasoning",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("grade prompt missing %q:\n%s", want, got)
+		}
+	}
+
+	parsed, ok := parseGradeWorkerOutput(`{"verdict":"correct","confidence":0.96,"reasoning":"Evidence supports the proposal."}`)
+	if !ok {
+		t.Fatal("parseGradeWorkerOutput rejected valid JSON")
+	}
+	if parsed.Verdict != GradeVerdictCorrect || parsed.Confidence != 0.96 || parsed.Reasoning != "Evidence supports the proposal." {
+		t.Fatalf("parsed grade output = %#v", parsed)
+	}
 }
 
 func TestVoiceGate_RejectsOffVoiceProse(t *testing.T) {

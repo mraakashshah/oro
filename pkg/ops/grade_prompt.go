@@ -13,9 +13,130 @@ import (
 // CardCandidate is the proposed card prose shape graded by the voice gate.
 type CardCandidate = cards.CardCandidate
 
+// Card is the proposed durable card shape graded by the grade worker.
+type Card = cards.Card
+
+// GradeVerdict is the closed set of verdicts emitted by the grade worker.
+type GradeVerdict string
+
+const (
+	// GradeVerdictCorrect means the evidence supports applying the proposal.
+	GradeVerdictCorrect GradeVerdict = "correct"
+	// GradeVerdictIncorrect means the evidence refutes the proposal.
+	GradeVerdictIncorrect GradeVerdict = "incorrect"
+	// GradeVerdictPartial means the proposal is useful but needs human review.
+	GradeVerdictPartial GradeVerdict = "partial"
+	// GradeVerdictUnresolvable means the evidence is insufficient or conflicted.
+	GradeVerdictUnresolvable GradeVerdict = "unresolvable"
+)
+
+// GradeEvidence is the oro-native context supplied to the grade worker.
+type GradeEvidence struct {
+	Events          []cards.CardEvent
+	SeeAlso         []cards.CardSummary
+	VectorNeighbors []cards.CardSummary
+	OriginatingBead GradeBeadEvidence
+}
+
+// GradeBeadEvidence summarizes the bead that produced the proposal.
+type GradeBeadEvidence struct {
+	ID           string `json:"id"`
+	Title        string `json:"title"`
+	Type         string `json:"type"`
+	QGOutcome    string `json:"qg_outcome"`
+	MergeOutcome string `json:"merge_outcome"`
+	Summary      string `json:"summary"`
+}
+
+type gradeWorkerResult struct {
+	Verdict    GradeVerdict `json:"verdict"`
+	Confidence float64      `json:"confidence"`
+	Reasoning  string       `json:"reasoning"`
+}
+
 type voiceGateJudgeResult struct {
 	Score    int    `json:"score"`
 	Feedback string `json:"feedback"`
+}
+
+func buildGradePrompt(proposal Card, evidence GradeEvidence) string {
+	var b strings.Builder
+	b.WriteString("You are grading an Oro card proposal against local project evidence.\n")
+	b.WriteString("Use only the evidence in this prompt. If the evidence is missing or conflicted, choose unresolvable.\n\n")
+	b.WriteString("Return only JSON: {\"verdict\":\"correct|incorrect|partial|unresolvable\",\"confidence\":<0-1>,\"reasoning\":\"<concise evidence-based rationale>\"}.\n\n")
+
+	b.WriteString("## Proposal\n")
+	b.WriteString(mustJSON(proposal))
+	b.WriteString("\n\n")
+
+	b.WriteString("## Evidence\n")
+	b.WriteString("### card_events history\n")
+	writeCardEvents(&b, evidence.Events)
+	b.WriteString("\n### SeeAlso related cards\n")
+	writeCardSummaries(&b, evidence.SeeAlso)
+	b.WriteString("\n### Phase 2 vector neighbours\n")
+	writeCardSummaries(&b, evidence.VectorNeighbors)
+	b.WriteString("\n### originating bead\n")
+	b.WriteString(mustJSON(evidence.OriginatingBead))
+	b.WriteString("\n")
+
+	return b.String()
+}
+
+func writeCardEvents(b *strings.Builder, events []cards.CardEvent) {
+	if len(events) == 0 {
+		b.WriteString("(none)\n")
+		return
+	}
+	for _, event := range events {
+		b.WriteString("- ")
+		b.WriteString(mustJSON(event))
+		b.WriteString("\n")
+	}
+}
+
+func writeCardSummaries(b *strings.Builder, summaries []cards.CardSummary) {
+	if len(summaries) == 0 {
+		b.WriteString("(none)\n")
+		return
+	}
+	for _, summary := range summaries {
+		b.WriteString("- ")
+		b.WriteString(mustJSON(summary))
+		b.WriteString("\n")
+	}
+}
+
+func parseGradeWorkerOutput(out string) (gradeWorkerResult, bool) {
+	var result gradeWorkerResult
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &result); err != nil {
+		return gradeWorkerResult{}, false
+	}
+	if !isValidGradeVerdict(result.Verdict) {
+		return gradeWorkerResult{}, false
+	}
+	result.Confidence = clampGradeConfidence(result.Confidence)
+	return result, true
+}
+
+func isValidGradeVerdict(verdict GradeVerdict) bool {
+	switch verdict {
+	case GradeVerdictCorrect, GradeVerdictIncorrect, GradeVerdictPartial, GradeVerdictUnresolvable:
+		return true
+	default:
+		return false
+	}
+}
+
+func clampGradeConfidence(confidence float64) float64 {
+	switch {
+	case confidence < 0:
+		return 0
+	case confidence > 1:
+		return 1
+	default:
+		return confidence
+	}
 }
 
 // buildVoiceGatePrompt asks a cheap judge to score proposed card prose against
