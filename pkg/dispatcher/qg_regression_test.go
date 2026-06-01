@@ -2,12 +2,17 @@ package dispatcher //nolint:testpackage // parseTestOutcomes is an unexported pu
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"oro/pkg/protocol"
 )
 
 func TestParseTestOutcomes(t *testing.T) {
@@ -143,6 +148,122 @@ func TestCaptureQGBaselineGitFailure(t *testing.T) {
 	if len(d.qgBaselineCache) != 0 {
 		t.Fatalf("qgBaselineCache = %#v, want empty", d.qgBaselineCache)
 	}
+}
+
+func TestRegressionRevertFlagOff_NoBaselineCapture(t *testing.T) {
+	t.Parallel()
+
+	defaulted := (&Config{}).withDefaults()
+	if !defaulted.RegressionRevert {
+		t.Fatal("RegressionRevert default = false, want true")
+	}
+
+	dOn, cleanupOn := newQGRetryBaselineTestDispatcher(t, true)
+	defer cleanupOn()
+	ioPhase := false
+	dOn.testUnlockHook = func() {
+		ioPhase = true
+	}
+	dOn.shutdownRunner = &mockCommandRunner{callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if reflect.DeepEqual(args, []string{"-C", "/tmp/qg-retry-worktree", "rev-parse", "HEAD"}) && !ioPhase {
+			t.Fatal("captureQGBaseline ran before withReservation I/O phase")
+		}
+		return []byte("abc123\n"), nil
+	}}
+	dOn.qgRetryWithReservation(context.Background(), "worker-1", "bead-1", "quality gate failed", 1)
+	if len(dOn.qgRunner.(*mockQGRunner).calls) != 1 {
+		t.Fatalf("default-on qgRunner calls = %d, want 1", len(dOn.qgRunner.(*mockQGRunner).calls))
+	}
+	if revParseCalls(dOn.shutdownRunner.(*mockCommandRunner)) != 1 {
+		t.Fatalf("default-on baseline rev-parse calls = %d, want 1", revParseCalls(dOn.shutdownRunner.(*mockCommandRunner)))
+	}
+
+	d, cleanup := newQGRetryBaselineTestDispatcher(t, false)
+	defer cleanup()
+
+	d.qgRetryWithReservation(context.Background(), "worker-1", "bead-1", "quality gate failed", 1)
+
+	if len(d.qgRunner.(*mockQGRunner).calls) != 0 {
+		t.Fatalf("qgRunner calls = %d, want 0", len(d.qgRunner.(*mockQGRunner).calls))
+	}
+	if revParseCalls(d.shutdownRunner.(*mockCommandRunner)) != 0 {
+		t.Fatalf("baseline rev-parse calls = %d, want 0", revParseCalls(d.shutdownRunner.(*mockCommandRunner)))
+	}
+}
+
+func TestTransientRetry_SkipsRegressionCheck(t *testing.T) {
+	t.Parallel()
+
+	d, cleanup := newQGRetryBaselineTestDispatcher(t, true)
+	defer cleanup()
+	d.transientBackoffFn = func(int) time.Duration { return 0 }
+
+	d.handleQGFailure(context.Background(), "worker-1", "bead-1", "network timeout while downloading module")
+
+	if len(d.qgRunner.(*mockQGRunner).calls) != 0 {
+		t.Fatalf("qgRunner calls = %d, want 0", len(d.qgRunner.(*mockQGRunner).calls))
+	}
+	if revParseCalls(d.shutdownRunner.(*mockCommandRunner)) != 0 {
+		t.Fatalf("baseline rev-parse calls = %d, want 0", revParseCalls(d.shutdownRunner.(*mockCommandRunner)))
+	}
+}
+
+func newQGRetryBaselineTestDispatcher(t *testing.T, regressionRevert bool) (*Dispatcher, func()) {
+	t.Helper()
+
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	d.cfg.RegressionRevert = regressionRevert
+	d.qgRunner = &mockQGRunner{passed: true, output: "--- PASS: TestExisting (0.00s)\n"}
+	d.shutdownRunner = &mockCommandRunner{callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if reflect.DeepEqual(args, []string{"-C", "/tmp/qg-retry-worktree", "rev-parse", "HEAD"}) {
+			return []byte("abc123\n"), nil
+		}
+		return []byte("abc123 commit\n"), nil
+	}}
+
+	beadSrc.mu.Lock()
+	beadSrc.shown["bead-1"] = &protocol.BeadDetail{ID: "bead-1", Title: "Retry bead"}
+	beadSrc.mu.Unlock()
+
+	serverConn, clientConn := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var msg protocol.Message
+		_ = json.NewDecoder(clientConn).Decode(&msg)
+	}()
+
+	d.mu.Lock()
+	d.workers["worker-1"] = &trackedWorker{
+		id:           "worker-1",
+		conn:         serverConn,
+		state:        protocol.WorkerReserved,
+		beadID:       "bead-1",
+		worktree:     "/tmp/qg-retry-worktree",
+		assignmentID: 1,
+	}
+	d.mu.Unlock()
+
+	cleanup := func() {
+		_ = serverConn.Close()
+		_ = clientConn.Close()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for worker read goroutine")
+		}
+	}
+	return d, cleanup
+}
+
+func revParseCalls(runner *mockCommandRunner) int {
+	count := 0
+	for _, call := range runner.calls {
+		if call.Name == "git" && reflect.DeepEqual(call.Args, []string{"-C", "/tmp/qg-retry-worktree", "rev-parse", "HEAD"}) {
+			count++
+		}
+	}
+	return count
 }
 
 func TestCompareQGRegressionBaseline(t *testing.T) {
