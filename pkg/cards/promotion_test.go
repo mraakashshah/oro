@@ -275,13 +275,13 @@ func TestCalibration_ReportsRates(t *testing.T) {
 	ctx := context.Background()
 	store, db := newCalibrationStore(t)
 
-	seedResolvedGrade(t, ctx, store, db, "pattern", "task", "correct")
-	seedResolvedGrade(t, ctx, store, db, "pattern", "task", "correct")
-	seedResolvedGrade(t, ctx, store, db, "pattern", "task", "correct")
-	seedResolvedGrade(t, ctx, store, db, "pattern", "task", "incorrect")
-	seedResolvedGrade(t, ctx, store, db, "rule", "bug", "incorrect")
-	seedResolvedGrade(t, ctx, store, db, "rule", "bug", "incorrect")
-	seedResolvedGrade(t, ctx, store, db, "rule", "bug", "partial")
+	seedResolvedGrade(ctx, t, store, db, "pattern", "task", "correct")
+	seedResolvedGrade(ctx, t, store, db, "pattern", "task", "correct")
+	seedResolvedGrade(ctx, t, store, db, "pattern", "task", "correct")
+	seedResolvedGrade(ctx, t, store, db, "pattern", "task", "incorrect")
+	seedResolvedGrade(ctx, t, store, db, "rule", "bug", "incorrect")
+	seedResolvedGrade(ctx, t, store, db, "rule", "bug", "incorrect")
+	seedResolvedGrade(ctx, t, store, db, "rule", "bug", "partial")
 
 	scorecard, err := store.Calibration(ctx)
 	if err != nil {
@@ -343,8 +343,8 @@ func newCalibrationStore(t *testing.T) (*cards.SQLiteCardStore, *sql.DB) {
 }
 
 func seedResolvedGrade(
-	t *testing.T,
 	ctx context.Context,
+	t *testing.T,
 	store *cards.SQLiteCardStore,
 	db *sql.DB,
 	cardType string,
