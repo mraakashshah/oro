@@ -140,3 +140,34 @@ func TestCaptureQGBaselineGitFailure(t *testing.T) {
 		t.Fatalf("qgBaselineCache = %#v, want empty", d.qgBaselineCache)
 	}
 }
+
+func TestCompareQGRegressionBaseline(t *testing.T) {
+	t.Parallel()
+
+	baseline := qgBaseline{
+		"bead-1": {
+			HeadSHA: "abc123",
+			Outcomes: map[string]bool{
+				"TestStillGreen": true,
+				"TestRegressed":  true,
+				"TestWasRed":     false,
+			},
+		},
+	}
+
+	got := compareQGRegressionBaseline(baseline, "bead-1", map[string]bool{
+		"TestStillGreen": true,
+		"TestRegressed":  false,
+		"TestWasRed":     false,
+	})
+	want := []qgRegression{
+		{
+			TestName:       "TestRegressed",
+			BaselinePassed: true,
+			CurrentPassed:  false,
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("compareQGRegressionBaseline() = %#v, want %#v", got, want)
+	}
+}
