@@ -10,8 +10,9 @@ import (
 type qgBaseline map[string]qgBaselineEntry
 
 type qgBaselineEntry struct {
-	HeadSHA  string
-	Outcomes map[string]bool
+	HeadSHA     string
+	SuitePassed bool
+	Outcomes    map[string]bool
 }
 
 type qgRegression struct {
@@ -36,17 +37,36 @@ func (d *Dispatcher) captureQGBaseline(ctx context.Context, beadID, worktree str
 		return cached, nil
 	}
 
-	_, output, err := d.qgRunner.Run(ctx, worktree, !d.cfg.MutationTesting)
+	passed, output, err := d.qgRunner.Run(ctx, worktree, !d.cfg.MutationTesting)
 	if err != nil {
 		return nil, fmt.Errorf("capture qg baseline run: %w", err)
 	}
 	baseline := qgBaseline{
 		beadID: {
-			HeadSHA:  headSHA,
-			Outcomes: parseTestOutcomes(output),
+			HeadSHA:     headSHA,
+			SuitePassed: passed,
+			Outcomes:    parseTestOutcomes(output),
 		},
 	}
 	return d.storeQGBaseline(headSHA, baseline), nil
+}
+
+func (d *Dispatcher) detectQGRegression(ctx context.Context, base qgBaseline, worktree string) (qgRegression, error) {
+	passed, output, err := d.qgRunner.Run(ctx, worktree, !d.cfg.MutationTesting)
+	if err != nil {
+		return qgRegression{}, fmt.Errorf("detect qg regression run: %w", err)
+	}
+	current := parseTestOutcomes(output)
+	for beadID := range base {
+		regressions := compareQGRegressionBaseline(base, beadID, current)
+		if len(regressions) > 0 {
+			return regressions[0], nil
+		}
+		if regression, ok := detectCoarseQGRegression(base[beadID], passed, current); ok {
+			return regression, nil
+		}
+	}
+	return qgRegression{}, nil
 }
 
 func (d *Dispatcher) cachedQGBaseline(headSHA string) (qgBaseline, bool) {
@@ -83,11 +103,23 @@ func cloneQGBaseline(baseline qgBaseline) qgBaseline {
 			outcomes[name] = passed
 		}
 		cloned[beadID] = qgBaselineEntry{
-			HeadSHA:  entry.HeadSHA,
-			Outcomes: outcomes,
+			HeadSHA:     entry.HeadSHA,
+			SuitePassed: entry.SuitePassed,
+			Outcomes:    outcomes,
 		}
 	}
 	return cloned
+}
+
+func detectCoarseQGRegression(entry qgBaselineEntry, currentPassed bool, current map[string]bool) (qgRegression, bool) {
+	if len(entry.Outcomes) != 0 || len(current) != 0 || !entry.SuitePassed || currentPassed {
+		return qgRegression{}, false
+	}
+	return qgRegression{
+		TestName:       "quality_gate",
+		BaselinePassed: true,
+		CurrentPassed:  false,
+	}, true
 }
 
 func compareQGRegressionBaseline(baseline qgBaseline, beadID string, current map[string]bool) []qgRegression {

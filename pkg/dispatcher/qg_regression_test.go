@@ -91,7 +91,8 @@ FAIL
 
 	want := qgBaseline{
 		"bead-1": {
-			HeadSHA: "abc123",
+			HeadSHA:     "abc123",
+			SuitePassed: true,
 			Outcomes: map[string]bool{
 				"TestKept":   true,
 				"TestBroken": false,
@@ -169,5 +170,115 @@ func TestCompareQGRegressionBaseline(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("compareQGRegressionBaseline() = %#v, want %#v", got, want)
+	}
+}
+
+func TestDetectQGRegression(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		baseline   qgBaseline
+		postPassed bool
+		postOutput string
+		want       qgRegression
+	}{
+		{
+			name: "green to red test is regression",
+			baseline: qgBaseline{
+				"bead-1": {
+					HeadSHA: "abc123",
+					Outcomes: map[string]bool{
+						"TestA": true,
+						"TestB": true,
+					},
+				},
+			},
+			postPassed: false,
+			postOutput: `=== RUN   TestA
+--- PASS: TestA (0.00s)
+=== RUN   TestB
+--- FAIL: TestB (0.01s)
+FAIL
+`,
+			want: qgRegression{
+				TestName:       "TestB",
+				BaselinePassed: true,
+				CurrentPassed:  false,
+			},
+		},
+		{
+			name: "pre-existing red is not regression",
+			baseline: qgBaseline{
+				"bead-1": {
+					HeadSHA: "abc123",
+					Outcomes: map[string]bool{
+						"TestB": false,
+					},
+				},
+			},
+			postPassed: false,
+			postOutput: `=== RUN   TestB
+--- FAIL: TestB (0.01s)
+FAIL
+`,
+		},
+		{
+			name: "identical outcomes are not regression",
+			baseline: qgBaseline{
+				"bead-1": {
+					HeadSHA: "abc123",
+					Outcomes: map[string]bool{
+						"TestA": true,
+						"TestB": false,
+					},
+				},
+			},
+			postPassed: false,
+			postOutput: `=== RUN   TestA
+--- PASS: TestA (0.00s)
+=== RUN   TestB
+--- FAIL: TestB (0.01s)
+FAIL
+`,
+		},
+		{
+			name: "unparseable green to red falls back to suite regression",
+			baseline: qgBaseline{
+				"bead-1": {
+					HeadSHA:     "abc123",
+					SuitePassed: true,
+					Outcomes:    map[string]bool{},
+				},
+			},
+			postPassed: false,
+			postOutput: "quality gate failed without parseable test names",
+			want: qgRegression{
+				TestName:       "quality_gate",
+				BaselinePassed: true,
+				CurrentPassed:  false,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			d := &Dispatcher{
+				qgRunner: &mockQGRunner{
+					passed: tt.postPassed,
+					output: tt.postOutput,
+				},
+			}
+
+			got, err := d.detectQGRegression(context.Background(), tt.baseline, t.TempDir())
+			if err != nil {
+				t.Fatalf("detectQGRegression() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("detectQGRegression() = %#v, want %#v", got, tt.want)
+			}
+		})
 	}
 }
