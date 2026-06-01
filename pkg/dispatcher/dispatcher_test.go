@@ -3883,11 +3883,9 @@ func TestOneShotFailureCreatesOpsRunFailureWithoutManagerFallback(t *testing.T) 
 		t.Fatalf("LoadOpsRunMetrics: %v", err)
 	}
 	health := factoryhealth.Evaluate(factoryhealth.Snapshot{
-		DaemonRunning:       true,
-		DispatcherState:     "running",
-		ManagerPaneRequired: true,
-		ManagerPaneAlive:    false,
-		OpsRuns:             opsRuns,
+		DaemonRunning:   true,
+		DispatcherState: "running",
+		OpsRuns:         opsRuns,
 	})
 	finding, ok := factoryHealthFindingByCode(health, factoryhealth.FindingOpsRunFailed)
 	if !ok {

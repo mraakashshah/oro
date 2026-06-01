@@ -18,7 +18,6 @@ type factoryHealthInput struct {
 	daemonRunning           bool
 	daemonPID               int
 	dispatcherState         string
-	managerPaneAlive        bool
 	workers                 []workerStatus
 	queueDepth              int
 	targetWorkers           int
@@ -29,20 +28,6 @@ type factoryHealthInput struct {
 	openRecoveryQuarantines int
 	progressTimeoutSecs     float64
 	heartbeatTimeoutSecs    float64
-}
-
-// paneAlive reports whether the given pane has a pane_activity row whose
-// last_seen unix timestamp is within the past 60 seconds of nowUnix.
-func paneAlive(ctx context.Context, db *sql.DB, nowUnix int64) bool {
-	if db == nil {
-		return false
-	}
-	var lastSeen int64
-	err := db.QueryRowContext(ctx, `SELECT last_seen FROM pane_activity WHERE pane = 'manager'`).Scan(&lastSeen)
-	if err != nil {
-		return false
-	}
-	return nowUnix-lastSeen <= 60
 }
 
 // applyHealth returns the repo-owned FactoryHealth JSON contract.
@@ -60,7 +45,6 @@ func (d *Dispatcher) applyHealth() (string, error) {
 	if err != nil {
 		_ = d.logEvent(ctx, "factory_health_recovery_quarantine_load_failed", "dispatcher", "", "", err.Error())
 	}
-	managerPaneAlive := d.managerPaneAlive(ctx, now.Unix())
 
 	d.mu.Lock()
 	workers, _, _, _ := d.snapshotWorkers(now)
@@ -69,7 +53,6 @@ func (d *Dispatcher) applyHealth() (string, error) {
 		daemonRunning:           true,
 		daemonPID:               os.Getpid(),
 		dispatcherState:         string(d.state),
-		managerPaneAlive:        managerPaneAlive,
 		workers:                 workers,
 		queueDepth:              queueDepth,
 		targetWorkers:           d.targetWorkers,
@@ -89,17 +72,6 @@ func (d *Dispatcher) applyHealth() (string, error) {
 		return "", fmt.Errorf("marshal health: %w", err)
 	}
 	return string(data), nil
-}
-
-func (d *Dispatcher) managerPaneAlive(ctx context.Context, nowUnix int64) bool {
-	if paneAlive(ctx, d.db, nowUnix) {
-		return true
-	}
-	d.mu.Lock()
-	restarter := d.paneRestarter
-	d.mu.Unlock()
-	checker, ok := restarter.(PaneLivenessChecker)
-	return ok && checker.Alive(ctx, "manager")
 }
 
 func (d *Dispatcher) evaluateFactoryHealth(ctx context.Context, now time.Time, input factoryHealthInput) factoryhealth.FactoryHealth {
@@ -127,7 +99,6 @@ func (d *Dispatcher) evaluateFactoryHealth(ctx context.Context, now time.Time, i
 		DaemonRunning:           input.daemonRunning,
 		DaemonPID:               input.daemonPID,
 		DispatcherState:         input.dispatcherState,
-		ManagerPaneAlive:        input.managerPaneAlive,
 		Workers:                 toFactoryWorkers(input.workers),
 		ReadyQueue:              input.queueDepth,
 		TargetWorkers:           input.targetWorkers,

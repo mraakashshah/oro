@@ -47,7 +47,6 @@ const (
 	FindingThroughputStall                    = "throughput_stall"
 	FindingQGIncidentsOpen                    = "qg_incidents_open"
 	FindingQGIncidentIncrease                 = "qg_incident_increase"
-	FindingManagerPaneUnhealthy               = "manager_pane_unhealthy"
 	FindingRecoveryQuarantineOpen             = "recovery_quarantine_open"
 	FindingOpsRunFailed                       = "ops_run_failed"
 	FindingOpsRunStale                        = "ops_run_stale"
@@ -85,7 +84,6 @@ type Metrics struct {
 	DaemonRunning           bool              `json:"daemon_running"`
 	DaemonPID               int               `json:"daemon_pid,omitempty"`
 	DispatcherState         string            `json:"dispatcher_state,omitempty"`
-	ManagerPaneAlive        bool              `json:"manager_pane_alive"`
 	WorkerCount             int               `json:"worker_count"`
 	ActiveWorkers           int               `json:"active_workers"`
 	IdleWorkers             int               `json:"idle_workers"`
@@ -178,8 +176,6 @@ type Snapshot struct {
 	DaemonRunning           bool
 	DaemonPID               int
 	DispatcherState         string
-	ManagerPaneAlive        bool
-	ManagerPaneRequired     bool
 	Workers                 []WorkerSnapshot
 	ReadyQueue              int
 	TargetWorkers           int
@@ -216,7 +212,6 @@ func metricsFromSnapshot(snapshot Snapshot) Metrics {
 		DaemonRunning:           snapshot.DaemonRunning,
 		DaemonPID:               snapshot.DaemonPID,
 		DispatcherState:         snapshot.DispatcherState,
-		ManagerPaneAlive:        snapshot.ManagerPaneAlive,
 		WorkerCount:             len(snapshot.Workers),
 		ReadyQueue:              snapshot.ReadyQueue,
 		TargetWorkers:           snapshot.TargetWorkers,
@@ -266,16 +261,6 @@ func evaluateFindings(snapshot Snapshot, metrics *Metrics) []Finding {
 			})
 		}
 		return findings
-	}
-
-	if snapshot.ManagerPaneRequired && !snapshot.ManagerPaneAlive {
-		findings = append(findings, Finding{
-			Code:              FindingManagerPaneUnhealthy,
-			Severity:          SeverityWarning,
-			Component:         "manager",
-			Message:           "manager pane has no recent activity",
-			RecommendedAction: "reattach or restart the manager pane",
-		})
 	}
 
 	progressTimeout := defaultFloat(snapshot.ProgressTimeoutSecs, 600)

@@ -2,7 +2,9 @@ package factoryhealth //nolint:testpackage // white-box tests keep snapshots con
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,7 +24,6 @@ func TestEvaluateFactoryHealthStates(t *testing.T) {
 			snapshot: Snapshot{
 				DaemonRunning:       true,
 				DispatcherState:     "running",
-				ManagerPaneAlive:    true,
 				ProgressTimeoutSecs: 600,
 				Workers: []WorkerSnapshot{
 					{ID: "w-1", State: "idle", LastHeartbeatSecs: 2},
@@ -35,7 +36,6 @@ func TestEvaluateFactoryHealthStates(t *testing.T) {
 			snapshot: Snapshot{
 				DaemonRunning:       true,
 				DispatcherState:     "running",
-				ManagerPaneAlive:    true,
 				ProgressTimeoutSecs: 600,
 				OpenQGIncidents:     1,
 			},
@@ -47,7 +47,6 @@ func TestEvaluateFactoryHealthStates(t *testing.T) {
 			snapshot: Snapshot{
 				DaemonRunning:        true,
 				DispatcherState:      "running",
-				ManagerPaneAlive:     true,
 				ProgressTimeoutSecs:  600,
 				HeartbeatTimeoutSecs: 45,
 				Workers: []WorkerSnapshot{
@@ -92,7 +91,6 @@ func TestEvaluateAssignmentContradictions(t *testing.T) {
 	got := Evaluate(Snapshot{
 		DaemonRunning:       true,
 		DispatcherState:     "running",
-		ManagerPaneAlive:    true,
 		ReadyQueue:          2,
 		ProgressTimeoutSecs: 600,
 		Workers: []WorkerSnapshot{
@@ -121,7 +119,6 @@ func TestEvaluateRecoveryQuarantineOpenIsUnsafe(t *testing.T) {
 	got := Evaluate(Snapshot{
 		DaemonRunning:           true,
 		DispatcherState:         "running",
-		ManagerPaneAlive:        true,
 		OpenRecoveryQuarantines: 2,
 	})
 
@@ -171,8 +168,17 @@ func TestEvaluateNoManagerPaneFindingByDefault(t *testing.T) {
 	if got.State != StateHealthy {
 		t.Fatalf("state = %q, want healthy; findings=%+v", got.State, got.Findings)
 	}
-	if hasFinding(got, FindingManagerPaneUnhealthy) {
+	if hasFinding(got, "manager_pane_unhealthy") {
 		t.Fatalf("absent manager pane should not be unhealthy by default: %+v", got.Findings)
+	}
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal health: %v", err)
+	}
+	for _, legacy := range []string{"manager_pane_alive", "manager_pane_unhealthy"} {
+		if strings.Contains(string(data), legacy) {
+			t.Fatalf("health JSON still contains legacy manager pane surface %q: %s", legacy, data)
+		}
 	}
 }
 
