@@ -219,6 +219,55 @@ func TestInitCmd_QuietMode_MissingTool(t *testing.T) {
 	}
 }
 
+func TestInitCmd_ForceFlagOverwritesGeneratedQualityGate(t *testing.T) {
+	origDefs := defaultToolDefs
+	defer func() { defaultToolDefs = origDefs }()
+	defaultToolDefs = []toolDef{
+		{Name: "go", Category: "prerequisites", CheckCmd: "go", CheckArgs: []string{"version"}},
+	}
+
+	projectDir := t.TempDir()
+	homeDir := t.TempDir()
+	oroHome := filepath.Join(homeDir, ".oro")
+	t.Setenv("HOME", homeDir)
+	t.Setenv("ORO_HOME", oroHome)
+
+	if err := os.WriteFile(filepath.Join(projectDir, "go.mod"), []byte("module example.com/test\n"), 0o644); err != nil { //nolint:gosec // test file
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	scriptsDir := filepath.Join(projectDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o750); err != nil {
+		t.Fatalf("mkdir scripts: %v", err)
+	}
+	qgPath := filepath.Join(scriptsDir, "quality_gate.sh")
+	const custom = "#!/bin/bash\n# custom user script\n"
+	if err := os.WriteFile(qgPath, []byte(custom), 0o755); err != nil { //nolint:gosec // test file
+		t.Fatalf("write existing quality_gate.sh: %v", err)
+	}
+
+	root := newRootCmd()
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs([]string{"init", "--local", "--force", "--skip-wizard", "--project-root", projectDir})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("init --force should succeed, got: %v\n%s", err, buf.String())
+	}
+
+	got, err := os.ReadFile(qgPath) //nolint:gosec // test file
+	if err != nil {
+		t.Fatalf("read quality_gate.sh: %v", err)
+	}
+	if string(got) == custom {
+		t.Fatal("quality_gate.sh should be overwritten when init is run with --force")
+	}
+	if !strings.Contains(string(got), "Oro Quality Gate") {
+		t.Fatalf("quality_gate.sh should contain generated content, got:\n%s", string(got))
+	}
+}
+
 // --- Default tool definitions tests ---
 
 func TestDefaultToolDefs_NonEmpty(t *testing.T) {

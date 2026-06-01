@@ -383,6 +383,7 @@ func newInitCmdWithDeps(deps *initDeps) *cobra.Command {
 		checkOnly   bool
 		quiet       bool
 		local       bool
+		force       bool
 		skipWizard  bool
 		projectRoot string
 	)
@@ -406,6 +407,7 @@ Flags:
   --quiet         Suppress all output (useful for CI scripts).
   --local         In-repo mode: create .oro/ directory in the project root.
                   By default oro uses stealth mode (zero footprint).
+  --force         Overwrite regenerated Oro assets and quality gate files.
   --project-root  Specify a different project directory (default: current directory).
   --skip-wizard   Skip interactive setup wizard and write the default agent provider mode silently.`,
 		Args: cobra.MaximumNArgs(1),
@@ -417,13 +419,14 @@ Flags:
 				projectName = args[0]
 			}
 			stealth := !local
-			return runInitWithDeps(w, errW, checkOnly, quiet, stealth, skipWizard, projectRoot, projectName, deps)
+			return runInitWithDeps(w, errW, checkOnly, quiet, stealth, skipWizard, force, projectRoot, projectName, deps)
 		},
 	}
 
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "verify tools without installing (exit 1 if any missing)")
 	cmd.Flags().BoolVar(&quiet, "quiet", false, "suppress output, just exit code")
 	cmd.Flags().BoolVar(&local, "local", false, "in-repo mode: create .oro/ in project root (default: stealth)")
+	cmd.Flags().BoolVar(&force, "force", false, "overwrite regenerated Oro assets and quality gate files")
 	cmd.Flags().StringVar(&projectRoot, "project-root", ".", "project root directory for config generation")
 	cmd.Flags().BoolVar(&skipWizard, "skip-wizard", false, "skip interactive setup wizard (write default agent provider mode silently)")
 
@@ -433,11 +436,11 @@ Flags:
 // runInit is the backward-compatible entry point used by cmd_start auto-init.
 // It always skips the wizard (non-interactive context).
 func runInit(w io.Writer, checkOnly, quiet, stealth bool, projectRoot, projectName string) error {
-	return runInitWithDeps(w, os.Stderr, checkOnly, quiet, stealth, true, projectRoot, projectName, defaultInitDeps())
+	return runInitWithDeps(w, os.Stderr, checkOnly, quiet, stealth, true, false, projectRoot, projectName, defaultInitDeps())
 }
 
 // runInitWithDeps is the core init logic with injectable dependencies.
-func runInitWithDeps(w, errW io.Writer, checkOnly, quiet, stealth, skipWizard bool, projectRoot, projectName string, deps *initDeps) error {
+func runInitWithDeps(w, errW io.Writer, checkOnly, quiet, stealth, skipWizard, force bool, projectRoot, projectName string, deps *initDeps) error {
 	// Resolve real repo root for worktree support (e.g. when running from inside .worktrees/).
 	if resolved, err := langprofile.ResolveProjectRoot(projectRoot); err == nil {
 		projectRoot = resolved
@@ -475,7 +478,7 @@ func runInitWithDeps(w, errW io.Writer, checkOnly, quiet, stealth, skipWizard bo
 		return fmt.Errorf("access embedded assets: %w", err)
 	}
 
-	if err := runBootstrapAndPrint(w, stealth, projectRoot, projectName, oroHome, subAssets); err != nil {
+	if err := runBootstrapAndPrint(w, stealth, force, projectRoot, projectName, oroHome, subAssets); err != nil {
 		return err
 	}
 
@@ -493,15 +496,15 @@ func runInitWithDeps(w, errW io.Writer, checkOnly, quiet, stealth, skipWizard bo
 
 // runBootstrapAndPrint runs the appropriate bootstrap path (stealth or local)
 // and prints the success message to w.
-func runBootstrapAndPrint(w io.Writer, stealth bool, projectRoot, projectName, oroHome string, assets fs.FS) error {
+func runBootstrapAndPrint(w io.Writer, stealth, force bool, projectRoot, projectName, oroHome string, assets fs.FS) error {
 	if stealth {
-		return runInitStealth(w, projectRoot, oroHome, assets)
+		return runInitStealth(w, force, projectRoot, oroHome, assets)
 	}
 	name, err := resolveProjectName(projectRoot, projectName)
 	if err != nil {
 		return err
 	}
-	if _, err := bootstrapProject(projectRoot, name, oroHome, assets, false); err != nil {
+	if _, err := bootstrapProject(projectRoot, name, oroHome, assets, force); err != nil {
 		return fmt.Errorf("bootstrap project: %w", err)
 	}
 	fmt.Fprintf(w, "\n✓ Initialized project %q\n", name)
@@ -514,8 +517,8 @@ func runBootstrapAndPrint(w io.Writer, stealth bool, projectRoot, projectName, o
 
 // runInitStealth handles the stealth branch of runInit: bootstraps a stealth
 // project and prints the success message.
-func runInitStealth(w io.Writer, projectRoot, oroHome string, assets fs.FS) error {
-	if err := bootstrapStealthProject(projectRoot, oroHome, assets); err != nil {
+func runInitStealth(w io.Writer, force bool, projectRoot, oroHome string, assets fs.FS) error {
+	if err := bootstrapStealthProject(projectRoot, oroHome, assets, force); err != nil {
 		return fmt.Errorf("bootstrap stealth project: %w", err)
 	}
 	hash, err := projectHash(projectRoot)
@@ -563,7 +566,7 @@ func installStealthGitHooks(absProjectRoot, qualityGatePath string) {
 // Rather than writing .oro/config.yaml into the project root, it creates
 // <oroHome>/projects/s-<hash>/config.yaml with mode: stealth.
 // Git pre-commit and pre-push hooks are installed to prevent accidental leakage.
-func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS) error { //nolint:funlen // sequential bootstrap steps, mirrors bootstrapProject
+func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS, force bool) error { //nolint:funlen // sequential bootstrap steps, mirrors bootstrapProject
 	hash, err := projectHash(projectRoot)
 	if err != nil {
 		return fmt.Errorf("compute project hash: %w", err)
@@ -626,13 +629,13 @@ func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS) error { 
 		return fmt.Errorf("write stealth settings: %w", err)
 	}
 
-	// 9. Extract embedded assets to oroHome (additive: don't overwrite user edits).
-	if err := extractAssets(oroHome, assets, false); err != nil {
+	// 9. Extract embedded assets to oroHome (additive unless --force is set).
+	if err := extractAssets(oroHome, assets, force); err != nil {
 		return fmt.Errorf("extract assets: %w", err)
 	}
 
 	// 10. Generate quality_gate.sh to the stealth path (not in project root).
-	if err := writeQualityGateScriptFile(stealthPaths, false); err != nil {
+	if err := writeQualityGateScriptFile(stealthPaths, force); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: quality gate generation failed: %v\n", err)
 	}
 
@@ -757,8 +760,8 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 		return nil, fmt.Errorf("write settings: %w", err)
 	}
 
-	// 6. Extract embedded assets to oroHome (additive: don't overwrite user edits).
-	if err := extractAssets(oroHome, assets, false); err != nil {
+	// 6. Extract embedded assets to oroHome (additive unless --force is set).
+	if err := extractAssets(oroHome, assets, force); err != nil {
 		return nil, fmt.Errorf("extract assets: %w", err)
 	}
 
