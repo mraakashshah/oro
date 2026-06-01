@@ -494,7 +494,7 @@ func (d *Dispatcher) routeOpsRun(ctx context.Context, rec OpsRunRecord) bool {
 			Workdir:        d.workdirForOpsRun(rec.BeadID),
 		})
 	case ops.OpsDream:
-		d.ops.Dream(ctx, ops.DreamOpts{Memories: d.dumpMemoriesForDream(ctx)})
+		d.ops.Dream(ctx, d.dreamOpts(ctx))
 	default:
 		return false
 	}

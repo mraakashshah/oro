@@ -35,6 +35,14 @@ func TestDreamPromptEmptyMemoriesIsValid(t *testing.T) {
 	}
 }
 
+func TestDreamPromptIncludesActiveBiasTags(t *testing.T) {
+	opts := DreamOpts{ActiveBiasTags: []string{"low_accuracy:rule:bug"}}
+	prompt := buildDreamPrompt(opts)
+	if !strings.Contains(prompt, "active_bias_tags: low_accuracy:rule:bug") {
+		t.Fatalf("prompt missing active bias tags: %s", prompt)
+	}
+}
+
 func TestDreamSpawnerReturnsChan(t *testing.T) {
 	proc := newReadyMockProcess("", nil)
 	mock := &mockBatchSpawner{process: proc}

@@ -19,6 +19,13 @@ func buildDreamPrompt(opts DreamOpts) string {
 		b.WriteString("(none)\n\n")
 	}
 
+	if len(opts.ActiveBiasTags) > 0 {
+		b.WriteString("## Calibration\n")
+		b.WriteString("active_bias_tags: ")
+		b.WriteString(strings.Join(opts.ActiveBiasTags, ", "))
+		b.WriteString("\nCounter these historical proposal biases when drafting new card actions.\n\n")
+	}
+
 	b.WriteString("## Output\n")
 	b.WriteString("List any new insights or patterns as concise bullet points.\n")
 	b.WriteString("If there is nothing to consolidate, output: (no new insights)\n")

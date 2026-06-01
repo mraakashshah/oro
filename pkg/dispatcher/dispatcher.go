@@ -2891,9 +2891,31 @@ func (d *Dispatcher) triggerDream(ctx context.Context) {
 				fmt.Sprintf(`{"deleted":%d}`, n))
 		}
 	}
-	memories := d.dumpMemoriesForDream(ctx)
-	resultCh := d.ops.Dream(ctx, ops.DreamOpts{Memories: memories})
+	resultCh := d.ops.Dream(ctx, d.dreamOpts(ctx))
 	d.safeGo(func() { d.handleDreamResult(ctx, resultCh) })
+}
+
+func (d *Dispatcher) dreamOpts(ctx context.Context) ops.DreamOpts {
+	return ops.DreamOpts{
+		Memories:       d.dumpMemoriesForDream(ctx),
+		ActiveBiasTags: d.activeBiasTags(ctx),
+	}
+}
+
+type calibratingCardStore interface {
+	Calibration(context.Context) (cards.Scorecard, error)
+}
+
+func (d *Dispatcher) activeBiasTags(ctx context.Context) []string {
+	store, ok := d.cardStore.(calibratingCardStore)
+	if !ok {
+		return nil
+	}
+	scorecard, err := store.Calibration(ctx)
+	if err != nil || scorecard.Skipped {
+		return nil
+	}
+	return scorecard.ActiveBiasTags
 }
 
 // dumpMemoriesForDream serializes all memories as a text block for the dream agent.
