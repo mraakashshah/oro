@@ -114,7 +114,7 @@ func (d *Dispatcher) buildCardContext(ctx context.Context, bead protocol.Bead) c
 		BeadType:        bead.Type,
 		BeadTags:        bead.Labels,
 		BeadDescription: strings.TrimSpace(bead.Title + " " + bead.Description),
-		SymbolHints:     d.assignmentSymbolHints(ctx, bead),
+		SymbolHints:     d.assignmentSymbolHints(bead),
 		MaxTokens:       2000,
 	})
 	if err != nil {
@@ -125,21 +125,15 @@ func (d *Dispatcher) buildCardContext(ctx context.Context, bead protocol.Bead) c
 	return trimAssignmentCardContext(result)
 }
 
-func (d *Dispatcher) assignmentSymbolHints(ctx context.Context, bead protocol.Bead) []string {
+func (d *Dispatcher) assignmentSymbolHints(bead protocol.Bead) []string {
 	refs := touchedSymbolRefs(bead.AcceptanceCriteria)
 	if len(refs) == 0 {
 		return nil
 	}
-	hints, err := d.resolveAssignmentSymbolHints(refs)
-	if err != nil {
-		_ = d.logEvent(ctx, "card_context_symbol_hints_failed", "dispatcher", bead.ID, "",
-			fmt.Sprintf(`{"error":%q}`, err.Error()))
-		return nil
-	}
-	return hints
+	return d.resolveAssignmentSymbolHints(refs)
 }
 
-func (d *Dispatcher) resolveAssignmentSymbolHints(refs []symbolRef) ([]string, error) {
+func (d *Dispatcher) resolveAssignmentSymbolHints(refs []symbolRef) []string {
 	root := d.cfg.RepoRoot
 	if root == "" {
 		root = "."
@@ -165,7 +159,7 @@ func (d *Dispatcher) resolveAssignmentSymbolHints(refs []symbolRef) ([]string, e
 		addSymbolRefHints(hints, ref, symsByFile[ref.file])
 	}
 	addResolvedCalleeHints(hints, files, symsByFile)
-	return sortedSymbolHints(hints), nil
+	return sortedSymbolHints(hints)
 }
 
 type symbolRef struct {
