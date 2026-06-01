@@ -707,7 +707,7 @@ func (s *TmuxSession) WaitBeacon() {
 }
 
 // SendKeys sends text to a Claude Code tmux pane and presses Enter.
-// Uses set-buffer + paste-buffer (same as TmuxEscalator) for reliable delivery
+// Uses set-buffer + paste-buffer for reliable delivery
 // to Claude Code's Ink TUI, then sends Enter separately with retry.
 // Finishes with a SIGWINCH wake for detached sessions.
 //
