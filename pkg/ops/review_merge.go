@@ -61,7 +61,7 @@ func flattenReviewReports(reports []ReviewReport) []Finding {
 }
 
 func dedupFindings(findings []Finding) [][]Finding {
-	var groups [][]Finding
+	groups := make([][]Finding, 0, len(findings))
 	for _, finding := range findings {
 		index := matchingFindingGroup(groups, finding)
 		if index == -1 {
