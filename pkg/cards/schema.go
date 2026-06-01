@@ -33,6 +33,14 @@ CREATE TABLE IF NOT EXISTS cards (
 CREATE INDEX IF NOT EXISTS idx_cards_type_score ON cards(type, score DESC) WHERE retired_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_cards_tags       ON cards(tags);
 
+CREATE TABLE IF NOT EXISTS card_symbols (
+  card_id TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+  symbol  TEXT NOT NULL,
+  PRIMARY KEY (card_id, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS idx_card_symbols_symbol ON card_symbols(symbol);
+
 CREATE TABLE IF NOT EXISTS bead_learnings_pending (
   id                   INTEGER PRIMARY KEY AUTOINCREMENT,
   bead_id              TEXT NOT NULL REFERENCES beads(id) ON DELETE CASCADE,

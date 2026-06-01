@@ -197,6 +197,36 @@ func scanCard(row interface { //nolint:funlen // 18-column SELECT requires 18 Sc
 	return c, nil
 }
 
+type relevantRowScanner struct {
+	row     interface{ Scan(...any) error }
+	symbols *sql.NullString
+}
+
+// Scan appends the relevance-only symbols column to the base card scan.
+func (s relevantRowScanner) Scan(dest ...any) error {
+	if err := s.row.Scan(append(dest, s.symbols)...); err != nil {
+		return fmt.Errorf("scan relevant card row: %w", err)
+	}
+	return nil
+}
+
+func scanRelevantCard(row interface{ Scan(...any) error }) (*Card, error) {
+	var symbols sql.NullString
+	c, err := scanCard(relevantRowScanner{row: row, symbols: &symbols})
+	if err != nil {
+		return nil, err
+	}
+	c.Symbols = splitSymbolList(symbols)
+	return c, nil
+}
+
+func splitSymbolList(symbols sql.NullString) []string {
+	if !symbols.Valid || symbols.String == "" {
+		return nil
+	}
+	return strings.Split(symbols.String, "\x1f")
+}
+
 func scanPendingLearning(row interface {
 	Scan(...any) error
 },
@@ -390,7 +420,7 @@ func queryPendingLearningForUpdate(ctx context.Context, tx *sql.Tx, learningID i
 // Relevant returns cards relevant to the query, sorted by effective score × relevance weight.
 func (s *SQLiteCardStore) Relevant(ctx context.Context, q RelevanceQuery) (RelevantCards, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT`+cardSelectCols+` FROM cards WHERE retired_at IS NULL`)
+		relevantCardsQuery())
 	if err != nil {
 		return RelevantCards{}, fmt.Errorf("relevant query: %w", err)
 	}
@@ -439,7 +469,7 @@ func scoreCardForRelevance(c *Card, q RelevanceQuery, now time.Time) (float64, b
 func collectScoredCards(rows *sql.Rows, q RelevanceQuery, now time.Time) ([]scoredCard, error) {
 	var out []scoredCard
 	for rows.Next() {
-		c, err := scanCard(rows)
+		c, err := scanRelevantCard(rows)
 		if err != nil {
 			return nil, fmt.Errorf("scan card: %w", err)
 		}
@@ -509,10 +539,16 @@ func buildInlined(candidates []scoredCard, maxTokens int) []InlinedCard {
 func relevanceScore(c *Card, q RelevanceQuery) float64 {
 	tagScore := jaccardSimilarity(c.Tags, q.BeadTags)          // weight 0.4
 	textScore := wordOverlap(c.BodySummary, q.BeadDescription) // weight 0.3
-	symbolScore := symbolOverlap(c.Tags, q.SymbolHints)        // weight 0.2
+	symbolScore := symbolOverlap(c.Symbols, q.SymbolHints)     // weight 0.2
 	typeScore := beadTypeMatch(c.Type, q.BeadType)             // weight 0.1
 
 	return tagScore*0.4 + textScore*0.3 + symbolScore*0.2 + typeScore*0.1
+}
+
+func relevantCardsQuery() string {
+	return `SELECT` + cardSelectCols + `,
+		(SELECT group_concat(symbol, char(31)) FROM card_symbols WHERE card_id = cards.id)
+		FROM cards WHERE retired_at IS NULL`
 }
 
 func jaccardSimilarity(a, b []string) float64 {
@@ -1011,7 +1047,7 @@ func (r *readTxImpl) List(ctx context.Context, q ListQuery) ([]Card, error) {
 // Relevant implements ReadTx.
 func (r *readTxImpl) Relevant(ctx context.Context, q RelevanceQuery) (RelevantCards, error) {
 	rows, err := r.tx.QueryContext(ctx,
-		`SELECT`+cardSelectCols+` FROM cards WHERE retired_at IS NULL`)
+		relevantCardsQuery())
 	if err != nil {
 		return RelevantCards{}, fmt.Errorf("tx relevant query: %w", err)
 	}

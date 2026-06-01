@@ -15,6 +15,12 @@ import (
 
 func newTestStore(t *testing.T) *cards.SQLiteCardStore {
 	t.Helper()
+	store, _ := newTestStoreWithDB(t)
+	return store
+}
+
+func newTestStoreWithDB(t *testing.T) (*cards.SQLiteCardStore, *sql.DB) {
+	t.Helper()
 	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
 		t.Fatalf("open in-memory db: %v", err)
@@ -25,7 +31,7 @@ func newTestStore(t *testing.T) *cards.SQLiteCardStore {
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
-	return store
+	return store, db
 }
 
 func mustCreate(t *testing.T, store *cards.SQLiteCardStore, p cards.CardCreateParams) *cards.Card {
@@ -1007,4 +1013,57 @@ func TestCardStoreRead(t *testing.T) {
 			t.Errorf("top card: got %q, want %q", result.Deck[0].Title, "Wrap errors")
 		}
 	})
+}
+
+func TestRelevant_SymbolHintsNowContributes(t *testing.T) {
+	ctx := context.Background()
+	store, db := newTestStoreWithDB(t)
+
+	withSymbol := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "with symbol",
+		BodySummary: "same summary",
+		BodyFull:    "same body",
+		Tags:        []string{"same-tag"},
+	})
+	withoutSymbol := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "without symbol",
+		BodySummary: "same summary",
+		BodyFull:    "same body",
+		Tags:        []string{"same-tag"},
+	})
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO card_symbols (card_id, symbol) VALUES (?, ?)`,
+		withSymbol.ID, "pkg/x:Foo",
+	); err != nil {
+		t.Fatalf("insert card symbol: %v", err)
+	}
+
+	result, err := store.Relevant(ctx, cards.RelevanceQuery{
+		BeadType:        "task",
+		BeadTags:        []string{"same-tag"},
+		BeadDescription: "same summary",
+		SymbolHints:     []string{"pkg/x:Foo"},
+		MaxTokens:       1000,
+	})
+	if err != nil {
+		t.Fatalf("Relevant: %v", err)
+	}
+
+	withIdx, withoutIdx := -1, -1
+	for i, c := range result.Deck {
+		switch c.ID {
+		case withSymbol.ID:
+			withIdx = i
+		case withoutSymbol.ID:
+			withoutIdx = i
+		}
+	}
+	if withIdx == -1 || withoutIdx == -1 {
+		t.Fatalf("expected both cards in deck: withIdx=%d withoutIdx=%d", withIdx, withoutIdx)
+	}
+	if withIdx > withoutIdx {
+		t.Fatalf("symbol-matching card ranked after non-matching card: withIdx=%d withoutIdx=%d", withIdx, withoutIdx)
+	}
 }

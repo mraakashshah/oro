@@ -43,6 +43,7 @@ type Card struct {
 	BodyFull            string
 	BodyDeep            *string
 	Tags                []string
+	Symbols             []string
 	Score               float64
 	PromotionConfidence *float64
 	DecayAnchor         time.Time
