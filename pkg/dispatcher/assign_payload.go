@@ -145,18 +145,22 @@ func (d *Dispatcher) resolveAssignmentSymbolHints(refs []symbolRef) ([]string, e
 		root = "."
 	}
 
+	hints := make(map[string]struct{})
+	for _, ref := range refs {
+		addSymbolRefHints(hints, ref, nil)
+	}
+
 	files := uniqueTouchedFiles(refs)
 	symsByFile := make(map[string][]codestruct.Symbol, len(files))
 	for _, file := range files {
 		abs := filepath.Join(root, file)
 		syms, err := codestruct.ExtractGoSymbols(abs)
 		if err != nil {
-			return nil, fmt.Errorf("extract symbols %s: %w", file, err)
+			continue
 		}
 		symsByFile[file] = syms
 	}
 
-	hints := make(map[string]struct{})
 	for _, ref := range refs {
 		addSymbolRefHints(hints, ref, symsByFile[ref.file])
 	}
