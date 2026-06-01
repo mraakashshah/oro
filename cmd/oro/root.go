@@ -76,6 +76,7 @@ func rootSubcommands(root *cobra.Command) []*cobra.Command {
 		newCurrentCmd(),
 		newHandoffCmd(),
 		newResumeCmd(),
+		newReviewCmd(),
 		newReviewPatternsCmd(),
 	}
 }

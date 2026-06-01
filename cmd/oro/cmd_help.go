@@ -50,6 +50,7 @@ Workflow:
   shell      Launch an interactive agent session with oro settings
 
 Reviews:
+  review           Manage structured review findings
   review-patterns  Inspect and promote candidate review patterns captured from approved reviews
 
 Renders:
