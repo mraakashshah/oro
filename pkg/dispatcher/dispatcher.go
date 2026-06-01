@@ -366,7 +366,7 @@ type assignmentBaseBranchPreparer interface {
 	PrepareBaseBranchForAssignment(ctx context.Context, branch, baseBranch string) (fastForwarded bool, err error)
 }
 
-// Escalator sends messages to the Manager. Production impl uses tmux send-keys.
+// Escalator accepts escalation messages from dispatcher checks.
 type Escalator interface {
 	Escalate(ctx context.Context, msg string) error
 }
