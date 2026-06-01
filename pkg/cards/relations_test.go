@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"oro/pkg/cards"
+	"oro/pkg/codestruct"
 	"oro/pkg/dbutil"
 )
 
@@ -99,6 +100,73 @@ func TestSeeAlso_CycleSafe(t *testing.T) {
 	assertCardIDs(t, got, []string{second.ID})
 }
 
+func TestComention_WordBoundaryNotSubstring(t *testing.T) {
+	ctx := context.Background()
+	store, db := newRelationTestStore(t)
+	source := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "Configure behavior",
+		BodySummary: "configure handles setup",
+		BodyFull:    "configure handles setup without a standalone keyword",
+	})
+	target := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "Config",
+		BodySummary: "configuration summary",
+		BodyFull:    "configuration body",
+	})
+
+	if err := store.MineCardRelations(ctx, nil); err != nil {
+		t.Fatalf("mine relations: %v", err)
+	}
+
+	assertSignalRows(t, db, source.ID, target.ID, cards.RelationSignalComention, 0)
+}
+
+func TestMineCardRelations_Accumulates(t *testing.T) {
+	ctx := context.Background()
+	store, db := newRelationTestStore(t)
+	caller := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "Caller",
+		BodySummary: "caller summary",
+		BodyFull:    "Caller references Callee directly.",
+	})
+	callee := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "Callee",
+		BodySummary: "callee summary",
+		BodyFull:    "callee body",
+	})
+	other := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "Other",
+		BodySummary: "other summary",
+		BodyFull:    "other body",
+	})
+	mustAddCardSymbol(t, db, caller.ID, "pkg/demo/caller.go:Run")
+	mustAddCardSymbol(t, db, callee.ID, "pkg/demo/callee.go:Do")
+	mustAddCardSymbol(t, db, other.ID, "pkg/other/other.go:Other")
+
+	err := store.MineCardRelations(ctx, []codestruct.CallEdge{{
+		CallerFile:   "pkg/demo/caller.go",
+		CallerSymbol: "Run",
+		CalleeFile:   "pkg/demo/callee.go",
+		CalleeSymbol: "Do",
+		Resolved:     true,
+	}})
+	if err != nil {
+		t.Fatalf("mine relations: %v", err)
+	}
+
+	assertSignalStrength(t, db, caller.ID, callee.ID, cards.RelationSignalCall, 3)
+	assertSignalStrength(t, db, caller.ID, callee.ID, cards.RelationSignalNamespace, 1)
+	assertSignalStrength(t, db, caller.ID, callee.ID, cards.RelationSignalComention, 2)
+	assertRelationStrength(t, db, caller.ID, callee.ID, 6)
+	assertRelationStrength(t, db, callee.ID, caller.ID, 3)
+	assertRelationRows(t, db, caller.ID, other.ID, 0)
+}
+
 func newRelationTestStore(t *testing.T) (*cards.SQLiteCardStore, *sql.DB) {
 	t.Helper()
 	db, err := dbutil.OpenDB(":memory:")
@@ -112,6 +180,17 @@ func newRelationTestStore(t *testing.T) (*cards.SQLiteCardStore, *sql.DB) {
 		t.Fatalf("new store: %v", err)
 	}
 	return store, db
+}
+
+func mustAddCardSymbol(t *testing.T, db *sql.DB, cardID, symbol string) {
+	t.Helper()
+	if _, err := db.Exec(
+		`INSERT INTO card_symbols(card_id, symbol) VALUES (?, ?)`,
+		cardID,
+		symbol,
+	); err != nil {
+		t.Fatalf("insert card symbol: %v", err)
+	}
 }
 
 func mustCreateRelationCard(t *testing.T, store *cards.SQLiteCardStore, title string) *cards.Card {
@@ -186,5 +265,28 @@ func assertSignalStrength(
 	}
 	if got != want {
 		t.Fatalf("signal strength %s -> %s %s = %d, want %d", sourceID, targetID, signal, got, want)
+	}
+}
+
+func assertSignalRows(
+	t *testing.T,
+	db *sql.DB,
+	sourceID string,
+	targetID string,
+	signal cards.RelationSignal,
+	want int,
+) {
+	t.Helper()
+	var got int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM card_relations WHERE source_id = ? AND target_id = ? AND signal = ?`,
+		sourceID,
+		targetID,
+		signal,
+	).Scan(&got); err != nil {
+		t.Fatalf("query signal rows: %v", err)
+	}
+	if got != want {
+		t.Fatalf("signal rows %s -> %s %s = %d, want %d", sourceID, targetID, signal, got, want)
 	}
 }
