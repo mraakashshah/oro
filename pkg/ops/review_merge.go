@@ -1,0 +1,184 @@
+package ops
+
+import (
+	"encoding/json"
+	"sort"
+)
+
+type reviewMergeFeedback struct {
+	Findings []Finding `json:"findings"`
+}
+
+func mergeReports(reports []ReviewReport, m PromptManifest, opts ReviewOpts) Result {
+	findings := flattenReviewReports(reports)
+	findings, _ = PartitionFindings(m, opts.Worktree, findings)
+
+	groups := dedupFindings(findings)
+	merged := make([]Finding, 0, len(groups))
+	for _, group := range groups {
+		finding := mergeFindingGroup(group, opts.BeadID)
+		if finding.Origin == "pre_existing" {
+			continue
+		}
+		merged = append(merged, finding)
+	}
+
+	promoteFindings(merged)
+	survivors := gateFindings(merged)
+	feedback, err := json.Marshal(reviewMergeFeedback{Findings: survivors})
+	if err != nil {
+		return Result{
+			Type:     OpsReview,
+			BeadID:   opts.BeadID,
+			Verdict:  VerdictFailed,
+			Feedback: err.Error(),
+			Err:      err,
+		}
+	}
+
+	return Result{
+		Type:     OpsReview,
+		BeadID:   opts.BeadID,
+		Verdict:  verdictForFindings(survivors),
+		Feedback: string(feedback),
+	}
+}
+
+func flattenReviewReports(reports []ReviewReport) []Finding {
+	var findings []Finding
+	for _, report := range reports {
+		if report.Verdict == VerdictFailed {
+			continue
+		}
+		for _, finding := range report.Findings {
+			if len(finding.Sources) == 0 && report.Reviewer != "" {
+				finding.Sources = []string{report.Reviewer}
+			}
+			findings = append(findings, finding)
+		}
+	}
+	return findings
+}
+
+func dedupFindings(findings []Finding) [][]Finding {
+	var groups [][]Finding
+	for _, finding := range findings {
+		index := matchingFindingGroup(groups, finding)
+		if index == -1 {
+			groups = append(groups, []Finding{finding})
+			continue
+		}
+		groups[index] = append(groups[index], finding)
+	}
+	return groups
+}
+
+func matchingFindingGroup(groups [][]Finding, finding Finding) int {
+	for i, group := range groups {
+		for _, existing := range group {
+			if sameFindingBucket(existing, finding) {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func sameFindingBucket(a, b Finding) bool {
+	aEvidence, aOK := primaryEvidence(a)
+	bEvidence, bOK := primaryEvidence(b)
+	if !aOK || !bOK {
+		return normalizeTitle(a.Title) == normalizeTitle(b.Title)
+	}
+	return aEvidence.File == bEvidence.File &&
+		lineDistance(aEvidence.LineStart, bEvidence.LineStart) <= 3 &&
+		normalizeTitle(a.Title) == normalizeTitle(b.Title)
+}
+
+func primaryEvidence(f Finding) (Evidence, bool) {
+	if len(f.Evidence) == 0 {
+		return Evidence{}, false
+	}
+	return f.Evidence[0], true
+}
+
+func lineDistance(a, b int) int {
+	if a > b {
+		return a - b
+	}
+	return b - a
+}
+
+func mergeFindingGroup(group []Finding, beadID string) Finding {
+	merged := group[0]
+	for _, finding := range group[1:] {
+		if finding.Confidence > merged.Confidence {
+			merged.Confidence = finding.Confidence
+		}
+		if severityRank(finding.Severity) > severityRank(merged.Severity) {
+			merged.Severity = finding.Severity
+		}
+	}
+	merged.Sources = unionFindingSources(group)
+	if merged.ID == "" {
+		merged.ID = FindingID(beadID, merged)
+	}
+	return merged
+}
+
+func unionFindingSources(group []Finding) []string {
+	seen := make(map[string]struct{})
+	for _, finding := range group {
+		for _, source := range finding.Sources {
+			if source != "" {
+				seen[source] = struct{}{}
+			}
+		}
+	}
+	sources := make([]string, 0, len(seen))
+	for source := range seen {
+		sources = append(sources, source)
+	}
+	sort.Strings(sources)
+	return sources
+}
+
+func promoteFindings(findings []Finding) {
+	for i := range findings {
+		if len(findings[i].Sources) >= 2 && findings[i].Confidence < 100 {
+			findings[i].Confidence += 25
+		}
+	}
+}
+
+func gateFindings(findings []Finding) []Finding {
+	survivors := make([]Finding, 0, len(findings))
+	for _, finding := range findings {
+		if finding.Confidence >= 75 || finding.Severity == SevCritical && finding.Confidence >= 50 {
+			survivors = append(survivors, finding)
+		}
+	}
+	return survivors
+}
+
+func verdictForFindings(findings []Finding) Verdict {
+	for _, finding := range findings {
+		if finding.Severity == SevCritical || finding.Severity == SevImportant {
+			return VerdictRejected
+		}
+	}
+	return VerdictApproved
+}
+
+func severityRank(severity Severity) int {
+	switch severity {
+	case SevCritical:
+		return 3
+	case SevImportant:
+		return 2
+	case SevMinor:
+		return 1
+	default:
+		return 0
+	}
+}
