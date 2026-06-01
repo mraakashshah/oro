@@ -32,6 +32,8 @@ type Store interface {
 	Create(ctx context.Context, c CardCreateParams) (*Card, error)
 	Retire(ctx context.Context, id, reason string, supersededBy string) error
 	AddRelation(ctx context.Context, srcID, dstID string, sig RelationSignal) error
+	Lineage(ctx context.Context, id string) ([]Card, error)
+	LatestInChain(ctx context.Context, id string) (*Card, error)
 
 	WithReadTx(ctx context.Context, fn func(tx ReadTx) error) error
 }
@@ -43,6 +45,11 @@ type SQLiteCardStore struct {
 
 type sqlExecutor interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+type sqlReadWriter interface {
+	sqlExecutor
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
 // NewStore opens a cards store against an existing *sql.DB and applies the schema.
@@ -669,6 +676,11 @@ func insertCard(ctx context.Context, exec sqlExecutor, p CardCreateParams) (stri
 		VALUES (?, ?, 'system', 'created')`, id, now)
 	if err != nil {
 		return "", fmt.Errorf("record created event: %w", err)
+	}
+	if readWriter, ok := exec.(sqlReadWriter); ok {
+		if err := addWikilinkRelations(ctx, readWriter, id, p.BodyFull); err != nil {
+			return "", err
+		}
 	}
 	return id, nil
 }
