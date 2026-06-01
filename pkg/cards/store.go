@@ -49,6 +49,9 @@ func NewStore(db *sql.DB) (*SQLiteCardStore, error) {
 	if _, err := db.ExecContext(context.Background(), schemaDDL); err != nil {
 		return nil, fmt.Errorf("apply cards schema: %w", err)
 	}
+	if err := ensureColumn(db, "card_events", "session_id", "ALTER TABLE card_events ADD COLUMN session_id TEXT"); err != nil {
+		return nil, fmt.Errorf("ensure card event session id: %w", err)
+	}
 	return &SQLiteCardStore{db: db}, nil
 }
 
