@@ -185,6 +185,10 @@ func (s *staticRelevantCardStore) Retire(context.Context, string, string, string
 	return errors.New("not implemented")
 }
 
+func (s *staticRelevantCardStore) AddRelation(context.Context, string, string, cards.RelationSignal) error {
+	return errors.New("not implemented")
+}
+
 func (s *staticRelevantCardStore) WithReadTx(context.Context, func(cards.ReadTx) error) error {
 	return errors.New("not implemented")
 }

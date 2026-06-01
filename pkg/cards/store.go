@@ -31,6 +31,7 @@ type Store interface {
 	DeferToReviewQueue(ctx context.Context, id int64, reason string) error
 	Create(ctx context.Context, c CardCreateParams) (*Card, error)
 	Retire(ctx context.Context, id, reason string, supersededBy string) error
+	AddRelation(ctx context.Context, srcID, dstID string, sig RelationSignal) error
 
 	WithReadTx(ctx context.Context, fn func(tx ReadTx) error) error
 }
