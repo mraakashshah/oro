@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"oro/pkg/cards"
+	embeddings "oro/pkg/embed"
 
 	"github.com/spf13/cobra"
 )
@@ -109,7 +110,12 @@ func openDefaultCardStore() (cards.Store, func(), error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("open state db: %w", err)
 	}
-	store, err := cards.NewStore(db)
+	embedder, embedderErr := embeddings.NewEmbedder("")
+	opts := []cards.StoreOption{}
+	if embedderErr == nil {
+		opts = append(opts, cards.WithEmbedder(embedder))
+	}
+	store, err := cards.NewStore(db, opts...)
 	if err != nil {
 		_ = db.Close()
 		return nil, nil, fmt.Errorf("init card store: %w", err)

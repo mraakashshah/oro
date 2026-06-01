@@ -21,6 +21,7 @@ import (
 	"oro/pkg/codesearch"
 	"oro/pkg/codestruct"
 	"oro/pkg/dispatcher"
+	embeddings "oro/pkg/embed"
 	"oro/pkg/langprofile"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
@@ -166,7 +167,15 @@ func newWorkerBeadStore(db *sql.DB, _ workMemoryStore) *beadstore.SQLiteStore {
 }
 
 func openWorkerCardStore(db *sql.DB) cards.Store {
-	store, err := cards.NewStore(db)
+	embedder, err := embeddings.NewEmbedder("")
+	if err != nil {
+		logStep("cards embedder unavailable for work prompts: %v", err)
+	}
+	opts := []cards.StoreOption{}
+	if embedder != nil {
+		opts = append(opts, cards.WithEmbedder(embedder))
+	}
+	store, err := cards.NewStore(db, opts...)
 	if err != nil {
 		logStep("cards store unavailable for work prompts: %v", err)
 		return nil

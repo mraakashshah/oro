@@ -60,6 +60,8 @@ func TestSchema_AddsRelationTablesAndSessionID(t *testing.T) {
 	assertTableExists(t, db, "card_relations")
 	assertTableExists(t, db, "card_symbols")
 	assertColumnExists(t, db, "card_events", "session_id")
+	assertColumnExists(t, db, "cards", "embedding")
+	assertColumnExists(t, db, "cards", "embedding_model")
 	assertExistingCardSurvived(t, db)
 	assertSessionIDNullable(t, db)
 
@@ -73,6 +75,8 @@ func TestSchema_AddsRelationTablesAndSessionID(t *testing.T) {
 	assertTableExists(t, db, "card_relations")
 	assertTableExists(t, db, "card_symbols")
 	assertColumnExists(t, db, "card_events", "session_id")
+	assertColumnExists(t, db, "cards", "embedding")
+	assertColumnExists(t, db, "cards", "embedding_model")
 	assertExistingCardSurvived(t, db)
 }
 

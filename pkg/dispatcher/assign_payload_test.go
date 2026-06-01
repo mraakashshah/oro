@@ -232,6 +232,10 @@ func (s *staticRelevantCardStore) LatestInChain(context.Context, string) (*cards
 	return nil, errors.New("not implemented")
 }
 
+func (s *staticRelevantCardStore) Reindex(context.Context) (int, error) {
+	return 0, errors.New("not implemented")
+}
+
 func (s *staticRelevantCardStore) WithReadTx(context.Context, func(cards.ReadTx) error) error {
 	return errors.New("not implemented")
 }

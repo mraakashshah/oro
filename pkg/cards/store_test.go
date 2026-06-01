@@ -13,6 +13,29 @@ import (
 	"oro/pkg/dbutil"
 )
 
+type recordingEmbedder struct {
+	model string
+	dim   int
+	texts []string
+}
+
+func (e *recordingEmbedder) Embed(text string) []float32 {
+	e.texts = append(e.texts, text)
+	vec := make([]float32, e.dim)
+	for i := range vec {
+		vec[i] = float32(len(e.texts) + i)
+	}
+	return vec
+}
+
+func (e *recordingEmbedder) Dim() int {
+	return e.dim
+}
+
+func (e *recordingEmbedder) Name() string {
+	return e.model
+}
+
 func newTestStore(t *testing.T) *cards.SQLiteCardStore {
 	t.Helper()
 	store, _ := newTestStoreWithDB(t)
@@ -65,6 +88,126 @@ func newTestStoreWithBeads(t *testing.T) (*cards.SQLiteCardStore, *sql.DB) {
 		t.Fatalf("new store: %v", err)
 	}
 	return store, db
+}
+
+func TestCreate_EmbedsCard(t *testing.T) {
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	embedder := &recordingEmbedder{model: "test-model", dim: 3}
+	store, err := cards.NewStore(db, cards.WithEmbedder(embedder))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+
+	card, err := store.Create(ctx, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "Embed created cards",
+		BodySummary: "Create should embed the compact recall text",
+		BodyFull:    "Full text is intentionally not sent to the embedder.",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if len(embedder.texts) != 1 {
+		t.Fatalf("embed calls = %d, want 1", len(embedder.texts))
+	}
+	wantText := "Embed created cards\nCreate should embed the compact recall text"
+	if embedder.texts[0] != wantText {
+		t.Fatalf("embedded text = %q, want %q", embedder.texts[0], wantText)
+	}
+
+	var raw []byte
+	var model sql.NullString
+	if err := db.QueryRowContext(ctx,
+		`SELECT embedding, embedding_model FROM cards WHERE id = ?`, card.ID,
+	).Scan(&raw, &model); err != nil {
+		t.Fatalf("query embedding: %v", err)
+	}
+	if len(raw) != 12 {
+		t.Fatalf("embedding bytes len = %d, want 12 for 3 float32 values", len(raw))
+	}
+	if !model.Valid || model.String != "test-model" {
+		t.Fatalf("embedding_model = %v, want test-model", model)
+	}
+}
+
+func TestReindex_BackfillsNull(t *testing.T) {
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	storeWithoutEmbedder, err := cards.NewStore(db)
+	if err != nil {
+		t.Fatalf("new store without embedder: %v", err)
+	}
+	legacy, err := storeWithoutEmbedder.Create(ctx, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "Legacy card",
+		BodySummary: "Backfill this null embedding",
+		BodyFull:    "Legacy rows start with embedding NULL.",
+	})
+	if err != nil {
+		t.Fatalf("create legacy card: %v", err)
+	}
+
+	embedder := &recordingEmbedder{model: "backfill-model", dim: 2}
+	store, err := cards.NewStore(db, cards.WithEmbedder(embedder))
+	if err != nil {
+		t.Fatalf("new store with embedder: %v", err)
+	}
+	alreadyEmbedded, err := store.Create(ctx, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "Already embedded",
+		BodySummary: "Create embeds this row immediately",
+		BodyFull:    "This row should not be embedded twice.",
+	})
+	if err != nil {
+		t.Fatalf("create embedded card: %v", err)
+	}
+
+	backfilled, err := store.Reindex(ctx)
+	if err != nil {
+		t.Fatalf("Reindex: %v", err)
+	}
+	if backfilled != 1 {
+		t.Fatalf("Reindex backfilled = %d, want 1", backfilled)
+	}
+	wantTexts := []string{
+		"Already embedded\nCreate embeds this row immediately",
+		"Legacy card\nBackfill this null embedding",
+	}
+	if strings.Join(embedder.texts, "\x00") != strings.Join(wantTexts, "\x00") {
+		t.Fatalf("embed texts = %#v, want %#v", embedder.texts, wantTexts)
+	}
+
+	assertCardEmbeddingModel(t, db, legacy.ID, "backfill-model")
+	assertCardEmbeddingModel(t, db, alreadyEmbedded.ID, "backfill-model")
+}
+
+func assertCardEmbeddingModel(t *testing.T, db *sql.DB, id, want string) {
+	t.Helper()
+	var raw []byte
+	var model sql.NullString
+	if err := db.QueryRow(
+		`SELECT embedding, embedding_model FROM cards WHERE id = ?`, id,
+	).Scan(&raw, &model); err != nil {
+		t.Fatalf("query embedding for %s: %v", id, err)
+	}
+	if len(raw) == 0 {
+		t.Fatalf("card %s embedding is empty", id)
+	}
+	if !model.Valid || model.String != want {
+		t.Fatalf("card %s embedding_model = %v, want %s", id, model, want)
+	}
 }
 
 func TestAppendAndQueryPending(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -35,13 +36,32 @@ type Store interface {
 	SeeAlso(ctx context.Context, cardID string, limit int) ([]CardSummary, error)
 	Lineage(ctx context.Context, id string) ([]Card, error)
 	LatestInChain(ctx context.Context, id string) (*Card, error)
+	Reindex(ctx context.Context) (int, error)
 
 	WithReadTx(ctx context.Context, fn func(tx ReadTx) error) error
 }
 
+// Embedder computes dense embedding vectors for card semantic recall.
+type Embedder interface {
+	Embed(text string) []float32
+	Dim() int
+	Name() string
+}
+
+// StoreOption configures a SQLiteCardStore.
+type StoreOption func(*SQLiteCardStore)
+
+// WithEmbedder configures the store to embed cards on create and reindex.
+func WithEmbedder(embedder Embedder) StoreOption {
+	return func(s *SQLiteCardStore) {
+		s.embedder = embedder
+	}
+}
+
 // SQLiteCardStore is the SQLite-backed implementation of Store.
 type SQLiteCardStore struct {
-	db *sql.DB
+	db       *sql.DB
+	embedder Embedder
 }
 
 type sqlExecutor interface {
@@ -54,14 +74,24 @@ type sqlReadWriter interface {
 }
 
 // NewStore opens a cards store against an existing *sql.DB and applies the schema.
-func NewStore(db *sql.DB) (*SQLiteCardStore, error) {
+func NewStore(db *sql.DB, opts ...StoreOption) (*SQLiteCardStore, error) {
 	if _, err := db.ExecContext(context.Background(), schemaDDL); err != nil {
 		return nil, fmt.Errorf("apply cards schema: %w", err)
 	}
 	if err := ensureColumn(db, "card_events", "session_id", "ALTER TABLE card_events ADD COLUMN session_id TEXT"); err != nil {
 		return nil, fmt.Errorf("ensure card event session id: %w", err)
 	}
-	return &SQLiteCardStore{db: db}, nil
+	if err := ensureColumn(db, "cards", "embedding", "ALTER TABLE cards ADD COLUMN embedding BLOB"); err != nil {
+		return nil, fmt.Errorf("ensure card embedding: %w", err)
+	}
+	if err := ensureColumn(db, "cards", "embedding_model", "ALTER TABLE cards ADD COLUMN embedding_model TEXT"); err != nil {
+		return nil, fmt.Errorf("ensure card embedding model: %w", err)
+	}
+	store := &SQLiteCardStore{db: db}
+	for _, opt := range opts {
+		opt(store)
+	}
+	return store, nil
 }
 
 // --- helpers ---
@@ -115,6 +145,21 @@ func parseTimePtr(s sql.NullString) *time.Time {
 
 func nowRFC3339() string {
 	return time.Now().UTC().Format(time.RFC3339Nano)
+}
+
+func cardEmbeddingText(title, bodySummary string) string {
+	return title + "\n" + bodySummary
+}
+
+func encodeEmbedding(vec []float32) []byte {
+	if len(vec) == 0 {
+		return nil
+	}
+	buf := make([]byte, len(vec)*4)
+	for i, v := range vec {
+		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(v))
+	}
+	return buf
 }
 
 func scanCard(row interface { //nolint:funlen // 18-column SELECT requires 18 Scan destinations
@@ -673,7 +718,7 @@ func (s *SQLiteCardStore) AppendLearningPending(ctx context.Context, beadID stri
 	return id, nil
 }
 
-func insertCard(ctx context.Context, exec sqlExecutor, p CardCreateParams) (string, error) {
+func insertCard(ctx context.Context, exec sqlExecutor, p CardCreateParams, embedder Embedder) (string, error) {
 	id := p.ID
 	if id == "" {
 		id = newCardID()
@@ -693,15 +738,22 @@ func insertCard(ctx context.Context, exec sqlExecutor, p CardCreateParams) (stri
 	if p.PromotionConfidence != nil {
 		promotionConf = p.PromotionConfidence
 	}
+	var embedding []byte
+	var embeddingModel *string
+	if embedder != nil {
+		embedding = encodeEmbedding(embedder.Embed(cardEmbeddingText(p.Title, p.BodySummary)))
+		model := embedder.Name()
+		embeddingModel = &model
+	}
 
 	_, err := exec.ExecContext(ctx, `
 		INSERT INTO cards (
 			id, type, title, body_summary, body_full, body_deep,
 			tags, score, promotion_confidence, decay_anchor,
-			created_at, updated_at, emerged_from
-		) VALUES (?, ?, ?, ?, ?, ?, ?, 1.0, ?, ?, ?, ?, ?)`,
+			created_at, updated_at, emerged_from, embedding, embedding_model
+		) VALUES (?, ?, ?, ?, ?, ?, ?, 1.0, ?, ?, ?, ?, ?, ?, ?)`,
 		id, string(p.Type), p.Title, p.BodySummary, p.BodyFull, bodyDeep,
-		tags, promotionConf, now, now, now, emergedFrom,
+		tags, promotionConf, now, now, now, emergedFrom, embedding, embeddingModel,
 	)
 	if err != nil {
 		return "", fmt.Errorf("create card: %w", err)
@@ -724,12 +776,69 @@ func insertCard(ctx context.Context, exec sqlExecutor, p CardCreateParams) (stri
 
 // Create inserts a new card and returns it.
 func (s *SQLiteCardStore) Create(ctx context.Context, p CardCreateParams) (*Card, error) {
-	id, err := insertCard(ctx, s.db, p)
+	id, err := insertCard(ctx, s.db, p, s.embedder)
 	if err != nil {
 		return nil, err
 	}
 
 	return s.Show(ctx, id)
+}
+
+// Reindex backfills embeddings for non-retired cards whose embedding is NULL.
+func (s *SQLiteCardStore) Reindex(ctx context.Context) (int, error) {
+	if s.embedder == nil {
+		return 0, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, title, body_summary
+		  FROM cards
+		 WHERE embedding IS NULL AND retired_at IS NULL
+		 ORDER BY created_at ASC`)
+	if err != nil {
+		return 0, fmt.Errorf("query cards for reindex: %w", err)
+	}
+
+	type pendingEmbedding struct {
+		id          string
+		title       string
+		bodySummary string
+	}
+	var pending []pendingEmbedding
+	for rows.Next() {
+		var p pendingEmbedding
+		if err := rows.Scan(&p.id, &p.title, &p.bodySummary); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("scan card for reindex: %w", err)
+		}
+		pending = append(pending, p)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("close reindex rows: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate cards for reindex: %w", err)
+	}
+
+	model := s.embedder.Name()
+	for i, p := range pending {
+		embedding := encodeEmbedding(s.embedder.Embed(cardEmbeddingText(p.title, p.bodySummary)))
+		result, err := s.db.ExecContext(ctx, `
+			UPDATE cards
+			   SET embedding = ?, embedding_model = ?, updated_at = ?
+			 WHERE id = ? AND embedding IS NULL`,
+			embedding, model, nowRFC3339(), p.id)
+		if err != nil {
+			return i, fmt.Errorf("backfill card embedding %s: %w", p.id, err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return i, fmt.Errorf("backfill card embedding rows affected %s: %w", p.id, err)
+		}
+		if affected == 0 {
+			continue
+		}
+	}
+	return len(pending), nil
 }
 
 // PromoteLearning creates a card from a pending learning and marks it resolved.
@@ -752,7 +861,7 @@ func (s *SQLiteCardStore) PromoteLearning(ctx context.Context, learningID int64)
 			Tags:                learning.Candidate.Tags,
 			EmergedFrom:         &emergedFrom,
 			PromotionConfidence: &confidence,
-		})
+		}, s.embedder)
 		if err != nil {
 			return err
 		}

@@ -202,6 +202,10 @@ func (s *promotionCardStore) LatestInChain(context.Context, string) (*cards.Card
 	return nil, errors.New("not implemented")
 }
 
+func (s *promotionCardStore) Reindex(context.Context) (int, error) {
+	return 0, errors.New("not implemented")
+}
+
 func (s *promotionCardStore) WithReadTx(context.Context, func(cards.ReadTx) error) error {
 	return errors.New("not implemented")
 }
