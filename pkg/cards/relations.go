@@ -66,6 +66,8 @@ type minedCard struct {
 
 // MineCardRelations derives relation evidence from symbols, package proximity,
 // and word-boundary card title mentions.
+//
+//oro:testonly — production wiring deferred to Phase 1 relation feed.
 func (s *SQLiteCardStore) MineCardRelations(ctx context.Context, calls []codestruct.CallEdge) error {
 	cards, err := s.loadMineableCards(ctx)
 	if err != nil {
@@ -100,10 +102,10 @@ func (s *SQLiteCardStore) loadMineableCards(ctx context.Context) ([]minedCard, e
 		if err := rows.Scan(&id, &title, &summary, &full, &symbol); err != nil {
 			return nil, fmt.Errorf("scan mineable card: %w", err)
 		}
-		card := byID[id]
-		if card == nil {
-			byID[id] = &minedCard{id: id, title: title, body: summary + "\n" + full}
-			card = byID[id]
+		card, ok := byID[id]
+		if !ok {
+			card = &minedCard{id: id, title: title, body: summary + "\n" + full}
+			byID[id] = card
 			ordered = append(ordered, id)
 		}
 		if symbol != "" {
@@ -300,7 +302,7 @@ func mentionsTitleTerm(body, title string) bool {
 
 func titleTerms(title string) []string {
 	return strings.FieldsFunc(strings.ToLower(title), func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_')
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_'
 	})
 }
 
