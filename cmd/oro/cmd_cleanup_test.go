@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"oro/pkg/beadstore"
 )
@@ -240,6 +241,62 @@ func TestCleanup_RemovesStaleStateDBLock(t *testing.T) {
 	}
 	if out := buf.String(); !strings.Contains(out, "state DB lock") {
 		t.Errorf("expected output to mention state DB lock removal, got: %s", out)
+	}
+}
+
+func TestCleanupPrunesSubprocessCache(t *testing.T) {
+	fake := newFakeCmd()
+	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
+	fake.output[key("git", "branch", "--list", "agent/*")] = ""
+	fake.output[key("git", "branch", "--list", "epic/*")] = ""
+
+	now := time.Now()
+	tmpDir := t.TempDir()
+	cacheRoot := filepath.Join(tmpDir, "subprocess")
+	staleNamespace := filepath.Join(cacheRoot, "stale")
+	recentNamespace := filepath.Join(cacheRoot, "recent")
+	if err := os.MkdirAll(filepath.Join(staleNamespace, "go-build"), 0o755); err != nil {
+		t.Fatalf("mkdir stale namespace: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(recentNamespace, "go-build"), 0o755); err != nil {
+		t.Fatalf("mkdir recent namespace: %v", err)
+	}
+	if err := os.Chtimes(staleNamespace, now.Add(-8*24*time.Hour), now.Add(-8*24*time.Hour)); err != nil {
+		t.Fatalf("chtimes stale namespace: %v", err)
+	}
+	if err := os.Chtimes(recentNamespace, now.Add(-2*24*time.Hour), now.Add(-2*24*time.Hour)); err != nil {
+		t.Fatalf("chtimes recent namespace: %v", err)
+	}
+
+	var buf bytes.Buffer
+	cfg := &cleanupConfig{
+		runner:                fake,
+		w:                     &buf,
+		tmuxName:              TmuxSessionName(""),
+		pidPath:               filepath.Join(tmpDir, "oro.pid"),
+		sockPath:              filepath.Join(tmpDir, "oro.sock"),
+		subprocessCacheRoot:   cacheRoot,
+		subprocessCacheMaxAge: 7 * 24 * time.Hour,
+		signalFn:              func(int) error { return nil },
+		aliveFn:               func(int) bool { return false },
+	}
+
+	if err := runCleanup(context.Background(), cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(staleNamespace); !os.IsNotExist(err) {
+		t.Fatalf("expected stale subprocess cache namespace to be removed, stat err: %v", err)
+	}
+	if _, err := os.Stat(recentNamespace); err != nil {
+		t.Fatalf("expected recent subprocess cache namespace to be preserved: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "pruned 1 stale subprocess cache namespace") {
+		t.Fatalf("expected subprocess cache pruning output, got:\n%s", out)
+	}
+	if strings.Contains(out, "nothing to clean") {
+		t.Fatalf("cleanup reported nothing to clean after pruning cache:\n%s", out)
 	}
 }
 

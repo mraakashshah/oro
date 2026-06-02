@@ -8,22 +8,27 @@ import (
 	"time"
 )
 
+// ErrInvalidRetention reports a non-positive subprocess cache retention window.
 var ErrInvalidRetention = errors.New("invalid subprocess cache retention")
 
+// PruneOptions configures subprocess cache namespace pruning.
 type PruneOptions struct {
 	MaxAge time.Duration
 	Now    func() time.Time
 }
 
+// PruneResult reports how many subprocess cache namespaces were removed or kept.
 type PruneResult struct {
 	Removed int
 	Kept    int
 }
 
+// SubprocessCacheRoot returns the default root for isolated subprocess caches.
 func SubprocessCacheRoot() string {
 	return defaultCacheRoot()
 }
 
+// PruneSubprocessCache removes subprocess cache namespaces older than MaxAge.
 func PruneSubprocessCache(root string, opts PruneOptions) (PruneResult, error) {
 	if opts.MaxAge <= 0 {
 		return PruneResult{}, ErrInvalidRetention

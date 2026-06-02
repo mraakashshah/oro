@@ -14,28 +14,32 @@ import (
 	"time"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/processenv"
 
 	"github.com/spf13/cobra"
 )
 
 const (
-	cleanupDispatcherExitWait = 5 * time.Second
-	cleanupPIDLockMaxAge      = time.Hour
+	cleanupDispatcherExitWait    = 5 * time.Second
+	cleanupPIDLockMaxAge         = time.Hour
+	cleanupSubprocessCacheMaxAge = 7 * 24 * time.Hour
 )
 
 // cleanupConfig holds injectable dependencies for the cleanup command.
 type cleanupConfig struct {
-	runner       CmdRunner
-	w            io.Writer
-	tmuxName     string
-	pidPath      string
-	sockPath     string
-	stateDBPath  string          // path to native SQLite state.db; empty disables bead state repair
-	worktreesDir string          // path to .worktrees directory; empty disables worktree dir removal
-	signalFn     func(int) error // sends SIGINT; injectable for testing
-	aliveFn      func(int) bool  // checks process liveness; injectable for testing
-	isTTY        func() bool     // returns true if stdin is a TTY; injectable for testing
-	exitWait     time.Duration   // bounded wait for dispatcher exit after SIGINT
+	runner                CmdRunner
+	w                     io.Writer
+	tmuxName              string
+	pidPath               string
+	sockPath              string
+	stateDBPath           string // path to native SQLite state.db; empty disables bead state repair
+	worktreesDir          string // path to .worktrees directory; empty disables worktree dir removal
+	subprocessCacheRoot   string
+	subprocessCacheMaxAge time.Duration
+	signalFn              func(int) error // sends SIGINT; injectable for testing
+	aliveFn               func(int) bool  // checks process liveness; injectable for testing
+	isTTY                 func() bool     // returns true if stdin is a TTY; injectable for testing
+	exitWait              time.Duration   // bounded wait for dispatcher exit after SIGINT
 }
 
 // newCleanupCmd creates the "oro cleanup" subcommand.
@@ -64,17 +68,19 @@ Safe to run anytime. If nothing is running, reports "nothing to clean".`,
 			}
 
 			cfg := &cleanupConfig{
-				runner:       &ExecRunner{},
-				w:            cmd.OutOrStdout(),
-				tmuxName:     TmuxSessionName(readProjectNameCWD()),
-				pidPath:      paths.PIDPath,
-				sockPath:     paths.SocketPath,
-				stateDBPath:  paths.StateDBPath,
-				worktreesDir: projPaths.WorktreesDir,
-				signalFn:     defaultSignalINT,
-				aliveFn:      IsProcessAlive,
-				isTTY:        isStdinTTY,
-				exitWait:     cleanupDispatcherExitWait,
+				runner:                &ExecRunner{},
+				w:                     cmd.OutOrStdout(),
+				tmuxName:              TmuxSessionName(readProjectNameCWD()),
+				pidPath:               paths.PIDPath,
+				sockPath:              paths.SocketPath,
+				stateDBPath:           paths.StateDBPath,
+				worktreesDir:          projPaths.WorktreesDir,
+				subprocessCacheRoot:   processenv.SubprocessCacheRoot(),
+				subprocessCacheMaxAge: cleanupSubprocessCacheMaxAge,
+				signalFn:              defaultSignalINT,
+				aliveFn:               IsProcessAlive,
+				isTTY:                 isStdinTTY,
+				exitWait:              cleanupDispatcherExitWait,
 			}
 
 			return runCleanup(cmd.Context(), cfg)
@@ -109,30 +115,35 @@ func runCleanup(ctx context.Context, cfg *cleanupConfig) error {
 		cleaned = true
 	}
 
-	// 4. Remove stale PID file.
+	// 4. Prune subprocess tool caches after runtime processes are stopped.
+	if cleanedSubprocessCache := cleanupSubprocessCache(cfg); cleanedSubprocessCache {
+		cleaned = true
+	}
+
+	// 5. Remove stale PID file.
 	if cleanedPID := cleanupPIDFile(cfg); cleanedPID {
 		cleaned = true
 	}
 
-	// 5. Remove stale socket file.
+	// 6. Remove stale socket file.
 	if cleanedSock := cleanupSocketFile(cfg); cleanedSock {
 		cleaned = true
 	}
 
-	// 6. Remove stale dispatcher state DB lock.
+	// 7. Remove stale dispatcher state DB lock.
 	if cleanedLock := cleanupStateDBLock(cfg); cleanedLock {
 		cleaned = true
 	}
 
-	// 7. Prune git worktrees.
+	// 8. Prune git worktrees.
 	cleanupWorktrees(cfg)
 
-	// 8. Remove .worktrees/ directory.
+	// 9. Remove .worktrees/ directory.
 	if cleanedWorktreeDir := cleanupWorktreeDir(cfg); cleanedWorktreeDir {
 		cleaned = true
 	}
 
-	// 9. Delete agent/* and epic/* branches.
+	// 10. Delete agent/* and epic/* branches.
 	cleanedBranches, err := cleanupAgentBranches(ctx, cfg)
 	if cleanedBranches {
 		cleaned = true
@@ -141,7 +152,7 @@ func runCleanup(ctx context.Context, cfg *cleanupConfig) error {
 		cleanupErr = err
 	}
 
-	// 10. Reset in_progress beads back to open.
+	// 11. Reset in_progress beads back to open.
 	if cleanedBeads := cleanupBeads(ctx, cfg); cleanedBeads {
 		cleaned = true
 	}
@@ -151,6 +162,31 @@ func runCleanup(ctx context.Context, cfg *cleanupConfig) error {
 	}
 
 	return cleanupErr
+}
+
+func cleanupSubprocessCache(cfg *cleanupConfig) bool {
+	if cfg.subprocessCacheRoot == "" || cfg.subprocessCacheMaxAge <= 0 {
+		return false
+	}
+	result, err := processenv.PruneSubprocessCache(cfg.subprocessCacheRoot, processenv.PruneOptions{
+		MaxAge: cfg.subprocessCacheMaxAge,
+	})
+	if err != nil {
+		fmt.Fprintf(cfg.w, "warning: prune subprocess cache: %v\n", err)
+	}
+	if result.Removed == 0 {
+		return false
+	}
+	fmt.Fprintf(cfg.w, "pruned %d stale subprocess cache %s from %s\n",
+		result.Removed, pluralize(result.Removed, "namespace", "namespaces"), cfg.subprocessCacheRoot)
+	return true
+}
+
+func pluralize(count int, singular, plural string) string {
+	if count == 1 {
+		return singular
+	}
+	return plural
 }
 
 // cleanupTmux kills the tmux session if it exists. Returns true if something was cleaned.
