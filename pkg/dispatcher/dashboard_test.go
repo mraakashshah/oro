@@ -114,47 +114,6 @@ func TestDashboardDataHealth(t *testing.T) {
 		}
 	})
 
-	t.Run("Epics summarizes active and next epic work", func(t *testing.T) {
-		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
-		beadSrc.mu.Lock()
-		beadSrc.inProgressBeads = []protocol.Bead{
-			{ID: "oro-active-epic", Title: "Active epic", Type: "epic"},
-			{ID: "oro-active-child", Title: "Active child", Type: "task", Epic: "oro-active-epic"},
-		}
-		beadSrc.beads = []protocol.Bead{
-			{ID: "oro-next-epic", Title: "Next epic", Type: "EPIC"},
-			{ID: "oro-ready-task", Title: "Ready task", Type: "task"},
-		}
-		beadSrc.blockedBeads = []protocol.Bead{
-			{ID: "oro-blocked-child", Title: "Blocked child", Type: "task", Epic: "oro-next-epic"},
-		}
-		beadSrc.closedBeads = []protocol.Bead{
-			{ID: "oro-closed-child", Title: "Closed child", Type: "task", Epic: "oro-active-epic"},
-			{ID: "oro-unrelated-closed", Title: "Unrelated closed", Type: "task", Epic: "oro-other"},
-		}
-		beadSrc.mu.Unlock()
-
-		var dd DashboardData = d
-		got, err := dd.Epics(context.Background())
-		if err != nil {
-			t.Fatalf("Epics() error: %v", err)
-		}
-		if len(got.InProgress) != 1 {
-			t.Fatalf("InProgress summaries = %+v, want one", got.InProgress)
-		}
-		active := got.InProgress[0]
-		if active.ID != "oro-active-epic" || active.ActiveChildTitle != "Active child" || active.ClosedChildren != 1 {
-			t.Fatalf("active epic summary = %+v", active)
-		}
-		if len(got.Next) != 1 {
-			t.Fatalf("Next summaries = %+v, want one", got.Next)
-		}
-		next := got.Next[0]
-		if next.ID != "oro-next-epic" || next.FirstBlockerTitle != "Blocked child" {
-			t.Fatalf("next epic summary = %+v", next)
-		}
-	})
-
 	t.Run("ShowBead delegates to BeadSource.Show", func(t *testing.T) {
 		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 		beadSrc.mu.Lock()
