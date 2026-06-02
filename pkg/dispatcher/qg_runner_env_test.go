@@ -23,7 +23,7 @@ func TestShellQGRunnerNormalizesInvalidLocaleBeforeStartingBash(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	passed, output, err := (&dispatcher.ShellQGRunner{}).Run(context.Background(), tmpDir, false)
+	passed, output, err := (&dispatcher.ShellQGRunner{}).Run(context.Background(), tmpDir, false, "")
 	if err != nil {
 		t.Fatalf("ShellQGRunner.Run: %v", err)
 	}

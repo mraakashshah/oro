@@ -852,7 +852,7 @@ func (w *Worker) runQGAndReport(ctx context.Context) {
 	// surface legitimate failures without blocking the worker indefinitely.
 	_ = rebaseOntoTarget(ctx, wt, target)
 
-	passed, output, err := w.runQualityGateWithProgress(ctx, wt, true)
+	passed, output, err := w.runQualityGateWithProgress(ctx, wt, true, target)
 	if ctx.Err() != nil {
 		return
 	}
@@ -878,7 +878,7 @@ func (w *Worker) runQGAndReport(ctx context.Context) {
 	_ = w.SendReadyForReview(ctx)
 }
 
-func (w *Worker) runQualityGateWithProgress(ctx context.Context, worktree string, skipMutation bool) (passed bool, output string, err error) {
+func (w *Worker) runQualityGateWithProgress(ctx context.Context, worktree string, skipMutation bool, mutationBase string) (passed bool, output string, err error) {
 	scriptPath, statErr := findQualityGateScript(ctx, worktree)
 	if statErr != nil {
 		return false, "", statErr
@@ -890,7 +890,7 @@ func (w *Worker) runQualityGateWithProgress(ctx context.Context, worktree string
 	}
 	cmd := exec.CommandContext(ctx, "bash", args...) //nolint:gosec // script path constructed from worktree, not user input
 	cmd.Dir = worktree
-	cmd.Env = qualityGateEnv(worktree, skipMutation)
+	cmd.Env = qualityGateEnv(worktree, skipMutation, mutationBase)
 
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -1832,7 +1832,7 @@ func RunQualityGate(ctx context.Context, worktree string, skipMutation bool) (pa
 	}
 	cmd := exec.CommandContext(ctx, "bash", args...) //nolint:gosec // script path constructed from worktree, not user input
 	cmd.Dir = worktree
-	cmd.Env = qualityGateEnv(worktree, skipMutation)
+	cmd.Env = qualityGateEnv(worktree, skipMutation, "")
 
 	out, err := cmd.CombinedOutput()
 	output = string(out)
@@ -1873,13 +1873,16 @@ func (p *commandProcess) Kill() error {
 	return nil
 }
 
-func qualityGateEnv(worktree string, skipMutation bool) []string {
+func qualityGateEnv(worktree string, skipMutation bool, mutationBase string) []string {
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, kv := range os.Environ() {
 		if strings.HasPrefix(kv, "ORO_SKIP_MUTATION=") {
 			continue
 		}
 		if strings.HasPrefix(kv, "ORO_RUN_MUTATION=") {
+			continue
+		}
+		if strings.HasPrefix(kv, "ORO_MUTATION_BASE=") {
 			continue
 		}
 		if strings.HasPrefix(kv, "ORO_QG_LOCK_TIMEOUT_SECONDS=") {
@@ -1889,6 +1892,9 @@ func qualityGateEnv(worktree string, skipMutation bool) []string {
 	}
 	if skipMutation {
 		env = append(env, "ORO_SKIP_MUTATION=1")
+	}
+	if mutationBase != "" {
+		env = append(env, "ORO_MUTATION_BASE="+mutationBase)
 	}
 	return processenv.ForWorkdir(env, worktree)
 }

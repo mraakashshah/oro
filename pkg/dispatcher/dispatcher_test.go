@@ -11364,13 +11364,15 @@ type mockQGRunner struct {
 	err           error
 	calls         []string // worktree paths passed to Run
 	skipMutations []bool
+	mutationBases []string
 }
 
-func (m *mockQGRunner) Run(_ context.Context, worktree string, skipMutation bool) (bool, string, error) {
+func (m *mockQGRunner) Run(_ context.Context, worktree string, skipMutation bool, mutationBase string) (bool, string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, worktree)
 	m.skipMutations = append(m.skipMutations, skipMutation)
+	m.mutationBases = append(m.mutationBases, mutationBase)
 	return m.passed, m.output, m.err
 }
 
@@ -11389,7 +11391,7 @@ func TestShellQGRunner_DoesNotInheritMutationSkipWhenDisabled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	passed, output, err := (&ShellQGRunner{}).Run(context.Background(), tmpDir, false)
+	passed, output, err := (&ShellQGRunner{}).Run(context.Background(), tmpDir, false, "")
 	if err != nil {
 		t.Fatalf("ShellQGRunner.Run: %v", err)
 	}
@@ -11413,7 +11415,7 @@ func TestShellQGRunner_ConflictMarkersFailBeforeBash(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	passed, output, err := (&ShellQGRunner{}).Run(context.Background(), tmpDir, true)
+	passed, output, err := (&ShellQGRunner{}).Run(context.Background(), tmpDir, true, "")
 	if err != nil {
 		t.Fatalf("ShellQGRunner.Run: %v", err)
 	}
@@ -11440,12 +11442,33 @@ func TestShellQGRunner_SkipMutationScrubsRunMutationEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	passed, output, err := (&ShellQGRunner{}).Run(context.Background(), tmpDir, true)
+	passed, output, err := (&ShellQGRunner{}).Run(context.Background(), tmpDir, true, "")
 	if err != nil {
 		t.Fatalf("ShellQGRunner.Run: %v", err)
 	}
 	if !passed {
 		t.Fatalf("expected QG to pass with mutation forcibly disabled, output: %s", output)
+	}
+}
+
+func TestShellQGRunner_SetsMutationBase(t *testing.T) {
+	t.Setenv("ORO_MUTATION_BASE", "wrong-base")
+
+	tmpDir := t.TempDir()
+	script := filepath.Join(tmpDir, "quality_gate.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nif [ \"${ORO_MUTATION_BASE:-}\" != \"epic/qg-target\" ]; then echo wrong base: ${ORO_MUTATION_BASE:-unset}; exit 1; fi\necho clean\nexit 0\n"), 0o600); err != nil { //nolint:gosec // test script
+		t.Fatal(err)
+	}
+	if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+		t.Fatal(err)
+	}
+
+	passed, output, err := (&ShellQGRunner{}).Run(context.Background(), tmpDir, true, "epic/qg-target")
+	if err != nil {
+		t.Fatalf("ShellQGRunner.Run: %v", err)
+	}
+	if !passed {
+		t.Fatalf("expected QG to pass with mutation base, output: %s", output)
 	}
 }
 
@@ -11461,7 +11484,7 @@ func TestShellQGRunner_MutationTestingUsesFlagNotAmbientEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	passed, output, err := (&ShellQGRunner{}).Run(context.Background(), tmpDir, false)
+	passed, output, err := (&ShellQGRunner{}).Run(context.Background(), tmpDir, false, "")
 	if err != nil {
 		t.Fatalf("ShellQGRunner.Run: %v", err)
 	}
@@ -11477,7 +11500,7 @@ func TestCheckPreMergeQG_MutationTestingOptIn(t *testing.T) {
 	d.qgRunner = qgRunner
 	d.cfg.MutationTesting = true
 
-	if !d.checkPreMergeQG(ctx, "bead-mutation-opt-in", "worker-mutation-opt-in", "/tmp/wt", 0) {
+	if !d.checkPreMergeQG(ctx, "bead-mutation-opt-in", "worker-mutation-opt-in", "/tmp/wt", 0, "epic/qg-base") {
 		t.Fatal("expected pre-merge QG to pass")
 	}
 
@@ -11488,6 +11511,9 @@ func TestCheckPreMergeQG_MutationTestingOptIn(t *testing.T) {
 	}
 	if qgRunner.skipMutations[0] {
 		t.Fatal("pre-merge QG skipped mutation despite dispatcher opt-in")
+	}
+	if qgRunner.mutationBases[0] != "epic/qg-base" {
+		t.Fatalf("pre-merge QG mutation base = %q, want epic/qg-base", qgRunner.mutationBases[0])
 	}
 }
 

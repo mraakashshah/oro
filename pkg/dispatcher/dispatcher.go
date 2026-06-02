@@ -434,7 +434,7 @@ func (r *ShellAcceptanceRunner) Run(ctx context.Context, cmd string) (output str
 // whether it passed. skipMutation true means mutation testing is skipped;
 // false means the caller explicitly opted into mutation testing.
 type QGRunner interface {
-	Run(ctx context.Context, worktree string, skipMutation bool) (passed bool, output string, err error)
+	Run(ctx context.Context, worktree string, skipMutation bool, mutationBase string) (passed bool, output string, err error)
 }
 
 // ShellQGRunner runs quality_gate.sh inside the worktree via bash. It looks
@@ -445,7 +445,7 @@ type ShellQGRunner struct{}
 
 // Run implements QGRunner using the same logic as worker.RunQualityGate but
 // self-contained in the dispatcher package to avoid an import cycle.
-func (r *ShellQGRunner) Run(ctx context.Context, worktree string, skipMutation bool) (passed bool, output string, err error) {
+func (r *ShellQGRunner) Run(ctx context.Context, worktree string, skipMutation bool, mutationBase string) (passed bool, output string, err error) {
 	candidates := []string{
 		filepath.Join(worktree, "scripts", "quality_gate.sh"),
 		filepath.Join(worktree, "quality_gate.sh"),
@@ -472,7 +472,7 @@ func (r *ShellQGRunner) Run(ctx context.Context, worktree string, skipMutation b
 	}
 	cmd := exec.CommandContext(ctx, "bash", args...) //nolint:gosec // script path constructed from worktree, not user input
 	cmd.Dir = worktree
-	cmd.Env = qgRunnerEnv(skipMutation, worktree)
+	cmd.Env = qgRunnerEnv(skipMutation, worktree, mutationBase)
 	out, runErr := cmd.CombinedOutput()
 	output = string(out)
 	if runErr != nil {
@@ -516,7 +516,7 @@ func qualityGateConflictMarkerOutput(scriptPath string) (string, error) {
 	return b.String(), nil
 }
 
-func qgRunnerEnv(skipMutation bool, worktree string) []string {
+func qgRunnerEnv(skipMutation bool, worktree, mutationBase string) []string {
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, kv := range os.Environ() {
 		if strings.HasPrefix(kv, "ORO_SKIP_MUTATION=") {
@@ -525,12 +525,28 @@ func qgRunnerEnv(skipMutation bool, worktree string) []string {
 		if strings.HasPrefix(kv, "ORO_RUN_MUTATION=") {
 			continue
 		}
+		if strings.HasPrefix(kv, "ORO_MUTATION_BASE=") {
+			continue
+		}
 		env = append(env, kv)
 	}
 	if skipMutation {
 		env = append(env, "ORO_SKIP_MUTATION=1")
 	}
+	if mutationBase != "" {
+		env = append(env, "ORO_MUTATION_BASE="+mutationBase)
+	}
 	return processenv.ForWorkdir(env, worktree)
+}
+
+func (d *Dispatcher) qgMutationBase(targetBranch string) string {
+	if targetBranch != "" {
+		return targetBranch
+	}
+	if d.cfg.DefaultBranch != "" {
+		return d.cfg.DefaultBranch
+	}
+	return "main"
 }
 
 // --- Worker tracking ---
@@ -2189,7 +2205,7 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 		// I/O function: build full payload outside lock.
 		func() string {
 			if d.cfg.RegressionRevert {
-				if _, err := d.captureQGBaseline(ctx, beadID, snap.worktree); err != nil {
+				if _, err := d.captureQGBaseline(ctx, beadID, snap.worktree, d.qgMutationBase(snap.targetBranch)); err != nil {
 					_ = d.logEvent(ctx, "qg_baseline_capture_failed", workerID, beadID, workerID,
 						fmt.Sprintf(`{"error":%q,"attempt":%d}`, err.Error(), attempt))
 				}
@@ -2438,7 +2454,7 @@ func (d *Dispatcher) recordPreMergeDeterministicFailure(ctx context.Context, rec
 	}
 }
 
-func (d *Dispatcher) guardQGRegression(ctx context.Context, beadID, workerID, worktree string, assignmentID int64) bool {
+func (d *Dispatcher) guardQGRegression(ctx context.Context, beadID, workerID, worktree string, assignmentID int64, targetBranch string) bool {
 	if !d.cfg.RegressionRevert {
 		return true
 	}
@@ -2447,7 +2463,7 @@ func (d *Dispatcher) guardQGRegression(ctx context.Context, beadID, workerID, wo
 		return true
 	}
 
-	regression, err := d.detectQGRegression(ctx, base, worktree)
+	regression, err := d.detectQGRegression(ctx, base, worktree, d.qgMutationBase(targetBranch))
 	if err != nil {
 		return d.handlePreMergeQGError(ctx, beadID, workerID, worktree, assignmentID, err)
 	}
@@ -2482,11 +2498,12 @@ func (d *Dispatcher) guardQGRegression(ctx context.Context, beadID, workerID, wo
 // testing is opt-in so local branch merges do not pay that cost by default.
 // It returns true when the gate passes and the merge should proceed. On failure
 // or error it handles cleanup and returns false so the caller can return early.
-func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, worktree string, assignmentID int64) bool {
-	if !d.guardQGRegression(ctx, beadID, workerID, worktree, assignmentID) {
+func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, worktree string, assignmentID int64, targetBranch string) bool {
+	mutationBase := d.qgMutationBase(targetBranch)
+	if !d.guardQGRegression(ctx, beadID, workerID, worktree, assignmentID, mutationBase) {
 		return false
 	}
-	qgPassed, qgOutput, qgErr := d.qgRunner.Run(ctx, worktree, !d.cfg.MutationTesting)
+	qgPassed, qgOutput, qgErr := d.qgRunner.Run(ctx, worktree, !d.cfg.MutationTesting, mutationBase)
 	if qgErr != nil {
 		return d.handlePreMergeQGError(ctx, beadID, workerID, worktree, assignmentID, qgErr)
 	}
@@ -2586,7 +2603,7 @@ func (d *Dispatcher) blockPreMergeLeak(ctx context.Context, beadID, workerID, wo
 // the worktree on completion. It returns true when the gate passes and
 // tryCloseEpic should proceed to completeEpicClose. On failure or error it
 // handles logging/escalation and returns false.
-func (d *Dispatcher) checkEpicQG(ctx context.Context, epicID, workerID, epicBranch string) bool {
+func (d *Dispatcher) checkEpicQG(ctx context.Context, epicID, workerID, epicBranch, targetBranch string) bool {
 	wtID := d.epicQGWorktreeID(epicID)
 	worktree, _, err := d.worktrees.Create(ctx, wtID, epicBranch)
 	if err != nil {
@@ -2596,7 +2613,7 @@ func (d *Dispatcher) checkEpicQG(ctx context.Context, epicID, workerID, epicBran
 	}
 	defer func() { _ = d.worktrees.Remove(context.Background(), worktree) }()
 
-	passed, qgOutput, qgErr := d.qgRunner.Run(ctx, worktree, !d.cfg.MutationTesting)
+	passed, qgOutput, qgErr := d.qgRunner.Run(ctx, worktree, !d.cfg.MutationTesting, d.qgMutationBase(targetBranch))
 	if qgErr != nil {
 		_ = d.logEvent(ctx, "epic_qg_error", "dispatcher", epicID, workerID,
 			fmt.Sprintf(`{"error":%q}`, qgErr.Error()))
@@ -2755,10 +2772,7 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 		return
 	}
 
-	if !d.guardQGRegression(ctx, beadID, workerID, worktree, assignmentID) {
-		return
-	}
-	if !d.checkPreMergeQG(ctx, beadID, workerID, worktree, assignmentID) {
+	if !d.checkPreMergeQG(ctx, beadID, workerID, worktree, assignmentID, targetBranch) {
 		return
 	}
 	if !d.checkPreMergeLeaks(ctx, beadID, workerID, worktree, branch, targetBranch, assignmentID) {
@@ -3259,7 +3273,7 @@ func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) 
 		_ = d.logEvent(ctx, "epic_acceptance_passed", "dispatcher", epicID, workerID,
 			fmt.Sprintf(`{"cmd":%q}`, cmd))
 		epicBranch := protocol.EpicBranchPrefix + epicID
-		if !d.checkEpicQG(ctx, epicID, workerID, epicBranch) {
+		if !d.checkEpicQG(ctx, epicID, workerID, epicBranch, targetBranch) {
 			return
 		}
 		d.completeEpicClose(ctx, epicID, workerID, "Acceptance test passed", targetBranch)

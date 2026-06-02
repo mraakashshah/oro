@@ -3429,7 +3429,7 @@ func TestWorkerFlow_SendsReadyForReview(t *testing.T) { //nolint:funlen // integ
 		// local QG path must keep mutation testing disabled by default.
 		tmpDir := t.TempDir()
 		script := filepath.Join(tmpDir, "quality_gate.sh")
-		if err := os.WriteFile(script, []byte("#!/bin/sh\nif [ \"${ORO_SKIP_MUTATION:-}\" != \"1\" ]; then echo 'missing ORO_SKIP_MUTATION'; exit 1; fi\necho 'all checks passed'\nexit 0\n"), 0o600); err != nil { //nolint:gosec // test file
+		if err := os.WriteFile(script, []byte("#!/bin/sh\nif [ \"${ORO_SKIP_MUTATION:-}\" != \"1\" ]; then echo 'missing ORO_SKIP_MUTATION'; exit 1; fi\nif [ \"${ORO_MUTATION_BASE:-}\" != \"epic/worker-target\" ]; then echo \"wrong ORO_MUTATION_BASE=${ORO_MUTATION_BASE:-unset}\"; exit 1; fi\necho 'all checks passed'\nexit 0\n"), 0o600); err != nil { //nolint:gosec // test file
 			t.Fatal(err)
 		}
 		if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
@@ -3457,8 +3457,9 @@ func TestWorkerFlow_SendsReadyForReview(t *testing.T) { //nolint:funlen // integ
 		sendMessage(t, dispatcherConn, protocol.Message{
 			Type: protocol.MsgAssign,
 			Assign: &protocol.AssignPayload{
-				BeadID:   "bead-rfr",
-				Worktree: tmpDir,
+				BeadID:       "bead-rfr",
+				Worktree:     tmpDir,
+				TargetBranch: "epic/worker-target",
 			},
 		})
 		_ = readMessage(t, dispatcherConn) // drain STATUS

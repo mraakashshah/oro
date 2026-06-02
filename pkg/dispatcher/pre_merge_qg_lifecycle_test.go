@@ -199,7 +199,7 @@ func TestPreMergeQGFailureDoesNotOrphan(t *testing.T) {
 	d.worktreeByBead[beadID] = worktree
 	d.mu.Unlock()
 
-	d.checkPreMergeQG(ctx, beadID, workerID, worktree, assignmentID)
+	d.checkPreMergeQG(ctx, beadID, workerID, worktree, assignmentID, "epic/pre-merge-target")
 
 	// (1) Event "qg_failed" logged with actionable output.
 	var payload string
@@ -265,7 +265,7 @@ func TestClosedBeadNotReopenedByStaleAssignment(t *testing.T) {
 	d.worktreeByBead[beadID] = worktree
 	d.mu.Unlock()
 
-	d.checkPreMergeQG(ctx, beadID, workerID, worktree, assignmentID)
+	d.checkPreMergeQG(ctx, beadID, workerID, worktree, assignmentID, "epic/pre-merge-target")
 
 	// Bead must NOT be reopened — it was already closed on main.
 	beadSrc.mu.Lock()
@@ -324,7 +324,7 @@ func TestPreMergeQGErrorClassifiedBeforePreservation(t *testing.T) {
 	d.worktreeByBead[beadID] = worktree
 	d.mu.Unlock()
 
-	d.checkPreMergeQG(ctx, beadID, workerID, worktree, assignmentID)
+	d.checkPreMergeQG(ctx, beadID, workerID, worktree, assignmentID, "epic/pre-merge-target")
 
 	// (1) Classification event must be recorded.
 	var payload string
@@ -387,7 +387,7 @@ func TestPreMergeQGFailurePreservesRejectedWork(t *testing.T) {
 	d.worktreeByBead[beadID] = worktree
 	d.mu.Unlock()
 
-	d.checkPreMergeQG(ctx, beadID, workerID, worktree, assignmentID)
+	d.checkPreMergeQG(ctx, beadID, workerID, worktree, assignmentID, "epic/pre-merge-target")
 
 	// (1) Preservation event must be logged.
 	var preservePayload string

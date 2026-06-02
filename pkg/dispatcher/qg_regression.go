@@ -26,7 +26,7 @@ var (
 	goTestOutcomeRE = regexp.MustCompile(`^--- (PASS|FAIL): ([^\s(]+)`)
 )
 
-func (d *Dispatcher) captureQGBaseline(ctx context.Context, beadID, worktree string) (qgBaseline, error) {
+func (d *Dispatcher) captureQGBaseline(ctx context.Context, beadID, worktree, mutationBase string) (qgBaseline, error) {
 	headOut, err := d.shutdownRunner.Run(ctx, "git", "-C", worktree, "rev-parse", "HEAD")
 	if err != nil {
 		return nil, fmt.Errorf("capture qg baseline head: %w", err)
@@ -37,7 +37,7 @@ func (d *Dispatcher) captureQGBaseline(ctx context.Context, beadID, worktree str
 		return cached, nil
 	}
 
-	passed, output, err := d.qgRunner.Run(ctx, worktree, !d.cfg.MutationTesting)
+	passed, output, err := d.qgRunner.Run(ctx, worktree, !d.cfg.MutationTesting, mutationBase)
 	if err != nil {
 		return nil, fmt.Errorf("capture qg baseline run: %w", err)
 	}
@@ -51,8 +51,8 @@ func (d *Dispatcher) captureQGBaseline(ctx context.Context, beadID, worktree str
 	return d.storeQGBaseline(headSHA, baseline), nil
 }
 
-func (d *Dispatcher) detectQGRegression(ctx context.Context, base qgBaseline, worktree string) (qgRegression, error) {
-	passed, output, err := d.qgRunner.Run(ctx, worktree, !d.cfg.MutationTesting)
+func (d *Dispatcher) detectQGRegression(ctx context.Context, base qgBaseline, worktree, mutationBase string) (qgRegression, error) {
+	passed, output, err := d.qgRunner.Run(ctx, worktree, !d.cfg.MutationTesting, mutationBase)
 	if err != nil {
 		return qgRegression{}, fmt.Errorf("detect qg regression run: %w", err)
 	}

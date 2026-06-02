@@ -93,7 +93,7 @@ FAIL
 		qgRunner:       qgRunner,
 	}
 
-	baseline, err := d.captureQGBaseline(ctx, "bead-1", worktree)
+	baseline, err := d.captureQGBaseline(ctx, "bead-1", worktree, "epic/qg-base")
 	if err != nil {
 		t.Fatalf("captureQGBaseline() error = %v", err)
 	}
@@ -121,7 +121,7 @@ FAIL
 		t.Fatalf("qg calls = %#v, want [%q]", qgRunner.calls, worktree)
 	}
 
-	cached, err := d.captureQGBaseline(ctx, "bead-1", worktree)
+	cached, err := d.captureQGBaseline(ctx, "bead-1", worktree, "epic/qg-base")
 	if err != nil {
 		t.Fatalf("cached captureQGBaseline() error = %v", err)
 	}
@@ -142,7 +142,7 @@ func TestCaptureQGBaselineGitFailure(t *testing.T) {
 		qgRunner:       &mockQGRunner{passed: true, output: "--- PASS: TestA (0.00s)\n"},
 	}
 
-	_, err := d.captureQGBaseline(context.Background(), "bead-1", t.TempDir())
+	_, err := d.captureQGBaseline(context.Background(), "bead-1", t.TempDir(), "epic/qg-base")
 	if !errors.Is(err, proofErr) {
 		t.Fatalf("captureQGBaseline() error = %v, want %v", err, proofErr)
 	}
@@ -511,7 +511,7 @@ FAIL
 				},
 			}
 
-			got, err := d.detectQGRegression(context.Background(), tt.baseline, t.TempDir())
+			got, err := d.detectQGRegression(context.Background(), tt.baseline, t.TempDir(), "epic/qg-base")
 			if err != nil {
 				t.Fatalf("detectQGRegression() error = %v", err)
 			}
