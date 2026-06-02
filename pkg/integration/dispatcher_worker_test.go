@@ -133,7 +133,7 @@ func (m *mockGitRunner) Run(_ context.Context, _ string, args ...string) (string
 // tests where quality_gate.sh is not available on disk.
 type passQGRunner struct{}
 
-func (passQGRunner) Run(_ context.Context, _ string, _ bool) (bool, string, error) {
+func (passQGRunner) Run(_ context.Context, _ string, _ bool, _ string) (bool, string, error) {
 	return true, "", nil
 }
 

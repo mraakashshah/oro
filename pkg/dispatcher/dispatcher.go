@@ -539,16 +539,6 @@ func qgRunnerEnv(skipMutation bool, worktree, mutationBase string) []string {
 	return processenv.ForWorkdir(env, worktree)
 }
 
-func (d *Dispatcher) qgMutationBase(targetBranch string) string {
-	if targetBranch != "" {
-		return targetBranch
-	}
-	if d.cfg.DefaultBranch != "" {
-		return d.cfg.DefaultBranch
-	}
-	return "main"
-}
-
 // --- Worker tracking ---
 
 // WorkerState is now in pkg/protocol/types.go
@@ -1025,6 +1015,16 @@ type Dispatcher struct {
 	// of the previous one, the cached JSON is returned without rebuilding.
 	lastStatusTime time.Time
 	lastStatusJSON string
+}
+
+func (d *Dispatcher) qgMutationBase(targetBranch string) string {
+	if targetBranch != "" {
+		return targetBranch
+	}
+	if d.cfg.DefaultBranch != "" {
+		return d.cfg.DefaultBranch
+	}
+	return "main"
 }
 
 func (d *Dispatcher) updateBeadStatus(ctx context.Context, id, status string) error {
