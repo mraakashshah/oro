@@ -175,7 +175,9 @@ Default behavior:
 - Detect Cypress if `cypress` is in dependencies/devDependencies or `cypress.config.*` exists.
 - Do not mark E2E required solely because a project is JS/TS. Mark required when an E2E script exists or the user configures `frontend.e2e.required: true`.
 
-`BuildYAML` must preserve existing top-level sections. Today `BuildYAML` emits only `languages:` and would drop unrelated blocks if reused broadly. This feature must either update `BuildYAML` to emit `frontend` and `memory` safely, or avoid rewriting existing config except during initial generation.
+`BuildYAML` must preserve existing top-level sections. Today `BuildYAML` emits only `languages:` and would drop unrelated blocks if reused broadly. For this feature, replace the hand-rolled YAML builder with structured YAML marshaling for the known config shape and add round-trip coverage for `languages`, `memory`, and `frontend`. Existing user config still must not be overwritten without explicit force, but generated config must not silently discard fields that Oro already owns.
+
+`langprofile.GenerateConfig` is the production entry point used by setup/bootstrap. It must call frontend detection and populate `Config.Frontend` directly when `package.json` is present. Tests that construct `FrontendConfig` by hand are useful unit coverage, but they are not enough to prove real project generation works.
 
 ### 2. Frontend Command Resolver
 
@@ -295,6 +297,41 @@ The final template should not duplicate this exact pseudo-code blindly. It needs
 - exclude `.worktrees`, `.claude/worktrees`, `.venv`, `node_modules`, `playwright-report`, `test-results`, `coverage`, and configured `frontend.artifacts_dir` from unrelated filesystem walkers;
 - aggregate rc files and fail on missing lane rc files.
 
+#### 3a. Generated QG Main-Block Wiring
+
+Defining `lane_frontend` is not sufficient. The existing generated quality gate explicitly dispatches each lane in the template main block and explicitly lists expected rc files. The frontend implementation must update the same dispatch and aggregation path.
+
+Required template changes:
+
+- `qualityGateData` must include `HasFrontend` and `Frontend`.
+- `writeQualityGateScript` and `generateQualityGateScript` must derive `HasFrontend` from normalized `cfg.Frontend`, not from language presence.
+- The generated script main block must launch `lane_frontend` when `HasFrontend` is true.
+- The generated script must wait for the frontend PID, print `frontend.out`, and include `$QG_DIR/frontend.rc` in the expected rc file list.
+- Tests must assert the generated script contains the dispatch/aggregation wiring, not only the function definition.
+
+The expected shell shape mirrors the current Go/Python lane dispatch:
+
+```bash
+{{if .HasFrontend}}
+lane_frontend > "$QG_DIR/frontend.out" 2>&1 &
+pid_frontend=$!
+{{end}}
+
+{{if .HasFrontend}}
+wait "$pid_frontend" || true
+cat "$QG_DIR/frontend.out"
+{{end}}
+
+expected_rc_files=(
+  {{if .HasGo}}"$QG_DIR/go.rc"{{end}}
+  {{if .HasPython}}"$QG_DIR/python.rc"{{end}}
+  {{if .HasFrontend}}"$QG_DIR/frontend.rc"{{end}}
+  "$QG_DIR/other.rc"
+)
+```
+
+The exact code should follow the current template style, but these three pieces are inseparable: dispatch, output printing, and rc aggregation. If any one is missing, the lane can be defined but never gate the merge.
+
 ### 4. Dev Server and E2E Server Policy
 
 Do not make Oro responsible for inventing a dev server command in v1. Browser E2E frameworks already support `webServer` in Playwright config and `baseUrl` in Cypress config. Oro should support both patterns:
@@ -340,6 +377,8 @@ Update `pkg/ops/review_prompt.go` so review rejects UI-impacting tasks when:
 
 Review should not reject for missing full exploratory QA if deterministic E2E passes and the task is narrow. Exploratory QA is a later layer; the first hard gate is command-based evidence.
 
+`buildReviewPrompt` currently receives acceptance criteria and diff context, not arbitrary QG transcript text. This feature must either extend the review input model to include a QG evidence summary, or the review rule must be based only on data the reviewer actually receives. The preferred design is to add a small `QGEvidence`/`VerificationEvidence` field that includes executed frontend commands, skipped required checks, and artifact paths. Prompt tests should prove that data appears in the review prompt.
+
 Likely UI surface heuristics:
 
 - paths under `frontend/`, `web/`, `app/`, `src/`, `pages/`, `components/`, `pkg/web/templates`, `pkg/web/static`;
@@ -362,6 +401,7 @@ Extend setup/init support:
 - `filterToolsByLanguages` needs a frontend category or a JS/TS category that does not force Go/Python tools.
 - `bootstrapProject` should generate `.oro/config.yaml` with the `frontend:` block on new projects.
 - Existing configs must not be overwritten without `--force`.
+- Existing generated `scripts/quality_gate.sh` files must have a documented regeneration path, because the current writer skips existing scripts unless forced. The initial implementation can use existing force behavior, but docs and tests must prove `oro init --force` or the chosen upgrade path regenerates the frontend lane for an existing Oro project.
 
 Example generated config:
 
@@ -444,19 +484,34 @@ It should not be the first hard gate because it is agent-driven, not determinist
 
 Add it after the command-based lane lands. A later spec can define `oro browser verify` or an `agent-browser` daemon wrapper that records structured QA reports.
 
+### 11. Worktree Dependency Availability
+
+Oro workers run quality gates from isolated git worktrees. Frontend dependencies and Playwright browser caches are usually gitignored and may exist only in the main checkout or local cache, not in the worker worktree. The frontend lane must make this operational boundary explicit.
+
+V1 policy:
+
+- Do not run package installation inside QG.
+- Run configured commands from `frontend.root` inside the worktree.
+- Before executing frontend commands, check that the package manager binary is available and that project dependencies needed by the configured command appear available.
+- If dependencies are missing, fail with an explicit setup message naming the frontend root and package manager command the user should run outside QG.
+- Keep runner caches under `$QG_DIR` unless the project runner already owns a cache path.
+
+This does not magically make every worktree runnable without dependency setup. It prevents silent or misleading failures and gives workers/reviewers deterministic evidence when the frontend lane could not execute.
+
 ## Acceptance Test for the Epic
 
 The epic is complete when this command passes on `main`:
 
 ```bash
-go test ./pkg/langprofile ./cmd/oro ./pkg/worker ./pkg/ops -run 'TestDetectFrontendConfig|TestBuildYAMLEmitsFrontendConfig|TestGenerateQualityGateScriptIncludesFrontendLane|TestGeneratedFrontendLaneRunsConfiguredE2E|TestGeneratedFrontendLaneFailsWhenRequiredE2EMissing|TestBootstrapGeneratesFrontendConfig|TestWorkerPromptRequiresBrowserEvidenceForUITasks|TestOpsReviewRejectsUITaskWithoutBrowserEvidence' -count=1 && ./scripts/quality_gate.sh
+go test ./pkg/langprofile ./cmd/oro ./pkg/worker ./pkg/ops -run 'TestDetectFrontendConfig|TestBuildYAMLEmitsFrontendConfig|TestBuildYAMLPreservesMemoryAndLanguages|TestGenerateQualityGateScriptIncludesFrontendLane|TestGenerateQualityGateScriptDispatchesFrontendLane|TestGeneratedFrontendLaneRunsConfiguredE2E|TestGeneratedFrontendLaneFailsWhenRequiredE2EMissing|TestBootstrapGeneratesFrontendConfig|TestBootstrapFrontendFixtureEndToEnd|TestWorkerPromptRequiresBrowserEvidenceForUITasks|TestOpsReviewIncludesFrontendQGEvidence|TestOpsReviewRejectsUITaskWithoutBrowserEvidence' -count=1 && ./scripts/quality_gate.sh
 ```
 
 Assert:
 
 - A fixture project with `package.json`, `tsconfig.json`, `pnpm-lock.yaml`, and `test:e2e` gets a generated `frontend:` config.
-- Generated QG includes `lane_frontend` and runs the configured E2E command.
+- Generated QG includes `lane_frontend`, dispatches it from the main block, aggregates `frontend.rc`, and runs the configured E2E command.
 - Required E2E missing fails the frontend lane.
+- A full generated-script fixture proves the frontend lane actually executes by checking a stub E2E side effect.
 - Non-frontend projects preserve existing Go/Python/docs QG behavior.
 - Worker and ops prompts require browser evidence for UI-impacting tasks.
 - Full repo QG still passes.
@@ -470,15 +525,15 @@ This is ready to materialize into Oro tasks. IDs are placeholders.
 Acceptance:
 
 ```text
-Test: docs/plans/2026-06-09-front-end-e2e-verification-design.md:Acceptance Test for the Epic | Cmd: go test ./pkg/langprofile ./cmd/oro ./pkg/worker ./pkg/ops -run 'TestDetectFrontendConfig|TestBuildYAMLEmitsFrontendConfig|TestGenerateQualityGateScriptIncludesFrontendLane|TestGeneratedFrontendLaneRunsConfiguredE2E|TestGeneratedFrontendLaneFailsWhenRequiredE2EMissing|TestBootstrapGeneratesFrontendConfig|TestWorkerPromptRequiresBrowserEvidenceForUITasks|TestOpsReviewRejectsUITaskWithoutBrowserEvidence' -count=1 && ./scripts/quality_gate.sh | Assert: frontend config detection, generated QG lane, required E2E enforcement, worker guidance, ops review enforcement, and full QG all pass
+Test: docs/plans/2026-06-09-front-end-e2e-verification-design.md:Acceptance Test for the Epic | Cmd: go test ./pkg/langprofile ./cmd/oro ./pkg/worker ./pkg/ops -run 'TestDetectFrontendConfig|TestBuildYAMLEmitsFrontendConfig|TestBuildYAMLPreservesMemoryAndLanguages|TestGenerateQualityGateScriptIncludesFrontendLane|TestGenerateQualityGateScriptDispatchesFrontendLane|TestGeneratedFrontendLaneRunsConfiguredE2E|TestGeneratedFrontendLaneFailsWhenRequiredE2EMissing|TestBootstrapGeneratesFrontendConfig|TestBootstrapFrontendFixtureEndToEnd|TestWorkerPromptRequiresBrowserEvidenceForUITasks|TestOpsReviewIncludesFrontendQGEvidence|TestOpsReviewRejectsUITaskWithoutBrowserEvidence' -count=1 && ./scripts/quality_gate.sh | Assert: frontend config detection, generated QG lane dispatch and aggregation, required E2E enforcement, worker guidance, ops review enforcement, full-script fixture execution, and full QG all pass
 ```
 
 #### Task 1: Add frontend config model and detection
 
 ```text
-Test: pkg/langprofile/config_test.go:TestDetectFrontendConfig | Cmd: go test ./pkg/langprofile -run 'TestDetectFrontendConfig|TestBuildYAMLEmitsFrontendConfig|TestFrontendConfigPreservesExplicitFalse' -count=1 | Assert: package.json/lockfile/scripts produce FrontendConfig with package manager, command map, runner, required flag, artifacts dir, and explicit false survives YAML round trip
+Test: pkg/langprofile/config_test.go:TestDetectFrontendConfig | Cmd: go test ./pkg/langprofile -run 'TestDetectFrontendConfig|TestGenerateConfigPopulatesFrontend|TestBuildYAMLEmitsFrontendConfig|TestBuildYAMLPreservesMemoryAndLanguages|TestFrontendConfigPreservesExplicitFalse' -count=1 | Assert: package.json/lockfile/scripts produce FrontendConfig through GenerateConfig with package manager, command map, runner, required flag, artifacts dir, memory/language config is preserved, and explicit false survives YAML round trip
 Read: pkg/langprofile/config.go:Config, pkg/langprofile/profiles.go:AllProfiles, pkg/langprofile/detect.go:DetectExistingToolsAt
-Signature: type FrontendConfig struct; func DetectFrontend(projectRoot string) (FrontendConfig, error); func (c *Config) WithDefaults() *Config
+Signature: type FrontendConfig struct; func DetectFrontend(projectRoot string) (FrontendConfig, error); func GenerateConfig(projectRoot string, profiles []LangProfile) (*Config, error); func (c *Config) WithDefaults() *Config
 Edges: no package.json -> disabled/zero config; malformed package.json -> no panic and warning-ready error; explicit enabled:false -> do not auto-enable; multiple lockfiles -> deterministic priority
 Estimate: 7
 ```
@@ -488,9 +543,10 @@ Dependencies: none.
 #### Task 2: Preserve and emit frontend config in setup/init
 
 ```text
-Test: cmd/oro/cmd_init_test.go:TestBootstrapGeneratesFrontendConfig | Cmd: go test ./cmd/oro -run 'TestBootstrapGeneratesFrontendConfig|TestBootstrapDoesNotOverwriteExistingFrontendConfigWithoutForce|TestSetupDryRunReportsFrontendDetection' -count=1 | Assert: bootstrap writes frontend config for package.json fixtures, preserves existing config without force, and setup dry-run reports detected package manager/E2E script
-Read: cmd/oro/cmd_init.go:bootstrapProject, cmd/oro/cmd_setup.go:setupPhase2Detect, pkg/langprofile/config.go:BuildYAML
-Edges: existing user config, stealth config path, no languages but package.json present, force overwrite
+Test: cmd/oro/cmd_init_test.go:TestBootstrapGeneratesFrontendConfig | Cmd: go test ./cmd/oro -run 'TestBootstrapGeneratesFrontendConfig|TestBootstrapDoesNotOverwriteExistingFrontendConfigWithoutForce|TestBootstrapForceRegeneratesFrontendQualityGate|TestSetupDryRunReportsFrontendDetection' -count=1 | Assert: bootstrap writes frontend config for package.json fixtures, preserves existing config without force, force regeneration updates an existing quality gate with the frontend lane, and setup dry-run reports detected package manager/E2E script
+Read: cmd/oro/cmd_init.go:bootstrapProject, cmd/oro/cmd_setup.go:setupPhase2Detect, cmd/oro/quality_gate_gen.go:writeQualityGateScriptFile, pkg/langprofile/config.go:BuildYAML
+Signature: bootstrap/setup use langprofile.GenerateConfig so production detection populates cfg.Frontend
+Edges: existing user config, stealth config path, no languages but package.json present, force overwrite, existing scripts/quality_gate.sh
 Estimate: 7
 ```
 
@@ -511,9 +567,10 @@ Dependencies: Task 1.
 #### Task 4: Render generated frontend QG lane
 
 ```text
-Test: cmd/oro/quality_gate_gen_test.go:TestGenerateQualityGateScriptIncludesFrontendLane | Cmd: go test ./cmd/oro -run 'TestGenerateQualityGateScriptIncludesFrontendLane|TestGenerateQualityGateScriptOmitsFrontendLaneWhenDisabled|TestGeneratedFrontendLaneExcludesArtifactsFromWalkers' -count=1 | Assert: generated script has lane_frontend only when enabled and excludes node_modules, worktrees, Playwright/Cypress artifacts, coverage, and configured artifacts_dir from unrelated walkers
-Read: cmd/oro/quality_gate_gen.go:qualityGateData, cmd/oro/quality_gate_gen.go:qualityGateTmpl, scripts/quality_gate.sh:lane_other
-Edges: frontend disabled, no languages detected but frontend enabled, custom frontend.root, shell quoting of commands
+Test: cmd/oro/quality_gate_gen_test.go:TestGenerateQualityGateScriptIncludesFrontendLane | Cmd: go test ./cmd/oro -run 'TestGenerateQualityGateScriptIncludesFrontendLane|TestGenerateQualityGateScriptDispatchesFrontendLane|TestGenerateQualityGateScriptOmitsFrontendLaneWhenDisabled|TestGeneratedFrontendLaneExcludesArtifactsFromWalkers' -count=1 | Assert: generated script has lane_frontend only when enabled, dispatches it from the main block, waits/prints frontend output, includes frontend.rc in aggregation, and excludes node_modules, worktrees, Playwright/Cypress artifacts, coverage, and configured artifacts_dir from unrelated walkers
+Read: cmd/oro/quality_gate_gen.go:qualityGateData, cmd/oro/quality_gate_gen.go:writeQualityGateScript, cmd/oro/quality_gate_gen.go:generateQualityGateScript, cmd/oro/quality_gate_gen.go:qualityGateTmpl, scripts/quality_gate.sh:lane_other
+Signature: qualityGateData.HasFrontend is derived from cfg.Frontend after defaults/normalization
+Edges: frontend disabled, no languages detected but frontend enabled, custom frontend.root, shell quoting of commands, frontend lane defined but dispatch removed, frontend.rc omitted from expected rc files
 Estimate: 7
 ```
 
@@ -524,7 +581,7 @@ Dependencies: Tasks 1 and 3.
 ```text
 Test: cmd/oro/quality_gate_gen_test.go:TestGeneratedFrontendLaneRunsConfiguredE2E | Cmd: go test ./cmd/oro -run 'TestGeneratedFrontendLaneRunsConfiguredE2E|TestGeneratedFrontendLaneFailsWhenRequiredE2EMissing|TestGeneratedFrontendLaneSkipsOptionalMissingE2E|TestGeneratedFrontendLaneUsesFrontendRoot' -count=1 | Assert: fixture generated QG runs configured E2E from frontend.root, fails required missing E2E, skips optional missing E2E, and writes artifacts under QG_DIR
 Read: cmd/oro/quality_gate_gen.go:qualityGateTmpl, pkg/worker/worker.go:RunQualityGate
-Edges: command exits non-zero, missing package manager binary, cancelled context, E2E writes repo-local reports
+Edges: command exits non-zero, missing package manager binary, missing worktree dependencies, cancelled context, E2E writes repo-local reports
 Estimate: 7
 ```
 
@@ -555,8 +612,9 @@ Dependencies: none.
 #### Task 8: Update ops review prompt to reject missing UI evidence
 
 ```text
-Test: pkg/ops/review_prompt_test.go:TestOpsReviewRejectsUITaskWithoutBrowserEvidence | Cmd: go test ./pkg/ops -run 'TestOpsReviewRejectsUITaskWithoutBrowserEvidence|TestOpsReviewAcceptsNarrowUITaskWithE2EEvidence|TestOpsReviewAllowsNonUIChangeWithoutFrontendEvidence' -count=1 | Assert: review prompt requires browser/E2E evidence for UI-impacting diffs and avoids rejecting non-UI diffs
+Test: pkg/ops/review_prompt_test.go:TestOpsReviewRejectsUITaskWithoutBrowserEvidence | Cmd: go test ./pkg/ops -run 'TestOpsReviewIncludesFrontendQGEvidence|TestOpsReviewRejectsUITaskWithoutBrowserEvidence|TestOpsReviewAcceptsNarrowUITaskWithE2EEvidence|TestOpsReviewAllowsNonUIChangeWithoutFrontendEvidence' -count=1 | Assert: review prompt includes frontend QG evidence when provided, requires browser/E2E evidence for UI-impacting diffs, and avoids rejecting non-UI diffs
 Read: pkg/ops/review_prompt.go:buildReviewPrompt, assets/review-patterns.md
+Signature: review prompt input includes frontend QG evidence summary or verification evidence equivalent
 Edges: template-only changes, CSS-only changes, generated files, explicitly out-of-scope browser testing
 Estimate: 5
 ```
@@ -577,7 +635,7 @@ Dependencies: Tasks 1, 4, 7, 8.
 #### Task 10: Integration fixture for JS/TS project generation
 
 ```text
-Test: cmd/oro/cmd_init_test.go:TestBootstrapFrontendFixtureEndToEnd | Cmd: go test ./cmd/oro -run TestBootstrapFrontendFixtureEndToEnd -count=1 | Assert: a temp TS fixture with package.json, tsconfig, pnpm lock, and stub test:e2e bootstraps config and generated QG whose frontend lane executes the stub E2E script successfully
+Test: cmd/oro/cmd_init_test.go:TestBootstrapFrontendFixtureEndToEnd | Cmd: go test ./cmd/oro -run TestBootstrapFrontendFixtureEndToEnd -count=1 | Assert: a temp TS fixture with package.json, tsconfig, pnpm lock, and stub test:e2e bootstraps config and generated QG whose frontend lane dispatches from the main block, executes the stub E2E script, writes a marker file, and aggregates frontend.rc successfully
 Read: cmd/oro/cmd_init_test.go:TestBootstrapGeneratesQualityGate, cmd/oro/quality_gate_gen.go:writeQualityGateScriptFile
 Edges: no node_modules, package manager command stubbed on PATH, scripts/quality_gate.sh existing, force vs non-force
 Estimate: 7
@@ -623,25 +681,25 @@ It does not yet give:
 | Failure | Impact | Mitigation |
 |---|---|---|
 | QG runs write-mode formatters and mutates worktree | Worker commits unrelated changes or QG dirties branch | Default generated commands should use check-only scripts when known; project config owns write-mode commands; tests assert no generated install command |
-| Missing node dependencies make QG fail on every worker | Frontend projects unusable until setup | Fail with explicit dependency/setup message; `oro setup` reports package manager and script availability |
+| Missing node dependencies make QG fail on every worker | Frontend projects unusable until setup | Fail with explicit worktree dependency/setup message; `oro setup` reports package manager and script availability |
 | E2E is flaky | Factory throughput stalls | Keep retries project-owned in Playwright/Cypress config; future QG classifier can recognize deterministic vs flaky output |
 | UI task lacks E2E harness | Review rejects useful work | Worker creates narrow harness task or task acceptance explicitly scopes browser testing out; ops review requires citation |
 | Artifacts leak secrets | Credentials committed | Docs and gitignore guidance; no QG artifact commits by default; storage state paths through env/local files |
 | Monorepo frontend is not at repo root | QG runs wrong package | `frontend.root` and fixture coverage |
 | Browser checks walk `node_modules` or `.worktrees` | Slow or false failures | Exclusion tests in generated QG |
 
-## Adversarial Self-Review
+## Fresh Claude Adversarial Review
 
-Fresh-context subagent review was not run because the available sub-agent tool is restricted to explicit user requests for delegation. This self-review follows the same six checks and should be rerun with a fresh reviewer before implementation.
+A fresh Claude subagent reviewed this spec after the initial draft. It returned `verdict: FAIL` because the first draft specified the frontend lane body but not every activation path needed to make it gate merges. This revision applies those findings by adding main-block dispatch/aggregation requirements, `HasFrontend` population, full generated-script acceptance coverage, config round-trip preservation, existing-script regeneration coverage, worktree dependency handling, and review-prompt evidence input.
 
 ```yaml
-verdict: PASS_WITH_REVIEW_REQUIRED
+verdict: PASS_AFTER_REVISION
 spec: "docs/plans/2026-06-09-front-end-e2e-verification-design.md"
-reviewer_note: "The design is implementable as a QG-first frontend verification lane; the main residual risk is config rewrite preservation."
+reviewer_note: "Claude's structural gaps have been converted into explicit spec sections, task acceptance criteria, and epic-gating tests."
 
 acceptance_test:
-  cmd: "go test ./pkg/langprofile ./cmd/oro ./pkg/worker ./pkg/ops -run 'TestDetectFrontendConfig|TestBuildYAMLEmitsFrontendConfig|TestGenerateQualityGateScriptIncludesFrontendLane|TestGeneratedFrontendLaneRunsConfiguredE2E|TestGeneratedFrontendLaneFailsWhenRequiredE2EMissing|TestBootstrapGeneratesFrontendConfig|TestWorkerPromptRequiresBrowserEvidenceForUITasks|TestOpsReviewRejectsUITaskWithoutBrowserEvidence' -count=1 && ./scripts/quality_gate.sh"
-  assert: "Frontend config, generated QG, required E2E enforcement, worker/review policy, and full QG pass."
+  cmd: "go test ./pkg/langprofile ./cmd/oro ./pkg/worker ./pkg/ops -run 'TestDetectFrontendConfig|TestBuildYAMLEmitsFrontendConfig|TestBuildYAMLPreservesMemoryAndLanguages|TestGenerateQualityGateScriptIncludesFrontendLane|TestGenerateQualityGateScriptDispatchesFrontendLane|TestGeneratedFrontendLaneRunsConfiguredE2E|TestGeneratedFrontendLaneFailsWhenRequiredE2EMissing|TestBootstrapGeneratesFrontendConfig|TestBootstrapFrontendFixtureEndToEnd|TestWorkerPromptRequiresBrowserEvidenceForUITasks|TestOpsReviewIncludesFrontendQGEvidence|TestOpsReviewRejectsUITaskWithoutBrowserEvidence' -count=1 && ./scripts/quality_gate.sh"
+  assert: "Frontend config, generated QG dispatch, required E2E enforcement, worker/review policy, full-script fixture, and full QG pass."
   adequate: true
   issues: []
 
@@ -653,7 +711,7 @@ traceability:
     | 1 | Detect frontend config | 1 | TestDetectFrontendConfig | covered |
     | 2 | Preserve/emit config in bootstrap | 2 | TestBootstrapGeneratesFrontendConfig | covered |
     | 3 | Resolve package manager/scripts safely | 3 | TestResolveFrontendCommands | covered |
-    | 4 | Generate frontend QG lane | 4 | TestGenerateQualityGateScriptIncludesFrontendLane | covered |
+    | 4 | Generate and dispatch frontend QG lane | 4 | TestGenerateQualityGateScriptDispatchesFrontendLane | covered |
     | 5 | Run configured E2E and enforce required flag | 5 | TestGeneratedFrontendLaneRunsConfiguredE2E | covered |
     | 6 | Optional dev server lifecycle | 6 | TestGeneratedFrontendLaneStartsConfiguredDevServer | covered/deferable |
     | 7 | Worker prompt requires UI evidence | 7 | TestWorkerPromptRequiresBrowserEvidenceForUITasks | covered |
@@ -661,18 +719,27 @@ traceability:
     | 9 | Documentation and artifact policy | 9 | ./scripts/quality_gate.sh | covered |
     | 10 | End-to-end fixture generation | 10 | TestBootstrapFrontendFixtureEndToEnd | covered |
 
-wiring_gaps: []
+wiring_gaps:
+  - finding: "Frontend lane could be defined but never called."
+    fix: "Section 3a and Task 4 require dispatch, wait/print, and frontend.rc aggregation tests."
+  - finding: "HasFrontend could remain false because qualityGateData population ignored cfg.Frontend."
+    fix: "Task 4 now reads and tests writeQualityGateScript/generateQualityGateScript population."
+  - finding: "GenerateConfig could omit frontend detection while unit tests hand-built FrontendConfig."
+    fix: "Task 1 and Task 2 now require production GenerateConfig coverage."
 
 negative_space:
   - area: "Existing config rewrite preservation"
     severity: important
-    fix: "Task 2 must test non-force preservation and force overwrite; implementation must not use BuildYAML to silently drop unrelated sections."
+    fix: "Task 1 requires structured YAML preservation tests; Task 2 requires non-force preservation and force regeneration."
   - area: "Dev server management"
     severity: minor
     fix: "Task 6 is explicitly deferable; first wedge relies on project-owned Playwright/Cypress server startup."
-  - area: "Fresh-context adversarial review"
+  - area: "Existing generated QG scripts"
     severity: important
-    fix: "Run adversarial-spec-review in a separate agent before materializing tasks."
+    fix: "Task 2 requires force regeneration coverage; docs must explain the upgrade path."
+  - area: "Worktree dependency availability"
+    severity: important
+    fix: "Section 11 and Task 5 require explicit setup failure behavior."
 
 red_team_scenarios:
   - scenario: "Frontend lane is generated and tests pass, but setup never emits frontend config, so real projects never run the lane."
