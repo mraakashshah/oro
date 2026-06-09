@@ -276,18 +276,34 @@ func TestInstallCodexHookConfigWritesManagedBlock(t *testing.T) {
 
 func TestMaybeRunRepoPreflightChecksHonorsFlag(t *testing.T) {
 	t.Run("skips when disabled", func(t *testing.T) {
-		if err := maybeRunRepoPreflightChecks(io.Discard, filepath.Join(t.TempDir(), "missing"), false); err != nil {
+		checkCalls := 0
+		checker := func(_ io.Writer, _ string) error {
+			checkCalls++
+			return nil
+		}
+		if err := maybeRunRepoPreflightChecksWith(io.Discard, filepath.Join(t.TempDir(), "missing"), false, checker); err != nil {
 			t.Fatalf("maybeRunRepoPreflightChecks returned error when disabled: %v", err)
+		}
+		if checkCalls != 0 {
+			t.Fatalf("disabled repo preflight should not call checker, got %d calls", checkCalls)
 		}
 	})
 
 	t.Run("runs when enabled", func(t *testing.T) {
 		oroHome := filepath.Join(t.TempDir(), "oro-home")
-		if err := maybeRunRepoPreflightChecks(io.Discard, oroHome, true); err != nil {
+		checkCalls := 0
+		checker := func(_ io.Writer, gotHome string) error {
+			checkCalls++
+			if gotHome != oroHome {
+				t.Fatalf("expected oroHome %q to be forwarded to repo preflight checker, got %q", oroHome, gotHome)
+			}
+			return nil
+		}
+		if err := maybeRunRepoPreflightChecksWith(io.Discard, oroHome, true, checker); err != nil {
 			t.Fatalf("maybeRunRepoPreflightChecks returned error when enabled: %v", err)
 		}
-		if _, err := os.Stat(filepath.Join(oroHome, "hooks", "oro-search-hook")); err != nil {
-			t.Fatalf("enabled repo preflight should build oro-search-hook: %v", err)
+		if checkCalls != 1 {
+			t.Fatalf("enabled repo preflight should call checker once, got %d calls", checkCalls)
 		}
 	})
 }

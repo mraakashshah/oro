@@ -498,10 +498,14 @@ func reportAlreadyRunningBeforePreflight(w io.Writer) bool {
 }
 
 func maybeRunRepoPreflightChecks(w io.Writer, oroHome string, runRepoChecks bool) error {
+	return maybeRunRepoPreflightChecksWith(w, oroHome, runRepoChecks, runRepoPreflightChecks)
+}
+
+func maybeRunRepoPreflightChecksWith(w io.Writer, oroHome string, runRepoChecks bool, check func(io.Writer, string) error) error {
 	if !runRepoChecks {
 		return nil
 	}
-	return runRepoPreflightChecks(w, oroHome)
+	return check(w, oroHome)
 }
 
 func ensureRuntimeProjectAssets(w io.Writer, oroHome string) error {
