@@ -302,7 +302,7 @@ Removes the binary, `~/.oro/`, launchd agents, `.oro/` anchor dirs, oro-managed 
 For development or contributing:
 
 ```bash
-# Prerequisites: Go 1.26.3, Node.js/npm, Python 3.13+, and uv
+# Prerequisites: Go 1.26.4, Node.js/npm, Python 3.13+, and uv
 git clone https://github.com/mraakashshah/oro.git
 cd oro
 make setup      # git hooks, npm deps, golangci-lint, NilAway, Python deps
