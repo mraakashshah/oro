@@ -210,6 +210,10 @@ This complements, rather than replaces, the front-end E2E QG lane. QG can run th
 
 Give Oro its own browser skills like gstack, but adapt the architecture to Oro's dispatcher and worktree model.
 
+Detailed design now lives in `docs/plans/2026-06-10-browser-skills-deepspec.md`.
+Treat that deepspec as the canonical browser-skills plan; this section remains
+the strategic summary inside the broader harness comparison.
+
 gstack's important ideas:
 
 - A persistent local Chromium daemon makes repeated browser commands cheap after first startup.
