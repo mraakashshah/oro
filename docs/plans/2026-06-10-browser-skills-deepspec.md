@@ -1,12 +1,13 @@
 # Oro Browser Skills Deepspec
 
 Date: 2026-06-10
-Status: Draft deepspec v4. Local deep premortem completed. Claude Fable adversarial review passed on round 4 after v4 incorporated all prior FAIL findings. Task-graph review still required after decomposition.
+Status: Draft deepspec v5. Local deep premortem completed. Claude Fable adversarial review passed on round 4 for v4; v5 incorporates the follow-up gstack adoption list and requires task-graph review refresh after decomposition.
 Related specs:
 
 - `docs/plans/2026-06-09-openai-harness-engineering-comparison-design.md`
 - `docs/plans/2026-06-09-front-end-e2e-verification-design.md`
 - `docs/research/2026-03-23-gstack-skill-analysis.md`
+- `docs/research/2026-06-10-gstack-cookie-import-vs-agent-browser.md`
 
 ## Summary
 
@@ -22,6 +23,13 @@ attachment, and mobile support without first rebuilding Playwright automation.
 After the Oro browser-skill format and reports are stable, add an Oro-managed
 persistent daemon for gstack-like latency, project/worktree isolation, and
 better lifecycle control.
+
+This v5 makes the gstack adoption targets explicit: persistent browser daemon,
+skillification loop, report-only QA, domain-scoped auth bundles,
+imported-auth guardrails, local picker UI, browser artifact contract, and
+daemon isolation by worktree. The implementation order still starts with the
+Oro-owned contracts so the later daemon and picker have a stable product surface
+to plug into.
 
 Local cookie import should be first-class, explicit, scoped, inspectable, and
 never live-read by workers from a user's real browser profile. Imported state is
@@ -47,6 +55,11 @@ Files and references read:
 - `docs/research/2026-03-23-gstack-skill-analysis.md`: documents gstack's
   browser daemon, cookie import, QA skills, and recommendation to upgrade Oro's
   browser surface.
+- `docs/research/2026-06-10-gstack-cookie-import-vs-agent-browser.md`:
+  confirms gstack has a native Chromium-family cookie importer with profile
+  discovery, platform decryption, picker routes, and imported-domain guardrails,
+  while Oro's packaged `agent-browser` documents login/state reuse and CDP
+  attachment but not local browser cookie import.
 - `archive/yap/reference/gstack/BROWSER.md`: gstack's persistent Chromium
   daemon, plain CLI/stdout interface, `@e` refs, browser-skills runtime,
   `/scrape` + `/skillify` loop, workspace isolation, auth, and prompt-injection
@@ -71,6 +84,10 @@ Observed trade-offs:
 - Oro already has `agent-browser` packaged as a skill. Reusing it first lowers
   risk and lets the design focus on the Oro-native contracts: skill schema,
   auth bundles, dispatcher payloads, reports, and review consumption.
+- `agent-browser` is not a substitute for a local browser-cookie import layer.
+  It can drive pages and preserve its own state, but the gstack importer shows
+  the separate policy surface Oro needs: browser/profile/domain selection,
+  copied auth bundles, redaction, and scoped worker access.
 - Deterministic front-end E2E remains the merge gate. Browser skills are the
   richer exploratory and reusable harness lane that can provide evidence to the
   gate, ops review, and future app harness.
@@ -233,6 +250,8 @@ Oro already has the ingredients but not the product boundary:
 - There is no structured browser run report contract consumed by dispatcher or
   ops review.
 - There is no Oro auth bundle policy for copied cookies/local storage.
+- There is no local auth picker UI, browser/profile/domain selection flow, or
+  imported-domain guardrail comparable to gstack's cookie picker.
 - There is no app/worktree-aware browser lifecycle in the dispatcher.
 - There is no way to distinguish a task-specific journey from a reusable
   browser skill that can be matched by trigger and maintained over time.
@@ -242,9 +261,15 @@ Oro already has the ingredients but not the product boundary:
 - Define an Oro-owned browser-skill schema and runner.
 - Use `agent-browser` as the first backend through a small adapter.
 - Support explicit, scoped local cookie/auth import into Oro-managed bundles.
+- Provide a local picker UI for browser/profile/domain auth import without
+  exposing cookie values.
+- Track imported-auth domains and block dangerous cross-origin browser actions
+  when copied sensitive state is loaded.
 - Keep auth artifacts out of git, prompts, and reports.
 - Produce structured reports with screenshots, console, network, and
   assertion results.
+- Provide report-only browser QA that creates evidence and review input without
+  editing source.
 - Integrate browser evidence into worker assignments and ops review.
 - Preserve deterministic QG as the hard merge gate while making browser skills
   reusable evidence and QA tools.
@@ -256,6 +281,8 @@ Oro already has the ingredients but not the product boundary:
 - Do not port gstack wholesale.
 - Do not make production browser automation available to workers by default.
 - Do not read or mutate a user's live browser profile during normal worker runs.
+- Do not give workers permission to import from local browser profiles; workers
+  may only consume pre-approved copied Oro auth bundles.
 - Do not replace Playwright/Cypress/project E2E commands in generated QG.
 - Do not solve arbitrary third-party website automation without explicit user
   authorization and host allowlists.
@@ -313,6 +340,43 @@ Premortem:
 Recommendation: reject as the product direction. Keep direct `agent-browser`
 usage as a debugging escape hatch.
 
+## Gstack Adoption Targets
+
+The following gstack ideas are in scope, adapted to Oro's worktree and
+dispatcher model:
+
+1. Persistent browser daemon: keep a warm browser context per
+   project/worktree/app profile after the backend interface is proven.
+2. Browser skillification loop: record a successful session, synthesize a
+   temporary skill, test it, and only then move it into
+   `docs/browser-skills/<name>/`.
+3. Report-only QA: run browser checks that produce screenshots, console and
+   network findings, DOM notes, and assertion results without source edits.
+4. Domain-scoped auth bundles: import selected domains into copied Oro auth
+   bundles, with domain counts before decrypting and no live browser reads by
+   workers.
+5. Imported-auth guardrails: track allowed domains for each loaded bundle and
+   block arbitrary cross-origin JavaScript or storage inspection once sensitive
+   cookies are present.
+6. Local picker UI: expose a localhost-only picker for browser, profile, and
+   domain selection; show metadata and counts, never cookie values.
+7. Browser artifact contract: standardize `report.json`, screenshots, traces,
+   console, network, DOM summaries, redacted backend logs, and their paths.
+8. Daemon isolation by worktree: isolate ports, tokens, browser contexts,
+   session handles, logs, cookies, tabs, and storage by project/worktree/run.
+
+Premortem:
+
+- Tiger: These additions turn the v1 wedge into a daemon rewrite. Mitigation:
+  BRS-0 through BRS-6 still ship first; daemon, picker, and native import are
+  later tasks behind the same interfaces and report schema.
+- Tiger: Local cookie import leaks high-value credentials. Mitigation:
+  human-only import, copied bundles, host allowlists, redaction tests,
+  chmod 0700/0600, production opt-in, and imported-domain guardrails.
+- Elephant: Report-only QA is valuable only if review consumes it. Mitigation:
+  BRS-6 wires report discovery into worker prompts and ops review before adding
+  dashboard UX.
+
 ## Architecture
 
 ### Package Shape
@@ -326,8 +390,11 @@ pkg/browserharness/
   runner.go          # skill runner and assertion engine
   backend.go         # BrowserBackend interface
   agentbrowser.go    # agent-browser backend adapter
+  daemon.go          # later persistent daemon backend implementation
   config.go          # browser app/base-url config
   auth.go            # bundle metadata, host/environment validation
+  picker.go          # localhost auth picker routes and session auth
+  guardrails.go      # imported-auth domain enforcement
   report.go          # artifact manifest and redaction
   match.go           # trigger/app/host matching
 
@@ -419,6 +486,7 @@ oro browser click --worktree <path> @e12
 oro browser fill --worktree <path> @e3 value
 oro browser console --worktree <path> --errors
 oro browser screenshot --worktree <path> --full
+oro browser qa --worktree <path> --app web --report-only
 oro browser stop --worktree <path>
 ```
 
@@ -438,6 +506,7 @@ Auth commands:
 ```text
 oro browser-auth import chrome --profile Default --app web --host localhost:3000 --environment local
 oro browser-auth import agent-browser-state ./auth.json --app web --host localhost:3000 --environment local
+oro browser-auth picker --app web --environment local
 oro browser-auth list
 oro browser-auth inspect web-localhost
 oro browser-auth revoke web-localhost
@@ -588,6 +657,10 @@ Security rules:
 - Host allowlists are enforced before loading auth state into a backend session.
 - Imported auth state expires by policy; v1 can warn after 30 days before adding
   hard expiry.
+- Bundles record allowed domains imported from the source browser. Browser
+  sessions loading a bundle must enforce those domains before running arbitrary
+  JavaScript, reading storage, or navigating to unrelated hosts with the bundle
+  still active.
 
 ### Import Paths
 
@@ -599,11 +672,46 @@ Support these import paths in order:
    `oro browser-auth import storage-state`.
 3. Chrome profile import on macOS with Keychain-backed cookie decryption when
    available.
-4. Safari/Firefox import later.
+4. Chromium-family import on Linux/Windows after platform decryption and v20
+   fallback risks are designed and reviewed.
+5. Safari/Firefox import later.
 
 This answers the local-cookie requirement while limiting blast radius. The user
 can authenticate locally once, export/copy that state into Oro, inspect the
 bundle metadata, and allow specific workers or skills to use it.
+
+### Local Picker UI
+
+`oro browser-auth picker` starts a localhost-only picker server and opens the
+system browser. The picker is for humans, not workers.
+
+Requirements:
+
+- One-time code for first access; short-lived picker session cookie after that.
+- Main Oro command tokens are not valid for picker routes, and picker session
+  cookies are not valid for normal browser commands.
+- Browser list comes from a hardcoded supported registry or platform detector,
+  not arbitrary user-supplied profile paths.
+- Profile names reject traversal, slashes, backslashes, and control characters.
+- Domain/count metadata is visible before decryption; cookie values are never
+  rendered.
+- Import writes a copied auth bundle and closes all plaintext temp files before
+  returning.
+
+### Imported-Auth Guardrails
+
+When a session loads an auth bundle with imported cookies, the backend receives
+an `AuthScope` containing allowed hosts/domains and a reason string. Guardrails
+apply before:
+
+- JavaScript evaluation.
+- Storage inspection/export.
+- Cookie inspection/export.
+- Navigating a loaded-auth session to a host outside the bundle allowlist.
+
+The error should explain which bundle is loaded, which domains are allowed, and
+how to start a separate unauthenticated session if the user wants to inspect
+another host.
 
 ## Dispatcher And Worker Integration
 
@@ -685,6 +793,8 @@ $ORO_HOME/projects/<name>/browser-runs/<bead-id>/<run-id>/
   report.json
   report.md
   screenshots/
+  traces/
+  dom-summary.json
   console.jsonl
   network.jsonl
   backend-debug.redacted.log
@@ -707,12 +817,18 @@ $ORO_HOME/projects/<name>/browser-runs/<bead-id>/<run-id>/
   "steps": [],
   "assertions": [],
   "artifacts": [],
+  "dom_summary": "dom-summary.json",
   "redactions": ["cookies", "local_storage", "authorization_headers"]
 }
 ```
 
 The markdown report is for humans. The JSON report is the contract for workers,
 ops review, dashboards, and future canaries.
+
+Report-only QA is a first-class mode over the same contract. It may open pages,
+run assertions, capture screenshots/traces/console/network summaries, and write
+reports, but it must not edit source files, commit changes, mutate external
+systems unless the skill declares mutation, or paste raw artifacts into prompts.
 
 ## Skillify Flow
 
@@ -744,6 +860,9 @@ After the schema, reports, and auth layer are proven, add an Oro daemon backend:
 - Crash detection and restart on next command.
 - Plain CLI/stdout remains the user-facing interface.
 - Browser context isolated per worktree.
+- Separate contexts per run when auth bundles differ.
+- No shared cookies, local storage, tabs, element refs, traces, logs, or command
+  tokens across worktrees.
 - Daemon stores logs under the same browser run artifact tree.
 
 This should implement the same `BrowserBackend` interface and require no skill
@@ -811,11 +930,16 @@ Acceptance criteria:
 - `oro browser-auth import agent-browser-state` creates a bundle under
   `$ORO_HOME/projects/<name>/browser-auth`.
 - Bundle permissions are 0700/0600 on Unix.
+- Bundle metadata records source kind, app, environment, host allowlist,
+  imported domains, worker-use permission, production permission, and redaction
+  settings.
 - Host and environment checks are enforced before use.
 - Production bundles are disabled by default and require explicit
   `--allow-production`.
 - Worker use requires both bundle opt-in and app/profile opt-in.
 - Reports can reference bundle ID but cannot include cookie/storage contents.
+- A fake bundle containing seeded cookie/storage secrets is used in tests, and
+  generated reports/prompts must not contain those seed values.
 
 ### BRS-3: Implement fake backend and runner assertion engine
 
@@ -837,6 +961,8 @@ Acceptance criteria:
 - Commands have timeouts and redacted debug logs.
 - Adapter sessions are named uniquely per project/worktree/run and two
   concurrent sessions do not share storage state.
+- Adapter receives `AuthScope` when a bundle is loaded and enforces
+  imported-auth guardrails before JavaScript/storage/cookie inspection commands.
 - Tests use a fake command runner; one optional integration test is skipped when
   `agent-browser` is unavailable.
 
@@ -918,14 +1044,51 @@ Acceptance criteria:
   `docs/browser-skills`.
 - Failed synthesis leaves no partial committed skill.
 
-### BRS-9: Add native daemon backend
+### BRS-9: Add report-only QA command
+
+Acceptance criteria:
+
+- `oro browser qa --report-only` runs a browser skill or explicit URL/assertion
+  bundle without modifying source files.
+- The command writes the same `report.json`/artifact tree as
+  `browser-skill run`.
+- Reports include screenshots, console/network summaries, DOM summary, trace
+  references when captured, assertion status, and mutation mode.
+- Report-only QA transcripts are marked `mutation: false` unless the invoked
+  skill explicitly declares allowed mutation.
+- Ops review can consume report-only QA output through the same BRS-6 report
+  discovery path.
+- Tests prove a report-only QA run with a fake backend cannot write inside the
+  repo except through configured report paths outside committed source.
+
+### BRS-10: Add local auth picker and native browser import
+
+Acceptance criteria:
+
+- `oro browser-auth picker` starts a localhost-only picker with one-time-code
+  access and separate picker session cookies.
+- Picker routes list supported browsers, profiles, and domain/count metadata
+  without displaying cookie values.
+- Import creates a copied Oro auth bundle with imported-domain metadata and
+  closes/removes plaintext temp files.
+- Worker commands cannot invoke picker or live profile import paths.
+- Chrome/Chromium-family import is platform-gated; unsupported platforms fail
+  with remediation to `agent-browser-state` or `storage-state` import.
+- Tests cover picker auth separation, profile path validation, redaction, bundle
+  metadata, and unsupported-platform errors.
+
+### BRS-11: Add native daemon backend
 
 Acceptance criteria:
 
 - Daemon implements `BrowserBackend`.
 - Per-project/worktree state is isolated.
+- Daemon keying includes project, worktree hash, app profile, run ID when
+  required, and loaded auth bundle identity.
 - Idle shutdown, dead-daemon detection, and cleanup are tested.
 - Existing browser skills run unchanged on the daemon backend.
+- Tests prove two worktrees cannot see each other's cookies, tabs, logs, traces,
+  ports, bearer tokens, session handles, or element refs.
 
 ## Testing Strategy
 
@@ -952,6 +1115,9 @@ Acceptance criteria:
   classify scraped page text as untrusted prompt input.
 - Daemon lifecycle bugs: defer daemon until the adapter contract exists; use the
   existing project-scoped daemon path precedent.
+- Picker security bugs: keep picker routes localhost-only, require one-time
+  code/session auth, separate picker auth from command auth, and never expose
+  cookie values.
 
 ## Resolved V1 Decisions
 
@@ -965,7 +1131,7 @@ Acceptance criteria:
   requires an explicit human import command with `--allow-production`; worker
   use also requires bundle and app/profile opt-in.
 - Native daemon implementation language remains deferred until BRS-0 through
-  BRS-8 prove the backend interface and report contract.
+  BRS-10 prove the backend interface, report contract, and auth policy.
 - `oro dash` rendering is deferred. V1 stores `report.json` paths in review
   context and leaves dashboard UX to a later spec.
 
@@ -984,3 +1150,11 @@ Ship BRS-0 through BRS-6 first:
 That gives Oro its own browser-skills without overbuilding the daemon. It also
 answers the local-cookie requirement safely because the first usable auth path
 is explicit copied state, not live browser-profile access.
+
+Then ship BRS-7 through BRS-11 for gstack parity:
+
+1. cleanup for browser sessions.
+2. skillify prototype.
+3. report-only QA command.
+4. local auth picker and native browser import.
+5. native persistent daemon with worktree isolation.
