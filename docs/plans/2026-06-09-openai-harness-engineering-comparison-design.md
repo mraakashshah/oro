@@ -32,6 +32,9 @@ Repo sources read:
 - `pkg/agentruntime/codex/codex.go`: Codex worker and ops subprocess adapter.
 - `pkg/protocol/schema.go` and `pkg/dispatcher/dispatcher.go`: durable ops runs, managerless escalation routing, startup reconciliation.
 - `cmd/oro/cmd_harness.go` and `cmd/oro/cmd_harness_dogfood.go`: checkpoint and finite dogfood verification commands.
+- `docs/research/2026-03-23-gstack-skill-analysis.md`: gstack browser daemon comparison and recommendation to upgrade `agent-browser` into a persistent QA surface.
+- `archive/yap/reference/gstack/BROWSER.md`: gstack's browser architecture, command surface, browser-skills runtime, `/scrape` + `/skillify` loop, and multi-workspace isolation.
+- `archive/yap/reference/gstack/qa/SKILL.md` and `qa-only/SKILL.md`: gstack's browser-backed QA workflow and report-only variant.
 
 ## OpenAI Article: Harness Principles
 
@@ -104,6 +107,7 @@ OpenAI's biggest capability gap relative to Oro is per-worktree application obse
 - starting an app per worker worktree,
 - assigning stable per-worktree ports,
 - driving browser journeys,
+- codifying repeated browser flows into reusable browser skills,
 - capturing screenshots/videos/traces,
 - querying logs/metrics/traces,
 - enforcing UI or service-level journey budgets.
@@ -202,7 +206,108 @@ Core behavior:
 
 This complements, rather than replaces, the front-end E2E QG lane. QG can run the project's test suite; journeys give Oro agent-readable task-specific evidence.
 
-### Phase 3: Local observability harness
+### Phase 3: Persistent browser daemon and browser skills
+
+Give Oro browser skills like gstack, but adapt the architecture to Oro's dispatcher and worktree model.
+
+gstack's important ideas:
+
+- A persistent local Chromium daemon makes repeated browser commands cheap after first startup.
+- Commands use plain CLI/stdout, so agents do not need a custom protocol in prompt context.
+- Snapshot refs such as `@e1` give stable short-lived element handles.
+- Browser state is isolated per workspace.
+- Repeated flows can be codified into browser skills, then rerun in roughly hundreds of milliseconds instead of re-explored by an agent every time.
+- `/qa` can find and fix issues, while `/qa-only` produces a report without modifying code.
+
+Oro should keep the current `agent-browser` skill as the human/agent exploratory surface, then add an Oro-managed browser service underneath it:
+
+```text
+oro browser start --worktree <path>
+oro browser snapshot --worktree <path> --interactive
+oro browser click --worktree <path> @e12
+oro browser console --worktree <path> --errors
+oro browser screenshot --worktree <path> --full
+oro browser stop --worktree <path>
+```
+
+Browser skill runtime:
+
+```text
+oro browser-skill list
+oro browser-skill run checkout-smoke --worktree <path>
+oro browser-skill record checkout-smoke --from-last-session
+oro browser-skill test checkout-smoke
+```
+
+Browser skill on-disk shape:
+
+```text
+.oro/browser-skills/checkout-smoke/
+  skill.yaml        # name, host/app profile, triggers, required auth state
+  flow.yaml         # deterministic steps using selectors or semantic locators
+  assertions.yaml   # text, console, network, screenshot, timing assertions
+  README.md         # human-readable intent and maintenance notes
+```
+
+Flow example:
+
+```yaml
+name: checkout-smoke
+triggers:
+  - checkout works
+  - purchase flow
+app: web
+start_url: /cart
+steps:
+  - click: "[data-testid=checkout]"
+  - fill:
+      selector: "[name=email]"
+      value_env: ORO_TEST_EMAIL
+  - click: "[data-testid=submit-order]"
+assertions:
+  - text: "Order confirmed"
+  - console_errors: none
+  - network_errors: none
+budgets:
+  max_total_ms: 15000
+```
+
+Security and scope:
+
+- Browser state lives under Oro's project/worktree state, not global browser state by default.
+- Real-browser cookie import is a later, explicit opt-in capability.
+- Browser skills that mutate external systems require an environment guard and confirmation unless the target app profile is marked local/test.
+- Prompt-injection-sensitive commands (`html`, page text, scraped content) should be tagged as untrusted and fed through the existing prompt-injection guard path before entering prompts.
+
+The key distinction from Phase 2: a journey is a task-specific verification artifact; a browser skill is a reusable capability with triggers, tests, and maintenance rules. Journeys can later compile down to browser skills when they prove stable.
+
+### Phase 4: Browser QA and design review skills
+
+Port the gstack skill shape into Oro-owned skills and ops runs.
+
+Proposed Oro skills:
+
+- `browser-qa`: browser-backed QA that can file bugs or fix issues when running as an Oro worker.
+- `browser-qa-only`: report-only browser QA; no source edits.
+- `browser-design-review`: layout, responsiveness, accessibility, copy, visual hierarchy, and interaction polish review.
+- `browser-canary`: post-merge or post-deploy smoke checks using browser skills.
+- `browser-skillify`: turn a successful exploratory browser session or journey into a reusable browser skill.
+
+These should not be loose Markdown-only workflows. Each run should persist a structured artifact:
+
+```text
+.oro/browser-reports/<bead-id>/<run-id>/
+  report.json
+  report.md
+  screenshots/
+  traces/
+  console.jsonl
+  network.jsonl
+```
+
+Ops review can consume the report summary and artifact manifest. The dispatcher can block merge when a UI-impacting task has no passing browser evidence and no explicit waiver.
+
+### Phase 5: Local observability harness
 
 Expose logs, metrics, and traces through stable commands and APIs.
 
@@ -225,7 +330,7 @@ Initial version can be deliberately boring:
 
 Do not start by cloning a full production observability stack. Start with the smallest agent-readable signal store, then add adapters.
 
-### Phase 4: Knowledge gardening and quality grades
+### Phase 6: Knowledge gardening and quality grades
 
 Add recurring repo hygiene runs:
 
@@ -247,7 +352,7 @@ Checks:
 
 Output should be tasks or PRs, not prose-only reports.
 
-### Phase 5: Mechanical taste invariants
+### Phase 7: Mechanical taste invariants
 
 Promote repeated agent failures into rules:
 
@@ -265,7 +370,7 @@ dispatcher: dependency from pkg/web to pkg/dispatcher is forbidden.
 Use pkg/dashboard/data as the read boundary, or add a provider interface.
 ```
 
-### Phase 6: PR drive loop
+### Phase 8: PR drive loop
 
 Add a GitHub-backed lifecycle for repos that want PR flow:
 
@@ -300,6 +405,7 @@ Minimum useful version:
 - Per-worktree port allocation.
 - Assignment payload includes app URL and log command when an app profile exists.
 - Worker prompt teaches "use `oro app status/logs` and app URL for runtime validation."
+- The follow-on browser daemon can attach to the app URL without inventing its own app lifecycle.
 - Dogfood smoke proves start/status/stop on an isolated test app.
 
 ## Premortem
@@ -310,6 +416,8 @@ Minimum useful version:
 - **Port allocation races between workers.** Mitigation: use a shared port registry with leases keyed by worktree/assignment, and release on completion.
 - **Long-running app processes leak after worktree removal.** Mitigation: process group tracking, teardown during assignment cleanup, startup reconciliation that reaps orphaned app processes.
 - **Browser journey flakiness erodes trust.** Mitigation: first make app start/status/logs stable; introduce journeys with artifact capture and clear retry policy.
+- **Browser skills become stale when UI selectors change.** Mitigation: every browser skill has `oro browser-skill test`; failing skills create repair tasks instead of silently falling back to agent exploration.
+- **Browser daemon leaks auth or state between worktrees.** Mitigation: isolate browser state by project/worktree; real-browser cookie import is explicit opt-in and disabled for workers by default.
 - **Observability stack becomes too heavy.** Mitigation: start with local logs/events/metrics in SQLite/JSONL before adding full OpenTelemetry adapters.
 
 ### Elephants
@@ -330,6 +438,8 @@ Minimum useful version:
 - Should app harness config live under a top-level `apps:` section or a single `app:` section first?
 - Should dispatcher start the app automatically on assignment, or should the worker explicitly request `oro app start`?
 - Should browser journey execution be allowed in worker prompts before it is part of QG?
+- Should Oro wrap the existing `agent-browser` binary first, or build an Oro-native browser daemon command surface from the start?
+- Should browser skills live in `.oro/browser-skills/` per project, or under `$ORO_HOME/projects/<slug>/browser-skills/` with project-local symlinks?
 - Should observability use SQLite/JSONL first, or adopt an existing local stack immediately?
 - Should PR drive be a first-class Oro command or remain a GitHub skill workflow until app/runtime harnessing lands?
 
@@ -354,5 +464,14 @@ First implementation epic should target:
 Title: Per-worktree app harness for Oro workers
 Test: go test ./cmd/oro ./pkg/dispatcher ./pkg/protocol -run 'AppHarness|PortRegistry|AssignmentAppContext' -count=1
 Cmd: scripts/oro-dogfood-smoke.sh --iterations 3 --workers 2
-Assert: app profiles can start/status/stop/log per isolated worktree; ports do not collide; assignment cleanup tears down app processes; dogfood leaves no active app processes, active assignments, quarantines, QG incidents, or failed/stale ops runs.
+Assert: app profiles can start/status/stop/log per isolated worktree; ports do not collide; assignment cleanup tears down app processes; the future browser daemon has a stable app URL manifest to attach to; dogfood leaves no active app processes, active assignments, quarantines, QG incidents, or failed/stale ops runs.
+```
+
+Second implementation epic should target:
+
+```text
+Title: Persistent browser daemon and reusable browser skills
+Test: go test ./cmd/oro ./pkg/browserharness ./pkg/dispatcher -run 'BrowserDaemon|BrowserSkill|BrowserReport|AssignmentBrowserContext' -count=1
+Cmd: scripts/oro-dogfood-smoke.sh --iterations 3 --workers 2
+Assert: browser commands attach to the per-worktree app profile, snapshot/click/fill/screenshot commands persist artifacts, browser skills can be recorded/tested/run deterministically, report-only QA creates artifacts without source edits, and assignment cleanup stops browser state without leaking cookies or ports across worktrees.
 ```
