@@ -112,7 +112,7 @@ Premortem:
 
 - Tiger: Prompt guidance is not a gate. Workers can rationalize or forget.
 - Tiger: Ops review has no structured evidence to check.
-- Elephant: This reproduces the current backend/frontend asymmetry.
+  - Elephant: This reproduces the current backend/frontend asymmetry.
 
 Recommendation: reject as the primary solution. Keep prompt updates only as support for the mechanical lane.
 
