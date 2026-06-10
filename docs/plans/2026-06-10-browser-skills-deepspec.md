@@ -1,7 +1,7 @@
 # Oro Browser Skills Deepspec
 
 Date: 2026-06-10
-Status: Draft deepspec. Implementation pending. Fresh-context adversarial review pending.
+Status: Draft deepspec v4. Local deep premortem completed. Claude Fable adversarial review passed on round 4 after v4 incorporated all prior FAIL findings. Task-graph review still required after decomposition.
 Related specs:
 
 - `docs/plans/2026-06-09-openai-harness-engineering-comparison-design.md`
@@ -27,6 +27,12 @@ Local cookie import should be first-class, explicit, scoped, inspectable, and
 never live-read by workers from a user's real browser profile. Imported state is
 copied into an Oro auth bundle, tied to a project/app/host/environment, and
 redacted from all prompts and reports.
+
+Important correction from review: committed browser skills must not live under
+`.oro/browser-skills/` because Oro init writes `.oro/` to the project's global
+gitignore. The committed v1 location is `docs/browser-skills/<name>/`; runtime
+state, reports, auth bundles, and temporary generated skills remain under
+`$ORO_HOME/projects/<name>/...`.
 
 ## Research Summary
 
@@ -75,8 +81,8 @@ The immediate question is "shouldn't we make our own browser-skills, and can
 they use local cookies?" The underlying problem is agent legibility for running
 apps. Oro workers can edit code and run QG, but they do not have a standard,
 repeatable way to open the app, reuse authenticated state, inspect console and
-network failures, record screenshots/traces, and convert a successful manual
-browser path into a reusable skill.
+network failures, record screenshots and structured artifacts, and convert a
+successful manual browser path into a reusable skill.
 
 The user pain is highest for UI, local web app, dashboard, and auth-gated
 features. Without browser skills, each worker rediscovers the app manually,
@@ -104,6 +110,113 @@ The OpenAI harness comparison is the parent strategic context. This deepspec is
 the focused implementation shape for its "persistent browser daemon and browser
 skills" portion.
 
+## Epic Acceptance Test
+
+The implemented feature is not complete until a single command can prove the
+CLI, runner, auth redaction, payload wiring, and review wiring are connected
+without a vacuous `go test -run` pass:
+
+```text
+Cmd: ./scripts/verify_browser_skills_epic.sh
+Assert: exit 0; script runs the required cross-package Go tests from inside a real git worktree checkout with no `.oro/config.yaml`, fails if any named test is absent or skipped, proves fixture skill runs through `oro browser-skill run` using the payload-provided `--base-url`, emits a passing report.json under the expected bead ID, seeded fake cookie values are absent from all report artifacts, AssignPayload contains browser skills/auth bundle IDs when configured, worker prompt includes the browser run command, and ops review prompt includes report paths discovered from disk.
+```
+
+This acceptance command intentionally spans packages. Component tests alone can
+pass while the feature is dead in production.
+
+## Plan-Level Premortem
+
+```yaml
+premortem:
+  mode: deep
+  context: "Oro browser-skills deepspec before decomposition"
+  tigers:
+    - risk: "Committed skills under `.oro/browser-skills` never reach worker worktrees because `.oro/` is globally gitignored by Oro init."
+      severity: high
+      location: "cmd/oro/cmd_init.go global gitignore entries; original spec lines 304-311 before v2"
+      mitigation_checked: "Original v1 had no task proving skill files are tracked or visible from a fresh worktree."
+      resolution: "v2 moves committed skills to `docs/browser-skills/<name>/` and adds a fresh-worktree visibility acceptance criterion."
+    - risk: "The task graph could build schemas, runner, and CLI but never expose browser evidence to workers or ops review."
+      severity: high
+      location: "docs/plans/2026-06-10-browser-skills-deepspec.md dispatcher/worker integration section"
+      mitigation_checked: "v1 named BRS-6 but did not enumerate `AssignPayload`, worker prompt, solo `oro work`, or `ReviewOpts` call sites."
+      resolution: "v2 names the exact integration files and adds prompt/review tests to the epic acceptance command."
+    - risk: "Skillify ships against fixture transcripts but real browser sessions never produce transcripts."
+      severity: high
+      location: "docs/plans/2026-06-10-browser-skills-deepspec.md skillify flow"
+      mitigation_checked: "v1 had no producer for `record --from-session <id>`."
+      resolution: "v2 requires session journaling in the browser CLI task before skillify."
+  elephants:
+    - risk: "Browser skills depend on an app URL, but Oro's per-worktree app harness is not implemented yet."
+      resolution: "v2 adds a minimal browser app config/base-url contract and keeps full app lifecycle as adjacent future work."
+  paper_tigers:
+    - risk: "Using `agent-browser` first is not as fast as gstack's daemon."
+      reason: "The adapter is a deliberate wedge; the daemon phase implements the same backend interface after the skill/report/auth contract is proven."
+```
+
+## Claude Fable Adversarial Review
+
+`claude --model fable` ran the six-check `adversarial-spec-review` workflow four
+times on 2026-06-10.
+
+Round 1 returned `FAIL` against v1. Load-bearing findings incorporated in v2:
+
+- `.oro/browser-skills` conflicted with Oro's global `.oro/` gitignore and would
+  make committed skills invisible in worker worktrees.
+- The assignment payload example depended on app URL/log command producers that
+  no task created.
+- Ops review had no concrete `ReviewOpts` field or dispatcher plumbing for
+  browser report paths.
+- Solo `oro work` and `pkg/dispatcher/router.go` build prompts independently of
+  `buildAssignPayload`; wiring only the dispatcher payload path would miss them.
+- `browser-skill record --from-session` had no production transcript producer.
+- Dispatcher cleanup had no task to stop sessions or clear transient state.
+- The adapter phase needed explicit per-worktree/session isolation, not only the
+  deferred daemon phase.
+
+Round 2 returned `FAIL` against v2. It confirmed the round-1 fixes landed and
+found narrower evidence-chain gaps incorporated in v3:
+
+- Browser reports were keyed by `<bead-id>`, but `browser-skill run` had no
+  `--bead`, env, or worktree-basename rule to supply that ID.
+- `ReviewOpts.BrowserReports` could render if injected, but no production path
+  discovered `report.json` files from disk before review.
+- `cmd/oro/paths.go` is `package main`, so `pkg/browserharness` and
+  `pkg/dispatcher` cannot import its `$ORO_HOME/projects/<name>/` helpers.
+- Dispatcher cleanup said "sessions it starts," but workers start browser
+  sessions through CLI subprocesses; teardown must discover sessions from the
+  handle store.
+- The epic acceptance command could pass vacuously if `go test -run` matched no
+  tests.
+- V1 promised traces without a backend method or task; traces are deferred.
+
+Round 3 returned `FAIL` against v3. It confirmed the round-1 and round-2 fixes
+landed and found one remaining production-context gap incorporated in v4:
+
+- Workers invoke `oro browser-skill run` from inside worktrees where
+  `.oro/config.yaml` is absent, so the payload `run_command` must carry the
+  dispatcher-resolved `--base-url`.
+- The bead env tier should use the real production variable
+  `ORO_WORKER_BEAD_ID`, not a new `ORO_BEAD_ID`.
+- Skill discovery must define standard and stealth-mode roots explicitly.
+- `pkg/projpaths` must preserve `ORO_PROJECT` precedence so worker-side report
+  paths and dispatcher-side discovery agree.
+
+Ralph Loop requirement: after v4 is decomposed into beads, rerun a fresh-context
+adversarial review before implementation begins.
+
+Round 4 returned `PASS` against v4. Non-blocking notes folded in after the pass:
+
+- The epic script should use a stub `agent-browser` executable or explicit fake
+  backend so the run-proof is hermetic.
+- The anti-skip guard must exclude the optional real-`agent-browser` integration
+  smoke because that test is allowed to skip on machines without the binary.
+- `browser.apps` requires structured YAML parsing of `.oro/config.yaml` without
+  breaking existing line-based readers.
+- Report discovery should label/order reports so stale failed attempts do not
+  confuse review.
+- Missing `value_env` must fail before any browser step executes.
+
 ## Current Oro State
 
 Oro already has the ingredients but not the product boundary:
@@ -130,7 +243,7 @@ Oro already has the ingredients but not the product boundary:
 - Use `agent-browser` as the first backend through a small adapter.
 - Support explicit, scoped local cookie/auth import into Oro-managed bundles.
 - Keep auth artifacts out of git, prompts, and reports.
-- Produce structured reports with screenshots, traces, console, network, and
+- Produce structured reports with screenshots, console, network, and
   assertion results.
 - Integrate browser evidence into worker assignments and ops review.
 - Preserve deterministic QG as the hard merge gate while making browser skills
@@ -213,9 +326,13 @@ pkg/browserharness/
   runner.go          # skill runner and assertion engine
   backend.go         # BrowserBackend interface
   agentbrowser.go    # agent-browser backend adapter
+  config.go          # browser app/base-url config
   auth.go            # bundle metadata, host/environment validation
   report.go          # artifact manifest and redaction
   match.go           # trigger/app/host matching
+
+pkg/projpaths/
+  paths.go           # importable $ORO_HOME project path resolution
 
 cmd/oro/
   cmd_browser.go
@@ -257,6 +374,38 @@ Adapter rules:
 - Backend output is normalized before reaching reports or prompts.
 - The adapter never writes auth bundles directly; it asks the auth layer for a
   temporary backend-readable state file.
+- The adapter uses a unique `agent-browser --session` name per
+  project/worktree/run so concurrent workers do not share cookies, storage, or
+  element refs.
+- The CLI stores session handles in `$ORO_HOME/projects/<name>/browser-sessions/`
+  so `oro browser start`, `snapshot`, `click`, and `stop` work across separate
+  process invocations.
+
+### App URL Contract
+
+Full per-worktree app lifecycle belongs to the app harness. Browser skills still
+need a v1 URL producer so the feature is not dead code while that harness is
+pending.
+
+Add a minimal browser config section to project config:
+
+```yaml
+browser:
+  apps:
+    web:
+      base_url: "http://127.0.0.1:5173"
+      base_url_env: ORO_APP_URL
+      logs_command: "oro app logs --worktree ${worktree}"
+```
+
+Rules:
+
+- `base_url_env`, when set and non-empty, wins over `base_url`.
+- `--base-url` on `oro browser-skill run` wins over both.
+- `logs_command` is optional and may reference future app-harness commands; v1
+  must not require `oro app logs` to exist.
+- If no URL can be resolved, `browser-skill run` fails before loading auth.
+- Dispatcher and solo `oro work` payloads use this same resolver.
 
 ### CLI Surface
 
@@ -278,7 +427,7 @@ Browser skill commands:
 ```text
 oro browser-skill list
 oro browser-skill match "checkout works" --app web
-oro browser-skill run checkout-smoke --worktree <path> --app web
+oro browser-skill run checkout-smoke --worktree <path> --app web --bead <bead-id>
 oro browser-skill record checkout-smoke --from-session <id>
 oro browser-skill test checkout-smoke
 oro browser-skill report <run-id>
@@ -299,12 +448,21 @@ decryption is not ready in v1, the command should say so and point users to the
 `agent-browser-state` path. The important contract is the Oro bundle format and
 policy, not completing every browser importer at once.
 
+Bead ID rules:
+
+- `oro browser-skill run` accepts `--bead <id>`.
+- If `--bead` is absent, `ORO_WORKER_BEAD_ID` is used when set.
+- If both are absent, Oro infers the bead ID from the basename of `--worktree`.
+  This matches production worktree paths from both dispatcher and solo `oro work`.
+- The report path is always
+  `$ORO_HOME/projects/<name>/browser-runs/<bead-id>/<run-id>/report.json`.
+
 ## Browser Skill Format
 
-Committed skills live under `.oro/browser-skills/<name>/`:
+Committed skills live under `docs/browser-skills/<name>/`:
 
 ```text
-.oro/browser-skills/checkout-smoke/
+docs/browser-skills/checkout-smoke/
   skill.yaml
   flow.yaml
   assertions.yaml
@@ -335,7 +493,6 @@ mutation:
   external_systems: false
 artifacts:
   screenshots: on_failure
-  trace: on_failure
   console: always
   network: on_failure
 ```
@@ -389,7 +546,7 @@ Auth bundles are copied state, not live links to the user's browser profile.
 They live outside committed source:
 
 ```text
-$ORO_HOME/projects/<slug>/browser-auth/<bundle-id>/
+$ORO_HOME/projects/<name>/browser-auth/<bundle-id>/
   bundle.yaml
   storage-state.json
   imported-from.txt
@@ -422,7 +579,7 @@ redaction:
 Security rules:
 
 - Bundle directories are chmod 0700; files are chmod 0600.
-- Bundle contents are never committed and never copied into `.oro/browser-skills`.
+- Bundle contents are never committed and never copied into `docs/browser-skills`.
 - Reports may say which bundle ID was used, but not cookie names, values, local
   storage keys, or local storage values.
 - Production bundles are disabled by default and require a human command with an
@@ -462,10 +619,24 @@ Assignment payload additions:
   "browser": {
     "available_skills": ["checkout-smoke", "settings-save"],
     "auth_bundles": ["web-local"],
-    "run_command": "oro browser-skill run <name> --worktree ..."
+    "run_command": "oro browser-skill run <name> --worktree ... --bead <bead-id> --base-url <resolved-url>"
   }
 }
 ```
+
+Concrete integration points:
+
+- `pkg/protocol/message.go`: add optional browser/app fields to
+  `AssignPayload`, with compatibility tests that pin JSON field names.
+- `pkg/dispatcher/assign_payload.go`: discover valid `docs/browser-skills`
+  entries, resolve app URLs from browser config, list auth bundle IDs, and
+  include report/run commands with `--bead <id>` and dispatcher-resolved
+  `--base-url <url>`.
+- `pkg/worker/worker.go`: map payload browser fields into prompt params so
+  spawned workers actually see the browser section.
+- `pkg/dispatcher/router.go` and `cmd/oro/cmd_work.go`: update non-dispatcher
+  `AssemblePrompt`/review construction paths or explicitly pass empty browser
+  context. V1 should support solo `oro work`; do not scope it out silently.
 
 Worker prompt additions should be short and tool-oriented:
 
@@ -482,23 +653,38 @@ Ops review additions:
   unless needed.
 - Browser evidence can strengthen a finding but does not override deterministic
   failing QG.
+- `pkg/ops/ops.go` gets a `BrowserReports []string` field on `ReviewOpts`.
+- `pkg/ops/review_prompt.go` renders a browser report section when
+  `BrowserReports` is non-empty.
+- The dispatcher and `cmd/oro/cmd_work.go` pass report paths into `ReviewOpts`.
+- Before spawning review, `pkg/dispatcher/dispatcher.go`,
+  `pkg/dispatcher/ops_runs.go`, and `cmd/oro/cmd_work.go` discover
+  `$ORO_HOME/projects/<name>/browser-runs/<bead-id>/*/report.json` on disk and
+  pass those paths into `ReviewOpts`.
+
+V1 UI-impacting detection is explicit. Ops review requires browser evidence only
+when the task acceptance criteria include `BrowserSkill: <name>` or
+`BrowserEvidence: required`. Touched-file heuristics can be added later, but the
+first gate must be binary and testable.
 
 Cleanup:
 
 - Dispatcher cleanup stops browser sessions it started.
 - Worktree removal also removes transient session state.
 - Auth bundles remain project-scoped and survive sessions until revoked.
+- Hook cleanup through `pkg/dispatcher/dispatcher.go` worktree teardown,
+  including `removeWorktreeAndClearTracking`, and clear browser-session
+  bookkeeping even if backend stop fails.
 
 ## Reports And Artifacts
 
 Reports live outside committed source by default:
 
 ```text
-$ORO_HOME/projects/<slug>/browser-runs/<bead-id>/<run-id>/
+$ORO_HOME/projects/<name>/browser-runs/<bead-id>/<run-id>/
   report.json
   report.md
   screenshots/
-  traces/
   console.jsonl
   network.jsonl
   backend-debug.redacted.log
@@ -537,17 +723,22 @@ must be provenance-guarded:
 2. Extract only the final successful command slice and user intent.
 3. Synthesize a temporary skill under an uncommitted temp directory.
 4. Run `oro browser-skill test <temp-skill>`.
-5. Only then move it into `.oro/browser-skills/<name>/`.
+5. Only then move it into `docs/browser-skills/<name>/`.
 
 Do not synthesize browser skills from vague chat history. This avoids permanent
 skills that never actually worked.
+
+Production prerequisite: `oro browser` commands must append a redacted session
+journal under `$ORO_HOME/projects/<name>/browser-runs/sessions/<session-id>/`.
+`record --from-session` reads only that journal. Fixture-only transcripts are
+not sufficient.
 
 ## Native Daemon Phase
 
 After the schema, reports, and auth layer are proven, add an Oro daemon backend:
 
 - One daemon per project/worktree/app profile.
-- State file under `$ORO_HOME/projects/<slug>/browser-daemon/<worktree-hash>/`.
+- State file under `$ORO_HOME/projects/<name>/browser-daemon/<worktree-hash>/`.
 - Random port and bearer token, chmod 0600.
 - Idle shutdown.
 - Crash detection and restart on next command.
@@ -560,6 +751,49 @@ format changes.
 
 ## Task Graph
 
+### BRS-0: Resolve committed skill location, app URL config, and state paths
+
+Acceptance criteria:
+
+- Add `scripts/verify_browser_skills_epic.sh`; it runs the epic acceptance
+  tests, fails if any required test is absent/skipped, and fails on any missing
+  redaction/report/prompt assertion.
+- The script uses a stub `agent-browser` executable on `PATH` or an explicit
+  fake backend so the run-proof is hermetic. Its required-test anti-skip guard
+  excludes the optional real-`agent-browser` integration smoke.
+- Committed skills live under `docs/browser-skills/<name>/`; no v1 committed
+  skill path is under `.oro/`.
+- `cmd/oro/cmd_init.go` global gitignore behavior is either left unchanged with
+  `docs/browser-skills` verified as tracked, or explicitly tested if any
+  exception is added later.
+- A test proves a skill committed in `docs/browser-skills` is visible from a
+  fresh git worktree checkout.
+- Browser state paths preserve the existing `$ORO_HOME/projects/<name>/`
+  behavior by extracting the relevant helpers from `cmd/oro/paths.go` into an
+  importable package such as `pkg/projpaths`.
+- `cmd/oro`, `pkg/dispatcher`, and `pkg/browserharness` all use the same
+  `pkg/projpaths` helpers, with tests pinning standard and stealth-mode paths
+  to the same values as the current CLI behavior.
+- `pkg/projpaths` preserves current `ORO_PROJECT`-first precedence; a test
+  proves project-name resolution from a worker worktree CWD with `ORO_PROJECT`
+  set equals resolution from the main repo root.
+- Skill discovery root is explicit: standard mode reads
+  `<repo-root>/docs/browser-skills`; stealth mode reads the configured Oro docs
+  root only when that root is populated, otherwise browser skills are disabled
+  with remediation text.
+- Project config can define `browser.apps.<name>.base_url`,
+  `base_url_env`, and optional `logs_command`.
+- The config schema/read path is covered in `pkg/config` and command setup
+  paths, not only in browserharness fixtures.
+- Implementing `browser.apps` introduces structured YAML parsing of
+  `.oro/config.yaml`; keep existing line-based readers compatible until they are
+  deliberately replaced.
+- `oro browser-skill run` accepts `--base-url`, falls back to config/env, and
+  fails before loading auth when no base URL is available.
+- BRS-0 tests invoke `oro browser-skill run` from inside a real worktree checkout
+  that has no `.oro/config.yaml`, proving payload-provided `--base-url` is
+  sufficient in production worker context.
+
 ### BRS-1: Define schemas and load/validate browser skills
 
 Acceptance criteria:
@@ -568,15 +802,19 @@ Acceptance criteria:
 - Invalid schema version, missing trigger, missing host allowlist with auth, and
   invalid mutation policy fail with actionable errors.
 - Unit tests cover valid and invalid fixtures.
+- Fixture skills are read from `docs/browser-skills`, not `.oro/browser-skills`.
 
 ### BRS-2: Add auth bundle model and import from storage state
 
 Acceptance criteria:
 
 - `oro browser-auth import agent-browser-state` creates a bundle under
-  `$ORO_HOME/projects/<slug>/browser-auth`.
+  `$ORO_HOME/projects/<name>/browser-auth`.
 - Bundle permissions are 0700/0600 on Unix.
 - Host and environment checks are enforced before use.
+- Production bundles are disabled by default and require explicit
+  `--allow-production`.
+- Worker use requires both bundle opt-in and app/profile opt-in.
 - Reports can reference bundle ID but cannot include cookie/storage contents.
 
 ### BRS-3: Implement fake backend and runner assertion engine
@@ -586,6 +824,8 @@ Acceptance criteria:
 - Runner executes a v1 skill against a fake backend.
 - Assertions cover text, console errors, network errors, screenshots, and timing
   budgets.
+- A step referencing unset `value_env` fails before any browser action executes,
+  and the error names the missing variable.
 - Failure reports include failed step/assertion and artifact manifest.
 
 ### BRS-4: Implement `agent-browser` backend adapter
@@ -595,40 +835,90 @@ Acceptance criteria:
 - Adapter can open, snapshot, click, fill, wait, screenshot, collect console,
   and stop using `agent-browser`.
 - Commands have timeouts and redacted debug logs.
+- Adapter sessions are named uniquely per project/worktree/run and two
+  concurrent sessions do not share storage state.
 - Tests use a fake command runner; one optional integration test is skipped when
   `agent-browser` is unavailable.
 
-### BRS-5: Add CLI commands
+### BRS-5: Add CLI commands and session transcript journaling
 
 Acceptance criteria:
 
 - `oro browser-skill list/run/test/report` works against fixtures.
+- `oro browser-skill match` works against triggers, app, and host constraints.
 - `oro browser-auth list/inspect/revoke` works.
-- `oro browser snapshot/click/fill/screenshot` delegates through the backend.
+- `oro browser-skill run` derives bead ID from `--bead`, `ORO_WORKER_BEAD_ID`,
+  or the `--worktree` basename, in that order.
+- A run against `.worktrees/oro-test1` without `--bead` writes
+  `$ORO_HOME/projects/<name>/browser-runs/oro-test1/<run-id>/report.json`.
+- `oro browser start/open/snapshot/click/fill/screenshot/stop` delegates through
+  the backend across separate CLI process invocations using stored session
+  handles.
+- Session handles are keyed by normalized worktree path or worktree hash so
+  teardown can discover worker-started sessions later.
+- Every `oro browser` command appends a redacted transcript entry under
+  `$ORO_HOME/projects/<name>/browser-runs/sessions/<session-id>/`.
+- The transcript includes command, normalized target, timestamp, artifact
+  references, and redaction metadata, but not auth contents.
 - CLI errors are concise and include remediation.
 
 ### BRS-6: Wire reports into worker assignment and ops review
 
 Acceptance criteria:
 
-- Assignment payload exposes app URL, available browser skills, and auth bundle
-  IDs when configured.
-- Worker prompt includes browser report expectations without leaking secrets.
-- Ops review prompt can consume `report.json`.
-- UI-impacting tasks with known relevant browser skills require a report or a
-  waiver in review guidance.
+- `pkg/protocol/message.go` adds optional browser/app fields to `AssignPayload`
+  with JSON compatibility tests.
+- `pkg/dispatcher/assign_payload.go` discovers valid `docs/browser-skills`
+  entries, resolves app URL from BRS-0 config, lists allowed auth bundle IDs,
+  and includes browser run/report commands.
+- Dispatcher config plumbing carries browser config and project paths through
+  `pkg/dispatcher/dispatcher.go` config/defaults, `pkg/config`, and
+  `cmd/oro/cmd_start.go`.
+- `pkg/worker/worker.go` maps payload browser fields into `PromptParams`; a
+  golden prompt test proves the browser section appears.
+- `pkg/dispatcher/router.go` and `cmd/oro/cmd_work.go` solo prompt paths either
+  include browser context or explicitly pass empty browser context with tests.
+- `pkg/ops/ops.go` adds `ReviewOpts.BrowserReports []string`.
+- `pkg/ops/review_prompt.go` renders browser report paths when present.
+- Dispatcher review call sites in `pkg/dispatcher/dispatcher.go`,
+  resumed/recovered review paths in `pkg/dispatcher/ops_runs.go`, and
+  `cmd/oro/cmd_work.go` pass browser report paths into `ReviewOpts`.
+- Review population tests seed
+  `$ORO_HOME/projects/<name>/browser-runs/<bead-id>/<run-id>/report.json` on
+  disk and assert the real discovered path reaches the review prompt; injecting
+  fake `BrowserReports` directly is not sufficient.
+- Report discovery labels each report with status, skill, run ID, and timestamp,
+  and orders reports newest-first so stale failed attempts do not look like the
+  current result.
+- Acceptance criteria containing `BrowserSkill: <name>` or
+  `BrowserEvidence: required` cause review guidance to require a passing report
+  or explicit waiver.
+- Tests prove no auth contents enter worker or review prompts.
 
-### BRS-7: Add skillify prototype
+### BRS-7: Stop browser sessions during dispatcher cleanup
+
+Acceptance criteria:
+
+- Worktree teardown, including `removeWorktreeAndClearTracking`, discovers
+  browser sessions from the BRS-5 handle store keyed by worktree path/hash.
+- Teardown stops worker-started browser sessions and removes transient session
+  state.
+- Dispatcher shutdown and closed-worktree garbage collection sweep dangling
+  browser-session handles and stop live sessions when possible.
+- Cleanup bookkeeping is cleared even when backend stop returns an error.
+- Tests cover merge cleanup, abandoned worktree cleanup, and stop failure.
+
+### BRS-8: Add skillify prototype
 
 Acceptance criteria:
 
 - `oro browser-skill record --from-session` can create a temporary skill from a
-  successful session transcript.
+  successful production session transcript written by BRS-5.
 - The temp skill must pass `oro browser-skill test` before moving into
-  `.oro/browser-skills`.
+  `docs/browser-skills`.
 - Failed synthesis leaves no partial committed skill.
 
-### BRS-8: Add native daemon backend
+### BRS-9: Add native daemon backend
 
 Acceptance criteria:
 
@@ -663,27 +953,33 @@ Acceptance criteria:
 - Daemon lifecycle bugs: defer daemon until the adapter contract exists; use the
   existing project-scoped daemon path precedent.
 
-## Open Decisions
+## Resolved V1 Decisions
 
-- Whether `.oro/browser-skills` should be the only committed location, or
-  whether `docs/browser-skills` should also be supported for repos that prefer
-  docs-owned artifacts.
-- Whether UI-impacting task detection comes from acceptance criteria tags,
-  touched files, explicit bead labels, or a combination.
-- Whether production auth should be entirely forbidden for workers or allowed
-  behind an explicit per-run human approval.
-- Whether the native daemon should be written in Go with CDP, or in Node/Bun
-  with Playwright behind the Go CLI.
-- How browser-skill reports should appear in `oro dash`.
+- Committed browser skills live under `docs/browser-skills/<name>/`.
+  `.oro/browser-skills` is not a v1 committed location because `.oro/` is
+  globally gitignored by Oro init.
+- V1 browser evidence enforcement is explicit: acceptance criteria must include
+  `BrowserSkill: <name>` or `BrowserEvidence: required`. Touched-file heuristics
+  are deferred.
+- Production auth is unavailable to workers by default. A production bundle
+  requires an explicit human import command with `--allow-production`; worker
+  use also requires bundle and app/profile opt-in.
+- Native daemon implementation language remains deferred until BRS-0 through
+  BRS-8 prove the backend interface and report contract.
+- `oro dash` rendering is deferred. V1 stores `report.json` paths in review
+  context and leaves dashboard UX to a later spec.
 
 ## Narrowest Wedge
 
-Ship BRS-1 through BRS-4 first:
+Ship BRS-0 through BRS-6 first:
 
-1. v1 browser-skill schema.
-2. auth bundle model with storage-state import.
-3. runner and report contract.
-4. `agent-browser` backend adapter.
+1. committed skill location and app/base-url config.
+2. v1 browser-skill schema.
+3. auth bundle model with storage-state import.
+4. runner and report contract.
+5. `agent-browser` backend adapter.
+6. CLI/session transcript journaling.
+7. worker assignment and ops review wiring.
 
 That gives Oro its own browser-skills without overbuilding the daemon. It also
 answers the local-cookie requirement safely because the first usable auth path
