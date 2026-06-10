@@ -208,7 +208,7 @@ This complements, rather than replaces, the front-end E2E QG lane. QG can run th
 
 ### Phase 3: Persistent browser daemon and browser skills
 
-Give Oro browser skills like gstack, but adapt the architecture to Oro's dispatcher and worktree model.
+Give Oro its own browser skills like gstack, but adapt the architecture to Oro's dispatcher and worktree model.
 
 gstack's important ideas:
 
@@ -219,7 +219,9 @@ gstack's important ideas:
 - Repeated flows can be codified into browser skills, then rerun in roughly hundreds of milliseconds instead of re-explored by an agent every time.
 - `/qa` can find and fix issues, while `/qa-only` produces a report without modifying code.
 
-Oro should keep the current `agent-browser` skill as the human/agent exploratory surface, then add an Oro-managed browser service underneath it:
+Oro should own the browser-skill abstraction instead of treating `agent-browser` as the product. The current `agent-browser` skill is still useful as the first backend and as the human/agent exploratory surface. The durable Oro surface is the browser-skill format, runner, report artifacts, auth-state policy, and dispatcher integration.
+
+Initial implementation can wrap `agent-browser` commands so we avoid rebuilding Playwright automation before proving the workflow. Once browser skills are stable, an Oro-managed daemon can replace or sit below that wrapper for gstack-like latency and lifecycle control:
 
 ```text
 oro browser start --worktree <path>
@@ -237,6 +239,8 @@ oro browser-skill list
 oro browser-skill run checkout-smoke --worktree <path>
 oro browser-skill record checkout-smoke --from-last-session
 oro browser-skill test checkout-smoke
+oro browser-auth import chrome --profile Default --scope local
+oro browser-auth list
 ```
 
 Browser skill on-disk shape:
@@ -275,7 +279,11 @@ budgets:
 Security and scope:
 
 - Browser state lives under Oro's project/worktree state, not global browser state by default.
-- Real-browser cookie import is a later, explicit opt-in capability.
+- Local cookie import is a first-class capability because it lets agents QA authenticated local/staging flows without asking the user to rebuild login state. It must be explicit, scoped, and inspectable.
+- Imported auth state is copied into an Oro-managed auth bundle, never read live from the user's browser profile on every run.
+- Auth bundles are scoped to project slug, app profile, host allowlist, and environment (`local`, `staging`, `production-disabled-by-default`).
+- Auth bundles are not committed and should live under `$ORO_HOME/projects/<slug>/browser-auth/` or an encrypted project-local equivalent.
+- Workers may use imported auth only when the app profile opts in. Production hosts require an explicit human command, not automatic worker use.
 - Browser skills that mutate external systems require an environment guard and confirmation unless the target app profile is marked local/test.
 - Prompt-injection-sensitive commands (`html`, page text, scraped content) should be tagged as untrusted and fed through the existing prompt-injection guard path before entering prompts.
 
