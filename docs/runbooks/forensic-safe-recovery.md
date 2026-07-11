@@ -2,6 +2,12 @@
 
 Use this when `oro health` reports `recovery_quarantine_open`.
 
+If instead `oro start` refuses to launch because active assignments block the
+v4 migration, see
+[stale-assignment-migration-deadlock.md](stale-assignment-migration-deadlock.md)
+first — it quarantines the stale rows so they surface as the open quarantines
+this runbook resolves.
+
 ## Inspect
 
 ```sh
