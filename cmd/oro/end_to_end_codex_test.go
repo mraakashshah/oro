@@ -81,6 +81,12 @@ agent:
 
 	assertFileExists(t, filepath.Join(projectDir, "AGENTS.md"))
 	assertFileContains(t, filepath.Join(codexHome, "rules", "oro.rules"), "prefix_rule")
+	assertSkillSymlink(
+		t,
+		filepath.Join(codexHome, "skills", "using-skills"),
+		filepath.Join(oroHome, ".claude", "skills", "using-skills"),
+	)
+	assertPathMissing(t, filepath.Join(codexHome, "oro-marketplace"))
 
 	hooks := listCodexHooks(t, codexHome, projectDir)
 	assertCodexHookEvents(t, hooks, []string{"SessionStart", "PreToolUse", "PostToolUse", "Stop"})

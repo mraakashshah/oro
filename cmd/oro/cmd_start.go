@@ -522,8 +522,7 @@ func ensureRuntimeProjectAssets(w io.Writer, oroHome string) error {
 		return fmt.Errorf("extract AGENTS.md: %w", err)
 	}
 
-	runtime, _, _ := agentmodel.ResolveForRole("worker")
-	if runtime != agentRuntimeCodex {
+	if !codexAssetsRequired() {
 		return nil
 	}
 
@@ -535,6 +534,13 @@ func ensureRuntimeProjectAssets(w io.Writer, oroHome string) error {
 		}
 		codexHome = filepath.Join(homeDir, ".codex")
 	}
+	if err := copySkills(agentAssetsConfig{
+		oroSkillsDir:       filepath.Join(oroHome, ".claude", "skills"),
+		destSkillsDir:      filepath.Join(codexHome, "skills"),
+		requireUsingSkills: true,
+	}, w); err != nil {
+		return fmt.Errorf("install Codex skills: %w", err)
+	}
 	if err := agentassets.InstallCodexRules(context.Background(), codexHome, agentassets.CodexRuleAssets()); err != nil {
 		return fmt.Errorf("install Codex rules: %w", err)
 	}
@@ -544,14 +550,11 @@ func ensureRuntimeProjectAssets(w io.Writer, oroHome string) error {
 	if err := installCodexHookConfig(codexHome, filepath.Join(oroHome, "hooks")); err != nil {
 		return fmt.Errorf("install Codex hook config: %w", err)
 	}
-	pluginAssets, err := (agentassets.CodexGenerator{}).PluginPackage(filepath.Join(oroHome, "hooks"))
-	if err != nil {
-		return fmt.Errorf("generate Codex plugin package: %w", err)
-	}
-	if err := agentassets.InstallCodexPluginPackage(context.Background(), filepath.Join(codexHome, "oro-marketplace"), pluginAssets); err != nil {
-		return fmt.Errorf("install Codex plugin package: %w", err)
-	}
 	return nil
+}
+
+func codexAssetsRequired() bool {
+	return readAgentRuntime() == runtimeCodex || agentmodel.UsesRuntime(runtimeCodex)
 }
 
 const (

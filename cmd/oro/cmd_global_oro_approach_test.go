@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"sort"
 	"testing"
 )
 
@@ -657,11 +656,10 @@ func TestAgentAssetsSyncSupportsClaudeAndCodex(t *testing.T) {
 	}
 
 	codexCfg := agentAssetsConfig{
-		runtime:         agentRuntimeCodex,
-		oroSkillsDir:    srcSkills,
-		oroHooksDir:     srcHooks,
-		destSkillsDir:   filepath.Join(tmp, "codex", "skills"),
-		codexPluginRoot: filepath.Join(tmp, "codex", "oro-marketplace"),
+		runtime:       agentRuntimeCodex,
+		oroSkillsDir:  srcSkills,
+		oroHooksDir:   srcHooks,
+		destSkillsDir: filepath.Join(tmp, "codex", "skills"),
 	}
 	if err := runAgentAssetsSync(codexCfg, os.Stdout); err != nil {
 		t.Fatalf("Codex sync failed: %v", err)
@@ -676,113 +674,9 @@ func TestAgentAssetsSyncSupportsClaudeAndCodex(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(tmp, "codex", "hooks")); err == nil {
 		t.Fatal("Codex runtime should not require hooks to be installed")
 	}
-	assertFileContent(t, filepath.Join(codexCfg.codexPluginRoot, ".agents", "plugins", "marketplace.json"), `{
-	"name": "oro-local",
-	"interface": {
-		"displayName": "Oro Local"
-	},
-	"plugins": [
-		{
-			"name": "oro",
-			"source": {
-				"source": "local",
-				"path": "./plugins/oro"
-			},
-			"policy": {
-				"installation": "AVAILABLE",
-				"authentication": "ON_INSTALL"
-			},
-			"category": "Productivity"
-		}
-	]
-}
-`)
-	assertFileContent(t, filepath.Join(codexCfg.codexPluginRoot, "plugins", "oro", "hooks.json"), `{
-	"hooks": {
-		"PostToolUse": [
-			{
-				"matcher": "Bash",
-				"hooks": [
-					{
-						"type": "command",
-						"command": "python3 `+filepath.ToSlash(srcHooks)+`/prompt_injection_guard.py"
-					},
-					{
-						"type": "command",
-						"command": "python3 `+filepath.ToSlash(srcHooks)+`/context_pruner.py"
-					}
-				]
-			},
-			{
-				"matcher": "apply_patch",
-				"hooks": [
-					{
-						"type": "command",
-						"command": "`+filepath.ToSlash(srcHooks)+`/auto-format.sh"
-					}
-				]
-			}
-		],
-		"PreToolUse": [
-			{
-				"matcher": "Bash",
-				"hooks": [
-					{
-						"type": "command",
-						"command": "python3 `+filepath.ToSlash(srcHooks)+`/enforce_skills.py"
-					},
-					{
-						"type": "command",
-						"command": "python3 `+filepath.ToSlash(srcHooks)+`/destructive_command_guard.py"
-					}
-				]
-			},
-			{
-				"matcher": "str_replace_based_edit_tool",
-				"hooks": [
-					{
-						"type": "command",
-						"command": "`+filepath.ToSlash(srcHooks)+`/oro-search-hook"
-					}
-				]
-			}
-		],
-		"SessionStart": [
-			{
-				"matcher": "",
-				"hooks": [
-					{
-						"type": "command",
-						"command": "python3 `+filepath.ToSlash(srcHooks)+`/session_start_global.py"
-					}
-				]
-			}
-		],
-		"Stop": [
-			{
-				"matcher": "",
-				"hooks": [
-					{
-						"type": "command",
-						"command": "`+filepath.ToSlash(srcHooks)+`/stop-checklist.sh"
-					}
-				]
-			}
-		],
-		"UserPromptSubmit": [
-			{
-				"matcher": "",
-				"hooks": [
-					{
-						"type": "command",
-						"command": "python3 `+filepath.ToSlash(srcHooks)+`/enforce_skills.py"
-					}
-				]
-			}
-		]
+	if _, err := os.Stat(filepath.Join(tmp, "codex", "oro-marketplace")); !os.IsNotExist(err) {
+		t.Fatalf("Codex sync must not create a marketplace, stat err = %v", err)
 	}
-}
-`)
 
 	globalAliasCfg := agentAssetsConfig{
 		runtime:       agentRuntimeClaude,
@@ -827,105 +721,6 @@ func TestCodexSkillSyncInstallsPortableSkills(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(cfg.destSkillsDir, "restart-oro")); err == nil {
 		t.Fatal("restart-oro should not be installed as a portable Codex skill")
-	}
-}
-
-func TestCodexPluginInstallIdempotent(t *testing.T) {
-	tmp := t.TempDir()
-	srcSkills := filepath.Join(tmp, "src", "skills")
-	srcHooks := filepath.Join(tmp, "src", "hooks")
-	makeSkillsDir(t, srcSkills, []string{"using-skills"})
-	makeHooksDir(t, srcHooks, map[string]string{
-		"auto-format.sh":               "#!/bin/bash\n",
-		"prompt_injection_guard.py":    "# guard\n",
-		"context_pruner.py":            "# pruner\n",
-		"stop-checklist.sh":            "#!/bin/bash\n",
-		"enforce_skills.py":            "# marker\n",
-		"destructive_command_guard.py": "# destructive guard\n",
-		"session_start_global.py":      "# global session start\n",
-	})
-
-	cfg := agentAssetsConfig{
-		runtime:         agentRuntimeCodex,
-		oroSkillsDir:    srcSkills,
-		oroHooksDir:     srcHooks,
-		destSkillsDir:   filepath.Join(tmp, "codex", "skills"),
-		codexPluginRoot: filepath.Join(tmp, "codex", "oro-marketplace"),
-	}
-	if err := runAgentAssetsSync(cfg, &bytes.Buffer{}); err != nil {
-		t.Fatalf("first Codex sync failed: %v", err)
-	}
-
-	manifestPath := filepath.Join(cfg.codexPluginRoot, "plugins", "oro", ".codex-plugin", "plugin.json")
-	var manifest map[string]any
-	manifestData, err := os.ReadFile(manifestPath)
-	if err != nil {
-		t.Fatalf("read plugin manifest: %v", err)
-	}
-	if err := json.Unmarshal(manifestData, &manifest); err != nil {
-		t.Fatalf("plugin manifest JSON invalid: %v", err)
-	}
-	for _, field := range []string{"name", "version", "description", "author", "homepage", "repository", "license", "interface"} {
-		if _, ok := manifest[field]; !ok {
-			t.Fatalf("plugin manifest missing required field %q: %s", field, manifestData)
-		}
-	}
-
-	before := codexPackageSnapshot(t, cfg.codexPluginRoot)
-	if err := runAgentAssetsSync(cfg, &bytes.Buffer{}); err != nil {
-		t.Fatalf("second Codex sync failed: %v", err)
-	}
-	after := codexPackageSnapshot(t, cfg.codexPluginRoot)
-	if before != after {
-		t.Fatalf("Codex plugin install should be idempotent; before=%s after=%s", before, after)
-	}
-}
-
-func TestCodexPluginInstallPreservesUserFiles(t *testing.T) {
-	tmp := t.TempDir()
-	srcSkills := filepath.Join(tmp, "src", "skills")
-	srcHooks := filepath.Join(tmp, "src", "hooks")
-	makeSkillsDir(t, srcSkills, []string{"using-skills"})
-	makeHooksDir(t, srcHooks, map[string]string{
-		"auto-format.sh":               "#!/bin/bash\n",
-		"prompt_injection_guard.py":    "# guard\n",
-		"context_pruner.py":            "# pruner\n",
-		"stop-checklist.sh":            "#!/bin/bash\n",
-		"enforce_skills.py":            "# marker\n",
-		"destructive_command_guard.py": "# destructive guard\n",
-		"session_start_global.py":      "# global session start\n",
-	})
-
-	cfg := agentAssetsConfig{
-		runtime:         agentRuntimeCodex,
-		oroSkillsDir:    srcSkills,
-		oroHooksDir:     srcHooks,
-		destSkillsDir:   filepath.Join(tmp, "codex", "skills"),
-		codexPluginRoot: filepath.Join(tmp, "codex", "oro-marketplace"),
-	}
-
-	staleManagedFile := filepath.Join(cfg.codexPluginRoot, "plugins", "oro", "old-hooks.json")
-	userFile := filepath.Join(cfg.codexPluginRoot, "plugins", "oro", "README.local.md")
-	if err := os.MkdirAll(filepath.Dir(staleManagedFile), 0o750); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(staleManagedFile, []byte("stale generated file\n"), 0o640); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(userFile, []byte("user notes\n"), 0o640); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := runAgentAssetsSync(cfg, &bytes.Buffer{}); err != nil {
-		t.Fatalf("Codex sync failed: %v", err)
-	}
-
-	if _, err := os.Stat(staleManagedFile); !os.IsNotExist(err) {
-		t.Fatalf("stale generated plugin file should be removed, stat err = %v", err)
-	}
-	assertFileContent(t, userFile, "user notes\n")
-	if _, err := os.Stat(filepath.Join(cfg.codexPluginRoot, "plugins", "oro", ".codex-plugin", "plugin.json")); err != nil {
-		t.Fatalf("plugin manifest should be installed at discovered local marketplace path: %v", err)
 	}
 }
 
@@ -1126,9 +921,6 @@ func TestDefaultAgentAssetsConfigAllRuntime(t *testing.T) {
 	if cfg.codexSkillsDir != filepath.Join("custom", "codex", "skills") {
 		t.Fatalf("Codex skills dir = %q", cfg.codexSkillsDir)
 	}
-	if cfg.codexPluginRoot != filepath.Join("custom", "codex", "oro-marketplace") {
-		t.Fatalf("Codex plugin root = %q", cfg.codexPluginRoot)
-	}
 	if cfg.claudeRulesRoot != filepath.Join("home", "user") {
 		t.Fatalf("Claude rules root = %q", cfg.claudeRulesRoot)
 	}
@@ -1174,58 +966,4 @@ func assertFileContent(t *testing.T, path, want string) {
 	if string(got) != want {
 		t.Fatalf("%s = %q, want %q", path, got, want)
 	}
-}
-
-func mustReadFile(t *testing.T, path string) []byte {
-	t.Helper()
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	return data
-}
-
-func codexPackageSnapshot(t *testing.T, root string) string {
-	t.Helper()
-
-	type fileSnapshot struct {
-		Path    string `json:"path"`
-		Content string `json:"content"`
-		Mode    uint32 `json:"mode"`
-		ModTime int64  `json:"modTime"`
-	}
-	var files []fileSnapshot
-	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		files = append(files, fileSnapshot{
-			Path:    filepath.ToSlash(rel),
-			Content: string(mustReadFile(t, path)),
-			Mode:    uint32(info.Mode().Perm()),
-			ModTime: info.ModTime().UnixNano(),
-		})
-		return nil
-	}); err != nil {
-		t.Fatalf("snapshot codex package: %v", err)
-	}
-	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
-
-	data, err := json.Marshal(files)
-	if err != nil {
-		t.Fatalf("marshal snapshot: %v", err)
-	}
-	return string(data)
 }

@@ -40,17 +40,17 @@ const (
 
 // agentAssetsConfig holds injectable paths for testability.
 type agentAssetsConfig struct {
-	runtime         string
-	oroAssetsDir    string // source bundle root under ~/.oro/
-	oroSkillsDir    string // source bundle under ~/.oro/
-	oroHooksDir     string // source hooks under ~/.oro/
-	destSkillsDir   string // runtime-specific destination for skills
-	destHooksDir    string // runtime-specific destination for hooks; empty when unsupported
-	claudeRulesRoot string // home/root where .claude/rules should be installed
-	codexSkillsDir  string // optional Codex destination when runtime=all
-	codexPluginRoot string // local marketplace root for Codex plugin package
-	settingsPath    string // runtime-specific settings.json; empty when unsupported
-	deprecationOut  io.Writer
+	runtime            string
+	oroAssetsDir       string // source bundle root under ~/.oro/
+	oroSkillsDir       string // source bundle under ~/.oro/
+	oroHooksDir        string // source hooks under ~/.oro/
+	destSkillsDir      string // runtime-specific destination for skills
+	destHooksDir       string // runtime-specific destination for hooks; empty when unsupported
+	claudeRulesRoot    string // home/root where .claude/rules should be installed
+	codexSkillsDir     string // optional Codex destination when runtime=all
+	requireUsingSkills bool   // fail when the canonical using-skills source is unavailable
+	settingsPath       string // runtime-specific settings.json; empty when unsupported
+	deprecationOut     io.Writer
 	// Legacy Claude-specific aliases kept for test and caller compatibility.
 	claudeSkillsDir string
 	claudeHooksDir  string
@@ -128,13 +128,11 @@ func defaultAgentAssetsConfig(homeDir, runtimeID string) agentAssetsConfig {
 	switch runtimeID {
 	case agentRuntimeCodex:
 		cfg.destSkillsDir = filepath.Join(codexHome, "skills")
-		cfg.codexPluginRoot = filepath.Join(codexHome, "oro-marketplace")
 	case agentRuntimeAll:
 		cfg.destSkillsDir = filepath.Join(homeDir, ".claude", "skills")
 		cfg.destHooksDir = filepath.Join(homeDir, ".claude", "hooks")
 		cfg.claudeRulesRoot = homeDir
 		cfg.codexSkillsDir = filepath.Join(codexHome, "skills")
-		cfg.codexPluginRoot = filepath.Join(codexHome, "oro-marketplace")
 		cfg.settingsPath = filepath.Join(homeDir, ".claude", "settings.json")
 	default:
 		cfg.runtime = agentRuntimeClaude
@@ -189,11 +187,6 @@ func syncAgentRuntimeAssets(cfg agentAssetsConfig, w io.Writer) error {
 	if err := copySkills(cfg, w); err != nil {
 		return err
 	}
-	if cfg.runtime == agentRuntimeCodex {
-		if err := installCodexPluginPackage(cfg, w); err != nil {
-			return err
-		}
-	}
 	if !runtimeSupportsHooks(cfg) {
 		fmt.Fprintf(w, "hooks: skipped for runtime %s\n", cfg.runtime)
 		return nil
@@ -205,22 +198,6 @@ func syncAgentRuntimeAssets(cfg agentAssetsConfig, w io.Writer) error {
 		return err
 	}
 	return installClaudeRuleAssets(cfg, w)
-}
-
-func installCodexPluginPackage(cfg agentAssetsConfig, w io.Writer) error {
-	if cfg.codexPluginRoot == "" {
-		return nil
-	}
-
-	assets, err := (agentassets.CodexGenerator{}).PluginPackage(cfg.oroHooksDir)
-	if err != nil {
-		return fmt.Errorf("generate Codex plugin package: %w", err)
-	}
-	if err := agentassets.InstallCodexPluginPackage(context.Background(), cfg.codexPluginRoot, assets); err != nil {
-		return fmt.Errorf("install Codex plugin package: %w", err)
-	}
-	fmt.Fprintf(w, "plugin: installed Codex local marketplace package to %s\n", cfg.codexPluginRoot)
-	return nil
 }
 
 func installClaudeRuleAssets(cfg agentAssetsConfig, w io.Writer) error {
@@ -260,6 +237,17 @@ func (cfg agentAssetsConfig) hooksDir() string {
 // copySkills symlinks all skill directories (except blocked ones) from oroSkillsDir into destSkillsDir.
 // Any existing entry at the destination (symlink or directory) is removed first so re-runs are idempotent.
 func copySkills(cfg agentAssetsConfig, w io.Writer) error {
+	if cfg.requireUsingSkills {
+		required := filepath.Join(cfg.oroSkillsDir, "using-skills", "SKILL.md")
+		info, err := os.Stat(required)
+		if err != nil {
+			return fmt.Errorf("required using-skills source %s: %w", required, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("required using-skills source %s is not a regular file", required)
+		}
+	}
+
 	entries, err := os.ReadDir(cfg.oroSkillsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -285,19 +273,38 @@ func copySkills(cfg agentAssetsConfig, w io.Writer) error {
 		src := filepath.Join(cfg.oroSkillsDir, e.Name())
 		dst := filepath.Join(destSkillsDir, e.Name())
 
-		// Remove any existing entry (old copy or stale symlink) before creating a fresh symlink.
-		if _, lstatErr := os.Lstat(dst); lstatErr == nil {
-			if err := os.RemoveAll(dst); err != nil {
-				return fmt.Errorf("remove existing skill %s: %w", e.Name(), err)
-			}
-		}
-
-		if err := os.Symlink(src, dst); err != nil {
-			return fmt.Errorf("symlink skill %s: %w", e.Name(), err)
+		if err := replaceSkillSymlink(src, dst); err != nil {
+			return fmt.Errorf("link skill %s: %w", e.Name(), err)
 		}
 		linked++
 	}
 	fmt.Fprintf(w, "skills: linked %d to %s\n", linked, destSkillsDir)
+	return nil
+}
+
+func replaceSkillSymlink(src, dst string) error {
+	tempDir, err := os.MkdirTemp(filepath.Dir(dst), ".oro-skill-"+filepath.Base(dst)+"-")
+	if err != nil {
+		return fmt.Errorf("create temporary link directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir) //nolint:errcheck // best-effort cleanup after rename or failure
+
+	tempLink := filepath.Join(tempDir, "link")
+	if err := os.Symlink(src, tempLink); err != nil {
+		return fmt.Errorf("create temporary symlink: %w", err)
+	}
+	if info, statErr := os.Lstat(dst); statErr == nil {
+		if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+			if err := os.RemoveAll(dst); err != nil {
+				return fmt.Errorf("remove legacy skill directory: %w", err)
+			}
+		}
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("inspect existing skill: %w", statErr)
+	}
+	if err := os.Rename(tempLink, dst); err != nil {
+		return fmt.Errorf("install symlink: %w", err)
+	}
 	return nil
 }
 

@@ -11,7 +11,6 @@ func TestAgentAssetsIncludeDestructiveCommandGuard(t *testing.T) {
 	const hooksDir = "/Users/alice/.oro/hooks"
 
 	assertPreToolUseBashGuard(t, "Claude", (agentassets.ClaudeGenerator{}).Hooks(hooksDir))
-	assertPreToolUseBashGuard(t, "Codex", (agentassets.CodexGenerator{}).Hooks(hooksDir))
 }
 
 func assertPreToolUseBashGuard(t *testing.T, runtime string, hooks map[string][]agentassets.HookGroup) {
@@ -33,10 +32,6 @@ func assertPreToolUseBashGuard(t *testing.T, runtime string, hooks map[string][]
 	if !slices.Contains(bashCommands, "python3 /Users/alice/.oro/hooks/destructive_command_guard.py") {
 		t.Fatalf("%s PreToolUse Bash commands = %#v, want destructive guard", runtime, bashCommands)
 	}
-	if runtime == "Codex" && !slices.Contains(bashCommands, "python3 /Users/alice/.oro/hooks/enforce_skills.py") {
-		t.Fatalf("%s PreToolUse Bash commands = %#v, want enforce_skills.py", runtime, bashCommands)
-	}
-
 	if !slices.Contains(allPreToolUseCommands(preToolUse), "python3 /Users/alice/.oro/hooks/enforce_skills.py") {
 		t.Fatalf("%s PreToolUse hooks must preserve enforce_skills.py wiring: %#v", runtime, preToolUse)
 	}

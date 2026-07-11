@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -213,8 +214,20 @@ func TestCodexHookConfigBlockReplacement(t *testing.T) {
 		!strings.Contains(block, "Stop") {
 		t.Fatalf("Codex hook config block missing required event wiring:\n%s", block)
 	}
-	if !strings.Contains(block, "oro-search-hook") {
-		t.Fatalf("Codex hook config block missing oro-search-hook wiring:\n%s", block)
+	for _, command := range []string{
+		"session_start_global.py",
+		"enforce_skills.py",
+		"destructive_command_guard.py",
+		"oro-search-hook",
+		"prompt_injection_guard.py",
+		"context_pruner.py",
+		"auto-format.sh",
+		"context_block_stop.py",
+		"stop-checklist.sh",
+	} {
+		if !strings.Contains(block, command) {
+			t.Fatalf("Codex hook config block missing %s wiring:\n%s", command, block)
+		}
 	}
 
 	existing := strings.Join([]string{
@@ -271,6 +284,194 @@ func TestInstallCodexHookConfigWritesManagedBlock(t *testing.T) {
 	}
 	if !bytes.Equal(first, second) {
 		t.Fatalf("Codex hook config install must be idempotent:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+}
+
+func TestCodexDirectSkillSetupAcceptance(t *testing.T) {
+	t.Run("startup_links_skills_without_marketplace", func(t *testing.T) {
+		oroHome, codexHome, skillSource := prepareCodexStartFixture(t, "codex-only", "", true)
+
+		if err := ensureRuntimeProjectAssets(io.Discard, oroHome); err != nil {
+			t.Fatalf("ensureRuntimeProjectAssets: %v", err)
+		}
+		assertSkillSymlink(t, filepath.Join(codexHome, "skills", "using-skills"), filepath.Dir(skillSource))
+		assertPathMissing(t, filepath.Join(codexHome, "oro-marketplace"))
+	})
+
+	t.Run("startup_rejects_missing_using_skills", func(t *testing.T) {
+		oroHome, _, _ := prepareCodexStartFixture(t, "codex-only", "", false)
+
+		err := ensureRuntimeProjectAssets(io.Discard, oroHome)
+		if err == nil || !strings.Contains(err.Error(), "using-skills") {
+			t.Fatalf("missing using-skills error = %v, want required-source failure", err)
+		}
+	})
+
+	t.Run("agent_assets_does_not_create_marketplace", func(t *testing.T) {
+		home := t.TempDir()
+		cfg := defaultAgentAssetsConfig(home, agentRuntimeCodex)
+		cfg.oroSkillsDir = filepath.Join(home, ".oro", ".claude", "skills")
+		makeSkillsDir(t, cfg.oroSkillsDir, []string{"using-skills"})
+
+		if err := runAgentAssetsSync(cfg, io.Discard); err != nil {
+			t.Fatalf("runAgentAssetsSync: %v", err)
+		}
+		assertSkillSymlink(t, filepath.Join(home, ".codex", "skills", "using-skills"), filepath.Join(cfg.oroSkillsDir, "using-skills"))
+		assertPathMissing(t, filepath.Join(home, ".codex", "oro-marketplace"))
+	})
+
+	t.Run("concurrent_sync_converges", func(t *testing.T) {
+		root := t.TempDir()
+		src := filepath.Join(root, "source")
+		dst := filepath.Join(root, "destination")
+		makeSkillsDir(t, src, []string{"using-skills", "brainstorming"})
+		cfg := agentAssetsConfig{oroSkillsDir: src, destSkillsDir: dst}
+
+		const workers = 24
+		start := make(chan struct{})
+		errs := make(chan error, workers)
+		var wg sync.WaitGroup
+		for range workers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				errs <- copySkills(cfg, io.Discard)
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatalf("concurrent copySkills: %v", err)
+			}
+		}
+		assertSkillSymlink(t, filepath.Join(dst, "using-skills"), filepath.Join(src, "using-skills"))
+		assertSkillSymlink(t, filepath.Join(dst, "brainstorming"), filepath.Join(src, "brainstorming"))
+	})
+
+	t.Run("legacy_directory_recovers_without_temp_links", func(t *testing.T) {
+		root := t.TempDir()
+		src := filepath.Join(root, "source")
+		dst := filepath.Join(root, "destination")
+		makeSkillsDir(t, src, []string{"using-skills"})
+		legacy := filepath.Join(dst, "using-skills")
+		makeSkillsDir(t, dst, []string{"using-skills"})
+
+		if err := copySkills(agentAssetsConfig{oroSkillsDir: src, destSkillsDir: dst}, io.Discard); err != nil {
+			t.Fatalf("copySkills over legacy directory: %v", err)
+		}
+		assertSkillSymlink(t, legacy, filepath.Join(src, "using-skills"))
+		leftovers, err := filepath.Glob(filepath.Join(dst, ".oro-skill-*"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(leftovers) != 0 {
+			t.Fatalf("temporary skill links remain: %v", leftovers)
+		}
+	})
+
+	t.Run("runtime_override_links_skills_before_launch", func(t *testing.T) {
+		oroHome, codexHome, skillSource := prepareCodexStartFixture(t, "claude-only", runtimeCodex, true)
+
+		if err := ensureRuntimeProjectAssets(io.Discard, oroHome); err != nil {
+			t.Fatalf("ensureRuntimeProjectAssets with runtime override: %v", err)
+		}
+		assertSkillSymlink(t, filepath.Join(codexHome, "skills", "using-skills"), filepath.Dir(skillSource))
+	})
+
+	t.Run("mixed_provider_links_skills_before_launch", func(t *testing.T) {
+		oroHome, codexHome, skillSource := prepareCodexStartFixture(t, "claude-coding-codex-review", "", true)
+
+		if err := ensureRuntimeProjectAssets(io.Discard, oroHome); err != nil {
+			t.Fatalf("ensureRuntimeProjectAssets with mixed providers: %v", err)
+		}
+		assertSkillSymlink(t, filepath.Join(codexHome, "skills", "using-skills"), filepath.Dir(skillSource))
+	})
+
+	t.Run("claude_only_does_not_mutate_codex_home", func(t *testing.T) {
+		oroHome, codexHome, _ := prepareCodexStartFixture(t, "claude-only", "", false)
+		sentinel := filepath.Join(codexHome, "sentinel")
+		if err := os.MkdirAll(codexHome, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(sentinel, []byte("unchanged\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := ensureRuntimeProjectAssets(io.Discard, oroHome); err != nil {
+			t.Fatalf("Claude-only ensureRuntimeProjectAssets: %v", err)
+		}
+		entries, err := os.ReadDir(codexHome)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 1 || entries[0].Name() != "sentinel" {
+			t.Fatalf("Claude-only startup mutated Codex home: %v", entries)
+		}
+	})
+}
+
+func prepareCodexStartFixture(t *testing.T, providerMode, runtimeOverride string, withSkills bool) (string, string, string) {
+	t.Helper()
+	home := t.TempDir()
+	oroHome := filepath.Join(home, ".oro-home")
+	codexHome := filepath.Join(home, ".codex-home")
+	project := filepath.Join(home, "project")
+	if err := os.MkdirAll(filepath.Join(project, ".oro"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	config := fmt.Sprintf("project: direct-skills\nagent:\n  provider_mode: %s\n", providerMode)
+	if err := os.WriteFile(filepath.Join(project, ".oro", "config.yaml"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte("module directskills\n\ngo 1.26\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hooksDir := filepath.Join(oroHome, "hooks")
+	if err := os.MkdirAll(hooksDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hooksDir, "oro-search-hook"), []byte("#!/bin/sh\nexit 0\n"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	skillSource := filepath.Join(oroHome, ".claude", "skills", "using-skills", "SKILL.md")
+	if withSkills {
+		makeSkillsDir(t, filepath.Join(oroHome, ".claude", "skills"), []string{"using-skills"})
+	}
+
+	t.Setenv("HOME", home)
+	t.Setenv("ORO_HOME", oroHome)
+	t.Setenv("CODEX_HOME", codexHome)
+	t.Setenv(agentRuntimeEnvVar, runtimeOverride)
+	t.Chdir(project)
+	return oroHome, codexHome, skillSource
+}
+
+func assertSkillSymlink(t *testing.T, path, wantTarget string) {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("lstat skill link %s: %v", path, err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("skill path %s mode = %v, want symlink", path, info.Mode())
+	}
+	gotTarget, err := os.Readlink(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotTarget != wantTarget {
+		t.Fatalf("skill link %s target = %q, want %q", path, gotTarget, wantTarget)
+	}
+}
+
+func assertPathMissing(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("path %s exists or stat failed: %v", path, err)
 	}
 }
 
