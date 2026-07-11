@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -152,33 +153,142 @@ func newRecoveryInspectCmd() *cobra.Command {
 
 func newRecoveryResolveCmd() *cobra.Command {
 	var mode string
+	var all bool
+	var force bool
 	cmd := &cobra.Command{
-		Use:   "resolve <id>",
-		Short: "Mark a recovery quarantine resolved",
-		Args:  cobra.ExactArgs(1),
+		Use:   "resolve [<id>]",
+		Short: "Mark a recovery quarantine resolved (or all open quarantines with --all)",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			id, err := strconv.ParseInt(args[0], 10, 64)
-			if err != nil || id <= 0 {
-				return fmt.Errorf("invalid recovery quarantine id %q", args[0])
+			if all {
+				return runRecoveryResolveAllCmd(cmd, args, mode, force)
 			}
-			db, err := openRecoveryStateDB()
-			if err != nil {
-				return err
-			}
-			defer db.Close()
-			if err := resolveRecoveryQuarantine(cmd.Context(), db, id, mode); err != nil {
-				return err
-			}
-			if mode == "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "resolved recovery quarantine %d (compatibility mode; prefer --mode requeue-preserved, resolved-after-merge, human-owned, or discard-empty-safe)\n", id)
-			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "resolved recovery quarantine %d with mode %s\n", id, mode)
-			}
-			return nil
+			return runRecoveryResolveSingleCmd(cmd, args, mode)
 		},
 	}
 	cmd.Flags().StringVar(&mode, "mode", "", "resolution mode: requeue-preserved, resolved-after-merge, human-owned, discard-empty-safe")
+	cmd.Flags().BoolVar(&all, "all", false, "resolve every open quarantine with --mode (bulk); requires confirmation")
+	cmd.Flags().BoolVar(&force, "force", false, "skip interactive confirmation for --all (requires ORO_HUMAN_CONFIRMED=1)")
 	return cmd
+}
+
+// runRecoveryResolveSingleCmd resolves exactly one quarantine by positional id,
+// preserving the original single-id behavior (including the empty-mode
+// compatibility path and message).
+func runRecoveryResolveSingleCmd(cmd *cobra.Command, args []string, mode string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("recovery resolve requires exactly one <id> (or use --all)")
+	}
+	id, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil || id <= 0 {
+		return fmt.Errorf("invalid recovery quarantine id %q", args[0])
+	}
+	db, err := openRecoveryStateDB()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if err := resolveRecoveryQuarantine(cmd.Context(), db, id, mode); err != nil {
+		return err
+	}
+	if mode == "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "resolved recovery quarantine %d (compatibility mode; prefer --mode requeue-preserved, resolved-after-merge, human-owned, or discard-empty-safe)\n", id)
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "resolved recovery quarantine %d with mode %s\n", id, mode)
+	}
+	return nil
+}
+
+// runRecoveryResolveAllCmd wires the guarded bulk resolve path: it rejects a
+// stray positional id, opens the store, and delegates to runRecoveryResolveAll
+// with an injected config so the run function stays testable without a TTY.
+func runRecoveryResolveAllCmd(cmd *cobra.Command, args []string, mode string, force bool) error {
+	if len(args) != 0 {
+		return fmt.Errorf("recovery resolve --all does not take a positional <id>; it resolves every open quarantine")
+	}
+	db, err := openRecoveryStateDB()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	cfg := recoveryResolveAllConfig{
+		db:    db,
+		mode:  mode,
+		force: force,
+		w:     cmd.OutOrStdout(),
+		stdin: os.Stdin,
+		isTTY: isStdinTTY,
+	}
+	return runRecoveryResolveAll(cmd.Context(), cfg)
+}
+
+// recoveryResolveAllConfig holds injectable dependencies for the bulk resolve
+// flow, mirroring recoveryAbandonConfig so the confirmation guard is testable
+// without a real TTY.
+type recoveryResolveAllConfig struct {
+	db    *sql.DB
+	mode  string
+	force bool
+	w     io.Writer
+	stdin io.Reader
+	isTTY func() bool
+}
+
+// runRecoveryResolveAll resolves every open quarantine using the given mode.
+// It requires an explicit mode (bulk resolve must be intentional), is guarded
+// by the same confirmation pattern as abandon-stale, and treats a per-row
+// resolve failure (e.g. discard-empty-safe refusing a non-empty row) as a SKIP
+// rather than a fatal abort.
+func runRecoveryResolveAll(ctx context.Context, cfg recoveryResolveAllConfig) error {
+	mode := strings.TrimSpace(cfg.mode)
+	if mode == "" {
+		return fmt.Errorf("--all requires an explicit --mode (requeue-preserved, resolved-after-merge, human-owned, or discard-empty-safe)")
+	}
+	if err := confirmRecoveryResolveAll(cfg); err != nil {
+		return err
+	}
+
+	records, err := listRecoveryQuarantines(ctx, cfg.db)
+	if err != nil {
+		return err
+	}
+
+	resolved, skipped := 0, 0
+	for _, r := range records {
+		if err := resolveRecoveryQuarantine(ctx, cfg.db, r.ID, mode); err != nil {
+			skipped++
+			fmt.Fprintf(cfg.w, "  skipped #%d %s: %s\n", r.ID, r.BeadID, err)
+			continue
+		}
+		resolved++
+	}
+	fmt.Fprintf(cfg.w, "resolved %d, skipped %d of %d open quarantines (mode: %s)\n",
+		resolved, skipped, len(records), mode)
+	return nil
+}
+
+// confirmRecoveryResolveAll mirrors confirmRecoveryAbandon: --force requires
+// ORO_HUMAN_CONFIRMED=1, otherwise an interactive TTY must type YES.
+func confirmRecoveryResolveAll(cfg recoveryResolveAllConfig) error {
+	if cfg.force {
+		if os.Getenv("ORO_HUMAN_CONFIRMED") != "1" {
+			return fmt.Errorf("--force requires ORO_HUMAN_CONFIRMED=1 environment variable")
+		}
+		return nil
+	}
+	if cfg.isTTY != nil && !cfg.isTTY() {
+		return fmt.Errorf("oro recovery resolve --all requires an interactive terminal (stdin is not a TTY)\n" +
+			"Hint: use --force with ORO_HUMAN_CONFIRMED=1 for non-interactive use")
+	}
+	fmt.Fprint(cfg.w, "Type YES to resolve all open quarantines: ")
+	scanner := bufio.NewScanner(cfg.stdin)
+	if !scanner.Scan() {
+		return fmt.Errorf("failed to read confirmation from stdin")
+	}
+	if strings.TrimSpace(scanner.Text()) != "YES" {
+		return fmt.Errorf("aborted (expected YES)")
+	}
+	return nil
 }
 
 func openRecoveryStateDB() (*sql.DB, error) {
