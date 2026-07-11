@@ -1,5 +1,11 @@
 # Codex Plugin Discovery
 
+> Historical research note: Oro no longer distributes its worker skills through
+> a marketplace plugin. The supported implementation links skills directly into
+> `$CODEX_HOME/skills` and writes managed hooks to `$CODEX_HOME/config.toml`.
+> Marketplace observations below remain useful as Codex platform research, but
+> the former Oro plugin proposal is rejected for non-interactive workers.
+
 Research date: 2026-05-06  
 Codex version: 0.128.0
 
@@ -279,9 +285,13 @@ Two restart events (`T2`, `T4`) confirmed the stub persists across `codex exec` 
 | `~/.codex/plugins/<name>/` | Not used by Codex | Yes (fs-stable, Codex never reads it) | **No** (not auto-discovered) |
 | `~/local-plugins/plugins/<name>/` | Local marketplace source | Yes | **Yes** (after marketplace add + TUI install) |
 
-### Implications for oro plugin installation
+### Historical rejected Oro plugin proposal
 
-To ship an oro plugin that loads in Codex:
+The 2026-05 research concluded that an Oro marketplace plugin would have required
+the following steps. Oro does not use this distribution path; these are retained
+only to explain why direct personal-skill installation replaced it.
+
+To load a generic local plugin in the researched Codex version:
 1. The plugin files must live in a stable directory (e.g., `~/local-plugins/plugins/oro/`)
 2. A `marketplace.json` must register the plugin under `.agents/plugins/`
 3. `codex plugin marketplace add ~/local-plugins` must be run once (writes to `config.toml`)

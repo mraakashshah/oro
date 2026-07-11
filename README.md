@@ -287,7 +287,7 @@ codex --version
 oro agent-assets --runtime codex
 ```
 
-Codex assets are installed under `$CODEX_HOME` when set, otherwise `~/.codex`. Oro writes portable Codex skills, Codex command-permission rules, an Oro local marketplace package, and project `AGENTS.md` instructions. See [docs/runbooks/codex-setup.md](docs/runbooks/codex-setup.md) for the plugin discovery path, `.codex-plugin/plugin.json` layout, marketplace registration, and current limitations.
+Codex assets are installed under `$CODEX_HOME` when set, otherwise `~/.codex`. Oro links portable skills into `$CODEX_HOME/skills`, writes command-permission rules and managed hooks directly, and generates project `AGENTS.md` instructions. No plugin registration or interactive installation is required. See [docs/runbooks/codex-setup.md](docs/runbooks/codex-setup.md) for the direct discovery path and startup contract.
 
 ### Uninstall
 

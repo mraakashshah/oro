@@ -2,8 +2,8 @@
 
 This runbook documents the Codex side of the harness parity work from
 [the Codex harness parity spec](../plans/2026-05-06-codex-harness-parity-design.md).
-The plugin discovery rules come from
-[the R1 Codex plugin discovery outcome](../learnings/codex-plugin-discovery.md).
+The direct skill discovery decision follows
+[the Codex direct skill setup design](../plans/2026-07-11-codex-direct-skill-setup-design.md).
 
 ## Scope
 
@@ -41,75 +41,58 @@ For asset-only sync, run:
 oro agent-assets --runtime codex
 ```
 
-The Codex sync installs portable skills into `$CODEX_HOME/skills`, installs
-Codex command rules under `$CODEX_HOME/rules`, and writes the Oro local
-marketplace package under `$CODEX_HOME/oro-marketplace`.
+The asset-only Codex sync links portable skills into `$CODEX_HOME/skills`.
+Skill links point to Oro's installed source under `~/.oro/.claude/skills`, so
+skill edits and Oro upgrades are visible without copying or plugin installation.
 
-When Codex is the active worker runtime, `oro start` also ensures project
-runtime assets are present. That includes writing `AGENTS.md` at the project
-root so Codex sessions receive the same project instructions that Claude reads
-from `CLAUDE.md`.
+When any configured CLI tier or role can use Codex, `oro start` also ensures the
+Codex assets before launching the dispatcher: skill links, command rules under
+`$CODEX_HOME/rules`, and managed hooks in `$CODEX_HOME/config.toml`. This covers the
+`ORO_AGENT_RUNTIME=codex` override and mixed-provider modes where review or ops
+roles use Codex even if the primary worker uses Claude. Claude-only routing does
+not modify `$CODEX_HOME`.
 
-## Plugin Discovery Path
+Startup additionally writes `AGENTS.md` at the project root so Codex sessions
+receive the same project instructions that Claude reads from `CLAUDE.md`.
 
-Codex does not auto-discover plugins from `~/.codex/plugins/<name>`. It also
-does not load plugins just because files exist in `~/.codex/.tmp/plugins/`.
-Oro does not install plugins into ~/.codex/plugins/. Oro does not install plugins into ~/.codex/.tmp/plugins/.
+## Direct Discovery Path
 
-The R1-supported path is a local marketplace:
-
-The required marketplace manifest path is `.agents/plugins/marketplace.json`.
-The Oro plugin files live under `plugins/oro/.codex-plugin/plugin.json`,
-`plugins/oro/hooks.json`, and `plugins/oro/skills/`.
+Oro uses Codex's personal skills directory directly:
 
 ```text
-$CODEX_HOME/oro-marketplace/
-├── .agents/
-│   └── plugins/
-│       └── marketplace.json
-└── plugins/
-    └── oro/
-        ├── .codex-plugin/
-        │   └── plugin.json
-        ├── hooks.json
-        └── skills/
+~/.oro/.claude/skills/using-skills/
+└── SKILL.md
+
+$CODEX_HOME/
+├── skills/
+│   ├── using-skills -> ~/.oro/.claude/skills/using-skills
+│   └── ...          -> ~/.oro/.claude/skills/...
+├── rules/
+│   └── oro.rules
+└── config.toml      # contains Oro's managed hooks block
 ```
 
-The marketplace manifest registers the plugin by relative path:
+No marketplace registration, plugin cache mutation, or interactive installation
+step is part of Oro setup. Older Oro versions may have left a legacy marketplace
+directory in a Codex home; current sync and startup paths ignore it and do not
+delete user-home content automatically.
 
-```json
-{
-  "name": "oro-marketplace",
-  "interface": {"displayName": "Oro local"},
-  "plugins": [
-    {
-      "name": "oro",
-      "source": {"source": "local", "path": "./plugins/oro"}
-    }
-  ]
-}
-```
+Codex-capable startup requires the canonical
+`~/.oro/.claude/skills/using-skills/SKILL.md` source. If it is missing, startup
+stops before launching the dispatcher rather than running an undisciplined Codex
+worker. Reinstall or upgrade Oro to restore the source, then rerun `oro start`.
 
-The plugin manifest lives at `plugins/oro/.codex-plugin/plugin.json`:
+The SessionStart hook loads the same canonical file directly. The hook itself is
+fail-open: if the file becomes unreadable during a running Codex session, it
+still injects Oro's compact discipline block.
 
-```json
-{
-  "name": "oro",
-  "version": "0.1.0",
-  "description": "Oro workflow guidance, hooks, and task orchestration support for Codex.",
-  "skills": "./skills/"
-}
-```
+## Managed Hooks
 
-Register the marketplace once per Codex home:
-
-```bash
-codex plugin marketplace add "$CODEX_HOME/oro-marketplace"
-```
-
-After registration, Codex may still mark the plugin as available rather than
-active. The R1 result found that active plugin installation is a Codex TUI step;
-`codex exec` only uses already-installed plugins.
+Oro writes a marked hooks block directly into `$CODEX_HOME/config.toml`. Repeated
+startup replaces only that block and preserves user configuration outside it.
+The block wires SessionStart, PreToolUse, PostToolUse, and Stop events to the
+shared scripts under `~/.oro/hooks`; those scripts are not duplicated into the
+Codex home.
 
 ## Prefix Rules
 
