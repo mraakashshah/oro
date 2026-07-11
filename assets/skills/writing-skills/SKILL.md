@@ -141,6 +141,21 @@ description: Use when you have a written implementation plan to execute
 - Most skills: **<500 words**
 - Discipline skills (with rationalization tables): earn their length
 
+## Match the Form to the Failure
+
+Before writing guidance, classify the baseline failure. The form that fixes one failure type backfires on another.
+
+| Baseline failure | Right form | Wrong form |
+|---|---|---|
+| Knows the rule, skips it under pressure | Prohibition + rationalization table + red flags | Soft guidance ("prefer...", "consider...") |
+| Complies, but output has wrong shape (bloated, buried verdict, restated spec) | Positive recipe: state what the output IS — its parts, in order | Prohibition list ("don't restate", "never narrate") |
+| Omits a required element they otherwise produce | Structural slot: a REQUIRED field in the template they fill | Prose reminders near the template |
+| Behavior should depend on a condition | Conditional keyed to an observable predicate ("if the brief exists, reference it") | Unconditional rule + exemption clauses |
+
+**Prohibitions backfire on shaping problems.** When the agent has a competing incentive, "don't X" is something to negotiate against — in wording tests, a prohibition arm produced more of the unwanted content than the positive-recipe arm, and trended worse than even a no-guidance control. A recipe or a slot leaves nothing to negotiate: the output matches the stated shape or it doesn't. Reach for prohibition only for discipline failures (knows-better-does-it-anyway).
+
+**No nuance clauses.** "Don't X unless it matters" reopens the negotiation. Express a real exception as its own conditional on an observable predicate. Exemption clauses ("this limit doesn't apply to code blocks") don't scope — they suppress the exempt part too. Restructure so the rule can't reach it.
+
 ## Bulletproofing Discipline Skills
 
 ### Close Every Loophole
@@ -181,6 +196,18 @@ Easy self-check when rationalizing:
 3. **Create** — Write SKILL.md, add bundled resources. Prefer concise examples over verbose explanations
 4. **Test** — Use the skill on real tasks. Watch for struggles or inefficiencies
 5. **Iterate** — Update based on real usage, not theory
+
+## Micro-Test Wording Before Full Scenarios
+
+Full pressure scenarios are the final gate, but they're slow per iteration. Verify the wording itself first with cheap micro-tests:
+
+1. **One fresh-context sample per call.** System prompt = the realistic context the guidance will live in (the whole skill or prompt, not the snippet in isolation); user message = a task that tempts the failure.
+2. **Always include a no-guidance control.** If the control doesn't exhibit the failure, there's nothing to fix — stop, don't author the guidance.
+3. **5+ reps per variant.** Single samples lie.
+4. **Read every flagged match by hand.** Template echoes and quoted counter-examples masquerade as hits; automated counts overstate both failure and success.
+5. **Variance is a signal.** When guidance binds, reps converge on the same shape. Five different interpretations across five reps means the wording isn't binding — tighten the form before adding words.
+
+Micro-tests verify wording; they don't replace pressure scenarios for discipline skills.
 
 ## Anti-Patterns
 

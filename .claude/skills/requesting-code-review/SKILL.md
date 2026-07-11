@@ -50,6 +50,15 @@ Check for:
 - Spec compliance (matches requirements?)
 - Code quality (clean, tested, no regressions?)
 - Triage as Critical / Important / Minor
+
+Read-Only Review: This review is read-only on this checkout. Do not
+mutate the working tree, the index, HEAD, or branch state in any way.
+Use `git show`, `git diff`, and `git log` to inspect history. If you
+need a working copy of a different revision, check it out into a
+separate temporary directory (e.g. `git worktree add /tmp/review-{SHA}
+{SHA}`, then `git worktree remove` when done) — never `git checkout
+{SHA}` on this checkout, which detaches HEAD, orphans commits, and can
+trigger long whole-codebase crawls.
 ```
 
 ### 4. Act on feedback
