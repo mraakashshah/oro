@@ -10,6 +10,16 @@ import (
 	"oro/pkg/protocol"
 )
 
+// execer is the subset of database access shared by *sql.DB and *sql.Tx.
+// Extracting the two primitive recovery-quarantine writes behind this
+// interface lets both the online *Dispatcher path and the offline
+// AbandonAllActiveAssignments transaction reuse identical SQL, so the
+// quarantine semantics cannot drift between them.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 type recoveryQuarantine struct {
 	BeadID       string
 	AssignmentID int64
@@ -55,7 +65,15 @@ func (d *Dispatcher) createRecoveryQuarantine(ctx context.Context, q recoveryQua
 		}
 	}
 
-	_, err := d.db.ExecContext(ctx, `
+	return insertRecoveryQuarantineRow(ctx, d.db, q)
+}
+
+// insertRecoveryQuarantineRow inserts (or coalesces onto the existing open
+// row for the same bead_id+reason) a recovery_quarantines row and returns its
+// id. It is the single source of truth for the open-quarantine INSERT so the
+// online dispatcher and the offline recovery command emit identical SQL.
+func insertRecoveryQuarantineRow(ctx context.Context, ex execer, q recoveryQuarantine) (int64, error) {
+	if _, err := ex.ExecContext(ctx, `
 INSERT INTO recovery_quarantines
     (bead_id, assignment_id, worker_id, worktree, branch, reason, details, status)
 VALUES (?, ?, ?, ?, ?, ?, ?, 'open')
@@ -65,13 +83,12 @@ ON CONFLICT(bead_id, reason) WHERE status='open' DO UPDATE SET
     worktree=excluded.worktree,
     branch=excluded.branch,
     details=excluded.details`,
-		q.BeadID, nullableInt64(q.AssignmentID), q.WorkerID, q.Worktree, q.Branch, q.Reason, q.Details)
-	if err != nil {
+		q.BeadID, nullableInt64(q.AssignmentID), q.WorkerID, q.Worktree, q.Branch, q.Reason, q.Details); err != nil {
 		return 0, fmt.Errorf("create recovery quarantine: %w", err)
 	}
 
 	var id int64
-	if err := d.db.QueryRowContext(ctx,
+	if err := ex.QueryRowContext(ctx,
 		`SELECT id FROM recovery_quarantines WHERE bead_id=? AND reason=? AND status='open'`,
 		q.BeadID, q.Reason).Scan(&id); err != nil {
 		return 0, fmt.Errorf("lookup recovery quarantine: %w", err)
@@ -140,7 +157,15 @@ func (d *Dispatcher) quarantineUnsafeRecoveryWork(ctx context.Context, q recover
 }
 
 func (d *Dispatcher) markAssignmentQuarantined(ctx context.Context, assignmentID int64) error {
-	res, err := d.db.ExecContext(ctx,
+	return markAssignmentQuarantinedExec(ctx, d.db, assignmentID)
+}
+
+// markAssignmentQuarantinedExec flips an assignment to status='quarantined'
+// and clears completed_at. It is the single source of truth for the
+// quarantine UPDATE, shared by the online dispatcher and the offline recovery
+// command so the two paths cannot drift.
+func markAssignmentQuarantinedExec(ctx context.Context, ex execer, assignmentID int64) error {
+	res, err := ex.ExecContext(ctx,
 		`UPDATE assignments SET status='quarantined', completed_at=NULL WHERE id=?`,
 		assignmentID)
 	if err != nil {

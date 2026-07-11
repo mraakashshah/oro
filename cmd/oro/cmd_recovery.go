@@ -89,7 +89,7 @@ func newRecoveryCmd() *cobra.Command {
 		Use:   "recovery",
 		Short: "Inspect and resolve recovery quarantines",
 	}
-	cmd.AddCommand(newRecoveryListCmd(), newRecoveryInspectCmd(), newRecoveryResolveCmd())
+	cmd.AddCommand(newRecoveryListCmd(), newRecoveryInspectCmd(), newRecoveryResolveCmd(), newRecoveryAbandonStaleCmd())
 	return cmd
 }
 
