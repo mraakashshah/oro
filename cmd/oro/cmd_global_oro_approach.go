@@ -293,17 +293,28 @@ func replaceSkillSymlink(src, dst string) error {
 	if err := os.Symlink(src, tempLink); err != nil {
 		return fmt.Errorf("create temporary symlink: %w", err)
 	}
-	if info, statErr := os.Lstat(dst); statErr == nil {
-		if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
-			if err := os.RemoveAll(dst); err != nil {
-				return fmt.Errorf("remove legacy skill directory: %w", err)
-			}
-		}
-	} else if !os.IsNotExist(statErr) {
-		return fmt.Errorf("inspect existing skill: %w", statErr)
+	if err := removeLegacySkillDirectory(dst); err != nil {
+		return err
 	}
 	if err := os.Rename(tempLink, dst); err != nil {
 		return fmt.Errorf("install symlink: %w", err)
+	}
+	return nil
+}
+
+func removeLegacySkillDirectory(dst string) error {
+	info, err := os.Lstat(dst)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect existing skill: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil
+	}
+	if err := os.RemoveAll(dst); err != nil {
+		return fmt.Errorf("remove legacy skill directory: %w", err)
 	}
 	return nil
 }
