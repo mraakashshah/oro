@@ -192,7 +192,7 @@ After relaunch:
 1. Record old PID, new PID, worker count, queue depth, and active assignments.
 2. Check logs from the new start time only.
 3. Verify the original failure signature is absent for 2 watch windows.
-4. Update `monitoring report.md` with the defect, bug ID, commit, verification,
+4. Update `docs/monitoring-report.md` with the defect, bug ID, commit, verification,
    and relaunch status.
 
 ## Reporting Format

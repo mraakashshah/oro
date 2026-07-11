@@ -32,7 +32,7 @@ Files and references read:
 - `assets/hooks/architect_router.py` and generated/mirrored hook copies: active command policy currently allows `oro bead ...` but would reject `oro task ...` in architect contexts.
 - `assets/hooks/notify_manager_on_bead_create.py` and `assets/hooks/bd_create_notifier.py`: active notifications detect only `oro bead create` and tell managers to run `oro bead ready`.
 - `pkg/protocol/constants.go`: worker branches use `agent/<id>`, not a bead-specific branch prefix.
-- `docs/plans/2026-04-27-replatform-beads-spec.md`: explicitly made beads the native concept and storage seam during migration.
+- `archive/migration-2026/2026-04-27-replatform-beads-spec.md`: explicitly made beads the native concept and storage seam during migration.
 - `docs/plans/notes/bd-callsites.md`: documents `beadstore.Store` as the post-Phase-10 production seam.
 - `README.md`: public docs define beads as work items and describe the worker lifecycle around beads.
 

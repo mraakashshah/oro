@@ -4,7 +4,7 @@
 **Author:** Aakash Shah
 **Status:** v6 — codex rounds 1-5 complete. **Round 5 verdict: PASS.** Trajectory: 15 → 12 → 11 → 9 → 5 findings; critical 4 → 2 → 1 → 0 → 0. Zero regressions across all rounds. R5 polish wave applied (5 implementation-contract findings); spec is implementation-ready.
 **Companion specs:**
-- `docs/plans/2026-04-27-replatform-beads-spec.md` (v20, codex-PASS) — replaces bd CLI + Dolt with `pkg/beadstore`
+- `archive/migration-2026/2026-04-27-replatform-beads-spec.md` (v20, codex-PASS) — replaces bd CLI + Dolt with `pkg/beadstore`
 - `docs/plans/2026-04-27-external-tooling-integration-spec.md` (v1) — superseded by this document
 
 **Changelog v5 → v6 (round 5 polish — codex returned PASS at v5; v6 cleans up the 5 implementation-contract findings):**
