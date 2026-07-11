@@ -4,6 +4,7 @@ package agentmodel
 
 import (
 	"path/filepath"
+	"strings"
 
 	"oro/pkg/config"
 	"oro/pkg/protocol"
@@ -21,6 +22,31 @@ type loadedConfig struct {
 func ResolveForRole(role string) (runtime, model, reasoning string) {
 	cfg := loadAgentConfig()
 	return resolveRole(cfg.cfg, role)
+}
+
+// UsesRuntime reports whether any effective CLI tier or role can route work to runtime.
+func UsesRuntime(runtime string) bool {
+	want := strings.TrimSpace(strings.ToLower(runtime))
+	if want == "" {
+		return false
+	}
+
+	cfg := loadAgentConfig().cfg
+	for _, tier := range cfg.Tiers {
+		if strings.EqualFold(tier.Runtime, want) {
+			return true
+		}
+	}
+	for role, roleCfg := range cfg.Roles {
+		if roleCfg.Transport != "cli" {
+			continue
+		}
+		resolved, _, _ := resolveRole(cfg, role)
+		if strings.EqualFold(resolved, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // ResolveForBead returns the runtime and model configured for role, with bead

@@ -188,6 +188,75 @@ func TestProviderModeOverridesStaleRoleEntries(t *testing.T) {
 	}
 }
 
+func TestUsesRuntime(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  string
+		runtime string
+		want    bool
+	}{
+		{name: "codex only", config: "agent:\n  provider_mode: codex-only\n", runtime: "codex", want: true},
+		{name: "codex coding", config: "agent:\n  provider_mode: codex-coding-claude-review\n", runtime: "codex", want: true},
+		{name: "codex review", config: "agent:\n  provider_mode: claude-coding-codex-review\n", runtime: "codex", want: true},
+		{name: "claude only", config: "agent:\n  provider_mode: claude-only\n", runtime: "codex", want: false},
+		{
+			name: "custom cli role",
+			config: `agent:
+  provider_mode: claude-only
+  roles:
+    custom_reviewer:
+      transport: cli
+      runtime: codex
+      model: gpt-5.5
+`,
+			runtime: "codex",
+			want:    true,
+		},
+		{
+			name: "custom tier",
+			config: `agent:
+  tiers:
+    fast:
+      runtime: codex
+      model: gpt-5.5
+    balanced:
+      runtime: claude
+      model: claude-sonnet-4-6
+    deep:
+      runtime: claude
+      model: claude-opus-4-7
+    background:
+      runtime: claude
+      model: claude-haiku-4-5-20251001
+`,
+			runtime: "codex",
+			want:    true,
+		},
+		{
+			name: "api role does not count",
+			config: `agent:
+  provider_mode: claude-only
+  roles:
+    api_only:
+      transport: api
+      provider: openai
+      api_model: codex
+`,
+			runtime: "codex",
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			writeAgentConfig(t, tt.config)
+			if got := agentmodel.UsesRuntime(tt.runtime); got != tt.want {
+				t.Fatalf("UsesRuntime(%q) = %t, want %t", tt.runtime, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestProtocolPackageHasNoConfigImport(t *testing.T) {
 	// Covered by the acceptance shell command; this test keeps the requirement
 	// visible in package-local output.
