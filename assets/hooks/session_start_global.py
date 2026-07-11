@@ -72,7 +72,14 @@ def main() -> None:
     with contextlib.suppress(json.JSONDecodeError, ValueError, EOFError):
         json.loads(sys.stdin.read())  # consume stdin; content unused
 
-    skills_file = Path.home() / ".claude" / "skills" / "using-skills" / "SKILL.md"
+    skills_file = (
+        Path.home()
+        / ".oro"
+        / ".claude"
+        / "skills"
+        / "using-skills"
+        / "SKILL.md"
+    )
     skills_content = _auto_load_skills_silent(str(skills_file))
 
     parts = [_SUPERPOWERS]

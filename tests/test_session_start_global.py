@@ -73,9 +73,9 @@ class TestAutoLoadSkillsSilent:
 
 def _run_main(monkeypatch, tmp_path, *, stdin_data="{}", skills_content=None):
     """Helper: run main() with a fake home dir and optional skills file."""
-    # Create ~/.claude/skills/using-skills/SKILL.md under tmp_path
+    # Create ~/.oro/.claude/skills/using-skills/SKILL.md under tmp_path
     if skills_content is not None:
-        skills_dir = tmp_path / ".claude" / "skills" / "using-skills"
+        skills_dir = tmp_path / ".oro" / ".claude" / "skills" / "using-skills"
         skills_dir.mkdir(parents=True)
         (skills_dir / "SKILL.md").write_text(skills_content)
 
@@ -106,6 +106,21 @@ class TestMainIntegration:
         ctx = output["hookSpecificOutput"]["additionalContext"]
         assert "# Auto-loaded Skill: using-skills" in ctx
         assert "Always check skills first." in ctx
+
+    def test_oro_source_wins_over_legacy_claude_destination(self, monkeypatch, tmp_path):
+        legacy_dir = tmp_path / ".claude" / "skills" / "using-skills"
+        legacy_dir.mkdir(parents=True)
+        (legacy_dir / "SKILL.md").write_text("# Legacy destination content")
+
+        output = _run_main(
+            monkeypatch,
+            tmp_path,
+            skills_content="# Canonical Oro content",
+        )
+
+        ctx = output["hookSpecificOutput"]["additionalContext"]
+        assert "Canonical Oro content" in ctx
+        assert "Legacy destination content" not in ctx
 
     def test_superpowers_before_skills(self, monkeypatch, tmp_path):
         output = _run_main(
