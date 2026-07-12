@@ -306,6 +306,199 @@ VALUES ('oro-requeue', ?, 'worker-1', '/tmp/oro-requeue', 'agent/oro-requeue', '
 	}
 }
 
+func TestRecoveryResolveRequeuePreservedFallsBackToLatestAssignment(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "state.db")
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "oro.pid"))
+	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+
+	db, err := openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	res, err := db.ExecContext(context.Background(), `
+INSERT INTO assignments (bead_id, worker_id, worktree, status, completed_at)
+VALUES ('oro-requeue-fallback', 'worker-1', '/tmp/oro-requeue-fallback', 'completed', datetime('now'))`)
+	if err != nil {
+		t.Fatalf("seed completed assignment: %v", err)
+	}
+	assignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("assignment id: %v", err)
+	}
+	res, err = db.ExecContext(context.Background(), `
+INSERT INTO recovery_quarantines (bead_id, worker_id, worktree, branch, reason, details, status)
+VALUES ('oro-requeue-fallback', 'worker-2', '/tmp/oro-requeue-fallback', 'agent/oro-requeue-fallback', 'unsafe_stale_branch', 'preserved', 'open')`)
+	if err != nil {
+		t.Fatalf("seed recovery quarantine: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("quarantine id: %v", err)
+	}
+	db.Close()
+
+	root := newRootCmd()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetArgs([]string{"recovery", "resolve", strconv.FormatInt(id, 10), "--mode", "requeue-preserved"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("recovery resolve --mode requeue-preserved: %v", err)
+	}
+
+	db, err = openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("reopen state db: %v", err)
+	}
+	defer db.Close()
+	var quarantineStatus, assignmentStatus string
+	if err := db.QueryRowContext(context.Background(), `SELECT status FROM recovery_quarantines WHERE id=?`, id).Scan(&quarantineStatus); err != nil {
+		t.Fatalf("query quarantine status: %v", err)
+	}
+	if err := db.QueryRowContext(context.Background(), `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("query assignment status: %v", err)
+	}
+	if quarantineStatus != "resolved" || assignmentStatus != "requeued" {
+		t.Fatalf("quarantine=%q assignment=%q, want resolved/requeued", quarantineStatus, assignmentStatus)
+	}
+}
+
+func TestRecoveryResolveRequeuePreservedRefusesOlderEligibleAssignment(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "state.db")
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "oro.pid"))
+	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+
+	db, err := openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	if _, err := db.ExecContext(context.Background(), `
+INSERT INTO assignments (bead_id, worker_id, worktree, status, completed_at)
+VALUES ('oro-requeue-latest-active', 'worker-1', '/tmp/oro-requeue-latest-active', 'completed', datetime('now'))`); err != nil {
+		t.Fatalf("seed older completed assignment: %v", err)
+	}
+	if _, err := db.ExecContext(context.Background(), `
+INSERT INTO assignments (bead_id, worker_id, worktree, status)
+VALUES ('oro-requeue-latest-active', 'worker-2', '/tmp/oro-requeue-latest-active', 'active')`); err != nil {
+		t.Fatalf("seed latest active assignment: %v", err)
+	}
+	res, err := db.ExecContext(context.Background(), `
+INSERT INTO recovery_quarantines (bead_id, worker_id, worktree, branch, reason, details, status)
+VALUES ('oro-requeue-latest-active', 'worker-3', '/tmp/oro-requeue-latest-active', 'agent/oro-requeue-latest-active', 'unsafe_stale_branch', 'preserved', 'open')`)
+	if err != nil {
+		t.Fatalf("seed recovery quarantine: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("quarantine id: %v", err)
+	}
+	db.Close()
+
+	root := newRootCmd()
+	root.SetArgs([]string{"recovery", "resolve", strconv.FormatInt(id, 10), "--mode", "requeue-preserved"})
+	if err := root.Execute(); err == nil {
+		t.Fatal("recovery resolve unexpectedly requeued an older completed assignment")
+	}
+
+	db, err = openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("reopen state db: %v", err)
+	}
+	defer db.Close()
+	var quarantineStatus string
+	if err := db.QueryRowContext(context.Background(), `SELECT status FROM recovery_quarantines WHERE id=?`, id).Scan(&quarantineStatus); err != nil {
+		t.Fatalf("query quarantine status: %v", err)
+	}
+	if quarantineStatus != "open" {
+		t.Fatalf("quarantine status = %q, want open", quarantineStatus)
+	}
+	rows, err := db.QueryContext(context.Background(), `SELECT status FROM assignments WHERE bead_id='oro-requeue-latest-active' ORDER BY id`)
+	if err != nil {
+		t.Fatalf("query assignment statuses: %v", err)
+	}
+	defer rows.Close()
+	var statuses []string
+	for rows.Next() {
+		var status string
+		if err := rows.Scan(&status); err != nil {
+			t.Fatalf("scan assignment status: %v", err)
+		}
+		statuses = append(statuses, status)
+	}
+	if got := strings.Join(statuses, ","); got != "completed,active" {
+		t.Fatalf("assignment statuses = %q, want completed,active", got)
+	}
+}
+
+func TestRecoveryAssignmentIDForRequeueRefusesStaleQuarantineLink(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "state.db")
+	db, err := openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	defer db.Close()
+
+	res, err := db.ExecContext(context.Background(), `
+INSERT INTO assignments (bead_id, worker_id, worktree, status, completed_at)
+VALUES ('oro-requeue-stale-link', 'worker-1', '/tmp/oro-requeue-stale-link', 'completed', datetime('now'))`)
+	if err != nil {
+		t.Fatalf("seed fallback assignment: %v", err)
+	}
+	fallbackID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("fallback assignment id: %v", err)
+	}
+	res, err = db.ExecContext(context.Background(), `
+INSERT INTO assignments (bead_id, worker_id, worktree, status)
+VALUES ('oro-other-bead', 'worker-2', '/tmp/oro-other-bead', 'quarantined')`)
+	if err != nil {
+		t.Fatalf("seed linked assignment: %v", err)
+	}
+	linkedID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("linked assignment id: %v", err)
+	}
+	res, err = db.ExecContext(context.Background(), `
+INSERT INTO recovery_quarantines (bead_id, worker_id, worktree, branch, reason, details, status)
+VALUES ('oro-requeue-stale-link', 'worker-1', '/tmp/oro-requeue-stale-link', 'agent/oro-requeue-stale-link', 'unsafe_stale_branch', 'preserved', 'open')`)
+	if err != nil {
+		t.Fatalf("seed recovery quarantine: %v", err)
+	}
+	quarantineID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("quarantine id: %v", err)
+	}
+
+	staleQuarantine, err := getRecoveryQuarantine(context.Background(), db, quarantineID)
+	if err != nil {
+		t.Fatalf("read stale quarantine: %v", err)
+	}
+	if _, err := db.ExecContext(context.Background(), `UPDATE recovery_quarantines SET assignment_id=? WHERE id=?`, linkedID, quarantineID); err != nil {
+		t.Fatalf("link quarantine concurrently: %v", err)
+	}
+
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin transaction: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, _, err := recoveryAssignmentIDForRequeue(context.Background(), tx, quarantineID, staleQuarantine); err == nil {
+		t.Fatal("recoveryAssignmentIDForRequeue accepted a stale NULL assignment link")
+	}
+
+	var gotLinkedID int64
+	if err := db.QueryRowContext(context.Background(), `SELECT assignment_id FROM recovery_quarantines WHERE id=?`, quarantineID).Scan(&gotLinkedID); err != nil {
+		t.Fatalf("query linked assignment: %v", err)
+	}
+	if gotLinkedID != linkedID || gotLinkedID == fallbackID {
+		t.Fatalf("quarantine assignment_id = %d, want preserved concurrent link %d", gotLinkedID, linkedID)
+	}
+}
+
 func TestRecoveryResolveRequeuePreservedReleasesHumanOwned(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "state.db")
