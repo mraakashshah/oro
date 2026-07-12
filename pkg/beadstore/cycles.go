@@ -86,6 +86,10 @@ func reachablePath(g depGraph, from, to string) []string {
 }
 
 func findCycles(g depGraph) []Cycle {
+	if isAcyclic(g) {
+		return nil
+	}
+
 	seenCycles := map[string]struct{}{}
 	var cycles []Cycle
 	var path []string
@@ -121,6 +125,37 @@ func findCycles(g depGraph) []Cycle {
 		return strings.Join(cycles[i], "\x00") < strings.Join(cycles[j], "\x00")
 	})
 	return cycles
+}
+
+func isAcyclic(g depGraph) bool {
+	const (
+		visiting = 1
+		visited  = 2
+	)
+	state := make(map[string]uint8, len(g))
+	var visit func(string) bool
+	visit = func(id string) bool {
+		switch state[id] {
+		case visiting:
+			return false
+		case visited:
+			return true
+		}
+		state[id] = visiting
+		for next := range g[id] {
+			if !visit(next) {
+				return false
+			}
+		}
+		state[id] = visited
+		return true
+	}
+	for id := range g {
+		if !visit(id) {
+			return false
+		}
+	}
+	return true
 }
 
 func canonicalizeCycle(cycle Cycle) Cycle {

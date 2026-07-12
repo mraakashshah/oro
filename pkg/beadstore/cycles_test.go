@@ -3,6 +3,7 @@ package beadstore
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"testing"
 )
@@ -13,6 +14,22 @@ func TestFindCycles_AcyclicDiamondReturnsEmpty(t *testing.T) {
 		"B": {"D": {}},
 		"C": {"D": {}},
 		"D": {},
+	}
+
+	if got := findCycles(graph); len(got) != 0 {
+		t.Fatalf("findCycles() = %#v, want empty", got)
+	}
+}
+
+func TestFindCycles_DenseAcyclicGraphReturnsPromptly(t *testing.T) {
+	const nodes = 28
+	graph := make(depGraph, nodes)
+	for from := 0; from < nodes; from++ {
+		id := fmt.Sprintf("N%02d", from)
+		graph[id] = map[string]struct{}{}
+		for to := from + 1; to < nodes; to++ {
+			graph[id][fmt.Sprintf("N%02d", to)] = struct{}{}
+		}
 	}
 
 	if got := findCycles(graph); len(got) != 0 {
