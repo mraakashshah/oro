@@ -22,7 +22,7 @@ If an invoked skill turns out to be wrong for the situation, you don't need to f
 
 ## Quick Reference — Skill Index
 
-**Discipline:** test-driven-development, systematic-debugging, verification-before-completion, observe-before-editing, destructive-command-safety
+**Discipline:** writing-code, test-driven-development, systematic-debugging, verification-before-completion, observe-before-editing, destructive-command-safety
 
 **Workflow:** spec, brainstorming, writing-plans, executing-plans, requesting-code-review, receiving-code-review, finishing-work, review-implementation, review-docs, adversarial-spec-review
 
