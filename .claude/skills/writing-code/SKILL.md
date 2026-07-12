@@ -24,7 +24,8 @@ No production code without a failing test first. Red → green → refactor. Eve
 - **Python: always `uv`, never `pip`** — `uv run python`, `uv add <pkg>`, `uvx <tool>`, `uv init`. Never bare `python` or `pip`.
 - **Functional-first**: pure functions, immutability, `map`/`filter`/`reduce`; pure core, impure edges (I/O, CLI). Early returns, fail fast.
 - **Python style**: PEP 8, f-strings, docstrings, `PascalCase` classes, `snake_case`, `pytest` fixtures over classes.
-- **Reusable over inline**: put non-trivial logic in standalone, callable scripts (e.g. `ad_hoc/` or a shared kit), not one-off inline code. Look for an existing tool before building one.
+- **Reusable over inline**: prefer standalone, callable scripts (`ad_hoc/`) over one-off inline code. Before building a scraper, API client, or reusable utility, check the shared `kit` inventory (surfaced at session start) and reuse it via `uv add --editable <path-to>/kit`; reusable tools you build belong in kit, not inline.
+- **Data work**: pandas for manipulation; matplotlib + seaborn (objects interface) for viz; save plots to `data/` or `ad_hoc/`, never only in notebook state.
 - **Match the surrounding file's** naming, idioms, and comment density. Keep changes small and atomic.
 - **Log architectural decisions** to `docs/decisions&discoveries.md` — `## YYYY-MM-DD: Title` with Tags / Context / Decision / Implications. Notes in Markdown only.
 
