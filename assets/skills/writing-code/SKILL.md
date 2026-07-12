@@ -17,22 +17,26 @@ Never edit the primary checkout: another agent may be working in it at any time.
 
 ## 2. Test-first — always
 
-No production code without a failing test first. Red → green → refactor. Full workflow: **`test-driven-development`**.
+No production code without a failing test first. Red → green → refactor. Every feature and every bugfix needs a test. Full workflow: **`test-driven-development`**.
 
 ## 3. Standards
 
-- Functional-first: pure functions, immutability, early returns; side effects only at the edges.
-- Match the surrounding file's naming, idioms, and comment density.
-- Keep changes small and atomic; commit when each lands.
+- **Python: always `uv`, never `pip`** — `uv run python`, `uv add <pkg>`, `uvx <tool>`, `uv init`. Never bare `python` or `pip`.
+- **Functional-first**: pure functions, immutability, `map`/`filter`/`reduce`; pure core, impure edges (I/O, CLI). Early returns, fail fast.
+- **Python style**: PEP 8, f-strings, docstrings, `PascalCase` classes, `snake_case`, `pytest` fixtures over classes.
+- **Reusable over inline**: put non-trivial logic in standalone, callable scripts (e.g. `ad_hoc/` or a shared kit), not one-off inline code. Look for an existing tool before building one.
+- **Match the surrounding file's** naming, idioms, and comment density. Keep changes small and atomic.
+- **Log architectural decisions** to `docs/decisions&discoveries.md` — `## YYYY-MM-DD: Title` with Tags / Context / Decision / Implications. Notes in Markdown only.
 
-## 4. Verify before done
+## 4. Verify & land
 
-Run tests, lint, and format; confirm the behavior. See **`verification-before-completion`** and **`finishing-work`**. Never claim done without proof.
+Run the quality gate — tests, lint/format (`ruff`, `biome`, `go fmt`, `pyright`), build — and fix everything before proceeding. Commit with a conventional message (`type(scope): description`, always pass `-m`) — see **`git-commits`** — then `git pull --rebase && git push`. See **`verification-before-completion`** / **`finishing-work`**. Never claim done without proof.
 
 ## Red Flags — STOP
 
 - About to Write/Edit a file in the primary checkout instead of a worktree
 - Writing implementation before a failing test
+- Bare `python` or `pip` instead of `uv`
 - Thinking "too small for a worktree/test" — size is not an exemption
 
 Violating the letter of these rules violates their spirit.
