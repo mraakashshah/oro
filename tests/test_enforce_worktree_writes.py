@@ -7,9 +7,10 @@ worktree, outside any git repo, to allow-listed paths, or with the
 ORO_ALLOW_MAIN_WRITES escape hatch are permitted.
 """
 
+# pylint: disable=import-error
 import subprocess
 
-import pytest
+import pytest  # type: ignore[import-not-found]
 from enforce_worktree_writes import (
     build_decision,
     classify_checkout,
