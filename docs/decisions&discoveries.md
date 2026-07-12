@@ -1,5 +1,28 @@
 # Decisions and Discoveries
 
+## 2026-07-12: All code writes must land in a worktree (enforced by hook)
+**Tags:** #worktree #hooks #isolation #enforcement #concurrency
+**Context:** Investigated how superpowers (`using-git-worktrees`) and the
+compound-engineering-plugin (`ce-worktree`) handle worktrees. Both are
+detect-first *discipline* with zero write-time enforcement — they rely on the
+harness creating a worktree at session start. Oro's dispatcher already requires
+a worktree for swarm workers (`AssignPayload.Validate`), but the main session
+and foreground/absolute-path writes were unguarded, so a concurrent agent could
+edit the shared primary checkout at any time.
+**Decision:** Added `enforce_worktree_writes.py`, a PreToolUse hook on
+`Write|Edit|NotebookEdit` that DENIES writes whose target resolves inside a git
+*primary* checkout. Allowed: linked worktrees, out-of-repo paths, allow-listed
+prefixes (`docs/`, `.worktrees/`, `.claude/` — `.claude/` kept writable so the
+policy can always be disabled), and the `ORO_ALLOW_MAIN_WRITES=1` escape hatch.
+Primary-vs-linked detection follows ce-worktree (resolved `--absolute-git-dir`
+vs `--git-common-dir`). Wired for all projects via `buildHookConfig` in
+`cmd/oro/cmd_init.go` and into this repo's `.claude/settings.json`.
+**Implications:** In any oro-managed project, agents (including the main
+session) must create/enter a `.worktrees/<branch>` worktree before editing code;
+non-code surfaces (docs, config) stay editable in place. Takes effect on the
+next session start after settings load. To extend the allow-list, edit
+`ALLOWLIST_PREFIXES` in the hook.
+
 ## 2026-05-19: Managerless operation is the default
 **Tags:** #managerless #dispatcher #ops-runs #operations
 **Context:** The managerless orchestration design moved routine factory progress

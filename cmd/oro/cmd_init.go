@@ -980,6 +980,9 @@ func buildHookConfigWithCapture(hooksDir string, continuousCapture bool) map[str
 			{Matcher: "Task", Hooks: []hookEntry{
 				{Type: "command", Command: py("enforce_worktree.py")},
 			}},
+			{Matcher: "Write|Edit|NotebookEdit", Hooks: []hookEntry{
+				{Type: "command", Command: py("enforce_worktree_writes.py")},
+			}},
 		},
 		"PostToolUse": postToolUseHookGroups(py, sh),
 		"Stop": {{Matcher: "", Hooks: []hookEntry{

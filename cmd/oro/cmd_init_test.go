@@ -2057,6 +2057,28 @@ func TestBuildHookConfig_NoStaleHookRefs(t *testing.T) {
 	}
 }
 
+// TestBuildHookConfig_EnforceWorktreeWritesWired verifies that file-mutating
+// tools (Write/Edit/NotebookEdit) route through the enforce_worktree_writes
+// PreToolUse guard, so writes to the primary checkout are blocked per the
+// all-code-in-worktrees policy.
+func TestBuildHookConfig_EnforceWorktreeWritesWired(t *testing.T) {
+	cfg := buildHookConfig("/hooks")
+	found := false
+	for _, group := range cfg["PreToolUse"] {
+		if !strings.Contains(group.Matcher, "Write") || !strings.Contains(group.Matcher, "Edit") {
+			continue
+		}
+		for _, hook := range group.Hooks {
+			if strings.Contains(hook.Command, "enforce_worktree_writes.py") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("PreToolUse must run enforce_worktree_writes.py on a Write|Edit matcher")
+	}
+}
+
 // --- Stealth mode init (oro-e2tg) ---
 
 // TestOroInitStealth_EndToEnd verifies that `oro init --stealth` bootstraps a
