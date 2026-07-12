@@ -357,8 +357,9 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	runtime, model, reasoning := resolveWorkerRuntimeModel(cfg)
 
 	if cfg.dryRun {
-		logStep("Dry run — would execute bead %s with model=%s, timeout=%s, skip-review=%t",
-			cfg.beadID, model, cfg.timeout, cfg.skipReview)
+		reviewRuntime, reviewModel, reviewReasoning := agentmodel.ResolveForRole("ops_review")
+		logStep("Dry run — would execute bead %s with runtime=%s, model=%s, reasoning=%s, review-runtime=%s, review-model=%s, review-reasoning=%s, timeout=%s, skip-review=%t",
+			cfg.beadID, runtime, model, reasoning, reviewRuntime, reviewModel, reviewReasoning, cfg.timeout, cfg.skipReview)
 		return nil
 	}
 	if cfg.dryRunSpawn {
