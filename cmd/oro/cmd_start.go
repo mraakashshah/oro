@@ -621,6 +621,7 @@ func codexHookConfigBlock(hooksDir string) string {
 		"PreToolUse = [",
 		"  { matcher = \"Bash\", hooks = [ { type = \"command\", command = " + py("enforce_skills.py") + ", async = false }, { type = \"command\", command = " + py("destructive_command_guard.py") + ", async = false } ] },",
 		"  { matcher = \"str_replace_based_edit_tool\", hooks = [ { type = \"command\", command = " + sh("oro-search-hook") + ", async = false, timeoutSec = 5, statusMessage = \"Searching codebase...\" } ] },",
+		"  { matcher = \"apply_patch\", hooks = [ { type = \"command\", command = " + py("enforce_worktree_writes.py") + ", async = false } ] },",
 		"]",
 		"PostToolUse = [",
 		"  { matcher = \"Bash\", hooks = [ { type = \"command\", command = " + py("prompt_injection_guard.py") + ", async = false }, { type = \"command\", command = " + py("context_pruner.py") + ", async = false } ] },",

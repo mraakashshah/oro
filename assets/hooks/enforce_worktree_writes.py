@@ -21,12 +21,18 @@ Output: deny JSON if blocked, nothing otherwise (passthrough).
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
-# Tools that mutate files on disk.
-_WRITE_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
+# Tools that mutate files on disk. Claude Code uses Write/Edit/NotebookEdit;
+# Codex edits via apply_patch (a *** Begin Patch ... *** End Patch blob).
+_WRITE_TOOLS = frozenset({"Write", "Edit", "NotebookEdit", "apply_patch"})
+
+# Patch envelope markers that name a target file in an apply_patch payload.
+_PATCH_FILE_RE = re.compile(r"^\*\*\*\s+(?:Add|Update|Delete) File:\s*(.+?)\s*$", re.MULTILINE)
+_PATCH_MOVE_RE = re.compile(r"^\*\*\*\s+Move to:\s*(.+?)\s*$", re.MULTILINE)
 
 # Environment escape hatch: set to a truthy value to permit primary-checkout
 # writes for the whole session (e.g. ORO_ALLOW_MAIN_WRITES=1).
@@ -44,11 +50,26 @@ def is_escape_hatch_set(env) -> bool:
     return val.strip().lower() not in ("", "0", "false", "no", "off")
 
 
-def target_path_for(tool_name: str, tool_input: dict) -> str | None:
-    """Extract the file path a write-tool call targets."""
+def paths_from_patch(patch: str) -> list[str]:
+    """Extract every target file path from an apply_patch payload."""
+    if not patch:
+        return []
+    paths = _PATCH_FILE_RE.findall(patch) + _PATCH_MOVE_RE.findall(patch)
+    return [p for p in paths if p]
+
+
+def target_paths_for(tool_name: str, tool_input: dict) -> list[str]:
+    """Extract every file path a write-tool call targets.
+
+    Claude's Write/Edit target one path; Codex's apply_patch can touch several.
+    """
+    if tool_name == "apply_patch":
+        return paths_from_patch(tool_input.get("command") or tool_input.get("input") or "")
     if tool_name == "NotebookEdit":
-        return tool_input.get("notebook_path") or tool_input.get("file_path")
-    return tool_input.get("file_path")
+        path = tool_input.get("notebook_path") or tool_input.get("file_path")
+        return [path] if path else []
+    path = tool_input.get("file_path")
+    return [path] if path else []
 
 
 def nearest_existing_dir(path) -> Path:
@@ -116,6 +137,27 @@ def is_allowlisted(target, root) -> bool:
     return any(rel_str == prefix.rstrip("/") or rel_str.startswith(prefix) for prefix in ALLOWLIST_PREFIXES)
 
 
+def blocked_target(target: str, cwd: str) -> tuple[Path, Path] | None:
+    """Return (abs_target, checkout_root) if this write must be blocked, else None.
+
+    A write is blocked when its target resolves inside a git primary checkout
+    (or submodule) and is not under an allow-listed prefix.
+    """
+    abs_target = Path(target)
+    if not abs_target.is_absolute():
+        abs_target = Path(cwd) / abs_target
+    abs_target = abs_target.resolve()
+
+    probe = nearest_existing_dir(abs_target.parent)
+    if classify_checkout(probe) in ("none", "linked"):
+        return None
+
+    root = checkout_root(probe)
+    if root is not None and is_allowlisted(abs_target, root):
+        return None
+    return abs_target, root if root is not None else abs_target
+
+
 def build_decision(hook_input: dict) -> dict | None:
     """Decide whether to block a write. Returns a deny dict or None (allow)."""
     tool_name = hook_input.get("tool_name", "")
@@ -126,27 +168,24 @@ def build_decision(hook_input: dict) -> dict | None:
     if not isinstance(tool_input, dict):
         return None
 
-    target = target_path_for(tool_name, tool_input)
-    if not target:
+    targets = target_paths_for(tool_name, tool_input)
+    if not targets:
         return None
 
     if is_escape_hatch_set(os.environ):
         return None
 
     cwd = hook_input.get("cwd") or os.getcwd()
-    abs_target = Path(target)
-    if not abs_target.is_absolute():
-        abs_target = Path(cwd) / abs_target
-    abs_target = abs_target.resolve()
+    for target in targets:
+        blocked = blocked_target(target, cwd)
+        if blocked is None:
+            continue
+        abs_target, root = blocked
+        return _deny(abs_target, root)
+    return None
 
-    status = classify_checkout(nearest_existing_dir(abs_target.parent))
-    if status in ("none", "linked"):
-        return None
 
-    root = checkout_root(nearest_existing_dir(abs_target.parent))
-    if root is not None and is_allowlisted(abs_target, root):
-        return None
-
+def _deny(abs_target: Path, root: Path) -> dict:
     return {
         "permissionDecision": "deny",
         "message": (

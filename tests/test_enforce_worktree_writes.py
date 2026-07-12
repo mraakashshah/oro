@@ -17,7 +17,8 @@ from enforce_worktree_writes import (
     is_allowlisted,
     is_escape_hatch_set,
     nearest_existing_dir,
-    target_path_for,
+    paths_from_patch,
+    target_paths_for,
 )
 
 
@@ -134,7 +135,39 @@ class TestUnits:
         assert is_allowlisted(primary_repo / ".worktrees" / "w" / "f", primary_repo) is True
         assert is_allowlisted(primary_repo / "src" / "a.py", primary_repo) is False
 
-    def test_target_path_for(self):
-        assert target_path_for("Write", {"file_path": "/x"}) == "/x"
-        assert target_path_for("NotebookEdit", {"notebook_path": "/n.ipynb"}) == "/n.ipynb"
-        assert target_path_for("Edit", {}) is None
+    def test_target_paths_for(self):
+        assert target_paths_for("Write", {"file_path": "/x"}) == ["/x"]
+        assert target_paths_for("NotebookEdit", {"notebook_path": "/n.ipynb"}) == ["/n.ipynb"]
+        assert target_paths_for("Edit", {}) == []
+
+    def test_paths_from_patch(self):
+        patch = (
+            "*** Begin Patch\n*** Add File: src/new.py\n+print('hi')\n*** Update File: pkg/existing.go\n*** End Patch\n"
+        )
+        assert paths_from_patch(patch) == ["src/new.py", "pkg/existing.go"]
+        assert paths_from_patch("") == []
+
+
+def _decide_apply_patch(patch, cwd):
+    return build_decision({"tool_name": "apply_patch", "tool_input": {"command": patch}, "cwd": str(cwd)})
+
+
+class TestCodexApplyPatch:
+    def test_apply_patch_add_in_primary_is_blocked(self, primary_repo):
+        patch = "*** Begin Patch\n*** Add File: src/new.py\n+x\n*** End Patch\n"
+        decision = _decide_apply_patch(patch, primary_repo)
+        assert decision is not None
+        assert decision["permissionDecision"] == "deny"
+
+    def test_apply_patch_update_in_worktree_is_allowed(self, linked_worktree):
+        patch = "*** Begin Patch\n*** Update File: seed.txt\n+x\n*** End Patch\n"
+        assert _decide_apply_patch(patch, linked_worktree) is None
+
+    def test_apply_patch_docs_only_is_allowed(self, primary_repo):
+        patch = "*** Begin Patch\n*** Update File: docs/note.md\n+x\n*** End Patch\n"
+        assert _decide_apply_patch(patch, primary_repo) is None
+
+    def test_apply_patch_blocks_if_any_target_is_primary_src(self, primary_repo):
+        # docs/ is allow-listed, but src/ is not — a mixed patch must be blocked.
+        patch = "*** Begin Patch\n*** Update File: docs/ok.md\n+x\n*** Add File: src/app.py\n+y\n*** End Patch\n"
+        assert _decide_apply_patch(patch, primary_repo) is not None

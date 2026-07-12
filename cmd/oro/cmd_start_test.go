@@ -219,6 +219,7 @@ func TestCodexHookConfigBlockReplacement(t *testing.T) {
 		"enforce_skills.py",
 		"destructive_command_guard.py",
 		"oro-search-hook",
+		"enforce_worktree_writes.py",
 		"prompt_injection_guard.py",
 		"context_pruner.py",
 		"auto-format.sh",

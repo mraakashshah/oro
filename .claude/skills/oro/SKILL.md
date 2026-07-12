@@ -181,6 +181,27 @@ oro task create "Feature name" --type epic \
 
 Full decomposition workflow: `/beadcraft`
 
+## Worktree Isolation (mandatory)
+
+**Write all code inside a linked git worktree, never the primary checkout.**
+Another agent may be editing the main working tree at any time, so isolate
+before you edit. This is enforced by the `enforce_worktree_writes` PreToolUse
+hook on both harnesses — Claude (`Write|Edit|NotebookEdit`) and Codex
+(`apply_patch`) — which **denies** writes that resolve into a primary checkout.
+
+Before editing code:
+
+```bash
+git worktree add .worktrees/<branch> -b <branch>   # from repo root
+# then edit files under .worktrees/<branch>/
+```
+
+Writes that stay allowed in the primary checkout: `docs/`, `.worktrees/`,
+`.claude/` (kept open so the policy can be disabled), and anything outside a git
+repo. To override for a whole session, launch it with `ORO_ALLOW_MAIN_WRITES=1`.
+Non-code surfaces aside, if an edit is denied, you are in the wrong tree — make a
+worktree and edit there.
+
 ## Build & Test
 
 ```bash
