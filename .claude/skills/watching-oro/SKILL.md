@@ -95,7 +95,7 @@ done
 - After `awaiting_review` events — do the review immediately
 - After rebuild+relaunch — verify workers picked up new work
 
-**What to watch**: See [deep-observation.md](references/deep-observation.md) for per-component techniques, DB queries, and failure pattern signatures. For operator cadence and incident policy, follow `docs/runbooks/oro-monitoring.md`.
+**What to watch**: See [deep-observation.md](references/deep-observation.md) for per-component techniques, DB queries, and failure pattern signatures. For operator cadence and incident policy, follow the oro-monitoring runbook (`docs/runbooks/oro-monitoring.md` in the Oro source, or `~/.oro/runbooks/oro-monitoring.md` when installed).
 
 ### Key failure signatures
 
@@ -182,8 +182,10 @@ When native task-store errors occur during observation:
 1. Inspect `./oro status`, logs, and event output for the failing component.
 2. Verify the active SQLite state path and run `./oro task ready`,
    `./oro task blocked`, and `./oro task show <id>` directly.
-3. If the store is damaged, follow `docs/runbooks/beadstore-recovery.md` and
-   restore only from reviewed SQLite backups.
+3. If the store is damaged, follow the beadstore recovery runbook
+   (`docs/runbooks/beadstore-recovery.md` in the Oro source, or
+   `~/.oro/runbooks/beadstore-recovery.md` when installed) and restore only from
+   reviewed SQLite backups.
 4. If still broken: **ask the user**
 
 Don't panic. Don't nuke.

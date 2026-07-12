@@ -195,7 +195,9 @@ go test ./pkg/worker/... -v -count=1
 
 When native task-store errors occur, inspect the SQLite state directly, verify `oro task ready`,
 `oro task blocked`, and `oro task show`, and follow
-`docs/runbooks/beadstore-recovery.md` for backup or restore operations.
+the beadstore recovery runbook (`docs/runbooks/beadstore-recovery.md` in the Oro
+source, or `~/.oro/runbooks/beadstore-recovery.md` when installed) for backup or
+restore operations.
 
 If the native store cannot be recovered with the reviewed runbook, **ask the
 user**. Never nuke the database autonomously.
