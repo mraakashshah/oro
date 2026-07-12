@@ -36,8 +36,9 @@ stage-assets:
 	trap 'cleanup 130' INT; \
 	trap 'cleanup 143' TERM; \
 	rm -rf "$$tmp" "$$old"; \
-	mkdir -p "$$tmp/skills" "$$tmp/hooks" "$$tmp/beacons" "$$tmp/commands" "$$tmp/rules"; \
+	mkdir -p "$$tmp/skills" "$$tmp/hooks" "$$tmp/beacons" "$$tmp/commands" "$$tmp/rules" "$$tmp/runbooks"; \
 	if [ -d assets/skills ] && [ "$$(find assets/skills -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" -gt 0 ]; then cp -R assets/skills/. "$$tmp/skills/"; fi; \
+	if [ -d docs/runbooks ]; then grep -rhoE 'runbooks/[A-Za-z0-9._-]+\.md' "$$tmp/skills" 2>/dev/null | sed 's#.*/##' | sort -u | while IFS= read -r rb; do if [ -f "docs/runbooks/$$rb" ]; then cp "docs/runbooks/$$rb" "$$tmp/runbooks/"; fi; done; fi; \
 	if [ -d assets/beacons ] && [ "$$(find assets/beacons -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" -gt 0 ]; then cp -R assets/beacons/. "$$tmp/beacons/"; fi; \
 	if [ -d assets/commands ] && [ "$$(find assets/commands -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" -gt 0 ]; then cp -R assets/commands/. "$$tmp/commands/"; fi; \
 	if [ -d assets/rules ] && [ "$$(find assets/rules -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" -gt 0 ]; then cp -R assets/rules/. "$$tmp/rules/"; fi; \
@@ -73,6 +74,8 @@ dev-sync:
 	@mkdir -p "$(ORO_HOME)/hooks" "$(ORO_HOME)/.claude/skills" "$(ORO_HOME)/beacons" "$(ORO_HOME)/.claude/commands"
 	@rsync --archive --delete --exclude=oro-search-hook assets/hooks/ "$(ORO_HOME)/hooks/" && echo "  ✓ hooks"
 	@rsync --archive --delete assets/skills/ "$(ORO_HOME)/.claude/skills/" && echo "  ✓ skills"
+	@mkdir -p "$(ORO_HOME)/runbooks"
+	@if [ -d docs/runbooks ]; then grep -rhoE 'runbooks/[A-Za-z0-9._-]+\.md' assets/skills 2>/dev/null | sed 's#.*/##' | sort -u | while IFS= read -r rb; do if [ -f "docs/runbooks/$$rb" ]; then cp "docs/runbooks/$$rb" "$(ORO_HOME)/runbooks/"; fi; done; fi && echo "  ✓ runbooks"
 	@rsync --archive --delete assets/beacons/ "$(ORO_HOME)/beacons/" && echo "  ✓ beacons"
 	@rsync --archive --delete assets/commands/ "$(ORO_HOME)/.claude/commands/" && echo "  ✓ commands"
 	@cp assets/CLAUDE.md "$(ORO_HOME)/.claude/CLAUDE.md" && echo "  ✓ CLAUDE.md"
