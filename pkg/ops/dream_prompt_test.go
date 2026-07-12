@@ -55,7 +55,7 @@ func TestDreamSpawnerReturnsChan(t *testing.T) {
 	waitResult(t, ch)
 }
 
-func TestDreamSpawnerUsesHaikuModel(t *testing.T) {
+func TestDreamSpawnerUsesTerraLow(t *testing.T) {
 	proc := newReadyMockProcess("", nil)
 	mock := &mockBatchSpawner{process: proc}
 	s := NewSpawner(mock)
@@ -67,8 +67,8 @@ func TestDreamSpawnerUsesHaikuModel(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 spawn call, got %d", len(calls))
 	}
-	if calls[0].model != "haiku" {
-		t.Fatalf("Dream expected model %q, got %q", "haiku", calls[0].model)
+	if calls[0].model != "gpt-5.6-terra" || calls[0].reasoning != "low" {
+		t.Fatalf("Dream expected Terra low, got model=%q reasoning=%q", calls[0].model, calls[0].reasoning)
 	}
 }
 

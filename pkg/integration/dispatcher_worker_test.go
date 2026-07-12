@@ -120,6 +120,10 @@ func (m *mockEscalator) Escalate(_ context.Context, _ string) error {
 	return nil
 }
 
+type noOpEstimator struct{}
+
+func (noOpEstimator) Estimate(_ context.Context, _, _ string) int { return 0 }
+
 type mockGitRunner struct{}
 
 func (m *mockGitRunner) Run(_ context.Context, _ string, args ...string) (string, string, error) {
@@ -317,6 +321,7 @@ func TestDispatcherWorker_FullCycle(t *testing.T) {
 		PollInterval:         50 * time.Millisecond,
 		FallbackPollInterval: 50 * time.Millisecond,
 		ShutdownTimeout:      2 * time.Second,
+		Estimator:            noOpEstimator{},
 	}
 
 	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
@@ -472,6 +477,7 @@ func TestDispatcherWorker_GracefulShutdown(t *testing.T) {
 		PollInterval:         50 * time.Millisecond,
 		FallbackPollInterval: 50 * time.Millisecond,
 		ShutdownTimeout:      2 * time.Second,
+		Estimator:            noOpEstimator{},
 	}
 
 	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
@@ -573,6 +579,7 @@ func TestDispatcherWorker_Heartbeat(t *testing.T) {
 		PollInterval:         50 * time.Millisecond,
 		FallbackPollInterval: 50 * time.Millisecond,
 		ShutdownTimeout:      1 * time.Second,
+		Estimator:            noOpEstimator{},
 	}
 
 	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)

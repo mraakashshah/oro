@@ -139,8 +139,8 @@ func TestHandleDone_QGFailRetryAttemptContinuesAcrossModelEscalation(t *testing.
 		if msg.Type != protocol.MsgAssign {
 			t.Fatalf("expected ASSIGN on attempt %d, got %s", attempt, msg.Type)
 		}
-		if msg.Assign.Model != protocol.ModelOpus {
-			t.Fatalf("expected retry model opus on attempt %d, got %q", attempt, msg.Assign.Model)
+		if msg.Assign.Model != "gpt-5.6-sol" || msg.Assign.Reasoning != "xhigh" {
+			t.Fatalf("expected retry Sol xhigh on attempt %d, got model=%q reasoning=%q", attempt, msg.Assign.Model, msg.Assign.Reasoning)
 		}
 		if msg.Assign.Attempt != attempt {
 			t.Fatalf("expected Attempt=%d across model escalation, got %d", attempt, msg.Assign.Attempt)

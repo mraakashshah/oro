@@ -66,40 +66,13 @@ type configFile struct {
 }
 
 func defaultAgentConfig() *AgentConfig {
+	coding := oroCodexProfile()
+	review := fableProfile()
+
 	return &AgentConfig{
-		Tiers: map[protocol.Tier]TierConfig{
-			protocol.TierFast:       {Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
-			protocol.TierBalanced:   {Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
-			protocol.TierDeep:       {Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
-			protocol.TierBackground: {Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
-		},
-		APIModels: map[string]string{
-			"anthropic_fast": "claude-haiku-4-5-20251001",
-		},
-		Roles: map[string]RoleConfig{
-			"spec_writer":             {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
-			"spec_challenger":         {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "xhigh"},
-			"worker":                  {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
-			"worker_escalation":       {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "medium"},
-			"ops_review":              {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
-			"ops_review_triage":       {Tier: protocol.TierFast, Transport: "cli"},
-			"ops_review_correctness":  {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
-			"ops_review_security":     {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
-			"ops_review_adversarial":  {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
-			"ops_review_design":       {Transport: "cli", Runtime: "claude", Model: "claude-sonnet-4-6"},
-			"ops_review_test":         {Transport: "cli", Runtime: "claude", Model: "claude-sonnet-4-6"},
-			"ops_review_architecture": {Transport: "cli", Runtime: "claude", Model: "claude-sonnet-4-6"},
-			"ops_escalation":          {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
-			"ops_merge":               {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
-			"ops_diagnosis":           {Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
-			"ops_epic_fix":            {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
-			"ops_write_ac":            {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
-			"ops_decompose":           {Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
-			"ops_dream":               {Tier: protocol.TierFast, Transport: "cli"},
-			"memory_extractor":        {Tier: protocol.TierFast, Transport: "cli"},
-			"codesearch_reranker":     {Tier: protocol.TierFast, Transport: "cli"},
-			"estimator":               {Transport: "api", Provider: "anthropic", APIModel: "anthropic_fast"},
-		},
+		Tiers:     tiersForProvider(coding),
+		APIModels: map[string]string{},
+		Roles:     rolesForProviderMode(coding, review),
 	}
 }
 
@@ -124,7 +97,7 @@ func ApplyProviderMode(cfg *AgentConfig) error {
 	case ProviderModeClaudeOnly:
 		coding, review = claudeProfile(), claudeProfile()
 	case ProviderModeCodexCodingClaudeReview:
-		coding, review = codexProfile(), claudeProfile()
+		coding, review = oroCodexProfile(), fableProfile()
 	case ProviderModeClaudeCodingCodexReview:
 		coding, review = claudeProfile(), codexProfile()
 	default:
@@ -137,6 +110,15 @@ func ApplyProviderMode(cfg *AgentConfig) error {
 	}
 	for role, rc := range rolesForProviderMode(coding, review) {
 		cfg.Roles[role] = rc
+	}
+	if cfg.ProviderMode != ProviderModeCodexCodingClaudeReview {
+		cfg.Roles["estimator"] = RoleConfig{Transport: "api", Provider: "anthropic", APIModel: "anthropic_fast"}
+		if cfg.APIModels == nil {
+			cfg.APIModels = make(map[string]string)
+		}
+		if _, ok := cfg.APIModels["anthropic_fast"]; !ok {
+			cfg.APIModels["anthropic_fast"] = "claude-haiku-4-5-20251001"
+		}
 	}
 	return nil
 }
@@ -171,6 +153,22 @@ func codexProfile() providerProfile {
 	}
 }
 
+func oroCodexProfile() providerProfile {
+	return providerProfile{
+		runtime:             "codex",
+		fastModel:           "gpt-5.6-terra",
+		balancedModel:       "gpt-5.6-terra",
+		deepModel:           "gpt-5.6-sol",
+		backgroundModel:     "gpt-5.6-terra",
+		fastReasoning:       "low",
+		balancedReasoning:   "medium",
+		deepReasoning:       "xhigh",
+		backgroundReasoning: "low",
+		escalationReasoning: "xhigh",
+		challengeReasoning:  "xhigh",
+	}
+}
+
 func claudeProfile() providerProfile {
 	return providerProfile{
 		runtime:         "claude",
@@ -178,6 +176,16 @@ func claudeProfile() providerProfile {
 		balancedModel:   "claude-sonnet-4-6",
 		deepModel:       "claude-opus-4-7",
 		backgroundModel: "claude-haiku-4-5-20251001",
+	}
+}
+
+func fableProfile() providerProfile {
+	return providerProfile{
+		runtime:         "claude",
+		fastModel:       "fable",
+		balancedModel:   "fable",
+		deepModel:       "fable",
+		backgroundModel: "fable",
 	}
 }
 
@@ -210,9 +218,10 @@ func rolesForProviderMode(coding, review providerProfile) map[string]RoleConfig 
 		"ops_epic_fix":            roleConfig(coding.runtime, coding.deepModel, coding.deepReasoning),
 		"ops_write_ac":            roleConfig(coding.runtime, coding.deepModel, coding.deepReasoning),
 		"ops_decompose":           roleConfig(coding.runtime, coding.deepModel, coding.deepReasoning),
-		"ops_dream":               roleConfig(coding.runtime, coding.backgroundModel, coding.backgroundReasoning),
-		"memory_extractor":        roleConfig(coding.runtime, coding.fastModel, coding.fastReasoning),
-		"codesearch_reranker":     roleConfig(coding.runtime, coding.fastModel, coding.fastReasoning),
+		"ops_dream":               {Tier: protocol.TierFast, Transport: "cli"},
+		"memory_extractor":        {Tier: protocol.TierFast, Transport: "cli"},
+		"codesearch_reranker":     {Tier: protocol.TierFast, Transport: "cli"},
+		"estimator":               {Tier: protocol.TierFast, Transport: "cli"},
 	}
 	return roles
 }
@@ -234,39 +243,6 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func legacyDefaultAgentConfig() *AgentConfig {
-	cfg := defaultAgentConfig()
-	cfg.Tiers = map[protocol.Tier]TierConfig{
-		protocol.TierFast:       {Runtime: "claude", Model: "claude-haiku-4-5-20251001"},
-		protocol.TierBalanced:   {Runtime: "claude", Model: "claude-sonnet-4-6"},
-		protocol.TierDeep:       {Runtime: "claude", Model: "claude-opus-4-7"},
-		protocol.TierBackground: {Runtime: "claude", Model: "claude-haiku-4-5-20251001"},
-	}
-	cfg.Roles = map[string]RoleConfig{
-		"worker":                  {Tier: protocol.TierBalanced, Transport: "cli"},
-		"worker_escalation":       {Tier: protocol.TierDeep, Transport: "cli"},
-		"ops_review":              {Tier: protocol.TierDeep, Transport: "cli"},
-		"ops_review_triage":       {Tier: protocol.TierFast, Transport: "cli"},
-		"ops_review_correctness":  {Tier: protocol.TierDeep, Transport: "cli"},
-		"ops_review_security":     {Tier: protocol.TierDeep, Transport: "cli"},
-		"ops_review_adversarial":  {Tier: protocol.TierDeep, Transport: "cli"},
-		"ops_review_design":       {Tier: protocol.TierBalanced, Transport: "cli"},
-		"ops_review_test":         {Tier: protocol.TierBalanced, Transport: "cli"},
-		"ops_review_architecture": {Tier: protocol.TierBalanced, Transport: "cli"},
-		"ops_merge":               {Tier: protocol.TierDeep, Transport: "cli"},
-		"ops_diagnosis":           {Tier: protocol.TierDeep, Transport: "cli"},
-		"ops_epic_fix":            {Tier: protocol.TierDeep, Transport: "cli"},
-		"ops_write_ac":            {Tier: protocol.TierDeep, Transport: "cli"},
-		"ops_escalation":          {Tier: protocol.TierBalanced, Transport: "cli"},
-		"ops_decompose":           {Tier: protocol.TierDeep, Transport: "cli"},
-		"ops_dream":               {Tier: protocol.TierBackground, Transport: "cli"},
-		"memory_extractor":        {Tier: protocol.TierFast, Transport: "cli"},
-		"codesearch_reranker":     {Tier: protocol.TierFast, Transport: "cli"},
-		"estimator":               {Transport: "api", Provider: "anthropic", APIModel: "anthropic_fast"},
-	}
-	return cfg
-}
-
 // Load reads the YAML file at path and returns the parsed AgentConfig.
 // When the file does not exist or the agent block is absent, built-in
 // defaults are returned. Parse errors are surfaced as-is.
@@ -277,7 +253,7 @@ func Load(path string) (*AgentConfig, error) {
 		return nil, err
 	}
 	if cfg == nil {
-		return legacyDefaultAgentConfig(), nil
+		return defaultAgentConfig(), nil
 	}
 	return cfg, nil
 }
@@ -301,7 +277,7 @@ func LoadWithPrecedence(projectConfigPath string) (*AgentConfig, error) {
 			return cfg, nil
 		}
 	}
-	return legacyDefaultAgentConfig(), nil
+	return defaultAgentConfig(), nil
 }
 
 // HasAgentBlockWithPrecedence reports whether any config layer in precedence

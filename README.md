@@ -516,7 +516,7 @@ Use `oro current` to inspect live task context and relevant cards. Use `oro hand
 
 ### Ops Agents
 
-Short-lived runtime subprocesses spawned by the dispatcher for judgment-heavy tasks: code review (post-completion), merge conflict resolution, stuck-worker diagnosis, acceptance criteria writing, and memory dreaming (cross-session synthesis). Routing depends on active agent configuration. Legacy/no-agent-block behavior defaults to Claude; initialized projects write an agent provider mode.
+Short-lived runtime subprocesses spawned by the dispatcher for judgment-heavy tasks: code review (post-completion), merge conflict resolution, stuck-worker diagnosis, acceptance criteria writing, and memory dreaming (cross-session synthesis). Routing depends on active agent configuration. Without an `agent` block, Oro uses its built-in Codex-coding/Claude-review route; initialized projects write an agent provider mode.
 
 ### Escalations
 
@@ -606,7 +606,7 @@ The `--model` flag and task `model` field accept **tier names** (preferred) or p
 | `deep` | Complex architecture, multi-file refactors, review-heavy tasks |
 | `background` | Memory extraction, dreaming, ops subtasks |
 
-Tier names are the stable interface. Concrete model names are resolved from the active agent config. Legacy/no-agent-block behavior defaults to Claude. `oro init` writes an `agent.provider_mode` by default; the default provider mode is `codex-coding-claude-review`.
+Tier names are the stable interface. Concrete model names are resolved from the active agent config. Without an `agent` block, fast/background work uses Codex Terra at low reasoning, ordinary work uses Terra at medium, deep/escalated work uses Sol at xhigh, and reviews use Claude Fable. `oro init` writes an `agent.provider_mode` by default; the default provider mode is `codex-coding-claude-review`.
 
 Provider modes:
 

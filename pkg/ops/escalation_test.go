@@ -67,8 +67,8 @@ func TestEscalateUsesCorrectModel(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 spawn call, got %d", len(calls))
 	}
-	if calls[0].model != OpsEscalation.Model() {
-		t.Fatalf("expected model %q, got %q", OpsEscalation.Model(), calls[0].model)
+	if calls[0].model != "gpt-5.6-sol" || calls[0].reasoning != "xhigh" {
+		t.Fatalf("expected Sol xhigh, got model=%q reasoning=%q", calls[0].model, calls[0].reasoning)
 	}
 }
 

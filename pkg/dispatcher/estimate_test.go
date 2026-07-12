@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,131 @@ import (
 	"oro/pkg/config"
 	"oro/pkg/protocol"
 )
+
+func TestNewBeadEstimatorUsesSubscriptionCLIByDefault(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	binDir := t.TempDir()
+	codexHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ORO_HOME", filepath.Join(home, ".oro-test"))
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("CODEX_HOME", codexHome)
+	t.Chdir(project)
+	if err := os.WriteFile(filepath.Join(codexHome, "auth.json"), []byte(`{"tokens":"test"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(codexHome, "plugins", "unsafe"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	oroDir := filepath.Join(project, ".oro")
+	if err := os.MkdirAll(oroDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oroDir, "config.yaml"), []byte("agent: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	argsPath := filepath.Join(t.TempDir(), "codex-args.txt")
+	pwdPath := filepath.Join(t.TempDir(), "codex-pwd.txt")
+	homePath := filepath.Join(t.TempDir(), "codex-home.txt")
+	t.Setenv("ESTIMATOR_ARGS_PATH", argsPath)
+	t.Setenv("ESTIMATOR_PWD_PATH", pwdPath)
+	t.Setenv("ESTIMATOR_HOME_PATH", homePath)
+	fakeCodex := filepath.Join(binDir, "codex")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ESTIMATOR_ARGS_PATH\"\npwd > \"$ESTIMATOR_PWD_PATH\"\nfind \"$CODEX_HOME\" -mindepth 1 -maxdepth 2 -print > \"$ESTIMATOR_HOME_PATH\"\nprintf 'harmless diagnostic\\n' >&2\nprintf '7\\n'\n"
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	got := NewBeadEstimator().Estimate(context.Background(), "Implement routing", "Tests pass")
+	if got != 7 {
+		t.Fatalf("default estimator = %d, want 7 from subscription CLI", got)
+	}
+
+	args, err := os.ReadFile(argsPath) //nolint:gosec // test-owned temporary path
+	if err != nil {
+		t.Fatalf("read fake Codex args: %v", err)
+	}
+	for _, want := range []string{
+		"--model\ngpt-5.6-terra", "--sandbox\nread-only", "--ephemeral", "--ignore-user-config",
+		"--disable\nplugins", "--disable\nshell_tool", "--disable\nunified_exec",
+		`model_reasoning_effort="low"`, "Implement routing", "Tests pass",
+	} {
+		if !strings.Contains(string(args), want) {
+			t.Errorf("Codex args missing %q:\n%s", want, args)
+		}
+	}
+	if strings.Contains(string(args), "danger-full-access") {
+		t.Errorf("estimator must not use danger-full-access:\n%s", args)
+	}
+	pwd, err := os.ReadFile(pwdPath) //nolint:gosec // test-owned temporary path
+	if err != nil {
+		t.Fatalf("read fake Codex cwd: %v", err)
+	}
+	if got := strings.TrimSpace(string(pwd)); got == project || !strings.HasPrefix(got, os.TempDir()) {
+		t.Errorf("estimator cwd = %q, want isolated temp dir outside project %q", got, project)
+	}
+	isolatedHome, err := os.ReadFile(homePath) //nolint:gosec // test-owned temporary path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(isolatedHome), "plugins") || strings.Contains(string(isolatedHome), codexHome) {
+		t.Errorf("estimator inherited user Codex home contents:\n%s", isolatedHome)
+	}
+	if !strings.Contains(string(isolatedHome), "auth.json") {
+		t.Errorf("isolated estimator home missing subscription auth:\n%s", isolatedHome)
+	}
+}
+
+func TestNewBeadEstimatorClaudeCLIDisablesTools(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	binDir := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ORO_HOME", filepath.Join(home, ".oro-test"))
+	t.Chdir(project)
+
+	oroDir := filepath.Join(project, ".oro")
+	if err := os.MkdirAll(oroDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configYAML := `agent:
+  roles:
+    estimator:
+      transport: cli
+      runtime: claude
+      model: fable
+`
+	if err := os.WriteFile(filepath.Join(oroDir, "config.yaml"), []byte(configYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	argsPath := filepath.Join(t.TempDir(), "claude-args.txt")
+	t.Setenv("ESTIMATOR_ARGS_PATH", argsPath)
+	fakeClaude := filepath.Join(binDir, "claude")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ESTIMATOR_ARGS_PATH\"\nprintf 'harmless diagnostic\\n' >&2\nprintf '9\\n'\n"
+	if err := os.WriteFile(fakeClaude, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	got := NewBeadEstimator().Estimate(context.Background(), "Review scope", "No side effects")
+	if got != 9 {
+		t.Fatalf("Claude CLI estimator = %d, want 9", got)
+	}
+	args, err := os.ReadFile(argsPath) //nolint:gosec // test-owned temporary path
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"--safe-mode", "--tools\n\n", "--disable-slash-commands", "--no-session-persistence", "--strict-mcp-config"} {
+		if !strings.Contains(string(args), want) {
+			t.Errorf("Claude args missing %q:\n%s", want, args)
+		}
+	}
+}
 
 // anthropicResponse mimics the subset of the Anthropic Messages API response we use.
 type anthropicResponse struct {

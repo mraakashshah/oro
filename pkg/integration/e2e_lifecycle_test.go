@@ -56,6 +56,7 @@ func TestE2E_FullLifecycle(t *testing.T) {
 		PollInterval:         50 * time.Millisecond,
 		FallbackPollInterval: 50 * time.Millisecond,
 		ShutdownTimeout:      2 * time.Second,
+		Estimator:            noOpEstimator{},
 	}
 
 	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)

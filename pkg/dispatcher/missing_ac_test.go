@@ -69,8 +69,8 @@ func TestCheckBeadReady_MissingAC_Escalates(t *testing.T) {
 }
 
 // TestSpawnOneShot_MissingAC_UsesWriteAC verifies that spawnEscalationOneShot
-// routes MISSING_AC to ops.WriteAC (model=opus, AC-writing prompt) instead of
-// ops.Escalate (model=sonnet, manager prompt).
+// routes MISSING_AC to ops.WriteAC (deep Sol, AC-writing prompt) instead of
+// the generic ops escalation prompt.
 func TestSpawnOneShot_MissingAC_UsesWriteAC(t *testing.T) {
 	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
 	ctx := context.Background()
@@ -102,9 +102,8 @@ func TestSpawnOneShot_MissingAC_UsesWriteAC(t *testing.T) {
 	}
 	last := spawns[len(spawns)-1]
 
-	// WriteAC uses model "opus"; ops.Escalate uses "sonnet".
-	if last.model != "opus" {
-		t.Errorf("spawn model = %q, want %q (WriteAC uses opus)", last.model, "opus")
+	if last.model != "gpt-5.6-sol" {
+		t.Errorf("spawn model = %q, want Sol", last.model)
 	}
 
 	// The prompt must be the AC-writing prompt, not the escalation manager prompt.

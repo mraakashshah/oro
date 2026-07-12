@@ -9,11 +9,15 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"oro/pkg/agentmodel"
 	"oro/pkg/config"
+	"oro/pkg/processenv"
 )
 
 // estimatorBaseURL is the default Anthropic API endpoint.
@@ -36,6 +40,14 @@ type BeadEstimator interface {
 	Estimate(ctx context.Context, title, acceptance string) int
 }
 
+// cliEstimator uses the configured subscription-backed agent CLI to estimate
+// bead complexity without requiring a provider API key.
+type cliEstimator struct {
+	runtime   string
+	model     string
+	reasoning string
+}
+
 // llmEstimator uses the Anthropic Messages API to estimate bead complexity in minutes.
 // The model is resolved from roles.estimator.api_model in the agent config.
 type llmEstimator struct {
@@ -45,12 +57,19 @@ type llmEstimator struct {
 	model   string // resolved from config; empty means no estimate (zero return)
 }
 
-// NewBeadEstimator constructs a BeadEstimator backed by the Anthropic Messages API.
-// The model is loaded from roles.estimator.api_model in the agent config; provider
-// must be "anthropic". Returns an estimator that always returns 0 when
-// ANTHROPIC_API_KEY is not set or a non-anthropic provider is configured.
+// NewBeadEstimator constructs the estimator selected by roles.estimator. CLI
+// roles use the installed subscription-backed runtime; explicit API roles keep
+// the legacy Anthropic Messages API integration.
 func NewBeadEstimator() BeadEstimator {
 	cfg := loadEstimatorConfig()
+	if role, ok := cfg.Roles["estimator"]; ok && role.Transport == "cli" {
+		runtime, model, reasoning := agentmodel.ResolveForRole("estimator")
+		return &cliEstimator{
+			runtime:   runtime,
+			model:     model,
+			reasoning: reasoning,
+		}
+	}
 	return &llmEstimator{
 		apiKey:  os.Getenv("ANTHROPIC_API_KEY"),
 		client:  &http.Client{},
@@ -59,10 +78,10 @@ func NewBeadEstimator() BeadEstimator {
 	}
 }
 
-// loadEstimatorConfig reads the project config and merges estimator-relevant
-// defaults so roles["estimator"] and api_models are always populated.
+// loadEstimatorConfig reads the effective config and merges estimator-relevant
+// defaults so roles["estimator"] is always populated.
 func loadEstimatorConfig() *config.AgentConfig {
-	cfg, err := config.Load(estimatorConfigPath)
+	cfg, err := config.LoadWithPrecedence(estimatorConfigPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return config.DefaultAgentConfig()
 	}
@@ -70,6 +89,137 @@ func loadEstimatorConfig() *config.AgentConfig {
 		return config.DefaultAgentConfig()
 	}
 	return mergeEstimatorDefaults(cfg)
+}
+
+// Estimate invokes the configured CLI and parses its integer-only response.
+// Failures are deliberately non-fatal: zero lets normal balanced routing apply.
+func (e *cliEstimator) Estimate(ctx context.Context, title, acceptance string) int {
+	if strings.TrimSpace(title) == "" || e == nil || e.runtime == "" || e.model == "" {
+		return 0
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, estimatorTimeout)
+	defer cancel()
+
+	prompt := fmt.Sprintf("%s\n\nTitle: %s\nAcceptance criteria: %s", estimateSystemPrompt, title, acceptance)
+	output, err := runEstimatorCLI(ctx, e.runtime, e.model, e.reasoning, prompt)
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(output))
+	if err != nil || n < 1 || n > 30 {
+		return 0
+	}
+	return n
+}
+
+func runEstimatorCLI(ctx context.Context, runtime, model, reasoning, prompt string) (string, error) {
+	command, args, err := estimatorCLICommand(runtime, model, reasoning, prompt)
+	if err != nil {
+		return "", err
+	}
+
+	workdir, err := os.MkdirTemp("", "oro-estimator-*")
+	if err != nil {
+		return "", fmt.Errorf("create estimator workdir: %w", err)
+	}
+	defer os.RemoveAll(workdir)
+
+	codexHome := ""
+	if runtime == "codex" {
+		codexHome, err = isolatedCodexHome()
+		if err != nil {
+			return "", err
+		}
+		defer os.RemoveAll(codexHome)
+	}
+
+	cmd := exec.CommandContext(ctx, command, args...) //nolint:gosec // command and flags are selected from fixed runtime adapters
+	cmd.Dir = workdir
+	cmd.Env = processenv.ForWorkdir(estimatorCLIEnv(runtime, codexHome), workdir)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("run %s estimator: %w: %s", runtime, err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
+}
+
+func estimatorCLICommand(runtime, model, reasoning, prompt string) (command string, args []string, err error) {
+	switch runtime {
+	case "codex":
+		args := []string{
+			"exec", "--skip-git-repo-check", "--sandbox", "read-only", "--ephemeral",
+			"--ignore-user-config", "--ignore-rules", "--color", "never", "--model", model,
+		}
+		for _, feature := range []string{
+			"plugins", "plugin_sharing", "remote_plugin", "apps", "enable_mcp_apps",
+			"shell_tool", "unified_exec", "code_mode_host", "browser_use",
+			"computer_use", "image_generation", "multi_agent",
+		} {
+			args = append(args, "--disable", feature)
+		}
+		if reasoning != "" {
+			args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", reasoning))
+		}
+		return "codex", append(args, prompt), nil
+	case "claude":
+		return "claude", []string{
+			"-p", prompt, "--model", model,
+			"--safe-mode",
+			"--tools", "",
+			"--disable-slash-commands",
+			"--no-session-persistence",
+			"--strict-mcp-config",
+			"--mcp-config", `{"mcpServers":{}}`,
+		}, nil
+	default:
+		return "", nil, fmt.Errorf("unsupported estimator runtime %q", runtime)
+	}
+}
+
+func isolatedCodexHome() (string, error) {
+	sourceHome := os.Getenv("CODEX_HOME")
+	if sourceHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve Codex home: %w", err)
+		}
+		sourceHome = filepath.Join(home, ".codex")
+	}
+	auth, err := os.ReadFile(filepath.Join(sourceHome, "auth.json")) //nolint:gosec // fixed auth filename under configured Codex home
+	if err != nil {
+		return "", fmt.Errorf("read Codex subscription auth: %w", err)
+	}
+	tempHome, err := os.MkdirTemp("", "oro-estimator-codex-home-*")
+	if err != nil {
+		return "", fmt.Errorf("create isolated Codex home: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempHome, "auth.json"), auth, 0o600); err != nil { //nolint:gosec // fixed basename inside private MkdirTemp directory
+		_ = os.RemoveAll(tempHome)
+		return "", fmt.Errorf("copy Codex subscription auth: %w", err)
+	}
+	return tempHome, nil
+}
+
+func estimatorCLIEnv(runtime, codexHome string) []string {
+	env := os.Environ()
+	filtered := make([]string, 0, len(env))
+	for _, value := range env {
+		if runtime == "claude" && strings.HasPrefix(value, "CLAUDECODE=") {
+			continue
+		}
+		if runtime == "codex" && strings.HasPrefix(value, "CODEX_HOME=") {
+			continue
+		}
+		filtered = append(filtered, value)
+	}
+	if runtime == "codex" {
+		filtered = append(filtered, "CODEX_HOME="+codexHome)
+	}
+	return filtered
 }
 
 // mergeEstimatorDefaults ensures the estimator role and its api_models entries

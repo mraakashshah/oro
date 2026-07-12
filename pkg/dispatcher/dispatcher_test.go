@@ -1201,6 +1201,7 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *fakeBeadStore, *mockWorktree
 		HeartbeatTimeout: 500 * time.Millisecond,
 		PollInterval:     50 * time.Millisecond,
 		ShutdownTimeout:  200 * time.Millisecond,
+		Estimator:        &mockBeadEstimator{},
 	}
 
 	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil,
@@ -2090,7 +2091,7 @@ func TestDispatcher_AssignBead_ModelPropagation(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	// Assign bead with explicit sonnet model
+	// Legacy sonnet maps through the balanced tier.
 	beadSrc.SetBeads([]protocol.Bead{{
 		ID: "bead-model", Title: "Model test", Priority: 1,
 		Model: "sonnet",
@@ -2100,8 +2101,8 @@ func TestDispatcher_AssignBead_ModelPropagation(t *testing.T) {
 	if !ok {
 		t.Fatal("expected ASSIGN")
 	}
-	if msg.Assign.Model != "sonnet" {
-		t.Fatalf("expected model claude-sonnet-4-6, got %q", msg.Assign.Model)
+	if msg.Assign.Model != "gpt-5.6-terra" || msg.Assign.Reasoning != "medium" {
+		t.Fatalf("expected Terra medium, got model=%q reasoning=%q", msg.Assign.Model, msg.Assign.Reasoning)
 	}
 }
 
@@ -2183,15 +2184,15 @@ func TestDispatcher_AssignBead_DefaultModel(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	// Assign bead with no model — should default to opus
+	// Assign bead with no model — should use the balanced default.
 	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-default", Title: "Default model", Priority: 1}})
 
 	msg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected ASSIGN")
 	}
-	if msg.Assign.Model != protocol.DefaultModel {
-		t.Fatalf("expected default model %q, got %q", protocol.DefaultModel, msg.Assign.Model)
+	if msg.Assign.Model != "gpt-5.6-terra" || msg.Assign.Reasoning != "medium" {
+		t.Fatalf("expected default Terra medium, got model=%q reasoning=%q", msg.Assign.Model, msg.Assign.Reasoning)
 	}
 }
 
@@ -7512,6 +7513,7 @@ func TestDispatcherShutdownOpsCleanup(t *testing.T) {
 		HeartbeatTimeout: 500 * time.Millisecond,
 		PollInterval:     50 * time.Millisecond,
 		ShutdownTimeout:  500 * time.Millisecond,
+		Estimator:        &mockBeadEstimator{},
 	}
 
 	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
@@ -7589,6 +7591,7 @@ func TestDispatcherShutdownPreservesWorktrees(t *testing.T) {
 		HeartbeatTimeout: 500 * time.Millisecond,
 		PollInterval:     50 * time.Millisecond,
 		ShutdownTimeout:  500 * time.Millisecond,
+		Estimator:        &mockBeadEstimator{},
 	}
 
 	d, err := New(cfg, db, merger, spawner, beadSrc, wtMgr, esc, nil)
@@ -7672,6 +7675,7 @@ func TestShutdown_SendsPrepareBeforePreservingWorktrees(t *testing.T) {
 		HeartbeatTimeout: 2 * time.Second,
 		PollInterval:     50 * time.Millisecond,
 		ShutdownTimeout:  2 * time.Second,
+		Estimator:        &mockBeadEstimator{},
 	}
 
 	d, err := New(cfg, db, merger, spawner, beadSrc, wtMgr, esc, nil)
@@ -8221,8 +8225,8 @@ func TestQualityGateRetry_ModelEscalatedToOpus(t *testing.T) {
 	if !ok {
 		t.Fatal("expected ASSIGN")
 	}
-	if assignMsg.Assign.Model != protocol.ModelSonnet {
-		t.Fatalf("initial ASSIGN should have model %q, got %q", protocol.ModelSonnet, assignMsg.Assign.Model)
+	if assignMsg.Assign.Model != "gpt-5.6-terra" {
+		t.Fatalf("initial ASSIGN should map sonnet to Terra, got %q", assignMsg.Assign.Model)
 	}
 	beadSrc.SetBeads(nil)
 
@@ -8231,8 +8235,8 @@ func TestQualityGateRetry_ModelEscalatedToOpus(t *testing.T) {
 	if !ok {
 		t.Fatal("expected worker to be tracked")
 	}
-	if model != protocol.ModelSonnet {
-		t.Fatalf("expected stored model %q, got %q", protocol.ModelSonnet, model)
+	if model != "gpt-5.6-terra" {
+		t.Fatalf("expected stored model Terra, got %q", model)
 	}
 
 	// Send DONE with quality gate failed
@@ -8245,7 +8249,7 @@ func TestQualityGateRetry_ModelEscalatedToOpus(t *testing.T) {
 		},
 	})
 
-	// Worker should receive re-ASSIGN escalated to opus
+	// Worker should receive re-ASSIGN escalated to Sol xhigh.
 	retryMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected re-ASSIGN after quality gate failure")
@@ -8253,17 +8257,17 @@ func TestQualityGateRetry_ModelEscalatedToOpus(t *testing.T) {
 	if retryMsg.Type != protocol.MsgAssign {
 		t.Fatalf("expected ASSIGN, got %s", retryMsg.Type)
 	}
-	if retryMsg.Assign.Model != protocol.ModelOpus {
-		t.Fatalf("re-ASSIGN should escalate to opus %q, got %q", protocol.ModelOpus, retryMsg.Assign.Model)
+	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "xhigh" {
+		t.Fatalf("re-ASSIGN should escalate to Sol xhigh, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
 	}
 
-	// Verify the worker's stored model was updated to opus
+	// Verify the worker's stored model was updated to Sol.
 	model, ok = d.WorkerModel("w1")
 	if !ok {
 		t.Fatal("expected worker to be tracked after retry")
 	}
-	if model != protocol.ModelOpus {
-		t.Fatalf("expected stored model %q after escalation, got %q", protocol.ModelOpus, model)
+	if model != "gpt-5.6-sol" {
+		t.Fatalf("expected stored model Sol after escalation, got %q", model)
 	}
 
 	// Verify attempt counter remains total across model escalation.
@@ -8289,14 +8293,14 @@ func TestQualityGateRetry_DefaultModelEscalatedToOpus(t *testing.T) {
 	sendDirective(t, d.cfg.SocketPath, "start")
 	waitForState(t, d, StateRunning, 1*time.Second)
 
-	// Assign bead with no model (should resolve to default = sonnet)
+	// Assign bead with no model (should resolve to balanced Terra medium).
 	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-qg-defmodel", Title: "QG default model", Priority: 1}})
 	assignMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected ASSIGN")
 	}
-	if assignMsg.Assign.Model != protocol.DefaultModel {
-		t.Fatalf("initial ASSIGN should have default model %q, got %q", protocol.DefaultModel, assignMsg.Assign.Model)
+	if assignMsg.Assign.Model != "gpt-5.6-terra" || assignMsg.Assign.Reasoning != "medium" {
+		t.Fatalf("initial ASSIGN should use Terra medium, got model=%q reasoning=%q", assignMsg.Assign.Model, assignMsg.Assign.Reasoning)
 	}
 	beadSrc.SetBeads(nil)
 
@@ -8310,13 +8314,13 @@ func TestQualityGateRetry_DefaultModelEscalatedToOpus(t *testing.T) {
 		},
 	})
 
-	// Worker should receive re-ASSIGN escalated to opus (default model is sonnet)
+	// Worker should receive re-ASSIGN escalated to Sol xhigh.
 	retryMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected re-ASSIGN after quality gate failure")
 	}
-	if retryMsg.Assign.Model != protocol.ModelOpus {
-		t.Fatalf("re-ASSIGN should escalate default model to opus %q, got %q", protocol.ModelOpus, retryMsg.Assign.Model)
+	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "xhigh" {
+		t.Fatalf("re-ASSIGN should escalate to Sol xhigh, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
 	}
 }
 
@@ -8343,8 +8347,8 @@ func TestQualityGateRetry_OpusStaysOpus(t *testing.T) {
 	if !ok {
 		t.Fatal("expected ASSIGN")
 	}
-	if assignMsg.Assign.Model != protocol.ModelOpus {
-		t.Fatalf("initial ASSIGN should have model %q, got %q", protocol.ModelOpus, assignMsg.Assign.Model)
+	if assignMsg.Assign.Model != "gpt-5.6-sol" || assignMsg.Assign.Reasoning != "xhigh" {
+		t.Fatalf("initial ASSIGN should map opus to Sol xhigh, got model=%q reasoning=%q", assignMsg.Assign.Model, assignMsg.Assign.Reasoning)
 	}
 	beadSrc.SetBeads(nil)
 
@@ -8358,7 +8362,7 @@ func TestQualityGateRetry_OpusStaysOpus(t *testing.T) {
 		},
 	})
 
-	// Worker should receive re-ASSIGN with model still opus
+	// Worker should receive re-ASSIGN with model still Sol xhigh.
 	retryMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected re-ASSIGN after quality gate failure")
@@ -8366,8 +8370,8 @@ func TestQualityGateRetry_OpusStaysOpus(t *testing.T) {
 	if retryMsg.Type != protocol.MsgAssign {
 		t.Fatalf("expected ASSIGN, got %s", retryMsg.Type)
 	}
-	if retryMsg.Assign.Model != protocol.ModelOpus {
-		t.Fatalf("re-ASSIGN should keep opus model %q, got %q", protocol.ModelOpus, retryMsg.Assign.Model)
+	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "xhigh" {
+		t.Fatalf("re-ASSIGN should keep Sol xhigh, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
 	}
 
 	// Verify attempt counter was NOT reset (should be 1 since no escalation happened)
@@ -9741,6 +9745,7 @@ func TestDispatcher_RespawnsWorkersToTarget(t *testing.T) {
 		PollInterval:     5 * time.Second, // long poll: no tick within 2s assertion window
 		HeartbeatTimeout: 500 * time.Millisecond,
 		ShutdownTimeout:  200 * time.Millisecond,
+		Estimator:        &mockBeadEstimator{},
 	}
 
 	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
@@ -21606,20 +21611,20 @@ func TestAssignBead_UsesLLMEstimate(t *testing.T) {
 		}
 	}
 
-	// Test 1: bead-estimate-short should be estimated to 3 minutes → Haiku
+	// Test 1: bead-estimate-short should be estimated to 3 minutes → Terra low.
 	if assign := assignedBeads["bead-estimate-short"]; assign != nil {
-		if assign.Model != protocol.ModelHaiku {
-			t.Errorf("bead-estimate-short: estimated 3 min should route to Haiku, got %s", assign.Model)
+		if assign.Model != "gpt-5.6-terra" || assign.Reasoning != "low" {
+			t.Errorf("bead-estimate-short: estimated 3 min should route to Terra low, got model=%s reasoning=%s", assign.Model, assign.Reasoning)
 		}
 		if !mockEstimator.wasCalled("Short task") {
 			t.Errorf("bead-estimate-short: estimator should have been called")
 		}
 	}
 
-	// Test 2: bead-estimate-long should be estimated to 8 minutes → Sonnet
+	// Test 2: bead-estimate-long should be estimated to 8 minutes → Terra medium.
 	if assign := assignedBeads["bead-estimate-long"]; assign != nil {
-		if assign.Model != protocol.ModelSonnet {
-			t.Errorf("bead-estimate-long: estimated 8 min should route to Sonnet, got %s", assign.Model)
+		if assign.Model != "gpt-5.6-terra" || assign.Reasoning != "medium" {
+			t.Errorf("bead-estimate-long: estimated 8 min should route to Terra medium, got model=%s reasoning=%s", assign.Model, assign.Reasoning)
 		}
 		if !mockEstimator.wasCalled("Long task") {
 			t.Errorf("bead-estimate-long: estimator should have been called")
@@ -21628,8 +21633,8 @@ func TestAssignBead_UsesLLMEstimate(t *testing.T) {
 
 	// Test 3: bead-has-estimate has pre-set estimate, should NOT call estimator
 	if assign := assignedBeads["bead-has-estimate"]; assign != nil {
-		if assign.Model != protocol.ModelHaiku {
-			t.Errorf("bead-has-estimate: 3 minute estimate should route to Haiku, got %s", assign.Model)
+		if assign.Model != "gpt-5.6-terra" || assign.Reasoning != "low" {
+			t.Errorf("bead-has-estimate: 3 minute estimate should route to Terra low, got model=%s reasoning=%s", assign.Model, assign.Reasoning)
 		}
 		if mockEstimator.wasCalled("Has estimate") {
 			t.Errorf("bead-has-estimate: estimator should NOT have been called (already has estimate)")
@@ -21638,18 +21643,18 @@ func TestAssignBead_UsesLLMEstimate(t *testing.T) {
 
 	// Test 4: bead-has-model has explicit model, should NOT call estimator
 	if assign := assignedBeads["bead-has-model"]; assign != nil {
-		if assign.Model != protocol.ModelOpus {
-			t.Errorf("bead-has-model: explicit Model=Opus should be used, got %s", assign.Model)
+		if assign.Model != "gpt-5.6-sol" || assign.Reasoning != "xhigh" {
+			t.Errorf("bead-has-model: legacy Opus should map to Sol xhigh, got model=%s reasoning=%s", assign.Model, assign.Reasoning)
 		}
 		if mockEstimator.wasCalled("Has model") {
 			t.Errorf("bead-has-model: estimator should NOT have been called (has explicit model)")
 		}
 	}
 
-	// Test 5: bead-estimate-zero should be estimated to 0 → default Sonnet
+	// Test 5: bead-estimate-zero should be estimated to 0 → balanced Terra medium.
 	if assign := assignedBeads["bead-estimate-zero"]; assign != nil {
-		if assign.Model != protocol.ModelSonnet {
-			t.Errorf("bead-estimate-zero: estimate of 0 should route to default Sonnet, got %s", assign.Model)
+		if assign.Model != "gpt-5.6-terra" || assign.Reasoning != "medium" {
+			t.Errorf("bead-estimate-zero: estimate of 0 should route to Terra medium, got model=%s reasoning=%s", assign.Model, assign.Reasoning)
 		}
 		if !mockEstimator.wasCalled("Estimates to zero") {
 			t.Errorf("bead-estimate-zero: estimator should have been called")
