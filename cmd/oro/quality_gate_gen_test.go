@@ -624,7 +624,7 @@ func TestQualityGateRunLockHasNoDefaultTimeoutForLiveContention(t *testing.T) {
 	}
 }
 
-func TestQualityGateRunLockFIFOQueuePreventsLateArrivalStarvation(t *testing.T) {
+func TestQualityGateRunLockRecoveryPreservesLiveOwnerThenClearsRecursiveQueue(t *testing.T) {
 	dir := t.TempDir()
 	eventsPath := filepath.Join(dir, "events")
 
@@ -700,6 +700,13 @@ echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
 		_ = late.Wait()
 		t.Fatalf("late waiter did not join quality gate FIFO queue")
 	}
+	owner, err := os.ReadFile(filepath.Join(lockDir, "owner"))
+	if err != nil {
+		t.Fatalf("read live lock owner while waiters are queued: %v", err)
+	}
+	if !strings.Contains(string(owner), fmt.Sprintf("pid=%d\n", os.Getpid())) {
+		t.Fatalf("live lock owner changed while waiters were queued: %q", owner)
+	}
 
 	if err := os.Remove(filepath.Join(lockDir, "owner")); err != nil {
 		t.Fatalf("remove held lock owner: %v", err)
@@ -722,6 +729,12 @@ echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
 	got := strings.Fields(string(events))
 	if !reflect.DeepEqual(got, []string{"early", "late"}) {
 		t.Fatalf("quality gate acquisition order = %v, want FIFO early before late", got)
+	}
+	if _, err := os.Stat(lockDir); !os.IsNotExist(err) {
+		t.Fatalf("quality gate lock should be cleared after queued waiters finish, stat err=%v", err)
+	}
+	if _, err := os.Stat(queueDir); !os.IsNotExist(err) {
+		t.Fatalf("quality gate queue should be cleared after queued waiters finish, stat err=%v", err)
 	}
 }
 
