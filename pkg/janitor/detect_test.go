@@ -90,6 +90,99 @@ func TestRunDetectScriptExitFailureIncludesOutput(t *testing.T) {
 	}
 }
 
+func TestJanitorBuiltinsSkipMissing(t *testing.T) {
+	worktree := t.TempDir()
+	if err := os.WriteFile(filepath.Join(worktree, "pyproject.toml"), []byte("[project]\nname = 'fixture'\n"), 0o600); err != nil {
+		t.Fatalf("write Python project marker: %v", err)
+	}
+	t.Setenv("PATH", t.TempDir())
+
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree)
+	if err != nil {
+		t.Fatalf("run built-in detectors: %v", err)
+	}
+	if contains(ran, "vulture") {
+		t.Errorf("ran = %#v, should not include missing vulture", ran)
+	}
+	if !contains(skipped, "vulture") {
+		t.Errorf("skipped = %#v, want vulture", skipped)
+	}
+	for _, candidate := range cands {
+		if candidate.Detector == "vulture" {
+			t.Errorf("candidates = %#v, want no vulture findings", cands)
+		}
+		if candidate.Detector == "" {
+			t.Errorf("candidate = %#v, want detector name", candidate)
+		}
+	}
+}
+
+func TestJanitorBuiltinsKeepsLintFindings(t *testing.T) {
+	worktree := t.TempDir()
+	if err := os.WriteFile(filepath.Join(worktree, "pyproject.toml"), []byte("[project]\nname = 'fixture'\n"), 0o600); err != nil {
+		t.Fatalf("write Python project marker: %v", err)
+	}
+	binDir := t.TempDir()
+	vulturePath := filepath.Join(binDir, "vulture")
+	vulture := "#!/bin/sh\nprintf '%s\\n' 'unused helper'\nexit 1\n"
+	if err := os.WriteFile(vulturePath, []byte(vulture), 0o700); err != nil {
+		t.Fatalf("write vulture fixture: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree)
+	if err != nil {
+		t.Fatalf("run built-in detectors: %v", err)
+	}
+	if !contains(ran, "vulture") {
+		t.Errorf("ran = %#v, want vulture", ran)
+	}
+	if contains(skipped, "vulture") {
+		t.Errorf("skipped = %#v, should not include vulture", skipped)
+	}
+	if !reflect.DeepEqual(cands, []janitor.Candidate{{Detector: "vulture", Title: "unused helper", Detail: "unused helper"}}) {
+		t.Errorf("candidates = %#v, want vulture finding", cands)
+	}
+}
+
+func TestJanitorBuiltinsFindsBrokenRelativeLinksWithoutTools(t *testing.T) {
+	worktree := t.TempDir()
+	if err := os.WriteFile(filepath.Join(worktree, "README.md"), []byte("[missing](docs/missing.md)\n"), 0o600); err != nil {
+		t.Fatalf("write Markdown fixture: %v", err)
+	}
+	t.Setenv("PATH", t.TempDir())
+
+	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree)
+	if err != nil {
+		t.Fatalf("run built-in detectors: %v", err)
+	}
+	if !contains(ran, "broken-links") {
+		t.Errorf("ran = %#v, want broken-links", ran)
+	}
+	want := janitor.Candidate{Detector: "broken-links", File: "README.md", Line: 1, Title: "broken relative link", Detail: "docs/missing.md"}
+	if !containsCandidate(cands, want) {
+		t.Errorf("candidates = %#v, want %#v", cands, want)
+	}
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func containsCandidate(candidates []janitor.Candidate, target janitor.Candidate) bool {
+	for _, candidate := range candidates {
+		if candidate == target {
+			return true
+		}
+	}
+	return false
+}
+
 func TestCandidateShape(t *testing.T) {
 	t.Parallel()
 
