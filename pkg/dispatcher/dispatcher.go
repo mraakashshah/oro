@@ -3063,7 +3063,9 @@ func (d *Dispatcher) spawnJanitor(ctx context.Context, spawn func(context.Contex
 		spawn(ctx)
 		return
 	}
-	_ = d.logEvent(ctx, "janitor_scheduled", "dispatcher", "", "", "")
+	if err := d.runJanitor(ctx); err != nil {
+		_ = d.logEvent(ctx, "janitor_scan_failed", "dispatcher", "", "", err.Error())
+	}
 }
 
 // spawnAudit is the asynchronous boundary for an audit that replaces a

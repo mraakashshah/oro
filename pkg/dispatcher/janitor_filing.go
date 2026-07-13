@@ -21,6 +21,7 @@ const (
 type janitorResultPayload struct {
 	Findings     []ops.Finding `json:"findings"`
 	RanDetectors []string      `json:"ran_detectors"`
+	Skipped      []string      `json:"skipped"`
 }
 
 // handleJanitorResult files the highest-severity findings from one janitor
@@ -46,9 +47,10 @@ func (d *Dispatcher) handleJanitorResult(ctx context.Context, result ops.Result)
 			_ = d.logEvent(ctx, "janitor_finding_create_failed", janitorRoleActor, result.BeadID, "", createErr.Error())
 		}
 	}
-	d.appendJanitorJourney(ctx, result.BeadID, "janitor_cycle", map[string]int{
+	d.appendJanitorJourney(ctx, result.BeadID, "janitor_cycle", map[string]any{
 		"findings": len(payload.Findings),
 		"filed":    len(filed),
+		"skipped":  payload.Skipped,
 	})
 }
 
