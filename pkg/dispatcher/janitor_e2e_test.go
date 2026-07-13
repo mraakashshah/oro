@@ -44,7 +44,7 @@ func TestJanitorCycleEndToEnd(t *testing.T) {
 		t.Fatalf("first janitor cycle: %v", err)
 	}
 
-	filed := janitorFiledFindings(t, ctx, store)
+	filed := janitorFiledFindings(ctx, t, store)
 	if len(filed) != 1 {
 		t.Fatalf("filed findings = %d, want 1", len(filed))
 	}
@@ -65,11 +65,11 @@ func TestJanitorCycleEndToEnd(t *testing.T) {
 	if err := d.runJanitor(ctx); err != nil {
 		t.Fatalf("second janitor cycle: %v", err)
 	}
-	if got := len(janitorFiledFindings(t, ctx, store)); got != 1 {
+	if got := len(janitorFiledFindings(ctx, t, store)); got != 1 {
 		t.Fatalf("filed findings after wont-fix = %d, want no new finding", got)
 	}
 
-	role := janitorRoleBead(t, ctx, store)
+	role := janitorRoleBead(ctx, t, store)
 	events, err := store.Journey(ctx, role.ID, time.Time{})
 	if err != nil {
 		t.Fatalf("janitor journey: %v", err)
@@ -103,7 +103,7 @@ func janitorFixtureRepo(t *testing.T) string {
 	return repo
 }
 
-func janitorFiledFindings(t *testing.T, ctx context.Context, store beadstore.Store) []*protocol.Bead {
+func janitorFiledFindings(ctx context.Context, t *testing.T, store beadstore.Store) []*protocol.Bead {
 	t.Helper()
 	beads, err := store.FindByMetadataKey(ctx, janitorFindingMetadataKey)
 	if err != nil {
@@ -112,7 +112,7 @@ func janitorFiledFindings(t *testing.T, ctx context.Context, store beadstore.Sto
 	return beads
 }
 
-func janitorRoleBead(t *testing.T, ctx context.Context, store beadstore.Store) *protocol.Bead {
+func janitorRoleBead(ctx context.Context, t *testing.T, store beadstore.Store) *protocol.Bead {
 	t.Helper()
 	beads, err := store.FindByMetadataKey(ctx, janitorRoleMetadataKey)
 	if err != nil {

@@ -47,15 +47,19 @@ func (d *Dispatcher) runJanitor(ctx context.Context) error {
 	})
 }
 
-func scanJanitorDetectors(ctx context.Context, worktree, targetBranch string) ([]janitor.Candidate, []string, []string, error) {
+func scanJanitorDetectors(ctx context.Context, worktree, targetBranch string) (candidates []janitor.Candidate, ran, skipped []string, err error) {
 	candidates, skippedLines, found, err := janitor.RunDetectScript(ctx, worktree)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, fmt.Errorf("run detector script: %w", err)
 	}
 	if !found {
-		return janitor.RunBuiltins(ctx, worktree, targetBranch)
+		candidates, ran, skipped, err = janitor.RunBuiltins(ctx, worktree, targetBranch)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("run built-in detectors: %w", err)
+		}
+		return candidates, ran, skipped, nil
 	}
-	ran := make([]string, 0, len(candidates))
+	ran = make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
 		ran = append(ran, candidate.Detector)
 	}
