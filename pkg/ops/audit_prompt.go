@@ -31,3 +31,13 @@ func auditSections() []Persona {
 		{ID: "dx-deps-docs", Role: OpsAudit.Role(), Fragment: "\n\n## Audit Section: dx-deps-docs\nReview pinned versions, setup documentation accuracy, outdated or abandoned dependencies, documentation rot, and broken references."},
 	}
 }
+
+// AuditSectionIDs returns the canonical whole-repository audit section IDs.
+func AuditSectionIDs() []string {
+	sections := auditSections()
+	ids := make([]string, 0, len(sections))
+	for _, section := range sections {
+		ids = append(ids, section.ID)
+	}
+	return ids
+}

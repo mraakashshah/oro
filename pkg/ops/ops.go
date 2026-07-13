@@ -403,8 +403,6 @@ func (s *Spawner) collectPersonaReviews(ctx context.Context, opsType Type, opts 
 
 // Audit spawns six focused whole-repository auditors in bounded waves. Each
 // section receives the shared audit base prompt plus only its own fragment.
-//
-//oro:testonly — production audit scheduling is wired by the janitor lifecycle.
 func (s *Spawner) Audit(ctx context.Context, opts AuditOpts) <-chan Result {
 	prompt := buildAuditPrompt(opts)
 	personas := auditSections()

@@ -4,9 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestAuditSectionIDs(t *testing.T) {
+	want := []string{
+		"code-quality",
+		"tests-safety",
+		"data-migrations",
+		"security-static",
+		"perf-patterns",
+		"dx-deps-docs",
+	}
+	if got := AuditSectionIDs(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("AuditSectionIDs() = %#v, want %#v", got, want)
+	}
+}
 
 func TestAuditSectionFanout(t *testing.T) {
 	worktree := testReviewRepo(t)

@@ -33,13 +33,13 @@ func (d *Dispatcher) handleAuditResult(ctx context.Context, result ops.Result) {
 		_ = d.logEvent(ctx, "audit_failed", "ops_audit", "", "", err.Error())
 		return
 	}
-	suppressed, err := d.suppressedFindingIDs(ctx)
+	blocked, err := d.blockedAuditFindingIDs(ctx)
 	if err != nil {
 		_ = d.logEvent(ctx, "audit_suppression_failed", "ops_audit", "", "", err.Error())
 		return
 	}
 	for _, finding := range findings {
-		if finding.ID == "" || suppressed[finding.ID] {
+		if finding.ID == "" || blocked[finding.ID] {
 			continue
 		}
 		if _, err := d.beads.Create(ctx, auditFindingCreateParams(finding)); err != nil {
@@ -48,7 +48,12 @@ func (d *Dispatcher) handleAuditResult(ctx context.Context, result ops.Result) {
 		}
 		_ = d.logEvent(ctx, "audit_finding_created", "ops_audit", "", "", finding.ID)
 	}
-	_ = d.logEvent(ctx, "audit_coverage", "ops_audit", "", "", auditCoveragePayload)
+	coveragePayload, err := auditCoveragePayload()
+	if err != nil {
+		_ = d.logEvent(ctx, "audit_coverage_failed", "ops_audit", "", "", err.Error())
+		return
+	}
+	_ = d.logEvent(ctx, "audit_coverage", "ops_audit", "", "", coveragePayload)
 }
 
 func auditFindings(feedback string) ([]ops.Finding, error) {
@@ -61,21 +66,29 @@ func auditFindings(feedback string) ([]ops.Finding, error) {
 	return payload.Findings, nil
 }
 
-func (d *Dispatcher) suppressedFindingIDs(ctx context.Context) (map[string]bool, error) {
+func (d *Dispatcher) blockedAuditFindingIDs(ctx context.Context) (map[string]bool, error) {
 	beads, err := d.beads.FindByMetadataKey(ctx, auditFindingMetadataKey)
 	if err != nil {
-		return nil, fmt.Errorf("find suppressed audit findings: %w", err)
+		return nil, fmt.Errorf("find existing audit findings: %w", err)
 	}
-	suppressed := make(map[string]bool)
+	blocked := make(map[string]bool)
 	for _, bead := range beads {
-		if bead == nil || bead.Status != "closed" {
+		if bead == nil {
 			continue
 		}
-		if findingID, ok := bead.Metadata[auditFindingMetadataKey].(string); ok && findingID != "" {
-			suppressed[findingID] = true
+		findingID, ok := bead.Metadata[auditFindingMetadataKey].(string)
+		if !ok || findingID == "" {
+			continue
+		}
+		if bead.Status != "closed" || isWontFixReason(bead.CloseReason) {
+			blocked[findingID] = true
 		}
 	}
-	return suppressed, nil
+	return blocked, nil
+}
+
+func isWontFixReason(reason string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(reason)), "wont-fix")
 }
 
 func auditFindingCreateParams(finding ops.Finding) beadstore.CreateParams {
@@ -83,9 +96,15 @@ func auditFindingCreateParams(finding ops.Finding) beadstore.CreateParams {
 		Title:       finding.Title,
 		Type:        "task",
 		Priority:    auditFindingPriority(finding.Severity),
-		Description: strings.TrimSpace(finding.Detail),
+		Description: auditFindingDescription(finding),
 		Metadata:    map[string]string{auditFindingMetadataKey: finding.ID},
 	}
+}
+
+func auditFindingDescription(finding ops.Finding) string {
+	return strings.TrimSpace(fmt.Sprintf(`%s
+
+Suppression contract: close with a reason beginning "wont-fix:" to mark this finding intentional and prevent refiling. The first close reason is immutable; reopen this bead before closing again to change that reason.`, finding.Detail))
 }
 
 func auditFindingPriority(severity ops.Severity) int {
@@ -106,4 +125,21 @@ func auditFailureDetail(result ops.Result) string {
 	return result.Feedback
 }
 
-const auditCoveragePayload = `{"covered_sections":["code-quality","tests-safety","data-migrations","security-static","perf-patterns","dx-deps-docs"],"not_covered":["product-correctness-live","reliability-injection","integrations-live","deploy-observability"]}`
+func auditCoveragePayload() (string, error) {
+	payload, err := json.Marshal(struct {
+		CoveredSections []string `json:"covered_sections"`
+		NotCovered      []string `json:"not_covered"`
+	}{
+		CoveredSections: ops.AuditSectionIDs(),
+		NotCovered: []string{
+			"product-correctness-live",
+			"reliability-injection",
+			"integrations-live",
+			"deploy-observability",
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal audit coverage: %w", err)
+	}
+	return string(payload), nil
+}
