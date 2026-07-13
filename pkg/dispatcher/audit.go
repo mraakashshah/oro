@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"oro/pkg/beadstore"
 	"oro/pkg/ops"
@@ -14,9 +15,9 @@ const auditFindingMetadataKey = "meta_finding_id"
 
 // runAudit executes the whole-repository audit in an isolated scan worktree.
 // Failed section reports are recorded as audit events; audits never escalate.
-func (d *Dispatcher) runAudit(ctx context.Context) error {
+func (d *Dispatcher) runAudit(ctx context.Context, roleBeadID string) error {
 	return d.withScanWorktree(ctx, func(worktree string) error {
-		result := <-d.ops.Audit(ctx, ops.AuditOpts{Worktree: worktree})
+		result := <-d.ops.Audit(ctx, ops.AuditOpts{BeadID: roleBeadID, Worktree: worktree})
 		d.handleAuditResult(ctx, result)
 		return nil
 	})
@@ -24,7 +25,9 @@ func (d *Dispatcher) runAudit(ctx context.Context) error {
 
 func (d *Dispatcher) handleAuditResult(ctx context.Context, result ops.Result) {
 	if result.Err != nil || result.Verdict == ops.VerdictFailed {
-		_ = d.logEvent(ctx, "audit_failed", "ops_audit", "", "", auditFailureDetail(result))
+		detail := auditFailureDetail(result)
+		d.appendAuditNote(ctx, result.BeadID, "all_sections_failed", detail)
+		_ = d.logEvent(ctx, "audit_failed", auditRoleActor, result.BeadID, "", detail)
 		return
 	}
 
@@ -33,27 +36,48 @@ func (d *Dispatcher) handleAuditResult(ctx context.Context, result ops.Result) {
 		_ = d.logEvent(ctx, "audit_failed", "ops_audit", "", "", err.Error())
 		return
 	}
-	blocked, err := d.blockedAuditFindingIDs(ctx)
+	roleBeadIDs, err := d.cleanlinessRoleBeadIDs(ctx, result.BeadID)
 	if err != nil {
-		_ = d.logEvent(ctx, "audit_suppression_failed", "ops_audit", "", "", err.Error())
+		_ = d.logEvent(ctx, "audit_suppression_failed", auditRoleActor, result.BeadID, "", err.Error())
+		return
+	}
+	suppressed, err := d.deriveSuppressed(ctx, roleBeadIDs)
+	if err != nil {
+		_ = d.logEvent(ctx, "audit_suppression_failed", auditRoleActor, result.BeadID, "", err.Error())
+		return
+	}
+	active, err := d.deriveActiveFindings(ctx, roleBeadIDs)
+	if err != nil {
+		_ = d.logEvent(ctx, "audit_suppression_failed", auditRoleActor, result.BeadID, "", err.Error())
 		return
 	}
 	for _, finding := range findings {
-		if finding.ID == "" || blocked[finding.ID] {
+		if finding.ID == "" {
+			continue
+		}
+		if err := d.appendAuditFinding(ctx, result.BeadID, finding); err != nil {
+			_ = d.logEvent(ctx, "audit_finding_persist_failed", auditRoleActor, result.BeadID, "", err.Error())
+			continue
+		}
+		if findingSuppressed(finding, active) || findingSuppressed(finding, suppressed) {
 			continue
 		}
 		if _, err := d.beads.Create(ctx, auditFindingCreateParams(finding)); err != nil {
-			_ = d.logEvent(ctx, "audit_finding_create_failed", "ops_audit", "", "", err.Error())
+			_ = d.logEvent(ctx, "audit_finding_create_failed", auditRoleActor, result.BeadID, "", err.Error())
 			continue
 		}
-		_ = d.logEvent(ctx, "audit_finding_created", "ops_audit", "", "", finding.ID)
+		_ = d.logEvent(ctx, "audit_finding_created", auditRoleActor, result.BeadID, "", finding.ID)
 	}
 	coveragePayload, err := auditCoveragePayload()
 	if err != nil {
-		_ = d.logEvent(ctx, "audit_coverage_failed", "ops_audit", "", "", err.Error())
+		_ = d.logEvent(ctx, "audit_coverage_failed", auditRoleActor, result.BeadID, "", err.Error())
 		return
 	}
-	_ = d.logEvent(ctx, "audit_coverage", "ops_audit", "", "", coveragePayload)
+	if err := d.appendAuditJourney(ctx, result.BeadID, "audit_coverage", coveragePayload); err != nil {
+		_ = d.logEvent(ctx, "audit_coverage_failed", auditRoleActor, result.BeadID, "", err.Error())
+		return
+	}
+	_ = d.logEvent(ctx, "audit_coverage", auditRoleActor, result.BeadID, "", coveragePayload)
 }
 
 func auditFindings(feedback string) ([]ops.Finding, error) {
@@ -66,25 +90,34 @@ func auditFindings(feedback string) ([]ops.Finding, error) {
 	return payload.Findings, nil
 }
 
-func (d *Dispatcher) blockedAuditFindingIDs(ctx context.Context) (map[string]bool, error) {
-	beads, err := d.beads.FindByMetadataKey(ctx, auditFindingMetadataKey)
+func (d *Dispatcher) appendAuditFinding(ctx context.Context, roleBeadID string, finding ops.Finding) error {
+	payload, err := json.Marshal(finding)
 	if err != nil {
-		return nil, fmt.Errorf("find existing audit findings: %w", err)
+		return fmt.Errorf("marshal audit finding: %w", err)
 	}
-	blocked := make(map[string]bool)
-	for _, bead := range beads {
-		if bead == nil {
-			continue
-		}
-		findingID, ok := bead.Metadata[auditFindingMetadataKey].(string)
-		if !ok || findingID == "" {
-			continue
-		}
-		if bead.Status != "closed" || isWontFixReason(bead.CloseReason) {
-			blocked[findingID] = true
-		}
+	return d.appendAuditJourney(ctx, roleBeadID, "audit_finding", string(payload))
+}
+
+func (d *Dispatcher) appendAuditNote(ctx context.Context, roleBeadID, kind, detail string) {
+	payload, err := json.Marshal(map[string]string{"kind": kind, "error": detail})
+	if err != nil {
+		return
 	}
-	return blocked, nil
+	if err := d.appendAuditJourney(ctx, roleBeadID, "note", string(payload)); err != nil {
+		_ = d.logEvent(ctx, "audit_journey_append_failed", auditRoleActor, roleBeadID, "", err.Error())
+	}
+}
+
+func (d *Dispatcher) appendAuditJourney(ctx context.Context, roleBeadID, event, payload string) error {
+	if err := d.beads.AppendJourney(ctx, roleBeadID, beadstore.JourneyEvent{
+		Ts:      time.Now().UTC().Format(time.RFC3339Nano),
+		Actor:   auditRoleActor,
+		Event:   event,
+		Payload: payload,
+	}); err != nil {
+		return fmt.Errorf("append audit %s journey: %w", event, err)
+	}
+	return nil
 }
 
 func isWontFixReason(reason string) bool {

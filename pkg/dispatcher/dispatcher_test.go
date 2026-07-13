@@ -77,8 +77,9 @@ func (m *mockConn) SetReadDeadline(t time.Time) error  { return nil }
 func (m *mockConn) SetWriteDeadline(t time.Time) error { return nil }
 
 type createCall struct {
-	title, beadType     string
+	id, title, beadType string
 	priority            int
+	status              string
 	description, parent string
 	acceptanceCriteria  string
 	tier                string
@@ -256,21 +257,34 @@ func (m *fakeBeadStore) Sync(_ context.Context) error {
 func (m *fakeBeadStore) Create(_ context.Context, params beadstore.CreateParams) (*protocol.Bead, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	id := "oro-new1"
+	if m.createID != "" {
+		id = m.createID
+	}
+	status := params.Status
+	if status == "" {
+		status = "open"
+	}
 	m.created = append(m.created, createCall{
+		id:                 id,
 		title:              params.Title,
 		beadType:           params.Type,
 		priority:           params.Priority,
+		status:             status,
 		description:        params.Description,
 		parent:             params.ParentID,
 		acceptanceCriteria: params.AcceptanceCriteria,
 		tier:               params.Tier,
 		metadata:           maps.Clone(params.Metadata),
 	})
-	id := "oro-new1"
-	if m.createID != "" {
-		id = m.createID
+	bead := &protocol.Bead{ID: id, Status: status, Metadata: make(map[string]any, len(params.Metadata))}
+	for key, value := range params.Metadata {
+		bead.Metadata[key] = value
 	}
-	return &protocol.Bead{ID: id}, nil
+	if len(bead.Metadata) > 0 {
+		m.metadataMatches = append(m.metadataMatches, bead)
+	}
+	return bead, nil
 }
 
 func (m *fakeBeadStore) AllChildrenClosed(_ context.Context, epicID string) (bool, error) {
@@ -306,10 +320,19 @@ func (m *fakeBeadStore) FindByParentAndTag(_ context.Context, _ string, _ string
 	return []protocol.Bead{}, nil
 }
 
-func (m *fakeBeadStore) FindByMetadataKey(_ context.Context, _ string) ([]*protocol.Bead, error) {
+func (m *fakeBeadStore) FindByMetadataKey(_ context.Context, key string) ([]*protocol.Bead, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return append([]*protocol.Bead(nil), m.metadataMatches...), nil
+	matches := make([]*protocol.Bead, 0, len(m.metadataMatches))
+	for _, bead := range m.metadataMatches {
+		if bead == nil {
+			continue
+		}
+		if _, ok := bead.Metadata[key]; ok {
+			matches = append(matches, bead)
+		}
+	}
+	return matches, nil
 }
 
 func (m *fakeBeadStore) InProgress(_ context.Context) ([]protocol.Bead, error) {
@@ -418,8 +441,10 @@ func (m *fakeBeadStore) AppendJourney(_ context.Context, beadID string, evt bead
 	return nil
 }
 
-func (m *fakeBeadStore) Journey(_ context.Context, _ string, _ time.Time) ([]beadstore.JourneyEvent, error) {
-	return nil, nil
+func (m *fakeBeadStore) Journey(_ context.Context, beadID string, _ time.Time) ([]beadstore.JourneyEvent, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]beadstore.JourneyEvent(nil), m.journeys[beadID]...), nil
 }
 
 func (m *fakeBeadStore) LatestJourney(_ context.Context, _ string, _ int) ([]beadstore.JourneyEvent, error) {

@@ -9,14 +9,18 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"oro/pkg/beadstore"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
 )
 
 func TestAuditSpawnMergePipeline(t *testing.T) {
+	var _ func(*Dispatcher, context.Context) = (*Dispatcher).spawnAudit
+
 	d, beads, worktrees, esc, _, spawner := newTestDispatcher(t)
 	worktree := auditFixtureRepo(t)
 	worktrees.createFn = func(context.Context, string, string) (string, string, error) {
@@ -39,14 +43,11 @@ func TestAuditSpawnMergePipeline(t *testing.T) {
 	triggerAuditCycle(context.Background(), d)
 
 	waitFor(t, func() bool {
-		beads.mu.Lock()
-		defer beads.mu.Unlock()
-		return len(beads.created) == 1
+		return len(createdCallsWithMetadata(beads, auditFindingMetadataKey, "")) == 1 &&
+			eventCount(t, d.db, "audit_coverage") == 1
 	}, 2*time.Second)
 
-	beads.mu.Lock()
-	created := beads.created[0]
-	beads.mu.Unlock()
+	created := createdCallsWithMetadata(beads, auditFindingMetadataKey, "")[0]
 	if created.priority != 1 {
 		t.Fatalf("audit finding priority = %d, want 1", created.priority)
 	}
@@ -59,6 +60,11 @@ func TestAuditSpawnMergePipeline(t *testing.T) {
 	if !strings.Contains(created.description, "wont-fix:") || !strings.Contains(created.description, "reopen") {
 		t.Fatalf("audit finding description omitted suppression contract: %q", created.description)
 	}
+	roleCalls := createdCallsWithMetadata(beads, "meta_role", "audit")
+	if len(roleCalls) != 1 || roleCalls[0].status != "closed" {
+		t.Fatalf("audit role creates = %#v, want one atomically closed role bead", roleCalls)
+	}
+	assertAuditRoleJourney(t, beads, roleCalls[0].id, "audit_finding", "audit_coverage")
 	if got := spawner.SpawnCount(); got != 6 {
 		t.Fatalf("audit spawn calls = %d, want six sections", got)
 	}
@@ -126,6 +132,17 @@ func TestAuditSpawnMergePipeline(t *testing.T) {
 				assertAuditFindingCreateCount(t, finding, tc.bead, tc.wantCreated)
 			})
 		}
+
+		t.Run("janitor wont-fix survives line drift", func(t *testing.T) {
+			prior := auditFixtureFinding()
+			prior.ID = ops.FindingID("", prior)
+			incoming := prior
+			incoming.Evidence = []ops.Evidence{{
+				File: "audit.go", LineStart: 3, LineEnd: 3, Quote: "package fixture",
+			}}
+			incoming.ID = ops.FindingID("", incoming)
+			assertAuditBucketSuppressed(t, incoming, prior)
+		})
 	})
 }
 
@@ -141,11 +158,8 @@ func TestAuditSpawnAllSectionsFailedDoesNotEscalate(t *testing.T) {
 		return eventCount(t, d.db, "audit_failed") == 1
 	}, 10*time.Second)
 
-	beads.mu.Lock()
-	created := len(beads.created)
-	beads.mu.Unlock()
-	if created != 0 {
-		t.Fatalf("created beads = %d, want none", created)
+	if created := len(createdCallsWithMetadata(beads, auditFindingMetadataKey, "")); created != 0 {
+		t.Fatalf("created finding beads = %d, want none", created)
 	}
 	if got := len(esc.Messages()); got != 0 {
 		t.Fatalf("audit escalations = %d, want none", got)
@@ -153,12 +167,83 @@ func TestAuditSpawnAllSectionsFailedDoesNotEscalate(t *testing.T) {
 	if got := eventCount(t, d.db, "audit_failed"); got != 1 {
 		t.Fatalf("audit_failed notes = %d, want 1", got)
 	}
+	roleCalls := createdCallsWithMetadata(beads, "meta_role", "audit")
+	if len(roleCalls) != 1 {
+		t.Fatalf("audit role creates = %d, want 1", len(roleCalls))
+	}
+	assertAuditRoleJourney(t, beads, roleCalls[0].id, "note")
 	d.mu.Lock()
 	mergesSinceJanitor := d.mergesSinceJanitor
 	janitorRunsSinceAudit := d.janitorRunsSinceAudit
 	d.mu.Unlock()
 	if mergesSinceJanitor != 0 || janitorRunsSinceAudit != 0 {
 		t.Fatalf("failed audit counters: merges=%d janitors=%d, want reset", mergesSinceJanitor, janitorRunsSinceAudit)
+	}
+}
+
+func TestAuditSpawnSerializesOverlappingRuns(t *testing.T) {
+	d, _, worktrees, _, _, _ := newTestDispatcher(t)
+	worktree := auditFixtureRepo(t)
+	worktrees.createFn = func(context.Context, string, string) (string, string, error) {
+		return worktree, "agent/audit", nil
+	}
+	spawner := newBlockingAuditSpawner(auditSectionOutput(t, ops.ReviewReport{Verdict: ops.VerdictApproved}))
+	d.ops = ops.NewSpawner(spawner)
+
+	firstDone := make(chan struct{})
+	go func() {
+		d.spawnAudit(context.Background())
+		close(firstDone)
+	}()
+	waitFor(t, func() bool { return spawner.SpawnCount() == 4 }, time.Second)
+
+	secondDone := make(chan struct{})
+	go func() {
+		d.spawnAudit(context.Background())
+		close(secondDone)
+	}()
+	defer func() {
+		spawner.Release()
+		<-firstDone
+		<-secondDone
+	}()
+
+	select {
+	case <-spawner.fifthSpawn:
+		t.Fatal("second audit spawned while first audit was still running")
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	spawner.Release()
+	<-firstDone
+	<-secondDone
+}
+
+func TestAuditSpawnRecordsJourneyAppendFailure(t *testing.T) {
+	d, baseStore, worktrees, esc, _, spawner := newTestDispatcher(t)
+	worktree := auditFixtureRepo(t)
+	worktrees.createFn = func(context.Context, string, string) (string, string, error) {
+		return worktree, "agent/audit", nil
+	}
+	spawner.verdict = auditSectionOutput(t, ops.ReviewReport{
+		Verdict:  ops.VerdictRejected,
+		Findings: []ops.Finding{auditFixtureFinding()},
+	})
+	d.beads = &failingAuditJourneyStore{
+		fakeBeadStore: baseStore,
+		err:           errors.New("journey unavailable"),
+	}
+
+	d.spawnAudit(context.Background())
+
+	if got := eventCount(t, d.db, "audit_finding_persist_failed"); got != 1 {
+		t.Fatalf("audit_finding_persist_failed events = %d, want 1", got)
+	}
+	if got := len(createdCallsWithMetadata(baseStore, auditFindingMetadataKey, "")); got != 0 {
+		t.Fatalf("findings filed without durable audit journey = %d, want 0", got)
+	}
+	if got := len(esc.Messages()); got != 0 {
+		t.Fatalf("audit journey failure escalations = %d, want 0", got)
 	}
 }
 
@@ -185,14 +270,80 @@ func assertAuditFindingCreateCount(t *testing.T, finding ops.Finding, existing *
 		Findings: []ops.Finding{finding},
 	})
 	beads.metadataMatches = []*protocol.Bead{existing}
+	beads.journeys = make(map[string][]beadstore.JourneyEvent)
+	priorFinding := finding
+	priorFinding.ID, _ = existing.Metadata[auditFindingMetadataKey].(string)
+	priorPayload, err := json.Marshal(priorFinding)
+	if err != nil {
+		t.Fatalf("marshal prior audit finding: %v", err)
+	}
+	beads.journeys["oro-new1"] = []beadstore.JourneyEvent{{
+		Actor: auditRoleActor, Event: "audit_finding", Payload: string(priorPayload),
+	}}
 
-	d.spawnAudit(context.Background(), nil)
+	d.spawnAudit(context.Background())
 
-	beads.mu.Lock()
-	created := len(beads.created)
-	beads.mu.Unlock()
+	created := len(createdCallsWithMetadata(beads, auditFindingMetadataKey, ""))
 	if created != want {
 		t.Fatalf("created beads = %d, want %d", created, want)
+	}
+}
+
+func assertAuditBucketSuppressed(t *testing.T, incoming, prior ops.Finding) {
+	t.Helper()
+	d, beads, worktrees, _, _, spawner := newTestDispatcher(t)
+	worktree := auditFixtureRepo(t)
+	worktrees.createFn = func(context.Context, string, string) (string, string, error) {
+		return worktree, "agent/audit", nil
+	}
+	spawner.verdict = auditSectionOutput(t, ops.ReviewReport{
+		Verdict:  ops.VerdictRejected,
+		Findings: []ops.Finding{incoming},
+	})
+	priorPayload, err := json.Marshal(prior)
+	if err != nil {
+		t.Fatalf("marshal prior janitor finding: %v", err)
+	}
+	beads.metadataMatches = []*protocol.Bead{
+		auditFindingBead("closed", "wont-fix: accepted janitor finding", prior.ID),
+		{ID: "oro-janitor-role", Status: "closed", Metadata: map[string]any{"meta_role": "janitor"}},
+	}
+	beads.journeys = make(map[string][]beadstore.JourneyEvent)
+	beads.journeys["oro-janitor-role"] = []beadstore.JourneyEvent{{
+		Actor: "ops_janitor", Event: "janitor_finding", Payload: string(priorPayload),
+	}}
+
+	d.spawnAudit(context.Background())
+
+	if got := len(createdCallsWithMetadata(beads, auditFindingMetadataKey, "")); got != 0 {
+		t.Fatalf("line-drifted audit finding creates = %d, want cross-role suppression", got)
+	}
+}
+
+func createdCallsWithMetadata(store *fakeBeadStore, key, value string) []createCall {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	calls := make([]createCall, 0, len(store.created))
+	for _, call := range store.created {
+		got, ok := call.metadata[key]
+		if ok && (value == "" || got == value) {
+			calls = append(calls, call)
+		}
+	}
+	return calls
+}
+
+func assertAuditRoleJourney(t *testing.T, store *fakeBeadStore, roleBeadID string, wantEvents ...string) {
+	t.Helper()
+	store.mu.Lock()
+	journey := append([]beadstore.JourneyEvent(nil), store.journeys[roleBeadID]...)
+	store.mu.Unlock()
+	for _, want := range wantEvents {
+		if !slices.ContainsFunc(journey, func(event beadstore.JourneyEvent) bool {
+			return event.Actor == "ops_audit" && event.Event == want
+		}) {
+			t.Fatalf("audit role journey = %#v, want ops_audit %s", journey, want)
+		}
 	}
 }
 
@@ -255,3 +406,64 @@ func auditFixtureFinding() ops.Finding {
 		Origin:     "pre_existing",
 	}
 }
+
+type failingAuditJourneyStore struct {
+	*fakeBeadStore
+	err error
+}
+
+func (s *failingAuditJourneyStore) AppendJourney(context.Context, string, beadstore.JourneyEvent) error {
+	return s.err
+}
+
+type blockingAuditSpawner struct {
+	mu         sync.Mutex
+	output     string
+	release    chan struct{}
+	releaseOne sync.Once
+	fifthSpawn chan struct{}
+	fifthOne   sync.Once
+	spawns     int
+}
+
+func newBlockingAuditSpawner(output string) *blockingAuditSpawner {
+	return &blockingAuditSpawner{
+		output:     output,
+		release:    make(chan struct{}),
+		fifthSpawn: make(chan struct{}),
+	}
+}
+
+func (s *blockingAuditSpawner) Spawn(context.Context, string, string, string) (ops.Process, error) {
+	s.mu.Lock()
+	s.spawns++
+	if s.spawns == 5 {
+		s.fifthOne.Do(func() { close(s.fifthSpawn) })
+	}
+	s.mu.Unlock()
+	return &blockingAuditProcess{release: s.release, output: s.output}, nil
+}
+
+func (s *blockingAuditSpawner) SpawnCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.spawns
+}
+
+func (s *blockingAuditSpawner) Release() {
+	s.releaseOne.Do(func() { close(s.release) })
+}
+
+type blockingAuditProcess struct {
+	release <-chan struct{}
+	output  string
+}
+
+func (p *blockingAuditProcess) Wait() error {
+	<-p.release
+	return nil
+}
+
+func (p *blockingAuditProcess) Kill() error             { return nil }
+func (p *blockingAuditProcess) Output() (string, error) { return p.output, nil }
+func (p *blockingAuditProcess) LastOutputAt() time.Time { return time.Time{} }

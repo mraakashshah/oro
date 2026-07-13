@@ -185,6 +185,12 @@ func sameFindingBucket(a, b Finding) bool {
 		normalizeTitle(a.Title) == normalizeTitle(b.Title)
 }
 
+// SameFindingBucket reports whether two findings identify the same logical
+// issue after allowing the review pipeline's three-line evidence drift.
+func SameFindingBucket(a, b Finding) bool {
+	return sameFindingBucket(a, b)
+}
+
 func primaryEvidence(f Finding) (Evidence, bool) {
 	if len(f.Evidence) == 0 {
 		return Evidence{}, false

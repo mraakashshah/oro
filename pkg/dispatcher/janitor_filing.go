@@ -36,12 +36,21 @@ func (d *Dispatcher) handleJanitorResult(ctx context.Context, result ops.Result)
 		_ = d.logEvent(ctx, "janitor_result_malformed", janitorRoleActor, result.BeadID, "", err.Error())
 		return
 	}
+	eligible, err := d.filterJanitorFindings(ctx, result.BeadID, payload.Findings)
+	if err != nil {
+		d.appendJanitorJourney(ctx, result.BeadID, "note", map[string]string{
+			"kind":  "suppression_derivation_failed",
+			"error": err.Error(),
+		})
+		_ = d.logEvent(ctx, "janitor_suppression_failed", janitorRoleActor, result.BeadID, "", err.Error())
+		return
+	}
 
 	for _, finding := range payload.Findings {
 		d.persistJanitorFinding(ctx, result.BeadID, finding)
 	}
 
-	filed := janitorTopFindingsBySeverity(payload.Findings)
+	filed := janitorTopFindingsBySeverity(eligible)
 	for _, finding := range filed {
 		if _, createErr := d.beads.Create(ctx, janitorFindingCreateParams(finding, payload.RanDetectors)); createErr != nil {
 			_ = d.logEvent(ctx, "janitor_finding_create_failed", janitorRoleActor, result.BeadID, "", createErr.Error())
@@ -52,6 +61,33 @@ func (d *Dispatcher) handleJanitorResult(ctx context.Context, result ops.Result)
 		"filed":    len(filed),
 		"skipped":  payload.Skipped,
 	})
+}
+
+func (d *Dispatcher) filterJanitorFindings(
+	ctx context.Context,
+	roleBeadID string,
+	findings []ops.Finding,
+) ([]ops.Finding, error) {
+	roleBeadIDs, err := d.cleanlinessRoleBeadIDs(ctx, roleBeadID)
+	if err != nil {
+		return nil, err
+	}
+	suppressed, err := d.deriveSuppressed(ctx, roleBeadIDs)
+	if err != nil {
+		return nil, err
+	}
+	active, err := d.deriveActiveFindings(ctx, roleBeadIDs)
+	if err != nil {
+		return nil, err
+	}
+	eligible := make([]ops.Finding, 0, len(findings))
+	for _, finding := range findings {
+		if findingSuppressed(finding, active) || findingSuppressed(finding, suppressed) {
+			continue
+		}
+		eligible = append(eligible, finding)
+	}
+	return eligible, nil
 }
 
 func parseJanitorResult(feedback string) (janitorResultPayload, error) {

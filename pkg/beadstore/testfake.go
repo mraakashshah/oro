@@ -198,6 +198,13 @@ func (s *FakeStore) Create(ctx context.Context, params CreateParams) (*protocol.
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("create bead context: %w", err)
 	}
+	status := params.Status
+	if status == "" {
+		status = "open"
+	}
+	if !validStatus(status) {
+		return nil, fmt.Errorf("beadstore: invalid status %q", status)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -214,7 +221,7 @@ func (s *FakeStore) Create(ctx context.Context, params CreateParams) (*protocol.
 	bead := protocol.Bead{
 		ID:                 id,
 		Title:              params.Title,
-		Status:             "open",
+		Status:             status,
 		Priority:           params.Priority,
 		Epic:               params.ParentID,
 		Type:               params.Type,

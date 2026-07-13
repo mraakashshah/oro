@@ -898,6 +898,8 @@ type Dispatcher struct {
 	janitorRunsSinceAudit uint64
 	janitorSpawnFn        func(context.Context) // test hook; nil records the scheduled janitor run
 	auditSpawnFn          func(context.Context) // test hook; nil records the scheduled audit run
+	cleanlinessRoleMu     sync.Mutex
+	auditMu               sync.Mutex
 
 	// dreamExecuteFn, if non-nil, is called by handleDreamResult instead of
 	// memoryServices.ExecuteDream. Tests inject this to capture calls.
@@ -3046,7 +3048,13 @@ func (d *Dispatcher) maybeTriggerJanitor(ctx context.Context) {
 			d.janitorRunsSinceAudit = 0
 			spawn = d.auditSpawnFn
 			d.mu.Unlock()
-			d.safeGo(func() { d.spawnAudit(ctx, spawn) })
+			d.safeGo(func() {
+				if spawn != nil {
+					spawn(ctx)
+					return
+				}
+				d.spawnAudit(ctx)
+			})
 			return
 		}
 	}
@@ -3070,12 +3078,16 @@ func (d *Dispatcher) spawnJanitor(ctx context.Context, spawn func(context.Contex
 
 // spawnAudit is the asynchronous boundary for an audit that replaces a
 // janitor cycle. It intentionally shares no scan goroutine with janitor.
-func (d *Dispatcher) spawnAudit(ctx context.Context, spawn func(context.Context)) {
-	if spawn != nil {
-		spawn(ctx)
+func (d *Dispatcher) spawnAudit(ctx context.Context) {
+	d.auditMu.Lock()
+	defer d.auditMu.Unlock()
+
+	roleBeadID, err := d.ensureRoleBead(ctx, "audit")
+	if err != nil {
+		_ = d.logEvent(ctx, "audit_role_failed", "dispatcher", "", "", err.Error())
 		return
 	}
-	if err := d.runAudit(ctx); err != nil {
+	if err := d.runAudit(ctx, roleBeadID); err != nil {
 		_ = d.logEvent(ctx, "audit_scan_failed", "dispatcher", "", "", err.Error())
 	}
 }
