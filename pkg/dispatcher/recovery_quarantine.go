@@ -156,6 +156,66 @@ func (d *Dispatcher) quarantineUnsafeRecoveryWork(ctx context.Context, q recover
 		fmt.Sprintf(`{"quarantine_id":%d,"assignment_id":%d,"reason":%q,"branch":%q,"worktree":%q}`, id, q.AssignmentID, q.Reason, q.Branch, q.Worktree))
 }
 
+// autoRedeployablePreservedWorktrees returns only quarantined beads whose
+// preserved state is safe to prove again at dispatch time. Quarantine reasons
+// that represent an unresolved merge conflict or a known branch/worktree
+// mismatch always remain human-owned recovery work.
+func (d *Dispatcher) autoRedeployablePreservedWorktrees(ctx context.Context) (map[string]bool, error) {
+	if d.db == nil {
+		return nil, nil
+	}
+	rows, err := d.db.QueryContext(ctx, `
+SELECT bead_id, worktree, branch
+FROM recovery_quarantines
+WHERE status='open'
+  AND reason NOT IN ('merge_conflict_resolution_failed', 'branch_worktree_mismatch')`)
+	if err != nil {
+		return nil, fmt.Errorf("query auto-redeployable recovery quarantines: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	redeployable := make(map[string]bool)
+	for rows.Next() {
+		var beadID, worktree, branch string
+		if err := rows.Scan(&beadID, &worktree, &branch); err != nil {
+			return nil, fmt.Errorf("scan auto-redeployable recovery quarantine: %w", err)
+		}
+		if d.preservedWorktreeSafeForRedeploy(ctx, beadID, worktree, branch) {
+			redeployable[beadID] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate auto-redeployable recovery quarantines: %w", err)
+	}
+	return redeployable, nil
+}
+
+func (d *Dispatcher) preservedWorktreeSafeForRedeploy(ctx context.Context, beadID, worktree, branch string) bool {
+	expectedBranch := protocol.BranchPrefix + beadID
+	if beadID == "" || worktree == "" || branch != expectedBranch || !d.worktrees.Exists(ctx, worktree) {
+		return false
+	}
+	d.mu.Lock()
+	trackedWorktree := d.worktreeByBead[beadID]
+	active := false
+	for _, worker := range d.workers {
+		if worker.beadID == beadID && worker.state != protocol.WorkerIdle {
+			active = true
+			break
+		}
+	}
+	d.mu.Unlock()
+	if active || trackedWorktree != worktree {
+		return false
+	}
+	currentBranch, err := d.worktrees.CurrentBranch(ctx, worktree)
+	if err != nil || currentBranch != expectedBranch {
+		return false
+	}
+	dirty, _, err := d.worktreeDirty(ctx, worktree)
+	return err == nil && !dirty
+}
+
 func (d *Dispatcher) markAssignmentQuarantined(ctx context.Context, assignmentID int64) error {
 	return markAssignmentQuarantinedExec(ctx, d.db, assignmentID)
 }

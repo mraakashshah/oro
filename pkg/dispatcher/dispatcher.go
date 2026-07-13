@@ -5065,10 +5065,6 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	// Detect beads closed externally while a worker is assigned and clean up.
 	d.checkClosedBeadAssignments(ctx)
 
-	if d.assignmentBlockedByRecoveryQuarantine(ctx) {
-		return
-	}
-
 	// Reconcile worker pool size (spawns/removes workers to match target).
 	d.reconcileScale()
 	d.assignPendingHandoffsToIdleWorkers()
@@ -5102,6 +5098,11 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	}
 
 	beads := d.filterAssignable(ctx, allBeads)
+	if redeployable, blocked := d.recoveryQuarantineAssignmentScope(ctx); blocked {
+		return
+	} else if len(redeployable) > 0 {
+		beads = filterBeadsByID(beads, redeployable)
+	}
 
 	plan, pbSnapshot, focusVersion := d.buildSchedulingPlan(ctx, beads)
 	beads = plan.beads()
@@ -5127,20 +5128,41 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	d.assignGeneralIdleWorkers(ctx, idle, plan, pbSnapshot, assignedBeads, reservedTargets, focusVersion)
 }
 
-func (d *Dispatcher) assignmentBlockedByRecoveryQuarantine(ctx context.Context) bool {
+func filterBeadsByID(beads []protocol.Bead, ids map[string]bool) []protocol.Bead {
+	filtered := make([]protocol.Bead, 0, len(beads))
+	for _, bead := range beads {
+		if ids[bead.ID] {
+			filtered = append(filtered, bead)
+		}
+	}
+	return filtered
+}
+
+// recoveryQuarantineAssignmentScope preserves the recovery safety interlock:
+// open quarantines block ordinary work, but a clean preserved worktree may be
+// handed to one fresh worker to continue its own bead.
+func (d *Dispatcher) recoveryQuarantineAssignmentScope(ctx context.Context) (map[string]bool, bool) {
 	if d.db == nil {
-		return false
+		return nil, false
 	}
 	openQuarantines, err := factoryhealth.LoadRecoveryQuarantineMetrics(ctx, d.db)
 	if err != nil {
 		d.logRecoveryAssignmentBlocked(ctx, 0, "recovery_quarantine_metric_load_failed: "+err.Error())
-		return true
+		return nil, true
 	}
 	if openQuarantines == 0 {
-		return false
+		return nil, false
 	}
-	d.logRecoveryAssignmentBlocked(ctx, openQuarantines, "open_recovery_quarantine")
-	return true
+	redeployable, err := d.autoRedeployablePreservedWorktrees(ctx)
+	if err != nil {
+		d.logRecoveryAssignmentBlocked(ctx, openQuarantines, "recovery_quarantine_inspection_failed: "+err.Error())
+		return nil, true
+	}
+	if len(redeployable) == 0 {
+		d.logRecoveryAssignmentBlocked(ctx, openQuarantines, "open_recovery_quarantine")
+		return nil, true
+	}
+	return redeployable, false
 }
 
 func (d *Dispatcher) logRecoveryAssignmentBlocked(ctx context.Context, openQuarantines int, reason string) {
@@ -5666,9 +5688,18 @@ func (d *Dispatcher) filterRecoveryQuarantinedBeads(ctx context.Context, allBead
 	if len(quarantined) == 0 {
 		return allBeads
 	}
+	redeployable, err := d.autoRedeployablePreservedWorktrees(ctx)
+	if err != nil {
+		_ = d.logEvent(ctx, "recovery_quarantine_redeploy_inspection_failed", "dispatcher", "", "", err.Error())
+		return nil
+	}
 	filtered := make([]protocol.Bead, 0, len(allBeads))
 	for _, bead := range allBeads {
 		if quarantined[bead.ID] {
+			if redeployable[bead.ID] {
+				filtered = append(filtered, bead)
+				continue
+			}
 			_ = d.logEvent(ctx, "recovery_quarantined_bead_skipped", "dispatcher", bead.ID, "",
 				`{"reason":"open_recovery_quarantine"}`)
 			continue

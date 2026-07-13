@@ -3,6 +3,7 @@ package dispatcher //nolint:testpackage // white-box tests for recovery quaranti
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"path/filepath"
 	"strings"
@@ -696,6 +697,92 @@ UPDATE recovery_quarantines SET status='resolved', resolved_at=datetime('now') W
 	beadSrc.mu.Unlock()
 	if status != "in_progress" {
 		t.Fatalf("ready bead status after resolving quarantines = %q, want in_progress", status)
+	}
+}
+
+func TestPreservedWorktreeAutoRedeploysFreshWorker(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const beadID = "oro-preserved-redeploy"
+	const worktree = "/tmp/worktree-oro-preserved-redeploy"
+
+	beadSrc.SetBeads([]protocol.Bead{{
+		ID:       beadID,
+		Title:    "resume preserved worker attempt",
+		Status:   "open",
+		Priority: 1,
+		Type:     "task",
+	}})
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "resume preserved worker attempt",
+		Status:             "open",
+		Type:               "task",
+		AcceptanceCriteria: "Test: preserved worker attempt | Cmd: true | Assert: pass",
+	}
+	beadSrc.mu.Unlock()
+
+	if _, err := d.db.ExecContext(ctx, `
+INSERT INTO recovery_quarantines (bead_id, worker_id, worktree, branch, reason, details, status)
+VALUES (?, 'disconnected-worker', ?, ?, 'stale_active_assignment', 'preserved clean attempt', 'open')`,
+		beadID, worktree, protocol.BranchPrefix+beadID); err != nil {
+		t.Fatalf("insert recovery quarantine: %v", err)
+	}
+
+	wtMgr.existsFn = func(_ context.Context, path string) bool { return path == worktree }
+	wtMgr.currentBranchFn = func(_ context.Context, path string) (string, error) {
+		if path != worktree {
+			return "", fmt.Errorf("unexpected worktree %q", path)
+		}
+		return protocol.BranchPrefix + beadID, nil
+	}
+	wtMgr.prepareReuseFn = func(_ context.Context, path, branch, base string) (bool, error) {
+		if path != worktree || branch != protocol.BranchPrefix+beadID || base != "main" {
+			t.Fatalf("reuse preparation = path %q branch %q base %q", path, branch, base)
+		}
+		return false, nil // clean worktree: no fast-forward or rebase is required.
+	}
+	d.shutdownRunner = &mockCommandRunner{callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "git" && strings.Join(args, " ") == "-C "+worktree+" status --porcelain" {
+			return nil, nil // dirty=0
+		}
+		return nil, fmt.Errorf("unexpected command: %s %s", name, strings.Join(args, " "))
+	}}
+
+	conn := newMockConn()
+	w := &trackedWorker{id: "fresh-worker", conn: conn, state: protocol.WorkerIdle, encoder: json.NewEncoder(conn)}
+	d.mu.Lock()
+	d.state = StateRunning
+	d.workers[w.id] = w
+	d.worktreeByBead[beadID] = worktree
+	d.mu.Unlock()
+
+	redeployable, err := d.autoRedeployablePreservedWorktrees(ctx)
+	if err != nil {
+		t.Fatalf("inspect preserved worktree: %v", err)
+	}
+	if !redeployable[beadID] {
+		t.Fatalf("clean preserved worktree %q was not eligible for auto-redeploy", beadID)
+	}
+
+	d.tryAssign(ctx)
+
+	state, assigned, ok := d.WorkerInfo(w.id)
+	if !ok || state != protocol.WorkerBusy || assigned != beadID {
+		t.Fatalf("worker assignment = exists %t state %q bead %q, want busy on %q", ok, state, assigned, beadID)
+	}
+	d.mu.Lock()
+	gotWorktree := d.workers[w.id].worktree
+	d.mu.Unlock()
+	if gotWorktree != worktree {
+		t.Fatalf("worker worktree = %q, want preserved %q", gotWorktree, worktree)
+	}
+	wtMgr.mu.Lock()
+	created := len(wtMgr.created)
+	wtMgr.mu.Unlock()
+	if created != 0 {
+		t.Fatalf("created %d fresh worktrees, want preserved worktree reuse", created)
 	}
 }
 
