@@ -891,6 +891,13 @@ type Dispatcher struct {
 	explicitScaleTarget         bool
 	completionsSinceConsolidate int // counts completed beads since last context consolidation
 	beadsSinceDream             int // counts completed beads since last dream trigger
+	// mergesSinceJanitor tracks completed merges until the janitor has enough
+	// work to justify a scan. janitorRunsSinceAudit tracks eligible cycles so
+	// an audit can replace the configured periodic janitor run.
+	mergesSinceJanitor    uint64
+	janitorRunsSinceAudit uint64
+	janitorSpawnFn        func(context.Context) // test hook; nil records the scheduled janitor run
+	auditSpawnFn          func(context.Context) // test hook; nil records the scheduled audit run
 
 	// dreamExecuteFn, if non-nil, is called by handleDreamResult instead of
 	// memoryServices.ExecuteDream. Tests inject this to capture calls.
@@ -2879,6 +2886,7 @@ func (d *Dispatcher) handleNoopMerge(ctx context.Context, beadID, workerID, work
 	d.removeWorktreeAndClearTracking(ctx, beadID, workerID, worktree, target)
 	d.maybeConsolidateMemory(ctx)
 	d.maybeTriggerDream(ctx)
+	d.maybeTriggerJanitor(ctx)
 }
 
 func (d *Dispatcher) completeEpicRebaseChild(ctx context.Context, detail *protocol.BeadDetail, beadID, workerID, worktree, branch, epicID, targetBranch string, assignmentID int64) bool {
@@ -2958,6 +2966,7 @@ func (d *Dispatcher) finalizeSuccessfulMerge(ctx context.Context, beadID, worker
 
 	d.maybeConsolidateMemory(ctx)
 	d.maybeTriggerDream(ctx)
+	d.maybeTriggerJanitor(ctx)
 }
 
 // maybeConsolidateMemory increments the completion counter and triggers an
@@ -3007,6 +3016,64 @@ func (d *Dispatcher) maybeTriggerDream(ctx context.Context) {
 	if fire {
 		d.triggerDream(ctx)
 	}
+}
+
+// maybeTriggerJanitor counts completed merges and starts a janitor scan only
+// once the configured interval is reached. Normal runs wait for a sufficiently
+// idle queue; three intervals force a run so sustained load cannot starve
+// cleanliness work. Every configured audit cadence replaces that janitor run.
+func (d *Dispatcher) maybeTriggerJanitor(ctx context.Context) {
+	d.mu.Lock()
+	if !d.cfg.JanitorEnabled || d.cfg.JanitorInterval <= 0 {
+		d.mu.Unlock()
+		return
+	}
+
+	interval := uint64(d.cfg.JanitorInterval)
+	d.mergesSinceJanitor++
+	forceRun := d.mergesSinceJanitor/interval >= 3
+	ready := d.mergesSinceJanitor >= interval && d.cachedQueueDepth <= d.cfg.JanitorIdleThreshold
+	if !ready && !forceRun {
+		d.mu.Unlock()
+		return
+	}
+
+	d.mergesSinceJanitor = 0
+	spawn := d.janitorSpawnFn
+	if d.cfg.AuditEnabled && d.cfg.AuditEveryNJanitors > 0 {
+		d.janitorRunsSinceAudit++
+		if d.janitorRunsSinceAudit >= uint64(d.cfg.AuditEveryNJanitors) {
+			d.janitorRunsSinceAudit = 0
+			spawn = d.auditSpawnFn
+			d.mu.Unlock()
+			d.safeGo(func() { d.spawnAudit(ctx, spawn) })
+			return
+		}
+	}
+	d.mu.Unlock()
+
+	d.safeGo(func() { d.spawnJanitor(ctx, spawn) })
+}
+
+// spawnJanitor is the asynchronous boundary for a selected janitor cycle.
+// The lifecycle work is added separately; recording the schedule keeps the
+// trigger observable until that work is wired in.
+func (d *Dispatcher) spawnJanitor(ctx context.Context, spawn func(context.Context)) {
+	if spawn != nil {
+		spawn(ctx)
+		return
+	}
+	_ = d.logEvent(ctx, "janitor_scheduled", "dispatcher", "", "", "")
+}
+
+// spawnAudit is the asynchronous boundary for an audit that replaces a
+// janitor cycle. It intentionally shares no scan goroutine with janitor.
+func (d *Dispatcher) spawnAudit(ctx context.Context, spawn func(context.Context)) {
+	if spawn != nil {
+		spawn(ctx)
+		return
+	}
+	_ = d.logEvent(ctx, "audit_scheduled", "dispatcher", "", "", "")
 }
 
 // triggerDream spawns a dream memory-consolidation agent and handles the result
