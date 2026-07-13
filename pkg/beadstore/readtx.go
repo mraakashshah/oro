@@ -135,6 +135,25 @@ WHERE b.deleted=0 AND b.parent_id=?
 ORDER BY b.priority ASC, b.created_at ASC`, tag, parentID)
 }
 
+// FindByMetadataKey implements ReadTx.
+func (r *readTxImpl) FindByMetadataKey(ctx context.Context, key string) ([]protocol.Bead, error) {
+	if strings.TrimSpace(key) == "" {
+		return nil, fmt.Errorf("beadstore: metadata key is required")
+	}
+	beads, err := queryBeadsInTx(ctx, r.tx, `SELECT `+prefixedBeadColumns("b")+`
+FROM beads b
+JOIN bead_metadata m ON m.bead_id=b.id AND m.key=?
+WHERE b.deleted=0
+ORDER BY b.created_at ASC, b.id ASC`, key)
+	if err != nil {
+		return nil, err
+	}
+	if beads == nil {
+		return []protocol.Bead{}, nil
+	}
+	return beads, nil
+}
+
 // Journey implements ReadTx.
 func (r *readTxImpl) Journey(ctx context.Context, beadID string, since time.Time) ([]JourneyEvent, error) {
 	rows, err := r.tx.QueryContext(ctx, `

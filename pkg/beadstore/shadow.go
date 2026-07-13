@@ -252,6 +252,14 @@ func (s *ShadowStore) FindByParentAndTag(ctx context.Context, parentID, tag stri
 	return primary, wrapPrimaryStoreError("find children by tag", primaryErr)
 }
 
+// FindByMetadataKey returns primary's matching beads after comparing the secondary read.
+func (s *ShadowStore) FindByMetadataKey(ctx context.Context, key string) ([]protocol.Bead, error) {
+	primary, primaryErr := s.primary.FindByMetadataKey(ctx, key)
+	secondary, secondaryErr := s.secondary.FindByMetadataKey(ctx, key)
+	s.compareBeads(ctx, "FindByMetadataKey", primary, primaryErr, secondary, secondaryErr)
+	return primary, wrapPrimaryStoreError("find beads by metadata key", primaryErr)
+}
+
 // Export returns primary's JSONL snapshot after comparing the secondary read.
 func (s *ShadowStore) Export(ctx context.Context) ([]byte, error) {
 	primary, primaryErr := s.primary.Export(ctx)

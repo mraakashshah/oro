@@ -617,6 +617,28 @@ func (s *FakeStore) FindByParentAndTag(ctx context.Context, parentID, tag string
 	return matches, nil
 }
 
+// FindByMetadataKey returns every bead that has key, regardless of status.
+func (s *FakeStore) FindByMetadataKey(ctx context.Context, key string) ([]protocol.Bead, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("find beads by metadata key context: %w", err)
+	}
+	if strings.TrimSpace(key) == "" {
+		return nil, fmt.Errorf("metadata key is required")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	matches := make([]protocol.Bead, 0)
+	for _, bead := range s.beads {
+		if _, ok := bead.Metadata[key]; ok {
+			matches = append(matches, cloneBead(bead))
+		}
+	}
+	sortBeads(matches)
+	return matches, nil
+}
+
 // CountChildren returns the number of non-deleted child beads for parentID.
 func (s *FakeStore) CountChildren(ctx context.Context, epicID string) (int, error) {
 	if err := ctx.Err(); err != nil {
@@ -918,6 +940,11 @@ func (r *fakeReadTx) AllChildrenClosed(ctx context.Context, epicID string) (bool
 // FindByParentAndTag implements ReadTx.
 func (r *fakeReadTx) FindByParentAndTag(ctx context.Context, parentID, tag string) ([]protocol.Bead, error) {
 	return r.s.FindByParentAndTag(ctx, parentID, tag)
+}
+
+// FindByMetadataKey implements ReadTx.
+func (r *fakeReadTx) FindByMetadataKey(ctx context.Context, key string) ([]protocol.Bead, error) {
+	return r.s.FindByMetadataKey(ctx, key)
 }
 
 // Journey implements ReadTx.

@@ -302,6 +302,10 @@ func (m *fakeBeadStore) FindByParentAndTag(_ context.Context, _ string, _ string
 	return []protocol.Bead{}, nil
 }
 
+func (m *fakeBeadStore) FindByMetadataKey(_ context.Context, _ string) ([]protocol.Bead, error) {
+	return []protocol.Bead{}, nil
+}
+
 func (m *fakeBeadStore) InProgress(_ context.Context) ([]protocol.Bead, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

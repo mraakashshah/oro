@@ -632,6 +632,25 @@ WHERE b.deleted=0 AND b.parent_id=?
 ORDER BY b.priority ASC, b.created_at ASC`, tag, parentID)
 }
 
+// FindByMetadataKey returns every non-deleted bead that has key, regardless of status.
+func (s *SQLiteStore) FindByMetadataKey(ctx context.Context, key string) ([]protocol.Bead, error) {
+	if strings.TrimSpace(key) == "" {
+		return nil, fmt.Errorf("beadstore: metadata key is required")
+	}
+	beads, err := s.queryBeads(ctx, `SELECT `+prefixedBeadColumns("b")+`
+FROM beads b
+JOIN bead_metadata m ON m.bead_id=b.id AND m.key=?
+WHERE b.deleted=0
+ORDER BY b.created_at ASC, b.id ASC`, key)
+	if err != nil {
+		return nil, err
+	}
+	if beads == nil {
+		return []protocol.Bead{}, nil
+	}
+	return beads, nil
+}
+
 // Export returns all active beads as newline-delimited JSON.
 func (s *SQLiteStore) Export(ctx context.Context) ([]byte, error) {
 	beads, err := s.queryBeads(ctx, `SELECT `+beadColumns+` FROM beads WHERE deleted=0 ORDER BY created_at ASC, id ASC`)

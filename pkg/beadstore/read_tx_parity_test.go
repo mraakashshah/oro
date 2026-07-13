@@ -29,6 +29,7 @@ var renderFacingReadMethods = []string{
 	"HasChildren",
 	"AllChildrenClosed",
 	"FindByParentAndTag",
+	"FindByMetadataKey",
 	"Journey",
 	"LatestJourney",
 }

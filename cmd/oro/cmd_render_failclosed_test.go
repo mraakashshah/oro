@@ -52,6 +52,10 @@ func (r *errorReadTx) FindByParentAndTag(_ context.Context, _, _ string) ([]prot
 	return nil, errInjected
 }
 
+func (r *errorReadTx) FindByMetadataKey(_ context.Context, _ string) ([]protocol.Bead, error) {
+	return nil, errInjected
+}
+
 func (r *errorReadTx) Journey(_ context.Context, _ string, _ time.Time) ([]beadstore.JourneyEvent, error) {
 	return nil, errInjected
 }

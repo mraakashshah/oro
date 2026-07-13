@@ -37,6 +37,8 @@ type Store interface {
 	AllChildrenClosed(ctx context.Context, epicID string) (bool, error)
 	// FindByParentAndTag returns children under parentID that have tag.
 	FindByParentAndTag(ctx context.Context, parentID, tag string) ([]protocol.Bead, error)
+	// FindByMetadataKey returns every non-deleted bead that has metadata key.
+	FindByMetadataKey(ctx context.Context, key string) ([]protocol.Bead, error)
 	// CountChildren returns the total number of non-deleted child beads for parentID.
 	CountChildren(ctx context.Context, parentID string) (int, error)
 	// DependencyCycles returns active blocking dependency cycles, if any.
@@ -79,6 +81,7 @@ type ReadTx interface {
 	HasChildren(ctx context.Context, epicID string) (bool, error)
 	AllChildrenClosed(ctx context.Context, epicID string) (bool, error)
 	FindByParentAndTag(ctx context.Context, parentID, tag string) ([]protocol.Bead, error)
+	FindByMetadataKey(ctx context.Context, key string) ([]protocol.Bead, error)
 
 	Journey(ctx context.Context, beadID string, since time.Time) ([]JourneyEvent, error)
 	LatestJourney(ctx context.Context, beadID string, limit int) ([]JourneyEvent, error)

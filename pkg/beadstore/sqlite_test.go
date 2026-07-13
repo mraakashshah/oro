@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -109,6 +110,51 @@ func TestSQLiteStoreCreateShowExportAndMemory(t *testing.T) {
 	}
 	if len(rows) != 2 || gotExported["oro-sql1"].ID != "oro-sql1" {
 		t.Fatalf("exported rows = %#v", rows)
+	}
+}
+
+func TestFindByMetadataKeyJanitor(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+
+	for i := range 60 {
+		id := fmt.Sprintf("oro-closed-%02d", i)
+		mustCreate(t, store, CreateParams{
+			ID:       id,
+			Title:    id,
+			Metadata: map[string]string{"meta_finding_id": fmt.Sprintf("finding-%02d", i)},
+		})
+		if err := store.Close(ctx, id, "janitor resolved finding"); err != nil {
+			t.Fatalf("Close(%s): %v", id, err)
+		}
+	}
+	for i := range 5 {
+		id := fmt.Sprintf("oro-open-%02d", i)
+		mustCreate(t, store, CreateParams{
+			ID:       id,
+			Title:    id,
+			Metadata: map[string]string{"meta_finding_id": fmt.Sprintf("open-finding-%02d", i)},
+		})
+	}
+
+	matches, err := store.FindByMetadataKey(ctx, "meta_finding_id")
+	if err != nil {
+		t.Fatalf("FindByMetadataKey: %v", err)
+	}
+	if len(matches) != 65 {
+		t.Fatalf("FindByMetadataKey returned %d beads, want 65", len(matches))
+	}
+
+	if _, err := store.FindByMetadataKey(ctx, ""); err == nil {
+		t.Fatal("FindByMetadataKey(empty key) error = nil, want error")
+	}
+
+	none, err := store.FindByMetadataKey(ctx, "missing_key")
+	if err != nil {
+		t.Fatalf("FindByMetadataKey(missing key): %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("FindByMetadataKey(missing key) = %d beads, want empty", len(none))
 	}
 }
 
