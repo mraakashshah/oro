@@ -1,3 +1,4 @@
+//nolint:testpackage // white-box test exercises the unexported janitor result handler
 package dispatcher
 
 import (
