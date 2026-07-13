@@ -213,6 +213,13 @@ type ReviewOpts struct {
 	BeadStore          beadstore.Store
 }
 
+// AuditOpts configures a whole-repository audit fan-out.
+type AuditOpts struct {
+	BeadID       string
+	Worktree     string
+	MaxReviewers int
+}
+
 // MergeOpts configures a merge conflict agent.
 type MergeOpts struct {
 	BeadID           string
@@ -343,7 +350,7 @@ func (s *Spawner) reviewMultiPersona(ctx context.Context, opts ReviewOpts) <-cha
 	manifest, prompt := buildStructuredReviewPrompt(opts)
 	out := make(chan Result, 1)
 	go func() {
-		reports := s.collectPersonaReviews(ctx, opts, personas, prompt)
+		reports := s.collectPersonaReviews(ctx, OpsReview, opts, personas, prompt)
 		if allReviewReportsFailed(reports) {
 			out <- <-s.run(ctx, OpsReview, opts.BeadID, opts.Worktree, buildReviewPrompt(opts))
 			return
@@ -353,7 +360,7 @@ func (s *Spawner) reviewMultiPersona(ctx context.Context, opts ReviewOpts) <-cha
 	return out
 }
 
-func (s *Spawner) collectPersonaReviews(ctx context.Context, opts ReviewOpts, personas []Persona, prompt string) []ReviewReport {
+func (s *Spawner) collectPersonaReviews(ctx context.Context, opsType Type, opts ReviewOpts, personas []Persona, prompt string) []ReviewReport {
 	maxReviewers := opts.MaxReviewers
 	if maxReviewers <= 0 {
 		maxReviewers = 4
@@ -372,7 +379,7 @@ func (s *Spawner) collectPersonaReviews(ctx context.Context, opts ReviewOpts, pe
 		for _, persona := range personas[start:end] {
 			chans = append(chans, s.runWith(
 				ctx,
-				OpsReview,
+				opsType,
 				spawnRouting{role: persona.Role},
 				opts.BeadID,
 				opts.Worktree,
@@ -392,6 +399,41 @@ func (s *Spawner) collectPersonaReviews(ctx context.Context, opts ReviewOpts, pe
 		}
 	}
 	return reports
+}
+
+// Audit spawns six focused whole-repository auditors in bounded waves. Each
+// section receives the shared audit base prompt plus only its own fragment.
+//
+//oro:testonly — production audit scheduling is wired by the janitor lifecycle.
+func (s *Spawner) Audit(ctx context.Context, opts AuditOpts) <-chan Result {
+	prompt := buildAuditPrompt(opts)
+	personas := auditSections()
+	reviewOpts := ReviewOpts{
+		BeadID:       opts.BeadID,
+		Worktree:     opts.Worktree,
+		MaxReviewers: opts.MaxReviewers,
+	}
+	out := make(chan Result, 1)
+	go func() {
+		reports := s.collectPersonaReviews(ctx, OpsAudit, reviewOpts, personas, prompt)
+		if allReviewReportsFailed(reports) {
+			out <- Result{
+				Type:     OpsAudit,
+				BeadID:   opts.BeadID,
+				Verdict:  VerdictFailed,
+				Feedback: "all audit section reports failed to parse",
+				Err:      errors.New("all audit section reports failed"),
+			}
+			return
+		}
+		feedback, err := json.Marshal(reports)
+		if err != nil {
+			out <- Result{Type: OpsAudit, BeadID: opts.BeadID, Verdict: VerdictFailed, Err: fmt.Errorf("marshal audit reports: %w", err)}
+			return
+		}
+		out <- Result{Type: OpsAudit, BeadID: opts.BeadID, Verdict: VerdictApproved, Feedback: string(feedback)}
+	}()
+	return out
 }
 
 func allReviewReportsFailed(reports []ReviewReport) bool {
