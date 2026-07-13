@@ -76,6 +76,8 @@ func (e *ExecDaemonSpawner) buildArgs(workers, maxWorkers int) []string {
 	}
 	if e.WebEnabled {
 		args = append(args, "--web")
+	} else {
+		args = append(args, "--web=false")
 	}
 	if e.WebAddr != "" {
 		args = append(args, "--web-addr="+e.WebAddr)

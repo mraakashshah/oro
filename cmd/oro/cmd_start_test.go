@@ -915,6 +915,14 @@ func TestStartProgressTimeoutFlag(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("ExecDaemonSpawner forwards web dashboard opt-out to child", func(t *testing.T) {
+		spawner := &ExecDaemonSpawner{WebEnabled: false}
+		argStr := strings.Join(spawner.buildArgs(2, 2), " ")
+		if !strings.Contains(argStr, "--web=false") {
+			t.Errorf("daemon args missing explicit web opt-out: %s", argStr)
+		}
+	})
 }
 
 func TestStartReviewTimeoutFlagsAreDistinct(t *testing.T) {
