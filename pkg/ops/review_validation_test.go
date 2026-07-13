@@ -119,6 +119,40 @@ func TestPartitionFindings(t *testing.T) {
 	}
 }
 
+func TestFileOnlyEvidenceJanitor(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeReviewFixture(t, repoRoot, "pkg/ops/present.go", "package ops\n")
+
+	manifest := ops.PromptManifest{
+		Shown: map[string][][2]int{
+			"pkg/ops/present.go": nil,
+		},
+	}
+	fileOnly := func(file, quote string) ops.Finding {
+		return ops.Finding{
+			Evidence: []ops.Evidence{{
+				File:      file,
+				LineStart: 0,
+				LineEnd:   0,
+				Quote:     quote,
+			}},
+		}
+	}
+
+	kept, dropped := ops.PartitionFindings(manifest, repoRoot, []ops.Finding{
+		fileOnly("pkg/ops/present.go", ""),
+		fileOnly("pkg/ops/missing.go", ""),
+		fileOnly("pkg/ops/present.go", "package ops"),
+	})
+
+	if len(kept) != 1 || kept[0].Evidence[0].File != "pkg/ops/present.go" {
+		t.Fatalf("kept findings = %#v, want only present file-only evidence", kept)
+	}
+	if len(dropped) != 2 {
+		t.Fatalf("dropped findings = %#v, want absent and quoted file-only evidence dropped", dropped)
+	}
+}
+
 func writeReviewFixture(t *testing.T, repoRoot, relPath, content string) {
 	t.Helper()
 

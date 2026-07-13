@@ -58,6 +58,9 @@ func validateEvidence(m PromptManifest, repoRoot string, ev Evidence) error {
 	if !ok {
 		return fmt.Errorf("evidence path not in manifest: %s", file)
 	}
+	if ev.LineStart == 0 && ev.Quote == "" {
+		return nil
+	}
 	if !rangeShown(ranges, ev.LineStart, ev.LineEnd) {
 		return fmt.Errorf("evidence lines outside manifest range: %s:%d-%d", file, ev.LineStart, ev.LineEnd)
 	}
