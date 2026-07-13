@@ -27,7 +27,7 @@ agent:
     spec_challenger:
       transport: cli
       runtime: claude
-      model: claude-opus-4-7
+      model: fable
     worker:
       transport: cli
       runtime: codex
@@ -41,7 +41,8 @@ agent:
     ops_review:
       transport: cli
       runtime: claude
-      model: claude-opus-4-7
+      model: claude-opus-4-8
+      reasoning: xhigh
     ops_escalation:
       transport: cli
       runtime: codex
