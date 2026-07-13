@@ -1,0 +1,159 @@
+package dispatcher
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"oro/pkg/beadstore"
+	"oro/pkg/ops"
+)
+
+const (
+	janitorFindingMetadataKey = "meta_finding_id"
+	janitorRoleActor          = "ops_janitor"
+	janitorTopFindings        = 5
+)
+
+type janitorResultPayload struct {
+	Findings     []ops.Finding `json:"findings"`
+	RanDetectors []string      `json:"ran_detectors"`
+}
+
+// handleJanitorResult files the highest-severity findings from one janitor
+// cycle and keeps the complete finding set in the janitor role-bead journey.
+func (d *Dispatcher) handleJanitorResult(ctx context.Context, result ops.Result) {
+	payload, err := parseJanitorResult(result.Feedback)
+	if err != nil {
+		d.appendJanitorJourney(ctx, result.BeadID, "note", map[string]string{
+			"kind":  "malformed_janitor_result",
+			"error": err.Error(),
+		})
+		_ = d.logEvent(ctx, "janitor_result_malformed", janitorRoleActor, result.BeadID, "", err.Error())
+		return
+	}
+
+	for _, finding := range payload.Findings {
+		d.persistJanitorFinding(ctx, result.BeadID, finding)
+	}
+
+	filed := janitorTopFindingsBySeverity(payload.Findings)
+	for _, finding := range filed {
+		if _, createErr := d.beads.Create(ctx, janitorFindingCreateParams(finding, payload.RanDetectors)); createErr != nil {
+			_ = d.logEvent(ctx, "janitor_finding_create_failed", janitorRoleActor, result.BeadID, "", createErr.Error())
+		}
+	}
+	d.appendJanitorJourney(ctx, result.BeadID, "janitor_cycle", map[string]int{
+		"findings": len(payload.Findings),
+		"filed":    len(filed),
+	})
+}
+
+func parseJanitorResult(feedback string) (janitorResultPayload, error) {
+	var payload janitorResultPayload
+	if err := json.Unmarshal([]byte(feedback), &payload); err != nil {
+		return janitorResultPayload{}, fmt.Errorf("parse janitor findings: %w", err)
+	}
+	return payload, nil
+}
+
+func (d *Dispatcher) persistJanitorFinding(ctx context.Context, roleBeadID string, finding ops.Finding) {
+	payload, err := json.Marshal(finding)
+	if err != nil {
+		_ = d.logEvent(ctx, "janitor_finding_persist_failed", janitorRoleActor, roleBeadID, "", err.Error())
+		return
+	}
+	if err := d.beads.AppendJourney(ctx, roleBeadID, beadstore.JourneyEvent{
+		Ts:      time.Now().UTC().Format(time.RFC3339Nano),
+		Actor:   janitorRoleActor,
+		Event:   "janitor_finding",
+		Payload: string(payload),
+	}); err != nil {
+		_ = d.logEvent(ctx, "janitor_finding_persist_failed", janitorRoleActor, roleBeadID, "", err.Error())
+	}
+}
+
+func (d *Dispatcher) appendJanitorJourney(ctx context.Context, roleBeadID, event string, payload any) {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	if err := d.beads.AppendJourney(ctx, roleBeadID, beadstore.JourneyEvent{
+		Ts:      time.Now().UTC().Format(time.RFC3339Nano),
+		Actor:   janitorRoleActor,
+		Event:   event,
+		Payload: string(encoded),
+	}); err != nil {
+		_ = d.logEvent(ctx, "janitor_journey_append_failed", janitorRoleActor, roleBeadID, "", err.Error())
+	}
+}
+
+func janitorTopFindingsBySeverity(findings []ops.Finding) []ops.Finding {
+	ordered := append([]ops.Finding(nil), findings...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return janitorSeverityRank(ordered[i].Severity) > janitorSeverityRank(ordered[j].Severity)
+	})
+	if len(ordered) > janitorTopFindings {
+		ordered = ordered[:janitorTopFindings]
+	}
+	return ordered
+}
+
+func janitorFindingCreateParams(finding ops.Finding, ranDetectors []string) beadstore.CreateParams {
+	return beadstore.CreateParams{
+		Title:              finding.Title,
+		Type:               "task",
+		Priority:           2,
+		Description:        janitorFindingDescription(finding),
+		AcceptanceCriteria: janitorFindingAcceptance(finding, ranDetectors),
+		Metadata:           map[string]string{janitorFindingMetadataKey: finding.ID},
+	}
+}
+
+func janitorFindingDescription(finding ops.Finding) string {
+	return strings.TrimSpace(fmt.Sprintf(`%s
+
+Suppression contract: close with a reason beginning "wont-fix:" to mark this finding intentional and prevent refiling. The first close reason is immutable; reopen this bead before closing again to change that reason.`, finding.Detail))
+}
+
+func janitorFindingAcceptance(finding ops.Finding, ranDetectors []string) string {
+	ran := make(map[string]bool, len(ranDetectors))
+	for _, detector := range ranDetectors {
+		ran[detector] = true
+	}
+	var commands []string
+	for _, detector := range finding.Sources {
+		if ran[detector] {
+			commands = append(commands, fmt.Sprintf("./scripts/janitor_detect.sh --detector %s", detector))
+		}
+	}
+	commands = append(commands, "./scripts/quality_gate.sh")
+	return fmt.Sprintf("Test: janitor finding %s\nCmd: %s\nAssert: detector finding is gone and the quality gate passes", finding.ID, strings.Join(uniqueStrings(commands), " && "))
+}
+
+func janitorSeverityRank(severity ops.Severity) int {
+	switch severity {
+	case ops.SevCritical:
+		return 3
+	case ops.SevImportant:
+		return 2
+	default:
+		return 1
+	}
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
+}

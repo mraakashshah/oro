@@ -10,6 +10,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
@@ -81,6 +82,7 @@ type createCall struct {
 	description, parent string
 	acceptanceCriteria  string
 	tier                string
+	metadata            map[string]string
 }
 
 type deferCall struct {
@@ -261,6 +263,7 @@ func (m *fakeBeadStore) Create(_ context.Context, params beadstore.CreateParams)
 		parent:             params.ParentID,
 		acceptanceCriteria: params.AcceptanceCriteria,
 		tier:               params.Tier,
+		metadata:           maps.Clone(params.Metadata),
 	})
 	id := "oro-new1"
 	if m.createID != "" {
