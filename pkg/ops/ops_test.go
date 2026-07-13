@@ -484,6 +484,37 @@ func TestDecomposeSandboxDenialIsShortActionableError(t *testing.T) {
 	}
 }
 
+func TestClaudeArgsWithReasoningAppendsEffort(t *testing.T) {
+	// Non-empty reasoning appends --effort so Claude runs at the configured level.
+	got := buildClaudeReviewArgsWithReasoning("claude-opus-4-8", "xhigh", "review prompt")
+	want := []string{"-p", "review prompt", "--model", "claude-opus-4-8", "--verbose", "--output-format", "stream-json", "--effort", "xhigh"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("buildClaudeReviewArgsWithReasoning = %q, want %q", got, want)
+	}
+
+	gotOps := buildClaudeOpsArgsWithReasoning("claude-opus-4-8", "high", "plain prompt")
+	wantOps := []string{"-p", "plain prompt", "--model", "claude-opus-4-8", "--effort", "high"}
+	if strings.Join(gotOps, "\x00") != strings.Join(wantOps, "\x00") {
+		t.Fatalf("buildClaudeOpsArgsWithReasoning = %q, want %q", gotOps, wantOps)
+	}
+
+	// Empty reasoning must not append --effort (falls back to plain args).
+	gotEmpty := buildClaudeReviewArgsWithReasoning("claude-opus-4-8", "", "review prompt")
+	wantEmpty := buildClaudeReviewArgs("claude-opus-4-8", "review prompt")
+	if strings.Join(gotEmpty, "\x00") != strings.Join(wantEmpty, "\x00") {
+		t.Fatalf("buildClaudeReviewArgsWithReasoning empty reasoning = %q, want %q", gotEmpty, wantEmpty)
+	}
+
+	// Both Claude spawners must wire the reasoning-aware builder so
+	// SpawnWithReasoning passes --effort instead of dropping it.
+	if NewClaudeReviewOpsSpawner().spec.BuildArgsWithReasoning == nil {
+		t.Fatal("NewClaudeReviewOpsSpawner must set BuildArgsWithReasoning")
+	}
+	if NewClaudeOpsSpawner().spec.BuildArgsWithReasoning == nil {
+		t.Fatal("NewClaudeOpsSpawner must set BuildArgsWithReasoning")
+	}
+}
+
 func TestRunSelectsReviewSpawner(t *testing.T) {
 	reviewArgs := buildClaudeReviewArgs("claude-opus", "review prompt")
 	wantReviewArgs := []string{"-p", "review prompt", "--model", "claude-opus", "--verbose", "--output-format", "stream-json"}

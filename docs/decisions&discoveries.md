@@ -1,5 +1,19 @@
 # Decisions and Discoveries
 
+## 2026-07-13: Claude ops runtime now honors reasoning/effort (--effort)
+**Tags:** #ops #reviewer #claude #reasoning #routing
+**Context:** The role config supports a `reasoning` level (e.g. `ops_review:
+xhigh`), but the Claude ops spawner dropped it — `RuntimeSpec` only set
+`BuildArgs` (not `BuildArgsWithReasoning`), so `SpawnWithReasoning` fell back to
+the no-effort path. Effort only took hold for Codex (`model_reasoning_effort`).
+The `claude` CLI does expose `--effort <low|medium|high|xhigh|max>`.
+**Decision:** Added `buildClaude{Ops,Review}ArgsWithReasoning` (append `--effort
+<reasoning>` when non-empty) and wired `BuildArgsWithReasoning` on both Claude
+ops spawners. Empty reasoning still omits the flag.
+**Implications:** A Claude reviewer/challenger configured with a reasoning level
+now actually runs at that effort (e.g. `ops_review` at Opus 4.8 `xhigh`). Effort
+values map 1:1 to the CLI's accepted set.
+
 ## 2026-07-12: All code writes must land in a worktree (enforced by hook)
 **Tags:** #worktree #hooks #isolation #enforcement #concurrency
 **Context:** Investigated how superpowers (`using-git-worktrees`) and the

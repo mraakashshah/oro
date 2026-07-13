@@ -40,8 +40,8 @@ type BatchSpawner interface {
 	Spawn(ctx context.Context, model string, prompt string, workdir string) (Process, error)
 }
 
-// ReasoningBatchSpawner accepts a Codex-style reasoning effort. Claude
-// spawners ignore reasoning by not implementing it.
+// ReasoningBatchSpawner accepts a reasoning/effort level. Codex maps it to
+// model_reasoning_effort; Claude maps it to its --effort flag.
 type ReasoningBatchSpawner interface {
 	SpawnWithReasoning(ctx context.Context, model string, reasoning string, prompt string, workdir string) (Process, error)
 }

@@ -131,9 +131,10 @@ type ClaudeOpsSpawner struct {
 func NewClaudeOpsSpawner() *ClaudeOpsSpawner {
 	return &ClaudeOpsSpawner{
 		ExecSpawner: NewExecSpawner(RuntimeSpec{
-			Command:   "claude",
-			BuildArgs: buildClaudeOpsArgs,
-			BuildEnv:  filteredEnv,
+			Command:                "claude",
+			BuildArgs:              buildClaudeOpsArgs,
+			BuildArgsWithReasoning: buildClaudeOpsArgsWithReasoning,
+			BuildEnv:               filteredEnv,
 		}),
 	}
 }
@@ -143,9 +144,10 @@ func NewClaudeOpsSpawner() *ClaudeOpsSpawner {
 func NewClaudeReviewOpsSpawner() *ClaudeOpsSpawner {
 	return &ClaudeOpsSpawner{
 		ExecSpawner: NewExecSpawner(RuntimeSpec{
-			Command:   "claude",
-			BuildArgs: buildClaudeReviewArgs,
-			BuildEnv:  filteredEnv,
+			Command:                "claude",
+			BuildArgs:              buildClaudeReviewArgs,
+			BuildArgsWithReasoning: buildClaudeReviewArgsWithReasoning,
+			BuildEnv:               filteredEnv,
 		}),
 	}
 }
@@ -251,6 +253,23 @@ func buildClaudeOpsArgs(model, prompt string) []string {
 
 func buildClaudeReviewArgs(model, prompt string) []string {
 	return []string{"-p", prompt, "--model", model, "--verbose", "--output-format", "stream-json"}
+}
+
+// appendEffort adds Claude's --effort flag when a reasoning level is set,
+// leaving the args untouched for empty reasoning.
+func appendEffort(args []string, reasoning string) []string {
+	if reasoning = strings.TrimSpace(reasoning); reasoning != "" {
+		return append(args, "--effort", reasoning)
+	}
+	return args
+}
+
+func buildClaudeOpsArgsWithReasoning(model, reasoning, prompt string) []string {
+	return appendEffort(buildClaudeOpsArgs(model, prompt), reasoning)
+}
+
+func buildClaudeReviewArgsWithReasoning(model, reasoning, prompt string) []string {
+	return appendEffort(buildClaudeReviewArgs(model, prompt), reasoning)
 }
 
 // filteredEnv returns the current environment with CLAUDECODE stripped,
