@@ -39,12 +39,14 @@ func TestAuditSectionFanout(t *testing.T) {
 		t.Fatalf("Audit verdict = %q, want approved; feedback=%s err=%v", result.Verdict, result.Feedback, result.Err)
 	}
 
-	var reports []ReviewReport
-	if err := json.Unmarshal([]byte(result.Feedback), &reports); err != nil {
-		t.Fatalf("Audit feedback is not []ReviewReport JSON: %v\n%s", err, result.Feedback)
+	var feedback struct {
+		Findings []Finding `json:"findings"`
 	}
-	if len(reports) != len(sections) {
-		t.Fatalf("Audit reports = %d, want %d", len(reports), len(sections))
+	if err := json.Unmarshal([]byte(result.Feedback), &feedback); err != nil {
+		t.Fatalf("Audit feedback is not merged findings JSON: %v\n%s", err, result.Feedback)
+	}
+	if len(feedback.Findings) != 0 {
+		t.Fatalf("Audit findings = %#v, want none", feedback.Findings)
 	}
 
 	calls := spawner.getCalls()

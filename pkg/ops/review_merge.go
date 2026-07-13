@@ -18,12 +18,23 @@ type reviewMergeFeedback struct {
 }
 
 func mergeReports(reports []ReviewReport, m PromptManifest, opts ReviewOpts) Result {
+	return mergeReportsFor(OpsReview, reports, m, opts, true)
+}
+
+// mergeAuditReports applies the structured reviewer merge pipeline to the
+// whole-repository audit. Unlike per-bead review, pre-existing findings are
+// the audit's purpose and must remain eligible after validation.
+func mergeAuditReports(reports []ReviewReport, m PromptManifest, opts ReviewOpts) Result {
+	return mergeReportsFor(OpsAudit, reports, m, opts, false)
+}
+
+func mergeReportsFor(resultType Type, reports []ReviewReport, m PromptManifest, opts ReviewOpts, dropPreExisting bool) Result {
 	findings := flattenReviewReports(reports)
 	findings, _ = PartitionFindings(m, opts.Worktree, findings)
 	priorFindings, err := priorReviewFindings(context.Background(), opts)
 	if err != nil {
 		return Result{
-			Type:     OpsReview,
+			Type:     resultType,
 			BeadID:   opts.BeadID,
 			Verdict:  VerdictFailed,
 			Feedback: err.Error(),
@@ -38,27 +49,29 @@ func mergeReports(reports []ReviewReport, m PromptManifest, opts ReviewOpts) Res
 		if prior, ok := priorFindings[finding.ID]; ok {
 			finding = mergeFinding(prior, finding)
 		}
-		if finding.Origin == "pre_existing" {
+		if dropPreExisting && finding.Origin == "pre_existing" {
 			continue
 		}
 		merged = append(merged, finding)
 	}
 
 	promoteFindings(merged)
-	if err := persistReviewFindings(context.Background(), opts, merged); err != nil {
-		return Result{
-			Type:     OpsReview,
-			BeadID:   opts.BeadID,
-			Verdict:  VerdictFailed,
-			Feedback: err.Error(),
-			Err:      err,
+	if resultType == OpsReview {
+		if err := persistReviewFindings(context.Background(), opts, merged); err != nil {
+			return Result{
+				Type:     resultType,
+				BeadID:   opts.BeadID,
+				Verdict:  VerdictFailed,
+				Feedback: err.Error(),
+				Err:      err,
+			}
 		}
 	}
 	survivors := gateFindings(merged)
 	feedback, err := json.Marshal(reviewMergeFeedback{Findings: survivors})
 	if err != nil {
 		return Result{
-			Type:     OpsReview,
+			Type:     resultType,
 			BeadID:   opts.BeadID,
 			Verdict:  VerdictFailed,
 			Feedback: err.Error(),
@@ -67,7 +80,7 @@ func mergeReports(reports []ReviewReport, m PromptManifest, opts ReviewOpts) Res
 	}
 
 	return Result{
-		Type:     OpsReview,
+		Type:     resultType,
 		BeadID:   opts.BeadID,
 		Verdict:  verdictForFindings(survivors),
 		Feedback: string(feedback),

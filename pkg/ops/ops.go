@@ -426,12 +426,7 @@ func (s *Spawner) Audit(ctx context.Context, opts AuditOpts) <-chan Result {
 			}
 			return
 		}
-		feedback, err := json.Marshal(reports)
-		if err != nil {
-			out <- Result{Type: OpsAudit, BeadID: opts.BeadID, Verdict: VerdictFailed, Err: fmt.Errorf("marshal audit reports: %w", err)}
-			return
-		}
-		out <- Result{Type: OpsAudit, BeadID: opts.BeadID, Verdict: VerdictApproved, Feedback: string(feedback)}
+		out <- mergeAuditReports(reports, buildRepoManifest(ctx, opts.Worktree), reviewOpts)
 	}()
 	return out
 }

@@ -3073,7 +3073,9 @@ func (d *Dispatcher) spawnAudit(ctx context.Context, spawn func(context.Context)
 		spawn(ctx)
 		return
 	}
-	_ = d.logEvent(ctx, "audit_scheduled", "dispatcher", "", "", "")
+	if err := d.runAudit(ctx); err != nil {
+		_ = d.logEvent(ctx, "audit_scan_failed", "dispatcher", "", "", err.Error())
+	}
 }
 
 // triggerDream spawns a dream memory-consolidation agent and handles the result
