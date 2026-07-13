@@ -738,6 +738,90 @@ echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
 	}
 }
 
+func TestCheckedInQualityGateStartsAfterLiveFIFOQueueDrains(t *testing.T) {
+	dir := t.TempDir()
+	eventsPath := filepath.Join(dir, "events")
+
+	script, err := os.ReadFile(filepath.Join("..", "..", "scripts", "quality_gate.sh"))
+	if err != nil {
+		t.Fatalf("read checked-in quality gate: %v", err)
+	}
+	acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
+	acquireIdx := strings.Index(string(script), acquireCall)
+	if acquireIdx < 0 {
+		t.Fatal("checked-in quality gate missing acquire call marker")
+	}
+	harness := string(script[:acquireIdx+len("acquire_quality_gate_lock")]) + `
+echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
+`
+
+	earlyScript := filepath.Join(dir, "early.sh")
+	if err := os.WriteFile(earlyScript, []byte(harness), 0o755); err != nil {
+		t.Fatalf("write early harness: %v", err)
+	}
+	lateScript := filepath.Join(dir, "late.sh")
+	if err := os.WriteFile(lateScript, []byte(harness), 0o755); err != nil {
+		t.Fatalf("write late harness: %v", err)
+	}
+
+	lockDir := filepath.Join(dir, ".oro-quality-gate.lock")
+	if err := os.Mkdir(lockDir, 0o755); err != nil {
+		t.Fatalf("create held lock: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(lockDir, "owner"), []byte(fmt.Sprintf("pid=%d\n", os.Getpid())), 0o644); err != nil {
+		t.Fatalf("write held lock owner: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	startWaiter := func(name, scriptPath string) *exec.Cmd {
+		t.Helper()
+		cmd := exec.CommandContext(ctx, scriptPath) //nolint:gosec // scriptPath is a test-owned temp file
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"ORO_QG_TEST_NAME="+name,
+			"ORO_QG_TEST_EVENTS="+eventsPath,
+			"ORO_QG_LOCK_POLL_SECONDS=1",
+			"ORO_QG_LOCK_TIMEOUT_SECONDS=8",
+		)
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start %s waiter: %v", name, err)
+		}
+		return cmd
+	}
+
+	early := startWaiter("early", earlyScript)
+	queueDir := filepath.Join(dir, ".oro-quality-gate.queue")
+	if !waitForQualityGateQueueEntries(queueDir, 1, 2*time.Second) {
+		t.Fatalf("early waiter did not create a quality gate FIFO queue ticket")
+	}
+
+	late := startWaiter("late", lateScript)
+	if !waitForQualityGateQueueEntries(queueDir, 2, 2*time.Second) {
+		t.Fatalf("late waiter did not join quality gate FIFO queue")
+	}
+
+	if err := os.RemoveAll(lockDir); err != nil {
+		t.Fatalf("release held lock: %v", err)
+	}
+	if err := early.Wait(); err != nil {
+		t.Fatalf("early waiter failed: %v", err)
+	}
+	if err := late.Wait(); err != nil {
+		t.Fatalf("late waiter failed: %v", err)
+	}
+
+	events, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatalf("read acquisition events: %v", err)
+	}
+	got := strings.Fields(string(events))
+	if !reflect.DeepEqual(got, []string{"early", "late"}) {
+		t.Fatalf("checked-in quality gate acquisition order = %v, want FIFO early before late", got)
+	}
+}
+
 func waitForQualityGateQueueEntries(queueDir string, want int, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
