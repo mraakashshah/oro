@@ -71,6 +71,8 @@ const (
 	OpsWriteAC    Type = "write_ac"
 	OpsDecompose  Type = "decompose" // spawned when a bead exhausts all worker retry attempts
 	OpsDream      Type = "dream"     // spawned for background memory consolidation
+	OpsJanitor    Type = "janitor"   // spawned for low-cost codebase cleanliness triage
+	OpsAudit      Type = "audit"     // spawned for periodic deep whole-repo audits
 )
 
 // Tier returns the provider-neutral routing tier for this ops type.
@@ -88,6 +90,10 @@ func (t Type) Tier() protocol.Tier {
 		return protocol.TierDeep // bead decomposition requires careful judgment
 	case OpsDream:
 		return protocol.TierBackground // lightweight background memory consolidation
+	case OpsJanitor:
+		return protocol.TierFast // continuous low-cost codebase cleanliness triage
+	case OpsAudit:
+		return protocol.TierDeep // periodic whole-repo audits require deep judgment
 	default:
 		return protocol.DefaultTier
 	}
@@ -124,6 +130,10 @@ func (t Type) Role() string {
 		return "ops_decompose"
 	case OpsDream:
 		return "ops_dream"
+	case OpsJanitor:
+		return "ops_janitor"
+	case OpsAudit:
+		return "ops_audit"
 	default:
 		return "worker"
 	}
@@ -140,6 +150,10 @@ func (t Type) Timeout() time.Duration {
 		return 10 * time.Minute
 	case OpsDream:
 		return 60 * time.Second
+	case OpsJanitor:
+		return 10 * time.Minute
+	case OpsAudit:
+		return 20 * time.Minute
 	default:
 		return 0
 	}
@@ -764,8 +778,8 @@ func parseResult(opsType Type, beadID, stdout string, waitErr error) Result {
 		r.Verdict, r.Feedback = parseReviewOutput(stdout)
 	case OpsMerge:
 		r.Verdict, r.Feedback = parseMergeOutput(stdout)
-	case OpsDiagnosis, OpsEpicFix, OpsDream:
-		// Diagnosis / epic-fix / dream have no verdict parsing — the whole output is the feedback.
+	case OpsDiagnosis, OpsEpicFix, OpsDream, OpsJanitor, OpsAudit:
+		// These runs have no verdict parsing — the whole output is the feedback.
 		r.Feedback = stdout
 	case OpsEscalation:
 		r.Verdict, r.Feedback = parseEscalationOutput(stdout)
