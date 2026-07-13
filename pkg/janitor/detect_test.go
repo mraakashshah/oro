@@ -99,7 +99,7 @@ func TestJanitorBuiltinsSkipMissing(t *testing.T) {
 	}
 	t.Setenv("PATH", t.TempDir())
 
-	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main")
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "")
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -122,10 +122,32 @@ func TestJanitorBuiltinsSkipMissing(t *testing.T) {
 func TestCIDetectorEmitsFindingWhenRed(t *testing.T) {
 	worktree := t.TempDir()
 	runGit(t, worktree, "init", "-b", "agent/janitor-scan")
+	runGit(t, worktree, "remote", "add", "origin", "git@github.example:acme/repo.git")
 	binDir := t.TempDir()
 	gh := `#!/bin/sh
-[ "$#" -eq 8 ] && [ "$1" = run ] && [ "$2" = list ] && [ "$3" = --branch ] && [ "$4" = main ] && [ "$5" = --limit ] && [ "$6" = 100 ] && [ "$7" = --json ] && [ "$8" = workflowName,displayTitle,conclusion,url ] || exit 1
-printf '%s\n' '[{"workflowName":"CI","displayTitle":"unit tests","conclusion":"failure","url":"https://github.example/acme/repo/actions/runs/42"},{"workflowName":"CI","displayTitle":"older unit tests","conclusion":"failure","url":"https://github.example/acme/repo/actions/runs/41"},{"workflowName":"Release","displayTitle":"publish","conclusion":"failure","url":"https://github.example/acme/repo/actions/runs/43"}]'
+if [ "$1" = auth ] && [ "$2" = status ]; then
+	[ "$3" = --active ] && [ "$4" = --hostname ] && [ "$5" = github.example ] || exit 2
+	exit
+fi
+if [ "$1" = run ] && [ "$2" = list ]; then
+  [ "$#" -eq 8 ] && [ "$3" = --branch ] && [ "$4" = main ] && [ "$5" = --limit ] && [ "$6" = 100 ] && [ "$7" = --json ] || exit 1
+  [ "$8" = databaseId,workflowDatabaseId,workflowName,conclusion,url ] || exit 1
+  printf '%s\n' '[{"databaseId":42,"workflowDatabaseId":100,"workflowName":"CI","conclusion":"failure","url":"https://github.example/acme/repo/actions/runs/42"},{"databaseId":41,"workflowDatabaseId":100,"workflowName":"CI","conclusion":"failure","url":"https://github.example/acme/repo/actions/runs/41"},{"databaseId":43,"workflowDatabaseId":101,"workflowName":"Release","conclusion":"failure","url":"https://github.example/acme/repo/actions/runs/43"},{"databaseId":45,"workflowDatabaseId":102,"workflowName":"CI","conclusion":"failure","url":"https://github.example/acme/repo/actions/runs/45"},{"databaseId":48,"workflowDatabaseId":103,"workflowName":"Docs","conclusion":"failure","url":"https://github.example/acme/repo/actions/runs/48"},{"databaseId":46,"workflowDatabaseId":0,"workflowName":"","conclusion":"failure","url":"https://github.example/acme/repo/actions/runs/46"},{"databaseId":47,"workflowDatabaseId":0,"workflowName":"","conclusion":"failure","url":"https://github.example/acme/repo/actions/runs/47"}]'
+  exit
+fi
+if [ "$1" = run ] && [ "$2" = view ] && [ "$4" = --json ] && [ "$5" = jobs ]; then
+  case "$3" in
+    42) printf '%s\n' '{"jobs":[{"name":"unit tests","conclusion":"failure"},{"name":"build","conclusion":"success"}]}' ;;
+    43) printf '%s\n' '{"jobs":[{"name":"publish","conclusion":"failure"}]}' ;;
+    45) printf '%s\n' '{"jobs":[{"name":"integration tests","conclusion":"failure"}]}' ;;
+    48) printf '%s\n' '{"jobs":[{"name":"docs","conclusion":"success"}]}' ;;
+    46) printf '%s\n' '{"jobs":[{"name":"ruleset policy A","conclusion":"failure"}]}' ;;
+    47) printf '%s\n' '{"jobs":[{"name":"ruleset policy B","conclusion":"failure"}]}' ;;
+    *) exit 1 ;;
+  esac
+  exit
+fi
+exit 1
 `
 	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(gh), 0o700); err != nil {
 		t.Fatalf("write gh fixture: %v", err)
@@ -158,8 +180,40 @@ printf '%s\n' '[{"workflowName":"CI","displayTitle":"unit tests","conclusion":"f
 	if !containsCandidate(cands, want) {
 		t.Errorf("candidates = %#v, want %#v", cands, want)
 	}
-	if got := detectorCandidateCount(cands, "ci"); got != 2 {
-		t.Errorf("ci candidate count = %d, want one per failing workflow (2): %#v", got, cands)
+	want = janitor.Candidate{
+		Detector: "ci",
+		Title:    "CI failed",
+		Detail:   "workflow: CI; job: integration tests; run: https://github.example/acme/repo/actions/runs/45",
+	}
+	if !containsCandidate(cands, want) {
+		t.Errorf("candidates = %#v, want distinct same-name workflow %#v", cands, want)
+	}
+	want = janitor.Candidate{
+		Detector: "ci",
+		Title:    "Docs failed",
+		Detail:   "workflow: Docs; job: unspecified job; run: https://github.example/acme/repo/actions/runs/48",
+	}
+	if !containsCandidate(cands, want) {
+		t.Errorf("candidates = %#v, want no display-title-as-job fallback %#v", cands, want)
+	}
+	for _, ruleset := range []struct {
+		job string
+		url string
+	}{
+		{job: "ruleset policy A", url: "https://github.example/acme/repo/actions/runs/46"},
+		{job: "ruleset policy B", url: "https://github.example/acme/repo/actions/runs/47"},
+	} {
+		want = janitor.Candidate{
+			Detector: "ci",
+			Title:    "CI workflow failed",
+			Detail:   "workflow: CI workflow; job: " + ruleset.job + "; run: " + ruleset.url,
+		}
+		if !containsCandidate(cands, want) {
+			t.Errorf("candidates = %#v, want zero-workflow-ID fallback %#v", cands, want)
+		}
+	}
+	if got := detectorCandidateCount(cands, "ci"); got != 6 {
+		t.Errorf("ci candidate count = %d, want one per failing workflow (6): %#v", got, cands)
 	}
 }
 
@@ -187,6 +241,7 @@ func TestCIDetectorNoopWhenToolMissing(t *testing.T) {
 func TestCIDetectorNoopWhenUnauthed(t *testing.T) {
 	worktree := t.TempDir()
 	runGit(t, worktree, "init", "-b", "main")
+	runGit(t, worktree, "remote", "add", "origin", "ssh://git@github.example/acme/repo.git")
 	binDir := t.TempDir()
 	gh := "#!/bin/sh\necho 'authentication required' >&2\nexit 4\n"
 	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(gh), 0o700); err != nil {
@@ -211,13 +266,48 @@ func TestCIDetectorNoopWhenUnauthed(t *testing.T) {
 	}
 }
 
+func TestCIDetectorReturnsAuthenticatedProbeError(t *testing.T) {
+	worktree := t.TempDir()
+	runGit(t, worktree, "init", "-b", "main")
+	runGit(t, worktree, "remote", "add", "origin", "git@github.example:acme/repo.git")
+	binDir := t.TempDir()
+	gh := `#!/bin/sh
+if [ "$1" = auth ] && [ "$2" = status ]; then
+	[ "$3" = --active ] && [ "$4" = --hostname ] && [ "$5" = github.example ] || exit 2
+	exit
+fi
+echo 'CI API unavailable' >&2
+exit 4
+`
+	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(gh), 0o700); err != nil {
+		t.Fatalf("write gh fixture: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	_, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main")
+	if err == nil {
+		t.Fatal("run built-in detectors succeeded, want authenticated CI probe error")
+	}
+	if !strings.Contains(err.Error(), "CI API unavailable") {
+		t.Errorf("error = %q, want CI probe stderr", err)
+	}
+	if contains(ran, "ci") || contains(skipped, "ci") {
+		t.Errorf("ran, skipped = %#v, %#v, want authenticated CI probe classified as error", ran, skipped)
+	}
+}
+
 func TestCIDetectorNoopWhenGreen(t *testing.T) {
 	worktree := t.TempDir()
 	runGit(t, worktree, "init", "-b", "main")
+	runGit(t, worktree, "remote", "add", "origin", "https://github.example/acme/repo.git")
 	binDir := t.TempDir()
 	gh := `#!/bin/sh
-[ "$#" -eq 8 ] && [ "$1" = run ] && [ "$2" = list ] && [ "$3" = --branch ] && [ "$4" = main ] && [ "$5" = --limit ] && [ "$6" = 100 ] && [ "$7" = --json ] && [ "$8" = workflowName,displayTitle,conclusion,url ] || exit 1
-printf '%s\n' '[{"workflowName":"CI","displayTitle":"unit tests","conclusion":"success","url":"https://github.example/acme/repo/actions/runs/44"},{"workflowName":"CI","displayTitle":"older unit tests","conclusion":"failure","url":"https://github.example/acme/repo/actions/runs/42"}]'
+if [ "$1" = auth ] && [ "$2" = status ]; then
+	[ "$3" = --active ] && [ "$4" = --hostname ] && [ "$5" = github.example ] || exit 2
+	exit
+fi
+[ "$#" -eq 8 ] && [ "$1" = run ] && [ "$2" = list ] && [ "$3" = --branch ] && [ "$4" = main ] && [ "$5" = --limit ] && [ "$6" = 100 ] && [ "$7" = --json ] && [ "$8" = databaseId,workflowDatabaseId,workflowName,conclusion,url ] || exit 1
+printf '%s\n' '[{"databaseId":44,"workflowDatabaseId":100,"workflowName":"CI","displayTitle":"unit tests","conclusion":"success","url":"https://github.example/acme/repo/actions/runs/44"},{"databaseId":42,"workflowDatabaseId":100,"workflowName":"CI","displayTitle":"older unit tests","conclusion":"failure","url":"https://github.example/acme/repo/actions/runs/42"}]'
 `
 	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(gh), 0o700); err != nil {
 		t.Fatalf("write gh fixture: %v", err)
@@ -274,7 +364,7 @@ func TestJanitorBuiltinsKeepsLintFindings(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir)
 
-	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main")
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "")
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -302,7 +392,7 @@ func TestJanitorBuiltinsTreatsDetectorStderrAsCrash(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir)
 
-	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree, "main")
+	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree, "")
 	if err == nil {
 		t.Fatal("run built-in detectors succeeded, want detector crash error")
 	}
@@ -337,7 +427,7 @@ func TestJanitorBuiltinsFindsOrphanFiles(t *testing.T) {
 		t.Fatalf("write asset reference: %v", err)
 	}
 
-	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree, "main")
+	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree, "")
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -372,7 +462,7 @@ func TestJanitorBuiltinsUsesGitHistoryForTODOAge(t *testing.T) {
 		t.Fatalf("refresh TODO file mtime: %v", err)
 	}
 
-	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree, "main")
+	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree, "")
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -392,7 +482,7 @@ func TestJanitorBuiltinsFindsBrokenRelativeLinksWithoutTools(t *testing.T) {
 	}
 	t.Setenv("PATH", t.TempDir())
 
-	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree, "main")
+	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree, "")
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}

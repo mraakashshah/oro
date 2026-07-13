@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -123,10 +124,20 @@ func builtinsFor(worktree, targetBranch string) []builtinDetector {
 }
 
 type ciWorkflowRun struct {
-	WorkflowName string `json:"workflowName"`
-	DisplayTitle string `json:"displayTitle"`
-	Conclusion   string `json:"conclusion"`
-	URL          string `json:"url"`
+	DatabaseID         int64  `json:"databaseId"`
+	WorkflowDatabaseID int64  `json:"workflowDatabaseId"`
+	WorkflowName       string `json:"workflowName"`
+	Conclusion         string `json:"conclusion"`
+	URL                string `json:"url"`
+}
+
+type ciJob struct {
+	Name       string `json:"name"`
+	Conclusion string `json:"conclusion"`
+}
+
+type ciRunDetails struct {
+	Jobs []ciJob `json:"jobs"`
 }
 
 func ciDetector(ctx context.Context, worktree, targetBranch string) ([]Candidate, error) {
@@ -140,47 +151,154 @@ func ciDetector(ctx context.Context, worktree, targetBranch string) ([]Candidate
 	if targetBranch == "" {
 		return nil, errDetectorSkipped
 	}
-	cmd := exec.CommandContext(ctx, gh, "run", "list", "--branch", targetBranch, "--limit", "100", "--json", "workflowName,displayTitle,conclusion,url") //nolint:gosec // gh path and arguments are fixed CI detector definitions
-	cmd.Dir = worktree
-	cmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
-	out, runErr := cmd.CombinedOutput()
-	if ctx.Err() != nil {
-		return nil, fmt.Errorf("run CI detector: %w", ctx.Err())
+	host, err := ciRemoteHost(ctx, worktree)
+	if err != nil {
+		return nil, err
 	}
-	if runErr != nil {
-		// gh uses a non-zero exit for both an absent login and inaccessible
-		// repository. CI health is optional in those environments.
+	authenticated, err := ciAuthenticated(ctx, worktree, gh, host)
+	if err != nil {
+		return nil, err
+	}
+	if !authenticated {
 		return nil, errDetectorSkipped
+	}
+	out, err := runCIProbe(ctx, worktree, gh, "run", "list", "--branch", targetBranch, "--limit", "100", "--json", "databaseId,workflowDatabaseId,workflowName,conclusion,url")
+	if err != nil {
+		return nil, err
 	}
 	var runs []ciWorkflowRun
 	if err := json.Unmarshal(out, &runs); err != nil {
 		return nil, fmt.Errorf("parse gh CI runs: %w", err)
 	}
-	return latestCICandidates(runs), nil
+	return ciCandidates(ctx, worktree, gh, latestFailingCIRuns(runs))
 }
 
-func latestCICandidates(runs []ciWorkflowRun) []Candidate {
-	candidates := make([]Candidate, 0, len(runs))
+func ciRemoteHost(ctx context.Context, worktree string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", worktree, "remote", "get-url", "origin") //nolint:gosec // worktree is the controlled scan checkout
+	cmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
+	out, err := cmd.Output()
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("read CI remote: %w", ctx.Err())
+		}
+		return "", fmt.Errorf("read CI remote: %w", err)
+	}
+	host, err := gitRemoteHost(strings.TrimSpace(string(out)))
+	if err != nil {
+		return "", err
+	}
+	return host, nil
+}
+
+func gitRemoteHost(remote string) (string, error) {
+	if strings.Contains(remote, "://") {
+		parsed, err := url.Parse(remote)
+		if err == nil && parsed.Hostname() != "" {
+			return parsed.Hostname(), nil
+		}
+		return "", errors.New("CI remote has no hostname")
+	}
+	hostAndPath := remote
+	if at := strings.LastIndex(hostAndPath, "@"); at >= 0 {
+		hostAndPath = hostAndPath[at+1:]
+	}
+	if colon := strings.Index(hostAndPath, ":"); colon > 0 && !strings.Contains(hostAndPath[:colon], "/") {
+		return hostAndPath[:colon], nil
+	}
+	return "", errors.New("CI remote has no hostname")
+}
+
+func ciAuthenticated(ctx context.Context, worktree, gh, host string) (bool, error) {
+	cmd := exec.CommandContext(ctx, gh, "auth", "status", "--active", "--hostname", host) //nolint:gosec // gh path is fixed and host comes from the scan checkout's Git remote
+	cmd.Dir = worktree
+	cmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return false, fmt.Errorf("check gh authentication: %w", ctx.Err())
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
+func runCIProbe(ctx context.Context, worktree, gh string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, gh, args...) //nolint:gosec // gh path and arguments come from fixed CI detector definitions
+	cmd.Dir = worktree
+	cmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("run CI detector: %w", ctx.Err())
+	}
+	if runErr != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			return nil, fmt.Errorf("run gh CI probe: %w", runErr)
+		}
+		return nil, fmt.Errorf("run gh CI probe: %w: %s", runErr, detail)
+	}
+	return stdout.Bytes(), nil
+}
+
+func latestFailingCIRuns(runs []ciWorkflowRun) []ciWorkflowRun {
+	failing := make([]ciWorkflowRun, 0, len(runs))
 	seenWorkflows := make(map[string]struct{}, len(runs))
 	// gh run list returns newest runs first, so the first occurrence is the
 	// current conclusion for that workflow.
 	for _, run := range runs {
-		workflow := firstNonEmpty(run.WorkflowName, "CI workflow")
-		if _, seen := seenWorkflows[workflow]; seen {
+		workflowKey := ciWorkflowKey(run)
+		if _, seen := seenWorkflows[workflowKey]; seen {
 			continue
 		}
-		seenWorkflows[workflow] = struct{}{}
+		seenWorkflows[workflowKey] = struct{}{}
 		if run.Conclusion != "failure" {
 			continue
 		}
-		job := firstNonEmpty(run.DisplayTitle, "unspecified job")
+		failing = append(failing, run)
+	}
+	return failing
+}
+
+func ciWorkflowKey(run ciWorkflowRun) string {
+	if run.WorkflowDatabaseID != 0 {
+		return "workflow:" + strconv.FormatInt(run.WorkflowDatabaseID, 10)
+	}
+	return "run:" + strconv.FormatInt(run.DatabaseID, 10)
+}
+
+func ciCandidates(ctx context.Context, worktree, gh string, runs []ciWorkflowRun) ([]Candidate, error) {
+	candidates := make([]Candidate, 0, len(runs))
+	for _, run := range runs {
+		out, err := runCIProbe(ctx, worktree, gh, "run", "view", strconv.FormatInt(run.DatabaseID, 10), "--json", "jobs")
+		if err != nil {
+			return nil, err
+		}
+		var details ciRunDetails
+		if err := json.Unmarshal(out, &details); err != nil {
+			return nil, fmt.Errorf("parse gh CI jobs for run %d: %w", run.DatabaseID, err)
+		}
+		workflow := firstNonEmpty(run.WorkflowName, "CI workflow")
+		job := firstNonEmpty(strings.Join(failedCIJobNames(details.Jobs), ", "), "unspecified job")
 		candidates = append(candidates, Candidate{
 			Detector: "ci",
 			Title:    workflow + " failed",
 			Detail:   fmt.Sprintf("workflow: %s; job: %s; run: %s", workflow, job, run.URL),
 		})
 	}
-	return candidates
+	return candidates, nil
+}
+
+func failedCIJobNames(jobs []ciJob) []string {
+	names := make([]string, 0, len(jobs))
+	for _, job := range jobs {
+		if job.Conclusion == "failure" && job.Name != "" {
+			names = append(names, job.Name)
+		}
+	}
+	return names
 }
 
 func firstNonEmpty(value, fallback string) string {
