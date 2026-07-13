@@ -19,7 +19,7 @@ import (
 )
 
 func TestAuditSpawnMergePipeline(t *testing.T) {
-	var _ func(*Dispatcher, context.Context) = (*Dispatcher).spawnAudit
+	assertAuditSpawnSignature((*Dispatcher).spawnAudit)
 
 	d, beads, worktrees, esc, _, spawner := newTestDispatcher(t)
 	worktree := auditFixtureRepo(t)
@@ -145,6 +145,8 @@ func TestAuditSpawnMergePipeline(t *testing.T) {
 		})
 	})
 }
+
+func assertAuditSpawnSignature(_ func(*Dispatcher, context.Context)) {}
 
 func TestAuditSpawnAllSectionsFailedDoesNotEscalate(t *testing.T) {
 	d, beads, worktrees, esc, _, spawner := newTestDispatcher(t)

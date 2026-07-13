@@ -66,6 +66,9 @@ func (d *Dispatcher) ensureRoleBead(ctx context.Context, name string) (string, e
 	if err != nil {
 		return "", fmt.Errorf("create %s role bead: %w", name, err)
 	}
+	if role == nil || role.ID == "" {
+		return "", fmt.Errorf("create %s role bead: empty bead", name)
+	}
 	return role.ID, nil
 }
 

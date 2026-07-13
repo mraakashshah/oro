@@ -12,7 +12,7 @@ import (
 )
 
 func TestJanitorSuppressionDerivation(t *testing.T) {
-	var _ func(*Dispatcher, context.Context, []string) ([]ops.Finding, error) = (*Dispatcher).deriveSuppressed
+	assertDeriveSuppressedSignature((*Dispatcher).deriveSuppressed)
 
 	d, store, _, _, _, _ := newTestDispatcher(t)
 	roleIDs := []string{"oro-janitor-role", "oro-audit-role"}
@@ -74,6 +74,9 @@ func TestJanitorSuppressionDerivation(t *testing.T) {
 	t.Run("production janitor filing consults shared suppression", func(t *testing.T) {
 		assertJanitorFilingUsesSharedSuppression(t)
 	})
+}
+
+func assertDeriveSuppressedSignature(_ func(*Dispatcher, context.Context, []string) ([]ops.Finding, error)) {
 }
 
 func assertJanitorFilingUsesSharedSuppression(t *testing.T) {

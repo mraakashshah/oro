@@ -51,23 +51,8 @@ func (d *Dispatcher) handleAuditResult(ctx context.Context, result ops.Result) {
 		_ = d.logEvent(ctx, "audit_suppression_failed", auditRoleActor, result.BeadID, "", err.Error())
 		return
 	}
-	for _, finding := range findings {
-		if finding.ID == "" {
-			continue
-		}
-		if err := d.appendAuditFinding(ctx, result.BeadID, finding); err != nil {
-			_ = d.logEvent(ctx, "audit_finding_persist_failed", auditRoleActor, result.BeadID, "", err.Error())
-			continue
-		}
-		if findingSuppressed(finding, active) || findingSuppressed(finding, suppressed) {
-			continue
-		}
-		if _, err := d.beads.Create(ctx, auditFindingCreateParams(finding)); err != nil {
-			_ = d.logEvent(ctx, "audit_finding_create_failed", auditRoleActor, result.BeadID, "", err.Error())
-			continue
-		}
-		_ = d.logEvent(ctx, "audit_finding_created", auditRoleActor, result.BeadID, "", finding.ID)
-	}
+	d.fileAuditFindings(ctx, result.BeadID, findings, active, suppressed)
+
 	coveragePayload, err := auditCoveragePayload()
 	if err != nil {
 		_ = d.logEvent(ctx, "audit_coverage_failed", auditRoleActor, result.BeadID, "", err.Error())
@@ -78,6 +63,30 @@ func (d *Dispatcher) handleAuditResult(ctx context.Context, result ops.Result) {
 		return
 	}
 	_ = d.logEvent(ctx, "audit_coverage", auditRoleActor, result.BeadID, "", coveragePayload)
+}
+
+func (d *Dispatcher) fileAuditFindings(
+	ctx context.Context,
+	roleBeadID string,
+	findings, active, suppressed []ops.Finding,
+) {
+	for _, finding := range findings {
+		if finding.ID == "" {
+			continue
+		}
+		if err := d.appendAuditFinding(ctx, roleBeadID, finding); err != nil {
+			_ = d.logEvent(ctx, "audit_finding_persist_failed", auditRoleActor, roleBeadID, "", err.Error())
+			continue
+		}
+		if findingSuppressed(finding, active) || findingSuppressed(finding, suppressed) {
+			continue
+		}
+		if _, err := d.beads.Create(ctx, auditFindingCreateParams(finding)); err != nil {
+			_ = d.logEvent(ctx, "audit_finding_create_failed", auditRoleActor, roleBeadID, "", err.Error())
+			continue
+		}
+		_ = d.logEvent(ctx, "audit_finding_created", auditRoleActor, roleBeadID, "", finding.ID)
+	}
 }
 
 func auditFindings(feedback string) ([]ops.Finding, error) {
