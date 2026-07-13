@@ -99,7 +99,7 @@ func TestJanitorBuiltinsSkipMissing(t *testing.T) {
 	}
 	t.Setenv("PATH", t.TempDir())
 
-	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree)
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main")
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -121,18 +121,18 @@ func TestJanitorBuiltinsSkipMissing(t *testing.T) {
 
 func TestCIDetectorEmitsFindingWhenRed(t *testing.T) {
 	worktree := t.TempDir()
-	runGit(t, worktree, "init", "-b", "main")
+	runGit(t, worktree, "init", "-b", "agent/janitor-scan")
 	binDir := t.TempDir()
 	gh := `#!/bin/sh
-[ "$1" = run ] && [ "$2" = list ] && [ "$3" = --branch ] && [ "$4" = main ] || exit 1
-printf '%s\n' '[{"workflowName":"CI","displayTitle":"unit tests","conclusion":"failure","url":"https://github.example/acme/repo/actions/runs/42"},{"workflowName":"Release","displayTitle":"publish","conclusion":"failure","url":"https://github.example/acme/repo/actions/runs/43"}]'
+[ "$#" -eq 8 ] && [ "$1" = run ] && [ "$2" = list ] && [ "$3" = --branch ] && [ "$4" = main ] && [ "$5" = --limit ] && [ "$6" = 100 ] && [ "$7" = --json ] && [ "$8" = workflowName,displayTitle,conclusion,url ] || exit 1
+printf '%s\n' '[{"workflowName":"CI","displayTitle":"unit tests","conclusion":"failure","url":"https://github.example/acme/repo/actions/runs/42"},{"workflowName":"CI","displayTitle":"older unit tests","conclusion":"failure","url":"https://github.example/acme/repo/actions/runs/41"},{"workflowName":"Release","displayTitle":"publish","conclusion":"failure","url":"https://github.example/acme/repo/actions/runs/43"}]'
 `
 	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(gh), 0o700); err != nil {
 		t.Fatalf("write gh fixture: %v", err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree)
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main")
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -158,13 +158,16 @@ printf '%s\n' '[{"workflowName":"CI","displayTitle":"unit tests","conclusion":"f
 	if !containsCandidate(cands, want) {
 		t.Errorf("candidates = %#v, want %#v", cands, want)
 	}
+	if got := detectorCandidateCount(cands, "ci"); got != 2 {
+		t.Errorf("ci candidate count = %d, want one per failing workflow (2): %#v", got, cands)
+	}
 }
 
 func TestCIDetectorNoopWhenToolMissing(t *testing.T) {
 	worktree := t.TempDir()
 	t.Setenv("PATH", t.TempDir())
 
-	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree)
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main")
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -191,7 +194,7 @@ func TestCIDetectorNoopWhenUnauthed(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree)
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main")
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -212,13 +215,16 @@ func TestCIDetectorNoopWhenGreen(t *testing.T) {
 	worktree := t.TempDir()
 	runGit(t, worktree, "init", "-b", "main")
 	binDir := t.TempDir()
-	gh := "#!/bin/sh\nprintf '%s\\n' '[{\"workflowName\":\"CI\",\"conclusion\":\"success\",\"url\":\"https://github.example/acme/repo/actions/runs/42\"}]'\n"
+	gh := `#!/bin/sh
+[ "$#" -eq 8 ] && [ "$1" = run ] && [ "$2" = list ] && [ "$3" = --branch ] && [ "$4" = main ] && [ "$5" = --limit ] && [ "$6" = 100 ] && [ "$7" = --json ] && [ "$8" = workflowName,displayTitle,conclusion,url ] || exit 1
+printf '%s\n' '[{"workflowName":"CI","displayTitle":"unit tests","conclusion":"success","url":"https://github.example/acme/repo/actions/runs/44"},{"workflowName":"CI","displayTitle":"older unit tests","conclusion":"failure","url":"https://github.example/acme/repo/actions/runs/42"}]'
+`
 	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(gh), 0o700); err != nil {
 		t.Fatalf("write gh fixture: %v", err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree)
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main")
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -232,7 +238,7 @@ func TestCIDetectorNoopWhenGreen(t *testing.T) {
 	}
 }
 
-func TestCIDetectorNoopOutsideGitWorktree(t *testing.T) {
+func TestCIDetectorNoopWithoutTargetBranch(t *testing.T) {
 	binDir := t.TempDir()
 	gh := "#!/bin/sh\nprintf '%s\\n' '[]'\n"
 	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(gh), 0o700); err != nil {
@@ -240,7 +246,7 @@ func TestCIDetectorNoopOutsideGitWorktree(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), t.TempDir())
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), t.TempDir(), "")
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -268,7 +274,7 @@ func TestJanitorBuiltinsKeepsLintFindings(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir)
 
-	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree)
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main")
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -296,7 +302,7 @@ func TestJanitorBuiltinsTreatsDetectorStderrAsCrash(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir)
 
-	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree)
+	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree, "main")
 	if err == nil {
 		t.Fatal("run built-in detectors succeeded, want detector crash error")
 	}
@@ -331,7 +337,7 @@ func TestJanitorBuiltinsFindsOrphanFiles(t *testing.T) {
 		t.Fatalf("write asset reference: %v", err)
 	}
 
-	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree)
+	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree, "main")
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -366,7 +372,7 @@ func TestJanitorBuiltinsUsesGitHistoryForTODOAge(t *testing.T) {
 		t.Fatalf("refresh TODO file mtime: %v", err)
 	}
 
-	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree)
+	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree, "main")
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -386,7 +392,7 @@ func TestJanitorBuiltinsFindsBrokenRelativeLinksWithoutTools(t *testing.T) {
 	}
 	t.Setenv("PATH", t.TempDir())
 
-	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree)
+	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree, "main")
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -415,6 +421,16 @@ func containsCandidate(candidates []janitor.Candidate, target janitor.Candidate)
 		}
 	}
 	return false
+}
+
+func detectorCandidateCount(candidates []janitor.Candidate, detector string) int {
+	count := 0
+	for _, candidate := range candidates {
+		if candidate.Detector == detector {
+			count++
+		}
+	}
+	return count
 }
 
 func runGit(t *testing.T, worktree string, args ...string) {

@@ -48,10 +48,12 @@ type janitorFile struct {
 // janitor detector script. A missing detector binary is recorded in skipped,
 // rather than returning an error. Detector output is kept as a candidate even
 // when the detector exits non-zero, which is the normal lint finding signal.
+// targetBranch is passed to repository-level probes such as CI; when it is
+// empty, those probes are skipped and cannot contribute re-run commands.
 //
 //oro:testonly — production wiring is deferred to the dispatcher janitor lifecycle.
-func RunBuiltins(ctx context.Context, worktree string) (cands []Candidate, ran, skipped []string, err error) {
-	for _, detector := range builtinsFor(worktree) {
+func RunBuiltins(ctx context.Context, worktree, targetBranch string) (cands []Candidate, ran, skipped []string, err error) {
+	for _, detector := range builtinsFor(worktree, targetBranch) {
 		if detector.run != nil {
 			builtinCands, runBuiltinErr := detector.run(ctx, worktree)
 			if runBuiltinErr != nil {
@@ -95,9 +97,11 @@ func RunBuiltins(ctx context.Context, worktree string) (cands []Candidate, ran, 
 	return cands, ran, skipped, nil
 }
 
-func builtinsFor(worktree string) []builtinDetector {
+func builtinsFor(worktree, targetBranch string) []builtinDetector {
 	detectors := []builtinDetector{
-		{name: "ci", run: ciDetector},
+		{name: "ci", run: func(ctx context.Context, worktree string) ([]Candidate, error) {
+			return ciDetector(ctx, worktree, targetBranch)
+		}},
 		{name: "todo", run: staleTODOs},
 		{name: "broken-links", run: brokenRelativeLinks},
 		{name: "orphan-files", run: orphanFiles},
@@ -125,7 +129,7 @@ type ciWorkflowRun struct {
 	URL          string `json:"url"`
 }
 
-func ciDetector(ctx context.Context, worktree string) ([]Candidate, error) {
+func ciDetector(ctx context.Context, worktree, targetBranch string) ([]Candidate, error) {
 	gh, err := exec.LookPath("gh")
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
@@ -133,16 +137,10 @@ func ciDetector(ctx context.Context, worktree string) ([]Candidate, error) {
 		}
 		return nil, fmt.Errorf("find gh: %w", err)
 	}
-	branch, err := currentBranch(ctx, worktree)
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, fmt.Errorf("find CI branch: %w", ctx.Err())
-		}
-		// The rest of the built-in suite can scan a plain directory in tests
-		// and small repositories. CI status has no meaningful branch there.
+	if targetBranch == "" {
 		return nil, errDetectorSkipped
 	}
-	cmd := exec.CommandContext(ctx, gh, "run", "list", "--branch", branch, "--status", "failure", "--json", "workflowName,displayTitle,conclusion,url") //nolint:gosec // gh path and arguments are fixed CI detector definitions
+	cmd := exec.CommandContext(ctx, gh, "run", "list", "--branch", targetBranch, "--limit", "100", "--json", "workflowName,displayTitle,conclusion,url") //nolint:gosec // gh path and arguments are fixed CI detector definitions
 	cmd.Dir = worktree
 	cmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
 	out, runErr := cmd.CombinedOutput()
@@ -158,31 +156,23 @@ func ciDetector(ctx context.Context, worktree string) ([]Candidate, error) {
 	if err := json.Unmarshal(out, &runs); err != nil {
 		return nil, fmt.Errorf("parse gh CI runs: %w", err)
 	}
-	return ciCandidates(runs), nil
+	return latestCICandidates(runs), nil
 }
 
-func currentBranch(ctx context.Context, worktree string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "branch", "--show-current") //nolint:gosec // fixed git command in the supplied scan worktree
-	cmd.Dir = worktree
-	cmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("find CI branch: %w", err)
-	}
-	branch := strings.TrimSpace(string(out))
-	if branch == "" {
-		return "", errors.New("find CI branch: detached HEAD")
-	}
-	return branch, nil
-}
-
-func ciCandidates(runs []ciWorkflowRun) []Candidate {
+func latestCICandidates(runs []ciWorkflowRun) []Candidate {
 	candidates := make([]Candidate, 0, len(runs))
+	seenWorkflows := make(map[string]struct{}, len(runs))
+	// gh run list returns newest runs first, so the first occurrence is the
+	// current conclusion for that workflow.
 	for _, run := range runs {
+		workflow := firstNonEmpty(run.WorkflowName, "CI workflow")
+		if _, seen := seenWorkflows[workflow]; seen {
+			continue
+		}
+		seenWorkflows[workflow] = struct{}{}
 		if run.Conclusion != "failure" {
 			continue
 		}
-		workflow := firstNonEmpty(run.WorkflowName, "CI workflow")
 		job := firstNonEmpty(run.DisplayTitle, "unspecified job")
 		candidates = append(candidates, Candidate{
 			Detector: "ci",
