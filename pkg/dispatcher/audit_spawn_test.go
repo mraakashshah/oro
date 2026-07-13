@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"oro/pkg/ops"
+	"oro/pkg/protocol"
 )
 
 func TestAuditSpawnMergePipeline(t *testing.T) {
@@ -90,6 +91,34 @@ func TestAuditSpawnAllSectionsFailedDoesNotEscalate(t *testing.T) {
 	}
 }
 
+func TestAuditSpawnSuppressesClosedFinding(t *testing.T) {
+	d, beads, worktrees, _, _, spawner := newTestDispatcher(t)
+	worktree := auditFixtureRepo(t)
+	worktrees.createFn = func(context.Context, string, string) (string, string, error) {
+		return worktree, "agent/audit", nil
+	}
+	finding := auditFixtureFinding()
+	spawner.verdict = auditSectionOutput(t, ops.ReviewReport{
+		Verdict:  ops.VerdictRejected,
+		Findings: []ops.Finding{finding},
+	})
+	beads.metadataMatches = []*protocol.Bead{{
+		Status: "closed",
+		Metadata: map[string]any{
+			auditFindingMetadataKey: ops.FindingID("", finding),
+		},
+	}}
+
+	d.spawnAudit(context.Background(), nil)
+
+	beads.mu.Lock()
+	created := len(beads.created)
+	beads.mu.Unlock()
+	if created != 0 {
+		t.Fatalf("created beads = %d, want closed finding suppression", created)
+	}
+}
+
 func auditFixtureRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
@@ -113,4 +142,16 @@ func auditSectionOutput(t *testing.T, report ops.ReviewReport) string {
 		t.Fatalf("marshal audit report: %v", err)
 	}
 	return "```json\n" + string(payload) + "\n```\nVERDICT: REJECTED\n"
+}
+
+func auditFixtureFinding() ops.Finding {
+	return ops.Finding{
+		Severity:   ops.SevImportant,
+		Category:   "correctness",
+		Title:      "shared audit finding",
+		Detail:     "the fixture needs a remediation",
+		Evidence:   []ops.Evidence{{File: "audit.go", LineStart: 1, LineEnd: 1, Quote: "package fixture"}},
+		Confidence: 50,
+		Origin:     "pre_existing",
+	}
 }

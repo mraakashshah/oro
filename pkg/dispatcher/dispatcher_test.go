@@ -126,6 +126,7 @@ type fakeBeadStore struct {
 	readyCalled          int // incremented on every Ready() call
 	dependencyCycles     []beadstore.Cycle
 	journeys             map[string][]beadstore.JourneyEvent
+	metadataMatches      []*protocol.Bead
 }
 
 func (m *fakeBeadStore) Ready(_ context.Context) ([]protocol.Bead, error) {
@@ -306,7 +307,9 @@ func (m *fakeBeadStore) FindByParentAndTag(_ context.Context, _ string, _ string
 }
 
 func (m *fakeBeadStore) FindByMetadataKey(_ context.Context, _ string) ([]*protocol.Bead, error) {
-	return []*protocol.Bead{}, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]*protocol.Bead(nil), m.metadataMatches...), nil
 }
 
 func (m *fakeBeadStore) InProgress(_ context.Context) ([]protocol.Bead, error) {
