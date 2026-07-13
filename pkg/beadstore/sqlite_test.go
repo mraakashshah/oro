@@ -195,6 +195,44 @@ func TestCreateClosedJanitorRoleBead(t *testing.T) {
 	}
 }
 
+// TestCreateBeadEventPayloadCarriesStatus asserts the bead_created event records
+// the initial status, so a bead born closed is observable in the event log rather
+// than leaving a journey with a bead_created event and no bead_closed event.
+func TestCreateBeadEventPayloadCarriesStatus(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+
+	if _, err := store.Create(ctx, CreateParams{ID: "oro-born-closed", Title: "Born closed", Status: "closed"}); err != nil {
+		t.Fatalf("Create closed bead: %v", err)
+	}
+	if got := createdEventStatus(t, store.db, "oro-born-closed"); got != "closed" {
+		t.Fatalf("bead_created status = %q, want closed", got)
+	}
+
+	if _, err := store.Create(ctx, CreateParams{ID: "oro-born-open", Title: "Born open"}); err != nil {
+		t.Fatalf("Create default-status bead: %v", err)
+	}
+	if got := createdEventStatus(t, store.db, "oro-born-open"); got != "open" {
+		t.Fatalf("bead_created status = %q, want open", got)
+	}
+}
+
+// createdEventStatus returns the "status" field from a bead's bead_created event payload.
+func createdEventStatus(t *testing.T, db *sql.DB, beadID string) string {
+	t.Helper()
+	var payloadJSON string
+	if err := db.QueryRowContext(context.Background(),
+		`SELECT payload FROM events WHERE type='bead_created' AND bead_id=?`, beadID).Scan(&payloadJSON); err != nil {
+		t.Fatalf("query bead_created payload for %s: %v", beadID, err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		t.Fatalf("unmarshal bead_created payload for %s: %v", beadID, err)
+	}
+	status, _ := payload["status"].(string)
+	return status
+}
+
 func TestSQLiteStoreShowReturnsMigratedSQLiteBead(t *testing.T) {
 	ctx := context.Background()
 	db, err := sql.Open("sqlite", ":memory:")

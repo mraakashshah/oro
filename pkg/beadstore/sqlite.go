@@ -206,6 +206,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	if err := insertEvent(ctx, tx, "bead_created", params.ID, map[string]any{
 		"type":     params.Type,
 		"priority": params.Priority,
+		"status":   params.Status,
 	}); err != nil {
 		return nil, err
 	}
