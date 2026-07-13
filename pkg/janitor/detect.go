@@ -51,8 +51,6 @@ type janitorFile struct {
 // when the detector exits non-zero, which is the normal lint finding signal.
 // targetBranch is passed to repository-level probes such as CI; when it is
 // empty, those probes are skipped and cannot contribute re-run commands.
-//
-//oro:testonly — production wiring is deferred to the dispatcher janitor lifecycle.
 func RunBuiltins(ctx context.Context, worktree, targetBranch string) (cands []Candidate, ran, skipped []string, err error) {
 	for _, detector := range builtinsFor(worktree, targetBranch) {
 		if detector.run != nil {
@@ -564,8 +562,6 @@ func candidatesFromOutput(detector string, output []byte) []Candidate {
 // can fall back to built-in detectors. Malformed JSONL records are skipped and
 // returned in skippedLines. A non-zero script exit returns an error containing
 // the script's combined output.
-//
-//oro:testonly — production wiring is deferred to the dispatcher janitor lifecycle.
 func RunDetectScript(ctx context.Context, worktree string) (cands []Candidate, skippedLines []string, found bool, err error) {
 	scriptPath := filepath.Join(worktree, detectScriptPath)
 	if _, statErr := os.Stat(scriptPath); statErr != nil {
