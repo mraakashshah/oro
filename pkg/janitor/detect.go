@@ -3,6 +3,7 @@ package janitor
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,7 +34,12 @@ type builtinDetector struct {
 	name    string
 	command string
 	args    []string
-	run     func(string) ([]Candidate, error)
+	run     func(context.Context, string) ([]Candidate, error)
+}
+
+type janitorFile struct {
+	relPath  string
+	contents []byte
 }
 
 // RunBuiltins runs fallback detectors when a project does not provide a
@@ -44,7 +51,7 @@ type builtinDetector struct {
 func RunBuiltins(ctx context.Context, worktree string) (cands []Candidate, ran, skipped []string, err error) {
 	for _, detector := range builtinsFor(worktree) {
 		if detector.run != nil {
-			builtinCands, runBuiltinErr := detector.run(worktree)
+			builtinCands, runBuiltinErr := detector.run(ctx, worktree)
 			if runBuiltinErr != nil {
 				return nil, nil, nil, fmt.Errorf("run janitor detector %q: %w", detector.name, runBuiltinErr)
 			}
@@ -65,16 +72,19 @@ func RunBuiltins(ctx context.Context, worktree string) (cands []Candidate, ran, 
 		cmd := exec.CommandContext(ctx, binary, detector.args...) //nolint:gosec // binary and arguments are fixed built-in detector definitions
 		cmd.Dir = worktree
 		cmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
-		out, runErr := cmd.CombinedOutput()
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		runErr := cmd.Run()
 		if ctx.Err() != nil {
 			return nil, nil, nil, fmt.Errorf("run janitor detector %q: %w", detector.name, ctx.Err())
 		}
-		if runErr != nil && strings.TrimSpace(string(out)) == "" {
-			return nil, nil, nil, fmt.Errorf("run janitor detector %q: %w", detector.name, runErr)
+		if runErr != nil && strings.TrimSpace(stdout.String()) == "" {
+			return nil, nil, nil, detectorRunError(detector.name, runErr, stderr.String())
 		}
 
 		ran = append(ran, detector.name)
-		cands = append(cands, candidatesFromOutput(detector.name, out)...)
+		cands = append(cands, candidatesFromOutput(detector.name, stdout.Bytes())...)
 	}
 	return cands, ran, skipped, nil
 }
@@ -83,7 +93,7 @@ func builtinsFor(worktree string) []builtinDetector {
 	detectors := []builtinDetector{
 		{name: "todo", run: staleTODOs},
 		{name: "broken-links", run: brokenRelativeLinks},
-		{name: "orphan-files", run: func(string) ([]Candidate, error) { return nil, nil }},
+		{name: "orphan-files", run: orphanFiles},
 	}
 	if isProjectFile(worktree, "go.mod") {
 		detectors = append(detectors,
@@ -101,11 +111,19 @@ func builtinsFor(worktree string) []builtinDetector {
 	return detectors
 }
 
-func staleTODOs(worktree string) ([]Candidate, error) {
+func detectorRunError(detector string, runErr error, stderr string) error {
+	detail := strings.TrimSpace(stderr)
+	if detail == "" {
+		return fmt.Errorf("run janitor detector %q: %w", detector, runErr)
+	}
+	return fmt.Errorf("run janitor detector %q: %w: %s", detector, runErr, detail)
+}
+
+func staleTODOs(ctx context.Context, worktree string) ([]Candidate, error) {
 	var cands []Candidate
 	deadline := time.Now().AddDate(0, 0, -60)
 	err := walkJanitorFiles(worktree, func(path string, entry fs.DirEntry) error {
-		fileCands, candidateErr := staleTODOCandidates(worktree, deadline, path, entry)
+		fileCands, candidateErr := staleTODOCandidates(ctx, worktree, deadline, path, entry)
 		if candidateErr != nil {
 			return candidateErr
 		}
@@ -118,7 +136,7 @@ func staleTODOs(worktree string) ([]Candidate, error) {
 	return cands, nil
 }
 
-func brokenRelativeLinks(worktree string) ([]Candidate, error) {
+func brokenRelativeLinks(_ context.Context, worktree string) ([]Candidate, error) {
 	var cands []Candidate
 	err := walkJanitorFiles(worktree, func(path string, entry fs.DirEntry) error {
 		fileCands, candidateErr := brokenLinkCandidates(worktree, path, entry)
@@ -134,13 +152,80 @@ func brokenRelativeLinks(worktree string) ([]Candidate, error) {
 	return cands, nil
 }
 
+func orphanFiles(_ context.Context, worktree string) ([]Candidate, error) {
+	files, err := readJanitorFiles(worktree)
+	if err != nil {
+		return nil, fmt.Errorf("read files for orphan scan: %w", err)
+	}
+	var cands []Candidate
+	for _, file := range files {
+		if !isAssetOrScript(file.relPath) || isReferenced(file, files) {
+			continue
+		}
+		cands = append(cands, Candidate{
+			Detector: "orphan-files",
+			File:     filepath.ToSlash(file.relPath),
+			Title:    "orphan file",
+			Detail:   "unreferenced asset or script",
+		})
+	}
+	return cands, nil
+}
+
+func readJanitorFiles(worktree string) ([]janitorFile, error) {
+	var files []janitorFile
+	err := walkJanitorFiles(worktree, func(path string, entry fs.DirEntry) error {
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return fmt.Errorf("stat %q: %w", path, infoErr)
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		contents, readErr := os.ReadFile(path) //nolint:gosec // path comes from filepath.WalkDir under the supplied worktree
+		if readErr != nil {
+			return fmt.Errorf("read %q: %w", path, readErr)
+		}
+		relPath, relErr := filepath.Rel(worktree, path)
+		if relErr != nil {
+			return fmt.Errorf("make %q relative: %w", path, relErr)
+		}
+		files = append(files, janitorFile{relPath: relPath, contents: contents})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk janitor files: %w", err)
+	}
+	return files, nil
+}
+
+func isAssetOrScript(path string) bool {
+	topDir, _, found := strings.Cut(filepath.ToSlash(path), "/")
+	return found && (topDir == "assets" || topDir == "scripts")
+}
+
+func isReferenced(target janitorFile, files []janitorFile) bool {
+	relPath := []byte(filepath.ToSlash(target.relPath))
+	baseName := []byte(filepath.Base(target.relPath))
+	for _, file := range files {
+		if file.relPath == target.relPath {
+			continue
+		}
+		if bytes.Contains(file.contents, relPath) || bytes.Contains(file.contents, baseName) {
+			return true
+		}
+	}
+	return false
+}
+
 func walkJanitorFiles(worktree string, visit func(string, fs.DirEntry) error) error {
 	err := filepath.WalkDir(worktree, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return fmt.Errorf("walk %q: %w", path, walkErr)
 		}
 		if entry.IsDir() {
-			if entry.Name() == ".git" {
+			switch entry.Name() {
+			case ".git", ".worktrees", "node_modules", "vendor":
 				return filepath.SkipDir
 			}
 			return nil
@@ -153,14 +238,7 @@ func walkJanitorFiles(worktree string, visit func(string, fs.DirEntry) error) er
 	return nil
 }
 
-func staleTODOCandidates(worktree string, deadline time.Time, path string, entry fs.DirEntry) ([]Candidate, error) {
-	info, err := entry.Info()
-	if err != nil {
-		return nil, fmt.Errorf("stat %q: %w", path, err)
-	}
-	if !info.ModTime().Before(deadline) {
-		return nil, nil
-	}
+func staleTODOCandidates(ctx context.Context, worktree string, deadline time.Time, path string, _ fs.DirEntry) ([]Candidate, error) {
 	contents, err := os.ReadFile(path) //nolint:gosec // path comes from filepath.WalkDir under the supplied worktree
 	if err != nil {
 		return nil, fmt.Errorf("read %q: %w", path, err)
@@ -169,7 +247,36 @@ func staleTODOCandidates(worktree string, deadline time.Time, path string, entry
 	if err != nil {
 		return nil, fmt.Errorf("make %q relative: %w", path, err)
 	}
-	return todoCandidates(relPath, contents), nil
+	fileCands := todoCandidates(relPath, contents)
+	if len(fileCands) == 0 {
+		return nil, nil
+	}
+	updatedAt, found, err := lastGitUpdate(ctx, worktree, relPath)
+	if err != nil {
+		return nil, err
+	}
+	if !found || !updatedAt.Before(deadline) {
+		return nil, nil
+	}
+	return fileCands, nil
+}
+
+func lastGitUpdate(ctx context.Context, worktree, relPath string) (time.Time, bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "log", "-1", "--format=%ct", "--", filepath.ToSlash(relPath)) //nolint:gosec // relPath comes from WalkDir under worktree and follows --
+	cmd.Dir = worktree
+	out, err := cmd.Output()
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("find TODO age for %q: %w", relPath, err)
+	}
+	rawTimestamp := strings.TrimSpace(string(out))
+	if rawTimestamp == "" {
+		return time.Time{}, false, nil
+	}
+	timestamp, err := strconv.ParseInt(rawTimestamp, 10, 64)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("parse TODO age for %q: %w", relPath, err)
+	}
+	return time.Unix(timestamp, 0), true, nil
 }
 
 func todoCandidates(path string, contents []byte) []Candidate {

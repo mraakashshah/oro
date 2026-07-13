@@ -3,10 +3,12 @@ package janitor_test
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"oro/pkg/janitor"
 )
@@ -145,6 +147,102 @@ func TestJanitorBuiltinsKeepsLintFindings(t *testing.T) {
 	}
 }
 
+func TestJanitorBuiltinsTreatsDetectorStderrAsCrash(t *testing.T) {
+	worktree := t.TempDir()
+	if err := os.WriteFile(filepath.Join(worktree, "pyproject.toml"), []byte("[project]\nname = 'fixture'\n"), 0o600); err != nil {
+		t.Fatalf("write Python project marker: %v", err)
+	}
+	binDir := t.TempDir()
+	vulturePath := filepath.Join(binDir, "vulture")
+	vulture := "#!/bin/sh\nprintf '%s\\n' 'configuration crashed' >&2\nexit 1\n"
+	if err := os.WriteFile(vulturePath, []byte(vulture), 0o700); err != nil {
+		t.Fatalf("write vulture fixture: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree)
+	if err == nil {
+		t.Fatal("run built-in detectors succeeded, want detector crash error")
+	}
+	if !strings.Contains(err.Error(), "configuration crashed") {
+		t.Errorf("error = %q, want detector stderr", err)
+	}
+	if contains(ran, "vulture") {
+		t.Errorf("ran = %#v, should not include crashed vulture", ran)
+	}
+	for _, candidate := range cands {
+		if candidate.Detector == "vulture" {
+			t.Errorf("candidates = %#v, want no vulture crash output", cands)
+		}
+	}
+}
+
+func TestJanitorBuiltinsFindsOrphanFiles(t *testing.T) {
+	worktree := t.TempDir()
+	assetsDir := filepath.Join(worktree, "assets")
+	if err := os.Mkdir(assetsDir, 0o750); err != nil {
+		t.Fatalf("create assets directory: %v", err)
+	}
+	for name, contents := range map[string]string{
+		"used.svg":   "used",
+		"unused.svg": "unused",
+	} {
+		if err := os.WriteFile(filepath.Join(assetsDir, name), []byte(contents), 0o600); err != nil {
+			t.Fatalf("write asset %q: %v", name, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "README.md"), []byte("![used](assets/used.svg)\n"), 0o600); err != nil {
+		t.Fatalf("write asset reference: %v", err)
+	}
+
+	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree)
+	if err != nil {
+		t.Fatalf("run built-in detectors: %v", err)
+	}
+	if !contains(ran, "orphan-files") {
+		t.Errorf("ran = %#v, want orphan-files", ran)
+	}
+	want := janitor.Candidate{Detector: "orphan-files", File: "assets/unused.svg", Title: "orphan file", Detail: "unreferenced asset or script"}
+	if !containsCandidate(cands, want) {
+		t.Errorf("candidates = %#v, want %#v", cands, want)
+	}
+	for _, candidate := range cands {
+		if candidate.Detector == "orphan-files" && candidate.File == "assets/used.svg" {
+			t.Errorf("candidates = %#v, referenced asset should not be orphaned", cands)
+		}
+	}
+}
+
+func TestJanitorBuiltinsUsesGitHistoryForTODOAge(t *testing.T) {
+	worktree := t.TempDir()
+	oldPath := filepath.Join(worktree, "old.go")
+	if err := os.WriteFile(oldPath, []byte("package fixture // TODO remove legacy path\n"), 0o600); err != nil {
+		t.Fatalf("write TODO fixture: %v", err)
+	}
+	runGit(t, worktree, "init")
+	runGit(t, worktree, "config", "user.email", "janitor@example.com")
+	runGit(t, worktree, "config", "user.name", "Janitor Test")
+	runGit(t, worktree, "add", "old.go")
+	oldDate := time.Now().AddDate(0, 0, -61).Format(time.RFC3339)
+	runGitWithEnv(t, worktree, []string{"GIT_AUTHOR_DATE=" + oldDate, "GIT_COMMITTER_DATE=" + oldDate}, "commit", "-m", "add old TODO")
+	now := time.Now()
+	if err := os.Chtimes(oldPath, now, now); err != nil {
+		t.Fatalf("refresh TODO file mtime: %v", err)
+	}
+
+	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree)
+	if err != nil {
+		t.Fatalf("run built-in detectors: %v", err)
+	}
+	if !contains(ran, "todo") {
+		t.Errorf("ran = %#v, want todo", ran)
+	}
+	want := janitor.Candidate{Detector: "todo", File: "old.go", Line: 1, Title: "stale TODO/FIXME", Detail: "package fixture // TODO remove legacy path"}
+	if !containsCandidate(cands, want) {
+		t.Errorf("candidates = %#v, want %#v", cands, want)
+	}
+}
+
 func TestJanitorBuiltinsFindsBrokenRelativeLinksWithoutTools(t *testing.T) {
 	worktree := t.TempDir()
 	if err := os.WriteFile(filepath.Join(worktree, "README.md"), []byte("[missing](docs/missing.md)\n"), 0o600); err != nil {
@@ -181,6 +279,21 @@ func containsCandidate(candidates []janitor.Candidate, target janitor.Candidate)
 		}
 	}
 	return false
+}
+
+func runGit(t *testing.T, worktree string, args ...string) {
+	t.Helper()
+	runGitWithEnv(t, worktree, nil, args...)
+}
+
+func runGitWithEnv(t *testing.T, worktree string, env []string, args ...string) {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "git", args...)
+	cmd.Dir = worktree
+	cmd.Env = append(os.Environ(), env...)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
+	}
 }
 
 func TestCandidateShape(t *testing.T) {
