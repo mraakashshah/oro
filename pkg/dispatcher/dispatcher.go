@@ -667,6 +667,12 @@ type Config struct {
 	ConsolidateAfterN       int           // Trigger context consolidation after N completed beads (default 5).
 	DreamInterval           int           // Spawn a dream memory-consolidation agent after N completed beads (default 10; 0 disables).
 	GradeGateEnabled        bool          // When true, dream actions are queued as card proposals instead of directly applying memory mutations.
+	JanitorInterval         int           // Run janitor every N dispatcher cycles; 0 disables it.
+	JanitorIdleThreshold    int           // Require at most this many queued beads before janitor runs; 0 means only an empty queue.
+	AuditEveryNJanitors     int           // Run audit every N janitor cycles; 0 disables periodic audit cadence.
+	AuditTopK               int           // Limit each audit to its top K findings; 0 uses the audit's natural limit.
+	JanitorEnabled          bool          // Enable janitor cycles. Enable flags intentionally default false.
+	AuditEnabled            bool          // Enable audit counters driven by janitor cycles.
 	PaneContextThreshold    int           // Context percentage threshold for pane handoff (default 60).
 	PaneMonitorInterval     time.Duration // Pane context_pct poll interval (default 5s).
 	PaneRestartCooldown     time.Duration // Min time between manager pane restarts (default 2m).
@@ -786,6 +792,21 @@ func (c *Config) withDefaults() Config {
 func (c Config) validate() error {
 	if c.MaxWorkers < 0 {
 		return fmt.Errorf("MaxWorkers must be non-negative, got %d", c.MaxWorkers)
+	}
+	if c.JanitorInterval < 0 {
+		return fmt.Errorf("JanitorInterval must be non-negative, got %d", c.JanitorInterval)
+	}
+	if c.JanitorIdleThreshold < 0 {
+		return fmt.Errorf("JanitorIdleThreshold must be non-negative, got %d", c.JanitorIdleThreshold)
+	}
+	if c.AuditEveryNJanitors < 0 {
+		return fmt.Errorf("AuditEveryNJanitors must be non-negative, got %d", c.AuditEveryNJanitors)
+	}
+	if c.AuditTopK < 0 {
+		return fmt.Errorf("AuditTopK must be non-negative, got %d", c.AuditTopK)
+	}
+	if c.AuditEnabled && !c.JanitorEnabled {
+		return fmt.Errorf("AuditEnabled requires JanitorEnabled because audit counters are driven by janitor cycles")
 	}
 	if c.HeartbeatTimeout <= 0 {
 		return fmt.Errorf("HeartbeatTimeout must be positive, got %v", c.HeartbeatTimeout)
