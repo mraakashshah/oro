@@ -768,6 +768,7 @@ func newStartCmd() *cobra.Command {
 		baseBranch         string
 		mutationTesting    bool
 		webEnabled         bool
+		noWeb              bool
 		webAddr            string
 	)
 
@@ -775,6 +776,9 @@ func newStartCmd() *cobra.Command {
 		Use:   "start",
 		Short: "Launch the Oro swarm (tmux session + dispatcher)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if noWeb {
+				webEnabled = false
+			}
 			// When --max-workers is unset (0), default to --workers so the
 			// ceiling equals the initial target (backward-compatible behaviour).
 			if maxWorkers == 0 {
@@ -807,7 +811,8 @@ func newStartCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&manualIntegration, "manual-integration", false, "leave completed worker branches for manual review instead of auto-merging")
 	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "base branch for worktree creation (default: main)")
 	cmd.Flags().BoolVar(&mutationTesting, "mutation-testing", false, "run mutation-testing tiers in dispatcher quality gates (off by default)")
-	cmd.Flags().BoolVar(&webEnabled, "web", false, "enable HTTP server for dashboard/health endpoints")
+	cmd.Flags().BoolVar(&webEnabled, "web", true, "enable HTTP server for dashboard/health endpoints")
+	cmd.Flags().BoolVar(&noWeb, "no-web", false, "disable HTTP server for headless/CI use")
 	cmd.Flags().StringVar(&webAddr, "web-addr", "", "HTTP server listen address (default 127.0.0.1:4444)")
 
 	return cmd

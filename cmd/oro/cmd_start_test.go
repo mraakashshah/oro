@@ -1301,21 +1301,44 @@ func TestStartWiresReviewPatternPaths(t *testing.T) {
 	}
 }
 
-func TestStartWebFlags(t *testing.T) {
-	t.Run("--web flag exists and defaults to false", func(t *testing.T) {
-		cmd := newStartCmd()
-		if err := cmd.ParseFlags([]string{}); err != nil {
-			t.Fatalf("ParseFlags: %v", err)
-		}
-		web, err := cmd.Flags().GetBool("web")
-		if err != nil {
-			t.Fatalf("GetBool web: %v", err)
-		}
-		if web {
-			t.Error("--web default: expected false")
-		}
-	})
+func TestStartWebEnabledByDefault(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "default enables the dashboard", want: true},
+		{name: "--web=false disables the dashboard", args: []string{"--web=false"}, want: false},
+		{name: "--no-web disables the dashboard", args: []string{"--no-web"}, want: false},
+	}
 
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pidPath := filepath.Join(t.TempDir(), "oro.pid")
+			t.Setenv("ORO_PID_PATH", pidPath)
+			t.Setenv(daemonSkipPreflightEnv, "1")
+
+			var got bool
+			previousRunDaemonOnly := runDaemonOnlyFn
+			runDaemonOnlyFn = func(_ *cobra.Command, _ string, _ int, _ int, _ time.Duration, _ time.Duration, _ time.Duration, _ bool, _ string, _ bool, webEnabled bool, _ string) error {
+				got = webEnabled
+				return nil
+			}
+			t.Cleanup(func() { runDaemonOnlyFn = previousRunDaemonOnly })
+
+			cmd := newStartCmd()
+			cmd.SetArgs(append([]string{"--daemon-only"}, tt.args...))
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("start: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("WebEnabled: got %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStartWebFlags(t *testing.T) {
 	t.Run("--web-addr flag exists and defaults to empty string", func(t *testing.T) {
 		cmd := newStartCmd()
 		if err := cmd.ParseFlags([]string{}); err != nil {
