@@ -24,6 +24,7 @@ func TestStoreContractMatchesReplatformSpec(t *testing.T) {
 
 	ctxType := reflect.TypeOf((*context.Context)(nil)).Elem()
 	beadSliceType := reflect.TypeOf([]protocol.Bead{})
+	beadPtrSliceType := reflect.TypeOf([]*protocol.Bead{})
 	beadPtrType := reflect.TypeOf((*protocol.Bead)(nil))
 	bytesType := reflect.TypeOf([]byte{})
 	errType := reflect.TypeOf((*error)(nil)).Elem()
@@ -46,7 +47,7 @@ func TestStoreContractMatchesReplatformSpec(t *testing.T) {
 	assertSignature(t, methods, "HasChildren", []reflect.Type{ctxType, stringType}, []reflect.Type{boolType, errType})
 	assertSignature(t, methods, "AllChildrenClosed", []reflect.Type{ctxType, stringType}, []reflect.Type{boolType, errType})
 	assertSignature(t, methods, "FindByParentAndTag", []reflect.Type{ctxType, stringType, stringType}, []reflect.Type{beadSliceType, errType})
-	assertSignature(t, methods, "FindByMetadataKey", []reflect.Type{ctxType, stringType}, []reflect.Type{beadSliceType, errType})
+	assertSignature(t, methods, "FindByMetadataKey", []reflect.Type{ctxType, stringType}, []reflect.Type{beadPtrSliceType, errType})
 	assertSignature(t, methods, "Export", []reflect.Type{ctxType}, []reflect.Type{bytesType, errType})
 	assertSignature(t, methods, "CountChildren", []reflect.Type{ctxType, stringType}, []reflect.Type{intType, errType})
 	assertSignature(t, methods, "DependencyCycles", []reflect.Type{ctxType}, []reflect.Type{cycleSliceType, errType})

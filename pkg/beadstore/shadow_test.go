@@ -18,7 +18,7 @@ func TestShadowStore(t *testing.T) {
 	t.Run("dual reads every read method and returns primary results", func(t *testing.T) {
 		ctx := context.Background()
 		seed := []protocol.Bead{
-			{ID: "ready", Title: "ready", Status: "open", Priority: 1, UpdatedAt: "2026-04-28T09:00:00Z"},
+			{ID: "ready", Title: "ready", Status: "open", Priority: 1, Metadata: map[string]any{"meta_finding_id": "finding-ready"}, UpdatedAt: "2026-04-28T09:00:00Z"},
 			{ID: "progress", Title: "progress", Status: "in_progress", Priority: 2, Epic: "epic", Tags: []string{"phase"}, UpdatedAt: "2026-04-28T09:00:00Z"},
 			{ID: "closed", Title: "closed", Status: "closed", Priority: 3, Epic: "epic", UpdatedAt: "2026-04-28T09:00:00Z"},
 		}
@@ -56,11 +56,18 @@ func TestShadowStore(t *testing.T) {
 		if _, err := store.FindByParentAndTag(ctx, "epic", "phase"); err != nil {
 			t.Fatalf("FindByParentAndTag: %v", err)
 		}
+		metadataMatches, err := store.FindByMetadataKey(ctx, "meta_finding_id")
+		if err != nil {
+			t.Fatalf("FindByMetadataKey: %v", err)
+		}
+		if len(metadataMatches) != 1 || metadataMatches[0] == nil || metadataMatches[0].ID != "ready" {
+			t.Fatalf("FindByMetadataKey returned %#v, want primary ready bead", metadataMatches)
+		}
 		if _, err := store.Export(ctx); err != nil {
 			t.Fatalf("Export: %v", err)
 		}
 
-		want := readCallCounts{ready: 1, inProgress: 1, blocked: 1, closed: 1, show: 1, hasChildren: 1, allChildrenClosed: 1, findByParentAndTag: 1, export: 1}
+		want := readCallCounts{ready: 1, inProgress: 1, blocked: 1, closed: 1, show: 1, hasChildren: 1, allChildrenClosed: 1, findByParentAndTag: 1, findByMetadataKey: 1, export: 1}
 		if got := primary.readCalls(); got != want {
 			t.Fatalf("primary read calls = %+v, want %+v", got, want)
 		}
@@ -573,6 +580,7 @@ type recordingStore struct {
 	hasChildrenCalls        int
 	allChildrenClosedCalls  int
 	findByParentAndTagCalls int
+	findByMetadataKeyCalls  int
 	exportCalls             int
 }
 
@@ -631,6 +639,11 @@ func (s *recordingStore) FindByParentAndTag(ctx context.Context, parentID, tag s
 	return s.Store.FindByParentAndTag(ctx, parentID, tag)
 }
 
+func (s *recordingStore) FindByMetadataKey(ctx context.Context, key string) ([]*protocol.Bead, error) {
+	s.findByMetadataKeyCalls++
+	return s.Store.FindByMetadataKey(ctx, key)
+}
+
 func (s *recordingStore) Export(ctx context.Context) ([]byte, error) {
 	s.exportCalls++
 	return s.Store.Export(ctx)
@@ -645,6 +658,7 @@ type readCallCounts struct {
 	hasChildren        int
 	allChildrenClosed  int
 	findByParentAndTag int
+	findByMetadataKey  int
 	export             int
 }
 
@@ -658,6 +672,7 @@ func (s *recordingStore) readCalls() readCallCounts {
 		hasChildren:        s.hasChildrenCalls,
 		allChildrenClosed:  s.allChildrenClosedCalls,
 		findByParentAndTag: s.findByParentAndTagCalls,
+		findByMetadataKey:  s.findByMetadataKeyCalls,
 		export:             s.exportCalls,
 	}
 }

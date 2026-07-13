@@ -52,7 +52,7 @@ func (r *errorReadTx) FindByParentAndTag(_ context.Context, _, _ string) ([]prot
 	return nil, errInjected
 }
 
-func (r *errorReadTx) FindByMetadataKey(_ context.Context, _ string) ([]protocol.Bead, error) {
+func (r *errorReadTx) FindByMetadataKey(_ context.Context, _ string) ([]*protocol.Bead, error) {
 	return nil, errInjected
 }
 

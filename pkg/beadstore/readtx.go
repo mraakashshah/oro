@@ -128,7 +128,7 @@ func (r *readTxImpl) AllChildrenClosed(ctx context.Context, epicID string) (bool
 
 // FindByParentAndTag implements ReadTx.
 func (r *readTxImpl) FindByParentAndTag(ctx context.Context, parentID, tag string) ([]protocol.Bead, error) {
-	return queryBeadsInTx(ctx, r.tx, `SELECT `+prefixedBeadColumns("b")+`
+	return queryBeadsInTx(ctx, r.tx, `SELECT `+prefixedBeadColumns()+`
 FROM beads b
 JOIN bead_tags t ON t.bead_id=b.id AND t.tag=?
 WHERE b.deleted=0 AND b.parent_id=?
@@ -136,11 +136,11 @@ ORDER BY b.priority ASC, b.created_at ASC`, tag, parentID)
 }
 
 // FindByMetadataKey implements ReadTx.
-func (r *readTxImpl) FindByMetadataKey(ctx context.Context, key string) ([]protocol.Bead, error) {
+func (r *readTxImpl) FindByMetadataKey(ctx context.Context, key string) ([]*protocol.Bead, error) {
 	if strings.TrimSpace(key) == "" {
 		return nil, fmt.Errorf("beadstore: metadata key is required")
 	}
-	beads, err := queryBeadsInTx(ctx, r.tx, `SELECT `+prefixedBeadColumns("b")+`
+	beads, err := queryBeadsInTx(ctx, r.tx, `SELECT `+prefixedBeadColumns()+`
 FROM beads b
 JOIN bead_metadata m ON m.bead_id=b.id AND m.key=?
 WHERE b.deleted=0
@@ -148,10 +148,7 @@ ORDER BY b.created_at ASC, b.id ASC`, key)
 	if err != nil {
 		return nil, err
 	}
-	if beads == nil {
-		return []protocol.Bead{}, nil
-	}
-	return beads, nil
+	return beadPointers(beads), nil
 }
 
 // Journey implements ReadTx.

@@ -153,8 +153,8 @@ func TestFindByMetadataKeyJanitor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindByMetadataKey(missing key): %v", err)
 	}
-	if len(none) != 0 {
-		t.Fatalf("FindByMetadataKey(missing key) = %d beads, want empty", len(none))
+	if none == nil || len(none) != 0 {
+		t.Fatalf("FindByMetadataKey(missing key) = %#v, want non-nil empty slice", none)
 	}
 }
 

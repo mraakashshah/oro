@@ -618,7 +618,7 @@ func (s *FakeStore) FindByParentAndTag(ctx context.Context, parentID, tag string
 }
 
 // FindByMetadataKey returns every bead that has key, regardless of status.
-func (s *FakeStore) FindByMetadataKey(ctx context.Context, key string) ([]protocol.Bead, error) {
+func (s *FakeStore) FindByMetadataKey(ctx context.Context, key string) ([]*protocol.Bead, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("find beads by metadata key context: %w", err)
 	}
@@ -636,7 +636,7 @@ func (s *FakeStore) FindByMetadataKey(ctx context.Context, key string) ([]protoc
 		}
 	}
 	sortBeads(matches)
-	return matches, nil
+	return beadPointers(matches), nil
 }
 
 // CountChildren returns the number of non-deleted child beads for parentID.
@@ -943,7 +943,7 @@ func (r *fakeReadTx) FindByParentAndTag(ctx context.Context, parentID, tag strin
 }
 
 // FindByMetadataKey implements ReadTx.
-func (r *fakeReadTx) FindByMetadataKey(ctx context.Context, key string) ([]protocol.Bead, error) {
+func (r *fakeReadTx) FindByMetadataKey(ctx context.Context, key string) ([]*protocol.Bead, error) {
 	return r.s.FindByMetadataKey(ctx, key)
 }
 

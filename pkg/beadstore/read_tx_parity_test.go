@@ -152,6 +152,38 @@ func TestReadTxParity(t *testing.T) {
 		}
 	})
 
+	t.Run("metadata_key_queries", func(t *testing.T) {
+		ctx := context.Background()
+		db := openBeadDB(ctx, t)
+		defer db.Close()
+		store := beadstore.NewSQLiteStore(db)
+
+		mustCreate(ctx, t, store, beadstore.CreateParams{
+			ID: "bd-metadata-open", Title: "open", Metadata: map[string]string{"meta_finding_id": "finding-open"},
+		})
+		mustCreate(ctx, t, store, beadstore.CreateParams{
+			ID: "bd-metadata-closed", Title: "closed", Metadata: map[string]string{"meta_finding_id": "finding-closed"},
+		})
+		if err := store.Close(ctx, "bd-metadata-closed", "resolved"); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+
+		storeMatches, err := store.FindByMetadataKey(ctx, "meta_finding_id")
+		if err != nil {
+			t.Fatalf("Store.FindByMetadataKey: %v", err)
+		}
+		var txMatches []*protocol.Bead
+		if err := store.WithReadTx(ctx, func(tx beadstore.ReadTx) error {
+			txMatches, err = tx.FindByMetadataKey(ctx, "meta_finding_id")
+			return err
+		}); err != nil {
+			t.Fatalf("ReadTx.FindByMetadataKey: %v", err)
+		}
+		if !reflect.DeepEqual(txMatches, storeMatches) {
+			t.Fatalf("ReadTx.FindByMetadataKey = %#v, Store.FindByMetadataKey = %#v", txMatches, storeMatches)
+		}
+	})
+
 	t.Run("cards_reads_share_tx_snapshot", func(t *testing.T) {
 		ctx := context.Background()
 

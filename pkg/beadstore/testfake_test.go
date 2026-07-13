@@ -445,6 +445,46 @@ func TestFakeStore(t *testing.T) {
 	})
 }
 
+func TestFakeStoreFindByMetadataKey(t *testing.T) {
+	ctx := context.Background()
+	store := beadstore.NewFakeStore(
+		protocol.Bead{ID: "open", Status: "open", Metadata: map[string]any{"meta_finding_id": "finding-open"}},
+		protocol.Bead{ID: "closed", Status: "closed", Metadata: map[string]any{"meta_finding_id": "finding-closed"}},
+		protocol.Bead{ID: "other", Status: "open", Metadata: map[string]any{"other": "value"}},
+	)
+
+	matches, err := store.FindByMetadataKey(ctx, "meta_finding_id")
+	if err != nil {
+		t.Fatalf("FindByMetadataKey: %v", err)
+	}
+	if len(matches) != 2 || matches[0] == nil || matches[1] == nil {
+		t.Fatalf("FindByMetadataKey = %#v, want two non-nil bead pointers", matches)
+	}
+	if matches[0].ID != "closed" || matches[1].ID != "open" {
+		t.Fatalf("FindByMetadataKey IDs = [%s %s], want [closed open]", matches[0].ID, matches[1].ID)
+	}
+
+	matches[0].Metadata["meta_finding_id"] = "mutated"
+	again, err := store.FindByMetadataKey(ctx, "meta_finding_id")
+	if err != nil {
+		t.Fatalf("FindByMetadataKey after mutation: %v", err)
+	}
+	if again[0].Metadata["meta_finding_id"] != "finding-closed" {
+		t.Fatalf("FindByMetadataKey returned aliased metadata: %#v", again[0].Metadata)
+	}
+
+	if _, err := store.FindByMetadataKey(ctx, " "); err == nil {
+		t.Fatal("FindByMetadataKey(empty key) error = nil, want error")
+	}
+	none, err := store.FindByMetadataKey(ctx, "missing")
+	if err != nil {
+		t.Fatalf("FindByMetadataKey(missing): %v", err)
+	}
+	if none == nil || len(none) != 0 {
+		t.Fatalf("FindByMetadataKey(missing) = %#v, want non-nil empty slice", none)
+	}
+}
+
 func TestFakeStoreDelete(t *testing.T) {
 	ctx := context.Background()
 	store := beadstore.NewFakeStore(protocol.Bead{ID: "delete-me", Title: "delete me", Status: "open"})

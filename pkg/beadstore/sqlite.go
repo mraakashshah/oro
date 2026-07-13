@@ -625,7 +625,7 @@ func (s *SQLiteStore) AllChildrenClosed(ctx context.Context, epicID string) (boo
 
 // FindByParentAndTag returns children under parentID that have tag.
 func (s *SQLiteStore) FindByParentAndTag(ctx context.Context, parentID, tag string) ([]protocol.Bead, error) {
-	return s.queryBeads(ctx, `SELECT `+prefixedBeadColumns("b")+`
+	return s.queryBeads(ctx, `SELECT `+prefixedBeadColumns()+`
 FROM beads b
 JOIN bead_tags t ON t.bead_id=b.id AND t.tag=?
 WHERE b.deleted=0 AND b.parent_id=?
@@ -633,11 +633,11 @@ ORDER BY b.priority ASC, b.created_at ASC`, tag, parentID)
 }
 
 // FindByMetadataKey returns every non-deleted bead that has key, regardless of status.
-func (s *SQLiteStore) FindByMetadataKey(ctx context.Context, key string) ([]protocol.Bead, error) {
+func (s *SQLiteStore) FindByMetadataKey(ctx context.Context, key string) ([]*protocol.Bead, error) {
 	if strings.TrimSpace(key) == "" {
 		return nil, fmt.Errorf("beadstore: metadata key is required")
 	}
-	beads, err := s.queryBeads(ctx, `SELECT `+prefixedBeadColumns("b")+`
+	beads, err := s.queryBeads(ctx, `SELECT `+prefixedBeadColumns()+`
 FROM beads b
 JOIN bead_metadata m ON m.bead_id=b.id AND m.key=?
 WHERE b.deleted=0
@@ -645,10 +645,7 @@ ORDER BY b.created_at ASC, b.id ASC`, key)
 	if err != nil {
 		return nil, err
 	}
-	if beads == nil {
-		return []protocol.Bead{}, nil
-	}
-	return beads, nil
+	return beadPointers(beads), nil
 }
 
 // Export returns all active beads as newline-delimited JSON.
@@ -669,12 +666,20 @@ func (s *SQLiteStore) Export(ctx context.Context) ([]byte, error) {
 
 const beadColumns = `id, title, description, acceptance_criteria, status, priority, type, parent_id, owner, estimated_minutes, tier, model, deferred_until, close_reason, created_at, updated_at, closed_at`
 
-func prefixedBeadColumns(prefix string) string {
+func prefixedBeadColumns() string {
 	parts := strings.Split(beadColumns, ", ")
 	for i, part := range parts {
-		parts[i] = prefix + "." + part
+		parts[i] = "b." + part
 	}
 	return strings.Join(parts, ", ")
+}
+
+func beadPointers(beads []protocol.Bead) []*protocol.Bead {
+	pointers := make([]*protocol.Bead, len(beads))
+	for i := range beads {
+		pointers[i] = &beads[i]
+	}
+	return pointers
 }
 
 func (s *SQLiteStore) queryBeads(ctx context.Context, query string, args ...any) ([]protocol.Bead, error) {

@@ -253,10 +253,10 @@ func (s *ShadowStore) FindByParentAndTag(ctx context.Context, parentID, tag stri
 }
 
 // FindByMetadataKey returns primary's matching beads after comparing the secondary read.
-func (s *ShadowStore) FindByMetadataKey(ctx context.Context, key string) ([]protocol.Bead, error) {
+func (s *ShadowStore) FindByMetadataKey(ctx context.Context, key string) ([]*protocol.Bead, error) {
 	primary, primaryErr := s.primary.FindByMetadataKey(ctx, key)
 	secondary, secondaryErr := s.secondary.FindByMetadataKey(ctx, key)
-	s.compareBeads(ctx, "FindByMetadataKey", primary, primaryErr, secondary, secondaryErr)
+	s.compareBeads(ctx, "FindByMetadataKey", beadValues(primary), primaryErr, beadValues(secondary), secondaryErr)
 	return primary, wrapPrimaryStoreError("find beads by metadata key", primaryErr)
 }
 
@@ -354,6 +354,16 @@ func (s *ShadowStore) compareBeads(ctx context.Context, op string, primary []pro
 	if kind != ShadowDivergenceNone {
 		s.report(op, kind, "bead result mismatch")
 	}
+}
+
+func beadValues(beads []*protocol.Bead) []protocol.Bead {
+	values := make([]protocol.Bead, len(beads))
+	for i, bead := range beads {
+		if bead != nil {
+			values[i] = *bead
+		}
+	}
+	return values
 }
 
 func (s *ShadowStore) compareShown(primary *protocol.Bead, primaryErr error, secondary *protocol.Bead, secondaryErr error) {
