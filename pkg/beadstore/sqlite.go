@@ -160,20 +160,9 @@ func (s *SQLiteStore) show(ctx context.Context, id string, includeMemory bool) (
 
 // Create persists a new bead and returns its complete stored representation.
 func (s *SQLiteStore) Create(ctx context.Context, params CreateParams) (*protocol.Bead, error) {
-	if strings.TrimSpace(params.Title) == "" {
-		return nil, fmt.Errorf("beadstore: title is required")
-	}
-	if params.Status == "" {
-		params.Status = "open"
-	}
-	if !validStatus(params.Status) {
-		return nil, fmt.Errorf("beadstore: invalid status %q", params.Status)
-	}
-	if params.ID == "" {
-		params.ID = generateBeadID()
-	}
-	if params.Type == "" {
-		params.Type = "task"
+	params, err := normalizeCreateParams(params)
+	if err != nil {
+		return nil, err
 	}
 	now := nowString()
 
@@ -1110,6 +1099,25 @@ func updatePayload(params UpdateParams) map[string]any {
 
 func validStatus(status string) bool {
 	return status == "open" || status == "in_progress" || status == "blocked" || status == "closed"
+}
+
+func normalizeCreateParams(params CreateParams) (CreateParams, error) {
+	if strings.TrimSpace(params.Title) == "" {
+		return CreateParams{}, fmt.Errorf("beadstore: title is required")
+	}
+	if params.Status == "" {
+		params.Status = "open"
+	}
+	if !validStatus(params.Status) {
+		return CreateParams{}, fmt.Errorf("beadstore: invalid status %q", params.Status)
+	}
+	if params.ID == "" {
+		params.ID = generateBeadID()
+	}
+	if params.Type == "" {
+		params.Type = "task"
+	}
+	return params, nil
 }
 
 // applyLegacyMetadataTier sets bead.Tier from metadata["model"] when both the
