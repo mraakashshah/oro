@@ -970,6 +970,7 @@ test_quality_gate_run_lock_timeout_preserves_holder() {
 		sed -n '/^quality_gate_queue_ticket_stale()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^cleanup_stale_quality_gate_queue_tickets()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^first_quality_gate_queue_ticket()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_lock_is_inherited()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^acquire_quality_gate_lock()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		echo 'trap cleanup_qg EXIT'
 		echo 'acquire_quality_gate_lock'
@@ -1028,6 +1029,7 @@ test_quality_gate_run_lock_archives_stale_legacy_lock() {
 		sed -n '/^quality_gate_queue_ticket_stale()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^cleanup_stale_quality_gate_queue_tickets()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^first_quality_gate_queue_ticket()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_lock_is_inherited()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^acquire_quality_gate_lock()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		echo 'trap cleanup_qg EXIT'
 		echo 'acquire_quality_gate_lock'

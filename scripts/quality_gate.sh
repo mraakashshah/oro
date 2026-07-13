@@ -235,12 +235,23 @@ first_quality_gate_queue_ticket() {
 	find "$queue_dir" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null | LC_ALL=C sort | head -1
 }
 
+quality_gate_lock_is_inherited() {
+	local lock_dir="$1"
+	[ "${ORO_QG_INHERITED_LOCK_DIR:-}" = "$lock_dir" ] &&
+		[ -n "${ORO_QG_INHERITED_LOCK_TOKEN:-}" ] &&
+		[ -f "$lock_dir/owner" ] &&
+		grep -qx "token=$ORO_QG_INHERITED_LOCK_TOKEN" "$lock_dir/owner" 2>/dev/null
+}
+
 acquire_quality_gate_lock() {
 	local lock_dir="$REPO_ROOT/.oro-quality-gate.lock"
 	local queue_dir="$REPO_ROOT/.oro-quality-gate.queue"
 	local ticket_name poll_seconds reported_waiting
 	local waited=0
 	reported_waiting=false
+	if quality_gate_lock_is_inherited "$lock_dir"; then
+		return 0
+	fi
 	create_quality_gate_queue_ticket "$queue_dir"
 	while :; do
 		cleanup_stale_quality_gate_queue_tickets "$queue_dir"
@@ -281,6 +292,8 @@ acquire_quality_gate_lock() {
 	QG_RUN_LOCK="$lock_dir"
 	QG_RUN_LOCK_TOKEN="$$-$(date +%s)-$RANDOM"
 	write_quality_gate_lock_owner "$lock_dir" "$QG_RUN_LOCK_TOKEN"
+	export ORO_QG_INHERITED_LOCK_DIR="$lock_dir"
+	export ORO_QG_INHERITED_LOCK_TOKEN="$QG_RUN_LOCK_TOKEN"
 	rm -f "$QG_RUN_QUEUE_TICKET/owner" 2>/dev/null || true
 	rmdir "$QG_RUN_QUEUE_TICKET" 2>/dev/null || true
 	rmdir "$queue_dir" 2>/dev/null || true
