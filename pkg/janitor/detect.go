@@ -30,6 +30,8 @@ type Candidate struct {
 // can fall back to built-in detectors. Malformed JSONL records are skipped and
 // returned in skippedLines. A non-zero script exit returns an error containing
 // the script's combined output.
+//
+//oro:testonly — production wiring is deferred to the dispatcher janitor lifecycle.
 func RunDetectScript(ctx context.Context, worktree string) (cands []Candidate, skippedLines []string, found bool, err error) {
 	scriptPath := filepath.Join(worktree, detectScriptPath)
 	if _, statErr := os.Stat(scriptPath); statErr != nil {

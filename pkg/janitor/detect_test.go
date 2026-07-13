@@ -1,4 +1,4 @@
-package janitor
+package janitor_test
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"oro/pkg/janitor"
 )
 
 func TestJanitorDetectScript(t *testing.T) {
@@ -26,14 +28,14 @@ printf '%s\n' '{"detector":"todo","file":"README.md","line":3,"title":"stale tod
 		t.Fatalf("write detector script: %v", err)
 	}
 
-	cands, skippedLines, found, err := RunDetectScript(context.Background(), worktree)
+	cands, skippedLines, found, err := janitor.RunDetectScript(context.Background(), worktree)
 	if err != nil {
 		t.Fatalf("run detector script: %v", err)
 	}
 	if !found {
 		t.Fatal("expected detector script to be found")
 	}
-	wantCands := []Candidate{
+	wantCands := []janitor.Candidate{
 		{Detector: "deadcode", File: "pkg/example.go", Line: 14, Title: "unused helper", Detail: "remove helper"},
 		{Detector: "todo", File: "README.md", Line: 3, Title: "stale todo", Detail: "resolve item"},
 	}
@@ -48,7 +50,7 @@ printf '%s\n' '{"detector":"todo","file":"README.md","line":3,"title":"stale tod
 func TestRunDetectScriptMissing(t *testing.T) {
 	t.Parallel()
 
-	cands, skippedLines, found, err := RunDetectScript(context.Background(), t.TempDir())
+	cands, skippedLines, found, err := janitor.RunDetectScript(context.Background(), t.TempDir())
 	if err != nil {
 		t.Fatalf("missing script error = %v, want nil", err)
 	}
@@ -76,7 +78,7 @@ func TestRunDetectScriptExitFailureIncludesOutput(t *testing.T) {
 		t.Fatalf("write detector script: %v", err)
 	}
 
-	_, _, found, err := RunDetectScript(context.Background(), worktree)
+	_, _, found, err := janitor.RunDetectScript(context.Background(), worktree)
 	if !found {
 		t.Fatal("expected detector script to be found")
 	}
@@ -91,7 +93,7 @@ func TestRunDetectScriptExitFailureIncludesOutput(t *testing.T) {
 func TestCandidateShape(t *testing.T) {
 	t.Parallel()
 
-	candidateType := reflect.TypeFor[Candidate]()
+	candidateType := reflect.TypeFor[janitor.Candidate]()
 	wantNames := []string{"Detector", "File", "Title", "Detail", "Line"}
 	for i, wantName := range wantNames {
 		field := candidateType.Field(i)
