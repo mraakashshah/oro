@@ -667,10 +667,10 @@ type Config struct {
 	ConsolidateAfterN       int           // Trigger context consolidation after N completed beads (default 5).
 	DreamInterval           int           // Spawn a dream memory-consolidation agent after N completed beads (default 10; 0 disables).
 	GradeGateEnabled        bool          // When true, dream actions are queued as card proposals instead of directly applying memory mutations.
-	JanitorInterval         int           // Run janitor every N dispatcher cycles; 0 disables it.
+	JanitorInterval         int           // Run janitor after N completed merges; 0 disables it.
 	JanitorIdleThreshold    int           // Require at most this many queued beads before janitor runs; 0 means only an empty queue.
 	AuditEveryNJanitors     int           // Run audit every N janitor cycles; 0 disables periodic audit cadence.
-	AuditTopK               int           // Limit each audit to its top K findings; 0 uses the audit's natural limit.
+	JanitorTopK             int           // Limit each janitor cycle to its top K findings; 0 uses the janitor's natural limit.
 	JanitorEnabled          bool          // Enable janitor cycles. Enable flags intentionally default false.
 	AuditEnabled            bool          // Enable audit counters driven by janitor cycles.
 	PaneContextThreshold    int           // Context percentage threshold for pane handoff (default 60).
@@ -787,8 +787,9 @@ func (c *Config) withDefaults() Config {
 	return out
 }
 
-// validate checks that all Config values are valid. Returns an error if any
-// duration is <= 0 or if MaxWorkers is negative. Call this AFTER withDefaults().
+// validate checks that all Config values are valid, including required
+// durations, non-negative counts, and compatible feature flags. Call this
+// AFTER withDefaults().
 func (c Config) validate() error {
 	if c.MaxWorkers < 0 {
 		return fmt.Errorf("MaxWorkers must be non-negative, got %d", c.MaxWorkers)
@@ -802,8 +803,8 @@ func (c Config) validate() error {
 	if c.AuditEveryNJanitors < 0 {
 		return fmt.Errorf("AuditEveryNJanitors must be non-negative, got %d", c.AuditEveryNJanitors)
 	}
-	if c.AuditTopK < 0 {
-		return fmt.Errorf("AuditTopK must be non-negative, got %d", c.AuditTopK)
+	if c.JanitorTopK < 0 {
+		return fmt.Errorf("JanitorTopK must be non-negative, got %d", c.JanitorTopK)
 	}
 	if c.AuditEnabled && !c.JanitorEnabled {
 		return fmt.Errorf("AuditEnabled requires JanitorEnabled because audit counters are driven by janitor cycles")

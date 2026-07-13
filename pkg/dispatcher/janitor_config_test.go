@@ -1,4 +1,4 @@
-package dispatcher
+package dispatcher //nolint:testpackage // white-box test exercises unexported config defaulting and validation
 
 import (
 	"strings"
@@ -18,7 +18,7 @@ func TestJanitorConfigValidation(t *testing.T) {
 				AuditEnabled:   true,
 				JanitorEnabled: false,
 			},
-			wantErr: "AuditEnabled requires JanitorEnabled",
+			wantErr: "AuditEnabled requires JanitorEnabled because audit counters are driven by janitor cycles",
 		},
 		{
 			name: "negative janitor interval",
@@ -42,11 +42,11 @@ func TestJanitorConfigValidation(t *testing.T) {
 			wantErr: "AuditEveryNJanitors must be non-negative",
 		},
 		{
-			name: "negative audit top k",
+			name: "negative janitor top k",
 			cfg: Config{
-				AuditTopK: -1,
+				JanitorTopK: -1,
 			},
-			wantErr: "AuditTopK must be non-negative",
+			wantErr: "JanitorTopK must be non-negative",
 		},
 		{
 			name: "zero values leave janitor disabled and idle threshold empty queue only",
