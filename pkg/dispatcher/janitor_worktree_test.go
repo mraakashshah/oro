@@ -41,6 +41,13 @@ func TestJanitorScanWorktree(t *testing.T) {
 	detectorErr := errors.New("detector failed")
 	err := d.withScanWorktree(context.Background(), func(path string) error {
 		snapshot := filepath.Join(path, "scripts", "janitor_detect.sh")
+		scriptDirInfo, statErr := os.Stat(filepath.Dir(snapshot))
+		if statErr != nil {
+			t.Fatalf("stat detector snapshot directory: %v", statErr)
+		}
+		if mode := scriptDirInfo.Mode().Perm(); mode&0o027 != 0 {
+			t.Fatalf("detector snapshot directory mode = %o, want no group-write or other permissions", mode)
+		}
 		contents, readErr := os.ReadFile(snapshot)
 		if readErr != nil {
 			t.Fatalf("read detector snapshot: %v", readErr)

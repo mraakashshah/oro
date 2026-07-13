@@ -42,7 +42,7 @@ func (d *Dispatcher) copyJanitorDetectSnapshot(worktreePath string) error {
 	}
 
 	destination := filepath.Join(worktreePath, janitorDetectScriptPath)
-	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(destination), 0o750); err != nil {
 		return fmt.Errorf("create janitor detector directory: %w", err)
 	}
 	if err := copyQualityGateSnapshot(source, destination); err != nil {
