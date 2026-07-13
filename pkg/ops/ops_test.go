@@ -81,6 +81,23 @@ func (m *mockProcess) setLastOutputAt(t time.Time) {
 	m.lastOutputAt = t
 }
 
+type reapGatedProcess struct {
+	*mockProcess
+	reap chan struct{}
+}
+
+func newReapGatedProcess() *reapGatedProcess {
+	return &reapGatedProcess{
+		mockProcess: newMockProcess("", nil),
+		reap:        make(chan struct{}),
+	}
+}
+
+func (p *reapGatedProcess) Wait() error {
+	<-p.reap
+	return p.waitErr
+}
+
 // mockBatchSpawner records spawn calls and returns preconfigured processes.
 type mockBatchSpawner struct {
 	mu      sync.Mutex
@@ -95,6 +112,70 @@ type spawnCall struct {
 	reasoning string
 	prompt    string
 	workdir   string
+}
+
+func TestWaitForProcessPublishesFailureAfterReaping(t *testing.T) {
+	tests := []struct {
+		name  string
+		start func(*Spawner, Process, chan<- Result)
+	}{
+		{
+			name: "timeout",
+			start: func(s *Spawner, proc Process, results chan<- Result) {
+				s.timeout = 10 * time.Millisecond
+				go s.waitForProcess(context.Background(), proc, OpsDecompose, "oro-reap", results)
+			},
+		},
+		{
+			name: "cancellation",
+			start: func(s *Spawner, proc Process, results chan<- Result) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				go s.waitForProcess(ctx, proc, OpsDecompose, "oro-reap", results)
+			},
+		},
+		{
+			name: "idle wedge",
+			start: func(s *Spawner, proc Process, results chan<- Result) {
+				s.reviewIdle = 10 * time.Millisecond
+				go s.waitForProcess(context.Background(), proc, OpsReview, "oro-reap", results)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proc := newReapGatedProcess()
+			results := make(chan Result, 1)
+			s := NewSpawner(nil)
+			tt.start(s, proc, results)
+
+			waitForKilled(t, proc)
+			select {
+			case result := <-results:
+				t.Fatalf("published verdict before Wait completed: %+v", result)
+			case <-time.After(25 * time.Millisecond):
+			}
+
+			close(proc.reap)
+			result := waitResult(t, results)
+			if result.Verdict != VerdictFailed {
+				t.Fatalf("Verdict = %q, want %q", result.Verdict, VerdictFailed)
+			}
+		})
+	}
+}
+
+func waitForKilled(t *testing.T, proc *reapGatedProcess) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if proc.wasKilled() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("process was not killed before timeout")
 }
 
 func (m *mockBatchSpawner) Spawn(_ context.Context, model, prompt, workdir string) (Process, error) {

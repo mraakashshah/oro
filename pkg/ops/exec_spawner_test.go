@@ -2,9 +2,13 @@ package ops //nolint:testpackage // internal test needs access to unexported ops
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -220,4 +224,130 @@ func TestOpsProcessKillNilSuccess(t *testing.T) {
 	}
 	// Clean up: wait for the killed process to avoid zombies.
 	_ = cmd.Wait()
+}
+
+func TestKillTerminatesProcessGroup(t *testing.T) {
+	workdir := t.TempDir()
+	spawner := NewExecSpawner(RuntimeSpec{
+		Command: "sh",
+		BuildArgs: func(_, _ string) []string {
+			return []string{"-c", "trap '' TERM; sleep 3600 & echo $! > child.pid; wait"}
+		},
+	})
+
+	proc, err := spawner.Spawn(context.Background(), "balanced", "review this", workdir)
+	if err != nil {
+		t.Fatalf("Spawn() error = %v", err)
+	}
+	parentPID := proc.(*opsProcess).cmd.Process.Pid
+	waited := false
+	t.Cleanup(func() {
+		if waited {
+			return
+		}
+		_ = proc.Kill()
+		_ = proc.Wait()
+	})
+	waitForGrandchildInProcessGroup(t, workdir, parentPID)
+
+	if err := proc.Kill(); err != nil {
+		t.Fatalf("Kill() error = %v", err)
+	}
+	timely, waitErr := waitForProcessExit(proc, parentPID)
+	waited = true
+	if !timely {
+		t.Fatal("Wait() did not return after Kill()")
+	}
+	if waitErr == nil {
+		t.Fatal("Wait() error = nil, want killed process error")
+	}
+	waitForProcessGroupGone(t, parentPID)
+}
+
+func TestContextCancellationTerminatesProcessGroup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	workdir := t.TempDir()
+	spawner := NewExecSpawner(RuntimeSpec{
+		Command: "sh",
+		BuildArgs: func(_, _ string) []string {
+			return []string{"-c", "trap '' TERM; sleep 3600 & echo $! > child.pid; wait"}
+		},
+	})
+
+	proc, err := spawner.Spawn(ctx, "balanced", "review this", workdir)
+	if err != nil {
+		t.Fatalf("Spawn() error = %v", err)
+	}
+	parentPID := proc.(*opsProcess).cmd.Process.Pid
+	waited := false
+	t.Cleanup(func() {
+		if waited {
+			return
+		}
+		cancel()
+		_ = proc.Kill()
+		_ = proc.Wait()
+	})
+	waitForGrandchildInProcessGroup(t, workdir, parentPID)
+
+	cancel()
+	timely, waitErr := waitForProcessExit(proc, parentPID)
+	waited = true
+	if !timely {
+		t.Fatal("Wait() did not return after context cancellation")
+	}
+	if waitErr == nil {
+		t.Fatal("Wait() error = nil, want canceled process error")
+	}
+	waitForProcessGroupGone(t, parentPID)
+}
+
+func waitForGrandchildInProcessGroup(t *testing.T, workdir string, parentPID int) {
+	t.Helper()
+	waitForProcessCondition(t, func() bool {
+		data, err := os.ReadFile(filepath.Join(workdir, "child.pid"))
+		if err != nil {
+			return false
+		}
+		childPID, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil || childPID <= 0 {
+			return false
+		}
+		childPGID, err := syscall.Getpgid(childPID)
+		return err == nil && childPGID == parentPID
+	})
+}
+
+func waitForProcessExit(proc Process, pgid int) (bool, error) {
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- proc.Wait()
+	}()
+
+	select {
+	case waitErr := <-waitDone:
+		return true, waitErr
+	case <-time.After(2 * time.Second):
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		return false, <-waitDone
+	}
+}
+
+func waitForProcessGroupGone(t *testing.T, pgid int) {
+	t.Helper()
+	waitForProcessCondition(t, func() bool {
+		return errors.Is(syscall.Kill(-pgid, syscall.Signal(0)), syscall.ESRCH)
+	})
+}
+
+func waitForProcessCondition(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("process condition was not met before timeout")
 }

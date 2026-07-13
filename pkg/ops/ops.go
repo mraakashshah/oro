@@ -621,7 +621,7 @@ func (s *Spawner) waitForProcess(ctx context.Context, proc Process, opsType Type
 			if !reviewIdleExceeded(proc, startedAt, idle) {
 				continue
 			}
-			_ = proc.Kill()
+			killAndReap(proc, done)
 			ch <- Result{
 				Type:    opsType,
 				BeadID:  beadID,
@@ -630,7 +630,7 @@ func (s *Spawner) waitForProcess(ctx context.Context, proc Process, opsType Type
 			}
 			return false, nil
 		case <-timer.C:
-			_ = proc.Kill()
+			killAndReap(proc, done)
 			ch <- Result{
 				Type:    opsType,
 				BeadID:  beadID,
@@ -639,7 +639,7 @@ func (s *Spawner) waitForProcess(ctx context.Context, proc Process, opsType Type
 			}
 			return false, nil
 		case <-ctx.Done():
-			_ = proc.Kill()
+			killAndReap(proc, done)
 			ch <- Result{
 				Type:    opsType,
 				BeadID:  beadID,
@@ -649,6 +649,14 @@ func (s *Spawner) waitForProcess(ctx context.Context, proc Process, opsType Type
 			return false, nil
 		}
 	}
+}
+
+// killAndReap waits for the existing Wait call after stopping a subprocess.
+// This prevents a timeout verdict from racing an unreaped launcher or any
+// process-group descendant that still owns the subprocess output pipes.
+func killAndReap(proc Process, done <-chan error) {
+	_ = proc.Kill()
+	<-done
 }
 
 func idleWatchdog(idle time.Duration) (ticks <-chan time.Time, stop func()) {

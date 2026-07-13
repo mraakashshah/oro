@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"oro/pkg/processenv"
@@ -49,6 +51,10 @@ func (s *ExecSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning, 
 		args = buildArgs(model, prompt)
 	}
 	cmd := exec.CommandContext(ctx, s.spec.Command, args...)
+	// Give every ops subprocess its own process group. Runtime launchers such
+	// as codex may spawn the actual agent as a child process, so cancellation
+	// must be able to terminate the entire tree rather than only this launcher.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Dir = workdir
 	if s.spec.BuildEnv != nil {
 		cmd.Env = processenv.ForWorkdir(s.spec.BuildEnv(), workdir)
@@ -57,6 +63,7 @@ func (s *ExecSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning, 
 	}
 
 	proc := &opsProcess{cmd: cmd}
+	cmd.Cancel = proc.Kill
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("stdout pipe %s: %w", s.spec.Command, err)
@@ -176,9 +183,13 @@ func (p *opsProcess) Wait() error {
 	return nil
 }
 
-// Kill sends SIGKILL to the subprocess.
+// Kill sends SIGKILL to the subprocess process group.
 func (p *opsProcess) Kill() error {
-	if err := p.cmd.Process.Kill(); err != nil {
+	pgid := p.cmd.Process.Pid
+	if err := syscall.Kill(-pgid, syscall.SIGKILL); err == nil {
+		return nil
+	}
+	if err := p.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("kill: %w", err)
 	}
 	return nil
