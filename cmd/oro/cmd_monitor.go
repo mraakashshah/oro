@@ -553,7 +553,7 @@ func (r *cliMonitorRunner) RestartDaemon(ctx context.Context, workers, maxWorker
 	if pidPath == "" {
 		return nil
 	}
-	return startFreshSwarm(io.Discard, workers, maxWorkers, "", true, 0, 0, 0, false, false, false, "")
+	return startFreshSwarm(io.Discard, workers, maxWorkers, "", true, 0, 0, 0, false, false, false, "", defaultCleanlinessStartConfig())
 }
 
 func waitForMonitorDaemonStopped(ctx context.Context, timeout time.Duration) error {

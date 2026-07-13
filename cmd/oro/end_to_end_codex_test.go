@@ -60,7 +60,7 @@ agent:
 	origRunDaemonOnly := runDaemonOnlyFn
 	t.Cleanup(func() { runDaemonOnlyFn = origRunDaemonOnly })
 	var capturedStart startCapture
-	runDaemonOnlyFn = func(cmd *cobra.Command, pidPath string, workers, maxWorkers int, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool, baseBranch string, mutationTesting bool, webEnabled bool, webAddr string) error {
+	runDaemonOnlyFn = func(cmd *cobra.Command, pidPath string, workers, maxWorkers int, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool, baseBranch string, mutationTesting bool, webEnabled bool, webAddr string, cleanliness cleanlinessStartConfig) error {
 		capturedStart = startCapture{workers: workers, maxWorkers: maxWorkers}
 		return WritePIDFile(pidPath, os.Getpid())
 	}

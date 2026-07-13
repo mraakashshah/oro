@@ -43,6 +43,27 @@ type ExecDaemonSpawner struct {
 	MutationTesting    bool
 	WebEnabled         bool
 	WebAddr            string
+	Cleanliness        cleanlinessStartConfig
+}
+
+type cleanlinessStartConfig struct {
+	JanitorInterval      int
+	JanitorIdleThreshold int
+	AuditEveryNJanitors  int
+	JanitorTopK          int
+	JanitorEnabled       bool
+	AuditEnabled         bool
+}
+
+func defaultCleanlinessStartConfig() cleanlinessStartConfig {
+	return cleanlinessStartConfig{
+		JanitorInterval:      50,
+		JanitorIdleThreshold: 0,
+		AuditEveryNJanitors:  5,
+		JanitorTopK:          5,
+		JanitorEnabled:       true,
+		AuditEnabled:         true,
+	}
 }
 
 // SetManualIntegration lets dispatcher-only startup configure the daemon
@@ -82,6 +103,14 @@ func (e *ExecDaemonSpawner) buildArgs(workers, maxWorkers int) []string {
 	if e.WebAddr != "" {
 		args = append(args, "--web-addr="+e.WebAddr)
 	}
+	args = append(args,
+		"--janitor-interval="+strconv.Itoa(e.Cleanliness.JanitorInterval),
+		"--janitor-idle-threshold="+strconv.Itoa(e.Cleanliness.JanitorIdleThreshold),
+		"--audit-every-n-janitors="+strconv.Itoa(e.Cleanliness.AuditEveryNJanitors),
+		"--janitor-top-k="+strconv.Itoa(e.Cleanliness.JanitorTopK),
+		"--janitor-enabled="+strconv.FormatBool(e.Cleanliness.JanitorEnabled),
+		"--audit-enabled="+strconv.FormatBool(e.Cleanliness.AuditEnabled),
+	)
 	return args
 }
 
@@ -776,6 +805,7 @@ func newStartCmd() *cobra.Command {
 		webEnabled         bool
 		noWeb              bool
 		webAddr            string
+		cleanliness        = defaultCleanlinessStartConfig()
 	)
 
 	cmd := &cobra.Command{
@@ -798,9 +828,9 @@ func newStartCmd() *cobra.Command {
 				return reconnectRunningDaemon(cmd.OutOrStdout(), workers, daemonOnly, detach)
 			}
 			if daemonOnly {
-				return runDaemonOnlyFn(cmd, pidPath, workers, maxWorkers, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, baseBranch, mutationTesting, webEnabled, webAddr)
+				return runDaemonOnlyFn(cmd, pidPath, workers, maxWorkers, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, baseBranch, mutationTesting, webEnabled, webAddr, cleanliness)
 			}
-			return startFreshSwarm(cmd.OutOrStdout(), workers, maxWorkers, model, detach, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, mutationTesting, webEnabled, webAddr)
+			return startFreshSwarm(cmd.OutOrStdout(), workers, maxWorkers, model, detach, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, mutationTesting, webEnabled, webAddr, cleanliness)
 		},
 	}
 
@@ -820,12 +850,18 @@ func newStartCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&webEnabled, "web", true, "enable HTTP server for dashboard/health endpoints")
 	cmd.Flags().BoolVar(&noWeb, "no-web", false, "disable HTTP server for headless/CI use")
 	cmd.Flags().StringVar(&webAddr, "web-addr", "", "HTTP server listen address (default 127.0.0.1:4444)")
+	cmd.Flags().IntVar(&cleanliness.JanitorInterval, "janitor-interval", cleanliness.JanitorInterval, "run janitor after N completed merges (0 disables janitor)")
+	cmd.Flags().IntVar(&cleanliness.JanitorIdleThreshold, "janitor-idle-threshold", cleanliness.JanitorIdleThreshold, "maximum queued tasks before janitor waits")
+	cmd.Flags().IntVar(&cleanliness.AuditEveryNJanitors, "audit-every-n-janitors", cleanliness.AuditEveryNJanitors, "run audit every N janitor cycles (0 disables periodic audits)")
+	cmd.Flags().IntVar(&cleanliness.JanitorTopK, "janitor-top-k", cleanliness.JanitorTopK, "maximum findings filed per janitor cycle (0 uses natural limit)")
+	cmd.Flags().BoolVar(&cleanliness.JanitorEnabled, "janitor-enabled", cleanliness.JanitorEnabled, "enable janitor cycles")
+	cmd.Flags().BoolVar(&cleanliness.AuditEnabled, "audit-enabled", cleanliness.AuditEnabled, "enable audit cycles")
 
 	return cmd
 }
 
 // startFreshSwarm sets up project env vars and launches the full swarm (daemon + tmux).
-func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach bool, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration, mutationTesting, webEnabled bool, webAddr string) error {
+func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach bool, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration, mutationTesting, webEnabled bool, webAddr string, cleanliness cleanlinessStartConfig) error {
 	project, err := startProjectName(".")
 	if err != nil {
 		return fmt.Errorf("read project config: %w", err)
@@ -854,6 +890,7 @@ func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach 
 			MutationTesting:    mutationTesting,
 			WebEnabled:         webEnabled,
 			WebAddr:            webAddr,
+			Cleanliness:        cleanliness,
 		},
 		&ExecRunner{},
 		func(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) },
@@ -892,7 +929,7 @@ func cleanStaleWorkerLogs(oroHome string, maxAge time.Duration) { //nolint:unpar
 }
 
 // runDaemonOnly runs the dispatcher in the foreground (used for testing/CI).
-func runDaemonOnly(cmd *cobra.Command, pidPath string, workers, maxWorkers int, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool, baseBranch string, mutationTesting, webEnabled bool, webAddr string) error {
+func runDaemonOnly(cmd *cobra.Command, pidPath string, workers, maxWorkers int, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool, baseBranch string, mutationTesting, webEnabled bool, webAddr string, cleanliness cleanlinessStartConfig) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "starting dispatcher (PID %d, workers=%d)\n", os.Getpid(), workers)
 	if err := WritePIDFile(pidPath, os.Getpid()); err != nil {
 		return fmt.Errorf("write pid file: %w", err)
@@ -907,7 +944,7 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers, maxWorkers int, 
 	// Build dispatcher first so we can wire its shutdown authorization flag
 	// into the signal handler. This makes the daemon immune to raw SIGTERM
 	// until the "shutdown" directive authorizes it.
-	d, db, err := buildDispatcherWithReviewTimeouts(workers, maxWorkers, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, baseBranch, mutationTesting, webEnabled, webAddr)
+	d, db, err := buildDispatcherWithReviewTimeoutsAndCleanliness(workers, maxWorkers, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, baseBranch, mutationTesting, webEnabled, webAddr, cleanliness)
 	if err != nil {
 		return fmt.Errorf("build dispatcher: %w", err)
 	}
@@ -969,12 +1006,16 @@ func buildCodeIndex(ctx context.Context, repoRoot, dbPath string) error {
 // The initial target and auto-scale ceiling both start at one worker for
 // callers that do not need timeout controls.
 func buildDispatcher(baseBranch string, webEnabled bool, webAddr string) (*dispatcher.Dispatcher, *sql.DB, error) {
-	return buildDispatcherWithReviewTimeouts(1, 1, 0, 0, 0, false, baseBranch, false, webEnabled, webAddr)
+	return buildDispatcherWithReviewTimeoutsAndCleanliness(1, 1, 0, 0, 0, false, baseBranch, false, webEnabled, webAddr, defaultCleanlinessStartConfig())
 }
 
 // buildDispatcherWithReviewTimeouts constructs a Dispatcher with separate
 // ops-review subprocess and reviewing-worker stall timeout controls.
 func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool, baseBranch string, mutationTesting, webEnabled bool, webAddr string) (*dispatcher.Dispatcher, *sql.DB, error) { //nolint:funlen // factory initialization
+	return buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, baseBranch, mutationTesting, webEnabled, webAddr, defaultCleanlinessStartConfig())
+}
+
+func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers int, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool, baseBranch string, mutationTesting, webEnabled bool, webAddr string, cleanliness cleanlinessStartConfig) (*dispatcher.Dispatcher, *sql.DB, error) { //nolint:funlen // factory initialization
 	if err := requireNativeProductionBeadSourceMode("oro start"); err != nil {
 		return nil, nil, err
 	}
@@ -1046,6 +1087,12 @@ func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressT
 		ReviewPatternCandidates: resolveReviewPatternCandidatesPath(repoRoot),
 		DefaultBranch:           baseBranch,
 		DreamInterval:           10,
+		JanitorInterval:         cleanliness.JanitorInterval,
+		JanitorIdleThreshold:    cleanliness.JanitorIdleThreshold,
+		AuditEveryNJanitors:     cleanliness.AuditEveryNJanitors,
+		JanitorTopK:             cleanliness.JanitorTopK,
+		JanitorEnabled:          cleanliness.JanitorEnabled,
+		AuditEnabled:            cleanliness.AuditEnabled,
 		WebEnabled:              webEnabled,
 		WebAddr:                 webAddr,
 	}

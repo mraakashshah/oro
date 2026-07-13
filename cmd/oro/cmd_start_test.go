@@ -1141,7 +1141,7 @@ func TestStartManualIntegrationDaemonHandoffForwardsFlagAndConfig(t *testing.T) 
 	var capturedWorkers int
 	var capturedMaxWorkers int
 	previousRunDaemonOnly := runDaemonOnlyFn
-	runDaemonOnlyFn = func(_ *cobra.Command, gotPIDPath string, workers, maxWorkers int, _ time.Duration, _ time.Duration, _ time.Duration, manualIntegration bool, _ string, mutationTesting bool, _ bool, _ string) error {
+	runDaemonOnlyFn = func(_ *cobra.Command, gotPIDPath string, workers, maxWorkers int, _ time.Duration, _ time.Duration, _ time.Duration, manualIntegration bool, _ string, mutationTesting bool, _ bool, _ string, _ cleanlinessStartConfig) error {
 		if gotPIDPath != pidPath {
 			t.Fatalf("pidPath: got %q, want %q", gotPIDPath, pidPath)
 		}
