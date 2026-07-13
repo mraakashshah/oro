@@ -438,10 +438,8 @@ func preflightAndCheckRunningWith(w io.Writer, preflight func() error, runRepoCh
 	if err := maybeRunRepoPreflightChecks(w, paths.OroHome, runRepoChecks); err != nil {
 		return "", err
 	}
-	if runRepoChecks {
-		if err := ensureRuntimeProjectAssets(w, paths.OroHome); err != nil {
-			return "", err
-		}
+	if err := ensureRuntimeProjectAssetsWithSearchHook(w, paths.OroHome, runRepoChecks); err != nil {
+		return "", err
 	}
 
 	pidPath = paths.PIDPath
@@ -513,6 +511,10 @@ func maybeRunRepoPreflightChecksWith(w io.Writer, oroHome string, runRepoChecks 
 }
 
 func ensureRuntimeProjectAssets(w io.Writer, oroHome string) error {
+	return ensureRuntimeProjectAssetsWithSearchHook(w, oroHome, true)
+}
+
+func ensureRuntimeProjectAssetsWithSearchHook(w io.Writer, oroHome string, installSearchHook bool) error {
 	assets, err := fs.Sub(EmbeddedAssets, "_assets")
 	if err != nil {
 		return fmt.Errorf("access embedded assets: %w", err)
@@ -548,8 +550,10 @@ func ensureRuntimeProjectAssets(w io.Writer, oroHome string) error {
 	if err := agentassets.InstallCodexRules(context.Background(), codexHome, agentassets.CodexRuleAssets()); err != nil {
 		return fmt.Errorf("install Codex rules: %w", err)
 	}
-	if err := ensureSearchHook(os.Stderr, filepath.Join(oroHome, "hooks", "oro-search-hook"), filepath.Join(projectRoot, "cmd", "oro-search-hook")); err != nil {
-		return fmt.Errorf("install Codex search hook: %w", err)
+	if installSearchHook {
+		if err := ensureSearchHook(os.Stderr, filepath.Join(oroHome, "hooks", "oro-search-hook"), filepath.Join(projectRoot, "cmd", "oro-search-hook")); err != nil {
+			return fmt.Errorf("install Codex search hook: %w", err)
+		}
 	}
 	if err := installCodexHookConfig(codexHome, filepath.Join(oroHome, "hooks")); err != nil {
 		return fmt.Errorf("install Codex hook config: %w", err)

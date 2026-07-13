@@ -190,8 +190,17 @@ func startTestEnvMap(env []string) map[string]string {
 
 func TestStartPreflightAndCheckRunning_DaemonOnlyBypass(t *testing.T) {
 	tmpDir := t.TempDir()
+	projectDir := filepath.Join(tmpDir, "project")
 	pidFile := filepath.Join(tmpDir, "oro.pid")
+	codexHome := filepath.Join(tmpDir, "codex-home")
 	toolsDir := filepath.Join(tmpDir, "tools")
+	writeFile(t, filepath.Join(projectDir, "go.mod"), "module bypass\n\ngo 1.22\n")
+	writeFile(t, filepath.Join(projectDir, ".oro", "config.yaml"), `project: bypass
+agent:
+  tiers:
+    balanced:
+      runtime: codex
+`)
 	if err := os.Mkdir(toolsDir, 0o755); err != nil {
 		t.Fatalf("mkdir tools: %v", err)
 	}
@@ -211,17 +220,31 @@ func TestStartPreflightAndCheckRunning_DaemonOnlyBypass(t *testing.T) {
 	t.Setenv("ORO_PID_PATH", pidFile)
 	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
 	t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))
+	t.Setenv("CODEX_HOME", codexHome)
 	t.Setenv("PATH", toolsDir)
 	t.Setenv("ORO_BEADSOURCE_MODE", "sqlite")
 	t.Setenv(daemonSkipPreflightEnv, "1")
 
-	got, err := startPreflightAndCheckRunning(io.Discard, true)
+	var (
+		got string
+		err error
+	)
+	withChdir(t, projectDir, func() {
+		got, err = startPreflightAndCheckRunning(io.Discard, true)
+	})
 	if err != nil {
 		t.Fatalf("startPreflightAndCheckRunning: %v", err)
 	}
 	if got != pidFile {
 		t.Fatalf("pid path = %q, want %q", got, pidFile)
 	}
+	assertFileExists(t, filepath.Join(projectDir, "AGENTS.md"))
+	assertFileContains(t, filepath.Join(codexHome, "rules", "oro.rules"), "prefix_rule")
+	assertSkillSymlink(
+		t,
+		filepath.Join(codexHome, "skills", "using-skills"),
+		filepath.Join(tmpDir, "orohome", ".claude", "skills", "using-skills"),
+	)
 }
 
 func TestStartPreflightAndCheckRunning_NonDaemonDoesNotBypass(t *testing.T) {
