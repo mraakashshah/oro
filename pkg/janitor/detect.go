@@ -41,7 +41,7 @@ type builtinDetector struct {
 // when the detector exits non-zero, which is the normal lint finding signal.
 //
 //oro:testonly — production wiring is deferred to the dispatcher janitor lifecycle.
-func RunBuiltins(ctx context.Context, worktree string) (cands []Candidate, ran []string, skipped []string, err error) {
+func RunBuiltins(ctx context.Context, worktree string) (cands []Candidate, ran, skipped []string, err error) {
 	for _, detector := range builtinsFor(worktree) {
 		if detector.run != nil {
 			builtinCands, runBuiltinErr := detector.run(worktree)
@@ -104,46 +104,37 @@ func builtinsFor(worktree string) []builtinDetector {
 func staleTODOs(worktree string) ([]Candidate, error) {
 	var cands []Candidate
 	deadline := time.Now().AddDate(0, 0, -60)
-	err := filepath.WalkDir(worktree, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return fmt.Errorf("walk %q: %w", path, walkErr)
+	err := walkJanitorFiles(worktree, func(path string, entry fs.DirEntry) error {
+		fileCands, candidateErr := staleTODOCandidates(worktree, deadline, path, entry)
+		if candidateErr != nil {
+			return candidateErr
 		}
-		if entry.IsDir() {
-			if entry.Name() == ".git" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		info, infoErr := entry.Info()
-		if infoErr != nil {
-			return fmt.Errorf("stat %q: %w", path, infoErr)
-		}
-		if !info.ModTime().Before(deadline) {
-			return nil
-		}
-		contents, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return fmt.Errorf("read %q: %w", path, readErr)
-		}
-		relPath, relErr := filepath.Rel(worktree, path)
-		if relErr != nil {
-			return fmt.Errorf("make %q relative: %w", path, relErr)
-		}
-		for lineNumber, line := range strings.Split(string(contents), "\n") {
-			if strings.Contains(line, "TODO") || strings.Contains(line, "FIXME") {
-				cands = append(cands, Candidate{Detector: "todo", File: relPath, Line: lineNumber + 1, Title: "stale TODO/FIXME", Detail: strings.TrimSpace(line)})
-			}
-		}
+		cands = append(cands, fileCands...)
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("scan stale TODOs: %w", err)
 	}
 	return cands, nil
 }
 
 func brokenRelativeLinks(worktree string) ([]Candidate, error) {
 	var cands []Candidate
+	err := walkJanitorFiles(worktree, func(path string, entry fs.DirEntry) error {
+		fileCands, candidateErr := brokenLinkCandidates(worktree, path, entry)
+		if candidateErr != nil {
+			return candidateErr
+		}
+		cands = append(cands, fileCands...)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scan broken relative links: %w", err)
+	}
+	return cands, nil
+}
+
+func walkJanitorFiles(worktree string, visit func(string, fs.DirEntry) error) error {
 	err := filepath.WalkDir(worktree, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return fmt.Errorf("walk %q: %w", path, walkErr)
@@ -154,32 +145,68 @@ func brokenRelativeLinks(worktree string) ([]Candidate, error) {
 			}
 			return nil
 		}
-		if filepath.Ext(path) != ".md" {
-			return nil
-		}
-		contents, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return fmt.Errorf("read %q: %w", path, readErr)
-		}
-		relPath, relErr := filepath.Rel(worktree, path)
-		if relErr != nil {
-			return fmt.Errorf("make %q relative: %w", path, relErr)
-		}
-		for lineNumber, line := range strings.Split(string(contents), "\n") {
-			for _, target := range markdownLinkTargets(line) {
-				if _, statErr := os.Stat(filepath.Join(filepath.Dir(path), filepath.FromSlash(target))); errors.Is(statErr, os.ErrNotExist) {
-					cands = append(cands, Candidate{Detector: "broken-links", File: relPath, Line: lineNumber + 1, Title: "broken relative link", Detail: target})
-				} else if statErr != nil {
-					return fmt.Errorf("check link target %q: %w", target, statErr)
-				}
-			}
-		}
-		return nil
+		return visit(path, entry)
 	})
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("walk janitor files: %w", err)
 	}
-	return cands, nil
+	return nil
+}
+
+func staleTODOCandidates(worktree string, deadline time.Time, path string, entry fs.DirEntry) ([]Candidate, error) {
+	info, err := entry.Info()
+	if err != nil {
+		return nil, fmt.Errorf("stat %q: %w", path, err)
+	}
+	if !info.ModTime().Before(deadline) {
+		return nil, nil
+	}
+	contents, err := os.ReadFile(path) //nolint:gosec // path comes from filepath.WalkDir under the supplied worktree
+	if err != nil {
+		return nil, fmt.Errorf("read %q: %w", path, err)
+	}
+	relPath, err := filepath.Rel(worktree, path)
+	if err != nil {
+		return nil, fmt.Errorf("make %q relative: %w", path, err)
+	}
+	return todoCandidates(relPath, contents), nil
+}
+
+func todoCandidates(path string, contents []byte) []Candidate {
+	var cands []Candidate
+	for lineNumber, line := range strings.Split(string(contents), "\n") {
+		if strings.Contains(line, "TODO") || strings.Contains(line, "FIXME") {
+			cands = append(cands, Candidate{Detector: "todo", File: path, Line: lineNumber + 1, Title: "stale TODO/FIXME", Detail: strings.TrimSpace(line)})
+		}
+	}
+	return cands
+}
+
+func brokenLinkCandidates(worktree, path string, _ fs.DirEntry) ([]Candidate, error) {
+	if filepath.Ext(path) != ".md" {
+		return nil, nil
+	}
+	contents, err := os.ReadFile(path) //nolint:gosec // path comes from filepath.WalkDir under the supplied worktree
+	if err != nil {
+		return nil, fmt.Errorf("read %q: %w", path, err)
+	}
+	relPath, err := filepath.Rel(worktree, path)
+	if err != nil {
+		return nil, fmt.Errorf("make %q relative: %w", path, err)
+	}
+	return findBrokenLinks(path, relPath, contents), nil
+}
+
+func findBrokenLinks(path, relPath string, contents []byte) []Candidate {
+	var cands []Candidate
+	for lineNumber, line := range strings.Split(string(contents), "\n") {
+		for _, target := range markdownLinkTargets(line) {
+			if _, err := os.Stat(filepath.Join(filepath.Dir(path), filepath.FromSlash(target))); errors.Is(err, os.ErrNotExist) {
+				cands = append(cands, Candidate{Detector: "broken-links", File: relPath, Line: lineNumber + 1, Title: "broken relative link", Detail: target})
+			}
+		}
+	}
+	return cands
 }
 
 func markdownLinkTargets(line string) []string {
