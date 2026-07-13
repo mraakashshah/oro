@@ -10,9 +10,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var newDispatcherDaemonSpawner = func() DaemonSpawner {
+var newDispatcherDaemonSpawner = func() DaemonSpawner { //nolint:gochecknoglobals // test seam for dispatcher start wiring
 	return &ExecDaemonSpawner{Cleanliness: defaultCleanlinessStartConfig()}
-} //nolint:gochecknoglobals // test seam for dispatcher start wiring
+}
 
 // newDispatcherCmd creates the "oro dispatcher" subcommand group.
 func newDispatcherCmd() *cobra.Command {

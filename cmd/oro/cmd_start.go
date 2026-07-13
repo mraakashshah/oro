@@ -850,14 +850,18 @@ func newStartCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&webEnabled, "web", true, "enable HTTP server for dashboard/health endpoints")
 	cmd.Flags().BoolVar(&noWeb, "no-web", false, "disable HTTP server for headless/CI use")
 	cmd.Flags().StringVar(&webAddr, "web-addr", "", "HTTP server listen address (default 127.0.0.1:4444)")
+	registerCleanlinessStartFlags(cmd, &cleanliness)
+
+	return cmd
+}
+
+func registerCleanlinessStartFlags(cmd *cobra.Command, cleanliness *cleanlinessStartConfig) {
 	cmd.Flags().IntVar(&cleanliness.JanitorInterval, "janitor-interval", cleanliness.JanitorInterval, "run janitor after N completed merges (0 disables janitor)")
 	cmd.Flags().IntVar(&cleanliness.JanitorIdleThreshold, "janitor-idle-threshold", cleanliness.JanitorIdleThreshold, "maximum queued tasks before janitor waits")
 	cmd.Flags().IntVar(&cleanliness.AuditEveryNJanitors, "audit-every-n-janitors", cleanliness.AuditEveryNJanitors, "run audit every N janitor cycles (0 disables periodic audits)")
 	cmd.Flags().IntVar(&cleanliness.JanitorTopK, "janitor-top-k", cleanliness.JanitorTopK, "maximum findings filed per janitor cycle (0 uses natural limit)")
 	cmd.Flags().BoolVar(&cleanliness.JanitorEnabled, "janitor-enabled", cleanliness.JanitorEnabled, "enable janitor cycles")
 	cmd.Flags().BoolVar(&cleanliness.AuditEnabled, "audit-enabled", cleanliness.AuditEnabled, "enable audit cycles")
-
-	return cmd
 }
 
 // startFreshSwarm sets up project env vars and launches the full swarm (daemon + tmux).
@@ -1011,7 +1015,7 @@ func buildDispatcher(baseBranch string, webEnabled bool, webAddr string) (*dispa
 
 // buildDispatcherWithReviewTimeouts constructs a Dispatcher with separate
 // ops-review subprocess and reviewing-worker stall timeout controls.
-func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool, baseBranch string, mutationTesting, webEnabled bool, webAddr string) (*dispatcher.Dispatcher, *sql.DB, error) { //nolint:funlen // factory initialization
+func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool, baseBranch string, mutationTesting, webEnabled bool, webAddr string) (*dispatcher.Dispatcher, *sql.DB, error) { //nolint:funlen,unparam // factory test seam preserves production base-branch parity
 	return buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, baseBranch, mutationTesting, webEnabled, webAddr, defaultCleanlinessStartConfig())
 }
 
