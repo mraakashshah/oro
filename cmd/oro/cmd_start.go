@@ -392,10 +392,10 @@ func preflightAndCheckRunning(w io.Writer) (pidPath string, err error) {
 }
 
 // preflightAndCheckRunningWith runs the supplied preflight closure and
-// optionally the repo-rooted checks and runtime project assets (build
-// oro-search-hook, warn on quality_gate.sh / Epic C drift). Hermetic
-// daemon-skip mode passes runRepoChecks=false because that mode assumes no Go
-// toolchain and no repo on disk (oro-7jjt).
+// optionally the repo-rooted checks (build oro-search-hook, warn on
+// quality_gate.sh / Epic C drift). Hermetic daemon-skip mode passes
+// runRepoChecks=false because that mode assumes no Go toolchain and no
+// repo on disk (oro-7jjt).
 func preflightAndCheckRunningWith(w io.Writer, preflight func() error, runRepoChecks bool) (pidPath string, err error) {
 	// Clear CLAUDECODE early — it leaks from Claude Code's Bash tool
 	// and blocks nested claude sessions in tmux panes and workers.
