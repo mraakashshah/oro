@@ -158,6 +158,43 @@ func TestFindByMetadataKeyJanitor(t *testing.T) {
 	}
 }
 
+func TestCreateClosedJanitorRoleBead(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+
+	closed, err := store.Create(ctx, CreateParams{
+		ID:     "oro-janitor",
+		Title:  "Janitor role bead",
+		Status: "closed",
+	})
+	if err != nil {
+		t.Fatalf("Create closed janitor bead: %v", err)
+	}
+	if closed.Status != "closed" {
+		t.Fatalf("created closed bead status = %q, want closed", closed.Status)
+	}
+
+	open, err := store.Create(ctx, CreateParams{ID: "oro-existing-caller", Title: "Existing caller"})
+	if err != nil {
+		t.Fatalf("Create zero-value status bead: %v", err)
+	}
+	if open.Status != "open" {
+		t.Fatalf("created zero-value status bead = %q, want open", open.Status)
+	}
+
+	ready, err := store.Ready(ctx)
+	if err != nil {
+		t.Fatalf("Ready: %v", err)
+	}
+	if ids(ready) != "oro-existing-caller" {
+		t.Fatalf("Ready IDs = %q, want oro-existing-caller", ids(ready))
+	}
+
+	if _, err := store.Create(ctx, CreateParams{ID: "oro-invalid-status", Title: "Invalid", Status: "invalid"}); err == nil {
+		t.Fatal("Create invalid status succeeded, want error")
+	}
+}
+
 func TestSQLiteStoreShowReturnsMigratedSQLiteBead(t *testing.T) {
 	ctx := context.Background()
 	db, err := sql.Open("sqlite", ":memory:")

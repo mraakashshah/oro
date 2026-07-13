@@ -163,6 +163,12 @@ func (s *SQLiteStore) Create(ctx context.Context, params CreateParams) (*protoco
 	if strings.TrimSpace(params.Title) == "" {
 		return nil, fmt.Errorf("beadstore: title is required")
 	}
+	if params.Status == "" {
+		params.Status = "open"
+	}
+	if !validStatus(params.Status) {
+		return nil, fmt.Errorf("beadstore: invalid status %q", params.Status)
+	}
 	if params.ID == "" {
 		params.ID = generateBeadID()
 	}
@@ -195,8 +201,8 @@ func (s *SQLiteStore) Create(ctx context.Context, params CreateParams) (*protoco
 
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO beads (id, title, description, acceptance_criteria, status, priority, type, parent_id, estimated_minutes, tier, created_at, updated_at)
-VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`,
-		params.ID, params.Title, params.Description, params.AcceptanceCriteria, params.Priority, params.Type, parent, estimate, tier, now, now); err != nil {
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		params.ID, params.Title, params.Description, params.AcceptanceCriteria, params.Status, params.Priority, params.Type, parent, estimate, tier, now, now); err != nil {
 		return nil, fmt.Errorf("beadstore: create bead %s: %w", params.ID, err)
 	}
 	if err := replaceStrings(ctx, tx, "bead_tags", "tag", params.ID, params.Tags); err != nil {
