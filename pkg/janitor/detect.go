@@ -21,6 +21,8 @@ import (
 
 const detectScriptPath = "scripts/janitor_detect.sh"
 
+var errDetectorSkipped = errors.New("janitor detector skipped")
+
 // Candidate is one finding emitted by a deterministic janitor detector.
 type Candidate struct {
 	Detector string `json:"detector"`
@@ -53,6 +55,10 @@ func RunBuiltins(ctx context.Context, worktree string) (cands []Candidate, ran, 
 		if detector.run != nil {
 			builtinCands, runBuiltinErr := detector.run(ctx, worktree)
 			if runBuiltinErr != nil {
+				if errors.Is(runBuiltinErr, errDetectorSkipped) {
+					skipped = append(skipped, detector.name)
+					continue
+				}
 				return nil, nil, nil, fmt.Errorf("run janitor detector %q: %w", detector.name, runBuiltinErr)
 			}
 			ran = append(ran, detector.name)
@@ -91,6 +97,7 @@ func RunBuiltins(ctx context.Context, worktree string) (cands []Candidate, ran, 
 
 func builtinsFor(worktree string) []builtinDetector {
 	detectors := []builtinDetector{
+		{name: "ci", run: ciDetector},
 		{name: "todo", run: staleTODOs},
 		{name: "broken-links", run: brokenRelativeLinks},
 		{name: "orphan-files", run: orphanFiles},
@@ -109,6 +116,88 @@ func builtinsFor(worktree string) []builtinDetector {
 		)
 	}
 	return detectors
+}
+
+type ciWorkflowRun struct {
+	WorkflowName string `json:"workflowName"`
+	DisplayTitle string `json:"displayTitle"`
+	Conclusion   string `json:"conclusion"`
+	URL          string `json:"url"`
+}
+
+func ciDetector(ctx context.Context, worktree string) ([]Candidate, error) {
+	gh, err := exec.LookPath("gh")
+	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return nil, errDetectorSkipped
+		}
+		return nil, fmt.Errorf("find gh: %w", err)
+	}
+	branch, err := currentBranch(ctx, worktree)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("find CI branch: %w", ctx.Err())
+		}
+		// The rest of the built-in suite can scan a plain directory in tests
+		// and small repositories. CI status has no meaningful branch there.
+		return nil, errDetectorSkipped
+	}
+	cmd := exec.CommandContext(ctx, gh, "run", "list", "--branch", branch, "--status", "failure", "--json", "workflowName,displayTitle,conclusion,url") //nolint:gosec // gh path and arguments are fixed CI detector definitions
+	cmd.Dir = worktree
+	cmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
+	out, runErr := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("run CI detector: %w", ctx.Err())
+	}
+	if runErr != nil {
+		// gh uses a non-zero exit for both an absent login and inaccessible
+		// repository. CI health is optional in those environments.
+		return nil, errDetectorSkipped
+	}
+	var runs []ciWorkflowRun
+	if err := json.Unmarshal(out, &runs); err != nil {
+		return nil, fmt.Errorf("parse gh CI runs: %w", err)
+	}
+	return ciCandidates(runs), nil
+}
+
+func currentBranch(ctx context.Context, worktree string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "branch", "--show-current") //nolint:gosec // fixed git command in the supplied scan worktree
+	cmd.Dir = worktree
+	cmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("find CI branch: %w", err)
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch == "" {
+		return "", errors.New("find CI branch: detached HEAD")
+	}
+	return branch, nil
+}
+
+func ciCandidates(runs []ciWorkflowRun) []Candidate {
+	candidates := make([]Candidate, 0, len(runs))
+	for _, run := range runs {
+		if run.Conclusion != "failure" {
+			continue
+		}
+		workflow := firstNonEmpty(run.WorkflowName, "CI workflow")
+		job := firstNonEmpty(run.DisplayTitle, "unspecified job")
+		candidates = append(candidates, Candidate{
+			Detector: "ci",
+			Title:    workflow + " failed",
+			Detail:   fmt.Sprintf("workflow: %s; job: %s; run: %s", workflow, job, run.URL),
+		})
+	}
+	return candidates
+}
+
+func firstNonEmpty(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 func detectorRunError(detector string, runErr error, stderr string) error {

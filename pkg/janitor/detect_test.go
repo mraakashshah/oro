@@ -119,6 +119,142 @@ func TestJanitorBuiltinsSkipMissing(t *testing.T) {
 	}
 }
 
+func TestCIDetectorEmitsFindingWhenRed(t *testing.T) {
+	worktree := t.TempDir()
+	runGit(t, worktree, "init", "-b", "main")
+	binDir := t.TempDir()
+	gh := `#!/bin/sh
+[ "$1" = run ] && [ "$2" = list ] && [ "$3" = --branch ] && [ "$4" = main ] || exit 1
+printf '%s\n' '[{"workflowName":"CI","displayTitle":"unit tests","conclusion":"failure","url":"https://github.example/acme/repo/actions/runs/42"},{"workflowName":"Release","displayTitle":"publish","conclusion":"failure","url":"https://github.example/acme/repo/actions/runs/43"}]'
+`
+	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(gh), 0o700); err != nil {
+		t.Fatalf("write gh fixture: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree)
+	if err != nil {
+		t.Fatalf("run built-in detectors: %v", err)
+	}
+	if !contains(ran, "ci") {
+		t.Errorf("ran = %#v, want ci", ran)
+	}
+	if contains(skipped, "ci") {
+		t.Errorf("skipped = %#v, should not include ci", skipped)
+	}
+	want := janitor.Candidate{
+		Detector: "ci",
+		Title:    "CI failed",
+		Detail:   "workflow: CI; job: unit tests; run: https://github.example/acme/repo/actions/runs/42",
+	}
+	if !containsCandidate(cands, want) {
+		t.Errorf("candidates = %#v, want %#v", cands, want)
+	}
+	want = janitor.Candidate{
+		Detector: "ci",
+		Title:    "Release failed",
+		Detail:   "workflow: Release; job: publish; run: https://github.example/acme/repo/actions/runs/43",
+	}
+	if !containsCandidate(cands, want) {
+		t.Errorf("candidates = %#v, want %#v", cands, want)
+	}
+}
+
+func TestCIDetectorNoopWhenToolMissing(t *testing.T) {
+	worktree := t.TempDir()
+	t.Setenv("PATH", t.TempDir())
+
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree)
+	if err != nil {
+		t.Fatalf("run built-in detectors: %v", err)
+	}
+	if contains(ran, "ci") {
+		t.Errorf("ran = %#v, should not include ci", ran)
+	}
+	if !contains(skipped, "ci") {
+		t.Errorf("skipped = %#v, want ci", skipped)
+	}
+	for _, candidate := range cands {
+		if candidate.Detector == "ci" {
+			t.Errorf("candidates = %#v, want no ci finding", cands)
+		}
+	}
+}
+
+func TestCIDetectorNoopWhenUnauthed(t *testing.T) {
+	worktree := t.TempDir()
+	runGit(t, worktree, "init", "-b", "main")
+	binDir := t.TempDir()
+	gh := "#!/bin/sh\necho 'authentication required' >&2\nexit 4\n"
+	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(gh), 0o700); err != nil {
+		t.Fatalf("write gh fixture: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree)
+	if err != nil {
+		t.Fatalf("run built-in detectors: %v", err)
+	}
+	if contains(ran, "ci") {
+		t.Errorf("ran = %#v, should not include ci", ran)
+	}
+	if !contains(skipped, "ci") {
+		t.Errorf("skipped = %#v, want ci", skipped)
+	}
+	for _, candidate := range cands {
+		if candidate.Detector == "ci" {
+			t.Errorf("candidates = %#v, want no ci finding", cands)
+		}
+	}
+}
+
+func TestCIDetectorNoopWhenGreen(t *testing.T) {
+	worktree := t.TempDir()
+	runGit(t, worktree, "init", "-b", "main")
+	binDir := t.TempDir()
+	gh := "#!/bin/sh\nprintf '%s\\n' '[{\"workflowName\":\"CI\",\"conclusion\":\"success\",\"url\":\"https://github.example/acme/repo/actions/runs/42\"}]'\n"
+	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(gh), 0o700); err != nil {
+		t.Fatalf("write gh fixture: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree)
+	if err != nil {
+		t.Fatalf("run built-in detectors: %v", err)
+	}
+	if !contains(ran, "ci") || contains(skipped, "ci") {
+		t.Errorf("ran, skipped = %#v, %#v, want ci ran only", ran, skipped)
+	}
+	for _, candidate := range cands {
+		if candidate.Detector == "ci" {
+			t.Errorf("candidates = %#v, want no ci finding", cands)
+		}
+	}
+}
+
+func TestCIDetectorNoopOutsideGitWorktree(t *testing.T) {
+	binDir := t.TempDir()
+	gh := "#!/bin/sh\nprintf '%s\\n' '[]'\n"
+	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(gh), 0o700); err != nil {
+		t.Fatalf("write gh fixture: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatalf("run built-in detectors: %v", err)
+	}
+	if contains(ran, "ci") {
+		t.Errorf("ran = %#v, should not include ci", ran)
+	}
+	if !contains(skipped, "ci") {
+		t.Errorf("skipped = %#v, want ci", skipped)
+	}
+	if containsCandidate(cands, janitor.Candidate{Detector: "ci"}) {
+		t.Errorf("candidates = %#v, want no ci finding", cands)
+	}
+}
+
 func TestJanitorBuiltinsKeepsLintFindings(t *testing.T) {
 	worktree := t.TempDir()
 	if err := os.WriteFile(filepath.Join(worktree, "pyproject.toml"), []byte("[project]\nname = 'fixture'\n"), 0o600); err != nil {
