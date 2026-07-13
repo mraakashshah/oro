@@ -2,15 +2,18 @@ package dispatcher //nolint:testpackage // exercises the internal janitor lifecy
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"oro/pkg/beadstore"
 	"oro/pkg/beadstore/migrations"
+	"oro/pkg/ops"
 	"oro/pkg/protocol"
 )
 
@@ -74,6 +77,9 @@ func TestJanitorCycleEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("janitor journey: %v", err)
 	}
+	if !janitorJourneyHasFindingStatus(events, first.Metadata[janitorFindingMetadataKey].(string), "wont-fix") {
+		t.Fatalf("janitor journey = %#v, want derived wont-fix finding", events)
+	}
 	if !janitorJourneyHasSkipped(events, "deadcode") {
 		t.Fatalf("janitor journey = %#v, want skipped deadcode detector", events)
 	}
@@ -126,7 +132,26 @@ func janitorRoleBead(ctx context.Context, t *testing.T, store beadstore.Store) *
 
 func janitorJourneyHasSkipped(events []beadstore.JourneyEvent, detector string) bool {
 	for _, event := range events {
-		if event.Event == "janitor_cycle" && strings.Contains(event.Payload, `"`+detector+`"`) {
+		if event.Event != "janitor_cycle" {
+			continue
+		}
+		var cycle struct {
+			Skipped []string `json:"skipped"`
+		}
+		if json.Unmarshal([]byte(event.Payload), &cycle) == nil && slices.Contains(cycle.Skipped, detector) {
+			return true
+		}
+	}
+	return false
+}
+
+func janitorJourneyHasFindingStatus(events []beadstore.JourneyEvent, findingID, status string) bool {
+	for _, event := range events {
+		if event.Event != "janitor_finding" {
+			continue
+		}
+		var finding ops.Finding
+		if json.Unmarshal([]byte(event.Payload), &finding) == nil && finding.ID == findingID && finding.Status == status {
 			return true
 		}
 	}

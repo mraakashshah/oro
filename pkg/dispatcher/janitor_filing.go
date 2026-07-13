@@ -94,7 +94,13 @@ func (d *Dispatcher) appendJanitorJourney(ctx context.Context, roleBeadID, event
 }
 
 func janitorTopFindingsBySeverity(findings []ops.Finding) []ops.Finding {
-	ordered := append([]ops.Finding(nil), findings...)
+	ordered := make([]ops.Finding, 0, len(findings))
+	for _, finding := range findings {
+		if finding.Status == "wont-fix" {
+			continue
+		}
+		ordered = append(ordered, finding)
+	}
 	sort.SliceStable(ordered, func(i, j int) bool {
 		return janitorSeverityRank(ordered[i].Severity) > janitorSeverityRank(ordered[j].Severity)
 	})

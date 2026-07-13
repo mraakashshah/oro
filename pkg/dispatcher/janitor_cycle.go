@@ -125,9 +125,10 @@ func janitorFindings(candidates []janitor.Candidate, suppressed map[string]bool)
 			Origin:     "pre_existing",
 		}
 		finding.ID = ops.FindingID("", finding)
-		if !suppressed[finding.ID] {
-			findings = append(findings, finding)
+		if suppressed[finding.ID] {
+			finding.Status = "wont-fix"
 		}
+		findings = append(findings, finding)
 	}
 	return findings
 }
