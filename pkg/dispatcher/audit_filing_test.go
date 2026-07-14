@@ -60,6 +60,40 @@ func TestAuditFilingAllSurvivors(t *testing.T) {
 	assertAuditCoverageJourney(t, journey)
 }
 
+func TestAuditFilingAcceptance(t *testing.T) {
+	ctx := context.Background()
+	d, store, _, _, _, _ := newTestDispatcher(t)
+	findings := []ops.Finding{
+		{ID: "audit-critical", Severity: ops.SevCritical, Title: "critical finding", Detail: "critical detail"},
+		{ID: "audit-empty-detail", Severity: ops.SevMinor, Title: "finding without detail"},
+	}
+
+	d.fileAuditFindings(ctx, "oro-audit-role", findings, nil, nil)
+
+	store.mu.Lock()
+	created := append([]createCall(nil), store.created...)
+	store.mu.Unlock()
+	if len(created) != len(findings) {
+		t.Fatalf("created beads = %d, want %d: %#v", len(created), len(findings), created)
+	}
+	for i, call := range created {
+		lines := strings.Split(call.acceptanceCriteria, "\n")
+		for _, prefix := range []string{"Test: ", "Cmd: ", "Assert: "} {
+			if !slices.ContainsFunc(lines, func(line string) bool {
+				return strings.HasPrefix(line, prefix) && strings.TrimSpace(strings.TrimPrefix(line, prefix)) != ""
+			}) {
+				t.Errorf("created bead %q acceptance missing non-empty %sline: %q", call.title, prefix, call.acceptanceCriteria)
+			}
+		}
+		if !strings.Contains(call.acceptanceCriteria, "Cmd: ./scripts/quality_gate.sh") {
+			t.Errorf("created bead %q acceptance does not invoke repository quality gate: %q", call.title, call.acceptanceCriteria)
+		}
+		if !strings.Contains(call.acceptanceCriteria, findings[i].ID) {
+			t.Errorf("created bead %q acceptance missing finding ID %q: %q", call.title, findings[i].ID, call.acceptanceCriteria)
+		}
+	}
+}
+
 func TestAuditFilingZeroSurvivorsRecordsCoverage(t *testing.T) {
 	ctx := context.Background()
 	d, store, _, _, _, _ := newTestDispatcher(t)

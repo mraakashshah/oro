@@ -135,11 +135,12 @@ func isWontFixReason(reason string) bool {
 
 func auditFindingCreateParams(finding ops.Finding) beadstore.CreateParams {
 	return beadstore.CreateParams{
-		Title:       finding.Title,
-		Type:        "task",
-		Priority:    auditFindingPriority(finding.Severity),
-		Description: auditFindingDescription(finding),
-		Metadata:    map[string]string{auditFindingMetadataKey: finding.ID},
+		Title:              finding.Title,
+		Type:               "task",
+		Priority:           auditFindingPriority(finding.Severity),
+		Description:        auditFindingDescription(finding),
+		AcceptanceCriteria: fmt.Sprintf("Test: audit finding %s\nCmd: ./scripts/quality_gate.sh\nAssert: audit finding %s is resolved and the quality gate passes", finding.ID, finding.ID),
+		Metadata:           map[string]string{auditFindingMetadataKey: finding.ID},
 	}
 }
 
