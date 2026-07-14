@@ -19384,7 +19384,10 @@ func TestParseAcceptanceCmd_PipeFormat(t *testing.T) {
 		{"Test: only | Assert: PASS", ""},
 	}
 	for _, c := range cases {
-		got := parseAcceptanceCmd(c.ac)
+		got, err := parseAcceptanceCmd(c.ac)
+		if err != nil {
+			t.Fatalf("parseAcceptanceCmd(%q): %v", c.ac, err)
+		}
 		if got != c.want {
 			t.Errorf("parseAcceptanceCmd(%q): got %q, want %q", c.ac, got, c.want)
 		}
@@ -19395,7 +19398,10 @@ func TestParseAcceptanceCmd_PipeFormat(t *testing.T) {
 // is parsed correctly.
 func TestParseAcceptanceCmd_LineFormat(t *testing.T) {
 	ac := "Test: pkg/foo/foo_test.go\nCmd: go test ./pkg/foo/...\nAssert: 100% pass"
-	got := parseAcceptanceCmd(ac)
+	got, err := parseAcceptanceCmd(ac)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got != "go test ./pkg/foo/..." {
 		t.Errorf("parseAcceptanceCmd (line format): got %q, want %q", got, "go test ./pkg/foo/...")
 	}
@@ -19435,11 +19441,32 @@ Read: docs/rules.md`,
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := parseAcceptanceCmd(c.ac)
+			got, err := parseAcceptanceCmd(c.ac)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if got != c.want {
 				t.Errorf("parseAcceptanceCmd(%q): got %q, want %q", c.ac, got, c.want)
 			}
 		})
+	}
+}
+
+// TestParseAcceptanceCmd_QuotedPipe preserves quoted pipes in inline commands
+// and rejects malformed quoting instead of silently truncating the command.
+func TestParseAcceptanceCmd_QuotedPipe(t *testing.T) {
+	const cmd = "go test ./pkg/dispatcher -run 'TestA|TestB' -count=1"
+
+	got, err := parseAcceptanceCmd("Test: pkg/dispatcher/dispatcher_test.go:TestA | Cmd: " + cmd + " | Assert: PASS")
+	if err != nil {
+		t.Fatalf("parseAcceptanceCmd returned error: %v", err)
+	}
+	if got != cmd {
+		t.Errorf("parseAcceptanceCmd quoted pipe: got %q, want %q", got, cmd)
+	}
+
+	if _, err := parseAcceptanceCmd("Test: pkg/dispatcher/dispatcher_test.go:TestA | Cmd: go test -run 'TestA|TestB | Assert: PASS"); err == nil {
+		t.Error("parseAcceptanceCmd accepted malformed quoted command")
 	}
 }
 

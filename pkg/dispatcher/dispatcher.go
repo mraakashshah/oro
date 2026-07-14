@@ -3408,7 +3408,12 @@ func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) 
 
 	targetBranch := resolveEpicTargetBranch(detail.Metadata, d.cfg.DefaultBranch)
 
-	cmd := parseAcceptanceCmd(detail.AcceptanceCriteria)
+	cmd, parseErr := parseAcceptanceCmd(detail.AcceptanceCriteria)
+	if parseErr != nil {
+		_ = d.logEvent(ctx, "epic_acceptance_parse_error", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"error":%q}`, parseErr.Error()))
+		return
+	}
 	if cmd == "" {
 		// No executable acceptance test: warn and fall back to count-based close.
 		_ = d.logEvent(ctx, "epic_no_acceptance_cmd", "dispatcher", epicID, workerID,
@@ -3580,23 +3585,77 @@ func (d *Dispatcher) completeEpicClose(ctx context.Context, epicID, workerID, re
 // parseAcceptanceCmd extracts the Cmd: value from an acceptance criteria string.
 // It supports both pipe-separated inline format ("... | Cmd: go test | ...")
 // and line-per-field format. Returns "" if no Cmd: is present.
-func parseAcceptanceCmd(ac string) string {
+func parseAcceptanceCmd(ac string) (string, error) {
 	if strings.Contains(ac, "\n") {
 		for _, line := range strings.Split(ac, "\n") {
 			trimmed := strings.TrimSpace(line)
 			if strings.HasPrefix(trimmed, "Cmd:") {
-				return strings.TrimSpace(strings.TrimPrefix(trimmed, "Cmd:"))
+				cmd := strings.TrimSpace(strings.TrimPrefix(trimmed, "Cmd:"))
+				return cmd, validateAcceptanceCmdQuotes(cmd)
 			}
 		}
-		return ""
+		return "", nil
 	}
-	for _, part := range strings.Split(ac, "|") {
+	parts, err := splitInlineAcceptanceFields(ac)
+	if err != nil {
+		return "", err
+	}
+	for _, part := range parts {
 		trimmed := strings.TrimSpace(part)
 		if strings.HasPrefix(trimmed, "Cmd:") {
-			return strings.TrimSpace(strings.TrimPrefix(trimmed, "Cmd:"))
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, "Cmd:")), nil
 		}
 	}
-	return ""
+	return "", nil
+}
+
+func splitInlineAcceptanceFields(ac string) ([]string, error) {
+	parts := make([]string, 0, 3)
+	start := 0
+	var quote byte
+	escaped := false
+	for i := 0; i < len(ac); i++ {
+		char := ac[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if char == '\\' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if char == quote {
+				quote = 0
+			}
+			continue
+		}
+		if char == '\'' || char == '"' {
+			quote = char
+			continue
+		}
+		if char == '|' && startsAcceptanceField(ac[i+1:]) {
+			parts = append(parts, ac[start:i])
+			start = i + 1
+		}
+	}
+	if quote != 0 {
+		return nil, fmt.Errorf("unterminated %c quote in acceptance command", quote)
+	}
+	return append(parts, ac[start:]), nil
+}
+
+func startsAcceptanceField(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	return strings.HasPrefix(trimmed, "Test:") ||
+		strings.HasPrefix(trimmed, "Cmd:") ||
+		strings.HasPrefix(trimmed, "Assert:") ||
+		strings.HasPrefix(trimmed, "Read:")
+}
+
+func validateAcceptanceCmdQuotes(cmd string) error {
+	_, err := splitInlineAcceptanceFields(cmd)
+	return err
 }
 
 // handleMergeConflictResult waits for the ops merge-conflict result and acts on it.
@@ -6734,7 +6793,12 @@ func (d *Dispatcher) checkChildlessEpicAssignable(ctx context.Context, bead prot
 		return true, false
 	}
 
-	cmd := parseAcceptanceCmd(detail.AcceptanceCriteria)
+	cmd, parseErr := parseAcceptanceCmd(detail.AcceptanceCriteria)
+	if parseErr != nil {
+		_ = d.logEvent(ctx, "epic_pre_decompose_acceptance_parse_error", "dispatcher", bead.ID, workerID,
+			fmt.Sprintf(`{"error":%q}`, parseErr.Error()))
+		return true, false
+	}
 	if cmd == "" {
 		return true, false
 	}
