@@ -376,6 +376,30 @@ func TestCIDetectorNoopWhenToolMissing(t *testing.T) {
 	}
 }
 
+func TestCIDetectorNoopWithoutOrigin(t *testing.T) {
+	worktree := t.TempDir()
+	runGit(t, worktree, "init", "-b", "main")
+	binDir := t.TempDir()
+	gh := "#!/bin/sh\necho 'gh must not run without an origin remote' >&2\nexit 9\n"
+	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(gh), 0o700); err != nil {
+		t.Fatalf("write gh fixture: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main")
+	if err != nil {
+		t.Fatalf("run built-in detectors: %v", err)
+	}
+	if contains(ran, "ci") || !contains(skipped, "ci") {
+		t.Errorf("ran, skipped = %#v, %#v, want missing-origin CI skipped", ran, skipped)
+	}
+	for _, candidate := range cands {
+		if candidate.Detector == "ci" {
+			t.Errorf("candidates = %#v, want no CI finding without an origin", cands)
+		}
+	}
+}
+
 func TestCIDetectorNoopWhenUnauthed(t *testing.T) {
 	worktree := t.TempDir()
 	runGit(t, worktree, "init", "-b", "main")

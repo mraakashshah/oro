@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -201,6 +202,19 @@ func ciDetector(ctx context.Context, worktree, targetBranch string) ([]Candidate
 }
 
 func ciRemoteHost(ctx context.Context, worktree string) (string, error) {
+	listCmd := exec.CommandContext(ctx, "git", "-C", worktree, "remote") //nolint:gosec // worktree is the controlled scan checkout
+	listCmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
+	remotes, err := listCmd.Output()
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("list CI remotes: %w", ctx.Err())
+		}
+		return "", fmt.Errorf("list CI remotes: %w", err)
+	}
+	if !slices.Contains(strings.Fields(string(remotes)), "origin") {
+		return "", errDetectorSkipped
+	}
+
 	cmd := exec.CommandContext(ctx, "git", "-C", worktree, "remote", "get-url", "origin") //nolint:gosec // worktree is the controlled scan checkout
 	cmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
 	out, err := cmd.Output()
