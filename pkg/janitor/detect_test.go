@@ -616,7 +616,15 @@ func TestJanitorBuiltinsFindsOrphanFiles(t *testing.T) {
 func TestJanitorBuiltinsUsesGitHistoryForTODOAge(t *testing.T) {
 	worktree := t.TempDir()
 	oldPath := filepath.Join(worktree, "old.go")
-	if err := os.WriteFile(oldPath, []byte("package fixture // TODO remove legacy path\n"), 0o600); err != nil {
+	contents := `package fixture
+
+// TODO(oro-old): remove legacy path
+// FIXME remove another legacy path
+var examples = []string{"TODO marker", "FIXME marker"}
+
+// Route tokens such as (TODO, handleRequest) through ripgrep.
+`
+	if err := os.WriteFile(oldPath, []byte(contents), 0o600); err != nil {
 		t.Fatalf("write TODO fixture: %v", err)
 	}
 	runGit(t, worktree, "init")
@@ -637,15 +645,26 @@ func TestJanitorBuiltinsUsesGitHistoryForTODOAge(t *testing.T) {
 	if !contains(ran, "todo") {
 		t.Errorf("ran = %#v, want todo", ran)
 	}
-	want := janitor.Candidate{Detector: "todo", File: "old.go", Line: 1, Title: "stale TODO/FIXME", Detail: "package fixture // TODO remove legacy path"}
+	want := janitor.Candidate{Detector: "todo", File: "old.go", Line: 3, Title: "stale TODO/FIXME", Detail: "// TODO(oro-old): remove legacy path"}
 	if !containsCandidate(cands, want) {
 		t.Errorf("candidates = %#v, want %#v", cands, want)
+	}
+	if got := detectorCandidateCount(cands, "todo"); got != 2 {
+		t.Errorf("TODO candidates = %d, want only the two actionable comment markers; candidates=%#v", got, cands)
 	}
 }
 
 func TestJanitorBuiltinsFindsBrokenRelativeLinksWithoutTools(t *testing.T) {
 	worktree := t.TempDir()
-	if err := os.WriteFile(filepath.Join(worktree, "README.md"), []byte("[missing](docs/missing.md)\n"), 0o600); err != nil {
+	contents := `[missing](docs/missing.md)
+
+func RetryOperation[T any](fn func()) {}
+
+` + "```markdown" + `
+[example only](docs/example.md)
+` + "```" + `
+`
+	if err := os.WriteFile(filepath.Join(worktree, "README.md"), []byte(contents), 0o600); err != nil {
 		t.Fatalf("write Markdown fixture: %v", err)
 	}
 	t.Setenv("PATH", t.TempDir())
@@ -660,6 +679,9 @@ func TestJanitorBuiltinsFindsBrokenRelativeLinksWithoutTools(t *testing.T) {
 	want := janitor.Candidate{Detector: "broken-links", File: "README.md", Line: 1, Title: "broken relative link", Detail: "docs/missing.md"}
 	if !containsCandidate(cands, want) {
 		t.Errorf("candidates = %#v, want %#v", cands, want)
+	}
+	if got := detectorCandidateCount(cands, "broken-links"); got != 1 {
+		t.Errorf("broken-link candidates = %d, want only the real Markdown link; candidates=%#v", got, cands)
 	}
 }
 

@@ -27,6 +27,8 @@ const detectScriptPath = "scripts/janitor_detect.sh"
 
 var errDetectorSkipped = errors.New("janitor detector skipped")
 
+var todoMarkerPattern = regexp.MustCompile(`(?i)(//|#|/\*|<!--)[[:space:]]*(TODO|FIXME)(\([^)]*\))?([[:space:]]*:[[:space:]]*|[[:space:]]+|[[:space:]]*$)`)
+
 // Candidate is one finding emitted by a deterministic janitor detector.
 type Candidate struct {
 	Detector string `json:"detector"`
@@ -524,7 +526,7 @@ func lastGitUpdate(ctx context.Context, worktree, relPath string) (time.Time, bo
 func todoCandidates(path string, contents []byte) []Candidate {
 	var cands []Candidate
 	for lineNumber, line := range strings.Split(string(contents), "\n") {
-		if strings.Contains(line, "TODO") || strings.Contains(line, "FIXME") {
+		if todoMarkerPattern.MatchString(line) {
 			cands = append(cands, Candidate{Detector: "todo", File: path, Line: lineNumber + 1, Title: "stale TODO/FIXME", Detail: strings.TrimSpace(line)})
 		}
 	}
@@ -548,7 +550,16 @@ func brokenLinkCandidates(worktree, path string, _ fs.DirEntry) ([]Candidate, er
 
 func findBrokenLinks(path, relPath string, contents []byte) []Candidate {
 	var cands []Candidate
+	inFence := false
 	for lineNumber, line := range strings.Split(string(contents), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
 		for _, target := range markdownLinkTargets(line) {
 			if _, err := os.Stat(filepath.Join(filepath.Dir(path), filepath.FromSlash(target))); errors.Is(err, os.ErrNotExist) {
 				cands = append(cands, Candidate{Detector: "broken-links", File: relPath, Line: lineNumber + 1, Title: "broken relative link", Detail: target})
@@ -565,13 +576,17 @@ func markdownLinkTargets(line string) []string {
 		if start < 0 {
 			return targets
 		}
+		if strings.LastIndexByte(rest[:start], '[') < 0 {
+			rest = rest[start+2:]
+			continue
+		}
 		rest = rest[start+2:]
 		end := strings.IndexByte(rest, ')')
 		if end < 0 {
 			return targets
 		}
 		target := strings.TrimSpace(strings.Split(rest[:end], "#")[0])
-		if target != "" && !strings.HasPrefix(target, "/") && !strings.Contains(target, "://") && !strings.HasPrefix(target, "mailto:") {
+		if target != "" && !strings.ContainsAny(target, " \t\r\n") && !strings.HasPrefix(target, "/") && !strings.Contains(target, "://") && !strings.HasPrefix(target, "mailto:") {
 			targets = append(targets, target)
 		}
 		rest = rest[end+1:]
