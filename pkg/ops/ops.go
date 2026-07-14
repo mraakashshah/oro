@@ -397,13 +397,13 @@ func (s *Spawner) collectPersonaReviews(ctx context.Context, opsType Type, opts 
 		}
 		for i, ch := range chans {
 			result := <-ch
-			report, _ := parseReviewReport(result.Feedback)
+			report, _, parseErr := parseStructuredReviewReport(result.Feedback)
 			assignedPersona := personas[start+i]
 			report.Reviewer = assignedPersona.ID
 			for findingIndex := range report.Findings {
 				report.Findings[findingIndex].Sources = []string{assignedPersona.ID}
 			}
-			if result.Err != nil || result.Verdict == VerdictFailed {
+			if parseErr != nil || result.Err != nil || result.Verdict == VerdictFailed {
 				report.Verdict = VerdictFailed
 			}
 			reports = append(reports, report)

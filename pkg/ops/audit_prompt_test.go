@@ -108,6 +108,38 @@ func TestAuditAllUnparseableReportsFailClosed(t *testing.T) {
 	}
 }
 
+func TestAuditMalformedSectionFailsClosed(t *testing.T) {
+	personas := []Persona{
+		{ID: "code-quality", Role: "ops_audit_code_quality"},
+		{ID: "tests-safety", Role: "ops_audit_tests_safety"},
+		{ID: "data-migrations", Role: "ops_audit_data_migrations"},
+	}
+	spawner := &recordingReviewSpawner{outputs: []string{
+		"legacy-only report\nVERDICT: APPROVED\n",
+		"```json\n{malformed\n```\nVERDICT: REJECTED\n",
+		structuredReviewOutput(t, ReviewReport{Reviewer: "model-spoof", Verdict: VerdictApproved}),
+	}}
+
+	reports := NewSpawner(spawner).collectPersonaReviews(
+		context.Background(), OpsAudit, ReviewOpts{MaxReviewers: 1}, personas, "audit prompt",
+	)
+
+	if len(reports) != len(personas) {
+		t.Fatalf("reports = %d, want %d", len(reports), len(personas))
+	}
+	for i := range 2 {
+		if reports[i].Verdict != VerdictFailed {
+			t.Errorf("reports[%d].Verdict = %q, want failed for malformed structured output", i, reports[i].Verdict)
+		}
+	}
+	if reports[2].Reviewer != "data-migrations" || reports[2].Verdict != VerdictApproved {
+		t.Fatalf("valid report = %#v, want attributed approved data-migrations report", reports[2])
+	}
+	if got, want := coveredAuditSections(reports), []string{"data-migrations"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("coveredAuditSections() = %#v, want %#v", got, want)
+	}
+}
+
 func TestAuditCoverageUsesAssignedPersona(t *testing.T) {
 	t.Run("audit coverage ignores model reviewer values", func(t *testing.T) {
 		personas := auditSections()
