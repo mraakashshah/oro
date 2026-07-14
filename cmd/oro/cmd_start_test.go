@@ -1328,7 +1328,7 @@ func TestStartWebEnabledByDefault(t *testing.T) {
 
 			var got bool
 			previousRunDaemonOnly := runDaemonOnlyFn
-			runDaemonOnlyFn = func(_ *cobra.Command, _ string, _ int, _ int, _ time.Duration, _ time.Duration, _ time.Duration, _ bool, _ string, _ bool, webEnabled bool, _ string) error {
+			runDaemonOnlyFn = func(_ *cobra.Command, _ string, _ int, _ int, _ time.Duration, _ time.Duration, _ time.Duration, _ bool, _ string, _ bool, webEnabled bool, _ string, _ cleanlinessStartConfig) error {
 				got = webEnabled
 				return nil
 			}
