@@ -900,8 +900,7 @@ type Dispatcher struct {
 	auditSpawnFn          func(context.Context)                           // test hook; nil records the scheduled audit run
 	auditResultFn         func(context.Context, ops.AuditOpts) ops.Result // test hook; nil runs the ops audit
 	cleanlinessRoleMu     sync.Mutex
-	janitorMu             sync.Mutex
-	auditMu               sync.Mutex
+	cleanlinessCycleMu    sync.Mutex
 
 	// dreamExecuteFn, if non-nil, is called by handleDreamResult instead of
 	// memoryServices.ExecuteDream. Tests inject this to capture calls.
@@ -3068,8 +3067,8 @@ func (d *Dispatcher) maybeTriggerJanitor(ctx context.Context) {
 // spawnJanitor is the serialized asynchronous boundary for a selected janitor
 // cycle. Failed scans restore one interval of merge budget for a prompt retry.
 func (d *Dispatcher) spawnJanitor(ctx context.Context, spawn func(context.Context)) {
-	d.janitorMu.Lock()
-	defer d.janitorMu.Unlock()
+	d.cleanlinessCycleMu.Lock()
+	defer d.cleanlinessCycleMu.Unlock()
 
 	if spawn != nil {
 		spawn(ctx)
@@ -3100,10 +3099,10 @@ func (d *Dispatcher) restoreJanitorCadenceAfterFailure() {
 }
 
 // spawnAudit is the asynchronous boundary for an audit that replaces a
-// janitor cycle. It intentionally shares no scan goroutine with janitor.
+// janitor cycle. Cleanliness cycles serialize across both roles.
 func (d *Dispatcher) spawnAudit(ctx context.Context) {
-	d.auditMu.Lock()
-	defer d.auditMu.Unlock()
+	d.cleanlinessCycleMu.Lock()
+	defer d.cleanlinessCycleMu.Unlock()
 
 	roleBeadID, err := d.ensureRoleBead(ctx, "audit")
 	if err != nil {

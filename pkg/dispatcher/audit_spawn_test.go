@@ -513,6 +513,103 @@ func assertAuditRetryCadence(t *testing.T, d *Dispatcher) {
 	}
 }
 
+func TestCleanlinessScansSerializeAcrossRoles(t *testing.T) {
+	t.Run("janitor blocks audit", assertJanitorBlocksAudit)
+	t.Run("audit blocks janitor", assertAuditBlocksJanitor)
+}
+
+func assertJanitorBlocksAudit(t *testing.T) {
+	t.Helper()
+	d, _, worktrees, _, _, spawner := newTestDispatcher(t)
+	worktree := auditFixtureRepo(t)
+	spawner.verdict = auditSectionOutput(t, ops.ReviewReport{Verdict: ops.VerdictApproved})
+	auditEntered := make(chan struct{}, 1)
+	worktrees.createFn = func(context.Context, string, string) (string, string, error) {
+		auditEntered <- struct{}{}
+		return worktree, "agent/audit", nil
+	}
+
+	releaseJanitor := make(chan struct{})
+	janitorEntered := make(chan struct{})
+	janitorDone := make(chan struct{})
+	go func() {
+		d.spawnJanitor(context.Background(), func(context.Context) {
+			close(janitorEntered)
+			<-releaseJanitor
+		})
+		close(janitorDone)
+	}()
+	waitForCleanlinessEntry(t, janitorEntered, "janitor")
+
+	auditDone := make(chan struct{})
+	go func() {
+		d.spawnAudit(context.Background())
+		close(auditDone)
+	}()
+	overlapped := cleanlinessEntryObserved(auditEntered)
+	close(releaseJanitor)
+	<-janitorDone
+	<-auditDone
+	if overlapped {
+		t.Fatal("audit entered while janitor scan was active")
+	}
+}
+
+func assertAuditBlocksJanitor(t *testing.T) {
+	t.Helper()
+	d, _, worktrees, _, _, spawner := newTestDispatcher(t)
+	worktree := auditFixtureRepo(t)
+	spawner.verdict = auditSectionOutput(t, ops.ReviewReport{Verdict: ops.VerdictApproved})
+	auditEntered := make(chan struct{})
+	releaseAudit := make(chan struct{})
+	worktrees.createFn = func(context.Context, string, string) (string, string, error) {
+		close(auditEntered)
+		<-releaseAudit
+		return worktree, "agent/audit", nil
+	}
+
+	auditDone := make(chan struct{})
+	go func() {
+		d.spawnAudit(context.Background())
+		close(auditDone)
+	}()
+	waitForCleanlinessEntry(t, auditEntered, "audit")
+
+	janitorEntered := make(chan struct{}, 1)
+	janitorDone := make(chan struct{})
+	go func() {
+		d.spawnJanitor(context.Background(), func(context.Context) {
+			janitorEntered <- struct{}{}
+		})
+		close(janitorDone)
+	}()
+	overlapped := cleanlinessEntryObserved(janitorEntered)
+	close(releaseAudit)
+	<-auditDone
+	<-janitorDone
+	if overlapped {
+		t.Fatal("janitor entered while audit scan was active")
+	}
+}
+
+func waitForCleanlinessEntry(t *testing.T, entered <-chan struct{}, role string) {
+	t.Helper()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatalf("%s scan did not enter", role)
+	}
+}
+
+func cleanlinessEntryObserved(entered <-chan struct{}) bool {
+	select {
+	case <-entered:
+		return true
+	case <-time.After(150 * time.Millisecond):
+		return false
+	}
+}
+
 func TestAuditSpawnSerializesOverlappingRuns(t *testing.T) {
 	d, _, worktrees, _, _, _ := newTestDispatcher(t)
 	worktree := auditFixtureRepo(t)
