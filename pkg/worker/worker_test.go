@@ -1015,6 +1015,32 @@ test -z "${ORO_QG_LOCK_TIMEOUT_SECONDS:-}"
 	}
 }
 
+func TestRunQualityGate_ScrubsInheritedQualityGateLock(t *testing.T) {
+	t.Setenv("ORO_QG_INHERITED_LOCK_DIR", "/tmp/inherited-quality-gate-lock")
+	t.Setenv("ORO_QG_INHERITED_LOCK_TOKEN", "inherited-token")
+
+	tmpDir := t.TempDir()
+	script := filepath.Join(tmpDir, "quality_gate.sh")
+	if err := os.WriteFile(script, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+test -z "${ORO_QG_INHERITED_LOCK_DIR:-}"
+test -z "${ORO_QG_INHERITED_LOCK_TOKEN:-}"
+`), 0o600); err != nil { //nolint:gosec // test file
+		t.Fatal(err)
+	}
+	if err := os.Chmod(script, 0o755); err != nil { //nolint:gosec // test script must be executable
+		t.Fatal(err)
+	}
+
+	passed, output, err := worker.RunQualityGate(context.Background(), tmpDir, false)
+	if err != nil {
+		t.Fatalf("RunQualityGate: %v", err)
+	}
+	if !passed {
+		t.Fatalf("expected quality gate to pass without inherited lock state, output: %s", output)
+	}
+}
+
 func TestRunQualityGate_NoScript(t *testing.T) {
 	t.Parallel()
 
