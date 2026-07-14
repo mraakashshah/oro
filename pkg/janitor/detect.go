@@ -13,9 +13,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"oro/pkg/processenv"
 )
@@ -120,7 +122,7 @@ func runBuiltin(ctx context.Context, worktree string, detector builtinDetector) 
 	if runErr != nil && strings.TrimSpace(stdout.String()) == "" {
 		return nil, false, detectorRunError(detector.name, runErr, stderr.String())
 	}
-	return candidatesFromOutput(detector.name, stdout.Bytes()), false, nil
+	return candidatesFromOutput(worktree, detector.name, stdout.Bytes()), false, nil
 }
 
 func builtinsFor(worktree, targetBranch string) []builtinDetector {
@@ -295,7 +297,7 @@ func ciWorkflowKey(run ciWorkflowRun) string {
 }
 
 func ciCandidates(ctx context.Context, worktree, gh string, runs []ciWorkflowRun) ([]Candidate, error) {
-	candidates := make([]Candidate, 0, len(runs))
+	var candidates []Candidate
 	for _, run := range runs {
 		out, err := runCIProbe(ctx, worktree, gh, "run", "view", strconv.FormatInt(run.DatabaseID, 10), "--json", "jobs")
 		if err != nil {
@@ -307,11 +309,15 @@ func ciCandidates(ctx context.Context, worktree, gh string, runs []ciWorkflowRun
 		}
 		workflow := firstNonEmpty(run.WorkflowName, "CI workflow")
 		job := firstNonEmpty(strings.Join(failedCIJobNames(details.Jobs), ", "), "unspecified job")
-		candidates = append(candidates, Candidate{
-			Detector: "ci",
-			Title:    workflow + " failed",
-			Detail:   fmt.Sprintf("workflow: %s; job: %s; run: %s", workflow, job, run.URL),
-		})
+		logOutput, err := runCIProbe(ctx, worktree, gh, "run", "view", strconv.FormatInt(run.DatabaseID, 10), "--log-failed")
+		if err != nil {
+			return nil, err
+		}
+		for _, candidate := range candidatesFromOutput(worktree, "ci", logOutput) {
+			candidate.Title = workflow + " failed"
+			candidate.Detail = fmt.Sprintf("workflow: %s; job: %s; run: %s; evidence: %s", workflow, job, run.URL, candidate.Detail)
+			candidates = append(candidates, candidate)
+		}
 	}
 	return candidates, nil
 }
@@ -572,16 +578,82 @@ func isPythonProject(worktree string) bool {
 	return false
 }
 
-func candidatesFromOutput(detector string, output []byte) []Candidate {
+func candidatesFromOutput(worktree, detector string, output []byte) []Candidate {
 	var cands []Candidate
+	locationPattern := regexp.MustCompile(`:(\d+)(?::\d+|,\d+)?(?::|\s|$)`)
 	for _, line := range strings.Split(string(output), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		cands = append(cands, Candidate{Detector: detector, Title: line, Detail: line})
+		file, lineNumber, ok := outputRepositoryLocation(worktree, line, locationPattern)
+		if !ok {
+			continue
+		}
+		cands = append(cands, Candidate{Detector: detector, File: file, Line: lineNumber, Title: line, Detail: line})
 	}
 	return cands
+}
+
+func outputRepositoryLocation(worktree, line string, locationPattern *regexp.Regexp) (file string, lineNumber int, found bool) {
+	for _, match := range locationPattern.FindAllStringSubmatchIndex(line, -1) {
+		candidateLine, err := strconv.Atoi(line[match[2]:match[3]])
+		if err != nil || candidateLine <= 0 {
+			continue
+		}
+		for _, rawPath := range outputPathSuffixes(line[:match[0]]) {
+			relPath, fullPath, ok := repositoryOutputPath(worktree, rawPath)
+			if !ok || !repositoryLineExists(fullPath, candidateLine) {
+				continue
+			}
+			return relPath, candidateLine, true
+		}
+	}
+	return "", 0, false
+}
+
+func outputPathSuffixes(prefix string) []string {
+	prefix = strings.TrimSpace(prefix)
+	paths := []string{prefix}
+	for index, char := range prefix {
+		if unicode.IsSpace(char) {
+			paths = append(paths, strings.TrimSpace(prefix[index+len(string(char)):]))
+		}
+	}
+	return paths
+}
+
+func repositoryOutputPath(worktree, rawPath string) (relativePath, fullPath string, found bool) {
+	rawPath = strings.Trim(strings.TrimSpace(rawPath), `"'`)
+	rawPath = strings.TrimPrefix(rawPath, "##[error]")
+	localPath := filepath.Clean(filepath.FromSlash(rawPath))
+	if localPath == "." || localPath == "" {
+		return "", "", false
+	}
+	if filepath.IsAbs(localPath) {
+		relPath, err := filepath.Rel(worktree, localPath)
+		if err != nil {
+			return "", "", false
+		}
+		localPath = relPath
+	}
+	if localPath == ".." || strings.HasPrefix(localPath, ".."+string(filepath.Separator)) {
+		return "", "", false
+	}
+	fullPath = filepath.Join(worktree, localPath)
+	info, err := os.Stat(fullPath)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", "", false
+	}
+	return filepath.ToSlash(localPath), fullPath, true
+}
+
+func repositoryLineExists(path string, lineNumber int) bool {
+	data, err := os.ReadFile(path) //nolint:gosec // path was resolved to a regular file inside the scan worktree.
+	if err != nil {
+		return false
+	}
+	return lineNumber <= len(strings.Split(string(data), "\n"))
 }
 
 // RunDetectScript runs the project-owned detector script in worktree.

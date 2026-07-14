@@ -148,8 +148,103 @@ func TestJanitorBuiltinsSkipMissing(t *testing.T) {
 	}
 }
 
+func TestFallbackCandidatesCarryEvidence(t *testing.T) {
+	worktree := t.TempDir()
+	for name, contents := range map[string]string{
+		"go.mod":             "module fixture\n\ngo 1.26\n",
+		"pyproject.toml":     "[project]\nname = 'fixture'\n",
+		"pkg/dead.go":        "package fixture\nfunc unused() {}\n",
+		"pkg/duplicate.go":   "package fixture\nfunc duplicate() {}\n",
+		"pkg/lint.go":        "package fixture\nvar lint = true\n",
+		"python/lint.py":     "import os\nprint('lint')\n",
+		"python/unused.py":   "def live(): pass\ndef unused(): pass\n",
+		"ci/failure_test.go": "package ci\nfunc broken() {}\n",
+	} {
+		writeFallbackFixture(t, worktree, name, contents, 0o600)
+	}
+	runGit(t, worktree, "init", "-b", "agent/janitor-scan")
+	runGit(t, worktree, "remote", "add", "origin", "git@github.example:acme/repo.git")
+
+	binDir := t.TempDir()
+	tools := map[string]string{
+		"deadcode":      "#!/bin/sh\nprintf '%s\\n' 'pkg/dead.go:2:6: func unused is unused'\n",
+		"dupl":          "#!/bin/sh\nprintf '%s\\n' 'pkg/duplicate.go:2,2'\n",
+		"golangci-lint": "#!/bin/sh\nprintf '%s\\n' 'pkg/lint.go:2:5: lint issue (revive)' 'level=warning msg=noise'\n",
+		"ruff":          "#!/bin/sh\nprintf '%s\\n' 'python/lint.py:2:1: F401 imported but unused' 'Found 1 error.'\n",
+		"vulture":       "#!/bin/sh\nprintf '%s\\n' \"python/unused.py:2: unused function 'unused' (60% confidence)\"\n",
+		"gh": `#!/bin/sh
+if [ "$1" = auth ] && [ "$2" = status ]; then exit 0; fi
+if [ "$1" = run ] && [ "$2" = list ]; then
+  printf '%s\n' '[{"databaseId":42,"workflowDatabaseId":100,"workflowName":"CI","conclusion":"failure","url":"https://github.example/acme/repo/actions/runs/42"}]'
+  exit 0
+fi
+if [ "$1" = run ] && [ "$2" = view ] && [ "$4" = --json ]; then
+  printf '%s\n' '{"jobs":[{"name":"unit tests","conclusion":"failure"}]}'
+  exit 0
+fi
+if [ "$1" = run ] && [ "$2" = view ] && [ "$4" = --log-failed ]; then
+  printf '%s\n' 'unit tests build ci/failure_test.go:2:6: compile failure' 'unit tests finished with status 1'
+  exit 0
+fi
+exit 1
+`,
+	}
+	for name, script := range tools {
+		writeFallbackFixture(t, binDir, name, script, 0o700)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	candidates, _, _, err := janitor.RunBuiltins(context.Background(), worktree, "main")
+	if err != nil {
+		t.Fatalf("run fallback detectors: %v", err)
+	}
+	want := map[string]struct {
+		file string
+		line int
+	}{
+		"deadcode":      {file: "pkg/dead.go", line: 2},
+		"dupl":          {file: "pkg/duplicate.go", line: 2},
+		"golangci-lint": {file: "pkg/lint.go", line: 2},
+		"ruff":          {file: "python/lint.py", line: 2},
+		"vulture":       {file: "python/unused.py", line: 2},
+		"ci":            {file: "ci/failure_test.go", line: 2},
+	}
+	for detector, location := range want {
+		if !hasFallbackCandidateLocation(candidates, detector, location.file, location.line) {
+			t.Errorf("%s candidates = %#v, want %s:%d", detector, candidates, location.file, location.line)
+		}
+	}
+	for _, candidate := range candidates {
+		if strings.Contains(candidate.Detail, "msg=noise") || strings.Contains(candidate.Detail, "Found 1 error") ||
+			strings.Contains(candidate.Detail, "finished with status") {
+			t.Errorf("unfileable detector noise emitted as candidate: %#v", candidate)
+		}
+	}
+}
+
+func writeFallbackFixture(t *testing.T, root, name, contents string, mode os.FileMode) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("create fixture directory: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(contents), mode); err != nil {
+		t.Fatalf("write fixture %q: %v", name, err)
+	}
+}
+
+func hasFallbackCandidateLocation(candidates []janitor.Candidate, detector, file string, line int) bool {
+	for _, candidate := range candidates {
+		if candidate.Detector == detector && candidate.File == file && candidate.Line == line {
+			return true
+		}
+	}
+	return false
+}
+
 func TestCIDetectorEmitsFindingWhenRed(t *testing.T) {
 	worktree := t.TempDir()
+	writeFallbackFixture(t, worktree, "ci/failure_test.go", "package ci\nfunc broken() {}\n", 0o600)
 	runGit(t, worktree, "init", "-b", "agent/janitor-scan")
 	runGit(t, worktree, "remote", "add", "origin", "git@github.example:acme/repo.git")
 	binDir := t.TempDir()
@@ -176,6 +271,10 @@ if [ "$1" = run ] && [ "$2" = view ] && [ "$4" = --json ] && [ "$5" = jobs ]; th
   esac
   exit
 fi
+if [ "$1" = run ] && [ "$2" = view ] && [ "$4" = --log-failed ]; then
+  printf '%s\n' 'ci/failure_test.go:2:6: compile failure'
+  exit
+fi
 exit 1
 `
 	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(gh), 0o700); err != nil {
@@ -195,32 +294,40 @@ exit 1
 	}
 	want := janitor.Candidate{
 		Detector: "ci",
+		File:     "ci/failure_test.go",
+		Line:     2,
 		Title:    "CI failed",
-		Detail:   "workflow: CI; job: unit tests; run: https://github.example/acme/repo/actions/runs/42",
+		Detail:   "workflow: CI; job: unit tests; run: https://github.example/acme/repo/actions/runs/42; evidence: ci/failure_test.go:2:6: compile failure",
 	}
 	if !containsCandidate(cands, want) {
 		t.Errorf("candidates = %#v, want %#v", cands, want)
 	}
 	want = janitor.Candidate{
 		Detector: "ci",
+		File:     "ci/failure_test.go",
+		Line:     2,
 		Title:    "Release failed",
-		Detail:   "workflow: Release; job: publish; run: https://github.example/acme/repo/actions/runs/43",
+		Detail:   "workflow: Release; job: publish; run: https://github.example/acme/repo/actions/runs/43; evidence: ci/failure_test.go:2:6: compile failure",
 	}
 	if !containsCandidate(cands, want) {
 		t.Errorf("candidates = %#v, want %#v", cands, want)
 	}
 	want = janitor.Candidate{
 		Detector: "ci",
+		File:     "ci/failure_test.go",
+		Line:     2,
 		Title:    "CI failed",
-		Detail:   "workflow: CI; job: integration tests; run: https://github.example/acme/repo/actions/runs/45",
+		Detail:   "workflow: CI; job: integration tests; run: https://github.example/acme/repo/actions/runs/45; evidence: ci/failure_test.go:2:6: compile failure",
 	}
 	if !containsCandidate(cands, want) {
 		t.Errorf("candidates = %#v, want distinct same-name workflow %#v", cands, want)
 	}
 	want = janitor.Candidate{
 		Detector: "ci",
+		File:     "ci/failure_test.go",
+		Line:     2,
 		Title:    "Docs failed",
-		Detail:   "workflow: Docs; job: unspecified job; run: https://github.example/acme/repo/actions/runs/48",
+		Detail:   "workflow: Docs; job: unspecified job; run: https://github.example/acme/repo/actions/runs/48; evidence: ci/failure_test.go:2:6: compile failure",
 	}
 	if !containsCandidate(cands, want) {
 		t.Errorf("candidates = %#v, want no display-title-as-job fallback %#v", cands, want)
@@ -234,8 +341,10 @@ exit 1
 	} {
 		want = janitor.Candidate{
 			Detector: "ci",
+			File:     "ci/failure_test.go",
+			Line:     2,
 			Title:    "CI workflow failed",
-			Detail:   "workflow: CI workflow; job: " + ruleset.job + "; run: " + ruleset.url,
+			Detail:   "workflow: CI workflow; job: " + ruleset.job + "; run: " + ruleset.url + "; evidence: ci/failure_test.go:2:6: compile failure",
 		}
 		if !containsCandidate(cands, want) {
 			t.Errorf("candidates = %#v, want zero-workflow-ID fallback %#v", cands, want)
@@ -385,9 +494,12 @@ func TestJanitorBuiltinsKeepsLintFindings(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(worktree, "pyproject.toml"), []byte("[project]\nname = 'fixture'\n"), 0o600); err != nil {
 		t.Fatalf("write Python project marker: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(worktree, "unused.py"), []byte("def unused(): pass\n"), 0o600); err != nil {
+		t.Fatalf("write vulture candidate fixture: %v", err)
+	}
 	binDir := t.TempDir()
 	vulturePath := filepath.Join(binDir, "vulture")
-	vulture := "#!/bin/sh\nprintf '%s\\n' 'unused helper'\nexit 1\n"
+	vulture := "#!/bin/sh\nprintf '%s\\n' 'unused.py:1: unused function'\nexit 1\n"
 	if err := os.WriteFile(vulturePath, []byte(vulture), 0o700); err != nil {
 		t.Fatalf("write vulture fixture: %v", err)
 	}
@@ -403,7 +515,10 @@ func TestJanitorBuiltinsKeepsLintFindings(t *testing.T) {
 	if contains(skipped, "vulture") {
 		t.Errorf("skipped = %#v, should not include vulture", skipped)
 	}
-	if !reflect.DeepEqual(cands, []janitor.Candidate{{Detector: "vulture", Title: "unused helper", Detail: "unused helper"}}) {
+	if !reflect.DeepEqual(cands, []janitor.Candidate{{
+		Detector: "vulture", File: "unused.py", Line: 1,
+		Title: "unused.py:1: unused function", Detail: "unused.py:1: unused function",
+	}}) {
 		t.Errorf("candidates = %#v, want vulture finding", cands)
 	}
 }

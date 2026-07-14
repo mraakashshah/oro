@@ -413,6 +413,40 @@ func TestJanitorRejectsModelStatus(t *testing.T) {
 	}
 }
 
+func TestJanitorTriageFallbackEvidence(t *testing.T) {
+	worktree := t.TempDir()
+	writeJanitorEvidenceFixture(t, worktree, "pyproject.toml", "[project]\nname = 'fixture'\n")
+	writeJanitorEvidenceFixture(t, worktree, "unused.py", "def live(): pass\ndef unused(): pass\n")
+	binDir := t.TempDir()
+	writeJanitorEvidenceFixture(t, binDir, "vulture", "#!/bin/sh\nprintf '%s\\n' \"unused.py:2: unused function 'unused' (60% confidence)\"\n")
+	if err := os.Chmod(filepath.Join(binDir, "vulture"), 0o700); err != nil {
+		t.Fatalf("make vulture executable: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	candidates, _, _, err := janitor.RunBuiltins(t.Context(), worktree, "")
+	if err != nil {
+		t.Fatalf("run fallback detectors: %v", err)
+	}
+	finding := ops.Finding{
+		Severity: ops.SevMinor, Category: "dead-code", Title: "remove unused function",
+		Detail: "remove the candidate-backed unused function", Confidence: 90,
+		Evidence: []ops.Evidence{{File: "unused.py", LineStart: 2, LineEnd: 2, Quote: "def unused"}},
+		Sources:  []string{"vulture"}, Origin: "pre_existing",
+	}
+	raw, err := json.Marshal([]ops.Finding{finding})
+	if err != nil {
+		t.Fatalf("marshal fallback finding: %v", err)
+	}
+	findings, err := parseJanitorTriage(string(raw), candidates, worktree)
+	if err != nil {
+		t.Fatalf("validate fallback evidence: %v (candidates: %#v)", err, candidates)
+	}
+	if len(findings) != 1 || findings[0].ID == "" {
+		t.Fatalf("validated findings = %#v, want one assigned finding", findings)
+	}
+}
+
 func writeJanitorEvidenceFixture(t *testing.T, root, name, contents string) {
 	t.Helper()
 	path := filepath.Join(root, name)
