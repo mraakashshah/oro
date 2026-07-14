@@ -6,9 +6,11 @@ close path) → R3 FAIL (stale hook clause; missing beadstore metadata query)
 → R4 FAIL (single finding: acceptance Cmd pipe truncation +
 pipeline-exit-swallowing) → R5: single-edit fix, verified inline against
 `parseAcceptanceCmd` line-mode (dispatcher.go:3428–3436 — line-per-field
-splits on newlines only, pipes within the Cmd line preserved). R4 cleared
-everything else: 0 wiring gaps, 0 traceability gaps, ~25 code citations
-verified. **Ready for beadcraft decomposition.**
+splits on newlines only, pipes within the Cmd line preserved). The parser
+now also preserves quoted pipes in inline commands and rejects malformed
+quoting explicitly. R4 cleared everything else: 0 wiring gaps, 0
+traceability gaps, ~25 code citations verified. **Ready for beadcraft
+decomposition.**
 
 ## Goal
 
@@ -373,11 +375,9 @@ Tests must exercise the real seams:
   fixture section outputs → all gated survivors filed, coverage event
   appended.
 
-**Epic acceptance** — MUST be stored in **line-per-field format** (the
-inline format splits the whole AC on `|` at `parseAcceptanceCmd`,
-dispatcher.go:3437, which would truncate this Cmd at the pipe inside the
-`-run` regex to an unterminated quote → permanent sh failure → endless
-epic-fix churn; line mode splits on newlines and preserves pipes):
+**Epic acceptance** — stored in **line-per-field format** for readability.
+`parseAcceptanceCmd` now preserves quoted regex pipes in inline commands too,
+while rejecting unterminated quotes instead of running a truncated command:
 
 ```
 Cmd: go test ./pkg/dispatcher/ ./pkg/ops/ ./pkg/janitor/ ./cmd/oro/ -run 'Janitor|Audit' -count=1 -timeout 600s -v > "${TMPDIR:-/tmp}/oro-clean-accept.log" 2>&1 && grep -q -- '--- PASS: TestJanitorCycleEndToEnd' "${TMPDIR:-/tmp}/oro-clean-accept.log"

@@ -3408,10 +3408,8 @@ func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) 
 
 	targetBranch := resolveEpicTargetBranch(detail.Metadata, d.cfg.DefaultBranch)
 
-	cmd, parseErr := parseAcceptanceCmd(detail.AcceptanceCriteria)
-	if parseErr != nil {
-		_ = d.logEvent(ctx, "epic_acceptance_parse_error", "dispatcher", epicID, workerID,
-			fmt.Sprintf(`{"error":%q}`, parseErr.Error()))
+	cmd, ok := d.parseEpicAcceptanceCmd(ctx, "epic_acceptance_parse_error", epicID, workerID, detail.AcceptanceCriteria)
+	if !ok {
 		return
 	}
 	if cmd == "" {
@@ -3656,6 +3654,19 @@ func startsAcceptanceField(value string) bool {
 func validateAcceptanceCmdQuotes(cmd string) error {
 	_, err := splitInlineAcceptanceFields(cmd)
 	return err
+}
+
+func (d *Dispatcher) parseEpicAcceptanceCmd(
+	ctx context.Context,
+	eventType, epicID, workerID, acceptanceCriteria string,
+) (string, bool) {
+	cmd, err := parseAcceptanceCmd(acceptanceCriteria)
+	if err != nil {
+		_ = d.logEvent(ctx, eventType, "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"error":%q}`, err.Error()))
+		return "", false
+	}
+	return cmd, true
 }
 
 // handleMergeConflictResult waits for the ops merge-conflict result and acts on it.
@@ -6793,10 +6804,8 @@ func (d *Dispatcher) checkChildlessEpicAssignable(ctx context.Context, bead prot
 		return true, false
 	}
 
-	cmd, parseErr := parseAcceptanceCmd(detail.AcceptanceCriteria)
-	if parseErr != nil {
-		_ = d.logEvent(ctx, "epic_pre_decompose_acceptance_parse_error", "dispatcher", bead.ID, workerID,
-			fmt.Sprintf(`{"error":%q}`, parseErr.Error()))
+	cmd, ok := d.parseEpicAcceptanceCmd(ctx, "epic_pre_decompose_acceptance_parse_error", bead.ID, workerID, detail.AcceptanceCriteria)
+	if !ok {
 		return true, false
 	}
 	if cmd == "" {
