@@ -4171,6 +4171,10 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 			}
 			d.handleReviewRejection(ctx, workerID, beadID, result.Feedback)
 		default:
+			if classifyReviewFailure(result) == ReviewFailureInfraBlocked {
+				d.handleReviewBlocked(ctx, workerID, beadID, result)
+				return
+			}
 			d.handleReviewFailed(ctx, workerID, beadID, result)
 		}
 	}
@@ -4242,6 +4246,9 @@ func reviewFailureDetail(result ops.Result) string {
 
 func classifyReviewFailure(result ops.Result) ReviewFailureClass {
 	detail := strings.ToLower(reviewFailureDetail(result))
+	if result.Err != nil && reviewStartupHookFailed(detail) {
+		return ReviewFailureInfraBlocked
+	}
 	if !strings.Contains(detail, "acceptance command passed") {
 		return ReviewFailureOrdinary
 	}
@@ -4275,6 +4282,11 @@ func reviewInfraBlocked(detail string) bool {
 		"context deadline exceeded",
 		"timed out waiting for review",
 	)
+}
+
+func reviewStartupHookFailed(detail string) bool {
+	return strings.Contains(detail, `"subtype":"hook_started"`) &&
+		strings.Contains(detail, "sessionstart:startup")
 }
 
 func containsAny(s string, needles ...string) bool {

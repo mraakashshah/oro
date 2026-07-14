@@ -2978,6 +2978,71 @@ func TestReviewSandboxBlockedDoesNotIncrementRejectionCount(t *testing.T) {
 	}
 }
 
+func TestHandleReviewResult_SubprocessErrorReleasesReviewingWorker(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		beadID   = "bead-startup-hook"
+		workerID = "w-startup-hook"
+		worktree = "/tmp/startup-hook"
+	)
+
+	assignmentID, err := d.createAssignment(ctx, beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		state:        protocol.WorkerReviewing,
+		beadID:       beadID,
+		worktree:     worktree,
+		assignmentID: assignmentID,
+	}
+	d.worktreeByBead[beadID] = worktree
+	d.assigningBeads[beadID] = true
+	d.rejectionCounts[beadID] = 1
+	d.mu.Unlock()
+
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+	beadSrc.mu.Unlock()
+
+	resultCh := make(chan ops.Result, 1)
+	resultCh <- ops.Result{
+		Verdict:  ops.VerdictFailed,
+		Feedback: `{"type":"system","subtype":"hook_started","hook_name":"SessionStart:startup"}`,
+		Err:      errors.New("exit status 1"),
+	}
+	d.handleReviewResult(ctx, workerID, beadID, resultCh)
+
+	if got := eventCount(t, d.db, "review_infra_blocked"); got != 1 {
+		t.Fatalf("expected review_infra_blocked event, got %d", got)
+	}
+	if got := beadSrc.updated[beadID]; got != "open" {
+		t.Fatalf("startup-hook subprocess failure must reopen bead, got %q", got)
+	}
+	var assignmentStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("assignment status: %v", err)
+	}
+	if assignmentStatus != "completed" {
+		t.Fatalf("startup-hook subprocess failure must complete assignment, got %q", assignmentStatus)
+	}
+	d.mu.Lock()
+	w := d.workers[workerID]
+	_, assigning := d.assigningBeads[beadID]
+	_, rejectionTracked := d.rejectionCounts[beadID]
+	d.mu.Unlock()
+	if w == nil || w.state != protocol.WorkerIdle || w.beadID != "" {
+		t.Fatalf("worker = %#v, want idle worker released from bead", w)
+	}
+	if assigning || rejectionTracked {
+		t.Fatalf("tracking leaked: assigning=%t rejection=%t", assigning, rejectionTracked)
+	}
+}
+
 func TestReviewPermissionDeniedRegressionStillCountsAsRejection(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
