@@ -244,6 +244,40 @@ func TestJanitorTriageEvidenceValidation(t *testing.T) {
 	}
 }
 
+func TestJanitorRejectsModelStatus(t *testing.T) {
+	worktree := t.TempDir()
+	writeJanitorEvidenceFixture(t, worktree, "code.go", "package fixture\n// TODO remove legacy path\n")
+	candidates := []janitor.Candidate{{Detector: "todo", File: "code.go", Line: 2}}
+
+	tests := []struct {
+		name   string
+		mutate func(*ops.Finding)
+	}{
+		{name: "status", mutate: func(f *ops.Finding) { f.Status = "wont-fix" }},
+		{name: "history", mutate: func(f *ops.Finding) {
+			f.History = []ops.FindingHistoryEntry{{Status: "wont-fix", Actor: "model"}}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			finding := ops.Finding{
+				Severity: ops.SevImportant, Category: "todo", Title: "remove legacy path",
+				Detail: "remove the candidate-backed legacy path", Confidence: 95,
+				Evidence: []ops.Evidence{{File: "code.go", LineStart: 2, LineEnd: 2, Quote: "TODO remove legacy path"}},
+				Sources:  []string{"todo"}, Origin: "pre_existing",
+			}
+			tt.mutate(&finding)
+			raw, err := json.Marshal([]ops.Finding{finding})
+			if err != nil {
+				t.Fatalf("marshal finding: %v", err)
+			}
+			if got, err := parseJanitorTriage(string(raw), candidates, worktree); err == nil {
+				t.Fatalf("parseJanitorTriage() = %#v, nil; want model lifecycle state rejected", got)
+			}
+		})
+	}
+}
+
 func writeJanitorEvidenceFixture(t *testing.T, root, name, contents string) {
 	t.Helper()
 	path := filepath.Join(root, name)

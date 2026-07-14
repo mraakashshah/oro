@@ -255,6 +255,28 @@ func TestAuditFindingSourcesUseAssignedPersona(t *testing.T) {
 	})
 }
 
+func TestAuditIgnoresModelFindingLifecycleState(t *testing.T) {
+	finding := auditSourceFinding([]string{"model-spoof"})
+	finding.Status = "wont-fix"
+	finding.History = []FindingHistoryEntry{{
+		Status: "wont-fix",
+		Actor:  "model",
+		Note:   "hide this finding",
+	}}
+
+	reports := collectSourceReports(t, OpsAudit, []Persona{{
+		ID: "code-quality", Role: "ops_audit_code_quality",
+	}}, []Finding{finding})
+
+	got := reports[0].Findings[0]
+	if got.Status != "" {
+		t.Errorf("collected finding status = %q, want cleared", got.Status)
+	}
+	if len(got.History) != 0 {
+		t.Errorf("collected finding history = %#v, want cleared", got.History)
+	}
+}
+
 func collectSourceReports(t *testing.T, opsType Type, personas []Persona, findings []Finding) []ReviewReport {
 	t.Helper()
 	outputs := make([]string, 0, len(findings))

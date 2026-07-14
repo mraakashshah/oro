@@ -210,6 +210,9 @@ func validateJanitorTriageFinding(
 	if strings.TrimSpace(finding.Category) == "" || strings.TrimSpace(finding.Title) == "" || strings.TrimSpace(finding.Detail) == "" {
 		return fmt.Errorf("category, title, and detail are required")
 	}
+	if finding.Status != "" || len(finding.History) != 0 {
+		return fmt.Errorf("status and history are dispatcher-managed")
+	}
 	if finding.Confidence < 0 || finding.Confidence > 100 {
 		return fmt.Errorf("confidence %d is outside 0..100", finding.Confidence)
 	}

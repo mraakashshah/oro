@@ -401,7 +401,10 @@ func (s *Spawner) collectPersonaReviews(ctx context.Context, opsType Type, opts 
 			assignedPersona := personas[start+i]
 			report.Reviewer = assignedPersona.ID
 			for findingIndex := range report.Findings {
-				report.Findings[findingIndex].Sources = []string{assignedPersona.ID}
+				finding := &report.Findings[findingIndex]
+				finding.Sources = []string{assignedPersona.ID}
+				finding.Status = ""
+				finding.History = nil
 			}
 			if parseErr != nil || result.Err != nil || result.Verdict == VerdictFailed {
 				report.Verdict = VerdictFailed
