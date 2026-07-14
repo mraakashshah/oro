@@ -87,17 +87,37 @@ func TestJanitorFindingAcceptanceSource(t *testing.T) {
 			t.Fatalf("fallback acceptance argument is not shell quoted: %q", acceptance)
 		}
 	})
+}
 
-	t.Run("CI detector receives the configured target branch", func(t *testing.T) {
-		const targetBranch = "release/v1'; printf pwned"
-		acceptance := janitorFindingAcceptance(ops.Finding{
-			ID:      "fnd_ci",
-			Sources: []string{"ci"},
-		}, []string{"ci"}, false, targetBranch)
-		if !strings.Contains(acceptance, `--detector 'ci' --target-branch 'release/v1'\''; printf pwned'`) {
-			t.Fatalf("CI acceptance target branch is missing or unsafe: %q", acceptance)
+func TestJanitorCIAcceptanceUsesLocalGate(t *testing.T) {
+	acceptance := janitorFindingAcceptance(ops.Finding{
+		ID: "fnd_ci", Sources: []string{"ci"},
+	}, []string{"ci"}, false, "main")
+	command := acceptanceCommandLine(t, acceptance)
+	if command != "./scripts/quality_gate.sh" {
+		t.Fatalf("CI acceptance command = %q, want only the local quality gate", command)
+	}
+	if strings.Contains(acceptance, "--target-branch") || strings.Contains(acceptance, "janitor:detect") {
+		t.Fatalf("CI acceptance still queries remote branch state: %q", acceptance)
+	}
+
+	nonCI := janitorFindingAcceptance(ops.Finding{
+		ID: "fnd_todo", Sources: []string{"todo"},
+	}, []string{"todo"}, false, "main")
+	if !strings.Contains(nonCI, "oro janitor:detect --detector 'todo'") {
+		t.Fatalf("non-CI acceptance lost its exact detector rerun: %q", nonCI)
+	}
+}
+
+func acceptanceCommandLine(t *testing.T, acceptance string) string {
+	t.Helper()
+	for _, line := range strings.Split(acceptance, "\n") {
+		if command, ok := strings.CutPrefix(line, "Cmd: "); ok {
+			return command
 		}
-	})
+	}
+	t.Fatalf("acceptance missing Cmd: %q", acceptance)
+	return ""
 }
 
 func TestJanitorFindingAcceptanceSourceShellSafe(t *testing.T) {
@@ -281,6 +301,51 @@ func TestJanitorTopKConfig(t *testing.T) {
 	_ = janitorTopFindingsBySeverity(findings, 0)
 	if !reflect.DeepEqual(findings, original) {
 		t.Fatalf("janitor severity selection mutated input\n got: %#v\nwant: %#v", findings, original)
+	}
+}
+
+func TestJanitorDeduplicatesBeforeTopK(t *testing.T) {
+	d, store, _, _, _, _ := newTestDispatcher(t)
+	d.cfg.JanitorTopK = 2
+	duplicate := ops.Finding{
+		ID: "duplicate", Severity: ops.SevImportant, Title: "duplicate finding", Detail: "duplicate detail",
+		Sources: []string{"todo"}, Origin: "pre_existing",
+	}
+	distinct := ops.Finding{
+		ID: "distinct", Severity: ops.SevMinor, Title: "distinct finding", Detail: "distinct detail",
+		Sources: []string{"todo"}, Origin: "pre_existing",
+	}
+	feedback, err := json.Marshal(janitorResultPayload{
+		Findings: []ops.Finding{duplicate, duplicate, distinct}, RanDetectors: []string{"todo"},
+	})
+	if err != nil {
+		t.Fatalf("marshal janitor result: %v", err)
+	}
+
+	if err := d.handleJanitorResult(t.Context(), ops.Result{
+		Type: ops.OpsJanitor, BeadID: "oro-janitor-role", Feedback: string(feedback),
+	}); err != nil {
+		t.Fatalf("handleJanitorResult() error = %v", err)
+	}
+
+	store.mu.Lock()
+	created := append([]createCall(nil), store.created...)
+	journey := append([]beadstore.JourneyEvent(nil), store.journeys["oro-janitor-role"]...)
+	store.mu.Unlock()
+	if len(created) != 2 || created[0].title != duplicate.Title || created[1].title != distinct.Title {
+		t.Fatalf("created findings = %#v, want one duplicate and one distinct", created)
+	}
+	persisted := 0
+	for _, event := range journey {
+		if event.Actor == janitorRoleActor && event.Event == "janitor_finding" {
+			persisted++
+		}
+	}
+	if persisted != 2 {
+		t.Fatalf("persisted finding events = %d, want two unique findings: %#v", persisted, journey)
+	}
+	if filed, ok := janitorCycleFiledCount(t, journey); !ok || filed != 2 {
+		t.Fatalf("cycle filed count = %d, %v; want 2 durable unique files", filed, ok)
 	}
 }
 

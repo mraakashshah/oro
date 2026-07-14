@@ -38,6 +38,7 @@ func (d *Dispatcher) handleJanitorResult(ctx context.Context, result ops.Result)
 		_ = d.logEvent(ctx, "janitor_result_malformed", janitorRoleActor, result.BeadID, "", err.Error())
 		return errors.Join(err, noteErr)
 	}
+	payload.Findings = uniqueJanitorFindings(payload.Findings)
 	eligible, err := d.filterJanitorFindings(ctx, result.BeadID, payload.Findings)
 	if err != nil {
 		noteErr := d.appendJanitorJourney(ctx, result.BeadID, "note", map[string]string{
@@ -80,6 +81,20 @@ func (d *Dispatcher) handleJanitorResult(ctx context.Context, result ops.Result)
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+func uniqueJanitorFindings(findings []ops.Finding) []ops.Finding {
+	seen := make(map[string]bool, len(findings))
+	unique := make([]ops.Finding, 0, len(findings))
+	for _, finding := range findings {
+		key := ops.FindingID("", finding)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		unique = append(unique, finding)
+	}
+	return unique
 }
 
 func (d *Dispatcher) filterJanitorFindings(
@@ -201,7 +216,7 @@ func janitorFindingAcceptance(finding ops.Finding, ranDetectors []string, projec
 	}
 	var commands []string
 	for _, detector := range finding.Sources {
-		if ran[detector] {
+		if ran[detector] && (projectScript || detector != "ci") {
 			commands = append(commands, janitorDetectorRerunCommand(detector, projectScript, targetBranch))
 		}
 	}
