@@ -620,6 +620,10 @@ func TestJanitorBuiltinsUsesGitHistoryForTODOAge(t *testing.T) {
 
 // TODO(oro-old): remove legacy path
 // FIXME remove another legacy path
+/*
+ * TODO: remove block-comment fallback
+ */
+-- TODO: remove legacy schema
 var examples = []string{"TODO marker", "FIXME marker"}
 
 // Route tokens such as (TODO, handleRequest) through ripgrep.
@@ -649,20 +653,35 @@ var examples = []string{"TODO marker", "FIXME marker"}
 	if !containsCandidate(cands, want) {
 		t.Errorf("candidates = %#v, want %#v", cands, want)
 	}
-	if got := detectorCandidateCount(cands, "todo"); got != 2 {
-		t.Errorf("TODO candidates = %d, want only the two actionable comment markers; candidates=%#v", got, cands)
+	blockWant := janitor.Candidate{Detector: "todo", File: "old.go", Line: 6, Title: "stale TODO/FIXME", Detail: "* TODO: remove block-comment fallback"}
+	if !containsCandidate(cands, blockWant) {
+		t.Errorf("candidates = %#v, want multiline block candidate %#v", cands, blockWant)
+	}
+	sqlWant := janitor.Candidate{Detector: "todo", File: "old.go", Line: 8, Title: "stale TODO/FIXME", Detail: "-- TODO: remove legacy schema"}
+	if !containsCandidate(cands, sqlWant) {
+		t.Errorf("candidates = %#v, want SQL comment candidate %#v", cands, sqlWant)
+	}
+	if got := detectorCandidateCount(cands, "todo"); got != 4 {
+		t.Errorf("TODO candidates = %d, want only the four actionable comment markers; candidates=%#v", got, cands)
 	}
 }
 
 func TestJanitorBuiltinsFindsBrokenRelativeLinksWithoutTools(t *testing.T) {
 	worktree := t.TempDir()
 	contents := `[missing](docs/missing.md)
+[titled](docs/titled-missing.md "Guide")
+[angle](<docs/missing guide.md>)
+
+` + "`[inline example](docs/inline-example.md)`" + `
+[malformed](docs/no-closing-paren.md
 
 func RetryOperation[T any](fn func()) {}
 
 ` + "```markdown" + `
 [example only](docs/example.md)
+~~~
 ` + "```" + `
+[after fence](docs/after-fence.md)
 `
 	if err := os.WriteFile(filepath.Join(worktree, "README.md"), []byte(contents), 0o600); err != nil {
 		t.Fatalf("write Markdown fixture: %v", err)
@@ -680,8 +699,17 @@ func RetryOperation[T any](fn func()) {}
 	if !containsCandidate(cands, want) {
 		t.Errorf("candidates = %#v, want %#v", cands, want)
 	}
-	if got := detectorCandidateCount(cands, "broken-links"); got != 1 {
-		t.Errorf("broken-link candidates = %d, want only the real Markdown link; candidates=%#v", got, cands)
+	for _, target := range []janitor.Candidate{
+		{Detector: "broken-links", File: "README.md", Line: 2, Title: "broken relative link", Detail: "docs/titled-missing.md"},
+		{Detector: "broken-links", File: "README.md", Line: 3, Title: "broken relative link", Detail: "docs/missing guide.md"},
+		{Detector: "broken-links", File: "README.md", Line: 14, Title: "broken relative link", Detail: "docs/after-fence.md"},
+	} {
+		if !containsCandidate(cands, target) {
+			t.Errorf("candidates = %#v, want %#v", cands, target)
+		}
+	}
+	if got := detectorCandidateCount(cands, "broken-links"); got != 4 {
+		t.Errorf("broken-link candidates = %d, want four real Markdown links; candidates=%#v", got, cands)
 	}
 }
 

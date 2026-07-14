@@ -21,13 +21,19 @@ import (
 	"unicode"
 
 	"oro/pkg/processenv"
+
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/text"
 )
 
 const detectScriptPath = "scripts/janitor_detect.sh"
 
 var errDetectorSkipped = errors.New("janitor detector skipped")
 
-var todoMarkerPattern = regexp.MustCompile(`(?i)(//|#|/\*|<!--)[[:space:]]*(TODO|FIXME)(\([^)]*\))?([[:space:]]*:[[:space:]]*|[[:space:]]+|[[:space:]]*$)`)
+var todoMarkerPattern = regexp.MustCompile(`(?i)(//|#|--|/\*|<!--)[[:space:]]*(TODO|FIXME)(\([^)]*\))?([[:space:]]*:[[:space:]]*|[[:space:]]+|[[:space:]]*$)`)
+
+var todoBlockContinuationPattern = regexp.MustCompile(`(?i)^[[:space:]]*\*?[[:space:]]*(TODO|FIXME)(\([^)]*\))?([[:space:]]*:[[:space:]]*|[[:space:]]+|[[:space:]]*$)`)
 
 // Candidate is one finding emitted by a deterministic janitor detector.
 type Candidate struct {
@@ -525,9 +531,21 @@ func lastGitUpdate(ctx context.Context, worktree, relPath string) (time.Time, bo
 
 func todoCandidates(path string, contents []byte) []Candidate {
 	var cands []Candidate
+	inBlockComment := false
 	for lineNumber, line := range strings.Split(string(contents), "\n") {
-		if todoMarkerPattern.MatchString(line) {
+		trimmed := strings.TrimSpace(line)
+		isBlockContinuation := inBlockComment && todoBlockContinuationPattern.MatchString(line)
+		if todoMarkerPattern.MatchString(line) || isBlockContinuation {
 			cands = append(cands, Candidate{Detector: "todo", File: path, Line: lineNumber + 1, Title: "stale TODO/FIXME", Detail: strings.TrimSpace(line)})
+		}
+		if inBlockComment {
+			if strings.Contains(trimmed, "*/") {
+				inBlockComment = false
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "/*") && !strings.Contains(strings.TrimPrefix(trimmed, "/*"), "*/") {
+			inBlockComment = true
 		}
 	}
 	return cands
@@ -550,47 +568,62 @@ func brokenLinkCandidates(worktree, path string, _ fs.DirEntry) ([]Candidate, er
 
 func findBrokenLinks(path, relPath string, contents []byte) []Candidate {
 	var cands []Candidate
-	inFence := false
-	for lineNumber, line := range strings.Split(string(contents), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-			inFence = !inFence
-			continue
+	document := goldmark.DefaultParser().Parse(text.NewReader(contents))
+	_ = ast.Walk(document, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
 		}
-		if inFence {
-			continue
+		var destination []byte
+		switch typed := node.(type) {
+		case *ast.Link:
+			destination = typed.Destination
+		case *ast.Image:
+			destination = typed.Destination
+		default:
+			return ast.WalkContinue, nil
 		}
-		for _, target := range markdownLinkTargets(line) {
-			if _, err := os.Stat(filepath.Join(filepath.Dir(path), filepath.FromSlash(target))); errors.Is(err, os.ErrNotExist) {
-				cands = append(cands, Candidate{Detector: "broken-links", File: relPath, Line: lineNumber + 1, Title: "broken relative link", Detail: target})
-			}
+		target, ok := relativeMarkdownTarget(destination)
+		if !ok {
+			return ast.WalkContinue, nil
 		}
-	}
+		if _, err := os.Stat(filepath.Join(filepath.Dir(path), filepath.FromSlash(target))); errors.Is(err, os.ErrNotExist) {
+			cands = append(cands, Candidate{Detector: "broken-links", File: relPath, Line: markdownNodeLine(contents, node), Title: "broken relative link", Detail: target})
+		}
+		return ast.WalkContinue, nil
+	})
 	return cands
 }
 
-func markdownLinkTargets(line string) []string {
-	var targets []string
-	for rest := line; ; {
-		start := strings.Index(rest, "](")
-		if start < 0 {
-			return targets
-		}
-		if strings.LastIndexByte(rest[:start], '[') < 0 {
-			rest = rest[start+2:]
-			continue
-		}
-		rest = rest[start+2:]
-		end := strings.IndexByte(rest, ')')
-		if end < 0 {
-			return targets
-		}
-		target := strings.TrimSpace(strings.Split(rest[:end], "#")[0])
-		if target != "" && !strings.ContainsAny(target, " \t\r\n") && !strings.HasPrefix(target, "/") && !strings.Contains(target, "://") && !strings.HasPrefix(target, "mailto:") {
-			targets = append(targets, target)
-		}
-		rest = rest[end+1:]
+func relativeMarkdownTarget(destination []byte) (string, bool) {
+	target := strings.TrimSpace(strings.SplitN(string(destination), "#", 2)[0])
+	if target == "" || strings.HasPrefix(target, "/") || strings.Contains(target, "://") || strings.HasPrefix(target, "mailto:") {
+		return "", false
 	}
+	return target, true
+}
+
+func markdownNodeLine(contents []byte, node ast.Node) int {
+	offset := -1
+	_ = ast.Walk(node, func(child ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering || offset >= 0 {
+			return ast.WalkContinue, nil
+		}
+		if value, ok := child.(*ast.Text); ok {
+			offset = value.Segment.Start
+			return ast.WalkStop, nil
+		}
+		return ast.WalkContinue, nil
+	})
+	for parent := node.Parent(); offset < 0 && parent != nil; parent = parent.Parent() {
+		lines := parent.Lines()
+		if lines != nil && lines.Len() > 0 {
+			offset = lines.At(0).Start
+		}
+	}
+	if offset < 0 || offset > len(contents) {
+		return 1
+	}
+	return bytes.Count(contents[:offset], []byte{'\n'}) + 1
 }
 
 func isProjectFile(worktree, name string) bool {
