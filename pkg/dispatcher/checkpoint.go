@@ -9,6 +9,8 @@ import (
 
 	"oro/pkg/beadstore"
 	"oro/pkg/protocol"
+
+	"github.com/google/uuid"
 )
 
 // checkpointState tracks an in-flight checkpoint for a single bead (§9.3).
@@ -47,12 +49,8 @@ func (t *checkpointTracker) clear(beadID string) {
 }
 
 // generateCheckpointID returns a unique checkpoint correlation ID.
-//
-// TODO(oro-l024): spec §9.3 specifies UUIDv7. Current `cp-<UnixNano>` form is
-// process-locally unique and time-ordered but not RFC 9562 compliant and not
-// sortable across dispatcher processes. Swap to github.com/google/uuid v7.
 func generateCheckpointID() string {
-	return fmt.Sprintf("cp-%d", time.Now().UnixNano())
+	return uuid.Must(uuid.NewV7()).String()
 }
 
 // triggerCheckpoint initiates a checkpoint for beadID/workerID when context
