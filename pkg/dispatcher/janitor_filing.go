@@ -216,7 +216,7 @@ func janitorDetectorRerunCommand(detector string, projectScript bool, targetBran
 		parts = append(parts, prefix)
 	}
 	if projectScript {
-		parts = append(parts, fmt.Sprintf("./scripts/janitor_detect.sh --detector %s", detectorArg))
+		parts = append(parts, fmt.Sprintf("oro janitor:detect --project-script --detector %s", detectorArg))
 		return strings.Join(parts, " && ")
 	}
 	command := fmt.Sprintf("oro janitor:detect --detector %s", detectorArg)

@@ -102,3 +102,54 @@ func TestJanitorDetectCommand(t *testing.T) {
 		}
 	})
 }
+
+func TestJanitorDetectProjectScript(t *testing.T) {
+	worktree := t.TempDir()
+	statePath := filepath.Join(worktree, "detector-state")
+	if err := os.WriteFile(statePath, []byte("remaining\n"), 0o600); err != nil {
+		t.Fatalf("write detector state: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(worktree, "scripts"), 0o750); err != nil {
+		t.Fatalf("create scripts directory: %v", err)
+	}
+	const detector = "project'; touch injected"
+	script := `#!/bin/sh
+printf '%s' "$#" > script-argc
+if [ "$(cat detector-state)" = remaining ]; then
+  printf '%s\n' '{"detector":"project'\''; touch injected","file":"project.go","line":1,"title":"project candidate","detail":"still present"}'
+fi
+printf '%s\n' '{"detector":"unrelated","file":"other.go","line":1,"title":"other candidate","detail":"still present"}'
+`
+	if err := os.WriteFile(filepath.Join(worktree, "scripts", "janitor_detect.sh"), []byte(script), 0o700); err != nil {
+		t.Fatalf("write project detector: %v", err)
+	}
+	t.Chdir(worktree)
+
+	remaining := newJanitorDetectCmd()
+	var output bytes.Buffer
+	remaining.SetOut(&output)
+	remaining.SetErr(&output)
+	remaining.SetArgs([]string{"--project-script", "--detector", detector})
+	if err := remaining.Execute(); err == nil || !strings.Contains(err.Error(), "found 1 candidate") {
+		t.Fatalf("remaining project candidate error = %v, want one-candidate failure", err)
+	}
+	if strings.Contains(output.String(), `"detector":"unrelated"`) {
+		t.Fatalf("project detector output includes unrelated candidate: %q", output.String())
+	}
+	argc, err := os.ReadFile(filepath.Join(worktree, "script-argc"))
+	if err != nil || string(argc) != "0" {
+		t.Fatalf("project script argc = %q, %v; want no arguments", argc, err)
+	}
+	if _, err := os.Stat(filepath.Join(worktree, "injected")); !os.IsNotExist(err) {
+		t.Fatalf("detector name executed as shell input: %v", err)
+	}
+
+	if err := os.WriteFile(statePath, []byte("clear\n"), 0o600); err != nil {
+		t.Fatalf("clear detector state: %v", err)
+	}
+	clearCmd := newJanitorDetectCmd()
+	clearCmd.SetArgs([]string{"--project-script", "--detector", detector})
+	if err := clearCmd.Execute(); err != nil {
+		t.Fatalf("clear named project detector: %v", err)
+	}
+}

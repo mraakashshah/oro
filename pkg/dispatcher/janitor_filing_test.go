@@ -53,7 +53,7 @@ func TestJanitorFindingAcceptanceSource(t *testing.T) {
 
 	t.Run("project detector script is rerunnable", func(t *testing.T) {
 		acceptance := fileAcceptance(t, true)
-		if got := strings.Count(acceptance, "./scripts/janitor_detect.sh --detector 'todo'"); got != 1 {
+		if got := strings.Count(acceptance, "oro janitor:detect --project-script --detector 'todo'"); got != 1 {
 			t.Fatalf("project acceptance detector commands = %d, want 1: %q", got, acceptance)
 		}
 		if !strings.Contains(acceptance, "./scripts/quality_gate.sh") {
@@ -104,7 +104,13 @@ func TestJanitorFindingAcceptanceSourceShellSafe(t *testing.T) {
 	worktree := t.TempDir()
 	writeJanitorAcceptanceScript(t, worktree, "scripts/janitor_detect.sh", "#!/bin/sh\nprintf '%s' \"$2\" > detector-arg\n")
 	writeJanitorAcceptanceScript(t, worktree, "scripts/quality_gate.sh", "#!/bin/sh\n: > quality-gate-ran\n")
-	writeJanitorAcceptanceScript(t, worktree, "bin/oro", "#!/bin/sh\nprintf '%s' \"$3\" > detector-arg\n")
+	writeJanitorAcceptanceScript(t, worktree, "bin/oro", `#!/bin/sh
+if [ "$2" = --project-script ]; then
+  printf '%s' "$4" > detector-arg
+else
+  printf '%s' "$3" > detector-arg
+fi
+`)
 
 	for _, projectScript := range []bool{true, false} {
 		mode := "built-in"
@@ -144,6 +150,56 @@ func TestJanitorFindingAcceptanceSourceShellSafe(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestJanitorProjectAcceptanceRequiresClear(t *testing.T) {
+	worktree := t.TempDir()
+	writeJanitorAcceptanceScript(t, worktree, "scripts/janitor_detect.sh", "#!/bin/sh\n: > direct-script-ran\nexit 0\n")
+	writeJanitorAcceptanceScript(t, worktree, "scripts/quality_gate.sh", "#!/bin/sh\n: > quality-gate-ran\n")
+	writeJanitorAcceptanceScript(t, worktree, "bin/oro", `#!/bin/sh
+[ "$1" = janitor:detect ] && [ "$2" = --project-script ] && [ "$3" = --detector ] || exit 9
+printf '%s' "$4" > detector-arg
+[ "$(cat detector-state)" = remaining ] && exit 3
+exit 0
+`)
+	const detector = "project'; touch injected"
+	command := janitorDetectorRerunCommand(detector, true, "") + " && ./scripts/quality_gate.sh"
+	run := func() error {
+		cmd := exec.Command("sh", "-c", command) //nolint:gosec // exercises generated acceptance in an isolated fixture.
+		cmd.Dir = worktree
+		cmd.Env = append(os.Environ(), "PATH="+filepath.Join(worktree, "bin")+":"+os.Getenv("PATH"))
+		return cmd.Run()
+	}
+
+	if err := os.WriteFile(filepath.Join(worktree, "detector-state"), []byte("remaining\n"), 0o600); err != nil {
+		t.Fatalf("write remaining detector state: %v", err)
+	}
+	if err := run(); err == nil {
+		t.Fatal("project acceptance passed while the named candidate remained")
+	}
+	if _, err := os.Stat(filepath.Join(worktree, "quality-gate-ran")); !os.IsNotExist(err) {
+		t.Fatalf("quality gate ran before detector cleared: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(worktree, "detector-state"), []byte("clear\n"), 0o600); err != nil {
+		t.Fatalf("write clear detector state: %v", err)
+	}
+	if err := run(); err != nil {
+		t.Fatalf("project acceptance after detector cleared: %v", err)
+	}
+	argument, err := os.ReadFile(filepath.Join(worktree, "detector-arg"))
+	if err != nil || string(argument) != detector {
+		t.Fatalf("project detector argument = %q, %v; want %q", argument, err, detector)
+	}
+	if _, err := os.Stat(filepath.Join(worktree, "direct-script-ran")); !os.IsNotExist(err) {
+		t.Fatalf("acceptance invoked the project script directly: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(worktree, "injected")); !os.IsNotExist(err) {
+		t.Fatalf("project detector argument injected a command: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(worktree, "quality-gate-ran")); err != nil {
+		t.Fatalf("quality gate did not run after detector cleared: %v", err)
 	}
 }
 
