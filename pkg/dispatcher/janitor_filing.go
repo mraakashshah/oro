@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -27,42 +28,58 @@ type janitorResultPayload struct {
 
 // handleJanitorResult files the highest-severity findings from one janitor
 // cycle and keeps the complete finding set in the janitor role-bead journey.
-func (d *Dispatcher) handleJanitorResult(ctx context.Context, result ops.Result) {
+func (d *Dispatcher) handleJanitorResult(ctx context.Context, result ops.Result) error {
 	payload, err := parseJanitorResult(result.Feedback)
 	if err != nil {
-		d.appendJanitorJourney(ctx, result.BeadID, "note", map[string]string{
+		noteErr := d.appendJanitorJourney(ctx, result.BeadID, "note", map[string]string{
 			"kind":  "malformed_janitor_result",
 			"error": err.Error(),
 		})
 		_ = d.logEvent(ctx, "janitor_result_malformed", janitorRoleActor, result.BeadID, "", err.Error())
-		return
+		return errors.Join(err, noteErr)
 	}
 	eligible, err := d.filterJanitorFindings(ctx, result.BeadID, payload.Findings)
 	if err != nil {
-		d.appendJanitorJourney(ctx, result.BeadID, "note", map[string]string{
+		noteErr := d.appendJanitorJourney(ctx, result.BeadID, "note", map[string]string{
 			"kind":  "suppression_derivation_failed",
 			"error": err.Error(),
 		})
 		_ = d.logEvent(ctx, "janitor_suppression_failed", janitorRoleActor, result.BeadID, "", err.Error())
-		return
+		return errors.Join(err, noteErr)
 	}
 
+	var errs []error
+	persisted := make(map[string]bool, len(payload.Findings))
 	for _, finding := range payload.Findings {
-		d.persistJanitorFinding(ctx, result.BeadID, finding)
+		if err := d.persistJanitorFinding(ctx, result.BeadID, finding); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		persisted[finding.ID] = true
 	}
 
-	filed := janitorTopFindingsBySeverity(eligible, d.cfg.JanitorTopK)
-	for _, finding := range filed {
+	selected := janitorTopFindingsBySeverity(eligible, d.cfg.JanitorTopK)
+	filed := 0
+	for _, finding := range selected {
+		if !persisted[finding.ID] {
+			continue
+		}
 		params := janitorFindingCreateParams(finding, payload.RanDetectors, payload.ProjectScript, d.cfg.DefaultBranch)
 		if _, createErr := d.beads.Create(ctx, params); createErr != nil {
 			_ = d.logEvent(ctx, "janitor_finding_create_failed", janitorRoleActor, result.BeadID, "", createErr.Error())
+			errs = append(errs, fmt.Errorf("create janitor finding %s: %w", finding.ID, createErr))
+			continue
 		}
+		filed++
 	}
-	d.appendJanitorJourney(ctx, result.BeadID, "janitor_cycle", map[string]any{
+	if err := d.appendJanitorJourney(ctx, result.BeadID, "janitor_cycle", map[string]any{
 		"findings": len(payload.Findings),
-		"filed":    len(filed),
+		"filed":    filed,
 		"skipped":  payload.Skipped,
-	})
+	}); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 func (d *Dispatcher) filterJanitorFindings(
@@ -100,11 +117,11 @@ func parseJanitorResult(feedback string) (janitorResultPayload, error) {
 	return payload, nil
 }
 
-func (d *Dispatcher) persistJanitorFinding(ctx context.Context, roleBeadID string, finding ops.Finding) {
+func (d *Dispatcher) persistJanitorFinding(ctx context.Context, roleBeadID string, finding ops.Finding) error {
 	payload, err := json.Marshal(finding)
 	if err != nil {
 		_ = d.logEvent(ctx, "janitor_finding_persist_failed", janitorRoleActor, roleBeadID, "", err.Error())
-		return
+		return fmt.Errorf("marshal janitor finding %s: %w", finding.ID, err)
 	}
 	if err := d.beads.AppendJourney(ctx, roleBeadID, beadstore.JourneyEvent{
 		Ts:      time.Now().UTC().Format(time.RFC3339Nano),
@@ -113,13 +130,15 @@ func (d *Dispatcher) persistJanitorFinding(ctx context.Context, roleBeadID strin
 		Payload: string(payload),
 	}); err != nil {
 		_ = d.logEvent(ctx, "janitor_finding_persist_failed", janitorRoleActor, roleBeadID, "", err.Error())
+		return fmt.Errorf("persist janitor finding %s: %w", finding.ID, err)
 	}
+	return nil
 }
 
-func (d *Dispatcher) appendJanitorJourney(ctx context.Context, roleBeadID, event string, payload any) {
+func (d *Dispatcher) appendJanitorJourney(ctx context.Context, roleBeadID, event string, payload any) error {
 	encoded, err := json.Marshal(payload)
 	if err != nil {
-		return
+		return fmt.Errorf("marshal janitor %s journey: %w", event, err)
 	}
 	if err := d.beads.AppendJourney(ctx, roleBeadID, beadstore.JourneyEvent{
 		Ts:      time.Now().UTC().Format(time.RFC3339Nano),
@@ -128,7 +147,9 @@ func (d *Dispatcher) appendJanitorJourney(ctx context.Context, roleBeadID, event
 		Payload: string(encoded),
 	}); err != nil {
 		_ = d.logEvent(ctx, "janitor_journey_append_failed", janitorRoleActor, roleBeadID, "", err.Error())
+		return fmt.Errorf("append janitor %s journey: %w", event, err)
 	}
+	return nil
 }
 
 func janitorTopFindingsBySeverity(findings []ops.Finding, limit int) []ops.Finding {

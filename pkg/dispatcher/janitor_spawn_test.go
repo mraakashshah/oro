@@ -178,6 +178,141 @@ printf '%s\n' '{"detector":"todo","file":"legacy.go","line":1,"title":"candidate
 	}
 }
 
+func TestJanitorPersistenceFailureRestoresCadence(t *testing.T) {
+	tests := []struct {
+		name           string
+		appendErrEvent string
+		createErr      bool
+		wantMerges     uint64
+		wantFiled      int
+	}{
+		{name: "finding journey", appendErrEvent: "janitor_finding", wantMerges: 7},
+		{name: "finding create", createErr: true, wantMerges: 7},
+		{name: "cycle journey", appendErrEvent: "janitor_cycle", wantMerges: 7, wantFiled: 1},
+		{name: "success", wantFiled: 1},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d, store := janitorPersistenceFixture(t)
+			faults := &faultingJanitorStore{
+				fakeBeadStore:  store,
+				appendErrEvent: tc.appendErrEvent,
+			}
+			if tc.createErr {
+				faults.findingCreateErr = errors.New("finding create unavailable")
+			}
+			d.beads = faults
+
+			d.spawnJanitor(context.Background(), nil)
+
+			assertJanitorPersistenceOutcome(t, d, store, tc.wantMerges, tc.wantFiled)
+		})
+	}
+}
+
+func janitorPersistenceFixture(t *testing.T) (*Dispatcher, *fakeBeadStore) {
+	t.Helper()
+	d, store, worktrees, _, _, spawner := newTestDispatcher(t)
+	d.cfg.JanitorInterval = 7
+	source, scan := janitorSpawnFixture(t, `#!/usr/bin/env bash
+printf '%s\n' '{"detector":"todo","file":"legacy.go","line":1,"title":"candidate","detail":"TODO remove legacy path"}'
+`)
+	d.repoRoot = source
+	worktrees.createFn = func(context.Context, string, string) (string, string, error) {
+		return scan, "agent/janitor-scan", nil
+	}
+	spawner.verdict = `[{
+		"severity":"important",
+		"category":"todo",
+		"title":"triaged legacy cleanup",
+		"detail":"remove the candidate-backed legacy path",
+		"evidence":[{"file":"legacy.go","line_start":1,"line_end":1,"quote":"TODO remove legacy path"}],
+		"confidence":95,
+		"sources":["todo"],
+		"origin":"pre_existing"
+	}]`
+	return d, store
+}
+
+func assertJanitorPersistenceOutcome(
+	t *testing.T,
+	d *Dispatcher,
+	store *fakeBeadStore,
+	wantMerges uint64,
+	wantFiled int,
+) {
+	t.Helper()
+	d.mu.Lock()
+	merges := d.mergesSinceJanitor
+	d.mu.Unlock()
+	if merges != wantMerges {
+		t.Fatalf("mergesSinceJanitor = %d, want %d", merges, wantMerges)
+	}
+	if got := countCreatedJanitorFindings(store); got != wantFiled {
+		t.Fatalf("durably filed janitor findings = %d, want %d", got, wantFiled)
+	}
+
+	store.mu.Lock()
+	journey := append([]beadstore.JourneyEvent(nil), store.journeys["oro-new1"]...)
+	store.mu.Unlock()
+	if wantMerges > 0 {
+		if got := eventCount(t, d.db, "janitor_scan_failed"); got != 1 {
+			t.Fatalf("janitor_scan_failed events = %d, want 1", got)
+		}
+		if !journeyHasEvent(journey, "note") {
+			t.Fatalf("janitor failure journey = %#v, want failure note", journey)
+		}
+	}
+	if cycle, ok := janitorCycleFiledCount(t, journey); ok && cycle != wantFiled {
+		t.Fatalf("janitor cycle filed = %d, want successful creates %d", cycle, wantFiled)
+	}
+}
+
+func janitorCycleFiledCount(t *testing.T, events []beadstore.JourneyEvent) (int, bool) {
+	t.Helper()
+	for _, event := range events {
+		if event.Actor != janitorRoleActor || event.Event != "janitor_cycle" {
+			continue
+		}
+		var payload struct {
+			Filed int `json:"filed"`
+		}
+		if err := json.Unmarshal([]byte(event.Payload), &payload); err != nil {
+			t.Fatalf("parse janitor cycle journey: %v", err)
+		}
+		return payload.Filed, true
+	}
+	return 0, false
+}
+
+type faultingJanitorStore struct {
+	*fakeBeadStore
+	appendErrEvent   string
+	findingCreateErr error
+}
+
+func (s *faultingJanitorStore) Create(
+	ctx context.Context,
+	params beadstore.CreateParams,
+) (*protocol.Bead, error) {
+	if params.Metadata[janitorFindingMetadataKey] != "" && s.findingCreateErr != nil {
+		return nil, s.findingCreateErr
+	}
+	return s.fakeBeadStore.Create(ctx, params)
+}
+
+func (s *faultingJanitorStore) AppendJourney(
+	ctx context.Context,
+	beadID string,
+	event beadstore.JourneyEvent,
+) error {
+	if event.Event == s.appendErrEvent {
+		return errors.New("journey persistence unavailable")
+	}
+	return s.fakeBeadStore.AppendJourney(ctx, beadID, event)
+}
+
 func TestJanitorTriageEvidenceValidation(t *testing.T) {
 	worktree := t.TempDir()
 	writeJanitorEvidenceFixture(t, worktree, "code.go", "package fixture\n// TODO remove legacy path\n")

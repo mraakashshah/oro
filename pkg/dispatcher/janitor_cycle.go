@@ -31,7 +31,7 @@ func (d *Dispatcher) runJanitor(ctx context.Context) error {
 	if err == nil {
 		return nil
 	}
-	d.appendJanitorJourney(ctx, roleBeadID, "note", map[string]string{
+	_ = d.appendJanitorJourney(ctx, roleBeadID, "note", map[string]string{
 		"kind":  "janitor_cycle_failed",
 		"error": err.Error(),
 	})
@@ -113,12 +113,11 @@ func (d *Dispatcher) fileJanitorTriage(
 	if err != nil {
 		return fmt.Errorf("marshal janitor findings: %w", err)
 	}
-	d.handleJanitorResult(ctx, ops.Result{
+	return d.handleJanitorResult(ctx, ops.Result{
 		Type:     ops.OpsJanitor,
 		BeadID:   roleBeadID,
 		Feedback: string(payload),
 	})
-	return nil
 }
 
 func scanJanitorDetectors(ctx context.Context, worktree, targetBranch string) (
