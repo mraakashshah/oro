@@ -17,6 +17,7 @@ import (
 
 	"oro/pkg/agentmodel"
 	"oro/pkg/beadstore"
+	"oro/pkg/janitor"
 	"oro/pkg/processenv"
 	"oro/pkg/protocol"
 	"oro/pkg/worker"
@@ -262,6 +263,14 @@ type DreamOpts struct {
 	ActiveBiasTags []string // calibration tags to counter in the next proposal prompt
 }
 
+// JanitorOpts configures a deterministic-cleanliness triage agent.
+type JanitorOpts struct {
+	Candidates []janitor.Candidate
+	Suppressed []Finding
+	OpenTitles []string
+	Worktree   string
+}
+
 // EpicFixOpts configures an epic acceptance-failure diagnostic agent.
 type EpicFixOpts struct {
 	EpicID string // the parent epic whose acceptance test failed
@@ -491,6 +500,12 @@ func (s *Spawner) Decompose(ctx context.Context, opts DecomposeOpts) <-chan Resu
 func (s *Spawner) Dream(ctx context.Context, opts DreamOpts) <-chan Result {
 	prompt := buildDreamPrompt(opts)
 	return s.run(ctx, OpsDream, "", "", prompt)
+}
+
+// Janitor spawns a cheap deterministic-cleanliness triage agent.
+func (s *Spawner) Janitor(ctx context.Context, opts JanitorOpts) <-chan Result {
+	prompt := buildJanitorPrompt(opts)
+	return s.run(ctx, OpsJanitor, "", opts.Worktree, prompt)
 }
 
 // Cancel kills a running ops agent by task ID.
