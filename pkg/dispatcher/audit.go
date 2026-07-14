@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -19,78 +20,88 @@ const auditFindingMetadataKey = "meta_finding_id"
 // runAudit executes the whole-repository audit in an isolated scan worktree.
 // Failed section reports are recorded as audit events; audits never escalate.
 func (d *Dispatcher) runAudit(ctx context.Context, roleBeadID string) error {
-	resultFailureRecorded := false
 	err := d.withScanWorktree(ctx, func(worktree string) error {
-		result := <-d.ops.Audit(ctx, ops.AuditOpts{BeadID: roleBeadID, Worktree: worktree})
-		d.handleAuditResultInWorktree(ctx, result, worktree)
-		if result.Err != nil {
-			resultFailureRecorded = true
-			return fmt.Errorf("audit result: %w", result.Err)
-		}
-		if result.Verdict == ops.VerdictFailed {
-			resultFailureRecorded = true
-			return fmt.Errorf("audit result failed: %s", result.Feedback)
-		}
-		return nil
+		result := d.waitAuditResult(ctx, ops.AuditOpts{BeadID: roleBeadID, Worktree: worktree})
+		return d.handleAuditResultInWorktree(ctx, result, worktree)
 	})
-	if err != nil && !resultFailureRecorded {
-		d.appendAuditNote(ctx, roleBeadID, "audit_scan_failed", err.Error())
+	if err != nil {
+		d.appendAuditNote(ctx, roleBeadID, "audit_cycle_failed", err.Error())
 	}
 	return err
 }
 
-func (d *Dispatcher) handleAuditResult(ctx context.Context, result ops.Result) {
-	d.handleAuditResultInWorktree(ctx, result, d.repoRoot)
+func (d *Dispatcher) waitAuditResult(ctx context.Context, opts ops.AuditOpts) ops.Result {
+	if d.auditResultFn != nil {
+		return d.auditResultFn(ctx, opts)
+	}
+	return <-d.ops.Audit(ctx, opts)
 }
 
-func (d *Dispatcher) handleAuditResultInWorktree(ctx context.Context, result ops.Result, worktree string) {
+func (d *Dispatcher) handleAuditResult(ctx context.Context, result ops.Result) error {
+	return d.handleAuditResultInWorktree(ctx, result, d.repoRoot)
+}
+
+func (d *Dispatcher) handleAuditResultInWorktree(ctx context.Context, result ops.Result, worktree string) error {
 	if result.Err != nil || result.Verdict == ops.VerdictFailed {
 		detail := auditFailureDetail(result)
-		d.appendAuditNote(ctx, result.BeadID, "all_sections_failed", detail)
 		_ = d.logEvent(ctx, "audit_failed", auditRoleActor, result.BeadID, "", detail)
-		return
+		if result.Err != nil {
+			return fmt.Errorf("audit result: %w", result.Err)
+		}
+		return fmt.Errorf("audit result failed: %s", detail)
 	}
 
 	payload, err := parseAuditResult(result.Feedback)
 	if err != nil {
-		_ = d.logEvent(ctx, "audit_failed", "ops_audit", "", "", err.Error())
-		return
+		_ = d.logEvent(ctx, "audit_failed", auditRoleActor, result.BeadID, "", err.Error())
+		return err
 	}
 	roleBeadIDs, err := d.cleanlinessRoleBeadIDs(ctx, result.BeadID)
 	if err != nil {
 		_ = d.logEvent(ctx, "audit_suppression_failed", auditRoleActor, result.BeadID, "", err.Error())
-		return
+		return err
 	}
 	suppressed, err := d.deriveSuppressed(ctx, roleBeadIDs)
 	if err != nil {
 		_ = d.logEvent(ctx, "audit_suppression_failed", auditRoleActor, result.BeadID, "", err.Error())
-		return
+		return err
 	}
 	active, err := d.deriveActiveFindings(ctx, roleBeadIDs)
 	if err != nil {
 		_ = d.logEvent(ctx, "audit_suppression_failed", auditRoleActor, result.BeadID, "", err.Error())
-		return
+		return err
 	}
-	d.fileAuditFindingsInWorktree(ctx, result.BeadID, payload.AllFindings, payload.Findings, active, suppressed, worktree)
+	if err := d.fileAuditFindingsInWorktree(
+		ctx,
+		result.BeadID,
+		payload.AllFindings,
+		payload.Findings,
+		active,
+		suppressed,
+		worktree,
+	); err != nil {
+		return err
+	}
 
 	coveragePayload, err := auditCoveragePayload(payload.CoveredSections)
 	if err != nil {
 		_ = d.logEvent(ctx, "audit_coverage_failed", auditRoleActor, result.BeadID, "", err.Error())
-		return
+		return err
 	}
 	if err := d.appendAuditJourney(ctx, result.BeadID, "audit_coverage", coveragePayload); err != nil {
 		_ = d.logEvent(ctx, "audit_coverage_failed", auditRoleActor, result.BeadID, "", err.Error())
-		return
+		return err
 	}
 	_ = d.logEvent(ctx, "audit_coverage", auditRoleActor, result.BeadID, "", coveragePayload)
+	return nil
 }
 
 func (d *Dispatcher) fileAuditFindings(
 	ctx context.Context,
 	roleBeadID string,
 	findings, active, suppressed []ops.Finding,
-) {
-	d.fileAuditFindingsInWorktree(ctx, roleBeadID, findings, findings, active, suppressed, d.repoRoot)
+) error {
+	return d.fileAuditFindingsInWorktree(ctx, roleBeadID, findings, findings, active, suppressed, d.repoRoot)
 }
 
 func (d *Dispatcher) fileAuditFindingsInWorktree(
@@ -98,7 +109,8 @@ func (d *Dispatcher) fileAuditFindingsInWorktree(
 	roleBeadID string,
 	allFindings, survivors, active, suppressed []ops.Finding,
 	worktree string,
-) {
+) error {
+	var errs []error
 	persisted := make(map[string]bool, len(allFindings))
 	for _, finding := range allFindings {
 		if finding.ID == "" || persisted[finding.ID] {
@@ -106,6 +118,7 @@ func (d *Dispatcher) fileAuditFindingsInWorktree(
 		}
 		if err := d.appendAuditFinding(ctx, roleBeadID, finding); err != nil {
 			_ = d.logEvent(ctx, "audit_finding_persist_failed", auditRoleActor, roleBeadID, "", err.Error())
+			errs = append(errs, fmt.Errorf("persist audit finding %s: %w", finding.ID, err))
 			continue
 		}
 		persisted[finding.ID] = true
@@ -123,14 +136,17 @@ func (d *Dispatcher) fileAuditFindingsInWorktree(
 		params, err := auditFindingCreateParams(finding, worktree)
 		if err != nil {
 			_ = d.logEvent(ctx, "audit_finding_acceptance_failed", auditRoleActor, roleBeadID, "", err.Error())
+			errs = append(errs, fmt.Errorf("prepare audit finding %s: %w", finding.ID, err))
 			continue
 		}
 		if _, err := d.beads.Create(ctx, params); err != nil {
 			_ = d.logEvent(ctx, "audit_finding_create_failed", auditRoleActor, roleBeadID, "", err.Error())
+			errs = append(errs, fmt.Errorf("create audit finding %s: %w", finding.ID, err))
 			continue
 		}
 		_ = d.logEvent(ctx, "audit_finding_created", auditRoleActor, roleBeadID, "", finding.ID)
 	}
+	return errors.Join(errs...)
 }
 
 type auditResultPayload struct {

@@ -896,8 +896,9 @@ type Dispatcher struct {
 	// an audit can replace the configured periodic janitor run.
 	mergesSinceJanitor    uint64
 	janitorRunsSinceAudit uint64
-	janitorSpawnFn        func(context.Context) // test hook; nil records the scheduled janitor run
-	auditSpawnFn          func(context.Context) // test hook; nil records the scheduled audit run
+	janitorSpawnFn        func(context.Context)                           // test hook; nil records the scheduled janitor run
+	auditSpawnFn          func(context.Context)                           // test hook; nil records the scheduled audit run
+	auditResultFn         func(context.Context, ops.AuditOpts) ops.Result // test hook; nil runs the ops audit
 	cleanlinessRoleMu     sync.Mutex
 	janitorMu             sync.Mutex
 	auditMu               sync.Mutex
@@ -3106,6 +3107,7 @@ func (d *Dispatcher) spawnAudit(ctx context.Context) {
 
 	roleBeadID, err := d.ensureRoleBead(ctx, "audit")
 	if err != nil {
+		d.restoreAuditCadenceAfterFailure()
 		_ = d.logEvent(ctx, "audit_role_failed", "dispatcher", "", "", err.Error())
 		return
 	}

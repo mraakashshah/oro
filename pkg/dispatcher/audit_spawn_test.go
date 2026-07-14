@@ -353,6 +353,166 @@ func TestAuditFailureRestoresCadence(t *testing.T) {
 	})
 }
 
+func TestAuditIncompleteCycleRestoresCadence(t *testing.T) {
+	tests := []struct {
+		name           string
+		configure      func(*faultingAuditStore, *mockBatchSpawner)
+		resultFeedback string
+		wantRoleEvent  bool
+	}{
+		{
+			name: "role bead creation",
+			configure: func(store *faultingAuditStore, _ *mockBatchSpawner) {
+				store.roleCreateErr = errors.New("role create unavailable")
+			},
+			wantRoleEvent: true,
+		},
+		{
+			name: "role bead discovery",
+			configure: func(store *faultingAuditStore, _ *mockBatchSpawner) {
+				store.findErrKey = cleanlinessRoleMetadataKey
+				store.findErrAt = 2
+			},
+		},
+		{
+			name:           "result parse",
+			resultFeedback: "{not-json",
+		},
+		{
+			name: "suppression lookup",
+			configure: func(store *faultingAuditStore, _ *mockBatchSpawner) {
+				store.findErrKey = auditFindingMetadataKey
+				store.findErrAt = 1
+			},
+		},
+		{
+			name: "finding persistence",
+			configure: func(store *faultingAuditStore, spawner *mockBatchSpawner) {
+				store.appendErrEvent = "audit_finding"
+				spawner.verdict = auditSectionOutput(t, auditReportWithFixtureFinding())
+			},
+		},
+		{
+			name: "finding filing",
+			configure: func(store *faultingAuditStore, spawner *mockBatchSpawner) {
+				store.findingCreateErr = errors.New("finding create unavailable")
+				spawner.verdict = auditSectionOutput(t, auditReportWithFixtureFinding())
+			},
+		},
+		{
+			name: "coverage persistence",
+			configure: func(store *faultingAuditStore, _ *mockBatchSpawner) {
+				store.appendErrEvent = "audit_coverage"
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d, baseStore, worktrees, _, _, spawner := newTestDispatcher(t)
+			configureAuditRetryCadence(d)
+			worktrees.createFn = func(context.Context, string, string) (string, string, error) {
+				return auditFixtureRepo(t), "agent/audit", nil
+			}
+			spawner.verdict = auditSectionOutput(t, ops.ReviewReport{Verdict: ops.VerdictApproved})
+			store := &faultingAuditStore{fakeBeadStore: baseStore}
+			if tc.configure != nil {
+				tc.configure(store, spawner)
+			}
+			d.beads = store
+			if tc.resultFeedback != "" {
+				d.auditResultFn = func(_ context.Context, opts ops.AuditOpts) ops.Result {
+					return ops.Result{Type: ops.OpsAudit, BeadID: opts.BeadID, Feedback: tc.resultFeedback}
+				}
+			}
+
+			d.spawnAudit(context.Background())
+
+			assertIncompleteAuditRecorded(t, d, baseStore, tc.wantRoleEvent)
+			assertAuditRetryCadence(t, d)
+		})
+	}
+
+	t.Run("successful audit stays reset", func(t *testing.T) {
+		d, _, worktrees, _, _, spawner := newTestDispatcher(t)
+		configureAuditRetryCadence(d)
+		worktrees.createFn = func(context.Context, string, string) (string, string, error) {
+			return auditFixtureRepo(t), "agent/audit", nil
+		}
+		spawner.verdict = auditSectionOutput(t, ops.ReviewReport{Verdict: ops.VerdictApproved})
+
+		d.spawnAudit(context.Background())
+
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if d.mergesSinceJanitor != 0 || d.janitorRunsSinceAudit != 0 {
+			t.Fatalf(
+				"successful audit cadence: merges=%d janitors=%d, want reset",
+				d.mergesSinceJanitor,
+				d.janitorRunsSinceAudit,
+			)
+		}
+	})
+}
+
+func auditReportWithFixtureFinding() ops.ReviewReport {
+	return ops.ReviewReport{
+		Verdict:  ops.VerdictRejected,
+		Findings: []ops.Finding{auditFixtureFinding()},
+	}
+}
+
+func configureAuditRetryCadence(d *Dispatcher) {
+	d.cfg.JanitorEnabled = true
+	d.cfg.JanitorInterval = 3
+	d.cfg.JanitorIdleThreshold = 0
+	d.cfg.AuditEnabled = true
+	d.cfg.AuditEveryNJanitors = 5
+	d.mergesSinceJanitor = 0
+	d.janitorRunsSinceAudit = 0
+}
+
+func assertIncompleteAuditRecorded(t *testing.T, d *Dispatcher, store *fakeBeadStore, wantRoleEvent bool) {
+	t.Helper()
+	if wantRoleEvent {
+		if got := eventCount(t, d.db, "audit_role_failed"); got != 1 {
+			t.Fatalf("audit_role_failed events = %d, want 1", got)
+		}
+		return
+	}
+	if got := eventCount(t, d.db, "audit_scan_failed"); got != 1 {
+		t.Fatalf("audit_scan_failed events = %d, want 1", got)
+	}
+	roleCalls := createdCallsWithMetadata(store, cleanlinessRoleMetadataKey, "audit")
+	if len(roleCalls) != 1 {
+		t.Fatalf("audit role creates = %d, want 1", len(roleCalls))
+	}
+	assertAuditRoleJourney(t, store, roleCalls[0].id, "note")
+}
+
+func assertAuditRetryCadence(t *testing.T, d *Dispatcher) {
+	t.Helper()
+	d.mu.Lock()
+	if d.mergesSinceJanitor != 3 || d.janitorRunsSinceAudit != 4 {
+		d.mu.Unlock()
+		t.Fatalf(
+			"restored audit cadence: merges=%d janitors=%d, want merges=3 janitors=4",
+			d.mergesSinceJanitor,
+			d.janitorRunsSinceAudit,
+		)
+	}
+	d.mu.Unlock()
+
+	spawned := make(chan struct{}, 1)
+	d.auditSpawnFn = func(context.Context) { spawned <- struct{}{} }
+	d.maybeTriggerJanitor(context.Background())
+	select {
+	case <-spawned:
+	case <-time.After(time.Second):
+		t.Fatal("next completed merge did not retry the incomplete audit")
+	}
+}
+
 func TestAuditSpawnSerializesOverlappingRuns(t *testing.T) {
 	d, _, worktrees, _, _, _ := newTestDispatcher(t)
 	worktree := auditFixtureRepo(t)
@@ -586,6 +746,53 @@ type failingAuditJourneyStore struct {
 
 func (s *failingAuditJourneyStore) AppendJourney(context.Context, string, beadstore.JourneyEvent) error {
 	return s.err
+}
+
+type faultingAuditStore struct {
+	*fakeBeadStore
+
+	faultMu          sync.Mutex
+	findCalls        map[string]int
+	findErrKey       string
+	findErrAt        int
+	roleCreateErr    error
+	findingCreateErr error
+	appendErrEvent   string
+}
+
+func (s *faultingAuditStore) FindByMetadataKey(ctx context.Context, key string) ([]*protocol.Bead, error) {
+	s.faultMu.Lock()
+	if s.findCalls == nil {
+		s.findCalls = make(map[string]int)
+	}
+	s.findCalls[key]++
+	call := s.findCalls[key]
+	s.faultMu.Unlock()
+	if key == s.findErrKey && call == s.findErrAt {
+		return nil, errors.New("metadata lookup unavailable")
+	}
+	return s.fakeBeadStore.FindByMetadataKey(ctx, key)
+}
+
+func (s *faultingAuditStore) Create(ctx context.Context, params beadstore.CreateParams) (*protocol.Bead, error) {
+	if params.Metadata[cleanlinessRoleMetadataKey] == "audit" && s.roleCreateErr != nil {
+		return nil, s.roleCreateErr
+	}
+	if params.Metadata[auditFindingMetadataKey] != "" && s.findingCreateErr != nil {
+		return nil, s.findingCreateErr
+	}
+	return s.fakeBeadStore.Create(ctx, params)
+}
+
+func (s *faultingAuditStore) AppendJourney(
+	ctx context.Context,
+	beadID string,
+	event beadstore.JourneyEvent,
+) error {
+	if event.Event == s.appendErrEvent {
+		return errors.New("journey persistence unavailable")
+	}
+	return s.fakeBeadStore.AppendJourney(ctx, beadID, event)
 }
 
 type blockingAuditSpawner struct {
