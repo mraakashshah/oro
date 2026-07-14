@@ -923,7 +923,7 @@ lane_go() {
 	}
 
 	local tier2_checks=(
-		"golangci-lint" "GOCACHE=$QG_DIR/golangci-go-cache GOFLAGS=-buildvcs=false golangci-lint run --timeout 5m --allow-parallel-runners ./cmd/... ./internal/... ./pkg/..."
+		"golangci-lint" "GOCACHE=$QG_DIR/golangci-go-cache GOFLAGS=-buildvcs=false golangci-lint run --timeout 10m --allow-parallel-runners ./cmd/... ./internal/... ./pkg/..."
 		"nilaway" "nilaway -pretty-print=false -exclude-test-files -include-pkgs=oro ./cmd/... ./internal/... ./pkg/..."
 		"dead exports" "check_dead_exports"
 		"beadstore imports" "scripts/check-beadstore-imports.sh"

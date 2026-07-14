@@ -361,6 +361,36 @@ func TestGenerateQualityGateScript(t *testing.T) {
 	})
 }
 
+func TestQualityGateGolangciLintTimeoutAllowsLoadedRuns(t *testing.T) {
+	cfg := &langprofile.Config{
+		Languages: map[string]langprofile.LanguageConfig{
+			"go": {Linters: []string{"golangci-lint"}},
+		},
+	}
+	generated, err := generateQualityGateScript(cfg)
+	if err != nil {
+		t.Fatalf("generate quality gate: %v", err)
+	}
+	checkedIn, err := os.ReadFile(filepath.Join("..", "..", "scripts", "quality_gate.sh"))
+	if err != nil {
+		t.Fatalf("read checked-in quality gate: %v", err)
+	}
+
+	for name, script := range map[string]string{
+		"generated":  generated,
+		"checked-in": string(checkedIn),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !strings.Contains(script, "golangci-lint run --timeout 10m --allow-parallel-runners") {
+				t.Fatal("quality gate does not allow ten minutes for golangci-lint under load")
+			}
+			if strings.Contains(script, "golangci-lint run --timeout 5m --allow-parallel-runners") {
+				t.Fatal("quality gate retains the five-minute golangci-lint timeout")
+			}
+		})
+	}
+}
+
 func TestQualityGatesUseTrackedShellSources(t *testing.T) {
 	cfg := &langprofile.Config{
 		Languages: map[string]langprofile.LanguageConfig{
