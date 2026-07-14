@@ -1399,13 +1399,16 @@ test_quality_gate_filesystem_walkers_are_source_scoped() {
 		echo "FAIL: generated quality gate template still scans repo root for Python/YAML lanes"
 		return 1
 	fi
-	for path in './.tmp-test/*' './.cache/*' './.worktrees/*'; do
-		if ! grep -Fq -- "-not -path '$path'" "$script"; then
-			echo "FAIL: quality_gate.sh shell lane does not exclude $path"
+	for pathspec in \
+		':(exclude).tmp-test/**' \
+		':(exclude).cache/**' \
+		':(exclude).worktrees/**'; do
+		if ! grep -Fq -- "$pathspec" "$script"; then
+			echo "FAIL: quality_gate.sh qg_source_files does not exclude $pathspec"
 			return 1
 		fi
-		if ! grep -Fq -- "-not -path '$path'" "$gen"; then
-			echo "FAIL: generated quality gate template shell lane does not exclude $path"
+		if ! grep -Fq -- "$pathspec" "$gen"; then
+			echo "FAIL: generated quality gate qg_source_files does not exclude $pathspec"
 			return 1
 		fi
 	done
