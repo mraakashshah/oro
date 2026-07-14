@@ -1,10 +1,12 @@
 package dispatcher
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -240,11 +242,27 @@ func auditEvidenceAcceptanceCheck(evidence ops.Evidence, worktree string) (strin
 	if err != nil {
 		return "", err
 	}
+	if err := validateAuditEvidenceRange(evidence); err != nil {
+		return "", err
+	}
 	if evidence.Quote != "" {
 		if strings.ContainsAny(evidence.Quote, "\r\n") {
 			return "", fmt.Errorf("evidence quote must be a single line")
 		}
 		return fmt.Sprintf("! grep -Fq -- %s %s", shellSingleQuote(evidence.Quote), shellSingleQuote(file)), nil
+	}
+	if evidence.LineStart > 0 {
+		baseline, rangeErr := auditEvidenceRangeHash(worktree, file, evidence.LineStart, evidence.LineEnd)
+		if rangeErr != nil {
+			return "", rangeErr
+		}
+		sedRange := fmt.Sprintf("%d,%dp", evidence.LineStart, evidence.LineEnd)
+		return fmt.Sprintf(
+			"test \"$(sed -n %s < %s 2>/dev/null | git hash-object --stdin)\" != %s",
+			shellSingleQuote(sedRange),
+			shellSingleQuote(file),
+			shellSingleQuote(baseline),
+		), nil
 	}
 	baseline, err := auditEvidenceFileHash(worktree, file)
 	if err != nil {
@@ -255,6 +273,41 @@ func auditEvidenceAcceptanceCheck(evidence ops.Evidence, worktree string) (strin
 		shellSingleQuote(file),
 		shellSingleQuote(baseline),
 	), nil
+}
+
+func validateAuditEvidenceRange(evidence ops.Evidence) error {
+	if evidence.LineStart == 0 && evidence.LineEnd == 0 {
+		if evidence.Quote != "" {
+			return fmt.Errorf("quoted evidence requires a positive line range")
+		}
+		return nil
+	}
+	if evidence.LineStart <= 0 || evidence.LineEnd < evidence.LineStart {
+		return fmt.Errorf("invalid evidence line range: %d-%d", evidence.LineStart, evidence.LineEnd)
+	}
+	return nil
+}
+
+func auditEvidenceRangeHash(worktree, file string, start, end int) (string, error) {
+	data, err := os.ReadFile(filepath.Join(worktree, filepath.FromSlash(file))) //nolint:gosec // file is normalized and worktree-relative.
+	if err != nil {
+		return "", fmt.Errorf("read line evidence %s: %w", file, err)
+	}
+	lines := strings.SplitAfter(string(data), "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if start > len(lines) || end > len(lines) {
+		return "", fmt.Errorf("line evidence outside file %s: %d-%d", file, start, end)
+	}
+	cmd := exec.CommandContext(context.Background(), "git", "hash-object", "--stdin") //nolint:gosec // fixed git hash command.
+	cmd.Dir = worktree
+	cmd.Stdin = bytes.NewBufferString(strings.Join(lines[start-1:end], ""))
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("hash line evidence %s:%d-%d: %w", file, start, end, err)
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 func normalizeAuditEvidencePath(path string) (string, error) {

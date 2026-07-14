@@ -196,6 +196,37 @@ func TestAuditFindingAcceptanceEvidence(t *testing.T) {
 	assertAuditAcceptanceRejectsUnsafeEvidence(t, worktree)
 }
 
+func TestAuditLineRangeAcceptanceEvidence(t *testing.T) {
+	worktree := auditAcceptanceFixture(t)
+	const file = "range; touch range-injected.go"
+	writeAuditAcceptanceFile(t, worktree, file, "first\ntarget range\nthird\n")
+	finding := auditAcceptanceFinding("line-range", ops.Evidence{File: file, LineStart: 2, LineEnd: 2})
+	params, err := auditFindingCreateParams(finding, worktree)
+	if err != nil {
+		t.Fatalf("auditFindingCreateParams() error = %v", err)
+	}
+	command := auditAcceptanceCommand(t, params.AcceptanceCriteria)
+
+	assertAuditAcceptanceResult(t, worktree, command, false)
+	writeAuditAcceptanceFile(t, worktree, file, "unrelated edit\ntarget range\nthird changed\n")
+	assertAuditAcceptanceResult(t, worktree, command, false)
+	writeAuditAcceptanceFile(t, worktree, file, "unrelated edit\nremediated range\nthird changed\n")
+	assertAuditAcceptanceResult(t, worktree, command, true)
+	if _, err := os.Stat(filepath.Join(worktree, "range-injected.go")); !os.IsNotExist(err) {
+		t.Fatalf("line-range path injected a command: %v", err)
+	}
+
+	for _, evidence := range []ops.Evidence{
+		{File: file, LineStart: -1, LineEnd: 2},
+		{File: file, LineStart: 3, LineEnd: 2},
+		{File: file, LineEnd: 2},
+	} {
+		if params, err := auditFindingCreateParams(auditAcceptanceFinding("invalid-range", evidence), worktree); err == nil {
+			t.Fatalf("auditFindingCreateParams(%#v) = %#v, nil; want error", evidence, params)
+		}
+	}
+}
+
 func TestAuditPersistsBelowGateFindings(t *testing.T) {
 	t.Run("all validated findings persist but only survivors file", func(t *testing.T) {
 		d, store, _, _, _, _ := newTestDispatcher(t)
