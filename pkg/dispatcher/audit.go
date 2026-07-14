@@ -31,7 +31,7 @@ func (d *Dispatcher) handleAuditResult(ctx context.Context, result ops.Result) {
 		return
 	}
 
-	findings, err := auditFindings(result.Feedback)
+	payload, err := parseAuditResult(result.Feedback)
 	if err != nil {
 		_ = d.logEvent(ctx, "audit_failed", "ops_audit", "", "", err.Error())
 		return
@@ -51,9 +51,9 @@ func (d *Dispatcher) handleAuditResult(ctx context.Context, result ops.Result) {
 		_ = d.logEvent(ctx, "audit_suppression_failed", auditRoleActor, result.BeadID, "", err.Error())
 		return
 	}
-	d.fileAuditFindings(ctx, result.BeadID, findings, active, suppressed)
+	d.fileAuditFindings(ctx, result.BeadID, payload.Findings, active, suppressed)
 
-	coveragePayload, err := auditCoveragePayload()
+	coveragePayload, err := auditCoveragePayload(payload.CoveredSections)
 	if err != nil {
 		_ = d.logEvent(ctx, "audit_coverage_failed", auditRoleActor, result.BeadID, "", err.Error())
 		return
@@ -89,14 +89,17 @@ func (d *Dispatcher) fileAuditFindings(
 	}
 }
 
-func auditFindings(feedback string) ([]ops.Finding, error) {
-	var payload struct {
-		Findings []ops.Finding `json:"findings"`
-	}
+type auditResultPayload struct {
+	Findings        []ops.Finding `json:"findings"`
+	CoveredSections []string      `json:"covered_sections"`
+}
+
+func parseAuditResult(feedback string) (auditResultPayload, error) {
+	var payload auditResultPayload
 	if err := json.Unmarshal([]byte(feedback), &payload); err != nil {
-		return nil, fmt.Errorf("parse audit findings: %w", err)
+		return auditResultPayload{}, fmt.Errorf("parse audit findings: %w", err)
 	}
-	return payload.Findings, nil
+	return payload, nil
 }
 
 func (d *Dispatcher) appendAuditFinding(ctx context.Context, roleBeadID string, finding ops.Finding) error {
@@ -168,18 +171,32 @@ func auditFailureDetail(result ops.Result) string {
 	return result.Feedback
 }
 
-func auditCoveragePayload() (string, error) {
+func auditCoveragePayload(reported []string) (string, error) {
+	reportedSet := make(map[string]bool, len(reported))
+	for _, section := range reported {
+		reportedSet[section] = true
+	}
+	covered := make([]string, 0, len(reportedSet))
+	notCovered := make([]string, 0, len(ops.AuditSectionIDs())+4)
+	for _, section := range ops.AuditSectionIDs() {
+		if reportedSet[section] {
+			covered = append(covered, section)
+			continue
+		}
+		notCovered = append(notCovered, section)
+	}
+	notCovered = append(notCovered,
+		"product-correctness-live",
+		"reliability-injection",
+		"integrations-live",
+		"deploy-observability",
+	)
 	payload, err := json.Marshal(struct {
 		CoveredSections []string `json:"covered_sections"`
 		NotCovered      []string `json:"not_covered"`
 	}{
-		CoveredSections: ops.AuditSectionIDs(),
-		NotCovered: []string{
-			"product-correctness-live",
-			"reliability-injection",
-			"integrations-live",
-			"deploy-observability",
-		},
+		CoveredSections: covered,
+		NotCovered:      notCovered,
 	})
 	if err != nil {
 		return "", fmt.Errorf("marshal audit coverage: %w", err)

@@ -12,6 +12,67 @@ import (
 	"oro/pkg/ops"
 )
 
+func TestAuditPartialCoverage(t *testing.T) {
+	tests := []struct {
+		name        string
+		feedback    string
+		wantCovered []string
+	}{
+		{
+			name:        "partial unordered coverage is canonicalized",
+			feedback:    `{"findings":[],"covered_sections":["tests-safety","unknown","code-quality","tests-safety"]}`,
+			wantCovered: []string{"code-quality", "tests-safety"},
+		},
+		{
+			name:     "missing coverage means no static section was covered",
+			feedback: `{"findings":[]}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d, store, _, _, _, _ := newTestDispatcher(t)
+			const roleBeadID = "oro-audit-role"
+			d.handleAuditResult(t.Context(), ops.Result{
+				Type: ops.OpsAudit, BeadID: roleBeadID, Feedback: tc.feedback,
+			})
+
+			store.mu.Lock()
+			journey := append([]beadstore.JourneyEvent(nil), store.journeys[roleBeadID]...)
+			store.mu.Unlock()
+			coverageEvents := make([]beadstore.JourneyEvent, 0, 1)
+			for _, event := range journey {
+				if event.Actor == auditRoleActor && event.Event == "audit_coverage" {
+					coverageEvents = append(coverageEvents, event)
+				}
+			}
+			if len(coverageEvents) != 1 {
+				t.Fatalf("audit coverage events = %d, want 1: %#v", len(coverageEvents), journey)
+			}
+			var coverage struct {
+				CoveredSections []string `json:"covered_sections"`
+				NotCovered      []string `json:"not_covered"`
+			}
+			if err := json.Unmarshal([]byte(coverageEvents[0].Payload), &coverage); err != nil {
+				t.Fatalf("parse audit coverage: %v", err)
+			}
+			if !slices.Equal(coverage.CoveredSections, tc.wantCovered) {
+				t.Errorf("covered sections = %#v, want %#v", coverage.CoveredSections, tc.wantCovered)
+			}
+			wantNotCovered := append([]string(nil), ops.AuditSectionIDs()[len(tc.wantCovered):]...)
+			wantNotCovered = append(wantNotCovered,
+				"product-correctness-live",
+				"reliability-injection",
+				"integrations-live",
+				"deploy-observability",
+			)
+			if !slices.Equal(coverage.NotCovered, wantNotCovered) {
+				t.Errorf("not covered = %#v, want %#v", coverage.NotCovered, wantNotCovered)
+			}
+		})
+	}
+}
+
 func TestAuditFilingAllSurvivors(t *testing.T) {
 	ctx := context.Background()
 	d, store, _, _, _, _ := newTestDispatcher(t)
@@ -25,9 +86,9 @@ func TestAuditFilingAllSurvivors(t *testing.T) {
 		{ID: "minor-4", Severity: ops.SevMinor, Title: "minor finding four", Detail: "minor detail"},
 		{ID: "minor-5", Severity: ops.SevMinor, Title: "minor finding five", Detail: "minor detail"},
 	}
-	feedback, err := json.Marshal(struct {
-		Findings []ops.Finding `json:"findings"`
-	}{Findings: findings})
+	feedback, err := json.Marshal(auditResultPayload{
+		Findings: findings, CoveredSections: ops.AuditSectionIDs(),
+	})
 	if err != nil {
 		t.Fatalf("marshal feedback: %v", err)
 	}
@@ -99,7 +160,11 @@ func TestAuditFilingZeroSurvivorsRecordsCoverage(t *testing.T) {
 	d, store, _, _, _, _ := newTestDispatcher(t)
 	const roleBeadID = "oro-audit-role"
 
-	d.handleAuditResult(ctx, ops.Result{Type: ops.OpsAudit, BeadID: roleBeadID, Feedback: `{"findings":[]}`})
+	feedback, err := json.Marshal(auditResultPayload{CoveredSections: ops.AuditSectionIDs()})
+	if err != nil {
+		t.Fatalf("marshal feedback: %v", err)
+	}
+	d.handleAuditResult(ctx, ops.Result{Type: ops.OpsAudit, BeadID: roleBeadID, Feedback: string(feedback)})
 
 	store.mu.Lock()
 	created := len(store.created)
