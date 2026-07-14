@@ -899,6 +899,7 @@ type Dispatcher struct {
 	janitorSpawnFn        func(context.Context) // test hook; nil records the scheduled janitor run
 	auditSpawnFn          func(context.Context) // test hook; nil records the scheduled audit run
 	cleanlinessRoleMu     sync.Mutex
+	janitorMu             sync.Mutex
 	auditMu               sync.Mutex
 
 	// dreamExecuteFn, if non-nil, is called by handleDreamResult instead of
@@ -3063,16 +3064,37 @@ func (d *Dispatcher) maybeTriggerJanitor(ctx context.Context) {
 	d.safeGo(func() { d.spawnJanitor(ctx, spawn) })
 }
 
-// spawnJanitor is the asynchronous boundary for a selected janitor cycle.
-// The lifecycle work is added separately; recording the schedule keeps the
-// trigger observable until that work is wired in.
+// spawnJanitor is the serialized asynchronous boundary for a selected janitor
+// cycle. Failed scans restore one interval of merge budget for a prompt retry.
 func (d *Dispatcher) spawnJanitor(ctx context.Context, spawn func(context.Context)) {
+	d.janitorMu.Lock()
+	defer d.janitorMu.Unlock()
+
 	if spawn != nil {
 		spawn(ctx)
 		return
 	}
 	if err := d.runJanitor(ctx); err != nil {
+		d.restoreJanitorCadenceAfterFailure()
 		_ = d.logEvent(ctx, "janitor_scan_failed", "dispatcher", "", "", err.Error())
+	}
+}
+
+func (d *Dispatcher) restoreJanitorCadenceAfterFailure() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.cfg.JanitorInterval > 0 {
+		interval := uint64(d.cfg.JanitorInterval)
+		const maxUint64 = ^uint64(0)
+		if maxUint64-d.mergesSinceJanitor < interval {
+			d.mergesSinceJanitor = maxUint64
+		} else {
+			d.mergesSinceJanitor += interval
+		}
+	}
+	if d.cfg.AuditEnabled && d.cfg.AuditEveryNJanitors > 0 && d.janitorRunsSinceAudit > 0 {
+		d.janitorRunsSinceAudit--
 	}
 }
 

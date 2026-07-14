@@ -4,47 +4,93 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
-	"oro/pkg/beadstore"
 	"oro/pkg/janitor"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
 )
 
-const (
-	janitorRoleMetadataKey = "meta_role"
-	janitorRoleMetadata    = "janitor"
-)
+const janitorRoleMetadataKey = cleanlinessRoleMetadataKey
 
-// runJanitor scans an isolated checkout, derives suppression from persisted
-// close reasons, and records the complete detector outcome on its role bead.
+// runJanitor scans an isolated checkout, derives persisted suppression, asks
+// one cheap ops agent to triage the deterministic candidates, and files only
+// the structured findings returned by that triage.
 func (d *Dispatcher) runJanitor(ctx context.Context) error {
-	role, err := d.janitorRole(ctx)
+	roleBeadID, err := d.ensureRoleBead(ctx, "janitor")
 	if err != nil {
 		return err
 	}
-	return d.withScanWorktree(ctx, func(worktree string) error {
-		candidates, ran, skipped, err := scanJanitorDetectors(ctx, worktree, d.cfg.DefaultBranch)
-		if err != nil {
-			return fmt.Errorf("run janitor detectors: %w", err)
+
+	err = d.withScanWorktree(ctx, func(worktree string) error {
+		candidates, ran, skipped, scanErr := scanJanitorDetectors(ctx, worktree, d.cfg.DefaultBranch)
+		if scanErr != nil {
+			return fmt.Errorf("run janitor detectors: %w", scanErr)
 		}
-		suppressed, err := d.janitorSuppressedFindingIDs(ctx)
-		if err != nil {
-			return err
+		roleBeadIDs, roleErr := d.cleanlinessRoleBeadIDs(ctx, roleBeadID)
+		if roleErr != nil {
+			return roleErr
 		}
-		findings := janitorFindings(candidates, suppressed)
-		feedback, err := json.Marshal(janitorResultPayload{
+		suppressed, suppressionErr := d.deriveSuppressed(ctx, roleBeadIDs)
+		if suppressionErr != nil {
+			return suppressionErr
+		}
+		openTitles, titlesErr := d.janitorOpenTitles(ctx)
+		if titlesErr != nil {
+			return titlesErr
+		}
+
+		resultCh := d.ops.Janitor(ctx, ops.JanitorOpts{
+			Candidates: candidates,
+			Suppressed: suppressed,
+			OpenTitles: openTitles,
+			Worktree:   worktree,
+		})
+		var result ops.Result
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for janitor triage: %w", ctx.Err())
+		case result = <-resultCh:
+		}
+		if result.Err != nil {
+			return fmt.Errorf("run janitor triage: %w", result.Err)
+		}
+		if result.Verdict == ops.VerdictFailed {
+			return fmt.Errorf("run janitor triage: %s", strings.TrimSpace(result.Feedback))
+		}
+		findings, parseErr := parseJanitorTriage(result.Feedback, candidates)
+		if parseErr != nil {
+			return parseErr
+		}
+		for i := range findings {
+			if findingSuppressed(findings[i], suppressed) {
+				findings[i].Status = "wont-fix"
+			}
+		}
+		feedback, marshalErr := json.Marshal(janitorResultPayload{
 			Findings:     findings,
 			RanDetectors: ran,
 			Skipped:      skipped,
 		})
-		if err != nil {
-			return fmt.Errorf("marshal janitor findings: %w", err)
+		if marshalErr != nil {
+			return fmt.Errorf("marshal janitor findings: %w", marshalErr)
 		}
-		d.handleJanitorResult(ctx, ops.Result{Type: ops.OpsJanitor, BeadID: role.ID, Feedback: string(feedback)})
+		d.handleJanitorResult(ctx, ops.Result{
+			Type:     ops.OpsJanitor,
+			BeadID:   roleBeadID,
+			Feedback: string(feedback),
+		})
 		return nil
 	})
+	if err == nil {
+		return nil
+	}
+	d.appendJanitorJourney(ctx, roleBeadID, "note", map[string]string{
+		"kind":  "janitor_cycle_failed",
+		"error": err.Error(),
+	})
+	return err
 }
 
 func scanJanitorDetectors(ctx context.Context, worktree, targetBranch string) (candidates []janitor.Candidate, ran, skipped []string, err error) {
@@ -66,69 +112,82 @@ func scanJanitorDetectors(ctx context.Context, worktree, targetBranch string) (c
 	return candidates, uniqueStrings(ran), skippedLines, nil
 }
 
-func (d *Dispatcher) janitorRole(ctx context.Context) (*protocol.Bead, error) {
-	beads, err := d.beads.FindByMetadataKey(ctx, janitorRoleMetadataKey)
+func (d *Dispatcher) janitorOpenTitles(ctx context.Context) ([]string, error) {
+	ready, err := d.beads.Ready(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("find janitor role: %w", err)
+		return nil, fmt.Errorf("list ready beads for janitor triage: %w", err)
 	}
-	for _, bead := range beads {
-		if bead != nil && bead.Metadata[janitorRoleMetadataKey] == janitorRoleMetadata {
-			return bead, nil
+	inProgress, err := d.beads.InProgress(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list in-progress beads for janitor triage: %w", err)
+	}
+	blocked, err := d.beads.Blocked(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list blocked beads for janitor triage: %w", err)
+	}
+
+	titles := make([]string, 0, len(ready)+len(inProgress)+len(blocked))
+	for _, beads := range [][]protocol.Bead{ready, inProgress, blocked} {
+		for _, bead := range beads {
+			title := strings.TrimSpace(bead.Title)
+			if title != "" {
+				titles = append(titles, title)
+			}
 		}
 	}
-	role, err := d.beads.Create(ctx, beadstore.CreateParams{
-		Title:    "Janitor findings",
-		Type:     "task",
-		Priority: 2,
-		Status:   "closed",
-		Metadata: map[string]string{janitorRoleMetadataKey: janitorRoleMetadata},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create janitor role: %w", err)
-	}
-	return role, nil
+	sort.Strings(titles)
+	return uniqueStrings(titles), nil
 }
 
-func (d *Dispatcher) janitorSuppressedFindingIDs(ctx context.Context) (map[string]bool, error) {
-	beads, err := d.beads.FindByMetadataKey(ctx, janitorFindingMetadataKey)
-	if err != nil {
-		return nil, fmt.Errorf("find janitor findings: %w", err)
+func parseJanitorTriage(feedback string, candidates []janitor.Candidate) ([]ops.Finding, error) {
+	var findings []ops.Finding
+	if err := json.Unmarshal([]byte(strings.TrimSpace(feedback)), &findings); err != nil {
+		return nil, fmt.Errorf("parse janitor triage findings: %w", err)
 	}
-	suppressed := make(map[string]bool)
-	for _, bead := range beads {
-		if bead == nil || bead.Status != "closed" || !janitorWontFix(bead.CloseReason) {
-			continue
-		}
-		findingID, _ := bead.Metadata[janitorFindingMetadataKey].(string)
-		if findingID != "" {
-			suppressed[findingID] = true
-		}
+	if findings == nil {
+		findings = []ops.Finding{}
 	}
-	return suppressed, nil
-}
-
-func janitorWontFix(reason string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(reason)), "wont-fix")
-}
-
-func janitorFindings(candidates []janitor.Candidate, suppressed map[string]bool) []ops.Finding {
-	findings := make([]ops.Finding, 0, len(candidates))
+	availableSources := make(map[string]bool, len(candidates))
 	for _, candidate := range candidates {
-		finding := ops.Finding{
-			Severity:   ops.SevMinor,
-			Category:   candidate.Detector,
-			Title:      candidate.Title,
-			Detail:     candidate.Detail,
-			Evidence:   []ops.Evidence{{File: candidate.File, LineStart: candidate.Line, LineEnd: candidate.Line, Quote: candidate.Detail}},
-			Confidence: 100,
-			Sources:    []string{candidate.Detector},
-			Origin:     "pre_existing",
+		if candidate.Detector != "" {
+			availableSources[candidate.Detector] = true
 		}
-		finding.ID = ops.FindingID("", finding)
-		if suppressed[finding.ID] {
-			finding.Status = "wont-fix"
-		}
-		findings = append(findings, finding)
 	}
-	return findings
+	for i := range findings {
+		finding := &findings[i]
+		if err := validateJanitorTriageFinding(*finding, availableSources); err != nil {
+			return nil, fmt.Errorf("validate janitor triage finding %d: %w", i, err)
+		}
+		finding.ID = ops.FindingID("", *finding)
+	}
+	return findings, nil
+}
+
+func validateJanitorTriageFinding(finding ops.Finding, availableSources map[string]bool) error {
+	switch finding.Severity {
+	case ops.SevCritical, ops.SevImportant, ops.SevMinor:
+	default:
+		return fmt.Errorf("invalid severity %q", finding.Severity)
+	}
+	if strings.TrimSpace(finding.Category) == "" || strings.TrimSpace(finding.Title) == "" || strings.TrimSpace(finding.Detail) == "" {
+		return fmt.Errorf("category, title, and detail are required")
+	}
+	if finding.Confidence < 0 || finding.Confidence > 100 {
+		return fmt.Errorf("confidence %d is outside 0..100", finding.Confidence)
+	}
+	if len(finding.Evidence) == 0 {
+		return fmt.Errorf("candidate-backed evidence is required")
+	}
+	if len(finding.Sources) == 0 {
+		return fmt.Errorf("a detector source is required")
+	}
+	for _, source := range finding.Sources {
+		if !availableSources[source] {
+			return fmt.Errorf("source %q did not produce a candidate", source)
+		}
+	}
+	if finding.Origin != "pre_existing" {
+		return fmt.Errorf("origin must be pre_existing")
+	}
+	return nil
 }

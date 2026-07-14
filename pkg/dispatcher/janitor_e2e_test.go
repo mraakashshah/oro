@@ -19,7 +19,17 @@ import (
 
 func TestJanitorCycleEndToEnd(t *testing.T) {
 	ctx := context.Background()
-	d, _, worktrees, _, _, _ := newTestDispatcher(t)
+	d, _, worktrees, _, _, spawner := newTestDispatcher(t)
+	spawner.verdict = `[{
+		"severity":"minor",
+		"category":"todo",
+		"title":"remove stale fixture TODO",
+		"detail":"remove the intentional fixture TODO after verifying the dead path",
+		"evidence":[{"file":"dead.go","line_start":3,"line_end":3,"quote":"TODO: intentional fixture dead code"}],
+		"confidence":90,
+		"sources":["todo"],
+		"origin":"pre_existing"
+	}]`
 	db := newTestDB(t)
 	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
 		t.Fatalf("migrate fixture bead schema: %v", err)
