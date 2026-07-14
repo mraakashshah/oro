@@ -75,6 +75,11 @@ func TestExternalCloseRecoversWorktree(t *testing.T) {
 	waitFor(t, func() bool {
 		return eventCount(t, d.db, "external_close_recovered") > 0
 	}, 2*time.Second)
+	waitFor(t, func() bool {
+		wtMgr.mu.Lock()
+		defer wtMgr.mu.Unlock()
+		return len(wtMgr.removed) == 1 && wtMgr.removed[0] == worktree
+	}, 2*time.Second)
 
 	// Sanity: cleanup still ran so we don't leak the worktree.
 	wtMgr.mu.Lock()
