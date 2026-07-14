@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -58,7 +60,7 @@ func (d *Dispatcher) runJanitorInWorktree(ctx context.Context, roleBeadID, workt
 	if err != nil {
 		return err
 	}
-	return d.fileJanitorTriage(ctx, roleBeadID, result.Feedback, candidates, suppressed, ran, skipped, projectScript)
+	return d.fileJanitorTriage(ctx, roleBeadID, result.Feedback, candidates, worktree, suppressed, ran, skipped, projectScript)
 }
 
 func (d *Dispatcher) janitorSuppressedFindings(ctx context.Context, roleBeadID string) ([]ops.Finding, error) {
@@ -88,11 +90,12 @@ func (d *Dispatcher) fileJanitorTriage(
 	ctx context.Context,
 	roleBeadID, feedback string,
 	candidates []janitor.Candidate,
+	worktree string,
 	suppressed []ops.Finding,
 	ran, skipped []string,
 	projectScript bool,
 ) error {
-	findings, err := parseJanitorTriage(feedback, candidates)
+	findings, err := parseJanitorTriage(feedback, candidates, worktree)
 	if err != nil {
 		return err
 	}
@@ -169,7 +172,7 @@ func (d *Dispatcher) janitorOpenTitles(ctx context.Context) ([]string, error) {
 	return uniqueStrings(titles), nil
 }
 
-func parseJanitorTriage(feedback string, candidates []janitor.Candidate) ([]ops.Finding, error) {
+func parseJanitorTriage(feedback string, candidates []janitor.Candidate, worktree string) ([]ops.Finding, error) {
 	var findings []ops.Finding
 	if err := json.Unmarshal([]byte(strings.TrimSpace(feedback)), &findings); err != nil {
 		return nil, fmt.Errorf("parse janitor triage findings: %w", err)
@@ -185,7 +188,7 @@ func parseJanitorTriage(feedback string, candidates []janitor.Candidate) ([]ops.
 	}
 	for i := range findings {
 		finding := &findings[i]
-		if err := validateJanitorTriageFinding(*finding, availableSources); err != nil {
+		if err := validateJanitorTriageFinding(*finding, availableSources, candidates, worktree); err != nil {
 			return nil, fmt.Errorf("validate janitor triage finding %d: %w", i, err)
 		}
 		finding.ID = ops.FindingID("", *finding)
@@ -193,7 +196,12 @@ func parseJanitorTriage(feedback string, candidates []janitor.Candidate) ([]ops.
 	return findings, nil
 }
 
-func validateJanitorTriageFinding(finding ops.Finding, availableSources map[string]bool) error {
+func validateJanitorTriageFinding(
+	finding ops.Finding,
+	availableSources map[string]bool,
+	candidates []janitor.Candidate,
+	worktree string,
+) error {
 	switch finding.Severity {
 	case ops.SevCritical, ops.SevImportant, ops.SevMinor:
 	default:
@@ -219,5 +227,112 @@ func validateJanitorTriageFinding(finding ops.Finding, availableSources map[stri
 	if finding.Origin != "pre_existing" {
 		return fmt.Errorf("origin must be pre_existing")
 	}
+	if err := validateJanitorTriageEvidence(finding, candidates, worktree); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validateJanitorTriageEvidence(finding ops.Finding, candidates []janitor.Candidate, worktree string) error {
+	sources := make(map[string]bool, len(finding.Sources))
+	for _, source := range finding.Sources {
+		sources[source] = true
+	}
+	for _, evidence := range finding.Evidence {
+		matched, err := janitorEvidenceMatchesCandidate(evidence, candidates, sources, worktree)
+		if err != nil {
+			return err
+		}
+		if !matched {
+			return fmt.Errorf("evidence does not match a cited detector candidate: %s", evidence.File)
+		}
+	}
+	return nil
+}
+
+func janitorEvidenceMatchesCandidate(
+	evidence ops.Evidence,
+	candidates []janitor.Candidate,
+	sources map[string]bool,
+	worktree string,
+) (bool, error) {
+	evidenceFile, err := normalizeJanitorEvidencePath(evidence.File)
+	if err != nil {
+		return false, err
+	}
+	for _, candidate := range candidates {
+		if !sources[candidate.Detector] {
+			continue
+		}
+		candidateFile, candidateErr := normalizeJanitorEvidencePath(candidate.File)
+		if candidateErr != nil || candidateFile != evidenceFile {
+			continue
+		}
+		matched, matchErr := janitorEvidenceMatchesLocation(evidence, candidate, worktree, evidenceFile)
+		if matchErr != nil {
+			return false, matchErr
+		}
+		if matched {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func janitorEvidenceMatchesLocation(
+	evidence ops.Evidence,
+	candidate janitor.Candidate,
+	worktree, evidenceFile string,
+) (bool, error) {
+	if candidate.Line == 0 {
+		return evidence.LineStart == 0 && evidence.LineEnd == 0 && evidence.Quote == "", nil
+	}
+	if candidate.Line < 0 || evidence.LineStart <= 0 || evidence.LineEnd < evidence.LineStart ||
+		candidate.Line < evidence.LineStart || candidate.Line > evidence.LineEnd || strings.TrimSpace(evidence.Quote) == "" {
+		return false, nil
+	}
+	text, err := janitorEvidenceLineText(worktree, evidenceFile, evidence.LineStart, evidence.LineEnd)
+	if err != nil {
+		return false, err
+	}
+	return strings.Contains(text, evidence.Quote), nil
+}
+
+func normalizeJanitorEvidencePath(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("evidence path is empty")
+	}
+	localPath := filepath.FromSlash(path)
+	if filepath.IsAbs(localPath) {
+		return "", fmt.Errorf("evidence path must be relative: %s", path)
+	}
+	clean := filepath.ToSlash(filepath.Clean(localPath))
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") {
+		return "", fmt.Errorf("evidence path escapes scan worktree: %s", path)
+	}
+	return clean, nil
+}
+
+func janitorEvidenceLineText(worktree, file string, start, end int) (string, error) {
+	root, err := filepath.EvalSymlinks(worktree)
+	if err != nil {
+		return "", fmt.Errorf("resolve scan worktree: %w", err)
+	}
+	path, err := filepath.EvalSymlinks(filepath.Join(root, filepath.FromSlash(file)))
+	if err != nil {
+		return "", fmt.Errorf("resolve evidence file: %w", err)
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("evidence path escapes scan worktree: %s", file)
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // evaluated path is contained by the isolated scan worktree.
+	if err != nil {
+		return "", fmt.Errorf("read evidence file: %w", err)
+	}
+	lines := strings.Split(string(data), "\n")
+	if end > len(lines) {
+		return "", fmt.Errorf("evidence line outside file: %s:%d", file, end)
+	}
+	return strings.Join(lines[start-1:end], "\n"), nil
 }

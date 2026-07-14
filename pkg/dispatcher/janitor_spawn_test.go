@@ -2,6 +2,7 @@ package dispatcher //nolint:testpackage // white-box test pins the janitor orche
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/janitor"
+	"oro/pkg/ops"
 	"oro/pkg/protocol"
 )
 
@@ -172,6 +175,83 @@ printf '%s\n' '{"detector":"todo","file":"legacy.go","line":1,"title":"candidate
 				t.Fatalf("janitor journey after %s failure = %#v, want note", stage, journey)
 			}
 		})
+	}
+}
+
+func TestJanitorTriageEvidenceValidation(t *testing.T) {
+	worktree := t.TempDir()
+	writeJanitorEvidenceFixture(t, worktree, "code.go", "package fixture\n// TODO remove legacy path\n")
+	writeJanitorEvidenceFixture(t, worktree, "assets/orphan.svg", "<svg></svg>\n")
+	candidates := []janitor.Candidate{
+		{Detector: "todo", File: "code.go", Line: 2},
+		{Detector: "orphan-files", File: "assets/orphan.svg"},
+	}
+	base := ops.Finding{
+		Severity: ops.SevImportant, Category: "todo", Title: "remove legacy path",
+		Detail: "remove the candidate-backed legacy path", Confidence: 95,
+		Evidence: []ops.Evidence{{File: "code.go", LineStart: 2, LineEnd: 2, Quote: "TODO remove legacy path"}},
+		Sources:  []string{"todo"}, Origin: "pre_existing",
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*ops.Finding)
+		wantErr bool
+	}{
+		{name: "matching candidate"},
+		{name: "wrong file", mutate: func(f *ops.Finding) { f.Evidence[0].File = "other.go" }, wantErr: true},
+		{name: "wrong line", mutate: func(f *ops.Finding) { f.Evidence[0].LineStart, f.Evidence[0].LineEnd = 1, 1 }, wantErr: true},
+		{name: "wrong quote", mutate: func(f *ops.Finding) { f.Evidence[0].Quote = "invented quote" }, wantErr: true},
+		{name: "wrong source", mutate: func(f *ops.Finding) { f.Sources = []string{"orphan-files"} }, wantErr: true},
+		{name: "path traversal", mutate: func(f *ops.Finding) { f.Evidence[0].File = "../code.go" }, wantErr: true},
+		{name: "absolute path", mutate: func(f *ops.Finding) { f.Evidence[0].File = filepath.Join(worktree, "code.go") }, wantErr: true},
+		{name: "matching file-only candidate", mutate: func(f *ops.Finding) {
+			f.Evidence = []ops.Evidence{{File: "assets/orphan.svg"}}
+			f.Sources = []string{"orphan-files"}
+		}},
+		{name: "file-only candidate with line", mutate: func(f *ops.Finding) {
+			f.Evidence = []ops.Evidence{{File: "assets/orphan.svg", LineStart: 1, LineEnd: 1, Quote: "<svg>"}}
+			f.Sources = []string{"orphan-files"}
+		}, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			finding := base
+			finding.Evidence = append([]ops.Evidence(nil), base.Evidence...)
+			finding.Sources = append([]string(nil), base.Sources...)
+			if tt.mutate != nil {
+				tt.mutate(&finding)
+			}
+			raw, err := json.Marshal([]ops.Finding{finding})
+			if err != nil {
+				t.Fatalf("marshal finding: %v", err)
+			}
+			got, err := parseJanitorTriage(string(raw), candidates, worktree)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("parseJanitorTriage() = %#v, nil; want error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseJanitorTriage() error = %v", err)
+			}
+			if len(got) != 1 || got[0].ID == "" {
+				t.Fatalf("parseJanitorTriage() = %#v, want one finding with ID", got)
+			}
+		})
+	}
+}
+
+func writeJanitorEvidenceFixture(t *testing.T, root, name, contents string) {
+	t.Helper()
+	path := filepath.Join(root, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("create evidence directory: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write evidence fixture: %v", err)
 	}
 }
 
