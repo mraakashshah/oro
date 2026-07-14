@@ -250,7 +250,7 @@ acquire_quality_gate_lock() {
 	local waited=0
 	reported_waiting=false
 	if quality_gate_lock_is_inherited "$lock_dir"; then
-		return 0
+		exit 0
 	fi
 	create_quality_gate_queue_ticket "$queue_dir"
 	while :; do

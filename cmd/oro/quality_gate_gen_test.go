@@ -658,6 +658,9 @@ func TestQualityGateScriptsRecursiveInvocationReturnsWithoutQueueingBehindParent
 if [ "${ORO_QG_RECURSIVE_TEST:-}" = "1" ]; then
     ORO_QG_RECURSIVE_TEST=0 "$0"
 fi
+if [ "${ORO_QG_RECURSIVE_TEST:-}" = "0" ]; then
+    echo "recursive child reached quality gate body"
+fi
 `
 			scriptPath := filepath.Join(dir, "quality_gate.sh")
 			if err := os.WriteFile(scriptPath, []byte(harness), 0o755); err != nil {
@@ -679,6 +682,9 @@ fi
 			}
 			if strings.Contains(string(out), "Waiting for another quality gate to finish") {
 				t.Fatalf("recursive quality gate queued behind its parent:\n%s", out)
+			}
+			if strings.Contains(string(out), "recursive child reached quality gate body") {
+				t.Fatalf("recursive quality gate continued into its body:\n%s", out)
 			}
 		})
 	}
