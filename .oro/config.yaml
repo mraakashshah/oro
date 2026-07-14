@@ -1,6 +1,5 @@
 project: oro
 agent:
-  provider_mode: codex-coding-claude-review
   tiers:
     fast:
       runtime: codex
