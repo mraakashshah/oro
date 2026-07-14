@@ -347,6 +347,33 @@ qg_yaml_source_files() {
 }
 
 # shellcheck disable=SC2317,SC2329
+qg_shell_source_files() {
+	qg_source_files '*.sh'
+}
+
+# shellcheck disable=SC2317,SC2329
+qg_run_shfmt_source() {
+	local -a files=()
+	mapfile -t files < <(qg_shell_source_files)
+	if [ "${#files[@]}" -eq 0 ]; then
+		echo "No tracked shell source files"
+		return 0
+	fi
+	shfmt -ln bash -d "${files[@]}"
+}
+
+# shellcheck disable=SC2317,SC2329
+qg_run_shellcheck_source() {
+	local -a files=()
+	mapfile -t files < <(qg_shell_source_files)
+	if [ "${#files[@]}" -eq 0 ]; then
+		echo "No tracked shell source files"
+		return 0
+	fi
+	shellcheck --severity=info "${files[@]}"
+}
+
+# shellcheck disable=SC2317,SC2329
 qg_run_ruff_format_source() {
 	local -a files=()
 	mapfile -t files < <(qg_python_source_files)
@@ -1187,8 +1214,8 @@ lane_other() {
 	if $HAS_SHELL; then
 		header "SHELL: FORMAT + LINT"
 		parallel_checks \
-			"shfmt" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.tmp-test/*' -not -path './.cache/*' -not -path './.worktrees/*' -not -path './.claude/worktrees/*' -not -path './.venv/*' -not -path './node_modules/*' -not -path './cmd/oro/_assets/*' -exec shfmt -ln bash -d {} +" \
-			"shellcheck" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.tmp-test/*' -not -path './.cache/*' -not -path './.worktrees/*' -not -path './.claude/worktrees/*' -not -path './.venv/*' -not -path './node_modules/*' -not -path './cmd/oro/_assets/*' -exec shellcheck --severity=info {} +"
+			"shfmt" "qg_run_shfmt_source" \
+			"shellcheck" "qg_run_shellcheck_source"
 		pass=$((pass + TIER_PASS))
 		fail=$((fail + TIER_FAIL))
 	fi

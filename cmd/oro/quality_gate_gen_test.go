@@ -361,8 +361,40 @@ func TestGenerateQualityGateScript(t *testing.T) {
 	})
 }
 
+func TestQualityGatesUseTrackedShellSources(t *testing.T) {
+	cfg := &langprofile.Config{
+		Languages: map[string]langprofile.LanguageConfig{
+			"go": {TestCmd: "go test ./..."},
+		},
+	}
+	generated, err := generateQualityGateScript(cfg)
+	if err != nil {
+		t.Fatalf("generate quality gate: %v", err)
+	}
+	checkedIn, err := os.ReadFile(filepath.Join("..", "..", "scripts", "quality_gate.sh"))
+	if err != nil {
+		t.Fatalf("read checked-in quality gate: %v", err)
+	}
+
+	for name, script := range map[string]string{
+		"generated":  generated,
+		"checked-in": string(checkedIn),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if strings.Contains(script, `find . -name '*.sh'`) {
+				t.Fatal("shell checks walk mutable untracked worktrees")
+			}
+			for _, want := range []string{"qg_shell_source_files", "qg_run_shellcheck_source"} {
+				if !strings.Contains(script, want) {
+					t.Fatalf("quality gate missing %s", want)
+				}
+			}
+		})
+	}
+}
+
 // TestQualityGateScript_StealthPaths verifies that writeQualityGateScript uses
-// ProjectPaths fields for path substitution instead of hardcoded defaults.
+// the configured docs path instead of a hardcoded default.
 func TestQualityGateScript_StealthPaths(t *testing.T) {
 	stealthBase := "/home/testuser/.oro/projects/s-abcdef0123456789"
 	paths := ProjectPaths{
@@ -396,9 +428,7 @@ func TestQualityGateScript_StealthPaths(t *testing.T) {
 		t.Errorf("biome loop should start with OroDocsDir %q", paths.OroDocsDir)
 	}
 
-	// Script must NOT use hardcoded defaults when stealth paths are set, except
-	// repo-relative .worktrees exclusions. Those are safe because find/git only
-	// traverse the current repository, not external stealth worktree roots.
+	// Script must NOT use legacy hardcoded paths when stealth paths are set.
 	if strings.Contains(script, ".beads") {
 		t.Error("script should not contain legacy .beads paths")
 	}
@@ -409,9 +439,6 @@ func TestQualityGateScript_StealthPaths(t *testing.T) {
 		t.Fatalf("writeQualityGateScript with empty paths: %v", err)
 	}
 	defScript := defBuf.String()
-	if !strings.Contains(defScript, "./.worktrees") {
-		t.Error("empty WorktreesDir should default to ./.worktrees")
-	}
 	if strings.Contains(defScript, ".beads") {
 		t.Error("empty paths should not reintroduce legacy .beads paths")
 	}
@@ -422,8 +449,8 @@ func TestQualityGateScript_StealthPaths(t *testing.T) {
 	checkBashSyntax(t, script)
 	checkBashSyntax(t, defScript)
 
-	// Standard mode: absolute WorktreesDir should become ./relative in find exclusions.
-	t.Run("standard mode uses relative find exclusions", func(t *testing.T) {
+	// Standard mode: absolute docs paths should become repository-relative.
+	t.Run("standard mode uses relative docs path", func(t *testing.T) {
 		stdPaths := ProjectPaths{
 			Mode:         "standard",
 			RepoRoot:     "/home/testuser/myproject",
@@ -436,14 +463,6 @@ func TestQualityGateScript_StealthPaths(t *testing.T) {
 			t.Fatalf("writeQualityGateScript (standard): %v", err)
 		}
 		stdScript := stdBuf.String()
-
-		// find exclusions must use ./-relative paths, not absolute.
-		if strings.Contains(stdScript, "-not -path '/home/testuser/myproject/.worktrees") {
-			t.Error("standard mode: find exclusion must not use absolute WorktreesDir path")
-		}
-		if !strings.Contains(stdScript, "-not -path './.worktrees/*'") {
-			t.Error("standard mode: find exclusion should use ./.worktrees/*")
-		}
 
 		// Biome loop should use relative paths.
 		if strings.Contains(stdScript, ".beads") {

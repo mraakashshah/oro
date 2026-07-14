@@ -243,10 +243,9 @@ func generateGolangciLint(cfg *langprofile.Config) (string, error) { //nolint:un
 
 // qualityGateData holds the template variables for quality gate generation.
 type qualityGateData struct {
-	HasGo        bool
-	HasPython    bool
-	WorktreesDir string // find exclusion path; defaults to "./.worktrees"
-	OroDocsDir   string // biome scan path; defaults to "docs/"
+	HasGo      bool
+	HasPython  bool
+	OroDocsDir string // biome scan path; defaults to "docs/"
 }
 
 // generateQualityGateScript produces a quality_gate.sh script tailored to the
@@ -263,10 +262,9 @@ func generateQualityGateScript(cfg *langprofile.Config) (string, error) {
 	_, hasPython := cfg.Languages["python"]
 
 	data := qualityGateData{
-		HasGo:        hasGo,
-		HasPython:    hasPython,
-		WorktreesDir: "./.worktrees",
-		OroDocsDir:   "docs/",
+		HasGo:      hasGo,
+		HasPython:  hasPython,
+		OroDocsDir: "docs/",
 	}
 
 	tmpl, err := template.New("quality_gate").Parse(qualityGateTmpl)
@@ -303,30 +301,22 @@ func readQGConfig(configPath string) (*langprofile.Config, error) {
 }
 
 // writeQualityGateScript renders quality_gate.sh to w using paths for dynamic
-// path substitution in find exclusions and biome scan paths.
+// substitution in biome scan paths.
 // Language detection reads paths.ConfigYAML; falls back to shell-only when absent.
-// Empty path fields fall back to standard defaults (./.worktrees, docs/).
+// An empty docs path falls back to docs/.
 func writeQualityGateScript(w io.Writer, paths ProjectPaths) error {
 	cfg, err := readQGConfig(paths.ConfigYAML)
 	if err != nil {
 		return err
 	}
 
-	worktreesDir := paths.WorktreesDir
-	if worktreesDir == "" {
-		worktreesDir = "./.worktrees"
-	}
 	oroDocsDir := paths.OroDocsDir
 	if oroDocsDir == "" {
 		oroDocsDir = "docs/"
 	}
 
-	// Convert absolute paths to CWD-relative for find exclusions.
-	// find . outputs relative paths (e.g. ./.worktrees/foo), so absolute
-	// -not -path arguments would never match. Stealth paths outside the repo
-	// are unaffected since find . never traverses them.
+	// Convert absolute docs paths to CWD-relative for repository-local scans.
 	if paths.RepoRoot != "" {
-		worktreesDir = cwdRelative(paths.RepoRoot, worktreesDir)
 		oroDocsDir = cwdRelative(paths.RepoRoot, oroDocsDir)
 	}
 
@@ -337,10 +327,9 @@ func writeQualityGateScript(w io.Writer, paths ProjectPaths) error {
 	}
 
 	data := qualityGateData{
-		HasGo:        hasGo,
-		HasPython:    hasPython,
-		WorktreesDir: worktreesDir,
-		OroDocsDir:   oroDocsDir,
+		HasGo:      hasGo,
+		HasPython:  hasPython,
+		OroDocsDir: oroDocsDir,
 	}
 
 	tmpl, err := template.New("quality_gate").Parse(qualityGateTmpl)
@@ -755,6 +744,22 @@ qg_python_source_files() {
 # shellcheck disable=SC2317,SC2329
 qg_yaml_source_files() {
     qg_source_files '*.yml' '*.yaml'
+}
+
+# shellcheck disable=SC2317,SC2329
+qg_shell_source_files() {
+    qg_source_files '*.sh'
+}
+
+# shellcheck disable=SC2317,SC2329
+qg_run_shellcheck_source() {
+    local -a files=()
+    mapfile -t files < <(qg_shell_source_files)
+    if [ "${#files[@]}" -eq 0 ]; then
+        echo "No tracked shell source files"
+        return 0
+    fi
+    shellcheck --severity=info "${files[@]}"
 }
 
 # shellcheck disable=SC2317,SC2329
@@ -1360,7 +1365,7 @@ lane_other() {
 
     if $has_shell; then
         header "SHELL: LINT"
-        if check "shellcheck" "find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.tmp-test/*' -not -path './.cache/*' -not -path './.worktrees/*' -not -path './.claude/worktrees/*' -not -path './.venv/*' -not -path './node_modules/*' -not -path './cmd/oro/_assets/*' -exec shellcheck --severity=info {} +"; then
+        if check "shellcheck" "qg_run_shellcheck_source"; then
             pass=$((pass + 1))
         else
             fail=$((fail + 1))
