@@ -189,14 +189,38 @@ func janitorFindingAcceptance(finding ops.Finding, ranDetectors []string, projec
 }
 
 func janitorDetectorRerunCommand(detector string, projectScript bool, targetBranch string) string {
+	prefix, detectorArg := shellAcceptanceArgument("janitor_detector", detector)
+	parts := make([]string, 0, 3)
+	if prefix != "" {
+		parts = append(parts, prefix)
+	}
 	if projectScript {
-		return fmt.Sprintf("./scripts/janitor_detect.sh --detector %s", detector)
+		parts = append(parts, fmt.Sprintf("./scripts/janitor_detect.sh --detector %s", detectorArg))
+		return strings.Join(parts, " && ")
 	}
-	command := fmt.Sprintf("oro janitor:detect --detector %s", shellSingleQuote(detector))
+	command := fmt.Sprintf("oro janitor:detect --detector %s", detectorArg)
 	if detector == "ci" && targetBranch != "" {
-		command += " --target-branch " + shellSingleQuote(targetBranch)
+		branchPrefix, branchArg := shellAcceptanceArgument("janitor_target_branch", targetBranch)
+		if branchPrefix != "" {
+			parts = append(parts, branchPrefix)
+		}
+		command += " --target-branch " + branchArg
 	}
-	return command
+	return strings.Join(append(parts, command), " && ")
+}
+
+func shellAcceptanceArgument(variable, value string) (prefix, argument string) {
+	if !strings.ContainsAny(value, "\r\n") {
+		return "", shellSingleQuote(value)
+	}
+	var encoded strings.Builder
+	for _, valueByte := range []byte(value) {
+		_, _ = fmt.Fprintf(&encoded, `\0%03o`, valueByte)
+	}
+	encoded.WriteString(`\0137`)
+	prefix = variable + "=$(printf '%b' " + shellSingleQuote(encoded.String()) + ") && " +
+		variable + "=${" + variable + "%_}"
+	return prefix, `"$` + variable + `"`
 }
 
 func janitorSeverityRank(severity ops.Severity) int {

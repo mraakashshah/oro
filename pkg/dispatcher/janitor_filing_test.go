@@ -4,6 +4,9 @@ package dispatcher
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -50,7 +53,7 @@ func TestJanitorFindingAcceptanceSource(t *testing.T) {
 
 	t.Run("project detector script is rerunnable", func(t *testing.T) {
 		acceptance := fileAcceptance(t, true)
-		if got := strings.Count(acceptance, "./scripts/janitor_detect.sh --detector todo"); got != 1 {
+		if got := strings.Count(acceptance, "./scripts/janitor_detect.sh --detector 'todo'"); got != 1 {
 			t.Fatalf("project acceptance detector commands = %d, want 1: %q", got, acceptance)
 		}
 		if !strings.Contains(acceptance, "./scripts/quality_gate.sh") {
@@ -95,6 +98,64 @@ func TestJanitorFindingAcceptanceSource(t *testing.T) {
 			t.Fatalf("CI acceptance target branch is missing or unsafe: %q", acceptance)
 		}
 	})
+}
+
+func TestJanitorFindingAcceptanceSourceShellSafe(t *testing.T) {
+	worktree := t.TempDir()
+	writeJanitorAcceptanceScript(t, worktree, "scripts/janitor_detect.sh", "#!/bin/sh\nprintf '%s' \"$2\" > detector-arg\n")
+	writeJanitorAcceptanceScript(t, worktree, "scripts/quality_gate.sh", "#!/bin/sh\n: > quality-gate-ran\n")
+	writeJanitorAcceptanceScript(t, worktree, "bin/oro", "#!/bin/sh\nprintf '%s' \"$3\" > detector-arg\n")
+
+	for _, projectScript := range []bool{true, false} {
+		mode := "built-in"
+		if projectScript {
+			mode = "project-script"
+		}
+		for _, detector := range []string{
+			"detector with spaces; touch injected",
+			"detector'quoted",
+			"detector\nwith\nnewlines\n",
+		} {
+			t.Run(mode+"/"+strings.ReplaceAll(detector, "\n", "newline"), func(t *testing.T) {
+				_ = os.Remove(filepath.Join(worktree, "detector-arg"))
+				_ = os.Remove(filepath.Join(worktree, "quality-gate-ran"))
+				command := janitorDetectorRerunCommand(detector, projectScript, "") + " && ./scripts/quality_gate.sh"
+				if strings.Contains(command, "\n") {
+					t.Fatalf("generated command contains a literal newline: %q", command)
+				}
+				cmd := exec.Command("sh", "-c", command) //nolint:gosec // executes generated acceptance only in an isolated fixture.
+				cmd.Dir = worktree
+				cmd.Env = append(os.Environ(), "PATH="+filepath.Join(worktree, "bin")+":"+os.Getenv("PATH"))
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("run generated command: %v\n%s\n%s", err, output, command)
+				}
+				got, err := os.ReadFile(filepath.Join(worktree, "detector-arg"))
+				if err != nil {
+					t.Fatalf("read captured detector: %v", err)
+				}
+				if string(got) != detector {
+					t.Fatalf("captured detector = %q, want exact %q", got, detector)
+				}
+				if _, err := os.Stat(filepath.Join(worktree, "injected")); !os.IsNotExist(err) {
+					t.Fatalf("detector argument injected a command: %v", err)
+				}
+				if _, err := os.Stat(filepath.Join(worktree, "quality-gate-ran")); err != nil {
+					t.Fatalf("quality gate did not run: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func writeJanitorAcceptanceScript(t *testing.T, root, name, contents string) {
+	t.Helper()
+	path := filepath.Join(root, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("create scripts directory: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o700); err != nil {
+		t.Fatalf("write acceptance script: %v", err)
+	}
 }
 
 func TestJanitorTopKConfig(t *testing.T) {
