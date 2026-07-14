@@ -13076,33 +13076,50 @@ func TestShutdownHardTimeout(t *testing.T) {
 // The preemption system (oro-wofg) handles priority contention automatically.
 func TestPriorityContention(t *testing.T) {
 	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
-	startDispatcher(t, d)
+	d.cfg.MaxWorkers = 1
+	d.setState(StateRunning)
 
-	// Start the dispatcher
-	sendDirective(t, d.cfg.SocketPath, "start")
-	waitForState(t, d, StateRunning, 1*time.Second)
+	conn := newMockConn()
+	d.mu.Lock()
+	d.workers["worker-1"] = &trackedWorker{
+		id:           "worker-1",
+		conn:         conn,
+		state:        protocol.WorkerIdle,
+		lastSeen:     d.nowFunc(),
+		lastProgress: d.nowFunc(),
+		encoder:      json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
 
-	// Connect one worker
-	conn, _ := connectWorker(t, d.cfg.SocketPath)
-	sendMsg(t, conn, protocol.Message{
-		Type: protocol.MsgHeartbeat,
-		Heartbeat: &protocol.HeartbeatPayload{
-			WorkerID:   "worker-1",
-			ContextPct: 10,
-		},
-	})
-	waitForWorkers(t, d, 1, 1*time.Second)
+	lastMessage := func() protocol.Message {
+		t.Helper()
+		conn.mu.Lock()
+		if len(conn.written) == 0 {
+			conn.mu.Unlock()
+			t.Fatal("worker received no messages")
+		}
+		data := slices.Clone(conn.written[len(conn.written)-1])
+		conn.mu.Unlock()
+
+		var msg protocol.Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			t.Fatalf("decode worker message: %v", err)
+		}
+		return msg
+	}
+	messageCount := func() int {
+		conn.mu.Lock()
+		defer conn.mu.Unlock()
+		return len(conn.written)
+	}
 
 	// Assign a P1 bead to make the worker busy
 	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "bead-p1", Title: "P1 Task", Priority: 1},
 	})
+	d.tryAssign(t.Context())
 
-	// Wait for the P1 assignment
-	msg, ok := readMsg(t, conn, 2*time.Second)
-	if !ok {
-		t.Fatal("expected ASSIGN for P1 bead")
-	}
+	msg := lastMessage()
 	if msg.Type != protocol.MsgAssign {
 		t.Fatalf("expected ASSIGN, got %s", msg.Type)
 	}
@@ -13110,23 +13127,22 @@ func TestPriorityContention(t *testing.T) {
 		t.Fatalf("expected bead-p1, got %s", msg.Assign.BeadID)
 	}
 
-	// Verify worker is busy
-	waitForWorkerState(t, d, "worker-1", protocol.WorkerBusy, 1*time.Second)
+	state, activeBeadID, tracked := d.WorkerInfo("worker-1")
+	if !tracked || state != protocol.WorkerBusy || activeBeadID != "bead-p1" {
+		t.Fatalf("worker after P1 assignment = tracked:%t state:%s bead:%s, want busy on bead-p1",
+			tracked, state, activeBeadID)
+	}
 
 	// Now add a P0 bead — all workers are busy, but should NOT trigger escalation
 	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "bead-p1", Title: "P1 Task", Priority: 1}, // still in queue (worker busy)
 		{ID: "bead-p0", Title: "P0 Urgent", Priority: 0},
 	})
+	d.tryAssign(t.Context())
 
-	// Wait for the assign loop to process the new bead list (positive signal:
-	// cachedQueueDepth reflects the 2 beads we just set).
-	waitFor(t, func() bool {
-		d.mu.Lock()
-		depth := d.cachedQueueDepth
-		d.mu.Unlock()
-		return depth >= 2
-	}, 2*time.Second)
+	if got := messageCount(); got != 1 {
+		t.Fatalf("busy worker received %d messages, want only its original assignment", got)
+	}
 
 	// Verify NO escalation occurred
 	messages := esc.Messages()
@@ -13142,33 +13158,32 @@ func TestPriorityContention(t *testing.T) {
 		t.Error("expected escalatedBeads flag to NOT be set for bead-p0")
 	}
 
-	// Now free up the worker and verify the P0 gets assigned (and flag cleared)
-	// Send DONE for the P1 bead
-	sendMsg(t, conn, protocol.Message{
-		Type: protocol.MsgDone,
-		Done: &protocol.DonePayload{
-			WorkerID:          "worker-1",
-			BeadID:            "bead-p1",
-			QualityGatePassed: true,
-		},
-	})
-
-	// Wait for P0 assignment. DONE releases the worker after the async merge/close
-	// path completes, which can be slower under -race plus coverage.
-	msg, ok = readMsg(t, conn, 5*time.Second)
-	if !ok {
-		t.Fatal("expected ASSIGN for P0 bead after worker completed P1")
+	// Complete P1 synchronously, then verify the newly idle worker takes P0.
+	d.mu.Lock()
+	assignmentID := d.workers["worker-1"].assignmentID
+	d.mu.Unlock()
+	if err := d.completeAssignment(t.Context(), assignmentID, "bead-p1"); err != nil {
+		t.Fatalf("complete P1 assignment: %v", err)
 	}
+	d.releaseWorkerAfterDoneTerminal("worker-1", "bead-p1", assignmentID)
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "bead-p1-next", Title: "Next P1 Task", Priority: 1},
+		{ID: "bead-p0", Title: "P0 Urgent", Priority: 0},
+	})
+	d.tryAssign(t.Context())
+
+	msg = lastMessage()
 	if msg.Type != protocol.MsgAssign {
 		t.Fatalf("expected ASSIGN, got %s", msg.Type)
 	}
 	if msg.Assign.BeadID != "bead-p0" {
 		t.Fatalf("expected bead-p0 to be assigned, got %s", msg.Assign.BeadID)
 	}
-	waitFor(t, func() bool {
-		st, beadID, ok := d.WorkerInfo("worker-1")
-		return ok && st == protocol.WorkerBusy && beadID == "bead-p0"
-	}, 2*time.Second)
+	state, activeBeadID, tracked = d.WorkerInfo("worker-1")
+	if !tracked || state != protocol.WorkerBusy || activeBeadID != "bead-p0" {
+		t.Fatalf("worker after P0 assignment = tracked:%t state:%s bead:%s, want busy on bead-p0",
+			tracked, state, activeBeadID)
+	}
 
 	// Verify the escalation flag was cleared on assignment
 	d.mu.Lock()
