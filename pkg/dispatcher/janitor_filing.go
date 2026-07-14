@@ -199,10 +199,6 @@ func janitorDetectorRerunCommand(detector string, projectScript bool, targetBran
 	return command
 }
 
-func shellSingleQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
-}
-
 func janitorSeverityRank(severity ops.Severity) int {
 	switch severity {
 	case ops.SevCritical:
