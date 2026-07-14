@@ -255,9 +255,7 @@ func mergeFindingGroup(group []Finding, beadID string) Finding {
 		}
 	}
 	merged.Sources = unionFindingSources(group)
-	if merged.ID == "" {
-		merged.ID = FindingID(beadID, merged)
-	}
+	merged.ID = FindingID(beadID, merged)
 	return merged
 }
 

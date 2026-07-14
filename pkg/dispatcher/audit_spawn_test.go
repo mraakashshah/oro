@@ -146,6 +146,56 @@ func TestAuditSpawnMergePipeline(t *testing.T) {
 	})
 }
 
+func TestAuditPersistsDistinctFindings(t *testing.T) {
+	d, beads, worktrees, _, _, spawner := newTestDispatcher(t)
+	worktree := auditFixtureRepo(t)
+	worktrees.createFn = func(context.Context, string, string) (string, string, error) {
+		return worktree, "agent/audit", nil
+	}
+	first := auditFixtureFinding()
+	first.ID = "model-duplicate"
+	first.Title = "first distinct audit finding"
+	first.Detail = "the first issue needs remediation"
+	second := first
+	second.Title = "second distinct audit finding"
+	second.Detail = "the second issue needs remediation"
+	spawner.verdict = auditSectionOutput(t, ops.ReviewReport{
+		Verdict:  ops.VerdictRejected,
+		Findings: []ops.Finding{first, second},
+	})
+
+	d.spawnAudit(context.Background())
+
+	roleCalls := createdCallsWithMetadata(beads, "meta_role", "audit")
+	if len(roleCalls) != 1 {
+		t.Fatalf("audit role creates = %d, want 1", len(roleCalls))
+	}
+	beads.mu.Lock()
+	journey := append([]beadstore.JourneyEvent(nil), beads.journeys[roleCalls[0].id]...)
+	beads.mu.Unlock()
+	persisted := make(map[string]string)
+	for _, event := range journey {
+		if event.Actor != auditRoleActor || event.Event != "audit_finding" {
+			continue
+		}
+		var finding ops.Finding
+		if err := json.Unmarshal([]byte(event.Payload), &finding); err != nil {
+			t.Fatalf("parse persisted audit finding: %v", err)
+		}
+		if finding.ID != ops.FindingID(roleCalls[0].id, finding) {
+			t.Errorf("persisted finding %q kept untrusted id %q", finding.Title, finding.ID)
+		}
+		persisted[finding.ID] = finding.Title
+	}
+	if got, want := len(persisted), 2; got != want {
+		t.Fatalf("persisted distinct findings = %d, want %d: %#v", got, want, journey)
+	}
+	created := createdCallsWithMetadata(beads, auditFindingMetadataKey, "")
+	if got, want := len(created), 2; got != want {
+		t.Fatalf("filed distinct findings = %d, want %d: %#v", got, want, created)
+	}
+}
+
 func assertAuditSpawnSignature(_ func(*Dispatcher, context.Context)) {}
 
 func TestAuditSpawnAllSectionsFailedDoesNotEscalate(t *testing.T) {

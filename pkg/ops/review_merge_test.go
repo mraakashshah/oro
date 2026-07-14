@@ -83,6 +83,50 @@ func TestAuditMergeAllFindings(t *testing.T) {
 	}
 }
 
+func TestAuditIgnoresModelFindingIDs(t *testing.T) {
+	const beadID = "oro-audit"
+	first := reviewMergeFinding("pkg/ops/finding.go", 10, "first distinct issue", SevImportant, 80, "code-quality")
+	first.ID = "model-duplicate"
+	second := reviewMergeFinding("pkg/ops/finding.go", 30, "second distinct issue", SevImportant, 80, "code-quality")
+	second.ID = "model-duplicate"
+	identical := first
+	identical.ID = "another-model-id"
+	identical.Sources = []string{"tests-safety"}
+
+	result := mergeAuditReports([]ReviewReport{
+		{Reviewer: "code-quality", Verdict: VerdictRejected, Findings: []Finding{first, second}},
+		{Reviewer: "tests-safety", Verdict: VerdictRejected, Findings: []Finding{identical}},
+	}, reviewMergeManifest(), ReviewOpts{BeadID: beadID})
+	var feedback struct {
+		Findings    []Finding `json:"findings"`
+		AllFindings []Finding `json:"all_findings"`
+	}
+	if err := json.Unmarshal([]byte(result.Feedback), &feedback); err != nil {
+		t.Fatalf("parse audit feedback: %v\n%s", err, result.Feedback)
+	}
+	if got, want := len(feedback.AllFindings), 2; got != want {
+		t.Fatalf("all findings = %d, want %d distinct content findings: %#v", got, want, feedback.AllFindings)
+	}
+	if got, want := len(feedback.Findings), 2; got != want {
+		t.Fatalf("survivors = %d, want %d distinct content findings: %#v", got, want, feedback.Findings)
+	}
+
+	ids := make(map[string]string, len(feedback.AllFindings))
+	for _, finding := range feedback.AllFindings {
+		wantID := FindingID(beadID, finding)
+		if finding.ID != wantID {
+			t.Errorf("finding %q id = %q, want trusted content id %q", finding.Title, finding.ID, wantID)
+		}
+		if priorTitle, duplicate := ids[finding.ID]; duplicate {
+			t.Errorf("distinct findings %q and %q share id %q", priorTitle, finding.Title, finding.ID)
+		}
+		ids[finding.ID] = finding.Title
+	}
+	if got, want := feedback.AllFindings[0].Sources, []string{"code-quality", "tests-safety"}; !equalStrings(got, want) {
+		t.Fatalf("identical finding sources = %#v, want merged sources %#v", got, want)
+	}
+}
+
 func TestDedupAndUnionSources(t *testing.T) {
 	reports := []ReviewReport{
 		{
