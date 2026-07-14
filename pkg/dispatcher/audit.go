@@ -16,11 +16,24 @@ const auditFindingMetadataKey = "meta_finding_id"
 // runAudit executes the whole-repository audit in an isolated scan worktree.
 // Failed section reports are recorded as audit events; audits never escalate.
 func (d *Dispatcher) runAudit(ctx context.Context, roleBeadID string) error {
-	return d.withScanWorktree(ctx, func(worktree string) error {
+	resultFailureRecorded := false
+	err := d.withScanWorktree(ctx, func(worktree string) error {
 		result := <-d.ops.Audit(ctx, ops.AuditOpts{BeadID: roleBeadID, Worktree: worktree})
 		d.handleAuditResult(ctx, result)
+		if result.Err != nil {
+			resultFailureRecorded = true
+			return fmt.Errorf("audit result: %w", result.Err)
+		}
+		if result.Verdict == ops.VerdictFailed {
+			resultFailureRecorded = true
+			return fmt.Errorf("audit result failed: %s", result.Feedback)
+		}
 		return nil
 	})
+	if err != nil && !resultFailureRecorded {
+		d.appendAuditNote(ctx, roleBeadID, "audit_scan_failed", err.Error())
+	}
+	return err
 }
 
 func (d *Dispatcher) handleAuditResult(ctx context.Context, result ops.Result) {

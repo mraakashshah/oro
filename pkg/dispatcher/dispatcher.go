@@ -3110,7 +3110,26 @@ func (d *Dispatcher) spawnAudit(ctx context.Context) {
 		return
 	}
 	if err := d.runAudit(ctx, roleBeadID); err != nil {
+		d.restoreAuditCadenceAfterFailure()
 		_ = d.logEvent(ctx, "audit_scan_failed", "dispatcher", "", "", err.Error())
+	}
+}
+
+func (d *Dispatcher) restoreAuditCadenceAfterFailure() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.cfg.JanitorInterval > 0 {
+		interval := uint64(d.cfg.JanitorInterval)
+		const maxUint64 = ^uint64(0)
+		if maxUint64-d.mergesSinceJanitor < interval {
+			d.mergesSinceJanitor = maxUint64
+		} else {
+			d.mergesSinceJanitor += interval
+		}
+	}
+	if d.cfg.AuditEnabled && d.cfg.AuditEveryNJanitors > 0 {
+		d.janitorRunsSinceAudit = uint64(d.cfg.AuditEveryNJanitors - 1)
 	}
 }
 

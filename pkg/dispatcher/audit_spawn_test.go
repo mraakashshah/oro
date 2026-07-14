@@ -178,9 +178,129 @@ func TestAuditSpawnAllSectionsFailedDoesNotEscalate(t *testing.T) {
 	mergesSinceJanitor := d.mergesSinceJanitor
 	janitorRunsSinceAudit := d.janitorRunsSinceAudit
 	d.mu.Unlock()
-	if mergesSinceJanitor != 0 || janitorRunsSinceAudit != 0 {
-		t.Fatalf("failed audit counters: merges=%d janitors=%d, want reset", mergesSinceJanitor, janitorRunsSinceAudit)
+	if mergesSinceJanitor != 1 || janitorRunsSinceAudit != 4 {
+		t.Fatalf("failed audit counters: merges=%d janitors=%d, want merges=1 janitors=4", mergesSinceJanitor, janitorRunsSinceAudit)
 	}
+}
+
+func TestAuditFailureRestoresCadence(t *testing.T) {
+	const (
+		janitorInterval = 3
+		auditEvery      = 5
+	)
+
+	configureAuditCadence := func(d *Dispatcher) {
+		d.cfg.JanitorEnabled = true
+		d.cfg.JanitorInterval = janitorInterval
+		d.cfg.JanitorIdleThreshold = 0
+		d.cfg.AuditEnabled = true
+		d.cfg.AuditEveryNJanitors = auditEvery
+	}
+	assertRetryState := func(t *testing.T, d *Dispatcher, wantMerges uint64) {
+		t.Helper()
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if d.mergesSinceJanitor != wantMerges || d.janitorRunsSinceAudit != auditEvery-1 {
+			t.Fatalf(
+				"restored audit cadence: merges=%d janitors=%d, want merges=%d janitors=%d",
+				d.mergesSinceJanitor,
+				d.janitorRunsSinceAudit,
+				wantMerges,
+				auditEvery-1,
+			)
+		}
+	}
+	assertRoleFailureNote := func(t *testing.T, beads *fakeBeadStore) {
+		t.Helper()
+		roleCalls := createdCallsWithMetadata(beads, "meta_role", "audit")
+		if len(roleCalls) != 1 {
+			t.Fatalf("audit role creates = %d, want 1", len(roleCalls))
+		}
+		assertAuditRoleJourney(t, beads, roleCalls[0].id, "note")
+	}
+	assertNextMergeRetriesAudit := func(t *testing.T, d *Dispatcher) {
+		t.Helper()
+		spawned := make(chan struct{}, 1)
+		d.auditSpawnFn = func(context.Context) { spawned <- struct{}{} }
+		d.maybeTriggerJanitor(context.Background())
+		select {
+		case <-spawned:
+		case <-time.After(time.Second):
+			t.Fatal("next completed merge did not retry the failed audit")
+		}
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if d.mergesSinceJanitor != 0 || d.janitorRunsSinceAudit != 0 {
+			t.Fatalf(
+				"retried audit cadence: merges=%d janitors=%d, want reset",
+				d.mergesSinceJanitor,
+				d.janitorRunsSinceAudit,
+			)
+		}
+	}
+
+	t.Run("failed result", func(t *testing.T) {
+		d, beads, worktrees, _, _, spawner := newTestDispatcher(t)
+		configureAuditCadence(d)
+		worktrees.createFn = func(context.Context, string, string) (string, string, error) {
+			return auditFixtureRepo(t), "agent/audit", nil
+		}
+		spawner.spawnErr = errors.New("audit runtime unavailable")
+
+		d.spawnAudit(context.Background())
+
+		assertRetryState(t, d, janitorInterval)
+		assertRoleFailureNote(t, beads)
+		assertNextMergeRetriesAudit(t, d)
+	})
+
+	t.Run("worktree failure", func(t *testing.T) {
+		d, beads, worktrees, _, _, _ := newTestDispatcher(t)
+		configureAuditCadence(d)
+		worktrees.createFn = func(context.Context, string, string) (string, string, error) {
+			return "", "", errors.New("worktree unavailable")
+		}
+
+		d.spawnAudit(context.Background())
+
+		assertRetryState(t, d, janitorInterval)
+		assertRoleFailureNote(t, beads)
+		assertNextMergeRetriesAudit(t, d)
+	})
+
+	t.Run("successful audit stays reset", func(t *testing.T) {
+		d, _, worktrees, _, _, spawner := newTestDispatcher(t)
+		configureAuditCadence(d)
+		worktrees.createFn = func(context.Context, string, string) (string, string, error) {
+			return auditFixtureRepo(t), "agent/audit", nil
+		}
+		spawner.verdict = auditSectionOutput(t, ops.ReviewReport{Verdict: ops.VerdictApproved})
+
+		d.spawnAudit(context.Background())
+
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if d.mergesSinceJanitor != 0 || d.janitorRunsSinceAudit != 0 {
+			t.Fatalf(
+				"successful audit cadence: merges=%d janitors=%d, want reset",
+				d.mergesSinceJanitor,
+				d.janitorRunsSinceAudit,
+			)
+		}
+	})
+
+	t.Run("restoration saturates", func(t *testing.T) {
+		d, _, worktrees, _, _, _ := newTestDispatcher(t)
+		configureAuditCadence(d)
+		d.mergesSinceJanitor = ^uint64(0) - 1
+		worktrees.createFn = func(context.Context, string, string) (string, string, error) {
+			return "", "", errors.New("worktree unavailable")
+		}
+
+		d.spawnAudit(context.Background())
+
+		assertRetryState(t, d, ^uint64(0))
+	})
 }
 
 func TestAuditSpawnSerializesOverlappingRuns(t *testing.T) {
