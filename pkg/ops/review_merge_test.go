@@ -2,8 +2,50 @@ package ops //nolint:testpackage // internal test needs access to unexported mer
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 )
+
+func TestMergeAuditReportsCoverage(t *testing.T) {
+	reports := []ReviewReport{
+		{Reviewer: "dx-deps-docs", Verdict: VerdictApproved},
+		{Reviewer: "unknown-section", Verdict: VerdictApproved},
+		{Reviewer: "perf-patterns", Verdict: VerdictRejected},
+		{Reviewer: "code-quality", Verdict: VerdictApproved},
+		{Reviewer: "perf-patterns", Verdict: VerdictApproved},
+		{Reviewer: "tests-safety", Verdict: VerdictFailed},
+	}
+
+	result := mergeAuditReports(reports, reviewMergeManifest(), ReviewOpts{BeadID: "oro-audit"})
+	var auditFeedback struct {
+		Findings        []Finding `json:"findings"`
+		CoveredSections []string  `json:"covered_sections"`
+	}
+	if err := json.Unmarshal([]byte(result.Feedback), &auditFeedback); err != nil {
+		t.Fatalf("audit feedback is not structured JSON: %v\n%s", err, result.Feedback)
+	}
+	wantSections := []string{"code-quality", "perf-patterns", "dx-deps-docs"}
+	if !reflect.DeepEqual(auditFeedback.CoveredSections, wantSections) {
+		t.Fatalf("covered_sections = %#v, want %#v", auditFeedback.CoveredSections, wantSections)
+	}
+
+	normalResult := mergeReports(reports, reviewMergeManifest(), ReviewOpts{BeadID: "oro-review"})
+	var normalFeedback map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(normalResult.Feedback), &normalFeedback); err != nil {
+		t.Fatalf("normal review feedback is not structured JSON: %v\n%s", err, normalResult.Feedback)
+	}
+	if _, ok := normalFeedback["covered_sections"]; ok {
+		t.Fatalf("normal review feedback gained covered_sections: %s", normalResult.Feedback)
+	}
+
+	failedReports := []ReviewReport{
+		{Reviewer: "code-quality", Verdict: VerdictFailed},
+		{Reviewer: "tests-safety", Verdict: VerdictFailed},
+	}
+	if !allReviewReportsFailed(failedReports) {
+		t.Fatal("allReviewReportsFailed() = false, want true for zero successful reports")
+	}
+}
 
 func TestDedupAndUnionSources(t *testing.T) {
 	reports := []ReviewReport{

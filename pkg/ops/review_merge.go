@@ -14,21 +14,23 @@ import (
 const cheapGateScore = 45
 
 type reviewMergeFeedback struct {
-	Findings []Finding `json:"findings"`
+	Findings        []Finding `json:"findings"`
+	CoveredSections *[]string `json:"covered_sections,omitempty"`
 }
 
 func mergeReports(reports []ReviewReport, m PromptManifest, opts ReviewOpts) Result {
-	return mergeReportsFor(OpsReview, reports, m, opts, true)
+	return mergeReportsFor(OpsReview, reports, m, opts, true, nil)
 }
 
 // mergeAuditReports applies the structured reviewer merge pipeline to the
 // whole-repository audit. Unlike per-bead review, pre-existing findings are
 // the audit's purpose and must remain eligible after validation.
 func mergeAuditReports(reports []ReviewReport, m PromptManifest, opts ReviewOpts) Result {
-	return mergeReportsFor(OpsAudit, reports, m, opts, false)
+	coveredSections := coveredAuditSections(reports)
+	return mergeReportsFor(OpsAudit, reports, m, opts, false, &coveredSections)
 }
 
-func mergeReportsFor(resultType Type, reports []ReviewReport, m PromptManifest, opts ReviewOpts, dropPreExisting bool) Result {
+func mergeReportsFor(resultType Type, reports []ReviewReport, m PromptManifest, opts ReviewOpts, dropPreExisting bool, coveredSections *[]string) Result {
 	findings := flattenReviewReports(reports)
 	findings, _ = PartitionFindings(m, opts.Worktree, findings)
 	priorFindings, err := priorReviewFindings(context.Background(), opts)
@@ -68,7 +70,10 @@ func mergeReportsFor(resultType Type, reports []ReviewReport, m PromptManifest, 
 		}
 	}
 	survivors := gateFindings(merged)
-	feedback, err := json.Marshal(reviewMergeFeedback{Findings: survivors})
+	feedback, err := json.Marshal(reviewMergeFeedback{
+		Findings:        survivors,
+		CoveredSections: coveredSections,
+	})
 	if err != nil {
 		return Result{
 			Type:     resultType,
@@ -85,6 +90,23 @@ func mergeReportsFor(resultType Type, reports []ReviewReport, m PromptManifest, 
 		Verdict:  verdictForFindings(survivors),
 		Feedback: string(feedback),
 	}
+}
+
+func coveredAuditSections(reports []ReviewReport) []string {
+	successful := make(map[string]struct{}, len(reports))
+	for _, report := range reports {
+		if report.Verdict != VerdictFailed {
+			successful[report.Reviewer] = struct{}{}
+		}
+	}
+
+	covered := make([]string, 0, len(successful))
+	for _, section := range AuditSectionIDs() {
+		if _, ok := successful[section]; ok {
+			covered = append(covered, section)
+		}
+	}
+	return covered
 }
 
 func priorReviewFindings(ctx context.Context, opts ReviewOpts) (map[string]Finding, error) {
