@@ -92,6 +92,35 @@ func TestRunDetectScriptExitFailureIncludesOutput(t *testing.T) {
 	}
 }
 
+func TestJanitorDetectCommandAPI(t *testing.T) {
+	worktree := t.TempDir()
+	if err := os.WriteFile(filepath.Join(worktree, "README.md"), []byte("[missing](docs/missing.md)\n"), 0o600); err != nil {
+		t.Fatalf("write README fixture: %v", err)
+	}
+
+	cands, err := janitor.RunBuiltin(context.Background(), worktree, "", "broken-links")
+	if err != nil {
+		t.Fatalf("run broken-links detector: %v", err)
+	}
+	want := janitor.Candidate{
+		Detector: "broken-links",
+		File:     "README.md",
+		Line:     1,
+		Title:    "broken relative link",
+		Detail:   "docs/missing.md",
+	}
+	if !containsCandidate(cands, want) {
+		t.Fatalf("candidates = %#v, want %#v", cands, want)
+	}
+
+	if _, err := janitor.RunBuiltin(context.Background(), worktree, "", "not-a-detector"); err == nil || !strings.Contains(err.Error(), "unknown janitor detector") {
+		t.Fatalf("unknown detector error = %v", err)
+	}
+	if _, err := janitor.RunBuiltin(context.Background(), worktree, "", "ci"); err == nil || !strings.Contains(err.Error(), "skipped") {
+		t.Fatalf("skipped CI detector error = %v", err)
+	}
+}
+
 func TestJanitorBuiltinsSkipMissing(t *testing.T) {
 	worktree := t.TempDir()
 	if err := os.WriteFile(filepath.Join(worktree, "pyproject.toml"), []byte("[project]\nname = 'fixture'\n"), 0o600); err != nil {

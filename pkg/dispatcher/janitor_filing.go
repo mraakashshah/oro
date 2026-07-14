@@ -53,7 +53,7 @@ func (d *Dispatcher) handleJanitorResult(ctx context.Context, result ops.Result)
 
 	filed := janitorTopFindingsBySeverity(eligible, d.cfg.JanitorTopK)
 	for _, finding := range filed {
-		params := janitorFindingCreateParams(finding, payload.RanDetectors, payload.ProjectScript)
+		params := janitorFindingCreateParams(finding, payload.RanDetectors, payload.ProjectScript, d.cfg.DefaultBranch)
 		if _, createErr := d.beads.Create(ctx, params); createErr != nil {
 			_ = d.logEvent(ctx, "janitor_finding_create_failed", janitorRoleActor, result.BeadID, "", createErr.Error())
 		}
@@ -151,13 +151,18 @@ func janitorTopFindingsBySeverity(findings []ops.Finding, limit int) []ops.Findi
 	return ordered
 }
 
-func janitorFindingCreateParams(finding ops.Finding, ranDetectors []string, projectScript bool) beadstore.CreateParams {
+func janitorFindingCreateParams(
+	finding ops.Finding,
+	ranDetectors []string,
+	projectScript bool,
+	targetBranch string,
+) beadstore.CreateParams {
 	return beadstore.CreateParams{
 		Title:              finding.Title,
 		Type:               "task",
 		Priority:           2,
 		Description:        janitorFindingDescription(finding),
-		AcceptanceCriteria: janitorFindingAcceptance(finding, ranDetectors, projectScript),
+		AcceptanceCriteria: janitorFindingAcceptance(finding, ranDetectors, projectScript, targetBranch),
 		Metadata:           map[string]string{janitorFindingMetadataKey: finding.ID},
 	}
 }
@@ -168,21 +173,34 @@ func janitorFindingDescription(finding ops.Finding) string {
 Suppression contract: close with a reason beginning "wont-fix:" to mark this finding intentional and prevent refiling. The first close reason is immutable; reopen this bead before closing again to change that reason.`, finding.Detail))
 }
 
-func janitorFindingAcceptance(finding ops.Finding, ranDetectors []string, projectScript bool) string {
+func janitorFindingAcceptance(finding ops.Finding, ranDetectors []string, projectScript bool, targetBranch string) string {
 	ran := make(map[string]bool, len(ranDetectors))
 	for _, detector := range ranDetectors {
 		ran[detector] = true
 	}
 	var commands []string
-	if projectScript {
-		for _, detector := range finding.Sources {
-			if ran[detector] {
-				commands = append(commands, fmt.Sprintf("./scripts/janitor_detect.sh --detector %s", detector))
-			}
+	for _, detector := range finding.Sources {
+		if ran[detector] {
+			commands = append(commands, janitorDetectorRerunCommand(detector, projectScript, targetBranch))
 		}
 	}
 	commands = append(commands, "./scripts/quality_gate.sh")
 	return fmt.Sprintf("Test: janitor finding %s\nCmd: %s\nAssert: finding is gone and the quality gate passes", finding.ID, strings.Join(uniqueStrings(commands), " && "))
+}
+
+func janitorDetectorRerunCommand(detector string, projectScript bool, targetBranch string) string {
+	if projectScript {
+		return fmt.Sprintf("./scripts/janitor_detect.sh --detector %s", detector)
+	}
+	command := fmt.Sprintf("oro janitor:detect --detector %s", shellSingleQuote(detector))
+	if detector == "ci" && targetBranch != "" {
+		command += " --target-branch " + shellSingleQuote(targetBranch)
+	}
+	return command
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 func janitorSeverityRank(severity ops.Severity) int {

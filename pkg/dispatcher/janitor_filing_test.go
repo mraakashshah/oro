@@ -63,8 +63,36 @@ func TestJanitorFindingAcceptanceSource(t *testing.T) {
 		if strings.Contains(acceptance, "scripts/janitor_detect.sh") {
 			t.Fatalf("fallback acceptance references absent detector script: %q", acceptance)
 		}
-		if !strings.Contains(acceptance, "Cmd: ./scripts/quality_gate.sh") {
-			t.Fatalf("fallback acceptance missing executable quality gate: %q", acceptance)
+		if got := strings.Count(acceptance, "oro janitor:detect --detector 'todo'"); got != 1 {
+			t.Fatalf("fallback acceptance detector commands = %d, want 1: %q", got, acceptance)
+		}
+		if strings.Contains(acceptance, "missing-tool") {
+			t.Fatalf("fallback acceptance includes detector that did not run: %q", acceptance)
+		}
+		if !strings.Contains(acceptance, "'todo' && ./scripts/quality_gate.sh") {
+			t.Fatalf("fallback acceptance missing detector-to-gate sequence: %q", acceptance)
+		}
+	})
+
+	t.Run("built-in detector arguments are shell safe", func(t *testing.T) {
+		const hostile = "todo'; printf pwned"
+		acceptance := janitorFindingAcceptance(ops.Finding{
+			ID:      "fnd_hostile",
+			Sources: []string{hostile},
+		}, []string{hostile}, false, "")
+		if !strings.Contains(acceptance, `--detector 'todo'\''; printf pwned'`) {
+			t.Fatalf("fallback acceptance argument is not shell quoted: %q", acceptance)
+		}
+	})
+
+	t.Run("CI detector receives the configured target branch", func(t *testing.T) {
+		const targetBranch = "release/v1'; printf pwned"
+		acceptance := janitorFindingAcceptance(ops.Finding{
+			ID:      "fnd_ci",
+			Sources: []string{"ci"},
+		}, []string{"ci"}, false, targetBranch)
+		if !strings.Contains(acceptance, `--detector 'ci' --target-branch 'release/v1'\''; printf pwned'`) {
+			t.Fatalf("CI acceptance target branch is missing or unsafe: %q", acceptance)
 		}
 	})
 }

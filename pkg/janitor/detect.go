@@ -53,47 +53,74 @@ type janitorFile struct {
 // empty, those probes are skipped and cannot contribute re-run commands.
 func RunBuiltins(ctx context.Context, worktree, targetBranch string) (cands []Candidate, ran, skipped []string, err error) {
 	for _, detector := range builtinsFor(worktree, targetBranch) {
-		if detector.run != nil {
-			builtinCands, runBuiltinErr := detector.run(ctx, worktree)
-			if runBuiltinErr != nil {
-				if errors.Is(runBuiltinErr, errDetectorSkipped) {
-					skipped = append(skipped, detector.name)
-					continue
-				}
-				return nil, nil, nil, fmt.Errorf("run janitor detector %q: %w", detector.name, runBuiltinErr)
-			}
-			ran = append(ran, detector.name)
-			cands = append(cands, builtinCands...)
+		builtinCands, detectorSkipped, runErr := runBuiltin(ctx, worktree, detector)
+		if runErr != nil {
+			return nil, nil, nil, runErr
+		}
+		if detectorSkipped {
+			skipped = append(skipped, detector.name)
 			continue
 		}
-
-		binary, lookPathErr := exec.LookPath(detector.command)
-		if lookPathErr != nil {
-			if errors.Is(lookPathErr, exec.ErrNotFound) {
-				skipped = append(skipped, detector.name)
-				continue
-			}
-			return nil, nil, nil, fmt.Errorf("find janitor detector %q: %w", detector.name, lookPathErr)
-		}
-
-		cmd := exec.CommandContext(ctx, binary, detector.args...) //nolint:gosec // binary and arguments are fixed built-in detector definitions
-		cmd.Dir = worktree
-		cmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		runErr := cmd.Run()
-		if ctx.Err() != nil {
-			return nil, nil, nil, fmt.Errorf("run janitor detector %q: %w", detector.name, ctx.Err())
-		}
-		if runErr != nil && strings.TrimSpace(stdout.String()) == "" {
-			return nil, nil, nil, detectorRunError(detector.name, runErr, stderr.String())
-		}
-
 		ran = append(ran, detector.name)
-		cands = append(cands, candidatesFromOutput(detector.name, stdout.Bytes())...)
+		cands = append(cands, builtinCands...)
 	}
 	return cands, ran, skipped, nil
+}
+
+// RunBuiltin reruns one named deterministic detector in worktree. A detector
+// that is unknown or unavailable is an error so callers never mistake a
+// skipped acceptance check for a clean repository.
+func RunBuiltin(ctx context.Context, worktree, targetBranch, name string) ([]Candidate, error) {
+	for _, detector := range builtinsFor(worktree, targetBranch) {
+		if detector.name != name {
+			continue
+		}
+		candidates, skipped, err := runBuiltin(ctx, worktree, detector)
+		if err != nil {
+			return nil, err
+		}
+		if skipped {
+			return nil, fmt.Errorf("janitor detector %q skipped: unavailable or missing required configuration", name)
+		}
+		return candidates, nil
+	}
+	return nil, fmt.Errorf("unknown janitor detector %q", name)
+}
+
+func runBuiltin(ctx context.Context, worktree string, detector builtinDetector) ([]Candidate, bool, error) {
+	if detector.run != nil {
+		candidates, err := detector.run(ctx, worktree)
+		if errors.Is(err, errDetectorSkipped) {
+			return nil, true, nil
+		}
+		if err != nil {
+			return nil, false, fmt.Errorf("run janitor detector %q: %w", detector.name, err)
+		}
+		return candidates, false, nil
+	}
+
+	binary, err := exec.LookPath(detector.command)
+	if errors.Is(err, exec.ErrNotFound) {
+		return nil, true, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("find janitor detector %q: %w", detector.name, err)
+	}
+
+	cmd := exec.CommandContext(ctx, binary, detector.args...) //nolint:gosec // binary and arguments are fixed built-in detector definitions
+	cmd.Dir = worktree
+	cmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+	if ctx.Err() != nil {
+		return nil, false, fmt.Errorf("run janitor detector %q: %w", detector.name, ctx.Err())
+	}
+	if runErr != nil && strings.TrimSpace(stdout.String()) == "" {
+		return nil, false, detectorRunError(detector.name, runErr, stderr.String())
+	}
+	return candidatesFromOutput(detector.name, stdout.Bytes()), false, nil
 }
 
 func builtinsFor(worktree, targetBranch string) []builtinDetector {

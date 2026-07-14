@@ -68,8 +68,8 @@ func TestJanitorCycleEndToEnd(t *testing.T) {
 	if strings.Contains(first.AcceptanceCriteria, "scripts/janitor_detect.sh") {
 		t.Fatalf("acceptance = %q, must not reference absent project detector script", first.AcceptanceCriteria)
 	}
-	if !strings.Contains(first.AcceptanceCriteria, "Cmd: ./scripts/quality_gate.sh") {
-		t.Fatalf("acceptance = %q, want executable fallback quality gate", first.AcceptanceCriteria)
+	if !strings.Contains(first.AcceptanceCriteria, "Cmd: oro janitor:detect --detector 'todo' && ./scripts/quality_gate.sh") {
+		t.Fatalf("acceptance = %q, want executable fallback detector then quality gate", first.AcceptanceCriteria)
 	}
 	if strings.Contains(first.AcceptanceCriteria, "deadcode") {
 		t.Fatalf("acceptance = %q, must not embed skipped deadcode detector", first.AcceptanceCriteria)
