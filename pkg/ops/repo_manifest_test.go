@@ -2,6 +2,7 @@ package ops //nolint:testpackage // buildRepoManifest is an internal review help
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,7 +18,10 @@ func TestBuildRepoManifestAudit(t *testing.T) {
 		runGit(t, repo, "add", ".")
 		writeRepoManifestFile(t, repo, "scratch.txt", "untracked\n")
 
-		got := buildRepoManifest(context.Background(), repo)
+		got, err := buildRepoManifest(context.Background(), repo)
+		if err != nil {
+			t.Fatalf("buildRepoManifest() error = %v", err)
+		}
 		want := map[string][][2]int{
 			"README.md":      {{1, 3}},
 			"pkg/example.go": {{1, 4}},
@@ -31,9 +35,54 @@ func TestBuildRepoManifestAudit(t *testing.T) {
 		repo := t.TempDir()
 		runGit(t, repo, "init", "-b", "main")
 
-		got := buildRepoManifest(context.Background(), repo)
+		got, err := buildRepoManifest(context.Background(), repo)
+		if err != nil {
+			t.Fatalf("buildRepoManifest() error = %v", err)
+		}
 		if len(got.Shown) != 0 {
 			t.Fatalf("manifest shown = %#v, want empty", got.Shown)
+		}
+	})
+
+	t.Run("invalid worktree fails before spawning auditors", func(t *testing.T) {
+		nonRepo := t.TempDir()
+		if _, err := buildRepoManifest(context.Background(), nonRepo); err == nil {
+			t.Fatal("buildRepoManifest() error = nil, want non-repository error")
+		}
+
+		spawner := &recordingReviewSpawner{
+			stdout: structuredReviewOutput(t, ReviewReport{Reviewer: "auditor", Verdict: VerdictApproved}),
+		}
+		s := NewSpawner(spawner)
+
+		result := waitResult(t, s.Audit(context.Background(), AuditOpts{
+			Worktree: nonRepo,
+		}))
+
+		if result.Verdict != VerdictFailed || result.Err == nil {
+			t.Fatalf("Audit result = %+v, want failed verdict with manifest error", result)
+		}
+		if calls := spawner.getCalls(); len(calls) != 0 {
+			t.Fatalf("audit spawn calls = %d, want 0 after manifest failure", len(calls))
+		}
+	})
+
+	t.Run("context cancellation remains distinguishable", func(t *testing.T) {
+		repo := t.TempDir()
+		runGit(t, repo, "init", "-b", "main")
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		spawner := &recordingReviewSpawner{
+			stdout: structuredReviewOutput(t, ReviewReport{Reviewer: "auditor", Verdict: VerdictApproved}),
+		}
+		result := waitResult(t, NewSpawner(spawner).Audit(ctx, AuditOpts{Worktree: repo}))
+
+		if !errors.Is(result.Err, context.Canceled) {
+			t.Fatalf("Audit error = %v, want context.Canceled", result.Err)
+		}
+		if calls := spawner.getCalls(); len(calls) != 0 {
+			t.Fatalf("audit spawn calls = %d, want 0 after manifest cancellation", len(calls))
 		}
 	})
 }

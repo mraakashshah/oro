@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,10 +12,10 @@ import (
 )
 
 // buildRepoManifest records the full line range of every tracked file in worktree.
-func buildRepoManifest(ctx context.Context, worktree string) PromptManifest {
+func buildRepoManifest(ctx context.Context, worktree string) (PromptManifest, error) {
 	shown := make(map[string][][2]int)
 	if worktree == "" {
-		return PromptManifest{Shown: shown}
+		return PromptManifest{Shown: shown}, nil
 	}
 
 	cmd := exec.CommandContext(ctx, "git", "ls-files", "-z") //nolint:gosec // fixed git invocation
@@ -22,7 +23,10 @@ func buildRepoManifest(ctx context.Context, worktree string) PromptManifest {
 	cmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
 	out, err := cmd.Output()
 	if err != nil {
-		return PromptManifest{Shown: shown}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return PromptManifest{}, fmt.Errorf("build repo manifest: %w", ctxErr)
+		}
+		return PromptManifest{}, fmt.Errorf("list tracked files in %q: %w", worktree, err)
 	}
 
 	for _, path := range strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00") {
@@ -37,5 +41,5 @@ func buildRepoManifest(ctx context.Context, worktree string) PromptManifest {
 		shown[clean] = [][2]int{{1, lines}}
 	}
 
-	return PromptManifest{Shown: shown}
+	return PromptManifest{Shown: shown}, nil
 }

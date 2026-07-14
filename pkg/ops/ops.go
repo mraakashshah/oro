@@ -422,6 +422,17 @@ func (s *Spawner) Audit(ctx context.Context, opts AuditOpts) <-chan Result {
 	}
 	out := make(chan Result, 1)
 	go func() {
+		manifest, err := buildRepoManifest(ctx, opts.Worktree)
+		if err != nil {
+			out <- Result{
+				Type:     OpsAudit,
+				BeadID:   opts.BeadID,
+				Verdict:  VerdictFailed,
+				Feedback: err.Error(),
+				Err:      err,
+			}
+			return
+		}
 		reports := s.collectPersonaReviews(ctx, OpsAudit, reviewOpts, personas, prompt)
 		if allReviewReportsFailed(reports) {
 			out <- Result{
@@ -433,7 +444,7 @@ func (s *Spawner) Audit(ctx context.Context, opts AuditOpts) <-chan Result {
 			}
 			return
 		}
-		out <- mergeAuditReports(reports, buildRepoManifest(ctx, opts.Worktree), reviewOpts)
+		out <- mergeAuditReports(reports, manifest, reviewOpts)
 	}()
 	return out
 }
