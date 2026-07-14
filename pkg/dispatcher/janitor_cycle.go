@@ -227,10 +227,7 @@ func validateJanitorTriageFinding(
 	if finding.Origin != "pre_existing" {
 		return fmt.Errorf("origin must be pre_existing")
 	}
-	if err := validateJanitorTriageEvidence(finding, candidates, worktree); err != nil {
-		return err
-	}
-	return nil
+	return validateJanitorTriageEvidence(finding, candidates, worktree)
 }
 
 func validateJanitorTriageEvidence(finding ops.Finding, candidates []janitor.Candidate, worktree string) error {

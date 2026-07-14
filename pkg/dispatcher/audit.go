@@ -257,7 +257,7 @@ func normalizeAuditEvidencePath(path string) (string, error) {
 }
 
 func auditEvidenceFileHash(worktree, file string) (string, error) {
-	cmd := exec.Command("git", "hash-object", "--", file) //nolint:gosec // fixed git subcommand with a normalized relative path.
+	cmd := exec.CommandContext(context.Background(), "git", "hash-object", "--", file) //nolint:gosec // fixed git subcommand with a normalized relative path.
 	cmd.Dir = worktree
 	output, err := cmd.Output()
 	if err != nil {

@@ -183,11 +183,3 @@ func auditE2ERoleBead(ctx context.Context, t *testing.T, store beadstore.Store) 
 	t.Fatalf("audit role not found: %#v", roles)
 	return nil
 }
-
-func eventPayloadTitle(payload string) string {
-	var finding ops.Finding
-	if json.Unmarshal([]byte(payload), &finding) != nil {
-		return ""
-	}
-	return finding.Title
-}

@@ -71,14 +71,7 @@ func mergeReportsFor(resultType Type, reports []ReviewReport, m PromptManifest, 
 		}
 	}
 	survivors := gateFindings(merged)
-	feedbackPayload := reviewMergeFeedback{
-		Findings:        survivors,
-		CoveredSections: coveredSections,
-	}
-	if resultType == OpsAudit {
-		feedbackPayload.AllFindings = merged
-	}
-	feedback, err := json.Marshal(feedbackPayload)
+	feedback, err := marshalReviewMergeFeedback(resultType, survivors, merged, coveredSections)
 	if err != nil {
 		return Result{
 			Type:     resultType,
@@ -95,6 +88,25 @@ func mergeReportsFor(resultType Type, reports []ReviewReport, m PromptManifest, 
 		Verdict:  verdictForFindings(survivors),
 		Feedback: string(feedback),
 	}
+}
+
+func marshalReviewMergeFeedback(
+	resultType Type,
+	survivors, merged []Finding,
+	coveredSections *[]string,
+) ([]byte, error) {
+	feedbackPayload := reviewMergeFeedback{
+		Findings:        survivors,
+		CoveredSections: coveredSections,
+	}
+	if resultType == OpsAudit {
+		feedbackPayload.AllFindings = merged
+	}
+	feedback, err := json.Marshal(feedbackPayload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal review feedback: %w", err)
+	}
+	return feedback, nil
 }
 
 func coveredAuditSections(reports []ReviewReport) []string {
