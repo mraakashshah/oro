@@ -168,7 +168,9 @@ func (d *Dispatcher) autoRedeployablePreservedWorktrees(ctx context.Context) (ma
 SELECT bead_id, worktree, branch
 FROM recovery_quarantines
 WHERE status='open'
-  AND reason NOT IN ('merge_conflict_resolution_failed', 'branch_worktree_mismatch')`)
+  AND reason NOT IN ('merge_conflict_resolution_failed', 'branch_worktree_mismatch')
+  AND worktree IS NOT NULL AND worktree != ''
+  AND branch IS NOT NULL AND branch != ''`)
 	if err != nil {
 		return nil, fmt.Errorf("query auto-redeployable recovery quarantines: %w", err)
 	}
