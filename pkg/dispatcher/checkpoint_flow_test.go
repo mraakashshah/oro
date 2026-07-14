@@ -10,6 +10,8 @@ import (
 
 	"oro/pkg/beadstore"
 	"oro/pkg/protocol"
+
+	"github.com/google/uuid"
 )
 
 // captureJournalStore wraps fakeBeadStore and records AppendJourney/Journey calls.
@@ -124,6 +126,13 @@ func TestCheckpointFlow(t *testing.T) {
 		}
 		if req.CheckpointID == "" {
 			t.Fatal("checkpoint_requested event missing checkpoint_id")
+		}
+		parsedID, err := uuid.Parse(req.CheckpointID)
+		if err != nil {
+			t.Fatalf("checkpoint_requested checkpoint_id = %q, want RFC 9562 UUID: %v", req.CheckpointID, err)
+		}
+		if got := parsedID.Version(); got != uuid.Version(7) {
+			t.Fatalf("checkpoint_requested checkpoint_id version = %d, want 7", got)
 		}
 		cpID := req.CheckpointID
 
