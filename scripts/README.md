@@ -11,7 +11,7 @@ Run commands from the repository root unless noted otherwise.
 | `check-beadstore-shadow-monitor.sh` | Verify that a beadstore shadow-mode observation window has run for at least 24 hours. | `ORO_BEADSOURCE_MODE=shadow ORO_DB_PATH=/path/to/state.db scripts/check-beadstore-shadow-monitor.sh` |
 | `check_parity_docs.sh` | Check that Codex parity documentation retains required commands, paths, and terminology. | `scripts/check_parity_docs.sh` |
 | `install_test.sh` | Exercise platform detection, URL construction, and installation behavior in `install.sh`. | `scripts/install_test.sh` |
-| `nilaway_lint_wiring_test.sh` | Regression-test the Makefile and quality-gate wiring for blocking NilAway checks. | `scripts/nilaway_lint_wiring_test.sh` |
+| `nilaway_lint_wiring_test.sh` | Regression-test the Makefile and quality-gate wiring for blocking NilAway checks. | `bash scripts/nilaway_lint_wiring_test.sh` |
 | `quality_gate_test.sh` | Regression-test complete output capture from parallel quality-gate checks. | `scripts/quality_gate_test.sh` |
 | `run-edit-corpus.sh` | Run the focused edit-package corpus tests without the full repository gate. | `scripts/run-edit-corpus.sh` |
 | `test-quality-gate-parallel.sh` | Exercise concurrent quality-gate runs from isolated worktrees. | `scripts/test-quality-gate-parallel.sh` |
