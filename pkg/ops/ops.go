@@ -398,9 +398,7 @@ func (s *Spawner) collectPersonaReviews(ctx context.Context, opsType Type, opts 
 		for i, ch := range chans {
 			result := <-ch
 			report, _ := parseReviewReport(result.Feedback)
-			if report.Reviewer == "" {
-				report.Reviewer = personas[start+i].ID
-			}
+			report.Reviewer = personas[start+i].ID
 			if result.Err != nil || result.Verdict == VerdictFailed {
 				report.Verdict = VerdictFailed
 			}

@@ -107,3 +107,57 @@ func TestAuditAllUnparseableReportsFailClosed(t *testing.T) {
 		t.Fatalf("Audit verdict = %q, want failed for unparseable section reports; feedback=%s err=%v", result.Verdict, result.Feedback, result.Err)
 	}
 }
+
+func TestAuditCoverageUsesAssignedPersona(t *testing.T) {
+	t.Run("audit coverage ignores model reviewer values", func(t *testing.T) {
+		personas := auditSections()
+		spawner := &recordingReviewSpawner{outputs: []string{
+			structuredReviewOutput(t, ReviewReport{Reviewer: "tests-safety", Verdict: VerdictApproved}),
+			structuredReviewOutput(t, ReviewReport{Reviewer: "code-quality", Verdict: VerdictFailed}),
+			structuredReviewOutput(t, ReviewReport{Reviewer: "unknown-section", Verdict: VerdictApproved}),
+			structuredReviewOutput(t, ReviewReport{Reviewer: "code-quality", Verdict: VerdictApproved}),
+			structuredReviewOutput(t, ReviewReport{Reviewer: "", Verdict: VerdictApproved}),
+			structuredReviewOutput(t, ReviewReport{Reviewer: "tests-safety", Verdict: VerdictApproved}),
+		}}
+		s := NewSpawner(spawner)
+
+		reports := s.collectPersonaReviews(
+			context.Background(),
+			OpsAudit,
+			ReviewOpts{MaxReviewers: 1},
+			personas,
+			"audit prompt",
+		)
+
+		want := []string{"code-quality", "data-migrations", "security-static", "perf-patterns", "dx-deps-docs"}
+		if got := coveredAuditSections(reports); !reflect.DeepEqual(got, want) {
+			t.Fatalf("coveredAuditSections() = %#v, want assigned successful personas %#v", got, want)
+		}
+	})
+
+	t.Run("regular review attribution ignores model reviewer values", func(t *testing.T) {
+		personas := []Persona{
+			{ID: "correctness", Role: "ops_review_correctness"},
+			{ID: "security", Role: "ops_review_security"},
+		}
+		spawner := &recordingReviewSpawner{outputs: []string{
+			structuredReviewOutput(t, ReviewReport{Reviewer: "security", Verdict: VerdictApproved}),
+			structuredReviewOutput(t, ReviewReport{Reviewer: "", Verdict: VerdictApproved}),
+		}}
+		s := NewSpawner(spawner)
+
+		reports := s.collectPersonaReviews(
+			context.Background(),
+			OpsReview,
+			ReviewOpts{MaxReviewers: 1},
+			personas,
+			"review prompt",
+		)
+
+		got := []string{reports[0].Reviewer, reports[1].Reviewer}
+		want := []string{"correctness", "security"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("reviewer attribution = %#v, want assigned personas %#v", got, want)
+		}
+	})
+}
