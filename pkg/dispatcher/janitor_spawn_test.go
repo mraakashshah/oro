@@ -89,7 +89,11 @@ printf '%s\n' 'skipped-detector-output'
 		var maximum atomic.Int32
 		hook := func(context.Context) {
 			current := active.Add(1)
-			for previous := maximum.Load(); current > previous && !maximum.CompareAndSwap(previous, current); previous = maximum.Load() {
+			for current > maximum.Load() {
+				previous := maximum.Load()
+				if current <= previous || maximum.CompareAndSwap(previous, current) {
+					break
+				}
 			}
 			entered <- struct{}{}
 			<-release

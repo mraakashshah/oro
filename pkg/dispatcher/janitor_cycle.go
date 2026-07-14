@@ -24,64 +24,7 @@ func (d *Dispatcher) runJanitor(ctx context.Context) error {
 	}
 
 	err = d.withScanWorktree(ctx, func(worktree string) error {
-		candidates, ran, skipped, scanErr := scanJanitorDetectors(ctx, worktree, d.cfg.DefaultBranch)
-		if scanErr != nil {
-			return fmt.Errorf("run janitor detectors: %w", scanErr)
-		}
-		roleBeadIDs, roleErr := d.cleanlinessRoleBeadIDs(ctx, roleBeadID)
-		if roleErr != nil {
-			return roleErr
-		}
-		suppressed, suppressionErr := d.deriveSuppressed(ctx, roleBeadIDs)
-		if suppressionErr != nil {
-			return suppressionErr
-		}
-		openTitles, titlesErr := d.janitorOpenTitles(ctx)
-		if titlesErr != nil {
-			return titlesErr
-		}
-
-		resultCh := d.ops.Janitor(ctx, ops.JanitorOpts{
-			Candidates: candidates,
-			Suppressed: suppressed,
-			OpenTitles: openTitles,
-			Worktree:   worktree,
-		})
-		var result ops.Result
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("wait for janitor triage: %w", ctx.Err())
-		case result = <-resultCh:
-		}
-		if result.Err != nil {
-			return fmt.Errorf("run janitor triage: %w", result.Err)
-		}
-		if result.Verdict == ops.VerdictFailed {
-			return fmt.Errorf("run janitor triage: %s", strings.TrimSpace(result.Feedback))
-		}
-		findings, parseErr := parseJanitorTriage(result.Feedback, candidates)
-		if parseErr != nil {
-			return parseErr
-		}
-		for i := range findings {
-			if findingSuppressed(findings[i], suppressed) {
-				findings[i].Status = "wont-fix"
-			}
-		}
-		feedback, marshalErr := json.Marshal(janitorResultPayload{
-			Findings:     findings,
-			RanDetectors: ran,
-			Skipped:      skipped,
-		})
-		if marshalErr != nil {
-			return fmt.Errorf("marshal janitor findings: %w", marshalErr)
-		}
-		d.handleJanitorResult(ctx, ops.Result{
-			Type:     ops.OpsJanitor,
-			BeadID:   roleBeadID,
-			Feedback: string(feedback),
-		})
-		return nil
+		return d.runJanitorInWorktree(ctx, roleBeadID, worktree)
 	})
 	if err == nil {
 		return nil
@@ -91,6 +34,86 @@ func (d *Dispatcher) runJanitor(ctx context.Context) error {
 		"error": err.Error(),
 	})
 	return err
+}
+
+func (d *Dispatcher) runJanitorInWorktree(ctx context.Context, roleBeadID, worktree string) error {
+	candidates, ran, skipped, err := scanJanitorDetectors(ctx, worktree, d.cfg.DefaultBranch)
+	if err != nil {
+		return fmt.Errorf("run janitor detectors: %w", err)
+	}
+	suppressed, err := d.janitorSuppressedFindings(ctx, roleBeadID)
+	if err != nil {
+		return err
+	}
+	openTitles, err := d.janitorOpenTitles(ctx)
+	if err != nil {
+		return err
+	}
+	result, err := d.waitJanitorTriage(ctx, ops.JanitorOpts{
+		Candidates: candidates,
+		Suppressed: suppressed,
+		OpenTitles: openTitles,
+		Worktree:   worktree,
+	})
+	if err != nil {
+		return err
+	}
+	return d.fileJanitorTriage(ctx, roleBeadID, result.Feedback, candidates, suppressed, ran, skipped)
+}
+
+func (d *Dispatcher) janitorSuppressedFindings(ctx context.Context, roleBeadID string) ([]ops.Finding, error) {
+	roleBeadIDs, err := d.cleanlinessRoleBeadIDs(ctx, roleBeadID)
+	if err != nil {
+		return nil, err
+	}
+	return d.deriveSuppressed(ctx, roleBeadIDs)
+}
+
+func (d *Dispatcher) waitJanitorTriage(ctx context.Context, opts ops.JanitorOpts) (ops.Result, error) {
+	select {
+	case <-ctx.Done():
+		return ops.Result{}, fmt.Errorf("wait for janitor triage: %w", ctx.Err())
+	case result := <-d.ops.Janitor(ctx, opts):
+		if result.Err != nil {
+			return ops.Result{}, fmt.Errorf("run janitor triage: %w", result.Err)
+		}
+		if result.Verdict == ops.VerdictFailed {
+			return ops.Result{}, fmt.Errorf("run janitor triage: %s", strings.TrimSpace(result.Feedback))
+		}
+		return result, nil
+	}
+}
+
+func (d *Dispatcher) fileJanitorTriage(
+	ctx context.Context,
+	roleBeadID, feedback string,
+	candidates []janitor.Candidate,
+	suppressed []ops.Finding,
+	ran, skipped []string,
+) error {
+	findings, err := parseJanitorTriage(feedback, candidates)
+	if err != nil {
+		return err
+	}
+	for i := range findings {
+		if findingSuppressed(findings[i], suppressed) {
+			findings[i].Status = "wont-fix"
+		}
+	}
+	payload, err := json.Marshal(janitorResultPayload{
+		Findings:     findings,
+		RanDetectors: ran,
+		Skipped:      skipped,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal janitor findings: %w", err)
+	}
+	d.handleJanitorResult(ctx, ops.Result{
+		Type:     ops.OpsJanitor,
+		BeadID:   roleBeadID,
+		Feedback: string(payload),
+	})
+	return nil
 }
 
 func scanJanitorDetectors(ctx context.Context, worktree, targetBranch string) (candidates []janitor.Candidate, ran, skipped []string, err error) {
