@@ -13,6 +13,62 @@ import (
 	"oro/pkg/protocol"
 )
 
+func TestJanitorFindingAcceptanceSource(t *testing.T) {
+	finding := ops.Finding{
+		ID:       "fnd_source",
+		Severity: ops.SevMinor,
+		Title:    "source-aware finding",
+		Detail:   "detector-backed cleanup",
+		Sources:  []string{"todo", "todo", "missing-tool"},
+	}
+
+	fileAcceptance := func(t *testing.T, projectScript bool) string {
+		t.Helper()
+		d, store, _, _, _, _ := newTestDispatcher(t)
+		feedback, err := json.Marshal(struct {
+			Findings      []ops.Finding `json:"findings"`
+			RanDetectors  []string      `json:"ran_detectors"`
+			ProjectScript bool          `json:"project_script"`
+		}{
+			Findings:      []ops.Finding{finding},
+			RanDetectors:  []string{"todo"},
+			ProjectScript: projectScript,
+		})
+		if err != nil {
+			t.Fatalf("marshal janitor result: %v", err)
+		}
+		d.handleJanitorResult(t.Context(), ops.Result{
+			Type: ops.OpsJanitor, BeadID: "oro-janitor-role", Feedback: string(feedback),
+		})
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		if len(store.created) != 1 {
+			t.Fatalf("created beads = %d, want 1", len(store.created))
+		}
+		return store.created[0].acceptanceCriteria
+	}
+
+	t.Run("project detector script is rerunnable", func(t *testing.T) {
+		acceptance := fileAcceptance(t, true)
+		if got := strings.Count(acceptance, "./scripts/janitor_detect.sh --detector todo"); got != 1 {
+			t.Fatalf("project acceptance detector commands = %d, want 1: %q", got, acceptance)
+		}
+		if !strings.Contains(acceptance, "./scripts/quality_gate.sh") {
+			t.Fatalf("project acceptance missing quality gate: %q", acceptance)
+		}
+	})
+
+	t.Run("built-in fallback never references the absent script", func(t *testing.T) {
+		acceptance := fileAcceptance(t, false)
+		if strings.Contains(acceptance, "scripts/janitor_detect.sh") {
+			t.Fatalf("fallback acceptance references absent detector script: %q", acceptance)
+		}
+		if !strings.Contains(acceptance, "Cmd: ./scripts/quality_gate.sh") {
+			t.Fatalf("fallback acceptance missing executable quality gate: %q", acceptance)
+		}
+	})
+}
+
 func TestJanitorTopKConfig(t *testing.T) {
 	const roleBeadID = "oro-janitor-role"
 	findings := []ops.Finding{

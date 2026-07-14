@@ -65,8 +65,11 @@ func TestJanitorCycleEndToEnd(t *testing.T) {
 	if first.Metadata[janitorFindingMetadataKey] == "" {
 		t.Fatalf("filed finding metadata = %#v, want meta_finding_id", first.Metadata)
 	}
-	if !strings.Contains(first.AcceptanceCriteria, "--detector todo") {
-		t.Fatalf("acceptance = %q, want todo detector re-run", first.AcceptanceCriteria)
+	if strings.Contains(first.AcceptanceCriteria, "scripts/janitor_detect.sh") {
+		t.Fatalf("acceptance = %q, must not reference absent project detector script", first.AcceptanceCriteria)
+	}
+	if !strings.Contains(first.AcceptanceCriteria, "Cmd: ./scripts/quality_gate.sh") {
+		t.Fatalf("acceptance = %q, want executable fallback quality gate", first.AcceptanceCriteria)
 	}
 	if strings.Contains(first.AcceptanceCriteria, "deadcode") {
 		t.Fatalf("acceptance = %q, must not embed skipped deadcode detector", first.AcceptanceCriteria)

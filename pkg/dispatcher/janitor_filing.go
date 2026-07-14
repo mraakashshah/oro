@@ -19,9 +19,10 @@ const (
 )
 
 type janitorResultPayload struct {
-	Findings     []ops.Finding `json:"findings"`
-	RanDetectors []string      `json:"ran_detectors"`
-	Skipped      []string      `json:"skipped"`
+	Findings      []ops.Finding `json:"findings"`
+	RanDetectors  []string      `json:"ran_detectors"`
+	Skipped       []string      `json:"skipped"`
+	ProjectScript bool          `json:"project_script"`
 }
 
 // handleJanitorResult files the highest-severity findings from one janitor
@@ -52,7 +53,8 @@ func (d *Dispatcher) handleJanitorResult(ctx context.Context, result ops.Result)
 
 	filed := janitorTopFindingsBySeverity(eligible, d.cfg.JanitorTopK)
 	for _, finding := range filed {
-		if _, createErr := d.beads.Create(ctx, janitorFindingCreateParams(finding, payload.RanDetectors)); createErr != nil {
+		params := janitorFindingCreateParams(finding, payload.RanDetectors, payload.ProjectScript)
+		if _, createErr := d.beads.Create(ctx, params); createErr != nil {
 			_ = d.logEvent(ctx, "janitor_finding_create_failed", janitorRoleActor, result.BeadID, "", createErr.Error())
 		}
 	}
@@ -149,13 +151,13 @@ func janitorTopFindingsBySeverity(findings []ops.Finding, limit int) []ops.Findi
 	return ordered
 }
 
-func janitorFindingCreateParams(finding ops.Finding, ranDetectors []string) beadstore.CreateParams {
+func janitorFindingCreateParams(finding ops.Finding, ranDetectors []string, projectScript bool) beadstore.CreateParams {
 	return beadstore.CreateParams{
 		Title:              finding.Title,
 		Type:               "task",
 		Priority:           2,
 		Description:        janitorFindingDescription(finding),
-		AcceptanceCriteria: janitorFindingAcceptance(finding, ranDetectors),
+		AcceptanceCriteria: janitorFindingAcceptance(finding, ranDetectors, projectScript),
 		Metadata:           map[string]string{janitorFindingMetadataKey: finding.ID},
 	}
 }
@@ -166,19 +168,21 @@ func janitorFindingDescription(finding ops.Finding) string {
 Suppression contract: close with a reason beginning "wont-fix:" to mark this finding intentional and prevent refiling. The first close reason is immutable; reopen this bead before closing again to change that reason.`, finding.Detail))
 }
 
-func janitorFindingAcceptance(finding ops.Finding, ranDetectors []string) string {
+func janitorFindingAcceptance(finding ops.Finding, ranDetectors []string, projectScript bool) string {
 	ran := make(map[string]bool, len(ranDetectors))
 	for _, detector := range ranDetectors {
 		ran[detector] = true
 	}
 	var commands []string
-	for _, detector := range finding.Sources {
-		if ran[detector] {
-			commands = append(commands, fmt.Sprintf("./scripts/janitor_detect.sh --detector %s", detector))
+	if projectScript {
+		for _, detector := range finding.Sources {
+			if ran[detector] {
+				commands = append(commands, fmt.Sprintf("./scripts/janitor_detect.sh --detector %s", detector))
+			}
 		}
 	}
 	commands = append(commands, "./scripts/quality_gate.sh")
-	return fmt.Sprintf("Test: janitor finding %s\nCmd: %s\nAssert: detector finding is gone and the quality gate passes", finding.ID, strings.Join(uniqueStrings(commands), " && "))
+	return fmt.Sprintf("Test: janitor finding %s\nCmd: %s\nAssert: finding is gone and the quality gate passes", finding.ID, strings.Join(uniqueStrings(commands), " && "))
 }
 
 func janitorSeverityRank(severity ops.Severity) int {

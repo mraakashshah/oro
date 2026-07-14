@@ -37,7 +37,7 @@ func (d *Dispatcher) runJanitor(ctx context.Context) error {
 }
 
 func (d *Dispatcher) runJanitorInWorktree(ctx context.Context, roleBeadID, worktree string) error {
-	candidates, ran, skipped, err := scanJanitorDetectors(ctx, worktree, d.cfg.DefaultBranch)
+	candidates, ran, skipped, projectScript, err := scanJanitorDetectors(ctx, worktree, d.cfg.DefaultBranch)
 	if err != nil {
 		return fmt.Errorf("run janitor detectors: %w", err)
 	}
@@ -58,7 +58,7 @@ func (d *Dispatcher) runJanitorInWorktree(ctx context.Context, roleBeadID, workt
 	if err != nil {
 		return err
 	}
-	return d.fileJanitorTriage(ctx, roleBeadID, result.Feedback, candidates, suppressed, ran, skipped)
+	return d.fileJanitorTriage(ctx, roleBeadID, result.Feedback, candidates, suppressed, ran, skipped, projectScript)
 }
 
 func (d *Dispatcher) janitorSuppressedFindings(ctx context.Context, roleBeadID string) ([]ops.Finding, error) {
@@ -90,6 +90,7 @@ func (d *Dispatcher) fileJanitorTriage(
 	candidates []janitor.Candidate,
 	suppressed []ops.Finding,
 	ran, skipped []string,
+	projectScript bool,
 ) error {
 	findings, err := parseJanitorTriage(feedback, candidates)
 	if err != nil {
@@ -101,9 +102,10 @@ func (d *Dispatcher) fileJanitorTriage(
 		}
 	}
 	payload, err := json.Marshal(janitorResultPayload{
-		Findings:     findings,
-		RanDetectors: ran,
-		Skipped:      skipped,
+		Findings:      findings,
+		RanDetectors:  ran,
+		Skipped:       skipped,
+		ProjectScript: projectScript,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal janitor findings: %w", err)
@@ -116,23 +118,28 @@ func (d *Dispatcher) fileJanitorTriage(
 	return nil
 }
 
-func scanJanitorDetectors(ctx context.Context, worktree, targetBranch string) (candidates []janitor.Candidate, ran, skipped []string, err error) {
+func scanJanitorDetectors(ctx context.Context, worktree, targetBranch string) (
+	candidates []janitor.Candidate,
+	ran, skipped []string,
+	projectScript bool,
+	err error,
+) {
 	candidates, skippedLines, found, err := janitor.RunDetectScript(ctx, worktree)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("run detector script: %w", err)
+		return nil, nil, nil, false, fmt.Errorf("run detector script: %w", err)
 	}
 	if !found {
 		candidates, ran, skipped, err = janitor.RunBuiltins(ctx, worktree, targetBranch)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("run built-in detectors: %w", err)
+			return nil, nil, nil, false, fmt.Errorf("run built-in detectors: %w", err)
 		}
-		return candidates, ran, skipped, nil
+		return candidates, ran, skipped, false, nil
 	}
 	ran = make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
 		ran = append(ran, candidate.Detector)
 	}
-	return candidates, uniqueStrings(ran), skippedLines, nil
+	return candidates, uniqueStrings(ran), skippedLines, true, nil
 }
 
 func (d *Dispatcher) janitorOpenTitles(ctx context.Context) ([]string, error) {
