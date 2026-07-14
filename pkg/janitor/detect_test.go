@@ -713,6 +713,26 @@ func RetryOperation[T any](fn func()) {}
 	}
 }
 
+func TestScriptCatalogUsesInterpreterForNonExecutableShellScript(t *testing.T) {
+	const scriptPath = "scripts/nilaway_lint_wiring_test.sh"
+	repositoryRoot := filepath.Join("..", "..")
+	info, err := os.Stat(filepath.Join(repositoryRoot, filepath.FromSlash(scriptPath)))
+	if err != nil {
+		t.Fatalf("stat %s: %v", scriptPath, err)
+	}
+	if info.Mode().Perm()&0o111 != 0 {
+		return
+	}
+
+	catalog, err := os.ReadFile(filepath.Join(repositoryRoot, "scripts", "README.md"))
+	if err != nil {
+		t.Fatalf("read script catalog: %v", err)
+	}
+	if !strings.Contains(string(catalog), "`bash "+scriptPath+"`") {
+		t.Fatalf("non-executable %s must be invoked through bash in scripts/README.md", scriptPath)
+	}
+}
+
 func contains(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
