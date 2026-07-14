@@ -815,8 +815,7 @@ func newStartCmd() *cobra.Command {
 			if noWeb {
 				webEnabled = false
 			}
-			// When --max-workers is unset (0), default to --workers so the
-			// ceiling equals the initial target (backward-compatible behaviour).
+			// Default an unset --max-workers ceiling to --workers for backward compatibility.
 			if maxWorkers == 0 {
 				maxWorkers = workers
 			}
@@ -847,12 +846,16 @@ func newStartCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&manualIntegration, "manual-integration", false, "leave completed worker branches for manual review instead of auto-merging")
 	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "base branch for worktree creation (default: main)")
 	cmd.Flags().BoolVar(&mutationTesting, "mutation-testing", false, "run mutation-testing tiers in dispatcher quality gates (off by default)")
-	cmd.Flags().BoolVar(&webEnabled, "web", true, "enable HTTP server for dashboard/health endpoints")
-	cmd.Flags().BoolVar(&noWeb, "no-web", false, "disable HTTP server for headless/CI use")
-	cmd.Flags().StringVar(&webAddr, "web-addr", "", "HTTP server listen address (default 127.0.0.1:4444)")
+	registerWebStartFlags(cmd, &webEnabled, &noWeb, &webAddr)
 	registerCleanlinessStartFlags(cmd, &cleanliness)
 
 	return cmd
+}
+
+func registerWebStartFlags(cmd *cobra.Command, webEnabled, noWeb *bool, webAddr *string) {
+	cmd.Flags().BoolVar(webEnabled, "web", true, "enable HTTP server for dashboard/health endpoints")
+	cmd.Flags().BoolVar(noWeb, "no-web", false, "disable HTTP server for headless/CI use")
+	cmd.Flags().StringVar(webAddr, "web-addr", "", "HTTP server listen address (default 127.0.0.1:4444)")
 }
 
 func registerCleanlinessStartFlags(cmd *cobra.Command, cleanliness *cleanlinessStartConfig) {
