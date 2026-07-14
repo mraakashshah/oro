@@ -196,6 +196,90 @@ func TestAuditFindingAcceptanceEvidence(t *testing.T) {
 	assertAuditAcceptanceRejectsUnsafeEvidence(t, worktree)
 }
 
+func TestAuditPersistsBelowGateFindings(t *testing.T) {
+	t.Run("all validated findings persist but only survivors file", func(t *testing.T) {
+		d, store, _, _, _, _ := newTestDispatcher(t)
+		survivor := ops.Finding{
+			ID: "survivor", Severity: ops.SevImportant, Title: "survivor", Detail: "survivor detail",
+			Evidence: auditQuotedEvidence("survivor"),
+		}
+		belowGate := ops.Finding{
+			ID: "below", Severity: ops.SevMinor, Title: "below gate", Detail: "below detail",
+			Evidence: auditQuotedEvidence("below"), Status: "below_gate",
+		}
+		feedback, err := json.Marshal(auditResultPayload{
+			Findings: []ops.Finding{survivor}, AllFindings: []ops.Finding{survivor, belowGate, belowGate},
+		})
+		if err != nil {
+			t.Fatalf("marshal audit result: %v", err)
+		}
+
+		d.handleAuditResult(t.Context(), ops.Result{Type: ops.OpsAudit, BeadID: "oro-audit-role", Feedback: string(feedback)})
+
+		assertAuditFindingPersistence(t, store, map[string]string{"survivor": "", "below": "below_gate"}, []string{"survivor"})
+	})
+
+	t.Run("missing all findings falls back to survivors", func(t *testing.T) {
+		d, store, _, _, _, _ := newTestDispatcher(t)
+		survivor := ops.Finding{
+			ID: "legacy", Severity: ops.SevImportant, Title: "legacy survivor", Detail: "legacy detail",
+			Evidence: auditQuotedEvidence("legacy"),
+		}
+		feedback, err := json.Marshal(auditResultPayload{Findings: []ops.Finding{survivor}})
+		if err != nil {
+			t.Fatalf("marshal legacy audit result: %v", err)
+		}
+
+		d.handleAuditResult(t.Context(), ops.Result{Type: ops.OpsAudit, BeadID: "oro-audit-role", Feedback: string(feedback)})
+
+		assertAuditFindingPersistence(t, store, map[string]string{"legacy": ""}, []string{"legacy survivor"})
+	})
+}
+
+func assertAuditFindingPersistence(t *testing.T, store *fakeBeadStore, wantStatuses map[string]string, wantCreated []string) {
+	t.Helper()
+	store.mu.Lock()
+	journey := append([]beadstore.JourneyEvent(nil), store.journeys["oro-audit-role"]...)
+	created := append([]createCall(nil), store.created...)
+	store.mu.Unlock()
+	gotStatuses := make(map[string]string)
+	for _, event := range journey {
+		if event.Actor != auditRoleActor || event.Event != "audit_finding" {
+			continue
+		}
+		var finding ops.Finding
+		if err := json.Unmarshal([]byte(event.Payload), &finding); err != nil {
+			t.Fatalf("parse persisted finding: %v", err)
+		}
+		if _, duplicate := gotStatuses[finding.ID]; duplicate {
+			t.Fatalf("finding %q persisted more than once: %#v", finding.ID, journey)
+		}
+		gotStatuses[finding.ID] = finding.Status
+	}
+	if !mapsEqual(gotStatuses, wantStatuses) {
+		t.Fatalf("persisted statuses = %#v, want %#v", gotStatuses, wantStatuses)
+	}
+	gotCreated := make([]string, 0, len(created))
+	for _, call := range created {
+		gotCreated = append(gotCreated, call.title)
+	}
+	if !slices.Equal(gotCreated, wantCreated) {
+		t.Fatalf("created findings = %#v, want survivors %#v", gotCreated, wantCreated)
+	}
+}
+
+func mapsEqual[K, V comparable](left, right map[K]V) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		if right[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
 func auditAcceptanceFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()

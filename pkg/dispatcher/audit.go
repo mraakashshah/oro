@@ -71,7 +71,7 @@ func (d *Dispatcher) handleAuditResultInWorktree(ctx context.Context, result ops
 		_ = d.logEvent(ctx, "audit_suppression_failed", auditRoleActor, result.BeadID, "", err.Error())
 		return
 	}
-	d.fileAuditFindingsInWorktree(ctx, result.BeadID, payload.Findings, active, suppressed, worktree)
+	d.fileAuditFindingsInWorktree(ctx, result.BeadID, payload.AllFindings, payload.Findings, active, suppressed, worktree)
 
 	coveragePayload, err := auditCoveragePayload(payload.CoveredSections)
 	if err != nil {
@@ -90,23 +90,33 @@ func (d *Dispatcher) fileAuditFindings(
 	roleBeadID string,
 	findings, active, suppressed []ops.Finding,
 ) {
-	d.fileAuditFindingsInWorktree(ctx, roleBeadID, findings, active, suppressed, d.repoRoot)
+	d.fileAuditFindingsInWorktree(ctx, roleBeadID, findings, findings, active, suppressed, d.repoRoot)
 }
 
 func (d *Dispatcher) fileAuditFindingsInWorktree(
 	ctx context.Context,
 	roleBeadID string,
-	findings, active, suppressed []ops.Finding,
+	allFindings, survivors, active, suppressed []ops.Finding,
 	worktree string,
 ) {
-	for _, finding := range findings {
-		if finding.ID == "" {
+	persisted := make(map[string]bool, len(allFindings))
+	for _, finding := range allFindings {
+		if finding.ID == "" || persisted[finding.ID] {
 			continue
 		}
 		if err := d.appendAuditFinding(ctx, roleBeadID, finding); err != nil {
 			_ = d.logEvent(ctx, "audit_finding_persist_failed", auditRoleActor, roleBeadID, "", err.Error())
 			continue
 		}
+		persisted[finding.ID] = true
+	}
+
+	filed := make(map[string]bool, len(survivors))
+	for _, finding := range survivors {
+		if finding.ID == "" || filed[finding.ID] || !persisted[finding.ID] {
+			continue
+		}
+		filed[finding.ID] = true
 		if findingSuppressed(finding, active) || findingSuppressed(finding, suppressed) {
 			continue
 		}
@@ -125,6 +135,7 @@ func (d *Dispatcher) fileAuditFindingsInWorktree(
 
 type auditResultPayload struct {
 	Findings        []ops.Finding `json:"findings"`
+	AllFindings     []ops.Finding `json:"all_findings,omitempty"`
 	CoveredSections []string      `json:"covered_sections"`
 }
 
@@ -132,6 +143,9 @@ func parseAuditResult(feedback string) (auditResultPayload, error) {
 	var payload auditResultPayload
 	if err := json.Unmarshal([]byte(feedback), &payload); err != nil {
 		return auditResultPayload{}, fmt.Errorf("parse audit findings: %w", err)
+	}
+	if payload.AllFindings == nil {
+		payload.AllFindings = append([]ops.Finding(nil), payload.Findings...)
 	}
 	return payload, nil
 }

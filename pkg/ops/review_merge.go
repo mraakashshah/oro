@@ -15,6 +15,7 @@ const cheapGateScore = 45
 
 type reviewMergeFeedback struct {
 	Findings        []Finding `json:"findings"`
+	AllFindings     []Finding `json:"all_findings,omitempty"`
 	CoveredSections *[]string `json:"covered_sections,omitempty"`
 }
 
@@ -70,10 +71,14 @@ func mergeReportsFor(resultType Type, reports []ReviewReport, m PromptManifest, 
 		}
 	}
 	survivors := gateFindings(merged)
-	feedback, err := json.Marshal(reviewMergeFeedback{
+	feedbackPayload := reviewMergeFeedback{
 		Findings:        survivors,
 		CoveredSections: coveredSections,
-	})
+	}
+	if resultType == OpsAudit {
+		feedbackPayload.AllFindings = merged
+	}
+	feedback, err := json.Marshal(feedbackPayload)
 	if err != nil {
 		return Result{
 			Type:     resultType,
@@ -278,13 +283,16 @@ func promoteFindings(findings []Finding) {
 
 func gateFindings(findings []Finding) []Finding {
 	survivors := make([]Finding, 0, len(findings))
-	for _, finding := range findings {
-		if !findingBlocksGate(finding) {
+	for i := range findings {
+		finding := &findings[i]
+		if !findingBlocksGate(*finding) {
 			continue
 		}
 		if finding.Confidence >= 75 || finding.Severity == SevCritical && finding.Confidence >= 50 {
-			survivors = append(survivors, finding)
+			survivors = append(survivors, *finding)
+			continue
 		}
+		finding.Status = "below_gate"
 	}
 	return survivors
 }

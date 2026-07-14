@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -87,12 +86,24 @@ func TestAuditCycleEndToEnd(t *testing.T) {
 		t.Fatalf("audit role journey: %v", err)
 	}
 	assertAuditCoverageJourney(t, journey)
-	if slices.ContainsFunc(journey, func(event beadstore.JourneyEvent) bool {
-		return event.Event == "audit_finding" &&
-			(eventPayloadTitle(event.Payload) == "below gate finding" ||
-				eventPayloadTitle(event.Payload) == "invalid manifest finding")
-	}) {
-		t.Fatalf("audit journey persisted a finding rejected by manifest validation or gate: %#v", journey)
+	belowGatePersisted := false
+	for _, event := range journey {
+		if event.Event != "audit_finding" {
+			continue
+		}
+		var finding ops.Finding
+		if err := json.Unmarshal([]byte(event.Payload), &finding); err != nil {
+			t.Fatalf("parse audit finding journey: %v", err)
+		}
+		if finding.Title == "invalid manifest finding" {
+			t.Fatalf("audit journey persisted a manifest-invalid finding: %#v", journey)
+		}
+		if finding.Title == "below gate finding" && finding.Status == "below_gate" {
+			belowGatePersisted = true
+		}
+	}
+	if !belowGatePersisted {
+		t.Fatalf("audit journey omitted the validated below-gate finding: %#v", journey)
 	}
 
 	d.mu.Lock()

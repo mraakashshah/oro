@@ -47,6 +47,42 @@ func TestMergeAuditReportsCoverage(t *testing.T) {
 	}
 }
 
+func TestAuditMergeAllFindings(t *testing.T) {
+	survivor := reviewMergeFinding("pkg/ops/finding.go", 10, "survivor", SevImportant, 80, "code-quality")
+	belowGate := reviewMergeFinding("pkg/ops/finding.go", 30, "below gate", SevMinor, 40, "code-quality")
+	invalid := reviewMergeFinding("missing.go", 1, "invalid", SevCritical, 100, "code-quality")
+	reports := []ReviewReport{{
+		Reviewer: "code-quality", Verdict: VerdictRejected, Findings: []Finding{survivor, belowGate, invalid},
+	}}
+
+	result := mergeAuditReports(reports, reviewMergeManifest(), ReviewOpts{BeadID: "oro-audit"})
+	var feedback struct {
+		Findings    []Finding `json:"findings"`
+		AllFindings []Finding `json:"all_findings"`
+	}
+	if err := json.Unmarshal([]byte(result.Feedback), &feedback); err != nil {
+		t.Fatalf("parse audit feedback: %v\n%s", err, result.Feedback)
+	}
+	if got, want := reviewMergeTitles(feedback.Findings), []string{"survivor"}; !equalStrings(got, want) {
+		t.Fatalf("survivors = %#v, want %#v", got, want)
+	}
+	if got, want := reviewMergeTitles(feedback.AllFindings), []string{"survivor", "below gate"}; !equalStrings(got, want) {
+		t.Fatalf("all findings = %#v, want validated findings %#v", got, want)
+	}
+	if feedback.AllFindings[1].Status != "below_gate" {
+		t.Fatalf("below-gate status = %q, want below_gate", feedback.AllFindings[1].Status)
+	}
+
+	normal := mergeReports(reports, reviewMergeManifest(), ReviewOpts{BeadID: "oro-review"})
+	var normalFeedback map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(normal.Feedback), &normalFeedback); err != nil {
+		t.Fatalf("parse normal feedback: %v", err)
+	}
+	if _, ok := normalFeedback["all_findings"]; ok {
+		t.Fatalf("normal review feedback gained all_findings: %s", normal.Feedback)
+	}
+}
+
 func TestDedupAndUnionSources(t *testing.T) {
 	reports := []ReviewReport{
 		{
