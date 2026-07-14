@@ -161,3 +161,85 @@ func TestAuditCoverageUsesAssignedPersona(t *testing.T) {
 		}
 	})
 }
+
+func TestAuditFindingSourcesUseAssignedPersona(t *testing.T) {
+	t.Run("untrusted model sources cannot promote one persona", func(t *testing.T) {
+		testCases := []struct {
+			name    string
+			sources []string
+		}{
+			{name: "empty"},
+			{name: "spoofed", sources: []string{"tests-safety"}},
+			{name: "duplicate", sources: []string{"code-quality", "code-quality"}},
+			{name: "unknown", sources: []string{"unknown-section"}},
+		}
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				reports := collectSourceReports(t, OpsAudit, []Persona{{
+					ID: "code-quality", Role: "ops_audit_code_quality",
+				}}, []Finding{auditSourceFinding(tc.sources)})
+
+				if got, want := reports[0].Findings[0].Sources, []string{"code-quality"}; !reflect.DeepEqual(got, want) {
+					t.Fatalf("finding sources = %#v, want assigned persona %#v", got, want)
+				}
+				merged := []Finding{mergeFindingGroup(flattenReviewReports(reports), "oro-source-binding")}
+				promoteFindings(merged)
+				if merged[0].Confidence != 50 || len(gateFindings(merged)) != 0 {
+					t.Fatalf("one assigned persona manufactured promotion: %#v", merged[0])
+				}
+			})
+		}
+	})
+
+	t.Run("independent assigned personas still union after merge", func(t *testing.T) {
+		personas := []Persona{
+			{ID: "code-quality", Role: "ops_audit_code_quality"},
+			{ID: "tests-safety", Role: "ops_audit_tests_safety"},
+		}
+		reports := collectSourceReports(t, OpsAudit, personas, []Finding{
+			auditSourceFinding([]string{"model-spoof"}),
+			auditSourceFinding([]string{"model-spoof"}),
+		})
+
+		group := flattenReviewReports(reports)
+		merged := []Finding{mergeFindingGroup(group, "oro-source-binding")}
+		promoteFindings(merged)
+		if got, want := merged[0].Sources, []string{"code-quality", "tests-safety"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("merged sources = %#v, want independent personas %#v", got, want)
+		}
+		if merged[0].Confidence != 75 || len(gateFindings(merged)) != 1 {
+			t.Fatalf("independent persona corroboration was not promoted: %#v", merged[0])
+		}
+	})
+
+	t.Run("regular review uses the same assigned persona boundary", func(t *testing.T) {
+		reports := collectSourceReports(t, OpsReview, []Persona{{
+			ID: "correctness", Role: "ops_review_correctness",
+		}}, []Finding{auditSourceFinding([]string{"security", "unknown"})})
+
+		if got, want := reports[0].Findings[0].Sources, []string{"correctness"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("regular review sources = %#v, want assigned persona %#v", got, want)
+		}
+	})
+}
+
+func collectSourceReports(t *testing.T, opsType Type, personas []Persona, findings []Finding) []ReviewReport {
+	t.Helper()
+	outputs := make([]string, 0, len(findings))
+	for _, finding := range findings {
+		outputs = append(outputs, structuredReviewOutput(t, ReviewReport{
+			Reviewer: "model-claimed-reviewer",
+			Verdict:  VerdictRejected,
+			Findings: []Finding{finding},
+		}))
+	}
+	return NewSpawner(&recordingReviewSpawner{outputs: outputs}).collectPersonaReviews(
+		context.Background(), opsType, ReviewOpts{MaxReviewers: 1}, personas, "prompt",
+	)
+}
+
+func auditSourceFinding(sources []string) Finding {
+	finding := reviewMergeFinding("pkg/ops/finding.go", 10, "source integrity", SevImportant, 50, "model")
+	finding.Sources = sources
+	return finding
+}
