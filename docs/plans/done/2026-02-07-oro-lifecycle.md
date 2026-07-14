@@ -4,7 +4,7 @@
 
 > How Oro runs, end-to-end. The authoritative overview of all roles, capabilities, and behaviors.
 >
-> **Detail docs:** [Manager Redesign (archived)](../../archive/2026-02-07-manager-redesign.md) · [IPC Comparison (archived)](../../archive/2026-02-07-orchestrator-ipc-comparison.md) · [Memory System](2026-02-07-memory-system-spec.md)
+> **Detail docs:** Historical Manager Redesign (not retained) · Historical IPC Comparison (not retained) · [Memory System](2026-02-07-memory-system-spec.md)
 > **Authoritative spec:** [Architecture Spec](2026-02-08-oro-architecture-spec.md) — resolves all open questions and supersedes detail docs above.
 
 ## What Oro Is

@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-22
 **Plan:** [2026-04-22-deep-forensic-audit-remediation-plan.md](./2026-04-22-deep-forensic-audit-remediation-plan.md)
-**Audit:** [../audits/2026-04-22-deep-forensic-audit-replacement.md](../audits/2026-04-22-deep-forensic-audit-replacement.md)
+**Audit:** Historical source: `archive/audits/2026-04-22-deep-forensic-audit-replacement.md` (not retained)
 **Epic Slug:** `forensic-audit-remediation`
 **Intent:** Decompose the forensic remediation plan into executable Oro beads with explicit dependencies, acceptance criteria, and rollout order.
 

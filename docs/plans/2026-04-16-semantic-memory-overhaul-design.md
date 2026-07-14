@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-16
 **Status:** v3.2 — third adversarial pass (on the bead tree, not the doc) flagged four gaps: ANNResult type pinned in P1 (was undefined); config schema explicit (`.oro/config.yaml` + Go struct — not `oro.toml` as brainstorm presumed); warmup-without-model failure path documented; P2 Cmd fix (`make install &&` prefix) and corpus-curation checkpoint landed on the beads themselves
-**Goal:** Replace oro's TF-IDF memory retrieval with BGE-small embeddings, sqlite-vec HNSW ANN, chunked embeddings, cross-encoder reranking, per-project partitions, and search telemetry. Cherry-picked from [memvid evaluation](../../archive/yap/reference/memvid/evaluation.md).
+**Goal:** Replace oro's TF-IDF memory retrieval with BGE-small embeddings, sqlite-vec HNSW ANN, chunked embeddings, cross-encoder reranking, per-project partitions, and search telemetry. The historical memvid evaluation that informed this plan is no longer retained.
 
 ## Problem
 

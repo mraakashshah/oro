@@ -579,6 +579,7 @@ oro/
 │   └── worker/           # Worker agent — UDS connection, prompt assembly, subprocess
 ├── assets/               # Embedded skills, hooks, rules, commands, beacons
 ├── scripts/
+│   ├── README.md         # Developer and operator script catalog
 │   ├── install.sh        # curl installer
 │   └── quality_gate.sh   # Automated quality gate runner
 ├── docs/
