@@ -50,7 +50,7 @@ func (d *Dispatcher) handleJanitorResult(ctx context.Context, result ops.Result)
 		d.persistJanitorFinding(ctx, result.BeadID, finding)
 	}
 
-	filed := janitorTopFindingsBySeverity(eligible)
+	filed := janitorTopFindingsBySeverity(eligible, d.cfg.JanitorTopK)
 	for _, finding := range filed {
 		if _, createErr := d.beads.Create(ctx, janitorFindingCreateParams(finding, payload.RanDetectors)); createErr != nil {
 			_ = d.logEvent(ctx, "janitor_finding_create_failed", janitorRoleActor, result.BeadID, "", createErr.Error())
@@ -129,7 +129,7 @@ func (d *Dispatcher) appendJanitorJourney(ctx context.Context, roleBeadID, event
 	}
 }
 
-func janitorTopFindingsBySeverity(findings []ops.Finding) []ops.Finding {
+func janitorTopFindingsBySeverity(findings []ops.Finding, limit int) []ops.Finding {
 	ordered := make([]ops.Finding, 0, len(findings))
 	for _, finding := range findings {
 		if finding.Status == "wont-fix" {
@@ -140,8 +140,11 @@ func janitorTopFindingsBySeverity(findings []ops.Finding) []ops.Finding {
 	sort.SliceStable(ordered, func(i, j int) bool {
 		return janitorSeverityRank(ordered[i].Severity) > janitorSeverityRank(ordered[j].Severity)
 	})
-	if len(ordered) > janitorTopFindings {
-		ordered = ordered[:janitorTopFindings]
+	if limit == 0 {
+		limit = janitorTopFindings
+	}
+	if len(ordered) > limit {
+		ordered = ordered[:limit]
 	}
 	return ordered
 }

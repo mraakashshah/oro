@@ -4,12 +4,84 @@ package dispatcher
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
 	"oro/pkg/beadstore"
 	"oro/pkg/ops"
+	"oro/pkg/protocol"
 )
+
+func TestJanitorTopKConfig(t *testing.T) {
+	const roleBeadID = "oro-janitor-role"
+	findings := []ops.Finding{
+		{ID: "critical-1", Severity: ops.SevCritical, Title: "critical one"},
+		{ID: "suppressed", Severity: ops.SevCritical, Title: "suppressed critical"},
+		{ID: "wont-fix", Severity: ops.SevCritical, Status: "wont-fix", Title: "wont-fix critical"},
+		{ID: "critical-2", Severity: ops.SevCritical, Title: "critical two"},
+		{ID: "important-1", Severity: ops.SevImportant, Title: "important one"},
+		{ID: "important-2", Severity: ops.SevImportant, Title: "important two"},
+		{ID: "important-3", Severity: ops.SevImportant, Title: "important three"},
+		{ID: "minor-1", Severity: ops.SevMinor, Title: "minor one"},
+		{ID: "minor-2", Severity: ops.SevMinor, Title: "minor two"},
+		{ID: "minor-3", Severity: ops.SevMinor, Title: "minor three"},
+		{ID: "minor-4", Severity: ops.SevMinor, Title: "minor four"},
+		{ID: "minor-5", Severity: ops.SevMinor, Title: "minor five"},
+	}
+	wantOrder := []string{
+		"critical one", "critical two",
+		"important one", "important two", "important three",
+		"minor one", "minor two", "minor three", "minor four", "minor five",
+	}
+
+	for _, tc := range []struct {
+		name  string
+		limit int
+		want  int
+	}{
+		{name: "configured two", limit: 2, want: 2},
+		{name: "configured nine", limit: 9, want: 9},
+		{name: "zero uses natural limit", limit: 0, want: janitorTopFindings},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, store, _, _, _, _ := newTestDispatcher(t)
+			d.cfg.JanitorTopK = tc.limit
+			store.journeys = make(map[string][]beadstore.JourneyEvent)
+			store.metadataMatches = []*protocol.Bead{
+				{ID: roleBeadID, Status: "closed", Metadata: map[string]any{cleanlinessRoleMetadataKey: "janitor"}},
+				{ID: "oro-existing", Status: "open", Metadata: map[string]any{auditFindingMetadataKey: "suppressed"}},
+			}
+			appendSuppressionFixture(t, store, roleBeadID, findings[1], "janitor_finding")
+
+			feedback, err := json.Marshal(janitorResultPayload{Findings: findings})
+			if err != nil {
+				t.Fatalf("marshal janitor result: %v", err)
+			}
+			d.handleJanitorResult(t.Context(), ops.Result{
+				Type: ops.OpsJanitor, BeadID: roleBeadID, Feedback: string(feedback),
+			})
+
+			store.mu.Lock()
+			created := append([]createCall(nil), store.created...)
+			store.mu.Unlock()
+			if len(created) != tc.want {
+				t.Fatalf("created beads = %d, want %d", len(created), tc.want)
+			}
+			for i, call := range created {
+				if call.title != wantOrder[i] {
+					t.Fatalf("created bead %d title = %q, want %q", i, call.title, wantOrder[i])
+				}
+			}
+		})
+	}
+
+	original := append([]ops.Finding(nil), findings...)
+	_ = janitorTopFindingsBySeverity(findings, 0)
+	if !reflect.DeepEqual(findings, original) {
+		t.Fatalf("janitor severity selection mutated input\n got: %#v\nwant: %#v", findings, original)
+	}
+}
 
 func TestJanitorFilingTopFive(t *testing.T) {
 	ctx := context.Background()
