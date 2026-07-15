@@ -41,14 +41,14 @@ func resolveProductionRuntime() (*productionRuntime, error) {
 			id:             runtimeClaude,
 			workerSpawn:    newClaudeWorkerSpawner(),
 			opsSpawn:       ops.NewRuntimeSpawnerRouter(newClaudeOpsSpawner(), newCodexOpsSpawner()),
-			reviewOpsSpawn: newClaudeReviewOpsSpawner(),
+			reviewOpsSpawn: ops.NewRuntimeSpawnerRouter(newClaudeReviewOpsSpawner(), newCodexOpsSpawner()),
 		}, nil
 	case runtimeCodex:
 		return &productionRuntime{
 			id:             runtimeCodex,
 			workerSpawn:    newCodexWorkerSpawner(),
 			opsSpawn:       ops.NewRuntimeSpawnerRouter(newClaudeOpsSpawner(), newCodexOpsSpawner()),
-			reviewOpsSpawn: newClaudeReviewOpsSpawner(),
+			reviewOpsSpawn: ops.NewRuntimeSpawnerRouter(newClaudeReviewOpsSpawner(), newCodexOpsSpawner()),
 		}, nil
 	default:
 		return nil, fmt.Errorf("unknown agent runtime %q", runtime)

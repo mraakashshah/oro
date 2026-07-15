@@ -1563,6 +1563,16 @@ func TestBuildDispatcherResolvesOpsRuntime(t *testing.T) {
 		if wantOps.calls != 1 {
 			t.Fatalf("codex ops calls = %d, want 1", wantOps.calls)
 		}
+		reviewRouter, ok := rt.reviewOpsSpawn.(ops.RuntimeBatchSpawner)
+		if !ok {
+			t.Fatalf("review ops spawner = %#v, want runtime router", rt.reviewOpsSpawn)
+		}
+		if _, err := reviewRouter.SpawnRuntime(context.Background(), runtimeCodex, "gpt-5.6-sol", "xhigh", "review prompt", tmpDir); err != nil {
+			t.Fatalf("spawn codex review through router: %v", err)
+		}
+		if wantOps.calls != 2 {
+			t.Fatalf("codex ops calls after review = %d, want 2", wantOps.calls)
+		}
 
 		d, db, err := buildDispatcher("", false, "")
 		if err != nil {
