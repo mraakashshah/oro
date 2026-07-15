@@ -28,6 +28,8 @@ Files and prior art read:
 - `cmd/oro/cmd_task.go`: public `oro task` command tree.
 - `cmd/oro/root.go`: there is currently no `oro config` command.
 - `cmd/oro/cmd_init.go`: local and stealth config generation plus project-name derivation.
+- `cmd/oro/cmd_start.go:preflightAndCheckRunningWith`: fresh start currently performs stealth auto-init inside preflight, so post-init context re-resolution is required.
+- `cmd/oro/cmd_setup.go:executeBootstrap`: setup currently calls local `bootstrapProject` directly, so existing stealth projects need explicit mode-aware routing.
 - `cmd/oro/paths.go`: standard/stealth config resolution and project-scoped daemon paths.
 - `cmd/oro/paths.go:projectHash`: existing symlink-resolved repository identity uses SHA-256, providing the canonical digest input for deterministic collision extensions.
 - `pkg/config/yamlmerge.go`: comment-preserving top-level YAML updates.
@@ -54,6 +56,7 @@ Files and prior art read:
 12. Direct task commands resolve the config, prefix, and state database from the same validated project identity.
 13. `oro setup` uses the same guarded bootstrap contract as `oro init` and cannot reset a custom prefix behind a live dispatcher.
 14. Oro-managed initialization and setter operations never allocate the same prefix to two project roots under one `ORO_HOME`, including when they run concurrently.
+15. Direct creation and dispatcher startup validate prefix ownership so moved, copied, stale, or manually conflicting configs fail before task or daemon-state mutation.
 
 ## Non-Goals
 
@@ -65,6 +68,7 @@ Files and prior art read:
 - Renaming internal `beadstore` or `Bead` compatibility types.
 - Renaming an initialized Oro project's `project` identity or migrating its project-scoped state directory.
 - Discovering or repairing duplicate prefixes introduced by unsupported hand-editing of config and registry files.
+- Migrating an existing stealth project's state when its repository is moved; the moved root initializes as a new stealth identity and receives a non-conflicting prefix.
 
 ## Design
 
@@ -75,13 +79,14 @@ The active project config gains one top-level key:
 ```yaml
 project: my-project
 task_prefix: mng
+task_prefix_owner: 66f90d6d9027a8c4f68e52a56e18efca
 ```
 
-The stored value excludes the separator. Generated IDs have the form `<task_prefix>-<suffix>`.
+The stored prefix excludes the separator. Generated IDs have the form `<task_prefix>-<suffix>`. `task_prefix_owner` is an internal 128-bit lowercase hexadecimal ownership token generated from `crypto/rand` during fresh initialization; it is not user-settable and does not appear in task IDs.
 
 When `task_prefix` is absent, the effective value is `oro`. This preserves behavior for every existing configuration and for tests or library callers that construct a store without project config.
 
-An explicitly present but invalid value is an error. The loader must include the resolved config path and a corrective example in the message; it must not silently replace a malformed value with `oro`.
+The two new keys are a pair. Both absent means legacy `oro` fallback. Exactly one present, or either value invalid, is an error. The loader must include the resolved config path and a corrective example in the message; it must not silently replace malformed or incomplete ownership with `oro`.
 
 ### 2. Prefix grammar and derivation
 
@@ -107,20 +112,30 @@ For both local and stealth initialization, the automatic source is `filepath.Bas
 
 ### 3. System-wide prefix allocation
 
-`ORO_HOME/task-prefixes.yaml` is the authoritative reservation registry for prefixes allocated by Oro. Each reservation records the prefix and the symlink-resolved absolute repository root that owns it. `ORO_HOME/task-prefixes.lock` is a kernel-backed exclusive lock shared by local init, stealth init, setup, and `oro config set task-prefix` across every project on that system.
+`ORO_HOME/task-prefixes.yaml` is the authoritative reservation registry for prefixes allocated by Oro. Each reservation records the prefix, opaque owner token, and canonical repository root. The owner token—not path equality—is the primary ownership identity. `ORO_HOME/task-prefixes.lock` is a kernel-backed exclusive lock shared by local init, stealth init, setup, `oro config set task-prefix`, and configured-prefix validation across every project on that system.
 
 ```yaml
 version: 1
 reservations:
-  mng: /absolute/path/to/moon-garden
-  mng7: /absolute/path/to/moon-garden-tools
+  mng:
+    owner: 66f90d6d9027a8c4f68e52a56e18efca
+    root: /absolute/path/to/moon-garden
+  mng7:
+    owner: 33d33d98e3c9ac51c4f9dc83612deeb7
+    root: /absolute/path/to/moon-garden-tools
 ```
 
-Automatic allocation begins with the derived base. If another repository root owns it, Oro appends one, then two, then three lowercase hexadecimal characters from the SHA-256 digest of the canonical repository root, stopping at the first unowned candidate. This makes the ordinary result three characters and bounds collision variants at six. If all three deterministic variants are occupied, init fails without changing project config and directs the user to choose an available explicit prefix. It never silently reuses an occupied value.
+Automatic allocation begins with the derived base. If another owner token owns it, Oro appends one, then two, then three lowercase hexadecimal characters from the SHA-256 digest of the canonical repository root, stopping at the first unowned candidate. This makes the ordinary result three characters and bounds collision variants at six. If all three deterministic variants are occupied, init fails without changing project config and directs the user to choose an available explicit prefix. It never silently reuses an occupied value.
 
-The setter reserves the exact requested value and rejects it when another repository root owns it. Re-init by the same canonical root reuses its reservation. Writers acquire the system allocation lock before the existing project config lock, reserve the new value atomically before writing project config, and release any prior reservation only after the config write succeeds. A config-write failure rolls back the new reservation when possible. A crash can therefore leave an unused reservation, but cannot expose the same prefix to two managed projects; retrying from the same root reclaims its own reservation. Corrupt or unreadable registry state fails closed with its path in the error.
+The setter reserves the exact requested value and rejects it when another owner token owns it. Re-init with the same config token reuses its reservation. Writers acquire the system allocation lock before the existing project config lock, reserve the new value atomically before writing project config, and release any prior reservation only after the config write succeeds. A config-write failure rolls back the new reservation when possible. A crash before config write can leave the new reservation; a crash after config rename can leave both old and new reservations attached to the same owner. Neither state permits duplicate ownership, and a later same-owner transaction reconciles the extra reservation. Corrupt or unreadable registry state fails closed with its path in the error.
 
-The registry uses the same durable YAML replacement protocol as project config: same-directory temporary file, preserved mode, file sync, atomic rename, and parent-directory sync. Unsupported manual edits can violate ownership; supported init, setup, and setter paths are the uniqueness boundary.
+Every project-facing load of an explicit `task_prefix`—direct task store construction and dispatcher startup included—validates under the system lock that the registry entry matches both `task_prefix_owner` and the canonical current root. A config with `task_prefix` but no valid owner token, a missing reservation, or a reservation bound to a different root fails closed before database/PID mutation. The legacy compatibility case is specifically a config with neither `task_prefix` nor `task_prefix_owner`; it continues using `oro` without a reservation.
+
+One `canonicalProjectRoot` helper performs `filepath.Abs`, `filepath.EvalSymlinks`, and `filepath.Clean`, returning an error rather than mixing unresolved aliases. Folder derivation, digest extensions, registry comparisons, `project.root`, and project-context construction all consume that exact value. Two symlink or relative aliases of the same repository therefore resolve to one owner/root pair.
+
+Standard repository relocation is reconciled only by guarded init/setup, never by ordinary task creation. When a config token is bound to another root, reconciliation inspects the recorded root while holding the system lock. If that root no longer contains a config with the token, treat this as a move and atomically rebind the reservation. If the old root still has that token, treat the new repository as a copy: mint a fresh owner token, allocate a distinct prefix, and update only the copy. Runtime creation at either unbound root fails closed until reconciliation. Reuse of an old filesystem path cannot impersonate the moved project because a fresh config has a different token. Stealth relocation remains a fresh stealth identity because its config is stored under the path hash; its still-reserved old prefix forces deterministic disambiguation.
+
+The registry uses the same durable YAML replacement protocol as project config: same-directory temporary file, preserved mode, file sync, atomic rename, and parent-directory sync. Unsupported manual edits can invalidate ownership, but runtime validation fails closed rather than generating with a duplicate managed prefix.
 
 ### 4. CLI surface
 
@@ -147,11 +162,13 @@ The active-project context is resolved once from the repository root and `Projec
 
 Startup performs that identity validation in `newStartCmd.RunE` before `startPreflightAndCheckRunning`, because preflight already calls environment-sensitive daemon resolution and may remove stale PID/socket state. On mismatch, startup exits before inspecting, creating, removing, or migrating either project's state. The validated context is then threaded into preflight and daemon construction instead of being independently re-resolved later.
 
+Fresh `oro start` is the one explicit exception because no active config exists to validate yet. `newStartCmd.RunE` first distinguishes “uninitialized” from malformed/conflicting initialized state without touching daemon files. For uninitialized state it runs guarded stealth initialization under the system allocation lock and the target stealth config lock, then resolves and validates the newly active stealth context. Only that post-init context may enter preflight, publish a PID, resolve daemon paths, or build the dispatcher. It must not retain or lock the standard-mode fallback returned by `ResolvePaths` before the stealth config exists. `TestDispatcherProjectTaskPrefixEndToEnd` includes fresh `oro start` and proves auto-init, re-resolution, PID location, registry ownership, and generated prefix all use the resulting stealth identity.
+
 The lock is a cross-process, project-scoped advisory file lock beside the active config, implemented with the platform's kernel-backed exclusive lock primitive rather than PID-file deletion. Dispatcher startup resolves the same identity-coherent context, acquires the lock before writing its daemon PID file, and holds it through effective-prefix loading and configured store construction. The setter and init/re-init hold it across their liveness checks and any prefix read/write. Therefore a config writer wins before startup and startup loads the completed value, or startup wins and publishes liveness before the writer checks and refuses; a live dispatcher cannot retain an old prefix after a successful config write. The kernel releases ownership automatically on process exit, including crashes, eliminating stale-owner and ABA-reclamation races. A deterministic two-process contention test must prove mutual exclusion and crash release.
 
 Prefix configuration writes are atomic. Add an atomic YAML merge path (either by hardening `config.MergeKey` or adding a typed wrapper used by every prefix writer): marshal to a same-directory temporary file, preserve the existing file mode, write and sync the temporary file, close it, atomically rename it over the target, and sync the parent directory where supported. On any pre-rename failure, remove only the temporary file and leave the prior config byte-for-byte intact. Injected write/sync/rename failure tests verify preservation.
 
-Atomic replacement prevents torn files but not stale-snapshot lost updates. Every init-path read-modify-write to the active project config—not only `task_prefix`—holds the same project lock. In particular, `runInitWithDeps` retains the guarded init transaction through its post-bootstrap `writeInitAgentProviderMode → config.MergeKey` mutation, or that helper independently acquires the same lock before reading and writing. A deterministic inter-writer test pauses the agent-mode merge after its read, attempts the prefix setter, and proves serialization preserves both the new prefix and agent key.
+Atomic replacement prevents torn files but not stale-snapshot lost updates. Every init-path read-modify-write to the active project config—not only `task_prefix`—runs inside one explicit `withTaskPrefixMutation(ctx, target, fn)` transaction that owns the system lock and then the project lock. Nested helpers, including `writeInitAgentProviderMode`, receive the transaction and never reacquire either non-reentrant lock. The transaction remains held through bootstrap, prefix/owner persistence, and the post-bootstrap agent-provider merge. A deterministic inter-writer test pauses the agent-mode merge after its read, attempts the prefix setter, proves bounded completion without self-deadlock, and proves serialization preserves the prefix, owner, reservation, and agent key.
 
 No generic config-key setter is introduced. This keeps validation typed and limits the public API to the requested capability.
 
@@ -200,13 +217,14 @@ Init and re-init participate in the same project-context lock as the setter and 
 
 For an already initialized local or stealth config, its existing `project` field is the authoritative identity for lock and daemon-liveness resolution before any mutation. If `oro init [project-name]` or `oro setup [project-name]` supplies a different name, reject the attempted rename without mutation whether stopped or running; project identity migration is out of scope and cannot be safely approximated by rewriting config. The optional name remains valid for fresh project identity. It is used as the prefix derivation source only when the real folder name contains no ASCII-alphanumeric characters.
 
-`cmd/oro/cmd_setup.go:setupPhase4Bootstrap → executeBootstrap → bootstrapProject` uses that same guarded bootstrap entry point; locking and preservation must live at or below the shared bootstrap boundary, not only around `runInit`. Fresh setup derives the prefix, setup of a legacy config adds it only while stopped, valid custom prefixes survive setup and `setup --force`, invalid explicit prefixes fail without rewrite, and a live or concurrently starting dispatcher makes setup refuse before config mutation.
+`cmd/oro/cmd_setup.go:setupPhase4Bootstrap → executeBootstrap` resolves the active mode before selecting `bootstrapProject` or `bootstrapStealthProject`, then uses the same guarded bootstrap transaction; locking and preservation must live at or below that shared mode-aware boundary, not only around `runInit`. Fresh setup derives the prefix, setup of a legacy config adds it only while stopped, valid custom prefixes survive setup and `setup --force`, invalid explicit prefixes fail without rewrite, and a live or concurrently starting dispatcher makes setup refuse before config mutation. Existing stealth setup and `setup --force` remain stealth and never create `.oro/config.yaml`. An explicit init mode that conflicts with an existing active mode is rejected before mutation rather than silently switching identity.
 
 Re-init then has a binary contract in both local and stealth modes: if the existing active config contains a valid explicit `task_prefix`, preserve that exact value and confirm or reclaim its reservation for the same canonical root even when `oro init --force` regenerates other config content and assets. If the key is absent, derive, reserve, and write the compact project default. If it is present but invalid or reserved by another root, fail with path-specific guidance rather than overwriting the user's value. `--force` does not mean “reset project identity”; changing the prefix remains the setter's responsibility.
 
 Compatibility rules:
 
-- config missing key → `oro-*`;
+- config missing both `task_prefix` and `task_prefix_owner` → `oro-*`;
+- config containing only one of the pair → fail closed;
 - configured key → configured future IDs;
 - explicit `--id` or `CreateParams.ID` → unchanged;
 - existing mixed-prefix tasks → fully readable, mutable, assignable, and closable;
@@ -221,6 +239,9 @@ Compatibility rules:
 - initialized config plus a different explicit project name → reject as an unsupported rename before liveness/path identity can change.
 - init's post-bootstrap agent-provider write → remains inside the same project lock, preserving concurrent prefix updates and both YAML keys.
 - concurrent allocations under one `ORO_HOME` → system allocation lock serializes registry choice and persistence, so later projects receive a deterministic four-to-six-character variant or fail closed.
+- standard repository move → ordinary creation fails until guarded init/setup rebinds the same owner when the recorded root no longer contains it.
+- copied initialized repository → guarded init/setup detects the live old owner, mints a new token, and allocates a distinct prefix for the copy.
+- existing stealth project through setup → remains stealth; local/stealth mode switches are never implicit.
 
 ## Error Handling
 
@@ -236,6 +257,9 @@ Compatibility rules:
 | Registry is missing | Create it atomically while holding the system lock |
 | Registry is corrupt or unreadable | Fail closed with the registry path; do not allocate or mutate project config |
 | Process crashes after reservation but before config write | Leave a safe unused reservation; retry from the same canonical root reclaims it |
+| Process crashes after config rename but before old release | Leave both reservations with one owner; next same-owner mutation reconciles them |
+| Explicit prefix owner/root does not match registry | Direct creation/startup fails before DB/PID mutation; guarded init/setup performs move/copy reconciliation |
+| Fresh `oro start` has no config | Guarded stealth init first, then resolve and validate the new context before preflight |
 | Dispatcher is live during `set` | Refuse with stop/set/restart instructions |
 | Setter races dispatcher startup | Shared project config lock orders both operations; no old-live/new-config split state |
 | Process crashes while holding config lock | Kernel releases advisory ownership automatically; next process acquires safely |
@@ -246,6 +270,8 @@ Compatibility rules:
 | Re-init sees invalid explicit prefix | Fail with config-path-specific guidance; do not silently regenerate |
 | Init/re-init races or observes dispatcher startup | Shared lock orders operations; refuse when target dispatcher is live |
 | Setup/re-setup sees custom, invalid, live, or racing state | Use the shared guarded bootstrap: preserve valid custom, reject invalid/live, order startup race |
+| Setup sees an existing stealth project | Route to stealth bootstrap and do not create a local anchor, including `--force` |
+| Init flag requests a mode different from active config | Reject the mode switch before config or state mutation |
 | Existing config receives a different init/setup project name | Reject unsupported rename before config or daemon-state mutation |
 | Setter races init agent-provider merge | Same advisory lock serializes both full read-modify-write operations; retain both keys |
 | Stealth basename derives empty | Use explicit `oro init [project-name]` as the fallback derivation source; otherwise return that recovery command |
@@ -263,17 +289,17 @@ The epic-level acceptance test is:
 
 ```text
 Cmd: test "$(git branch --show-current)" = main && pattern='^(TestProjectTaskPrefixEndToEnd|TestStealthProjectTaskPrefixEndToEnd|TestSetupProjectTaskPrefixEndToEnd|TestDispatcherProjectTaskPrefixEndToEnd|TestTaskPrefixMutationCoordination|TestTaskPrefixIdentitySafetyEndToEnd)$' && test "$(go test ./cmd/oro -list "$pattern" | awk '/^Test/{n++} END{print n+0}')" -eq 6 && go test ./cmd/oro -run "$pattern" -count=1
-Assert: exit code 0 and exactly six named tests exist and run; the local CLI test proves a Moon Garden folder stores task_prefix: mng, creates mng-*, gives a second colliding folder a deterministic 4–6 character variant under the same ORO_HOME, changes the stopped first project to moss, rejects moss for the second project, preserves an explicit ID, and falls back to oro-* for an older config; the default stealth test proves ordinary `oro init` derives and reserves the real-folder prefix; the setup test proves fresh/legacy/custom/invalid/live/forced bootstrap behavior uses the shared guarded allocation contract; the dispatcher test proves construction and selectStore preserve the configured prefix; the mutation test proves global allocation/project/startup locking, live refusal, and no lost update against init's agent-provider merge; the identity/safety test proves invalid config and corrupt-registry rejection, unsupported re-init/setup rename rejection, setter/startup/direct-task `ORO_PROJECT` conflict rejection before state mutation, atomic-write failure preservation, and failed-start PID cleanup.
+Assert: exit code 0 and exactly six named tests exist and run; the local CLI test proves a Moon Garden folder stores task_prefix: mng plus an owner, creates mng-*, disambiguates a second colliding folder, survives a standard repository move through rebind, prevents old-path reuse from reclaiming the owner, changes the stopped first project to moss, rejects moss for the second project, preserves an explicit ID, and falls back to oro-* only when both new keys are absent; the stealth test proves real-folder derivation/reservation and symlink aliases share one canonical identity; the setup test proves fresh/legacy/custom/invalid/live/forced mode-aware bootstrap behavior and preserves an existing stealth project without a local anchor; the dispatcher test proves fresh oro start auto-initializes stealth, re-resolves its context, and preserves the prefix through selectStore; the mutation test proves global allocation/project/startup locking, bounded non-reentrant transaction completion, live refusal, and no lost update against init's agent-provider merge; the identity/safety test proves invalid config, owner/root mismatch, corrupt registry, cross-mode init, unsupported rename, and ORO_PROJECT conflicts fail before mutation, atomic-write failures preserve state, and failed-start PID cleanup.
 ```
 
 All six tests must exercise production command/store wiring rather than calling prefix helpers directly. They remain separate test functions for deterministic setup, while the one epic command first fails if any named test is absent, then runs all six, and refuses to pass off `main`.
 
 1. **Prefix unit tests:** valid one-to-six-character boundary values; uppercase, whitespace, underscore, consecutive/edge hyphens, empty, and seven-byte rejection; exact folder derivations (`moon-garden → mng`, `beadcraft → bdc`, `AI UI → aiu`), punctuation-only fallback/error, and normal/forced-fallback IDs with a six-character prefix both pass `protocol.ValidateBeadID`.
-2. **Config loader tests:** missing key fallback, valid key, malformed YAML, invalid explicit prefix, and exact config-path errors.
+2. **Config loader tests:** both keys absent yields the legacy fallback; valid prefix/owner/reservation loads; malformed YAML, invalid prefix/owner, missing reservation, owner mismatch, root mismatch, and exact path errors fail closed.
 3. **Store tests:** default `oro-*`, configured prefix, explicit-ID bypass, random-source fallback formatting, and mixed-prefix CRUD compatibility.
-4. **Allocation and CLI persistence tests:** two roots with the same base receive distinct deterministic prefixes; parallel allocations cannot duplicate; the same root reclaims its reservation; exact setter conflicts fail; corrupt registry fails closed; registry/config write failures never expose duplicate ownership; set preserves unrelated YAML/comments, refuses a live dispatcher, allows a stale PID, and rejects a missing project; injected atomic write/sync/rename failures preserve prior bytes; setter/startup and setter/init-agent-mode interleavings preserve coherent state.
-5. **Init tests:** local compact derivation and reservation, default stealth real-folder derivation, punctuation-only explicit-name fallback, collision extension through six characters, exact custom-prefix reservation preservation for local and stealth re-init with and without `--force`, invalid/conflicting existing-prefix rejection, live-dispatcher refusal, deterministic startup-race ordering, locked `writeInitAgentProviderMode`, and rejection of a changed explicit project identity on existing config.
-6. **Setup tests:** `setupPhase4Bootstrap`/`executeBootstrap` fresh allocation, legacy addition and reservation, valid custom preservation, invalid/conflicting-prefix rejection, `--force` preservation, live-dispatcher refusal, startup-race ordering through the shared guarded bootstrap, and rejection of a changed explicit project identity on existing config.
+4. **Allocation and CLI persistence tests:** two roots with the same base receive distinct deterministic prefixes; parallel allocations cannot duplicate; same-token same-root retry reclaims; standard move rebinds when the old token is absent; a live copied config gets a fresh token/prefix; old-path reuse cannot claim another token; exact setter conflicts fail; corrupt registry fails closed; registry/config write failures never expose duplicate ownership; set preserves unrelated YAML/comments, refuses a live dispatcher, allows a stale PID, and rejects a missing project; injected failures preserve prior bytes; setter/startup and setter/init-agent-mode interleavings preserve coherent state.
+5. **Init tests:** local compact derivation, owner generation, and reservation; default stealth real-folder derivation; `Abs → EvalSymlinks → Clean` aliases produce one owner; punctuation-only explicit-name fallback; collision extension through six characters; exact custom-prefix/owner preservation and move/copy reconciliation for re-init with and without `--force`; invalid/conflicting ownership rejection; live refusal; deterministic startup-race ordering; bounded transaction-owned `writeInitAgentProviderMode`; changed project identity and cross-mode requests reject before mutation.
+6. **Setup tests:** `setupPhase4Bootstrap`/`executeBootstrap` fresh allocation, legacy addition/reservation, valid custom preservation, invalid/conflicting ownership rejection, `--force` preservation, live/startup-race refusal, changed project identity rejection, and existing stealth setup/`--force` preserving stealth config/state without creating `.oro/config.yaml`.
 7. **Wiring tests:** direct `oro task create` and dispatcher-owned autogenerated creation through `dispatcher.selectStore` both emit the configured prefix.
 8. **Quality gate:** targeted Go tests during TDD, then `go test ./...`, lint/format checks used by the repository, and `make build` because embedded assets require the project build path.
 
@@ -317,6 +343,10 @@ This avoids a registry, but standard configs live in arbitrary repositories and 
 
 This avoids shared state and races, but makes every normal prefix longer and only makes collision improbable rather than detecting it. Rejected because the requested contract is ideally three characters with no managed same-system clash. Hash characters are used only as deterministic extensions after an observed reservation conflict.
 
+### I. Use the canonical repository path as ownership identity
+
+This looks sufficient during concurrent allocation but fails across time: after a repository moves, a different repository created at its old path can impersonate the reservation owner. Rejected after adversarial review. A persisted random owner token supplies continuity, while the separately validated root binding prevents two live copies from using one token.
+
 ## Premortem
 
 ```yaml
@@ -349,6 +379,18 @@ premortem:
       severity: high
       evidence: "Registry and project config are separate files and cannot be atomically renamed as one transaction"
       mitigation_checked: "Reserve-first ordering makes crashes leak capacity instead of duplicate ownership; same-root retry reclaims reservations and config failure attempts rollback"
+    - risk: "Repository moves or old-path reuse let a different project impersonate path-based ownership"
+      severity: high
+      evidence: "cmd/oro/paths.go identities are path-derived; an absolute path can later name unrelated contents"
+      mitigation_checked: "Fresh configs receive random persisted owner tokens; registry loads validate token plus canonical root, and guarded init distinguishes moves from live copies before rebinding or forking"
+    - risk: "Fresh oro start validates identity before its historical stealth auto-init creates that identity"
+      severity: high
+      evidence: "cmd/oro/cmd_start.go:preflightAndCheckRunningWith currently invokes runInit after command entry, while ResolvePaths defaults an uninitialized root to standard mode"
+      mitigation_checked: "Design specifies an explicit uninitialized transition: guarded stealth init, post-init context resolution, then preflight/PID/dispatcher operations"
+    - risk: "Setup silently turns an existing stealth project into local mode"
+      severity: high
+      evidence: "cmd/oro/cmd_setup.go:executeBootstrap directly invokes bootstrapProject and ResolvePaths prefers a newly created local config"
+      mitigation_checked: "Setup resolves active mode first, routes to the matching bootstrap, and production tests assert no local anchor appears for stealth setup or --force"
 
   elephants:
     - risk: "Changing a prefix intentionally leaves historical and new IDs mixed in one project"
@@ -381,3 +423,4 @@ Consultation resolved every design assumption:
 - **Future fit:** durable project config capability, not a local hardcoded patch.
 - **Compact derivation amendment:** user approved the deterministic initials → consonants → first-three cascade, with a three-character target and six-character ceiling.
 - **Same-system uniqueness amendment:** user required no local clash; the design uses fail-closed system-wide reservations rather than probabilistic uniqueness.
+- **Ownership lifecycle amendment:** adversarial review rejected path-only ownership; persisted random owner tokens plus runtime root binding prevent move, copy, and old-path-reuse clashes.
