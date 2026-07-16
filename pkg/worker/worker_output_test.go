@@ -15,17 +15,24 @@ import (
 
 func TestWorkerOutputRedactsCredentialAssignmentsEndToEnd(t *testing.T) {
 	const sentinel = "credential-sentinel"
-	const expected = "OPENAI_API_KEY=[REDACTED] MODE=development"
 
 	for _, tc := range []struct {
 		name   string
 		format worker.StreamFormat
 		lines  []string
+		want   string
 	}{
 		{
 			name:   "plaintext",
 			format: worker.StreamFormatLineText,
 			lines:  []string{"ordinary text", "OPENAI_API_KEY=" + sentinel + " MODE=development"},
+			want:   "OPENAI_API_KEY=[REDACTED] MODE=development",
+		},
+		{
+			name:   "plaintext post-equals space",
+			format: worker.StreamFormatLineText,
+			lines:  []string{"ordinary text", "OPENAI_API_KEY = " + sentinel + " MODE=development"},
+			want:   "OPENAI_API_KEY = [REDACTED] MODE=development",
 		},
 		{
 			name:   "structured key and value split across deltas",
@@ -34,6 +41,16 @@ func TestWorkerOutputRedactsCredentialAssignmentsEndToEnd(t *testing.T) {
 				textDeltaLine("ordinary text\nOPENAI_API_"),
 				textDeltaLine("KEY=" + sentinel + " MODE=development\n"),
 			},
+			want: "OPENAI_API_KEY=[REDACTED] MODE=development",
+		},
+		{
+			name:   "structured post-equals tab",
+			format: worker.StreamFormatClaudeJSON,
+			lines: []string{
+				textDeltaLine("ordinary text\nOPENAI_API_KEY\t="),
+				textDeltaLine("\t" + sentinel + " MODE=development\n"),
+			},
+			want: "OPENAI_API_KEY\t=\t[REDACTED] MODE=development",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -63,7 +80,7 @@ func TestWorkerOutputRedactsCredentialAssignmentsEndToEnd(t *testing.T) {
 				t.Fatalf("expected STATUS, got %s", msg.Type)
 			}
 
-			waitForRedactedSessionText(t, w, expected)
+			waitForRedactedSessionText(t, w, tc.want)
 			logPath := filepath.Join(home, ".oro", "workers", "redacted-output", "output.log")
 			log, err := os.ReadFile(logPath)
 			if err != nil {
@@ -73,8 +90,11 @@ func TestWorkerOutputRedactsCredentialAssignmentsEndToEnd(t *testing.T) {
 				if strings.Contains(output, sentinel) {
 					t.Fatalf("credential leaked in output: %q", output)
 				}
-				if !strings.Contains(output, expected) || !strings.Contains(output, "ordinary text") {
+				if !strings.Contains(output, tc.want) || !strings.Contains(output, "ordinary text") {
 					t.Fatalf("output = %q, want ordinary and redacted text", output)
+				}
+				if got := strings.Count(output, "[REDACTED]"); got != 1 {
+					t.Fatalf("redaction count = %d, want 1: %q", got, output)
 				}
 			}
 		})

@@ -135,21 +135,25 @@ func (s *credentialLineSanitizer) flush() (string, bool) {
 }
 
 func credentialValueBounds(text string, start int) (valueStart, valueEnd int) {
-	if start >= len(text) {
-		return start, start
+	valueStart = start
+	for valueStart < len(text) && (text[valueStart] == ' ' || text[valueStart] == '\t') {
+		valueStart++
 	}
-	if strings.HasPrefix(text[start:], `\"`) {
-		return start + 2, escapedCredentialValueEnd(text, start)
+	if valueStart >= len(text) {
+		return valueStart, valueStart
 	}
-	if text[start] == '"' || text[start] == '\'' {
-		return start + 1, quotedCredentialValueEnd(text, start)
+	if strings.HasPrefix(text[valueStart:], `\"`) {
+		return valueStart + 2, escapedCredentialValueEnd(text, valueStart)
 	}
-	for end := start; end < len(text); end++ {
+	if text[valueStart] == '"' || text[valueStart] == '\'' {
+		return valueStart + 1, quotedCredentialValueEnd(text, valueStart)
+	}
+	for end := valueStart; end < len(text); end++ {
 		if text[end] == ' ' || text[end] == '\t' || text[end] == '\n' || text[end] == '\r' {
-			return start, end
+			return valueStart, end
 		}
 	}
-	return start, len(text)
+	return valueStart, len(text)
 }
 
 func escapedCredentialValueEnd(text string, start int) int {

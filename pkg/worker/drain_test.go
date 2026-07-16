@@ -360,6 +360,8 @@ func TestDrainOutputRedactsCredentialAssignmentsFromLogsAndMemoryExtraction(t *t
 	credentialLine := "CLAUDE_CODE_OAUTH_TOKEN=" + claudeToken + " OPENAI_API_KEY=" + openAIKey + " MODE=development"
 	quotedLine := `quoted CLAUDE_CODE_OAUTH_TOKEN="` + claudeToken + `" escaped OPENAI_API_KEY=\"` + openAIKey + `\" already OPENAI_API_KEY=[REDACTED]`
 	quotedParityLine := `even OPENAI_API_KEY="` + openAIKey + `\\" MODE=development odd OPENAI_API_KEY="` + openAIKey + `\\\" still-secret" MODE=development`
+	spacedLine := "spaced OPENAI_API_KEY = " + openAIKey + " MODE=development"
+	tabbedLine := "tabbed CLAUDE_CODE_OAUTH_TOKEN\t=\t" + claudeToken + " MODE=development"
 
 	for _, tc := range []struct {
 		name   string
@@ -369,12 +371,19 @@ func TestDrainOutputRedactsCredentialAssignmentsFromLogsAndMemoryExtraction(t *t
 		{
 			name:   "stream json",
 			format: worker.StreamFormatClaudeJSON,
-			input:  ndjsonInput(textDeltaLine("ordinary text\n"), textDeltaLine(credentialLine+"\n"), textDeltaLine(quotedLine+"\n"), textDeltaLine(quotedParityLine+"\n")),
+			input: ndjsonInput(
+				textDeltaLine("ordinary text\n"),
+				textDeltaLine(credentialLine+"\n"),
+				textDeltaLine(quotedLine+"\n"),
+				textDeltaLine(quotedParityLine+"\n"),
+				textDeltaLine(spacedLine+"\n"),
+				textDeltaLine(tabbedLine+"\n"),
+			),
 		},
 		{
 			name:   "plaintext",
 			format: worker.StreamFormatLineText,
-			input:  strings.Join([]string{"ordinary text", credentialLine, quotedLine, quotedParityLine}, "\n") + "\n",
+			input:  strings.Join([]string{"ordinary text", credentialLine, quotedLine, quotedParityLine, spacedLine, tabbedLine}, "\n") + "\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -392,6 +401,8 @@ func TestDrainOutputRedactsCredentialAssignmentsFromLogsAndMemoryExtraction(t *t
 					`CLAUDE_CODE_OAUTH_TOKEN="[REDACTED]"`,
 					`OPENAI_API_KEY=\"[REDACTED]\"`,
 					"OPENAI_API_KEY=[REDACTED]",
+					"spaced OPENAI_API_KEY = [REDACTED] MODE=development",
+					"tabbed CLAUDE_CODE_OAUTH_TOKEN\t=\t[REDACTED] MODE=development",
 					"ordinary text",
 					"MODE=development",
 				} {
@@ -399,8 +410,14 @@ func TestDrainOutputRedactsCredentialAssignmentsFromLogsAndMemoryExtraction(t *t
 						t.Fatalf("output missing %q: %q", expected, output)
 					}
 				}
-				if got := strings.Count(output, "MODE=development"); got != 3 {
-					t.Fatalf("ordinary assignments after credentials = %d, want 3: %q", got, output)
+				if strings.Contains(output, "still-secret") {
+					t.Fatalf("quoted credential tail leaked in output: %q", output)
+				}
+				if got := strings.Count(output, "[REDACTED]"); got != 9 {
+					t.Fatalf("redaction count = %d, want 9: %q", got, output)
+				}
+				if got := strings.Count(output, "MODE=development"); got != 5 {
+					t.Fatalf("ordinary assignments after credentials = %d, want 5: %q", got, output)
 				}
 			}
 		})
@@ -409,18 +426,23 @@ func TestDrainOutputRedactsCredentialAssignmentsFromLogsAndMemoryExtraction(t *t
 
 func TestDrainOutputRedactsCredentialAssignmentsFromFormattedResults(t *testing.T) {
 	const sentinel = "formatted-result-credential"
-	input := `{"type":"result","subtype":"error","result":"command failed: OPENAI_API_KEY=` + sentinel + ` MODE=development","is_error":true}` + "\n"
+	const secondSentinel = "formatted-result-tabbed-credential"
+	input := `{"type":"result","subtype":"error","result":"command failed: OPENAI_API_KEY = ` + sentinel + ` CLAUDE_CODE_OAUTH_TOKEN\t=\t` + secondSentinel + ` MODE=development","is_error":true}` + "\n"
 
 	var log bytes.Buffer
 	worker.DrainOutputInWorkdir(context.Background(), io.NopCloser(strings.NewReader(input)),
 		worker.StreamFormatClaudeJSON, nil, "oro-redact-result", nil, t.TempDir(), &log)
 
 	output := log.String()
-	if strings.Contains(output, sentinel) {
+	if strings.Contains(output, sentinel) || strings.Contains(output, secondSentinel) {
 		t.Fatalf("credential leaked in formatted result: %q", output)
 	}
-	if !strings.Contains(output, "ERROR: command failed: OPENAI_API_KEY=[REDACTED] MODE=development") {
-		t.Fatalf("formatted result = %q, want redacted credential assignment", output)
+	const expected = "    ERROR: command failed: OPENAI_API_KEY = [REDACTED] CLAUDE_CODE_OAUTH_TOKEN\t=\t[REDACTED] MODE=development"
+	if !strings.Contains(output, expected) {
+		t.Fatalf("formatted result = %q, want exact line %q", output, expected)
+	}
+	if got := strings.Count(output, "[REDACTED]"); got != 4 {
+		t.Fatalf("formatted-result redaction count = %d, want 4 across summary and drained text: %q", got, output)
 	}
 }
 
