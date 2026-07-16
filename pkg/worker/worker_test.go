@@ -2076,6 +2076,99 @@ func TestGracefulShutdown(t *testing.T) { //nolint:funlen // integration test re
 	}
 }
 
+func TestWorkerHandlesPreempt(t *testing.T) {
+	t.Run("busy worker saves handoff, kills subprocess, and exits", func(t *testing.T) {
+		spawner := newMockSpawner()
+		dispatcherConn, workerConn := net.Pipe()
+		defer func() { _ = dispatcherConn.Close() }()
+
+		w := worker.NewWithConn("w-preempt-busy", workerConn, spawner)
+		errCh := startWorkerRun(t.Context(), t, w, dispatcherConn)
+
+		sendMessage(t, dispatcherConn, protocol.Message{
+			Type: protocol.MsgAssign,
+			Assign: &protocol.AssignPayload{
+				BeadID:   "bead-preempt",
+				Worktree: validAssignWorktree(t, "preempt-busy"),
+			},
+		})
+		_ = readMessage(t, dispatcherConn) // drain STATUS
+
+		sendMessage(t, dispatcherConn, protocol.Message{Type: protocol.MsgPreempt})
+		msg := readMessage(t, dispatcherConn)
+		if msg.Type != protocol.MsgHandoff {
+			t.Fatalf("expected HANDOFF, got %s", msg.Type)
+		}
+		if msg.Handoff == nil || msg.Handoff.BeadID != "bead-preempt" {
+			t.Fatalf("expected handoff for bead-preempt, got %+v", msg.Handoff)
+		}
+
+		waitFor(t, spawner.process.Killed, 200*time.Millisecond)
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("expected clean worker exit, got %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("worker did not exit after PREEMPT")
+		}
+	})
+
+	t.Run("idle worker exits cleanly", func(t *testing.T) {
+		spawner := newMockSpawner()
+		dispatcherConn, workerConn := net.Pipe()
+		defer func() { _ = dispatcherConn.Close() }()
+
+		w := worker.NewWithConn("w-preempt-idle", workerConn, spawner)
+		errCh := startWorkerRun(t.Context(), t, w, dispatcherConn)
+
+		sendMessage(t, dispatcherConn, protocol.Message{Type: protocol.MsgPreempt})
+		msg := readMessage(t, dispatcherConn)
+		if msg.Type != protocol.MsgHandoff {
+			t.Fatalf("expected HANDOFF, got %s", msg.Type)
+		}
+
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("expected clean worker exit, got %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("idle worker did not exit after PREEMPT")
+		}
+	})
+
+	t.Run("handoff failure still kills subprocess and exits", func(t *testing.T) {
+		spawner := newMockSpawner()
+		dispatcherConn, workerConn := net.Pipe()
+
+		w := worker.NewWithConn("w-preempt-handoff-failure", workerConn, spawner)
+		errCh := startWorkerRun(t.Context(), t, w, dispatcherConn)
+
+		sendMessage(t, dispatcherConn, protocol.Message{
+			Type: protocol.MsgAssign,
+			Assign: &protocol.AssignPayload{
+				BeadID:   "bead-preempt-handoff-failure",
+				Worktree: validAssignWorktree(t, "preempt-handoff-failure"),
+			},
+		})
+		_ = readMessage(t, dispatcherConn) // drain STATUS
+
+		sendMessage(t, dispatcherConn, protocol.Message{Type: protocol.MsgPreempt})
+		_ = dispatcherConn.Close()
+
+		waitFor(t, spawner.process.Killed, 200*time.Millisecond)
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("expected clean worker exit, got %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("worker did not exit after failed PREEMPT handoff")
+		}
+	})
+}
+
 func TestGracefulShutdown_NilPayload(t *testing.T) {
 	t.Parallel()
 

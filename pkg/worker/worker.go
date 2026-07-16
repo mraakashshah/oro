@@ -489,12 +489,22 @@ func (w *Worker) handleMessage(ctx context.Context, msg protocol.Message) (bool,
 		return true, nil
 	case protocol.MsgPrepareShutdown:
 		return w.handlePrepareShutdown(ctx, msg)
+	case protocol.MsgPreempt:
+		return w.handlePreempt(ctx)
 	case protocol.MsgReviewResult:
 		return false, w.handleReviewResult(ctx, msg)
 	default:
 		// Unknown message type, ignore
 		return false, nil
 	}
+}
+
+// handlePreempt saves the current assignment context, stops any active
+// subprocess, and exits so the dispatcher can reclaim this worker's slot.
+func (w *Worker) handlePreempt(ctx context.Context) (bool, error) {
+	_ = w.SendHandoff(ctx)
+	w.killProc()
+	return true, nil
 }
 
 // handleReviewResult processes a REVIEW_RESULT message from the dispatcher.
