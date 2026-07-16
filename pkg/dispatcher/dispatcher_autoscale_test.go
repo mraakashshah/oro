@@ -1242,6 +1242,54 @@ func TestApplyRestartWorker_KillFailureCompletesActiveAssignment(t *testing.T) {
 	}
 }
 
+func TestApplyRestartWorker_KillFailureNotifiesAssignLoop(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+	ctx := context.Background()
+	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	const (
+		workerID = "managed-restart-notify-failure"
+		beadID   = "bead-restart-notify-failure"
+	)
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+	assignmentID, err := d.createAssignment(ctx, beadID, workerID, "/tmp/restart-notify")
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	d.procMgr = &mockProcessManager{killErr: errors.New("residual cleanup timed out")}
+	conn1, conn2 := net.Pipe()
+	defer conn1.Close()
+	defer conn2.Close()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn1,
+		state:        protocol.WorkerBusy,
+		managed:      true,
+		beadID:       beadID,
+		assignmentID: assignmentID,
+	}
+	d.mu.Unlock()
+
+	select {
+	case <-d.workerReadyCh:
+		t.Fatal("assign loop had an unexpected pending wake-up before restart")
+	default:
+	}
+
+	if _, err := d.applyRestartWorker(workerID); err == nil {
+		t.Fatal("applyRestartWorker succeeded after managed worker cleanup failure")
+	}
+	select {
+	case <-d.workerReadyCh:
+	default:
+		t.Fatal("failed restart did not wake the assign loop after reopening the bead")
+	}
+}
+
 func TestApplyRestartWorker_KillFailureEmitsRecoveryOnly(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	d.setState(StateRunning)

@@ -7837,6 +7837,7 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 
 	d.completeRestartAssignment(ctx, beadID, assignmentID, workerID)
 	if cleanupErr != nil {
+		d.notifyAssignLoop()
 		return "", cleanupErr
 	}
 	if beadID != "" {

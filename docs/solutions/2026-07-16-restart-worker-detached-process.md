@@ -51,15 +51,16 @@ lifecycle changes, terminates the tracked group, scans one bounded
 set of environment-inclusive process snapshots for both exact markers, and
 performs a bounded TERM-then-KILL cleanup before a same-ID spawn can proceed.
 
-The bounded scanner now takes one lightweight current-user PID/PGID snapshot,
-then inspects parsed integer PIDs in batches of at most 128. Each batch pairs an
-argv-only `ps ww -p <pid-list>` snapshot with `ps eww -p <pid-list>` and removes
-the argv prefix before matching environment entries. Leaving `a` and `x` out
-preserves the PID filter, while separating argv prevents a foreign process from
-spoofing ownership through command-line arguments. Processes that exit between
-snapshots are skipped only after their absence is verified, canceled contexts
-return a bounded error, and incomplete socket/worker marker tuples are rejected
-before either scan.
+The bounded scanner takes one lightweight current-user PID/PGID snapshot, then
+reads each candidate's environment with a delimiter-preserving OS source:
+`/proc/<pid>/environ` on Linux and Darwin `kern.procargs2` when cgo is
+available. Unsupported or unavailable readers fail closed instead of
+reconstructing environment entries from whitespace-delimited process output.
+Argument text stays separate from environment entries, so a foreign process
+cannot spoof ownership through command-line strings. Processes that exit
+between snapshots are skipped only after their absence is verified, canceled
+contexts return a bounded error, and incomplete socket/worker marker tuples are
+rejected before either scan.
 
 The stop command uses the same all-marker matcher. Bare roles, tool names, and
 worktree substrings are not sufficient ownership evidence when scoped markers

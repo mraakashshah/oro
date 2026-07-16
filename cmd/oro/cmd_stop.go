@@ -621,8 +621,9 @@ func descendantProcessGroups(pids []int) []int {
 	return groups
 }
 
-// scanOroResidualProcesses returns only processes with Oro ownership evidence:
-// a known project/worktree root in the command line or explicit Oro markers.
+// scanOroResidualProcesses returns only processes with Oro ownership evidence.
+// When explicit markers are available they are authoritative; roots are used
+// only as the legacy fallback when no markers were supplied.
 func scanOroResidualProcesses(ctx context.Context, roots, markers []string) ([]ResidualProcess, error) {
 	snapshots, err := defaultProcessSnapshots(ctx)
 	if err != nil {
