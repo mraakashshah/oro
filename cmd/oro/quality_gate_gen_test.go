@@ -1123,7 +1123,14 @@ echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
 				t.Fatalf("timed-out waiter exit = %v, want status 1; output:\n%s", waitErr, timedOutOutput)
 			}
 			wantTimeout := "FAIL: timed out waiting for quality gate lock: " + filepath.Join(canonicalDir, ".oro-quality-gate.lock")
-			if !strings.Contains(timedOutOutput.String(), wantTimeout) {
+			timeoutLineFound := false
+			for _, line := range strings.Split(strings.TrimSpace(timedOutOutput.String()), "\n") {
+				if line == wantTimeout {
+					timeoutLineFound = true
+					break
+				}
+			}
+			if !timeoutLineFound {
 				t.Fatalf("timed-out waiter output missing %q:\n%s", wantTimeout, timedOutOutput)
 			}
 
