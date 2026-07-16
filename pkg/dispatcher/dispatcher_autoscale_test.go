@@ -1137,6 +1137,43 @@ func TestApplyRestartWorker_KillsManagedProcessBeforeSameIDRespawn(t *testing.T)
 	}
 }
 
+func TestApplyRestartWorker_KillFailureDoesNotRespawnOrReserveSameID(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+
+	pm := &mockProcessManager{killErr: fmt.Errorf("residual cleanup timed out")}
+	d.procMgr = pm
+
+	workerID := "managed-restart-kill-failure"
+	conn1, conn2 := net.Pipe()
+	defer conn1.Close()
+	defer conn2.Close()
+
+	d.mu.Lock()
+	d.pendingManagedIDs[workerID] = true
+	d.mu.Unlock()
+	d.registerWorker(workerID, conn1)
+
+	_, err := d.applyRestartWorker(workerID)
+	if err == nil || !strings.Contains(err.Error(), "residual cleanup timed out") {
+		t.Fatalf("applyRestartWorker error = %v, want residual cleanup failure", err)
+	}
+	if spawned := pm.SpawnedIDs(); len(spawned) != 0 {
+		t.Fatalf("restart-worker spawned same ID after failed cleanup: %v", spawned)
+	}
+	if events := pm.Events(); !reflect.DeepEqual(events, []string{"kill:" + workerID}) {
+		t.Fatalf("restart-worker process lifecycle order = %v, want kill only", events)
+	}
+
+	d.mu.Lock()
+	pending := d.pendingManagedIDs[workerID]
+	_, pendingSince := d.pendingManagedSince[workerID]
+	d.mu.Unlock()
+	if pending || pendingSince {
+		t.Fatalf("failed restart retained pending managed reservation: pending=%v since=%v", pending, pendingSince)
+	}
+}
+
 func TestRespawnWorker_ReservesHandoffWorkerAsManagedAtMaxWorkers(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	d.setState(StateRunning)
