@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -1113,8 +1114,8 @@ echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
 				t.Fatal("later waiter did not join quality gate FIFO queue")
 			}
 			waitErr := timedOut.Wait()
-			exitErr, ok := waitErr.(*exec.ExitError)
-			if !ok || exitErr.ExitCode() != 1 {
+			var exitErr *exec.ExitError
+			if !errors.As(waitErr, &exitErr) || exitErr.ExitCode() != 1 {
 				t.Fatalf("timed-out waiter exit = %v, want status 1; output:\n%s", waitErr, timedOutOutput)
 			}
 			wantTimeout := "FAIL: timed out waiting for quality gate lock: " + filepath.Join(canonicalDir, ".oro-quality-gate.lock")
