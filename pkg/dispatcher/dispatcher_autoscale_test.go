@@ -1337,6 +1337,80 @@ func TestApplyRestartWorker_KillFailureEmitsRecoveryOnly(t *testing.T) {
 	}
 }
 
+func TestApplyRestartWorker_CompletionFailurePreservesRecoverableAssignment(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+	ctx := context.Background()
+	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	const (
+		workerID = "restart-completion-failure"
+		beadID   = "bead-restart-completion-failure"
+	)
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+	assignmentID, err := d.createAssignment(ctx, beadID, workerID, "/tmp/restart-completion-failure")
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `CREATE TRIGGER fail_restart_assignment_completion
+		BEFORE UPDATE OF status ON assignments
+		WHEN NEW.status = 'completed'
+		BEGIN SELECT RAISE(ABORT, 'forced completion failure'); END`); err != nil {
+		t.Fatalf("create completion failure trigger: %v", err)
+	}
+
+	pm := &mockProcessManager{}
+	d.procMgr = pm
+	conn1, conn2 := net.Pipe()
+	defer conn1.Close()
+	defer conn2.Close()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn1,
+		state:        protocol.WorkerBusy,
+		beadID:       beadID,
+		assignmentID: assignmentID,
+	}
+	d.attemptCounts[beadID] = 1
+	d.mu.Unlock()
+
+	_, err = d.applyRestartWorker(workerID)
+	if err == nil || !strings.Contains(err.Error(), "complete restart assignment") {
+		t.Fatalf("applyRestartWorker error = %v, want assignment completion failure", err)
+	}
+	if spawned := pm.SpawnedIDs(); len(spawned) != 0 {
+		t.Fatalf("restart-worker spawned after assignment completion failure: %v", spawned)
+	}
+	select {
+	case <-d.workerReadyCh:
+		t.Fatal("restart-worker notified assign loop after assignment completion failure")
+	default:
+	}
+	var assignmentStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("read assignment status: %v", err)
+	}
+	if assignmentStatus != "active" {
+		t.Fatalf("assignment status = %q, want active for recovery", assignmentStatus)
+	}
+	d.mu.Lock()
+	_, tracked := d.attemptCounts[beadID]
+	d.mu.Unlock()
+	if !tracked {
+		t.Fatal("restart-worker cleared bead tracking after assignment completion failure")
+	}
+	var failures int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE type='restart_worker_assignment_completion_failed'`).Scan(&failures); err != nil {
+		t.Fatalf("count assignment completion failure events: %v", err)
+	}
+	if failures != 1 {
+		t.Fatalf("assignment completion failure events = %d, want 1", failures)
+	}
+}
+
 func TestRespawnWorker_ReservesHandoffWorkerAsManagedAtMaxWorkers(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	d.setState(StateRunning)

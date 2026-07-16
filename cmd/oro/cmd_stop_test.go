@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -397,17 +398,29 @@ func TestResidualScanUsesScopedMarkers(t *testing.T) {
 	}
 }
 
-func TestResidualScanUsesDefaultSocketOwnershipMarker(t *testing.T) {
+func TestStopResidualScanRequiresWorkerOwnershipMarker(t *testing.T) {
 	const socketPath = "/tmp/project-a/oro.sock"
 	residuals := scanOroResidualProcessSnapshots([]processSnapshot{
 		{
 			PID: 2117, PPID: 1, PGID: 2117, Session: 2117, Command: "./scripts/quality_gate.sh",
+			Environment: []string{"ORO_SOCKET_PATH=" + socketPath},
+		},
+		{
+			PID: 2118, PPID: 1, PGID: 2118, Session: 2118, Command: "./scripts/quality_gate.sh",
+			Environment: []string{"ORO_WORKER_ID=w1"},
+		},
+		{
+			PID: 2119, PPID: 1, PGID: 2119, Session: 2119, Command: "./scripts/quality_gate.sh",
+			Environment: []string{"ORO_SOCKET_PATH=" + socketPath, "ORO_WORKER_ID="},
+		},
+		{
+			PID: 2120, PPID: 1, PGID: 2120, Session: 2120, Command: "./scripts/quality_gate.sh",
 			Environment: []string{"ORO_SOCKET_PATH=" + socketPath, "ORO_WORKER_ID=w1", "ORO_PROJECT=project-a"},
 		},
 	}, nil, defaultOroResidualMarkers("project-a", socketPath))
 
-	if got, want := residualPIDs(residuals), []int{2117}; !sameInts(got, want) {
-		t.Fatalf("residual PIDs = %v, want default socket ownership match %v", got, want)
+	if got, want := residualPIDs(residuals), []int{2120}; !sameInts(got, want) {
+		t.Fatalf("residual PIDs = %v, want exact socket plus non-empty worker ownership match %v", got, want)
 	}
 }
 
@@ -453,9 +466,12 @@ func TestStopResidualScanUsesTypedEnvironmentEntries(t *testing.T) {
 
 func TestProcessSnapshotsFromOutputsSeparatesArgvFromEnvironment(t *testing.T) {
 	const command = "foreign-helper --note ORO_SOCKET_PATH=/tmp/project-a/oro.sock"
-	snapshots := processSnapshotsFromOutputs("2201 1 2201 2201 "+command+"\n", func(int) ([]string, error) {
+	snapshots, err := processSnapshotsFromOutputs(context.Background(), "2201 1 2201 2201 "+command+"\n", func(int) ([]string, error) {
 		return []string{"ORO_SOCKET_PATH=/tmp/project-a/oro.sock", "ORO_WORKER_ID=w1", "PATH=/bin"}, nil
 	})
+	if err != nil {
+		t.Fatalf("processSnapshotsFromOutputs: %v", err)
+	}
 
 	if len(snapshots) != 1 {
 		t.Fatalf("snapshots = %#v, want one", snapshots)
@@ -465,6 +481,24 @@ func TestProcessSnapshotsFromOutputsSeparatesArgvFromEnvironment(t *testing.T) {
 	}
 	if want := []string{"ORO_SOCKET_PATH=/tmp/project-a/oro.sock", "ORO_WORKER_ID=w1", "PATH=/bin"}; !slices.Equal(snapshots[0].Environment, want) {
 		t.Fatalf("environment = %#v, want %#v", snapshots[0].Environment, want)
+	}
+}
+
+func TestProcessSnapshotsFromOutputsHonorsContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var reads []int
+
+	_, err := processSnapshotsFromOutputs(ctx, "2201 1 2201 2201 first\n2202 1 2202 2202 second\n", func(pid int) ([]string, error) {
+		reads = append(reads, pid)
+		cancel()
+		return []string{"PATH=/bin"}, nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("processSnapshotsFromOutputs error = %v, want wrapped context cancellation", err)
+	}
+	if got, want := reads, []int{2201}; !slices.Equal(got, want) {
+		t.Fatalf("environment reads = %v, want no reads after cancellation %v", got, want)
 	}
 }
 

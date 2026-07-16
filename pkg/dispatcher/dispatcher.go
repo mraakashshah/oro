@@ -7835,7 +7835,11 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 		cleanupErr = d.killManagedWorkerForRestart(ctx, procMgr, workerID, beadID)
 	}
 
-	d.completeRestartAssignment(ctx, beadID, assignmentID, workerID)
+	if err := d.completeRestartAssignment(ctx, beadID, assignmentID, workerID); err != nil {
+		_ = d.logEvent(ctx, "restart_worker_assignment_completion_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"error":%q}`, err.Error()))
+		return "", fmt.Errorf("complete restart assignment: %w", err)
+	}
 	if cleanupErr != nil {
 		d.notifyAssignLoop()
 		return "", cleanupErr
@@ -7858,9 +7862,12 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 	return fmt.Sprintf("worker %s restarted", workerID), nil
 }
 
-func (d *Dispatcher) completeRestartAssignment(ctx context.Context, beadID string, assignmentID int64, workerID string) {
+func (d *Dispatcher) completeRestartAssignment(ctx context.Context, beadID string, assignmentID int64, workerID string) error {
 	if beadID == "" {
-		return
+		return nil
+	}
+	if err := d.completeAssignment(ctx, assignmentID, beadID); err != nil {
+		return err
 	}
 	if d.shouldReopenBead(ctx, beadID) {
 		if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
@@ -7869,7 +7876,7 @@ func (d *Dispatcher) completeRestartAssignment(ctx context.Context, beadID strin
 		}
 	}
 	d.clearBeadTracking(beadID)
-	_ = d.completeAssignment(ctx, assignmentID, beadID)
+	return nil
 }
 
 func (d *Dispatcher) killManagedWorkerForRestart(

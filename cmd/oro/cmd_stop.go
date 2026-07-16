@@ -516,7 +516,7 @@ func defaultOroResidualMarkers(_, sockPath string) []string {
 	if sockPath == "" {
 		return nil
 	}
-	return []string{"ORO_SOCKET_PATH=" + sockPath}
+	return []string{"ORO_SOCKET_PATH=" + sockPath, "ORO_WORKER_ID="}
 }
 
 // killProcessTree terminates pid's process group and descendants. Missing
@@ -653,7 +653,7 @@ func scanOroResidualProcessSnapshots(snapshots []processSnapshot, roots, markers
 
 func residualEvidence(command string, environment, roots, markers []string) string {
 	if len(markers) > 0 {
-		if processenv.CommandContainsAllMarkers(environment, markers) {
+		if residualEnvironmentContainsAllMarkers(environment, markers) {
 			return "markers:" + strings.Join(markers, ",")
 		}
 		return ""
@@ -664,6 +664,31 @@ func residualEvidence(command string, environment, roots, markers []string) stri
 		}
 	}
 	return ""
+}
+
+func residualEnvironmentContainsAllMarkers(environment, markers []string) bool {
+	for _, marker := range markers {
+		if marker == processenv.WorkerIDEnv+"=" {
+			if !hasNonEmptyEnvironmentValue(environment, processenv.WorkerIDEnv) {
+				return false
+			}
+			continue
+		}
+		if !processenv.CommandContainsAllMarkers(environment, []string{marker}) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasNonEmptyEnvironmentValue(entries []string, key string) bool {
+	prefix := key + "="
+	for _, entry := range entries {
+		if strings.HasPrefix(entry, prefix) && len(entry) > len(prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func commandContainsRoot(command, root string) bool {
@@ -708,18 +733,24 @@ func defaultProcessSnapshots(ctx context.Context) ([]processSnapshot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list process commands: %w", err)
 	}
-	return processSnapshotsFromOutputs(string(commandOut), processenv.ReadEntries), nil
+	return processSnapshotsFromOutputs(ctx, string(commandOut), processenv.ReadEntries)
 }
 
-func processSnapshotsFromOutputs(commandOutput string, readEntries func(int) ([]string, error)) []processSnapshot {
+func processSnapshotsFromOutputs(ctx context.Context, commandOutput string, readEntries func(int) ([]string, error)) ([]processSnapshot, error) {
 	snapshots := parseProcessSnapshots(commandOutput)
 	for index := range snapshots {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("read process environments: %w", err)
+		}
 		entries, err := readEntries(snapshots[index].PID)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("read process environments: %w", ctxErr)
+		}
 		if err == nil {
 			snapshots[index].Environment = entries
 		}
 	}
-	return snapshots
+	return snapshots, nil
 }
 
 func parseProcessSnapshots(output string) []processSnapshot {
