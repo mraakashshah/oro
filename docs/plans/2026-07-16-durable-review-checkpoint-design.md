@@ -2,7 +2,7 @@
 
 Date: 2026-07-16
 
-Status: Architecture selected; consultation pending
+Status: Consultation complete; adversarial review pending
 
 ## 1. Goal
 
@@ -1038,5 +1038,6 @@ The following decisions are intentionally held for consultation:
 - [x] Consequence threshold for doing nothing: unacceptable P0 correctness and
   liveness failure. Lost findings, unchanged-state QG/review replay, and
   routine operator babysitting contradict the self-healing factory contract.
-- [ ] Whether acceptance-contract repair is a durable core capability or a
-  follow-up after checkpoint recovery.
+- [x] Future-fit and acceptance-contract repair: durable core capability.
+  Review-classified acceptance gaps must enter a validated contract-repair path
+  before coding retry; raw reviewer prose cannot directly mutate requirements.
