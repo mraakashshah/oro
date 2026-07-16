@@ -692,7 +692,7 @@ type Config struct {
 	MutationTesting         bool          // If true, dispatcher quality gates run mutation-testing tiers. Defaults false.
 	RegressionRevert        bool          // If true, QG retries capture a pre-retry baseline for regression-revert checks. Defaults true.
 	LeakScan                LeakScanConfig
-	Estimator               BeadEstimator // LLM-based bead complexity estimator (default NewBeadEstimator()).
+	Estimator               BeadEstimator // Optional bead complexity estimator for explicit injection.
 	WorkerProgram           string        // Absolute path to worker-program.md. Defaults to <RepoRoot>/worker-program.md.
 	ReviewPatterns          string        // Absolute path for review patterns. Populated from ProjectPaths.ReviewPatterns.
 	ReviewPatternCandidates string        // Absolute path for review-pattern candidate inbox. Populated from ProjectPaths.ReviewPatternCandidates.
@@ -784,9 +784,6 @@ func (c *Config) withDefaults() Config {
 	out.ReviewDeadGrace = durationDefault(out.ReviewDeadGrace, 30*time.Second)
 	out.RegressionRevert = boolDefault(out.RegressionRevert, true)
 	out.CheckpointThreshold = intDefault(out.CheckpointThreshold, 75)
-	if out.Estimator == nil {
-		out.Estimator = NewBeadEstimator()
-	}
 	if out.DefaultBranch == "" {
 		out.DefaultBranch = "main"
 	}

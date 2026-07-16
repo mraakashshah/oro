@@ -11,9 +11,37 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/agentmodel"
 	"oro/pkg/config"
 	"oro/pkg/protocol"
 )
+
+func TestAutomaticBeadEstimationDisabled(t *testing.T) {
+	t.Run("production defaults leave estimation disabled", func(t *testing.T) {
+		if estimator := (&Config{}).withDefaults().Estimator; estimator != nil {
+			t.Fatalf("default estimator = %T, want nil", estimator)
+		}
+	})
+
+	t.Run("injected estimator remains available to tests", func(t *testing.T) {
+		injected := &mockBeadEstimator{}
+		if estimator := (&Config{Estimator: injected}).withDefaults().Estimator; estimator != injected {
+			t.Fatalf("configured estimator = %T, want injected estimator", estimator)
+		}
+	})
+
+	t.Run("routing keeps zero estimates balanced and explicit estimates tiered", func(t *testing.T) {
+		zeroRuntime, zeroModel, zeroReasoning := agentmodel.ResolveForBead("worker", protocol.Bead{})
+		if zeroRuntime != "codex" || zeroModel != "gpt-5.6-terra" || zeroReasoning != "medium" {
+			t.Fatalf("zero estimate route = (%q, %q, %q), want balanced tier", zeroRuntime, zeroModel, zeroReasoning)
+		}
+
+		explicitRuntime, explicitModel, explicitReasoning := agentmodel.ResolveForBead("worker", protocol.Bead{EstimatedMinutes: 3})
+		if explicitRuntime != "codex" || explicitModel != "gpt-5.6-luna" || explicitReasoning != "low" {
+			t.Fatalf("explicit estimate route = (%q, %q, %q), want fast tier", explicitRuntime, explicitModel, explicitReasoning)
+		}
+	})
+}
 
 func TestNewBeadEstimatorUsesSubscriptionCLIByDefault(t *testing.T) {
 	home := t.TempDir()
