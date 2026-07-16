@@ -2,11 +2,13 @@ package processenv_test
 
 import (
 	"encoding/binary"
+	"errors"
 	"os"
 	"os/exec"
 	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -70,6 +72,7 @@ func TestParseDarwinEntriesRejectsMalformedPayloads(t *testing.T) {
 	binary.LittleEndian.PutUint32(argcOne, 1)
 
 	for name, raw := range map[string][]byte{
+		"empty payload":      nil,
 		"short header":       {0, 0, 0},
 		"missing executable": {0, 0, 0, 0},
 		"truncated argv":     append(argcOne, []byte("/bin/helper\x00\x00")...),
@@ -83,7 +86,28 @@ func TestParseDarwinEntriesRejectsMalformedPayloads(t *testing.T) {
 }
 
 func TestReadEntriesFailsClosedForMissingProcess(t *testing.T) {
-	if _, err := processenv.ReadEntries(1 << 30); err == nil {
+	cmd := exec.Command(os.Args[0], "-test.run=^$") //nolint:gosec // re-executes this test binary to obtain a valid, reaped PID
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run short-lived process: %v", err)
+	}
+
+	_, err := processenv.ReadEntries(cmd.ProcessState.Pid())
+	if err == nil {
 		t.Fatal("ReadEntries succeeded for a missing process")
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		var errno syscall.Errno
+		if !errors.As(err, &errno) {
+			t.Fatalf("ReadEntries error = %v, want wrapped syscall.Errno", err)
+		}
+	case "linux":
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("ReadEntries error = %v, want wrapped os.ErrNotExist", err)
+		}
+	default:
+		if !errors.Is(err, errors.ErrUnsupported) {
+			t.Fatalf("ReadEntries error = %v, want wrapped errors.ErrUnsupported", err)
+		}
 	}
 }
