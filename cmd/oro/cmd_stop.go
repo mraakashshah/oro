@@ -509,7 +509,7 @@ type processSnapshot struct {
 	PGID        int
 	Session     int
 	Command     string
-	Environment string
+	Environment []string
 }
 
 func defaultOroResidualMarkers(_, sockPath string) []string {
@@ -650,9 +650,9 @@ func scanOroResidualProcessSnapshots(snapshots []processSnapshot, roots, markers
 	return residuals
 }
 
-func residualEvidence(command, environment string, roots, markers []string) string {
+func residualEvidence(command string, environment, roots, markers []string) string {
 	if len(markers) > 0 {
-		if processenv.CommandContainsAllMarkers(strings.Fields(environment), markers) {
+		if processenv.CommandContainsAllMarkers(environment, markers) {
 			return "markers:" + strings.Join(markers, ",")
 		}
 		return ""
@@ -707,27 +707,15 @@ func defaultProcessSnapshots(ctx context.Context) ([]processSnapshot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list process commands: %w", err)
 	}
-	environmentOut, err := exec.CommandContext(ctx, "ps", "axeww", "-o", "pid=,ppid=,pgid=,sess=,command=").Output()
-	if err != nil {
-		return nil, fmt.Errorf("list process environments: %w", err)
-	}
-	return processSnapshotsFromOutputs(string(commandOut), string(environmentOut)), nil
+	return processSnapshotsFromOutputs(string(commandOut), processenv.ReadEntries), nil
 }
 
-func processSnapshotsFromOutputs(commandOutput, environmentOutput string) []processSnapshot {
+func processSnapshotsFromOutputs(commandOutput string, readEntries func(int) ([]string, error)) []processSnapshot {
 	snapshots := parseProcessSnapshots(commandOutput)
-	indexByPID := make(map[int]int, len(snapshots))
-	for index, snapshot := range snapshots {
-		indexByPID[snapshot.PID] = index
-	}
-	for _, combined := range parseProcessSnapshots(environmentOutput) {
-		index, ok := indexByPID[combined.PID]
-		if !ok {
-			continue
-		}
-		environment, separated := stopProcessEnvironmentSuffix(combined.Command, snapshots[index].Command)
-		if separated {
-			snapshots[index].Environment = environment
+	for index := range snapshots {
+		entries, err := readEntries(snapshots[index].PID)
+		if err == nil {
+			snapshots[index].Environment = entries
 		}
 	}
 	return snapshots
@@ -753,17 +741,6 @@ func parseProcessSnapshots(output string) []processSnapshot {
 		})
 	}
 	return snapshots
-}
-
-func stopProcessEnvironmentSuffix(commandAndEnvironment, command string) (string, bool) {
-	if command == "" || !strings.HasPrefix(commandAndEnvironment, command) {
-		return "", false
-	}
-	suffix := commandAndEnvironment[len(command):]
-	if suffix == "" || (suffix[0] != ' ' && suffix[0] != '\t') {
-		return "", false
-	}
-	return strings.TrimSpace(suffix), true
 }
 
 func killResidualProcess(ctx context.Context, residuals ...ResidualProcess) error {

@@ -127,78 +127,20 @@ func inspectProcessEnvironmentsWithReader(
 }
 
 func readProcessEnvironmentSnapshots(ctx context.Context, processes []OwnedProcess) (processEnvironmentSnapshots, error) {
-	environments := processEnvironmentEntriesFromProc(processes)
-	if len(environments) == len(processes) {
-		return processEnvironmentSnapshots{environments: environments}, nil
-	}
-	pids := make([]string, 0, len(processes))
-	for _, process := range processes {
-		pids = append(pids, strconv.Itoa(process.PID))
-	}
-	pidList := strings.Join(pids, ",")
-	//nolint:gosec // PID arguments are parsed integers from the local ps snapshot.
-	commandOut, err := exec.CommandContext(ctx, "ps", "ww", "-p", pidList, "-o", "pid=,command=").Output()
-	if err != nil {
-		return processEnvironmentSnapshots{}, fmt.Errorf("list process commands: %w", err)
-	}
-	//nolint:gosec // PID arguments are parsed integers from the local ps snapshot.
-	environmentOut, err := exec.CommandContext(ctx, "ps", "eww", "-p", pidList, "-o", "pid=,pgid=,command=").Output()
-	if err != nil {
-		return processEnvironmentSnapshots{}, fmt.Errorf("list process environments: %w", err)
-	}
-	for pid, entries := range environmentEntriesFromSnapshot(string(environmentOut), processCommandsFromSnapshot(string(commandOut))) {
-		if _, found := environments[pid]; !found {
-			environments[pid] = entries
-		}
-	}
-	return processEnvironmentSnapshots{environments: environments}, nil
-}
-
-func processEnvironmentEntriesFromProc(processes []OwnedProcess) map[int][]string {
 	environments := make(map[int][]string, len(processes))
 	for _, process := range processes {
-		contents, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", process.PID))
+		if err := ctx.Err(); err != nil {
+			return processEnvironmentSnapshots{}, fmt.Errorf("read process environment entries: %w", err)
+		}
+		entries, err := processenv.ReadEntries(process.PID)
 		if err != nil {
 			continue
 		}
-		entries := strings.Split(strings.TrimSuffix(string(contents), "\x00"), "\x00")
-		if len(entries) > 0 && entries[0] != "" {
+		if len(entries) > 0 {
 			environments[process.PID] = entries
 		}
 	}
-	return environments
-}
-
-func processCommandsFromSnapshot(snapshot string) map[int]string {
-	commands := make(map[int]string)
-	for _, line := range strings.Split(snapshot, "\n") {
-		pidField, command, ok := splitProcessField(line)
-		pid, err := strconv.Atoi(pidField)
-		if !ok || err != nil {
-			continue
-		}
-		commands[pid] = command
-	}
-	return commands
-}
-
-func environmentEntriesFromSnapshot(snapshot string, commands map[int]string) map[int][]string {
-	environments := make(map[int][]string)
-	for _, line := range strings.Split(snapshot, "\n") {
-		pidField, remainder, ok := splitProcessField(line)
-		if !ok {
-			continue
-		}
-		_, commandAndEnvironment, ok := splitProcessField(remainder)
-		pid, err := strconv.Atoi(pidField)
-		command, candidate := commands[pid]
-		environment, separated := processEnvironmentSuffix(commandAndEnvironment, command)
-		if !ok || err != nil || !candidate || !separated {
-			continue
-		}
-		environments[pid] = strings.Fields(environment)
-	}
-	return environments
+	return processEnvironmentSnapshots{environments: environments}, nil
 }
 
 func ownedProcessesFromEnvironmentSnapshot(processes []OwnedProcess, environments map[int][]string, markers []string) []OwnedProcess {
@@ -210,30 +152,6 @@ func ownedProcessesFromEnvironmentSnapshot(processes []OwnedProcess, environment
 		owned = append(owned, process)
 	}
 	return owned
-}
-
-func splitProcessField(line string) (field, remainder string, ok bool) {
-	line = strings.TrimSpace(line)
-	separator := strings.IndexAny(line, " \t")
-	if separator <= 0 {
-		return "", "", false
-	}
-	remainder = strings.TrimLeft(line[separator:], " \t")
-	if remainder == "" {
-		return "", "", false
-	}
-	return line[:separator], remainder, true
-}
-
-func processEnvironmentSuffix(commandAndEnvironment, command string) (string, bool) {
-	if command == "" || !strings.HasPrefix(commandAndEnvironment, command) {
-		return "", false
-	}
-	suffix := commandAndEnvironment[len(command):]
-	if suffix == "" || (suffix[0] != ' ' && suffix[0] != '\t') {
-		return "", false
-	}
-	return strings.TrimSpace(suffix), true
 }
 
 func hasCompleteOwnershipMarkers(markers []string) bool {

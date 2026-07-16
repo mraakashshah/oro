@@ -1242,6 +1242,53 @@ func TestApplyRestartWorker_KillFailureCompletesActiveAssignment(t *testing.T) {
 	}
 }
 
+func TestApplyRestartWorker_KillFailureEmitsRecoveryOnly(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	d.setState(StateRunning)
+	ctx := context.Background()
+	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	const (
+		workerID = "managed-restart-event-failure"
+		beadID   = "bead-restart-event-failure"
+	)
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+	pm := &mockProcessManager{killErr: errors.New("residual cleanup timed out")}
+	d.procMgr = pm
+	conn1, conn2 := net.Pipe()
+	defer conn1.Close()
+	defer conn2.Close()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:      workerID,
+		conn:    conn1,
+		state:   protocol.WorkerBusy,
+		managed: true,
+		beadID:  beadID,
+	}
+	d.mu.Unlock()
+
+	if _, err := d.applyRestartWorker(workerID); err == nil {
+		t.Fatal("applyRestartWorker succeeded after managed worker cleanup failure")
+	}
+	if spawned := pm.SpawnedIDs(); len(spawned) != 0 {
+		t.Fatalf("restart-worker spawned after failed cleanup: %v", spawned)
+	}
+
+	var failed, restarted int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE type='restart_worker_kill_failed'`).Scan(&failed); err != nil {
+		t.Fatalf("count restart cleanup failures: %v", err)
+	}
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE type='worker_restarted'`).Scan(&restarted); err != nil {
+		t.Fatalf("count restart success events: %v", err)
+	}
+	if failed != 1 || restarted != 0 {
+		t.Fatalf("restart events failed/restarted = %d/%d, want 1/0", failed, restarted)
+	}
+}
+
 func TestRespawnWorker_ReservesHandoffWorkerAsManagedAtMaxWorkers(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	d.setState(StateRunning)

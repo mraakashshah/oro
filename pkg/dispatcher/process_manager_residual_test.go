@@ -72,6 +72,24 @@ func TestInspectProcessEnvironmentsPreservesEntryBoundaries(t *testing.T) {
 	}
 }
 
+func TestReadProcessEnvironmentEntriesPreservesDarwinBoundaries(t *testing.T) {
+	markers := []string{
+		"ORO_SOCKET_PATH=/tmp/owned-process.sock",
+		"ORO_WORKER_ID=owned-worker",
+	}
+	raw := append([]byte{2, 0, 0, 0}, []byte("/bin/helper\x00helper\x00--flag\x00\x00PATH=/bin\x00NOTE=foreign "+markers[0]+" "+markers[1]+" text\x00"+markers[0]+"\x00ORDINARY=value with spaces\x00"+markers[1]+"\x00")...)
+	entries, err := processenv.ParseDarwinEntries(raw)
+	if err != nil {
+		t.Fatalf("parse Darwin process environment entries: %v", err)
+	}
+	if !processenv.CommandContainsAllMarkers(entries, markers) {
+		t.Fatalf("entries = %#v, want exact ownership markers", entries)
+	}
+	if processenv.CommandContainsAllMarkers(entries[:2], markers) {
+		t.Fatal("a marker-shaped NOTE value must not prove ownership")
+	}
+}
+
 func TestInspectProcessEnvironmentsRejectsIncompleteMarkers(t *testing.T) {
 	for name, markers := range map[string][]string{
 		"socket only":  {"ORO_SOCKET_PATH=/tmp/owned-process.sock"},
