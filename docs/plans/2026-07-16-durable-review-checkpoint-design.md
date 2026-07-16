@@ -2,7 +2,7 @@
 
 Date: 2026-07-16
 
-Status: Adversarial revision 5; re-review pending
+Status: Adversarial revision 6; re-review pending
 
 ## 1. Goal
 
@@ -473,6 +473,15 @@ oversized, or hash-mismatched recovery data fails closed into typed recovery.
 Compaction may truncate excerpts and diagnostics deterministically, but never
 finding IDs, severity, file/line, contract impact, or required action.
 
+Before correction becomes routable, the canonical lossless recovery artifact is
+fsynced and its path, SHA-256, byte count, and finding count are committed on
+the checkpoint in the same transaction as `rejected`. Restart reconstructs
+`ReviewRecoveryArtifactRef` from those columns, not compact rows or process
+memory. Because compact rows may truncate diagnostics, they are never treated
+as a lossless regeneration source. A missing persisted artifact enters typed
+checkpoint recovery/quarantine and never sends partial findings or silently
+reruns review.
+
 ## 8. QG Evidence at READY_FOR_REVIEW
 
 The worker must send proof of the QG-passed state before review starts.
@@ -508,6 +517,7 @@ remains clean. Tests may not seed `QGEvidenceDir` directly.
 ```go
 type QGEvidence struct {
     RunID        string `json:"run_id"`
+    AssignmentID int64  `json:"assignment_id"`
     BeadID       string `json:"bead_id"`
     WorkerID     string `json:"worker_id,omitempty"`
     HeadSHA      string `json:"head_sha"`
@@ -576,6 +586,16 @@ type ReconnectPayload struct {
 }
 ```
 
+`protocol.AssignPayload` gains immutable `AssignmentID int64`. `assignBead`
+stores the durable assignment ID on the tracked worker before
+`buildAssignPayload`; correction routing and `assignHandoffToWorker` do the same.
+`worker.handleAssign` rejects a missing/nonpositive identity and retains it for
+QG, READY, reconnect, and handoff. The evidence path's assignment component,
+decoded `QGEvidence.AssignmentID`, active/requeued assignment row, bead,
+worktree, and READY identity must all agree. A correction worker's next
+checkpoint uses its current correction assignment ID; prior evidence remains
+bound to the checkpoint's origin assignment.
+
 Before sending READY, the worker atomically writes and fsyncs QG evidence under
 the assigned project-state evidence directory. It enters an
 `awaiting_review_ack` phase and retains
@@ -585,9 +605,24 @@ the assigned project-state evidence directory. It enters an
 Initial READY carries both the inline evidence and its file reference. The
 dispatcher canonicalizes and hash-verifies the referenced file, decodes it, and
 requires byte-for-byte canonical JSON equality with the inline evidence before
-creating a checkpoint. Missing reference, mismatched bytes/hash, or unsafe path
+creating a checkpoint. The canonical path must equal the exact path derived from
+configured directory, bead, assignment, and ready attempt—not merely remain
+beneath the directory—and reference `RunID` must equal decoded and inline
+`RunID`. Missing reference, mismatched bytes/hash/identity, or unsafe path
 selects the legacy-unverified path and forces dispatcher QG; it can never
 authorize integration. Reconnect reuses the same `QGEvidenceRef`.
+
+`TestReadyEvidenceIdentityValidation` submits matching evidence, different
+inline canonical content against the same file, wrong reference hash, wrong
+run ID, wrong assignment ID, and path/symlink escape. Every mismatch must avoid
+trusted checkpoint creation and force the dispatcher-owned legacy QG path.
+
+While the socket remains connected, awaiting-ACK state starts a five-second
+timer. Timeout retransmits the identical READY/attempt/reference, doubles the
+interval up to a 30-second cap, and never creates a new attempt or reruns QG.
+ACK clears the timer only after identity validation; reconnect restarts it from
+five seconds. `TestReadyForReviewAckLiveRetransmit` drops ACK on a live socket
+and proves one canonical checkpoint and one review.
 
 The dispatcher validates READY, transactionally creates or reuses the
 checkpoint and linked review ops run, commits, and only then sends ACK.
@@ -655,6 +690,10 @@ CREATE TABLE review_checkpoints (
     artifact_path TEXT,
     artifact_sha256 TEXT,
     artifact_bytes INTEGER NOT NULL DEFAULT 0,
+    recovery_artifact_path TEXT,
+    recovery_artifact_sha256 TEXT,
+    recovery_artifact_bytes INTEGER NOT NULL DEFAULT 0,
+    recovery_artifact_finding_count INTEGER NOT NULL DEFAULT 0,
     ops_run_id INTEGER,
     integration_target_before_sha TEXT,
     integration_approved_head_sha TEXT,
@@ -951,6 +990,20 @@ ordinary ready queue.
 
 The dispatcher becomes completion owner for evidence-backed checkpoints.
 
+`beginCheckpointIntegration` reads the live target ref immediately before
+integration intent and compare-and-swaps only when it equals the checkpoint's
+`target_sha`. The merge coordinator receives `ExpectedTargetSHA`; a ref change
+between intent and merge returns typed `ErrTargetMoved` before any semantic
+merge. Either mismatch transitions the checkpoint to `recovery_running` with
+`RecoveryRefreshTarget`, preserves the assignment/worktree/approval, and keeps
+the bead out of ordinary queues. Target refresh or rebase must run QG and review
+again under a new target-bound checkpoint key; only after the replacement is
+durable does the stale checkpoint become `superseded`.
+
+`TestReviewIntegrationTargetInvalidation` advances the target after approval and
+again at the merge compare point. Both cases must avoid merge, assignment
+completion, and bead reopen, then produce new target-bound QG/review evidence.
+
 On approval:
 
 1. compare-and-swap checkpoint `review_running -> approved`;
@@ -970,6 +1023,26 @@ used by:
 
 - legacy worker `DONE(QualityGatePassed=true)`;
 - durable approved checkpoint recovery.
+
+`checkPreMergeQG` runs for legacy or untrusted evidence only. A durable
+checkpoint revalidates its immutable evidence and live target but does not run a
+redundant dispatcher QG for the same key. `handleNoopMerge` and
+`completeEpicRebaseChild` must call the same checkpoint proof/finalization
+primitive as `finalizeSuccessfulMerge`:
+
+- no-op requires ancestry proof that the approved head is already reachable
+  from the expected target, records the observed target, and advances every
+  integration step;
+- epic-rebase-child updates the epic target with an expected-ref compare,
+  records its observed ref, and advances the same assignment/bead/checkpoint
+  steps;
+- crashes between either ref side effect and DB proof reconcile from ancestry
+  and never rerun QG, review, or semantic merge.
+
+`TestReviewIntegrationSpecialBranches` drives durable approval through
+`checkPreMergeQG`, `handleNoopMerge`, and `completeEpicRebaseChild`, proving QG
+is skipped only for trusted evidence and both special branches become
+`integrated` idempotently.
 
 `ReviewResultPayload` gains a completion-owner marker. New workers clear their
 pending local QG state and do not echo `DONE` when the dispatcher owns
@@ -1496,14 +1569,20 @@ Throughput reporting should distinguish:
 - create/write/fsync/hash failure fails approval closed;
 - janitor never removes an artifact referenced by a non-terminal checkpoint;
 - janitor treats only `integrated` and `superseded` as terminal and retains
-  approved, rejected, failed, blocked, quarantined, and manual-pending artifacts;
+  approved, rejected, failed, blocked, quarantined, and manual-pending artifacts
+  in `TestReviewArtifactTerminalStateMatrix`;
 - oversized findings switch to a hash-verified recovery artifact without
   dropping gating obligations.
+- `TestReviewArtifactAndFindingOverflow` restarts before correction delivery and
+  reconstructs the exact persisted recovery reference without compact-row
+  regeneration;
 - QG evidence is written outside an unconfigured temporary Git worktree and
   does not weaken dirty-file detection.
 - `TestReadyEvidenceProductionAssignPath` proves the real assignment builder and
   socket deliver the configured directory without direct payload seeding, and
   initial READY inline/file evidence matches exactly.
+- `TestReadyEvidenceIdentityValidation` rejects content, hash, run, assignment,
+  and path mismatches into dispatcher-owned legacy QG.
 
 ### Checkpoint store tests
 
@@ -1529,6 +1608,8 @@ Throughput reporting should distinguish:
   maintenance loop discovers ancestry and finalizes without restart;
 - READY ACK is consumed through `worker.Run/handleMessage`, and phase-aware
   reconnect is consumed through dispatcher `handleReconnect`;
+- live lost ACK retransmits the identical READY on a bounded timer through
+  `TestReadyForReviewAckLiveRetransmit`;
 - legacy READY without evidence forces dispatcher QG before merge in
   `TestLegacyReadyForReviewForcesDispatcherQG`;
 - an old-worker duplicate `DONE` is harmless.
@@ -1564,6 +1645,10 @@ Throughput reporting should distinguish:
 - conflict and non-conflict integration failures remain checkpoint-scoped,
   preserve proof/work, and never reopen through
   `TestReviewIntegrationFailureRecovery`;
+- target movement after approval and at merge compare forces target-bound
+  QG/review through `TestReviewIntegrationTargetInvalidation`;
+- no-op and epic-rebase-child outcomes finalize checkpoint proof through
+  `TestReviewIntegrationSpecialBranches`;
 - changed HEAD invalidates the checkpoint;
 - recovery attempts and backoff survive dispatcher restart;
 - changing worker/process identity does not reset a failure fingerprint budget;
@@ -1600,19 +1685,21 @@ Throughput reporting should distinguish:
 The epic acceptance command is:
 
 ```bash
-bash -euo pipefail -c 'test "$(git branch --show-current)" = main; out=$(go test -v -count=1 -timeout=240s ./pkg/dispatcher ./cmd/oro -run "^(TestDurableReviewCheckpointEndToEnd|TestDurableReviewCheckpointProductionComposition|TestReviewQuarantineSurfaceParity)$"); grep -Fq -- "--- PASS: TestDurableReviewCheckpointEndToEnd" <<<"$out"; grep -Fq -- "--- PASS: TestDurableReviewCheckpointProductionComposition" <<<"$out"; grep -Fq -- "--- PASS: TestReviewQuarantineSurfaceParity" <<<"$out"'
+bash -euo pipefail -c 'test "$(git branch --show-current)" = main; tests="TestReviewFindingWireRoundTrip TestReviewOutcomeRequiredCoverage TestReviewArtifactAndFindingOverflow TestReviewArtifactJanitorScheduled TestReviewArtifactTerminalStateMatrix TestReadyForReviewAckReplay TestReadyForReviewAckLiveRetransmit TestReadyEvidenceDoesNotDirtyWorktree TestReadyEvidenceProductionAssignPath TestReadyEvidenceIdentityValidation TestLegacyReadyForReviewForcesDispatcherQG TestReviewCheckpointCanonicalKeyMigration TestReviewOpsRunCheckpointTransaction TestReviewCheckpointStartupOrdering TestReviewCheckpointGracefulShutdownRecovery TestReviewCheckpointSocketEOFRecovery TestReviewCheckpointSendFailureRecovery TestReviewCheckpointAdministrativeWorkerLifecycle TestReviewCheckpointExternalCloseOverride TestReviewCheckpointHandoffPreemptRecovery TestReviewIntegrationCrashRecovery TestReviewIntegrationFailureRecovery TestReviewIntegrationTargetInvalidation TestReviewIntegrationSpecialBranches TestReviewApprovedManualIntegrationPreserved TestReviewFindingsReplacementWorker TestReviewRecoveryBudgetAndReactivation TestReviewQuarantineReminderScheduler TestAcceptanceContractSharedParser TestReviewAcceptanceGapContractRepair TestReviewQuarantineSurfaceParity TestDurableReviewCheckpointEndToEnd TestDurableReviewCheckpointProductionComposition"; pattern="^($(tr " " "|" <<<"$tests"))$"; out=$(go test -v -count=1 -timeout=300s ./pkg/... ./cmd/oro -run "$pattern"); for name in $tests; do grep -Fq -- "--- PASS: $name" <<<"$out"; done'
 ```
 
-Assert: exit code 0, all three exact named tests exist and emit PASS markers on
-`main`.
+Assert: exit code 0 and all 33 exact named tests emit PASS markers on `main`.
 
 `TestDurableReviewCheckpointEndToEnd` exercises:
 
 1. production-built `ASSIGN` carrying the canonical evidence directory,
-   initial QG pass, fsynced evidence, accepted READY, and a clean worktree;
+   immutable assignment ID, exact assignment-scoped path, initial QG pass,
+   fsynced evidence, accepted READY, and a clean worktree, followed by rejection
+   of content/hash/run/assignment/path mismatches;
 2. dispatcher death after READY receipt but before checkpoint commit;
-3. lost ACK and phase-aware reconnect through both production event loops, one
-   canonical checkpoint, and one review;
+3. lost ACK on a live socket, bounded identical retransmit, phase-aware
+   reconnect through both production event loops, one canonical checkpoint,
+   and one review;
 4. structured rejection with misleading infrastructure keywords in the raw
    transcript;
 5. original-worker death and exact inline or referenced findings delivered by
@@ -1626,7 +1713,8 @@ Assert: exit code 0, all three exact named tests exist and emit PASS markers on
 10. live socket EOF, write failure, administrative kill/restart,
     focus-immediate, hard shutdown, organic handoff, generic preempt, and
     external close preserving or durably overriding exact checkpoint phase
-    without unapproved merge;
+    without unapproved merge; post-handoff correction `ASSIGN` must contain
+    byte-identical findings and the canonical evidence directory;
 11. failed required persona preventing approval, typed docs-only approval, and
     legacy READY forcing dispatcher QG;
 12. acceptance-gap contract repair blocking coding, accepting a valid revision,
@@ -1638,10 +1726,13 @@ Assert: exit code 0, all three exact named tests exist and emit PASS markers on
     reconciliation;
 15. dispatcher death after git merge but before merge-proof persistence, then
     idempotent assignment/bead finalization without QG or review replay, plus
-    checkpoint-scoped conflict and non-conflict merge-failure recovery;
+    target invalidation, checkpoint-scoped conflict and non-conflict
+    merge-failure recovery, no-op integration, and epic-rebase-child
+    finalization;
 16. bounded autonomous failure recovery, checkpoint-scoped quarantine,
     unrelated bead dispatch, fake-clock reminder scheduling, input-change
-    reactivation, and a due terminal-artifact maintenance sweep;
+    reactivation, and the full artifact terminal-state matrix before a due
+    maintenance sweep;
 17. zero active assignments, failed or processless running review ops runs,
     non-terminal review checkpoints, or unclosed target bead at completion.
 
@@ -1677,13 +1768,13 @@ listed production call sites in child `Read:` fields.
 |---|---|---|
 | Shared finding wire contract | new `pkg/reviewcontract`, `pkg/ops/finding.go`, `pkg/protocol/message.go:AssignPayload.ReviewRecovery`, worker decode | `TestReviewFindingWireRoundTrip` |
 | Typed review contract | `pkg/ops/ops.go:Result/Review`, `review_parse.go`, `review_validation.go`, `review_merge.go`, `personas.go`, shared finding model | `TestReviewOutcomeRequiredCoverage` |
-| Bounded artifacts and findings | `pkg/ops/exec_spawner.go`, `pkg/ops/finding.go`, dispatcher config/path injection, `spawnBackgroundLoops/reviewMaintenanceLoop` | `TestReviewArtifactAndFindingOverflow`, `TestReviewArtifactJanitorScheduled` |
-| READY evidence handshake | `pkg/worker/worker.go:runQGAndReport/reconnect/handleMessage/handleReadyForReviewAck/evidence writer`, `buffer.go`, `pkg/protocol/message.go`, `pkg/dispatcher/assign_payload.go:buildAssignPayload`, `worker_pool.go:assignHandoffToWorker`, dispatcher `handleReadyForReview/handleReconnect/processReconnectUnderLock/checkPreReviewGitHygiene`, `cmd/oro:ResolveDaemonPaths/buildDispatcherWithReviewTimeoutsAndCleanliness` | `TestReadyForReviewAckReplay`, `TestReadyEvidenceDoesNotDirtyWorktree`, `TestReadyEvidenceProductionAssignPath`, `TestLegacyReadyForReviewForcesDispatcherQG` |
+| Bounded artifacts and findings | `pkg/ops/exec_spawner.go`, `pkg/ops/finding.go`, checkpoint recovery-artifact reference, dispatcher config/path injection, `spawnBackgroundLoops/reviewMaintenanceLoop` | `TestReviewArtifactAndFindingOverflow`, `TestReviewArtifactJanitorScheduled`, `TestReviewArtifactTerminalStateMatrix` |
+| READY evidence handshake | `pkg/worker/worker.go:handleAssign/runQGAndReport/reconnect/handleMessage/handleReadyForReviewAck/evidence writer/ACK timer`, `buffer.go`, `pkg/protocol/message.go:AssignPayload/QGEvidence`, `pkg/dispatcher/dispatcher.go:assignBead`, `assign_payload.go:buildAssignPayload`, `worker_pool.go:assignHandoffToWorker`, dispatcher `handleReadyForReview/handleReconnect/processReconnectUnderLock/checkPreReviewGitHygiene`, `cmd/oro:ResolveDaemonPaths/buildDispatcherWithReviewTimeoutsAndCleanliness` | `TestReadyForReviewAckReplay`, `TestReadyForReviewAckLiveRetransmit`, `TestReadyEvidenceDoesNotDirtyWorktree`, `TestReadyEvidenceProductionAssignPath`, `TestReadyEvidenceIdentityValidation`, `TestLegacyReadyForReviewForcesDispatcherQG` |
 | Checkpoint schema/store | `pkg/protocol/schema.go:SchemaDDL/MigrateBeadSchema/beads_ready` plus checkpoint repository | `TestReviewCheckpointCanonicalKeyMigration` |
 | Review ops lifecycle | `dispatcher.handleReadyForReview/handleReviewResult`, `ops_runs.go` | `TestReviewOpsRunCheckpointTransaction` |
 | Startup and queue recovery | `dispatcher.Run/startupRecovery/restoreState/tryAssign/statusQueueBeads/connCloseCleanup/shutdownWithTimeout/applyKillWorker/applyRestartWorker/restartWorkerIfStillOnBead/checkClosedBeadAssignments/shutdownWorkerForClose/finalizeExternalClose`, `worker_pool.go:sendToWorker/heartbeat/scale-down`, `handleShutdownApproved/shutdownSequence/shutdownResetActiveBeads/requeueAssignmentForShutdown` | `TestReviewCheckpointStartupOrdering`, `TestReviewCheckpointGracefulShutdownRecovery`, `TestReviewCheckpointSocketEOFRecovery`, `TestReviewCheckpointSendFailureRecovery`, `TestReviewCheckpointAdministrativeWorkerLifecycle`, `TestReviewCheckpointExternalCloseOverride` |
 | Checkpoint handoff and preempt | `pkg/worker/worker.go:handleContextThreshold/handlePreempt/SendHandoff`, dispatcher `applyPreempt/handleHandoff/shutdownWorkerForHandoff/respawnWorker`, `worker_pool.go:assignHandoffToWorker`, `releaseCheckpointOwnedWorker` and phase schedulers | `TestReviewCheckpointHandoffPreemptRecovery` |
-| Dispatcher-owned integration | `handleDone/mergeAndComplete/finalizeSuccessfulMerge`, checkpoint merge-error routing, `spawnBackgroundLoops/reviewMaintenanceLoop/reconcileManualIntegrationCheckpoint` | `TestReviewIntegrationCrashRecovery`, `TestReviewIntegrationFailureRecovery`, `TestReviewApprovedManualIntegrationPreserved` |
+| Dispatcher-owned integration | `handleDone/beginCheckpointIntegration/mergeAndComplete/checkPreMergeQG/handleNoopMerge/completeEpicRebaseChild/finalizeSuccessfulMerge`, expected-target merge contract, checkpoint merge-error routing, `spawnBackgroundLoops/reviewMaintenanceLoop/reconcileManualIntegrationCheckpoint` | `TestReviewIntegrationCrashRecovery`, `TestReviewIntegrationFailureRecovery`, `TestReviewIntegrationTargetInvalidation`, `TestReviewIntegrationSpecialBranches`, `TestReviewApprovedManualIntegrationPreserved` |
 | Structured rejection delivery | `routeRejectedCheckpoint`, worker-pool reservation/heartbeat paths, `assign_payload.go:buildAssignPayload`, worker recovery preflight | `TestReviewFindingsReplacementWorker` |
 | Autonomous recovery | recovery action/store/executor, checkpoint-scoped quarantine, fingerprint sampler, `spawnBackgroundLoops/reviewMaintenanceLoop` | `TestReviewRecoveryBudgetAndReactivation`, `TestReviewQuarantineReminderScheduler` |
 | Acceptance repair/admission | new `pkg/acceptance`, task create/update, `cmd/oro/cmd_work.go:acAlreadySatisfied` with private parser removal, `checkBeadReady`, `handleReviewResult/routeAcceptanceGap/handleContractRepairResult`, contract ops/startup reconciliation, review prompt | `TestAcceptanceContractSharedParser`, `TestReviewAcceptanceGapContractRepair` |
@@ -1738,7 +1829,17 @@ premortem:
     - risk: "Production config has an evidence directory but ASSIGN never delivers it."
       location: "pkg/dispatcher/assign_payload.go:buildAssignPayload; pkg/worker/worker.go:handleAssign"
       severity: high
-      mitigation_checked: "A real dispatcher/worker socket test forbids direct payload seeding, asserts canonical QGEvidenceDir on ASSIGN, and follows the resulting evidence through READY acceptance."
+      mitigation_checked: "A real dispatcher/worker socket test forbids direct payload seeding, asserts AssignmentID and canonical QGEvidenceDir on ASSIGN, and follows the exact assignment-scoped evidence path through READY acceptance."
+
+    - risk: "Matching happy-path evidence hides ignored content, hash, run, assignment, or path mismatches."
+      location: "pkg/dispatcher/dispatcher.go:handleReadyForReview"
+      severity: high
+      mitigation_checked: "Named negative proof submits every mismatch class and requires untrusted legacy handling plus dispatcher-owned QG."
+
+    - risk: "A dropped READY ACK on a live socket waits forever for reconnect."
+      location: "pkg/worker/worker.go:runQGAndReport/handleReadyForReviewAck"
+      severity: high
+      mitigation_checked: "Non-evictable READY state retransmits the identical attempt on a bounded 5-to-30-second timer; live-socket proof requires one checkpoint and one review."
 
     - risk: "Ops and protocol use different finding models or create an import cycle."
       location: "pkg/ops/finding.go; pkg/ops/ops.go; pkg/protocol/message.go"
@@ -1808,7 +1909,7 @@ premortem:
     - risk: "A stale approval is reused after code, target, acceptance, QG script, or policy changes."
       location: "pkg/dispatcher/dispatcher.go:handleReadyForReview; pkg/dispatcher/dispatcher.go:mergeAndComplete"
       severity: high
-      mitigation_checked: "Current code has no immutable review key. Design keys reuse to all relevant hashes and requires verification again before integration."
+      mitigation_checked: "Current code has no immutable review key. Design keys reuse to all relevant hashes, compares the live target before intent and inside the merger, and requires target-bound QG/review on mismatch."
 
     - risk: "A reviewer false positive is automatically promoted into permanent acceptance criteria."
       location: "pkg/ops/finding.go; pkg/dispatcher/dispatcher.go:handleReviewRejection"
@@ -1839,6 +1940,16 @@ premortem:
       location: "pkg/ops/ops.go:runWith; pkg/protocol/message.go:MaxMessageSize"
       severity: high
       mitigation_checked: "Current process accumulates output in memory. Design requires 0600 artifacts, byte caps, hashes, truncation markers, and retention policy."
+
+    - risk: "Overflow findings survive only in process memory and disappear on restart."
+      location: "review_checkpoints recovery artifact columns; pkg/dispatcher/assign_payload.go"
+      severity: high
+      mitigation_checked: "The lossless recovery-artifact reference is fsynced and committed with rejection; restart never regenerates it from compact rows."
+
+    - risk: "No-op or epic-rebase-child success closes the bead but leaves its checkpoint integrating."
+      location: "pkg/dispatcher/dispatcher.go:handleNoopMerge/completeEpicRebaseChild"
+      severity: high
+      mitigation_checked: "Both branches share observed-target proof and the idempotent checkpoint finalizer, with named branch and crash coverage."
 
     - risk: "Contract validation blocks legitimate legacy operational beads."
       location: "pkg/dispatcher/dispatcher.go:checkBeadReady"
