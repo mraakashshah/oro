@@ -378,6 +378,23 @@ func TestResidualScanUsesScopedMarkers(t *testing.T) {
 	}
 }
 
+func TestResidualScanRejectsOwnershipMarkersPresentOnlyInArgv(t *testing.T) {
+	markers := []string{
+		"ORO_SOCKET_PATH=/tmp/project-a/oro.sock",
+		"ORO_WORKER_ID=w1",
+	}
+	residuals := scanOroResidualProcessSnapshots([]processSnapshot{
+		{
+			PID: 2117, PPID: 1, PGID: 2117, Session: 2117,
+			Command: "foreign-helper --note " + markers[0] + " --note " + markers[1],
+		},
+	}, nil, markers)
+
+	if len(residuals) != 0 {
+		t.Fatalf("residuals = %+v, want no ownership match from argv-only markers", residuals)
+	}
+}
+
 func TestResidualScanUsesPathBoundariesForRoots(t *testing.T) {
 	residuals := scanOroResidualProcessSnapshots([]processSnapshot{
 		{PID: 2121, PPID: 1, PGID: 2121, Session: 2121, Command: "go test -worktree /tmp/oro/projects/foo"},

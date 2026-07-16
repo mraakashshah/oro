@@ -138,7 +138,7 @@ func TestInspectProcessEnvironmentsBoundsLargeTableAndIgnoresArgvMarkers(t *test
 			case spoofedPID:
 				command += " " + strings.Join(markers, " ")
 			case ownedPID:
-				environment += " " + strings.Join(markers, " ")
+				environment = strings.Join(markers, " ") + " " + environment
 			}
 			_, _ = fmt.Fprintf(&commands, "%d %s\n", process.PID, command)
 			_, _ = fmt.Fprintf(&environments, "%d %d %s %s\n", process.PID, process.PGID, command, environment)
@@ -155,6 +155,24 @@ func TestInspectProcessEnvironmentsBoundsLargeTableAndIgnoresArgvMarkers(t *test
 	}
 	if len(owned) != 1 || owned[0].PID != ownedPID {
 		t.Fatalf("owned processes = %#v, want only PID %d (argv spoof PID %d must not match)", owned, ownedPID, spoofedPID)
+	}
+}
+
+func TestOwnedProcessEnvironmentScanRejectsMarkersEmbeddedInSingleForeignVariable(t *testing.T) {
+	markers := []string{
+		"ORO_SOCKET_PATH=/tmp/owned-process.sock",
+		"ORO_WORKER_ID=owned-worker",
+	}
+	const pid = 60_001
+	const command = "helper --serve"
+
+	owned := ownedProcessesFromEnvironmentSnapshot(
+		fmt.Sprintf("%d %d %s NOTE=foreign %s %s text\n", pid, pid, command, markers[0], markers[1]),
+		map[int]string{pid: command},
+		markers,
+	)
+	if len(owned) != 0 {
+		t.Fatalf("owned processes = %#v, want none when both markers occur inside one foreign environment value", owned)
 	}
 }
 

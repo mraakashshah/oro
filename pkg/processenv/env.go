@@ -80,19 +80,15 @@ func ForWorkdir(env []string, workdir string) []string {
 // WithWorkerOwnership replaces inherited ownership values with the exact
 // dispatcher socket and worker ID for a managed worker subprocess.
 func WithWorkerOwnership(env []string, socketPath, workerID string) []string {
-	out := make([]string, 0, len(env)+2)
+	markers := WorkerOwnershipMarkers(socketPath, workerID)
+	out := make([]string, 0, len(env)+len(markers))
+	out = append(out, markers...)
 	for _, entry := range env {
 		key, _, ok := strings.Cut(entry, "=")
 		if ok && (key == SocketPathEnv || key == WorkerIDEnv) {
 			continue
 		}
 		out = append(out, entry)
-	}
-	if socketPath != "" {
-		out = append(out, SocketPathEnv+"="+socketPath)
-	}
-	if workerID != "" {
-		out = append(out, WorkerIDEnv+"="+workerID)
 	}
 	return out
 }
@@ -106,14 +102,30 @@ func WorkerOwnershipMarkers(socketPath, workerID string) []string {
 	return []string{SocketPathEnv + "=" + socketPath, WorkerIDEnv + "=" + workerID}
 }
 
-// CommandContainsAllMarkers reports whether command contains every exact
-// marker as a boundary-delimited command/environment entry.
+// CommandContainsAllMarkers reports whether command begins with every exact
+// ownership marker as a contiguous environment-entry prefix.
 func CommandContainsAllMarkers(command string, markers []string) bool {
 	if len(markers) == 0 {
 		return false
 	}
-	for _, marker := range markers {
-		if marker == "" || !CommandContainsMarker(command, marker) {
+	remaining := append([]string(nil), markers...)
+	command = strings.TrimLeft(command, " \t\r\n")
+	for len(remaining) > 0 {
+		matched := false
+		for index, marker := range remaining {
+			if marker == "" || !strings.HasPrefix(command, marker) {
+				continue
+			}
+			end := len(marker)
+			if end < len(command) && !isCommandMarkerBoundary(command[end]) {
+				continue
+			}
+			command = strings.TrimLeft(command[end:], " \t\r\n")
+			remaining = append(remaining[:index], remaining[index+1:]...)
+			matched = true
+			break
+		}
+		if !matched {
 			return false
 		}
 	}
