@@ -2,7 +2,8 @@
 
 Date: 2026-07-16
 
-Status: Validated by adversarial Gate 8; beadcraft pending
+Status: Validated by adversarial Gate 8; beadcraft graph `drc-factory`
+created with 10 work-package epics and 53 leaf tasks
 
 ## 1. Goal
 
@@ -1819,9 +1820,10 @@ production-wiring tests to the final integration beads.
 
 ### Required beadcraft work packages
 
-At the design-review gate these are task placeholders; Stage 4 beadcraft assigns
-IDs, recursively splits each to the Rule-of-Five size limit, and preserves the
-listed production call sites in child `Read:` fields.
+At the design-review gate these were task placeholders. Stage 4 beadcraft
+assigned them under `drc-factory`, recursively split each to the Rule-of-Five
+size limit, and preserved the listed production call sites in child `Read:`
+fields.
 
 | Work package | Required production wiring | Required named proof |
 |---|---|---|
