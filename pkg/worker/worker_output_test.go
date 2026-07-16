@@ -60,6 +60,14 @@ func TestWorkerOutputRedactsCredentialAssignmentsEndToEnd(t *testing.T) {
 			},
 			want: `OPENAI_API_KEY=\"[REDACTED]\" MODE=development`,
 		},
+		{
+			name:   "structured escaped wrapper with internal quote followed by whitespace",
+			format: worker.StreamFormatClaudeJSON,
+			lines: []string{
+				textDeltaLine(`ordinary text` + "\n" + `OPENAI_API_KEY=\"` + sentinel + `\\\" still-secret\" MODE=development` + "\n"),
+			},
+			want: `OPENAI_API_KEY=\"[REDACTED]\" MODE=development`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()

@@ -361,6 +361,7 @@ func TestDrainOutputRedactsCredentialAssignmentsFromLogsAndMemoryExtraction(t *t
 	quotedLine := `quoted CLAUDE_CODE_OAUTH_TOKEN="` + claudeToken + `" escaped OPENAI_API_KEY=\"` + openAIKey + `\" already OPENAI_API_KEY=[REDACTED]`
 	quotedParityLine := `even OPENAI_API_KEY="` + openAIKey + `\\" MODE=development odd OPENAI_API_KEY="` + openAIKey + `\\\" still-secret" MODE=development`
 	escapedInternalQuoteLine := `escaped internal OPENAI_API_KEY=\"` + openAIKey + `\\\"still-secret\" MODE=development`
+	escapedAmbiguousWhitespaceLine := `escaped ambiguous OPENAI_API_KEY=\"` + openAIKey + `\\\" still-secret\" MODE=development`
 	spacedLine := "spaced OPENAI_API_KEY = " + openAIKey + " MODE=development"
 	tabbedLine := "tabbed CLAUDE_CODE_OAUTH_TOKEN\t=\t" + claudeToken + " MODE=development"
 
@@ -378,6 +379,7 @@ func TestDrainOutputRedactsCredentialAssignmentsFromLogsAndMemoryExtraction(t *t
 				textDeltaLine(quotedLine+"\n"),
 				textDeltaLine(quotedParityLine+"\n"),
 				textDeltaLine(escapedInternalQuoteLine+"\n"),
+				textDeltaLine(escapedAmbiguousWhitespaceLine+"\n"),
 				textDeltaLine(spacedLine+"\n"),
 				textDeltaLine(tabbedLine+"\n"),
 			),
@@ -385,7 +387,7 @@ func TestDrainOutputRedactsCredentialAssignmentsFromLogsAndMemoryExtraction(t *t
 		{
 			name:   "plaintext",
 			format: worker.StreamFormatLineText,
-			input:  strings.Join([]string{"ordinary text", credentialLine, quotedLine, quotedParityLine, escapedInternalQuoteLine, spacedLine, tabbedLine}, "\n") + "\n",
+			input:  strings.Join([]string{"ordinary text", credentialLine, quotedLine, quotedParityLine, escapedInternalQuoteLine, escapedAmbiguousWhitespaceLine, spacedLine, tabbedLine}, "\n") + "\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -404,6 +406,7 @@ func TestDrainOutputRedactsCredentialAssignmentsFromLogsAndMemoryExtraction(t *t
 					`OPENAI_API_KEY=\"[REDACTED]\"`,
 					"OPENAI_API_KEY=[REDACTED]",
 					`escaped internal OPENAI_API_KEY=\"[REDACTED]\" MODE=development`,
+					`escaped ambiguous OPENAI_API_KEY=\"[REDACTED]\" MODE=development`,
 					"spaced OPENAI_API_KEY = [REDACTED] MODE=development",
 					"tabbed CLAUDE_CODE_OAUTH_TOKEN\t=\t[REDACTED] MODE=development",
 					"ordinary text",
@@ -416,11 +419,11 @@ func TestDrainOutputRedactsCredentialAssignmentsFromLogsAndMemoryExtraction(t *t
 				if strings.Contains(output, "still-secret") {
 					t.Fatalf("quoted credential tail leaked in output: %q", output)
 				}
-				if got := strings.Count(output, "[REDACTED]"); got != 10 {
-					t.Fatalf("redaction count = %d, want 10: %q", got, output)
+				if got := strings.Count(output, "[REDACTED]"); got != 11 {
+					t.Fatalf("redaction count = %d, want 11: %q", got, output)
 				}
-				if got := strings.Count(output, "MODE=development"); got != 6 {
-					t.Fatalf("ordinary assignments after credentials = %d, want 6: %q", got, output)
+				if got := strings.Count(output, "MODE=development"); got != 7 {
+					t.Fatalf("ordinary assignments after credentials = %d, want 7: %q", got, output)
 				}
 			}
 		})

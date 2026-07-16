@@ -158,11 +158,15 @@ func credentialValueBounds(text string, start int) (valueStart, valueEnd int) {
 
 func escapedCredentialValueEnd(text string, start int) int {
 	for quote := start + 2; quote < len(text); quote++ {
-		if text[quote] == '"' && hasOddTrailingBackslashes(text, quote) && credentialValueEndsAfter(text, quote) {
+		if text[quote] == '"' && hasSingleTrailingBackslash(text, quote) && credentialValueEndsAfter(text, quote) {
 			return quote - 1
 		}
 	}
 	return len(text)
+}
+
+func hasSingleTrailingBackslash(text string, end int) bool {
+	return end > 0 && text[end-1] == '\\' && (end < 2 || text[end-2] != '\\')
 }
 
 func credentialValueEndsAfter(text string, quote int) bool {
