@@ -7831,14 +7831,8 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 	d.mu.Unlock()
 
 	if wasManaged && procMgr != nil {
-		if err := procMgr.Kill(workerID); err != nil {
-			d.mu.Lock()
-			delete(d.pendingManagedIDs, workerID)
-			delete(d.pendingManagedSince, workerID)
-			d.mu.Unlock()
-			_ = d.logEvent(ctx, "restart_worker_kill_failed", "dispatcher", beadID, workerID,
-				fmt.Sprintf(`{"error":%q}`, err.Error()))
-			return "", fmt.Errorf("kill worker before restart: %w", err)
+		if err := d.killManagedWorkerForRestart(ctx, procMgr, workerID, beadID); err != nil {
+			return "", err
 		}
 	}
 
@@ -7869,6 +7863,23 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 	}
 
 	return fmt.Sprintf("worker %s restarted", workerID), nil
+}
+
+func (d *Dispatcher) killManagedWorkerForRestart(
+	ctx context.Context,
+	procMgr ProcessManager,
+	workerID, beadID string,
+) error {
+	if err := procMgr.Kill(workerID); err != nil {
+		d.mu.Lock()
+		delete(d.pendingManagedIDs, workerID)
+		delete(d.pendingManagedSince, workerID)
+		d.mu.Unlock()
+		_ = d.logEvent(ctx, "restart_worker_kill_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"error":%q}`, err.Error()))
+		return fmt.Errorf("kill worker before restart: %w", err)
+	}
+	return nil
 }
 
 // applyPreempt gracefully preempts a worker for higher-priority work.
