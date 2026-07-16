@@ -343,7 +343,7 @@ func TestStopScansAndKillsOroOwnedResidualChildren(t *testing.T) {
 	if err := runStopSequence(context.Background(), cfg); err != nil {
 		t.Fatalf("runStopSequence: %v", err)
 	}
-	if got, want := killed, []int{2001, 2002}; !sameInts(got, want) {
+	if got, want := killed, []int{2001}; !sameInts(got, want) {
 		t.Fatalf("killed residual PIDs = %v, want %v", got, want)
 	}
 	if strings.Contains(buf.String(), "2003") {
@@ -358,21 +358,22 @@ func TestResidualScanDoesNotTreatBareToolNamesAsOwnership(t *testing.T) {
 		{PID: 2103, PPID: 1, PGID: 2103, Session: 2103, Command: "go test ./pkg/dispatcher -worktree /tmp/oro-owned-worktree"},
 	}, []string{"/tmp/oro-owned-worktree"}, defaultOroResidualMarkers("myproject", "/tmp/myproject/oro.sock"))
 
-	if len(residuals) != 1 || residuals[0].PID != 2103 {
-		t.Fatalf("residuals = %+v, want only root-owned process 2103", residuals)
+	if len(residuals) != 0 {
+		t.Fatalf("residuals = %+v, want no matches without exact scoped markers", residuals)
 	}
 }
 
 func TestResidualScanUsesScopedMarkers(t *testing.T) {
 	residuals := scanOroResidualProcessSnapshots([]processSnapshot{
 		{PID: 2111, PPID: 1, PGID: 2111, Session: 2111, Command: "ORO_ROLE=worker ORO_WORKER_ID=w1 go test ./pkg/dispatcher"},
-		{PID: 2112, PPID: 1, PGID: 2112, Session: 2112, Command: "ORO_SOCKET_PATH=/tmp/project-a/oro.sock ./scripts/quality_gate.sh"},
-		{PID: 2113, PPID: 1, PGID: 2113, Session: 2113, Command: "ORO_SOCKET_PATH=/tmp/project-ab/oro.sock ./scripts/quality_gate.sh"},
-		{PID: 2114, PPID: 1, PGID: 2114, Session: 2114, Command: "ORO_PROJECT=project-a ops-review"},
-		{PID: 2115, PPID: 1, PGID: 2115, Session: 2115, Command: "ORO_PROJECT=project-ab ops-review"},
-	}, nil, defaultOroResidualMarkers("project-a", "/tmp/project-a/oro.sock"))
+		{PID: 2112, PPID: 1, PGID: 2112, Session: 2112, Command: "ORO_SOCKET_PATH=/tmp/project-a/oro.sock ORO_WORKER_ID=w1 ./scripts/quality_gate.sh"},
+		{PID: 2113, PPID: 1, PGID: 2113, Session: 2113, Command: "ORO_SOCKET_PATH=/tmp/project-ab/oro.sock ORO_WORKER_ID=w1 ./scripts/quality_gate.sh"},
+		{PID: 2114, PPID: 1, PGID: 2114, Session: 2114, Command: "ORO_SOCKET_PATH=/tmp/project-a/oro.sock ORO_WORKER_ID=w2 ops-review"},
+		{PID: 2115, PPID: 1, PGID: 2115, Session: 2115, Command: "go test ./pkg/dispatcher -worktree /tmp/project-a"},
+		{PID: 2116, PPID: 1, PGID: 2116, Session: 2116, Command: "ORO_SOCKET_PATH=/tmp/project-a/oro.sock ORO_WORKER_ID=w10 sleep 3600"},
+	}, []string{"/tmp/project-a"}, []string{"ORO_SOCKET_PATH=/tmp/project-a/oro.sock", "ORO_WORKER_ID=w1"})
 
-	if got, want := residualPIDs(residuals), []int{2112, 2114}; !sameInts(got, want) {
+	if got, want := residualPIDs(residuals), []int{2112}; !sameInts(got, want) {
 		t.Fatalf("residual PIDs = %v, want scoped project/socket matches %v", got, want)
 	}
 }

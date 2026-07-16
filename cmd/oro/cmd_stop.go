@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"oro/pkg/processenv"
 )
 
 // stopConfig holds injectable dependencies for the graceful shutdown sequence.
@@ -652,10 +654,11 @@ func scanOroResidualProcessSnapshots(snapshots []processSnapshot, roots, markers
 }
 
 func residualEvidence(command string, roots, markers []string) string {
-	for _, marker := range markers {
-		if marker != "" && commandContainsMarker(command, marker) {
-			return "marker:" + marker
+	if len(markers) > 0 {
+		if processenv.CommandContainsAllMarkers(command, markers) {
+			return "markers:" + strings.Join(markers, ",")
 		}
+		return ""
 	}
 	for _, root := range roots {
 		if root != "" && commandContainsRoot(command, root) {
@@ -663,21 +666,6 @@ func residualEvidence(command string, roots, markers []string) string {
 		}
 	}
 	return ""
-}
-
-func commandContainsMarker(command, marker string) bool {
-	for start := 0; ; {
-		idx := strings.Index(command[start:], marker)
-		if idx < 0 {
-			return false
-		}
-		idx += start
-		end := idx + len(marker)
-		if commandBoundaryBefore(command, idx) && commandBoundaryAfter(command, end) {
-			return true
-		}
-		start = idx + 1
-	}
 }
 
 func commandContainsRoot(command, root string) bool {
@@ -703,13 +691,6 @@ func commandBoundaryBefore(s string, idx int) bool {
 	return isCommandBoundary(s[idx-1])
 }
 
-func commandBoundaryAfter(s string, idx int) bool {
-	if idx >= len(s) {
-		return true
-	}
-	return isCommandBoundary(s[idx])
-}
-
 func rootBoundaryAfter(s string, idx int) bool {
 	if idx >= len(s) {
 		return true
@@ -725,7 +706,7 @@ func isCommandBoundary(b byte) bool {
 }
 
 func defaultProcessSnapshots(ctx context.Context) ([]processSnapshot, error) {
-	out, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,ppid=,pgid=,sess=,command=").Output()
+	out, err := exec.CommandContext(ctx, "ps", "axeww", "-o", "pid=,ppid=,pgid=,sess=,command=").Output()
 	if err != nil {
 		return nil, fmt.Errorf("list processes: %w", err)
 	}

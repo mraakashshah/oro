@@ -1,10 +1,12 @@
 package dispatcher_test
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -148,10 +150,25 @@ func TestExecProcessManager_Kill_SendsSignalToTrackedProcess(t *testing.T) {
 // Kill with an untracked ID returns an error.
 func TestExecProcessManager_Kill_UnknownIDReturnsError(t *testing.T) {
 	pm := dispatcher.NewExecProcessManager("/tmp/test.sock")
+	scanCalled := false
+	killCalled := false
+	pm.SetResidualProcessHooks(
+		func(context.Context, []string) ([]dispatcher.OwnedProcess, error) {
+			scanCalled = true
+			return nil, nil
+		},
+		func(context.Context, ...dispatcher.OwnedProcess) error {
+			killCalled = true
+			return nil
+		},
+	)
 
 	err := pm.Kill("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for unknown worker ID, got nil")
+	}
+	if scanCalled || killCalled {
+		t.Fatalf("unknown-worker Kill called residual hooks: scan=%t kill=%t", scanCalled, killCalled)
 	}
 }
 
@@ -345,6 +362,193 @@ func TestExecProcessManager_Kill_KillsProcessGroup(t *testing.T) {
 	if err := p.Signal(syscall.Signal(0)); err == nil {
 		t.Errorf("grandchild process %d should be dead after Kill, but signal 0 succeeded", grandchildPID)
 	}
+}
+
+func TestExecProcessManagerKillTerminatesDetachedOwnedProcess(t *testing.T) {
+	if os.Getenv("ORO_TEST_DETACHED_OWNED_PROCESS_HELPER") == "1" {
+		runDetachedOwnedProcessHelper(t)
+		return
+	}
+	if os.Getenv("ORO_TEST_DETACHED_WORKER_HELPER") == "1" {
+		runDetachedWorkerHelper(t)
+		return
+	}
+
+	t.Setenv("ORO_SOCKET_PATH", "/tmp/wrong-project.sock")
+	t.Setenv("ORO_WORKER_ID", "wrong-worker")
+	tmpDir := t.TempDir()
+	socketPath := filepath.Join(tmpDir, "project-a.sock")
+	workerID := "worker-owned"
+	pidPath := filepath.Join(tmpDir, "detached.pid")
+
+	pm := dispatcher.NewOroProcessManager(socketPath, "")
+	productionEnv := append([]string(nil), pm.CmdForWorker(workerID).Env...)
+	spawnCount := 0
+	pm.SetCmdFactory(func(id string) *exec.Cmd {
+		spawnCount++
+		if spawnCount == 1 {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestExecProcessManagerKillTerminatesDetachedOwnedProcess$") //nolint:gosec // test helper re-executes this binary
+			cmd.Env = append(append([]string(nil), productionEnv...),
+				"ORO_TEST_DETACHED_WORKER_HELPER=1",
+				"ORO_TEST_DETACHED_PID_PATH="+pidPath,
+			)
+			return cmd
+		}
+		cmd := exec.Command("sleep", "3600") //nolint:gosec // test-only replacement process
+		cmd.Env = testWorkerOwnershipEnv(os.Environ(), socketPath, id)
+		return cmd
+	})
+
+	foreignSocket := startDetachedTestProcess(t, "/tmp/other-project.sock", workerID)
+	foreignWorker := startDetachedTestProcess(t, socketPath, "worker-other")
+	var ownedDetachedPID int
+	t.Cleanup(func() {
+		if ownedDetachedPID > 1 {
+			_ = syscall.Kill(-ownedDetachedPID, syscall.SIGKILL)
+			_ = syscall.Kill(ownedDetachedPID, syscall.SIGKILL)
+		}
+		_ = pm.Kill(workerID)
+	})
+
+	tracked, err := pm.Spawn(workerID)
+	if err != nil {
+		t.Fatalf("Spawn managed worker: %v", err)
+	}
+	ownedDetachedPID = waitForDetachedOwnership(t, pidPath, socketPath, workerID)
+
+	if err := pm.Kill(workerID); err != nil {
+		t.Fatalf("Kill managed worker: %v", err)
+	}
+	replacement, err := pm.Spawn(workerID)
+	if err != nil {
+		t.Fatalf("Spawn same-ID replacement: %v", err)
+	}
+	if replacement == nil {
+		t.Fatal("Spawn same-ID replacement returned nil process")
+	}
+
+	if processAliveForTest(tracked.Pid) {
+		t.Fatalf("tracked worker PID %d survived Kill", tracked.Pid)
+	}
+	if processAliveForTest(ownedDetachedPID) {
+		t.Fatalf("detached owned PID %d survived Kill before same-ID Spawn returned", ownedDetachedPID)
+	}
+	if !processAliveForTest(foreignSocket.Process.Pid) {
+		t.Fatalf("detached PID %d for another socket was killed", foreignSocket.Process.Pid)
+	}
+	if !processAliveForTest(foreignWorker.Process.Pid) {
+		t.Fatalf("detached PID %d for another worker was killed", foreignWorker.Process.Pid)
+	}
+
+	for _, want := range []string{"ORO_SOCKET_PATH=" + socketPath, "ORO_WORKER_ID=" + workerID} {
+		if !containsExactEnv(productionEnv, want) {
+			t.Errorf("production worker environment missing exact ownership marker %q", want)
+		}
+	}
+	for _, stale := range []string{"ORO_SOCKET_PATH=/tmp/wrong-project.sock", "ORO_WORKER_ID=wrong-worker"} {
+		if containsExactEnv(productionEnv, stale) {
+			t.Errorf("production worker environment retained stale ownership marker %q", stale)
+		}
+	}
+}
+
+func runDetachedWorkerHelper(t *testing.T) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestExecProcessManagerKillTerminatesDetachedOwnedProcess$") //nolint:gosec // test helper re-executes this binary
+	cmd.Env = append(os.Environ(), "ORO_TEST_DETACHED_OWNED_PROCESS_HELPER=1")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start detached helper process: %v", err)
+	}
+	for {
+		time.Sleep(time.Hour)
+	}
+}
+
+func runDetachedOwnedProcessHelper(t *testing.T) {
+	t.Helper()
+	pidPath := os.Getenv("ORO_TEST_DETACHED_PID_PATH")
+	env := os.Environ()
+	socketIndex, workerIndex := -1, -1
+	for index, entry := range env {
+		if strings.HasPrefix(entry, "ORO_SOCKET_PATH=") {
+			socketIndex = index
+		}
+		if strings.HasPrefix(entry, "ORO_WORKER_ID=") {
+			workerIndex = index
+		}
+	}
+	report := fmt.Sprintf("%d\n%s\n%s\n%d/%d/%d", os.Getpid(), os.Getenv("ORO_SOCKET_PATH"), os.Getenv("ORO_WORKER_ID"), socketIndex, workerIndex, len(env))
+	if err := os.WriteFile(pidPath, []byte(report), 0o600); err != nil {
+		t.Fatalf("write detached PID: %v", err)
+	}
+	for {
+		time.Sleep(time.Hour)
+	}
+}
+
+func startDetachedTestProcess(t *testing.T, socketPath, workerID string) *exec.Cmd {
+	t.Helper()
+	pidPath := filepath.Join(t.TempDir(), "detached.pid")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestExecProcessManagerKillTerminatesDetachedOwnedProcess$") //nolint:gosec // test helper re-executes this binary
+	cmd.Env = append(testWorkerOwnershipEnv(os.Environ(), socketPath, workerID),
+		"ORO_TEST_DETACHED_OWNED_PROCESS_HELPER=1",
+		"ORO_TEST_DETACHED_PID_PATH="+pidPath,
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start detached test process: %v", err)
+	}
+	if got := waitForDetachedOwnership(t, pidPath, socketPath, workerID); got != cmd.Process.Pid {
+		t.Fatalf("detached helper reported PID %d, want %d", got, cmd.Process.Pid)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
+	return cmd
+}
+
+func waitForDetachedOwnership(t *testing.T, pidPath, socketPath, workerID string) int {
+	t.Helper()
+	pid := 0
+	waitFor(t, func() bool {
+		data, err := os.ReadFile(pidPath)
+		if err != nil {
+			return false
+		}
+		fields := strings.Split(strings.TrimSpace(string(data)), "\n")
+		if len(fields) < 4 || fields[1] != socketPath || fields[2] != workerID {
+			return false
+		}
+		pid, err = strconv.Atoi(fields[0])
+		return err == nil && pid > 1
+	}, 2*time.Second)
+	return pid
+}
+
+func testWorkerOwnershipEnv(env []string, socketPath, workerID string) []string {
+	out := make([]string, 0, len(env)+2)
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "ORO_SOCKET_PATH=") || strings.HasPrefix(entry, "ORO_WORKER_ID=") {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, "ORO_SOCKET_PATH="+socketPath, "ORO_WORKER_ID="+workerID)
+}
+
+func containsExactEnv(env []string, want string) bool {
+	for _, entry := range env {
+		if entry == want {
+			return true
+		}
+	}
+	return false
+}
+
+func processAliveForTest(pid int) bool {
+	return pid > 1 && syscall.Kill(pid, syscall.Signal(0)) == nil
 }
 
 // TestSpawn_ReaperTracked verifies that the zombie reaper goroutine is
