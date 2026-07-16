@@ -326,7 +326,10 @@ func TestStopScansAndKillsOroOwnedResidualChildren(t *testing.T) {
 	cfg.residualRoots = []string{"/tmp/oro-owned-worktree"}
 	cfg.residualMarkers = []string{"ORO_SOCKET_PATH=" + cfg.sockPath}
 	snapshots := []processSnapshot{
-		{PID: 2001, PPID: 1, PGID: 2001, Session: 2001, Command: "ORO_SOCKET_PATH=" + cfg.sockPath + " sh -c ./scripts/quality_gate.sh"},
+		{
+			PID: 2001, PPID: 1, PGID: 2001, Session: 2001,
+			Command: "sh -c ./scripts/quality_gate.sh", Environment: "ORO_SOCKET_PATH=" + cfg.sockPath,
+		},
 		{PID: 2002, PPID: 1, PGID: 2002, Session: 2002, Command: "go test ./pkg/dispatcher -worktree /tmp/oro-owned-worktree"},
 		{PID: 2003, PPID: 1, PGID: 2003, Session: 2003, Command: "go test ./pkg/dispatcher"},
 	}
@@ -365,16 +368,45 @@ func TestResidualScanDoesNotTreatBareToolNamesAsOwnership(t *testing.T) {
 
 func TestResidualScanUsesScopedMarkers(t *testing.T) {
 	residuals := scanOroResidualProcessSnapshots([]processSnapshot{
-		{PID: 2111, PPID: 1, PGID: 2111, Session: 2111, Command: "ORO_ROLE=worker ORO_WORKER_ID=w1 go test ./pkg/dispatcher"},
-		{PID: 2112, PPID: 1, PGID: 2112, Session: 2112, Command: "ORO_SOCKET_PATH=/tmp/project-a/oro.sock ORO_WORKER_ID=w1 ./scripts/quality_gate.sh"},
-		{PID: 2113, PPID: 1, PGID: 2113, Session: 2113, Command: "ORO_SOCKET_PATH=/tmp/project-ab/oro.sock ORO_WORKER_ID=w1 ./scripts/quality_gate.sh"},
-		{PID: 2114, PPID: 1, PGID: 2114, Session: 2114, Command: "ORO_SOCKET_PATH=/tmp/project-a/oro.sock ORO_WORKER_ID=w2 ops-review"},
+		{
+			PID: 2111, PPID: 1, PGID: 2111, Session: 2111, Command: "go test ./pkg/dispatcher",
+			Environment: "ORO_ROLE=worker ORO_WORKER_ID=w1",
+		},
+		{
+			PID: 2112, PPID: 1, PGID: 2112, Session: 2112, Command: "./scripts/quality_gate.sh",
+			Environment: "ORO_SOCKET_PATH=/tmp/project-a/oro.sock ORO_WORKER_ID=w1",
+		},
+		{
+			PID: 2113, PPID: 1, PGID: 2113, Session: 2113, Command: "./scripts/quality_gate.sh",
+			Environment: "ORO_SOCKET_PATH=/tmp/project-ab/oro.sock ORO_WORKER_ID=w1",
+		},
+		{
+			PID: 2114, PPID: 1, PGID: 2114, Session: 2114, Command: "ops-review",
+			Environment: "ORO_SOCKET_PATH=/tmp/project-a/oro.sock ORO_WORKER_ID=w2",
+		},
 		{PID: 2115, PPID: 1, PGID: 2115, Session: 2115, Command: "go test ./pkg/dispatcher -worktree /tmp/project-a"},
-		{PID: 2116, PPID: 1, PGID: 2116, Session: 2116, Command: "ORO_SOCKET_PATH=/tmp/project-a/oro.sock ORO_WORKER_ID=w10 sleep 3600"},
+		{
+			PID: 2116, PPID: 1, PGID: 2116, Session: 2116, Command: "sleep 3600",
+			Environment: "ORO_SOCKET_PATH=/tmp/project-a/oro.sock ORO_WORKER_ID=w10",
+		},
 	}, []string{"/tmp/project-a"}, []string{"ORO_SOCKET_PATH=/tmp/project-a/oro.sock", "ORO_WORKER_ID=w1"})
 
 	if got, want := residualPIDs(residuals), []int{2112}; !sameInts(got, want) {
 		t.Fatalf("residual PIDs = %v, want scoped project/socket matches %v", got, want)
+	}
+}
+
+func TestResidualScanUsesDefaultSocketOwnershipMarker(t *testing.T) {
+	const socketPath = "/tmp/project-a/oro.sock"
+	residuals := scanOroResidualProcessSnapshots([]processSnapshot{
+		{
+			PID: 2117, PPID: 1, PGID: 2117, Session: 2117, Command: "./scripts/quality_gate.sh",
+			Environment: "ORO_SOCKET_PATH=" + socketPath + " ORO_WORKER_ID=w1 ORO_PROJECT=project-a",
+		},
+	}, nil, defaultOroResidualMarkers("project-a", socketPath))
+
+	if got, want := residualPIDs(residuals), []int{2117}; !sameInts(got, want) {
+		t.Fatalf("residual PIDs = %v, want default socket ownership match %v", got, want)
 	}
 }
 
@@ -392,6 +424,24 @@ func TestResidualScanRejectsOwnershipMarkersPresentOnlyInArgv(t *testing.T) {
 
 	if len(residuals) != 0 {
 		t.Fatalf("residuals = %+v, want no ownership match from argv-only markers", residuals)
+	}
+}
+
+func TestProcessSnapshotsFromOutputsSeparatesArgvFromEnvironment(t *testing.T) {
+	const command = "foreign-helper --note ORO_SOCKET_PATH=/tmp/project-a/oro.sock"
+	snapshots := processSnapshotsFromOutputs(
+		"2201 1 2201 2201 "+command+"\n",
+		"2201 1 2201 2201 "+command+" ORO_SOCKET_PATH=/tmp/project-a/oro.sock ORO_WORKER_ID=w1 PATH=/bin\n",
+	)
+
+	if len(snapshots) != 1 {
+		t.Fatalf("snapshots = %#v, want one", snapshots)
+	}
+	if snapshots[0].Command != command {
+		t.Fatalf("command = %q, want %q", snapshots[0].Command, command)
+	}
+	if want := "ORO_SOCKET_PATH=/tmp/project-a/oro.sock ORO_WORKER_ID=w1 PATH=/bin"; snapshots[0].Environment != want {
+		t.Fatalf("environment = %q, want %q", snapshots[0].Environment, want)
 	}
 }
 

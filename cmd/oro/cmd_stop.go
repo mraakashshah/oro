@@ -504,22 +504,19 @@ type ResidualProcess struct {
 }
 
 type processSnapshot struct {
-	PID     int
-	PPID    int
-	PGID    int
-	Session int
-	Command string
+	PID         int
+	PPID        int
+	PGID        int
+	Session     int
+	Command     string
+	Environment string
 }
 
-func defaultOroResidualMarkers(projectName, sockPath string) []string {
-	var markers []string
-	if sockPath != "" {
-		markers = append(markers, "ORO_SOCKET_PATH="+sockPath)
+func defaultOroResidualMarkers(_, sockPath string) []string {
+	if sockPath == "" {
+		return nil
 	}
-	if projectName != "" {
-		markers = append(markers, "ORO_PROJECT="+projectName)
-	}
-	return markers
+	return []string{"ORO_SOCKET_PATH=" + sockPath}
 }
 
 // killProcessTree terminates pid's process group and descendants. Missing
@@ -641,7 +638,7 @@ func scanOroResidualProcessSnapshots(snapshots []processSnapshot, roots, markers
 		if proc.PID <= 1 || proc.PID == self {
 			continue
 		}
-		evidence := residualEvidence(proc.Command, roots, markers)
+		evidence := residualEvidence(proc.Command, proc.Environment, roots, markers)
 		if evidence == "" {
 			continue
 		}
@@ -653,9 +650,9 @@ func scanOroResidualProcessSnapshots(snapshots []processSnapshot, roots, markers
 	return residuals
 }
 
-func residualEvidence(command string, roots, markers []string) string {
+func residualEvidence(command, environment string, roots, markers []string) string {
 	if len(markers) > 0 {
-		if processenv.CommandContainsAllMarkers(command, markers) {
+		if processenv.CommandContainsAllMarkers(environment, markers) {
 			return "markers:" + strings.Join(markers, ",")
 		}
 		return ""
@@ -706,12 +703,39 @@ func isCommandBoundary(b byte) bool {
 }
 
 func defaultProcessSnapshots(ctx context.Context) ([]processSnapshot, error) {
-	out, err := exec.CommandContext(ctx, "ps", "axeww", "-o", "pid=,ppid=,pgid=,sess=,command=").Output()
+	commandOut, err := exec.CommandContext(ctx, "ps", "axww", "-o", "pid=,ppid=,pgid=,sess=,command=").Output()
 	if err != nil {
-		return nil, fmt.Errorf("list processes: %w", err)
+		return nil, fmt.Errorf("list process commands: %w", err)
 	}
-	var snapshots []processSnapshot
-	for _, line := range strings.Split(string(out), "\n") {
+	environmentOut, err := exec.CommandContext(ctx, "ps", "axeww", "-o", "pid=,ppid=,pgid=,sess=,command=").Output()
+	if err != nil {
+		return nil, fmt.Errorf("list process environments: %w", err)
+	}
+	return processSnapshotsFromOutputs(string(commandOut), string(environmentOut)), nil
+}
+
+func processSnapshotsFromOutputs(commandOutput, environmentOutput string) []processSnapshot {
+	snapshots := parseProcessSnapshots(commandOutput)
+	indexByPID := make(map[int]int, len(snapshots))
+	for index, snapshot := range snapshots {
+		indexByPID[snapshot.PID] = index
+	}
+	for _, combined := range parseProcessSnapshots(environmentOutput) {
+		index, ok := indexByPID[combined.PID]
+		if !ok {
+			continue
+		}
+		environment, separated := stopProcessEnvironmentSuffix(combined.Command, snapshots[index].Command)
+		if separated {
+			snapshots[index].Environment = environment
+		}
+	}
+	return snapshots
+}
+
+func parseProcessSnapshots(output string) []processSnapshot {
+	snapshots := make([]processSnapshot, 0)
+	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 5 {
 			continue
@@ -728,7 +752,18 @@ func defaultProcessSnapshots(ctx context.Context) ([]processSnapshot, error) {
 			Command: strings.Join(fields[4:], " "),
 		})
 	}
-	return snapshots, nil
+	return snapshots
+}
+
+func stopProcessEnvironmentSuffix(commandAndEnvironment, command string) (string, bool) {
+	if command == "" || !strings.HasPrefix(commandAndEnvironment, command) {
+		return "", false
+	}
+	suffix := commandAndEnvironment[len(command):]
+	if suffix == "" || (suffix[0] != ' ' && suffix[0] != '\t') {
+		return "", false
+	}
+	return strings.TrimSpace(suffix), true
 }
 
 func killResidualProcess(ctx context.Context, residuals ...ResidualProcess) error {
