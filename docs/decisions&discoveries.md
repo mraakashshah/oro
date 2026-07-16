@@ -9,7 +9,8 @@ the no-effort path. Effort only took hold for Codex (`model_reasoning_effort`).
 The `claude` CLI does expose `--effort <low|medium|high|xhigh|max>`.
 **Decision:** Added `buildClaude{Ops,Review}ArgsWithReasoning` (append `--effort
 <reasoning>` when non-empty) and wired `BuildArgsWithReasoning` on both Claude
-ops spawners. Empty reasoning still omits the flag.
+ops spawners. The worker Claude spawner also implements the reasoning-aware
+interface and forwards the same flag. Empty reasoning still omits the flag.
 **Implications:** A Claude reviewer/challenger configured with a reasoning level
 now actually runs at that effort (e.g. `ops_review` at Opus 4.8 `xhigh`). Effort
 values map 1:1 to the CLI's accepted set.

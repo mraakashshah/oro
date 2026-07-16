@@ -44,8 +44,8 @@ type StreamingSpawner interface {
 	StreamFormat() StreamFormat
 }
 
-// ReasoningStreamingSpawner accepts a Codex-style reasoning effort in addition
-// to the model. Claude spawners ignore reasoning by not implementing it.
+// ReasoningStreamingSpawner accepts a runtime-specific reasoning effort in
+// addition to the model.
 type ReasoningStreamingSpawner interface {
 	SpawnWithReasoning(ctx context.Context, model string, reasoning string, prompt string, workdir string) (Process, io.ReadCloser, io.WriteCloser, error)
 }
@@ -1915,7 +1915,14 @@ func (s *ClaudeSpawner) StreamFormat() StreamFormat { return StreamFormatClaudeJ
 // When both ORO_HOME and ORO_PROJECT env vars are set, it appends
 // --add-dir and --settings flags to point claude at the shared oro config.
 func buildClaudeArgs(model, prompt string) []string {
+	return buildClaudeArgsWithReasoning(model, "", prompt)
+}
+
+func buildClaudeArgsWithReasoning(model, reasoning, prompt string) []string {
 	args := []string{"-p", prompt, "--model", model, "--verbose", "--output-format", "stream-json"}
+	if reasoning != "" {
+		args = append(args, "--effort", reasoning)
+	}
 
 	oroHome := os.Getenv("ORO_HOME")
 	oroProject := os.Getenv("ORO_PROJECT")
@@ -1957,7 +1964,12 @@ func buildClaudeEnv(workdir string) []string {
 // stdin to /dev/null avoids this. The trade-off: sendCompact() becomes a no-op,
 // so context overflow triggers handoff instead of in-place compaction.
 func (s *ClaudeSpawner) Spawn(ctx context.Context, model, prompt, workdir string) (Process, io.ReadCloser, io.WriteCloser, error) {
-	args := buildClaudeArgs(model, prompt)
+	return s.SpawnWithReasoning(ctx, model, "", prompt, workdir)
+}
+
+// SpawnWithReasoning starts a `claude -p` subprocess with the configured effort.
+func (s *ClaudeSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning, prompt, workdir string) (Process, io.ReadCloser, io.WriteCloser, error) {
+	args := buildClaudeArgsWithReasoning(model, reasoning, prompt)
 	cmd := exec.CommandContext(ctx, "claude", args...) //nolint:gosec // args are constructed internally by buildClaudeArgs, not user input
 	cmd.Dir = workdir
 	stderrTail := NewLineTailBuffer(100)
