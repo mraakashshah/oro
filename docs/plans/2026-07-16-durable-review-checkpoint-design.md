@@ -2,7 +2,7 @@
 
 Date: 2026-07-16
 
-Status: Consultation complete; adversarial review pending
+Status: Adversarial revision 1; re-review pending
 
 ## 1. Goal
 
@@ -219,6 +219,17 @@ prose but the task remains formally unchanged.
 10. **Contract gaps become contracts.** Review findings classified as
     acceptance gaps must pass a separate contract-repair and acceptance
     validation step before code retry.
+11. **Commit before acknowledgement.** READY is acknowledged only after its
+    canonical checkpoint and linked review ops run commit; lost ACKs replay
+    idempotently.
+12. **External effects carry proof.** Merge, recovery repair, artifact, and
+    reminder side effects have durable intent, idempotency identity, and
+    machine-verifiable completion proof.
+13. **Incomplete coverage cannot approve.** Missing or failed required review
+    personas fail approval closed.
+14. **Pipeline ownership excludes ordinary assignment.** Any non-terminal
+    checkpoint state blocks the bead from ordinary ready/assign paths without
+    blocking unrelated beads.
 
 ## 5. Rejected Alternatives
 
@@ -293,6 +304,23 @@ type ReviewArtifactRef struct {
     Truncated bool   `json:"truncated,omitempty"`
 }
 
+type ReviewPersonaExecution struct {
+    Persona   string              `json:"persona"`
+    Required  bool                `json:"required"`
+    Kind      ReviewExecutionKind `json:"kind"`
+    ErrorCode string              `json:"error_code,omitempty"`
+}
+
+type ReviewExecution struct {
+    Kind              ReviewExecutionKind      `json:"kind"`
+    ExitCode          int                      `json:"exit_code,omitempty"`
+    ErrorCode         string                   `json:"error_code,omitempty"`
+    Complete          bool                     `json:"complete"`
+    RequiredPersonas  []string                 `json:"required_personas,omitempty"`
+    CompletedPersonas []string                 `json:"completed_personas,omitempty"`
+    PersonaExecutions []ReviewPersonaExecution `json:"persona_executions,omitempty"`
+}
+
 type ReviewOutcome struct {
     Decision     ReviewDecision     `json:"decision"`
     Findings     []Finding          `json:"findings,omitempty"`
@@ -336,6 +364,30 @@ The outcome reducer applies these rules in order:
 This explicitly prevents a blocker or transcript keyword from swallowing real
 findings.
 
+### Required review coverage
+
+The review-policy hash includes the selected personas, which personas are
+required, fallback policy, prompt/schema version, reviewer configuration, and
+triage revision. Approval is legal only when:
+
+1. every required persona has one successful, schema-valid report;
+2. `ReviewExecution.Complete` is true;
+3. required and completed persona sets match;
+4. no validated gating finding exists;
+5. no Critical or Important candidate was dropped by validation without
+   producing a fail-closed rejected/failed outcome.
+
+A failed or missing required persona makes the aggregate `failed`, unless
+another successful report contains a valid gating finding, in which case the
+safe terminal decision remains `rejected`. A fallback single-pass review is
+allowed only when the hashed policy explicitly selects it; the fallback itself
+becomes required coverage and cannot silently replace one failed persona.
+
+The docs-only shortcut must emit a complete typed `ReviewOutcome` with
+`Execution.Kind=succeeded`, an explicit docs-only policy hash, and no raw prose
+classification. If the shortcut cannot construct that outcome, it runs the
+ordinary typed review path instead of auto-approving.
+
 ## 7. Bounded Review Artifacts
 
 The ops process separates raw transport from the result contract.
@@ -356,6 +408,28 @@ The ops process separates raw transport from the result contract.
 
 The artifact reference is diagnostic only. Classification and recovery remain
 possible if the raw artifact is missing.
+
+`cmd/oro:buildDispatcherWithReviewTimeoutsAndCleanliness` resolves
+`<project-state-dir>/review-artifacts` through `ResolveDaemonPaths` and passes
+it, the byte cap, and retention duration through dispatcher config into
+`ReviewOpts`. `pkg/ops/exec_spawner.go` streams to a temporary `0600` file,
+fsyncs it, atomically renames it, and returns its hash and size.
+
+Artifact create, write, fsync, or hash failure is recorded in
+`ReviewExecution.ErrorCode`. It fails approval closed. A complete structured
+rejection may still reject safely because it cannot authorize integration.
+Janitor selection is database-driven: it may delete only artifacts referenced
+exclusively by terminal checkpoints older than retention, never an artifact
+referenced by a non-terminal checkpoint or recovery run.
+
+Full findings are stored as capped rows in `review_checkpoint_findings`, not as
+one lossy JSON blob. Inline recovery preserves every gating finding when the
+message fits. If it does not fit, `ASSIGN` carries a local
+`ReviewRecoveryArtifactRef {Path, SHA256, FindingCount}`; the worker loads and
+hash-verifies the atomically written recovery artifact before starting. Missing,
+oversized, or hash-mismatched recovery data fails closed into typed recovery.
+Compaction may truncate excerpts and diagnostics deterministically, but never
+finding IDs, severity, file/line, contract impact, or required action.
 
 ## 8. QG Evidence at READY_FOR_REVIEW
 
@@ -395,6 +469,47 @@ review may run, but approval requires dispatcher-owned QG before integration.
 The new path no longer relies on `worker.pendingQGOutput` as authoritative
 state.
 
+### READY acknowledgement and replay
+
+`READY_FOR_REVIEW` is an at-least-once phase transition, not a fire-and-forget
+event.
+
+```go
+type ReadyForReviewPayload struct {
+    BeadID       string     `json:"bead_id"`
+    WorkerID     string     `json:"worker_id"`
+    ReadyAttempt string     `json:"ready_attempt"`
+    QGEvidence   QGEvidence `json:"qg_evidence"`
+}
+
+type ReadyForReviewAckPayload struct {
+    BeadID        string `json:"bead_id"`
+    ReadyAttempt  string `json:"ready_attempt"`
+    CheckpointID  int64  `json:"checkpoint_id"`
+    CheckpointKey string `json:"checkpoint_key"`
+}
+```
+
+Before sending READY, the worker atomically writes and fsyncs QG evidence under
+the preserved worktree's `.oro/qg-evidence/` directory. It enters an
+`awaiting_review_ack` phase and retains `{ReadyAttempt,QGEvidence}` independently
+of the evicting `MessageBuffer`.
+
+The dispatcher validates READY, transactionally creates or reuses the
+checkpoint and linked review ops run, commits, and only then sends ACK.
+Duplicate READY messages with the same attempt or canonical checkpoint key
+return the same ACK and never spawn a second review. If ACK is lost, the worker
+resends READY. On reconnect, `ReconnectPayload` carries the explicit phase,
+ready attempt, and QG evidence reference; `idle` is not legal while awaiting
+ACK or review.
+
+If the worker dies before ACK, startup recovery scans the active or requeued
+assignment's preserved evidence file, verifies its hash and checkpoint identity,
+and performs the same idempotent transaction. Evidence files are reconstructable
+phase state and therefore need not be non-evictable buffer entries. They are
+removed only after checkpoint terminal state and integration or supersession
+are durable.
+
 ## 9. Durable Review Checkpoint
 
 Add a state-DB table dedicated to immutable review phases.
@@ -402,20 +517,26 @@ Add a state-DB table dedicated to immutable review phases.
 ```sql
 CREATE TABLE review_checkpoints (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    checkpoint_key TEXT NOT NULL,
     bead_id TEXT NOT NULL,
-    assignment_id INTEGER NOT NULL,
+    origin_assignment_id INTEGER NOT NULL,
+    current_assignment_id INTEGER,
     worker_id TEXT,
     worktree TEXT NOT NULL,
     branch TEXT NOT NULL,
     target_branch TEXT NOT NULL,
     head_sha TEXT NOT NULL,
-    target_sha TEXT,
+    target_sha TEXT NOT NULL,
     acceptance_hash TEXT NOT NULL,
     qg_run_id TEXT,
-    qg_script_hash TEXT,
-    qg_mode TEXT,
+    qg_script_hash TEXT NOT NULL,
+    qg_mode TEXT NOT NULL,
     qg_output_hash TEXT,
+    qg_evidence_path TEXT,
+    qg_evidence_sha256 TEXT,
     review_policy_hash TEXT NOT NULL,
+    triage_revision TEXT NOT NULL,
+    ready_attempt TEXT NOT NULL,
     state TEXT NOT NULL,
     review_attempt INTEGER NOT NULL DEFAULT 0,
     recovery_attempt INTEGER NOT NULL DEFAULT 0,
@@ -426,7 +547,6 @@ CREATE TABLE review_checkpoints (
     next_quarantine_reminder_at TEXT,
     quarantine_reminded_at TEXT,
     quarantine_reminder_count INTEGER NOT NULL DEFAULT 0,
-    findings_json TEXT NOT NULL DEFAULT '[]',
     blockers_json TEXT NOT NULL DEFAULT '[]',
     verification_json TEXT NOT NULL DEFAULT '{}',
     summary TEXT NOT NULL DEFAULT '',
@@ -434,9 +554,50 @@ CREATE TABLE review_checkpoints (
     artifact_sha256 TEXT,
     artifact_bytes INTEGER NOT NULL DEFAULT 0,
     ops_run_id INTEGER,
+    integration_target_before_sha TEXT,
+    integration_approved_head_sha TEXT,
+    integration_observed_target_sha TEXT,
+    integration_step TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at TEXT
+);
+
+CREATE UNIQUE INDEX idx_review_checkpoints_active_key
+ON review_checkpoints(checkpoint_key)
+WHERE state <> 'superseded';
+
+CREATE TABLE review_checkpoint_findings (
+    checkpoint_id INTEGER NOT NULL,
+    finding_id TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    file TEXT NOT NULL,
+    line INTEGER,
+    contract_impact TEXT NOT NULL,
+    required_action TEXT NOT NULL,
+    compact_json TEXT NOT NULL,
+    PRIMARY KEY(checkpoint_id, finding_id)
+);
+
+CREATE TABLE review_recovery_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    checkpoint_id INTEGER NOT NULL,
+    failure_fingerprint TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    strategy TEXT NOT NULL,
+    action_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    proof_json TEXT NOT NULL DEFAULT '{}',
+    started_at TEXT NOT NULL,
+    completed_at TEXT
+);
+
+CREATE TABLE review_quarantine_deliveries (
+    checkpoint_id INTEGER NOT NULL,
+    scheduled_at TEXT NOT NULL,
+    delivered_at TEXT,
+    sink TEXT NOT NULL,
+    PRIMARY KEY(checkpoint_id, scheduled_at, sink)
 );
 ```
 
@@ -457,20 +618,25 @@ integrated
 superseded
 ```
 
-Checkpoint uniqueness is based on:
+`checkpoint_key` is the SHA-256 of a versioned, length-prefixed canonical
+encoding of:
 
 ```text
 bead_id
-assignment_id
 head_sha
 target_sha
 acceptance_hash
 qg_script_hash
 qg_mode
 review_policy_hash
+triage_revision
 ```
 
-There may be only one non-superseded checkpoint for a unique key.
+Missing legacy values use explicit non-null sentinels such as
+`legacy-unverified`; nullable SQLite columns are never part of uniqueness.
+Assignment and worker ownership may move during recovery without changing the
+code/contract checkpoint identity. There may be only one non-superseded
+checkpoint for a canonical key.
 
 The current checkpoint is authoritative for pipeline recovery. The bead journey
 receives compact `review_finding`, `review_checkpoint_changed`, and triage
@@ -481,10 +647,16 @@ unbounded journey.
 
 Before spawning review, the dispatcher transactionally:
 
-1. verifies the active/requeued assignment owns the worktree;
-2. creates or reuses the checkpoint;
+1. verifies the active or requeued assignment owns the worktree;
+2. creates or reuses the checkpoint by canonical key;
 3. creates a linked `ops_runs(type=review, status=running)` row;
-4. transitions the checkpoint to `review_running`.
+4. transitions the checkpoint to `review_running`;
+5. commits before acknowledging READY or spawning the subprocess.
+
+The spawned goroutine carries an immutable
+`ReviewAttemptContext {CheckpointID, CheckpointKey, AssignmentID, OpsRunID,
+ReviewAttempt}`. Every result handler accepts this context instead of
+reconstructing identity from worker and bead IDs.
 
 Terminal handling:
 
@@ -500,10 +672,52 @@ or failed result automatically enters the recovery controller. Manual
 `oro ops retry` remains an administrative override, but it is not part of the
 normal recovery contract.
 
+Checkpoint transition and ops-run completion occur in one SQLite transaction.
+When startup supersedes a dead run, failure to route its replacement completes
+the replacement as `failed` in the same recovery cycle; it may not remain
+`running` without a process or durable scheduled retry.
+
 ### Autonomous recovery controller
 
 The controller chooses the next safe action from typed outcome fields and
 durable attempt history. It never derives a strategy from raw transcript text.
+
+```go
+type RecoveryStrategy string
+
+const (
+    RecoveryRerouteReview       RecoveryStrategy = "reroute_review"
+    RecoveryProbeCapability     RecoveryStrategy = "probe_capability"
+    RecoveryRepairDependency    RecoveryStrategy = "repair_dependency"
+    RecoveryRepairContract      RecoveryStrategy = "repair_contract"
+    RecoveryRefreshTarget       RecoveryStrategy = "refresh_target"
+    RecoveryQuarantine          RecoveryStrategy = "quarantine"
+)
+
+type RecoveryAction struct {
+    IdempotencyKey    string           `json:"idempotency_key"`
+    CheckpointID      int64            `json:"checkpoint_id"`
+    FailureFingerprint string         `json:"failure_fingerprint"`
+    Strategy          RecoveryStrategy `json:"strategy"`
+    ActionID          string           `json:"action_id"`
+    Arguments         map[string]string `json:"arguments,omitempty"`
+    ExpectedProof     string           `json:"expected_proof"`
+}
+
+type RecoveryResult struct {
+    IdempotencyKey string `json:"idempotency_key"`
+    Status         string `json:"status"` // succeeded|failed|blocked
+    ProofHash      string `json:"proof_hash,omitempty"`
+    ErrorCode      string `json:"error_code,omitempty"`
+}
+```
+
+The policy maps typed `{Execution.Kind, Blocker.Class, Blocker.Scope,
+Blocker.ErrorCode}` tuples to an allowlisted `ActionID`. Reviewer-supplied
+commands and recovery-planner prose are never executed directly. The planner
+may select only an allowlisted action and bounded arguments, which a dedicated
+executor validates. Each side effect is guarded by the persisted idempotency key
+and must return machine-verifiable proof before the checkpoint advances.
 
 1. Compute a stable failure fingerprint from checkpoint identity, execution
    kind, blocker class/scope/error code, and failed verification command.
@@ -545,15 +759,20 @@ in progress/status output.
 
 Relevant reactivation inputs include:
 
-- toolchain or dependency-lock fingerprint;
-- Oro configuration and review-policy hash;
-- reviewer/provider health generation;
+- toolchain version plus sorted dependency-lock-file hashes;
+- `.oro/config.yaml` hash and review-policy hash;
+- reviewer/provider health epoch maintained by the dispatcher;
 - target HEAD;
-- acceptance-contract hash;
-- previously blocked command availability or capability fingerprint.
+- acceptance-contract hash and triage revision;
+- an allowlisted capability probe result for the previously blocked command.
 
 An input change resets only the recovery budget made obsolete by that change.
 It does not discard the checkpoint, worktree, findings, or prior audit history.
+The dispatcher computes the canonical environment fingerprint at startup, after
+each recovery action, and once per minute for quarantined checkpoints. Status
+and progress queries read the latest sample but do not themselves execute side
+effects. A changed component reactivates only strategies that declare that
+component as a precondition.
 
 ## 11. State Machine
 
@@ -604,9 +823,15 @@ On approval:
 
 1. compare-and-swap checkpoint `review_running -> approved`;
 2. verify assignment identity, worktree, HEAD, and QG evidence again;
-3. transition `approved -> integrating`;
-4. execute the existing passing-DONE integration path;
-5. transition to `integrated` only after assignment completion and merge/close.
+3. record `integration_target_before_sha`, `integration_approved_head_sha`, and
+   `integration_step=intent`, then transition `approved -> integrating`;
+4. execute the existing passing-DONE merge path;
+5. read the target ref and durably record
+   `integration_observed_target_sha` plus `integration_step=merge_observed`;
+6. complete the assignment idempotently and record
+   `integration_step=assignment_completed`;
+7. close the bead idempotently and record `integration_step=bead_closed`;
+8. transition to `integrated` only after all proof is durable.
 
 Refactor the successful half of `handleDone` into a shared integration function
 used by:
@@ -621,17 +846,43 @@ the existing merge guard must make the duplicate a no-op.
 
 This removes the requirement that the original worker survive until approval.
 
+### Crash-consistent integration reconciliation
+
+Startup reconciles every `integrating` checkpoint before ordinary assignment:
+
+- target ref still equals `integration_target_before_sha` -> merge did not
+  happen; revalidate the checkpoint and retry merge;
+- approved head is an ancestor of the current target and the recorded target
+  before SHA is also an ancestor -> merge happened; record the observed target
+  SHA if missing and resume assignment/bead finalization;
+- recorded observed target SHA equals current target -> resume the next
+  idempotent DB/bead step;
+- target moved and ancestry cannot prove the approved head was integrated ->
+  fail closed into checkpoint-scoped recovery or quarantine.
+
+Tests inject death before merge, after the git merge side effect, after observed
+SHA persistence, after assignment completion, and after bead close. No restart
+may issue a duplicate semantic merge, reopen an integrated bead, or run QG or
+review again.
+
 ## 13. Rejection Recovery
 
 `AssignPayload` gains structured recovery context:
 
 ```go
+type ReviewRecoveryArtifactRef struct {
+    Path         string `json:"path"`
+    SHA256       string `json:"sha256"`
+    FindingCount int    `json:"finding_count"`
+}
+
 type ReviewRecovery struct {
-    CheckpointID    int64     `json:"checkpoint_id"`
-    RejectedHeadSHA string    `json:"rejected_head_sha"`
-    Findings        []Finding `json:"findings"`
-    Attempt         int       `json:"attempt"`
-    AcceptanceHash  string    `json:"acceptance_hash"`
+    CheckpointID    int64                      `json:"checkpoint_id"`
+    RejectedHeadSHA string                     `json:"rejected_head_sha"`
+    Findings        []Finding                  `json:"findings,omitempty"`
+    FindingsRef     *ReviewRecoveryArtifactRef `json:"findings_ref,omitempty"`
+    Attempt         int                        `json:"attempt"`
+    AcceptanceHash  string                     `json:"acceptance_hash"`
 }
 ```
 
@@ -678,7 +929,23 @@ original bead become executable requirements before another full QG.
 
 ## 15. Acceptance Admission
 
-Introduce one line-aware acceptance parser and validator shared by:
+Introduce dependency-neutral `pkg/acceptance` with:
+
+```go
+type Contract struct {
+    Test       string
+    Command    string
+    Assert     string
+    Read       []string
+    Signature string
+    Edges      []string
+}
+
+func Parse(raw string) (Contract, error)
+func ValidateWorkerContract(contract Contract, repoRoot string) error
+```
+
+This is the one line-aware parser and validator shared by:
 
 - `oro task create`;
 - `oro task update --acceptance`;
@@ -688,6 +955,10 @@ Introduce one line-aware acceptance parser and validator shared by:
 
 The parser must preserve shell pipes and quoted expressions inside `Cmd:`. It
 must not split acceptance text on every `|`.
+
+`cmd/oro:runBeadCreate`, `newBeadUpdateCmd`, dispatcher `checkBeadReady`,
+contract repair, and `pkg/ops:buildReviewPrompt`/`acceptanceCommand` must call
+this package. No consumer keeps a private parser or raw pipe split.
 
 Worker-executable tasks require:
 
@@ -709,7 +980,29 @@ repair path once, not repeatedly offered to workers.
 
 ## 16. Startup and Runtime Recovery
 
-Startup recovery runs after assignment/worktree validation.
+Startup recovery uses this mandatory order:
+
+1. initialize and migrate schema;
+2. validate persisted worktree and branch ownership;
+3. restore assignments, `worktreeByBead`, target branches, checkpoint identity,
+   READY attempts, and evidence references;
+4. reconcile `integrating` checkpoints and external merge proof;
+5. reconcile review, recovery, and contract ops runs;
+6. route pending ops/escalation work only after its context is available;
+7. reset orphaned beads only when no non-terminal checkpoint owns the bead;
+8. start ordinary assignment.
+
+When an ops run is superseded but its replacement cannot route, the replacement
+is completed `failed` transactionally and a scheduled recovery attempt is
+created. Startup may not leave a processless `running` ops run.
+
+`beads_ready`, `statusQueueBeads`, and `tryAssign` all exclude a bead with a
+checkpoint in `qg_passed`, `review_running`, `rejected`,
+`contract_repair_running`, `blocked`, `failed`, `recovery_running`,
+`quarantined`, `approved`, or `integrating`. The dispatcher rechecks this
+condition immediately before assignment to close view/query races. Review
+quarantine is checkpoint-scoped; it cannot trigger the existing global recovery
+quarantine behavior, and unrelated ready beads continue dispatching.
 
 For every non-terminal checkpoint:
 
@@ -734,7 +1027,8 @@ For every non-terminal checkpoint:
 ### `approved` or `integrating`
 
 - verify the immutable checkpoint;
-- resume integration without the original worker;
+- reconcile integration intent and merge proof, then resume without the
+  original worker;
 - run dispatcher QG if evidence cannot be trusted;
 - do not rerun review.
 
@@ -816,6 +1110,14 @@ Add compact events:
 - `review_quarantine_reminder`
 - `review_quarantine_reactivated`
 
+The durable state-DB event row is the delivery source of truth. A reminder
+scheduler claims `review_quarantine_deliveries(checkpoint_id,scheduled_at,sink)`
+with an insert-or-ignore transaction, appends the event, and marks delivery
+complete. The built-in sinks are dispatcher event stream/daemon log and monitor
+output; configured external sinks may subscribe later but are not required for
+correctness. An ACK lost after event persistence is deduplicated by the delivery
+primary key.
+
 Status/health metrics:
 
 - review checkpoints by state;
@@ -830,11 +1132,12 @@ Status/health metrics:
 
 Every operator-facing progress or status response must include an active
 quarantine summary even when no reminder is currently due. This applies to
-status/health commands, throughput or progress queries, machine-readable status
-APIs, and periodic monitor reports. Each summary includes bead ID, checkpoint
-state, compact reason, quarantine age, reminder count, attempted strategies,
-last attempt, next automatic reactivation condition, and whether unrelated work
-is still progressing.
+`oro status` human/JSON, `oro health` online/offline human/JSON,
+`oro throughput`, the daemon status response, and every `oro monitor` iteration.
+Each summary includes bead ID, checkpoint state, compact reason, quarantine age,
+reminder count, attempted strategies, last attempt, next automatic reactivation
+condition, and whether unrelated work is still progressing. All online and
+offline views load the same `factoryhealth` quarantine model from the state DB.
 
 Throughput reporting should distinguish:
 
@@ -852,12 +1155,21 @@ Throughput reporting should distinguish:
 - Existing `Feedback` remains as a bounded compatibility rendering.
 - Missing `ReadyForReview.QGEvidence` selects the legacy-compatible path and
   forces dispatcher QG before merge.
+- Legacy READY creates a provisional checkpoint using explicit
+  `legacy-unverified` sentinels and a canonical key; duplicate legacy READY
+  messages reuse it and cannot spawn concurrent reviews.
+- Legacy rejection findings or bounded feedback are persisted before worker
+  notification and survive dispatcher restart even though QG evidence is
+  untrusted.
 - Legacy exact prose verdicts synthesize a typed outcome conservatively.
 - Existing finding journey and triage formats remain readable.
 - Existing `rejection_history` may continue receiving compact summaries during
   rollout, but it is no longer authoritative.
 - Old workers that echo passing `DONE` after approval cannot cause duplicate
   integration.
+- New ACK and reconnect fields are optional on the wire. Old workers retain the
+  worker-owned DONE flow, while assignment/checkpoint CAS makes mixed-version
+  duplicate completion harmless.
 
 ## 20. Testing Strategy
 
@@ -868,6 +1180,11 @@ Throughput reporting should distinguish:
 - A typed blocker with no findings becomes blocked.
 - A valid rejection plus nonzero process exit remains safely rejected.
 - An approval plus nonzero exit fails closed.
+- a failed or missing required persona prevents approval;
+- a valid gating finding from a surviving persona still rejects when another
+  required persona fails;
+- docs-only approval emits a complete typed outcome and policy hash;
+- dropped Critical/Important candidates cannot produce approval;
 - Raw artifact text is never passed to the classifier.
 
 ### Artifact tests
@@ -877,13 +1194,19 @@ Throughput reporting should distinguish:
 - event, ops-run, checkpoint, and `ASSIGN` payloads remain below their caps;
 - truncation is explicit and does not change the decision;
 - artifacts use project-scoped paths and restrictive permissions.
+- create/write/fsync/hash failure fails approval closed;
+- janitor never removes an artifact referenced by a non-terminal checkpoint;
+- oversized findings switch to a hash-verified recovery artifact without
+  dropping gating obligations.
 
 ### Checkpoint store tests
 
 - duplicate immutable keys create one active checkpoint;
+- duplicate legacy keys with sentinel values create one active checkpoint;
 - compare-and-swap rejects stale state transitions;
 - changed HEAD, acceptance, target, QG script, or policy supersedes the prior
   checkpoint;
+- reviewer configuration and triage revision invalidate reuse;
 - terminal rejected/approved data survives database reopen.
 
 ### Dispatcher lifecycle tests
@@ -893,15 +1216,25 @@ Throughput reporting should distinguish:
 - blocked review preserves work, creates a failed review ops run, and schedules
   autonomous recovery without reopening into the ready queue;
 - every review outcome completes the linked ops run;
+- a replacement ops run that cannot route is failed and scheduled, never left
+  processless and running;
 - approval integrates without worker `DONE`;
 - an old-worker duplicate `DONE` is harmless.
 
 ### Recovery tests
 
 - dispatcher death during review reroutes one review and no QG;
+- death after READY socket receipt but before checkpoint commit is repaired by
+  READY resend or evidence-file recovery;
+- lost READY ACK causes idempotent replay and one review;
 - worker death during review does not lose QG evidence;
 - worker death after rejection reassigns findings to a different worker;
 - dispatcher death after approval resumes integration and does not rerun review;
+- startup restores worktree/checkpoint context before ops-run reconciliation;
+- non-terminal checkpoint states cannot enter `beads_ready`,
+  `statusQueueBeads`, or `tryAssign`;
+- death before merge, after merge, after merge-proof persistence, after
+  assignment completion, and after bead close resumes idempotently;
 - changed HEAD invalidates the checkpoint;
 - recovery attempts and backoff survive dispatcher restart;
 - changing worker/process identity does not reset a failure fingerprint budget;
@@ -915,6 +1248,8 @@ Throughput reporting should distinguish:
 - relevant toolchain, config, provider-health, target, contract, or capability
   changes reactivate recovery automatically;
 - unsafe worktree state recovery-quarantines instead of deleting work.
+- `oro status`, `oro health` online/offline, `oro throughput`, daemon status,
+  and `oro monitor` human/JSON surfaces agree on quarantine details.
 
 ### Contract tests
 
@@ -927,30 +1262,80 @@ Throughput reporting should distinguish:
 
 ### End-to-end proof
 
-A bounded harness must exercise:
+The epic acceptance command is:
 
-1. initial QG pass;
-2. structured rejection with misleading infrastructure keywords in the raw
+```bash
+bash -euo pipefail -c 'test "$(git branch --show-current)" = main; out=$(go test -v -count=1 -timeout=180s ./pkg/dispatcher -run "^TestDurableReviewCheckpointEndToEnd$"); grep -Fq -- "--- PASS: TestDurableReviewCheckpointEndToEnd" <<<"$out"'
+```
+
+Assert: exit code 0, the exact named test exists and emits its PASS marker on
+`main`, and the test exercises:
+
+1. initial QG pass and fsynced evidence;
+2. dispatcher death after READY receipt but before checkpoint commit;
+3. lost ACK, reconnect replay, one canonical checkpoint, and one review;
+4. structured rejection with misleading infrastructure keywords in the raw
    transcript;
-3. exact findings delivered to a recovery worker;
-4. unchanged retry prevented before QG;
-5. changed retry produces new QG evidence;
-6. dispatcher restart during review;
-7. approval and integration without original worker;
-8. zero active assignments, failed review ops runs, or non-terminal review
-   checkpoints at completion.
+5. exact inline or referenced findings delivered to a replacement worker;
+6. unchanged retry prevented before QG;
+7. changed retry producing new QG evidence and checkpoint key;
+8. dispatcher restart during review with worktree restoration before ops
+   reroute;
+9. failed required persona preventing approval and typed docs-only approval;
+10. approval and integration without the original worker;
+11. dispatcher death after git merge but before merge-proof persistence, then
+    idempotent assignment/bead finalization without QG or review replay;
+12. bounded autonomous failure recovery, checkpoint-scoped quarantine,
+    unrelated bead dispatch, reminder visibility, and input-change reactivation;
+13. zero active assignments, failed or processless running review ops runs,
+    non-terminal review checkpoints, or unclosed target bead at completion.
+
+Beadcraft must place this command verbatim on the epic and assign the named
+production-wiring test to the final integration bead.
+
+### Required beadcraft work packages
+
+At the design-review gate these are task placeholders; Stage 4 beadcraft assigns
+IDs, recursively splits each to the Rule-of-Five size limit, and preserves the
+listed production call sites in child `Read:` fields.
+
+| Work package | Required production wiring | Required named proof |
+|---|---|---|
+| Typed review contract | `pkg/ops/ops.go:Result/Review`, `review_parse.go`, `review_validation.go`, `review_merge.go`, `personas.go` | `TestReviewOutcomeRequiredCoverage` |
+| Bounded artifacts and findings | `pkg/ops/exec_spawner.go`, `pkg/ops/finding.go`, dispatcher config/path injection | `TestReviewArtifactAndFindingOverflow` |
+| READY evidence handshake | `pkg/worker/worker.go:runQGAndReport/reconnect`, `buffer.go`, `pkg/protocol/message.go` | `TestReadyForReviewAckReplay` |
+| Checkpoint schema/store | `pkg/protocol/schema.go:SchemaDDL/MigrateBeadSchema/beads_ready` plus checkpoint repository | `TestReviewCheckpointCanonicalKeyMigration` |
+| Review ops lifecycle | `dispatcher.handleReadyForReview/handleReviewResult`, `ops_runs.go` | `TestReviewOpsRunCheckpointTransaction` |
+| Startup and queue recovery | `dispatcher.Run/startupRecovery/restoreState/tryAssign/statusQueueBeads`, `worker_pool.go` | `TestReviewCheckpointStartupOrdering` |
+| Dispatcher-owned integration | `handleDone/mergeAndComplete/finalizeSuccessfulMerge` | `TestReviewIntegrationCrashRecovery` |
+| Structured rejection delivery | `assign_payload.go:buildAssignPayload`, worker recovery preflight | `TestReviewFindingsReplacementWorker` |
+| Autonomous recovery | recovery action/store/executor, checkpoint-scoped quarantine, fingerprint sampler | `TestReviewRecoveryBudgetAndReactivation` |
+| Acceptance repair/admission | new `pkg/acceptance`, task create/update, `checkBeadReady`, contract ops, review prompt | `TestAcceptanceContractSharedParser` |
+| Quarantine observability | `factoryhealth`, dispatcher health/events, status/health/throughput/monitor online and offline paths | `TestReviewQuarantineSurfaceParity` |
+| Production composition and epic proof | `cmd_start.go`, `paths.go`, `cmd_harness.go` or dispatcher integration harness | `TestDurableReviewCheckpointEndToEnd` |
+
+Dependency order is: contracts/schema -> protocol/artifacts -> review and ops
+lifecycle -> startup/integration/rejection -> recovery/contract/observability ->
+production composition and epic proof. The epic depends on every leaf task.
 
 ## 21. Rollout
 
-1. Add typed outcomes and bounded artifacts while keeping existing dispatcher
-   behavior.
-2. Add QG evidence and checkpoint persistence.
-3. Switch dispatcher review routing to structured outcomes and linked ops runs.
-4. Move evidence-backed approval completion to the dispatcher.
-5. Add startup recovery for each checkpoint state.
-6. Add structured rejection recovery and unchanged-head preflight.
-7. Add acceptance-contract repair and stricter admission.
-8. Add health/status/throughput reporting and the bounded restart proof.
+1. Add typed outcomes, required-persona aggregation, docs-only typing, and
+   bounded artifacts while keeping existing dispatcher behavior.
+2. Add canonical checkpoint schema, normalized findings, QG evidence files, and
+   READY ACK/replay.
+3. Switch dispatcher review routing to structured outcomes and transactionally
+   linked ops runs.
+4. Move evidence-backed approval completion to the dispatcher with durable
+   integration intent and merge proof.
+5. Reorder startup and add recovery/queue exclusion for each checkpoint state.
+6. Add structured rejection recovery, overflow references, and unchanged-head
+   preflight.
+7. Add typed autonomous recovery, fingerprint reactivation, and
+   checkpoint-scoped quarantine.
+8. Add shared acceptance parsing, contract repair, and stricter admission.
+9. Add health/status/throughput/reminder reporting.
+10. Add the exact bounded end-to-end crash/restart proof.
 
 Each phase is reversible until the schema/checkpoint path becomes authoritative.
 During rollout, missing new fields select conservative legacy fallbacks.
@@ -963,6 +1348,26 @@ premortem:
   context: "durable review checkpoints and worker recovery"
 
   tigers:
+    - risk: "READY is accepted by the socket but lost before checkpoint commit."
+      location: "pkg/worker/worker.go:SendReadyForReview/reconnect; pkg/dispatcher/dispatcher.go:handleReadyForReview"
+      severity: high
+      mitigation_checked: "Current protocol has no READY ACK and reconnect reports idle when proc is nil. Design adds fsynced evidence, awaiting_review_ack phase, commit-before-ACK, and idempotent replay."
+
+    - risk: "Git merge succeeds but dispatcher death loses integration progress."
+      location: "pkg/dispatcher/dispatcher.go:handleDone/mergeAndComplete"
+      severity: high
+      mitigation_checked: "Current integration has no persisted target proof. Design stores intent, target-before, approved head, observed target, and stepwise idempotent finalization."
+
+    - risk: "Partial multi-persona failure still produces approval."
+      location: "pkg/ops/ops.go:collectPersonaReviews; pkg/ops/review_merge.go:mergeReports"
+      severity: high
+      mitigation_checked: "Current merge flattens surviving reports. Design hashes required coverage and forbids approval unless every required persona succeeds."
+
+    - risk: "Startup reroutes review before assignment/worktree context is restored."
+      location: "pkg/dispatcher/dispatcher.go:startupRecovery; pkg/dispatcher/ops_runs.go:routeReviewOpsRun"
+      severity: high
+      mitigation_checked: "Current startup reconciles ops runs before restoreState. Design mandates restore and integration reconciliation before ops reroute, with failed rollback when routing cannot start."
+
     - risk: "Dispatcher and legacy worker both finalize the same approved bead."
       location: "pkg/worker/worker.go:handleReviewResult; pkg/dispatcher/dispatcher.go:handleDone"
       severity: high
