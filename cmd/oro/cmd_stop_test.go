@@ -326,7 +326,7 @@ func TestStopScansAndKillsOroOwnedResidualChildren(t *testing.T) {
 	cfg.residualRoots = []string{"/tmp/oro-owned-worktree"}
 	cfg.residualMarkers = []string{"ORO_SOCKET_PATH=" + cfg.sockPath}
 	snapshots := []processSnapshot{
-		{PID: 2001, PPID: 1, PGID: 2001, Session: 2001, Command: "sh -c ORO_SOCKET_PATH=" + cfg.sockPath + " ./scripts/quality_gate.sh"},
+		{PID: 2001, PPID: 1, PGID: 2001, Session: 2001, Command: "ORO_SOCKET_PATH=" + cfg.sockPath + " sh -c ./scripts/quality_gate.sh"},
 		{PID: 2002, PPID: 1, PGID: 2002, Session: 2002, Command: "go test ./pkg/dispatcher -worktree /tmp/oro-owned-worktree"},
 		{PID: 2003, PPID: 1, PGID: 2003, Session: 2003, Command: "go test ./pkg/dispatcher"},
 	}

@@ -132,31 +132,6 @@ func CommandContainsAllMarkers(command string, markers []string) bool {
 	return true
 }
 
-// CommandContainsMarker reports whether command contains marker without
-// accepting a prefix or suffix collision in an environment entry.
-func CommandContainsMarker(command, marker string) bool {
-	for start := 0; ; {
-		idx := strings.Index(command[start:], marker)
-		if idx < 0 {
-			return false
-		}
-		idx += start
-		end := idx + len(marker)
-		if commandMarkerBoundaryBefore(command, idx) && commandMarkerBoundaryAfter(command, end) {
-			return true
-		}
-		start = idx + 1
-	}
-}
-
-func commandMarkerBoundaryBefore(value string, index int) bool {
-	return index <= 0 || isCommandMarkerBoundary(value[index-1])
-}
-
-func commandMarkerBoundaryAfter(value string, index int) bool {
-	return index >= len(value) || isCommandMarkerBoundary(value[index])
-}
-
 func isCommandMarkerBoundary(value byte) bool {
 	return value == ' ' || value == '\t' || value == '\n' || value == '\r'
 }
