@@ -146,10 +146,7 @@ func commandMarkerBoundaryAfter(value string, index int) bool {
 }
 
 func isCommandMarkerBoundary(value byte) bool {
-	return value == ' ' || value == '\t' || value == '\n' || value == '\r' ||
-		value == '\'' || value == '"' || value == '`' ||
-		value == '=' || value == ':' || value == ',' || value == ';' ||
-		value == ')' || value == '(' || value == '[' || value == ']'
+	return value == ' ' || value == '\t' || value == '\n' || value == '\r'
 }
 
 func normalizeEnvEntry(entry, workdir string, rewriteGOMODCACHE bool) (normalized string, keep, handledPWD bool) {

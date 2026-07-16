@@ -148,6 +148,30 @@ func TestForWorkdirPreservesExternalGOMODCACHE(t *testing.T) {
 	}
 }
 
+func TestCommandContainsMarkerRequiresEnvironmentEntryBoundaries(t *testing.T) {
+	const marker = "ORO_WORKER_ID=worker-1"
+	tests := []struct {
+		name    string
+		command string
+		want    bool
+	}{
+		{name: "only entry", command: marker, want: true},
+		{name: "whitespace delimited", command: "PATH=/bin\t" + marker + "\nHOME=/tmp", want: true},
+		{name: "embedded in another value", command: "NOTE=" + marker, want: false},
+		{name: "suffixed value", command: marker + ":foreign", want: false},
+		{name: "comma suffix", command: marker + ",foreign", want: false},
+		{name: "prefixed key", command: "X" + marker, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := processenv.CommandContainsMarker(tt.command, marker); got != tt.want {
+				t.Fatalf("CommandContainsMarker(%q, %q) = %v, want %v", tt.command, marker, got, tt.want)
+			}
+		})
+	}
+}
+
 func envMap(env []string) map[string]string {
 	out := make(map[string]string, len(env))
 	for _, entry := range env {
