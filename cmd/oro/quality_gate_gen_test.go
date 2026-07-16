@@ -1089,6 +1089,10 @@ echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
 				if err := cmd.Start(); err != nil {
 					t.Fatalf("start %s waiter: %v", name, err)
 				}
+				t.Cleanup(func() {
+					_ = cmd.Process.Kill()
+					_ = cmd.Wait()
+				})
 				return cmd, output
 			}
 
@@ -1109,7 +1113,7 @@ echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
 			if !waitForQualityGateQueueEntries(queueDir, 1, 2*time.Second) {
 				t.Fatal("timed-out waiter did not create a quality gate FIFO queue ticket")
 			}
-			later, _ := startWaiter(ctx, "later", 8)
+			later, laterOutput := startWaiter(ctx, "later", 8)
 			if !waitForQualityGateQueueEntries(queueDir, 2, 2*time.Second) {
 				t.Fatal("later waiter did not join quality gate FIFO queue")
 			}
@@ -1141,7 +1145,7 @@ echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
 				t.Fatalf("release held lock: %v", err)
 			}
 			if err := later.Wait(); err != nil {
-				t.Fatalf("later waiter failed after owner released lock: %v", err)
+				t.Fatalf("later waiter failed after owner released lock: %v; output:\n%s", err, laterOutput)
 			}
 
 			events, err := os.ReadFile(eventsPath)
