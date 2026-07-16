@@ -401,6 +401,8 @@ CREATE TABLE review_checkpoints (
     recovery_strategy TEXT,
     failure_fingerprint TEXT,
     next_recovery_at TEXT,
+    quarantined_at TEXT,
+    next_quarantine_reminder_at TEXT,
     quarantine_reminded_at TEXT,
     quarantine_reminder_count INTEGER NOT NULL DEFAULT 0,
     findings_json TEXT NOT NULL DEFAULT '[]',
@@ -508,6 +510,17 @@ The factory does not wait for an operator between these steps. Status and CLI
 commands expose the strategy, attempts, next retry, and quarantine reason for
 diagnosis or optional override. Reminder timestamps and counts are durable so a
 dispatcher restart neither suppresses a due reminder nor repeats one early.
+
+The default quarantine reminder schedule is:
+
+1. immediately when the checkpoint enters quarantine;
+2. every 15 minutes during its first hour in quarantine;
+3. hourly after the first hour until it leaves quarantine.
+
+`quarantined_at` anchors the schedule and `next_quarantine_reminder_at` makes
+delivery restart-safe. Configuration may make reminders more frequent, but may
+not disable the immediate reminder, the recurring hourly reminder, or inclusion
+in progress/status output.
 
 Relevant reactivation inputs include:
 
@@ -794,6 +807,14 @@ Status/health metrics:
 - failed/stale review ops runs;
 - approved-but-not-integrated checkpoints.
 
+Every operator-facing progress or status response must include an active
+quarantine summary even when no reminder is currently due. This applies to
+status/health commands, throughput or progress queries, machine-readable status
+APIs, and periodic monitor reports. Each summary includes bead ID, checkpoint
+state, compact reason, quarantine age, reminder count, attempted strategies,
+last attempt, next automatic reactivation condition, and whether unrelated work
+is still progressing.
+
 Throughput reporting should distinguish:
 
 - review executions;
@@ -866,6 +887,10 @@ Throughput reporting should distinguish:
 - a successful repair resumes the blocked phase without rerunning worker QG;
 - exhausted recovery quarantines one bead while unrelated beads continue;
 - quarantine reminder cadence and deduplication survive dispatcher restart;
+- quarantine emits immediately, every 15 minutes for the first hour, and hourly
+  thereafter;
+- every progress/status response includes active quarantine summaries even
+  between scheduled reminders;
 - relevant toolchain, config, provider-health, target, contract, or capability
   changes reactivate recovery automatically;
 - unsafe worktree state recovery-quarantines instead of deleting work.
@@ -940,7 +965,7 @@ premortem:
     - risk: "Recurring quarantine warnings become noisy enough that operators ignore them."
       location: "pkg/dispatcher/health.go; pkg/dispatcher/events.go"
       severity: medium
-      mitigation_checked: "Design persists last-reminded time and count, deduplicates by checkpoint/failure fingerprint, keeps the bead visible in status, and requires a configurable reminder cadence."
+      mitigation_checked: "Design persists quarantine/reminder schedule state, deduplicates by checkpoint/failure fingerprint, uses 15-minute reminders only for the first hour, backs off to hourly, and always keeps the bead visible in progress/status output."
 
     - risk: "Raw review artifacts consume disk or expose sensitive local context."
       location: "pkg/ops/ops.go:runWith; pkg/protocol/message.go:MaxMessageSize"
@@ -978,7 +1003,9 @@ The following decisions are intentionally held for consultation:
   strategies, continue unrelated work, reactivate automatically when relevant
   inputs change, and surface the quarantine to the operator on a recurring
   deduplicated cadence.
-- [ ] Quarantine reminder cadence and escalation policy.
+- [x] Quarantine reminder cadence and escalation: emit immediately, every 15
+  minutes for the first hour, then hourly; also include active quarantine
+  summaries whenever progress or status is requested.
 - [ ] Exact primary beneficiary/failure scenario.
 - [ ] Narrowest shippable wedge within the architecture.
 - [ ] Consequence threshold for doing nothing.
