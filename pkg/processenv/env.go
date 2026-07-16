@@ -22,6 +22,8 @@ const (
 
 // WithWorkerOwnership replaces inherited ownership values with the exact
 // dispatcher socket and worker ID for a managed worker subprocess.
+//
+//oro:testonly — production wiring is provided by the referenced oro-533v foundation.
 func WithWorkerOwnership(env []string, socketPath, workerID string) []string {
 	markers := WorkerOwnershipMarkers(socketPath, workerID)
 	out := make([]string, 0, len(env)+len(markers))
@@ -48,6 +50,8 @@ func WorkerOwnershipMarkers(socketPath, workerID string) []string {
 // CommandContainsAllMarkers reports whether entries contain every exact
 // ownership marker. Callers must preserve entry boundaries so marker-shaped
 // text within another variable's value never proves ownership.
+//
+//oro:testonly — production wiring is provided by the referenced oro-533v foundation.
 func CommandContainsAllMarkers(entries, markers []string) bool {
 	if len(markers) == 0 {
 		return false
