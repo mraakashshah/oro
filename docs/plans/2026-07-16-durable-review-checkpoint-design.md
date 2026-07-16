@@ -35,6 +35,27 @@ The desired end state is:
    bounded recovery strategies without requiring an operator to babysit the
    bead.
 
+### Primary beneficiary and protected scenario
+
+The direct beneficiary is Oro's dispatcher while shepherding any implementation
+bead across the QG-to-review boundary. The operator benefits indirectly from a
+self-healing factory, but operator monitoring is not the mechanism's primary
+consumer.
+
+For every implementation bead that reaches `READY_FOR_REVIEW`, the checkpoint
+must preserve enough state to continue correctly when any of these occur:
+
+- review rejects the code and the same or a replacement worker must receive the
+  exact structured findings;
+- the reviewer process fails, times out, or reports a typed blocker;
+- the implementation worker dies after QG passes;
+- the dispatcher restarts while review or recovery is active;
+- review approves the code but integration has not completed.
+
+The success criterion is phase-local continuation: resume review, recovery,
+implementation correction, or integration from the durable checkpoint without
+restarting already-proven stages.
+
 ## 2. Source Research
 
 The design is grounded in the current production paths and prior Oro designs.
@@ -1006,7 +1027,10 @@ The following decisions are intentionally held for consultation:
 - [x] Quarantine reminder cadence and escalation: emit immediately, every 15
   minutes for the first hour, then hourly; also include active quarantine
   summaries whenever progress or status is requested.
-- [ ] Exact primary beneficiary/failure scenario.
+- [x] Exact primary beneficiary/failure scenario: the dispatcher shepherding
+  every implementation bead across QG into review, including rejection,
+  reviewer/process failure, worker death, dispatcher restart, and
+  approved-before-integration recovery.
 - [ ] Narrowest shippable wedge within the architecture.
 - [ ] Consequence threshold for doing nothing.
 - [ ] Whether acceptance-contract repair is a durable core capability or a
