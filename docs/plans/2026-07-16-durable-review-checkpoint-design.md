@@ -1035,6 +1035,8 @@ The following decisions are intentionally held for consultation:
   Use beadcraft to form dependency-ordered, independently verifiable beads; the
   first usable chain may land incrementally, but the epic remains open until
   all durable recovery behavior is integrated.
-- [ ] Consequence threshold for doing nothing.
+- [x] Consequence threshold for doing nothing: unacceptable P0 correctness and
+  liveness failure. Lost findings, unchanged-state QG/review replay, and
+  routine operator babysitting contradict the self-healing factory contract.
 - [ ] Whether acceptance-contract repair is a durable core capability or a
   follow-up after checkpoint recovery.
