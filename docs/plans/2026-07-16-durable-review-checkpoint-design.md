@@ -401,6 +401,8 @@ CREATE TABLE review_checkpoints (
     recovery_strategy TEXT,
     failure_fingerprint TEXT,
     next_recovery_at TEXT,
+    quarantine_reminded_at TEXT,
+    quarantine_reminder_count INTEGER NOT NULL DEFAULT 0,
     findings_json TEXT NOT NULL DEFAULT '[]',
     blockers_json TEXT NOT NULL DEFAULT '[]',
     verification_json TEXT NOT NULL DEFAULT '{}',
@@ -494,6 +496,8 @@ durable attempt history. It never derives a strategy from raw transcript text.
    recovery-planning run that must return a typed, policy-approved action.
 6. If no safe action remains, transition only this checkpoint to
    `quarantined`, preserve all work, and continue dispatching unrelated beads.
+7. While quarantined, publish a deduplicated recurring operator reminder and
+   automatically reactivate recovery when a relevant input fingerprint changes.
 
 Retry budgets are per failure fingerprint and survive dispatcher restarts.
 Changing process IDs, workers, or timestamps cannot reset the budget. Recovery
@@ -502,7 +506,20 @@ Success clears the active fingerprint but preserves attempt history for audit.
 
 The factory does not wait for an operator between these steps. Status and CLI
 commands expose the strategy, attempts, next retry, and quarantine reason for
-diagnosis or optional override.
+diagnosis or optional override. Reminder timestamps and counts are durable so a
+dispatcher restart neither suppresses a due reminder nor repeats one early.
+
+Relevant reactivation inputs include:
+
+- toolchain or dependency-lock fingerprint;
+- Oro configuration and review-policy hash;
+- reviewer/provider health generation;
+- target HEAD;
+- acceptance-contract hash;
+- previously blocked command availability or capability fingerprint.
+
+An input change resets only the recovery budget made obsolete by that change.
+It does not discard the checkpoint, worktree, findings, or prior audit history.
 
 ## 11. State Machine
 
@@ -708,8 +725,13 @@ For every non-terminal checkpoint:
 - preserve the worktree, assignment, checkpoint, and all structured evidence;
 - keep the bead out of the ordinary queue;
 - continue dispatching unrelated beads;
-- expose the terminal reason and optional administrative override without
-  making operator action a prerequisite for factory health.
+- mark project health degraded and include the bead in every status snapshot;
+- emit a deduplicated reminder on a configurable recurring cadence until the
+  checkpoint leaves quarantine;
+- automatically transition back to recovery when a relevant input fingerprint
+  changes;
+- expose the terminal reason and optional administrative override without making
+  operator action a prerequisite for factory health.
 
 ### Any identity mismatch
 
@@ -757,6 +779,8 @@ Add compact events:
 - `review_recovery_succeeded`
 - `review_recovery_exhausted`
 - `review_checkpoint_quarantined`
+- `review_quarantine_reminder`
+- `review_quarantine_reactivated`
 
 Status/health metrics:
 
@@ -841,6 +865,9 @@ Throughput reporting should distinguish:
 - changing worker/process identity does not reset a failure fingerprint budget;
 - a successful repair resumes the blocked phase without rerunning worker QG;
 - exhausted recovery quarantines one bead while unrelated beads continue;
+- quarantine reminder cadence and deduplication survive dispatcher restart;
+- relevant toolchain, config, provider-health, target, contract, or capability
+  changes reactivate recovery automatically;
 - unsafe worktree state recovery-quarantines instead of deleting work.
 
 ### Contract tests
@@ -910,6 +937,11 @@ premortem:
       severity: high
       mitigation_checked: "Current blocked path reopens ordinary work. Design fingerprints failures, persists attempt budgets across restarts, uses typed bounded strategies, and quarantines one bead when no safe action remains."
 
+    - risk: "Recurring quarantine warnings become noisy enough that operators ignore them."
+      location: "pkg/dispatcher/health.go; pkg/dispatcher/events.go"
+      severity: medium
+      mitigation_checked: "Design persists last-reminded time and count, deduplicates by checkpoint/failure fingerprint, keeps the bead visible in status, and requires a configurable reminder cadence."
+
     - risk: "Raw review artifacts consume disk or expose sensitive local context."
       location: "pkg/ops/ops.go:runWith; pkg/protocol/message.go:MaxMessageSize"
       severity: high
@@ -942,8 +974,11 @@ The following decisions are intentionally held for consultation:
 - [x] Status quo and intervention: repeated work and dropped findings are not
   acceptable operating costs. Recovery must be automatic; operator commands
   are optional overrides, not normal pipeline steps.
-- [ ] Autonomous exhaustion policy: quarantine one bead after bounded safe
-  strategies vs continue attempting indefinitely.
+- [x] Autonomous exhaustion policy: quarantine one bead after bounded safe
+  strategies, continue unrelated work, reactivate automatically when relevant
+  inputs change, and surface the quarantine to the operator on a recurring
+  deduplicated cadence.
+- [ ] Quarantine reminder cadence and escalation policy.
 - [ ] Exact primary beneficiary/failure scenario.
 - [ ] Narrowest shippable wedge within the architecture.
 - [ ] Consequence threshold for doing nothing.
