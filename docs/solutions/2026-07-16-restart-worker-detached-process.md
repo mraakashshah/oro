@@ -24,6 +24,13 @@ Darwin process snapshot, so checking only its parent could make the safety
 assertions vacuous. The final fixture re-executes the Go test helper, detaches
 it, and has each owned and foreign control process report its own exact markers.
 
+The first bounded-scan follow-up still failed with
+`inspect process environments: context deadline exceeded`. It listed candidate
+PIDs first, then launched `ps axeww -p <pid>` concurrently for each candidate.
+On Darwin, the BSD `a` and `x` selectors expand the selection to the full live
+process table despite `-p`, so every nominally PID-filtered inspection repeated
+the complete environment scan.
+
 ## Root Cause
 
 Process-group membership is transient ownership evidence. A daemonized session
@@ -31,13 +38,28 @@ leader can escape that group while still belonging to the same Oro project and
 worker. Without a second exact ownership identity, restart had no safe way to
 distinguish that residual process from another project's worker.
 
+The acceptance regression persisted because the scanner combined mutually
+counterproductive `ps` selectors. Concurrency did not bound the work: it
+multiplied a full environment-inclusive table scan by the number of live
+candidate PIDs until the shared four-second cleanup context expired.
+
 ## Solution
 
 Production worker commands now receive normalized `ORO_SOCKET_PATH` and
 `ORO_WORKER_ID` environment entries. `ExecProcessManager` serializes worker
 lifecycle changes, terminates the tracked group, scans one bounded
-environment-inclusive process snapshot for both exact markers, and performs a
-bounded TERM-then-KILL cleanup before a same-ID spawn can proceed.
+set of environment-inclusive process snapshots for both exact markers, and
+performs a bounded TERM-then-KILL cleanup before a same-ID spawn can proceed.
+
+The bounded scanner now takes one lightweight current-user PID/PGID snapshot,
+then inspects parsed integer PIDs in batches of at most 128. Each batch pairs an
+argv-only `ps ww -p <pid-list>` snapshot with `ps eww -p <pid-list>` and removes
+the argv prefix before matching environment entries. Leaving `a` and `x` out
+preserves the PID filter, while separating argv prevents a foreign process from
+spoofing ownership through command-line arguments. Processes that exit between
+snapshots are skipped only after their absence is verified, canceled contexts
+return a bounded error, and incomplete socket/worker marker tuples are rejected
+before either scan.
 
 The stop command uses the same all-marker matcher. Bare roles, tool names, and
 worktree substrings are not sufficient ownership evidence when scoped markers
@@ -49,6 +71,10 @@ Lifecycle tests for detached processes should make every positive and negative
 control self-report its runtime ownership tuple. Cleanup code should require the
 complete worker-and-project identity and retain the tracked process-group kill
 as the fast first step.
+
+When changing BSD-style `ps` selectors, verify the number of returned rows as
+well as the presence of expected fields. A command can expose the right marker
+while silently ignoring its intended PID filter.
 
 ## Related
 

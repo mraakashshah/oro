@@ -401,6 +401,8 @@ func TestExecProcessManagerKillTerminatesDetachedOwnedProcess(t *testing.T) {
 
 	foreignSocket := startDetachedTestProcess(t, "/tmp/other-project.sock", workerID)
 	foreignWorker := startDetachedTestProcess(t, socketPath, "worker-other")
+	foreignArgv := startDetachedTestProcess(t, "/tmp/argv-only-project.sock", "worker-argv-only",
+		"ORO_SOCKET_PATH="+socketPath, "ORO_WORKER_ID="+workerID)
 	var ownedDetachedPID int
 	t.Cleanup(func() {
 		if ownedDetachedPID > 1 {
@@ -438,6 +440,9 @@ func TestExecProcessManagerKillTerminatesDetachedOwnedProcess(t *testing.T) {
 	}
 	if !processAliveForTest(foreignWorker.Process.Pid) {
 		t.Fatalf("detached PID %d for another worker was killed", foreignWorker.Process.Pid)
+	}
+	if !processAliveForTest(foreignArgv.Process.Pid) {
+		t.Fatalf("detached PID %d with ownership markers only in argv was killed", foreignArgv.Process.Pid)
 	}
 
 	for _, want := range []string{"ORO_SOCKET_PATH=" + socketPath, "ORO_WORKER_ID=" + workerID} {
@@ -487,10 +492,11 @@ func runDetachedOwnedProcessHelper(t *testing.T) {
 	}
 }
 
-func startDetachedTestProcess(t *testing.T, socketPath, workerID string) *exec.Cmd {
+func startDetachedTestProcess(t *testing.T, socketPath, workerID string, argv ...string) *exec.Cmd {
 	t.Helper()
 	pidPath := filepath.Join(t.TempDir(), "detached.pid")
-	cmd := exec.Command(os.Args[0], "-test.run=^TestExecProcessManagerKillTerminatesDetachedOwnedProcess$") //nolint:gosec // test helper re-executes this binary
+	args := append([]string{"-test.run=^TestExecProcessManagerKillTerminatesDetachedOwnedProcess$"}, argv...)
+	cmd := exec.Command(os.Args[0], args...) //nolint:gosec // test helper re-executes this binary with controlled arguments
 	cmd.Env = append(testWorkerOwnershipEnv(os.Environ(), socketPath, workerID),
 		"ORO_TEST_DETACHED_OWNED_PROCESS_HELPER=1",
 		"ORO_TEST_DETACHED_PID_PATH="+pidPath,

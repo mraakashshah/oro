@@ -17,7 +17,15 @@ import (
 const (
 	residualCleanupTimeout = 4 * time.Second
 	residualTERMGrace      = 250 * time.Millisecond
+	residualScanBatchSize  = 128
 )
+
+type processEnvironmentSnapshots struct {
+	commands     string
+	environments string
+}
+
+type processEnvironmentBatchReader func(context.Context, []OwnedProcess) (processEnvironmentSnapshots, error)
 
 // OwnedProcess identifies a detached process and its process group.
 //
@@ -48,30 +56,171 @@ func (pm *ExecProcessManager) cleanupResidualProcesses(id string) error {
 }
 
 func scanOwnedProcesses(ctx context.Context, markers []string) ([]OwnedProcess, error) {
-	out, err := exec.CommandContext(ctx, "ps", "axeww", "-o", "pid=,pgid=,command=").Output()
-	if err != nil {
-		return nil, fmt.Errorf("list process environments: %w", err)
+	if !hasCompleteOwnershipMarkers(markers) {
+		return nil, nil
 	}
-	return ownedProcessesFromSnapshot(string(out), markers), nil
+	out, err := exec.CommandContext(ctx, "ps", "x", "-o", "pid=,pgid=").Output()
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("list process IDs: %w", ctxErr)
+		}
+		return nil, fmt.Errorf("list process IDs: %w", err)
+	}
+	return inspectProcessEnvironments(ctx, processesFromSnapshot(string(out)), markers)
 }
 
-func ownedProcessesFromSnapshot(snapshot string, markers []string) []OwnedProcess {
+func processesFromSnapshot(snapshot string) []OwnedProcess {
 	self := os.Getpid()
 	var processes []OwnedProcess
 	for _, line := range strings.Split(snapshot, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 3 {
+		if len(fields) < 2 {
 			continue
 		}
 		pid, pidErr := strconv.Atoi(fields[0])
 		pgid, pgidErr := strconv.Atoi(fields[1])
-		if pidErr != nil || pgidErr != nil || pid <= 1 || pid == self ||
-			!processenv.CommandContainsAllMarkers(strings.Join(fields[2:], " "), markers) {
+		if pidErr != nil || pgidErr != nil || pid <= 1 || pid == self {
 			continue
 		}
 		processes = append(processes, OwnedProcess{PID: pid, PGID: pgid})
 	}
 	return processes
+}
+
+func inspectProcessEnvironments(ctx context.Context, processes []OwnedProcess, markers []string) ([]OwnedProcess, error) {
+	return inspectProcessEnvironmentsWithReader(ctx, processes, markers, readProcessEnvironmentSnapshots)
+}
+
+func inspectProcessEnvironmentsWithReader(
+	ctx context.Context,
+	processes []OwnedProcess,
+	markers []string,
+	readBatch processEnvironmentBatchReader,
+) ([]OwnedProcess, error) {
+	if !hasCompleteOwnershipMarkers(markers) {
+		return nil, nil
+	}
+	processes = uniqueOwnedProcesses(processes)
+	if len(processes) == 0 {
+		return nil, nil
+	}
+
+	owned := make([]OwnedProcess, 0)
+	for start := 0; start < len(processes); start += residualScanBatchSize {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("inspect process environments: %w", err)
+		}
+		end := min(start+residualScanBatchSize, len(processes))
+		batch := processes[start:end]
+		snapshots, err := readBatch(ctx, batch)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, fmt.Errorf("inspect process environments: %w", ctxErr)
+			}
+			if allOwnedProcessesExited(batch) {
+				continue
+			}
+			return nil, fmt.Errorf("inspect process environments: %w", err)
+		}
+		commands := processCommandsFromSnapshot(snapshots.commands)
+		owned = append(owned, ownedProcessesFromEnvironmentSnapshot(snapshots.environments, commands, markers)...)
+	}
+	return uniqueOwnedProcesses(owned), nil
+}
+
+func readProcessEnvironmentSnapshots(ctx context.Context, processes []OwnedProcess) (processEnvironmentSnapshots, error) {
+	pids := make([]string, 0, len(processes))
+	for _, process := range processes {
+		pids = append(pids, strconv.Itoa(process.PID))
+	}
+	pidList := strings.Join(pids, ",")
+	//nolint:gosec // PID arguments are parsed integers from the local ps snapshot.
+	commandOut, err := exec.CommandContext(ctx, "ps", "ww", "-p", pidList, "-o", "pid=,command=").Output()
+	if err != nil {
+		return processEnvironmentSnapshots{}, fmt.Errorf("list process commands: %w", err)
+	}
+	//nolint:gosec // PID arguments are parsed integers from the local ps snapshot.
+	environmentOut, err := exec.CommandContext(ctx, "ps", "eww", "-p", pidList, "-o", "pid=,pgid=,command=").Output()
+	if err != nil {
+		return processEnvironmentSnapshots{}, fmt.Errorf("list process environments: %w", err)
+	}
+	return processEnvironmentSnapshots{commands: string(commandOut), environments: string(environmentOut)}, nil
+}
+
+func processCommandsFromSnapshot(snapshot string) map[int]string {
+	commands := make(map[int]string)
+	for _, line := range strings.Split(snapshot, "\n") {
+		pidField, command, ok := splitProcessField(line)
+		pid, err := strconv.Atoi(pidField)
+		if !ok || err != nil {
+			continue
+		}
+		commands[pid] = command
+	}
+	return commands
+}
+
+func ownedProcessesFromEnvironmentSnapshot(snapshot string, commands map[int]string, markers []string) []OwnedProcess {
+	owned := make([]OwnedProcess, 0)
+	for _, line := range strings.Split(snapshot, "\n") {
+		pidField, remainder, ok := splitProcessField(line)
+		if !ok {
+			continue
+		}
+		pgidField, commandAndEnvironment, ok := splitProcessField(remainder)
+		pid, pidErr := strconv.Atoi(pidField)
+		pgid, pgidErr := strconv.Atoi(pgidField)
+		command, candidate := commands[pid]
+		environment, separated := processEnvironmentSuffix(commandAndEnvironment, command)
+		if !ok || pidErr != nil || pgidErr != nil || !candidate || !separated ||
+			!processenv.CommandContainsAllMarkers(environment, markers) {
+			continue
+		}
+		owned = append(owned, OwnedProcess{PID: pid, PGID: pgid})
+	}
+	return owned
+}
+
+func splitProcessField(line string) (field, remainder string, ok bool) {
+	line = strings.TrimSpace(line)
+	separator := strings.IndexAny(line, " \t")
+	if separator <= 0 {
+		return "", "", false
+	}
+	remainder = strings.TrimLeft(line[separator:], " \t")
+	if remainder == "" {
+		return "", "", false
+	}
+	return line[:separator], remainder, true
+}
+
+func processEnvironmentSuffix(commandAndEnvironment, command string) (string, bool) {
+	if command == "" || !strings.HasPrefix(commandAndEnvironment, command) {
+		return "", false
+	}
+	suffix := commandAndEnvironment[len(command):]
+	if suffix == "" || (suffix[0] != ' ' && suffix[0] != '\t') {
+		return "", false
+	}
+	return strings.TrimSpace(suffix), true
+}
+
+func hasCompleteOwnershipMarkers(markers []string) bool {
+	if len(markers) != 2 {
+		return false
+	}
+	var socket, worker bool
+	for _, marker := range markers {
+		switch {
+		case strings.HasPrefix(marker, processenv.SocketPathEnv+"=") && len(marker) > len(processenv.SocketPathEnv)+1:
+			socket = true
+		case strings.HasPrefix(marker, processenv.WorkerIDEnv+"=") && len(marker) > len(processenv.WorkerIDEnv)+1:
+			worker = true
+		default:
+			return false
+		}
+	}
+	return socket && worker
 }
 
 func killOwnedProcesses(ctx context.Context, processes ...OwnedProcess) error {
