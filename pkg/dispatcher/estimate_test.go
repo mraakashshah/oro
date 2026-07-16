@@ -63,7 +63,7 @@ func TestNewBeadEstimatorUsesSubscriptionCLIByDefault(t *testing.T) {
 		t.Fatalf("read fake Codex args: %v", err)
 	}
 	for _, want := range []string{
-		"--model\ngpt-5.6-terra", "--sandbox\nread-only", "--ephemeral", "--ignore-user-config",
+		"--model\ngpt-5.6-luna", "--sandbox\nread-only", "--ephemeral", "--ignore-user-config",
 		"--disable\nplugins", "--disable\nshell_tool", "--disable\nunified_exec",
 		`model_reasoning_effort="low"`, "Implement routing", "Tests pass",
 	} {

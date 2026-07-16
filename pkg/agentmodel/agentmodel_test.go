@@ -104,17 +104,17 @@ languages:
 		}
 	})
 
-	t.Run("estimated short bead uses Terra low", func(t *testing.T) {
+	t.Run("estimated short bead uses Luna low", func(t *testing.T) {
 		runtime, model, reasoning := agentmodel.ResolveForBead("worker", protocol.Bead{EstimatedMinutes: 3})
-		if runtime != "codex" || model != "gpt-5.6-terra" || reasoning != "low" {
-			t.Fatalf("ResolveForBead(short estimate) = (%q, %q, %q), want (codex, gpt-5.6-terra, low)", runtime, model, reasoning)
+		if runtime != "codex" || model != "gpt-5.6-luna" || reasoning != "low" {
+			t.Fatalf("ResolveForBead(short estimate) = (%q, %q, %q), want (codex, gpt-5.6-luna, low)", runtime, model, reasoning)
 		}
 	})
 
-	t.Run("legacy deep model maps to Sol xhigh", func(t *testing.T) {
+	t.Run("legacy deep model maps to Sol high", func(t *testing.T) {
 		runtime, model, reasoning := agentmodel.ResolveForBead("worker", protocol.Bead{Model: protocol.ModelOpus})
-		if runtime != "codex" || model != "gpt-5.6-sol" || reasoning != "xhigh" {
-			t.Fatalf("ResolveForBead(opus) = (%q, %q, %q), want (codex, gpt-5.6-sol, xhigh)", runtime, model, reasoning)
+		if runtime != "codex" || model != "gpt-5.6-sol" || reasoning != "high" {
+			t.Fatalf("ResolveForBead(opus) = (%q, %q, %q), want (codex, gpt-5.6-sol, high)", runtime, model, reasoning)
 		}
 	})
 }
@@ -127,28 +127,28 @@ func TestLockedRoleResolution(t *testing.T) {
 		model     string
 		reasoning string
 	}{
-		"spec_writer":             {"codex", "gpt-5.6-sol", "xhigh"},
-		"spec_challenger":         {"claude", "fable", ""},
+		"spec_writer":             {"codex", "gpt-5.6-sol", "high"},
+		"spec_challenger":         {"claude", "fable", "xhigh"},
 		"worker":                  {"codex", "gpt-5.6-terra", "medium"},
-		"worker_escalation":       {"codex", "gpt-5.6-sol", "xhigh"},
-		"ops_review":              {"claude", "fable", ""},
+		"worker_escalation":       {"codex", "gpt-5.6-sol", "high"},
+		"ops_review":              {"claude", "fable", "xhigh"},
 		"ops_review_triage":       {"claude", "fable", ""},
-		"ops_review_correctness":  {"claude", "fable", ""},
-		"ops_review_security":     {"claude", "fable", ""},
-		"ops_review_adversarial":  {"claude", "fable", ""},
+		"ops_review_correctness":  {"claude", "fable", "xhigh"},
+		"ops_review_security":     {"claude", "fable", "xhigh"},
+		"ops_review_adversarial":  {"claude", "fable", "xhigh"},
 		"ops_review_design":       {"claude", "fable", ""},
 		"ops_review_test":         {"claude", "fable", ""},
 		"ops_review_architecture": {"claude", "fable", ""},
-		"ops_escalation":          {"codex", "gpt-5.6-sol", "xhigh"},
-		"ops_merge":               {"codex", "gpt-5.6-sol", "xhigh"},
-		"ops_diagnosis":           {"codex", "gpt-5.6-sol", "xhigh"},
-		"ops_decompose":           {"codex", "gpt-5.6-sol", "xhigh"},
-		"ops_epic_fix":            {"codex", "gpt-5.6-sol", "xhigh"},
-		"ops_write_ac":            {"codex", "gpt-5.6-sol", "xhigh"},
-		"ops_dream":               {"codex", "gpt-5.6-terra", "low"},
-		"memory_extractor":        {"codex", "gpt-5.6-terra", "low"},
-		"codesearch_reranker":     {"codex", "gpt-5.6-terra", "low"},
-		"estimator":               {"codex", "gpt-5.6-terra", "low"},
+		"ops_escalation":          {"codex", "gpt-5.6-sol", "high"},
+		"ops_merge":               {"codex", "gpt-5.6-sol", "high"},
+		"ops_diagnosis":           {"codex", "gpt-5.6-sol", "high"},
+		"ops_decompose":           {"codex", "gpt-5.6-sol", "high"},
+		"ops_epic_fix":            {"codex", "gpt-5.6-sol", "high"},
+		"ops_write_ac":            {"codex", "gpt-5.6-sol", "high"},
+		"ops_dream":               {"codex", "gpt-5.6-luna", "low"},
+		"memory_extractor":        {"codex", "gpt-5.6-luna", "low"},
+		"codesearch_reranker":     {"codex", "gpt-5.6-luna", "low"},
+		"estimator":               {"codex", "gpt-5.6-luna", "low"},
 	}
 
 	for role, want := range cases {
@@ -182,12 +182,12 @@ func TestProviderModeOverridesStaleRoleEntries(t *testing.T) {
 	}
 
 	runtime, model, reasoning = agentmodel.ResolveForRole("ops_review")
-	if runtime != "claude" || model != "fable" || reasoning != "" {
+	if runtime != "claude" || model != "fable" || reasoning != "xhigh" {
 		t.Fatalf("ResolveForRole(ops_review) = (%q, %q, %q), want claude review preset", runtime, model, reasoning)
 	}
 
 	runtime, model, reasoning = agentmodel.ResolveForRole("spec_challenger")
-	if runtime != "claude" || model != "fable" || reasoning != "" {
+	if runtime != "claude" || model != "fable" || reasoning != "xhigh" {
 		t.Fatalf("ResolveForRole(spec_challenger) = (%q, %q, %q), want claude review preset", runtime, model, reasoning)
 	}
 }

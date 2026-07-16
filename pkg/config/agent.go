@@ -138,34 +138,22 @@ type providerProfile struct {
 }
 
 func codexProfile() providerProfile {
-	return providerProfile{
-		runtime:             "codex",
-		fastModel:           "gpt-5.5",
-		balancedModel:       "gpt-5.5",
-		deepModel:           "gpt-5.5",
-		backgroundModel:     "gpt-5.5",
-		fastReasoning:       "low",
-		balancedReasoning:   "low",
-		deepReasoning:       "high",
-		backgroundReasoning: "low",
-		escalationReasoning: "medium",
-		challengeReasoning:  "xhigh",
-	}
+	return oroCodexProfile()
 }
 
 func oroCodexProfile() providerProfile {
 	return providerProfile{
 		runtime:             "codex",
-		fastModel:           "gpt-5.6-terra",
+		fastModel:           "gpt-5.6-luna",
 		balancedModel:       "gpt-5.6-terra",
 		deepModel:           "gpt-5.6-sol",
-		backgroundModel:     "gpt-5.6-terra",
+		backgroundModel:     "gpt-5.6-luna",
 		fastReasoning:       "low",
 		balancedReasoning:   "medium",
-		deepReasoning:       "xhigh",
+		deepReasoning:       "high",
 		backgroundReasoning: "low",
-		escalationReasoning: "xhigh",
-		challengeReasoning:  "xhigh",
+		escalationReasoning: "high",
+		challengeReasoning:  "high",
 	}
 }
 
@@ -181,11 +169,13 @@ func claudeProfile() providerProfile {
 
 func fableProfile() providerProfile {
 	return providerProfile{
-		runtime:         "claude",
-		fastModel:       "fable",
-		balancedModel:   "fable",
-		deepModel:       "fable",
-		backgroundModel: "fable",
+		runtime:            "claude",
+		fastModel:          "fable",
+		balancedModel:      "fable",
+		deepModel:          "fable",
+		backgroundModel:    "fable",
+		deepReasoning:      "xhigh",
+		challengeReasoning: "xhigh",
 	}
 }
 

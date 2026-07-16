@@ -3,40 +3,41 @@ agent:
   tiers:
     fast:
       runtime: codex
-      model: gpt-5.5
+      model: gpt-5.6-luna
       reasoning: low
     balanced:
       runtime: codex
-      model: gpt-5.5
-      reasoning: low
+      model: gpt-5.6-terra
+      reasoning: medium
     deep:
       runtime: codex
-      model: gpt-5.5
+      model: gpt-5.6-sol
       reasoning: high
     background:
       runtime: codex
-      model: gpt-5.5
+      model: gpt-5.6-luna
       reasoning: low
   roles:
     spec_writer:
       transport: cli
       runtime: codex
-      model: gpt-5.5
-      reasoning: xhigh
+      model: gpt-5.6-sol
+      reasoning: high
     spec_challenger:
       transport: cli
       runtime: claude
       model: fable
+      reasoning: xhigh
     worker:
       transport: cli
       runtime: codex
-      model: gpt-5.5
-      reasoning: low
+      model: gpt-5.6-terra
+      reasoning: medium
     worker_escalation:
       transport: cli
       runtime: codex
-      model: gpt-5.5
-      reasoning: medium
+      model: gpt-5.6-sol
+      reasoning: high
     ops_review:
       transport: cli
       runtime: claude
@@ -45,52 +46,52 @@ agent:
     ops_escalation:
       transport: cli
       runtime: codex
-      model: gpt-5.5
+      model: gpt-5.6-sol
       reasoning: high
     ops_merge:
       transport: cli
       runtime: codex
-      model: gpt-5.5
+      model: gpt-5.6-sol
       reasoning: high
     ops_diagnosis:
       transport: cli
       runtime: codex
-      model: gpt-5.5
+      model: gpt-5.6-sol
       reasoning: high
     ops_epic_fix:
       transport: cli
       runtime: codex
-      model: gpt-5.5
+      model: gpt-5.6-sol
       reasoning: high
     ops_write_ac:
       transport: cli
       runtime: codex
-      model: gpt-5.5
+      model: gpt-5.6-sol
       reasoning: high
     ops_decompose:
       transport: cli
       runtime: codex
-      model: gpt-5.5
+      model: gpt-5.6-sol
       reasoning: high
     ops_dream:
       transport: cli
       runtime: codex
-      model: gpt-5.5
+      model: gpt-5.6-luna
       reasoning: low
     memory_extractor:
       transport: cli
       runtime: codex
-      model: gpt-5.5
+      model: gpt-5.6-luna
       reasoning: low
     codesearch_reranker:
       transport: cli
       runtime: codex
-      model: gpt-5.5
+      model: gpt-5.6-luna
       reasoning: low
     estimator:
       transport: cli
       runtime: codex
-      model: gpt-5.5
+      model: gpt-5.6-luna
       reasoning: low
 languages:
   go:

@@ -8349,7 +8349,7 @@ func TestQualityGateRetry_ModelEscalatedToOpus(t *testing.T) {
 		},
 	})
 
-	// Worker should receive re-ASSIGN escalated to Sol xhigh.
+	// Worker should receive re-ASSIGN escalated to Sol high.
 	retryMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected re-ASSIGN after quality gate failure")
@@ -8357,8 +8357,8 @@ func TestQualityGateRetry_ModelEscalatedToOpus(t *testing.T) {
 	if retryMsg.Type != protocol.MsgAssign {
 		t.Fatalf("expected ASSIGN, got %s", retryMsg.Type)
 	}
-	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "xhigh" {
-		t.Fatalf("re-ASSIGN should escalate to Sol xhigh, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
+	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "high" {
+		t.Fatalf("re-ASSIGN should escalate to Sol high, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
 	}
 
 	// Verify the worker's stored model was updated to Sol.
@@ -8414,13 +8414,13 @@ func TestQualityGateRetry_DefaultModelEscalatedToOpus(t *testing.T) {
 		},
 	})
 
-	// Worker should receive re-ASSIGN escalated to Sol xhigh.
+	// Worker should receive re-ASSIGN escalated to Sol high.
 	retryMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected re-ASSIGN after quality gate failure")
 	}
-	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "xhigh" {
-		t.Fatalf("re-ASSIGN should escalate to Sol xhigh, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
+	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "high" {
+		t.Fatalf("re-ASSIGN should escalate to Sol high, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
 	}
 }
 
@@ -8447,8 +8447,8 @@ func TestQualityGateRetry_OpusStaysOpus(t *testing.T) {
 	if !ok {
 		t.Fatal("expected ASSIGN")
 	}
-	if assignMsg.Assign.Model != "gpt-5.6-sol" || assignMsg.Assign.Reasoning != "xhigh" {
-		t.Fatalf("initial ASSIGN should map opus to Sol xhigh, got model=%q reasoning=%q", assignMsg.Assign.Model, assignMsg.Assign.Reasoning)
+	if assignMsg.Assign.Model != "gpt-5.6-sol" || assignMsg.Assign.Reasoning != "high" {
+		t.Fatalf("initial ASSIGN should map opus to Sol high, got model=%q reasoning=%q", assignMsg.Assign.Model, assignMsg.Assign.Reasoning)
 	}
 	beadSrc.SetBeads(nil)
 
@@ -8462,7 +8462,7 @@ func TestQualityGateRetry_OpusStaysOpus(t *testing.T) {
 		},
 	})
 
-	// Worker should receive re-ASSIGN with model still Sol xhigh.
+	// Worker should receive re-ASSIGN with model still Sol high.
 	retryMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected re-ASSIGN after quality gate failure")
@@ -8470,8 +8470,8 @@ func TestQualityGateRetry_OpusStaysOpus(t *testing.T) {
 	if retryMsg.Type != protocol.MsgAssign {
 		t.Fatalf("expected ASSIGN, got %s", retryMsg.Type)
 	}
-	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "xhigh" {
-		t.Fatalf("re-ASSIGN should keep Sol xhigh, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
+	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "high" {
+		t.Fatalf("re-ASSIGN should keep Sol high, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
 	}
 
 	// Verify attempt counter was NOT reset (should be 1 since no escalation happened)
@@ -21753,10 +21753,10 @@ func TestAssignBead_UsesLLMEstimate(t *testing.T) {
 		}
 	}
 
-	// Test 1: bead-estimate-short should be estimated to 3 minutes → Terra low.
+	// Test 1: bead-estimate-short should be estimated to 3 minutes → Luna low.
 	if assign := assignedBeads["bead-estimate-short"]; assign != nil {
-		if assign.Model != "gpt-5.6-terra" || assign.Reasoning != "low" {
-			t.Errorf("bead-estimate-short: estimated 3 min should route to Terra low, got model=%s reasoning=%s", assign.Model, assign.Reasoning)
+		if assign.Model != "gpt-5.6-luna" || assign.Reasoning != "low" {
+			t.Errorf("bead-estimate-short: estimated 3 min should route to Luna low, got model=%s reasoning=%s", assign.Model, assign.Reasoning)
 		}
 		if !mockEstimator.wasCalled("Short task") {
 			t.Errorf("bead-estimate-short: estimator should have been called")
@@ -21775,8 +21775,8 @@ func TestAssignBead_UsesLLMEstimate(t *testing.T) {
 
 	// Test 3: bead-has-estimate has pre-set estimate, should NOT call estimator
 	if assign := assignedBeads["bead-has-estimate"]; assign != nil {
-		if assign.Model != "gpt-5.6-terra" || assign.Reasoning != "low" {
-			t.Errorf("bead-has-estimate: 3 minute estimate should route to Terra low, got model=%s reasoning=%s", assign.Model, assign.Reasoning)
+		if assign.Model != "gpt-5.6-luna" || assign.Reasoning != "low" {
+			t.Errorf("bead-has-estimate: 3 minute estimate should route to Luna low, got model=%s reasoning=%s", assign.Model, assign.Reasoning)
 		}
 		if mockEstimator.wasCalled("Has estimate") {
 			t.Errorf("bead-has-estimate: estimator should NOT have been called (already has estimate)")
@@ -21785,8 +21785,8 @@ func TestAssignBead_UsesLLMEstimate(t *testing.T) {
 
 	// Test 4: bead-has-model has explicit model, should NOT call estimator
 	if assign := assignedBeads["bead-has-model"]; assign != nil {
-		if assign.Model != "gpt-5.6-sol" || assign.Reasoning != "xhigh" {
-			t.Errorf("bead-has-model: legacy Opus should map to Sol xhigh, got model=%s reasoning=%s", assign.Model, assign.Reasoning)
+		if assign.Model != "gpt-5.6-sol" || assign.Reasoning != "high" {
+			t.Errorf("bead-has-model: legacy Opus should map to Sol high, got model=%s reasoning=%s", assign.Model, assign.Reasoning)
 		}
 		if mockEstimator.wasCalled("Has model") {
 			t.Errorf("bead-has-model: estimator should NOT have been called (has explicit model)")

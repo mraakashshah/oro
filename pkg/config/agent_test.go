@@ -243,22 +243,22 @@ languages:
 		t.Fatal("Load returned nil config")
 	}
 
-	if got := cfg.Tiers[protocol.TierFast]; got != (config.TierConfig{Runtime: "codex", Model: "gpt-5.6-terra", Reasoning: "low"}) {
-		t.Errorf("default tiers.fast = %+v, want Terra low", got)
+	if got := cfg.Tiers[protocol.TierFast]; got != (config.TierConfig{Runtime: "codex", Model: "gpt-5.6-luna", Reasoning: "low"}) {
+		t.Errorf("default tiers.fast = %+v, want Luna low", got)
 	}
 	if got := cfg.Tiers[protocol.TierBalanced]; got != (config.TierConfig{Runtime: "codex", Model: "gpt-5.6-terra", Reasoning: "medium"}) {
 		t.Errorf("default tiers.balanced = %+v, want Terra medium", got)
 	}
-	if got := cfg.Tiers[protocol.TierDeep]; got != (config.TierConfig{Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "xhigh"}) {
-		t.Errorf("default tiers.deep = %+v, want Sol xhigh", got)
+	if got := cfg.Tiers[protocol.TierDeep]; got != (config.TierConfig{Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "high"}) {
+		t.Errorf("default tiers.deep = %+v, want Sol high", got)
 	}
-	if got := cfg.Tiers[protocol.TierBackground]; got != (config.TierConfig{Runtime: "codex", Model: "gpt-5.6-terra", Reasoning: "low"}) {
-		t.Errorf("default tiers.background = %+v, want Terra low", got)
+	if got := cfg.Tiers[protocol.TierBackground]; got != (config.TierConfig{Runtime: "codex", Model: "gpt-5.6-luna", Reasoning: "low"}) {
+		t.Errorf("default tiers.background = %+v, want Luna low", got)
 	}
 	if got := cfg.Roles["worker"]; got != (config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.6-terra", Reasoning: "medium"}) {
 		t.Errorf("default roles.worker = %+v, want Terra medium", got)
 	}
-	if got := cfg.Roles["ops_review"]; got != (config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "fable"}) {
+	if got := cfg.Roles["ops_review"]; got != (config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "fable", Reasoning: "xhigh"}) {
 		t.Errorf("default roles.ops_review = %+v, want Claude Fable CLI", got)
 	}
 	if got := cfg.Roles["estimator"]; got != (config.RoleConfig{Tier: protocol.TierFast, Transport: "cli"}) {
@@ -273,10 +273,10 @@ func TestDefaultAgentConfigLockedProviderRoleTable(t *testing.T) {
 	cfg := config.DefaultAgentConfig()
 
 	for tier, want := range map[protocol.Tier]config.TierConfig{
-		protocol.TierFast:       {Runtime: "codex", Model: "gpt-5.6-terra", Reasoning: "low"},
+		protocol.TierFast:       {Runtime: "codex", Model: "gpt-5.6-luna", Reasoning: "low"},
 		protocol.TierBalanced:   {Runtime: "codex", Model: "gpt-5.6-terra", Reasoning: "medium"},
-		protocol.TierDeep:       {Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "xhigh"},
-		protocol.TierBackground: {Runtime: "codex", Model: "gpt-5.6-terra", Reasoning: "low"},
+		protocol.TierDeep:       {Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "high"},
+		protocol.TierBackground: {Runtime: "codex", Model: "gpt-5.6-luna", Reasoning: "low"},
 	} {
 		if got := cfg.Tiers[tier]; got != want {
 			t.Fatalf("tier %s = %+v, want %+v", tier, got, want)
@@ -284,24 +284,24 @@ func TestDefaultAgentConfigLockedProviderRoleTable(t *testing.T) {
 	}
 
 	for role, want := range map[string]config.RoleConfig{
-		"spec_writer":             {Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "xhigh"},
-		"spec_challenger":         {Transport: "cli", Runtime: "claude", Model: "fable"},
+		"spec_writer":             {Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "high"},
+		"spec_challenger":         {Transport: "cli", Runtime: "claude", Model: "fable", Reasoning: "xhigh"},
 		"worker":                  {Transport: "cli", Runtime: "codex", Model: "gpt-5.6-terra", Reasoning: "medium"},
-		"worker_escalation":       {Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "xhigh"},
-		"ops_review":              {Transport: "cli", Runtime: "claude", Model: "fable"},
+		"worker_escalation":       {Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "high"},
+		"ops_review":              {Transport: "cli", Runtime: "claude", Model: "fable", Reasoning: "xhigh"},
 		"ops_review_triage":       {Transport: "cli", Runtime: "claude", Model: "fable"},
-		"ops_review_correctness":  {Transport: "cli", Runtime: "claude", Model: "fable"},
-		"ops_review_security":     {Transport: "cli", Runtime: "claude", Model: "fable"},
-		"ops_review_adversarial":  {Transport: "cli", Runtime: "claude", Model: "fable"},
+		"ops_review_correctness":  {Transport: "cli", Runtime: "claude", Model: "fable", Reasoning: "xhigh"},
+		"ops_review_security":     {Transport: "cli", Runtime: "claude", Model: "fable", Reasoning: "xhigh"},
+		"ops_review_adversarial":  {Transport: "cli", Runtime: "claude", Model: "fable", Reasoning: "xhigh"},
 		"ops_review_design":       {Transport: "cli", Runtime: "claude", Model: "fable"},
 		"ops_review_test":         {Transport: "cli", Runtime: "claude", Model: "fable"},
 		"ops_review_architecture": {Transport: "cli", Runtime: "claude", Model: "fable"},
-		"ops_escalation":          {Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "xhigh"},
-		"ops_merge":               {Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "xhigh"},
-		"ops_diagnosis":           {Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "xhigh"},
-		"ops_decompose":           {Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "xhigh"},
-		"ops_epic_fix":            {Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "xhigh"},
-		"ops_write_ac":            {Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "xhigh"},
+		"ops_escalation":          {Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "high"},
+		"ops_merge":               {Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "high"},
+		"ops_diagnosis":           {Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "high"},
+		"ops_decompose":           {Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "high"},
+		"ops_epic_fix":            {Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "high"},
+		"ops_write_ac":            {Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "high"},
 		"ops_dream":               {Transport: "cli", Tier: protocol.TierFast},
 		"memory_extractor":        {Transport: "cli", Tier: protocol.TierFast},
 		"codesearch_reranker":     {Transport: "cli", Tier: protocol.TierFast},
@@ -310,6 +310,27 @@ func TestDefaultAgentConfigLockedProviderRoleTable(t *testing.T) {
 		if got := cfg.Roles[role]; got != want {
 			t.Fatalf("role %s = %+v, want %+v", role, got, want)
 		}
+	}
+}
+
+func TestDefaultAgentConfigUsesLunaTerraSolAndFableEffort(t *testing.T) {
+	cfg := config.DefaultAgentConfig()
+
+	wantTiers := map[protocol.Tier]config.TierConfig{
+		protocol.TierFast:       {Runtime: "codex", Model: "gpt-5.6-luna", Reasoning: "low"},
+		protocol.TierBalanced:   {Runtime: "codex", Model: "gpt-5.6-terra", Reasoning: "medium"},
+		protocol.TierDeep:       {Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "high"},
+		protocol.TierBackground: {Runtime: "codex", Model: "gpt-5.6-luna", Reasoning: "low"},
+	}
+	for tier, want := range wantTiers {
+		if got := cfg.Tiers[tier]; got != want {
+			t.Errorf("tier %s = %+v, want %+v", tier, got, want)
+		}
+	}
+
+	wantChallenger := config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "fable", Reasoning: "xhigh"}
+	if got := cfg.Roles["spec_challenger"]; got != wantChallenger {
+		t.Errorf("spec_challenger = %+v, want %+v", got, wantChallenger)
 	}
 }
 
@@ -327,17 +348,17 @@ func TestProviderModePresets(t *testing.T) {
 	}{
 		"codex only": {
 			mode:   config.ProviderModeCodexOnly,
-			worker: config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
+			worker: config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.6-terra", Reasoning: "medium"},
 			challenger: config.RoleConfig{
 				Transport: "cli",
 				Runtime:   "codex",
-				Model:     "gpt-5.5",
-				Reasoning: "xhigh",
+				Model:     "gpt-5.6-sol",
+				Reasoning: "high",
 			},
-			review:    config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
-			merge:     config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
-			fastTier:  config.TierConfig{Runtime: "codex", Model: "gpt-5.5", Reasoning: "low"},
-			deepTier:  config.TierConfig{Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
+			review:    config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "high"},
+			merge:     config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "high"},
+			fastTier:  config.TierConfig{Runtime: "codex", Model: "gpt-5.6-luna", Reasoning: "low"},
+			deepTier:  config.TierConfig{Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "high"},
 			estimator: config.RoleConfig{Transport: "api", Provider: "anthropic", APIModel: "anthropic_fast"},
 		},
 		"claude only": {
@@ -361,11 +382,12 @@ func TestProviderModePresets(t *testing.T) {
 				Transport: "cli",
 				Runtime:   "claude",
 				Model:     "fable",
+				Reasoning: "xhigh",
 			},
-			review:    config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "fable"},
-			merge:     config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "xhigh"},
-			fastTier:  config.TierConfig{Runtime: "codex", Model: "gpt-5.6-terra", Reasoning: "low"},
-			deepTier:  config.TierConfig{Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "xhigh"},
+			review:    config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "fable", Reasoning: "xhigh"},
+			merge:     config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "high"},
+			fastTier:  config.TierConfig{Runtime: "codex", Model: "gpt-5.6-luna", Reasoning: "low"},
+			deepTier:  config.TierConfig{Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "high"},
 			estimator: config.RoleConfig{Transport: "cli", Tier: protocol.TierFast},
 		},
 		"claude coding codex review": {
@@ -374,10 +396,10 @@ func TestProviderModePresets(t *testing.T) {
 			challenger: config.RoleConfig{
 				Transport: "cli",
 				Runtime:   "codex",
-				Model:     "gpt-5.5",
-				Reasoning: "xhigh",
+				Model:     "gpt-5.6-sol",
+				Reasoning: "high",
 			},
-			review:    config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.5", Reasoning: "high"},
+			review:    config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "high"},
 			merge:     config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "claude-opus-4-7"},
 			fastTier:  config.TierConfig{Runtime: "claude", Model: "claude-haiku-4-5-20251001"},
 			deepTier:  config.TierConfig{Runtime: "claude", Model: "claude-opus-4-7"},
@@ -440,34 +462,40 @@ func TestCodexCodingClaudeReviewPresetCompleteRouting(t *testing.T) {
 	}
 
 	for tier, want := range map[protocol.Tier]config.TierConfig{
-		protocol.TierFast:       {Runtime: "codex", Model: "gpt-5.6-terra", Reasoning: "low"},
+		protocol.TierFast:       {Runtime: "codex", Model: "gpt-5.6-luna", Reasoning: "low"},
 		protocol.TierBalanced:   {Runtime: "codex", Model: "gpt-5.6-terra", Reasoning: "medium"},
-		protocol.TierDeep:       {Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "xhigh"},
-		protocol.TierBackground: {Runtime: "codex", Model: "gpt-5.6-terra", Reasoning: "low"},
+		protocol.TierDeep:       {Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "high"},
+		protocol.TierBackground: {Runtime: "codex", Model: "gpt-5.6-luna", Reasoning: "low"},
 	} {
 		if got := cfg.Tiers[tier]; got != want {
 			t.Errorf("tier %s = %+v, want %+v", tier, got, want)
 		}
 	}
 
-	fable := config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "fable"}
+	fableXHigh := config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "fable", Reasoning: "xhigh"}
 	for _, role := range []string{
-		"spec_challenger", "ops_review", "ops_review_triage", "ops_review_correctness",
-		"ops_review_security", "ops_review_adversarial", "ops_review_design",
-		"ops_review_test", "ops_review_architecture",
+		"spec_challenger", "ops_review", "ops_review_correctness",
+		"ops_review_security", "ops_review_adversarial",
 	} {
+		if got := cfg.Roles[role]; got != fableXHigh {
+			t.Errorf("role %s = %+v, want Claude Fable xhigh CLI", role, got)
+		}
+	}
+
+	fable := config.RoleConfig{Transport: "cli", Runtime: "claude", Model: "fable"}
+	for _, role := range []string{"ops_review_triage", "ops_review_design", "ops_review_test", "ops_review_architecture"} {
 		if got := cfg.Roles[role]; got != fable {
 			t.Errorf("role %s = %+v, want Claude Fable CLI", role, got)
 		}
 	}
 
-	sol := config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "xhigh"}
+	sol := config.RoleConfig{Transport: "cli", Runtime: "codex", Model: "gpt-5.6-sol", Reasoning: "high"}
 	for _, role := range []string{
 		"spec_writer", "worker_escalation", "ops_escalation", "ops_merge", "ops_diagnosis",
 		"ops_epic_fix", "ops_write_ac", "ops_decompose",
 	} {
 		if got := cfg.Roles[role]; got != sol {
-			t.Errorf("role %s = %+v, want Sol xhigh", role, got)
+			t.Errorf("role %s = %+v, want Sol high", role, got)
 		}
 	}
 
