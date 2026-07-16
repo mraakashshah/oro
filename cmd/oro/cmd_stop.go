@@ -652,7 +652,7 @@ func scanOroResidualProcessSnapshots(snapshots []processSnapshot, roots, markers
 
 func residualEvidence(command, environment string, roots, markers []string) string {
 	if len(markers) > 0 {
-		if processenv.CommandContainsAllMarkers(environment, markers) {
+		if processenv.CommandContainsAllMarkers(strings.Fields(environment), markers) {
 			return "markers:" + strings.Join(markers, ",")
 		}
 		return ""

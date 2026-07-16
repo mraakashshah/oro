@@ -21,8 +21,7 @@ const (
 )
 
 type processEnvironmentSnapshots struct {
-	commands     string
-	environments string
+	environments map[int][]string
 }
 
 type processEnvironmentBatchReader func(context.Context, []OwnedProcess) (processEnvironmentSnapshots, error)
@@ -122,13 +121,16 @@ func inspectProcessEnvironmentsWithReader(
 			}
 			return nil, fmt.Errorf("inspect process environments: %w", err)
 		}
-		commands := processCommandsFromSnapshot(snapshots.commands)
-		owned = append(owned, ownedProcessesFromEnvironmentSnapshot(snapshots.environments, commands, markers)...)
+		owned = append(owned, ownedProcessesFromEnvironmentSnapshot(batch, snapshots.environments, markers)...)
 	}
 	return uniqueOwnedProcesses(owned), nil
 }
 
 func readProcessEnvironmentSnapshots(ctx context.Context, processes []OwnedProcess) (processEnvironmentSnapshots, error) {
+	environments := processEnvironmentEntriesFromProc(processes)
+	if len(environments) == len(processes) {
+		return processEnvironmentSnapshots{environments: environments}, nil
+	}
 	pids := make([]string, 0, len(processes))
 	for _, process := range processes {
 		pids = append(pids, strconv.Itoa(process.PID))
@@ -144,7 +146,27 @@ func readProcessEnvironmentSnapshots(ctx context.Context, processes []OwnedProce
 	if err != nil {
 		return processEnvironmentSnapshots{}, fmt.Errorf("list process environments: %w", err)
 	}
-	return processEnvironmentSnapshots{commands: string(commandOut), environments: string(environmentOut)}, nil
+	for pid, entries := range environmentEntriesFromSnapshot(string(environmentOut), processCommandsFromSnapshot(string(commandOut))) {
+		if _, found := environments[pid]; !found {
+			environments[pid] = entries
+		}
+	}
+	return processEnvironmentSnapshots{environments: environments}, nil
+}
+
+func processEnvironmentEntriesFromProc(processes []OwnedProcess) map[int][]string {
+	environments := make(map[int][]string, len(processes))
+	for _, process := range processes {
+		contents, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", process.PID))
+		if err != nil {
+			continue
+		}
+		entries := strings.Split(strings.TrimSuffix(string(contents), "\x00"), "\x00")
+		if len(entries) > 0 && entries[0] != "" {
+			environments[process.PID] = entries
+		}
+	}
+	return environments
 }
 
 func processCommandsFromSnapshot(snapshot string) map[int]string {
@@ -160,23 +182,32 @@ func processCommandsFromSnapshot(snapshot string) map[int]string {
 	return commands
 }
 
-func ownedProcessesFromEnvironmentSnapshot(snapshot string, commands map[int]string, markers []string) []OwnedProcess {
-	owned := make([]OwnedProcess, 0)
+func environmentEntriesFromSnapshot(snapshot string, commands map[int]string) map[int][]string {
+	environments := make(map[int][]string)
 	for _, line := range strings.Split(snapshot, "\n") {
 		pidField, remainder, ok := splitProcessField(line)
 		if !ok {
 			continue
 		}
-		pgidField, commandAndEnvironment, ok := splitProcessField(remainder)
-		pid, pidErr := strconv.Atoi(pidField)
-		pgid, pgidErr := strconv.Atoi(pgidField)
+		_, commandAndEnvironment, ok := splitProcessField(remainder)
+		pid, err := strconv.Atoi(pidField)
 		command, candidate := commands[pid]
 		environment, separated := processEnvironmentSuffix(commandAndEnvironment, command)
-		if !ok || pidErr != nil || pgidErr != nil || !candidate || !separated ||
-			!processenv.CommandContainsAllMarkers(environment, markers) {
+		if !ok || err != nil || !candidate || !separated {
 			continue
 		}
-		owned = append(owned, OwnedProcess{PID: pid, PGID: pgid})
+		environments[pid] = strings.Fields(environment)
+	}
+	return environments
+}
+
+func ownedProcessesFromEnvironmentSnapshot(processes []OwnedProcess, environments map[int][]string, markers []string) []OwnedProcess {
+	owned := make([]OwnedProcess, 0)
+	for _, process := range processes {
+		if !processenv.CommandContainsAllMarkers(environments[process.PID], markers) {
+			continue
+		}
+		owned = append(owned, process)
 	}
 	return owned
 }

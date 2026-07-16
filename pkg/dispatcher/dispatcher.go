@@ -7830,10 +7830,9 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 	procMgr := d.procMgr
 	d.mu.Unlock()
 
+	var cleanupErr error
 	if wasManaged && procMgr != nil {
-		if err := d.killManagedWorkerForRestart(ctx, procMgr, workerID, beadID); err != nil {
-			return "", err
-		}
+		cleanupErr = d.killManagedWorkerForRestart(ctx, procMgr, workerID, beadID)
 	}
 
 	// Reset bead to open, clear tracking, and complete the assignment so it can be reassigned.
@@ -7850,6 +7849,9 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 		_ = d.completeAssignment(ctx, assignmentID, beadID)
 		_ = d.logEvent(ctx, "worker_restarted", "dispatcher", beadID, workerID,
 			`{"reason":"restart-worker directive"}`)
+	}
+	if cleanupErr != nil {
+		return "", cleanupErr
 	}
 
 	// Spawn new worker process with same ID

@@ -4,7 +4,6 @@ package dispatcher
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
@@ -47,6 +46,29 @@ func TestInspectProcessEnvironmentsFindsExactOwnedProcess(t *testing.T) {
 	}
 	if len(owned) != 1 || owned[0].PID != cmd.Process.Pid {
 		t.Fatalf("owned processes = %#v, want PID %d", owned, cmd.Process.Pid)
+	}
+}
+
+func TestInspectProcessEnvironmentsPreservesEntryBoundaries(t *testing.T) {
+	markers := []string{
+		"ORO_SOCKET_PATH=/tmp/owned-process.sock",
+		"ORO_WORKER_ID=owned-worker",
+	}
+	process := OwnedProcess{PID: 60_000, PGID: 60_000}
+	reader := func(context.Context, []OwnedProcess) (processEnvironmentSnapshots, error) {
+		return processEnvironmentSnapshots{
+			environments: map[int][]string{process.PID: {
+				"PATH=/usr/bin", "HOME=/tmp", markers[0], markers[1],
+			}},
+		}, nil
+	}
+
+	owned, err := inspectProcessEnvironmentsWithReader(context.Background(), []OwnedProcess{process}, markers, reader)
+	if err != nil {
+		t.Fatalf("inspect process environments: %v", err)
+	}
+	if len(owned) != 1 || owned[0] != process {
+		t.Fatalf("owned processes = %#v, want %#v", owned, []OwnedProcess{process})
 	}
 }
 
@@ -130,20 +152,18 @@ func TestInspectProcessEnvironmentsBoundsLargeTableAndIgnoresArgvMarkers(t *test
 	reader := func(_ context.Context, batch []OwnedProcess) (processEnvironmentSnapshots, error) {
 		batchCalls++
 		maxBatchSize = max(maxBatchSize, len(batch))
-		var commands, environments strings.Builder
+		environments := make(map[int][]string, len(batch))
 		for _, process := range batch {
-			command := "helper"
-			environment := "PATH=/usr/bin"
+			environment := []string{"PATH=/usr/bin"}
 			switch process.PID {
 			case spoofedPID:
-				command += " " + strings.Join(markers, " ")
+				environment = []string{"NOTE=" + strings.Join(markers, " ")}
 			case ownedPID:
-				environment = strings.Join(markers, " ") + " " + environment
+				environment = append(environment, markers...)
 			}
-			_, _ = fmt.Fprintf(&commands, "%d %s\n", process.PID, command)
-			_, _ = fmt.Fprintf(&environments, "%d %d %s %s\n", process.PID, process.PGID, command, environment)
+			environments[process.PID] = environment
 		}
-		return processEnvironmentSnapshots{commands: commands.String(), environments: environments.String()}, nil
+		return processEnvironmentSnapshots{environments: environments}, nil
 	}
 
 	owned, err := inspectProcessEnvironmentsWithReader(context.Background(), processes, markers, reader)
@@ -164,13 +184,10 @@ func TestOwnedProcessEnvironmentScanRejectsMarkersEmbeddedInSingleForeignVariabl
 		"ORO_WORKER_ID=owned-worker",
 	}
 	const pid = 60_001
-	const command = "helper --serve"
 
-	owned := ownedProcessesFromEnvironmentSnapshot(
-		fmt.Sprintf("%d %d %s NOTE=foreign %s %s text\n", pid, pid, command, markers[0], markers[1]),
-		map[int]string{pid: command},
-		markers,
-	)
+	owned := ownedProcessesFromEnvironmentSnapshot([]OwnedProcess{{PID: pid, PGID: pid}}, map[int][]string{
+		pid: {"PATH=/usr/bin", "NOTE=foreign " + markers[0] + " " + markers[1] + " text"},
+	}, markers)
 	if len(owned) != 0 {
 		t.Fatalf("owned processes = %#v, want none when both markers occur inside one foreign environment value", owned)
 	}

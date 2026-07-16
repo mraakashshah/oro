@@ -102,38 +102,23 @@ func WorkerOwnershipMarkers(socketPath, workerID string) []string {
 	return []string{SocketPathEnv + "=" + socketPath, WorkerIDEnv + "=" + workerID}
 }
 
-// CommandContainsAllMarkers reports whether command begins with every exact
-// ownership marker as a contiguous environment-entry prefix.
-func CommandContainsAllMarkers(command string, markers []string) bool {
+// CommandContainsAllMarkers reports whether entries contain every exact
+// ownership marker. Callers must preserve entry boundaries so marker-shaped
+// text within another variable's value never proves ownership.
+func CommandContainsAllMarkers(entries, markers []string) bool {
 	if len(markers) == 0 {
 		return false
 	}
-	remaining := append([]string(nil), markers...)
-	command = strings.TrimLeft(command, " \t\r\n")
-	for len(remaining) > 0 {
-		matched := false
-		for index, marker := range remaining {
-			if marker == "" || !strings.HasPrefix(command, marker) {
-				continue
-			}
-			end := len(marker)
-			if end < len(command) && !isCommandMarkerBoundary(command[end]) {
-				continue
-			}
-			command = strings.TrimLeft(command[end:], " \t\r\n")
-			remaining = append(remaining[:index], remaining[index+1:]...)
-			matched = true
-			break
-		}
-		if !matched {
+	found := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		found[entry] = true
+	}
+	for _, marker := range markers {
+		if marker == "" || !found[marker] {
 			return false
 		}
 	}
 	return true
-}
-
-func isCommandMarkerBoundary(value byte) bool {
-	return value == ' ' || value == '\t' || value == '\n' || value == '\r'
 }
 
 func normalizeEnvEntry(entry, workdir string, rewriteGOMODCACHE bool) (normalized string, keep, handledPWD bool) {
