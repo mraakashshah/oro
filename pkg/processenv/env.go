@@ -13,6 +13,57 @@ import (
 	"time"
 )
 
+const (
+	// SocketPathEnv scopes an Oro subprocess to one dispatcher/project socket.
+	SocketPathEnv = "ORO_SOCKET_PATH"
+	// WorkerIDEnv identifies the managed worker that owns a subprocess tree.
+	WorkerIDEnv = "ORO_WORKER_ID"
+)
+
+// WithWorkerOwnership replaces inherited ownership values with the exact
+// dispatcher socket and worker ID for a managed worker subprocess.
+func WithWorkerOwnership(env []string, socketPath, workerID string) []string {
+	markers := WorkerOwnershipMarkers(socketPath, workerID)
+	out := make([]string, 0, len(env)+len(markers))
+	out = append(out, markers...)
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && (key == SocketPathEnv || key == WorkerIDEnv) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// WorkerOwnershipMarkers returns the complete marker tuple required to own a
+// worker subprocess. An incomplete scope intentionally produces no markers.
+func WorkerOwnershipMarkers(socketPath, workerID string) []string {
+	if socketPath == "" || workerID == "" {
+		return nil
+	}
+	return []string{SocketPathEnv + "=" + socketPath, WorkerIDEnv + "=" + workerID}
+}
+
+// CommandContainsAllMarkers reports whether entries contain every exact
+// ownership marker. Callers must preserve entry boundaries so marker-shaped
+// text within another variable's value never proves ownership.
+func CommandContainsAllMarkers(entries, markers []string) bool {
+	if len(markers) == 0 {
+		return false
+	}
+	found := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		found[entry] = true
+	}
+	for _, marker := range markers {
+		if marker == "" || !found[marker] {
+			return false
+		}
+	}
+	return true
+}
+
 // ForWorkdir returns env with git worktree override variables stripped and PWD
 // aligned with workdir. cmd.Dir changes the process cwd, but many nested tools
 // inspect env PWD or git override variables before consulting the OS cwd.
