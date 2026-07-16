@@ -24,8 +24,8 @@ func TestOracleSearchMapPrimitives(t *testing.T) {
 		if !utf8.ValidString(got) {
 			t.Fatalf("query is not valid UTF-8: %q", got)
 		}
-		if got == "" {
-			t.Fatal("long non-empty query was discarded")
+		if want := strings.Repeat("界", 170); got != want {
+			t.Fatalf("rune-boundary query = %q, want %q", got, want)
 		}
 
 		if got := codesearch.BuildOracleQuery(" \t", "\n", "\u00a0"); got != "" {
@@ -43,16 +43,9 @@ func TestOracleSearchMapPrimitives(t *testing.T) {
 		}
 
 		got := codesearch.FormatOracleMap(chunks, 1024)
-		if got == "" {
-			t.Fatal("FormatOracleMap() returned empty output")
-		}
-		if strings.Count(got, "pkg/a.go") != 1 {
-			t.Fatalf("duplicate entry was not stable-deduplicated: %q", got)
-		}
-		for _, want := range []string{"pkg/a.go", "3-9", "func", "Alpha", "pkg/b.go", "1-1", "type", "Beta"} {
-			if !strings.Contains(got, want) {
-				t.Errorf("map missing %q: %q", want, got)
-			}
+		want := "pkg/a.go:3-9 func Alpha\npkg/b.go:1-1 type Beta"
+		if got != want {
+			t.Fatalf("FormatOracleMap() = %q, want %q", got, want)
 		}
 		for _, absent := range []string{"BadRange", "MissingPath", "Content", "func Alpha()"} {
 			if strings.Contains(got, absent) {
@@ -68,6 +61,27 @@ func TestOracleSearchMapPrimitives(t *testing.T) {
 		}
 		if got := codesearch.FormatOracleMap(chunks, 1); got != "" {
 			t.Fatalf("budget below first entry = %q, want empty", got)
+		}
+	})
+
+	t.Run("caps oversized maps at the Oracle context limit", func(t *testing.T) {
+		chunks := make([]codesearch.ChunkRef, 0, 512)
+		for i := range 512 {
+			chunks = append(chunks, codesearch.ChunkRef{
+				FilePath:  "pkg/very/long/path/to/package/file.go",
+				StartLine: i + 1,
+				EndLine:   i + 1,
+				Kind:      "function",
+				Name:      "UniqueChunkNameForOracleSearchMap",
+			})
+		}
+
+		out := codesearch.FormatOracleMap(chunks, codesearch.OracleSearchContextLimit+1024)
+		if len(out) > codesearch.OracleSearchContextLimit {
+			t.Fatalf("oversized map is %d bytes, want at most %d", len(out), codesearch.OracleSearchContextLimit)
+		}
+		if !strings.Contains(out, "UniqueChunkNameForOracleSearchMap") {
+			t.Fatalf("oversized map omitted ranked entries: %q", out)
 		}
 	})
 }

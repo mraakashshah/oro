@@ -40,7 +40,9 @@ func FormatOracleMap(chunks []ChunkRef, maxBytes int) string {
 	}
 
 	var b strings.Builder
-	seen := make(map[ChunkRef]struct{}, len(chunks))
+	// Do not reserve capacity from chunks: callers may provide an unbounded ranked
+	// result set while this renderer is explicitly bounded by maxBytes.
+	seen := make(map[ChunkRef]struct{})
 	for _, chunk := range chunks {
 		if !validChunkRef(chunk) {
 			continue
