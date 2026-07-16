@@ -407,6 +407,23 @@ func TestDrainOutputRedactsCredentialAssignmentsFromLogsAndMemoryExtraction(t *t
 	}
 }
 
+func TestDrainOutputRedactsCredentialAssignmentsFromFormattedResults(t *testing.T) {
+	const sentinel = "formatted-result-credential"
+	input := `{"type":"result","subtype":"error","result":"command failed: OPENAI_API_KEY=` + sentinel + ` MODE=development","is_error":true}` + "\n"
+
+	var log bytes.Buffer
+	worker.DrainOutputInWorkdir(context.Background(), io.NopCloser(strings.NewReader(input)),
+		worker.StreamFormatClaudeJSON, nil, "oro-redact-result", nil, t.TempDir(), &log)
+
+	output := log.String()
+	if strings.Contains(output, sentinel) {
+		t.Fatalf("credential leaked in formatted result: %q", output)
+	}
+	if !strings.Contains(output, "ERROR: command failed: OPENAI_API_KEY=[REDACTED] MODE=development") {
+		t.Fatalf("formatted result = %q, want redacted credential assignment", output)
+	}
+}
+
 func TestDrainOutputInWorkdir_BindsLLMExtractionToWorkdir(t *testing.T) {
 	workdir := t.TempDir()
 	spawner := &mockWorkdirLLMSpawner{

@@ -167,5 +167,5 @@ func FormatResult(a Activity) string {
 	if a.IsError {
 		parts = append(parts, fmt.Sprintf("    ERROR: %s", a.Text))
 	}
-	return strings.Join(parts, "\n")
+	return redactCredentialAssignments(strings.Join(parts, "\n"))
 }
