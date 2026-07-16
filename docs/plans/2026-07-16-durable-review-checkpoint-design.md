@@ -2,7 +2,7 @@
 
 Date: 2026-07-16
 
-Status: Adversarial revision 2; re-review pending
+Status: Adversarial revision 3; re-review pending
 
 ## 1. Goal
 
@@ -262,6 +262,42 @@ identity, review attempt ownership, or approved-but-not-integrated recovery.
 `ops.Result` remains the generic subprocess result for compatibility, but
 review results gain an optional typed payload.
 
+### Dependency-neutral finding contract
+
+Introduce `pkg/reviewcontract`, which imports neither `pkg/ops` nor
+`pkg/protocol`, as the single owner of `Severity`, `Evidence`, `ContractImpact`,
+`Finding`, and `FindingHistoryEntry`. `pkg/ops` uses or aliases those types for
+source compatibility; `pkg/protocol` imports `pkg/reviewcontract` directly.
+There are no parallel ops and wire finding structs and therefore no lossy
+dispatcher conversion.
+
+```go
+package reviewcontract
+
+type Finding struct {
+    ID             string                `json:"id"`
+    Severity       Severity              `json:"severity"`
+    Category       string                `json:"category"`
+    Title          string                `json:"title"`
+    Detail         string                `json:"detail"`
+    Evidence       []Evidence            `json:"evidence"`
+    Confidence     int                   `json:"confidence"`
+    Sources        []string              `json:"sources"`
+    SourceFamilies []string              `json:"source_families,omitempty"`
+    Origin         string                `json:"origin"`
+    Status         string                `json:"status,omitempty"`
+    History        []FindingHistoryEntry `json:"history,omitempty"`
+    ContractImpact ContractImpact        `json:"contract_impact"`
+    RequiredAction string                `json:"required_action"`
+}
+```
+
+`TestReviewFindingWireRoundTrip` marshals a fully populated finding through
+`protocol.AssignPayload.ReviewRecovery`, unmarshals it at the worker boundary,
+and requires deep equality for ID, severity, evidence, contract impact,
+required action, and every other field. This test also protects the import
+graph: `pkg/reviewcontract` may use only the standard library.
+
 ```go
 type ReviewDecision string
 
@@ -322,17 +358,17 @@ type ReviewExecution struct {
 }
 
 type ReviewOutcome struct {
-    Decision     ReviewDecision     `json:"decision"`
-    Findings     []Finding          `json:"findings,omitempty"`
-    Blockers     []ReviewBlocker    `json:"blockers,omitempty"`
-    Verification ReviewVerification `json:"verification"`
-    Execution    ReviewExecution    `json:"execution"`
-    Summary      string             `json:"summary"`
-    Artifact     ReviewArtifactRef  `json:"artifact"`
+    Decision     ReviewDecision          `json:"decision"`
+    Findings     []reviewcontract.Finding `json:"findings,omitempty"`
+    Blockers     []ReviewBlocker         `json:"blockers,omitempty"`
+    Verification ReviewVerification      `json:"verification"`
+    Execution    ReviewExecution         `json:"execution"`
+    Summary      string                  `json:"summary"`
+    Artifact     ReviewArtifactRef       `json:"artifact"`
 }
 ```
 
-`Finding` gains a narrowly-scoped contract impact:
+The shared `Finding` uses a narrowly-scoped contract impact:
 
 ```go
 type ContractImpact string
@@ -435,6 +471,24 @@ finding IDs, severity, file/line, contract impact, or required action.
 
 The worker must send proof of the QG-passed state before review starts.
 
+`ResolveDaemonPaths` exposes `<project-state-dir>/review-evidence`, and
+`buildDispatcherWithReviewTimeoutsAndCleanliness` passes it as
+`Config.ReviewEvidenceDir`. Every `AssignPayload` carries that absolute
+project-state path as `QGEvidenceDir`. The worker writes
+`<QGEvidenceDir>/<bead-id>/<assignment-id>/<ready-attempt>.json` with directory
+mode `0700` and file mode `0600`, then fsyncs the file and parent directory.
+The writer rejects non-absolute paths and any clean/join result outside the
+assigned evidence directory. The dispatcher independently canonicalizes every
+`QGEvidenceRef.Path`, requires it to remain beneath its own configured
+`ReviewEvidenceDir`, rejects symlink escape, and hash-verifies before use.
+
+Evidence is deliberately outside the worktree. Oro does not add a broad
+`.oro` hygiene exemption, so arbitrary untracked project files remain dirty.
+`TestReadyEvidenceDoesNotDirtyWorktree` creates an otherwise unconfigured
+temporary Git repository, writes evidence through the production worker helper,
+and proves `checkPreReviewGitHygiene` still reports clean without a repository
+ignore rule.
+
 `ReadyForReviewPayload` gains:
 
 ```go
@@ -508,7 +562,7 @@ type ReconnectPayload struct {
 ```
 
 Before sending READY, the worker atomically writes and fsyncs QG evidence under
-the preserved worktree's `.oro/qg-evidence/` directory. It enters an
+the assigned project-state evidence directory. It enters an
 `awaiting_review_ack` phase and retains `{ReadyAttempt,QGEvidence}` independently
 of the evicting `MessageBuffer`.
 
@@ -934,12 +988,12 @@ type ReviewRecoveryArtifactRef struct {
 }
 
 type ReviewRecovery struct {
-    CheckpointID    int64                      `json:"checkpoint_id"`
-    RejectedHeadSHA string                     `json:"rejected_head_sha"`
-    Findings        []Finding                  `json:"findings,omitempty"`
-    FindingsRef     *ReviewRecoveryArtifactRef `json:"findings_ref,omitempty"`
-    Attempt         int                        `json:"attempt"`
-    AcceptanceHash  string                     `json:"acceptance_hash"`
+    CheckpointID    int64                        `json:"checkpoint_id"`
+    RejectedHeadSHA string                       `json:"rejected_head_sha"`
+    Findings        []reviewcontract.Finding     `json:"findings,omitempty"`
+    FindingsRef     *ReviewRecoveryArtifactRef   `json:"findings_ref,omitempty"`
+    Attempt         int                          `json:"attempt"`
+    AcceptanceHash  string                       `json:"acceptance_hash"`
 }
 ```
 
@@ -985,19 +1039,26 @@ They remain structured obligations in the worker prompt and review checkpoint.
 ## 14. Acceptance-Contract Repair
 
 Findings explicitly marked `acceptance_gap` do not go directly back to a coding
-worker.
-
-The dispatcher:
+worker. `handleReviewResult` calls
+`routeAcceptanceGap(ctx, checkpointID, findings)`. That coordinator:
 
 1. persists the findings;
 2. releases worker capacity while preserving the assignment worktree;
-3. creates a blocking contract-repair ops run;
+3. compare-and-swaps the checkpoint to `contract_repair_running` and creates one
+   linked blocking contract-repair ops run in the same transaction;
 4. asks the contract agent to produce a complete replacement acceptance
    contract;
-5. validates the replacement deterministically;
-6. updates the bead acceptance only after validation;
-7. marks the old checkpoint superseded because `acceptance_hash` changed;
-8. requeues the preserved implementation with the revised contract.
+5. routes its result to
+   `handleContractRepairResult(ctx, checkpointID, opsRunID, result)`;
+6. parses and validates the replacement through `pkg/acceptance`;
+7. transactionally updates bead acceptance, completes the ops run, marks the old
+   checkpoint superseded because `acceptance_hash` changed, and requeues the
+   preserved implementation with the revised contract.
+
+Invalid, empty, or failed repair output marks the linked ops run failed and
+leaves the checkpoint in a durable failed/recovery state; it never falls through
+to coding correction. Startup reconciliation resumes or safely reroutes a
+processless `contract_repair_running` run before ordinary assignment.
 
 The contract agent cannot directly close, merge, or silently waive a finding.
 False-positive and wont-fix handling continues through durable finding triage.
@@ -1087,8 +1148,11 @@ recovery quarantine behavior, and unrelated ready beads continue dispatching.
 
 One helper, `releaseCheckpointOwnedWorker`, is used by
 `handleShutdownApproved`, `shutdownSequence`, `shutdownResetActiveBeads`,
-`requeueAssignmentForShutdown`, connection cleanup, heartbeat timeout handling,
-and scale-down. When a non-terminal checkpoint owns the bead, the helper:
+`requeueAssignmentForShutdown`, `connCloseCleanup`, `sendToWorker` write-failure
+removal, heartbeat timeout handling, and scale-down. Every production
+`delete(d.workers, ...)`, `clearBeadTracking`, or bead-to-open path must first
+use this helper when a non-terminal checkpoint owns the bead. In that case the
+helper:
 
 - never completes the assignment or reopens the bead;
 - requeues the current assignment while preserving worktree, branch, and
@@ -1100,7 +1164,10 @@ and scale-down. When a non-terminal checkpoint owns the bead, the helper:
 Shutdown reset is idempotent with the earlier shutdown-approved transition.
 `TestReviewCheckpointGracefulShutdownRecovery` covers `awaiting_review_ack`,
 `review_running`, `correction_assigned`, and `integrating`, followed by restart
-and phase-local continuation.
+and phase-local continuation. `TestReviewCheckpointSocketEOFRecovery` closes a
+real `handleConn` socket during each phase and proves exact-phase requeue without
+ordinary reopen. `TestReviewCheckpointSendFailureRecovery` forces a socket write
+failure through `sendToWorker` and proves the same invariant.
 
 For every non-terminal checkpoint:
 
@@ -1294,6 +1361,8 @@ Throughput reporting should distinguish:
 - docs-only approval emits a complete typed outcome and policy hash;
 - dropped Critical/Important candidates cannot produce approval;
 - Raw artifact text is never passed to the classifier.
+- a fully populated shared finding survives `AssignPayload` JSON round-trip with
+  exact contract impact and required action.
 
 ### Artifact tests
 
@@ -1306,6 +1375,8 @@ Throughput reporting should distinguish:
 - janitor never removes an artifact referenced by a non-terminal checkpoint;
 - oversized findings switch to a hash-verified recovery artifact without
   dropping gating obligations.
+- QG evidence is written outside an unconfigured temporary Git worktree and
+  does not weaken dirty-file detection.
 
 ### Checkpoint store tests
 
@@ -1345,6 +1416,9 @@ Throughput reporting should distinguish:
   the correction scheduler assign exact findings to a real replacement;
 - `TestReviewCheckpointGracefulShutdownRecovery` proves stop, scale-down, and
   heartbeat loss requeue checkpoint-owned assignments without reopening;
+- `TestReviewCheckpointSocketEOFRecovery` and
+  `TestReviewCheckpointSendFailureRecovery` prove live teardown cannot reopen
+  checkpoint-owned work;
 - dispatcher death after approval resumes integration and does not rerun review;
 - startup restores worktree/checkpoint context before ops-run reconciliation;
 - non-terminal checkpoint states cannot enter `beads_ready`,
@@ -1374,20 +1448,24 @@ Throughput reporting should distinguish:
 - line-aware AC parsing preserves shell pipes;
 - missing `Read`, vacuous `Cmd`, or missing `Assert` is rejected before
   assignment;
-- an acceptance-gap finding blocks coding retry;
-- valid contract repair updates AC and requeues preserved work;
-- invalid contract repair leaves a failed ops run and no worker loop.
+- `TestReviewAcceptanceGapContractRepair` sends an `acceptance_gap` outcome
+  through `handleReviewResult`, proves coding correction remains blocked, proves
+  a valid deterministic replacement updates acceptance, completes the ops run,
+  supersedes the old checkpoint, and requeues preserved work, then proves
+  invalid output leaves a failed ops run and no worker loop.
 
 ### End-to-end proof
 
 The epic acceptance command is:
 
 ```bash
-bash -euo pipefail -c 'test "$(git branch --show-current)" = main; out=$(go test -v -count=1 -timeout=180s ./pkg/dispatcher -run "^TestDurableReviewCheckpointEndToEnd$"); grep -Fq -- "--- PASS: TestDurableReviewCheckpointEndToEnd" <<<"$out"'
+bash -euo pipefail -c 'test "$(git branch --show-current)" = main; out=$(go test -v -count=1 -timeout=240s ./pkg/dispatcher ./cmd/oro -run "^(TestDurableReviewCheckpointEndToEnd|TestDurableReviewCheckpointProductionComposition|TestReviewQuarantineSurfaceParity)$"); grep -Fq -- "--- PASS: TestDurableReviewCheckpointEndToEnd" <<<"$out"; grep -Fq -- "--- PASS: TestDurableReviewCheckpointProductionComposition" <<<"$out"; grep -Fq -- "--- PASS: TestReviewQuarantineSurfaceParity" <<<"$out"'
 ```
 
-Assert: exit code 0, the exact named test exists and emits its PASS marker on
-`main`, and the test exercises:
+Assert: exit code 0, all three exact named tests exist and emit PASS markers on
+`main`.
+
+`TestDurableReviewCheckpointEndToEnd` exercises:
 
 1. initial QG pass and fsynced evidence;
 2. dispatcher death after READY receipt but before checkpoint commit;
@@ -1403,19 +1481,42 @@ Assert: exit code 0, the exact named test exists and emits its PASS marker on
    reroute;
 9. graceful stop during review requeues checkpoint ownership and resumes after
    restart;
-10. failed required persona preventing approval, typed docs-only approval, and
+10. live socket EOF and write failure preserving exact checkpoint phase;
+11. failed required persona preventing approval, typed docs-only approval, and
     legacy READY forcing dispatcher QG;
-11. approval and integration without the original worker;
-12. dispatcher death after git merge but before merge-proof persistence, then
+12. acceptance-gap contract repair blocking coding, accepting a valid revision,
+    superseding the old checkpoint, and failing invalid repair safely;
+13. automatic approval and integration without the original worker;
+14. manual-integration approval preserving the worktree until ancestry proof;
+15. dispatcher death after git merge but before merge-proof persistence, then
     idempotent assignment/bead finalization without QG or review replay;
-13. bounded autonomous failure recovery, checkpoint-scoped quarantine,
+16. bounded autonomous failure recovery, checkpoint-scoped quarantine,
     unrelated bead dispatch, fake-clock reminder scheduling, input-change
     reactivation, and a due terminal-artifact maintenance sweep;
-14. zero active assignments, failed or processless running review ops runs,
+17. zero active assignments, failed or processless running review ops runs,
     non-terminal review checkpoints, or unclosed target bead at completion.
 
+`TestDurableReviewCheckpointProductionComposition` invokes
+`newRootCmd -> newStartCmd -> runDaemonOnly/startFreshSwarm ->
+buildDispatcherWithReviewTimeoutsAndCleanliness -> dispatcher.New -> Run`.
+It must not construct `dispatcher.Config` or call the builder directly. It may
+replace only external worker-process and listener lifecycle seams after the
+production factory has constructed the dispatcher. With a temporary
+`ORO_HOME`/project it proves `ResolveDaemonPaths` supplies distinct artifact and
+evidence directories; `ReviewArtifactDir`, `ReviewEvidenceDir`,
+`ReviewMaintenanceInterval`, `ReviewArtifactRetention`, and
+`ReviewArtifactSweepInterval` reach the dispatcher; and the real startup path
+starts the maintenance scheduler. The proof observes one scheduled reminder and
+one due terminal-artifact deletion rather than merely inspecting fields.
+
+`TestReviewQuarantineSurfaceParity` lives in `cmd/oro` and drives the real
+online and offline status, health, throughput, daemon-status, and monitor
+handlers against one state database between reminder deadlines. It requires
+identical active quarantine identity, reason, cadence, and unrelated-progress
+fields from every human/JSON model.
+
 Beadcraft must place this command verbatim on the epic and assign the named
-production-wiring test to the final integration bead.
+production-wiring tests to the final integration beads.
 
 ### Required beadcraft work packages
 
@@ -1425,18 +1526,20 @@ listed production call sites in child `Read:` fields.
 
 | Work package | Required production wiring | Required named proof |
 |---|---|---|
-| Typed review contract | `pkg/ops/ops.go:Result/Review`, `review_parse.go`, `review_validation.go`, `review_merge.go`, `personas.go` | `TestReviewOutcomeRequiredCoverage` |
+| Shared finding wire contract | new `pkg/reviewcontract`, `pkg/ops/finding.go`, `pkg/protocol/message.go:AssignPayload.ReviewRecovery`, worker decode | `TestReviewFindingWireRoundTrip` |
+| Typed review contract | `pkg/ops/ops.go:Result/Review`, `review_parse.go`, `review_validation.go`, `review_merge.go`, `personas.go`, shared finding model | `TestReviewOutcomeRequiredCoverage` |
 | Bounded artifacts and findings | `pkg/ops/exec_spawner.go`, `pkg/ops/finding.go`, dispatcher config/path injection, `spawnBackgroundLoops/reviewMaintenanceLoop` | `TestReviewArtifactAndFindingOverflow`, `TestReviewArtifactJanitorScheduled` |
-| READY evidence handshake | `pkg/worker/worker.go:runQGAndReport/reconnect/handleMessage/handleReadyForReviewAck`, `buffer.go`, `pkg/protocol/message.go`, dispatcher `handleReadyForReview/handleReconnect/processReconnectUnderLock` | `TestReadyForReviewAckReplay`, `TestLegacyReadyForReviewForcesDispatcherQG` |
+| READY evidence handshake | `pkg/worker/worker.go:runQGAndReport/reconnect/handleMessage/handleReadyForReviewAck/evidence writer`, `buffer.go`, `pkg/protocol/message.go`, dispatcher `handleReadyForReview/handleReconnect/processReconnectUnderLock/checkPreReviewGitHygiene`, `cmd/oro:ResolveDaemonPaths/buildDispatcherWithReviewTimeoutsAndCleanliness` | `TestReadyForReviewAckReplay`, `TestReadyEvidenceDoesNotDirtyWorktree`, `TestLegacyReadyForReviewForcesDispatcherQG` |
 | Checkpoint schema/store | `pkg/protocol/schema.go:SchemaDDL/MigrateBeadSchema/beads_ready` plus checkpoint repository | `TestReviewCheckpointCanonicalKeyMigration` |
 | Review ops lifecycle | `dispatcher.handleReadyForReview/handleReviewResult`, `ops_runs.go` | `TestReviewOpsRunCheckpointTransaction` |
-| Startup and queue recovery | `dispatcher.Run/startupRecovery/restoreState/tryAssign/statusQueueBeads`, `worker_pool.go`, `handleShutdownApproved/shutdownSequence/shutdownResetActiveBeads/requeueAssignmentForShutdown` | `TestReviewCheckpointStartupOrdering`, `TestReviewCheckpointGracefulShutdownRecovery` |
+| Startup and queue recovery | `dispatcher.Run/startupRecovery/restoreState/tryAssign/statusQueueBeads/connCloseCleanup`, `worker_pool.go:sendToWorker/heartbeat/scale-down`, `handleShutdownApproved/shutdownSequence/shutdownResetActiveBeads/requeueAssignmentForShutdown` | `TestReviewCheckpointStartupOrdering`, `TestReviewCheckpointGracefulShutdownRecovery`, `TestReviewCheckpointSocketEOFRecovery`, `TestReviewCheckpointSendFailureRecovery` |
 | Dispatcher-owned integration | `handleDone/mergeAndComplete/finalizeSuccessfulMerge`, manual integration path | `TestReviewIntegrationCrashRecovery`, `TestReviewApprovedManualIntegrationPreserved` |
 | Structured rejection delivery | `routeRejectedCheckpoint`, worker-pool reservation/heartbeat paths, `assign_payload.go:buildAssignPayload`, worker recovery preflight | `TestReviewFindingsReplacementWorker` |
 | Autonomous recovery | recovery action/store/executor, checkpoint-scoped quarantine, fingerprint sampler, `spawnBackgroundLoops/reviewMaintenanceLoop` | `TestReviewRecoveryBudgetAndReactivation`, `TestReviewQuarantineReminderScheduler` |
-| Acceptance repair/admission | new `pkg/acceptance`, task create/update, `checkBeadReady`, contract ops, review prompt | `TestAcceptanceContractSharedParser` |
+| Acceptance repair/admission | new `pkg/acceptance`, task create/update, `checkBeadReady`, `handleReviewResult/routeAcceptanceGap/handleContractRepairResult`, contract ops/startup reconciliation, review prompt | `TestAcceptanceContractSharedParser`, `TestReviewAcceptanceGapContractRepair` |
 | Quarantine observability | `factoryhealth`, dispatcher health/events, status/health/throughput/monitor online and offline paths | `TestReviewQuarantineSurfaceParity` |
-| Production composition and epic proof | `cmd_start.go`, `paths.go`, `cmd_harness.go` or dispatcher integration harness | `TestDurableReviewCheckpointEndToEnd` |
+| Dispatcher epic proof | production dispatcher/worker sockets, review/checkpoint/recovery/integration stores, CLI surface adapters | `TestDurableReviewCheckpointEndToEnd` |
+| CLI production composition | `cmd/oro:main/newRootCmd/newStartCmd/runDaemonOnly/startFreshSwarm/buildDispatcherWithReviewTimeoutsAndCleanliness`, `paths.go:ResolveDaemonPaths`, real dispatcher `Run/spawnBackgroundLoops` | `TestDurableReviewCheckpointProductionComposition` |
 
 Dependency order is: contracts/schema -> protocol/artifacts -> review and ops
 lifecycle -> startup/integration/rejection -> recovery/contract/observability ->
@@ -1459,7 +1562,7 @@ production composition and epic proof. The epic depends on every leaf task.
    checkpoint-scoped quarantine.
 8. Add shared acceptance parsing, contract repair, and stricter admission.
 9. Add health/status/throughput/reminder reporting.
-10. Add the exact bounded end-to-end crash/restart proof.
+10. Add the exact bounded dispatcher and CLI-composition crash/restart proofs.
 
 Each phase is reversible until the schema/checkpoint path becomes authoritative.
 During rollout, missing new fields select conservative legacy fallbacks.
@@ -1476,6 +1579,16 @@ premortem:
       location: "pkg/worker/worker.go:SendReadyForReview/reconnect; pkg/dispatcher/dispatcher.go:handleReadyForReview"
       severity: high
       mitigation_checked: "Current protocol has no READY ACK and reconnect reports idle when proc is nil. Design adds fsynced evidence, awaiting_review_ack phase, commit-before-ACK, and idempotent replay."
+
+    - risk: "Durable READY evidence makes every clean worktree appear dirty."
+      location: "pkg/worker/worker.go:runQGAndReport; pkg/dispatcher/dispatcher.go:checkPreReviewGitHygiene"
+      severity: high
+      mitigation_checked: "Evidence is stored under the project state directory passed by production config, never under the worktree, and a temporary repository without ignore rules must remain clean."
+
+    - risk: "Ops and protocol use different finding models or create an import cycle."
+      location: "pkg/ops/finding.go; pkg/ops/ops.go; pkg/protocol/message.go"
+      severity: high
+      mitigation_checked: "A dependency-neutral pkg/reviewcontract owns the only model, and a full JSON wire round-trip protects every recovery field."
 
     - risk: "Git merge succeeds but dispatcher death loses integration progress."
       location: "pkg/dispatcher/dispatcher.go:handleDone/mergeAndComplete"
@@ -1502,6 +1615,11 @@ premortem:
       severity: high
       mitigation_checked: "Current shutdown can complete the assignment. Design centralizes checkpoint-aware release that requeues and preserves exact phase across stop, scale-down, heartbeat, and connection loss."
 
+    - risk: "Unexpected socket EOF or write failure reopens checkpoint-owned work."
+      location: "pkg/dispatcher/dispatcher.go:connCloseCleanup; pkg/dispatcher/worker_pool.go:sendToWorker"
+      severity: high
+      mitigation_checked: "Both teardown paths and every worker deletion/open transition use releaseCheckpointOwnedWorker, with real EOF and write-failure proofs."
+
     - risk: "Retention and recurring reminder logic exists but no production loop invokes it."
       location: "pkg/dispatcher/dispatcher.go:spawnBackgroundLoops"
       severity: high
@@ -1521,6 +1639,16 @@ premortem:
       location: "pkg/ops/finding.go; pkg/dispatcher/dispatcher.go:handleReviewRejection"
       severity: high
       mitigation_checked: "Current Finding has no contract-impact field and current retry uses prose. Design requires explicit acceptance_gap classification, separate contract repair, deterministic AC validation, and triage override."
+
+    - risk: "Acceptance-gap parsing exists but no production coordinator runs repair."
+      location: "pkg/dispatcher/dispatcher.go:handleReviewResult; pkg/dispatcher/ops_runs.go"
+      severity: high
+      mitigation_checked: "Design names routeAcceptanceGap and handleContractRepairResult, their transactional state changes, startup reconciliation, and a full lifecycle test."
+
+    - risk: "Package-local tests pass while oro start omits evidence or maintenance configuration."
+      location: "cmd/oro/cmd_start.go:buildDispatcherWithReviewTimeoutsAndCleanliness; cmd/oro/paths.go:ResolveDaemonPaths"
+      severity: high
+      mitigation_checked: "Epic acceptance includes a second named test that enters through the real root/start command chain and observes scheduled behavior, not just config fields."
 
     - risk: "Blocked review recovery becomes another automatic retry loop."
       location: "pkg/dispatcher/dispatcher.go:handleReviewBlocked; pkg/dispatcher/ops_runs.go"
