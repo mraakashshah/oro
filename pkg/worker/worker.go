@@ -963,7 +963,7 @@ func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser, genera
 
 	// Flush any remaining buffered text (incomplete final line) for structured streams.
 	if format != StreamFormatLineText {
-		if line, ok := sanitizer.Flush(); ok {
+		if line, ok := sanitizer.flush(); ok {
 			w.processOutputTextLine(ctx, line)
 		}
 	}
@@ -1007,7 +1007,7 @@ func (w *Worker) processStructuredStreamLine(ctx context.Context, line []byte, s
 		}
 	}
 
-	for _, textLine := range sanitizer.Append(activity.Text) {
+	for _, textLine := range sanitizer.append(activity.Text) {
 		w.processOutputTextLine(ctx, textLine)
 	}
 }

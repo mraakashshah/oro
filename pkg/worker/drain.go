@@ -47,7 +47,7 @@ func DrainOutputInWorkdir(ctx context.Context, stdout io.ReadCloser, format Stre
 				unknownLines++
 			}
 			drainWriteActivity(out, activity)
-			for _, line := range sanitizer.Append(activity.Text) {
+			for _, line := range sanitizer.append(activity.Text) {
 				drainProcessSanitizedLine(ctx, out, line, &accumulated, store, beadID)
 			}
 		}
@@ -60,7 +60,7 @@ func DrainOutputInWorkdir(ctx context.Context, stdout io.ReadCloser, format Stre
 	}
 
 	if format != StreamFormatLineText {
-		if line, ok := sanitizer.Flush(); ok {
+		if line, ok := sanitizer.flush(); ok {
 			drainProcessSanitizedLine(ctx, out, line, &accumulated, store, beadID)
 		}
 	}
@@ -109,7 +109,7 @@ type credentialLineSanitizer struct {
 	pending strings.Builder
 }
 
-func (s *credentialLineSanitizer) Append(text string) []string {
+func (s *credentialLineSanitizer) append(text string) []string {
 	if text == "" {
 		return nil
 	}
@@ -125,7 +125,7 @@ func (s *credentialLineSanitizer) Append(text string) []string {
 	return strings.Split(complete, "\n")
 }
 
-func (s *credentialLineSanitizer) Flush() (string, bool) {
+func (s *credentialLineSanitizer) flush() (string, bool) {
 	if s.pending.Len() == 0 {
 		return "", false
 	}
