@@ -2,7 +2,7 @@
 
 Date: 2026-07-16
 
-Status: Adversarial revision 1; re-review pending
+Status: Adversarial revision 2; re-review pending
 
 ## 1. Goal
 
@@ -488,6 +488,23 @@ type ReadyForReviewAckPayload struct {
     CheckpointID  int64  `json:"checkpoint_id"`
     CheckpointKey string `json:"checkpoint_key"`
 }
+
+type QGEvidenceRef struct {
+    RunID  string `json:"run_id"`
+    Path   string `json:"path"`
+    SHA256 string `json:"sha256"`
+}
+
+type ReconnectPayload struct {
+    WorkerID       string         `json:"worker_id"`
+    BeadID         string         `json:"bead_id"`
+    State          string         `json:"state"`
+    Phase          string         `json:"phase,omitempty"`
+    ReadyAttempt   string         `json:"ready_attempt,omitempty"`
+    QGEvidenceRef  *QGEvidenceRef `json:"qg_evidence_ref,omitempty"`
+    ContextPct     int            `json:"context_pct"`
+    BufferedEvents []Message      `json:"buffered_events"`
+}
 ```
 
 Before sending READY, the worker atomically writes and fsyncs QG evidence under
@@ -502,6 +519,14 @@ return the same ACK and never spawn a second review. If ACK is lost, the worker
 resends READY. On reconnect, `ReconnectPayload` carries the explicit phase,
 ready attempt, and QG evidence reference; `idle` is not legal while awaiting
 ACK or review.
+
+`protocol.Message` gains `MsgReadyForReviewAck` and a
+`ReadyForReviewAck` envelope field. `worker.Run -> handleMessage` consumes it
+through `handleReadyForReviewAck`, verifies bead/attempt/key, clears only the
+awaiting-ACK retry state, and retains evidence until the checkpoint becomes
+terminal. Dispatcher `handleReconnect -> processReconnectUnderLock` validates
+the new phase/reference fields and invokes the same idempotent READY transaction
+rather than reducing the worker to `idle`.
 
 If the worker dies before ACK, startup recovery scans the active or requeued
 assignment's preserved evidence file, verifies its hash and checkpoint identity,
@@ -607,12 +632,15 @@ Allowed states:
 qg_passed
 review_running
 rejected
+correction_assigning
+correction_assigned
 contract_repair_running
 blocked
 failed
 recovery_running
 quarantined
 approved
+manual_integration_pending
 integrating
 integrated
 superseded
@@ -774,6 +802,25 @@ and progress queries read the latest sample but do not themselves execute side
 effects. A changed component reactivates only strategies that declare that
 component as a precondition.
 
+### Production maintenance scheduler
+
+`spawnBackgroundLoops` starts one `reviewMaintenanceLoop`. On a one-minute
+base tick it:
+
+1. routes due rejected checkpoints to correction workers;
+2. runs due recovery attempts and fingerprint sampling;
+3. claims and emits due quarantine reminders;
+4. invokes artifact pruning when the configured retention sweep is due.
+
+Each operation claims durable work before side effects, so overlapping ticks or
+dispatcher restart are harmless. Config exposes the base tick, artifact
+retention, and artifact sweep interval; defaults are one minute, seven days, and
+one hour. `TestReviewArtifactJanitorScheduled` proves a terminal due artifact is
+deleted by the loop while active references remain.
+`TestReviewQuarantineReminderScheduler` uses a fake clock to prove immediate,
+15-minute, hourly, restart, and duplicate-delivery behavior through the actual
+loop.
+
 ## 11. State Machine
 
 ```text
@@ -790,7 +837,9 @@ review_running
 
   -> rejected (implementation_fix)
        -> preserve assignment/worktree
-       -> deliver compact findings
+       -> correction_assigning
+       -> reserve same or replacement worker
+       -> correction_assigned with compact findings
        -> worker changes HEAD
        -> acceptance preflight
        -> full QG
@@ -846,6 +895,14 @@ the existing merge guard must make the duplicate a no-op.
 
 This removes the requirement that the original worker survive until approval.
 
+When existing `ManualIntegration` mode is enabled, dispatcher ownership does
+not bypass it. Approval transitions to `manual_integration_pending`, preserves
+the worktree and assignment, and emits the existing manual-integration signal.
+After an explicit/manual merge, reconciliation verifies that the approved head
+is an ancestor of the target before completing assignment, bead, and checkpoint
+state. `TestReviewApprovedManualIntegrationPreserved` proves no automatic merge
+occurs and verified manual integration finalizes idempotently.
+
 ### Crash-consistent integration reconciliation
 
 Startup reconciles every `integrating` checkpoint before ordinary assignment:
@@ -888,6 +945,27 @@ type ReviewRecovery struct {
 
 The existing string `Feedback` remains as a compact rendered compatibility
 view, not the source of truth.
+
+### Rejected-checkpoint correction scheduler
+
+Rejected checkpoints never depend on ordinary `beads_ready` assignment.
+`reviewMaintenanceLoop` invokes `routeRejectedCheckpoint`:
+
+1. select a due `rejected` checkpoint with no live correction worker;
+2. compare-and-swap `rejected -> correction_assigning`;
+3. requeue and reuse its checkpoint-owned assignment, or create a replacement
+   assignment bound to the preserved worktree when none remains;
+4. reserve an idle eligible worker through the worker-pool reservation seam;
+5. update `current_assignment_id` and worker ownership transactionally;
+6. build the structured payload through `buildAssignPayload`;
+7. send `ASSIGN` and transition to `correction_assigned`.
+
+Send or reservation failure releases the worker, requeues the assignment, and
+returns the checkpoint to `rejected` with bounded backoff. Heartbeat,
+connection-loss, graceful-shutdown, and scale-down paths requeue rather than
+complete a checkpoint-owned assignment, then wake this scheduler. The same
+worker is an optimization; killing the original worker must still result in a
+real replacement assignment carrying identical finding IDs and content.
 
 Before running another full QG, the worker performs a recovery preflight:
 
@@ -998,11 +1076,31 @@ created. Startup may not leave a processless `running` ops run.
 
 `beads_ready`, `statusQueueBeads`, and `tryAssign` all exclude a bead with a
 checkpoint in `qg_passed`, `review_running`, `rejected`,
-`contract_repair_running`, `blocked`, `failed`, `recovery_running`,
-`quarantined`, `approved`, or `integrating`. The dispatcher rechecks this
+`correction_assigning`, `correction_assigned`, `contract_repair_running`,
+`blocked`, `failed`, `recovery_running`, `quarantined`, `approved`, or
+`manual_integration_pending`, or `integrating`. The dispatcher rechecks this
 condition immediately before assignment to close view/query races. Review
-quarantine is checkpoint-scoped; it cannot trigger the existing global recovery
-quarantine behavior, and unrelated ready beads continue dispatching.
+quarantine is checkpoint-scoped; it cannot trigger the existing global
+recovery quarantine behavior, and unrelated ready beads continue dispatching.
+
+### Graceful shutdown, scale-down, and heartbeat loss
+
+One helper, `releaseCheckpointOwnedWorker`, is used by
+`handleShutdownApproved`, `shutdownSequence`, `shutdownResetActiveBeads`,
+`requeueAssignmentForShutdown`, connection cleanup, heartbeat timeout handling,
+and scale-down. When a non-terminal checkpoint owns the bead, the helper:
+
+- never completes the assignment or reopens the bead;
+- requeues the current assignment while preserving worktree, branch, and
+  evidence;
+- clears only worker ownership and records the checkpoint's exact phase;
+- wakes review, correction, or recovery routing for the next process or
+  startup.
+
+Shutdown reset is idempotent with the earlier shutdown-approved transition.
+`TestReviewCheckpointGracefulShutdownRecovery` covers `awaiting_review_ack`,
+`review_running`, `correction_assigned`, and `integrating`, followed by restart
+and phase-local continuation.
 
 For every non-terminal checkpoint:
 
@@ -1016,17 +1114,27 @@ For every non-terminal checkpoint:
 ### `rejected`
 
 - keep or reactivate the preserved assignment;
-- make the bead assignable only with structured review recovery context;
+- wake `routeRejectedCheckpoint`;
+- make the bead assignable only through the correction scheduler with structured
+  review recovery context;
 - if a worker reconnects on the same assignment, replay the compact findings.
+
+### `correction_assigning` or `correction_assigned`
+
+- reconcile reservation, assignment, and worker ownership;
+- finish or retry an interrupted payload send idempotently;
+- if the worker is gone, requeue the assignment and return to `rejected`;
+- never expose the bead through the ordinary ready queue.
 
 ### `contract_repair_running`
 
 - reconcile the linked contract ops run;
 - ordinary worker assignment remains blocked.
 
-### `approved` or `integrating`
+### `approved`, `manual_integration_pending`, or `integrating`
 
 - verify the immutable checkpoint;
+- preserve manual-integration mode and wait for ancestry proof when configured;
 - reconcile integration intent and merge proof, then resume without the
   original worker;
 - run dispatcher QG if evidence cannot be trusted;
@@ -1219,6 +1327,10 @@ Throughput reporting should distinguish:
 - a replacement ops run that cannot route is failed and scheduled, never left
   processless and running;
 - approval integrates without worker `DONE`;
+- READY ACK is consumed through `worker.Run/handleMessage`, and phase-aware
+  reconnect is consumed through dispatcher `handleReconnect`;
+- legacy READY without evidence forces dispatcher QG before merge in
+  `TestLegacyReadyForReviewForcesDispatcherQG`;
 - an old-worker duplicate `DONE` is harmless.
 
 ### Recovery tests
@@ -1229,6 +1341,10 @@ Throughput reporting should distinguish:
 - lost READY ACK causes idempotent replay and one review;
 - worker death during review does not lose QG evidence;
 - worker death after rejection reassigns findings to a different worker;
+- `TestReviewFindingsReplacementWorker` kills the original worker and observes
+  the correction scheduler assign exact findings to a real replacement;
+- `TestReviewCheckpointGracefulShutdownRecovery` proves stop, scale-down, and
+  heartbeat loss requeue checkpoint-owned assignments without reopening;
 - dispatcher death after approval resumes integration and does not rerun review;
 - startup restores worktree/checkpoint context before ops-run reconciliation;
 - non-terminal checkpoint states cannot enter `beads_ready`,
@@ -1250,6 +1366,8 @@ Throughput reporting should distinguish:
 - unsafe worktree state recovery-quarantines instead of deleting work.
 - `oro status`, `oro health` online/offline, `oro throughput`, daemon status,
   and `oro monitor` human/JSON surfaces agree on quarantine details.
+- the scheduled artifact janitor and quarantine reminder loop run from
+  `spawnBackgroundLoops` with restart-safe claims.
 
 ### Contract tests
 
@@ -1273,21 +1391,27 @@ Assert: exit code 0, the exact named test exists and emits its PASS marker on
 
 1. initial QG pass and fsynced evidence;
 2. dispatcher death after READY receipt but before checkpoint commit;
-3. lost ACK, reconnect replay, one canonical checkpoint, and one review;
+3. lost ACK and phase-aware reconnect through both production event loops, one
+   canonical checkpoint, and one review;
 4. structured rejection with misleading infrastructure keywords in the raw
    transcript;
-5. exact inline or referenced findings delivered to a replacement worker;
+5. original-worker death and exact inline or referenced findings delivered by
+   the correction scheduler to a replacement worker;
 6. unchanged retry prevented before QG;
 7. changed retry producing new QG evidence and checkpoint key;
 8. dispatcher restart during review with worktree restoration before ops
    reroute;
-9. failed required persona preventing approval and typed docs-only approval;
-10. approval and integration without the original worker;
-11. dispatcher death after git merge but before merge-proof persistence, then
+9. graceful stop during review requeues checkpoint ownership and resumes after
+   restart;
+10. failed required persona preventing approval, typed docs-only approval, and
+    legacy READY forcing dispatcher QG;
+11. approval and integration without the original worker;
+12. dispatcher death after git merge but before merge-proof persistence, then
     idempotent assignment/bead finalization without QG or review replay;
-12. bounded autonomous failure recovery, checkpoint-scoped quarantine,
-    unrelated bead dispatch, reminder visibility, and input-change reactivation;
-13. zero active assignments, failed or processless running review ops runs,
+13. bounded autonomous failure recovery, checkpoint-scoped quarantine,
+    unrelated bead dispatch, fake-clock reminder scheduling, input-change
+    reactivation, and a due terminal-artifact maintenance sweep;
+14. zero active assignments, failed or processless running review ops runs,
     non-terminal review checkpoints, or unclosed target bead at completion.
 
 Beadcraft must place this command verbatim on the epic and assign the named
@@ -1302,14 +1426,14 @@ listed production call sites in child `Read:` fields.
 | Work package | Required production wiring | Required named proof |
 |---|---|---|
 | Typed review contract | `pkg/ops/ops.go:Result/Review`, `review_parse.go`, `review_validation.go`, `review_merge.go`, `personas.go` | `TestReviewOutcomeRequiredCoverage` |
-| Bounded artifacts and findings | `pkg/ops/exec_spawner.go`, `pkg/ops/finding.go`, dispatcher config/path injection | `TestReviewArtifactAndFindingOverflow` |
-| READY evidence handshake | `pkg/worker/worker.go:runQGAndReport/reconnect`, `buffer.go`, `pkg/protocol/message.go` | `TestReadyForReviewAckReplay` |
+| Bounded artifacts and findings | `pkg/ops/exec_spawner.go`, `pkg/ops/finding.go`, dispatcher config/path injection, `spawnBackgroundLoops/reviewMaintenanceLoop` | `TestReviewArtifactAndFindingOverflow`, `TestReviewArtifactJanitorScheduled` |
+| READY evidence handshake | `pkg/worker/worker.go:runQGAndReport/reconnect/handleMessage/handleReadyForReviewAck`, `buffer.go`, `pkg/protocol/message.go`, dispatcher `handleReadyForReview/handleReconnect/processReconnectUnderLock` | `TestReadyForReviewAckReplay`, `TestLegacyReadyForReviewForcesDispatcherQG` |
 | Checkpoint schema/store | `pkg/protocol/schema.go:SchemaDDL/MigrateBeadSchema/beads_ready` plus checkpoint repository | `TestReviewCheckpointCanonicalKeyMigration` |
 | Review ops lifecycle | `dispatcher.handleReadyForReview/handleReviewResult`, `ops_runs.go` | `TestReviewOpsRunCheckpointTransaction` |
-| Startup and queue recovery | `dispatcher.Run/startupRecovery/restoreState/tryAssign/statusQueueBeads`, `worker_pool.go` | `TestReviewCheckpointStartupOrdering` |
-| Dispatcher-owned integration | `handleDone/mergeAndComplete/finalizeSuccessfulMerge` | `TestReviewIntegrationCrashRecovery` |
-| Structured rejection delivery | `assign_payload.go:buildAssignPayload`, worker recovery preflight | `TestReviewFindingsReplacementWorker` |
-| Autonomous recovery | recovery action/store/executor, checkpoint-scoped quarantine, fingerprint sampler | `TestReviewRecoveryBudgetAndReactivation` |
+| Startup and queue recovery | `dispatcher.Run/startupRecovery/restoreState/tryAssign/statusQueueBeads`, `worker_pool.go`, `handleShutdownApproved/shutdownSequence/shutdownResetActiveBeads/requeueAssignmentForShutdown` | `TestReviewCheckpointStartupOrdering`, `TestReviewCheckpointGracefulShutdownRecovery` |
+| Dispatcher-owned integration | `handleDone/mergeAndComplete/finalizeSuccessfulMerge`, manual integration path | `TestReviewIntegrationCrashRecovery`, `TestReviewApprovedManualIntegrationPreserved` |
+| Structured rejection delivery | `routeRejectedCheckpoint`, worker-pool reservation/heartbeat paths, `assign_payload.go:buildAssignPayload`, worker recovery preflight | `TestReviewFindingsReplacementWorker` |
+| Autonomous recovery | recovery action/store/executor, checkpoint-scoped quarantine, fingerprint sampler, `spawnBackgroundLoops/reviewMaintenanceLoop` | `TestReviewRecoveryBudgetAndReactivation`, `TestReviewQuarantineReminderScheduler` |
 | Acceptance repair/admission | new `pkg/acceptance`, task create/update, `checkBeadReady`, contract ops, review prompt | `TestAcceptanceContractSharedParser` |
 | Quarantine observability | `factoryhealth`, dispatcher health/events, status/health/throughput/monitor online and offline paths | `TestReviewQuarantineSurfaceParity` |
 | Production composition and epic proof | `cmd_start.go`, `paths.go`, `cmd_harness.go` or dispatcher integration harness | `TestDurableReviewCheckpointEndToEnd` |
@@ -1367,6 +1491,21 @@ premortem:
       location: "pkg/dispatcher/dispatcher.go:startupRecovery; pkg/dispatcher/ops_runs.go:routeReviewOpsRun"
       severity: high
       mitigation_checked: "Current startup reconciles ops runs before restoreState. Design mandates restore and integration reconciliation before ops reroute, with failed rollback when routing cannot start."
+
+    - risk: "Rejected findings are durable but no replacement worker is ever assigned."
+      location: "pkg/dispatcher/dispatcher.go:handleReviewRejection; pkg/dispatcher/worker_pool.go:checkHeartbeats"
+      severity: high
+      mitigation_checked: "Current rejection resends only to the same worker, while ordinary ready assignment is excluded. Design adds a correction scheduler with CAS, assignment requeue/replacement, reservation, and real replacement-worker proof."
+
+    - risk: "Graceful shutdown completes a checkpoint-owned assignment and breaks restart ownership."
+      location: "pkg/dispatcher/dispatcher.go:handleShutdownApproved/shutdownSequence/shutdownResetActiveBeads"
+      severity: high
+      mitigation_checked: "Current shutdown can complete the assignment. Design centralizes checkpoint-aware release that requeues and preserves exact phase across stop, scale-down, heartbeat, and connection loss."
+
+    - risk: "Retention and recurring reminder logic exists but no production loop invokes it."
+      location: "pkg/dispatcher/dispatcher.go:spawnBackgroundLoops"
+      severity: high
+      mitigation_checked: "Design assigns one reviewMaintenanceLoop and named scheduler tests for artifact pruning, correction routing, fingerprints, and reminder cadence."
 
     - risk: "Dispatcher and legacy worker both finalize the same approved bead."
       location: "pkg/worker/worker.go:handleReviewResult; pkg/dispatcher/dispatcher.go:handleDone"
