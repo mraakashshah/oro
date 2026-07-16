@@ -1031,7 +1031,10 @@ The following decisions are intentionally held for consultation:
   every implementation bead across QG into review, including rejection,
   reviewer/process failure, worker death, dispatcher restart, and
   approved-before-integration recovery.
-- [ ] Narrowest shippable wedge within the architecture.
+- [x] Narrowest shippable wedge: do not cut the self-healing product contract.
+  Use beadcraft to form dependency-ordered, independently verifiable beads; the
+  first usable chain may land incrementally, but the epic remains open until
+  all durable recovery behavior is integrated.
 - [ ] Consequence threshold for doing nothing.
 - [ ] Whether acceptance-contract repair is a durable core capability or a
   follow-up after checkpoint recovery.
