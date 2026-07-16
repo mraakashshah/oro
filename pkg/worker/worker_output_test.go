@@ -52,6 +52,14 @@ func TestWorkerOutputRedactsCredentialAssignmentsEndToEnd(t *testing.T) {
 			},
 			want: "OPENAI_API_KEY\t=\t[REDACTED] MODE=development",
 		},
+		{
+			name:   "structured escaped wrapper with internal quote",
+			format: worker.StreamFormatClaudeJSON,
+			lines: []string{
+				textDeltaLine(`ordinary text` + "\n" + `OPENAI_API_KEY=\"` + sentinel + `\\\"still-secret\" MODE=development` + "\n"),
+			},
+			want: `OPENAI_API_KEY=\"[REDACTED]\" MODE=development`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
@@ -87,7 +95,7 @@ func TestWorkerOutputRedactsCredentialAssignmentsEndToEnd(t *testing.T) {
 				t.Fatalf("read output log: %v", err)
 			}
 			for _, output := range []string{w.SessionText(), string(log)} {
-				if strings.Contains(output, sentinel) {
+				if strings.Contains(output, sentinel) || strings.Contains(output, "still-secret") {
 					t.Fatalf("credential leaked in output: %q", output)
 				}
 				if !strings.Contains(output, tc.want) || !strings.Contains(output, "ordinary text") {
