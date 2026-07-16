@@ -2,7 +2,7 @@
 
 Date: 2026-07-16
 
-Status: Adversarial revision 4; re-review pending
+Status: Adversarial revision 5; re-review pending
 
 ## 1. Goal
 
@@ -458,6 +458,12 @@ Janitor selection is database-driven: it may delete only artifacts referenced
 exclusively by terminal checkpoints older than retention, never an artifact
 referenced by a non-terminal checkpoint or recovery run.
 
+For retention, only `integrated` and `superseded` are terminal. `approved`,
+`rejected`, `blocked`, `failed`, `quarantined`,
+`manual_integration_pending`, and every active phase remain non-terminal because
+recovery, correction, integration, triage, or operator inspection can still
+need their artifacts.
+
 Full findings are stored as capped rows in `review_checkpoint_findings`, not as
 one lossy JSON blob. Inline recovery preserves every gating finding when the
 message fits. If it does not fit, `ASSIGN` carries a local
@@ -538,10 +544,11 @@ event.
 
 ```go
 type ReadyForReviewPayload struct {
-    BeadID       string     `json:"bead_id"`
-    WorkerID     string     `json:"worker_id"`
-    ReadyAttempt string     `json:"ready_attempt"`
-    QGEvidence   QGEvidence `json:"qg_evidence"`
+    BeadID        string        `json:"bead_id"`
+    WorkerID      string        `json:"worker_id"`
+    ReadyAttempt  string        `json:"ready_attempt"`
+    QGEvidence    QGEvidence    `json:"qg_evidence"`
+    QGEvidenceRef QGEvidenceRef `json:"qg_evidence_ref"`
 }
 
 type ReadyForReviewAckPayload struct {
@@ -571,8 +578,16 @@ type ReconnectPayload struct {
 
 Before sending READY, the worker atomically writes and fsyncs QG evidence under
 the assigned project-state evidence directory. It enters an
-`awaiting_review_ack` phase and retains `{ReadyAttempt,QGEvidence}` independently
-of the evicting `MessageBuffer`.
+`awaiting_review_ack` phase and retains
+`{ReadyAttempt,QGEvidence,QGEvidenceRef}` independently of the evicting
+`MessageBuffer`.
+
+Initial READY carries both the inline evidence and its file reference. The
+dispatcher canonicalizes and hash-verifies the referenced file, decodes it, and
+requires byte-for-byte canonical JSON equality with the inline evidence before
+creating a checkpoint. Missing reference, mismatched bytes/hash, or unsafe path
+selects the legacy-unverified path and forces dispatcher QG; it can never
+authorize integration. Reconnect reuses the same `QGEvidenceRef`.
 
 The dispatcher validates READY, transactionally creates or reuses the
 checkpoint and linked review ops run, commits, and only then sends ACK.
@@ -784,6 +799,8 @@ const (
     RecoveryRepairDependency    RecoveryStrategy = "repair_dependency"
     RecoveryRepairContract      RecoveryStrategy = "repair_contract"
     RecoveryRefreshTarget       RecoveryStrategy = "refresh_target"
+    RecoveryResolveIntegration  RecoveryStrategy = "resolve_integration_conflict"
+    RecoveryRetryIntegration    RecoveryStrategy = "retry_integration"
     RecoveryQuarantine          RecoveryStrategy = "quarantine"
 )
 
@@ -874,8 +891,9 @@ base tick it:
 
 1. routes due rejected checkpoints to correction workers;
 2. runs due recovery attempts and fingerprint sampling;
-3. claims and emits due quarantine reminders;
-4. invokes artifact pruning when the configured retention sweep is due.
+3. reconciles `manual_integration_pending` ancestry proof;
+4. claims and emits due quarantine reminders;
+5. invokes artifact pruning when the configured retention sweep is due.
 
 Each operation claims durable work before side effects, so overlapping ticks or
 dispatcher restart are harmless. Config exposes the base tick, artifact
@@ -965,8 +983,15 @@ not bypass it. Approval transitions to `manual_integration_pending`, preserves
 the worktree and assignment, and emits the existing manual-integration signal.
 After an explicit/manual merge, reconciliation verifies that the approved head
 is an ancestor of the target before completing assignment, bead, and checkpoint
-state. `TestReviewApprovedManualIntegrationPreserved` proves no automatic merge
-occurs and verified manual integration finalizes idempotently.
+state. While the same dispatcher remains running,
+`reviewMaintenanceLoop -> reconcileManualIntegrationCheckpoint` scans each
+pending checkpoint at the base tick. When ancestry is proven it compare-and-swaps
+to `integrating`, records the observed target proof, and invokes the same
+idempotent assignment/bead finalizer. No proof leaves the checkpoint pending
+without side effects. `TestReviewApprovedManualIntegrationPreserved` performs
+the manual merge while one dispatcher instance remains alive, advances a fake
+clock, and observes automatic finalization through the production loop without
+restart or direct helper invocation.
 
 ### Crash-consistent integration reconciliation
 
@@ -986,6 +1011,22 @@ Tests inject death before merge, after the git merge side effect, after observed
 SHA persistence, after assignment completion, and after bead close. No restart
 may issue a duplicate semantic merge, reopen an integrated bead, or run QG or
 review again.
+
+### Checkpoint-owned merge failure
+
+The shared integration function does not reuse the legacy reopen behavior when
+called for a durable checkpoint. A conflict transitions `integrating` to
+checkpoint-scoped recovery with typed strategy
+`resolve_integration_conflict`; a non-conflict merge error uses
+`retry_integration` only when target/intent proof makes retry safe. Both paths
+preserve the assignment, worktree, approved head, target-before SHA, and merge
+proof, and neither completes the assignment nor reopens the bead. Exhausted or
+unsafe recovery quarantines only this checkpoint.
+
+`TestReviewIntegrationFailureRecovery` injects both conflict and non-conflict
+errors through the production integration function, proves the bead never
+enters ordinary ready queues, then proves a safe retry finalizes without QG or
+review replay.
 
 ## 13. Rejection Recovery
 
@@ -1193,6 +1234,38 @@ drives the real directive, focus-immediate, and hard-timeout entry points in
 `review_running`, `correction_assigned`, and `integrating`, then proves
 phase-local recovery.
 
+### Handoff and generic preempt
+
+Worker context exhaustion and `oro directive preempt` enter
+`worker.handleContextThreshold/handlePreempt -> SendHandoff ->
+dispatcher.handleHandoff`. `applyPreempt`, `shutdownWorkerForHandoff`, and
+`respawnWorker` inspect checkpoint ownership before creating an ordinary pending
+handoff:
+
+- `awaiting_review_ack` releases the process and replays the preserved evidence
+  through READY recovery;
+- `review_running` releases the implementation worker while the dispatcher-owned
+  review continues;
+- `correction_assigning` or `correction_assigned` requeues the
+  checkpoint-owned correction assignment and wakes `routeRejectedCheckpoint`;
+- `contract_repair_running`, `manual_integration_pending`, or `integrating`
+  releases the process and wakes the owning dispatcher phase;
+- no non-terminal checkpoint enters the generic `pendingHandoffs` map.
+
+`worker_pool.assignHandoffToWorker` remains for ordinary implementation
+handoffs, but it must call `buildAssignPayload` or the same canonical payload
+builder rather than constructing a private `AssignPayload`. It therefore always
+delivers `QGEvidenceDir`; any future checkpoint recovery fields added to the
+canonical builder cannot drift. Checkpoint-owned correction uses the
+phase-specific scheduler and carries exact `ReviewRecovery`.
+
+`TestReviewCheckpointHandoffPreemptRecovery` drives both an organic context
+handoff and the real generic preempt directive over dispatcher/worker sockets in
+`review_running` and `correction_assigned`. It kills the original process,
+proves no ordinary reassignment or QG replay, and requires a replacement
+correction worker to receive identical finding IDs/content plus the canonical
+evidence directory.
+
 ### External bead close
 
 `checkClosedBeadAssignments -> shutdownWorkerForClose ->
@@ -1377,8 +1450,8 @@ Throughput reporting should distinguish:
 
 - Existing `Verdict` values and `<-chan Result` remain.
 - Existing `Feedback` remains as a bounded compatibility rendering.
-- Missing `ReadyForReview.QGEvidence` selects the legacy-compatible path and
-  forces dispatcher QG before merge.
+- Missing `ReadyForReview.QGEvidence` or `QGEvidenceRef` selects the
+  legacy-compatible path and forces dispatcher QG before merge.
 - Legacy READY creates a provisional checkpoint using explicit
   `legacy-unverified` sentinels and a canonical key; duplicate legacy READY
   messages reuse it and cannot spawn concurrent reviews.
@@ -1422,12 +1495,15 @@ Throughput reporting should distinguish:
 - artifacts use project-scoped paths and restrictive permissions.
 - create/write/fsync/hash failure fails approval closed;
 - janitor never removes an artifact referenced by a non-terminal checkpoint;
+- janitor treats only `integrated` and `superseded` as terminal and retains
+  approved, rejected, failed, blocked, quarantined, and manual-pending artifacts;
 - oversized findings switch to a hash-verified recovery artifact without
   dropping gating obligations.
 - QG evidence is written outside an unconfigured temporary Git worktree and
   does not weaken dirty-file detection.
 - `TestReadyEvidenceProductionAssignPath` proves the real assignment builder and
-  socket deliver the configured directory without direct payload seeding.
+  socket deliver the configured directory without direct payload seeding, and
+  initial READY inline/file evidence matches exactly.
 
 ### Checkpoint store tests
 
@@ -1449,6 +1525,8 @@ Throughput reporting should distinguish:
 - a replacement ops run that cannot route is failed and scheduled, never left
   processless and running;
 - approval integrates without worker `DONE`;
+- manual integration merges while one dispatcher stays alive and the production
+  maintenance loop discovers ancestry and finalizes without restart;
 - READY ACK is consumed through `worker.Run/handleMessage`, and phase-aware
   reconnect is consumed through dispatcher `handleReconnect`;
 - legacy READY without evidence forces dispatcher QG before merge in
@@ -1472,6 +1550,9 @@ Throughput reporting should distinguish:
   checkpoint-owned work;
 - `TestReviewCheckpointAdministrativeWorkerLifecycle` proves kill, restart,
   focus-immediate, and hard shutdown preserve exact checkpoint phase;
+- `TestReviewCheckpointHandoffPreemptRecovery` proves organic handoff and
+  generic preempt preserve phase, findings, and evidence over replacement
+  sockets;
 - `TestReviewCheckpointExternalCloseOverride` proves external close cannot merge
   unapproved work and persists its no-merge override;
 - dispatcher death after approval resumes integration and does not rerun review;
@@ -1480,6 +1561,9 @@ Throughput reporting should distinguish:
   `statusQueueBeads`, or `tryAssign`;
 - death before merge, after merge, after merge-proof persistence, after
   assignment completion, and after bead close resumes idempotently;
+- conflict and non-conflict integration failures remain checkpoint-scoped,
+  preserve proof/work, and never reopen through
+  `TestReviewIntegrationFailureRecovery`;
 - changed HEAD invalidates the checkpoint;
 - recovery attempts and backoff survive dispatcher restart;
 - changing worker/process identity does not reset a failure fingerprint budget;
@@ -1540,17 +1624,21 @@ Assert: exit code 0, all three exact named tests exist and emit PASS markers on
 9. graceful stop during review requeues checkpoint ownership and resumes after
    restart;
 10. live socket EOF, write failure, administrative kill/restart,
-    focus-immediate, hard shutdown, and external close preserving or durably
-    overriding exact checkpoint phase without unapproved merge;
+    focus-immediate, hard shutdown, organic handoff, generic preempt, and
+    external close preserving or durably overriding exact checkpoint phase
+    without unapproved merge;
 11. failed required persona preventing approval, typed docs-only approval, and
     legacy READY forcing dispatcher QG;
 12. acceptance-gap contract repair blocking coding, accepting a valid revision,
     superseding the old checkpoint, executing its pipeline intact through
     `oro work` no-commit preflight, and failing invalid repair safely;
 13. automatic approval and integration without the original worker;
-14. manual-integration approval preserving the worktree until ancestry proof;
+14. manual-integration approval preserving the worktree, a manual merge while
+    the same dispatcher remains alive, and maintenance-loop ancestry
+    reconciliation;
 15. dispatcher death after git merge but before merge-proof persistence, then
-    idempotent assignment/bead finalization without QG or review replay;
+    idempotent assignment/bead finalization without QG or review replay, plus
+    checkpoint-scoped conflict and non-conflict merge-failure recovery;
 16. bounded autonomous failure recovery, checkpoint-scoped quarantine,
     unrelated bead dispatch, fake-clock reminder scheduling, input-change
     reactivation, and a due terminal-artifact maintenance sweep;
@@ -1590,11 +1678,12 @@ listed production call sites in child `Read:` fields.
 | Shared finding wire contract | new `pkg/reviewcontract`, `pkg/ops/finding.go`, `pkg/protocol/message.go:AssignPayload.ReviewRecovery`, worker decode | `TestReviewFindingWireRoundTrip` |
 | Typed review contract | `pkg/ops/ops.go:Result/Review`, `review_parse.go`, `review_validation.go`, `review_merge.go`, `personas.go`, shared finding model | `TestReviewOutcomeRequiredCoverage` |
 | Bounded artifacts and findings | `pkg/ops/exec_spawner.go`, `pkg/ops/finding.go`, dispatcher config/path injection, `spawnBackgroundLoops/reviewMaintenanceLoop` | `TestReviewArtifactAndFindingOverflow`, `TestReviewArtifactJanitorScheduled` |
-| READY evidence handshake | `pkg/worker/worker.go:runQGAndReport/reconnect/handleMessage/handleReadyForReviewAck/evidence writer`, `buffer.go`, `pkg/protocol/message.go`, `pkg/dispatcher/assign_payload.go:buildAssignPayload`, dispatcher `handleReadyForReview/handleReconnect/processReconnectUnderLock/checkPreReviewGitHygiene`, `cmd/oro:ResolveDaemonPaths/buildDispatcherWithReviewTimeoutsAndCleanliness` | `TestReadyForReviewAckReplay`, `TestReadyEvidenceDoesNotDirtyWorktree`, `TestReadyEvidenceProductionAssignPath`, `TestLegacyReadyForReviewForcesDispatcherQG` |
+| READY evidence handshake | `pkg/worker/worker.go:runQGAndReport/reconnect/handleMessage/handleReadyForReviewAck/evidence writer`, `buffer.go`, `pkg/protocol/message.go`, `pkg/dispatcher/assign_payload.go:buildAssignPayload`, `worker_pool.go:assignHandoffToWorker`, dispatcher `handleReadyForReview/handleReconnect/processReconnectUnderLock/checkPreReviewGitHygiene`, `cmd/oro:ResolveDaemonPaths/buildDispatcherWithReviewTimeoutsAndCleanliness` | `TestReadyForReviewAckReplay`, `TestReadyEvidenceDoesNotDirtyWorktree`, `TestReadyEvidenceProductionAssignPath`, `TestLegacyReadyForReviewForcesDispatcherQG` |
 | Checkpoint schema/store | `pkg/protocol/schema.go:SchemaDDL/MigrateBeadSchema/beads_ready` plus checkpoint repository | `TestReviewCheckpointCanonicalKeyMigration` |
 | Review ops lifecycle | `dispatcher.handleReadyForReview/handleReviewResult`, `ops_runs.go` | `TestReviewOpsRunCheckpointTransaction` |
 | Startup and queue recovery | `dispatcher.Run/startupRecovery/restoreState/tryAssign/statusQueueBeads/connCloseCleanup/shutdownWithTimeout/applyKillWorker/applyRestartWorker/restartWorkerIfStillOnBead/checkClosedBeadAssignments/shutdownWorkerForClose/finalizeExternalClose`, `worker_pool.go:sendToWorker/heartbeat/scale-down`, `handleShutdownApproved/shutdownSequence/shutdownResetActiveBeads/requeueAssignmentForShutdown` | `TestReviewCheckpointStartupOrdering`, `TestReviewCheckpointGracefulShutdownRecovery`, `TestReviewCheckpointSocketEOFRecovery`, `TestReviewCheckpointSendFailureRecovery`, `TestReviewCheckpointAdministrativeWorkerLifecycle`, `TestReviewCheckpointExternalCloseOverride` |
-| Dispatcher-owned integration | `handleDone/mergeAndComplete/finalizeSuccessfulMerge`, manual integration path | `TestReviewIntegrationCrashRecovery`, `TestReviewApprovedManualIntegrationPreserved` |
+| Checkpoint handoff and preempt | `pkg/worker/worker.go:handleContextThreshold/handlePreempt/SendHandoff`, dispatcher `applyPreempt/handleHandoff/shutdownWorkerForHandoff/respawnWorker`, `worker_pool.go:assignHandoffToWorker`, `releaseCheckpointOwnedWorker` and phase schedulers | `TestReviewCheckpointHandoffPreemptRecovery` |
+| Dispatcher-owned integration | `handleDone/mergeAndComplete/finalizeSuccessfulMerge`, checkpoint merge-error routing, `spawnBackgroundLoops/reviewMaintenanceLoop/reconcileManualIntegrationCheckpoint` | `TestReviewIntegrationCrashRecovery`, `TestReviewIntegrationFailureRecovery`, `TestReviewApprovedManualIntegrationPreserved` |
 | Structured rejection delivery | `routeRejectedCheckpoint`, worker-pool reservation/heartbeat paths, `assign_payload.go:buildAssignPayload`, worker recovery preflight | `TestReviewFindingsReplacementWorker` |
 | Autonomous recovery | recovery action/store/executor, checkpoint-scoped quarantine, fingerprint sampler, `spawnBackgroundLoops/reviewMaintenanceLoop` | `TestReviewRecoveryBudgetAndReactivation`, `TestReviewQuarantineReminderScheduler` |
 | Acceptance repair/admission | new `pkg/acceptance`, task create/update, `cmd/oro/cmd_work.go:acAlreadySatisfied` with private parser removal, `checkBeadReady`, `handleReviewResult/routeAcceptanceGap/handleContractRepairResult`, contract ops/startup reconciliation, review prompt | `TestAcceptanceContractSharedParser`, `TestReviewAcceptanceGapContractRepair` |
@@ -1639,7 +1728,7 @@ premortem:
     - risk: "READY is accepted by the socket but lost before checkpoint commit."
       location: "pkg/worker/worker.go:SendReadyForReview/reconnect; pkg/dispatcher/dispatcher.go:handleReadyForReview"
       severity: high
-      mitigation_checked: "Current protocol has no READY ACK and reconnect reports idle when proc is nil. Design adds fsynced evidence, awaiting_review_ack phase, commit-before-ACK, and idempotent replay."
+      mitigation_checked: "Current protocol has no READY ACK and reconnect reports idle when proc is nil. Design adds fsynced evidence with an explicit initial file reference, inline/file equality, awaiting_review_ack phase, commit-before-ACK, and idempotent replay."
 
     - risk: "Durable READY evidence makes every clean worktree appear dirty."
       location: "pkg/worker/worker.go:runQGAndReport; pkg/dispatcher/dispatcher.go:checkPreReviewGitHygiene"
@@ -1691,6 +1780,11 @@ premortem:
       severity: high
       mitigation_checked: "Process controls preserve exact phase through checkpoint-aware release; external close records a durable no-merge override unless completed integration is already proven."
 
+    - risk: "Context handoff or generic preempt drops structured findings and QG evidence."
+      location: "pkg/worker/worker.go:handleContextThreshold/handlePreempt; pkg/dispatcher/dispatcher.go:handleHandoff; pkg/dispatcher/worker_pool.go:assignHandoffToWorker"
+      severity: high
+      mitigation_checked: "Checkpoint-owned handoff routes by durable phase, never through generic pendingHandoffs; the ordinary handoff sender uses the canonical payload builder; a replacement-socket test preserves findings and evidence."
+
     - risk: "Retention and recurring reminder logic exists but no production loop invokes it."
       location: "pkg/dispatcher/dispatcher.go:spawnBackgroundLoops"
       severity: high
@@ -1700,6 +1794,16 @@ premortem:
       location: "pkg/worker/worker.go:handleReviewResult; pkg/dispatcher/dispatcher.go:handleDone"
       severity: high
       mitigation_checked: "Current protocol makes the worker echo DONE. Design requires a completion-owner marker, checkpoint CAS, assignment identity checks, and duplicate-DONE coverage."
+
+    - risk: "Manual integration succeeds but remains pending until daemon restart."
+      location: "pkg/dispatcher/dispatcher.go:spawnBackgroundLoops/reviewMaintenanceLoop"
+      severity: high
+      mitigation_checked: "The live maintenance loop scans manual_integration_pending, claims ancestry-proven work, and finalizes through the idempotent integration path; the proof forbids restart or direct helper invocation."
+
+    - risk: "A checkpoint-owned merge failure falls through to legacy reopen."
+      location: "pkg/dispatcher/dispatcher.go:mergeAndComplete"
+      severity: high
+      mitigation_checked: "Conflict and non-conflict failures retain checkpoint ownership and proof, enter typed integration recovery, and have a production failure-path test."
 
     - risk: "A stale approval is reused after code, target, acceptance, QG script, or policy changes."
       location: "pkg/dispatcher/dispatcher.go:handleReadyForReview; pkg/dispatcher/dispatcher.go:mergeAndComplete"
