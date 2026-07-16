@@ -865,8 +865,9 @@ premortem:
 The following decisions are intentionally held for consultation:
 
 - [x] Architecture: use a durable review checkpoint, not keyword patching.
-- [ ] Real problem framing: correctness-state durability vs throughput-only
-  optimization.
+- [x] Real problem framing: preserve trustworthy correctness state across
+  process boundaries and restarts. Throughput loss is a measured consequence,
+  not the primary problem.
 - [ ] Status quo cost and acceptable operator intervention.
 - [ ] Exact primary beneficiary/failure scenario.
 - [ ] Narrowest shippable wedge within the architecture.
