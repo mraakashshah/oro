@@ -1,12 +1,60 @@
 package codesearch_test
 
 import (
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
 	"oro/pkg/codesearch"
 )
+
+func TestFilterOracleChunksForWorktree(t *testing.T) {
+	parent := t.TempDir()
+	worktree := filepath.Join(parent, "worktree")
+	for _, path := range []string{
+		filepath.Join(worktree, "pkg", "first.go"),
+		filepath.Join(worktree, "pkg", "second.go"),
+		filepath.Join(parent, "sibling.go"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("package test\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(worktree, "pkg", "directory"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(parent, "sibling.go"), filepath.Join(worktree, "pkg", "escape.go")); err != nil {
+		t.Fatal(err)
+	}
+
+	first := codesearch.ChunkRef{FilePath: "pkg/first.go", StartLine: 1, EndLine: 1, Kind: "func", Name: "First"}
+	second := codesearch.ChunkRef{FilePath: "pkg/second.go", StartLine: 1, EndLine: 1, Kind: "func", Name: "Second"}
+	got := codesearch.FilterOracleChunksForWorktree(worktree, []codesearch.ChunkRef{
+		first,
+		{FilePath: "pkg/missing.go", StartLine: 1, EndLine: 1, Kind: "func", Name: "Missing"},
+		{FilePath: "pkg/directory", StartLine: 1, EndLine: 1, Kind: "func", Name: "Directory"},
+		{FilePath: filepath.Join(worktree, "pkg", "first.go"), StartLine: 1, EndLine: 1, Kind: "func", Name: "Absolute"},
+		{FilePath: "pkg/../pkg/first.go", StartLine: 1, EndLine: 1, Kind: "func", Name: "Traversal"},
+		{FilePath: "../sibling.go", StartLine: 1, EndLine: 1, Kind: "func", Name: "Sibling"},
+		{FilePath: "pkg/escape.go", StartLine: 1, EndLine: 1, Kind: "func", Name: "Escape"},
+		second,
+	})
+	if want := []codesearch.ChunkRef{first, second}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("FilterOracleChunksForWorktree() = %#v, want %#v", got, want)
+	}
+
+	for _, root := range []string{"", filepath.Join(parent, "missing-worktree")} {
+		if got := codesearch.FilterOracleChunksForWorktree(root, []codesearch.ChunkRef{first}); got != nil {
+			t.Errorf("FilterOracleChunksForWorktree(%q) = %#v, want nil", root, got)
+		}
+	}
+}
 
 func TestOracleSearchMapPrimitives(t *testing.T) {
 	t.Run("normalizes a bounded query", func(t *testing.T) {

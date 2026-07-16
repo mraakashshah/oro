@@ -2,6 +2,8 @@ package codesearch
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -18,6 +20,74 @@ type ChunkRef struct {
 	Kind      string
 	StartLine int
 	EndLine   int
+}
+
+// FilterOracleChunksForWorktree retains only chunks that name regular files
+// contained by worktree after symlinks are resolved. It preserves rank order.
+//
+//oro:testonly
+func FilterOracleChunksForWorktree(worktree string, chunks []ChunkRef) []ChunkRef {
+	root, ok := resolveOracleWorktree(worktree)
+	if !ok {
+		return nil
+	}
+
+	filtered := make([]ChunkRef, 0, len(chunks))
+	for _, chunk := range chunks {
+		if oracleChunkInWorktree(root, chunk.FilePath) {
+			filtered = append(filtered, chunk)
+		}
+	}
+	return filtered
+}
+
+func resolveOracleWorktree(worktree string) (string, bool) {
+	if strings.TrimSpace(worktree) == "" {
+		return "", false
+	}
+
+	absRoot, err := filepath.Abs(worktree)
+	if err != nil {
+		return "", false
+	}
+	root, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return "", false
+	}
+	info, err := os.Stat(root)
+	if err != nil || !info.IsDir() {
+		return "", false
+	}
+	return root, true
+}
+
+func oracleChunkInWorktree(root, filePath string) bool {
+	if filepath.IsAbs(filePath) || pathHasTraversal(filePath) {
+		return false
+	}
+
+	resolved, err := filepath.EvalSymlinks(filepath.Join(root, filePath))
+	if err != nil || !pathContainedBy(root, resolved) {
+		return false
+	}
+	info, err := os.Stat(resolved)
+	return err == nil && info.Mode().IsRegular()
+}
+
+func pathHasTraversal(path string) bool {
+	for _, segment := range strings.FieldsFunc(path, func(r rune) bool {
+		return r == filepath.Separator || r == '/'
+	}) {
+		if segment == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+func pathContainedBy(root, candidate string) bool {
+	rel, err := filepath.Rel(root, candidate)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 // BuildOracleQuery joins bead text into a normalized, rune-safe query.
