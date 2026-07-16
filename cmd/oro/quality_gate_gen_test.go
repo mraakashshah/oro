@@ -1031,6 +1031,108 @@ echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
 	}
 }
 
+func TestQualityGateScriptsTimedOutWaiterPreservesLiveOwnerAndQueueProgress(t *testing.T) {
+	dir := t.TempDir()
+	eventsPath := filepath.Join(dir, "events")
+
+	script, err := os.ReadFile(filepath.Join("..", "..", "scripts", "quality_gate.sh"))
+	if err != nil {
+		t.Fatalf("read checked-in quality gate: %v", err)
+	}
+	acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
+	acquireIdx := strings.Index(string(script), acquireCall)
+	if acquireIdx < 0 {
+		t.Fatal("checked-in quality gate missing acquire call marker")
+	}
+	harness := string(script[:acquireIdx+len("acquire_quality_gate_lock")]) + `
+echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
+`
+
+	writeHarness := func(name string) string {
+		t.Helper()
+		path := filepath.Join(dir, name+".sh")
+		if err := os.WriteFile(path, []byte(harness), 0o755); err != nil {
+			t.Fatalf("write %s harness: %v", name, err)
+		}
+		return path
+	}
+	startWaiter := func(ctx context.Context, name string, timeout int) *exec.Cmd {
+		t.Helper()
+		cmd := exec.CommandContext(ctx, writeHarness(name)) //nolint:gosec // test-owned temp script
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"ORO_QG_TEST_NAME="+name,
+			"ORO_QG_TEST_EVENTS="+eventsPath,
+			"ORO_QG_LOCK_POLL_SECONDS=1",
+			fmt.Sprintf("ORO_QG_LOCK_TIMEOUT_SECONDS=%d", timeout),
+		)
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start %s waiter: %v", name, err)
+		}
+		return cmd
+	}
+
+	lockDir := filepath.Join(dir, ".oro-quality-gate.lock")
+	if err := os.Mkdir(lockDir, 0o755); err != nil {
+		t.Fatalf("create held lock: %v", err)
+	}
+	ownerPath := filepath.Join(lockDir, "owner")
+	liveOwner := fmt.Sprintf("pid=%d\n", os.Getpid())
+	if err := os.WriteFile(ownerPath, []byte(liveOwner), 0o644); err != nil {
+		t.Fatalf("write held lock owner: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	timedOut := startWaiter(ctx, "timed-out", 1)
+	queueDir := filepath.Join(dir, ".oro-quality-gate.queue")
+	if !waitForQualityGateQueueEntries(queueDir, 1, 2*time.Second) {
+		t.Fatal("timed-out waiter did not create a quality gate FIFO queue ticket")
+	}
+	later := startWaiter(ctx, "later", 8)
+	if !waitForQualityGateQueueEntries(queueDir, 2, 2*time.Second) {
+		t.Fatal("later waiter did not join quality gate FIFO queue")
+	}
+	if err := timedOut.Wait(); err == nil {
+		t.Fatal("timed-out waiter unexpectedly acquired the live owner lock")
+	}
+
+	owner, err := os.ReadFile(ownerPath)
+	if err != nil {
+		t.Fatalf("read live owner after timed-out waiter exits: %v", err)
+	}
+	if string(owner) != liveOwner {
+		t.Fatalf("live lock owner after timed-out waiter = %q, want %q", owner, liveOwner)
+	}
+	if !waitForQualityGateQueueEntries(queueDir, 1, time.Second) {
+		t.Fatal("later waiter queue ticket disappeared after an earlier waiter timed out")
+	}
+
+	if err := os.Remove(ownerPath); err != nil {
+		t.Fatalf("remove held lock owner: %v", err)
+	}
+	if err := os.Remove(lockDir); err != nil {
+		t.Fatalf("release held lock: %v", err)
+	}
+	if err := later.Wait(); err != nil {
+		t.Fatalf("later waiter failed after owner released lock: %v", err)
+	}
+
+	events, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatalf("read acquisition events: %v", err)
+	}
+	if got := strings.Fields(string(events)); !reflect.DeepEqual(got, []string{"later"}) {
+		t.Fatalf("quality gate acquisition events = %v, want later waiter to progress", got)
+	}
+	if _, err := os.Stat(lockDir); !os.IsNotExist(err) {
+		t.Fatalf("quality gate lock should be cleared after later waiter finishes, stat err=%v", err)
+	}
+	if _, err := os.Stat(queueDir); !os.IsNotExist(err) {
+		t.Fatalf("quality gate queue should be cleared after later waiter finishes, stat err=%v", err)
+	}
+}
+
 func waitForQualityGateQueueEntries(queueDir string, want int, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
