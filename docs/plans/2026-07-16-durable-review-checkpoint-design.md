@@ -2,7 +2,7 @@
 
 Date: 2026-07-16
 
-Status: Adversarial revision 7; re-review pending
+Status: Validated by adversarial Gate 8; beadcraft pending
 
 ## 1. Goal
 
