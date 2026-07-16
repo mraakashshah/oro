@@ -354,6 +354,55 @@ func TestDrainOutput_LLMExtraction(t *testing.T) {
 	}
 }
 
+func TestDrainOutputRedactsCredentialAssignmentsFromLogsAndMemoryExtraction(t *testing.T) {
+	const claudeToken = "sk-test-sentinel"
+	const openAIKey = "sk-test-openai"
+	credentialLine := "CLAUDE_CODE_OAUTH_TOKEN=" + claudeToken + " OPENAI_API_KEY=" + openAIKey + " MODE=development"
+	quotedLine := `quoted CLAUDE_CODE_OAUTH_TOKEN="` + claudeToken + `" escaped OPENAI_API_KEY=\"` + openAIKey + `\" already OPENAI_API_KEY=[REDACTED]`
+
+	for _, tc := range []struct {
+		name   string
+		format worker.StreamFormat
+		input  string
+	}{
+		{
+			name:   "stream json",
+			format: worker.StreamFormatClaudeJSON,
+			input:  ndjsonInput(textDeltaLine("ordinary text\n"), textDeltaLine(credentialLine+"\n"), textDeltaLine(quotedLine+"\n")),
+		},
+		{
+			name:   "plaintext",
+			format: worker.StreamFormatLineText,
+			input:  strings.Join([]string{"ordinary text", credentialLine, quotedLine}, "\n") + "\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spawner := &mockLLMSpawner{}
+			var log bytes.Buffer
+			worker.DrainOutputInWorkdir(context.Background(), io.NopCloser(strings.NewReader(tc.input)),
+				tc.format, &mockMemStore{}, "oro-redact", spawner, t.TempDir(), &log)
+
+			for _, output := range []string{log.String(), spawner.promptGiven} {
+				if strings.Contains(output, claudeToken) || strings.Contains(output, openAIKey) {
+					t.Fatalf("credential leaked in output: %q", output)
+				}
+				for _, expected := range []string{
+					"CLAUDE_CODE_OAUTH_TOKEN=[REDACTED]",
+					`CLAUDE_CODE_OAUTH_TOKEN="[REDACTED]"`,
+					`OPENAI_API_KEY=\"[REDACTED]\"`,
+					"OPENAI_API_KEY=[REDACTED]",
+					"ordinary text",
+					"MODE=development",
+				} {
+					if !strings.Contains(output, expected) {
+						t.Fatalf("output missing %q: %q", expected, output)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestDrainOutputInWorkdir_BindsLLMExtractionToWorkdir(t *testing.T) {
 	workdir := t.TempDir()
 	spawner := &mockWorkdirLLMSpawner{

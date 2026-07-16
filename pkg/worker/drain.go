@@ -5,8 +5,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 )
+
+var credentialAssignmentRE = regexp.MustCompile(`(?i)\b(?:ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY)\s*=`)
 
 // DrainOutput reads subprocess stdout according to format, writes formatted
 // activity and/or text content to writers, and extracts [MEMORY] markers
@@ -37,13 +40,15 @@ func DrainOutputInWorkdir(ctx context.Context, stdout io.ReadCloser, format Stre
 		totalLines++
 		switch format {
 		case StreamFormatLineText:
-			drainWritePlaintext(out, scanner.Text())
-			drainAccumulatePlaintext(ctx, scanner.Text(), &accumulated, store, beadID)
+			line := redactCredentialAssignments(scanner.Text())
+			drainWritePlaintext(out, line)
+			drainAccumulatePlaintext(ctx, line, &accumulated, store, beadID)
 		default:
 			activity := ParseStreamEvent(scanner.Bytes())
 			if activity.Kind == ActivityUnknown {
 				unknownLines++
 			}
+			activity.Text = redactCredentialAssignments(activity.Text)
 			drainWriteActivity(out, activity)
 			drainAccumulateText(ctx, activity, &lineBuf, &accumulated, store, beadID)
 		}
@@ -63,6 +68,69 @@ func DrainOutputInWorkdir(ctx context.Context, stdout io.ReadCloser, format Stre
 	if spawner != nil && store != nil {
 		_ = ExtractMemoriesWithLLMInWorkdir(ctx, spawner, accumulated.String(), beadID, store, workdir)
 	}
+}
+
+// redactCredentialAssignments masks values assigned to supported credential
+// environment variables while preserving surrounding text and quote wrappers.
+func redactCredentialAssignments(text string) string {
+	indices := credentialAssignmentRE.FindAllStringIndex(text, -1)
+	if len(indices) == 0 {
+		return text
+	}
+
+	var redacted strings.Builder
+	redacted.Grow(len(text))
+	last := 0
+	for _, index := range indices {
+		assignmentEnd := index[1]
+		if assignmentEnd < last {
+			continue
+		}
+		valueStart, valueEnd := credentialValueBounds(text, assignmentEnd)
+		redacted.WriteString(text[last:assignmentEnd])
+		redacted.WriteString(text[assignmentEnd:valueStart])
+		redacted.WriteString("[REDACTED]")
+		last = valueEnd
+	}
+	redacted.WriteString(text[last:])
+	return redacted.String()
+}
+
+func credentialValueBounds(text string, start int) (valueStart, valueEnd int) {
+	if start >= len(text) {
+		return start, start
+	}
+	if strings.HasPrefix(text[start:], `\"`) {
+		return start + 2, escapedCredentialValueEnd(text, start)
+	}
+	if text[start] == '"' || text[start] == '\'' {
+		return start + 1, quotedCredentialValueEnd(text, start)
+	}
+	for end := start; end < len(text); end++ {
+		if text[end] == ' ' || text[end] == '\t' || text[end] == '\n' || text[end] == '\r' {
+			return start, end
+		}
+	}
+	return start, len(text)
+}
+
+func escapedCredentialValueEnd(text string, start int) int {
+	for end := start + 2; end+1 < len(text); end++ {
+		if text[end] == '\\' && text[end+1] == '"' {
+			return end
+		}
+	}
+	return len(text)
+}
+
+func quotedCredentialValueEnd(text string, start int) int {
+	quote := text[start]
+	for end := start + 1; end < len(text); end++ {
+		if text[end] == quote && (end == start+1 || text[end-1] != '\\') {
+			return end
+		}
+	}
+	return len(text)
 }
 
 func drainWritePlaintext(out io.Writer, line string) {
