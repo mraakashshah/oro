@@ -21,12 +21,16 @@ type ChunkRef struct {
 }
 
 // BuildOracleQuery joins bead text into a normalized, rune-safe query.
+//
+//oro:testonly
 func BuildOracleQuery(title, description, acceptance string) string {
 	query := strings.Join(strings.Fields(strings.Join([]string{title, description, acceptance}, " ")), " ")
 	return truncateUTF8(query, oracleQueryLimit)
 }
 
 // FormatOracleMap renders ranked chunk metadata without source bodies.
+//
+//oro:testonly
 func FormatOracleMap(chunks []ChunkRef, maxBytes int) string {
 	if maxBytes <= 0 {
 		return ""
