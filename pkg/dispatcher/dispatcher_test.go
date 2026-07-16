@@ -9323,6 +9323,7 @@ type mockProcessManager struct {
 	events   []string               // chronological "spawn:<id>" / "kill:<id>" events
 	deadIDs  map[string]bool        // IDs explicitly marked as dead via MarkDead
 	spawnErr error                  // if set, Spawn returns this error
+	killErr  error                  // if set, Kill returns this error
 	procs    map[string]*os.Process // tracked processes (nil for tests)
 }
 
@@ -9347,7 +9348,7 @@ func (m *mockProcessManager) Kill(id string) error {
 	defer m.mu.Unlock()
 	m.killed = append(m.killed, id)
 	m.events = append(m.events, "kill:"+id)
-	return nil
+	return m.killErr
 }
 
 func (m *mockProcessManager) SpawnedIDs() []string {

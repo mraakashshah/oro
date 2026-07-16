@@ -7824,24 +7824,19 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 	procMgr := d.procMgr
 	d.mu.Unlock()
 
-	if wasManaged && procMgr != nil {
-		_ = procMgr.Kill(workerID)
-	}
-
-	// Reset bead to open, clear tracking, and complete the assignment so it can be reassigned.
-	// If the bead was closed while the worker was still active, preserve that
-	// close instead of resurrecting stale work.
-	if beadID != "" {
-		if d.shouldReopenBead(ctx, beadID) {
-			if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
-				_ = d.logEvent(ctx, "restart_worker_bead_reset_failed", "dispatcher", beadID, workerID,
-					fmt.Sprintf(`{"error":%q}`, err.Error()))
-			}
+	killErr := d.killManagedWorkerForRestart(ctx, procMgr, workerID, beadID, wasManaged)
+	completeErr := d.completeRestartAssignment(ctx, beadID, assignmentID, workerID)
+	if completeErr != nil || killErr != nil {
+		if wasManaged {
+			d.mu.Lock()
+			delete(d.pendingManagedIDs, workerID)
+			delete(d.pendingManagedSince, workerID)
+			d.mu.Unlock()
 		}
-		d.clearBeadTracking(beadID)
-		_ = d.completeAssignment(ctx, assignmentID, beadID)
-		_ = d.logEvent(ctx, "worker_restarted", "dispatcher", beadID, workerID,
-			`{"reason":"restart-worker directive"}`)
+		if completeErr != nil {
+			return "", completeErr
+		}
+		return "", killErr
 	}
 
 	// Spawn new worker process with same ID
@@ -7853,8 +7848,48 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 			return "", fmt.Errorf("spawn new worker: %w", err)
 		}
 	}
+	if beadID != "" {
+		_ = d.logEvent(ctx, "worker_restarted", "dispatcher", beadID, workerID,
+			`{"reason":"restart-worker directive"}`)
+	}
 
 	return fmt.Sprintf("worker %s restarted", workerID), nil
+}
+
+func (d *Dispatcher) killManagedWorkerForRestart(ctx context.Context, procMgr ProcessManager, workerID, beadID string, wasManaged bool) error {
+	if !wasManaged || procMgr == nil {
+		return nil
+	}
+	if err := procMgr.Kill(workerID); err != nil {
+		_ = d.logEvent(ctx, "restart_worker_kill_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"error":%q}`, err.Error()))
+		return fmt.Errorf("kill managed worker for restart: %w", err)
+	}
+	return nil
+}
+
+// completeRestartAssignment makes a restarted worker's assignment available
+// again. Tracking is cleared only after completion succeeds so failed cleanup
+// remains visible for recovery instead of stranding an active assignment.
+func (d *Dispatcher) completeRestartAssignment(ctx context.Context, beadID string, assignmentID int64, workerID string) error {
+	if beadID == "" {
+		return nil
+	}
+	if d.shouldReopenBead(ctx, beadID) {
+		if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
+			_ = d.logEvent(ctx, "restart_worker_bead_reset_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"error":%q}`, err.Error()))
+		}
+	}
+	if err := d.completeAssignment(ctx, assignmentID, beadID); err != nil {
+		_ = d.logEvent(ctx, "restart_worker_assignment_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
+		return fmt.Errorf("complete restart assignment: %w", err)
+	}
+	d.clearBeadTracking(beadID)
+	_ = d.logEvent(ctx, "restart_worker_assignment_recovered", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"assignment_id":%d}`, assignmentID))
+	d.notifyAssignLoop()
+	return nil
 }
 
 // applyPreempt gracefully preempts a worker for higher-priority work.
