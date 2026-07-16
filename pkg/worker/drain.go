@@ -31,7 +31,7 @@ func DrainOutputInWorkdir(ctx context.Context, stdout io.ReadCloser, format Stre
 	out := filterWriters(writers)
 
 	var accumulated strings.Builder
-	var lineBuf strings.Builder
+	var sanitizer credentialLineSanitizer
 
 	var totalLines, unknownLines int
 	scanner := bufio.NewScanner(stdout)
@@ -40,17 +40,16 @@ func DrainOutputInWorkdir(ctx context.Context, stdout io.ReadCloser, format Stre
 		totalLines++
 		switch format {
 		case StreamFormatLineText:
-			line := redactCredentialAssignments(scanner.Text())
-			drainWritePlaintext(out, line)
-			drainAccumulatePlaintext(ctx, line, &accumulated, store, beadID)
+			drainProcessSanitizedLine(ctx, out, scanner.Text(), &accumulated, store, beadID)
 		default:
 			activity := ParseStreamEvent(scanner.Bytes())
 			if activity.Kind == ActivityUnknown {
 				unknownLines++
 			}
-			activity.Text = redactCredentialAssignments(activity.Text)
 			drainWriteActivity(out, activity)
-			drainAccumulateText(ctx, activity, &lineBuf, &accumulated, store, beadID)
+			for _, line := range sanitizer.Append(activity.Text) {
+				drainProcessSanitizedLine(ctx, out, line, &accumulated, store, beadID)
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil && out != nil {
@@ -61,13 +60,21 @@ func DrainOutputInWorkdir(ctx context.Context, stdout io.ReadCloser, format Stre
 	}
 
 	if format != StreamFormatLineText {
-		drainFlushRemaining(ctx, &lineBuf, &accumulated, store, beadID)
+		if line, ok := sanitizer.Flush(); ok {
+			drainProcessSanitizedLine(ctx, out, line, &accumulated, store, beadID)
+		}
 	}
 
 	// Post-drain LLM extraction on accumulated session text.
 	if spawner != nil && store != nil {
 		_ = ExtractMemoriesWithLLMInWorkdir(ctx, spawner, accumulated.String(), beadID, store, workdir)
 	}
+}
+
+func drainProcessSanitizedLine(ctx context.Context, out io.Writer, line string, accumulated *strings.Builder, store LearningSink, beadID string) {
+	line = redactCredentialAssignments(line)
+	drainWritePlaintext(out, line)
+	drainAccumulatePlaintext(ctx, line, accumulated, store, beadID)
 }
 
 // redactCredentialAssignments masks values assigned to supported credential
@@ -96,6 +103,37 @@ func redactCredentialAssignments(text string) string {
 	return redacted.String()
 }
 
+// credentialLineSanitizer reassembles structured text deltas before values are
+// redacted. This prevents split credential assignments from reaching a sink.
+type credentialLineSanitizer struct {
+	pending strings.Builder
+}
+
+func (s *credentialLineSanitizer) Append(text string) []string {
+	if text == "" {
+		return nil
+	}
+	s.pending.WriteString(text)
+	content := s.pending.String()
+	lastNL := strings.LastIndex(content, "\n")
+	if lastNL < 0 {
+		return nil
+	}
+	complete := content[:lastNL]
+	s.pending.Reset()
+	s.pending.WriteString(content[lastNL+1:])
+	return strings.Split(complete, "\n")
+}
+
+func (s *credentialLineSanitizer) Flush() (string, bool) {
+	if s.pending.Len() == 0 {
+		return "", false
+	}
+	line := s.pending.String()
+	s.pending.Reset()
+	return line, true
+}
+
 func credentialValueBounds(text string, start int) (valueStart, valueEnd int) {
 	if start >= len(text) {
 		return start, start
@@ -115,9 +153,9 @@ func credentialValueBounds(text string, start int) (valueStart, valueEnd int) {
 }
 
 func escapedCredentialValueEnd(text string, start int) int {
-	for end := start + 2; end+1 < len(text); end++ {
-		if text[end] == '\\' && text[end+1] == '"' {
-			return end
+	for quote := start + 2; quote < len(text); quote++ {
+		if text[quote] == '"' && hasOddTrailingBackslashes(text, quote) {
+			return quote - 1
 		}
 	}
 	return len(text)
@@ -126,11 +164,19 @@ func escapedCredentialValueEnd(text string, start int) int {
 func quotedCredentialValueEnd(text string, start int) int {
 	quote := text[start]
 	for end := start + 1; end < len(text); end++ {
-		if text[end] == quote && (end == start+1 || text[end-1] != '\\') {
+		if text[end] == quote && !hasOddTrailingBackslashes(text, end) {
 			return end
 		}
 	}
 	return len(text)
+}
+
+func hasOddTrailingBackslashes(text string, end int) bool {
+	count := 0
+	for before := end - 1; before >= 0 && text[before] == '\\'; before-- {
+		count++
+	}
+	return count%2 == 1
 }
 
 func drainWritePlaintext(out io.Writer, line string) {
@@ -161,7 +207,7 @@ func filterWriters(writers []io.Writer) io.Writer {
 	return io.MultiWriter(valid...)
 }
 
-// drainWriteActivity writes formatted tool activity and text to the output writer.
+// drainWriteActivity writes formatted tool activity to the output writer.
 func drainWriteActivity(out io.Writer, activity Activity) {
 	if out == nil {
 		return
@@ -171,48 +217,5 @@ func drainWriteActivity(out io.Writer, activity Activity) {
 	}
 	if resultSummary := FormatResult(activity); resultSummary != "" {
 		fmt.Fprintln(out, resultSummary)
-	}
-	if activity.Text != "" {
-		_, _ = io.WriteString(out, activity.Text)
-	}
-}
-
-// drainAccumulateText buffers text content and flushes complete lines for memory extraction.
-func drainAccumulateText(ctx context.Context, activity Activity, lineBuf, accumulated *strings.Builder, store LearningSink, beadID string) {
-	if activity.Text == "" {
-		return
-	}
-	lineBuf.WriteString(activity.Text)
-	drainFlushLines(ctx, lineBuf, accumulated, store, beadID)
-}
-
-// drainFlushRemaining flushes any buffered text that doesn't end with a newline.
-func drainFlushRemaining(ctx context.Context, lineBuf, accumulated *strings.Builder, store LearningSink, beadID string) {
-	if lineBuf.Len() == 0 {
-		return
-	}
-	remaining := lineBuf.String()
-	accumulated.WriteString(remaining)
-	accumulated.WriteString("\n")
-	appendMemoryMarker(ctx, store, beadID, remaining)
-}
-
-// drainFlushLines extracts complete newline-terminated lines from buf,
-// appends each to accumulated, and checks for [MEMORY] markers.
-func drainFlushLines(ctx context.Context, buf, accumulated *strings.Builder, store LearningSink, beadID string) {
-	content := buf.String()
-	lastNL := strings.LastIndex(content, "\n")
-	if lastNL < 0 {
-		return
-	}
-	complete := content[:lastNL]
-	buf.Reset()
-	if lastNL+1 < len(content) {
-		buf.WriteString(content[lastNL+1:])
-	}
-	for _, line := range strings.Split(complete, "\n") {
-		accumulated.WriteString(line)
-		accumulated.WriteString("\n")
-		appendMemoryMarker(ctx, store, beadID, line)
 	}
 }

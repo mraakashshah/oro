@@ -204,7 +204,7 @@ func TestDrainOutput_ExtractsMemoryMarkers(t *testing.T) {
 
 func TestDrainOutput_FlushRemainingTrailingPartial(t *testing.T) {
 	// Text deltas that never close with \n leave bytes in the line buffer.
-	// drainFlushRemaining must flush them (and parse a [MEMORY] marker if
+	// The final structured-line flush must process them (and parse a [MEMORY] marker if
 	// present) before DrainOutput returns.
 	input := ndjsonInput(
 		textDeltaLine("[MEMORY] type=lesson: trailing memory without newline"),
@@ -226,7 +226,7 @@ func TestDrainOutput_FlushRemainingTrailingPartial(t *testing.T) {
 
 func TestDrainOutput_FlushRemainingNoMarkerNoStore(t *testing.T) {
 	// Trailing partial without a [MEMORY] marker and a nil store: covers the
-	// non-marker / nil-store branches of drainFlushRemaining.
+	// non-marker / nil-store branches of final structured-line flushing.
 	input := ndjsonInput(textDeltaLine("plain trailing text without newline"))
 	worker.DrainOutput(context.Background(), io.NopCloser(strings.NewReader(input)),
 		worker.StreamFormatClaudeJSON, nil, "oro-bead-plain", nil, io.Discard)
@@ -359,6 +359,7 @@ func TestDrainOutputRedactsCredentialAssignmentsFromLogsAndMemoryExtraction(t *t
 	const openAIKey = "sk-test-openai"
 	credentialLine := "CLAUDE_CODE_OAUTH_TOKEN=" + claudeToken + " OPENAI_API_KEY=" + openAIKey + " MODE=development"
 	quotedLine := `quoted CLAUDE_CODE_OAUTH_TOKEN="` + claudeToken + `" escaped OPENAI_API_KEY=\"` + openAIKey + `\" already OPENAI_API_KEY=[REDACTED]`
+	quotedParityLine := `even OPENAI_API_KEY="` + openAIKey + `\\" MODE=development odd OPENAI_API_KEY="` + openAIKey + `\\\" still-secret" MODE=development`
 
 	for _, tc := range []struct {
 		name   string
@@ -368,12 +369,12 @@ func TestDrainOutputRedactsCredentialAssignmentsFromLogsAndMemoryExtraction(t *t
 		{
 			name:   "stream json",
 			format: worker.StreamFormatClaudeJSON,
-			input:  ndjsonInput(textDeltaLine("ordinary text\n"), textDeltaLine(credentialLine+"\n"), textDeltaLine(quotedLine+"\n")),
+			input:  ndjsonInput(textDeltaLine("ordinary text\n"), textDeltaLine(credentialLine+"\n"), textDeltaLine(quotedLine+"\n"), textDeltaLine(quotedParityLine+"\n")),
 		},
 		{
 			name:   "plaintext",
 			format: worker.StreamFormatLineText,
-			input:  strings.Join([]string{"ordinary text", credentialLine, quotedLine}, "\n") + "\n",
+			input:  strings.Join([]string{"ordinary text", credentialLine, quotedLine, quotedParityLine}, "\n") + "\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -397,6 +398,9 @@ func TestDrainOutputRedactsCredentialAssignmentsFromLogsAndMemoryExtraction(t *t
 					if !strings.Contains(output, expected) {
 						t.Fatalf("output missing %q: %q", expected, output)
 					}
+				}
+				if got := strings.Count(output, "MODE=development"); got != 3 {
+					t.Fatalf("ordinary assignments after credentials = %d, want 3: %q", got, output)
 				}
 			}
 		})

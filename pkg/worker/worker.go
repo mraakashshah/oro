@@ -947,7 +947,7 @@ func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser, genera
 	format := w.streamFormat
 	w.mu.Unlock()
 
-	var lineBuf strings.Builder
+	var sanitizer credentialLineSanitizer
 
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
@@ -957,13 +957,15 @@ func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser, genera
 		case StreamFormatLineText:
 			w.processPlaintextLine(ctx, scanner.Text())
 		default:
-			w.processStructuredStreamLine(ctx, scanner.Bytes(), &lineBuf)
+			w.processStructuredStreamLine(ctx, scanner.Bytes(), &sanitizer)
 		}
 	}
 
 	// Flush any remaining buffered text (incomplete final line) for structured streams.
-	if format != StreamFormatLineText && lineBuf.Len() > 0 {
-		w.processTextLine(ctx, lineBuf.String())
+	if format != StreamFormatLineText {
+		if line, ok := sanitizer.Flush(); ok {
+			w.processOutputTextLine(ctx, line)
+		}
 	}
 
 	// Flush log buffer once after all events are processed (not per-event).
@@ -991,7 +993,7 @@ func (w *Worker) updateStreamContextPct(format StreamFormat, line []byte, genera
 	}
 }
 
-func (w *Worker) processStructuredStreamLine(ctx context.Context, line []byte, lineBuf *strings.Builder) {
+func (w *Worker) processStructuredStreamLine(ctx context.Context, line []byte, sanitizer *credentialLineSanitizer) {
 	activity := ParseStreamEvent(line)
 
 	// Log formatted tool-call activity (best-effort; don't block on I/O errors).
@@ -1005,14 +1007,17 @@ func (w *Worker) processStructuredStreamLine(ctx context.Context, line []byte, l
 		}
 	}
 
-	// Accumulate text content and process complete lines.
-	if activity.Text != "" {
-		lineBuf.WriteString(activity.Text)
-		w.flushCompleteLines(ctx, lineBuf)
+	for _, textLine := range sanitizer.Append(activity.Text) {
+		w.processOutputTextLine(ctx, textLine)
 	}
 }
 
 func (w *Worker) processPlaintextLine(ctx context.Context, line string) {
+	w.processOutputTextLine(ctx, line)
+}
+
+func (w *Worker) processOutputTextLine(ctx context.Context, line string) {
+	line = redactCredentialAssignments(line)
 	w.mu.Lock()
 	lw := w.logWriter
 	w.mu.Unlock()
@@ -1021,25 +1026,6 @@ func (w *Worker) processPlaintextLine(ctx context.Context, line string) {
 		_, _ = lw.WriteString("\n")
 	}
 	w.processTextLine(ctx, line)
-}
-
-// flushCompleteLines extracts complete newline-terminated lines from buf,
-// processes each via processTextLine, and leaves any trailing incomplete
-// content in buf for the next call.
-func (w *Worker) flushCompleteLines(ctx context.Context, buf *strings.Builder) {
-	content := buf.String()
-	lastNL := strings.LastIndex(content, "\n")
-	if lastNL < 0 {
-		return
-	}
-	complete := content[:lastNL]
-	buf.Reset()
-	if lastNL+1 < len(content) {
-		buf.WriteString(content[lastNL+1:])
-	}
-	for _, line := range strings.Split(complete, "\n") {
-		w.processTextLine(ctx, line)
-	}
 }
 
 // processTextLine appends a single text line to sessionText and extracts
