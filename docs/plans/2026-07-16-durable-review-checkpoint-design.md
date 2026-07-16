@@ -31,6 +31,9 @@ The desired end state is:
    requirements before another full gate.
 7. Raw review transcripts are stored as bounded artifacts by reference. Events,
    ops runs, worker messages, and bead history carry compact structured data.
+8. Review failure recovery is autonomous. Oro selects, executes, and records
+   bounded recovery strategies without requiring an operator to babysit the
+   bead.
 
 ## 2. Source Research
 
@@ -183,9 +186,9 @@ prose but the task remains formally unchanged.
 5. **One review per checkpoint key.** The same immutable code and contract do
    not pay for review twice.
 6. **No silent reopen.** Every non-approved outcome leaves either actionable
-   findings, a blocking ops incident, or an explicit recovery quarantine.
+   findings, an autonomous recovery run, or an explicit recovery quarantine.
 7. **Preserve work before releasing ownership.** Worktree and branch state are
-   retained until merge proof or explicit recovery resolution.
+   retained until merge proof or a durable recovery decision.
 8. **Compact hot-path data.** Worker messages, events, `ops_runs`, and bead
    journey entries contain bounded summaries and structured findings, never
    raw stream transcripts.
@@ -394,6 +397,10 @@ CREATE TABLE review_checkpoints (
     review_policy_hash TEXT NOT NULL,
     state TEXT NOT NULL,
     review_attempt INTEGER NOT NULL DEFAULT 0,
+    recovery_attempt INTEGER NOT NULL DEFAULT 0,
+    recovery_strategy TEXT,
+    failure_fingerprint TEXT,
+    next_recovery_at TEXT,
     findings_json TEXT NOT NULL DEFAULT '[]',
     blockers_json TEXT NOT NULL DEFAULT '[]',
     verification_json TEXT NOT NULL DEFAULT '{}',
@@ -417,6 +424,8 @@ rejected
 contract_repair_running
 blocked
 failed
+recovery_running
+quarantined
 approved
 integrating
 integrated
@@ -461,9 +470,39 @@ Terminal handling:
 - spawn, timeout, cancellation, malformed result, or unsafe approval -> ops run
   `failed`, checkpoint `failed`.
 
-No review path may leave a `running` ops run after terminal handling. Manual
-`oro ops retry` supersedes the old run and resumes review from the checkpoint,
-not from an inferred bead status.
+No review path may leave a `running` ops run after terminal handling. A blocked
+or failed result automatically enters the recovery controller. Manual
+`oro ops retry` remains an administrative override, but it is not part of the
+normal recovery contract.
+
+### Autonomous recovery controller
+
+The controller chooses the next safe action from typed outcome fields and
+durable attempt history. It never derives a strategy from raw transcript text.
+
+1. Compute a stable failure fingerprint from checkpoint identity, execution
+   kind, blocker class/scope/error code, and failed verification command.
+2. If the process died or timed out before a trustworthy outcome, reroute review
+   from the same QG checkpoint after bounded backoff.
+3. If a typed environment or infrastructure blocker names a repairable
+   precondition, create a linked `ops_runs(type=review_recovery)` run to repair
+   or provision that precondition, then retry only the blocked verification or
+   review phase.
+4. If the failure is an acceptance-contract gap, use the contract-repair path
+   rather than infrastructure recovery.
+5. If the same fingerprint survives the allowed strategies, invoke one bounded
+   recovery-planning run that must return a typed, policy-approved action.
+6. If no safe action remains, transition only this checkpoint to
+   `quarantined`, preserve all work, and continue dispatching unrelated beads.
+
+Retry budgets are per failure fingerprint and survive dispatcher restarts.
+Changing process IDs, workers, or timestamps cannot reset the budget. Recovery
+actions are idempotent or guarded by compare-and-swap state transitions.
+Success clears the active fingerprint but preserves attempt history for audit.
+
+The factory does not wait for an operator between these steps. Status and CLI
+commands expose the strategy, attempts, next retry, and quarantine reason for
+diagnosis or optional override.
 
 ## 11. State Machine
 
@@ -497,7 +536,10 @@ review_running
        -> preserve/requeue assignment
        -> release worker capacity
        -> failed ops run blocks ordinary reassignment
-       -> oro ops retry/resolve is the recovery action
+       -> recovery_running
+       -> repair/reroute/retry from the durable checkpoint
+       -> resume the appropriate phase on success
+       -> quarantined only when no policy-approved action remains
 ```
 
 No transition from `blocked` or `failed` directly reopens the bead into the
@@ -649,7 +691,25 @@ For every non-terminal checkpoint:
 
 - preserve the worktree and assignment;
 - keep the bead out of the ordinary queue;
-- expose the failed ops run and exact `oro ops retry`/`resolve` action.
+- reconcile or create the autonomous recovery run;
+- apply persisted backoff and attempt budgets by failure fingerprint;
+- expose the current automatic strategy and next retry.
+
+### `recovery_running`
+
+- reconcile the linked recovery ops run;
+- resume or reroute it once if its process is dead;
+- on success, return to the exact blocked phase rather than restarting the
+  implementation pipeline;
+- on exhaustion, invoke the bounded recovery planner or quarantine.
+
+### `quarantined`
+
+- preserve the worktree, assignment, checkpoint, and all structured evidence;
+- keep the bead out of the ordinary queue;
+- continue dispatching unrelated beads;
+- expose the terminal reason and optional administrative override without
+  making operator action a prerequisite for factory health.
 
 ### Any identity mismatch
 
@@ -692,6 +752,11 @@ Add compact events:
 - `review_contract_repaired`
 - `review_integration_resumed`
 - `review_artifact_truncated`
+- `review_recovery_started`
+- `review_recovery_retried`
+- `review_recovery_succeeded`
+- `review_recovery_exhausted`
+- `review_checkpoint_quarantined`
 
 Status/health metrics:
 
@@ -711,6 +776,8 @@ Throughput reporting should distinguish:
 - checkpoint reuses;
 - productive rejections delivered to a worker;
 - blocked infra reviews;
+- autonomous recovery attempts and success rate;
+- quarantined checkpoints by stable failure fingerprint;
 - repeated unchanged attempts prevented.
 
 ## 19. Backward Compatibility
@@ -757,8 +824,8 @@ Throughput reporting should distinguish:
 
 - normal rejection sends exact structured findings;
 - env/infra keyword pollution cannot route to blocked;
-- blocked review preserves work and creates a failed ops run without reopening
-  into the ready queue;
+- blocked review preserves work, creates a failed review ops run, and schedules
+  autonomous recovery without reopening into the ready queue;
 - every review outcome completes the linked ops run;
 - approval integrates without worker `DONE`;
 - an old-worker duplicate `DONE` is harmless.
@@ -770,6 +837,10 @@ Throughput reporting should distinguish:
 - worker death after rejection reassigns findings to a different worker;
 - dispatcher death after approval resumes integration and does not rerun review;
 - changed HEAD invalidates the checkpoint;
+- recovery attempts and backoff survive dispatcher restart;
+- changing worker/process identity does not reset a failure fingerprint budget;
+- a successful repair resumes the blocked phase without rerunning worker QG;
+- exhausted recovery quarantines one bead while unrelated beads continue;
 - unsafe worktree state recovery-quarantines instead of deleting work.
 
 ### Contract tests
@@ -837,7 +908,7 @@ premortem:
     - risk: "Blocked review recovery becomes another automatic retry loop."
       location: "pkg/dispatcher/dispatcher.go:handleReviewBlocked; pkg/dispatcher/ops_runs.go"
       severity: high
-      mitigation_checked: "Current blocked path reopens ordinary work. Design keeps failed/blocked checkpoints behind a failed ops run and requires explicit retry/resolve."
+      mitigation_checked: "Current blocked path reopens ordinary work. Design fingerprints failures, persists attempt budgets across restarts, uses typed bounded strategies, and quarantines one bead when no safe action remains."
 
     - risk: "Raw review artifacts consume disk or expose sensitive local context."
       location: "pkg/ops/ops.go:runWith; pkg/protocol/message.go:MaxMessageSize"
@@ -868,7 +939,11 @@ The following decisions are intentionally held for consultation:
 - [x] Real problem framing: preserve trustworthy correctness state across
   process boundaries and restarts. Throughput loss is a measured consequence,
   not the primary problem.
-- [ ] Status quo cost and acceptable operator intervention.
+- [x] Status quo and intervention: repeated work and dropped findings are not
+  acceptable operating costs. Recovery must be automatic; operator commands
+  are optional overrides, not normal pipeline steps.
+- [ ] Autonomous exhaustion policy: quarantine one bead after bounded safe
+  strategies vs continue attempting indefinitely.
 - [ ] Exact primary beneficiary/failure scenario.
 - [ ] Narrowest shippable wedge within the architecture.
 - [ ] Consequence threshold for doing nothing.
