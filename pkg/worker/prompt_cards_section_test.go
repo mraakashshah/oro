@@ -1,12 +1,94 @@
 package worker_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"oro/pkg/cards"
 	"oro/pkg/worker"
 )
+
+func TestCardsBodyBoundsDeckView(t *testing.T) {
+	t.Parallel()
+
+	const deckSize = 4_000
+	deck := make([]cards.DeckCard, deckSize)
+	for i := range deck {
+		deck[i] = cards.DeckCard{
+			ID:          fmt.Sprintf("deck-%04d", i),
+			Type:        cards.CardTypePattern,
+			Title:       fmt.Sprintf("Ranked deck card %04d", i),
+			BodySummary: strings.Repeat("summary ", 48),
+			Score:       float64(deckSize - i),
+		}
+	}
+
+	prompt := worker.AssemblePrompt(worker.PromptParams{
+		BeadID: "bead-bounded-deck",
+		Title:  "Bounded deck view",
+		Cards: cards.RelevantCards{
+			Inlined: []cards.InlinedCard{{
+				ID:       "inline-card",
+				Type:     cards.CardTypeRule,
+				Title:    "Inline card",
+				BodyFull: "INLINE_CARD_MUST_REMAIN",
+			}},
+			Deck: deck,
+		},
+	})
+
+	if len(prompt) >= 300*1024 {
+		t.Fatalf("prompt size = %d bytes, want below 300 KiB", len(prompt))
+	}
+	if !strings.Contains(prompt, "INLINE_CARD_MUST_REMAIN") {
+		t.Fatal("inline cards must remain in the prompt")
+	}
+	if !strings.Contains(prompt, "id deck-0000") {
+		t.Fatal("highest-ranked deck entry must remain in the prompt")
+	}
+
+	rendered := 0
+	for i := range deck {
+		if strings.Contains(prompt, fmt.Sprintf("id deck-%04d\n", i)) {
+			rendered++
+		}
+	}
+	if rendered == deckSize {
+		t.Fatal("deck tail must be omitted")
+	}
+	if strings.Contains(prompt, fmt.Sprintf("id deck-%04d\n", deckSize-1)) {
+		t.Fatal("lowest-ranked deck entry must be omitted")
+	}
+	wantOmitted := fmt.Sprintf("%d deck cards omitted due to prompt size limit.", deckSize-rendered)
+	if !strings.Contains(prompt, wantOmitted) {
+		t.Fatalf("prompt must report exact omitted-card count %q", wantOmitted)
+	}
+
+	t.Run("oversized_summary_is_rune_safe", func(t *testing.T) {
+		prompt := worker.AssemblePrompt(worker.PromptParams{
+			BeadID: "bead-oversized-summary",
+			Title:  "Rune-safe summary",
+			Cards: cards.RelevantCards{Deck: []cards.DeckCard{{
+				ID:          "oversized-summary",
+				Type:        cards.CardTypePattern,
+				Title:       "Oversized summary",
+				BodySummary: strings.Repeat("世", 200_000),
+			}}},
+		})
+
+		if len(prompt) >= 300*1024 {
+			t.Fatalf("prompt size = %d bytes, want below 300 KiB", len(prompt))
+		}
+		if !utf8.ValidString(prompt) {
+			t.Fatal("bounded oversized summary must remain valid UTF-8")
+		}
+		if !strings.Contains(prompt, "id oversized-summary") {
+			t.Fatal("oversized summary card metadata must remain in the prompt")
+		}
+	})
+}
 
 // TestPromptCardsSection verifies the Cards section behaviour in AssemblePrompt:
 //  1. prompt has a ## Cards section
