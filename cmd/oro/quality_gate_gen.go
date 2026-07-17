@@ -544,10 +544,14 @@ quality_gate_lock_age_seconds() {
 quality_gate_lock_stale() {
     local lock_dir="$1"
     local owner="$lock_dir/owner"
-    local pid age stale_after
+    local pid parent_pid age stale_after
     if [ -f "$owner" ]; then
         pid=$(sed -n 's/^pid=//p' "$owner" | head -1)
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            parent_pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+            if [ "$parent_pid" = "1" ]; then
+                return 0
+            fi
             return 1
         fi
         return 0
