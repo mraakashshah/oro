@@ -1,104 +1,68 @@
-# Detached Worker Process Cleanup Implementation Plan
+# Detached Worker Process Cleanup Design
 
-> **For Claude:** Use executing-plans skill to implement this plan task-by-task.
+## Goal
 
-**Goal:** Ensure managed worker replacement terminates detached descendants owned by the exact worker and Oro project socket.
+When replacing or stopping a managed worker, terminate only detached
+descendants that carry the complete, exact ownership tuple for that worker and
+its dispatcher socket.
 
-**Architecture:** Production worker commands receive normalized `ORO_SOCKET_PATH` and `ORO_WORKER_ID` ownership entries. `ExecProcessManager` serializes lifecycle changes, kills the tracked process group, scans process environments for the complete ownership tuple, and synchronously kills exact residual matches through injectable scan/kill functions. The stop command reuses the same exact marker-boundary matcher and no longer accepts a project worktree path alone as ownership evidence.
+## Ownership contract
 
-**Tech Stack:** Go `os/exec`, Unix process groups/sessions, `ps eww`, existing `pkg/processenv` environment normalization.
+Ownership is established by the complete environment entries:
 
-## Global Constraints
+- `ORO_SOCKET_PATH=<dispatcher socket>`
+- `ORO_WORKER_ID=<worker id>`
 
-- Preserve `Kill`'s unknown-worker error without scanning or killing residuals.
-- Require both worker ID and socket/project scope; never match bare `ORO_ROLE`, tool names, or worktree substrings alone.
-- Finish tracked-group and residual cleanup before a same-ID replacement process starts.
-- Bound residual scan, graceful termination, and force-kill waits.
-- Extend the existing duplicate-worker process-group guarantee.
+The ownership matcher accepts typed `[]string` environment entries, not a
+rendered process description. `processenv.WorkerOwnershipMarkers` produces the
+complete tuple, and `processenv.CommandContainsAllMarkers(entries, markers)`
+compares each required entry by exact equality. A partial tuple, a duplicate
+name with a different value, argv text, a role value, a tool name, or a
+worktree path is not ownership evidence.
 
----
+`processenv.WithWorkerOwnership` removes inherited ownership entries and adds
+the exact socket and worker entries to every managed worker command. This makes
+the tuple stable across child processes while preventing an inherited parent
+scope from claiming a detached descendant.
 
-### Task 1: Pin detached ownership cleanup behavior
+## Process environment readers
 
-**Files:**
-- Modify: `pkg/dispatcher/process_manager_test.go`
-- Modify: `cmd/oro/cmd_stop_test.go`
+Residual cleanup calls `processenv.ReadEntries(pid)` and makes decisions only
+from its typed `[]string` result. Reader implementations preserve the original
+entry delimiters:
 
-**Interfaces:**
-- Consumes: `dispatcher.NewOroProcessManager`, `ExecProcessManager.Spawn`, `ExecProcessManager.Kill`
-- Produces: `TestExecProcessManagerKillTerminatesDetachedOwnedProcess` and stricter `TestResidualScanUsesScopedMarkers`
+- On Darwin, `processenv.ReadEntries` obtains `kern.procargs2` with
+  `unix.SysctlRaw` and parses its NUL-delimited executable, argv, and
+  environment payload without whitespace tokenization.
+- On Linux, `processenv.ReadEntries` reads `/proc/<pid>/environ` and splits its
+  NUL-delimited contents into complete environment entries.
+- On unsupported operating systems, and for an unreadable or malformed
+  process environment, the reader returns an error. Cleanup fails closed: it
+  does not infer ownership and does not kill that process.
 
-**Step 1: Write the failing test**
+The reader boundary deliberately excludes argv inspection and whitespace
+tokenization. Values may contain spaces, quotes, or marker-shaped text; only a
+complete environment entry can satisfy an ownership marker.
 
-Add a helper-process mode to the named dispatcher test. The managed helper starts a `sleep` child with `SysProcAttr.Setsid`, writes its PID, and remains alive. Launch foreign detached processes with the same worker/different socket and the same socket/different worker. Kill the managed worker, start a same-ID replacement, and assert the tracked PID and owned detached PID are gone while both foreign PIDs remain alive. Also assert the production command environment contains the exact socket and worker entries.
+## Cleanup sequence
 
-Change `TestResidualScanUsesScopedMarkers` so a snapshot matches only when every supplied scoped marker is present with command boundaries. Include negative snapshots for worker-only, socket-only, wrong worker, wrong socket, bare role, tool name, and worktree path.
+1. Serialize `Spawn` and `Kill` for a worker ID.
+2. Terminate the tracked worker process group.
+3. Enumerate candidate process IDs using normal process metadata only.
+4. For each candidate, read exact entries through `processenv.ReadEntries`.
+5. Kill a residual process only if every marker in the complete ownership tuple
+   is present as an exact entry.
+6. Complete residual cleanup before a same-ID replacement can start.
 
-**Step 2: Run tests to verify they fail**
+Unknown worker IDs remain errors and do not start a residual scan. Residual
+termination is bounded and uses the existing graceful-then-force process-group
+cleanup path.
 
-Run: `go test ./pkg/dispatcher -run '^TestExecProcessManagerKillTerminatesDetachedOwnedProcess$' -count=1 -v`
+## Verification
 
-Expected: FAIL because the detached owned session survives and ownership environment entries are absent.
-
-Run: `go test ./cmd/oro -run '^TestResidualScanUsesScopedMarkers$' -count=1 -v`
-
-Expected: FAIL because the current scanner accepts any one marker.
-
-### Task 2: Add exact ownership markers and matching
-
-**Files:**
-- Modify: `pkg/processenv/env.go`
-- Modify: `pkg/dispatcher/process_manager.go`
-- Create: `pkg/dispatcher/process_manager_residual.go`
-- Modify: `cmd/oro/cmd_stop.go`
-
-**Interfaces:**
-- Produces: `processenv.WithWorkerOwnership(env []string, socketPath, workerID string) []string`
-- Produces: `processenv.WorkerOwnershipMarkers(socketPath, workerID string) []string`
-- Produces: `processenv.CommandContainsAllMarkers(command string, markers []string) bool`
-- Produces: `ExecProcessManager.SetResidualProcessHooks(scanFn, killFn)` as a test-only injectable seam
-
-**Step 1: Implement environment ownership**
-
-Normalize away inherited duplicates of `ORO_SOCKET_PATH` and `ORO_WORKER_ID`, append the exact constructor socket and worker ID, and use the helper in `NewOroProcessManager`.
-
-**Step 2: Implement managed residual cleanup**
-
-Add a process snapshot type with PID and PGID, default `ps eww` scanning filtered by `CommandContainsAllMarkers`, and a bounded TERM-then-KILL implementation. Serialize `Spawn` and `Kill`; if a same-ID process is tracked, complete primary-group and residual cleanup before starting the replacement. Keep unknown `Kill` as an immediate error.
-
-**Step 3: Tighten stop scanning**
-
-Use environment-inclusive snapshots and require all scoped markers when markers are available. Treat roots only as supplementary evidence after scoped ownership, never sufficient evidence by themselves.
-
-**Step 4: Run focused tests to verify they pass**
-
-Run the two commands from Task 1, then `go test ./pkg/dispatcher ./pkg/processenv -count=1` and the relevant `cmd/oro` tests.
-
-### Task 3: Verify, review, and land
-
-**Files:**
-- Review all files above.
-
-**Interfaces:**
-- Consumes: task acceptance criteria and project quality gate
-- Produces: one atomic conventional commit on `agent/oro-xsmn`
-
-**Step 1: Check integration side effects**
-
-Trace dispatcher restart-worker ordering, duplicate `Spawn`, `Kill` unknown-ID behavior, constructor wiring, and stop residual scanning. Confirm no cleanup scan can observe a just-started same-ID replacement.
-
-**Step 2: Run verification**
-
-Run: `go test ./pkg/dispatcher -run '^TestExecProcessManagerKillTerminatesDetachedOwnedProcess$' -count=1`
-
-Run: `go test ./pkg/dispatcher -count=1`
-
-Run: `go test ./cmd/oro -run '^TestResidualScanUsesScopedMarkers$' -count=1`
-
-Run: `ORO_MUTATION_BASE=epic/oro-tjv2 ./scripts/quality_gate.sh`
-
-Expected: every command exits 0 and the named tests are reported as executed.
-
-**Step 3: Commit**
-
-Stage only the task files and commit with `git commit -m "fix(dispatcher): terminate detached worker processes"`.
+Tests must cover a managed detached descendant, a same-worker/different-socket
+process, and a same-socket/different-worker process. Only the exact complete
+tuple is eligible for cleanup. Reader tests must preserve environment values
+containing whitespace and must verify Darwin `kern.procargs2` parsing, Linux
+NUL-delimited parsing, and fail-closed errors for unsupported or unreadable
+processes.

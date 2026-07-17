@@ -531,12 +531,6 @@ func qgRunnerEnv(skipMutation bool, worktree, mutationBase string) []string {
 		if strings.HasPrefix(kv, "ORO_QG_LOCK_TIMEOUT_SECONDS=") {
 			continue
 		}
-		if strings.HasPrefix(kv, "ORO_QG_INHERITED_LOCK_DIR=") {
-			continue
-		}
-		if strings.HasPrefix(kv, "ORO_QG_INHERITED_LOCK_TOKEN=") {
-			continue
-		}
 		env = append(env, kv)
 	}
 	if skipMutation {
@@ -692,7 +686,7 @@ type Config struct {
 	MutationTesting         bool          // If true, dispatcher quality gates run mutation-testing tiers. Defaults false.
 	RegressionRevert        bool          // If true, QG retries capture a pre-retry baseline for regression-revert checks. Defaults true.
 	LeakScan                LeakScanConfig
-	Estimator               BeadEstimator // LLM-based bead complexity estimator (default NewBeadEstimator()).
+	Estimator               BeadEstimator // Optional bead complexity estimator for explicit injection.
 	WorkerProgram           string        // Absolute path to worker-program.md. Defaults to <RepoRoot>/worker-program.md.
 	ReviewPatterns          string        // Absolute path for review patterns. Populated from ProjectPaths.ReviewPatterns.
 	ReviewPatternCandidates string        // Absolute path for review-pattern candidate inbox. Populated from ProjectPaths.ReviewPatternCandidates.
@@ -784,9 +778,6 @@ func (c *Config) withDefaults() Config {
 	out.ReviewDeadGrace = durationDefault(out.ReviewDeadGrace, 30*time.Second)
 	out.RegressionRevert = boolDefault(out.RegressionRevert, true)
 	out.CheckpointThreshold = intDefault(out.CheckpointThreshold, 75)
-	if out.Estimator == nil {
-		out.Estimator = NewBeadEstimator()
-	}
 	if out.DefaultBranch == "" {
 		out.DefaultBranch = "main"
 	}
@@ -5801,7 +5792,12 @@ func (d *Dispatcher) filterRecoveryQuarantinedBeads(ctx context.Context, allBead
 }
 
 func (d *Dispatcher) openRecoveryQuarantineBeads(ctx context.Context) (map[string]bool, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT DISTINCT bead_id FROM recovery_quarantines WHERE status IN ('open', 'human_owned')`)
+	rows, err := d.db.QueryContext(ctx, `
+SELECT DISTINCT q.bead_id
+FROM recovery_quarantines q
+LEFT JOIN assignments a ON a.id=q.assignment_id
+WHERE q.status IN ('open', 'human_owned')
+   OR (q.status='resolved' AND a.status='requeued')`)
 	if err != nil {
 		if strings.Contains(err.Error(), "no such table") {
 			return nil, nil
@@ -7833,24 +7829,21 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 	procMgr := d.procMgr
 	d.mu.Unlock()
 
-	if wasManaged && procMgr != nil {
-		_ = procMgr.Kill(workerID)
-	}
-
-	// Reset bead to open, clear tracking, and complete the assignment so it can be reassigned.
-	// If the bead was closed while the worker was still active, preserve that
-	// close instead of resurrecting stale work.
-	if beadID != "" {
-		if d.shouldReopenBead(ctx, beadID) {
-			if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
-				_ = d.logEvent(ctx, "restart_worker_bead_reset_failed", "dispatcher", beadID, workerID,
-					fmt.Sprintf(`{"error":%q}`, err.Error()))
-			}
+	killErr := d.killManagedWorkerForRestart(ctx, procMgr, workerID, beadID, wasManaged)
+	completeErr := d.completeRestartAssignment(ctx, beadID, assignmentID, workerID)
+	if completeErr != nil || killErr != nil {
+		if wasManaged {
+			d.mu.Lock()
+			delete(d.pendingManagedIDs, workerID)
+			delete(d.pendingManagedSince, workerID)
+			d.mu.Unlock()
 		}
-		d.clearBeadTracking(beadID)
-		_ = d.completeAssignment(ctx, assignmentID, beadID)
-		_ = d.logEvent(ctx, "worker_restarted", "dispatcher", beadID, workerID,
-			`{"reason":"restart-worker directive"}`)
+		if completeErr != nil {
+			_ = d.logEvent(ctx, "restart_worker_assignment_completion_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"error":%q}`, completeErr.Error()))
+			return "", completeErr
+		}
+		return "", killErr
 	}
 
 	// Spawn new worker process with same ID
@@ -7862,8 +7855,48 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 			return "", fmt.Errorf("spawn new worker: %w", err)
 		}
 	}
+	if beadID != "" {
+		_ = d.logEvent(ctx, "worker_restarted", "dispatcher", beadID, workerID,
+			`{"reason":"restart-worker directive"}`)
+	}
 
 	return fmt.Sprintf("worker %s restarted", workerID), nil
+}
+
+func (d *Dispatcher) killManagedWorkerForRestart(ctx context.Context, procMgr ProcessManager, workerID, beadID string, wasManaged bool) error {
+	if !wasManaged || procMgr == nil {
+		return nil
+	}
+	if err := procMgr.Kill(workerID); err != nil {
+		_ = d.logEvent(ctx, "restart_worker_kill_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"error":%q}`, err.Error()))
+		return fmt.Errorf("kill managed worker for restart: %w", err)
+	}
+	return nil
+}
+
+// completeRestartAssignment makes a restarted worker's assignment available
+// again. Tracking is cleared only after completion succeeds so failed cleanup
+// remains visible for recovery instead of stranding an active assignment.
+func (d *Dispatcher) completeRestartAssignment(ctx context.Context, beadID string, assignmentID int64, workerID string) error {
+	if beadID == "" {
+		return nil
+	}
+	if err := d.completeAssignment(ctx, assignmentID, beadID); err != nil {
+		_ = d.logEvent(ctx, "restart_worker_assignment_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
+		return fmt.Errorf("complete restart assignment: %w", err)
+	}
+	if d.shouldReopenBead(ctx, beadID) {
+		if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
+			_ = d.logEvent(ctx, "restart_worker_bead_reset_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"error":%q}`, err.Error()))
+		}
+	}
+	d.clearBeadTracking(beadID)
+	_ = d.logEvent(ctx, "restart_worker_assignment_recovered", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"assignment_id":%d}`, assignmentID))
+	d.notifyAssignLoop()
+	return nil
 }
 
 // applyPreempt gracefully preempts a worker for higher-priority work.

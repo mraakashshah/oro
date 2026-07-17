@@ -137,14 +137,68 @@ quality_gate_lock_age_seconds() {
 	fi
 }
 
+quality_gate_process_start_time() {
+	LC_ALL=C TZ=UTC ps -o lstart= -p "$1" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+quality_gate_lock_owner_matches_process() {
+	local owner="$1"
+	local pid="$2"
+	local recorded_start_time actual_start_time
+	recorded_start_time=$(sed -n 's/^start_time=//p' "$owner" | head -1)
+	if [ -z "$recorded_start_time" ]; then
+		return 2
+	fi
+	actual_start_time=$(quality_gate_process_start_time "$pid")
+	if [ -z "$actual_start_time" ]; then
+		return 2
+	fi
+	if [ "$recorded_start_time" = "$actual_start_time" ]; then
+		return 0
+	fi
+	return 1
+}
+
+quality_gate_process_has_descendants() {
+	pgrep -P "$1" >/dev/null 2>&1
+	case $? in
+	0) return 0 ;;
+	1) return 1 ;;
+	*) return 2 ;;
+	esac
+}
+
 quality_gate_lock_stale() {
 	local lock_dir="$1"
 	local owner="$lock_dir/owner"
-	local pid age stale_after
+	local pid parent_pid age stale_after owner_match_status
 	if [ -f "$owner" ]; then
 		pid=$(sed -n 's/^pid=//p' "$owner" | head -1)
 		if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-			return 1
+			quality_gate_lock_owner_matches_process "$owner" "$pid"
+			owner_match_status=$?
+			if [ "$owner_match_status" -ne 0 ]; then
+				if [ "$owner_match_status" -eq 1 ]; then
+					return 0
+				fi
+				return 1
+			fi
+			parent_pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+			if [ "$parent_pid" != "1" ]; then
+				return 1
+			fi
+			stale_after="${ORO_QG_STALE_LOCK_SECONDS:-600}"
+			if ! age=$(quality_gate_lock_age_seconds "$lock_dir"); then
+				return 1
+			fi
+			if [ "$age" -lt "$stale_after" ]; then
+				return 1
+			fi
+			quality_gate_process_has_descendants "$pid"
+			case $? in
+			1) return 0 ;;
+			*) return 1 ;;
+			esac
 		fi
 		return 0
 	fi
@@ -170,8 +224,11 @@ archive_stale_quality_gate_lock() {
 write_quality_gate_lock_owner() {
 	local lock_dir="$1"
 	local token="$2"
+	local start_time
+	start_time=$(quality_gate_process_start_time "$$")
 	{
 		echo "pid=$$"
+		echo "start_time=$start_time"
 		echo "token=$token"
 		echo "repo=$REPO_ROOT"
 		echo "created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"

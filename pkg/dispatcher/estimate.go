@@ -60,6 +60,8 @@ type llmEstimator struct {
 // NewBeadEstimator constructs the estimator selected by roles.estimator. CLI
 // roles use the installed subscription-backed runtime; explicit API roles keep
 // the legacy Anthropic Messages API integration.
+//
+//oro:testonly — automatic production estimation is disabled; tests inject this explicitly.
 func NewBeadEstimator() BeadEstimator {
 	cfg := loadEstimatorConfig()
 	if role, ok := cfg.Roles["estimator"]; ok && role.Transport == "cli" {

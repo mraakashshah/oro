@@ -179,6 +179,9 @@ func (d *Dispatcher) gcWorktrees(ctx context.Context) {
 		if err != nil {
 			return false
 		}
+		if detail == nil {
+			return false
+		}
 		return detail.Status == "closed"
 	}
 	if err := d.worktrees.GCClosedWorktrees(ctx, isBeadClosed); err != nil {

@@ -204,7 +204,7 @@ func TestDrainOutput_ExtractsMemoryMarkers(t *testing.T) {
 
 func TestDrainOutput_FlushRemainingTrailingPartial(t *testing.T) {
 	// Text deltas that never close with \n leave bytes in the line buffer.
-	// drainFlushRemaining must flush them (and parse a [MEMORY] marker if
+	// The final structured-line flush must process them (and parse a [MEMORY] marker if
 	// present) before DrainOutput returns.
 	input := ndjsonInput(
 		textDeltaLine("[MEMORY] type=lesson: trailing memory without newline"),
@@ -226,7 +226,7 @@ func TestDrainOutput_FlushRemainingTrailingPartial(t *testing.T) {
 
 func TestDrainOutput_FlushRemainingNoMarkerNoStore(t *testing.T) {
 	// Trailing partial without a [MEMORY] marker and a nil store: covers the
-	// non-marker / nil-store branches of drainFlushRemaining.
+	// non-marker / nil-store branches of final structured-line flushing.
 	input := ndjsonInput(textDeltaLine("plain trailing text without newline"))
 	worker.DrainOutput(context.Background(), io.NopCloser(strings.NewReader(input)),
 		worker.StreamFormatClaudeJSON, nil, "oro-bead-plain", nil, io.Discard)
@@ -351,6 +351,104 @@ func TestDrainOutput_LLMExtraction(t *testing.T) {
 	// Text content should be echoed to output for debugging visibility.
 	if !strings.Contains(buf.String(), "doing work") {
 		t.Errorf("expected text echo in output, got %q", buf.String())
+	}
+}
+
+func TestDrainOutputRedactsCredentialAssignmentsFromLogsAndMemoryExtraction(t *testing.T) {
+	const claudeToken = "sk-test-sentinel"
+	const openAIKey = "sk-test-openai"
+	credentialLine := "CLAUDE_CODE_OAUTH_TOKEN=" + claudeToken + " OPENAI_API_KEY=" + openAIKey + " MODE=development"
+	quotedLine := `quoted CLAUDE_CODE_OAUTH_TOKEN="` + claudeToken + `" escaped OPENAI_API_KEY=\"` + openAIKey + `\" already OPENAI_API_KEY=[REDACTED]`
+	quotedParityLine := `even OPENAI_API_KEY="` + openAIKey + `\\" MODE=development odd OPENAI_API_KEY="` + openAIKey + `\\\" still-secret" MODE=development`
+	escapedInternalQuoteLine := `escaped internal OPENAI_API_KEY=\"` + openAIKey + `\\\"still-secret\" MODE=development`
+	escapedAmbiguousWhitespaceLine := `escaped ambiguous OPENAI_API_KEY=\"` + openAIKey + `\\\" still-secret\" MODE=development`
+	spacedLine := "spaced OPENAI_API_KEY = " + openAIKey + " MODE=development"
+	tabbedLine := "tabbed CLAUDE_CODE_OAUTH_TOKEN\t=\t" + claudeToken + " MODE=development"
+
+	for _, tc := range []struct {
+		name   string
+		format worker.StreamFormat
+		input  string
+	}{
+		{
+			name:   "stream json",
+			format: worker.StreamFormatClaudeJSON,
+			input: ndjsonInput(
+				textDeltaLine("ordinary text\n"),
+				textDeltaLine(credentialLine+"\n"),
+				textDeltaLine(quotedLine+"\n"),
+				textDeltaLine(quotedParityLine+"\n"),
+				textDeltaLine(escapedInternalQuoteLine+"\n"),
+				textDeltaLine(escapedAmbiguousWhitespaceLine+"\n"),
+				textDeltaLine(spacedLine+"\n"),
+				textDeltaLine(tabbedLine+"\n"),
+			),
+		},
+		{
+			name:   "plaintext",
+			format: worker.StreamFormatLineText,
+			input:  strings.Join([]string{"ordinary text", credentialLine, quotedLine, quotedParityLine, escapedInternalQuoteLine, escapedAmbiguousWhitespaceLine, spacedLine, tabbedLine}, "\n") + "\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spawner := &mockLLMSpawner{}
+			var log bytes.Buffer
+			worker.DrainOutputInWorkdir(context.Background(), io.NopCloser(strings.NewReader(tc.input)),
+				tc.format, &mockMemStore{}, "oro-redact", spawner, t.TempDir(), &log)
+
+			for _, output := range []string{log.String(), spawner.promptGiven} {
+				if strings.Contains(output, claudeToken) || strings.Contains(output, openAIKey) {
+					t.Fatalf("credential leaked in output: %q", output)
+				}
+				for _, expected := range []string{
+					"CLAUDE_CODE_OAUTH_TOKEN=[REDACTED]",
+					`CLAUDE_CODE_OAUTH_TOKEN="[REDACTED]"`,
+					`OPENAI_API_KEY=\"[REDACTED]\"`,
+					"OPENAI_API_KEY=[REDACTED]",
+					`escaped internal OPENAI_API_KEY=\"[REDACTED]\" MODE=development`,
+					`escaped ambiguous OPENAI_API_KEY=\"[REDACTED]\" MODE=development`,
+					"spaced OPENAI_API_KEY = [REDACTED] MODE=development",
+					"tabbed CLAUDE_CODE_OAUTH_TOKEN\t=\t[REDACTED] MODE=development",
+					"ordinary text",
+					"MODE=development",
+				} {
+					if !strings.Contains(output, expected) {
+						t.Fatalf("output missing %q: %q", expected, output)
+					}
+				}
+				if strings.Contains(output, "still-secret") {
+					t.Fatalf("quoted credential tail leaked in output: %q", output)
+				}
+				if got := strings.Count(output, "[REDACTED]"); got != 11 {
+					t.Fatalf("redaction count = %d, want 11: %q", got, output)
+				}
+				if got := strings.Count(output, "MODE=development"); got != 7 {
+					t.Fatalf("ordinary assignments after credentials = %d, want 7: %q", got, output)
+				}
+			}
+		})
+	}
+}
+
+func TestDrainOutputRedactsCredentialAssignmentsFromFormattedResults(t *testing.T) {
+	const sentinel = "formatted-result-credential"
+	const secondSentinel = "formatted-result-tabbed-credential"
+	input := `{"type":"result","subtype":"error","result":"command failed: OPENAI_API_KEY = ` + sentinel + ` CLAUDE_CODE_OAUTH_TOKEN\t=\t` + secondSentinel + ` MODE=development","is_error":true}` + "\n"
+
+	var log bytes.Buffer
+	worker.DrainOutputInWorkdir(context.Background(), io.NopCloser(strings.NewReader(input)),
+		worker.StreamFormatClaudeJSON, nil, "oro-redact-result", nil, t.TempDir(), &log)
+
+	output := log.String()
+	if strings.Contains(output, sentinel) || strings.Contains(output, secondSentinel) {
+		t.Fatalf("credential leaked in formatted result: %q", output)
+	}
+	const expected = "    ERROR: command failed: OPENAI_API_KEY = [REDACTED] CLAUDE_CODE_OAUTH_TOKEN\t=\t[REDACTED] MODE=development"
+	if !strings.Contains(output, expected) {
+		t.Fatalf("formatted result = %q, want exact line %q", output, expected)
+	}
+	if got := strings.Count(output, "[REDACTED]"); got != 4 {
+		t.Fatalf("formatted-result redaction count = %d, want 4 across summary and drained text: %q", got, output)
 	}
 }
 

@@ -13,13 +13,6 @@ import (
 	"time"
 )
 
-const (
-	// SocketPathEnv scopes an Oro subprocess to one dispatcher/project socket.
-	SocketPathEnv = "ORO_SOCKET_PATH"
-	// WorkerIDEnv identifies the managed worker that owns a subprocess tree.
-	WorkerIDEnv = "ORO_WORKER_ID"
-)
-
 // ForWorkdir returns env with git worktree override variables stripped and PWD
 // aligned with workdir. cmd.Dir changes the process cwd, but many nested tools
 // inspect env PWD or git override variables before consulting the OS cwd.
@@ -75,81 +68,6 @@ func ForWorkdir(env []string, workdir string) []string {
 		"EDITOR=true",
 	)
 	return out
-}
-
-// WithWorkerOwnership replaces inherited ownership values with the exact
-// dispatcher socket and worker ID for a managed worker subprocess.
-func WithWorkerOwnership(env []string, socketPath, workerID string) []string {
-	out := make([]string, 0, len(env)+2)
-	for _, entry := range env {
-		key, _, ok := strings.Cut(entry, "=")
-		if ok && (key == SocketPathEnv || key == WorkerIDEnv) {
-			continue
-		}
-		out = append(out, entry)
-	}
-	if socketPath != "" {
-		out = append(out, SocketPathEnv+"="+socketPath)
-	}
-	if workerID != "" {
-		out = append(out, WorkerIDEnv+"="+workerID)
-	}
-	return out
-}
-
-// WorkerOwnershipMarkers returns the complete marker tuple required to own a
-// worker subprocess. An incomplete scope intentionally produces no markers.
-func WorkerOwnershipMarkers(socketPath, workerID string) []string {
-	if socketPath == "" || workerID == "" {
-		return nil
-	}
-	return []string{SocketPathEnv + "=" + socketPath, WorkerIDEnv + "=" + workerID}
-}
-
-// CommandContainsAllMarkers reports whether command contains every exact
-// marker as a boundary-delimited command/environment entry.
-func CommandContainsAllMarkers(command string, markers []string) bool {
-	if len(markers) == 0 {
-		return false
-	}
-	for _, marker := range markers {
-		if marker == "" || !CommandContainsMarker(command, marker) {
-			return false
-		}
-	}
-	return true
-}
-
-// CommandContainsMarker reports whether command contains marker without
-// accepting a prefix or suffix collision in an environment entry.
-func CommandContainsMarker(command, marker string) bool {
-	for start := 0; ; {
-		idx := strings.Index(command[start:], marker)
-		if idx < 0 {
-			return false
-		}
-		idx += start
-		end := idx + len(marker)
-		if commandMarkerBoundaryBefore(command, idx) && commandMarkerBoundaryAfter(command, end) {
-			return true
-		}
-		start = idx + 1
-	}
-}
-
-func commandMarkerBoundaryBefore(value string, index int) bool {
-	return index <= 0 || isCommandMarkerBoundary(value[index-1])
-}
-
-func commandMarkerBoundaryAfter(value string, index int) bool {
-	return index >= len(value) || isCommandMarkerBoundary(value[index])
-}
-
-func isCommandMarkerBoundary(value byte) bool {
-	return value == ' ' || value == '\t' || value == '\n' || value == '\r' ||
-		value == '\'' || value == '"' || value == '`' ||
-		value == '=' || value == ':' || value == ',' || value == ';' ||
-		value == ')' || value == '(' || value == '[' || value == ']'
 }
 
 func normalizeEnvEntry(entry, workdir string, rewriteGOMODCACHE bool) (normalized string, keep, handledPWD bool) {
