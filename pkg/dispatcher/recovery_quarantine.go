@@ -165,12 +165,13 @@ func (d *Dispatcher) autoRedeployablePreservedWorktrees(ctx context.Context) (ma
 		return nil, nil
 	}
 	rows, err := d.db.QueryContext(ctx, `
-SELECT bead_id, worktree, branch
-FROM recovery_quarantines
-WHERE status='open'
-  AND reason NOT IN ('merge_conflict_resolution_failed', 'branch_worktree_mismatch')
-  AND worktree IS NOT NULL AND worktree != ''
-  AND branch IS NOT NULL AND branch != ''`)
+SELECT q.bead_id, q.worktree, q.branch, q.status
+FROM recovery_quarantines q
+LEFT JOIN assignments a ON a.id=q.assignment_id
+WHERE (q.status='open' OR (q.status='resolved' AND a.status='requeued'))
+  AND q.reason NOT IN ('merge_conflict_resolution_failed', 'branch_worktree_mismatch')
+  AND q.worktree IS NOT NULL AND q.worktree != ''
+  AND q.branch IS NOT NULL AND q.branch != ''`)
 	if err != nil {
 		return nil, fmt.Errorf("query auto-redeployable recovery quarantines: %w", err)
 	}
@@ -178,11 +179,11 @@ WHERE status='open'
 
 	redeployable := make(map[string]bool)
 	for rows.Next() {
-		var beadID, worktree, branch string
-		if err := rows.Scan(&beadID, &worktree, &branch); err != nil {
+		var beadID, worktree, branch, status string
+		if err := rows.Scan(&beadID, &worktree, &branch, &status); err != nil {
 			return nil, fmt.Errorf("scan auto-redeployable recovery quarantine: %w", err)
 		}
-		if d.preservedWorktreeSafeForRedeploy(ctx, beadID, worktree, branch) {
+		if d.preservedWorktreeSafeForRedeploy(ctx, beadID, worktree, branch, status == "resolved") {
 			redeployable[beadID] = true
 		}
 	}
@@ -192,22 +193,17 @@ WHERE status='open'
 	return redeployable, nil
 }
 
-func (d *Dispatcher) preservedWorktreeSafeForRedeploy(ctx context.Context, beadID, worktree, branch string) bool {
+func (d *Dispatcher) preservedWorktreeSafeForRedeploy(
+	ctx context.Context, beadID, worktree, branch string, restoreUntracked bool,
+) bool {
 	expectedBranch := protocol.BranchPrefix + beadID
 	if beadID == "" || worktree == "" || branch != expectedBranch || !d.worktrees.Exists(ctx, worktree) {
 		return false
 	}
 	d.mu.Lock()
-	trackedWorktree := d.worktreeByBead[beadID]
-	active := false
-	for _, worker := range d.workers {
-		if worker.beadID == beadID && worker.state != protocol.WorkerIdle {
-			active = true
-			break
-		}
-	}
+	available := d.preservedWorktreeUnownedLocked(beadID, worktree, restoreUntracked)
 	d.mu.Unlock()
-	if active || trackedWorktree != worktree {
+	if !available {
 		return false
 	}
 	currentBranch, err := d.worktrees.CurrentBranch(ctx, worktree)
@@ -215,7 +211,36 @@ func (d *Dispatcher) preservedWorktreeSafeForRedeploy(ctx context.Context, beadI
 		return false
 	}
 	dirty, _, err := d.worktreeDirty(ctx, worktree)
-	return err == nil && !dirty
+	if err != nil || dirty {
+		return false
+	}
+
+	// The offline recovery command resolves the quarantine and requeues its
+	// preserved assignment durably, but cannot rebuild this process-local map.
+	// Recheck live ownership before restoring it so a concurrent assignment
+	// cannot be displaced by stale recovery state.
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.preservedWorktreeUnownedLocked(beadID, worktree, restoreUntracked) {
+		return false
+	}
+	if restoreUntracked && d.worktreeByBead[beadID] == "" {
+		d.worktreeByBead[beadID] = worktree
+	}
+	return true
+}
+
+// preservedWorktreeUnownedLocked checks the process-local ownership state.
+// The caller holds d.mu so validation and an optional restore can be made
+// atomically after the filesystem safety checks complete.
+func (d *Dispatcher) preservedWorktreeUnownedLocked(beadID, worktree string, allowUntracked bool) bool {
+	for _, worker := range d.workers {
+		if worker.beadID == beadID && worker.state != protocol.WorkerIdle {
+			return false
+		}
+	}
+	trackedWorktree := d.worktreeByBead[beadID]
+	return trackedWorktree == worktree || (allowUntracked && trackedWorktree == "")
 }
 
 func (d *Dispatcher) markAssignmentQuarantined(ctx context.Context, assignmentID int64) error {
