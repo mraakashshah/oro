@@ -5792,7 +5792,12 @@ func (d *Dispatcher) filterRecoveryQuarantinedBeads(ctx context.Context, allBead
 }
 
 func (d *Dispatcher) openRecoveryQuarantineBeads(ctx context.Context) (map[string]bool, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT DISTINCT bead_id FROM recovery_quarantines WHERE status IN ('open', 'human_owned')`)
+	rows, err := d.db.QueryContext(ctx, `
+SELECT DISTINCT q.bead_id
+FROM recovery_quarantines q
+LEFT JOIN assignments a ON a.id=q.assignment_id
+WHERE q.status IN ('open', 'human_owned')
+   OR (q.status='resolved' AND a.status='requeued')`)
 	if err != nil {
 		if strings.Contains(err.Error(), "no such table") {
 			return nil, nil
