@@ -25,6 +25,19 @@ type DroppedFinding struct {
 // review results. Callers must not classify prose or malformed JSON as an
 // approved review.
 func ValidateReviewOutcome(out ReviewOutcome) error {
+	if err := validateReviewOutcomeSchema(out); err != nil {
+		return err
+	}
+	if out.Decision != reduceReviewDecision(out) {
+		return fmt.Errorf("review decision %q conflicts with typed outcome", out.Decision)
+	}
+	return nil
+}
+
+func validateReviewOutcomeSchema(out ReviewOutcome) error {
+	if err := validateReviewDecision(out.Decision); err != nil {
+		return err
+	}
 	if strings.TrimSpace(out.Summary) == "" {
 		return fmt.Errorf("review summary is required")
 	}
@@ -50,10 +63,16 @@ func ValidateReviewOutcome(out ReviewOutcome) error {
 			return fmt.Errorf("finding %d: %w", i, err)
 		}
 	}
-	if out.Decision != reduceReviewDecision(out) {
-		return fmt.Errorf("review decision %q conflicts with typed outcome", out.Decision)
-	}
 	return nil
+}
+
+func validateReviewDecision(decision ReviewDecision) error {
+	switch decision {
+	case ReviewApproved, ReviewRejected, ReviewBlocked, ReviewFailed:
+		return nil
+	default:
+		return fmt.Errorf("invalid review decision %q", decision)
+	}
 }
 
 func validateReviewVerification(verification ReviewVerification) error {
@@ -133,7 +152,7 @@ func reduceReviewDecision(out ReviewOutcome) ReviewDecision {
 			return ReviewRejected
 		}
 	}
-	if out.Execution.Kind != ReviewExecSucceeded || !out.Execution.Complete {
+	if out.Execution.Kind != ReviewExecSucceeded || !out.Execution.Complete || out.Execution.ExitCode != 0 {
 		return ReviewFailed
 	}
 	if len(out.Blockers) > 0 {

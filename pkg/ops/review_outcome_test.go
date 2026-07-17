@@ -68,6 +68,44 @@ func TestTypedReviewOutcomeParsing(t *testing.T) {
 			wantDecision: ReviewFailed,
 		},
 		{
+			name: "nonzero exit outranks approval",
+			raw: `{
+  "decision": "approved",
+  "findings": [],
+  "blockers": [],
+  "verification": {"acceptance_status": "passed"},
+  "execution": {"kind": "succeeded", "exit_code": 1, "complete": true},
+  "summary": "review complete",
+  "artifact": {"sha256": "abc", "bytes": 3}
+}`,
+			wantDecision: ReviewFailed,
+		},
+		{
+			name: "missing decision fails closed",
+			raw: `{
+  "findings": [],
+  "blockers": [],
+  "verification": {"acceptance_status": "passed"},
+  "execution": {"kind": "succeeded", "complete": true},
+  "summary": "review complete",
+  "artifact": {"sha256": "abc", "bytes": 3}
+}`,
+			wantErr: "invalid review decision",
+		},
+		{
+			name: "unknown decision fails closed",
+			raw: `{
+  "decision": "indeterminate",
+  "findings": [],
+  "blockers": [],
+  "verification": {"acceptance_status": "passed"},
+  "execution": {"kind": "succeeded", "complete": true},
+  "summary": "review complete",
+  "artifact": {"sha256": "abc", "bytes": 3}
+}`,
+			wantErr: "invalid review decision",
+		},
+		{
 			name:    "ambiguous prose fails closed",
 			raw:     "The change looks good, probably approved.",
 			wantErr: "structured review JSON is required",

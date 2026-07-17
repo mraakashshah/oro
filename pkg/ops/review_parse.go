@@ -32,6 +32,9 @@ func parseStructuredReviewReport(raw string) (ReviewOutcome, error) {
 	if err := json.Unmarshal([]byte(block), &outcome); err != nil {
 		return ReviewOutcome{}, fmt.Errorf("parse typed review outcome: %w", err)
 	}
+	if err := validateReviewOutcomeSchema(outcome); err != nil {
+		return ReviewOutcome{}, err
+	}
 	outcome.Decision = reduceReviewDecision(outcome)
 	if err := ValidateReviewOutcome(outcome); err != nil {
 		return ReviewOutcome{}, err
