@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -453,6 +454,78 @@ func TestExecProcessManagerKillTerminatesDetachedOwnedProcess(t *testing.T) {
 	for _, stale := range []string{"ORO_SOCKET_PATH=/tmp/wrong-project.sock", "ORO_WORKER_ID=wrong-worker"} {
 		if containsExactEnv(productionEnv, stale) {
 			t.Errorf("production worker environment retained stale ownership marker %q", stale)
+		}
+	}
+}
+
+func TestExecProcessManagerKillMacOSDetachedScanTerminatesOnlyExactSocketAndWorkerWithinFourSecondsWith128UnrelatedProcesses(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS kern.procargs2 performance regression")
+	}
+
+	tmpDir := t.TempDir()
+	socketPath := filepath.Join(tmpDir, "project-a.sock")
+	workerID := "worker-owned"
+	pidPath := filepath.Join(tmpDir, "detached.pid")
+	pm := dispatcher.NewOroProcessManager(socketPath, "")
+	productionEnv := append([]string(nil), pm.CmdForWorker(workerID).Env...)
+	pm.SetCmdFactory(func(string) *exec.Cmd {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestExecProcessManagerKillTerminatesDetachedOwnedProcess$") //nolint:gosec // test helper re-executes this binary
+		cmd.Env = append(append([]string(nil), productionEnv...),
+			"ORO_TEST_DETACHED_WORKER_HELPER=1",
+			"ORO_TEST_DETACHED_PID_PATH="+pidPath,
+		)
+		return cmd
+	})
+
+	foreign := make([]*exec.Cmd, 0, 128)
+	for index := range 128 {
+		foreignSocket, foreignWorker := socketPath, workerID
+		if index%2 == 0 {
+			foreignSocket = filepath.Join(tmpDir, "other-project.sock")
+		} else {
+			foreignWorker = "worker-other"
+		}
+		cmd := exec.Command("sleep", "60") //nolint:gosec // controlled test helper
+		cmd.Env = testWorkerOwnershipEnv(os.Environ(), foreignSocket, foreignWorker)
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start unrelated process %d: %v", index, err)
+		}
+		foreign = append(foreign, cmd)
+	}
+	t.Cleanup(func() {
+		for _, cmd := range foreign {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	})
+
+	var ownedDetachedPID int
+	t.Cleanup(func() {
+		if ownedDetachedPID > 1 {
+			_ = syscall.Kill(-ownedDetachedPID, syscall.SIGKILL)
+			_ = syscall.Kill(ownedDetachedPID, syscall.SIGKILL)
+		}
+		_ = pm.Kill(workerID)
+	})
+	if _, err := pm.Spawn(workerID); err != nil {
+		t.Fatalf("spawn managed worker: %v", err)
+	}
+	ownedDetachedPID = waitForDetachedOwnership(t, pidPath, socketPath, workerID)
+
+	started := time.Now()
+	if err := pm.Kill(workerID); err != nil {
+		t.Fatalf("kill managed worker: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 4*time.Second {
+		t.Fatalf("detached scan took %v, want under 4s with 128 unrelated processes", elapsed)
+	}
+	if processAliveForTest(ownedDetachedPID) {
+		t.Fatalf("exact owned detached PID %d survived Kill", ownedDetachedPID)
+	}
+	for index, cmd := range foreign {
+		if !processAliveForTest(cmd.Process.Pid) {
+			t.Fatalf("unrelated process %d (PID %d) was killed", index, cmd.Process.Pid)
 		}
 	}
 }
