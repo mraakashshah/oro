@@ -23,6 +23,92 @@ func TestSchemaExecsCleanly(t *testing.T) {
 	}
 }
 
+func TestReviewCheckpointCanonicalKeyMigration(t *testing.T) {
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	_, err = db.ExecContext(ctx, `CREATE TABLE review_checkpoints (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		bead_id TEXT NOT NULL,
+		origin_assignment_id INTEGER NOT NULL,
+		worktree TEXT NOT NULL,
+		branch TEXT NOT NULL,
+		state TEXT NOT NULL
+	)`)
+	if err != nil {
+		t.Fatalf("create legacy review checkpoints: %v", err)
+	}
+	result, err := db.ExecContext(ctx, `INSERT INTO review_checkpoints
+		(bead_id, origin_assignment_id, worktree, branch, state)
+		VALUES ('oro-legacy', 7, '/tmp/legacy', 'agent/legacy', 'review_running')`)
+	if err != nil {
+		t.Fatalf("insert legacy review checkpoint: %v", err)
+	}
+	legacyID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("legacy checkpoint id: %v", err)
+	}
+
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("first migration: %v", err)
+	}
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("second migration: %v", err)
+	}
+
+	for _, table := range []string{
+		"review_checkpoints",
+		"review_checkpoint_findings",
+		"review_recovery_attempts",
+		"review_quarantine_deliveries",
+	} {
+		assertSQLiteObjectExists(t, db, "table", table)
+	}
+	assertSQLiteObjectExists(t, db, "index", "idx_review_checkpoints_active_key")
+
+	for _, column := range []string{
+		"checkpoint_key", "qg_script_hash", "qg_mode", "review_policy_hash", "triage_revision",
+		"recovery_artifact_path", "recovery_artifact_sha256", "recovery_artifact_bytes",
+		"override_kind", "override_source", "overridden_at",
+	} {
+		var got string
+		if err := db.QueryRowContext(ctx,
+			"SELECT name FROM pragma_table_info('review_checkpoints') WHERE name = ?", column,
+		).Scan(&got); err != nil {
+			t.Errorf("review_checkpoints missing column %q: %v", column, err)
+		}
+	}
+
+	var checkpointKey string
+	if err := db.QueryRowContext(ctx, `SELECT checkpoint_key FROM review_checkpoints WHERE id = ?`, legacyID).Scan(&checkpointKey); err != nil {
+		t.Fatalf("read migrated checkpoint key: %v", err)
+	}
+	if checkpointKey != "legacy-unverified:1" {
+		t.Fatalf("migrated checkpoint key = %q, want deterministic legacy sentinel", checkpointKey)
+	}
+
+	if _, err := db.ExecContext(ctx, `INSERT INTO review_checkpoints (
+		checkpoint_key, bead_id, origin_assignment_id, worktree, branch, target_branch,
+		head_sha, target_sha, acceptance_hash, qg_script_hash, qg_mode,
+		review_policy_hash, triage_revision, ready_attempt, state
+	) VALUES (?, 'oro-duplicate', 8, '/tmp/duplicate', 'agent/duplicate', 'main',
+		'head', 'target', 'acceptance', 'qg', 'default', 'policy', 'triage', 'ready', 'review_running')`, checkpointKey); err == nil {
+		t.Fatal("duplicate active canonical key succeeded, want unique index failure")
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO review_checkpoints (
+		checkpoint_key, bead_id, origin_assignment_id, worktree, branch, target_branch,
+		head_sha, target_sha, acceptance_hash, qg_script_hash, qg_mode,
+		review_policy_hash, triage_revision, ready_attempt, state
+	) VALUES (NULL, 'oro-null', 9, '/tmp/null', 'agent/null', 'main',
+		'head', 'target', 'acceptance', 'qg', 'default', 'policy', 'triage', 'ready', 'review_running')`); err == nil {
+		t.Fatal("nullable canonical key succeeded, want NOT NULL failure")
+	}
+}
+
 func TestSchemaCreatesExpectedTables(t *testing.T) {
 	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {
