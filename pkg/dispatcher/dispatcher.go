@@ -7839,6 +7839,8 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 			d.mu.Unlock()
 		}
 		if completeErr != nil {
+			_ = d.logEvent(ctx, "restart_worker_assignment_completion_failed", "dispatcher", beadID, workerID,
+				fmt.Sprintf(`{"error":%q}`, completeErr.Error()))
 			return "", completeErr
 		}
 		return "", killErr
@@ -7880,15 +7882,15 @@ func (d *Dispatcher) completeRestartAssignment(ctx context.Context, beadID strin
 	if beadID == "" {
 		return nil
 	}
+	if err := d.completeAssignment(ctx, assignmentID, beadID); err != nil {
+		_ = d.logEvent(ctx, "restart_worker_assignment_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
+		return fmt.Errorf("complete restart assignment: %w", err)
+	}
 	if d.shouldReopenBead(ctx, beadID) {
 		if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
 			_ = d.logEvent(ctx, "restart_worker_bead_reset_failed", "dispatcher", beadID, workerID,
 				fmt.Sprintf(`{"error":%q}`, err.Error()))
 		}
-	}
-	if err := d.completeAssignment(ctx, assignmentID, beadID); err != nil {
-		_ = d.logEvent(ctx, "restart_worker_assignment_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
-		return fmt.Errorf("complete restart assignment: %w", err)
 	}
 	d.clearBeadTracking(beadID)
 	_ = d.logEvent(ctx, "restart_worker_assignment_recovered", "dispatcher", beadID, workerID,

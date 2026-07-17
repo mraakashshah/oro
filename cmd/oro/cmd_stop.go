@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"oro/pkg/processenv"
 )
 
 // stopConfig holds injectable dependencies for the graceful shutdown sequence.
@@ -502,22 +504,19 @@ type ResidualProcess struct {
 }
 
 type processSnapshot struct {
-	PID     int
-	PPID    int
-	PGID    int
-	Session int
-	Command string
+	PID         int
+	PPID        int
+	PGID        int
+	Session     int
+	Command     string
+	Environment []string
 }
 
-func defaultOroResidualMarkers(projectName, sockPath string) []string {
-	var markers []string
-	if sockPath != "" {
-		markers = append(markers, "ORO_SOCKET_PATH="+sockPath)
+func defaultOroResidualMarkers(_, sockPath string) []string {
+	if sockPath == "" {
+		return nil
 	}
-	if projectName != "" {
-		markers = append(markers, "ORO_PROJECT="+projectName)
-	}
-	return markers
+	return []string{"ORO_SOCKET_PATH=" + sockPath, "ORO_WORKER_ID="}
 }
 
 // killProcessTree terminates pid's process group and descendants. Missing
@@ -622,8 +621,9 @@ func descendantProcessGroups(pids []int) []int {
 	return groups
 }
 
-// scanOroResidualProcesses returns only processes with Oro ownership evidence:
-// a known project/worktree root in the command line or explicit Oro markers.
+// scanOroResidualProcesses returns only processes with Oro ownership evidence.
+// When explicit markers are available they are authoritative; roots are used
+// only as the legacy fallback when no markers were supplied.
 func scanOroResidualProcesses(ctx context.Context, roots, markers []string) ([]ResidualProcess, error) {
 	snapshots, err := defaultProcessSnapshots(ctx)
 	if err != nil {
@@ -639,7 +639,7 @@ func scanOroResidualProcessSnapshots(snapshots []processSnapshot, roots, markers
 		if proc.PID <= 1 || proc.PID == self {
 			continue
 		}
-		evidence := residualEvidence(proc.Command, roots, markers)
+		evidence := residualEvidence(proc.Command, proc.Environment, roots, markers)
 		if evidence == "" {
 			continue
 		}
@@ -651,11 +651,12 @@ func scanOroResidualProcessSnapshots(snapshots []processSnapshot, roots, markers
 	return residuals
 }
 
-func residualEvidence(command string, roots, markers []string) string {
-	for _, marker := range markers {
-		if marker != "" && commandContainsMarker(command, marker) {
-			return "marker:" + marker
+func residualEvidence(command string, environment, roots, markers []string) string {
+	if len(markers) > 0 {
+		if residualEnvironmentContainsAllMarkers(environment, markers) {
+			return "markers:" + strings.Join(markers, ",")
 		}
+		return ""
 	}
 	for _, root := range roots {
 		if root != "" && commandContainsRoot(command, root) {
@@ -665,19 +666,29 @@ func residualEvidence(command string, roots, markers []string) string {
 	return ""
 }
 
-func commandContainsMarker(command, marker string) bool {
-	for start := 0; ; {
-		idx := strings.Index(command[start:], marker)
-		if idx < 0 {
+func residualEnvironmentContainsAllMarkers(environment, markers []string) bool {
+	for _, marker := range markers {
+		if marker == processenv.WorkerIDEnv+"=" {
+			if !hasNonEmptyEnvironmentValue(environment, processenv.WorkerIDEnv) {
+				return false
+			}
+			continue
+		}
+		if !processenv.CommandContainsAllMarkers(environment, []string{marker}) {
 			return false
 		}
-		idx += start
-		end := idx + len(marker)
-		if commandBoundaryBefore(command, idx) && commandBoundaryAfter(command, end) {
+	}
+	return true
+}
+
+func hasNonEmptyEnvironmentValue(entries []string, key string) bool {
+	prefix := key + "="
+	for _, entry := range entries {
+		if strings.HasPrefix(entry, prefix) && len(entry) > len(prefix) {
 			return true
 		}
-		start = idx + 1
 	}
+	return false
 }
 
 func commandContainsRoot(command, root string) bool {
@@ -703,13 +714,6 @@ func commandBoundaryBefore(s string, idx int) bool {
 	return isCommandBoundary(s[idx-1])
 }
 
-func commandBoundaryAfter(s string, idx int) bool {
-	if idx >= len(s) {
-		return true
-	}
-	return isCommandBoundary(s[idx])
-}
-
 func rootBoundaryAfter(s string, idx int) bool {
 	if idx >= len(s) {
 		return true
@@ -725,12 +729,58 @@ func isCommandBoundary(b byte) bool {
 }
 
 func defaultProcessSnapshots(ctx context.Context) ([]processSnapshot, error) {
-	out, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,ppid=,pgid=,sess=,command=").Output()
+	commandOut, err := exec.CommandContext(ctx, "ps", "axww", "-o", "pid=,ppid=,pgid=,sess=,command=").Output()
 	if err != nil {
-		return nil, fmt.Errorf("list processes: %w", err)
+		return nil, fmt.Errorf("list process commands: %w", err)
 	}
-	var snapshots []processSnapshot
-	for _, line := range strings.Split(string(out), "\n") {
+	return processSnapshotsFromOutputs(ctx, string(commandOut), processenv.ReadEntries)
+}
+
+func processSnapshotsFromOutputs(ctx context.Context, commandOutput string, readEntries func(int) ([]string, error)) ([]processSnapshot, error) {
+	snapshots := parseProcessSnapshots(commandOutput)
+	for index := range snapshots {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("read process environments: %w", err)
+		}
+		entries, err := readEntries(snapshots[index].PID)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("read process environments: %w", ctxErr)
+		}
+		if err != nil {
+			if processDefinitelyExited(ctx, snapshots[index].PID) {
+				continue
+			}
+			if processDefinitelyForeign(ctx, snapshots[index].PID) {
+				continue
+			}
+			return nil, fmt.Errorf("read process environment for pid %d: %w", snapshots[index].PID, err)
+		}
+		snapshots[index].Environment = entries
+	}
+	return snapshots, nil
+}
+
+func processDefinitelyExited(ctx context.Context, pid int) bool {
+	probeErr := syscall.Kill(pid, syscall.Signal(0))
+	if probeErr != nil {
+		return isNoSuchProcess(probeErr)
+	}
+	state, err := exec.CommandContext(ctx, "ps", "-o", "state=", "-p", strconv.Itoa(pid)).Output() //nolint:gosec // pid is numeric process metadata
+	return err == nil && strings.HasPrefix(strings.TrimSpace(string(state)), "Z")
+}
+
+func processDefinitelyForeign(ctx context.Context, pid int) bool {
+	uidOutput, err := exec.CommandContext(ctx, "ps", "-o", "uid=", "-p", strconv.Itoa(pid)).Output() //nolint:gosec // pid is numeric process metadata
+	if err != nil {
+		return false
+	}
+	uid, err := strconv.Atoi(strings.TrimSpace(string(uidOutput)))
+	return err == nil && uid != os.Geteuid()
+}
+
+func parseProcessSnapshots(output string) []processSnapshot {
+	snapshots := make([]processSnapshot, 0)
+	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 5 {
 			continue
@@ -747,7 +797,7 @@ func defaultProcessSnapshots(ctx context.Context) ([]processSnapshot, error) {
 			Command: strings.Join(fields[4:], " "),
 		})
 	}
-	return snapshots, nil
+	return snapshots
 }
 
 func killResidualProcess(ctx context.Context, residuals ...ResidualProcess) error {
