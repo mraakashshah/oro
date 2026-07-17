@@ -133,7 +133,7 @@ func TestEvaluateRecoveryQuarantineOpenIsUnsafe(t *testing.T) {
 	}
 }
 
-func TestLoadRecoveryQuarantineMetricsIgnoresHumanOwned(t *testing.T) {
+func TestLoadRecoveryQuarantineMetricsIncludesHumanOwned(t *testing.T) {
 	ctx := context.Background()
 	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
@@ -144,8 +144,11 @@ func TestLoadRecoveryQuarantineMetricsIgnoresHumanOwned(t *testing.T) {
 		t.Fatalf("schema: %v", err)
 	}
 	if _, err := db.ExecContext(ctx, `
-INSERT INTO recovery_quarantines (bead_id, reason, details, status, resolved_at)
-VALUES ('oro-human-owned', 'unsafe_stale_branch', 'operator owns branch', 'human_owned', datetime('now'));
+INSERT INTO recovery_quarantines (bead_id, reason, details, status)
+VALUES
+    ('oro-open', 'unsafe_stale_branch', 'assignment filtering blocks this row', 'open'),
+    ('oro-human-owned', 'unsafe_stale_branch', 'assignment filtering blocks this row', 'human_owned'),
+    ('oro-resolved', 'unsafe_stale_branch', 'resolved rows do not block assignment', 'resolved');
 `); err != nil {
 		t.Fatalf("seed recovery quarantine: %v", err)
 	}
@@ -154,8 +157,20 @@ VALUES ('oro-human-owned', 'unsafe_stale_branch', 'operator owns branch', 'human
 	if err != nil {
 		t.Fatalf("LoadRecoveryQuarantineMetrics: %v", err)
 	}
-	if got != 0 {
-		t.Fatalf("open recovery quarantines = %d, want 0", got)
+	if got != 2 {
+		t.Fatalf("open recovery quarantines = %d, want 2", got)
+	}
+
+	health := Evaluate(Snapshot{
+		DaemonRunning:           true,
+		DispatcherState:         "running",
+		OpenRecoveryQuarantines: got,
+	})
+	if health.State == StateHealthy {
+		t.Fatalf("state = %q, want non-healthy while recovery quarantines block assignment", health.State)
+	}
+	if !hasFinding(health, FindingRecoveryQuarantineOpen) {
+		t.Fatalf("missing recovery quarantine finding in %+v", health.Findings)
 	}
 }
 

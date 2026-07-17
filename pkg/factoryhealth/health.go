@@ -631,12 +631,12 @@ SELECT i.fingerprint
 	return topFingerprints, nil
 }
 
-// LoadRecoveryQuarantineMetrics reads open recovery quarantine counts from the state database.
+// LoadRecoveryQuarantineMetrics reads assignment-blocking recovery quarantine counts from the state database.
 func LoadRecoveryQuarantineMetrics(ctx context.Context, db *sql.DB) (openQuarantines int, err error) {
 	if db == nil {
 		return 0, nil
 	}
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_quarantines WHERE status='open'`).Scan(&openQuarantines); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_quarantines WHERE status IN ('open', 'human_owned')`).Scan(&openQuarantines); err != nil {
 		if tableMissing(err) {
 			return 0, nil
 		}
