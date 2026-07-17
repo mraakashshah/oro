@@ -2,10 +2,11 @@ package ops
 
 import (
 	"fmt"
-	"oro/pkg/reviewcontract"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"oro/pkg/reviewcontract"
 )
 
 // PromptManifest records the file line ranges included in a review prompt.

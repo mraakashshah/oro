@@ -4,9 +4,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"oro/pkg/reviewcontract"
 	"sort"
 	"strings"
+
+	"oro/pkg/reviewcontract"
 )
 
 // Severity mirrors the shared review contract vocabulary.
