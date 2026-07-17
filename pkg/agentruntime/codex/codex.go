@@ -84,7 +84,7 @@ func (s *WorkerSpawner) Spawn(ctx context.Context, model, prompt, workdir string
 // SpawnWithReasoning starts Codex with an optional model reasoning effort.
 func (s *WorkerSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning, prompt, workdir string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
 	assembledPrompt := strings.ToValidUTF8(BuildBootstrapPrompt(prompt, workdir), "�")
-	cmd := exec.CommandContext(ctx, s.binary(), buildWorkerExecArgsWithReasoning(model, reasoning, assembledPrompt, workdir)...) //nolint:gosec // args built internally
+	cmd := exec.CommandContext(ctx, s.binary(), buildWorkerExecArgsWithReasoning(model, reasoning, workdir)...) //nolint:gosec // args built internally
 	cmd.Dir = workdir
 	stderrTail := worker.NewLineTailBuffer(100)
 	cmd.Stderr = io.MultiWriter(os.Stderr, stderrTail)
@@ -129,7 +129,7 @@ func buildExecArgsWithReasoning(model, reasoning, prompt string) []string {
 	return args
 }
 
-func buildWorkerExecArgsWithReasoning(model, reasoning, _ string, workdir string) []string {
+func buildWorkerExecArgsWithReasoning(model, reasoning, workdir string) []string {
 	args := buildExecArgPrefixWithSandbox(model, reasoning, "danger-full-access")
 	if gitCommonDir := resolveGitCommonDir(workdir); gitCommonDir != "" {
 		args = append(args, "--add-dir", gitCommonDir)
