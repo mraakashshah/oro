@@ -8,11 +8,14 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"oro/pkg/cards"
 	"oro/pkg/langprofile"
 	"oro/pkg/protocol"
 )
+
+const maxDeckViewBytes = 256 * 1024
 
 // PromptParams contains all inputs needed to assemble the 12-section worker prompt.
 type PromptParams struct {
@@ -59,21 +62,79 @@ func cardsBody(rc cards.RelevantCards) string {
 	for _, c := range rc.Inlined {
 		inlinedIDs[c.ID] = true
 	}
-	var deckOnly []cards.DeckCard
+	deckOnlyCount := 0
 	for _, c := range rc.Deck {
 		if !inlinedIDs[c.ID] {
-			deckOnly = append(deckOnly, c)
+			deckOnlyCount++
 		}
 	}
-	if len(deckOnly) > 0 {
-		b.WriteString("=== Cards (deck view) ===\n\n")
-		for _, c := range deckOnly {
-			fmt.Fprintf(&b, "[%-8s] %-40s score %.1f   id %s\n%s\n", string(c.Type), c.Title, c.Score, c.ID, c.BodySummary)
-		}
-		b.WriteString("\nTo see full body of any card: `oro cards show <id>`\n")
+	if deckOnlyCount > 0 {
+		b.WriteString(boundedDeckView(rc.Deck, inlinedIDs, deckOnlyCount))
 	}
 
 	return b.String()
+}
+
+func boundedDeckView(deck []cards.DeckCard, inlinedIDs map[string]bool, deckOnlyCount int) string {
+	const header = "=== Cards (deck view) ===\n\n"
+
+	var b strings.Builder
+	b.WriteString(header)
+	rendered := 0
+	for _, c := range deck {
+		if inlinedIDs[c.ID] {
+			continue
+		}
+
+		suffix := deckViewSuffix(deckOnlyCount - rendered - 1)
+		available := maxDeckViewBytes - b.Len() - len(suffix)
+		prefix := fmt.Sprintf("[%-8s] %-40s score %.1f   id %s\n", string(c.Type), c.Title, c.Score, c.ID)
+		if available < len(prefix)+1 {
+			break
+		}
+		if len(prefix)+len(c.BodySummary)+1 <= available {
+			b.WriteString(prefix)
+			b.WriteString(c.BodySummary)
+			b.WriteByte('\n')
+			rendered++
+			continue
+		}
+
+		b.WriteString(prefix)
+		b.WriteString(truncateUTF8(c.BodySummary, available-len(prefix)-1))
+		b.WriteByte('\n')
+		rendered++
+		break
+	}
+	b.WriteString(deckViewSuffix(deckOnlyCount - rendered))
+	return b.String()
+}
+
+func deckViewSuffix(omitted int) string {
+	var b strings.Builder
+	if omitted > 0 {
+		fmt.Fprintf(&b, "\n%d deck cards omitted due to prompt size limit.\n", omitted)
+	}
+	b.WriteString("\nTo see full body of any card: `oro cards show <id>`\n")
+	return b.String()
+}
+
+func truncateUTF8(value string, maxBytes int) string {
+	if len(value) <= maxBytes {
+		return value
+	}
+	if maxBytes <= 0 {
+		return ""
+	}
+	const ellipsis = "…"
+	if maxBytes < len(ellipsis) {
+		return ""
+	}
+	end := maxBytes - len(ellipsis)
+	for end > 0 && !utf8.RuneStart(value[end]) {
+		end--
+	}
+	return value[:end] + ellipsis
 }
 
 // AssemblePrompt builds the complete 12-section worker prompt from task details

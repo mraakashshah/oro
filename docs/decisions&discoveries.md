@@ -235,3 +235,10 @@ Hook inventory (same in both files):
 **Context:** Adversarial review (R4) of the cleanliness-roles design caught the spec's epic acceptance `Cmd:` being silently destroyed: `parseAcceptanceCmd` (dispatcher.go:3437) splits single-line ACs on every `|`, so `Cmd: go test -run 'Janitor|Audit' ... | grep -q ...` truncates to `go test -run 'Janitor` — unterminated quote, permanent sh failure, endless DiagnoseEpicFailure churn against a working feature.
 **Decision/Discovery:** (1) Inline acceptance fields are now split only at unquoted pipes followed by a known field label, preserving quoted regex alternation and bare shell pipelines in `Cmd:`. Unterminated quotes are rejected explicitly instead of producing a truncated command; line-per-field extraction remains supported. (2) Bare `cmd | grep` pipelines in ACs still swallow the left command's exit code because `sh -c` does not enable `pipefail` — use `cmd > log 2>&1 && grep -q ... log` instead.
 **Implications:** Inline and line-per-field ACs can both contain quoted regex pipes without truncation. Prefer line-per-field form for readability, and avoid bare verification pipelines when the left command's exit status matters.
+
+## 2026-07-17: Bound deck-view prompt context
+
+**Tags:** #worker #prompt #cards
+**Context:** A standalone worker may receive thousands of ranked deck cards, exceeding command and model input limits before it starts.
+**Decision:** Keep inline cards intact and cap only deck-view rendering at 256 KiB, retaining the ranked prefix, a rune-safe clipped final summary when needed, and an explicit omitted-card count.
+**Implications:** Deck-card input may grow without growing worker prompts unboundedly; workers can still retrieve omitted cards with `oro cards show`.
