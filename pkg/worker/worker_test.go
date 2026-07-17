@@ -1015,7 +1015,7 @@ test -z "${ORO_QG_LOCK_TIMEOUT_SECONDS:-}"
 	}
 }
 
-func TestRunQualityGate_ScrubsInheritedQualityGateLock(t *testing.T) {
+func TestRunQualityGate_PreservesInheritedQualityGateLock(t *testing.T) {
 	t.Setenv("ORO_QG_INHERITED_LOCK_DIR", "/tmp/inherited-quality-gate-lock")
 	t.Setenv("ORO_QG_INHERITED_LOCK_TOKEN", "inherited-token")
 
@@ -1023,8 +1023,8 @@ func TestRunQualityGate_ScrubsInheritedQualityGateLock(t *testing.T) {
 	script := filepath.Join(tmpDir, "quality_gate.sh")
 	if err := os.WriteFile(script, []byte(`#!/usr/bin/env bash
 set -euo pipefail
-test -z "${ORO_QG_INHERITED_LOCK_DIR:-}"
-test -z "${ORO_QG_INHERITED_LOCK_TOKEN:-}"
+test "${ORO_QG_INHERITED_LOCK_DIR:-}" = "/tmp/inherited-quality-gate-lock"
+test "${ORO_QG_INHERITED_LOCK_TOKEN:-}" = "inherited-token"
 `), 0o600); err != nil { //nolint:gosec // test file
 		t.Fatal(err)
 	}
@@ -1037,7 +1037,7 @@ test -z "${ORO_QG_INHERITED_LOCK_TOKEN:-}"
 		t.Fatalf("RunQualityGate: %v", err)
 	}
 	if !passed {
-		t.Fatalf("expected quality gate to pass without inherited lock state, output: %s", output)
+		t.Fatalf("expected quality gate to pass with inherited lock state, output: %s", output)
 	}
 }
 
@@ -2074,6 +2074,99 @@ func TestGracefulShutdown(t *testing.T) { //nolint:funlen // integration test re
 	case <-time.After(2 * time.Second):
 		t.Fatal("worker did not exit after graceful shutdown")
 	}
+}
+
+func TestWorkerHandlesPreempt(t *testing.T) {
+	t.Run("busy worker saves handoff, kills subprocess, and exits", func(t *testing.T) {
+		spawner := newMockSpawner()
+		dispatcherConn, workerConn := net.Pipe()
+		defer func() { _ = dispatcherConn.Close() }()
+
+		w := worker.NewWithConn("w-preempt-busy", workerConn, spawner)
+		errCh := startWorkerRun(t.Context(), t, w, dispatcherConn)
+
+		sendMessage(t, dispatcherConn, protocol.Message{
+			Type: protocol.MsgAssign,
+			Assign: &protocol.AssignPayload{
+				BeadID:   "bead-preempt",
+				Worktree: validAssignWorktree(t, "preempt-busy"),
+			},
+		})
+		_ = readMessage(t, dispatcherConn) // drain STATUS
+
+		sendMessage(t, dispatcherConn, protocol.Message{Type: protocol.MsgPreempt})
+		msg := readMessage(t, dispatcherConn)
+		if msg.Type != protocol.MsgHandoff {
+			t.Fatalf("expected HANDOFF, got %s", msg.Type)
+		}
+		if msg.Handoff == nil || msg.Handoff.BeadID != "bead-preempt" {
+			t.Fatalf("expected handoff for bead-preempt, got %+v", msg.Handoff)
+		}
+
+		waitFor(t, spawner.process.Killed, 200*time.Millisecond)
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("expected clean worker exit, got %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("worker did not exit after PREEMPT")
+		}
+	})
+
+	t.Run("idle worker exits cleanly", func(t *testing.T) {
+		spawner := newMockSpawner()
+		dispatcherConn, workerConn := net.Pipe()
+		defer func() { _ = dispatcherConn.Close() }()
+
+		w := worker.NewWithConn("w-preempt-idle", workerConn, spawner)
+		errCh := startWorkerRun(t.Context(), t, w, dispatcherConn)
+
+		sendMessage(t, dispatcherConn, protocol.Message{Type: protocol.MsgPreempt})
+		msg := readMessage(t, dispatcherConn)
+		if msg.Type != protocol.MsgHandoff {
+			t.Fatalf("expected HANDOFF, got %s", msg.Type)
+		}
+
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("expected clean worker exit, got %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("idle worker did not exit after PREEMPT")
+		}
+	})
+
+	t.Run("handoff failure still kills subprocess and exits", func(t *testing.T) {
+		spawner := newMockSpawner()
+		dispatcherConn, workerConn := net.Pipe()
+
+		w := worker.NewWithConn("w-preempt-handoff-failure", workerConn, spawner)
+		errCh := startWorkerRun(t.Context(), t, w, dispatcherConn)
+
+		sendMessage(t, dispatcherConn, protocol.Message{
+			Type: protocol.MsgAssign,
+			Assign: &protocol.AssignPayload{
+				BeadID:   "bead-preempt-handoff-failure",
+				Worktree: validAssignWorktree(t, "preempt-handoff-failure"),
+			},
+		})
+		_ = readMessage(t, dispatcherConn) // drain STATUS
+
+		sendMessage(t, dispatcherConn, protocol.Message{Type: protocol.MsgPreempt})
+		_ = dispatcherConn.Close()
+
+		waitFor(t, spawner.process.Killed, 200*time.Millisecond)
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("expected clean worker exit, got %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("worker did not exit after failed PREEMPT handoff")
+		}
+	})
 }
 
 func TestGracefulShutdown_NilPayload(t *testing.T) {

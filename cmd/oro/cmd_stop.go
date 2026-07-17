@@ -746,11 +746,36 @@ func processSnapshotsFromOutputs(ctx context.Context, commandOutput string, read
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, fmt.Errorf("read process environments: %w", ctxErr)
 		}
-		if err == nil {
-			snapshots[index].Environment = entries
+		if err != nil {
+			if processDefinitelyExited(ctx, snapshots[index].PID) {
+				continue
+			}
+			if processDefinitelyForeign(ctx, snapshots[index].PID) {
+				continue
+			}
+			return nil, fmt.Errorf("read process environment for pid %d: %w", snapshots[index].PID, err)
 		}
+		snapshots[index].Environment = entries
 	}
 	return snapshots, nil
+}
+
+func processDefinitelyExited(ctx context.Context, pid int) bool {
+	probeErr := syscall.Kill(pid, syscall.Signal(0))
+	if probeErr != nil {
+		return isNoSuchProcess(probeErr)
+	}
+	state, err := exec.CommandContext(ctx, "ps", "-o", "state=", "-p", strconv.Itoa(pid)).Output() //nolint:gosec // pid is numeric process metadata
+	return err == nil && strings.HasPrefix(strings.TrimSpace(string(state)), "Z")
+}
+
+func processDefinitelyForeign(ctx context.Context, pid int) bool {
+	uidOutput, err := exec.CommandContext(ctx, "ps", "-o", "uid=", "-p", strconv.Itoa(pid)).Output() //nolint:gosec // pid is numeric process metadata
+	if err != nil {
+		return false
+	}
+	uid, err := strconv.Atoi(strings.TrimSpace(string(uidOutput)))
+	return err == nil && uid != os.Geteuid()
 }
 
 func parseProcessSnapshots(output string) []processSnapshot {

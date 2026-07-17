@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -499,6 +500,21 @@ func TestProcessSnapshotsFromOutputsHonorsContext(t *testing.T) {
 	}
 	if got, want := reads, []int{2201}; !slices.Equal(got, want) {
 		t.Fatalf("environment reads = %v, want no reads after cancellation %v", got, want)
+	}
+}
+
+func TestProcessSnapshotsFromOutputsPropagatesLiveReadFailure(t *testing.T) {
+	readErr := errors.New("read live process environment")
+	output := strconv.Itoa(os.Getpid()) + " 1 1 1 live-process\n"
+
+	snapshots, err := processSnapshotsFromOutputs(context.Background(), output, func(int) ([]string, error) {
+		return nil, readErr
+	})
+	if !errors.Is(err, readErr) {
+		t.Fatalf("processSnapshotsFromOutputs error = %v, want wrapped live-read failure", err)
+	}
+	if snapshots != nil {
+		t.Fatalf("processSnapshotsFromOutputs snapshots = %#v, want no false-success result", snapshots)
 	}
 }
 

@@ -116,7 +116,7 @@ func inspectProcessEnvironmentsWithReader(
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, fmt.Errorf("inspect process environments: %w", ctxErr)
 			}
-			if allOwnedProcessesExited(batch) {
+			if allOwnedProcessesExited(ctx, batch) {
 				continue
 			}
 			return nil, fmt.Errorf("inspect process environments: %w", err)
@@ -127,14 +127,31 @@ func inspectProcessEnvironmentsWithReader(
 }
 
 func readProcessEnvironmentSnapshots(ctx context.Context, processes []OwnedProcess) (processEnvironmentSnapshots, error) {
+	return readProcessEnvironmentSnapshotsWithReader(ctx, processes, processenv.ReadEntries)
+}
+
+func readProcessEnvironmentSnapshotsWithReader(
+	ctx context.Context,
+	processes []OwnedProcess,
+	readEntries func(int) ([]string, error),
+) (processEnvironmentSnapshots, error) {
 	environments := make(map[int][]string, len(processes))
 	for _, process := range processes {
 		if err := ctx.Err(); err != nil {
 			return processEnvironmentSnapshots{}, fmt.Errorf("read process environment entries: %w", err)
 		}
-		entries, err := processenv.ReadEntries(process.PID)
+		entries, err := readEntries(process.PID)
 		if err != nil {
-			continue
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return processEnvironmentSnapshots{}, fmt.Errorf("read process environment entries: %w", ctxErr)
+			}
+			if allOwnedProcessesExited(ctx, []OwnedProcess{process}) {
+				continue
+			}
+			if ownedProcessDefinitelyForeign(ctx, process.PID) {
+				continue
+			}
+			return processEnvironmentSnapshots{}, fmt.Errorf("read process environment entries for pid %d: %w", process.PID, err)
 		}
 		if len(entries) > 0 {
 			environments[process.PID] = entries
@@ -219,7 +236,7 @@ func waitForOwnedProcesses(ctx context.Context, processes []OwnedProcess, timeou
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if allOwnedProcessesExited(processes) {
+		if allOwnedProcessesExited(ctx, processes) {
 			return true
 		}
 		select {
@@ -232,11 +249,28 @@ func waitForOwnedProcesses(ctx context.Context, processes []OwnedProcess, timeou
 	}
 }
 
-func allOwnedProcessesExited(processes []OwnedProcess) bool {
+func allOwnedProcessesExited(ctx context.Context, processes []OwnedProcess) bool {
 	for _, process := range processes {
-		if err := syscall.Kill(process.PID, syscall.Signal(0)); err == nil || !errors.Is(err, syscall.ESRCH) {
+		if !ownedProcessExited(ctx, process.PID) {
 			return false
 		}
 	}
 	return true
+}
+
+func ownedProcessExited(ctx context.Context, pid int) bool {
+	if err := syscall.Kill(pid, syscall.Signal(0)); err != nil {
+		return errors.Is(err, syscall.ESRCH)
+	}
+	state, err := exec.CommandContext(ctx, "ps", "-o", "state=", "-p", strconv.Itoa(pid)).Output() //nolint:gosec // pid is numeric process metadata
+	return err == nil && strings.HasPrefix(strings.TrimSpace(string(state)), "Z")
+}
+
+func ownedProcessDefinitelyForeign(ctx context.Context, pid int) bool {
+	uidOutput, err := exec.CommandContext(ctx, "ps", "-o", "uid=", "-p", strconv.Itoa(pid)).Output() //nolint:gosec // pid is numeric process metadata
+	if err != nil {
+		return false
+	}
+	uid, err := strconv.Atoi(strings.TrimSpace(string(uidOutput)))
+	return err == nil && uid != os.Geteuid()
 }

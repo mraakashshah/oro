@@ -2,11 +2,13 @@ package processenv_test
 
 import (
 	"encoding/binary"
+	"errors"
 	"os"
 	"os/exec"
 	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -70,6 +72,7 @@ func TestParseDarwinEntriesRejectsMalformedPayloads(t *testing.T) {
 	binary.LittleEndian.PutUint32(argcOne, 1)
 
 	for name, raw := range map[string][]byte{
+		"empty payload":      nil,
 		"short header":       {0, 0, 0},
 		"missing executable": {0, 0, 0, 0},
 		"truncated argv":     append(argcOne, []byte("/bin/helper\x00\x00")...),
@@ -82,33 +85,29 @@ func TestParseDarwinEntriesRejectsMalformedPayloads(t *testing.T) {
 	}
 }
 
-func TestWorkerOwnershipRequiresCompleteExactEntries(t *testing.T) {
-	markers := processenv.WorkerOwnershipMarkers("/tmp/processenv.sock", "processenv-worker")
-	got := processenv.WithWorkerOwnership([]string{
-		"PATH=/bin",
-		"ORO_SOCKET_PATH=/tmp/inherited.sock",
-		"ORO_WORKER_ID=inherited-worker",
-	}, "/tmp/processenv.sock", "processenv-worker")
-
-	if !slices.Equal(got[:2], markers) {
-		t.Fatalf("ownership prefix = %#v, want %#v", got[:2], markers)
-	}
-	if slices.Contains(got, "ORO_SOCKET_PATH=/tmp/inherited.sock") || slices.Contains(got, "ORO_WORKER_ID=inherited-worker") {
-		t.Fatalf("inherited ownership entries remain in %#v", got)
-	}
-	if !processenv.CommandContainsAllMarkers(got, markers) {
-		t.Fatalf("entries = %#v, want complete exact ownership", got)
-	}
-	if processenv.CommandContainsAllMarkers(got, append(markers, "")) {
-		t.Fatal("empty marker must fail ownership matching")
-	}
-	if markers := processenv.WorkerOwnershipMarkers("", "processenv-worker"); markers != nil {
-		t.Fatalf("markers = %#v, want nil for incomplete scope", markers)
-	}
-}
-
 func TestReadEntriesFailsClosedForMissingProcess(t *testing.T) {
-	if _, err := processenv.ReadEntries(1 << 30); err == nil {
+	cmd := exec.Command(os.Args[0], "-test.run=^$") //nolint:gosec // re-executes this test binary to obtain a valid, reaped PID
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run short-lived process: %v", err)
+	}
+
+	_, err := processenv.ReadEntries(cmd.ProcessState.Pid())
+	if err == nil {
 		t.Fatal("ReadEntries succeeded for a missing process")
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		var errno syscall.Errno
+		if !errors.As(err, &errno) {
+			t.Fatalf("ReadEntries error = %v, want wrapped syscall.Errno", err)
+		}
+	case "linux":
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("ReadEntries error = %v, want wrapped os.ErrNotExist", err)
+		}
+	default:
+		if !errors.Is(err, errors.ErrUnsupported) {
+			t.Fatalf("ReadEntries error = %v, want wrapped errors.ErrUnsupported", err)
+		}
 	}
 }

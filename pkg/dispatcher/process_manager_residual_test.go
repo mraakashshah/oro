@@ -240,3 +240,18 @@ func TestInspectProcessEnvironmentsHonorsInFlightDeadline(t *testing.T) {
 		t.Fatalf("inspect process environments error = %v, want deadline exceeded", err)
 	}
 }
+
+func TestReadProcessEnvironmentSnapshotsPropagatesLiveReadFailure(t *testing.T) {
+	readErr := errors.New("read live process environment")
+	processes := []OwnedProcess{{PID: os.Getpid(), PGID: os.Getpid()}}
+
+	snapshots, err := readProcessEnvironmentSnapshotsWithReader(context.Background(), processes, func(int) ([]string, error) {
+		return nil, readErr
+	})
+	if !errors.Is(err, readErr) {
+		t.Fatalf("readProcessEnvironmentSnapshots error = %v, want wrapped live-read failure", err)
+	}
+	if snapshots.environments != nil {
+		t.Fatalf("readProcessEnvironmentSnapshots environments = %#v, want no false-success result", snapshots.environments)
+	}
+}

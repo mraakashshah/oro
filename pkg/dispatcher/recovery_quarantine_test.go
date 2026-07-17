@@ -786,6 +786,108 @@ VALUES (?, 'disconnected-worker', ?, ?, 'stale_active_assignment', 'preserved cl
 	}
 }
 
+func TestOfflineRequeuePreservedRedeploy(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const beadID = "oro-offline-requeue"
+	const worktree = "/tmp/worktree-oro-offline-requeue"
+
+	bead := protocol.Bead{
+		ID:       beadID,
+		Title:    "redeploy preserved offline work",
+		Status:   "open",
+		Priority: 1,
+		Type:     "task",
+	}
+	beadSrc.SetBeads([]protocol.Bead{bead})
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              bead.Title,
+		Status:             "open",
+		Type:               "task",
+		AcceptanceCriteria: "Test: preserved work | Cmd: true | Assert: pass",
+	}
+	beadSrc.mu.Unlock()
+
+	assignment, err := d.db.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree, status)
+VALUES (?, 'offline-worker', ?, 'requeued')`, beadID, worktree)
+	if err != nil {
+		t.Fatalf("insert requeued preserved assignment: %v", err)
+	}
+	assignmentID, err := assignment.LastInsertId()
+	if err != nil {
+		t.Fatalf("preserved assignment ID: %v", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `
+INSERT INTO recovery_quarantines (bead_id, assignment_id, worker_id, worktree, branch, reason, details, status, resolved_at)
+VALUES (?, ?, 'offline-worker', ?, ?, 'stale_active_assignment', 'requeued preserved attempt', 'resolved', datetime('now'))`,
+		beadID, assignmentID, worktree, protocol.BranchPrefix+beadID); err != nil {
+		t.Fatalf("insert resolved preserved quarantine: %v", err)
+	}
+
+	wtMgr.existsFn = func(_ context.Context, path string) bool { return path == worktree }
+	wtMgr.currentBranchFn = func(_ context.Context, path string) (string, error) {
+		if path != worktree {
+			return "", fmt.Errorf("unexpected worktree %q", path)
+		}
+		return protocol.BranchPrefix + beadID, nil
+	}
+	wtMgr.prepareReuseFn = func(_ context.Context, path, branch, base string) (bool, error) {
+		if path != worktree || branch != protocol.BranchPrefix+beadID || base != "main" {
+			t.Fatalf("reuse preparation = path %q branch %q base %q", path, branch, base)
+		}
+		return false, nil
+	}
+	d.shutdownRunner = &mockCommandRunner{callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "git" && strings.Join(args, " ") == "-C "+worktree+" status --porcelain" {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("unexpected command: %s %s", name, strings.Join(args, " "))
+	}}
+
+	conn := newMockConn()
+	w := &trackedWorker{id: "fresh-worker", conn: conn, state: protocol.WorkerIdle, encoder: json.NewEncoder(conn)}
+	d.mu.Lock()
+	d.state = StateRunning
+	d.workers[w.id] = w
+	// Simulate a new dispatcher process: durable recovery state survives while
+	// the in-memory worktree mapping does not.
+	d.worktreeByBead = make(map[string]string)
+	d.mu.Unlock()
+
+	d.tryAssign(ctx)
+
+	state, assigned, ok := d.WorkerInfo(w.id)
+	if !ok || state != protocol.WorkerBusy || assigned != beadID {
+		t.Fatalf("worker assignment = exists %t state %q bead %q, want busy on %q", ok, state, assigned, beadID)
+	}
+	d.mu.Lock()
+	gotWorktree := d.workers[w.id].worktree
+	d.mu.Unlock()
+	if gotWorktree != worktree {
+		t.Fatalf("worker worktree = %q, want preserved %q", gotWorktree, worktree)
+	}
+	wtMgr.mu.Lock()
+	created := len(wtMgr.created)
+	deleted := len(wtMgr.deletedBranches)
+	wtMgr.mu.Unlock()
+	if created != 0 {
+		t.Fatalf("created %d fresh worktrees, want preserved worktree reuse", created)
+	}
+	if deleted != 0 {
+		t.Fatalf("deleted %d stale agent branches, want no stale cleanup", deleted)
+	}
+	var quarantines int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_quarantines WHERE bead_id=?`, beadID).Scan(&quarantines); err != nil {
+		t.Fatalf("count recovery quarantines: %v", err)
+	}
+	if quarantines != 1 {
+		t.Fatalf("recovery quarantine rows = %d, want original resolved row only", quarantines)
+	}
+}
+
 func TestFilterAssignableSkipsHumanOwnedRecoveryWork(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()

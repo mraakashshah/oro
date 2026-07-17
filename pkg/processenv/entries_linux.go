@@ -12,7 +12,7 @@ import (
 func ReadEntries(pid int) ([]string, error) {
 	contents, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read process environment for pid %d: %w", pid, err)
 	}
 	return splitNULDelimitedEntries(contents), nil
 }
