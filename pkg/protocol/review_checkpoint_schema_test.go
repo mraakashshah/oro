@@ -61,7 +61,7 @@ func TestReviewCheckpointCanonicalKeyMigration(t *testing.T) {
 		"review_quarantine_deliveries": {"checkpoint_id", "scheduled_at", "delivered_at", "sink"},
 	} {
 		assertSQLiteObjectExists(t, db, "table", table)
-		assertSQLiteTableColumns(t, ctx, db, table, columns)
+		assertSQLiteTableColumns(ctx, t, db, table, columns)
 	}
 	assertSQLiteObjectExists(t, db, "index", "idx_review_checkpoints_active_key")
 
@@ -154,13 +154,13 @@ func TestReviewCheckpointCanonicalKeyMigration(t *testing.T) {
 	if err := protocol.MigrateBeadSchema(ctx, partialDB); err != nil {
 		t.Fatalf("second partial migration: %v", err)
 	}
-	assertSQLiteTableColumns(t, ctx, partialDB, "review_checkpoints", []string{"recovery_artifact_path"})
+	assertSQLiteTableColumns(ctx, t, partialDB, "review_checkpoints", []string{"recovery_artifact_path"})
 	for table, columns := range map[string][]string{
 		"review_checkpoint_findings":   {"checkpoint_id", "finding_id", "severity", "file", "line", "contract_impact", "required_action", "compact_json"},
 		"review_recovery_attempts":     {"id", "checkpoint_id", "failure_fingerprint", "idempotency_key", "strategy", "action_json", "status", "proof_json", "started_at", "completed_at"},
 		"review_quarantine_deliveries": {"checkpoint_id", "scheduled_at", "delivered_at", "sink"},
 	} {
-		assertSQLiteTableColumns(t, ctx, partialDB, table, columns)
+		assertSQLiteTableColumns(ctx, t, partialDB, table, columns)
 	}
 	for table := range map[string]struct{}{
 		"review_checkpoint_findings":   {},
@@ -191,7 +191,7 @@ func TestReviewCheckpointCanonicalKeyMigration(t *testing.T) {
 	}
 }
 
-func assertSQLiteTableColumns(t *testing.T, ctx context.Context, db *sql.DB, table string, columns []string) {
+func assertSQLiteTableColumns(ctx context.Context, t *testing.T, db *sql.DB, table string, columns []string) {
 	t.Helper()
 	for _, column := range columns {
 		var got string

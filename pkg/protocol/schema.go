@@ -818,46 +818,64 @@ func reviewCheckpointChildCopyExpression(table, column string, columns map[strin
 	}
 	switch table {
 	case "review_checkpoint_findings":
-		switch column {
-		case "finding_id":
-			return `'legacy-finding:' || rowid`
-		case "severity":
-			return `'unknown'`
-		case "file", "contract_impact", "required_action":
-			return `''`
-		case "compact_json":
-			return `'{}'`
-		}
+		return reviewCheckpointFindingCopyExpression(column)
 	case "review_recovery_attempts":
-		switch column {
-		case "id":
-			return "rowid"
-		case "checkpoint_id":
-			return "0"
-		case "failure_fingerprint":
-			return `''`
-		case "idempotency_key":
-			return `'legacy-recovery:' || rowid`
-		case "strategy":
-			return `'legacy'`
-		case "action_json", "proof_json":
-			return `'{}'`
-		case "status":
-			return `'failed'`
-		case "started_at":
-			return "datetime('now')"
-		}
+		return reviewRecoveryAttemptCopyExpression(column)
 	case "review_quarantine_deliveries":
-		switch column {
-		case "checkpoint_id":
-			return "0"
-		case "scheduled_at":
-			return "datetime('now') || ':' || rowid"
-		case "sink":
-			return `'legacy'`
-		}
+		return reviewQuarantineDeliveryCopyExpression(column)
 	}
 	return "NULL"
+}
+
+func reviewCheckpointFindingCopyExpression(column string) string {
+	switch column {
+	case "finding_id":
+		return `'legacy-finding:' || rowid`
+	case "severity":
+		return `'unknown'`
+	case "file", "contract_impact", "required_action":
+		return `''`
+	case "compact_json":
+		return `'{}'`
+	default:
+		return "NULL"
+	}
+}
+
+func reviewRecoveryAttemptCopyExpression(column string) string {
+	switch column {
+	case "id":
+		return "rowid"
+	case "checkpoint_id":
+		return "0"
+	case "failure_fingerprint":
+		return `''`
+	case "idempotency_key":
+		return `'legacy-recovery:' || rowid`
+	case "strategy":
+		return `'legacy'`
+	case "action_json", "proof_json":
+		return `'{}'`
+	case "status":
+		return `'failed'`
+	case "started_at":
+		return "datetime('now')"
+	default:
+		return "NULL"
+	}
+}
+
+func reviewQuarantineDeliveryCopyExpression(column string) string {
+	switch column {
+	case "checkpoint_id":
+		return "0"
+	case "scheduled_at":
+		return "datetime('now') || ':' || rowid"
+	case "sink":
+		return `'legacy'`
+	default:
+		return "NULL"
+	}
 }
 
 func sqliteTableColumns(ctx context.Context, db *sql.DB, table string) (columns map[string]bool, exists bool, err error) {
