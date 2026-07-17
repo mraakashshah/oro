@@ -328,7 +328,9 @@ const reviewCheckpointSchemaDDL = reviewCheckpointTableDDL + `
 CREATE UNIQUE INDEX IF NOT EXISTS idx_review_checkpoints_active_key
 ON review_checkpoints(checkpoint_key)
 WHERE state <> 'superseded';
+` + reviewCheckpointFindingsTableDDL + reviewRecoveryAttemptsTableDDL + reviewQuarantineDeliveriesTableDDL
 
+const reviewCheckpointFindingsTableDDL = `
 CREATE TABLE IF NOT EXISTS review_checkpoint_findings (
     checkpoint_id INTEGER NOT NULL,
     finding_id TEXT NOT NULL,
@@ -339,8 +341,9 @@ CREATE TABLE IF NOT EXISTS review_checkpoint_findings (
     required_action TEXT NOT NULL,
     compact_json TEXT NOT NULL,
     PRIMARY KEY(checkpoint_id, finding_id)
-);
+);`
 
+const reviewRecoveryAttemptsTableDDL = `
 CREATE TABLE IF NOT EXISTS review_recovery_attempts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     checkpoint_id INTEGER NOT NULL,
@@ -352,8 +355,9 @@ CREATE TABLE IF NOT EXISTS review_recovery_attempts (
     proof_json TEXT NOT NULL DEFAULT '{}',
     started_at TEXT NOT NULL,
     completed_at TEXT
-);
+);`
 
+const reviewQuarantineDeliveriesTableDDL = `
 CREATE TABLE IF NOT EXISTS review_quarantine_deliveries (
     checkpoint_id INTEGER NOT NULL,
     scheduled_at TEXT NOT NULL,
@@ -688,10 +692,172 @@ func ensureReviewCheckpointSchema(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("rebuild legacy review checkpoints: %w", err)
 		}
 	}
+	if err := ensureReviewCheckpointChildSchemas(ctx, db); err != nil {
+		return fmt.Errorf("repair review checkpoint child schemas: %w", err)
+	}
 	if _, err := db.ExecContext(ctx, reviewCheckpointSchemaDDL); err != nil {
 		return fmt.Errorf("create review checkpoint schema: %w", err)
 	}
 	return nil
+}
+
+type reviewCheckpointChildSchema struct {
+	table       string
+	ddl         string
+	constraints []string
+	columns     []string
+	notNull     []string
+}
+
+func ensureReviewCheckpointChildSchemas(ctx context.Context, db *sql.DB) error {
+	for _, schema := range reviewCheckpointChildSchemas() {
+		columns, exists, err := sqliteTableColumns(ctx, db, schema.table)
+		if err != nil {
+			return fmt.Errorf("inspect %s: %w", schema.table, err)
+		}
+		if !exists || hasCanonicalReviewCheckpointChildSchema(ctx, db, schema, columns) {
+			continue
+		}
+		if err := rebuildReviewCheckpointChildSchema(ctx, db, schema, columns); err != nil {
+			return fmt.Errorf("rebuild %s: %w", schema.table, err)
+		}
+	}
+	return nil
+}
+
+func reviewCheckpointChildSchemas() []reviewCheckpointChildSchema {
+	return []reviewCheckpointChildSchema{
+		{
+			table:       "review_checkpoint_findings",
+			ddl:         reviewCheckpointFindingsTableDDL,
+			constraints: []string{"primarykey(checkpoint_id,finding_id)"},
+			columns:     []string{"checkpoint_id", "finding_id", "severity", "file", "line", "contract_impact", "required_action", "compact_json"},
+			notNull:     []string{"checkpoint_id", "finding_id", "severity", "file", "contract_impact", "required_action", "compact_json"},
+		},
+		{
+			table:       "review_recovery_attempts",
+			ddl:         reviewRecoveryAttemptsTableDDL,
+			constraints: []string{"primarykeyautoincrement", "idempotency_keytextnotnullunique"},
+			columns:     []string{"id", "checkpoint_id", "failure_fingerprint", "idempotency_key", "strategy", "action_json", "status", "proof_json", "started_at", "completed_at"},
+			notNull:     []string{"checkpoint_id", "failure_fingerprint", "idempotency_key", "strategy", "action_json", "status", "proof_json", "started_at"},
+		},
+		{
+			table:       "review_quarantine_deliveries",
+			ddl:         reviewQuarantineDeliveriesTableDDL,
+			constraints: []string{"primarykey(checkpoint_id,scheduled_at,sink)"},
+			columns:     []string{"checkpoint_id", "scheduled_at", "delivered_at", "sink"},
+			notNull:     []string{"checkpoint_id", "scheduled_at", "sink"},
+		},
+	}
+}
+
+func hasCanonicalReviewCheckpointChildSchema(ctx context.Context, db *sql.DB, schema reviewCheckpointChildSchema, columns map[string]bool) bool {
+	for _, column := range schema.columns {
+		if _, ok := columns[column]; !ok {
+			return false
+		}
+	}
+	for _, column := range schema.notNull {
+		if !columns[column] {
+			return false
+		}
+	}
+	var tableSQL string
+	if err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?`, schema.table).Scan(&tableSQL); err != nil {
+		return false
+	}
+	normalized := strings.NewReplacer(" ", "", "\n", "", "\t", "").Replace(strings.ToLower(tableSQL))
+	for _, constraint := range schema.constraints {
+		if !strings.Contains(normalized, constraint) {
+			return false
+		}
+	}
+	return true
+}
+
+func rebuildReviewCheckpointChildSchema(ctx context.Context, db *sql.DB, schema reviewCheckpointChildSchema, columns map[string]bool) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin rebuild: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	legacyTable := schema.table + "_legacy"
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE `+schema.table+` RENAME TO `+legacyTable); err != nil {
+		return fmt.Errorf("rename legacy table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, schema.ddl); err != nil {
+		return fmt.Errorf("create canonical table: %w", err)
+	}
+	insertColumns, selectColumns := reviewCheckpointChildCopyColumns(schema, columns)
+	//nolint:gosec // G202: identifiers and expressions are selected from static migration lists.
+	query := `INSERT INTO ` + schema.table + ` (` + strings.Join(insertColumns, ", ") + `) SELECT ` + strings.Join(selectColumns, ", ") + ` FROM ` + legacyTable
+	if _, err := tx.ExecContext(ctx, query); err != nil {
+		return fmt.Errorf("copy compatible rows: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DROP TABLE `+legacyTable); err != nil {
+		return fmt.Errorf("drop legacy table: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit rebuild: %w", err)
+	}
+	return nil
+}
+
+func reviewCheckpointChildCopyColumns(schema reviewCheckpointChildSchema, columns map[string]bool) (insertColumns, selectColumns []string) {
+	for _, column := range schema.columns {
+		insertColumns = append(insertColumns, column)
+		selectColumns = append(selectColumns, reviewCheckpointChildCopyExpression(schema.table, column, columns))
+	}
+	return insertColumns, selectColumns
+}
+
+func reviewCheckpointChildCopyExpression(table, column string, columns map[string]bool) string {
+	if _, ok := columns[column]; ok {
+		return column
+	}
+	switch table {
+	case "review_checkpoint_findings":
+		switch column {
+		case "finding_id":
+			return `'legacy-finding:' || rowid`
+		case "severity":
+			return `'unknown'`
+		case "file", "contract_impact", "required_action":
+			return `''`
+		case "compact_json":
+			return `'{}'`
+		}
+	case "review_recovery_attempts":
+		switch column {
+		case "id":
+			return "rowid"
+		case "checkpoint_id":
+			return "0"
+		case "failure_fingerprint":
+			return `''`
+		case "idempotency_key":
+			return `'legacy-recovery:' || rowid`
+		case "strategy":
+			return `'legacy'`
+		case "action_json", "proof_json":
+			return `'{}'`
+		case "status":
+			return `'failed'`
+		case "started_at":
+			return "datetime('now')"
+		}
+	case "review_quarantine_deliveries":
+		switch column {
+		case "checkpoint_id":
+			return "0"
+		case "scheduled_at":
+			return "datetime('now') || ':' || rowid"
+		case "sink":
+			return `'legacy'`
+		}
+	}
+	return "NULL"
 }
 
 func sqliteTableColumns(ctx context.Context, db *sql.DB, table string) (columns map[string]bool, exists bool, err error) {

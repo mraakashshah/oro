@@ -115,10 +115,80 @@ func TestReviewCheckpointCanonicalKeyMigration(t *testing.T) {
 	)`); err != nil {
 		t.Fatalf("create partial review checkpoints: %v", err)
 	}
+	if _, err := partialDB.ExecContext(ctx, `CREATE TABLE review_checkpoint_findings (
+		checkpoint_id INTEGER NOT NULL,
+		finding_id TEXT NOT NULL,
+		PRIMARY KEY(checkpoint_id, finding_id)
+	)`); err != nil {
+		t.Fatalf("create partial review findings: %v", err)
+	}
+	if _, err := partialDB.ExecContext(ctx, `INSERT INTO review_checkpoint_findings
+		(checkpoint_id, finding_id) VALUES (1, 'finding-1')`); err != nil {
+		t.Fatalf("insert partial review finding: %v", err)
+	}
+	if _, err := partialDB.ExecContext(ctx, `CREATE TABLE review_recovery_attempts (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		checkpoint_id INTEGER NOT NULL,
+		idempotency_key TEXT NOT NULL UNIQUE
+	)`); err != nil {
+		t.Fatalf("create partial review recovery attempts: %v", err)
+	}
+	if _, err := partialDB.ExecContext(ctx, `INSERT INTO review_recovery_attempts
+		(checkpoint_id, idempotency_key) VALUES (1, 'attempt-1')`); err != nil {
+		t.Fatalf("insert partial review recovery attempt: %v", err)
+	}
+	if _, err := partialDB.ExecContext(ctx, `CREATE TABLE review_quarantine_deliveries (
+		checkpoint_id INTEGER NOT NULL,
+		scheduled_at TEXT NOT NULL,
+		PRIMARY KEY(checkpoint_id, scheduled_at)
+	)`); err != nil {
+		t.Fatalf("create partial quarantine deliveries: %v", err)
+	}
+	if _, err := partialDB.ExecContext(ctx, `INSERT INTO review_quarantine_deliveries
+		(checkpoint_id, scheduled_at) VALUES (1, '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("insert partial quarantine delivery: %v", err)
+	}
 	if err := protocol.MigrateBeadSchema(ctx, partialDB); err != nil {
 		t.Fatalf("migrate partial review checkpoints: %v", err)
 	}
+	if err := protocol.MigrateBeadSchema(ctx, partialDB); err != nil {
+		t.Fatalf("second partial migration: %v", err)
+	}
 	assertSQLiteTableColumns(t, ctx, partialDB, "review_checkpoints", []string{"recovery_artifact_path"})
+	for table, columns := range map[string][]string{
+		"review_checkpoint_findings":   {"checkpoint_id", "finding_id", "severity", "file", "line", "contract_impact", "required_action", "compact_json"},
+		"review_recovery_attempts":     {"id", "checkpoint_id", "failure_fingerprint", "idempotency_key", "strategy", "action_json", "status", "proof_json", "started_at", "completed_at"},
+		"review_quarantine_deliveries": {"checkpoint_id", "scheduled_at", "delivered_at", "sink"},
+	} {
+		assertSQLiteTableColumns(t, ctx, partialDB, table, columns)
+	}
+	for table := range map[string]struct{}{
+		"review_checkpoint_findings":   {},
+		"review_recovery_attempts":     {},
+		"review_quarantine_deliveries": {},
+	} {
+		var count int
+		if err := partialDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table).Scan(&count); err != nil {
+			t.Fatalf("count migrated %s: %v", table, err)
+		}
+		if count != 1 {
+			t.Fatalf("migrated %s rows = %d, want 1", table, count)
+		}
+	}
+	if _, err := partialDB.ExecContext(ctx, `INSERT INTO review_checkpoint_findings
+		(checkpoint_id, finding_id, severity, file, contract_impact, required_action, compact_json)
+		VALUES (2, 'invalid-finding', NULL, 'file.go', '', '', '{}')`); err == nil {
+		t.Fatal("nullable finding severity succeeded, want NOT NULL failure")
+	}
+	if _, err := partialDB.ExecContext(ctx, `INSERT INTO review_recovery_attempts
+		(checkpoint_id, failure_fingerprint, idempotency_key, strategy, action_json, status, proof_json, started_at)
+		VALUES (2, '', 'attempt-1', 'legacy', '{}', 'failed', '{}', '2026-01-01T00:00:00Z')`); err == nil {
+		t.Fatal("duplicate recovery idempotency key succeeded, want UNIQUE failure")
+	}
+	if _, err := partialDB.ExecContext(ctx, `INSERT INTO review_quarantine_deliveries
+		(checkpoint_id, scheduled_at, sink) VALUES (1, '2026-01-01T00:00:00Z', 'legacy')`); err == nil {
+		t.Fatal("duplicate quarantine delivery succeeded, want primary key failure")
+	}
 }
 
 func assertSQLiteTableColumns(t *testing.T, ctx context.Context, db *sql.DB, table string, columns []string) {
