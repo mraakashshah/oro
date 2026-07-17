@@ -52,6 +52,9 @@ func TestReviewCheckpointCanonicalKeyMigration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("legacy checkpoint id: %v", err)
 	}
+	if _, err := db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("schema DDL must tolerate legacy review checkpoints: %v", err)
+	}
 
 	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
 		t.Fatalf("first migration: %v", err)
@@ -106,6 +109,41 @@ func TestReviewCheckpointCanonicalKeyMigration(t *testing.T) {
 	) VALUES (NULL, 'oro-null', 9, '/tmp/null', 'agent/null', 'main',
 		'head', 'target', 'acceptance', 'qg', 'default', 'policy', 'triage', 'ready', 'review_running')`); err == nil {
 		t.Fatal("nullable canonical key succeeded, want NOT NULL failure")
+	}
+
+	partialDB, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open partial-schema db: %v", err)
+	}
+	defer func() { _ = partialDB.Close() }()
+	if _, err := partialDB.ExecContext(ctx, `CREATE TABLE review_checkpoints (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		checkpoint_key TEXT NOT NULL,
+		bead_id TEXT NOT NULL,
+		origin_assignment_id INTEGER NOT NULL,
+		worktree TEXT NOT NULL,
+		branch TEXT NOT NULL,
+		target_branch TEXT NOT NULL,
+		head_sha TEXT NOT NULL,
+		target_sha TEXT NOT NULL,
+		acceptance_hash TEXT NOT NULL,
+		qg_script_hash TEXT NOT NULL,
+		qg_mode TEXT NOT NULL,
+		review_policy_hash TEXT NOT NULL,
+		triage_revision TEXT NOT NULL,
+		ready_attempt TEXT NOT NULL,
+		state TEXT NOT NULL
+	)`); err != nil {
+		t.Fatalf("create partial review checkpoints: %v", err)
+	}
+	if err := protocol.MigrateBeadSchema(ctx, partialDB); err != nil {
+		t.Fatalf("migrate partial review checkpoints: %v", err)
+	}
+	var artifactColumn string
+	if err := partialDB.QueryRowContext(ctx,
+		"SELECT name FROM pragma_table_info('review_checkpoints') WHERE name = 'recovery_artifact_path'",
+	).Scan(&artifactColumn); err != nil {
+		t.Fatalf("partial review checkpoints missing recovery artifact column: %v", err)
 	}
 }
 

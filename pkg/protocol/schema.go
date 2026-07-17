@@ -242,7 +242,7 @@ CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
     INSERT INTO memories_fts(memories_fts, rowid, content, tags) VALUES ('delete', old.id, old.content, old.tags);
     INSERT INTO memories_fts(rowid, content, tags) VALUES (new.id, new.content, new.tags);
 END;
-` + reviewCheckpointSchemaDDL
+`
 
 const beadTableDDL = `
 CREATE TABLE IF NOT EXISTS beads (
@@ -717,11 +717,7 @@ func sqliteTableColumns(ctx context.Context, db *sql.DB, table string) (columns 
 }
 
 func hasCanonicalReviewCheckpointColumns(columns map[string]bool) bool {
-	for _, column := range []string{
-		"bead_id", "origin_assignment_id", "worktree", "branch", "target_branch",
-		"head_sha", "target_sha", "acceptance_hash", "qg_script_hash", "qg_mode",
-		"review_policy_hash", "triage_revision", "ready_attempt", "state",
-	} {
+	for _, column := range reviewCheckpointColumnNames() {
 		if _, ok := columns[column]; !ok {
 			return false
 		}
@@ -759,7 +755,16 @@ func rebuildReviewCheckpoints(ctx context.Context, db *sql.DB, columns map[strin
 }
 
 func reviewCheckpointCopyColumns(columns map[string]bool) (insertColumns, selectColumns []string) {
-	insertColumns = []string{
+	insertColumns = reviewCheckpointColumnNames()
+	selectColumns = make([]string, 0, len(insertColumns))
+	for _, column := range insertColumns {
+		selectColumns = append(selectColumns, reviewCheckpointCopyExpression(column, columns))
+	}
+	return insertColumns, selectColumns
+}
+
+func reviewCheckpointColumnNames() []string {
+	return []string{
 		"id", "checkpoint_key", "bead_id", "origin_assignment_id", "current_assignment_id", "worker_id",
 		"worktree", "branch", "target_branch", "head_sha", "target_sha", "acceptance_hash",
 		"qg_run_id", "qg_script_hash", "qg_mode", "qg_output_hash", "qg_evidence_path", "qg_evidence_sha256",
@@ -771,11 +776,6 @@ func reviewCheckpointCopyColumns(columns map[string]bool) (insertColumns, select
 		"integration_approved_head_sha", "integration_observed_target_sha", "integration_step", "override_kind",
 		"override_source", "overridden_at", "created_at", "updated_at", "completed_at",
 	}
-	selectColumns = make([]string, 0, len(insertColumns))
-	for _, column := range insertColumns {
-		selectColumns = append(selectColumns, reviewCheckpointCopyExpression(column, columns))
-	}
-	return insertColumns, selectColumns
 }
 
 func reviewCheckpointCopyExpression(column string, columns map[string]bool) string {
