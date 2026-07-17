@@ -1204,11 +1204,11 @@ func TestQualityGateScriptsOrphanedLiveOwnerDoesNotBlockFIFOAndHealthyLiveOwnerI
 			}
 
 			lockDir := filepath.Join(dir, ".oro-quality-gate.lock")
-			orphanPID := startOrphanedQualityGateTestProcess(t)
+			orphanPID, orphanStartTime := startOrphanedQualityGateTestProcess(t, false)
 			if err := os.Mkdir(lockDir, 0o755); err != nil {
 				t.Fatalf("create orphan-held lock: %v", err)
 			}
-			if err := os.WriteFile(filepath.Join(lockDir, "owner"), []byte(fmt.Sprintf("pid=%d\n", orphanPID)), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(lockDir, "owner"), []byte(qualityGateLockOwner(orphanPID, "not-"+orphanStartTime)), 0o644); err != nil {
 				t.Fatalf("write orphan lock owner: %v", err)
 			}
 			orphan := exec.Command(harnessPath) //nolint:gosec // test-owned temp script
@@ -1222,10 +1222,58 @@ func TestQualityGateScriptsOrphanedLiveOwnerDoesNotBlockFIFOAndHealthyLiveOwnerI
 				t.Fatalf("orphaned live owner did not allow FIFO head to acquire:\n%s", orphanOutput)
 			}
 
+			youngPID, youngStartTime := startOrphanedQualityGateTestProcess(t, false)
+			if err := os.Mkdir(lockDir, 0o755); err != nil {
+				t.Fatalf("create young detached lock: %v", err)
+			}
+			youngOwner := qualityGateLockOwner(youngPID, youngStartTime)
+			ownerPath := filepath.Join(lockDir, "owner")
+			if err := os.WriteFile(ownerPath, []byte(youngOwner), 0o644); err != nil {
+				t.Fatalf("write young detached lock owner: %v", err)
+			}
+			assertQualityGateWaiterPreservesOwner(t, harnessPath, dir, ownerPath, youngOwner, 60, "young detached owner")
+			if err := os.RemoveAll(lockDir); err != nil {
+				t.Fatalf("remove young detached lock: %v", err)
+			}
+
+			workingPID, workingStartTime := startOrphanedQualityGateTestProcess(t, true)
+			if err := os.Mkdir(lockDir, 0o755); err != nil {
+				t.Fatalf("create working detached lock: %v", err)
+			}
+			workingOwner := qualityGateLockOwner(workingPID, workingStartTime)
+			if err := os.WriteFile(ownerPath, []byte(workingOwner), 0o644); err != nil {
+				t.Fatalf("write working detached lock owner: %v", err)
+			}
+			old := time.Now().Add(-2 * time.Second)
+			if err := os.Chtimes(lockDir, old, old); err != nil {
+				t.Fatalf("age working detached lock: %v", err)
+			}
+			assertQualityGateWaiterPreservesOwner(t, harnessPath, dir, ownerPath, workingOwner, 1, "working detached owner")
+			if err := os.RemoveAll(lockDir); err != nil {
+				t.Fatalf("remove working detached lock: %v", err)
+			}
+
+			stalePID, staleStartTime := startOrphanedQualityGateTestProcess(t, false)
+			if err := os.Mkdir(lockDir, 0o755); err != nil {
+				t.Fatalf("create stale detached lock: %v", err)
+			}
+			if err := os.WriteFile(ownerPath, []byte(qualityGateLockOwner(stalePID, staleStartTime)), 0o644); err != nil {
+				t.Fatalf("write stale detached lock owner: %v", err)
+			}
+			if err := os.Chtimes(lockDir, old, old); err != nil {
+				t.Fatalf("age stale detached lock: %v", err)
+			}
+			stale := exec.Command(harnessPath) //nolint:gosec // test-owned temp script
+			stale.Dir = dir
+			stale.Env = append(os.Environ(), "ORO_QG_LOCK_POLL_SECONDS=1", "ORO_QG_LOCK_TIMEOUT_SECONDS=2", "ORO_QG_STALE_LOCK_SECONDS=1")
+			staleOutput, err := stale.CombinedOutput()
+			if err != nil || !strings.Contains(string(staleOutput), "acquired") {
+				t.Fatalf("old detached owner without descendants should be recovered: %v\n%s", err, staleOutput)
+			}
+
 			if err := os.Mkdir(lockDir, 0o755); err != nil {
 				t.Fatalf("create healthy-held lock: %v", err)
 			}
-			ownerPath := filepath.Join(lockDir, "owner")
 			healthyOwner := fmt.Sprintf("pid=%d\n", os.Getpid())
 			if err := os.WriteFile(ownerPath, []byte(healthyOwner), 0o644); err != nil {
 				t.Fatalf("write healthy lock owner: %v", err)
@@ -1249,9 +1297,40 @@ func TestQualityGateScriptsOrphanedLiveOwnerDoesNotBlockFIFOAndHealthyLiveOwnerI
 	}
 }
 
-func startOrphanedQualityGateTestProcess(t *testing.T) int {
+func assertQualityGateWaiterPreservesOwner(t *testing.T, harnessPath, dir, ownerPath, wantOwner string, staleAfter int, name string) {
 	t.Helper()
-	cmd := exec.Command("sh", "-c", "sleep 30 >/dev/null 2>&1 & printf '%s\\n' \"$!\"") //nolint:gosec // fixed test helper command
+	waiter := exec.Command(harnessPath) //nolint:gosec // test-owned temp script
+	waiter.Dir = dir
+	waiter.Env = append(os.Environ(),
+		"ORO_QG_LOCK_POLL_SECONDS=1",
+		"ORO_QG_LOCK_TIMEOUT_SECONDS=1",
+		fmt.Sprintf("ORO_QG_STALE_LOCK_SECONDS=%d", staleAfter),
+	)
+	output, err := waiter.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("%s waiter exit = %v, want status 1; output:\n%s", name, err, output)
+	}
+	owner, err := os.ReadFile(ownerPath)
+	if err != nil {
+		t.Fatalf("read %s after waiter exits: %v", name, err)
+	}
+	if string(owner) != wantOwner {
+		t.Fatalf("%s changed to %q, want %q", name, owner, wantOwner)
+	}
+}
+
+func qualityGateLockOwner(pid int, startTime string) string {
+	return fmt.Sprintf("pid=%d\nstart_time=%s\n", pid, startTime)
+}
+
+func startOrphanedQualityGateTestProcess(t *testing.T, withDescendant bool) (int, string) {
+	t.Helper()
+	command := "sleep 30 >/dev/null 2>&1 & printf '%s\\n' \"$!\""
+	if withDescendant {
+		command = "sh -c 'sleep 30 >/dev/null 2>&1 & wait' >/dev/null 2>&1 & printf '%s\\n' \"$!\""
+	}
+	cmd := exec.Command("sh", "-c", command) //nolint:gosec // fixed test helper command
 	output, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("start orphaned process: %v", err)
@@ -1260,13 +1339,28 @@ func startOrphanedQualityGateTestProcess(t *testing.T) int {
 	if err != nil {
 		t.Fatalf("parse orphaned process PID %q: %v", output, err)
 	}
+	startTime := qualityGateProcessStartTime(t, pid)
 	t.Cleanup(func() {
+		_ = exec.Command("pkill", "-P", strconv.Itoa(pid)).Run() //nolint:gosec // pid belongs to the test-owned detached process.
 		process, findErr := os.FindProcess(pid)
 		if findErr == nil {
 			_ = process.Kill()
 		}
 	})
-	return pid
+	return pid, startTime
+}
+
+func qualityGateProcessStartTime(t *testing.T, pid int) string {
+	t.Helper()
+	output, err := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(pid)).Output() //nolint:gosec // pid belongs to a test-owned process.
+	if err != nil {
+		t.Fatalf("read process start time for PID %d: %v", pid, err)
+	}
+	startTime := strings.TrimSpace(string(output))
+	if startTime == "" {
+		t.Fatalf("empty process start time for PID %d", pid)
+	}
+	return startTime
 }
 
 func waitForQualityGateQueueEntries(queueDir string, want int, timeout time.Duration) bool {
