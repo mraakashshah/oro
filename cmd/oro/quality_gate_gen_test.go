@@ -1204,22 +1204,22 @@ func TestQualityGateScriptsOrphanedLiveOwnerDoesNotBlockFIFOAndHealthyLiveOwnerI
 			}
 
 			lockDir := filepath.Join(dir, ".oro-quality-gate.lock")
-			orphanPID, orphanStartTime := startOrphanedQualityGateTestProcess(t, false)
+			reusedPID, reusedStartTime := startOrphanedQualityGateTestProcess(t, false)
 			if err := os.Mkdir(lockDir, 0o755); err != nil {
 				t.Fatalf("create orphan-held lock: %v", err)
 			}
-			if err := os.WriteFile(filepath.Join(lockDir, "owner"), []byte(qualityGateLockOwner(orphanPID, "not-"+orphanStartTime)), 0o644); err != nil {
-				t.Fatalf("write orphan lock owner: %v", err)
+			if err := os.WriteFile(filepath.Join(lockDir, "owner"), []byte(qualityGateLockOwner(reusedPID, "not-"+reusedStartTime)), 0o644); err != nil {
+				t.Fatalf("write PID-reused lock owner: %v", err)
 			}
 			orphan := exec.Command(harnessPath) //nolint:gosec // test-owned temp script
 			orphan.Dir = dir
 			orphan.Env = append(os.Environ(), "ORO_QG_LOCK_POLL_SECONDS=1", "ORO_QG_LOCK_TIMEOUT_SECONDS=2")
 			orphanOutput, err := orphan.CombinedOutput()
 			if err != nil {
-				t.Fatalf("orphaned live owner should be recovered: %v\n%s", err, orphanOutput)
+				t.Fatalf("PID-reused live owner should be recovered: %v\n%s", err, orphanOutput)
 			}
 			if !strings.Contains(string(orphanOutput), "acquired") {
-				t.Fatalf("orphaned live owner did not allow FIFO head to acquire:\n%s", orphanOutput)
+				t.Fatalf("PID-reused live owner did not allow FIFO head to acquire:\n%s", orphanOutput)
 			}
 
 			youngPID, youngStartTime := startOrphanedQualityGateTestProcess(t, false)
@@ -1305,6 +1305,7 @@ func TestQualityGateScriptsOrphanedLiveOwnerDoesNotBlockFIFOAndHealthyLiveOwnerI
 				t.Fatalf("write timezone-shifted healthy lock owner: %v", err)
 			}
 			assertQualityGateWaiterPreservesOwnerWithEnv(t, harnessPath, dir, ownerPath, timezoneOwner, 1, "timezone-shifted healthy owner", []string{
+				"LC_ALL=POSIX",
 				"TZ=America/New_York",
 			})
 			if err := os.RemoveAll(lockDir); err != nil {
@@ -1329,6 +1330,121 @@ ps() {
 			assertQualityGateWaiterPreservesOwnerWithEnv(t, harnessPath, dir, ownerPath, lookupFailureOwner, 1, "identity lookup failure", []string{
 				"BASH_ENV=" + failingBashEnv,
 			})
+			if err := os.RemoveAll(lockDir); err != nil {
+				t.Fatalf("remove identity-lookup failure lock: %v", err)
+			}
+
+			for _, probeExit := range []int{2, 127} {
+				probeBashEnv := writeQualityGateTestBashEnv(t, fmt.Sprintf(`
+pgrep() {
+    if [ "$1" = "-P" ]; then
+        return %d
+    fi
+    command pgrep "$@"
+}
+`, probeExit))
+				probePID, probeStartTime := startOrphanedQualityGateTestProcess(t, false)
+				if err := os.Mkdir(lockDir, 0o755); err != nil {
+					t.Fatalf("create descendant-probe failure lock for exit %d: %v", probeExit, err)
+				}
+				probeOwner := qualityGateLockOwner(probePID, probeStartTime)
+				if err := os.WriteFile(ownerPath, []byte(probeOwner), 0o644); err != nil {
+					t.Fatalf("write descendant-probe failure owner for exit %d: %v", probeExit, err)
+				}
+				if err := os.Chtimes(lockDir, old, old); err != nil {
+					t.Fatalf("age descendant-probe failure lock for exit %d: %v", probeExit, err)
+				}
+				assertQualityGateWaiterPreservesOwnerWithEnv(t, harnessPath, dir, ownerPath, probeOwner, 1, fmt.Sprintf("descendant probe exit %d", probeExit), []string{
+					"BASH_ENV=" + probeBashEnv,
+				})
+				if err := os.RemoveAll(lockDir); err != nil {
+					t.Fatalf("remove descendant-probe failure lock for exit %d: %v", probeExit, err)
+				}
+			}
+
+			confirmedPID, confirmedStartTime := startOrphanedQualityGateTestProcess(t, false)
+			if err := os.Mkdir(lockDir, 0o755); err != nil {
+				t.Fatalf("create confirmed-no-descendants lock: %v", err)
+			}
+			if err := os.WriteFile(ownerPath, []byte(qualityGateLockOwner(confirmedPID, confirmedStartTime)), 0o644); err != nil {
+				t.Fatalf("write confirmed-no-descendants owner: %v", err)
+			}
+			if err := os.Chtimes(lockDir, old, old); err != nil {
+				t.Fatalf("age confirmed-no-descendants lock: %v", err)
+			}
+			confirmedBashEnv := writeQualityGateTestBashEnv(t, `
+pgrep() {
+    if [ "$1" = "-P" ]; then
+        return 1
+    fi
+    command pgrep "$@"
+}
+`)
+			confirmed := exec.Command(harnessPath) //nolint:gosec // test-owned temp script
+			confirmed.Dir = dir
+			confirmed.Env = append(os.Environ(), "BASH_ENV="+confirmedBashEnv, "ORO_QG_LOCK_POLL_SECONDS=1", "ORO_QG_LOCK_TIMEOUT_SECONDS=2", "ORO_QG_STALE_LOCK_SECONDS=1")
+			confirmedOutput, err := confirmed.CombinedOutput()
+			if err != nil || !strings.Contains(string(confirmedOutput), "acquired") {
+				t.Fatalf("confirmed absence of descendants should reclaim old detached owner: %v\n%s", err, confirmedOutput)
+			}
+
+			eventsPath := filepath.Join(dir, "fifo-events")
+			fifoHarnessPath := filepath.Join(dir, "fifo-acquire.sh")
+			fifoHarness := tc.script[:acquireIdx+len("acquire_quality_gate_lock")] + `
+echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
+`
+			if err := os.WriteFile(fifoHarnessPath, []byte(fifoHarness), 0o755); err != nil {
+				t.Fatalf("write FIFO quality gate harness: %v", err)
+			}
+			if err := os.Mkdir(lockDir, 0o755); err != nil {
+				t.Fatalf("create healthy-held FIFO lock: %v", err)
+			}
+			healthyFIFOOwner := fmt.Sprintf("pid=%d\n", os.Getpid())
+			if err := os.WriteFile(ownerPath, []byte(healthyFIFOOwner), 0o644); err != nil {
+				t.Fatalf("write healthy-held FIFO owner: %v", err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			startWaiter := func(name string) *exec.Cmd {
+				t.Helper()
+				waiter := exec.CommandContext(ctx, fifoHarnessPath) //nolint:gosec // test-owned temp script
+				waiter.Dir = dir
+				waiter.Env = append(os.Environ(),
+					"ORO_QG_TEST_NAME="+name,
+					"ORO_QG_TEST_EVENTS="+eventsPath,
+					"ORO_QG_LOCK_POLL_SECONDS=1",
+					"ORO_QG_LOCK_TIMEOUT_SECONDS=8",
+				)
+				if err := waiter.Start(); err != nil {
+					t.Fatalf("start %s FIFO waiter: %v", name, err)
+				}
+				return waiter
+			}
+			early := startWaiter("early")
+			queueDir := filepath.Join(dir, ".oro-quality-gate.queue")
+			if !waitForQualityGateQueueEntries(queueDir, 1, 2*time.Second) {
+				t.Fatal("early FIFO waiter did not create a queue ticket")
+			}
+			late := startWaiter("late")
+			if !waitForQualityGateQueueEntries(queueDir, 2, 2*time.Second) {
+				t.Fatal("late FIFO waiter did not join the queue")
+			}
+			if err := os.RemoveAll(lockDir); err != nil {
+				t.Fatalf("release healthy FIFO lock: %v", err)
+			}
+			if err := early.Wait(); err != nil {
+				t.Fatalf("early FIFO waiter failed after healthy-owner release: %v", err)
+			}
+			if err := late.Wait(); err != nil {
+				t.Fatalf("late FIFO waiter failed after early waiter release: %v", err)
+			}
+			events, err := os.ReadFile(eventsPath)
+			if err != nil {
+				t.Fatalf("read FIFO acquisition events: %v", err)
+			}
+			if got := strings.Fields(string(events)); !reflect.DeepEqual(got, []string{"early", "late"}) {
+				t.Fatalf("FIFO acquisition order = %v, want early then late", got)
+			}
 		})
 	}
 }

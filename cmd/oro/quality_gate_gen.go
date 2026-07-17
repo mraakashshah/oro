@@ -565,6 +565,11 @@ quality_gate_lock_owner_matches_process() {
 
 quality_gate_process_has_descendants() {
     pgrep -P "$1" >/dev/null 2>&1
+    case $? in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) return 2 ;;
+    esac
 }
 
 quality_gate_lock_stale() {
@@ -590,10 +595,14 @@ quality_gate_lock_stale() {
             if ! age=$(quality_gate_lock_age_seconds "$lock_dir"); then
                 return 1
             fi
-            if [ "$age" -lt "$stale_after" ] || quality_gate_process_has_descendants "$pid"; then
+            if [ "$age" -lt "$stale_after" ]; then
                 return 1
             fi
-            return 0
+            quality_gate_process_has_descendants "$pid"
+            case $? in
+            1) return 0 ;;
+            *) return 1 ;;
+            esac
         fi
         return 0
     fi
