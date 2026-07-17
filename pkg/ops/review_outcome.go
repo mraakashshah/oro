@@ -5,6 +5,7 @@ import "oro/pkg/reviewcontract"
 // ReviewDecision is the terminal result of a typed review.
 type ReviewDecision string
 
+// Review decision values classify terminal typed review results.
 const (
 	ReviewApproved ReviewDecision = "approved"
 	ReviewRejected ReviewDecision = "rejected"
@@ -15,6 +16,7 @@ const (
 // ReviewExecutionKind classifies the review subprocess outcome.
 type ReviewExecutionKind string
 
+// Review execution kinds describe subprocess completion.
 const (
 	ReviewExecSucceeded  ReviewExecutionKind = "succeeded"
 	ReviewExecSpawnError ReviewExecutionKind = "spawn_error"

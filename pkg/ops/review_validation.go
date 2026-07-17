@@ -90,8 +90,18 @@ func validateReviewBlocker(blocker ReviewBlocker) error {
 }
 
 func validateOutcomeFinding(finding Finding) error {
-	if strings.TrimSpace(finding.ID) == "" || strings.TrimSpace(finding.Category) == "" || strings.TrimSpace(finding.Title) == "" || strings.TrimSpace(finding.Detail) == "" || strings.TrimSpace(finding.Origin) == "" || strings.TrimSpace(finding.RequiredAction) == "" {
-		return fmt.Errorf("required finding field is empty")
+	requiredFields := [...]string{
+		finding.ID,
+		finding.Category,
+		finding.Title,
+		finding.Detail,
+		finding.Origin,
+		finding.RequiredAction,
+	}
+	for _, field := range requiredFields {
+		if strings.TrimSpace(field) == "" {
+			return fmt.Errorf("required finding field is empty")
+		}
 	}
 	if finding.Confidence < 0 || finding.Confidence > 100 {
 		return fmt.Errorf("confidence must be between 0 and 100")

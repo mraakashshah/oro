@@ -13,6 +13,7 @@ import (
 // Severity mirrors the shared review contract vocabulary.
 type Severity = reviewcontract.Severity
 
+// Severity values are aliases of the shared review contract severities.
 const (
 	SevCritical  = reviewcontract.SevCritical
 	SevImportant = reviewcontract.SevImportant

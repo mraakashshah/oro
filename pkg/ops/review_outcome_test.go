@@ -1,4 +1,4 @@
-package ops
+package ops //nolint:testpackage // white-box test exercises the required unexported parser signature
 
 import (
 	"strings"

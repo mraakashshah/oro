@@ -4,6 +4,7 @@ package reviewcontract
 // Severity describes the impact of a review finding.
 type Severity string
 
+// Severity values classify the impact of review findings.
 const (
 	SevCritical  Severity = "critical"
 	SevImportant Severity = "important"
@@ -21,6 +22,7 @@ type Evidence struct {
 // ContractImpact identifies the review contract affected by a finding.
 type ContractImpact string
 
+// Contract impact values identify the required remediation path.
 const (
 	ContractImplementationFix ContractImpact = "implementation_fix"
 	ContractAcceptanceGap     ContractImpact = "acceptance_gap"

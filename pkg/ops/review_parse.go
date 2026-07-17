@@ -40,7 +40,7 @@ func parseStructuredReviewReport(raw string) (ReviewOutcome, error) {
 }
 
 func reviewReportFromOutcome(outcome ReviewOutcome) ReviewReport {
-	verdict := VerdictFailed
+	var verdict Verdict
 	switch outcome.Decision {
 	case ReviewApproved:
 		verdict = VerdictApproved
