@@ -694,24 +694,24 @@ func ensureReviewCheckpointSchema(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-func sqliteTableColumns(ctx context.Context, db *sql.DB, table string) (map[string]bool, bool, error) {
+func sqliteTableColumns(ctx context.Context, db *sql.DB, table string) (columns map[string]bool, exists bool, err error) {
 	rows, err := db.QueryContext(ctx, `SELECT name, "notnull" FROM pragma_table_info(?)`, table)
 	if err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("query table columns: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	columns := make(map[string]bool)
+	columns = make(map[string]bool)
 	for rows.Next() {
 		var name string
 		var notNull int
 		if err := rows.Scan(&name, &notNull); err != nil {
-			return nil, false, err
+			return nil, false, fmt.Errorf("scan table column: %w", err)
 		}
 		columns[name] = notNull != 0
 	}
 	if err := rows.Err(); err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("iterate table columns: %w", err)
 	}
 	return columns, len(columns) > 0, nil
 }
@@ -744,6 +744,7 @@ func rebuildReviewCheckpoints(ctx context.Context, db *sql.DB, columns map[strin
 	}
 
 	insertColumns, selectColumns := reviewCheckpointCopyColumns(columns)
+	//nolint:gosec // G202: column names and expressions are selected from static migration lists.
 	query := `INSERT INTO review_checkpoints (` + strings.Join(insertColumns, ", ") + `) SELECT ` + strings.Join(selectColumns, ", ") + ` FROM review_checkpoints_legacy`
 	if _, err := tx.ExecContext(ctx, query); err != nil {
 		return fmt.Errorf("copy legacy review checkpoints: %w", err)
@@ -757,8 +758,8 @@ func rebuildReviewCheckpoints(ctx context.Context, db *sql.DB, columns map[strin
 	return nil
 }
 
-func reviewCheckpointCopyColumns(columns map[string]bool) ([]string, []string) {
-	columnNames := []string{
+func reviewCheckpointCopyColumns(columns map[string]bool) (insertColumns, selectColumns []string) {
+	insertColumns = []string{
 		"id", "checkpoint_key", "bead_id", "origin_assignment_id", "current_assignment_id", "worker_id",
 		"worktree", "branch", "target_branch", "head_sha", "target_sha", "acceptance_hash",
 		"qg_run_id", "qg_script_hash", "qg_mode", "qg_output_hash", "qg_evidence_path", "qg_evidence_sha256",
@@ -770,11 +771,11 @@ func reviewCheckpointCopyColumns(columns map[string]bool) ([]string, []string) {
 		"integration_approved_head_sha", "integration_observed_target_sha", "integration_step", "override_kind",
 		"override_source", "overridden_at", "created_at", "updated_at", "completed_at",
 	}
-	selectColumns := make([]string, 0, len(columnNames))
-	for _, column := range columnNames {
+	selectColumns = make([]string, 0, len(insertColumns))
+	for _, column := range insertColumns {
 		selectColumns = append(selectColumns, reviewCheckpointCopyExpression(column, columns))
 	}
-	return columnNames, selectColumns
+	return insertColumns, selectColumns
 }
 
 func reviewCheckpointCopyExpression(column string, columns map[string]bool) string {
