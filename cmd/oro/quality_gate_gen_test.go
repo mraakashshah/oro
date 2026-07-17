@@ -1293,11 +1293,52 @@ func TestQualityGateScriptsOrphanedLiveOwnerDoesNotBlockFIFOAndHealthyLiveOwnerI
 			if string(owner) != healthyOwner {
 				t.Fatalf("healthy live owner changed to %q, want %q", owner, healthyOwner)
 			}
+			if err := os.RemoveAll(lockDir); err != nil {
+				t.Fatalf("remove healthy-held lock: %v", err)
+			}
+
+			if err := os.Mkdir(lockDir, 0o755); err != nil {
+				t.Fatalf("create timezone-shifted healthy lock: %v", err)
+			}
+			timezoneOwner := qualityGateLockOwner(os.Getpid(), qualityGateProcessStartTime(t, os.Getpid()))
+			if err := os.WriteFile(ownerPath, []byte(timezoneOwner), 0o644); err != nil {
+				t.Fatalf("write timezone-shifted healthy lock owner: %v", err)
+			}
+			assertQualityGateWaiterPreservesOwnerWithEnv(t, harnessPath, dir, ownerPath, timezoneOwner, 1, "timezone-shifted healthy owner", []string{
+				"TZ=America/New_York",
+			})
+			if err := os.RemoveAll(lockDir); err != nil {
+				t.Fatalf("remove timezone-shifted healthy lock: %v", err)
+			}
+
+			failingBashEnv := writeQualityGateTestBashEnv(t, `
+ps() {
+    if [ "$1" = "-o" ] && [ "$2" = "lstart=" ]; then
+        return 1
+    fi
+    command ps "$@"
+}
+`)
+			if err := os.Mkdir(lockDir, 0o755); err != nil {
+				t.Fatalf("create identity-lookup failure lock: %v", err)
+			}
+			lookupFailureOwner := qualityGateLockOwner(os.Getpid(), "Fri Jul 17 01:54:21 2026")
+			if err := os.WriteFile(ownerPath, []byte(lookupFailureOwner), 0o644); err != nil {
+				t.Fatalf("write identity-lookup failure lock owner: %v", err)
+			}
+			assertQualityGateWaiterPreservesOwnerWithEnv(t, harnessPath, dir, ownerPath, lookupFailureOwner, 1, "identity lookup failure", []string{
+				"BASH_ENV=" + failingBashEnv,
+			})
 		})
 	}
 }
 
 func assertQualityGateWaiterPreservesOwner(t *testing.T, harnessPath, dir, ownerPath, wantOwner string, staleAfter int, name string) {
+	t.Helper()
+	assertQualityGateWaiterPreservesOwnerWithEnv(t, harnessPath, dir, ownerPath, wantOwner, staleAfter, name, nil)
+}
+
+func assertQualityGateWaiterPreservesOwnerWithEnv(t *testing.T, harnessPath, dir, ownerPath, wantOwner string, staleAfter int, name string, extraEnv []string) {
 	t.Helper()
 	waiter := exec.Command(harnessPath) //nolint:gosec // test-owned temp script
 	waiter.Dir = dir
@@ -1306,6 +1347,7 @@ func assertQualityGateWaiterPreservesOwner(t *testing.T, harnessPath, dir, owner
 		"ORO_QG_LOCK_TIMEOUT_SECONDS=1",
 		fmt.Sprintf("ORO_QG_STALE_LOCK_SECONDS=%d", staleAfter),
 	)
+	waiter.Env = replaceQualityGateTestEnv(waiter.Env, extraEnv)
 	output, err := waiter.CombinedOutput()
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
@@ -1318,6 +1360,36 @@ func assertQualityGateWaiterPreservesOwner(t *testing.T, harnessPath, dir, owner
 	if string(owner) != wantOwner {
 		t.Fatalf("%s changed to %q, want %q", name, owner, wantOwner)
 	}
+}
+
+func replaceQualityGateTestEnv(env, replacements []string) []string {
+	keys := make(map[string]struct{}, len(replacements))
+	for _, replacement := range replacements {
+		key, _, ok := strings.Cut(replacement, "=")
+		if ok {
+			keys[key] = struct{}{}
+		}
+	}
+	filtered := make([]string, 0, len(env)+len(replacements))
+	for _, value := range env {
+		key, _, ok := strings.Cut(value, "=")
+		if !ok {
+			continue
+		}
+		if _, replaced := keys[key]; !replaced {
+			filtered = append(filtered, value)
+		}
+	}
+	return append(filtered, replacements...)
+}
+
+func writeQualityGateTestBashEnv(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "bash-env")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write test ps: %v", err)
+	}
+	return path
 }
 
 func qualityGateLockOwner(pid int, startTime string) string {
@@ -1352,7 +1424,7 @@ func startOrphanedQualityGateTestProcess(t *testing.T, withDescendant bool) (int
 
 func qualityGateProcessStartTime(t *testing.T, pid int) string {
 	t.Helper()
-	output, err := exec.Command("ps", "-o", "lstart=", "-p", strconv.Itoa(pid)).Output() //nolint:gosec // pid belongs to a test-owned process.
+	output, err := exec.Command("env", "LC_ALL=C", "TZ=UTC", "ps", "-o", "lstart=", "-p", strconv.Itoa(pid)).Output() //nolint:gosec // pid belongs to a test-owned process.
 	if err != nil {
 		t.Fatalf("read process start time for PID %d: %v", pid, err)
 	}
