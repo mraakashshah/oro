@@ -259,6 +259,66 @@ func TestCodexWorkerSpawnerStreamsPromptViaStdin(t *testing.T) {
 	}
 }
 
+func TestBuildBootstrapPromptInstructionSources(t *testing.T) {
+	prompt := "preserve\nall task bytes\n"
+	localInstructions := "\n  # Local instructions\n\nFollow local rules.\n"
+	homeInstructions := "\n  # Home instructions\n\nFollow home rules.\n"
+
+	for _, tc := range []struct {
+		name              string
+		localInstructions string
+		homeInstructions  string
+		want              string
+	}{
+		{
+			name:              "worktree local instructions prepend",
+			localInstructions: localInstructions,
+			want:              "# Local instructions\n\nFollow local rules.\n\n## Task\n\n" + prompt,
+		},
+		{
+			name:             "home instructions are fallback",
+			homeInstructions: homeInstructions,
+			want:             "# Home instructions\n\nFollow home rules.\n\n## Task\n\n" + prompt,
+		},
+		{
+			name:              "worktree instructions take precedence over home",
+			localInstructions: localInstructions,
+			homeInstructions:  homeInstructions,
+			want:              "# Local instructions\n\nFollow local rules.\n\n## Task\n\n" + prompt,
+		},
+		{
+			name: "neither source leaves prompt unchanged",
+			want: prompt,
+		},
+		{
+			name:              "blank sources leave prompt unchanged",
+			localInstructions: " \n\t ",
+			homeInstructions:  "\n",
+			want:              prompt,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workdir := t.TempDir()
+			oroHome := t.TempDir()
+			t.Setenv("ORO_HOME", oroHome)
+			if tc.localInstructions != "" {
+				if err := os.WriteFile(filepath.Join(workdir, "ORO_AGENT.md"), []byte(tc.localInstructions), 0o644); err != nil {
+					t.Fatalf("write worktree instructions: %v", err)
+				}
+			}
+			if tc.homeInstructions != "" {
+				if err := os.WriteFile(filepath.Join(oroHome, "ORO_AGENT.md"), []byte(tc.homeInstructions), 0o644); err != nil {
+					t.Fatalf("write home instructions: %v", err)
+				}
+			}
+
+			if got := codexruntime.BuildBootstrapPrompt(prompt, workdir); got != tc.want {
+				t.Fatalf("BuildBootstrapPrompt() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // test helper uses fixed git binary
