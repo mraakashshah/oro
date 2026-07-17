@@ -201,11 +201,9 @@ func TestCodexWorkerSpawnerUsesFullAccessSandbox(t *testing.T) {
 }
 
 func TestCodexWorkerSpawnerStreamsPromptViaStdin(t *testing.T) {
+	t.Setenv("ORO_HOME", "")
+	t.Setenv("ORO_PROJECT", "")
 	workdir := t.TempDir()
-	repoInstructions := "# Repository Instructions\n\nFollow the local conventions."
-	if err := os.WriteFile(filepath.Join(workdir, "ORO_AGENT.md"), []byte(repoInstructions), 0o644); err != nil {
-		t.Fatalf("write repository instructions: %v", err)
-	}
 	binDir := t.TempDir()
 	argsReport := filepath.Join(t.TempDir(), "args.txt")
 	stdinReport := filepath.Join(t.TempDir(), "stdin.txt")
@@ -225,9 +223,9 @@ func TestCodexWorkerSpawnerStreamsPromptViaStdin(t *testing.T) {
 		prompt string
 		want   string
 	}{
-		{name: "large valid multiline", prompt: validPrompt, want: repoInstructions + "\n\n## Task\n\n" + validPrompt},
-		{name: "invalid UTF-8", prompt: invalidPrompt, want: repoInstructions + "\n\n## Task\n\nbefore\n�\nafter"},
-		{name: "empty", prompt: "", want: repoInstructions + "\n\n## Task\n\n"},
+		{name: "large valid multiline", prompt: validPrompt, want: validPrompt},
+		{name: "invalid UTF-8", prompt: invalidPrompt, want: "before\n�\nafter"},
+		{name: "empty", prompt: "", want: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			spawner := codexruntime.NewWorkerSpawner()
@@ -247,7 +245,7 @@ func TestCodexWorkerSpawnerStreamsPromptViaStdin(t *testing.T) {
 			if got := bytes.Count(gotArgs, []byte("-\n")); got != 1 {
 				t.Fatalf("literal dash argv count = %d, want 1: %q", got, gotArgs)
 			}
-			if bytes.Contains(gotArgs, []byte(tc.want)) {
+			if tc.want != "" && bytes.Contains(gotArgs, []byte(tc.want)) {
 				t.Fatal("assembled prompt unexpectedly present in argv")
 			}
 			gotStdin, err := os.ReadFile(stdinReport)
