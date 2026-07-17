@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"oro/pkg/processenv"
 )
 
 // ttyStop returns a stopConfig that passes TTY confirmation (simulates interactive terminal).
@@ -396,6 +398,28 @@ func TestResidualScanUsesScopedMarkers(t *testing.T) {
 
 	if got, want := residualPIDs(residuals), []int{2112}; !sameInts(got, want) {
 		t.Fatalf("residual PIDs = %v, want scoped project/socket matches %v", got, want)
+	}
+}
+
+func TestStopResidualScanSeparatesCommandAndOwnershipEnvironment(t *testing.T) {
+	markers := processenv.WorkerOwnershipMarkers("/tmp/oro.sock", "worker-1")
+	foreignArgv := "go test ./pkg/dispatcher " + strings.Join(markers, " ")
+	foreignNote := "NOTE=foreign " + strings.Join(markers, " ") + " text"
+
+	markerResiduals := scanOroResidualProcessSnapshots([]processSnapshot{
+		{PID: 2131, PPID: 1, PGID: 2131, Session: 2131, Command: foreignArgv},
+		{PID: 2132, PPID: 1, PGID: 2132, Session: 2132, Command: "go test ./pkg/dispatcher", Environment: markers},
+		{PID: 2133, PPID: 1, PGID: 2133, Session: 2133, Command: "go test ./pkg/dispatcher", Environment: []string{foreignNote}},
+	}, nil, markers)
+	if got, want := residualPIDs(markerResiduals), []int{2132}; !sameInts(got, want) {
+		t.Fatalf("marker residual PIDs = %v, want %v", got, want)
+	}
+
+	rootResiduals := scanOroResidualProcessSnapshots([]processSnapshot{
+		{PID: 2134, PPID: 1, PGID: 2134, Session: 2134, Command: "go test -worktree /tmp/oro/project"},
+	}, []string{"/tmp/oro/project"}, nil)
+	if got, want := residualPIDs(rootResiduals), []int{2134}; !sameInts(got, want) {
+		t.Fatalf("root residual PIDs = %v, want %v", got, want)
 	}
 }
 
