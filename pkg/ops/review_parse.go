@@ -7,7 +7,11 @@ import (
 )
 
 func parseReviewReport(raw string) (ReviewReport, []DroppedFinding) {
-	report, dropped, err := parseStructuredReviewReport(raw)
+	outcome, err := parseStructuredReviewReport(raw)
+	if err == nil {
+		return reviewReportFromOutcome(outcome), nil
+	}
+	report, dropped, err := parseLegacyStructuredReviewReport(raw)
 	if err == nil {
 		return report, dropped
 	}
@@ -15,40 +19,39 @@ func parseReviewReport(raw string) (ReviewReport, []DroppedFinding) {
 	return ReviewReport{Verdict: verdict, Raw: feedback}, nil
 }
 
-func parseStructuredReviewReport(raw string) (ReviewReport, []DroppedFinding, error) {
+// parseStructuredReviewReport decodes a typed review outcome and reduces its
+// decision from validated findings, blockers, and process execution.
+func parseStructuredReviewReport(raw string) (ReviewOutcome, error) {
 	text := reviewOutputText(raw)
 	block, ok := reviewJSONBlock(text)
 	if !ok {
-		return ReviewReport{}, nil, fmt.Errorf("structured review JSON is required")
+		return ReviewOutcome{}, fmt.Errorf("structured review JSON is required")
 	}
 
-	var report ReviewReport
-	if err := json.Unmarshal([]byte(block), &report); err == nil {
-		if err := validateStructuredReviewVerdict(report.Verdict); err != nil {
-			return ReviewReport{}, nil, err
-		}
-		report.Raw = text
-		return report, nil, nil
+	var outcome ReviewOutcome
+	if err := json.Unmarshal([]byte(block), &outcome); err != nil {
+		return ReviewOutcome{}, fmt.Errorf("parse typed review outcome: %w", err)
 	}
-
-	report, dropped, err := parseReviewReportLayered(block)
-	if err != nil {
-		return ReviewReport{}, nil, err
+	outcome.Decision = reduceReviewDecision(outcome)
+	if err := ValidateReviewOutcome(outcome); err != nil {
+		return ReviewOutcome{}, err
 	}
-	if err := validateStructuredReviewVerdict(report.Verdict); err != nil {
-		return ReviewReport{}, nil, err
-	}
-	report.Raw = text
-	return report, dropped, nil
+	return outcome, nil
 }
 
-func validateStructuredReviewVerdict(verdict Verdict) error {
-	switch verdict {
-	case VerdictApproved, VerdictRejected, VerdictFailed:
-		return nil
+func reviewReportFromOutcome(outcome ReviewOutcome) ReviewReport {
+	verdict := VerdictFailed
+	switch outcome.Decision {
+	case ReviewApproved:
+		verdict = VerdictApproved
+	case ReviewRejected:
+		verdict = VerdictRejected
+	case ReviewBlocked, ReviewFailed:
+		verdict = VerdictFailed
 	default:
-		return fmt.Errorf("invalid structured review verdict %q", verdict)
+		verdict = VerdictFailed
 	}
+	return ReviewReport{Findings: outcome.Findings, Verdict: verdict, Raw: outcome.Summary}
 }
 
 type reviewReportEnvelope struct {
@@ -57,10 +60,22 @@ type reviewReportEnvelope struct {
 	Verdict  Verdict           `json:"verdict"`
 }
 
-func parseReviewReportLayered(raw string) (ReviewReport, []DroppedFinding, error) {
+func parseLegacyStructuredReviewReport(raw string) (ReviewReport, []DroppedFinding, error) {
+	text := reviewOutputText(raw)
+	block, ok := reviewJSONBlock(text)
+	if !ok {
+		return ReviewReport{}, nil, fmt.Errorf("structured review JSON is required")
+	}
+	return parseReviewReportLayered(block, text)
+}
+
+func parseReviewReportLayered(raw, text string) (ReviewReport, []DroppedFinding, error) {
 	var envelope reviewReportEnvelope
 	if err := json.Unmarshal([]byte(raw), &envelope); err != nil {
 		return ReviewReport{}, nil, fmt.Errorf("parse review report envelope: %w", err)
+	}
+	if err := validateStructuredReviewVerdict(envelope.Verdict); err != nil {
+		return ReviewReport{}, nil, err
 	}
 
 	report := ReviewReport{
@@ -79,7 +94,17 @@ func parseReviewReportLayered(raw string) (ReviewReport, []DroppedFinding, error
 		}
 		report.Findings = append(report.Findings, finding)
 	}
+	report.Raw = text
 	return report, dropped, nil
+}
+
+func validateStructuredReviewVerdict(verdict Verdict) error {
+	switch verdict {
+	case VerdictApproved, VerdictRejected, VerdictFailed:
+		return nil
+	default:
+		return fmt.Errorf("invalid structured review verdict %q", verdict)
+	}
 }
 
 func reviewJSONBlock(raw string) (string, bool) {

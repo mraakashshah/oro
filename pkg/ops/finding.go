@@ -4,54 +4,28 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"oro/pkg/reviewcontract"
 	"sort"
 	"strings"
 )
 
-// Severity mirrors the existing review prompt vocabulary.
-type Severity string
+// Severity mirrors the shared review contract vocabulary.
+type Severity = reviewcontract.Severity
 
 const (
-	// SevCritical identifies a critical structured review finding.
-	SevCritical Severity = "critical"
-	// SevImportant identifies an important structured review finding.
-	SevImportant Severity = "important"
-	// SevMinor identifies a minor structured review finding.
-	SevMinor Severity = "minor"
+	SevCritical  = reviewcontract.SevCritical
+	SevImportant = reviewcontract.SevImportant
+	SevMinor     = reviewcontract.SevMinor
 )
 
 // Evidence pins a finding to a file:line(:quote) the reviewer was shown.
-type Evidence struct {
-	File      string `json:"file"`
-	LineStart int    `json:"line_start"`
-	LineEnd   int    `json:"line_end"`
-	Quote     string `json:"quote,omitempty"`
-}
+type Evidence = reviewcontract.Evidence
 
 // Finding is the shared structured review finding emitted by reviewers.
-type Finding struct {
-	ID         string     `json:"id"`
-	Severity   Severity   `json:"severity"`
-	Category   string     `json:"category"`
-	Title      string     `json:"title"`
-	Detail     string     `json:"detail"`
-	Evidence   []Evidence `json:"evidence"`
-	Confidence int        `json:"confidence"`
-	Sources    []string   `json:"sources"`
-	// SourceFamilies names independent evidence families used by cheap triage.
-	SourceFamilies []string              `json:"source_families,omitempty"`
-	Origin         string                `json:"origin"`
-	Status         string                `json:"status,omitempty"`
-	History        []FindingHistoryEntry `json:"history,omitempty"`
-}
+type Finding = reviewcontract.Finding
 
 // FindingHistoryEntry records an append-only triage status change for a finding.
-type FindingHistoryEntry struct {
-	Status string `json:"status"`
-	Actor  string `json:"actor,omitempty"`
-	Note   string `json:"note,omitempty"`
-	At     string `json:"at,omitempty"`
-}
+type FindingHistoryEntry = reviewcontract.FindingHistoryEntry
 
 // ReviewReport is the parsed structured output of one reviewer pass.
 type ReviewReport struct {

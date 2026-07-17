@@ -2,6 +2,7 @@ package ops
 
 import (
 	"fmt"
+	"oro/pkg/reviewcontract"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,120 @@ type DroppedFinding struct {
 	Finding Finding
 	Layer   string
 	Reason  string
+}
+
+// ValidateReviewOutcome rejects incomplete or internally inconsistent typed
+// review results. Callers must not classify prose or malformed JSON as an
+// approved review.
+func ValidateReviewOutcome(out ReviewOutcome) error {
+	if strings.TrimSpace(out.Summary) == "" {
+		return fmt.Errorf("review summary is required")
+	}
+	if strings.TrimSpace(out.Artifact.SHA256) == "" {
+		return fmt.Errorf("artifact sha256 is required")
+	}
+	if out.Artifact.Bytes < 0 {
+		return fmt.Errorf("artifact bytes must not be negative")
+	}
+	if err := validateReviewVerification(out.Verification); err != nil {
+		return err
+	}
+	if err := validateReviewExecution(out.Execution); err != nil {
+		return err
+	}
+	for i, blocker := range out.Blockers {
+		if err := validateReviewBlocker(blocker); err != nil {
+			return fmt.Errorf("blocker %d: %w", i, err)
+		}
+	}
+	for i, finding := range out.Findings {
+		if err := validateOutcomeFinding(finding); err != nil {
+			return fmt.Errorf("finding %d: %w", i, err)
+		}
+	}
+	if out.Decision != reduceReviewDecision(out) {
+		return fmt.Errorf("review decision %q conflicts with typed outcome", out.Decision)
+	}
+	return nil
+}
+
+func validateReviewVerification(verification ReviewVerification) error {
+	switch verification.AcceptanceStatus {
+	case "passed", "failed", "not_run", "blocked":
+		return nil
+	default:
+		return fmt.Errorf("invalid acceptance status %q", verification.AcceptanceStatus)
+	}
+}
+
+func validateReviewExecution(execution ReviewExecution) error {
+	switch execution.Kind {
+	case ReviewExecSucceeded, ReviewExecSpawnError, ReviewExecExitError, ReviewExecTimeout, ReviewExecIdle, ReviewExecCancelled:
+		return nil
+	default:
+		return fmt.Errorf("invalid review execution kind %q", execution.Kind)
+	}
+}
+
+func validateReviewBlocker(blocker ReviewBlocker) error {
+	if blocker.Class != "environment" && blocker.Class != "infrastructure" {
+		return fmt.Errorf("invalid blocker class %q", blocker.Class)
+	}
+	switch blocker.Scope {
+	case "acceptance", "broader_verification", "runtime":
+	default:
+		return fmt.Errorf("invalid blocker scope %q", blocker.Scope)
+	}
+	if strings.TrimSpace(blocker.Summary) == "" {
+		return fmt.Errorf("summary is required")
+	}
+	return nil
+}
+
+func validateOutcomeFinding(finding Finding) error {
+	if strings.TrimSpace(finding.ID) == "" || strings.TrimSpace(finding.Category) == "" || strings.TrimSpace(finding.Title) == "" || strings.TrimSpace(finding.Detail) == "" || strings.TrimSpace(finding.Origin) == "" || strings.TrimSpace(finding.RequiredAction) == "" {
+		return fmt.Errorf("required finding field is empty")
+	}
+	if finding.Confidence < 0 || finding.Confidence > 100 {
+		return fmt.Errorf("confidence must be between 0 and 100")
+	}
+	if len(finding.Evidence) == 0 || len(finding.Sources) == 0 {
+		return fmt.Errorf("evidence and sources are required")
+	}
+	switch finding.Severity {
+	case reviewcontract.SevCritical, reviewcontract.SevImportant, reviewcontract.SevMinor:
+	default:
+		return fmt.Errorf("invalid severity %q", finding.Severity)
+	}
+	switch finding.ContractImpact {
+	case reviewcontract.ContractImplementationFix, reviewcontract.ContractAcceptanceGap:
+	default:
+		return fmt.Errorf("invalid contract impact %q", finding.ContractImpact)
+	}
+	for _, evidence := range finding.Evidence {
+		if strings.TrimSpace(evidence.File) == "" || evidence.LineStart <= 0 || evidence.LineEnd < evidence.LineStart {
+			return fmt.Errorf("invalid evidence")
+		}
+	}
+	return nil
+}
+
+func reduceReviewDecision(out ReviewOutcome) ReviewDecision {
+	for _, finding := range out.Findings {
+		if finding.Severity == reviewcontract.SevCritical || finding.Severity == reviewcontract.SevImportant {
+			return ReviewRejected
+		}
+	}
+	if out.Execution.Kind != ReviewExecSucceeded || !out.Execution.Complete {
+		return ReviewFailed
+	}
+	if len(out.Blockers) > 0 {
+		return ReviewBlocked
+	}
+	if out.Decision == ReviewApproved {
+		return ReviewApproved
+	}
+	return ReviewFailed
 }
 
 // ValidateFinding rejects evidence that was not shown in the prompt manifest.

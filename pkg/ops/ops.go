@@ -399,7 +399,11 @@ func (s *Spawner) collectPersonaReviews(ctx context.Context, opsType Type, opts 
 		}
 		for i, ch := range chans {
 			result := <-ch
-			report, _, parseErr := parseStructuredReviewReport(result.Feedback)
+			report, _ := parseReviewReport(result.Feedback)
+			_, parseErr := parseStructuredReviewReport(result.Feedback)
+			if parseErr != nil {
+				_, _, parseErr = parseLegacyStructuredReviewReport(result.Feedback)
+			}
 			assignedPersona := personas[start+i]
 			report.Reviewer = assignedPersona.ID
 			for findingIndex := range report.Findings {
