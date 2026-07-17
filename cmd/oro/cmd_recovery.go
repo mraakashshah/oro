@@ -600,26 +600,14 @@ func resolveRecoveryQuarantineRequeuePreserved(ctx context.Context, db *sql.DB, 
 	if err != nil {
 		return err
 	}
-	assignmentID, allowCompleted, err := recoveryAssignmentIDForRequeue(ctx, tx, id, q)
+	assignmentID, needsRequeue, err := recoveryAssignmentIDForRequeue(ctx, tx, id, q)
 	if err != nil {
 		return err
 	}
-	assignmentStatuses := "status='quarantined'"
-	if allowCompleted {
-		assignmentStatuses = "status IN ('quarantined', 'completed')"
-	}
-	res, err := tx.ExecContext(ctx,
-		`UPDATE assignments SET status='requeued', completed_at=datetime('now') WHERE id=? AND bead_id=? AND `+assignmentStatuses,
-		assignmentID, q.BeadID)
-	if err != nil {
-		return fmt.Errorf("requeue preserved assignment: %w", err)
-	}
-	rows, rowsErr := res.RowsAffected()
-	if rowsErr != nil {
-		return fmt.Errorf("requeue preserved assignment rows affected: %w", rowsErr)
-	}
-	if rows != 1 {
-		return fmt.Errorf("requeue-preserved assignment_id %d affected %d rows", assignmentID, rows)
+	if needsRequeue {
+		if err := requeuePreservedAssignment(ctx, tx, assignmentID, q.BeadID); err != nil {
+			return err
+		}
 	}
 	if err := markRecoveryQuarantineResolvedTx(ctx, tx, id); err != nil {
 		return err
@@ -630,9 +618,27 @@ func resolveRecoveryQuarantineRequeuePreserved(ctx context.Context, db *sql.DB, 
 	return nil
 }
 
-func recoveryAssignmentIDForRequeue(ctx context.Context, tx *sql.Tx, quarantineID int64, q recoveryQuarantineCLIRecord) (assignmentID int64, allowCompleted bool, err error) {
+func requeuePreservedAssignment(ctx context.Context, tx *sql.Tx, assignmentID int64, beadID string) error {
+	res, err := tx.ExecContext(ctx, `
+UPDATE assignments
+SET status='requeued', completed_at=datetime('now')
+WHERE id=? AND bead_id=? AND status IN ('quarantined', 'completed')`, assignmentID, beadID)
+	if err != nil {
+		return fmt.Errorf("requeue preserved assignment: %w", err)
+	}
+	rows, rowsErr := res.RowsAffected()
+	if rowsErr != nil {
+		return fmt.Errorf("requeue preserved assignment rows affected: %w", rowsErr)
+	}
+	if rows != 1 {
+		return fmt.Errorf("requeue-preserved assignment_id %d affected %d rows", assignmentID, rows)
+	}
+	return nil
+}
+
+func recoveryAssignmentIDForRequeue(ctx context.Context, tx *sql.Tx, quarantineID int64, q recoveryQuarantineCLIRecord) (assignmentID int64, needsRequeue bool, err error) {
 	if q.AssignmentID > 0 {
-		return q.AssignmentID, false, nil
+		return q.AssignmentID, true, nil
 	}
 
 	var assignmentStatus string
@@ -648,7 +654,7 @@ LIMIT 1`, q.BeadID, q.Worktree, q.Worktree).Scan(&assignmentID, &assignmentStatu
 		}
 		return 0, false, fmt.Errorf("lookup preserved recovery assignment: %w", err)
 	}
-	if assignmentStatus != "quarantined" && assignmentStatus != "completed" {
+	if assignmentStatus != "quarantined" && assignmentStatus != "completed" && assignmentStatus != "requeued" {
 		return 0, false, fmt.Errorf("requeue-preserved latest assignment_id %d has status %q", assignmentID, assignmentStatus)
 	}
 	res, err := tx.ExecContext(ctx, `
@@ -665,7 +671,7 @@ WHERE id=? AND assignment_id IS NULL AND status IN ('open', 'human_owned')`, ass
 	if rows != 1 {
 		return 0, false, fmt.Errorf("link preserved recovery assignment affected %d rows", rows)
 	}
-	return assignmentID, true, nil
+	return assignmentID, assignmentStatus != "requeued", nil
 }
 
 func discardEmptySafe(inspection recoveryInspection) bool {
