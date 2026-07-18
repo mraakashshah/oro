@@ -363,6 +363,11 @@ Rules:
   reconcile the documented Oro-owned ruleset idempotently; otherwise startup
   reports an unhealthy configuration and does not publish candidates. Routine
   beads never wait for operator setup.
+- Preflight discovers and persists the repository default branch separately
+  from the configured integration/audit target. The full-mutation workflow path
+  must exist on the current default branch and declare `workflow_dispatch`, even
+  when the audited snapshot belongs to a custom/release branch. Absence,
+  disablement, or invalid trigger is auth/config failure.
 - `runtime_identity` is typed and separate from setup administration. GitHub v1
   uses a GitHub App installation credential provider. `private_key_ref` points
   to an OS secret store or an approved credential-command provider; secret
@@ -1262,6 +1267,16 @@ test-only, vendored, or explicitly excluded code appears only through the
 hashed exclusion policy. The dispatcher persists the complete inventory and
 hash before dispatch and passes the hash/count/policy hash as workflow inputs.
 
+Immediately before creating or adopting the audit ref, the adapter re-fetches
+the repository default branch and verifies that the configured full-mutation
+workflow path still exists there, is enabled, and declares
+`workflow_dispatch`. This registration check is distinct from the immutable
+audit-ref workflow-blob proof below: GitHub authorizes a manual dispatch from
+the workflow registered on the default branch, while Oro executes and attests
+the workflow definition at the audited snapshot. Default-branch movement,
+workflow deletion/disablement, or trigger removal after startup is an
+auth/config failure with no audit ref or workflow run created.
+
 `workflow_dispatch` is issued only against an immutable dispatcher-owned branch
 ref, never the moving target branch or a SHA-like input. For each audit the
 dispatcher creates/adopts
@@ -1402,7 +1417,10 @@ chains; it may split them further but may not collapse away a boundary:
    identity provider/secret reference/refresh/permissions, auth, target CAS
    support, startup events, and status. Production construction must not fall
    back to ambient credentials. Setup/startup must inspect the exact permission
-   allowlist/hash and recent isolated capability-canary evidence.
+   allowlist/hash and recent isolated capability-canary evidence. Discover and
+   persist the repository default branch independently of the configured target;
+   require the full-mutation workflow to be present, enabled, and registered
+   with `workflow_dispatch` on that branch.
 2. **Provider-neutral core and GitHub adapter.** Implement normalized
    candidate/change/evidence/merge types, all `RemoteGateClient` operations
    including idempotent `SetChangeReady` and ambiguous
@@ -1431,7 +1449,10 @@ chains; it may split them further but may not collapse away a boundary:
    observation/cancellation, check/job/log reads, and artifact download.
    Model GitHub's branch/tag-only `workflow_dispatch` ref semantics; expose
    leased immutable audit-ref create/adopt/delete plus workflow path/blob/run-
-   head attestation through the provider boundary.
+   head attestation through the provider boundary. Model the repository default
+   branch and dispatch ref as separate provider identities, and reject dispatch
+   when the workflow is absent, disabled, or lacks `workflow_dispatch` on the
+   current default branch even if the same workflow is valid at the audit ref.
 3. **Protocol and worker handoff.** Wire `CANDIDATE_READY` through
    `pkg/protocol/message.go`, `pkg/worker/worker.go:awaitSubprocessAndReport`,
    `runQGAndReport`, `SendReadyForReview`, and `SendDone`. Update
@@ -1588,7 +1609,13 @@ chains; it may split them further but may not collapse away a boundary:
     retain the ref through restart/artifact incorporation, and lease-delete it
     only after reconciliation. Inject target movement and workflow change at
     the snapshot/dispatch barrier plus ref collision, stale run, and cleanup
-    crash cases.
+    crash cases. Before audit-ref creation, re-fetch the repository default
+    branch and repeat the workflow registration/enablement/trigger check. Test a
+    configured custom or release audit target whose snapshot contains a valid
+    workflow while the default branch lacks it, disables it, removes its trigger,
+    or changes default branch after startup; each case fails before ref or run
+    creation. The production-faithful fake enforces default-branch registration
+    independently from dispatch-ref workflow identity.
 11. **Observability and self-healing.** Extend dispatcher/status JSON,
     `cmd/oro/cmd_status.go`, health online/offline loaders, monitor defect
     rules, dashboard provider/templates, and progress responses for every
@@ -1752,6 +1779,12 @@ nonterminal remote record.
    The exact runtime App proves Actions dispatch/cancel/read and artifact/log
    access through the isolated canary and permission-aware campaign fixture;
    correct actor with insufficient permission is auth/config failure.
+   Startup and the immediate pre-dispatch barrier independently require the
+   configured workflow to be present, enabled, and registered with
+   `workflow_dispatch` on the repository's then-current default branch. Tests
+   cover a custom/release audit target whose immutable snapshot is valid while
+   the default branch is missing, disabled, trigger-ineligible, or changed, and
+   prove failure creates neither an audit ref nor a workflow run.
    Dispatch uses a leased immutable audit branch at the exact snapshot SHA,
    binds the expected workflow path/blob and run ref/head/attempt, survives
    target/workflow movement and restart, and deletes the ref only after durable
