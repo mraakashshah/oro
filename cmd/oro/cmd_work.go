@@ -547,9 +547,6 @@ func prepareStandaloneWorkTargetBranch(ctx context.Context, deps *workDeps, targ
 	if deps == nil || deps.wtMgr == nil || resolvedEpicID == "" || targetBranch == "" || targetBranch == defaultBranch {
 		return nil
 	}
-	if dispatcher.IsEpicRebaseChild(bead, resolvedEpicID, targetBranch) {
-		return nil
-	}
 	preparer, ok := deps.wtMgr.(standaloneBaseBranchPreparer)
 	if !ok {
 		return nil
@@ -565,9 +562,6 @@ func prepareStandaloneWorkTargetBranch(ctx context.Context, deps *workDeps, targ
 }
 
 func validateStandaloneEpicBranchSafe(ctx context.Context, deps *workDeps, targetBranch, defaultBranch string, bead *protocol.BeadDetail, resolvedEpicID string) error {
-	if dispatcher.IsEpicRebaseChild(bead, resolvedEpicID, targetBranch) {
-		return nil
-	}
 	checker, ok := deps.wtMgr.(standaloneBaseBranchSafetyChecker)
 	if !ok {
 		return nil
@@ -577,6 +571,9 @@ func validateStandaloneEpicBranchSafe(ctx context.Context, deps *workDeps, targe
 		return fmt.Errorf("check whether %s has unique commits relative to %s: %w", targetBranch, defaultBranch, err)
 	}
 	if hasUniqueCommits {
+		if dispatcher.IsEpicRebaseChild(bead, resolvedEpicID, targetBranch) {
+			return nil
+		}
 		return fmt.Errorf("epic branch %q has unique commits relative to %q; preserved divergent branch/worktree state and aborted before worker spawn. Inspect `git log --oneline --graph %s %s`, then preserve or port wanted commits before resetting %s to %s",
 			targetBranch, defaultBranch, defaultBranch, targetBranch, targetBranch, defaultBranch)
 	}

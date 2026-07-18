@@ -366,6 +366,10 @@ type assignmentBaseBranchPreparer interface {
 	PrepareBaseBranchForAssignment(ctx context.Context, branch, baseBranch string) (fastForwarded bool, err error)
 }
 
+type assignmentBaseBranchSafetyChecker interface {
+	BaseBranchHasUniqueCommits(ctx context.Context, branch, baseBranch string) (bool, error)
+}
+
 // Escalator accepts escalation messages from dispatcher checks.
 type Escalator interface {
 	Escalate(ctx context.Context, msg string) error
@@ -6176,25 +6180,41 @@ func (d *Dispatcher) prepareEpicBranchForAssignment(ctx context.Context, beadID,
 	}
 	fastForwarded, err := preparer.PrepareBaseBranchForAssignment(ctx, baseBranch, d.cfg.DefaultBranch)
 	if err != nil {
-		if d.isEpicRebaseChildForBase(ctx, beadID, baseBranch) {
-			_ = d.logEvent(ctx, "epic_rebase_child_prepare_diverged", "dispatcher", beadID, workerID,
-				fmt.Sprintf(`{"branch":%q,"base_branch":%q,"error":%q}`, baseBranch, d.cfg.DefaultBranch, err.Error()))
-			return true
-		}
-		_ = d.logEvent(ctx, "epic_branch_prepare_failed", "dispatcher", beadID, workerID,
-			fmt.Sprintf(`{"branch":%q,"base_branch":%q,"error":%q}`, baseBranch, d.cfg.DefaultBranch, err.Error()))
-		_ = d.updateBeadStatus(ctx, beadID, "open")
-		d.mu.Lock()
-		delete(d.assigningBeads, beadID)
-		d.mu.Unlock()
-		d.recordAssignmentFailure(beadID)
-		return false
+		return d.rejectEpicBranchPreparation(ctx, beadID, workerID, baseBranch, err)
 	}
 	if fastForwarded {
 		_ = d.logEvent(ctx, "epic_branch_fast_forwarded", "dispatcher", beadID, workerID,
 			fmt.Sprintf(`{"branch":%q,"base_branch":%q}`, baseBranch, d.cfg.DefaultBranch))
 	}
-	return true
+	checker, ok := d.worktrees.(assignmentBaseBranchSafetyChecker)
+	if !ok {
+		return true
+	}
+	hasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, baseBranch, d.cfg.DefaultBranch)
+	if err != nil {
+		return d.rejectEpicBranchPreparation(ctx, beadID, workerID, baseBranch, err)
+	}
+	if !hasUniqueCommits {
+		return true
+	}
+	if d.isEpicRebaseChildForBase(ctx, beadID, baseBranch) {
+		_ = d.logEvent(ctx, "epic_rebase_child_prepare_diverged", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"branch":%q,"base_branch":%q}`, baseBranch, d.cfg.DefaultBranch))
+		return true
+	}
+	return d.rejectEpicBranchPreparation(ctx, beadID, workerID, baseBranch,
+		fmt.Errorf("epic branch %s has unique commits relative to %s", baseBranch, d.cfg.DefaultBranch))
+}
+
+func (d *Dispatcher) rejectEpicBranchPreparation(ctx context.Context, beadID, workerID, baseBranch string, err error) bool {
+	_ = d.logEvent(ctx, "epic_branch_prepare_failed", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"branch":%q,"base_branch":%q,"error":%q}`, baseBranch, d.cfg.DefaultBranch, err.Error()))
+	_ = d.updateBeadStatus(ctx, beadID, "open")
+	d.mu.Lock()
+	delete(d.assigningBeads, beadID)
+	d.mu.Unlock()
+	d.recordAssignmentFailure(beadID)
+	return false
 }
 
 // lazyCreateEpicBranch creates baseBranch from d.cfg.DefaultBranch when it is
