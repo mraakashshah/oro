@@ -1003,6 +1003,34 @@ after install does not rebuild unnecessarily, and a crash after old-daemon exit
 retries replacement start. The monitor action ledger and post-epic ledger use
 idempotency keys so two monitor instances cannot start two swarms.
 
+Lifecycle execution is serialized by one renewable project-global lease and a
+monotonic lifecycle generation, not by independent per-operation leases. Each
+post-epic operation records its configured install target, required target SHA,
+generation, and artifact identity. On every claim/resume, the monitor loads all
+pending operations for the project, fetches the authoritative configured target
+under the normal repository coordination boundary, and orders requirements by
+Git ancestry. It selects the newest required/current descendant as the desired
+install SHA; row creation or claim timing cannot select an ancestor first.
+
+A healthy installed descendant satisfies every pending operation whose required
+SHA is its ancestor. Those operations are acknowledged individually with
+durable `satisfied_by_sha`, ancestry proof, installed/build hash, PID, and health
+evidence. An ancestor operation arriving after a descendant is already healthy
+is coalesced without rebuilding or restarting. Divergent, rewritten, different-
+artifact, or different-install-target requirements cannot be coalesced and fail
+closed into lifecycle recovery rather than choosing arbitrarily.
+
+The monitor re-fetches and revalidates desired generation/SHA immediately
+before installation, before stopping the daemon, and before starting the
+replacement. Target advancement during build supersedes the build and restarts
+from the newest descendant before shutdown. Because only the live dispatcher
+performs target integration and the monitor holds the project lifecycle barrier
+through shutdown, no later integration can appear after the old dispatcher
+exits and before replacement start. The installed/running SHA is monotonic by
+ancestry: the coordinator never installs or starts an ancestor of the latest
+proven healthy build. These rules prevent downgrade and restart storms while
+allowing one newest build/restart to close several epics.
+
 The monitor itself is supervised by the OS user service manager. Setup installs
 and verifies that service; dispatcher startup requires a compatible supervisor
 heartbeat and supported operation-schema version before enabling automatic
@@ -1251,6 +1279,14 @@ chains; it may split them further but may not collapse away a boundary:
    acknowledgement, epic closure, and recovery after monitor crashes both
    after install and after old-daemon exit. An in-process lifecycle fake cannot
    satisfy this package.
+   Add the project-global lifecycle generation/lease, ancestry-ordered desired
+   SHA selection, descendant-satisfies-ancestor evidence, no-downgrade running
+   SHA, and pre-install/pre-shutdown/pre-start revalidation. The same test runs
+   two epic operations `S1 -> S2`, forces reverse row/claim order, target
+   advancement during build, a late ancestor operation, and monitor crashes;
+   it proves at most one necessary restart, both epics acknowledged/closed, and
+   final running build equal to the newest authoritative descendant. Divergent
+   requirements fail closed.
 10. **Remote full mutation audit.** Add the workflow-dispatch/shard/aggregate
     workflow and wire `pkg/dispatcher/audit.go:runAudit` to durable exact-SHA
     campaign observation, artifact ingestion, restart, infrastructure failure,
@@ -1351,7 +1387,10 @@ nonterminal remote record.
    and verifies the local build/install/restart operation through a real
    externally supervised monitor process. The test crosses old-daemon exit/new-
    daemon start, checks PID/build/install hashes/config/health/acknowledgement,
-   and resumes monitor crashes after install and after daemon exit.
+   and resumes monitor crashes after install and after daemon exit. With two
+   epic operations `S1 -> S2`, reverse claim order and target movement during
+   build never downgrade or restart twice unnecessarily; the healthy `S2`
+   installation durably satisfies both operations and closes both epics.
 5. `oro status --json`, health, monitor events, and the dashboard expose remote
    backlog, degraded mode, failure feedback delivery, quarantine count, and
    pending post-epic installation.
