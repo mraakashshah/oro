@@ -113,8 +113,9 @@ oro recovery list                                          # No open recovery qu
 sqlite3 state.db "SELECT COUNT(*) FROM assignments WHERE status='active';"   # 0
 ```
 
-The dispatcher pauses assignment while any recovery quarantine is open, so the
-project will not pick up new work until every row is resolved.
+The dispatcher pauses assignment while an open recovery quarantine still has a
+branch or worktree to preserve. Empty-safe rows with neither do not freeze new
+work, but should still be resolved so health reporting returns clean.
 
 ## Prevention
 

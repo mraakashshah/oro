@@ -13,6 +13,31 @@ import (
 	"oro/pkg/protocol"
 )
 
+func TestRecoveryQuarantineEmptySafeMatchesRecoveryCommandSemantics(t *testing.T) {
+	tests := []struct {
+		name         string
+		dirtyFiles   int
+		branchExists bool
+		branchAhead  int
+		want         bool
+	}{
+		{name: "no branch or dirty files", want: true},
+		{name: "clean branch without unique commits", branchExists: true, want: true},
+		{name: "dirty worktree", dirtyFiles: 1, want: false},
+		{name: "branch with unique commits", branchExists: true, branchAhead: 1, want: false},
+		{name: "missing branch ignores stale ahead count", branchAhead: 1, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RecoveryQuarantineEmptySafe(tt.dirtyFiles, tt.branchExists, tt.branchAhead); got != tt.want {
+				t.Fatalf("RecoveryQuarantineEmptySafe(%d, %t, %d) = %t, want %t",
+					tt.dirtyFiles, tt.branchExists, tt.branchAhead, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCreateRecoveryQuarantineIdempotent(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()

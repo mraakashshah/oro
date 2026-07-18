@@ -23243,6 +23243,62 @@ func TestTryAssign_IndependentBeforeEpicUnits(t *testing.T) {
 	assertMockWorkerAssignCount(t, workers, len(want))
 }
 
+func TestTryAssignNotFrozenByEmptySafeQuarantine(t *testing.T) {
+	tests := []struct {
+		name              string
+		preservableBranch string
+		wantAssigned      bool
+	}{
+		{
+			name:         "only empty-safe quarantines",
+			wantAssigned: true,
+		},
+		{
+			name:              "preservable quarantine still freezes assignment",
+			preservableBranch: "agent/oro-preserved",
+			wantAssigned:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, beadSrc, workers := setupTryAssignSchedulingTest(t, 1)
+			seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "oro-ready", Priority: 0})
+			beadSrc.SetBeads([]protocol.Bead{{ID: "oro-ready", Priority: 0}})
+
+			if _, err := d.db.ExecContext(t.Context(), `
+INSERT INTO recovery_quarantines (bead_id, reason, details, status)
+VALUES ('oro-empty-safe-1', 'stale_active_assignment', 'no branch or worktree remains', 'open'),
+       ('oro-empty-safe-2', 'missing_worktree', 'nothing remains to recover', 'open')`); err != nil {
+				t.Fatalf("insert empty-safe recovery quarantine: %v", err)
+			}
+			if tt.preservableBranch != "" {
+				if _, err := d.db.ExecContext(t.Context(), `
+INSERT INTO recovery_quarantines (bead_id, branch, reason, details, status)
+VALUES ('oro-preserved', ?, 'unsafe_stale_branch', 'branch still requires recovery', 'open')`,
+					tt.preservableBranch); err != nil {
+					t.Fatalf("insert preservable recovery quarantine: %v", err)
+				}
+			}
+
+			d.tryAssign(t.Context())
+
+			got := assignedBeadIDsByCreation(t, d.db)
+			if tt.wantAssigned {
+				if !slices.Equal(got, []string{"oro-ready"}) {
+					t.Fatalf("assigned beads = %v, want ready bead despite empty-safe quarantine", got)
+				}
+				assertMockWorkerAssignCount(t, workers, 1)
+				return
+			}
+			if len(got) != 0 {
+				t.Fatalf("assigned beads = %v, want preservable quarantine to freeze assignment", got)
+			}
+			assertMockWorkerAssignCount(t, workers, 0)
+		})
+	}
+}
+
 func TestTryAssign_EpicPriorityBeatsEpicAge(t *testing.T) {
 	d, beadSrc, workers := setupTryAssignSchedulingTest(t, 1)
 	seedTryAssignEpic(t, beadSrc, "epic-old", 1, "2026-05-01T00:00:00Z")

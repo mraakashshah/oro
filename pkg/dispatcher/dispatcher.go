@@ -5385,13 +5385,21 @@ func (d *Dispatcher) recoveryQuarantineAssignmentScope(ctx context.Context) (map
 	if openQuarantines == 0 {
 		return nil, false
 	}
+	preservableQuarantines, err := d.countPreservableRecoveryQuarantines(ctx)
+	if err != nil {
+		d.logRecoveryAssignmentBlocked(ctx, openQuarantines, "recovery_quarantine_classification_failed: "+err.Error())
+		return nil, true
+	}
+	if preservableQuarantines == 0 {
+		return nil, false
+	}
 	redeployable, err := d.autoRedeployablePreservedWorktrees(ctx)
 	if err != nil {
-		d.logRecoveryAssignmentBlocked(ctx, openQuarantines, "recovery_quarantine_inspection_failed: "+err.Error())
+		d.logRecoveryAssignmentBlocked(ctx, preservableQuarantines, "recovery_quarantine_inspection_failed: "+err.Error())
 		return nil, true
 	}
 	if len(redeployable) == 0 {
-		d.logRecoveryAssignmentBlocked(ctx, openQuarantines, "open_recovery_quarantine")
+		d.logRecoveryAssignmentBlocked(ctx, preservableQuarantines, "open_recovery_quarantine")
 		return nil, true
 	}
 	return redeployable, false
