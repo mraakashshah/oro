@@ -308,7 +308,10 @@ Rules:
 - GitHub preflight verifies workflow visibility and trigger eligibility for
   the project's actual target patterns, squash-merge availability, and a
   strict required-check ruleset covering `main`, configured targets, and
-  `epic/**`. When the authenticated identity has repository-administration
+  `epic/**`. The adapter identity must not be an allowed bypass actor. The same
+  ruleset identity/enforcement is re-read immediately before authorization;
+  removal, mutation, bypass eligibility, or ambiguous enforcement quarantines
+  the candidate instead of merging. When the authenticated identity has repository-administration
   permission, setup may reconcile the documented Oro-owned ruleset
   idempotently; otherwise startup reports an unhealthy configuration and does
   not publish candidates. Routine beads never wait for operator setup.
@@ -383,6 +386,8 @@ candidate_adopted
   -> awaiting_run
   -> running
   -> passed
+  -> readying_change
+  -> ready_for_merge
   -> merge_authorizing
   -> github_merging
   -> local_sync
@@ -433,9 +438,11 @@ On `CANDIDATE_READY`, the dispatcher:
 9. releases local Git coordination while CI runs;
 10. observes exact check-run data through the adaptive pull scheduler;
 11. validates and persists passing or failing evidence;
-12. after pass, revalidates ops and CI evidence and requests a GitHub squash
-    merge with the expected PR head SHA;
-13. observes the merged SHA, verifies the merged tree, synchronizes the local
+12. after pass, idempotently marks the draft change ready for review and
+    observes that non-draft state;
+13. revalidates ops and CI evidence and requests a GitHub squash merge with the
+    expected PR head SHA;
+14. observes the merged SHA, verifies the merged tree, synchronizes the local
     target, closes the bead, and reconciles the PR and remote candidate ref.
 
 The dispatcher never holds a repository lock while waiting for GitHub.
@@ -475,6 +482,7 @@ type RemoteGateClient interface {
     Publish(ctx context.Context, req PublishRequest) (PublishedCandidate, error)
     EnsureChange(ctx context.Context, req EnsureChangeRequest) (RemoteChange, error)
     Observe(ctx context.Context, req ObserveGateRequest) (RemoteGateObservation, error)
+    SetChangeReady(ctx context.Context, req ChangeReadyRequest) (RemoteChange, error)
     AuthorizeSquashMerge(ctx context.Context, req MergeAuthorizationRequest) (MergeResult, error)
     Cancel(ctx context.Context, req CancelGateRequest) error
     Reconcile(ctx context.Context, req ReconcileChangeRequest) error
@@ -488,6 +496,13 @@ boundary atomically rejects a changed tested base. The GitHub adapter satisfies
 this through a verified strict required-check ruleset and sends the expected
 PR head SHA to the squash endpoint. Ambiguous timeout-after-success responses
 are reconciled by observing the persisted change before retrying.
+
+`SetChangeReady` is a distinct persisted, idempotent transition. The GitHub
+adapter marks the draft PR ready, then observes `isDraft=false` before merge
+authorization. A timeout after the provider accepted the transition is
+reconciled by observation instead of repeating blindly. Restart and rollback
+preserve this state, and the deterministic adapter fake rejects every attempt
+to merge a draft PR.
 
 The production implementation shells out to `git` and `gh` using argument
 arrays and JSON output. It reuses `processenv.ForWorkdir`, authenticates against
@@ -893,9 +908,11 @@ chains; it may split them further but may not collapse away a boundary:
    rulesets, auth, squash support, startup events, and status.
 2. **Provider-neutral core and GitHub adapter.** Implement normalized
    candidate/change/evidence/merge types, all `RemoteGateClient` operations
-   including ambiguous `AuthorizeSquashMerge`, and GitHub transport isolated
-   behind the adapter. Read `pkg/janitor/detect.go` for environment/host/auth
-   conventions and add boundary/import tests.
+   including idempotent `SetChangeReady` and ambiguous
+   `AuthorizeSquashMerge`, and GitHub transport isolated behind the adapter.
+   Read `pkg/janitor/detect.go` for environment/host/auth conventions and add
+   boundary/import tests. The production-faithful fake must reject merge while
+   a change remains draft.
 3. **Protocol and worker handoff.** Wire `CANDIDATE_READY` through
    `pkg/protocol/message.go`, `pkg/worker/worker.go:awaitSubprocessAndReport`,
    `runQGAndReport`, `SendReadyForReview`, and `SendDone`. Update
@@ -922,12 +939,17 @@ chains; it may split them further but may not collapse away a boundary:
    machine through `checkPreMergeQG`, `mergeAndComplete`, and
    `finalizeSuccessfulMerge`; bind the ops-reviewed tree, tested synthetic
    merge tree, strict target policy, and squash result. Test base races,
-   same-name checks, reruns, changed workflow, ambiguous merge response,
+   same-name checks, reruns, changed workflow, draft-to-ready transition and
+   ambiguous response, ambiguous merge response, ruleset removal/bypass,
    unexpected result tree, and local divergence without destructive reset.
 8. **Correction and cleanup.** Persist bounded findings, create a normal pool
    correction assignment at the exact remote candidate SHA, and handle dead
    workers, deleted worktrees, missing refs, duplicate findings, non-ancestor
-   squash cleanup, cancellation, rollback, and recovery quarantine.
+   squash cleanup, cancellation, rollback, and recovery quarantine. Include
+   `TestRemoteGateModeRollbackOwnership` across publishing, running, passed,
+   and ambiguous-merge states after restart; new candidates use local mode,
+   while every old record remains exclusively remote-owned until terminal or
+   durably cancelled.
 9. **Epic promotion and local installation.** Replace the GitHub-mode path in
    `tryCloseEpic`, `completeEpicClose`, and `ffMergeEpicBranch` with promotion
    state, remote evidence/merge, local sync, durable build/install/restart,
@@ -943,10 +965,44 @@ chains; it may split them further but may not collapse away a boundary:
 12. **Hermetic epic verification and canary.** Build
     `scripts/test_remote_gate_epic.sh` around a real local Git remote and a
     deterministic GitHub API/`gh` fake. Parse `go test -json` and require a
-    test-level pass event for every exact named integration test. Statically
-    validate both PR and full-mutation workflows, then run the controlled Oro
-    GitHub canary only after current local history and the workflow are
-    published.
+    test-level pass event for every test in the fixed manifest below. The
+    harness fails if the manifest is empty, has duplicates, names an absent
+    test, or lacks a criterion mapping. Statically validate both PR and full-
+    mutation workflows, then run the controlled Oro GitHub canary only after
+    current local history and the workflow are published.
+13. **Automatic degraded mode and memory-safe full fallback.** Own the
+    `transient_failed -> outage_degraded -> local_memory_safe_gate ->
+    local_passed_waiting_remote` dispatcher transitions, outage timer, exact
+    local evidence, recovery, and project-global lease. Add
+    `scripts/quality_gate.sh --profile=memory-safe` with behavioral subprocess
+    tests for sequential lanes, `GOMAXPROCS=2`, `go test -p 1`, cancellation,
+    and lease release. Test outages during publish, observe, and merge
+    separately and prove automatic return to remote mode.
+
+The committed epic integration-test manifest is nonempty and maps one-to-one
+to required behavior:
+
+```text
+TestRemoteGateConcurrentCandidates
+TestRemoteGateRestartRecovery
+TestRemoteGateDegradedPublishOutage
+TestRemoteGateDegradedObserveOutage
+TestRemoteGateDegradedMergeOutage
+TestRemoteGateDraftReadiness
+TestRemoteGateModeRollbackOwnership
+TestRemoteGateWorkflowContract
+TestRemoteGateWorkerHandoffAndCorrection
+TestRemoteGateExactEvidenceAndProtectedMerge
+TestRemoteMutationAuditCampaign
+TestEpicRemoteGateAndInstall
+TestRemoteGateObservability
+TestRemoteGateProviderBoundary
+```
+
+`scripts/test_remote_gate_epic.sh` owns this literal manifest (or reads an
+equivalent committed data file), verifies exactly 14 unique entries, associates
+each with acceptance criteria 1–10, and requires a test-level JSON `pass` event
+for every entry.
 
 ### 16. Rollout
 
