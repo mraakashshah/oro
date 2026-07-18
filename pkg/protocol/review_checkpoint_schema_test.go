@@ -221,8 +221,19 @@ func TestReviewCheckpointCanonicalKeyMigration(t *testing.T) {
 	if err := protocol.MigrateBeadSchema(ctx, partialDB); err != nil {
 		t.Fatalf("repair mismatched review checkpoint schema: %v", err)
 	}
+	var activeKeyIndexRowIDBeforeRepeat int64
+	if err := partialDB.QueryRowContext(ctx, `SELECT rowid FROM sqlite_schema WHERE type = 'index' AND name = 'idx_review_checkpoints_active_key'`).Scan(&activeKeyIndexRowIDBeforeRepeat); err != nil {
+		t.Fatalf("read active key index rowid before repeat migration: %v", err)
+	}
 	if err := protocol.MigrateBeadSchema(ctx, partialDB); err != nil {
 		t.Fatalf("repeat repaired review checkpoint migration: %v", err)
+	}
+	var activeKeyIndexRowIDAfterRepeat int64
+	if err := partialDB.QueryRowContext(ctx, `SELECT rowid FROM sqlite_schema WHERE type = 'index' AND name = 'idx_review_checkpoints_active_key'`).Scan(&activeKeyIndexRowIDAfterRepeat); err != nil {
+		t.Fatalf("read active key index rowid after repeat migration: %v", err)
+	}
+	if activeKeyIndexRowIDAfterRepeat != activeKeyIndexRowIDBeforeRepeat {
+		t.Fatalf("repeat canonical migration rebuilt active key index: rowid %d -> %d", activeKeyIndexRowIDBeforeRepeat, activeKeyIndexRowIDAfterRepeat)
 	}
 	if _, err := partialDB.ExecContext(ctx, `INSERT INTO review_checkpoints (
 		checkpoint_key, bead_id, origin_assignment_id, worktree, branch, target_branch,
