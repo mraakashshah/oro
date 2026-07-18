@@ -1127,6 +1127,34 @@ barriers issue pause/resume, focus/clear, scale, and max-worker directives durin
 build, immediately before freeze, after freeze, and before D1 eligibility; only
 acknowledged directives appear in the restored generation.
 
+Workers are fenced across the same restart. The durable restart snapshot
+allocates a new worker generation and records every known managed worker PID,
+process group, process-start identity, executable-image/build hash, socket,
+managed/external ownership, and prior generation. D0's graceful shutdown
+returns explicit termination results rather than ignoring kill errors. M1
+rescans project-owned process groups independently of D0's connected-worker map,
+escalates TERM/KILL for every old managed generation, and keeps D1 assignment
+eligibility closed until zero owned B0 worker processes remain or the lifecycle
+operation is durably failed/quarantined.
+
+Worker protocol begins with mandatory versioned `HELLO`/`HELLO_ACK` before
+registration. HELLO contains immutable project identity, worker/restart
+generation, executable-image hash, build SHA, supported protocol range,
+managed/external type, and process identity. D1 accepts only B1 workers whose
+project, generation, image/build, and negotiated protocol match the active
+restart snapshot. A previous-session timestamp is not admission. Stale or
+incompatible managed/external workers receive a shutdown/rejection and never
+enter the idle pool; external workers that cannot be killed remain harmless
+because reconnect cannot pass HELLO.
+
+Assignment selection, target/max capacity, health, status, and dashboard counts
+include only current-generation attested workers. Health reports expected versus
+attested B1 workers plus stale-generation connections/residual process evidence.
+The negotiated protocol versions assignment, shutdown, heartbeat,
+`CANDIDATE_READY`, review, and completion messages; unsupported semantics fail
+before any work is assigned. Rollback allocates another generation for B0 so
+partially spawned B1 workers cannot join the restored factory.
+
 The supervisor shim is supervised by the OS user service manager. Setup installs
 and verifies that service; dispatcher startup requires a compatible monitor-child
 heartbeat and supported operation-schema version before enabling automatic
@@ -1340,6 +1368,11 @@ chains; it may split them further but may not collapse away a boundary:
    `pkg/worker/prompt.go:buildCodingSections`. Prove malformed, oversized,
    stale, and duplicate handoffs fail safely and GitHub mode cannot enter the
    legacy full-QG or `DONE` merge path.
+   Add mandatory `HELLO`/`HELLO_ACK` negotiation carrying project, restart/
+   worker generation, image/build, process identity, ownership type, and
+   protocol range before `registerWorker`/`upsertWorker`. Version all assignment,
+   shutdown, heartbeat, candidate, review, and completion messages; stale or
+   incompatible workers never register.
 4. **Durable remote state and dispatcher ownership.** Add normalized SQLite
    schema/types/indexes/migrations/CAS for candidate, run, evidence,
    correction, audit campaign, post-install state, and monotonic runtime-control
@@ -1358,6 +1391,11 @@ chains; it may split them further but may not collapse away a boundary:
    recomputes its SHA.
    Add the same-database bead-generation/integration-intent transaction and a
    non-assignment remote-record close scan.
+   Persist the worker generation/process inventory and make worker pool
+   registration, idle selection, capacity, health, status, and assignment
+   require active-generation attestation. `shutdownWaitForWorkers`,
+   `killManagedWorkers`, and `cleanupResidualProcesses` return/persist verified
+   outcomes and rescan project-owned process groups beyond connected IDs.
 5. **Local presubmit action scheduler.** Replace the worker monolithic gate in
    GitHub mode with completion-based actions, total/per-resource admission,
    cancellation, exact acceptance execution, and pre/post-rebase invalidation.
@@ -1457,6 +1495,12 @@ chains; it may split them further but may not collapse away a boundary:
    directives at build/pre-freeze/post-freeze/pre-start barriers, paused no-
    dispatch health, focus/capacity restoration, retryable rejected directives,
    B1-config/override incompatibility, and B0 rollback without stale controls.
+   Spawn stubborn managed/external B0 workers that disconnect before inventory,
+   ignore graceful shutdown, and reconnect after D1 socket creation. Prove
+   managed process-group escalation/rescan blocks D1 until zero residuals,
+   external/stale HELLO rejection, no registration/assignment/capacity impact,
+   attested B1 replacement workers, mixed-protocol rejection, and a newly
+   rotated rollback generation excluding partial B1 workers.
 10. **Remote full mutation audit.** Add the workflow-dispatch/shard/aggregate
     workflow and wire `pkg/dispatcher/audit.go:runAudit` to durable exact-SHA
     campaign observation, artifact ingestion, restart, infrastructure failure,
@@ -1580,9 +1624,14 @@ nonterminal remote record.
    durable control generation. Directives before freeze survive exactly;
    directives after freeze are retryably rejected. D1 cannot dispatch before
    acknowledging that generation, and rollback D0 never revives stale control.
+   Stubborn/disconnected B0 managed workers are inventoried and terminated;
+   surviving external/stale workers fail the mandatory generation/build/
+   protocol HELLO and never affect idle capacity or assignments. D1 dispatches
+   only through attested B1 workers, and rollback rotates generation again.
 5. `oro status --json`, health, monitor events, and the dashboard expose remote
    backlog, degraded mode, failure feedback delivery, quarantine count, and
-   pending post-epic installation.
+   pending post-epic installation, expected/attested active-generation workers,
+   stale worker connections, and residual old-generation processes.
 6. Workflow contract fixtures prove PR eligibility for main, a configured
    custom target, and an `epic/**` target; prove the aggregate includes every
    portable job including strict incremental mutation; and reject mutable
