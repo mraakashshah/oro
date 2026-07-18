@@ -922,6 +922,10 @@ premortem:
 - [x] DECISION: What happens when GitHub is transiently unavailable?
       ANSWER: After 15 minutes the dispatcher uses one memory-safe local gate
       and automatically returns to remote mode.
+- [x] DECISION: Is replacing normal local full-QG execution necessary?
+      ANSWER: Yes. The serialized local gate is a dominant throughput defect,
+      not an optional optimization opportunity. Remote execution is the normal
+      architecture; local full QG survives only as controlled degraded fallback.
 - [ ] DECISION: Is a visible draft PR for every bead an acceptable permanent
       factory audit trail, or should successful bead PRs be collapsed later?
       DEPENDS_ON: None.
