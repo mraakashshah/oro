@@ -604,6 +604,21 @@ func resolveRecoveryQuarantineRequeuePreserved(ctx context.Context, db *sql.DB, 
 	if err != nil {
 		return err
 	}
+	var beadStatus string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM beads WHERE id=?`, q.BeadID).Scan(&beadStatus); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("requeue-preserved bead %s does not exist", q.BeadID)
+		}
+		return fmt.Errorf("lookup requeue-preserved bead %s: %w", q.BeadID, err)
+	}
+	if beadStatus != "open" && beadStatus != "in_progress" {
+		return fmt.Errorf("requeue-preserved bead %s has status %q", q.BeadID, beadStatus)
+	}
+	if beadStatus == "in_progress" {
+		if _, err := tx.ExecContext(ctx, `UPDATE beads SET status='open', updated_at=datetime('now') WHERE id=? AND status='in_progress'`, q.BeadID); err != nil {
+			return fmt.Errorf("reopen requeue-preserved bead: %w", err)
+		}
+	}
 	if needsRequeue {
 		if err := requeuePreservedAssignment(ctx, tx, assignmentID, q.BeadID); err != nil {
 			return err
