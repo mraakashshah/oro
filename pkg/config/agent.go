@@ -249,14 +249,14 @@ func Load(path string) (*AgentConfig, error) {
 }
 
 // LoadWithPrecedence reads an agent block from the highest-priority config
-// layer that defines one. Agent configuration is global-user scoped, falling
-// back to project config only when higher layers are unset, absent, or do not
-// contain an agent block.
+// layer that defines one. Agent configuration is project scoped, falling back
+// to global config only when the project file is absent or does not contain an
+// agent block.
 //
 // Precedence:
-//  1. $ORO_HOME/config.yaml, when ORO_HOME is set
-//  2. ~/.oro/config.yaml
-//  3. projectConfigPath, typically <repo>/.oro/config.yaml
+//  1. projectConfigPath, typically <repo>/.oro/config.yaml
+//  2. $ORO_HOME/config.yaml, when ORO_HOME is set
+//  3. ~/.oro/config.yaml
 func LoadWithPrecedence(projectConfigPath string) (*AgentConfig, error) {
 	for _, path := range agentConfigCandidates(projectConfigPath) {
 		cfg, found, err := loadIfAgentBlock(path)
@@ -284,14 +284,14 @@ func HasAgentBlockWithPrecedence(projectConfigPath string) bool {
 
 func agentConfigCandidates(projectConfigPath string) []string {
 	candidates := make([]string, 0, 3)
+	if projectConfigPath != "" {
+		candidates = append(candidates, projectConfigPath)
+	}
 	if oroHome := os.Getenv("ORO_HOME"); oroHome != "" {
 		candidates = append(candidates, filepath.Join(oroHome, "config.yaml"))
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		candidates = append(candidates, filepath.Join(home, ".oro", "config.yaml"))
-	}
-	if projectConfigPath != "" {
-		candidates = append(candidates, projectConfigPath)
 	}
 	return candidates
 }

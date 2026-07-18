@@ -119,6 +119,38 @@ languages:
 	})
 }
 
+func TestProjectRoleRoutingOverridesGlobalAgentConfig(t *testing.T) {
+	projectDir := t.TempDir()
+	oroHome := t.TempDir()
+	t.Chdir(projectDir)
+	t.Setenv("ORO_HOME", oroHome)
+	t.Setenv("ORO_PROJECT", "")
+
+	writeProjectConfigFile(t, projectDir, `agent:
+  roles:
+    worker:
+      transport: cli
+      runtime: project-runtime
+      model: project-model
+      reasoning: project-reasoning
+`)
+	if err := os.WriteFile(filepath.Join(oroHome, "config.yaml"), []byte(`agent:
+  roles:
+    worker:
+      transport: cli
+      runtime: global-runtime
+      model: global-model
+      reasoning: global-reasoning
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime, model, reasoning := agentmodel.ResolveForRole("worker")
+	if runtime != "project-runtime" || model != "project-model" || reasoning != "project-reasoning" {
+		t.Fatalf("ResolveForRole(worker) = (%q, %q, %q), want project routing", runtime, model, reasoning)
+	}
+}
+
 func TestLockedRoleResolution(t *testing.T) {
 	writeAgentConfig(t, `agent: {}`)
 

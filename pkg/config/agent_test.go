@@ -269,6 +269,106 @@ languages:
 	}
 }
 
+func TestLoadWithPrecedencePrefersProjectAgentBlock(t *testing.T) {
+	projectConfigPath := filepath.Join(t.TempDir(), "config.yaml")
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+
+	projectConfig := `agent:
+  roles:
+    worker:
+      runtime: project-runtime
+      model: project-model
+      reasoning: project-reasoning
+`
+	if err := os.WriteFile(projectConfigPath, []byte(projectConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	globalConfig := `agent:
+  roles:
+    worker:
+      runtime: global-runtime
+      model: global-model
+      reasoning: global-reasoning
+`
+	if err := os.WriteFile(filepath.Join(oroHome, "config.yaml"), []byte(globalConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.LoadWithPrecedence(projectConfigPath)
+	if err != nil {
+		t.Fatalf("LoadWithPrecedence returned unexpected error: %v", err)
+	}
+
+	worker := cfg.Roles["worker"]
+	if worker.Runtime != "project-runtime" || worker.Model != "project-model" || worker.Reasoning != "project-reasoning" {
+		t.Errorf("worker role = %+v, want project routing values", worker)
+	}
+}
+
+func TestLoadWithPrecedenceFallsBackToGlobalWithoutProjectAgentBlock(t *testing.T) {
+	projectConfigPath := filepath.Join(t.TempDir(), "config.yaml")
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+
+	globalConfig := `agent:
+  roles:
+    worker:
+      runtime: global-runtime
+      model: global-model
+      reasoning: global-reasoning
+`
+	if err := os.WriteFile(filepath.Join(oroHome, "config.yaml"), []byte(globalConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("project config absent", func(t *testing.T) {
+		cfg, err := config.LoadWithPrecedence(projectConfigPath)
+		if err != nil {
+			t.Fatalf("LoadWithPrecedence returned unexpected error: %v", err)
+		}
+		if got := cfg.Roles["worker"].Model; got != "global-model" {
+			t.Errorf("worker model = %q, want global-model", got)
+		}
+	})
+
+	t.Run("project config has no agent block", func(t *testing.T) {
+		if err := os.WriteFile(projectConfigPath, []byte("project: example\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg, err := config.LoadWithPrecedence(projectConfigPath)
+		if err != nil {
+			t.Fatalf("LoadWithPrecedence returned unexpected error: %v", err)
+		}
+		if got := cfg.Roles["worker"].Model; got != "global-model" {
+			t.Errorf("worker model = %q, want global-model", got)
+		}
+	})
+}
+
+func TestLoadWithPrecedenceSurfacesMalformedProjectAgentBlock(t *testing.T) {
+	projectConfigPath := filepath.Join(t.TempDir(), "config.yaml")
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+
+	if err := os.WriteFile(projectConfigPath, []byte("agent: [\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oroHome, "config.yaml"), []byte("agent: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := config.LoadWithPrecedence(projectConfigPath)
+	if err == nil {
+		t.Fatal("LoadWithPrecedence returned nil error for malformed project agent config")
+	}
+	if !strings.Contains(err.Error(), projectConfigPath) {
+		t.Errorf("error = %q, want project config path %q", err, projectConfigPath)
+	}
+}
+
 func TestDefaultAgentConfigLockedProviderRoleTable(t *testing.T) {
 	cfg := config.DefaultAgentConfig()
 
