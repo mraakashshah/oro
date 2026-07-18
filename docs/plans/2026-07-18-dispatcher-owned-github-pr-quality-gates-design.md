@@ -14,7 +14,8 @@ rebases the bead branch, publishes the exact candidate state, creates or
 updates a draft pull request, waits for an aggregate GitHub check, validates
 the returned evidence against the exact head and target SHAs, routes failures
 back to durable correction work, retries transient infrastructure failures,
-performs the existing ops review, authorizes a protected GitHub squash merge,
+performs the existing ops review, authorizes an atomic GitHub-hosted squash
+integration,
 synchronizes local target state, and reconciles the pull request.
 
 The operator is an observer. Remote-gate backlog, recovery, and degraded mode
@@ -62,7 +63,8 @@ turn those checks into merge evidence.
   orchestration.
 - Preserve the invariant that only a gate for the exact candidate head and
   exact target state can authorize review and merge.
-- Preserve linear target history with one GitHub squash-merged commit per bead.
+- Preserve linear target history with one squash commit per bead, atomically
+  accepted by the GitHub target ref only while its tested base is still exact.
 - Route deterministic CI findings back to the assigned worker as structured,
   bounded feedback.
 - Recover idempotently after dispatcher, worker, `gh`, network, or GitHub
@@ -103,7 +105,7 @@ turn those checks into merge evidence.
 2. **Exact-state evidence:** a passing check is usable only when it identifies
    the configured workflow, aggregate check, PR number, workflow run ID,
    tested merge SHA, candidate head SHA, target branch, and target SHA.
-3. **No stale merge:** immediately before authorizing GitHub's squash merge, the dispatcher
+3. **No stale merge:** immediately before authorizing the GitHub-hosted squash integration, the dispatcher
    proves that local target, remote target, candidate head, and recorded
    evidence still match. Any mismatch invalidates evidence and re-enters the
    rebase/publish/gate loop.
@@ -128,9 +130,13 @@ turn those checks into merge evidence.
     status/progress request.
 11. **Atomic target protection:** a remote provider may merge only if it can
     prove that the tested base is still current at the provider's atomic merge
-    boundary. For GitHub v1 this requires a verified strict required-check
-    ruleset covering `main`, configured custom targets, and `epic/**`; a
-    pre-merge read followed by an expected-head request is not sufficient.
+    boundary. GitHub v1 creates one commit whose parent is the exact tested base
+    and whose tree is the exact reviewed/tested tree, then updates the target
+    ref with an exact `--force-with-lease=<target>:<tested-base>` transaction.
+    GitHub accepts the ref update only when the current ref value is exactly the
+    expected base; forward, backward, or rewritten movement rejects atomically.
+    Mutable policy observations or an expected-head-only PR merge request are
+    not correctness boundaries.
 12. **Single authoritative completion path:** in `github-pr` mode neither
     `DONE(QualityGatePassed=true)`, the legacy local merge coordinator, nor
     `checkPreMergeQG` can bypass the durable remote-gate record.
@@ -197,7 +203,7 @@ worker implementation
   -> publish draft PR
   -> comprehensive remote QG on the PR merge commit
   -> exact evidence revalidation
-  -> dispatcher-authorized GitHub squash merge
+  -> dispatcher-authorized GitHub target-ref CAS of one squash commit
 ```
 
 Each layer has a distinct job:
@@ -306,23 +312,28 @@ Rules:
   win and are reported as the effective value. Unknown or malformed remote
   gate keys fail closed.
 - GitHub preflight verifies workflow visibility and trigger eligibility for
-  the project's actual target patterns, squash-merge availability, and a
+  the project's actual target patterns and a
   strict required-check ruleset covering `main`, configured targets, and
-  `epic/**`. The adapter identity must not be an allowed bypass actor. The same
+  `epic/**`. A dedicated least-privilege integration identity may bypass the
+  PR/required-check rule only for the final target-ref CAS; it has contents/PR
+  permission but no repository administration or ruleset-write permission.
+  No human or general worker identity is a bypass actor. The same
   evaluation resolves the complete effective repository and organization
   policy for each target. V1 rejects any overlapping rule that requires human
   approving/CODEOWNER reviews, conversation resolution, deployments, merge
   queue, signed-commit behavior the provider cannot satisfy, or another
   unsupported actor/restriction/lock/read-only condition. It also proves the
-  dispatcher can update its candidate ref and use the squash endpoint. The
+  dispatcher can update candidate refs, create the exact squash commit, and
+  perform the exact-SHA leased target update through that dedicated identity. The
   evaluated rule IDs, versions, enforcement modes, bypass actors, and canonical
   policy hash become capability evidence. The complete policy is re-read
   immediately before authorization; removal, mutation, newly effective policy,
-  bypass eligibility, or ambiguous enforcement quarantines the candidate
-  instead of merging. When the authenticated identity has repository-administration
-  permission, setup may reconcile the documented Oro-owned ruleset
-  idempotently; otherwise startup reports an unhealthy configuration and does
-  not publish candidates. Routine beads never wait for operator setup.
+  unexpected bypass eligibility, or ambiguous enforcement quarantines the
+  candidate instead of merging. Repository administration used by setup is a
+  separate credential from the runtime integration identity. Setup may
+  reconcile the documented Oro-owned ruleset idempotently; otherwise startup
+  reports an unhealthy configuration and does not publish candidates. Routine
+  beads never wait for operator setup.
 
 The first version supports one GitHub remote and one workflow/check contract
 per project. Candidate, evidence, correction, state-machine, and merge-policy
@@ -420,15 +431,18 @@ worktree, exact branch/ref, target, and that the SHA is committed and reachable
 from that branch. Missing, dirty, mismatched, stale, or oversized messages fail
 before adoption. Duplicate delivery is idempotent both before and after the
 acknowledgement: the dispatcher persists the candidate row, dispatcher-owned
-remote ref, and candidate-ref lease before acknowledging worker release.
+local adoption ref, and candidate-ref lease before acknowledging worker
+release. Remote-ref identity may be reserved at adoption, but it is not treated
+as durable storage until publication and exact remote observation succeed.
 
 The durable candidate row is independent of the active worker assignment. On
 adoption, ownership of the candidate ref transfers from the assignment to the
 dispatcher; the worker worktree may then be deleted or reused. Corrections
-materialize from the persisted dispatcher-owned remote ref at the exact
-candidate SHA into a fresh worktree. A missing remote ref, deleted original
-worktree, stale `agent/<bead>` branch, or dead original worker is handled by
-that source-of-truth order and never by worker affinity.
+materialize through the ordered candidate source resolver: verified remote ref
+when one exists, otherwise the retained local adoption ref at the exact SHA.
+A missing remote ref, deleted original worktree, stale `agent/<bead>` branch,
+or dead original worker is handled by that source-of-truth order and never by
+worker affinity.
 
 Worker release has a crash-consistent durability boundary before the first
 network publication. The dispatcher atomically creates and verifies a local
@@ -467,8 +481,8 @@ On `CANDIDATE_READY`, the dispatcher:
 12. validates and persists passing or failing evidence;
 13. after pass, idempotently marks the draft change ready for review and
     observes that non-draft state;
-14. revalidates ops and CI evidence and requests a GitHub squash merge with the
-    expected PR head SHA;
+14. revalidates ops and CI evidence and requests the GitHub-hosted squash CAS
+    with the exact candidate head and target SHA;
 15. observes the merged SHA, verifies the merged tree, synchronizes the local
     target, closes the bead, and reconciles the PR and remote candidate ref.
 
@@ -510,19 +524,24 @@ type RemoteGateClient interface {
     EnsureChange(ctx context.Context, req EnsureChangeRequest) (RemoteChange, error)
     Observe(ctx context.Context, req ObserveGateRequest) (RemoteGateObservation, error)
     SetChangeReady(ctx context.Context, req ChangeReadyRequest) (RemoteChange, error)
-    AuthorizeSquashMerge(ctx context.Context, req MergeAuthorizationRequest) (MergeResult, error)
+    IntegrateSquashCAS(ctx context.Context, req SquashCASRequest) (MergeResult, error)
     Cancel(ctx context.Context, req CancelGateRequest) error
     Reconcile(ctx context.Context, req ReconcileChangeRequest) error
 }
 ```
 
-`MergeAuthorizationRequest` contains repository identity, remote change ID,
-expected candidate head SHA, expected target ref and SHA, exact evidence ID,
-and reviewed tree. `Capabilities` must attest that the provider's merge
-boundary atomically rejects a changed tested base. The GitHub adapter satisfies
-this through a verified strict required-check ruleset and sends the expected
-PR head SHA to the squash endpoint. Ambiguous timeout-after-success responses
-are reconciled by observing the persisted change before retrying.
+`SquashCASRequest` contains repository identity, remote change ID, expected
+candidate head SHA, exact target ref/SHA, exact evidence ID, reviewed/tested
+tree, and deterministic commit message/metadata. The adapter creates one
+squash commit with parent equal to the expected target SHA and tree equal to
+the reviewed/tested tree, then asks GitHub to advance the target ref using an
+exact expected-old-SHA lease. Git's receive transaction accepts the update only
+if the current target equals that tested base; because the new commit's sole
+parent is also the expected target, the result is one fast-forward squash
+commit. Any concurrent target movement rejects the update atomically.
+The adapter then observes the exact target ref before classifying success.
+Ambiguous timeout-after-success responses are reconciled by that observation
+instead of retrying creation or target mutation blindly.
 
 `Capabilities` also contains the canonical effective-policy hash and an
 enumerated result for every applicable repository/organization rule. GitHub v1
@@ -661,17 +680,17 @@ approval for the old diff is also invalidated because the diff changed.
 If only observational metadata changed, the dispatcher may continue. The first
 version must not attempt affected-file reasoning.
 
-After exact validation, the dispatcher re-verifies that the actual target is
-covered by the preflighted strict required-check ruleset, then calls the
-adapter's `AuthorizeSquashMerge` with `merge_method=squash`, exact expected PR
-head SHA, target ref/SHA, and evidence ID. GitHub's endpoint directly guards
-the head while the required-up-to-date ruleset provides the atomic base guard:
-if the base advances, the required aggregate becomes stale and GitHub rejects
-the merge. A target without this provider-enforced guarantee is unsupported in
-`github-pr` mode. A 405/409, changed protection, or changed head/base means the
-bead is not closed and re-enters preflight or the rebase/review/gate loop.
+After exact validation, the dispatcher re-verifies compatible policy and calls
+the adapter's `IntegrateSquashCAS`. The adapter independently verifies the PR
+head, constructs the exact single-parent squash commit, and performs the
+exact-SHA leased target-ref update. This Git ref transaction—not the mutable policy
+reread—is the atomic expected-base guard. A rejected ref update, changed policy,
+or changed head/base means the bead is not closed and re-enters preflight or
+the rebase/review/gate loop. A deterministic fake barrier between final policy
+read and ref mutation injects simultaneous policy change plus target movement
+and must prove rejection before target mutation.
 
-After GitHub reports the merged SHA, the dispatcher fetches the remote and
+After GitHub reports the integrated SHA, the dispatcher fetches the remote and
 proves the three-way invariant: reviewed post-rebase candidate tree equals the
 tested synthetic merge tree equals the resulting squash-commit tree. Git tree
 identity covers modes, symlinks, submodule gitlinks, and LFS pointer blobs. An
@@ -716,8 +735,12 @@ dispatcher owns a candidate worktree/ref after `CANDIDATE_READY`; the worker
 may immediately accept another bead. Any review or CI rejection reopens the
 original bead in a correction stage and creates a normal pool assignment. The
 same process may receive it if idle, but correctness never depends on affinity.
-The correction worker starts from the preserved remote candidate ref or a fresh
-worktree at that exact SHA and receives the durable checkpoint before coding.
+Candidate materialization uses one durable resolver: before verified remote
+publication it selects the local adoption ref; afterward it prefers the exact
+verified remote ref and retains the local ref as fallback until terminal
+reconciliation. The correction worker gets a fresh worktree at that resolved
+SHA and receives the durable checkpoint before coding. Local-presubmit or ops
+rejection before first publication is a required correction fixture.
 This preserves the requirement that unchanged code cannot repeat a rejection
 cycle without seeing the actual findings.
 
@@ -740,9 +763,9 @@ dispatcher may execute the candidate through a local `memory-safe` profile:
 The local result produces exact local evidence for the same candidate and
 target SHA. It may advance the durable record to `local_passed_waiting_remote`,
 release local compute, and preserve the candidate, but it cannot perform a
-GitHub squash merge while the merge API or its protection proof is unavailable.
+GitHub target-ref CAS while the remote API/transport is unavailable.
 After GitHub recovers, the dispatcher revalidates target/review/local evidence,
-authorizes the protected merge, and returns new candidates automatically to
+authorizes the atomic squash CAS, and returns new candidates automatically to
 remote mode. Thus coding and local validation may continue during a long
 outage, while integration throughput correctly waits for the authoritative
 remote merge boundary. Outages are tested separately during publish, observe,
@@ -770,12 +793,14 @@ quarantined, the dispatcher cancels its current workflow run best-effort and
 marks the durable run obsolete. A failed cancellation cannot make stale
 evidence usable.
 
-After a successful GitHub squash merge, reconciliation proves the merged target
+After a successful GitHub-hosted squash CAS, reconciliation proves the target
 tree equals the reviewed and tested candidate tree. It then:
 
-1. records GitHub's merged SHA and synchronizes the local target by
+1. records GitHub's integrated SHA and synchronizes the local target by
    fast-forward only;
-2. verifies GitHub marked the PR merged;
+2. verifies the exact target ref/commit, then closes/reconciles the CI PR with
+   durable factory-integrated evidence (the PR merge endpoint is not the target
+   mutation primitive);
 3. deletes the remote candidate ref with a lease;
 4. archives or safely deletes the non-ancestor worker branch only after
    tree-equivalence and durable PR evidence prove no unique work remains;
@@ -821,7 +846,7 @@ When all children and acceptance criteria are closed:
 2. run the aggregate portable gate against the combined epic merge commit;
 3. persist exact epic evidence;
 4. run final epic review/acceptance;
-5. authorize GitHub to squash merge through the normal exact-state path;
+5. authorize the GitHub-hosted squash CAS through the normal exact-state path;
 6. reconcile the promotion PR and remote epic ref;
 7. perform the existing local `make build install`, installed/repo binary hash
    match, controlled Oro restart, and healthy-dispatch verification.
@@ -941,15 +966,16 @@ chains; it may split them further but may not collapse away a boundary:
    `dispatcher.Config.validate`, and `Dispatcher.Run` before socket readiness.
    Cover defaults, precedence, malformed values, workflow eligibility, target
    rulesets, complete effective repository/organization policy, unsupported
-   human/deployment/merge-queue blockers, auth, squash support, startup events,
-   and status.
+   human/deployment/merge-queue blockers, dedicated runtime integration
+   identity permissions, auth, target CAS support, startup events, and status.
 2. **Provider-neutral core and GitHub adapter.** Implement normalized
    candidate/change/evidence/merge types, all `RemoteGateClient` operations
    including idempotent `SetChangeReady` and ambiguous
-   `AuthorizeSquashMerge`, and GitHub transport isolated behind the adapter.
+   `IntegrateSquashCAS`, and GitHub transport isolated behind the adapter.
    Read `pkg/janitor/detect.go` for environment/host/auth conventions and add
    boundary/import tests. The production-faithful fake must reject merge while
-   a change remains draft and model approving review, CODEOWNER, conversation,
+   a change remains draft and model target movement at the exact CAS barrier,
+   policy mutation in that same interval, approving review, CODEOWNER, conversation,
    deployment, signed-commit, lock/read-only, actor restriction, and merge-
    queue policy blockers.
 3. **Protocol and worker handoff.** Wire `CANDIDATE_READY` through
@@ -977,12 +1003,13 @@ chains; it may split them further but may not collapse away a boundary:
    strict machine-readable incremental mutation command, workflow fixtures,
    SHA-pinned actions, and aggregate membership/trigger tests for main,
    custom, and epic bases.
-7. **Exact evidence, ops review, and protected merge.** Wire the remote state
+7. **Exact evidence, ops review, and atomic squash integration.** Wire the remote state
    machine through `checkPreMergeQG`, `mergeAndComplete`, and
    `finalizeSuccessfulMerge`; bind the ops-reviewed tree, tested synthetic
    merge tree, strict target policy, and squash result. Test base races,
    same-name checks, reruns, changed workflow, draft-to-ready transition and
    ambiguous response, ambiguous merge response, ruleset removal/bypass,
+   compound policy mutation plus base movement at the final CAS barrier,
    unexpected result tree, and local divergence without destructive reset.
 8. **Correction and cleanup.** Persist bounded findings, create a normal pool
    correction assignment at the exact remote candidate SHA, and handle dead
@@ -993,6 +1020,9 @@ chains; it may split them further but may not collapse away a boundary:
    and ambiguous-merge states after restart; new candidates use local mode,
    while every old record remains exclusively remote-owned until terminal or
    durably cancelled.
+   The shared candidate source resolver is exercised for prepublication
+   presubmit/ops rejection (local adoption ref), postpublication rejection
+   (verified remote ref), startup recovery, and missing-source quarantine.
 9. **Epic promotion and local installation.** Replace the GitHub-mode path in
    `tryCloseEpic`, `completeEpicClose`, and `ffMergeEpicBranch` with promotion
    state, remote evidence/merge, local sync, durable build/install/restart,
@@ -1096,7 +1126,8 @@ nonterminal remote record.
    custom target, and an `epic/**` target; prove the aggregate includes every
    portable job including strict incremental mutation; and reject mutable
    action tags, write permissions, secrets, `pull_request_target`, head-only
-   checkout, missing/skipped needs, a non-strict target ruleset, adapter bypass,
+   checkout, missing/skipped needs, a non-strict target ruleset, any bypass
+   actor other than the dedicated least-privilege integration identity,
    and every unsupported effective human/deployment/conversation/signature/
    lock/actor/merge-queue policy.
 7. GitHub mode runs the configured local presubmit actions with bounded
@@ -1106,15 +1137,17 @@ nonterminal remote record.
    missing remote ref, and correction by a different worker are covered.
 8. Exact evidence tests reject same-name checks, changed workflow blobs,
    reruns for another attempt, stale synthetic merge SHAs, target movement at
-   the merge boundary, ambiguous merge responses, and any inequality among
-   reviewed, tested, and squash-result trees.
+   the merge boundary, ambiguous integration responses, simultaneous policy
+   mutation plus base movement at the CAS barrier, and any inequality among
+   reviewed, tested, and squash-result trees. Prepublication rejection also
+   materializes corrections from the retained local adoption ref.
 9. Every auditor cycle dispatches or adopts exactly one full mutation campaign
    for its audit ID and SHA, survives restart, validates every shard artifact,
    distinguishes infrastructure failure from surviving mutants, and creates
    deduplicated repair beads before a successful audit completion.
 10. Provider-neutral core packages compile without GitHub transport imports or
     direct `gh` execution; a deterministic GitHub adapter fake exercises every
-    side effect including protected squash authorization and reconciliation.
+    side effect including exact-old-SHA squash CAS and reconciliation.
 
 Epic verification command:
 
@@ -1161,14 +1194,14 @@ premortem:
   elephants:
     - risk: "PR-per-bead increases remote noise and consumes hosted CI capacity."
       mitigation: "Draft PRs, deterministic refs, max_in_flight, cancellation, and automatic reconciliation bound the noise; the audit trail is part of the desired capability."
-    - risk: "The dispatcher requests a squash merge after its evidence becomes stale."
-      mitigation: "A dispatcher-preflighted strict required-check ruleset provides the provider-side atomic base guard, the merge request supplies expected head SHA, and Oro revalidates head, base, workflow, review, and QG evidence immediately before authorization."
+    - risk: "The dispatcher requests squash integration after its evidence becomes stale."
+      mitigation: "Oro revalidates head, base, workflow, review, and QG evidence, constructs a commit with the exact tested tree and base parent, and uses an exact-old-SHA leased GitHub ref transaction to reject any concurrent base movement atomically."
     - risk: "Automatic local fallback can still be slower than remote CI and one tool can individually exhaust memory."
       mitigation: "Fallback is serialized and memory-safe, but absolute memory safety needs OS-level resource control as a future capability."
 
   paper_tigers:
     - risk: "GitHub merge queue is unavailable for this user-owned public repository."
-      reason: "The selected design does not depend on merge queue; preflight rejects any target whose effective policy requires it. For supported targets, a verified strict ruleset makes the aggregate stale on base movement, expected-head squash merge rejects head races, and the dispatcher automatically rebases/retries."
+      reason: "The selected design does not depend on merge queue; preflight rejects any target whose effective policy requires it. For supported targets, exact evidence rejects head races and the exact-old-SHA squash ref transaction rejects base races atomically, after which the dispatcher automatically rebases/retries."
     - risk: "Squash merge makes the candidate branch a non-ancestor of target."
       reason: "Reconciliation binds the tested candidate tree to GitHub's merged tree before cleaning the preserved worker and remote refs."
 ```
@@ -1203,9 +1236,10 @@ premortem:
       reviews the exact post-rebase diff before that candidate is published.
 - [x] DECISION: How is the guarantee that every integrated commit compiles
       enforced when a worker creates multiple internal commits?
-      ANSWER: GitHub performs a protected squash merge after exact review and
-      remote QG evidence pass. Worker/WIP commits remain on preserved candidate
-      refs but do not enter target history.
+      ANSWER: After exact review and GitHub remote-QG evidence pass, the
+      dispatcher supplies one exact-tree squash commit and GitHub atomically
+      accepts it only if the target is still the tested base. Worker/WIP commits
+      remain on preserved candidate refs but do not enter target history.
 - [x] DECISION: Who owns PR creation, CI waiting, retry, merge, and cleanup?
       ANSWER: The dispatcher; the operator only observes surfaced state.
 - [x] DECISION: Is GitHub or the local worker authoritative for portable QG in
@@ -1213,9 +1247,13 @@ premortem:
       ANSWER: GitHub exact PR merge evidence is authoritative; local runs only
       macOS checks or the explicitly memory-safe outage fallback.
 - [x] DECISION: Who creates the final Git commit?
-      ANSWER: The worker creates candidate commits; the dispatcher authorizes;
-      GitHub creates one squash commit on the target; the dispatcher fetches
-      and fast-forwards local state after verifying tree equivalence.
+      ANSWER: The worker creates candidate commits. After exact GitHub CI and
+      review evidence, the dispatcher constructs one commit with the tested
+      tree and exact tested base as its sole parent; GitHub atomically accepts
+      that commit through an exact-old-SHA leased target-ref compare-and-swap. The
+      dispatcher fetches and fast-forwards local state after verifying tree
+      equivalence. The PR remains the CI/audit object, but the PR merge endpoint
+      is not used because it has no atomic expected-base parameter.
 - [x] DECISION: Must the original worker remain occupied during review and CI?
       ANSWER: No. Candidate adoption releases it. Rejections become durable
       correction assignments consumable by any available worker, with exact
