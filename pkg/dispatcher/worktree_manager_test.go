@@ -62,6 +62,7 @@ func TestGitWorktreeManagerCreateSelectsSafeFreshBase(t *testing.T) {
 	tests := []struct {
 		name        string
 		localHead   string
+		localErr    error
 		remoteHead  string
 		ancestors   map[string]bool
 		wantBase    string
@@ -89,6 +90,13 @@ func TestGitWorktreeManagerCreateSelectsSafeFreshBase(t *testing.T) {
 			wantCreate: true,
 		},
 		{
+			name:       "uses remote branch when local branch is missing",
+			localErr:   fmt.Errorf("fatal: ambiguous argument 'main': unknown revision"),
+			remoteHead: "remote",
+			wantBase:   "origin/main",
+			wantCreate: true,
+		},
+		{
 			name:        "rejects divergent branches",
 			localHead:   "local",
 			remoteHead:  "remote",
@@ -105,9 +113,11 @@ func TestGitWorktreeManagerCreateSelectsSafeFreshBase(t *testing.T) {
 					case name == "git" && slices.Equal(args, []string{"-C", repoRoot, "fetch", "origin", "main"}):
 						return nil, nil
 					case name == "git" && slices.Equal(args, []string{"-C", repoRoot, "rev-parse", "main"}):
-						return []byte(tt.localHead + "\n"), nil
+						return []byte(tt.localHead + "\n"), tt.localErr
 					case name == "git" && slices.Equal(args, []string{"-C", repoRoot, "rev-parse", "origin/main"}):
 						return []byte(tt.remoteHead + "\n"), nil
+					case name == "git" && slices.Equal(args, []string{"-C", repoRoot, "branch", "--list", "main"}):
+						return nil, nil
 					case name == "git" && len(args) == 6 && slices.Equal(args[:4], []string{"-C", repoRoot, "merge-base", "--is-ancestor"}):
 						if tt.ancestors[args[4]+"->"+args[5]] {
 							return nil, nil
@@ -754,15 +764,21 @@ func TestCreateWithBaseBranch(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		// worktree add is at index 1 (index 0 is the best-effort fetch).
-		// fetch succeeded (mock returns nil) so effectiveBase = "origin/agent/epic-bar".
-		if len(runner.calls) < 2 {
-			t.Fatal("expected at least 2 git calls (fetch + worktree add)")
+		// The default mock reports matching local and remote heads, so either ref
+		// is safe and Create consistently selects the local branch.
+		var args []string
+		for _, call := range runner.calls {
+			if call.Name == "git" && containsAll(call.Args, "worktree", "add") {
+				args = call.Args
+				break
+			}
 		}
-		args := runner.calls[1].Args
+		if args == nil {
+			t.Fatal("expected git worktree add call")
+		}
 		// effectiveBase must be the last argument to `git worktree add <path> -b <branch> <effectiveBase>`.
-		if args[len(args)-1] != "origin/agent/epic-bar" {
-			t.Fatalf("git worktree add last arg: got %q, want %q", args[len(args)-1], "origin/agent/epic-bar")
+		if args[len(args)-1] != "agent/epic-bar" {
+			t.Fatalf("git worktree add last arg: got %q, want %q", args[len(args)-1], "agent/epic-bar")
 		}
 	})
 
@@ -775,14 +791,19 @@ func TestCreateWithBaseBranch(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		// worktree add is at index 1; fetch succeeded so effectiveBase = "origin/main".
-		if len(runner.calls) < 2 {
-			t.Fatal("expected at least 2 git calls (fetch + worktree add)")
+		// Matching local and remote heads select the equivalent local default.
+		var args []string
+		for _, call := range runner.calls {
+			if call.Name == "git" && containsAll(call.Args, "worktree", "add") {
+				args = call.Args
+				break
+			}
 		}
-		args := runner.calls[1].Args
-		// When baseBranch is empty, it defaults to "main" and fetch → "origin/main".
-		if args[len(args)-1] != "origin/main" {
-			t.Fatalf("git worktree add last arg: got %q, want %q (empty baseBranch should default to origin/main after fetch)", args[len(args)-1], "origin/main")
+		if args == nil {
+			t.Fatal("expected git worktree add call")
+		}
+		if args[len(args)-1] != "main" {
+			t.Fatalf("git worktree add last arg: got %q, want %q (empty baseBranch should default to main)", args[len(args)-1], "main")
 		}
 	})
 }
@@ -1414,20 +1435,16 @@ func TestPruneStaleReturnsFirstError(t *testing.T) {
 		slog.SetDefault(slog.New(h))
 		defer slog.SetDefault(origLogger)
 
-		callCount := 0
+		worktreeAddFailed := false
 		runner := &mockCommandRunner{
-			callFn: func(_ context.Context, _ string, _ ...string) ([]byte, error) {
-				callCount++
-				// Call 1: git fetch → succeeds (effectiveBase = origin/main)
-				// Call 2: git worktree add → fails with "already exists"
-				if callCount == 2 {
+			callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+				if containsAll(args, "worktree", "add") && !worktreeAddFailed {
+					worktreeAddFailed = true
 					return nil, fmt.Errorf("fatal: a branch named 'agent/retry-bead' already exists")
 				}
-				// Call 3: git worktree remove (pruneStale step 1) → fails
-				if callCount == 3 {
+				if containsAll(args, "worktree", "remove", "--force") {
 					return nil, fmt.Errorf("fatal: worktree is locked")
 				}
-				// Calls 4+ (prune, merge-base proof, branch -D, branch check, retry add, stage-assets) -> succeed
 				return nil, nil
 			},
 		}
@@ -1442,13 +1459,21 @@ func TestPruneStaleReturnsFirstError(t *testing.T) {
 			t.Fatalf("expected worktree_create_prune_failed to be logged, got: %q", logBuf.String())
 		}
 
-		// Verify retry still executed (9 total calls: fetch, initial add, 4 prune steps,
-		// branch existence check, retry add, stage-assets).
-		if callCount != 9 {
-			t.Fatalf("expected 9 total calls (retry ran), got %d", callCount)
+		worktreeAddCalls := 0
+		sawBranchCheck := false
+		for _, call := range runner.calls {
+			if containsAll(call.Args, "worktree", "add") {
+				worktreeAddCalls++
+			}
+			if containsAll(call.Args, "branch", "--list", "agent/retry-bead") {
+				sawBranchCheck = true
+			}
 		}
-		if !containsAll(runner.calls[6].Args, "branch", "--list", "agent/retry-bead") {
-			t.Fatalf("expected branch existence check before retry, got: %v", runner.calls[6].Args)
+		if worktreeAddCalls != 2 {
+			t.Fatalf("worktree add calls = %d, want initial attempt and retry", worktreeAddCalls)
+		}
+		if !sawBranchCheck {
+			t.Fatal("expected branch existence check before retry")
 		}
 	})
 }

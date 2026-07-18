@@ -31,15 +31,16 @@ before the retry worker can start.
 
 ## Solution
 
-`GitWorktreeManager.Create` preserves the existing remote-first behavior when
-`git fetch origin <baseBranch>` succeeds. If fetch fails and the requested base
-is an `epic/<id>` branch, it checks for the local branch and creates it from
-`main` before running `git worktree add`.
+When `git fetch origin <baseBranch>` succeeds, `GitWorktreeManager.Create`
+selects the fetched remote if the local ref is absent; when both exist, it
+selects their descendant and rejects divergent histories. If fetch fails and
+the requested base is an `epic/<id>` branch, it checks for the local branch and
+creates it from `main` before running `git worktree add`.
 
 Key references:
 
-- `pkg/dispatcher/worktree_manager.go:66`
-- `pkg/dispatcher/worktree_manager_test.go:563`
+- `pkg/dispatcher/worktree_manager.go:GitWorktreeManager.Create`
+- `pkg/dispatcher/worktree_manager_test.go:TestCreateWithMissingEpicBaseBranchCreatesBaseBeforeWorktree`
 
 ## Prevention
 

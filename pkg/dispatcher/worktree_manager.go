@@ -48,11 +48,10 @@ func (g *GitWorktreeManager) ManagedQualityGatePath() string {
 // (e.g. "main" for standalone beads, "epic/<epicID>" for epic child beads).
 //
 // Before creating the worktree, Create performs a best-effort `git fetch origin
-// <baseBranch>` so that the new agent branch always starts from the current
-// remote HEAD, not a potentially-stale local ref. On success the worktree is
-// branched from `origin/<baseBranch>`; if the fetch fails (e.g. no remote), epic
-// base branches are created locally when missing and the local ref is used as a
-// fallback.
+// <baseBranch>`, then selects the fetched remote when no local ref exists or
+// whichever ref is the descendant when both exist. Divergent refs fail closed.
+// If the fetch fails (e.g. no remote), epic base branches are created locally
+// when missing and the local ref is used as a fallback.
 func (g *GitWorktreeManager) Create(ctx context.Context, beadID, baseBranch string) (path, branch string, err error) {
 	// Validate bead ID before using it in filepath operations to prevent
 	// directory traversal attacks.
@@ -114,7 +113,7 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID, baseBranch stri
 func (g *GitWorktreeManager) selectFreshBase(ctx context.Context, localBase, remoteBase string) (string, error) {
 	relation, err := g.branchRelationToBase(ctx, localBase, remoteBase)
 	if err != nil {
-		return "", fmt.Errorf("compare local base %s with %s: %w", localBase, remoteBase, err)
+		return g.selectFetchedRemoteIfLocalMissing(ctx, localBase, remoteBase, err)
 	}
 	switch relation {
 	case branchStrictlyBehind:
@@ -124,6 +123,22 @@ func (g *GitWorktreeManager) selectFreshBase(ctx context.Context, localBase, rem
 	default:
 		return localBase, nil
 	}
+}
+
+func (g *GitWorktreeManager) selectFetchedRemoteIfLocalMissing(
+	ctx context.Context, localBase, remoteBase string, compareErr error,
+) (string, error) {
+	localExists, err := g.BranchExists(ctx, localBase)
+	if err != nil {
+		return "", fmt.Errorf("check local base %s after comparison failure: %w", localBase, err)
+	}
+	if localExists {
+		return "", fmt.Errorf("compare local base %s with %s: %w", localBase, remoteBase, compareErr)
+	}
+	if _, err := g.revParse(ctx, g.repoRoot, remoteBase); err != nil {
+		return "", fmt.Errorf("verify remote base %s: %w", remoteBase, err)
+	}
+	return remoteBase, nil
 }
 
 func (g *GitWorktreeManager) retryCreateAfterPrune(ctx context.Context, path, branch, effectiveBase string, pruneFailed bool) error {
