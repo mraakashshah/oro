@@ -109,6 +109,9 @@ turn those checks into merge evidence.
    proves that local target, remote target, candidate head, and recorded
    evidence still match. Any mismatch invalidates evidence and re-enters the
    rebase/publish/gate loop.
+   GitHub cannot atomically condition a ref update on a previously observed
+   ruleset hash; the narrower policy-drift contract in section 4 governs that
+   final provider race and never misreports an already-integrated commit.
 4. **One authoritative portable gate:** in `github-pr` mode the coding agent
    runs acceptance/focused tests, not the portable full QG; GitHub supplies the
    authoritative portable result. Oro must not then rerun the same portable
@@ -357,8 +360,9 @@ Rules:
   evaluated rule IDs, versions, enforcement modes, bypass actors, and canonical
   policy hash become capability evidence. The complete policy is re-read
   immediately before authorization; removal, mutation, newly effective policy,
-  unexpected bypass eligibility, or ambiguous enforcement quarantines the
-  candidate instead of merging. Repository administration used by setup is a
+  unexpected bypass eligibility, or ambiguous enforcement observed before the
+  target mutation quarantines the candidate instead of merging. Repository
+  administration used by setup is a
   separate credential from the runtime integration identity. Setup may
   reconcile the documented Oro-owned ruleset idempotently; otherwise startup
   reports an unhealthy configuration and does not publish candidates. Routine
@@ -506,6 +510,7 @@ candidate_adopted
   -> integration_intent
   -> merge_authorizing
   -> github_merging
+  -> integrated_policy_drift (only when post-CAS policy differs)
   -> local_sync
   -> reconciled
 
@@ -705,6 +710,29 @@ publication when any is effective. Pre-authorization must reproduce the same
 compatible policy hash. The fake models every supported rejection category,
 not only the desired required-check rule.
 
+GitHub's ref-update primitive has no atomic ruleset-version precondition: its
+request carries the new SHA and fast-forward/lease semantics, while the server
+enforces whatever policy is current when it processes that update. Therefore
+Oro guarantees atomic target-SHA equality and current server-side enforcement,
+but does not claim that a policy read and ref mutation form one transaction.
+Immediately after every successful or ambiguously reconciled CAS, the adapter
+re-reads the complete effective policy. If its canonical hash differs from the
+authorized hash, the candidate enters durable `integrated_policy_drift` with
+before/after policy and rule-suite evidence; Oro freezes further target
+integrations and does not falsely report that the target was unchanged. The
+already-integrated commit is never destructively reverted. Automatic policy
+reconciliation uses only the separately configured setup path, after which the
+record is reconciled idempotently and integration resumes; unavailable setup
+authority remains a surfaced P0 auth/config defect.
+
+The deterministic fake has a barrier after the last policy read with an
+unchanged target. Policy-only removal or a mutation still bypassed by the App
+may allow the ref CAS and must produce `integrated_policy_drift`; a newly
+restrictive rule enforced against the App must make GitHub reject the CAS.
+Policy drift before the last read must prevent mutation. These cases explicitly
+test the provider limitation rather than masking it with simultaneous target
+movement.
+
 `SetChangeReady` is a distinct persisted, idempotent transition. The GitHub
 adapter marks the draft PR ready, then observes `isDraft=false` before merge
 authorization. A timeout after the provider accepted the transition is
@@ -869,10 +897,12 @@ then calls `IntegrateSquashCAS` with that exact object. The adapter independentl
 re-verifies the PR head, prepared commit/ref, and performs the exact-SHA leased
 target-ref update. This Git ref transaction—not the mutable policy reread—is
 the atomic expected-base guard. A rejected ref update, changed policy,
-or changed head/base means the bead is not closed and re-enters preflight or
-the rebase/review/gate loop. A deterministic fake barrier between final policy
-read and ref mutation injects simultaneous policy change plus target movement
-and must prove rejection before target mutation.
+or changed head/base observed before the mutation means the bead is not closed
+and re-enters preflight or the rebase/review/gate loop. Deterministic fake
+barriers between final policy read and ref mutation separately inject target
+movement, policy-only removal/mutation, and both together. Target movement must
+reject before mutation; policy-only outcomes follow the explicit provider-
+limitation contract rather than borrowing safety from the target lease.
 
 Deterministic barriers also inject close/preempt/requeue immediately before and
 after integration intent. Before-intent cancellation prevents provider
@@ -891,6 +921,12 @@ factory checkout this is `git merge --ff-only origin/<target>`; a non-checked-
 out target ref may be compare-and-swap updated. Tracked local edits or divergent
 local commits are preserved and routed to dispatcher recovery—never reset,
 overwritten, or silently discarded.
+
+Before local sync, closure, cleanup, or epic installation, the dispatcher also
+performs the post-CAS effective-policy read. A hash match permits normal
+completion. Drift commits the exact `integrated_policy_drift` state and project-
+wide integration freeze first; subsequent reconciliation knows the target
+already contains the tested squash and must never republish or integrate it.
 
 “GitHub reports” includes ancestry reconciliation of an ambiguous attempt. The
 dispatcher evaluates the persisted proposed squash commit, not only the current
@@ -1432,6 +1468,7 @@ Human and JSON status expose:
 - bead, worker, PR, run URL, candidate SHA prefix, target SHA prefix;
 - last deterministic failure fingerprint;
 - open remote-gate quarantines;
+- integrated-policy-drift evidence and whether target integration is frozen;
 - pending epic post-merge build/install operations.
 
 Required events include:
@@ -1449,14 +1486,17 @@ remote_gate_degraded_started / recovered
 remote_gate_cancelled
 remote_gate_recovery_resumed
 remote_gate_quarantined
+remote_gate_integrated_policy_drift / policy_reconciled
 remote_gate_reconciled
 epic_postmerge_install_started / completed / failed
 ```
 
 The monitor treats a remote gate with no observation beyond the configured
 timeout, a repeated deterministic fingerprint without a worker-feedback event,
-or a terminal run attached to a nonterminal state as a dispatcher defect and
-files/deduplicates a P0 bead automatically.
+a terminal run attached to a nonterminal state, or integrated policy drift as a
+dispatcher defect and files/deduplicates a P0 bead automatically. Policy drift
+also triggers the separately authorized setup-reconciliation path; runtime
+credentials never gain ruleset-write permission.
 
 ### 15. Implementation Coverage Plan
 
@@ -1532,7 +1572,8 @@ chains; it may split them further but may not collapse away a boundary:
 4. **Durable remote state and dispatcher ownership.** Add normalized SQLite
    schema/types/indexes/migrations/CAS for candidate, run, evidence,
    correction, audit campaign, post-install state, and monotonic runtime-control
-   generation. Wire `handleMessage`,
+   generation, plus `integrated_policy_drift` evidence and the project-wide
+   integration freeze/setup-reconciliation state. Wire `handleMessage`,
    `handleDone`, `handleReadyForReview`, `handleReviewResult`,
    `startupRecovery`, `restoreState`, `spawnBackgroundLoops`,
    `checkClosedBeadAssignments`, and `handleClosedAssignment`. Test restart
@@ -1569,6 +1610,8 @@ chains; it may split them further but may not collapse away a boundary:
    same-name checks, reruns, changed workflow, draft-to-ready transition and
    ambiguous response, ambiguous merge response, ruleset removal/bypass,
    compound policy mutation plus base movement at the final CAS barrier,
+   policy-only removal and mutation after the last policy read with an unchanged
+   target, post-CAS drift evidence/integration freeze/setup reconciliation,
    accepted-CAS/lost-response followed by descendant advancement and restart,
    crashes before/after preparation, row commit, remote mutation, and adapter
    return through the real two-phase production call chain,
@@ -1829,6 +1872,7 @@ nonterminal remote record.
    backlog, degraded mode, failure feedback delivery, quarantine count, and
    pending post-epic installation, audit-ref cleanup pending with the blocking
    policy evidence, mutation requested/provider-bound/effective shard counts,
+   integrated policy drift plus integration-freeze/setup-reconciliation state,
    lifecycle readiness reason/control/queue generations, expected/attested
    active-generation workers, stale worker connections, and residual old-
    generation processes.
@@ -1868,6 +1912,12 @@ nonterminal remote record.
    response followed by descendant advancement/restart, and any inequality
    among reviewed, tested, and squash-result trees. Prepublication rejection also
    materializes corrections from the retained local adoption ref.
+   Separate unchanged-target barriers prove policy drift before the last read
+   blocks integration; a newly enforced restriction makes the provider reject;
+   and removal or bypassed mutation in the unavoidable post-read race produces
+   an integrated commit plus exact `integrated_policy_drift` evidence, freezes
+   later integrations, and reconciles only through the setup path. The test
+   never claims that a nontransactional policy read prevented that mutation.
 9. Every auditor cycle dispatches or adopts exactly one full mutation campaign
    for its audit ID and SHA, survives restart, validates every shard artifact,
    independently reconstructs the persisted eligible-unit inventory, proves
