@@ -1048,7 +1048,8 @@ When all children and acceptance criteria are closed:
 5. authorize the GitHub-hosted squash CAS through the normal exact-state path;
 6. reconcile the promotion PR and remote epic ref;
 7. perform the existing local `make build install`, installed/repo binary hash
-   match, controlled Oro restart, and healthy-dispatch verification.
+   match, controlled Oro restart, and state-dependent replacement-readiness
+   verification.
 
 The dispatcher owns steps 1–6, then writes a versioned post-epic operation and
 signals the external lifecycle supervisor. The dispatcher never attempts to
@@ -1063,8 +1064,8 @@ operation with a renewable lease, then idempotently:
 4. invokes `cmd/oro/cmd_start.go:startFreshSwarm` through the newly installed
    binary with the persisted project worker limits/configuration;
 5. proves the replacement PID differs, its executable hash is expected, its
-   reported build hash matches the repository, and dispatcher health plus
-   healthy dispatch succeed;
+   reported build hash matches the repository, and dispatcher health plus the
+   typed state-dependent readiness proof below succeed;
 6. atomically acknowledges the lifecycle operation for dispatcher startup
    recovery to close the epic.
 
@@ -1174,6 +1175,23 @@ paused snapshot remains healthy and paused with zero new assignments. B1
 configuration incompatibility with a persisted override fails preflight before
 D0 shutdown rather than silently dropping or reviving a value.
 
+Lifecycle acknowledgement never depends on ordinary queue work existing or
+being dispatchable. After D1 acknowledges the frozen control generation, it
+emits a typed, durable replacement-readiness proof containing project/build/
+PID/restart generation, control generation, worker-generation fence result,
+socket/database/background-loop health, queue snapshot generation, and one
+planner-cycle result. The planner cycle is read-only: it may prove assignment
+eligibility, but cannot lease, mutate, or send a production assignment. Its
+state reason is exactly one of `paused`, `zero_capacity`, `no_eligible_work`,
+`focus_filtered`, or `assignment_eligible`. A paused proof requires the paused
+control generation and zero post-start `ASSIGN` messages; capacity/focus/empty
+proofs require the matching durable controls and queue snapshot. When configured
+capacity is positive, any expected managed workers must complete the B1
+generation/build/protocol HELLO before readiness; zero configured capacity is a
+valid healthy state. The supervisor accepts only this exact-generation proof,
+never unpauses, scales, clears focus, injects a bead, or waits for a production
+assignment to close an epic.
+
 Rollback clears the freeze only after D0/B0 or a replacement B0 dispatcher has
 loaded and acknowledged the same latest control generation. No rollback path
 unpauses, clears focus, or restores descriptor-time capacity. Deterministic
@@ -1254,8 +1272,8 @@ The durable epic states distinguish `promotion_gate`, `remote_merged`,
 `complete`. `tryCloseEpic`, `completeEpicClose`, and `ffMergeEpicBranch` must
 dispatch by gate mode; the legacy local-QG/FF path cannot close an epic in
 `github-pr` mode. The epic closes only after installed/repository binary hashes
-match, the external supervisor acknowledgement commits, and healthy dispatch is
-observed by the replacement process.
+match, the external supervisor acknowledgement commits, and the replacement's
+typed state-dependent readiness proof is verified.
 
 ### 13. Remote Auditor Mutation Campaign
 
@@ -1612,6 +1630,12 @@ chains; it may split them further but may not collapse away a boundary:
    directives at build/pre-freeze/post-freeze/pre-start barriers, paused no-
    dispatch health, focus/capacity restoration, retryable rejected directives,
    B1-config/override incompatibility, and B0 rollback without stale controls.
+   Implement the typed read-only planner/readiness proof and compose lifecycle
+   acknowledgement plus epic closure with each preserved state: paused, zero
+   target/max workers, no eligible bead, focus excluding all ready beads, and
+   assignment-eligible. The paused real-process case remains paused, emits zero
+   production `ASSIGN` messages, acknowledges the lifecycle operation, and
+   closes the epic without an operator action or synthetic production bead.
    Spawn stubborn managed/external B0 workers that disconnect before inventory,
    ignore graceful shutdown, and reconnect after D1 socket creation. Prove
    managed process-group escalation/rescan blocks D1 until zero residuals,
@@ -1762,6 +1786,12 @@ nonterminal remote record.
    durable control generation. Directives before freeze survive exactly;
    directives after freeze are retryably rejected. D1 cannot dispatch before
    acknowledging that generation, and rollback D0 never revives stale control.
+   With the pre-freeze state paused, zero-capacity, empty, or fully focus-
+   filtered, D1 emits the matching exact-generation read-only readiness proof;
+   the supervisor acknowledges and closes the epic while preserving that state
+   and without any production assignment. The paused subcase proves zero
+   post-start `ASSIGN` messages. Assignment-eligible readiness is also covered
+   without making ordinary queue availability a completion prerequisite.
    Stubborn/disconnected B0 managed workers are inventoried and terminated;
    surviving external/stale workers fail the mandatory generation/build/
    protocol HELLO and never affect idle capacity or assignments. D1 dispatches
@@ -1769,8 +1799,9 @@ nonterminal remote record.
 5. `oro status --json`, health, monitor events, and the dashboard expose remote
    backlog, degraded mode, failure feedback delivery, quarantine count, and
    pending post-epic installation, audit-ref cleanup pending with the blocking
-   policy evidence, expected/attested active-generation workers, stale worker
-   connections, and residual old-generation processes.
+   policy evidence, lifecycle readiness reason/control/queue generations,
+   expected/attested active-generation workers, stale worker connections, and
+   residual old-generation processes.
 6. Workflow contract fixtures prove PR eligibility for main, a configured
    custom target, and an `epic/**` target; prove the aggregate includes every
    portable job including strict incremental mutation; and reject mutable
