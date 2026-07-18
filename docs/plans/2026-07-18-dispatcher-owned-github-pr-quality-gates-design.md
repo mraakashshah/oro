@@ -344,7 +344,8 @@ Rules:
   strict required-check ruleset covering `main`, configured targets, and
   `epic/**`. A dedicated least-privilege integration identity may bypass the
   PR/required-check rule only for the final target-ref CAS; it has contents/PR
-  permission but no repository administration or ruleset-write permission.
+  plus the exact Actions/check/workflow permissions enumerated below, but no
+  repository administration or ruleset-write permission.
   No human or general worker identity is a bypass actor. The same
   evaluation resolves the complete effective repository and organization
   policy for each target. V1 rejects any overlapping rule that requires human
@@ -371,6 +372,44 @@ Rules:
   nonsecret actor/expiry metadata. Refresh failure is classified as transient
   when the source is temporarily unavailable and auth/config when identity or
   scope is invalid.
+
+The runtime installation token is minted with an exact allowlist, not every
+permission the App might possess. V1's canonical repository permission matrix
+is:
+
+| Permission | Level | Used for |
+|---|---|---|
+| Metadata | read | repository identity and effective branch rules |
+| Contents | write | authenticated Git fetch/publish and exact target CAS |
+| Pull requests | write | create/update/ready/close the CI PR |
+| Actions | write | dispatch/cancel audit workflows; read runs, jobs, logs, and artifacts |
+| Checks | read | observe the exact aggregate check/run evidence |
+| Workflows | write | publish candidate commits that legitimately change workflow files |
+
+All other repository/organization/account permissions—including
+Administration, secrets, deployments, environments, webhooks, members, and
+ruleset mutation—must be absent from the minted runtime token. The adapter uses
+the effective-rules-for-branch read endpoint available through Metadata rather
+than requiring Administration. If a configured host reports a different
+endpoint permission contract, capability probing decides support; the adapter
+does not silently broaden the token.
+
+`Capabilities` persists the required, granted, and forbidden permission sets,
+canonical permission hash, host/API version, and endpoint-probe evidence. Token
+issuance response permissions/repository scope must equal the allowlist. Setup
+then runs an isolated capability canary: push/delete an Oro probe ref, create/
+ready/close a probe PR, dispatch and observe a no-op workflow that uploads a
+small digest-checked artifact, and dispatch/cancel a second run. Probe refs,
+PRs, runs, and artifacts are namespaced and reconciled automatically. Explicit
+`github-pr` startup requires recent successful evidence; it never discovers a
+missing write permission on a production bead.
+
+Before dispatch, cancellation, artifact ingestion, PR mutation, or target CAS,
+the provider refreshes and re-attests the permission hash. Revocation or
+permission drift is auth/config failure, not a transient outage. Permission-
+aware fakes enforce each endpoint independently, test every one-permission-
+missing case and every forbidden extra permission, model the
+`X-Accepted-GitHub-Permissions` response, and cover GitHub Enterprise hosts.
 
 The first version supports one GitHub remote and one workflow/check contract
 per project. Candidate, evidence, correction, state-machine, and merge-policy
@@ -1340,7 +1379,8 @@ chains; it may split them further but may not collapse away a boundary:
    human/deployment/merge-queue blockers, dedicated runtime integration
    identity provider/secret reference/refresh/permissions, auth, target CAS
    support, startup events, and status. Production construction must not fall
-   back to ambient credentials.
+   back to ambient credentials. Setup/startup must inspect the exact permission
+   allowlist/hash and recent isolated capability-canary evidence.
 2. **Provider-neutral core and GitHub adapter.** Implement normalized
    candidate/change/evidence/merge types, all `RemoteGateClient` operations
    including idempotent `SetChangeReady` and ambiguous
@@ -1362,6 +1402,11 @@ chains; it may split them further but may not collapse away a boundary:
    Model accepted-CAS/lost-response followed by a second target advance before
    observation; reconciliation returns the persisted proposed commit as
    integrated without requiring it to remain the current tip.
+   Make the API fake permission-aware per endpoint and test every required
+   permission removed individually, every forbidden extra permission, token
+   permission drift/revocation, `X-Accepted-GitHub-Permissions`, and host/API
+   differences. The setup canary exercises probe ref/PR, workflow dispatch/
+   observation/cancellation, check/job/log reads, and artifact download.
 3. **Protocol and worker handoff.** Wire `CANDIDATE_READY` through
    `pkg/protocol/message.go`, `pkg/worker/worker.go:awaitSubprocessAndReport`,
    `runQGAndReport`, `SendReadyForReview`, and `SendDone`. Update
@@ -1510,6 +1555,9 @@ chains; it may split them further but may not collapse away a boundary:
     completion proof. Test new/unconfigured packages, remainder shards, missing/
     duplicate/unexpected/wrong-SHA units, stale policy, empty inventory, empty
     plan with nonempty inventory, valid-no-mutant, artifact loss, and restart.
+    Use the permission-aware runtime App fixture for audit workflow dispatch,
+    run/job observation, cancellation, logs, and artifact download; any missing
+    Actions capability fails auth/config before campaign side effects.
 11. **Observability and self-healing.** Extend dispatcher/status JSON,
     `cmd/oro/cmd_status.go`, health online/offline loaders, monitor defect
     rules, dashboard provider/templates, and progress responses for every
@@ -1644,6 +1692,11 @@ nonterminal remote record.
    ambient, split, expired-unrefreshable, wrong-host, or wrong-repository
    credentials without exposing secret material. This assertion covers both
    dispatcher and externally supervised lifecycle constructors/transports.
+   The granted token permission set exactly matches Metadata-read,
+   Contents-write, Pull-requests-write, Actions-write, Checks-read, and
+   Workflows-write. A permission-aware probe/fake rejects every missing member,
+   every forbidden extra permission, drift/revocation, and endpoint-specific
+   dispatch/cancel/observe/log/artifact denial before production work.
 7. GitHub mode runs the configured local presubmit actions with bounded
    total/resource concurrency, then replaces the production
    `READY_FOR_REVIEW`/`DONE` local-QG merge path with durable candidate
@@ -1665,10 +1718,13 @@ nonterminal remote record.
    shard manifests are its exact nonoverlapping union, distinguishes
    infrastructure failure from surviving/valid-no-mutant outcomes, and creates
    deduplicated repair beads before a successful audit completion.
+   The exact runtime App proves Actions dispatch/cancel/read and artifact/log
+   access through the isolated canary and permission-aware campaign fixture;
+   correct actor with insufficient permission is auth/config failure.
 10. Provider-neutral core packages compile without GitHub transport imports or
     direct `gh` execution; a deterministic GitHub adapter fake exercises every
     side effect including credential refresh/actor attestation, exact-old-SHA
-    squash CAS, and reconciliation.
+    squash CAS, permission/capability enforcement, and reconciliation.
 
 Epic verification command:
 
