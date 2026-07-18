@@ -653,30 +653,20 @@ func LoadThroughputMetrics(ctx context.Context, db *sql.DB, now time.Time, windo
 	}
 	startTime := now.Add(-window)
 	start := startTime.UTC().Format("2006-01-02 15:04:05")
-	assignmentRows, err := db.QueryContext(ctx, `SELECT assigned_at FROM assignments`)
+	assignmentsStarted, err := countTimestampsInWindow(
+		ctx,
+		db,
+		`SELECT assigned_at FROM assignments`,
+		startTime,
+		now,
+	)
 	if err != nil {
 		if tableMissing(err) {
 			return metrics, nil
 		}
 		return metrics, fmt.Errorf("count throughput assignments: %w", err)
 	}
-	for assignmentRows.Next() {
-		var assignedAt string
-		if err := assignmentRows.Scan(&assignedAt); err != nil {
-			_ = assignmentRows.Close()
-			return metrics, fmt.Errorf("scan throughput assignment: %w", err)
-		}
-		if ts, ok := parseSQLiteTime(assignedAt); ok && !ts.Before(startTime) && ts.Before(now) {
-			metrics.AssignmentsStarted++
-		}
-	}
-	if err := assignmentRows.Err(); err != nil {
-		_ = assignmentRows.Close()
-		return metrics, fmt.Errorf("iterate throughput assignments: %w", err)
-	}
-	if err := assignmentRows.Close(); err != nil {
-		return metrics, fmt.Errorf("close throughput assignments: %w", err)
-	}
+	metrics.AssignmentsStarted = assignmentsStarted
 	if err := db.QueryRowContext(ctx, `
 SELECT COUNT(*)
   FROM beads
@@ -687,29 +677,18 @@ SELECT COUNT(*)
 			return metrics, fmt.Errorf("count throughput closures: %w", err)
 		}
 	}
-	eventRows, err := db.QueryContext(ctx, `SELECT created_at FROM events WHERE type='progress_timeout'`)
-	if err != nil {
-		if !tableMissing(err) {
-			return metrics, fmt.Errorf("count throughput progress timeouts: %w", err)
-		}
-	} else {
-		for eventRows.Next() {
-			var createdAt string
-			if err := eventRows.Scan(&createdAt); err != nil {
-				_ = eventRows.Close()
-				return metrics, fmt.Errorf("scan throughput progress timeout: %w", err)
-			}
-			if ts, ok := parseSQLiteTime(createdAt); ok && !ts.Before(startTime) && ts.Before(now) {
-				metrics.ProgressTimeouts++
-			}
-		}
-		if err := eventRows.Err(); err != nil {
-			_ = eventRows.Close()
-			return metrics, fmt.Errorf("iterate throughput progress timeouts: %w", err)
-		}
-		if err := eventRows.Close(); err != nil {
-			return metrics, fmt.Errorf("close throughput progress timeouts: %w", err)
-		}
+	progressTimeouts, err := countTimestampsInWindow(
+		ctx,
+		db,
+		`SELECT created_at FROM events WHERE type='progress_timeout'`,
+		startTime,
+		now,
+	)
+	if err != nil && !tableMissing(err) {
+		return metrics, fmt.Errorf("count throughput progress timeouts: %w", err)
+	}
+	if err == nil {
+		metrics.ProgressTimeouts = progressTimeouts
 	}
 	var latest string
 	err = db.QueryRowContext(ctx, `SELECT COALESCE(MAX(created_at), '') FROM events`).Scan(&latest)
@@ -725,6 +704,37 @@ SELECT COUNT(*)
 		}
 	}
 	return metrics, nil
+}
+
+func countTimestampsInWindow(
+	ctx context.Context,
+	db *sql.DB,
+	query string,
+	start, end time.Time,
+) (int, error) {
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return 0, fmt.Errorf("query timestamps: %w", err)
+	}
+	count := 0
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("scan timestamp: %w", err)
+		}
+		if ts, ok := parseSQLiteTime(raw); ok && !ts.Before(start) && ts.Before(end) {
+			count++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, fmt.Errorf("iterate timestamps: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("close timestamps: %w", err)
+	}
+	return count, nil
 }
 
 // LoadPendingEscalationMetrics reads pending escalations that have no known
