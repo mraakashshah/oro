@@ -90,6 +90,9 @@ turn those checks into merge evidence.
 - Keeping every superseded draft PR forever.
 - Using PRs primarily as a collaboration UI; they are the transport and audit
   identity for remote compute.
+- Replacing Oro's task database with GitHub Issues, mirroring every epic as an
+  issue, or representing child beads as GitHub sub-issues. Oro's task store
+  remains authoritative; issue synchronization is a separate possible feature.
 
 ## Required Invariants
 
@@ -677,6 +680,13 @@ premortem:
       ANSWER: Local-device QG compute limits factory throughput. Move as much
       QG computation onto GitHub as possible; PR visibility is incidental and
       the dispatcher remains responsible for autonomous progress.
+- [x] DECISION: How severe is the current status quo?
+      ANSWER: QG serialization is the dominant current factory throughput
+      limiter. GitHub CI exists but is not consumed by bead progression, while
+      the local authoritative gate queues workers behind one serialized slot.
+- [x] DECISION: Should GitHub also become the task database in this work?
+      ANSWER: No. Epics and child beads remain in Oro's task store. A future
+      GitHub Issues/sub-issues integration is explicitly out of scope.
 - [x] DECISION: Who owns PR creation, CI waiting, retry, merge, and cleanup?
       ANSWER: The dispatcher; the operator only observes surfaced state.
 - [x] DECISION: Is GitHub or the local worker authoritative for portable QG in
