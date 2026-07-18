@@ -2,6 +2,8 @@ package ops
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +12,46 @@ import (
 
 	"oro/pkg/processenv"
 )
+
+const docsOnlyReviewPolicy = "docs-only: markdown and documentation paths only"
+
+// ReviewPolicy identifies the rules used to approve a review outcome.
+type ReviewPolicy struct {
+	Hash string
+}
+
+func reviewPolicy(opts ReviewOpts) ReviewPolicy {
+	if opts.ReviewPolicy != nil {
+		return *opts.ReviewPolicy
+	}
+	sum := sha256.Sum256([]byte(docsOnlyReviewPolicy))
+	return ReviewPolicy{Hash: hex.EncodeToString(sum[:])}
+}
+
+func buildDocsOnlyReviewOutcome(policy ReviewPolicy) (ReviewOutcome, error) {
+	if strings.TrimSpace(policy.Hash) == "" {
+		return ReviewOutcome{}, fmt.Errorf("docs-only review policy hash is required")
+	}
+	outcome := ReviewOutcome{
+		Decision:   ReviewApproved,
+		PolicyHash: policy.Hash,
+		Verification: ReviewVerification{
+			AcceptanceStatus: "passed",
+		},
+		Execution: ReviewExecution{
+			Kind:     ReviewExecSucceeded,
+			Complete: true,
+		},
+		Summary: "Approved automatically: diff only touches markdown/docs files.",
+		Artifact: ReviewArtifactRef{
+			SHA256: policy.Hash,
+		},
+	}
+	if err := ValidateReviewOutcome(outcome); err != nil {
+		return ReviewOutcome{}, fmt.Errorf("validate docs-only review outcome: %w", err)
+	}
+	return outcome, nil
+}
 
 // Persona identifies one focused reviewer in the multi-persona review team.
 type Persona struct {

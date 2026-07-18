@@ -1,6 +1,10 @@
 package ops //nolint:testpackage // white-box test exercises the required unexported parser signature
 
 import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -142,5 +146,77 @@ func TestTypedReviewOutcomeParsing(t *testing.T) {
 				t.Fatalf("ValidateReviewOutcome() error = %v", err)
 			}
 		})
+	}
+}
+
+func TestDocsOnlyTypedReviewOutcome(t *testing.T) {
+	worktree := initReviewTestRepo(t)
+	if err := os.MkdirAll(filepath.Join(worktree, "docs"), 0o755); err != nil {
+		t.Fatalf("mkdir docs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "docs", "guide.md"), []byte("# Guide\n"), 0o644); err != nil {
+		t.Fatalf("write docs change: %v", err)
+	}
+
+	mock := &mockBatchSpawner{process: newReadyMockProcess("VERDICT: APPROVED", nil)}
+	result := waitResult(t, NewSpawner(mock).Review(context.Background(), ReviewOpts{
+		BeadID:     "oro-docs",
+		Worktree:   worktree,
+		BaseBranch: "main",
+	}))
+
+	if result.Verdict != VerdictApproved {
+		t.Fatalf("docs-only review verdict = %q, want approved", result.Verdict)
+	}
+	outcome, err := parseStructuredReviewReport(result.Feedback)
+	if err != nil {
+		t.Fatalf("parseStructuredReviewReport() error = %v", err)
+	}
+	if err := ValidateReviewOutcome(outcome); err != nil {
+		t.Fatalf("ValidateReviewOutcome() error = %v", err)
+	}
+	if outcome.Decision != ReviewApproved || outcome.Execution.Kind != ReviewExecSucceeded || !outcome.Execution.Complete {
+		t.Fatalf("docs-only outcome = %#v, want complete succeeded approval", outcome)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(result.Feedback), &raw); err != nil {
+		t.Fatalf("unmarshal docs-only feedback: %v", err)
+	}
+	if len(raw["policy_hash"]) == 0 || string(raw["policy_hash"]) == `""` {
+		t.Fatalf("docs-only outcome missing explicit policy_hash: %s", result.Feedback)
+	}
+	if calls := mock.getCalls(); len(calls) != 0 {
+		t.Fatalf("docs-only review should not spawn ops process, got %d calls", len(calls))
+	}
+}
+
+func TestDocsOnlyReviewWithoutPolicyFallsBack(t *testing.T) {
+	worktree := initReviewTestRepo(t)
+	if err := os.MkdirAll(filepath.Join(worktree, "docs"), 0o755); err != nil {
+		t.Fatalf("mkdir docs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "docs", "guide.md"), []byte("# Guide\n"), 0o644); err != nil {
+		t.Fatalf("write docs change: %v", err)
+	}
+
+	mock := &mockBatchSpawner{process: newReadyMockProcess("VERDICT: APPROVED", nil)}
+	result := waitResult(t, NewSpawner(mock).Review(context.Background(), ReviewOpts{
+		BeadID:       "oro-docs",
+		Worktree:     worktree,
+		BaseBranch:   "main",
+		ReviewPolicy: &ReviewPolicy{},
+	}))
+
+	if result.Verdict != VerdictFailed {
+		t.Fatalf("review without policy verdict = %q, want failed typed review", result.Verdict)
+	}
+	if result.Err == nil {
+		t.Fatal("review without policy unexpectedly accepted raw prose")
+	}
+	if calls := mock.getCalls(); len(calls) != 1 {
+		t.Fatalf("review without policy should invoke reviewer once, got %d calls", len(calls))
+	} else if !strings.Contains(calls[0].prompt, "Structured Review Output") {
+		t.Fatal("review without policy did not use the typed review prompt")
 	}
 }

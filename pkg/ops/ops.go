@@ -214,6 +214,7 @@ type ReviewOpts struct {
 	ReviewPatterns     string // explicit path to review-patterns.md; falls back to ProjectRoot/assets/review-patterns.md when empty
 	PersistFindings    bool   // when true, merged structured findings are appended to the bead journey
 	BeadStore          beadstore.Store
+	ReviewPolicy       *ReviewPolicy // nil uses the default review policy
 }
 
 // AuditOpts configures a whole-repository audit fan-out.
@@ -323,14 +324,21 @@ func (s *Spawner) SetReviewSpawner(sp BatchSpawner) {
 // returned channel (non-blocking for the caller).
 func (s *Spawner) Review(ctx context.Context, opts ReviewOpts) <-chan Result {
 	if docsOnly, err := isDocsOnlyDiff(ctx, opts.Worktree, opts.BaseBranch); err == nil && docsOnly {
-		ch := make(chan Result, 1)
-		ch <- Result{
-			Type:     OpsReview,
-			BeadID:   opts.BeadID,
-			Verdict:  VerdictApproved,
-			Feedback: "Approved automatically: diff only touches markdown/docs files.",
+		outcome, outcomeErr := buildDocsOnlyReviewOutcome(reviewPolicy(opts))
+		if outcomeErr == nil {
+			feedback, marshalErr := json.Marshal(outcome)
+			if marshalErr == nil {
+				ch := make(chan Result, 1)
+				ch <- Result{
+					Type:     OpsReview,
+					BeadID:   opts.BeadID,
+					Verdict:  VerdictApproved,
+					Feedback: string(feedback),
+				}
+				return ch
+			}
 		}
-		return ch
+		return s.runTypedReview(ctx, opts)
 	}
 
 	if opts.MultiPersona {
@@ -339,6 +347,29 @@ func (s *Spawner) Review(ctx context.Context, opts ReviewOpts) <-chan Result {
 
 	prompt := buildReviewPrompt(opts)
 	return s.run(ctx, OpsReview, opts.BeadID, opts.Worktree, prompt)
+}
+
+func (s *Spawner) runTypedReview(ctx context.Context, opts ReviewOpts) <-chan Result {
+	_, prompt := buildStructuredReviewPrompt(opts)
+	rawResults := s.run(ctx, OpsReview, opts.BeadID, opts.Worktree, prompt)
+	out := make(chan Result, 1)
+	go func() {
+		result := <-rawResults
+		if result.Err != nil {
+			out <- result
+			return
+		}
+		outcome, err := parseStructuredReviewReport(result.Feedback)
+		if err != nil {
+			result.Verdict = VerdictFailed
+			result.Err = fmt.Errorf("parse typed review outcome: %w", err)
+			out <- result
+			return
+		}
+		result.Verdict = reviewReportFromOutcome(outcome).Verdict
+		out <- result
+	}()
+	return out
 }
 
 func (s *Spawner) runCheapTriage(ctx context.Context, opts ReviewOpts) []Finding {

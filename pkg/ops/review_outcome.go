@@ -72,6 +72,7 @@ type ReviewExecution struct {
 // ReviewOutcome is the schema-validated review result consumed by dispatch.
 type ReviewOutcome struct {
 	Decision     ReviewDecision           `json:"decision"`
+	PolicyHash   string                   `json:"policy_hash,omitempty"`
 	Findings     []reviewcontract.Finding `json:"findings,omitempty"`
 	Blockers     []ReviewBlocker          `json:"blockers,omitempty"`
 	Verification ReviewVerification       `json:"verification"`
