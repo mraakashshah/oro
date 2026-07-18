@@ -687,6 +687,10 @@ premortem:
 - [x] DECISION: Should GitHub also become the task database in this work?
       ANSWER: No. Epics and child beads remain in Oro's task store. A future
       GitHub Issues/sub-issues integration is explicitly out of scope.
+- [x] DECISION: Which projects can use remote gates?
+      ANSWER: Any Oro-managed GitHub repository can opt in through project
+      configuration. The Oro repository is the first canary; implementation
+      contains no Oro-repository or developer-account special cases.
 - [x] DECISION: Who owns PR creation, CI waiting, retry, merge, and cleanup?
       ANSWER: The dispatcher; the operator only observes surfaced state.
 - [x] DECISION: Is GitHub or the local worker authoritative for portable QG in
