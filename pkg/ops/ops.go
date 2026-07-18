@@ -140,13 +140,15 @@ func (t Type) Role() string {
 	}
 }
 
-// Timeout returns the per-type process timeout. Returns 0 for all types except
-// OpsWriteAC, which needs 10 minutes for careful acceptance-criteria generation.
+// Timeout returns the per-type process timeout. Recovery operations get a
+// 15-minute budget so healthy conflict resolution and verification can finish.
 // When 0, the Spawner falls back to its default timeout.
 func (t Type) Timeout() time.Duration {
 	switch t {
 	case OpsReview:
 		return 35 * time.Minute
+	case OpsMerge, OpsDiagnosis, OpsEscalation, OpsEpicFix:
+		return 15 * time.Minute
 	case OpsWriteAC:
 		return 10 * time.Minute
 	case OpsDream:

@@ -1570,13 +1570,25 @@ func TestTypeTimeout(t *testing.T) {
 		{name: "review", typ: OpsReview, want: 35 * time.Minute},
 		{name: "write ac", typ: OpsWriteAC, want: 10 * time.Minute},
 		{name: "dream", typ: OpsDream, want: 60 * time.Second},
-		{name: "merge fallback", typ: OpsMerge, want: 0},
+		{name: "recovery ops", typ: OpsMerge, want: 15 * time.Minute},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.typ.Timeout(); got != tt.want {
 				t.Fatalf("%s.Timeout() = %v, want %v", tt.typ, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRecoveryOpsTimeoutBudget(t *testing.T) {
+	spawner := NewSpawnerWithReviewTimeout(&mockBatchSpawner{process: newReadyMockProcess("", nil)}, 0)
+	want := 15 * time.Minute
+	for _, opsType := range []Type{OpsMerge, OpsDiagnosis, OpsEscalation, OpsEpicFix} {
+		t.Run(string(opsType), func(t *testing.T) {
+			if got := spawner.effectiveTimeout(opsType); got != want {
+				t.Fatalf("%s effective timeout = %v, want %v", opsType, got, want)
 			}
 		})
 	}
@@ -1600,8 +1612,8 @@ func TestSpawnerReviewTimeoutOverride(t *testing.T) {
 	if got := fallback.effectiveTimeout(OpsReview); got != 35*time.Minute {
 		t.Fatalf("zero override OpsReview effective timeout = %v, want 35m", got)
 	}
-	if got := fallback.effectiveTimeout(OpsMerge); got != 5*time.Minute {
-		t.Fatalf("zero override OpsMerge effective timeout = %v, want spawner default 5m", got)
+	if got := fallback.effectiveTimeout(OpsMerge); got != 15*time.Minute {
+		t.Fatalf("zero override OpsMerge effective timeout = %v, want 15m", got)
 	}
 }
 
@@ -1614,11 +1626,7 @@ func TestOneShotTimeout(t *testing.T) {
 	s.timeout = 100 * time.Millisecond
 
 	ctx := context.Background()
-	ch := s.Escalate(ctx, EscalationOpts{
-		EscalationType: "STUCK_WORKER",
-		BeadID:         "oro-timeout",
-		Workdir:        ".",
-	})
+	ch := s.run(ctx, OpsDecompose, "oro-timeout", ".", "")
 
 	result := waitResult(t, ch)
 
