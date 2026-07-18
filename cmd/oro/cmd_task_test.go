@@ -527,6 +527,7 @@ func TestTaskDeleteJSONAndRefusals(t *testing.T) {
 
 func TestTaskDeleteNoPremortemEndToEnd(t *testing.T) {
 	ctx := context.Background()
+	t.Setenv("ORO_PROJECT", "task-delete-e2e")
 	db, err := openStateDB(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatalf("openStateDB: %v", err)

@@ -317,6 +317,49 @@ func readProjectNameCWD() string {
 	return name
 }
 
+type runtimeProjectEnv struct {
+	OroHome string
+	Project string
+}
+
+// ensureRuntimeProjectEnv resolves and exports the runtime identity required by
+// standalone worker construction. Explicit non-empty environment values win;
+// otherwise project detection fails closed so workers cannot start unscoped.
+func ensureRuntimeProjectEnv(repoRoot string) (runtimeProjectEnv, error) { //nolint:unparam // snapshot is part of the contract; production callers need the environment mutation
+	env := runtimeProjectEnv{
+		OroHome: os.Getenv("ORO_HOME"),
+		Project: os.Getenv("ORO_PROJECT"),
+	}
+	if env.OroHome == "" {
+		oroHome, err := resolveOroHome()
+		if err != nil {
+			return runtimeProjectEnv{}, fmt.Errorf("resolve ORO_HOME: %w", err)
+		}
+		absoluteHome, err := filepath.Abs(oroHome)
+		if err != nil {
+			return runtimeProjectEnv{}, fmt.Errorf("make ORO_HOME absolute: %w", err)
+		}
+		env.OroHome = absoluteHome
+		if err := os.Setenv("ORO_HOME", env.OroHome); err != nil {
+			return runtimeProjectEnv{}, fmt.Errorf("set ORO_HOME: %w", err)
+		}
+	}
+	if env.Project == "" {
+		project, _, err := detectProjectMode(repoRoot)
+		if err != nil {
+			return runtimeProjectEnv{}, fmt.Errorf("resolve ORO_PROJECT for %s: %w", repoRoot, err)
+		}
+		if project == "" {
+			return runtimeProjectEnv{}, fmt.Errorf("resolve ORO_PROJECT for %s: project is not initialized; run 'oro init'", repoRoot)
+		}
+		env.Project = project
+		if err := os.Setenv("ORO_PROJECT", env.Project); err != nil {
+			return runtimeProjectEnv{}, fmt.Errorf("set ORO_PROJECT: %w", err)
+		}
+	}
+	return env, nil
+}
+
 // resolveOroHome returns the oro home directory from ORO_HOME env var or ~/.oro.
 func resolveOroHome() (string, error) {
 	if v := os.Getenv("ORO_HOME"); v != "" {
