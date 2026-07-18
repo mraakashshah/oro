@@ -1,3 +1,4 @@
+//nolint:testpackage // The persistence regression inspects the reopened store database directly.
 package dispatcher
 
 import (
@@ -14,7 +15,7 @@ func TestReviewCheckpointStoreCAS(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "checkpoints.sqlite")
 
-	store := openReviewCheckpointStore(t, ctx, dbPath)
+	store := openReviewCheckpointStore(ctx, t, dbPath)
 	input := CheckpointInput{
 		CheckpointKey:       "oro-cas:head:target",
 		BeadID:              "oro-cas",
@@ -56,7 +57,7 @@ func TestReviewCheckpointStoreCAS(t *testing.T) {
 		t.Fatalf("close store DB: %v", err)
 	}
 
-	reopened := openReviewCheckpointStore(t, ctx, dbPath)
+	reopened := openReviewCheckpointStore(ctx, t, dbPath)
 	var state ReviewCheckpointState
 	if err := reopened.db.QueryRowContext(ctx, `SELECT state FROM review_checkpoints WHERE id = ?`, created.ID).Scan(&state); err != nil {
 		t.Fatalf("read reopened checkpoint: %v", err)
@@ -66,7 +67,7 @@ func TestReviewCheckpointStoreCAS(t *testing.T) {
 	}
 }
 
-func openReviewCheckpointStore(t *testing.T, ctx context.Context, path string) *ReviewCheckpointStore {
+func openReviewCheckpointStore(ctx context.Context, t *testing.T, path string) *ReviewCheckpointStore {
 	t.Helper()
 	db, err := dbutil.OpenDB(path)
 	if err != nil {
