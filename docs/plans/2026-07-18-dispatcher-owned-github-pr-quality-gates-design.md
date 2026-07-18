@@ -317,8 +317,9 @@ Rules:
 - The effective mode and all limits appear in status and startup events.
 - `auto_install_after_epic` requires a live, version-compatible external
   lifecycle supervisor with a recent durable heartbeat. In v1 this is
-  `oro monitor --act` installed as a per-project managed service by setup
-  (launchd on macOS, systemd user service on Linux). GitHub PR gates may run
+  a stable per-project supervisor shim installed by setup (launchd on macOS,
+  systemd user service on Linux) which launches a versioned
+  `oro monitor --act` child. GitHub PR gates may run
   without it only when automatic epic installation is disabled; Oro's canary
   requires it and startup fails before dispatch if the supervisor contract is
   absent or stale.
@@ -997,9 +998,9 @@ When all children and acceptance criteria are closed:
 
 The dispatcher owns steps 1–6, then writes a versioned post-epic operation and
 signals the external lifecycle supervisor. The dispatcher never attempts to
-restart itself. The managed `oro monitor --act` process owns step 7 across the
-termination boundary. It durably claims the operation with a renewable lease,
-then idempotently:
+restart itself. A managed `oro monitor --act` child owns step 7 across the
+termination boundary under the stable supervisor shim. It durably claims the
+operation with a renewable lease, then idempotently:
 
 1. verifies the exact synced target SHA and clean lifecycle worktree;
 2. runs or resumes `make build install` and records repository/installed binary
@@ -1048,18 +1049,48 @@ ancestry: the coordinator never installs or starts an ancestor of the latest
 proven healthy build. These rules prevent downgrade and restart storms while
 allowing one newest build/restart to close several epics.
 
-The monitor itself is supervised by the OS user service manager. Setup installs
-and verifies that service; dispatcher startup requires a compatible supervisor
+Normal epic installation is side-by-side, not in-place. The build produces a
+versioned Oro executable path `B1` and retains the current `B0`. Before daemon
+shutdown, old monitor `M0` invokes `B1` in non-mutating supervisor compatibility
+mode to validate the stable descriptor envelope, lifecycle-ledger schema,
+migration plan, credential-provider access, and supported operation range. A
+failed preflight records an incompatible-upgrade failure while `M0` and old
+dispatcher `D0` continue running.
+
+After successful preflight, `M0` persists `supervisor_upgrade_pending` with a
+new fencing generation/token, expected `B1` hash/build/schema ranges, staged
+descriptor/ledger migration hashes, and rollback `B0` identity. Every monitor
+side effect checks the current fencing generation. `M0` relinquishes its lease
+and exits; it cannot resume mutation after the generation advances. The stable
+shim atomically selects `B1`, starts distinct child `M1`, and requires a
+heartbeat bound to M1 PID, executable-image hash, build SHA, descriptor schema,
+ledger/operation-schema ranges, and fencing generation. `M1` performs the
+preflighted atomic migrations, claims the ledger, and acknowledges handoff.
+Only then may `M1` stop `D0` and start/verify `D1`.
+
+The shim is deliberately outside normal `make build install` and uses a small,
+versioned, backward-compatible bootstrap protocol. It remains alive while
+monitor children change. If `M1` exits or cannot produce the exact heartbeat
+before timeout, the shim restores the `B0` selection, starts a fenced `M0`
+replacement, records rollback evidence, and leaves `D0` running. Crashes before
+or after lease relinquishment, child start, migration, heartbeat, and handoff
+acknowledgement are idempotently recoverable; exactly one fencing generation
+may stop/start a dispatcher.
+
+The supervisor shim is supervised by the OS user service manager. Setup installs
+and verifies that service; dispatcher startup requires a compatible monitor-child
 heartbeat and supported operation-schema version before enabling automatic
 epic installation. This ensures some process remains able to consume
 `restart_pending` after the dispatcher exits. Failure keeps the epic operation
 visible and retryable without undoing a proven remote integration.
 
 The generated service invokes
-`oro monitor --act --managed-project-descriptor <absolute-path>` with an
-absolute executable and an explicit canonical working directory, but correctness
+`oro-supervisor-shim --managed-project-descriptor <absolute-path>` with an
+absolute stable shim executable and an explicit canonical working directory.
+The shim selects a versioned Oro executable and launches
+`oro monitor --act --managed-project-descriptor <absolute-path>`; correctness
 comes from the validated descriptor rather than the working directory. The
-service starts from a clean, allowlisted environment. Monitor startup verifies
+service starts from a clean, allowlisted environment. Shim and monitor startup verify
 descriptor hash, canonical root, project ownership/identity, state paths, and
 service instance identity before heartbeat or mutation; a moved repository or
 changed identity fails closed until `oro setup` atomically unloads the old
@@ -1322,7 +1353,8 @@ chains; it may split them further but may not collapse away a boundary:
    `pkg/dispatcher/dispatcher.go:applyRestartDaemon`,
    `cmd/oro/cmd_monitor.go:cliMonitorRunner.RestartDaemon`, the monitor action
    ledger/claim loop, `cmd/oro/cmd_start.go:startFreshSwarm`, setup-managed
-   launchd/systemd service installation, supervisor heartbeat/schema preflight,
+   stable supervisor shim/versioned-child protocol, launchd/systemd service
+   installation, supervisor heartbeat/schema preflight,
    and post-epic operation store. The hermetic test uses real old-dispatcher and
    external-monitor processes, asserts old PID exit/new PID start, expected
    installed/repository hash and worker config, replacement health, durable
@@ -1354,6 +1386,13 @@ chains; it may split them further but may not collapse away a boundary:
    revalidation, redaction from service/log/rows, restart, acknowledgement, and
    epic closure. Anonymous, SSH/helper, ambient, wrong-actor/repository, and
    unrefreshable credentials fail without mutation.
+   Build distinct old/new Oro fixtures with incompatible descriptor/operation-
+   schema ranges. Exercise the normal no-crash `M0/B0 -> shim -> M1/B1 ->
+   D0 -> D1` path and crashes before/after fencing, lease release, child start,
+   migration, heartbeat, and handoff ACK. Assert distinct monitor PID, actual
+   executable-image/build hash, compatible schemas/generation, old-monitor
+   fencing, dispatcher restart only after M1 proof, and automatic B0 rollback
+   with D0 left running when B1 preflight or M1 heartbeat fails.
 10. **Remote full mutation audit.** Add the workflow-dispatch/shard/aggregate
     workflow and wire `pkg/dispatcher/audit.go:runAudit` to durable exact-SHA
     campaign observation, artifact ingestion, restart, infrastructure failure,
@@ -1465,6 +1504,10 @@ nonterminal remote record.
    relocation failure. A private-remote-equivalent authenticated fixture expires
    the App token between lifecycle stages and proves monitor-side refresh,
    actor/repository attestation, no ambient fallback, and secret redaction.
+   It also proves normal and crash-boundary supervisor upgrade from old
+   `M0/B0` to distinct `M1/B1` with fencing, schema migration, heartbeat
+   PID/image/build/generation evidence, rollback to B0 before dispatcher
+   shutdown on incompatibility, and `D0 -> D1` only after M1 acknowledgement.
 5. `oro status --json`, health, monitor events, and the dashboard expose remote
    backlog, degraded mode, failure feedback delivery, quarantine count, and
    pending post-epic installation.
