@@ -326,7 +326,7 @@ const reviewCheckpointTableDDL = `CREATE TABLE IF NOT EXISTS review_checkpoints 
 
 const reviewCheckpointActiveKeyIndexDDL = `CREATE UNIQUE INDEX idx_review_checkpoints_active_key
 ON review_checkpoints(checkpoint_key)
-WHERE state <> 'superseded';`
+WHERE state <> 'superseded'`
 
 const reviewCheckpointSchemaDDL = reviewCheckpointTableDDL + `
 CREATE UNIQUE INDEX IF NOT EXISTS idx_review_checkpoints_active_key
