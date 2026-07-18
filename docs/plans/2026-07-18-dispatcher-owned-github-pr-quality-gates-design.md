@@ -294,6 +294,15 @@ factory:
         app_id: 123456
         installation_id: 789012
         private_key_ref: keychain:oro/github-app
+      policy_reconciliation:
+        enabled: true
+        owned_ruleset_id: 456789
+        desired_template_hash: sha256:...
+        maintenance_identity:
+          type: github-app
+          app_id: 654321
+          installation_id: 789012
+          private_key_ref: keychain:oro/github-maintenance-app
     local:
       profile: memory-safe
       max_actions: 6
@@ -313,6 +322,15 @@ Rules:
   credential-helper, or developer tokens never satisfy this requirement.
 - Invalid explicit configuration fails startup with a configuration error. It
   does not silently switch modes.
+- GitHub PR mode requires typed policy-reconciliation configuration for the
+  one Oro-owned repository ruleset. The maintenance identity is a distinct
+  GitHub App installation credential minted only with Metadata-read and
+  Administration-write; every Contents, Pull requests, Actions, Checks,
+  Workflows, secrets, organization, and account permission is forbidden. The
+  runtime App never receives Administration. Missing/malformed identity,
+  repository/host mismatch, permission drift, or inaccessible secret reference
+  fails startup or recovery as auth/config rather than falling back to ambient
+  administration.
 - A runtime GitHub outage uses the separately configured degraded-mode policy;
   configuration errors are not outages.
 - `max_in_flight` limits dispatcher-owned remote candidates, preventing an
@@ -331,7 +349,8 @@ Rules:
   root, immutable project identity, absolute `ORO_HOME`, state DB/PID/socket/
   lifecycle-ledger paths, installed executable path, worker/start configuration,
   schema version, runtime credential-provider reference, expected App/
-  installation/host/repository identity, network transport policy, and
+  installation/host/repository identity, the distinct maintenance credential-
+  provider reference and expected identity/scope, network transport policy, and
   descriptor hash. It contains no credentials. Managed
   monitor, health, restart, and `startFreshSwarm` accept this descriptor
   explicitly and never rediscover project context from CWD, `ORO_PROJECT`, or
@@ -732,6 +751,42 @@ restrictive rule enforced against the App must make GitHub reject the CAS.
 Policy drift before the last read must prevent mutation. These cases explicitly
 test the provider limitation rather than masking it with simultaneous target
 movement.
+
+Automatic recovery is production-wired through a second provider-neutral
+boundary, not an injected test callback:
+
+```go
+type PolicyReconciler interface {
+    PreflightMaintenance(ctx context.Context, req MaintenancePreflightRequest) (MaintenanceCapabilities, error)
+    ReconcileOwnedPolicy(ctx context.Context, req ReconcileOwnedPolicyRequest) (PolicyReconcileResult, error)
+}
+```
+
+The GitHub implementation is constructed from the typed maintenance identity
+by setup and the managed monitor, never by a worker and never from the runtime
+credential. It can read and update only the configured repository ruleset ID;
+the desired canonical template, ownership marker, repository identity, last
+observed ruleset version/hash, drift evidence, and reconciliation idempotency
+key are mandatory request fields. It refuses organization rules, foreign or
+unmarked repository rulesets, repository mismatch, unexpected ruleset identity,
+or a desired template not matching project configuration. The adapter mints a
+short-lived exact-scope token just in time, updates the Oro-owned ruleset,
+re-reads complete effective policy, and returns before/after rule/version/hash
+evidence. Secrets are excluded from argv, environment inheritance, descriptors,
+database rows, and logs.
+
+`integrated_policy_drift` atomically creates a durable reconciliation request
+and integration freeze. The external monitor claims it with a renewable lease,
+constructs `PolicyReconciler` from the descriptor, retries transient credential/
+API failures with backoff, and commits the returned evidence. Dispatcher
+`startupRecovery`, `restoreState`, and `spawnBackgroundLoops` reconcile requests
+and unfreeze only when a fresh runtime-identity policy read exactly matches the
+configured template and the integrated attempt is already accounted for.
+Crashes before/after claim, token mint, provider update, verification, row
+commit, monitor restart, and dispatcher restart are idempotent. Drift caused by
+foreign or organization policy is never overwritten; it remains frozen and a
+P0 auth/config defect, but it does not silently require a human interaction
+inside a routine bead.
 
 `SetChangeReady` is a distinct persisted, idempotent transition. The GitHub
 adapter marks the draft PR ready, then observes `isDraft=false` before merge
@@ -1520,7 +1575,11 @@ chains; it may split them further but may not collapse away a boundary:
    namespace, persist operation-specific create/adopt/delete capability and
    policy hashes, and run the capability canary inside that exact namespace.
    Persist the provider's typed matrix-entry limit and reject full-mutation
-   enablement when that limit is absent or invalid.
+   enablement when that limit is absent or invalid. Add the distinct typed
+   maintenance identity/owned-ruleset/template configuration, exact permission
+   validation, secret-reference resolution, recent setup attestation, and
+   production constructor inputs through `newProductionDispatcher` and the
+   supervisor descriptor.
 2. **Provider-neutral core and GitHub adapter.** Implement normalized
    candidate/change/evidence/merge types, all `RemoteGateClient` operations
    including idempotent `SetChangeReady` and ambiguous
@@ -1558,6 +1617,12 @@ chains; it may split them further but may not collapse away a boundary:
    generic probe, target, and audit namespaces must be independently configurable.
    Model provider execution limits and reject a planned matrix above the reported
    bound exactly as the production host does.
+   Implement the provider-neutral `PolicyReconciler` boundary and GitHub adapter
+   with owned-ruleset/identity/template/idempotency validation. Production
+   constructor tests prove runtime credentials cannot construct it, maintenance
+   credentials cannot perform Git/PR/Actions operations, and absent, malformed,
+   expired, wrong-host/repository, overprivileged, or inaccessible maintenance
+   identity fails closed without secret leakage.
 3. **Protocol and worker handoff.** Wire `CANDIDATE_READY` through
    `pkg/protocol/message.go`, `pkg/worker/worker.go:awaitSubprocessAndReport`,
    `runQGAndReport`, `SendReadyForReview`, and `SendDone`. Update
@@ -1573,7 +1638,8 @@ chains; it may split them further but may not collapse away a boundary:
    schema/types/indexes/migrations/CAS for candidate, run, evidence,
    correction, audit campaign, post-install state, and monotonic runtime-control
    generation, plus `integrated_policy_drift` evidence and the project-wide
-   integration freeze/setup-reconciliation state. Wire `handleMessage`,
+   integration freeze/setup-reconciliation request, lease, attempt, and evidence
+   state. Wire `handleMessage`,
    `handleDone`, `handleReadyForReview`, `handleReviewResult`,
    `startupRecovery`, `restoreState`, `spawnBackgroundLoops`,
    `checkClosedBeadAssignments`, and `handleClosedAssignment`. Test restart
@@ -1588,6 +1654,11 @@ chains; it may split them further but may not collapse away a boundary:
    recomputes its SHA.
    Add the same-database bead-generation/integration-intent transaction and a
    non-assignment remote-record close scan.
+   Wire `startupRecovery`, `restoreState`, and `spawnBackgroundLoops` to adopt
+   or observe monitor-owned reconciliation requests and unfreeze only after a
+   fresh runtime-identity policy proof matches. Inject crashes at every claim/
+   provider-update/evidence-commit/unfreeze boundary and prohibit duplicate
+   integration or premature closure.
    Persist the worker generation/process inventory and make worker pool
    registration, idle selection, capacity, health, status, and assignment
    require active-generation attestation. `shutdownWaitForWorkers`,
@@ -1674,6 +1745,15 @@ chains; it may split them further but may not collapse away a boundary:
    revalidation, redaction from service/log/rows, restart, acknowledgement, and
    epic closure. Anonymous, SSH/helper, ambient, wrong-actor/repository, and
    unrefreshable credentials fail without mutation.
+   Extend `cmd/oro/cmd_setup.go:runSetup`/doctor with creation or idempotent
+   repair of the marked Oro-owned repository ruleset and a maintenance-
+   capability attestation. Extend the stable descriptor, monitor claim loop,
+   and supervisor protocol with typed policy-reconciliation operations. A real
+   authenticated ruleset API fixture—not an injected callback—expires the
+   maintenance token, restarts monitor/dispatcher at each boundary, proves
+   exact-scope refresh and redaction, restores the template, verifies through
+   the runtime identity, releases the integration freeze, and never grants the
+   runtime App Administration.
    Build distinct old/new Oro fixtures with both compatible and incompatible
    descriptor/operation-schema ranges. Exercise the normal no-crash
    `M0/B0 -> shim -> M1/B1 ->
@@ -1745,7 +1825,9 @@ chains; it may split them further but may not collapse away a boundary:
 11. **Observability and self-healing.** Extend dispatcher/status JSON,
     `cmd/oro/cmd_status.go`, health online/offline loaders, monitor defect
     rules, dashboard provider/templates, and progress responses for every
-    required state and finding.
+    required state and finding, including reconciliation request/lease/attempt,
+    redacted maintenance identity status, before/after ruleset evidence, retry
+    age, integration freeze, and unfreeze proof.
 12. **Hermetic epic verification and canary.** Build
     `scripts/test_remote_gate_epic.sh` around a real local Git remote and a
     deterministic GitHub API/`gh` fake. Parse `go test -json` and require a
@@ -1897,6 +1979,12 @@ nonterminal remote record.
    probe inside `oro/audits/<project-prefix>/**`; policy fixtures prove that a
    usable target/candidate/generic probe does not imply audit-namespace create,
    adopt, or delete capability.
+   A second production-constructor fixture requires the maintenance App token
+   to contain exactly Metadata-read and Administration-write for the same host/
+   repository and no runtime permission. It proves runtime/maintenance
+   credential noninterchangeability, short-lived refresh, descriptor/row/log
+   redaction, and failure for absent, malformed, expired, inaccessible,
+   overprivileged, or wrong-scope maintenance configuration.
 7. GitHub mode runs the configured local presubmit actions with bounded
    total/resource concurrency, then replaces the production
    `READY_FOR_REVIEW`/`DONE` local-QG merge path with durable candidate
@@ -1918,6 +2006,12 @@ nonterminal remote record.
    an integrated commit plus exact `integrated_policy_drift` evidence, freezes
    later integrations, and reconciles only through the setup path. The test
    never claims that a nontransactional policy read prevented that mutation.
+   The reconciliation case uses the real typed project config, supervisor
+   descriptor, external monitor claim loop, GitHub ruleset adapter, runtime
+   post-verification, startup recovery, and dispatcher unfreeze path. It
+   restarts across provider update and evidence commit, rejects foreign/
+   organization/unmarked rules, and proves no fake-only callback or manual
+   operator step is needed for the marked Oro-owned ruleset.
 9. Every auditor cycle dispatches or adopts exactly one full mutation campaign
    for its audit ID and SHA, survives restart, validates every shard artifact,
    independently reconstructs the persisted eligible-unit inventory, proves
