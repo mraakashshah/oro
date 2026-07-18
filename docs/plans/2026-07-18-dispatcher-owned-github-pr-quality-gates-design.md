@@ -309,9 +309,17 @@ Rules:
   the project's actual target patterns, squash-merge availability, and a
   strict required-check ruleset covering `main`, configured targets, and
   `epic/**`. The adapter identity must not be an allowed bypass actor. The same
-  ruleset identity/enforcement is re-read immediately before authorization;
-  removal, mutation, bypass eligibility, or ambiguous enforcement quarantines
-  the candidate instead of merging. When the authenticated identity has repository-administration
+  evaluation resolves the complete effective repository and organization
+  policy for each target. V1 rejects any overlapping rule that requires human
+  approving/CODEOWNER reviews, conversation resolution, deployments, merge
+  queue, signed-commit behavior the provider cannot satisfy, or another
+  unsupported actor/restriction/lock/read-only condition. It also proves the
+  dispatcher can update its candidate ref and use the squash endpoint. The
+  evaluated rule IDs, versions, enforcement modes, bypass actors, and canonical
+  policy hash become capability evidence. The complete policy is re-read
+  immediately before authorization; removal, mutation, newly effective policy,
+  bypass eligibility, or ambiguous enforcement quarantines the candidate
+  instead of merging. When the authenticated identity has repository-administration
   permission, setup may reconcile the documented Oro-owned ruleset
   idempotently; otherwise startup reports an unhealthy configuration and does
   not publish candidates. Routine beads never wait for operator setup.
@@ -422,27 +430,46 @@ candidate SHA into a fresh worktree. A missing remote ref, deleted original
 worktree, stale `agent/<bead>` branch, or dead original worker is handled by
 that source-of-truth order and never by worker affinity.
 
+Worker release has a crash-consistent durability boundary before the first
+network publication. The dispatcher atomically creates and verifies a local
+backup ref in the shared repository, for example
+`refs/oro/adopted/<project>/<bead>/<assignment>`, pointing at the exact worker
+SHA. It verifies the commit is reachable from that ref, then persists the ref
+name/SHA and adopted candidate row before acknowledging `CANDIDATE_READY`.
+Only after that acknowledgement may the worker worktree/branch be reused.
+`git update-ref` and the SQLite transaction cannot be one atomic transaction,
+so ordering and startup reconciliation are explicit: a crash after ref creation
+but before the row leaves an identifiable orphan ref that recovery adopts or
+conservatively retains; a crash after the row but before ACK makes the duplicate
+message return the same ACK. The local adoption ref is retained until the
+rebased candidate is verified under a durable remote ref or the work is
+terminally preserved elsewhere. Garbage collection and cleanup must never
+remove an adoption ref referenced by a nonterminal row.
+
 On `CANDIDATE_READY`, the dispatcher:
 
 1. verifies the assignment, branch, clean worktree, and committed head;
-2. serializes target-changing Git operations using the existing merge/branch
+2. creates/verifies the dispatcher-owned local adoption ref, persists its
+   lease and candidate row, acknowledges adoption, and only then releases the
+   worker;
+3. serializes target-changing Git operations using the existing merge/branch
    coordination boundary;
-3. fetches the configured remote and rebases the candidate onto the exact
+4. fetches the configured remote and rebases the candidate onto the exact
    local target;
-4. runs ops review against the exact post-rebase tree and persists its verdict;
-5. ensures a non-main epic target exists on the remote before creating a PR;
-6. publishes the candidate with `--force-with-lease=<remote-ref>:<observed-sha>`
+5. runs ops review against the exact post-rebase tree and persists its verdict;
+6. ensures a non-main epic target exists on the remote before creating a PR;
+7. publishes the candidate with `--force-with-lease=<remote-ref>:<observed-sha>`
    when a prior dispatcher-owned ref exists, never with an unconditional force;
-7. creates or updates a draft PR whose base is the actual target branch;
-8. persists PR identity before waiting for checks;
-9. releases local Git coordination while CI runs;
-10. observes exact check-run data through the adaptive pull scheduler;
-11. validates and persists passing or failing evidence;
-12. after pass, idempotently marks the draft change ready for review and
+8. creates or updates a draft PR whose base is the actual target branch;
+9. persists PR identity before waiting for checks;
+10. releases local Git coordination while CI runs;
+11. observes exact check-run data through the adaptive pull scheduler;
+12. validates and persists passing or failing evidence;
+13. after pass, idempotently marks the draft change ready for review and
     observes that non-draft state;
-13. revalidates ops and CI evidence and requests a GitHub squash merge with the
+14. revalidates ops and CI evidence and requests a GitHub squash merge with the
     expected PR head SHA;
-14. observes the merged SHA, verifies the merged tree, synchronizes the local
+15. observes the merged SHA, verifies the merged tree, synchronizes the local
     target, closes the bead, and reconciles the PR and remote candidate ref.
 
 The dispatcher never holds a repository lock while waiting for GitHub.
@@ -496,6 +523,14 @@ boundary atomically rejects a changed tested base. The GitHub adapter satisfies
 this through a verified strict required-check ruleset and sends the expected
 PR head SHA to the squash endpoint. Ambiguous timeout-after-success responses
 are reconciled by observing the persisted change before retrying.
+
+`Capabilities` also contains the canonical effective-policy hash and an
+enumerated result for every applicable repository/organization rule. GitHub v1
+explicitly does not implement merge queue or autonomous satisfaction of human
+review, conversation, or deployment gates; preflight fails before candidate
+publication when any is effective. Pre-authorization must reproduce the same
+compatible policy hash. The fake models every supported rejection category,
+not only the desired required-check rule.
 
 `SetChangeReady` is a distinct persisted, idempotent transition. The GitHub
 adapter marks the draft PR ready, then observes `isDraft=false` before merge
@@ -905,14 +940,18 @@ chains; it may split them further but may not collapse away a boundary:
    project config model, `cmd/oro/cmd_start.go:newProductionDispatcher`,
    `dispatcher.Config.validate`, and `Dispatcher.Run` before socket readiness.
    Cover defaults, precedence, malformed values, workflow eligibility, target
-   rulesets, auth, squash support, startup events, and status.
+   rulesets, complete effective repository/organization policy, unsupported
+   human/deployment/merge-queue blockers, auth, squash support, startup events,
+   and status.
 2. **Provider-neutral core and GitHub adapter.** Implement normalized
    candidate/change/evidence/merge types, all `RemoteGateClient` operations
    including idempotent `SetChangeReady` and ambiguous
    `AuthorizeSquashMerge`, and GitHub transport isolated behind the adapter.
    Read `pkg/janitor/detect.go` for environment/host/auth conventions and add
    boundary/import tests. The production-faithful fake must reject merge while
-   a change remains draft.
+   a change remains draft and model approving review, CODEOWNER, conversation,
+   deployment, signed-commit, lock/read-only, actor restriction, and merge-
+   queue policy blockers.
 3. **Protocol and worker handoff.** Wire `CANDIDATE_READY` through
    `pkg/protocol/message.go`, `pkg/worker/worker.go:awaitSubprocessAndReport`,
    `runQGAndReport`, `SendReadyForReview`, and `SendDone`. Update
@@ -924,7 +963,10 @@ chains; it may split them further but may not collapse away a boundary:
    correction, audit campaign, and post-install state. Wire `handleMessage`,
    `handleDone`, `handleReadyForReview`, `handleReviewResult`,
    `startupRecovery`, `restoreState`, and `spawnBackgroundLoops`. Test restart
-   after worker death and worktree deletion.
+   after worker death and worktree deletion. Add dispatcher-owned local
+   adoption-ref creation, reachability proof, lease persistence, orphan-ref
+   startup recovery, and crash injection between ref creation, row commit, ACK,
+   worktree deletion, rebase, and first remote publication.
 5. **Local presubmit action scheduler.** Replace the worker monolithic gate in
    GitHub mode with completion-based actions, total/per-resource admission,
    cancellation, exact acceptance execution, and pre/post-rebase invalidation.
@@ -945,7 +987,8 @@ chains; it may split them further but may not collapse away a boundary:
 8. **Correction and cleanup.** Persist bounded findings, create a normal pool
    correction assignment at the exact remote candidate SHA, and handle dead
    workers, deleted worktrees, missing refs, duplicate findings, non-ancestor
-   squash cleanup, cancellation, rollback, and recovery quarantine. Include
+   squash cleanup, adoption-ref retention/removal, cancellation, rollback, and
+   recovery quarantine. Include
    `TestRemoteGateModeRollbackOwnership` across publishing, running, passed,
    and ambiguous-merge states after restart; new candidates use local mode,
    while every old record remains exclusively remote-owned until terminal or
@@ -992,6 +1035,7 @@ TestRemoteGateDraftReadiness
 TestRemoteGateModeRollbackOwnership
 TestRemoteGateWorkflowContract
 TestRemoteGateWorkerHandoffAndCorrection
+TestRemoteGateAdoptionCrashBoundary
 TestRemoteGateExactEvidenceAndProtectedMerge
 TestRemoteMutationAuditCampaign
 TestEpicRemoteGateAndInstall
@@ -1000,7 +1044,7 @@ TestRemoteGateProviderBoundary
 ```
 
 `scripts/test_remote_gate_epic.sh` owns this literal manifest (or reads an
-equivalent committed data file), verifies exactly 14 unique entries, associates
+equivalent committed data file), verifies exactly 15 unique entries, associates
 each with acceptance criteria 1–10, and requires a test-level JSON `pass` event
 for every entry.
 
@@ -1052,7 +1096,9 @@ nonterminal remote record.
    custom target, and an `epic/**` target; prove the aggregate includes every
    portable job including strict incremental mutation; and reject mutable
    action tags, write permissions, secrets, `pull_request_target`, head-only
-   checkout, missing/skipped needs, and a non-strict target ruleset.
+   checkout, missing/skipped needs, a non-strict target ruleset, adapter bypass,
+   and every unsupported effective human/deployment/conversation/signature/
+   lock/actor/merge-queue policy.
 7. GitHub mode runs the configured local presubmit actions with bounded
    total/resource concurrency, then replaces the production
    `READY_FOR_REVIEW`/`DONE` local-QG merge path with durable candidate
@@ -1122,7 +1168,7 @@ premortem:
 
   paper_tigers:
     - risk: "GitHub merge queue is unavailable for this user-owned public repository."
-      reason: "The selected design does not depend on merge queue; a verified strict ruleset makes the aggregate stale on base movement, expected-head squash merge rejects head races, and the dispatcher automatically rebases/retries."
+      reason: "The selected design does not depend on merge queue; preflight rejects any target whose effective policy requires it. For supported targets, a verified strict ruleset makes the aggregate stale on base movement, expected-head squash merge rejects head races, and the dispatcher automatically rebases/retries."
     - risk: "Squash merge makes the candidate branch a non-ancestor of target."
       reason: "Reconciliation binds the tested candidate tree to GitHub's merged tree before cleaning the preserved worker and remote refs."
 ```
