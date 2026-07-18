@@ -64,14 +64,19 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID, baseBranch stri
 		baseBranch = "main"
 	}
 
-	// Best-effort: fetch from origin so the worktree branches from the current
-	// remote HEAD, not a potentially-stale local ref (govulncheck loop root cause).
-	// On success use origin/<baseBranch>; fall back to the local ref if there is
-	// no remote or the fetch fails (e.g. local-only repos, no network).
+	// Best-effort: fetch from origin so the worktree can branch from the freshest
+	// safe ref. If local and remote disagree, prefer the descendant and refuse
+	// divergent histories rather than starting a worker from a stale target.
+	// Fall back to the local ref if there is no remote or fetch fails (e.g.
+	// local-only repos, no network).
 	effectiveBase := baseBranch
 	_, fetchErr := g.runner.Run(ctx, "git", "-C", g.repoRoot, "fetch", "origin", baseBranch)
 	if fetchErr == nil {
-		effectiveBase = "origin/" + baseBranch
+		selectedBase, selectErr := g.selectFreshBase(ctx, baseBranch, "origin/"+baseBranch)
+		if selectErr != nil {
+			return "", "", selectErr
+		}
+		effectiveBase = selectedBase
 	} else if err := g.ensureLocalEpicBaseBranch(ctx, baseBranch); err != nil {
 		return "", "", err
 	}
@@ -104,6 +109,21 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID, baseBranch stri
 	}
 	g.stageAssets(ctx, path)
 	return path, branch, nil
+}
+
+func (g *GitWorktreeManager) selectFreshBase(ctx context.Context, localBase, remoteBase string) (string, error) {
+	relation, err := g.branchRelationToBase(ctx, localBase, remoteBase)
+	if err != nil {
+		return "", fmt.Errorf("compare local base %s with %s: %w", localBase, remoteBase, err)
+	}
+	switch relation {
+	case branchStrictlyBehind:
+		return remoteBase, nil
+	case branchDiverged:
+		return "", fmt.Errorf("local base %s and %s diverged", localBase, remoteBase)
+	default:
+		return localBase, nil
+	}
 }
 
 func (g *GitWorktreeManager) retryCreateAfterPrune(ctx context.Context, path, branch, effectiveBase string, pruneFailed bool) error {
