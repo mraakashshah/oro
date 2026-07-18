@@ -271,6 +271,9 @@ Add a project configuration section:
 
 ```yaml
 factory:
+  lifecycle:
+    auto_install_after_epic: true
+    supervisor: managed-monitor
   quality_gate:
     mode: github-pr             # local | github-pr
     github:
@@ -312,6 +315,13 @@ Rules:
 - `max_in_flight` limits dispatcher-owned remote candidates, preventing an
   accidental PR/run explosion even though the computation is no longer local.
 - The effective mode and all limits appear in status and startup events.
+- `auto_install_after_epic` requires a live, version-compatible external
+  lifecycle supervisor with a recent durable heartbeat. In v1 this is
+  `oro monitor --act` installed as a per-project managed service by setup
+  (launchd on macOS, systemd user service on Linux). GitHub PR gates may run
+  without it only when automatic epic installation is disabled; Oro's canary
+  requires it and startup fails before dispatch if the supervisor contract is
+  absent or stale.
 - Configuration is loaded into a typed project-config model, passed by
   `cmd/oro/cmd_start.go:newProductionDispatcher` into `dispatcher.Config`, and
   validated before the daemon socket becomes available. File values have the
@@ -968,17 +978,45 @@ When all children and acceptance criteria are closed:
 7. perform the existing local `make build install`, installed/repo binary hash
    match, controlled Oro restart, and healthy-dispatch verification.
 
-The dispatcher owns steps 1–6. Local factory lifecycle automation owns step 7;
-it must be a durable post-epic operation rather than an informal operator
-reminder. Failure in step 7 keeps the epic completion operation visible and
-retryable without undoing a proven merge.
+The dispatcher owns steps 1–6, then writes a versioned post-epic operation and
+signals the external lifecycle supervisor. The dispatcher never attempts to
+restart itself. The managed `oro monitor --act` process owns step 7 across the
+termination boundary. It durably claims the operation with a renewable lease,
+then idempotently:
+
+1. verifies the exact synced target SHA and clean lifecycle worktree;
+2. runs or resumes `make build install` and records repository/installed binary
+   hashes before restart;
+3. requests graceful shutdown, records the old PID, and waits for its exit;
+4. invokes `cmd/oro/cmd_start.go:startFreshSwarm` through the newly installed
+   binary with the persisted project worker limits/configuration;
+5. proves the replacement PID differs, its executable hash is expected, its
+   reported build hash matches the repository, and dispatcher health plus
+   healthy dispatch succeed;
+6. atomically acknowledges the lifecycle operation for dispatcher startup
+   recovery to close the epic.
+
+The operation ledger stores stage, schema version, claim owner/lease, attempts,
+target/install hashes, old/new PIDs, start configuration, health evidence, and
+acknowledgement. Monitor restart resumes from the last proven stage: a crash
+after install does not rebuild unnecessarily, and a crash after old-daemon exit
+retries replacement start. The monitor action ledger and post-epic ledger use
+idempotency keys so two monitor instances cannot start two swarms.
+
+The monitor itself is supervised by the OS user service manager. Setup installs
+and verifies that service; dispatcher startup requires a compatible supervisor
+heartbeat and supported operation-schema version before enabling automatic
+epic installation. This ensures some process remains able to consume
+`restart_pending` after the dispatcher exits. Failure keeps the epic operation
+visible and retryable without undoing a proven remote integration.
 
 The durable epic states distinguish `promotion_gate`, `remote_merged`,
 `local_install_pending`, `restart_pending`, `health_verification`, and
 `complete`. `tryCloseEpic`, `completeEpicClose`, and `ffMergeEpicBranch` must
 dispatch by gate mode; the legacy local-QG/FF path cannot close an epic in
 `github-pr` mode. The epic closes only after installed/repository binary hashes
-match and healthy dispatch is observed.
+match, the external supervisor acknowledgement commits, and healthy dispatch is
+observed by the replacement process.
 
 ### 13. Remote Auditor Mutation Campaign
 
@@ -1202,7 +1240,17 @@ chains; it may split them further but may not collapse away a boundary:
 9. **Epic promotion and local installation.** Replace the GitHub-mode path in
    `tryCloseEpic`, `completeEpicClose`, and `ffMergeEpicBranch` with promotion
    state, remote evidence/merge, local sync, durable build/install/restart,
-   hash comparison, health proof, and retry.
+   hash comparison, health proof, and retry. Wire
+   `pkg/dispatcher/dispatcher.go:applyRestartDaemon`,
+   `cmd/oro/cmd_monitor.go:cliMonitorRunner.RestartDaemon`, the monitor action
+   ledger/claim loop, `cmd/oro/cmd_start.go:startFreshSwarm`, setup-managed
+   launchd/systemd service installation, supervisor heartbeat/schema preflight,
+   and post-epic operation store. The hermetic test uses real old-dispatcher and
+   external-monitor processes, asserts old PID exit/new PID start, expected
+   installed/repository hash and worker config, replacement health, durable
+   acknowledgement, epic closure, and recovery after monitor crashes both
+   after install and after old-daemon exit. An in-process lifecycle fake cannot
+   satisfy this package.
 10. **Remote full mutation audit.** Add the workflow-dispatch/shard/aggregate
     workflow and wire `pkg/dispatcher/audit.go:runAudit` to durable exact-SHA
     campaign observation, artifact ingestion, restart, infrastructure failure,
@@ -1300,7 +1348,10 @@ nonterminal remote record.
    action, and the dispatcher automatically returns to remote mode after
    recovery.
 4. Epic promotion uses a remote PR gate for the combined branch, then performs
-   and verifies the local build/install/restart operation durably.
+   and verifies the local build/install/restart operation through a real
+   externally supervised monitor process. The test crosses old-daemon exit/new-
+   daemon start, checks PID/build/install hashes/config/health/acknowledgement,
+   and resumes monitor crashes after install and after daemon exit.
 5. `oro status --json`, health, monitor events, and the dashboard expose remote
    backlog, degraded mode, failure feedback delivery, quarantine count, and
    pending post-epic installation.
