@@ -13,9 +13,9 @@ selected design, the dispatcher owns the complete remote-gate lifecycle: it
 rebases the bead branch, publishes the exact candidate state, creates or
 updates a draft pull request, waits for an aggregate GitHub check, validates
 the returned evidence against the exact head and target SHAs, routes failures
-back to the worker, retries transient infrastructure failures, performs the
-existing ops review, fast-forwards the target, pushes it, and reconciles the
-pull request.
+back to durable correction work, retries transient infrastructure failures,
+performs the existing ops review, authorizes a protected GitHub squash merge,
+synchronizes local target state, and reconciles the pull request.
 
 The operator is an observer. Remote-gate backlog, recovery, and degraded mode
 must be surfaced in status, logs, the dashboard, and every progress response,
@@ -62,7 +62,7 @@ turn those checks into merge evidence.
   orchestration.
 - Preserve the invariant that only a gate for the exact candidate head and
   exact target state can authorize review and merge.
-- Preserve Oro's linear, fast-forward merge model.
+- Preserve linear target history with one GitHub squash-merged commit per bead.
 - Route deterministic CI findings back to the assigned worker as structured,
   bounded feedback.
 - Recover idempotently after dispatcher, worker, `gh`, network, or GitHub
@@ -78,7 +78,7 @@ turn those checks into merge evidence.
 ## Non-Goals
 
 - Replacing GitHub Actions with a generic multi-provider CI framework.
-- Letting GitHub merge or rebase Oro branches in the first version.
+- Letting a worker or operator decide or perform routine merges.
 - Requiring an organization-owned repository or GitHub merge queue.
 - Running agent/model credentials or Oro's private runtime state in CI.
 - Sending arbitrary worker prompts, cards, or local state database contents to
@@ -101,7 +101,7 @@ turn those checks into merge evidence.
 2. **Exact-state evidence:** a passing check is usable only when it identifies
    the configured workflow, aggregate check, PR number, workflow run ID,
    tested merge SHA, candidate head SHA, target branch, and target SHA.
-3. **No stale merge:** immediately before fast-forwarding, the dispatcher
+3. **No stale merge:** immediately before authorizing GitHub's squash merge, the dispatcher
    proves that local target, remote target, candidate head, and recorded
    evidence still match. Any mismatch invalidates evidence and re-enters the
    rebase/publish/gate loop.
@@ -187,17 +187,19 @@ worker implementation
   -> publish draft PR
   -> comprehensive remote QG on the PR merge commit
   -> exact evidence revalidation
-  -> fast-forward target
+  -> dispatcher-authorized GitHub squash merge
 ```
 
 Each layer has a distinct job:
 
 - Worker TDD and acceptance commands provide immediate change-specific
   feedback during implementation.
-- Fast local presubmit rejects syntactically invalid, unformatted, obviously
-  uncompilable, or acceptance-failing work before it is published. It has a
-  strict time budget and cannot contain repository-wide tests, coverage,
-  security scans, or broad lint.
+- Local presubmit is a completion-based set of independently scheduled checks,
+  not a smaller monolithic QG and not a wall-clock budget. It rejects invalid,
+  unformatted, uncompilable, acceptance-failing, or statically unsound work
+  before publication. Project configuration controls local check concurrency;
+  lightweight checks from many candidates may run together while heavyweight
+  repository-wide suites execute remotely.
 - Ops review protects design, behavior, acceptance completeness, code health,
   and maintainability. It reviews the exact post-rebase diff before publication
   to GitHub.
@@ -228,7 +230,8 @@ factory:
       workflow: ci.yml
       aggregate_check: oro-portable-qg
       max_in_flight: 3
-      poll_interval: 10s
+      poll_min_interval: 5s
+      poll_max_interval: 60s
       run_timeout: 35m
       outage_fallback_after: 15m
       close_superseded_prs: true
@@ -292,14 +295,18 @@ portable gate against GitHub's PR merge commit, not merely the head branch.
 Introduce a persisted state machine:
 
 ```text
-candidate_committed
+candidate_adopted
+  -> local_presubmit
   -> rebasing
+  -> local_presubmit_post_rebase
+  -> ops_review
   -> publishing
   -> awaiting_run
   -> running
   -> passed
-  -> awaiting_review
-  -> merging
+  -> merge_authorizing
+  -> github_merging
+  -> local_sync
   -> reconciled
 
 Failure branches:
@@ -312,8 +319,9 @@ Failure branches:
 
 The worker-to-dispatcher protocol gains `CANDIDATE_READY`. It contains the
 bead ID, assignment ID, worktree, branch, target branch, and local head SHA.
-It does not claim a QG pass. The worker remains assigned and receives periodic
-remote-gate progress, failure feedback, or the existing review result.
+It does not claim a QG pass. Once the dispatcher durably adopts the candidate,
+the worker is released to the pool and may move to another bead. Review and CI
+therefore never rely on the original worker process remaining reserved.
 
 On `CANDIDATE_READY`, the dispatcher:
 
@@ -322,20 +330,43 @@ On `CANDIDATE_READY`, the dispatcher:
    coordination boundary;
 3. fetches the configured remote and rebases the candidate onto the exact
    local target;
-4. ensures a non-main epic target exists on the remote before creating a PR;
-5. publishes the candidate with `--force-with-lease=<remote-ref>:<observed-sha>`
+4. runs ops review against the exact post-rebase tree and persists its verdict;
+5. ensures a non-main epic target exists on the remote before creating a PR;
+6. publishes the candidate with `--force-with-lease=<remote-ref>:<observed-sha>`
    when a prior dispatcher-owned ref exists, never with an unconditional force;
-6. creates or updates a draft PR whose base is the actual target branch;
-7. persists PR identity before waiting for checks;
-8. releases local Git coordination while CI runs;
-9. polls exact check-run data with bounded jittered backoff;
-10. validates and persists passing or failing evidence;
-11. on pass, starts the existing ops review;
-12. after approval, re-acquires merge coordination and revalidates evidence;
-13. fast-forwards locally, pushes the target with a lease, closes the bead,
-    and reconciles the PR and remote candidate ref.
+7. creates or updates a draft PR whose base is the actual target branch;
+8. persists PR identity before waiting for checks;
+9. releases local Git coordination while CI runs;
+10. observes exact check-run data through the adaptive pull scheduler;
+11. validates and persists passing or failing evidence;
+12. after pass, revalidates ops and CI evidence and requests a GitHub squash
+    merge with the expected PR head SHA;
+13. observes the merged SHA, verifies the merged tree, synchronizes the local
+    target, closes the bead, and reconciles the PR and remote candidate ref.
 
 The dispatcher never holds a repository lock while waiting for GitHub.
+
+#### Adaptive GitHub observation
+
+The dispatcher does not create one polling goroutine per PR. One project-local
+scheduler owns a priority queue keyed by `next_observation_at` and batches API
+queries where GitHub supports it. An observation is scheduled immediately when:
+
+- a PR is created or its head/base is updated;
+- ops review changes candidate eligibility;
+- a prior observation reaches its next due time;
+- a transient API retry becomes due;
+- the dispatcher starts or resumes and finds a nonterminal remote gate;
+- a status/progress request asks for freshness (the request returns cached
+  state with `observed_at`; refresh happens asynchronously);
+- the safety sweep finds a nonterminal record with no live timer.
+
+Active queued/new runs begin at `poll_min_interval`. Stable running jobs back
+off toward `poll_max_interval`; API errors use jittered exponential backoff.
+Every state change resets to the minimum. Terminal records stop polling. ETags,
+rate-limit headers, and a 60-second safety sweep prevent both API hammering and
+lost wakeups. Webhooks are an optional future accelerator, never a correctness
+dependency for a dispatcher behind NAT.
 
 ### 4. GitHub Client Boundary
 
@@ -428,7 +459,7 @@ A remote pass is acceptable only when all of these are true:
 - PR base ref and base SHA equal the intended target and recorded target SHA;
 - the run head/merge SHA equals the PR merge SHA for that head/base pair;
 - the workflow definition blob SHA is recorded;
-- the passing evidence row commits successfully before review starts;
+- the passing evidence row commits successfully before merge authorization;
 - no later candidate, target, or workflow change supersedes it.
 
 Status checks named the same by another workflow are rejected. The dispatcher
@@ -438,7 +469,8 @@ uses workflow identity plus check name, not check name alone.
 
 Target movement is normal under parallel workers. It is not an operator event.
 
-Before review, and again immediately before merge, the dispatcher compares:
+Before ops review, before publication, and again immediately before merge
+authorization, the dispatcher compares:
 
 - local target SHA;
 - remote target SHA;
@@ -456,14 +488,20 @@ approval for the old diff is also invalidated because the diff changed.
 If only observational metadata changed, the dispatcher may continue. The first
 version must not attempt affected-file reasoning.
 
-After exact validation, the dispatcher uses the existing fast-forward merge
-path locally. It then pushes the target with a lease against the target SHA it
-validated. A lease failure means another writer won the race: the merge is not
-closed, the local target is reconciled to the remote, and the bead re-enters
-the rebase/gate loop.
+After exact validation, the dispatcher calls GitHub's merge endpoint with
+`merge_method=squash` and the exact expected PR head SHA. Branch protection
+requires the aggregate portable check and rejects stale or conflicting state.
+GitHub creates one fast-forwarded squash commit on the target. A 405/409 or a
+changed head/base means another writer won the race: the bead is not closed and
+re-enters the rebase/review/gate loop.
 
-GitHub is not asked to synthesize a merge, squash, or rebase commit. This keeps
-the tested candidate SHA and Oro's local linear history aligned.
+After GitHub reports the merged SHA, the dispatcher fetches the remote, proves
+the merged commit's tree equals the reviewed and remotely tested candidate
+tree, and updates the local target by fast-forward only. In the normal clean
+factory checkout this is `git merge --ff-only origin/<target>`; a non-checked-
+out target ref may be compare-and-swap updated. Tracked local edits or divergent
+local commits are preserved and routed to dispatcher recovery—never reset,
+overwritten, or silently discarded.
 
 ### 8. Failure Classification and Worker Recovery
 
@@ -471,7 +509,7 @@ Remote observations are classified before action:
 
 | Class | Examples | Dispatcher action |
 |---|---|---|
-| deterministic | test, lint, build, coverage, or aggregate dependency failure | Fetch bounded failed-step evidence, persist it, send retry to the same worker when alive, otherwise requeue with the evidence checkpoint |
+| deterministic | test, lint, build, coverage, or aggregate dependency failure | Fetch bounded failed-step evidence, persist a correction checkpoint on the original bead, and enqueue a fresh correction assignment for any available worker |
 | superseded | candidate or base changed; run cancelled by newer push | Ignore old run and await the replacement |
 | transient | GitHub 5xx, network timeout, runner startup failure, `gh` temporary error | Retry with jittered exponential backoff within the run timeout |
 | auth/config | missing auth, missing workflow, missing aggregate check | Mark factory configuration unhealthy and pause new remote-gate assignments; do not ask the operator to advance individual beads |
@@ -492,9 +530,15 @@ and total caps. Repeated identical findings increment an occurrence count
 instead of duplicating text. Review/QG stuck detection fingerprints normalized
 findings, not the full transcript.
 
-If the worker dies, the next assignment receives the durable checkpoint before
-coding begins. This preserves the existing requirement that unchanged code
-must not repeat a rejection cycle without seeing the actual findings.
+The original worker is not reserved while ops review or GitHub runs. The
+dispatcher owns a candidate worktree/ref after `CANDIDATE_READY`; the worker
+may immediately accept another bead. Any review or CI rejection reopens the
+original bead in a correction stage and creates a normal pool assignment. The
+same process may receive it if idle, but correctness never depends on affinity.
+The correction worker starts from the preserved remote candidate ref or a fresh
+worktree at that exact SHA and receives the durable checkpoint before coding.
+This preserves the requirement that unchanged code cannot repeat a rejection
+cycle without seeing the actual findings.
 
 ### 9. Automatic Degraded Mode
 
@@ -513,7 +557,7 @@ dispatcher may execute the candidate through a local `memory-safe` profile:
 - cancellation releases the local gate lease.
 
 The local result produces exact local evidence for the same candidate and
-target SHA. It can authorize review and merge, but the dispatcher records that
+target SHA. It can authorize merge after the existing ops approval, but the dispatcher records that
 the remote gate was bypassed due to degraded mode. When GitHub recovers, new
 candidates return automatically to remote mode.
 
@@ -532,14 +576,16 @@ quarantined, the dispatcher cancels its current workflow run best-effort and
 marks the durable run obsolete. A failed cancellation cannot make stale
 evidence usable.
 
-After a successful target push, reconciliation proves the candidate head is an
-ancestor of both local and remote target. It then:
+After a successful GitHub squash merge, reconciliation proves the merged target
+tree equals the reviewed and tested candidate tree. It then:
 
-1. observes whether GitHub marked the PR merged;
-2. if still open, closes it with a dispatcher-generated reconciliation note;
+1. records GitHub's merged SHA and synchronizes the local target by
+   fast-forward only;
+2. verifies GitHub marked the PR merged;
 3. deletes the remote candidate ref with a lease;
-4. runs existing local worktree/branch cleanup;
-5. emits `remote_gate_reconciled`.
+4. archives or safely deletes the non-ancestor worker branch only after
+   tree-equivalence and durable PR evidence prove no unique work remains;
+5. runs local worktree cleanup and emits `remote_gate_reconciled`.
 
 Cleanup is retryable and cannot reopen or fail the already proven merge. Remote
 refs with unmerged commits are never deleted. Ambiguous ownership, unexpected
@@ -557,7 +603,7 @@ the dispatcher reconciles every nonterminal record:
 - query the persisted PR and workflow run;
 - adopt an exact active run, observe a completed run, or publish a replacement;
 - cancel obsolete runs;
-- restore the worker-visible status;
+- restore the candidate pipeline status independently of worker lifetime;
 - resume backoff from persisted attempt time rather than stampeding GitHub.
 
 All transitions use compare-and-swap on the record version. Only one dispatcher
@@ -565,9 +611,10 @@ instance may advance a record. Reconciliation is idempotent: repeating it after
 any individual side effect produces the same live PR/run or a conservative
 quarantine, never a duplicate merge.
 
-If the worker process is absent, a deterministic failure reopens/requeues the
-bead with its checkpoint. A passing gate may proceed to a fresh ops review only
-after current branch/worktree state is reverified.
+If the original worker process is absent, a deterministic failure opens a
+normal correction assignment with its checkpoint. A passing gate may proceed
+to merge authorization only after current branch, review, and evidence state
+is reverified.
 
 ### 12. Epic Promotion
 
@@ -580,7 +627,7 @@ When all children and acceptance criteria are closed:
 2. run the aggregate portable gate against the combined epic merge commit;
 3. persist exact epic evidence;
 4. run final epic review/acceptance;
-5. fast-forward and push through the normal exact-state merge path;
+5. authorize GitHub to squash merge through the normal exact-state path;
 6. reconcile the promotion PR and remote epic ref;
 7. perform the existing local `make build install`, installed/repo binary hash
    match, controlled Oro restart, and healthy-dispatch verification.
@@ -708,16 +755,16 @@ premortem:
   elephants:
     - risk: "PR-per-bead increases remote noise and consumes hosted CI capacity."
       mitigation: "Draft PRs, deterministic refs, max_in_flight, cancellation, and automatic reconciliation bound the noise; the audit trail is part of the desired capability."
-    - risk: "Direct target pushes mean GitHub branch protection is not the primary correctness boundary."
-      mitigation: "Oro's exact-evidence merge state machine is the boundary in v1; rulesets can be added later without changing evidence semantics."
+    - risk: "The dispatcher requests a squash merge after its evidence becomes stale."
+      mitigation: "GitHub branch protection plus the expected-head-SHA merge request fail closed; Oro revalidates head, base, workflow, review, and QG evidence immediately before authorization."
     - risk: "Automatic local fallback can still be slower than remote CI and one tool can individually exhaust memory."
       mitigation: "Fallback is serialized and memory-safe, but absolute memory safety needs OS-level resource control as a future capability."
 
   paper_tigers:
     - risk: "GitHub merge queue is unavailable for this user-owned public repository."
-      reason: "The selected design does not depend on merge queue; Oro rebases, validates, fast-forwards, and pushes with leases itself."
-    - risk: "A PR remains open after Oro directly pushes its head into the base."
-      reason: "Reconciliation proves ancestry, then closes the PR and safely deletes the remote candidate ref without affecting merge correctness."
+      reason: "The selected design does not depend on merge queue; strict up-to-date checks and expected-head squash merge reject races, and the dispatcher automatically rebases/retries."
+    - risk: "Squash merge makes the candidate branch a non-ancestor of target."
+      reason: "Reconciliation binds the tested candidate tree to GitHub's merged tree before cleaning the preserved worker and remote refs."
 ```
 
 ## Assumption Ledger
@@ -750,11 +797,9 @@ premortem:
       reviews the exact post-rebase diff before that candidate is published.
 - [ ] DECISION: How is the guarantee that every integrated commit compiles
       enforced when a worker creates multiple internal commits?
-      DEPENDS_ON: The local fast-presubmit contract.
-      RECOMMENDATION: Normalize each bead to one dispatcher-controlled
-      candidate commit after fast local presubmit; worker commits remain
-      recoverable on the worker branch but never enter target history.
-      ASK: Confirm one validated target-history commit per bead.
+      ANSWER: GitHub performs a protected squash merge after exact review and
+      remote QG evidence pass. Worker/WIP commits remain on preserved candidate
+      refs but do not enter target history.
 - [x] DECISION: Who owns PR creation, CI waiting, retry, merge, and cleanup?
       ANSWER: The dispatcher; the operator only observes surfaced state.
 - [x] DECISION: Is GitHub or the local worker authoritative for portable QG in
@@ -762,8 +807,17 @@ premortem:
       ANSWER: GitHub exact PR merge evidence is authoritative; local runs only
       macOS checks or the explicitly memory-safe outage fallback.
 - [x] DECISION: Who creates the final Git commit?
-      ANSWER: The worker creates the candidate commit; GitHub never rewrites it;
-      the dispatcher fast-forwards the target.
+      ANSWER: The worker creates candidate commits; the dispatcher authorizes;
+      GitHub creates one squash commit on the target; the dispatcher fetches
+      and fast-forwards local state after verifying tree equivalence.
+- [x] DECISION: Must the original worker remain occupied during review and CI?
+      ANSWER: No. Candidate adoption releases it. Rejections become durable
+      correction assignments consumable by any available worker, with exact
+      candidate state and bounded findings restored.
+- [x] DECISION: Is local presubmit governed by a time target?
+      ANSWER: No. It is governed by an explicit check set and configurable
+      concurrent scheduling. Many local presubmit actions may run at once;
+      heavyweight comprehensive work remains remote.
 - [x] DECISION: What happens when the target moves?
       ANSWER: Dispatcher automatically invalidates evidence/review, rebases,
       republishes, and reruns.
