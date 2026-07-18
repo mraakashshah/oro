@@ -296,7 +296,8 @@ factory:
         private_key_ref: keychain:oro/github-app
       policy_reconciliation:
         enabled: true
-        owned_ruleset_id: 456789
+        owned_ruleset_key: oro-target-policy-018f...
+        owned_ruleset_name: oro:project-identity:target-policy
         desired_template_hash: sha256:...
         maintenance_identity:
           type: github-app
@@ -323,7 +324,10 @@ Rules:
 - Invalid explicit configuration fails startup with a configuration error. It
   does not silently switch modes.
 - GitHub PR mode requires typed policy-reconciliation configuration for the
-  one Oro-owned repository ruleset. The maintenance identity is a distinct
+  one Oro-owned repository ruleset. Configuration and the supervisor descriptor
+  carry a stable logical ownership key/name/template hash, never an immutable
+  provider ruleset ID; the active provider ID is versioned durable state because
+  recreation returns a new ID. The maintenance identity is a distinct
   GitHub App installation credential minted only with Metadata-read and
   Administration-write; every Contents, Pull requests, Actions, Checks,
   Workflows, secrets, organization, and account permission is forbidden. The
@@ -764,16 +768,40 @@ type PolicyReconciler interface {
 
 The GitHub implementation is constructed from the typed maintenance identity
 by setup and the managed monitor, never by a worker and never from the runtime
-credential. It can read and update only the configured repository ruleset ID;
-the desired canonical template, ownership marker, repository identity, last
-observed ruleset version/hash, drift evidence, and reconciliation idempotency
-key are mandatory request fields. It refuses organization rules, foreign or
-unmarked repository rulesets, repository mismatch, unexpected ruleset identity,
-or a desired template not matching project configuration. The adapter mints a
-short-lived exact-scope token just in time, updates the Oro-owned ruleset,
-re-reads complete effective policy, and returns before/after rule/version/hash
-evidence. Secrets are excluded from argv, environment inheritance, descriptors,
-database rows, and logs.
+credential. The desired canonical template, logical ownership key encoded in
+the exact ruleset name, repository identity, last observed provider ID/version/
+hash, drift evidence, and reconciliation idempotency key are mandatory request
+fields. It refuses organization rules, foreign or unmarked repository rulesets,
+repository mismatch, ownership-name collision, unexpected creation actor, or a
+desired template not matching project configuration. The adapter mints a short-
+lived exact-scope token just in time, reconciles the Oro-owned ruleset, re-reads
+complete effective policy, and returns before/after provider-ID/rule/version/
+hash evidence. Secrets are excluded from argv, environment inheritance,
+descriptors, database rows, and logs.
+
+The durable policy-binding registry is authoritative for mutable provider
+identity: logical key, active provider ID, binding generation, desired template
+hash, create-attempt ID, observed IDs/versions, and state (`bound`, `missing`,
+`create_ambiguous`, `deduplicating`). A 404 on the active ID first lists all
+repository-source rulesets and discovers exact ownership-name matches. One
+matching ruleset is adopted only when its full template and ruleset-history
+creation actor match the configured maintenance App. Zero matches persists a
+create attempt before POSTing the full marked template. A response records the
+new ID; a lost response enters `create_ambiguous` and reconciliation lists by
+the same marker before any new attempt.
+
+Because GitHub creation has no idempotency-key field, an ambiguous retry may
+produce duplicate identical marked rulesets. Integration remains frozen while
+the reconciler validates every match, deterministically retains the oldest
+maintenance-App-created exact-template instance, lease-records each duplicate,
+and deletes only the other identical marked instances. Any foreign creator or
+template mismatch is quarantined, never deleted. Once exactly one instance
+remains, one database transaction increments binding generation and replaces
+the active provider ID. Static config and the supervisor descriptor need no
+rewrite because they contain only the logical key/name/template; monitor and
+dispatcher always resolve the current binding generation from the shared
+ledger. Crashes or lost responses around create, discovery, duplicate deletion,
+binding commit, and verification converge without duplicate active policy.
 
 `integrated_policy_drift` atomically creates a durable reconciliation request
 and integration freeze. The external monitor claims it with a renewable lease,
@@ -782,8 +810,9 @@ API failures with backoff, and commits the returned evidence. Dispatcher
 `startupRecovery`, `restoreState`, and `spawnBackgroundLoops` reconcile requests
 and unfreeze only when a fresh runtime-identity policy read exactly matches the
 configured template and the integrated attempt is already accounted for.
-Crashes before/after claim, token mint, provider update, verification, row
-commit, monitor restart, and dispatcher restart are idempotent. Drift caused by
+Crashes before/after claim, token mint, provider update/create/adopt/rebind,
+verification, row commit, monitor restart, and dispatcher restart are
+idempotent. Drift caused by
 foreign or organization policy is never overwritten; it remains frozen and a
 P0 auth/config defect, but it does not silently require a human interaction
 inside a routine bead.
@@ -1579,7 +1608,8 @@ chains; it may split them further but may not collapse away a boundary:
    maintenance identity/owned-ruleset/template configuration, exact permission
    validation, secret-reference resolution, recent setup attestation, and
    production constructor inputs through `newProductionDispatcher` and the
-   supervisor descriptor.
+   supervisor descriptor. Config/descriptor validation forbids a pinned provider
+   ID and requires the stable logical ownership key/name instead.
 2. **Provider-neutral core and GitHub adapter.** Implement normalized
    candidate/change/evidence/merge types, all `RemoteGateClient` operations
    including idempotent `SetChangeReady` and ambiguous
@@ -1618,7 +1648,8 @@ chains; it may split them further but may not collapse away a boundary:
    Model provider execution limits and reject a planned matrix above the reported
    bound exactly as the production host does.
    Implement the provider-neutral `PolicyReconciler` boundary and GitHub adapter
-   with owned-ruleset/identity/template/idempotency validation. Production
+   with discover/create/update/adopt/deduplicate/rebind plus owned-ruleset/
+   identity/template/idempotency validation. Production
    constructor tests prove runtime credentials cannot construct it, maintenance
    credentials cannot perform Git/PR/Actions operations, and absent, malformed,
    expired, wrong-host/repository, overprivileged, or inaccessible maintenance
@@ -1639,7 +1670,9 @@ chains; it may split them further but may not collapse away a boundary:
    correction, audit campaign, post-install state, and monotonic runtime-control
    generation, plus `integrated_policy_drift` evidence and the project-wide
    integration freeze/setup-reconciliation request, lease, attempt, and evidence
-   state. Wire `handleMessage`,
+   state, including the logical-key policy-binding registry, mutable provider ID,
+   binding generation, create-attempt ID, ambiguity, and duplicate leases. Wire
+   `handleMessage`,
    `handleDone`, `handleReadyForReview`, `handleReviewResult`,
    `startupRecovery`, `restoreState`, `spawnBackgroundLoops`,
    `checkClosedBeadAssignments`, and `handleClosedAssignment`. Test restart
@@ -1659,6 +1692,9 @@ chains; it may split them further but may not collapse away a boundary:
    fresh runtime-identity policy proof matches. Inject crashes at every claim/
    provider-update/evidence-commit/unfreeze boundary and prohibit duplicate
    integration or premature closure.
+   Inject 404 deletion, lost create/update/delete responses, duplicate creation,
+   crash-before/after active-ID binding, and stale descriptor/provider-ID cache;
+   prove one active exact-template ruleset and monotonic binding generation.
    Persist the worker generation/process inventory and make worker pool
    registration, idle selection, capacity, health, status, and assignment
    require active-generation attestation. `shutdownWaitForWorkers`,
@@ -1753,7 +1789,10 @@ chains; it may split them further but may not collapse away a boundary:
    maintenance token, restarts monitor/dispatcher at each boundary, proves
    exact-scope refresh and redaction, restores the template, verifies through
    the runtime identity, releases the integration freeze, and never grants the
-   runtime App Administration.
+   runtime App Administration. Delete the live ruleset so recreation returns a
+   different provider ID, lose the create response, permit duplicate marked
+   creation, and prove discovery/deduplication/atomic rebind plus final unfreeze
+   without rewriting static config or the descriptor.
    Build distinct old/new Oro fixtures with both compatible and incompatible
    descriptor/operation-schema ranges. Exercise the normal no-crash
    `M0/B0 -> shim -> M1/B1 ->
@@ -1955,7 +1994,8 @@ nonterminal remote record.
    pending post-epic installation, audit-ref cleanup pending with the blocking
    policy evidence, mutation requested/provider-bound/effective shard counts,
    integrated policy drift plus integration-freeze/setup-reconciliation state,
-   lifecycle readiness reason/control/queue generations, expected/attested
+   logical policy key, active provider ID/binding generation, create ambiguity/
+   deduplication, lifecycle readiness reason/control/queue generations, expected/attested
    active-generation workers, stale worker connections, and residual old-
    generation processes.
 6. Workflow contract fixtures prove PR eligibility for main, a configured
@@ -1985,6 +2025,9 @@ nonterminal remote record.
    credential noninterchangeability, short-lived refresh, descriptor/row/log
    redaction, and failure for absent, malformed, expired, inaccessible,
    overprivileged, or wrong-scope maintenance configuration.
+   Static config/descriptor identity is the logical ownership key/name/template,
+   while the shared binding registry is the only authoritative active provider
+   ID and generation; pinned provider IDs are rejected.
 7. GitHub mode runs the configured local presubmit actions with bounded
    total/resource concurrency, then replaces the production
    `READY_FOR_REVIEW`/`DONE` local-QG merge path with durable candidate
@@ -2012,6 +2055,11 @@ nonterminal remote record.
    restarts across provider update and evidence commit, rejects foreign/
    organization/unmarked rules, and proves no fake-only callback or manual
    operator step is needed for the marked Oro-owned ruleset.
+   It deletes the active ruleset, requires GitHub to return a new ID, loses the
+   create response, injects a duplicate exact marked instance and crashes around
+   deduplication/binding commit. Recovery retains one maintenance-created exact-
+   template instance, increments the binding generation atomically, resolves
+   stale cached IDs through the ledger, verifies policy, and only then unfreezes.
 9. Every auditor cycle dispatches or adopts exactly one full mutation campaign
    for its audit ID and SHA, survives restart, validates every shard artifact,
    independently reconstructs the persisted eligible-unit inventory, proves
