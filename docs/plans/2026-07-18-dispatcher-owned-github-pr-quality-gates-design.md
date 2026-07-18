@@ -1053,29 +1053,47 @@ Normal epic installation is side-by-side, not in-place. The build produces a
 versioned Oro executable path `B1` and retains the current `B0`. Before daemon
 shutdown, old monitor `M0` invokes `B1` in non-mutating supervisor compatibility
 mode to validate the stable descriptor envelope, lifecycle-ledger schema,
-migration plan, credential-provider access, and supported operation range. A
-failed preflight records an incompatible-upgrade failure while `M0` and old
-dispatcher `D0` continue running.
+credential-provider access, and supported operation range. The shim descriptor
+envelope and lifecycle journal use a stable append-only protocol that automatic
+epic installation never incompatibly migrates. `B1` must read/write the active
+protocol while `B0` remains valid. An incompatible or irreversible supervisor-
+protocol change fails preflight and files a prioritized compatibility repair
+while `M0` and old dispatcher `D0` continue running; such a change must ship
+through a backward-compatible bridge release or an explicit setup-maintenance
+flow, never this automatic handoff.
 
 After successful preflight, `M0` persists `supervisor_upgrade_pending` with a
 new fencing generation/token, expected `B1` hash/build/schema ranges, staged
-descriptor/ledger migration hashes, and rollback `B0` identity. Every monitor
+compatibility proof, and rollback `B0` identity. Every monitor
 side effect checks the current fencing generation. `M0` relinquishes its lease
 and exits; it cannot resume mutation after the generation advances. The stable
 shim atomically selects `B1`, starts distinct child `M1`, and requires a
 heartbeat bound to M1 PID, executable-image hash, build SHA, descriptor schema,
 ledger/operation-schema ranges, and fencing generation. `M1` performs the
-preflighted atomic migrations, claims the ledger, and acknowledges handoff.
+preflighted compatibility probe, claims the unchanged stable ledger, and
+acknowledges handoff.
 Only then may `M1` stop `D0` and start/verify `D1`.
 
 The shim is deliberately outside normal `make build install` and uses a small,
 versioned, backward-compatible bootstrap protocol. It remains alive while
 monitor children change. If `M1` exits or cannot produce the exact heartbeat
 before timeout, the shim restores the `B0` selection, starts a fenced `M0`
-replacement, records rollback evidence, and leaves `D0` running. Crashes before
-or after lease relinquishment, child start, migration, heartbeat, and handoff
+replacement, proves B0 can read/write/claim the unchanged stable ledger,
+records rollback evidence, and leaves `D0` running. Crashes before or after
+lease relinquishment, child start, compatibility probe, heartbeat, and handoff
 acknowledgement are idempotently recoverable; exactly one fencing generation
 may stop/start a dispatcher.
+
+Project state-database migration is a later, separate boundary. After M1 is
+healthy, it gracefully quiesces and stops D0, creates and integrity-checks an
+exact B0-readable SQLite backup plus external bootstrap-journal marker, then
+runs B1 migration with no old readers/writers. Automatic install permits only
+transactional/reversible migrations. If migration, D1 start, or D1 health fails,
+M1 stops D1, restores the verified B0 preimage byte/logically exactly, starts
+D0/B0, proves B0 database read/write and health, and records rollback. The
+stable shim journal distinguishes backup, migration-started, activated, and
+rollback-restored even when the project DB is unreadable. Irreversible
+migrations fail preflight before D0 shutdown; no live D0 observes a B1 schema.
 
 The supervisor shim is supervised by the OS user service manager. Setup installs
 and verifies that service; dispatcher startup requires a compatible monitor-child
@@ -1386,13 +1404,19 @@ chains; it may split them further but may not collapse away a boundary:
    revalidation, redaction from service/log/rows, restart, acknowledgement, and
    epic closure. Anonymous, SSH/helper, ambient, wrong-actor/repository, and
    unrefreshable credentials fail without mutation.
-   Build distinct old/new Oro fixtures with incompatible descriptor/operation-
-   schema ranges. Exercise the normal no-crash `M0/B0 -> shim -> M1/B1 ->
+   Build distinct old/new Oro fixtures with both compatible and incompatible
+   descriptor/operation-schema ranges. Exercise the normal no-crash
+   `M0/B0 -> shim -> M1/B1 ->
    D0 -> D1` path and crashes before/after fencing, lease release, child start,
-   migration, heartbeat, and handoff ACK. Assert distinct monitor PID, actual
+   compatibility probe, heartbeat, and handoff ACK. Assert distinct monitor PID, actual
    executable-image/build hash, compatible schemas/generation, old-monitor
    fencing, dispatcher restart only after M1 proof, and automatic B0 rollback
-   with D0 left running when B1 preflight or M1 heartbeat fails.
+   with unchanged stable-ledger B0 read/write/claim and D0 left running when B1
+   preflight or M1 heartbeat fails. Incompatible supervisor protocol is rejected
+   before handoff. Separately test reversible project-DB migration only after D0
+   quiescence, crashes before/after backup/migration/activation, verified B0
+   preimage restoration plus D0 read/write/health, and pre-shutdown rejection of
+   irreversible migration.
 10. **Remote full mutation audit.** Add the workflow-dispatch/shard/aggregate
     workflow and wire `pkg/dispatcher/audit.go:runAudit` to durable exact-SHA
     campaign observation, artifact ingestion, restart, infrastructure failure,
@@ -1505,9 +1529,13 @@ nonterminal remote record.
    the App token between lifecycle stages and proves monitor-side refresh,
    actor/repository attestation, no ambient fallback, and secret redaction.
    It also proves normal and crash-boundary supervisor upgrade from old
-   `M0/B0` to distinct `M1/B1` with fencing, schema migration, heartbeat
+   `M0/B0` to distinct `M1/B1` with fencing, compatibility proof, heartbeat
    PID/image/build/generation evidence, rollback to B0 before dispatcher
    shutdown on incompatibility, and `D0 -> D1` only after M1 acknowledgement.
+   Stable supervisor protocol incompatibility is rejected without changing its
+   ledger; rollback proves B0 read/write/claim. Project DB migration occurs only
+   after D0 quiescence with a verified preimage, and failure restores B0 DB/D0
+   health; irreversible migration never stops D0.
 5. `oro status --json`, health, monitor events, and the dashboard expose remote
    backlog, degraded mode, failure feedback delivery, quarantine count, and
    pending post-epic installation.
