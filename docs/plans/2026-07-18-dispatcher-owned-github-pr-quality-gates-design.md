@@ -409,6 +409,7 @@ candidate_adopted
   -> ready_for_merge
   -> integration_preparing
   -> integration_prepared
+  -> integration_intent
   -> merge_authorizing
   -> github_merging
   -> local_sync
@@ -420,6 +421,7 @@ Failure branches:
   target_moved         -> rebasing
   outage_degraded      -> local_memory_safe_gate
   preserved_ambiguity  -> quarantine
+  cancel_pending       -> reconcile integration outcome -> reconciled/cancelled
 ```
 
 The worker-to-dispatcher protocol gains `CANDIDATE_READY`. It contains the
@@ -461,6 +463,37 @@ message return the same ACK. The local adoption ref is retained until the
 rebased candidate is verified under a durable remote ref or the work is
 terminally preserved elsewhere. Garbage collection and cleanup must never
 remove an adoption ref referenced by a nonterminal row.
+
+#### Integration versus cancellation linearization
+
+External close, deduplication, preemption, requeue, rollback, and shutdown
+cancellation share one durable transition with remote integration. Immediately
+before provider mutation, the dispatcher starts a SQLite write transaction that
+reads the current bead status/generation and prepared-attempt version. If the
+bead is already closed/cancelled/requeued or the attempt changed, integration
+intent does not commit and the remote target cannot be mutated. Otherwise the
+same transaction commits an irrevocable `integration_intent` tied to the exact
+prepared squash and task generation.
+
+Every dispatcher cancellation producer, including
+`checkClosedBeadAssignments`, `handleClosedAssignment`, preemption, requeue,
+rollback, and remote-record scanning, uses the same rule. Cancellation that
+commits first prevents preparation/CAS. Once intent commits, later cancellation
+is recorded as `cancel_pending`; it cannot mark evidence obsolete, delete refs,
+or invoke a legacy recovery merge while the provider outcome is unknown. If
+CAS or ancestry reconciliation proves integration, the close request has lost
+the cancellation race and normal idempotent reconciliation completes the bead.
+If CAS is proven not to have mutated the target, pending cancellation wins and
+cleanup preserves all unique work. Ambiguous outcomes remain under recovery
+until one of those facts is proven.
+
+The external-close scanner examines nonterminal remote records independently of
+worker assignments. `handleClosedAssignment` delegates to this state machine
+and is forbidden from invoking its legacy branch recovery/merge path for any
+remote-owned record. Because task status and integration intent live in the
+same project SQLite database, `BEGIN IMMEDIATE` serializes a direct task close
+with intent creation. A task close committed after intent is visible as pending
+but cannot retroactively authorize cancellation of an already-issued CAS.
 
 On `CANDIDATE_READY`, the dispatcher:
 
@@ -709,7 +742,8 @@ version must not attempt affected-file reasoning.
 
 After exact validation, the dispatcher re-verifies compatible policy, calls
 `PrepareSquash`, persists and acknowledges the returned prepared object, then
-calls `IntegrateSquashCAS` with that exact object. The adapter independently
+commits the exact integration intent against current bead/attempt versions,
+then calls `IntegrateSquashCAS` with that exact object. The adapter independently
 re-verifies the PR head, prepared commit/ref, and performs the exact-SHA leased
 target-ref update. This Git ref transaction—not the mutable policy reread—is
 the atomic expected-base guard. A rejected ref update, changed policy,
@@ -717,6 +751,11 @@ or changed head/base means the bead is not closed and re-enters preflight or
 the rebase/review/gate loop. A deterministic fake barrier between final policy
 read and ref mutation injects simultaneous policy change plus target movement
 and must prove rejection before target mutation.
+
+Deterministic barriers also inject close/preempt/requeue immediately before and
+after integration intent. Before-intent cancellation prevents provider
+mutation. After-intent cancellation becomes pending while the already-issued
+CAS is reconciled; it never starts a second completion path.
 
 After GitHub reports the integrated SHA, the dispatcher fetches the remote and
 proves the three-way invariant: reviewed post-rebase candidate tree equals the
@@ -1034,7 +1073,8 @@ chains; it may split them further but may not collapse away a boundary:
    schema/types/indexes/migrations/CAS for candidate, run, evidence,
    correction, audit campaign, and post-install state. Wire `handleMessage`,
    `handleDone`, `handleReadyForReview`, `handleReviewResult`,
-   `startupRecovery`, `restoreState`, and `spawnBackgroundLoops`. Test restart
+   `startupRecovery`, `restoreState`, `spawnBackgroundLoops`,
+   `checkClosedBeadAssignments`, and `handleClosedAssignment`. Test restart
    after worker death and worktree deletion. Add dispatcher-owned local
    adoption-ref creation, reachability proof, lease persistence, orphan-ref
    startup recovery, and crash injection between ref creation, row commit, ACK,
@@ -1044,6 +1084,8 @@ chains; it may split them further but may not collapse away a boundary:
    reconciliation markers across restart. The dispatcher writer commits the
    adapter-returned `PreparedSquash` between the two typed operations and never
    recomputes its SHA.
+   Add the same-database bead-generation/integration-intent transaction and a
+   non-assignment remote-record close scan.
 5. **Local presubmit action scheduler.** Replace the worker monolithic gate in
    GitHub mode with completion-based actions, total/per-resource admission,
    cancellation, exact acceptance execution, and pre/post-rebase invalidation.
@@ -1077,6 +1119,12 @@ chains; it may split them further but may not collapse away a boundary:
    The shared candidate source resolver is exercised for prepublication
    presubmit/ops rejection (local adoption ref), postpublication rejection
    (verified remote ref), startup recovery, and missing-source quarantine.
+   Inventory every close, deduplication, preemption, requeue, rollback, and
+   shutdown producer. All must use cancellation-before-intent or
+   `cancel_pending`-after-intent semantics, and legacy recovery merge is
+   forbidden for a remote-owned record. Deterministic barriers cover both
+   orderings immediately around intent and a rejected, successful, and
+   ambiguous CAS outcome.
 9. **Epic promotion and local installation.** Replace the GitHub-mode path in
    `tryCloseEpic`, `completeEpicClose`, and `ffMergeEpicBranch` with promotion
    state, remote evidence/merge, local sync, durable build/install/restart,
@@ -1117,6 +1165,7 @@ TestRemoteGateDegradedObserveOutage
 TestRemoteGateDegradedMergeOutage
 TestRemoteGateDraftReadiness
 TestRemoteGateModeRollbackOwnership
+TestRemoteGateIntegrationCancellationRace
 TestRemoteGateWorkflowContract
 TestRemoteGateWorkerHandoffAndCorrection
 TestRemoteGateAdoptionCrashBoundary
@@ -1128,7 +1177,7 @@ TestRemoteGateProviderBoundary
 ```
 
 `scripts/test_remote_gate_epic.sh` owns this literal manifest (or reads an
-equivalent committed data file), verifies exactly 15 unique entries, associates
+equivalent committed data file), verifies exactly 16 unique entries, associates
 each with acceptance criteria 1–10, and requires a test-level JSON `pass` event
 for every entry.
 
@@ -1188,7 +1237,10 @@ nonterminal remote record.
    total/resource concurrency, then replaces the production
    `READY_FOR_REVIEW`/`DONE` local-QG merge path with durable candidate
    adoption. Malformed and duplicate handoffs, worker death, deleted worktree,
-   missing remote ref, and correction by a different worker are covered.
+   missing remote ref, correction by a different worker, and external close/
+   preempt/requeue on both sides of integration intent are covered. Exactly one
+   of cancellation or integration wins; no remote-owned record reaches legacy
+   recovery merge.
 8. Exact evidence tests reject same-name checks, changed workflow blobs,
    reruns for another attempt, stale synthetic merge SHAs, target movement at
    the merge boundary, ambiguous integration responses, simultaneous policy
