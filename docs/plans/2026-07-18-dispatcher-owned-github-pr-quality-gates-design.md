@@ -169,6 +169,52 @@ failed; merge authorization requires exact SHA identity and durable state.
 
 ## Selected Architecture
 
+### Presubmit Model Reframe
+
+This is a high-scale presubmit system, not merely a way to replace one shell
+command with a GitHub workflow. The integration target must stay green while
+local feedback remains fast enough that obvious failures do not consume remote
+queue time.
+
+The intended gate layers are:
+
+```text
+worker implementation
+  -> fast local presubmit
+  -> normalized candidate commit/range
+  -> dispatcher rebase onto exact target
+  -> ops review of the exact post-rebase diff
+  -> publish draft PR
+  -> comprehensive remote QG on the PR merge commit
+  -> exact evidence revalidation
+  -> fast-forward target
+```
+
+Each layer has a distinct job:
+
+- Worker TDD and acceptance commands provide immediate change-specific
+  feedback during implementation.
+- Fast local presubmit rejects syntactically invalid, unformatted, obviously
+  uncompilable, or acceptance-failing work before it is published. It has a
+  strict time budget and cannot contain repository-wide tests, coverage,
+  security scans, or broad lint.
+- Ops review protects design, behavior, acceptance completeness, code health,
+  and maintainability. It reviews the exact post-rebase diff before publication
+  to GitHub.
+- Remote QG owns comprehensive compilation, tests, race checks, lint,
+  architecture, coverage, security, documentation, and supported-platform
+  matrices against the exact PR merge commit.
+- Merge revalidation proves neither the candidate, target, workflow, QG
+  evidence, nor ops-reviewed diff changed.
+
+Candidate commits may exist on an isolated local worker branch before they are
+validated; GitHub and CI need a commit object to identify what they test. The
+hard guarantee applies to commits integrated into a target branch. The design
+must explicitly choose whether internal worker commit ranges are normalized to
+one validated candidate commit or whether every commit in the range is tested.
+Testing only the range tip is insufficient if the requirement is literally
+that every commit in target history compiles.
+
 ### 1. Opt-In Project Configuration
 
 Add a project configuration section:
@@ -691,6 +737,24 @@ premortem:
       ANSWER: Any Oro-managed GitHub repository can opt in through project
       configuration. The Oro repository is the first canary; implementation
       contains no Oro-repository or developer-account special cases.
+- [x] DECISION: What quality model should the design emulate?
+      ANSWER: A large-engineering-team presubmit model: fast local feedback,
+      exact post-rebase review, comprehensive remote validation, and no target
+      integration until every required independent gate passes.
+- [x] DECISION: Which checks are definitely remote?
+      ANSWER: The comprehensive post-rebase QG, including full compilation,
+      tests, lint, architecture, coverage, security, docs, and portable build
+      matrices, runs on GitHub against the PR merge commit.
+- [x] DECISION: Does ops review remain a required independent gate?
+      ANSWER: Yes. It checks design and code health beyond mechanical QG, and
+      reviews the exact post-rebase diff before that candidate is published.
+- [ ] DECISION: How is the guarantee that every integrated commit compiles
+      enforced when a worker creates multiple internal commits?
+      DEPENDS_ON: The local fast-presubmit contract.
+      RECOMMENDATION: Normalize each bead to one dispatcher-controlled
+      candidate commit after fast local presubmit; worker commits remain
+      recoverable on the worker branch but never enter target history.
+      ASK: Confirm one validated target-history commit per bead.
 - [x] DECISION: Who owns PR creation, CI waiting, retry, merge, and cleanup?
       ANSWER: The dispatcher; the operator only observes surfaced state.
 - [x] DECISION: Is GitHub or the local worker authoritative for portable QG in
