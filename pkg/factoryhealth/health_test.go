@@ -123,6 +123,44 @@ INSERT INTO events VALUES
 	}
 }
 
+func TestEvaluateFactoryHealthIgnoresPipelineOwnedWorkerStates(t *testing.T) {
+	got := Evaluate(Snapshot{
+		DaemonRunning:        true,
+		DispatcherState:      "running",
+		ProgressTimeoutSecs:  600,
+		HeartbeatTimeoutSecs: 45,
+		Workers: []WorkerSnapshot{
+			{ID: "reserved", State: "reserved", BeadID: "oro-r", LastProgressSecs: 601, LastHeartbeatSecs: 5},
+			{ID: "reviewing", State: "reviewing", BeadID: "oro-v", LastProgressSecs: 601, LastHeartbeatSecs: 5},
+			{ID: "busy", State: "busy", BeadID: "oro-b", LastProgressSecs: 601, LastHeartbeatSecs: 5},
+		},
+	})
+
+	if got.State != StateStalled {
+		t.Fatalf("state = %q, want stalled; findings=%+v", got.State, got.Findings)
+	}
+	if got.Metrics.ActiveWorkers != 3 {
+		t.Fatalf("active workers = %d, want 3", got.Metrics.ActiveWorkers)
+	}
+	if !hasFindingForWorker(got, FindingAliveNoProgress, "busy") {
+		t.Fatalf("missing busy alive_no_progress finding in %+v", got.Findings)
+	}
+	for _, workerID := range []string{"reserved", "reviewing"} {
+		if hasFindingForWorker(got, FindingAliveNoProgress, workerID) {
+			t.Fatalf("pipeline-owned worker %q emitted alive_no_progress: %+v", workerID, got.Findings)
+		}
+	}
+}
+
+func hasFindingForWorker(health FactoryHealth, code, workerID string) bool {
+	for _, finding := range health.Findings {
+		if finding.Code == code && finding.WorkerID == workerID {
+			return true
+		}
+	}
+	return false
+}
+
 func TestEvaluateAssignmentContradictions(t *testing.T) {
 	got := Evaluate(Snapshot{
 		DaemonRunning:       true,

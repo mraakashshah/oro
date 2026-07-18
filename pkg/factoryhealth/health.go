@@ -266,7 +266,7 @@ func evaluateFindings(snapshot Snapshot, metrics *Metrics) []Finding {
 	progressTimeout := defaultFloat(snapshot.ProgressTimeoutSecs, 600)
 	heartbeatTimeout := defaultFloat(snapshot.HeartbeatTimeoutSecs, 45)
 	for _, worker := range snapshot.Workers {
-		if !activeWorkerState(worker.State) || worker.BeadID == "" {
+		if worker.State != "busy" || worker.BeadID == "" {
 			continue
 		}
 		if worker.LastProgressSecs >= progressTimeout && worker.LastHeartbeatSecs > 0 && worker.LastHeartbeatSecs < heartbeatTimeout {
