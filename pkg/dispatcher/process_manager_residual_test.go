@@ -255,3 +255,24 @@ func TestReadProcessEnvironmentSnapshotsPropagatesLiveReadFailure(t *testing.T) 
 		t.Fatalf("readProcessEnvironmentSnapshots environments = %#v, want no false-success result", snapshots.environments)
 	}
 }
+
+func TestOwnedProcessExitedAfterPSRace(t *testing.T) {
+	probes := 0
+	exited := ownedProcessExitedWithProbe(context.Background(), 1234,
+		func(int) error {
+			probes++
+			if probes == 1 {
+				return nil
+			}
+			return syscall.ESRCH
+		},
+		func(context.Context, int) (string, error) {
+			return "", errors.New("ps: process vanished")
+		})
+	if !exited {
+		t.Fatal("ownedProcessExitedWithProbe = false, want exited after second ESRCH probe")
+	}
+	if probes != 2 {
+		t.Fatalf("signal-zero probes = %d, want 2", probes)
+	}
+}

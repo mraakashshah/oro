@@ -259,11 +259,23 @@ func allOwnedProcessesExited(ctx context.Context, processes []OwnedProcess) bool
 }
 
 func ownedProcessExited(ctx context.Context, pid int) bool {
-	if err := syscall.Kill(pid, syscall.Signal(0)); err != nil {
+	return ownedProcessExitedWithProbe(ctx, pid, func(pid int) error {
+		return syscall.Kill(pid, syscall.Signal(0))
+	}, func(ctx context.Context, pid int) (string, error) {
+		out, err := exec.CommandContext(ctx, "ps", "-o", "state=", "-p", strconv.Itoa(pid)).Output() //nolint:gosec // pid is numeric process metadata
+		return string(out), err
+	})
+}
+
+func ownedProcessExitedWithProbe(ctx context.Context, pid int, signalZero func(int) error, processState func(context.Context, int) (string, error)) bool {
+	if err := signalZero(pid); err != nil {
 		return errors.Is(err, syscall.ESRCH)
 	}
-	state, err := exec.CommandContext(ctx, "ps", "-o", "state=", "-p", strconv.Itoa(pid)).Output() //nolint:gosec // pid is numeric process metadata
-	return err == nil && strings.HasPrefix(strings.TrimSpace(string(state)), "Z")
+	state, err := processState(ctx, pid)
+	if err == nil {
+		return strings.HasPrefix(strings.TrimSpace(state), "Z")
+	}
+	return errors.Is(signalZero(pid), syscall.ESRCH)
 }
 
 func ownedProcessDefinitelyForeign(ctx context.Context, pid int) bool {
