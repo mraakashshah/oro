@@ -87,6 +87,42 @@ func TestEvaluateFactoryHealthStates(t *testing.T) {
 	}
 }
 
+func TestLoadThroughputMetricsCountsAssignmentsAndTimeoutsChronologically(t *testing.T) {
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE assignments (assigned_at TEXT);
+CREATE TABLE events (type TEXT, created_at TEXT);
+INSERT INTO assignments VALUES
+	('2026-07-17 11:45:00'),
+	('2026-07-17T11:50:00Z'),
+	('2026-07-17T11:55:00.123Z'),
+	('2026-07-17 11:00:00'),
+	('not-a-timestamp');
+INSERT INTO events VALUES
+	('progress_timeout', '2026-07-17T11:45:00.123Z'),
+	('worker_progress', '2026-07-17T11:50:00Z'),
+	('progress_timeout', '2026-07-17 10:00:00');
+`); err != nil {
+		t.Fatalf("schema and fixtures: %v", err)
+	}
+
+	got, err := LoadThroughputMetrics(ctx, db, time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC), 30*time.Minute)
+	if err != nil {
+		t.Fatalf("LoadThroughputMetrics: %v", err)
+	}
+	if got.AssignmentsStarted != 3 {
+		t.Fatalf("assignments started = %d, want 3", got.AssignmentsStarted)
+	}
+	if got.ProgressTimeouts != 1 {
+		t.Fatalf("progress timeouts = %d, want 1", got.ProgressTimeouts)
+	}
+}
+
 func TestEvaluateAssignmentContradictions(t *testing.T) {
 	got := Evaluate(Snapshot{
 		DaemonRunning:       true,
