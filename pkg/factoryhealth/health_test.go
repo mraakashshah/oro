@@ -174,6 +174,38 @@ VALUES
 	}
 }
 
+func TestLoadThroughputMetricsCountsRFC3339Chronologically(t *testing.T) {
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE assignments (assigned_at TEXT);
+CREATE TABLE events (type TEXT, created_at TEXT);
+CREATE TABLE beads (status TEXT, close_reason TEXT, closed_at TEXT, updated_at TEXT);
+INSERT INTO beads (status, close_reason, closed_at, updated_at) VALUES
+ ('closed', '', '2026-07-17T23:04:00Z', '2026-07-17T23:04:00Z'),
+ ('closed', '', '2026-07-17T20:33:00Z', '2026-07-17T20:33:00Z'),
+ ('closed', '', '2026-07-17T03:35:00Z', '2026-07-17T03:35:00Z'),
+ ('closed', '', '2026-07-17 23:05:00', '2026-07-17 23:05:00'),
+ ('closed', 'deferred', '2026-07-17T23:06:00Z', '2026-07-17T23:06:00Z'),
+ ('closed', 'duplicate', '2026-07-17T23:07:00Z', '2026-07-17T23:07:00Z'),
+ ('closed', 'not_planned', '2026-07-17T23:08:00Z', '2026-07-17T23:08:00Z');
+`); err != nil {
+		t.Fatalf("seed throughput tables: %v", err)
+	}
+
+	got, err := LoadThroughputMetrics(ctx, db, time.Date(2026, 7, 17, 23, 18, 0, 0, time.UTC), 30*time.Minute)
+	if err != nil {
+		t.Fatalf("LoadThroughputMetrics: %v", err)
+	}
+	if got.ProductiveClosures != 2 {
+		t.Fatalf("productive closures = %d, want 2", got.ProductiveClosures)
+	}
+}
+
 func TestEvaluateNoManagerPaneFindingByDefault(t *testing.T) {
 	got := Evaluate(Snapshot{
 		DaemonRunning:   true,

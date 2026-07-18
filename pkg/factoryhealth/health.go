@@ -663,7 +663,7 @@ SELECT COUNT(*)
   FROM beads
  WHERE status='closed'
    AND COALESCE(close_reason, '') NOT IN ('deferred', 'duplicate', 'not_planned')
-   AND COALESCE(closed_at, updated_at) >= ?`, start).Scan(&metrics.ProductiveClosures); err != nil {
+   AND datetime(COALESCE(closed_at, updated_at)) >= datetime(?)`, start).Scan(&metrics.ProductiveClosures); err != nil {
 		if !tableMissing(err) {
 			return metrics, fmt.Errorf("count throughput closures: %w", err)
 		}
