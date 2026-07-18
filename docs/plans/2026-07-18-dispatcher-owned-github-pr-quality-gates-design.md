@@ -1095,6 +1095,38 @@ stable shim journal distinguishes backup, migration-started, activated, and
 rollback-restored even when the project DB is unreadable. Irreversible
 migrations fail preflight before D0 shutdown; no live D0 observes a B1 schema.
 
+Restart-relevant operational control is durable, not inferred from descriptor
+defaults. A versioned `runtime_control` row stores desired run state
+(`paused|running`), focused epic/clear state, target worker count, max workers,
+explicit runtime overrides, and a monotonic control generation. Every
+`applyPause`, `applyResume`, `applyFocus`, `applyScaleDirective`, and
+`applyMaxWorkersDirective` transactionally persists the new generation before
+acknowledging the directive; status/events expose that generation.
+
+Before D0 shutdown, M1 requests a durable restart freeze. D0 serializes it with
+directive writes, records the exact frozen control generation, quiesces new
+assignments, and thereafter rejects new control directives with a retryable
+`restart-in-progress` result rather than acknowledging state that cannot join
+the handoff. Thus a directive either commits before the frozen snapshot or is
+explicitly not accepted. M1 revalidates target, project configuration, and the
+frozen control generation before stop and before D1 start.
+
+D1 starts in managed inert mode: socket/health may report bootstrapping, but
+worker spawning and assignment loops remain ineligible. It loads and validates
+the B1 project configuration, reapplies the exact durable runtime overrides,
+restores pause/run, focus, target/max worker counts, and acknowledges the frozen
+generation. Only then does it enter Running when the snapshot says Running; a
+paused snapshot remains healthy and paused with zero new assignments. B1
+configuration incompatibility with a persisted override fails preflight before
+D0 shutdown rather than silently dropping or reviving a value.
+
+Rollback clears the freeze only after D0/B0 or a replacement B0 dispatcher has
+loaded and acknowledged the same latest control generation. No rollback path
+unpauses, clears focus, or restores descriptor-time capacity. Deterministic
+barriers issue pause/resume, focus/clear, scale, and max-worker directives during
+build, immediately before freeze, after freeze, and before D1 eligibility; only
+acknowledged directives appear in the restored generation.
+
 The supervisor shim is supervised by the OS user service manager. Setup installs
 and verifies that service; dispatcher startup requires a compatible monitor-child
 heartbeat and supported operation-schema version before enabling automatic
@@ -1310,7 +1342,8 @@ chains; it may split them further but may not collapse away a boundary:
    legacy full-QG or `DONE` merge path.
 4. **Durable remote state and dispatcher ownership.** Add normalized SQLite
    schema/types/indexes/migrations/CAS for candidate, run, evidence,
-   correction, audit campaign, and post-install state. Wire `handleMessage`,
+   correction, audit campaign, post-install state, and monotonic runtime-control
+   generation. Wire `handleMessage`,
    `handleDone`, `handleReadyForReview`, `handleReviewResult`,
    `startupRecovery`, `restoreState`, `spawnBackgroundLoops`,
    `checkClosedBeadAssignments`, and `handleClosedAssignment`. Test restart
@@ -1417,6 +1450,13 @@ chains; it may split them further but may not collapse away a boundary:
    quiescence, crashes before/after backup/migration/activation, verified B0
    preimage restoration plus D0 read/write/health, and pre-shutdown rejection of
    irreversible migration.
+   Persist `applyPause`/`applyResume`, `applyFocus`, `applyScaleDirective`, and
+   `applyMaxWorkersDirective` before ACK. Add restart freeze/unfreeze,
+   `cmd/oro/cmd_start.go:runFullStart` managed-inert startup, and assignment-loop
+   eligibility only after exact control-generation acknowledgement. Test
+   directives at build/pre-freeze/post-freeze/pre-start barriers, paused no-
+   dispatch health, focus/capacity restoration, retryable rejected directives,
+   B1-config/override incompatibility, and B0 rollback without stale controls.
 10. **Remote full mutation audit.** Add the workflow-dispatch/shard/aggregate
     workflow and wire `pkg/dispatcher/audit.go:runAudit` to durable exact-SHA
     campaign observation, artifact ingestion, restart, infrastructure failure,
@@ -1536,6 +1576,10 @@ nonterminal remote record.
    ledger; rollback proves B0 read/write/claim. Project DB migration occurs only
    after D0 quiescence with a verified preimage, and failure restores B0 DB/D0
    health; irreversible migration never stops D0.
+   Pause/run, focus, target workers, max workers, and explicit overrides use a
+   durable control generation. Directives before freeze survive exactly;
+   directives after freeze are retryably rejected. D1 cannot dispatch before
+   acknowledging that generation, and rollback D0 never revives stale control.
 5. `oro status --json`, health, monitor events, and the dashboard expose remote
    backlog, degraded mode, failure feedback delivery, quarantine count, and
    pending post-epic installation.
