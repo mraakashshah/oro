@@ -324,6 +324,10 @@ const reviewCheckpointTableDDL = `CREATE TABLE IF NOT EXISTS review_checkpoints 
     completed_at TEXT
 );`
 
+const reviewCheckpointActiveKeyIndexDDL = `CREATE UNIQUE INDEX idx_review_checkpoints_active_key
+ON review_checkpoints(checkpoint_key)
+WHERE state <> 'superseded';`
+
 const reviewCheckpointSchemaDDL = reviewCheckpointTableDDL + `
 CREATE UNIQUE INDEX IF NOT EXISTS idx_review_checkpoints_active_key
 ON review_checkpoints(checkpoint_key)
@@ -698,6 +702,36 @@ func ensureReviewCheckpointSchema(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, reviewCheckpointSchemaDDL); err != nil {
 		return fmt.Errorf("create review checkpoint schema: %w", err)
 	}
+	if err := ensureReviewCheckpointActiveKeyIndex(ctx, db); err != nil {
+		return fmt.Errorf("repair review checkpoint active key index: %w", err)
+	}
+	return nil
+}
+
+func ensureReviewCheckpointActiveKeyIndex(ctx context.Context, db *sql.DB) error {
+	var indexSQL string
+	err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = 'idx_review_checkpoints_active_key'`).Scan(&indexSQL)
+	if err != nil {
+		return fmt.Errorf("inspect active key index: %w", err)
+	}
+	if normalizeReviewCheckpointSchemaSQL(indexSQL) == normalizeReviewCheckpointSchemaSQL(reviewCheckpointActiveKeyIndexDDL) {
+		return nil
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin active key index repair: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DROP INDEX idx_review_checkpoints_active_key`); err != nil {
+		return fmt.Errorf("drop mismatched active key index: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, reviewCheckpointActiveKeyIndexDDL); err != nil {
+		return fmt.Errorf("create canonical active key index: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit active key index repair: %w", err)
+	}
 	return nil
 }
 
@@ -737,7 +771,7 @@ func reviewCheckpointChildSchemas() []reviewCheckpointChildSchema {
 		{
 			table:       "review_recovery_attempts",
 			ddl:         reviewRecoveryAttemptsTableDDL,
-			constraints: []string{"primarykeyautoincrement", "idempotency_keytextnotnullunique"},
+			constraints: []string{"primarykeyautoincrement", "idempotency_keytextnotnullunique", "proof_jsontextnotnulldefault'{}'"},
 			columns:     []string{"id", "checkpoint_id", "failure_fingerprint", "idempotency_key", "strategy", "action_json", "status", "proof_json", "started_at", "completed_at"},
 			notNull:     []string{"checkpoint_id", "failure_fingerprint", "idempotency_key", "strategy", "action_json", "status", "proof_json", "started_at"},
 		},
@@ -766,13 +800,17 @@ func hasCanonicalReviewCheckpointChildSchema(ctx context.Context, db *sql.DB, sc
 	if err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?`, schema.table).Scan(&tableSQL); err != nil {
 		return false
 	}
-	normalized := strings.NewReplacer(" ", "", "\n", "", "\t", "").Replace(strings.ToLower(tableSQL))
+	normalized := normalizeReviewCheckpointSchemaSQL(tableSQL)
 	for _, constraint := range schema.constraints {
 		if !strings.Contains(normalized, constraint) {
 			return false
 		}
 	}
 	return true
+}
+
+func normalizeReviewCheckpointSchemaSQL(sqlText string) string {
+	return strings.NewReplacer(" ", "", "\n", "", "\t", "").Replace(strings.ToLower(sqlText))
 }
 
 func rebuildReviewCheckpointChildSchema(ctx context.Context, db *sql.DB, schema reviewCheckpointChildSchema, columns map[string]bool) error {
