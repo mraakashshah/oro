@@ -876,11 +876,25 @@ the runtime credential provider plus a durable operation/lease object for one
 of candidate, ephemeral-epic, audit, or target-CAS ref operations. It invokes a
 trusted absolute Git executable with the canonical HTTPS URL, controlled
 environment/config, `-c core.hooksPath=/dev/null`, and `push --no-verify`; it
-strips inherited hook/config injection and credential-helper/SSH variables and
-uses only the shared short-lived App credential mechanism. The operation still
-uses exact expected-old/absent leases and provider policy checks. No worker,
-general command runner, public CLI flag, or human push path can obtain this
-transport capability.
+does not reuse `processenv.ForWorkdir` unchanged. Setup resolves the absolute Git
+binary, `git --exec-path`, and real `git-remote-https` helper chain in a sanitized
+environment, canonicalizes them, records binary/helper identities and hashes in
+capability evidence, and startup re-attests them. Invocation pins that trusted
+exec path and HTTPS-only protocol policy.
+
+The subprocess environment is built from an empty/minimal allowlist. It removes
+every ambient `GIT_*`, `GH_*`, dynamic-loader, executable-search, proxy, CA-
+override, credential, SSH, object-directory/alternates, template, namespace,
+and config-injection variable, then adds only Oro-generated values such as
+`GIT_TERMINAL_PROMPT=0`, the one-shot credential provider, null system/global
+config, explicit workdir, trusted exec path, locale/temp, and configured network
+policy. Internally supplied config-count entries are constructed from typed
+constants, never inherited. The helper executable directory and PATH are fixed
+to setup-attested locations; neither `GIT_EXEC_PATH` nor a substituted
+`git-remote-https` can come from the parent process. The operation still uses
+exact expected-old/absent leases and provider policy checks. No worker, general
+command runner, public CLI flag, or human push path can obtain this transport
+capability.
 
 This bypass is intentionally local and per subprocess. Oro does not delete,
 rewrite, disable, or globally reconfigure `.git/hooks/pre-push`, its user-hook
@@ -1745,6 +1759,9 @@ chains; it may split them further but may not collapse away a boundary:
    exact-namespace canary evidence separately from candidate/audit namespaces.
    Construct all ref canaries through the same internal hook-free Git transport
    used in production; a REST-only or hookless-repository probe is insufficient.
+   Setup/doctor persist and startup re-attests canonical Git binary/exec-path/
+   HTTPS-helper identities and hashes; missing, moved, replaced, or untrusted
+   helper evidence fails before any credential-bearing subprocess.
    Thread effective `ManualIntegration` through both CLI parent/child start
    paths and reject it with `github-pr` before any startup side effect; local
    mode remains compatible.
@@ -1804,6 +1821,11 @@ chains; it may split them further but may not collapse away a boundary:
    unsupported operation kinds, noncanonical/SSH/helper transports, inherited
    hook/config injection, absent `core.hooksPath=/dev/null` or `--no-verify`,
    and any worker/general-CLI construction path; ordinary Git remains unchanged.
+   Poison `GIT_EXEC_PATH`, `PATH`, template/object/alternate/namespace/protocol/
+   config variables, proxy/CA overrides, and dynamic-loader variables with
+   credential-capturing/failing sentinels. Real Git internal operations must use
+   only the setup-attested helper chain, while an ordinary user Git invocation
+   still sees the poisoned environment.
 3. **Protocol and worker handoff.** Wire `CANDIDATE_READY` through
    `pkg/protocol/message.go`, `pkg/worker/worker.go:awaitSubprocessAndReport`,
    `runQGAndReport`, `SendReadyForReview`, and `SendDone`. Update
@@ -2099,6 +2121,11 @@ chains; it may split them further but may not collapse away a boundary:
     ref and the source has the actual Oro-managed pre-push wrapper plus user-hook
     sentinel; pre-seeding the base or using an uninitialized hookless source is
     a harness failure.
+    It also supplies a poisoned `GIT_EXEC_PATH` containing a sentinel
+    `git-remote-https`, poisoned object/config/protocol variables, and executable/
+    loader/proxy overrides. Every real-Git internal mutation must ignore them,
+    and the sentinel must observe neither execution nor App credentials; the
+    ordinary user-Git control proves the poison is otherwise effective.
     CLI fixtures cover both installed start entry points with manual integration
     on/off in local/GitHub modes and assert zero remote side effects on the
     invalid combination.
@@ -2293,6 +2320,11 @@ or explicitly cancelled.
    sentinel hook and prove every internal push kind uses the scoped hook-free
    constructor with lease evidence, while worker/user pushes cannot access the
    bypass and repository hooks/config remain unchanged.
+   The same real-Git fixture poisons `GIT_EXEC_PATH` with a credential-capturing
+   `git-remote-https` plus every ambient execution/object/config/protocol/helper/
+   loader/proxy override. Internal transport pins the setup-attested binary,
+   exec path, helper identities, HTTPS policy, and minimal environment so no
+   sentinel runs or sees a token; the ordinary Git control still uses the poison.
    A second production-constructor fixture requires the maintenance App token
    to contain exactly Metadata-read and Administration-write for the same host/
    repository and no runtime permission. It proves runtime/maintenance
