@@ -243,8 +243,11 @@ observation, not a pass/fail policy.
 The remote PR workflow reruns all local checks and additionally owns full
 repository tests, race/shuffle suites, coverage enforcement, full pytest,
 security scans, CGO-free and supported-platform builds, and complete build
-matrices. Thus local results accelerate feedback but never substitute for the
-comprehensive exact post-rebase remote gate.
+matrices. It also runs incremental mutation against files/functions changed by
+the PR. A below-policy score is deterministic failure; tool crash, missing base,
+or timeout is infrastructure failure eligible for dispatcher retry, never a
+warning-pass. Thus local results accelerate feedback but never substitute for
+the comprehensive exact post-rebase remote gate.
 
 ### 1. Opt-In Project Configuration
 
@@ -668,8 +671,10 @@ retryable without undoing a proven merge.
 
 ### 13. Remote Auditor Mutation Campaign
 
-The periodic whole-repository auditor triggers a distinct GitHub Actions
-workflow against the exact current target SHA. This is separate from both the
+Every periodic whole-repository auditor cycle triggers exactly one distinct
+GitHub Actions workflow against the audit's exact current target SHA. The audit
+cycle is not complete until that mutation workflow reaches a valid terminal
+result and its artifacts are durably incorporated. This is separate from both the
 per-PR portable gate and `quality_gate.sh --mutation-testing` because the
 existing flag is incremental: Go targets changed files/touched functions, has
 an eight-minute cap, and treats timeout as a warning.
@@ -695,15 +700,19 @@ The remote audit workflow:
 
 The dispatcher uses the same adaptive GitHub observation scheduler and restart
 reconciliation as PR gates. Mutation campaigns have their own remote
-concurrency group so an obsolete audit for the same target can be cancelled
-without cancelling bead PR checks. Local mutation remains only an explicit
+concurrency group. Auditor cycles do not overlap for the same project: a new
+cycle adopts an already-running campaign for the same target SHA or waits for
+the prior different-SHA cycle to finish; it never silently cancels evidence the
+auditor is required to consume. Local mutation remains only an explicit
 fallback for projects whose configured mutation command genuinely requires
 local hardware or services.
 
-Whether a full mutation campaign blocks epic completion or acts as an
-asynchronous audit that files repair beads remains a consultation decision.
-It must never be inserted into every bead PR gate because doing so would create
-a new serialized critical path at a much higher compute cost.
+The full campaign gates completion of its auditor cycle and always produces
+auditor evidence or an explicit audit infrastructure failure. It does not block
+ordinary bead PRs or epic promotion. Surviving mutants and policy regressions
+become prioritized repair beads through the normal auditor finding path. Full
+mutation must never be inserted into every bead PR gate because that would
+create a new critical path at a much higher compute cost.
 
 ### 14. Observability
 
@@ -898,12 +907,15 @@ premortem:
 - [x] DECISION: Where does the auditor execute a full mutation campaign?
       ANSWER: On GitHub in a separate sharded workflow at an exact target SHA.
       The existing incremental mutation QG is not misrepresented as full.
-- [ ] DECISION: Does a successful full mutation campaign gate epic completion?
-      DEPENDS_ON: Desired factory latency versus mutation-strength enforcement.
-      RECOMMENDATION: Run it asynchronously on the auditor cadence and create
-      prioritized correction beads from surviving mutants; do not put it on
-      every bead or epic critical path.
-      ASK: Confirm asynchronous auditor evidence rather than an epic blocker.
+- [x] DECISION: When does incremental mutation run?
+      ANSWER: Every remote PR QG runs changed-scope incremental mutation on
+      GitHub. Mutation timeout/tool error is retryable infrastructure failure,
+      not a pass; below-policy score is deterministic failure.
+- [x] DECISION: When does full mutation run and what does it gate?
+      ANSWER: Every auditor cycle triggers one full GitHub mutation campaign at
+      the exact audit SHA and cannot complete until it incorporates a valid
+      terminal result. It files repair beads but does not block ordinary bead
+      or epic merges.
 - [x] DECISION: What happens when the target moves?
       ANSWER: Dispatcher automatically invalidates evidence/review, rebases,
       republishes, and reruns.
