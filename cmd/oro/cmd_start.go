@@ -605,6 +605,17 @@ func installCodexHookConfig(codexHome, hooksDir string) error {
 		return fmt.Errorf("resolve Codex config dir: %w", err)
 	}
 	codexHome = cleanCodexHome
+	// Defense-in-depth: refuse to write a managed block whose hook commands point
+	// at an ephemeral hooksDir (under the temp root) into a codexHome that lives
+	// outside it. That mismatch means a test isolated ORO_HOME but forgot
+	// CODEX_HOME and is about to leak dangling hook paths into the developer's
+	// real ~/.codex/config.toml — fail loudly instead of corrupting it.
+	if hookPathsWouldLeak(os.TempDir(), codexHome, hooksDir) {
+		return fmt.Errorf(
+			"refusing to install Codex hook config: hooks dir %q is under the temp root %q but Codex home %q is not — "+
+				"writing would leak ephemeral hook paths into a persistent config (isolate the test with CODEX_HOME)",
+			hooksDir, os.TempDir(), codexHome)
+	}
 	configPath := filepath.Join(codexHome, "config.toml")
 	data, err := os.ReadFile(configPath) //nolint:gosec // CODEX_HOME-controlled config path
 	if err != nil && !os.IsNotExist(err) {
@@ -618,6 +629,36 @@ func installCodexHookConfig(codexHome, hooksDir string) error {
 		return fmt.Errorf("write Codex config: %w", err)
 	}
 	return nil
+}
+
+// hookPathsWouldLeak reports whether installing a managed hooks block that points
+// at hooksDir into codexHome would leak ephemeral paths into a persistent config:
+// true when hooksDir lives under tempRoot but codexHome does not. Pure so the leak
+// rule can be verified without touching the filesystem.
+func hookPathsWouldLeak(tempRoot, codexHome, hooksDir string) bool {
+	return pathUnder(tempRoot, hooksDir) && !pathUnder(tempRoot, codexHome)
+}
+
+// pathUnder reports whether target is root itself or nested inside root, comparing
+// cleaned absolute paths so a sibling like /tmp/oro-other is not treated as under
+// /tmp/oro.
+func pathUnder(root, target string) bool {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	targetAbs, err := filepath.Abs(target)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(rootAbs, targetAbs)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func replaceManagedCodexHookBlock(existing, block string) string {

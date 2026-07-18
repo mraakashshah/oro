@@ -1,5 +1,29 @@
 # Decisions and Discoveries
 
+## 2026-07-18: Start-path tests must isolate CODEX_HOME, not just ORO_HOME
+**Tags:** #testing #isolation #codex #hooks #hermetic #defense-in-depth
+**Context:** A stale hooks block pointing at a deleted `/tmp/oro-subprocess/.../oro-home/hooks`
+fixture was found wedging live Codex sessions (every tool call ran a missing hook).
+Root cause: `installCodexHookConfig` (cmd_start.go) writes the managed block to
+`CODEX_HOME` (falling back to the real `$HOME/.codex`), while the block's hook
+*commands* point at `ORO_HOME/hooks`. `TestDaemonOnlyStartsDispatcher` and
+`TestStartCommandPreflightChecks` isolated `ORO_HOME` but not `CODEX_HOME`, so
+they wrote a real-config block whose commands pointed into an ephemeral temp dir
+that vanished at teardown. `ORO_DAEMON_SKIP_PREFLIGHT` did not help — it only skips
+the Go/repo build checks; `installCodexHookConfig` runs unconditionally when Codex
+assets are required.
+**Decision:** (1) Added a `hermeticOroEnv(t, tmpDir)` test helper that sets
+`ORO_HOME` + `CODEX_HOME` + PID/socket/db paths as one unit, and applied it across
+all start-path tests so partial isolation is impossible. (2) Defense-in-depth:
+`installCodexHookConfig` now refuses (hard error) to write when the hooks dir is
+under the temp root but `CODEX_HOME` is not — via the pure predicate
+`hookPathsWouldLeak(tempRoot, codexHome, hooksDir)`. A future forgotten
+`CODEX_HOME` now fails the test loudly instead of silently corrupting the dev's
+`~/.codex/config.toml`.
+**Implications:** New start-path tests should call `hermeticOroEnv`; the guard is a
+backstop, not a substitute. Verified: running the previously-leaking tests leaves
+the real `~/.codex/config.toml` byte-for-byte unchanged.
+
 ## 2026-07-13: Claude ops runtime now honors reasoning/effort (--effort)
 **Tags:** #ops #reviewer #claude #reasoning #routing
 **Context:** The role config supports a `reasoning` level (e.g. `ops_review:

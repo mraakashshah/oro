@@ -288,6 +288,73 @@ func TestInstallCodexHookConfigWritesManagedBlock(t *testing.T) {
 	}
 }
 
+func TestHookPathsWouldLeak(t *testing.T) {
+	cases := []struct {
+		name      string
+		tempRoot  string
+		codexHome string
+		hooksDir  string
+		want      bool
+	}{
+		{
+			name:      "ephemeral hooks into persistent home leaks",
+			tempRoot:  "/tmp/oro-subprocess/abc",
+			codexHome: "/Users/dev/.codex",
+			hooksDir:  "/tmp/oro-subprocess/abc/TestX/001/oro-home/hooks",
+			want:      true,
+		},
+		{
+			name:      "both under temp is a hermetic test, no leak",
+			tempRoot:  "/tmp/oro-subprocess/abc",
+			codexHome: "/tmp/oro-subprocess/abc/TestX/001/codex-home",
+			hooksDir:  "/tmp/oro-subprocess/abc/TestX/001/oro-home/hooks",
+			want:      false,
+		},
+		{
+			name:      "both persistent is production, no leak",
+			tempRoot:  "/tmp/oro-subprocess/abc",
+			codexHome: "/Users/dev/.codex",
+			hooksDir:  "/Users/dev/.oro/hooks",
+			want:      false,
+		},
+		{
+			name:      "sibling temp dir is not under temp root, no false prefix match",
+			tempRoot:  "/tmp/oro",
+			codexHome: "/Users/dev/.codex",
+			hooksDir:  "/tmp/oro-other/hooks",
+			want:      false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hookPathsWouldLeak(tc.tempRoot, tc.codexHome, tc.hooksDir); got != tc.want {
+				t.Fatalf("hookPathsWouldLeak(%q, %q, %q) = %v, want %v",
+					tc.tempRoot, tc.codexHome, tc.hooksDir, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestInstallCodexHookConfigRefusesLeakyHooks(t *testing.T) {
+	// A "persistent" Codex home that will sit outside the redirected temp root.
+	persistentHome := t.TempDir()
+	configPath := filepath.Join(persistentHome, "config.toml")
+
+	// Redirect the temp root so hooksDir is ephemeral but persistentHome is not:
+	// this reproduces a test that isolated ORO_HOME but forgot CODEX_HOME.
+	ephemeralRoot := t.TempDir()
+	t.Setenv("TMPDIR", ephemeralRoot)
+	hooksDir := filepath.Join(ephemeralRoot, "oro-home", "hooks")
+
+	err := installCodexHookConfig(persistentHome, hooksDir)
+	if err == nil || !strings.Contains(err.Error(), "refusing to install Codex hook config") {
+		t.Fatalf("expected refusal error, got %v", err)
+	}
+	if _, statErr := os.Stat(configPath); !os.IsNotExist(statErr) {
+		t.Fatalf("guard must refuse before writing config.toml; stat err = %v", statErr)
+	}
+}
+
 func TestCodexDirectSkillSetupAcceptance(t *testing.T) {
 	t.Run("startup_links_skills_without_marketplace", func(t *testing.T) {
 		oroHome, codexHome, skillSource := prepareCodexStartFixture(t, "codex-only", "", true)
