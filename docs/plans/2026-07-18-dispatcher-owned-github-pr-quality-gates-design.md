@@ -407,6 +407,7 @@ candidate_adopted
   -> passed
   -> readying_change
   -> ready_for_merge
+  -> integration_preparing
   -> integration_prepared
   -> merge_authorizing
   -> github_merging
@@ -525,21 +526,26 @@ type RemoteGateClient interface {
     EnsureChange(ctx context.Context, req EnsureChangeRequest) (RemoteChange, error)
     Observe(ctx context.Context, req ObserveGateRequest) (RemoteGateObservation, error)
     SetChangeReady(ctx context.Context, req ChangeReadyRequest) (RemoteChange, error)
-    IntegrateSquashCAS(ctx context.Context, req SquashCASRequest) (MergeResult, error)
+    PrepareSquash(ctx context.Context, req PrepareSquashRequest) (PreparedSquash, error)
+    IntegrateSquashCAS(ctx context.Context, prepared PreparedSquash) (MergeResult, error)
     Cancel(ctx context.Context, req CancelGateRequest) error
     Reconcile(ctx context.Context, req ReconcileChangeRequest) error
 }
 ```
 
-`SquashCASRequest` contains repository identity, remote change ID, expected
+`PrepareSquashRequest` contains repository identity, remote change ID, expected
 candidate head SHA, exact target ref/SHA, exact evidence ID, reviewed/tested
-tree, and deterministic commit message/metadata. The adapter creates one
+tree, and deterministic commit message/metadata. `PrepareSquash` is forbidden
+from mutating a provider target. It creates one
 squash commit with parent equal to the expected target SHA and tree equal to
-the reviewed/tested tree. Before external mutation, it stores the commit under
-a dispatcher-owned local integration ref and the dispatcher durably persists
-an integration-attempt row containing proposed squash SHA, parent, tree,
-candidate/evidence/PR identity, target ref, and attempt key. Only then does the
-adapter ask GitHub to advance the target ref using an
+the reviewed/tested tree, stores it under a dispatcher-owned local integration
+ref, and returns exactly one `PreparedSquash` containing proposed SHA, parent,
+tree, local ref, candidate/evidence/PR identity, target ref, and attempt key.
+The dispatcher verifies that object/ref, commits the integration-attempt row,
+and advances durable state to `integration_prepared`. Only after that
+transaction acknowledges success may it call
+`IntegrateSquashCAS(prepared)`. That operation re-verifies the prepared object
+and local ref, then asks GitHub to advance the target ref using an
 exact expected-old-SHA lease. Git's receive transaction accepts the update only
 if the current target equals that tested base; because the new commit's sole
 parent is also the expected target, the result is one fast-forward squash
@@ -555,6 +561,14 @@ history, the dispatcher distinguishes unchanged expected base (safe retry),
 different target (invalidate/rebase), and rewritten/deleted ambiguity
 (quarantine). It never infers success from current-tip tree equality and never
 recreates a second squash commit after an ambiguous response.
+
+This two-phase boundary has one commit-identity producer. The dispatcher never
+recomputes the squash SHA, and the adapter never writes Oro's database. Crash
+injection covers before/after local preparation, before/after attempt-row
+commit, immediately before remote mutation, and immediately after accepted
+mutation but before the adapter returns. An orphan prepared ref is retained and
+reconciled; remote mutation is illegal without a matching committed prepared
+row and version.
 
 `Capabilities` also contains the canonical effective-policy hash and an
 enumerated result for every applicable repository/organization rule. GitHub v1
@@ -693,11 +707,12 @@ approval for the old diff is also invalidated because the diff changed.
 If only observational metadata changed, the dispatcher may continue. The first
 version must not attempt affected-file reasoning.
 
-After exact validation, the dispatcher re-verifies compatible policy and calls
-the adapter's `IntegrateSquashCAS`. The adapter independently verifies the PR
-head, constructs the exact single-parent squash commit, and performs the
-exact-SHA leased target-ref update. This Git ref transaction—not the mutable policy
-reread—is the atomic expected-base guard. A rejected ref update, changed policy,
+After exact validation, the dispatcher re-verifies compatible policy, calls
+`PrepareSquash`, persists and acknowledges the returned prepared object, then
+calls `IntegrateSquashCAS` with that exact object. The adapter independently
+re-verifies the PR head, prepared commit/ref, and performs the exact-SHA leased
+target-ref update. This Git ref transaction—not the mutable policy reread—is
+the atomic expected-base guard. A rejected ref update, changed policy,
 or changed head/base means the bead is not closed and re-enters preflight or
 the rebase/review/gate loop. A deterministic fake barrier between final policy
 read and ref mutation injects simultaneous policy change plus target movement
@@ -997,7 +1012,9 @@ chains; it may split them further but may not collapse away a boundary:
 2. **Provider-neutral core and GitHub adapter.** Implement normalized
    candidate/change/evidence/merge types, all `RemoteGateClient` operations
    including idempotent `SetChangeReady` and ambiguous
-   `IntegrateSquashCAS`, and GitHub transport isolated behind the adapter.
+   `PrepareSquash`/`IntegrateSquashCAS`, and GitHub transport isolated behind
+   the adapter. Preparation cannot mutate the provider; integration accepts
+   only the one returned, durably acknowledged `PreparedSquash`.
    Read `pkg/janitor/detect.go` for environment/host/auth conventions and add
    boundary/import tests. The production-faithful fake must reject merge while
    a change remains draft and model target movement at the exact CAS barrier,
@@ -1024,7 +1041,9 @@ chains; it may split them further but may not collapse away a boundary:
    worktree deletion, rebase, and first remote publication.
    Persist the deterministic integration-attempt row and local proposed-squash
    ref before CAS; recover orphan/prepared attempts and idempotent
-   reconciliation markers across restart.
+   reconciliation markers across restart. The dispatcher writer commits the
+   adapter-returned `PreparedSquash` between the two typed operations and never
+   recomputes its SHA.
 5. **Local presubmit action scheduler.** Replace the worker monolithic gate in
    GitHub mode with completion-based actions, total/per-resource admission,
    cancellation, exact acceptance execution, and pre/post-rebase invalidation.
@@ -1043,6 +1062,8 @@ chains; it may split them further but may not collapse away a boundary:
    ambiguous response, ambiguous merge response, ruleset removal/bypass,
    compound policy mutation plus base movement at the final CAS barrier,
    accepted-CAS/lost-response followed by descendant advancement and restart,
+   crashes before/after preparation, row commit, remote mutation, and adapter
+   return through the real two-phase production call chain,
    unexpected result tree, and local divergence without destructive reset.
 8. **Correction and cleanup.** Persist bounded findings, create a normal pool
    correction assignment at the exact remote candidate SHA, and handle dead
