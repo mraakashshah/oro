@@ -407,6 +407,7 @@ candidate_adopted
   -> passed
   -> readying_change
   -> ready_for_merge
+  -> integration_prepared
   -> merge_authorizing
   -> github_merging
   -> local_sync
@@ -534,14 +535,26 @@ type RemoteGateClient interface {
 candidate head SHA, exact target ref/SHA, exact evidence ID, reviewed/tested
 tree, and deterministic commit message/metadata. The adapter creates one
 squash commit with parent equal to the expected target SHA and tree equal to
-the reviewed/tested tree, then asks GitHub to advance the target ref using an
+the reviewed/tested tree. Before external mutation, it stores the commit under
+a dispatcher-owned local integration ref and the dispatcher durably persists
+an integration-attempt row containing proposed squash SHA, parent, tree,
+candidate/evidence/PR identity, target ref, and attempt key. Only then does the
+adapter ask GitHub to advance the target ref using an
 exact expected-old-SHA lease. Git's receive transaction accepts the update only
 if the current target equals that tested base; because the new commit's sole
 parent is also the expected target, the result is one fast-forward squash
 commit. Any concurrent target movement rejects the update atomically.
-The adapter then observes the exact target ref before classifying success.
-Ambiguous timeout-after-success responses are reconciled by that observation
-instead of retrying creation or target mutation blindly.
+The proposed commit is deterministic and its local integration ref survives
+restart. On success, timeout, disconnect, or restart, reconciliation proves
+the proposed commit has its persisted parent/tree and is on the target's
+current first-parent history. It therefore recognizes success even if another
+valid integration already advanced `proposed -> newer-tip`. Tree equality is
+checked at the proposed commit, while local synchronization advances to the
+current descendant tip. If the proposed commit is absent from current target
+history, the dispatcher distinguishes unchanged expected base (safe retry),
+different target (invalidate/rebase), and rewritten/deleted ambiguity
+(quarantine). It never infers success from current-tip tree equality and never
+recreates a second squash commit after an ambiguous response.
 
 `Capabilities` also contains the canonical effective-policy hash and an
 enumerated result for every applicable repository/organization rule. GitHub v1
@@ -703,6 +716,14 @@ out target ref may be compare-and-swap updated. Tracked local edits or divergent
 local commits are preserved and routed to dispatcher recovery—never reset,
 overwritten, or silently discarded.
 
+“GitHub reports” includes ancestry reconciliation of an ambiguous attempt. The
+dispatcher evaluates the persisted proposed squash commit, not only the current
+target tip. If the current tip is a first-parent descendant, the bead integrated
+exactly once; the dispatcher verifies tree equality at the proposed commit,
+records its integration, syncs to the newer descendant, and idempotently
+reconciles the PR. A durable reconciliation marker prevents duplicate PR close,
+comment, bead close, or cleanup events after repeated restart.
+
 ### 8. Failure Classification and Worker Recovery
 
 Remote observations are classified before action:
@@ -804,7 +825,9 @@ tree equals the reviewed and tested candidate tree. It then:
 3. deletes the remote candidate ref with a lease;
 4. archives or safely deletes the non-ancestor worker branch only after
    tree-equivalence and durable PR evidence prove no unique work remains;
-5. runs local worktree cleanup and emits `remote_gate_reconciled`.
+5. after the idempotent bead/PR reconciliation marker commits, deletes the
+   local adoption and proposed-integration refs with exact leases;
+6. runs local worktree cleanup and emits `remote_gate_reconciled`.
 
 Cleanup is retryable and cannot reopen or fail the already proven merge. Remote
 refs with unmerged commits are never deleted. Ambiguous ownership, unexpected
@@ -822,6 +845,9 @@ the dispatcher reconciles every nonterminal record:
 - query the persisted PR and workflow run;
 - adopt an exact active run, observe a completed run, or publish a replacement;
 - cancel obsolete runs;
+- restore every prepared integration attempt and test its persisted proposed
+  squash commit against the current target's first-parent history before any
+  target mutation retry;
 - restore the candidate pipeline status independently of worker lifetime;
 - resume backoff from persisted attempt time rather than stampeding GitHub.
 
@@ -978,6 +1004,9 @@ chains; it may split them further but may not collapse away a boundary:
    policy mutation in that same interval, approving review, CODEOWNER, conversation,
    deployment, signed-commit, lock/read-only, actor restriction, and merge-
    queue policy blockers.
+   Model accepted-CAS/lost-response followed by a second target advance before
+   observation; reconciliation returns the persisted proposed commit as
+   integrated without requiring it to remain the current tip.
 3. **Protocol and worker handoff.** Wire `CANDIDATE_READY` through
    `pkg/protocol/message.go`, `pkg/worker/worker.go:awaitSubprocessAndReport`,
    `runQGAndReport`, `SendReadyForReview`, and `SendDone`. Update
@@ -993,6 +1022,9 @@ chains; it may split them further but may not collapse away a boundary:
    adoption-ref creation, reachability proof, lease persistence, orphan-ref
    startup recovery, and crash injection between ref creation, row commit, ACK,
    worktree deletion, rebase, and first remote publication.
+   Persist the deterministic integration-attempt row and local proposed-squash
+   ref before CAS; recover orphan/prepared attempts and idempotent
+   reconciliation markers across restart.
 5. **Local presubmit action scheduler.** Replace the worker monolithic gate in
    GitHub mode with completion-based actions, total/per-resource admission,
    cancellation, exact acceptance execution, and pre/post-rebase invalidation.
@@ -1010,6 +1042,7 @@ chains; it may split them further but may not collapse away a boundary:
    same-name checks, reruns, changed workflow, draft-to-ready transition and
    ambiguous response, ambiguous merge response, ruleset removal/bypass,
    compound policy mutation plus base movement at the final CAS barrier,
+   accepted-CAS/lost-response followed by descendant advancement and restart,
    unexpected result tree, and local divergence without destructive reset.
 8. **Correction and cleanup.** Persist bounded findings, create a normal pool
    correction assignment at the exact remote candidate SHA, and handle dead
@@ -1138,8 +1171,9 @@ nonterminal remote record.
 8. Exact evidence tests reject same-name checks, changed workflow blobs,
    reruns for another attempt, stale synthetic merge SHAs, target movement at
    the merge boundary, ambiguous integration responses, simultaneous policy
-   mutation plus base movement at the CAS barrier, and any inequality among
-   reviewed, tested, and squash-result trees. Prepublication rejection also
+   mutation plus base movement at the CAS barrier, accepted CAS with lost
+   response followed by descendant advancement/restart, and any inequality
+   among reviewed, tested, and squash-result trees. Prepublication rejection also
    materializes corrections from the retained local adoption ref.
 9. Every auditor cycle dispatches or adopts exactly one full mutation campaign
    for its audit ID and SHA, survives restart, validates every shard artifact,
