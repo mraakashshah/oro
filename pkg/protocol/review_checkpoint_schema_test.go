@@ -189,6 +189,54 @@ func TestReviewCheckpointCanonicalKeyMigration(t *testing.T) {
 		(checkpoint_id, scheduled_at, sink) VALUES (1, '2026-01-01T00:00:00Z', 'legacy')`); err == nil {
 		t.Fatal("duplicate quarantine delivery succeeded, want primary key failure")
 	}
+	if _, err := partialDB.ExecContext(ctx, `INSERT INTO review_checkpoints (
+		checkpoint_key, bead_id, origin_assignment_id, worktree, branch, target_branch,
+		head_sha, target_sha, acceptance_hash, qg_script_hash, qg_mode,
+		review_policy_hash, triage_revision, ready_attempt, state
+	) VALUES (?, 'oro-original', 9, '/tmp/original', 'agent/original', 'main',
+		'head', 'target', 'acceptance', 'qg', 'default', 'policy', 'triage', 'ready', 'review_running')`, checkpointKey); err != nil {
+		t.Fatalf("seed canonical active checkpoint: %v", err)
+	}
+
+	if _, err := partialDB.ExecContext(ctx, `DROP INDEX idx_review_checkpoints_active_key;
+		CREATE INDEX idx_review_checkpoints_active_key ON review_checkpoints(checkpoint_key);
+		ALTER TABLE review_recovery_attempts RENAME TO review_recovery_attempts_legacy;
+		CREATE TABLE review_recovery_attempts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			checkpoint_id INTEGER NOT NULL,
+			failure_fingerprint TEXT NOT NULL,
+			idempotency_key TEXT NOT NULL UNIQUE,
+			strategy TEXT NOT NULL,
+			action_json TEXT NOT NULL,
+			status TEXT NOT NULL,
+			proof_json TEXT NOT NULL,
+			started_at TEXT NOT NULL,
+			completed_at TEXT
+		);
+		INSERT INTO review_recovery_attempts
+			SELECT * FROM review_recovery_attempts_legacy;
+		DROP TABLE review_recovery_attempts_legacy`); err != nil {
+		t.Fatalf("create mismatched review checkpoint schema: %v", err)
+	}
+	if err := protocol.MigrateBeadSchema(ctx, partialDB); err != nil {
+		t.Fatalf("repair mismatched review checkpoint schema: %v", err)
+	}
+	if err := protocol.MigrateBeadSchema(ctx, partialDB); err != nil {
+		t.Fatalf("repeat repaired review checkpoint migration: %v", err)
+	}
+	if _, err := partialDB.ExecContext(ctx, `INSERT INTO review_checkpoints (
+		checkpoint_key, bead_id, origin_assignment_id, worktree, branch, target_branch,
+		head_sha, target_sha, acceptance_hash, qg_script_hash, qg_mode,
+		review_policy_hash, triage_revision, ready_attempt, state
+	) VALUES (?, 'oro-duplicate-after-repair', 10, '/tmp/duplicate', 'agent/duplicate', 'main',
+		'head', 'target', 'acceptance', 'qg', 'default', 'policy', 'triage', 'ready', 'review_running')`, checkpointKey); err == nil {
+		t.Fatal("duplicate active canonical key succeeded after index repair, want unique index failure")
+	}
+	if _, err := partialDB.ExecContext(ctx, `INSERT INTO review_recovery_attempts (
+		checkpoint_id, failure_fingerprint, idempotency_key, strategy, action_json, status, started_at
+	) VALUES (3, '', 'attempt-default-proof', 'legacy', '{}', 'failed', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("recovery insert without proof_json: %v", err)
+	}
 }
 
 func assertSQLiteTableColumns(ctx context.Context, t *testing.T, db *sql.DB, table string, columns []string) {
