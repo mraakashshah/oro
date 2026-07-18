@@ -13,6 +13,7 @@ var ErrCheckpointConflict = errors.New("review checkpoint conflict")
 // ReviewCheckpointState is the durable lifecycle state for a review checkpoint.
 type ReviewCheckpointState string
 
+// ReviewCheckpointState values define the durable checkpoint lifecycle.
 const (
 	ReviewCheckpointStateQGPassed                 ReviewCheckpointState = "qg_passed"
 	ReviewCheckpointStateReviewRunning            ReviewCheckpointState = "review_running"
@@ -64,11 +65,15 @@ type ReviewCheckpointStore struct {
 }
 
 // NewReviewCheckpointStore constructs a checkpoint store over db.
+//
+//oro:testonly
 func NewReviewCheckpointStore(db *sql.DB) *ReviewCheckpointStore {
 	return &ReviewCheckpointStore{db: db}
 }
 
 // CreateOrReuse returns the single active checkpoint for a canonical key.
+//
+//oro:testonly
 func (s *ReviewCheckpointStore) CreateOrReuse(ctx context.Context, in CheckpointInput) (ReviewCheckpoint, error) {
 	if s == nil || s.db == nil {
 		return ReviewCheckpoint{}, errors.New("create or reuse review checkpoint: db is nil")
@@ -133,13 +138,20 @@ WHERE id = ? AND state = ?`, to, id, from)
 }
 
 func validateCheckpointInput(in CheckpointInput) error {
-	if in.CheckpointKey == "" || in.BeadID == "" || in.OriginAssignmentID <= 0 || in.Worktree == "" ||
-		in.Branch == "" || in.TargetBranch == "" || in.HeadSHA == "" || in.TargetSHA == "" ||
-		in.AcceptanceHash == "" || in.QGScriptHash == "" || in.QGMode == "" || in.ReviewPolicyHash == "" ||
-		in.TriageRevision == "" || in.ReadyAttempt == "" || in.State == "" {
+	if in.OriginAssignmentID <= 0 || in.State == "" || missingCheckpointIdentity(in) || missingCheckpointMetadata(in) {
 		return errors.New("create or reuse review checkpoint: missing required input")
 	}
 	return nil
+}
+
+func missingCheckpointIdentity(in CheckpointInput) bool {
+	return in.CheckpointKey == "" || in.BeadID == "" || in.Worktree == "" || in.Branch == "" ||
+		in.TargetBranch == "" || in.HeadSHA == "" || in.TargetSHA == "" || in.AcceptanceHash == ""
+}
+
+func missingCheckpointMetadata(in CheckpointInput) bool {
+	return in.QGScriptHash == "" || in.QGMode == "" || in.ReviewPolicyHash == "" ||
+		in.TriageRevision == "" || in.ReadyAttempt == ""
 }
 
 func scanReviewCheckpoint(row *sql.Row) (ReviewCheckpoint, error) {
@@ -165,7 +177,7 @@ func scanReviewCheckpoint(row *sql.Row) (ReviewCheckpoint, error) {
 		&checkpoint.State,
 	)
 	if err != nil {
-		return ReviewCheckpoint{}, err
+		return ReviewCheckpoint{}, fmt.Errorf("scan review checkpoint: %w", err)
 	}
 	return checkpoint, nil
 }
