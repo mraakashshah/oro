@@ -410,7 +410,10 @@ endpoint permission contract, capability probing decides support; the adapter
 does not silently broaden the token.
 
 `Capabilities` persists the required, granted, and forbidden permission sets,
-canonical permission hash, host/API version, and endpoint-probe evidence. Token
+canonical permission hash, host/API version, endpoint-probe evidence, and typed
+provider execution limits including `max_matrix_entries`. GitHub.com's adapter
+reports 256; the core never hardcodes that value, and a host whose limit cannot
+be established fails full-mutation preflight rather than guessing. Token
 issuance response permissions/repository scope must equal the allowlist. Setup
 then runs an isolated capability canary: push/delete an Oro probe ref, create/
 ready/close a probe PR, dispatch and observe a no-op workflow that uploads a
@@ -1350,6 +1353,20 @@ persisted inventory is genuinely empty. Zero generated mutants with nonempty
 eligible inventory is infrastructure failure unless every unit has a validated
 `valid-no-mutant` outcome under the pinned tool contract.
 
+The persisted audit plan records the requested shard count, provider-reported
+matrix bound, effective shard count, packing algorithm/version, ordered unit-to-
+shard map, and plan hash. The effective count is
+`min(requested, max_matrix_entries, inventory_unit_count)` for nonempty
+inventories. A stable weighted bin-packing algorithm balances estimated mutation
+work while deterministically assigning every unit exactly once; natural package/
+file partitions never become unbounded matrix dimensions. The workflow planner
+reconstructs that map, asserts its matrix length is within the persisted provider
+bound before expansion, and the aggregate still proves exact-union outcomes at
+unit granularity. Invalid zero/negative bounds fail typed preflight. A configured
+request above the provider limit is safely capped and reported, not retried as an
+invalid workflow; an emitted plan above the bound is infrastructure failure
+before dispatch in Oro and is independently rejected by the workflow and fake.
+
 The remote audit workflow:
 
 - uses `workflow_dispatch` with audit run ID, repository target, and exact SHA;
@@ -1462,6 +1479,8 @@ chains; it may split them further but may not collapse away a boundary:
    organization rules for the prospective `oro/audits/<project-prefix>/**`
    namespace, persist operation-specific create/adopt/delete capability and
    policy hashes, and run the capability canary inside that exact namespace.
+   Persist the provider's typed matrix-entry limit and reject full-mutation
+   enablement when that limit is absent or invalid.
 2. **Provider-neutral core and GitHub adapter.** Implement normalized
    candidate/change/evidence/merge types, all `RemoteGateClient` operations
    including idempotent `SetChangeReady` and ambiguous
@@ -1497,6 +1516,8 @@ chains; it may split them further but may not collapse away a boundary:
    Make the deterministic fake apply repository/organization rules by ref
    pattern, operation type, enforcement mode, and App bypass actor. Candidate,
    generic probe, target, and audit namespaces must be independently configurable.
+   Model provider execution limits and reject a planned matrix above the reported
+   bound exactly as the production host does.
 3. **Protocol and worker handoff.** Wire `CANDIDATE_READY` through
    `pkg/protocol/message.go`, `pkg/worker/worker.go:awaitSubprocessAndReport`,
    `runQGAndReport`, `SendReadyForReview`, and `SendDone`. Update
@@ -1651,6 +1672,12 @@ chains; it may split them further but may not collapse away a boundary:
     completion proof. Test new/unconfigured packages, remainder shards, missing/
     duplicate/unexpected/wrong-SHA units, stale policy, empty inventory, empty
     plan with nonempty inventory, valid-no-mutant, artifact loss, and restart.
+    Make the provider-bound planner persist requested/bound/effective counts and
+    a deterministic unit-to-shard packing map. Test 255, 256, 257, and much
+    larger natural shard inventories, requested count above the host limit,
+    absent/invalid capability, balance determinism, restart-stable plan hashes,
+    workflow/fake rejection of an injected 257-entry matrix, and unit-level
+    exact-union proof after packing.
     Use the permission-aware runtime App fixture for audit workflow dispatch,
     run/job observation, cancellation, logs, and artifact download; any missing
     Actions capability fails auth/config before campaign side effects.
@@ -1682,7 +1709,9 @@ chains; it may split them further but may not collapse away a boundary:
     test-level pass event for every test in the fixed manifest below. The
     harness fails if the manifest is empty, has duplicates, names an absent
     test, or lacks a criterion mapping. Statically validate both PR and full-
-    mutation workflows, then run the controlled Oro GitHub canary only after
+    mutation workflows, including the dynamic-matrix bound assertion and the
+    absence of unbounded Cartesian dimensions, then run the controlled Oro
+    GitHub canary only after
     current local history and the workflow are published.
 13. **Automatic degraded mode and memory-safe full fallback.** Own the
     `transient_failed -> outage_degraded -> local_memory_safe_gate ->
@@ -1799,9 +1828,10 @@ nonterminal remote record.
 5. `oro status --json`, health, monitor events, and the dashboard expose remote
    backlog, degraded mode, failure feedback delivery, quarantine count, and
    pending post-epic installation, audit-ref cleanup pending with the blocking
-   policy evidence, lifecycle readiness reason/control/queue generations,
-   expected/attested active-generation workers, stale worker connections, and
-   residual old-generation processes.
+   policy evidence, mutation requested/provider-bound/effective shard counts,
+   lifecycle readiness reason/control/queue generations, expected/attested
+   active-generation workers, stale worker connections, and residual old-
+   generation processes.
 6. Workflow contract fixtures prove PR eligibility for main, a configured
    custom target, and an `epic/**` target; prove the aggregate includes every
    portable job including strict incremental mutation; and reject mutable
@@ -1844,6 +1874,11 @@ nonterminal remote record.
    shard manifests are its exact nonoverlapping union, distinguishes
    infrastructure failure from surviving/valid-no-mutant outcomes, and creates
    deduplicated repair beads before a successful audit completion.
+   The provider capability supplies the matrix-entry bound; the deterministic
+   planner packs 257-plus natural partitions into no more than that bound while
+   preserving unit-level exact-union proof. Boundary fixtures cover 255/256/257,
+   a much larger inventory, an overlarge configured request, restart-stable
+   packing, and workflow/fake rejection of any injected over-bound plan.
    The exact runtime App proves Actions dispatch/cancel/read and artifact/log
    access through the isolated canary and permission-aware campaign fixture;
    correct actor with insufficient permission is auth/config failure.
@@ -1865,7 +1900,8 @@ nonterminal remote record.
 10. Provider-neutral core packages compile without GitHub transport imports or
     direct `gh` execution; a deterministic GitHub adapter fake exercises every
     side effect including credential refresh/actor attestation, exact-old-SHA
-    squash CAS, permission/capability enforcement, and reconciliation.
+    squash CAS, permission/capability/execution-limit enforcement, and
+    reconciliation.
 
 Epic verification command:
 
