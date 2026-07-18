@@ -430,6 +430,56 @@ SELECT status, worktree FROM assignments WHERE id=?`, assignmentID).Scan(&assign
 	if gotWorktree != worktree || quarantineWorktree != worktree || quarantineBranch != branch {
 		t.Fatalf("preserved fields assignment worktree=%q quarantine worktree/branch=%q/%q, want %q/%q/%q", gotWorktree, quarantineWorktree, quarantineBranch, worktree, worktree, branch)
 	}
+
+	t.Run("directly linked completed assignment fails closed", func(t *testing.T) {
+		failedDB, err := openStateDB(filepath.Join(t.TempDir(), "state.db"))
+		if err != nil {
+			t.Fatalf("open state db: %v", err)
+		}
+		defer failedDB.Close()
+
+		res, err := failedDB.ExecContext(context.Background(), `
+INSERT INTO assignments (bead_id, worker_id, worktree, status, completed_at)
+VALUES ('oro-requeue-direct-completed', 'worker-1', '/tmp/oro-requeue-direct-completed', 'completed', datetime('now'))`)
+		if err != nil {
+			t.Fatalf("seed completed assignment: %v", err)
+		}
+		completedAssignmentID, err := res.LastInsertId()
+		if err != nil {
+			t.Fatalf("assignment id: %v", err)
+		}
+		res, err = failedDB.ExecContext(context.Background(), `
+INSERT INTO recovery_quarantines (bead_id, assignment_id, worker_id, worktree, branch, reason, details, status, resolved_at)
+VALUES ('oro-requeue-direct-completed', ?, 'worker-2', '/tmp/oro-requeue-direct-completed', 'agent/oro-requeue-direct-completed', 'unsafe_stale_branch', 'preserved', 'human_owned', datetime('now'))`, completedAssignmentID)
+		if err != nil {
+			t.Fatalf("seed linked recovery quarantine: %v", err)
+		}
+		quarantineID, err := res.LastInsertId()
+		if err != nil {
+			t.Fatalf("quarantine id: %v", err)
+		}
+
+		if err := resolveRecoveryQuarantineRequeuePreserved(context.Background(), failedDB, quarantineID); err == nil {
+			t.Fatal("requeue-preserved unexpectedly accepted a directly linked completed assignment")
+		}
+
+		var assignmentStatus, quarantineStatus, quarantineWorktree, quarantineBranch, resolvedAt string
+		var linkedAssignmentID int64
+		if err := failedDB.QueryRowContext(context.Background(), `SELECT status FROM assignments WHERE id=?`, completedAssignmentID).Scan(&assignmentStatus); err != nil {
+			t.Fatalf("query completed assignment: %v", err)
+		}
+		if err := failedDB.QueryRowContext(context.Background(), `
+SELECT status, assignment_id, worktree, branch, COALESCE(resolved_at, '')
+FROM recovery_quarantines WHERE id=?`, quarantineID).Scan(&quarantineStatus, &linkedAssignmentID, &quarantineWorktree, &quarantineBranch, &resolvedAt); err != nil {
+			t.Fatalf("query linked recovery quarantine: %v", err)
+		}
+		if assignmentStatus != "completed" || quarantineStatus != "human_owned" || linkedAssignmentID != completedAssignmentID {
+			t.Fatalf("assignment/quarantine status=%q/%q linked assignment=%d, want completed/human_owned/%d", assignmentStatus, quarantineStatus, linkedAssignmentID, completedAssignmentID)
+		}
+		if quarantineWorktree != "/tmp/oro-requeue-direct-completed" || quarantineBranch != "agent/oro-requeue-direct-completed" || resolvedAt == "" {
+			t.Fatalf("quarantine fields worktree/branch/resolved_at=%q/%q/%q changed unexpectedly", quarantineWorktree, quarantineBranch, resolvedAt)
+		}
+	})
 }
 
 func TestRecoveryResolveRequeuePreservedRefusesOlderEligibleAssignment(t *testing.T) {

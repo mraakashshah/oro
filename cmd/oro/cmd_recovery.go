@@ -638,7 +638,21 @@ WHERE id=? AND bead_id=? AND status IN ('quarantined', 'completed')`, assignment
 
 func recoveryAssignmentIDForRequeue(ctx context.Context, tx *sql.Tx, quarantineID int64, q recoveryQuarantineCLIRecord) (assignmentID int64, needsRequeue bool, err error) {
 	if q.AssignmentID > 0 {
-		return q.AssignmentID, true, nil
+		var assignmentStatus string
+		if err := tx.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=? AND bead_id=?`, q.AssignmentID, q.BeadID).Scan(&assignmentStatus); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return 0, false, fmt.Errorf("requeue-preserved assignment_id %d is not a preserved assignment for bead %s", q.AssignmentID, q.BeadID)
+			}
+			return 0, false, fmt.Errorf("lookup preserved recovery assignment: %w", err)
+		}
+		switch assignmentStatus {
+		case "quarantined":
+			return q.AssignmentID, true, nil
+		case "requeued":
+			return q.AssignmentID, false, nil
+		default:
+			return 0, false, fmt.Errorf("requeue-preserved assignment_id %d has status %q", q.AssignmentID, assignmentStatus)
+		}
 	}
 
 	var assignmentStatus string
