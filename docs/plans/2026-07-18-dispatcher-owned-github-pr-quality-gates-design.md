@@ -990,6 +990,29 @@ per-PR portable gate and `quality_gate.sh --mutation-testing` because the
 existing flag is incremental: Go targets changed files/touched functions, has
 an eight-minute cap, and treats timeout as a warning.
 
+Before workflow dispatch, a low-compute, read-only inventory builder walks the
+exact audited Git tree and applies the versioned mutation inclusion/exclusion
+policy. It emits a canonical sorted inventory of eligible Go and Python
+mutation units, plus target SHA, policy/config hash, tool/version requirements,
+unit count, and inventory hash. A unit is the stable language-specific source
+identifier the mutation runner can independently claim and report; generated,
+test-only, vendored, or explicitly excluded code appears only through the
+hashed exclusion policy. The dispatcher persists the complete inventory and
+hash before dispatch and passes the hash/count/policy hash as workflow inputs.
+
+The workflow independently reconstructs the inventory from its exact checkout
+and fails before planning if any hash/count/policy value differs. Its shard
+planner partitions the canonical inventory deterministically; the planner's
+own output is never the definition of completeness. Every shard artifact lists
+its assigned unit IDs and one terminal outcome per unit, including killed,
+survived, valid-no-mutant, or infrastructure failure, plus artifact digest and
+exact SHA. The aggregate proves shard manifests are an exact, nonoverlapping
+union of the persisted inventory: no missing, duplicate, unexpected, wrong-SHA,
+or wrong-policy unit can pass. An empty plan succeeds only when the independently
+persisted inventory is genuinely empty. Zero generated mutants with nonempty
+eligible inventory is infrastructure failure unless every unit has a validated
+`valid-no-mutant` outcome under the pinned tool contract.
+
 The remote audit workflow:
 
 - uses `workflow_dispatch` with audit run ID, repository target, and exact SHA;
@@ -1003,6 +1026,8 @@ The remote audit workflow:
 - uploads machine-readable per-shard results, surviving mutants, killed/total
   counts, score, tool versions, and logs;
 - aggregates only after every required shard reaches a terminal conclusion;
+- records inventory, policy, deterministic plan, shard-manifest, and artifact
+  hashes and requires exact-union proof before aggregation succeeds;
 - distinguishes infrastructure failure from a valid campaign whose mutation
   score is below policy;
 - persists exact workflow/run/job/artifact/SHA evidence in the audit journey;
@@ -1034,6 +1059,12 @@ them completes the *attempt* as a durable audit-infrastructure failure, keeps
 the audit cycle non-successful and visible, and schedules self-healing retry
 work without blocking bead/epic gates. A valid campaign with surviving mutants
 completes evidence ingestion and files deduplicated repair beads.
+
+The durable audit completion record contains inventory hash, policy hash,
+shard-plan hash, workflow path/blob/run attempt, artifact IDs/digests, eligible
+and covered unit counts, and exact-union proof. Missing evidence or unequal
+counts keeps the audit unsuccessful even when every produced shard itself
+reported success.
 
 ### 14. Observability
 
@@ -1175,7 +1206,12 @@ chains; it may split them further but may not collapse away a boundary:
 10. **Remote full mutation audit.** Add the workflow-dispatch/shard/aggregate
     workflow and wire `pkg/dispatcher/audit.go:runAudit` to durable exact-SHA
     campaign observation, artifact ingestion, restart, infrastructure failure,
-    and survivor bead creation.
+    and survivor bead creation. Implement the independent canonical eligible-
+    unit inventory/policy hasher, remote reconstruction check, deterministic
+    planner, per-unit shard manifests, artifact digests, and exact-union audit
+    completion proof. Test new/unconfigured packages, remainder shards, missing/
+    duplicate/unexpected/wrong-SHA units, stale policy, empty inventory, empty
+    plan with nonempty inventory, valid-no-mutant, artifact loss, and restart.
 11. **Observability and self-healing.** Extend dispatcher/status JSON,
     `cmd/oro/cmd_status.go`, health online/offline loaders, monitor defect
     rules, dashboard provider/templates, and progress responses for every
@@ -1296,7 +1332,9 @@ nonterminal remote record.
    materializes corrections from the retained local adoption ref.
 9. Every auditor cycle dispatches or adopts exactly one full mutation campaign
    for its audit ID and SHA, survives restart, validates every shard artifact,
-   distinguishes infrastructure failure from surviving mutants, and creates
+   independently reconstructs the persisted eligible-unit inventory, proves
+   shard manifests are its exact nonoverlapping union, distinguishes
+   infrastructure failure from surviving/valid-no-mutant outcomes, and creates
    deduplicated repair beads before a successful audit completion.
 10. Provider-neutral core packages compile without GitHub transport imports or
     direct `gh` execution; a deterministic GitHub adapter fake exercises every
