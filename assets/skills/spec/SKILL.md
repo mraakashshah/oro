@@ -1,6 +1,6 @@
 ---
 name: spec
-description: Use when the user asks to make a spec, spec out work, or brainstorm a validated task graph
+description: Use when the user asks to make a spec, spec out work, run a "deepspec", or brainstorm a validated task graph
 ---
 
 # Spec
