@@ -83,7 +83,9 @@ turn those checks into merge evidence.
 - Running agent/model credentials or Oro's private runtime state in CI.
 - Sending arbitrary worker prompts, cards, or local state database contents to
   GitHub.
-- Making branch protection the dispatcher correctness boundary.
+- Assuming a human will configure or preserve repository merge protection.
+  GitHub mode requires a dispatcher-preflighted ruleset/branch policy that
+  makes the aggregate check strict and up to date for every supported target.
 - Eliminating focused acceptance tests from the coding worker.
 - Offloading macOS-only smoke tests, local binary installation, dispatcher
   restart, or post-install health checks.
@@ -124,6 +126,14 @@ turn those checks into merge evidence.
 10. **Quarantine visibility:** remote-gate ambiguity that preserves unmerged
     work follows the normal quarantine contract and is surfaced on every
     status/progress request.
+11. **Atomic target protection:** a remote provider may merge only if it can
+    prove that the tested base is still current at the provider's atomic merge
+    boundary. For GitHub v1 this requires a verified strict required-check
+    ruleset covering `main`, configured custom targets, and `epic/**`; a
+    pre-merge read followed by an expected-head request is not sufficient.
+12. **Single authoritative completion path:** in `github-pr` mode neither
+    `DONE(QualityGatePassed=true)`, the legacy local merge coordinator, nor
+    `checkPreMergeQG` can bypass the durable remote-gate record.
 
 ## Current Call Chain
 
@@ -269,6 +279,11 @@ factory:
       close_superseded_prs: true
     local:
       profile: memory-safe
+      max_actions: 6
+      resource_capacity:
+        cpu_light: 4
+        cpu_heavy: 1
+        memory_heavy: 1
 ```
 
 Rules:
@@ -284,11 +299,33 @@ Rules:
 - `max_in_flight` limits dispatcher-owned remote candidates, preventing an
   accidental PR/run explosion even though the computation is no longer local.
 - The effective mode and all limits appear in status and startup events.
+- Configuration is loaded into a typed project-config model, passed by
+  `cmd/oro/cmd_start.go:newProductionDispatcher` into `dispatcher.Config`, and
+  validated before the daemon socket becomes available. File values have the
+  normal project-config precedence; explicit CLI overrides, if introduced,
+  win and are reported as the effective value. Unknown or malformed remote
+  gate keys fail closed.
+- GitHub preflight verifies workflow visibility and trigger eligibility for
+  the project's actual target patterns, squash-merge availability, and a
+  strict required-check ruleset covering `main`, configured targets, and
+  `epic/**`. When the authenticated identity has repository-administration
+  permission, setup may reconcile the documented Oro-owned ruleset
+  idempotently; otherwise startup reports an unhealthy configuration and does
+  not publish candidates. Routine beads never wait for operator setup.
 
 The first version supports one GitHub remote and one workflow/check contract
-per project. Provider-general abstractions are intentionally deferred.
+per project. Candidate, evidence, correction, state-machine, and merge-policy
+types remain provider-neutral; only the v1 adapter and configuration are
+GitHub-specific. No second provider implementation or speculative generalized
+framework is built.
 
 ### 2. Aggregate Workflow Contract
+
+The `pull_request` trigger must not retain the current `branches: [main]`
+filter. It covers every PR base the dispatcher supports, including configured
+custom targets and ephemeral `epic/**` branches. Push CI may remain limited to
+protected integration targets. Preflight rejects an actual target for which
+the workflow is ineligible before publishing the candidate.
 
 The existing CI jobs remain independently diagnosable. Add one final job with
 a globally unique name:
@@ -296,7 +333,7 @@ a globally unique name:
 ```yaml
 oro-portable-qg:
   if: ${{ always() }}
-  needs: [go, cgo-free, shell, docs, python]
+  needs: [go, cgo-free, shell, docs, python, incremental-mutation]
   runs-on: ubuntu-latest
   steps:
     - name: Require every portable gate
@@ -319,8 +356,18 @@ concurrency:
 ```
 
 CI uses the `pull_request` event, explicit read-only permissions, no project or
-model secrets, and SHA-pinned third-party actions. The workflow must run the
-portable gate against GitHub's PR merge commit, not merely the head branch.
+model secrets, and full-commit-SHA-pinned third-party actions. The workflow
+must run the portable gate against GitHub's PR synthetic merge commit, not
+merely the head branch. Static workflow-contract tests prove trigger
+eligibility for main/custom/epic bases, one unique aggregate name, complete
+`needs`, `always()` failure handling, read-only permissions, absence of
+`pull_request_target` and secrets, pinned actions, and merge-commit checkout.
+
+The `incremental-mutation` job invokes a new strict, machine-readable remote
+mode, not the existing best-effort `--mutation-testing` behavior. Missing base,
+tool crash, timeout, malformed/absent output, artifact loss, and zero mutants
+when mutants were expected are non-success infrastructure conclusions. A valid
+score below policy is deterministic failure. Fixtures cover each conclusion.
 
 ### 3. Dispatcher-Owned Remote Gate State Machine
 
@@ -354,6 +401,21 @@ bead ID, assignment ID, worktree, branch, target branch, and local head SHA.
 It does not claim a QG pass. Once the dispatcher durably adopts the candidate,
 the worker is released to the pool and may move to another bead. Review and CI
 therefore never rely on the original worker process remaining reserved.
+
+Adoption validates message size, assignment ownership and freshness, clean
+worktree, exact branch/ref, target, and that the SHA is committed and reachable
+from that branch. Missing, dirty, mismatched, stale, or oversized messages fail
+before adoption. Duplicate delivery is idempotent both before and after the
+acknowledgement: the dispatcher persists the candidate row, dispatcher-owned
+remote ref, and candidate-ref lease before acknowledging worker release.
+
+The durable candidate row is independent of the active worker assignment. On
+adoption, ownership of the candidate ref transfers from the assignment to the
+dispatcher; the worker worktree may then be deleted or reused. Corrections
+materialize from the persisted dispatcher-owned remote ref at the exact
+candidate SHA into a fresh worktree. A missing remote ref, deleted original
+worktree, stale `agent/<bead>` branch, or dead original worker is handled by
+that source-of-truth order and never by worker affinity.
 
 On `CANDIDATE_READY`, the dispatcher:
 
@@ -402,19 +464,30 @@ dependency for a dispatcher behind NAT.
 
 ### 4. GitHub Client Boundary
 
-Define a narrow dispatcher dependency so behavior is testable without network
-access:
+Define provider-neutral policy types and a narrow dispatcher dependency so
+behavior is testable without network access. The core names a change request,
+target, candidate, evidence, and merge capability; it does not expose `gh`
+JSON or GitHub PR types:
 
 ```go
 type RemoteGateClient interface {
-    Preflight(ctx context.Context, repoRoot string, cfg GitHubGateConfig) error
+    Preflight(ctx context.Context, req PreflightRequest) (Capabilities, error)
     Publish(ctx context.Context, req PublishRequest) (PublishedCandidate, error)
-    EnsureDraftPR(ctx context.Context, req EnsurePRRequest) (PullRequest, error)
+    EnsureChange(ctx context.Context, req EnsureChangeRequest) (RemoteChange, error)
     Observe(ctx context.Context, req ObserveGateRequest) (RemoteGateObservation, error)
+    AuthorizeSquashMerge(ctx context.Context, req MergeAuthorizationRequest) (MergeResult, error)
     Cancel(ctx context.Context, req CancelGateRequest) error
-    Reconcile(ctx context.Context, req ReconcilePRRequest) error
+    Reconcile(ctx context.Context, req ReconcileChangeRequest) error
 }
 ```
+
+`MergeAuthorizationRequest` contains repository identity, remote change ID,
+expected candidate head SHA, expected target ref and SHA, exact evidence ID,
+and reviewed tree. `Capabilities` must attest that the provider's merge
+boundary atomically rejects a changed tested base. The GitHub adapter satisfies
+this through a verified strict required-check ruleset and sends the expected
+PR head SHA to the squash endpoint. Ambiguous timeout-after-success responses
+are reconciled by observing the persisted change before retrying.
 
 The production implementation shells out to `git` and `gh` using argument
 arrays and JSON output. It reuses `processenv.ForWorkdir`, authenticates against
@@ -422,8 +495,9 @@ the actual remote host, and applies per-call contexts. No shell command is
 constructed from PR titles, branch names, URLs, or remote output.
 
 The dispatcher owns policy, persistence, retry classification, and state
-transitions. The client owns only GitHub/git side effects and normalized
-observations.
+transitions. The client owns only provider/git side effects and normalized
+observations. Compile-time boundary tests prevent dispatcher policy packages
+from importing GitHub/`gh` transport representations or shelling out to `gh`.
 
 ### 5. Branch and Pull Request Identity
 
@@ -444,7 +518,7 @@ Idempotency key:
 <repository>|<bead-id>|<assignment-id>|<candidate-head-sha>|<target-ref>
 ```
 
-On restart, `EnsureDraftPR` searches first by persisted PR number and then by
+On restart, the GitHub adapter's `EnsureChange` searches first by persisted PR number and then by
 exact head/base refs. It may adopt only a PR whose repository, head ref, base
 ref, and bead metadata all match. Ambiguous matches fail closed and preserve
 the work in quarantine.
@@ -452,6 +526,12 @@ the work in quarantine.
 PR titles and bodies are generated by the dispatcher and contain no prompt or
 card content beyond the bead ID, title, target, commit SHA, and a short factory
 status marker.
+
+Mode changes cannot create two completion paths. Switching to `local` while a
+remote record is publishing, running, passed, or merging stops new remote
+adoptions but leaves that record under remote reconciliation until it reaches
+a proven terminal state or is durably cancelled and requeued. Best-effort PR
+cancellation never releases candidate refs or enables legacy `DONE` merge.
 
 ### 6. Exact Remote Evidence
 
@@ -494,6 +574,17 @@ A remote pass is acceptable only when all of these are true:
 - the passing evidence row commits successfully before merge authorization;
 - no later candidate, target, or workflow change supersedes it.
 
+The adapter obtains run identity from GitHub's workflow-runs/check-runs APIs,
+then independently fetches the immutable workflow file at the run commit and
+the PR head/base objects. It persists workflow database ID, workflow path,
+workflow blob SHA, run attempt, check-suite/check-run IDs, head SHA, recorded
+base SHA, and synthetic merge SHA before transitioning to `passed`. It verifies
+that the synthetic merge commit has the expected candidate and target parents
+and expected tree. A mutable current `pull_request.merge_commit_sha`, a check
+name alone, or the latest run for a branch is never sufficient. Reruns,
+same-name checks, workflow edits, base movement, and stale merge SHAs are
+explicit negative fixtures.
+
 Status checks named the same by another workflow are rejected. The dispatcher
 uses workflow identity plus check name, not check name alone.
 
@@ -520,16 +611,24 @@ approval for the old diff is also invalidated because the diff changed.
 If only observational metadata changed, the dispatcher may continue. The first
 version must not attempt affected-file reasoning.
 
-After exact validation, the dispatcher calls GitHub's merge endpoint with
-`merge_method=squash` and the exact expected PR head SHA. Branch protection
-requires the aggregate portable check and rejects stale or conflicting state.
-GitHub creates one fast-forwarded squash commit on the target. A 405/409 or a
-changed head/base means another writer won the race: the bead is not closed and
-re-enters the rebase/review/gate loop.
+After exact validation, the dispatcher re-verifies that the actual target is
+covered by the preflighted strict required-check ruleset, then calls the
+adapter's `AuthorizeSquashMerge` with `merge_method=squash`, exact expected PR
+head SHA, target ref/SHA, and evidence ID. GitHub's endpoint directly guards
+the head while the required-up-to-date ruleset provides the atomic base guard:
+if the base advances, the required aggregate becomes stale and GitHub rejects
+the merge. A target without this provider-enforced guarantee is unsupported in
+`github-pr` mode. A 405/409, changed protection, or changed head/base means the
+bead is not closed and re-enters preflight or the rebase/review/gate loop.
 
-After GitHub reports the merged SHA, the dispatcher fetches the remote, proves
-the merged commit's tree equals the reviewed and remotely tested candidate
-tree, and updates the local target by fast-forward only. In the normal clean
+After GitHub reports the merged SHA, the dispatcher fetches the remote and
+proves the three-way invariant: reviewed post-rebase candidate tree equals the
+tested synthetic merge tree equals the resulting squash-commit tree. Git tree
+identity covers modes, symlinks, submodule gitlinks, and LFS pointer blobs. An
+empty/no-op candidate is rejected before publication. An unexpected mismatch
+after a provider merge is a durable P0 recovery state: it never closes the bead
+or deletes refs even though the external target has already changed. After a
+valid proof, the dispatcher updates the local target by fast-forward only. In the normal clean
 factory checkout this is `git merge --ff-only origin/<target>`; a non-checked-
 out target ref may be compare-and-swap updated. Tracked local edits or divergent
 local commits are preserved and routed to dispatcher recovery—never reset,
@@ -589,9 +688,22 @@ dispatcher may execute the candidate through a local `memory-safe` profile:
 - cancellation releases the local gate lease.
 
 The local result produces exact local evidence for the same candidate and
-target SHA. It can authorize merge after the existing ops approval, but the dispatcher records that
-the remote gate was bypassed due to degraded mode. When GitHub recovers, new
-candidates return automatically to remote mode.
+target SHA. It may advance the durable record to `local_passed_waiting_remote`,
+release local compute, and preserve the candidate, but it cannot perform a
+GitHub squash merge while the merge API or its protection proof is unavailable.
+After GitHub recovers, the dispatcher revalidates target/review/local evidence,
+authorizes the protected merge, and returns new candidates automatically to
+remote mode. Thus coding and local validation may continue during a long
+outage, while integration throughput correctly waits for the authoritative
+remote merge boundary. Outages are tested separately during publish, observe,
+and merge authorization.
+
+The concrete fallback interface is
+`scripts/quality_gate.sh --profile=memory-safe`. It acquires one project-global
+lease, runs outer lanes sequentially, exports `GOMAXPROCS=2`, propagates
+`go test -p 1`, limits every inner scheduler to one, forwards cancellation, and
+always releases the lease. Behavioral subprocess tests assert those commands
+and limits rather than trusting environment variables by convention.
 
 Projects may set `outage_fallback_after: 0` to fail closed and wait remotely,
 but the Oro project's recommended default is `15m` so the factory continues
@@ -669,6 +781,13 @@ it must be a durable post-epic operation rather than an informal operator
 reminder. Failure in step 7 keeps the epic completion operation visible and
 retryable without undoing a proven merge.
 
+The durable epic states distinguish `promotion_gate`, `remote_merged`,
+`local_install_pending`, `restart_pending`, `health_verification`, and
+`complete`. `tryCloseEpic`, `completeEpicClose`, and `ffMergeEpicBranch` must
+dispatch by gate mode; the legacy local-QG/FF path cannot close an epic in
+`github-pr` mode. The epic closes only after installed/repository binary hashes
+match and healthy dispatch is observed.
+
 ### 13. Remote Auditor Mutation Campaign
 
 Every periodic whole-repository auditor cycle triggers exactly one distinct
@@ -714,6 +833,16 @@ become prioritized repair beads through the normal auditor finding path. Full
 mutation must never be inserted into every bead PR gate because that would
 create a new critical path at a much higher compute cost.
 
+`pkg/dispatcher/audit.go:runAudit` persists the audit snapshot and remote
+campaign key before dispatch, waits through the shared scheduler, and cannot
+call the existing completion path until every shard artifact is validated and
+incorporated. Restart adopts the same workflow for the same audit ID/SHA.
+Infrastructure retries are bounded by configured campaign policy; exhausting
+them completes the *attempt* as a durable audit-infrastructure failure, keeps
+the audit cycle non-successful and visible, and schedules self-healing retry
+work without blocking bead/epic gates. A valid campaign with surviving mutants
+completes evidence ingestion and files deduplicated repair beads.
+
 ### 14. Observability
 
 Human and JSON status expose:
@@ -752,7 +881,74 @@ timeout, a repeated deterministic fingerprint without a worker-feedback event,
 or a terminal run attached to a nonterminal state as a dispatcher defect and
 files/deduplicates a P0 bead automatically.
 
-### 15. Rollout
+### 15. Implementation Coverage Plan
+
+`beadcraft` must preserve these work packages and their named production call
+chains; it may split them further but may not collapse away a boundary:
+
+1. **Typed configuration and repository preflight.** Read and change the
+   project config model, `cmd/oro/cmd_start.go:newProductionDispatcher`,
+   `dispatcher.Config.validate`, and `Dispatcher.Run` before socket readiness.
+   Cover defaults, precedence, malformed values, workflow eligibility, target
+   rulesets, auth, squash support, startup events, and status.
+2. **Provider-neutral core and GitHub adapter.** Implement normalized
+   candidate/change/evidence/merge types, all `RemoteGateClient` operations
+   including ambiguous `AuthorizeSquashMerge`, and GitHub transport isolated
+   behind the adapter. Read `pkg/janitor/detect.go` for environment/host/auth
+   conventions and add boundary/import tests.
+3. **Protocol and worker handoff.** Wire `CANDIDATE_READY` through
+   `pkg/protocol/message.go`, `pkg/worker/worker.go:awaitSubprocessAndReport`,
+   `runQGAndReport`, `SendReadyForReview`, and `SendDone`. Update
+   `pkg/worker/prompt.go:buildCodingSections`. Prove malformed, oversized,
+   stale, and duplicate handoffs fail safely and GitHub mode cannot enter the
+   legacy full-QG or `DONE` merge path.
+4. **Durable remote state and dispatcher ownership.** Add normalized SQLite
+   schema/types/indexes/migrations/CAS for candidate, run, evidence,
+   correction, audit campaign, and post-install state. Wire `handleMessage`,
+   `handleDone`, `handleReadyForReview`, `handleReviewResult`,
+   `startupRecovery`, `restoreState`, and `spawnBackgroundLoops`. Test restart
+   after worker death and worktree deletion.
+5. **Local presubmit action scheduler.** Replace the worker monolithic gate in
+   GitHub mode with completion-based actions, total/per-resource admission,
+   cancellation, exact acceptance execution, and pre/post-rebase invalidation.
+   Test concurrency across candidates and serialize only declared heavy
+   resources.
+6. **Workflow and strict incremental mutation.** Change
+   `.github/workflows/ci.yml`, add `scripts/ci/require-needs-success.sh`, a
+   strict machine-readable incremental mutation command, workflow fixtures,
+   SHA-pinned actions, and aggregate membership/trigger tests for main,
+   custom, and epic bases.
+7. **Exact evidence, ops review, and protected merge.** Wire the remote state
+   machine through `checkPreMergeQG`, `mergeAndComplete`, and
+   `finalizeSuccessfulMerge`; bind the ops-reviewed tree, tested synthetic
+   merge tree, strict target policy, and squash result. Test base races,
+   same-name checks, reruns, changed workflow, ambiguous merge response,
+   unexpected result tree, and local divergence without destructive reset.
+8. **Correction and cleanup.** Persist bounded findings, create a normal pool
+   correction assignment at the exact remote candidate SHA, and handle dead
+   workers, deleted worktrees, missing refs, duplicate findings, non-ancestor
+   squash cleanup, cancellation, rollback, and recovery quarantine.
+9. **Epic promotion and local installation.** Replace the GitHub-mode path in
+   `tryCloseEpic`, `completeEpicClose`, and `ffMergeEpicBranch` with promotion
+   state, remote evidence/merge, local sync, durable build/install/restart,
+   hash comparison, health proof, and retry.
+10. **Remote full mutation audit.** Add the workflow-dispatch/shard/aggregate
+    workflow and wire `pkg/dispatcher/audit.go:runAudit` to durable exact-SHA
+    campaign observation, artifact ingestion, restart, infrastructure failure,
+    and survivor bead creation.
+11. **Observability and self-healing.** Extend dispatcher/status JSON,
+    `cmd/oro/cmd_status.go`, health online/offline loaders, monitor defect
+    rules, dashboard provider/templates, and progress responses for every
+    required state and finding.
+12. **Hermetic epic verification and canary.** Build
+    `scripts/test_remote_gate_epic.sh` around a real local Git remote and a
+    deterministic GitHub API/`gh` fake. Parse `go test -json` and require a
+    test-level pass event for every exact named integration test. Statically
+    validate both PR and full-mutation workflows, then run the controlled Oro
+    GitHub canary only after current local history and the workflow are
+    published.
+
+### 16. Rollout
 
 Rollout is reversible and staged:
 
@@ -771,9 +967,11 @@ Rollout is reversible and staged:
 7. Remove the coding-agent full-QG instruction only after the dispatcher-owned
    remote path and fallback path are both proven.
 
-Rollback sets `mode: local`. Durable remote records remain audit evidence;
-active dispatcher-owned runs are cancelled and candidate branches are preserved
-until their work is merged or safely requeued.
+Rollback sets `mode: local` only for new candidates. Durable remote records
+remain audit evidence; active dispatcher-owned runs are reconciled to terminal
+or durably cancelled before their candidates are requeued, and candidate
+branches/refs are preserved. A legacy `DONE` or local merge can never race a
+nonterminal remote record.
 
 ## Acceptance Criteria
 
@@ -794,12 +992,38 @@ until their work is merged or safely requeued.
 5. `oro status --json`, health, monitor events, and the dashboard expose remote
    backlog, degraded mode, failure feedback delivery, quarantine count, and
    pending post-epic installation.
+6. Workflow contract fixtures prove PR eligibility for main, a configured
+   custom target, and an `epic/**` target; prove the aggregate includes every
+   portable job including strict incremental mutation; and reject mutable
+   action tags, write permissions, secrets, `pull_request_target`, head-only
+   checkout, missing/skipped needs, and a non-strict target ruleset.
+7. GitHub mode runs the configured local presubmit actions with bounded
+   total/resource concurrency, then replaces the production
+   `READY_FOR_REVIEW`/`DONE` local-QG merge path with durable candidate
+   adoption. Malformed and duplicate handoffs, worker death, deleted worktree,
+   missing remote ref, and correction by a different worker are covered.
+8. Exact evidence tests reject same-name checks, changed workflow blobs,
+   reruns for another attempt, stale synthetic merge SHAs, target movement at
+   the merge boundary, ambiguous merge responses, and any inequality among
+   reviewed, tested, and squash-result trees.
+9. Every auditor cycle dispatches or adopts exactly one full mutation campaign
+   for its audit ID and SHA, survives restart, validates every shard artifact,
+   distinguishes infrastructure failure from surviving mutants, and creates
+   deduplicated repair beads before a successful audit completion.
+10. Provider-neutral core packages compile without GitHub transport imports or
+    direct `gh` execution; a deterministic GitHub adapter fake exercises every
+    side effect including protected squash authorization and reconciliation.
 
 Epic verification command:
 
 ```text
-Cmd: go test ./pkg/dispatcher ./pkg/worker ./pkg/protocol ./cmd/oro -run 'TestDispatcherRemoteGateEndToEnd|TestRemoteGateRestartRecovery|TestRemoteGateDegradedFallback|TestEpicRemoteGateAndInstall' -count=1 && ./scripts/test_quality_gate.sh && ./scripts/quality_gate.sh
-Assert: all named integration tests execute (none report "no tests to run"), the script harness passes, and the full repository quality gate exits 0 on main.
+Cmd: test "$(git branch --show-current)" = main && ./scripts/test_remote_gate_epic.sh && ./scripts/test_quality_gate.sh && ./scripts/quality_gate.sh
+Assert: exit 0. The remote-gate harness uses `go test -json` and fails unless
+every exact integration test emits a test-level `pass` event; exercises a real
+local Git remote and deterministic GitHub API/`gh` fake; validates PR and full
+mutation workflow contracts, status/health/monitor/dashboard surfaces, strict
+incremental and full mutation outcomes, and provider boundaries. The existing
+QG harness and full repository gate also pass on main.
 ```
 
 ## Deep Premortem
@@ -836,13 +1060,13 @@ premortem:
     - risk: "PR-per-bead increases remote noise and consumes hosted CI capacity."
       mitigation: "Draft PRs, deterministic refs, max_in_flight, cancellation, and automatic reconciliation bound the noise; the audit trail is part of the desired capability."
     - risk: "The dispatcher requests a squash merge after its evidence becomes stale."
-      mitigation: "GitHub branch protection plus the expected-head-SHA merge request fail closed; Oro revalidates head, base, workflow, review, and QG evidence immediately before authorization."
+      mitigation: "A dispatcher-preflighted strict required-check ruleset provides the provider-side atomic base guard, the merge request supplies expected head SHA, and Oro revalidates head, base, workflow, review, and QG evidence immediately before authorization."
     - risk: "Automatic local fallback can still be slower than remote CI and one tool can individually exhaust memory."
       mitigation: "Fallback is serialized and memory-safe, but absolute memory safety needs OS-level resource control as a future capability."
 
   paper_tigers:
     - risk: "GitHub merge queue is unavailable for this user-owned public repository."
-      reason: "The selected design does not depend on merge queue; strict up-to-date checks and expected-head squash merge reject races, and the dispatcher automatically rebases/retries."
+      reason: "The selected design does not depend on merge queue; a verified strict ruleset makes the aggregate stale on base movement, expected-head squash merge rejects head races, and the dispatcher automatically rebases/retries."
     - risk: "Squash merge makes the candidate branch a non-ancestor of target."
       reason: "Reconciliation binds the tested candidate tree to GitHub's merged tree before cleaning the preserved worker and remote refs."
 ```
