@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -88,15 +89,23 @@ func readLastNLines(path string, n int) ([]string, error) {
 	}
 	defer file.Close()
 
-	// Read all lines into a buffer
+	// ReadString avoids bufio.Scanner's 64 KiB token limit while preserving
+	// scanner-style line splitting, including a final line without a newline.
 	var lines []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan file: %w", err)
+	reader := bufio.NewReader(file)
+	for {
+		line, err := reader.ReadString('\n')
+		if line != "" {
+			line = strings.TrimSuffix(line, "\n")
+			line = strings.TrimSuffix(line, "\r")
+			lines = append(lines, line)
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, fmt.Errorf("read file: %w", err)
+		}
 	}
 
 	// Return last N lines
