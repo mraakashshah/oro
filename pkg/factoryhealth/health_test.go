@@ -161,6 +161,31 @@ func hasFindingForWorker(health FactoryHealth, code, workerID string) bool {
 	return false
 }
 
+func TestLoadThroughputMetricsSelectsLatestMixedFormatEvent(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 18, 12, 6, 0, 0, time.UTC)
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE assignments (assigned_at TEXT);
+CREATE TABLE beads (status TEXT, close_reason TEXT, closed_at TEXT, updated_at TEXT);
+CREATE TABLE events (type TEXT, created_at TEXT);
+INSERT INTO events (type, created_at) VALUES ('old', '2026-07-18T12:00:00Z'), ('new', '2026-07-18 12:05:00');`); err != nil {
+		t.Fatalf("schema and seed: %v", err)
+	}
+
+	got, err := LoadThroughputMetrics(ctx, db, now, time.Hour)
+	if err != nil {
+		t.Fatalf("LoadThroughputMetrics: %v", err)
+	}
+	if got.LastEventAgeSecs != 60 {
+		t.Fatalf("last event age = %v, want 60", got.LastEventAgeSecs)
+	}
+}
+
 func TestEvaluateAssignmentContradictions(t *testing.T) {
 	got := Evaluate(Snapshot{
 		DaemonRunning:       true,

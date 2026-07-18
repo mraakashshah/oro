@@ -690,17 +690,14 @@ SELECT COUNT(*)
 	if err == nil {
 		metrics.ProgressTimeouts = progressTimeouts
 	}
-	var latest string
-	err = db.QueryRowContext(ctx, `SELECT COALESCE(MAX(created_at), '') FROM events`).Scan(&latest)
-	if err != nil && !tableMissing(err) {
-		return metrics, fmt.Errorf("load latest event: %w", err)
+	latest, err := latestEventTimestamp(ctx, db)
+	if err != nil {
+		return metrics, err
 	}
-	if latest != "" {
-		if ts, ok := parseSQLiteTime(latest); ok {
-			metrics.LastEventAgeSecs = now.Sub(ts).Seconds()
-			if metrics.LastEventAgeSecs < 0 {
-				metrics.LastEventAgeSecs = 0
-			}
+	if !latest.IsZero() {
+		metrics.LastEventAgeSecs = now.Sub(latest).Seconds()
+		if metrics.LastEventAgeSecs < 0 {
+			metrics.LastEventAgeSecs = 0
 		}
 	}
 	return metrics, nil
@@ -735,6 +732,31 @@ func countTimestampsInWindow(
 		return 0, fmt.Errorf("close timestamps: %w", err)
 	}
 	return count, nil
+}
+
+func latestEventTimestamp(ctx context.Context, db *sql.DB) (time.Time, error) {
+	rows, err := db.QueryContext(ctx, `SELECT created_at FROM events`)
+	if err != nil {
+		if tableMissing(err) {
+			return time.Time{}, nil
+		}
+		return time.Time{}, fmt.Errorf("load latest event: %w", err)
+	}
+	defer rows.Close()
+	var latest time.Time
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return time.Time{}, fmt.Errorf("scan latest event: %w", err)
+		}
+		if ts, ok := parseSQLiteTime(raw); ok && ts.After(latest) {
+			latest = ts
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return time.Time{}, fmt.Errorf("iterate latest events: %w", err)
+	}
+	return latest, nil
 }
 
 // LoadPendingEscalationMetrics reads pending escalations that have no known
