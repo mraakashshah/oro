@@ -44,6 +44,17 @@ type recoveryQuarantineRecord struct {
 	ResolvedAt   string
 }
 
+// RecoveryQuarantineEmptySafe reports whether an inspected quarantine has no
+// dirty files or unique branch commits to preserve. The recovery CLI and the
+// dispatcher share this predicate so their definition of discardable state
+// cannot drift.
+func RecoveryQuarantineEmptySafe(dirtyFiles int, branchExists bool, branchAhead int) bool {
+	if dirtyFiles > 0 {
+		return false
+	}
+	return !branchExists || branchAhead == 0
+}
+
 func (d *Dispatcher) createRecoveryQuarantine(ctx context.Context, q recoveryQuarantine) (int64, error) {
 	if d.db == nil {
 		return 0, fmt.Errorf("create recovery quarantine: db is nil")
@@ -296,6 +307,41 @@ ORDER BY id`)
 		return nil, fmt.Errorf("iterate recovery quarantines: %w", err)
 	}
 	return records, nil
+}
+
+// countPreservableRecoveryQuarantines returns active quarantines that may hold
+// work worth recovering. Without a stored branch or worktree, the dispatcher
+// can prove the CLI empty-safe predicate with zero dirty files and no branch;
+// any stored recovery location remains blocking until it is inspected or
+// resolved explicitly.
+func (d *Dispatcher) countPreservableRecoveryQuarantines(ctx context.Context) (int, error) {
+	rows, err := d.db.QueryContext(ctx, `
+SELECT COALESCE(branch, ''), COALESCE(worktree, '')
+FROM recovery_quarantines
+WHERE status IN ('open', 'human_owned')`)
+	if err != nil {
+		if tableMissingErr(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("query preservable recovery quarantines: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	preservable := 0
+	for rows.Next() {
+		var branch, worktree string
+		if err := rows.Scan(&branch, &worktree); err != nil {
+			return 0, fmt.Errorf("scan preservable recovery quarantine: %w", err)
+		}
+		if branch == "" && worktree == "" && RecoveryQuarantineEmptySafe(0, false, 0) {
+			continue
+		}
+		preservable++
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate preservable recovery quarantines: %w", err)
+	}
+	return preservable, nil
 }
 
 func (d *Dispatcher) resolveRecoveryQuarantine(ctx context.Context, id int64) error {
