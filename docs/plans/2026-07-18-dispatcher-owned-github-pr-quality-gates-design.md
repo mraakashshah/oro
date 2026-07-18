@@ -322,6 +322,14 @@ Rules:
   without it only when automatic epic installation is disabled; Oro's canary
   requires it and startup fails before dispatch if the supervisor contract is
   absent or stale.
+- Setup atomically writes a versioned per-project supervisor descriptor under
+  the project-scoped Oro state directory. It contains canonical real repository
+  root, immutable project identity, absolute `ORO_HOME`, state DB/PID/socket/
+  lifecycle-ledger paths, installed executable path, worker/start configuration,
+  schema version, and descriptor hash. It contains no credentials. Managed
+  monitor, health, restart, and `startFreshSwarm` accept this descriptor
+  explicitly and never rediscover project context from CWD, `ORO_PROJECT`, or
+  ambient environment.
 - Configuration is loaded into a typed project-config model, passed by
   `cmd/oro/cmd_start.go:newProductionDispatcher` into `dispatcher.Config`, and
   validated before the daemon socket becomes available. File values have the
@@ -1038,6 +1046,26 @@ epic installation. This ensures some process remains able to consume
 `restart_pending` after the dispatcher exits. Failure keeps the epic operation
 visible and retryable without undoing a proven remote integration.
 
+The generated service invokes
+`oro monitor --act --managed-project-descriptor <absolute-path>` with an
+absolute executable and an explicit canonical working directory, but correctness
+comes from the validated descriptor rather than the working directory. The
+service starts from a clean, allowlisted environment. Monitor startup verifies
+descriptor hash, canonical root, project ownership/identity, state paths, and
+service instance identity before heartbeat or mutation; a moved repository or
+changed identity fails closed until `oro setup` atomically unloads the old
+instance and installs a new descriptor/service.
+
+Service identities are stable and collision-resistant per canonical project
+identity: for example `dev.getoro.oro.monitor.<project-hash>` and a matching
+project-specific plist path on launchd, or an escaped/hash-addressed
+`oro-monitor@<project-hash>.service` user unit on systemd. Setup, repair, and
+uninstall act only on the exact descriptor hash/instance and cannot replace or
+remove another project's supervisor. Verification launches the installed unit
+from an unrelated working directory with ambient project variables removed,
+then requires its heartbeat and lifecycle claim to appear only in the intended
+project database.
+
 The durable epic states distinguish `promotion_gate`, `remote_merged`,
 `local_install_pending`, `restart_pending`, `health_verification`, and
 `complete`. `tryCloseEpic`, `completeEpicClose`, and `ffMergeEpicBranch` must
@@ -1287,6 +1315,15 @@ chains; it may split them further but may not collapse away a boundary:
    it proves at most one necessary restart, both epics acknowledged/closed, and
    final running build equal to the newest authoritative descendant. Divergent
    requirements fail closed.
+   Wire `cmd/oro/cmd_setup.go:runSetup`/phase 4/doctor, a versioned supervisor-
+   descriptor generator, `cmd/oro/launchd.go` project labels/plist paths,
+   systemd user-unit generation, `cmd/oro/cmd_monitor.go:newMonitorCmd`, and
+   `cmd/oro/paths.go:ResolveDaemonPaths` so managed mode threads explicit
+   project context end to end. The installed-service test starts with empty
+   project environment/unrelated CWD, then installs projects A and B
+   concurrently and proves distinct descriptors, service identities, ledgers,
+   heartbeats, sockets, restart targets, and uninstall isolation. Repository
+   relocation fails closed until setup repairs the exact instance.
 10. **Remote full mutation audit.** Add the workflow-dispatch/shard/aggregate
     workflow and wire `pkg/dispatcher/audit.go:runAudit` to durable exact-SHA
     campaign observation, artifact ingestion, restart, infrastructure failure,
@@ -1391,6 +1428,11 @@ nonterminal remote record.
    epic operations `S1 -> S2`, reverse claim order and target movement during
    build never downgrade or restart twice unnecessarily; the healthy `S2`
    installation durably satisfies both operations and closes both epics.
+   The same test launches the actually generated launchd/systemd-equivalent
+   unit from an unrelated CWD with empty ambient project environment, proves
+   exact descriptor-bound database/socket/repository identity, and verifies
+   simultaneous project A/B service identity plus uninstall isolation and
+   relocation failure.
 5. `oro status --json`, health, monitor events, and the dashboard expose remote
    backlog, degraded mode, failure feedback delivery, quarantine count, and
    pending post-epic installation.
