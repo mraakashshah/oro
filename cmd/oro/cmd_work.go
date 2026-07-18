@@ -417,7 +417,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	if resolveErr != nil {
 		return fmt.Errorf("resolve epic branch: %w", resolveErr)
 	}
-	if _, prepareErr := prepareStandaloneWorkTargetBranch(ctx, deps, targetBranch, defaultBranch, resolvedEpicID); prepareErr != nil {
+	if prepareErr := prepareStandaloneWorkTargetBranch(ctx, deps, targetBranch, defaultBranch, resolvedEpicID, cfg.bead); prepareErr != nil {
 		return fmt.Errorf("prepare target branch: %w", prepareErr)
 	}
 	worktree, branch, err := setupWorktree(ctx, cfg, deps, targetBranch)
@@ -543,28 +543,31 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	return nil
 }
 
-func prepareStandaloneWorkTargetBranch(ctx context.Context, deps *workDeps, targetBranch, defaultBranch, resolvedEpicID string) (bool, error) {
+func prepareStandaloneWorkTargetBranch(ctx context.Context, deps *workDeps, targetBranch, defaultBranch, resolvedEpicID string, bead *protocol.BeadDetail) error {
 	if deps == nil || deps.wtMgr == nil || resolvedEpicID == "" || targetBranch == "" || targetBranch == defaultBranch {
-		return false, nil
+		return nil
+	}
+	if dispatcher.IsEpicRebaseChild(bead, resolvedEpicID, targetBranch) {
+		return nil
 	}
 	preparer, ok := deps.wtMgr.(standaloneBaseBranchPreparer)
 	if !ok {
-		return false, nil
+		return nil
 	}
 	fastForwarded, err := preparer.PrepareBaseBranchForAssignment(ctx, targetBranch, defaultBranch)
 	if err != nil {
-		return false, fmt.Errorf("prepare target branch %s from %s: %w", targetBranch, defaultBranch, err)
+		return fmt.Errorf("prepare target branch %s from %s: %w", targetBranch, defaultBranch, err)
 	}
 	if fastForwarded {
 		logStep("Fast-forwarded target branch %s to %s", targetBranch, defaultBranch)
 	}
-	if err := validateStandaloneEpicBranchSafe(ctx, deps, targetBranch, defaultBranch); err != nil {
-		return fastForwarded, err
-	}
-	return fastForwarded, nil
+	return validateStandaloneEpicBranchSafe(ctx, deps, targetBranch, defaultBranch, bead, resolvedEpicID)
 }
 
-func validateStandaloneEpicBranchSafe(ctx context.Context, deps *workDeps, targetBranch, defaultBranch string) error {
+func validateStandaloneEpicBranchSafe(ctx context.Context, deps *workDeps, targetBranch, defaultBranch string, bead *protocol.BeadDetail, resolvedEpicID string) error {
+	if dispatcher.IsEpicRebaseChild(bead, resolvedEpicID, targetBranch) {
+		return nil
+	}
 	checker, ok := deps.wtMgr.(standaloneBaseBranchSafetyChecker)
 	if !ok {
 		return nil

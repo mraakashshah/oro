@@ -691,6 +691,61 @@ func (m *mockWorktreeManager) PrepareBaseBranchForAssignment(ctx context.Context
 	return false, nil
 }
 
+func TestEpicRebaseChildAssignableOnDivergedBranch(t *testing.T) {
+	const (
+		epicID     = "oro-26yy"
+		beadID     = "oro-fm29"
+		workerID   = "worker-rebase"
+		baseBranch = protocol.EpicBranchPrefix + epicID
+	)
+
+	t.Run("rebase child remains assignable without cooldown", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		bead := protocol.Bead{ID: beadID, Title: "Rebase " + baseBranch + " onto main", Epic: epicID}
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: bead.Title, Type: "task", Status: "open"}
+		wtMgr.prepareBaseFn = divergedBaseBranchPreparer(t, baseBranch)
+
+		if !d.ensureEpicBranchReady(ctx, bead, &trackedWorker{id: workerID}, baseBranch, epicID) {
+			t.Fatal("ensureEpicBranchReady = false, want rebase child to remain assignable")
+		}
+		d.mu.Lock()
+		_, inCooldown := d.worktreeFailures[beadID]
+		d.mu.Unlock()
+		if inCooldown {
+			t.Fatal("assignment failure cooldown recorded, want none")
+		}
+	})
+
+	t.Run("ordinary child remains rejected with cooldown", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		bead := protocol.Bead{ID: beadID, Title: "Implement epic work", Epic: epicID}
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: bead.Title, Type: "task", Status: "open"}
+		wtMgr.prepareBaseFn = divergedBaseBranchPreparer(t, baseBranch)
+
+		if d.ensureEpicBranchReady(ctx, bead, &trackedWorker{id: workerID}, baseBranch, epicID) {
+			t.Fatal("ensureEpicBranchReady = true, want ordinary child rejected")
+		}
+		d.mu.Lock()
+		_, inCooldown := d.worktreeFailures[beadID]
+		d.mu.Unlock()
+		if !inCooldown {
+			t.Fatal("assignment failure cooldown not recorded for ordinary child")
+		}
+	})
+}
+
+func divergedBaseBranchPreparer(t *testing.T, wantBranch string) func(context.Context, string, string) (bool, error) {
+	t.Helper()
+	return func(_ context.Context, branch, base string) (bool, error) {
+		if branch != wantBranch || base != "main" {
+			t.Fatalf("prepare branch = %q from %q, want %q from main", branch, base, wantBranch)
+		}
+		return false, fmt.Errorf("branch %s diverged from base %s", branch, base)
+	}
+}
+
 func (m *mockWorktreeManager) RebaseOnto(_ context.Context, _, _ string) error {
 	return nil // default: rebase succeeds
 }
