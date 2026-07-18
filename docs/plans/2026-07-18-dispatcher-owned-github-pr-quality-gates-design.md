@@ -340,14 +340,16 @@ Rules:
 - `max_in_flight` limits dispatcher-owned remote candidates, preventing an
   accidental PR/run explosion even though the computation is no longer local.
 - The effective mode and all limits appear in status and startup events.
-- `auto_install_after_epic` requires a live, version-compatible external
-  lifecycle supervisor with a recent durable heartbeat. In v1 this is
-  a stable per-project supervisor shim installed by setup (launchd on macOS,
-  systemd user service on Linux) which launches a versioned
-  `oro monitor --act` child. GitHub PR gates may run
-  without it only when automatic epic installation is disabled; Oro's canary
-  requires it and startup fails before dispatch if the supervisor contract is
-  absent or stale.
+- Every `github-pr` project requires a live, version-compatible external
+  supervisor with a recent durable heartbeat, independently of
+  `auto_install_after_epic`, because the isolated monitor is the only claimant
+  allowed to use maintenance authority for policy self-healing. In v1 this is a
+  stable per-project supervisor shim installed and enabled by setup (launchd on
+  macOS, systemd user service on Linux) which launches a versioned
+  `oro monitor --act` child. Startup fails before dispatch when the descriptor,
+  service enablement, protocol, heartbeat, or maintenance capability attestation
+  is absent or stale. Local gate mode may remain monitorless when epic auto-
+  installation is disabled.
 - Setup atomically writes a versioned per-project supervisor descriptor under
   the project-scoped Oro state directory. It contains canonical real repository
   root, immutable project identity, absolute `ORO_HOME`, state DB/PID/socket/
@@ -359,6 +361,14 @@ Rules:
   monitor, health, restart, and `startFreshSwarm` accept this descriptor
   explicitly and never rediscover project context from CWD, `ORO_PROJECT`, or
   ambient environment.
+- Dispatcher health continuously leases the supervisor heartbeat. A stale or
+  incompatible claimant sets durable `maintenance_unavailable`, blocks new
+  integration intent and target CAS, and is not classified as a GitHub outage
+  eligible for local fallback. The OS service restarts the stable shim, which
+  restarts the monitor; any already-durable reconciliation request is then
+  reclaimed. The live heartbeat/capability generation is rechecked immediately
+  before integration authorization. No in-process dispatcher fallback may mint
+  the Administration token.
 - Configuration is loaded into a typed project-config model, passed by
   `cmd/oro/cmd_start.go:newProductionDispatcher` into `dispatcher.Config`, and
   validated before the daemon socket becomes available. File values have the
@@ -1609,7 +1619,10 @@ chains; it may split them further but may not collapse away a boundary:
    validation, secret-reference resolution, recent setup attestation, and
    production constructor inputs through `newProductionDispatcher` and the
    supervisor descriptor. Config/descriptor validation forbids a pinned provider
-   ID and requires the stable logical ownership key/name instead.
+   ID and requires the stable logical ownership key/name instead. Require a live
+   compatible supervisor/monitor heartbeat and maintenance attestation for every
+   `github-pr` startup even when epic auto-install is false; monitorless explicit
+   configuration fails before the dispatcher socket accepts work.
 2. **Provider-neutral core and GitHub adapter.** Implement normalized
    candidate/change/evidence/merge types, all `RemoteGateClient` operations
    including idempotent `SetChangeReady` and ambiguous
@@ -1671,7 +1684,8 @@ chains; it may split them further but may not collapse away a boundary:
    generation, plus `integrated_policy_drift` evidence and the project-wide
    integration freeze/setup-reconciliation request, lease, attempt, and evidence
    state, including the logical-key policy-binding registry, mutable provider ID,
-   binding generation, create-attempt ID, ambiguity, and duplicate leases. Wire
+   binding generation, create-attempt ID, ambiguity, duplicate leases, and
+   `maintenance_unavailable` heartbeat/capability generation. Wire
    `handleMessage`,
    `handleDone`, `handleReadyForReview`, `handleReviewResult`,
    `startupRecovery`, `restoreState`, `spawnBackgroundLoops`,
@@ -1695,6 +1709,9 @@ chains; it may split them further but may not collapse away a boundary:
    Inject 404 deletion, lost create/update/delete responses, duplicate creation,
    crash-before/after active-ID binding, and stale descriptor/provider-ID cache;
    prove one active exact-template ruleset and monotonic binding generation.
+   Continuously observe the claimant lease and block integration intent/CAS when
+   stale; recovery must not enter memory-safe local merge or mint maintenance
+   credentials inside the dispatcher.
    Persist the worker generation/process inventory and make worker pool
    registration, idle selection, capacity, health, status, and assignment
    require active-generation attestation. `shutdownWaitForWorkers`,
@@ -1793,6 +1810,10 @@ chains; it may split them further but may not collapse away a boundary:
    different provider ID, lose the create response, permit duplicate marked
    creation, and prove discovery/deduplication/atomic rebind plus final unfreeze
    without rewriting static config or the descriptor.
+   Run the same project with `auto_install_after_epic: false`: no supervisor
+   fails startup, while an installed supervisor passes. Kill the monitor and
+   stable shim, prove OS-service relaunch and durable request reclaim; while its
+   heartbeat is stale, no new integration intent or CAS occurs.
    Build distinct old/new Oro fixtures with both compatible and incompatible
    descriptor/operation-schema ranges. Exercise the normal no-crash
    `M0/B0 -> shim -> M1/B1 ->
@@ -1877,6 +1898,9 @@ chains; it may split them further but may not collapse away a boundary:
     absence of unbounded Cartesian dimensions, then run the controlled Oro
     GitHub canary only after
     current local history and the workflow are published.
+    Provider-boundary fixtures include the monitorless auto-install-disabled
+    startup rejection and stale-heartbeat integration barrier so the always-
+    supervised requirement cannot be hidden by the canary's normal monitor.
 13. **Automatic degraded mode and memory-safe full fallback.** Own the
     `transient_failed -> outage_degraded -> local_memory_safe_gate ->
     local_passed_waiting_remote` dispatcher transitions, outage timer, exact
@@ -1995,7 +2019,8 @@ nonterminal remote record.
    policy evidence, mutation requested/provider-bound/effective shard counts,
    integrated policy drift plus integration-freeze/setup-reconciliation state,
    logical policy key, active provider ID/binding generation, create ambiguity/
-   deduplication, lifecycle readiness reason/control/queue generations, expected/attested
+   deduplication, supervisor heartbeat/capability generation and maintenance-
+   unavailable barrier, lifecycle readiness reason/control/queue generations, expected/attested
    active-generation workers, stale worker connections, and residual old-
    generation processes.
 6. Workflow contract fixtures prove PR eligibility for main, a configured
@@ -2028,6 +2053,10 @@ nonterminal remote record.
    Static config/descriptor identity is the logical ownership key/name/template,
    while the shared binding registry is the only authoritative active provider
    ID and generation; pinned provider IDs are rejected.
+   With `auto_install_after_epic: false`, an absent/disabled/stale supervisor
+   fails `github-pr` startup; local mode remains valid. Stale heartbeat after
+   startup blocks integration without activating local-merge fallback, and the
+   OS-managed shim/monitor relaunch restores the claimant generation.
 7. GitHub mode runs the configured local presubmit actions with bounded
    total/resource concurrency, then replaces the production
    `READY_FOR_REVIEW`/`DONE` local-QG merge path with durable candidate
@@ -2060,6 +2089,9 @@ nonterminal remote record.
    deduplication/binding commit. Recovery retains one maintenance-created exact-
    template instance, increments the binding generation atomically, resolves
    stale cached IDs through the ledger, verifies policy, and only then unfreezes.
+   Killing monitor/shim during that request proves OS-service relaunch, lease
+   reclaim, and eventual unfreeze; no dispatcher path can construct the
+   Administration-scoped reconciler.
 9. Every auditor cycle dispatches or adopts exactly one full mutation campaign
    for its audit ID and SHA, survives restart, validates every shard artifact,
    independently reconstructs the persisted eligible-unit inventory, proves
