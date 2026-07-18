@@ -283,6 +283,11 @@ factory:
       run_timeout: 35m
       outage_fallback_after: 15m
       close_superseded_prs: true
+      runtime_identity:
+        type: github-app
+        app_id: 123456
+        installation_id: 789012
+        private_key_ref: keychain:oro/github-app
     local:
       profile: memory-safe
       max_actions: 6
@@ -296,8 +301,10 @@ Rules:
 
 - Existing projects default to `local`; setup never silently publishes code.
 - `github-pr` is valid only when the remote resolves to GitHub, `gh` exists,
-  authentication is active for that host, the workflow is visible, and the
-  aggregate check contract can be found.
+  the configured runtime credential provider resolves the expected GitHub App
+  installation for that host/repository, the workflow is visible, and the
+  aggregate check contract can be found. Ambient `gh`, SSH-agent, Git
+  credential-helper, or developer tokens never satisfy this requirement.
 - Invalid explicit configuration fails startup with a configuration error. It
   does not silently switch modes.
 - A runtime GitHub outage uses the separately configured degraded-mode policy;
@@ -334,6 +341,15 @@ Rules:
   reconcile the documented Oro-owned ruleset idempotently; otherwise startup
   reports an unhealthy configuration and does not publish candidates. Routine
   beads never wait for operator setup.
+- `runtime_identity` is typed and separate from setup administration. GitHub v1
+  uses a GitHub App installation credential provider. `private_key_ref` points
+  to an OS secret store or an approved credential-command provider; secret
+  material is never stored in project YAML. The provider returns a redacted
+  credential handle, expiration, App/installation actor IDs, host, and allowed
+  repository. It refreshes with safety skew before expiry and persists only
+  nonsecret actor/expiry metadata. Refresh failure is classified as transient
+  when the source is temporarily unavailable and auth/config when identity or
+  scope is invalid.
 
 The first version supports one GitHub remote and one workflow/check contract
 per project. Candidate, evidence, correction, state-machine, and merge-policy
@@ -622,6 +638,27 @@ The production implementation shells out to `git` and `gh` using argument
 arrays and JSON output. It reuses `processenv.ForWorkdir`, authenticates against
 the actual remote host, and applies per-call contexts. No shell command is
 constructed from PR titles, branch names, URLs, or remote output.
+
+Provider construction receives one `RuntimeCredentialProvider`. Before every
+network side effect it resolves/refreshes a credential and verifies the same
+expected App ID, installation ID, host, and repository stored in
+`Capabilities`. `gh` subprocesses receive only the scoped `GH_TOKEN`/`GH_HOST`
+environment and verify the installation actor through the GitHub API. Git
+network subprocesses use a canonical HTTPS repository URL plus a private
+`GIT_ASKPASS`/credential-FD bridge backed by that same installation token;
+tokens never appear in argv, config files, logs, events, or persisted rows.
+The adapter clears ambient Git credential helpers, SSH commands/agents, and
+interactive prompting for provider network operations. An SSH `origin` may be
+used as local repository metadata, but publishing, fetching provider evidence,
+candidate-ref mutation, and target CAS use only the verified App-owned HTTPS
+transport.
+
+The adapter re-attests actor identity immediately before target CAS. Token
+expiry during a long CI wait triggers provider refresh and one idempotent
+retry; an actor/installation/repository mismatch fails closed before mutation.
+Production-construction tests use separate fake `gh` and Git receive transports
+to expose split actors, ambient administrator credentials, wrong host/repo,
+credential-helper/SSH leakage, expiry/refresh, and redaction.
 
 The dispatcher owns policy, persistence, retry classification, and state
 transitions. The client owns only provider/git side effects and normalized
@@ -1047,7 +1084,9 @@ chains; it may split them further but may not collapse away a boundary:
    Cover defaults, precedence, malformed values, workflow eligibility, target
    rulesets, complete effective repository/organization policy, unsupported
    human/deployment/merge-queue blockers, dedicated runtime integration
-   identity permissions, auth, target CAS support, startup events, and status.
+   identity provider/secret reference/refresh/permissions, auth, target CAS
+   support, startup events, and status. Production construction must not fall
+   back to ambient credentials.
 2. **Provider-neutral core and GitHub adapter.** Implement normalized
    candidate/change/evidence/merge types, all `RemoteGateClient` operations
    including idempotent `SetChangeReady` and ambiguous
@@ -1060,6 +1099,10 @@ chains; it may split them further but may not collapse away a boundary:
    policy mutation in that same interval, approving review, CODEOWNER, conversation,
    deployment, signed-commit, lock/read-only, actor restriction, and merge-
    queue policy blockers.
+   Bind separate `gh` and Git network transports to one credential-provider
+   actor; test SSH origins, ambient admin/credential helpers, mismatched actors,
+   host/repository scope, expiry refresh, and secret redaction through the real
+   adapter constructor.
    Model accepted-CAS/lost-response followed by a second target advance before
    observation; reconciliation returns the persisted proposed commit as
    integrated without requiring it to remain the current tip.
@@ -1232,7 +1275,10 @@ nonterminal remote record.
    checkout, missing/skipped needs, a non-strict target ruleset, any bypass
    actor other than the dedicated least-privilege integration identity,
    and every unsupported effective human/deployment/conversation/signature/
-   lock/actor/merge-queue policy.
+   lock/actor/merge-queue policy. Production transport fixtures prove API and
+   Git network operations use the same configured App installation and reject
+   ambient, split, expired-unrefreshable, wrong-host, or wrong-repository
+   credentials without exposing secret material.
 7. GitHub mode runs the configured local presubmit actions with bounded
    total/resource concurrency, then replaces the production
    `READY_FOR_REVIEW`/`DONE` local-QG merge path with durable candidate
@@ -1254,7 +1300,8 @@ nonterminal remote record.
    deduplicated repair beads before a successful audit completion.
 10. Provider-neutral core packages compile without GitHub transport imports or
     direct `gh` execution; a deterministic GitHub adapter fake exercises every
-    side effect including exact-old-SHA squash CAS and reconciliation.
+    side effect including credential refresh/actor attestation, exact-old-SHA
+    squash CAS, and reconciliation.
 
 Epic verification command:
 
