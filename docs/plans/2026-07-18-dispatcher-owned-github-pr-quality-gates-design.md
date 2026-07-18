@@ -217,6 +217,35 @@ one validated candidate commit or whether every commit in the range is tested.
 Testing only the range tip is insufficient if the requirement is literally
 that every commit in target history compiles.
 
+#### Local presubmit contract
+
+Local presubmit keeps the broad static and compile-time protection of the
+current pre-review QG, but decomposes it into independently scheduled actions.
+It has no arbitrary wall-clock target. For each detected language/profile it
+runs:
+
+- the bead's exact acceptance command;
+- asset staging, generated-file validation, and Git hygiene;
+- every configured formatter;
+- static lint and type analysis, including Go golangci-lint, NilAway, dead
+  exports, import boundaries, architecture lint, build, and vet;
+- changed-package tests plus configured direct-dependent tests;
+- Python ruff format/check, pylint, pyright, and changed-scope pytest;
+- shell formatting/lint and documentation/YAML/JSON validation.
+
+The local scheduler admits checks rather than whole QGs. Many candidates and
+many independent checks may progress together. Configuration exposes total
+concurrent actions plus per-resource-class capacity so one memory-heavy linter
+cannot multiply without serializing unrelated formatting, acceptance, docs,
+or type checks. A check completes, fails, or is cancelled; elapsed time is an
+observation, not a pass/fail policy.
+
+The remote PR workflow reruns all local checks and additionally owns full
+repository tests, race/shuffle suites, coverage enforcement, full pytest,
+security scans, CGO-free and supported-platform builds, and complete build
+matrices. Thus local results accelerate feedback but never substitute for the
+comprehensive exact post-rebase remote gate.
+
 ### 1. Opt-In Project Configuration
 
 Add a project configuration section:
@@ -637,7 +666,46 @@ it must be a durable post-epic operation rather than an informal operator
 reminder. Failure in step 7 keeps the epic completion operation visible and
 retryable without undoing a proven merge.
 
-### 13. Observability
+### 13. Remote Auditor Mutation Campaign
+
+The periodic whole-repository auditor triggers a distinct GitHub Actions
+workflow against the exact current target SHA. This is separate from both the
+per-PR portable gate and `quality_gate.sh --mutation-testing` because the
+existing flag is incremental: Go targets changed files/touched functions, has
+an eight-minute cap, and treats timeout as a warning.
+
+The remote audit workflow:
+
+- uses `workflow_dispatch` with audit run ID, repository target, and exact SHA;
+- checks out an ephemeral workspace at that SHA;
+- installs pinned Go tools from `go.mod` and Python tools from the lock/project
+  configuration;
+- shards full Go mutation across configured packages/files instead of mutating
+  one checkout concurrently;
+- runs the full Python `cosmic-ray-full.toml` campaign when configured;
+- never mutates a shared or dispatcher worktree;
+- uploads machine-readable per-shard results, surviving mutants, killed/total
+  counts, score, tool versions, and logs;
+- aggregates only after every required shard reaches a terminal conclusion;
+- distinguishes infrastructure failure from a valid campaign whose mutation
+  score is below policy;
+- persists exact workflow/run/job/artifact/SHA evidence in the audit journey;
+- lets the auditor translate surviving mutants and policy regressions into
+  deduplicated, evidence-backed beads without operator intervention.
+
+The dispatcher uses the same adaptive GitHub observation scheduler and restart
+reconciliation as PR gates. Mutation campaigns have their own remote
+concurrency group so an obsolete audit for the same target can be cancelled
+without cancelling bead PR checks. Local mutation remains only an explicit
+fallback for projects whose configured mutation command genuinely requires
+local hardware or services.
+
+Whether a full mutation campaign blocks epic completion or acts as an
+asynchronous audit that files repair beads remains a consultation decision.
+It must never be inserted into every bead PR gate because doing so would create
+a new serialized critical path at a much higher compute cost.
+
+### 14. Observability
 
 Human and JSON status expose:
 
@@ -675,7 +743,7 @@ timeout, a repeated deterministic fingerprint without a worker-feedback event,
 or a terminal run attached to a nonterminal state as a dispatcher defect and
 files/deduplicates a P0 bead automatically.
 
-### 14. Rollout
+### 15. Rollout
 
 Rollout is reversible and staged:
 
@@ -751,6 +819,9 @@ premortem:
     - risk: "The dispatcher trusts a check with the right name from the wrong workflow."
       severity: high
       mitigation_checked: "Evidence requires workflow file/blob identity plus unique aggregate check and exact PR merge SHA."
+    - risk: "The auditor labels the incremental, timeout-tolerant mutation command as a full mutation pass."
+      severity: high
+      mitigation_checked: "The design requires a separate sharded full-repository workflow, exact target SHA, terminal evidence from every shard, and distinct infrastructure-failure versus mutation-score outcomes."
 
   elephants:
     - risk: "PR-per-bead increases remote noise and consumes hosted CI capacity."
@@ -818,6 +889,21 @@ premortem:
       ANSWER: No. It is governed by an explicit check set and configurable
       concurrent scheduling. Many local presubmit actions may run at once;
       heavyweight comprehensive work remains remote.
+- [x] DECISION: Which existing QG checks remain in local presubmit?
+      ANSWER: Broad formatting, static analysis, type analysis, compilation,
+      vet, architecture/import checks, changed-scope tests, exact acceptance,
+      shell/docs/config validation, staging, and Git hygiene remain local as
+      independently scheduled actions. Remote CI reruns them and owns the full
+      dynamic suites, coverage, security, and platform matrices.
+- [x] DECISION: Where does the auditor execute a full mutation campaign?
+      ANSWER: On GitHub in a separate sharded workflow at an exact target SHA.
+      The existing incremental mutation QG is not misrepresented as full.
+- [ ] DECISION: Does a successful full mutation campaign gate epic completion?
+      DEPENDS_ON: Desired factory latency versus mutation-strength enforcement.
+      RECOMMENDATION: Run it asynchronously on the auditor cadence and create
+      prioritized correction beads from surviving mutants; do not put it on
+      every bead or epic critical path.
+      ASK: Confirm asynchronous auditor evidence rather than an epic blocker.
 - [x] DECISION: What happens when the target moves?
       ANSWER: Dispatcher automatically invalidates evidence/review, rebases,
       republishes, and reruns.
