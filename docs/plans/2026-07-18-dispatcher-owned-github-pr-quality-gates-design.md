@@ -1262,6 +1262,28 @@ test-only, vendored, or explicitly excluded code appears only through the
 hashed exclusion policy. The dispatcher persists the complete inventory and
 hash before dispatch and passes the hash/count/policy hash as workflow inputs.
 
+`workflow_dispatch` is issued only against an immutable dispatcher-owned branch
+ref, never the moving target branch or a SHA-like input. For each audit the
+dispatcher creates/adopts
+`oro/audits/<project-prefix>/<audit-id>-<sha-prefix>` at the exact persisted
+audit SHA using an expected-absent or exact-old-SHA lease. A matching ref is
+idempotently adopted; a mismatched existing ref is quarantined and never
+rewritten. Before dispatch, the dispatcher reads and persists the configured
+full-mutation workflow path/blob from that exact commit plus the audit ref/SHA.
+If the workflow is absent or differs from configuration, the campaign fails
+auth/config before execution.
+
+The adapter dispatches with the immutable branch name and exact audit identity
+inputs. The run must report that ref and head SHA, and the workflow emits its
+own path/blob hash computed from the checked-out audit commit. Dispatcher
+observation independently verifies workflow database ID/path/blob, run attempt,
+ref, head SHA, and input audit ID before trusting inventory or artifacts. Target
+movement immediately before/after dispatch cannot change workflow code or
+checkout state. Restart recovery adopts the exact ref/run idempotently. The
+audit ref is deleted with an exact SHA lease only after terminal artifact
+incorporation and durable campaign reconciliation; unincorporated evidence
+always retains it.
+
 The workflow independently reconstructs the inventory from its exact checkout
 and fails before planning if any hash/count/policy value differs. Its shard
 planner partitions the canonical inventory deterministically; the planner's
@@ -1407,6 +1429,9 @@ chains; it may split them further but may not collapse away a boundary:
    permission drift/revocation, `X-Accepted-GitHub-Permissions`, and host/API
    differences. The setup canary exercises probe ref/PR, workflow dispatch/
    observation/cancellation, check/job/log reads, and artifact download.
+   Model GitHub's branch/tag-only `workflow_dispatch` ref semantics; expose
+   leased immutable audit-ref create/adopt/delete plus workflow path/blob/run-
+   head attestation through the provider boundary.
 3. **Protocol and worker handoff.** Wire `CANDIDATE_READY` through
    `pkg/protocol/message.go`, `pkg/worker/worker.go:awaitSubprocessAndReport`,
    `runQGAndReport`, `SendReadyForReview`, and `SendDone`. Update
@@ -1558,6 +1583,12 @@ chains; it may split them further but may not collapse away a boundary:
     Use the permission-aware runtime App fixture for audit workflow dispatch,
     run/job observation, cancellation, logs, and artifact download; any missing
     Actions capability fails auth/config before campaign side effects.
+    Create/adopt the exact-SHA namespaced audit branch before dispatch, persist
+    expected workflow blob, require run ref/head/workflow identity equality,
+    retain the ref through restart/artifact incorporation, and lease-delete it
+    only after reconciliation. Inject target movement and workflow change at
+    the snapshot/dispatch barrier plus ref collision, stale run, and cleanup
+    crash cases.
 11. **Observability and self-healing.** Extend dispatcher/status JSON,
     `cmd/oro/cmd_status.go`, health online/offline loaders, monitor defect
     rules, dashboard provider/templates, and progress responses for every
@@ -1721,6 +1752,10 @@ nonterminal remote record.
    The exact runtime App proves Actions dispatch/cancel/read and artifact/log
    access through the isolated canary and permission-aware campaign fixture;
    correct actor with insufficient permission is auth/config failure.
+   Dispatch uses a leased immutable audit branch at the exact snapshot SHA,
+   binds the expected workflow path/blob and run ref/head/attempt, survives
+   target/workflow movement and restart, and deletes the ref only after durable
+   artifact incorporation.
 10. Provider-neutral core packages compile without GitHub transport imports or
     direct `gh` execution; a deterministic GitHub adapter fake exercises every
     side effect including credential refresh/actor attestation, exact-old-SHA
