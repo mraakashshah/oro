@@ -4,8 +4,11 @@ Date: 2026-07-18
 
 ## Summary
 
-Oro should be able to move portable quality-gate work off the local Mac and
-onto GitHub Actions without turning the operator into a CI coordinator. In the
+Oro should move every quality-gate computation that does not fundamentally
+require the local device off the Mac and onto GitHub Actions. Local QG compute
+is a factory throughput limiter, so remote execution coverage—not PR visibility
+or replacing Oro's merge model—is the primary product outcome. This must not
+turn the operator into a CI coordinator. In the
 selected design, the dispatcher owns the complete remote-gate lifecycle: it
 rebases the bead branch, publishes the exact candidate state, creates or
 updates a draft pull request, waits for an aggregate GitHub check, validates
@@ -49,8 +52,12 @@ turn those checks into merge evidence.
 
 ## Goals
 
-- Offload portable full-QG computation to GitHub Actions for configured
-  projects.
+- Offload all portable full-QG computation to GitHub Actions for configured
+  projects; retain locally only checks that require macOS, installed-machine
+  state, or an explicitly entered outage fallback.
+- Make remote-compute coverage measurable by reporting which QG stages ran
+  remotely, which ran locally, why each local stage could not run remotely,
+  and the local wall-clock/CPU time avoided.
 - Make the dispatcher, not the operator or coding worker, own all PR and CI
   orchestration.
 - Preserve the invariant that only a gate for the exact candidate head and
@@ -81,6 +88,8 @@ turn those checks into merge evidence.
 - Offloading macOS-only smoke tests, local binary installation, dispatcher
   restart, or post-install health checks.
 - Keeping every superseded draft PR forever.
+- Using PRs primarily as a collaboration UI; they are the transport and audit
+  identity for remote compute.
 
 ## Required Invariants
 
@@ -664,6 +673,10 @@ premortem:
 
 ## Assumption Ledger
 
+- [x] DECISION: What is the underlying problem?
+      ANSWER: Local-device QG compute limits factory throughput. Move as much
+      QG computation onto GitHub as possible; PR visibility is incidental and
+      the dispatcher remains responsible for autonomous progress.
 - [x] DECISION: Who owns PR creation, CI waiting, retry, merge, and cleanup?
       ANSWER: The dispatcher; the operator only observes surfaced state.
 - [x] DECISION: Is GitHub or the local worker authoritative for portable QG in
