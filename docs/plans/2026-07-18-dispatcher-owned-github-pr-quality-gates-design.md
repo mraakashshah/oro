@@ -1051,6 +1051,28 @@ completion. Drift commits the exact `integrated_policy_drift` state and project-
 wide integration freeze first; subsequent reconciliation knows the target
 already contains the tested squash and must never republish or integrate it.
 
+The integration freeze is gate-mode independent. Assignment eligibility and
+every target-mutating entry point—including `handleDone`,
+`completeManualIntegration`, `mergeAndComplete`, `ffMergeEpicBranch`, remote
+integration intent/CAS, and epic promotion—must read the same durable barrier.
+Workers may finish and have results durably adopted, but no local or remote
+merge/FF/CAS occurs while it is set. A configuration rollback cannot clear or
+bypass it.
+
+If mode becomes `local` while drift or deferred `local_sync` exists, startup is
+recovery-only: status/health and the external supervisor run, but the assignment
+loop and all integration paths remain ineligible. The previous runtime and
+maintenance credential-provider references, supervisor descriptor, remote
+identity, integration attempt, and expected target are retained until recovery;
+configuration that removes them fails closed. After the supervisor repairs the
+owned policy, the dispatcher re-verifies it with the runtime identity, fetches
+the authoritative remote target, proves the persisted squash is on its current
+first-parent history with the expected tree, and fast-forwards the local target
+to that exact current descendant. Dirty/divergent local state is preserved and
+quarantined, never reset. One transaction records remote/local synchronization,
+closes the remote ownership record exactly once, and clears the freeze; only
+then may local assignments or legacy integration start.
+
 “GitHub reports” includes ancestry reconciliation of an ambiguous attempt. The
 dispatcher evaluates the persisted proposed squash commit, not only the current
 target tip. If the current tip is a first-parent descendant, the bead integrated
@@ -1676,6 +1698,9 @@ chains; it may split them further but may not collapse away a boundary:
    Thread effective `ManualIntegration` through both CLI parent/child start
    paths and reject it with `github-pr` before any startup side effect; local
    mode remains compatible.
+   On local-mode startup, inspect durable maintenance/freeze/deferred-sync state
+   before applying monitorless defaults; require preserved supervisor/runtime/
+   maintenance identity and enter recovery-only until reconciliation completes.
 2. **Provider-neutral core and GitHub adapter.** Implement normalized
    candidate/change/evidence/merge types, all `RemoteGateClient` operations
    including idempotent `SetChangeReady` and ambiguous
@@ -1779,6 +1804,11 @@ chains; it may split them further but may not collapse away a boundary:
    Implement local-manual rollback reconciliation: cancel/requeue pre-intent
    remote records, resolve intent/ambiguous outcomes before socket readiness,
    and preserve one-owner/no-legacy-merge invariants across restart.
+   Make the project-wide freeze a shared eligibility predicate for assignment
+   and every local/remote integration producer. Persist recovery-only mode and
+   require policy repair, authenticated authoritative fetch, first-parent/tree
+   proof, exact descendant fast-forward, remote-record closure, and unfreeze in
+   the specified order; inject crashes and dirty/divergent local targets.
    Persist the worker generation/process inventory and make worker pool
    registration, idle selection, capacity, health, status, and assignment
    require active-generation attestation. `shutdownWaitForWorkers`,
@@ -1815,6 +1845,11 @@ chains; it may split them further but may not collapse away a boundary:
    `github-pr + --manual-integration` fails before publication/CAS, including a
    passed remote record and restart; prove local-manual rollback follows the
    cancellation/reconciliation contract instead of silently auto-integrating.
+   At the post-CAS/pre-local-sync policy-drift barrier, switch to ordinary local
+   and local-manual modes and restart. Exercise `handleDone`,
+   `completeManualIntegration`, `mergeAndComplete`, and `ffMergeEpicBranch`;
+   each performs zero mutation until supervised repair and authoritative
+   descendant local sync clear the freeze.
 8. **Correction and cleanup.** Persist bounded findings, create a normal pool
    correction assignment at the exact remote candidate SHA, and handle dead
    workers, deleted worktrees, missing refs, duplicate findings, non-ancestor
@@ -1895,6 +1930,10 @@ chains; it may split them further but may not collapse away a boundary:
    fails startup, while an installed supervisor passes. Kill the monitor and
    stable shim, prove OS-service relaunch and durable request reclaim; while its
    heartbeat is stale, no new integration intent or CAS occurs.
+   Then switch configuration to local at the integrated-policy-drift/pre-sync
+   boundary: the supervisor remains required and claims repair, while the
+   dispatcher stays recovery-only. Prove exact remote descendant sync and
+   transactional unfreeze before any local worker assignment or merge.
    Build distinct old/new Oro fixtures with both compatible and incompatible
    descriptor/operation-schema ranges. Exercise the normal no-crash
    `M0/B0 -> shim -> M1/B1 ->
@@ -1987,6 +2026,10 @@ chains; it may split them further but may not collapse away a boundary:
     CLI fixtures cover both installed start entry points with manual integration
     on/off in local/GitHub modes and assert zero remote side effects on the
     invalid combination.
+    The fixed manifest maps the rollback-at-integrated-policy-drift cross-product
+    to both `TestRemoteGateModeRollbackOwnership` and
+    `TestRemoteGateExactEvidenceAndProtectedMerge`; testing those states only in
+    isolation does not satisfy the harness criterion.
 13. **Automatic degraded mode and memory-safe full fallback.** Own the
     `transient_failed -> outage_degraded -> local_memory_safe_gate ->
     local_passed_waiting_remote` dispatcher transitions, outage timer, exact
@@ -2047,6 +2090,13 @@ remain audit evidence; active dispatcher-owned runs are reconciled to terminal
 or durably cancelled before their candidates are requeued, and candidate
 branches/refs are preserved. A legacy `DONE` or local merge can never race a
 nonterminal remote record.
+
+Rollback does not make the supervisor optional while a project-wide integration
+freeze, policy-reconciliation request, deferred remote local-sync, epic cleanup,
+or other maintenance-owned record exists. Such a local-mode restart enters the
+recovery-only state above and retains both credential references until all
+barriers are reconciled. Only a clean local project with no maintenance-owned
+state may return to the otherwise valid monitorless local configuration.
 
 If rollback also enables local `--manual-integration`, startup recovery first
 cancels every pre-intent remote record and requeues its preserved candidate into
@@ -2123,7 +2173,8 @@ or explicitly cancelled.
    ephemeral epic-target creation/adoption/retirement/cleanup state,
    logical policy key, active provider ID/binding generation, create ambiguity/
    deduplication, supervisor heartbeat/capability generation and maintenance-
-   unavailable barrier, lifecycle readiness reason/control/queue generations, expected/attested
+   unavailable barrier, cross-mode recovery-only/deferred-sync state, lifecycle
+   readiness reason/control/queue generations, expected/attested
    active-generation workers, stale worker connections, and residual old-
    generation processes.
 6. Workflow contract fixtures prove PR eligibility for main, a configured
@@ -2176,6 +2227,9 @@ or explicitly cancelled.
    mode remains functional; a GitHub-to-local-manual restart cancels/requeues
    pre-intent records and resolves issued/ambiguous CAS before accepting work,
    so no passed remote record silently auto-integrates under the manual session.
+   If rollback occurs with `integrated_policy_drift` before local sync, both
+   ordinary and manual local modes are recovery-only and every legacy merge/FF
+   path proves zero mutation until the shared freeze is cleared.
 8. Exact evidence tests reject same-name checks, changed workflow blobs,
    reruns for another attempt, stale synthetic merge SHAs, target movement at
    the merge boundary, ambiguous integration responses, simultaneous policy
@@ -2203,6 +2257,11 @@ or explicitly cancelled.
    Killing monitor/shim during that request proves OS-service relaunch, lease
    reclaim, and eventual unfreeze; no dispatcher path can construct the
    Administration-scoped reconciler.
+   At the exact post-CAS/pre-local-sync drift barrier, a restart in local mode
+   retains supervisor and credential references, repairs policy, proves the
+   integrated squash on the authoritative current descendant, fast-forwards
+   clean local state, closes remote ownership once, and only then admits local
+   work. Dirty/divergent local state remains frozen and preserved.
 9. Every auditor cycle dispatches or adopts exactly one full mutation campaign
    for its audit ID and SHA, survives restart, validates every shard artifact,
    independently reconstructs the persisted eligible-unit inventory, proves
