@@ -350,7 +350,7 @@ func (s *Spawner) Review(ctx context.Context, opts ReviewOpts) <-chan Result {
 }
 
 func (s *Spawner) runTypedReview(ctx context.Context, opts ReviewOpts) <-chan Result {
-	_, prompt := buildStructuredReviewPrompt(opts)
+	prompt := buildStructuredReviewPrompt(opts)
 	rawResults := s.run(ctx, OpsReview, opts.BeadID, opts.Worktree, prompt)
 	out := make(chan Result, 1)
 	go func() {
@@ -389,20 +389,29 @@ func (s *Spawner) reviewMultiPersona(ctx context.Context, opts ReviewOpts) <-cha
 		opts = scopeToSurvivors(opts, s.runCheapTriage(ctx, opts))
 	}
 
-	manifest, prompt := buildStructuredReviewPrompt(opts)
+	prompt := buildStructuredReviewPrompt(opts)
 	out := make(chan Result, 1)
 	go func() {
-		reports := s.collectPersonaReviews(ctx, OpsReview, opts, personas, prompt)
-		if allReviewReportsFailed(reports) {
-			out <- <-s.run(ctx, OpsReview, opts.BeadID, opts.Worktree, buildReviewPrompt(opts))
-			return
-		}
-		out <- mergeReports(reports, manifest, opts)
+		policy := reviewPolicy(opts)
+		reports, executions := s.collectPersonaReviewExecutions(ctx, OpsReview, opts, personas, prompt, policy)
+		out <- reviewOutcomeResult(opts, mergeReports(policy, reports, executions))
 	}()
 	return out
 }
 
 func (s *Spawner) collectPersonaReviews(ctx context.Context, opsType Type, opts ReviewOpts, personas []Persona, prompt string) []ReviewReport {
+	reports, _ := s.collectPersonaReviewExecutions(ctx, opsType, opts, personas, prompt, ReviewPolicy{})
+	return reports
+}
+
+func (s *Spawner) collectPersonaReviewExecutions(
+	ctx context.Context,
+	opsType Type,
+	opts ReviewOpts,
+	personas []Persona,
+	prompt string,
+	policy ReviewPolicy,
+) ([]ReviewReport, []ReviewPersonaExecution) {
 	maxReviewers := opts.MaxReviewers
 	if maxReviewers <= 0 {
 		maxReviewers = 4
@@ -412,6 +421,7 @@ func (s *Spawner) collectPersonaReviews(ctx context.Context, opsType Type, opts 
 	}
 
 	reports := make([]ReviewReport, 0, len(personas))
+	executions := make([]ReviewPersonaExecution, 0, len(personas))
 	for start := 0; start < len(personas); start += maxReviewers {
 		end := start + maxReviewers
 		if end > len(personas) {
@@ -429,27 +439,72 @@ func (s *Spawner) collectPersonaReviews(ctx context.Context, opsType Type, opts 
 			))
 		}
 		for i, ch := range chans {
-			result := <-ch
-			report, _ := parseReviewReport(result.Feedback)
-			_, parseErr := parseStructuredReviewReport(result.Feedback)
-			if parseErr != nil {
-				_, _, parseErr = parseLegacyStructuredReviewReport(result.Feedback)
-			}
-			assignedPersona := personas[start+i]
-			report.Reviewer = assignedPersona.ID
-			for findingIndex := range report.Findings {
-				finding := &report.Findings[findingIndex]
-				finding.Sources = []string{assignedPersona.ID}
-				finding.Status = ""
-				finding.History = nil
-			}
-			if parseErr != nil || result.Err != nil || result.Verdict == VerdictFailed {
-				report.Verdict = VerdictFailed
-			}
+			report, execution := personaReviewResult(<-ch, personas[start+i], policy)
 			reports = append(reports, report)
+			executions = append(executions, execution)
 		}
 	}
-	return reports
+	return reports, executions
+}
+
+func personaReviewResult(result Result, persona Persona, policy ReviewPolicy) (ReviewReport, ReviewPersonaExecution) {
+	report, _ := parseReviewReport(result.Feedback)
+	_, parseErr := parseStructuredReviewReport(result.Feedback)
+	if parseErr != nil {
+		_, _, parseErr = parseLegacyStructuredReviewReport(result.Feedback)
+	}
+	report.Reviewer = persona.ID
+	execution := ReviewPersonaExecution{
+		Persona:  persona.ID,
+		Required: personaRequired(policy, persona.ID),
+		Kind:     ReviewExecSucceeded,
+	}
+	for findingIndex := range report.Findings {
+		finding := &report.Findings[findingIndex]
+		finding.Sources = []string{persona.ID}
+		finding.Status = ""
+		finding.History = nil
+	}
+	if parseErr != nil || result.Err != nil || result.Verdict == VerdictFailed {
+		report.Verdict = VerdictFailed
+		execution.Kind = ReviewExecExitError
+	}
+	return report, execution
+}
+
+func personaRequired(policy ReviewPolicy, persona string) bool {
+	for _, required := range requiredPersonas(policy) {
+		if required == persona {
+			return true
+		}
+	}
+	return false
+}
+
+func reviewOutcomeResult(opts ReviewOpts, outcome ReviewOutcome) Result {
+	feedback, err := json.Marshal(outcome)
+	if err != nil {
+		return Result{
+			Type:     OpsReview,
+			BeadID:   opts.BeadID,
+			Verdict:  VerdictFailed,
+			Feedback: err.Error(),
+			Err:      fmt.Errorf("marshal merged review outcome: %w", err),
+		}
+	}
+	verdict := VerdictFailed
+	switch outcome.Decision {
+	case ReviewApproved:
+		verdict = VerdictApproved
+	case ReviewRejected:
+		verdict = VerdictRejected
+	}
+	return Result{
+		Type:     OpsReview,
+		BeadID:   opts.BeadID,
+		Verdict:  verdict,
+		Feedback: string(feedback),
+	}
 }
 
 // Audit spawns six focused whole-repository auditors in bounded waves. Each

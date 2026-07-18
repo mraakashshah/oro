@@ -132,18 +132,17 @@ func TestReviewSinglePass_WhenMultiPersonaFalse(t *testing.T) {
 	}
 }
 
-func TestReviewMultiPersona_AllFailFallsBackToSinglePass(t *testing.T) {
+func TestReviewMultiPersona_AllFailDoesNotFallBackWithoutPolicy(t *testing.T) {
 	worktree := testReviewRepo(t)
 	t.Chdir(worktree)
 	writePersonaAgentConfig(t, worktree)
 	writeFile(t, filepath.Join(worktree, "pkg", "worker.go"), "package pkg\n\nfunc Worker() string { return \"changed\" }\n")
 
 	personas := selectPersonas(ReviewOpts{Worktree: worktree, BaseBranch: "main"})
-	outputs := make([]string, 0, len(personas)+1)
+	outputs := make([]string, 0, len(personas))
 	for range personas {
 		outputs = append(outputs, "reviewer crashed without a verdict")
 	}
-	outputs = append(outputs, "legacy fallback\nVERDICT: APPROVED\n")
 	spawner := &recordingReviewSpawner{outputs: outputs}
 	s := NewSpawner(spawner)
 
@@ -154,15 +153,12 @@ func TestReviewMultiPersona_AllFailFallsBackToSinglePass(t *testing.T) {
 		MultiPersona: true,
 	}))
 
-	if result.Verdict != VerdictApproved {
-		t.Fatalf("Review verdict = %q, want approved from legacy fallback; feedback=%s err=%v", result.Verdict, result.Feedback, result.Err)
+	if result.Verdict != VerdictFailed {
+		t.Fatalf("Review verdict = %q, want failed required coverage; feedback=%s err=%v", result.Verdict, result.Feedback, result.Err)
 	}
 	calls := spawner.getCalls()
-	if len(calls) != len(personas)+1 {
-		t.Fatalf("spawn calls = %d, want %d persona calls plus one fallback", len(calls), len(personas)+1)
-	}
-	if calls[len(calls)-1].role != "ops_review" {
-		t.Fatalf("fallback role = %q, want ops_review", calls[len(calls)-1].role)
+	if len(calls) != len(personas) {
+		t.Fatalf("spawn calls = %d, want %d persona calls without fallback", len(calls), len(personas))
 	}
 }
 

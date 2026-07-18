@@ -17,7 +17,27 @@ const docsOnlyReviewPolicy = "docs-only: markdown and documentation paths only"
 
 // ReviewPolicy identifies the rules used to approve a review outcome.
 type ReviewPolicy struct {
-	Hash string
+	Hash             string
+	RequiredPersonas []string
+}
+
+// requiredPersonas returns only the personas explicitly required by policy.
+// A policy without required personas has no implicit fallback coverage.
+func requiredPersonas(policy ReviewPolicy) []string {
+	seen := make(map[string]struct{}, len(policy.RequiredPersonas))
+	personas := make([]string, 0, len(policy.RequiredPersonas))
+	for _, persona := range policy.RequiredPersonas {
+		persona = strings.TrimSpace(persona)
+		if persona == "" {
+			continue
+		}
+		if _, ok := seen[persona]; ok {
+			continue
+		}
+		seen[persona] = struct{}{}
+		personas = append(personas, persona)
+	}
+	return personas
 }
 
 func reviewPolicy(opts ReviewOpts) ReviewPolicy {
@@ -25,7 +45,17 @@ func reviewPolicy(opts ReviewOpts) ReviewPolicy {
 		return *opts.ReviewPolicy
 	}
 	sum := sha256.Sum256([]byte(docsOnlyReviewPolicy))
-	return ReviewPolicy{Hash: hex.EncodeToString(sum[:])}
+	return ReviewPolicy{
+		Hash: hex.EncodeToString(sum[:]),
+		RequiredPersonas: []string{
+			"correctness",
+			"security",
+			"adversarial",
+			"design",
+			"test",
+			"architecture",
+		},
+	}
 }
 
 func buildDocsOnlyReviewOutcome(policy ReviewPolicy) (ReviewOutcome, error) {

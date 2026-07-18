@@ -19,8 +19,70 @@ type reviewMergeFeedback struct {
 	CoveredSections *[]string `json:"covered_sections,omitempty"`
 }
 
-func mergeReports(reports []ReviewReport, m PromptManifest, opts ReviewOpts) Result {
+func mergeReportResults(reports []ReviewReport, m PromptManifest, opts ReviewOpts) Result {
 	return mergeReportsFor(OpsReview, reports, m, opts, true, nil)
+}
+
+// mergeReports reduces typed persona executions and structured findings into
+// the outcome consumed by review dispatch. Review transcript text is not a
+// decision input: only execution state and surviving structured findings are.
+func mergeReports(policy ReviewPolicy, reports []ReviewReport, execs []ReviewPersonaExecution) ReviewOutcome {
+	required := requiredPersonas(policy)
+	completed := make(map[string]struct{}, len(execs))
+	for _, execution := range execs {
+		if execution.Kind == ReviewExecSucceeded {
+			completed[execution.Persona] = struct{}{}
+		}
+	}
+
+	findings := make([]Finding, 0)
+	for _, report := range reports {
+		if _, ok := completed[report.Reviewer]; !ok {
+			continue
+		}
+		findings = append(findings, report.Findings...)
+	}
+	survivors := gateFindings(findings)
+
+	decision := ReviewApproved
+	summary := "All required review personas completed without gating findings."
+	for _, persona := range required {
+		if _, ok := completed[persona]; !ok {
+			decision = ReviewFailed
+			summary = "Required review persona coverage is incomplete."
+			break
+		}
+	}
+	if decision == ReviewApproved && verdictForFindings(survivors) == VerdictRejected {
+		decision = ReviewRejected
+		summary = "Review found one or more gating findings."
+	}
+
+	completedPersonas := make([]string, 0, len(completed))
+	for _, execution := range execs {
+		if execution.Kind == ReviewExecSucceeded {
+			completedPersonas = append(completedPersonas, execution.Persona)
+		}
+	}
+	return ReviewOutcome{
+		Decision:   decision,
+		PolicyHash: policy.Hash,
+		Findings:   survivors,
+		Verification: ReviewVerification{
+			AcceptanceStatus: "passed",
+		},
+		Execution: ReviewExecution{
+			Kind:              ReviewExecSucceeded,
+			Complete:          decision != ReviewFailed,
+			RequiredPersonas:  required,
+			CompletedPersonas: completedPersonas,
+			PersonaExecutions: append([]ReviewPersonaExecution(nil), execs...),
+		},
+		Summary: summary,
+		Artifact: ReviewArtifactRef{
+			SHA256: "merged-review-outcome",
+		},
+	}
 }
 
 // mergeAuditReports applies the structured reviewer merge pipeline to the

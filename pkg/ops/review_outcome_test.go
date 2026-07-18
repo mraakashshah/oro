@@ -149,6 +149,83 @@ func TestTypedReviewOutcomeParsing(t *testing.T) {
 	}
 }
 
+func TestReviewOutcomeRequiredCoverage(t *testing.T) {
+	policy := ReviewPolicy{RequiredPersonas: []string{"correctness", "security"}}
+	important := Finding{
+		Severity:   SevImportant,
+		Confidence: 90,
+		Status:     "open",
+		Sources:    []string{"correctness"},
+	}
+
+	tests := []struct {
+		name    string
+		reports []ReviewReport
+		execs   []ReviewPersonaExecution
+		want    ReviewDecision
+	}{
+		{
+			name: "approves only when every required persona succeeds",
+			reports: []ReviewReport{
+				{Reviewer: "correctness", Verdict: VerdictApproved},
+				{Reviewer: "security", Verdict: VerdictApproved},
+			},
+			execs: []ReviewPersonaExecution{
+				{Persona: "correctness", Kind: ReviewExecSucceeded},
+				{Persona: "security", Kind: ReviewExecSucceeded},
+			},
+			want: ReviewApproved,
+		},
+		{
+			name: "missing required persona fails closed",
+			reports: []ReviewReport{
+				{Reviewer: "correctness", Verdict: VerdictApproved},
+			},
+			execs: []ReviewPersonaExecution{
+				{Persona: "correctness", Kind: ReviewExecSucceeded},
+			},
+			want: ReviewFailed,
+		},
+		{
+			name: "surviving important finding rejects",
+			reports: []ReviewReport{
+				{Reviewer: "correctness", Verdict: VerdictApproved, Findings: []Finding{important}},
+				{Reviewer: "security", Verdict: VerdictApproved},
+			},
+			execs: []ReviewPersonaExecution{
+				{Persona: "correctness", Kind: ReviewExecSucceeded},
+				{Persona: "security", Kind: ReviewExecSucceeded},
+			},
+			want: ReviewRejected,
+		},
+		{
+			name: "transcript keyword does not reject without a finding",
+			reports: []ReviewReport{
+				{Reviewer: "correctness", Verdict: VerdictRejected, Raw: "VERDICT: REJECTED appears in a quoted transcript"},
+				{Reviewer: "security", Verdict: VerdictApproved},
+			},
+			execs: []ReviewPersonaExecution{
+				{Persona: "correctness", Kind: ReviewExecSucceeded},
+				{Persona: "security", Kind: ReviewExecSucceeded},
+			},
+			want: ReviewApproved,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			outcome := mergeReports(policy, tt.reports, tt.execs)
+			if outcome.Decision != tt.want {
+				t.Fatalf("decision = %q, want %q", outcome.Decision, tt.want)
+			}
+		})
+	}
+
+	if got := requiredPersonas(ReviewPolicy{}); len(got) != 0 {
+		t.Fatalf("requiredPersonas without policy = %#v, want no fallback personas", got)
+	}
+}
+
 func TestDocsOnlyTypedReviewOutcome(t *testing.T) {
 	worktree := initReviewTestRepo(t)
 	if err := os.MkdirAll(filepath.Join(worktree, "docs"), 0o755); err != nil {

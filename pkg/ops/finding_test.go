@@ -106,7 +106,7 @@ func TestPersistFindings_WritesJourneyRows(t *testing.T) {
 		},
 	}
 
-	result := mergeReports(reports, reviewMergeManifest(), ReviewOpts{
+	result := mergeReportResults(reports, reviewMergeManifest(), ReviewOpts{
 		BeadID:          beadID,
 		Worktree:        ".",
 		PersistFindings: true,
@@ -170,7 +170,7 @@ func TestReReviewPreservesTriage(t *testing.T) {
 		t.Fatalf("AppendJourney prior: %v", err)
 	}
 
-	result := mergeReports([]ReviewReport{{
+	result := mergeReportResults([]ReviewReport{{
 		Reviewer: "persona:correctness",
 		Verdict:  VerdictRejected,
 		Findings: []Finding{incoming},
