@@ -930,9 +930,12 @@ premortem:
       ANSWER: Candidate lifecycle, evidence, correction, recovery, and merge
       authorization contracts are provider-neutral. V1 implements only a
       GitHub adapter; no speculative multi-provider framework is built.
-- [ ] DECISION: Is a visible draft PR for every bead an acceptable permanent
+- [x] DECISION: Is a visible draft PR for every bead an acceptable permanent
       factory audit trail, or should successful bead PRs be collapsed later?
       DEPENDS_ON: None.
       RECOMMENDATION: Keep one draft PR per bead and auto-reconcile it; this is
       the narrowest implementation and gives exact CI/audit identity.
       ASK: Confirm PR-per-bead as the v1 unit of remote work.
+      ANSWER: Yes. One dispatcher-owned draft PR per bead is the v1 remote work
+      and evidence unit; the dispatcher updates, squash-merges, and reconciles
+      it automatically.
