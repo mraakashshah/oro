@@ -875,7 +875,7 @@ premortem:
 - [x] DECISION: Does ops review remain a required independent gate?
       ANSWER: Yes. It checks design and code health beyond mechanical QG, and
       reviews the exact post-rebase diff before that candidate is published.
-- [ ] DECISION: How is the guarantee that every integrated commit compiles
+- [x] DECISION: How is the guarantee that every integrated commit compiles
       enforced when a worker creates multiple internal commits?
       ANSWER: GitHub performs a protected squash merge after exact review and
       remote QG evidence pass. Worker/WIP commits remain on preserved candidate
@@ -926,6 +926,10 @@ premortem:
       ANSWER: Yes. The serialized local gate is a dominant throughput defect,
       not an optional optimization opportunity. Remote execution is the normal
       architecture; local full QG survives only as controlled degraded fallback.
+- [x] DECISION: How should the design accommodate future CI providers?
+      ANSWER: Candidate lifecycle, evidence, correction, recovery, and merge
+      authorization contracts are provider-neutral. V1 implements only a
+      GitHub adapter; no speculative multi-provider framework is built.
 - [ ] DECISION: Is a visible draft PR for every bead an acceptable permanent
       factory audit trail, or should successful bead PRs be collapsed later?
       DEPENDS_ON: None.
