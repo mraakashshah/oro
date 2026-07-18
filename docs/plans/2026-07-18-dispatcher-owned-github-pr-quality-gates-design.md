@@ -870,6 +870,27 @@ arrays and JSON output. It reuses `processenv.ForWorkdir`, authenticates against
 the actual remote host, and applies per-call contexts. No shell command is
 constructed from PR titles, branch names, URLs, or remote output.
 
+Dispatcher-owned network ref mutation uses a dedicated internal Git transport,
+not the repository's ordinary push path. Its unexported constructor requires
+the runtime credential provider plus a durable operation/lease object for one
+of candidate, ephemeral-epic, audit, or target-CAS ref operations. It invokes a
+trusted absolute Git executable with the canonical HTTPS URL, controlled
+environment/config, `-c core.hooksPath=/dev/null`, and `push --no-verify`; it
+strips inherited hook/config injection and credential-helper/SSH variables and
+uses only the shared short-lived App credential mechanism. The operation still
+uses exact expected-old/absent leases and provider policy checks. No worker,
+general command runner, public CLI flag, or human push path can obtain this
+transport capability.
+
+This bypass is intentionally local and per subprocess. Oro does not delete,
+rewrite, disable, or globally reconfigure `.git/hooks/pre-push`, its user-hook
+chain, or `core.hooksPath`. Ordinary `git push` continues through the installed
+`buildOroPrePushCheck` wrapper, rejects human `agent/*`/`epic/*` publication, and
+runs the configured local guard. Internal pushes never execute that wrapper or
+arbitrary user hooks, so they neither reject dispatcher-owned `epic/**` refs nor
+rerun the full local QG. Command/audit evidence records `hooks_disabled=true`
+and the internal operation ID without logging credentials.
+
 Provider construction receives one `RuntimeCredentialProvider`. Before every
 network side effect it resolves/refreshes a credential and verifies the same
 expected App ID, installation ID, host, and repository stored in
@@ -1722,6 +1743,8 @@ chains; it may split them further but may not collapse away a boundary:
    configuration fails before the dispatcher socket accepts work.
    Prove prospective `epic/**` create/update/delete capability and persist the
    exact-namespace canary evidence separately from candidate/audit namespaces.
+   Construct all ref canaries through the same internal hook-free Git transport
+   used in production; a REST-only or hookless-repository probe is insufficient.
    Thread effective `ManualIntegration` through both CLI parent/child start
    paths and reject it with `github-pr` before any startup side effect; local
    mode remains compatible.
@@ -1776,6 +1799,11 @@ chains; it may split them further but may not collapse away a boundary:
    credentials cannot perform Git/PR/Actions operations, and absent, malformed,
    expired, wrong-host/repository, overprivileged, or inaccessible maintenance
    identity fails closed without secret leakage.
+   Add the unexported hook-free internal Git transport and route every
+   dispatcher-owned push/delete/CAS through it. Tests reject missing leases,
+   unsupported operation kinds, noncanonical/SSH/helper transports, inherited
+   hook/config injection, absent `core.hooksPath=/dev/null` or `--no-verify`,
+   and any worker/general-CLI construction path; ordinary Git remains unchanged.
 3. **Protocol and worker handoff.** Wire `CANDIDATE_READY` through
    `pkg/protocol/message.go`, `pkg/worker/worker.go:awaitSubprocessAndReport`,
    `runQGAndReport`, `SendReadyForReview`, and `SendDone`. Update
@@ -1925,6 +1953,12 @@ chains; it may split them further but may not collapse away a boundary:
    external deletion/recreation while active, promotion retirement, leased
    deletion ambiguity, changed-ref quarantine, cleanup pending, and no post-
    retirement resurrection.
+   Build that source repository through real Oro init/setup so its managed
+   pre-push wrapper and a sentinel failing user hook are installed. Prove the
+   internal epic/candidate/audit/target mutations reach the bare remote without
+   invoking either hook or local QG, while ordinary human pushes still invoke
+   the wrapper/user chain and `epic/*` is rejected. Assert hook files and Git
+   configuration are byte-for-byte unchanged afterward.
    Add the project-global lifecycle generation/lease, ancestry-ordered desired
    SHA selection, descendant-satisfies-ancestor evidence, no-downgrade running
    SHA, and pre-install/pre-shutdown/pre-start revalidation. The same test runs
@@ -2062,7 +2096,9 @@ chains; it may split them further but may not collapse away a boundary:
     startup rejection and stale-heartbeat integration barrier so the always-
     supervised requirement cannot be hidden by the canary's normal monitor.
     The epic fixture asserts the bare remote initially lacks every `epic/**`
-    ref; pre-seeding the base is a harness failure.
+    ref and the source has the actual Oro-managed pre-push wrapper plus user-hook
+    sentinel; pre-seeding the base or using an uninitialized hookless source is
+    a harness failure.
     CLI fixtures cover both installed start entry points with manual integration
     on/off in local/GitHub modes and assert zero remote side effects on the
     invalid combination.
@@ -2183,6 +2219,10 @@ or explicitly cancelled.
    lost response and restart, then create PRs against the one remote base.
    Promotion retires and lease-deletes that ref; mismatches, policy denial,
    ambiguity, cleanup pending, and post-retirement non-resurrection are proven.
+   The source repository is actually Oro-initialized with the managed pre-push
+   wrapper and a failing user-hook sentinel: internal leased ref operations
+   bypass both without running local QG, ordinary pushes still execute them,
+   and human `epic/*` publication remains blocked.
    The same test launches the actually generated launchd/systemd-equivalent
    unit from an unrelated CWD with empty ambient project environment, proves
    exact descriptor-bound database/socket/repository identity, and verifies
@@ -2249,6 +2289,10 @@ or explicitly cancelled.
    A separate unique `epic/**` canary proves create, exact-SHA advancement, and
    leased deletion under that namespace's effective repository/organization
    rules; other ref probes cannot satisfy this assertion.
+   Production transport fixtures install the real wrapper plus arbitrary
+   sentinel hook and prove every internal push kind uses the scoped hook-free
+   constructor with lease evidence, while worker/user pushes cannot access the
+   bypass and repository hooks/config remain unchanged.
    A second production-constructor fixture requires the maintenance App token
    to contain exactly Metadata-read and Administration-write for the same host/
    repository and no runtime permission. It proves runtime/maintenance
