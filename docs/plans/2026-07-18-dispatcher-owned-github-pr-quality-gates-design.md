@@ -67,7 +67,7 @@ turn those checks into merge evidence.
   accepted by the GitHub target ref only while its tested base is still exact.
 - Route deterministic CI findings back to the assigned worker as structured,
   bounded feedback.
-- Recover idempotently after dispatcher, worker, `gh`, network, or GitHub
+- Recover idempotently after dispatcher, worker, API client, network, or GitHub
   interruption.
 - Cancel obsolete runs when a bead is retried, preempted, quarantined, or
   superseded.
@@ -172,8 +172,7 @@ candidate instead of independently owning a long-lived GitHub operation.
 
 ### GitHub precedent
 
-`pkg/janitor/detect.go:ciDetector` already establishes these local project
-conventions:
+`pkg/janitor/detect.go:ciDetector` establishes useful evidence conventions:
 
 - discover `gh` with `exec.LookPath`;
 - derive the host from the repository's `origin` remote;
@@ -182,9 +181,11 @@ conventions:
 - parse JSON rather than terminal text;
 - retain failing run URLs and failed-job evidence.
 
-The remote-gate implementation should reuse those conventions, but must not
-reuse the janitor detector directly. Janitor asks whether the latest branch CI
-failed; merge authorization requires exact SHA identity and durable state.
+The remote-gate implementation reuses host derivation, structured JSON, and
+evidence concepts, but deliberately does not reuse janitor's ambient `gh`
+subprocess convention. Janitor asks whether the latest branch CI failed; merge
+authorization requires exact SHA identity, durable state, and a stronger
+credential-bearing transport boundary.
 
 ## Selected Architecture
 
@@ -289,6 +290,11 @@ factory:
       run_timeout: 35m
       outage_fallback_after: 15m
       close_superseded_prs: true
+      api:
+        base_url: https://api.github.com
+        ca_bundle_ref: system
+        proxy: none
+        api_version: "2022-11-28"
       runtime_identity:
         type: github-app
         app_id: 123456
@@ -316,7 +322,8 @@ factory:
 Rules:
 
 - Existing projects default to `local`; setup never silently publishes code.
-- `github-pr` is valid only when the remote resolves to GitHub, `gh` exists,
+- `github-pr` is valid only when the remote resolves to GitHub, the in-process
+  API endpoint/TLS policy validates,
   the configured runtime credential provider resolves the expected GitHub App
   installation for that host/repository, the workflow is visible, and the
   aggregate check contract can be found. Ambient `gh`, SSH-agent, Git
@@ -865,10 +872,23 @@ reconciled by observation instead of repeating blindly. Restart and rollback
 preserve this state, and the deterministic adapter fake rejects every attempt
 to merge a draft PR.
 
-The production implementation shells out to `git` and `gh` using argument
-arrays and JSON output. It reuses `processenv.ForWorkdir`, authenticates against
-the actual remote host, and applies per-call contexts. No shell command is
-constructed from PR titles, branch names, URLs, or remote output.
+The production implementation shells out only to the pinned `git` transport for
+Git object/ref operations. PR, workflow, check, artifact, cancellation, rule,
+and installation-token APIs use a typed in-process Go HTTP client; the remote
+gate never executes `gh` and never places a token in subprocess environment or
+argv. No shell command is constructed from PR titles, branch names, URLs, or
+remote output.
+
+The HTTP client is constructed from typed host/API/TLS/network policy, not
+ambient environment. It uses an explicit HTTPS base URL, expected host/SNI,
+setup-attested system roots or configured CA reference, minimum TLS policy,
+bounded connect/header/body/overall timeouts, no `ProxyFromEnvironment`, no
+cross-host redirects, strict response-size limits, structured JSON decoding,
+and the pinned GitHub API version/media headers. Proxy or private-CA use must be
+explicitly configured and attested. Runtime/maintenance installation tokens
+exist only in memory and the per-request Authorization header; headers and
+bodies are redacted from errors/events/logs. Actor/repository/permission
+attestation is performed over this same client before side effects.
 
 Dispatcher-owned network ref mutation uses a dedicated internal Git transport,
 not the repository's ordinary push path. Its unexported constructor requires
@@ -908,8 +928,8 @@ and the internal operation ID without logging credentials.
 Provider construction receives one `RuntimeCredentialProvider`. Before every
 network side effect it resolves/refreshes a credential and verifies the same
 expected App ID, installation ID, host, and repository stored in
-`Capabilities`. `gh` subprocesses receive only the scoped `GH_TOKEN`/`GH_HOST`
-environment and verify the installation actor through the GitHub API. Git
+`Capabilities`. The in-process API client receives the scoped token only as a
+request credential and verifies the installation actor through the GitHub API. Git
 network subprocesses use a canonical HTTPS repository URL plus a private
 `GIT_ASKPASS`/credential-FD bridge backed by that same installation token;
 tokens never appear in argv, config files, logs, events, or persisted rows.
@@ -922,9 +942,10 @@ transport.
 The adapter re-attests actor identity immediately before target CAS. Token
 expiry during a long CI wait triggers provider refresh and one idempotent
 retry; an actor/installation/repository mismatch fails closed before mutation.
-Production-construction tests use separate fake `gh` and Git receive transports
-to expose split actors, ambient administrator credentials, wrong host/repo,
-credential-helper/SSH leakage, expiry/refresh, and redaction.
+Production-construction tests use a production-faithful TLS HTTP server and Git
+receive transport to expose split actors, ambient administrator credentials,
+wrong host/repo, proxy/CA/redirect abuse, credential-helper/SSH leakage,
+expiry/refresh, body limits, and redaction.
 
 The credential provider and canonical authenticated Git transport live in a
 shared production package used by both the dispatcher GitHub adapter and the
@@ -936,7 +957,9 @@ developer credential path.
 The dispatcher owns policy, persistence, retry classification, and state
 transitions. The client owns only provider/git side effects and normalized
 observations. Compile-time boundary tests prevent dispatcher policy packages
-from importing GitHub/`gh` transport representations or shelling out to `gh`.
+from importing GitHub transport representations. Boundary tests also forbid any
+remote-gate or policy-reconciler package from importing an exec-based `gh`
+runner or shelling out to `gh`.
 
 ### 5. Branch and Pull Request Identity
 
@@ -1151,7 +1174,7 @@ Remote observations are classified before action:
 |---|---|---|
 | deterministic | test, lint, build, coverage, or aggregate dependency failure | Fetch bounded failed-step evidence, persist a correction checkpoint on the original bead, and enqueue a fresh correction assignment for any available worker |
 | superseded | candidate or base changed; run cancelled by newer push | Ignore old run and await the replacement |
-| transient | GitHub 5xx, network timeout, runner startup failure, `gh` temporary error | Retry with jittered exponential backoff within the run timeout |
+| transient | GitHub 5xx, network timeout, runner startup failure, API transport error | Retry with jittered exponential backoff within the run timeout |
 | auth/config | missing auth, missing workflow, missing aggregate check | Mark factory configuration unhealthy and pause new remote-gate assignments; do not ask the operator to advance individual beads |
 | ambiguous | multiple matching PRs, mismatched repository identity, unverifiable SHA | Preserve branch/ref/evidence and quarantine for dispatcher recovery logic |
 
@@ -1762,6 +1785,9 @@ chains; it may split them further but may not collapse away a boundary:
    Setup/doctor persist and startup re-attests canonical Git binary/exec-path/
    HTTPS-helper identities and hashes; missing, moved, replaced, or untrusted
    helper evidence fails before any credential-bearing subprocess.
+   Validate the typed in-process API base URL, host/SNI, TLS roots/CA reference,
+   redirect/proxy policy, API version, and size/time limits; `gh` presence or
+   authentication is irrelevant to remote-gate readiness.
    Thread effective `ManualIntegration` through both CLI parent/child start
    paths and reject it with `github-pr` before any startup side effect; local
    mode remains compatible.
@@ -1780,8 +1806,8 @@ chains; it may split them further but may not collapse away a boundary:
    policy mutation in that same interval, approving review, CODEOWNER, conversation,
    deployment, signed-commit, lock/read-only, actor restriction, and merge-
    queue policy blockers.
-   Bind separate `gh` and Git network transports to one credential-provider
-   actor; test SSH origins, ambient admin/credential helpers, mismatched actors,
+   Bind the in-process API client and Git network transport to one credential-
+   provider actor; test SSH origins, ambient admin/credential helpers, mismatched actors,
    host/repository scope, expiry refresh, and secret redaction through the real
    adapter constructor. Expose the same service-safe credential and canonical
    HTTPS transport constructors to the managed lifecycle runner; no second Git
@@ -1826,6 +1852,12 @@ chains; it may split them further but may not collapse away a boundary:
    credential-capturing/failing sentinels. Real Git internal operations must use
    only the setup-attested helper chain, while an ordinary user Git invocation
    still sees the poisoned environment.
+   Implement all GitHub API operations with the shared in-process HTTP client;
+   no adapter or reconciler call may execute `gh`. A TLS test server covers every
+   endpoint and rejects wrong SNI/host, unconfigured proxy/CA, cross-host
+   redirect, oversized/malformed JSON, forged actor/scope, and token leakage.
+   Poison PATH with a credential-capturing `gh`, plus `GH_TOKEN`, `GH_HOST`,
+   `GH_CONFIG_DIR`, loader, and proxy variables; no sentinel process may run.
 3. **Protocol and worker handoff.** Wire `CANDIDATE_READY` through
    `pkg/protocol/message.go`, `pkg/worker/worker.go:awaitSubprocessAndReport`,
    `runQGAndReport`, `SendReadyForReview`, and `SendDone`. Update
@@ -2018,6 +2050,9 @@ chains; it may split them further but may not collapse away a boundary:
    different provider ID, lose the create response, permit duplicate marked
    creation, and prove discovery/deduplication/atomic rebind plus final unfreeze
    without rewriting static config or the descriptor.
+   The external monitor constructs the same attested in-process HTTP client from
+   the descriptor; a poisoned `gh`/PATH/GH environment cannot intercept its
+   maintenance token, and process inventory proves it spawns no API CLI.
    Run the same project with `auto_install_after_epic: false`: no supervisor
    fails startup, while an installed supervisor passes. Kill the monitor and
    stable shim, prove OS-service relaunch and durable request reclaim; while its
@@ -2106,7 +2141,7 @@ chains; it may split them further but may not collapse away a boundary:
     last-owner unfreeze proof, and integration freeze.
 12. **Hermetic epic verification and canary.** Build
     `scripts/test_remote_gate_epic.sh` around a real local Git remote and a
-    deterministic GitHub API/`gh` fake. Parse `go test -json` and require a
+    deterministic production-faithful TLS GitHub API server. Parse `go test -json` and require a
     test-level pass event for every test in the fixed manifest below. The
     harness fails if the manifest is empty, has duplicates, names an absent
     test, or lacks a criterion mapping. Statically validate both PR and full-
@@ -2126,6 +2161,10 @@ chains; it may split them further but may not collapse away a boundary:
     loader/proxy overrides. Every real-Git internal mutation must ignore them,
     and the sentinel must observe neither execution nor App credentials; the
     ordinary user-Git control proves the poison is otherwise effective.
+    The API side uses a real TLS server and poisons PATH with a token-capturing
+    `gh` plus ambient GH/proxy/CA/loader values. Endpoint coverage and process
+    inventory prove every runtime and maintenance API call stays in-process,
+    honors only typed network policy, and never executes or feeds a sentinel.
     CLI fixtures cover both installed start entry points with manual integration
     on/off in local/GitHub modes and assert zero remote side effects on the
     invalid combination.
@@ -2325,6 +2364,11 @@ or explicitly cancelled.
    loader/proxy override. Internal transport pins the setup-attested binary,
    exec path, helper identities, HTTPS policy, and minimal environment so no
    sentinel runs or sees a token; the ordinary Git control still uses the poison.
+   All PR/workflow/check/artifact/cancel/ruleset/token operations use the typed
+   in-process TLS client. A poisoned executable `gh`, GH/proxy/CA/loader ambient
+   state, cross-host redirect, malformed/oversized response, and forged actor
+   cannot execute code, capture credentials, or produce accepted evidence;
+   process inventory proves zero API subprocesses for runtime and maintenance.
    A second production-constructor fixture requires the maintenance App token
    to contain exactly Metadata-read and Administration-write for the same host/
    repository and no runtime permission. It proves runtime/maintenance
@@ -2431,7 +2475,7 @@ Epic verification command:
 Cmd: test "$(git branch --show-current)" = main && ./scripts/test_remote_gate_epic.sh && ./scripts/test_quality_gate.sh && ./scripts/quality_gate.sh
 Assert: exit 0. The remote-gate harness uses `go test -json` and fails unless
 every exact integration test emits a test-level `pass` event; exercises a real
-local Git remote and deterministic GitHub API/`gh` fake; validates PR and full
+local Git remote and deterministic TLS GitHub API server; validates PR and full
 mutation workflow contracts, status/health/monitor/dashboard surfaces, strict
 incremental and full mutation outcomes, and provider boundaries. The existing
 QG harness and full repository gate also pass on main.
