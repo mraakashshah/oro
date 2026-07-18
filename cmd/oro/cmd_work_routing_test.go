@@ -30,6 +30,7 @@ func TestExecuteWorkDryRunReportsEffectiveWorkerAndReviewRouting(t *testing.T) {
 		t.Fatalf("write agent config: %v", err)
 	}
 	t.Setenv("ORO_HOME", oroHome)
+	t.Setenv("ORO_PROJECT", "routing-test")
 
 	db, err := openStateDB(filepath.Join(tmpDir, "state.db"))
 	if err != nil {
