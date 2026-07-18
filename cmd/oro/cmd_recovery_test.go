@@ -636,6 +636,63 @@ VALUES ('oro-human-owned', 'agent/oro-human-owned', 'unsafe_stale_branch', 'oper
 	}
 }
 
+func TestRecoveryListJSONIncludesStatus(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "state.db")
+	t.Setenv("ORO_DB_PATH", dbPath)
+	t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "oro.pid"))
+	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+
+	db, err := openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	defer db.Close()
+	for _, row := range []struct {
+		beadID string
+		status string
+	}{
+		{beadID: "oro-json-open", status: "open"},
+		{beadID: "oro-json-human-owned", status: "human_owned"},
+		{beadID: "oro-json-resolved", status: "resolved"},
+	} {
+		if _, err := db.ExecContext(context.Background(), `
+INSERT INTO recovery_quarantines (bead_id, branch, reason, details, status)
+VALUES (?, 'agent/recovery-json', 'unsafe_stale_branch', 'operator needed', ?)`, row.beadID, row.status); err != nil {
+			t.Fatalf("seed %s recovery quarantine: %v", row.status, err)
+		}
+	}
+	db.Close()
+
+	root := newRootCmd()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetArgs([]string{"recovery", "list", "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("recovery list --json: %v", err)
+	}
+
+	var records []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &records); err != nil {
+		t.Fatalf("recovery list --json invalid JSON: %v\nraw: %s", err, out.String())
+	}
+	got := make(map[string]string, len(records))
+	for _, record := range records {
+		beadID, _ := record["bead_id"].(string)
+		status, ok := record["status"].(string)
+		if !ok || status == "" {
+			t.Fatalf("record for %q omits status: %#v", beadID, record)
+		}
+		got[beadID] = status
+	}
+	if got["oro-json-open"] != "open" || got["oro-json-human-owned"] != "human_owned" {
+		t.Fatalf("returned statuses = %#v, want open and human_owned", got)
+	}
+	if _, ok := got["oro-json-resolved"]; ok {
+		t.Fatalf("returned statuses = %#v, resolved row must be omitted", got)
+	}
+}
+
 func TestRecoveryResolveAfterMergeCanReleaseHumanOwnedQuarantine(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "state.db")

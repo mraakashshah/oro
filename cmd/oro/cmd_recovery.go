@@ -25,7 +25,7 @@ type recoveryQuarantineCLIRecord struct {
 	Branch       string `json:"branch,omitempty"`
 	Reason       string `json:"reason"`
 	Details      string `json:"details"`
-	Status       string `json:"status,omitempty"`
+	Status       string `json:"status"`
 	CreatedAt    string `json:"created_at"`
 }
 
@@ -306,7 +306,7 @@ func openRecoveryStateDB() (*sql.DB, error) {
 func listRecoveryQuarantines(ctx context.Context, db *sql.DB) ([]recoveryQuarantineCLIRecord, error) {
 	rows, err := db.QueryContext(ctx, `
 SELECT id, bead_id, COALESCE(assignment_id, 0), COALESCE(worker_id, ''), COALESCE(worktree, ''),
-       COALESCE(branch, ''), reason, details, created_at
+       COALESCE(branch, ''), reason, details, status, created_at
 FROM recovery_quarantines
 WHERE status IN ('open', 'human_owned')
 ORDER BY id`)
@@ -318,7 +318,7 @@ ORDER BY id`)
 	var records []recoveryQuarantineCLIRecord
 	for rows.Next() {
 		var r recoveryQuarantineCLIRecord
-		if err := rows.Scan(&r.ID, &r.BeadID, &r.AssignmentID, &r.WorkerID, &r.Worktree, &r.Branch, &r.Reason, &r.Details, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.BeadID, &r.AssignmentID, &r.WorkerID, &r.Worktree, &r.Branch, &r.Reason, &r.Details, &r.Status, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan recovery quarantine: %w", err)
 		}
 		records = append(records, r)
