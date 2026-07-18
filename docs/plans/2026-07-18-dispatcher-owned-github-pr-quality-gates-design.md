@@ -368,6 +368,16 @@ Rules:
   must exist on the current default branch and declare `workflow_dispatch`, even
   when the audited snapshot belongs to a custom/release branch. Absence,
   disablement, or invalid trigger is auth/config failure.
+- Preflight also evaluates repository and organization rules against a
+  prospective exact `oro/audits/<project-prefix>/**` ref, independently of
+  candidate and target policy. It proves the runtime App may create, adopt by
+  exact SHA, and delete that namespace. Setup's capability canary uses a unique
+  ref inside that exact namespace, creates it with an expected-absent lease,
+  observes it, and deletes it with an exact-SHA lease; a generic probe ref is
+  insufficient. Applicable rule IDs, patterns, creation/update/deletion
+  restrictions, enforcement modes, bypass actors, and policy hash are persisted.
+  A failed cleanup remains a visible retryable setup defect rather than being
+  hidden or deleted with the administration credential.
 - `runtime_identity` is typed and separate from setup administration. GitHub v1
   uses a GitHub App installation credential provider. `private_key_ref` points
   to an OS secret store or an approved credential-command provider; secret
@@ -1277,6 +1287,12 @@ the workflow definition at the audited snapshot. Default-branch movement,
 workflow deletion/disablement, or trigger removal after startup is an
 auth/config failure with no audit ref or workflow run created.
 
+At that same no-side-effect barrier, the adapter re-evaluates every effective
+repository and organization rule for the concrete generated audit-ref name and
+attests the runtime App's create/adopt capability against the startup policy
+evidence. Any new matching pattern, restriction, enforcement change, lost
+bypass, or ambiguous policy result fails auth/config before ref creation.
+
 `workflow_dispatch` is issued only against an immutable dispatcher-owned branch
 ref, never the moving target branch or a SHA-like input. For each audit the
 dispatcher creates/adopts
@@ -1296,8 +1312,12 @@ ref, head SHA, and input audit ID before trusting inventory or artifacts. Target
 movement immediately before/after dispatch cannot change workflow code or
 checkout state. Restart recovery adopts the exact ref/run idempotently. The
 audit ref is deleted with an exact SHA lease only after terminal artifact
-incorporation and durable campaign reconciliation; unincorporated evidence
-always retains it.
+incorporation and durable campaign reconciliation. Immediately before deletion,
+the adapter re-evaluates the effective rules for that exact name and proves the
+same App's deletion capability; denial or ambiguity enters durable
+`cleanup_pending`, reports auth/config health, and retries without losing the
+incorporated result or using an administrative credential. Unincorporated
+evidence always retains the ref.
 
 The workflow independently reconstructs the inventory from its exact checkout
 and fails before planning if any hash/count/policy value differs. Its shard
@@ -1420,7 +1440,10 @@ chains; it may split them further but may not collapse away a boundary:
    allowlist/hash and recent isolated capability-canary evidence. Discover and
    persist the repository default branch independently of the configured target;
    require the full-mutation workflow to be present, enabled, and registered
-   with `workflow_dispatch` on that branch.
+   with `workflow_dispatch` on that branch. Evaluate effective repository and
+   organization rules for the prospective `oro/audits/<project-prefix>/**`
+   namespace, persist operation-specific create/adopt/delete capability and
+   policy hashes, and run the capability canary inside that exact namespace.
 2. **Provider-neutral core and GitHub adapter.** Implement normalized
    candidate/change/evidence/merge types, all `RemoteGateClient` operations
    including idempotent `SetChangeReady` and ambiguous
@@ -1453,6 +1476,9 @@ chains; it may split them further but may not collapse away a boundary:
    branch and dispatch ref as separate provider identities, and reject dispatch
    when the workflow is absent, disabled, or lacks `workflow_dispatch` on the
    current default branch even if the same workflow is valid at the audit ref.
+   Make the deterministic fake apply repository/organization rules by ref
+   pattern, operation type, enforcement mode, and App bypass actor. Candidate,
+   generic probe, target, and audit namespaces must be independently configurable.
 3. **Protocol and worker handoff.** Wire `CANDIDATE_READY` through
    `pkg/protocol/message.go`, `pkg/worker/worker.go:awaitSubprocessAndReport`,
    `runQGAndReport`, `SendReadyForReview`, and `SendDone`. Update
@@ -1615,7 +1641,13 @@ chains; it may split them further but may not collapse away a boundary:
     workflow while the default branch lacks it, disables it, removes its trigger,
     or changes default branch after startup; each case fails before ref or run
     creation. The production-faithful fake enforces default-branch registration
-    independently from dispatch-ref workflow identity.
+    independently from dispatch-ref workflow identity. Re-attest all effective
+    rules for the concrete audit-ref name immediately before create/adopt and
+    delete. Fixtures independently deny audit-namespace creation, update/adopt,
+    and deletion while candidate/target/generic-probe refs remain usable; cover
+    startup drift, lost bypass, ambiguous policy reads, failed cleanup recovery,
+    restart, and proof that neither setup administration nor another actor
+    silently performs runtime cleanup.
 11. **Observability and self-healing.** Extend dispatcher/status JSON,
     `cmd/oro/cmd_status.go`, health online/offline loaders, monitor defect
     rules, dashboard provider/templates, and progress responses for every
@@ -1736,8 +1768,9 @@ nonterminal remote record.
    only through attested B1 workers, and rollback rotates generation again.
 5. `oro status --json`, health, monitor events, and the dashboard expose remote
    backlog, degraded mode, failure feedback delivery, quarantine count, and
-   pending post-epic installation, expected/attested active-generation workers,
-   stale worker connections, and residual old-generation processes.
+   pending post-epic installation, audit-ref cleanup pending with the blocking
+   policy evidence, expected/attested active-generation workers, stale worker
+   connections, and residual old-generation processes.
 6. Workflow contract fixtures prove PR eligibility for main, a configured
    custom target, and an `epic/**` target; prove the aggregate includes every
    portable job including strict incremental mutation; and reject mutable
@@ -1755,6 +1788,10 @@ nonterminal remote record.
    Workflows-write. A permission-aware probe/fake rejects every missing member,
    every forbidden extra permission, drift/revocation, and endpoint-specific
    dispatch/cancel/observe/log/artifact denial before production work.
+   The setup canary creates, observes, and exact-SHA lease-deletes its unique
+   probe inside `oro/audits/<project-prefix>/**`; policy fixtures prove that a
+   usable target/candidate/generic probe does not imply audit-namespace create,
+   adopt, or delete capability.
 7. GitHub mode runs the configured local presubmit actions with bounded
    total/resource concurrency, then replaces the production
    `READY_FOR_REVIEW`/`DONE` local-QG merge path with durable candidate
@@ -1785,6 +1822,11 @@ nonterminal remote record.
    cover a custom/release audit target whose immutable snapshot is valid while
    the default branch is missing, disabled, trigger-ineligible, or changed, and
    prove failure creates neither an audit ref nor a workflow run.
+   Effective repository and organization rules are evaluated for the concrete
+   audit-ref name at startup, immediately before create/adopt, and immediately
+   before deletion, including operation-specific restrictions and App bypass.
+   Creation denial has no ref/run side effects; deletion denial durably retains
+   the exact ref in visible `cleanup_pending` and self-heals on policy recovery.
    Dispatch uses a leased immutable audit branch at the exact snapshot SHA,
    binds the expected workflow path/blob and run ref/head/attempt, survives
    target/workflow movement and restart, and deletes the ref only after durable
