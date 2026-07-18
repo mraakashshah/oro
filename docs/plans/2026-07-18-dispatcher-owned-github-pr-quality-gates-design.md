@@ -326,7 +326,9 @@ Rules:
   the project-scoped Oro state directory. It contains canonical real repository
   root, immutable project identity, absolute `ORO_HOME`, state DB/PID/socket/
   lifecycle-ledger paths, installed executable path, worker/start configuration,
-  schema version, and descriptor hash. It contains no credentials. Managed
+  schema version, runtime credential-provider reference, expected App/
+  installation/host/repository identity, network transport policy, and
+  descriptor hash. It contains no credentials. Managed
   monitor, health, restart, and `startFreshSwarm` accept this descriptor
   explicitly and never rediscover project context from CWD, `ORO_PROJECT`, or
   ambient environment.
@@ -677,6 +679,13 @@ retry; an actor/installation/repository mismatch fails closed before mutation.
 Production-construction tests use separate fake `gh` and Git receive transports
 to expose split actors, ambient administrator credentials, wrong host/repo,
 credential-helper/SSH leakage, expiry/refresh, and redaction.
+
+The credential provider and canonical authenticated Git transport live in a
+shared production package used by both the dispatcher GitHub adapter and the
+managed lifecycle runner. The supervisor reconstructs that provider from the
+descriptor's hash-bound nonsecret reference and expected actor scope after the
+dispatcher is gone. It cannot substitute an anonymous, SSH, ambient helper, or
+developer credential path.
 
 The dispatcher owns policy, persistence, retry classification, and state
 transitions. The client owns only provider/git side effects and normalized
@@ -1066,6 +1075,17 @@ from an unrelated working directory with ambient project variables removed,
 then requires its heartbeat and lifecycle claim to appear only in the intended
 project database.
 
+Every supervisor fetch/re-fetch of the authoritative target uses the shared
+credential-provider-backed canonical HTTPS transport. Before pre-install,
+pre-shutdown, and pre-start network reads, it refreshes with safety skew and
+attests the expected App, installation, host, and repository. Temporarily
+locked/unavailable secret storage is a durable transient lifecycle failure;
+invalid actor/scope is auth/config failure. Tokens are excluded from argv,
+descriptor, service definition, stdout/stderr, monitor logs, events, and
+lifecycle rows. An authenticated private-remote fixture rejects anonymous,
+ambient, SSH/helper, expired, wrong-installation, and wrong-repository access
+and expires credentials between lifecycle stages.
+
 The durable epic states distinguish `promotion_gate`, `remote_merged`,
 `local_install_pending`, `restart_pending`, `health_verification`, and
 `complete`. `tryCloseEpic`, `completeEpicClose`, and `ffMergeEpicBranch` must
@@ -1227,7 +1247,9 @@ chains; it may split them further but may not collapse away a boundary:
    Bind separate `gh` and Git network transports to one credential-provider
    actor; test SSH origins, ambient admin/credential helpers, mismatched actors,
    host/repository scope, expiry refresh, and secret redaction through the real
-   adapter constructor.
+   adapter constructor. Expose the same service-safe credential and canonical
+   HTTPS transport constructors to the managed lifecycle runner; no second Git
+   network implementation is permitted.
    Model accepted-CAS/lost-response followed by a second target advance before
    observation; reconciliation returns the persisted proposed commit as
    integrated without requiring it to remain the current tip.
@@ -1324,6 +1346,14 @@ chains; it may split them further but may not collapse away a boundary:
    concurrently and proves distinct descriptors, service identities, ledgers,
    heartbeats, sockets, restart targets, and uninstall isolation. Repository
    relocation fails closed until setup repairs the exact instance.
+   The supervisor descriptor carries the hash-bound nonsecret credential-
+   provider reference and expected actor/repository scope. Extend the epic test
+   with an authenticated private-remote-equivalent HTTP fixture, launch through
+   the clean service environment, expire the App token between build and
+   pre-shutdown/pre-start checks, and prove refresh, scope attestation, target
+   revalidation, redaction from service/log/rows, restart, acknowledgement, and
+   epic closure. Anonymous, SSH/helper, ambient, wrong-actor/repository, and
+   unrefreshable credentials fail without mutation.
 10. **Remote full mutation audit.** Add the workflow-dispatch/shard/aggregate
     workflow and wire `pkg/dispatcher/audit.go:runAudit` to durable exact-SHA
     campaign observation, artifact ingestion, restart, infrastructure failure,
@@ -1432,7 +1462,9 @@ nonterminal remote record.
    unit from an unrelated CWD with empty ambient project environment, proves
    exact descriptor-bound database/socket/repository identity, and verifies
    simultaneous project A/B service identity plus uninstall isolation and
-   relocation failure.
+   relocation failure. A private-remote-equivalent authenticated fixture expires
+   the App token between lifecycle stages and proves monitor-side refresh,
+   actor/repository attestation, no ambient fallback, and secret redaction.
 5. `oro status --json`, health, monitor events, and the dashboard expose remote
    backlog, degraded mode, failure feedback delivery, quarantine count, and
    pending post-epic installation.
@@ -1446,7 +1478,8 @@ nonterminal remote record.
    lock/actor/merge-queue policy. Production transport fixtures prove API and
    Git network operations use the same configured App installation and reject
    ambient, split, expired-unrefreshable, wrong-host, or wrong-repository
-   credentials without exposing secret material.
+   credentials without exposing secret material. This assertion covers both
+   dispatcher and externally supervised lifecycle constructors/transports.
 7. GitHub mode runs the configured local presubmit actions with bounded
    total/resource concurrency, then replaces the production
    `READY_FOR_REVIEW`/`DONE` local-QG merge path with durable candidate
