@@ -415,6 +415,13 @@ Rules:
   restrictions, enforcement modes, bypass actors, and policy hash are persisted.
   A failed cleanup remains a visible retryable setup defect rather than being
   hidden or deleted with the administration credential.
+- Preflight separately evaluates create/update/delete rules and runtime-App
+  bypass for prospective `epic/**` refs. The capability canary creates,
+  observes, advances by exact old SHA, and lease-deletes a unique ref in that
+  exact namespace. Candidate or audit-ref capability is not evidence for an
+  epic PR base. The effective policy is re-attested for each concrete epic ref
+  immediately before create/recreate and delete; drift fails before mutation or
+  enters durable cleanup pending after retirement.
 - `runtime_identity` is typed and separate from setup administration. GitHub v1
   uses a GitHub App installation credential provider. `private_key_ref` points
   to an OS secret store or an approved credential-command provider; secret
@@ -532,6 +539,7 @@ candidate_adopted
   -> rebasing
   -> local_presubmit_post_rebase
   -> ops_review
+  -> ensuring_ephemeral_target (non-main epic base only)
   -> publishing
   -> awaiting_run
   -> running
@@ -687,6 +695,8 @@ JSON or GitHub PR types:
 ```go
 type RemoteGateClient interface {
     Preflight(ctx context.Context, req PreflightRequest) (Capabilities, error)
+    EnsureEphemeralTarget(ctx context.Context, req EnsureEphemeralTargetRequest) (EphemeralTarget, error)
+    DeleteEphemeralTarget(ctx context.Context, req DeleteEphemeralTargetRequest) error
     Publish(ctx context.Context, req PublishRequest) (PublishedCandidate, error)
     EnsureChange(ctx context.Context, req EnsureChangeRequest) (RemoteChange, error)
     Observe(ctx context.Context, req ObserveGateRequest) (RemoteGateObservation, error)
@@ -697,6 +707,17 @@ type RemoteGateClient interface {
     Reconcile(ctx context.Context, req ReconcileChangeRequest) error
 }
 ```
+
+`EnsureEphemeralTarget` is the provider-neutral lifecycle for PR bases such as
+an Oro epic branch. Its request includes project/epic identity, exact ref name,
+persisted seed SHA, target generation, ownership marker, and expected-absent or
+exact-observed lease. GitHub creates `epic/<id>` at that SHA; an identical ref is
+idempotently adopted after a concurrent creator, lost response, or restart. A
+mismatched unowned/external ref is quarantined and never overwritten. Once the
+target exists, normal `IntegrateSquashCAS` advances it as children complete.
+`DeleteEphemeralTarget` accepts only a durably retired target plus exact final
+SHA/generation and uses a leased Git deletion; it never deletes a moving or
+unowned ref.
 
 `PrepareSquashRequest` contains repository identity, remote change ID, expected
 candidate head SHA, exact target ref/SHA, exact evidence ID, reviewed/tested
@@ -1171,6 +1192,15 @@ is reverified.
 
 Child beads targeting an epic branch use PRs whose base is that epic branch.
 The dispatcher publishes and advances the remote epic branch as children merge.
+The local epic creation transaction persists its exact seed SHA, ref, ownership
+marker, and generation in an `epic_target` row. Before the first child candidate
+can publish or create a PR, the dispatcher calls `EnsureEphemeralTarget` and
+durably records the returned provider identity/SHA. Two concurrent first
+children share that row: one expected-absent create wins and the other adopts
+the exact ref. Publication remains ineligible until creation/adoption is
+committed. A lost response, dispatcher death, or externally deleted active ref
+reconciles by observation; an active owned target may be recreated only at its
+exact last durably integrated SHA, while a retired target can never resurrect.
 
 When all children and acceptance criteria are closed:
 
@@ -1189,6 +1219,16 @@ signals the external lifecycle supervisor. The dispatcher never attempts to
 restart itself. A managed `oro monitor --act` child owns step 7 across the
 termination boundary under the stable supervisor shim. It durably claims the
 operation with a renewable lease, then idempotently:
+
+After step 6, the dispatcher transactionally marks the ephemeral epic target
+retired and records its exact final SHA before requesting leased deletion.
+Deletion happens only after the promotion integration and PR reconciliation are
+durable. Absent-after-timeout is reconciled as success; still-present-at-exact-
+SHA is retryable; a changed ref is quarantined. Policy or permission denial is
+durable `epic_target_cleanup_pending`, exposed to self-healing and retried
+without resurrecting the branch. Final epic completion requires cleanup
+reconciliation as well as the post-install acknowledgement, though build/
+restart work may proceed while cleanup retries.
 
 1. verifies the exact synced target SHA and clean lifecycle worktree;
 2. runs or resumes `make build install` and records repository/installed binary
@@ -1623,6 +1663,8 @@ chains; it may split them further but may not collapse away a boundary:
    compatible supervisor/monitor heartbeat and maintenance attestation for every
    `github-pr` startup even when epic auto-install is false; monitorless explicit
    configuration fails before the dispatcher socket accepts work.
+   Prove prospective `epic/**` create/update/delete capability and persist the
+   exact-namespace canary evidence separately from candidate/audit namespaces.
 2. **Provider-neutral core and GitHub adapter.** Implement normalized
    candidate/change/evidence/merge types, all `RemoteGateClient` operations
    including idempotent `SetChangeReady` and ambiguous
@@ -1660,6 +1702,10 @@ chains; it may split them further but may not collapse away a boundary:
    generic probe, target, and audit namespaces must be independently configurable.
    Model provider execution limits and reject a planned matrix above the reported
    bound exactly as the production host does.
+   Implement `EnsureEphemeralTarget`/`DeleteEphemeralTarget` with expected-
+   absent/exact-SHA leases, ownership/generation checks, ambiguity observation,
+   and pattern-specific policy enforcement. The fake independently denies epic
+   creation, advancement, or deletion while other namespaces remain usable.
    Implement the provider-neutral `PolicyReconciler` boundary and GitHub adapter
    with discover/create/update/adopt/deduplicate/rebind plus owned-ruleset/
    identity/template/idempotency validation. Production
@@ -1712,6 +1758,11 @@ chains; it may split them further but may not collapse away a boundary:
    Continuously observe the claimant lease and block integration intent/CAS when
    stale; recovery must not enter memory-safe local merge or mint maintenance
    credentials inside the dispatcher.
+   Add `epic_target` seed/provider/ownership/generation/active/retired/cleanup
+   rows and CAS transitions. Serialize concurrent first-child ensure, child
+   integration, epic close, external ref deletion, and cleanup so a retired ref
+   cannot be recreated and a missing active ref is restored only at the last
+   durably integrated SHA.
    Persist the worker generation/process inventory and make worker pool
    registration, idle selection, capacity, health, status, and assignment
    require active-generation attestation. `shutdownWaitForWorkers`,
@@ -1740,6 +1791,10 @@ chains; it may split them further but may not collapse away a boundary:
    crashes before/after preparation, row commit, remote mutation, and adapter
    return through the real two-phase production call chain,
    unexpected result tree, and local divergence without destructive reset.
+   Before `Publish`/`EnsureChange` for a non-main epic base, wire local
+   `PrepareBaseBranchForAssignment`/`CreateBranch` seed evidence through the
+   durable `EnsureEphemeralTarget` transition; PR creation is impossible until
+   exact remote-base adoption commits.
 8. **Correction and cleanup.** Persist bounded findings, create a normal pool
    correction assignment at the exact remote candidate SHA, and handle dead
    workers, deleted worktrees, missing refs, duplicate findings, non-ancestor
@@ -1773,6 +1828,12 @@ chains; it may split them further but may not collapse away a boundary:
    acknowledgement, epic closure, and recovery after monitor crashes both
    after install and after old-daemon exit. An in-process lifecycle fake cannot
    satisfy this package.
+   Start the bare remote without `epic/<id>`, race two first children, lose the
+   winning create response, restart, and prove one exact seed ref plus two valid
+   child PRs. Cover mismatched existing ref, operation-specific ruleset denial,
+   external deletion/recreation while active, promotion retirement, leased
+   deletion ambiguity, changed-ref quarantine, cleanup pending, and no post-
+   retirement resurrection.
    Add the project-global lifecycle generation/lease, ancestry-ordered desired
    SHA selection, descendant-satisfies-ancestor evidence, no-downgrade running
    SHA, and pre-install/pre-shutdown/pre-start revalidation. The same test runs
@@ -1901,6 +1962,8 @@ chains; it may split them further but may not collapse away a boundary:
     Provider-boundary fixtures include the monitorless auto-install-disabled
     startup rejection and stale-heartbeat integration barrier so the always-
     supervised requirement cannot be hidden by the canary's normal monitor.
+    The epic fixture asserts the bare remote initially lacks every `epic/**`
+    ref; pre-seeding the base is a harness failure.
 13. **Automatic degraded mode and memory-safe full fallback.** Own the
     `transient_failed -> outage_degraded -> local_memory_safe_gate ->
     local_passed_waiting_remote` dispatcher transitions, outage timer, exact
@@ -1984,6 +2047,11 @@ nonterminal remote record.
    epic operations `S1 -> S2`, reverse claim order and target movement during
    build never downgrade or restart twice unnecessarily; the healthy `S2`
    installation durably satisfies both operations and closes both epics.
+   The real bare remote begins with no `epic/**` ref. Two concurrent first
+   children converge through expected-absent create/exact-SHA adoption despite
+   lost response and restart, then create PRs against the one remote base.
+   Promotion retires and lease-deletes that ref; mismatches, policy denial,
+   ambiguity, cleanup pending, and post-retirement non-resurrection are proven.
    The same test launches the actually generated launchd/systemd-equivalent
    unit from an unrelated CWD with empty ambient project environment, proves
    exact descriptor-bound database/socket/repository identity, and verifies
@@ -2018,6 +2086,7 @@ nonterminal remote record.
    pending post-epic installation, audit-ref cleanup pending with the blocking
    policy evidence, mutation requested/provider-bound/effective shard counts,
    integrated policy drift plus integration-freeze/setup-reconciliation state,
+   ephemeral epic-target creation/adoption/retirement/cleanup state,
    logical policy key, active provider ID/binding generation, create ambiguity/
    deduplication, supervisor heartbeat/capability generation and maintenance-
    unavailable barrier, lifecycle readiness reason/control/queue generations, expected/attested
@@ -2044,6 +2113,9 @@ nonterminal remote record.
    probe inside `oro/audits/<project-prefix>/**`; policy fixtures prove that a
    usable target/candidate/generic probe does not imply audit-namespace create,
    adopt, or delete capability.
+   A separate unique `epic/**` canary proves create, exact-SHA advancement, and
+   leased deletion under that namespace's effective repository/organization
+   rules; other ref probes cannot satisfy this assertion.
    A second production-constructor fixture requires the maintenance App token
    to contain exactly Metadata-read and Administration-write for the same host/
    repository and no runtime permission. It proves runtime/maintenance
