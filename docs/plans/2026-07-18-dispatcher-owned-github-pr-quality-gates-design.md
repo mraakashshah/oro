@@ -842,13 +842,15 @@ dispatcher always resolve the current binding generation from the shared
 ledger. Crashes or lost responses around create, discovery, duplicate deletion,
 binding commit, and verification converge without duplicate active policy.
 
-`integrated_policy_drift` atomically creates a durable reconciliation request
-and integration freeze. The external monitor claims it with a renewable lease,
+`integrated_policy_drift` atomically creates a durable reconciliation request,
+attempt-owned blocker, and joins/creates the integration-barrier generation. The
+external monitor claims the request with a renewable lease,
 constructs `PolicyReconciler` from the descriptor, retries transient credential/
 API failures with backoff, and commits the returned evidence. Dispatcher
 `startupRecovery`, `restoreState`, and `spawnBackgroundLoops` reconcile requests
-and unfreeze only when a fresh runtime-identity policy read exactly matches the
-configured template and the integrated attempt is already accounted for.
+and resolve a blocker only when a fresh runtime-identity policy read exactly
+matches the configured template and that integrated attempt is already
+accounted for. Barrier closure uses the last-owner predicate below.
 Crashes before/after claim, token mint, provider update/create/adopt/rebind,
 verification, row commit, monitor restart, and dispatcher restart are
 idempotent. Drift caused by
@@ -1059,6 +1061,30 @@ Workers may finish and have results durably adopted, but no local or remote
 merge/FF/CAS occurs while it is set. A configuration rollback cannot clear or
 bypass it.
 
+The freeze is not one boolean. A monotonic `integration_barrier` generation owns
+durable participant rows keyed by project, integration attempt, target ref, and
+maintenance owner. Every issued CAS already has an attempt row before provider
+mutation and remains in `integration_intent|cas_issued|post_cas_verification`
+until its issuance/outcome, policy result, and local synchronization are durable.
+The first drift transaction
+increments the barrier generation, creates its drift blocker, and enrolls every
+other intent/issued/post-CAS attempt as a participant before eligibility observes the
+barrier. Later drift records join the same active generation; new integration
+attempts are forbidden.
+An enrolled `integration_intent` proven not yet issued is durably cancelled and
+never sent; issued/ambiguous attempts must be observed to exact outcome.
+
+Policy-reconciliation requests are deduplicated by desired policy identity but
+do not collapse per-attempt synchronization: one repair may satisfy several
+blockers, while each target/attempt separately proves its integrated result and
+authoritative local descendant. Recovery may resolve participants in any order.
+A resolution transaction marks only its owner complete, then performs a
+generation-checked `NOT EXISTS` query over unresolved blockers and enrolled
+post-CAS participants. Only the last-owner transaction may close the barrier and
+restore eligibility. Lost responses, ambiguous CAS, restart, different main/
+custom/epic targets, and duplicate recovery never decrement a counter or clear
+another owner's blocker.
+
 If mode becomes `local` while drift or deferred `local_sync` exists, startup is
 recovery-only: status/health and the external supervisor run, but the assignment
 loop and all integration paths remain ineligible. The previous runtime and
@@ -1069,9 +1095,10 @@ owned policy, the dispatcher re-verifies it with the runtime identity, fetches
 the authoritative remote target, proves the persisted squash is on its current
 first-parent history with the expected tree, and fast-forwards the local target
 to that exact current descendant. Dirty/divergent local state is preserved and
-quarantined, never reset. One transaction records remote/local synchronization,
-closes the remote ownership record exactly once, and clears the freeze; only
-then may local assignments or legacy integration start.
+quarantined, never reset. One transaction records that owner's remote/local
+synchronization and closes its remote ownership record exactly once. Local
+assignments or legacy integration start only when the atomic last-owner
+predicate closes the barrier.
 
 “GitHub reports” includes ancestry reconciliation of an ambiguous attempt. The
 dispatcher evaluates the persisted proposed squash commit, not only the current
@@ -1769,7 +1796,9 @@ chains; it may split them further but may not collapse away a boundary:
    integration freeze/setup-reconciliation request, lease, attempt, and evidence
    state, including the logical-key policy-binding registry, mutable provider ID,
    binding generation, create-attempt ID, ambiguity, duplicate leases, and
-   `maintenance_unavailable` heartbeat/capability generation. Wire
+   `maintenance_unavailable` heartbeat/capability generation. Model the freeze
+   as monotonic barrier-generation plus attempt/target/maintenance-owner blocker
+   and issued/post-CAS participant rows, never a boolean or decrementing counter. Wire
    `handleMessage`,
    `handleDone`, `handleReadyForReview`, `handleReviewResult`,
    `startupRecovery`, `restoreState`, `spawnBackgroundLoops`,
@@ -1809,6 +1838,11 @@ chains; it may split them further but may not collapse away a boundary:
    require policy repair, authenticated authoritative fetch, first-parent/tree
    proof, exact descendant fast-forward, remote-record closure, and unfreeze in
    the specified order; inject crashes and dirty/divergent local targets.
+   Inject two or more CAS attempts on main/custom/epic targets before the first
+   drift becomes visible, deduplicated/shared and distinct policy repairs,
+   out-of-order participant sync, lost/ambiguous outcomes, duplicate recovery,
+   and restart. Prove only a generation-checked zero-unresolved last-owner
+   transaction restores assignment/integration eligibility.
    Persist the worker generation/process inventory and make worker pool
    registration, idle selection, capacity, health, status, and assignment
    require active-generation attestation. `shutdownWaitForWorkers`,
@@ -1850,6 +1884,8 @@ chains; it may split them further but may not collapse away a boundary:
    `completeManualIntegration`, `mergeAndComplete`, and `ffMergeEpicBranch`;
    each performs zero mutation until supervised repair and authoritative
    descendant local sync clear the freeze.
+   Repeat with two drift/issued participants and resolve them in reverse order;
+   the first resolution cannot admit any legacy or remote integration.
 8. **Correction and cleanup.** Persist bounded findings, create a normal pool
    correction assignment at the exact remote candidate SHA, and handle dead
    workers, deleted worktrees, missing refs, duplicate findings, non-ancestor
@@ -1934,6 +1970,9 @@ chains; it may split them further but may not collapse away a boundary:
    boundary: the supervisor remains required and claims repair, while the
    dispatcher stays recovery-only. Prove exact remote descendant sync and
    transactional unfreeze before any local worker assignment or merge.
+   Share one policy-repair request across eligible blockers while retaining
+   per-attempt target sync; a monitor crash or duplicate claim cannot resolve a
+   blocker it does not own.
    Build distinct old/new Oro fixtures with both compatible and incompatible
    descriptor/operation-schema ranges. Exercise the normal no-crash
    `M0/B0 -> shim -> M1/B1 ->
@@ -2007,7 +2046,8 @@ chains; it may split them further but may not collapse away a boundary:
     rules, dashboard provider/templates, and progress responses for every
     required state and finding, including reconciliation request/lease/attempt,
     redacted maintenance identity status, before/after ruleset evidence, retry
-    age, integration freeze, and unfreeze proof.
+    age, barrier generation, blocker/participant owner and unresolved counts,
+    last-owner unfreeze proof, and integration freeze.
 12. **Hermetic epic verification and canary.** Build
     `scripts/test_remote_gate_epic.sh` around a real local Git remote and a
     deterministic GitHub API/`gh` fake. Parse `go test -json` and require a
@@ -2030,6 +2070,9 @@ chains; it may split them further but may not collapse away a boundary:
     to both `TestRemoteGateModeRollbackOwnership` and
     `TestRemoteGateExactEvidenceAndProtectedMerge`; testing those states only in
     isolation does not satisfy the harness criterion.
+    The same mapping requires concurrent drift blockers on different targets,
+    reverse-order recovery across restart, and no eligibility until the final
+    participant resolves.
 13. **Automatic degraded mode and memory-safe full fallback.** Own the
     `transient_failed -> outage_degraded -> local_memory_safe_gate ->
     local_passed_waiting_remote` dispatcher transitions, outage timer, exact
@@ -2116,6 +2159,10 @@ or explicitly cancelled.
    invalidates the second candidate when the first advances the base, reruns it,
    sends a deterministic failed run's bounded findings to the worker, and
    fast-forwards only after the replacement run and ops review pass.
+   A concurrent subcase issues CAS attempts on two different targets before
+   post-CAS policy observation, makes both barrier participants, recovers them
+   in reverse order across restart, and proves the first resolution cannot
+   restore assignment or integration eligibility.
 2. Killing and restarting the dispatcher during `awaiting_run`, `running`, and
    `passed` resumes the same exact PR/run when valid and never duplicates a PR,
    loses findings, or merges stale evidence.
@@ -2174,7 +2221,8 @@ or explicitly cancelled.
    logical policy key, active provider ID/binding generation, create ambiguity/
    deduplication, supervisor heartbeat/capability generation and maintenance-
    unavailable barrier, cross-mode recovery-only/deferred-sync state, lifecycle
-   readiness reason/control/queue generations, expected/attested
+   barrier generation and blocker/participant owners/unresolved count/last-owner
+   proof, readiness reason/control/queue generations, expected/attested
    active-generation workers, stale worker connections, and residual old-
    generation processes.
 6. Workflow contract fixtures prove PR eligibility for main, a configured
@@ -2262,6 +2310,10 @@ or explicitly cancelled.
    integrated squash on the authoritative current descendant, fast-forwards
    clean local state, closes remote ownership once, and only then admits local
    work. Dirty/divergent local state remains frozen and preserved.
+   A multi-owner variant has drift/issued participants on main and an epic or
+   custom target, shares policy repair where valid, synchronizes each attempt
+   separately in reverse order across restart, and proves only the final
+   generation-checked `NOT EXISTS` transition unfreezes the project.
 9. Every auditor cycle dispatches or adopts exactly one full mutation campaign
    for its audit ID and SHA, survives restart, validates every shard artifact,
    independently reconstructs the persisted eligible-unit inventory, proves
