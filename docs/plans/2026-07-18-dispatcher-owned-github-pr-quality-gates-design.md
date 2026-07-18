@@ -323,6 +323,14 @@ Rules:
   credential-helper, or developer tokens never satisfy this requirement.
 - Invalid explicit configuration fails startup with a configuration error. It
   does not silently switch modes.
+- `--manual-integration` is incompatible with effective `github-pr` mode. The
+  remote factory is an autonomous contract; it does not create a hidden manual-
+  approval state. Both `oro start`/`ExecDaemonSpawner` and
+  `oro dispatcher start`/`runDaemonOnly` reject the combination before daemon
+  socket availability, worker spawn, candidate publication, or remote recovery
+  mutation, and daemon-side typed validation repeats the check so a handcrafted
+  child invocation cannot bypass it. Local mode retains existing manual
+  integration behavior.
 - GitHub PR mode requires typed policy-reconciliation configuration for the
   one Oro-owned repository ruleset. Configuration and the supervisor descriptor
   carry a stable logical ownership key/name/template hash, never an immutable
@@ -1665,6 +1673,9 @@ chains; it may split them further but may not collapse away a boundary:
    configuration fails before the dispatcher socket accepts work.
    Prove prospective `epic/**` create/update/delete capability and persist the
    exact-namespace canary evidence separately from candidate/audit namespaces.
+   Thread effective `ManualIntegration` through both CLI parent/child start
+   paths and reject it with `github-pr` before any startup side effect; local
+   mode remains compatible.
 2. **Provider-neutral core and GitHub adapter.** Implement normalized
    candidate/change/evidence/merge types, all `RemoteGateClient` operations
    including idempotent `SetChangeReady` and ambiguous
@@ -1719,6 +1730,8 @@ chains; it may split them further but may not collapse away a boundary:
    `pkg/worker/prompt.go:buildCodingSections`. Prove malformed, oversized,
    stale, and duplicate handoffs fail safely and GitHub mode cannot enter the
    legacy full-QG or `DONE` merge path.
+   Prove remote `CANDIDATE_READY` cannot enter `completeManualIntegration`, and
+   that rejected startup sends no worker/protocol/remote messages.
    Add mandatory `HELLO`/`HELLO_ACK` negotiation carrying project, restart/
    worker generation, image/build, process identity, ownership type, and
    protocol range before `registerWorker`/`upsertWorker`. Version all assignment,
@@ -1763,6 +1776,9 @@ chains; it may split them further but may not collapse away a boundary:
    integration, epic close, external ref deletion, and cleanup so a retired ref
    cannot be recreated and a missing active ref is restored only at the last
    durably integrated SHA.
+   Implement local-manual rollback reconciliation: cancel/requeue pre-intent
+   remote records, resolve intent/ambiguous outcomes before socket readiness,
+   and preserve one-owner/no-legacy-merge invariants across restart.
    Persist the worker generation/process inventory and make worker pool
    registration, idle selection, capacity, health, status, and assignment
    require active-generation attestation. `shutdownWaitForWorkers`,
@@ -1795,6 +1811,10 @@ chains; it may split them further but may not collapse away a boundary:
    `PrepareBaseBranchForAssignment`/`CreateBranch` seed evidence through the
    durable `EnsureEphemeralTarget` transition; PR creation is impossible until
    exact remote-base adoption commits.
+   Add real `oro start` and `oro dispatcher start` fixtures proving
+   `github-pr + --manual-integration` fails before publication/CAS, including a
+   passed remote record and restart; prove local-manual rollback follows the
+   cancellation/reconciliation contract instead of silently auto-integrating.
 8. **Correction and cleanup.** Persist bounded findings, create a normal pool
    correction assignment at the exact remote candidate SHA, and handle dead
    workers, deleted worktrees, missing refs, duplicate findings, non-ancestor
@@ -1964,6 +1984,9 @@ chains; it may split them further but may not collapse away a boundary:
     supervised requirement cannot be hidden by the canary's normal monitor.
     The epic fixture asserts the bare remote initially lacks every `epic/**`
     ref; pre-seeding the base is a harness failure.
+    CLI fixtures cover both installed start entry points with manual integration
+    on/off in local/GitHub modes and assert zero remote side effects on the
+    invalid combination.
 13. **Automatic degraded mode and memory-safe full fallback.** Own the
     `transient_failed -> outage_degraded -> local_memory_safe_gate ->
     local_passed_waiting_remote` dispatcher transitions, outage timer, exact
@@ -2024,6 +2047,17 @@ remain audit evidence; active dispatcher-owned runs are reconciled to terminal
 or durably cancelled before their candidates are requeued, and candidate
 branches/refs are preserved. A legacy `DONE` or local merge can never race a
 nonterminal remote record.
+
+If rollback also enables local `--manual-integration`, startup recovery first
+cancels every pre-intent remote record and requeues its preserved candidate into
+the local-manual path. An integration-intent or ambiguous-CAS record is
+reconciled to an exact integrated/not-integrated outcome before the socket opens;
+an unintegrated candidate is requeued, while an already-integrated result is
+reported exactly once. Local manual policy never causes a remote-owned record to
+enter legacy merge, and no preexisting remote record may continue to a new CAS
+under the manual session. Switching back to `github-pr` requires the manual flag
+to be absent; existing local-manual records remain locally owned until completed
+or explicitly cancelled.
 
 ## Acceptance Criteria
 
@@ -2137,6 +2171,11 @@ nonterminal remote record.
    preempt/requeue on both sides of integration intent are covered. Exactly one
    of cancellation or integration wins; no remote-owned record reaches legacy
    recovery merge.
+   Both installed start commands reject effective `github-pr` plus
+   `--manual-integration` before daemon/worker/remote side effects. Local manual
+   mode remains functional; a GitHub-to-local-manual restart cancels/requeues
+   pre-intent records and resolves issued/ambiguous CAS before accepting work,
+   so no passed remote record silently auto-integrates under the manual session.
 8. Exact evidence tests reject same-name checks, changed workflow blobs,
    reruns for another attempt, stale synthetic merge SHAs, target movement at
    the merge boundary, ambiguous integration responses, simultaneous policy
