@@ -255,6 +255,48 @@ func TestCodexHookConfigBlockReplacement(t *testing.T) {
 	}
 }
 
+// TestCodexHookConfigBashMatcherIncludesSearchHook verifies that oro-search-hook
+// runs on the Codex PreToolUse Bash matcher (LAST in the chain, after the safety
+// guards) and that the dead str_replace_based_edit_tool matcher is gone. This is
+// what wires the token-saving read hook onto the read surface Codex actually uses.
+func TestCodexHookConfigBashMatcherIncludesSearchHook(t *testing.T) {
+	hooksDir := filepath.Join(t.TempDir(), "hooks")
+	block := codexHookConfigBlock(hooksDir)
+
+	if strings.Contains(block, "str_replace_based_edit_tool") {
+		t.Errorf("Codex hook config still wires the dead str_replace_based_edit_tool matcher:\n%s", block)
+	}
+
+	bashLine := findBashPreToolUseLine(t, block)
+	for _, want := range []string{"enforce_skills.py", "destructive_command_guard.py", "oro-search-hook"} {
+		if !strings.Contains(bashLine, want) {
+			t.Fatalf("Bash PreToolUse matcher missing %s:\n%s", want, bashLine)
+		}
+	}
+
+	iEnforce := strings.Index(bashLine, "enforce_skills.py")
+	iGuard := strings.Index(bashLine, "destructive_command_guard.py")
+	iHook := strings.Index(bashLine, "oro-search-hook")
+	if !(iEnforce < iGuard && iGuard < iHook) {
+		t.Errorf("oro-search-hook must run LAST on the Bash chain "+
+			"(enforce_skills < destructive_command_guard < oro-search-hook); "+
+			"got positions %d/%d/%d:\n%s", iEnforce, iGuard, iHook, bashLine)
+	}
+}
+
+// findBashPreToolUseLine returns the PreToolUse Bash matcher line — identified by
+// carrying enforce_skills.py, which distinguishes it from the PostToolUse Bash line.
+func findBashPreToolUseLine(t *testing.T, block string) string {
+	t.Helper()
+	for _, line := range strings.Split(block, "\n") {
+		if strings.Contains(line, `matcher = "Bash"`) && strings.Contains(line, "enforce_skills.py") {
+			return line
+		}
+	}
+	t.Fatalf("no PreToolUse Bash matcher line found in block:\n%s", block)
+	return ""
+}
+
 func TestInstallCodexHookConfigWritesManagedBlock(t *testing.T) {
 	codexHome := t.TempDir()
 	hooksDir := filepath.Join(t.TempDir(), "hooks")
