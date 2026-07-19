@@ -326,6 +326,35 @@ func TestSetupPhase2ReturnsConfig(t *testing.T) {
 }
 
 func TestSetupInstallsManagedGitHubCLI(t *testing.T) {
+	t.Run("dry-run reports managed CLI setup without executing it", func(t *testing.T) {
+		var buf bytes.Buffer
+		lookPathCalls := 0
+		runCalls := 0
+		err := setupPhase1Prereqs(&buf, setupOptions{
+			dryRun: true,
+			installDeps: InstallDeps{
+				GOOS: "darwin",
+				LookPath: func(string) (string, error) {
+					lookPathCalls++
+					return "", errors.New("must not execute during dry-run")
+				},
+				Run: func(context.Context, string, ...string) ([]byte, error) {
+					runCalls++
+					return nil, errors.New("must not execute during dry-run")
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("setupPhase1Prereqs() dry-run error = %v", err)
+		}
+		if lookPathCalls != 0 || runCalls != 0 {
+			t.Fatalf("dry-run executed installer dependencies: LookPath=%d Run=%d", lookPathCalls, runCalls)
+		}
+		if !strings.Contains(buf.String(), "[dry-run] Would ensure GitHub CLI") {
+			t.Fatalf("dry-run output = %q, want managed CLI notice", buf.String())
+		}
+	})
+
 	t.Run("attests an existing supported CLI without mutating Homebrew", func(t *testing.T) {
 		var commands []string
 		deps := InstallDeps{

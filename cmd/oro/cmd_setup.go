@@ -124,7 +124,9 @@ func setupPhase1Prereqs(w io.Writer, opts setupOptions) error {
 		return err
 	}
 	if shouldEnsureManagedGitHubCLI(opts) {
-		if _, err := EnsureManagedGitHubCLI(context.Background(), opts.installDeps); err != nil {
+		if opts.dryRun {
+			fmt.Fprintln(w, "  [dry-run] Would ensure GitHub CLI (brew install gh) on macOS")
+		} else if _, err := EnsureManagedGitHubCLI(context.Background(), opts.installDeps); err != nil {
 			return err
 		}
 	}
