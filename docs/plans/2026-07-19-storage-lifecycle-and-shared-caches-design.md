@@ -371,6 +371,18 @@ Repeated identical failures deduplicate into one incident. Full environments, to
 
 The migration is safe to repeat. It never traverses arbitrary paths supplied by directory contents and never treats an unknown child as disposable.
 
+## Delivery Epics
+
+Beadcraft must decompose this design into multiple independently reviewable epics rather than one oversized storage epic. The epics share this design's global safety constraints and use explicit dependency edges:
+
+1. **Shared-cache foundation and storage control plane.** Add the provider contract, global catalog and lock, cache environment resolution, status and dry-run planning, and checked-in/generated quality-gate changes. Its acceptance test proves sibling worktrees reuse external caches without correctness contamination.
+2. **Worktree scratch lifecycle, pressure, and legacy migration.** Add runtime leases, `/tmp` measurement and limits, post-merge retirement, bounded tombstone deletion, admission control, active-writer cancellation, and reconciliation of the existing Oro cache/temp backlog. This epic depends on Epic 1.
+3. **Managed worktree and branch retirement.** Add recurring worktree cleanup plus proven local and compare-and-delete remote branch cleanup. This epic depends on Epic 2's ownership and lifecycle interfaces.
+4. **Strict `~/.oro` retention.** Implement only the approved log, handoff, backup, known-temp, and SQLite checkpoint rules while proving all indexes and unknown state are preserved. This epic depends on Epic 1's planner, evidence, and safety primitives and may proceed in parallel with Epic 2.
+5. **Weekly developer-tool maintenance.** Add provider-native Go, uv, golangci-lint, npm, and npx cleanup, global idle/overdue-drain scheduling, pressure-triggered early execution, and before/after proof. This epic depends on Epic 1's provider and evidence interfaces and may proceed in parallel with Epic 2.
+
+Each epic must have its own end-to-end acceptance test and can ship independently once its dependencies are complete. Epic 1 followed by Epic 2 is the safety-critical path; Epics 3–5 complete the requested cleanup surface without blocking the first recurrence-prevention release.
+
 ## Rollout
 
 Rollout is staged so observation precedes enforcement:
