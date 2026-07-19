@@ -1,7 +1,7 @@
 # Codex Bash Read-Hook for Normal Workers
 
 **Date:** 2026-07-18
-**Status:** Validated — adversarial review R3 (fixed deny-field, allow-contract, str_replace scope, live-validation gate; enumerated Set-B Bash-`{}` regressions; promoted live gate to a reproducible script)
+**Status:** Validated — adversarial review R4 (fixed deny-field, allow-contract, str_replace scope, live-validation gate; Set-B Bash-`{}` regressions now a grep-driven procedure covering Go + Python suites; uniform empty-stdout Bash allow)
 **Priority:** P0
 
 ## Goal
@@ -148,20 +148,38 @@ we keep the binary `handleCodexView` arm and only touch the config matcher:
 (`TestCodexHookConfigBlockReplacement`) only asserts `oro-search-hook` is
 present, which the `Bash` matcher still satisfies — it does not break.
 
-*Set B — MUST be UPDATED (will break, by design).* Three existing tests feed a
-`Bash` event (`ls`) and assert `{}` because today `Bash` falls to the
+*Set B — MUST be UPDATED (will break, by design).* Existing tests feed a
+`Bash` event and assert `{}` because today `Bash` falls to the
 default→`allowJSON` arm. Once `tool_name=="Bash"` routes to `handleCodexBash`,
-the allow path is **empty stdout**, so these must be rewritten to assert zero
+the allow path is **empty stdout**, so each must be rewritten to assert zero
 bytes — and guarded against being "fixed" back to `{}` (which would reinstate
-the dangerous `{}`-on-Bash contract):
-`cmd/oro-search-hook/main_test.go:45-52` (`TestRun`),
-`cmd/oro-search-hook/main_test.go:131-140` (`TestHookDispatch` "allow non-Read
-tool (Bash)" — note its `json.Unmarshal` at ~:256 must change, since empty
-stdout is not valid JSON),
-`cmd/oro-search-hook/integration_test.go:86-100` (`allow_non_read_tool`).
-This is a **required task deliverable**, not incidental cleanup: the binary
-task's acceptance must include updating these three sites and adding a
-regression assertion that a non-`cat` `Bash` allow emits exactly zero bytes.
+the dangerous `{}`-on-Bash contract). **The `Bash`-arm allow contract is empty
+stdout uniformly for both Claude- and Codex-shaped events** — empty stdout is a
+valid no-op allow in both runtimes, the fixtures are indistinguishable (both
+carry `hook_type`; `_codex_pre_tool_use` spreads `_claude_pre_tool_use` at
+`test_hook_schemas.py:57`), and the `Bash` matcher only fires under Codex in
+production, so the binary need not branch on runtime for the allow path.
+
+Known sites as of R3 (Go + Python):
+- `cmd/oro-search-hook/main_test.go:45-52` (`TestRun`, Bash `ls` → `{}`)
+- `cmd/oro-search-hook/main_test.go:131-140` (`TestHookDispatch` "allow non-Read
+  tool (Bash)" — its shared `json.Unmarshal` at ~:256 must change, since empty
+  stdout is not valid JSON)
+- `cmd/oro-search-hook/integration_test.go:86-100` (`allow_non_read_tool`,
+  Bash `ls -la` → `{}`)
+- `assets/hooks/test_hook_schemas.py:447-450`
+  (`test_tool_name_extraction_bash_allows_claude`)
+- `assets/hooks/test_hook_schemas.py:452-455`
+  (`test_tool_name_extraction_bash_allows_codex`)
+
+**Procedure, not just a list** (this enumeration has been under-counted twice):
+the binary task must `grep` the Go and Python hook test suites for every test
+that feeds a `Bash` `tool_name` to the `oro-search-hook` binary and asserts
+`{}` / `allowJSON` / `json.loads(...) == {}`, and update **every** match to the
+empty-stdout contract. The list above is the known set as of R3, **not** a
+guarantee of completeness. This is a **required binary-task deliverable**,
+including a regression assertion that a non-`cat` `Bash` allow emits exactly
+zero bytes.
 
 ### 3. Verification
 
@@ -270,8 +288,11 @@ On `main`, quality gate green, with:
 2. `TestCodexHookConfigBashMatcherIncludesSearchHook` passing — `Bash` matcher
    includes `oro-search-hook`; no `str_replace_based_edit_tool` matcher.
 3. Set-A four legacy `str_replace`/`view` test sites still green (binary arm
-   retained); Set-B three `Bash`-allow test sites updated to the zero-byte
-   contract (a non-`cat` `Bash` allow emits exactly zero bytes, not `{}`).
+   retained); **every** existing binary-level `Bash`-allow assertion (Set B —
+   the five known Go+Python sites plus any surfaced by the required grep sweep)
+   updated to the zero-byte contract (a non-`cat` `Bash` allow emits exactly
+   zero bytes, not `{}`); full quality gate (Go **and** `pytest` hook suites)
+   green.
 4. **`scripts/validate_codex_bash_hook.sh` recorded passing** against a live
    `codex exec`: a real worker's large-file `cat` is intercepted and the
    summary reaches the model (script exit 0, output + Codex version in the
