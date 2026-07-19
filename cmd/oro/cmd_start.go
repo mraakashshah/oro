@@ -1104,6 +1104,13 @@ func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers 
 	if err != nil {
 		return nil, nil, err
 	}
+	catalog, err := openStorageCatalog(context.Background(), paths.OroHome)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := catalog.Close(); err != nil {
+		return nil, nil, fmt.Errorf("close storage catalog: %w", err)
+	}
 	sockPath := paths.SocketPath
 	dbPath := paths.StateDBPath
 	// Migrate global DBs to per-project directory on first use (no-op if already migrated).
