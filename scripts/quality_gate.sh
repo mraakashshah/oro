@@ -102,19 +102,30 @@ trap 'exit 143' TERM
 # Keep the golangci-lint cache inside the QG temp directory. Shared
 # golangci-lint caches can collide across concurrent workers.
 export GOLANGCI_LINT_CACHE="$QG_DIR/golangci-lint-cache"
-export GOCACHE="$QG_DIR/go-build-cache"
+# Go's build cache is content-addressed and concurrency-safe. Point concurrent
+# main-phase gates at a SHARED, warm GOCACHE so N sibling worktree gates no longer
+# each cold-compile the full repo from an isolated per-run cache now that the main
+# phase runs lockless (oro-hwx2). Overridable for hermetic test runs.
+export GOCACHE="${ORO_QG_GOCACHE:-${TMPDIR:-/tmp}/oro-qg-gocache}"
+mkdir -p "$GOCACHE"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$QG_DIR/uv-cache}"
 export GOMAXPROCS="${ORO_QG_GOMAXPROCS:-2}"
 
 # Resolve repo root node_modules (works from worktrees too). Non-git harness
 # tests copy this script into temporary projects, so fall back to the current
 # project directory when no git common dir exists.
-if QG_COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null)"; then
+if [ -n "${ORO_QG_REPO_ROOT_OVERRIDE:-}" ]; then
+	# Test seam: relocate the cross-worktree lock/queue to a hermetic dir.
+	REPO_ROOT="$ORO_QG_REPO_ROOT_OVERRIDE"
+elif QG_COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null)"; then
 	REPO_ROOT="$(cd "$QG_COMMON_DIR/.." && pwd)"
 else
 	REPO_ROOT="$PWD"
 fi
 NODE_BIN="$REPO_ROOT/node_modules/.bin"
+# Directory of this script, used to locate the checked-in serial-lane test list
+# regardless of the caller's working directory.
+SCRIPT_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Serialize full quality gates across sibling worktrees. The gate already runs
 # internal lanes in parallel; concurrent worker gates overload dispatcher socket
@@ -373,7 +384,83 @@ acquire_quality_gate_lock() {
 	QG_RUN_QUEUE_TICKET=""
 }
 
-acquire_quality_gate_lock
+# check_inherited_quality_gate_lock short-circuits a gate invoked *inside* another
+# gate's lock scope (nested / mutation re-invocation): the parent already ran the
+# checks, so exit success immediately. Preserved from the pre-oro-hwx2 top-level
+# lock acquisition; only the acquisition itself moved to the serial lane.
+check_inherited_quality_gate_lock() {
+	if quality_gate_lock_is_inherited "$REPO_ROOT/.oro-quality-gate.lock"; then
+		exit 0
+	fi
+}
+
+# neutralize_serial_lane_env actively clears ORO_QG_SERIAL_LANE before the
+# concurrent main phase. Callers pass os.Environ() through unfiltered
+# (worker.go qualityGateEnv, dispatcher.go qgRunnerEnv), so a leaked =1 would run
+# the guarded socket-timing tests concurrently and resurrect the flakiness this
+# split removes. The serial lane re-enables it locally (oro-hwx2).
+neutralize_serial_lane_env() {
+	unset ORO_QG_SERIAL_LANE
+}
+
+# run_phase_marker is a TEST-ONLY probe (enabled by ORO_QG_PHASE_MARKER_DIR). It
+# records peak concurrency for a phase so the concurrency tests can assert the
+# main phase overlaps while the serial lane is mutually exclusive, without running
+# the heavy real checks. Production runs never set ORO_QG_PHASE_MARKER_DIR.
+run_phase_marker() {
+	local phase="$1" sleep_s="$2"
+	local dir="$ORO_QG_PHASE_MARKER_DIR"
+	local id="${ORO_QG_PROBE_ID:-$$}"
+	mkdir -p "$dir/active"
+	printf '%s\n' "${ORO_QG_SERIAL_LANE:-}" >"$dir/env.$phase.$id"
+	touch "$dir/active/$phase.$id"
+	if [ "${sleep_s:-0}" != "0" ]; then
+		sleep "$sleep_s"
+	fi
+	local count
+	count=$(find "$dir/active" -maxdepth 1 -name "$phase.*" 2>/dev/null | wc -l | tr -d ' ')
+	printf '%s\n' "$count" >"$dir/peak.$phase.$id"
+	rm -f "$dir/active/$phase.$id"
+}
+
+# run_serial_lane runs the concurrency-flaky guarded tests (the oro-sjp8 canonical
+# list) under the cross-worktree FIFO lock, with ORO_QG_SERIAL_LANE=1 so the
+# qgserial guards actually run them. Acquiring the lock HERE — not around the whole
+# gate — is the core of oro-hwx2: the main phase above ran lockless and concurrent.
+# Writes pass:fail to $QG_DIR/serial.rc.
+run_serial_lane() {
+	if ! acquire_quality_gate_lock; then
+		echo "0:1" >"$QG_DIR/serial.rc" 2>/dev/null || true
+		return 1
+	fi
+	export ORO_QG_SERIAL_LANE=1
+	if [ -n "${ORO_QG_PHASE_MARKER_DIR:-}" ]; then
+		run_phase_marker serial "${ORO_QG_SERIAL_SLEEP:-0}"
+		return 0
+	fi
+	header "SERIAL TIMING LANE (guarded socket/timing tests)"
+	local list="$SCRIPT_SELF_DIR/../pkg/dispatcher/testdata/serial_lane_tests.txt"
+	if [ ! -f "$list" ]; then
+		echo "0:0" >"$QG_DIR/serial.rc"
+		return 0
+	fi
+	local names run_filter
+	names=$(grep -vE '^[[:space:]]*#' "$list" | grep -vE '^[[:space:]]*$' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
+	# shellcheck disable=SC2086 # intentional word-splitting: one -run alternative per name
+	run_filter=$(printf '^%s$|' $names)
+	run_filter="${run_filter%|}"
+	if GOFLAGS=-buildvcs=false go test ./pkg/dispatcher -run "$run_filter" -count=1; then
+		echo "1:0" >"$QG_DIR/serial.rc"
+	else
+		echo "0:1" >"$QG_DIR/serial.rc"
+	fi
+}
+
+# Nested-gate short-circuit, then neutralize any leaked serial-lane env before the
+# concurrent, lockless main phase. The FIFO lock is acquired later, only for the
+# serial timing lane (run_serial_lane).
+check_inherited_quality_gate_lock
+neutralize_serial_lane_env
 
 # =============================================================================
 # PRIMITIVES
@@ -1330,6 +1417,15 @@ if $HAS_PYTHON; then echo "  Detected: Python project"; fi
 if $HAS_SHELL; then echo "  Detected: Shell scripts"; fi
 echo ""
 
+# TEST-ONLY: phase-marker mode drives the lock/phase skeleton (main-phase
+# concurrency + serialized lane) without the heavy real checks. Production never
+# sets ORO_QG_PHASE_MARKER_DIR.
+if [ -n "${ORO_QG_PHASE_MARKER_DIR:-}" ]; then
+	run_phase_marker main "${ORO_QG_MAIN_SLEEP:-0}"
+	run_serial_lane
+	exit 0
+fi
+
 # Launch all lanes in parallel, each writing output to a file
 lane_go >"$QG_DIR/go.out" 2>&1 &
 PID_GO=$!
@@ -1348,10 +1444,19 @@ cat "$QG_DIR/go.out" 2>/dev/null || true
 cat "$QG_DIR/other.out" 2>/dev/null || true
 cat "$QG_DIR/python.out" 2>/dev/null || true
 
+# Serial timing lane: the guarded socket/timing tests, run under the FIFO lock so
+# they are serialized across sibling worktree gates (oro-hwx2). The main phase
+# above ran lockless and concurrent; this is the only serialized segment.
+RC_FILES=("$QG_DIR"/go.rc "$QG_DIR"/python.rc "$QG_DIR"/other.rc)
+if $HAS_GO; then
+	run_serial_lane
+	RC_FILES+=("$QG_DIR"/serial.rc)
+fi
+
 # Aggregate pass/fail counts
 TOTAL_PASS=0
 TOTAL_FAIL=0
-for rc_file in "$QG_DIR"/go.rc "$QG_DIR"/python.rc "$QG_DIR"/other.rc; do
+for rc_file in "${RC_FILES[@]}"; do
 	if [ -f "$rc_file" ]; then
 		IFS=: read -r p f <"$rc_file"
 		TOTAL_PASS=$((TOTAL_PASS + p))
