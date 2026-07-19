@@ -5472,20 +5472,17 @@ func (d *Dispatcher) assignGeneralIdleWorkers(ctx context.Context, idle []idleWo
 	// next bead in the list can still be paired with it.
 	idleIdx := 0
 	for _, unit := range plan.units {
-		_, nextIdleIdx := d.assignGeneralSchedulingUnit(ctx, idle, idleIdx, unit, pbSnapshot, assignedBeads, reservedTargets, focusVersion)
-		idleIdx = nextIdleIdx
+		idleIdx = d.assignGeneralSchedulingUnit(ctx, idle, idleIdx, unit, pbSnapshot, assignedBeads, reservedTargets, focusVersion)
 	}
 }
 
-func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idleWorker, idleIdx int, unit schedulingUnit, pbSnapshot, assignedBeads, reservedTargets map[string]bool, focusVersion uint64) (unitConsumed bool, nextIdleIdx int) {
-	nextIdleIdx = idleIdx
+func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idleWorker, idleIdx int, unit schedulingUnit, pbSnapshot, assignedBeads, reservedTargets map[string]bool, focusVersion uint64) int {
+	nextIdleIdx := idleIdx
 	for _, bead := range unit.beads {
 		if assignedBeads[bead.ID] {
-			unitConsumed = true
 			continue
 		}
 		if reservedTargets[bead.ID] {
-			unitConsumed = true
 			continue
 		}
 		nextIdleIdx = d.nextGeneralIdleIndex(idle, nextIdleIdx)
@@ -5493,13 +5490,9 @@ func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idl
 			break
 		}
 		_ = d.assignBead(ctx, idle[nextIdleIdx].worker, bead, focusVersion)
-		var claimed bool
-		claimed, nextIdleIdx = d.advanceAssignedGeneralIdle(idle, nextIdleIdx, bead.ID, pbSnapshot)
-		if claimed {
-			unitConsumed = true
-		}
+		_, nextIdleIdx = d.advanceAssignedGeneralIdle(idle, nextIdleIdx, bead.ID, pbSnapshot)
 	}
-	return unitConsumed, nextIdleIdx
+	return nextIdleIdx
 }
 
 func (d *Dispatcher) nextGeneralIdleIndex(idle []idleWorker, idleIdx int) int {
