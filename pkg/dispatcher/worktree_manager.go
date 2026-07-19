@@ -230,10 +230,7 @@ func (g *GitWorktreeManager) refreshQualityGate(worktreePath string) error {
 		return fmt.Errorf("remove stale managed quality gate %s: %w", linkPath, err)
 	}
 
-	if err := copyQualityGateSnapshot(g.qualityGatePath, linkPath); err != nil {
-		return err
-	}
-	return nil
+	return copyQualityGateSnapshot(g.qualityGatePath, linkPath)
 }
 
 func copyQualityGateSnapshot(src, dst string) error {
@@ -367,20 +364,7 @@ func (g *GitWorktreeManager) PrepareExistingForReuse(ctx context.Context, worktr
 
 	branchBehind, err := g.isAncestor(ctx, branch, baseBranch)
 	if err == nil && branchBehind {
-		dirty, dirtyErr := g.trackedStatus(ctx, worktree)
-		if dirtyErr != nil {
-			return false, dirtyErr
-		}
-		if dirty != "" {
-			return false, fmt.Errorf("stale branch %s is behind %s but worktree has tracked changes: %s", branch, baseBranch, dirty)
-		}
-		if _, mergeErr := g.runner.Run(ctx, "git", "-C", worktree, "merge", "--ff-only", baseBranch); mergeErr != nil {
-			return false, fmt.Errorf("fast-forward existing worktree %s to %s: %w", worktree, baseBranch, mergeErr)
-		}
-		if err := g.refreshQualityGate(worktree); err != nil {
-			return false, fmt.Errorf("refresh managed quality gate for reused worktree %s: %w", worktree, err)
-		}
-		return true, nil
+		return g.fastForwardExistingForReuse(ctx, worktree, branch, baseBranch)
 	}
 
 	baseBehind, err := g.isAncestor(ctx, baseBranch, branch)
@@ -391,6 +375,23 @@ func (g *GitWorktreeManager) PrepareExistingForReuse(ctx context.Context, worktr
 		return false, nil
 	}
 	return false, fmt.Errorf("agent branch %s diverged from base %s", branch, baseBranch)
+}
+
+func (g *GitWorktreeManager) fastForwardExistingForReuse(ctx context.Context, worktree, branch, baseBranch string) (bool, error) {
+	dirty, err := g.trackedStatus(ctx, worktree)
+	if err != nil {
+		return false, err
+	}
+	if dirty != "" {
+		return false, fmt.Errorf("stale branch %s is behind %s but worktree has tracked changes: %s", branch, baseBranch, dirty)
+	}
+	if _, err := g.runner.Run(ctx, "git", "-C", worktree, "merge", "--ff-only", baseBranch); err != nil {
+		return false, fmt.Errorf("fast-forward existing worktree %s to %s: %w", worktree, baseBranch, err)
+	}
+	if err := g.refreshQualityGate(worktree); err != nil {
+		return false, fmt.Errorf("refresh managed quality gate for reused worktree %s: %w", worktree, err)
+	}
+	return true, nil
 }
 
 // RebaseDivergedExistingForReuse rebases a clean preserved assignment
