@@ -496,25 +496,14 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		logStep("Skipping review (--skip-review)")
 	}
 
-	// Step 9: Pre-merge quality gate. Mutation testing is disabled unless explicitly requested.
-	logStep("Running pre-merge quality gate (%s)...", workMutationMode(cfg))
-	mutPassed, mutOutput, mutErr := deps.runQG(ctx, worktree, !cfg.mutationTesting)
-	if mutErr != nil {
-		recordWorkQGFailure(ctx, cfg, deps, "oro-work-pre-merge", mutErr.Error())
-		return fmt.Errorf("pre-merge quality gate error: %w", mutErr)
-	}
-	if !mutPassed {
-		recordWorkQGFailure(ctx, cfg, deps, "oro-work-pre-merge", mutOutput)
-		return &exitError{
-			code: exitCodeRetries,
-			msg:  fmt.Sprintf("Pre-merge quality gate failed:\n%s", mutOutput),
-		}
-	}
-	logStep("Pre-merge quality gate passed")
-
-	// Step 10: Merge to main.
+	// Step 9: Merge to main. The final quality gate runs inside mergeToMain
+	// after rebase and while the FF lock prevents the target from advancing.
 	mergeResult, mergeErr := mergeToMain(ctx, cfg, deps, worktree, branch, targetBranch)
 	if mergeErr != nil {
+		var exitErr *exitError
+		if errors.As(mergeErr, &exitErr) {
+			return exitErr
+		}
 		return &exitError{
 			code: exitCodeMergeFail,
 			msg:  fmt.Sprintf("Merge failed: %v", mergeErr),
@@ -1053,9 +1042,34 @@ func mergeToMain(ctx context.Context, cfg *workConfig, deps *workDeps, worktree,
 		Worktree:     worktree,
 		BeadID:       cfg.beadID,
 		TargetBranch: targetBranch,
+		PreFFCheck: func(checkCtx context.Context, finalWorktree string) error {
+			logStep("Running pre-merge quality gate (%s)...", workMutationMode(cfg))
+			passed, output, qgErr := deps.runQG(checkCtx, finalWorktree, !cfg.mutationTesting)
+			if qgErr != nil {
+				return &merge.PreFFCheckError{Output: qgErr.Error(), Err: qgErr}
+			}
+			if !passed {
+				return &merge.PreFFCheckError{Output: output, Err: errors.New("quality gate failed")}
+			}
+			logStep("Pre-merge quality gate passed")
+			return nil
+		},
 	})
 	if err == nil {
 		return result, nil
+	}
+
+	var preFFErr *merge.PreFFCheckError
+	if errors.As(err, &preFFErr) {
+		output := preFFErr.Output
+		if output == "" {
+			output = preFFErr.Error()
+		}
+		recordWorkQGFailure(ctx, cfg, deps, "oro-work-pre-merge", output)
+		return nil, &exitError{
+			code: exitCodeRetries,
+			msg:  fmt.Sprintf("Pre-merge quality gate failed:\n%s", output),
+		}
 	}
 
 	var conflictErr *merge.ConflictError

@@ -9,6 +9,7 @@ package merge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -43,6 +44,9 @@ type Opts struct {
 	Worktree     string // path to the worktree
 	BeadID       string // for logging/context
 	TargetBranch string // branch to merge into; empty defaults to "main"
+	// PreFFCheck validates the final rebased worktree immediately before the
+	// target branch advances. It runs while ffLock is held.
+	PreFFCheck func(ctx context.Context, worktree string) error
 }
 
 // Result holds the outcome of a successful merge.
@@ -57,6 +61,34 @@ type Result struct {
 type ConflictError struct {
 	Files  []string // files with conflicts
 	BeadID string
+}
+
+// PreFFCheckError reports a failed validation of the final rebased worktree.
+// It is distinct from ConflictError so callers can retry the quality gate
+// without treating the branch as a merge conflict.
+type PreFFCheckError struct {
+	Output string
+	Err    error
+}
+
+func (e *PreFFCheckError) Error() string {
+	if e == nil {
+		return "pre-ff check failed"
+	}
+	if e.Output != "" {
+		return fmt.Sprintf("pre-ff check failed: %s", e.Output)
+	}
+	if e.Err != nil {
+		return fmt.Sprintf("pre-ff check failed: %v", e.Err)
+	}
+	return "pre-ff check failed"
+}
+
+func (e *PreFFCheckError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
 }
 
 func (e *ConflictError) Error() string {
@@ -192,10 +224,16 @@ func (c *Coordinator) worktreeRemoveAndFFMerge(ctx context.Context, opts Opts) (
 	}
 
 	if target := effectiveTarget(opts); target != "main" {
+		if err := runPreFFCheck(ctx, opts); err != nil {
+			return nil, err
+		}
 		return c.updateTargetRefAndRemove(ctx, opts, primaryRepo, target)
 	}
 
 	// Try ff-only merge BEFORE removing the worktree so we can retry on failure.
+	if err := runPreFFCheck(ctx, opts); err != nil {
+		return nil, err
+	}
 	_, _, err = c.git.Run(ctx, primaryRepo, "merge", "--ff-only", opts.Branch)
 	if err != nil {
 		// Primary repo HEAD moved between the rebase (under rebaseLock) and here
@@ -210,6 +248,9 @@ func (c *Coordinator) worktreeRemoveAndFFMerge(ctx context.Context, opts Opts) (
 		stdout, stderr, rebaseErr := c.git.Run(ctx, opts.Worktree, "rebase", retryBase, opts.Branch)
 		if rebaseErr != nil {
 			return nil, c.handleRebaseFailure(ctx, opts, retryBase, stdout, stderr, rebaseErr)
+		}
+		if err := runPreFFCheck(ctx, opts); err != nil {
+			return nil, err
 		}
 		_, _, err = c.git.Run(ctx, primaryRepo, "merge", "--ff-only", opts.Branch)
 		if err != nil {
@@ -232,6 +273,20 @@ func (c *Coordinator) worktreeRemoveAndFFMerge(ctx context.Context, opts Opts) (
 		return nil, fmt.Errorf("rev-parse %s failed: %w", opts.Branch, err)
 	}
 	return &Result{CommitSHA: strings.TrimSpace(stdout)}, nil
+}
+
+func runPreFFCheck(ctx context.Context, opts Opts) error {
+	if opts.PreFFCheck == nil {
+		return nil
+	}
+	if err := opts.PreFFCheck(ctx, opts.Worktree); err != nil {
+		var preFFErr *PreFFCheckError
+		if errors.As(err, &preFFErr) {
+			return preFFErr
+		}
+		return &PreFFCheckError{Err: err}
+	}
+	return nil
 }
 
 func (c *Coordinator) updateTargetRefAndRemove(ctx context.Context, opts Opts, primaryRepo, target string) (*Result, error) {
