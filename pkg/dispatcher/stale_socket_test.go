@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"oro/pkg/testutil/qgserial"
 	"os"
 	"path/filepath"
 	"testing"
@@ -78,6 +79,7 @@ func TestStaleSocketCleanup_NoFileIsNoop(t *testing.T) {
 }
 
 func TestStaleSocketCleanup_ActiveSocketReturnsError(t *testing.T) {
+	qgserial.RequireSerial(t)
 	sockPath := shortSockPath(t, "active")
 
 	// Start a real listener to simulate an active dispatcher.
@@ -100,6 +102,7 @@ func TestStaleSocketCleanup_ActiveSocketReturnsError(t *testing.T) {
 }
 
 func TestStaleSocketCleanup_DispatcherRunUsesIt(t *testing.T) {
+	qgserial.RequireSerial(t)
 	// End-to-end: start a dispatcher, stop it (leaving stale socket), then
 	// start a second dispatcher on the same socket path — it should succeed.
 	d1, _, _, _, _, _ := newTestDispatcher(t)
@@ -157,6 +160,7 @@ func TestStaleSocketCleanup_DispatcherRunUsesIt(t *testing.T) {
 }
 
 func TestStaleSocketCleanup_ActiveDispatcherBlocksSecond(t *testing.T) {
+	qgserial.RequireSerial(t)
 	// If a dispatcher is already running, a second one must NOT start on the
 	// same socket. cleanStaleSocket should detect the active socket and Run()
 	// should return an error.

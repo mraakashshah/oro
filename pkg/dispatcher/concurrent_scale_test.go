@@ -1,6 +1,7 @@
 package dispatcher //nolint:testpackage // white-box test needs internal access
 
 import (
+	"oro/pkg/testutil/qgserial"
 	"sync"
 	"testing"
 )
@@ -16,6 +17,7 @@ import (
 // This test reproduces the race condition by calling reconcileScale concurrently
 // and asserting that each spawned worker has a unique ID.
 func TestReconcileScale_NoDuplicateWorkerIDs(t *testing.T) {
+	qgserial.RequireSerial(t)
 	t.Parallel()
 
 	d, _, _, _, _, _ := newTestDispatcher(t)

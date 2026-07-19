@@ -1,12 +1,14 @@
 package dispatcher //nolint:testpackage // internal white-box tests need access to unexported fields
 
 import (
+	"oro/pkg/testutil/qgserial"
 	"os"
 	"testing"
 	"time"
 )
 
 func TestSocketPermissions(t *testing.T) {
+	qgserial.RequireSerial(t)
 	// Create a dispatcher with a test socket path.
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	sockPath := d.cfg.SocketPath

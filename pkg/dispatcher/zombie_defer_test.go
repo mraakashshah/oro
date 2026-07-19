@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net"
+	"oro/pkg/testutil/qgserial"
 	"strings"
 	"testing"
 	"time"
@@ -110,6 +111,7 @@ func latestEventPayload(t *testing.T, db *sql.DB, evType string) string {
 }
 
 func TestStartupCallsDetectZombieDeferred(t *testing.T) {
+	qgserial.RequireSerial(t)
 	t.Run("runs after reconciliation summary and before socket bind", func(t *testing.T) {
 		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 		beadSrc.exportData = []byte(`{"id":"oro-zombie","status":"open","defer_until":"2026-04-27T04:00:00Z"}` + "\n")

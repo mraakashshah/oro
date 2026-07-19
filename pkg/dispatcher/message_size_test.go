@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net"
+	"oro/pkg/testutil/qgserial"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,7 @@ import (
 // and closes that connection, but the dispatcher continues to accept new
 // connections.
 func TestOversizeMessage(t *testing.T) {
+	qgserial.RequireSerial(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 

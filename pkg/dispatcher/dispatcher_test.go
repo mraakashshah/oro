@@ -12,6 +12,7 @@ import (
 	"go/token"
 	"maps"
 	"net"
+	"oro/pkg/testutil/qgserial"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1942,6 +1943,7 @@ func TestRunWaitsForGoroutines(t *testing.T) {
 }
 
 func TestAcceptLoopBackpressure(t *testing.T) {
+	qgserial.RequireSerial(t)
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
@@ -4840,6 +4842,7 @@ func TestFailedDecomposeOpsRunSetsAssignmentCooldown(t *testing.T) {
 }
 
 func TestDispatcher_ConcurrentWorkers(t *testing.T) {
+	qgserial.RequireSerial(t)
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
@@ -9236,6 +9239,7 @@ func TestDispatcher_FocusImmediateAbortsStateTransitionRace(t *testing.T) {
 }
 
 func TestDispatcherFullSuiteStateDoesNotStarveEstimateAssignments(t *testing.T) {
+	qgserial.RequireSerial(t)
 	ctx := context.Background()
 	db := newTestDB(t)
 	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
@@ -13487,6 +13491,7 @@ func TestPriorityContention(t *testing.T) {
 // numWorkers concurrent DONE deliveries to exercise assign-loop locking under
 // parallel mergeAndComplete goroutines.  The -race detector must not fire.
 func TestPriorityContention_StableUnderLoad(t *testing.T) {
+	qgserial.RequireSerial(t)
 	loadguard.SkipOutsidePushQG(t)
 
 	const numWorkers = 4
