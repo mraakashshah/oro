@@ -120,3 +120,44 @@ func TestOpenCatalogHonorsCanceledContext(t *testing.T) {
 		t.Fatalf("OpenCatalog() error = %v, want context.Canceled", err)
 	}
 }
+
+func TestCatalogMigrationRebuildsIncompatibleLeaseSchema(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatalf("open catalog db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE runtime_leases (
+ id TEXT, namespace TEXT NOT NULL, controller_id TEXT NOT NULL, owner_id TEXT NOT NULL,
+ pid INTEGER NOT NULL, process_start TEXT NOT NULL, acquired_at TEXT NOT NULL,
+ heartbeat_at TEXT NOT NULL, released_at TEXT
+)`); err != nil {
+		t.Fatalf("seed incompatible schema: %v", err)
+	}
+	catalog, err := storage.OpenCatalog(ctx, db)
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+
+	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
+	if _, err := catalog.AcquireLease(ctx, storage.LeaseRequest{
+		ID:           "lease-1",
+		Namespace:    "repo-a/worktree-a",
+		ControllerID: "controller-1",
+		OwnerID:      "owner-1",
+		PID:          101,
+		ProcessStart: now.Add(-time.Minute),
+		AcquiredAt:   now,
+		HeartbeatAt:  now,
+	}); err != nil {
+		t.Fatalf("acquire lease after migration: %v", err)
+	}
+	if err := storage.MigrateCatalog(ctx, db); err != nil {
+		t.Fatalf("repeat catalog migration: %v", err)
+	}
+}
