@@ -1,7 +1,7 @@
 # Codex Bash Read-Hook for Normal Workers
 
 **Date:** 2026-07-18
-**Status:** Draft — pending adversarial review
+**Status:** Validated — adversarial review R2 (fixed deny-field, allow-contract, str_replace scope, live-validation gate)
 **Priority:** P0
 
 ## Goal
@@ -74,11 +74,13 @@ By contrast, normal **Claude** workers are already covered:
 | Read surface | Recognize Codex `Bash` reads; retire `str_replace_based_edit_tool` matcher | Match the surface current Codex actually uses |
 | Scope of interception | **Only** a single simple `cat [--] <path>` of a large code file | Small blast radius on the hot Bash path; YAGNI |
 | Everything else | `sed`, `head`, `tail`, `rg`, pipes, chains, redirects, substitutions, multiple files, malformed → **fail open** | Never break or slow a legitimate shell command |
-| Codex deny shape | `hookSpecificOutput{hookEventName:"PreToolUse", permissionDecision:"deny", permissionDecisionReason:<summary>}` | Codex-native contract; the model must receive the summary |
-| Claude path | Unchanged (top-level `permissionDecision`) | No regression to the working Claude route |
+| Codex deny shape | `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"}, "systemMessage":<summary>, "permissionDecisionReason":<summary>}` — summary in **`systemMessage`** (the proven surfaced field) **and** `permissionDecisionReason` for robustness | Match the only working in-tree Codex Bash deny (`destructive_command_guard.py:146-155` surfaces `systemMessage`, emits no `permissionDecisionReason`); the model must actually receive the summary |
+| Codex allow / fail-open output | **Empty stdout** (no bytes), matching the sibling hook's proven allow contract — *not* `{}` | The Codex allow contract is "no decision emitted"; `{}` is unverified on the Bash surface and could stall every non-`cat` Bash call |
+| Claude path | Unchanged (top-level `permissionDecision`, `{}` allow) | No regression to the working Claude route |
+| Legacy Codex `view` arm | **Keep** `handleCodexView` in the binary (harmless dead arm); only the *config* `str_replace_based_edit_tool` matcher is removed | Deleting the arm breaks four existing tests (enumerated below) for no benefit |
 | Config wiring | Add `oro-search-hook` to the shared `Bash` matcher, **last** in the chain (after `enforce_skills`, `destructive_command_guard`) | Safety guards evaluate first; summary only replaces an allowed read |
-| Coverage | Shared config ⇒ normal **and** Oracle workers; verified via a normal-worker test | The explicit gap this epic closes |
-| Fail-open invariant | Every error / unrecognized shape → allow | A broken hook must degrade to normal reads, never block work |
+| Coverage | Shared config ⇒ normal **and** Oracle workers; verified via config test **plus a live `codex exec` validation** (a JSON-to-binary test is *not* end-to-end proof) | The explicit gap this epic closes |
+| Fail-open invariant | Every error / unrecognized shape → allow (empty stdout on the Codex Bash path) | A broken hook must degrade to normal reads, never block work |
 
 ## Consultation Record
 
@@ -110,35 +112,62 @@ New dispatch arm in `HandleHook` for `tool_name == "Bash"`, reading
   other than `--` → fail open. (Ambiguous shell semantics we won't reason about.)
 - `os.Stat` the path; on error fail open. Build `codesearch.ToolInput`
   (`FilePath`, `FileSize`, `Offset:0`) and run `ShouldBypass`. If bypassed,
-  allow. Otherwise `SummarizeFile` and emit the **Codex deny** shape.
+  allow. Otherwise `SummarizeFile` and emit the **Codex deny** shape:
+  `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":
+  "deny"}, "systemMessage":<summary>, "permissionDecisionReason":<summary>}`.
 - Summarize error → fail open.
 
-Allow output for the Codex path = the same allow contract Codex expects
-(no deny decision). This is a **load-bearing assumption** (see below).
+**Allow / fail-open output on the Codex Bash path = empty stdout** (write no
+bytes), matching `destructive_command_guard.py`'s proven allow contract
+(`main()` returns without writing when it does not deny). This requires
+`HandleHook` to return an empty slice for the Codex Bash allow/bypass/fail-open
+cases so `writeOut` emits nothing — the Claude and legacy-`view` arms keep
+their `{}` allow. Do **not** emit `{}` on the Bash surface: it is unverified
+and could be parsed as a malformed decision, stalling every non-`cat` Bash
+call.
 
 ### 2. Config — `codexHookConfigBlock` (`cmd/oro/cmd_start.go`)
 
 - Append `oro-search-hook` as the **last** command in the existing `Bash`
   PreToolUse matcher chain.
-- **Remove** the standalone `matcher = "str_replace_based_edit_tool"` entry
-  (dead surface).
+- **Remove only the config** `matcher = "str_replace_based_edit_tool"` entry
+  (dead surface). Do **not** touch the binary's `handleCodexView` arm.
 - `installCodexHookConfig` already rewrites the managed block idempotently,
-  so upgrades pick up the new chain with no migration.
+  so existing users pick up the new chain on their next `oro start` with no
+  migration. (This is why the coverage extends to *already-installed* normal
+  workers, not just fresh installs.)
+
+Existing tests that assert the legacy `str_replace`/`view` surface — which we
+therefore **keep passing unchanged** by retaining the binary arm and only
+touching the config matcher: `cmd/oro/end_to_end_codex_test.go:296-306`,
+`cmd/oro-search-hook/parity_test.go:41-56`,
+`cmd/oro-search-hook/main_test.go:332-365,429-430`,
+`assets/hooks/test_parity.py:77-82`. `cmd_start_test.go:207`
+(`TestCodexHookConfigBlockReplacement`) only asserts `oro-search-hook` is
+present, which the `Bash` matcher still satisfies — it does not break.
 
 ### 3. Verification
 
-- `TestHandleCodexBashRead` (binary): a large-code `cat` → deny+summary in
-  `hookSpecificOutput` shape; `sed -n`, `head`, `tail`, `rg`, chained,
-  redirected, substituted, multi-file, malformed, and non-`Bash` events all
-  allow/fail-open; small/test/non-code `cat` bypasses; Claude `Read`
-  unchanged.
+- `TestHandleCodexBashRead` (binary): a large-code `cat` → deny with
+  **`systemMessage` present and non-empty** (assert this field, not only
+  `permissionDecisionReason`) in the `hookSpecificOutput` deny shape;
+  `sed -n`, `head`, `tail`, `rg`, chained, redirected, substituted,
+  multi-file, malformed, and non-`Bash` events → **empty stdout** (assert
+  zero bytes, the Codex allow contract); small/test/non-code `cat` → empty
+  stdout; Claude `Read` and legacy `view` outputs unchanged (`{}` / top-level
+  deny).
 - `TestCodexHookConfigBashMatcherIncludesSearchHook` (config): generated
   block wires `oro-search-hook` on the `Bash` matcher **and** no longer emits
   a `str_replace_based_edit_tool` matcher.
-- **Normal-worker integration** (the explicit gap): drive a representative
-  normal-worker Codex `Bash` PreToolUse event JSON through the installed hook
-  binary and assert the deny+summary — proving coverage without an Oracle in
-  the loop.
+- **Live-`codex exec` validation (epic acceptance gate).** A JSON-to-binary
+  test is coverage-identical to the unit test and proves nothing about the
+  consumer. Instead, gate epic acceptance on a real check: run a normal
+  worker (or a minimal `codex exec` harness) against the installed
+  `$CODEX_HOME/config.toml`, have it `cat` a large code file, and confirm
+  (a) the read is intercepted and (b) the **summary reaches the model**
+  (whichever field Codex surfaces). If a live Codex CLI is unavailable in CI,
+  this is a documented manual validation step recorded in the epic's closing
+  notes — explicitly **not** claimed as satisfied by the binary tests.
 
 ## Alternatives Considered
 
@@ -160,22 +189,29 @@ Allow output for the Codex path = the same allow contract Codex expects
   test of adversarial command strings.
 - **Tiger — wrong allow contract stalls every Bash call.** If Codex doesn't
   read the allow output the way we assume, we could block all shell.
-  *Mitigation:* verify the allow shape against a live Codex before rollout;
-  fail-open default; hook is last in the chain.
+  *Mitigation:* conform to the proven sibling contract — **empty stdout** on
+  allow — rather than `{}`; fail-open default; hook is last in the chain; the
+  live-`codex exec` validation exercises a real non-`cat` Bash call.
 - **Elephant — the summary never reaches the model.** Deny may suppress the
-  read but drop `permissionDecisionReason`, so the model gets nothing.
-  *Mitigation:* integration test asserts the reason/summary is present in the
-  emitted JSON; confirm which field Codex surfaces to the model.
+  read but drop the field the model reads. The in-tree
+  `destructive_command_guard.py:146-155` proves Codex surfaces
+  **`systemMessage`**, not `permissionDecisionReason`. *Mitigation:* emit the
+  summary in `systemMessage` (proven) **and** `permissionDecisionReason`
+  (belt-and-braces); the binary test asserts `systemMessage`; the live
+  validation confirms the model actually receives it.
 - **Paper tiger — latency.** The hook `os.Stat`s and only summarizes on a
   large-file `cat`; negligible for the common case.
 
 ## Load-Bearing Assumption
 
-**Codex CLI treats a `PreToolUse` `Bash` hook that emits no deny decision as
-"allow", and surfaces `hookSpecificOutput.permissionDecisionReason` (or
-`systemMessage`) back to the model on deny.** If false, the allow path could
-block shell or the summary could be invisible. Must be validated against a
-live Codex CLI before this ships — the design is otherwise correct but inert.
+Reduced by conforming to the only working in-tree Codex Bash deny
+(`destructive_command_guard.py`): we emit `systemMessage` and empty-stdout
+allow rather than guessing. The **one** remaining assumption is that
+**`codex exec` in worker mode fires the managed `PreToolUse` `Bash` config
+hooks at all** (not just interactive Codex). If Codex ignores config-file
+hooks under `codex exec`, the approach is inert regardless of output shape.
+This is precisely what the live-`codex exec` validation gate (Verification §3)
+exists to prove — it must pass before the epic is accepted.
 
 ## Relationship to Existing Tasks
 
@@ -199,7 +235,16 @@ live Codex CLI before this ships — the design is otherwise correct but inert.
 
 ## Acceptance (epic)
 
-On `main`, with the three tests above passing and the quality gate green:
-a normal Codex worker's large-file `cat` is intercepted and replaced with a
-structural summary via the shared `Bash` matcher, and the dead
-`str_replace_based_edit_tool` matcher is gone.
+On `main`, quality gate green, with:
+1. `TestHandleCodexBashRead` passing — asserts `systemMessage` on deny and
+   **empty stdout** on every allow/bypass/fail-open case; Claude + legacy
+   `view` outputs unchanged.
+2. `TestCodexHookConfigBashMatcherIncludesSearchHook` passing — `Bash` matcher
+   includes `oro-search-hook`; no `str_replace_based_edit_tool` matcher.
+3. The four legacy `str_replace`/`view` test sites still green (binary arm
+   retained).
+4. **Live-`codex exec` validation** recorded: a real Codex worker's large-file
+   `cat` is intercepted and the summary reaches the model. This gate — not the
+   binary tests — is what certifies "normal Codex workers are covered." If a
+   live Codex CLI is unavailable in CI, the manual validation result is
+   recorded in the epic's closing notes.
