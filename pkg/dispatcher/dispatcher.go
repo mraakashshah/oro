@@ -4311,12 +4311,21 @@ func (d *Dispatcher) handleReviewFailed(ctx context.Context, workerID, beadID st
 
 func reviewFailureDetail(result ops.Result) string {
 	if result.Feedback != "" {
-		return result.Feedback
+		return boundedReviewFailureDetail(result.Feedback)
 	}
 	if result.Err != nil {
 		return result.Err.Error()
 	}
 	return "review completed without a machine-readable verdict"
+}
+
+const maxReviewFailureDetailBytes = 2 * 1024
+
+func boundedReviewFailureDetail(detail string) string {
+	if len(detail) <= maxReviewFailureDetailBytes {
+		return detail
+	}
+	return detail[len(detail)-maxReviewFailureDetailBytes:]
 }
 
 func classifyReviewFailure(result ops.Result) ReviewFailureClass {

@@ -165,6 +165,36 @@ EOF
 	fi
 }
 
+# Test: startup hygiene removes only terminal-escape artifacts at the repo root.
+# shellcheck disable=SC2317,SC2329
+test_repo_root_rejects_terminal_escape_artifacts() {
+	local tmpdir artifact normal_dir live_lock ordinary_file harness
+	tmpdir=$(mktemp -d)
+	# shellcheck disable=SC2064
+	trap "rm -rf -- '$tmpdir'" RETURN
+
+	artifact="$tmpdir"/$'\033]8;;file:artifact'
+	normal_dir="$tmpdir/normal"
+	live_lock="$tmpdir/.oro-quality-gate.lock"
+	ordinary_file="$tmpdir/ordinary-file"
+	harness="$tmpdir/sweep.sh"
+	mkdir -p "$artifact" "$normal_dir" "$live_lock"
+	: >"$ordinary_file"
+
+	{
+		printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
+		awk '/^sweep_repo_root_escape_artifacts\(\) \{/{capture=1} capture {print} capture && /^}/{exit}' "$SCRIPT_DIR/quality_gate.sh"
+		printf '%s\n' "sweep_repo_root_escape_artifacts \"\$REPO_ROOT\""
+	} >"$harness"
+	chmod +x "$harness"
+
+	REPO_ROOT="$tmpdir" "$harness"
+	if [ -e "$artifact" ] || [ ! -d "$normal_dir" ] || [ ! -d "$live_lock" ] || [ ! -f "$ordinary_file" ]; then
+		echo 'Expected only the OSC-8 artifact directory to be removed'
+		return 1
+	fi
+}
+
 # =============================================================================
 # Trap EXIT Tests (oro-bl44): mutation testing cleanup on interrupt
 # =============================================================================
@@ -1639,6 +1669,7 @@ echo "=============================================="
 test_case "Reads config when present" test_reads_config_when_present
 test_case "Falls back when config missing" test_fallback_when_config_missing
 test_case "Skips when tool missing" test_skip_when_tool_missing
+test_case "Removes terminal escape artifacts at repo root" test_repo_root_rejects_terminal_escape_artifacts
 
 echo ""
 echo "Testing mutation trap handlers (oro-bl44)"

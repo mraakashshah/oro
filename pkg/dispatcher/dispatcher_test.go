@@ -25871,3 +25871,17 @@ func dispatcherTestOpsRunStatusByID(t *testing.T, db *sql.DB, runID int64) strin
 	}
 	return status
 }
+
+func TestReviewFailureDetail_Bounded(t *testing.T) {
+	raw := strings.Repeat(`{"type":"assistant","delta":"noise"}`+"\n", 2000) +
+		`{"type":"result","is_error":true,"result":"terminal review error"}`
+
+	detail := reviewFailureDetail(ops.Result{Feedback: raw})
+
+	if len(detail) > 2*1024 {
+		t.Fatalf("review failure detail length = %d, want <= 2048", len(detail))
+	}
+	if !strings.Contains(detail, "terminal review error") {
+		t.Fatalf("review failure detail %q does not preserve terminal result", detail)
+	}
+}
