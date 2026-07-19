@@ -889,12 +889,17 @@ type mockGitRunner struct {
 	conflict     bool   // if true, rebase returns conflict error
 	conflictOnce bool   // if true, fail on the first rebase only
 	revListCount string
+	calls        [][]string // records all git calls
 	rebaseCalls  [][]string // records args for each rebase invocation
 }
 
 func (m *mockGitRunner) Run(_ context.Context, _ string, args ...string) (string, string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	cp := make([]string, len(args))
+	copy(cp, args)
+	m.calls = append(m.calls, cp)
 
 	for _, a := range args {
 		if m.failOn != "" && a == m.failOn {
@@ -908,8 +913,6 @@ func (m *mockGitRunner) Run(_ context.Context, _ string, args ...string) (string
 			return "", "", nil // abort succeeds
 		}
 		// Record rebase call args (copy to avoid aliasing).
-		cp := make([]string, len(args))
-		copy(cp, args)
 		m.rebaseCalls = append(m.rebaseCalls, cp)
 		if m.conflict || m.conflictOnce {
 			m.conflictOnce = false // consume the one-shot flag
@@ -929,6 +932,17 @@ func (m *mockGitRunner) Run(_ context.Context, _ string, args ...string) (string
 		return "abc123def456\n", "", nil
 	}
 	return "", "", nil
+}
+
+// Calls returns a snapshot of all git command arguments recorded so far.
+func (m *mockGitRunner) Calls() [][]string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([][]string, len(m.calls))
+	for i, call := range m.calls {
+		out[i] = append([]string(nil), call...)
+	}
+	return out
 }
 
 // RebaseCalls returns a snapshot of all rebase arg slices recorded so far.
@@ -12180,6 +12194,97 @@ func TestMergeAndComplete_RunsPreMergeQG(t *testing.T) {
 		}
 		if eventCount(t, d.db, "pre_merge_qg_work_preserved") == 0 {
 			t.Errorf("expected pre_merge_qg_work_preserved event on QG error")
+		}
+	})
+}
+
+func TestMergeAndCompleteRunsQGPostRebaseViaPreFFCheck(t *testing.T) {
+	t.Run("QG runs once after rebase and before fast-forward", func(t *testing.T) {
+		d, _, _, _, gitRunner, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		const (
+			beadID   = "bead-post-rebase-qg"
+			workerID = "worker-post-rebase-qg"
+			worktree = "/tmp/worktree-post-rebase-qg"
+			branch   = "agent/bead-post-rebase-qg"
+		)
+		qgRunner := &mockQGRunner{
+			callFn: func(_ context.Context, gotWorktree string, _ bool, _ string) (bool, string, error) {
+				if gotWorktree != worktree {
+					t.Fatalf("QG worktree = %q, want %q", gotWorktree, worktree)
+				}
+				if calls := gitRunner.RebaseCalls(); len(calls) != 1 {
+					t.Fatalf("QG ran after %d rebases, want exactly one completed rebase", len(calls))
+				}
+				return true, "all green", nil
+			},
+		}
+		d.qgRunner = qgRunner
+
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "", 0)
+
+		qgRunner.mu.Lock()
+		qgCalls := len(qgRunner.calls)
+		qgRunner.mu.Unlock()
+		if qgCalls != 1 {
+			t.Fatalf("QG calls = %d, want exactly one", qgCalls)
+		}
+	})
+
+	t.Run("QG failure aborts fast-forward and uses QG failure handling", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, gitRunner, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		const (
+			beadID   = "bead-post-rebase-qg-failure"
+			workerID = "worker-post-rebase-qg-failure"
+			worktree = "/tmp/worktree-post-rebase-qg-failure"
+			branch   = "agent/bead-post-rebase-qg-failure"
+		)
+		d.qgRunner = &mockQGRunner{
+			callFn: func(_ context.Context, _ string, _ bool, _ string) (bool, string, error) {
+				if calls := gitRunner.RebaseCalls(); len(calls) != 1 {
+					t.Fatalf("QG ran after %d rebases, want exactly one completed rebase", len(calls))
+				}
+				return false, "post-rebase QG failure", nil
+			},
+		}
+		d.mu.Lock()
+		d.worktreeByBead[beadID] = worktree
+		d.mu.Unlock()
+
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "", 0)
+
+		if eventCount(t, d.db, "qg_failed") != 1 {
+			t.Fatal("expected post-rebase QG failure to be recorded")
+		}
+		for _, call := range gitRunner.Calls() {
+			if len(call) >= 2 && call[0] == "merge" && call[1] == "--ff-only" {
+				t.Fatalf("fast-forward merge ran after QG failure: %v", call)
+			}
+		}
+		wtMgr.mu.Lock()
+		removed := append([]string(nil), wtMgr.removed...)
+		wtMgr.mu.Unlock()
+		if slices.Contains(removed, worktree) {
+			t.Fatalf("worktree %q was removed after QG failure", worktree)
+		}
+		beadSrc.mu.Lock()
+		status := beadSrc.updated[beadID]
+		beadSrc.mu.Unlock()
+		if status != "open" {
+			t.Fatalf("bead status = %q, want open after QG failure", status)
 		}
 	})
 }

@@ -2528,19 +2528,66 @@ func (d *Dispatcher) guardQGRegression(ctx context.Context, beadID, workerID, wo
 // testing is opt-in so local branch merges do not pay that cost by default.
 // It returns true when the gate passes and the merge should proceed. On failure
 // or error it handles cleanup and returns false so the caller can return early.
-func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, worktree string, assignmentID int64, targetBranch string) bool {
+var errPreMergeQGAlreadyHandled = errors.New("pre-merge QG failure already handled")
+
+type preMergeQGFailureError struct {
+	output string
+}
+
+func (e *preMergeQGFailureError) Error() string {
+	return "pre-merge quality gate failed"
+}
+
+type preMergeQGRunError struct {
+	err error
+}
+
+func (e *preMergeQGRunError) Error() string {
+	return fmt.Sprintf("run pre-merge quality gate: %v", e.err)
+}
+
+func (e *preMergeQGRunError) Unwrap() error {
+	return e.err
+}
+
+// runPreMergeQG executes the dispatcher quality gate for a final candidate
+// worktree. It leaves failure handling to its caller, except for regression
+// protection, which already performs the required recovery itself.
+func (d *Dispatcher) runPreMergeQG(ctx context.Context, beadID, workerID, worktree string, assignmentID int64, targetBranch string) error {
 	mutationBase := d.qgMutationBase(targetBranch)
 	if !d.guardQGRegression(ctx, beadID, workerID, worktree, assignmentID, mutationBase) {
-		return false
+		return errPreMergeQGAlreadyHandled
 	}
 	qgPassed, qgOutput, qgErr := d.qgRunner.Run(ctx, worktree, !d.cfg.MutationTesting, mutationBase)
 	if qgErr != nil {
-		return d.handlePreMergeQGError(ctx, beadID, workerID, worktree, assignmentID, qgErr)
+		return &preMergeQGRunError{err: qgErr}
 	}
 	if !qgPassed {
-		return d.handlePreMergeQGFailure(ctx, beadID, workerID, worktree, assignmentID, qgOutput)
+		return &preMergeQGFailureError{output: qgOutput}
 	}
-	return true
+	return nil
+}
+
+// checkPreMergeQG preserves the direct local-gate entry point used by the
+// existing lifecycle checks. Dispatcher merges invoke runPreMergeQG through
+// merge.Opts.PreFFCheck so the gate sees the rebased worktree.
+func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, worktree string, assignmentID int64, targetBranch string) bool {
+	err := d.runPreMergeQG(ctx, beadID, workerID, worktree, assignmentID, targetBranch)
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, errPreMergeQGAlreadyHandled) {
+		return false
+	}
+	var qgFailure *preMergeQGFailureError
+	if errors.As(err, &qgFailure) {
+		return d.handlePreMergeQGFailure(ctx, beadID, workerID, worktree, assignmentID, qgFailure.output)
+	}
+	var qgRunErr *preMergeQGRunError
+	if errors.As(err, &qgRunErr) {
+		return d.handlePreMergeQGError(ctx, beadID, workerID, worktree, assignmentID, qgRunErr.err)
+	}
+	return d.handlePreMergeQGError(ctx, beadID, workerID, worktree, assignmentID, err)
 }
 
 func (d *Dispatcher) checkPreMergeLeaks(ctx context.Context, beadID, workerID, worktree, branch, targetBranch string, assignmentID int64) bool {
@@ -2802,9 +2849,6 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 		return
 	}
 
-	if !d.checkPreMergeQG(ctx, beadID, workerID, worktree, assignmentID, targetBranch) {
-		return
-	}
 	if !d.checkPreMergeLeaks(ctx, beadID, workerID, worktree, branch, targetBranch, assignmentID) {
 		return
 	}
@@ -2817,8 +2861,27 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 		Worktree:     worktree,
 		BeadID:       beadID,
 		TargetBranch: targetBranch,
+		PreFFCheck: func(checkCtx context.Context, finalWorktree string) error {
+			return d.runPreMergeQG(checkCtx, beadID, workerID, finalWorktree, assignmentID, targetBranch)
+		},
 	})
 	if err != nil {
+		var preFFErr *merge.PreFFCheckError
+		if errors.As(err, &preFFErr) {
+			if errors.Is(preFFErr, errPreMergeQGAlreadyHandled) {
+				return
+			}
+			var qgFailure *preMergeQGFailureError
+			if errors.As(preFFErr, &qgFailure) {
+				d.handlePreMergeQGFailure(ctx, beadID, workerID, worktree, assignmentID, qgFailure.output)
+				return
+			}
+			var qgRunErr *preMergeQGRunError
+			if errors.As(preFFErr, &qgRunErr) {
+				d.handlePreMergeQGError(ctx, beadID, workerID, worktree, assignmentID, qgRunErr.err)
+				return
+			}
+		}
 		var conflictErr *merge.ConflictError
 		if errors.As(err, &conflictErr) {
 			// Spawn ops agent to resolve conflict
