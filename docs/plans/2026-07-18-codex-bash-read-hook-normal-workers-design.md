@@ -1,8 +1,40 @@
 # Codex Bash Read-Hook for Normal Workers
 
 **Date:** 2026-07-18
-**Status:** Validated — adversarial review R4 **PASS** (deny-field, allow-contract, str_replace scope, live-validation gate, Set-B grep procedure across Go + Python suites, uniform empty-stdout Bash allow — zero surviving all-pass-yet-fails scenarios)
+**Status:** **Implemented + live-validated** on `codex-cli 0.144.6`. The design's
+original deny mechanism was proven inert on Codex during implementation and
+**superseded** — see **Live Findings (implementation)** below. Adversarial review
+R4 PASS applied to the *deny* mechanism; the corrected *updatedInput* mechanism is
+validated empirically by the live gate (`scripts/validate_codex_bash_hook.sh`,
+recorded PASS) rather than a re-run spec review.
 **Priority:** P0
+
+## Live Findings (implementation) — supersede parts of the original design
+
+Verified against real `codex exec` (codex-cli 0.144.6). Three facts changed the design:
+
+1. **codex exec fires NO config hooks without trust.** codex gates config-file
+   hooks behind a persisted per-hook `trusted_hash` (`[hooks.state]` in
+   `config.toml`) **or** the per-invocation flag `--dangerously-bypass-hook-trust`.
+   oro's spawn args passed neither, so **every** oro Codex hook (search hook,
+   `enforce_skills`, `destructive_command_guard`, …) was silently inert.
+   → **Fix (task `oro-3mcf`):** add `--dangerously-bypass-hook-trust` to
+   `buildExecArgPrefixWithSandbox` (worker + ops). The flag does not persist, so it
+   rides every spawn. oro authors its own hooks (the flag's intended use).
+2. **codex exec IGNORES a PreToolUse `deny` for trusted read commands.**
+   `cat`/`ls`/`sed` run regardless of a hook deny (6/6 across `permissionDecision:
+   deny`, top-level `decision:block`, combined; large and tiny reasons). A deny
+   **cannot** suppress a `cat`. (Deny *is* honored for non-trusted commands — e.g.
+   `destructive_command_guard`'s `rm` block enforces 3/3 — so the trust flag is a
+   net safety win, not a hole.)
+3. **codex exec HONORS `updatedInput`.** A hook may return
+   `permissionDecision:"allow"` plus `hookSpecificOutput.updatedInput.command`,
+   which codex runs *instead of* the original. → **Mechanism (task `oro-srh4`):**
+   rewrite `cat <path>` into `printf '%s' '<summary>'`. The raw file is never read;
+   the model receives the AST summary. Verified live 3/3 (raw suppressed, summary
+   delivered) and by the committed gate.
+
+The Claude Read arm still uses `deny` (Claude honors it) — unchanged.
 
 ## Goal
 
@@ -75,7 +107,8 @@ By contrast, normal **Claude** workers are already covered:
 | Read surface | Recognize Codex `Bash` reads; retire `str_replace_based_edit_tool` matcher | Match the surface current Codex actually uses |
 | Scope of interception | **Only** a single simple `cat [--] <path>` of a large code file | Small blast radius on the hot Bash path; YAGNI |
 | Everything else | `sed`, `head`, `tail`, `rg`, pipes, chains, redirects, substitutions, multiple files, malformed → **fail open** | Never break or slow a legitimate shell command |
-| Codex deny shape | `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"}, "systemMessage":<summary>, "permissionDecisionReason":<summary>}` — summary in **`systemMessage`** (the proven surfaced field) **and** `permissionDecisionReason` for robustness | Match the only working in-tree Codex Bash deny (`destructive_command_guard.py:146-155` surfaces `systemMessage`, emits no `permissionDecisionReason`); the model must actually receive the summary |
+| Codex intercept shape | ~~deny + summary~~ **SUPERSEDED.** `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":"printf '%s' '<summary>'"}}}` — allow the call, rewrite the `cat` into a `printf` of the summary | codex exec ignores `deny` for trusted reads (`cat`), so deny delivered zero savings; `updatedInput` is the only mechanism codex honors for suppressing a `cat`. Verified live 3/3 |
+| Codex hook trust | Pass `--dangerously-bypass-hook-trust` on every `codex exec` (`oro-3mcf`) | codex exec fires no config hook without persisted trust or this flag; trust doesn't persist so the flag rides every spawn |
 | Codex allow / fail-open output | **Empty stdout** (no bytes), matching the sibling hook's proven allow contract — *not* `{}` | The Codex allow contract is "no decision emitted"; `{}` is unverified on the Bash surface and could stall every non-`cat` Bash call |
 | Claude path | Unchanged (top-level `permissionDecision`, `{}` allow) | No regression to the working Claude route |
 | Legacy Codex `view` arm | **Keep** `handleCodexView` in the binary (harmless dead arm); only the *config* `str_replace_based_edit_tool` matcher is removed | Deleting the arm breaks four existing tests (enumerated below) for no benefit |
@@ -251,14 +284,14 @@ zero bytes.
 
 ## Load-Bearing Assumption
 
-Reduced by conforming to the only working in-tree Codex Bash deny
-(`destructive_command_guard.py`): we emit `systemMessage` and empty-stdout
-allow rather than guessing. The **one** remaining assumption is that
-**`codex exec` in worker mode fires the managed `PreToolUse` `Bash` config
-hooks at all** (not just interactive Codex). If Codex ignores config-file
-hooks under `codex exec`, the approach is inert regardless of output shape.
-This is precisely what the live-`codex exec` validation gate (Verification §3)
-exists to prove — it must pass before the epic is accepted.
+**RESOLVED by the live gate.** The load-bearing assumption was that `codex exec`
+fires the managed `PreToolUse Bash` config hooks and honors their output. Live
+testing proved it does **not** by default — hooks don't fire without
+`--dangerously-bypass-hook-trust` (`oro-3mcf`), and even when firing, a `deny`
+does not suppress a `cat`. Both were fixed: the trust flag makes hooks fire, and
+the `updatedInput` rewrite (not deny) suppresses the read. The gate
+(`scripts/validate_codex_bash_hook.sh`) now records a **PASS** end-to-end
+(raw suppressed, summary delivered), so the assumption is verified, not assumed.
 
 ## Relationship to Existing Tasks
 
