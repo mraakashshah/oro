@@ -202,38 +202,38 @@ func (g *GitWorktreeManager) stageAssets(ctx context.Context, path string) {
 // script intentionally coexists with a tracked scripts/quality_gate.sh so old
 // epic branches cannot bypass current factory safety fixes.
 func (g *GitWorktreeManager) linkQualityGate(ctx context.Context, worktreePath string) {
+	g.RefreshQualityGate(ctx, worktreePath)
+}
+
+// RefreshQualityGate replaces the dispatcher-managed root quality gate with a
+// current executable snapshot. It is intentionally best-effort for newly
+// created worktrees; reuse calls refreshQualityGate directly so it can fail
+// closed rather than handing a stale gate to a worker.
+func (g *GitWorktreeManager) RefreshQualityGate(ctx context.Context, worktreePath string) {
+	if err := g.refreshQualityGate(worktreePath); err != nil {
+		slog.WarnContext(ctx, "refresh_quality_gate_failed",
+			"worktree", worktreePath, "target", g.qualityGatePath, "error", err.Error())
+	}
+}
+
+func (g *GitWorktreeManager) refreshQualityGate(worktreePath string) error {
 	if g.qualityGatePath == "" {
-		return
+		return nil
 	}
 
-	// Verify the target exists before creating a broken symlink.
 	if _, err := os.Stat(g.qualityGatePath); err != nil {
-		slog.WarnContext(ctx, "link_quality_gate_target_missing",
-			"path", g.qualityGatePath, "error", err.Error())
-		return
+		return fmt.Errorf("stat managed quality gate %s: %w", g.qualityGatePath, err)
 	}
 
 	linkPath := filepath.Join(worktreePath, "quality_gate.sh")
-	info, err := os.Lstat(linkPath)
-	if err == nil {
-		if info.Mode()&os.ModeSymlink == 0 {
-			return
-		}
-		if removeErr := os.Remove(linkPath); removeErr != nil {
-			slog.WarnContext(ctx, "link_quality_gate_remove_stale_link_failed",
-				"link", linkPath, "target", g.qualityGatePath, "error", removeErr.Error())
-			return
-		}
-	} else if !os.IsNotExist(err) {
-		slog.WarnContext(ctx, "link_quality_gate_lstat_failed",
-			"link", linkPath, "target", g.qualityGatePath, "error", err.Error())
-		return
+	if err := os.Remove(linkPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove stale managed quality gate %s: %w", linkPath, err)
 	}
 
 	if err := copyQualityGateSnapshot(g.qualityGatePath, linkPath); err != nil {
-		slog.WarnContext(ctx, "link_quality_gate_copy_failed",
-			"link", linkPath, "target", g.qualityGatePath, "error", err.Error())
+		return err
 	}
+	return nil
 }
 
 func copyQualityGateSnapshot(src, dst string) error {
@@ -359,6 +359,9 @@ func (g *GitWorktreeManager) PrepareExistingForReuse(ctx context.Context, worktr
 		return false, err
 	}
 	if branchHead == baseHead {
+		if err := g.refreshQualityGate(worktree); err != nil {
+			return false, fmt.Errorf("refresh managed quality gate for reused worktree %s: %w", worktree, err)
+		}
 		return false, nil
 	}
 
@@ -374,11 +377,17 @@ func (g *GitWorktreeManager) PrepareExistingForReuse(ctx context.Context, worktr
 		if _, mergeErr := g.runner.Run(ctx, "git", "-C", worktree, "merge", "--ff-only", baseBranch); mergeErr != nil {
 			return false, fmt.Errorf("fast-forward existing worktree %s to %s: %w", worktree, baseBranch, mergeErr)
 		}
+		if err := g.refreshQualityGate(worktree); err != nil {
+			return false, fmt.Errorf("refresh managed quality gate for reused worktree %s: %w", worktree, err)
+		}
 		return true, nil
 	}
 
 	baseBehind, err := g.isAncestor(ctx, baseBranch, branch)
 	if err == nil && baseBehind {
+		if err := g.refreshQualityGate(worktree); err != nil {
+			return false, fmt.Errorf("refresh managed quality gate for reused worktree %s: %w", worktree, err)
+		}
 		return false, nil
 	}
 	return false, fmt.Errorf("agent branch %s diverged from base %s", branch, baseBranch)
