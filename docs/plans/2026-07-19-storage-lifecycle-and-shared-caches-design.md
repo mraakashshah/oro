@@ -1,7 +1,7 @@
 # Storage Lifecycle and Shared Caches Design
 
 **Date:** 2026-07-19
-**Status:** Validated design; consultation and adversarial review pending
+**Status:** Consultation complete; adversarial gaps addressed; rereview pending
 
 ## Summary
 
@@ -105,6 +105,16 @@ Only one process performs global maintenance at a time using an OS advisory lock
 
 Catalog loss or corruption puts automated deletion into preservation mode. A bounded reconciler can rebuild known records, but absence of a record is never treated as deletion authority.
 
+Catalog corruption has an explicit operational boundary. Stateless cache-path resolution and read-only status continue, but new worktree-scoped subprocess admission fails with `storage_unavailable` because Oro cannot create a trustworthy lease. Existing processes may finish; deletion, retirement execution, weekly provider cleanup, and branch cleanup remain disabled. Reconciliation runs read-only until it reconstructs ownership and an operator-visible health finding clears. Oro never falls back to untracked scratch execution.
+
+### Host-wide pause and drain
+
+The catalog also carries a monotonically increasing global admission epoch with states `open`, `pause_requested`, `paused`, and `resuming`. Every live dispatcher and standalone `oro work` controller heartbeats its observed epoch and stops new worker, reviewer, hook, and quality-gate admissions when a pause is requested. A controller acknowledges `paused` only after its Oro-owned process groups have exited or been cancelled and all leases have been released.
+
+A weekly or manual destructive provider sweep proceeds only after every non-stale controller has acknowledged the same pause epoch. A missing acknowledgement blocks the sweep and produces a health incident. Under critical disk pressure, the coordinator requests cancellation of every catalogued Oro-owned process group; it still waits for confirmed exit and lease release rather than weakening cleanup safety. Stale controllers are excluded only after strong process-identity verification proves they are dead.
+
+Resume requires both aggregate temp usage at or below 2 GiB and filesystem free space above the warning threshold on two probes at least 30 seconds apart. The coordinator advances the epoch to `resuming`, controllers acknowledge, and then it returns to `open`. This hysteresis prevents oscillation and permanent pause.
+
 ### Worktree runtime leases
 
 `processenv` must acquire a runtime handle, not merely return an environment slice. The handle represents the worktree's short temp namespace and must be released after the spawned command exits. Workers, quality gates, reviewers, hooks, and dispatcher commands that use worktree scratch all hold leases.
@@ -112,6 +122,10 @@ Catalog loss or corruption puts automated deletion into preservation mode. A bou
 A lease includes a process identity stronger than PID alone, such as PID plus observed start time and Oro owner identity. Heartbeats allow stale-lease recovery. Oro expires a lease only after proving that its owning process identity no longer exists.
 
 The runtime handle resolves shared cache environment variables before returning the final subprocess environment. Existing call sites of `processenv.ForWorkdir` must migrate to an acquire/release API or to a spawner wrapper that owns the handle for the child lifetime.
+
+Migration covers every production `ForWorkdir` caller in `pkg/worker`, `pkg/ops`, `pkg/merge`, `pkg/janitor`, `pkg/dispatcher`, `pkg/codesearch`, `pkg/agentruntime/codex`, and `cmd/oro`. Spawner families must hold the handle across `Start`, `Wait`, cancellation, start failure, and forced termination. Direct commands use one common acquire/run/release wrapper.
+
+Directly invoked quality gates, including installed pre-push hooks and stealth-mode gates, cannot rely on a parent Go spawner. Oro therefore provides a lease-aware `oro storage exec --workdir <path> -- <argv...>` wrapper. Generated and installed hooks invoke the quality-gate script through this wrapper. The wrapper resolves cache policy, acquires the runtime handle, forwards signals to the child process group, waits, releases the handle, and preserves the child's exit code.
 
 ## Scope-based Shared Cache Contract
 
@@ -162,6 +176,18 @@ External means reusable, not deletable. Oro may delete or invoke cleanup only wh
 
 A provider can require global idleness or serialization before status or cleanup. One provider failure does not prevent subsequent providers from running.
 
+### Configuration and precedence
+
+One typed storage-policy loader is shared by daemon startup, standalone `oro work`, `oro storage`, workers, hooks, and tests. Policy sources are applied in this order:
+
+1. compiled safe defaults;
+2. trusted user configuration under `~/.oro`;
+3. repository or project configuration, which may declare cache variables/scope and may only tighten host thresholds;
+4. environment overrides explicitly allowlisted by the trusted user configuration;
+5. CLI overrides for the current status or cleanup invocation, which cannot add deletion roots or bypass proof.
+
+Only trusted user configuration can increase host limits, authorize a custom cleaner, or add a deletion root. Project configuration cannot weaken global pressure, lease, containment, pause, or retention policy. The resolved immutable policy and its source provenance are injected into both dispatcher and standalone construction paths so they cannot interpret the same repository differently.
+
 ## Worktree Scratch Lifecycle
 
 The sole worktree runtime namespace is `/tmp/oro-subprocess/<token>`, where the token is a deterministic hash of the canonical worktree path. All subprocesses for that worktree share the same lease-protected namespace.
@@ -175,7 +201,9 @@ The sole worktree runtime namespace is `/tmp/oro-subprocess/<token>`, where the 
 
 These limits apply only to actual worktree scratch. Shared caches and Git worktree checkout bytes are measured separately.
 
-At the warning threshold, Oro emits a finding and samples usage more frequently. At the stop threshold, it prevents new subprocesses in that namespace and requests graceful cancellation of the active writer. After 30 seconds, Oro terminates a writer that is still running or growing. Under critical host pressure, the grace period is skipped. The worktree and diagnostic evidence are preserved, and the attempt is classified as `storage_limit` rather than as an ordinary test failure.
+At the warning threshold, Oro emits a finding and samples usage more frequently. At the stop threshold, it prevents new subprocesses in that namespace and requests graceful cancellation of every active lease owner. After 30 seconds, Oro terminates any owner that remains running. Under critical host pressure, the grace period is skipped. The worktree and diagnostic evidence are preserved, and the attempt is classified as `storage_limit` rather than as an ordinary test failure.
+
+Oro does not guess which of several processes created the bytes. When one namespace crosses 0.5 GiB, every live lease owner and descendant process group for that namespace receives graceful cancellation. The catalog records every cancellation outcome; after the grace period, all remaining process groups are terminated. This is intentionally broader than attributing a single writer and is covered by concurrent worker, reviewer, and quality-gate tests.
 
 Before enforcement is enabled by default, an acceptance run must prove that a normal full quality gate stays below 0.5 GiB of scratch after all shared-cache routing is active. A project can explicitly configure a higher limit; overrides are logged and never silently inferred.
 
@@ -217,6 +245,8 @@ Cleanup is triggered:
 
 The janitor is a trigger, not the owner of cleanup. This prevents maintenance starvation when there are no merges, janitor is disabled, or the factory cannot reach its first successful merge.
 
+Trigger wiring is explicit rather than inferred from the existence of a maintenance loop. Dispatcher construction opens the manager and performs startup catch-up; `RunSweepLoop` invokes the hourly planner; both successful and failed janitor/audit cycle exits enqueue a bounded pass; successful and no-op merge finalizers commit retirement before worktree tracking is cleared; `tryAssign`, quality-gate admission, hook execution, and standalone `oro work` honor the global admission epoch; shutdown closes the manager only after controller acknowledgement is withdrawn.
+
 A cheap filesystem-space probe runs before admissions and on the maintenance cadence:
 
 - Warning pressure: free space below the greater of 10% of filesystem capacity or 50 GiB.
@@ -240,13 +270,17 @@ A local branch is deleted only after its worktree is removed, no lease remains, 
 
 ### Remote branches
 
-A remote branch is eligible only when Oro created and owns it. Oro must fetch current refs, prove the exact branch tip is contained in the remote target, reject protected/default/user-owned refs, and compare the expected remote SHA immediately before deletion. A remotely advanced ref is preserved. Transient failures are retried, and remote cleanup never changes merge success.
+A remote branch is eligible only when Oro created and owns it. Ownership is recorded transactionally when the common Oro branch-publish operation first creates the remote ref, including remote name, full ref, expected SHA, project, task, and target branch. Every production remote push must use this operation; a remote ref discovered without this producer record is user-owned for cleanup purposes.
+
+Oro must fetch current refs, prove the exact branch tip is contained in the remote target, reject protected/default/user-owned refs, and delete through Git's expected-SHA lease semantics, equivalent to `git push --force-with-lease=refs/heads/<branch>:<expected-sha> <remote> :refs/heads/<branch>`. A remotely advanced ref is preserved atomically by the server-side comparison. Transient failures are retried, and remote cleanup never changes merge success.
 
 The weekly cycle retries eligible leftover worktrees and local or remote branches.
 
 ## Weekly Developer-tool Sweep
 
 The global catalog stores the weekly due time. Oro waits for a globally idle Oro window. If no idle window occurs within 24 hours after the sweep becomes due, Oro pauses new admissions, drains active Oro work, and runs the sweep. Oro cannot prove that unrelated non-Oro processes are idle, so operator documentation must state that boundary.
+
+Dry-run and apply output explicitly warn that Oro has verified only Oro-owned controllers and leases. This is an accepted residual risk: the user-requested weekly full tool cleanup may invalidate caches used concurrently by unrelated processes. Oro never represents host-wide Oro idleness as proof of whole-machine tool idleness.
 
 The initial built-in sweep performs independently evidenced provider steps equivalent to:
 
@@ -294,6 +328,8 @@ Oro always preserves:
 
 The cleanup planner exposes which allowlist rule authorized every candidate.
 
+Age and size caps never unlink an active worker or hook log. Worker/process startup registers the canonical current log path with its process identity; shutdown releases it. Cleanup excludes every active registration and any log whose owner cannot be proven dead. Cap enforcement removes only the oldest inactive allowlisted logs.
+
 ## Operator Surface
 
 ### Status
@@ -319,6 +355,10 @@ The cleanup planner exposes which allowlist rule authorized every candidate.
 - `--apply` authorizes the already proven candidates; it never bypasses ownership, containment, lease, ancestry, remote-SHA, or provider rules.
 - `oro storage clean --scope dev-tools --apply` is the reusable equivalent of the requested developer-tool shell one-shot.
 - Scheduled maintenance and the CLI invoke the same planner and executor.
+
+### Lease-aware execution
+
+`oro storage exec --workdir <absolute-path> -- <argv...>` is the non-interactive execution surface for hooks and scripts that are not spawned by a lease-aware Go caller. It has no deletion authority. It resolves the shared-cache policy, acquires the worktree runtime lease, starts one child process group, forwards signals, releases after confirmed exit, and returns the child's exit status. Missing or corrupt catalog state fails before child start with `storage_unavailable`.
 
 ## Evidence and Health
 
@@ -371,17 +411,54 @@ Repeated identical failures deduplicate into one incident. Full environments, to
 
 The migration is safe to repeat. It never traverses arbitrary paths supplied by directory contents and never treats an unknown child as disposable.
 
+## Production Wiring Inventory
+
+Beadcraft tasks must list these production entry points in their `Read:` fields and cover the indicated call chain. Implementing a component without its listed producer and consumer is incomplete.
+
+| Concern | Required production files and functions | Epic |
+|---|---|---:|
+| CLI registration and global paths | `cmd/oro/root.go:rootSubcommands`, `cmd/oro/paths.go`, new `cmd/oro/cmd_storage.go` | 1 |
+| Dispatcher dependency construction | `cmd/oro/cmd_start.go:buildDispatcherWithReviewTimeoutsAndCleanliness`, `cleanEnvForDaemon`; `pkg/dispatcher/dispatcher.go:New`, `Run`, `startupRecovery`, `spawnBackgroundLoops` | 1–2 |
+| Standalone lifecycle | `cmd/oro/cmd_work.go:runWork`, `executeWork`, no-op/success/failure/cancellation cleanup paths | 1–3 |
+| Direct hooks | `cmd/oro/init_stealth.go:buildOroPrePushCheck` and other installed hook templates, routed through `oro storage exec` | 1–2 |
+| Cache and lease API | `pkg/processenv/env.go:ForWorkdir` replacement plus `pkg/processenv/cache_cleanup.go:PruneSubprocessCache` retirement | 1–2 |
+| Every processenv caller | all callers in `pkg/worker`, `pkg/ops`, `pkg/merge`, `pkg/janitor`, `pkg/dispatcher`, `pkg/codesearch`, `pkg/agentruntime/codex`, and `cmd/oro` | 1–2 |
+| Checked-in/generated gates | `scripts/quality_gate.sh`, `cmd/oro/quality_gate_gen.go:qualityGateTmpl` | 1–2 |
+| Dispatcher QG lifetime | `pkg/dispatcher/dispatcher.go:ShellQGRunner.Run`, `qgRunnerEnv`, pre-merge QG path | 2 |
+| Admission and cancellation | `pkg/dispatcher/dispatcher.go:tryAssign`; `pkg/dispatcher/process_manager.go:Spawn`, `Kill`; worker/ops/QG process groups | 2 |
+| Post-merge retirement | `pkg/dispatcher/dispatcher.go:handleNoopMerge`, `finalizeSuccessfulMerge`, `removeWorktreeAndClearTracking` | 2–3 |
+| Periodic and cycle triggers | `pkg/dispatcher/sweeper_loop.go:RunSweepLoop`, `pkg/dispatcher/janitor_cycle.go:runJanitor`, `pkg/dispatcher/audit.go:runAudit` | 2 |
+| Janitor/audit scratch | `pkg/dispatcher/janitor_worktree.go:withScanWorktree`, `pkg/janitor/detect.go` subprocess paths | 2 |
+| Recurring worktree GC | `pkg/dispatcher/worker_pool.go:heartbeatLoop`, `pkg/dispatcher/bead_tracker.go:gcWorktrees` | 3 |
+| Worktree/ref implementation | `pkg/dispatcher/worktree_manager.go:Remove`, `DeleteBranchMergedInto`, `GCClosedWorktrees`, `PushBranch`, new expected-SHA remote delete | 3 |
+| Live and offline health | `pkg/dispatcher/health.go`, `cmd/oro/cmd_health.go:queryFactoryHealth`, `loadLocalFactoryHealth`, `pkg/factoryhealth/health.go` | 1–5 |
+| Unified policy loading | `pkg/config` typed loader, `cmd/oro/cmd_start.go`, `cmd/oro/cmd_work.go`, storage CLI and hook construction | 1 |
+| Legacy interactive cleanup | `cmd/oro/cmd_cleanup.go:runCleanup`, `cleanupSubprocessCache`, delegated to the common planner | 2 |
+| Temporary HOME tests | `pkg/testutil/configenv/configenv.go:Run` | 1 |
+
 ## Delivery Epics
 
 Beadcraft must decompose this design into multiple independently reviewable epics rather than one oversized storage epic. The epics share this design's global safety constraints and use explicit dependency edges:
 
-1. **Shared-cache foundation and storage control plane.** Add the provider contract, global catalog and lock, cache environment resolution, status and dry-run planning, and checked-in/generated quality-gate changes. Its acceptance test proves sibling worktrees reuse external caches without correctness contamination.
-2. **Worktree scratch lifecycle, pressure, and legacy migration.** Add runtime leases, `/tmp` measurement and limits, post-merge retirement, bounded tombstone deletion, admission control, active-writer cancellation, and reconciliation of the existing Oro cache/temp backlog. This epic depends on Epic 1.
-3. **Managed worktree and branch retirement.** Add recurring worktree cleanup plus proven local and compare-and-delete remote branch cleanup. This epic depends on Epic 2's ownership and lifecycle interfaces.
-4. **Strict `~/.oro` retention.** Implement only the approved log, handoff, backup, known-temp, and SQLite checkpoint rules while proving all indexes and unknown state are preserved. This epic depends on Epic 1's planner, evidence, and safety primitives and may proceed in parallel with Epic 2.
-5. **Weekly developer-tool maintenance.** Add provider-native Go, uv, golangci-lint, npm, and npx cleanup, global idle/overdue-drain scheduling, pressure-triggered early execution, and before/after proof. This epic depends on Epic 1's provider and evidence interfaces and may proceed in parallel with Epic 2.
+1. **Shared-cache foundation and storage control plane.** Add the provider contract, unified policy loader, global catalog and lock, CLI/router/path/bootstrap wiring, cache environment resolution, status and dry-run planning, checked-in/generated quality-gate changes, standalone parity, and live/offline health base fields. Its acceptance test proves sibling worktrees reuse external caches without correctness contamination.
+2. **Worktree scratch lifecycle, pressure, and legacy migration.** Add runtime leases across every spawner and direct command, the hook/QG wrapper, `/tmp` measurement and limits, global pause acknowledgements, dispatcher and standalone admission, post-merge/no-op retirement, process-group cancellation, bounded tombstone deletion, all recurring triggers, and reconciliation of the existing Oro cache/temp backlog. This epic depends on Epic 1.
+3. **Managed worktree and branch retirement.** Replace the existing recurring GC callback with catalog-backed proof, add post-merge and standalone cleanup parity, and implement worktree removal plus proven local and expected-SHA remote branch cleanup with ownership recorded at remote creation. This epic depends on Epic 2's ownership and lifecycle interfaces.
+4. **Strict `~/.oro` retention.** Implement only the approved inactive log, handoff, backup, known-temp, and SQLite checkpoint rules while proving all indexes, active logs, and unknown state are preserved through both CLI and scheduled paths. This epic depends on Epic 1's planner, evidence, and safety primitives and may proceed in parallel with Epic 2.
+5. **Weekly developer-tool maintenance.** Add provider-native Go, uv, golangci-lint, npm, and npx cleanup, host-wide idle/acknowledged-drain scheduling, pressure-triggered early execution, CLI reuse, live/offline health, and before/after proof. This epic depends on Epic 1's provider and evidence interfaces and may proceed in parallel with Epic 2.
 
 Each epic must have its own end-to-end acceptance test and can ship independently once its dependencies are complete. Epic 1 followed by Epic 2 is the safety-critical path; Epics 3–5 complete the requested cleanup surface without blocking the first recurrence-prevention release.
+
+The exact per-epic acceptance commands are:
+
+| Epic | Command | Binary assertion |
+|---:|---|---|
+| 1 | `./scripts/test_storage_epic1_shared_cache.sh` | exit 0 and final line `STORAGE_EPIC1_PASS` |
+| 2 | `./scripts/test_storage_epic2_runtime_lifecycle.sh` | exit 0 and final line `STORAGE_EPIC2_PASS` |
+| 3 | `./scripts/test_storage_epic3_worktree_refs.sh` | exit 0 and final line `STORAGE_EPIC3_PASS` |
+| 4 | `./scripts/test_storage_epic4_oro_home.sh` | exit 0 and final line `STORAGE_EPIC4_PASS` |
+| 5 | `./scripts/test_storage_epic5_dev_tools.sh` | exit 0 and final line `STORAGE_EPIC5_PASS` |
+
+Each script refuses to run unless `git branch --show-current` is `main`, creates isolated fixture roots rather than touching the operator's real cache or home, invokes named Go integration tests and CLI fixtures, and emits its sentinel only after every assertion passes.
 
 ## Rollout
 
@@ -408,7 +485,10 @@ Every stage exposes status and dry-run output. Shared caches are rebuildable, an
 - Explicitly provide external `GOCACHE` and `GOMODCACHE` when `HOME` is replaced.
 - Report but do not relocate or delete unknown cache-like paths.
 - Verify provider user/project/repository scoping.
+- Verify compiled/user/project/environment/CLI precedence and reject project attempts to raise limits or add cleaners.
 - Verify generated and checked-in quality gates do not invent per-run caches.
+- Verify installed and stealth hooks invoke the lease-aware wrapper.
+- Verify dispatcher and standalone controllers resolve byte-identical policy.
 - Run conflicting Go and uv worktrees concurrently and prove correct outputs and cache reuse.
 
 ### Runtime lifecycle
@@ -422,6 +502,10 @@ Every stage exposes status and dry-run output. Shared caches are rebuildable, an
 - 0.25/0.5 GiB namespace policy.
 - 2/3 GiB aggregate policy.
 - Admission pause/resume and active cancellation.
+- Two-controller pause epoch, acknowledgement, overdue drain, and two-probe resume hysteresis.
+- Concurrent worker, reviewer, and QG leases all receive cancellation for one oversized namespace.
+- Standalone work, dispatcher success/no-op, hooks, and every spawner family hold leases through child exit.
+- Catalog corruption preserves existing work, blocks new scratch admission, and disables deletion while status remains available.
 - Symlink, traversal, ownership mismatch, and injected `ENOSPC` preservation.
 
 ### Scale and migration
@@ -449,21 +533,58 @@ Every stage exposes status and dry-run output. Shared caches are rebuildable, an
 - Guarded npx target validation.
 - Exact before/after free-space evidence.
 - Indexes, databases, models, configuration, unknown files, and active WALs are never deleted.
+- Active worker and hook logs remain open and present while inactive logs obey retention.
 - Retention counts, ages, and caps are deterministic.
+- Live and offline health assembly produce equivalent storage findings.
 
-### Epic acceptance
+### Aggregate acceptance
 
-Run a full quality gate from multiple sibling worktrees and prove:
+The parent design has one machine-verifiable acceptance command:
+
+```text
+Cmd: ./scripts/test_storage_lifecycle_e2e.sh
+Assert: exit 0 and final stdout line is STORAGE_LIFECYCLE_E2E_PASS
+```
+
+The harness refuses any branch other than `main`, runs all five per-epic scripts, then runs `go test ./pkg/integration -run '^TestStorageCrossEpicEndToEnd$' -count=1 -timeout=30m`. The integration test uses isolated home/cache/temp roots, two dispatcher controllers, a bare Git remote, fake tool executables, and instrumented filesystem probes. The final sentinel is emitted only after the test proves:
 
 1. shared cache paths are external and equal where provider scope requires;
 2. cache hits occur across worktrees without correctness contamination;
-3. peak worktree scratch stays below 0.5 GiB;
-4. merging a task retires and removes its exact temp namespace;
+3. an actual full quality gate records peak worktree scratch below 536,870,912 bytes;
+4. successful and no-op dispatcher merges, plus successful standalone work, retire and remove the exact temp namespace;
 5. its worktree and eligible local branch are removed;
-6. its remote branch is deleted only after the remote target contains the expected tip;
-7. legacy reconciliation makes bounded progress without touching unknown paths;
-8. the weekly sweep produces complete per-provider and before/after evidence;
-9. all indexes under `~/.oro` remain byte-for-byte present.
+6. an Oro-owned remote branch in the bare fixture is deleted only after the remote target contains the expected tip, while an advanced ref is preserved;
+7. a 100,000-child legacy fixture visits at most 1,024 entries and deletes at most 256 directories or 1 GiB in one cycle, persists its cursor, and leaves the unknown-child SHA-256 manifest unchanged;
+8. two live controllers acknowledge one pause epoch before the weekly sweep, no admission occurs while paused, and the sweep records every provider plus exact before/after free bytes;
+9. the SHA-256 manifest of every index fixture is unchanged after `oro-home` cleanup;
+10. live and offline `oro health` report the same storage state and incidents.
+
+The five scripts call named integration tests rather than relying on prose:
+
+| Epic | Required named tests |
+|---:|---|
+| 1 | `TestStorageSharedCacheEndToEnd`, `TestStorageStandalonePolicyParity`, `TestStorageCLIAndHealthWiring` |
+| 2 | `TestStorageRuntimeLifecycleEndToEnd`, `TestStorageTwoControllerPauseDrain`, `TestStorageStandaloneAndHookLeases`, `TestStorageLegacyReconcileBounds` |
+| 3 | `TestStorageWorktreeAndRemoteRefEndToEnd`, `TestStorageRemoteAdvancePreserved` |
+| 4 | `TestStorageOroHomeAllowlistEndToEnd`, `TestStorageActiveLogsAndIndexesPreserved` |
+| 5 | `TestStorageWeeklyProviderSweepEndToEnd`, `TestStorageOverdueDrainAndEvidence` |
+
+### Design traceability matrix
+
+| # | Acceptance criterion | Responsible delivery epic | Required verifying test |
+|---:|---|---:|---|
+| 1 | External shared cache paths | 1 | `TestStorageSharedCacheEndToEnd` |
+| 2 | Cross-worktree cache reuse without contamination | 1 | `TestStorageSharedCacheEndToEnd` |
+| 3 | Peak scratch below 0.5 GiB and enforced limits | 2 | `TestStorageRuntimeLifecycleEndToEnd` |
+| 4 | Dispatcher success/no-op, standalone, and hook lease/retirement wiring | 2 | `TestStorageStandaloneAndHookLeases`, `TestStorageCrossEpicEndToEnd` |
+| 5 | Managed worktree and local branch removal | 3 | `TestStorageWorktreeAndRemoteRefEndToEnd` |
+| 6 | Remote ownership producer and expected-SHA deletion | 3 | `TestStorageWorktreeAndRemoteRefEndToEnd`, `TestStorageRemoteAdvancePreserved` |
+| 7 | Bounded legacy reconciliation and unknown preservation | 2 | `TestStorageLegacyReconcileBounds` |
+| 8 | Host-wide pause acknowledgement and evidenced weekly sweep | 5 | `TestStorageTwoControllerPauseDrain`, `TestStorageWeeklyProviderSweepEndToEnd` |
+| 9 | Strict `~/.oro` allowlist, active logs, and index hash preservation | 4 | `TestStorageOroHomeAllowlistEndToEnd`, `TestStorageActiveLogsAndIndexesPreserved` |
+| 10 | CLI plus live/offline health parity | 1–5 | `TestStorageCLIAndHealthWiring`, `TestStorageCrossEpicEndToEnd` |
+
+Beadcraft must assign every matrix row to at least one concrete task with the corresponding production wiring inventory in `Read:` and the named test in acceptance. Partial component tests do not satisfy a row without its end-to-end producer-to-consumer wiring test.
 
 ## Alternatives Rejected
 
@@ -517,7 +638,9 @@ The design assumes that provider-declared shared caches are either documented sa
 - `pkg/dispatcher`: startup/hourly/janitor/post-merge/pressure triggers, admission control, lifecycle events, active cancellation.
 - `pkg/dispatcher/worktree_manager.go`: recurring safe worktree and local/remote branch retirement integration.
 - `pkg/factoryhealth`: storage findings and incidents.
-- `cmd/oro`: `oro storage status` and `oro storage clean`.
+- `cmd/oro`: `oro storage status`, `oro storage clean`, `oro storage exec`, root registration, global paths, dispatcher bootstrap, standalone `oro work`, hooks, and live/offline health.
 - `scripts/quality_gate.sh` and `cmd/oro/quality_gate_gen.go`: inherit shared caches and remove per-run cache isolation.
 - `pkg/testutil/configenv`: explicit shared cache preservation under temporary HOME.
-- Configuration schema and docs: cache providers, thresholds, trusted custom cleaners, operator runbook.
+- `pkg/config`: one typed storage policy and precedence implementation for every execution mode.
+- `pkg/integration` and `scripts/test_storage_*.sh`: named per-epic and aggregate main-branch acceptance harnesses.
+- Documentation: cache providers, thresholds, trusted custom cleaners, non-Oro idleness boundary, and operator runbook.
