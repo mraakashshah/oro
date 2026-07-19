@@ -1,7 +1,7 @@
 # Codex Bash Read-Hook for Normal Workers
 
 **Date:** 2026-07-18
-**Status:** Validated — adversarial review R4 (fixed deny-field, allow-contract, str_replace scope, live-validation gate; Set-B Bash-`{}` regressions now a grep-driven procedure covering Go + Python suites; uniform empty-stdout Bash allow)
+**Status:** Validated — adversarial review R4 **PASS** (deny-field, allow-contract, str_replace scope, live-validation gate, Set-B grep procedure across Go + Python suites, uniform empty-stdout Bash allow — zero surviving all-pass-yet-fails scenarios)
 **Priority:** P0
 
 ## Goal
@@ -24,11 +24,12 @@ Three facts, verified in-tree:
    dispatches on `tool_name`: `Read` (Claude) and
    `str_replace_based_edit_tool` (legacy Codex `view`). Current Codex CLI does
    not emit `str_replace_based_edit_tool` for reads — it runs `Bash`.
-2. **The hook is wired to the dead surface.** `cmd/oro/cmd_start.go:701`
+2. **The hook is wired to the dead surface.** `cmd/oro/cmd_start.go:730`
    registers `oro-search-hook` under `matcher = "str_replace_based_edit_tool"`.
-   The live `Bash` matcher (`cmd_start.go:700`) runs only `enforce_skills.py`
+   The live `Bash` matcher (`cmd_start.go:729`) runs only `enforce_skills.py`
    and `destructive_command_guard.py`. So a Codex `cat big_file.go` sails
-   through with no summarization.
+   through with no summarization. (Line numbers current as of R4; see
+   `codexHookConfigBlock`.)
 3. **The config is shared, but the fix is only tasked for Oracles.**
    `installCodexHookConfig` (`cmd_start.go:602`) writes **one** managed
    `[hooks]` block into `$CODEX_HOME/config.toml`, consumed by every Codex
