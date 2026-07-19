@@ -2590,6 +2590,27 @@ func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, work
 	return d.handlePreMergeQGError(ctx, beadID, workerID, worktree, assignmentID, err)
 }
 
+func (d *Dispatcher) handlePreFFCheckError(ctx context.Context, beadID, workerID, worktree string, assignmentID int64, err error) bool {
+	var preFFErr *merge.PreFFCheckError
+	if !errors.As(err, &preFFErr) {
+		return false
+	}
+	if errors.Is(preFFErr, errPreMergeQGAlreadyHandled) {
+		return true
+	}
+	var qgFailure *preMergeQGFailureError
+	if errors.As(preFFErr, &qgFailure) {
+		d.handlePreMergeQGFailure(ctx, beadID, workerID, worktree, assignmentID, qgFailure.output)
+		return true
+	}
+	var qgRunErr *preMergeQGRunError
+	if errors.As(preFFErr, &qgRunErr) {
+		d.handlePreMergeQGError(ctx, beadID, workerID, worktree, assignmentID, qgRunErr.err)
+		return true
+	}
+	return false
+}
+
 func (d *Dispatcher) checkPreMergeLeaks(ctx context.Context, beadID, workerID, worktree, branch, targetBranch string, assignmentID int64) bool {
 	cfg := d.cfg.LeakScan
 	if !cfg.Enabled {
@@ -2866,21 +2887,8 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 		},
 	})
 	if err != nil {
-		var preFFErr *merge.PreFFCheckError
-		if errors.As(err, &preFFErr) {
-			if errors.Is(preFFErr, errPreMergeQGAlreadyHandled) {
-				return
-			}
-			var qgFailure *preMergeQGFailureError
-			if errors.As(preFFErr, &qgFailure) {
-				d.handlePreMergeQGFailure(ctx, beadID, workerID, worktree, assignmentID, qgFailure.output)
-				return
-			}
-			var qgRunErr *preMergeQGRunError
-			if errors.As(preFFErr, &qgRunErr) {
-				d.handlePreMergeQGError(ctx, beadID, workerID, worktree, assignmentID, qgRunErr.err)
-				return
-			}
+		if d.handlePreFFCheckError(ctx, beadID, workerID, worktree, assignmentID, err) {
+			return
 		}
 		var conflictErr *merge.ConflictError
 		if errors.As(err, &conflictErr) {
