@@ -1025,6 +1025,7 @@ test_quality_gate_run_lock_archives_stale_legacy_lock() {
 		sed -n '/^quality_gate_process_has_descendants()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^quality_gate_lock_stale()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^archive_stale_quality_gate_lock()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^cleanup_archived_stale_quality_gate_locks()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^write_quality_gate_lock_owner()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^quality_gate_lock_poll_seconds()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^quality_gate_lock_timeout_reached()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
@@ -1042,6 +1043,67 @@ test_quality_gate_run_lock_archives_stale_legacy_lock() {
 
 	if ! bash "$harness" >"$tmpdir/out" 2>"$tmpdir/err"; then
 		echo "FAIL: acquire_quality_gate_lock did not recover a stale legacy lock"
+		cat "$tmpdir/out"
+		cat "$tmpdir/err"
+		rm -rf "$tmpdir"
+		return 1
+	fi
+	rm -rf "$tmpdir"
+	return 0
+}
+
+# Test: archived stale run locks are swept on acquisition once they exceed the
+# stale threshold, while newer archives and the newly acquired live lock stay.
+# shellcheck disable=SC2016,SC2317,SC2329
+test_quality_gate_archived_stale_locks_are_garbage_collected() {
+	if ! grep -q 'cleanup_archived_stale_quality_gate_locks()' "$SCRIPT_DIR/quality_gate.sh" ||
+		! grep -q 'cleanup_archived_stale_quality_gate_locks()' "$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go"; then
+		echo "FAIL: quality gate does not garbage-collect archived stale run locks"
+		return 1
+	fi
+
+	local tmpdir lockdir fresh_archive harness old_archive
+	tmpdir=$(mktemp -d)
+	lockdir="$tmpdir/.oro-quality-gate.lock"
+	fresh_archive="${lockdir}.stale.fresh.999"
+	harness="$tmpdir/run-lock-archive-gc.sh"
+	for old_archive in "${lockdir}.stale.old-one.111" "${lockdir}.stale.old-two.222" "${lockdir}.stale.old-three.333"; do
+		mkdir "$old_archive"
+		echo 'pid=999999' >"$old_archive/owner"
+		touch -t 200001010000 "$old_archive"
+	done
+	mkdir "$fresh_archive"
+	echo 'pid=999999' >"$fresh_archive/owner"
+	{
+		echo 'set -euo pipefail'
+		printf 'REPO_ROOT=%q\n' "$tmpdir"
+		printf 'QG_DIR=%q\n' "$tmpdir/qg"
+		echo 'QG_STAGE_ASSETS_LOCK=""'
+		echo 'QG_RUN_LOCK=""'
+		echo 'ORO_QG_STALE_LOCK_SECONDS=10'
+		echo 'mkdir -p "$QG_DIR"'
+		sed -n '/^cleanup_qg()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_lock_age_seconds()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^cleanup_archived_stale_quality_gate_locks()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_process_start_time()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^write_quality_gate_lock_owner()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_lock_poll_seconds()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_lock_timeout_reached()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^create_quality_gate_queue_ticket()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_queue_ticket_stale()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^cleanup_stale_quality_gate_queue_tickets()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^first_quality_gate_queue_ticket()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_lock_is_inherited()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^acquire_quality_gate_lock()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		echo 'trap cleanup_qg EXIT'
+		echo 'acquire_quality_gate_lock'
+		echo '[ -d "$REPO_ROOT/.oro-quality-gate.lock.stale.fresh.999" ]'
+		echo '[ -f "$QG_RUN_LOCK/owner" ]'
+		echo '! find "$REPO_ROOT" -maxdepth 1 -name ".oro-quality-gate.lock.stale.old-*" | grep -q .'
+	} >"$harness"
+
+	if ! bash "$harness" >"$tmpdir/out" 2>"$tmpdir/err"; then
+		echo "FAIL: acquire_quality_gate_lock did not garbage-collect archived stale run locks"
 		cat "$tmpdir/out"
 		cat "$tmpdir/err"
 		rm -rf "$tmpdir"
@@ -1635,6 +1697,7 @@ test_case "quality_gate.sh \$changed is quoted" test_quality_gate_changed_is_quo
 test_case "quality_gate.sh stage-assets failures fail closed" test_quality_gate_stage_assets_fail_closed
 test_case "quality_gate.sh run lock timeout preserves holder" test_quality_gate_run_lock_timeout_preserves_holder
 test_case "quality_gate.sh archives stale legacy run lock" test_quality_gate_run_lock_archives_stale_legacy_lock
+test_case "quality_gate.sh garbage-collects archived stale run locks" test_quality_gate_archived_stale_locks_are_garbage_collected
 test_case "quality_gate.sh caps Go scheduler fanout" test_quality_gate_caps_go_scheduler_fanout
 test_case "go coverage threshold skips uncovered Go surfaces" test_go_coverage_threshold_skips_uncovered_go_surfaces
 test_case "quality_gate.sh Python tools avoid pyenv shims" test_quality_gate_python_tools_avoid_pyenv_shims

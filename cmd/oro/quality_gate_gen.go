@@ -625,6 +625,21 @@ archive_stale_quality_gate_lock() {
     return 1
 }
 
+cleanup_archived_stale_quality_gate_locks() {
+    local lock_dir="$1"
+    local stale_dir age stale_after
+    stale_after="${ORO_QG_STALE_LOCK_SECONDS:-600}"
+    for stale_dir in "${lock_dir}.stale."*; do
+        [ -d "$stale_dir" ] || continue
+        if ! age=$(quality_gate_lock_age_seconds "$stale_dir"); then
+            continue
+        fi
+        if [ "$age" -ge "$stale_after" ]; then
+            rm -rf "$stale_dir"
+        fi
+    done
+}
+
 write_quality_gate_lock_owner() {
     local lock_dir="$1"
     local token="$2"
@@ -713,6 +728,7 @@ acquire_quality_gate_lock() {
     if quality_gate_lock_is_inherited "$lock_dir"; then
         exit 0
     fi
+    cleanup_archived_stale_quality_gate_locks "$lock_dir"
     create_quality_gate_queue_ticket "$queue_dir"
     while :; do
         cleanup_stale_quality_gate_queue_tickets "$queue_dir"
