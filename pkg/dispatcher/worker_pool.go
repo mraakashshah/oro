@@ -656,7 +656,7 @@ func heartbeatTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) b
 }
 
 func workerProgressTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) bool {
-	return !w.spawnFor && (w.state == protocol.WorkerBusy || w.state == protocol.WorkerReviewing) &&
+	return !w.spawnFor && w.state == protocol.WorkerBusy &&
 		!w.lastProgress.IsZero() && now.Sub(w.lastProgress) > timeout
 }
 
