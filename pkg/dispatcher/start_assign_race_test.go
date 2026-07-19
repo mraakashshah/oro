@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"oro/pkg/testutil/qgserial"
 	"sync"
 	"testing"
 	"time"
+
+	"oro/pkg/testutil/qgserial"
 
 	"oro/pkg/protocol"
 )

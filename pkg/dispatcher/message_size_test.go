@@ -5,12 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net"
-	"oro/pkg/testutil/qgserial"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"oro/pkg/testutil/qgserial"
 
 	"oro/pkg/dbutil"
 	"oro/pkg/merge"

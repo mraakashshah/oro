@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"net"
-	"oro/pkg/testutil/qgserial"
 	"testing"
 	"time"
+
+	"oro/pkg/testutil/qgserial"
 
 	"oro/pkg/protocol"
 )

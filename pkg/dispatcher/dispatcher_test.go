@@ -12,7 +12,6 @@ import (
 	"go/token"
 	"maps"
 	"net"
-	"oro/pkg/testutil/qgserial"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +22,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"oro/pkg/testutil/qgserial"
 
 	"oro/pkg/beadstore"
 	"oro/pkg/cards"

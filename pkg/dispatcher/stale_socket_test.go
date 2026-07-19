@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"oro/pkg/testutil/qgserial"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"oro/pkg/testutil/qgserial"
 )
 
 // shortSockPath returns a short /tmp socket path safe for macOS (108 char limit).

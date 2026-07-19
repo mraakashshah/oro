@@ -1,9 +1,10 @@
 package dispatcher //nolint:testpackage // white-box test needs internal access
 
 import (
-	"oro/pkg/testutil/qgserial"
 	"sync"
 	"testing"
+
+	"oro/pkg/testutil/qgserial"
 )
 
 // TestReconcileScale_NoDuplicateWorkerIDs verifies that when reconcileScale is

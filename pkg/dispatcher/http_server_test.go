@@ -7,10 +7,11 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"oro/pkg/testutil/qgserial"
 	"strings"
 	"testing"
 	"time"
+
+	"oro/pkg/testutil/qgserial"
 )
 
 // truncate returns s truncated to at most n characters.

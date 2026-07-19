@@ -1,10 +1,11 @@
 package dispatcher //nolint:testpackage // internal white-box tests need access to unexported fields
 
 import (
-	"oro/pkg/testutil/qgserial"
 	"os"
 	"testing"
 	"time"
+
+	"oro/pkg/testutil/qgserial"
 )
 
 func TestSocketPermissions(t *testing.T) {

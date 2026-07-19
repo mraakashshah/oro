@@ -5,10 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"net"
-	"oro/pkg/testutil/qgserial"
 	"strings"
 	"testing"
 	"time"
+
+	"oro/pkg/testutil/qgserial"
 )
 
 func TestDetectZombieDeferred(t *testing.T) {

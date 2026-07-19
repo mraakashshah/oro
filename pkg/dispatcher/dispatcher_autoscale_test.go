@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"oro/pkg/testutil/qgserial"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"oro/pkg/testutil/qgserial"
 
 	"oro/pkg/protocol"
 )
