@@ -3232,6 +3232,45 @@ func TestClassifyReviewFailure_RateLimited(t *testing.T) {
 	}
 }
 
+func TestClassifyReviewFailure_RateLimitEvidence(t *testing.T) {
+	tests := []struct {
+		name     string
+		feedback string
+		want     ReviewFailureClass
+	}{
+		{
+			name:     "structured rejected five hour event",
+			feedback: `{"rateLimitType":"FIVE_HOUR","overageStatus":"REJECTED"}`,
+			want:     ReviewFailureRateLimited,
+		},
+		{
+			name: "rejected review quotes marker names",
+			feedback: `VERDICT: REJECTED
+This review discusses the rateLimitType, five_hour, overageStatus, and rejected marker names.`,
+			want: ReviewFailureOrdinary,
+		},
+		{
+			name:     "malformed JSON is not evidence",
+			feedback: `{"rateLimitType":"five_hour","overageStatus":"rejected"`,
+			want:     ReviewFailureOrdinary,
+		},
+		{
+			name:     "markers spread through prose are not evidence",
+			feedback: "rateLimitType\nfive_hour\noverageStatus\nrejected",
+			want:     ReviewFailureOrdinary,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyReviewFailure(ops.Result{Feedback: tt.feedback, Err: errors.New("exit status 1")})
+			if got != tt.want {
+				t.Fatalf("classifyReviewFailure() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHandleReviewResult_RateLimitedDefersReReview(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()

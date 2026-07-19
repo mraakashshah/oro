@@ -4325,7 +4325,7 @@ func classifyReviewFailure(result ops.Result) ReviewFailureClass {
 	if result.Err != nil && reviewStartupHookFailed(raw) {
 		return ReviewFailureInfraBlocked
 	}
-	if reviewRateLimited(detail) {
+	if reviewRateLimited(raw) {
 		return ReviewFailureRateLimited
 	}
 	if !strings.Contains(detail, "acceptance command passed") {
@@ -4341,10 +4341,19 @@ func classifyReviewFailure(result ops.Result) ReviewFailureClass {
 }
 
 func reviewRateLimited(detail string) bool {
-	return strings.Contains(detail, "ratelimittype") &&
-		strings.Contains(detail, "five_hour") &&
-		strings.Contains(detail, "overagestatus") &&
-		strings.Contains(detail, "rejected")
+	for _, line := range strings.Split(detail, "\n") {
+		var event struct {
+			RateLimitType string `json:"rateLimitType"`
+			OverageStatus string `json:"overageStatus"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(line)), &event); err != nil {
+			continue
+		}
+		if strings.EqualFold(event.RateLimitType, "five_hour") && strings.EqualFold(event.OverageStatus, "rejected") {
+			return true
+		}
+	}
+	return false
 }
 
 func reviewEnvBlocked(detail string) bool {
