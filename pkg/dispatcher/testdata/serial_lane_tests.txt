@@ -1,0 +1,51 @@
+# Canonical serial-lane test set (oro-eee8 / oro-sjp8).
+#
+# These pkg/dispatcher tests stand up a REAL socket/HTTP listener or assert tight
+# wall-clock timing, and flake when many worker quality gates run concurrently and
+# contend for CPU (the dispatcher's listener wait and socket/stream deadlines miss
+# under load). They carry a qgserial.RequireSerial(t) guard (oro-0xzy): the
+# concurrent main quality-gate phase SKIPS them, and only the serialized lane runs
+# them under the cross-worktree FIFO lock (oro-hwx2).
+#
+# Selection criterion: a test belongs here iff it (a) opens a real net/UDS listener
+# or drives one over a real connection, AND (b) depends on wall-clock timing
+# (waitFor / deadlines / "under load" invariants). Slow-but-deterministic tests do
+# NOT belong here — slowness is not the criterion.
+#
+# Reproduction (documented, non-deterministic — do NOT run in the normal suite):
+#   scripts/reproduce_serial_lane_flakes.sh
+# It launches N concurrent copies of the dispatcher test binary under GOMAXPROCS
+# pressure + CPU burn and harvests non-deterministic failures. Control sample:
+# passing --control runs an equal-size sample of NON-listed tests under identical
+# contention; those must stay green, demonstrating the split is real.
+#
+# Empirically reproduced as flaky under contention on this hardware (12 cores,
+# GOMAXPROCS=1, 12 concurrent workers x 15 rounds + CPU burn):
+#   TestAutoScaleRespectsMax
+#   TestHTTPServerStreamsDashboardEvents_StableUnderLoad
+#   TestDispatcherStartSequence_AssignsWorkerUnderParallelStress
+# The remaining entries share the same real-listener/tight-deadline signature and
+# are the socket-timing set the original global gate lock was installed to protect
+# (scripts/quality_gate.sh) — guarded here so the lock can be lifted from the main
+# phase. Keep this list sorted and unique.
+#
+# One test name per line. The serial lane anchors each as ^<name>$ for -run.
+TestAcceptLoopBackpressure
+TestAutoScale
+TestAutoScaleRespectsMax
+TestCheckpointRespawn
+TestDispatcherFullSuiteStateDoesNotStarveEstimateAssignments
+TestDispatcherStartSequence_AssignsWorkerUnderParallelStress
+TestDispatcher_ConcurrentWorkers
+TestHTTPServerServesDashboard
+TestHTTPServerStartsInRun
+TestHTTPServerStreamsDashboardEvents_StableUnderLoad
+TestNoMultipleAssignmentsToSameBead
+TestOversizeMessage
+TestPriorityContention_StableUnderLoad
+TestReconcileScale_NoDuplicateWorkerIDs
+TestReconnectDoesNotStealBead
+TestScaleUpDoesNotDuplicateAssignment
+TestSocketPermissions
+TestStaleSocketCleanup_ActiveDispatcherBlocksSecond
+TestStaleSocketCleanup_DispatcherRunUsesIt
