@@ -101,10 +101,19 @@ build:
 
 ensure-github-cli:
 ifeq ($(UNAME_S),Darwin)
-	@command -v gh >/dev/null 2>&1 || { \
+	@set -e; \
+	if gh_path=$$(command -v gh 2>/dev/null); then :; else \
 		command -v brew >/dev/null 2>&1 || { echo "GitHub CLI is missing; install Homebrew, then run brew install gh"; exit 1; }; \
-		brew install gh; \
-	}
+		brew install gh || { echo "Failed to install GitHub CLI with brew install gh"; exit 1; }; \
+		gh_path=$$(command -v gh 2>/dev/null) || { echo "brew install gh completed but gh is still unavailable; ensure Homebrew's bin directory is on PATH"; exit 1; }; \
+	fi; \
+	version_output=$$("$$gh_path" --version 2>&1) || { echo "GitHub CLI readiness failed at $$gh_path: gh --version failed"; exit 1; }; \
+	set -- $$version_output; \
+	version=$${3#v}; major=$${version%%.*}; \
+	case "$$major" in ''|*[!0-9]*) echo "Unsupported GitHub CLI version output: $$version_output"; exit 1;; esac; \
+	if [ "$${1:-}" != "gh" ] || [ "$${2:-}" != "version" ] || [ "$$major" -lt 2 ]; then \
+		echo "Unsupported GitHub CLI version: $$version_output (require version 2 or later)"; exit 1; \
+	fi
 endif
 
 install: ensure-github-cli

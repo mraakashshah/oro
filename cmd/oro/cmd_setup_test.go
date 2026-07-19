@@ -501,6 +501,47 @@ func TestSetupInstallsManagedGitHubCLI(t *testing.T) {
 		}
 	})
 
+	t.Run("Makefile rejects an unsupported existing CLI", func(t *testing.T) {
+		binDir := t.TempDir()
+		ghPath := filepath.Join(binDir, "gh")
+		if err := os.WriteFile(ghPath, []byte("#!/bin/sh\nprintf 'gh version 1.14.0\\n'\n"), 0o755); err != nil { //nolint:gosec // test helper script
+			t.Fatalf("write fake gh: %v", err)
+		}
+
+		cmd := exec.Command("make", "-f", "Makefile", "ensure-github-cli", "UNAME_S=Darwin")
+		cmd.Env = append(os.Environ(), "PATH="+binDir)
+		cmd.Dir = filepath.Clean("../..")
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("make ensure-github-cli accepted unsupported gh; output:\n%s", out)
+		}
+		if !strings.Contains(strings.ToLower(string(out)), "unsupported") {
+			t.Fatalf("make ensure-github-cli output = %q, want actionable unsupported-version error", out)
+		}
+	})
+
+	t.Run("Makefile rejects a broken CLI after Homebrew install", func(t *testing.T) {
+		binDir := t.TempDir()
+		ghPath := filepath.Join(binDir, "gh")
+		brewPath := filepath.Join(binDir, "brew")
+		brewScript := "#!/bin/sh\nprintf '%s\\n' '#!/bin/sh' \"printf 'not-gh\\\\n'\" > \"" + ghPath + "\"\n" +
+			"/bin/chmod 755 \"" + ghPath + "\"\n"
+		if err := os.WriteFile(brewPath, []byte(brewScript), 0o755); err != nil { //nolint:gosec // test helper script
+			t.Fatalf("write fake brew: %v", err)
+		}
+
+		cmd := exec.Command("make", "-f", "Makefile", "ensure-github-cli", "UNAME_S=Darwin")
+		cmd.Env = append(os.Environ(), "PATH="+binDir)
+		cmd.Dir = filepath.Clean("../..")
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("make ensure-github-cli accepted broken installed gh; output:\n%s", out)
+		}
+		if !strings.Contains(strings.ToLower(string(out)), "unsupported") {
+			t.Fatalf("make ensure-github-cli output = %q, want post-install readiness error", out)
+		}
+	})
+
 	t.Run("Makefile installs missing gh but uninstall preserves it", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		binDir := filepath.Join(tmpDir, "bin")
@@ -508,8 +549,11 @@ func TestSetupInstallsManagedGitHubCLI(t *testing.T) {
 			t.Fatalf("mkdir fake bin: %v", err)
 		}
 		logPath := filepath.Join(tmpDir, "brew.log")
+		ghPath := filepath.Join(binDir, "gh")
 		brewPath := filepath.Join(binDir, "brew")
-		brewScript := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + logPath + "\"\n"
+		brewScript := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + logPath + "\"\n" +
+			"printf '%s\\n' '#!/bin/sh' \"printf 'gh version 2.63.0\\\\n'\" > \"" + ghPath + "\"\n" +
+			"/bin/chmod 755 \"" + ghPath + "\"\n"
 		if err := os.WriteFile(brewPath, []byte(brewScript), 0o755); err != nil { //nolint:gosec // test helper script
 			t.Fatalf("write fake brew: %v", err)
 		}
@@ -536,8 +580,7 @@ func TestSetupInstallsManagedGitHubCLI(t *testing.T) {
 			t.Fatalf("brew invocation = %q, want %q", got, "install gh")
 		}
 
-		ghPath := filepath.Join(binDir, "gh")
-		if err := os.WriteFile(ghPath, []byte("#!/bin/sh\n"), 0o755); err != nil { //nolint:gosec // test helper script
+		if err := os.WriteFile(ghPath, []byte("#!/bin/sh\nprintf 'gh version 2.63.0\\n'\n"), 0o755); err != nil { //nolint:gosec // test helper script
 			t.Fatalf("write fake gh: %v", err)
 		}
 		runMake("ensure-github-cli")
