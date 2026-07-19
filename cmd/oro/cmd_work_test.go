@@ -43,6 +43,14 @@ func TestWorkAllowsRebaseChildAgainstDivergedEpicBranch(t *testing.T) {
 		}
 	})
 
+	t.Run("ordinary child remains runnable when epic is only ahead", func(t *testing.T) {
+		wtMgr := newAheadStandaloneWorktreeManager(t, branch)
+		err := prepareStandaloneWorkTargetBranch(context.Background(), &workDeps{wtMgr: wtMgr}, branch, "main", epicID, &protocol.BeadDetail{Title: "Implement epic work"})
+		if err != nil {
+			t.Fatalf("prepareStandaloneWorkTargetBranch: %v", err)
+		}
+	})
+
 	t.Run("rebase child still fails on operational preparation error", func(t *testing.T) {
 		wtMgr := &failingStandaloneWorktreeManager{}
 		err := prepareStandaloneWorkTargetBranch(context.Background(), &workDeps{wtMgr: wtMgr}, branch, "main", epicID, &protocol.BeadDetail{Title: "Rebase " + branch + " onto main"})
@@ -70,5 +78,18 @@ func newDivergedStandaloneWorktreeManager(t *testing.T, branch string) dispatche
 	}
 	runRecoveryGit(t, repo, "add", "main.txt")
 	runRecoveryGit(t, repo, "commit", "-m", "main commit")
+	return dispatcher.NewGitWorktreeManager(repo, "", "", &dispatcher.ExecCommandRunner{})
+}
+
+func newAheadStandaloneWorktreeManager(t *testing.T, branch string) dispatcher.WorktreeManager {
+	t.Helper()
+	repo := t.TempDir()
+	initRecoveryTestRepo(t, repo, branch)
+	if err := os.WriteFile(filepath.Join(repo, "epic.txt"), []byte("epic\n"), 0o644); err != nil {
+		t.Fatalf("write epic commit: %v", err)
+	}
+	runRecoveryGit(t, repo, "add", "epic.txt")
+	runRecoveryGit(t, repo, "commit", "-m", "epic commit")
+	runRecoveryGit(t, repo, "checkout", "main")
 	return dispatcher.NewGitWorktreeManager(repo, "", "", &dispatcher.ExecCommandRunner{})
 }

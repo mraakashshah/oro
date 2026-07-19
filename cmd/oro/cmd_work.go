@@ -566,18 +566,33 @@ func validateStandaloneEpicBranchSafe(ctx context.Context, deps *workDeps, targe
 	if !ok {
 		return nil
 	}
-	hasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, targetBranch, defaultBranch)
+	diverged, err := standaloneEpicBranchesDiverged(ctx, checker, targetBranch, defaultBranch)
 	if err != nil {
-		return fmt.Errorf("check whether %s has unique commits relative to %s: %w", targetBranch, defaultBranch, err)
+		return fmt.Errorf("check whether %s diverged from %s: %w", targetBranch, defaultBranch, err)
 	}
-	if hasUniqueCommits {
+	if diverged {
 		if dispatcher.IsEpicRebaseChild(bead, resolvedEpicID, targetBranch) {
 			return nil
 		}
-		return fmt.Errorf("epic branch %q has unique commits relative to %q; preserved divergent branch/worktree state and aborted before worker spawn. Inspect `git log --oneline --graph %s %s`, then preserve or port wanted commits before resetting %s to %s",
+		return fmt.Errorf("epic branch %q diverged from %q; preserved divergent branch/worktree state and aborted before worker spawn. Inspect `git log --oneline --graph %s %s`, then preserve or port wanted commits before resetting %s to %s",
 			targetBranch, defaultBranch, defaultBranch, targetBranch, targetBranch, defaultBranch)
 	}
 	return nil
+}
+
+func standaloneEpicBranchesDiverged(ctx context.Context, checker standaloneBaseBranchSafetyChecker, targetBranch, defaultBranch string) (bool, error) {
+	targetHasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, targetBranch, defaultBranch)
+	if err != nil {
+		return false, err
+	}
+	if !targetHasUniqueCommits {
+		return false, nil
+	}
+	defaultHasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, defaultBranch, targetBranch)
+	if err != nil {
+		return false, err
+	}
+	return defaultHasUniqueCommits, nil
 }
 
 func resolveWorkerRuntimeModel(cfg *workConfig) (runtime, model, reasoning string) {

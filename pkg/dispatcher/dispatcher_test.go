@@ -746,6 +746,24 @@ func TestEpicRebaseChildAssignableOnDivergedBranch(t *testing.T) {
 		}
 	})
 
+	t.Run("ordinary child remains assignable when epic is only ahead", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		bead := protocol.Bead{ID: beadID, Title: "Implement epic work", Epic: epicID}
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: bead.Title, Type: "task", Status: "open"}
+		d.worktrees = newAheadAssignmentWorktreeManager(t, baseBranch)
+
+		if !d.ensureEpicBranchReady(ctx, bead, &trackedWorker{id: workerID}, baseBranch, epicID) {
+			t.Fatal("ensureEpicBranchReady = false, want ahead-only epic branch to remain assignable")
+		}
+		d.mu.Lock()
+		_, inCooldown := d.worktreeFailures[beadID]
+		d.mu.Unlock()
+		if inCooldown {
+			t.Fatal("assignment failure cooldown recorded for healthy ahead-only epic branch")
+		}
+	})
+
 	t.Run("rebase child remains rejected on operational preparation error", func(t *testing.T) {
 		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
 		ctx := context.Background()
@@ -790,6 +808,27 @@ func newDivergedAssignmentWorktreeManager(t *testing.T, branch string) WorktreeM
 	}
 	runAssignmentTestGit(t, repo, "add", "main.txt")
 	runAssignmentTestGit(t, repo, "commit", "-m", "main commit")
+	return NewGitWorktreeManager(repo, "", "", &ExecCommandRunner{})
+}
+
+func newAheadAssignmentWorktreeManager(t *testing.T, branch string) WorktreeManager {
+	t.Helper()
+	repo := t.TempDir()
+	runAssignmentTestGit(t, repo, "init", "-b", "main")
+	runAssignmentTestGit(t, repo, "config", "user.email", "test@example.com")
+	runAssignmentTestGit(t, repo, "config", "user.name", "Oro Test")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write base commit: %v", err)
+	}
+	runAssignmentTestGit(t, repo, "add", "base.txt")
+	runAssignmentTestGit(t, repo, "commit", "-m", "base commit")
+	runAssignmentTestGit(t, repo, "checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(repo, "epic.txt"), []byte("epic\n"), 0o644); err != nil {
+		t.Fatalf("write epic commit: %v", err)
+	}
+	runAssignmentTestGit(t, repo, "add", "epic.txt")
+	runAssignmentTestGit(t, repo, "commit", "-m", "epic commit")
+	runAssignmentTestGit(t, repo, "checkout", "main")
 	return NewGitWorktreeManager(repo, "", "", &ExecCommandRunner{})
 }
 

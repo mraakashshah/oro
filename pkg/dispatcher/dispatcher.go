@@ -6190,11 +6190,11 @@ func (d *Dispatcher) prepareEpicBranchForAssignment(ctx context.Context, beadID,
 	if !ok {
 		return true
 	}
-	hasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, baseBranch, d.cfg.DefaultBranch)
+	diverged, err := assignmentBaseBranchDiverged(ctx, checker, baseBranch, d.cfg.DefaultBranch)
 	if err != nil {
 		return d.rejectEpicBranchPreparation(ctx, beadID, workerID, baseBranch, err)
 	}
-	if !hasUniqueCommits {
+	if !diverged {
 		return true
 	}
 	if d.isEpicRebaseChildForBase(ctx, beadID, baseBranch) {
@@ -6203,7 +6203,22 @@ func (d *Dispatcher) prepareEpicBranchForAssignment(ctx context.Context, beadID,
 		return true
 	}
 	return d.rejectEpicBranchPreparation(ctx, beadID, workerID, baseBranch,
-		fmt.Errorf("epic branch %s has unique commits relative to %s", baseBranch, d.cfg.DefaultBranch))
+		fmt.Errorf("epic branch %s diverged from %s", baseBranch, d.cfg.DefaultBranch))
+}
+
+func assignmentBaseBranchDiverged(ctx context.Context, checker assignmentBaseBranchSafetyChecker, branch, baseBranch string) (bool, error) {
+	branchHasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, branch, baseBranch)
+	if err != nil {
+		return false, err
+	}
+	if !branchHasUniqueCommits {
+		return false, nil
+	}
+	baseHasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, baseBranch, branch)
+	if err != nil {
+		return false, err
+	}
+	return baseHasUniqueCommits, nil
 }
 
 func (d *Dispatcher) rejectEpicBranchPreparation(ctx context.Context, beadID, workerID, baseBranch string, err error) bool {
