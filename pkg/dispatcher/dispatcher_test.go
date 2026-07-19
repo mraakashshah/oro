@@ -504,6 +504,7 @@ type mockWorktreeManager struct {
 	updateBranchRefFn func(target, source string) error
 	branchHeadFn      func(branch string) (string, error)
 	prepareBaseFn     func(ctx context.Context, branch, baseBranch string) (bool, error)
+	baseUniqueFn      func(ctx context.Context, branch, baseBranch string) (bool, error)
 	existsFn          func(ctx context.Context, path string) bool
 	currentBranchFn   func(ctx context.Context, path string) (string, error)
 	prepareReuseFn    func(ctx context.Context, worktree, branch, baseBranch string) (bool, error)
@@ -689,6 +690,155 @@ func (m *mockWorktreeManager) PrepareBaseBranchForAssignment(ctx context.Context
 		return fn(ctx, branch, baseBranch)
 	}
 	return false, nil
+}
+
+func (m *mockWorktreeManager) BaseBranchHasUniqueCommits(ctx context.Context, branch, baseBranch string) (bool, error) {
+	m.mu.Lock()
+	fn := m.baseUniqueFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, branch, baseBranch)
+	}
+	return false, nil
+}
+
+func TestEpicRebaseChildAssignableOnDivergedBranch(t *testing.T) {
+	const (
+		epicID     = "oro-26yy"
+		beadID     = "oro-fm29"
+		workerID   = "worker-rebase"
+		baseBranch = protocol.EpicBranchPrefix + epicID
+	)
+
+	t.Run("rebase child remains assignable without cooldown", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		bead := protocol.Bead{ID: beadID, Title: "Rebase " + baseBranch + " onto main", Epic: epicID}
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: bead.Title, Type: "task", Status: "open"}
+		d.worktrees = newDivergedAssignmentWorktreeManager(t, baseBranch)
+
+		if !d.ensureEpicBranchReady(ctx, bead, &trackedWorker{id: workerID}, baseBranch, epicID) {
+			t.Fatal("ensureEpicBranchReady = false, want rebase child to remain assignable")
+		}
+		d.mu.Lock()
+		_, inCooldown := d.worktreeFailures[beadID]
+		d.mu.Unlock()
+		if inCooldown {
+			t.Fatal("assignment failure cooldown recorded, want none")
+		}
+	})
+
+	t.Run("ordinary child remains rejected with cooldown", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		bead := protocol.Bead{ID: beadID, Title: "Implement epic work", Epic: epicID}
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: bead.Title, Type: "task", Status: "open"}
+		d.worktrees = newDivergedAssignmentWorktreeManager(t, baseBranch)
+
+		if d.ensureEpicBranchReady(ctx, bead, &trackedWorker{id: workerID}, baseBranch, epicID) {
+			t.Fatal("ensureEpicBranchReady = true, want ordinary child rejected")
+		}
+		d.mu.Lock()
+		_, inCooldown := d.worktreeFailures[beadID]
+		d.mu.Unlock()
+		if !inCooldown {
+			t.Fatal("assignment failure cooldown not recorded for ordinary child")
+		}
+	})
+
+	t.Run("ordinary child remains assignable when epic is only ahead", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		bead := protocol.Bead{ID: beadID, Title: "Implement epic work", Epic: epicID}
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: bead.Title, Type: "task", Status: "open"}
+		d.worktrees = newAheadAssignmentWorktreeManager(t, baseBranch)
+
+		if !d.ensureEpicBranchReady(ctx, bead, &trackedWorker{id: workerID}, baseBranch, epicID) {
+			t.Fatal("ensureEpicBranchReady = false, want ahead-only epic branch to remain assignable")
+		}
+		d.mu.Lock()
+		_, inCooldown := d.worktreeFailures[beadID]
+		d.mu.Unlock()
+		if inCooldown {
+			t.Fatal("assignment failure cooldown recorded for healthy ahead-only epic branch")
+		}
+	})
+
+	t.Run("rebase child remains rejected on operational preparation error", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		bead := protocol.Bead{ID: beadID, Title: "Rebase " + baseBranch + " onto main", Epic: epicID}
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: bead.Title, Type: "task", Status: "open"}
+		wtMgr.prepareBaseFn = func(context.Context, string, string) (bool, error) {
+			return false, fmt.Errorf("rev-parse target branch: %w", errors.ErrUnsupported)
+		}
+
+		if d.ensureEpicBranchReady(ctx, bead, &trackedWorker{id: workerID}, baseBranch, epicID) {
+			t.Fatal("ensureEpicBranchReady = true, want operational preparation error rejected")
+		}
+		d.mu.Lock()
+		_, inCooldown := d.worktreeFailures[beadID]
+		d.mu.Unlock()
+		if !inCooldown {
+			t.Fatal("assignment failure cooldown not recorded after operational error")
+		}
+	})
+}
+
+func newDivergedAssignmentWorktreeManager(t *testing.T, branch string) WorktreeManager {
+	t.Helper()
+	repo := t.TempDir()
+	runAssignmentTestGit(t, repo, "init", "-b", "main")
+	runAssignmentTestGit(t, repo, "config", "user.email", "test@example.com")
+	runAssignmentTestGit(t, repo, "config", "user.name", "Oro Test")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write base commit: %v", err)
+	}
+	runAssignmentTestGit(t, repo, "add", "base.txt")
+	runAssignmentTestGit(t, repo, "commit", "-m", "base commit")
+	runAssignmentTestGit(t, repo, "checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(repo, "epic.txt"), []byte("epic\n"), 0o644); err != nil {
+		t.Fatalf("write epic commit: %v", err)
+	}
+	runAssignmentTestGit(t, repo, "add", "epic.txt")
+	runAssignmentTestGit(t, repo, "commit", "-m", "epic commit")
+	runAssignmentTestGit(t, repo, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(repo, "main.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatalf("write main commit: %v", err)
+	}
+	runAssignmentTestGit(t, repo, "add", "main.txt")
+	runAssignmentTestGit(t, repo, "commit", "-m", "main commit")
+	return NewGitWorktreeManager(repo, "", "", &ExecCommandRunner{})
+}
+
+func newAheadAssignmentWorktreeManager(t *testing.T, branch string) WorktreeManager {
+	t.Helper()
+	repo := t.TempDir()
+	runAssignmentTestGit(t, repo, "init", "-b", "main")
+	runAssignmentTestGit(t, repo, "config", "user.email", "test@example.com")
+	runAssignmentTestGit(t, repo, "config", "user.name", "Oro Test")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write base commit: %v", err)
+	}
+	runAssignmentTestGit(t, repo, "add", "base.txt")
+	runAssignmentTestGit(t, repo, "commit", "-m", "base commit")
+	runAssignmentTestGit(t, repo, "checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(repo, "epic.txt"), []byte("epic\n"), 0o644); err != nil {
+		t.Fatalf("write epic commit: %v", err)
+	}
+	runAssignmentTestGit(t, repo, "add", "epic.txt")
+	runAssignmentTestGit(t, repo, "commit", "-m", "epic commit")
+	runAssignmentTestGit(t, repo, "checkout", "main")
+	return NewGitWorktreeManager(repo, "", "", &ExecCommandRunner{})
+}
+
+func runAssignmentTestGit(t *testing.T, repo string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+	}
 }
 
 func (m *mockWorktreeManager) RebaseOnto(_ context.Context, _, _ string) error {

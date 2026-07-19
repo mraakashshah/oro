@@ -366,6 +366,10 @@ type assignmentBaseBranchPreparer interface {
 	PrepareBaseBranchForAssignment(ctx context.Context, branch, baseBranch string) (fastForwarded bool, err error)
 }
 
+type assignmentBaseBranchSafetyChecker interface {
+	BaseBranchHasUniqueCommits(ctx context.Context, branch, baseBranch string) (bool, error)
+}
+
 // Escalator accepts escalation messages from dispatcher checks.
 type Escalator interface {
 	Escalate(ctx context.Context, msg string) error
@@ -2896,7 +2900,7 @@ func (d *Dispatcher) handleNoopMerge(ctx context.Context, beadID, workerID, work
 }
 
 func (d *Dispatcher) completeEpicRebaseChild(ctx context.Context, detail *protocol.BeadDetail, beadID, workerID, worktree, branch, epicID, targetBranch string, assignmentID int64) bool {
-	if !isEpicRebaseChild(detail, epicID, targetBranch) {
+	if !IsEpicRebaseChild(detail, epicID, targetBranch) {
 		return false
 	}
 	if err := d.worktrees.UpdateBranchRef(ctx, targetBranch, branch); err != nil {
@@ -2919,7 +2923,10 @@ func (d *Dispatcher) completeEpicRebaseChild(ctx context.Context, detail *protoc
 	return true
 }
 
-func isEpicRebaseChild(detail *protocol.BeadDetail, epicID, targetBranch string) bool {
+// IsEpicRebaseChild reports whether detail is the canonical recovery task for
+// rebasing an epic branch onto its target. Recovery tasks must be allowed to
+// run against the divergence they were created to repair.
+func IsEpicRebaseChild(detail *protocol.BeadDetail, epicID, targetBranch string) bool {
 	if detail == nil || epicID == "" || targetBranch == "" {
 		return false
 	}
@@ -6163,20 +6170,56 @@ func (d *Dispatcher) prepareEpicBranchForAssignment(ctx context.Context, beadID,
 	}
 	fastForwarded, err := preparer.PrepareBaseBranchForAssignment(ctx, baseBranch, d.cfg.DefaultBranch)
 	if err != nil {
-		_ = d.logEvent(ctx, "epic_branch_prepare_failed", "dispatcher", beadID, workerID,
-			fmt.Sprintf(`{"branch":%q,"base_branch":%q,"error":%q}`, baseBranch, d.cfg.DefaultBranch, err.Error()))
-		_ = d.updateBeadStatus(ctx, beadID, "open")
-		d.mu.Lock()
-		delete(d.assigningBeads, beadID)
-		d.mu.Unlock()
-		d.recordAssignmentFailure(beadID)
-		return false
+		return d.rejectEpicBranchPreparation(ctx, beadID, workerID, baseBranch, err)
 	}
 	if fastForwarded {
 		_ = d.logEvent(ctx, "epic_branch_fast_forwarded", "dispatcher", beadID, workerID,
 			fmt.Sprintf(`{"branch":%q,"base_branch":%q}`, baseBranch, d.cfg.DefaultBranch))
 	}
-	return true
+	checker, ok := d.worktrees.(assignmentBaseBranchSafetyChecker)
+	if !ok {
+		return true
+	}
+	diverged, err := assignmentBaseBranchDiverged(ctx, checker, baseBranch, d.cfg.DefaultBranch)
+	if err != nil {
+		return d.rejectEpicBranchPreparation(ctx, beadID, workerID, baseBranch, err)
+	}
+	if !diverged {
+		return true
+	}
+	if d.isEpicRebaseChildForBase(ctx, beadID, baseBranch) {
+		_ = d.logEvent(ctx, "epic_rebase_child_prepare_diverged", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"branch":%q,"base_branch":%q}`, baseBranch, d.cfg.DefaultBranch))
+		return true
+	}
+	return d.rejectEpicBranchPreparation(ctx, beadID, workerID, baseBranch,
+		fmt.Errorf("epic branch %s diverged from %s", baseBranch, d.cfg.DefaultBranch))
+}
+
+func assignmentBaseBranchDiverged(ctx context.Context, checker assignmentBaseBranchSafetyChecker, branch, baseBranch string) (bool, error) {
+	branchHasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, branch, baseBranch)
+	if err != nil {
+		return false, fmt.Errorf("check unique commits on %s relative to %s: %w", branch, baseBranch, err)
+	}
+	if !branchHasUniqueCommits {
+		return false, nil
+	}
+	baseHasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, baseBranch, branch)
+	if err != nil {
+		return false, fmt.Errorf("check unique commits on %s relative to %s: %w", baseBranch, branch, err)
+	}
+	return baseHasUniqueCommits, nil
+}
+
+func (d *Dispatcher) rejectEpicBranchPreparation(ctx context.Context, beadID, workerID, baseBranch string, err error) bool {
+	_ = d.logEvent(ctx, "epic_branch_prepare_failed", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"branch":%q,"base_branch":%q,"error":%q}`, baseBranch, d.cfg.DefaultBranch, err.Error()))
+	_ = d.updateBeadStatus(ctx, beadID, "open")
+	d.mu.Lock()
+	delete(d.assigningBeads, beadID)
+	d.mu.Unlock()
+	d.recordAssignmentFailure(beadID)
+	return false
 }
 
 // lazyCreateEpicBranch creates baseBranch from d.cfg.DefaultBranch when it is
@@ -6608,7 +6651,7 @@ func (d *Dispatcher) isEpicRebaseChildForBase(ctx context.Context, beadID, baseB
 		return false
 	}
 	epicID := strings.TrimPrefix(baseBranch, protocol.EpicBranchPrefix)
-	return isEpicRebaseChild(detail, epicID, baseBranch)
+	return IsEpicRebaseChild(detail, epicID, baseBranch)
 }
 
 func isBranchDivergedFromBase(err error) bool {
