@@ -4,6 +4,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -338,61 +339,41 @@ func (c *Catalog) ReconciliationCursor(ctx context.Context, name string) (Reconc
 
 type catalogTable struct {
 	name, ddl string
-	columns   []string
 }
 
 func catalogTables() []catalogTable {
 	return []catalogTable{
-		{"runtime_leases", `CREATE TABLE runtime_leases (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, controller_id TEXT NOT NULL, owner_id TEXT NOT NULL, pid INTEGER NOT NULL, process_start TEXT NOT NULL, acquired_at TEXT NOT NULL, heartbeat_at TEXT NOT NULL, released_at TEXT)`, []string{"id", "namespace", "controller_id", "owner_id", "pid", "process_start", "acquired_at", "heartbeat_at", "released_at"}},
-		{"runtime_controllers", `CREATE TABLE runtime_controllers (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, pid INTEGER NOT NULL, process_start TEXT NOT NULL, observed_epoch INTEGER NOT NULL, heartbeat_at TEXT NOT NULL)`, []string{"id", "owner_id", "pid", "process_start", "observed_epoch", "heartbeat_at"}},
-		{"runtime_pause_epochs", `CREATE TABLE runtime_pause_epochs (epoch INTEGER PRIMARY KEY, state TEXT NOT NULL, created_at TEXT NOT NULL)`, []string{"epoch", "state", "created_at"}},
-		{"runtime_pause_acknowledgements", `CREATE TABLE runtime_pause_acknowledgements (epoch INTEGER NOT NULL, controller_id TEXT NOT NULL, state TEXT NOT NULL, acknowledged_at TEXT NOT NULL, PRIMARY KEY (epoch, controller_id))`, []string{"epoch", "controller_id", "state", "acknowledged_at"}},
-		{"runtime_tombstones", `CREATE TABLE runtime_tombstones (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, reason TEXT NOT NULL, state TEXT NOT NULL, retired_at TEXT NOT NULL, retry_at TEXT, attempts INTEGER NOT NULL DEFAULT 0)`, []string{"id", "namespace", "reason", "state", "retired_at", "retry_at", "attempts"}},
-		{"runtime_reconciliation_cursors", `CREATE TABLE runtime_reconciliation_cursors (name TEXT PRIMARY KEY, cursor TEXT NOT NULL, proof TEXT NOT NULL, updated_at TEXT NOT NULL)`, []string{"name", "cursor", "proof", "updated_at"}},
+		{"runtime_leases", `CREATE TABLE runtime_leases (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, controller_id TEXT NOT NULL, owner_id TEXT NOT NULL, pid INTEGER NOT NULL, process_start TEXT NOT NULL, acquired_at TEXT NOT NULL, heartbeat_at TEXT NOT NULL, released_at TEXT)`},
+		{"runtime_controllers", `CREATE TABLE runtime_controllers (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, pid INTEGER NOT NULL, process_start TEXT NOT NULL, observed_epoch INTEGER NOT NULL, heartbeat_at TEXT NOT NULL)`},
+		{"runtime_pause_epochs", `CREATE TABLE runtime_pause_epochs (epoch INTEGER PRIMARY KEY, state TEXT NOT NULL, created_at TEXT NOT NULL)`},
+		{"runtime_pause_acknowledgements", `CREATE TABLE runtime_pause_acknowledgements (epoch INTEGER NOT NULL, controller_id TEXT NOT NULL, state TEXT NOT NULL, acknowledged_at TEXT NOT NULL, PRIMARY KEY (epoch, controller_id))`},
+		{"runtime_tombstones", `CREATE TABLE runtime_tombstones (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, reason TEXT NOT NULL, state TEXT NOT NULL, retired_at TEXT NOT NULL, retry_at TEXT, attempts INTEGER NOT NULL DEFAULT 0)`},
+		{"runtime_reconciliation_cursors", `CREATE TABLE runtime_reconciliation_cursors (name TEXT PRIMARY KEY, cursor TEXT NOT NULL, proof TEXT NOT NULL, updated_at TEXT NOT NULL)`},
 	}
 }
 
 func ensureCatalogTable(ctx context.Context, tx *sql.Tx, table catalogTable) error {
-	rows, err := tx.QueryContext(ctx, `SELECT name FROM pragma_table_info(?)`, table.name)
+	var schema string
+	err := tx.QueryRowContext(ctx, `SELECT sql FROM sqlite_schema WHERE type='table' AND name=?`, table.name).Scan(&schema)
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, err := tx.ExecContext(ctx, table.ddl); err != nil {
+			return fmt.Errorf("create catalog table %s: %w", table.name, err)
+		}
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("inspect catalog table %s: %w", table.name, err)
 	}
-	defer func() { _ = rows.Close() }()
-	columns := make(map[string]struct{}, len(table.columns))
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return fmt.Errorf("scan catalog table %s: %w", table.name, err)
-		}
-		columns[name] = struct{}{}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate catalog table %s: %w", table.name, err)
-	}
-	if len(columns) > 0 && hasColumns(columns, table.columns) {
+	if schema == table.ddl {
 		return nil
 	}
-	if len(columns) > 0 {
-		if _, err := tx.ExecContext(ctx, `DROP TABLE `+table.name); err != nil {
-			return fmt.Errorf("drop stale catalog table %s: %w", table.name, err)
-		}
+	if _, err := tx.ExecContext(ctx, `DROP TABLE `+table.name); err != nil {
+		return fmt.Errorf("drop stale catalog table %s: %w", table.name, err)
 	}
 	if _, err := tx.ExecContext(ctx, table.ddl); err != nil {
 		return fmt.Errorf("create catalog table %s: %w", table.name, err)
 	}
 	return nil
-}
-
-func hasColumns(columns map[string]struct{}, required []string) bool {
-	if len(columns) != len(required) {
-		return false
-	}
-	for _, column := range required {
-		if _, ok := columns[column]; !ok {
-			return false
-		}
-	}
-	return true
 }
 
 func validateLeaseRequest(request LeaseRequest) error {
