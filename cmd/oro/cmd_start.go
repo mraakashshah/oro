@@ -610,7 +610,7 @@ func installCodexHookConfig(codexHome, hooksDir string) error {
 	// outside it. That mismatch means a test isolated ORO_HOME but forgot
 	// CODEX_HOME and is about to leak dangling hook paths into the developer's
 	// real ~/.codex/config.toml — fail loudly instead of corrupting it.
-	if hookPathsWouldLeak(os.TempDir(), codexHome, hooksDir) {
+	if hookPathsWouldLeak(codexHome, hooksDir) {
 		return fmt.Errorf(
 			"refusing to install Codex hook config: hooks dir %q is under the temp root %q but Codex home %q is not — "+
 				"writing would leak ephemeral hook paths into a persistent config (isolate the test with CODEX_HOME)",
@@ -632,22 +632,27 @@ func installCodexHookConfig(codexHome, hooksDir string) error {
 }
 
 // hookPathsWouldLeak reports whether installing a managed hooks block that points
-// at hooksDir into codexHome would leak ephemeral paths into a persistent config:
-// true when hooksDir lives under tempRoot but codexHome does not. Pure so the leak
-// rule can be verified without touching the filesystem.
-func hookPathsWouldLeak(tempRoot, codexHome, hooksDir string) bool {
-	return pathUnder(tempRoot, hooksDir) && !pathUnder(tempRoot, codexHome)
+// at hooksDir into codexHome would leak ephemeral paths into a persistent config.
+// It checks common temporary roots rather than just os.TempDir because Oro
+// subprocesses may use /tmp while macOS reports a per-user /var/folders temp dir.
+func hookPathsWouldLeak(codexHome, hooksDir string) bool {
+	for _, tempRoot := range []string{os.TempDir(), "/tmp", "/private/tmp", "/var/folders"} {
+		if pathUnder(tempRoot, hooksDir) && !pathUnder(tempRoot, codexHome) {
+			return true
+		}
+	}
+	return false
 }
 
 // pathUnder reports whether target is root itself or nested inside root, comparing
-// cleaned absolute paths so a sibling like /tmp/oro-other is not treated as under
-// /tmp/oro.
+// absolute paths resolved through existing symlinked ancestors so aliases such as
+// /tmp and /private/tmp compare consistently.
 func pathUnder(root, target string) bool {
-	rootAbs, err := filepath.Abs(root)
+	rootAbs, err := resolvePath(root)
 	if err != nil {
 		return false
 	}
-	targetAbs, err := filepath.Abs(target)
+	targetAbs, err := resolvePath(target)
 	if err != nil {
 		return false
 	}
@@ -659,6 +664,30 @@ func pathUnder(root, target string) bool {
 		return true
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// resolvePath returns an absolute path with symlinked ancestors resolved. It can
+// canonicalize paths that do not exist yet, which matters for hooksDir paths whose
+// parent sandbox is created after the leak guard runs.
+func resolvePath(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	for ancestor := absPath; ; ancestor = filepath.Dir(ancestor) {
+		resolved, evalErr := filepath.EvalSymlinks(ancestor)
+		if evalErr == nil {
+			rel, relErr := filepath.Rel(ancestor, absPath)
+			if relErr != nil {
+				return "", relErr
+			}
+			return filepath.Clean(filepath.Join(resolved, rel)), nil
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			return absPath, nil
+		}
+	}
 }
 
 func replaceManagedCodexHookBlock(existing, block string) string {

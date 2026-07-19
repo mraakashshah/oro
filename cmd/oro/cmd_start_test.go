@@ -291,47 +291,70 @@ func TestInstallCodexHookConfigWritesManagedBlock(t *testing.T) {
 func TestHookPathsWouldLeak(t *testing.T) {
 	cases := []struct {
 		name      string
-		tempRoot  string
 		codexHome string
 		hooksDir  string
 		want      bool
 	}{
 		{
 			name:      "ephemeral hooks into persistent home leaks",
-			tempRoot:  "/tmp/oro-subprocess/abc",
 			codexHome: "/Users/dev/.codex",
 			hooksDir:  "/tmp/oro-subprocess/abc/TestX/001/oro-home/hooks",
 			want:      true,
 		},
 		{
 			name:      "both under temp is a hermetic test, no leak",
-			tempRoot:  "/tmp/oro-subprocess/abc",
 			codexHome: "/tmp/oro-subprocess/abc/TestX/001/codex-home",
 			hooksDir:  "/tmp/oro-subprocess/abc/TestX/001/oro-home/hooks",
 			want:      false,
 		},
 		{
 			name:      "both persistent is production, no leak",
-			tempRoot:  "/tmp/oro-subprocess/abc",
 			codexHome: "/Users/dev/.codex",
 			hooksDir:  "/Users/dev/.oro/hooks",
 			want:      false,
 		},
 		{
-			name:      "sibling temp dir is not under temp root, no false prefix match",
-			tempRoot:  "/tmp/oro",
+			name:      "any common tmp hooks path leaks into persistent home",
 			codexHome: "/Users/dev/.codex",
 			hooksDir:  "/tmp/oro-other/hooks",
-			want:      false,
+			want:      true,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := hookPathsWouldLeak(tc.tempRoot, tc.codexHome, tc.hooksDir); got != tc.want {
-				t.Fatalf("hookPathsWouldLeak(%q, %q, %q) = %v, want %v",
-					tc.tempRoot, tc.codexHome, tc.hooksDir, got, tc.want)
+			if got := hookPathsWouldLeak(tc.codexHome, tc.hooksDir); got != tc.want {
+				t.Fatalf("hookPathsWouldLeak(%q, %q) = %v, want %v",
+					tc.codexHome, tc.hooksDir, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestPathUnder(t *testing.T) {
+	if pathUnder("/tmp/oro", "/tmp/oro-other/hooks") {
+		t.Fatal("pathUnder must not treat a sibling path as nested")
+	}
+
+	realRoot := t.TempDir()
+	aliasParent := t.TempDir()
+	alias := filepath.Join(aliasParent, "temp-alias")
+	if err := os.Symlink(realRoot, alias); err != nil {
+		t.Fatalf("create temp root alias: %v", err)
+	}
+	if !pathUnder(alias, filepath.Join(realRoot, "hooks")) {
+		t.Fatal("pathUnder must resolve symlinked ancestors")
+	}
+}
+
+func TestHookPathsWouldLeak_NonTmpdirSandboxRoot(t *testing.T) {
+	// On macOS, os.TempDir can be /var/folders/.../T even though Oro's
+	// subprocess sandbox roots are intentionally created under /tmp.
+	// The guard must still refuse to write these transient hook paths into a
+	// persistent CODEX_HOME.
+	codexHome := "/Users/u/.codex"
+	hooksDir := "/tmp/oro-subprocess/h/oro-home/hooks"
+	if !hookPathsWouldLeak(codexHome, hooksDir) {
+		t.Fatalf("hookPathsWouldLeak(%q, %q) = false, want true", codexHome, hooksDir)
 	}
 }
 
