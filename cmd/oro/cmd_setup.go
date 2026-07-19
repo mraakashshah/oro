@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 
 	"oro/pkg/langprofile"
 
@@ -21,6 +23,7 @@ type setupOptions struct {
 	dryRun      bool
 	skipTools   bool
 	force       bool
+	installDeps InstallDeps
 }
 
 // prereqDef describes a hard prerequisite that must exist before setup proceeds.
@@ -120,9 +123,18 @@ func setupPhase1Prereqs(w io.Writer, opts setupOptions) error {
 	} else if err := checkPrereqs(w, defaultPrereqs); err != nil {
 		return err
 	}
+	if shouldEnsureManagedGitHubCLI(opts) {
+		if _, err := EnsureManagedGitHubCLI(context.Background(), opts.installDeps); err != nil {
+			return err
+		}
+	}
 	fmt.Fprintln(w, "  All prerequisites found.")
 	fmt.Fprintln(w)
 	return nil
+}
+
+func shouldEnsureManagedGitHubCLI(opts setupOptions) bool {
+	return opts.installDeps.GOOS == "darwin" || (opts.installDeps.GOOS == "" && runtime.GOOS == "darwin")
 }
 
 // setupPhase2Detect detects project languages via langprofile and returns the
