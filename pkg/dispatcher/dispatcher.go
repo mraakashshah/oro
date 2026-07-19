@@ -6209,14 +6209,14 @@ func (d *Dispatcher) prepareEpicBranchForAssignment(ctx context.Context, beadID,
 func assignmentBaseBranchDiverged(ctx context.Context, checker assignmentBaseBranchSafetyChecker, branch, baseBranch string) (bool, error) {
 	branchHasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, branch, baseBranch)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("check unique commits on %s relative to %s: %w", branch, baseBranch, err)
 	}
 	if !branchHasUniqueCommits {
 		return false, nil
 	}
 	baseHasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, baseBranch, branch)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("check unique commits on %s relative to %s: %w", baseBranch, branch, err)
 	}
 	return baseHasUniqueCommits, nil
 }

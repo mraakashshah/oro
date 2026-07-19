@@ -583,14 +583,14 @@ func validateStandaloneEpicBranchSafe(ctx context.Context, deps *workDeps, targe
 func standaloneEpicBranchesDiverged(ctx context.Context, checker standaloneBaseBranchSafetyChecker, targetBranch, defaultBranch string) (bool, error) {
 	targetHasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, targetBranch, defaultBranch)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("check unique commits on %s relative to %s: %w", targetBranch, defaultBranch, err)
 	}
 	if !targetHasUniqueCommits {
 		return false, nil
 	}
 	defaultHasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, defaultBranch, targetBranch)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("check unique commits on %s relative to %s: %w", defaultBranch, targetBranch, err)
 	}
 	return defaultHasUniqueCommits, nil
 }
