@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,86 @@ import (
 
 	"oro/pkg/protocol"
 )
+
+func TestResolveStoragePaths(t *testing.T) {
+	userRoot := t.TempDir()
+	oroHome := filepath.Join(userRoot, ".oro")
+	if err := os.MkdirAll(oroHome, 0o750); err != nil {
+		t.Fatalf("mkdir oro home: %v", err)
+	}
+
+	paths, err := ResolveStoragePaths(oroHome)
+	if err != nil {
+		t.Fatalf("ResolveStoragePaths() error: %v", err)
+	}
+	canonicalOroHome := paths.OroHome
+
+	for name, path := range map[string]string{
+		"catalog":  paths.CatalogPath,
+		"lock":     paths.LockPath,
+		"evidence": paths.EvidenceRoot,
+		"cache":    paths.CacheRoot,
+	} {
+		if !filepath.IsAbs(path) {
+			t.Errorf("%s path = %q, want absolute", name, path)
+		}
+		if rel, err := filepath.Rel(canonicalOroHome, path); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			t.Errorf("%s path = %q, want beneath %q", name, path, canonicalOroHome)
+		}
+	}
+
+	if paths.CatalogPath != filepath.Join(canonicalOroHome, "storage", "catalog.db") {
+		t.Errorf("CatalogPath = %q", paths.CatalogPath)
+	}
+	if paths.LockPath != filepath.Join(canonicalOroHome, "storage", "maintenance.lock") {
+		t.Errorf("LockPath = %q", paths.LockPath)
+	}
+	if paths.EvidenceRoot != filepath.Join(canonicalOroHome, "storage", "evidence") {
+		t.Errorf("EvidenceRoot = %q", paths.EvidenceRoot)
+	}
+	if paths.CacheRoot != filepath.Join(canonicalOroHome, "cache") {
+		t.Errorf("CacheRoot = %q", paths.CacheRoot)
+	}
+
+	for _, test := range []struct {
+		name string
+		root string
+		want error
+	}{
+		{name: "relative", root: ".oro", want: ErrInvalidPath},
+		{name: "worktree", root: filepath.Join(userRoot, "repo", ".oro"), want: ErrUnsafeStorageRoot},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.name == "worktree" {
+				if err := os.MkdirAll(filepath.Join(userRoot, "repo", ".git"), 0o750); err != nil {
+					t.Fatalf("mkdir worktree marker: %v", err)
+				}
+				if err := os.MkdirAll(test.root, 0o750); err != nil {
+					t.Fatalf("mkdir worktree storage root: %v", err)
+				}
+			}
+			_, err := ResolveStoragePaths(test.root)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("ResolveStoragePaths(%q) error = %v, want %v", test.root, err, test.want)
+			}
+		})
+	}
+
+	escape := filepath.Join(userRoot, "repo", "escaped-oro")
+	if err := os.MkdirAll(filepath.Join(userRoot, "repo", ".git"), 0o750); err != nil {
+		t.Fatalf("mkdir symlink worktree marker: %v", err)
+	}
+	if err := os.MkdirAll(escape, 0o750); err != nil {
+		t.Fatalf("mkdir symlink escape target: %v", err)
+	}
+	if err := os.Symlink(escape, filepath.Join(userRoot, "linked-oro")); err != nil {
+		t.Fatalf("symlink storage root: %v", err)
+	}
+	_, err = ResolveStoragePaths(filepath.Join(userRoot, "linked-oro"))
+	if !errors.Is(err, ErrUnsafeStorageRoot) {
+		t.Fatalf("ResolveStoragePaths(symlink escape) error = %v, want %v", err, ErrUnsafeStorageRoot)
+	}
+}
 
 func TestResolvePaths_Standard(t *testing.T) {
 	repoRoot := t.TempDir()
