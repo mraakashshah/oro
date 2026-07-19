@@ -1,11 +1,23 @@
-// Binary oro-search-hook is a Claude Code PreToolUse hook that intercepts Read
-// tool calls and returns AST-based summaries instead of raw file content for
-// large Go source files. This saves tokens by replacing full file reads with
-// compact structural summaries (function signatures, type declarations, etc.).
+// Binary oro-search-hook is a PreToolUse hook that intercepts file reads and
+// returns AST-based summaries instead of raw file content for large source
+// files. This saves tokens by replacing full file reads with compact structural
+// summaries (function signatures, type declarations, etc.).
 //
-// Protocol: reads JSON from stdin, writes JSON to stdout.
-//   - Allow (pass through): {}
-//   - Deny (with summary):  {"permissionDecision":"deny","permissionDecisionReason":"..."}
+// It handles three read surfaces:
+//   - Claude Code Read tool (tool_name="Read", tool_input.file_path).
+//   - Codex Bash reads (tool_name="Bash", a bare `cat [--] <path>`).
+//   - Legacy Codex view (tool_name="str_replace_based_edit_tool", command="view").
+//
+// Protocol: reads JSON from stdin, writes to stdout.
+//   - Claude/legacy allow (pass through): {}
+//   - Claude/legacy deny (with summary):  {"permissionDecision":"deny","permissionDecisionReason":"..."}
+//   - Codex Bash allow (pass through):    EMPTY STDOUT (zero bytes) — matches the
+//     sibling destructive_command_guard.py contract; {} is unverified on the
+//     Bash surface and could be parsed as a malformed decision.
+//   - Codex Bash deny (with summary):     {"hookSpecificOutput":{"hookEventName":
+//     "PreToolUse","permissionDecision":"deny"},"systemMessage":"...",
+//     "permissionDecisionReason":"..."} — the summary rides systemMessage (the
+//     field Codex actually surfaces) plus permissionDecisionReason.
 package main
 
 import (
@@ -13,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"oro/pkg/codesearch"
 )
@@ -39,8 +52,10 @@ type hookInput struct {
 }
 
 // toolInput represents the tool_input field from the Claude Code hook payload.
+// Command carries the Codex Bash shell string (tool_name="Bash").
 type toolInput struct {
 	FilePath string  `json:"file_path"`
+	Command  string  `json:"command,omitempty"`
 	Offset   float64 `json:"offset,omitempty"`
 	Limit    float64 `json:"limit,omitempty"`
 }
@@ -67,6 +82,19 @@ type denyResponse struct {
 	PermissionDecisionReason string `json:"permissionDecisionReason"`
 }
 
+// codexDenyResponse is the JSON shape for blocking a Codex Bash read with a
+// summary. It mirrors the sibling destructive_command_guard.py deny: the summary
+// is surfaced via top-level systemMessage (the field Codex actually reads), with
+// permissionDecisionReason as a belt-and-braces duplicate.
+type codexDenyResponse struct {
+	HookSpecificOutput struct {
+		HookEventName      string `json:"hookEventName"`
+		PermissionDecision string `json:"permissionDecision"`
+	} `json:"hookSpecificOutput"`
+	SystemMessage            string `json:"systemMessage"`
+	PermissionDecisionReason string `json:"permissionDecisionReason"`
+}
+
 // allowJSON is the pre-encoded allow response (empty JSON object).
 var allowJSON = []byte("{}")
 
@@ -79,15 +107,19 @@ var allowJSON = []byte("{}")
 //
 // Shape detection (runtime selected by inspecting stdin):
 //  1. Claude Code shape: tool_name="Read", file at tool_input.file_path.
-//  2. Codex shape: tool_name="str_replace_based_edit_tool", command="view",
+//  2. Codex Bash shape: tool_name="Bash", shell string at tool_input.command.
+//  3. Legacy Codex view: tool_name="str_replace_based_edit_tool", command="view",
 //     file at tool_input.path. No hook_type field.
-//  3. Unknown shape: fail-open allow (user-never-blocked invariant).
+//  4. Unknown shape: fail-open allow (user-never-blocked invariant).
 //
 // Within each shape:
-//   - Non-read tools / non-view commands: allow.
+//   - Non-read tools / non-cat commands / non-view commands: allow.
 //   - Bypass conditions (small file, test file, config, offset/limit/view_range): allow.
 //   - Large file: summarize and deny with summary.
 //   - Summarize error: allow (fail open).
+//
+// Allow contracts differ by surface: Claude/legacy allow with {}; the Codex Bash
+// arm allows with EMPTY STDOUT (nil), matching destructive_command_guard.py.
 func HandleHook(input []byte) []byte {
 	var hook hookInput
 	if err := json.Unmarshal(input, &hook); err != nil {
@@ -99,8 +131,12 @@ func HandleHook(input []byte) []byte {
 		// Claude Code shape: file path at tool_input.file_path.
 		return handleClaudeRead(hook.ToolInput)
 
+	case "Bash":
+		// Codex Bash shape: recognize only a bare `cat [--] <path>` read.
+		return handleCodexBash(hook.ToolInput.Command)
+
 	case "str_replace_based_edit_tool":
-		// Codex shape: file path at tool_input.path, view indicated by command="view".
+		// Legacy Codex shape: file path at tool_input.path, view indicated by command="view".
 		var codexHook codexHookInput
 		if err := json.Unmarshal(input, &codexHook); err != nil {
 			return allowJSON
@@ -159,6 +195,74 @@ func handleCodexView(ti codexToolInput) []byte {
 		return allowJSON
 	}
 	return summarizeAndDeny(ti.Path)
+}
+
+// shellMetaChars are characters whose presence signals shell syntax we refuse
+// to reason about: pipes, chains, redirects, command substitution, globs,
+// quoting, tilde/home expansion, history expansion. Any of them makes the
+// command ambiguous, so handleCodexBash fails open.
+const shellMetaChars = "|&;<>$`(){}[]*?~!'\"\\\n\r"
+
+// simpleCatPath returns the single file path of a bare `cat <path>` or
+// `cat -- <path>` command and true. Any other form — extra flags, multiple
+// files, or shell metacharacters — returns ("", false) so the caller fails open.
+func simpleCatPath(command string) (string, bool) {
+	if strings.ContainsAny(command, shellMetaChars) {
+		return "", false
+	}
+	fields := strings.Fields(command)
+	switch {
+	case len(fields) == 2 && fields[0] == "cat" && !strings.HasPrefix(fields[1], "-"):
+		return fields[1], true
+	case len(fields) == 3 && fields[0] == "cat" && fields[1] == "--":
+		return fields[2], true
+	default:
+		return "", false
+	}
+}
+
+// handleCodexBash intercepts a Codex Bash file read. It recognizes ONLY a bare
+// `cat [--] <path>` of a large code file; every other command shape fails open.
+//
+// The Codex Bash allow / fail-open contract is EMPTY STDOUT (nil), matching the
+// sibling destructive_command_guard.py hook — NOT {}, which is unverified on the
+// Bash surface and could be parsed as a malformed decision that stalls the call.
+func handleCodexBash(command string) []byte {
+	filePath, ok := simpleCatPath(command)
+	if !ok {
+		return nil
+	}
+	info, err := os.Stat(filePath)
+	if err != nil {
+		return nil
+	}
+	cti := codesearch.ToolInput{
+		FilePath: filePath,
+		FileSize: info.Size(),
+	}
+	if codesearch.ShouldBypass(cti) {
+		return nil
+	}
+	return summarizeAndDenyCodex(filePath)
+}
+
+// summarizeAndDenyCodex summarizes filePath and returns the Codex Bash deny
+// shape. On summarization error, returns nil (empty stdout = fail-open allow).
+func summarizeAndDenyCodex(filePath string) []byte {
+	summary, err := codesearch.SummarizeFile(filePath)
+	if err != nil {
+		return nil
+	}
+	var resp codexDenyResponse
+	resp.HookSpecificOutput.HookEventName = "PreToolUse"
+	resp.HookSpecificOutput.PermissionDecision = "deny"
+	resp.SystemMessage = summary
+	resp.PermissionDecisionReason = summary
+	out, err := json.Marshal(resp)
+	if err != nil {
+		return nil
+	}
+	return out
 }
 
 // summarizeAndDeny attempts to summarize filePath and returns a deny response.

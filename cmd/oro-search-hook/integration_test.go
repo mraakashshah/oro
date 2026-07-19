@@ -83,7 +83,7 @@ func TestHookEndToEnd(t *testing.T) {
 		}
 	})
 
-	t.Run("allow_non_read_tool", func(t *testing.T) {
+	t.Run("allow_non_cat_bash_empty_stdout", func(t *testing.T) {
 		input := map[string]any{
 			"hook_type": "PreToolUse",
 			"tool_name": "Bash",
@@ -93,9 +93,9 @@ func TestHookEndToEnd(t *testing.T) {
 		}
 		stdout := runHookBinary(t, binPath, input)
 
-		trimmed := strings.TrimSpace(string(stdout))
-		if trimmed != "{}" {
-			t.Errorf("expected allow response {}, got %q", trimmed)
+		// Codex Bash allow contract is empty stdout (zero bytes), not {}.
+		if len(stdout) != 0 {
+			t.Errorf("expected empty stdout for non-cat Bash (allow), got %q", string(stdout))
 		}
 	})
 
