@@ -308,6 +308,12 @@ func TestHookPathsWouldLeak(t *testing.T) {
 			want:      false,
 		},
 		{
+			name:      "different temp roots are still a hermetic test",
+			codexHome: "/var/folders/ab/codex-home",
+			hooksDir:  "/tmp/oro-subprocess/abc/TestX/001/oro-home/hooks",
+			want:      false,
+		},
+		{
 			name:      "both persistent is production, no leak",
 			codexHome: "/Users/dev/.codex",
 			hooksDir:  "/Users/dev/.oro/hooks",
@@ -359,17 +365,24 @@ func TestHookPathsWouldLeak_NonTmpdirSandboxRoot(t *testing.T) {
 }
 
 func TestInstallCodexHookConfigRefusesLeakyHooks(t *testing.T) {
-	// A "persistent" Codex home that will sit outside the redirected temp root.
-	persistentHome := t.TempDir()
+	// Model a persistent Codex home with a disposable directory under the
+	// package worktree, outside every recognized temporary root.
+	persistentHome, err := os.MkdirTemp(".", ".codex-home-test-")
+	if err != nil {
+		t.Fatalf("create persistent Codex home fixture: %v", err)
+	}
+	t.Cleanup(func() {
+		if removeErr := os.RemoveAll(persistentHome); removeErr != nil {
+			t.Errorf("remove persistent Codex home fixture: %v", removeErr)
+		}
+	})
 	configPath := filepath.Join(persistentHome, "config.toml")
 
-	// Redirect the temp root so hooksDir is ephemeral but persistentHome is not:
-	// this reproduces a test that isolated ORO_HOME but forgot CODEX_HOME.
+	// This reproduces a test that isolated ORO_HOME but forgot CODEX_HOME.
 	ephemeralRoot := t.TempDir()
-	t.Setenv("TMPDIR", ephemeralRoot)
 	hooksDir := filepath.Join(ephemeralRoot, "oro-home", "hooks")
 
-	err := installCodexHookConfig(persistentHome, hooksDir)
+	err = installCodexHookConfig(persistentHome, hooksDir)
 	if err == nil || !strings.Contains(err.Error(), "refusing to install Codex hook config") {
 		t.Fatalf("expected refusal error, got %v", err)
 	}

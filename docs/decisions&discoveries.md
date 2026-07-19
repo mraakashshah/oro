@@ -16,13 +16,17 @@ assets are required.
 `ORO_HOME` + `CODEX_HOME` + PID/socket/db paths as one unit, and applied it across
 all start-path tests so partial isolation is impossible. (2) Defense-in-depth:
 `installCodexHookConfig` now refuses (hard error) to write when the hooks dir is
-under the temp root but `CODEX_HOME` is not — via the pure predicate
-`hookPathsWouldLeak(tempRoot, codexHome, hooksDir)`. A future forgotten
-`CODEX_HOME` now fails the test loudly instead of silently corrupting the dev's
-`~/.codex/config.toml`.
+under any common temporary root (`os.TempDir()`, `/tmp`, `/private/tmp`, or
+`/var/folders`) but `CODEX_HOME` is under none of them — via the pure predicate
+`hookPathsWouldLeak(codexHome, hooksDir)`. Path containment resolves symlinked
+ancestors so `/tmp` and `/private/tmp` aliases compare consistently. A future
+forgotten `CODEX_HOME` now fails the test loudly instead of silently corrupting
+the dev's `~/.codex/config.toml`.
 **Implications:** New start-path tests should call `hermeticOroEnv`; the guard is a
-backstop, not a substitute. Verified: running the previously-leaking tests leaves
-the real `~/.codex/config.toml` byte-for-byte unchanged.
+backstop, not a substitute. A `CODEX_HOME` under any recognized temp root remains
+hermetic even when its root differs from the hooks root. Verified: running the
+previously-leaking tests leaves the real `~/.codex/config.toml` byte-for-byte
+unchanged.
 
 ## 2026-07-13: Claude ops runtime now honors reasoning/effort (--effort)
 **Tags:** #ops #reviewer #claude #reasoning #routing

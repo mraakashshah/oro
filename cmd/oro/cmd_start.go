@@ -636,12 +636,12 @@ func installCodexHookConfig(codexHome, hooksDir string) error {
 // It checks common temporary roots rather than just os.TempDir because Oro
 // subprocesses may use /tmp while macOS reports a per-user /var/folders temp dir.
 func hookPathsWouldLeak(codexHome, hooksDir string) bool {
+	var codexUnderTemp, hooksUnderTemp bool
 	for _, tempRoot := range []string{os.TempDir(), "/tmp", "/private/tmp", "/var/folders"} {
-		if pathUnder(tempRoot, hooksDir) && !pathUnder(tempRoot, codexHome) {
-			return true
-		}
+		codexUnderTemp = codexUnderTemp || pathUnder(tempRoot, codexHome)
+		hooksUnderTemp = hooksUnderTemp || pathUnder(tempRoot, hooksDir)
 	}
-	return false
+	return hooksUnderTemp && !codexUnderTemp
 }
 
 // pathUnder reports whether target is root itself or nested inside root, comparing
@@ -672,14 +672,14 @@ func pathUnder(root, target string) bool {
 func resolvePath(path string) (string, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("resolve absolute path: %w", err)
 	}
 	for ancestor := absPath; ; ancestor = filepath.Dir(ancestor) {
 		resolved, evalErr := filepath.EvalSymlinks(ancestor)
 		if evalErr == nil {
 			rel, relErr := filepath.Rel(ancestor, absPath)
 			if relErr != nil {
-				return "", relErr
+				return "", fmt.Errorf("resolve path relative to existing ancestor: %w", relErr)
 			}
 			return filepath.Clean(filepath.Join(resolved, rel)), nil
 		}
