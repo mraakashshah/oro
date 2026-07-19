@@ -45,6 +45,7 @@ import (
 	"oro/pkg/processenv"
 	"oro/pkg/protocol"
 	"oro/pkg/web"
+	workerstream "oro/pkg/worker"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -4325,8 +4326,9 @@ func reviewFailureDetail(result ops.Result) string {
 }
 
 func classifyReviewFailure(result ops.Result) ReviewFailureClass {
-	detail := strings.ToLower(reviewFailureDetail(result))
-	if result.Err != nil && reviewStartupHookFailed(detail) {
+	raw := reviewFailureDetail(result)
+	detail := strings.ToLower(raw)
+	if result.Err != nil && reviewStartupHookFailed(raw) {
 		return ReviewFailureInfraBlocked
 	}
 	if !strings.Contains(detail, "acceptance command passed") {
@@ -4364,9 +4366,21 @@ func reviewInfraBlocked(detail string) bool {
 	)
 }
 
-func reviewStartupHookFailed(detail string) bool {
+func reviewStartupHookFailed(raw string) bool {
+	detail := strings.ToLower(raw)
 	return strings.Contains(detail, `"subtype":"hook_started"`) &&
-		strings.Contains(detail, "sessionstart:startup")
+		strings.Contains(detail, "sessionstart:startup") &&
+		!reviewStreamHadAgentActivity(raw)
+}
+
+func reviewStreamHadAgentActivity(raw string) bool {
+	for _, line := range strings.Split(raw, "\n") {
+		switch workerstream.ParseStreamEvent([]byte(line)).Kind {
+		case workerstream.ActivityToolUse, workerstream.ActivityTextDelta, workerstream.ActivityResult:
+			return true
+		}
+	}
+	return false
 }
 
 func containsAny(s string, needles ...string) bool {

@@ -3147,6 +3147,55 @@ func TestReviewSandboxBlockedDoesNotIncrementRejectionCount(t *testing.T) {
 	}
 }
 
+func TestClassifyReviewFailure_ContentBased(t *testing.T) {
+	const startupHook = `{"type":"system","subtype":"hook_started","hook_name":"SessionStart:startup"}`
+	tests := []struct {
+		name     string
+		feedback string
+		err      error
+		want     ReviewFailureClass
+	}{
+		{
+			name:     "startup hook without agent activity is infrastructure blocked",
+			feedback: startupHook,
+			err:      errors.New("exit status 1"),
+			want:     ReviewFailureInfraBlocked,
+		},
+		{
+			name:     "tool use after startup is ordinary failure",
+			feedback: startupHook + "\n" + `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read"}]}}`,
+			err:      errors.New("exit status 1"),
+			want:     ReviewFailureOrdinary,
+		},
+		{
+			name:     "text delta after startup is ordinary failure",
+			feedback: startupHook + "\n" + `{"type":"content_block_delta","delta":{"type":"text_delta","text":"reviewing"}}`,
+			err:      errors.New("exit status 1"),
+			want:     ReviewFailureOrdinary,
+		},
+		{
+			name:     "result after startup is ordinary failure",
+			feedback: startupHook + "\n" + `{"type":"result","subtype":"error_max_turns","result":"stopped","is_error":true}`,
+			err:      errors.New("exit status 1"),
+			want:     ReviewFailureOrdinary,
+		},
+		{
+			name: "spawn failure without startup hook is ordinary failure",
+			err:  errors.New("ops: spawn failed: executable not found"),
+			want: ReviewFailureOrdinary,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyReviewFailure(ops.Result{Feedback: tt.feedback, Err: tt.err})
+			if got != tt.want {
+				t.Fatalf("classifyReviewFailure() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHandleReviewResult_SubprocessErrorReleasesReviewingWorker(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
