@@ -583,9 +583,9 @@ func (d *Dispatcher) collectTimedOutWorkersLocked(now time.Time) (dead, stuck, s
 		if reviewGraceActive {
 			continue
 		}
-		// Progress check: an active worker has not made meaningful progress.
-		// Review/QG/merge work is represented by WorkerReviewing and must be
-		// bounded by the same real-progress clock as coding work.
+		// Progress check: a busy coding worker has not made meaningful progress.
+		// Reviewing workers use the separate ReviewTimeout below, allowing an
+		// active ops review to outlive the shorter coding-progress deadline.
 		if workerProgressTimedOut(w, now, d.cfg.ProgressTimeout) {
 			stuck = append(stuck, id)
 			continue
