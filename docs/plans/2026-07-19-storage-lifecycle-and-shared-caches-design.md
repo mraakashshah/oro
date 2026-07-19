@@ -127,6 +127,10 @@ Migration covers every production `ForWorkdir` caller in `pkg/worker`, `pkg/ops`
 
 Directly invoked quality gates, including installed pre-push hooks and stealth-mode gates, cannot rely on a parent Go spawner. Oro therefore provides a lease-aware `oro storage exec --workdir <path> -- <argv...>` wrapper. Generated and installed hooks invoke the quality-gate script through this wrapper. The wrapper resolves cache policy, acquires the runtime handle, forwards signals to the child process group, waits, releases the handle, and preserves the child's exit code.
 
+Arbitrary acceptance commands use the same execution primitive. Dispatcher `ShellAcceptanceRunner` acquires an ephemeral repository-workdir handle for both pre-decomposition checks and post-child epic auto-close, checks the global admission epoch before start, routes shared caches and temp, registers the process group, and retires the invocation scratch after confirmed exit. Pause or pressure can defer start; a scratch limit cancels the process group and returns typed `storage_limit` evidence rather than an ordinary acceptance failure.
+
+Standalone `oro work` acquires one encompassing managed-worktree handle before any agent, review, quality-gate, Git, or acceptance child starts and holds it through every terminal path. Therefore the no-commit `acAlreadySatisfied` command and `defaultRunShellCmd` execute beneath the same controller lease and registered process-group boundary. Start failure, cancellation, ordinary failure, successful merge, and AC-already-satisfied no-op all release deterministically before retirement or preservation is evaluated.
+
 ## Scope-based Shared Cache Contract
 
 The cache abstraction is based on storage scope, not language. A `CacheProvider` describes:
@@ -419,12 +423,13 @@ Beadcraft tasks must list these production entry points in their `Read:` fields 
 |---|---|---:|
 | CLI registration and global paths | `cmd/oro/root.go:rootSubcommands`, `cmd/oro/paths.go`, new `cmd/oro/cmd_storage.go` | 1 |
 | Dispatcher dependency construction | `cmd/oro/cmd_start.go:buildDispatcherWithReviewTimeoutsAndCleanliness`, `cleanEnvForDaemon`; `pkg/dispatcher/dispatcher.go:New`, `Run`, `startupRecovery`, `spawnBackgroundLoops` | 1–2 |
-| Standalone lifecycle | `cmd/oro/cmd_work.go:runWork`, `executeWork`, no-op/success/failure/cancellation cleanup paths | 1–3 |
+| Standalone lifecycle | `cmd/oro/cmd_work.go:runWork`, `executeWork`, `noCommitsResult`, `acAlreadySatisfied`, `defaultRunShellCmd`, no-op/success/failure/cancellation cleanup paths | 1–3 |
 | Direct hooks | `cmd/oro/init_stealth.go:buildOroPrePushCheck`; `cmd/oro/cmd_init.go:installAgentBranchGuard`, `installStealthGitHooks`; `cmd/oro/hooks.go:installHookWrapper`; `Makefile:install-git-hooks`; `git/hooks/pre-push`; every installed artifact routed through `oro storage exec` | 1–2 |
 | Cache and lease API | `pkg/processenv/env.go:ForWorkdir` replacement plus `pkg/processenv/cache_cleanup.go:PruneSubprocessCache` retirement | 1–2 |
 | Every processenv caller | all callers in `pkg/worker`, `pkg/ops`, `pkg/merge`, `pkg/janitor`, `pkg/dispatcher`, `pkg/codesearch`, `pkg/agentruntime/codex`, and `cmd/oro` | 1–2 |
 | Checked-in/generated gates | `scripts/quality_gate.sh`, `cmd/oro/quality_gate_gen.go:qualityGateTmpl` | 1–2 |
 | Dispatcher QG lifetime | `pkg/dispatcher/dispatcher.go:ShellQGRunner.Run`, `qgRunnerEnv`, pre-merge QG path | 2 |
+| Dispatcher epic acceptance | `pkg/dispatcher/dispatcher.go:ShellAcceptanceRunner.Run`, `checkChildlessEpicAssignable`, `tryCloseEpic`, pre-decomposition and auto-close producers | 2 |
 | Admission and cancellation | `pkg/dispatcher/dispatcher.go:tryAssign`; `pkg/dispatcher/process_manager.go:Spawn`, `Kill`; worker/ops/QG process groups | 2 |
 | Post-merge retirement | `pkg/dispatcher/dispatcher.go:handleNoopMerge`, `finalizeSuccessfulMerge`, `removeWorktreeAndClearTracking` | 2–3 |
 | Periodic and cycle triggers | `pkg/dispatcher/sweeper_loop.go:RunSweepLoop`, `pkg/dispatcher/janitor_cycle.go:runJanitor`, `pkg/dispatcher/audit.go:runAudit` | 2 |
@@ -441,7 +446,7 @@ Beadcraft tasks must list these production entry points in their `Read:` fields 
 Beadcraft must decompose this design into multiple independently reviewable epics rather than one oversized storage epic. The epics share this design's global safety constraints and use explicit dependency edges:
 
 1. **Shared-cache foundation and storage control plane.** Add the provider contract, unified policy loader, global catalog and lock, CLI/router/path/bootstrap wiring, cache environment resolution, status and dry-run planning, checked-in/generated quality-gate changes, standalone parity, and live/offline health base fields. Its acceptance test proves sibling worktrees reuse external caches without correctness contamination.
-2. **Worktree scratch lifecycle, pressure, and legacy migration.** Add runtime leases across every spawner and direct command, the hook/QG wrapper, migration of Cobra standard/stealth hooks plus the `Makefile:install-git-hooks` checked-in hook, `/tmp` measurement and limits, global pause acknowledgements, dispatcher and standalone admission, post-merge/no-op retirement, process-group cancellation, bounded tombstone deletion, all recurring triggers, and reconciliation of the existing Oro cache/temp backlog. This epic depends on Epic 1.
+2. **Worktree scratch lifecycle, pressure, and legacy migration.** Add runtime leases across every spawner and direct command, dispatcher epic-acceptance execution, the encompassing standalone controller lease including AC-already-satisfied commands, the hook/QG wrapper, migration of Cobra standard/stealth hooks plus the `Makefile:install-git-hooks` checked-in hook, `/tmp` measurement and limits, global pause acknowledgements, dispatcher and standalone admission, post-merge/no-op retirement, process-group cancellation, bounded tombstone deletion, all recurring triggers, and reconciliation of the existing Oro cache/temp backlog. This epic depends on Epic 1.
 3. **Managed worktree and branch retirement.** Replace the existing recurring GC callback with catalog-backed proof, add post-merge and standalone cleanup parity, and implement worktree removal plus proven local and expected-SHA remote branch cleanup with ownership recorded at remote creation. This epic depends on Epic 2's ownership and lifecycle interfaces.
 4. **Strict `~/.oro` retention.** Implement only the approved inactive log, handoff, backup, known-temp, and SQLite checkpoint rules while proving all indexes, active logs, and unknown state are preserved through both CLI and scheduled paths. This epic depends on Epic 1's planner, evidence, and safety primitives and may proceed in parallel with Epic 2.
 5. **Weekly developer-tool maintenance.** Add provider-native Go, uv, golangci-lint, npm, and npx cleanup, host-wide idle/acknowledged-drain scheduling, pressure-triggered early execution, CLI reuse, live/offline health, and before/after proof. This epic depends on Epic 1's provider and evidence interfaces and may proceed in parallel with Epic 2.
@@ -505,6 +510,8 @@ Every stage exposes status and dry-run output. Shared caches are rebuildable, an
 - Two-controller pause epoch, acknowledgement, overdue drain, and two-probe resume hysteresis.
 - Concurrent worker, reviewer, and QG leases all receive cancellation for one oversized namespace.
 - Standalone work, dispatcher success/no-op, hooks, and every spawner family hold leases through child exit.
+- Pre-decomposition and auto-close `ShellAcceptanceRunner` commands honor admission, cache/temp routing, leases, process-group cancellation, start failure, release, and `storage_limit` classification.
+- Standalone no-commit `acAlreadySatisfied` and `defaultRunShellCmd` remain covered by the encompassing controller lease through exit, cancellation, and start failure.
 - Startup catch-up, hourly cadence, post-merge/no-op, janitor success/failure, audit success/failure, pre-admission pressure, critical pressure, and weekly scheduling each invoke the same bounded planner exactly once per trigger event.
 - Catalog corruption preserves existing work, blocks new scratch admission, and disables deletion while status remains available.
 - Symlink, traversal, ownership mismatch, and injected `ENOSPC` preservation.
@@ -560,14 +567,16 @@ The harness refuses any branch other than `main`, runs all five per-epic scripts
 9. the SHA-256 manifest of every index fixture is unchanged after `oro-home` cleanup;
 10. live and offline `oro health` report the same storage state and incidents;
 11. standard, stealth, and `make install-git-hooks` pre-push artifacts execute the quality gate through `oro storage exec` and hold a lease until script exit;
-12. startup catch-up, hourly, post-merge/no-op, janitor success/failure, audit success/failure, elevated pre-admission, critical-pressure, and weekly triggers each reach the common bounded planner.
+12. startup catch-up, hourly, post-merge/no-op, janitor success/failure, audit success/failure, elevated pre-admission, critical-pressure, and weekly triggers each reach the common bounded planner;
+13. pre-decomposition and auto-close epic acceptance commands are admitted, cache-routed, leased, cancellable, and classified as `storage_limit` under scratch pressure;
+14. standalone no-commit AC-already-satisfied execution stays within the encompassing controller lease through child exit and releases before no-op retirement.
 
 The five scripts call named integration tests rather than relying on prose:
 
 | Epic | Required named tests |
 |---:|---|
 | 1 | `TestStorageSharedCacheEndToEnd`, `TestStorageStandalonePolicyParity`, `TestStorageCLIAndHealthWiring` |
-| 2 | `TestStorageRuntimeLifecycleEndToEnd`, `TestStorageTwoControllerPauseDrain`, `TestStorageStandaloneAndHookLeases`, `TestStorageAllHookInstallersUseLeaseWrapper`, `TestStorageAllMaintenanceTriggersEndToEnd`, `TestStorageLegacyReconcileBounds` |
+| 2 | `TestStorageRuntimeLifecycleEndToEnd`, `TestStorageTwoControllerPauseDrain`, `TestStorageStandaloneAndHookLeases`, `TestStorageAcceptanceRunnerLifecycle`, `TestStorageStandaloneAlreadySatisfiedLease`, `TestStorageAllHookInstallersUseLeaseWrapper`, `TestStorageAllMaintenanceTriggersEndToEnd`, `TestStorageLegacyReconcileBounds` |
 | 3 | `TestStorageWorktreeAndRemoteRefEndToEnd`, `TestStorageRemoteAdvancePreserved` |
 | 4 | `TestStorageOroHomeAllowlistEndToEnd`, `TestStorageActiveLogsAndIndexesPreserved` |
 | 5 | `TestStorageWeeklyProviderSweepEndToEnd`, `TestStorageOverdueDrainAndEvidence` |
@@ -588,6 +597,8 @@ The five scripts call named integration tests rather than relying on prose:
 | 10 | CLI plus live/offline health parity | 1–5 | `TestStorageCLIAndHealthWiring`, `TestStorageCrossEpicEndToEnd` |
 | 11 | Standard, stealth, and Makefile-installed hooks use the lease wrapper | 2 | `TestStorageAllHookInstallersUseLeaseWrapper` |
 | 12 | Every startup, cadence, cycle, merge, pressure, and weekly trigger invokes the planner | 2, 5 | `TestStorageAllMaintenanceTriggersEndToEnd` |
+| 13 | Pre-decomposition and auto-close epic acceptance commands use the storage execution boundary | 2 | `TestStorageAcceptanceRunnerLifecycle` |
+| 14 | Standalone AC-already-satisfied direct commands remain inside the controller lease | 2 | `TestStorageStandaloneAlreadySatisfiedLease` |
 
 Beadcraft must assign every matrix row to at least one concrete task with the corresponding production wiring inventory in `Read:` and the named test in acceptance. Partial component tests do not satisfy a row without its end-to-end producer-to-consumer wiring test.
 
