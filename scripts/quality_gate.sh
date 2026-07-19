@@ -66,6 +66,12 @@ NC='\033[0m'
 
 # Temp directory for all check outputs (cleaned up on exit)
 QG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/qg-$$-XXXXXX")
+# Coverage profiles: the main lockless lane covers ./internal/... ./pkg/... with
+# the serial-lane tests SKIPPED; the serial lane emits its own profile so the
+# ≥85% threshold is enforced on the MERGED coverage (oro-hwx2/oro-zdpg) — otherwise
+# the guarded tests' coverage would be lost from the gate.
+GO_COVERAGE_FILE="$QG_DIR/go-coverage.out"
+GO_SERIAL_COVERAGE_FILE="$QG_DIR/go-serial-coverage.out"
 QG_STAGE_ASSETS_LOCK=""
 QG_RUN_LOCK=""
 QG_RUN_LOCK_TOKEN=""
@@ -102,11 +108,14 @@ trap 'exit 143' TERM
 # Keep the golangci-lint cache inside the QG temp directory. Shared
 # golangci-lint caches can collide across concurrent workers.
 export GOLANGCI_LINT_CACHE="$QG_DIR/golangci-lint-cache"
-# Go's build cache is content-addressed and concurrency-safe. Point concurrent
-# main-phase gates at a SHARED, warm GOCACHE so N sibling worktree gates no longer
-# each cold-compile the full repo from an isolated per-run cache now that the main
-# phase runs lockless (oro-hwx2). Overridable for hermetic test runs.
-export GOCACHE="${ORO_QG_GOCACHE:-${TMPDIR:-/tmp}/oro-qg-gocache}"
+# Go's build cache is content-addressed and concurrency-safe, so it must be WARM,
+# not a cold per-run cache: with the lockless concurrent main phase (oro-hwx2), a
+# fresh per-run GOCACHE would make N sibling worktree gates each cold-compile the
+# whole repo at once. Prefer an inherited GOCACHE — worker/dispatcher gates get a
+# per-worktree warm cache from processenv.ForWorkdir, developers get their user
+# cache — and only fall back to a uid-namespaced shared dir when unset (avoids
+# cross-user permission collisions in a shared /tmp).
+export GOCACHE="${GOCACHE:-${ORO_QG_GOCACHE:-${TMPDIR:-/tmp}/oro-qg-gocache-$(id -u)}}"
 mkdir -p "$GOCACHE"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$QG_DIR/uv-cache}"
 export GOMAXPROCS="${ORO_QG_GOMAXPROCS:-2}"
@@ -439,27 +448,102 @@ run_serial_lane() {
 		return 0
 	fi
 	header "SERIAL TIMING LANE (guarded socket/timing tests)"
-	local list="$SCRIPT_SELF_DIR/../pkg/dispatcher/testdata/serial_lane_tests.txt"
-	if [ ! -f "$list" ]; then
-		echo "0:0" >"$QG_DIR/serial.rc"
-		return 0
-	fi
+	local dispatcher_dir="$SCRIPT_SELF_DIR/../pkg/dispatcher"
+	local list="$dispatcher_dir/testdata/serial_lane_tests.txt"
 	local names run_filter
 	if [ -n "${ORO_QG_SERIAL_LANE_RUN_OVERRIDE:-}" ]; then
 		# Test seam: narrow the lane to a specific -run filter (e.g. the regression
 		# canary) so the serial-lane failure path can be proven cheaply.
 		run_filter="$ORO_QG_SERIAL_LANE_RUN_OVERRIDE"
+	elif [ ! -d "$dispatcher_dir" ]; then
+		# Script copied into a non-oro harness project: no guarded tests to run.
+		echo "0:0" >"$QG_DIR/serial.rc"
+		return 0
+	elif [ ! -f "$list" ]; then
+		# In the oro repo the list is the ONLY place the guarded tests run — a
+		# missing list must fail the gate, never silently pass (fail-closed).
+		echo "FAIL: serial-lane test list missing: $list (guarded socket/timing tests would not run)" >&2
+		echo "0:1" >"$QG_DIR/serial.rc"
+		return 1
 	else
 		names=$(grep -vE '^[[:space:]]*#' "$list" | grep -vE '^[[:space:]]*$' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
 		# shellcheck disable=SC2086 # intentional word-splitting: one -run alternative per name
 		run_filter=$(printf '^%s$|' $names)
 		run_filter="${run_filter%|}"
+		if [ -z "$run_filter" ]; then
+			echo "FAIL: serial-lane test list is empty: $list" >&2
+			echo "0:1" >"$QG_DIR/serial.rc"
+			return 1
+		fi
 	fi
-	if GOFLAGS=-buildvcs=false go test ./pkg/dispatcher -run "$run_filter" -count=1; then
+	# Mirror the main suite's race policy so the guarded tests keep -race coverage
+	# (several are explicit data-race tests); the main suite skips -race only on
+	# darwin/arm64 and when mutation is skipped (scripts/quality_gate.sh go lane).
+	local race_flag="" goos goarch
+	goos=$(go env GOOS)
+	goarch=$(go env GOARCH)
+	if [ "${ORO_SKIP_MUTATION:-}" != "1" ] && ! { [ "$goos" = "darwin" ] && [ "$goarch" = "arm64" ]; }; then
+		race_flag="-race"
+	fi
+	# Emit a coverage profile so the guarded tests' coverage is merged back into
+	# the ≥85% threshold check (enforce_go_coverage_threshold); otherwise moving
+	# them out of the main lane would silently erode measured coverage.
+	# shellcheck disable=SC2086 # race_flag is intentionally word-split (empty or -race)
+	if GOFLAGS=-buildvcs=false go test $race_flag -coverprofile="$GO_SERIAL_COVERAGE_FILE" \
+		./pkg/dispatcher -run "$run_filter" -count=1; then
 		echo "1:0" >"$QG_DIR/serial.rc"
 	else
 		echo "0:1" >"$QG_DIR/serial.rc"
 	fi
+}
+
+# merge_coverage_profiles writes $1 from the remaining profile args, summing the
+# execution count of each identical coverage block. Correct for `go tool cover`
+# percentage (a block counts as covered if covered in ANY input). Preserves the
+# first `mode:` header and block order.
+merge_coverage_profiles() {
+	local out="$1"
+	shift
+	awk '
+		FNR == 1 && $1 == "mode:" { if (!seen_mode) { print; seen_mode = 1 } next }
+		{
+			block = $1 " " $2
+			if (!(block in counts)) { order[++n] = block }
+			counts[block] += $3
+		}
+		END { for (i = 1; i <= n; i++) print order[i], counts[order[i]] }
+	' "$@" >"$out"
+}
+
+# enforce_go_coverage_threshold enforces the ≥85% gate on the MERGED main+serial
+# coverage. Runs AFTER the serial lane. Writes pass:fail to $QG_DIR/coverage.rc.
+enforce_go_coverage_threshold() {
+	if [ ! -f "$GO_COVERAGE_FILE" ]; then
+		# No main coverage profile (e.g. go test failed earlier); nothing to add.
+		echo "0:0" >"$QG_DIR/coverage.rc"
+		return 0
+	fi
+	if ! should_enforce_go_coverage_threshold; then
+		echo "0:0" >"$QG_DIR/coverage.rc"
+		return 0
+	fi
+	local merged="$QG_DIR/go-coverage-merged.out"
+	if [ -f "$GO_SERIAL_COVERAGE_FILE" ]; then
+		merge_coverage_profiles "$merged" "$GO_COVERAGE_FILE" "$GO_SERIAL_COVERAGE_FILE"
+	else
+		cp "$GO_COVERAGE_FILE" "$merged"
+	fi
+	local filtered="$merged.filtered"
+	grep -v -e 'oro/pkg/dashboard/' "$merged" >"$filtered"
+	local cov
+	cov=$(go tool cover -func="$filtered" | grep total | awk '{print $3}' | sed 's/%//')
+	echo "Coverage (main + serial lane merged): ${cov}%"
+	if [ "$(echo "$cov < 85" | bc -l)" -eq 1 ]; then
+		echo "FAIL: coverage ${cov}% is below 85% threshold"
+		echo "0:1" >"$QG_DIR/coverage.rc"
+		return 1
+	fi
+	echo "1:0" >"$QG_DIR/coverage.rc"
 }
 
 # Nested-gate short-circuit, then neutralize any leaked serial-lane env before the
@@ -1108,7 +1192,7 @@ lane_go() {
 	# --- Tier 3: Test + Security + Build (parallel) ---
 	header "GO TIER 3: TEST + SECURITY + BUILD"
 
-	local COVERAGE_FILE="$QG_DIR/coverage-$$.out"
+	local COVERAGE_FILE="$GO_COVERAGE_FILE"
 
 	# shellcheck disable=SC2317,SC2329
 	go_test_with_coverage() {
@@ -1122,20 +1206,15 @@ lane_go() {
 		# shellcheck disable=SC2086
 		GOFLAGS=-buildvcs=false go test $race_flag -shuffle=on -p 3 \
 			-coverprofile="$COVERAGE_FILE" ./internal/... ./pkg/... || return 1
-		# Exclude newly-ported dashboard TUI packages from coverage — they
-		# have low coverage until full integration wiring.
+		# Report the main-lane coverage for visibility. The ≥85% THRESHOLD is
+		# enforced later, after the serial lane, on the MERGED profile — the
+		# serial-lane tests self-skip here, so this partial number would understate
+		# coverage and could fail the gate spuriously (enforce_go_coverage_threshold).
 		local filtered="${COVERAGE_FILE}.filtered"
 		grep -v -e 'oro/pkg/dashboard/' "$COVERAGE_FILE" >"$filtered"
 		local cov
 		cov=$(go tool cover -func="$filtered" | grep total | awk '{print $3}' | sed 's/%//')
-		echo "Coverage: ${cov}%"
-		if ! should_enforce_go_coverage_threshold; then
-			return 0
-		fi
-		if [ "$(echo "$cov < 85" | bc -l)" -eq 1 ]; then
-			echo "FAIL: coverage ${cov}% is below 85% threshold"
-			return 1
-		fi
+		echo "Coverage (main lane, serial-lane tests excluded): ${cov}%"
 	}
 
 	local tier3_checks=(
@@ -1469,6 +1548,10 @@ RC_FILES=("$QG_DIR"/go.rc "$QG_DIR"/python.rc "$QG_DIR"/other.rc)
 if $HAS_GO; then
 	run_serial_lane
 	RC_FILES+=("$QG_DIR"/serial.rc)
+	# Enforce the coverage threshold on the merged main+serial profile (the serial
+	# lane's tests were excluded from the main lane's measurement).
+	enforce_go_coverage_threshold
+	RC_FILES+=("$QG_DIR"/coverage.rc)
 fi
 
 # Aggregate pass/fail counts

@@ -1,6 +1,9 @@
 package dispatcher
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -59,42 +62,34 @@ func TestFlakyTimingTestsCarrySerialGuard(t *testing.T) {
 }
 
 // dispatcherTestFuncBodies returns a map of top-level Test function name to its
-// full source body (brace-balanced) across the package's *_test.go files.
+// full source text across the package's *_test.go files. It uses go/ast for exact
+// function boundaries so braces inside string literals or comments cannot
+// mis-delimit a body (which line-based brace counting would).
 func dispatcherTestFuncBodies(t *testing.T) map[string]string {
 	t.Helper()
 	files, err := filepath.Glob("*_test.go")
 	if err != nil {
 		t.Fatalf("glob test files: %v", err)
 	}
-	funcRe := regexp.MustCompile(`^func (Test\w+)\(`)
 	bodies := map[string]string{}
+	fset := token.NewFileSet()
 	for _, file := range files {
-		data, err := os.ReadFile(file)
+		src, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatalf("read %s: %v", file, err)
 		}
-		lines := strings.Split(string(data), "\n")
-		for i := 0; i < len(lines); i++ {
-			m := funcRe.FindStringSubmatch(lines[i])
-			if m == nil {
+		f, err := parser.ParseFile(fset, file, src, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", file, err)
+		}
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil || !strings.HasPrefix(fn.Name.Name, "Test") {
 				continue
 			}
-			name := m[1]
-			var body []string
-			depth, started := 0, false
-			j := i
-			for ; j < len(lines); j++ {
-				body = append(body, lines[j])
-				depth += strings.Count(lines[j], "{") - strings.Count(lines[j], "}")
-				if strings.Contains(lines[j], "{") {
-					started = true
-				}
-				if started && depth <= 0 {
-					break
-				}
-			}
-			bodies[name] = strings.Join(body, "\n")
-			i = j
+			start := fset.Position(fn.Pos()).Offset
+			end := fset.Position(fn.End()).Offset
+			bodies[fn.Name.Name] = string(src[start:end])
 		}
 	}
 	return bodies

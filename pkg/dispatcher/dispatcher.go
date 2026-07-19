@@ -524,16 +524,7 @@ func qualityGateConflictMarkerOutput(scriptPath string) (string, error) {
 func qgRunnerEnv(skipMutation bool, worktree, mutationBase string) []string {
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "ORO_SKIP_MUTATION=") {
-			continue
-		}
-		if strings.HasPrefix(kv, "ORO_RUN_MUTATION=") {
-			continue
-		}
-		if strings.HasPrefix(kv, "ORO_MUTATION_BASE=") {
-			continue
-		}
-		if strings.HasPrefix(kv, "ORO_QG_LOCK_TIMEOUT_SECONDS=") {
+		if processenv.StripQualityGateEnv(kv) {
 			continue
 		}
 		env = append(env, kv)

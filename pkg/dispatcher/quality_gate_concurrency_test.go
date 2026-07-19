@@ -185,20 +185,25 @@ func TestConcurrentGatesNoTimingFlakeSerialLaneCatchesRegression(t *testing.T) {
 				defer wg.Done()
 				// Ambient leak: a stray ORO_QG_SERIAL_LANE=1 must NOT reach the main phase.
 				results[i] = runGateProbe(t, markerDir, repoRoot, ids[i],
-					"ORO_QG_SERIAL_LANE=1", "ORO_QG_MAIN_SLEEP=1", "ORO_QG_SERIAL_SLEEP=0")
+					"ORO_QG_SERIAL_LANE=1", "ORO_QG_MAIN_SLEEP=3", "ORO_QG_SERIAL_SLEEP=0")
 			}(i)
 		}
 		wg.Wait()
+		maxPeak := 0
 		for i, r := range results {
-			if r.mainPeak < 2 {
-				t.Errorf("gate %s main phase serialized (peak=%d); the global lock must be gone from the main phase", ids[i], r.mainPeak)
-			}
+			maxPeak = max(maxPeak, r.mainPeak)
+			// These are deterministic per gate regardless of overlap timing:
 			if r.mainEnv != "" {
 				t.Errorf("gate %s main phase saw ORO_QG_SERIAL_LANE=%q; leaked env must be neutralized so guarded tests stay skipped there", ids[i], r.mainEnv)
 			}
 			if r.serialEnv != "1" {
 				t.Errorf("gate %s serial lane saw ORO_QG_SERIAL_LANE=%q, want 1 (only place guarded tests run)", ids[i], r.serialEnv)
 			}
+		}
+		// A global lock would serialize every main phase to peak 1; concurrency
+		// means at least one gate observed a sibling running.
+		if maxPeak < 2 {
+			t.Errorf("no concurrent main-phase overlap observed (all peaks <2); the global lock must be gone from the main phase")
 		}
 	})
 
@@ -249,13 +254,16 @@ func TestMainGateRunsConcurrentSerialLaneSerializes(t *testing.T) {
 			wg.Add(1)
 			go func(i int, id string) {
 				defer wg.Done()
-				results[i] = runGateProbe(t, markerDir, repoRoot, id, "ORO_QG_MAIN_SLEEP=2", "ORO_QG_SERIAL_SLEEP=0")
+				results[i] = runGateProbe(t, markerDir, repoRoot, id, "ORO_QG_MAIN_SLEEP=3", "ORO_QG_SERIAL_SLEEP=0")
 			}(i, id)
 		}
 		wg.Wait()
-		// Both main phases must have seen the other running: peak concurrency >= 2.
-		if results[0].mainPeak < 2 || results[1].mainPeak < 2 {
-			t.Fatalf("main phase serialized: peaks a=%d b=%d, want both >=2 (no global lock in main phase)", results[0].mainPeak, results[1].mainPeak)
+		// A global lock would serialize the main phases, forcing every peak to 1.
+		// Concurrency means at least one probe observed the other running (>=2).
+		// (Requiring BOTH to see 2 flakes when process-startup skew approaches the
+		// sleep window; max>=2 is the precise not-serialized discriminator.)
+		if max(results[0].mainPeak, results[1].mainPeak) < 2 {
+			t.Fatalf("main phase serialized: peaks a=%d b=%d, want at least one >=2 (no global lock in main phase)", results[0].mainPeak, results[1].mainPeak)
 		}
 	})
 

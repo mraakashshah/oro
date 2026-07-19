@@ -96,6 +96,36 @@ func normalizeEnvEntry(entry, workdir string, rewriteGOMODCACHE bool) (normalize
 	return entry, true, false
 }
 
+// qualityGateStrippedEnvKeys are variables the dispatcher and worker must NOT
+// pass through to a spawned quality-gate subprocess. Mutation controls and the
+// lock timeout are re-derived per run; the ORO_QG_* test seams (marker mode,
+// serial-lane-only, repo-root override, sleeps, regression inject) would let a
+// leaked daemon environment skip the entire gate and pass with zero checks.
+var qualityGateStrippedEnvKeys = map[string]bool{
+	"ORO_SKIP_MUTATION":               true,
+	"ORO_RUN_MUTATION":                true,
+	"ORO_MUTATION_BASE":               true,
+	"ORO_QG_LOCK_TIMEOUT_SECONDS":     true,
+	"ORO_QG_PHASE_MARKER_DIR":         true,
+	"ORO_QG_SERIAL_LANE_ONLY":         true,
+	"ORO_QG_SERIAL_LANE_RUN_OVERRIDE": true,
+	"ORO_QG_REPO_ROOT_OVERRIDE":       true,
+	"ORO_QG_MAIN_SLEEP":               true,
+	"ORO_QG_SERIAL_SLEEP":             true,
+	"ORO_QG_PROBE_ID":                 true,
+	"ORO_QG_INJECT_TIMING_REGRESSION": true,
+}
+
+// StripQualityGateEnv reports whether a KEY=VALUE entry must be dropped from a
+// spawned quality-gate subprocess environment (see qualityGateStrippedEnvKeys).
+func StripQualityGateEnv(kv string) bool {
+	key, _, ok := strings.Cut(kv, "=")
+	if !ok {
+		return false
+	}
+	return qualityGateStrippedEnvKeys[key]
+}
+
 func isInteractiveGitEditorEnv(key string) bool {
 	switch key {
 	case "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_MERGE_AUTOEDIT", "VISUAL", "EDITOR":
