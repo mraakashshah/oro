@@ -145,6 +145,9 @@ func readProcessEnvironmentSnapshotsWithReader(
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return processEnvironmentSnapshots{}, fmt.Errorf("read process environment entries: %w", ctxErr)
 			}
+			if errors.Is(err, os.ErrPermission) {
+				continue
+			}
 			if allOwnedProcessesExited(ctx, []OwnedProcess{process}) {
 				continue
 			}

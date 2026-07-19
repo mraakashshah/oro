@@ -4,6 +4,7 @@ package dispatcher
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -17,6 +18,14 @@ import (
 
 func TestInspectProcessEnvironmentsFindsExactOwnedProcess(t *testing.T) {
 	if os.Getenv("ORO_TEST_OWNED_ENV_HELPER") == "1" {
+		ready := os.NewFile(3, "owned-process-ready")
+		if ready == nil {
+			t.Fatal("open owned-process readiness pipe")
+		}
+		if _, err := ready.Write([]byte{1}); err != nil {
+			t.Fatalf("signal owned-process readiness: %v", err)
+		}
+		_ = ready.Close()
 		for {
 			time.Sleep(time.Hour)
 		}
@@ -24,16 +33,30 @@ func TestInspectProcessEnvironmentsFindsExactOwnedProcess(t *testing.T) {
 
 	socketPath := "/tmp/owned-process.sock"
 	workerID := "owned-worker"
+	readyReader, readyWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create owned-process readiness pipe: %v", err)
+	}
+	t.Cleanup(func() { _ = readyReader.Close() })
 	cmd := exec.Command(os.Args[0], "-test.run=^TestInspectProcessEnvironmentsFindsExactOwnedProcess$") //nolint:gosec // test helper re-executes this binary
 	cmd.Env = append(processenv.WithWorkerOwnership(os.Environ(), socketPath, workerID), "ORO_TEST_OWNED_ENV_HELPER=1")
+	cmd.ExtraFiles = []*os.File{readyWriter}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
+		_ = readyWriter.Close()
 		t.Fatalf("start owned process: %v", err)
 	}
+	_ = readyWriter.Close()
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
 	})
+	if err := readyReader.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set owned-process readiness deadline: %v", err)
+	}
+	if _, err := io.ReadFull(readyReader, make([]byte, 1)); err != nil {
+		t.Fatalf("wait for owned-process readiness: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -253,6 +276,30 @@ func TestReadProcessEnvironmentSnapshotsPropagatesLiveReadFailure(t *testing.T) 
 	}
 	if snapshots.environments != nil {
 		t.Fatalf("readProcessEnvironmentSnapshots environments = %#v, want no false-success result", snapshots.environments)
+	}
+}
+
+func TestReadProcessEnvironmentSnapshotsSkipsPermissionDenied(t *testing.T) {
+	markers := []string{
+		"ORO_SOCKET_PATH=/tmp/owned-process.sock",
+		"ORO_WORKER_ID=owned-worker",
+	}
+	foreign := OwnedProcess{PID: os.Getpid(), PGID: os.Getpid()}
+	owned := OwnedProcess{PID: 60_002, PGID: 60_002}
+	processes := []OwnedProcess{foreign, owned}
+
+	snapshots, err := readProcessEnvironmentSnapshotsWithReader(context.Background(), processes, func(pid int) ([]string, error) {
+		if pid == foreign.PID {
+			return nil, os.ErrPermission
+		}
+		return append([]string{"PATH=/usr/bin"}, markers...), nil
+	})
+	if err != nil {
+		t.Fatalf("readProcessEnvironmentSnapshots error = %v, want permission-denied process skipped", err)
+	}
+	got := ownedProcessesFromEnvironmentSnapshot(processes, snapshots.environments, markers)
+	if len(got) != 1 || got[0] != owned {
+		t.Fatalf("owned processes = %#v, want %#v", got, []OwnedProcess{owned})
 	}
 }
 
