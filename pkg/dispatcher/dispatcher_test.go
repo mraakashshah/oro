@@ -1253,6 +1253,25 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *fakeBeadStore, *mockWorktree
 	return d, beadSrc, wtMgr, esc, gitRunner, spawnMock
 }
 
+func TestNewCardStoreFailureLeavesNilInterface(t *testing.T) {
+	t.Setenv("ORO_BEADSOURCE_MODE", "cli")
+	db := newTestDB(t)
+	if _, err := db.Exec(`CREATE VIEW cards AS SELECT 'blocked' AS id`); err != nil {
+		t.Fatalf("create conflicting cards view: %v", err)
+	}
+
+	d, err := New(Config{
+		SocketPath: "/tmp/oro-card-store-failure.sock",
+		MaxWorkers: 1,
+	}, db, nil, nil, &fakeBeadStore{}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	if d.cardStore != nil {
+		t.Fatalf("cardStore = %T(%v), want nil when optional card schema setup fails", d.cardStore, d.cardStore)
+	}
+}
+
 func TestNewUsesOroHomeForPanesDir(t *testing.T) {
 	oroHome := t.TempDir()
 	t.Setenv("ORO_HOME", oroHome)

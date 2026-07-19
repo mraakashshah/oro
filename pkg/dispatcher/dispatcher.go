@@ -1082,7 +1082,10 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 	if beadsDir == "" {
 		beadsDir = protocol.BeadsDir
 	}
-	cardStore, _ := cards.NewStore(db) // non-fatal; nil disables D.3 dual-write
+	var cardStore cards.Store
+	if store, err := cards.NewStore(db); err == nil {
+		cardStore = store
+	}
 	beadSourceMode := normalizeBeadSourceModeForPrimary(os.Getenv("ORO_BEADSOURCE_MODE"), beads)
 	selectedBeads, err := selectStore(context.Background(), beadSourceMode, beads, db)
 	if err != nil {
