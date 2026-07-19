@@ -9,12 +9,67 @@ import (
 	"testing"
 
 	"oro/pkg/dispatcher"
+	"oro/pkg/merge"
 	"oro/pkg/protocol"
 )
 
 type failingStandaloneWorktreeManager struct {
 	dispatcher.WorktreeManager
 	prepareCalls int
+}
+
+type preFFCheckMerger struct {
+	opts merge.Opts
+}
+
+func (m *preFFCheckMerger) Merge(ctx context.Context, opts merge.Opts) (*merge.Result, error) {
+	m.opts = opts
+	if opts.PreFFCheck == nil {
+		return nil, errors.New("PreFFCheck was not configured")
+	}
+	return nil, opts.PreFFCheck(ctx, opts.Worktree)
+}
+
+func TestWorkNoSeparatePreRebaseQG(t *testing.T) {
+	merger := &preFFCheckMerger{}
+	var recorded dispatcher.QGFailureRecord
+	qgCalls := 0
+	deps := &workDeps{
+		merger: merger,
+		runQG: func(_ context.Context, worktree string, skipMutation bool) (bool, string, error) {
+			qgCalls++
+			if worktree != "/tmp/worktree" {
+				t.Fatalf("runQG worktree = %q, want /tmp/worktree", worktree)
+			}
+			if !skipMutation {
+				t.Fatal("post-rebase QG must skip mutation testing by default")
+			}
+			return false, "post-rebase qg failed", nil
+		},
+		recordQGFailure: func(_ context.Context, rec dispatcher.QGFailureRecord, _ dispatcher.QGFailureClassification) error {
+			recorded = rec
+			return nil
+		},
+	}
+	cfg := &workConfig{beadID: "oro-work-qg"}
+
+	_, err := mergeToMain(context.Background(), cfg, deps, "/tmp/worktree", "agent/oro-work-qg", "main")
+	if err == nil {
+		t.Fatal("mergeToMain error = nil, want exitError")
+	}
+	var exitErr *exitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("mergeToMain error = %T %v, want *exitError", err, err)
+	}
+	if exitErr.code != exitCodeRetries {
+		t.Fatalf("exit code = %d, want %d", exitErr.code, exitCodeRetries)
+	}
+	if qgCalls != 1 {
+		t.Fatalf("runQG calls = %d, want one post-rebase callback", qgCalls)
+	}
+	if recorded.Component != "oro-work-pre-merge" {
+		t.Fatalf("recorded component = %q, want oro-work-pre-merge", recorded.Component)
+	}
 }
 
 func (m *failingStandaloneWorktreeManager) PrepareBaseBranchForAssignment(_ context.Context, _, _ string) (bool, error) {

@@ -1287,6 +1287,138 @@ func TestMerge_FFOnlyFails_RebasesAndRetries(t *testing.T) {
 	assertArgs(t, calls[8], "/repo", "rev-parse", "bead/retry")
 }
 
+func TestMergePreFFCheckRunsOnRebasedTreeBeforeFF(t *testing.T) {
+	checkErr := errors.New("quality gate failed")
+	mock := &mockGitRunner{
+		results: []mockResult{
+			{Stdout: "1\n"}, // branch is not already merged
+			{},              // rebase succeeds
+			{Stdout: "/repo/.git\n"},
+		},
+	}
+	coord := NewCoordinator(mock)
+
+	_, err := coord.Merge(context.Background(), Opts{
+		Branch:   "bead/check",
+		Worktree: "/tmp/wt-check",
+		BeadID:   "oro-check",
+		PreFFCheck: func(_ context.Context, worktree string) error {
+			if worktree != "/tmp/wt-check" {
+				t.Fatalf("PreFFCheck worktree = %q, want /tmp/wt-check", worktree)
+			}
+			calls := mock.getCalls()
+			if len(calls) != 3 {
+				t.Fatalf("PreFFCheck called after %d git calls, want 3: %+v", len(calls), calls)
+			}
+			assertArgs(t, calls[1], "/tmp/wt-check", "rebase", "main", "bead/check")
+			return &PreFFCheckError{Output: "qg output", Err: checkErr}
+		},
+	})
+	if err == nil {
+		t.Fatal("Merge() error = nil, want PreFFCheckError")
+	}
+	var preFFErr *PreFFCheckError
+	if !errors.As(err, &preFFErr) {
+		t.Fatalf("Merge() error = %T %v, want *PreFFCheckError", err, err)
+	}
+	if !errors.Is(err, checkErr) {
+		t.Fatalf("Merge() error does not unwrap check error: %v", err)
+	}
+	var conflictErr *ConflictError
+	if errors.As(err, &conflictErr) {
+		t.Fatalf("PreFFCheckError must be distinct from ConflictError: %v", err)
+	}
+	if preFFErr.Output != "qg output" {
+		t.Errorf("PreFFCheckError.Output = %q, want qg output", preFFErr.Output)
+	}
+
+	calls := mock.getCalls()
+	if len(calls) != 3 {
+		t.Fatalf("git calls = %d, want no merge or worktree removal: %+v", len(calls), calls)
+	}
+}
+
+func TestMergePreFFCheckReRunsAfterReRebase(t *testing.T) {
+	mock := &mockGitRunner{
+		results: []mockResult{
+			{Stdout: "1\n"},
+			{},
+			{Stdout: "/repo/.git\n"},
+			{Err: errors.New("main moved")},
+			{Stdout: "new-main\n"},
+			{},
+			{},
+			{},
+			{Stdout: "merged\n"},
+		},
+	}
+	coord := NewCoordinator(mock)
+	var checks int
+	_, err := coord.Merge(context.Background(), Opts{
+		Branch:   "bead/recheck",
+		Worktree: "/tmp/wt-recheck",
+		BeadID:   "oro-recheck",
+		PreFFCheck: func(_ context.Context, worktree string) error {
+			checks++
+			if worktree != "/tmp/wt-recheck" {
+				t.Fatalf("PreFFCheck worktree = %q", worktree)
+			}
+			calls := mock.getCalls()
+			switch checks {
+			case 1:
+				if len(calls) != 3 {
+					t.Fatalf("first check after %d git calls, want 3", len(calls))
+				}
+			case 2:
+				if len(calls) != 6 {
+					t.Fatalf("second check after %d git calls, want 6", len(calls))
+				}
+				assertArgs(t, calls[5], "/tmp/wt-recheck", "rebase", "new-main", "bead/recheck")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Merge() error = %v", err)
+	}
+	if checks != 2 {
+		t.Fatalf("PreFFCheck calls = %d, want 2", checks)
+	}
+}
+
+func TestMergePreFFCheckRunsBeforeNonMainTargetAdvance(t *testing.T) {
+	mock := &mockGitRunner{
+		results: []mockResult{
+			{Stdout: "1\n"},
+			{},
+			{Stdout: "/repo/.git\n"},
+		},
+	}
+	coord := NewCoordinator(mock)
+	_, err := coord.Merge(context.Background(), Opts{
+		Branch:       "bead/target-check",
+		Worktree:     "/tmp/wt-target-check",
+		BeadID:       "oro-target-check",
+		TargetBranch: "epic/target",
+		PreFFCheck: func(_ context.Context, worktree string) error {
+			if worktree != "/tmp/wt-target-check" {
+				t.Fatalf("PreFFCheck worktree = %q", worktree)
+			}
+			return &PreFFCheckError{Output: "blocked", Err: errors.New("quality gate failed")}
+		},
+	})
+	if err == nil {
+		t.Fatal("Merge() error = nil, want PreFFCheckError")
+	}
+	var preFFErr *PreFFCheckError
+	if !errors.As(err, &preFFErr) {
+		t.Fatalf("Merge() error = %T %v, want *PreFFCheckError", err, err)
+	}
+	if calls := mock.getCalls(); len(calls) != 3 {
+		t.Fatalf("git calls = %d, want no target advance or worktree removal: %+v", len(calls), calls)
+	}
+}
+
 func TestCoordinatorAbort_NoMergeInProgress(t *testing.T) {
 	mock := &mockGitRunner{}
 	coord := NewCoordinator(mock)
