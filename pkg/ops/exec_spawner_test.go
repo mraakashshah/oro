@@ -162,6 +162,32 @@ func TestExecSpawnerStreamsIncrementally(t *testing.T) {
 	}
 }
 
+func TestExecSpawnerCapturesLargeRecord(t *testing.T) {
+	workdir := t.TempDir()
+	record := strings.Repeat("x", 256*1024)
+	spawner := NewExecSpawner(RuntimeSpec{
+		Command: "sh",
+		BuildArgs: func(_, _ string) []string {
+			return []string{"-c", "head -c 262144 /dev/zero | tr '\\000' x; printf '\\n'"}
+		},
+	})
+
+	proc, err := spawner.Spawn(context.Background(), "balanced", record, workdir)
+	if err != nil {
+		t.Fatalf("Spawn() error = %v", err)
+	}
+	if err := proc.Wait(); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	output, err := proc.Output()
+	if err != nil {
+		t.Fatalf("Output() error = %v", err)
+	}
+	if output != record+"\n" {
+		t.Fatalf("Output() length = %d, want %d", len(output), len(record)+1)
+	}
+}
+
 func waitForLastOutputAt(t *testing.T, proc Process, after time.Time) time.Time {
 	t.Helper()
 	deadline := time.Now().Add(500 * time.Millisecond)
