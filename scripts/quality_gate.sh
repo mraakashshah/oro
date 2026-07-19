@@ -335,6 +335,20 @@ quality_gate_lock_is_inherited() {
 		grep -qx "token=$ORO_QG_INHERITED_LOCK_TOKEN" "$lock_dir/owner" 2>/dev/null
 }
 
+# OSC-8 terminal hyperlinks can create escaped, top-level artifact directories
+# when pasted into shells. Remove only real directories at the repository root;
+# do not follow symlinks or inspect paths below that boundary.
+sweep_repo_root_escape_artifacts() {
+	local repo_root="$1"
+	local artifact
+	for artifact in "$repo_root"/$'\033]8;;file:'*; do
+		[ -d "$artifact" ] && [ ! -L "$artifact" ] || continue
+		rm -rf -- "$artifact"
+	done
+}
+
+sweep_repo_root_escape_artifacts "$REPO_ROOT"
+
 acquire_quality_gate_lock() {
 	local lock_dir="$REPO_ROOT/.oro-quality-gate.lock"
 	local queue_dir="$REPO_ROOT/.oro-quality-gate.queue"
