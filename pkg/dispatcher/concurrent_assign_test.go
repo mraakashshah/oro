@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/testutil/qgserial"
+
 	"oro/pkg/protocol"
 )
 
@@ -19,6 +21,7 @@ import (
 // This test reproduces oro-ptp2: the race condition where multiple workers
 // could be spawned for the same P0 bead, causing resource thrashing.
 func TestNoMultipleAssignmentsToSameBead(t *testing.T) {
+	qgserial.RequireSerial(t)
 	t.Parallel()
 
 	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
@@ -152,6 +155,7 @@ func TestNoMultipleAssignmentsToSameBead(t *testing.T) {
 // filterAssignable before dispatching to a worker, preventing the window where
 // a newly scaled-up worker races with an in-progress assignment.
 func TestScaleUpDoesNotDuplicateAssignment(t *testing.T) {
+	qgserial.RequireSerial(t)
 	t.Parallel()
 
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
@@ -256,6 +260,7 @@ func TestScaleUpDoesNotDuplicateAssignment(t *testing.T) {
 // race condition documented in oro-ovpc where two workers (one via normal
 // assignment, one via reconnect) can be simultaneously assigned to the same bead.
 func TestReconnectDoesNotStealBead(t *testing.T) {
+	qgserial.RequireSerial(t)
 	t.Parallel()
 
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)

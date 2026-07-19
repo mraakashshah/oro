@@ -527,19 +527,26 @@ func (d *Dispatcher) hasManagedIdleWorkersLocked() bool {
 	return false
 }
 
-// reviewDeadGraceExpiredLocked tracks whether the ops review subprocess for w has
-// been absent for longer than ReviewDeadGrace. It resets the timer when the review
-// is active and starts it on first absence. Must be called with d.mu held.
-func (d *Dispatcher) reviewDeadGraceExpiredLocked(w *trackedWorker, now time.Time) bool {
+// reviewDeadStateLocked tracks whether a reviewing worker's ops subprocess is
+// absent and whether its ReviewDeadGrace window has expired. It resets the timer
+// when the review is active and starts it on first absence. Must be called with
+// d.mu held.
+func (d *Dispatcher) reviewDeadStateLocked(w *trackedWorker, now time.Time) (expired, graceActive bool) {
+	if !w.managed || w.state != protocol.WorkerReviewing {
+		return false, false
+	}
 	if d.ops == nil || d.ops.HasActiveForBead(w.beadID) {
 		w.reviewDeadSince = time.Time{}
-		return false
+		return false, false
 	}
 	if w.reviewDeadSince.IsZero() {
 		w.reviewDeadSince = now
-		return false
+		return false, true
 	}
-	return now.Sub(w.reviewDeadSince) > d.cfg.ReviewDeadGrace
+	if now.Sub(w.reviewDeadSince) > d.cfg.ReviewDeadGrace {
+		return true, false
+	}
+	return false, true
 }
 
 func (d *Dispatcher) collectTimedOutWorkersLocked(now time.Time) (dead, stuck, stoppedSpawnFor []string) {
@@ -566,11 +573,19 @@ func (d *Dispatcher) collectTimedOutWorkersLocked(now time.Time) (dead, stuck, s
 		}
 		// Dead ops review check: reviewing worker whose ops subprocess has exited
 		// while the OS process is still alive. After ReviewDeadGrace, remove worker.
-		if w.managed && w.state == protocol.WorkerReviewing && d.reviewDeadGraceExpiredLocked(w, now) {
+		reviewDead, reviewGraceActive := d.reviewDeadStateLocked(w, now)
+		if reviewDead {
 			dead = append(dead, id)
 			continue
 		}
-		// Progress check: busy worker has not made meaningful progress.
+		// A missing ops review gets its full grace period before any progress
+		// or review timeout can reap the owning worker.
+		if reviewGraceActive {
+			continue
+		}
+		// Progress check: an active worker has not made meaningful progress.
+		// Review/QG/merge work is represented by WorkerReviewing and must be
+		// bounded by the same real-progress clock as coding work.
 		if workerProgressTimedOut(w, now, d.cfg.ProgressTimeout) {
 			stuck = append(stuck, id)
 			continue
@@ -641,7 +656,8 @@ func heartbeatTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) b
 }
 
 func workerProgressTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) bool {
-	return w.state == protocol.WorkerBusy && !w.lastProgress.IsZero() && now.Sub(w.lastProgress) > timeout
+	return !w.spawnFor && (w.state == protocol.WorkerBusy || w.state == protocol.WorkerReviewing) &&
+		!w.lastProgress.IsZero() && now.Sub(w.lastProgress) > timeout
 }
 
 func workerReviewTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) bool {

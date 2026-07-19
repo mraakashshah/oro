@@ -45,6 +45,7 @@ import (
 	"oro/pkg/processenv"
 	"oro/pkg/protocol"
 	"oro/pkg/web"
+	workerstream "oro/pkg/worker"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -366,6 +367,10 @@ type assignmentBaseBranchPreparer interface {
 	PrepareBaseBranchForAssignment(ctx context.Context, branch, baseBranch string) (fastForwarded bool, err error)
 }
 
+type assignmentBaseBranchSafetyChecker interface {
+	BaseBranchHasUniqueCommits(ctx context.Context, branch, baseBranch string) (bool, error)
+}
+
 // Escalator accepts escalation messages from dispatcher checks.
 type Escalator interface {
 	Escalate(ctx context.Context, msg string) error
@@ -519,16 +524,7 @@ func qualityGateConflictMarkerOutput(scriptPath string) (string, error) {
 func qgRunnerEnv(skipMutation bool, worktree, mutationBase string) []string {
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "ORO_SKIP_MUTATION=") {
-			continue
-		}
-		if strings.HasPrefix(kv, "ORO_RUN_MUTATION=") {
-			continue
-		}
-		if strings.HasPrefix(kv, "ORO_MUTATION_BASE=") {
-			continue
-		}
-		if strings.HasPrefix(kv, "ORO_QG_LOCK_TIMEOUT_SECONDS=") {
+		if processenv.StripQualityGateEnv(kv) {
 			continue
 		}
 		env = append(env, kv)
@@ -1082,7 +1078,10 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 	if beadsDir == "" {
 		beadsDir = protocol.BeadsDir
 	}
-	cardStore, _ := cards.NewStore(db) // non-fatal; nil disables D.3 dual-write
+	var cardStore cards.Store
+	if store, err := cards.NewStore(db); err == nil {
+		cardStore = store
+	}
 	beadSourceMode := normalizeBeadSourceModeForPrimary(os.Getenv("ORO_BEADSOURCE_MODE"), beads)
 	selectedBeads, err := selectStore(context.Background(), beadSourceMode, beads, db)
 	if err != nil {
@@ -1849,15 +1848,9 @@ func (d *Dispatcher) handleHeartbeat(ctx context.Context, workerID string, msg p
 	d.mu.Lock()
 	if w, ok := d.workers[workerID]; ok {
 		w.lastSeen = d.nowFunc()
-		previousPct := w.contextPct
 		w.contextPct = msg.Heartbeat.ContextPct
-		// Only count a heartbeat as progress when context_pct actually moved.
-		// Flat-context heartbeats are liveness signals (lastSeen), not progress
-		// — without this guard, STUCK_WORKER never fires for genuinely-stalled
-		// workers that keep heartbeating (oro-16yy).
-		if w.state == protocol.WorkerBusy && msg.Heartbeat.ContextPct != previousPct {
-			w.lastProgress = d.nowFunc()
-		}
+		// Heartbeats, including changing context_pct, are liveness only. Real
+		// progress arrives through STATUS, DONE, READY_FOR_REVIEW, and QG events.
 	}
 	d.mu.Unlock()
 
@@ -2893,7 +2886,7 @@ func (d *Dispatcher) handleNoopMerge(ctx context.Context, beadID, workerID, work
 }
 
 func (d *Dispatcher) completeEpicRebaseChild(ctx context.Context, detail *protocol.BeadDetail, beadID, workerID, worktree, branch, epicID, targetBranch string, assignmentID int64) bool {
-	if !isEpicRebaseChild(detail, epicID, targetBranch) {
+	if !IsEpicRebaseChild(detail, epicID, targetBranch) {
 		return false
 	}
 	if err := d.worktrees.UpdateBranchRef(ctx, targetBranch, branch); err != nil {
@@ -2916,7 +2909,10 @@ func (d *Dispatcher) completeEpicRebaseChild(ctx context.Context, detail *protoc
 	return true
 }
 
-func isEpicRebaseChild(detail *protocol.BeadDetail, epicID, targetBranch string) bool {
+// IsEpicRebaseChild reports whether detail is the canonical recovery task for
+// rebasing an epic branch onto its target. Recovery tasks must be allowed to
+// run against the divergence they were created to repair.
+func IsEpicRebaseChild(detail *protocol.BeadDetail, epicID, targetBranch string) bool {
 	if detail == nil || epicID == "" || targetBranch == "" {
 		return false
 	}
@@ -4315,8 +4311,9 @@ func reviewFailureDetail(result ops.Result) string {
 }
 
 func classifyReviewFailure(result ops.Result) ReviewFailureClass {
-	detail := strings.ToLower(reviewFailureDetail(result))
-	if result.Err != nil && reviewStartupHookFailed(detail) {
+	raw := reviewFailureDetail(result)
+	detail := strings.ToLower(raw)
+	if result.Err != nil && reviewStartupHookFailed(raw) {
 		return ReviewFailureInfraBlocked
 	}
 	if !strings.Contains(detail, "acceptance command passed") {
@@ -4354,9 +4351,21 @@ func reviewInfraBlocked(detail string) bool {
 	)
 }
 
-func reviewStartupHookFailed(detail string) bool {
+func reviewStartupHookFailed(raw string) bool {
+	detail := strings.ToLower(raw)
 	return strings.Contains(detail, `"subtype":"hook_started"`) &&
-		strings.Contains(detail, "sessionstart:startup")
+		strings.Contains(detail, "sessionstart:startup") &&
+		!reviewStreamHadAgentActivity(raw)
+}
+
+func reviewStreamHadAgentActivity(raw string) bool {
+	for _, line := range strings.Split(raw, "\n") {
+		switch workerstream.ParseStreamEvent([]byte(line)).Kind {
+		case workerstream.ActivityToolUse, workerstream.ActivityTextDelta, workerstream.ActivityResult:
+			return true
+		}
+	}
+	return false
 }
 
 func containsAny(s string, needles ...string) bool {
@@ -5477,23 +5486,17 @@ func (d *Dispatcher) assignGeneralIdleWorkers(ctx context.Context, idle []idleWo
 	// next bead in the list can still be paired with it.
 	idleIdx := 0
 	for _, unit := range plan.units {
-		unitConsumed, nextIdleIdx := d.assignGeneralSchedulingUnit(ctx, idle, idleIdx, unit, pbSnapshot, assignedBeads, reservedTargets, focusVersion)
-		idleIdx = nextIdleIdx
-		if unit.kind == unitEpic && unitConsumed {
-			return
-		}
+		idleIdx = d.assignGeneralSchedulingUnit(ctx, idle, idleIdx, unit, pbSnapshot, assignedBeads, reservedTargets, focusVersion)
 	}
 }
 
-func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idleWorker, idleIdx int, unit schedulingUnit, pbSnapshot, assignedBeads, reservedTargets map[string]bool, focusVersion uint64) (unitConsumed bool, nextIdleIdx int) {
-	nextIdleIdx = idleIdx
+func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idleWorker, idleIdx int, unit schedulingUnit, pbSnapshot, assignedBeads, reservedTargets map[string]bool, focusVersion uint64) int {
+	nextIdleIdx := idleIdx
 	for _, bead := range unit.beads {
 		if assignedBeads[bead.ID] {
-			unitConsumed = true
 			continue
 		}
 		if reservedTargets[bead.ID] {
-			unitConsumed = true
 			continue
 		}
 		nextIdleIdx = d.nextGeneralIdleIndex(idle, nextIdleIdx)
@@ -5501,13 +5504,9 @@ func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idl
 			break
 		}
 		_ = d.assignBead(ctx, idle[nextIdleIdx].worker, bead, focusVersion)
-		var claimed bool
-		claimed, nextIdleIdx = d.advanceAssignedGeneralIdle(idle, nextIdleIdx, bead.ID, pbSnapshot)
-		if claimed {
-			unitConsumed = true
-		}
+		_, nextIdleIdx = d.advanceAssignedGeneralIdle(idle, nextIdleIdx, bead.ID, pbSnapshot)
 	}
-	return unitConsumed, nextIdleIdx
+	return nextIdleIdx
 }
 
 func (d *Dispatcher) nextGeneralIdleIndex(idle []idleWorker, idleIdx int) int {
@@ -6178,20 +6177,56 @@ func (d *Dispatcher) prepareEpicBranchForAssignment(ctx context.Context, beadID,
 	}
 	fastForwarded, err := preparer.PrepareBaseBranchForAssignment(ctx, baseBranch, d.cfg.DefaultBranch)
 	if err != nil {
-		_ = d.logEvent(ctx, "epic_branch_prepare_failed", "dispatcher", beadID, workerID,
-			fmt.Sprintf(`{"branch":%q,"base_branch":%q,"error":%q}`, baseBranch, d.cfg.DefaultBranch, err.Error()))
-		_ = d.updateBeadStatus(ctx, beadID, "open")
-		d.mu.Lock()
-		delete(d.assigningBeads, beadID)
-		d.mu.Unlock()
-		d.recordAssignmentFailure(beadID)
-		return false
+		return d.rejectEpicBranchPreparation(ctx, beadID, workerID, baseBranch, err)
 	}
 	if fastForwarded {
 		_ = d.logEvent(ctx, "epic_branch_fast_forwarded", "dispatcher", beadID, workerID,
 			fmt.Sprintf(`{"branch":%q,"base_branch":%q}`, baseBranch, d.cfg.DefaultBranch))
 	}
-	return true
+	checker, ok := d.worktrees.(assignmentBaseBranchSafetyChecker)
+	if !ok {
+		return true
+	}
+	diverged, err := assignmentBaseBranchDiverged(ctx, checker, baseBranch, d.cfg.DefaultBranch)
+	if err != nil {
+		return d.rejectEpicBranchPreparation(ctx, beadID, workerID, baseBranch, err)
+	}
+	if !diverged {
+		return true
+	}
+	if d.isEpicRebaseChildForBase(ctx, beadID, baseBranch) {
+		_ = d.logEvent(ctx, "epic_rebase_child_prepare_diverged", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"branch":%q,"base_branch":%q}`, baseBranch, d.cfg.DefaultBranch))
+		return true
+	}
+	return d.rejectEpicBranchPreparation(ctx, beadID, workerID, baseBranch,
+		fmt.Errorf("epic branch %s diverged from %s", baseBranch, d.cfg.DefaultBranch))
+}
+
+func assignmentBaseBranchDiverged(ctx context.Context, checker assignmentBaseBranchSafetyChecker, branch, baseBranch string) (bool, error) {
+	branchHasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, branch, baseBranch)
+	if err != nil {
+		return false, fmt.Errorf("check unique commits on %s relative to %s: %w", branch, baseBranch, err)
+	}
+	if !branchHasUniqueCommits {
+		return false, nil
+	}
+	baseHasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, baseBranch, branch)
+	if err != nil {
+		return false, fmt.Errorf("check unique commits on %s relative to %s: %w", baseBranch, branch, err)
+	}
+	return baseHasUniqueCommits, nil
+}
+
+func (d *Dispatcher) rejectEpicBranchPreparation(ctx context.Context, beadID, workerID, baseBranch string, err error) bool {
+	_ = d.logEvent(ctx, "epic_branch_prepare_failed", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"branch":%q,"base_branch":%q,"error":%q}`, baseBranch, d.cfg.DefaultBranch, err.Error()))
+	_ = d.updateBeadStatus(ctx, beadID, "open")
+	d.mu.Lock()
+	delete(d.assigningBeads, beadID)
+	d.mu.Unlock()
+	d.recordAssignmentFailure(beadID)
+	return false
 }
 
 // lazyCreateEpicBranch creates baseBranch from d.cfg.DefaultBranch when it is
@@ -6623,7 +6658,7 @@ func (d *Dispatcher) isEpicRebaseChildForBase(ctx context.Context, beadID, baseB
 		return false
 	}
 	epicID := strings.TrimPrefix(baseBranch, protocol.EpicBranchPrefix)
-	return isEpicRebaseChild(detail, epicID, baseBranch)
+	return IsEpicRebaseChild(detail, epicID, baseBranch)
 }
 
 func isBranchDivergedFromBase(err error) bool {

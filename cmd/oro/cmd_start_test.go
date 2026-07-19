@@ -255,6 +255,48 @@ func TestCodexHookConfigBlockReplacement(t *testing.T) {
 	}
 }
 
+// TestCodexHookConfigBashMatcherIncludesSearchHook verifies that oro-search-hook
+// runs on the Codex PreToolUse Bash matcher (LAST in the chain, after the safety
+// guards) and that the dead str_replace_based_edit_tool matcher is gone. This is
+// what wires the token-saving read hook onto the read surface Codex actually uses.
+func TestCodexHookConfigBashMatcherIncludesSearchHook(t *testing.T) {
+	hooksDir := filepath.Join(t.TempDir(), "hooks")
+	block := codexHookConfigBlock(hooksDir)
+
+	if strings.Contains(block, "str_replace_based_edit_tool") {
+		t.Errorf("Codex hook config still wires the dead str_replace_based_edit_tool matcher:\n%s", block)
+	}
+
+	bashLine := findBashPreToolUseLine(t, block)
+	for _, want := range []string{"enforce_skills.py", "destructive_command_guard.py", "oro-search-hook"} {
+		if !strings.Contains(bashLine, want) {
+			t.Fatalf("Bash PreToolUse matcher missing %s:\n%s", want, bashLine)
+		}
+	}
+
+	iEnforce := strings.Index(bashLine, "enforce_skills.py")
+	iGuard := strings.Index(bashLine, "destructive_command_guard.py")
+	iHook := strings.Index(bashLine, "oro-search-hook")
+	if iEnforce >= iGuard || iGuard >= iHook {
+		t.Errorf("oro-search-hook must run LAST on the Bash chain "+
+			"(enforce_skills < destructive_command_guard < oro-search-hook); "+
+			"got positions %d/%d/%d:\n%s", iEnforce, iGuard, iHook, bashLine)
+	}
+}
+
+// findBashPreToolUseLine returns the PreToolUse Bash matcher line — identified by
+// carrying enforce_skills.py, which distinguishes it from the PostToolUse Bash line.
+func findBashPreToolUseLine(t *testing.T, block string) string {
+	t.Helper()
+	for _, line := range strings.Split(block, "\n") {
+		if strings.Contains(line, `matcher = "Bash"`) && strings.Contains(line, "enforce_skills.py") {
+			return line
+		}
+	}
+	t.Fatalf("no PreToolUse Bash matcher line found in block:\n%s", block)
+	return ""
+}
+
 func TestInstallCodexHookConfigWritesManagedBlock(t *testing.T) {
 	codexHome := t.TempDir()
 	hooksDir := filepath.Join(t.TempDir(), "hooks")
@@ -291,62 +333,98 @@ func TestInstallCodexHookConfigWritesManagedBlock(t *testing.T) {
 func TestHookPathsWouldLeak(t *testing.T) {
 	cases := []struct {
 		name      string
-		tempRoot  string
 		codexHome string
 		hooksDir  string
 		want      bool
 	}{
 		{
 			name:      "ephemeral hooks into persistent home leaks",
-			tempRoot:  "/tmp/oro-subprocess/abc",
 			codexHome: "/Users/dev/.codex",
 			hooksDir:  "/tmp/oro-subprocess/abc/TestX/001/oro-home/hooks",
 			want:      true,
 		},
 		{
 			name:      "both under temp is a hermetic test, no leak",
-			tempRoot:  "/tmp/oro-subprocess/abc",
 			codexHome: "/tmp/oro-subprocess/abc/TestX/001/codex-home",
 			hooksDir:  "/tmp/oro-subprocess/abc/TestX/001/oro-home/hooks",
 			want:      false,
 		},
 		{
+			name:      "different temp roots are still a hermetic test",
+			codexHome: "/var/folders/ab/codex-home",
+			hooksDir:  "/tmp/oro-subprocess/abc/TestX/001/oro-home/hooks",
+			want:      false,
+		},
+		{
 			name:      "both persistent is production, no leak",
-			tempRoot:  "/tmp/oro-subprocess/abc",
 			codexHome: "/Users/dev/.codex",
 			hooksDir:  "/Users/dev/.oro/hooks",
 			want:      false,
 		},
 		{
-			name:      "sibling temp dir is not under temp root, no false prefix match",
-			tempRoot:  "/tmp/oro",
+			name:      "any common tmp hooks path leaks into persistent home",
 			codexHome: "/Users/dev/.codex",
 			hooksDir:  "/tmp/oro-other/hooks",
-			want:      false,
+			want:      true,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := hookPathsWouldLeak(tc.tempRoot, tc.codexHome, tc.hooksDir); got != tc.want {
-				t.Fatalf("hookPathsWouldLeak(%q, %q, %q) = %v, want %v",
-					tc.tempRoot, tc.codexHome, tc.hooksDir, got, tc.want)
+			if got := hookPathsWouldLeak(tc.codexHome, tc.hooksDir); got != tc.want {
+				t.Fatalf("hookPathsWouldLeak(%q, %q) = %v, want %v",
+					tc.codexHome, tc.hooksDir, got, tc.want)
 			}
 		})
 	}
 }
 
+func TestPathUnder(t *testing.T) {
+	if pathUnder("/tmp/oro", "/tmp/oro-other/hooks") {
+		t.Fatal("pathUnder must not treat a sibling path as nested")
+	}
+
+	realRoot := t.TempDir()
+	aliasParent := t.TempDir()
+	alias := filepath.Join(aliasParent, "temp-alias")
+	if err := os.Symlink(realRoot, alias); err != nil {
+		t.Fatalf("create temp root alias: %v", err)
+	}
+	if !pathUnder(alias, filepath.Join(realRoot, "hooks")) {
+		t.Fatal("pathUnder must resolve symlinked ancestors")
+	}
+}
+
+func TestHookPathsWouldLeak_NonTmpdirSandboxRoot(t *testing.T) {
+	// On macOS, os.TempDir can be /var/folders/.../T even though Oro's
+	// subprocess sandbox roots are intentionally created under /tmp.
+	// The guard must still refuse to write these transient hook paths into a
+	// persistent CODEX_HOME.
+	codexHome := "/Users/u/.codex"
+	hooksDir := "/tmp/oro-subprocess/h/oro-home/hooks"
+	if !hookPathsWouldLeak(codexHome, hooksDir) {
+		t.Fatalf("hookPathsWouldLeak(%q, %q) = false, want true", codexHome, hooksDir)
+	}
+}
+
 func TestInstallCodexHookConfigRefusesLeakyHooks(t *testing.T) {
-	// A "persistent" Codex home that will sit outside the redirected temp root.
-	persistentHome := t.TempDir()
+	// Model a persistent Codex home with a disposable directory under the
+	// package worktree, outside every recognized temporary root.
+	persistentHome, err := os.MkdirTemp(".", ".codex-home-test-")
+	if err != nil {
+		t.Fatalf("create persistent Codex home fixture: %v", err)
+	}
+	t.Cleanup(func() {
+		if removeErr := os.RemoveAll(persistentHome); removeErr != nil {
+			t.Errorf("remove persistent Codex home fixture: %v", removeErr)
+		}
+	})
 	configPath := filepath.Join(persistentHome, "config.toml")
 
-	// Redirect the temp root so hooksDir is ephemeral but persistentHome is not:
-	// this reproduces a test that isolated ORO_HOME but forgot CODEX_HOME.
+	// This reproduces a test that isolated ORO_HOME but forgot CODEX_HOME.
 	ephemeralRoot := t.TempDir()
-	t.Setenv("TMPDIR", ephemeralRoot)
 	hooksDir := filepath.Join(ephemeralRoot, "oro-home", "hooks")
 
-	err := installCodexHookConfig(persistentHome, hooksDir)
+	err = installCodexHookConfig(persistentHome, hooksDir)
 	if err == nil || !strings.Contains(err.Error(), "refusing to install Codex hook config") {
 		t.Fatalf("expected refusal error, got %v", err)
 	}

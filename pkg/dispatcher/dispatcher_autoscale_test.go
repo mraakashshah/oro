@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/testutil/qgserial"
+
 	"oro/pkg/protocol"
 )
 
@@ -17,6 +19,7 @@ import (
 // there are no idle workers, the dispatcher automatically increases
 // targetWorkers up to MaxWorkers and calls reconcileScale to spawn workers.
 func TestAutoScale(t *testing.T) {
+	qgserial.RequireSerial(t)
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 
 	// Set MaxWorkers to 3 for this test
@@ -113,6 +116,7 @@ func TestAutoScale(t *testing.T) {
 // TestAutoScaleRespectsMax verifies that auto-scaling never exceeds the
 // configured MaxWorkers limit, even when more assignable beads exist.
 func TestAutoScaleRespectsMax(t *testing.T) {
+	qgserial.RequireSerial(t)
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 
 	// Set MaxWorkers to 2 for this test

@@ -23,6 +23,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"oro/pkg/testutil/qgserial"
+
 	"oro/pkg/beadstore"
 	"oro/pkg/cards"
 	"oro/pkg/dbutil"
@@ -504,6 +506,7 @@ type mockWorktreeManager struct {
 	updateBranchRefFn func(target, source string) error
 	branchHeadFn      func(branch string) (string, error)
 	prepareBaseFn     func(ctx context.Context, branch, baseBranch string) (bool, error)
+	baseUniqueFn      func(ctx context.Context, branch, baseBranch string) (bool, error)
 	existsFn          func(ctx context.Context, path string) bool
 	currentBranchFn   func(ctx context.Context, path string) (string, error)
 	prepareReuseFn    func(ctx context.Context, worktree, branch, baseBranch string) (bool, error)
@@ -689,6 +692,155 @@ func (m *mockWorktreeManager) PrepareBaseBranchForAssignment(ctx context.Context
 		return fn(ctx, branch, baseBranch)
 	}
 	return false, nil
+}
+
+func (m *mockWorktreeManager) BaseBranchHasUniqueCommits(ctx context.Context, branch, baseBranch string) (bool, error) {
+	m.mu.Lock()
+	fn := m.baseUniqueFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, branch, baseBranch)
+	}
+	return false, nil
+}
+
+func TestEpicRebaseChildAssignableOnDivergedBranch(t *testing.T) {
+	const (
+		epicID     = "oro-26yy"
+		beadID     = "oro-fm29"
+		workerID   = "worker-rebase"
+		baseBranch = protocol.EpicBranchPrefix + epicID
+	)
+
+	t.Run("rebase child remains assignable without cooldown", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		bead := protocol.Bead{ID: beadID, Title: "Rebase " + baseBranch + " onto main", Epic: epicID}
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: bead.Title, Type: "task", Status: "open"}
+		d.worktrees = newDivergedAssignmentWorktreeManager(t, baseBranch)
+
+		if !d.ensureEpicBranchReady(ctx, bead, &trackedWorker{id: workerID}, baseBranch, epicID) {
+			t.Fatal("ensureEpicBranchReady = false, want rebase child to remain assignable")
+		}
+		d.mu.Lock()
+		_, inCooldown := d.worktreeFailures[beadID]
+		d.mu.Unlock()
+		if inCooldown {
+			t.Fatal("assignment failure cooldown recorded, want none")
+		}
+	})
+
+	t.Run("ordinary child remains rejected with cooldown", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		bead := protocol.Bead{ID: beadID, Title: "Implement epic work", Epic: epicID}
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: bead.Title, Type: "task", Status: "open"}
+		d.worktrees = newDivergedAssignmentWorktreeManager(t, baseBranch)
+
+		if d.ensureEpicBranchReady(ctx, bead, &trackedWorker{id: workerID}, baseBranch, epicID) {
+			t.Fatal("ensureEpicBranchReady = true, want ordinary child rejected")
+		}
+		d.mu.Lock()
+		_, inCooldown := d.worktreeFailures[beadID]
+		d.mu.Unlock()
+		if !inCooldown {
+			t.Fatal("assignment failure cooldown not recorded for ordinary child")
+		}
+	})
+
+	t.Run("ordinary child remains assignable when epic is only ahead", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		bead := protocol.Bead{ID: beadID, Title: "Implement epic work", Epic: epicID}
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: bead.Title, Type: "task", Status: "open"}
+		d.worktrees = newAheadAssignmentWorktreeManager(t, baseBranch)
+
+		if !d.ensureEpicBranchReady(ctx, bead, &trackedWorker{id: workerID}, baseBranch, epicID) {
+			t.Fatal("ensureEpicBranchReady = false, want ahead-only epic branch to remain assignable")
+		}
+		d.mu.Lock()
+		_, inCooldown := d.worktreeFailures[beadID]
+		d.mu.Unlock()
+		if inCooldown {
+			t.Fatal("assignment failure cooldown recorded for healthy ahead-only epic branch")
+		}
+	})
+
+	t.Run("rebase child remains rejected on operational preparation error", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		bead := protocol.Bead{ID: beadID, Title: "Rebase " + baseBranch + " onto main", Epic: epicID}
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: bead.Title, Type: "task", Status: "open"}
+		wtMgr.prepareBaseFn = func(context.Context, string, string) (bool, error) {
+			return false, fmt.Errorf("rev-parse target branch: %w", errors.ErrUnsupported)
+		}
+
+		if d.ensureEpicBranchReady(ctx, bead, &trackedWorker{id: workerID}, baseBranch, epicID) {
+			t.Fatal("ensureEpicBranchReady = true, want operational preparation error rejected")
+		}
+		d.mu.Lock()
+		_, inCooldown := d.worktreeFailures[beadID]
+		d.mu.Unlock()
+		if !inCooldown {
+			t.Fatal("assignment failure cooldown not recorded after operational error")
+		}
+	})
+}
+
+func newDivergedAssignmentWorktreeManager(t *testing.T, branch string) WorktreeManager {
+	t.Helper()
+	repo := t.TempDir()
+	runAssignmentTestGit(t, repo, "init", "-b", "main")
+	runAssignmentTestGit(t, repo, "config", "user.email", "test@example.com")
+	runAssignmentTestGit(t, repo, "config", "user.name", "Oro Test")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write base commit: %v", err)
+	}
+	runAssignmentTestGit(t, repo, "add", "base.txt")
+	runAssignmentTestGit(t, repo, "commit", "-m", "base commit")
+	runAssignmentTestGit(t, repo, "checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(repo, "epic.txt"), []byte("epic\n"), 0o644); err != nil {
+		t.Fatalf("write epic commit: %v", err)
+	}
+	runAssignmentTestGit(t, repo, "add", "epic.txt")
+	runAssignmentTestGit(t, repo, "commit", "-m", "epic commit")
+	runAssignmentTestGit(t, repo, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(repo, "main.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatalf("write main commit: %v", err)
+	}
+	runAssignmentTestGit(t, repo, "add", "main.txt")
+	runAssignmentTestGit(t, repo, "commit", "-m", "main commit")
+	return NewGitWorktreeManager(repo, "", "", &ExecCommandRunner{})
+}
+
+func newAheadAssignmentWorktreeManager(t *testing.T, branch string) WorktreeManager {
+	t.Helper()
+	repo := t.TempDir()
+	runAssignmentTestGit(t, repo, "init", "-b", "main")
+	runAssignmentTestGit(t, repo, "config", "user.email", "test@example.com")
+	runAssignmentTestGit(t, repo, "config", "user.name", "Oro Test")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write base commit: %v", err)
+	}
+	runAssignmentTestGit(t, repo, "add", "base.txt")
+	runAssignmentTestGit(t, repo, "commit", "-m", "base commit")
+	runAssignmentTestGit(t, repo, "checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(repo, "epic.txt"), []byte("epic\n"), 0o644); err != nil {
+		t.Fatalf("write epic commit: %v", err)
+	}
+	runAssignmentTestGit(t, repo, "add", "epic.txt")
+	runAssignmentTestGit(t, repo, "commit", "-m", "epic commit")
+	runAssignmentTestGit(t, repo, "checkout", "main")
+	return NewGitWorktreeManager(repo, "", "", &ExecCommandRunner{})
+}
+
+func runAssignmentTestGit(t *testing.T, repo string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+	}
 }
 
 func (m *mockWorktreeManager) RebaseOnto(_ context.Context, _, _ string) error {
@@ -1253,6 +1405,25 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *fakeBeadStore, *mockWorktree
 	return d, beadSrc, wtMgr, esc, gitRunner, spawnMock
 }
 
+func TestNewCardStoreFailureLeavesNilInterface(t *testing.T) {
+	t.Setenv("ORO_BEADSOURCE_MODE", "cli")
+	db := newTestDB(t)
+	if _, err := db.Exec(`CREATE VIEW cards AS SELECT 'blocked' AS id`); err != nil {
+		t.Fatalf("create conflicting cards view: %v", err)
+	}
+
+	d, err := New(Config{
+		SocketPath: "/tmp/oro-card-store-failure.sock",
+		MaxWorkers: 1,
+	}, db, nil, nil, &fakeBeadStore{}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	if d.cardStore != nil {
+		t.Fatalf("cardStore = %T(%v), want nil when optional card schema setup fails", d.cardStore, d.cardStore)
+	}
+}
+
 func TestNewUsesOroHomeForPanesDir(t *testing.T) {
 	oroHome := t.TempDir()
 	t.Setenv("ORO_HOME", oroHome)
@@ -1514,8 +1685,8 @@ func TestHeartbeatsNotPersistedDurably(t *testing.T) {
 	if worker.contextPct != 80 {
 		t.Errorf("contextPct = %d, want 80", worker.contextPct)
 	}
-	if !worker.lastProgress.Equal(now) {
-		t.Errorf("lastProgress = %s, want %s", worker.lastProgress, now)
+	if !worker.lastProgress.Equal(previousProgress) {
+		t.Errorf("lastProgress = %s, want unchanged %s", worker.lastProgress, previousProgress)
 	}
 	d.mu.Unlock()
 
@@ -1773,6 +1944,7 @@ func TestRunWaitsForGoroutines(t *testing.T) {
 }
 
 func TestAcceptLoopBackpressure(t *testing.T) {
+	qgserial.RequireSerial(t)
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
@@ -2975,6 +3147,55 @@ func TestReviewSandboxBlockedDoesNotIncrementRejectionCount(t *testing.T) {
 	d.mu.Unlock()
 	if rejections != 0 {
 		t.Fatalf("sandbox-blocked review must not increment rejection count, got %d", rejections)
+	}
+}
+
+func TestClassifyReviewFailure_ContentBased(t *testing.T) {
+	const startupHook = `{"type":"system","subtype":"hook_started","hook_name":"SessionStart:startup"}`
+	tests := []struct {
+		name     string
+		feedback string
+		err      error
+		want     ReviewFailureClass
+	}{
+		{
+			name:     "startup hook without agent activity is infrastructure blocked",
+			feedback: startupHook,
+			err:      errors.New("exit status 1"),
+			want:     ReviewFailureInfraBlocked,
+		},
+		{
+			name:     "tool use after startup is ordinary failure",
+			feedback: startupHook + "\n" + `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read"}]}}`,
+			err:      errors.New("exit status 1"),
+			want:     ReviewFailureOrdinary,
+		},
+		{
+			name:     "text delta after startup is ordinary failure",
+			feedback: startupHook + "\n" + `{"type":"content_block_delta","delta":{"type":"text_delta","text":"reviewing"}}`,
+			err:      errors.New("exit status 1"),
+			want:     ReviewFailureOrdinary,
+		},
+		{
+			name:     "result after startup is ordinary failure",
+			feedback: startupHook + "\n" + `{"type":"result","subtype":"error_max_turns","result":"stopped","is_error":true}`,
+			err:      errors.New("exit status 1"),
+			want:     ReviewFailureOrdinary,
+		},
+		{
+			name: "spawn failure without startup hook is ordinary failure",
+			err:  errors.New("ops: spawn failed: executable not found"),
+			want: ReviewFailureOrdinary,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyReviewFailure(ops.Result{Feedback: tt.feedback, Err: tt.err})
+			if got != tt.want {
+				t.Fatalf("classifyReviewFailure() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -4622,6 +4843,7 @@ func TestFailedDecomposeOpsRunSetsAssignmentCooldown(t *testing.T) {
 }
 
 func TestDispatcher_ConcurrentWorkers(t *testing.T) {
+	qgserial.RequireSerial(t)
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
@@ -9018,6 +9240,7 @@ func TestDispatcher_FocusImmediateAbortsStateTransitionRace(t *testing.T) {
 }
 
 func TestDispatcherFullSuiteStateDoesNotStarveEstimateAssignments(t *testing.T) {
+	qgserial.RequireSerial(t)
 	ctx := context.Background()
 	db := newTestDB(t)
 	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
@@ -13269,6 +13492,7 @@ func TestPriorityContention(t *testing.T) {
 // numWorkers concurrent DONE deliveries to exercise assign-loop locking under
 // parallel mergeAndComplete goroutines.  The -race detector must not fire.
 func TestPriorityContention_StableUnderLoad(t *testing.T) {
+	qgserial.RequireSerial(t)
 	loadguard.SkipOutsidePushQG(t)
 
 	const numWorkers = 4
@@ -22714,7 +22938,7 @@ func TestBuildSchedulingPlan_EpicPriorityBeatsEpicAge(t *testing.T) {
 	}
 }
 
-func TestTryAssign_FillsSelectedEpicBeforeNextEpic(t *testing.T) {
+func TestTryAssign_FillsIdleWorkersAcrossEpicUnitsByPriority(t *testing.T) {
 	d, beadSrc, workers := setupTryAssignSchedulingTest(t, 3)
 	seedTryAssignEpic(t, beadSrc, "epic-a", 0, "2026-05-01T00:00:00Z")
 	seedTryAssignEpic(t, beadSrc, "epic-b", 1, "2026-05-02T00:00:00Z")
@@ -22730,9 +22954,34 @@ func TestTryAssign_FillsSelectedEpicBeforeNextEpic(t *testing.T) {
 	d.tryAssign(context.Background())
 
 	got := assignedBeadIDsByCreation(t, d.db)
-	want := []string{"a-fast", "a-slow"}
+	want := []string{"a-fast", "a-slow", "b-fast"}
 	if !slices.Equal(got, want) {
-		t.Fatalf("assigned beads = %v, want only selected epic frontier %v", got, want)
+		t.Fatalf("assigned beads = %v, want epic frontiers filled by priority %v", got, want)
+	}
+	assertMockWorkerAssignCount(t, workers, len(want))
+}
+
+func TestTryAssign_ConcentratesWorkersOnTopEpic(t *testing.T) {
+	d, beadSrc, workers := setupTryAssignSchedulingTest(t, 2)
+	seedTryAssignEpic(t, beadSrc, "epic-a", 0, "2026-05-01T00:00:00Z")
+	seedTryAssignEpic(t, beadSrc, "epic-b", 1, "2026-05-02T00:00:00Z")
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "a-fast", Priority: 0, Epic: "epic-a"})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "a-middle", Priority: 1, Epic: "epic-a"})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "a-slow", Priority: 2, Epic: "epic-a"})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "b-fast", Priority: 0, Epic: "epic-b"})
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "b-fast", Priority: 0, Epic: "epic-b"},
+		{ID: "a-slow", Priority: 2, Epic: "epic-a"},
+		{ID: "a-middle", Priority: 1, Epic: "epic-a"},
+		{ID: "a-fast", Priority: 0, Epic: "epic-a"},
+	})
+
+	d.tryAssign(context.Background())
+
+	got := assignedBeadIDsByCreation(t, d.db)
+	want := []string{"a-fast", "a-middle"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("assigned beads = %v, want all workers concentrated on top epic %v", got, want)
 	}
 	assertMockWorkerAssignCount(t, workers, len(want))
 }
@@ -22864,7 +23113,7 @@ func TestTryAssign_UnassignableEpicUnitDoesNotBlockNextEpic(t *testing.T) {
 	assertMockWorkerAssignCount(t, workers, len(want))
 }
 
-func TestTryAssign_ReservedEpicUnitBlocksNextEpic(t *testing.T) {
+func TestTryAssign_ReservedEpicUnitDoesNotIdleOtherWorkers(t *testing.T) {
 	d, beadSrc, workers := setupTryAssignSchedulingTest(t, 2)
 	seedTryAssignEpic(t, beadSrc, "epic-reserved", 0, "2026-05-01T00:00:00Z")
 	seedTryAssignEpic(t, beadSrc, "epic-next", 1, "2026-05-02T00:00:00Z")
@@ -22881,10 +23130,11 @@ func TestTryAssign_ReservedEpicUnitBlocksNextEpic(t *testing.T) {
 	d.tryAssign(context.Background())
 
 	got := assignedBeadIDsByCreation(t, d.db)
-	if len(got) != 0 {
-		t.Fatalf("assigned beads = %v, want reserved epic unit to block next epic", got)
+	want := []string{"next-child"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("assigned beads = %v, want reserved epic skipped and next epic assigned %v", got, want)
 	}
-	assertMockWorkerAssignCount(t, workers, 0)
+	assertMockWorkerAssignCount(t, workers, len(want))
 }
 
 func TestTryAssign_EscalatesDependencyCycle(t *testing.T) {

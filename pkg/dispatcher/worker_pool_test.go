@@ -856,12 +856,10 @@ func TestTouchProgress_NoopForUnknownWorker(t *testing.T) {
 
 // --- handleHeartbeat progress tests ---
 
-// TestHeartbeatTouchesProgressForBusyWorker verifies that a heartbeat with
-// climbing context_pct updates lastProgress, so a worker that is genuinely
-// running Claude (context grows) doesn't trip the progress timeout. Flat
-// context heartbeats are liveness only — see oro-16yy.
-func TestHeartbeatTouchesProgressForBusyWorker(t *testing.T) {
-	t.Parallel()
+// TestHeartbeatDoesNotTouchProgressForBusyWorker verifies that heartbeats are
+// liveness-only, even when context_pct climbs. Meaningful protocol messages
+// update lastProgress instead.
+func TestHeartbeatDoesNotTouchProgressForBusyWorker(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 
 	d.cfg.ProgressTimeout = 1 * time.Second
@@ -870,8 +868,8 @@ func TestHeartbeatTouchesProgressForBusyWorker(t *testing.T) {
 	d.nowFunc = func() time.Time { return now }
 
 	// Register a busy worker with stale lastProgress (past timeout) and a
-	// known prior context_pct. The next heartbeat carries a higher context_pct
-	// (Claude advanced), so it must refresh lastProgress.
+	// known prior context_pct. A higher context_pct heartbeat must not refresh
+	// the real-progress clock.
 	staleProgress := now.Add(-(d.cfg.ProgressTimeout + time.Second))
 	conn := newMockConn()
 	workerID := "busy-heartbeating"
@@ -888,7 +886,7 @@ func TestHeartbeatTouchesProgressForBusyWorker(t *testing.T) {
 	}
 	d.mu.Unlock()
 
-	// Heartbeat with CLIMBING context_pct — should refresh lastProgress.
+	// Heartbeat with CLIMBING context_pct — must remain liveness-only.
 	d.handleHeartbeat(context.Background(), workerID, protocol.Message{
 		Type: protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{
@@ -898,22 +896,22 @@ func TestHeartbeatTouchesProgressForBusyWorker(t *testing.T) {
 		},
 	})
 
-	// Verify lastProgress was updated.
+	// Verify lastProgress was not updated.
 	d.mu.Lock()
 	got := d.workers[workerID].lastProgress
 	d.mu.Unlock()
-	if !got.Equal(now) {
-		t.Errorf("lastProgress = %v, want %v (climbing context heartbeat should refresh progress)", got, now)
+	if !got.Equal(staleProgress) {
+		t.Errorf("lastProgress = %v, want %v (context drift must not refresh progress)", got, staleProgress)
 	}
 
-	// The worker must survive checkHeartbeats.
+	// The worker must be reaped because no real progress occurred.
 	d.checkHeartbeats(context.Background())
 
 	d.mu.Lock()
 	_, stillPresent := d.workers[workerID]
 	d.mu.Unlock()
-	if !stillPresent {
-		t.Error("busy worker with recent heartbeat should NOT be removed by checkHeartbeats")
+	if stillPresent {
+		t.Error("busy worker with only context drift should be removed by checkHeartbeats")
 	}
 }
 
@@ -957,6 +955,103 @@ func TestHeartbeatDoesNotTouchProgressForIdleWorker(t *testing.T) {
 }
 
 // --- checkHeartbeats tests ---
+
+// TestProgressTimeoutReapsWedgedNonBusyWorker verifies that the progress
+// reaper covers every active worker phase and counts only protocol progress,
+// never context_pct drift, as progress.
+func TestProgressTimeoutReapsWedgedNonBusyWorker(t *testing.T) {
+	t.Parallel()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+	d.cfg.ProgressTimeout = time.Second
+	d.cfg.ReviewTimeout = time.Hour
+
+	staleProgress := now.Add(-(d.cfg.ProgressTimeout + time.Second))
+	newWorker := func(id string, state protocol.WorkerState) *trackedWorker {
+		conn := newMockConn()
+		return &trackedWorker{
+			id:           id,
+			conn:         conn,
+			state:        state,
+			beadID:       id + "-bead",
+			lastSeen:     now,
+			lastProgress: staleProgress,
+			encoder:      json.NewEncoder(conn),
+		}
+	}
+
+	reviewing := newWorker("wedged-review", protocol.WorkerReviewing)
+	creeping := newWorker("context-creep", protocol.WorkerBusy)
+	creeping.contextPct = 10
+	fresh := newWorker("genuine-progress", protocol.WorkerBusy)
+
+	d.mu.Lock()
+	d.workers[reviewing.id] = reviewing
+	d.workers[creeping.id] = creeping
+	d.workers[fresh.id] = fresh
+	d.mu.Unlock()
+
+	// A spinning session may keep changing context_pct, but that alone is not
+	// a STATUS/DONE/READY_FOR_REVIEW/QG progress transition.
+	for _, contextPct := range []int{20, 30, 40} {
+		d.handleHeartbeat(context.Background(), creeping.id, protocol.Message{
+			Type: protocol.MsgHeartbeat,
+			Heartbeat: &protocol.HeartbeatPayload{
+				WorkerID:   creeping.id,
+				BeadID:     creeping.beadID,
+				ContextPct: contextPct,
+			},
+		})
+	}
+
+	// A real protocol transition refreshes the progress clock.
+	d.handleStatus(context.Background(), fresh.id, protocol.Message{
+		Type: protocol.MsgStatus,
+		Status: &protocol.StatusPayload{
+			BeadID: fresh.beadID,
+			State:  "running_progress",
+		},
+	})
+
+	d.checkHeartbeats(context.Background())
+
+	d.mu.Lock()
+	_, reviewingPresent := d.workers[reviewing.id]
+	_, creepingPresent := d.workers[creeping.id]
+	_, freshPresent := d.workers[fresh.id]
+	d.mu.Unlock()
+
+	if reviewingPresent || creepingPresent {
+		t.Errorf("stale workers present after progress scan: reviewing=%t context_creep=%t", reviewingPresent, creepingPresent)
+	}
+	if !freshPresent {
+		t.Error("worker with a genuine progress transition was reaped")
+	}
+	if !reviewing.conn.(*mockConn).closed || !creeping.conn.(*mockConn).closed {
+		t.Error("reaped worker connections must be closed")
+	}
+	if got := eventCount(t, d.db, "progress_timeout"); got != 2 {
+		t.Errorf("progress_timeout events = %d, want 2", got)
+	}
+}
+
+// TestWorkerProgressTimedOutSkipsSpawnFor verifies that spawn-for workers keep
+// using their dedicated heartbeat/shutdown timeout path.
+func TestWorkerProgressTimedOutSkipsSpawnFor(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	w := &trackedWorker{
+		state:        protocol.WorkerBusy,
+		spawnFor:     true,
+		lastProgress: now.Add(-2 * time.Second),
+	}
+	if workerProgressTimedOut(w, now, time.Second) {
+		t.Fatal("spawn-for worker should not use the progress timeout path")
+	}
+}
 
 // TestCheckHeartbeats_RemovesStaleIdleWorkers verifies that idle workers with
 // stale heartbeats are removed (they are disconnected). Only reserved workers
@@ -1271,9 +1366,9 @@ func TestCheckHeartbeats_ReviewTimeout(t *testing.T) {
 	}
 }
 
-// TestCheckHeartbeats_ReviewingUsesReviewTimeout verifies reviewing workers are
-// governed by ReviewTimeout instead of the normal busy-worker ProgressTimeout.
-func TestCheckHeartbeats_ReviewingUsesReviewTimeout(t *testing.T) {
+// TestCheckHeartbeats_ReviewingUsesProgressTimeout verifies reviewing workers
+// use the same real-progress deadline as busy workers.
+func TestCheckHeartbeats_ReviewingUsesProgressTimeout(t *testing.T) {
 	t.Parallel()
 	d, _, _, esc, _, _ := newTestDispatcher(t)
 
@@ -1283,66 +1378,66 @@ func TestCheckHeartbeats_ReviewingUsesReviewTimeout(t *testing.T) {
 	now := time.Now()
 	d.nowFunc = func() time.Time { return now }
 
-	youngerConn := newMockConn()
-	olderConn := newMockConn()
-	youngerWorkerID := "review-younger-than-review-timeout"
-	olderWorkerID := "review-older-than-review-timeout"
-	youngerBeadID := "bead-review-younger"
-	olderBeadID := "bead-review-older"
+	staleConn := newMockConn()
+	freshConn := newMockConn()
+	staleWorkerID := "review-stale-progress"
+	freshWorkerID := "review-fresh-progress"
+	staleBeadID := "bead-review-stale"
+	freshBeadID := "bead-review-fresh"
 
 	d.mu.Lock()
-	d.workers[youngerWorkerID] = &trackedWorker{
-		id:           youngerWorkerID,
-		conn:         youngerConn,
+	d.workers[staleWorkerID] = &trackedWorker{
+		id:           staleWorkerID,
+		conn:         staleConn,
 		state:        protocol.WorkerReviewing,
-		beadID:       youngerBeadID,
+		beadID:       staleBeadID,
 		lastSeen:     now.Add(-10 * time.Millisecond),
 		lastProgress: now.Add(-(d.cfg.ProgressTimeout + 100*time.Millisecond)),
-		encoder:      json.NewEncoder(youngerConn),
+		encoder:      json.NewEncoder(staleConn),
 	}
-	d.workers[olderWorkerID] = &trackedWorker{
-		id:           olderWorkerID,
-		conn:         olderConn,
+	d.workers[freshWorkerID] = &trackedWorker{
+		id:           freshWorkerID,
+		conn:         freshConn,
 		state:        protocol.WorkerReviewing,
-		beadID:       olderBeadID,
+		beadID:       freshBeadID,
 		lastSeen:     now.Add(-10 * time.Millisecond),
-		lastProgress: now.Add(-(d.cfg.ReviewTimeout + 100*time.Millisecond)),
-		encoder:      json.NewEncoder(olderConn),
+		lastProgress: now.Add(-50 * time.Millisecond),
+		encoder:      json.NewEncoder(freshConn),
 	}
 	d.mu.Unlock()
 
 	d.checkHeartbeats(context.Background())
 
 	d.mu.Lock()
-	_, youngerPresent := d.workers[youngerWorkerID]
-	_, olderPresent := d.workers[olderWorkerID]
+	_, stalePresent := d.workers[staleWorkerID]
+	_, freshPresent := d.workers[freshWorkerID]
 	d.mu.Unlock()
 
-	if !youngerPresent {
-		t.Error("reviewing worker older than ProgressTimeout but younger than ReviewTimeout should remain active")
+	if stalePresent {
+		t.Error("reviewing worker older than ProgressTimeout should be removed")
 	}
-	if youngerConn.closed {
-		t.Error("reviewing worker younger than ReviewTimeout should not have its connection closed")
+	if !staleConn.closed {
+		t.Error("reviewing worker older than ProgressTimeout should have its connection closed")
 	}
-	if olderPresent {
-		t.Error("reviewing worker older than ReviewTimeout should be removed as stalled")
+	if !freshPresent {
+		t.Error("reviewing worker with recent real progress should remain active")
 	}
-	if !olderConn.closed {
-		t.Error("reviewing worker older than ReviewTimeout should have its connection closed")
+	if freshConn.closed {
+		t.Error("reviewing worker with recent real progress should not have its connection closed")
 	}
 
 	msgs := esc.Messages()
 	if len(msgs) != 1 {
-		t.Fatalf("expected exactly 1 escalation for the older reviewing worker, got %d: %v", len(msgs), msgs)
+		t.Fatalf("expected exactly 1 escalation for the stale reviewing worker, got %d: %v", len(msgs), msgs)
 	}
 	if !strings.Contains(msgs[0], string(protocol.EscStuckWorker)) {
 		t.Errorf("expected escalation to contain %q, got %q", protocol.EscStuckWorker, msgs[0])
 	}
-	if !strings.Contains(msgs[0], olderBeadID) {
-		t.Errorf("expected escalation to mention bead %q, got %q", olderBeadID, msgs[0])
+	if !strings.Contains(msgs[0], staleBeadID) {
+		t.Errorf("expected escalation to mention bead %q, got %q", staleBeadID, msgs[0])
 	}
-	if strings.Contains(msgs[0], youngerBeadID) {
-		t.Errorf("did not expect escalation to mention younger bead %q, got %q", youngerBeadID, msgs[0])
+	if strings.Contains(msgs[0], freshBeadID) {
+		t.Errorf("did not expect escalation to mention fresh bead %q, got %q", freshBeadID, msgs[0])
 	}
 }
 
@@ -1479,6 +1574,57 @@ func TestCheckHeartbeats_ReviewingWorkerWithLiveProcessButDeadReviewIsRemoved(t 
 	beadSrc.mu.Unlock()
 	if !hasUpdate || status != "open" {
 		t.Errorf("bead status = %q (updated=%v), want %q", status, hasUpdate, "open")
+	}
+}
+
+// TestCheckHeartbeats_ReviewDeadGracePrecedesProgressTimeout verifies that a
+// newly absent ops review gets its configured grace period even when the
+// worker's progress clock was already stale.
+func TestCheckHeartbeats_ReviewDeadGracePrecedesProgressTimeout(t *testing.T) {
+	t.Parallel()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	d.procMgr = &mockProcessManager{}
+	d.cfg.ProgressTimeout = time.Second
+	d.cfg.ReviewDeadGrace = time.Minute
+
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+
+	workerID := "reviewing-newly-dead-review"
+	conn := newMockConn()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		state:        protocol.WorkerReviewing,
+		beadID:       "bead-newly-dead-review",
+		lastSeen:     now,
+		lastProgress: now.Add(-(d.cfg.ProgressTimeout + time.Second)),
+		managed:      true,
+		encoder:      json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+
+	// No ops review is active. The first scan starts ReviewDeadGrace and must
+	// not let the already-stale progress clock bypass that grace period.
+	d.checkHeartbeats(context.Background())
+
+	d.mu.Lock()
+	w, stillPresent := d.workers[workerID]
+	d.mu.Unlock()
+
+	if !stillPresent {
+		t.Fatal("reviewing worker was reaped before ReviewDeadGrace elapsed")
+	}
+	if conn.closed {
+		t.Error("worker connection was closed before ReviewDeadGrace elapsed")
+	}
+	if !w.reviewDeadSince.Equal(now) {
+		t.Errorf("reviewDeadSince = %v, want %v", w.reviewDeadSince, now)
+	}
+	if got := eventCount(t, d.db, "progress_timeout"); got != 0 {
+		t.Errorf("progress_timeout events = %d, want 0 during ReviewDeadGrace", got)
 	}
 }
 

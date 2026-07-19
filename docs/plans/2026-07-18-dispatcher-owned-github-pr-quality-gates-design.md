@@ -841,7 +841,8 @@ The durable policy-binding registry is authoritative for mutable provider
 identity: logical key, active provider ID, binding generation, desired template
 hash, create-attempt ID, observed IDs/versions, and state (`bound`, `missing`,
 `create_ambiguous`, `deduplicating`). A 404 on the active ID first lists all
-repository-source rulesets and discovers exact ownership-name matches. One
+repository-source rulesets through the complete-collection primitive and
+discovers exact ownership-name matches. One
 matching ruleset is adopted only when its full template and ruleset-history
 creation actor match the configured maintenance App. Zero matches persists a
 create attempt before POSTing the full marked template. A response records the
@@ -903,6 +904,21 @@ proxy, CA, shell-startup, and config injection. `GH_CONFIG_DIR` is an Oro-owned
 empty/nonpersistent directory and cannot provide another identity. Setup and
 doctor validate host/API/TLS policy through this exact runner. No shell command
 is constructed from PR titles, branch names, URLs, or remote output.
+
+Correctness-critical list operations use one typed complete-collection
+primitive in the shared runner, never an endpoint caller's one-page shortcut.
+For PRs, checks, workflow runs/jobs/artifacts, effective rules, repository
+rulesets, and ruleset history, it invokes `gh api --paginate --slurp` (or the
+host-version-equivalent Link traversal), validates every page before exposing
+any item, normalizes the page arrays into one typed collection, and rejects
+malformed pagination, cycles, host-changing links, repeated page tokens,
+duplicate stable IDs, inconsistent repository/run identity, or a partial-page
+failure. Endpoint-specific maximum page/item/byte limits are setup-attested;
+hitting a limit without a proven terminal page fails closed as incomplete
+rather than returning a prefix. Callers receive either a complete normalized
+collection plus page/count evidence or no collection at all. Restart repeats
+the idempotent read from page one; durable state never records a prefix as
+complete.
 
 Dispatcher-owned network ref mutation uses a dedicated internal Git transport,
 not the repository's ordinary push path. Its unexported constructor requires
@@ -1639,6 +1655,14 @@ same App's deletion capability; denial or ambiguity enters durable
 incorporated result or using an administrative credential. Unincorporated
 evidence always retains the ref.
 
+Run, job, check, and artifact discovery for an audit is complete-collection
+only. Artifact ingestion begins only after every validated page has been
+normalized and the resulting stable IDs/count/page evidence are durably bound
+to the audit attempt. A later-page timeout, malformed response, duplicate ID,
+pagination cycle, restart between pages, or configured bound exhaustion leaves
+the campaign retryable/infrastructure-failed with zero prefix incorporated; it
+can never satisfy exact-union completion from the first page alone.
+
 The workflow independently reconstructs the inventory from its exact checkout
 and fails before planning if any hash/count/policy value differs. Its shard
 planner partitions the canonical inventory deterministically; the planner's
@@ -1880,6 +1904,14 @@ chains; it may split them further but may not collapse away a boundary:
    leakage. Poison PATH with a credential-capturing `gh`, plus `GH_TOKEN`,
    `GH_HOST`, `GH_CONFIG_DIR`, loader, and proxy variables; only the absolute
    attested executable may run with the generated minimal environment.
+   Add the typed complete-collection operation and require it for every PR,
+   check, workflow run/job/artifact, effective-policy, repository-ruleset, and
+   ruleset-history enumeration. It uses bounded `--paginate --slurp`/Link
+   traversal, validates all pages atomically, normalizes page shapes, rejects
+   duplicate IDs/cycles/host changes/incomplete bounds, and returns page/count
+   evidence. Split owned, foreign, and duplicate rulesets across pages; no
+   repair, deduplication, readiness, integration, or unfreeze may proceed from
+   an incomplete enumeration.
 3. **Protocol and worker handoff.** Wire `CANDIDATE_READY` through
    `pkg/protocol/message.go`, `pkg/worker/worker.go:awaitSubprocessAndReport`,
    `runQGAndReport`, `SendReadyForReview`, and `SendDone`. Update
@@ -2137,6 +2169,13 @@ chains; it may split them further but may not collapse away a boundary:
     Use the permission-aware runtime App fixture for audit workflow dispatch,
     run/job observation, cancellation, logs, and artifact download; any missing
     Actions capability fails auth/config before campaign side effects.
+    Force workflow runs, jobs, checks, and artifacts across multiple pages,
+    including page sizes 1 and 30 and enough artifacts for the 256-shard case.
+    Inject restart between pages, later-page timeout/malformed JSON, duplicate
+    stable IDs, cyclic/foreign Link targets, and page/item bound exhaustion.
+    Assert no prefix is incorporated, no exact-union proof passes, and retry
+    restarts at page one until one complete normalized collection is durably
+    bound to the attempt.
     Create/adopt the exact-SHA namespaced audit branch before dispatch, persist
     expected workflow blob, require run ref/head/workflow identity equality,
     retain the ref through restart/artifact incorporation, and lease-delete it
@@ -2189,6 +2228,11 @@ chains; it may split them further but may not collapse away a boundary:
     `gh` plus ambient GH/proxy/CA/loader values. Endpoint coverage and process
     inventory prove every runtime and maintenance API call invokes only the
     attested absolute CLI with typed network policy and never feeds a sentinel.
+    The fixture paginates every correctness-critical collection and fails any
+    caller that omits traversal, requests an unbounded sequence, exposes a page
+    prefix, or bypasses the shared normalizer. It places matching/foreign/
+    duplicate rulesets and required run/job/check/artifact evidence beyond page
+    one, and records page/count evidence in the fixed-manifest assertions.
     CLI fixtures cover both installed start entry points with manual integration
     on/off in local/GitHub modes and assert zero remote side effects on the
     invalid combination.
@@ -2400,6 +2444,12 @@ or explicitly cancelled.
    Process inventory and argv/environment capture prove only the expected CLI
    runs, request bodies use stdin, tokens are absent from argv/stdin/logs, and
    runtime versus maintenance scopes remain noninterchangeable.
+   Every list endpoint proves complete bounded pagination: page sizes 1 and 30,
+   required evidence beyond page one, and the 256-shard artifact set all
+   normalize without omission. Later-page failure, duplicate IDs, cycles,
+   foreign Link targets, and exhausted bounds atomically reject the collection;
+   policy repair/unfreeze, merge authorization, and audit exact-union completion
+   remain blocked with no durable prefix.
    A second production-constructor fixture requires the maintenance App token
    to contain exactly Metadata-read and Administration-write for the same host/
    repository and no runtime permission. It proves runtime/maintenance

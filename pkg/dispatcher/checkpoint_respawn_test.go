@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/testutil/qgserial"
+
 	"oro/pkg/protocol"
 )
 
@@ -17,6 +19,7 @@ import (
 // Assert: new worker PID different; same worktree path; worker reads previous
 // next_action; turn N+1 of bead lifetime.
 func TestCheckpointRespawn(t *testing.T) {
+	qgserial.RequireSerial(t)
 	ctx := context.Background()
 
 	d, store := makeCheckpointDispatcher(t)

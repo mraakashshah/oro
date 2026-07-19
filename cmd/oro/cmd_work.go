@@ -417,7 +417,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	if resolveErr != nil {
 		return fmt.Errorf("resolve epic branch: %w", resolveErr)
 	}
-	if _, prepareErr := prepareStandaloneWorkTargetBranch(ctx, deps, targetBranch, defaultBranch, resolvedEpicID); prepareErr != nil {
+	if prepareErr := prepareStandaloneWorkTargetBranch(ctx, deps, targetBranch, defaultBranch, resolvedEpicID, cfg.bead); prepareErr != nil {
 		return fmt.Errorf("prepare target branch: %w", prepareErr)
 	}
 	worktree, branch, err := setupWorktree(ctx, cfg, deps, targetBranch)
@@ -543,41 +543,56 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	return nil
 }
 
-func prepareStandaloneWorkTargetBranch(ctx context.Context, deps *workDeps, targetBranch, defaultBranch, resolvedEpicID string) (bool, error) {
+func prepareStandaloneWorkTargetBranch(ctx context.Context, deps *workDeps, targetBranch, defaultBranch, resolvedEpicID string, bead *protocol.BeadDetail) error {
 	if deps == nil || deps.wtMgr == nil || resolvedEpicID == "" || targetBranch == "" || targetBranch == defaultBranch {
-		return false, nil
+		return nil
 	}
 	preparer, ok := deps.wtMgr.(standaloneBaseBranchPreparer)
 	if !ok {
-		return false, nil
+		return nil
 	}
 	fastForwarded, err := preparer.PrepareBaseBranchForAssignment(ctx, targetBranch, defaultBranch)
 	if err != nil {
-		return false, fmt.Errorf("prepare target branch %s from %s: %w", targetBranch, defaultBranch, err)
+		return fmt.Errorf("prepare target branch %s from %s: %w", targetBranch, defaultBranch, err)
 	}
 	if fastForwarded {
 		logStep("Fast-forwarded target branch %s to %s", targetBranch, defaultBranch)
 	}
-	if err := validateStandaloneEpicBranchSafe(ctx, deps, targetBranch, defaultBranch); err != nil {
-		return fastForwarded, err
-	}
-	return fastForwarded, nil
+	return validateStandaloneEpicBranchSafe(ctx, deps, targetBranch, defaultBranch, bead, resolvedEpicID)
 }
 
-func validateStandaloneEpicBranchSafe(ctx context.Context, deps *workDeps, targetBranch, defaultBranch string) error {
+func validateStandaloneEpicBranchSafe(ctx context.Context, deps *workDeps, targetBranch, defaultBranch string, bead *protocol.BeadDetail, resolvedEpicID string) error {
 	checker, ok := deps.wtMgr.(standaloneBaseBranchSafetyChecker)
 	if !ok {
 		return nil
 	}
-	hasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, targetBranch, defaultBranch)
+	diverged, err := standaloneEpicBranchesDiverged(ctx, checker, targetBranch, defaultBranch)
 	if err != nil {
-		return fmt.Errorf("check whether %s has unique commits relative to %s: %w", targetBranch, defaultBranch, err)
+		return fmt.Errorf("check whether %s diverged from %s: %w", targetBranch, defaultBranch, err)
 	}
-	if hasUniqueCommits {
-		return fmt.Errorf("epic branch %q has unique commits relative to %q; preserved divergent branch/worktree state and aborted before worker spawn. Inspect `git log --oneline --graph %s %s`, then preserve or port wanted commits before resetting %s to %s",
+	if diverged {
+		if dispatcher.IsEpicRebaseChild(bead, resolvedEpicID, targetBranch) {
+			return nil
+		}
+		return fmt.Errorf("epic branch %q diverged from %q; preserved divergent branch/worktree state and aborted before worker spawn. Inspect `git log --oneline --graph %s %s`, then preserve or port wanted commits before resetting %s to %s",
 			targetBranch, defaultBranch, defaultBranch, targetBranch, targetBranch, defaultBranch)
 	}
 	return nil
+}
+
+func standaloneEpicBranchesDiverged(ctx context.Context, checker standaloneBaseBranchSafetyChecker, targetBranch, defaultBranch string) (bool, error) {
+	targetHasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, targetBranch, defaultBranch)
+	if err != nil {
+		return false, fmt.Errorf("check unique commits on %s relative to %s: %w", targetBranch, defaultBranch, err)
+	}
+	if !targetHasUniqueCommits {
+		return false, nil
+	}
+	defaultHasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, defaultBranch, targetBranch)
+	if err != nil {
+		return false, fmt.Errorf("check unique commits on %s relative to %s: %w", defaultBranch, targetBranch, err)
+	}
+	return defaultHasUniqueCommits, nil
 }
 
 func resolveWorkerRuntimeModel(cfg *workConfig) (runtime, model, reasoning string) {

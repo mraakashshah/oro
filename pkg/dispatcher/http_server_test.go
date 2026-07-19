@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"oro/pkg/testutil/qgserial"
 )
 
 // truncate returns s truncated to at most n characters.
@@ -34,6 +36,7 @@ func freeAddr(t *testing.T) string {
 
 // TestHTTPServerStartsInRun verifies the HTTP server lifecycle within Run().
 func TestHTTPServerStartsInRun(t *testing.T) {
+	qgserial.RequireSerial(t)
 	t.Run("WebEnabled=true starts httpServer via safeGo", func(t *testing.T) {
 		d, _, _, _, _, _ := newTestDispatcher(t)
 		d.cfg.WebEnabled = true
@@ -190,6 +193,7 @@ func TestHTTPServerStartsInRun(t *testing.T) {
 // TestHTTPServerServesDashboard verifies that startHTTPServer mounts web.NewHandler
 // so that GET / returns HTML with <!DOCTYPE.
 func TestHTTPServerServesDashboard(t *testing.T) {
+	qgserial.RequireSerial(t)
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	addr := freeAddr(t)
 	d.cfg.WebEnabled = true
@@ -240,6 +244,7 @@ func TestHTTPServerStreamsDashboardEvents(t *testing.T) {
 }
 
 func TestHTTPServerStreamsDashboardEvents_StableUnderLoad(t *testing.T) {
+	qgserial.RequireSerial(t)
 	// Repeat a few independent server lifecycles to exercise the subscribe/send
 	// race window that only showed up under race-mode full-suite contention.
 	for i := 0; i < 5; i++ {

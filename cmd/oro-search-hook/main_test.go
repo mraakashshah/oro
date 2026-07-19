@@ -41,13 +41,15 @@ func TestWriteOut_writeError(t *testing.T) {
 	writeOut(&errorWriter{}, []byte(`{}`))
 }
 
-// TestRun verifies the happy path: valid JSON input produces the expected response.
+// TestRun verifies the happy path: a non-cat Bash command routes to the Codex
+// Bash arm and allows with EMPTY STDOUT (zero bytes), not {}. The Codex Bash
+// allow contract is "no bytes" — see handleCodexBash.
 func TestRun(t *testing.T) {
 	input := `{"hook_type":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}`
 	var out bytes.Buffer
 	run(strings.NewReader(input), &out)
-	if got := strings.TrimSpace(out.String()); got != "{}" {
-		t.Errorf("expected {} for non-Read tool, got %q", got)
+	if got := out.Bytes(); len(got) != 0 {
+		t.Errorf("expected empty stdout for non-cat Bash (allow), got %q", string(got))
 	}
 }
 
@@ -90,6 +92,7 @@ func TestHookDispatch(t *testing.T) {
 		name       string
 		input      map[string]any
 		wantAllow  bool   // expect empty JSON {} (allow)
+		wantEmpty  bool   // expect zero bytes (Codex Bash allow contract)
 		wantDeny   bool   // expect permissionDecision == "deny"
 		wantReason string // substring expected in permissionDecisionReason
 	}{
@@ -128,7 +131,7 @@ func TestHookDispatch(t *testing.T) {
 			wantAllow: true,
 		},
 		{
-			name: "allow non-Read tool (Bash)",
+			name: "allow non-cat Bash with empty stdout",
 			input: map[string]any{
 				"hook_type": "PreToolUse",
 				"tool_name": "Bash",
@@ -136,7 +139,7 @@ func TestHookDispatch(t *testing.T) {
 					"command": "ls",
 				},
 			},
-			wantAllow: true,
+			wantEmpty: true,
 		},
 		{
 			name: "allow Read with explicit offset (bypass)",
@@ -251,6 +254,13 @@ func TestHookDispatch(t *testing.T) {
 			}
 
 			output := HandleHook(inputJSON)
+
+			if tt.wantEmpty {
+				if len(output) != 0 {
+					t.Errorf("expected empty stdout (Codex Bash allow), got %q", string(output))
+				}
+				return
+			}
 
 			var resp hookResponse
 			if err := json.Unmarshal(output, &resp); err != nil {
@@ -446,6 +456,124 @@ func TestHandleHookFailsOpenOnUnknownShape(t *testing.T) {
 			}
 			if resp.PermissionDecision != "" {
 				t.Errorf("expected allow (no permissionDecision) for unknown shape, got permissionDecision=%q", resp.PermissionDecision)
+			}
+		})
+	}
+}
+
+// codexRewriteDecoded decodes the Codex Bash allow+rewrite shape emitted by
+// handleCodexBash (codex ignores deny for trusted reads, so the cat is rewritten).
+type codexRewriteDecoded struct {
+	HookSpecificOutput struct {
+		HookEventName      string `json:"hookEventName"`
+		PermissionDecision string `json:"permissionDecision"`
+		UpdatedInput       struct {
+			Command string `json:"command"`
+		} `json:"updatedInput"`
+	} `json:"hookSpecificOutput"`
+}
+
+// bashEvent builds a Codex-shaped PreToolUse Bash hook event for command.
+func bashEvent(t *testing.T, command string) []byte {
+	t.Helper()
+	b, err := json.Marshal(map[string]any{
+		"hook_type":  "PreToolUse",
+		"tool_name":  "Bash",
+		"tool_input": map[string]any{"command": command},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal bash event: %v", err)
+	}
+	return b
+}
+
+// TestHandleCodexBashRead verifies the Codex Bash read-hook arm: a bare
+// `cat [--] <largefile>` of a large code file is intercepted with a Codex
+// allow+updatedInput response that rewrites the cat into `printf '%s' '<summary>'`
+// (codex ignores deny for trusted reads, so the read is suppressed by rewriting);
+// every other Bash command shape — and any bypassed cat — allows with EMPTY
+// STDOUT (zero bytes), never {}.
+func TestHandleCodexBashRead(t *testing.T) {
+	if _, err := exec.LookPath("ast-grep"); err != nil {
+		t.Skip("ast-grep not installed, skipping")
+	}
+
+	largeGoFile := writeTempGoFile(t, 200)             // >3KB code → intercept
+	smallGoFile := writeTempGoFile(t, 3)               // <3KB → bypass on size
+	badFile := writeTempFile(t, ".go", "not valid Go") // summarize error → allow
+	testFile := writeTempFile(t, "_test.go", strings.Repeat("// filler line\n", 400))
+	nonCodeFile := writeTempFile(t, ".json", strings.Repeat("{\"k\":\"v\"}\n", 400))
+
+	// --- intercept cases: bare cat of a large code file → allow + rewrite ---
+	interceptCmds := []struct {
+		name string
+		cmd  string
+	}{
+		{"cat path", "cat " + largeGoFile},
+		{"cat -- path", "cat -- " + largeGoFile},
+	}
+	for _, tc := range interceptCmds {
+		t.Run("intercept: "+tc.name, func(t *testing.T) {
+			out := HandleHook(bashEvent(t, tc.cmd))
+			var resp codexRewriteDecoded
+			if err := json.Unmarshal(out, &resp); err != nil {
+				t.Fatalf("expected Codex allow+rewrite JSON, got %q: %v", string(out), err)
+			}
+			if resp.HookSpecificOutput.PermissionDecision != "allow" {
+				t.Errorf("expected permissionDecision=allow, got %q", resp.HookSpecificOutput.PermissionDecision)
+			}
+			if resp.HookSpecificOutput.HookEventName != "PreToolUse" {
+				t.Errorf("expected hookEventName=PreToolUse, got %q", resp.HookSpecificOutput.HookEventName)
+			}
+			rw := resp.HookSpecificOutput.UpdatedInput.Command
+			if !strings.HasPrefix(rw, "printf '%s' ") {
+				t.Errorf("rewritten command must print the summary via printf, got %q", rw)
+			}
+			// The rewrite must carry the summary (a signature), not the raw cat.
+			if !strings.Contains(rw, "package testpkg") {
+				t.Errorf("rewritten command must contain the AST summary, got %q", rw)
+			}
+			if strings.Contains(rw, "cat ") {
+				t.Errorf("rewritten command must not re-invoke cat (raw read), got %q", rw)
+			}
+		})
+	}
+
+	// --- allow cases: EMPTY STDOUT (zero bytes), never {} ---
+	allowCmds := []struct {
+		name string
+		cmd  string
+	}{
+		{"sed range", "sed -n 1,10p " + largeGoFile},
+		{"head", "head " + largeGoFile},
+		{"tail", "tail -20 " + largeGoFile},
+		{"rg", "rg func " + largeGoFile},
+		{"pipe", "cat " + largeGoFile + " | head"},
+		{"chain and", "cat " + largeGoFile + " && echo done"},
+		{"chain semicolon", "cat " + largeGoFile + " ; echo done"},
+		{"chain or", "cat " + largeGoFile + " || true"},
+		{"redirect out", "cat " + largeGoFile + " > /tmp/out"},
+		{"redirect in", "cat < " + largeGoFile},
+		{"command substitution", "cat $(echo " + largeGoFile + ")"},
+		{"backtick substitution", "cat `echo x`"},
+		{"glob", "cat pkg/*.go"},
+		{"multiple files", "cat " + largeGoFile + " " + smallGoFile},
+		{"extra flag", "cat -n " + largeGoFile},
+		{"ls", "ls -la"},
+		{"empty command", ""},
+		{"blank command", "   "},
+		{"bare cat", "cat"},
+		{"bypass small file", "cat " + smallGoFile},
+		{"bypass test file", "cat " + testFile},
+		{"bypass non-code file", "cat " + nonCodeFile},
+		{"summarize error fails open", "cat " + badFile},
+		{"stat error fails open", "cat /nonexistent/path/file.go"},
+	}
+	for _, tc := range allowCmds {
+		t.Run("allow empty stdout: "+tc.name, func(t *testing.T) {
+			out := HandleHook(bashEvent(t, tc.cmd))
+			if len(out) != 0 {
+				t.Errorf("expected empty stdout (zero bytes), got %q", string(out))
 			}
 		})
 	}

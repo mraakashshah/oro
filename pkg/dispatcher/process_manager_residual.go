@@ -141,21 +141,25 @@ func readProcessEnvironmentSnapshotsWithReader(
 			return processEnvironmentSnapshots{}, fmt.Errorf("read process environment entries: %w", err)
 		}
 		entries, err := readEntries(process.PID)
-		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return processEnvironmentSnapshots{}, fmt.Errorf("read process environment entries: %w", ctxErr)
+		if err == nil {
+			if len(entries) > 0 {
+				environments[process.PID] = entries
 			}
-			if allOwnedProcessesExited(ctx, []OwnedProcess{process}) {
-				continue
-			}
-			if ownedProcessDefinitelyForeign(ctx, process.PID) {
-				continue
-			}
-			return processEnvironmentSnapshots{}, fmt.Errorf("read process environment entries for pid %d: %w", process.PID, err)
+			continue
 		}
-		if len(entries) > 0 {
-			environments[process.PID] = entries
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return processEnvironmentSnapshots{}, fmt.Errorf("read process environment entries: %w", ctxErr)
 		}
+		if errors.Is(err, os.ErrPermission) {
+			continue
+		}
+		if allOwnedProcessesExited(ctx, []OwnedProcess{process}) {
+			continue
+		}
+		if ownedProcessDefinitelyForeign(ctx, process.PID) {
+			continue
+		}
+		return processEnvironmentSnapshots{}, fmt.Errorf("read process environment entries for pid %d: %w", process.PID, err)
 	}
 	return processEnvironmentSnapshots{environments: environments}, nil
 }
