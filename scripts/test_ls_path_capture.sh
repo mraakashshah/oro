@@ -19,28 +19,59 @@ is_source_file() {
 check_file() {
 	local file=$1
 	awk '
-		function trim_comment(line,    quote, i, c) {
+		function executable_code(line,    quote, i, c, out) {
 			quote = ""
+			out = ""
 			for (i = 1; i <= length(line); i++) {
 				c = substr(line, i, 1)
-				if (c == "\\" && quote != "") { i++; continue }
-				if ((c == "\"" || c == "\047") && quote == "") { quote = c; continue }
-				if (c == quote) { quote = ""; continue }
-				if (c == "#" && quote == "") return substr(line, 1, i - 1)
+				if (quote == "\047") {
+					if (c == "\047") { quote = ""; out = out " "; continue }
+					if (c == "$" || c == "`") { out = out " "; continue }
+					if (c == ";" || c == "&" || c == "|") { out = out ":"; continue }
+					out = out c
+					continue
+				}
+				if (quote == "\"") {
+					if (c == "\"") { quote = ""; out = out " "; continue }
+					if (c == "\\") {
+						out = out "  "
+						i++
+						continue
+					}
+					if (c == ";" || c == "&" || c == "|") { out = out ":"; continue }
+					out = out c
+					continue
+				}
+				if (c == "\"" || c == "\047") { quote = c; out = out " "; continue }
+				if (c == "\\") { out = out "  "; i++; continue }
+				if (c == "#") return out
+				out = out c
 			}
-			return line
+			return out
+		}
+		function normalize_command(segment) {
+			sub(/^[[:space:]]*/, "", segment)
+			sub(/^[-+@]+[[:space:]]*/, "", segment)
+			while (segment ~ /^(if|then|elif|while|until|do|!|sudo|command)[[:space:]]+/) {
+				sub(/^[^[:space:]]+[[:space:]]+/, "", segment)
+			}
+			return segment
+		}
+		function has_ls_capture(segment) {
+			return segment ~ /\$\([[:space:]]*(ls|lsd)([[:space:]]|\)|[|;&:]|$)/ ||
+				segment ~ /`[[:space:]]*(ls|lsd)([[:space:]]|`|[|;&:]|$)/
 		}
 		{
-			line = trim_comment($0)
+			line = executable_code($0)
 			if (line ~ /^[[:space:]]*$/) next
-			# A bare directory listing must not become an implicit filesystem path.
-			if (line ~ /(^[[:space:]]*|[;&|][[:space:]]*)(mkdir|cp|mv)[[:space:]][^;&|]*\$\([[:space:]]*(ls|lsd)([[:space:]]|\)|$)/) {
-				print FILENAME ":" FNR ": bare ls output passed to filesystem command"
-				error = 1
-			}
-			if (line ~ /(^[[:space:]]*|[;&|][[:space:]]*)(mkdir|cp|mv)[[:space:]][^;&|]*`[[:space:]]*(ls|lsd)([[:space:]]|`|$)/) {
-				print FILENAME ":" FNR ": bare ls output passed to filesystem command"
-				error = 1
+			segment_count = split(line, segments, /[;&|]+/)
+			for (segment_index = 1; segment_index <= segment_count; segment_index++) {
+				command = normalize_command(segments[segment_index])
+				# A bare directory listing must not become an implicit filesystem path.
+				if (command ~ /^(mkdir|cp|mv)([[:space:]]|$)/ && has_ls_capture(command)) {
+					print FILENAME ":" FNR ": bare ls output passed to filesystem command"
+					error = 1
+				}
 			}
 		}
 		END { exit error }
@@ -58,12 +89,22 @@ test_no_ls_derived_filesystem_paths() {
 ls -la "$HOME"                         # display-only listing
 echo "$(ls)"; mkdir -p destination      # display-only substitution is not a path
 mkdir -p "$(git ls-files | head -1)"   # tracked source is an allowed provider
+mkdir -p '$(ls)'                       # single-quoted text is not executed
+mkdir -p "\$(ls)"                      # escaped substitution is not executed
 EOF
 	check_file "$fixture" || fail "allowed fixture was rejected"
 
 	# These fixtures must preserve command substitutions as literal source text.
 	# shellcheck disable=SC2016
-	for command in 'mkdir -p "$(ls -d .tmp)"' 'cp "$(ls source)" destination' 'mv `ls source` destination' 'mkdir -p "$(lsd -d source)"'; do
+	for command in \
+		'mkdir -p "$(ls -d .tmp)"' \
+		'cp "$(ls source)" destination' \
+		'mv `ls source` destination' \
+		'mkdir -p "$(lsd -d source)"' \
+		'@mkdir -p "$(ls source)"' \
+		'-@cp "$(ls source)" destination' \
+		'if mkdir -p "$(ls source)"; then :; fi' \
+		'sudo mv "$(ls source)" destination'; do
 		printf '%s\n' "$command" >"$fixture"
 		if check_file "$fixture"; then
 			fail "unsafe fixture was accepted: $command"
