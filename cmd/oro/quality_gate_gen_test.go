@@ -569,6 +569,27 @@ func TestWriteQualityGateScriptFile_AbsentConfig(t *testing.T) {
 	}
 }
 
+func qualityGateSerialLaneHarness(t *testing.T, script, body string) string {
+	t.Helper()
+	serialLaneStart := strings.Index(script, "run_serial_lane() {")
+	if serialLaneStart < 0 {
+		t.Fatal("quality gate missing run_serial_lane")
+	}
+	serialLaneEndRel := strings.Index(script[serialLaneStart:], "\n}\n")
+	if serialLaneEndRel < 0 {
+		t.Fatal("quality gate run_serial_lane missing closing brace")
+	}
+	serialLaneEnd := serialLaneStart + serialLaneEndRel + len("\n}\n")
+	serialLane := script[serialLaneStart:serialLaneEnd]
+	if !strings.Contains(serialLane, "acquire_quality_gate_lock") {
+		t.Fatal("quality gate run_serial_lane does not acquire the quality-gate lock")
+	}
+	if strings.Contains(script[:serialLaneStart], "\nacquire_quality_gate_lock\n") {
+		t.Fatal("quality gate acquires the lock before run_serial_lane")
+	}
+	return script[:serialLaneEnd] + "\nheader() { :; }\nrun_serial_lane\n" + body
+}
+
 func TestQualityGateRunLockArchivesDeadOwnerAndStartsWithoutTimeout(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := filepath.Join(dir, "quality_gate.sh")
@@ -578,12 +599,7 @@ func TestQualityGateRunLockArchivesDeadOwnerAndStartsWithoutTimeout(t *testing.T
 		t.Fatalf("writeQualityGateScript: %v", err)
 	}
 	script := buf.String()
-	acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
-	acquireIdx := strings.Index(script, acquireCall)
-	if acquireIdx < 0 {
-		t.Fatalf("generated quality gate missing acquire call marker")
-	}
-	harness := script[:acquireIdx+len("acquire_quality_gate_lock")] + "\n"
+	harness := qualityGateSerialLaneHarness(t, script, "")
 	if err := os.WriteFile(scriptPath, []byte(harness), 0o755); err != nil {
 		t.Fatalf("write quality gate script: %v", err)
 	}
@@ -636,12 +652,7 @@ func TestQualityGateRunLockDoesNotReportWaitingWhenUncontended(t *testing.T) {
 		t.Fatalf("writeQualityGateScript: %v", err)
 	}
 	script := buf.String()
-	acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
-	acquireIdx := strings.Index(script, acquireCall)
-	if acquireIdx < 0 {
-		t.Fatalf("generated quality gate missing acquire call marker")
-	}
-	harness := script[:acquireIdx+len("acquire_quality_gate_lock")] + "\n"
+	harness := qualityGateSerialLaneHarness(t, script, "")
 	if err := os.WriteFile(scriptPath, []byte(harness), 0o755); err != nil {
 		t.Fatalf("write quality gate script: %v", err)
 	}
@@ -680,20 +691,14 @@ func TestQualityGateScriptsRecursiveInvocationReturnsWithoutQueueingBehindParent
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
-			acquireIdx := strings.Index(tc.script, acquireCall)
-			if acquireIdx < 0 {
-				t.Fatalf("quality gate missing acquire call marker")
-			}
-
-			harness := tc.script[:acquireIdx+len("acquire_quality_gate_lock")] + `
+			harness := qualityGateSerialLaneHarness(t, tc.script, `
 if [ "${ORO_QG_RECURSIVE_TEST:-}" = "1" ]; then
     ORO_QG_RECURSIVE_TEST=0 "$0"
 fi
 if [ "${ORO_QG_RECURSIVE_TEST:-}" = "0" ]; then
     echo "recursive child reached quality gate body"
 fi
-`
+`)
 			scriptPath := filepath.Join(dir, "quality_gate.sh")
 			if err := os.WriteFile(scriptPath, []byte(harness), 0o755); err != nil {
 				t.Fatalf("write quality gate harness: %v", err)
@@ -746,14 +751,9 @@ func TestQualityGateRunLockRecoveryPreservesLiveOwnerThenClearsRecursiveQueue(t 
 		t.Fatalf("writeQualityGateScript: %v", err)
 	}
 	script := buf.String()
-	acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
-	acquireIdx := strings.Index(script, acquireCall)
-	if acquireIdx < 0 {
-		t.Fatalf("generated quality gate missing acquire call marker")
-	}
-	harness := script[:acquireIdx+len("acquire_quality_gate_lock")] + `
+	harness := qualityGateSerialLaneHarness(t, script, `
 echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
-`
+`)
 
 	earlyScript := filepath.Join(dir, "early.sh")
 	if err := os.WriteFile(earlyScript, []byte(harness), 0o755); err != nil {
@@ -870,20 +870,14 @@ func TestQualityGateScriptsQueuedWaiterRunsLanesAndEmitsFinalSummaryAfterLockRel
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
-			acquireIdx := strings.Index(tc.script, acquireCall)
-			if acquireIdx < 0 {
-				t.Fatal("quality gate missing acquire call marker")
-			}
-
-			harness := tc.script[:acquireIdx+len("acquire_quality_gate_lock")] + `
+			harness := qualityGateSerialLaneHarness(t, tc.script, `
 echo "lane: synthetic"
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
 echo " SUMMARY"
 echo "═══════════════════════════════════════════════════════════════"
 echo "Quality gate PASSED"
-`
+`)
 			scriptPath := filepath.Join(dir, "quality_gate.sh")
 			if err := os.WriteFile(scriptPath, []byte(harness), 0o755); err != nil {
 				t.Fatalf("write quality gate harness: %v", err)
@@ -966,14 +960,9 @@ func TestCheckedInQualityGateStartsAfterLiveFIFOQueueDrains(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read checked-in quality gate: %v", err)
 	}
-	acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
-	acquireIdx := strings.Index(string(script), acquireCall)
-	if acquireIdx < 0 {
-		t.Fatal("checked-in quality gate missing acquire call marker")
-	}
-	harness := string(script[:acquireIdx+len("acquire_quality_gate_lock")]) + `
+	harness := qualityGateSerialLaneHarness(t, string(script), `
 echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
-`
+`)
 
 	earlyScript := filepath.Join(dir, "early.sh")
 	if err := os.WriteFile(earlyScript, []byte(harness), 0o755); err != nil {
@@ -1050,14 +1039,9 @@ func TestCheckedInQualityGatePreservesLiveOwnerThenClearsFIFOQueue(t *testing.T)
 	if err != nil {
 		t.Fatalf("read checked-in quality gate: %v", err)
 	}
-	acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
-	acquireIdx := strings.Index(string(script), acquireCall)
-	if acquireIdx < 0 {
-		t.Fatal("checked-in quality gate missing acquire call marker")
-	}
-	harness := string(script[:acquireIdx+len("acquire_quality_gate_lock")]) + `
+	harness := qualityGateSerialLaneHarness(t, string(script), `
 echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
-`
+`)
 
 	writeHarness := func(name string) string {
 		t.Helper()
@@ -1164,14 +1148,9 @@ func TestQualityGateScriptsTimedOutWaiterPreservesLiveOwnerAndQueueProgress(t *t
 				t.Fatalf("resolve temp directory: %v", err)
 			}
 			eventsPath := filepath.Join(dir, "events")
-			acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
-			acquireIdx := strings.Index(tc.script, acquireCall)
-			if acquireIdx < 0 {
-				t.Fatal("quality gate missing acquire call marker")
-			}
-			harness := tc.script[:acquireIdx+len("acquire_quality_gate_lock")] + `
+			harness := qualityGateSerialLaneHarness(t, tc.script, `
 echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
-`
+`)
 
 			writeHarness := func(name string) string {
 				t.Helper()
@@ -1299,13 +1278,8 @@ func TestQualityGateScriptsOrphanedLiveOwnerDoesNotBlockFIFOAndHealthyLiveOwnerI
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
-			acquireIdx := strings.Index(tc.script, acquireCall)
-			if acquireIdx < 0 {
-				t.Fatal("quality gate missing acquire call marker")
-			}
 			harnessPath := filepath.Join(dir, "acquire.sh")
-			harness := tc.script[:acquireIdx+len("acquire_quality_gate_lock")] + "\necho acquired\n"
+			harness := qualityGateSerialLaneHarness(t, tc.script, "echo acquired\n")
 			if err := os.WriteFile(harnessPath, []byte(harness), 0o755); err != nil {
 				t.Fatalf("write quality gate harness: %v", err)
 			}
@@ -1497,9 +1471,9 @@ pgrep() {
 
 			eventsPath := filepath.Join(dir, "fifo-events")
 			fifoHarnessPath := filepath.Join(dir, "fifo-acquire.sh")
-			fifoHarness := tc.script[:acquireIdx+len("acquire_quality_gate_lock")] + `
+			fifoHarness := qualityGateSerialLaneHarness(t, tc.script, `
 echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
-`
+`)
 			if err := os.WriteFile(fifoHarnessPath, []byte(fifoHarness), 0o755); err != nil {
 				t.Fatalf("write FIFO quality gate harness: %v", err)
 			}
