@@ -71,7 +71,10 @@ func oracleChunkInWorktree(root, filePath string) bool {
 		return false
 	}
 	info, err := os.Stat(resolved)
-	return err == nil && info.Mode().IsRegular()
+	if err != nil {
+		return false
+	}
+	return info.Mode().IsRegular()
 }
 
 func pathHasTraversal(path string) bool {
