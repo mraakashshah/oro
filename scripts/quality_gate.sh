@@ -445,10 +445,16 @@ run_serial_lane() {
 		return 0
 	fi
 	local names run_filter
-	names=$(grep -vE '^[[:space:]]*#' "$list" | grep -vE '^[[:space:]]*$' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
-	# shellcheck disable=SC2086 # intentional word-splitting: one -run alternative per name
-	run_filter=$(printf '^%s$|' $names)
-	run_filter="${run_filter%|}"
+	if [ -n "${ORO_QG_SERIAL_LANE_RUN_OVERRIDE:-}" ]; then
+		# Test seam: narrow the lane to a specific -run filter (e.g. the regression
+		# canary) so the serial-lane failure path can be proven cheaply.
+		run_filter="$ORO_QG_SERIAL_LANE_RUN_OVERRIDE"
+	else
+		names=$(grep -vE '^[[:space:]]*#' "$list" | grep -vE '^[[:space:]]*$' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
+		# shellcheck disable=SC2086 # intentional word-splitting: one -run alternative per name
+		run_filter=$(printf '^%s$|' $names)
+		run_filter="${run_filter%|}"
+	fi
 	if GOFLAGS=-buildvcs=false go test ./pkg/dispatcher -run "$run_filter" -count=1; then
 		echo "1:0" >"$QG_DIR/serial.rc"
 	else
@@ -1423,6 +1429,18 @@ echo ""
 if [ -n "${ORO_QG_PHASE_MARKER_DIR:-}" ]; then
 	run_phase_marker main "${ORO_QG_MAIN_SLEEP:-0}"
 	run_serial_lane
+	exit 0
+fi
+
+# Run ONLY the serialized timing lane (skip the main phase). Useful pre-merge and
+# for proving the lane catches regressions; exits with the lane's own status.
+if [ "${ORO_QG_SERIAL_LANE_ONLY:-}" = "1" ]; then
+	run_serial_lane
+	serial_fail=1
+	if [ -f "$QG_DIR/serial.rc" ]; then
+		IFS=: read -r _ serial_fail <"$QG_DIR/serial.rc"
+	fi
+	[ "${serial_fail:-1}" -gt 0 ] && exit 1
 	exit 0
 fi
 

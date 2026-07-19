@@ -9,7 +9,23 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"oro/pkg/testutil/qgserial"
 )
+
+// TestSerialLaneRegressionCanary is a guarded no-op that proves the serial lane
+// catches regressions: under ORO_QG_INJECT_TIMING_REGRESSION=1 it fails,
+// simulating a broken timing invariant that the serialized lane must surface. It
+// never fails in production — the inject env is set only by
+// TestConcurrentGatesNoTimingFlakeSerialLaneCatchesRegression. It is on the
+// canonical serial-lane list, so the main gate skips it and only the serial lane
+// runs it.
+func TestSerialLaneRegressionCanary(t *testing.T) {
+	qgserial.RequireSerial(t)
+	if os.Getenv("ORO_QG_INJECT_TIMING_REGRESSION") == "1" {
+		t.Fatal("injected timing regression (serial-lane regression-catch proof)")
+	}
+}
 
 // These tests exercise the quality-gate lock/phase skeleton (oro-hwx2): the main
 // phase must run concurrently (no global cross-worktree lock), while the serial
@@ -101,6 +117,122 @@ func readIntMarker(dir, name string) int {
 		return -1
 	}
 	return n
+}
+
+// worktreeRoot returns the repo/worktree root (parent of scripts/), so the script
+// can resolve `go test ./pkg/dispatcher` correctly regardless of the test CWD.
+func worktreeRoot(t *testing.T) string {
+	t.Helper()
+	return filepath.Dir(filepath.Dir(qgScript(t)))
+}
+
+// runSerialLaneOnly runs the script's serial-lane-only path (real go test) and
+// returns its exit code and wall time. It runs from the worktree root so the go
+// test package path resolves, and isolates the lock under repoRoot.
+func runSerialLaneOnly(t *testing.T, repoRoot, runOverride string, injectRegression bool) (int, time.Duration) {
+	t.Helper()
+	env := cleanQGEnv()
+	env = append(env,
+		"ORO_QG_SERIAL_LANE_ONLY=1",
+		"ORO_QG_REPO_ROOT_OVERRIDE="+repoRoot,
+		"ORO_QG_LOCK_TIMEOUT_SECONDS=60",
+	)
+	if runOverride != "" {
+		env = append(env, "ORO_QG_SERIAL_LANE_RUN_OVERRIDE="+runOverride)
+	}
+	if injectRegression {
+		env = append(env, "ORO_QG_INJECT_TIMING_REGRESSION=1")
+	}
+	cmd := exec.Command("bash", qgScript(t))
+	cmd.Env = env
+	cmd.Dir = worktreeRoot(t)
+	start := time.Now()
+	out, err := cmd.CombinedOutput()
+	dur := time.Since(start)
+	exit := 0
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			exit = ee.ExitCode()
+		} else {
+			t.Fatalf("serial-lane-only run error: %v\n%s", err, out)
+		}
+	}
+	return exit, dur
+}
+
+// TestConcurrentGatesNoTimingFlakeSerialLaneCatchesRegression is the integration
+// proof for oro-eee8: concurrent main phases run lock-free and flake-free (guarded
+// tests skipped, even when the serial-lane env leaks in ambiently), while the
+// serialized lane still runs the guarded tests and catches a regression.
+func TestConcurrentGatesNoTimingFlakeSerialLaneCatchesRegression(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go not available")
+	}
+
+	t.Run("concurrent main phases are lock-free and neutralize leaked serial env", func(t *testing.T) {
+		markerDir := t.TempDir()
+		repoRoot := t.TempDir()
+		const gates = 3
+		var wg sync.WaitGroup
+		results := make([]probeResult, gates)
+		ids := []string{"g0", "g1", "g2"}
+		for i := 0; i < gates; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				// Ambient leak: a stray ORO_QG_SERIAL_LANE=1 must NOT reach the main phase.
+				results[i] = runGateProbe(t, markerDir, repoRoot, ids[i],
+					"ORO_QG_SERIAL_LANE=1", "ORO_QG_MAIN_SLEEP=1", "ORO_QG_SERIAL_SLEEP=0")
+			}(i)
+		}
+		wg.Wait()
+		for i, r := range results {
+			if r.mainPeak < 2 {
+				t.Errorf("gate %s main phase serialized (peak=%d); the global lock must be gone from the main phase", ids[i], r.mainPeak)
+			}
+			if r.mainEnv != "" {
+				t.Errorf("gate %s main phase saw ORO_QG_SERIAL_LANE=%q; leaked env must be neutralized so guarded tests stay skipped there", ids[i], r.mainEnv)
+			}
+			if r.serialEnv != "1" {
+				t.Errorf("gate %s serial lane saw ORO_QG_SERIAL_LANE=%q, want 1 (only place guarded tests run)", ids[i], r.serialEnv)
+			}
+		}
+	})
+
+	t.Run("serial lane catches a broken timing invariant", func(t *testing.T) {
+		canary := "^TestSerialLaneRegressionCanary$"
+
+		exitClean, _ := runSerialLaneOnly(t, t.TempDir(), canary, false)
+		if exitClean != 0 {
+			t.Fatalf("serial lane failed with no regression injected: exit=%d", exitClean)
+		}
+
+		exitBroken, _ := runSerialLaneOnly(t, t.TempDir(), canary, true)
+		if exitBroken == 0 {
+			t.Fatal("serial lane did NOT catch the injected timing regression (exit=0)")
+		}
+	})
+
+	t.Run("serial lane wall-time is a small minority of the gate", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("skipping timing quantification in -short mode")
+		}
+		// Run the full guarded set once (no override) and record wall time. The
+		// full gate takes minutes (lint + full test suite + build + vet + vuln);
+		// the serial lane running ~two dozen fast tests must be a small minority.
+		exit, dur := runSerialLaneOnly(t, t.TempDir(), "", false)
+		if exit != 0 {
+			t.Fatalf("serial lane (full guarded set) failed: exit=%d", exit)
+		}
+		t.Logf("serial timing lane wall-time: %s (full guarded set)", dur.Round(time.Millisecond))
+		const maxLaneTime = 90 * time.Second
+		if dur > maxLaneTime {
+			t.Errorf("serial lane took %s (> %s); it is no longer a small minority of the gate — reconsider the guarded set", dur, maxLaneTime)
+		}
+	})
 }
 
 func TestMainGateRunsConcurrentSerialLaneSerializes(t *testing.T) {
