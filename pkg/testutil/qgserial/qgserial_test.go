@@ -1,4 +1,4 @@
-package qgserial
+package qgserial //nolint:testpackage // white-box: exercises unexported skipUnlessSerialLane
 
 import (
 	"fmt"

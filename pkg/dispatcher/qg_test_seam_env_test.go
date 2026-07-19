@@ -1,4 +1,4 @@
-package dispatcher
+package dispatcher //nolint:testpackage // white-box: exercises unexported qgRunnerEnv
 
 import (
 	"strings"

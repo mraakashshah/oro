@@ -1,4 +1,4 @@
-package dispatcher
+package dispatcher //nolint:testpackage // white-box: defines serial-lane test helpers shared across files
 
 import (
 	"bufio"

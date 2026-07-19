@@ -35,6 +35,8 @@ const SerialLaneEnvVar = "ORO_QG_SERIAL_LANE"
 // truthy ORO_QG_SERIAL_LANE. Call it as the first line of any test that stands up
 // a real socket listener or asserts tight wall-clock timing, so the concurrent
 // main gate skips it and only the serialized lane runs it.
+//
+//oro:testonly
 func RequireSerial(t *testing.T) {
 	t.Helper()
 	skipUnlessSerialLane(t)

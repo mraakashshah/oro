@@ -1,4 +1,4 @@
-package dispatcher
+package dispatcher //nolint:testpackage // white-box: shares readSerialLaneList/serialLaneListPath helpers
 
 import (
 	"go/ast"

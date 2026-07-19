@@ -1,6 +1,7 @@
-package dispatcher
+package dispatcher //nolint:testpackage // white-box: shares serial-lane test helpers + guarded canary
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -73,7 +74,8 @@ func runGateProbe(t *testing.T, markerDir, repoRoot, id string, extraEnv ...stri
 	out, err := cmd.CombinedOutput()
 	exit := 0
 	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
 			exit = ee.ExitCode()
 		} else {
 			t.Fatalf("probe %s run error: %v\n%s", id, err, out)
@@ -151,7 +153,8 @@ func runSerialLaneOnly(t *testing.T, repoRoot, runOverride string, injectRegress
 	dur := time.Since(start)
 	exit := 0
 	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
 			exit = ee.ExitCode()
 		} else {
 			t.Fatalf("serial-lane-only run error: %v\n%s", err, out)
