@@ -1,7 +1,7 @@
 # Codex Bash Read-Hook for Normal Workers
 
 **Date:** 2026-07-18
-**Status:** Validated — adversarial review R2 (fixed deny-field, allow-contract, str_replace scope, live-validation gate)
+**Status:** Validated — adversarial review R3 (fixed deny-field, allow-contract, str_replace scope, live-validation gate; enumerated Set-B Bash-`{}` regressions; promoted live gate to a reproducible script)
 **Priority:** P0
 
 ## Goal
@@ -137,14 +137,31 @@ call.
   migration. (This is why the coverage extends to *already-installed* normal
   workers, not just fresh installs.)
 
-Existing tests that assert the legacy `str_replace`/`view` surface — which we
-therefore **keep passing unchanged** by retaining the binary arm and only
-touching the config matcher: `cmd/oro/end_to_end_codex_test.go:296-306`,
+**Two disjoint sets of existing tests — track both explicitly:**
+
+*Set A — KEEP green (legacy `str_replace`/`view` surface).* Retained because
+we keep the binary `handleCodexView` arm and only touch the config matcher:
+`cmd/oro/end_to_end_codex_test.go:296-306`,
 `cmd/oro-search-hook/parity_test.go:41-56`,
 `cmd/oro-search-hook/main_test.go:332-365,429-430`,
 `assets/hooks/test_parity.py:77-82`. `cmd_start_test.go:207`
 (`TestCodexHookConfigBlockReplacement`) only asserts `oro-search-hook` is
 present, which the `Bash` matcher still satisfies — it does not break.
+
+*Set B — MUST be UPDATED (will break, by design).* Three existing tests feed a
+`Bash` event (`ls`) and assert `{}` because today `Bash` falls to the
+default→`allowJSON` arm. Once `tool_name=="Bash"` routes to `handleCodexBash`,
+the allow path is **empty stdout**, so these must be rewritten to assert zero
+bytes — and guarded against being "fixed" back to `{}` (which would reinstate
+the dangerous `{}`-on-Bash contract):
+`cmd/oro-search-hook/main_test.go:45-52` (`TestRun`),
+`cmd/oro-search-hook/main_test.go:131-140` (`TestHookDispatch` "allow non-Read
+tool (Bash)" — note its `json.Unmarshal` at ~:256 must change, since empty
+stdout is not valid JSON),
+`cmd/oro-search-hook/integration_test.go:86-100` (`allow_non_read_tool`).
+This is a **required task deliverable**, not incidental cleanup: the binary
+task's acceptance must include updating these three sites and adding a
+regression assertion that a non-`cat` `Bash` allow emits exactly zero bytes.
 
 ### 3. Verification
 
@@ -152,22 +169,33 @@ present, which the `Bash` matcher still satisfies — it does not break.
   **`systemMessage` present and non-empty** (assert this field, not only
   `permissionDecisionReason`) in the `hookSpecificOutput` deny shape;
   `sed -n`, `head`, `tail`, `rg`, chained, redirected, substituted,
-  multi-file, malformed, and non-`Bash` events → **empty stdout** (assert
-  zero bytes, the Codex allow contract); small/test/non-code `cat` → empty
-  stdout; Claude `Read` and legacy `view` outputs unchanged (`{}` / top-level
-  deny).
+  multi-file, malformed, and non-`Bash`-read `Bash` events (e.g. `ls`) →
+  **empty stdout** (assert zero bytes, the Codex allow contract); small/test/
+  non-code `cat` → empty stdout; Claude `Read` and legacy `view` outputs
+  unchanged (`{}` / top-level deny). **Plus** the Set-B updates above
+  (`main_test.go:45-52,131-140`, `integration_test.go:86-100`) rewritten to the
+  zero-byte Bash-allow contract.
+- A one-line update to the binary's package doc comment (`main.go:1-8`) and a
+  Codex-specific deny struct (the existing `denyResponse` at `main.go:64-68`
+  documents only the top-level shape) — QG-level, in the binary task's scope.
 - `TestCodexHookConfigBashMatcherIncludesSearchHook` (config): generated
   block wires `oro-search-hook` on the `Bash` matcher **and** no longer emits
   a `str_replace_based_edit_tool` matcher.
-- **Live-`codex exec` validation (epic acceptance gate).** A JSON-to-binary
-  test is coverage-identical to the unit test and proves nothing about the
-  consumer. Instead, gate epic acceptance on a real check: run a normal
-  worker (or a minimal `codex exec` harness) against the installed
-  `$CODEX_HOME/config.toml`, have it `cat` a large code file, and confirm
-  (a) the read is intercepted and (b) the **summary reaches the model**
-  (whichever field Codex surfaces). If a live Codex CLI is unavailable in CI,
-  this is a documented manual validation step recorded in the epic's closing
-  notes — explicitly **not** claimed as satisfied by the binary tests.
+- **Live-`codex exec` validation — a reproducible script gate, not a manual
+  note.** A JSON-to-binary test is coverage-identical to the unit test and
+  proves nothing about the consumer, so the feature-level truth is gated on a
+  committed, deterministic script: `scripts/validate_codex_bash_hook.sh`. It
+  sets an isolated `CODEX_HOME`, runs `installCodexHookConfig` into it, launches
+  `codex exec` (the same spawn path normal workers use) to `cat` a large
+  generated `.go` file, and **asserts, with a binary exit code**, that (a) the
+  raw file body is absent from the transcript (read intercepted) and (b) the
+  structural summary is present (summary reached the model). Exit 0 = pass,
+  non-zero = fail. Epic acceptance requires a **recorded passing run** of this
+  script (its output pasted into the epic's closing notes with the Codex CLI
+  version). CI may skip it only if it detects no `codex` binary, and in that
+  case the epic **cannot be closed** until an operator runs the script on a
+  machine with Codex and records the pass — the assumption is never waved
+  through on a bare promise.
 
 ## Alternatives Considered
 
@@ -241,10 +269,13 @@ On `main`, quality gate green, with:
    `view` outputs unchanged.
 2. `TestCodexHookConfigBashMatcherIncludesSearchHook` passing — `Bash` matcher
    includes `oro-search-hook`; no `str_replace_based_edit_tool` matcher.
-3. The four legacy `str_replace`/`view` test sites still green (binary arm
-   retained).
-4. **Live-`codex exec` validation** recorded: a real Codex worker's large-file
-   `cat` is intercepted and the summary reaches the model. This gate — not the
-   binary tests — is what certifies "normal Codex workers are covered." If a
-   live Codex CLI is unavailable in CI, the manual validation result is
-   recorded in the epic's closing notes.
+3. Set-A four legacy `str_replace`/`view` test sites still green (binary arm
+   retained); Set-B three `Bash`-allow test sites updated to the zero-byte
+   contract (a non-`cat` `Bash` allow emits exactly zero bytes, not `{}`).
+4. **`scripts/validate_codex_bash_hook.sh` recorded passing** against a live
+   `codex exec`: a real worker's large-file `cat` is intercepted and the
+   summary reaches the model (script exit 0, output + Codex version in the
+   epic's closing notes). This reproducible gate — not the binary tests — is
+   what certifies "normal Codex workers are covered." The epic cannot close on
+   a bare promise; if CI lacks `codex`, an operator must run it and record the
+   pass.
