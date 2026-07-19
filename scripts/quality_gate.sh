@@ -857,7 +857,7 @@ check() {
 qg_python_tool_path() {
 	local tool="$1"
 	local candidate
-	for candidate in ".venv/bin/$tool" "$REPO_ROOT/.venv/bin/$tool" "$HOME/.local/bin/$tool"; do
+	for candidate in ".venv/bin/$tool" "$REPO_ROOT/.venv/bin/$tool"; do
 		if [ -x "$candidate" ]; then
 			if ! qg_python_tool_path_allowed "$candidate"; then
 				continue

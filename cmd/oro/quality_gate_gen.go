@@ -904,7 +904,7 @@ qg_run_pylint_source() {
         echo "No tracked Python source files"
         return 0
     fi
-    pylint --disable=all --enable=E "${files[@]}"
+    qg_run_python_tool pylint --disable=all --enable=E "${files[@]}"
 }
 
 # shellcheck disable=SC2317,SC2329
@@ -1087,7 +1087,7 @@ check() {
 qg_python_tool_path() {
     local tool="$1"
     local candidate
-    for candidate in ".venv/bin/$tool" "$REPO_ROOT/.venv/bin/$tool" "$HOME/.local/bin/$tool"; do
+    for candidate in ".venv/bin/$tool" "$REPO_ROOT/.venv/bin/$tool"; do
         if [ -x "$candidate" ]; then
             if ! qg_python_tool_path_allowed "$candidate"; then
                 continue
@@ -1127,6 +1127,14 @@ qg_python_tool_path_allowed() {
 qg_run_python_tool() {
     local tool="$1"
     shift
+    # pylint must analyze code inside the project's dependency environment so
+    # first-party imports (e.g. files that import pytest) resolve; a global
+    # install emits a false import-error (E0401). Prefer uv run for it; --with
+    # provides pylint itself when it is not a project dependency.
+    if [ "$tool" = "pylint" ] && command -v uv >/dev/null 2>&1; then
+        uv run --with pylint pylint "$@"
+        return
+    fi
     local path
     if path=$(qg_python_tool_path "$tool"); then
         "$path" "$@"

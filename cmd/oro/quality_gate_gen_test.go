@@ -93,6 +93,44 @@ func TestGenerateGolangciLint(t *testing.T) {
 	})
 }
 
+// TestQualityGatePylintRunsInProjectEnv verifies the generated gate invokes
+// pylint inside the project's dependency environment (via uv) rather than a
+// global install, so source files that import project dependencies (e.g. pytest)
+// do not raise a false import-error (E0401), and that the python tool resolver
+// does not fall back to a global ~/.local/bin install.
+func TestQualityGatePylintRunsInProjectEnv(t *testing.T) {
+	cfg := &langprofile.Config{
+		Languages: map[string]langprofile.LanguageConfig{
+			"python": {
+				TestCmd:    "uv run pytest",
+				Formatters: []string{"ruff"},
+				Linters:    []string{"ruff", "pylint"},
+				TypeCheck:  "pyright",
+			},
+		},
+	}
+	script, err := generateQualityGateScript(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Fix: the python tool resolver must not fall back to a global ~/.local/bin
+	// install, which runs outside the project dependency environment.
+	if strings.Contains(script, `$HOME/.local/bin/$tool`) {
+		t.Error("qg_python_tool_path should not include the global $HOME/.local/bin candidate")
+	}
+	// Fix: pylint must run via uv in the project env, not a bare global binary.
+	if !strings.Contains(script, `uv run --with pylint pylint`) {
+		t.Error("qg_run_python_tool should run pylint via `uv run --with pylint`")
+	}
+	// Fix: the pylint lint helper must route through qg_run_python_tool.
+	if !strings.Contains(script, `qg_run_python_tool pylint --disable=all --enable=E`) {
+		t.Error("qg_run_pylint_source should route pylint through qg_run_python_tool")
+	}
+
+	checkBashSyntax(t, script)
+}
+
 // TestGeneratePyprojectToolSections verifies pyproject.toml tool section generation from Config.
 func TestGeneratePyprojectToolSections(t *testing.T) {
 	t.Run("Python in config returns TOML with tool sections", func(t *testing.T) {
