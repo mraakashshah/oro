@@ -25,7 +25,8 @@ LIST="pkg/dispatcher/testdata/serial_lane_tests.txt"
 # Build the -run regex from the canonical list (anchored per name).
 names="$(grep -vE '^\s*#' "$LIST" | grep -vE '^\s*$' | sed -E 's/^\s+|\s+$//g')"
 # shellcheck disable=SC2086 # intentional word-splitting: one arg per test name
-serial_run="$(printf '^%s$|' $names)"; serial_run="${serial_run%|}"
+serial_run="$(printf '^%s$|' $names)"
+serial_run="${serial_run%|}"
 
 if [ "${1:-}" = "--control" ]; then
 	# Control: dispatcher tests NOT in the list (exclude via -skip), capped to a
@@ -46,18 +47,18 @@ echo "Building dispatcher test binary..."
 go test ./pkg/dispatcher -c -o "$work/disp.test"
 
 echo "Starting $BURN CPU burners..."
-for _ in $(seq 1 "$BURN"); do ( yes >/dev/null ) & done
+for _ in $(seq 1 "$BURN"); do (yes >/dev/null) & done
 
 echo "Hammering: WORKERS=$WORKERS ROUNDS=$ROUNDS GOMAXPROCS=$GOMAXPROCS"
 for r in $(seq 1 "$ROUNDS"); do
 	pids=()
 	for _ in $(seq 1 "$WORKERS"); do
 		if [ -n "$SKIP" ]; then
-			( "$work/disp.test" -test.run "$RUN" -test.skip "$SKIP" -test.count=1 -test.v 2>&1 \
-				| grep -E '^--- FAIL|panic:|DATA RACE' >>"$work/fails" || true ) &
+			("$work/disp.test" -test.run "$RUN" -test.skip "$SKIP" -test.count=1 -test.v 2>&1 |
+				grep -E '^--- FAIL|panic:|DATA RACE' >>"$work/fails" || true) &
 		else
-			( "$work/disp.test" -test.run "$RUN" -test.count=1 -test.v 2>&1 \
-				| grep -E '^--- FAIL|panic:|DATA RACE' >>"$work/fails" || true ) &
+			("$work/disp.test" -test.run "$RUN" -test.count=1 -test.v 2>&1 |
+				grep -E '^--- FAIL|panic:|DATA RACE' >>"$work/fails" || true) &
 		fi
 		pids+=($!)
 	done
