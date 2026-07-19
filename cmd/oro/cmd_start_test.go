@@ -277,7 +277,7 @@ func TestCodexHookConfigBashMatcherIncludesSearchHook(t *testing.T) {
 	iEnforce := strings.Index(bashLine, "enforce_skills.py")
 	iGuard := strings.Index(bashLine, "destructive_command_guard.py")
 	iHook := strings.Index(bashLine, "oro-search-hook")
-	if !(iEnforce < iGuard && iGuard < iHook) {
+	if iEnforce >= iGuard || iGuard >= iHook {
 		t.Errorf("oro-search-hook must run LAST on the Bash chain "+
 			"(enforce_skills < destructive_command_guard < oro-search-hook); "+
 			"got positions %d/%d/%d:\n%s", iEnforce, iGuard, iHook, bashLine)
