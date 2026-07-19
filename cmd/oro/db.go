@@ -12,6 +12,7 @@ import (
 	"oro/pkg/beadstore/migrations"
 	"oro/pkg/dbutil"
 	"oro/pkg/protocol"
+	"oro/pkg/storage"
 )
 
 // openDB opens a SQLite database at path and enforces production-safe
@@ -23,6 +24,19 @@ func openDB(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("open db %s: %w", path, err)
 	}
 	return db, nil
+}
+
+// openStorageCatalog opens the host-global catalog associated with oroHome.
+func openStorageCatalog(ctx context.Context, oroHome string) (*storage.Catalog, error) {
+	paths, err := ResolveStoragePaths(oroHome)
+	if err != nil {
+		return nil, fmt.Errorf("resolve storage paths: %w", err)
+	}
+	catalog, err := storage.OpenCatalog(ctx, paths.CatalogPath)
+	if err != nil {
+		return nil, fmt.Errorf("open storage catalog: %w", err)
+	}
+	return catalog, nil
 }
 
 // openStateDB opens the dispatcher state database and ensures the full schema
