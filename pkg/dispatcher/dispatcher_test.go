@@ -1685,8 +1685,8 @@ func TestHeartbeatsNotPersistedDurably(t *testing.T) {
 	if worker.contextPct != 80 {
 		t.Errorf("contextPct = %d, want 80", worker.contextPct)
 	}
-	if !worker.lastProgress.Equal(now) {
-		t.Errorf("lastProgress = %s, want %s", worker.lastProgress, now)
+	if !worker.lastProgress.Equal(previousProgress) {
+		t.Errorf("lastProgress = %s, want unchanged %s", worker.lastProgress, previousProgress)
 	}
 	d.mu.Unlock()
 

@@ -1577,6 +1577,57 @@ func TestCheckHeartbeats_ReviewingWorkerWithLiveProcessButDeadReviewIsRemoved(t 
 	}
 }
 
+// TestCheckHeartbeats_ReviewDeadGracePrecedesProgressTimeout verifies that a
+// newly absent ops review gets its configured grace period even when the
+// worker's progress clock was already stale.
+func TestCheckHeartbeats_ReviewDeadGracePrecedesProgressTimeout(t *testing.T) {
+	t.Parallel()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	d.procMgr = &mockProcessManager{}
+	d.cfg.ProgressTimeout = time.Second
+	d.cfg.ReviewDeadGrace = time.Minute
+
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+
+	workerID := "reviewing-newly-dead-review"
+	conn := newMockConn()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		state:        protocol.WorkerReviewing,
+		beadID:       "bead-newly-dead-review",
+		lastSeen:     now,
+		lastProgress: now.Add(-(d.cfg.ProgressTimeout + time.Second)),
+		managed:      true,
+		encoder:      json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+
+	// No ops review is active. The first scan starts ReviewDeadGrace and must
+	// not let the already-stale progress clock bypass that grace period.
+	d.checkHeartbeats(context.Background())
+
+	d.mu.Lock()
+	w, stillPresent := d.workers[workerID]
+	d.mu.Unlock()
+
+	if !stillPresent {
+		t.Fatal("reviewing worker was reaped before ReviewDeadGrace elapsed")
+	}
+	if conn.closed {
+		t.Error("worker connection was closed before ReviewDeadGrace elapsed")
+	}
+	if !w.reviewDeadSince.Equal(now) {
+		t.Errorf("reviewDeadSince = %v, want %v", w.reviewDeadSince, now)
+	}
+	if got := eventCount(t, d.db, "progress_timeout"); got != 0 {
+		t.Errorf("progress_timeout events = %d, want 0 during ReviewDeadGrace", got)
+	}
+}
+
 // TestCheckHeartbeats_KillsManagedWorkerProcess verifies that checkHeartbeats calls
 // procMgr.Kill for managed workers (heartbeat and progress timeout) but NOT for
 // unmanaged workers. prevSession managed workers are still killed (the OS process

@@ -14,7 +14,7 @@ import (
 // configured to fail to spawn → ops.Spawner sends VerdictFailed and never
 // adds the agent to its active map, so HasActiveForBead returns false), and
 // the worker is then recycled by the dispatcher. The fix from oro-9nfh's
-// follow-up (reviewDeadGraceExpiredLocked) must remove the worker via
+// follow-up (reviewDeadStateLocked) must remove the worker via
 // checkHeartbeats AND reset the bead's status to "open" so it can be
 // reassigned. Before the fix, the bead would stay in_progress with no
 // active assignment (the zombie symptom).
