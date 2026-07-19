@@ -3199,6 +3199,92 @@ func TestClassifyReviewFailure_ContentBased(t *testing.T) {
 	}
 }
 
+func TestClassifyReviewFailure_RateLimited(t *testing.T) {
+	tests := []struct {
+		name     string
+		feedback string
+		want     ReviewFailureClass
+	}{
+		{
+			name:     "five hour overage rejected",
+			feedback: `{"rateLimitType":"five_hour","overageStatus":"rejected"}`,
+			want:     ReviewFailureClass("rate_limited"),
+		},
+		{
+			name:     "allowed overage is not rate limited",
+			feedback: `{"rateLimitType":"five_hour","overageStatus":"allowed"}`,
+			want:     ReviewFailureOrdinary,
+		},
+		{
+			name:     "missing overage signal is not rate limited",
+			feedback: `{"rateLimitType":"five_hour"}`,
+			want:     ReviewFailureOrdinary,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyReviewFailure(ops.Result{Feedback: tt.feedback, Err: errors.New("exit status 1")})
+			if got != tt.want {
+				t.Fatalf("classifyReviewFailure() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleReviewResult_RateLimitedDefersReReview(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		beadID   = "bead-rate-limited"
+		workerID = "w-rate-limited"
+		worktree = "/tmp/rate-limited"
+	)
+
+	assignmentID, err := d.createAssignment(ctx, beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	conn := newMockConn()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		encoder:      json.NewEncoder(conn),
+		state:        protocol.WorkerReviewing,
+		beadID:       beadID,
+		worktree:     worktree,
+		assignmentID: assignmentID,
+	}
+	d.worktreeByBead[beadID] = worktree
+	d.assigningBeads[beadID] = true
+	d.mu.Unlock()
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+	beadSrc.mu.Unlock()
+
+	resultCh := make(chan ops.Result, 1)
+	resultCh <- ops.Result{
+		Verdict:  ops.VerdictRejected,
+		Feedback: `{"rateLimitType":"five_hour","overageStatus":"rejected"}`,
+		Err:      errors.New("exit status 1"),
+	}
+	d.handleReviewResult(ctx, workerID, beadID, resultCh)
+
+	if got := eventCount(t, d.db, "review_rate_limited"); got != 1 {
+		t.Fatalf("review_rate_limited events = %d, want 1", got)
+	}
+	if got := eventCount(t, d.db, "review_rejected"); got != 0 {
+		t.Fatalf("rate-limited review must not reassign immediately, review_rejected events = %d", got)
+	}
+	if len(beadSrc.deferCalls) != 1 || beadSrc.deferCalls[0].id != beadID {
+		t.Fatalf("defer calls = %+v, want one cooldown defer for %s", beadSrc.deferCalls, beadID)
+	}
+	if until, parseErr := time.Parse(time.RFC3339, beadSrc.deferCalls[0].until); parseErr != nil || !until.After(time.Now().UTC()) {
+		t.Fatalf("defer until = %q, want future RFC3339 timestamp (parse err %v)", beadSrc.deferCalls[0].until, parseErr)
+	}
+}
+
 func TestHandleReviewResult_SubprocessErrorReleasesReviewingWorker(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()

@@ -77,6 +77,11 @@ const statusThrottleWindow = 5 * time.Second
 // the ready queue long enough for another task or an operator to make progress.
 const qgOriginalReopenDeferDuration = time.Hour
 
+// reviewRateLimitDeferDuration keeps a bead out of the ready queue after the
+// reviewer exhausts its five-hour usage window. Reassigning immediately would
+// start another reviewer in the same rate-limited window.
+const reviewRateLimitDeferDuration = time.Hour
+
 const maxCodeSearchContextSize = 128 * 1024
 
 // ErrSemanticDisabled is returned by WaitForEmbedder when semantic search has
@@ -4218,6 +4223,9 @@ const (
 	// ReviewFailureInfraBlocked means the acceptance command passed, but the
 	// review agent or tooling failed before producing useful implementation feedback.
 	ReviewFailureInfraBlocked ReviewFailureClass = "infra_blocked"
+	// ReviewFailureRateLimited means the reviewer exhausted its five-hour usage
+	// window and the bead must wait before another review attempt.
+	ReviewFailureRateLimited ReviewFailureClass = "rate_limited"
 )
 
 // handleReviewResult waits for the ops review result and acts on it.
@@ -4231,13 +4239,14 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 			d.handleReviewApproved(ctx, workerID, beadID, result)
 		case ops.VerdictRejected:
 			switch classifyReviewFailure(result) {
-			case ReviewFailureEnvBlocked, ReviewFailureInfraBlocked:
+			case ReviewFailureEnvBlocked, ReviewFailureInfraBlocked, ReviewFailureRateLimited:
 				d.handleReviewBlocked(ctx, workerID, beadID, result)
 				return
 			}
 			d.handleReviewRejection(ctx, workerID, beadID, result.Feedback)
 		default:
-			if classifyReviewFailure(result) == ReviewFailureInfraBlocked {
+			switch classifyReviewFailure(result) {
+			case ReviewFailureInfraBlocked, ReviewFailureRateLimited:
 				d.handleReviewBlocked(ctx, workerID, beadID, result)
 				return
 			}
@@ -4316,6 +4325,9 @@ func classifyReviewFailure(result ops.Result) ReviewFailureClass {
 	if result.Err != nil && reviewStartupHookFailed(raw) {
 		return ReviewFailureInfraBlocked
 	}
+	if reviewRateLimited(detail) {
+		return ReviewFailureRateLimited
+	}
 	if !strings.Contains(detail, "acceptance command passed") {
 		return ReviewFailureOrdinary
 	}
@@ -4326,6 +4338,13 @@ func classifyReviewFailure(result ops.Result) ReviewFailureClass {
 		return ReviewFailureInfraBlocked
 	}
 	return ReviewFailureOrdinary
+}
+
+func reviewRateLimited(detail string) bool {
+	return strings.Contains(detail, "ratelimittype") &&
+		strings.Contains(detail, "five_hour") &&
+		strings.Contains(detail, "overagestatus") &&
+		strings.Contains(detail, "rejected")
 }
 
 func reviewEnvBlocked(detail string) bool {
@@ -4397,9 +4416,13 @@ func (d *Dispatcher) handleReviewBlocked(ctx context.Context, workerID, beadID s
 	class := classifyReviewFailure(result)
 	eventType := "review_env_blocked"
 	reason := "review environment blocked"
-	if class == ReviewFailureInfraBlocked {
+	switch class {
+	case ReviewFailureInfraBlocked:
 		eventType = "review_infra_blocked"
 		reason = "review infrastructure blocked"
+	case ReviewFailureRateLimited:
+		eventType = "review_rate_limited"
+		reason = "reviewer rate limited"
 	}
 	detail := reviewFailureDetail(result)
 	if !matchesReviewingWorker {
@@ -4408,11 +4431,7 @@ func (d *Dispatcher) handleReviewBlocked(ctx context.Context, workerID, beadID s
 	}
 	_ = d.logEvent(ctx, eventType, "ops", beadID, workerID, detail)
 	d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID, reason, detail), beadID, workerID)
-	if d.shouldReopenBead(ctx, beadID) {
-		if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
-			_ = d.logEvent(ctx, eventType+"_reopen_failed", "ops", beadID, workerID, err.Error())
-		}
-	}
+	d.reopenBlockedReview(ctx, beadID, workerID, eventType, class)
 	if err := d.completeAssignment(ctx, assignmentID, beadID); err != nil {
 		_ = d.logEvent(ctx, eventType+"_assignment_cleanup_failed", "ops", beadID, workerID, err.Error())
 	}
@@ -4730,6 +4749,30 @@ func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg p
 	for _, buffered := range msg.Reconnect.BufferedEvents {
 		d.handleMessage(ctx, workerID, buffered)
 	}
+}
+
+func (d *Dispatcher) reopenBlockedReview(
+	ctx context.Context,
+	beadID, workerID, eventType string,
+	class ReviewFailureClass,
+) {
+	if !d.shouldReopenBead(ctx, beadID) {
+		return
+	}
+	if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
+		_ = d.logEvent(ctx, eventType+"_reopen_failed", "ops", beadID, workerID, err.Error())
+		return
+	}
+	if class != ReviewFailureRateLimited {
+		return
+	}
+
+	until := d.nowFunc().UTC().Add(reviewRateLimitDeferDuration).Format(time.RFC3339)
+	if err := d.beads.Defer(ctx, beadID, until); err != nil {
+		_ = d.logEvent(ctx, eventType+"_defer_failed", "ops", beadID, workerID, err.Error())
+		return
+	}
+	_ = d.logEvent(ctx, eventType+"_deferred", "ops", beadID, workerID, until)
 }
 
 func (d *Dispatcher) shutdownReconnectIfSpawnForStopping(workerID string) bool {
