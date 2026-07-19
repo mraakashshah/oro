@@ -4,6 +4,7 @@ package dispatcher
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -300,6 +301,30 @@ func TestReadProcessEnvironmentSnapshotsSkipsPermissionDenied(t *testing.T) {
 	got := ownedProcessesFromEnvironmentSnapshot(processes, snapshots.environments, markers)
 	if len(got) != 1 || got[0] != owned {
 		t.Fatalf("owned processes = %#v, want %#v", got, []OwnedProcess{owned})
+	}
+}
+
+func TestReadProcessEnvironmentSnapshotsSkipsDarwinVanishedPID(t *testing.T) {
+	markers := []string{
+		"ORO_SOCKET_PATH=/tmp/owned-process.sock",
+		"ORO_WORKER_ID=owned-worker",
+	}
+	vanished := OwnedProcess{PID: 60_003, PGID: 60_003}
+	owned := OwnedProcess{PID: 60_004, PGID: 60_004}
+	processes := []OwnedProcess{vanished, owned}
+
+	snapshots, err := readProcessEnvironmentSnapshotsWithReader(context.Background(), processes, func(pid int) ([]string, error) {
+		if pid == vanished.PID {
+			return nil, fmt.Errorf("kern.procargs2: %w", syscall.EINVAL)
+		}
+		return append([]string{"PATH=/usr/bin"}, markers...), nil
+	})
+	if err != nil {
+		t.Fatalf("readProcessEnvironmentSnapshots error = %v, want vanished PID skipped", err)
+	}
+	got := ownedProcessesFromEnvironmentSnapshot(processes, snapshots.environments, markers)
+	if len(got) != 1 || got[0] != owned {
+		t.Fatalf("owned processes = %#v, want only %#v", got, []OwnedProcess{owned})
 	}
 }
 
