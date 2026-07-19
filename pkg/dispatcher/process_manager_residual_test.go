@@ -309,7 +309,7 @@ func TestReadProcessEnvironmentSnapshotsSkipsDarwinVanishedPID(t *testing.T) {
 		"ORO_SOCKET_PATH=/tmp/owned-process.sock",
 		"ORO_WORKER_ID=owned-worker",
 	}
-	vanished := OwnedProcess{PID: 60_003, PGID: 60_003}
+	vanished := OwnedProcess{PID: os.Getpid(), PGID: os.Getpid()}
 	owned := OwnedProcess{PID: 60_004, PGID: 60_004}
 	processes := []OwnedProcess{vanished, owned}
 
