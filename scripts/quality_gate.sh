@@ -653,7 +653,13 @@ qg_run_pylint_source() {
 		echo "No tracked Python source files"
 		return 0
 	fi
-	pylint --disable=all --enable=E "${files[@]}"
+	# Run pylint in the project's dependency environment so first-party imports
+	# (e.g. PyYAML) resolve; --with provides pylint itself in that env.
+	if command -v uv >/dev/null 2>&1; then
+		uv run --with pylint pylint --disable=all --enable=E "${files[@]}"
+	else
+		pylint --disable=all --enable=E "${files[@]}"
+	fi
 }
 
 # shellcheck disable=SC2317,SC2329
@@ -1369,7 +1375,7 @@ lane_python() {
 	# --- Tier 2: Linting (parallel) ---
 	header "PYTHON TIER 2: LINTING"
 	local tier2_checks=("ruff check" "qg_run_ruff_check_source")
-	if command -v pylint >/dev/null 2>&1; then
+	if command -v uv >/dev/null 2>&1 || command -v pylint >/dev/null 2>&1; then
 		tier2_checks+=("pylint" "qg_run_pylint_source")
 	fi
 	parallel_checks "${tier2_checks[@]}"
