@@ -11814,17 +11814,22 @@ type mockQGRunner struct {
 	passed        bool
 	output        string
 	err           error
+	callFn        func(context.Context, string, bool, string) (bool, string, error)
 	calls         []string // worktree paths passed to Run
 	skipMutations []bool
 	mutationBases []string
 }
 
-func (m *mockQGRunner) Run(_ context.Context, worktree string, skipMutation bool, mutationBase string) (bool, string, error) {
+func (m *mockQGRunner) Run(ctx context.Context, worktree string, skipMutation bool, mutationBase string) (bool, string, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.calls = append(m.calls, worktree)
 	m.skipMutations = append(m.skipMutations, skipMutation)
 	m.mutationBases = append(m.mutationBases, mutationBase)
+	callFn := m.callFn
+	m.mu.Unlock()
+	if callFn != nil {
+		return callFn(ctx, worktree, skipMutation, mutationBase)
+	}
 	return m.passed, m.output, m.err
 }
 

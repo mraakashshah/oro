@@ -4638,6 +4638,15 @@ func (d *Dispatcher) validateReconnectBead(ctx context.Context, beadID, workerID
 // Caller must hold d.mu.
 // oro-ovpc: Prevents bead stealing by checking for existing assignments.
 func (d *Dispatcher) processReconnectUnderLock(ctx context.Context, w *trackedWorker, workerID, beadID, state string) {
+	if w.state == protocol.WorkerReserved {
+		w.lastSeen = d.nowFunc()
+		for _, pending := range w.pendingMsgs {
+			_ = d.sendToWorker(w, pending)
+		}
+		w.pendingMsgs = nil
+		return
+	}
+
 	// Check if another worker is already assigned to this bead.
 	var beadStolenFrom string
 	for otherID, other := range d.workers {
