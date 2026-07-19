@@ -777,7 +777,32 @@ acquire_quality_gate_lock() {
     QG_RUN_QUEUE_TICKET=""
 }
 
-acquire_quality_gate_lock
+# check_inherited_quality_gate_lock short-circuits a gate invoked inside another
+# gate's serialized lane. The concurrent main phase itself remains lockless.
+check_inherited_quality_gate_lock() {
+    if quality_gate_lock_is_inherited "$REPO_ROOT/.oro-quality-gate.lock"; then
+        exit 0
+    fi
+}
+
+neutralize_serial_lane_env() {
+    unset ORO_QG_SERIAL_LANE
+}
+
+# Generated gates have no Oro-specific guarded tests, but retain the same
+# lane-local lock boundary as the checked-in gate so recursive invocations and
+# sibling worktrees share one lock contract without serializing the main phase.
+run_serial_lane() {
+    if ! acquire_quality_gate_lock; then
+        echo "0:1" >"$QG_DIR/serial.rc" 2>/dev/null || true
+        return 1
+    fi
+    export ORO_QG_SERIAL_LANE=1
+    echo "1:0" >"$QG_DIR/serial.rc"
+}
+
+check_inherited_quality_gate_lock
+neutralize_serial_lane_env
 
 # =============================================================================
 # PRIMITIVES
@@ -1502,6 +1527,11 @@ PID_OT=$!
 {{end}}cat "$QG_DIR/other.out" 2>/dev/null || true
 {{if .HasPython}}cat "$QG_DIR/python.out" 2>/dev/null || true
 {{end}}
+
+# Keep only the lane-local boundary serialized; all language lanes above ran
+# concurrently and lockless.
+run_serial_lane || true
+
 # Aggregate pass/fail counts
 TOTAL_PASS=0
 TOTAL_FAIL=0
@@ -1509,6 +1539,7 @@ expected_rc_files=(
 {{if .HasGo}}    "$QG_DIR/go.rc"
 {{end}}{{if .HasPython}}    "$QG_DIR/python.rc"
 {{end}}    "$QG_DIR/other.rc"
+    "$QG_DIR/serial.rc"
 )
 for rc_file in "${expected_rc_files[@]}"; do
     if [ -f "$rc_file" ]; then
