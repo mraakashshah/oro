@@ -461,14 +461,16 @@ func TestHandleHookFailsOpenOnUnknownShape(t *testing.T) {
 	}
 }
 
-// codexDenyDecoded decodes the Codex Bash deny shape emitted by handleCodexBash.
-type codexDenyDecoded struct {
+// codexRewriteDecoded decodes the Codex Bash allow+rewrite shape emitted by
+// handleCodexBash (codex ignores deny for trusted reads, so the cat is rewritten).
+type codexRewriteDecoded struct {
 	HookSpecificOutput struct {
 		HookEventName      string `json:"hookEventName"`
 		PermissionDecision string `json:"permissionDecision"`
+		UpdatedInput       struct {
+			Command string `json:"command"`
+		} `json:"updatedInput"`
 	} `json:"hookSpecificOutput"`
-	SystemMessage            string `json:"systemMessage"`
-	PermissionDecisionReason string `json:"permissionDecisionReason"`
 }
 
 // bashEvent builds a Codex-shaped PreToolUse Bash hook event for command.
@@ -486,10 +488,11 @@ func bashEvent(t *testing.T, command string) []byte {
 }
 
 // TestHandleCodexBashRead verifies the Codex Bash read-hook arm: a bare
-// `cat [--] <largefile>` of a large code file is intercepted with a Codex-shaped
-// deny carrying the summary in systemMessage (the field Codex actually surfaces)
-// and permissionDecisionReason; every other Bash command shape — and any bypassed
-// cat — allows with EMPTY STDOUT (zero bytes), never {}.
+// `cat [--] <largefile>` of a large code file is intercepted with a Codex
+// allow+updatedInput response that rewrites the cat into `printf '%s' '<summary>'`
+// (codex ignores deny for trusted reads, so the read is suppressed by rewriting);
+// every other Bash command shape — and any bypassed cat — allows with EMPTY
+// STDOUT (zero bytes), never {}.
 func TestHandleCodexBashRead(t *testing.T) {
 	if _, err := exec.LookPath("ast-grep"); err != nil {
 		t.Skip("ast-grep not installed, skipping")
@@ -501,35 +504,37 @@ func TestHandleCodexBashRead(t *testing.T) {
 	testFile := writeTempFile(t, "_test.go", strings.Repeat("// filler line\n", 400))
 	nonCodeFile := writeTempFile(t, ".json", strings.Repeat("{\"k\":\"v\"}\n", 400))
 
-	// --- deny cases: bare cat of a large code file ---
-	denyCmds := []struct {
+	// --- intercept cases: bare cat of a large code file → allow + rewrite ---
+	interceptCmds := []struct {
 		name string
 		cmd  string
 	}{
 		{"cat path", "cat " + largeGoFile},
 		{"cat -- path", "cat -- " + largeGoFile},
 	}
-	for _, tc := range denyCmds {
-		t.Run("deny: "+tc.name, func(t *testing.T) {
+	for _, tc := range interceptCmds {
+		t.Run("intercept: "+tc.name, func(t *testing.T) {
 			out := HandleHook(bashEvent(t, tc.cmd))
-			var resp codexDenyDecoded
+			var resp codexRewriteDecoded
 			if err := json.Unmarshal(out, &resp); err != nil {
-				t.Fatalf("expected Codex deny JSON, got %q: %v", string(out), err)
+				t.Fatalf("expected Codex allow+rewrite JSON, got %q: %v", string(out), err)
 			}
-			if resp.HookSpecificOutput.PermissionDecision != "deny" {
-				t.Errorf("expected permissionDecision=deny, got %q", resp.HookSpecificOutput.PermissionDecision)
+			if resp.HookSpecificOutput.PermissionDecision != "allow" {
+				t.Errorf("expected permissionDecision=allow, got %q", resp.HookSpecificOutput.PermissionDecision)
 			}
 			if resp.HookSpecificOutput.HookEventName != "PreToolUse" {
 				t.Errorf("expected hookEventName=PreToolUse, got %q", resp.HookSpecificOutput.HookEventName)
 			}
-			if resp.SystemMessage == "" {
-				t.Error("expected non-empty systemMessage (the field Codex surfaces)")
+			rw := resp.HookSpecificOutput.UpdatedInput.Command
+			if !strings.HasPrefix(rw, "printf '%s' ") {
+				t.Errorf("rewritten command must print the summary via printf, got %q", rw)
 			}
-			if !strings.Contains(resp.SystemMessage, "package testpkg") {
-				t.Errorf("expected systemMessage to contain the summary, got %q", resp.SystemMessage)
+			// The rewrite must carry the summary (a signature), not the raw cat.
+			if !strings.Contains(rw, "package testpkg") {
+				t.Errorf("rewritten command must contain the AST summary, got %q", rw)
 			}
-			if resp.PermissionDecisionReason == "" {
-				t.Error("expected non-empty permissionDecisionReason (belt-and-braces)")
+			if strings.Contains(rw, "cat ") {
+				t.Errorf("rewritten command must not re-invoke cat (raw read), got %q", rw)
 			}
 		})
 	}

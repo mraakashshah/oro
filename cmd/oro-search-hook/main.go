@@ -14,10 +14,11 @@
 //   - Codex Bash allow (pass through):    EMPTY STDOUT (zero bytes) — matches the
 //     sibling destructive_command_guard.py contract; {} is unverified on the
 //     Bash surface and could be parsed as a malformed decision.
-//   - Codex Bash deny (with summary):     {"hookSpecificOutput":{"hookEventName":
-//     "PreToolUse","permissionDecision":"deny"},"systemMessage":"...",
-//     "permissionDecisionReason":"..."} — the summary rides systemMessage (the
-//     field Codex actually surfaces) plus permissionDecisionReason.
+//   - Codex Bash intercept (with summary): allow + updatedInput rewriting the
+//     `cat` into `printf '%s' '<summary>'`. Codex exec ignores a PreToolUse deny
+//     for trusted read commands (cat/ls/sed run regardless), so the read is
+//     suppressed by REWRITING the command, not denying it — verified live against
+//     codex-cli 0.144.6.
 package main
 
 import (
@@ -82,17 +83,22 @@ type denyResponse struct {
 	PermissionDecisionReason string `json:"permissionDecisionReason"`
 }
 
-// codexDenyResponse is the JSON shape for blocking a Codex Bash read with a
-// summary. It mirrors the sibling destructive_command_guard.py deny: the summary
-// is surfaced via top-level systemMessage (the field Codex actually reads), with
-// permissionDecisionReason as a belt-and-braces duplicate.
-type codexDenyResponse struct {
+// codexRewriteResponse is the JSON shape for intercepting a Codex Bash read.
+//
+// Codex exec does NOT honor a PreToolUse "deny" for trusted read commands
+// (cat/ls/sed run regardless — verified live against codex-cli 0.144.6), so a
+// deny cannot suppress a `cat`. Codex DOES honor `updatedInput`, which rewrites
+// the command before execution. We therefore ALLOW the call but rewrite
+// `cat <path>` into a command that emits the AST summary, so the model receives
+// the summary and the raw file is never read.
+type codexRewriteResponse struct {
 	HookSpecificOutput struct {
 		HookEventName      string `json:"hookEventName"`
 		PermissionDecision string `json:"permissionDecision"`
+		UpdatedInput       struct {
+			Command string `json:"command"`
+		} `json:"updatedInput"`
 	} `json:"hookSpecificOutput"`
-	SystemMessage            string `json:"systemMessage"`
-	PermissionDecisionReason string `json:"permissionDecisionReason"`
 }
 
 // allowJSON is the pre-encoded allow response (empty JSON object).
@@ -224,9 +230,11 @@ func simpleCatPath(command string) (string, bool) {
 // handleCodexBash intercepts a Codex Bash file read. It recognizes ONLY a bare
 // `cat [--] <path>` of a large code file; every other command shape fails open.
 //
-// The Codex Bash allow / fail-open contract is EMPTY STDOUT (nil), matching the
-// sibling destructive_command_guard.py hook — NOT {}, which is unverified on the
-// Bash surface and could be parsed as a malformed decision that stalls the call.
+// Because codex exec ignores a PreToolUse deny for trusted read commands, the
+// interception ALLOWS the call and rewrites the command via updatedInput to emit
+// the AST summary instead of the raw file (see codexRewriteResponse). The Codex
+// Bash allow / fail-open contract is EMPTY STDOUT (nil) — NOT {}, which is
+// unverified on the Bash surface and could be parsed as a malformed decision.
 func handleCodexBash(command string) []byte {
 	filePath, ok := simpleCatPath(command)
 	if !ok {
@@ -243,26 +251,38 @@ func handleCodexBash(command string) []byte {
 	if codesearch.ShouldBypass(cti) {
 		return nil
 	}
-	return summarizeAndDenyCodex(filePath)
+	return summarizeAndRewriteCodex(filePath)
 }
 
-// summarizeAndDenyCodex summarizes filePath and returns the Codex Bash deny
-// shape. On summarization error, returns nil (empty stdout = fail-open allow).
-func summarizeAndDenyCodex(filePath string) []byte {
+// summaryHeader labels the rewritten output so the model knows it received a
+// structural summary in place of the raw file.
+const summaryHeader = "[oro-search-hook] structural summary — raw file read suppressed to save context:\n\n"
+
+// summarizeAndRewriteCodex summarizes filePath and returns a Codex allow+rewrite
+// response: the `cat` is replaced with a `printf` that prints the summary, so the
+// raw file is never read. On summarization error, returns nil (empty stdout =
+// fail-open allow), letting the original `cat` run rather than emitting nothing.
+func summarizeAndRewriteCodex(filePath string) []byte {
 	summary, err := codesearch.SummarizeFile(filePath)
 	if err != nil {
 		return nil
 	}
-	var resp codexDenyResponse
+	var resp codexRewriteResponse
 	resp.HookSpecificOutput.HookEventName = "PreToolUse"
-	resp.HookSpecificOutput.PermissionDecision = "deny"
-	resp.SystemMessage = summary
-	resp.PermissionDecisionReason = summary
+	resp.HookSpecificOutput.PermissionDecision = "allow"
+	resp.HookSpecificOutput.UpdatedInput.Command = "printf '%s' " + shellSingleQuote(summaryHeader+summary)
 	out, err := json.Marshal(resp)
 	if err != nil {
 		return nil
 	}
 	return out
+}
+
+// shellSingleQuote wraps s in single quotes for safe POSIX-shell interpolation,
+// escaping any embedded single quotes as '\”. printf '%s' <quoted> then prints
+// s verbatim regardless of newlines or % characters in the summary.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // summarizeAndDeny attempts to summarize filePath and returns a deny response.
