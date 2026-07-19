@@ -18,9 +18,13 @@ const (
 	Paused PauseState = "paused"
 )
 
+// LeaseID uniquely identifies one persisted runtime lease.
+type LeaseID string
+
 // LeaseRequest identifies a runtime namespace and the process allowed to use it.
 type LeaseRequest struct {
-	ID, Namespace, ControllerID, OwnerID  string
+	ID                                    LeaseID
+	Namespace, ControllerID, OwnerID      string
 	PID                                   int
 	ProcessStart, AcquiredAt, HeartbeatAt time.Time
 }
@@ -133,7 +137,7 @@ ON CONFLICT(id) DO UPDATE SET namespace=excluded.namespace, controller_id=exclud
 // ReleaseLease marks an active lease as released without deleting its audit record.
 //
 //oro:testonly — production wiring lands in dependent runtime lifecycle tasks.
-func (c *Catalog) ReleaseLease(ctx context.Context, leaseID string) error {
+func (c *Catalog) ReleaseLease(ctx context.Context, leaseID LeaseID) error {
 	if leaseID == "" {
 		return fmt.Errorf("empty lease id")
 	}
@@ -154,7 +158,7 @@ func (c *Catalog) ReleaseLease(ctx context.Context, leaseID string) error {
 // Lease loads one persisted lease.
 //
 //oro:testonly — production wiring lands in dependent runtime lifecycle tasks.
-func (c *Catalog) Lease(ctx context.Context, id string) (Lease, error) {
+func (c *Catalog) Lease(ctx context.Context, id LeaseID) (Lease, error) {
 	row := c.db.QueryRowContext(ctx, `SELECT id, namespace, controller_id, owner_id, pid, process_start, acquired_at, heartbeat_at, released_at FROM runtime_leases WHERE id=?`, id)
 	return scanLease(row)
 }

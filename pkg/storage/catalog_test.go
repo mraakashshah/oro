@@ -10,6 +10,13 @@ import (
 	"oro/pkg/storage"
 )
 
+type runtimeLeaseCatalog interface {
+	AcquireLease(context.Context, storage.LeaseRequest) (storage.Lease, error)
+	ReleaseLease(context.Context, storage.LeaseID) error
+}
+
+var _ runtimeLeaseCatalog = (*storage.Catalog)(nil)
+
 func TestCatalogRuntimeLeaseLifecycle(t *testing.T) {
 	t.Parallel()
 
