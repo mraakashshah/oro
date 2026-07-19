@@ -9,10 +9,6 @@
 				"hooks": [
 					{
 						"type": "command",
-						"command": "python3 .claude/hooks/enforce_skills.py"
-					},
-					{
-						"type": "command",
 						"command": "python3 .claude/hooks/session_start_extras.py",
 						"statusMessage": "Loading project context..."
 					}
