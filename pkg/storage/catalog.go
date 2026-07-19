@@ -73,6 +73,7 @@ type ReconciliationCursor struct {
 type Catalog struct{ db *sql.DB }
 
 // OpenCatalog migrates db to the canonical runtime catalog schema.
+//oro:testonly — production wiring lands in dependent runtime lifecycle tasks.
 func OpenCatalog(ctx context.Context, db *sql.DB) (*Catalog, error) {
 	if db == nil {
 		return nil, fmt.Errorf("nil catalog db")
@@ -83,10 +84,8 @@ func OpenCatalog(ctx context.Context, db *sql.DB) (*Catalog, error) {
 	return &Catalog{db: db}, nil
 }
 
-// NewCatalog opens a catalog using a background migration context.
-func NewCatalog(db *sql.DB) (*Catalog, error) { return OpenCatalog(context.Background(), db) }
-
 // MigrateCatalog makes the runtime catalog schema canonical and repeatable.
+//oro:testonly — production wiring lands in dependent runtime lifecycle tasks.
 func MigrateCatalog(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("nil catalog db")
@@ -109,6 +108,7 @@ func MigrateCatalog(ctx context.Context, db *sql.DB) error {
 }
 
 // AcquireLease atomically records an active lease for a runtime namespace.
+//oro:testonly — production wiring lands in dependent runtime lifecycle tasks.
 func (c *Catalog) AcquireLease(ctx context.Context, request LeaseRequest) (Lease, error) {
 	if err := validateLeaseRequest(request); err != nil {
 		return Lease{}, err
@@ -128,6 +128,7 @@ ON CONFLICT(id) DO UPDATE SET namespace=excluded.namespace, controller_id=exclud
 }
 
 // ReleaseLease marks an active lease as released without deleting its audit record.
+//oro:testonly — production wiring lands in dependent runtime lifecycle tasks.
 func (c *Catalog) ReleaseLease(ctx context.Context, leaseID string) error {
 	if leaseID == "" {
 		return fmt.Errorf("empty lease id")
@@ -147,12 +148,14 @@ func (c *Catalog) ReleaseLease(ctx context.Context, leaseID string) error {
 }
 
 // Lease loads one persisted lease.
+//oro:testonly — production wiring lands in dependent runtime lifecycle tasks.
 func (c *Catalog) Lease(ctx context.Context, id string) (Lease, error) {
 	row := c.db.QueryRowContext(ctx, `SELECT id, namespace, controller_id, owner_id, pid, process_start, acquired_at, heartbeat_at, released_at FROM runtime_leases WHERE id=?`, id)
 	return scanLease(row)
 }
 
 // UpsertController persists a live controller heartbeat and observed epoch.
+//oro:testonly — production wiring lands in dependent runtime lifecycle tasks.
 func (c *Catalog) UpsertController(ctx context.Context, controller Controller) error {
 	if controller.ID == "" || controller.OwnerID == "" || controller.PID <= 0 || controller.ProcessStart.IsZero() || controller.HeartbeatAt.IsZero() {
 		return fmt.Errorf("invalid controller")
@@ -166,6 +169,7 @@ ON CONFLICT(id) DO UPDATE SET owner_id=excluded.owner_id, pid=excluded.pid, proc
 }
 
 // Controller loads one persisted controller.
+//oro:testonly — production wiring lands in dependent runtime lifecycle tasks.
 func (c *Catalog) Controller(ctx context.Context, id string) (Controller, error) {
 	var value Controller
 	var processStart, heartbeat string
@@ -186,6 +190,7 @@ func (c *Catalog) Controller(ctx context.Context, id string) (Controller, error)
 }
 
 // RecordPauseEpoch atomically inserts or updates a global pause epoch.
+//oro:testonly — production wiring lands in dependent runtime lifecycle tasks.
 func (c *Catalog) RecordPauseEpoch(ctx context.Context, epoch PauseEpoch) error {
 	if epoch.Epoch < 0 || epoch.State == "" || epoch.CreatedAt.IsZero() {
 		return fmt.Errorf("invalid pause epoch")
@@ -198,6 +203,7 @@ func (c *Catalog) RecordPauseEpoch(ctx context.Context, epoch PauseEpoch) error 
 }
 
 // PauseEpoch loads one pause epoch.
+//oro:testonly — production wiring lands in dependent runtime lifecycle tasks.
 func (c *Catalog) PauseEpoch(ctx context.Context, number int64) (PauseEpoch, error) {
 	var value PauseEpoch
 	var createdAt string
@@ -214,6 +220,7 @@ func (c *Catalog) PauseEpoch(ctx context.Context, number int64) (PauseEpoch, err
 }
 
 // AcknowledgePauseEpoch records a controller acknowledgement for a pause epoch.
+//oro:testonly — production wiring lands in dependent runtime lifecycle tasks.
 func (c *Catalog) AcknowledgePauseEpoch(ctx context.Context, acknowledgement PauseAcknowledgement) error {
 	if acknowledgement.Epoch < 0 || acknowledgement.ControllerID == "" || acknowledgement.State == "" || acknowledgement.AcknowledgedAt.IsZero() {
 		return fmt.Errorf("invalid pause acknowledgement")
@@ -226,6 +233,7 @@ func (c *Catalog) AcknowledgePauseEpoch(ctx context.Context, acknowledgement Pau
 }
 
 // PauseAcknowledgement loads one controller acknowledgement.
+//oro:testonly — production wiring lands in dependent runtime lifecycle tasks.
 func (c *Catalog) PauseAcknowledgement(ctx context.Context, epoch int64, controllerID string) (PauseAcknowledgement, error) {
 	var value PauseAcknowledgement
 	var acknowledgedAt string
@@ -242,6 +250,7 @@ func (c *Catalog) PauseAcknowledgement(ctx context.Context, epoch int64, control
 }
 
 // UpsertTombstone persists retryable retirement state.
+//oro:testonly — production wiring lands in dependent runtime lifecycle tasks.
 func (c *Catalog) UpsertTombstone(ctx context.Context, tombstone Tombstone) error {
 	if tombstone.ID == "" || tombstone.Namespace == "" || tombstone.Reason == "" || tombstone.State == "" || tombstone.RetiredAt.IsZero() {
 		return fmt.Errorf("invalid tombstone")
@@ -254,6 +263,7 @@ func (c *Catalog) UpsertTombstone(ctx context.Context, tombstone Tombstone) erro
 }
 
 // Tombstone loads one retirement record.
+//oro:testonly — production wiring lands in dependent runtime lifecycle tasks.
 func (c *Catalog) Tombstone(ctx context.Context, id string) (Tombstone, error) {
 	var value Tombstone
 	var retiredAt string
@@ -278,6 +288,7 @@ func (c *Catalog) Tombstone(ctx context.Context, id string) (Tombstone, error) {
 }
 
 // SaveReconciliationCursor persists the bounded scan checkpoint and proof.
+//oro:testonly — production wiring lands in dependent runtime lifecycle tasks.
 func (c *Catalog) SaveReconciliationCursor(ctx context.Context, cursor ReconciliationCursor) error {
 	if cursor.Name == "" || cursor.UpdatedAt.IsZero() {
 		return fmt.Errorf("invalid reconciliation cursor")
@@ -290,6 +301,7 @@ func (c *Catalog) SaveReconciliationCursor(ctx context.Context, cursor Reconcili
 }
 
 // ReconciliationCursor loads one bounded scan checkpoint.
+//oro:testonly — production wiring lands in dependent runtime lifecycle tasks.
 func (c *Catalog) ReconciliationCursor(ctx context.Context, name string) (ReconciliationCursor, error) {
 	var value ReconciliationCursor
 	var updatedAt string
