@@ -31,25 +31,25 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SENTINEL="ORO_RAW_BODY_SENTINEL_8fQ2"        # lives only in function bodies
-SUMMARY_MARK="structural summary"            # from oro-search-hook's summaryHeader
+SENTINEL="ORO_RAW_BODY_SENTINEL_8fQ2" # lives only in function bodies
+SUMMARY_MARK="structural summary"     # from oro-search-hook's summaryHeader
 
 log() { printf '[validate-codex-bash-hook] %s\n' "$*" >&2; }
 
 # --- prerequisites → SKIP (never a silent pass) ---------------------------------
 if ! command -v codex >/dev/null 2>&1; then
-  log "SKIP: no 'codex' binary on PATH. Run on a host with codex to certify."
-  exit 2
+	log "SKIP: no 'codex' binary on PATH. Run on a host with codex to certify."
+	exit 2
 fi
 if ! command -v ast-grep >/dev/null 2>&1; then
-  log "SKIP: no 'ast-grep' on PATH (oro-search-hook needs it to summarize)."
-  exit 2
+	log "SKIP: no 'ast-grep' on PATH (oro-search-hook needs it to summarize)."
+	exit 2
 fi
 
 CODEX_HOME_SRC="${CODEX_HOME:-$HOME/.codex}"
 if [ ! -f "$CODEX_HOME_SRC/auth.json" ] && [ -z "${OPENAI_API_KEY:-}" ] && [ -z "${CODEX_API_KEY:-}" ]; then
-  log "SKIP: no codex auth ($CODEX_HOME_SRC/auth.json or OPENAI_API_KEY/CODEX_API_KEY)."
-  exit 2
+	log "SKIP: no codex auth ($CODEX_HOME_SRC/auth.json or OPENAI_API_KEY/CODEX_API_KEY)."
+	exit 2
 fi
 
 log "codex: $(codex --version 2>/dev/null | head -1)"
@@ -75,18 +75,18 @@ cp "$REPO_ROOT/assets/hooks/destructive_command_guard.py" "$HOOKS/"
 # Large Go file: SENTINEL only in function bodies (absent from the AST summary),
 # distinctive exported signatures (present in the summary).
 {
-  echo 'package probe'
-  echo 'import "fmt"'
-  for i in $(seq 0 150); do
-    echo "func OroGateProbeSig${i}(ctx string, n int) (string, error) {"
-    echo "    secret := \"${SENTINEL}\""
-    echo "    return fmt.Sprintf(\"%s %s %d\", secret, ctx, n), nil"
-    echo "}"
-  done
-} > "$WORK/probe.go"
+	echo 'package probe'
+	echo 'import "fmt"'
+	for i in $(seq 0 150); do
+		echo "func OroGateProbeSig${i}(ctx string, n int) (string, error) {"
+		echo "    secret := \"${SENTINEL}\""
+		echo "    return fmt.Sprintf(\"%s %s %d\", secret, ctx, n), nil"
+		echo "}"
+	done
+} >"$WORK/probe.go"
 
 # Production-shaped PreToolUse Bash chain: safety guards first, search hook LAST.
-cat > "$CODEX_HOME/config.toml" <<EOF
+cat >"$CODEX_HOME/config.toml" <<EOF
 [hooks]
 PreToolUse = [
   { matcher = "Bash", hooks = [ { type = "command", command = "python3 $HOOKS/enforce_skills.py", async = false }, { type = "command", command = "python3 $HOOKS/destructive_command_guard.py", async = false }, { type = "command", command = "$HOOKS/oro-search-hook", async = false, timeoutSec = 5, statusMessage = "Searching codebase..." } ] },
@@ -96,12 +96,12 @@ EOF
 # --- drive a real codex exec (same flags as oro's worker spawn) -----------------
 EVENTS="$LAB/events.jsonl"
 log "running codex exec (cat probe.go)…"
-printf 'Run exactly this ONE shell command and nothing else, do not retry, then stop: cat probe.go' \
-  | timeout 180 codex exec \
-      --skip-git-repo-check \
-      --sandbox danger-full-access \
-      --dangerously-bypass-hook-trust \
-      -C "$WORK" --json - > "$EVENTS" 2>/dev/null || true
+printf 'Run exactly this ONE shell command and nothing else, do not retry, then stop: cat probe.go' |
+	timeout 180 codex exec \
+		--skip-git-repo-check \
+		--sandbox danger-full-access \
+		--dangerously-bypass-hook-trust \
+		-C "$WORK" --json - >"$EVENTS" 2>/dev/null || true
 
 # --- deterministic assertions over codex's own event stream ---------------------
 python3 - "$EVENTS" "$SENTINEL" "$SUMMARY_MARK" <<'PY'
