@@ -153,6 +153,12 @@ func buildExecArgPrefixWithSandbox(model, reasoning, sandbox string) []string {
 	// The flag is intended for automation that vets its own hook sources — oro
 	// authors and installs these hooks itself. Trust does not persist across
 	// runs, so the flag must ride every spawn.
+	//
+	// Scope caveat: the flag bypasses the trust gate for EVERY hook in the active
+	// $CODEX_HOME/config.toml, not only oro's managed block. This is contained
+	// because oro workers spawn into an oro-managed CODEX_HOME. Requires a
+	// codex-cli new enough to recognize the flag (verified on 0.144.6); an older
+	// codex would reject the unknown flag and fail the spawn.
 	args := []string{"exec", "--skip-git-repo-check", "--sandbox", sandbox, "--dangerously-bypass-hook-trust"}
 	model = normalizeCodexModel(model)
 	if model != "" {
