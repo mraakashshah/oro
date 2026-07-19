@@ -4416,10 +4416,11 @@ func (d *Dispatcher) handleReviewBlocked(ctx context.Context, workerID, beadID s
 	class := classifyReviewFailure(result)
 	eventType := "review_env_blocked"
 	reason := "review environment blocked"
-	if class == ReviewFailureInfraBlocked {
+	switch class {
+	case ReviewFailureInfraBlocked:
 		eventType = "review_infra_blocked"
 		reason = "review infrastructure blocked"
-	} else if class == ReviewFailureRateLimited {
+	case ReviewFailureRateLimited:
 		eventType = "review_rate_limited"
 		reason = "reviewer rate limited"
 	}
@@ -4430,18 +4431,7 @@ func (d *Dispatcher) handleReviewBlocked(ctx context.Context, workerID, beadID s
 	}
 	_ = d.logEvent(ctx, eventType, "ops", beadID, workerID, detail)
 	d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID, reason, detail), beadID, workerID)
-	if d.shouldReopenBead(ctx, beadID) {
-		if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
-			_ = d.logEvent(ctx, eventType+"_reopen_failed", "ops", beadID, workerID, err.Error())
-		} else if class == ReviewFailureRateLimited {
-			until := d.nowFunc().UTC().Add(reviewRateLimitDeferDuration).Format(time.RFC3339)
-			if err := d.beads.Defer(ctx, beadID, until); err != nil {
-				_ = d.logEvent(ctx, eventType+"_defer_failed", "ops", beadID, workerID, err.Error())
-			} else {
-				_ = d.logEvent(ctx, eventType+"_deferred", "ops", beadID, workerID, until)
-			}
-		}
-	}
+	d.reopenBlockedReview(ctx, beadID, workerID, eventType, class)
 	if err := d.completeAssignment(ctx, assignmentID, beadID); err != nil {
 		_ = d.logEvent(ctx, eventType+"_assignment_cleanup_failed", "ops", beadID, workerID, err.Error())
 	}
@@ -4759,6 +4749,30 @@ func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg p
 	for _, buffered := range msg.Reconnect.BufferedEvents {
 		d.handleMessage(ctx, workerID, buffered)
 	}
+}
+
+func (d *Dispatcher) reopenBlockedReview(
+	ctx context.Context,
+	beadID, workerID, eventType string,
+	class ReviewFailureClass,
+) {
+	if !d.shouldReopenBead(ctx, beadID) {
+		return
+	}
+	if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
+		_ = d.logEvent(ctx, eventType+"_reopen_failed", "ops", beadID, workerID, err.Error())
+		return
+	}
+	if class != ReviewFailureRateLimited {
+		return
+	}
+
+	until := d.nowFunc().UTC().Add(reviewRateLimitDeferDuration).Format(time.RFC3339)
+	if err := d.beads.Defer(ctx, beadID, until); err != nil {
+		_ = d.logEvent(ctx, eventType+"_defer_failed", "ops", beadID, workerID, err.Error())
+		return
+	}
+	_ = d.logEvent(ctx, eventType+"_deferred", "ops", beadID, workerID, until)
 }
 
 func (d *Dispatcher) shutdownReconnectIfSpawnForStopping(workerID string) bool {
