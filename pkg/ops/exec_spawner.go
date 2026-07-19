@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"oro/pkg/processenv"
+	"oro/pkg/protocol"
 )
 
 // RuntimeSpec describes how an ops runtime launches a subprocess.
@@ -199,6 +200,10 @@ func (p *opsProcess) Kill() error {
 
 func (p *opsProcess) scanStdout(stdout io.Reader) {
 	scanner := bufio.NewScanner(stdout)
+	// Ops stream records are line-delimited and may contain large review
+	// payloads. Keep the limit explicit rather than relying on Scanner's
+	// 64 KiB default.
+	scanner.Buffer(make([]byte, 64*1024), protocol.MaxMessageSize)
 	scanner.Split(scanLinesPreservingEnd)
 	for scanner.Scan() {
 		p.appendOutput(scanner.Text())
