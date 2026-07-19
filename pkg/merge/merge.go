@@ -231,31 +231,8 @@ func (c *Coordinator) worktreeRemoveAndFFMerge(ctx context.Context, opts Opts) (
 	}
 
 	// Try ff-only merge BEFORE removing the worktree so we can retry on failure.
-	if err := runPreFFCheck(ctx, opts); err != nil {
+	if err := c.ffMergeWithRetry(ctx, opts, primaryRepo); err != nil {
 		return nil, err
-	}
-	_, _, err = c.git.Run(ctx, primaryRepo, "merge", "--ff-only", opts.Branch)
-	if err != nil {
-		// Primary repo HEAD moved between the rebase (under rebaseLock) and here
-		// (under ffLock). Re-rebase the branch onto the primary repo's CURRENT HEAD —
-		// not effectiveTarget(opts), which may be a stale epic branch that is now
-		// behind the primary HEAD. We hold ffLock, so the HEAD cannot move again.
-		currentHead, _, headErr := c.git.Run(ctx, primaryRepo, "rev-parse", "HEAD")
-		if headErr != nil {
-			return nil, fmt.Errorf("rev-parse HEAD for retry base: %w", headErr)
-		}
-		retryBase := strings.TrimSpace(currentHead)
-		stdout, stderr, rebaseErr := c.git.Run(ctx, opts.Worktree, "rebase", retryBase, opts.Branch)
-		if rebaseErr != nil {
-			return nil, c.handleRebaseFailure(ctx, opts, retryBase, stdout, stderr, rebaseErr)
-		}
-		if err := runPreFFCheck(ctx, opts); err != nil {
-			return nil, err
-		}
-		_, _, err = c.git.Run(ctx, primaryRepo, "merge", "--ff-only", opts.Branch)
-		if err != nil {
-			return nil, fmt.Errorf("ff-only merge of %s failed after rebase retry: %w", opts.Branch, err)
-		}
 	}
 
 	// Merge succeeded — remove the worktree.
@@ -273,6 +250,36 @@ func (c *Coordinator) worktreeRemoveAndFFMerge(ctx context.Context, opts Opts) (
 		return nil, fmt.Errorf("rev-parse %s failed: %w", opts.Branch, err)
 	}
 	return &Result{CommitSHA: strings.TrimSpace(stdout)}, nil
+}
+
+func (c *Coordinator) ffMergeWithRetry(ctx context.Context, opts Opts, primaryRepo string) error {
+	if err := runPreFFCheck(ctx, opts); err != nil {
+		return err
+	}
+	if _, _, err := c.git.Run(ctx, primaryRepo, "merge", "--ff-only", opts.Branch); err == nil {
+		return nil
+	}
+
+	// Primary repo HEAD moved between the rebase (under rebaseLock) and here
+	// (under ffLock). Re-rebase the branch onto the primary repo's CURRENT HEAD —
+	// not effectiveTarget(opts), which may be a stale epic branch that is now
+	// behind the primary HEAD. We hold ffLock, so the HEAD cannot move again.
+	currentHead, _, err := c.git.Run(ctx, primaryRepo, "rev-parse", "HEAD")
+	if err != nil {
+		return fmt.Errorf("rev-parse HEAD for retry base: %w", err)
+	}
+	retryBase := strings.TrimSpace(currentHead)
+	stdout, stderr, err := c.git.Run(ctx, opts.Worktree, "rebase", retryBase, opts.Branch)
+	if err != nil {
+		return c.handleRebaseFailure(ctx, opts, retryBase, stdout, stderr, err)
+	}
+	if err := runPreFFCheck(ctx, opts); err != nil {
+		return err
+	}
+	if _, _, err := c.git.Run(ctx, primaryRepo, "merge", "--ff-only", opts.Branch); err != nil {
+		return fmt.Errorf("ff-only merge of %s failed after rebase retry: %w", opts.Branch, err)
+	}
+	return nil
 }
 
 func runPreFFCheck(ctx context.Context, opts Opts) error {
