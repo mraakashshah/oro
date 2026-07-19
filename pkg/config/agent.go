@@ -62,7 +62,8 @@ type TransportConfig struct{}
 
 // configFile is the top-level YAML document wrapper used only for parsing.
 type configFile struct {
-	Agent *AgentConfig `yaml:"agent"`
+	Agent   *AgentConfig       `yaml:"agent"`
+	Storage *storagePolicyFile `yaml:"storage"`
 }
 
 func defaultAgentConfig() *AgentConfig {

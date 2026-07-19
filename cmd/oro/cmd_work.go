@@ -20,6 +20,7 @@ import (
 	"oro/pkg/cards"
 	"oro/pkg/codesearch"
 	"oro/pkg/codestruct"
+	"oro/pkg/config"
 	"oro/pkg/dispatcher"
 	embeddings "oro/pkg/embed"
 	"oro/pkg/langprofile"
@@ -141,6 +142,7 @@ type workDeps struct {
 	recordQGFailure func(ctx context.Context, rec dispatcher.QGFailureRecord, cls dispatcher.QGFailureClassification) error
 	stdout          io.Writer
 	cardStore       cards.Store
+	storagePolicy   config.StoragePolicy
 }
 
 type standaloneBaseBranchPreparer interface {
@@ -300,11 +302,18 @@ func runWork(_ *cobra.Command, cfg *workConfig) error {
 	// Set up signal handling for graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	storagePolicy, err := config.LoadStoragePolicy(ctx, config.StoragePolicySources{
+		ProjectConfigPath: filepath.Join(currentRepoRoot(), ".oro", "config.yaml"),
+	})
+	if err != nil {
+		return fmt.Errorf("load storage policy: %w", err)
+	}
 
 	deps, err := newProductionDeps(cfg.reviewTimeout)
 	if err != nil {
 		return err
 	}
+	deps.storagePolicy = storagePolicy
 
 	err = executeWork(ctx, cfg, deps)
 	var ee *exitError
