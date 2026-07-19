@@ -5472,11 +5472,8 @@ func (d *Dispatcher) assignGeneralIdleWorkers(ctx context.Context, idle []idleWo
 	// next bead in the list can still be paired with it.
 	idleIdx := 0
 	for _, unit := range plan.units {
-		unitConsumed, nextIdleIdx := d.assignGeneralSchedulingUnit(ctx, idle, idleIdx, unit, pbSnapshot, assignedBeads, reservedTargets, focusVersion)
+		_, nextIdleIdx := d.assignGeneralSchedulingUnit(ctx, idle, idleIdx, unit, pbSnapshot, assignedBeads, reservedTargets, focusVersion)
 		idleIdx = nextIdleIdx
-		if unit.kind == unitEpic && unitConsumed {
-			return
-		}
 	}
 }
 

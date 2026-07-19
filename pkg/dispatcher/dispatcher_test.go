@@ -22733,7 +22733,7 @@ func TestBuildSchedulingPlan_EpicPriorityBeatsEpicAge(t *testing.T) {
 	}
 }
 
-func TestTryAssign_FillsSelectedEpicBeforeNextEpic(t *testing.T) {
+func TestTryAssign_FillsIdleWorkersAcrossEpicUnitsByPriority(t *testing.T) {
 	d, beadSrc, workers := setupTryAssignSchedulingTest(t, 3)
 	seedTryAssignEpic(t, beadSrc, "epic-a", 0, "2026-05-01T00:00:00Z")
 	seedTryAssignEpic(t, beadSrc, "epic-b", 1, "2026-05-02T00:00:00Z")
@@ -22749,9 +22749,34 @@ func TestTryAssign_FillsSelectedEpicBeforeNextEpic(t *testing.T) {
 	d.tryAssign(context.Background())
 
 	got := assignedBeadIDsByCreation(t, d.db)
-	want := []string{"a-fast", "a-slow"}
+	want := []string{"a-fast", "a-slow", "b-fast"}
 	if !slices.Equal(got, want) {
-		t.Fatalf("assigned beads = %v, want only selected epic frontier %v", got, want)
+		t.Fatalf("assigned beads = %v, want epic frontiers filled by priority %v", got, want)
+	}
+	assertMockWorkerAssignCount(t, workers, len(want))
+}
+
+func TestTryAssign_ConcentratesWorkersOnTopEpic(t *testing.T) {
+	d, beadSrc, workers := setupTryAssignSchedulingTest(t, 2)
+	seedTryAssignEpic(t, beadSrc, "epic-a", 0, "2026-05-01T00:00:00Z")
+	seedTryAssignEpic(t, beadSrc, "epic-b", 1, "2026-05-02T00:00:00Z")
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "a-fast", Priority: 0, Epic: "epic-a"})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "a-middle", Priority: 1, Epic: "epic-a"})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "a-slow", Priority: 2, Epic: "epic-a"})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "b-fast", Priority: 0, Epic: "epic-b"})
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "b-fast", Priority: 0, Epic: "epic-b"},
+		{ID: "a-slow", Priority: 2, Epic: "epic-a"},
+		{ID: "a-middle", Priority: 1, Epic: "epic-a"},
+		{ID: "a-fast", Priority: 0, Epic: "epic-a"},
+	})
+
+	d.tryAssign(context.Background())
+
+	got := assignedBeadIDsByCreation(t, d.db)
+	want := []string{"a-fast", "a-middle"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("assigned beads = %v, want all workers concentrated on top epic %v", got, want)
 	}
 	assertMockWorkerAssignCount(t, workers, len(want))
 }
@@ -22827,7 +22852,7 @@ func TestTryAssign_UnassignableEpicUnitDoesNotBlockNextEpic(t *testing.T) {
 	assertMockWorkerAssignCount(t, workers, len(want))
 }
 
-func TestTryAssign_ReservedEpicUnitBlocksNextEpic(t *testing.T) {
+func TestTryAssign_ReservedEpicUnitDoesNotIdleOtherWorkers(t *testing.T) {
 	d, beadSrc, workers := setupTryAssignSchedulingTest(t, 2)
 	seedTryAssignEpic(t, beadSrc, "epic-reserved", 0, "2026-05-01T00:00:00Z")
 	seedTryAssignEpic(t, beadSrc, "epic-next", 1, "2026-05-02T00:00:00Z")
@@ -22844,10 +22869,11 @@ func TestTryAssign_ReservedEpicUnitBlocksNextEpic(t *testing.T) {
 	d.tryAssign(context.Background())
 
 	got := assignedBeadIDsByCreation(t, d.db)
-	if len(got) != 0 {
-		t.Fatalf("assigned beads = %v, want reserved epic unit to block next epic", got)
+	want := []string{"next-child"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("assigned beads = %v, want reserved epic skipped and next epic assigned %v", got, want)
 	}
-	assertMockWorkerAssignCount(t, workers, 0)
+	assertMockWorkerAssignCount(t, workers, len(want))
 }
 
 func TestTryAssign_EscalatesDependencyCycle(t *testing.T) {
