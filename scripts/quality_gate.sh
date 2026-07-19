@@ -1237,13 +1237,22 @@ lane_go() {
 		echo "Coverage (main lane, serial-lane tests excluded): ${cov}%"
 	}
 
+	# Scope build/vet/govulncheck to the real tracked module subtrees so they
+	# never descend into archive/ — a gitignored, untracked tree of deliberately
+	# broken Go fixtures that would fail the gate on cruft that can never merge.
+	# (golangci-lint and the CGO-free build already scope explicitly.) The build
+	# lane omits the repo root "." because it is a test-only package main
+	# (readme_test.go); vet and govulncheck include "." to cover it.
+	local go_build_pkgs="./cmd/... ./internal/... ./pkg/... ./tests/..."
+	local go_analyze_pkgs="$go_build_pkgs ."
+
 	local tier3_checks=(
 		"go test + coverage" "go_test_with_coverage"
-		"go build" "go build -buildvcs=false ./..."
-		"go vet" "go vet ./..."
+		"go build" "go build -buildvcs=false $go_build_pkgs"
+		"go vet" "go vet $go_analyze_pkgs"
 		"CGO-free build" "CGO_ENABLED=0 go build -buildvcs=false ./cmd/oro ./cmd/oro-search-hook"
 	)
-	tier3_checks+=("govulncheck" "go tool govulncheck ./...")
+	tier3_checks+=("govulncheck" "go tool govulncheck $go_analyze_pkgs")
 	parallel_checks "${tier3_checks[@]}"
 	pass=$((pass + TIER_PASS))
 	fail=$((fail + TIER_FAIL))

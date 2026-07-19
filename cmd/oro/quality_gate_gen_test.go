@@ -1796,3 +1796,39 @@ func checkBashSyntax(t *testing.T, script string) {
 		t.Errorf("bash -n syntax check failed: %v\n%s", err, string(out))
 	}
 }
+
+// TestGoLanesScopeOutUntrackedArchive guards against the Go build/vet/govulncheck
+// lanes descending into archive/ — a gitignored, untracked tree of intentionally
+// broken Go fixtures that fails the gate on cruft that can never be pushed.
+//
+// The fix lives in the checked-in script only: generated gates for other projects
+// have no archive/ and must keep bare ./... , so the template is intentionally
+// exempt from this assertion.
+func TestGoLanesScopeOutUntrackedArchive(t *testing.T) {
+	checkedIn, err := os.ReadFile(filepath.Join("..", "..", "scripts", "quality_gate.sh"))
+	if err != nil {
+		t.Fatalf("read checked-in quality gate: %v", err)
+	}
+	script := string(checkedIn)
+
+	// The Go build/vet/govulncheck lanes must not walk the whole tree with bare
+	// ./... , which pulls in untracked archive/ fixtures.
+	for _, forbidden := range []string{
+		`go build -buildvcs=false ./...`,
+		`go vet ./...`,
+		`govulncheck ./...`,
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Errorf("quality gate still runs a bare-tree lane %q; scope it away from untracked archive/", forbidden)
+		}
+	}
+
+	// The scoped lanes must cover every real tracked module subtree.
+	for _, want := range []string{
+		"./cmd/... ./internal/... ./pkg/... ./tests/...",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("quality gate missing scoped Go package set %q", want)
+		}
+	}
+}
