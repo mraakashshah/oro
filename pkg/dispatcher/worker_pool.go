@@ -570,7 +570,9 @@ func (d *Dispatcher) collectTimedOutWorkersLocked(now time.Time) (dead, stuck, s
 			dead = append(dead, id)
 			continue
 		}
-		// Progress check: busy worker has not made meaningful progress.
+		// Progress check: an active worker has not made meaningful progress.
+		// Review/QG/merge work is represented by WorkerReviewing and must be
+		// bounded by the same real-progress clock as coding work.
 		if workerProgressTimedOut(w, now, d.cfg.ProgressTimeout) {
 			stuck = append(stuck, id)
 			continue
@@ -641,7 +643,8 @@ func heartbeatTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) b
 }
 
 func workerProgressTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) bool {
-	return w.state == protocol.WorkerBusy && !w.lastProgress.IsZero() && now.Sub(w.lastProgress) > timeout
+	return !w.spawnFor && (w.state == protocol.WorkerBusy || w.state == protocol.WorkerReviewing) &&
+		!w.lastProgress.IsZero() && now.Sub(w.lastProgress) > timeout
 }
 
 func workerReviewTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) bool {

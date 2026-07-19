@@ -8,9 +8,9 @@ import (
 	"oro/pkg/protocol"
 )
 
-// TestStuckWorkerProgressHeartbeatNotProgress proves that heartbeats with
-// flat context_pct do NOT refresh lastProgress for a busy worker — only
-// real content advancement (context_pct climb, STATUS, DONE) counts.
+// TestStuckWorkerProgressHeartbeatNotProgress proves that heartbeats do NOT
+// refresh lastProgress for a busy worker — only real protocol transitions
+// such as STATUS, DONE, READY_FOR_REVIEW, and QG events count.
 // Covers oro-16yy: in the 2026-05-04 proof run, workers held at 5%
 // context for 14+ minutes with only heartbeat traffic, but
 // progress-timeout never fired because the heartbeat handler was
@@ -51,7 +51,7 @@ func TestStuckWorkerProgressHeartbeatNotProgress(t *testing.T) {
 		t.Fatalf("workerProgressTimedOut = false, want true (lastProgress is %v ago)", now.Sub(t0))
 	}
 
-	// Heartbeat with climbing context_pct DOES update lastProgress.
+	// Even a climbing context_pct is heartbeat liveness, not progress.
 	d.handleHeartbeat(context.Background(), wid, protocol.Message{
 		Type:      protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{WorkerID: wid, BeadID: "oro-bead", ContextPct: 8},
@@ -59,7 +59,7 @@ func TestStuckWorkerProgressHeartbeatNotProgress(t *testing.T) {
 	d.mu.Lock()
 	gotClimbed := d.workers[wid].lastProgress
 	d.mu.Unlock()
-	if !gotClimbed.Equal(now) {
-		t.Fatalf("climbing-context lastProgress = %v, want %v (context climb must count as progress)", gotClimbed, now)
+	if !gotClimbed.Equal(t0) {
+		t.Fatalf("climbing-context lastProgress = %v, want unchanged %v (context drift must not count as progress)", gotClimbed, t0)
 	}
 }
