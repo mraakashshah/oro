@@ -60,7 +60,11 @@ func installDepsWithDefaults(deps InstallDeps) InstallDeps {
 
 func runGitHubCLICommand(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // executable and arguments are fixed by Oro.
-	return cmd.CombinedOutput()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return out, fmt.Errorf("run GitHub CLI command: %w", err)
+	}
+	return out, nil
 }
 
 func installGitHubCLI(ctx context.Context, deps InstallDeps) (string, error) {

@@ -440,6 +440,16 @@ func TestSetupInstallsManagedGitHubCLI(t *testing.T) {
 		})
 	}
 
+	t.Run("wraps CLI process failures with command context", func(t *testing.T) {
+		_, err := runGitHubCLICommand(context.Background(), "/usr/bin/false")
+		if err == nil {
+			t.Fatal("runGitHubCLICommand() error = nil, want process failure")
+		}
+		if !strings.Contains(err.Error(), "run GitHub CLI command") {
+			t.Fatalf("runGitHubCLICommand() error = %q, want command context", err)
+		}
+	})
+
 	t.Run("setup attests GitHub CLI on macOS", func(t *testing.T) {
 		originalPrereqs := defaultPrereqs
 		defaultPrereqs = []prereqDef{{Name: "git", CheckCmd: "git", InstallHint: "Install git"}}
