@@ -1,8 +1,8 @@
 """Regression tests for worker-progress event history parsing."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from ad_hoc.stuck_detector import progress_timestamps
+from ad_hoc.stuck_detector import classify_worker, main, progress_timestamps
 
 
 def _event(timestamp: str, worker_id: str, event_type: str, bead_id: str) -> str:
@@ -46,3 +46,74 @@ def test_progress_timestamps_returns_none_for_missing_event_kinds() -> None:
     )
 
     assert timestamps == (datetime(2026, 7, 20, 9), None, None)
+
+
+def test_worktree_reuse_not_stuck(capsys, monkeypatch) -> None:
+    """Lifecycle progress, not an old worktree commit, determines a live verdict."""
+    now = datetime(2026, 7, 20, 12)
+    old_commit = now - timedelta(minutes=243)
+    assigned = now - timedelta(minutes=29)
+    review_ready = now - timedelta(minutes=14)
+
+    assert classify_worker(assigned, review_ready, None, old_commit, True, now) == "ok"
+    assert classify_worker(None, None, None, old_commit, False, now) == "stale"
+    assert classify_worker(None, None, None, old_commit, True, now) == "ok"
+    assert (
+        classify_worker(
+            assigned,
+            None,
+            now - timedelta(minutes=16),
+            old_commit,
+            True,
+            now,
+        )
+        == "STUCK"
+    )
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "stuck_detector.py",
+            "--assigned-at",
+            assigned.isoformat(),
+            "--ready-for-review-at",
+            review_ready.isoformat(),
+            "--last-commit-at",
+            old_commit.isoformat(),
+            "--process-alive",
+            "--now",
+            now.isoformat(),
+        ],
+    )
+    assert main() == 0
+    assert capsys.readouterr().out.strip() == "ok"
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "stuck_detector.py",
+            "--assigned-at",
+            assigned.isoformat(),
+            "--last-progress-at",
+            (now - timedelta(minutes=16)).isoformat(),
+            "--last-commit-at",
+            old_commit.isoformat(),
+            "--process-alive",
+            "--now",
+            now.isoformat(),
+        ],
+    )
+    assert main() == 2
+    assert capsys.readouterr().out.strip() == "STUCK"
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "stuck_detector.py",
+            "--assigned-at",
+            "2020-01-01T00:00:00",
+            "--process-alive",
+        ],
+    )
+    assert main() == 2
+    assert capsys.readouterr().out.strip() == "STUCK"
