@@ -13,6 +13,73 @@ import (
 	"oro/pkg/protocol"
 )
 
+func TestAssignmentPayloadCarriesExecutionContext(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	beadSrc.shown["bead-execution-context"] = &protocol.BeadDetail{Title: "execution context"}
+	d.shutdownRunner = &mockCommandRunner{}
+
+	execution := WorkerExecutionContext{
+		AssignmentID: 91,
+		Generation:   3,
+		ActorRole:    "execution_worker",
+		Project:      "oro",
+		Capability:   "capability-identity",
+	}
+	payload := d.buildAssignPayload(context.Background(), &trackedWorker{
+		id:     "worker-execution-context",
+		beadID: "bead-execution-context",
+	}, 0, "", "", execution)
+
+	if payload.AssignmentID != execution.AssignmentID {
+		t.Fatalf("AssignmentID = %d, want %d", payload.AssignmentID, execution.AssignmentID)
+	}
+	if payload.Generation != execution.Generation {
+		t.Fatalf("Generation = %d, want %d", payload.Generation, execution.Generation)
+	}
+	if payload.ActorRole != execution.ActorRole {
+		t.Fatalf("ActorRole = %q, want %q", payload.ActorRole, execution.ActorRole)
+	}
+	if payload.Project != execution.Project {
+		t.Fatalf("Project = %q, want %q", payload.Project, execution.Project)
+	}
+	if payload.Capability != execution.Capability {
+		t.Fatalf("Capability = %q, want %q", payload.Capability, execution.Capability)
+	}
+
+	t.Run("handoff wire message", func(t *testing.T) {
+		conn := newMockConn()
+		d.mu.Lock()
+		d.workers["worker-handoff-execution-context"] = &trackedWorker{
+			id:      "worker-handoff-execution-context",
+			conn:    conn,
+			encoder: json.NewEncoder(conn),
+			state:   protocol.WorkerIdle,
+		}
+		d.assignHandoffToWorker("worker-handoff-execution-context", "bead-execution-context", &pendingHandoff{
+			assignmentID: execution.AssignmentID,
+			execution:    execution,
+			beadID:       "bead-execution-context",
+			worktree:     "/tmp/bead-execution-context",
+		})
+
+		if len(conn.written) != 1 {
+			t.Fatalf("handoff writes = %d, want 1", len(conn.written))
+		}
+		var msg protocol.Message
+		if err := json.Unmarshal(conn.written[0], &msg); err != nil {
+			t.Fatalf("decode handoff ASSIGN: %v", err)
+		}
+		if msg.Assign == nil {
+			t.Fatal("handoff message has nil ASSIGN payload")
+		}
+		if msg.Assign.AssignmentID != execution.AssignmentID || msg.Assign.Generation != execution.Generation ||
+			msg.Assign.ActorRole != execution.ActorRole || msg.Assign.Project != execution.Project ||
+			msg.Assign.Capability != execution.Capability {
+			t.Fatalf("handoff execution context = %#v, want %#v", msg.Assign, execution)
+		}
+	})
+}
+
 // TestAssignPayloadUsesProjectPaths verifies that buildAssignPayload reads the
 // worker-program.md from cfg.WorkerProgram (populated from ProjectPaths) rather
 // than the hardcoded filepath.Join(cfg.RepoRoot, "worker-program.md").
@@ -44,7 +111,7 @@ func TestAssignPayloadUsesProjectPaths(t *testing.T) {
 	}
 	d.shutdownRunner = &mockCommandRunner{output: []byte("abc git log")}
 
-	got := d.buildAssignPayload(context.Background(), w, 1, "", "")
+	got := d.buildAssignPayload(context.Background(), w, 1, "", "", WorkerExecutionContext{})
 
 	if got.WorkerProgram != wpContent {
 		t.Errorf("WorkerProgram = %q, want %q\n(cfg.WorkerProgram should be used, not filepath.Join(repoRoot, \"worker-program.md\"))",
