@@ -124,6 +124,47 @@ VALUES ('oro-q', 'agent/oro-q', 'missing_worktree_path', 'missing path', 'open')
 	}
 }
 
+func TestApplyHealthReportsAssignmentFrozenByQuarantine(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "oro-ready-health", Status: "open", Priority: 1, Type: "task"},
+	})
+	d.mu.Lock()
+	d.state = StateRunning
+	d.workers["w-idle-health"] = &trackedWorker{id: "w-idle-health", state: protocol.WorkerIdle}
+	d.mu.Unlock()
+	if _, err := d.db.ExecContext(ctx, `
+INSERT INTO recovery_quarantines (bead_id, branch, reason, details, status)
+VALUES ('oro-frozen-health', 'agent/oro-frozen-health', 'unsafe_stale_branch', 'unmerged branch', 'open');
+`); err != nil {
+		t.Fatalf("insert recovery quarantine: %v", err)
+	}
+	if _, blocked := d.recoveryQuarantineAssignmentScope(ctx); !blocked {
+		t.Fatal("assignment scope blocked = false, want true")
+	}
+
+	result, err := d.applyHealth()
+	if err != nil {
+		t.Fatalf("applyHealth: %v", err)
+	}
+	var health SwarmHealth
+	if err := json.Unmarshal([]byte(result), &health); err != nil {
+		t.Fatalf("unmarshal health: %v", err)
+	}
+	if !health.Metrics.AssignmentFrozenByQuarantine ||
+		health.Metrics.BlockingRecoveryQuarantines != 1 ||
+		health.Metrics.AssignmentFreezeReason != "open_recovery_quarantine" {
+		t.Fatalf("assignment freeze metrics = %+v", health.Metrics)
+	}
+	if health.Metrics.IdleWorkers != 1 || health.Metrics.ReadyQueue != 1 {
+		t.Fatalf("health capacity = idle %d ready %d, want idle 1 ready 1", health.Metrics.IdleWorkers, health.Metrics.ReadyQueue)
+	}
+	if !hasHealthFinding(health, factoryhealth.FindingAssignmentFrozenByQuarantine) {
+		t.Fatalf("health missing assignment freeze finding: %+v", health.Findings)
+	}
+}
+
 func TestBuildStatusJSONReportsRecoveryQuarantineHealth(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
@@ -147,6 +188,89 @@ VALUES ('oro-status-q', 'agent/oro-status-q', 'missing_worktree_path', 'missing 
 	}
 	if !hasHealthFinding(*status.Health, factoryhealth.FindingRecoveryQuarantineOpen) {
 		t.Fatalf("status health missing recovery quarantine finding: %+v", status.Health.Findings)
+	}
+}
+
+func TestStatusReportsAssignmentFrozenByQuarantine(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "oro-ready", Status: "open", Priority: 1, Type: "task"},
+	})
+	d.mu.Lock()
+	d.state = StateRunning
+	d.workers["w-idle"] = &trackedWorker{id: "w-idle", state: protocol.WorkerIdle}
+	d.mu.Unlock()
+
+	if _, err := d.db.ExecContext(ctx, `
+INSERT INTO recovery_quarantines (bead_id, branch, reason, details, status)
+VALUES ('oro-frozen', 'agent/oro-frozen', 'unsafe_stale_branch', 'unmerged branch', 'open');
+`); err != nil {
+		t.Fatalf("insert recovery quarantine: %v", err)
+	}
+
+	if redeployable, blocked := d.recoveryQuarantineAssignmentScope(ctx); !blocked || len(redeployable) != 0 {
+		t.Fatalf("assignment scope = redeployable %+v blocked %t, want globally blocked", redeployable, blocked)
+	}
+
+	var frozen statusResponse
+	if err := json.Unmarshal([]byte(d.buildStatusJSON()), &frozen); err != nil {
+		t.Fatalf("unmarshal frozen status JSON: %v", err)
+	}
+	if !frozen.AssignmentFrozenByQuarantine {
+		t.Fatal("status assignment_frozen_by_quarantine = false, want true")
+	}
+	if frozen.BlockingRecoveryQuarantines != 1 {
+		t.Fatalf("status blocking recovery quarantines = %d, want 1", frozen.BlockingRecoveryQuarantines)
+	}
+	if frozen.AssignmentFreezeReason != "open_recovery_quarantine" {
+		t.Fatalf("status assignment freeze reason = %q, want open_recovery_quarantine", frozen.AssignmentFreezeReason)
+	}
+	if frozen.Health == nil {
+		t.Fatal("status health missing")
+	}
+	if !frozen.Health.Metrics.AssignmentFrozenByQuarantine {
+		t.Fatal("health assignment_frozen_by_quarantine = false, want true")
+	}
+	if frozen.Health.Metrics.BlockingRecoveryQuarantines != 1 {
+		t.Fatalf("health blocking recovery quarantines = %d, want 1", frozen.Health.Metrics.BlockingRecoveryQuarantines)
+	}
+	if frozen.Health.Metrics.AssignmentFreezeReason != "open_recovery_quarantine" {
+		t.Fatalf("health assignment freeze reason = %q, want open_recovery_quarantine", frozen.Health.Metrics.AssignmentFreezeReason)
+	}
+	if frozen.Health.Metrics.IdleWorkers != 1 || frozen.Health.Metrics.ReadyQueue != 1 {
+		t.Fatalf("health capacity = idle %d ready %d, want idle 1 ready 1", frozen.Health.Metrics.IdleWorkers, frozen.Health.Metrics.ReadyQueue)
+	}
+	if !hasHealthFinding(*frozen.Health, factoryhealth.FindingAssignmentFrozenByQuarantine) {
+		t.Fatalf("health missing assignment freeze finding: %+v", frozen.Health.Findings)
+	}
+
+	if _, err := d.db.ExecContext(ctx, `
+UPDATE recovery_quarantines SET status='resolved', resolved_at=datetime('now') WHERE status='open';
+`); err != nil {
+		t.Fatalf("resolve recovery quarantine: %v", err)
+	}
+	if redeployable, blocked := d.recoveryQuarantineAssignmentScope(ctx); blocked || len(redeployable) != 0 {
+		t.Fatalf("resolved assignment scope = redeployable %+v blocked %t, want open", redeployable, blocked)
+	}
+
+	var unfrozen statusResponse
+	if err := json.Unmarshal([]byte(d.buildStatusJSON()), &unfrozen); err != nil {
+		t.Fatalf("unmarshal unfrozen status JSON: %v", err)
+	}
+	if unfrozen.AssignmentFrozenByQuarantine || unfrozen.BlockingRecoveryQuarantines != 0 || unfrozen.AssignmentFreezeReason != "" {
+		t.Fatalf("unfrozen status retained assignment gate: %+v", unfrozen)
+	}
+	if unfrozen.Health == nil {
+		t.Fatal("unfrozen status health missing")
+	}
+	if unfrozen.Health.Metrics.AssignmentFrozenByQuarantine ||
+		unfrozen.Health.Metrics.BlockingRecoveryQuarantines != 0 ||
+		unfrozen.Health.Metrics.AssignmentFreezeReason != "" {
+		t.Fatalf("unfrozen health retained assignment gate: %+v", unfrozen.Health.Metrics)
+	}
+	if hasHealthFinding(*unfrozen.Health, factoryhealth.FindingAssignmentFrozenByQuarantine) {
+		t.Fatalf("unfrozen health retained assignment freeze finding: %+v", unfrozen.Health.Findings)
 	}
 }
 
