@@ -49,7 +49,7 @@ type storageStatus struct {
 	NextSweep string `json:"next_sweep,omitempty"`
 }
 
-// newStorageCmd creates the read-only storage command group.
+// newStorageCmd creates the storage inspection and cleanup command group.
 func newStorageCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "storage",
@@ -99,6 +99,7 @@ type storageCleanupDecision struct {
 func newStorageCleanCmd() *cobra.Command {
 	var scopeValue string
 	var apply bool
+	var dryRun bool
 	var jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "clean",
@@ -106,6 +107,9 @@ func newStorageCleanCmd() *cobra.Command {
 		Long:  "Plans cleanup from the storage catalog without modifying files. Pass --apply to remove only candidates proven safe by the plan.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if apply && dryRun {
+				return fmt.Errorf("--apply and --dry-run cannot be used together")
+			}
 			scope, err := parseStorageCleanupScope(scopeValue)
 			if err != nil {
 				return err
@@ -123,6 +127,7 @@ func newStorageCleanCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&scopeValue, "scope", string(storage.ScopeAll), "cleanup scope: all, runtime, worktrees, oro-home, or dev-tools")
 	cmd.Flags().BoolVar(&apply, "apply", false, "remove candidates proven safe by the cleanup plan")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "explicitly preview cleanup without modifying files")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit cleanup plan as JSON")
 	return cmd
 }

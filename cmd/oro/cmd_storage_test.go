@@ -304,6 +304,14 @@ func TestStorageCleanDefaultsToDryRun(t *testing.T) {
 			t.Fatalf("dry-run mutated cleanup target %q: %v", path, err)
 		}
 	}
+	root = newRootCmd()
+	root.SetArgs([]string{"storage", "clean", "--scope", "runtime", "--dry-run"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute explicit dry-run clean: %v", err)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Errorf("explicit dry-run mutated cleanup target: %v", err)
+	}
 
 	out.Reset()
 	root = newRootCmd()
@@ -340,6 +348,46 @@ func TestStorageCleanDefaultsToDryRun(t *testing.T) {
 	}
 	if _, err := os.Stat(leasedTarget); err != nil {
 		t.Errorf("--apply bypassed active lease proof: %v", err)
+	}
+
+	if err := catalog.Close(); err != nil {
+		t.Fatalf("close catalog before corruption: %v", err)
+	}
+	catalogClosed = true
+	paths, err := ResolveStoragePaths(oroHome)
+	if err != nil {
+		t.Fatalf("ResolveStoragePaths() error = %v", err)
+	}
+	if err := os.WriteFile(paths.CatalogPath, []byte("not a sqlite database"), 0o600); err != nil {
+		t.Fatalf("corrupt cleanup catalog: %v", err)
+	}
+	out.Reset()
+	root = newRootCmd()
+	root.SetOut(&out)
+	root.SetArgs([]string{"storage", "clean", "--scope", "runtime", "--apply", "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute corrupt apply clean: %v", err)
+	}
+	var corrupt struct {
+		CatalogHealthy bool `json:"catalog_healthy"`
+		Decisions      []struct {
+			Action storage.ActionType `json:"action"`
+		} `json:"decisions"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &corrupt); err != nil {
+		t.Fatalf("decode corrupt cleanup JSON %q: %v", out.String(), err)
+	}
+	if corrupt.CatalogHealthy || len(corrupt.Decisions) != 0 {
+		t.Errorf("corrupt catalog cleanup = %+v, want preservation-only empty plan", corrupt)
+	}
+	if _, err := os.Stat(leasedTarget); err != nil {
+		t.Errorf("corrupt catalog apply mutated preserved target: %v", err)
+	}
+
+	root = newRootCmd()
+	root.SetArgs([]string{"storage", "clean", "--scope", "outside"})
+	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "invalid storage cleanup scope") {
+		t.Errorf("unknown scope error = %v, want usage error", err)
 	}
 }
 
