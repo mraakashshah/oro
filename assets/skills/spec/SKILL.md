@@ -21,11 +21,22 @@ If the request is a single coherent feature (even if cross-cutting), proceed to 
 
 Announce which mode: "Using **quick spec** — single package, well-understood change." or "Using **full spec** — cross-cutting change, needs design doc."
 
+## Internal Leverage Pass
+
+Run this privately after research and before finalizing the design or task graph. It is a decision lens, not a user questionnaire.
+
+- **Direction** — Are we still solving the most useful problem? Which assumptions became stale?
+- **Simplification** — What are we optimizing that should not exist? What would a radically simpler or theoretically best product or factory look like?
+- **Leverage** — What would cut half the timeline? What would double impact? What changes if money is less constrained than talent?
+- **Horizon and scale** — Dream in years, plan in months, evaluate in weeks, ship daily. Is this a prototype for 1x, a build for 10x, or engineering for 100x?
+
+Apply material findings directly to the design, scope, or tasks; do not narrate every answer. If a finding changes the goal, public contract, or hard constraints, ask the user to decide, one material decision at a time, with a recommendation. Do not proceed until it is decided. Continue autonomously when no material decisions remain.
+
 ---
 
 ## Quick Mode
 
-Research → inline review → decompose. No design doc. No subagent. Same context throughout.
+Research → leverage pass + inline review → decompose. No design doc. No subagent. Same context throughout.
 
 ### Step 1 — Research
 
@@ -35,9 +46,9 @@ Read affected code. Mandatory gate: no proposals without citing files read.
 - `grep` for all interface implementations, callers, and test mocks
 - Note what files must change for compilation
 
-### Step 2 — Inline Adversarial + Premortem
+### Step 2 — Internal Leverage + Inline Adversarial Review
 
-Self-review in the same context. Run these checks before decomposing:
+Run the Internal Leverage Pass, then self-review in the same context. Run these checks before decomposing:
 
 | Check | Question |
 |-------|----------|
@@ -65,7 +76,7 @@ oro task show <epic-id>    ← confirmed task tree (no design doc)
 
 ## Full Mode
 
-Collaborative design → consultation → adversarial validation → task decomposition. Produces a committed design doc.
+Collaborative design + leverage pass → adversarial validation → task decomposition. Produces a committed design doc.
 
 ### Stage 1 — Brainstorm (`brainstorming` skill)
 
@@ -73,50 +84,11 @@ Invoke the `brainstorming` skill. Follow it completely:
 
 - Research prior art first (mandatory gate — no proposals without citing files read)
 - One question at a time
+- Run the Internal Leverage Pass before finalizing the design
 - Produce a design doc: `docs/plans/YYYY-MM-DD-<topic>-design.md`
 - Commit the design doc before moving to Stage 2
 
-### Stage 2 — Consultation ← GATE
-
-Pressure-test the committed design doc before it goes to adversarial review. Human-in-the-loop stress test — confirm we're building the right thing, not just the thing asked for. Specs without pressure-testing build the wrong thing thoroughly.
-
-**The six forcing questions.** Ask one at a time. Present your recommended answer with each. Do not batch.
-
-1. **The real problem.** What is the underlying problem the design addresses? Is the stated request a proxy for something more important?
-2. **Status quo.** How is this solved today — workaround, manual process, absence? Whose pain does it cause, how much?
-3. **Desperate specificity.** Who specifically benefits? Name the user, task type, failure mode, caller — not a persona.
-4. **Narrowest wedge.** Is there a version that ships half the scope for most of the benefit?
-5. **Do nothing.** What happens if we ship nothing? Is the status quo bad enough to justify this work?
-6. **Future-fit.** In 6 months, does this feel like a durable capability or a local patch? If a patch, is a durable version cheaper to build now?
-
-**Assumption ledger.** Maintain a running list of unresolved decisions. Every user answer may surface new ones — add them. Format:
-
-```
-LEDGER
-- [ ] DECISION: <what needs to be decided>
-      DEPENDS_ON: <other decisions this hinges on — if any>
-      RECOMMENDATION: <your answer with reasoning>
-      ASK: <the one-question form to put to the user>
-```
-
-**Reframe hypothesis.** If the forcing questions suggest the design is solving the wrong problem, propose a reframe:
-
-```
-REFRAME
-Current design: <what the committed doc says we'll build>
-Observed framing: <what the real problem looks like>
-Proposed reframe: <what to build instead, and why>
-Cost delta: <is the reframe more/less work?>
-```
-
-Present once. Let the user confirm, reject, or modify. Don't bulldoze. If the reframe is accepted, **update the design doc in place and commit** before proceeding.
-
-**Exit condition:** NOT "looks good enough." The stage exits only when:
-1. User has confirmed the design (original or reframed)
-2. Ledger has zero unchecked items
-3. Answering the last decision did not add new decisions
-
-### Stage 3 — Adversarial Review (`adversarial-spec-review` skill) ← GATE
+### Stage 2 — Adversarial Review (`adversarial-spec-review` skill) ← GATE
 
 Spawn a **fresh-context subagent** to run `adversarial-spec-review` on the design doc.
 
@@ -127,11 +99,11 @@ Return the full output in the specified YAML format."
 ```
 
 - **FAIL** → fix the gaps identified, re-run the review (Ralph Loop)
-- **PASS** → continue to Stage 4
+- **PASS** → continue to Stage 3
 
 Do not skip this stage. Specs without adversarial review ship broken.
 
-### Stage 4 — Decompose (`beadcraft` Decompose mode)
+### Stage 3 — Decompose (`beadcraft` Decompose mode)
 
 Invoke `beadcraft` in Decompose mode on the validated design doc. Same as Quick Step 3.
 
@@ -152,7 +124,6 @@ oro task show <epic-id>                          ← confirmed task tree
 - Using Quick mode for cross-cutting changes ("it's simple enough")
 - Skipping adversarial checks in Quick mode ("the change is obvious")
 - Running Full adversarial review in the same context that wrote the spec
-- Stopping to ask for confirmation instead of proceeding to execution
-- Skipping Stage 2 Consultation in Full mode ("the design looks fine")
-- Invoking adversarial review before the assumption ledger is drained
-- Exiting Consultation on "looks good enough" instead of "ledger drained"
+- Stopping for routine confirmation when no material decision remains
+- Narrating every leverage question instead of applying material findings
+- Engineering for 100x without evidence that the current scale requires it
