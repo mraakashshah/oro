@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"context"
+	"fmt"
 	"sync"
 )
 
@@ -33,7 +34,7 @@ func (s *QGSemaphore) Acquire(ctx context.Context, class ResourceClass) (func(),
 	select {
 	case permits <- struct{}{}:
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, fmt.Errorf("acquire presubmit capacity: %w", ctx.Err())
 	}
 
 	var once sync.Once

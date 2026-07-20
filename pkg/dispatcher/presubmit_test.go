@@ -178,6 +178,16 @@ func TestPresubmitActionScheduler(t *testing.T) {
 	}
 }
 
+func TestQGSemaphoreWrapsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := NewQGSemaphore(map[ResourceClass]int{ResourceCPULight: 0}).Acquire(ctx, ResourceCPULight)
+	if err == nil || err.Error() != "acquire presubmit capacity: context canceled" {
+		t.Fatalf("Acquire cancellation error = %v", err)
+	}
+}
+
 func waitForPresubmitStarts(t *testing.T, started <-chan string, want map[string]bool) {
 	t.Helper()
 	timeout := time.After(time.Second)
