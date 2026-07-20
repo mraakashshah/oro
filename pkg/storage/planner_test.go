@@ -1,41 +1,45 @@
-package storage
+package storage_test
 
-import "testing"
+import (
+	"testing"
+
+	"oro/pkg/storage"
+)
 
 func TestPlannerPreservesUncertainCandidates(t *testing.T) {
 	t.Parallel()
 
-	snapshot := Snapshot{
+	snapshot := storage.Snapshot{
 		CatalogHealthy: true,
-		Candidates: []Candidate{
-			{Path: "/tmp/oro-subprocess/safe", Scope: ScopeRuntime, Allowlisted: true, Owned: true},
-			{Scope: ScopeRuntime, Allowlisted: true, Owned: true},
-			{Path: "/tmp/oro-subprocess/unknown", Scope: ScopeRuntime, Owned: true},
-			{Path: "/tmp/oro-subprocess/foreign", Scope: ScopeRuntime, Allowlisted: true},
-			{Path: "/tmp/oro-subprocess/live", Scope: ScopeRuntime, Allowlisted: true, Owned: true, LeaseActive: true},
-			{Path: "/tmp/oro-subprocess/other", Scope: ScopeWorktrees, Allowlisted: true, Owned: true},
+		Candidates: []storage.Candidate{
+			{Path: "/tmp/oro-subprocess/safe", Scope: storage.ScopeRuntime, Allowlisted: true, Owned: true},
+			{Scope: storage.ScopeRuntime, Allowlisted: true, Owned: true},
+			{Path: "/tmp/oro-subprocess/unknown", Scope: storage.ScopeRuntime, Owned: true},
+			{Path: "/tmp/oro-subprocess/foreign", Scope: storage.ScopeRuntime, Allowlisted: true},
+			{Path: "/tmp/oro-subprocess/live", Scope: storage.ScopeRuntime, Allowlisted: true, Owned: true, LeaseActive: true},
+			{Path: "/tmp/oro-subprocess/other", Scope: storage.ScopeWorktrees, Allowlisted: true, Owned: true},
 		},
 	}
-	policy := StoragePolicy{DeletionAuthorized: true}
+	policy := storage.StoragePolicy{DeletionAuthorized: true}
 
-	plan := PlanCleanup(snapshot, policy, ScopeRuntime)
-	assertPlanDecision(t, plan, "/tmp/oro-subprocess/safe", Delete, "")
-	assertPlanDecision(t, plan, "", Preserve, PreserveUnknown)
-	assertPlanDecision(t, plan, "/tmp/oro-subprocess/unknown", Preserve, PreserveUnknown)
-	assertPlanDecision(t, plan, "/tmp/oro-subprocess/foreign", Preserve, PreserveOwnershipUncertain)
-	assertPlanDecision(t, plan, "/tmp/oro-subprocess/live", Preserve, PreserveActive)
-	assertPlanDecision(t, plan, "/tmp/oro-subprocess/other", Preserve, PreserveOutOfScope)
+	plan := storage.PlanCleanup(snapshot, policy, storage.ScopeRuntime)
+	assertPlanDecision(t, plan, "/tmp/oro-subprocess/safe", storage.Delete, "")
+	assertPlanDecision(t, plan, "", storage.Preserve, storage.PreserveUnknown)
+	assertPlanDecision(t, plan, "/tmp/oro-subprocess/unknown", storage.Preserve, storage.PreserveUnknown)
+	assertPlanDecision(t, plan, "/tmp/oro-subprocess/foreign", storage.Preserve, storage.PreserveOwnershipUncertain)
+	assertPlanDecision(t, plan, "/tmp/oro-subprocess/live", storage.Preserve, storage.PreserveActive)
+	assertPlanDecision(t, plan, "/tmp/oro-subprocess/other", storage.Preserve, storage.PreserveOutOfScope)
 
-	noAuthority := PlanCleanup(snapshot, StoragePolicy{}, ScopeRuntime)
-	assertPlanDecision(t, noAuthority, "/tmp/oro-subprocess/safe", Preserve, PreserveNoAuthority)
+	noAuthority := storage.PlanCleanup(snapshot, storage.StoragePolicy{}, storage.ScopeRuntime)
+	assertPlanDecision(t, noAuthority, "/tmp/oro-subprocess/safe", storage.Preserve, storage.PreserveNoAuthority)
 
-	corrupt := PlanCleanup(Snapshot{Candidates: snapshot.Candidates}, policy, ScopeRuntime)
+	corrupt := storage.PlanCleanup(storage.Snapshot{Candidates: snapshot.Candidates}, policy, storage.ScopeRuntime)
 	for _, candidate := range snapshot.Candidates {
-		assertPlanDecision(t, corrupt, candidate.Path, Preserve, PreserveCatalogCorrupt)
+		assertPlanDecision(t, corrupt, candidate.Path, storage.Preserve, storage.PreserveCatalogCorrupt)
 	}
 }
 
-func assertPlanDecision(t *testing.T, plan Plan, path string, action ActionType, reason PreserveReason) {
+func assertPlanDecision(t *testing.T, plan storage.Plan, path string, action storage.ActionType, reason storage.PreserveReason) {
 	t.Helper()
 	for _, decision := range plan.Decisions {
 		if decision.Candidate.Path != path {

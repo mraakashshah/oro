@@ -33,13 +33,6 @@ type Candidate struct {
 	LeaseActive bool
 }
 
-// StoragePolicy controls whether the caller explicitly authorizes deletion.
-// Planning remains dry-run only; execution must separately revalidate every
-// delete decision before changing the filesystem.
-type StoragePolicy struct {
-	DeletionAuthorized bool
-}
-
 // ActionType identifies a planned cleanup outcome.
 type ActionType string
 
@@ -82,6 +75,8 @@ type Plan struct {
 
 // PlanCleanup returns a preservation-first cleanup plan. Only allowlisted,
 // Oro-owned, unleased candidates in the requested scope become delete actions.
+//
+//oro:testonly — production planner wiring lands in a subsequent storage lifecycle task.
 func PlanCleanup(snapshot Snapshot, policy StoragePolicy, scope Scope) Plan {
 	decisions := make([]Decision, 0, len(snapshot.Candidates))
 	for _, candidate := range snapshot.Candidates {

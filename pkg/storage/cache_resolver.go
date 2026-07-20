@@ -8,12 +8,13 @@ import (
 	"strings"
 )
 
-// StoragePolicy supplies the registered cache providers and their sharing identities.
-// It deliberately does not grant deletion authority to paths found in an environment.
+// StoragePolicy supplies cache sharing identities and explicit cleanup authority.
+// Cache resolution never infers deletion authority from paths found in an environment.
 type StoragePolicy struct { //nolint:revive // name is fixed by the public acceptance contract
-	Providers      []CacheProvider
-	ProjectID      string
-	RepositoryRoot string
+	Providers          []CacheProvider
+	ProjectID          string
+	RepositoryRoot     string
+	DeletionAuthorized bool
 }
 
 // ResolvedCacheEnv is a normalized subprocess environment and any unsafe
