@@ -104,6 +104,99 @@ func TestHandleDone_QGFailRetryIncrementsAttempt(t *testing.T) {
 	}
 }
 
+func TestHandleDoneQGRetryStopsWhenBeadGainsBlocker(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	const (
+		workerID = "worker-qg-blocked"
+		parentID = "bead-qg-parent"
+		childID  = "bead-qg-child"
+	)
+
+	server, client := net.Pipe()
+	defer func() { _ = server.Close() }()
+	defer func() { _ = client.Close() }()
+
+	result, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`,
+		parentID, workerID, t.TempDir())
+	if err != nil {
+		t.Fatalf("seed active assignment: %v", err)
+	}
+	assignmentID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("read assignment ID: %v", err)
+	}
+
+	parent := protocol.Bead{
+		ID:     parentID,
+		Status: "open",
+		Dependencies: []protocol.Dependency{{
+			IssueID: parentID, DependsOnID: childID, Type: "blocks",
+		}},
+	}
+	child := protocol.Bead{ID: childID, Status: "open"}
+	beadSrc.SetBeads([]protocol.Bead{parent, child})
+	beadSrc.mu.Lock()
+	beadSrc.shown[parentID] = &parent
+	beadSrc.shown[childID] = &child
+	beadSrc.mu.Unlock()
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         server,
+		encoder:      json.NewEncoder(server),
+		state:        protocol.WorkerBusy,
+		beadID:       parentID,
+		assignmentID: assignmentID,
+	}
+	d.mu.Unlock()
+
+	d.handleDone(ctx, workerID, protocol.Message{Done: &protocol.DonePayload{
+		BeadID:            parentID,
+		WorkerID:          workerID,
+		QualityGatePassed: false,
+		QGOutput:          "deterministic failure",
+	}})
+
+	_ = client.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	var retry protocol.Message
+	if err := json.NewDecoder(client).Decode(&retry); err == nil {
+		t.Fatalf("unexpected retry message: %#v", retry)
+	}
+
+	var assignmentStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("read assignment status: %v", err)
+	}
+	if assignmentStatus != "completed" {
+		t.Fatalf("assignment status = %q, want completed", assignmentStatus)
+	}
+
+	beadSrc.mu.Lock()
+	parentStatus := beadSrc.updated[parentID]
+	beadSrc.mu.Unlock()
+	if parentStatus != "open" {
+		t.Fatalf("parent status = %q, want open", parentStatus)
+	}
+
+	d.mu.Lock()
+	worker := d.workers[workerID]
+	d.mu.Unlock()
+	if worker == nil || worker.state != protocol.WorkerIdle || worker.beadID != "" || worker.assignmentID != 0 {
+		t.Fatalf("worker was not released: %#v", worker)
+	}
+	if got := eventCount(t, d.db, "qg_retry_blocked_by_dependency"); got != 1 {
+		t.Fatalf("qg_retry_blocked_by_dependency events = %d, want 1", got)
+	}
+
+	candidates := d.filterAssignable(ctx, []protocol.Bead{parent, child})
+	if len(candidates) != 1 || candidates[0].ID != childID {
+		t.Fatalf("schedulable beads = %#v, want only %q", candidates, childID)
+	}
+}
+
 func TestQGRetryReconnectDuringReservationStillDeliversRetry(t *testing.T) {
 	ctx := context.Background()
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)

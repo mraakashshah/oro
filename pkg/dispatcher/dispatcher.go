@@ -2343,10 +2343,64 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 		d.handleQGExhausted(ctx, workerID, beadID, retry.assignmentID, qgOutput, retry.attempt)
 		return
 	}
+	if d.stopQGRetryForBlockingDependency(ctx, workerID, beadID, retry.assignmentID, retry.attempt) {
+		return
+	}
 
 	d.recordQGFailureIncident(ctx, workerID, beadID, retry.assignmentID, retry.attempt, qgOutput, qg.record.Fingerprint, qg.record.Summary, qg.classification)
 	d.persistBeadCount(ctx, retry.assignmentID, beadID, "attempt_count", retry.attempt)
 	d.qgRetryWithReservation(ctx, workerID, beadID, qgOutput, retry.attempt)
+}
+
+// stopQGRetryForBlockingDependency releases a failed QG assignment when the
+// parent gained an unresolved blocker while the worker was running. A failed
+// dependency lookup is handled conservatively so an unchanged retry cannot
+// consume capacity while the scheduler's readiness view is unknown.
+func (d *Dispatcher) stopQGRetryForBlockingDependency(ctx context.Context, workerID, beadID string, assignmentID int64, attempt int) bool {
+	blockerID, lookupErr := d.qgRetryBlockingDependency(ctx, beadID)
+	if blockerID == "" && lookupErr == nil {
+		return false
+	}
+	if lookupErr != nil {
+		_ = d.logEvent(ctx, "qg_retry_dependency_lookup_failed", workerID, beadID, workerID,
+			fmt.Sprintf(`{"error":%q,"attempt":%d}`, lookupErr.Error(), attempt))
+	}
+	if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
+		_ = d.logEvent(ctx, "qg_retry_blocked_status_failed", workerID, beadID, workerID,
+			fmt.Sprintf(`{"error":%q,"attempt":%d}`, err.Error(), attempt))
+	}
+	if err := d.completeAssignment(ctx, assignmentID, beadID); err != nil {
+		_ = d.logEvent(ctx, "qg_retry_blocked_assignment_cleanup_failed", workerID, beadID, workerID,
+			fmt.Sprintf(`{"error":%q,"attempt":%d}`, err.Error(), attempt))
+	}
+	d.releaseWorkerAfterDoneTerminal(workerID, beadID, assignmentID)
+	d.clearBeadTracking(beadID)
+	_ = d.logEvent(ctx, "qg_retry_blocked_by_dependency", workerID, beadID, workerID,
+		fmt.Sprintf(`{"blocker_id":%q,"attempt":%d,"lookup_failed":%t}`, blockerID, attempt, lookupErr != nil))
+	return true
+}
+
+func (d *Dispatcher) qgRetryBlockingDependency(ctx context.Context, beadID string) (string, error) {
+	bead, err := d.beads.Show(ctx, beadID)
+	if err != nil {
+		return "", fmt.Errorf("show retry bead: %w", err)
+	}
+	if bead == nil {
+		return "", fmt.Errorf("show retry bead: bead %q not found", beadID)
+	}
+	for _, dep := range bead.Dependencies {
+		if dep.Type != "blocks" && dep.Type != "conditional-blocks" {
+			continue
+		}
+		blockingBead, err := d.beads.Show(ctx, dep.DependsOnID)
+		if err != nil {
+			return "", fmt.Errorf("show dependency %q: %w", dep.DependsOnID, err)
+		}
+		if blockingBead != nil && blockingBead.Status != "closed" {
+			return dep.DependsOnID, nil
+		}
+	}
+	return "", nil
 }
 
 type qgFailureEvaluation struct {
