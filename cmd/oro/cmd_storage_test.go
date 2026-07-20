@@ -14,13 +14,13 @@ import (
 
 func TestStorageStatusCommand(t *testing.T) {
 	t.Run("catalog pragmas must prove health", func(t *testing.T) {
-		if !storageCatalogPragmasHealthy("ok", 1) {
+		if !storageCatalogPragmasHealthy("ok", storage.CatalogSchemaVersion) {
 			t.Error("healthy catalog pragmas reported unhealthy")
 		}
-		if storageCatalogPragmasHealthy("row 7 missing from index", 1) {
+		if storageCatalogPragmasHealthy("row 7 missing from index", storage.CatalogSchemaVersion) {
 			t.Error("integrity diagnostic reported healthy")
 		}
-		if storageCatalogPragmasHealthy("ok", 2) {
+		if storageCatalogPragmasHealthy("ok", storage.CatalogSchemaVersion+1) {
 			t.Error("unsupported catalog version reported healthy")
 		}
 	})
@@ -172,22 +172,14 @@ func TestStorageStatusCommand(t *testing.T) {
 
 	t.Run("incomplete catalog schema is unhealthy", func(t *testing.T) {
 		incompleteHome := t.TempDir()
-		incompletePaths, err := ResolveStoragePaths(incompleteHome)
+		catalog, err := openStorageCatalog(context.Background(), incompleteHome)
 		if err != nil {
-			t.Fatalf("ResolveStoragePaths() error = %v", err)
+			t.Fatalf("openStorageCatalog() error = %v", err)
 		}
-		db, err := openDB(incompletePaths.CatalogPath)
-		if err != nil {
-			t.Fatalf("open incomplete catalog: %v", err)
+		if _, err := catalog.DB().Exec(`DROP TABLE runtime_tombstones`); err != nil {
+			t.Fatalf("remove required runtime table: %v", err)
 		}
-		if _, err := db.Exec(`
-			CREATE TABLE leases (expires_at TEXT NOT NULL);
-			CREATE TABLE sweeps (status TEXT NOT NULL, finished_at TEXT);
-			PRAGMA user_version = 1;
-		`); err != nil {
-			t.Fatalf("create incomplete catalog: %v", err)
-		}
-		if err := db.Close(); err != nil {
+		if err := catalog.Close(); err != nil {
 			t.Fatalf("close incomplete catalog: %v", err)
 		}
 		status, err := loadStorageStatus(context.Background(), incompleteHome)
