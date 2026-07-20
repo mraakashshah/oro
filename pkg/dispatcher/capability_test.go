@@ -1,4 +1,4 @@
-package dispatcher
+package dispatcher //nolint:testpackage // white-box test exercises unexported capability persistence helpers
 
 import (
 	"context"

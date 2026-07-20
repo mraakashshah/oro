@@ -17,6 +17,7 @@ const assignmentCapabilityLifetime = 20 * time.Minute
 // ActorRole scopes the work an assignment capability may authorize.
 type ActorRole string
 
+// Supported assignment capability actor roles.
 const (
 	ActorRoleExecutionWorker    ActorRole = "execution_worker"
 	ActorRoleEpicDecomposition  ActorRole = "epic_decomposition_worker"
@@ -99,7 +100,7 @@ INSERT INTO assignment_capabilities (
 func randomCapabilityValue(bytes int) (string, error) {
 	value := make([]byte, bytes)
 	if _, err := rand.Read(value); err != nil {
-		return "", err
+		return "", fmt.Errorf("read random capability bytes: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(value), nil
 }
