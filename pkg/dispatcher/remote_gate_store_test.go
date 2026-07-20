@@ -104,3 +104,30 @@ func TestRemoteGateStoreTransition(t *testing.T) {
 		t.Fatalf("persisted state = %q, want %q", persisted.State, RemoteGateStateLocalPresubmit)
 	}
 }
+
+func TestValidRemoteGateTransition(t *testing.T) {
+	tests := []struct {
+		from RemoteGateState
+		to   RemoteGateState
+		want bool
+	}{
+		{RemoteGateStateCandidateAdopted, RemoteGateStateLocalPresubmit, true},
+		{RemoteGateStateLocalPresubmit, RemoteGateStateRebasing, true},
+		{RemoteGateStateLocalPresubmit, RemoteGateStateFailed, true},
+		{RemoteGateStateRebasing, RemoteGateStateLocalPresubmitRebase, true},
+		{RemoteGateStateLocalPresubmitRebase, RemoteGateStateOpsReview, true},
+		{RemoteGateStateOpsReview, RemoteGateStatePublishing, true},
+		{RemoteGateStatePublishing, RemoteGateStateAwaitingRun, true},
+		{RemoteGateStateAwaitingRun, RemoteGateStateRunning, true},
+		{RemoteGateStateRunning, RemoteGateStatePassed, true},
+		{RemoteGateStatePassed, RemoteGateStateReconciled, true},
+		{RemoteGateStateCandidateAdopted, RemoteGateStateCandidateAdopted, true},
+		{RemoteGateStateCandidateAdopted, RemoteGateStatePublishing, false},
+		{RemoteGateStateReconciled, RemoteGateStateRunning, false},
+	}
+	for _, test := range tests {
+		if got := validRemoteGateTransition(test.from, test.to); got != test.want {
+			t.Errorf("validRemoteGateTransition(%q, %q) = %t, want %t", test.from, test.to, got, test.want)
+		}
+	}
+}

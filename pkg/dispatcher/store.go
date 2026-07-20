@@ -64,6 +64,19 @@ const (
 	RemoteGateStateReconciled           RemoteGateState = "reconciled"
 )
 
+var remoteGateTransitions = map[RemoteGateState][]RemoteGateState{ //nolint:gochecknoglobals // static state-machine configuration
+	RemoteGateStateCandidateAdopted:     {RemoteGateStateLocalPresubmit},
+	RemoteGateStateLocalPresubmit:       {RemoteGateStateRebasing, RemoteGateStateFailed},
+	RemoteGateStateRebasing:             {RemoteGateStateLocalPresubmitRebase, RemoteGateStateFailed},
+	RemoteGateStateLocalPresubmitRebase: {RemoteGateStateOpsReview, RemoteGateStateFailed},
+	RemoteGateStateOpsReview:            {RemoteGateStatePublishing, RemoteGateStateFailed},
+	RemoteGateStatePublishing:           {RemoteGateStateAwaitingRun, RemoteGateStateFailed},
+	RemoteGateStateAwaitingRun:          {RemoteGateStateRunning, RemoteGateStateFailed},
+	RemoteGateStateRunning:              {RemoteGateStatePassed, RemoteGateStateFailed},
+	RemoteGateStatePassed:               {RemoteGateStateReconciled},
+	RemoteGateStateFailed:               {RemoteGateStateReconciled},
+}
+
 // RemoteGateCandidate is the immutable dispatcher-owned identity adopted from
 // a completed worker candidate.
 type RemoteGateCandidate struct {
@@ -256,26 +269,10 @@ func validRemoteGateTransition(from, to RemoteGateState) bool {
 	if from == to {
 		return true
 	}
-	switch from {
-	case RemoteGateStateCandidateAdopted:
-		return to == RemoteGateStateLocalPresubmit
-	case RemoteGateStateLocalPresubmit:
-		return to == RemoteGateStateRebasing || to == RemoteGateStateFailed
-	case RemoteGateStateRebasing:
-		return to == RemoteGateStateLocalPresubmitRebase || to == RemoteGateStateFailed
-	case RemoteGateStateLocalPresubmitRebase:
-		return to == RemoteGateStateOpsReview || to == RemoteGateStateFailed
-	case RemoteGateStateOpsReview:
-		return to == RemoteGateStatePublishing || to == RemoteGateStateFailed
-	case RemoteGateStatePublishing:
-		return to == RemoteGateStateAwaitingRun || to == RemoteGateStateFailed
-	case RemoteGateStateAwaitingRun:
-		return to == RemoteGateStateRunning || to == RemoteGateStateFailed
-	case RemoteGateStateRunning:
-		return to == RemoteGateStatePassed || to == RemoteGateStateFailed
-	case RemoteGateStatePassed, RemoteGateStateFailed:
-		return to == RemoteGateStateReconciled
-	default:
-		return false
+	for _, allowed := range remoteGateTransitions[from] {
+		if to == allowed {
+			return true
+		}
 	}
+	return false
 }
