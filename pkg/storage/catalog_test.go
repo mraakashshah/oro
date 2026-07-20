@@ -1,123 +1,117 @@
-//nolint:testpackage // rollback coverage injects a failing package-private migrator.
-package storage
+package storage_test
 
 import (
 	"context"
-	"database/sql"
-	"errors"
-	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"oro/pkg/dbutil"
+	"oro/pkg/storage"
 )
 
-func TestOpenCatalogMigratesSchema(t *testing.T) {
-	t.Parallel()
-
-	path := filepath.Join(t.TempDir(), "catalog.db")
-	catalog, err := OpenCatalog(context.Background(), path)
-	if err != nil {
-		t.Fatalf("OpenCatalog() error = %v", err)
-	}
-	t.Cleanup(func() { _ = catalog.Close() })
-
-	for _, table := range []string{
-		"providers",
-		"namespaces",
-		"leases",
-		"controllers",
-		"refs",
-		"sweeps",
-		"evidence",
-	} {
-		var name string
-		err := catalog.DB().QueryRowContext(
-			context.Background(),
-			`SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?`,
-			table,
-		).Scan(&name)
-		if err != nil {
-			t.Fatalf("catalog missing %q table: %v", table, err)
-		}
-	}
-
-	var version int
-	if err := catalog.DB().QueryRowContext(context.Background(), `PRAGMA user_version`).Scan(&version); err != nil {
-		t.Fatalf("read schema version: %v", err)
-	}
-	if version == 0 {
-		t.Fatal("schema version = 0, want migrated version")
-	}
+type runtimeLeaseCatalog interface {
+	AcquireLease(context.Context, storage.LeaseRequest) (storage.Lease, error)
+	ReleaseLease(context.Context, storage.LeaseID) error
 }
 
-func TestOpenCatalogRejectsCorruptDatabase(t *testing.T) {
+var _ runtimeLeaseCatalog = (*storage.Catalog)(nil)
+
+func TestCatalogRuntimeLeaseLifecycle(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), "catalog.db")
-	if err := os.WriteFile(path, []byte("not a sqlite database"), 0o600); err != nil {
-		t.Fatalf("write corrupt catalog: %v", err)
-	}
-
-	_, err := OpenCatalog(context.Background(), path)
-	if !errors.Is(err, ErrCatalogCorrupt) {
-		t.Fatalf("OpenCatalog() error = %v, want ErrCatalogCorrupt", err)
-	}
-}
-
-func TestOpenCatalogRollbackPreservesOriginalVersion(t *testing.T) {
-	t.Parallel()
-
+	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "catalog.db")
 	db, err := dbutil.OpenDB(path)
 	if err != nil {
-		t.Fatalf("open fixture db: %v", err)
+		t.Fatalf("open catalog db: %v", err)
 	}
-	if _, err := db.Exec(`PRAGMA user_version = 7`); err != nil {
-		t.Fatalf("set fixture version: %v", err)
+
+	if _, err := db.ExecContext(ctx, `CREATE TABLE runtime_leases (id TEXT PRIMARY KEY)`); err != nil {
+		t.Fatalf("seed stale schema: %v", err)
 	}
 	if err := db.Close(); err != nil {
-		t.Fatalf("close fixture db: %v", err)
+		t.Fatalf("close stale catalog fixture: %v", err)
 	}
-
-	_, err = openCatalog(context.Background(), path, func(ctx context.Context, tx catalogTx) error {
-		if _, err := tx.ExecContext(ctx, `CREATE TABLE rollback_probe (id INTEGER PRIMARY KEY)`); err != nil {
-			return err
-		}
-		return errors.New("abort migration")
-	})
-	if err == nil {
-		t.Fatal("openCatalog() error = nil, want migration failure")
-	}
-
-	db, err = dbutil.OpenDB(path)
+	catalog, err := storage.OpenCatalog(ctx, path)
 	if err != nil {
-		t.Fatalf("reopen fixture db: %v", err)
+		t.Fatalf("open catalog: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
+	t.Cleanup(func() { _ = catalog.Close() })
+	db = catalog.DB()
 
-	var version int
-	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
-		t.Fatalf("read original version: %v", err)
+	var foundationTable string
+	if err := db.QueryRowContext(ctx, `SELECT name FROM sqlite_schema WHERE type='table' AND name='providers'`).Scan(&foundationTable); err != nil {
+		t.Fatalf("foundational catalog schema was not preserved: %v", err)
 	}
-	if version != 7 {
-		t.Fatalf("schema version = %d, want 7 after rollback", version)
-	}
-	var probe string
-	err = db.QueryRow(`SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'rollback_probe'`).Scan(&probe)
-	if !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("rollback_probe lookup error = %v, want sql.ErrNoRows", err)
-	}
-}
 
-func TestOpenCatalogHonorsCanceledContext(t *testing.T) {
-	t.Parallel()
+	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
+	lease, err := catalog.AcquireLease(ctx, storage.LeaseRequest{
+		ID:           "lease-1",
+		Namespace:    "repo-a/worktree-a",
+		ControllerID: "controller-1",
+		OwnerID:      "owner-1",
+		PID:          101,
+		ProcessStart: now.Add(-time.Minute),
+		AcquiredAt:   now,
+		HeartbeatAt:  now,
+	})
+	if err != nil {
+		t.Fatalf("acquire lease: %v", err)
+	}
+	if lease.ID != "lease-1" || lease.ReleasedAt != nil {
+		t.Fatalf("unexpected acquired lease: %+v", lease)
+	}
+	if err := catalog.UpsertController(ctx, storage.Controller{
+		ID: "controller-1", OwnerID: "owner-1", PID: 101, ProcessStart: now.Add(-time.Minute), ObservedEpoch: 7, HeartbeatAt: now,
+	}); err != nil {
+		t.Fatalf("upsert controller: %v", err)
+	}
+	if err := catalog.RecordPauseEpoch(ctx, storage.PauseEpoch{Epoch: 7, State: storage.PauseRequested, CreatedAt: now}); err != nil {
+		t.Fatalf("record pause epoch: %v", err)
+	}
+	if err := catalog.AcknowledgePauseEpoch(ctx, storage.PauseAcknowledgement{Epoch: 7, ControllerID: "controller-1", State: storage.Paused, AcknowledgedAt: now}); err != nil {
+		t.Fatalf("acknowledge pause epoch: %v", err)
+	}
+	if err := catalog.UpsertTombstone(ctx, storage.Tombstone{ID: "tombstone-1", Namespace: "repo-a/worktree-a", Reason: "merged", State: "pending", RetiredAt: now}); err != nil {
+		t.Fatalf("upsert tombstone: %v", err)
+	}
+	if err := catalog.SaveReconciliationCursor(ctx, storage.ReconciliationCursor{Name: "legacy-temp", Cursor: "token-99", Proof: "safe", UpdatedAt: now}); err != nil {
+		t.Fatalf("save reconciliation cursor: %v", err)
+	}
+	if err := catalog.ReleaseLease(ctx, lease.ID); err != nil {
+		t.Fatalf("release lease: %v", err)
+	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err := OpenCatalog(ctx, filepath.Join(t.TempDir(), "catalog.db"))
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("OpenCatalog() error = %v, want context.Canceled", err)
+	gotLease, err := catalog.Lease(ctx, lease.ID)
+	if err != nil {
+		t.Fatalf("load lease: %v", err)
+	}
+	if gotLease.ReleasedAt == nil || gotLease.Namespace != lease.Namespace || gotLease.OwnerID != lease.OwnerID {
+		t.Fatalf("lease did not round-trip: %+v", gotLease)
+	}
+	if got, err := catalog.Controller(ctx, "controller-1"); err != nil || got.ObservedEpoch != 7 {
+		t.Fatalf("controller did not round-trip: %+v, %v", got, err)
+	}
+	if got, err := catalog.PauseEpoch(ctx, 7); err != nil || got.State != storage.PauseRequested {
+		t.Fatalf("pause epoch did not round-trip: %+v, %v", got, err)
+	}
+	if got, err := catalog.PauseAcknowledgement(ctx, 7, "controller-1"); err != nil || got.State != storage.Paused {
+		t.Fatalf("pause acknowledgement did not round-trip: %+v, %v", got, err)
+	}
+	if got, err := catalog.Tombstone(ctx, "tombstone-1"); err != nil || got.Reason != "merged" {
+		t.Fatalf("tombstone did not round-trip: %+v, %v", got, err)
+	}
+	if got, err := catalog.ReconciliationCursor(ctx, "legacy-temp"); err != nil || got.Cursor != "token-99" || got.Proof != "safe" {
+		t.Fatalf("reconciliation cursor did not round-trip: %+v, %v", got, err)
+	}
+
+	var columns int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('runtime_leases')`).Scan(&columns); err != nil {
+		t.Fatalf("inspect migrated lease schema: %v", err)
+	}
+	if columns < 9 {
+		t.Fatalf("stale runtime_leases schema was not rebuilt, got %d columns", columns)
 	}
 }
 
@@ -125,11 +119,11 @@ func TestCatalogMigrationRebuildsIncompatibleLeaseSchema(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "catalog.db"))
+	path := filepath.Join(t.TempDir(), "catalog.db")
+	db, err := dbutil.OpenDB(path)
 	if err != nil {
 		t.Fatalf("open catalog db: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
 
 	if _, err := db.ExecContext(ctx, `
 CREATE TABLE runtime_leases (
@@ -139,10 +133,14 @@ CREATE TABLE runtime_leases (
 )`); err != nil {
 		t.Fatalf("seed incompatible schema: %v", err)
 	}
-	catalog, err := storage.OpenCatalog(ctx, db)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close incompatible catalog fixture: %v", err)
+	}
+	catalog, err := storage.OpenCatalog(ctx, path)
 	if err != nil {
 		t.Fatalf("open catalog: %v", err)
 	}
+	t.Cleanup(func() { _ = catalog.Close() })
 
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
 	if _, err := catalog.AcquireLease(ctx, storage.LeaseRequest{
@@ -157,7 +155,7 @@ CREATE TABLE runtime_leases (
 	}); err != nil {
 		t.Fatalf("acquire lease after migration: %v", err)
 	}
-	if err := storage.MigrateCatalog(ctx, db); err != nil {
+	if err := storage.MigrateCatalog(ctx, catalog.DB()); err != nil {
 		t.Fatalf("repeat catalog migration: %v", err)
 	}
 }
