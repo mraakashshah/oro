@@ -52,8 +52,8 @@ func TestOpenCatalogMigratesFoundationAndRuntimeSchema(t *testing.T) {
 	if err := catalog.DB().QueryRowContext(context.Background(), `PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != catalogSchemaVersion {
-		t.Fatalf("schema version = %d, want %d", version, catalogSchemaVersion)
+	if version != CatalogSchemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, CatalogSchemaVersion)
 	}
 }
 
