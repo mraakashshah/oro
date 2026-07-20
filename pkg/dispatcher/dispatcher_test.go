@@ -867,6 +867,18 @@ type mockEscalator struct {
 	err      error
 }
 
+type callbackSSEBroadcaster struct {
+	send func(eventType, beadID, workerID string)
+}
+
+func (b *callbackSSEBroadcaster) Send(eventType, beadID, workerID string) {
+	b.send(eventType, beadID, workerID)
+}
+
+func (b *callbackSSEBroadcaster) Subscribe() chan string { return make(chan string, 1) }
+
+func (b *callbackSSEBroadcaster) Unsubscribe(_ chan string) {}
+
 func (m *mockEscalator) Escalate(_ context.Context, msg string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -3187,6 +3199,17 @@ func TestHandleReviewBlocked_BoundedRetry(t *testing.T) {
 		Feedback: `{"type":"system","subtype":"hook_started","hook_name":"SessionStart:startup"}`,
 		Err:      errors.New("review subprocess failed"),
 	}
+	cleanupObserved := false
+	d.sseBroadcaster = &callbackSSEBroadcaster{send: func(eventType, _, _ string) {
+		if eventType != "review_escalated" {
+			return
+		}
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		_, countExists := d.reviewBlockedCounts[beadID]
+		w := d.workers[workerID]
+		cleanupObserved = !countExists && w != nil && w.state == protocol.WorkerIdle && w.beadID == ""
+	}}
 	for cycle := 1; cycle <= maxReviewRejections+1; cycle++ {
 		res, err := d.db.ExecContext(ctx,
 			`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`,
@@ -3225,6 +3248,62 @@ func TestHandleReviewBlocked_BoundedRetry(t *testing.T) {
 	}
 	if got := eventCount(t, d.db, "review_escalated"); got != 1 {
 		t.Fatalf("review_escalated events = %d, want 1", got)
+	}
+	if !cleanupObserved {
+		t.Fatal("review_escalated was published before review tracking and worker state were cleaned up")
+	}
+}
+
+func TestHandleReviewBlocked_RejectsStaleAssignment(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const beadID = "bead-stale-blocked-review"
+	const workerID = "worker-stale-blocked-review"
+
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+	res, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`,
+		beadID, workerID, "/tmp/review-blocked-new")
+	if err != nil {
+		t.Fatalf("insert current assignment: %v", err)
+	}
+	currentAssignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("current assignment ID: %v", err)
+	}
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		state:        protocol.WorkerReviewing,
+		beadID:       beadID,
+		assignmentID: currentAssignmentID,
+	}
+	d.mu.Unlock()
+
+	result := ops.Result{
+		Verdict:  ops.VerdictRejected,
+		Feedback: `{"type":"system","subtype":"hook_started","hook_name":"SessionStart:startup"}`,
+		Err:      errors.New("stale review subprocess failed"),
+	}
+	d.handleReviewBlockedForAssignment(ctx, workerID, beadID, currentAssignmentID-1, result)
+
+	var assignmentStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, currentAssignmentID).
+		Scan(&assignmentStatus); err != nil {
+		t.Fatalf("current assignment status: %v", err)
+	}
+	if assignmentStatus != "active" {
+		t.Fatalf("current assignment status = %q, want active", assignmentStatus)
+	}
+	if got := eventCount(t, d.db, "review_infra_blocked_stale"); got != 1 {
+		t.Fatalf("stale blocked-review events = %d, want 1", got)
+	}
+	d.mu.Lock()
+	count := d.reviewBlockedCounts[beadID]
+	d.mu.Unlock()
+	if count != 0 {
+		t.Fatalf("stale blocked review count = %d, want 0", count)
 	}
 }
 
@@ -10765,8 +10844,10 @@ func TestDispatcher_ReviewCountersResetIndependentlyByBead(t *testing.T) {
 	d.reviewBlockedCounts["bead-b"] = 1
 	d.mu.Unlock()
 
-	// handleReviewApproved uses this helper to reset the approved bead.
-	d.clearRejectionCount("bead-a")
+	// Approval resets both retry budgets for only the approved bead.
+	d.handleReviewApproved(context.Background(), "worker-a", "bead-a", ops.Result{
+		Verdict: ops.VerdictApproved,
+	})
 
 	d.mu.Lock()
 	_, rejectionAExists := d.rejectionCounts["bead-a"]
