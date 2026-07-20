@@ -76,7 +76,7 @@ func TestEvaluateFactoryHealthStates(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := Evaluate(tt.snapshot)
+			got := evaluateWithAvailableStorage(tt.snapshot)
 			if got.State != tt.wantState {
 				t.Fatalf("state = %q, want %q; findings=%+v", got.State, tt.wantState, got.Findings)
 			}
@@ -124,7 +124,7 @@ INSERT INTO events VALUES
 }
 
 func TestEvaluateFactoryHealthIgnoresPipelineOwnedWorkerStates(t *testing.T) {
-	got := Evaluate(Snapshot{
+	got := evaluateWithAvailableStorage(Snapshot{
 		DaemonRunning:        true,
 		DispatcherState:      "running",
 		ProgressTimeoutSecs:  600,
@@ -187,7 +187,7 @@ INSERT INTO events (type, created_at) VALUES ('old', '2026-07-18T12:00:00Z'), ('
 }
 
 func TestEvaluateAssignmentContradictions(t *testing.T) {
-	got := Evaluate(Snapshot{
+	got := evaluateWithAvailableStorage(Snapshot{
 		DaemonRunning:       true,
 		DispatcherState:     "running",
 		ReadyQueue:          2,
@@ -215,7 +215,7 @@ func TestEvaluateAssignmentContradictions(t *testing.T) {
 }
 
 func TestEvaluateRecoveryQuarantineOpenIsUnsafe(t *testing.T) {
-	got := Evaluate(Snapshot{
+	got := evaluateWithAvailableStorage(Snapshot{
 		DaemonRunning:           true,
 		DispatcherState:         "running",
 		OpenRecoveryQuarantines: 2,
@@ -230,6 +230,59 @@ func TestEvaluateRecoveryQuarantineOpenIsUnsafe(t *testing.T) {
 	if !hasFinding(got, FindingRecoveryQuarantineOpen) {
 		t.Fatalf("missing recovery quarantine finding in %+v", got.Findings)
 	}
+}
+
+func TestEvaluateStorageFindings(t *testing.T) {
+	t.Run("storage signals are stable and deduplicated", func(t *testing.T) {
+		snapshot := Snapshot{
+			DaemonRunning: true,
+			Storage: &StorageHealth{
+				Available:          true,
+				Pressure:           "critical",
+				SweepOverdue:       true,
+				BlockedRetirements: 2,
+				Failures:           []string{"provider cache cleanup failed", "provider cache cleanup failed"},
+				Cancellations:      []string{"namespace oro-a writer cancelled", "namespace oro-a writer cancelled"},
+				AdmissionPaused:    true,
+			},
+		}
+
+		findings := evaluateStorageFindings(snapshot)
+		wantCodes := []string{
+			FindingStoragePressure,
+			FindingStorageSweepOverdue,
+			FindingStorageRetirementBlocked,
+			FindingStorageFailure,
+			FindingStorageCancellation,
+			FindingStorageAdmissionPaused,
+		}
+		if len(findings) != len(wantCodes) {
+			t.Fatalf("findings = %+v, want %d stable findings", findings, len(wantCodes))
+		}
+		for index, wantCode := range wantCodes {
+			if findings[index].Code != wantCode {
+				t.Fatalf("finding[%d].Code = %q, want %q; findings=%+v", index, findings[index].Code, wantCode, findings)
+			}
+		}
+		if findings[3].Fingerprint != "provider cache cleanup failed" {
+			t.Fatalf("failure fingerprint = %q, want deduplicated failure", findings[3].Fingerprint)
+		}
+		if findings[4].Fingerprint != "namespace oro-a writer cancelled" {
+			t.Fatalf("cancellation fingerprint = %q, want deduplicated cancellation", findings[4].Fingerprint)
+		}
+
+		health := Evaluate(snapshot)
+		if health.Metrics.Storage == nil || !health.Metrics.Storage.AdmissionPaused {
+			t.Fatalf("metrics storage = %+v, want storage state", health.Metrics.Storage)
+		}
+	})
+
+	t.Run("missing storage snapshot is unavailable", func(t *testing.T) {
+		findings := evaluateStorageFindings(Snapshot{DaemonRunning: true})
+		if len(findings) != 1 || findings[0].Code != FindingStorageUnavailable {
+			t.Fatalf("findings = %+v, want one storage unavailable finding", findings)
+		}
+	})
 }
 
 func TestLoadRecoveryQuarantineMetricsIncludesHumanOwned(t *testing.T) {
@@ -260,7 +313,7 @@ VALUES
 		t.Fatalf("open recovery quarantines = %d, want 2", got)
 	}
 
-	health := Evaluate(Snapshot{
+	health := evaluateWithAvailableStorage(Snapshot{
 		DaemonRunning:           true,
 		DispatcherState:         "running",
 		OpenRecoveryQuarantines: got,
@@ -306,7 +359,7 @@ INSERT INTO beads (status, close_reason, closed_at, updated_at) VALUES
 }
 
 func TestEvaluateNoManagerPaneFindingByDefault(t *testing.T) {
-	got := Evaluate(Snapshot{
+	got := evaluateWithAvailableStorage(Snapshot{
 		DaemonRunning:   true,
 		DispatcherState: "running",
 	})
@@ -329,7 +382,7 @@ func TestEvaluateNoManagerPaneFindingByDefault(t *testing.T) {
 }
 
 func TestEvaluateOpsRunFindings(t *testing.T) {
-	got := Evaluate(Snapshot{
+	got := evaluateWithAvailableStorage(Snapshot{
 		DaemonRunning:   true,
 		DispatcherState: "running",
 		OpsRuns: OpsRunMetrics{
@@ -393,7 +446,7 @@ func TestEvaluateOpsRunFindings(t *testing.T) {
 }
 
 func TestEvaluateOpsRunFindingsFromAggregateCounts(t *testing.T) {
-	got := Evaluate(Snapshot{
+	got := evaluateWithAvailableStorage(Snapshot{
 		DaemonRunning:   true,
 		DispatcherState: "running",
 		OpsRuns: OpsRunMetrics{
@@ -428,7 +481,7 @@ func TestEvaluateOpsRunFindingsFromAggregateCounts(t *testing.T) {
 }
 
 func TestEvaluateOpsRunFindingsIgnoresEmptyCounts(t *testing.T) {
-	got := Evaluate(Snapshot{
+	got := evaluateWithAvailableStorage(Snapshot{
 		DaemonRunning:   true,
 		DispatcherState: "running",
 		OpsRuns: OpsRunMetrics{
@@ -445,7 +498,7 @@ func TestEvaluateOpsRunFindingsIgnoresEmptyCounts(t *testing.T) {
 }
 
 func TestPendingUnknownEscalationSurfacesUnroutedHealthFinding(t *testing.T) {
-	got := Evaluate(Snapshot{
+	got := evaluateWithAvailableStorage(Snapshot{
 		DaemonRunning:   true,
 		DispatcherState: "running",
 		PendingEscalations: EscalationMetrics{
@@ -481,7 +534,7 @@ func TestPendingUnknownEscalationSurfacesUnroutedHealthFinding(t *testing.T) {
 }
 
 func TestPendingEscalationFindingFallsBackToAggregateCount(t *testing.T) {
-	got := Evaluate(Snapshot{
+	got := evaluateWithAvailableStorage(Snapshot{
 		DaemonRunning:   true,
 		DispatcherState: "running",
 		PendingEscalations: EscalationMetrics{
@@ -739,6 +792,11 @@ func hasFinding(health FactoryHealth, code string) bool {
 		}
 	}
 	return false
+}
+
+func evaluateWithAvailableStorage(snapshot Snapshot) FactoryHealth {
+	snapshot.Storage = &StorageHealth{Available: true}
+	return Evaluate(snapshot)
 }
 
 func hasOpsRun(metrics OpsRunMetrics, beadID, runType, status string) bool {

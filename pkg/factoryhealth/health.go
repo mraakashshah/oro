@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -51,6 +52,13 @@ const (
 	FindingOpsRunFailed                       = "ops_run_failed"
 	FindingOpsRunStale                        = "ops_run_stale"
 	FindingPendingEscalationUnrouted          = "pending_escalation_unrouted"
+	FindingStorageUnavailable                 = "storage_unavailable"
+	FindingStoragePressure                    = "storage_pressure"
+	FindingStorageSweepOverdue                = "storage_sweep_overdue"
+	FindingStorageRetirementBlocked           = "storage_retirement_blocked"
+	FindingStorageFailure                     = "storage_failure"
+	FindingStorageCancellation                = "storage_cancellation"
+	FindingStorageAdmissionPaused             = "storage_admission_paused"
 )
 
 // OpsRunStaleAfter is the age threshold after which a running ops run is
@@ -98,6 +106,7 @@ type Metrics struct {
 	ThroughputWindow        ThroughputMetrics `json:"throughput_window"`
 	OpsRuns                 OpsRunMetrics     `json:"ops_runs"`
 	PendingEscalations      EscalationMetrics `json:"pending_escalations"`
+	Storage                 *StorageHealth    `json:"storage,omitempty"`
 	PendingWorkerCount      int               `json:"pending_worker_count,omitempty"`
 	PendingHandoffCount     int               `json:"pending_handoff_count,omitempty"`
 }
@@ -152,6 +161,18 @@ type EscalationSnapshot struct {
 	AgeSecs  float64 `json:"age_secs,omitempty"`
 }
 
+// StorageHealth summarizes the storage control plane observed by a health
+// caller. A nil snapshot means storage health could not be observed.
+type StorageHealth struct {
+	Available          bool     `json:"available"`
+	Pressure           string   `json:"pressure,omitempty"`
+	SweepOverdue       bool     `json:"sweep_overdue,omitempty"`
+	BlockedRetirements int      `json:"blocked_retirements,omitempty"`
+	Failures           []string `json:"failures,omitempty"`
+	Cancellations      []string `json:"cancellations,omitempty"`
+	AdmissionPaused    bool     `json:"admission_paused,omitempty"`
+}
+
 // WorkerSnapshot is a worker state sample used by the evaluator.
 type WorkerSnapshot struct {
 	ID                string
@@ -192,6 +213,7 @@ type Snapshot struct {
 	Throughput              ThroughputMetrics
 	OpsRuns                 OpsRunMetrics
 	PendingEscalations      EscalationMetrics
+	Storage                 *StorageHealth
 }
 
 // Evaluate converts an observed snapshot into the FactoryHealth contract.
@@ -223,6 +245,7 @@ func metricsFromSnapshot(snapshot Snapshot) Metrics {
 		ThroughputWindow:        snapshot.Throughput,
 		OpsRuns:                 snapshot.OpsRuns,
 		PendingEscalations:      snapshot.PendingEscalations,
+		Storage:                 snapshot.Storage,
 		PendingWorkerCount:      snapshot.PendingWorkerCount,
 		PendingHandoffCount:     snapshot.PendingHandoffCount,
 	}
@@ -250,6 +273,7 @@ func evaluateFindings(snapshot Snapshot, metrics *Metrics) []Finding {
 	}
 	findings = append(findings, opsRunFindings(snapshot.OpsRuns)...)
 	findings = append(findings, pendingEscalationFindings(snapshot.PendingEscalations)...)
+	findings = append(findings, evaluateStorageFindings(snapshot)...)
 	if !snapshot.DaemonRunning {
 		if len(snapshot.ActiveAssignments) > 0 {
 			findings = append(findings, Finding{
@@ -360,6 +384,98 @@ func evaluateFindings(snapshot Snapshot, metrics *Metrics) []Finding {
 			Component:         "throughput",
 			Message:           "recent assignments are not producing closures",
 			RecommendedAction: "inspect worker logs and restart the dispatcher only if the stall repeats",
+		})
+	}
+	return findings
+}
+
+// evaluateStorageFindings converts storage control-plane state into stable,
+// deduplicated health findings.
+func evaluateStorageFindings(snapshot Snapshot) []Finding {
+	storage := snapshot.Storage
+	if storage == nil || !storage.Available {
+		return []Finding{{
+			Code:              FindingStorageUnavailable,
+			Severity:          SeverityCritical,
+			Component:         "storage",
+			Message:           "storage health is unavailable",
+			RecommendedAction: "inspect oro storage status and repair the storage catalog before admitting new work",
+		}}
+	}
+
+	findings := storageStateFindings(*storage)
+	findings = append(findings, storageMessageFindings(FindingStorageFailure, SeverityError, "storage cleanup failed", "inspect oro storage status and retry the failed cleanup", storage.Failures)...)
+	findings = append(findings, storageMessageFindings(FindingStorageCancellation, SeverityWarning, "storage cancelled an active writer", "inspect the cancelled process and storage pressure before retrying work", storage.Cancellations)...)
+	if storage.AdmissionPaused {
+		findings = append(findings, Finding{
+			Code:              FindingStorageAdmissionPaused,
+			Severity:          SeverityWarning,
+			Component:         "storage",
+			Message:           "storage admission is paused",
+			RecommendedAction: "inspect oro storage status and resume admissions only after pressure and active leases are clear",
+		})
+	}
+	return findings
+}
+
+func storageStateFindings(storage StorageHealth) []Finding {
+	findings := make([]Finding, 0, 3)
+	if pressure := strings.TrimSpace(storage.Pressure); pressure != "" && !strings.EqualFold(pressure, "normal") {
+		severity := SeverityWarning
+		if strings.EqualFold(pressure, "critical") {
+			severity = SeverityCritical
+		}
+		findings = append(findings, Finding{
+			Code:              FindingStoragePressure,
+			Severity:          severity,
+			Component:         "storage",
+			Message:           fmt.Sprintf("storage pressure is %s", pressure),
+			Type:              pressure,
+			RecommendedAction: "inspect oro storage status and reclaim only storage proven safe to retire",
+		})
+	}
+	if storage.SweepOverdue {
+		findings = append(findings, Finding{
+			Code:              FindingStorageSweepOverdue,
+			Severity:          SeverityWarning,
+			Component:         "storage",
+			Message:           "storage maintenance sweep is overdue",
+			RecommendedAction: "run oro storage clean after controllers acknowledge the maintenance pause",
+		})
+	}
+	if storage.BlockedRetirements > 0 {
+		findings = append(findings, Finding{
+			Code:              FindingStorageRetirementBlocked,
+			Severity:          SeverityWarning,
+			Component:         "storage",
+			Message:           fmt.Sprintf("%d storage retirement(s) are blocked", storage.BlockedRetirements),
+			RecommendedAction: "inspect oro storage status for leased, dirty, or ownership-uncertain retirement records",
+		})
+	}
+	return findings
+}
+
+func storageMessageFindings(code string, severity Severity, prefix, action string, messages []string) []Finding {
+	unique := make(map[string]struct{}, len(messages))
+	for _, message := range messages {
+		if message = strings.TrimSpace(message); message != "" {
+			unique[message] = struct{}{}
+		}
+	}
+	values := make([]string, 0, len(unique))
+	for message := range unique {
+		values = append(values, message)
+	}
+	sort.Strings(values)
+	findings := make([]Finding, 0, len(values))
+	for _, message := range values {
+		findings = append(findings, Finding{
+			Code:              code,
+			Severity:          severity,
+			Component:         "storage",
+			Message:           fmt.Sprintf("%s: %s", prefix, message),
+			Fingerprint:       message,
+			RecommendedAction: action,
 		})
 	}
 	return findings

@@ -115,6 +115,7 @@ func (d *Dispatcher) evaluateFactoryHealth(ctx context.Context, now time.Time, i
 		Throughput:              throughput,
 		OpsRuns:                 opsRuns,
 		PendingEscalations:      pendingEscalations,
+		Storage:                 &factoryhealth.StorageHealth{Available: true},
 	})
 }
 
