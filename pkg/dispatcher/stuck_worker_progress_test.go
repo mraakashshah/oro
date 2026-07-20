@@ -42,16 +42,16 @@ func TestMeaningfulProgressEventsPersisted(t *testing.T) {
 	d.handleHeartbeat(ctx, workerID, protocol.Message{
 		Type: protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{
-			WorkerID: workerID,
-			BeadID:   beadID,
+			WorkerID:   workerID,
+			BeadID:     beadID,
 			ContextPct: 30,
 		},
 	})
 	d.handleHeartbeat(ctx, workerID, protocol.Message{
 		Type: protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{
-			WorkerID: workerID,
-			BeadID:   beadID,
+			WorkerID:   workerID,
+			BeadID:     beadID,
 			ContextPct: 30,
 		},
 	})
