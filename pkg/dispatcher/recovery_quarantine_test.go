@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"oro/pkg/dbutil"
+	"oro/pkg/factoryhealth"
 	"oro/pkg/protocol"
 )
 
@@ -351,6 +352,105 @@ func TestRestoreStateQuarantinesMissingWorktreeDurably(t *testing.T) {
 	}
 	if reason != "missing_worktree_path" {
 		t.Fatalf("quarantine reason = %q, want missing_worktree_path", reason)
+	}
+}
+
+func TestStartupAutoResolvesEmptySafeQuarantines(t *testing.T) {
+	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		emptyBeadID       = "oro-startup-empty"
+		preservedBeadID   = "oro-startup-preserved"
+		dirtyBeadID       = "oro-startup-dirty"
+		missingWorktree   = "/tmp/oro-startup-empty-missing"
+		preservedWorktree = "/tmp/oro-startup-preserved"
+		dirtyWorktree     = "/tmp/oro-startup-dirty"
+	)
+
+	wtMgr.existsFn = func(_ context.Context, path string) bool {
+		return path == preservedWorktree || path == dirtyWorktree
+	}
+	wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
+		return branch != protocol.BranchPrefix+emptyBeadID, nil
+	}
+	d.shutdownRunner = &mockCommandRunner{callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "git" && len(args) >= 4 && args[0] == "-C" && args[2] == "status" && args[3] == "--porcelain" {
+			if args[1] == dirtyWorktree {
+				return []byte(" M preserved.txt\n"), nil
+			}
+			return nil, nil
+		}
+		return nil, nil
+	}}
+
+	if _, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, 'worker-empty', ?, 'active')`,
+		emptyBeadID, missingWorktree); err != nil {
+		t.Fatalf("insert empty-safe assignment: %v", err)
+	}
+	for _, quarantine := range []struct {
+		beadID   string
+		worktree string
+	}{
+		{beadID: preservedBeadID, worktree: preservedWorktree},
+		{beadID: dirtyBeadID, worktree: dirtyWorktree},
+	} {
+		if _, err := d.db.ExecContext(ctx, `
+INSERT INTO recovery_quarantines (bead_id, worktree, branch, reason, details, status)
+VALUES (?, ?, ?, 'startup_fixture', 'preserved recovery state', 'open')`,
+			quarantine.beadID, quarantine.worktree, protocol.BranchPrefix+quarantine.beadID); err != nil {
+			t.Fatalf("insert %s quarantine: %v", quarantine.beadID, err)
+		}
+	}
+
+	if err := d.startupRecovery(ctx); err != nil {
+		t.Fatalf("startupRecovery: %v", err)
+	}
+
+	var emptyStatus string
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT status FROM recovery_quarantines WHERE bead_id=?`, emptyBeadID).Scan(&emptyStatus); err != nil {
+		t.Fatalf("query empty-safe quarantine: %v", err)
+	}
+	if emptyStatus != "resolved" {
+		t.Fatalf("empty-safe quarantine status = %q, want resolved", emptyStatus)
+	}
+
+	var payload string
+	if err := d.db.QueryRowContext(ctx, `
+SELECT payload
+FROM events
+WHERE type='startup_recovery_quarantine_auto_resolved' AND bead_id=?`, emptyBeadID).Scan(&payload); err != nil {
+		t.Fatalf("query empty-safe resolution event: %v", err)
+	}
+	var event struct {
+		Status string `json:"status"`
+		Mode   string `json:"mode"`
+	}
+	if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		t.Fatalf("decode empty-safe resolution event: %v", err)
+	}
+	if event.Status != "closed" || event.Mode != "discard-empty-safe" {
+		t.Fatalf("resolution event = %+v, want status closed and discard-empty-safe mode", event)
+	}
+
+	for _, beadID := range []string{preservedBeadID, dirtyBeadID} {
+		var status string
+		if err := d.db.QueryRowContext(ctx,
+			`SELECT status FROM recovery_quarantines WHERE bead_id=?`, beadID).Scan(&status); err != nil {
+			t.Fatalf("query preserved quarantine %s: %v", beadID, err)
+		}
+		if status != "open" {
+			t.Fatalf("preserved quarantine %s status = %q, want open", beadID, status)
+		}
+	}
+
+	openQuarantines, err := factoryhealth.LoadRecoveryQuarantineMetrics(ctx, d.db)
+	if err != nil {
+		t.Fatalf("load recovery quarantine metrics: %v", err)
+	}
+	if openQuarantines != 2 {
+		t.Fatalf("open recovery quarantines = %d, want 2 preservable rows", openQuarantines)
 	}
 }
 

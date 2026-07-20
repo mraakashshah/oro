@@ -344,6 +344,55 @@ WHERE status IN ('open', 'human_owned')`)
 	return preservable, nil
 }
 
+func (d *Dispatcher) autoResolveEmptySafeRecoveryQuarantines(ctx context.Context) int {
+	records, err := d.listOpenRecoveryQuarantines(ctx)
+	if err != nil {
+		_ = d.logEvent(ctx, "startup_recovery_quarantine_auto_resolve_failed", "dispatcher", "", "", err.Error())
+		return 0
+	}
+
+	resolved := 0
+	for _, record := range records {
+		emptySafe, inspectErr := d.recoveryQuarantineEmptySafeAtStartup(ctx, record)
+		if inspectErr != nil {
+			_ = d.logEvent(ctx, "startup_recovery_quarantine_inspection_failed", "dispatcher", record.BeadID, record.WorkerID,
+				fmt.Sprintf(`{"quarantine_id":%d,"error":%q}`, record.ID, inspectErr.Error()))
+			continue
+		}
+		if !emptySafe {
+			continue
+		}
+		if err := d.resolveRecoveryQuarantine(ctx, record.ID); err != nil {
+			_ = d.logEvent(ctx, "startup_recovery_quarantine_auto_resolve_failed", "dispatcher", record.BeadID, record.WorkerID,
+				fmt.Sprintf(`{"quarantine_id":%d,"error":%q}`, record.ID, err.Error()))
+			continue
+		}
+		resolved++
+		_ = d.logEvent(ctx, "startup_recovery_quarantine_auto_resolved", "dispatcher", record.BeadID, record.WorkerID,
+			fmt.Sprintf(`{"quarantine_id":%d,"assignment_id":%d,"status":"closed","mode":"discard-empty-safe","reason":%q}`,
+				record.ID, record.AssignmentID, record.Reason))
+	}
+	return resolved
+}
+
+func (d *Dispatcher) recoveryQuarantineEmptySafeAtStartup(ctx context.Context, record recoveryQuarantineRecord) (bool, error) {
+	if record.Worktree != "" && d.worktrees.Exists(ctx, record.Worktree) {
+		return false, nil
+	}
+	branchExists := false
+	if record.Branch != "" {
+		var err error
+		branchExists, err = d.worktrees.BranchExists(ctx, record.Branch)
+		if err != nil {
+			return false, fmt.Errorf("inspect recovery branch %s: %w", record.Branch, err)
+		}
+	}
+	if branchExists {
+		return false, nil
+	}
+	return RecoveryQuarantineEmptySafe(0, branchExists, 0), nil
+}
+
 func (d *Dispatcher) resolveRecoveryQuarantine(ctx context.Context, id int64) error {
 	if d.db == nil {
 		return fmt.Errorf("resolve recovery quarantine: db is nil")
