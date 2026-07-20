@@ -882,13 +882,14 @@ func newStartCmd() *cobra.Command {
 		Use:   "start",
 		Short: "Launch the Oro swarm (tmux session + dispatcher)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := verifyStartCommandRemoteCapabilities(cmd.Context()); err != nil {
+				return err
+			}
 			if noWeb {
 				webEnabled = false
 			}
 			// Default an unset --max-workers ceiling to --workers for backward compatibility.
-			if maxWorkers == 0 {
-				maxWorkers = workers
-			}
+			maxWorkers = resolvedMaxWorkers(workers, maxWorkers)
 			pidPath, err := startPreflightAndCheckRunning(cmd.OutOrStdout(), daemonOnly)
 			if err != nil {
 				return err
@@ -920,6 +921,13 @@ func newStartCmd() *cobra.Command {
 	registerCleanlinessStartFlags(cmd, &cleanliness)
 
 	return cmd
+}
+
+func resolvedMaxWorkers(workers, maxWorkers int) int {
+	if maxWorkers == 0 {
+		return workers
+	}
+	return maxWorkers
 }
 
 func registerWebStartFlags(cmd *cobra.Command, webEnabled, noWeb *bool, webAddr *string) {

@@ -65,7 +65,7 @@ commits of oro artifacts.
 
 Use --dry-run to see what would happen without executing.
 Use --skip-tools to skip tool installation (Phase 3).
-Use --force to overwrite existing config files.
+Use --force to refresh generated assets and quality gate files while preserving project config.
 Use --dev to also install dev-only tools (placeholder).`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -81,7 +81,7 @@ Use --dev to also install dev-only tools (placeholder).`,
 	cmd.Flags().BoolVar(&opts.dev, "dev", false, "also install dev-only tools (mutation testing, etc.)")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "print what would happen without executing")
 	cmd.Flags().BoolVar(&opts.skipTools, "skip-tools", false, "skip tool installation (Phase 3)")
-	cmd.Flags().BoolVar(&opts.force, "force", false, "overwrite existing config files")
+	cmd.Flags().BoolVar(&opts.force, "force", false, "refresh generated assets and quality gate files")
 
 	return cmd
 }
@@ -216,7 +216,7 @@ func printBootstrapDryRun(w io.Writer, name string, opts setupOptions) {
 	fmt.Fprintf(w, "  [dry-run] Would bootstrap project %q at %s\n", name, opts.projectRoot)
 	fmt.Fprintf(w, "  [dry-run] Would create .oro/config.yaml, settings.json, extract assets\n")
 	if opts.force {
-		fmt.Fprintln(w, "  [dry-run] --force: would overwrite existing files")
+		fmt.Fprintln(w, "  [dry-run] --force: would refresh generated assets and quality gate files")
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -16,6 +17,8 @@ import (
 
 	"oro/pkg/config"
 )
+
+const githubActionsMatrixEntriesLimit = 256
 
 // RemoteGateConfig is the remote-gate configuration used for capability attestation.
 type RemoteGateConfig = config.RemoteGateConfig
@@ -49,9 +52,16 @@ type ExecutableEvidence struct {
 // GitCapabilities records the trusted Git binary, HTTPS helper, and configured
 // credential helper identities observed during attestation.
 type GitCapabilities struct {
-	Binary            ExecutableEvidence `json:"binary"`
-	RemoteHTTPSHelper ExecutableEvidence `json:"remote_https_helper"`
-	CredentialHelpers []string           `json:"credential_helpers"`
+	Binary            ExecutableEvidence         `json:"binary"`
+	RemoteHTTPSHelper ExecutableEvidence         `json:"remote_https_helper"`
+	CredentialHelpers []CredentialHelperEvidence `json:"credential_helpers"`
+}
+
+// CredentialHelperEvidence binds one configured Git credential helper to the
+// exact executable that Git resolves from its trusted exec path.
+type CredentialHelperEvidence struct {
+	Configuration string             `json:"configuration"`
+	Executable    ExecutableEvidence `json:"executable"`
 }
 
 // RateLimit records one GitHub API resource limit.
@@ -172,10 +182,18 @@ func VerifyRemoteCapabilities(ctx context.Context, cfg RemoteGateConfig, path st
 	if err != nil {
 		return fmt.Errorf("re-attest remote capabilities: %w", err)
 	}
-	if !reflect.DeepEqual(persisted, current) {
+	if remoteCapabilitiesDrifted(persisted, current) {
 		return fmt.Errorf("remote capability evidence drifted since setup")
 	}
 	return nil
+}
+
+func remoteCapabilitiesDrifted(persisted, current Capabilities) bool {
+	persisted.APILimits.Core.Remaining = 0
+	persisted.APILimits.ActionsRunnerRegistration.Remaining = 0
+	current.APILimits.Core.Remaining = 0
+	current.APILimits.ActionsRunnerRegistration.Remaining = 0
+	return !reflect.DeepEqual(persisted, current)
 }
 
 func persistSetupRemoteCapabilities(ctx context.Context, projectRoot string) error {
@@ -216,12 +234,26 @@ func verifyStartupRemoteCapabilities(ctx context.Context, projectRoot string) er
 	return nil
 }
 
+func verifyStartCommandRemoteCapabilities(ctx context.Context) error {
+	projectRoot, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("resolve startup project root: %w", err)
+	}
+	configPath := filepath.Join(projectRoot, ".oro", "config.yaml")
+	if _, err = os.Stat(configPath); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("inspect startup project config: %w", err)
+	}
+	return verifyStartupRemoteCapabilities(ctx, projectRoot)
+}
+
 func remoteCapabilityEvidencePath(projectRoot string) string {
 	return filepath.Join(projectRoot, ".oro", "remote-capabilities.json")
 }
 
 func attestRemoteGitHubCLI(ctx context.Context, configured string) (ExecutableEvidence, error) {
-	if configured == "" {
+	if configured == "" || configured == "managed" {
 		configured = "gh"
 	}
 	path, err := exec.LookPath(configured)
@@ -265,10 +297,47 @@ func attestGitCapabilities(ctx context.Context, gitPath string) (GitCapabilities
 		return GitCapabilities{}, err
 	}
 	helpersOut, err := runCapabilityCommand(ctx, gitPath, "config", "--get-all", "credential.helper")
-	if err != nil {
+	if err != nil && !commandExitedWithStatus(err, 1) {
 		return GitCapabilities{}, fmt.Errorf("read git credential helper identities: %w", err)
 	}
-	return GitCapabilities{Binary: git, RemoteHTTPSHelper: helper, CredentialHelpers: nonEmptyLines(string(helpersOut))}, nil
+	credentialHelpers, err := attestCredentialHelpers(nonEmptyLines(string(helpersOut)), strings.TrimSpace(string(execPathOut)))
+	if err != nil {
+		return GitCapabilities{}, err
+	}
+	return GitCapabilities{Binary: git, RemoteHTTPSHelper: helper, CredentialHelpers: credentialHelpers}, nil
+}
+
+func commandExitedWithStatus(err error, status int) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == status
+}
+
+func attestCredentialHelpers(configurations []string, gitExecPath string) ([]CredentialHelperEvidence, error) {
+	evidence := make([]CredentialHelperEvidence, 0, len(configurations))
+	for _, configuration := range configurations {
+		fields := strings.Fields(configuration)
+		if len(fields) == 0 {
+			continue
+		}
+		command := fields[0]
+		if strings.HasPrefix(command, "!") {
+			return nil, fmt.Errorf("shell credential helper %q cannot be attested", configuration)
+		}
+		path := command
+		if !filepath.IsAbs(path) && !strings.ContainsRune(path, os.PathSeparator) {
+			path = filepath.Join(gitExecPath, "git-credential-"+path)
+		}
+		path, err := canonicalExecutablePath(path)
+		if err != nil {
+			return nil, fmt.Errorf("attest credential helper %q: %w", configuration, err)
+		}
+		executable, err := executableEvidence(path, "")
+		if err != nil {
+			return nil, fmt.Errorf("record credential helper %q: %w", configuration, err)
+		}
+		evidence = append(evidence, CredentialHelperEvidence{Configuration: configuration, Executable: executable})
+	}
+	return evidence, nil
 }
 
 func executableEvidence(path, version string) (ExecutableEvidence, error) {
@@ -317,11 +386,33 @@ func canonicalExecutablePath(path string) (string, error) {
 
 func runCapabilityCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // all executable paths and arguments are attested configuration values.
+	cmd.Env = capabilityCommandEnv(os.Environ())
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("run %s %s: %w", name, strings.Join(args, " "), err)
 	}
 	return out, nil
+}
+
+func capabilityCommandEnv(environment []string) []string {
+	allowed := map[string]bool{
+		"HOME": true, "TMPDIR": true, "TMP": true, "TEMP": true,
+	}
+	clean := make([]string, 0, len(allowed)+5)
+	for _, entry := range environment {
+		name, _, ok := strings.Cut(entry, "=")
+		if ok && allowed[name] {
+			clean = append(clean, entry)
+		}
+	}
+	return append(clean,
+		"LANG=C",
+		"LC_ALL=C",
+		"NO_COLOR=1",
+		"GIT_TERMINAL_PROMPT=0",
+		"GH_PROMPT_DISABLED=1",
+		"GH_NO_UPDATE_NOTIFIER=1",
+	)
 }
 
 func remoteRepositoryIdentity(remote string) (host, repository string, err error) {
@@ -352,7 +443,11 @@ func validateConfiguredAPIHost(baseURL, host string) error {
 	if err != nil || parsed.Hostname() == "" {
 		return fmt.Errorf("configured GitHub API base URL %q has no host", baseURL)
 	}
-	if !strings.EqualFold(parsed.Hostname(), host) {
+	apiHost := parsed.Hostname()
+	if strings.EqualFold(host, "github.com") && strings.EqualFold(apiHost, "api.github.com") {
+		return nil
+	}
+	if !strings.EqualFold(apiHost, host) {
 		return fmt.Errorf("configured GitHub API host %q does not match git remote host %q", parsed.Hostname(), host)
 	}
 	return nil
@@ -395,18 +490,23 @@ func fetchAPILimits(ctx context.Context, ghPath, host string) (APILimits, error)
 	if response.Resources.Core.Limit <= 0 {
 		return APILimits{}, fmt.Errorf("GitHub core API limit is absent or invalid")
 	}
+	if response.Resources.ActionsRunnerRegistration.Limit <= 0 {
+		return APILimits{}, fmt.Errorf("GitHub actions runner registration API limit is absent or invalid")
+	}
 	return APILimits{Core: response.Resources.Core, ActionsRunnerRegistration: response.Resources.ActionsRunnerRegistration}, nil
 }
 
 func fetchMatrixBound(ctx context.Context, ghPath, host, repository, workflow string) (int, error) {
+	if !strings.EqualFold(host, "github.com") {
+		return 0, fmt.Errorf("GitHub matrix entry bound is unknown for host %q", host)
+	}
 	out, err := runCapabilityCommand(ctx, ghPath, "api", "--hostname", host, "repos/"+repository+"/actions/workflows/"+workflow)
 	if err != nil {
 		return 0, fmt.Errorf("read GitHub workflow capability: %w", err)
 	}
 	var response struct {
-		Path               string `json:"path"`
-		State              string `json:"state"`
-		MatrixEntriesLimit int    `json:"matrix_entries_limit"`
+		Path  string `json:"path"`
+		State string `json:"state"`
 	}
 	if err := json.Unmarshal(out, &response); err != nil {
 		return 0, fmt.Errorf("decode GitHub workflow capability: %w", err)
@@ -414,10 +514,7 @@ func fetchMatrixBound(ctx context.Context, ghPath, host, repository, workflow st
 	if response.Path == "" || response.State != "active" {
 		return 0, fmt.Errorf("GitHub workflow %q is not active", workflow)
 	}
-	if response.MatrixEntriesLimit <= 0 {
-		return 0, fmt.Errorf("GitHub workflow %q has no valid matrix entry bound", workflow)
-	}
-	return response.MatrixEntriesLimit, nil
+	return githubActionsMatrixEntriesLimit, nil
 }
 
 func nonEmptyLines(value string) []string {

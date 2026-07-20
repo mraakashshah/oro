@@ -210,8 +210,8 @@ func TestSetupDryRunForce(t *testing.T) {
 	}
 
 	output := buf.String()
-	if !strings.Contains(output, "--force: would overwrite existing files") {
-		t.Error("dry-run with --force should mention overwrite")
+	if !strings.Contains(output, "--force: would refresh generated assets and quality gate files") {
+		t.Error("dry-run with --force should mention generated-file refresh")
 	}
 }
 

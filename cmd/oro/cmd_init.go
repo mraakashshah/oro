@@ -787,13 +787,20 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 	return cfg, nil
 }
 
-// createProjectAnchor writes the .oro/config.yaml anchor file in the project root.
-// It includes the project name and detected language profiles.
+// createProjectAnchor creates the .oro/config.yaml anchor in the project root.
+// It preserves existing project configuration and merges the project name;
+// newly created anchors include detected language profiles.
 // Returns the detected language config so callers can use it without re-reading from disk.
 func createProjectAnchor(projectRoot, projectName string) (*langprofile.Config, error) {
 	oroDir := filepath.Join(projectRoot, ".oro")
 	if err := os.MkdirAll(oroDir, 0o755); err != nil { //nolint:gosec // config dir needs to be readable
 		return nil, fmt.Errorf("create .oro dir: %w", err)
+	}
+	configPath := filepath.Join(oroDir, "config.yaml")
+	if cfg, preserved, err := preserveProjectAnchor(projectRoot, projectName, configPath); err != nil {
+		return nil, err
+	} else if preserved {
+		return cfg, nil
 	}
 
 	// Detect languages and build initial config content.
@@ -809,7 +816,6 @@ func createProjectAnchor(projectRoot, projectName string) (*langprofile.Config, 
 		cfg = &langprofile.Config{Languages: map[string]langprofile.LanguageConfig{}}
 	}
 
-	configPath := filepath.Join(oroDir, "config.yaml")
 	if err := os.WriteFile(configPath, []byte(buf.String()), 0o644); err != nil { //nolint:gosec // config file needs to be readable
 		return nil, fmt.Errorf("write config.yaml: %w", err)
 	}
@@ -817,6 +823,22 @@ func createProjectAnchor(projectRoot, projectName string) (*langprofile.Config, 
 		return nil, fmt.Errorf("write project to config.yaml: %w", err)
 	}
 	return cfg, nil
+}
+
+func preserveProjectAnchor(projectRoot, projectName, configPath string) (*langprofile.Config, bool, error) {
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		return nil, false, nil
+	} else if err != nil {
+		return nil, false, fmt.Errorf("inspect config.yaml: %w", err)
+	}
+	if err := config.MergeKey(configPath, "project", projectName); err != nil {
+		return nil, false, fmt.Errorf("write project to config.yaml: %w", err)
+	}
+	cfg, err := langprofile.GenerateConfig(projectRoot, langprofile.AllProfiles())
+	if err != nil {
+		cfg = &langprofile.Config{Languages: map[string]langprofile.LanguageConfig{}}
+	}
+	return cfg, true, nil
 }
 
 // oroGitignoreEntries returns the patterns oro needs ignored globally
