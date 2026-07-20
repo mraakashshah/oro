@@ -865,8 +865,8 @@ func TestAssignmentDivergenceCreatesOneRecoveryChild(t *testing.T) {
 			t.Errorf("ordinary child %s status = %q, want reopened", child.ID, updates[child.ID])
 		}
 	}
-	if len(dependencies) != 1 || dependencies[0] != (protocol.Dependency{IssueID: created.id, DependsOnID: epicID, Type: "blocks"}) {
-		t.Fatalf("recovery dependency = %#v, want child blocks epic", dependencies)
+	if len(dependencies) != 1 || dependencies[0] != (protocol.Dependency{IssueID: epicID, DependsOnID: created.id, Type: "blocks"}) {
+		t.Fatalf("recovery dependency = %#v, want epic blocked by recovery child", dependencies)
 	}
 
 	beads.shown[created.id] = &protocol.BeadDetail{ID: created.id, Title: created.title, Type: "task", Status: "open", AcceptanceCriteria: created.acceptanceCriteria}
@@ -883,6 +883,29 @@ func TestAssignmentDivergenceCreatesOneRecoveryChild(t *testing.T) {
 	if len(beads.created) != 1 {
 		t.Fatalf("FF failure created %d recovery children, want reuse of the assignment-time child", len(beads.created))
 	}
+
+	t.Run("recovery child is ready in the production store", func(t *testing.T) {
+		db := newTestDB(t)
+		if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+			t.Fatalf("migrate bead schema: %v", err)
+		}
+		store := beadstore.NewSQLiteStore(db)
+		if _, err := store.Create(ctx, beadstore.CreateParams{ID: epicID, Title: "Recovery epic", Type: "epic"}); err != nil {
+			t.Fatalf("create recovery epic: %v", err)
+		}
+		realDispatcher := &Dispatcher{beads: store}
+		child, err := realDispatcher.ensureEpicRebaseChild(ctx, epicID, epicBranch, "main", "diverged")
+		if err != nil {
+			t.Fatalf("ensure recovery child: %v", err)
+		}
+		ready, err := store.Ready(ctx)
+		if err != nil {
+			t.Fatalf("read ready beads: %v", err)
+		}
+		if len(ready) != 1 || ready[0].ID != child.ID {
+			t.Fatalf("ready beads = %#v, want only recovery child %q", ready, child.ID)
+		}
+	})
 }
 
 func newDivergedAssignmentWorktreeManager(t *testing.T, branch string) WorktreeManager {

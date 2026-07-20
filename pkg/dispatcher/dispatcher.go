@@ -3620,7 +3620,7 @@ func (d *Dispatcher) ensureEpicRebaseChild(ctx context.Context, epicID, epicBran
 		if !isCanonicalEpicRebaseChild(child, epicID, title, acceptance) {
 			continue
 		}
-		if err := d.addEpicRebaseDependency(ctx, child.ID, epicID); err != nil {
+		if err := d.addEpicRebaseDependency(ctx, epicID, child.ID); err != nil {
 			return nil, err
 		}
 		return child, nil
@@ -3647,18 +3647,18 @@ func (d *Dispatcher) ensureEpicRebaseChild(ctx context.Context, epicID, epicBran
 	if child == nil {
 		return nil, fmt.Errorf("create epic rebase child: store returned nil bead")
 	}
-	if err := d.addEpicRebaseDependency(ctx, child.ID, epicID); err != nil {
+	if err := d.addEpicRebaseDependency(ctx, epicID, child.ID); err != nil {
 		return nil, err
 	}
 	return child, nil
 }
 
-func (d *Dispatcher) addEpicRebaseDependency(ctx context.Context, childID, epicID string) error {
+func (d *Dispatcher) addEpicRebaseDependency(ctx context.Context, epicID, childID string) error {
 	store, ok := d.beads.(dependencyStore)
 	if !ok {
 		return fmt.Errorf("bead store does not support dependencies")
 	}
-	if err := store.AddDependency(ctx, childID, epicID, "blocks"); err != nil {
+	if err := store.AddDependency(ctx, epicID, childID, "blocks"); err != nil {
 		return fmt.Errorf("add epic rebase child dependency: %w", err)
 	}
 	return nil
