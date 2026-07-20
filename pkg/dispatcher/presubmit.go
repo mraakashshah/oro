@@ -138,7 +138,10 @@ func BuildPresubmitPlan(_ context.Context, repo RepoSnapshot, cfg PresubmitConfi
 
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
 }
 
 func goTestCommand(packages []string) string {
