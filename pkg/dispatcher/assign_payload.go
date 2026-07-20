@@ -62,22 +62,11 @@ func workerExecutionContext(assignmentID int64, isEpicDecomp bool, project strin
 //   - worker-program.md missing → empty WorkerProgram (no warning).
 //   - worker-program.md >32KB → truncate with log warning.
 //   - isEpicDecomp=true → GitLog and WorkerProgram are always empty.
-func (d *Dispatcher) buildAssignPayload(
-	ctx context.Context,
-	w *trackedWorker,
-	attempt int,
-	feedback, memCtx string,
-	execution WorkerExecutionContext,
-) *protocol.AssignPayload {
+func (d *Dispatcher) buildAssignPayload(ctx context.Context, w *trackedWorker, attempt int, feedback, memCtx string, execution WorkerExecutionContext) *protocol.AssignPayload {
 	var bead protocol.Bead
 	p := &protocol.AssignPayload{
 		BeadID:              w.beadID,
 		Worktree:            w.worktree,
-		AssignmentID:        execution.AssignmentID,
-		Generation:          execution.Generation,
-		ActorRole:           execution.ActorRole,
-		Project:             execution.Project,
-		Capability:          execution.Capability,
 		Runtime:             w.runtime,
 		Model:               w.model,
 		Reasoning:           w.reasoning,
