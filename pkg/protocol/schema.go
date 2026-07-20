@@ -248,6 +248,8 @@ const beadTableDDL = `
 CREATE TABLE IF NOT EXISTS beads (
     id                    TEXT PRIMARY KEY,
     title                 TEXT NOT NULL,
+    contract_version      INTEGER NOT NULL DEFAULT 0,
+    draft                 INTEGER NOT NULL DEFAULT 0,
     description           TEXT NOT NULL DEFAULT '',
     acceptance_criteria   TEXT NOT NULL DEFAULT '',
     status                TEXT NOT NULL CHECK (status IN
@@ -664,6 +666,9 @@ func MigrateBeadSchema(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("migrate bead schema: %w", err)
 	}
+	if err := ensureBeadContractColumns(ctx, db); err != nil {
+		return fmt.Errorf("migrate bead contract columns: %w", err)
+	}
 	if err := ensureReviewCheckpointSchema(ctx, db); err != nil {
 		return fmt.Errorf("migrate review checkpoint schema: %w", err)
 	}
@@ -681,6 +686,28 @@ func MigrateBeadSchema(ctx context.Context, db *sql.DB) error {
 	if rebuiltStatusConstraint {
 		if _, err := db.ExecContext(ctx, `INSERT INTO beads_fts(beads_fts) VALUES('rebuild')`); err != nil {
 			return fmt.Errorf("rebuild beads fts: %w", err)
+		}
+	}
+	return nil
+}
+
+func ensureBeadContractColumns(ctx context.Context, db *sql.DB) error {
+	columns, exists, err := sqliteTableColumns(ctx, db, "beads")
+	if err != nil {
+		return fmt.Errorf("inspect beads columns: %w", err)
+	}
+	if !exists {
+		return nil
+	}
+	for column, definition := range map[string]string{
+		"contract_version": "INTEGER NOT NULL DEFAULT 0",
+		"draft":            "INTEGER NOT NULL DEFAULT 0",
+	} {
+		if _, ok := columns[column]; ok {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, `ALTER TABLE beads ADD COLUMN `+column+` `+definition); err != nil {
+			return fmt.Errorf("add beads.%s: %w", column, err)
 		}
 	}
 	return nil
@@ -1173,7 +1200,7 @@ func runBeadsStatusRebuild(ctx context.Context, conn *sql.Conn, foreignKeysEnabl
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	const beadColumns = `id, title, description, acceptance_criteria, status, priority, type, parent_id, owner, estimated_minutes, tier, model, deferred_until, close_reason, created_at, updated_at, closed_at, deleted`
+	const beadColumns = `id, title, contract_version, draft, description, acceptance_criteria, status, priority, type, parent_id, owner, estimated_minutes, tier, model, deferred_until, close_reason, created_at, updated_at, closed_at, deleted`
 	rebuildSteps := []string{
 		`DROP VIEW IF EXISTS beads_ready`,
 		`DROP VIEW IF EXISTS beads_blocked`,
