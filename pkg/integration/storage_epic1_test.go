@@ -160,12 +160,13 @@ func TestStorageCLIAndHealthWiring(t *testing.T) {
 	if err := os.MkdirAll(oroHome, 0o750); err != nil {
 		t.Fatalf("create isolated Oro home: %v", err)
 	}
+	socketPath := integrationShortSocketPath(t)
 	env := append(os.Environ(),
 		"ORO_HOME="+oroHome,
 		"HOME="+filepath.Join(fixture, "home"),
 		"XDG_CACHE_HOME="+filepath.Join(fixture, "cache"),
 		"ORO_PID_PATH="+filepath.Join(fixture, "oro.pid"),
-		"ORO_SOCKET_PATH="+filepath.Join(fixture, "oro.sock"),
+		"ORO_SOCKET_PATH="+socketPath,
 		"ORO_DB_PATH="+filepath.Join(fixture, "state.db"),
 	)
 	statusOutput := integrationRunOroJSON(t, bin, env, "storage", "status", "--json")
@@ -192,7 +193,7 @@ func TestStorageCLIAndHealthWiring(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal live health fixture: %v", err)
 	}
-	serverResult := integrationServeHealth(t, filepath.Join(fixture, "oro.sock"), livePayload)
+	serverResult := integrationServeHealth(t, socketPath, livePayload)
 	liveOutput := integrationRunOroJSON(t, bin, env, "health", "--json")
 	if err := <-serverResult; err != nil {
 		t.Fatalf("serve live health: %v", err)
@@ -332,6 +333,23 @@ func integrationServeHealth(t *testing.T, socketPath string, health []byte) <-ch
 		result <- nil
 	}()
 	return result
+}
+
+func integrationShortSocketPath(t *testing.T) string {
+	t.Helper()
+	placeholder, err := os.CreateTemp("/tmp", "oro-storage-e1-*.sock")
+	if err != nil {
+		t.Fatalf("reserve short health socket path: %v", err)
+	}
+	path := placeholder.Name()
+	if err := placeholder.Close(); err != nil {
+		t.Fatalf("close health socket placeholder: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("release health socket placeholder: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(path) })
+	return path
 }
 
 func integrationServeHealthConn(conn net.Conn, health []byte) error {
