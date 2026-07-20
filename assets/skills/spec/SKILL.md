@@ -9,9 +9,7 @@ Two modes, auto-detected. Both produce the same output: a validated task depende
 
 ## Scope Assessment
 
-Before mode detection, check: does the request describe **multiple independent subsystems** (e.g., "build X with auth, billing, and notifications")? If yes, decompose first — each subsystem gets its own spec → plan → implementation cycle. Don't try to spec everything at once.
-
-If the request is a single coherent feature (even if cross-cutting), proceed to mode detection.
+Before mode detection, split multiple independent subsystems into separate spec → plan → implementation cycles. Treat a cross-cutting but coherent feature as one spec.
 
 ## Mode Detection
 
@@ -32,11 +30,21 @@ Run this privately after research and before finalizing the design or task graph
 
 Apply material findings directly to the design, scope, or tasks; do not narrate every answer. If a finding changes the goal, public contract, or hard constraints, ask the user to decide, one material decision at a time, with a recommendation. Do not proceed until it is decided. Continue autonomously when no material decisions remain.
 
+## Internal Premortem
+
+Keep the premortem private and classify verified risks after the leverage pass:
+
+- **Tiger** — a clear threat requiring mitigation
+- **Paper Tiger** — looks threatening but existing mitigation makes it acceptable
+- **Elephant** — an important concern the design avoids discussing
+
+Verify candidates against code and existing safeguards. Apply verified material risks and mitigations to the design or tasks; use the material-decision gate above only when needed.
+
 ---
 
 ## Quick Mode
 
-Research → leverage pass + inline review → decompose. No design doc. No subagent. Same context throughout.
+Research → leverage + premortem + inline review → decompose. No design doc or subagent.
 
 ### Step 1 — Research
 
@@ -46,9 +54,9 @@ Read affected code. Mandatory gate: no proposals without citing files read.
 - `grep` for all interface implementations, callers, and test mocks
 - Note what files must change for compilation
 
-### Step 2 — Internal Leverage + Inline Adversarial Review
+### Step 2 — Internal Leverage + Premortem + Adversarial Review
 
-Run the Internal Leverage Pass, then self-review in the same context. Run these checks before decomposing:
+Run the Internal Leverage Pass and Internal Premortem, then self-review in the same context:
 
 | Check | Question |
 |-------|----------|
@@ -76,7 +84,7 @@ oro task show <epic-id>    ← confirmed task tree (no design doc)
 
 ## Full Mode
 
-Collaborative design + leverage pass → adversarial validation → task decomposition. Produces a committed design doc.
+Collaborative design + reviews → adversarial validation → task decomposition. Produces a committed design doc.
 
 ### Stage 1 — Brainstorm (`brainstorming` skill)
 
@@ -84,7 +92,7 @@ Invoke the `brainstorming` skill. Follow it completely:
 
 - Research prior art first (mandatory gate — no proposals without citing files read)
 - One question at a time
-- Run the Internal Leverage Pass before finalizing the design
+- Order: Compare approaches → Internal Leverage Pass → brainstorming's single Internal Premortem → finalize; do not run a second premortem pass
 - Produce a design doc: `docs/plans/YYYY-MM-DD-<topic>-design.md`
 - Commit the design doc before moving to Stage 2
 
