@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-20
 
-**Status:** Draft — consultation pending
+**Status:** Draft — adversarial R1 fixes applied, re-review pending
 
 **Scope:** Worker discoveries, blocker proposals, task admission, dependency
 authorization, quality-gate evidence, and autonomous recovery
@@ -125,6 +125,9 @@ type WorkerExecutionContext struct {
     WorkerID     string
     BeadID       string
     AssignmentID int64
+    Generation   int64
+    ActorRole    string
+    Capability   string
     Project      string
     Worktree     string
     TargetBranch string
@@ -132,6 +135,24 @@ type WorkerExecutionContext struct {
 
 func WorkerEnv(base []string, ctx WorkerExecutionContext) ([]string, error)
 ```
+
+The production transport is explicit and end-to-end:
+
+```text
+assignBead/createAssignment
+  -> issueAssignmentCapability
+  -> buildAssignPayload (AssignmentID, Generation, ActorRole, Capability)
+  -> protocol.AssignPayload
+  -> worker.handleAssign/resetForNewAssignment
+  -> RuntimeStreamingSpawner.Spawn(..., WorkerExecutionContext)
+  -> ClaudeSpawner or Codex WorkerSpawner
+  -> WorkerEnv
+```
+
+This migration owns every initial, retry, review-recovery, and handoff assignment
+payload call site; mocks cannot retain the old spawner signature. Capability
+issuance happens only after the assignment row is durably active. Failure to
+build or send the payload revokes the capability before reopening the bead.
 
 Both Claude and Codex spawners receive the resulting explicit environment.
 The helper sets `ORO_WORKER=1`, identity fields, normalized `PWD`, isolated temp
@@ -156,12 +177,25 @@ Worker task mutation authority is role-scoped:
 | ops taskcraft reviewer | validated task only | accepted proposal only | yes |
 | human CLI | yes, through contract validation | yes | yes |
 
-The dispatcher issues a short-lived capability bound to assignment ID, actor
-role, project, and allowed actions. Worker mutations go through dispatcher IPC;
-the CLI does not write the bead store directly when worker identity is present.
-Capabilities are checked against live assignment state and consumed
-idempotently. Environment variables carry the opaque capability but are not
-the authority by themselves.
+The dispatcher issues a random 256-bit capability bound to assignment ID,
+assignment generation, actor role, project, and allowed actions. Only its hash
+is stored in `assignment_capabilities`; the raw value rides `AssignPayload` and
+the subprocess environment. It expires after 20 minutes or when the assignment
+generation becomes terminal/replaced, whichever occurs first. A long-running
+assignment receives a refreshed capability in a dispatcher ACK before expiry;
+the prior generation is revoked only after the ACK is durable.
+
+The capability is reusable only for its narrow action set, while every request
+has a caller-generated nonce. `(capability_id, nonce)` is unique and stores the
+completed response, making retries idempotent and replay with different content
+an error. Dispatcher restart reloads capability hashes and consumed nonces.
+Completion, requeue, disconnect recovery, or worker replacement revokes every
+capability for the old generation.
+
+Worker mutations go through dispatcher IPC; the CLI does not write the bead
+store directly when any worker identity field is present. Capabilities are
+checked against live assignment state. Environment variables transport the
+opaque value but are not authority by themselves.
 
 ### 6.3 Durable work proposals
 
@@ -175,6 +209,7 @@ type WorkProposalPayload struct {
     BeadID           string
     EvidenceRunID    string
     Fingerprint      string
+    ScopeHint        string // advisory; controller derives canonical ScopeKey
     Kind             string // task_local, prerequisite, systemic, external
     Summary          string
     SuggestedTitle   string
@@ -184,8 +219,13 @@ type WorkProposalPayload struct {
 ```
 
 Durable `work_proposals` state records identity, evidence, decision, repair
-attempts, executable bead ID, and timestamps. A unique key on
-`(assignment_id, fingerprint)` prevents duplicates. States are:
+attempts, canonical scope key, executable bead ID, and timestamps. Proposal
+submission is idempotent on `(assignment_id, fingerprint)`. Materialization is
+globally deduplicated on `(project, target_branch, scope_key, fingerprint)`.
+The controller derives `scope_key` from authoritative task ancestry plus the
+taskcraft review's canonical prerequisite identity; the worker's `ScopeHint`
+is never used as a key without validation. QG proposals use the existing QG
+incident scope and fingerprint. States are:
 
 ```text
 pending -> validating -> rejected
@@ -195,7 +235,35 @@ pending -> validating -> rejected
 
 No proposal is returned by `Store.Ready`, and no proposal blocks a bead.
 
-### 6.4 Evidence runs
+### 6.4 Agent-facing evidence and proposal commands
+
+The real producer entry points are:
+
+```text
+oro evidence run --kind diagnostic --timeout 2m -- <argv...>
+oro task propose-blocker --evidence-run <run-id> --kind <kind> \
+  --summary <text> --title <advisory-title> --priority <advisory-priority>
+```
+
+Both commands require `ORO_SOCKET_PATH`, assignment identity, and the opaque
+capability. They use the existing UDS directive client framing and add exact
+protocol messages:
+
+```go
+MsgEvidenceRunRequest  // capability, nonce, kind, argv, timeout
+MsgEvidenceRunResult   // run ID, exit, bounded output, manifest hash, error
+MsgWorkProposal        // capability, nonce, WorkProposalPayload
+MsgWorkProposalResult  // proposal ID, state, decision/retry feedback, error
+```
+
+`cmd/oro` registers both commands. `protocol.Message`, dispatcher
+`extractWorkerID`/`extractBeadID`, and `handleMessage` gain typed cases. The CLI
+discovers the project socket from the injected exact path; it never scans `/tmp`
+or connects to another project's socket. A missing socket, mismatched response
+identity, timeout, or dispatcher disconnect fails closed and prints structured
+JSON suitable for the agent prompt.
+
+### 6.5 Evidence runs
 
 Commands used as mutation evidence run through an Oro-owned wrapper:
 
@@ -218,19 +286,25 @@ type EvidenceManifest struct {
 }
 ```
 
+The dispatcher, not the agent subprocess, executes the requested argv in the
+assignment's stored worktree after capability validation. Caller cwd is ignored.
 The wrapper resolves the worktree and Git identity before execution, records
 the bounded result in dispatcher state, and returns `RunID`. Proposal validation
 re-resolves the live assignment and rejects mismatched project, worker, bead,
 worktree, branch, HEAD, future timestamp, expired evidence, absent run, or hash.
-Output excerpts are bounded; full logs remain in the existing worker/QG log
-surface.
+Default timeout is two minutes and the maximum is ten minutes. Argv encoding is
+bounded to 4 KiB, retained output to 32 KiB, and the event excerpt to 1200 bytes;
+the full streamed output goes to the assignment log and is addressed by hash.
+Cancellation records a terminal canceled run. Startup marks abandoned
+`running` evidence as interrupted; interrupted or unfinished evidence never
+validates and may be rerun with a new nonce.
 
 tmux panes and arbitrary files are never mutation evidence. A worker may inspect
 them diagnostically, but a proposal citing them without a matching evidence run
 is rejected. Dispatcher-run QG creates evidence directly and remains
 authoritative.
 
-### 6.5 Central executable task contract
+### 6.6 Central executable task contract
 
 Add one pure validator shared by bead creation, update-to-open, dependency
 attachment, dispatcher admission, generated QG tasks, and ops materialization:
@@ -261,13 +335,22 @@ The last two are required by taskcraft review rather than inferred solely with
 string matching. Epics use a separate contract requiring a main-branch
 machine-verifiable `Cmd:` and `Assert:`.
 
-Incomplete human or automated discoveries are proposals, not open beads. New
-CLI creation defaults executable tasks to contract v2 and rejects invalid
-input. A deliberate human `--draft` path can preserve incomplete notes without
-making them ready. Historical contract-v0 beads continue through the existing
-admission behavior and are repaired lazily; there is no flag-day migration.
+Contract state is durable, not inferred after reload. Add
+`beads.contract_version INTEGER NOT NULL DEFAULT 0` and
+`beads.draft INTEGER NOT NULL DEFAULT 0`, carry both through `protocol.Bead`,
+`BeadDetail`, `CreateParams`, `UpdateParams`, SQLite, shadow store, read
+transactions, export, and compatibility migrations. `Store.Ready` and its
+read-transaction equivalent exclude `draft=1` before dispatcher filtering.
+Every validator call derives its version from the persisted field.
 
-### 6.6 Autonomous triage controller
+Incomplete automated discoveries are proposals, not beads. New human CLI
+creation defaults executable tasks to contract v2 and rejects invalid input. A
+deliberate human `--draft` path persists `draft=1` without making the bead ready.
+Update-to-open, reopen, and dependency attachment revalidate the stored version.
+Historical contract-v0 beads continue through the existing admission behavior
+and are repaired lazily; there is no flag-day migration.
+
+### 6.7 Autonomous triage controller
 
 The dispatcher runs a restart-safe proposal controller:
 
@@ -285,19 +368,40 @@ The dispatcher runs a restart-safe proposal controller:
 4. **Revalidate.** Oro runs the central validator and scope/provenance checks on
    the returned contract. Invalid output is retried with exact validation
    errors; it is never stored as executable work.
-5. **Materialize atomically.** Create/reuse the executable bead, add the
-   dependency, transition the current assignment, and append events in one
-   transaction or compensate without leaving a half-edge.
+5. **Materialize atomically.** `Store.MaterializeWorkProposal` owns one SQLite
+   transaction across: compare live source assignment/generation; reserve the
+   global materialization key; create or reload the v2 bead; add or verify the
+   edge; transition proposal state; append the transition event; and mark the
+   assignment blocked. SQLite, shadow, fake, and read-transaction test stores
+   implement the boundary. A stale source assignment aborts before writes.
 6. **Resume throughput.** Rejected/task-local proposals resume the original
    assignment. Accepted blockers preserve current work, reopen the task as
    blocked, and release the worker. Other ready tasks continue.
 7. **Exhaustion.** After two repair attempts and one independent classification
-   attempt, quarantine only the proposal and source assignment. A background
-   janitor retries when evidence, branch, task graph, or relevant commits change.
-   Operator escalation is emitted after the retry budget, but the factory keeps
-   processing unrelated tasks.
+   attempt, transition the proposal to `quarantined` and record its source bead
+   in `proposal_quarantine_beads`. This is separate from
+   `recovery_quarantines`: assignment filtering excludes only that bead, health
+   reports a scoped warning, and monitor actions for unrelated beads remain
+   enabled. A background janitor retries when evidence, branch, task graph, or
+   relevant commits change. Operator escalation is emitted after the retry
+   budget, but the factory keeps processing unrelated tasks.
 
-### 6.7 Severity policy
+### 6.8 Worker mutation gateway
+
+Every mutable `oro task` entry point is inventoried. When worker identity is
+present, create, update, update-to-open, reopen, close, delete, dependency add,
+and dependency remove fail closed unless the dispatcher-issued capability
+explicitly authorizes the operation through IPC. Execution workers have only
+evidence/proposal actions. Epic decomposition capabilities allow only validated
+child creation under the assigned epic and parent-to-child edges; they cannot
+mutate unrelated beads or create cross-epic dependencies.
+
+Human/ops CLI calls still use the store but pass central contract validation.
+Generated QG, audit, janitor, recovery, and cleanliness producers use named
+constructors declaring contract version and executable versus non-executable
+classification; none bypasses the validator accidentally.
+
+### 6.9 Severity policy
 
 Remove “bugs are always P0.” Default autonomous bug priority is P2.
 
@@ -336,6 +440,9 @@ worker's suggested priority is advisory only.
   idempotency keys.
 - A `materialized` proposal reconciles bead existence and edge existence rather
   than creating duplicates.
+- Capability hashes, expiry, revocation, and consumed nonces reload before IPC
+  admission opens. Exact request replay returns the stored response; the same
+  nonce with different content is rejected.
 
 ### 7.4 Ops unavailable
 
@@ -347,8 +454,22 @@ worker's suggested priority is advisory only.
 ### 7.5 Store or transaction failure
 
 - Fail closed: no blocking edge may exist without a valid target bead.
-- A created bead with no edge is safe and deduplicated on retry.
-- Emit a repairable reconciliation event.
+- `MaterializeWorkProposal` rolls back bead, edge, proposal, assignment, and
+  event writes together.
+- Commit uncertainty leaves the proposal in `validating`; startup reconciliation
+  queries the global materialization key and either completes the same
+  transition or retries it.
+- Concurrent assignment replacement fails the generation comparison before
+  any mutation.
+- Emit a repairable reconciliation event for commit uncertainty.
+
+### 7.6 Transition and event atomicity
+
+Each proposal transition uses a monotonically increasing generation and a
+unique event key `(proposal_id, generation, to_state)`. State update and event
+insert occur in the same transaction. Replaying a completed request returns the
+stored result without emitting a second event. Invalid transitions change
+neither state nor events.
 
 ## 8. Observability
 
@@ -371,7 +492,9 @@ work_proposal_reconciled
 repairing, accepted, rejected, and quarantined proposals. Pending proposals are
 not health-critical. A repeatedly failing fingerprint is a warning. A
 quarantined proposal is scoped warning/critical according to severity but does
-not globally disable monitor actions unrelated to that bead.
+not globally disable monitor actions unrelated to that bead. Proposal
+quarantines have separate metrics and findings from recovery quarantines and
+never enter `recoveryQuarantineAssignmentScope`.
 
 ## 9. Compatibility and Migration
 
@@ -395,12 +518,21 @@ are additive; no destructive migration is required.
 ### 10.1 Unit contracts
 
 - Both runtime spawners receive identical worker identity fields.
+- Initial, retry, review-recovery, and handoff payloads preserve assignment ID,
+  generation, role, and capability through a real subprocess environment.
 - Missing assignment identity fails closed.
+- Expired, revoked, wrong-role, stale-generation, replayed-different-content,
+  and consumed capability requests fail closed; exact replay is idempotent.
 - v2 task validation rejects every missing field and invalid estimate.
-- Draft and legacy-v0 behavior is explicit.
+- Contract version and draft state round-trip through create, reload, update,
+  reopen, dependency attach, Ready, dispatcher admission, shadow store, and
+  export; drafts never appear in Ready.
 - dependency authorization rejects execution-worker self/cross-epic edges.
 - evidence validation rejects every identity mismatch and stale timestamp.
-- fingerprint deduplication is stable.
+- Evidence timeout, cancellation, oversized argv/output, dispatcher crash, and
+  unfinished runs are terminal and never validate.
+- Fingerprint plus canonical scope deduplicates across assignments.
+- Every proposal state transition emits exactly one durable event under replay.
 
 ### 10.2 State-machine tests
 
@@ -408,15 +540,22 @@ are additive; no destructive migration is required.
 - task-local -> retry original without new bead;
 - accepted -> valid bead plus edge plus worker release;
 - crash between bead create and edge -> reconcile exactly once;
+- injected failure after every materialization write -> full rollback or one
+  idempotent startup completion;
 - ops timeout -> bounded retry -> scoped quarantine;
+- scoped proposal quarantine -> source excluded, unrelated assignment continues,
+  recovery global-freeze metrics unchanged;
 - branch/HEAD change -> stale proposal revalidated or rejected;
 - two workers report same systemic issue -> one incident bead.
+- two assignments report the same prerequisite -> one blocker bead and one
+  materialization key.
 
 ### 10.3 Production-path regression
 
 `TestAutonomousWorkIntakeIntegrityEndToEnd` starts the real dispatcher with a
-Codex worker assignment for bead A and seeds stale terminal evidence from
-worktree B. It proves:
+real `cmd/oro` CLI and Codex subprocess shim for bead A, plus stale terminal
+evidence from worktree B. The production-path acceptance epic owns all fixtures
+and the full CLI -> UDS -> protocol -> dispatcher -> controller chain. It proves:
 
 1. worker identity reaches the Codex subprocess;
 2. direct task creation and self-dependency mutation are denied;
@@ -428,6 +567,7 @@ worktree B. It proves:
 7. review/merge does not proceed after the edge;
 8. the worker is released and an unrelated ready bead is assigned;
 9. restart does not duplicate proposals, beads, or edges.
+10. each durable transition event occurs exactly once.
 
 Epic acceptance runs against `main`:
 
@@ -441,13 +581,14 @@ Assert: the named production-path test passes on main and the full quality gate 
 The work decomposes into independently mergeable epics:
 
 1. **Worker identity parity** — typed execution context and fail-closed runtime
-   propagation.
+   propagation, capability issuance/lifecycle, and every assignment payload
+   path.
 2. **Executable task contracts** — shared validator, draft path, creation/update/
-   admission enforcement.
-3. **Evidence-bound proposals** — protocol, evidence manifests, durable proposal
-   store, validation.
+   admission enforcement, persisted contract version, and producer inventory.
+3. **Evidence-bound proposals** — exact CLI/UDS protocol, evidence execution,
+   manifests, durable proposal store, canonical scope, and validation.
 4. **Autonomous proposal controller** — classification, taskcraft repair,
-   materialization, retry, quarantine, reconciliation.
+   atomic materialization, retry, scoped quarantine, and reconciliation.
 5. **Dependency authority** — dispatcher-only worker edges and integration with
    `oro-vcw9`/`oro-emz2` review readiness.
 6. **Observability and janitor repair** — status/health/throughput plus legacy
@@ -456,11 +597,27 @@ The work decomposes into independently mergeable epics:
    restart/idempotency proof.
 
 Epics 1 and 2 can land first and prevent recurrence before the proposal
-controller is complete. Epics 3 through 6 may merge independently behind a
-disabled materialization flag. Epic 7 enables the production path and removes
-the legacy worker prompt instructions.
+controller is complete. Epic 3 must land before direct execution-worker mutation
+instructions are removed, so workers retain a valid reporting path. Epics 3
+through 6 may merge behind a disabled materialization flag. Epic 7 enables the
+production path, removes legacy prompt instructions, and proves real command
+composition.
 
-## 12. Premortem
+## 12. Integration Point Ownership
+
+| Boundary | Required production points | Owning epic |
+|---|---|---|
+| Assignment context | `assignBead`, `createAssignment`, `buildAssignPayload`, every reassignment path, `AssignPayload`, `handleAssign`, all spawner interfaces/mocks, Claude and Codex spawners | 1 |
+| Contract persistence | protocol bead types, schema/migrations, Store/CreateParams/UpdateParams, SQLite/shadow/fake/read-tx/export, `Ready`, `checkBeadReady` | 2 |
+| Human/task mutations | create, update, reopen, close, delete, dep add/remove plus generated QG/audit/janitor/recovery/cleanliness producers | 2 and 5 |
+| Agent proposal producer | command registration, `oro evidence run`, `oro task propose-blocker`, UDS client, protocol messages, identity extraction, dispatcher message handler | 3 |
+| Proposal state | schema, proposal/evidence store, scope normalization, transition/event idempotency | 3 |
+| Materialization | `Store.MaterializeWorkProposal`, assignment generation compare, bead/edge/proposal/event transaction, startup reconciliation | 4 |
+| Scoped quarantine | proposal-specific admission exclusion, janitor retry, factory health/status/throughput/monitor | 4 and 6 |
+| Review readiness | accepted edge rechecks at admission, approval, and retry using `oro-emz2` and `oro-vcw9` | 5 |
+| Production acceptance | real CLI/UDS/Codex shim, stale foreign-worktree evidence, restart and unrelated-throughput assertions | 7 |
+
+## 13. Premortem
 
 ```yaml
 premortem:
@@ -478,7 +635,7 @@ premortem:
       mitigation_checked: worker mutations move through dispatcher IPC with assignment-bound capabilities; env guards are only compatibility defense
     - risk: crash leaves a blocker edge without a valid target or duplicates work
       severity: high
-      mitigation_checked: materialization is transactional or compensating, fingerprinted, and startup-reconciled
+      mitigation_checked: Store.MaterializeWorkProposal owns one transaction with a global key, generation compare, event write, and startup commit-uncertainty reconciliation
     - risk: strict validation strands historical tasks
       severity: medium
       mitigation_checked: contract versioning preserves v0 and janitor repairs lazily
@@ -489,7 +646,22 @@ premortem:
       reason: taskcraft is a bounded one-shot only after evidence validation; task-local and QG failures use existing fast paths
 ```
 
-## 13. Assumptions for Consultation
+## 14. Resolved Adversarial Decisions
+
+- Capability transport is part of `AssignPayload` and every assignment/retry
+  call chain, not runtime-local construction.
+- Contract version and draft status are first-class persisted bead fields.
+- Proposal submission deduplicates per assignment; materialization deduplicates
+  across assignments with canonical scope.
+- Agent-facing commands and their exact CLI/UDS protocol are part of delivery.
+- Materialization uses one named Store transaction, not an unspecified
+  transaction-or-compensation choice.
+- Proposal quarantine is separate from recovery quarantine and cannot trigger
+  its global freeze.
+- The production acceptance epic owns real CLI, protocol, subprocess, restart,
+  event, and unrelated-throughput fixtures.
+
+## 15. Assumptions
 
 - A worker observation may be wrong; dispatcher-owned assignment and QG state
   are authoritative.
