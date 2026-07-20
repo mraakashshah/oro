@@ -21,18 +21,28 @@ func TestCatalogRuntimeLeaseLifecycle(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "catalog.db"))
+	path := filepath.Join(t.TempDir(), "catalog.db")
+	db, err := dbutil.OpenDB(path)
 	if err != nil {
 		t.Fatalf("open catalog db: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
 
 	if _, err := db.ExecContext(ctx, `CREATE TABLE runtime_leases (id TEXT PRIMARY KEY)`); err != nil {
 		t.Fatalf("seed stale schema: %v", err)
 	}
-	catalog, err := storage.OpenCatalog(ctx, db)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close stale catalog fixture: %v", err)
+	}
+	catalog, err := storage.OpenCatalog(ctx, path)
 	if err != nil {
 		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = catalog.Close() })
+	db = catalog.DB()
+
+	var foundationTable string
+	if err := db.QueryRowContext(ctx, `SELECT name FROM sqlite_schema WHERE type='table' AND name='providers'`).Scan(&foundationTable); err != nil {
+		t.Fatalf("foundational catalog schema was not preserved: %v", err)
 	}
 
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
@@ -109,11 +119,11 @@ func TestCatalogMigrationRebuildsIncompatibleLeaseSchema(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "catalog.db"))
+	path := filepath.Join(t.TempDir(), "catalog.db")
+	db, err := dbutil.OpenDB(path)
 	if err != nil {
 		t.Fatalf("open catalog db: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
 
 	if _, err := db.ExecContext(ctx, `
 CREATE TABLE runtime_leases (
@@ -123,10 +133,14 @@ CREATE TABLE runtime_leases (
 )`); err != nil {
 		t.Fatalf("seed incompatible schema: %v", err)
 	}
-	catalog, err := storage.OpenCatalog(ctx, db)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close incompatible catalog fixture: %v", err)
+	}
+	catalog, err := storage.OpenCatalog(ctx, path)
 	if err != nil {
 		t.Fatalf("open catalog: %v", err)
 	}
+	t.Cleanup(func() { _ = catalog.Close() })
 
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
 	if _, err := catalog.AcquireLease(ctx, storage.LeaseRequest{
@@ -141,7 +155,7 @@ CREATE TABLE runtime_leases (
 	}); err != nil {
 		t.Fatalf("acquire lease after migration: %v", err)
 	}
-	if err := storage.MigrateCatalog(ctx, db); err != nil {
+	if err := storage.MigrateCatalog(ctx, catalog.DB()); err != nil {
 		t.Fatalf("repeat catalog migration: %v", err)
 	}
 }
