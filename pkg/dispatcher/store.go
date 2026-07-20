@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
+
+const maxPresubmitLogBytes = 64 * 1024
 
 const remoteGateSchemaDDL = `
 CREATE TABLE IF NOT EXISTS remote_gates (
@@ -112,7 +115,21 @@ type PresubmitResult struct {
 	CompletedAt   string
 	Outcome       string
 	Logs          string
-	ResourceClass string
+	ResourceClass ResourceClass
+}
+
+// PresubmitEvidencePlan is the complete exact identity required to admit a
+// local presubmit plan. Actions not represented by matching terminal evidence
+// keep the plan non-passing.
+//
+//oro:testonly — wired into production by the post-rebase invalidation step.
+type PresubmitEvidencePlan struct {
+	GateID       int64
+	CandidateSHA string
+	BaseSHA      string
+	Profile      string
+	ToolHash     string
+	Actions      []PresubmitAction
 }
 
 // Store persists dispatcher-owned remote gate state and evidence.
@@ -214,6 +231,10 @@ func (s *Store) RecordPresubmitResult(ctx context.Context, result PresubmitResul
 	if err := validatePresubmitResult(result); err != nil {
 		return err
 	}
+	logs := result.Logs
+	if len(logs) > maxPresubmitLogBytes {
+		logs = logs[:maxPresubmitLogBytes]
+	}
 	if _, err := s.db.ExecContext(ctx, `
 INSERT INTO remote_gate_presubmit_results
   (gate_id, action_name, candidate_sha, base_sha, command, profile, tool_hash, started_at, completed_at, outcome, logs, resource_class)
@@ -221,10 +242,58 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(gate_id, action_name, candidate_sha, base_sha, command, profile, tool_hash) DO NOTHING`,
 		result.GateID, result.ActionName, result.CandidateSHA, result.BaseSHA, result.Command,
 		result.Profile, result.ToolHash, result.StartedAt, result.CompletedAt, result.Outcome,
-		result.Logs, result.ResourceClass); err != nil {
+		logs, result.ResourceClass); err != nil {
 		return fmt.Errorf("record presubmit result: %w", err)
 	}
 	return nil
+}
+
+// PresubmitPlanPassed reports whether every action in plan has exact, terminal
+// passing evidence for the durable candidate. Stale and non-passing rows are
+// retained for audit but never satisfy the current plan.
+//
+//oro:testonly — wired into production by the post-rebase invalidation step.
+func (s *Store) PresubmitPlanPassed(ctx context.Context, plan PresubmitEvidencePlan) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, errors.New("check presubmit plan: store is nil")
+	}
+	if err := validatePresubmitEvidencePlan(plan); err != nil {
+		return false, err
+	}
+	gate, err := s.RemoteGate(ctx, plan.GateID)
+	if err != nil {
+		return false, fmt.Errorf("check presubmit plan: load gate: %w", err)
+	}
+	if gate.Candidate.CandidateSHA != plan.CandidateSHA || gate.Candidate.BaseSHA != plan.BaseSHA {
+		return false, nil
+	}
+
+	for _, action := range plan.Actions {
+		var startedAt, completedAt, outcome string
+		err := s.db.QueryRowContext(ctx, `
+SELECT started_at, completed_at, outcome
+FROM remote_gate_presubmit_results
+WHERE gate_id = ?
+  AND action_name = ?
+  AND candidate_sha = ?
+  AND base_sha = ?
+  AND command = ?
+  AND profile = ?
+  AND tool_hash = ?
+  AND resource_class = ?`,
+			plan.GateID, action.Name, plan.CandidateSHA, plan.BaseSHA, action.Command,
+			plan.Profile, plan.ToolHash, action.ResourceClass).Scan(&startedAt, &completedAt, &outcome)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("check presubmit action %q: %w", action.Name, err)
+		}
+		if outcome != "passed" || validatePresubmitTimestamps(startedAt, completedAt) != nil {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 const remoteGateSelect = `
@@ -259,8 +328,44 @@ func validatePresubmitResult(result PresubmitResult) error {
 		strings.TrimSpace(result.BaseSHA) == "" || strings.TrimSpace(result.Command) == "" ||
 		strings.TrimSpace(result.Profile) == "" || strings.TrimSpace(result.ToolHash) == "" ||
 		strings.TrimSpace(result.StartedAt) == "" || strings.TrimSpace(result.CompletedAt) == "" ||
-		strings.TrimSpace(result.Outcome) == "" || strings.TrimSpace(result.ResourceClass) == "" {
+		strings.TrimSpace(result.Outcome) == "" || strings.TrimSpace(string(result.ResourceClass)) == "" {
 		return errors.New("record presubmit result: missing exact evidence identity")
+	}
+	if err := validatePresubmitTimestamps(result.StartedAt, result.CompletedAt); err != nil {
+		return fmt.Errorf("record presubmit result: %w", err)
+	}
+	return nil
+}
+
+func validatePresubmitEvidencePlan(plan PresubmitEvidencePlan) error {
+	if plan.GateID <= 0 || strings.TrimSpace(plan.CandidateSHA) == "" || strings.TrimSpace(plan.BaseSHA) == "" ||
+		strings.TrimSpace(plan.Profile) == "" || strings.TrimSpace(plan.ToolHash) == "" || len(plan.Actions) == 0 {
+		return errors.New("check presubmit plan: missing exact plan identity")
+	}
+	seen := make(map[string]struct{}, len(plan.Actions))
+	for _, action := range plan.Actions {
+		if strings.TrimSpace(action.Name) == "" || strings.TrimSpace(action.Command) == "" || action.ResourceClass == "" {
+			return errors.New("check presubmit plan: incomplete action identity")
+		}
+		if _, exists := seen[action.Name]; exists {
+			return fmt.Errorf("check presubmit plan: duplicate action %q", action.Name)
+		}
+		seen[action.Name] = struct{}{}
+	}
+	return nil
+}
+
+func validatePresubmitTimestamps(startedAt, completedAt string) error {
+	started, err := time.Parse(time.RFC3339Nano, startedAt)
+	if err != nil {
+		return fmt.Errorf("invalid started_at: %w", err)
+	}
+	completed, err := time.Parse(time.RFC3339Nano, completedAt)
+	if err != nil {
+		return fmt.Errorf("invalid completed_at: %w", err)
+	}
+	if completed.Before(started) {
+		return errors.New("completed_at precedes started_at")
 	}
 	return nil
 }

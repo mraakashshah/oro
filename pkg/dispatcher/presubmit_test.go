@@ -3,11 +3,15 @@ package dispatcher
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	"oro/pkg/dbutil"
 )
 
 func TestPresubmitActionManifest(t *testing.T) {
@@ -185,6 +189,186 @@ func TestQGSemaphoreWrapsCancellation(t *testing.T) {
 	_, err := NewQGSemaphore(map[ResourceClass]int{ResourceCPULight: 0}).Acquire(ctx, ResourceCPULight)
 	if err == nil || err.Error() != "acquire presubmit capacity: context canceled" {
 		t.Fatalf("Acquire cancellation error = %v", err)
+	}
+}
+
+func TestPresubmitEvidenceIdentity(t *testing.T) {
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "presubmit-evidence.db"))
+	if err != nil {
+		t.Fatalf("open DB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := NewStore(ctx, db)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	actions := []PresubmitAction{
+		{Name: "acceptance", Command: "go test ./pkg/dispatcher -run TestAcceptance", ResourceClass: ResourceCPULight},
+		{Name: "lint", Command: "golangci-lint run ./pkg/dispatcher", ResourceClass: ResourceMemoryHeavy},
+	}
+	const (
+		candidateSHA = "candidate-abc123"
+		baseSHA      = "base-def456"
+		profile      = "go-v1"
+		toolHash     = "tools-789"
+		startedAt    = "2026-07-20T12:00:00.123456789Z"
+		completedAt  = "2026-07-20T12:00:01.987654321Z"
+	)
+
+	type evidenceCase struct {
+		name       string
+		missing    bool
+		mutateLast func(*PresubmitResult)
+		wantPass   bool
+	}
+	cases := []evidenceCase{
+		{name: "complete exact plan", wantPass: true},
+		{name: "missing action", missing: true},
+		{name: "stale candidate", mutateLast: func(result *PresubmitResult) { result.CandidateSHA = "stale-candidate" }},
+		{name: "stale base", mutateLast: func(result *PresubmitResult) { result.BaseSHA = "stale-base" }},
+		{name: "stale command", mutateLast: func(result *PresubmitResult) { result.Command += " --config stale" }},
+		{name: "stale profile", mutateLast: func(result *PresubmitResult) { result.Profile = "go-v0" }},
+		{name: "stale tool inventory", mutateLast: func(result *PresubmitResult) { result.ToolHash = "tools-old" }},
+		{name: "stale resource class", mutateLast: func(result *PresubmitResult) { result.ResourceClass = ResourceCPUHeavy }},
+		{name: "skipped action", mutateLast: func(result *PresubmitResult) { result.Outcome = "skipped" }},
+		{name: "cancelled action", mutateLast: func(result *PresubmitResult) { result.Outcome = "cancelled" }},
+		{name: "failed action", mutateLast: func(result *PresubmitResult) { result.Outcome = "failed" }},
+	}
+
+	for caseIndex, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			candidate := RemoteGateCandidate{
+				Key:          "oro-kw5r:" + testCase.name,
+				BeadID:       "oro-kw5r",
+				AssignmentID: int64(caseIndex + 1),
+				CandidateSHA: candidateSHA,
+				BaseSHA:      baseSHA,
+				TargetBranch: "epic/oro-10jk",
+				AdoptionRef:  "refs/oro/adopted/oro/oro-kw5r/" + testCase.name,
+			}
+			gate, err := store.AdoptCandidate(ctx, candidate)
+			if err != nil {
+				t.Fatalf("AdoptCandidate: %v", err)
+			}
+			plan := PresubmitEvidencePlan{
+				GateID:       gate.ID,
+				CandidateSHA: candidateSHA,
+				BaseSHA:      baseSHA,
+				Profile:      profile,
+				ToolHash:     toolHash,
+				Actions:      actions,
+			}
+			results := make([]PresubmitResult, 0, len(actions))
+			for _, action := range actions {
+				results = append(results, PresubmitResult{
+					GateID:        gate.ID,
+					ActionName:    action.Name,
+					CandidateSHA:  candidateSHA,
+					BaseSHA:       baseSHA,
+					Command:       action.Command,
+					Profile:       profile,
+					ToolHash:      toolHash,
+					StartedAt:     startedAt,
+					CompletedAt:   completedAt,
+					Outcome:       "passed",
+					Logs:          strings.Repeat("x", maxPresubmitLogBytes+128),
+					ResourceClass: action.ResourceClass,
+				})
+			}
+			if testCase.missing {
+				results = results[:len(results)-1]
+			} else if testCase.mutateLast != nil {
+				testCase.mutateLast(&results[len(results)-1])
+			}
+			for _, result := range results {
+				if err := store.RecordPresubmitResult(ctx, result); err != nil {
+					t.Fatalf("RecordPresubmitResult(%s): %v", result.ActionName, err)
+				}
+			}
+
+			if testCase.wantPass {
+				duplicate := results[0]
+				duplicate.StartedAt = "2026-07-20T13:00:00Z"
+				duplicate.CompletedAt = "2026-07-20T13:00:01Z"
+				duplicate.Outcome = "cancelled"
+				duplicate.Logs = "duplicate must not overwrite completion"
+				if err := store.RecordPresubmitResult(ctx, duplicate); err != nil {
+					t.Fatalf("duplicate RecordPresubmitResult: %v", err)
+				}
+				assertPersistedPresubmitEvidence(t, ctx, db, gate.ID, startedAt, completedAt)
+			}
+
+			passed, err := store.PresubmitPlanPassed(ctx, plan)
+			if err != nil {
+				t.Fatalf("PresubmitPlanPassed: %v", err)
+			}
+			if passed != testCase.wantPass {
+				t.Fatalf("PresubmitPlanPassed = %t, want %t", passed, testCase.wantPass)
+			}
+		})
+	}
+
+	t.Run("rejects invalid timestamps", func(t *testing.T) {
+		invalid := PresubmitResult{
+			GateID:        1,
+			ActionName:    "acceptance",
+			CandidateSHA:  candidateSHA,
+			BaseSHA:       baseSHA,
+			Command:       actions[0].Command,
+			Profile:       profile,
+			ToolHash:      toolHash,
+			StartedAt:     "not-a-timestamp",
+			CompletedAt:   completedAt,
+			Outcome:       "passed",
+			ResourceClass: actions[0].ResourceClass,
+		}
+		if err := store.RecordPresubmitResult(ctx, invalid); err == nil {
+			t.Fatal("RecordPresubmitResult accepted an invalid start timestamp")
+		}
+		invalid.StartedAt = completedAt
+		invalid.CompletedAt = startedAt
+		if err := store.RecordPresubmitResult(ctx, invalid); err == nil {
+			t.Fatal("RecordPresubmitResult accepted completion before start")
+		}
+	})
+}
+
+func assertPersistedPresubmitEvidence(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	gateID int64,
+	wantStartedAt, wantCompletedAt string,
+) {
+	t.Helper()
+	var (
+		rowCount               int
+		startedAt, completedAt string
+		outcome                string
+		logBytes               int
+	)
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM remote_gate_presubmit_results WHERE gate_id = ?`, gateID).Scan(&rowCount); err != nil {
+		t.Fatalf("count presubmit evidence: %v", err)
+	}
+	if rowCount != 2 {
+		t.Fatalf("presubmit evidence rows = %d, want 2 after duplicate completion", rowCount)
+	}
+	if err := db.QueryRowContext(ctx, `
+SELECT started_at, completed_at, outcome, length(logs)
+FROM remote_gate_presubmit_results
+WHERE gate_id = ? AND action_name = 'acceptance'`, gateID).Scan(&startedAt, &completedAt, &outcome, &logBytes); err != nil {
+		t.Fatalf("load persisted presubmit evidence: %v", err)
+	}
+	if startedAt != wantStartedAt || completedAt != wantCompletedAt {
+		t.Fatalf("persisted timestamps = %q..%q, want %q..%q", startedAt, completedAt, wantStartedAt, wantCompletedAt)
+	}
+	if outcome != "passed" {
+		t.Fatalf("persisted duplicate outcome = %q, want first completion passed", outcome)
+	}
+	if logBytes != maxPresubmitLogBytes {
+		t.Fatalf("persisted logs = %d bytes, want bounded prefix of %d", logBytes, maxPresubmitLogBytes)
 	}
 }
 
