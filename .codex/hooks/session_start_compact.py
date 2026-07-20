@@ -10,7 +10,7 @@ After compaction completes, this hook reads the saved state from
 so the post-compaction agent knows what was in progress.
 
 Input:  JSON with session_id, source ("compact"), optional role
-Output: JSON with additionalContext: "..."
+Output: Codex SessionStart JSON with hookSpecificOutput.additionalContext
 """
 
 from __future__ import annotations
@@ -23,6 +23,16 @@ import sys
 from pathlib import Path
 
 PANES_DIR = os.path.expanduser("~/.oro/panes")
+
+
+def _session_start_output(context: str) -> dict:
+    """Return context in the Codex SessionStart hook output envelope."""
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": context,
+        }
+    }
 
 
 def _clear_debounce(role: str) -> None:
@@ -70,7 +80,7 @@ def main() -> None:
             # Non-worker role: clear debounce, inject live swarm context and return early.
             _clear_debounce(role)
             context = _live_swarm_context()
-            print(json.dumps({"additionalContext": context}))
+            print(json.dumps(_session_start_output(context)))
             return
         # Worker role: clear debounce file, then fall through to transcript path.
         _clear_debounce(role)
@@ -124,7 +134,7 @@ def main() -> None:
         state_path.unlink()
 
     context = "\n".join(lines)
-    print(json.dumps({"additionalContext": context}))
+    print(json.dumps(_session_start_output(context)))
 
 
 def _create_continuation_task(

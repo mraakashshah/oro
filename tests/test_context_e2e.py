@@ -186,7 +186,7 @@ class TestLayer3E2E:
             session_start_main()
 
         post_output = json.loads(capsys.readouterr().out)
-        ctx = post_output["additionalContext"]
+        ctx = post_output["hookSpecificOutput"]["additionalContext"]
 
         # Verify continuation context contains key state
         assert "oro-test-bead" in ctx
@@ -259,8 +259,8 @@ class TestLayer3E2E:
         assert any("--parent=oro-high-ctx" in a for a in call_args)
 
         output = json.loads(capsys.readouterr().out)
-        assert "additionalContext" in output
-        assert "oro-high-ctx" in output["additionalContext"]
+        assert "additionalContext" in output["hookSpecificOutput"]
+        assert "oro-high-ctx" in output["hookSpecificOutput"]["additionalContext"]
 
     def test_non_worker_mode_skips_continuation_bead(
         self,
@@ -295,7 +295,7 @@ class TestLayer3E2E:
         mock_run.assert_not_called()
 
         output = json.loads(capsys.readouterr().out)
-        assert "additionalContext" in output
+        assert "additionalContext" in output["hookSpecificOutput"]
 
     def test_state_persistence_survives_save_and_load(self, tmp_path: Path) -> None:
         """Verify save_state → load roundtrip preserves all fields."""
