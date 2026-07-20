@@ -7,12 +7,14 @@ import (
 	"strings"
 )
 
-const v4BeadColumns = `id, title, description, acceptance_criteria, status, priority, type, parent_id, owner, estimated_minutes, tier, model, deferred_until, close_reason, created_at, updated_at, closed_at, deleted, next_action, blockers, linked_artifacts, worker_state, pipeline_stage, sandbox_session, allowed_external_fns, context_thresholds`
+const v4BeadColumns = `id, title, contract_version, draft, description, acceptance_criteria, status, priority, type, parent_id, owner, estimated_minutes, tier, model, deferred_until, close_reason, created_at, updated_at, closed_at, deleted, next_action, blockers, linked_artifacts, worker_state, pipeline_stage, sandbox_session, allowed_external_fns, context_thresholds`
 
 const v4BeadTableDDL = `
 CREATE TABLE beads (
     id                    TEXT PRIMARY KEY,
     title                 TEXT NOT NULL,
+    contract_version      INTEGER NOT NULL DEFAULT 0,
+    draft                 INTEGER NOT NULL DEFAULT 0,
     description           TEXT NOT NULL DEFAULT '',
     acceptance_criteria   TEXT NOT NULL DEFAULT '',
     status                TEXT NOT NULL CHECK (status IN

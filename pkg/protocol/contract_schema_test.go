@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/beadstore/migrations"
 	"oro/pkg/dbutil"
 	"oro/pkg/protocol"
 )
@@ -56,6 +57,12 @@ func TestContractFieldsMigrateAndRoundTrip(t *testing.T) {
 	if created.ContractVersion != 2 || !created.Draft {
 		t.Fatalf("created contract fields = version %d, draft %t; want version 2, draft true", created.ContractVersion, created.Draft)
 	}
+	if err := migrations.MigrateToV3(ctx, db); err != nil {
+		t.Fatalf("migrate legacy database to v3: %v", err)
+	}
+	if err := migrations.MigrateToV4(ctx, db); err != nil {
+		t.Fatalf("migrate legacy database to v4: %v", err)
+	}
 
 	reloaded, err := store.Show(ctx, "draft-v2")
 	if err != nil {
@@ -102,7 +109,7 @@ CREATE TABLE beads (
     acceptance_criteria   TEXT NOT NULL DEFAULT '',
     status                TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','in_progress','blocked','closed')),
     priority              INTEGER NOT NULL DEFAULT 2,
-    type                  TEXT NOT NULL DEFAULT 'task' CHECK (type IN ('task','bug','epic','research','chore','review')),
+    type                  TEXT NOT NULL DEFAULT 'task' CHECK (type IN ('task','bug','epic','research','chore','review','premortem')),
     parent_id             TEXT REFERENCES beads(id),
     owner                 TEXT,
     estimated_minutes     INTEGER,
