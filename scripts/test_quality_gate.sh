@@ -963,7 +963,7 @@ test_quality_gate_stage_assets_fail_closed() {
 
 # Test: the checked-in gate keeps only transient scratch data under TMPDIR and
 # inherits shared tool caches (or each tool's standard external default).
-# shellcheck disable=SC2317,SC2329
+# shellcheck disable=SC2016,SC2317,SC2329
 test_quality_gate_uses_shared_external_caches() {
 	local gate="$SCRIPT_DIR/quality_gate.sh"
 	local cache_override
