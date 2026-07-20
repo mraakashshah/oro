@@ -15,19 +15,22 @@ import (
 type SwarmHealth = factoryhealth.FactoryHealth
 
 type factoryHealthInput struct {
-	daemonRunning           bool
-	daemonPID               int
-	dispatcherState         string
-	workers                 []workerStatus
-	queueDepth              int
-	targetWorkers           int
-	maxWorkers              int
-	pendingWorkerCount      int
-	pendingHandoffCount     int
-	qgStatus                QGFailureStatus
-	openRecoveryQuarantines int
-	progressTimeoutSecs     float64
-	heartbeatTimeoutSecs    float64
+	daemonRunning                bool
+	daemonPID                    int
+	dispatcherState              string
+	workers                      []workerStatus
+	queueDepth                   int
+	targetWorkers                int
+	maxWorkers                   int
+	pendingWorkerCount           int
+	pendingHandoffCount          int
+	qgStatus                     QGFailureStatus
+	openRecoveryQuarantines      int
+	assignmentFrozenByQuarantine bool
+	blockingRecoveryQuarantines  int
+	assignmentFreezeReason       string
+	progressTimeoutSecs          float64
+	heartbeatTimeoutSecs         float64
 }
 
 // applyHealth returns the repo-owned FactoryHealth JSON contract.
@@ -50,19 +53,22 @@ func (d *Dispatcher) applyHealth() (string, error) {
 	workers, _, _, _ := d.snapshotWorkers(now)
 	queueDepth := calculateLiveQueueDepth(readyBeads, d.workers)
 	input := factoryHealthInput{
-		daemonRunning:           true,
-		daemonPID:               os.Getpid(),
-		dispatcherState:         string(d.state),
-		workers:                 workers,
-		queueDepth:              queueDepth,
-		targetWorkers:           d.targetWorkers,
-		maxWorkers:              d.cfg.MaxWorkers,
-		pendingWorkerCount:      len(d.pendingManagedIDs) + len(d.pendingExternalIDs),
-		pendingHandoffCount:     len(d.pendingHandoffs),
-		qgStatus:                qgStatus,
-		openRecoveryQuarantines: openRecoveryQuarantines,
-		progressTimeoutSecs:     d.cfg.ProgressTimeout.Seconds(),
-		heartbeatTimeoutSecs:    d.cfg.HeartbeatTimeout.Seconds(),
+		daemonRunning:                true,
+		daemonPID:                    os.Getpid(),
+		dispatcherState:              string(d.state),
+		workers:                      workers,
+		queueDepth:                   queueDepth,
+		targetWorkers:                d.targetWorkers,
+		maxWorkers:                   d.cfg.MaxWorkers,
+		pendingWorkerCount:           len(d.pendingManagedIDs) + len(d.pendingExternalIDs),
+		pendingHandoffCount:          len(d.pendingHandoffs),
+		qgStatus:                     qgStatus,
+		openRecoveryQuarantines:      openRecoveryQuarantines,
+		assignmentFrozenByQuarantine: d.assignmentFrozenByQuarantine,
+		blockingRecoveryQuarantines:  d.blockingRecoveryQuarantines,
+		assignmentFreezeReason:       d.assignmentFreezeReason,
+		progressTimeoutSecs:          d.cfg.ProgressTimeout.Seconds(),
+		heartbeatTimeoutSecs:         d.cfg.HeartbeatTimeout.Seconds(),
 	}
 	d.mu.Unlock()
 
@@ -96,25 +102,28 @@ func (d *Dispatcher) evaluateFactoryHealth(ctx context.Context, now time.Time, i
 		qgFingerprints = input.qgStatus.TopFingerprints
 	}
 	return factoryhealth.Evaluate(factoryhealth.Snapshot{
-		DaemonRunning:           input.daemonRunning,
-		DaemonPID:               input.daemonPID,
-		DispatcherState:         input.dispatcherState,
-		Workers:                 toFactoryWorkers(input.workers),
-		ReadyQueue:              input.queueDepth,
-		TargetWorkers:           input.targetWorkers,
-		MaxWorkers:              input.maxWorkers,
-		PendingWorkerCount:      input.pendingWorkerCount,
-		PendingHandoffCount:     input.pendingHandoffCount,
-		ActiveAssignments:       activeAssignments,
-		OpenQGIncidents:         input.qgStatus.OpenIncidents,
-		QGOccurrences30m:        input.qgStatus.Occurrences30m,
-		QGTopFingerprints:       qgFingerprints,
-		OpenRecoveryQuarantines: input.openRecoveryQuarantines,
-		ProgressTimeoutSecs:     input.progressTimeoutSecs,
-		HeartbeatTimeoutSecs:    input.heartbeatTimeoutSecs,
-		Throughput:              throughput,
-		OpsRuns:                 opsRuns,
-		PendingEscalations:      pendingEscalations,
+		DaemonRunning:                input.daemonRunning,
+		DaemonPID:                    input.daemonPID,
+		DispatcherState:              input.dispatcherState,
+		Workers:                      toFactoryWorkers(input.workers),
+		ReadyQueue:                   input.queueDepth,
+		TargetWorkers:                input.targetWorkers,
+		MaxWorkers:                   input.maxWorkers,
+		PendingWorkerCount:           input.pendingWorkerCount,
+		PendingHandoffCount:          input.pendingHandoffCount,
+		ActiveAssignments:            activeAssignments,
+		OpenQGIncidents:              input.qgStatus.OpenIncidents,
+		QGOccurrences30m:             input.qgStatus.Occurrences30m,
+		QGTopFingerprints:            qgFingerprints,
+		OpenRecoveryQuarantines:      input.openRecoveryQuarantines,
+		AssignmentFrozenByQuarantine: input.assignmentFrozenByQuarantine,
+		BlockingRecoveryQuarantines:  input.blockingRecoveryQuarantines,
+		AssignmentFreezeReason:       input.assignmentFreezeReason,
+		ProgressTimeoutSecs:          input.progressTimeoutSecs,
+		HeartbeatTimeoutSecs:         input.heartbeatTimeoutSecs,
+		Throughput:                   throughput,
+		OpsRuns:                      opsRuns,
+		PendingEscalations:           pendingEscalations,
 	})
 }
 

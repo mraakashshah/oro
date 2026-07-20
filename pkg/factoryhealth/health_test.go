@@ -232,6 +232,36 @@ func TestEvaluateRecoveryQuarantineOpenIsUnsafe(t *testing.T) {
 	}
 }
 
+func TestEvaluateAssignmentFrozenByQuarantine(t *testing.T) {
+	got := Evaluate(Snapshot{
+		DaemonRunning:                true,
+		DispatcherState:              "running",
+		Workers:                      []WorkerSnapshot{{ID: "w-idle", State: "idle"}},
+		AssignmentFrozenByQuarantine: true,
+		BlockingRecoveryQuarantines:  2,
+		AssignmentFreezeReason:       "open_recovery_quarantine",
+		OpenRecoveryQuarantines:      2,
+	})
+
+	if !got.Metrics.AssignmentFrozenByQuarantine {
+		t.Fatal("assignment frozen metric = false, want true")
+	}
+	if got.Metrics.BlockingRecoveryQuarantines != 2 {
+		t.Fatalf("blocking recovery quarantines = %d, want 2", got.Metrics.BlockingRecoveryQuarantines)
+	}
+	if got.Metrics.AssignmentFreezeReason != "open_recovery_quarantine" {
+		t.Fatalf("assignment freeze reason = %q, want open_recovery_quarantine", got.Metrics.AssignmentFreezeReason)
+	}
+	if !hasFinding(got, FindingAssignmentFrozenByQuarantine) {
+		t.Fatalf("missing assignment freeze finding in %+v", got.Findings)
+	}
+
+	unfrozen := Evaluate(Snapshot{DaemonRunning: true, DispatcherState: "running"})
+	if unfrozen.Metrics.AssignmentFrozenByQuarantine || hasFinding(unfrozen, FindingAssignmentFrozenByQuarantine) {
+		t.Fatalf("unfrozen health retained assignment freeze signal: %+v", unfrozen)
+	}
+}
+
 func TestLoadRecoveryQuarantineMetricsIncludesHumanOwned(t *testing.T) {
 	ctx := context.Background()
 	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))

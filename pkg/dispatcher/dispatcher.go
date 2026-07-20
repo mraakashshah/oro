@@ -944,6 +944,9 @@ type Dispatcher struct {
 	// lastRecoveryAssignmentBlockLog throttles noisy assignment-block events while
 	// open recovery quarantines keep automation stopped.
 	lastRecoveryAssignmentBlockLog time.Time
+	assignmentFrozenByQuarantine   bool
+	blockingRecoveryQuarantines    int
+	assignmentFreezeReason         string
 
 	// nowFunc allows tests to control time.
 	nowFunc func() time.Time
@@ -5375,34 +5378,54 @@ func filterBeadsByID(beads []protocol.Bead, ids map[string]bool) []protocol.Bead
 // handed to one fresh worker to continue its own bead.
 func (d *Dispatcher) recoveryQuarantineAssignmentScope(ctx context.Context) (map[string]bool, bool) {
 	if d.db == nil {
+		d.setRecoveryAssignmentFreeze(false, 0, "")
 		return nil, false
 	}
 	openQuarantines, err := factoryhealth.LoadRecoveryQuarantineMetrics(ctx, d.db)
 	if err != nil {
-		d.logRecoveryAssignmentBlocked(ctx, 0, "recovery_quarantine_metric_load_failed: "+err.Error())
+		reason := "recovery_quarantine_metric_load_failed: " + err.Error()
+		d.setRecoveryAssignmentFreeze(true, 0, reason)
+		d.logRecoveryAssignmentBlocked(ctx, 0, reason)
 		return nil, true
 	}
 	if openQuarantines == 0 {
+		d.setRecoveryAssignmentFreeze(false, 0, "")
 		return nil, false
 	}
 	preservableQuarantines, err := d.countPreservableRecoveryQuarantines(ctx)
 	if err != nil {
-		d.logRecoveryAssignmentBlocked(ctx, openQuarantines, "recovery_quarantine_classification_failed: "+err.Error())
+		reason := "recovery_quarantine_classification_failed: " + err.Error()
+		d.setRecoveryAssignmentFreeze(true, openQuarantines, reason)
+		d.logRecoveryAssignmentBlocked(ctx, openQuarantines, reason)
 		return nil, true
 	}
 	if preservableQuarantines == 0 {
+		d.setRecoveryAssignmentFreeze(false, 0, "")
 		return nil, false
 	}
 	redeployable, err := d.autoRedeployablePreservedWorktrees(ctx)
 	if err != nil {
-		d.logRecoveryAssignmentBlocked(ctx, preservableQuarantines, "recovery_quarantine_inspection_failed: "+err.Error())
+		reason := "recovery_quarantine_inspection_failed: " + err.Error()
+		d.setRecoveryAssignmentFreeze(true, preservableQuarantines, reason)
+		d.logRecoveryAssignmentBlocked(ctx, preservableQuarantines, reason)
 		return nil, true
 	}
 	if len(redeployable) == 0 {
-		d.logRecoveryAssignmentBlocked(ctx, preservableQuarantines, "open_recovery_quarantine")
+		const reason = "open_recovery_quarantine"
+		d.setRecoveryAssignmentFreeze(true, preservableQuarantines, reason)
+		d.logRecoveryAssignmentBlocked(ctx, preservableQuarantines, reason)
 		return nil, true
 	}
+	d.setRecoveryAssignmentFreeze(false, 0, "")
 	return redeployable, false
+}
+
+func (d *Dispatcher) setRecoveryAssignmentFreeze(frozen bool, blockingQuarantines int, reason string) {
+	d.mu.Lock()
+	d.assignmentFrozenByQuarantine = frozen
+	d.blockingRecoveryQuarantines = blockingQuarantines
+	d.assignmentFreezeReason = reason
+	d.mu.Unlock()
 }
 
 func (d *Dispatcher) logRecoveryAssignmentBlocked(ctx context.Context, openQuarantines int, reason string) {
@@ -7082,10 +7105,13 @@ type statusResponse struct {
 	ProgressTimeoutSecs float64        `json:"progress_timeout_secs"`
 
 	// QG failure incident fields
-	QGFailureIncidentsOpen   int                          `json:"qg_failure_incidents_open"`
-	QGFailureOccurrences30m  int                          `json:"qg_failure_occurrences_30m"`
-	QGFailureTopFingerprints []string                     `json:"qg_failure_top_fingerprints,omitempty"`
-	Health                   *factoryhealth.FactoryHealth `json:"health,omitempty"`
+	QGFailureIncidentsOpen       int                          `json:"qg_failure_incidents_open"`
+	QGFailureOccurrences30m      int                          `json:"qg_failure_occurrences_30m"`
+	QGFailureTopFingerprints     []string                     `json:"qg_failure_top_fingerprints,omitempty"`
+	AssignmentFrozenByQuarantine bool                         `json:"assignment_frozen_by_quarantine"`
+	BlockingRecoveryQuarantines  int                          `json:"blocking_recovery_quarantines,omitempty"`
+	AssignmentFreezeReason       string                       `json:"assignment_freeze_reason,omitempty"`
+	Health                       *factoryhealth.FactoryHealth `json:"health,omitempty"`
 }
 
 const (
@@ -7626,27 +7652,30 @@ func (d *Dispatcher) buildStatusJSON() string {
 	attemptCounts := filterAttemptCounts(d.attemptCounts, activeBeadIDs)
 
 	resp := statusResponse{
-		State:                    string(d.state),
-		PID:                      os.Getpid(),
-		WorkerCount:              len(d.workers),
-		QueueDepth:               queueDepth,
-		Assignments:              assignments,
-		FocusedEpic:              d.focusedEpic,
-		Workers:                  workers,
-		ActiveCount:              activeCount,
-		IdleCount:                idleCount,
-		TargetCount:              d.targetWorkers,
-		MaxWorkers:               d.cfg.MaxWorkers,
-		ManagedCount:             managedCount,
-		UnmanagedCount:           unmanagedCount,
-		PendingWorkerCount:       len(d.pendingManagedIDs) + len(d.pendingExternalIDs),
-		UptimeSeconds:            now.Sub(d.startTime).Seconds(),
-		PendingHandoffCount:      len(d.pendingHandoffs),
-		AttemptCounts:            attemptCounts,
-		ProgressTimeoutSecs:      d.cfg.ProgressTimeout.Seconds(),
-		QGFailureIncidentsOpen:   qgStatus.OpenIncidents,
-		QGFailureOccurrences30m:  qgStatus.Occurrences30m,
-		QGFailureTopFingerprints: qgStatus.TopFingerprints,
+		State:                        string(d.state),
+		PID:                          os.Getpid(),
+		WorkerCount:                  len(d.workers),
+		QueueDepth:                   queueDepth,
+		Assignments:                  assignments,
+		FocusedEpic:                  d.focusedEpic,
+		Workers:                      workers,
+		ActiveCount:                  activeCount,
+		IdleCount:                    idleCount,
+		TargetCount:                  d.targetWorkers,
+		MaxWorkers:                   d.cfg.MaxWorkers,
+		ManagedCount:                 managedCount,
+		UnmanagedCount:               unmanagedCount,
+		PendingWorkerCount:           len(d.pendingManagedIDs) + len(d.pendingExternalIDs),
+		UptimeSeconds:                now.Sub(d.startTime).Seconds(),
+		PendingHandoffCount:          len(d.pendingHandoffs),
+		AttemptCounts:                attemptCounts,
+		ProgressTimeoutSecs:          d.cfg.ProgressTimeout.Seconds(),
+		QGFailureIncidentsOpen:       qgStatus.OpenIncidents,
+		QGFailureOccurrences30m:      qgStatus.Occurrences30m,
+		QGFailureTopFingerprints:     qgStatus.TopFingerprints,
+		AssignmentFrozenByQuarantine: d.assignmentFrozenByQuarantine,
+		BlockingRecoveryQuarantines:  d.blockingRecoveryQuarantines,
+		AssignmentFreezeReason:       d.assignmentFreezeReason,
 	}
 	state := string(d.state)
 	targetWorkers := d.targetWorkers
@@ -7655,22 +7684,28 @@ func (d *Dispatcher) buildStatusJSON() string {
 	pendingHandoffCount := len(d.pendingHandoffs)
 	progressTimeoutSecs := d.cfg.ProgressTimeout.Seconds()
 	heartbeatTimeoutSecs := d.cfg.HeartbeatTimeout.Seconds()
+	assignmentFrozenByQuarantine := d.assignmentFrozenByQuarantine
+	blockingRecoveryQuarantines := d.blockingRecoveryQuarantines
+	assignmentFreezeReason := d.assignmentFreezeReason
 	d.mu.Unlock()
 
 	health := d.evaluateFactoryHealth(ctx, now, factoryHealthInput{
-		daemonRunning:           true,
-		daemonPID:               os.Getpid(),
-		dispatcherState:         state,
-		workers:                 workers,
-		queueDepth:              queueDepth,
-		targetWorkers:           targetWorkers,
-		maxWorkers:              maxWorkers,
-		pendingWorkerCount:      pendingWorkerCount,
-		pendingHandoffCount:     pendingHandoffCount,
-		qgStatus:                qgStatus,
-		openRecoveryQuarantines: openRecoveryQuarantines,
-		progressTimeoutSecs:     progressTimeoutSecs,
-		heartbeatTimeoutSecs:    heartbeatTimeoutSecs,
+		daemonRunning:                true,
+		daemonPID:                    os.Getpid(),
+		dispatcherState:              state,
+		workers:                      workers,
+		queueDepth:                   queueDepth,
+		targetWorkers:                targetWorkers,
+		maxWorkers:                   maxWorkers,
+		pendingWorkerCount:           pendingWorkerCount,
+		pendingHandoffCount:          pendingHandoffCount,
+		qgStatus:                     qgStatus,
+		openRecoveryQuarantines:      openRecoveryQuarantines,
+		assignmentFrozenByQuarantine: assignmentFrozenByQuarantine,
+		blockingRecoveryQuarantines:  blockingRecoveryQuarantines,
+		assignmentFreezeReason:       assignmentFreezeReason,
+		progressTimeoutSecs:          progressTimeoutSecs,
+		heartbeatTimeoutSecs:         heartbeatTimeoutSecs,
 	})
 	resp.Health = &health
 
