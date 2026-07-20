@@ -1655,15 +1655,15 @@ func TestCheckHeartbeats_ReviewingWorkerWithLiveProcessButDeadReviewIsRemoved(t 
 	}
 }
 
-// TestCheckHeartbeats_ReviewDeadGracePrecedesProgressTimeout verifies that a
+// TestCheckHeartbeats_ReviewDeadGracePrecedesReviewTimeout verifies that a
 // newly absent ops review gets its configured grace period even when the
 // worker's progress clock was already stale.
-func TestCheckHeartbeats_ReviewDeadGracePrecedesProgressTimeout(t *testing.T) {
+func TestCheckHeartbeats_ReviewDeadGracePrecedesReviewTimeout(t *testing.T) {
 	t.Parallel()
 	d, _, _, _, _, _ := newTestDispatcher(t)
 
 	d.procMgr = &mockProcessManager{}
-	d.cfg.ProgressTimeout = time.Second
+	d.cfg.ReviewTimeout = time.Second
 	d.cfg.ReviewDeadGrace = time.Minute
 
 	now := time.Now()
@@ -1678,7 +1678,7 @@ func TestCheckHeartbeats_ReviewDeadGracePrecedesProgressTimeout(t *testing.T) {
 		state:        protocol.WorkerReviewing,
 		beadID:       "bead-newly-dead-review",
 		lastSeen:     now,
-		lastProgress: now.Add(-(d.cfg.ProgressTimeout + time.Second)),
+		lastProgress: now.Add(-(d.cfg.ReviewTimeout + time.Second)),
 		managed:      true,
 		encoder:      json.NewEncoder(conn),
 	}
