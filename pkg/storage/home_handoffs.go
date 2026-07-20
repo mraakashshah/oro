@@ -61,8 +61,8 @@ func knownHandoffsByProject(handoffs []HomeHandoff) map[string][]HomeHandoff {
 	return byProject
 }
 
-func canonicalOroHandoffPath(handoffPath string) (string, string, bool) {
-	canonical := path.Clean(strings.TrimSpace(handoffPath))
+func canonicalOroHandoffPath(handoffPath string) (canonical, project string, ok bool) {
+	canonical = path.Clean(strings.TrimSpace(handoffPath))
 	parts := strings.Split(canonical, "/")
 	if canonical == "." || strings.HasPrefix(canonical, "../") || strings.HasPrefix(canonical, "/") ||
 		len(parts) != 3 || parts[0] != "handoffs" || parts[1] == "" || !strings.HasSuffix(parts[2], ".md") {
