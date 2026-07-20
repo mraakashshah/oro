@@ -2,11 +2,97 @@ package dispatcher //nolint:testpackage // internal white-box test exercising tr
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
 	"oro/pkg/protocol"
 )
+
+func TestMeaningfulProgressEventsPersisted(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		beadID   = "oro-progress"
+		workerID = "worker-progress"
+	)
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:         workerID,
+		state:      protocol.WorkerBusy,
+		beadID:     beadID,
+		contextPct: 25,
+	}
+	d.mu.Unlock()
+
+	// Assignment is a durable progress boundary, independent of worktree reuse.
+	d.recordWorkerProgress(ctx, workerID, beadID, "assign")
+
+	// READY_FOR_REVIEW is another durable progress boundary.
+	d.handleReadyForReview(ctx, workerID, protocol.Message{
+		Type: protocol.MsgReadyForReview,
+		ReadyForReview: &protocol.ReadyForReviewPayload{
+			BeadID: beadID,
+		},
+	})
+
+	// Only a context_pct increase is durable progress; a flat heartbeat is
+	// liveness metadata and must not append another progress event.
+	d.handleHeartbeat(ctx, workerID, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID: workerID,
+			BeadID:   beadID,
+			ContextPct: 30,
+		},
+	})
+	d.handleHeartbeat(ctx, workerID, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID: workerID,
+			BeadID:   beadID,
+			ContextPct: 30,
+		},
+	})
+
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT source, created_at
+		FROM events
+		WHERE type = 'worker_progress' AND bead_id = ? AND worker_id = ?
+		ORDER BY id
+	`, beadID, workerID)
+	if err != nil {
+		t.Fatalf("query worker progress events: %v", err)
+	}
+	defer rows.Close()
+
+	var sources []string
+	for rows.Next() {
+		var source string
+		var createdAt sql.NullString
+		if err := rows.Scan(&source, &createdAt); err != nil {
+			t.Fatalf("scan worker progress event: %v", err)
+		}
+		if !createdAt.Valid || createdAt.String == "" {
+			t.Fatalf("worker progress event %q has no timestamp", source)
+		}
+		sources = append(sources, source)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate worker progress events: %v", err)
+	}
+
+	want := []string{"assign", "ready_for_review", "context_pct_increase"}
+	if len(sources) != len(want) {
+		t.Fatalf("worker progress sources = %v, want %v", sources, want)
+	}
+	for i, source := range sources {
+		if source != want[i] {
+			t.Fatalf("worker progress source[%d] = %q, want %q", i, source, want[i])
+		}
+	}
+}
 
 // TestStuckWorkerProgressHeartbeatNotProgress proves that heartbeats do NOT
 // refresh lastProgress for a busy worker — only real protocol transitions
