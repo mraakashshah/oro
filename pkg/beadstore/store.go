@@ -99,9 +99,11 @@ type StatusCounts struct {
 
 // CreateParams contains the fields needed to create a bead.
 type CreateParams struct {
-	Title    string
-	Type     string
-	Priority int
+	Title           string
+	Type            string
+	Priority        int
+	ContractVersion int
+	Draft           bool
 	// Status is optional; an empty value creates an open bead.
 	Status             string
 	Description        string
