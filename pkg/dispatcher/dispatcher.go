@@ -2980,14 +2980,12 @@ func (d *Dispatcher) completeEpicRebaseChild(ctx context.Context, detail *protoc
 	if !IsEpicRebaseChild(detail, epicID, targetBranch) {
 		return false
 	}
+	if err := d.validateEpicRebaseChildAncestry(ctx, branch); err != nil {
+		d.failEpicRebaseChild(ctx, beadID, workerID, assignmentID, "epic rebase child ancestry check failed", err)
+		return true
+	}
 	if err := d.worktrees.UpdateBranchRef(ctx, targetBranch, branch); err != nil {
-		_ = d.completeAssignment(ctx, assignmentID, beadID)
-		if updateErr := d.updateBeadStatus(ctx, beadID, "open"); updateErr != nil {
-			_ = d.logEvent(ctx, "merge_failed_reopen_failed", "dispatcher", beadID, workerID, updateErr.Error())
-		}
-		d.escalate(ctx, protocol.FormatEscalation(protocol.EscMergeConflict, beadID, "epic rebase child update failed", err.Error()), beadID, workerID)
-		_ = d.logEvent(ctx, "merge_failed", "dispatcher", beadID, workerID, err.Error())
-		d.releaseWorkerAfterDoneTerminal(workerID, beadID, assignmentID)
+		d.failEpicRebaseChild(ctx, beadID, workerID, assignmentID, "epic rebase child update failed", err)
 		return true
 	}
 	sha, err := d.worktrees.BranchHead(ctx, branch)
@@ -2998,6 +2996,31 @@ func (d *Dispatcher) completeEpicRebaseChild(ctx context.Context, detail *protoc
 		fmt.Sprintf(`{"epic":%q,"branch":%q,"source":%q}`, epicID, targetBranch, branch))
 	d.finalizeSuccessfulMerge(ctx, beadID, workerID, worktree, epicID, targetBranch, assignmentID, sha)
 	return true
+}
+
+func (d *Dispatcher) validateEpicRebaseChildAncestry(ctx context.Context, branch string) error {
+	checker, ok := d.worktrees.(assignmentBaseBranchSafetyChecker)
+	if !ok {
+		return fmt.Errorf("cannot verify that %s is an ancestor of recovery branch %s", d.cfg.DefaultBranch, branch)
+	}
+	defaultHasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, d.cfg.DefaultBranch, branch)
+	if err != nil {
+		return fmt.Errorf("check whether recovery branch %s contains %s: %w", branch, d.cfg.DefaultBranch, err)
+	}
+	if defaultHasUniqueCommits {
+		return fmt.Errorf("recovery branch %s does not contain required target ancestry from %s", branch, d.cfg.DefaultBranch)
+	}
+	return nil
+}
+
+func (d *Dispatcher) failEpicRebaseChild(ctx context.Context, beadID, workerID string, assignmentID int64, summary string, cause error) {
+	_ = d.completeAssignment(ctx, assignmentID, beadID)
+	if updateErr := d.updateBeadStatus(ctx, beadID, "open"); updateErr != nil {
+		_ = d.logEvent(ctx, "merge_failed_reopen_failed", "dispatcher", beadID, workerID, updateErr.Error())
+	}
+	d.escalate(ctx, protocol.FormatEscalation(protocol.EscMergeConflict, beadID, summary, cause.Error()), beadID, workerID)
+	_ = d.logEvent(ctx, "merge_failed", "dispatcher", beadID, workerID, cause.Error())
+	d.releaseWorkerAfterDoneTerminal(workerID, beadID, assignmentID)
 }
 
 // IsEpicRebaseChild reports whether detail is the canonical recovery task for

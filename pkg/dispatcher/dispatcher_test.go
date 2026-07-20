@@ -11941,6 +11941,56 @@ func TestMergeAndCompleteRebaseChildUpdatesEpicRefWithoutGenericRebase(t *testin
 	}
 }
 
+func TestCompleteEpicRebaseChildRejectsSourceWithoutTargetAncestry(t *testing.T) {
+	d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	const (
+		epicID       = "oro-home-retention"
+		beadID       = "oro-2pff"
+		workerID     = "w-rebase-child"
+		worktree     = "/tmp/worktree-oro-2pff"
+		branch       = "agent/oro-2pff"
+		targetBranch = "epic/oro-home-retention"
+	)
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Rebase epic/oro-home-retention onto main",
+		Type:               "task",
+		Status:             "in_progress",
+		AcceptanceCriteria: rebaseChildAcceptance(epicID, targetBranch, "main"),
+	}
+	beadSrc.allChildrenClosedMap = map[string]bool{epicID: false}
+	wtMgr.baseUniqueFn = func(_ context.Context, candidate, base string) (bool, error) {
+		return candidate == d.cfg.DefaultBranch && base == branch, nil
+	}
+
+	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, epicID, targetBranch, 0)
+
+	if got := wtMgr.updatedBranchRefs; len(got) != 0 {
+		t.Fatalf("UpdateBranchRef calls = %+v, want none when %s is not an ancestor of %s", got, d.cfg.DefaultBranch, branch)
+	}
+	if slices.Contains(beadSrc.closed, beadID) {
+		t.Fatalf("closed beads = %v, must preserve %s for recovery", beadSrc.closed, beadID)
+	}
+	if got := beadSrc.updated[beadID]; got != "open" {
+		t.Fatalf("bead status = %q, want reopened", got)
+	}
+	if got := wtMgr.removed; len(got) != 0 {
+		t.Fatalf("removed worktrees = %v, want recovery worktree preserved", got)
+	}
+	if got := wtMgr.deletedInto; len(got) != 0 {
+		t.Fatalf("DeleteBranchMergedInto calls = %+v, want no successful cleanup", got)
+	}
+	if messages := esc.Messages(); len(messages) == 0 || !strings.Contains(messages[len(messages)-1], "main") {
+		t.Fatalf("escalations = %v, want actionable ancestry failure", messages)
+	}
+}
+
 func TestMergeCompletionCleanupUsesEpicTargetForSuccessAndNoop(t *testing.T) {
 	ctx := context.Background()
 	const (
