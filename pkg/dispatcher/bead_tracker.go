@@ -59,6 +59,25 @@ func (d *Dispatcher) clearBeadTracking(beadID string) {
 	d.mu.Unlock()
 }
 
+// clearBeadTrackingPreservingRejectionCount releases a retryable review
+// assignment while retaining its consecutive review-failure count.
+func (d *Dispatcher) clearBeadTrackingPreservingRejectionCount(beadID string) {
+	d.mu.Lock()
+	delete(d.attemptCounts, beadID)
+	delete(d.transientCounts, beadID)
+	delete(d.handoffCounts, beadID)
+	delete(d.checkpointCounts, beadID)
+	delete(d.pendingHandoffs, beadID)
+	delete(d.qgStuckTracker, beadID)
+	delete(d.escalatedBeads, beadID)
+	delete(d.worktreeFailures, beadID)
+	delete(d.exhaustedBeads, beadID)
+	delete(d.assigningBeads, beadID)
+	delete(d.mergingBeads, beadID)
+	delete(d.processedExternalClose, beadID)
+	d.mu.Unlock()
+}
+
 // clearRejectionCount removes the rejection counter for a bead (e.g., on approval or completion).
 func (d *Dispatcher) clearRejectionCount(beadID string) {
 	d.mu.Lock()

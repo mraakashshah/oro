@@ -3107,7 +3107,7 @@ FAIL oro/pkg/dispatcher`
 	}
 }
 
-func TestReviewSandboxBlockedDoesNotIncrementRejectionCount(t *testing.T) {
+func TestReviewSandboxBlockedCountsTowardBoundedRetry(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 	const beadID = "bead-sandbox"
@@ -3159,8 +3159,61 @@ func TestReviewSandboxBlockedDoesNotIncrementRejectionCount(t *testing.T) {
 	d.mu.Lock()
 	rejections := d.rejectionCounts[beadID]
 	d.mu.Unlock()
-	if rejections != 0 {
-		t.Fatalf("sandbox-blocked review must not increment rejection count, got %d", rejections)
+	if rejections != 1 {
+		t.Fatalf("sandbox-blocked review count = %d, want 1", rejections)
+	}
+}
+
+func TestHandleReviewBlocked_BoundedRetry(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const beadID = "bead-blocked-retry"
+	const workerID = "worker-blocked-retry"
+
+	reopens := 0
+	beadSrc.updateFn = func(_ context.Context, id string, params beadstore.UpdateParams) error {
+		if id == beadID && params.Status != nil && *params.Status == "open" {
+			reopens++
+		}
+		return nil
+	}
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+
+	result := ops.Result{
+		Verdict:  ops.VerdictRejected,
+		Feedback: `{"type":"system","subtype":"hook_started","hook_name":"SessionStart:startup"}`,
+		Err:      errors.New("review subprocess failed"),
+	}
+	for cycle := 1; cycle <= maxReviewRejections+1; cycle++ {
+		res, err := d.db.ExecContext(ctx,
+			`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`,
+			beadID, workerID, "/tmp/review-blocked")
+		if err != nil {
+			t.Fatalf("cycle %d: insert assignment: %v", cycle, err)
+		}
+		assignmentID, err := res.LastInsertId()
+		if err != nil {
+			t.Fatalf("cycle %d: assignment ID: %v", cycle, err)
+		}
+
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:           workerID,
+			state:        protocol.WorkerReviewing,
+			beadID:       beadID,
+			assignmentID: assignmentID,
+		}
+		d.assigningBeads[beadID] = true
+		d.mu.Unlock()
+
+		d.handleReviewBlocked(ctx, workerID, beadID, result)
+	}
+
+	if reopens != maxReviewRejections {
+		t.Fatalf("blocked review reopens = %d, want %d before escalation", reopens, maxReviewRejections)
+	}
+	if got := eventCount(t, d.db, "review_escalated"); got != 1 {
+		t.Fatalf("review_escalated events = %d, want 1", got)
 	}
 }
 
