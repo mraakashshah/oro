@@ -48,6 +48,22 @@ def test_destructive_command_guard_blocks_pretooluse_bash_payloads() -> None:
         assert "destructive" in result["systemMessage"]
 
 
+def test_destructive_command_guard_emits_valid_codex_deny_reason() -> None:
+    """Codex requires a non-empty reason beside permissionDecision=deny."""
+    result = build_decision(_bash_input("rm -rf build", codex=True))
+
+    assert result is not None
+    hook_output = result["hookSpecificOutput"]
+    assert hook_output["permissionDecision"] == "deny"
+    assert hook_output["permissionDecisionReason"].strip()
+
+
+def test_destructive_command_guard_leaves_merge_to_explicit_approval() -> None:
+    """The stateless hook must not trap approved merges in a denial loop."""
+    for command in ["git merge feature", "git merge --abort"]:
+        assert build_decision(_bash_input(command, codex=True)) is None
+
+
 def test_destructive_command_guard_blocks_dangerous_commands() -> None:
     dangerous_commands = [
         "rm tmp.txt",
@@ -57,7 +73,6 @@ def test_destructive_command_guard_blocks_dangerous_commands() -> None:
         "git checkout -- src/main.py",
         "git clean -fd",
         "git rebase main",
-        "git merge feature",
         "git commit --amend",
         "git branch -D stale-branch",
         "git push --force origin HEAD",

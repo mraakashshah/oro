@@ -131,12 +131,17 @@ All four fields are **ABSENT** from PreToolUse input.
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
+    "permissionDecisionReason": "Why the command was blocked",
     "additionalContext": "..."
   },
   "systemMessage": "..."
 }
 ```
-Or for deny: `{ "permissionDecision": "deny", "permissionDecisionReason": "..." }`.
+
+Codex requires a non-empty `permissionDecisionReason` beside a nested
+`permissionDecision: "deny"`; otherwise it rejects the hook output and fails
+open. The top-level `{ "decision": "block", "reason": "..." }` form is the
+legacy alternative.
 
 ---
 

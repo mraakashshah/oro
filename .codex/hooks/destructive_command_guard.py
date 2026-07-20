@@ -18,7 +18,6 @@ _DANGEROUS_PREFIXES = (
     ("git", "checkout"),
     ("git", "clean"),
     ("git", "rebase"),
-    ("git", "merge"),
 )
 
 _NONINTERACTIVE_COMMIT_LONG_OPTS = (
@@ -74,7 +73,7 @@ def _classify_tokens(tokens: list[str]) -> str | None:
         return None
 
     subcommand = tokens[1]
-    if subcommand in {"reset", "checkout", "clean", "rebase", "merge"}:
+    if subcommand in {"reset", "checkout", "clean", "rebase"}:
         return f"git {subcommand}"
     if subcommand == "commit" and _has_option(tokens[2:], "--amend"):
         return "git commit --amend"
@@ -143,15 +142,17 @@ def build_decision(hook_input: dict) -> dict | None:
     if label is None:
         return None
 
+    reason = (
+        f"BLOCKED: Bash command classified as destructive ({label}). "
+        "Use a safer command or ask the user for explicit destructive-command approval."
+    )
     return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
         },
-        "systemMessage": (
-            f"BLOCKED: Bash command classified as destructive ({label}). "
-            "Use a safer command or ask the user for explicit destructive-command approval."
-        ),
+        "systemMessage": reason,
     }
 
 
