@@ -108,6 +108,42 @@ func TestForWorkdirIsolatesCacheAndTempOutsideWorktree(t *testing.T) {
 	}
 }
 
+func TestForWorkdirUsesSharedExternalCaches(t *testing.T) {
+	worktreeA := filepath.Join(t.TempDir(), "worktree-a")
+	worktreeB := filepath.Join(t.TempDir(), "worktree-b")
+	for _, worktree := range []string{worktreeA, worktreeB} {
+		if err := os.MkdirAll(worktree, 0o755); err != nil {
+			t.Fatalf("mkdir worktree: %v", err)
+		}
+	}
+
+	env := []string{
+		"PATH=/bin",
+	}
+	first := envMap(processenv.ForWorkdir(env, worktreeA))
+	second := envMap(processenv.ForWorkdir(env, worktreeB))
+
+	for _, key := range []string{"GOCACHE", "GOMODCACHE", "GOLANGCI_LINT_CACHE", "UV_CACHE_DIR"} {
+		if first[key] == "" || second[key] == "" {
+			t.Fatalf("%s must be set: first=%v second=%v", key, first, second)
+		}
+		if first[key] != second[key] {
+			t.Errorf("%s differs across sibling worktrees: %q != %q", key, first[key], second[key])
+		}
+		if pathInside(first[key], worktreeA) || pathInside(second[key], worktreeB) {
+			t.Errorf("%s remains inside a worktree: first=%q second=%q", key, first[key], second[key])
+		}
+	}
+	if first["TMPDIR"] == second["TMPDIR"] {
+		t.Errorf("TMPDIR is shared: %q", first["TMPDIR"])
+	}
+	for _, tmpDir := range []string{first["TMPDIR"], second["TMPDIR"]} {
+		if !strings.HasPrefix(tmpDir, filepath.Join("/tmp", "oro-subprocess")+string(os.PathSeparator)) {
+			t.Errorf("TMPDIR = %q, want path below short subprocess root", tmpDir)
+		}
+	}
+}
+
 func TestForWorkdirUsesShortTmpRootOnDarwin(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("darwin has a short Unix socket path limit")
