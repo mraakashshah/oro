@@ -11942,13 +11942,6 @@ func TestMergeAndCompleteRebaseChildUpdatesEpicRefWithoutGenericRebase(t *testin
 }
 
 func TestCompleteEpicRebaseChildRejectsSourceWithoutTargetAncestry(t *testing.T) {
-	d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)
-	ctx := context.Background()
-
-	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
-		t.Fatalf("init schema: %v", err)
-	}
-
 	const (
 		epicID       = "oro-home-retention"
 		beadID       = "oro-2pff"
@@ -11957,37 +11950,79 @@ func TestCompleteEpicRebaseChildRejectsSourceWithoutTargetAncestry(t *testing.T)
 		branch       = "agent/oro-2pff"
 		targetBranch = "epic/oro-home-retention"
 	)
-	beadSrc.shown[beadID] = &protocol.BeadDetail{
-		ID:                 beadID,
-		Title:              "Rebase epic/oro-home-retention onto main",
-		Type:               "task",
-		Status:             "in_progress",
-		AcceptanceCriteria: rebaseChildAcceptance(epicID, targetBranch, "main"),
+	tests := []struct {
+		name       string
+		checkError error
+	}{
+		{name: "missing default branch ancestor"},
+		{name: "ancestry check error", checkError: errors.New("merge-base failed")},
 	}
-	beadSrc.allChildrenClosedMap = map[string]bool{epicID: false}
-	wtMgr.baseUniqueFn = func(_ context.Context, candidate, base string) (bool, error) {
-		return candidate == d.cfg.DefaultBranch && base == branch, nil
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)
+			ctx := context.Background()
+			if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+				t.Fatalf("init schema: %v", err)
+			}
+			beadSrc.shown[beadID] = &protocol.BeadDetail{
+				ID:                 beadID,
+				Title:              "Rebase epic/oro-home-retention onto main",
+				Type:               "task",
+				Status:             "in_progress",
+				AcceptanceCriteria: rebaseChildAcceptance(epicID, targetBranch, "main"),
+			}
+			beadSrc.allChildrenClosedMap = map[string]bool{epicID: false}
+			res, err := d.db.ExecContext(ctx,
+				`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`,
+				beadID, workerID, worktree)
+			if err != nil {
+				t.Fatalf("insert assignment: %v", err)
+			}
+			assignmentID, err := res.LastInsertId()
+			if err != nil {
+				t.Fatalf("assignment id: %v", err)
+			}
+			d.mu.Lock()
+			d.workers[workerID] = &trackedWorker{
+				id:           workerID,
+				state:        protocol.WorkerReserved,
+				beadID:       beadID,
+				worktree:     worktree,
+				assignmentID: assignmentID,
+			}
+			d.mu.Unlock()
+			wtMgr.baseUniqueFn = func(_ context.Context, candidate, base string) (bool, error) {
+				return candidate == d.cfg.DefaultBranch && base == branch, tt.checkError
+			}
 
-	d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, epicID, targetBranch, 0)
+			d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, epicID, targetBranch, assignmentID)
 
-	if got := wtMgr.updatedBranchRefs; len(got) != 0 {
-		t.Fatalf("UpdateBranchRef calls = %+v, want none when %s is not an ancestor of %s", got, d.cfg.DefaultBranch, branch)
-	}
-	if slices.Contains(beadSrc.closed, beadID) {
-		t.Fatalf("closed beads = %v, must preserve %s for recovery", beadSrc.closed, beadID)
-	}
-	if got := beadSrc.updated[beadID]; got != "open" {
-		t.Fatalf("bead status = %q, want reopened", got)
-	}
-	if got := wtMgr.removed; len(got) != 0 {
-		t.Fatalf("removed worktrees = %v, want recovery worktree preserved", got)
-	}
-	if got := wtMgr.deletedInto; len(got) != 0 {
-		t.Fatalf("DeleteBranchMergedInto calls = %+v, want no successful cleanup", got)
-	}
-	if messages := esc.Messages(); len(messages) == 0 || !strings.Contains(messages[len(messages)-1], "main") {
-		t.Fatalf("escalations = %v, want actionable ancestry failure", messages)
+			if got := wtMgr.updatedBranchRefs; len(got) != 0 {
+				t.Fatalf("UpdateBranchRef calls = %+v, want none when ancestry is unverified", got)
+			}
+			if slices.Contains(beadSrc.closed, beadID) {
+				t.Fatalf("closed beads = %v, must preserve %s for recovery", beadSrc.closed, beadID)
+			}
+			if got := beadSrc.updated[beadID]; got != "open" {
+				t.Fatalf("bead status = %q, want reopened", got)
+			}
+			if got := wtMgr.removed; len(got) != 0 {
+				t.Fatalf("removed worktrees = %v, want recovery worktree preserved", got)
+			}
+			if got := wtMgr.deletedInto; len(got) != 0 {
+				t.Fatalf("DeleteBranchMergedInto calls = %+v, want no successful cleanup", got)
+			}
+			var assignmentStatus string
+			if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+				t.Fatalf("query assignment status: %v", err)
+			}
+			if assignmentStatus != "requeued" {
+				t.Fatalf("assignment status = %q, want requeued rather than successful completion", assignmentStatus)
+			}
+			if messages := esc.Messages(); len(messages) == 0 || !strings.Contains(messages[len(messages)-1], "main") {
+				t.Fatalf("escalations = %v, want actionable ancestry failure", messages)
+			}
+		})
 	}
 }
 

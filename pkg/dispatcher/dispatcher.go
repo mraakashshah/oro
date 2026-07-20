@@ -3014,9 +3014,11 @@ func (d *Dispatcher) validateEpicRebaseChildAncestry(ctx context.Context, branch
 }
 
 func (d *Dispatcher) failEpicRebaseChild(ctx context.Context, beadID, workerID string, assignmentID int64, summary string, cause error) {
-	_ = d.completeAssignment(ctx, assignmentID, beadID)
 	if updateErr := d.updateBeadStatus(ctx, beadID, "open"); updateErr != nil {
 		_ = d.logEvent(ctx, "merge_failed_reopen_failed", "dispatcher", beadID, workerID, updateErr.Error())
+	}
+	if requeueErr := d.requeueAssignment(ctx, assignmentID); requeueErr != nil {
+		_ = d.logEvent(ctx, "merge_failed_requeue_failed", "dispatcher", beadID, workerID, requeueErr.Error())
 	}
 	d.escalate(ctx, protocol.FormatEscalation(protocol.EscMergeConflict, beadID, summary, cause.Error()), beadID, workerID)
 	_ = d.logEvent(ctx, "merge_failed", "dispatcher", beadID, workerID, cause.Error())
