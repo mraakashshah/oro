@@ -297,7 +297,7 @@ func TestPresubmitEvidenceIdentity(t *testing.T) {
 				if err := store.RecordPresubmitResult(ctx, duplicate); err != nil {
 					t.Fatalf("duplicate RecordPresubmitResult: %v", err)
 				}
-				assertPersistedPresubmitEvidence(t, ctx, db, gate.ID, startedAt, completedAt)
+				assertPersistedPresubmitEvidence(ctx, t, db, gate.ID, startedAt, completedAt)
 			}
 
 			passed, err := store.PresubmitPlanPassed(ctx, plan)
@@ -336,8 +336,8 @@ func TestPresubmitEvidenceIdentity(t *testing.T) {
 }
 
 func assertPersistedPresubmitEvidence(
-	t *testing.T,
 	ctx context.Context,
+	t *testing.T,
 	db *sql.DB,
 	gateID int64,
 	wantStartedAt, wantCompletedAt string,
