@@ -289,7 +289,7 @@ WHERE gate_id = ?
 		if err != nil {
 			return false, fmt.Errorf("check presubmit action %q: %w", action.Name, err)
 		}
-		if outcome != "passed" || validatePresubmitTimestamps(startedAt, completedAt) != nil {
+		if outcome != "passed" || !validPresubmitTimestamps(startedAt, completedAt) {
 			return false, nil
 		}
 	}
@@ -368,6 +368,10 @@ func validatePresubmitTimestamps(startedAt, completedAt string) error {
 		return errors.New("completed_at precedes started_at")
 	}
 	return nil
+}
+
+func validPresubmitTimestamps(startedAt, completedAt string) bool {
+	return validatePresubmitTimestamps(startedAt, completedAt) == nil
 }
 
 func validRemoteGateTransition(from, to RemoteGateState) bool {
