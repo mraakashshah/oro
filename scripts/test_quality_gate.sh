@@ -1557,6 +1557,10 @@ test_quality_gate_invalid_locale_bootstraps_before_bash() {
 		echo "FAIL: quality_gate.sh does not guard the Bash bootstrap"
 		return 1
 	fi
+	if ! head -30 "$SCRIPT_DIR/quality_gate.sh" | grep -q 'BASHPID'; then
+		echo "FAIL: quality_gate.sh bootstrap does not distinguish Bash subshell PIDs"
+		return 1
+	fi
 	# shellcheck disable=SC2016
 	if ! head -30 "$SCRIPT_DIR/quality_gate.sh" | grep -q 'exec env -u BASH_ENV /usr/bin/env bash "$0" "$@"'; then
 		echo "FAIL: quality_gate.sh does not exec Bash after locale normalization"
@@ -1607,6 +1611,34 @@ EOF
 	fi
 	if [ -e "$marker" ]; then
 		echo "FAIL: quality_gate.sh sourced inherited BASH_ENV during bootstrap"
+		return 1
+	fi
+}
+
+# Test: a quality gate launched by an active gate must exit before it can start
+# another set of lanes. The active parent retains responsibility for the final
+# terminal summary.
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_nested_invocation_exits_before_lanes() {
+	local output rc
+
+	set +e
+	output=$(/bin/bash -c 'ORO_QG_ACTIVE_PID=$$ "$1" --help; status=$?; :; exit "$status"' _ "$SCRIPT_DIR/quality_gate.sh" 2>&1)
+	rc=$?
+	set -e
+
+	if [ "$rc" -ne 0 ]; then
+		echo "FAIL: nested quality gate exited $rc, want 0"
+		printf '%s\\n' "$output"
+		return 1
+	fi
+	if ! printf '%s\\n' "$output" | grep -q '^Nested quality gate invocation detected'; then
+		echo "FAIL: nested quality gate did not stop before starting lanes"
+		printf '%s\\n' "$output"
+		return 1
+	fi
+	if printf '%s\\n' "$output" | grep -q '^Usage: '; then
+		echo "FAIL: nested quality gate continued into its own command processing"
 		return 1
 	fi
 }
@@ -1800,6 +1832,7 @@ test_case "quality_gate.sh filesystem walkers are source scoped" test_quality_ga
 test_case "quality_gate.sh invalid locale sanitized" test_quality_gate_invalid_locale_sanitized
 test_case "quality_gate.sh invalid locale bootstraps before bash" test_quality_gate_invalid_locale_bootstraps_before_bash
 test_case "quality_gate.sh bootstrap ignores inherited shell state" test_quality_gate_bootstrap_ignores_inherited_shell_state
+test_case "quality_gate.sh nested invocation exits before lanes" test_quality_gate_nested_invocation_exits_before_lanes
 test_case "quality_gate.sh conflict markers fail preflight" test_quality_gate_conflict_markers_fail_preflight
 test_case "Makefile git diff has 2>/dev/null" test_makefile_git_diff_stderr_redirect
 test_case "Makefile \$\$changed is quoted" test_makefile_changed_is_quoted

@@ -9,7 +9,7 @@
 # Wall-clock time ≈ max(lane) instead of sum(all checks).
 # =============================================================================
 
-if [ "${ORO_QG_BASH_BOOTSTRAPPED_PID:-}" != "$$" ]; then
+if [ "${ORO_QG_BASH_BOOTSTRAPPED_PID:-}" != "${BASHPID:-$$}" ]; then
 	if grep -n -E '^(<{7}|={7}|>{7})( |$)' "$0" >/dev/null 2>&1; then
 		echo "FAIL: quality_gate.sh contains unresolved git conflict markers" >&2
 		grep -n -E '^(<{7}|={7}|>{7})( |$)' "$0" >&2 || true
@@ -24,13 +24,24 @@ if [ "${ORO_QG_BASH_BOOTSTRAPPED_PID:-}" != "$$" ]; then
 	# Keep the preflight before Bash parses the script; ignore BASH_ENV because a
 	# shell hook can recursively launch this gate.
 	unset ORO_QG_BASH_BOOTSTRAPPED
-	export ORO_QG_BASH_BOOTSTRAPPED_PID=$$
+	export ORO_QG_BASH_BOOTSTRAPPED_PID=${BASHPID:-$$}
 	exec env -u BASH_ENV /usr/bin/env bash "$0" "$@"
 fi
 unset ORO_QG_BASH_BOOTSTRAPPED
 unset ORO_QG_BASH_BOOTSTRAPPED_PID
 
 set -euo pipefail
+
+# A child process can invoke this script while the parent is still running a
+# parallel lint/check lane. The run lock is intentionally acquired later for
+# the serial timing lane, so it cannot prevent that recursive launch. Let the
+# parent own the terminal PASS/FAIL summary and stop the child before it starts
+# a second set of lanes.
+if [ -n "${ORO_QG_ACTIVE_PID:-}" ] && [ "$ORO_QG_ACTIVE_PID" != "${BASHPID:-$$}" ] && kill -0 "$ORO_QG_ACTIVE_PID" 2>/dev/null; then
+	echo "Nested quality gate invocation detected; using active parent result."
+	exit 0
+fi
+export ORO_QG_ACTIVE_PID=${BASHPID:-$$}
 
 QG_MUTATION_TESTING=false
 

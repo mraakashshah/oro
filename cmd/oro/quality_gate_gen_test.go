@@ -259,6 +259,7 @@ func TestGenerateQualityGateScript(t *testing.T) {
 			t.Error("go-only config should not include lane_python function")
 		}
 		for _, want := range []string{
+			`ORO_QG_ACTIVE_PID`,
 			`should_run_mutation_tests()`,
 			`--mutation-testing`,
 			`QG_MUTATION_TESTING=true`,
