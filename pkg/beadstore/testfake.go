@@ -221,6 +221,8 @@ func (s *FakeStore) Create(ctx context.Context, params CreateParams) (*protocol.
 	bead := protocol.Bead{
 		ID:                 id,
 		Title:              params.Title,
+		ContractVersion:    params.ContractVersion,
+		Draft:              params.Draft,
 		Status:             status,
 		Priority:           params.Priority,
 		Epic:               params.ParentID,
