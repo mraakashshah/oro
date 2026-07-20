@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-20
 
-**Status:** Draft — adversarial R3 fixes applied, re-review pending
+**Status:** Validated — adversarial R4 PASS (16/16 criteria, no wiring gaps)
 
 **Scope:** Worker discoveries, blocker proposals, task admission, dependency
 authorization, quality-gate evidence, and autonomous recovery
