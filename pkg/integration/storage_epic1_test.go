@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/dispatcher"
 	"oro/pkg/processenv"
+	"oro/pkg/worker"
 )
 
 // TestStorageSharedCacheEndToEnd proves that sibling worktrees share only
@@ -84,8 +87,8 @@ func TestStorageSharedCacheEndToEnd(t *testing.T) {
 	}
 }
 
-// TestStorageStandalonePolicyParity proves standalone worktree normalization
-// applies the same cache policy for each sibling worktree.
+// TestStorageStandalonePolicyParity proves the standalone runtime spawner and
+// dispatcher command runner apply the same cache policy to sibling worktrees.
 func TestStorageStandalonePolicyParity(t *testing.T) {
 	fixture := t.TempDir()
 	worktreeA := filepath.Join(fixture, "standalone-a")
@@ -95,18 +98,37 @@ func TestStorageStandalonePolicyParity(t *testing.T) {
 			t.Fatalf("create worktree %q: %v", worktree, err)
 		}
 	}
+	fakeBin := filepath.Join(fixture, "bin")
+	if err := os.MkdirAll(fakeBin, 0o750); err != nil {
+		t.Fatalf("create fake bin: %v", err)
+	}
+	probe := `#!/bin/sh
+printf '%s\n' "$GOCACHE|$GOMODCACHE|$UV_CACHE_DIR|$GOLANGCI_LINT_CACHE|$NPM_CONFIG_CACHE|$TMPDIR"
+`
+	for _, name := range []string{"claude", "envprobe"} {
+		if err := os.WriteFile(filepath.Join(fakeBin, name), []byte(probe), 0o750); err != nil {
+			t.Fatalf("write %s probe: %v", name, err)
+		}
+	}
 	home := filepath.Join(fixture, "home")
 	if err := os.MkdirAll(home, 0o750); err != nil {
 		t.Fatalf("create fixture home: %v", err)
 	}
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(fixture, "cache"))
-	baseEnv := []string{
-		"PATH=/bin",
-		"ORO_SUBPROCESS_TMP_ROOT=" + filepath.Join(fixture, "tmp"),
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("ORO_SUBPROCESS_TMP_ROOT", filepath.Join(fixture, "tmp"))
+	for _, key := range []string{"GOCACHE", "GOMODCACHE", "UV_CACHE_DIR", "GOLANGCI_LINT_CACHE", "NPM_CONFIG_CACHE"} {
+		t.Setenv(key, filepath.Join(fixture, "tmp", "legacy-"+strings.ToLower(key)))
 	}
-	first := integrationEnvMap(processenv.ForWorkdir(baseEnv, worktreeA))
-	second := integrationEnvMap(processenv.ForWorkdir(baseEnv, worktreeB))
+
+	first := integrationEnvMap(integrationStandaloneSpawnerEnv(t, worktreeA))
+	runner := &dispatcher.ExecCommandRunner{Dir: worktreeB}
+	secondOutput, err := runner.Run(context.Background(), "envprobe")
+	if err != nil {
+		t.Fatalf("run dispatcher environment probe: %v", err)
+	}
+	second := integrationPipeEnvMap(t, string(secondOutput))
 	for _, key := range []string{"GOCACHE", "GOMODCACHE", "UV_CACHE_DIR", "GOLANGCI_LINT_CACHE", "NPM_CONFIG_CACHE"} {
 		if first[key] != second[key] {
 			t.Errorf("standalone %s differs across worktrees: %q != %q", key, first[key], second[key])
@@ -243,6 +265,42 @@ func integrationEnvMap(env []string) map[string]string {
 		}
 	}
 	return values
+}
+
+func integrationStandaloneSpawnerEnv(t *testing.T, worktree string) []string {
+	t.Helper()
+	spawner := &worker.ClaudeSpawner{}
+	process, stdout, _, err := spawner.Spawn(context.Background(), "test-model", "test prompt", worktree)
+	if err != nil {
+		t.Fatalf("spawn standalone runtime probe: %v", err)
+	}
+	output, err := io.ReadAll(stdout)
+	if err != nil {
+		t.Fatalf("read standalone runtime probe: %v", err)
+	}
+	if err := process.Wait(); err != nil {
+		t.Fatalf("wait standalone runtime probe: %v", err)
+	}
+	return integrationPipeEnv(t, string(output))
+}
+
+func integrationPipeEnvMap(t *testing.T, output string) map[string]string {
+	t.Helper()
+	return integrationEnvMap(integrationPipeEnv(t, output))
+}
+
+func integrationPipeEnv(t *testing.T, output string) []string {
+	t.Helper()
+	values := strings.Split(strings.TrimSpace(output), "|")
+	keys := []string{"GOCACHE", "GOMODCACHE", "UV_CACHE_DIR", "GOLANGCI_LINT_CACHE", "NPM_CONFIG_CACHE", "TMPDIR"}
+	if len(values) != len(keys) {
+		t.Fatalf("environment probe fields = %d, want %d: %q", len(values), len(keys), output)
+	}
+	env := make([]string, len(keys))
+	for i, key := range keys {
+		env[i] = key + "=" + values[i]
+	}
+	return env
 }
 
 type integrationGoCacheRun struct {
