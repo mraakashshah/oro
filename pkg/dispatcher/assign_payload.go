@@ -67,6 +67,11 @@ func (d *Dispatcher) buildAssignPayload(ctx context.Context, w *trackedWorker, a
 	p := &protocol.AssignPayload{
 		BeadID:              w.beadID,
 		Worktree:            w.worktree,
+		AssignmentID:        execution.AssignmentID,
+		Generation:          execution.Generation,
+		ActorRole:           execution.ActorRole,
+		Project:             execution.Project,
+		Capability:          execution.Capability,
 		Runtime:             w.runtime,
 		Model:               w.model,
 		Reasoning:           w.reasoning,
