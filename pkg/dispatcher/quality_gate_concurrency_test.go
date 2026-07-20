@@ -131,7 +131,7 @@ func worktreeRoot(t *testing.T) string {
 // runSerialLaneOnly runs the script's serial-lane-only path (real go test) and
 // returns its exit code and wall time. It runs from the worktree root so the go
 // test package path resolves, and isolates the lock under repoRoot.
-func runSerialLaneOnly(t *testing.T, repoRoot, runOverride string, injectRegression bool) (int, time.Duration) {
+func runSerialLaneOnly(t *testing.T, repoRoot, runOverride string, injectRegression bool) (int, time.Duration, string) {
 	t.Helper()
 	env := cleanQGEnv()
 	env = append(env,
@@ -160,7 +160,24 @@ func runSerialLaneOnly(t *testing.T, repoRoot, runOverride string, injectRegress
 			t.Fatalf("serial-lane-only run error: %v\n%s", err, out)
 		}
 	}
-	return exit, dur
+	return exit, dur, string(out)
+}
+
+func TestRunSerialLaneOnlyRetainsNestedFailureOutput(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go not available")
+	}
+
+	exit, _, output := runSerialLaneOnly(t, t.TempDir(), "^TestSerialLaneRegressionCanary$", true)
+	if exit == 0 {
+		t.Fatal("serial lane unexpectedly passed with an injected regression")
+	}
+	if !strings.Contains(output, "injected timing regression (serial-lane regression-catch proof)") {
+		t.Fatalf("serial lane failure lost nested test output:\n%s", output)
+	}
 }
 
 // TestConcurrentGatesNoTimingFlakeSerialLaneCatchesRegression is the integration
@@ -213,12 +230,12 @@ func TestConcurrentGatesNoTimingFlakeSerialLaneCatchesRegression(t *testing.T) {
 	t.Run("serial lane catches a broken timing invariant", func(t *testing.T) {
 		canary := "^TestSerialLaneRegressionCanary$"
 
-		exitClean, _ := runSerialLaneOnly(t, t.TempDir(), canary, false)
+		exitClean, _, output := runSerialLaneOnly(t, t.TempDir(), canary, false)
 		if exitClean != 0 {
-			t.Fatalf("serial lane failed with no regression injected: exit=%d", exitClean)
+			t.Fatalf("serial lane failed with no regression injected: exit=%d\n%s", exitClean, output)
 		}
 
-		exitBroken, _ := runSerialLaneOnly(t, t.TempDir(), canary, true)
+		exitBroken, _, _ := runSerialLaneOnly(t, t.TempDir(), canary, true)
 		if exitBroken == 0 {
 			t.Fatal("serial lane did NOT catch the injected timing regression (exit=0)")
 		}
@@ -231,9 +248,9 @@ func TestConcurrentGatesNoTimingFlakeSerialLaneCatchesRegression(t *testing.T) {
 		// Run the full guarded set once (no override) and record wall time. The
 		// full gate takes minutes (lint + full test suite + build + vet + vuln);
 		// the serial lane running ~two dozen fast tests must be a small minority.
-		exit, dur := runSerialLaneOnly(t, t.TempDir(), "", false)
+		exit, dur, output := runSerialLaneOnly(t, t.TempDir(), "", false)
 		if exit != 0 {
-			t.Fatalf("serial lane (full guarded set) failed: exit=%d", exit)
+			t.Fatalf("serial lane (full guarded set) failed: exit=%d\n%s", exit, output)
 		}
 		t.Logf("serial timing lane wall-time: %s (full guarded set)", dur.Round(time.Millisecond))
 		const maxLaneTime = 90 * time.Second

@@ -1558,12 +1558,55 @@ test_quality_gate_invalid_locale_bootstraps_before_bash() {
 		return 1
 	fi
 	# shellcheck disable=SC2016
-	if ! head -25 "$SCRIPT_DIR/quality_gate.sh" | grep -q 'exec /usr/bin/env bash "$0" "$@"'; then
+	if ! head -30 "$SCRIPT_DIR/quality_gate.sh" | grep -q 'exec env -u BASH_ENV /usr/bin/env bash "$0" "$@"'; then
 		echo "FAIL: quality_gate.sh does not exec Bash after locale normalization"
 		return 1
 	fi
 	if ! grep -q '^const qualityGateTmpl = `#!/bin/sh' "$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go"; then
 		echo "FAIL: generated quality gate template must use /bin/sh bootstrap before Bash"
+		return 1
+	fi
+}
+
+# Test: an inherited bootstrap marker must not make a fresh /bin/sh launch skip
+# its one required Bash re-exec. BASH_ENV is deliberately ignored so an ambient
+# shell hook cannot recursively launch another quality gate during that exec.
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_bootstrap_ignores_inherited_shell_state() {
+	local tmpdir bash_env marker bash_dir output rc
+	tmpdir=$(mktemp -d)
+	# shellcheck disable=SC2064
+	trap "rm -rf '$tmpdir'" RETURN
+	bash_env="$tmpdir/bash_env"
+	marker="$tmpdir/bash-env-ran"
+	bash_dir="$tmpdir/bin"
+	mkdir -p "$bash_dir"
+	cat >"$bash_env" <<EOF
+printf 'sourced\\n' >"$marker"
+EOF
+	cat >"$bash_dir/bash" <<EOF
+#!/bin/sh
+printf 'bootstrap:%s\\n' "\${BASH_ENV:+set}" >"$tmpdir/bash-bootstrap"
+exec /bin/bash "\$@"
+EOF
+	chmod +x "$bash_dir/bash"
+
+	set +e
+	output=$(PATH="$bash_dir:$PATH" ORO_QG_BASH_BOOTSTRAPPED=1 BASH_ENV="$bash_env" "$SCRIPT_DIR/quality_gate.sh" --help 2>&1)
+	rc=$?
+	set -e
+
+	if [ "$rc" -ne 0 ] || ! printf '%s\\n' "$output" | grep -q '^Usage: '; then
+		echo "FAIL: inherited bootstrap state did not reach Bash help output (exit $rc)"
+		printf '%s\\n' "$output"
+		return 1
+	fi
+	if [ ! -f "$tmpdir/bash-bootstrap" ] || [ "$(cat "$tmpdir/bash-bootstrap")" != "bootstrap:" ]; then
+		echo "FAIL: inherited bootstrap state skipped the required Bash re-exec"
+		return 1
+	fi
+	if [ -e "$marker" ]; then
+		echo "FAIL: quality_gate.sh sourced inherited BASH_ENV during bootstrap"
 		return 1
 	fi
 }
@@ -1577,10 +1620,11 @@ test_quality_gate_conflict_markers_fail_preflight() {
 	trap "rm -rf '$tmpdir'" RETURN
 
 	script="$tmpdir/quality_gate.sh"
-	awk 'NR == 25 {
+	awk '/^unset ORO_QG_BASH_BOOTSTRAPPED_PID$/ && !inserted {
 		print "<<<<<<< Updated upstream"
 		print "======="
 		print ">>>>>>> Stashed changes"
+		inserted = 1
 	}
 	{ print }' "$SCRIPT_DIR/quality_gate.sh" >"$script"
 	chmod +x "$script"
@@ -1755,6 +1799,7 @@ test_case "generated quality gate Python tools avoid pyenv shims" test_generated
 test_case "quality_gate.sh filesystem walkers are source scoped" test_quality_gate_filesystem_walkers_are_source_scoped
 test_case "quality_gate.sh invalid locale sanitized" test_quality_gate_invalid_locale_sanitized
 test_case "quality_gate.sh invalid locale bootstraps before bash" test_quality_gate_invalid_locale_bootstraps_before_bash
+test_case "quality_gate.sh bootstrap ignores inherited shell state" test_quality_gate_bootstrap_ignores_inherited_shell_state
 test_case "quality_gate.sh conflict markers fail preflight" test_quality_gate_conflict_markers_fail_preflight
 test_case "Makefile git diff has 2>/dev/null" test_makefile_git_diff_stderr_redirect
 test_case "Makefile \$\$changed is quoted" test_makefile_changed_is_quoted
