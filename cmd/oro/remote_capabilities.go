@@ -299,15 +299,15 @@ func fileDevice(info os.FileInfo) uint64 {
 func canonicalExecutablePath(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("make executable path absolute: %w", err)
 	}
 	resolved, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("resolve executable symlinks: %w", err)
 	}
-	info, err := os.Stat(resolved)
+	info, err := os.Stat(resolved) //nolint:gosec // resolved is the canonical path of an executable discovered from trusted configuration.
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("stat resolved executable: %w", err)
 	}
 	if info.IsDir() || info.Mode()&0o111 == 0 {
 		return "", fmt.Errorf("%s is not an executable file", resolved)
@@ -324,7 +324,7 @@ func runCapabilityCommand(ctx context.Context, name string, args ...string) ([]b
 	return out, nil
 }
 
-func remoteRepositoryIdentity(remote string) (string, string, error) {
+func remoteRepositoryIdentity(remote string) (host, repository string, err error) {
 	remote = strings.TrimSpace(remote)
 	if parsed, err := url.Parse(remote); err == nil && parsed.Hostname() != "" {
 		return repositoryIdentity(parsed.Hostname(), parsed.Path)
@@ -339,8 +339,8 @@ func remoteRepositoryIdentity(remote string) (string, string, error) {
 	return repositoryIdentity(host, path)
 }
 
-func repositoryIdentity(host, path string) (string, string, error) {
-	repository := strings.TrimSuffix(strings.Trim(strings.TrimSpace(path), "/"), ".git")
+func repositoryIdentity(host, path string) (repositoryHost, repository string, err error) {
+	repository = strings.TrimSuffix(strings.Trim(strings.TrimSpace(path), "/"), ".git")
 	if host == "" || repository == "" || !strings.Contains(repository, "/") {
 		return "", "", fmt.Errorf("remote identity host=%q repository=%q is incomplete", host, repository)
 	}
