@@ -14,6 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/beadstore"
+	"oro/pkg/beadstore/migrations"
+	"oro/pkg/dbutil"
 	"oro/pkg/dispatcher"
 	"oro/pkg/factoryhealth"
 	"oro/pkg/processenv"
@@ -27,7 +30,8 @@ func TestStorageSharedCacheEndToEnd(t *testing.T) {
 	fixture := t.TempDir()
 	worktreeA := filepath.Join(fixture, "worktree-a")
 	worktreeB := filepath.Join(fixture, "worktree-b")
-	for _, worktree := range []string{worktreeA, worktreeB} {
+	worktreeC := filepath.Join(fixture, "worktree-c")
+	for _, worktree := range []string{worktreeA, worktreeB, worktreeC} {
 		if err := os.MkdirAll(worktree, 0o750); err != nil {
 			t.Fatalf("create worktree %q: %v", worktree, err)
 		}
@@ -45,24 +49,26 @@ func TestStorageSharedCacheEndToEnd(t *testing.T) {
 	}
 	firstEnv := processenv.ForWorkdir(baseEnv, worktreeA)
 	secondEnv := processenv.ForWorkdir(baseEnv, worktreeB)
+	thirdEnv := processenv.ForWorkdir(baseEnv, worktreeC)
 	first := integrationEnvMap(firstEnv)
 	second := integrationEnvMap(secondEnv)
+	third := integrationEnvMap(thirdEnv)
 
 	for _, key := range []string{"GOCACHE", "GOMODCACHE", "UV_CACHE_DIR", "GOLANGCI_LINT_CACHE", "NPM_CONFIG_CACHE"} {
-		if first[key] == "" || first[key] != second[key] {
-			t.Fatalf("%s is not shared: first=%q second=%q", key, first[key], second[key])
+		if first[key] == "" || first[key] != second[key] || first[key] != third[key] {
+			t.Fatalf("%s is not shared: first=%q second=%q third=%q", key, first[key], second[key], third[key])
 		}
-		if integrationPathInside(first[key], worktreeA) || integrationPathInside(second[key], worktreeB) {
-			t.Fatalf("%s points into a worktree: first=%q second=%q", key, first[key], second[key])
+		if integrationPathInside(first[key], worktreeA) || integrationPathInside(second[key], worktreeB) || integrationPathInside(third[key], worktreeC) {
+			t.Fatalf("%s points into a worktree: first=%q second=%q third=%q", key, first[key], second[key], third[key])
 		}
-		if !integrationPathInside(first[key], fixture) || !integrationPathInside(second[key], fixture) {
-			t.Fatalf("%s escaped fixture: first=%q second=%q fixture=%q", key, first[key], second[key], fixture)
+		if !integrationPathInside(first[key], fixture) || !integrationPathInside(second[key], fixture) || !integrationPathInside(third[key], fixture) {
+			t.Fatalf("%s escaped fixture: first=%q second=%q third=%q fixture=%q", key, first[key], second[key], third[key], fixture)
 		}
 	}
-	if first["TMPDIR"] == second["TMPDIR"] {
-		t.Fatalf("TMPDIR unexpectedly shared: %q", first["TMPDIR"])
+	if first["TMPDIR"] == second["TMPDIR"] || first["TMPDIR"] == third["TMPDIR"] || second["TMPDIR"] == third["TMPDIR"] {
+		t.Fatalf("TMPDIR unexpectedly shared: first=%q second=%q third=%q", first["TMPDIR"], second["TMPDIR"], third["TMPDIR"])
 	}
-	for _, tmpDir := range []string{first["TMPDIR"], second["TMPDIR"]} {
+	for _, tmpDir := range []string{first["TMPDIR"], second["TMPDIR"], third["TMPDIR"]} {
 		if !integrationPathInside(tmpDir, fixture) {
 			t.Fatalf("TMPDIR escaped fixture: path=%q fixture=%q", tmpDir, fixture)
 		}
@@ -70,6 +76,7 @@ func TestStorageSharedCacheEndToEnd(t *testing.T) {
 
 	integrationWriteGoCacheFixture(t, worktreeA, "alpha")
 	integrationWriteGoCacheFixture(t, worktreeB, "beta")
+	integrationWriteGoCacheFixture(t, worktreeC, "alpha")
 	initial := integrationRunGoCacheFixtures(t, []integrationGoCacheRun{
 		{worktree: worktreeA, env: firstEnv, value: "alpha"},
 		{worktree: worktreeB, env: secondEnv, value: "beta"},
@@ -80,14 +87,17 @@ func TestStorageSharedCacheEndToEnd(t *testing.T) {
 		}
 	}
 
-	reused := integrationRunGoCacheFixtures(t, []integrationGoCacheRun{
-		{worktree: worktreeA, env: firstEnv, value: "alpha"},
-		{worktree: worktreeB, env: secondEnv, value: "beta"},
-	})
-	for i, output := range reused {
-		if !strings.Contains(output, "(cached)") {
-			t.Fatalf("shared Go cache run %d did not report reuse:\n%s", i, output)
-		}
+	// Worktree C has never invoked Go. Its test dependency must resolve to the
+	// exact compiled export object that sibling worktree A populated. Go keys a
+	// package-under-test by directory, so the shared dependency is the stable
+	// cross-worktree cache artifact.
+	firstExport := integrationGoDependencyExport(t, worktreeA, firstEnv)
+	coldSiblingExport := integrationGoDependencyExport(t, worktreeC, thirdEnv)
+	if firstExport != coldSiblingExport {
+		t.Fatalf("cold sibling did not reuse shared Go export: first=%q third=%q", firstExport, coldSiblingExport)
+	}
+	if !integrationPathInside(coldSiblingExport, first["GOCACHE"]) {
+		t.Fatalf("shared Go export escaped GOCACHE %q: %q", first["GOCACHE"], coldSiblingExport)
 	}
 }
 
@@ -184,12 +194,8 @@ func TestStorageCLIAndHealthWiring(t *testing.T) {
 		t.Fatalf("offline health missing metrics.storage: %s", offlineOutput)
 	}
 
-	livePayload, err := json.Marshal(factoryhealth.Evaluate(factoryhealth.Snapshot{
-		DaemonRunning:   true,
-		DaemonPID:       os.Getpid(),
-		DispatcherState: "running",
-		Storage:         offline.Metrics.Storage,
-	}))
+	dispatcherHealth := integrationDispatcherHealth(t, fixture, offline.Metrics.Storage)
+	livePayload, err := json.Marshal(dispatcherHealth)
 	if err != nil {
 		t.Fatalf("marshal live health fixture: %v", err)
 	}
@@ -202,7 +208,7 @@ func TestStorageCLIAndHealthWiring(t *testing.T) {
 	if err := json.Unmarshal(liveOutput, &live); err != nil {
 		t.Fatalf("live health emitted invalid JSON: %v\n%s", err, liveOutput)
 	}
-	if !live.Metrics.DaemonRunning || live.Metrics.DispatcherState != "running" {
+	if !live.Metrics.DaemonRunning || live.Metrics.DaemonPID != os.Getpid() {
 		t.Fatalf("health CLI did not use live dispatcher response: %+v", live.Metrics)
 	}
 	if !integrationJSONEqual(t, offline.Metrics.Storage, live.Metrics.Storage) {
@@ -335,6 +341,49 @@ func integrationServeHealth(t *testing.T, socketPath string, health []byte) <-ch
 	return result
 }
 
+func integrationDispatcherHealth(
+	t *testing.T,
+	fixture string,
+	storage *factoryhealth.StorageHealth,
+) factoryhealth.FactoryHealth {
+	t.Helper()
+	ctx := context.Background()
+	dbPath := filepath.Join(fixture, "dispatcher-health.db")
+	db, err := dbutil.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("open dispatcher health database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("migrate dispatcher runtime schema: %v", err)
+	}
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("migrate dispatcher bead schema: %v", err)
+	}
+	if err := migrations.MigrateToV3(ctx, db); err != nil {
+		t.Fatalf("migrate dispatcher journey schema: %v", err)
+	}
+
+	d, err := dispatcher.New(dispatcher.Config{
+		DBPath:           dbPath,
+		RepoRoot:         fixture,
+		MaxWorkers:       1,
+		InitialWorkers:   0,
+		AllowZeroWorkers: true,
+		StorageHealth: func(context.Context) *factoryhealth.StorageHealth {
+			return storage
+		},
+	}, db, nil, nil, beadstore.NewSQLiteStore(db), nil, dispatcher.NoopEscalator{}, nil)
+	if err != nil {
+		t.Fatalf("construct dispatcher health producer: %v", err)
+	}
+	health, err := d.Health()
+	if err != nil {
+		t.Fatalf("produce dispatcher health: %v", err)
+	}
+	return health
+}
+
 func integrationShortSocketPath(t *testing.T) string {
 	t.Helper()
 	placeholder, err := os.CreateTemp("/tmp", "oro-storage-e1-*.sock")
@@ -453,6 +502,25 @@ type integrationGoCacheRun struct {
 	value    string
 }
 
+func integrationGoDependencyExport(t *testing.T, worktree string, env []string) string {
+	t.Helper()
+	cmd := exec.Command( //nolint:gosec // fixed tool and arguments
+		"go", "list", "-test", "-deps", "-export", "-f",
+		`{{if eq .ImportPath "testing"}}{{.Export}}{{end}}`, ".",
+	)
+	cmd.Dir = worktree
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("resolve Go export for %q: %v\n%s", worktree, err, output)
+	}
+	exportPath := strings.TrimSpace(string(output))
+	if exportPath == "" {
+		t.Fatalf("Go export for %q is empty", worktree)
+	}
+	return exportPath
+}
+
 func integrationWriteGoCacheFixture(t *testing.T, worktree, value string) {
 	t.Helper()
 	files := map[string]string{
@@ -483,17 +551,24 @@ func integrationRunGoCacheFixtures(t *testing.T, runs []integrationGoCacheRun) [
 		cmd.Stdout = &outputs[i]
 		cmd.Stderr = &outputs[i]
 		if err := cmd.Start(); err != nil {
+			cancel()
+			for _, started := range commands[:i] {
+				_ = started.Wait()
+			}
 			t.Fatalf("start Go cache fixture %q: %v", run.value, err)
 		}
 		commands[i] = cmd
 	}
 
 	result := make([]string, len(runs))
+	waitErrs := make([]error, len(runs))
 	for i, cmd := range commands {
-		err := cmd.Wait()
+		waitErrs[i] = cmd.Wait()
 		result[i] = outputs[i].String()
-		if err != nil {
-			t.Fatalf("run Go cache fixture %q: %v\n%s", runs[i].value, err, result[i])
+	}
+	for i := range runs {
+		if waitErrs[i] != nil {
+			t.Fatalf("run Go cache fixture %q: %v\n%s", runs[i].value, waitErrs[i], result[i])
 		}
 		if !strings.Contains(result[i], "fixture-value="+runs[i].value) {
 			t.Fatalf("Go cache fixture %q returned contaminated output:\n%s", runs[i].value, result[i])
