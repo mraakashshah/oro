@@ -191,7 +191,7 @@ func TestHTTPServerStartsInRun(t *testing.T) {
 }
 
 // TestHTTPServerServesDashboard verifies that startHTTPServer mounts web.NewHandler
-// so that GET / returns HTML with <!DOCTYPE.
+// and surfaces unavailable storage through the dashboard health header.
 func TestHTTPServerServesDashboard(t *testing.T) {
 	qgserial.RequireSerial(t)
 	d, _, _, _, _, _ := newTestDispatcher(t)
@@ -232,9 +232,14 @@ func TestHTTPServerServesDashboard(t *testing.T) {
 	if !strings.Contains(string(body), "<!DOCTYPE") {
 		t.Errorf("GET / body missing <!DOCTYPE; got first 200 chars: %q", truncate(string(body), 200))
 	}
-	for _, want := range []string{"Healthy", "beads/hr", "workers", "event-feed", `id="workers"`} {
+	for _, want := range []string{"Needs you", "factory health state: unsafe", "workers", "event-feed", `id="workers"`} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("GET / body missing %q; got first 300 chars: %q", want, truncate(string(body), 300))
+		}
+	}
+	for _, suppressed := range []string{"Healthy", "beads/hr"} {
+		if strings.Contains(string(body), suppressed) {
+			t.Errorf("GET / body unexpectedly contains %q while storage health is unavailable", suppressed)
 		}
 	}
 }
