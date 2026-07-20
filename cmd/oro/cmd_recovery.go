@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"oro/pkg/dispatcher"
 )
 
 type recoveryQuarantineCLIRecord struct {
@@ -721,13 +723,11 @@ WHERE id=? AND assignment_id IS NULL AND status IN ('open', 'human_owned')`, ass
 }
 
 func discardEmptySafe(inspection recoveryInspection) bool {
-	if inspection.Dirty.Total > 0 {
-		return false
-	}
-	if inspection.Branch.Exists && inspection.Branch.Ahead > 0 {
-		return false
-	}
-	return true
+	return dispatcher.RecoveryQuarantineEmptySafe(
+		inspection.Dirty.Total,
+		inspection.Branch.Exists,
+		inspection.Branch.Ahead,
+	)
 }
 
 func markRecoveryQuarantineResolved(ctx context.Context, db *sql.DB, id int64) error {

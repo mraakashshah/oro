@@ -49,6 +49,7 @@ const (
 	FindingQGIncidentsOpen                    = "qg_incidents_open"
 	FindingQGIncidentIncrease                 = "qg_incident_increase"
 	FindingRecoveryQuarantineOpen             = "recovery_quarantine_open"
+	FindingAssignmentFrozenByQuarantine       = "assignment_frozen_by_quarantine"
 	FindingOpsRunFailed                       = "ops_run_failed"
 	FindingOpsRunStale                        = "ops_run_stale"
 	FindingPendingEscalationUnrouted          = "pending_escalation_unrouted"
@@ -89,26 +90,29 @@ type Finding struct {
 
 // Metrics holds the numeric inputs used to evaluate factory health.
 type Metrics struct {
-	DaemonRunning           bool              `json:"daemon_running"`
-	DaemonPID               int               `json:"daemon_pid,omitempty"`
-	DispatcherState         string            `json:"dispatcher_state,omitempty"`
-	WorkerCount             int               `json:"worker_count"`
-	ActiveWorkers           int               `json:"active_workers"`
-	IdleWorkers             int               `json:"idle_workers"`
-	TargetWorkers           int               `json:"target_workers"`
-	MaxWorkers              int               `json:"max_workers"`
-	ReadyQueue              int               `json:"ready_queue"`
-	ActiveAssignments       int               `json:"active_assignments"`
-	OrphanAssignments       int               `json:"orphan_assignments"`
-	OpenQGIncidents         int               `json:"open_qg_incidents"`
-	QGOccurrences30m        int               `json:"qg_occurrences_30m"`
-	OpenRecoveryQuarantines int               `json:"recovery_quarantines_open"`
-	ThroughputWindow        ThroughputMetrics `json:"throughput_window"`
-	OpsRuns                 OpsRunMetrics     `json:"ops_runs"`
-	PendingEscalations      EscalationMetrics `json:"pending_escalations"`
-	Storage                 *StorageHealth    `json:"storage,omitempty"`
-	PendingWorkerCount      int               `json:"pending_worker_count,omitempty"`
-	PendingHandoffCount     int               `json:"pending_handoff_count,omitempty"`
+	DaemonRunning                bool              `json:"daemon_running"`
+	DaemonPID                    int               `json:"daemon_pid,omitempty"`
+	DispatcherState              string            `json:"dispatcher_state,omitempty"`
+	WorkerCount                  int               `json:"worker_count"`
+	ActiveWorkers                int               `json:"active_workers"`
+	IdleWorkers                  int               `json:"idle_workers"`
+	TargetWorkers                int               `json:"target_workers"`
+	MaxWorkers                   int               `json:"max_workers"`
+	ReadyQueue                   int               `json:"ready_queue"`
+	ActiveAssignments            int               `json:"active_assignments"`
+	OrphanAssignments            int               `json:"orphan_assignments"`
+	OpenQGIncidents              int               `json:"open_qg_incidents"`
+	QGOccurrences30m             int               `json:"qg_occurrences_30m"`
+	OpenRecoveryQuarantines      int               `json:"recovery_quarantines_open"`
+	AssignmentFrozenByQuarantine bool              `json:"assignment_frozen_by_quarantine"`
+	BlockingRecoveryQuarantines  int               `json:"blocking_recovery_quarantines,omitempty"`
+	AssignmentFreezeReason       string            `json:"assignment_freeze_reason,omitempty"`
+	ThroughputWindow             ThroughputMetrics `json:"throughput_window"`
+	OpsRuns                      OpsRunMetrics     `json:"ops_runs"`
+	PendingEscalations           EscalationMetrics `json:"pending_escalations"`
+	Storage                      *StorageHealth    `json:"storage,omitempty"`
+	PendingWorkerCount           int               `json:"pending_worker_count,omitempty"`
+	PendingHandoffCount          int               `json:"pending_handoff_count,omitempty"`
 }
 
 // ThroughputMetrics summarizes recent assignment and closure activity.
@@ -194,26 +198,29 @@ type AssignmentSnapshot struct {
 
 // Snapshot contains all observed inputs for one health evaluation.
 type Snapshot struct {
-	DaemonRunning           bool
-	DaemonPID               int
-	DispatcherState         string
-	Workers                 []WorkerSnapshot
-	ReadyQueue              int
-	TargetWorkers           int
-	MaxWorkers              int
-	PendingWorkerCount      int
-	PendingHandoffCount     int
-	ActiveAssignments       []AssignmentSnapshot
-	OpenQGIncidents         int
-	QGOccurrences30m        int
-	QGTopFingerprints       []string
-	OpenRecoveryQuarantines int
-	ProgressTimeoutSecs     float64
-	HeartbeatTimeoutSecs    float64
-	Throughput              ThroughputMetrics
-	OpsRuns                 OpsRunMetrics
-	PendingEscalations      EscalationMetrics
-	Storage                 *StorageHealth
+	DaemonRunning                bool
+	DaemonPID                    int
+	DispatcherState              string
+	Workers                      []WorkerSnapshot
+	ReadyQueue                   int
+	TargetWorkers                int
+	MaxWorkers                   int
+	PendingWorkerCount           int
+	PendingHandoffCount          int
+	ActiveAssignments            []AssignmentSnapshot
+	OpenQGIncidents              int
+	QGOccurrences30m             int
+	QGTopFingerprints            []string
+	OpenRecoveryQuarantines      int
+	AssignmentFrozenByQuarantine bool
+	BlockingRecoveryQuarantines  int
+	AssignmentFreezeReason       string
+	ProgressTimeoutSecs          float64
+	HeartbeatTimeoutSecs         float64
+	Throughput                   ThroughputMetrics
+	OpsRuns                      OpsRunMetrics
+	PendingEscalations           EscalationMetrics
+	Storage                      *StorageHealth
 }
 
 // Evaluate converts an observed snapshot into the FactoryHealth contract.
@@ -231,23 +238,26 @@ func Evaluate(snapshot Snapshot) FactoryHealth {
 
 func metricsFromSnapshot(snapshot Snapshot) Metrics {
 	metrics := Metrics{
-		DaemonRunning:           snapshot.DaemonRunning,
-		DaemonPID:               snapshot.DaemonPID,
-		DispatcherState:         snapshot.DispatcherState,
-		WorkerCount:             len(snapshot.Workers),
-		ReadyQueue:              snapshot.ReadyQueue,
-		TargetWorkers:           snapshot.TargetWorkers,
-		MaxWorkers:              snapshot.MaxWorkers,
-		ActiveAssignments:       len(snapshot.ActiveAssignments),
-		OpenQGIncidents:         snapshot.OpenQGIncidents,
-		QGOccurrences30m:        snapshot.QGOccurrences30m,
-		OpenRecoveryQuarantines: snapshot.OpenRecoveryQuarantines,
-		ThroughputWindow:        snapshot.Throughput,
-		OpsRuns:                 snapshot.OpsRuns,
-		PendingEscalations:      snapshot.PendingEscalations,
-		Storage:                 snapshot.Storage,
-		PendingWorkerCount:      snapshot.PendingWorkerCount,
-		PendingHandoffCount:     snapshot.PendingHandoffCount,
+		DaemonRunning:                snapshot.DaemonRunning,
+		DaemonPID:                    snapshot.DaemonPID,
+		DispatcherState:              snapshot.DispatcherState,
+		WorkerCount:                  len(snapshot.Workers),
+		ReadyQueue:                   snapshot.ReadyQueue,
+		TargetWorkers:                snapshot.TargetWorkers,
+		MaxWorkers:                   snapshot.MaxWorkers,
+		ActiveAssignments:            len(snapshot.ActiveAssignments),
+		OpenQGIncidents:              snapshot.OpenQGIncidents,
+		QGOccurrences30m:             snapshot.QGOccurrences30m,
+		OpenRecoveryQuarantines:      snapshot.OpenRecoveryQuarantines,
+		AssignmentFrozenByQuarantine: snapshot.AssignmentFrozenByQuarantine,
+		BlockingRecoveryQuarantines:  snapshot.BlockingRecoveryQuarantines,
+		AssignmentFreezeReason:       snapshot.AssignmentFreezeReason,
+		ThroughputWindow:             snapshot.Throughput,
+		OpsRuns:                      snapshot.OpsRuns,
+		PendingEscalations:           snapshot.PendingEscalations,
+		Storage:                      snapshot.Storage,
+		PendingWorkerCount:           snapshot.PendingWorkerCount,
+		PendingHandoffCount:          snapshot.PendingHandoffCount,
 	}
 	for _, worker := range snapshot.Workers {
 		if activeWorkerState(worker.State) {
@@ -269,6 +279,15 @@ func evaluateFindings(snapshot Snapshot, metrics *Metrics) []Finding {
 			Component:         "recovery",
 			Message:           fmt.Sprintf("%d recovery quarantine(s) are open", snapshot.OpenRecoveryQuarantines),
 			RecommendedAction: "run oro health --json, inspect recovery_quarantines and preserved worktrees/branches, then resolve after preserving or merging work",
+		})
+	}
+	if snapshot.AssignmentFrozenByQuarantine {
+		findings = append(findings, Finding{
+			Code:              FindingAssignmentFrozenByQuarantine,
+			Severity:          SeverityCritical,
+			Component:         "dispatcher",
+			Message:           fmt.Sprintf("assignment is frozen by %d recovery quarantine(s) while %d worker(s) are idle (reason: %s)", snapshot.BlockingRecoveryQuarantines, metrics.IdleWorkers, snapshot.AssignmentFreezeReason),
+			RecommendedAction: "inspect recovery quarantines and resolve or safely redeploy the preserved work before resuming ordinary assignment",
 		})
 	}
 	findings = append(findings, opsRunFindings(snapshot.OpsRuns)...)

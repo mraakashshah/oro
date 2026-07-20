@@ -944,6 +944,9 @@ type Dispatcher struct {
 	// lastRecoveryAssignmentBlockLog throttles noisy assignment-block events while
 	// open recovery quarantines keep automation stopped.
 	lastRecoveryAssignmentBlockLog time.Time
+	assignmentFrozenByQuarantine   bool
+	blockingRecoveryQuarantines    int
+	assignmentFreezeReason         string
 
 	// nowFunc allows tests to control time.
 	nowFunc func() time.Time
@@ -1124,6 +1127,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		},
 		BeadTracker: BeadTracker{
 			rejectionCounts:        make(map[string]int),
+			reviewBlockedCounts:    make(map[string]int),
 			handoffCounts:          make(map[string]int),
 			attemptCounts:          make(map[string]int),
 			transientCounts:        make(map[string]int),
@@ -1541,10 +1545,11 @@ func (d *Dispatcher) startupRecovery(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("restore state: %w", err)
 	}
+	autoResolved := d.autoResolveEmptySafeRecoveryQuarantines(ctx)
 	reopened, skipped := d.resetOrphanedBeads(ctx, recoverableBeads)
 	_ = d.logEvent(ctx, "startup_reconciliation_summary", "dispatcher", "", "",
-		fmt.Sprintf(`{"recovered_attempts":%d,"quarantined_assignments":%d,"retired_closed_assignments":%d,"reopened_beads":%d,"skipped_in_progress":%d}`,
-			recoveryStats.recoverable, recoveryStats.quarantined, recoveryStats.retiredClosed, reopened, skipped))
+		fmt.Sprintf(`{"recovered_attempts":%d,"quarantined_assignments":%d,"auto_resolved_quarantines":%d,"retired_closed_assignments":%d,"reopened_beads":%d,"skipped_in_progress":%d}`,
+			recoveryStats.recoverable, recoveryStats.quarantined, autoResolved, recoveryStats.retiredClosed, reopened, skipped))
 	if d.shouldRunZombieDeferredRepair() {
 		if fixed, err := d.detectZombieDeferred(ctx); err == nil && fixed > 0 {
 			_ = d.logEvent(ctx, "startup_zombie_defer_summary", "dispatcher", "", "",
@@ -2528,19 +2533,87 @@ func (d *Dispatcher) guardQGRegression(ctx context.Context, beadID, workerID, wo
 // testing is opt-in so local branch merges do not pay that cost by default.
 // It returns true when the gate passes and the merge should proceed. On failure
 // or error it handles cleanup and returns false so the caller can return early.
-func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, worktree string, assignmentID int64, targetBranch string) bool {
+var errPreMergeQGAlreadyHandled = errors.New("pre-merge QG failure already handled")
+
+type preMergeQGFailureError struct {
+	output string
+}
+
+func (e *preMergeQGFailureError) Error() string {
+	return "pre-merge quality gate failed"
+}
+
+type preMergeQGRunError struct {
+	err error
+}
+
+func (e *preMergeQGRunError) Error() string {
+	return fmt.Sprintf("run pre-merge quality gate: %v", e.err)
+}
+
+func (e *preMergeQGRunError) Unwrap() error {
+	return e.err
+}
+
+// runPreMergeQG executes the dispatcher quality gate for a final candidate
+// worktree. It leaves failure handling to its caller, except for regression
+// protection, which already performs the required recovery itself.
+func (d *Dispatcher) runPreMergeQG(ctx context.Context, beadID, workerID, worktree string, assignmentID int64, targetBranch string) error {
 	mutationBase := d.qgMutationBase(targetBranch)
 	if !d.guardQGRegression(ctx, beadID, workerID, worktree, assignmentID, mutationBase) {
-		return false
+		return errPreMergeQGAlreadyHandled
 	}
 	qgPassed, qgOutput, qgErr := d.qgRunner.Run(ctx, worktree, !d.cfg.MutationTesting, mutationBase)
 	if qgErr != nil {
-		return d.handlePreMergeQGError(ctx, beadID, workerID, worktree, assignmentID, qgErr)
+		return &preMergeQGRunError{err: qgErr}
 	}
 	if !qgPassed {
-		return d.handlePreMergeQGFailure(ctx, beadID, workerID, worktree, assignmentID, qgOutput)
+		return &preMergeQGFailureError{output: qgOutput}
 	}
-	return true
+	return nil
+}
+
+// checkPreMergeQG preserves the direct local-gate entry point used by the
+// existing lifecycle checks. Dispatcher merges invoke runPreMergeQG through
+// merge.Opts.PreFFCheck so the gate sees the rebased worktree.
+func (d *Dispatcher) checkPreMergeQG(ctx context.Context, beadID, workerID, worktree string, assignmentID int64, targetBranch string) bool {
+	err := d.runPreMergeQG(ctx, beadID, workerID, worktree, assignmentID, targetBranch)
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, errPreMergeQGAlreadyHandled) {
+		return false
+	}
+	var qgFailure *preMergeQGFailureError
+	if errors.As(err, &qgFailure) {
+		return d.handlePreMergeQGFailure(ctx, beadID, workerID, worktree, assignmentID, qgFailure.output)
+	}
+	var qgRunErr *preMergeQGRunError
+	if errors.As(err, &qgRunErr) {
+		return d.handlePreMergeQGError(ctx, beadID, workerID, worktree, assignmentID, qgRunErr.err)
+	}
+	return d.handlePreMergeQGError(ctx, beadID, workerID, worktree, assignmentID, err)
+}
+
+func (d *Dispatcher) handlePreFFCheckError(ctx context.Context, beadID, workerID, worktree string, assignmentID int64, err error) bool {
+	var preFFErr *merge.PreFFCheckError
+	if !errors.As(err, &preFFErr) {
+		return false
+	}
+	if errors.Is(preFFErr, errPreMergeQGAlreadyHandled) {
+		return true
+	}
+	var qgFailure *preMergeQGFailureError
+	if errors.As(preFFErr, &qgFailure) {
+		d.handlePreMergeQGFailure(ctx, beadID, workerID, worktree, assignmentID, qgFailure.output)
+		return true
+	}
+	var qgRunErr *preMergeQGRunError
+	if errors.As(preFFErr, &qgRunErr) {
+		d.handlePreMergeQGError(ctx, beadID, workerID, worktree, assignmentID, qgRunErr.err)
+		return true
+	}
+	return false
 }
 
 func (d *Dispatcher) checkPreMergeLeaks(ctx context.Context, beadID, workerID, worktree, branch, targetBranch string, assignmentID int64) bool {
@@ -2802,9 +2875,6 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 		return
 	}
 
-	if !d.checkPreMergeQG(ctx, beadID, workerID, worktree, assignmentID, targetBranch) {
-		return
-	}
 	if !d.checkPreMergeLeaks(ctx, beadID, workerID, worktree, branch, targetBranch, assignmentID) {
 		return
 	}
@@ -2817,8 +2887,14 @@ func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, wor
 		Worktree:     worktree,
 		BeadID:       beadID,
 		TargetBranch: targetBranch,
+		PreFFCheck: func(checkCtx context.Context, finalWorktree string) error {
+			return d.runPreMergeQG(checkCtx, beadID, workerID, finalWorktree, assignmentID, targetBranch)
+		},
 	})
 	if err != nil {
+		if d.handlePreFFCheckError(ctx, beadID, workerID, worktree, assignmentID, err) {
+			return
+		}
 		var conflictErr *merge.ConflictError
 		if errors.As(err, &conflictErr) {
 			// Spawn ops agent to resolve conflict
@@ -4035,10 +4111,12 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 	d.mu.Lock()
 	w, ok := d.workers[workerID]
 	var worktree, targetBranch string
+	var assignmentID int64
 	if ok {
 		w.state = protocol.WorkerReviewing
 		worktree = w.worktree
 		targetBranch = w.targetBranch
+		assignmentID = w.assignmentID
 	}
 	d.mu.Unlock()
 
@@ -4076,7 +4154,9 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 	})
 
 	// Handle review result asynchronously
-	d.safeGo(func() { d.handleReviewResult(ctx, workerID, beadID, resultCh) })
+	d.safeGo(func() {
+		d.handleReviewResultForAssignment(ctx, workerID, beadID, assignmentID, resultCh)
+	})
 }
 
 // PreReviewGitHygieneResult describes whether a worker worktree is clean
@@ -4230,6 +4310,21 @@ const (
 
 // handleReviewResult waits for the ops review result and acts on it.
 func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID string, resultCh <-chan ops.Result) {
+	d.mu.Lock()
+	assignmentID := int64(0)
+	if w, ok := d.workers[workerID]; ok {
+		assignmentID = w.assignmentID
+	}
+	d.mu.Unlock()
+	d.handleReviewResultForAssignment(ctx, workerID, beadID, assignmentID, resultCh)
+}
+
+func (d *Dispatcher) handleReviewResultForAssignment(
+	ctx context.Context,
+	workerID, beadID string,
+	assignmentID int64,
+	resultCh <-chan ops.Result,
+) {
 	select {
 	case <-ctx.Done():
 		return
@@ -4240,14 +4335,14 @@ func (d *Dispatcher) handleReviewResult(ctx context.Context, workerID, beadID st
 		case ops.VerdictRejected:
 			switch classifyReviewFailure(result) {
 			case ReviewFailureEnvBlocked, ReviewFailureInfraBlocked, ReviewFailureRateLimited:
-				d.handleReviewBlocked(ctx, workerID, beadID, result)
+				d.handleReviewBlockedForAssignment(ctx, workerID, beadID, assignmentID, result)
 				return
 			}
 			d.handleReviewRejection(ctx, workerID, beadID, result.Feedback)
 		default:
 			switch classifyReviewFailure(result) {
 			case ReviewFailureInfraBlocked, ReviewFailureRateLimited:
-				d.handleReviewBlocked(ctx, workerID, beadID, result)
+				d.handleReviewBlockedForAssignment(ctx, workerID, beadID, assignmentID, result)
 				return
 			}
 			d.handleReviewFailed(ctx, workerID, beadID, result)
@@ -4422,14 +4517,24 @@ func (d *Dispatcher) reviewingWorkerMatches(workerID, beadID string) bool {
 }
 
 func (d *Dispatcher) handleReviewBlocked(ctx context.Context, workerID, beadID string, result ops.Result) {
-	assignmentID := int64(0)
-	matchesReviewingWorker := false
 	d.mu.Lock()
-	if w, ok := d.workers[workerID]; ok && w.beadID == beadID && w.state == protocol.WorkerReviewing {
+	assignmentID := int64(0)
+	if w, ok := d.workers[workerID]; ok {
 		assignmentID = w.assignmentID
-		matchesReviewingWorker = true
 	}
 	d.mu.Unlock()
+	d.handleReviewBlockedForAssignment(ctx, workerID, beadID, assignmentID, result)
+}
+
+func (d *Dispatcher) handleReviewBlockedForAssignment(
+	ctx context.Context,
+	workerID, beadID string,
+	expectedAssignmentID int64,
+	result ops.Result,
+) {
+	assignmentID, matchesReviewingWorker := d.claimBlockedReviewAssignment(
+		workerID, beadID, expectedAssignmentID,
+	)
 
 	class := classifyReviewFailure(result)
 	eventType := "review_env_blocked"
@@ -4448,23 +4553,77 @@ func (d *Dispatcher) handleReviewBlocked(ctx context.Context, workerID, beadID s
 		return
 	}
 	_ = d.logEvent(ctx, eventType, "ops", beadID, workerID, detail)
-	d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID, reason, detail), beadID, workerID)
-	d.reopenBlockedReview(ctx, beadID, workerID, eventType, class)
+
+	preserveBlockedCount, reviewEscalated, blockedCount := d.processBlockedReviewRetry(
+		ctx, workerID, beadID, eventType, class,
+	)
 	if err := d.completeAssignment(ctx, assignmentID, beadID); err != nil {
 		_ = d.logEvent(ctx, eventType+"_assignment_cleanup_failed", "ops", beadID, workerID, err.Error())
 	}
-	d.clearBeadTracking(beadID)
+	if preserveBlockedCount {
+		d.clearBeadTrackingPreservingBlockedReviewCount(beadID)
+	} else {
+		d.clearBeadTracking(beadID)
+	}
+
+	d.releaseBlockedReviewAssignment(workerID, beadID, assignmentID)
+
+	if reviewEscalated {
+		_ = d.logEvent(ctx, "review_escalated", "ops", beadID, workerID,
+			fmt.Sprintf(`{"rejections":%d,"feedback":%q}`, blockedCount, detail))
+	}
+	d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID, reason, detail), beadID, workerID)
+	if reviewEscalated {
+		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
+			fmt.Sprintf("review blocked %d times", blockedCount), detail), beadID, workerID)
+	}
+}
+
+func (d *Dispatcher) claimBlockedReviewAssignment(workerID, beadID string, expectedAssignmentID int64) (int64, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w, ok := d.workers[workerID]
+	if !ok || w.beadID != beadID || w.state != protocol.WorkerReviewing || w.assignmentID != expectedAssignmentID {
+		return 0, false
+	}
+	w.state = protocol.WorkerReserved
+	return w.assignmentID, true
+}
+
+func (d *Dispatcher) releaseBlockedReviewAssignment(workerID, beadID string, assignmentID int64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w, ok := d.workers[workerID]
+	if !ok || w.beadID != beadID || w.state != protocol.WorkerReserved || w.assignmentID != assignmentID {
+		return
+	}
+	w.state = protocol.WorkerIdle
+	w.beadID = ""
+	w.epicID = ""
+	w.isEpicDecomp = false
+	w.worktree = ""
+	w.model = ""
+}
+
+func (d *Dispatcher) processBlockedReviewRetry(
+	ctx context.Context,
+	workerID, beadID, eventType string,
+	class ReviewFailureClass,
+) (preserveCount, escalated bool, count int) {
+	if class != ReviewFailureEnvBlocked && class != ReviewFailureInfraBlocked {
+		d.reopenBlockedReview(ctx, beadID, workerID, eventType, class)
+		return false, false, 0
+	}
 
 	d.mu.Lock()
-	if w, ok := d.workers[workerID]; ok && w.beadID == beadID && w.state == protocol.WorkerReviewing {
-		w.state = protocol.WorkerIdle
-		w.beadID = ""
-		w.epicID = ""
-		w.isEpicDecomp = false
-		w.worktree = ""
-		w.model = ""
-	}
+	d.reviewBlockedCounts[beadID]++
+	count = d.reviewBlockedCounts[beadID]
 	d.mu.Unlock()
+	if count <= maxReviewRejections {
+		d.reopenBlockedReview(ctx, beadID, workerID, eventType, class)
+		return true, false, count
+	}
+	return false, true, count
 }
 
 // handleReviewRejection processes a rejected review verdict: increments the
@@ -5304,26 +5463,54 @@ func filterBeadsByID(beads []protocol.Bead, ids map[string]bool) []protocol.Bead
 // handed to one fresh worker to continue its own bead.
 func (d *Dispatcher) recoveryQuarantineAssignmentScope(ctx context.Context) (map[string]bool, bool) {
 	if d.db == nil {
+		d.setRecoveryAssignmentFreeze(false, 0, "")
 		return nil, false
 	}
 	openQuarantines, err := factoryhealth.LoadRecoveryQuarantineMetrics(ctx, d.db)
 	if err != nil {
-		d.logRecoveryAssignmentBlocked(ctx, 0, "recovery_quarantine_metric_load_failed: "+err.Error())
+		reason := "recovery_quarantine_metric_load_failed: " + err.Error()
+		d.setRecoveryAssignmentFreeze(true, 0, reason)
+		d.logRecoveryAssignmentBlocked(ctx, 0, reason)
 		return nil, true
 	}
 	if openQuarantines == 0 {
+		d.setRecoveryAssignmentFreeze(false, 0, "")
+		return nil, false
+	}
+	preservableQuarantines, err := d.countPreservableRecoveryQuarantines(ctx)
+	if err != nil {
+		reason := "recovery_quarantine_classification_failed: " + err.Error()
+		d.setRecoveryAssignmentFreeze(true, openQuarantines, reason)
+		d.logRecoveryAssignmentBlocked(ctx, openQuarantines, reason)
+		return nil, true
+	}
+	if preservableQuarantines == 0 {
+		d.setRecoveryAssignmentFreeze(false, 0, "")
 		return nil, false
 	}
 	redeployable, err := d.autoRedeployablePreservedWorktrees(ctx)
 	if err != nil {
-		d.logRecoveryAssignmentBlocked(ctx, openQuarantines, "recovery_quarantine_inspection_failed: "+err.Error())
+		reason := "recovery_quarantine_inspection_failed: " + err.Error()
+		d.setRecoveryAssignmentFreeze(true, preservableQuarantines, reason)
+		d.logRecoveryAssignmentBlocked(ctx, preservableQuarantines, reason)
 		return nil, true
 	}
 	if len(redeployable) == 0 {
-		d.logRecoveryAssignmentBlocked(ctx, openQuarantines, "open_recovery_quarantine")
+		const reason = "open_recovery_quarantine"
+		d.setRecoveryAssignmentFreeze(true, preservableQuarantines, reason)
+		d.logRecoveryAssignmentBlocked(ctx, preservableQuarantines, reason)
 		return nil, true
 	}
+	d.setRecoveryAssignmentFreeze(false, 0, "")
 	return redeployable, false
+}
+
+func (d *Dispatcher) setRecoveryAssignmentFreeze(frozen bool, blockingQuarantines int, reason string) {
+	d.mu.Lock()
+	d.assignmentFrozenByQuarantine = frozen
+	d.blockingRecoveryQuarantines = blockingQuarantines
+	d.assignmentFreezeReason = reason
+	d.mu.Unlock()
 }
 
 func (d *Dispatcher) logRecoveryAssignmentBlocked(ctx context.Context, openQuarantines int, reason string) {
@@ -7003,10 +7190,13 @@ type statusResponse struct {
 	ProgressTimeoutSecs float64        `json:"progress_timeout_secs"`
 
 	// QG failure incident fields
-	QGFailureIncidentsOpen   int                          `json:"qg_failure_incidents_open"`
-	QGFailureOccurrences30m  int                          `json:"qg_failure_occurrences_30m"`
-	QGFailureTopFingerprints []string                     `json:"qg_failure_top_fingerprints,omitempty"`
-	Health                   *factoryhealth.FactoryHealth `json:"health,omitempty"`
+	QGFailureIncidentsOpen       int                          `json:"qg_failure_incidents_open"`
+	QGFailureOccurrences30m      int                          `json:"qg_failure_occurrences_30m"`
+	QGFailureTopFingerprints     []string                     `json:"qg_failure_top_fingerprints,omitempty"`
+	AssignmentFrozenByQuarantine bool                         `json:"assignment_frozen_by_quarantine"`
+	BlockingRecoveryQuarantines  int                          `json:"blocking_recovery_quarantines,omitempty"`
+	AssignmentFreezeReason       string                       `json:"assignment_freeze_reason,omitempty"`
+	Health                       *factoryhealth.FactoryHealth `json:"health,omitempty"`
 }
 
 const (
@@ -7547,27 +7737,30 @@ func (d *Dispatcher) buildStatusJSON() string {
 	attemptCounts := filterAttemptCounts(d.attemptCounts, activeBeadIDs)
 
 	resp := statusResponse{
-		State:                    string(d.state),
-		PID:                      os.Getpid(),
-		WorkerCount:              len(d.workers),
-		QueueDepth:               queueDepth,
-		Assignments:              assignments,
-		FocusedEpic:              d.focusedEpic,
-		Workers:                  workers,
-		ActiveCount:              activeCount,
-		IdleCount:                idleCount,
-		TargetCount:              d.targetWorkers,
-		MaxWorkers:               d.cfg.MaxWorkers,
-		ManagedCount:             managedCount,
-		UnmanagedCount:           unmanagedCount,
-		PendingWorkerCount:       len(d.pendingManagedIDs) + len(d.pendingExternalIDs),
-		UptimeSeconds:            now.Sub(d.startTime).Seconds(),
-		PendingHandoffCount:      len(d.pendingHandoffs),
-		AttemptCounts:            attemptCounts,
-		ProgressTimeoutSecs:      d.cfg.ProgressTimeout.Seconds(),
-		QGFailureIncidentsOpen:   qgStatus.OpenIncidents,
-		QGFailureOccurrences30m:  qgStatus.Occurrences30m,
-		QGFailureTopFingerprints: qgStatus.TopFingerprints,
+		State:                        string(d.state),
+		PID:                          os.Getpid(),
+		WorkerCount:                  len(d.workers),
+		QueueDepth:                   queueDepth,
+		Assignments:                  assignments,
+		FocusedEpic:                  d.focusedEpic,
+		Workers:                      workers,
+		ActiveCount:                  activeCount,
+		IdleCount:                    idleCount,
+		TargetCount:                  d.targetWorkers,
+		MaxWorkers:                   d.cfg.MaxWorkers,
+		ManagedCount:                 managedCount,
+		UnmanagedCount:               unmanagedCount,
+		PendingWorkerCount:           len(d.pendingManagedIDs) + len(d.pendingExternalIDs),
+		UptimeSeconds:                now.Sub(d.startTime).Seconds(),
+		PendingHandoffCount:          len(d.pendingHandoffs),
+		AttemptCounts:                attemptCounts,
+		ProgressTimeoutSecs:          d.cfg.ProgressTimeout.Seconds(),
+		QGFailureIncidentsOpen:       qgStatus.OpenIncidents,
+		QGFailureOccurrences30m:      qgStatus.Occurrences30m,
+		QGFailureTopFingerprints:     qgStatus.TopFingerprints,
+		AssignmentFrozenByQuarantine: d.assignmentFrozenByQuarantine,
+		BlockingRecoveryQuarantines:  d.blockingRecoveryQuarantines,
+		AssignmentFreezeReason:       d.assignmentFreezeReason,
 	}
 	state := string(d.state)
 	targetWorkers := d.targetWorkers
@@ -7576,22 +7769,28 @@ func (d *Dispatcher) buildStatusJSON() string {
 	pendingHandoffCount := len(d.pendingHandoffs)
 	progressTimeoutSecs := d.cfg.ProgressTimeout.Seconds()
 	heartbeatTimeoutSecs := d.cfg.HeartbeatTimeout.Seconds()
+	assignmentFrozenByQuarantine := d.assignmentFrozenByQuarantine
+	blockingRecoveryQuarantines := d.blockingRecoveryQuarantines
+	assignmentFreezeReason := d.assignmentFreezeReason
 	d.mu.Unlock()
 
 	health := d.evaluateFactoryHealth(ctx, now, factoryHealthInput{
-		daemonRunning:           true,
-		daemonPID:               os.Getpid(),
-		dispatcherState:         state,
-		workers:                 workers,
-		queueDepth:              queueDepth,
-		targetWorkers:           targetWorkers,
-		maxWorkers:              maxWorkers,
-		pendingWorkerCount:      pendingWorkerCount,
-		pendingHandoffCount:     pendingHandoffCount,
-		qgStatus:                qgStatus,
-		openRecoveryQuarantines: openRecoveryQuarantines,
-		progressTimeoutSecs:     progressTimeoutSecs,
-		heartbeatTimeoutSecs:    heartbeatTimeoutSecs,
+		daemonRunning:                true,
+		daemonPID:                    os.Getpid(),
+		dispatcherState:              state,
+		workers:                      workers,
+		queueDepth:                   queueDepth,
+		targetWorkers:                targetWorkers,
+		maxWorkers:                   maxWorkers,
+		pendingWorkerCount:           pendingWorkerCount,
+		pendingHandoffCount:          pendingHandoffCount,
+		qgStatus:                     qgStatus,
+		openRecoveryQuarantines:      openRecoveryQuarantines,
+		assignmentFrozenByQuarantine: assignmentFrozenByQuarantine,
+		blockingRecoveryQuarantines:  blockingRecoveryQuarantines,
+		assignmentFreezeReason:       assignmentFreezeReason,
+		progressTimeoutSecs:          progressTimeoutSecs,
+		heartbeatTimeoutSecs:         heartbeatTimeoutSecs,
 	})
 	resp.Health = &health
 
@@ -10208,6 +10407,7 @@ func (d *Dispatcher) releaseWorkerAfterQGExhaustion(workerID, beadID string) {
 	delete(d.transientCounts, beadID)
 	delete(d.handoffCounts, beadID)
 	delete(d.rejectionCounts, beadID)
+	delete(d.reviewBlockedCounts, beadID)
 	delete(d.pendingHandoffs, beadID)
 	delete(d.qgStuckTracker, beadID)
 	delete(d.escalatedBeads, beadID)
