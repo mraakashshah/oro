@@ -1,12 +1,15 @@
 package integration_test
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"oro/pkg/processenv"
 )
@@ -33,8 +36,10 @@ func TestStorageSharedCacheEndToEnd(t *testing.T) {
 		"PATH=/bin",
 		"ORO_SUBPROCESS_TMP_ROOT=" + filepath.Join(fixture, "tmp"),
 	}
-	first := integrationEnvMap(processenv.ForWorkdir(baseEnv, worktreeA))
-	second := integrationEnvMap(processenv.ForWorkdir(baseEnv, worktreeB))
+	firstEnv := processenv.ForWorkdir(baseEnv, worktreeA)
+	secondEnv := processenv.ForWorkdir(baseEnv, worktreeB)
+	first := integrationEnvMap(firstEnv)
+	second := integrationEnvMap(secondEnv)
 
 	for _, key := range []string{"GOCACHE", "GOMODCACHE", "UV_CACHE_DIR", "GOLANGCI_LINT_CACHE", "NPM_CONFIG_CACHE"} {
 		if first[key] == "" || first[key] != second[key] {
@@ -56,16 +61,26 @@ func TestStorageSharedCacheEndToEnd(t *testing.T) {
 		}
 	}
 
-	proof := filepath.Join(first["GOCACHE"], "shared-proof")
-	if err := os.WriteFile(proof, []byte("cache-hit"), 0o600); err != nil {
-		t.Fatalf("write shared cache proof: %v", err)
+	integrationWriteGoCacheFixture(t, worktreeA, "alpha")
+	integrationWriteGoCacheFixture(t, worktreeB, "beta")
+	initial := integrationRunGoCacheFixtures(t, []integrationGoCacheRun{
+		{worktree: worktreeA, env: firstEnv, value: "alpha"},
+		{worktree: worktreeB, env: secondEnv, value: "beta"},
+	})
+	for i, output := range initial {
+		if strings.Contains(output, "(cached)") {
+			t.Fatalf("initial conflicting cache run %d unexpectedly reused stale results:\n%s", i, output)
+		}
 	}
-	got, err := os.ReadFile(filepath.Join(second["GOCACHE"], "shared-proof"))
-	if err != nil {
-		t.Fatalf("read sibling cache proof: %v", err)
-	}
-	if string(got) != "cache-hit" {
-		t.Fatalf("shared cache proof = %q, want cache-hit", got)
+
+	reused := integrationRunGoCacheFixtures(t, []integrationGoCacheRun{
+		{worktree: worktreeA, env: firstEnv, value: "alpha"},
+		{worktree: worktreeB, env: secondEnv, value: "beta"},
+	})
+	for i, output := range reused {
+		if !strings.Contains(output, "(cached)") {
+			t.Fatalf("shared Go cache run %d did not report reuse:\n%s", i, output)
+		}
 	}
 }
 
@@ -228,6 +243,61 @@ func integrationEnvMap(env []string) map[string]string {
 		}
 	}
 	return values
+}
+
+type integrationGoCacheRun struct {
+	worktree string
+	env      []string
+	value    string
+}
+
+func integrationWriteGoCacheFixture(t *testing.T, worktree, value string) {
+	t.Helper()
+	files := map[string]string{
+		"go.mod":   "module example.com/oro/sharedcachefixture\n\ngo 1.26\n",
+		"value.go": "package sharedcachefixture\n\nfunc Value() string { return \"" + value + "\" }\n",
+		"value_test.go": "package sharedcachefixture\n\nimport \"testing\"\n\nfunc TestValue(t *testing.T) {\n" +
+			"\tif got := Value(); got != \"" + value + "\" { t.Fatalf(\"Value() = %q\", got) }\n" +
+			"\tt.Log(\"fixture-value=" + value + "\")\n}\n",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(worktree, name), []byte(content), 0o600); err != nil {
+			t.Fatalf("write Go cache fixture %s: %v", name, err)
+		}
+	}
+}
+
+func integrationRunGoCacheFixtures(t *testing.T, runs []integrationGoCacheRun) []string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	commands := make([]*exec.Cmd, len(runs))
+	outputs := make([]bytes.Buffer, len(runs))
+	for i, run := range runs {
+		cmd := exec.CommandContext(ctx, "go", "test", "-v", ".") //nolint:gosec // fixed tool and arguments
+		cmd.Dir = run.worktree
+		cmd.Env = run.env
+		cmd.Stdout = &outputs[i]
+		cmd.Stderr = &outputs[i]
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start Go cache fixture %q: %v", run.value, err)
+		}
+		commands[i] = cmd
+	}
+
+	result := make([]string, len(runs))
+	for i, cmd := range commands {
+		err := cmd.Wait()
+		result[i] = outputs[i].String()
+		if err != nil {
+			t.Fatalf("run Go cache fixture %q: %v\n%s", runs[i].value, err, result[i])
+		}
+		if !strings.Contains(result[i], "fixture-value="+runs[i].value) {
+			t.Fatalf("Go cache fixture %q returned contaminated output:\n%s", runs[i].value, result[i])
+		}
+	}
+	return result
 }
 
 func integrationPathInside(path, root string) bool {
