@@ -1127,6 +1127,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		},
 		BeadTracker: BeadTracker{
 			rejectionCounts:        make(map[string]int),
+			reviewBlockedCounts:    make(map[string]int),
 			handoffCounts:          make(map[string]int),
 			attemptCounts:          make(map[string]int),
 			transientCounts:        make(map[string]int),
@@ -4525,28 +4526,12 @@ func (d *Dispatcher) handleReviewBlocked(ctx context.Context, workerID, beadID s
 	_ = d.logEvent(ctx, eventType, "ops", beadID, workerID, detail)
 	d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID, reason, detail), beadID, workerID)
 
-	boundedRetry := class == ReviewFailureEnvBlocked || class == ReviewFailureInfraBlocked
-	count := 0
-	if boundedRetry {
-		d.mu.Lock()
-		d.rejectionCounts[beadID]++
-		count = d.rejectionCounts[beadID]
-		d.mu.Unlock()
-	}
-
-	if boundedRetry && count > maxReviewRejections {
-		_ = d.logEvent(ctx, "review_escalated", "ops", beadID, workerID,
-			fmt.Sprintf(`{"rejections":%d,"feedback":%q}`, count, detail))
-		d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
-			fmt.Sprintf("review blocked %d times", count), detail), beadID, workerID)
-	} else {
-		d.reopenBlockedReview(ctx, beadID, workerID, eventType, class)
-	}
+	preserveBlockedCount := d.processBlockedReviewRetry(ctx, workerID, beadID, eventType, class, detail)
 	if err := d.completeAssignment(ctx, assignmentID, beadID); err != nil {
 		_ = d.logEvent(ctx, eventType+"_assignment_cleanup_failed", "ops", beadID, workerID, err.Error())
 	}
-	if boundedRetry && count <= maxReviewRejections {
-		d.clearBeadTrackingPreservingRejectionCount(beadID)
+	if preserveBlockedCount {
+		d.clearBeadTrackingPreservingBlockedReviewCount(beadID)
 	} else {
 		d.clearBeadTracking(beadID)
 	}
@@ -4561,6 +4546,33 @@ func (d *Dispatcher) handleReviewBlocked(ctx context.Context, workerID, beadID s
 		w.model = ""
 	}
 	d.mu.Unlock()
+}
+
+func (d *Dispatcher) processBlockedReviewRetry(
+	ctx context.Context,
+	workerID, beadID, eventType string,
+	class ReviewFailureClass,
+	detail string,
+) bool {
+	if class != ReviewFailureEnvBlocked && class != ReviewFailureInfraBlocked {
+		d.reopenBlockedReview(ctx, beadID, workerID, eventType, class)
+		return false
+	}
+
+	d.mu.Lock()
+	d.reviewBlockedCounts[beadID]++
+	count := d.reviewBlockedCounts[beadID]
+	d.mu.Unlock()
+	if count <= maxReviewRejections {
+		d.reopenBlockedReview(ctx, beadID, workerID, eventType, class)
+		return true
+	}
+
+	_ = d.logEvent(ctx, "review_escalated", "ops", beadID, workerID,
+		fmt.Sprintf(`{"rejections":%d,"feedback":%q}`, count, detail))
+	d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuck, beadID,
+		fmt.Sprintf("review blocked %d times", count), detail), beadID, workerID)
+	return false
 }
 
 // handleReviewRejection processes a rejected review verdict: increments the
@@ -10344,6 +10356,7 @@ func (d *Dispatcher) releaseWorkerAfterQGExhaustion(workerID, beadID string) {
 	delete(d.transientCounts, beadID)
 	delete(d.handoffCounts, beadID)
 	delete(d.rejectionCounts, beadID)
+	delete(d.reviewBlockedCounts, beadID)
 	delete(d.pendingHandoffs, beadID)
 	delete(d.qgStuckTracker, beadID)
 	delete(d.escalatedBeads, beadID)

@@ -3157,7 +3157,7 @@ func TestReviewSandboxBlockedCountsTowardBoundedRetry(t *testing.T) {
 		t.Fatalf("sandbox-blocked review must complete assignment, got %q", assignmentStatus)
 	}
 	d.mu.Lock()
-	rejections := d.rejectionCounts[beadID]
+	rejections := d.reviewBlockedCounts[beadID]
 	d.mu.Unlock()
 	if rejections != 1 {
 		t.Fatalf("sandbox-blocked review count = %d, want 1", rejections)
@@ -3178,6 +3178,9 @@ func TestHandleReviewBlocked_BoundedRetry(t *testing.T) {
 		return nil
 	}
 	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+	d.mu.Lock()
+	d.rejectionCounts[beadID] = maxReviewRejections
+	d.mu.Unlock()
 
 	result := ops.Result{
 		Verdict:  ops.VerdictRejected,
@@ -3207,6 +3210,14 @@ func TestHandleReviewBlocked_BoundedRetry(t *testing.T) {
 		d.mu.Unlock()
 
 		d.handleReviewBlocked(ctx, workerID, beadID, result)
+		if cycle == 1 {
+			if reopens != 1 {
+				t.Fatalf("first blocked review after ordinary rejections reopens = %d, want 1", reopens)
+			}
+			if got := eventCount(t, d.db, "review_escalated"); got != 0 {
+				t.Fatalf("first blocked review after ordinary rejections escalated %d times, want 0", got)
+			}
+		}
 	}
 
 	if reopens != maxReviewRejections {
@@ -10743,31 +10754,33 @@ func TestDispatcher_Handoff_NoProcManager_LogsOnly(t *testing.T) {
 	}, 2*time.Second)
 }
 
-func TestDispatcher_ReviewRejection_CounterResetsOnNewBead(t *testing.T) {
+func TestDispatcher_ReviewCountersResetIndependentlyByBead(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 
-	// Simulate rejection counts for different beads
+	// Simulate review retry counts for different beads.
 	d.mu.Lock()
-	if d.rejectionCounts == nil {
-		d.rejectionCounts = make(map[string]int)
-	}
 	d.rejectionCounts["bead-a"] = 2
 	d.rejectionCounts["bead-b"] = 1
+	d.reviewBlockedCounts["bead-a"] = 2
+	d.reviewBlockedCounts["bead-b"] = 1
 	d.mu.Unlock()
 
-	// Clear bead-a's count (simulates bead completion)
+	// handleReviewApproved uses this helper to reset the approved bead.
 	d.clearRejectionCount("bead-a")
 
 	d.mu.Lock()
-	_, aExists := d.rejectionCounts["bead-a"]
-	bCount := d.rejectionCounts["bead-b"]
+	_, rejectionAExists := d.rejectionCounts["bead-a"]
+	_, blockedAExists := d.reviewBlockedCounts["bead-a"]
+	rejectionBCount := d.rejectionCounts["bead-b"]
+	blockedBCount := d.reviewBlockedCounts["bead-b"]
 	d.mu.Unlock()
 
-	if aExists {
-		t.Fatal("expected bead-a rejection count to be cleared")
+	if rejectionAExists || blockedAExists {
+		t.Fatal("expected bead-a review counters to be cleared")
 	}
-	if bCount != 1 {
-		t.Fatalf("expected bead-b count to remain 1, got %d", bCount)
+	if rejectionBCount != 1 || blockedBCount != 1 {
+		t.Fatalf("expected bead-b review counters to remain 1, got rejection=%d blocked=%d",
+			rejectionBCount, blockedBCount)
 	}
 }
 
