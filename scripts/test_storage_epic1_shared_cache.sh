@@ -10,6 +10,23 @@ if [[ "$(git branch --show-current)" != "main" ]]; then
 	exit 1
 fi
 
+acceptance_root="$(mktemp -d "${TMPDIR:-/tmp}/oro-storage-epic1.XXXXXX")"
+cleanup() {
+	chmod -R u+w "$acceptance_root" 2>/dev/null || true
+	rm -rf -- "$acceptance_root"
+}
+trap cleanup EXIT
+
+export HOME="$acceptance_root/home"
+export XDG_CACHE_HOME="$acceptance_root/cache"
+export GOCACHE="$acceptance_root/cache/go-build"
+export GOMODCACHE="$acceptance_root/cache/go-mod"
+export UV_CACHE_DIR="$acceptance_root/cache/uv"
+export GOLANGCI_LINT_CACHE="$acceptance_root/cache/golangci-lint"
+export NPM_CONFIG_CACHE="$acceptance_root/cache/npm"
+export TMPDIR="$acceptance_root/tmp"
+mkdir -p "$HOME" "$GOCACHE" "$GOMODCACHE" "$UV_CACHE_DIR" "$GOLANGCI_LINT_CACHE" "$NPM_CONFIG_CACHE" "$TMPDIR"
+
 tests=(
 	"TestStorageSharedCacheEndToEnd"
 	"TestStorageStandalonePolicyParity"

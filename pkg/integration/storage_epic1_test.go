@@ -33,7 +33,7 @@ func TestStorageSharedCacheEndToEnd(t *testing.T) {
 	first := integrationEnvMap(processenv.ForWorkdir(baseEnv, worktreeA))
 	second := integrationEnvMap(processenv.ForWorkdir(baseEnv, worktreeB))
 
-	for _, key := range []string{"GOCACHE", "GOMODCACHE", "UV_CACHE_DIR", "GOLANGCI_LINT_CACHE"} {
+	for _, key := range []string{"GOCACHE", "GOMODCACHE", "UV_CACHE_DIR", "GOLANGCI_LINT_CACHE", "NPM_CONFIG_CACHE"} {
 		if first[key] == "" || first[key] != second[key] {
 			t.Fatalf("%s is not shared: first=%q second=%q", key, first[key], second[key])
 		}
@@ -81,7 +81,7 @@ func TestStorageStandalonePolicyParity(t *testing.T) {
 	baseEnv := []string{"PATH=/bin"}
 	first := integrationEnvMap(processenv.ForWorkdir(baseEnv, worktreeA))
 	second := integrationEnvMap(processenv.ForWorkdir(baseEnv, worktreeB))
-	for _, key := range []string{"GOCACHE", "GOMODCACHE", "UV_CACHE_DIR", "GOLANGCI_LINT_CACHE"} {
+	for _, key := range []string{"GOCACHE", "GOMODCACHE", "UV_CACHE_DIR", "GOLANGCI_LINT_CACHE", "NPM_CONFIG_CACHE"} {
 		if first[key] != second[key] {
 			t.Errorf("standalone %s differs across worktrees: %q != %q", key, first[key], second[key])
 		}
@@ -126,6 +126,75 @@ func TestStorageCLIAndHealthWiring(t *testing.T) {
 			var metrics map[string]json.RawMessage
 			if err := json.Unmarshal(payload["metrics"], &metrics); err != nil || len(metrics["storage"]) == 0 {
 				t.Fatalf("health output missing metrics.storage field: %s", output)
+			}
+		}
+	}
+}
+
+func TestStorageEpic1WrapperIsolatesToolCaches(t *testing.T) {
+	root := integrationProjectRoot(t)
+	fakeBin := t.TempDir()
+	tracePath := filepath.Join(t.TempDir(), "cache-env.trace")
+	operatorRoot := t.TempDir()
+	wrapperTmp := t.TempDir()
+
+	fakeGit := "#!/bin/sh\nprintf '%s\\n' main\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "git"), []byte(fakeGit), 0o750); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	fakeGo := `#!/bin/sh
+printf '%s\n' "$HOME|$XDG_CACHE_HOME|$GOCACHE|$GOMODCACHE|$UV_CACHE_DIR|$GOLANGCI_LINT_CACHE|$NPM_CONFIG_CACHE|$TMPDIR" >> "$STORAGE_ENV_TRACE"
+if [ ! -e "$GOMODCACHE/readonly/module.go" ]; then
+	mkdir -p "$GOMODCACHE/readonly"
+	: > "$GOMODCACHE/readonly/module.go"
+	chmod 400 "$GOMODCACHE/readonly/module.go"
+	chmod 500 "$GOMODCACHE/readonly"
+fi
+for name in TestStorageSharedCacheEndToEnd TestStorageStandalonePolicyParity TestStorageCLIAndHealthWiring; do
+	case "$*" in
+		*"$name"*) printf '=== RUN   %s\n--- PASS: %s (0.00s)\nPASS\n' "$name" "$name"; exit 0 ;;
+	esac
+done
+exit 1
+`
+	if err := os.WriteFile(filepath.Join(fakeBin, "go"), []byte(fakeGo), 0o750); err != nil {
+		t.Fatalf("write fake go: %v", err)
+	}
+
+	cmd := exec.Command("bash", filepath.Join(root, "scripts", "test_storage_epic1_shared_cache.sh")) //nolint:gosec // repository-owned acceptance script
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(),
+		"PATH="+fakeBin+":/usr/bin:/bin",
+		"HOME="+filepath.Join(operatorRoot, "home"),
+		"XDG_CACHE_HOME="+filepath.Join(operatorRoot, "cache"),
+		"GOCACHE="+filepath.Join(operatorRoot, "go-build"),
+		"GOMODCACHE="+filepath.Join(operatorRoot, "go-mod"),
+		"UV_CACHE_DIR="+filepath.Join(operatorRoot, "uv"),
+		"GOLANGCI_LINT_CACHE="+filepath.Join(operatorRoot, "golangci-lint"),
+		"NPM_CONFIG_CACHE="+filepath.Join(operatorRoot, "npm"),
+		"TMPDIR="+wrapperTmp,
+		"STORAGE_ENV_TRACE="+tracePath,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run epic 1 wrapper: %v\n%s", err, output)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(string(output)), "STORAGE_EPIC1_PASS") {
+		t.Fatalf("wrapper output missing final sentinel:\n%s", output)
+	}
+
+	trace, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatalf("read cache environment trace: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(trace)), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("cache environment trace lines = %d, want 3: %q", len(lines), trace)
+	}
+	for _, line := range lines {
+		for _, path := range strings.Split(line, "|") {
+			if path == "" || !integrationPathInside(path, wrapperTmp) {
+				t.Fatalf("wrapper cache path escaped isolated root %q: %q", wrapperTmp, path)
 			}
 		}
 	}
