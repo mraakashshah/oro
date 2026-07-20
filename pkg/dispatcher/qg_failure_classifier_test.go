@@ -189,6 +189,17 @@ func TestClassifyQGFailureDecisionMatrix(t *testing.T) {
 	}
 }
 
+func TestClassifyNilAwaySourceDiagnosticDeterministic(t *testing.T) {
+	output := `nilaway: pkg/dispatcher/presubmit.go:141:24: Potential nil panic detected`
+
+	got := dispatcher.ClassifyQGFailure(dispatcher.QGFailureRecord{Output: output}, dispatcher.QGFailureHistory{})
+	if got.Class != dispatcher.QGFailureClassWorkerDeterministic ||
+		got.Decision != dispatcher.QGFailureDecisionRetryOriginal ||
+		got.Confidence != dispatcher.QGFailureConfidenceHigh {
+		t.Fatalf("classification = %+v, want worker_deterministic/retry_original/high", got)
+	}
+}
+
 func TestClassifyQGFailureDeterministicMarkerWinsOverTimeoutText(t *testing.T) {
 	tests := []struct {
 		name         string

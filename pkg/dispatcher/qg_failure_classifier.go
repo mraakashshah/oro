@@ -113,6 +113,7 @@ var (
 	qgHexTokenRE       = regexp.MustCompile(`\b[0-9a-fA-F]{12,}\b`)
 	qgWhitespaceRE     = regexp.MustCompile(`[ \t]+`)
 	qgSummaryMarkersRE = regexp.MustCompile(`(?i)(FAIL|panic:|fatal|error|exit status|signal:)`)
+	qgNilAwaySourceRE  = regexp.MustCompile(`nilaway.*\b[^\s:]+\.go:\d+:\d+.*potential nil panic detected`)
 )
 
 // FingerprintQGFailure returns a stable fingerprint and human-readable summary
@@ -170,6 +171,7 @@ func qgClassification(class QGFailureClass, decision QGFailureDecision, confiden
 func isDeterministicQGFailure(text string) bool {
 	return strings.Contains(text, "--- fail:") ||
 		strings.Contains(text, "\nfail") ||
+		qgNilAwaySourceRE.MatchString(text) ||
 		toolFailure(text, "gofumpt") ||
 		toolFailure(text, "goimports") ||
 		toolFailure(text, "golangci-lint") ||
