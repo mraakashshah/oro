@@ -145,11 +145,13 @@ func TestQGRetryReconnectDuringReservationStillDeliversRetry(t *testing.T) {
 	baselineStarted := make(chan struct{})
 	releaseBaseline := make(chan struct{})
 	d.cfg.RegressionRevert = true
-	d.shutdownRunner = &mockCommandRunner{output: []byte("qg-reconnect-head\n")}
-	d.qgRunner = &mockQGRunner{callFn: func(context.Context, string, bool, string) (bool, string, error) {
+	d.shutdownRunner = &mockCommandRunner{callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if strings.Join(args, " ") != "-C "+worktree+" rev-parse HEAD" {
+			return []byte("qg-reconnect-head\n"), nil
+		}
 		close(baselineStarted)
 		<-releaseBaseline
-		return true, "", nil
+		return []byte("qg-reconnect-head\n"), nil
 	}}
 
 	retryDone := make(chan struct{})
