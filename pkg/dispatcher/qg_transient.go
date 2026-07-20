@@ -103,7 +103,7 @@ func (d *Dispatcher) reassignAfterTransientBackoff(
 
 	assigned := d.withReservation(workerID,
 		func() string {
-			payload = d.buildAssignPayload(ctx, &snap, attempt, rec.Output, "")
+			payload = d.buildAssignPayload(ctx, &snap, attempt, rec.Output, "", snap.execution)
 			return ""
 		},
 		func(w *trackedWorker, _ string) bool {
