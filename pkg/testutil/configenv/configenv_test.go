@@ -49,6 +49,7 @@ func TestRunPreservesExternalGoCaches(t *testing.T) {
 	t.Setenv("HOME", ambientHome)
 	t.Setenv("GOCACHE", ambientGoCache)
 	t.Setenv("GOMODCACHE", "")
+	t.Setenv("TEST_TELEMETRY_DIR", filepath.Join(ambientRoot, "telemetry-disabled"))
 
 	code := configenv.Run(func() int {
 		isolatedHome := os.Getenv("HOME")

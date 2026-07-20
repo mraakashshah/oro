@@ -633,7 +633,9 @@ func qualityGateSerialLaneHarness(t *testing.T, script, body string) string {
 	if strings.Contains(script[:serialLaneStart], "\nacquire_quality_gate_lock\n") {
 		t.Fatal("quality gate acquires the lock before run_serial_lane")
 	}
-	return script[:serialLaneEnd] + "\nheader() { :; }\nrun_serial_lane\n" + body
+	return script[:serialLaneEnd] + "\nheader() { :; }\n" +
+		"if [ -n \"${ORO_QG_TEST_BASH_ENV:-}\" ]; then source \"$ORO_QG_TEST_BASH_ENV\"; fi\n" +
+		"run_serial_lane\n" + body
 }
 
 func qualityGateArtifactSweepHarness(t *testing.T, script string) string {
@@ -1528,7 +1530,7 @@ ps() {
 				t.Fatalf("write identity-lookup failure lock owner: %v", err)
 			}
 			assertQualityGateWaiterPreservesOwnerWithEnv(t, harnessPath, dir, ownerPath, lookupFailureOwner, 1, "identity lookup failure", []string{
-				"BASH_ENV=" + failingBashEnv,
+				"ORO_QG_TEST_BASH_ENV=" + failingBashEnv,
 			})
 			if err := os.RemoveAll(lockDir); err != nil {
 				t.Fatalf("remove identity-lookup failure lock: %v", err)
@@ -1555,7 +1557,7 @@ pgrep() {
 					t.Fatalf("age descendant-probe failure lock for exit %d: %v", probeExit, err)
 				}
 				assertQualityGateWaiterPreservesOwnerWithEnv(t, harnessPath, dir, ownerPath, probeOwner, 1, fmt.Sprintf("descendant probe exit %d", probeExit), []string{
-					"BASH_ENV=" + probeBashEnv,
+					"ORO_QG_TEST_BASH_ENV=" + probeBashEnv,
 				})
 				if err := os.RemoveAll(lockDir); err != nil {
 					t.Fatalf("remove descendant-probe failure lock for exit %d: %v", probeExit, err)
@@ -1582,7 +1584,7 @@ pgrep() {
 `)
 			confirmed := exec.Command(harnessPath) //nolint:gosec // test-owned temp script
 			confirmed.Dir = dir
-			confirmed.Env = append(os.Environ(), "BASH_ENV="+confirmedBashEnv, "ORO_QG_LOCK_POLL_SECONDS=1", "ORO_QG_LOCK_TIMEOUT_SECONDS=2", "ORO_QG_STALE_LOCK_SECONDS=1")
+			confirmed.Env = append(os.Environ(), "ORO_QG_TEST_BASH_ENV="+confirmedBashEnv, "ORO_QG_LOCK_POLL_SECONDS=1", "ORO_QG_LOCK_TIMEOUT_SECONDS=2", "ORO_QG_STALE_LOCK_SECONDS=1")
 			confirmedOutput, err := confirmed.CombinedOutput()
 			if err != nil || !strings.Contains(string(confirmedOutput), "acquired") {
 				t.Fatalf("confirmed absence of descendants should reclaim old detached owner: %v\n%s", err, confirmedOutput)
