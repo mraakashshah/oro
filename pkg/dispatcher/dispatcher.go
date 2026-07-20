@@ -848,6 +848,7 @@ func (c Config) validate() error {
 type Dispatcher struct {
 	cfg            Config
 	db             *sql.DB
+	remoteGates    *Store
 	merger         *merge.Coordinator
 	ops            *ops.Spawner
 	beads          DeferredStore
@@ -1107,9 +1108,17 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 	if err != nil {
 		return nil, err
 	}
+	var remoteGates *Store
+	if db != nil {
+		remoteGates, err = NewStore(context.Background(), db)
+		if err != nil {
+			return nil, err
+		}
+	}
 	d := &Dispatcher{
 		cfg:            resolved,
 		db:             db,
+		remoteGates:    remoteGates,
 		merger:         merger,
 		ops:            opsSpawner,
 		beads:          selectedBeads,
@@ -10600,6 +10609,15 @@ func buildSearchQuery(title string, labels []string) string {
 	}
 	parts = append(parts, labels...)
 	return strings.Join(parts, " ")
+}
+
+// advanceRemoteGate advances dispatcher-owned candidate state without relying
+// on the worker that originally produced the candidate.
+func (d *Dispatcher) advanceRemoteGate(ctx context.Context, gateID int64, from, to RemoteGateState) (RemoteGate, error) {
+	if d == nil || d.remoteGates == nil {
+		return RemoteGate{}, errors.New("advance remote gate: store is unavailable")
+	}
+	return d.remoteGates.AdvanceRemoteGate(ctx, gateID, from, to)
 }
 
 // ConnectedWorkers, TargetWorkers, WorkerInfo, WorkerModel → worker_pool.go
