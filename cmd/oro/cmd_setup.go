@@ -236,6 +236,9 @@ func executeBootstrap(w io.Writer, name string, opts setupOptions) error {
 	if err != nil {
 		return fmt.Errorf("bootstrap project: %w", err)
 	}
+	if err := persistSetupRemoteCapabilities(context.Background(), opts.projectRoot); err != nil {
+		return fmt.Errorf("attest remote capabilities: %w", err)
+	}
 
 	if opts.force {
 		if err := extractAssets(oroHome, subAssets, true); err != nil {

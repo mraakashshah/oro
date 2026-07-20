@@ -1093,6 +1093,13 @@ func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressT
 }
 
 func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers int, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool, baseBranch string, mutationTesting, webEnabled bool, webAddr string, cleanliness cleanlinessStartConfig) (*dispatcher.Dispatcher, *sql.DB, error) { //nolint:funlen // factory initialization
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		return nil, nil, fmt.Errorf("get working dir: %w", err)
+	}
+	if err := verifyStartupRemoteCapabilities(context.Background(), repoRoot); err != nil {
+		return nil, nil, err
+	}
 	if err := requireNativeProductionBeadSourceMode("oro start"); err != nil {
 		return nil, nil, err
 	}
@@ -1124,12 +1131,6 @@ func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers 
 	db, err := openStateDBWithV4Migration(dbPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open state db: %w", err)
-	}
-
-	repoRoot, err := os.Getwd()
-	if err != nil {
-		_ = db.Close()
-		return nil, nil, fmt.Errorf("get working dir: %w", err)
 	}
 
 	// Open code index eagerly (fast — just opens SQLite DB) so the dispatcher
