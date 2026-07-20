@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -163,7 +164,11 @@ func (d *Dispatcher) respawnAfterCheckpoint(ctx context.Context, workerID, beadI
 	if d.procMgr != nil {
 		_ = d.procMgr.Kill(workerID)
 	}
-	assignmentID := d.activeAssignmentIDForBead(ctx, beadID)
+	assignmentID := snap.execution.AssignmentID
+	if assignmentID <= 0 {
+		assignmentID = d.activeAssignmentIDForBead(ctx, beadID)
+		snap.execution = workerExecutionContext(assignmentID, false, filepath.Base(d.cfg.RepoRoot))
+	}
 	newID, turn := d.enqueueCheckpointHandoff(beadID, assignmentID, snap, nextAction)
 	_ = d.logEvent(ctx, "checkpoint_respawn_pending", "dispatcher", beadID, workerID,
 		fmt.Sprintf(`{"next_action":%q,"turn":%d}`, nextAction, turn))
@@ -185,6 +190,7 @@ func (d *Dispatcher) detachWorkerForCheckpoint(workerID string) workerAssignment
 		return workerAssignmentSnapshot{}
 	}
 	snap := workerAssignmentSnapshot{
+		execution:    w.execution,
 		worktree:     w.worktree,
 		runtime:      w.runtime,
 		model:        w.model,
@@ -223,6 +229,7 @@ func (d *Dispatcher) enqueueCheckpointHandoff(beadID string, assignmentID int64,
 	}
 	d.pendingHandoffs[beadID] = &pendingHandoff{
 		assignmentID:   assignmentID,
+		execution:      snap.execution,
 		beadID:         beadID,
 		epicID:         snap.epicID,
 		worktree:       snap.worktree,
