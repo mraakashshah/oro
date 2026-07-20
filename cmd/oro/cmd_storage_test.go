@@ -225,6 +225,124 @@ func TestStorageStatusCommand(t *testing.T) {
 	})
 }
 
+func TestStorageCleanDefaultsToDryRun(t *testing.T) {
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+
+	target := filepath.Join(t.TempDir(), "stale-runtime")
+	if err := os.WriteFile(target, []byte("stale"), 0o600); err != nil {
+		t.Fatalf("write cleanup target: %v", err)
+	}
+	leasedTarget := filepath.Join(t.TempDir(), "leased-runtime")
+	if err := os.WriteFile(leasedTarget, []byte("leased"), 0o600); err != nil {
+		t.Fatalf("write leased cleanup target: %v", err)
+	}
+	catalog, err := openStorageCatalog(context.Background(), oroHome)
+	if err != nil {
+		t.Fatalf("openStorageCatalog() error = %v", err)
+	}
+	catalogClosed := false
+	t.Cleanup(func() {
+		if catalogClosed {
+			return
+		}
+		if err := catalog.Close(); err != nil {
+			t.Errorf("close catalog: %v", err)
+		}
+	})
+	for _, statement := range []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO providers (id, created_at, updated_at) VALUES ('runtime', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, nil},
+		{`INSERT INTO namespaces (id, provider_id, path, created_at, updated_at) VALUES ('stale-runtime', 'runtime', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, []any{target}},
+		{`INSERT INTO namespaces (id, provider_id, path, created_at, updated_at) VALUES ('leased-runtime', 'runtime', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, []any{leasedTarget}},
+		{`INSERT INTO leases (id, namespace_id, owner_id, expires_at, created_at) VALUES ('lease-1', 'leased-runtime', 'worker-1', '2099-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, nil},
+	} {
+		if _, err := catalog.DB().Exec(statement.query, statement.args...); err != nil {
+			t.Fatalf("seed cleanup catalog: %v", err)
+		}
+	}
+
+	var out strings.Builder
+	root := newRootCmd()
+	root.SetOut(&out)
+	root.SetArgs([]string{"storage", "clean", "--scope", "runtime", "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute dry-run clean: %v", err)
+	}
+	var dryRun struct {
+		Scope     storage.Scope `json:"scope"`
+		Apply     bool          `json:"apply"`
+		Decisions []struct {
+			Path           string                 `json:"path"`
+			Action         storage.ActionType     `json:"action"`
+			PreserveReason storage.PreserveReason `json:"preserve_reason"`
+		} `json:"decisions"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &dryRun); err != nil {
+		t.Fatalf("decode dry-run JSON %q: %v", out.String(), err)
+	}
+	if dryRun.Scope != storage.ScopeRuntime || dryRun.Apply {
+		t.Errorf("dry-run scope/apply = (%q, %t), want (runtime, false)", dryRun.Scope, dryRun.Apply)
+	}
+	dryRunByPath := make(map[string]struct {
+		action storage.ActionType
+		reason storage.PreserveReason
+	}, len(dryRun.Decisions))
+	for _, decision := range dryRun.Decisions {
+		dryRunByPath[decision.Path] = struct {
+			action storage.ActionType
+			reason storage.PreserveReason
+		}{decision.Action, decision.PreserveReason}
+	}
+	if len(dryRun.Decisions) != 2 || dryRunByPath[target].action != storage.Preserve || dryRunByPath[target].reason != storage.PreserveNoAuthority || dryRunByPath[leasedTarget].action != storage.Preserve || dryRunByPath[leasedTarget].reason != storage.PreserveActive {
+		t.Errorf("dry-run decisions = %+v, want preserved runtime candidate without authority", dryRun.Decisions)
+	}
+	for _, path := range []string{target, leasedTarget} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("dry-run mutated cleanup target %q: %v", path, err)
+		}
+	}
+
+	out.Reset()
+	root = newRootCmd()
+	root.SetOut(&out)
+	root.SetArgs([]string{"storage", "clean", "--scope", "runtime", "--apply", "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute apply clean: %v", err)
+	}
+	var applied struct {
+		Decisions []struct {
+			Path           string                 `json:"path"`
+			Action         storage.ActionType     `json:"action"`
+			PreserveReason storage.PreserveReason `json:"preserve_reason"`
+		} `json:"decisions"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &applied); err != nil {
+		t.Fatalf("decode apply JSON %q: %v", out.String(), err)
+	}
+	appliedByPath := make(map[string]struct {
+		action storage.ActionType
+		reason storage.PreserveReason
+	}, len(applied.Decisions))
+	for _, decision := range applied.Decisions {
+		appliedByPath[decision.Path] = struct {
+			action storage.ActionType
+			reason storage.PreserveReason
+		}{decision.Action, decision.PreserveReason}
+	}
+	if len(applied.Decisions) != 2 || appliedByPath[target].action != storage.Delete || appliedByPath[leasedTarget].action != storage.Preserve || appliedByPath[leasedTarget].reason != storage.PreserveActive {
+		t.Errorf("apply decisions = %+v, want delete plus active preservation", applied.Decisions)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Errorf("apply did not remove proven target: %v", err)
+	}
+	if _, err := os.Stat(leasedTarget); err != nil {
+		t.Errorf("--apply bypassed active lease proof: %v", err)
+	}
+}
+
 func storageCatalogFilesBytes(t *testing.T, catalogPath string) int64 {
 	t.Helper()
 	var total int64

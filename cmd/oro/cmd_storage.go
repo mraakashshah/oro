@@ -10,7 +10,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"oro/pkg/storage"
 
 	"golang.org/x/sys/unix"
 	_ "modernc.org/sqlite"
@@ -52,7 +55,7 @@ func newStorageCmd() *cobra.Command {
 		Use:   "storage",
 		Short: "Inspect Oro-managed storage",
 	}
-	cmd.AddCommand(newStorageStatusCmd())
+	cmd.AddCommand(newStorageStatusCmd(), newStorageCleanCmd())
 	return cmd
 }
 
@@ -76,6 +79,184 @@ func newStorageStatusCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit storage status as JSON")
 	return cmd
+}
+
+type storageCleanupOutput struct {
+	Scope          storage.Scope            `json:"scope"`
+	Apply          bool                     `json:"apply"`
+	CatalogHealthy bool                     `json:"catalog_healthy"`
+	Decisions      []storageCleanupDecision `json:"decisions"`
+}
+
+type storageCleanupDecision struct {
+	Path           string                 `json:"path"`
+	Scope          storage.Scope          `json:"scope"`
+	Action         storage.ActionType     `json:"action"`
+	PreserveReason storage.PreserveReason `json:"preserve_reason,omitempty"`
+}
+
+// newStorageCleanCmd creates the preservation-first "oro storage clean" command.
+func newStorageCleanCmd() *cobra.Command {
+	var scopeValue string
+	var apply bool
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "clean",
+		Short: "Plan scoped storage cleanup",
+		Long:  "Plans cleanup from the storage catalog without modifying files. Pass --apply to remove only candidates proven safe by the plan.",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			scope, err := parseStorageCleanupScope(scopeValue)
+			if err != nil {
+				return err
+			}
+			oroHome, err := resolveOroHome()
+			if err != nil {
+				return fmt.Errorf("resolve Oro home: %w", err)
+			}
+			result, err := runStorageClean(cmd.Context(), oroHome, scope, apply)
+			if err != nil {
+				return err
+			}
+			return writeStorageCleanup(cmd.OutOrStdout(), result, jsonOut)
+		},
+	}
+	cmd.Flags().StringVar(&scopeValue, "scope", string(storage.ScopeAll), "cleanup scope: all, runtime, worktrees, oro-home, or dev-tools")
+	cmd.Flags().BoolVar(&apply, "apply", false, "remove candidates proven safe by the cleanup plan")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit cleanup plan as JSON")
+	return cmd
+}
+
+func parseStorageCleanupScope(value string) (storage.Scope, error) {
+	scope := storage.Scope(strings.TrimSpace(value))
+	switch scope {
+	case storage.ScopeAll, storage.ScopeRuntime, storage.ScopeWorktrees, storage.ScopeOroHome, storage.ScopeDevTools:
+		return scope, nil
+	default:
+		return "", fmt.Errorf("invalid storage cleanup scope %q", value)
+	}
+}
+
+func runStorageClean(ctx context.Context, oroHome string, scope storage.Scope, apply bool) (storageCleanupOutput, error) {
+	paths, err := ResolveStoragePaths(oroHome)
+	if err != nil {
+		return storageCleanupOutput{}, fmt.Errorf("resolve storage paths: %w", err)
+	}
+	snapshot := loadStorageCleanupSnapshot(ctx, paths.CatalogPath)
+	plan := storage.PlanCleanup(snapshot, storage.StoragePolicy{DeletionAuthorized: apply}, scope)
+	if apply {
+		if err := applyStorageCleanup(plan); err != nil {
+			return storageCleanupOutput{}, err
+		}
+	}
+	return storageCleanupOutput{
+		Scope:          scope,
+		Apply:          apply,
+		CatalogHealthy: snapshot.CatalogHealthy,
+		Decisions:      storageCleanupDecisions(plan),
+	}, nil
+}
+
+func loadStorageCleanupSnapshot(ctx context.Context, catalogPath string) storage.Snapshot {
+	db, err := openReadOnlyCatalog(ctx, catalogPath)
+	if err != nil {
+		return storage.Snapshot{}
+	}
+	defer func() { _ = db.Close() }()
+	if !storageCatalogHealthy(ctx, db) {
+		return storage.Snapshot{}
+	}
+	candidates, err := storageCleanupCandidates(ctx, db)
+	if err != nil {
+		return storage.Snapshot{}
+	}
+	return storage.Snapshot{CatalogHealthy: true, Candidates: candidates}
+}
+
+func storageCatalogHealthy(ctx context.Context, db *sql.DB) bool {
+	var integrity string
+	if err := db.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&integrity); err != nil {
+		return false
+	}
+	var version int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		return false
+	}
+	return storageCatalogPragmasHealthy(integrity, version) && validateStorageCatalog(ctx, db) == nil
+}
+
+func storageCleanupCandidates(ctx context.Context, db *sql.DB) ([]storage.Candidate, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT n.path, EXISTS(
+			SELECT 1 FROM leases l WHERE l.namespace_id = n.id AND l.expires_at > ?
+		)
+		FROM namespaces n
+		ORDER BY n.id`, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return nil, fmt.Errorf("list cleanup namespaces: %w", err)
+	}
+	defer rows.Close()
+	candidates := make([]storage.Candidate, 0)
+	for rows.Next() {
+		var candidate storage.Candidate
+		if err := rows.Scan(&candidate.Path, &candidate.LeaseActive); err != nil {
+			return nil, fmt.Errorf("scan cleanup namespace: %w", err)
+		}
+		candidate.Scope = storage.ScopeRuntime
+		candidate.Allowlisted = true
+		candidate.Owned = true
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate cleanup namespaces: %w", err)
+	}
+	return candidates, nil
+}
+
+func applyStorageCleanup(plan storage.Plan) error {
+	for _, decision := range plan.Decisions {
+		if decision.Action != storage.Delete {
+			continue
+		}
+		if err := os.RemoveAll(decision.Candidate.Path); err != nil {
+			return fmt.Errorf("remove planned storage path %s: %w", decision.Candidate.Path, err)
+		}
+	}
+	return nil
+}
+
+func storageCleanupDecisions(plan storage.Plan) []storageCleanupDecision {
+	decisions := make([]storageCleanupDecision, 0, len(plan.Decisions))
+	for _, decision := range plan.Decisions {
+		decisions = append(decisions, storageCleanupDecision{
+			Path:           decision.Candidate.Path,
+			Scope:          decision.Candidate.Scope,
+			Action:         decision.Action,
+			PreserveReason: decision.PreserveReason,
+		})
+	}
+	return decisions
+}
+
+func writeStorageCleanup(w io.Writer, result storageCleanupOutput, jsonOut bool) error {
+	if jsonOut {
+		if err := json.NewEncoder(w).Encode(result); err != nil {
+			return fmt.Errorf("encode storage cleanup: %w", err)
+		}
+		return nil
+	}
+	for _, decision := range result.Decisions {
+		if decision.Action == storage.Delete {
+			if _, err := fmt.Fprintf(w, "%s %s\n", decision.Action, decision.Path); err != nil {
+				return fmt.Errorf("write storage cleanup: %w", err)
+			}
+			continue
+		}
+		if _, err := fmt.Fprintf(w, "%s %s (%s)\n", decision.Action, decision.Path, decision.PreserveReason); err != nil {
+			return fmt.Errorf("write storage cleanup: %w", err)
+		}
+	}
+	return nil
 }
 
 func loadStorageStatus(ctx context.Context, oroHome string) (storageStatus, error) {
