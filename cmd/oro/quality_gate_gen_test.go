@@ -1804,6 +1804,45 @@ func checkBashSyntax(t *testing.T, script string) {
 	}
 }
 
+// TestGeneratedQualityGateUsesSharedCaches proves the generated quality gate
+// inherits shared Go/uv/lint/module caches instead of minting cold per-run
+// caches under QG_DIR. A fresh per-run GOCACHE forces every sibling worktree
+// gate to cold-compile the whole repo, so tool caches must inherit their
+// environment and only QG scratch data belongs under QG_DIR.
+func TestGeneratedQualityGateUsesSharedCaches(t *testing.T) {
+	cfg := &langprofile.Config{
+		Languages: map[string]langprofile.LanguageConfig{
+			"go":     {TestCmd: "go test ./...", Linters: []string{"golangci-lint"}},
+			"python": {TestCmd: "uv run pytest", Linters: []string{"ruff"}},
+		},
+	}
+	generated, err := generateQualityGateScript(cfg)
+	if err != nil {
+		t.Fatalf("generate quality gate: %v", err)
+	}
+	checkedIn, err := os.ReadFile(filepath.Join("..", "..", "scripts", "quality_gate.sh"))
+	if err != nil {
+		t.Fatalf("read checked-in quality gate: %v", err)
+	}
+
+	// No tool cache may be redirected under QG_DIR — that is the cold per-run
+	// cache anti-pattern this contract forbids.
+	forbidden := regexp.MustCompile(`\$QG_DIR/[A-Za-z0-9_-]*cache|QG_DIR.*(go-build-cache|golangci-go-cache|golangci-lint-cache|uv-cache)`)
+	for name, script := range map[string]string{
+		"generated":  generated,
+		"checked-in": string(checkedIn),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if loc := forbidden.FindString(script); loc != "" {
+				t.Errorf("quality gate redirects a tool cache under QG_DIR (%q); tool caches must inherit shared external caches", loc)
+			}
+			if !strings.Contains(script, "Tool caches deliberately inherit their environment") {
+				t.Error("quality gate missing the shared-cache inheritance contract")
+			}
+		})
+	}
+}
+
 // TestGoLanesScopeOutUntrackedArchive guards against the Go build/vet/govulncheck
 // lanes descending into archive/ — a gitignored, untracked tree of intentionally
 // broken Go fixtures that fails the gate on cruft that can never be pushed.
