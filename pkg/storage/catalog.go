@@ -12,7 +12,8 @@ import (
 	"oro/pkg/dbutil"
 )
 
-const catalogSchemaVersion = 2
+// CatalogSchemaVersion is the newest storage catalog schema understood by this binary.
+const CatalogSchemaVersion = 2
 
 var (
 	// ErrCatalogCorrupt reports a catalog SQLite database that cannot be read safely.
@@ -173,7 +174,7 @@ func migrateCatalog(ctx context.Context, tx catalogTx) error {
 	if err := tx.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		return fmt.Errorf("read catalog schema version: %w", err)
 	}
-	if version > catalogSchemaVersion {
+	if version > CatalogSchemaVersion {
 		return fmt.Errorf("%w: %d", ErrCatalogUnsupportedVersion, version)
 	}
 	if err := applyCatalogSchema(ctx, tx); err != nil {
@@ -184,7 +185,7 @@ func migrateCatalog(ctx context.Context, tx catalogTx) error {
 			return err
 		}
 	}
-	if version != catalogSchemaVersion {
+	if version != CatalogSchemaVersion {
 		if _, err := tx.ExecContext(ctx, `PRAGMA user_version = 2`); err != nil {
 			return fmt.Errorf("set catalog schema version: %w", err)
 		}
