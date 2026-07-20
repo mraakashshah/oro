@@ -20,6 +20,7 @@ import (
 	"oro/pkg/beadstore"
 	"oro/pkg/codesearch"
 	"oro/pkg/dispatcher"
+	"oro/pkg/factoryhealth"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/processenv"
@@ -1178,6 +1179,9 @@ func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers 
 		AuditEnabled:            cleanliness.AuditEnabled,
 		WebEnabled:              webEnabled,
 		WebAddr:                 webAddr,
+		StorageHealth: func(ctx context.Context) *factoryhealth.StorageHealth {
+			return loadFactoryStorageHealth(ctx, paths.OroHome)
+		},
 	}
 
 	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, codeIdx,

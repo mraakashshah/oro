@@ -31,12 +31,14 @@ type factoryHealthInput struct {
 	assignmentFreezeReason       string
 	progressTimeoutSecs          float64
 	heartbeatTimeoutSecs         float64
+	storage                      *factoryhealth.StorageHealth
 }
 
 // applyHealth returns the repo-owned FactoryHealth JSON contract.
 func (d *Dispatcher) applyHealth() (string, error) {
 	now := d.nowFunc()
 	ctx := context.Background()
+	storage := d.storageHealth(ctx)
 
 	readyBeads, err := d.beads.Ready(ctx)
 	if err != nil {
@@ -69,6 +71,7 @@ func (d *Dispatcher) applyHealth() (string, error) {
 		assignmentFreezeReason:       d.assignmentFreezeReason,
 		progressTimeoutSecs:          d.cfg.ProgressTimeout.Seconds(),
 		heartbeatTimeoutSecs:         d.cfg.HeartbeatTimeout.Seconds(),
+		storage:                      storage,
 	}
 	d.mu.Unlock()
 
@@ -124,7 +127,15 @@ func (d *Dispatcher) evaluateFactoryHealth(ctx context.Context, now time.Time, i
 		Throughput:                   throughput,
 		OpsRuns:                      opsRuns,
 		PendingEscalations:           pendingEscalations,
+		Storage:                      input.storage,
 	})
+}
+
+func (d *Dispatcher) storageHealth(ctx context.Context) *factoryhealth.StorageHealth {
+	if d.cfg.StorageHealth == nil {
+		return nil
+	}
+	return d.cfg.StorageHealth(ctx)
 }
 
 // LoadOpsRunMetrics reads health-relevant ops run counts from the state database.

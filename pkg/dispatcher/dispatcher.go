@@ -703,6 +703,9 @@ type Config struct {
 	// ContextSafety holds the configurable warning/checkpoint thresholds (§9.4).
 	// Expressed as fractions in [0, 1]. Zero values fall back to package defaults.
 	ContextSafety ContextSafetyConfig
+	// StorageHealth observes the host-global storage control plane. A nil
+	// observer leaves storage health unavailable.
+	StorageHealth func(context.Context) *factoryhealth.StorageHealth
 }
 
 // LeakScanConfig controls the dispatcher's pre-merge secret scan.

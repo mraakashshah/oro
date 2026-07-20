@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"oro/pkg/factoryhealth"
 	"oro/pkg/storage"
 
 	"golang.org/x/sys/unix"
@@ -288,6 +289,26 @@ func loadStorageStatus(ctx context.Context, oroHome string) (storageStatus, erro
 	status.Bytes.Total = status.Bytes.Catalog + status.Bytes.Evidence + status.Bytes.Cache
 
 	return loadStorageCatalogStatus(ctx, paths.CatalogPath, status), nil
+}
+
+func loadFactoryStorageHealth(ctx context.Context, oroHome string) *factoryhealth.StorageHealth {
+	status, err := loadStorageStatus(ctx, oroHome)
+	if err != nil || status.Catalog.Health != "healthy" {
+		return &factoryhealth.StorageHealth{}
+	}
+	return &factoryhealth.StorageHealth{
+		Available:    true,
+		Pressure:     status.Pressure,
+		SweepOverdue: storageSweepOverdue(status, time.Now()),
+	}
+}
+
+func storageSweepOverdue(status storageStatus, now time.Time) bool {
+	if status.NextSweep == "" {
+		return false
+	}
+	nextSweep, err := time.Parse(time.RFC3339, status.NextSweep)
+	return err == nil && !nextSweep.After(now)
 }
 
 func storageFilesystemStatus(path string) (storageStatus, error) {

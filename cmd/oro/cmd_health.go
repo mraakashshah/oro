@@ -114,6 +114,10 @@ func loadLocalFactoryHealth(ctx context.Context, stateDBPath string, daemonRunni
 	if ready, readyErr := store.Ready(ctx); readyErr == nil {
 		readyQueue = len(ready)
 	}
+	oroHome, err := resolveOroHome()
+	if err != nil {
+		return factoryhealth.FactoryHealth{}, fmt.Errorf("resolve Oro home: %w", err)
+	}
 	return factoryhealth.Evaluate(factoryhealth.Snapshot{
 		DaemonRunning:           daemonRunning,
 		DaemonPID:               pid,
@@ -126,6 +130,7 @@ func loadLocalFactoryHealth(ctx context.Context, stateDBPath string, daemonRunni
 		OpenRecoveryQuarantines: openRecoveryQuarantines,
 		Throughput:              throughput,
 		OpsRuns:                 opsRuns,
+		Storage:                 loadFactoryStorageHealth(ctx, oroHome),
 	}), nil
 }
 
