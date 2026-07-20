@@ -503,11 +503,8 @@ trap cleanup_qg EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Keep the golangci-lint cache inside the QG temp directory. Shared
-# golangci-lint caches can collide across concurrent workers.
-export GOLANGCI_LINT_CACHE="$QG_DIR/golangci-lint-cache"
-export GOCACHE="$QG_DIR/go-build-cache"
-export UV_CACHE_DIR="${UV_CACHE_DIR:-$QG_DIR/uv-cache}"
+# Tool caches deliberately inherit their environment (or each tool's standard
+# external default). Only QG scratch data belongs under TMPDIR/QG_DIR.
 export GOMAXPROCS="${ORO_QG_GOMAXPROCS:-2}"
 
 # Resolve repo root node_modules (works from worktrees too). Non-git harness
@@ -1273,7 +1270,7 @@ lane_go() {
     # --- Tier 2: Lint (parallel) ---
     header "GO TIER 2: LINT"
     parallel_checks \
-        "golangci-lint" "GOCACHE=$QG_DIR/golangci-go-cache GOFLAGS=-buildvcs=false golangci-lint run --timeout 10m --allow-parallel-runners ./cmd/... ./internal/... ./pkg/..."
+        "golangci-lint" "GOFLAGS=-buildvcs=false golangci-lint run --timeout 10m --allow-parallel-runners ./cmd/... ./internal/... ./pkg/..."
     pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
     if [ "$fail" -gt 0 ]; then echo "${pass}:${fail}" > "$QG_DIR/go.rc"; return; fi
 
