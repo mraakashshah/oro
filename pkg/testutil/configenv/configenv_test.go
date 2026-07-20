@@ -3,6 +3,7 @@ package configenv_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"oro/pkg/testutil/configenv"
@@ -38,5 +39,42 @@ func TestRunIsolatesAndRestoresAgentConfigEnvironment(t *testing.T) {
 	}
 	if got := os.Getenv("ORO_HOME"); got != ambientOroHome {
 		t.Fatalf("ORO_HOME after Run = %q, want restored %q", got, ambientOroHome)
+	}
+}
+
+func TestRunPreservesExternalGoCaches(t *testing.T) {
+	ambientRoot := t.TempDir()
+	ambientHome := filepath.Join(ambientRoot, "home")
+	ambientGoCache := filepath.Join(ambientRoot, "go-build")
+	t.Setenv("HOME", ambientHome)
+	t.Setenv("GOCACHE", ambientGoCache)
+	t.Setenv("GOMODCACHE", "")
+
+	code := configenv.Run(func() int {
+		isolatedHome := os.Getenv("HOME")
+		for _, key := range []string{"GOCACHE", "GOMODCACHE"} {
+			value := os.Getenv(key)
+			if value == "" {
+				t.Errorf("%s is empty", key)
+				continue
+			}
+			if rel, err := filepath.Rel(isolatedHome, value); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+				t.Errorf("%s = %q, want path outside temporary HOME %q", key, value, isolatedHome)
+			}
+		}
+		if got := os.Getenv("GOCACHE"); got != ambientGoCache {
+			t.Errorf("GOCACHE = %q, want preserved %q", got, ambientGoCache)
+		}
+		return 0
+	})
+
+	if code != 0 {
+		t.Fatalf("Run exit code = %d, want 0", code)
+	}
+	if got := os.Getenv("GOCACHE"); got != ambientGoCache {
+		t.Fatalf("GOCACHE after Run = %q, want restored %q", got, ambientGoCache)
+	}
+	if got := os.Getenv("GOMODCACHE"); got != "" {
+		t.Fatalf("GOMODCACHE after Run = %q, want restored empty value", got)
 	}
 }
