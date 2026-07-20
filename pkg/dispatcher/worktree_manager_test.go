@@ -2097,6 +2097,94 @@ func TestLinkQualityGateCreatesIsolatedManagedCopy(t *testing.T) {
 	}
 }
 
+func TestReusedWorktreeRefreshesManagedQualityGate(t *testing.T) {
+	worktree := t.TempDir()
+	configuredSource := filepath.Join(t.TempDir(), "quality_gate.sh")
+	configuredContent := []byte("#!/bin/sh\necho current\n")
+	if err := os.WriteFile(configuredSource, configuredContent, 0o755); err != nil {
+		t.Fatalf("create configured quality gate: %v", err)
+	}
+
+	worktreeQualityGate := filepath.Join(worktree, "quality_gate.sh")
+	if err := os.WriteFile(worktreeQualityGate, []byte("#!/bin/sh\necho stale\n"), 0o644); err != nil {
+		t.Fatalf("create stale worktree quality gate: %v", err)
+	}
+	unrelatedFile := filepath.Join(worktree, "worker-notes.txt")
+	unrelatedContent := []byte("preserve me\n")
+	if err := os.WriteFile(unrelatedFile, unrelatedContent, 0o600); err != nil {
+		t.Fatalf("create unrelated worktree file: %v", err)
+	}
+
+	runner := &mockCommandRunner{
+		callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "git" && slices.Equal(args, []string{"-C", "/repo", "rev-parse", "agent/oro-reused"}) {
+				return []byte("same-head\n"), nil
+			}
+			if name == "git" && slices.Equal(args, []string{"-C", "/repo", "rev-parse", "main"}) {
+				return []byte("same-head\n"), nil
+			}
+			return nil, fmt.Errorf("unexpected command: %s %v", name, args)
+		},
+	}
+	mgr := NewGitWorktreeManager("/repo", "", configuredSource, runner)
+
+	fastForwarded, err := mgr.PrepareExistingForReuse(context.Background(), worktree, "agent/oro-reused", "main")
+	if err != nil {
+		t.Fatalf("PrepareExistingForReuse: %v", err)
+	}
+	if fastForwarded {
+		t.Fatal("fastForwarded = true, want false when branch already matches base")
+	}
+
+	gotQualityGate, err := os.ReadFile(worktreeQualityGate)
+	if err != nil {
+		t.Fatalf("read refreshed quality gate: %v", err)
+	}
+	if !bytes.Equal(gotQualityGate, configuredContent) {
+		t.Fatalf("quality gate content = %q, want %q", gotQualityGate, configuredContent)
+	}
+	info, err := os.Lstat(worktreeQualityGate)
+	if err != nil {
+		t.Fatalf("lstat refreshed quality gate: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("quality gate must be a regular snapshot, got symlink")
+	}
+	if got, want := info.Mode().Perm(), os.FileMode(0o755); got != want {
+		t.Fatalf("quality gate mode = %o, want %o", got, want)
+	}
+	gotUnrelated, err := os.ReadFile(unrelatedFile)
+	if err != nil {
+		t.Fatalf("read unrelated worktree file: %v", err)
+	}
+	if !bytes.Equal(gotUnrelated, unrelatedContent) {
+		t.Fatalf("unrelated worktree file = %q, want %q", gotUnrelated, unrelatedContent)
+	}
+}
+
+func TestPrepareExistingForReuseFailsClosedWhenManagedQualityGateIsMissing(t *testing.T) {
+	runner := &mockCommandRunner{
+		callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "git" && slices.Equal(args, []string{"-C", "/repo", "rev-parse", "agent/oro-reused"}) {
+				return []byte("same-head\n"), nil
+			}
+			if name == "git" && slices.Equal(args, []string{"-C", "/repo", "rev-parse", "main"}) {
+				return []byte("same-head\n"), nil
+			}
+			return nil, fmt.Errorf("unexpected command: %s %v", name, args)
+		},
+	}
+	mgr := NewGitWorktreeManager("/repo", "", filepath.Join(t.TempDir(), "missing-quality_gate.sh"), runner)
+
+	_, err := mgr.PrepareExistingForReuse(context.Background(), t.TempDir(), "agent/oro-reused", "main")
+	if err == nil {
+		t.Fatal("PrepareExistingForReuse error = nil, want missing managed quality gate to block reuse")
+	}
+	if !strings.Contains(err.Error(), "managed quality gate") {
+		t.Fatalf("PrepareExistingForReuse error = %v, want managed quality gate context", err)
+	}
+}
+
 func TestNewGitWorktreeManager_StoresQualityGatePath(t *testing.T) {
 	runner := &mockCommandRunner{}
 	wantQG := "/path/to/quality_gate.sh"

@@ -153,6 +153,9 @@ func readProcessEnvironmentSnapshotsWithReader(
 		if errors.Is(err, os.ErrPermission) {
 			continue
 		}
+		if errors.Is(err, syscall.EINVAL) {
+			continue
+		}
 		if allOwnedProcessesExited(ctx, []OwnedProcess{process}) {
 			continue
 		}

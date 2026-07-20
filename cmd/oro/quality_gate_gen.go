@@ -414,7 +414,7 @@ const qualityGateTmpl = `#!/bin/sh
 # lane bails on first tier failure.
 # =============================================================================
 
-if [ "${ORO_QG_BASH_BOOTSTRAPPED:-}" != "1" ]; then
+if [ "${ORO_QG_BASH_BOOTSTRAPPED_PID:-}" != "$$" ]; then
     if grep -n -E '^(<{7}|={7}|>{7})( |$)' "$0" >/dev/null 2>&1; then
         echo "FAIL: quality_gate.sh contains unresolved git conflict markers" >&2
         grep -n -E '^(<{7}|={7}|>{7})( |$)' "$0" >&2 || true
@@ -424,10 +424,16 @@ if [ "${ORO_QG_BASH_BOOTSTRAPPED:-}" != "1" ]; then
         export LC_ALL=C
         export LANG=C
     fi
-    export ORO_QG_BASH_BOOTSTRAPPED=1
-    exec /usr/bin/env bash "$0" "$@"
+    # The legacy marker can be inherited by a fresh /bin/sh launcher. A PID-scoped
+    # token survives this one exec but cannot suppress bootstrap in a child launch.
+    # Keep the preflight before Bash parses the script; ignore BASH_ENV because a
+    # shell hook can recursively launch this gate.
+    unset ORO_QG_BASH_BOOTSTRAPPED
+    export ORO_QG_BASH_BOOTSTRAPPED_PID=$$
+    exec env -u BASH_ENV /usr/bin/env bash "$0" "$@"
 fi
 unset ORO_QG_BASH_BOOTSTRAPPED
+unset ORO_QG_BASH_BOOTSTRAPPED_PID
 
 set -euo pipefail
 
@@ -719,6 +725,20 @@ quality_gate_lock_is_inherited() {
         grep -qx "token=$ORO_QG_INHERITED_LOCK_TOKEN" "$lock_dir/owner" 2>/dev/null
 }
 
+# OSC-8 terminal hyperlinks can create escaped, top-level artifact directories
+# when pasted into shells. Remove only real directories at the repository root;
+# do not follow symlinks or inspect paths below that boundary.
+sweep_repo_root_escape_artifacts() {
+    local repo_root="$1"
+    local artifact
+    for artifact in "$repo_root"/$'\033]8;;file:'*; do
+        [ -d "$artifact" ] && [ ! -L "$artifact" ] || continue
+        rm -rf -- "$artifact"
+    done
+}
+
+sweep_repo_root_escape_artifacts "$REPO_ROOT"
+
 acquire_quality_gate_lock() {
     local lock_dir="$REPO_ROOT/.oro-quality-gate.lock"
     local queue_dir="$REPO_ROOT/.oro-quality-gate.queue"
@@ -777,7 +797,32 @@ acquire_quality_gate_lock() {
     QG_RUN_QUEUE_TICKET=""
 }
 
-acquire_quality_gate_lock
+# check_inherited_quality_gate_lock short-circuits a gate invoked inside another
+# gate's serialized lane. The concurrent main phase itself remains lockless.
+check_inherited_quality_gate_lock() {
+    if quality_gate_lock_is_inherited "$REPO_ROOT/.oro-quality-gate.lock"; then
+        exit 0
+    fi
+}
+
+neutralize_serial_lane_env() {
+    unset ORO_QG_SERIAL_LANE
+}
+
+# Generated gates have no Oro-specific guarded tests, but retain the same
+# lane-local lock boundary as the checked-in gate so recursive invocations and
+# sibling worktrees share one lock contract without serializing the main phase.
+run_serial_lane() {
+    if ! acquire_quality_gate_lock; then
+        echo "0:1" >"$QG_DIR/serial.rc" 2>/dev/null || true
+        return 1
+    fi
+    export ORO_QG_SERIAL_LANE=1
+    echo "1:0" >"$QG_DIR/serial.rc"
+}
+
+check_inherited_quality_gate_lock
+neutralize_serial_lane_env
 
 # =============================================================================
 # PRIMITIVES
@@ -865,7 +910,7 @@ qg_run_pylint_source() {
         echo "No tracked Python source files"
         return 0
     fi
-    pylint --disable=all --enable=E "${files[@]}"
+    qg_run_python_tool pylint --disable=all --enable=E "${files[@]}"
 }
 
 # shellcheck disable=SC2317,SC2329
@@ -1048,7 +1093,7 @@ check() {
 qg_python_tool_path() {
     local tool="$1"
     local candidate
-    for candidate in ".venv/bin/$tool" "$REPO_ROOT/.venv/bin/$tool" "$HOME/.local/bin/$tool"; do
+    for candidate in ".venv/bin/$tool" "$REPO_ROOT/.venv/bin/$tool"; do
         if [ -x "$candidate" ]; then
             if ! qg_python_tool_path_allowed "$candidate"; then
                 continue
@@ -1088,6 +1133,14 @@ qg_python_tool_path_allowed() {
 qg_run_python_tool() {
     local tool="$1"
     shift
+    # pylint must analyze code inside the project's dependency environment so
+    # first-party imports (e.g. files that import pytest) resolve; a global
+    # install emits a false import-error (E0401). Prefer uv run for it; --with
+    # provides pylint itself when it is not a project dependency.
+    if [ "$tool" = "pylint" ] && command -v uv >/dev/null 2>&1; then
+        uv run --with pylint pylint "$@"
+        return
+    fi
     local path
     if path=$(qg_python_tool_path "$tool"); then
         "$path" "$@"
@@ -1502,6 +1555,11 @@ PID_OT=$!
 {{end}}cat "$QG_DIR/other.out" 2>/dev/null || true
 {{if .HasPython}}cat "$QG_DIR/python.out" 2>/dev/null || true
 {{end}}
+
+# Keep only the lane-local boundary serialized; all language lanes above ran
+# concurrently and lockless.
+run_serial_lane || true
+
 # Aggregate pass/fail counts
 TOTAL_PASS=0
 TOTAL_FAIL=0
@@ -1509,6 +1567,7 @@ expected_rc_files=(
 {{if .HasGo}}    "$QG_DIR/go.rc"
 {{end}}{{if .HasPython}}    "$QG_DIR/python.rc"
 {{end}}    "$QG_DIR/other.rc"
+    "$QG_DIR/serial.rc"
 )
 for rc_file in "${expected_rc_files[@]}"; do
     if [ -f "$rc_file" ]; then

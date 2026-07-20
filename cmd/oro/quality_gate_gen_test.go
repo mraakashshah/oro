@@ -93,6 +93,44 @@ func TestGenerateGolangciLint(t *testing.T) {
 	})
 }
 
+// TestQualityGatePylintRunsInProjectEnv verifies the generated gate invokes
+// pylint inside the project's dependency environment (via uv) rather than a
+// global install, so source files that import project dependencies (e.g. pytest)
+// do not raise a false import-error (E0401), and that the python tool resolver
+// does not fall back to a global ~/.local/bin install.
+func TestQualityGatePylintRunsInProjectEnv(t *testing.T) {
+	cfg := &langprofile.Config{
+		Languages: map[string]langprofile.LanguageConfig{
+			"python": {
+				TestCmd:    "uv run pytest",
+				Formatters: []string{"ruff"},
+				Linters:    []string{"ruff", "pylint"},
+				TypeCheck:  "pyright",
+			},
+		},
+	}
+	script, err := generateQualityGateScript(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Fix: the python tool resolver must not fall back to a global ~/.local/bin
+	// install, which runs outside the project dependency environment.
+	if strings.Contains(script, `$HOME/.local/bin/$tool`) {
+		t.Error("qg_python_tool_path should not include the global $HOME/.local/bin candidate")
+	}
+	// Fix: pylint must run via uv in the project env, not a bare global binary.
+	if !strings.Contains(script, `uv run --with pylint pylint`) {
+		t.Error("qg_run_python_tool should run pylint via `uv run --with pylint`")
+	}
+	// Fix: the pylint lint helper must route through qg_run_python_tool.
+	if !strings.Contains(script, `qg_run_python_tool pylint --disable=all --enable=E`) {
+		t.Error("qg_run_pylint_source should route pylint through qg_run_python_tool")
+	}
+
+	checkBashSyntax(t, script)
+}
+
 // TestGeneratePyprojectToolSections verifies pyproject.toml tool section generation from Config.
 func TestGeneratePyprojectToolSections(t *testing.T) {
 	t.Run("Python in config returns TOML with tool sections", func(t *testing.T) {
@@ -211,7 +249,7 @@ func TestGenerateQualityGateScript(t *testing.T) {
 		if !strings.HasPrefix(script, "#!/bin/sh\n# shellcheck shell=bash") {
 			t.Error("script should start with /bin/sh Bash bootstrap")
 		}
-		if !strings.Contains(script, `exec /usr/bin/env bash "$0" "$@"`) {
+		if !strings.Contains(script, `exec env -u BASH_ENV /usr/bin/env bash "$0" "$@"`) {
 			t.Error("script should exec Bash after bootstrap")
 		}
 		if !strings.Contains(script, "lane_go") {
@@ -304,7 +342,7 @@ func TestGenerateQualityGateScript(t *testing.T) {
 		if !strings.HasPrefix(script, "#!/bin/sh\n# shellcheck shell=bash") {
 			t.Error("script should start with /bin/sh Bash bootstrap")
 		}
-		if !strings.Contains(script, `exec /usr/bin/env bash "$0" "$@"`) {
+		if !strings.Contains(script, `exec env -u BASH_ENV /usr/bin/env bash "$0" "$@"`) {
 			t.Error("script should exec Bash after bootstrap")
 		}
 		if strings.Contains(script, "lane_go") {
@@ -349,7 +387,7 @@ func TestGenerateQualityGateScript(t *testing.T) {
 		if !strings.HasPrefix(script, "#!/bin/sh\n# shellcheck shell=bash") {
 			t.Error("script should start with /bin/sh Bash bootstrap")
 		}
-		if !strings.Contains(script, `exec /usr/bin/env bash "$0" "$@"`) {
+		if !strings.Contains(script, `exec env -u BASH_ENV /usr/bin/env bash "$0" "$@"`) {
 			t.Error("script should exec Bash after bootstrap")
 		}
 		if !strings.Contains(script, "lane_go") {
@@ -569,6 +607,100 @@ func TestWriteQualityGateScriptFile_AbsentConfig(t *testing.T) {
 	}
 }
 
+func qualityGateSerialLaneHarness(t *testing.T, script, body string) string {
+	t.Helper()
+	serialLaneStart := strings.Index(script, "run_serial_lane() {")
+	if serialLaneStart < 0 {
+		t.Fatal("quality gate missing run_serial_lane")
+	}
+	serialLaneEndRel := strings.Index(script[serialLaneStart:], "\n}\n")
+	if serialLaneEndRel < 0 {
+		t.Fatal("quality gate run_serial_lane missing closing brace")
+	}
+	serialLaneEnd := serialLaneStart + serialLaneEndRel + len("\n}\n")
+	serialLane := script[serialLaneStart:serialLaneEnd]
+	if !strings.Contains(serialLane, "acquire_quality_gate_lock") {
+		t.Fatal("quality gate run_serial_lane does not acquire the quality-gate lock")
+	}
+	if strings.Contains(script[:serialLaneStart], "\nacquire_quality_gate_lock\n") {
+		t.Fatal("quality gate acquires the lock before run_serial_lane")
+	}
+	return script[:serialLaneEnd] + "\nheader() { :; }\nrun_serial_lane\n" + body
+}
+
+func qualityGateArtifactSweepHarness(t *testing.T, script string) string {
+	t.Helper()
+	start := strings.Index(script, "sweep_repo_root_escape_artifacts() {")
+	if start < 0 {
+		t.Fatal("quality gate missing OSC-8 artifact sweep")
+	}
+	endRel := strings.Index(script[start:], "\n}\n")
+	if endRel < 0 {
+		t.Fatal("quality gate OSC-8 artifact sweep missing closing brace")
+	}
+	invocation := strings.Index(script, "sweep_repo_root_escape_artifacts \"$REPO_ROOT\"")
+	lock := strings.Index(script, "acquire_quality_gate_lock() {")
+	if invocation < 0 || lock < 0 || invocation > lock {
+		t.Fatal("quality gate does not sweep OSC-8 artifacts before lock acquisition")
+	}
+	end := start + endRel + len("\n}\n")
+	return "#!/usr/bin/env bash\nset -euo pipefail\n" + script[start:end] + "\nsweep_repo_root_escape_artifacts \"$REPO_ROOT\"\n"
+}
+
+func TestQualityGateRepoRootEscapeArtifactSweep(t *testing.T) {
+	var generated bytes.Buffer
+	if err := writeQualityGateScript(&generated, ProjectPaths{}); err != nil {
+		t.Fatalf("write generated quality gate: %v", err)
+	}
+	checkedIn, err := os.ReadFile(filepath.Join("..", "..", "scripts", "quality_gate.sh"))
+	if err != nil {
+		t.Fatalf("read checked-in quality gate: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		script string
+	}{
+		{name: "generated", script: generated.String()},
+		{name: "checked-in", script: string(checkedIn)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repoRoot := t.TempDir()
+			artifact := filepath.Join(repoRoot, "\x1b]8;;file:artifact")
+			normalDir := filepath.Join(repoRoot, "normal")
+			liveLock := filepath.Join(repoRoot, ".oro-quality-gate.lock")
+			ordinaryFile := filepath.Join(repoRoot, "ordinary-file")
+			for _, dir := range []string{artifact, normalDir, liveLock} {
+				if err := os.Mkdir(dir, 0o755); err != nil {
+					t.Fatalf("create %q: %v", dir, err)
+				}
+			}
+			if err := os.WriteFile(ordinaryFile, []byte("keep"), 0o644); err != nil {
+				t.Fatalf("write ordinary file: %v", err)
+			}
+
+			harnessPath := filepath.Join(repoRoot, "sweep.sh")
+			if err := os.WriteFile(harnessPath, []byte(qualityGateArtifactSweepHarness(t, tc.script)), 0o755); err != nil {
+				t.Fatalf("write artifact sweep harness: %v", err)
+			}
+			cmd := exec.Command(harnessPath) //nolint:gosec // harnessPath is a test-owned temp file
+			cmd.Env = append(os.Environ(), "REPO_ROOT="+repoRoot)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("run artifact sweep: %v\n%s", err, out)
+			}
+
+			if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+				t.Fatalf("OSC-8 artifact directory should be removed, stat err=%v", err)
+			}
+			for _, preserved := range []string{normalDir, liveLock, ordinaryFile} {
+				if _, err := os.Lstat(preserved); err != nil {
+					t.Fatalf("preserved entry %q missing: %v", preserved, err)
+				}
+			}
+		})
+	}
+}
+
 func TestQualityGateRunLockArchivesDeadOwnerAndStartsWithoutTimeout(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := filepath.Join(dir, "quality_gate.sh")
@@ -578,12 +710,7 @@ func TestQualityGateRunLockArchivesDeadOwnerAndStartsWithoutTimeout(t *testing.T
 		t.Fatalf("writeQualityGateScript: %v", err)
 	}
 	script := buf.String()
-	acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
-	acquireIdx := strings.Index(script, acquireCall)
-	if acquireIdx < 0 {
-		t.Fatalf("generated quality gate missing acquire call marker")
-	}
-	harness := script[:acquireIdx+len("acquire_quality_gate_lock")] + "\n"
+	harness := qualityGateSerialLaneHarness(t, script, "")
 	if err := os.WriteFile(scriptPath, []byte(harness), 0o755); err != nil {
 		t.Fatalf("write quality gate script: %v", err)
 	}
@@ -636,12 +763,7 @@ func TestQualityGateRunLockDoesNotReportWaitingWhenUncontended(t *testing.T) {
 		t.Fatalf("writeQualityGateScript: %v", err)
 	}
 	script := buf.String()
-	acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
-	acquireIdx := strings.Index(script, acquireCall)
-	if acquireIdx < 0 {
-		t.Fatalf("generated quality gate missing acquire call marker")
-	}
-	harness := script[:acquireIdx+len("acquire_quality_gate_lock")] + "\n"
+	harness := qualityGateSerialLaneHarness(t, script, "")
 	if err := os.WriteFile(scriptPath, []byte(harness), 0o755); err != nil {
 		t.Fatalf("write quality gate script: %v", err)
 	}
@@ -680,20 +802,14 @@ func TestQualityGateScriptsRecursiveInvocationReturnsWithoutQueueingBehindParent
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
-			acquireIdx := strings.Index(tc.script, acquireCall)
-			if acquireIdx < 0 {
-				t.Fatalf("quality gate missing acquire call marker")
-			}
-
-			harness := tc.script[:acquireIdx+len("acquire_quality_gate_lock")] + `
+			harness := qualityGateSerialLaneHarness(t, tc.script, `
 if [ "${ORO_QG_RECURSIVE_TEST:-}" = "1" ]; then
     ORO_QG_RECURSIVE_TEST=0 "$0"
 fi
 if [ "${ORO_QG_RECURSIVE_TEST:-}" = "0" ]; then
     echo "recursive child reached quality gate body"
 fi
-`
+`)
 			scriptPath := filepath.Join(dir, "quality_gate.sh")
 			if err := os.WriteFile(scriptPath, []byte(harness), 0o755); err != nil {
 				t.Fatalf("write quality gate harness: %v", err)
@@ -746,14 +862,9 @@ func TestQualityGateRunLockRecoveryPreservesLiveOwnerThenClearsRecursiveQueue(t 
 		t.Fatalf("writeQualityGateScript: %v", err)
 	}
 	script := buf.String()
-	acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
-	acquireIdx := strings.Index(script, acquireCall)
-	if acquireIdx < 0 {
-		t.Fatalf("generated quality gate missing acquire call marker")
-	}
-	harness := script[:acquireIdx+len("acquire_quality_gate_lock")] + `
+	harness := qualityGateSerialLaneHarness(t, script, `
 echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
-`
+`)
 
 	earlyScript := filepath.Join(dir, "early.sh")
 	if err := os.WriteFile(earlyScript, []byte(harness), 0o755); err != nil {
@@ -870,20 +981,14 @@ func TestQualityGateScriptsQueuedWaiterRunsLanesAndEmitsFinalSummaryAfterLockRel
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
-			acquireIdx := strings.Index(tc.script, acquireCall)
-			if acquireIdx < 0 {
-				t.Fatal("quality gate missing acquire call marker")
-			}
-
-			harness := tc.script[:acquireIdx+len("acquire_quality_gate_lock")] + `
+			harness := qualityGateSerialLaneHarness(t, tc.script, `
 echo "lane: synthetic"
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
 echo " SUMMARY"
 echo "═══════════════════════════════════════════════════════════════"
 echo "Quality gate PASSED"
-`
+`)
 			scriptPath := filepath.Join(dir, "quality_gate.sh")
 			if err := os.WriteFile(scriptPath, []byte(harness), 0o755); err != nil {
 				t.Fatalf("write quality gate harness: %v", err)
@@ -966,14 +1071,9 @@ func TestCheckedInQualityGateStartsAfterLiveFIFOQueueDrains(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read checked-in quality gate: %v", err)
 	}
-	acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
-	acquireIdx := strings.Index(string(script), acquireCall)
-	if acquireIdx < 0 {
-		t.Fatal("checked-in quality gate missing acquire call marker")
-	}
-	harness := string(script[:acquireIdx+len("acquire_quality_gate_lock")]) + `
+	harness := qualityGateSerialLaneHarness(t, string(script), `
 echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
-`
+`)
 
 	earlyScript := filepath.Join(dir, "early.sh")
 	if err := os.WriteFile(earlyScript, []byte(harness), 0o755); err != nil {
@@ -1050,14 +1150,9 @@ func TestCheckedInQualityGatePreservesLiveOwnerThenClearsFIFOQueue(t *testing.T)
 	if err != nil {
 		t.Fatalf("read checked-in quality gate: %v", err)
 	}
-	acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
-	acquireIdx := strings.Index(string(script), acquireCall)
-	if acquireIdx < 0 {
-		t.Fatal("checked-in quality gate missing acquire call marker")
-	}
-	harness := string(script[:acquireIdx+len("acquire_quality_gate_lock")]) + `
+	harness := qualityGateSerialLaneHarness(t, string(script), `
 echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
-`
+`)
 
 	writeHarness := func(name string) string {
 		t.Helper()
@@ -1164,14 +1259,9 @@ func TestQualityGateScriptsTimedOutWaiterPreservesLiveOwnerAndQueueProgress(t *t
 				t.Fatalf("resolve temp directory: %v", err)
 			}
 			eventsPath := filepath.Join(dir, "events")
-			acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
-			acquireIdx := strings.Index(tc.script, acquireCall)
-			if acquireIdx < 0 {
-				t.Fatal("quality gate missing acquire call marker")
-			}
-			harness := tc.script[:acquireIdx+len("acquire_quality_gate_lock")] + `
+			harness := qualityGateSerialLaneHarness(t, tc.script, `
 echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
-`
+`)
 
 			writeHarness := func(name string) string {
 				t.Helper()
@@ -1299,13 +1389,8 @@ func TestQualityGateScriptsOrphanedLiveOwnerDoesNotBlockFIFOAndHealthyLiveOwnerI
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			acquireCall := "acquire_quality_gate_lock\n\n# =============================================================================\n# PRIMITIVES"
-			acquireIdx := strings.Index(tc.script, acquireCall)
-			if acquireIdx < 0 {
-				t.Fatal("quality gate missing acquire call marker")
-			}
 			harnessPath := filepath.Join(dir, "acquire.sh")
-			harness := tc.script[:acquireIdx+len("acquire_quality_gate_lock")] + "\necho acquired\n"
+			harness := qualityGateSerialLaneHarness(t, tc.script, "echo acquired\n")
 			if err := os.WriteFile(harnessPath, []byte(harness), 0o755); err != nil {
 				t.Fatalf("write quality gate harness: %v", err)
 			}
@@ -1497,9 +1582,9 @@ pgrep() {
 
 			eventsPath := filepath.Join(dir, "fifo-events")
 			fifoHarnessPath := filepath.Join(dir, "fifo-acquire.sh")
-			fifoHarness := tc.script[:acquireIdx+len("acquire_quality_gate_lock")] + `
+			fifoHarness := qualityGateSerialLaneHarness(t, tc.script, `
 echo "$ORO_QG_TEST_NAME" >> "$ORO_QG_TEST_EVENTS"
-`
+`)
 			if err := os.WriteFile(fifoHarnessPath, []byte(fifoHarness), 0o755); err != nil {
 				t.Fatalf("write FIFO quality gate harness: %v", err)
 			}
@@ -1709,5 +1794,41 @@ func checkBashSyntax(t *testing.T, script string) {
 	out, err := exec.Command(bashPath, "-n", f.Name()).CombinedOutput() //nolint:gosec // bashPath from LookPath, f.Name() is our own temp file
 	if err != nil {
 		t.Errorf("bash -n syntax check failed: %v\n%s", err, string(out))
+	}
+}
+
+// TestGoLanesScopeOutUntrackedArchive guards against the Go build/vet/govulncheck
+// lanes descending into archive/ — a gitignored, untracked tree of intentionally
+// broken Go fixtures that fails the gate on cruft that can never be pushed.
+//
+// The fix lives in the checked-in script only: generated gates for other projects
+// have no archive/ and must keep bare ./... , so the template is intentionally
+// exempt from this assertion.
+func TestGoLanesScopeOutUntrackedArchive(t *testing.T) {
+	checkedIn, err := os.ReadFile(filepath.Join("..", "..", "scripts", "quality_gate.sh"))
+	if err != nil {
+		t.Fatalf("read checked-in quality gate: %v", err)
+	}
+	script := string(checkedIn)
+
+	// The Go build/vet/govulncheck lanes must not walk the whole tree with bare
+	// ./... , which pulls in untracked archive/ fixtures.
+	for _, forbidden := range []string{
+		`go build -buildvcs=false ./...`,
+		`go vet ./...`,
+		`govulncheck ./...`,
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Errorf("quality gate still runs a bare-tree lane %q; scope it away from untracked archive/", forbidden)
+		}
+	}
+
+	// The scoped lanes must cover every real tracked module subtree.
+	for _, want := range []string{
+		"./cmd/... ./internal/... ./pkg/... ./tests/...",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("quality gate missing scoped Go package set %q", want)
+		}
 	}
 }

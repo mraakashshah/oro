@@ -147,9 +147,6 @@ func ClassifyQGFailure(record QGFailureRecord, history QGFailureHistory) QGFailu
 	case history.KnownFlaky || history.RerunPassed || isFlakyQGFailure(text):
 		return qgClassification(QGFailureClassFlaky, QGFailureDecisionBackoffRetry, QGFailureConfidenceHigh,
 			"failure matches known flaky or rerun-sensitive pattern")
-	case isTransientQGFailure(text):
-		return qgClassification(QGFailureClassTransient, QGFailureDecisionBackoffRetry, QGFailureConfidenceMedium,
-			"failure appears transient or environmental")
 	case isDeterministicQGFailure(text):
 		if history.RetryExhausted {
 			return qgClassification(QGFailureClassWorkerDeterministic, QGFailureDecisionReopenOriginal, QGFailureConfidenceHigh,
@@ -157,6 +154,9 @@ func ClassifyQGFailure(record QGFailureRecord, history QGFailureHistory) QGFailu
 		}
 		return qgClassification(QGFailureClassWorkerDeterministic, QGFailureDecisionRetryOriginal, QGFailureConfidenceHigh,
 			"failure is tied to deterministic test, compile, or lint output")
+	case isTransientQGFailure(text):
+		return qgClassification(QGFailureClassTransient, QGFailureDecisionBackoffRetry, QGFailureConfidenceMedium,
+			"failure appears transient or environmental")
 	default:
 		return qgClassification(QGFailureClassUnknown, QGFailureDecisionStopForTriage, QGFailureConfidenceLow,
 			"could not classify QG failure with enough confidence")
@@ -170,12 +170,22 @@ func qgClassification(class QGFailureClass, decision QGFailureDecision, confiden
 func isDeterministicQGFailure(text string) bool {
 	return strings.Contains(text, "--- fail:") ||
 		strings.Contains(text, "\nfail") ||
-		strings.Contains(text, "gofumpt") ||
-		strings.Contains(text, "goimports") ||
-		strings.Contains(text, "golangci-lint") ||
-		strings.Contains(text, "compile") ||
+		toolFailure(text, "gofumpt") ||
+		toolFailure(text, "goimports") ||
+		toolFailure(text, "golangci-lint") ||
+		strings.Contains(text, "compile error") ||
+		strings.Contains(text, "compilation failed") ||
 		strings.Contains(text, "build failed") ||
 		strings.Contains(text, "unused variable")
+}
+
+func toolFailure(text, tool string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, tool) && (strings.Contains(line, "fail") || strings.Contains(line, "error")) {
+			return true
+		}
+	}
+	return false
 }
 
 func isSystemicQGFailure(text string) bool {

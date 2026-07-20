@@ -9,7 +9,7 @@
 # Wall-clock time ≈ max(lane) instead of sum(all checks).
 # =============================================================================
 
-if [ "${ORO_QG_BASH_BOOTSTRAPPED:-}" != "1" ]; then
+if [ "${ORO_QG_BASH_BOOTSTRAPPED_PID:-}" != "$$" ]; then
 	if grep -n -E '^(<{7}|={7}|>{7})( |$)' "$0" >/dev/null 2>&1; then
 		echo "FAIL: quality_gate.sh contains unresolved git conflict markers" >&2
 		grep -n -E '^(<{7}|={7}|>{7})( |$)' "$0" >&2 || true
@@ -19,10 +19,16 @@ if [ "${ORO_QG_BASH_BOOTSTRAPPED:-}" != "1" ]; then
 		export LC_ALL=C
 		export LANG=C
 	fi
-	export ORO_QG_BASH_BOOTSTRAPPED=1
-	exec /usr/bin/env bash "$0" "$@"
+	# The legacy marker can be inherited by a fresh /bin/sh launcher. A PID-scoped
+	# token survives this one exec but cannot suppress bootstrap in a child launch.
+	# Keep the preflight before Bash parses the script; ignore BASH_ENV because a
+	# shell hook can recursively launch this gate.
+	unset ORO_QG_BASH_BOOTSTRAPPED
+	export ORO_QG_BASH_BOOTSTRAPPED_PID=$$
+	exec env -u BASH_ENV /usr/bin/env bash "$0" "$@"
 fi
 unset ORO_QG_BASH_BOOTSTRAPPED
+unset ORO_QG_BASH_BOOTSTRAPPED_PID
 
 set -euo pipefail
 
@@ -334,6 +340,20 @@ quality_gate_lock_is_inherited() {
 		[ -f "$lock_dir/owner" ] &&
 		grep -qx "token=$ORO_QG_INHERITED_LOCK_TOKEN" "$lock_dir/owner" 2>/dev/null
 }
+
+# OSC-8 terminal hyperlinks can create escaped, top-level artifact directories
+# when pasted into shells. Remove only real directories at the repository root;
+# do not follow symlinks or inspect paths below that boundary.
+sweep_repo_root_escape_artifacts() {
+	local repo_root="$1"
+	local artifact
+	for artifact in "$repo_root"/$'\033]8;;file:'*; do
+		[ -d "$artifact" ] && [ ! -L "$artifact" ] || continue
+		rm -rf -- "$artifact"
+	done
+}
+
+sweep_repo_root_escape_artifacts "$REPO_ROOT"
 
 acquire_quality_gate_lock() {
 	local lock_dir="$REPO_ROOT/.oro-quality-gate.lock"
@@ -843,7 +863,7 @@ check() {
 qg_python_tool_path() {
 	local tool="$1"
 	local candidate
-	for candidate in ".venv/bin/$tool" "$REPO_ROOT/.venv/bin/$tool" "$HOME/.local/bin/$tool"; do
+	for candidate in ".venv/bin/$tool" "$REPO_ROOT/.venv/bin/$tool"; do
 		if [ -x "$candidate" ]; then
 			if ! qg_python_tool_path_allowed "$candidate"; then
 				continue
@@ -1223,13 +1243,22 @@ lane_go() {
 		echo "Coverage (main lane, serial-lane tests excluded): ${cov}%"
 	}
 
+	# Scope build/vet/govulncheck to the real tracked module subtrees so they
+	# never descend into archive/ — a gitignored, untracked tree of deliberately
+	# broken Go fixtures that would fail the gate on cruft that can never merge.
+	# (golangci-lint and the CGO-free build already scope explicitly.) The build
+	# lane omits the repo root "." because it is a test-only package main
+	# (readme_test.go); vet and govulncheck include "." to cover it.
+	local go_build_pkgs="./cmd/... ./internal/... ./pkg/... ./tests/..."
+	local go_analyze_pkgs="$go_build_pkgs ."
+
 	local tier3_checks=(
 		"go test + coverage" "go_test_with_coverage"
-		"go build" "go build -buildvcs=false ./..."
-		"go vet" "go vet ./..."
+		"go build" "go build -buildvcs=false $go_build_pkgs"
+		"go vet" "go vet $go_analyze_pkgs"
 		"CGO-free build" "CGO_ENABLED=0 go build -buildvcs=false ./cmd/oro ./cmd/oro-search-hook"
 	)
-	tier3_checks+=("govulncheck" "go tool govulncheck ./...")
+	tier3_checks+=("govulncheck" "go tool govulncheck $go_analyze_pkgs")
 	parallel_checks "${tier3_checks[@]}"
 	pass=$((pass + TIER_PASS))
 	fail=$((fail + TIER_FAIL))

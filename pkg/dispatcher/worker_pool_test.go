@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/ops"
 	"oro/pkg/protocol"
 )
 
@@ -20,6 +21,27 @@ type failConn struct {
 	mu     sync.Mutex
 	closed bool
 }
+
+type blockingReviewSpawner struct {
+	release <-chan struct{}
+}
+
+func (s *blockingReviewSpawner) Spawn(context.Context, string, string, string) (ops.Process, error) {
+	return &blockingReviewProcess{release: s.release}, nil
+}
+
+type blockingReviewProcess struct {
+	release <-chan struct{}
+}
+
+func (p *blockingReviewProcess) Wait() error {
+	<-p.release
+	return nil
+}
+
+func (*blockingReviewProcess) Kill() error             { return nil }
+func (*blockingReviewProcess) Output() (string, error) { return "", nil }
+func (*blockingReviewProcess) LastOutputAt() time.Time { return time.Time{} }
 
 func (f *failConn) Write([]byte) (int, error) {
 	return 0, net.ErrClosed
@@ -957,8 +979,8 @@ func TestHeartbeatDoesNotTouchProgressForIdleWorker(t *testing.T) {
 // --- checkHeartbeats tests ---
 
 // TestProgressTimeoutReapsWedgedNonBusyWorker verifies that the progress
-// reaper covers every active worker phase and counts only protocol progress,
-// never context_pct drift, as progress.
+// reaper covers non-review workers and counts only protocol progress, never
+// context_pct drift, as progress.
 func TestProgressTimeoutReapsWedgedNonBusyWorker(t *testing.T) {
 	t.Parallel()
 	d, _, _, _, _, _ := newTestDispatcher(t)
@@ -982,13 +1004,11 @@ func TestProgressTimeoutReapsWedgedNonBusyWorker(t *testing.T) {
 		}
 	}
 
-	reviewing := newWorker("wedged-review", protocol.WorkerReviewing)
 	creeping := newWorker("context-creep", protocol.WorkerBusy)
 	creeping.contextPct = 10
 	fresh := newWorker("genuine-progress", protocol.WorkerBusy)
 
 	d.mu.Lock()
-	d.workers[reviewing.id] = reviewing
 	d.workers[creeping.id] = creeping
 	d.workers[fresh.id] = fresh
 	d.mu.Unlock()
@@ -1018,22 +1038,90 @@ func TestProgressTimeoutReapsWedgedNonBusyWorker(t *testing.T) {
 	d.checkHeartbeats(context.Background())
 
 	d.mu.Lock()
-	_, reviewingPresent := d.workers[reviewing.id]
 	_, creepingPresent := d.workers[creeping.id]
 	_, freshPresent := d.workers[fresh.id]
 	d.mu.Unlock()
 
-	if reviewingPresent || creepingPresent {
-		t.Errorf("stale workers present after progress scan: reviewing=%t context_creep=%t", reviewingPresent, creepingPresent)
+	if creepingPresent {
+		t.Error("stale non-review worker present after progress scan")
 	}
 	if !freshPresent {
 		t.Error("worker with a genuine progress transition was reaped")
 	}
-	if !reviewing.conn.(*mockConn).closed || !creeping.conn.(*mockConn).closed {
+	if !creeping.conn.(*mockConn).closed {
 		t.Error("reaped worker connections must be closed")
 	}
-	if got := eventCount(t, d.db, "progress_timeout"); got != 2 {
-		t.Errorf("progress_timeout events = %d, want 2", got)
+	if got := eventCount(t, d.db, "progress_timeout"); got != 1 {
+		t.Errorf("progress_timeout events = %d, want 1", got)
+	}
+}
+
+// TestCheckHeartbeats_ActiveReviewUsesReviewTimeout verifies that an active
+// managed review outlives ProgressTimeout and is reaped only after ReviewTimeout.
+func TestCheckHeartbeats_ActiveReviewUsesReviewTimeout(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	d.cfg.ProgressTimeout = time.Second
+	d.cfg.ReviewTimeout = 3 * time.Second
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	d.ops = ops.NewSpawner(&blockingReviewSpawner{release: release})
+
+	const workerID = "active-review-worker"
+	const beadID = "active-review-bead"
+	conn := newMockConn()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		state:        protocol.WorkerReviewing,
+		managed:      true,
+		beadID:       beadID,
+		lastSeen:     now,
+		lastProgress: now.Add(-(d.cfg.ProgressTimeout + time.Second)),
+		encoder:      json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+
+	_ = d.ops.Review(context.Background(), ops.ReviewOpts{BeadID: beadID, Worktree: t.TempDir()})
+	waitFor(t, func() bool { return d.ops.HasActiveForBead(beadID) }, time.Second)
+
+	d.checkHeartbeats(context.Background())
+
+	d.mu.Lock()
+	_, presentBeforeReviewTimeout := d.workers[workerID]
+	d.mu.Unlock()
+	if !presentBeforeReviewTimeout {
+		t.Fatal("active review worker was reaped by ProgressTimeout")
+	}
+	if conn.closed {
+		t.Fatal("active review worker connection was closed by ProgressTimeout")
+	}
+	if got := eventCount(t, d.db, "progress_timeout"); got != 0 {
+		t.Fatalf("progress_timeout events before ReviewTimeout = %d, want 0", got)
+	}
+
+	now = now.Add(d.cfg.ReviewTimeout + time.Second)
+	d.mu.Lock()
+	d.workers[workerID].lastSeen = now
+	d.mu.Unlock()
+	d.checkHeartbeats(context.Background())
+	d.checkHeartbeats(context.Background())
+
+	d.mu.Lock()
+	_, presentAfterReviewTimeout := d.workers[workerID]
+	d.mu.Unlock()
+	if presentAfterReviewTimeout {
+		t.Fatal("active review worker remained after ReviewTimeout")
+	}
+	if !conn.closed {
+		t.Fatal("review timeout should close the worker connection")
+	}
+	if got := eventCount(t, d.db, "progress_timeout"); got != 1 {
+		t.Fatalf("progress_timeout events after ReviewTimeout = %d, want 1", got)
 	}
 }
 
@@ -1366,9 +1454,9 @@ func TestCheckHeartbeats_ReviewTimeout(t *testing.T) {
 	}
 }
 
-// TestCheckHeartbeats_ReviewingUsesProgressTimeout verifies reviewing workers
-// use the same real-progress deadline as busy workers.
-func TestCheckHeartbeats_ReviewingUsesProgressTimeout(t *testing.T) {
+// TestCheckHeartbeats_ReviewingDefersToReviewTimeout verifies reviewing workers
+// are not reaped by the shorter progress deadline.
+func TestCheckHeartbeats_ReviewingDefersToReviewTimeout(t *testing.T) {
 	t.Parallel()
 	d, _, _, esc, _, _ := newTestDispatcher(t)
 
@@ -1413,11 +1501,11 @@ func TestCheckHeartbeats_ReviewingUsesProgressTimeout(t *testing.T) {
 	_, freshPresent := d.workers[freshWorkerID]
 	d.mu.Unlock()
 
-	if stalePresent {
-		t.Error("reviewing worker older than ProgressTimeout should be removed")
+	if !stalePresent {
+		t.Error("reviewing worker older than ProgressTimeout should remain until ReviewTimeout")
 	}
-	if !staleConn.closed {
-		t.Error("reviewing worker older than ProgressTimeout should have its connection closed")
+	if staleConn.closed {
+		t.Error("reviewing worker older than ProgressTimeout should not have its connection closed")
 	}
 	if !freshPresent {
 		t.Error("reviewing worker with recent real progress should remain active")
@@ -1426,18 +1514,8 @@ func TestCheckHeartbeats_ReviewingUsesProgressTimeout(t *testing.T) {
 		t.Error("reviewing worker with recent real progress should not have its connection closed")
 	}
 
-	msgs := esc.Messages()
-	if len(msgs) != 1 {
-		t.Fatalf("expected exactly 1 escalation for the stale reviewing worker, got %d: %v", len(msgs), msgs)
-	}
-	if !strings.Contains(msgs[0], string(protocol.EscStuckWorker)) {
-		t.Errorf("expected escalation to contain %q, got %q", protocol.EscStuckWorker, msgs[0])
-	}
-	if !strings.Contains(msgs[0], staleBeadID) {
-		t.Errorf("expected escalation to mention bead %q, got %q", staleBeadID, msgs[0])
-	}
-	if strings.Contains(msgs[0], freshBeadID) {
-		t.Errorf("did not expect escalation to mention fresh bead %q, got %q", freshBeadID, msgs[0])
+	if msgs := esc.Messages(); len(msgs) != 0 {
+		t.Fatalf("reviewing workers before ReviewTimeout should not escalate, got %v", msgs)
 	}
 }
 
@@ -1577,15 +1655,15 @@ func TestCheckHeartbeats_ReviewingWorkerWithLiveProcessButDeadReviewIsRemoved(t 
 	}
 }
 
-// TestCheckHeartbeats_ReviewDeadGracePrecedesProgressTimeout verifies that a
+// TestCheckHeartbeats_ReviewDeadGracePrecedesReviewTimeout verifies that a
 // newly absent ops review gets its configured grace period even when the
 // worker's progress clock was already stale.
-func TestCheckHeartbeats_ReviewDeadGracePrecedesProgressTimeout(t *testing.T) {
+func TestCheckHeartbeats_ReviewDeadGracePrecedesReviewTimeout(t *testing.T) {
 	t.Parallel()
 	d, _, _, _, _, _ := newTestDispatcher(t)
 
 	d.procMgr = &mockProcessManager{}
-	d.cfg.ProgressTimeout = time.Second
+	d.cfg.ReviewTimeout = time.Second
 	d.cfg.ReviewDeadGrace = time.Minute
 
 	now := time.Now()
@@ -1600,7 +1678,7 @@ func TestCheckHeartbeats_ReviewDeadGracePrecedesProgressTimeout(t *testing.T) {
 		state:        protocol.WorkerReviewing,
 		beadID:       "bead-newly-dead-review",
 		lastSeen:     now,
-		lastProgress: now.Add(-(d.cfg.ProgressTimeout + time.Second)),
+		lastProgress: now.Add(-(d.cfg.ReviewTimeout + time.Second)),
 		managed:      true,
 		encoder:      json.NewEncoder(conn),
 	}

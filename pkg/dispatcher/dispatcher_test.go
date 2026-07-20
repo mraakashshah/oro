@@ -889,12 +889,17 @@ type mockGitRunner struct {
 	conflict     bool   // if true, rebase returns conflict error
 	conflictOnce bool   // if true, fail on the first rebase only
 	revListCount string
+	calls        [][]string // records all git calls
 	rebaseCalls  [][]string // records args for each rebase invocation
 }
 
 func (m *mockGitRunner) Run(_ context.Context, _ string, args ...string) (string, string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	cp := make([]string, len(args))
+	copy(cp, args)
+	m.calls = append(m.calls, cp)
 
 	for _, a := range args {
 		if m.failOn != "" && a == m.failOn {
@@ -908,8 +913,6 @@ func (m *mockGitRunner) Run(_ context.Context, _ string, args ...string) (string
 			return "", "", nil // abort succeeds
 		}
 		// Record rebase call args (copy to avoid aliasing).
-		cp := make([]string, len(args))
-		copy(cp, args)
 		m.rebaseCalls = append(m.rebaseCalls, cp)
 		if m.conflict || m.conflictOnce {
 			m.conflictOnce = false // consume the one-shot flag
@@ -929,6 +932,17 @@ func (m *mockGitRunner) Run(_ context.Context, _ string, args ...string) (string
 		return "abc123def456\n", "", nil
 	}
 	return "", "", nil
+}
+
+// Calls returns a snapshot of all git command arguments recorded so far.
+func (m *mockGitRunner) Calls() [][]string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([][]string, len(m.calls))
+	for i, call := range m.calls {
+		out[i] = append([]string(nil), call...)
+	}
+	return out
 }
 
 // RebaseCalls returns a snapshot of all rebase arg slices recorded so far.
@@ -3196,6 +3210,131 @@ func TestClassifyReviewFailure_ContentBased(t *testing.T) {
 				t.Fatalf("classifyReviewFailure() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestClassifyReviewFailure_RateLimited(t *testing.T) {
+	tests := []struct {
+		name     string
+		feedback string
+		want     ReviewFailureClass
+	}{
+		{
+			name:     "five hour overage rejected",
+			feedback: `{"rateLimitType":"five_hour","overageStatus":"rejected"}`,
+			want:     ReviewFailureClass("rate_limited"),
+		},
+		{
+			name:     "allowed overage is not rate limited",
+			feedback: `{"rateLimitType":"five_hour","overageStatus":"allowed"}`,
+			want:     ReviewFailureOrdinary,
+		},
+		{
+			name:     "missing overage signal is not rate limited",
+			feedback: `{"rateLimitType":"five_hour"}`,
+			want:     ReviewFailureOrdinary,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyReviewFailure(ops.Result{Feedback: tt.feedback, Err: errors.New("exit status 1")})
+			if got != tt.want {
+				t.Fatalf("classifyReviewFailure() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifyReviewFailure_RateLimitEvidence(t *testing.T) {
+	tests := []struct {
+		name     string
+		feedback string
+		want     ReviewFailureClass
+	}{
+		{
+			name:     "structured rejected five hour event",
+			feedback: `{"rateLimitType":"FIVE_HOUR","overageStatus":"REJECTED"}`,
+			want:     ReviewFailureRateLimited,
+		},
+		{
+			name: "rejected review quotes marker names",
+			feedback: `VERDICT: REJECTED
+This review discusses the rateLimitType, five_hour, overageStatus, and rejected marker names.`,
+			want: ReviewFailureOrdinary,
+		},
+		{
+			name:     "malformed JSON is not evidence",
+			feedback: `{"rateLimitType":"five_hour","overageStatus":"rejected"`,
+			want:     ReviewFailureOrdinary,
+		},
+		{
+			name:     "markers spread through prose are not evidence",
+			feedback: "rateLimitType\nfive_hour\noverageStatus\nrejected",
+			want:     ReviewFailureOrdinary,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyReviewFailure(ops.Result{Feedback: tt.feedback, Err: errors.New("exit status 1")})
+			if got != tt.want {
+				t.Fatalf("classifyReviewFailure() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleReviewResult_RateLimitedDefersReReview(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		beadID   = "bead-rate-limited"
+		workerID = "w-rate-limited"
+		worktree = "/tmp/rate-limited"
+	)
+
+	assignmentID, err := d.createAssignment(ctx, beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	conn := newMockConn()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		encoder:      json.NewEncoder(conn),
+		state:        protocol.WorkerReviewing,
+		beadID:       beadID,
+		worktree:     worktree,
+		assignmentID: assignmentID,
+	}
+	d.worktreeByBead[beadID] = worktree
+	d.assigningBeads[beadID] = true
+	d.mu.Unlock()
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+	beadSrc.mu.Unlock()
+
+	resultCh := make(chan ops.Result, 1)
+	resultCh <- ops.Result{
+		Verdict:  ops.VerdictRejected,
+		Feedback: `{"rateLimitType":"five_hour","overageStatus":"rejected"}`,
+		Err:      errors.New("exit status 1"),
+	}
+	d.handleReviewResult(ctx, workerID, beadID, resultCh)
+
+	if got := eventCount(t, d.db, "review_rate_limited"); got != 1 {
+		t.Fatalf("review_rate_limited events = %d, want 1", got)
+	}
+	if got := eventCount(t, d.db, "review_rejected"); got != 0 {
+		t.Fatalf("rate-limited review must not reassign immediately, review_rejected events = %d", got)
+	}
+	if len(beadSrc.deferCalls) != 1 || beadSrc.deferCalls[0].id != beadID {
+		t.Fatalf("defer calls = %+v, want one cooldown defer for %s", beadSrc.deferCalls, beadID)
+	}
+	if until, parseErr := time.Parse(time.RFC3339, beadSrc.deferCalls[0].until); parseErr != nil || !until.After(time.Now().UTC()) {
+		t.Fatalf("defer until = %q, want future RFC3339 timestamp (parse err %v)", beadSrc.deferCalls[0].until, parseErr)
 	}
 }
 
@@ -11689,17 +11828,22 @@ type mockQGRunner struct {
 	passed        bool
 	output        string
 	err           error
+	callFn        func(context.Context, string, bool, string) (bool, string, error)
 	calls         []string // worktree paths passed to Run
 	skipMutations []bool
 	mutationBases []string
 }
 
-func (m *mockQGRunner) Run(_ context.Context, worktree string, skipMutation bool, mutationBase string) (bool, string, error) {
+func (m *mockQGRunner) Run(ctx context.Context, worktree string, skipMutation bool, mutationBase string) (bool, string, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.calls = append(m.calls, worktree)
 	m.skipMutations = append(m.skipMutations, skipMutation)
 	m.mutationBases = append(m.mutationBases, mutationBase)
+	callFn := m.callFn
+	m.mu.Unlock()
+	if callFn != nil {
+		return callFn(ctx, worktree, skipMutation, mutationBase)
+	}
 	return m.passed, m.output, m.err
 }
 
@@ -12050,6 +12194,97 @@ func TestMergeAndComplete_RunsPreMergeQG(t *testing.T) {
 		}
 		if eventCount(t, d.db, "pre_merge_qg_work_preserved") == 0 {
 			t.Errorf("expected pre_merge_qg_work_preserved event on QG error")
+		}
+	})
+}
+
+func TestMergeAndCompleteRunsQGPostRebaseViaPreFFCheck(t *testing.T) {
+	t.Run("QG runs once after rebase and before fast-forward", func(t *testing.T) {
+		d, _, _, _, gitRunner, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		const (
+			beadID   = "bead-post-rebase-qg"
+			workerID = "worker-post-rebase-qg"
+			worktree = "/tmp/worktree-post-rebase-qg"
+			branch   = "agent/bead-post-rebase-qg"
+		)
+		qgRunner := &mockQGRunner{
+			callFn: func(_ context.Context, gotWorktree string, _ bool, _ string) (bool, string, error) {
+				if gotWorktree != worktree {
+					t.Fatalf("QG worktree = %q, want %q", gotWorktree, worktree)
+				}
+				if calls := gitRunner.RebaseCalls(); len(calls) != 1 {
+					t.Fatalf("QG ran after %d rebases, want exactly one completed rebase", len(calls))
+				}
+				return true, "all green", nil
+			},
+		}
+		d.qgRunner = qgRunner
+
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "", 0)
+
+		qgRunner.mu.Lock()
+		qgCalls := len(qgRunner.calls)
+		qgRunner.mu.Unlock()
+		if qgCalls != 1 {
+			t.Fatalf("QG calls = %d, want exactly one", qgCalls)
+		}
+	})
+
+	t.Run("QG failure aborts fast-forward and uses QG failure handling", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, gitRunner, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		const (
+			beadID   = "bead-post-rebase-qg-failure"
+			workerID = "worker-post-rebase-qg-failure"
+			worktree = "/tmp/worktree-post-rebase-qg-failure"
+			branch   = "agent/bead-post-rebase-qg-failure"
+		)
+		d.qgRunner = &mockQGRunner{
+			callFn: func(_ context.Context, _ string, _ bool, _ string) (bool, string, error) {
+				if calls := gitRunner.RebaseCalls(); len(calls) != 1 {
+					t.Fatalf("QG ran after %d rebases, want exactly one completed rebase", len(calls))
+				}
+				return false, "post-rebase QG failure", nil
+			},
+		}
+		d.mu.Lock()
+		d.worktreeByBead[beadID] = worktree
+		d.mu.Unlock()
+
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "", 0)
+
+		if eventCount(t, d.db, "qg_failed") != 1 {
+			t.Fatal("expected post-rebase QG failure to be recorded")
+		}
+		for _, call := range gitRunner.Calls() {
+			if len(call) >= 2 && call[0] == "merge" && call[1] == "--ff-only" {
+				t.Fatalf("fast-forward merge ran after QG failure: %v", call)
+			}
+		}
+		wtMgr.mu.Lock()
+		removed := append([]string(nil), wtMgr.removed...)
+		wtMgr.mu.Unlock()
+		if slices.Contains(removed, worktree) {
+			t.Fatalf("worktree %q was removed after QG failure", worktree)
+		}
+		beadSrc.mu.Lock()
+		status := beadSrc.updated[beadID]
+		beadSrc.mu.Unlock()
+		if status != "open" {
+			t.Fatalf("bead status = %q, want open after QG failure", status)
 		}
 	})
 }
@@ -25796,4 +26031,18 @@ func dispatcherTestOpsRunStatusByID(t *testing.T, db *sql.DB, runID int64) strin
 		t.Fatalf("query ops_run %d status: %v", runID, err)
 	}
 	return status
+}
+
+func TestReviewFailureDetail_Bounded(t *testing.T) {
+	raw := strings.Repeat(`{"type":"assistant","delta":"noise"}`+"\n", 2000) +
+		`{"type":"result","is_error":true,"result":"terminal review error"}`
+
+	detail := reviewFailureDetail(ops.Result{Feedback: raw})
+
+	if len(detail) > 2*1024 {
+		t.Fatalf("review failure detail length = %d, want <= 2048", len(detail))
+	}
+	if !strings.Contains(detail, "terminal review error") {
+		t.Fatalf("review failure detail %q does not preserve terminal result", detail)
+	}
 }

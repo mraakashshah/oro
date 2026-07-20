@@ -116,10 +116,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 '/Users/as21/codehouse/oro/.codex/hooks/enforce_skills.py'"
-          },
-          {
-            "type": "command",
             "command": "python3 '/Users/as21/codehouse/oro/.codex/hooks/session_start_extras.py'",
             "statusMessage": "Loading project context..."
           }

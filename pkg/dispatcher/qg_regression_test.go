@@ -246,8 +246,8 @@ FAIL
 
 	d.mergeAndComplete(ctx, beadID, workerID, worktree, protocol.BranchPrefix+beadID, "", "main", assignmentID)
 
-	if len(gitRunner.RebaseCalls()) != 0 {
-		t.Fatalf("merge rebase calls = %d, want 0", len(gitRunner.RebaseCalls()))
+	if len(gitRunner.RebaseCalls()) != 1 {
+		t.Fatalf("merge rebase calls = %d, want 1 before post-rebase regression check", len(gitRunner.RebaseCalls()))
 	}
 	if got := eventCount(t, d.db, "qg_regression_reverted"); got != 1 {
 		t.Fatalf("qg_regression_reverted events = %d, want 1", got)
@@ -292,8 +292,8 @@ FAIL
 
 	d.mergeAndComplete(ctx, beadID, workerID, worktree, protocol.BranchPrefix+beadID, "", "main", 0)
 
-	if len(gitRunner.RebaseCalls()) != 0 {
-		t.Fatalf("merge rebase calls = %d, want 0", len(gitRunner.RebaseCalls()))
+	if len(gitRunner.RebaseCalls()) != 1 {
+		t.Fatalf("merge rebase calls = %d, want 1 before post-rebase regression check", len(gitRunner.RebaseCalls()))
 	}
 	if got := eventCount(t, d.db, "merged"); got != 0 {
 		t.Fatalf("merged events = %d, want 0", got)
