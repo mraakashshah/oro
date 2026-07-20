@@ -62,22 +62,11 @@ func workerExecutionContext(assignmentID int64, isEpicDecomp bool, project strin
 //   - worker-program.md missing → empty WorkerProgram (no warning).
 //   - worker-program.md >32KB → truncate with log warning.
 //   - isEpicDecomp=true → GitLog and WorkerProgram are always empty.
-func (d *Dispatcher) buildAssignPayload(
-	ctx context.Context,
-	w *trackedWorker,
-	attempt int,
-	feedback, memCtx string,
-	execution WorkerExecutionContext,
-) *protocol.AssignPayload {
+func (d *Dispatcher) buildAssignPayload(ctx context.Context, w *trackedWorker, attempt int, feedback, memCtx string, execution WorkerExecutionContext) *protocol.AssignPayload {
 	var bead protocol.Bead
 	p := &protocol.AssignPayload{
 		BeadID:              w.beadID,
 		Worktree:            w.worktree,
-		AssignmentID:        execution.AssignmentID,
-		Generation:          execution.Generation,
-		ActorRole:           execution.ActorRole,
-		Project:             execution.Project,
-		Capability:          execution.Capability,
 		Runtime:             w.runtime,
 		Model:               w.model,
 		Reasoning:           w.reasoning,
@@ -88,6 +77,7 @@ func (d *Dispatcher) buildAssignPayload(
 		ProjectRoot:         d.cfg.RepoRoot,
 		TargetBranch:        w.targetBranch,
 	}
+	applyExecutionContext(p, execution)
 
 	// Populate metadata from beads.Show.
 	detail, err := d.beads.Show(ctx, w.beadID)
@@ -139,6 +129,14 @@ func (d *Dispatcher) buildAssignPayload(
 	// Missing file: WorkerProgram stays empty.
 
 	return p
+}
+
+func applyExecutionContext(payload *protocol.AssignPayload, execution WorkerExecutionContext) {
+	payload.AssignmentID = execution.AssignmentID
+	payload.Generation = execution.Generation
+	payload.ActorRole = execution.ActorRole
+	payload.Project = execution.Project
+	payload.Capability = execution.Capability
 }
 
 func (d *Dispatcher) buildCardContext(ctx context.Context, bead protocol.Bead) cards.RelevantCards {
