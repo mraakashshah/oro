@@ -10,7 +10,7 @@ import (
 
 // StoragePolicy supplies the registered cache providers and their sharing identities.
 // It deliberately does not grant deletion authority to paths found in an environment.
-type StoragePolicy struct {
+type StoragePolicy struct { //nolint:revive // name is fixed by the public acceptance contract
 	Providers      []CacheProvider
 	ProjectID      string
 	RepositoryRoot string
@@ -95,9 +95,9 @@ func cacheBoundaries(env []string, workdir string) ([]string, error) {
 	return boundaries, nil
 }
 
-func splitCacheEnv(env []string) (map[string]string, []string) {
-	values := make(map[string]string, len(env))
-	order := make([]string, 0, len(env))
+func splitCacheEnv(env []string) (values map[string]string, order []string) {
+	values = make(map[string]string, len(env))
+	order = make([]string, 0, len(env))
 	for _, entry := range env {
 		key, value, ok := strings.Cut(entry, "=")
 		if !ok {
