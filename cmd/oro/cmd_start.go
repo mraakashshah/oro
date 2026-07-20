@@ -882,13 +882,14 @@ func newStartCmd() *cobra.Command {
 		Use:   "start",
 		Short: "Launch the Oro swarm (tmux session + dispatcher)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := verifyStartCommandRemoteCapabilities(cmd.Context()); err != nil {
+				return err
+			}
 			if noWeb {
 				webEnabled = false
 			}
 			// Default an unset --max-workers ceiling to --workers for backward compatibility.
-			if maxWorkers == 0 {
-				maxWorkers = workers
-			}
+			maxWorkers = resolvedMaxWorkers(workers, maxWorkers)
 			pidPath, err := startPreflightAndCheckRunning(cmd.OutOrStdout(), daemonOnly)
 			if err != nil {
 				return err
@@ -920,6 +921,13 @@ func newStartCmd() *cobra.Command {
 	registerCleanlinessStartFlags(cmd, &cleanliness)
 
 	return cmd
+}
+
+func resolvedMaxWorkers(workers, maxWorkers int) int {
+	if maxWorkers == 0 {
+		return workers
+	}
+	return maxWorkers
 }
 
 func registerWebStartFlags(cmd *cobra.Command, webEnabled, noWeb *bool, webAddr *string) {
@@ -1093,6 +1101,13 @@ func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressT
 }
 
 func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers int, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool, baseBranch string, mutationTesting, webEnabled bool, webAddr string, cleanliness cleanlinessStartConfig) (*dispatcher.Dispatcher, *sql.DB, error) { //nolint:funlen // factory initialization
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		return nil, nil, fmt.Errorf("get working dir: %w", err)
+	}
+	if err := verifyStartupRemoteCapabilities(context.Background(), repoRoot); err != nil {
+		return nil, nil, err
+	}
 	if err := requireNativeProductionBeadSourceMode("oro start"); err != nil {
 		return nil, nil, err
 	}
@@ -1124,12 +1139,6 @@ func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers 
 	db, err := openStateDBWithV4Migration(dbPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open state db: %w", err)
-	}
-
-	repoRoot, err := os.Getwd()
-	if err != nil {
-		_ = db.Close()
-		return nil, nil, fmt.Errorf("get working dir: %w", err)
 	}
 
 	// Open code index eagerly (fast — just opens SQLite DB) so the dispatcher

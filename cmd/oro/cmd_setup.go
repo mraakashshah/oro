@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 
 	"oro/pkg/langprofile"
 
@@ -21,6 +23,7 @@ type setupOptions struct {
 	dryRun      bool
 	skipTools   bool
 	force       bool
+	installDeps InstallDeps
 }
 
 // prereqDef describes a hard prerequisite that must exist before setup proceeds.
@@ -62,7 +65,7 @@ commits of oro artifacts.
 
 Use --dry-run to see what would happen without executing.
 Use --skip-tools to skip tool installation (Phase 3).
-Use --force to overwrite existing config files.
+Use --force to refresh generated assets and quality gate files while preserving project config.
 Use --dev to also install dev-only tools (placeholder).`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -78,7 +81,7 @@ Use --dev to also install dev-only tools (placeholder).`,
 	cmd.Flags().BoolVar(&opts.dev, "dev", false, "also install dev-only tools (mutation testing, etc.)")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "print what would happen without executing")
 	cmd.Flags().BoolVar(&opts.skipTools, "skip-tools", false, "skip tool installation (Phase 3)")
-	cmd.Flags().BoolVar(&opts.force, "force", false, "overwrite existing config files")
+	cmd.Flags().BoolVar(&opts.force, "force", false, "refresh generated assets and quality gate files")
 
 	return cmd
 }
@@ -120,9 +123,20 @@ func setupPhase1Prereqs(w io.Writer, opts setupOptions) error {
 	} else if err := checkPrereqs(w, defaultPrereqs); err != nil {
 		return err
 	}
+	if shouldEnsureManagedGitHubCLI(opts) {
+		if opts.dryRun {
+			fmt.Fprintln(w, "  [dry-run] Would ensure GitHub CLI (brew install gh) on macOS")
+		} else if _, err := EnsureManagedGitHubCLI(context.Background(), opts.installDeps); err != nil {
+			return err
+		}
+	}
 	fmt.Fprintln(w, "  All prerequisites found.")
 	fmt.Fprintln(w)
 	return nil
+}
+
+func shouldEnsureManagedGitHubCLI(opts setupOptions) bool {
+	return opts.installDeps.GOOS == "darwin" || (opts.installDeps.GOOS == "" && runtime.GOOS == "darwin")
 }
 
 // setupPhase2Detect detects project languages via langprofile and returns the
@@ -202,7 +216,7 @@ func printBootstrapDryRun(w io.Writer, name string, opts setupOptions) {
 	fmt.Fprintf(w, "  [dry-run] Would bootstrap project %q at %s\n", name, opts.projectRoot)
 	fmt.Fprintf(w, "  [dry-run] Would create .oro/config.yaml, settings.json, extract assets\n")
 	if opts.force {
-		fmt.Fprintln(w, "  [dry-run] --force: would overwrite existing files")
+		fmt.Fprintln(w, "  [dry-run] --force: would refresh generated assets and quality gate files")
 	}
 }
 
@@ -221,6 +235,9 @@ func executeBootstrap(w io.Writer, name string, opts setupOptions) error {
 	cfg, err := bootstrapProject(opts.projectRoot, name, oroHome, subAssets, opts.force)
 	if err != nil {
 		return fmt.Errorf("bootstrap project: %w", err)
+	}
+	if err := persistSetupRemoteCapabilities(context.Background(), opts.projectRoot); err != nil {
+		return fmt.Errorf("attest remote capabilities: %w", err)
 	}
 
 	if opts.force {

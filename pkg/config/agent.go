@@ -20,6 +20,7 @@ type AgentConfig struct {
 	APIModels    map[string]string            `yaml:"api_models,omitempty"`
 	Roles        map[string]RoleConfig        `yaml:"roles,omitempty"`
 	Transport    TransportConfig              `yaml:"transport,omitempty"`
+	Factory      FactoryConfig                `yaml:"factory,omitempty"`
 }
 
 // ProviderMode names a built-in provider routing preset.
@@ -64,6 +65,7 @@ type TransportConfig struct{}
 type configFile struct {
 	Agent   *AgentConfig       `yaml:"agent"`
 	Storage *storagePolicyFile `yaml:"storage"`
+	Factory *FactoryConfig     `yaml:"factory"`
 }
 
 func defaultAgentConfig() *AgentConfig {
@@ -74,6 +76,7 @@ func defaultAgentConfig() *AgentConfig {
 		Tiers:     tiersForProvider(coding),
 		APIModels: map[string]string{},
 		Roles:     rolesForProviderMode(coding, review),
+		Factory:   defaultFactoryConfig(),
 	}
 }
 
@@ -234,17 +237,37 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// Load reads the YAML file at path and returns the parsed AgentConfig.
-// When the file does not exist or the agent block is absent, built-in
-// defaults are returned. Parse errors are surfaced as-is.
-// Validation of field values lives in Validate() — this function only parses.
-func Load(path string) (*AgentConfig, error) {
-	cfg, _, err := loadIfAgentBlock(path)
+// Load reads the YAML file at path and returns the parsed project config.
+// When the file does not exist or the agent block is absent, built-in agent and
+// local quality-gate defaults are returned. Parse errors and invalid explicit
+// remote-gate configuration are surfaced to the caller.
+func Load(path string) (*Config, error) {
+	f, err := loadConfigFile(path)
 	if err != nil {
 		return nil, err
 	}
-	if cfg == nil {
+	if f == nil {
 		return defaultAgentConfig(), nil
+	}
+
+	cfg := defaultAgentConfig()
+	if f.Agent != nil {
+		cfg = f.Agent
+		if err := ApplyProviderMode(cfg); err != nil {
+			return nil, fmt.Errorf("agent provider mode in %s: %w", path, err)
+		}
+	}
+	if f.Factory != nil {
+		cfg.Factory = *f.Factory
+		if cfg.Factory.QualityGate.Mode == "" {
+			cfg.Factory.QualityGate.Mode = RemoteGateModeLocal
+		}
+	}
+	if cfg.Factory.Lifecycle.ManualIntegration && cfg.Factory.QualityGate.Mode == RemoteGateModeGitHubPR {
+		return nil, fmt.Errorf("invalid remote gate config: github-pr mode is incompatible with manual integration")
+	}
+	if err := ValidateRemoteGateConfig(cfg.Factory.QualityGate); err != nil {
+		return nil, err
 	}
 	return cfg, nil
 }
@@ -298,17 +321,9 @@ func agentConfigCandidates(projectConfigPath string) []string {
 }
 
 func loadIfAgentBlock(path string) (*AgentConfig, bool, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // path accepted from caller
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, fmt.Errorf("reading %s: %w", path, err)
-	}
-
-	var f configFile
-	if err := yaml.Unmarshal(data, &f); err != nil {
-		return nil, false, fmt.Errorf("parsing %s: %w", path, err)
+	f, err := loadConfigFile(path)
+	if err != nil || f == nil {
+		return nil, false, err
 	}
 
 	if f.Agent == nil {
@@ -318,6 +333,22 @@ func loadIfAgentBlock(path string) (*AgentConfig, bool, error) {
 		return nil, false, fmt.Errorf("agent provider mode in %s: %w", path, err)
 	}
 	return f.Agent, true, nil
+}
+
+func loadConfigFile(path string) (*configFile, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // path accepted from caller
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+
+	var f configFile
+	if err := yaml.Unmarshal(data, &f); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	return &f, nil
 }
 
 // Validate checks AgentConfig for invalid role definitions and

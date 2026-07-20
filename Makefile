@@ -1,9 +1,11 @@
-.PHONY: build build-search-hook install install-git-hooks setup test test-all test-integration lint nilaway fmt vet gate clean stage-assets clean-assets dev-sync release mutate-go mutate-go-diff mutate-py mutate-py-full verify-bundled-libs download-ort vendor-sqlite-vec vendor-sqlite-vec-release test-vendor-sqlite-vec
+.PHONY: build build-search-hook ensure-github-cli install install-git-hooks setup test test-all test-integration lint nilaway fmt vet gate clean stage-assets clean-assets dev-sync release mutate-go mutate-go-diff mutate-py mutate-py-full verify-bundled-libs download-ort vendor-sqlite-vec vendor-sqlite-vec-release test-vendor-sqlite-vec uninstall
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 GO_BUILD_FLAGS ?= -buildvcs=false
 LDFLAGS := -ldflags "-X oro/internal/appversion.version=$(VERSION)"
 ORO_HOME ?= $(HOME)/.oro
+ORO_BIN ?= $(shell go env GOPATH)/bin/oro
+UNAME_S ?= $(shell uname -s)
 GOLANGCI_LINT_VERSION ?= v2.10.1
 NILAWAY_VERSION ?= v0.0.0-20260318203545-ad240b12fb4c
 NILAWAY_PACKAGES ?= ./cmd/... ./internal/... ./pkg/...
@@ -97,7 +99,24 @@ build:
 		cp .claude/hooks/oro-search-hook $(ORO_HOME)/hooks/oro-search-hook; \
 	fi
 
-install:
+ensure-github-cli:
+ifeq ($(UNAME_S),Darwin)
+	@set -e; \
+	if gh_path=$$(command -v gh 2>/dev/null); then :; else \
+		command -v brew >/dev/null 2>&1 || { echo "GitHub CLI is missing; install Homebrew, then run brew install gh"; exit 1; }; \
+		brew install gh || { echo "Failed to install GitHub CLI with brew install gh"; exit 1; }; \
+		gh_path=$$(command -v gh 2>/dev/null) || { echo "brew install gh completed but gh is still unavailable; ensure Homebrew's bin directory is on PATH"; exit 1; }; \
+	fi; \
+	version_output=$$("$$gh_path" --version 2>&1) || { echo "GitHub CLI readiness failed at $$gh_path: gh --version failed"; exit 1; }; \
+	set -- $$version_output; \
+	version=$${3#v}; major=$${version%%.*}; \
+	case "$$major" in ''|*[!0-9]*) echo "Unsupported GitHub CLI version output: $$version_output"; exit 1;; esac; \
+	if [ "$${1:-}" != "gh" ] || [ "$${2:-}" != "version" ] || [ "$$major" -lt 2 ]; then \
+		echo "Unsupported GitHub CLI version: $$version_output (require version 2 or later)"; exit 1; \
+	fi
+endif
+
+install: ensure-github-cli
 	@$(MAKE) stage-assets
 	go install $(GO_BUILD_FLAGS) $(LDFLAGS) ./cmd/oro
 	@if [ -d cmd/oro-search-hook ]; then \
@@ -109,6 +128,10 @@ install:
 	fi
 	@$(MAKE) dev-sync
 	@$(MAKE) clean-assets
+
+uninstall:
+	@rm -f "$(ORO_BIN)"
+	@echo "Oro removed; shared GitHub CLI remains installed."
 
 build-search-hook:
 	@mkdir -p $(ORO_HOME)/hooks
