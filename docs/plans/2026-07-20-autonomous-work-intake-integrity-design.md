@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-20
 
-**Status:** Draft — adversarial R1 fixes applied, re-review pending
+**Status:** Draft — adversarial R2 fixes applied, re-review pending
 
 **Scope:** Worker discoveries, blocker proposals, task admission, dependency
 authorization, quality-gate evidence, and autonomous recovery
@@ -129,6 +129,7 @@ type WorkerExecutionContext struct {
     ActorRole    string
     Capability   string
     Project      string
+    SocketPath   string
     Worktree     string
     TargetBranch string
 }
@@ -148,6 +149,13 @@ assignBead/createAssignment
   -> ClaudeSpawner or Codex WorkerSpawner
   -> WorkerEnv
 ```
+
+`cmd/oro/cmd_worker_launch.go:ExecWorkerSpawner.SpawnWorker` and
+`cmd/oro/cmd_worker.go:runWorker` are part of this chain. `runWorker` copies its
+authoritative `--socket` value into worker state, and every assignment builds
+`WorkerExecutionContext.SocketPath` from that state. `WorkerEnv` sets the exact
+`ORO_SOCKET_PATH`; neither managed nor externally launched workers discover a
+socket by scanning the filesystem.
 
 This migration owns every initial, retry, review-recovery, and handoff assignment
 payload call site; mocks cannot retain the old spawner signature. Capability
@@ -192,6 +200,17 @@ an error. Dispatcher restart reloads capability hashes and consumed nonces.
 Completion, requeue, disconnect recovery, or worker replacement revokes every
 capability for the old generation.
 
+Capability refresh has an explicit fake-clock-driven protocol. Five minutes
+before expiry, the dispatcher persists a pending replacement and sends
+`MsgCapabilityRefresh` containing assignment ID, generation, replacement raw
+token, and expiry. `worker.handleMessage` atomically swaps the assignment-local
+spawn context for subsequent CLI processes and returns
+`MsgCapabilityRefreshACK` with the replacement capability ID. The dispatcher
+durably records the ACK, then revokes the predecessor. Restart before ACK
+retransmits the same replacement; restart after ACK observes the durable
+revocation. A missing ACK leaves the predecessor valid until its original
+expiry and never revokes both tokens simultaneously.
+
 Worker mutations go through dispatcher IPC; the CLI does not write the bead
 store directly when any worker identity field is present. Capabilities are
 checked against live assignment state. Environment variables transport the
@@ -219,8 +238,10 @@ type WorkProposalPayload struct {
 ```
 
 Durable `work_proposals` state records identity, evidence, decision, repair
-attempts, canonical scope key, executable bead ID, and timestamps. Proposal
-submission is idempotent on `(assignment_id, fingerprint)`. Materialization is
+attempts, canonical scope key, executable bead ID, and timestamps. Provisional
+submission is idempotent on `(assignment_id, client_proposal_id)` and does not
+collapse by fingerprint before scope is known. The controller may merge
+provisional rows only after canonical scope derivation. Materialization is
 globally deduplicated on `(project, target_branch, scope_key, fingerprint)`.
 The controller derives `scope_key` from authoritative task ancestry plus the
 taskcraft review's canonical prerequisite identity; the worker's `ScopeHint`
@@ -256,8 +277,13 @@ MsgWorkProposal        // capability, nonce, WorkProposalPayload
 MsgWorkProposalResult  // proposal ID, state, decision/retry feedback, error
 ```
 
-`cmd/oro` registers both commands. `protocol.Message`, dispatcher
-`extractWorkerID`/`extractBeadID`, and `handleMessage` gain typed cases. The CLI
+`cmd/oro` registers both commands. `protocol.Message` gains typed cases. In
+`dispatcher.handleConn`, evidence and proposal requests are recognized and
+handled as short-lived request/response traffic before `registerWorker`, just
+like directives: validate the claimed identity/capability against the tracked
+worker, send the result on the short-lived connection, then close only that
+connection. They never call `registerWorker`, replace `trackedWorker.conn`, or
+run `connCloseCleanup` for the assignment worker. The CLI
 discovers the project socket from the injected exact path; it never scans `/tmp`
 or connects to another project's socket. A missing socket, mismatched response
 identity, timeout, or dispatcher disconnect fails closed and prints structured
@@ -389,8 +415,8 @@ The dispatcher runs a restart-safe proposal controller:
 ### 6.8 Worker mutation gateway
 
 Every mutable `oro task` entry point is inventoried. When worker identity is
-present, create, update, update-to-open, reopen, close, delete, dependency add,
-and dependency remove fail closed unless the dispatcher-issued capability
+present, create, update, reopen, close, delete, defer, undefer, note add,
+dependency add, and dependency remove fail closed unless the dispatcher-issued capability
 explicitly authorizes the operation through IPC. Execution workers have only
 evidence/proposal actions. Epic decomposition capabilities allow only validated
 child creation under the assigned epic and parent-to-child edges; they cannot
@@ -400,6 +426,13 @@ Human/ops CLI calls still use the store but pass central contract validation.
 Generated QG, audit, janitor, recovery, and cleanliness producers use named
 constructors declaring contract version and executable versus non-executable
 classification; none bypasses the validator accidentally.
+
+The gateway test derives the complete mutable leaf-command set by walking the
+real `newTaskCmdWithStore` Cobra tree and compares it with an explicit policy
+table. Adding a future mutable command without a deny-or-route policy fails the
+test. Human draft publication uses `oro task publish <id>`, which validates the
+stored v2 contract and atomically clears `draft=1`; invalid drafts remain
+non-ready.
 
 ### 6.9 Severity policy
 
@@ -466,9 +499,11 @@ worker's suggested priority is advisory only.
 ### 7.6 Transition and event atomicity
 
 Each proposal transition uses a monotonically increasing generation and a
-unique event key `(proposal_id, generation, to_state)`. State update and event
-insert occur in the same transaction. Replaying a completed request returns the
-stored result without emitting a second event. Invalid transitions change
+unique event key `(proposal_id, generation, event_type)`. State update and event
+inserts occur in the same transaction. Materialization emits both
+`work_proposal_materialized` and `work_proposal_dependency_added` with distinct
+event types under the same generation. Replaying a completed request returns
+the stored result without emitting a second event. Invalid transitions change
 neither state nor events.
 
 ## 8. Observability
@@ -520,18 +555,27 @@ are additive; no destructive migration is required.
 - Both runtime spawners receive identical worker identity fields.
 - Initial, retry, review-recovery, and handoff payloads preserve assignment ID,
   generation, role, and capability through a real subprocess environment.
+- Managed and external `oro worker launch` paths inject the exact socket into
+  the spawned agent, which successfully performs an evidence request without
+  changing the tracked worker connection.
 - Missing assignment identity fails closed.
 - Expired, revoked, wrong-role, stale-generation, replayed-different-content,
   and consumed capability requests fail closed; exact replay is idempotent.
+- A fake-clock assignment crossing 20 minutes refreshes and ACKs capability;
+  restart before/after ACK retransmits or revokes exactly as specified.
 - v2 task validation rejects every missing field and invalid estimate.
 - Contract version and draft state round-trip through create, reload, update,
   reopen, dependency attach, Ready, dispatcher admission, shadow store, and
   export; drafts never appear in Ready.
 - dependency authorization rejects execution-worker self/cross-epic edges.
+- A Cobra-tree table test proves every mutable task command—including defer,
+  undefer, and note add—is denied or capability-routed for execution workers.
 - evidence validation rejects every identity mismatch and stale timestamp.
 - Evidence timeout, cancellation, oversized argv/output, dispatcher crash, and
   unfinished runs are terminal and never validate.
 - Fingerprint plus canonical scope deduplicates across assignments.
+- Two distinct canonical prerequisite scopes sharing one fingerprint within one
+  assignment remain distinct; same-scope repeats collapse at materialization.
 - Every proposal state transition emits exactly one durable event under replay.
 
 ### 10.2 State-machine tests
@@ -549,6 +593,10 @@ are additive; no destructive migration is required.
 - two workers report same systemic issue -> one incident bead.
 - two assignments report the same prerequisite -> one blocker bead and one
   materialization key.
+- one assignment reports two different prerequisite scopes with the same
+  fingerprint -> two materializations.
+- proposal/evidence CLI disconnect -> short-lived connection closes while the
+  tracked worker connection, assignment, and bead status remain unchanged.
 
 ### 10.3 Production-path regression
 
@@ -568,6 +616,13 @@ and the full CLI -> UDS -> protocol -> dispatcher -> controller chain. It proves
 8. the worker is released and an unrelated ready bead is assigned;
 9. restart does not duplicate proposals, beads, or edges.
 10. each durable transition event occurs exactly once.
+11. the supported external `oro worker launch` path carries socket and capability
+    through a real evidence/proposal round trip.
+12. every mutable task CLI leaf is denied or routed under execution-worker
+    identity.
+13. a fake clock crosses capability expiry and completes refresh/ACK without
+    interrupting proposal submission.
+14. same-fingerprint proposals with two canonical scopes both materialize.
 
 Epic acceptance runs against `main`:
 
@@ -607,10 +662,11 @@ composition.
 
 | Boundary | Required production points | Owning epic |
 |---|---|---|
-| Assignment context | `assignBead`, `createAssignment`, `buildAssignPayload`, every reassignment path, `AssignPayload`, `handleAssign`, all spawner interfaces/mocks, Claude and Codex spawners | 1 |
+| Assignment context | `assignBead`, `createAssignment`, `buildAssignPayload`, every reassignment path, `AssignPayload`, `handleAssign`, `runWorker`, `ExecWorkerSpawner.SpawnWorker`, all spawner interfaces/mocks, Claude and Codex spawners | 1 |
+| Capability refresh | dispatcher expiry scheduler, `MsgCapabilityRefresh`, worker handler, `MsgCapabilityRefreshACK`, durable ACK/revocation/restart | 1 |
 | Contract persistence | protocol bead types, schema/migrations, Store/CreateParams/UpdateParams, SQLite/shadow/fake/read-tx/export, `Ready`, `checkBeadReady` | 2 |
-| Human/task mutations | create, update, reopen, close, delete, dep add/remove plus generated QG/audit/janitor/recovery/cleanliness producers | 2 and 5 |
-| Agent proposal producer | command registration, `oro evidence run`, `oro task propose-blocker`, UDS client, protocol messages, identity extraction, dispatcher message handler | 3 |
+| Human/task mutations | Cobra-tree policy for create, update, reopen, publish, close, delete, defer, undefer, note add, dep add/remove plus generated QG/audit/janitor/recovery/cleanliness producers | 2 and 5 |
+| Agent proposal producer | command registration, `oro evidence run`, `oro task propose-blocker`, UDS client, protocol messages, pre-registration `handleConn` request/response path, connection-preservation checks | 3 |
 | Proposal state | schema, proposal/evidence store, scope normalization, transition/event idempotency | 3 |
 | Materialization | `Store.MaterializeWorkProposal`, assignment generation compare, bead/edge/proposal/event transaction, startup reconciliation | 4 |
 | Scoped quarantine | proposal-specific admission exclusion, janitor retry, factory health/status/throughput/monitor | 4 and 6 |
@@ -660,6 +716,11 @@ premortem:
   its global freeze.
 - The production acceptance epic owns real CLI, protocol, subprocess, restart,
   event, and unrelated-throughput fixtures.
+- External worker launch transports the exact socket through typed context.
+- Capability refresh is a durable refresh/ACK protocol tested across expiry.
+- Short-lived proposal connections bypass worker registration and cleanup.
+- Provisional proposal identity preserves distinct scopes until canonicalization.
+- Mutable command coverage is generated from the real Cobra tree.
 
 ## 15. Assumptions
 
