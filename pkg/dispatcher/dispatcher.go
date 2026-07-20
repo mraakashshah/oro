@@ -2250,7 +2250,7 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 		// I/O function: build full payload outside lock.
 		func() string {
 			if d.cfg.RegressionRevert {
-				if _, err := d.captureQGBaseline(ctx, beadID, snap.worktree, d.qgMutationBase(snap.targetBranch)); err != nil {
+				if _, err := d.seedQGBaselineFromFailure(ctx, beadID, snap.worktree, qgOutput); err != nil {
 					_ = d.logEvent(ctx, "qg_baseline_capture_failed", workerID, beadID, workerID,
 						fmt.Sprintf(`{"error":%q,"attempt":%d}`, err.Error(), attempt))
 				}
