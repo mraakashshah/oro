@@ -8,8 +8,6 @@ import (
 // BuiltinProviders returns the cache providers supported without repository
 // configuration. Missing executables remain valid because callers report them
 // as skipped instead of treating an unavailable optional tool as invalid.
-//
-//oro:testonly
 func BuiltinProviders() []CacheProvider {
 	return []CacheProvider{
 		{
