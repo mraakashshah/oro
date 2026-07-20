@@ -24,6 +24,7 @@ export GOMODCACHE="$acceptance_root/cache/go-mod"
 export UV_CACHE_DIR="$acceptance_root/cache/uv"
 export GOLANGCI_LINT_CACHE="$acceptance_root/cache/golangci-lint"
 export NPM_CONFIG_CACHE="$acceptance_root/cache/npm"
+export ORO_SUBPROCESS_TMP_ROOT="$acceptance_root/tmp"
 export TMPDIR="$acceptance_root/tmp"
 mkdir -p "$HOME" "$GOCACHE" "$GOMODCACHE" "$UV_CACHE_DIR" "$GOLANGCI_LINT_CACHE" "$NPM_CONFIG_CACHE" "$TMPDIR"
 

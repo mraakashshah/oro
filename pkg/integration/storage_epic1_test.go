@@ -29,7 +29,10 @@ func TestStorageSharedCacheEndToEnd(t *testing.T) {
 	}
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(fixture, "shared-cache"))
-	baseEnv := []string{"PATH=/bin"}
+	baseEnv := []string{
+		"PATH=/bin",
+		"ORO_SUBPROCESS_TMP_ROOT=" + filepath.Join(fixture, "tmp"),
+	}
 	first := integrationEnvMap(processenv.ForWorkdir(baseEnv, worktreeA))
 	second := integrationEnvMap(processenv.ForWorkdir(baseEnv, worktreeB))
 
@@ -46,6 +49,11 @@ func TestStorageSharedCacheEndToEnd(t *testing.T) {
 	}
 	if first["TMPDIR"] == second["TMPDIR"] {
 		t.Fatalf("TMPDIR unexpectedly shared: %q", first["TMPDIR"])
+	}
+	for _, tmpDir := range []string{first["TMPDIR"], second["TMPDIR"]} {
+		if !integrationPathInside(tmpDir, fixture) {
+			t.Fatalf("TMPDIR escaped fixture: path=%q fixture=%q", tmpDir, fixture)
+		}
 	}
 
 	proof := filepath.Join(first["GOCACHE"], "shared-proof")
@@ -78,7 +86,10 @@ func TestStorageStandalonePolicyParity(t *testing.T) {
 	}
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(fixture, "cache"))
-	baseEnv := []string{"PATH=/bin"}
+	baseEnv := []string{
+		"PATH=/bin",
+		"ORO_SUBPROCESS_TMP_ROOT=" + filepath.Join(fixture, "tmp"),
+	}
 	first := integrationEnvMap(processenv.ForWorkdir(baseEnv, worktreeA))
 	second := integrationEnvMap(processenv.ForWorkdir(baseEnv, worktreeB))
 	for _, key := range []string{"GOCACHE", "GOMODCACHE", "UV_CACHE_DIR", "GOLANGCI_LINT_CACHE", "NPM_CONFIG_CACHE"} {
@@ -87,6 +98,14 @@ func TestStorageStandalonePolicyParity(t *testing.T) {
 		}
 		if !integrationPathInside(first[key], fixture) || !integrationPathInside(second[key], fixture) {
 			t.Errorf("standalone %s escaped fixture: first=%q second=%q fixture=%q", key, first[key], second[key], fixture)
+		}
+	}
+	if first["TMPDIR"] == second["TMPDIR"] {
+		t.Fatalf("standalone TMPDIR unexpectedly shared: %q", first["TMPDIR"])
+	}
+	for _, tmpDir := range []string{first["TMPDIR"], second["TMPDIR"]} {
+		if !integrationPathInside(tmpDir, fixture) {
+			t.Fatalf("standalone TMPDIR escaped fixture: path=%q fixture=%q", tmpDir, fixture)
 		}
 	}
 }
@@ -143,7 +162,7 @@ func TestStorageEpic1WrapperIsolatesToolCaches(t *testing.T) {
 		t.Fatalf("write fake git: %v", err)
 	}
 	fakeGo := `#!/bin/sh
-printf '%s\n' "$HOME|$XDG_CACHE_HOME|$GOCACHE|$GOMODCACHE|$UV_CACHE_DIR|$GOLANGCI_LINT_CACHE|$NPM_CONFIG_CACHE|$TMPDIR" >> "$STORAGE_ENV_TRACE"
+printf '%s\n' "$HOME|$XDG_CACHE_HOME|$GOCACHE|$GOMODCACHE|$UV_CACHE_DIR|$GOLANGCI_LINT_CACHE|$NPM_CONFIG_CACHE|$TMPDIR|$ORO_SUBPROCESS_TMP_ROOT" >> "$STORAGE_ENV_TRACE"
 if [ ! -e "$GOMODCACHE/readonly/module.go" ]; then
 	mkdir -p "$GOMODCACHE/readonly"
 	: > "$GOMODCACHE/readonly/module.go"
