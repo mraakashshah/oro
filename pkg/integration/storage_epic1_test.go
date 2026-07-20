@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,7 +15,9 @@ import (
 	"time"
 
 	"oro/pkg/dispatcher"
+	"oro/pkg/factoryhealth"
 	"oro/pkg/processenv"
+	"oro/pkg/protocol"
 	"oro/pkg/worker"
 )
 
@@ -147,8 +151,8 @@ printf '%s\n' "$GOCACHE|$GOMODCACHE|$UV_CACHE_DIR|$GOLANGCI_LINT_CACHE|$NPM_CONF
 	}
 }
 
-// TestStorageCLIAndHealthWiring proves the compiled CLI exposes both storage
-// status and health storage fields with an entirely isolated Oro home.
+// TestStorageCLIAndHealthWiring proves the compiled CLI exposes storage status
+// and preserves the same storage health across offline and live paths.
 func TestStorageCLIAndHealthWiring(t *testing.T) {
 	bin := buildOroBinary(t)
 	fixture := t.TempDir()
@@ -164,26 +168,47 @@ func TestStorageCLIAndHealthWiring(t *testing.T) {
 		"ORO_SOCKET_PATH="+filepath.Join(fixture, "oro.sock"),
 		"ORO_DB_PATH="+filepath.Join(fixture, "state.db"),
 	)
-	for _, args := range [][]string{{"storage", "status", "--json"}, {"health", "--json"}} {
-		cmd := exec.Command(bin, args...) //nolint:gosec // test-owned binary and constant arguments
-		cmd.Env = env
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("oro %s: %v\n%s", strings.Join(args, " "), err, output)
-		}
-		var payload map[string]json.RawMessage
-		if err := json.Unmarshal(output, &payload); err != nil {
-			t.Fatalf("oro %s emitted invalid JSON: %v\n%s", strings.Join(args, " "), err, output)
-		}
-		if len(payload) == 0 {
-			t.Fatalf("oro %s emitted empty JSON", strings.Join(args, " "))
-		}
-		if args[0] == "health" {
-			var metrics map[string]json.RawMessage
-			if err := json.Unmarshal(payload["metrics"], &metrics); err != nil || len(metrics["storage"]) == 0 {
-				t.Fatalf("health output missing metrics.storage field: %s", output)
-			}
-		}
+	statusOutput := integrationRunOroJSON(t, bin, env, "storage", "status", "--json")
+	var status map[string]json.RawMessage
+	if err := json.Unmarshal(statusOutput, &status); err != nil || len(status) == 0 {
+		t.Fatalf("storage status emitted invalid or empty JSON: %v\n%s", err, statusOutput)
+	}
+
+	offlineOutput := integrationRunOroJSON(t, bin, env, "health", "--json")
+	var offline factoryhealth.FactoryHealth
+	if err := json.Unmarshal(offlineOutput, &offline); err != nil {
+		t.Fatalf("offline health emitted invalid JSON: %v\n%s", err, offlineOutput)
+	}
+	if offline.Metrics.Storage == nil {
+		t.Fatalf("offline health missing metrics.storage: %s", offlineOutput)
+	}
+
+	livePayload, err := json.Marshal(factoryhealth.Evaluate(factoryhealth.Snapshot{
+		DaemonRunning:   true,
+		DaemonPID:       os.Getpid(),
+		DispatcherState: "running",
+		Storage:         offline.Metrics.Storage,
+	}))
+	if err != nil {
+		t.Fatalf("marshal live health fixture: %v", err)
+	}
+	serverResult := integrationServeHealth(t, filepath.Join(fixture, "oro.sock"), livePayload)
+	liveOutput := integrationRunOroJSON(t, bin, env, "health", "--json")
+	if err := <-serverResult; err != nil {
+		t.Fatalf("serve live health: %v", err)
+	}
+	var live factoryhealth.FactoryHealth
+	if err := json.Unmarshal(liveOutput, &live); err != nil {
+		t.Fatalf("live health emitted invalid JSON: %v\n%s", err, liveOutput)
+	}
+	if !live.Metrics.DaemonRunning || live.Metrics.DispatcherState != "running" {
+		t.Fatalf("health CLI did not use live dispatcher response: %+v", live.Metrics)
+	}
+	if !integrationJSONEqual(t, offline.Metrics.Storage, live.Metrics.Storage) {
+		t.Fatalf("live/offline storage health differs: offline=%+v live=%+v", offline.Metrics.Storage, live.Metrics.Storage)
+	}
+	if !integrationStringSlicesEqual(integrationStorageFindingCodes(offline), integrationStorageFindingCodes(live)) {
+		t.Fatalf("live/offline storage findings differ: offline=%v live=%v", integrationStorageFindingCodes(offline), integrationStorageFindingCodes(live))
 	}
 }
 
@@ -265,6 +290,107 @@ func integrationEnvMap(env []string) map[string]string {
 		}
 	}
 	return values
+}
+
+func integrationRunOroJSON(t *testing.T, bin string, env []string, args ...string) []byte {
+	t.Helper()
+	cmd := exec.Command(bin, args...) //nolint:gosec // test-owned binary and arguments
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("oro %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return output
+}
+
+func integrationServeHealth(t *testing.T, socketPath string, health []byte) <-chan error {
+	t.Helper()
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen for health fixture: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	result := make(chan error, 1)
+	go func() {
+		defer listener.Close()
+		for range 2 {
+			if unixListener, ok := listener.(*net.UnixListener); ok {
+				_ = unixListener.SetDeadline(time.Now().Add(5 * time.Second))
+			}
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				result <- acceptErr
+				return
+			}
+			if serveErr := integrationServeHealthConn(conn, health); serveErr != nil {
+				_ = conn.Close()
+				result <- serveErr
+				return
+			}
+			_ = conn.Close()
+		}
+		result <- nil
+	}()
+	return result
+}
+
+func integrationServeHealthConn(conn net.Conn, health []byte) error {
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	var request protocol.Message
+	if err := json.NewDecoder(conn).Decode(&request); err != nil {
+		return err
+	}
+	if request.Type != protocol.MsgDirective || request.Directive == nil {
+		return fmt.Errorf("unexpected health request: %+v", request)
+	}
+	var detail string
+	switch request.Directive.Op {
+	case "status":
+		detail = fmt.Sprintf(`{"pid":%d}`, os.Getpid())
+	case "health":
+		detail = string(health)
+	default:
+		return fmt.Errorf("unexpected health directive %q", request.Directive.Op)
+	}
+	return json.NewEncoder(conn).Encode(protocol.Message{
+		Type: protocol.MsgACK,
+		ACK:  &protocol.ACKPayload{OK: true, Detail: detail},
+	})
+}
+
+func integrationJSONEqual(t *testing.T, left, right any) bool {
+	t.Helper()
+	leftJSON, err := json.Marshal(left)
+	if err != nil {
+		t.Fatalf("marshal left JSON comparison: %v", err)
+	}
+	rightJSON, err := json.Marshal(right)
+	if err != nil {
+		t.Fatalf("marshal right JSON comparison: %v", err)
+	}
+	return bytes.Equal(leftJSON, rightJSON)
+}
+
+func integrationStorageFindingCodes(health factoryhealth.FactoryHealth) []string {
+	codes := make([]string, 0)
+	for _, finding := range health.Findings {
+		if strings.HasPrefix(finding.Code, "storage_") {
+			codes = append(codes, finding.Code)
+		}
+	}
+	return codes
+}
+
+func integrationStringSlicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func integrationStandaloneSpawnerEnv(t *testing.T, worktree string) []string {
