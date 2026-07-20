@@ -879,9 +879,14 @@ type Dispatcher struct {
 	acceptance      AcceptanceRunner // runs epic acceptance test commands
 	qgRunner        QGRunner         // runs quality gate before merge (defaults to &ShellQGRunner{})
 	qgBaselineCache map[string]qgBaseline
-	paneRestarter   PaneRestarter      // restarts named tmux panes (nil means no restart)
-	estimator       BeadEstimator      // estimates bead completion time (nil means no estimation)
-	sseBroadcaster  web.SSEBroadcaster // broadcasts server-sent events (never nil, initialized in New)
+	// presubmitCandidates holds independent local validation plans. Its
+	// semaphore scopes capacity to each action's declared resource class.
+	presubmitCandidates   chan presubmitCandidate
+	presubmitSemaphore    *QGSemaphore
+	presubmitActionRunner func(context.Context, PresubmitAction) error
+	paneRestarter         PaneRestarter      // restarts named tmux panes (nil means no restart)
+	estimator             BeadEstimator      // estimates bead completion time (nil means no estimation)
+	sseBroadcaster        web.SSEBroadcaster // broadcasts server-sent events (never nil, initialized in New)
 	// WorkerPool holds the connected-worker registry (embedded for field promotion).
 	WorkerPool
 	// BeadTracker holds per-bead counters and mappings (embedded for field promotion).
@@ -1117,16 +1122,18 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		embedderFactory: func(modelDir string) (Embedder, error) {
 			return embeddings.NewEmbedder(modelDir)
 		},
-		rerankerFactory: defaultRerankerFactory(resolved),
-		repoRoot:        rootDir,
-		shutdownRunner:  &ExecCommandRunner{Dir: rootDir},
-		acceptance:      &ShellAcceptanceRunner{},
-		estimator:       resolved.Estimator,
-		qgRunner:        &ShellQGRunner{},
-		qgBaselineCache: make(map[string]qgBaseline),
-		sseBroadcaster:  web.NewSSEBroadcaster(),
-		state:           StateInert,
-		targetWorkers:   resolved.InitialWorkers,
+		rerankerFactory:     defaultRerankerFactory(resolved),
+		repoRoot:            rootDir,
+		shutdownRunner:      &ExecCommandRunner{Dir: rootDir},
+		acceptance:          &ShellAcceptanceRunner{},
+		estimator:           resolved.Estimator,
+		qgRunner:            &ShellQGRunner{},
+		qgBaselineCache:     make(map[string]qgBaseline),
+		presubmitCandidates: make(chan presubmitCandidate),
+		presubmitSemaphore:  newPresubmitSemaphore(),
+		sseBroadcaster:      web.NewSSEBroadcaster(),
+		state:               StateInert,
+		targetWorkers:       resolved.InitialWorkers,
 		explicitScaleTarget: resolved.AllowZeroWorkers &&
 			resolved.InitialWorkers == 0 && resolved.MaxWorkers > 0,
 		WorkerPool: WorkerPool{
@@ -1600,6 +1607,7 @@ func (d *Dispatcher) spawnBackgroundLoops(ctx context.Context, ln net.Listener) 
 	d.safeGo(func() { d.heartbeatLoop(ctx) })
 	d.safeGo(func() { d.paneMonitorLoop(ctx) })
 	d.safeGo(func() { d.escalationRetryLoop(ctx) })
+	d.safeGo(func() { d.runPresubmitScheduler(ctx) })
 	d.safeGo(func() { RunSweepLoop(ctx, d.beads, d.db, SweepConfig{}) })
 	if d.cfg.WebEnabled {
 		d.startHTTPServer()
