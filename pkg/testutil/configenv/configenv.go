@@ -2,11 +2,13 @@
 package configenv
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Run executes a package test runner with empty temporary HOME and ORO_HOME
@@ -51,7 +53,9 @@ func preserveGoCaches() error {
 	if os.Getenv("GOCACHE") != "" && os.Getenv("GOMODCACHE") != "" {
 		return nil
 	}
-	output, err := exec.Command("go", "env", "GOCACHE", "GOMODCACHE").Output() //nolint:gosec // fixed Go command and arguments
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "go", "env", "GOCACHE", "GOMODCACHE").Output() //nolint:gosec // fixed Go command and arguments
 	if err != nil {
 		return fmt.Errorf("resolve cache roots: %w", err)
 	}
