@@ -27,6 +27,30 @@ const (
 // gitLogTimeout is the maximum time allowed for the git log command.
 const gitLogTimeout = 2 * time.Second
 
+// WorkerExecutionContext is the assignment authority delivered to a worker.
+// It stays separate from the worker's mutable runtime state so retry and
+// handoff payloads can preserve the exact issued identity.
+type WorkerExecutionContext struct {
+	AssignmentID int64
+	Generation   int64
+	ActorRole    string
+	Project      string
+	Capability   string
+}
+
+func workerExecutionContext(assignmentID int64, isEpicDecomp bool, project string) WorkerExecutionContext {
+	role := "execution_worker"
+	if isEpicDecomp {
+		role = "epic_decomposition_worker"
+	}
+	return WorkerExecutionContext{
+		AssignmentID: assignmentID,
+		Generation:   1,
+		ActorRole:    role,
+		Project:      project,
+	}
+}
+
 // buildAssignPayload assembles an AssignPayload for a worker from beads.Show
 // and filesystem sources. It is the single source of truth for payload
 // construction, replacing the ad-hoc inline literals scattered across assignBead,
@@ -38,11 +62,22 @@ const gitLogTimeout = 2 * time.Second
 //   - worker-program.md missing → empty WorkerProgram (no warning).
 //   - worker-program.md >32KB → truncate with log warning.
 //   - isEpicDecomp=true → GitLog and WorkerProgram are always empty.
-func (d *Dispatcher) buildAssignPayload(ctx context.Context, w *trackedWorker, attempt int, feedback, memCtx string) *protocol.AssignPayload {
+func (d *Dispatcher) buildAssignPayload(
+	ctx context.Context,
+	w *trackedWorker,
+	attempt int,
+	feedback, memCtx string,
+	execution WorkerExecutionContext,
+) *protocol.AssignPayload {
 	var bead protocol.Bead
 	p := &protocol.AssignPayload{
 		BeadID:              w.beadID,
 		Worktree:            w.worktree,
+		AssignmentID:        execution.AssignmentID,
+		Generation:          execution.Generation,
+		ActorRole:           execution.ActorRole,
+		Project:             execution.Project,
+		Capability:          execution.Capability,
 		Runtime:             w.runtime,
 		Model:               w.model,
 		Reasoning:           w.reasoning,

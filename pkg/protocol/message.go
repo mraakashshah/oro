@@ -90,6 +90,11 @@ type Message struct {
 type AssignPayload struct {
 	BeadID               string              `json:"bead_id"`
 	Worktree             string              `json:"worktree"`
+	AssignmentID         int64               `json:"assignment_id"`
+	Generation           int64               `json:"generation"`
+	ActorRole            string              `json:"actor_role"`
+	Project              string              `json:"project"`
+	Capability           string              `json:"capability"`
 	Runtime              string              `json:"runtime,omitempty"`
 	Model                string              `json:"model,omitempty"`
 	Reasoning            string              `json:"reasoning,omitempty"`
