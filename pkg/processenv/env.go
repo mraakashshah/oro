@@ -11,22 +11,23 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"oro/pkg/storage"
 )
 
 // ForWorkdir returns env with git worktree override variables stripped and PWD
 // aligned with workdir. cmd.Dir changes the process cwd, but many nested tools
 // inspect env PWD or git override variables before consulting the OS cwd.
 func ForWorkdir(env []string, workdir string) []string {
-	out := make([]string, 0, len(env)+11)
+	resolvedEnv := resolveSharedCacheEnv(env, workdir)
+	out := make([]string, 0, len(resolvedEnv)+11)
 	pwdSet := workdir == ""
-	values := envValues(env)
-	cacheRoot := runtimeRoot(values["ORO_SUBPROCESS_CACHE_ROOT"], workdir, defaultCacheRoot())
+	values := envValues(resolvedEnv)
 	tmpRoot := runtimeRoot(values["ORO_SUBPROCESS_TMP_ROOT"], workdir, defaultTmpRoot())
 	token := runtimeToken(workdir)
-	rewriteGOMODCACHE := workdir != "" && pathInside(values["GOMODCACHE"], workdir)
 
-	for _, e := range env {
-		entry, keep, handledPWD := normalizeEnvEntry(e, workdir, rewriteGOMODCACHE)
+	for _, e := range resolvedEnv {
+		entry, keep, handledPWD := normalizeEnvEntry(e, workdir)
 		if handledPWD {
 			pwdSet = true
 		}
@@ -38,27 +39,14 @@ func ForWorkdir(env []string, workdir string) []string {
 		out = append(out, "PWD="+workdir)
 	}
 	if workdir != "" {
-		goCache := filepath.Join(cacheRoot, token, "go-build")
-		lintCache := filepath.Join(cacheRoot, token, "golangci-lint")
-		uvCache := filepath.Join(cacheRoot, token, "uv")
+		out = append(out, sharedCacheEntries(resolvedEnv)...)
 		tmpDir := filepath.Join(tmpRoot, token)
-		_ = os.MkdirAll(goCache, 0o750)
-		_ = os.MkdirAll(lintCache, 0o750)
-		_ = os.MkdirAll(uvCache, 0o750)
 		_ = os.MkdirAll(tmpDir, 0o750)
 		out = append(out,
-			"GOCACHE="+goCache,
-			"GOLANGCI_LINT_CACHE="+lintCache,
-			"UV_CACHE_DIR="+uvCache,
 			"TMPDIR="+tmpDir,
 			"TMP="+tmpDir,
 			"TEMP="+tmpDir,
 		)
-		if rewriteGOMODCACHE {
-			modCache := filepath.Join(cacheRoot, token, "gomodcache")
-			_ = os.MkdirAll(modCache, 0o750)
-			out = append(out, "GOMODCACHE="+modCache)
-		}
 	}
 	out = append(out,
 		"GIT_EDITOR=true",
@@ -70,7 +58,7 @@ func ForWorkdir(env []string, workdir string) []string {
 	return out
 }
 
-func normalizeEnvEntry(entry, workdir string, rewriteGOMODCACHE bool) (normalized string, keep, handledPWD bool) {
+func normalizeEnvEntry(entry, workdir string) (normalized string, keep, handledPWD bool) {
 	key, value, ok := strings.Cut(entry, "=")
 	if !ok {
 		return entry, true, false
@@ -87,7 +75,7 @@ func normalizeEnvEntry(entry, workdir string, rewriteGOMODCACHE bool) (normalize
 		}
 		return "PWD=" + workdir, true, true
 	}
-	if workdir != "" && isolatesRuntimeEnv(key, rewriteGOMODCACHE) {
+	if workdir != "" && isolatesRuntimeEnv(key) {
 		return "", false, false
 	}
 	if isLocaleEnv(key) && value != "" && !localeAvailable(value) {
@@ -160,15 +148,48 @@ func isGitOverrideEnv(key string) bool {
 	}
 }
 
-func isolatesRuntimeEnv(key string, rewriteGOMODCACHE bool) bool {
+func isolatesRuntimeEnv(key string) bool {
 	switch key {
-	case "GOCACHE", "GOLANGCI_LINT_CACHE", "UV_CACHE_DIR", "TMPDIR", "TMP", "TEMP":
+	case "GOCACHE", "GOMODCACHE", "GOLANGCI_LINT_CACHE", "UV_CACHE_DIR", "NPM_CONFIG_CACHE", "TMPDIR", "TMP", "TEMP":
 		return true
-	case "GOMODCACHE":
-		return rewriteGOMODCACHE
 	default:
 		return false
 	}
+}
+
+func resolveSharedCacheEnv(env []string, workdir string) []string {
+	resolved, err := storage.ResolveCacheEnv(env, workdir, storage.StoragePolicy{})
+	if err != nil {
+		return env
+	}
+	for _, entry := range resolved.Env {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || !isSharedCacheEnv(key) || value == "" {
+			continue
+		}
+		_ = os.MkdirAll(value, 0o750)
+	}
+	return resolved.Env
+}
+
+func isSharedCacheEnv(key string) bool {
+	switch key {
+	case "GOCACHE", "GOMODCACHE", "GOLANGCI_LINT_CACHE", "UV_CACHE_DIR", "NPM_CONFIG_CACHE":
+		return true
+	default:
+		return false
+	}
+}
+
+func sharedCacheEntries(env []string) []string {
+	entries := make([]string, 0, 5)
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok && value != "" && isSharedCacheEnv(key) {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
 }
 
 func envValues(env []string) map[string]string {

@@ -31,8 +31,6 @@ type CacheEnvFinding struct {
 
 // ResolveCacheEnv resolves registered cache variables to external, scope-safe
 // locations while preserving unknown environment state unchanged.
-//
-//oro:testonly
 func ResolveCacheEnv(env []string, workdir string, policy StoragePolicy) (ResolvedCacheEnv, error) {
 	providers, err := cacheProviders(policy)
 	if err != nil {
