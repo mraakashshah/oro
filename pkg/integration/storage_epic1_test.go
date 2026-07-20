@@ -23,6 +23,11 @@ func TestStorageSharedCacheEndToEnd(t *testing.T) {
 		}
 	}
 
+	home := filepath.Join(fixture, "home")
+	if err := os.MkdirAll(home, 0o750); err != nil {
+		t.Fatalf("create fixture home: %v", err)
+	}
+	t.Setenv("HOME", home)
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(fixture, "shared-cache"))
 	baseEnv := []string{"PATH=/bin"}
 	first := integrationEnvMap(processenv.ForWorkdir(baseEnv, worktreeA))
@@ -34,6 +39,9 @@ func TestStorageSharedCacheEndToEnd(t *testing.T) {
 		}
 		if integrationPathInside(first[key], worktreeA) || integrationPathInside(second[key], worktreeB) {
 			t.Fatalf("%s points into a worktree: first=%q second=%q", key, first[key], second[key])
+		}
+		if !integrationPathInside(first[key], fixture) || !integrationPathInside(second[key], fixture) {
+			t.Fatalf("%s escaped fixture: first=%q second=%q fixture=%q", key, first[key], second[key], fixture)
 		}
 	}
 	if first["TMPDIR"] == second["TMPDIR"] {
@@ -64,6 +72,11 @@ func TestStorageStandalonePolicyParity(t *testing.T) {
 			t.Fatalf("create worktree %q: %v", worktree, err)
 		}
 	}
+	home := filepath.Join(fixture, "home")
+	if err := os.MkdirAll(home, 0o750); err != nil {
+		t.Fatalf("create fixture home: %v", err)
+	}
+	t.Setenv("HOME", home)
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(fixture, "cache"))
 	baseEnv := []string{"PATH=/bin"}
 	first := integrationEnvMap(processenv.ForWorkdir(baseEnv, worktreeA))
@@ -71,6 +84,9 @@ func TestStorageStandalonePolicyParity(t *testing.T) {
 	for _, key := range []string{"GOCACHE", "GOMODCACHE", "UV_CACHE_DIR", "GOLANGCI_LINT_CACHE"} {
 		if first[key] != second[key] {
 			t.Errorf("standalone %s differs across worktrees: %q != %q", key, first[key], second[key])
+		}
+		if !integrationPathInside(first[key], fixture) || !integrationPathInside(second[key], fixture) {
+			t.Errorf("standalone %s escaped fixture: first=%q second=%q fixture=%q", key, first[key], second[key], fixture)
 		}
 	}
 }
