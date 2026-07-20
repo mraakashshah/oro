@@ -188,3 +188,65 @@ func TestRemoteGateStoreRejectsInvalidAndStaleTransitions(t *testing.T) {
 		t.Fatalf("stale transition error = %v, want ErrRemoteGateTransitionConflict", err)
 	}
 }
+
+func TestRemoteGateStorePersistenceFailures(t *testing.T) {
+	ctx := context.Background()
+	var nilStore *Store
+	if _, err := nilStore.AdoptCandidate(ctx, RemoteGateCandidate{}); err == nil {
+		t.Fatal("nil AdoptCandidate returned nil error")
+	}
+	if _, err := nilStore.RemoteGate(ctx, 1); err == nil {
+		t.Fatal("nil RemoteGate returned nil error")
+	}
+	if _, err := nilStore.AdvanceRemoteGate(ctx, 1, RemoteGateStateCandidateAdopted, RemoteGateStateLocalPresubmit); err == nil {
+		t.Fatal("nil AdvanceRemoteGate returned nil error")
+	}
+	if err := nilStore.RecordPresubmitResult(ctx, PresubmitResult{}); err == nil {
+		t.Fatal("nil RecordPresubmitResult returned nil error")
+	}
+
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "remote-gates.db"))
+	if err != nil {
+		t.Fatalf("open DB: %v", err)
+	}
+	store, err := NewStore(ctx, db)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if _, err := store.RemoteGate(ctx, 999); err == nil {
+		t.Fatal("missing RemoteGate returned nil error")
+	}
+
+	candidate := RemoteGateCandidate{
+		Key:          "oro-repf:43:ghi789",
+		BeadID:       "oro-repf",
+		AssignmentID: 43,
+		CandidateSHA: "ghi789",
+		BaseSHA:      "base000",
+		TargetBranch: "main",
+		AdoptionRef:  "refs/oro/adopted/oro/oro-repf/43",
+	}
+	gate, err := store.AdoptCandidate(ctx, candidate)
+	if err != nil {
+		t.Fatalf("AdoptCandidate: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE remote_gates SET candidate_sha = 'different' WHERE id = ?`, gate.ID); err != nil {
+		t.Fatalf("change persisted candidate: %v", err)
+	}
+	if _, err := store.AdoptCandidate(ctx, candidate); err == nil {
+		t.Fatal("conflicting candidate reuse returned nil error")
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("close DB: %v", err)
+	}
+	if _, err := NewStore(ctx, db); err == nil {
+		t.Fatal("NewStore on closed DB returned nil error")
+	}
+	if err := store.RecordPresubmitResult(ctx, PresubmitResult{
+		GateID: 1, ActionName: "format", CandidateSHA: "candidate", BaseSHA: "base", Command: "cmd",
+		Profile: "profile", ToolHash: "tools", StartedAt: "start", CompletedAt: "end", Outcome: "passed", ResourceClass: "light",
+	}); err == nil {
+		t.Fatal("RecordPresubmitResult on closed DB returned nil error")
+	}
+}
