@@ -64,6 +64,7 @@ Global:
   global-oro-approach  Deprecated alias for Claude agent assets sync
 
 Maintenance:
+	storage    Inspect Oro storage health and usage
   doctor     Diagnose oro installation issues
   doctrine   Inspect enforcement doctrine artifacts
   uninstall  Remove oro and all its artifacts from this machine

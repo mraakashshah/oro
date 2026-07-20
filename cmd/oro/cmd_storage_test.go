@@ -1,0 +1,262 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"oro/pkg/storage"
+)
+
+func TestStorageStatusCommand(t *testing.T) {
+	t.Run("catalog pragmas must prove health", func(t *testing.T) {
+		if !storageCatalogPragmasHealthy("ok", 1) {
+			t.Error("healthy catalog pragmas reported unhealthy")
+		}
+		if storageCatalogPragmasHealthy("row 7 missing from index", 1) {
+			t.Error("integrity diagnostic reported healthy")
+		}
+		if storageCatalogPragmasHealthy("ok", 2) {
+			t.Error("unsupported catalog version reported healthy")
+		}
+	})
+
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+
+	paths, err := ResolveStoragePaths(oroHome)
+	if err != nil {
+		t.Fatalf("ResolveStoragePaths() error = %v", err)
+	}
+	if err := os.MkdirAll(paths.CacheRoot, 0o750); err != nil {
+		t.Fatalf("create cache root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(paths.CacheRoot, "sample"), []byte("12345"), 0o600); err != nil {
+		t.Fatalf("write cache sample: %v", err)
+	}
+	catalog, err := openStorageCatalog(context.Background(), oroHome)
+	if err != nil {
+		t.Fatalf("openStorageCatalog() error = %v", err)
+	}
+	completedAt := time.Now().UTC().Truncate(time.Second)
+	seedStorageCatalog(t, catalog, filepath.Join(oroHome, "scratch"), completedAt)
+	t.Cleanup(func() {
+		if err := catalog.Close(); err != nil {
+			t.Errorf("close catalog: %v", err)
+		}
+	})
+
+	root := newRootCmd()
+	var out strings.Builder
+	root.SetOut(&out)
+	root.SetArgs([]string{"storage", "status", "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute storage status: %v", err)
+	}
+
+	var got struct {
+		Bytes struct {
+			Catalog  int64 `json:"catalog"`
+			Evidence int64 `json:"evidence"`
+			Cache    int64 `json:"cache"`
+			Total    int64 `json:"total"`
+		} `json:"bytes"`
+		Pressure string `json:"pressure"`
+		Catalog  struct {
+			Health string `json:"health"`
+		} `json:"catalog"`
+		Leases struct {
+			Active int `json:"active"`
+		} `json:"leases"`
+		Backlog struct {
+			PendingSweeps int `json:"pending_sweeps"`
+		} `json:"backlog"`
+		NextSweep string `json:"next_sweep"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &got); err != nil {
+		t.Fatalf("decode JSON %q: %v", out.String(), err)
+	}
+	wantCatalogBytes := storageCatalogFilesBytes(t, paths.CatalogPath)
+	if got.Bytes.Catalog != wantCatalogBytes || got.Bytes.Evidence != 0 || got.Bytes.Cache != 5 || got.Bytes.Total != wantCatalogBytes+5 {
+		t.Errorf("bytes = %+v, want catalog=%d evidence=0 cache=5 total=%d", got.Bytes, wantCatalogBytes, wantCatalogBytes+5)
+	}
+	if got.Pressure == "" {
+		t.Error("pressure is empty")
+	}
+	if got.Catalog.Health != "healthy" {
+		t.Errorf("catalog health = %q, want healthy", got.Catalog.Health)
+	}
+	if got.Leases.Active != 1 {
+		t.Errorf("active leases = %d, want 1", got.Leases.Active)
+	}
+	if got.Backlog.PendingSweeps != 1 {
+		t.Errorf("pending sweeps = %d, want 1", got.Backlog.PendingSweeps)
+	}
+	wantNextSweep := completedAt.Add(weeklyStorageSweepInterval).Format(time.RFC3339)
+	if got.NextSweep != wantNextSweep {
+		t.Errorf("next_sweep = %q, want %q", got.NextSweep, wantNextSweep)
+	}
+
+	root = newRootCmd()
+	out.Reset()
+	root.SetOut(&out)
+	root.SetArgs([]string{"storage", "status"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute human storage status: %v", err)
+	}
+	if !strings.Contains(out.String(), "catalog: healthy") {
+		t.Errorf("human output missing catalog health:\n%s", out.String())
+	}
+
+	t.Run("missing catalog reports preservation mode", func(t *testing.T) {
+		missingHome := t.TempDir()
+		status, err := loadStorageStatus(context.Background(), missingHome)
+		if err != nil {
+			t.Fatalf("loadStorageStatus() error = %v", err)
+		}
+		if status.Catalog.Health != "preservation_mode" {
+			t.Errorf("catalog health = %q, want preservation_mode", status.Catalog.Health)
+		}
+	})
+
+	t.Run("symlinked managed root reports target bytes", func(t *testing.T) {
+		target := t.TempDir()
+		if err := os.WriteFile(filepath.Join(target, "payload"), []byte("1234567"), 0o600); err != nil {
+			t.Fatalf("write target payload: %v", err)
+		}
+		link := filepath.Join(t.TempDir(), "cache")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatalf("create cache symlink: %v", err)
+		}
+		got, err := storagePathBytes(link)
+		if err != nil {
+			t.Fatalf("storagePathBytes() error = %v", err)
+		}
+		if got != 7 {
+			t.Errorf("storagePathBytes() = %d, want 7", got)
+		}
+	})
+
+	t.Run("corrupt catalog stays preserved", func(t *testing.T) {
+		corruptHome := t.TempDir()
+		corruptPaths, err := ResolveStoragePaths(corruptHome)
+		if err != nil {
+			t.Fatalf("ResolveStoragePaths() error = %v", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(corruptPaths.CatalogPath), 0o750); err != nil {
+			t.Fatalf("create catalog dir: %v", err)
+		}
+		const corruptContents = "not a sqlite database"
+		if err := os.WriteFile(corruptPaths.CatalogPath, []byte(corruptContents), 0o600); err != nil {
+			t.Fatalf("write corrupt catalog: %v", err)
+		}
+		status, err := loadStorageStatus(context.Background(), corruptHome)
+		if err != nil {
+			t.Fatalf("loadStorageStatus() error = %v", err)
+		}
+		if status.Catalog.Health != "corrupt" {
+			t.Errorf("catalog health = %q, want corrupt", status.Catalog.Health)
+		}
+		contents, err := os.ReadFile(corruptPaths.CatalogPath)
+		if err != nil {
+			t.Fatalf("read corrupt catalog: %v", err)
+		}
+		if string(contents) != corruptContents {
+			t.Errorf("corrupt catalog changed to %q", contents)
+		}
+	})
+
+	t.Run("incomplete catalog schema is unhealthy", func(t *testing.T) {
+		incompleteHome := t.TempDir()
+		incompletePaths, err := ResolveStoragePaths(incompleteHome)
+		if err != nil {
+			t.Fatalf("ResolveStoragePaths() error = %v", err)
+		}
+		db, err := openDB(incompletePaths.CatalogPath)
+		if err != nil {
+			t.Fatalf("open incomplete catalog: %v", err)
+		}
+		if _, err := db.Exec(`
+			CREATE TABLE leases (expires_at TEXT NOT NULL);
+			CREATE TABLE sweeps (status TEXT NOT NULL, finished_at TEXT);
+			PRAGMA user_version = 1;
+		`); err != nil {
+			t.Fatalf("create incomplete catalog: %v", err)
+		}
+		if err := db.Close(); err != nil {
+			t.Fatalf("close incomplete catalog: %v", err)
+		}
+		status, err := loadStorageStatus(context.Background(), incompleteHome)
+		if err != nil {
+			t.Fatalf("loadStorageStatus() error = %v", err)
+		}
+		if status.Catalog.Health != "corrupt" {
+			t.Errorf("catalog health = %q, want corrupt", status.Catalog.Health)
+		}
+	})
+
+	t.Run("catalog foreign key violations are unhealthy", func(t *testing.T) {
+		invalidHome := t.TempDir()
+		catalog, err := openStorageCatalog(context.Background(), invalidHome)
+		if err != nil {
+			t.Fatalf("openStorageCatalog() error = %v", err)
+		}
+		if _, err := catalog.DB().Exec(`
+			PRAGMA foreign_keys = OFF;
+			INSERT INTO leases (id, namespace_id, owner_id, expires_at, created_at)
+			VALUES ('orphan', 'missing', 'worker-1', '2099-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+		`); err != nil {
+			t.Fatalf("insert invalid catalog lease: %v", err)
+		}
+		if err := catalog.Close(); err != nil {
+			t.Fatalf("close invalid catalog: %v", err)
+		}
+		status, err := loadStorageStatus(context.Background(), invalidHome)
+		if err != nil {
+			t.Fatalf("loadStorageStatus() error = %v", err)
+		}
+		if status.Catalog.Health != "corrupt" {
+			t.Errorf("catalog health = %q, want corrupt", status.Catalog.Health)
+		}
+	})
+}
+
+func storageCatalogFilesBytes(t *testing.T, catalogPath string) int64 {
+	t.Helper()
+	var total int64
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		info, err := os.Stat(catalogPath + suffix)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("stat catalog file %q: %v", catalogPath+suffix, err)
+		}
+		total += info.Size()
+	}
+	return total
+}
+
+func seedStorageCatalog(t *testing.T, catalog *storage.Catalog, scratchPath string, completedAt time.Time) {
+	t.Helper()
+	statements := []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO providers (id, created_at, updated_at) VALUES ('runtime', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, nil},
+		{`INSERT INTO namespaces (id, provider_id, path, created_at, updated_at) VALUES ('scratch', 'runtime', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, []any{scratchPath}},
+		{`INSERT INTO leases (id, namespace_id, owner_id, expires_at, created_at) VALUES ('lease-1', 'scratch', 'worker-1', ?, '2026-01-01T00:00:00Z')`, []any{time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}},
+		{`INSERT INTO sweeps (id, provider_id, started_at, finished_at, status) VALUES ('weekly-complete', 'runtime', '2026-01-01T00:00:00Z', ?, 'completed')`, []any{completedAt.Format(time.RFC3339)}},
+		{`INSERT INTO sweeps (id, provider_id, started_at, finished_at, status) VALUES ('weekly-failed', 'runtime', '2026-01-02T00:00:00Z', ?, 'failed')`, []any{completedAt.Add(24 * time.Hour).Format(time.RFC3339)}},
+		{`INSERT INTO sweeps (id, provider_id, started_at, status) VALUES ('pending', 'runtime', '2026-01-02T00:00:00Z', 'running')`, nil},
+	}
+	for _, statement := range statements {
+		if _, err := catalog.DB().ExecContext(context.Background(), statement.query, statement.args...); err != nil {
+			t.Fatalf("seed catalog: %v", err)
+		}
+	}
+}
