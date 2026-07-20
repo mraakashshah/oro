@@ -249,7 +249,7 @@ func TestGenerateQualityGateScript(t *testing.T) {
 		if !strings.HasPrefix(script, "#!/bin/sh\n# shellcheck shell=bash") {
 			t.Error("script should start with /bin/sh Bash bootstrap")
 		}
-		if !strings.Contains(script, `exec /usr/bin/env bash "$0" "$@"`) {
+		if !strings.Contains(script, `exec env -u BASH_ENV /usr/bin/env bash "$0" "$@"`) {
 			t.Error("script should exec Bash after bootstrap")
 		}
 		if !strings.Contains(script, "lane_go") {
@@ -342,7 +342,7 @@ func TestGenerateQualityGateScript(t *testing.T) {
 		if !strings.HasPrefix(script, "#!/bin/sh\n# shellcheck shell=bash") {
 			t.Error("script should start with /bin/sh Bash bootstrap")
 		}
-		if !strings.Contains(script, `exec /usr/bin/env bash "$0" "$@"`) {
+		if !strings.Contains(script, `exec env -u BASH_ENV /usr/bin/env bash "$0" "$@"`) {
 			t.Error("script should exec Bash after bootstrap")
 		}
 		if strings.Contains(script, "lane_go") {
@@ -387,7 +387,7 @@ func TestGenerateQualityGateScript(t *testing.T) {
 		if !strings.HasPrefix(script, "#!/bin/sh\n# shellcheck shell=bash") {
 			t.Error("script should start with /bin/sh Bash bootstrap")
 		}
-		if !strings.Contains(script, `exec /usr/bin/env bash "$0" "$@"`) {
+		if !strings.Contains(script, `exec env -u BASH_ENV /usr/bin/env bash "$0" "$@"`) {
 			t.Error("script should exec Bash after bootstrap")
 		}
 		if !strings.Contains(script, "lane_go") {

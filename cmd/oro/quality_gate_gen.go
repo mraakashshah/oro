@@ -414,7 +414,7 @@ const qualityGateTmpl = `#!/bin/sh
 # lane bails on first tier failure.
 # =============================================================================
 
-if [ "${ORO_QG_BASH_BOOTSTRAPPED:-}" != "1" ]; then
+if [ "${ORO_QG_BASH_BOOTSTRAPPED_PID:-}" != "$$" ]; then
     if grep -n -E '^(<{7}|={7}|>{7})( |$)' "$0" >/dev/null 2>&1; then
         echo "FAIL: quality_gate.sh contains unresolved git conflict markers" >&2
         grep -n -E '^(<{7}|={7}|>{7})( |$)' "$0" >&2 || true
@@ -424,10 +424,16 @@ if [ "${ORO_QG_BASH_BOOTSTRAPPED:-}" != "1" ]; then
         export LC_ALL=C
         export LANG=C
     fi
-    export ORO_QG_BASH_BOOTSTRAPPED=1
-    exec /usr/bin/env bash "$0" "$@"
+    # The legacy marker can be inherited by a fresh /bin/sh launcher. A PID-scoped
+    # token survives this one exec but cannot suppress bootstrap in a child launch.
+    # Keep the preflight before Bash parses the script; ignore BASH_ENV because a
+    # shell hook can recursively launch this gate.
+    unset ORO_QG_BASH_BOOTSTRAPPED
+    export ORO_QG_BASH_BOOTSTRAPPED_PID=$$
+    exec env -u BASH_ENV /usr/bin/env bash "$0" "$@"
 fi
 unset ORO_QG_BASH_BOOTSTRAPPED
+unset ORO_QG_BASH_BOOTSTRAPPED_PID
 
 set -euo pipefail
 
