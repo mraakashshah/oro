@@ -72,6 +72,23 @@ func TestApplyHealth(t *testing.T) {
 	// Note: PaneStatus assertions require DB setup and will be validated in integration tests
 }
 
+func TestApplyHealthReportsStorageUnavailableWithoutObservation(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	result, err := d.applyHealth()
+	if err != nil {
+		t.Fatalf("applyHealth: %v", err)
+	}
+
+	var health SwarmHealth
+	if err := json.Unmarshal([]byte(result), &health); err != nil {
+		t.Fatalf("unmarshal health: %v", err)
+	}
+	if !hasHealthFinding(health, factoryhealth.FindingStorageUnavailable) {
+		t.Fatalf("missing storage unavailable finding: %+v", health.Findings)
+	}
+}
+
 func TestApplyHealthViaDirective(t *testing.T) {
 	// Create a test dispatcher
 	d, _, _, _, _, _ := newTestDispatcher(t)
