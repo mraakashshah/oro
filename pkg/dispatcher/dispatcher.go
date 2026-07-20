@@ -1858,14 +1858,17 @@ func (d *Dispatcher) handleHeartbeat(ctx context.Context, workerID string, msg p
 	if msg.Heartbeat == nil {
 		return
 	}
+	contextIncreased := false
 	d.mu.Lock()
 	if w, ok := d.workers[workerID]; ok {
 		w.lastSeen = d.nowFunc()
+		contextIncreased = msg.Heartbeat.ContextPct > w.contextPct
 		w.contextPct = msg.Heartbeat.ContextPct
-		// Heartbeats, including changing context_pct, are liveness only. Real
-		// progress arrives through STATUS, DONE, READY_FOR_REVIEW, and QG events.
 	}
 	d.mu.Unlock()
+	if contextIncreased {
+		d.recordWorkerProgress(ctx, workerID, msg.Heartbeat.BeadID, "context_pct_increase")
+	}
 
 	d.broadcastEvent("heartbeat", msg.Heartbeat.BeadID, workerID)
 
@@ -4109,6 +4112,7 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 	beadID := msg.ReadyForReview.BeadID
 
 	d.touchProgress(workerID)
+	d.recordWorkerProgress(ctx, workerID, beadID, "ready_for_review")
 	_ = d.logEvent(ctx, "ready_for_review", workerID, beadID, workerID, "")
 
 	d.mu.Lock()
@@ -6688,6 +6692,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	}
 	_ = d.logEvent(ctx, "assign", "dispatcher", bead.ID, w.id,
 		fmt.Sprintf(`{"worktree":%q,"branch":%q}`, worktree, branch))
+	d.recordWorkerProgress(ctx, w.id, bead.ID, "assign")
 
 	var codeCtx string
 	if d.codeIndex != nil {
@@ -8574,6 +8579,13 @@ func isManagedScaleDownCandidate(w *trackedWorker) bool {
 // heartbeatLoop, checkHeartbeats → worker_pool.go
 
 // --- SQLite helpers ---
+
+// recordWorkerProgress persists a worker event that is useful for auditing
+// assignment activity. It deliberately does not update lastProgress: timeout
+// state is driven only by real worker protocol transitions.
+func (d *Dispatcher) recordWorkerProgress(ctx context.Context, workerID, beadID, source string) {
+	_ = d.logEvent(ctx, "worker_progress", source, beadID, workerID, "")
+}
 
 func (d *Dispatcher) logEvent(ctx context.Context, evType, source, beadID, workerID, payload string) error {
 	_, err := d.db.ExecContext(ctx,
