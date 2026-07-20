@@ -17,8 +17,8 @@ Detect the user's primary goal from their message:
 |--------|------|-------------|
 | "how does", "what is", "find", "understand" | **Research** | `explore` → document findings |
 | "design", "plan", "break down" | **Plan** | `brainstorming` → `premortem` → `writing-plans` |
-| "spec", "decompose", "break into tasks", "encode" | **Encode** | `beadcraft` (decompose mode) |
-| "add", "implement", "create", "build" | **Build** | `executing-beads` → `finishing-work` |
+| "spec", "decompose", "break into tasks", "encode" | **Encode** | `beadcraft` only if already Oro-managed; otherwise native tracker/plan |
+| "add", "implement", "create", "build" | **Build** | `executing-beads` only for Oro tasks; native execution otherwise → `finishing-work` |
 | "fix", "broken", "failing", "debug", "bug" | **Fix** | `systematic-debugging` → `test-driven-development` → `finishing-work` |
 | "work task", "pick up a task", "execute task", "do <id>" | **Work Task** | `work-bead` |
 
@@ -28,7 +28,7 @@ If intent is clear from context, infer the goal. Otherwise, ask:
 What's your primary goal?
 1. Research — understand/explore something
 2. Plan — design and spec a solution (brainstorming → premortem → writing-plans)
-3. Encode — decompose a spec into tasks (beadcraft)
+3. Encode — decompose a spec into tasks (`beadcraft` only in an existing Oro project)
 4. Build — execute tasks and ship
 5. Fix — debug/fix an issue
 ```
@@ -53,9 +53,9 @@ What's your primary goal?
 
 ### Encode
 
-**Runs automatically — invoke beadcraft and present the tree.**
+Use `beadcraft` only when the current project is already Oro-managed. Do not initialize Oro to enable this workflow. Outside an Oro-managed project, decompose into the project's native tracker or plan.
 
-1. `beadcraft` (decompose mode) — parse spec into epic + tasks with full quality (Rule of Five, acceptance criteria, Read/Signature/Edges)
+1. In an existing Oro project, invoke `beadcraft` (decompose mode) to parse the spec into an epic and tasks. Otherwise use the native tracker or plan.
 2. Present task tree for user confirmation
 3. Suggest: "Ready to build?"
 
@@ -63,13 +63,13 @@ What's your primary goal?
 
 ### Build
 
-**Runs automatically — execute tasks in dependency order.**
+**Runs automatically — execute work in dependency order using the backend selected by Encode.**
 
-1. `executing-beads` — TDD cycle per task, quality gate, atomic commit
+1. When Encode produced Oro tasks, invoke `executing-beads`. When Encode produced a native task graph or plan, use the project's native execution workflow and do not initialize Oro.
 2. `requesting-code-review` — review between batches
 3. `finishing-work` — integrate and clean up
 
-**Input:** Task graph from Encode phase.
+**Input:** Oro or native work definition from Encode phase.
 
 ### Fix
 1. `systematic-debugging` — find root cause

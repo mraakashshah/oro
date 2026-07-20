@@ -8,6 +8,9 @@ SKILL_NAMES = (
     "brainstorming",
     "create-handoff",
     "dispatching-parallel-agents",
+    "using-skills",
+    "finishing-work",
+    "workflow-routing",
 )
 
 
@@ -32,6 +35,15 @@ def test_spec_runs_private_tiger_premortem_in_both_modes() -> None:
     assert "Compare approaches → Internal Leverage Pass → brainstorming's single Internal Premortem → finalize" in full
     assert "Keep the premortem private" in skill
     assert "verified material risks" in skill
+
+
+def test_spec_uses_beadcraft_only_for_existing_oro_projects() -> None:
+    skill = _skill("spec")
+
+    assert "only when the current project is already Oro-managed" in skill
+    assert "Outside an Oro-managed project" in skill
+    assert "Do not initialize Oro" in skill
+    assert "native tracker or implementation plan" in skill
 
 
 def test_brainstorming_leaves_adversarial_review_to_its_caller() -> None:
@@ -73,6 +85,62 @@ def test_parallel_dispatch_delegates_integration_to_oro_work() -> None:
     ):
         assert unsafe_default not in skill
     assert len(skill.split()) < 700
+
+
+def test_using_skills_keeps_one_percent_rule_with_material_matching() -> None:
+    skill = _skill("using-skills")
+
+    assert "1% chance" in skill
+    assert "materially matches" in skill
+    assert "Topical adjacency is not a material match" in skill
+    assert "already Oro-managed" in skill
+    assert "Do not initialize Oro just to invoke `beadcraft`" in skill
+    assert "Outside an Oro-managed project" in skill
+
+
+def test_workflow_routing_respects_oro_only_beadcraft_boundary() -> None:
+    skill = _skill("workflow-routing")
+
+    assert "only when the current project is already Oro-managed" in skill
+    assert "Outside an Oro-managed project" in skill
+    assert "Do not initialize Oro" in skill
+    assert "When Encode produced Oro tasks" in skill
+    assert "When Encode produced a native" in skill
+    assert "`executing-beads` only for Oro tasks; native execution otherwise" in skill
+
+
+def test_finishing_work_uses_conditional_documentation_and_single_landing_owner() -> None:
+    skill = _skill("finishing-work")
+
+    assert "Invoke `review-docs` only when" in skill
+    assert "Invoke `documenting-solutions` only when" in skill
+    assert "The selected integration option owns commit and push" in skill
+    assert "Before executing Option 1 or 2" in skill
+    assert "invoke `git-commits`" in skill
+    assert "Then invoke `review-docs`" not in skill
+    assert "This is not optional" not in skill
+    assert "### Step 7: Landing the Plane" not in skill
+    assert "an active tool's working directory" in skill
+    assert "Claude Code bug #9190" not in skill
+    assert "Codex bug #9190" not in skill
+    assert 'echo "bash ok"' not in skill
+    assert "verify bash" not in skill.lower()
+    assert skill.index("### Step 3: Reflect and Document") < skill.index("### Step 5: Execute Choice")
+    assert "explicitly set its working directory" in skill
+
+
+def test_worktree_removal_is_tool_neutral_and_uses_explicit_working_directory() -> None:
+    paths = [REPO_ROOT / "assets" / "skills" / "using-git-worktrees" / "SKILL.md"]
+    paths.extend(REPO_ROOT / root / "skills" / "using-git-worktrees" / "SKILL.md" for root in (".agents", ".claude"))
+
+    for path in paths:
+        skill = path.read_text()
+        assert "an active tool's working directory" in skill
+        assert "explicitly set its working directory" in skill
+        assert "Claude Code bug #9190" not in skill
+        assert "Codex bug #9190" not in skill
+        assert 'echo "bash ok"' not in skill
+        assert "verify bash" not in skill.lower()
 
 
 def test_revised_skill_bodies_match_agent_mirrors() -> None:
