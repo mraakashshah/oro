@@ -5,7 +5,7 @@ user-invocable: false
 ---
 
 <EXTREMELY-IMPORTANT>
-If you think there is even a 1% chance a skill might apply to what you are doing, you ABSOLUTELY MUST invoke the skill.
+If there is even a 1% chance a skill materially matches the current task, you ABSOLUTELY MUST invoke the skill.
 
 IF A SKILL APPLIES TO YOUR TASK, YOU DO NOT HAVE A CHOICE. YOU MUST USE IT.
 
@@ -16,9 +16,13 @@ This is not negotiable. This is not optional. You cannot rationalize your way ou
 
 ## The Rule
 
-**Invoke relevant skills BEFORE any response or action.** Even a 1% chance a skill might apply means invoke it.
+**Invoke relevant skills BEFORE any response or action.** Even a 1% chance of a material match means invoke it.
 
 If an invoked skill turns out to be wrong for the situation, you don't need to follow it. But you must check.
+
+## Material Match
+
+A skill materially matches when its documented trigger changes how the current task should be done. Topical adjacency is not a material match. The 1% threshold applies to uncertainty about that material match, not to every skill that mentions the same tools or domain.
 
 ## Quick Reference — Skill Index
 
@@ -33,6 +37,12 @@ If an invoked skill turns out to be wrong for the situation, you don't need to f
 **Continuity:** create-handoff, resume-handoff, documenting-solutions, refactor, using-git-worktrees, writing-skills, context-checkpoint
 
 **Tasks:** beadcraft, executing-beads, work-bead
+
+## Oro Task Routing
+
+Invoke `beadcraft` before creating or decomposing tracked tasks only when the current project is already Oro-managed. Treat a project as already Oro-managed when its instructions or project-local session state identify it as Oro-managed, or when existing Oro task IDs or state are present. Do not initialize Oro just to invoke `beadcraft`.
+
+Outside an Oro-managed project, use the project's native tracker or plan without `beadcraft`.
 
 ## Priority
 
@@ -63,7 +73,7 @@ These thoughts mean STOP — you're rationalizing:
 | "I'll just do this one thing first" | Check BEFORE doing anything. |
 | "This feels productive" | Undisciplined action wastes time. Skills prevent this. |
 | "I know what that means" | Knowing the concept ≠ using the skill. Invoke it. |
-| "Creating a task without running beadcraft" | beadcraft defines quality for every task |
+| "This Oro project doesn't need beadcraft for task creation" | In an already Oro-managed project, beadcraft defines task quality. |
 
 ## Commitment Protocol
 

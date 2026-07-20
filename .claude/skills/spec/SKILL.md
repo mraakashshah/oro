@@ -5,13 +5,17 @@ description: Use when the user asks to make a spec, spec out work, run a "deepsp
 
 # Spec
 
-Two modes, auto-detected. Both produce the same output: a validated task dependency graph.
+Auto-detect Quick or Full mode. Both produce validated work using the project's existing task backend.
 
 ## Scope Assessment
 
-Before mode detection, check: does the request describe **multiple independent subsystems** (e.g., "build X with auth, billing, and notifications")? If yes, decompose first — each subsystem gets its own spec → plan → implementation cycle. Don't try to spec everything at once.
+Split independent subsystems into separate spec → plan → implementation cycles. Keep a coherent cross-cutting feature together.
 
-If the request is a single coherent feature (even if cross-cutting), proceed to mode detection.
+## Task Backend
+
+Invoke `beadcraft` only when the current project is already Oro-managed, shown by project-local instructions, state, or task IDs. Do not initialize Oro just to use it.
+
+Outside an Oro-managed project, use its native tracker or implementation plan with the same acceptance-criteria and dependency quality bar.
 
 ## Mode Detection
 
@@ -21,23 +25,44 @@ If the request is a single coherent feature (even if cross-cutting), proceed to 
 
 Announce which mode: "Using **quick spec** — single package, well-understood change." or "Using **full spec** — cross-cutting change, needs design doc."
 
+## Internal Leverage Pass
+
+Run this privately after research. It is a decision lens, not a user questionnaire.
+
+- **Direction** — Still the most useful problem? Which assumptions became stale?
+- **Simplification** — What should not exist? What is radically simpler or theoretically best?
+- **Leverage** — What cuts half the timeline or delivers double impact? What if money is less constrained than talent?
+- **Scale** — Dream in years, plan in months, evaluate in weeks, ship daily. Is this 1x, 10x, or 100x work?
+
+Apply material findings without narrating every answer. If one changes the goal, public contract, or hard constraints, ask the user to decide, one material decision at a time, with a recommendation. Do not proceed until it is decided; continue when no material decisions remain.
+
+## Internal Premortem
+
+Keep the premortem private; classify verified risks after the leverage pass:
+
+- **Tiger** — a clear threat requiring mitigation
+- **Paper Tiger** — looks threatening but existing mitigation makes it acceptable
+- **Elephant** — an important concern the design avoids discussing
+
+Verify against code and safeguards. Apply verified material risks and mitigations; use the decision gate only when needed.
+
 ---
 
 ## Quick Mode
 
-Research → inline review → decompose. No design doc. No subagent. Same context throughout.
+Research → leverage/premortem/review → decompose. No design doc or subagent.
 
 ### Step 1 — Research
 
-Read affected code. Mandatory gate: no proposals without citing files read.
+Read affected code; cite files before proposing.
 
-- Read the functions/types being changed
-- `grep` for all interface implementations, callers, and test mocks
-- Note what files must change for compilation
+- Read changed functions/types
+- Find implementations, callers, and mocks
+- Note compilation-required files
 
-### Step 2 — Inline Adversarial + Premortem
+### Step 2 — Internal Leverage + Premortem + Adversarial Review
 
-Self-review in the same context. Run these checks before decomposing:
+Run the Internal Leverage Pass and Internal Premortem, then self-review:
 
 | Check | Question |
 |-------|----------|
@@ -47,78 +72,40 @@ Self-review in the same context. Run these checks before decomposing:
 | **Blast radius** | What's the worst that happens if this is wrong? Rollback plan? |
 | **Out of scope** | What are you explicitly NOT doing? Note follow-ups. |
 
-Write findings inline. If any check reveals the change is bigger than expected → switch to Full mode.
+Write findings inline. Switch to Full if scope grows.
 
-### Step 3 — Decompose (`beadcraft`)
+### Step 3 — Decompose
 
-Invoke `beadcraft` in Decompose mode on the research + review findings. Same quality bar as full mode: Rule of Five, full task anatomy, wired dependencies.
+Apply Task Backend to the findings: `beadcraft` Decompose in Oro; native task graph or plan elsewhere. Keep acceptance criteria and wired dependencies.
 
 Present task tree. Proceed to execution automatically.
 
 ### Output
 
 ```
-oro task show <epic-id>    ← confirmed task tree (no design doc)
+Oro:    oro task show <epic-id>    ← confirmed task tree (no design doc)
+Native: <project tracker or implementation plan>
 ```
 
 ---
 
 ## Full Mode
 
-Collaborative design → consultation → adversarial validation → task decomposition. Produces a committed design doc.
+Collaborative design → adversarial validation → decomposition, with a committed design doc.
 
 ### Stage 1 — Brainstorm (`brainstorming` skill)
 
-Invoke the `brainstorming` skill. Follow it completely:
+Invoke `brainstorming` completely:
 
-- Research prior art first (mandatory gate — no proposals without citing files read)
+- Research prior art; cite files before proposing
 - One question at a time
+- Order: Compare approaches → Internal Leverage Pass → brainstorming's single Internal Premortem → finalize; do not run a second premortem pass
 - Produce a design doc: `docs/plans/YYYY-MM-DD-<topic>-design.md`
 - Commit the design doc before moving to Stage 2
 
-### Stage 2 — Consultation ← GATE
+### Stage 2 — Adversarial Review (`adversarial-spec-review` skill) ← GATE
 
-Pressure-test the committed design doc before it goes to adversarial review. Human-in-the-loop stress test — confirm we're building the right thing, not just the thing asked for. Specs without pressure-testing build the wrong thing thoroughly.
-
-**The six forcing questions.** Ask one at a time. Present your recommended answer with each. Do not batch.
-
-1. **The real problem.** What is the underlying problem the design addresses? Is the stated request a proxy for something more important?
-2. **Status quo.** How is this solved today — workaround, manual process, absence? Whose pain does it cause, how much?
-3. **Desperate specificity.** Who specifically benefits? Name the user, task type, failure mode, caller — not a persona.
-4. **Narrowest wedge.** Is there a version that ships half the scope for most of the benefit?
-5. **Do nothing.** What happens if we ship nothing? Is the status quo bad enough to justify this work?
-6. **Future-fit.** In 6 months, does this feel like a durable capability or a local patch? If a patch, is a durable version cheaper to build now?
-
-**Assumption ledger.** Maintain a running list of unresolved decisions. Every user answer may surface new ones — add them. Format:
-
-```
-LEDGER
-- [ ] DECISION: <what needs to be decided>
-      DEPENDS_ON: <other decisions this hinges on — if any>
-      RECOMMENDATION: <your answer with reasoning>
-      ASK: <the one-question form to put to the user>
-```
-
-**Reframe hypothesis.** If the forcing questions suggest the design is solving the wrong problem, propose a reframe:
-
-```
-REFRAME
-Current design: <what the committed doc says we'll build>
-Observed framing: <what the real problem looks like>
-Proposed reframe: <what to build instead, and why>
-Cost delta: <is the reframe more/less work?>
-```
-
-Present once. Let the user confirm, reject, or modify. Don't bulldoze. If the reframe is accepted, **update the design doc in place and commit** before proceeding.
-
-**Exit condition:** NOT "looks good enough." The stage exits only when:
-1. User has confirmed the design (original or reframed)
-2. Ledger has zero unchecked items
-3. Answering the last decision did not add new decisions
-
-### Stage 3 — Adversarial Review (`adversarial-spec-review` skill) ← GATE
-
-Spawn a **fresh-context subagent** to run `adversarial-spec-review` on the design doc.
+Have a **fresh-context subagent** run `adversarial-spec-review` on the design doc.
 
 ```
 Task prompt: "Read docs/plans/<design-doc>. Read the actual source files for
@@ -127,13 +114,13 @@ Return the full output in the specified YAML format."
 ```
 
 - **FAIL** → fix the gaps identified, re-run the review (Ralph Loop)
-- **PASS** → continue to Stage 4
+- **PASS** → continue to Stage 3
 
-Do not skip this stage. Specs without adversarial review ship broken.
+Do not skip this gate.
 
-### Stage 4 — Decompose (`beadcraft` Decompose mode)
+### Stage 3 — Decompose
 
-Invoke `beadcraft` in Decompose mode on the validated design doc. Same as Quick Step 3.
+Apply Task Backend to the validated design: `beadcraft` only in Oro; native task graph or plan elsewhere. Use Quick's quality bar.
 
 Present the task tree. Proceed to execution automatically.
 
@@ -141,7 +128,8 @@ Present the task tree. Proceed to execution automatically.
 
 ```
 docs/plans/YYYY-MM-DD-<topic>-design.md   ← committed
-oro task show <epic-id>                          ← confirmed task tree
+Oro:    oro task show <epic-id>           ← confirmed task tree
+Native: <project tracker or implementation plan>
 ```
 
 ---
@@ -152,7 +140,6 @@ oro task show <epic-id>                          ← confirmed task tree
 - Using Quick mode for cross-cutting changes ("it's simple enough")
 - Skipping adversarial checks in Quick mode ("the change is obvious")
 - Running Full adversarial review in the same context that wrote the spec
-- Stopping to ask for confirmation instead of proceeding to execution
-- Skipping Stage 2 Consultation in Full mode ("the design looks fine")
-- Invoking adversarial review before the assumption ledger is drained
-- Exiting Consultation on "looks good enough" instead of "ledger drained"
+- Stopping for routine confirmation when no material decision remains
+- Narrating every leverage question instead of applying material findings
+- Engineering for 100x without evidence that the current scale requires it

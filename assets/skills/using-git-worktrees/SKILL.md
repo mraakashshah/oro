@@ -84,28 +84,24 @@ Ready to implement <feature-name>
 
 ## Worktree Removal (CRITICAL)
 
-Removing a worktree while the shell cwd is inside it **permanently kills the Bash tool** — every subsequent command returns exit code 1 with no output. This is a known Claude Code bug (GitHub #9190) with no recovery except session restart.
+Removing a worktree while an active tool's working directory is inside it can break subsequent shell calls; recovery may require restarting the session.
 
 **Mandatory sequence:**
 
-```bash
-# 1. ALWAYS cd to project root FIRST
-cd "$(git rev-parse --show-toplevel)"
-
-# 2. THEN remove the worktree
-git worktree remove .worktrees/$BRANCH_NAME
-
-# 3. Verify bash still works
-echo "bash ok"
-```
+1. Resolve and record the absolute main repo root without removing anything.
+2. For every remaining shell or tool call, explicitly set its working directory to that recorded main repo root.
+3. In a separate call configured with the main-root working directory, run `pwd` and verify the result.
+4. In another call with that same working directory, run `git worktree remove <worktree-path>`.
+5. Still using the main-root working directory, run `git worktree prune`, then `pwd` to verify shell calls still work.
 
 **Rules:**
 - NEVER chain worktree removal with other commands (`&&`, `;`)
 - NEVER remove a worktree from inside it or any of its subdirectories
-- ALWAYS verify bash works after removal before continuing
+- NEVER assume a `cd` in one tool call changes the next call's working directory
+- ALWAYS verify shell calls work after removal before continuing
 - A PreToolUse hook (`worktree_guard.py`) will block dangerous removals, but don't rely on it — follow the sequence above
 
-**If bash dies anyway:** The session is unrecoverable. Use `/clear` or restart Claude Code.
+**If shell calls fail anyway:** Move to a known-safe working directory if the platform allows it; otherwise restart the session.
 
 ## Quick Reference
 
@@ -116,7 +112,7 @@ echo "bash ok"
 | Neither exists | Check CLAUDE.md → ask user |
 | Directory not ignored | Add to .gitignore + commit |
 | Tests fail at baseline | Report + ask |
-| Removing a worktree | cd to project root first, then remove |
+| Removing a worktree | Set each tool call's working directory to the main root, then remove |
 
 ## Red Flags
 
@@ -124,5 +120,5 @@ echo "bash ok"
 - Skipping baseline test verification
 - Proceeding with failing tests without asking
 - Assuming directory location when ambiguous
-- Running `git worktree remove` without first `cd` to project root
+- Running `git worktree remove` without explicitly using the main-root working directory
 - Chaining worktree removal with other commands

@@ -5,139 +5,61 @@ description: Use when doing creative product, feature, component, functionality,
 
 # Brainstorming Ideas Into Designs
 
-## Overview
+Develop an evidence-based design through focused dialogue. Match the depth of the process to the decision's scope and reversibility.
 
-Turn ideas into fully formed designs through collaborative dialogue. Understand context, ask questions one at a time, then present the design incrementally.
+## Workflow
 
-## When to Use
+### 1. Research Proportionally
 
-- New feature development
-- Significant behavior changes
-- Architecture decisions
-- Component design
+Before proposing a design:
 
-## Steps
+- Read the affected code, current project state, and relevant prior plans.
+- Search `docs/decisions&discoveries.md`; use `oro recall` when institutional memory could help.
+- Research external prior art only when the domain has relevant established solutions or current facts.
+- Cite the sources and constraints that materially shape the proposal.
 
-### 1. Research Prior Art (GATE -- mandatory before any proposals)
+A small internal change may need two focused files. A new architecture may need broader internal and external research.
 
-Before proposing anything, gather evidence. **You must not proceed to Step 3 until this checklist is complete.**
+### 2. Frame the Decision
 
-#### Research checklist
+- Split multiple independent subsystems into separate design cycles.
+- Resolve discoverable questions from code and documentation.
+- Ask the user one question at a time only for material unknowns.
+- State the purpose, constraints, success criteria, and load-bearing assumptions.
 
-- [ ] **Check institutional knowledge** -- Grep `docs/decisions&discoveries.md` for keywords related to the task (module names, technical terms, problem indicators). Use `oro recall` to search memory store if needed. If hits found, read and incorporate before proposing anything new. This prevents re-solving solved problems.
-- [ ] **Read internal references** -- existing specs in `docs/plans/`, related code mentioned in the task/task description, and reference implementations in the codebase. Use `Read`, `Grep`, `Glob` to find and read them.
-- [ ] **Read external references** (when applicable) -- Use `WebSearch` / `WebFetch` when the problem domain has established solutions worth comparing (algorithms, protocols, libraries). Skip for project-internal design.
-- [ ] **Present research summary to the user** -- before proposing anything, show:
-  1. What files/sources you read (with paths or URLs)
-  2. What approaches others took
-  3. Key trade-offs observed
+When asking, give your recommendation, confidence, and 2-3 concrete options with trade-offs.
 
-#### What counts as research
+### 3. Compare Approaches
 
-| Sufficient | Insufficient |
-|------------|-------------|
-| Grepped `docs/decisions&discoveries.md` for related terms | Skipped institutional knowledge check |
-| Read 2+ reference files and summarized findings | Read 0 files, jumped to proposals |
-| Searched codebase for related patterns | Assumed you know the codebase |
-| Checked `docs/plans/` for prior designs | Skipped because "this is new" |
-| Used WebSearch for external prior art | Relied on training data alone |
+- Propose 2-3 credible approaches.
+- Lead with the recommended option and explain which constraints it satisfies.
+- Prefer proven, reversible, low-blast-radius choices.
+- Remove features and abstractions that do not earn their cost.
 
-#### Self-check before moving on
+### 4. Premortem Load-Bearing Choices
 
-> "Can I cite specific files I read and specific patterns I observed?"
->
-> If NO: go back and read more. You are not ready to propose.
+Apply the premortem taxonomy privately to architectural or irreversible decisions:
 
-### 2. Understand the Idea
+- **Tiger** — a verified threat requiring mitigation.
+- **Paper Tiger** — a concern already handled by an existing safeguard.
+- **Elephant** — an important concern the design is avoiding.
 
-- **Scope assessment first**: Does the request describe multiple independent subsystems? If yes, help the user decompose into sub-projects before designing. Each sub-project gets its own spec → plan → implementation cycle.
-- Check current project state (files, docs, recent commits)
-- Ask questions **one at a time** — never multiple questions per message
-- Prefer multiple choice questions when possible
-- Focus on: purpose, constraints, success criteria
-
-### 3. Explore Approaches
-
-- Propose 2-3 approaches with trade-offs
-- Lead with recommended option and explain why
-- Keep YAGNI in mind — strip unnecessary features
-
-### 4. Premortem Each Decision
-
-**Before committing to any design choice**, stress-test it:
-
-- Run a quick premortem (tigers/elephants/paper tigers) on each option
-- Present failure modes alongside trade-offs — not after
-- A decision without a premortem is a guess, not a design choice
-- Use the `premortem` skill's quick checklist for individual decisions
-- Only commit when the user has seen the risks and chosen deliberately
-
-This applies to every architectural decision, not just the final plan.
+Verify risks against the code and current mitigations. Incorporate material mitigations into the design; do not turn minor choices into user gates.
 
 ### 5. Present the Design
 
-- Break into sections of 200-300 words
-- Ask after each section: "Does this look right so far?"
-- Cover: architecture, components, data flow, error handling, testing
-- Go back and clarify if anything doesn't make sense
+Present the design in digestible sections when useful. Cover architecture, components, data flow, error handling, testing, rollback, and explicit non-goals. Pause only when a material user decision remains.
 
-### 6. Document
+Write `docs/plans/YYYY-MM-DD-<topic>-design.md` when the invoking workflow requires a design artifact. Include accepted risks and mitigations.
 
-- Write validated design to `docs/plans/YYYY-MM-DD-<topic>-design.md`
-- Include resolved premortems with each decision (risks accepted, mitigations chosen)
-- Commit the design document
+## Ownership Boundary
 
-### 7. Adversarial Review (GATE — mandatory before implementation)
-
-Before handing off to implementation, run `adversarial-spec-review` on the design:
-
-- Spawn a fresh-context subagent to review the spec adversarially
-- The reviewer must construct at least one scenario where all tasks pass but the feature fails
-- If the review returns FAIL: fix the gaps, re-run the review (Ralph Loop)
-- Only proceed to implementation when the review returns PASS
-
-**Do not skip this step.** The audit proved that specs without adversarial review produce features that ship broken.
-
-### 8. Implementation Handoff
-
-- Ask: "Ready to set up for implementation?"
-- Use `writing-plans` skill to create detailed implementation plan
-
-## Key Principles
-
-- **One question at a time** — Don't overwhelm
-- **Multiple choice preferred** — Easier to answer
-- **YAGNI ruthlessly** — Remove unnecessary features
-- **Explore alternatives** — Always 2-3 approaches before settling
-- **Incremental validation** — Present in sections, validate each
-
-## AskUserQuestion
-
-When you need to ask the human a question, use this 4-part structure:
-
-1. **Reground** — restate what you understand to be true so far. One sentence. Surfaces misalignments early.
-2. **Simplify** — reduce the question to its single most important unknown. Don't ask three things when one unlocks the rest.
-3. **Recommend** — give your current best answer with a completeness score (e.g. "I'd go with X — 70% confident"). Forces a concrete position and makes it easy for the human to agree, correct, or refine.
-4. **Options** — list 2-3 alternatives with effort estimates (e.g. "Option A: 1 task, low risk. Option B: 3 tasks, rewrites the data model."). Gives the human a decision frame, not an open-ended prompt.
-
-Do not ask a question you can answer by reading the code. Do not ask multiple questions in one message.
-
-## Engineering Cognitive Patterns
-
-These apply to all design work. Max 5 active at once — prioritize the most load-bearing:
-
-1. **Prefer proven boring solutions over novel ones.** A well-understood approach with known failure modes beats an elegant unknown. Novelty is a liability until it's a necessity.
-2. **Estimate blast radius before proposing changes.** Ask: if this goes wrong, what breaks? Small blast radius = safe to try. Large blast radius = needs proof.
-3. **Name the constraint, not just the solution.** A good design decision explains what constraint it satisfies. If you can't name the constraint, the decision is arbitrary.
-4. **Distinguish reversible from irreversible decisions.** Irreversible decisions (schema changes, public API shapes, deleted data) deserve 10x more scrutiny than reversible ones.
-5. **Surface the assumption that would invalidate this design.** Every design has a load-bearing assumption. Name it explicitly so workers and the human can verify it before committing.
+The invoking workflow owns adversarial review, task decomposition, commits, and execution. Brainstorming returns the chosen design plus unresolved material decisions; it does not spawn reviewers, create task graphs, commit files, or start implementation unless explicitly asked.
 
 ## Red Flags
 
-- **Proposing approaches without citing specific files or sources you read** -- the #1 failure mode
-- Jumping to implementation without understanding requirements
-- Asking 5 questions at once
-- Presenting entire design as a wall of text
-- Adding features the user didn't ask for
-- **Committing to a design decision without premorteming it first**
-- Saying "based on my understanding" instead of "based on reading X at line Y"
+- Proposing without evidence from relevant files or sources
+- Asking questions answerable from the codebase
+- Treating every minor choice as a user decision
+- Choosing an approach without checking its load-bearing risks
+- Continuing after an unresolved material decision
