@@ -130,6 +130,7 @@ type fakeBeadStore struct {
 	dependencyCycles     []beadstore.Cycle
 	journeys             map[string][]beadstore.JourneyEvent
 	metadataMatches      []*protocol.Bead
+	dependencies         []protocol.Dependency
 }
 
 func (m *fakeBeadStore) Ready(_ context.Context) ([]protocol.Bead, error) {
@@ -279,7 +280,17 @@ func (m *fakeBeadStore) Create(_ context.Context, params beadstore.CreateParams)
 		tier:               params.Tier,
 		metadata:           maps.Clone(params.Metadata),
 	})
-	bead := &protocol.Bead{ID: id, Status: status, Metadata: make(map[string]any, len(params.Metadata))}
+	bead := &protocol.Bead{
+		ID:                 id,
+		Title:              params.Title,
+		Status:             status,
+		Priority:           params.Priority,
+		Epic:               params.ParentID,
+		Tier:               protocol.Tier(params.Tier),
+		AcceptanceCriteria: params.AcceptanceCriteria,
+		Tags:               append([]string(nil), params.Tags...),
+		Metadata:           make(map[string]any, len(params.Metadata)),
+	}
 	for key, value := range params.Metadata {
 		bead.Metadata[key] = value
 	}
@@ -318,8 +329,29 @@ func (m *fakeBeadStore) HasChildren(_ context.Context, epicID string) (bool, err
 	return false, nil
 }
 
-func (m *fakeBeadStore) FindByParentAndTag(_ context.Context, _ string, _ string) ([]protocol.Bead, error) {
-	return []protocol.Bead{}, nil
+func (m *fakeBeadStore) FindByParentAndTag(_ context.Context, parentID, tag string) ([]protocol.Bead, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	values := make([]protocol.Bead, 0, len(m.metadataMatches))
+	for _, bead := range m.metadataMatches {
+		if bead == nil || bead.Epic != parentID || !slices.Contains(bead.Tags, tag) {
+			continue
+		}
+		values = append(values, *bead)
+	}
+	return values, nil
+}
+
+func (m *fakeBeadStore) AddDependency(_ context.Context, beadID, dependsOnID, depType string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, dependency := range m.dependencies {
+		if dependency.IssueID == beadID && dependency.DependsOnID == dependsOnID && dependency.Type == depType {
+			return nil
+		}
+	}
+	m.dependencies = append(m.dependencies, protocol.Dependency{IssueID: beadID, DependsOnID: dependsOnID, Type: depType})
+	return nil
 }
 
 func (m *fakeBeadStore) FindByMetadataKey(_ context.Context, key string) ([]*protocol.Bead, error) {
@@ -785,6 +817,72 @@ func TestEpicRebaseChildAssignableOnDivergedBranch(t *testing.T) {
 			t.Fatal("assignment failure cooldown not recorded after operational error")
 		}
 	})
+}
+
+func TestAssignmentDivergenceCreatesOneRecoveryChild(t *testing.T) {
+	const (
+		epicID     = "oro-assignment-recovery"
+		epicBranch = protocol.EpicBranchPrefix + epicID
+		workerID   = "worker-assignment-recovery"
+	)
+
+	d, beads, worktrees, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	beads.shown[epicID] = &protocol.BeadDetail{ID: epicID, Type: "epic", Tier: protocol.TierDeep}
+	worktrees.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
+		return branch == epicBranch, nil
+	}
+	worktrees.prepareBaseFn = func(context.Context, string, string) (bool, error) { return false, nil }
+	worktrees.baseUniqueFn = func(_ context.Context, branch, base string) (bool, error) {
+		return (branch == epicBranch && base == "main") || (branch == "main" && base == epicBranch), nil
+	}
+
+	ordinaryChildren := []protocol.Bead{
+		{ID: "oro-assignment-child-a", Title: "ordinary child a", Epic: epicID},
+		{ID: "oro-assignment-child-b", Title: "ordinary child b", Epic: epicID},
+	}
+	for _, child := range ordinaryChildren {
+		beads.shown[child.ID] = &protocol.BeadDetail{ID: child.ID, Title: child.Title, Type: "task", Status: "in_progress"}
+		if d.ensureEpicBranchReady(ctx, child, &trackedWorker{id: workerID}, epicBranch, epicID) {
+			t.Fatalf("ensureEpicBranchReady(%s) = true, want divergence rejection", child.ID)
+		}
+	}
+
+	created := requireCreatedCall(t, beads, func(call createCall) bool { return call.parent == epicID })
+	beads.mu.Lock()
+	createdCount := len(beads.created)
+	dependencies := append([]protocol.Dependency(nil), beads.dependencies...)
+	updates := maps.Clone(beads.updated)
+	beads.mu.Unlock()
+	if createdCount != 1 {
+		t.Fatalf("recovery children created = %d, want exactly one", createdCount)
+	}
+	if created.title != "Rebase "+epicBranch+" onto main" || created.priority != 0 || created.status != "open" || created.tier != string(protocol.TierDeep) {
+		t.Fatalf("recovery child = %#v, want open P0 canonical child inheriting deep tier", created)
+	}
+	for _, child := range ordinaryChildren {
+		if updates[child.ID] != "open" {
+			t.Errorf("ordinary child %s status = %q, want reopened", child.ID, updates[child.ID])
+		}
+	}
+	if len(dependencies) != 1 || dependencies[0] != (protocol.Dependency{IssueID: created.id, DependsOnID: epicID, Type: "blocks"}) {
+		t.Fatalf("recovery dependency = %#v, want child blocks epic", dependencies)
+	}
+
+	beads.shown[created.id] = &protocol.BeadDetail{ID: created.id, Title: created.title, Type: "task", Status: "open", AcceptanceCriteria: created.acceptanceCriteria}
+	if !d.ensureEpicBranchReady(ctx, protocol.Bead{ID: created.id, Title: created.title, Epic: epicID}, &trackedWorker{id: workerID}, epicBranch, epicID) {
+		t.Fatal("canonical recovery child is not assignable against its diverged epic branch")
+	}
+
+	worktrees.mergeFFOnlyFn = func(_, _ string) (string, error) { return "", errors.New("not a fast-forward") }
+	if err := d.ffMergeEpicBranch(ctx, epicID, workerID, "main"); err == nil {
+		t.Fatal("ffMergeEpicBranch error = nil, want failure")
+	}
+	beads.mu.Lock()
+	defer beads.mu.Unlock()
+	if len(beads.created) != 1 {
+		t.Fatalf("FF failure created %d recovery children, want reuse of the assignment-time child", len(beads.created))
+	}
 }
 
 func newDivergedAssignmentWorktreeManager(t *testing.T, branch string) WorktreeManager {

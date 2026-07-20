@@ -257,6 +257,10 @@ type DeferredStore interface {
 	Undefer(ctx context.Context, id string) error
 }
 
+type dependencyStore interface {
+	AddDependency(ctx context.Context, beadID, dependsOnID, depType string) error
+}
+
 func selectStore(ctx context.Context, mode string, primary DeferredStore, db *sql.DB) (DeferredStore, error) {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "", "cli":
@@ -3581,16 +3585,9 @@ func (d *Dispatcher) ffMergeEpicBranch(ctx context.Context, epicID, workerID, ta
 		wrapped := fmt.Errorf("ff merge %s to %s: %w", epicBranch, targetBranch, mergeErr)
 		_ = d.logEvent(ctx, "epic_ff_merge_failed", "dispatcher", epicID, workerID,
 			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, wrapped.Error()))
-		// Create a rebase child bead so the epic is retried after the rebase.
-		_, _ = d.beads.Create(ctx, beadstore.CreateParams{
-			Title:              fmt.Sprintf("Rebase %s onto %s", epicBranch, targetBranch),
-			Type:               "task",
-			Priority:           1,
-			Description:        fmt.Sprintf("FF merge of %s failed: %s. Rebase the epic branch onto %s and re-trigger close.", epicBranch, wrapped.Error(), targetBranch),
-			ParentID:           epicID,
-			AcceptanceCriteria: rebaseChildAcceptance(epicID, epicBranch, targetBranch),
-			Tier:               parentTierForCreate(ctx, d.beads, epicID),
-		})
+		if _, ensureErr := d.ensureEpicRebaseChild(ctx, epicID, epicBranch, targetBranch, wrapped.Error()); ensureErr != nil {
+			_ = d.logEvent(ctx, "epic_rebase_child_ensure_failed", "dispatcher", epicID, workerID, ensureErr.Error())
+		}
 		return wrapped
 	}
 
@@ -3602,6 +3599,76 @@ func (d *Dispatcher) ffMergeEpicBranch(ctx context.Context, epicID, workerID, ta
 			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, delErr.Error()))
 	}
 	return nil
+}
+
+// ensureEpicRebaseChild returns the one active recovery child for an epic
+// branch/target pair, creating it when no active canonical child exists.
+//
+//nolint:unparam // the recovery contract exposes the created-or-reused child for direct callers and tests.
+func (d *Dispatcher) ensureEpicRebaseChild(ctx context.Context, epicID, epicBranch, targetBranch, cause string) (*protocol.Bead, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	title := fmt.Sprintf("Rebase %s onto %s", epicBranch, targetBranch)
+	acceptance := rebaseChildAcceptance(epicID, epicBranch, targetBranch)
+	children, err := d.beads.FindByParentAndTag(ctx, epicID, "rebase")
+	if err != nil {
+		return nil, fmt.Errorf("find epic rebase children: %w", err)
+	}
+	for i := range children {
+		child := &children[i]
+		if !isCanonicalEpicRebaseChild(child, epicID, title, acceptance) {
+			continue
+		}
+		if err := d.addEpicRebaseDependency(ctx, child.ID, epicID); err != nil {
+			return nil, err
+		}
+		return child, nil
+	}
+
+	child, err := d.beads.Create(ctx, beadstore.CreateParams{
+		Title:              title,
+		Type:               "task",
+		Priority:           0,
+		Description:        fmt.Sprintf("Epic branch %s diverged from %s: %s", epicBranch, targetBranch, cause),
+		ParentID:           epicID,
+		AcceptanceCriteria: acceptance,
+		Tags:               []string{"rebase"},
+		Metadata: map[string]string{
+			"epic_rebase_child":       "true",
+			"epic_rebase_target":      targetBranch,
+			"epic_rebase_epic_branch": epicBranch,
+		},
+		Tier: parentTierForCreate(ctx, d.beads, epicID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create epic rebase child: %w", err)
+	}
+	if child == nil {
+		return nil, fmt.Errorf("create epic rebase child: store returned nil bead")
+	}
+	if err := d.addEpicRebaseDependency(ctx, child.ID, epicID); err != nil {
+		return nil, err
+	}
+	return child, nil
+}
+
+func (d *Dispatcher) addEpicRebaseDependency(ctx context.Context, childID, epicID string) error {
+	store, ok := d.beads.(dependencyStore)
+	if !ok {
+		return fmt.Errorf("bead store does not support dependencies")
+	}
+	if err := store.AddDependency(ctx, childID, epicID, "blocks"); err != nil {
+		return fmt.Errorf("add epic rebase child dependency: %w", err)
+	}
+	return nil
+}
+
+func isCanonicalEpicRebaseChild(child *protocol.Bead, epicID, title, acceptance string) bool {
+	if child == nil || (child.Status != "open" && child.Status != "in_progress") {
+		return false
+	}
+	return child.Epic == epicID && child.Title == title && child.AcceptanceCriteria == acceptance
 }
 
 func rebaseChildAcceptance(epicID, epicBranch, targetBranch string) string {
@@ -6455,8 +6522,12 @@ func (d *Dispatcher) prepareEpicBranchForAssignment(ctx context.Context, beadID,
 			fmt.Sprintf(`{"branch":%q,"base_branch":%q}`, baseBranch, d.cfg.DefaultBranch))
 		return true
 	}
-	return d.rejectEpicBranchPreparation(ctx, beadID, workerID, baseBranch,
-		fmt.Errorf("epic branch %s diverged from %s", baseBranch, d.cfg.DefaultBranch))
+	divergenceErr := fmt.Errorf("epic branch %s diverged from %s", baseBranch, d.cfg.DefaultBranch)
+	epicID := strings.TrimPrefix(baseBranch, protocol.EpicBranchPrefix)
+	if _, ensureErr := d.ensureEpicRebaseChild(ctx, epicID, baseBranch, d.cfg.DefaultBranch, divergenceErr.Error()); ensureErr != nil {
+		_ = d.logEvent(ctx, "epic_rebase_child_ensure_failed", "dispatcher", beadID, workerID, ensureErr.Error())
+	}
+	return d.rejectEpicBranchPreparation(ctx, beadID, workerID, baseBranch, divergenceErr)
 }
 
 func assignmentBaseBranchDiverged(ctx context.Context, checker assignmentBaseBranchSafetyChecker, branch, baseBranch string) (bool, error) {
