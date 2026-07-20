@@ -29,10 +29,7 @@ def test_spec_runs_private_tiger_premortem_in_both_modes() -> None:
     assert "Internal Premortem" in quick
     assert "Internal Premortem" in full
     assert "do not run a second premortem pass" in full
-    assert (
-        "Compare approaches → Internal Leverage Pass → brainstorming's single Internal Premortem → finalize"
-        in full
-    )
+    assert "Compare approaches → Internal Leverage Pass → brainstorming's single Internal Premortem → finalize" in full
     assert "Keep the premortem private" in skill
     assert "verified material risks" in skill
 
