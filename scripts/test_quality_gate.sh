@@ -903,13 +903,6 @@ test_quality_gate_stage_assets_fail_closed() {
 		echo "FAIL: quality_gate.sh lacks ensure_stage_assets helper"
 		return 1
 	fi
-	if ! grep -q "export GOLANGCI_LINT_CACHE=\"\$QG_DIR/golangci-lint-cache\"" "$SCRIPT_DIR/quality_gate.sh" ||
-		! grep -q 'export GOCACHE="${GOCACHE:-${ORO_QG_GOCACHE:-${TMPDIR:-/tmp}/oro-qg-gocache-$(id -u)}}"' "$SCRIPT_DIR/quality_gate.sh" ||
-		! grep -q "export UV_CACHE_DIR=\"\${UV_CACHE_DIR:-\$QG_DIR/uv-cache}\"" "$SCRIPT_DIR/quality_gate.sh" ||
-		! grep -q "GOCACHE=\$QG_DIR/golangci-go-cache GOFLAGS=-buildvcs=false golangci-lint run" "$SCRIPT_DIR/quality_gate.sh"; then
-		echo "FAIL: quality_gate.sh does not isolate lint, Go build, and uv caches"
-		return 1
-	fi
 	if ! grep -q 'QG_STAGE_ASSETS_LOCK=""' "$SCRIPT_DIR/quality_gate.sh" ||
 		! grep -q 'QG_RUN_LOCK=""' "$SCRIPT_DIR/quality_gate.sh" ||
 		! grep -q 'trap cleanup_qg EXIT' "$SCRIPT_DIR/quality_gate.sh" ||
@@ -966,6 +959,31 @@ test_quality_gate_stage_assets_fail_closed() {
 		return 1
 	fi
 	return 0
+}
+
+# Test: the checked-in gate keeps only transient scratch data under TMPDIR and
+# inherits shared tool caches (or each tool's standard external default).
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_uses_shared_external_caches() {
+	local gate="$SCRIPT_DIR/quality_gate.sh"
+	local cache_override
+
+	if ! grep -q 'QG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/qg-\$\$-XXXXXX")' "$gate"; then
+		echo "FAIL: quality_gate.sh does not create its scratch directory below TMPDIR"
+		return 1
+	fi
+
+	for cache_override in \
+		'export GOCACHE=' \
+		'export GOMODCACHE=' \
+		'export GOLANGCI_LINT_CACHE=' \
+		'export UV_CACHE_DIR=' \
+		'GOCACHE=\$QG_DIR/'; do
+		if grep -q "$cache_override" "$gate"; then
+			echo "FAIL: quality_gate.sh overrides shared cache via $cache_override"
+			return 1
+		fi
+	done
 }
 
 # Test: a process that times out waiting for the repo-wide QG lock must not
@@ -1770,6 +1788,7 @@ echo "=============================================="
 test_case "no SC2086 disable for \$changed" test_no_sc2086_disable_for_changed
 test_case "quality_gate.sh \$changed is quoted" test_quality_gate_changed_is_quoted
 test_case "quality_gate.sh stage-assets failures fail closed" test_quality_gate_stage_assets_fail_closed
+test_case "quality_gate.sh uses shared external caches" test_quality_gate_uses_shared_external_caches
 test_case "quality_gate.sh run lock timeout preserves holder" test_quality_gate_run_lock_timeout_preserves_holder
 test_case "quality_gate.sh archives stale legacy run lock" test_quality_gate_run_lock_archives_stale_legacy_lock
 test_case "quality_gate.sh garbage-collects archived stale run locks" test_quality_gate_archived_stale_locks_are_garbage_collected

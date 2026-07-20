@@ -111,19 +111,8 @@ trap cleanup_qg EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Keep the golangci-lint cache inside the QG temp directory. Shared
-# golangci-lint caches can collide across concurrent workers.
-export GOLANGCI_LINT_CACHE="$QG_DIR/golangci-lint-cache"
-# Go's build cache is content-addressed and concurrency-safe, so it must be WARM,
-# not a cold per-run cache: with the lockless concurrent main phase (oro-hwx2), a
-# fresh per-run GOCACHE would make N sibling worktree gates each cold-compile the
-# whole repo at once. Prefer an inherited GOCACHE — worker/dispatcher gates get a
-# per-worktree warm cache from processenv.ForWorkdir, developers get their user
-# cache — and only fall back to a uid-namespaced shared dir when unset (avoids
-# cross-user permission collisions in a shared /tmp).
-export GOCACHE="${GOCACHE:-${ORO_QG_GOCACHE:-${TMPDIR:-/tmp}/oro-qg-gocache-$(id -u)}}"
-mkdir -p "$GOCACHE"
-export UV_CACHE_DIR="${UV_CACHE_DIR:-$QG_DIR/uv-cache}"
+# Tool caches deliberately inherit their environment (or each tool's standard
+# external default). Only QG scratch data belongs under TMPDIR/QG_DIR.
 export GOMAXPROCS="${ORO_QG_GOMAXPROCS:-2}"
 
 # Resolve repo root node_modules (works from worktrees too). Non-git harness
@@ -1199,7 +1188,7 @@ lane_go() {
 	}
 
 	local tier2_checks=(
-		"golangci-lint" "GOCACHE=$QG_DIR/golangci-go-cache GOFLAGS=-buildvcs=false golangci-lint run --timeout 10m --allow-parallel-runners ./cmd/... ./internal/... ./pkg/..."
+		"golangci-lint" "GOFLAGS=-buildvcs=false golangci-lint run --timeout 10m --allow-parallel-runners ./cmd/... ./internal/... ./pkg/..."
 		"nilaway" "nilaway -pretty-print=false -exclude-test-files -include-pkgs=oro ./cmd/... ./internal/... ./pkg/..."
 		"dead exports" "check_dead_exports"
 		"beadstore imports" "scripts/check-beadstore-imports.sh"

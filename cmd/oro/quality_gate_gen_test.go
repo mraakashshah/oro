@@ -270,8 +270,6 @@ func TestGenerateQualityGateScript(t *testing.T) {
 			`STAGE_ASSETS_READY=true`,
 			`if ! STAGE_ASSETS_ERROR=$(ensure_stage_assets 2>&1); then`,
 			`if ! $STAGE_ASSETS_READY; then`,
-			`export GOLANGCI_LINT_CACHE="$QG_DIR/golangci-lint-cache"`,
-			`GOCACHE=$QG_DIR/golangci-go-cache GOFLAGS=-buildvcs=false golangci-lint run`,
 			`ensure_stage_assets()`,
 			`GO TIER 4: MUTATION TESTING (incremental)`,
 			`restore_go_mutation_worktree()`,
@@ -290,12 +288,21 @@ func TestGenerateQualityGateScript(t *testing.T) {
 			`cmd/oro embeds _assets but Makefile stage-assets target is unavailable`,
 			`expected_rc_files=(`,
 			`FAIL: missing lane result`,
-			`export GOCACHE="$QG_DIR/go-build-cache"`,
-			`export UV_CACHE_DIR="${UV_CACHE_DIR:-$QG_DIR/uv-cache}"`,
 			`export GOMAXPROCS="${ORO_QG_GOMAXPROCS:-2}"`,
 		} {
 			if !strings.Contains(script, want) {
 				t.Errorf("generated Go script missing %q", want)
+			}
+		}
+		for _, forbidden := range []string{
+			`export GOCACHE=`,
+			`export GOMODCACHE=`,
+			`export GOLANGCI_LINT_CACHE=`,
+			`export UV_CACHE_DIR=`,
+			`GOCACHE=$QG_DIR/`,
+		} {
+			if strings.Contains(script, forbidden) {
+				t.Errorf("generated Go script overrides shared cache via %q", forbidden)
 			}
 		}
 		if strings.Contains(script, "ORO_RUN_MUTATION") {
