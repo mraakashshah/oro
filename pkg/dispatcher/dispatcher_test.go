@@ -1277,11 +1277,15 @@ func TestConfigValidation(t *testing.T) {
 	}
 }
 
+var testResourceSequence atomic.Uint64
+
 // newTestDB creates an in-memory SQLite database with the protocol schema.
 func newTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	// Use a shared-cache in-memory DB so all connections see the same data.
-	dsn := fmt.Sprintf("file:test_%d?mode=memory&cache=shared", time.Now().UnixNano())
+	// A clock-derived name can collide when parallel tests call time.Now within
+	// the host clock's resolution, unintentionally sharing assignment rows.
+	dsn := fmt.Sprintf("file:test_%d_%d?mode=memory&cache=shared", os.Getpid(), testResourceSequence.Add(1))
 	db, err := dbutil.OpenDB(dsn)
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
@@ -1525,7 +1529,7 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *fakeBeadStore, *mockWorktree
 	esc := &mockEscalator{}
 
 	// Use short path for UDS — macOS limits to 108 chars.
-	sockPath := fmt.Sprintf("/tmp/oro-test-%d.sock", time.Now().UnixNano())
+	sockPath := fmt.Sprintf("/tmp/oro-test-%d-%d.sock", os.Getpid(), testResourceSequence.Add(1))
 	t.Cleanup(func() { _ = os.Remove(sockPath) })
 
 	cfg := Config{

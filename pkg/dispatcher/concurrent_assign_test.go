@@ -129,7 +129,7 @@ func TestNoMultipleAssignmentsToSameBead(t *testing.T) {
 	beadSrc.mu.Unlock()
 
 	if status != "in_progress" {
-		t.Errorf("Expected bead oro-test1 marked in_progress, got %q", status)
+		t.Errorf("Expected bead oro-test1 marked in_progress, got %q; events: %v", status, getLogEvents(t, d))
 	}
 
 	// Verify: Only one worker is busy with oro-test1
@@ -143,7 +143,7 @@ func TestNoMultipleAssignmentsToSameBead(t *testing.T) {
 	d.mu.Unlock()
 
 	if busyCount != 1 {
-		t.Errorf("Expected exactly 1 busy worker on oro-test1, got %d", busyCount)
+		t.Errorf("Expected exactly 1 busy worker on oro-test1, got %d; events: %v", busyCount, getLogEvents(t, d))
 	}
 }
 
