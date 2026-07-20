@@ -3,6 +3,7 @@ package dispatcher
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -129,5 +130,61 @@ func TestValidRemoteGateTransition(t *testing.T) {
 		if got := validRemoteGateTransition(test.from, test.to); got != test.want {
 			t.Errorf("validRemoteGateTransition(%q, %q) = %t, want %t", test.from, test.to, got, test.want)
 		}
+	}
+}
+
+func TestRemoteGateStoreRejectsInvalidAndStaleTransitions(t *testing.T) {
+	ctx := context.Background()
+	if _, err := NewStore(ctx, nil); err == nil {
+		t.Fatal("NewStore(nil) returned nil error")
+	}
+
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "remote-gates.db"))
+	if err != nil {
+		t.Fatalf("open DB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := NewStore(ctx, db)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if _, err := store.AdoptCandidate(ctx, RemoteGateCandidate{}); err == nil {
+		t.Fatal("AdoptCandidate with missing identity returned nil error")
+	}
+	if _, err := store.RemoteGate(ctx, 0); err == nil {
+		t.Fatal("RemoteGate(0) returned nil error")
+	}
+	if err := store.RecordPresubmitResult(ctx, PresubmitResult{}); err == nil {
+		t.Fatal("RecordPresubmitResult with missing identity returned nil error")
+	}
+
+	candidate := RemoteGateCandidate{
+		Key:          "oro-repf:42:def456",
+		BeadID:       "oro-repf",
+		AssignmentID: 42,
+		CandidateSHA: "def456",
+		BaseSHA:      "base789",
+		TargetBranch: "main",
+		AdoptionRef:  "refs/oro/adopted/oro/oro-repf/42",
+	}
+	gate, err := store.AdoptCandidate(ctx, candidate)
+	if err != nil {
+		t.Fatalf("AdoptCandidate: %v", err)
+	}
+	reused, err := store.AdoptCandidate(ctx, candidate)
+	if err != nil {
+		t.Fatalf("duplicate AdoptCandidate: %v", err)
+	}
+	if reused.ID != gate.ID {
+		t.Fatalf("reused ID = %d, want %d", reused.ID, gate.ID)
+	}
+	if _, err := store.AdvanceRemoteGate(ctx, gate.ID, RemoteGateStateCandidateAdopted, RemoteGateStatePublishing); err == nil {
+		t.Fatal("invalid transition returned nil error")
+	}
+	if _, err := store.AdvanceRemoteGate(ctx, gate.ID, RemoteGateStateCandidateAdopted, RemoteGateStateLocalPresubmit); err != nil {
+		t.Fatalf("first transition: %v", err)
+	}
+	if _, err := store.AdvanceRemoteGate(ctx, gate.ID, RemoteGateStateRebasing, RemoteGateStateLocalPresubmitRebase); !errors.Is(err, ErrRemoteGateTransitionConflict) {
+		t.Fatalf("stale transition error = %v, want ErrRemoteGateTransitionConflict", err)
 	}
 }
