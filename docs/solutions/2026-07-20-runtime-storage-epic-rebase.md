@@ -31,6 +31,12 @@ Then create an `ours` merge of the preserved epic ref into the rebased agent
 branch. The merge has no tree change, but keeps both `main` and the original epic
 tip as ancestors so the dispatcher can fast-forward the epic ref.
 
+The composed catalog migration advances `PRAGMA user_version` to 2. Storage
+status, health, and cleanup must compare that value with
+`storage.CatalogSchemaVersion` and validate both the foundation and runtime
+tables. Otherwise healthy catalogs are reported as corrupt, while a version-2
+catalog missing runtime tables can be reported as healthy.
+
 ## Prevention
 
 Before resolving an epic rebase conflict, compare the conflicting commit with
@@ -41,3 +47,8 @@ rebase, always verify both ancestry checks:
 git merge-base --is-ancestor main HEAD
 git merge-base --is-ancestor epic/<id> HEAD
 ```
+
+Do not repeat a plain `git rebase main` after adding the ancestry-preserving
+merge: Git flattens the merge and queues the preserved epic commits for replay.
+If a retry is already integration-ready, keep the existing tip and verify its
+ancestry and tests instead.
