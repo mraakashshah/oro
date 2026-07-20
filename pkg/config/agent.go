@@ -65,7 +65,7 @@ type TransportConfig struct{}
 type configFile struct {
 	Agent   *AgentConfig       `yaml:"agent"`
 	Storage *storagePolicyFile `yaml:"storage"`
-	Factory *FactoryConfig `yaml:"factory"`
+	Factory *FactoryConfig     `yaml:"factory"`
 }
 
 func defaultAgentConfig() *AgentConfig {
