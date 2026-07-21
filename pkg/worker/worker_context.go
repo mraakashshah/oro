@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -53,13 +54,16 @@ func executionContextForAssign(a *protocol.AssignPayload, socketPath string) (Wo
 	if strings.TrimSpace(a.ActorRole) == "" {
 		return WorkerExecutionContext{}, fmt.Errorf("assign execution context missing role")
 	}
-	return WorkerExecutionContext{
-		AssignmentID:   a.AssignmentID,
-		Generation:     a.Generation,
-		Role:           a.ActorRole,
-		SocketPath:     socketPath,
-		CapabilityFile: a.Capability,
-	}, nil
+	execution := WorkerExecutionContext{
+		AssignmentID: a.AssignmentID,
+		Generation:   a.Generation,
+		Role:         a.ActorRole,
+		SocketPath:   socketPath,
+	}
+	if a.Capability != "" {
+		execution.CapabilityFile = filepath.Join(a.Worktree, protocol.OroDir, "assignment-capability.json")
+	}
+	return execution, nil
 }
 
 // EnvironmentForExecution replaces assignment-owned environment entries with
