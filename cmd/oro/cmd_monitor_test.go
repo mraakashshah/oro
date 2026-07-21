@@ -628,6 +628,7 @@ func TestMonitorActIgnoresStaleOpsRunFindingWhenCountsAreZero(t *testing.T) {
 			WorkerCount:   1,
 			TargetWorkers: 1,
 			MaxWorkers:    2,
+			PauseSource:   "monitor",
 			OpsRuns:       factoryhealth.OpsRunMetrics{},
 		},
 	}}

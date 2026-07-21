@@ -93,6 +93,7 @@ func TestDogfoodHarnessSeedsRunsAndAssertsInvariants(t *testing.T) {
 			WorkerCount:   1,
 			TargetWorkers: 1,
 			MaxWorkers:    1,
+			PauseSource:   "monitor",
 		},
 	}}
 	out.Reset()
