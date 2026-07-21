@@ -359,7 +359,7 @@ func (d *Dispatcher) handleStuckTimedOutWorker(ctx context.Context, sw workerExi
 	escalation := protocol.FormatEscalation(protocol.EscStuckWorker, sw.beadID,
 		"worker stalled with no progress", "progress timeout for worker "+sw.workerID)
 	if sw.reviewing && d.ops != nil {
-		if _, err := d.ops.CancelForBead(sw.beadID); err != nil {
+		if _, err := d.ops.CancelReviewsForBead(sw.beadID); err != nil {
 			_ = d.logEvent(ctx, "review_timeout_cancel_failed", "dispatcher", sw.beadID, sw.workerID,
 				fmt.Sprintf(`{"error":%q}`, err.Error()))
 		}

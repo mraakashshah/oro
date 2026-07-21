@@ -1547,6 +1547,39 @@ func TestCheckHeartbeats_ReviewTimeoutCancelsOps(t *testing.T) {
 	}
 }
 
+func TestCheckHeartbeats_ReviewTimeoutPreservesSameBeadEscalation(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	reviewProcess := &countingReviewProcess{done: make(chan struct{})}
+	escalationProcess := &countingReviewProcess{done: make(chan struct{})}
+	spawner := &sequentialReviewSpawner{processes: []ops.Process{reviewProcess, escalationProcess}}
+	d.ops = ops.NewSpawner(spawner)
+	beadID := "review-timeout-preserve-escalation-bead"
+	t.Cleanup(func() { _, _ = d.ops.CancelForBead(beadID) })
+	d.cfg.ReviewTimeout = 100 * time.Millisecond
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+	server, client := net.Pipe()
+	t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
+	d.mu.Lock()
+	d.workers["review-timeout-preserve-escalation-worker"] = &trackedWorker{
+		id: "review-timeout-preserve-escalation-worker", conn: server, state: protocol.WorkerReviewing,
+		managed: true, beadID: beadID, lastSeen: now, lastProgress: now.Add(-d.cfg.ReviewTimeout - time.Second),
+		encoder: json.NewEncoder(server),
+	}
+	d.mu.Unlock()
+	_ = d.ops.Review(context.Background(), ops.ReviewOpts{BeadID: beadID, Worktree: t.TempDir()})
+	_ = d.ops.Escalate(context.Background(), ops.EscalationOpts{BeadID: beadID, Workdir: t.TempDir()})
+	waitFor(t, func() bool { return spawner.SpawnCount() == 2 }, time.Second)
+
+	d.checkHeartbeats(context.Background())
+	if got := reviewProcess.kills.Load(); got != 1 {
+		t.Fatalf("review process kills = %d, want 1", got)
+	}
+	if escalationProcess.kills.Load() != 0 || !d.ops.HasActiveForBead(beadID) {
+		t.Fatal("same-bead escalation was cancelled")
+	}
+}
+
 // TestCheckHeartbeats_ReviewingDefersToReviewTimeout verifies reviewing workers
 // are not reaped by the shorter progress deadline.
 func TestCheckHeartbeats_ReviewingDefersToReviewTimeout(t *testing.T) {
