@@ -9292,6 +9292,12 @@ func (d *Dispatcher) handleEscalationResult(ctx context.Context, escalationID in
 		fmt.Sprintf(`{"type":%q,"verdict":%q,"feedback":%q}`, escType, result.Verdict, result.Feedback))
 
 	if protocol.EscalationType(escType) == protocol.EscOversizedBead {
+		if result.Verdict == ops.VerdictFailed {
+			d.recordAssignmentFailure(beadID)
+			d.completeDecomposeOpsRunBestEffort(ctx, beadID, opsRunStatusFailed, string(result.Verdict), result.Feedback, result.Feedback)
+			d.ackEscalation(ctx, escalationID, beadID, workerID)
+			return
+		}
 		if err := d.validateDecomposeResult(ctx, beadID); err != nil {
 			if errors.Is(err, errDecomposeValidationUnavailable) {
 				_ = d.logEvent(ctx, "oneshot_escalation_validation_skipped", "ops", beadID, workerID,
