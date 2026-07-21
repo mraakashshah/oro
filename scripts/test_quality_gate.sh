@@ -1029,12 +1029,10 @@ EOF
 		echo "FAIL: active-worktree lint finding was lost: $output"
 		return 1
 	fi
-	for gate in "$SCRIPT_DIR/quality_gate.sh" "$SCRIPT_DIR/../quality_gate.sh"; do
-		if ! grep -q 'run_golangci_lint()' "$gate" || ! grep -q '"golangci-lint" "run_golangci_lint"' "$gate"; then
-			echo "FAIL: $gate does not use the isolated golangci-lint runner"
-			return 1
-		fi
-	done
+	if ! grep -q 'run_golangci_lint()' "$SCRIPT_DIR/quality_gate.sh" || ! grep -q '"golangci-lint" "run_golangci_lint"' "$SCRIPT_DIR/quality_gate.sh"; then
+		echo "FAIL: $SCRIPT_DIR/quality_gate.sh does not use the isolated golangci-lint runner"
+		return 1
+	fi
 	if ! grep -q 'run_golangci_lint()' "$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go"; then
 		echo 'FAIL: generated quality gate does not define the isolated golangci-lint runner'
 		return 1
