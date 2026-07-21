@@ -55,6 +55,8 @@ func (s *WorkProposalStore) Close() error {
 }
 
 // StoreEvidenceRun records durable evidence before a proposal cites it.
+//
+//oro:testonly
 func (s *WorkProposalStore) StoreEvidenceRun(ctx context.Context, run EvidenceRun) error {
 	if s == nil || s.db == nil {
 		return errors.New("store evidence run: nil db")
