@@ -4343,7 +4343,7 @@ func (d *Dispatcher) checkPreReviewGitHygiene(ctx context.Context, _, worktree s
 		return PreReviewGitHygieneResult{}, fmt.Errorf("pre-review git metadata: %w", statErr)
 	}
 
-	out, err := (&ExecCommandRunner{Dir: worktree}).Run(ctx, "git", "status", "--porcelain", "-z")
+	out, err := (&ExecCommandRunner{Dir: worktree}).Run(ctx, "git", "status", "--porcelain", "--untracked-files=all", "-z")
 	if err != nil {
 		return PreReviewGitHygieneResult{}, fmt.Errorf("pre-review git status: %w", err)
 	}
@@ -4394,6 +4394,9 @@ type managedQualityGateProvider interface {
 }
 
 func (d *Dispatcher) isIgnorableManagedQualityGateStatus(worktree string, entry gitStatusPorcelainEntry) bool {
+	if entry.Code == "??" && entry.Path == filepath.ToSlash(filepath.Join(protocol.OroDir, "assignment-capability.json")) {
+		return true
+	}
 	if entry.Code != "??" || entry.Path != "quality_gate.sh" {
 		return false
 	}
