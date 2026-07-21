@@ -17,6 +17,38 @@ import (
 	"oro/pkg/protocol"
 )
 
+// hermeticEnv holds the isolated home + runtime paths configured by hermeticOroEnv.
+type hermeticEnv struct {
+	OroHome    string
+	CodexHome  string
+	PIDPath    string
+	SocketPath string
+	DBPath     string
+}
+
+// hermeticOroEnv isolates every oro/codex home and runtime path under tmpDir so a
+// start-path test can never write into the developer's real ~/.oro or ~/.codex.
+// Isolation is applied as a single unit on purpose: setting ORO_HOME but forgetting
+// CODEX_HOME once leaked a managed hooks block, pointing at an ephemeral temp dir,
+// into a real ~/.codex/config.toml — wedging every later Codex session. Setting the
+// vars together makes partial isolation impossible.
+func hermeticOroEnv(t *testing.T, tmpDir string) hermeticEnv {
+	t.Helper()
+	env := hermeticEnv{
+		OroHome:    filepath.Join(tmpDir, "oro-home"),
+		CodexHome:  filepath.Join(tmpDir, "codex-home"),
+		PIDPath:    filepath.Join(tmpDir, "oro.pid"),
+		SocketPath: filepath.Join(tmpDir, "oro.sock"),
+		DBPath:     filepath.Join(tmpDir, "state.db"),
+	}
+	t.Setenv("ORO_HOME", env.OroHome)
+	t.Setenv("CODEX_HOME", env.CodexHome)
+	t.Setenv("ORO_PID_PATH", env.PIDPath)
+	t.Setenv("ORO_SOCKET_PATH", env.SocketPath)
+	t.Setenv("ORO_DB_PATH", env.DBPath)
+	return env
+}
+
 func TestIsDetached(t *testing.T) {
 	t.Run("flag override always returns true", func(t *testing.T) {
 		// Even if we were in a TTY, --detach flag should force detached mode.
@@ -191,8 +223,6 @@ func startTestEnvMap(env []string) map[string]string {
 func TestStartPreflightAndCheckRunning_DaemonOnlyBypass(t *testing.T) {
 	tmpDir := t.TempDir()
 	projectDir := filepath.Join(tmpDir, "project")
-	pidFile := filepath.Join(tmpDir, "oro.pid")
-	codexHome := filepath.Join(tmpDir, "codex-home")
 	toolsDir := filepath.Join(tmpDir, "tools")
 	writeFile(t, filepath.Join(projectDir, "go.mod"), "module bypass\n\ngo 1.22\n")
 	writeFile(t, filepath.Join(projectDir, ".oro", "config.yaml"), `project: bypass
@@ -211,16 +241,14 @@ agent:
 		}
 	}
 
-	// Hermetic ORO_HOME so the test does not silently pick up the developer's
-	// pre-built oro-search-hook in ~/.oro/hooks. Without this isolation, a
-	// build failure inside ensureSearchHook fell back to "preserved binary"
-	// locally while hard-failing in CI (oro-7jjt). With ORO_HOME pointing at
-	// a fresh tmp dir, daemon-skip mode must skip the hook build entirely.
-	t.Setenv("ORO_HOME", filepath.Join(tmpDir, "orohome"))
-	t.Setenv("ORO_PID_PATH", pidFile)
-	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
-	t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))
-	t.Setenv("CODEX_HOME", codexHome)
+	// Hermetic homes so the test never picks up the developer's pre-built
+	// oro-search-hook in ~/.oro/hooks nor writes into their real ~/.codex. Without
+	// ORO_HOME isolation a build failure inside ensureSearchHook fell back to a
+	// "preserved binary" locally while hard-failing in CI (oro-7jjt); daemon-skip
+	// mode must skip the hook build entirely.
+	env := hermeticOroEnv(t, tmpDir)
+	pidFile := env.PIDPath
+	codexHome := env.CodexHome
 	t.Setenv("PATH", toolsDir)
 	t.Setenv("ORO_BEADSOURCE_MODE", "sqlite")
 	t.Setenv(daemonSkipPreflightEnv, "1")
@@ -243,7 +271,7 @@ agent:
 	assertSkillSymlink(
 		t,
 		filepath.Join(codexHome, "skills", "using-skills"),
-		filepath.Join(tmpDir, "orohome", ".claude", "skills", "using-skills"),
+		filepath.Join(env.OroHome, ".claude", "skills", "using-skills"),
 	)
 }
 
@@ -350,10 +378,10 @@ func TestStartCommandPreflightChecks(t *testing.T) {
 		t.Fatalf("git init temp project: %v\n%s", err, out)
 	}
 
-	pidFile := filepath.Join(tmpDir, "oro.pid")
-	sockPath := filepath.Join(tmpDir, "oro.sock")
-	dbPath := filepath.Join(tmpDir, "state.db")
-	oroHome := filepath.Join(tmpDir, "oro-home")
+	env := hermeticOroEnv(t, tmpDir)
+	pidFile := env.PIDPath
+	sockPath := env.SocketPath
+	oroHome := env.OroHome
 	if err := os.MkdirAll(filepath.Join(oroHome, "hooks"), 0o755); err != nil {
 		t.Fatalf("mkdir hooks dir: %v", err)
 	}
@@ -362,11 +390,6 @@ func TestStartCommandPreflightChecks(t *testing.T) {
 	}
 
 	cmd := newStartCmd()
-
-	t.Setenv("ORO_HOME", oroHome)
-	t.Setenv("ORO_PID_PATH", pidFile)
-	t.Setenv("ORO_SOCKET_PATH", sockPath)
-	t.Setenv("ORO_DB_PATH", dbPath)
 
 	withChdir(t, projectDir, func() {
 		// Try to run with daemon-only mode (simpler than full start).
@@ -427,17 +450,14 @@ func TestDaemonOnlyStartsDispatcher(t *testing.T) {
 		t.Fatalf("git init temp project: %v\n%s", err, out)
 	}
 
-	pidFile := filepath.Join(tmpDir, "oro.pid")
-	sockPath := filepath.Join(tmpDir, "oro.sock")
-	dbPath := filepath.Join(tmpDir, "state.db")
-
 	cmd := newStartCmd()
 
-	// Override paths via environment for testability.
-	t.Setenv("ORO_HOME", filepath.Join(tmpDir, "oro-home"))
-	t.Setenv("ORO_PID_PATH", pidFile)
-	t.Setenv("ORO_SOCKET_PATH", sockPath)
-	t.Setenv("ORO_DB_PATH", dbPath)
+	// Isolate every oro/codex home + runtime path together; behavior toggles stay
+	// separate so we never forget one (forgetting CODEX_HOME once leaked hooks
+	// into the real ~/.codex).
+	env := hermeticOroEnv(t, tmpDir)
+	pidFile := env.PIDPath
+	sockPath := env.SocketPath
 	t.Setenv("ORO_BEADSOURCE_MODE", "sqlite")
 	t.Setenv(daemonSkipPreflightEnv, "1")
 

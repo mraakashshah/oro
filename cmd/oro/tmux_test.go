@@ -48,6 +48,13 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "set ORO_HOME for manager runtime tests: %v\n", err)
 		os.Exit(1)
 	}
+	// Clear transient ORO_* runtime vars a factory worker exports (ORO_WORKER_ID,
+	// ORO_SOCKET_PATH, ...) so inherited caller state cannot bleed into tests. The
+	// hermetic HOME/ORO_HOME redirect above prevents real ~/.oro pollution.
+	if err := sanitizeInheritedOroEnv(); err != nil {
+		fmt.Fprintf(os.Stderr, "sanitize inherited oro env for tests: %v\n", err)
+		os.Exit(1)
+	}
 
 	code := m.Run()
 	managerRuntimeConfigPath = previousConfigPath

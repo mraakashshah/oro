@@ -4,9 +4,12 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"oro/pkg/testutil/qgserial"
 )
 
 func TestSocketPermissions(t *testing.T) {
+	qgserial.RequireSerial(t)
 	// Create a dispatcher with a test socket path.
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	sockPath := d.cfg.SocketPath

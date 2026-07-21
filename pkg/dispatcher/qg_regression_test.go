@@ -172,8 +172,8 @@ func TestRegressionRevertFlagOff_NoBaselineCapture(t *testing.T) {
 		return []byte("abc123\n"), nil
 	}}
 	dOn.qgRetryWithReservation(context.Background(), "worker-1", "bead-1", "quality gate failed", 1)
-	if len(dOn.qgRunner.(*mockQGRunner).calls) != 1 {
-		t.Fatalf("default-on qgRunner calls = %d, want 1", len(dOn.qgRunner.(*mockQGRunner).calls))
+	if len(dOn.qgRunner.(*mockQGRunner).calls) != 0 {
+		t.Fatalf("default-on qgRunner calls = %d, want 0", len(dOn.qgRunner.(*mockQGRunner).calls))
 	}
 	if revParseCalls(dOn.shutdownRunner.(*mockCommandRunner)) != 1 {
 		t.Fatalf("default-on baseline rev-parse calls = %d, want 1", revParseCalls(dOn.shutdownRunner.(*mockCommandRunner)))
@@ -189,6 +189,54 @@ func TestRegressionRevertFlagOff_NoBaselineCapture(t *testing.T) {
 	}
 	if revParseCalls(d.shutdownRunner.(*mockCommandRunner)) != 0 {
 		t.Fatalf("baseline rev-parse calls = %d, want 0", revParseCalls(d.shutdownRunner.(*mockCommandRunner)))
+	}
+}
+
+func TestQGRetrySeedsBaselineFromFailureWithoutRerun(t *testing.T) {
+	d, cleanup := newQGRetryBaselineTestDispatcher(t, true)
+	defer cleanup()
+
+	const failedQGOutput = "\x1b[31m--- FAIL: TestAlreadyFailing (0.01s)\x1b[0m\nFAIL\n"
+	d.qgRunner = &mockQGRunner{
+		passed: false,
+		output: "--- FAIL: TestAlreadyFailing (0.01s)\nFAIL\n",
+	}
+
+	d.qgRetryWithReservation(context.Background(), "worker-1", "bead-1", failedQGOutput, 1)
+
+	if got := len(d.qgRunner.(*mockQGRunner).calls); got != 0 {
+		t.Fatalf("qgRunner calls while seeding retry baseline = %d, want 0", got)
+	}
+	if got := revParseCalls(d.shutdownRunner.(*mockCommandRunner)); got != 1 {
+		t.Fatalf("baseline rev-parse calls = %d, want 1", got)
+	}
+
+	baseline, ok := d.takeQGBaselineForBead("bead-1")
+	if !ok {
+		t.Fatal("retry baseline was not stored")
+	}
+	want := qgBaseline{
+		"bead-1": {
+			HeadSHA:     "abc123",
+			SuitePassed: false,
+			Outcomes: map[string]bool{
+				"TestAlreadyFailing": false,
+			},
+		},
+	}
+	if !reflect.DeepEqual(baseline, want) {
+		t.Fatalf("retry baseline = %#v, want %#v", baseline, want)
+	}
+
+	regression, err := d.detectQGRegression(context.Background(), baseline, "/tmp/qg-retry-worktree", "main")
+	if err != nil {
+		t.Fatalf("detectQGRegression() error = %v", err)
+	}
+	if regression != (qgRegression{}) {
+		t.Fatalf("detectQGRegression() = %#v, want no regression", regression)
+	}
+	if got := len(d.qgRunner.(*mockQGRunner).calls); got != 1 {
+		t.Fatalf("qgRunner calls after later regression comparison = %d, want 1", got)
 	}
 }
 
@@ -246,8 +294,8 @@ FAIL
 
 	d.mergeAndComplete(ctx, beadID, workerID, worktree, protocol.BranchPrefix+beadID, "", "main", assignmentID)
 
-	if len(gitRunner.RebaseCalls()) != 0 {
-		t.Fatalf("merge rebase calls = %d, want 0", len(gitRunner.RebaseCalls()))
+	if len(gitRunner.RebaseCalls()) != 1 {
+		t.Fatalf("merge rebase calls = %d, want 1 before post-rebase regression check", len(gitRunner.RebaseCalls()))
 	}
 	if got := eventCount(t, d.db, "qg_regression_reverted"); got != 1 {
 		t.Fatalf("qg_regression_reverted events = %d, want 1", got)
@@ -292,8 +340,8 @@ FAIL
 
 	d.mergeAndComplete(ctx, beadID, workerID, worktree, protocol.BranchPrefix+beadID, "", "main", 0)
 
-	if len(gitRunner.RebaseCalls()) != 0 {
-		t.Fatalf("merge rebase calls = %d, want 0", len(gitRunner.RebaseCalls()))
+	if len(gitRunner.RebaseCalls()) != 1 {
+		t.Fatalf("merge rebase calls = %d, want 1 before post-rebase regression check", len(gitRunner.RebaseCalls()))
 	}
 	if got := eventCount(t, d.db, "merged"); got != 0 {
 		t.Fatalf("merged events = %d, want 0", got)

@@ -48,11 +48,10 @@ func (g *GitWorktreeManager) ManagedQualityGatePath() string {
 // (e.g. "main" for standalone beads, "epic/<epicID>" for epic child beads).
 //
 // Before creating the worktree, Create performs a best-effort `git fetch origin
-// <baseBranch>` so that the new agent branch always starts from the current
-// remote HEAD, not a potentially-stale local ref. On success the worktree is
-// branched from `origin/<baseBranch>`; if the fetch fails (e.g. no remote), epic
-// base branches are created locally when missing and the local ref is used as a
-// fallback.
+// <baseBranch>`, then selects the fetched remote when no local ref exists or
+// whichever ref is the descendant when both exist. Divergent refs fail closed.
+// If the fetch fails (e.g. no remote), epic base branches are created locally
+// when missing and the local ref is used as a fallback.
 func (g *GitWorktreeManager) Create(ctx context.Context, beadID, baseBranch string) (path, branch string, err error) {
 	// Validate bead ID before using it in filepath operations to prevent
 	// directory traversal attacks.
@@ -64,14 +63,19 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID, baseBranch stri
 		baseBranch = "main"
 	}
 
-	// Best-effort: fetch from origin so the worktree branches from the current
-	// remote HEAD, not a potentially-stale local ref (govulncheck loop root cause).
-	// On success use origin/<baseBranch>; fall back to the local ref if there is
-	// no remote or the fetch fails (e.g. local-only repos, no network).
+	// Best-effort: fetch from origin so the worktree can branch from the freshest
+	// safe ref. If local and remote disagree, prefer the descendant and refuse
+	// divergent histories rather than starting a worker from a stale target.
+	// Fall back to the local ref if there is no remote or fetch fails (e.g.
+	// local-only repos, no network).
 	effectiveBase := baseBranch
 	_, fetchErr := g.runner.Run(ctx, "git", "-C", g.repoRoot, "fetch", "origin", baseBranch)
 	if fetchErr == nil {
-		effectiveBase = "origin/" + baseBranch
+		selectedBase, selectErr := g.selectFreshBase(ctx, baseBranch, "origin/"+baseBranch)
+		if selectErr != nil {
+			return "", "", selectErr
+		}
+		effectiveBase = selectedBase
 	} else if err := g.ensureLocalEpicBaseBranch(ctx, baseBranch); err != nil {
 		return "", "", err
 	}
@@ -104,6 +108,37 @@ func (g *GitWorktreeManager) Create(ctx context.Context, beadID, baseBranch stri
 	}
 	g.stageAssets(ctx, path)
 	return path, branch, nil
+}
+
+func (g *GitWorktreeManager) selectFreshBase(ctx context.Context, localBase, remoteBase string) (string, error) {
+	relation, err := g.branchRelationToBase(ctx, localBase, remoteBase)
+	if err != nil {
+		return g.selectFetchedRemoteIfLocalMissing(ctx, localBase, remoteBase, err)
+	}
+	switch relation {
+	case branchStrictlyBehind:
+		return remoteBase, nil
+	case branchDiverged:
+		return "", fmt.Errorf("local base %s and %s diverged", localBase, remoteBase)
+	default:
+		return localBase, nil
+	}
+}
+
+func (g *GitWorktreeManager) selectFetchedRemoteIfLocalMissing(
+	ctx context.Context, localBase, remoteBase string, compareErr error,
+) (string, error) {
+	localExists, err := g.BranchExists(ctx, localBase)
+	if err != nil {
+		return "", fmt.Errorf("check local base %s after comparison failure: %w", localBase, err)
+	}
+	if localExists {
+		return "", fmt.Errorf("compare local base %s with %s: %w", localBase, remoteBase, compareErr)
+	}
+	if _, err := g.revParse(ctx, g.repoRoot, remoteBase); err != nil {
+		return "", fmt.Errorf("verify remote base %s: %w", remoteBase, err)
+	}
+	return remoteBase, nil
 }
 
 func (g *GitWorktreeManager) retryCreateAfterPrune(ctx context.Context, path, branch, effectiveBase string, pruneFailed bool) error {
@@ -167,38 +202,35 @@ func (g *GitWorktreeManager) stageAssets(ctx context.Context, path string) {
 // script intentionally coexists with a tracked scripts/quality_gate.sh so old
 // epic branches cannot bypass current factory safety fixes.
 func (g *GitWorktreeManager) linkQualityGate(ctx context.Context, worktreePath string) {
+	g.RefreshQualityGate(ctx, worktreePath)
+}
+
+// RefreshQualityGate replaces the dispatcher-managed root quality gate with a
+// current executable snapshot. It is intentionally best-effort for newly
+// created worktrees; reuse calls refreshQualityGate directly so it can fail
+// closed rather than handing a stale gate to a worker.
+func (g *GitWorktreeManager) RefreshQualityGate(ctx context.Context, worktreePath string) {
+	if err := g.refreshQualityGate(worktreePath); err != nil {
+		slog.WarnContext(ctx, "refresh_quality_gate_failed",
+			"worktree", worktreePath, "target", g.qualityGatePath, "error", err.Error())
+	}
+}
+
+func (g *GitWorktreeManager) refreshQualityGate(worktreePath string) error {
 	if g.qualityGatePath == "" {
-		return
+		return nil
 	}
 
-	// Verify the target exists before creating a broken symlink.
 	if _, err := os.Stat(g.qualityGatePath); err != nil {
-		slog.WarnContext(ctx, "link_quality_gate_target_missing",
-			"path", g.qualityGatePath, "error", err.Error())
-		return
+		return fmt.Errorf("stat managed quality gate %s: %w", g.qualityGatePath, err)
 	}
 
 	linkPath := filepath.Join(worktreePath, "quality_gate.sh")
-	info, err := os.Lstat(linkPath)
-	if err == nil {
-		if info.Mode()&os.ModeSymlink == 0 {
-			return
-		}
-		if removeErr := os.Remove(linkPath); removeErr != nil {
-			slog.WarnContext(ctx, "link_quality_gate_remove_stale_link_failed",
-				"link", linkPath, "target", g.qualityGatePath, "error", removeErr.Error())
-			return
-		}
-	} else if !os.IsNotExist(err) {
-		slog.WarnContext(ctx, "link_quality_gate_lstat_failed",
-			"link", linkPath, "target", g.qualityGatePath, "error", err.Error())
-		return
+	if err := os.Remove(linkPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove stale managed quality gate %s: %w", linkPath, err)
 	}
 
-	if err := copyQualityGateSnapshot(g.qualityGatePath, linkPath); err != nil {
-		slog.WarnContext(ctx, "link_quality_gate_copy_failed",
-			"link", linkPath, "target", g.qualityGatePath, "error", err.Error())
-	}
+	return copyQualityGateSnapshot(g.qualityGatePath, linkPath)
 }
 
 func copyQualityGateSnapshot(src, dst string) error {
@@ -324,29 +356,42 @@ func (g *GitWorktreeManager) PrepareExistingForReuse(ctx context.Context, worktr
 		return false, err
 	}
 	if branchHead == baseHead {
+		if err := g.refreshQualityGate(worktree); err != nil {
+			return false, fmt.Errorf("refresh managed quality gate for reused worktree %s: %w", worktree, err)
+		}
 		return false, nil
 	}
 
 	branchBehind, err := g.isAncestor(ctx, branch, baseBranch)
 	if err == nil && branchBehind {
-		dirty, dirtyErr := g.trackedStatus(ctx, worktree)
-		if dirtyErr != nil {
-			return false, dirtyErr
-		}
-		if dirty != "" {
-			return false, fmt.Errorf("stale branch %s is behind %s but worktree has tracked changes: %s", branch, baseBranch, dirty)
-		}
-		if _, mergeErr := g.runner.Run(ctx, "git", "-C", worktree, "merge", "--ff-only", baseBranch); mergeErr != nil {
-			return false, fmt.Errorf("fast-forward existing worktree %s to %s: %w", worktree, baseBranch, mergeErr)
-		}
-		return true, nil
+		return g.fastForwardExistingForReuse(ctx, worktree, branch, baseBranch)
 	}
 
 	baseBehind, err := g.isAncestor(ctx, baseBranch, branch)
 	if err == nil && baseBehind {
+		if err := g.refreshQualityGate(worktree); err != nil {
+			return false, fmt.Errorf("refresh managed quality gate for reused worktree %s: %w", worktree, err)
+		}
 		return false, nil
 	}
 	return false, fmt.Errorf("agent branch %s diverged from base %s", branch, baseBranch)
+}
+
+func (g *GitWorktreeManager) fastForwardExistingForReuse(ctx context.Context, worktree, branch, baseBranch string) (bool, error) {
+	dirty, err := g.trackedStatus(ctx, worktree)
+	if err != nil {
+		return false, err
+	}
+	if dirty != "" {
+		return false, fmt.Errorf("stale branch %s is behind %s but worktree has tracked changes: %s", branch, baseBranch, dirty)
+	}
+	if _, err := g.runner.Run(ctx, "git", "-C", worktree, "merge", "--ff-only", baseBranch); err != nil {
+		return false, fmt.Errorf("fast-forward existing worktree %s to %s: %w", worktree, baseBranch, err)
+	}
+	if err := g.refreshQualityGate(worktree); err != nil {
+		return false, fmt.Errorf("refresh managed quality gate for reused worktree %s: %w", worktree, err)
+	}
+	return true, nil
 }
 
 // RebaseDivergedExistingForReuse rebases a clean preserved assignment

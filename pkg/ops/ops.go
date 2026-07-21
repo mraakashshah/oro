@@ -140,13 +140,15 @@ func (t Type) Role() string {
 	}
 }
 
-// Timeout returns the per-type process timeout. Returns 0 for all types except
-// OpsWriteAC, which needs 10 minutes for careful acceptance-criteria generation.
+// Timeout returns the per-type process timeout. Recovery operations get a
+// 15-minute budget so healthy conflict resolution and verification can finish.
 // When 0, the Spawner falls back to its default timeout.
 func (t Type) Timeout() time.Duration {
 	switch t {
 	case OpsReview:
 		return 35 * time.Minute
+	case OpsMerge, OpsDiagnosis, OpsEscalation, OpsEpicFix:
+		return 15 * time.Minute
 	case OpsWriteAC:
 		return 10 * time.Minute
 	case OpsDream:
@@ -542,10 +544,20 @@ func (s *Spawner) Cancel(taskID string) error {
 // CancelForBead kills all running ops agents for the given bead ID.
 // Returns the number of agents cancelled and any error from the first kill failure.
 func (s *Spawner) CancelForBead(beadID string) (int, error) {
+	return s.cancelForBead(beadID, func(*Agent) bool { return true })
+}
+
+// CancelReviewsForBead kills running review agents for the given bead ID.
+// Other operations for the bead remain active.
+func (s *Spawner) CancelReviewsForBead(beadID string) (int, error) {
+	return s.cancelForBead(beadID, func(agent *Agent) bool { return agent.Type == OpsReview })
+}
+
+func (s *Spawner) cancelForBead(beadID string, matches func(*Agent) bool) (int, error) {
 	s.mu.Lock()
 	var toCancel []*Agent
 	for _, agent := range s.active {
-		if agent.BeadID == beadID {
+		if agent.BeadID == beadID && matches(agent) {
 			toCancel = append(toCancel, agent)
 		}
 	}
@@ -556,6 +568,9 @@ func (s *Spawner) CancelForBead(beadID string) (int, error) {
 		if err := agent.proc.Kill(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("ops: kill agent %q for bead %q: %w", agent.ID, beadID, err)
 		}
+		s.mu.Lock()
+		delete(s.active, agent.ID)
+		s.mu.Unlock()
 	}
 	return len(toCancel), firstErr
 }

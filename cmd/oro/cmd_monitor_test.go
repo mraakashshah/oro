@@ -211,6 +211,30 @@ func TestMonitorActRestartsAfterRepeatedThroughputStall(t *testing.T) {
 	}
 }
 
+func TestMonitorActDoesNotRestartThroughputStallWithActiveWorkers(t *testing.T) {
+	runner := &fakeMonitorRunner{health: factoryhealth.FactoryHealth{
+		State: factoryhealth.StateStalled,
+		Findings: []factoryhealth.Finding{
+			{Code: factoryhealth.FindingThroughputStall, Severity: factoryhealth.SeverityWarning},
+		},
+		Metrics: factoryhealth.Metrics{
+			ActiveWorkers: 2, DaemonRunning: true, ReadyQueue: 2, WorkerCount: 2, TargetWorkers: 2,
+		},
+	}}
+	cfg := monitorConfig{targetWorkers: 2, maxWorkers: 2, act: true, restartAfter: 2}
+	state := newMonitorState()
+
+	for i := 0; i < 2; i++ {
+		if err := runMonitorIteration(context.Background(), &bytes.Buffer{}, cfg, runner, state); err != nil {
+			t.Fatalf("iteration %d: %v", i+1, err)
+		}
+	}
+
+	if len(runner.calls) != 0 {
+		t.Fatalf("calls = %v, want no daemon restart while workers are active", runner.calls)
+	}
+}
+
 func TestMonitorActDaemonRestartSurvivesMonitorRestart(t *testing.T) {
 	runner := &fakeMonitorRunner{health: factoryhealth.FactoryHealth{
 		State: factoryhealth.StateStalled,

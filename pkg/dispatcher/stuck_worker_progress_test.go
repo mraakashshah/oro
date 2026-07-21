@@ -2,15 +2,101 @@ package dispatcher //nolint:testpackage // internal white-box test exercising tr
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
 	"oro/pkg/protocol"
 )
 
-// TestStuckWorkerProgressHeartbeatNotProgress proves that heartbeats with
-// flat context_pct do NOT refresh lastProgress for a busy worker — only
-// real content advancement (context_pct climb, STATUS, DONE) counts.
+func TestMeaningfulProgressEventsPersisted(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		beadID   = "oro-progress"
+		workerID = "worker-progress"
+	)
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:         workerID,
+		state:      protocol.WorkerBusy,
+		beadID:     beadID,
+		contextPct: 25,
+	}
+	d.mu.Unlock()
+
+	// Assignment is a durable progress boundary, independent of worktree reuse.
+	d.recordWorkerProgress(ctx, workerID, beadID, "assign")
+
+	// READY_FOR_REVIEW is another durable progress boundary.
+	d.handleReadyForReview(ctx, workerID, protocol.Message{
+		Type: protocol.MsgReadyForReview,
+		ReadyForReview: &protocol.ReadyForReviewPayload{
+			BeadID: beadID,
+		},
+	})
+
+	// Only a context_pct increase is durable progress; a flat heartbeat is
+	// liveness metadata and must not append another progress event.
+	d.handleHeartbeat(ctx, workerID, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   workerID,
+			BeadID:     beadID,
+			ContextPct: 30,
+		},
+	})
+	d.handleHeartbeat(ctx, workerID, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   workerID,
+			BeadID:     beadID,
+			ContextPct: 30,
+		},
+	})
+
+	rows, err := d.db.QueryContext(ctx, `
+		SELECT source, created_at
+		FROM events
+		WHERE type = 'worker_progress' AND bead_id = ? AND worker_id = ?
+		ORDER BY id
+	`, beadID, workerID)
+	if err != nil {
+		t.Fatalf("query worker progress events: %v", err)
+	}
+	defer rows.Close()
+
+	var sources []string
+	for rows.Next() {
+		var source string
+		var createdAt sql.NullString
+		if err := rows.Scan(&source, &createdAt); err != nil {
+			t.Fatalf("scan worker progress event: %v", err)
+		}
+		if !createdAt.Valid || createdAt.String == "" {
+			t.Fatalf("worker progress event %q has no timestamp", source)
+		}
+		sources = append(sources, source)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate worker progress events: %v", err)
+	}
+
+	want := []string{"assign", "ready_for_review", "context_pct_increase"}
+	if len(sources) != len(want) {
+		t.Fatalf("worker progress sources = %v, want %v", sources, want)
+	}
+	for i, source := range sources {
+		if source != want[i] {
+			t.Fatalf("worker progress source[%d] = %q, want %q", i, source, want[i])
+		}
+	}
+}
+
+// TestStuckWorkerProgressHeartbeatNotProgress proves that heartbeats do NOT
+// refresh lastProgress for a busy worker — only real protocol transitions
+// such as STATUS, DONE, READY_FOR_REVIEW, and QG events count.
 // Covers oro-16yy: in the 2026-05-04 proof run, workers held at 5%
 // context for 14+ minutes with only heartbeat traffic, but
 // progress-timeout never fired because the heartbeat handler was
@@ -51,7 +137,7 @@ func TestStuckWorkerProgressHeartbeatNotProgress(t *testing.T) {
 		t.Fatalf("workerProgressTimedOut = false, want true (lastProgress is %v ago)", now.Sub(t0))
 	}
 
-	// Heartbeat with climbing context_pct DOES update lastProgress.
+	// Even a climbing context_pct is heartbeat liveness, not progress.
 	d.handleHeartbeat(context.Background(), wid, protocol.Message{
 		Type:      protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{WorkerID: wid, BeadID: "oro-bead", ContextPct: 8},
@@ -59,7 +145,7 @@ func TestStuckWorkerProgressHeartbeatNotProgress(t *testing.T) {
 	d.mu.Lock()
 	gotClimbed := d.workers[wid].lastProgress
 	d.mu.Unlock()
-	if !gotClimbed.Equal(now) {
-		t.Fatalf("climbing-context lastProgress = %v, want %v (context climb must count as progress)", gotClimbed, now)
+	if !gotClimbed.Equal(t0) {
+		t.Fatalf("climbing-context lastProgress = %v, want unchanged %v (context drift must not count as progress)", gotClimbed, t0)
 	}
 }

@@ -138,6 +138,9 @@ func newDispatcherStartCmd() *cobra.Command {
 		Long: `Starts the Oro dispatcher as a background daemon without creating a tmux session.
 Useful for CI environments or manual worker management (--workers 0 disables auto-scaling).`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := verifyStartCommandRemoteCapabilities(cmd.Context()); err != nil {
+				return err
+			}
 			w := cmd.OutOrStdout()
 
 			if !force {

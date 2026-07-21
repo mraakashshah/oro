@@ -51,10 +51,13 @@ type statusResponse struct {
 	ProgressTimeoutSecs float64        `json:"progress_timeout_secs"`
 
 	// QG incidents
-	QGFailureIncidentsOpen   int                          `json:"qg_failure_incidents_open"`
-	QGFailureOccurrences30m  int                          `json:"qg_failure_occurrences_30m"`
-	QGFailureTopFingerprints []string                     `json:"qg_failure_top_fingerprints,omitempty"`
-	Health                   *factoryhealth.FactoryHealth `json:"health,omitempty"`
+	QGFailureIncidentsOpen       int                          `json:"qg_failure_incidents_open"`
+	QGFailureOccurrences30m      int                          `json:"qg_failure_occurrences_30m"`
+	QGFailureTopFingerprints     []string                     `json:"qg_failure_top_fingerprints,omitempty"`
+	AssignmentFrozenByQuarantine bool                         `json:"assignment_frozen_by_quarantine"`
+	BlockingRecoveryQuarantines  int                          `json:"blocking_recovery_quarantines,omitempty"`
+	AssignmentFreezeReason       string                       `json:"assignment_freeze_reason,omitempty"`
+	Health                       *factoryhealth.FactoryHealth `json:"health,omitempty"`
 }
 
 // statusSocketTimeout is how long to wait for the dispatcher socket round-trip.

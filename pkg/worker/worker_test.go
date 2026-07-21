@@ -93,14 +93,15 @@ func (p *mockProcess) StderrTail() string {
 
 // mockSpawner implements worker.StreamingSpawner for testing.
 type mockSpawner struct {
-	mu       sync.Mutex
-	calls    []spawnCall
-	process  *mockProcess
-	spawnErr error
-	stdout   io.ReadCloser  // optional: simulated subprocess stdout
-	stdin    io.WriteCloser // optional: simulated subprocess stdin
-	format   worker.StreamFormat
-	onSpawn  func(model, prompt, workdir string) error
+	mu             sync.Mutex
+	calls          []spawnCall
+	process        *mockProcess
+	spawnErr       error
+	stdout         io.ReadCloser  // optional: simulated subprocess stdout
+	stdin          io.WriteCloser // optional: simulated subprocess stdin
+	format         worker.StreamFormat
+	onSpawn        func(model, prompt, workdir string) error
+	onSpawnContext func(context.Context, string, string, string) error
 }
 
 type spawnCall struct {
@@ -118,12 +119,17 @@ func (s *mockSpawner) Spawn(_ context.Context, model, prompt, workdir string) (w
 	return s.SpawnWithReasoning(context.Background(), model, "", prompt, workdir)
 }
 
-func (s *mockSpawner) SpawnWithReasoning(_ context.Context, model, reasoning, prompt, workdir string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
+func (s *mockSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning, prompt, workdir string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, spawnCall{Model: model, Reasoning: reasoning, Prompt: prompt, Workdir: workdir})
 	if s.onSpawn != nil {
 		if err := s.onSpawn(model, prompt, workdir); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	if s.onSpawnContext != nil {
+		if err := s.onSpawnContext(ctx, model, prompt, workdir); err != nil {
 			return nil, nil, nil, err
 		}
 	}
@@ -170,6 +176,16 @@ func validAssignWorktree(t *testing.T, name string) string {
 		t.Fatalf("create assign worktree: %v", err)
 	}
 	return dir
+}
+
+func envValue(env []string, key string) string {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return ""
 }
 
 // readMessage reads a single line-delimited JSON message from a connection.
@@ -233,6 +249,11 @@ func readMessageAsync(t *testing.T, conn net.Conn) <-chan protocol.Message {
 // sendMessage writes a line-delimited JSON message to a connection.
 func sendMessage(t *testing.T, conn net.Conn, msg protocol.Message) {
 	t.Helper()
+	if assign := msg.Assign; assign != nil && assign.BeadID != "" && assign.Worktree != "" && assign.AssignmentID == 0 {
+		assign.AssignmentID = 1
+		assign.Generation = 1
+		assign.ActorRole = "execution_worker"
+	}
 	data, err := json.Marshal(msg)
 	if err != nil {
 		t.Fatalf("failed to marshal message: %v", err)
@@ -1015,7 +1036,7 @@ test -z "${ORO_QG_LOCK_TIMEOUT_SECONDS:-}"
 	}
 }
 
-func TestRunQualityGate_ScrubsInheritedQualityGateLock(t *testing.T) {
+func TestRunQualityGate_PreservesInheritedQualityGateLock(t *testing.T) {
 	t.Setenv("ORO_QG_INHERITED_LOCK_DIR", "/tmp/inherited-quality-gate-lock")
 	t.Setenv("ORO_QG_INHERITED_LOCK_TOKEN", "inherited-token")
 
@@ -1023,8 +1044,8 @@ func TestRunQualityGate_ScrubsInheritedQualityGateLock(t *testing.T) {
 	script := filepath.Join(tmpDir, "quality_gate.sh")
 	if err := os.WriteFile(script, []byte(`#!/usr/bin/env bash
 set -euo pipefail
-test -z "${ORO_QG_INHERITED_LOCK_DIR:-}"
-test -z "${ORO_QG_INHERITED_LOCK_TOKEN:-}"
+test "${ORO_QG_INHERITED_LOCK_DIR:-}" = "/tmp/inherited-quality-gate-lock"
+test "${ORO_QG_INHERITED_LOCK_TOKEN:-}" = "inherited-token"
 `), 0o600); err != nil { //nolint:gosec // test file
 		t.Fatal(err)
 	}
@@ -1037,7 +1058,7 @@ test -z "${ORO_QG_INHERITED_LOCK_TOKEN:-}"
 		t.Fatalf("RunQualityGate: %v", err)
 	}
 	if !passed {
-		t.Fatalf("expected quality gate to pass without inherited lock state, output: %s", output)
+		t.Fatalf("expected quality gate to pass with inherited lock state, output: %s", output)
 	}
 }
 
@@ -2076,6 +2097,99 @@ func TestGracefulShutdown(t *testing.T) { //nolint:funlen // integration test re
 	}
 }
 
+func TestWorkerHandlesPreempt(t *testing.T) {
+	t.Run("busy worker saves handoff, kills subprocess, and exits", func(t *testing.T) {
+		spawner := newMockSpawner()
+		dispatcherConn, workerConn := net.Pipe()
+		defer func() { _ = dispatcherConn.Close() }()
+
+		w := worker.NewWithConn("w-preempt-busy", workerConn, spawner)
+		errCh := startWorkerRun(t.Context(), t, w, dispatcherConn)
+
+		sendMessage(t, dispatcherConn, protocol.Message{
+			Type: protocol.MsgAssign,
+			Assign: &protocol.AssignPayload{
+				BeadID:   "bead-preempt",
+				Worktree: validAssignWorktree(t, "preempt-busy"),
+			},
+		})
+		_ = readMessage(t, dispatcherConn) // drain STATUS
+
+		sendMessage(t, dispatcherConn, protocol.Message{Type: protocol.MsgPreempt})
+		msg := readMessage(t, dispatcherConn)
+		if msg.Type != protocol.MsgHandoff {
+			t.Fatalf("expected HANDOFF, got %s", msg.Type)
+		}
+		if msg.Handoff == nil || msg.Handoff.BeadID != "bead-preempt" {
+			t.Fatalf("expected handoff for bead-preempt, got %+v", msg.Handoff)
+		}
+
+		waitFor(t, spawner.process.Killed, 200*time.Millisecond)
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("expected clean worker exit, got %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("worker did not exit after PREEMPT")
+		}
+	})
+
+	t.Run("idle worker exits cleanly", func(t *testing.T) {
+		spawner := newMockSpawner()
+		dispatcherConn, workerConn := net.Pipe()
+		defer func() { _ = dispatcherConn.Close() }()
+
+		w := worker.NewWithConn("w-preempt-idle", workerConn, spawner)
+		errCh := startWorkerRun(t.Context(), t, w, dispatcherConn)
+
+		sendMessage(t, dispatcherConn, protocol.Message{Type: protocol.MsgPreempt})
+		msg := readMessage(t, dispatcherConn)
+		if msg.Type != protocol.MsgHandoff {
+			t.Fatalf("expected HANDOFF, got %s", msg.Type)
+		}
+
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("expected clean worker exit, got %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("idle worker did not exit after PREEMPT")
+		}
+	})
+
+	t.Run("handoff failure still kills subprocess and exits", func(t *testing.T) {
+		spawner := newMockSpawner()
+		dispatcherConn, workerConn := net.Pipe()
+
+		w := worker.NewWithConn("w-preempt-handoff-failure", workerConn, spawner)
+		errCh := startWorkerRun(t.Context(), t, w, dispatcherConn)
+
+		sendMessage(t, dispatcherConn, protocol.Message{
+			Type: protocol.MsgAssign,
+			Assign: &protocol.AssignPayload{
+				BeadID:   "bead-preempt-handoff-failure",
+				Worktree: validAssignWorktree(t, "preempt-handoff-failure"),
+			},
+		})
+		_ = readMessage(t, dispatcherConn) // drain STATUS
+
+		sendMessage(t, dispatcherConn, protocol.Message{Type: protocol.MsgPreempt})
+		_ = dispatcherConn.Close()
+
+		waitFor(t, spawner.process.Killed, 200*time.Millisecond)
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("expected clean worker exit, got %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("worker did not exit after failed PREEMPT handoff")
+		}
+	})
+}
+
 func TestGracefulShutdown_NilPayload(t *testing.T) {
 	t.Parallel()
 
@@ -2432,25 +2546,15 @@ func TestRun_ContextCancellationDuringProcessing(t *testing.T) {
 }
 
 // TestHandleAssignExposesBeadIDForSelfCloseGuard proves the worker exports
-// ORO_WORKER_BEAD_ID to the claude subprocess via the parent env (consumed
-// by buildClaudeEnv) so that the `oro task close` self-close guard can
-// identify the assigned bead. See oro-t5ha.
+// ORO_WORKER_BEAD_ID only to the assigned subprocess so the `oro task close`
+// self-close guard can identify the assigned bead without mutating its parent.
 func TestHandleAssignExposesBeadIDForSelfCloseGuard(t *testing.T) {
-	// Cannot use t.Parallel — this test inspects process-wide os.Environ.
-	prev, hadPrev := os.LookupEnv("ORO_WORKER_BEAD_ID")
-	t.Cleanup(func() {
-		if hadPrev {
-			_ = os.Setenv("ORO_WORKER_BEAD_ID", prev)
-		} else {
-			_ = os.Unsetenv("ORO_WORKER_BEAD_ID")
-		}
-	})
-	_ = os.Unsetenv("ORO_WORKER_BEAD_ID")
+	t.Setenv("ORO_WORKER_BEAD_ID", "caller-identity")
 
 	spawner := newMockSpawner()
 	captured := make(chan string, 1)
-	spawner.onSpawn = func(model, prompt, workdir string) error {
-		captured <- os.Getenv("ORO_WORKER_BEAD_ID")
+	spawner.onSpawnContext = func(ctx context.Context, _, _, _ string) error {
+		captured <- envValue(worker.EnvironmentForContext(ctx, os.Environ()), "ORO_WORKER_BEAD_ID")
 		return nil
 	}
 
@@ -2474,10 +2578,13 @@ func TestHandleAssignExposesBeadIDForSelfCloseGuard(t *testing.T) {
 	select {
 	case got := <-captured:
 		if got != "oro-t5ha-fixture" {
-			t.Fatalf("ORO_WORKER_BEAD_ID at spawn time = %q, want oro-t5ha-fixture", got)
+			t.Fatalf("ORO_WORKER_BEAD_ID in child environment = %q, want oro-t5ha-fixture", got)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Spawn was not called within 2s")
+	}
+	if got := os.Getenv("ORO_WORKER_BEAD_ID"); got != "caller-identity" {
+		t.Fatalf("ORO_WORKER_BEAD_ID in parent environment = %q, want caller-identity", got)
 	}
 
 	// Drain status message + clean shutdown.

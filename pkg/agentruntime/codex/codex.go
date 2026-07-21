@@ -83,18 +83,14 @@ func (s *WorkerSpawner) Spawn(ctx context.Context, model, prompt, workdir string
 
 // SpawnWithReasoning starts Codex with an optional model reasoning effort.
 func (s *WorkerSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning, prompt, workdir string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
-	cmd := exec.CommandContext(ctx, s.binary(), buildWorkerExecArgsWithReasoning(model, reasoning, BuildBootstrapPrompt(prompt, workdir), workdir)...) //nolint:gosec // args built internally
+	assembledPrompt := strings.ToValidUTF8(BuildBootstrapPrompt(prompt, workdir), "�")
+	cmd := exec.CommandContext(ctx, s.binary(), buildWorkerExecArgsWithReasoning(model, reasoning, workdir)...) //nolint:gosec // args built internally
 	cmd.Dir = workdir
 	stderrTail := worker.NewLineTailBuffer(100)
 	cmd.Stderr = io.MultiWriter(os.Stderr, stderrTail)
-	cmd.Env = processenv.ForWorkdir(os.Environ(), workdir)
+	cmd.Env = worker.EnvironmentForContext(ctx, processenv.ForWorkdir(os.Environ(), workdir))
 
-	devNull, err := os.Open(os.DevNull)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("open /dev/null: %w", err)
-	}
-	defer devNull.Close()
-	cmd.Stdin = devNull
+	cmd.Stdin = strings.NewReader(assembledPrompt)
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -133,7 +129,7 @@ func buildExecArgsWithReasoning(model, reasoning, prompt string) []string {
 	return args
 }
 
-func buildWorkerExecArgsWithReasoning(model, reasoning, prompt, workdir string) []string {
+func buildWorkerExecArgsWithReasoning(model, reasoning, workdir string) []string {
 	args := buildExecArgPrefixWithSandbox(model, reasoning, "danger-full-access")
 	if gitCommonDir := resolveGitCommonDir(workdir); gitCommonDir != "" {
 		args = append(args, "--add-dir", gitCommonDir)
@@ -141,7 +137,7 @@ func buildWorkerExecArgsWithReasoning(model, reasoning, prompt, workdir string) 
 			args = append(args, "--add-dir", gitDir)
 		}
 	}
-	args = append(args, prompt)
+	args = append(args, "-")
 	return args
 }
 
@@ -150,7 +146,20 @@ func buildExecArgPrefix(model, reasoning string) []string {
 }
 
 func buildExecArgPrefixWithSandbox(model, reasoning, sandbox string) []string {
-	args := []string{"exec", "--skip-git-repo-check", "--sandbox", sandbox}
+	// --dangerously-bypass-hook-trust: codex-cli gates config-file PreToolUse
+	// hooks behind a persisted per-hook trusted_hash. codex exec is
+	// non-interactive, so without this flag NONE of oro's managed hooks
+	// (oro-search-hook, enforce_skills, destructive_command_guard, …) ever fire.
+	// The flag is intended for automation that vets its own hook sources — oro
+	// authors and installs these hooks itself. Trust does not persist across
+	// runs, so the flag must ride every spawn.
+	//
+	// Scope caveat: the flag bypasses the trust gate for EVERY hook in the active
+	// $CODEX_HOME/config.toml, not only oro's managed block. This is contained
+	// because oro workers spawn into an oro-managed CODEX_HOME. Requires a
+	// codex-cli new enough to recognize the flag (verified on 0.144.6); an older
+	// codex would reject the unknown flag and fail the spawn.
+	args := []string{"exec", "--skip-git-repo-check", "--sandbox", sandbox, "--dangerously-bypass-hook-trust"}
 	model = normalizeCodexModel(model)
 	if model != "" {
 		args = append(args, "--model", model)

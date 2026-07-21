@@ -219,28 +219,28 @@ func TestOpsRoutingUsesLockedRoleModels(t *testing.T) {
 	}{
 		{"ops_escalation", func(s *Spawner) <-chan Result {
 			return s.Escalate(context.Background(), EscalationOpts{BeadID: "b", Workdir: dir})
-		}, "codex", "gpt-5.6-sol", "xhigh"},
+		}, "codex", "gpt-5.6-sol", "high"},
 		{"ops_merge", func(s *Spawner) <-chan Result {
 			return s.ResolveMergeConflict(context.Background(), MergeOpts{BeadID: "b", Worktree: dir})
-		}, "codex", "gpt-5.6-sol", "xhigh"},
+		}, "codex", "gpt-5.6-sol", "high"},
 		{"ops_diagnosis", func(s *Spawner) <-chan Result {
 			return s.Diagnose(context.Background(), DiagOpts{BeadID: "b", Worktree: dir})
-		}, "codex", "gpt-5.6-sol", "xhigh"},
+		}, "codex", "gpt-5.6-sol", "high"},
 		{"ops_review", func(s *Spawner) <-chan Result {
 			return s.Review(context.Background(), ReviewOpts{BeadID: "b", Worktree: ""})
-		}, "claude", "fable", ""},
+		}, "claude", "fable", "xhigh"},
 		{"ops_decompose", func(s *Spawner) <-chan Result {
 			return s.Decompose(context.Background(), DecomposeOpts{BeadID: "b"})
-		}, "codex", "gpt-5.6-sol", "xhigh"},
+		}, "codex", "gpt-5.6-sol", "high"},
 		{"ops_epic_fix", func(s *Spawner) <-chan Result {
 			return s.DiagnoseEpicFailure(context.Background(), EpicFixOpts{EpicID: "e"})
-		}, "codex", "gpt-5.6-sol", "xhigh"},
+		}, "codex", "gpt-5.6-sol", "high"},
 		{"ops_write_ac", func(s *Spawner) <-chan Result {
 			return s.WriteAC(context.Background(), WriteACOpts{BeadID: "b", Workdir: dir})
-		}, "codex", "gpt-5.6-sol", "xhigh"},
+		}, "codex", "gpt-5.6-sol", "high"},
 		{"ops_dream", func(s *Spawner) <-chan Result {
 			return s.Dream(context.Background(), DreamOpts{})
-		}, "codex", "gpt-5.6-terra", "low"},
+		}, "codex", "gpt-5.6-luna", "low"},
 	}
 
 	for _, tc := range cases {
@@ -853,8 +853,8 @@ func TestMergeUsesCorrectModel(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 spawn call, got %d", len(calls))
 	}
-	if calls[0].model != "gpt-5.6-sol" || calls[0].reasoning != "xhigh" {
-		t.Fatalf("expected Sol xhigh, got model=%q reasoning=%q", calls[0].model, calls[0].reasoning)
+	if calls[0].model != "gpt-5.6-sol" || calls[0].reasoning != "high" {
+		t.Fatalf("expected Sol high, got model=%q reasoning=%q", calls[0].model, calls[0].reasoning)
 	}
 }
 
@@ -899,8 +899,8 @@ func TestDiagnosisUsesCorrectModel(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 spawn call, got %d", len(calls))
 	}
-	if calls[0].model != "gpt-5.6-sol" || calls[0].reasoning != "xhigh" {
-		t.Fatalf("expected Sol xhigh, got model=%q reasoning=%q", calls[0].model, calls[0].reasoning)
+	if calls[0].model != "gpt-5.6-sol" || calls[0].reasoning != "high" {
+		t.Fatalf("expected Sol high, got model=%q reasoning=%q", calls[0].model, calls[0].reasoning)
 	}
 }
 
@@ -1258,6 +1258,64 @@ func TestCancelForBeadNonExistentBead(t *testing.T) {
 	}
 }
 
+func TestCancelReviewsForBeadPreservesOtherOps(t *testing.T) {
+	procs := []*mockProcess{
+		newMockProcess("", nil), // target review
+		newMockProcess("", nil), // target diagnosis
+		newMockProcess("", nil), // other review
+	}
+	s := NewSpawner(&multiProcessSpawner{processes: procs})
+
+	_ = s.Review(context.Background(), ReviewOpts{BeadID: "oro-target", Worktree: "/tmp/wt1"})
+	_ = s.Diagnose(context.Background(), DiagOpts{BeadID: "oro-target", Worktree: "/tmp/wt2", Symptom: "stuck"})
+	_ = s.Review(context.Background(), ReviewOpts{BeadID: "oro-other", Worktree: "/tmp/wt3"})
+	waitActive(t, s, 3)
+
+	var targetReview, targetDiagnosis, otherReview *mockProcess
+	s.mu.Lock()
+	for _, agent := range s.active {
+		proc, ok := agent.proc.(*mockProcess)
+		if !ok {
+			s.mu.Unlock()
+			t.Fatalf("agent process = %T, want *mockProcess", agent.proc)
+		}
+		switch {
+		case agent.BeadID == "oro-target" && agent.Type == OpsReview:
+			targetReview = proc
+		case agent.BeadID == "oro-target" && agent.Type == OpsDiagnosis:
+			targetDiagnosis = proc
+		case agent.BeadID == "oro-other" && agent.Type == OpsReview:
+			otherReview = proc
+		}
+	}
+	s.mu.Unlock()
+	if targetReview == nil || targetDiagnosis == nil || otherReview == nil {
+		t.Fatalf("missing expected agents: targetReview=%v targetDiagnosis=%v otherReview=%v", targetReview != nil, targetDiagnosis != nil, otherReview != nil)
+	}
+
+	count, err := s.CancelReviewsForBead("oro-target")
+	if err != nil {
+		t.Fatalf("CancelReviewsForBead returned error: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("review cancellation count = %d, want 1", count)
+	}
+
+	if !targetReview.wasKilled() {
+		t.Fatal("target review process was not killed")
+	}
+	if targetDiagnosis.wasKilled() {
+		t.Fatal("target diagnosis process was killed")
+	}
+	if otherReview.wasKilled() {
+		t.Fatal("other bead review process was killed")
+	}
+
+	waitActive(t, s, 2)
+	_, _ = s.CancelForBead("oro-target")
+	_, _ = s.CancelForBead("oro-other")
+}
+
 func TestParseReviewOutputRequiresVerdictPrefix(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -1570,13 +1628,25 @@ func TestTypeTimeout(t *testing.T) {
 		{name: "review", typ: OpsReview, want: 35 * time.Minute},
 		{name: "write ac", typ: OpsWriteAC, want: 10 * time.Minute},
 		{name: "dream", typ: OpsDream, want: 60 * time.Second},
-		{name: "merge fallback", typ: OpsMerge, want: 0},
+		{name: "recovery ops", typ: OpsMerge, want: 15 * time.Minute},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.typ.Timeout(); got != tt.want {
 				t.Fatalf("%s.Timeout() = %v, want %v", tt.typ, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRecoveryOpsTimeoutBudget(t *testing.T) {
+	spawner := NewSpawnerWithReviewTimeout(&mockBatchSpawner{process: newReadyMockProcess("", nil)}, 0)
+	want := 15 * time.Minute
+	for _, opsType := range []Type{OpsMerge, OpsDiagnosis, OpsEscalation, OpsEpicFix} {
+		t.Run(string(opsType), func(t *testing.T) {
+			if got := spawner.effectiveTimeout(opsType); got != want {
+				t.Fatalf("%s effective timeout = %v, want %v", opsType, got, want)
 			}
 		})
 	}
@@ -1600,8 +1670,8 @@ func TestSpawnerReviewTimeoutOverride(t *testing.T) {
 	if got := fallback.effectiveTimeout(OpsReview); got != 35*time.Minute {
 		t.Fatalf("zero override OpsReview effective timeout = %v, want 35m", got)
 	}
-	if got := fallback.effectiveTimeout(OpsMerge); got != 5*time.Minute {
-		t.Fatalf("zero override OpsMerge effective timeout = %v, want spawner default 5m", got)
+	if got := fallback.effectiveTimeout(OpsMerge); got != 15*time.Minute {
+		t.Fatalf("zero override OpsMerge effective timeout = %v, want 15m", got)
 	}
 }
 
@@ -1614,11 +1684,7 @@ func TestOneShotTimeout(t *testing.T) {
 	s.timeout = 100 * time.Millisecond
 
 	ctx := context.Background()
-	ch := s.Escalate(ctx, EscalationOpts{
-		EscalationType: "STUCK_WORKER",
-		BeadID:         "oro-timeout",
-		Workdir:        ".",
-	})
+	ch := s.run(ctx, OpsDecompose, "oro-timeout", ".", "")
 
 	result := waitResult(t, ch)
 
@@ -1823,8 +1889,8 @@ func TestOpsWriteAC(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 spawn call, got %d", len(calls))
 	}
-	if calls[0].model != "gpt-5.6-sol" || calls[0].reasoning != "xhigh" {
-		t.Fatalf("WriteAC expected Sol xhigh, got model=%q reasoning=%q", calls[0].model, calls[0].reasoning)
+	if calls[0].model != "gpt-5.6-sol" || calls[0].reasoning != "high" {
+		t.Fatalf("WriteAC expected Sol high, got model=%q reasoning=%q", calls[0].model, calls[0].reasoning)
 	}
 }
 

@@ -167,6 +167,7 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 	// Phase 1: Reserve the worker — heartbeat checker skips reserved workers.
 	w.state = protocol.WorkerReserved
 	w.assignmentID = h.assignmentID
+	w.execution = h.execution
 	w.beadID = h.beadID
 	w.worktree = h.worktree
 	w.runtime = h.runtime
@@ -195,6 +196,11 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 		Assign: &protocol.AssignPayload{
 			BeadID:       h.beadID,
 			Worktree:     h.worktree,
+			AssignmentID: h.execution.AssignmentID,
+			Generation:   h.execution.Generation,
+			ActorRole:    h.execution.ActorRole,
+			Project:      h.execution.Project,
+			Capability:   h.execution.Capability,
 			Runtime:      h.runtime,
 			Model:        h.model,
 			Reasoning:    h.reasoning,
@@ -321,6 +327,7 @@ type workerExitInfo struct {
 	assignmentID int64
 	prevSession  bool // worker is from a previous dispatcher session
 	managed      bool // worker was spawned by the dispatcher (procMgr)
+	reviewing    bool // worker was in an active ops review
 }
 
 // escalateTimedOutWorkers dispatches escalation messages and clears bead
@@ -355,8 +362,20 @@ func (d *Dispatcher) escalateTimedOutWorkers(ctx context.Context, dead, stuck []
 }
 
 func (d *Dispatcher) handleStuckTimedOutWorker(ctx context.Context, sw workerExitInfo) {
-	d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuckWorker, sw.beadID,
-		"worker stalled with no progress", "progress timeout for worker "+sw.workerID), sw.beadID, sw.workerID)
+	escalation := protocol.FormatEscalation(protocol.EscStuckWorker, sw.beadID,
+		"worker stalled with no progress", "progress timeout for worker "+sw.workerID)
+	if sw.reviewing && d.ops != nil {
+		if _, err := d.ops.CancelReviewsForBead(sw.beadID); err != nil {
+			_ = d.logEvent(ctx, "review_timeout_cancel_failed", "dispatcher", sw.beadID, sw.workerID,
+				fmt.Sprintf(`{"error":%q}`, err.Error()))
+		}
+		// A review timeout owns the existing ops process. Do not immediately
+		// replace it with a same-bead escalation process: callers need the
+		// cancellation boundary to leave no active review for this bead.
+		d.escalateWithoutOneShot(ctx, escalation, sw.beadID, sw.workerID)
+	} else {
+		d.escalate(ctx, escalation, sw.beadID, sw.workerID)
+	}
 	if sw.beadID == "" {
 		return
 	}
@@ -527,19 +546,26 @@ func (d *Dispatcher) hasManagedIdleWorkersLocked() bool {
 	return false
 }
 
-// reviewDeadGraceExpiredLocked tracks whether the ops review subprocess for w has
-// been absent for longer than ReviewDeadGrace. It resets the timer when the review
-// is active and starts it on first absence. Must be called with d.mu held.
-func (d *Dispatcher) reviewDeadGraceExpiredLocked(w *trackedWorker, now time.Time) bool {
+// reviewDeadStateLocked tracks whether a reviewing worker's ops subprocess is
+// absent and whether its ReviewDeadGrace window has expired. It resets the timer
+// when the review is active and starts it on first absence. Must be called with
+// d.mu held.
+func (d *Dispatcher) reviewDeadStateLocked(w *trackedWorker, now time.Time) (expired, graceActive bool) {
+	if !w.managed || w.state != protocol.WorkerReviewing {
+		return false, false
+	}
 	if d.ops == nil || d.ops.HasActiveForBead(w.beadID) {
 		w.reviewDeadSince = time.Time{}
-		return false
+		return false, false
 	}
 	if w.reviewDeadSince.IsZero() {
 		w.reviewDeadSince = now
-		return false
+		return false, true
 	}
-	return now.Sub(w.reviewDeadSince) > d.cfg.ReviewDeadGrace
+	if now.Sub(w.reviewDeadSince) > d.cfg.ReviewDeadGrace {
+		return true, false
+	}
+	return false, true
 }
 
 func (d *Dispatcher) collectTimedOutWorkersLocked(now time.Time) (dead, stuck, stoppedSpawnFor []string) {
@@ -566,11 +592,19 @@ func (d *Dispatcher) collectTimedOutWorkersLocked(now time.Time) (dead, stuck, s
 		}
 		// Dead ops review check: reviewing worker whose ops subprocess has exited
 		// while the OS process is still alive. After ReviewDeadGrace, remove worker.
-		if w.managed && w.state == protocol.WorkerReviewing && d.reviewDeadGraceExpiredLocked(w, now) {
+		reviewDead, reviewGraceActive := d.reviewDeadStateLocked(w, now)
+		if reviewDead {
 			dead = append(dead, id)
 			continue
 		}
-		// Progress check: busy worker has not made meaningful progress.
+		// A missing ops review gets its full grace period before any progress
+		// or review timeout can reap the owning worker.
+		if reviewGraceActive {
+			continue
+		}
+		// Progress check: a busy coding worker has not made meaningful progress.
+		// Reviewing workers use the separate ReviewTimeout below, allowing an
+		// active ops review to outlive the shorter coding-progress deadline.
 		if workerProgressTimedOut(w, now, d.cfg.ProgressTimeout) {
 			stuck = append(stuck, id)
 			continue
@@ -620,7 +654,7 @@ func (d *Dispatcher) removeStuckWorkersLocked(ctx context.Context, stuck []strin
 		if w == nil {
 			continue
 		}
-		stuckWorkers = append(stuckWorkers, workerExitInfo{workerID: id, beadID: w.beadID, worktree: w.worktree, baseBranch: w.baseBranch, assignmentID: w.assignmentID, managed: w.managed})
+		stuckWorkers = append(stuckWorkers, workerExitInfo{workerID: id, beadID: w.beadID, worktree: w.worktree, baseBranch: w.baseBranch, assignmentID: w.assignmentID, managed: w.managed, reviewing: w.state == protocol.WorkerReviewing})
 		if w.managed && !w.spawnFor {
 			managedExits++
 		}
@@ -641,7 +675,8 @@ func heartbeatTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) b
 }
 
 func workerProgressTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) bool {
-	return w.state == protocol.WorkerBusy && !w.lastProgress.IsZero() && now.Sub(w.lastProgress) > timeout
+	return !w.spawnFor && w.state == protocol.WorkerBusy &&
+		!w.lastProgress.IsZero() && now.Sub(w.lastProgress) > timeout
 }
 
 func workerReviewTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) bool {

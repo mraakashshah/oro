@@ -414,7 +414,7 @@ const qualityGateTmpl = `#!/bin/sh
 # lane bails on first tier failure.
 # =============================================================================
 
-if [ "${ORO_QG_BASH_BOOTSTRAPPED:-}" != "1" ]; then
+if [ "${ORO_QG_BASH_BOOTSTRAPPED_PID:-}" != "${BASHPID:-$$}" ]; then
     if grep -n -E '^(<{7}|={7}|>{7})( |$)' "$0" >/dev/null 2>&1; then
         echo "FAIL: quality_gate.sh contains unresolved git conflict markers" >&2
         grep -n -E '^(<{7}|={7}|>{7})( |$)' "$0" >&2 || true
@@ -424,12 +424,41 @@ if [ "${ORO_QG_BASH_BOOTSTRAPPED:-}" != "1" ]; then
         export LC_ALL=C
         export LANG=C
     fi
-    export ORO_QG_BASH_BOOTSTRAPPED=1
-    exec /usr/bin/env bash "$0" "$@"
+    # The legacy marker can be inherited by a fresh /bin/sh launcher. A PID-scoped
+    # token survives this one exec but cannot suppress bootstrap in a child launch.
+    # Keep the preflight before Bash parses the script; ignore BASH_ENV because a
+    # shell hook can recursively launch this gate.
+    unset ORO_QG_BASH_BOOTSTRAPPED
+    export ORO_QG_BASH_BOOTSTRAPPED_PID=${BASHPID:-$$}
+    qg_bash=""
+    for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash "$(command -v bash 2>/dev/null || true)"; do
+        # shellcheck disable=SC2016 # The candidate Bash, not this sh bootstrap, expands BASH_VERSINFO.
+        if [ -x "$candidate" ] && env -u BASH_ENV "$candidate" -c '[ "${BASH_VERSINFO[0]:-0}" -ge 4 ]' >/dev/null 2>&1; then
+            qg_bash="$candidate"
+            break
+        fi
+    done
+    if [ -z "$qg_bash" ]; then
+        echo "FAIL: quality_gate.sh requires Bash 4 or newer; install it (for example, Homebrew bash) or add it to PATH." >&2
+        exit 2
+    fi
+    exec env -u BASH_ENV "$qg_bash" "$0" "$@"
 fi
 unset ORO_QG_BASH_BOOTSTRAPPED
+unset ORO_QG_BASH_BOOTSTRAPPED_PID
 
 set -euo pipefail
+
+# A child process can invoke this script while the parent is still running a
+# parallel lint/check lane. The run lock is intentionally acquired later for
+# the serial timing lane, so it cannot prevent that recursive launch. Let the
+# parent own the terminal PASS/FAIL summary and stop the child before it starts
+# a second set of lanes.
+if [ -n "${ORO_QG_ACTIVE_PID:-}" ] && [ "$ORO_QG_ACTIVE_PID" != "${BASHPID:-$$}" ] && kill -0 "$ORO_QG_ACTIVE_PID" 2>/dev/null; then
+    echo "Nested quality gate invocation detected; using active parent result."
+    exit 0
+fi
+export ORO_QG_ACTIVE_PID=${BASHPID:-$$}
 
 QG_MUTATION_TESTING=false
 
@@ -503,11 +532,8 @@ trap cleanup_qg EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Keep the golangci-lint cache inside the QG temp directory. Shared
-# golangci-lint caches can collide across concurrent workers.
-export GOLANGCI_LINT_CACHE="$QG_DIR/golangci-lint-cache"
-export GOCACHE="$QG_DIR/go-build-cache"
-export UV_CACHE_DIR="${UV_CACHE_DIR:-$QG_DIR/uv-cache}"
+# Tool caches deliberately inherit their environment (or each tool's standard
+# external default). Only QG scratch data belongs under TMPDIR/QG_DIR.
 export GOMAXPROCS="${ORO_QG_GOMAXPROCS:-2}"
 
 # Resolve repo root node_modules (works from worktrees too). Non-git harness
@@ -541,14 +567,68 @@ quality_gate_lock_age_seconds() {
     fi
 }
 
+quality_gate_process_start_time() {
+    LC_ALL=C TZ=UTC ps -o lstart= -p "$1" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+quality_gate_lock_owner_matches_process() {
+    local owner="$1"
+    local pid="$2"
+    local recorded_start_time actual_start_time
+    recorded_start_time=$(sed -n 's/^start_time=//p' "$owner" | head -1)
+    if [ -z "$recorded_start_time" ]; then
+        return 2
+    fi
+    actual_start_time=$(quality_gate_process_start_time "$pid")
+    if [ -z "$actual_start_time" ]; then
+        return 2
+    fi
+    if [ "$recorded_start_time" = "$actual_start_time" ]; then
+        return 0
+    fi
+    return 1
+}
+
+quality_gate_process_has_descendants() {
+    pgrep -P "$1" >/dev/null 2>&1
+    case $? in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) return 2 ;;
+    esac
+}
+
 quality_gate_lock_stale() {
     local lock_dir="$1"
     local owner="$lock_dir/owner"
-    local pid age stale_after
+    local pid parent_pid age stale_after owner_match_status
     if [ -f "$owner" ]; then
         pid=$(sed -n 's/^pid=//p' "$owner" | head -1)
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            return 1
+            quality_gate_lock_owner_matches_process "$owner" "$pid"
+            owner_match_status=$?
+            if [ "$owner_match_status" -ne 0 ]; then
+                if [ "$owner_match_status" -eq 1 ]; then
+                    return 0
+                fi
+                return 1
+            fi
+            parent_pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+            if [ "$parent_pid" != "1" ]; then
+                return 1
+            fi
+            stale_after="${ORO_QG_STALE_LOCK_SECONDS:-600}"
+            if ! age=$(quality_gate_lock_age_seconds "$lock_dir"); then
+                return 1
+            fi
+            if [ "$age" -lt "$stale_after" ]; then
+                return 1
+            fi
+            quality_gate_process_has_descendants "$pid"
+            case $? in
+            1) return 0 ;;
+            *) return 1 ;;
+            esac
         fi
         return 0
     fi
@@ -571,11 +651,29 @@ archive_stale_quality_gate_lock() {
     return 1
 }
 
+cleanup_archived_stale_quality_gate_locks() {
+    local lock_dir="$1"
+    local stale_dir age stale_after
+    stale_after="${ORO_QG_STALE_LOCK_SECONDS:-600}"
+    for stale_dir in "${lock_dir}.stale."*; do
+        [ -d "$stale_dir" ] || continue
+        if ! age=$(quality_gate_lock_age_seconds "$stale_dir"); then
+            continue
+        fi
+        if [ "$age" -ge "$stale_after" ]; then
+            rm -rf "$stale_dir"
+        fi
+    done
+}
+
 write_quality_gate_lock_owner() {
     local lock_dir="$1"
     local token="$2"
+    local start_time
+    start_time=$(quality_gate_process_start_time "$$")
     {
         echo "pid=$$"
+        echo "start_time=$start_time"
         echo "token=$token"
         echo "repo=$REPO_ROOT"
         echo "created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -647,6 +745,20 @@ quality_gate_lock_is_inherited() {
         grep -qx "token=$ORO_QG_INHERITED_LOCK_TOKEN" "$lock_dir/owner" 2>/dev/null
 }
 
+# OSC-8 terminal hyperlinks can create escaped, top-level artifact directories
+# when pasted into shells. Remove only real directories at the repository root;
+# do not follow symlinks or inspect paths below that boundary.
+sweep_repo_root_escape_artifacts() {
+    local repo_root="$1"
+    local artifact
+    for artifact in "$repo_root"/$'\033]8;;file:'*; do
+        [ -d "$artifact" ] && [ ! -L "$artifact" ] || continue
+        rm -rf -- "$artifact"
+    done
+}
+
+sweep_repo_root_escape_artifacts "$REPO_ROOT"
+
 acquire_quality_gate_lock() {
     local lock_dir="$REPO_ROOT/.oro-quality-gate.lock"
     local queue_dir="$REPO_ROOT/.oro-quality-gate.queue"
@@ -656,6 +768,7 @@ acquire_quality_gate_lock() {
     if quality_gate_lock_is_inherited "$lock_dir"; then
         exit 0
     fi
+    cleanup_archived_stale_quality_gate_locks "$lock_dir"
     create_quality_gate_queue_ticket "$queue_dir"
     while :; do
         cleanup_stale_quality_gate_queue_tickets "$queue_dir"
@@ -704,7 +817,32 @@ acquire_quality_gate_lock() {
     QG_RUN_QUEUE_TICKET=""
 }
 
-acquire_quality_gate_lock
+# check_inherited_quality_gate_lock short-circuits a gate invoked inside another
+# gate's serialized lane. The concurrent main phase itself remains lockless.
+check_inherited_quality_gate_lock() {
+    if quality_gate_lock_is_inherited "$REPO_ROOT/.oro-quality-gate.lock"; then
+        exit 0
+    fi
+}
+
+neutralize_serial_lane_env() {
+    unset ORO_QG_SERIAL_LANE
+}
+
+# Generated gates have no Oro-specific guarded tests, but retain the same
+# lane-local lock boundary as the checked-in gate so recursive invocations and
+# sibling worktrees share one lock contract without serializing the main phase.
+run_serial_lane() {
+    if ! acquire_quality_gate_lock; then
+        echo "0:1" >"$QG_DIR/serial.rc" 2>/dev/null || true
+        return 1
+    fi
+    export ORO_QG_SERIAL_LANE=1
+    echo "1:0" >"$QG_DIR/serial.rc"
+}
+
+check_inherited_quality_gate_lock
+neutralize_serial_lane_env
 
 # =============================================================================
 # PRIMITIVES
@@ -792,7 +930,7 @@ qg_run_pylint_source() {
         echo "No tracked Python source files"
         return 0
     fi
-    pylint --disable=all --enable=E "${files[@]}"
+    qg_run_python_tool pylint --disable=all --enable=E "${files[@]}"
 }
 
 # shellcheck disable=SC2317,SC2329
@@ -975,7 +1113,7 @@ check() {
 qg_python_tool_path() {
     local tool="$1"
     local candidate
-    for candidate in ".venv/bin/$tool" "$REPO_ROOT/.venv/bin/$tool" "$HOME/.local/bin/$tool"; do
+    for candidate in ".venv/bin/$tool" "$REPO_ROOT/.venv/bin/$tool"; do
         if [ -x "$candidate" ]; then
             if ! qg_python_tool_path_allowed "$candidate"; then
                 continue
@@ -1015,6 +1153,14 @@ qg_python_tool_path_allowed() {
 qg_run_python_tool() {
     local tool="$1"
     shift
+    # pylint must analyze code inside the project's dependency environment so
+    # first-party imports (e.g. files that import pytest) resolve; a global
+    # install emits a false import-error (E0401). Prefer uv run for it; --with
+    # provides pylint itself when it is not a project dependency.
+    if [ "$tool" = "pylint" ] && command -v uv >/dev/null 2>&1; then
+        uv run --with pylint pylint "$@"
+        return
+    fi
     local path
     if path=$(qg_python_tool_path "$tool"); then
         "$path" "$@"
@@ -1153,7 +1299,7 @@ lane_go() {
     # --- Tier 2: Lint (parallel) ---
     header "GO TIER 2: LINT"
     parallel_checks \
-        "golangci-lint" "GOCACHE=$QG_DIR/golangci-go-cache GOFLAGS=-buildvcs=false golangci-lint run --timeout 10m --allow-parallel-runners ./cmd/... ./internal/... ./pkg/..."
+        "golangci-lint" "GOFLAGS=-buildvcs=false golangci-lint run --timeout 10m --allow-parallel-runners ./cmd/... ./internal/... ./pkg/..."
     pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
     if [ "$fail" -gt 0 ]; then echo "${pass}:${fail}" > "$QG_DIR/go.rc"; return; fi
 
@@ -1429,6 +1575,11 @@ PID_OT=$!
 {{end}}cat "$QG_DIR/other.out" 2>/dev/null || true
 {{if .HasPython}}cat "$QG_DIR/python.out" 2>/dev/null || true
 {{end}}
+
+# Keep only the lane-local boundary serialized; all language lanes above ran
+# concurrently and lockless.
+run_serial_lane || true
+
 # Aggregate pass/fail counts
 TOTAL_PASS=0
 TOTAL_FAIL=0
@@ -1436,6 +1587,7 @@ expected_rc_files=(
 {{if .HasGo}}    "$QG_DIR/go.rc"
 {{end}}{{if .HasPython}}    "$QG_DIR/python.rc"
 {{end}}    "$QG_DIR/other.rc"
+    "$QG_DIR/serial.rc"
 )
 for rc_file in "${expected_rc_files[@]}"; do
     if [ -f "$rc_file" ]; then

@@ -30,6 +30,34 @@ func TestBuildExecArgsKeepsNativeCodexModel(t *testing.T) {
 	t.Fatalf("native Codex model should be passed through: %v", args)
 }
 
+func TestBuildExecArgsBypassesHookTrust(t *testing.T) {
+	t.Parallel()
+
+	// codex-cli 0.144.x fires NO config PreToolUse hooks unless each hook has a
+	// persisted trusted_hash OR this per-invocation flag is passed. The flag does
+	// not persist, so it must ride every spawn — both ops and worker paths — or
+	// oro-search-hook (and every other oro Codex hook) is silently inert.
+	const flag = "--dangerously-bypass-hook-trust"
+
+	opsArgs := buildExecArgs("gpt-5.5", "do work")
+	if !slices.Contains(opsArgs, flag) {
+		t.Fatalf("ops exec args must bypass hook trust; %s missing: %v", flag, opsArgs)
+	}
+
+	workerArgs := buildWorkerExecArgsWithReasoning("gpt-5.5", "high", t.TempDir())
+	if !slices.Contains(workerArgs, flag) {
+		t.Fatalf("worker exec args must bypass hook trust; %s missing: %v", flag, workerArgs)
+	}
+
+	// The prompt/dash positional must remain last (the flag lives in the prefix).
+	if opsArgs[len(opsArgs)-1] != "do work" {
+		t.Fatalf("prompt must remain the final positional arg: %v", opsArgs)
+	}
+	if workerArgs[len(workerArgs)-1] != "-" {
+		t.Fatalf("worker stdin dash must remain the final positional arg: %v", workerArgs)
+	}
+}
+
 func TestBuildExecArgsAddsReasoningEffort(t *testing.T) {
 	t.Parallel()
 

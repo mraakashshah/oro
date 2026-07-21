@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -325,6 +326,26 @@ func TestReadLastNLines(t *testing.T) {
 		// Must be in original file order: third, fourth, fifth
 		if got[0] != "third" || got[1] != "fourth" || got[2] != "fifth" {
 			t.Errorf("lines not in correct order: %v", got)
+		}
+	})
+
+	t.Run("oversized line is returned intact with trailing lines", func(t *testing.T) {
+		f := t.TempDir() + "/oversized.log"
+		oversized := strings.Repeat("x", 1<<20)
+		content := oversized + "\nordinary\nlast"
+		if err := os.WriteFile(f, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := readLastNLines(f, 3)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{oversized, "ordinary", "last"}
+		if len(got) != len(want) {
+			t.Fatalf("unexpected line count: got %d, want %d", len(got), len(want))
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("unexpected lines: got lengths [%d, %d, %d], want [%d, %d, %d]", len(got[0]), len(got[1]), len(got[2]), len(want[0]), len(want[1]), len(want[2]))
 		}
 	})
 }

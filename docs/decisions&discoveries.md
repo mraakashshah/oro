@@ -1,5 +1,33 @@
 # Decisions and Discoveries
 
+## 2026-07-18: Start-path tests must isolate CODEX_HOME, not just ORO_HOME
+**Tags:** #testing #isolation #codex #hooks #hermetic #defense-in-depth
+**Context:** A stale hooks block pointing at a deleted `/tmp/oro-subprocess/.../oro-home/hooks`
+fixture was found wedging live Codex sessions (every tool call ran a missing hook).
+Root cause: `installCodexHookConfig` (cmd_start.go) writes the managed block to
+`CODEX_HOME` (falling back to the real `$HOME/.codex`), while the block's hook
+*commands* point at `ORO_HOME/hooks`. `TestDaemonOnlyStartsDispatcher` and
+`TestStartCommandPreflightChecks` isolated `ORO_HOME` but not `CODEX_HOME`, so
+they wrote a real-config block whose commands pointed into an ephemeral temp dir
+that vanished at teardown. `ORO_DAEMON_SKIP_PREFLIGHT` did not help — it only skips
+the Go/repo build checks; `installCodexHookConfig` runs unconditionally when Codex
+assets are required.
+**Decision:** (1) Added a `hermeticOroEnv(t, tmpDir)` test helper that sets
+`ORO_HOME` + `CODEX_HOME` + PID/socket/db paths as one unit, and applied it across
+all start-path tests so partial isolation is impossible. (2) Defense-in-depth:
+`installCodexHookConfig` now refuses (hard error) to write when the hooks dir is
+under any common temporary root (`os.TempDir()`, `/tmp`, `/private/tmp`, or
+`/var/folders`) but `CODEX_HOME` is under none of them — via the pure predicate
+`hookPathsWouldLeak(codexHome, hooksDir)`. Path containment resolves symlinked
+ancestors so `/tmp` and `/private/tmp` aliases compare consistently. A future
+forgotten `CODEX_HOME` now fails the test loudly instead of silently corrupting
+the dev's `~/.codex/config.toml`.
+**Implications:** New start-path tests should call `hermeticOroEnv`; the guard is a
+backstop, not a substitute. A `CODEX_HOME` under any recognized temp root remains
+hermetic even when its root differs from the hooks root. Verified: running the
+previously-leaking tests leaves the real `~/.codex/config.toml` byte-for-byte
+unchanged.
+
 ## 2026-07-13: Claude ops runtime now honors reasoning/effort (--effort)
 **Tags:** #ops #reviewer #claude #reasoning #routing
 **Context:** The role config supports a `reasoning` level (e.g. `ops_review:
@@ -9,7 +37,8 @@ the no-effort path. Effort only took hold for Codex (`model_reasoning_effort`).
 The `claude` CLI does expose `--effort <low|medium|high|xhigh|max>`.
 **Decision:** Added `buildClaude{Ops,Review}ArgsWithReasoning` (append `--effort
 <reasoning>` when non-empty) and wired `BuildArgsWithReasoning` on both Claude
-ops spawners. Empty reasoning still omits the flag.
+ops spawners. The worker Claude spawner also implements the reasoning-aware
+interface and forwards the same flag. Empty reasoning still omits the flag.
 **Implications:** A Claude reviewer/challenger configured with a reasoning level
 now actually runs at that effort (e.g. `ops_review` at Opus 4.8 `xhigh`). Effort
 values map 1:1 to the CLI's accepted set.
@@ -234,3 +263,10 @@ Hook inventory (same in both files):
 **Context:** Adversarial review (R4) of the cleanliness-roles design caught the spec's epic acceptance `Cmd:` being silently destroyed: `parseAcceptanceCmd` (dispatcher.go:3437) splits single-line ACs on every `|`, so `Cmd: go test -run 'Janitor|Audit' ... | grep -q ...` truncates to `go test -run 'Janitor` — unterminated quote, permanent sh failure, endless DiagnoseEpicFailure churn against a working feature.
 **Decision/Discovery:** (1) Inline acceptance fields are now split only at unquoted pipes followed by a known field label, preserving quoted regex alternation and bare shell pipelines in `Cmd:`. Unterminated quotes are rejected explicitly instead of producing a truncated command; line-per-field extraction remains supported. (2) Bare `cmd | grep` pipelines in ACs still swallow the left command's exit code because `sh -c` does not enable `pipefail` — use `cmd > log 2>&1 && grep -q ... log` instead.
 **Implications:** Inline and line-per-field ACs can both contain quoted regex pipes without truncation. Prefer line-per-field form for readability, and avoid bare verification pipelines when the left command's exit status matters.
+
+## 2026-07-17: Bound deck-view prompt context
+
+**Tags:** #worker #prompt #cards
+**Context:** A standalone worker may receive thousands of ranked deck cards, exceeding command and model input limits before it starts.
+**Decision:** Keep inline cards intact and cap only deck-view rendering at 256 KiB, retaining the ranked prefix, a rune-safe clipped final summary when needed, and an explicit omitted-card count.
+**Implications:** Deck-card input may grow without growing worker prompts unboundedly; workers can still retrieve omitted cards with `oro cards show`.

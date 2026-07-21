@@ -11,7 +11,7 @@ import (
 )
 
 func TestAgentBlockPrecedence(t *testing.T) {
-	t.Run("ORO_HOME wins over user and project config", func(t *testing.T) {
+	t.Run("project agent block wins over global config", func(t *testing.T) {
 		projectRoot := t.TempDir()
 		homeDir := t.TempDir()
 		oroHome := t.TempDir()
@@ -27,12 +27,12 @@ func TestAgentBlockPrecedence(t *testing.T) {
 			t.Fatalf("LoadWithPrecedence returned error: %v", err)
 		}
 
-		if got := cfg.Tiers[protocol.TierBalanced].Model; got != "oro-home-model" {
-			t.Errorf("balanced model = %q, want %q", got, "oro-home-model")
+		if got := cfg.Tiers[protocol.TierBalanced].Model; got != "project-model" {
+			t.Errorf("balanced model = %q, want %q", got, "project-model")
 		}
 	})
 
-	t.Run("ORO_HOME unset skips that layer and user config wins over project", func(t *testing.T) {
+	t.Run("project agent block wins when ORO_HOME is unset", func(t *testing.T) {
 		projectRoot := t.TempDir()
 		homeDir := t.TempDir()
 		t.Setenv("HOME", homeDir)
@@ -46,12 +46,12 @@ func TestAgentBlockPrecedence(t *testing.T) {
 			t.Fatalf("LoadWithPrecedence returned error: %v", err)
 		}
 
-		if got := cfg.Tiers[protocol.TierBalanced].Model; got != "user-model" {
-			t.Errorf("balanced model = %q, want %q", got, "user-model")
+		if got := cfg.Tiers[protocol.TierBalanced].Model; got != "project-model" {
+			t.Errorf("balanced model = %q, want %q", got, "project-model")
 		}
 	})
 
-	t.Run("higher-priority config without agent block falls through", func(t *testing.T) {
+	t.Run("global config without agent block does not override project", func(t *testing.T) {
 		projectRoot := t.TempDir()
 		homeDir := t.TempDir()
 		oroHome := t.TempDir()
@@ -67,8 +67,8 @@ func TestAgentBlockPrecedence(t *testing.T) {
 			t.Fatalf("LoadWithPrecedence returned error: %v", err)
 		}
 
-		if got := cfg.Tiers[protocol.TierBalanced].Model; got != "user-model" {
-			t.Errorf("balanced model = %q, want %q", got, "user-model")
+		if got := cfg.Tiers[protocol.TierBalanced].Model; got != "project-model" {
+			t.Errorf("balanced model = %q, want %q", got, "project-model")
 		}
 	})
 }

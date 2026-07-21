@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -48,9 +49,17 @@ const (
 	FindingQGIncidentsOpen                    = "qg_incidents_open"
 	FindingQGIncidentIncrease                 = "qg_incident_increase"
 	FindingRecoveryQuarantineOpen             = "recovery_quarantine_open"
+	FindingAssignmentFrozenByQuarantine       = "assignment_frozen_by_quarantine"
 	FindingOpsRunFailed                       = "ops_run_failed"
 	FindingOpsRunStale                        = "ops_run_stale"
 	FindingPendingEscalationUnrouted          = "pending_escalation_unrouted"
+	FindingStorageUnavailable                 = "storage_unavailable"
+	FindingStoragePressure                    = "storage_pressure"
+	FindingStorageSweepOverdue                = "storage_sweep_overdue"
+	FindingStorageRetirementBlocked           = "storage_retirement_blocked"
+	FindingStorageFailure                     = "storage_failure"
+	FindingStorageCancellation                = "storage_cancellation"
+	FindingStorageAdmissionPaused             = "storage_admission_paused"
 )
 
 // OpsRunStaleAfter is the age threshold after which a running ops run is
@@ -81,25 +90,29 @@ type Finding struct {
 
 // Metrics holds the numeric inputs used to evaluate factory health.
 type Metrics struct {
-	DaemonRunning           bool              `json:"daemon_running"`
-	DaemonPID               int               `json:"daemon_pid,omitempty"`
-	DispatcherState         string            `json:"dispatcher_state,omitempty"`
-	WorkerCount             int               `json:"worker_count"`
-	ActiveWorkers           int               `json:"active_workers"`
-	IdleWorkers             int               `json:"idle_workers"`
-	TargetWorkers           int               `json:"target_workers"`
-	MaxWorkers              int               `json:"max_workers"`
-	ReadyQueue              int               `json:"ready_queue"`
-	ActiveAssignments       int               `json:"active_assignments"`
-	OrphanAssignments       int               `json:"orphan_assignments"`
-	OpenQGIncidents         int               `json:"open_qg_incidents"`
-	QGOccurrences30m        int               `json:"qg_occurrences_30m"`
-	OpenRecoveryQuarantines int               `json:"recovery_quarantines_open"`
-	ThroughputWindow        ThroughputMetrics `json:"throughput_window"`
-	OpsRuns                 OpsRunMetrics     `json:"ops_runs"`
-	PendingEscalations      EscalationMetrics `json:"pending_escalations"`
-	PendingWorkerCount      int               `json:"pending_worker_count,omitempty"`
-	PendingHandoffCount     int               `json:"pending_handoff_count,omitempty"`
+	DaemonRunning                bool              `json:"daemon_running"`
+	DaemonPID                    int               `json:"daemon_pid,omitempty"`
+	DispatcherState              string            `json:"dispatcher_state,omitempty"`
+	WorkerCount                  int               `json:"worker_count"`
+	ActiveWorkers                int               `json:"active_workers"`
+	IdleWorkers                  int               `json:"idle_workers"`
+	TargetWorkers                int               `json:"target_workers"`
+	MaxWorkers                   int               `json:"max_workers"`
+	ReadyQueue                   int               `json:"ready_queue"`
+	ActiveAssignments            int               `json:"active_assignments"`
+	OrphanAssignments            int               `json:"orphan_assignments"`
+	OpenQGIncidents              int               `json:"open_qg_incidents"`
+	QGOccurrences30m             int               `json:"qg_occurrences_30m"`
+	OpenRecoveryQuarantines      int               `json:"recovery_quarantines_open"`
+	AssignmentFrozenByQuarantine bool              `json:"assignment_frozen_by_quarantine"`
+	BlockingRecoveryQuarantines  int               `json:"blocking_recovery_quarantines,omitempty"`
+	AssignmentFreezeReason       string            `json:"assignment_freeze_reason,omitempty"`
+	ThroughputWindow             ThroughputMetrics `json:"throughput_window"`
+	OpsRuns                      OpsRunMetrics     `json:"ops_runs"`
+	PendingEscalations           EscalationMetrics `json:"pending_escalations"`
+	Storage                      *StorageHealth    `json:"storage,omitempty"`
+	PendingWorkerCount           int               `json:"pending_worker_count,omitempty"`
+	PendingHandoffCount          int               `json:"pending_handoff_count,omitempty"`
 }
 
 // ThroughputMetrics summarizes recent assignment and closure activity.
@@ -152,6 +165,18 @@ type EscalationSnapshot struct {
 	AgeSecs  float64 `json:"age_secs,omitempty"`
 }
 
+// StorageHealth summarizes the storage control plane observed by a health
+// caller. A nil snapshot means storage health could not be observed.
+type StorageHealth struct {
+	Available          bool     `json:"available"`
+	Pressure           string   `json:"pressure,omitempty"`
+	SweepOverdue       bool     `json:"sweep_overdue,omitempty"`
+	BlockedRetirements int      `json:"blocked_retirements,omitempty"`
+	Failures           []string `json:"failures,omitempty"`
+	Cancellations      []string `json:"cancellations,omitempty"`
+	AdmissionPaused    bool     `json:"admission_paused,omitempty"`
+}
+
 // WorkerSnapshot is a worker state sample used by the evaluator.
 type WorkerSnapshot struct {
 	ID                string
@@ -173,25 +198,29 @@ type AssignmentSnapshot struct {
 
 // Snapshot contains all observed inputs for one health evaluation.
 type Snapshot struct {
-	DaemonRunning           bool
-	DaemonPID               int
-	DispatcherState         string
-	Workers                 []WorkerSnapshot
-	ReadyQueue              int
-	TargetWorkers           int
-	MaxWorkers              int
-	PendingWorkerCount      int
-	PendingHandoffCount     int
-	ActiveAssignments       []AssignmentSnapshot
-	OpenQGIncidents         int
-	QGOccurrences30m        int
-	QGTopFingerprints       []string
-	OpenRecoveryQuarantines int
-	ProgressTimeoutSecs     float64
-	HeartbeatTimeoutSecs    float64
-	Throughput              ThroughputMetrics
-	OpsRuns                 OpsRunMetrics
-	PendingEscalations      EscalationMetrics
+	DaemonRunning                bool
+	DaemonPID                    int
+	DispatcherState              string
+	Workers                      []WorkerSnapshot
+	ReadyQueue                   int
+	TargetWorkers                int
+	MaxWorkers                   int
+	PendingWorkerCount           int
+	PendingHandoffCount          int
+	ActiveAssignments            []AssignmentSnapshot
+	OpenQGIncidents              int
+	QGOccurrences30m             int
+	QGTopFingerprints            []string
+	OpenRecoveryQuarantines      int
+	AssignmentFrozenByQuarantine bool
+	BlockingRecoveryQuarantines  int
+	AssignmentFreezeReason       string
+	ProgressTimeoutSecs          float64
+	HeartbeatTimeoutSecs         float64
+	Throughput                   ThroughputMetrics
+	OpsRuns                      OpsRunMetrics
+	PendingEscalations           EscalationMetrics
+	Storage                      *StorageHealth
 }
 
 // Evaluate converts an observed snapshot into the FactoryHealth contract.
@@ -209,22 +238,26 @@ func Evaluate(snapshot Snapshot) FactoryHealth {
 
 func metricsFromSnapshot(snapshot Snapshot) Metrics {
 	metrics := Metrics{
-		DaemonRunning:           snapshot.DaemonRunning,
-		DaemonPID:               snapshot.DaemonPID,
-		DispatcherState:         snapshot.DispatcherState,
-		WorkerCount:             len(snapshot.Workers),
-		ReadyQueue:              snapshot.ReadyQueue,
-		TargetWorkers:           snapshot.TargetWorkers,
-		MaxWorkers:              snapshot.MaxWorkers,
-		ActiveAssignments:       len(snapshot.ActiveAssignments),
-		OpenQGIncidents:         snapshot.OpenQGIncidents,
-		QGOccurrences30m:        snapshot.QGOccurrences30m,
-		OpenRecoveryQuarantines: snapshot.OpenRecoveryQuarantines,
-		ThroughputWindow:        snapshot.Throughput,
-		OpsRuns:                 snapshot.OpsRuns,
-		PendingEscalations:      snapshot.PendingEscalations,
-		PendingWorkerCount:      snapshot.PendingWorkerCount,
-		PendingHandoffCount:     snapshot.PendingHandoffCount,
+		DaemonRunning:                snapshot.DaemonRunning,
+		DaemonPID:                    snapshot.DaemonPID,
+		DispatcherState:              snapshot.DispatcherState,
+		WorkerCount:                  len(snapshot.Workers),
+		ReadyQueue:                   snapshot.ReadyQueue,
+		TargetWorkers:                snapshot.TargetWorkers,
+		MaxWorkers:                   snapshot.MaxWorkers,
+		ActiveAssignments:            len(snapshot.ActiveAssignments),
+		OpenQGIncidents:              snapshot.OpenQGIncidents,
+		QGOccurrences30m:             snapshot.QGOccurrences30m,
+		OpenRecoveryQuarantines:      snapshot.OpenRecoveryQuarantines,
+		AssignmentFrozenByQuarantine: snapshot.AssignmentFrozenByQuarantine,
+		BlockingRecoveryQuarantines:  snapshot.BlockingRecoveryQuarantines,
+		AssignmentFreezeReason:       snapshot.AssignmentFreezeReason,
+		ThroughputWindow:             snapshot.Throughput,
+		OpsRuns:                      snapshot.OpsRuns,
+		PendingEscalations:           snapshot.PendingEscalations,
+		Storage:                      snapshot.Storage,
+		PendingWorkerCount:           snapshot.PendingWorkerCount,
+		PendingHandoffCount:          snapshot.PendingHandoffCount,
 	}
 	for _, worker := range snapshot.Workers {
 		if activeWorkerState(worker.State) {
@@ -248,8 +281,18 @@ func evaluateFindings(snapshot Snapshot, metrics *Metrics) []Finding {
 			RecommendedAction: "run oro health --json, inspect recovery_quarantines and preserved worktrees/branches, then resolve after preserving or merging work",
 		})
 	}
+	if snapshot.AssignmentFrozenByQuarantine {
+		findings = append(findings, Finding{
+			Code:              FindingAssignmentFrozenByQuarantine,
+			Severity:          SeverityCritical,
+			Component:         "dispatcher",
+			Message:           fmt.Sprintf("assignment is frozen by %d recovery quarantine(s) while %d worker(s) are idle (reason: %s)", snapshot.BlockingRecoveryQuarantines, metrics.IdleWorkers, snapshot.AssignmentFreezeReason),
+			RecommendedAction: "inspect recovery quarantines and resolve or safely redeploy the preserved work before resuming ordinary assignment",
+		})
+	}
 	findings = append(findings, opsRunFindings(snapshot.OpsRuns)...)
 	findings = append(findings, pendingEscalationFindings(snapshot.PendingEscalations)...)
+	findings = append(findings, evaluateStorageFindings(snapshot)...)
 	if !snapshot.DaemonRunning {
 		if len(snapshot.ActiveAssignments) > 0 {
 			findings = append(findings, Finding{
@@ -266,7 +309,7 @@ func evaluateFindings(snapshot Snapshot, metrics *Metrics) []Finding {
 	progressTimeout := defaultFloat(snapshot.ProgressTimeoutSecs, 600)
 	heartbeatTimeout := defaultFloat(snapshot.HeartbeatTimeoutSecs, 45)
 	for _, worker := range snapshot.Workers {
-		if !activeWorkerState(worker.State) || worker.BeadID == "" {
+		if worker.State != "busy" || worker.BeadID == "" {
 			continue
 		}
 		if worker.LastProgressSecs >= progressTimeout && worker.LastHeartbeatSecs > 0 && worker.LastHeartbeatSecs < heartbeatTimeout {
@@ -360,6 +403,98 @@ func evaluateFindings(snapshot Snapshot, metrics *Metrics) []Finding {
 			Component:         "throughput",
 			Message:           "recent assignments are not producing closures",
 			RecommendedAction: "inspect worker logs and restart the dispatcher only if the stall repeats",
+		})
+	}
+	return findings
+}
+
+// evaluateStorageFindings converts storage control-plane state into stable,
+// deduplicated health findings.
+func evaluateStorageFindings(snapshot Snapshot) []Finding {
+	storage := snapshot.Storage
+	if storage == nil || !storage.Available {
+		return []Finding{{
+			Code:              FindingStorageUnavailable,
+			Severity:          SeverityCritical,
+			Component:         "storage",
+			Message:           "storage health is unavailable",
+			RecommendedAction: "inspect oro storage status and repair the storage catalog before admitting new work",
+		}}
+	}
+
+	findings := storageStateFindings(*storage)
+	findings = append(findings, storageMessageFindings(FindingStorageFailure, SeverityError, "storage cleanup failed", "inspect oro storage status and retry the failed cleanup", storage.Failures)...)
+	findings = append(findings, storageMessageFindings(FindingStorageCancellation, SeverityWarning, "storage cancelled an active writer", "inspect the cancelled process and storage pressure before retrying work", storage.Cancellations)...)
+	if storage.AdmissionPaused {
+		findings = append(findings, Finding{
+			Code:              FindingStorageAdmissionPaused,
+			Severity:          SeverityWarning,
+			Component:         "storage",
+			Message:           "storage admission is paused",
+			RecommendedAction: "inspect oro storage status and resume admissions only after pressure and active leases are clear",
+		})
+	}
+	return findings
+}
+
+func storageStateFindings(storage StorageHealth) []Finding {
+	findings := make([]Finding, 0, 3)
+	if pressure := strings.TrimSpace(storage.Pressure); pressure != "" && !strings.EqualFold(pressure, "normal") {
+		severity := SeverityWarning
+		if strings.EqualFold(pressure, "critical") {
+			severity = SeverityCritical
+		}
+		findings = append(findings, Finding{
+			Code:              FindingStoragePressure,
+			Severity:          severity,
+			Component:         "storage",
+			Message:           fmt.Sprintf("storage pressure is %s", pressure),
+			Type:              pressure,
+			RecommendedAction: "inspect oro storage status and reclaim only storage proven safe to retire",
+		})
+	}
+	if storage.SweepOverdue {
+		findings = append(findings, Finding{
+			Code:              FindingStorageSweepOverdue,
+			Severity:          SeverityWarning,
+			Component:         "storage",
+			Message:           "storage maintenance sweep is overdue",
+			RecommendedAction: "run oro storage clean after controllers acknowledge the maintenance pause",
+		})
+	}
+	if storage.BlockedRetirements > 0 {
+		findings = append(findings, Finding{
+			Code:              FindingStorageRetirementBlocked,
+			Severity:          SeverityWarning,
+			Component:         "storage",
+			Message:           fmt.Sprintf("%d storage retirement(s) are blocked", storage.BlockedRetirements),
+			RecommendedAction: "inspect oro storage status for leased, dirty, or ownership-uncertain retirement records",
+		})
+	}
+	return findings
+}
+
+func storageMessageFindings(code string, severity Severity, prefix, action string, messages []string) []Finding {
+	unique := make(map[string]struct{}, len(messages))
+	for _, message := range messages {
+		if message = strings.TrimSpace(message); message != "" {
+			unique[message] = struct{}{}
+		}
+	}
+	values := make([]string, 0, len(unique))
+	for message := range unique {
+		values = append(values, message)
+	}
+	sort.Strings(values)
+	findings := make([]Finding, 0, len(values))
+	for _, message := range values {
+		findings = append(findings, Finding{
+			Code:              code,
+			Severity:          severity,
+			Component:         "storage",
+			Message:           fmt.Sprintf("%s: %s", prefix, message),
+			Fingerprint:       message,
+			RecommendedAction: action,
 		})
 	}
 	return findings
@@ -631,12 +766,12 @@ SELECT i.fingerprint
 	return topFingerprints, nil
 }
 
-// LoadRecoveryQuarantineMetrics reads open recovery quarantine counts from the state database.
+// LoadRecoveryQuarantineMetrics reads assignment-blocking recovery quarantine counts from the state database.
 func LoadRecoveryQuarantineMetrics(ctx context.Context, db *sql.DB) (openQuarantines int, err error) {
 	if db == nil {
 		return 0, nil
 	}
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_quarantines WHERE status='open'`).Scan(&openQuarantines); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_quarantines WHERE status IN ('open', 'human_owned')`).Scan(&openQuarantines); err != nil {
 		if tableMissing(err) {
 			return 0, nil
 		}
@@ -651,42 +786,112 @@ func LoadThroughputMetrics(ctx context.Context, db *sql.DB, now time.Time, windo
 	if db == nil || window <= 0 {
 		return metrics, nil
 	}
-	start := now.Add(-window).UTC().Format("2006-01-02 15:04:05")
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM assignments WHERE assigned_at >= ?`, start).Scan(&metrics.AssignmentsStarted); err != nil {
+	startTime := now.Add(-window)
+	start := startTime.UTC().Format("2006-01-02 15:04:05")
+	assignmentsStarted, err := countTimestampsInWindow(
+		ctx,
+		db,
+		`SELECT assigned_at FROM assignments`,
+		startTime,
+		now,
+	)
+	if err != nil {
 		if tableMissing(err) {
 			return metrics, nil
 		}
 		return metrics, fmt.Errorf("count throughput assignments: %w", err)
 	}
+	metrics.AssignmentsStarted = assignmentsStarted
 	if err := db.QueryRowContext(ctx, `
 SELECT COUNT(*)
   FROM beads
  WHERE status='closed'
    AND COALESCE(close_reason, '') NOT IN ('deferred', 'duplicate', 'not_planned')
-   AND COALESCE(closed_at, updated_at) >= ?`, start).Scan(&metrics.ProductiveClosures); err != nil {
+   AND datetime(COALESCE(closed_at, updated_at)) >= datetime(?)`, start).Scan(&metrics.ProductiveClosures); err != nil {
 		if !tableMissing(err) {
 			return metrics, fmt.Errorf("count throughput closures: %w", err)
 		}
 	}
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE type='progress_timeout' AND created_at >= ?`, start).Scan(&metrics.ProgressTimeouts); err != nil {
-		if !tableMissing(err) {
-			return metrics, fmt.Errorf("count throughput progress timeouts: %w", err)
-		}
-	}
-	var latest string
-	err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(created_at), '') FROM events`).Scan(&latest)
+	progressTimeouts, err := countTimestampsInWindow(
+		ctx,
+		db,
+		`SELECT created_at FROM events WHERE type='progress_timeout'`,
+		startTime,
+		now,
+	)
 	if err != nil && !tableMissing(err) {
-		return metrics, fmt.Errorf("load latest event: %w", err)
+		return metrics, fmt.Errorf("count throughput progress timeouts: %w", err)
 	}
-	if latest != "" {
-		if ts, ok := parseSQLiteTime(latest); ok {
-			metrics.LastEventAgeSecs = now.Sub(ts).Seconds()
-			if metrics.LastEventAgeSecs < 0 {
-				metrics.LastEventAgeSecs = 0
-			}
+	if err == nil {
+		metrics.ProgressTimeouts = progressTimeouts
+	}
+	latest, err := latestEventTimestamp(ctx, db)
+	if err != nil {
+		return metrics, err
+	}
+	if !latest.IsZero() {
+		metrics.LastEventAgeSecs = now.Sub(latest).Seconds()
+		if metrics.LastEventAgeSecs < 0 {
+			metrics.LastEventAgeSecs = 0
 		}
 	}
 	return metrics, nil
+}
+
+func countTimestampsInWindow(
+	ctx context.Context,
+	db *sql.DB,
+	query string,
+	start, end time.Time,
+) (int, error) {
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return 0, fmt.Errorf("query timestamps: %w", err)
+	}
+	count := 0
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("scan timestamp: %w", err)
+		}
+		if ts, ok := parseSQLiteTime(raw); ok && !ts.Before(start) && ts.Before(end) {
+			count++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, fmt.Errorf("iterate timestamps: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("close timestamps: %w", err)
+	}
+	return count, nil
+}
+
+func latestEventTimestamp(ctx context.Context, db *sql.DB) (time.Time, error) {
+	rows, err := db.QueryContext(ctx, `SELECT created_at FROM events`)
+	if err != nil {
+		if tableMissing(err) {
+			return time.Time{}, nil
+		}
+		return time.Time{}, fmt.Errorf("load latest event: %w", err)
+	}
+	defer rows.Close()
+	var latest time.Time
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return time.Time{}, fmt.Errorf("scan latest event: %w", err)
+		}
+		if ts, ok := parseSQLiteTime(raw); ok && ts.After(latest) {
+			latest = ts
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return time.Time{}, fmt.Errorf("iterate latest events: %w", err)
+	}
+	return latest, nil
 }
 
 // LoadPendingEscalationMetrics reads pending escalations that have no known

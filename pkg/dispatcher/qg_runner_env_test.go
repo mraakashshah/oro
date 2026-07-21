@@ -38,7 +38,7 @@ func TestShellQGRunnerNormalizesInvalidLocaleBeforeStartingBash(t *testing.T) {
 	}
 }
 
-func TestShellQGRunnerScrubsInheritedQualityGateLock(t *testing.T) {
+func TestShellQGRunnerPreservesInheritedQualityGateLock(t *testing.T) {
 	t.Setenv("ORO_QG_INHERITED_LOCK_DIR", "/tmp/inherited-quality-gate-lock")
 	t.Setenv("ORO_QG_INHERITED_LOCK_TOKEN", "inherited-token")
 
@@ -46,8 +46,8 @@ func TestShellQGRunnerScrubsInheritedQualityGateLock(t *testing.T) {
 	script := filepath.Join(tmpDir, "quality_gate.sh")
 	if err := os.WriteFile(script, []byte(`#!/usr/bin/env bash
 set -euo pipefail
-test -z "${ORO_QG_INHERITED_LOCK_DIR:-}"
-test -z "${ORO_QG_INHERITED_LOCK_TOKEN:-}"
+test "${ORO_QG_INHERITED_LOCK_DIR:-}" = "/tmp/inherited-quality-gate-lock"
+test "${ORO_QG_INHERITED_LOCK_TOKEN:-}" = "inherited-token"
 `), 0o600); err != nil { //nolint:gosec // test file
 		t.Fatal(err)
 	}
@@ -60,6 +60,6 @@ test -z "${ORO_QG_INHERITED_LOCK_TOKEN:-}"
 		t.Fatalf("ShellQGRunner.Run: %v", err)
 	}
 	if !passed {
-		t.Fatalf("expected quality gate to pass without inherited lock state, output: %s", output)
+		t.Fatalf("expected quality gate to pass with inherited lock state, output: %s", output)
 	}
 }

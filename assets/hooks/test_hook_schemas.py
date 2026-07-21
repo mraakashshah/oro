@@ -445,14 +445,17 @@ class TestOroSearchHookSchema:
         assert json.loads(r.stdout) == {}
 
     def test_tool_name_extraction_bash_allows_claude(self, oro_search_hook_binary: str) -> None:
+        # Bash routes to the Codex Bash arm; a non-cat command allows with EMPTY
+        # STDOUT (zero bytes), NOT {}. Must not be "fixed" back to {}.
         r = _run_hook([oro_search_hook_binary], _claude_pre_tool_use("Bash"))
         assert r.returncode == 0
-        assert json.loads(r.stdout) == {}
+        assert r.stdout == b""
 
     def test_tool_name_extraction_bash_allows_codex(self, oro_search_hook_binary: str) -> None:
+        # Codex Bash allow contract is empty stdout (zero bytes), NOT {}.
         r = _run_hook([oro_search_hook_binary], _codex_pre_tool_use("Bash"))
         assert r.returncode == 0
-        assert json.loads(r.stdout) == {}
+        assert r.stdout == b""
 
     def test_codex_extra_fields_do_not_affect_tool_name_extraction(self, oro_search_hook_binary: str) -> None:
         """tool_use_id, turn_id, transcript_path must not confuse hook logic."""

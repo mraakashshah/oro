@@ -10,8 +10,34 @@ import (
 	"testing"
 
 	"oro/pkg/dbutil"
+	"oro/pkg/factoryhealth"
 	"oro/pkg/protocol"
 )
+
+func TestRecoveryQuarantineEmptySafeMatchesRecoveryCommandSemantics(t *testing.T) {
+	tests := []struct {
+		name         string
+		dirtyFiles   int
+		branchExists bool
+		branchAhead  int
+		want         bool
+	}{
+		{name: "no branch or dirty files", want: true},
+		{name: "clean branch without unique commits", branchExists: true, want: true},
+		{name: "dirty worktree", dirtyFiles: 1, want: false},
+		{name: "branch with unique commits", branchExists: true, branchAhead: 1, want: false},
+		{name: "missing branch ignores stale ahead count", branchAhead: 1, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RecoveryQuarantineEmptySafe(tt.dirtyFiles, tt.branchExists, tt.branchAhead); got != tt.want {
+				t.Fatalf("RecoveryQuarantineEmptySafe(%d, %t, %d) = %t, want %t",
+					tt.dirtyFiles, tt.branchExists, tt.branchAhead, got, tt.want)
+			}
+		})
+	}
+}
 
 func TestCreateRecoveryQuarantineIdempotent(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
@@ -326,6 +352,105 @@ func TestRestoreStateQuarantinesMissingWorktreeDurably(t *testing.T) {
 	}
 	if reason != "missing_worktree_path" {
 		t.Fatalf("quarantine reason = %q, want missing_worktree_path", reason)
+	}
+}
+
+func TestStartupAutoResolvesEmptySafeQuarantines(t *testing.T) {
+	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		emptyBeadID       = "oro-startup-empty"
+		preservedBeadID   = "oro-startup-preserved"
+		dirtyBeadID       = "oro-startup-dirty"
+		missingWorktree   = "/tmp/oro-startup-empty-missing"
+		preservedWorktree = "/tmp/oro-startup-preserved"
+		dirtyWorktree     = "/tmp/oro-startup-dirty"
+	)
+
+	wtMgr.existsFn = func(_ context.Context, path string) bool {
+		return path == preservedWorktree || path == dirtyWorktree
+	}
+	wtMgr.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
+		return branch != protocol.BranchPrefix+emptyBeadID, nil
+	}
+	d.shutdownRunner = &mockCommandRunner{callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "git" && len(args) >= 4 && args[0] == "-C" && args[2] == "status" && args[3] == "--porcelain" {
+			if args[1] == dirtyWorktree {
+				return []byte(" M preserved.txt\n"), nil
+			}
+			return nil, nil
+		}
+		return nil, nil
+	}}
+
+	if _, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, 'worker-empty', ?, 'active')`,
+		emptyBeadID, missingWorktree); err != nil {
+		t.Fatalf("insert empty-safe assignment: %v", err)
+	}
+	for _, quarantine := range []struct {
+		beadID   string
+		worktree string
+	}{
+		{beadID: preservedBeadID, worktree: preservedWorktree},
+		{beadID: dirtyBeadID, worktree: dirtyWorktree},
+	} {
+		if _, err := d.db.ExecContext(ctx, `
+INSERT INTO recovery_quarantines (bead_id, worktree, branch, reason, details, status)
+VALUES (?, ?, ?, 'startup_fixture', 'preserved recovery state', 'open')`,
+			quarantine.beadID, quarantine.worktree, protocol.BranchPrefix+quarantine.beadID); err != nil {
+			t.Fatalf("insert %s quarantine: %v", quarantine.beadID, err)
+		}
+	}
+
+	if err := d.startupRecovery(ctx); err != nil {
+		t.Fatalf("startupRecovery: %v", err)
+	}
+
+	var emptyStatus string
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT status FROM recovery_quarantines WHERE bead_id=?`, emptyBeadID).Scan(&emptyStatus); err != nil {
+		t.Fatalf("query empty-safe quarantine: %v", err)
+	}
+	if emptyStatus != "resolved" {
+		t.Fatalf("empty-safe quarantine status = %q, want resolved", emptyStatus)
+	}
+
+	var payload string
+	if err := d.db.QueryRowContext(ctx, `
+SELECT payload
+FROM events
+WHERE type='startup_recovery_quarantine_auto_resolved' AND bead_id=?`, emptyBeadID).Scan(&payload); err != nil {
+		t.Fatalf("query empty-safe resolution event: %v", err)
+	}
+	var event struct {
+		Status string `json:"status"`
+		Mode   string `json:"mode"`
+	}
+	if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		t.Fatalf("decode empty-safe resolution event: %v", err)
+	}
+	if event.Status != "closed" || event.Mode != "discard-empty-safe" {
+		t.Fatalf("resolution event = %+v, want status closed and discard-empty-safe mode", event)
+	}
+
+	for _, beadID := range []string{preservedBeadID, dirtyBeadID} {
+		var status string
+		if err := d.db.QueryRowContext(ctx,
+			`SELECT status FROM recovery_quarantines WHERE bead_id=?`, beadID).Scan(&status); err != nil {
+			t.Fatalf("query preserved quarantine %s: %v", beadID, err)
+		}
+		if status != "open" {
+			t.Fatalf("preserved quarantine %s status = %q, want open", beadID, status)
+		}
+	}
+
+	openQuarantines, err := factoryhealth.LoadRecoveryQuarantineMetrics(ctx, d.db)
+	if err != nil {
+		t.Fatalf("load recovery quarantine metrics: %v", err)
+	}
+	if openQuarantines != 2 {
+		t.Fatalf("open recovery quarantines = %d, want 2 preservable rows", openQuarantines)
 	}
 }
 
@@ -783,6 +908,251 @@ VALUES (?, 'disconnected-worker', ?, ?, 'stale_active_assignment', 'preserved cl
 	wtMgr.mu.Unlock()
 	if created != 0 {
 		t.Fatalf("created %d fresh worktrees, want preserved worktree reuse", created)
+	}
+}
+
+func TestOfflineRequeuePreservedRedeploy(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const beadID = "oro-offline-requeue"
+	const worktree = "/tmp/worktree-oro-offline-requeue"
+
+	bead := protocol.Bead{
+		ID:       beadID,
+		Title:    "redeploy preserved offline work",
+		Status:   "open",
+		Priority: 1,
+		Type:     "task",
+	}
+	beadSrc.SetBeads([]protocol.Bead{bead})
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              bead.Title,
+		Status:             "open",
+		Type:               "task",
+		AcceptanceCriteria: "Test: preserved work | Cmd: true | Assert: pass",
+	}
+	beadSrc.mu.Unlock()
+
+	assignment, err := d.db.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree, status)
+VALUES (?, 'offline-worker', ?, 'requeued')`, beadID, worktree)
+	if err != nil {
+		t.Fatalf("insert requeued preserved assignment: %v", err)
+	}
+	assignmentID, err := assignment.LastInsertId()
+	if err != nil {
+		t.Fatalf("preserved assignment ID: %v", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `
+INSERT INTO recovery_quarantines (bead_id, assignment_id, worker_id, worktree, branch, reason, details, status, resolved_at)
+VALUES (?, ?, 'offline-worker', ?, ?, 'stale_active_assignment', 'requeued preserved attempt', 'resolved', datetime('now'))`,
+		beadID, assignmentID, worktree, protocol.BranchPrefix+beadID); err != nil {
+		t.Fatalf("insert resolved preserved quarantine: %v", err)
+	}
+
+	wtMgr.existsFn = func(_ context.Context, path string) bool { return path == worktree }
+	wtMgr.currentBranchFn = func(_ context.Context, path string) (string, error) {
+		if path != worktree {
+			return "", fmt.Errorf("unexpected worktree %q", path)
+		}
+		return protocol.BranchPrefix + beadID, nil
+	}
+	wtMgr.prepareReuseFn = func(_ context.Context, path, branch, base string) (bool, error) {
+		if path != worktree || branch != protocol.BranchPrefix+beadID || base != "main" {
+			t.Fatalf("reuse preparation = path %q branch %q base %q", path, branch, base)
+		}
+		return false, nil
+	}
+	d.shutdownRunner = &mockCommandRunner{callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "git" && strings.Join(args, " ") == "-C "+worktree+" status --porcelain" {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("unexpected command: %s %s", name, strings.Join(args, " "))
+	}}
+
+	conn := newMockConn()
+	w := &trackedWorker{id: "fresh-worker", conn: conn, state: protocol.WorkerIdle, encoder: json.NewEncoder(conn)}
+	d.mu.Lock()
+	d.state = StateRunning
+	d.workers[w.id] = w
+	// Simulate a new dispatcher process: durable recovery state survives while
+	// the in-memory worktree mapping does not.
+	d.worktreeByBead = make(map[string]string)
+	d.mu.Unlock()
+
+	d.tryAssign(ctx)
+
+	state, assigned, ok := d.WorkerInfo(w.id)
+	if !ok || state != protocol.WorkerBusy || assigned != beadID {
+		t.Fatalf("worker assignment = exists %t state %q bead %q, want busy on %q", ok, state, assigned, beadID)
+	}
+	d.mu.Lock()
+	gotWorktree := d.workers[w.id].worktree
+	d.mu.Unlock()
+	if gotWorktree != worktree {
+		t.Fatalf("worker worktree = %q, want preserved %q", gotWorktree, worktree)
+	}
+	wtMgr.mu.Lock()
+	created := len(wtMgr.created)
+	deleted := len(wtMgr.deletedBranches)
+	wtMgr.mu.Unlock()
+	if created != 0 {
+		t.Fatalf("created %d fresh worktrees, want preserved worktree reuse", created)
+	}
+	if deleted != 0 {
+		t.Fatalf("deleted %d stale agent branches, want no stale cleanup", deleted)
+	}
+	var quarantines int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_quarantines WHERE bead_id=?`, beadID).Scan(&quarantines); err != nil {
+		t.Fatalf("count recovery quarantines: %v", err)
+	}
+	if quarantines != 1 {
+		t.Fatalf("recovery quarantine rows = %d, want original resolved row only", quarantines)
+	}
+}
+
+func TestRestartDoesNotRequarantinePreviouslyRequeuedPreservedWorktree(t *testing.T) {
+	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		beadID   = "oro-preserved-startup"
+		worktree = "/tmp/worktree-oro-preserved-startup"
+		branch   = protocol.BranchPrefix + beadID
+	)
+
+	wtMgr.existsFn = func(_ context.Context, path string) bool { return path == worktree }
+	wtMgr.branchExistsFn = func(_ context.Context, got string) (bool, error) { return got == branch, nil }
+	wtMgr.currentBranchFn = func(_ context.Context, path string) (string, error) {
+		if path != worktree {
+			return "", fmt.Errorf("unexpected worktree %q", path)
+		}
+		return "", nil // Dirty preserved worktree remains detached.
+	}
+	d.shutdownRunner = &mockCommandRunner{callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "git" && strings.Join(args, " ") == "-C "+worktree+" status --porcelain" {
+			return []byte(" M pkg/protocol/contract_schema_test.go\n"), nil
+		}
+		return nil, fmt.Errorf("unexpected command: %s %s", name, strings.Join(args, " "))
+	}}
+	branchDeleteAttempts := 0
+	wtMgr.deleteBranchFn = func(got string) error {
+		branchDeleteAttempts++
+		return fmt.Errorf("force branch delete %s: branch is checked out at %s", got, worktree)
+	}
+
+	assignment, err := d.db.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree, status)
+VALUES (?, 'offline-worker', ?, 'active')`, beadID, worktree)
+	if err != nil {
+		t.Fatalf("insert preserved assignment: %v", err)
+	}
+	assignmentID, err := assignment.LastInsertId()
+	if err != nil {
+		t.Fatalf("preserved assignment ID: %v", err)
+	}
+
+	_, initialStats, err := d.restoreState(ctx)
+	if err != nil {
+		t.Fatalf("initial startup recovery: %v", err)
+	}
+	if initialStats.quarantined != 1 {
+		t.Fatalf("initial startup stats = %+v, want one mismatch quarantine", initialStats)
+	}
+	var initialQuarantines int
+	if err := d.db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM recovery_quarantines
+WHERE assignment_id=? AND reason='branch_worktree_mismatch' AND status='open'`, assignmentID).Scan(&initialQuarantines); err != nil {
+		t.Fatalf("count initial mismatch quarantine: %v", err)
+	}
+	if initialQuarantines != 1 {
+		t.Fatalf("initial mismatch quarantines = %d, want 1", initialQuarantines)
+	}
+
+	if _, err := d.db.ExecContext(ctx, `
+UPDATE assignments SET status='requeued', completed_at=datetime('now') WHERE id=?`, assignmentID); err != nil {
+		t.Fatalf("requeue preserved assignment: %v", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `
+UPDATE recovery_quarantines SET status='resolved', resolved_at=datetime('now')
+WHERE assignment_id=? AND reason='branch_worktree_mismatch'`, assignmentID); err != nil {
+		t.Fatalf("resolve preserved mismatch quarantine: %v", err)
+	}
+
+	for restart := 1; restart <= 2; restart++ {
+		// Assignment-failure cooldown is process-local. A real dispatcher
+		// restart begins without the previous process's retry throttle.
+		d.mu.Lock()
+		delete(d.worktreeFailures, beadID)
+		d.mu.Unlock()
+
+		recoverable, stats, err := d.restoreState(ctx)
+		if err != nil {
+			t.Fatalf("restart %d restore state: %v", restart, err)
+		}
+		if len(recoverable) != 0 || stats.recoverable != 0 || stats.quarantined != 0 {
+			t.Fatalf("restart %d recovery = %+v, stats = %+v; want preserved mismatch ignored", restart, recoverable, stats)
+		}
+
+		var openQuarantines int
+		if err := d.db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM recovery_quarantines WHERE bead_id=? AND status='open'`, beadID).Scan(&openQuarantines); err != nil {
+			t.Fatalf("restart %d count open recovery quarantines: %v", restart, err)
+		}
+		if openQuarantines != 0 {
+			t.Fatalf("restart %d open recovery quarantines = %d, want 0", restart, openQuarantines)
+		}
+
+		d.mu.Lock()
+		_, tracked := d.worktreeByBead[beadID]
+		d.mu.Unlock()
+		if tracked {
+			t.Fatalf("restart %d tracked dirty detached preserved worktree", restart)
+		}
+
+		assignable := d.filterAssignable(ctx, []protocol.Bead{{ID: beadID, Status: "open", Priority: 1, Type: "task"}})
+		if len(assignable) != 1 || assignable[0].ID != beadID {
+			t.Fatalf("restart %d assignable beads = %+v, want fresh retry for %s", restart, assignable, beadID)
+		}
+		if d.createFreshAssignmentWorktreeAllowed(ctx, beadID, "fresh-worker", d.cfg.DefaultBranch) {
+			t.Fatalf("restart %d allowed worktree creation over preserved evidence", restart)
+		}
+	}
+
+	if branchDeleteAttempts != 0 {
+		t.Fatalf("preserved branch delete attempts = %d, want 0", branchDeleteAttempts)
+	}
+	wtMgr.mu.Lock()
+	removed := append([]string(nil), wtMgr.removed...)
+	wtMgr.mu.Unlock()
+	if len(removed) != 0 {
+		t.Fatalf("preserved worktree removals = %v, want none", removed)
+	}
+
+	wtMgr.mu.Lock()
+	created := len(wtMgr.created)
+	wtMgr.mu.Unlock()
+	if created != 0 {
+		t.Fatalf("fresh worktrees created over preserved evidence = %d, want 0", created)
+	}
+
+	if _, err := d.db.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree, status)
+VALUES (?, 'distinct-worker', '/tmp/missing-distinct', 'active')`, beadID); err != nil {
+		t.Fatalf("insert distinct assignment: %v", err)
+	}
+	if suppressedID, suppressed, err := d.resolvedPreservedMismatchForRequeuedBead(ctx, beadID); err != nil {
+		t.Fatalf("check distinct assignment recovery scope: %v", err)
+	} else if suppressed {
+		t.Fatalf("distinct assignment hidden by preserved assignment %d", suppressedID)
+	}
+	_, distinctStats, err := d.restoreState(ctx)
+	if err != nil {
+		t.Fatalf("restore repeated startup state: %v", err)
+	}
+	if distinctStats.quarantined != 1 {
+		t.Fatalf("distinct assignment stats = %+v, want one independently quarantined assignment", distinctStats)
 	}
 }
 

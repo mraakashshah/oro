@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,6 +29,68 @@ type Paths struct {
 	SocketPath      string // oro.sock or ORO_SOCKET_PATH
 	StateDBPath     string // state.db or ORO_DB_PATH
 	CodeIndexDBPath string // code_index.db (respects ORO_HOME)
+}
+
+var (
+	// ErrInvalidPath reports a storage root which cannot be canonicalized safely.
+	ErrInvalidPath = errors.New("invalid storage path")
+	// ErrUnsafeStorageRoot reports a storage root inside a repository worktree.
+	ErrUnsafeStorageRoot = errors.New("unsafe storage root")
+)
+
+// StoragePaths contains host-global roots used by Oro storage management.
+// None of these paths may be rooted in a project worktree.
+type StoragePaths struct {
+	OroHome      string
+	CatalogPath  string
+	LockPath     string
+	EvidenceRoot string
+	CacheRoot    string
+}
+
+// ResolveStoragePaths resolves the global storage catalog, maintenance lock,
+// evidence, and Oro-managed cache paths beneath a canonical Oro home.
+func ResolveStoragePaths(oroHome string) (StoragePaths, error) {
+	root, err := canonicalStorageRoot(oroHome)
+	if err != nil {
+		return StoragePaths{}, err
+	}
+	if storageRootInWorktree(root) {
+		return StoragePaths{}, fmt.Errorf("%w: %s", ErrUnsafeStorageRoot, root)
+	}
+
+	storageRoot := filepath.Join(root, "storage")
+	return StoragePaths{
+		OroHome:      root,
+		CatalogPath:  filepath.Join(storageRoot, "catalog.db"),
+		LockPath:     filepath.Join(storageRoot, "maintenance.lock"),
+		EvidenceRoot: filepath.Join(storageRoot, "evidence"),
+		CacheRoot:    filepath.Join(root, "cache"),
+	}, nil
+}
+
+func canonicalStorageRoot(root string) (string, error) {
+	if root == "" || !filepath.IsAbs(root) {
+		return "", fmt.Errorf("%w: storage root must be absolute", ErrInvalidPath)
+	}
+
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(root))
+	if err != nil {
+		return "", fmt.Errorf("%w: resolve storage root %q: %w", ErrInvalidPath, root, err)
+	}
+	return resolved, nil
+}
+
+func storageRootInWorktree(root string) bool {
+	for dir := root; ; dir = filepath.Dir(dir) {
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+	}
 }
 
 // ResolveDaemonPaths returns all oro daemon state paths, respecting project scoping and env var overrides.

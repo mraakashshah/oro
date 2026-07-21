@@ -9,8 +9,8 @@ import (
 )
 
 // TestWorktreeCreatedFromCurrentMain verifies that Create fetches the base
-// branch from origin before branching, so the new worktree always branches
-// from the current remote HEAD — not a stale local ref.
+// branch from origin before branching, so an ahead remote HEAD wins over a
+// stale local ref.
 //
 // Repro scenario: local main is at commit A; another developer pushes commit B
 // (e.g. a go.mod version bump) to origin/main. Without a fetch, a new agent

@@ -20,6 +20,7 @@ import (
 	"oro/pkg/beadstore"
 	"oro/pkg/codesearch"
 	"oro/pkg/dispatcher"
+	"oro/pkg/factoryhealth"
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/processenv"
@@ -605,6 +606,17 @@ func installCodexHookConfig(codexHome, hooksDir string) error {
 		return fmt.Errorf("resolve Codex config dir: %w", err)
 	}
 	codexHome = cleanCodexHome
+	// Defense-in-depth: refuse to write a managed block whose hook commands point
+	// at an ephemeral hooksDir (under the temp root) into a codexHome that lives
+	// outside it. That mismatch means a test isolated ORO_HOME but forgot
+	// CODEX_HOME and is about to leak dangling hook paths into the developer's
+	// real ~/.codex/config.toml — fail loudly instead of corrupting it.
+	if hookPathsWouldLeak(codexHome, hooksDir) {
+		return fmt.Errorf(
+			"refusing to install Codex hook config: hooks dir %q is under the temp root %q but Codex home %q is not — "+
+				"writing would leak ephemeral hook paths into a persistent config (isolate the test with CODEX_HOME)",
+			hooksDir, os.TempDir(), codexHome)
+	}
 	configPath := filepath.Join(codexHome, "config.toml")
 	data, err := os.ReadFile(configPath) //nolint:gosec // CODEX_HOME-controlled config path
 	if err != nil && !os.IsNotExist(err) {
@@ -618,6 +630,65 @@ func installCodexHookConfig(codexHome, hooksDir string) error {
 		return fmt.Errorf("write Codex config: %w", err)
 	}
 	return nil
+}
+
+// hookPathsWouldLeak reports whether installing a managed hooks block that points
+// at hooksDir into codexHome would leak ephemeral paths into a persistent config.
+// It checks common temporary roots rather than just os.TempDir because Oro
+// subprocesses may use /tmp while macOS reports a per-user /var/folders temp dir.
+func hookPathsWouldLeak(codexHome, hooksDir string) bool {
+	var codexUnderTemp, hooksUnderTemp bool
+	for _, tempRoot := range []string{os.TempDir(), "/tmp", "/private/tmp", "/var/folders"} {
+		codexUnderTemp = codexUnderTemp || pathUnder(tempRoot, codexHome)
+		hooksUnderTemp = hooksUnderTemp || pathUnder(tempRoot, hooksDir)
+	}
+	return hooksUnderTemp && !codexUnderTemp
+}
+
+// pathUnder reports whether target is root itself or nested inside root, comparing
+// absolute paths resolved through existing symlinked ancestors so aliases such as
+// /tmp and /private/tmp compare consistently.
+func pathUnder(root, target string) bool {
+	rootAbs, err := resolvePath(root)
+	if err != nil {
+		return false
+	}
+	targetAbs, err := resolvePath(target)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(rootAbs, targetAbs)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// resolvePath returns an absolute path with symlinked ancestors resolved. It can
+// canonicalize paths that do not exist yet, which matters for hooksDir paths whose
+// parent sandbox is created after the leak guard runs.
+func resolvePath(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve absolute path: %w", err)
+	}
+	for ancestor := absPath; ; ancestor = filepath.Dir(ancestor) {
+		resolved, evalErr := filepath.EvalSymlinks(ancestor)
+		if evalErr == nil {
+			rel, relErr := filepath.Rel(ancestor, absPath)
+			if relErr != nil {
+				return "", fmt.Errorf("resolve path relative to existing ancestor: %w", relErr)
+			}
+			return filepath.Clean(filepath.Join(resolved, rel)), nil
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			return absPath, nil
+		}
+	}
 }
 
 func replaceManagedCodexHookBlock(existing, block string) string {
@@ -656,8 +727,7 @@ func codexHookConfigBlock(hooksDir string) string {
 		"  { matcher = \"\", hooks = [ { type = \"command\", command = " + py("session_start_global.py") + ", async = false } ] },",
 		"]",
 		"PreToolUse = [",
-		"  { matcher = \"Bash\", hooks = [ { type = \"command\", command = " + py("enforce_skills.py") + ", async = false }, { type = \"command\", command = " + py("destructive_command_guard.py") + ", async = false } ] },",
-		"  { matcher = \"str_replace_based_edit_tool\", hooks = [ { type = \"command\", command = " + sh("oro-search-hook") + ", async = false, timeoutSec = 5, statusMessage = \"Searching codebase...\" } ] },",
+		"  { matcher = \"Bash\", hooks = [ { type = \"command\", command = " + py("enforce_skills.py") + ", async = false }, { type = \"command\", command = " + py("destructive_command_guard.py") + ", async = false }, { type = \"command\", command = " + sh("oro-search-hook") + ", async = false, timeoutSec = 5, statusMessage = \"Searching codebase...\" } ] },",
 		"  { matcher = \"apply_patch\", hooks = [ { type = \"command\", command = " + py("enforce_worktree_writes.py") + ", async = false } ] },",
 		"]",
 		"PostToolUse = [",
@@ -812,13 +882,14 @@ func newStartCmd() *cobra.Command {
 		Use:   "start",
 		Short: "Launch the Oro swarm (tmux session + dispatcher)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := verifyStartCommandRemoteCapabilities(cmd.Context()); err != nil {
+				return err
+			}
 			if noWeb {
 				webEnabled = false
 			}
 			// Default an unset --max-workers ceiling to --workers for backward compatibility.
-			if maxWorkers == 0 {
-				maxWorkers = workers
-			}
+			maxWorkers = resolvedMaxWorkers(workers, maxWorkers)
 			pidPath, err := startPreflightAndCheckRunning(cmd.OutOrStdout(), daemonOnly)
 			if err != nil {
 				return err
@@ -850,6 +921,13 @@ func newStartCmd() *cobra.Command {
 	registerCleanlinessStartFlags(cmd, &cleanliness)
 
 	return cmd
+}
+
+func resolvedMaxWorkers(workers, maxWorkers int) int {
+	if maxWorkers == 0 {
+		return workers
+	}
+	return maxWorkers
 }
 
 func registerWebStartFlags(cmd *cobra.Command, webEnabled, noWeb *bool, webAddr *string) {
@@ -1023,6 +1101,13 @@ func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressT
 }
 
 func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers int, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool, baseBranch string, mutationTesting, webEnabled bool, webAddr string, cleanliness cleanlinessStartConfig) (*dispatcher.Dispatcher, *sql.DB, error) { //nolint:funlen // factory initialization
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		return nil, nil, fmt.Errorf("get working dir: %w", err)
+	}
+	if err := verifyStartupRemoteCapabilities(context.Background(), repoRoot); err != nil {
+		return nil, nil, err
+	}
 	if err := requireNativeProductionBeadSourceMode("oro start"); err != nil {
 		return nil, nil, err
 	}
@@ -1034,6 +1119,13 @@ func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers 
 	paths, err := ResolveDaemonPaths()
 	if err != nil {
 		return nil, nil, err
+	}
+	catalog, err := openStorageCatalog(context.Background(), paths.OroHome)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := catalog.Close(); err != nil {
+		return nil, nil, fmt.Errorf("close storage catalog: %w", err)
 	}
 	sockPath := paths.SocketPath
 	dbPath := paths.StateDBPath
@@ -1047,12 +1139,6 @@ func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers 
 	db, err := openStateDBWithV4Migration(dbPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open state db: %w", err)
-	}
-
-	repoRoot, err := os.Getwd()
-	if err != nil {
-		_ = db.Close()
-		return nil, nil, fmt.Errorf("get working dir: %w", err)
 	}
 
 	// Open code index eagerly (fast — just opens SQLite DB) so the dispatcher
@@ -1102,6 +1188,9 @@ func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers 
 		AuditEnabled:            cleanliness.AuditEnabled,
 		WebEnabled:              webEnabled,
 		WebAddr:                 webAddr,
+		StorageHealth: func(ctx context.Context) *factoryhealth.StorageHealth {
+			return loadFactoryStorageHealth(ctx, paths.OroHome)
+		},
 	}
 
 	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, codeIdx,

@@ -62,11 +62,8 @@ func shouldSkip(load float64, cpus int, threshold float64) bool {
 
 func oneMinuteLoad() (float64, bool) {
 	if b, err := os.ReadFile("/proc/loadavg"); err == nil {
-		fields := strings.Fields(string(b))
-		if len(fields) > 0 {
-			if v, parseErr := strconv.ParseFloat(fields[0], 64); parseErr == nil {
-				return v, true
-			}
+		if load, ok := parseLoadAverage(string(b)); ok {
+			return load, true
 		}
 	}
 
@@ -74,7 +71,11 @@ func oneMinuteLoad() (float64, bool) {
 	if err != nil {
 		return 0, false
 	}
-	fields := strings.Fields(strings.Trim(string(out), "{} \n\t"))
+	return parseLoadAverage(string(out))
+}
+
+func parseLoadAverage(output string) (float64, bool) {
+	fields := strings.Fields(strings.Trim(output, "{} \n\t"))
 	if len(fields) == 0 {
 		return 0, false
 	}

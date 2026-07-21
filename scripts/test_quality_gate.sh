@@ -10,6 +10,15 @@ if [ -n "${LC_ALL:-}" ] && ! locale -a 2>/dev/null | grep -qx "$LC_ALL"; then
 	export LANG=C
 fi
 
+# The bootstrap regression deliberately invokes the gate with PATH restricted
+# to macOS system directories. The rest of this harness uses project tools, so
+# restore Homebrew's tool directory when the harness itself was started with
+# that restricted PATH.
+if [ -d /opt/homebrew/bin ]; then
+	PATH="/opt/homebrew/bin:$PATH"
+	export PATH
+fi
+
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 BLUE='\033[0;34m'
@@ -161,6 +170,36 @@ EOF
 		echo "Expected SKIP when tool not installed"
 		echo "Output did not contain 'nonexistent-formatter-xyz.*SKIP'"
 		cd "$oldpwd"
+		return 1
+	fi
+}
+
+# Test: startup hygiene removes only terminal-escape artifacts at the repo root.
+# shellcheck disable=SC2317,SC2329
+test_repo_root_rejects_terminal_escape_artifacts() {
+	local tmpdir artifact normal_dir live_lock ordinary_file harness
+	tmpdir=$(mktemp -d)
+	# shellcheck disable=SC2064
+	trap "rm -rf -- '$tmpdir'" RETURN
+
+	artifact="$tmpdir"/$'\033]8;;file:artifact'
+	normal_dir="$tmpdir/normal"
+	live_lock="$tmpdir/.oro-quality-gate.lock"
+	ordinary_file="$tmpdir/ordinary-file"
+	harness="$tmpdir/sweep.sh"
+	mkdir -p "$artifact" "$normal_dir" "$live_lock"
+	: >"$ordinary_file"
+
+	{
+		printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
+		awk '/^sweep_repo_root_escape_artifacts\(\) \{/{capture=1} capture {print} capture && /^}/{exit}' "$SCRIPT_DIR/quality_gate.sh"
+		printf '%s\n' "sweep_repo_root_escape_artifacts \"\$REPO_ROOT\""
+	} >"$harness"
+	chmod +x "$harness"
+
+	REPO_ROOT="$tmpdir" "$harness"
+	if [ -e "$artifact" ] || [ ! -d "$normal_dir" ] || [ ! -d "$live_lock" ] || [ ! -f "$ordinary_file" ]; then
+		echo 'Expected only the OSC-8 artifact directory to be removed'
 		return 1
 	fi
 }
@@ -873,13 +912,6 @@ test_quality_gate_stage_assets_fail_closed() {
 		echo "FAIL: quality_gate.sh lacks ensure_stage_assets helper"
 		return 1
 	fi
-	if ! grep -q "export GOLANGCI_LINT_CACHE=\"\$QG_DIR/golangci-lint-cache\"" "$SCRIPT_DIR/quality_gate.sh" ||
-		! grep -q "export GOCACHE=\"\$QG_DIR/go-build-cache\"" "$SCRIPT_DIR/quality_gate.sh" ||
-		! grep -q "export UV_CACHE_DIR=\"\${UV_CACHE_DIR:-\$QG_DIR/uv-cache}\"" "$SCRIPT_DIR/quality_gate.sh" ||
-		! grep -q "GOCACHE=\$QG_DIR/golangci-go-cache GOFLAGS=-buildvcs=false golangci-lint run" "$SCRIPT_DIR/quality_gate.sh"; then
-		echo "FAIL: quality_gate.sh does not isolate lint, Go build, and uv caches"
-		return 1
-	fi
 	if ! grep -q 'QG_STAGE_ASSETS_LOCK=""' "$SCRIPT_DIR/quality_gate.sh" ||
 		! grep -q 'QG_RUN_LOCK=""' "$SCRIPT_DIR/quality_gate.sh" ||
 		! grep -q 'trap cleanup_qg EXIT' "$SCRIPT_DIR/quality_gate.sh" ||
@@ -936,6 +968,31 @@ test_quality_gate_stage_assets_fail_closed() {
 		return 1
 	fi
 	return 0
+}
+
+# Test: the checked-in gate keeps only transient scratch data under TMPDIR and
+# inherits shared tool caches (or each tool's standard external default).
+# shellcheck disable=SC2016,SC2317,SC2329
+test_quality_gate_uses_shared_external_caches() {
+	local gate="$SCRIPT_DIR/quality_gate.sh"
+	local cache_override
+
+	if ! grep -q 'QG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/qg-\$\$-XXXXXX")' "$gate"; then
+		echo "FAIL: quality_gate.sh does not create its scratch directory below TMPDIR"
+		return 1
+	fi
+
+	for cache_override in \
+		'export GOCACHE=' \
+		'export GOMODCACHE=' \
+		'export GOLANGCI_LINT_CACHE=' \
+		'export UV_CACHE_DIR=' \
+		'GOCACHE=\$QG_DIR/'; do
+		if grep -q "$cache_override" "$gate"; then
+			echo "FAIL: quality_gate.sh overrides shared cache via $cache_override"
+			return 1
+		fi
+	done
 }
 
 # Test: a process that times out waiting for the repo-wide QG lock must not
@@ -1020,8 +1077,12 @@ test_quality_gate_run_lock_archives_stale_legacy_lock() {
 		echo 'mkdir -p "$QG_DIR"'
 		sed -n '/^cleanup_qg()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^quality_gate_lock_age_seconds()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_process_start_time()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_lock_owner_matches_process()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_process_has_descendants()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^quality_gate_lock_stale()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^archive_stale_quality_gate_lock()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^cleanup_archived_stale_quality_gate_locks()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^write_quality_gate_lock_owner()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^quality_gate_lock_poll_seconds()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^quality_gate_lock_timeout_reached()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
@@ -1039,6 +1100,67 @@ test_quality_gate_run_lock_archives_stale_legacy_lock() {
 
 	if ! bash "$harness" >"$tmpdir/out" 2>"$tmpdir/err"; then
 		echo "FAIL: acquire_quality_gate_lock did not recover a stale legacy lock"
+		cat "$tmpdir/out"
+		cat "$tmpdir/err"
+		rm -rf "$tmpdir"
+		return 1
+	fi
+	rm -rf "$tmpdir"
+	return 0
+}
+
+# Test: archived stale run locks are swept on acquisition once they exceed the
+# stale threshold, while newer archives and the newly acquired live lock stay.
+# shellcheck disable=SC2016,SC2317,SC2329
+test_quality_gate_archived_stale_locks_are_garbage_collected() {
+	if ! grep -q 'cleanup_archived_stale_quality_gate_locks()' "$SCRIPT_DIR/quality_gate.sh" ||
+		! grep -q 'cleanup_archived_stale_quality_gate_locks()' "$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go"; then
+		echo "FAIL: quality gate does not garbage-collect archived stale run locks"
+		return 1
+	fi
+
+	local tmpdir lockdir fresh_archive harness old_archive
+	tmpdir=$(mktemp -d)
+	lockdir="$tmpdir/.oro-quality-gate.lock"
+	fresh_archive="${lockdir}.stale.fresh.999"
+	harness="$tmpdir/run-lock-archive-gc.sh"
+	for old_archive in "${lockdir}.stale.old-one.111" "${lockdir}.stale.old-two.222" "${lockdir}.stale.old-three.333"; do
+		mkdir "$old_archive"
+		echo 'pid=999999' >"$old_archive/owner"
+		touch -t 200001010000 "$old_archive"
+	done
+	mkdir "$fresh_archive"
+	echo 'pid=999999' >"$fresh_archive/owner"
+	{
+		echo 'set -euo pipefail'
+		printf 'REPO_ROOT=%q\n' "$tmpdir"
+		printf 'QG_DIR=%q\n' "$tmpdir/qg"
+		echo 'QG_STAGE_ASSETS_LOCK=""'
+		echo 'QG_RUN_LOCK=""'
+		echo 'ORO_QG_STALE_LOCK_SECONDS=10'
+		echo 'mkdir -p "$QG_DIR"'
+		sed -n '/^cleanup_qg()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_lock_age_seconds()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^cleanup_archived_stale_quality_gate_locks()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_process_start_time()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^write_quality_gate_lock_owner()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_lock_poll_seconds()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_lock_timeout_reached()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^create_quality_gate_queue_ticket()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_queue_ticket_stale()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^cleanup_stale_quality_gate_queue_tickets()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^first_quality_gate_queue_ticket()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_lock_is_inherited()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^acquire_quality_gate_lock()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		echo 'trap cleanup_qg EXIT'
+		echo 'acquire_quality_gate_lock'
+		echo '[ -d "$REPO_ROOT/.oro-quality-gate.lock.stale.fresh.999" ]'
+		echo '[ -f "$QG_RUN_LOCK/owner" ]'
+		echo '! find "$REPO_ROOT" -maxdepth 1 -name ".oro-quality-gate.lock.stale.old-*" | grep -q .'
+	} >"$harness"
+
+	if ! bash "$harness" >"$tmpdir/out" 2>"$tmpdir/err"; then
+		echo "FAIL: acquire_quality_gate_lock did not garbage-collect archived stale run locks"
 		cat "$tmpdir/out"
 		cat "$tmpdir/err"
 		rm -rf "$tmpdir"
@@ -1444,13 +1566,133 @@ test_quality_gate_invalid_locale_bootstraps_before_bash() {
 		echo "FAIL: quality_gate.sh does not guard the Bash bootstrap"
 		return 1
 	fi
+	if ! head -30 "$SCRIPT_DIR/quality_gate.sh" | grep -q 'BASHPID'; then
+		echo "FAIL: quality_gate.sh bootstrap does not distinguish Bash subshell PIDs"
+		return 1
+	fi
 	# shellcheck disable=SC2016
-	if ! head -25 "$SCRIPT_DIR/quality_gate.sh" | grep -q 'exec /usr/bin/env bash "$0" "$@"'; then
-		echo "FAIL: quality_gate.sh does not exec Bash after locale normalization"
+	if ! head -45 "$SCRIPT_DIR/quality_gate.sh" | grep -q 'exec env -u BASH_ENV "\$qg_bash" "\$0" "\$@"'; then
+		echo "FAIL: quality_gate.sh does not exec its verified Bash after locale normalization"
 		return 1
 	fi
 	if ! grep -q '^const qualityGateTmpl = `#!/bin/sh' "$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go"; then
 		echo "FAIL: generated quality gate template must use /bin/sh bootstrap before Bash"
+		return 1
+	fi
+}
+
+# Test: a restricted macOS-style PATH must not select /bin/bash 3.2, which
+# cannot run mapfile-based lanes. The bootstrap must locate Bash 4+ before it
+# can launch any lane, and its generated counterpart must retain that guard.
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_bootstrap_selects_bash4_or_fails() {
+	local tmpdir unavailable output rc
+	tmpdir=$(mktemp -d)
+	# shellcheck disable=SC2064
+	trap "rm -rf '$tmpdir'" RETURN
+
+	set +e
+	output=$(PATH=/usr/bin:/bin "$SCRIPT_DIR/quality_gate.sh" --help 2>&1)
+	rc=$?
+	set -e
+
+	if [ "$rc" -ne 0 ] && ! printf '%s\n' "$output" | grep -q 'requires Bash 4 or newer'; then
+		echo "FAIL: restricted PATH bootstrap failed without a deterministic Bash 4+ diagnostic"
+		printf '%s\n' "$output"
+		return 1
+	fi
+	if [ "$rc" -eq 0 ] && ! printf '%s\n' "$output" | grep -q '^Usage: '; then
+		echo "FAIL: restricted PATH bootstrap did not reach quality gate help"
+		printf '%s\n' "$output"
+		return 1
+	fi
+	unavailable="$tmpdir/quality_gate.sh"
+	sed 's#/opt/homebrew/bin/bash /usr/local/bin/bash#'"$tmpdir"'/missing-bash '"$tmpdir"'/also-missing-bash#' "$SCRIPT_DIR/quality_gate.sh" >"$unavailable"
+	chmod +x "$unavailable"
+	set +e
+	output=$(PATH=/usr/bin:/bin "$unavailable" --help 2>&1)
+	rc=$?
+	set -e
+	if [ "$rc" -ne 2 ] || ! printf '%s\n' "$output" | grep -q 'requires Bash 4 or newer'; then
+		echo "FAIL: bootstrap without Bash 4+ did not emit its deterministic diagnostic"
+		printf '%s\n' "$output"
+		return 1
+	fi
+	for file in "$SCRIPT_DIR/quality_gate.sh" "$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go"; do
+		if ! grep -q 'BASH_VERSINFO\[0\]' "$file"; then
+			echo "FAIL: $file does not verify a Bash 4+ interpreter"
+			return 1
+		fi
+		if ! grep -q '/opt/homebrew/bin/bash' "$file"; then
+			echo "FAIL: $file does not try Homebrew Bash before PATH Bash"
+			return 1
+		fi
+	done
+}
+
+# Test: an inherited bootstrap marker must not make a fresh /bin/sh launch skip
+# its one required Bash re-exec. BASH_ENV is deliberately ignored so an ambient
+# shell hook cannot recursively launch another quality gate during that exec.
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_bootstrap_ignores_inherited_shell_state() {
+	local tmpdir bash_env marker bash_dir output rc
+	tmpdir=$(mktemp -d)
+	# shellcheck disable=SC2064
+	trap "rm -rf '$tmpdir'" RETURN
+	bash_env="$tmpdir/bash_env"
+	marker="$tmpdir/bash-env-ran"
+	bash_dir="$tmpdir/bin"
+	mkdir -p "$bash_dir"
+	cat >"$bash_env" <<EOF
+printf 'sourced\\n' >"$marker"
+EOF
+	cat >"$bash_dir/bash" <<EOF
+#!/bin/sh
+printf 'bootstrap:%s\\n' "\${BASH_ENV:+set}" >"$tmpdir/bash-bootstrap"
+exec /bin/bash "\$@"
+EOF
+	chmod +x "$bash_dir/bash"
+
+	set +e
+	output=$(PATH="$bash_dir:$PATH" ORO_QG_BASH_BOOTSTRAPPED=1 BASH_ENV="$bash_env" "$SCRIPT_DIR/quality_gate.sh" --help 2>&1)
+	rc=$?
+	set -e
+
+	if [ "$rc" -ne 0 ] || ! printf '%s\\n' "$output" | grep -q '^Usage: '; then
+		echo "FAIL: inherited bootstrap state did not reach Bash help output (exit $rc)"
+		printf '%s\\n' "$output"
+		return 1
+	fi
+	if [ -e "$marker" ]; then
+		echo "FAIL: quality_gate.sh sourced inherited BASH_ENV during bootstrap"
+		return 1
+	fi
+}
+
+# Test: a quality gate launched by an active gate must exit before it can start
+# another set of lanes. The active parent retains responsibility for the final
+# terminal summary.
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_nested_invocation_exits_before_lanes() {
+	local output rc
+
+	set +e
+	output=$(/bin/bash -c 'ORO_QG_ACTIVE_PID=$$ "$1" --help; status=$?; :; exit "$status"' _ "$SCRIPT_DIR/quality_gate.sh" 2>&1)
+	rc=$?
+	set -e
+
+	if [ "$rc" -ne 0 ]; then
+		echo "FAIL: nested quality gate exited $rc, want 0"
+		printf '%s\\n' "$output"
+		return 1
+	fi
+	if ! printf '%s\\n' "$output" | grep -q '^Nested quality gate invocation detected'; then
+		echo "FAIL: nested quality gate did not stop before starting lanes"
+		printf '%s\\n' "$output"
+		return 1
+	fi
+	if printf '%s\\n' "$output" | grep -q '^Usage: '; then
+		echo "FAIL: nested quality gate continued into its own command processing"
 		return 1
 	fi
 }
@@ -1464,10 +1706,11 @@ test_quality_gate_conflict_markers_fail_preflight() {
 	trap "rm -rf '$tmpdir'" RETURN
 
 	script="$tmpdir/quality_gate.sh"
-	awk 'NR == 25 {
+	awk '/^unset ORO_QG_BASH_BOOTSTRAPPED_PID$/ && !inserted {
 		print "<<<<<<< Updated upstream"
 		print "======="
 		print ">>>>>>> Stashed changes"
+		inserted = 1
 	}
 	{ print }' "$SCRIPT_DIR/quality_gate.sh" >"$script"
 	chmod +x "$script"
@@ -1574,6 +1817,7 @@ echo "=============================================="
 test_case "Reads config when present" test_reads_config_when_present
 test_case "Falls back when config missing" test_fallback_when_config_missing
 test_case "Skips when tool missing" test_skip_when_tool_missing
+test_case "Removes terminal escape artifacts at repo root" test_repo_root_rejects_terminal_escape_artifacts
 
 echo ""
 echo "Testing mutation trap handlers (oro-bl44)"
@@ -1630,8 +1874,10 @@ echo "=============================================="
 test_case "no SC2086 disable for \$changed" test_no_sc2086_disable_for_changed
 test_case "quality_gate.sh \$changed is quoted" test_quality_gate_changed_is_quoted
 test_case "quality_gate.sh stage-assets failures fail closed" test_quality_gate_stage_assets_fail_closed
+test_case "quality_gate.sh uses shared external caches" test_quality_gate_uses_shared_external_caches
 test_case "quality_gate.sh run lock timeout preserves holder" test_quality_gate_run_lock_timeout_preserves_holder
 test_case "quality_gate.sh archives stale legacy run lock" test_quality_gate_run_lock_archives_stale_legacy_lock
+test_case "quality_gate.sh garbage-collects archived stale run locks" test_quality_gate_archived_stale_locks_are_garbage_collected
 test_case "quality_gate.sh caps Go scheduler fanout" test_quality_gate_caps_go_scheduler_fanout
 test_case "go coverage threshold skips uncovered Go surfaces" test_go_coverage_threshold_skips_uncovered_go_surfaces
 test_case "quality_gate.sh Python tools avoid pyenv shims" test_quality_gate_python_tools_avoid_pyenv_shims
@@ -1639,6 +1885,9 @@ test_case "generated quality gate Python tools avoid pyenv shims" test_generated
 test_case "quality_gate.sh filesystem walkers are source scoped" test_quality_gate_filesystem_walkers_are_source_scoped
 test_case "quality_gate.sh invalid locale sanitized" test_quality_gate_invalid_locale_sanitized
 test_case "quality_gate.sh invalid locale bootstraps before bash" test_quality_gate_invalid_locale_bootstraps_before_bash
+test_case "quality_gate.sh bootstrap selects Bash 4+ or fails clearly" test_quality_gate_bootstrap_selects_bash4_or_fails
+test_case "quality_gate.sh bootstrap ignores inherited shell state" test_quality_gate_bootstrap_ignores_inherited_shell_state
+test_case "quality_gate.sh nested invocation exits before lanes" test_quality_gate_nested_invocation_exits_before_lanes
 test_case "quality_gate.sh conflict markers fail preflight" test_quality_gate_conflict_markers_fail_preflight
 test_case "Makefile git diff has 2>/dev/null" test_makefile_git_diff_stderr_redirect
 test_case "Makefile \$\$changed is quoted" test_makefile_changed_is_quoted

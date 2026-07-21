@@ -1,6 +1,7 @@
 package codex_test
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -196,6 +197,125 @@ func TestCodexWorkerSpawnerUsesFullAccessSandbox(t *testing.T) {
 	gotArgs := strings.Split(strings.TrimSpace(string(gotBytes)), "\n")
 	if !argPairPresent(gotArgs, "--sandbox", "danger-full-access") {
 		t.Fatalf("codex worker args must use full-access sandbox for git/state writes, got %v", gotArgs)
+	}
+}
+
+func TestCodexWorkerSpawnerStreamsPromptViaStdin(t *testing.T) {
+	t.Setenv("ORO_HOME", "")
+	t.Setenv("ORO_PROJECT", "")
+	workdir := t.TempDir()
+	binDir := t.TempDir()
+	argsReport := filepath.Join(t.TempDir(), "args.txt")
+	stdinReport := filepath.Join(t.TempDir(), "stdin.txt")
+	fakeCodex := filepath.Join(binDir, "codex")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ORO_TEST_ARGS\"\ncat > \"$ORO_TEST_STDIN\"\n"
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("ORO_TEST_ARGS", argsReport)
+	t.Setenv("ORO_TEST_STDIN", stdinReport)
+
+	validPrompt := "first line\n第二行\nlast line\n" + strings.Repeat("x", 1_500_000)
+	invalidPrompt := "before\n" + string([]byte{0xff}) + "\nafter"
+	for _, tc := range []struct {
+		name   string
+		prompt string
+		want   string
+	}{
+		{name: "large valid multiline", prompt: validPrompt, want: validPrompt},
+		{name: "invalid UTF-8", prompt: invalidPrompt, want: "before\n�\nafter"},
+		{name: "empty", prompt: "", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spawner := codexruntime.NewWorkerSpawner()
+			proc, stdout, _, err := spawner.Spawn(context.Background(), "gpt-5.5", tc.prompt, workdir)
+			if err != nil {
+				t.Fatalf("Spawn() error = %v", err)
+			}
+			defer stdout.Close()
+			if err := proc.Wait(); err != nil {
+				t.Fatalf("Wait() error = %v", err)
+			}
+
+			gotArgs, err := os.ReadFile(argsReport)
+			if err != nil {
+				t.Fatalf("read args: %v", err)
+			}
+			if got := bytes.Count(gotArgs, []byte("-\n")); got != 1 {
+				t.Fatalf("literal dash argv count = %d, want 1: %q", got, gotArgs)
+			}
+			if tc.want != "" && bytes.Contains(gotArgs, []byte(tc.want)) {
+				t.Fatal("assembled prompt unexpectedly present in argv")
+			}
+			gotStdin, err := os.ReadFile(stdinReport)
+			if err != nil {
+				t.Fatalf("read stdin: %v", err)
+			}
+			if got := string(gotStdin); got != tc.want {
+				t.Fatalf("stdin = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildBootstrapPromptInstructionSources(t *testing.T) {
+	prompt := "preserve\nall task bytes\n"
+	localInstructions := "\n  # Local instructions\n\nFollow local rules.\n"
+	homeInstructions := "\n  # Home instructions\n\nFollow home rules.\n"
+
+	for _, tc := range []struct {
+		name              string
+		localInstructions string
+		homeInstructions  string
+		want              string
+	}{
+		{
+			name:              "worktree local instructions prepend",
+			localInstructions: localInstructions,
+			want:              "# Local instructions\n\nFollow local rules.\n\n## Task\n\n" + prompt,
+		},
+		{
+			name:             "home instructions are fallback",
+			homeInstructions: homeInstructions,
+			want:             "# Home instructions\n\nFollow home rules.\n\n## Task\n\n" + prompt,
+		},
+		{
+			name:              "worktree instructions take precedence over home",
+			localInstructions: localInstructions,
+			homeInstructions:  homeInstructions,
+			want:              "# Local instructions\n\nFollow local rules.\n\n## Task\n\n" + prompt,
+		},
+		{
+			name: "neither source leaves prompt unchanged",
+			want: prompt,
+		},
+		{
+			name:              "blank sources leave prompt unchanged",
+			localInstructions: " \n\t ",
+			homeInstructions:  "\n",
+			want:              prompt,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workdir := t.TempDir()
+			oroHome := t.TempDir()
+			t.Setenv("ORO_HOME", oroHome)
+			if tc.localInstructions != "" {
+				if err := os.WriteFile(filepath.Join(workdir, "ORO_AGENT.md"), []byte(tc.localInstructions), 0o644); err != nil {
+					t.Fatalf("write worktree instructions: %v", err)
+				}
+			}
+			if tc.homeInstructions != "" {
+				if err := os.WriteFile(filepath.Join(oroHome, "ORO_AGENT.md"), []byte(tc.homeInstructions), 0o644); err != nil {
+					t.Fatalf("write home instructions: %v", err)
+				}
+			}
+
+			if got := codexruntime.BuildBootstrapPrompt(prompt, workdir); got != tc.want {
+				t.Fatalf("BuildBootstrapPrompt() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

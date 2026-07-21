@@ -20,6 +20,7 @@ type AgentConfig struct {
 	APIModels    map[string]string            `yaml:"api_models,omitempty"`
 	Roles        map[string]RoleConfig        `yaml:"roles,omitempty"`
 	Transport    TransportConfig              `yaml:"transport,omitempty"`
+	Factory      FactoryConfig                `yaml:"factory,omitempty"`
 }
 
 // ProviderMode names a built-in provider routing preset.
@@ -62,7 +63,9 @@ type TransportConfig struct{}
 
 // configFile is the top-level YAML document wrapper used only for parsing.
 type configFile struct {
-	Agent *AgentConfig `yaml:"agent"`
+	Agent   *AgentConfig       `yaml:"agent"`
+	Storage *storagePolicyFile `yaml:"storage"`
+	Factory *FactoryConfig     `yaml:"factory"`
 }
 
 func defaultAgentConfig() *AgentConfig {
@@ -73,6 +76,7 @@ func defaultAgentConfig() *AgentConfig {
 		Tiers:     tiersForProvider(coding),
 		APIModels: map[string]string{},
 		Roles:     rolesForProviderMode(coding, review),
+		Factory:   defaultFactoryConfig(),
 	}
 }
 
@@ -138,34 +142,22 @@ type providerProfile struct {
 }
 
 func codexProfile() providerProfile {
-	return providerProfile{
-		runtime:             "codex",
-		fastModel:           "gpt-5.5",
-		balancedModel:       "gpt-5.5",
-		deepModel:           "gpt-5.5",
-		backgroundModel:     "gpt-5.5",
-		fastReasoning:       "low",
-		balancedReasoning:   "low",
-		deepReasoning:       "high",
-		backgroundReasoning: "low",
-		escalationReasoning: "medium",
-		challengeReasoning:  "xhigh",
-	}
+	return oroCodexProfile()
 }
 
 func oroCodexProfile() providerProfile {
 	return providerProfile{
 		runtime:             "codex",
-		fastModel:           "gpt-5.6-terra",
+		fastModel:           "gpt-5.6-luna",
 		balancedModel:       "gpt-5.6-terra",
 		deepModel:           "gpt-5.6-sol",
-		backgroundModel:     "gpt-5.6-terra",
+		backgroundModel:     "gpt-5.6-luna",
 		fastReasoning:       "low",
 		balancedReasoning:   "medium",
-		deepReasoning:       "xhigh",
+		deepReasoning:       "high",
 		backgroundReasoning: "low",
-		escalationReasoning: "xhigh",
-		challengeReasoning:  "xhigh",
+		escalationReasoning: "high",
+		challengeReasoning:  "high",
 	}
 }
 
@@ -181,11 +173,13 @@ func claudeProfile() providerProfile {
 
 func fableProfile() providerProfile {
 	return providerProfile{
-		runtime:         "claude",
-		fastModel:       "fable",
-		balancedModel:   "fable",
-		deepModel:       "fable",
-		backgroundModel: "fable",
+		runtime:            "claude",
+		fastModel:          "fable",
+		balancedModel:      "fable",
+		deepModel:          "fable",
+		backgroundModel:    "fable",
+		deepReasoning:      "xhigh",
+		challengeReasoning: "xhigh",
 	}
 }
 
@@ -243,30 +237,50 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// Load reads the YAML file at path and returns the parsed AgentConfig.
-// When the file does not exist or the agent block is absent, built-in
-// defaults are returned. Parse errors are surfaced as-is.
-// Validation of field values lives in Validate() — this function only parses.
-func Load(path string) (*AgentConfig, error) {
-	cfg, _, err := loadIfAgentBlock(path)
+// Load reads the YAML file at path and returns the parsed project config.
+// When the file does not exist or the agent block is absent, built-in agent and
+// local quality-gate defaults are returned. Parse errors and invalid explicit
+// remote-gate configuration are surfaced to the caller.
+func Load(path string) (*Config, error) {
+	f, err := loadConfigFile(path)
 	if err != nil {
 		return nil, err
 	}
-	if cfg == nil {
+	if f == nil {
 		return defaultAgentConfig(), nil
+	}
+
+	cfg := defaultAgentConfig()
+	if f.Agent != nil {
+		cfg = f.Agent
+		if err := ApplyProviderMode(cfg); err != nil {
+			return nil, fmt.Errorf("agent provider mode in %s: %w", path, err)
+		}
+	}
+	if f.Factory != nil {
+		cfg.Factory = *f.Factory
+		if cfg.Factory.QualityGate.Mode == "" {
+			cfg.Factory.QualityGate.Mode = RemoteGateModeLocal
+		}
+	}
+	if cfg.Factory.Lifecycle.ManualIntegration && cfg.Factory.QualityGate.Mode == RemoteGateModeGitHubPR {
+		return nil, fmt.Errorf("invalid remote gate config: github-pr mode is incompatible with manual integration")
+	}
+	if err := ValidateRemoteGateConfig(cfg.Factory.QualityGate); err != nil {
+		return nil, err
 	}
 	return cfg, nil
 }
 
 // LoadWithPrecedence reads an agent block from the highest-priority config
-// layer that defines one. Agent configuration is global-user scoped, falling
-// back to project config only when higher layers are unset, absent, or do not
-// contain an agent block.
+// layer that defines one. Agent configuration is project scoped, falling back
+// to global config only when the project file is absent or does not contain an
+// agent block.
 //
 // Precedence:
-//  1. $ORO_HOME/config.yaml, when ORO_HOME is set
-//  2. ~/.oro/config.yaml
-//  3. projectConfigPath, typically <repo>/.oro/config.yaml
+//  1. projectConfigPath, typically <repo>/.oro/config.yaml
+//  2. $ORO_HOME/config.yaml, when ORO_HOME is set
+//  3. ~/.oro/config.yaml
 func LoadWithPrecedence(projectConfigPath string) (*AgentConfig, error) {
 	for _, path := range agentConfigCandidates(projectConfigPath) {
 		cfg, found, err := loadIfAgentBlock(path)
@@ -294,30 +308,22 @@ func HasAgentBlockWithPrecedence(projectConfigPath string) bool {
 
 func agentConfigCandidates(projectConfigPath string) []string {
 	candidates := make([]string, 0, 3)
+	if projectConfigPath != "" {
+		candidates = append(candidates, projectConfigPath)
+	}
 	if oroHome := os.Getenv("ORO_HOME"); oroHome != "" {
 		candidates = append(candidates, filepath.Join(oroHome, "config.yaml"))
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		candidates = append(candidates, filepath.Join(home, ".oro", "config.yaml"))
 	}
-	if projectConfigPath != "" {
-		candidates = append(candidates, projectConfigPath)
-	}
 	return candidates
 }
 
 func loadIfAgentBlock(path string) (*AgentConfig, bool, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // path accepted from caller
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, fmt.Errorf("reading %s: %w", path, err)
-	}
-
-	var f configFile
-	if err := yaml.Unmarshal(data, &f); err != nil {
-		return nil, false, fmt.Errorf("parsing %s: %w", path, err)
+	f, err := loadConfigFile(path)
+	if err != nil || f == nil {
+		return nil, false, err
 	}
 
 	if f.Agent == nil {
@@ -327,6 +333,22 @@ func loadIfAgentBlock(path string) (*AgentConfig, bool, error) {
 		return nil, false, fmt.Errorf("agent provider mode in %s: %w", path, err)
 	}
 	return f.Agent, true, nil
+}
+
+func loadConfigFile(path string) (*configFile, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // path accepted from caller
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+
+	var f configFile
+	if err := yaml.Unmarshal(data, &f); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	return &f, nil
 }
 
 // Validate checks AgentConfig for invalid role definitions and

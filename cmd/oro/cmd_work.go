@@ -20,6 +20,7 @@ import (
 	"oro/pkg/cards"
 	"oro/pkg/codesearch"
 	"oro/pkg/codestruct"
+	"oro/pkg/config"
 	"oro/pkg/dispatcher"
 	embeddings "oro/pkg/embed"
 	"oro/pkg/langprofile"
@@ -141,6 +142,7 @@ type workDeps struct {
 	recordQGFailure func(ctx context.Context, rec dispatcher.QGFailureRecord, cls dispatcher.QGFailureClassification) error
 	stdout          io.Writer
 	cardStore       cards.Store
+	storagePolicy   config.StoragePolicy
 }
 
 type standaloneBaseBranchPreparer interface {
@@ -300,6 +302,12 @@ func runWork(_ *cobra.Command, cfg *workConfig) error {
 	// Set up signal handling for graceful shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	storagePolicy, err := config.LoadStoragePolicy(ctx, config.StoragePolicySources{
+		ProjectConfigPath: filepath.Join(currentRepoRoot(), ".oro", "config.yaml"),
+	})
+	if err != nil {
+		return fmt.Errorf("load storage policy: %w", err)
+	}
 
 	repoRoot, err := os.Getwd()
 	if err != nil {
@@ -313,6 +321,7 @@ func runWork(_ *cobra.Command, cfg *workConfig) error {
 	if err != nil {
 		return err
 	}
+	deps.storagePolicy = storagePolicy
 
 	err = executeWork(ctx, cfg, deps)
 	var ee *exitError
@@ -429,7 +438,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	if resolveErr != nil {
 		return fmt.Errorf("resolve epic branch: %w", resolveErr)
 	}
-	if _, prepareErr := prepareStandaloneWorkTargetBranch(ctx, deps, targetBranch, defaultBranch, resolvedEpicID); prepareErr != nil {
+	if prepareErr := prepareStandaloneWorkTargetBranch(ctx, deps, targetBranch, defaultBranch, resolvedEpicID, cfg.bead); prepareErr != nil {
 		return fmt.Errorf("prepare target branch: %w", prepareErr)
 	}
 	worktree, branch, err := setupWorktree(ctx, cfg, deps, targetBranch)
@@ -508,25 +517,14 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		logStep("Skipping review (--skip-review)")
 	}
 
-	// Step 9: Pre-merge quality gate. Mutation testing is disabled unless explicitly requested.
-	logStep("Running pre-merge quality gate (%s)...", workMutationMode(cfg))
-	mutPassed, mutOutput, mutErr := deps.runQG(ctx, worktree, !cfg.mutationTesting)
-	if mutErr != nil {
-		recordWorkQGFailure(ctx, cfg, deps, "oro-work-pre-merge", mutErr.Error())
-		return fmt.Errorf("pre-merge quality gate error: %w", mutErr)
-	}
-	if !mutPassed {
-		recordWorkQGFailure(ctx, cfg, deps, "oro-work-pre-merge", mutOutput)
-		return &exitError{
-			code: exitCodeRetries,
-			msg:  fmt.Sprintf("Pre-merge quality gate failed:\n%s", mutOutput),
-		}
-	}
-	logStep("Pre-merge quality gate passed")
-
-	// Step 10: Merge to main.
+	// Step 9: Merge to main. The final quality gate runs inside mergeToMain
+	// after rebase and while the FF lock prevents the target from advancing.
 	mergeResult, mergeErr := mergeToMain(ctx, cfg, deps, worktree, branch, targetBranch)
 	if mergeErr != nil {
+		var exitErr *exitError
+		if errors.As(mergeErr, &exitErr) {
+			return exitErr
+		}
 		return &exitError{
 			code: exitCodeMergeFail,
 			msg:  fmt.Sprintf("Merge failed: %v", mergeErr),
@@ -555,41 +553,56 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	return nil
 }
 
-func prepareStandaloneWorkTargetBranch(ctx context.Context, deps *workDeps, targetBranch, defaultBranch, resolvedEpicID string) (bool, error) {
+func prepareStandaloneWorkTargetBranch(ctx context.Context, deps *workDeps, targetBranch, defaultBranch, resolvedEpicID string, bead *protocol.BeadDetail) error {
 	if deps == nil || deps.wtMgr == nil || resolvedEpicID == "" || targetBranch == "" || targetBranch == defaultBranch {
-		return false, nil
+		return nil
 	}
 	preparer, ok := deps.wtMgr.(standaloneBaseBranchPreparer)
 	if !ok {
-		return false, nil
+		return nil
 	}
 	fastForwarded, err := preparer.PrepareBaseBranchForAssignment(ctx, targetBranch, defaultBranch)
 	if err != nil {
-		return false, fmt.Errorf("prepare target branch %s from %s: %w", targetBranch, defaultBranch, err)
+		return fmt.Errorf("prepare target branch %s from %s: %w", targetBranch, defaultBranch, err)
 	}
 	if fastForwarded {
 		logStep("Fast-forwarded target branch %s to %s", targetBranch, defaultBranch)
 	}
-	if err := validateStandaloneEpicBranchSafe(ctx, deps, targetBranch, defaultBranch); err != nil {
-		return fastForwarded, err
-	}
-	return fastForwarded, nil
+	return validateStandaloneEpicBranchSafe(ctx, deps, targetBranch, defaultBranch, bead, resolvedEpicID)
 }
 
-func validateStandaloneEpicBranchSafe(ctx context.Context, deps *workDeps, targetBranch, defaultBranch string) error {
+func validateStandaloneEpicBranchSafe(ctx context.Context, deps *workDeps, targetBranch, defaultBranch string, bead *protocol.BeadDetail, resolvedEpicID string) error {
 	checker, ok := deps.wtMgr.(standaloneBaseBranchSafetyChecker)
 	if !ok {
 		return nil
 	}
-	hasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, targetBranch, defaultBranch)
+	diverged, err := standaloneEpicBranchesDiverged(ctx, checker, targetBranch, defaultBranch)
 	if err != nil {
-		return fmt.Errorf("check whether %s has unique commits relative to %s: %w", targetBranch, defaultBranch, err)
+		return fmt.Errorf("check whether %s diverged from %s: %w", targetBranch, defaultBranch, err)
 	}
-	if hasUniqueCommits {
-		return fmt.Errorf("epic branch %q has unique commits relative to %q; preserved divergent branch/worktree state and aborted before worker spawn. Inspect `git log --oneline --graph %s %s`, then preserve or port wanted commits before resetting %s to %s",
+	if diverged {
+		if dispatcher.IsEpicRebaseChild(bead, resolvedEpicID, targetBranch) {
+			return nil
+		}
+		return fmt.Errorf("epic branch %q diverged from %q; preserved divergent branch/worktree state and aborted before worker spawn. Inspect `git log --oneline --graph %s %s`, then preserve or port wanted commits before resetting %s to %s",
 			targetBranch, defaultBranch, defaultBranch, targetBranch, targetBranch, defaultBranch)
 	}
 	return nil
+}
+
+func standaloneEpicBranchesDiverged(ctx context.Context, checker standaloneBaseBranchSafetyChecker, targetBranch, defaultBranch string) (bool, error) {
+	targetHasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, targetBranch, defaultBranch)
+	if err != nil {
+		return false, fmt.Errorf("check unique commits on %s relative to %s: %w", targetBranch, defaultBranch, err)
+	}
+	if !targetHasUniqueCommits {
+		return false, nil
+	}
+	defaultHasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, defaultBranch, targetBranch)
+	if err != nil {
+		return false, fmt.Errorf("check unique commits on %s relative to %s: %w", defaultBranch, targetBranch, err)
+	}
+	return defaultHasUniqueCommits, nil
 }
 
 func resolveWorkerRuntimeModel(cfg *workConfig) (runtime, model, reasoning string) {
@@ -1050,9 +1063,34 @@ func mergeToMain(ctx context.Context, cfg *workConfig, deps *workDeps, worktree,
 		Worktree:     worktree,
 		BeadID:       cfg.beadID,
 		TargetBranch: targetBranch,
+		PreFFCheck: func(checkCtx context.Context, finalWorktree string) error {
+			logStep("Running pre-merge quality gate (%s)...", workMutationMode(cfg))
+			passed, output, qgErr := deps.runQG(checkCtx, finalWorktree, !cfg.mutationTesting)
+			if qgErr != nil {
+				return &merge.PreFFCheckError{Output: qgErr.Error(), Err: qgErr}
+			}
+			if !passed {
+				return &merge.PreFFCheckError{Output: output, Err: errors.New("quality gate failed")}
+			}
+			logStep("Pre-merge quality gate passed")
+			return nil
+		},
 	})
 	if err == nil {
 		return result, nil
+	}
+
+	var preFFErr *merge.PreFFCheckError
+	if errors.As(err, &preFFErr) {
+		output := preFFErr.Output
+		if output == "" {
+			output = preFFErr.Error()
+		}
+		recordWorkQGFailure(ctx, cfg, deps, "oro-work-pre-merge", output)
+		return nil, &exitError{
+			code: exitCodeRetries,
+			msg:  fmt.Sprintf("Pre-merge quality gate failed:\n%s", output),
+		}
 	}
 
 	var conflictErr *merge.ConflictError

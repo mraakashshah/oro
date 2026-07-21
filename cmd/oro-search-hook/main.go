@@ -1,11 +1,24 @@
-// Binary oro-search-hook is a Claude Code PreToolUse hook that intercepts Read
-// tool calls and returns AST-based summaries instead of raw file content for
-// large Go source files. This saves tokens by replacing full file reads with
-// compact structural summaries (function signatures, type declarations, etc.).
+// Binary oro-search-hook is a PreToolUse hook that intercepts file reads and
+// returns AST-based summaries instead of raw file content for large source
+// files. This saves tokens by replacing full file reads with compact structural
+// summaries (function signatures, type declarations, etc.).
 //
-// Protocol: reads JSON from stdin, writes JSON to stdout.
-//   - Allow (pass through): {}
-//   - Deny (with summary):  {"permissionDecision":"deny","permissionDecisionReason":"..."}
+// It handles three read surfaces:
+//   - Claude Code Read tool (tool_name="Read", tool_input.file_path).
+//   - Codex Bash reads (tool_name="Bash", a bare `cat [--] <path>`).
+//   - Legacy Codex view (tool_name="str_replace_based_edit_tool", command="view").
+//
+// Protocol: reads JSON from stdin, writes to stdout.
+//   - Claude/legacy allow (pass through): {}
+//   - Claude/legacy deny (with summary):  {"permissionDecision":"deny","permissionDecisionReason":"..."}
+//   - Codex Bash allow (pass through):    EMPTY STDOUT (zero bytes) — matches the
+//     sibling destructive_command_guard.py contract; {} is unverified on the
+//     Bash surface and could be parsed as a malformed decision.
+//   - Codex Bash intercept (with summary): allow + updatedInput rewriting the
+//     `cat` into `printf '%s' '<summary>'`. Codex exec ignores a PreToolUse deny
+//     for trusted read commands (cat/ls/sed run regardless), so the read is
+//     suppressed by REWRITING the command, not denying it — verified live against
+//     codex-cli 0.144.6.
 package main
 
 import (
@@ -13,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"oro/pkg/codesearch"
 )
@@ -39,8 +53,10 @@ type hookInput struct {
 }
 
 // toolInput represents the tool_input field from the Claude Code hook payload.
+// Command carries the Codex Bash shell string (tool_name="Bash").
 type toolInput struct {
 	FilePath string  `json:"file_path"`
+	Command  string  `json:"command,omitempty"`
 	Offset   float64 `json:"offset,omitempty"`
 	Limit    float64 `json:"limit,omitempty"`
 }
@@ -67,6 +83,24 @@ type denyResponse struct {
 	PermissionDecisionReason string `json:"permissionDecisionReason"`
 }
 
+// codexRewriteResponse is the JSON shape for intercepting a Codex Bash read.
+//
+// Codex exec does NOT honor a PreToolUse "deny" for trusted read commands
+// (cat/ls/sed run regardless — verified live against codex-cli 0.144.6), so a
+// deny cannot suppress a `cat`. Codex DOES honor `updatedInput`, which rewrites
+// the command before execution. We therefore ALLOW the call but rewrite
+// `cat <path>` into a command that emits the AST summary, so the model receives
+// the summary and the raw file is never read.
+type codexRewriteResponse struct {
+	HookSpecificOutput struct {
+		HookEventName      string `json:"hookEventName"`
+		PermissionDecision string `json:"permissionDecision"`
+		UpdatedInput       struct {
+			Command string `json:"command"`
+		} `json:"updatedInput"`
+	} `json:"hookSpecificOutput"`
+}
+
 // allowJSON is the pre-encoded allow response (empty JSON object).
 var allowJSON = []byte("{}")
 
@@ -79,15 +113,19 @@ var allowJSON = []byte("{}")
 //
 // Shape detection (runtime selected by inspecting stdin):
 //  1. Claude Code shape: tool_name="Read", file at tool_input.file_path.
-//  2. Codex shape: tool_name="str_replace_based_edit_tool", command="view",
+//  2. Codex Bash shape: tool_name="Bash", shell string at tool_input.command.
+//  3. Legacy Codex view: tool_name="str_replace_based_edit_tool", command="view",
 //     file at tool_input.path. No hook_type field.
-//  3. Unknown shape: fail-open allow (user-never-blocked invariant).
+//  4. Unknown shape: fail-open allow (user-never-blocked invariant).
 //
 // Within each shape:
-//   - Non-read tools / non-view commands: allow.
+//   - Non-read tools / non-cat commands / non-view commands: allow.
 //   - Bypass conditions (small file, test file, config, offset/limit/view_range): allow.
 //   - Large file: summarize and deny with summary.
 //   - Summarize error: allow (fail open).
+//
+// Allow contracts differ by surface: Claude/legacy allow with {}; the Codex Bash
+// arm allows with EMPTY STDOUT (nil), matching destructive_command_guard.py.
 func HandleHook(input []byte) []byte {
 	var hook hookInput
 	if err := json.Unmarshal(input, &hook); err != nil {
@@ -99,8 +137,12 @@ func HandleHook(input []byte) []byte {
 		// Claude Code shape: file path at tool_input.file_path.
 		return handleClaudeRead(hook.ToolInput)
 
+	case "Bash":
+		// Codex Bash shape: recognize only a bare `cat [--] <path>` read.
+		return handleCodexBash(hook.ToolInput.Command)
+
 	case "str_replace_based_edit_tool":
-		// Codex shape: file path at tool_input.path, view indicated by command="view".
+		// Legacy Codex shape: file path at tool_input.path, view indicated by command="view".
 		var codexHook codexHookInput
 		if err := json.Unmarshal(input, &codexHook); err != nil {
 			return allowJSON
@@ -159,6 +201,88 @@ func handleCodexView(ti codexToolInput) []byte {
 		return allowJSON
 	}
 	return summarizeAndDeny(ti.Path)
+}
+
+// shellMetaChars are characters whose presence signals shell syntax we refuse
+// to reason about: pipes, chains, redirects, command substitution, globs,
+// quoting, tilde/home expansion, history expansion. Any of them makes the
+// command ambiguous, so handleCodexBash fails open.
+const shellMetaChars = "|&;<>$`(){}[]*?~!'\"\\\n\r"
+
+// simpleCatPath returns the single file path of a bare `cat <path>` or
+// `cat -- <path>` command and true. Any other form — extra flags, multiple
+// files, or shell metacharacters — returns ("", false) so the caller fails open.
+func simpleCatPath(command string) (string, bool) {
+	if strings.ContainsAny(command, shellMetaChars) {
+		return "", false
+	}
+	fields := strings.Fields(command)
+	switch {
+	case len(fields) == 2 && fields[0] == "cat" && !strings.HasPrefix(fields[1], "-"):
+		return fields[1], true
+	case len(fields) == 3 && fields[0] == "cat" && fields[1] == "--":
+		return fields[2], true
+	default:
+		return "", false
+	}
+}
+
+// handleCodexBash intercepts a Codex Bash file read. It recognizes ONLY a bare
+// `cat [--] <path>` of a large code file; every other command shape fails open.
+//
+// Because codex exec ignores a PreToolUse deny for trusted read commands, the
+// interception ALLOWS the call and rewrites the command via updatedInput to emit
+// the AST summary instead of the raw file (see codexRewriteResponse). The Codex
+// Bash allow / fail-open contract is EMPTY STDOUT (nil) — NOT {}, which is
+// unverified on the Bash surface and could be parsed as a malformed decision.
+func handleCodexBash(command string) []byte {
+	filePath, ok := simpleCatPath(command)
+	if !ok {
+		return nil
+	}
+	info, err := os.Stat(filePath)
+	if err != nil {
+		return nil
+	}
+	cti := codesearch.ToolInput{
+		FilePath: filePath,
+		FileSize: info.Size(),
+	}
+	if codesearch.ShouldBypass(cti) {
+		return nil
+	}
+	return summarizeAndRewriteCodex(filePath)
+}
+
+// summaryHeader labels the rewritten output so the model knows it received a
+// structural summary in place of the raw file.
+const summaryHeader = "[oro-search-hook] structural summary — raw file read suppressed to save context:\n\n"
+
+// summarizeAndRewriteCodex summarizes filePath and returns a Codex allow+rewrite
+// response: the `cat` is replaced with a `printf` that prints the summary, so the
+// raw file is never read. On summarization error, returns nil (empty stdout =
+// fail-open allow), letting the original `cat` run rather than emitting nothing.
+func summarizeAndRewriteCodex(filePath string) []byte {
+	summary, err := codesearch.SummarizeFile(filePath)
+	if err != nil {
+		return nil
+	}
+	var resp codexRewriteResponse
+	resp.HookSpecificOutput.HookEventName = "PreToolUse"
+	resp.HookSpecificOutput.PermissionDecision = "allow"
+	resp.HookSpecificOutput.UpdatedInput.Command = "printf '%s' " + shellSingleQuote(summaryHeader+summary)
+	out, err := json.Marshal(resp)
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
+// shellSingleQuote wraps s in single quotes for safe POSIX-shell interpolation,
+// escaping any embedded single quotes as '\”. printf '%s' <quoted> then prints
+// s verbatim regardless of newlines or % characters in the summary.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // summarizeAndDeny attempts to summarize filePath and returns a deny response.

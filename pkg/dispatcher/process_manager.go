@@ -18,16 +18,34 @@ import (
 //
 // Thread-safe: all access to the process map is protected by a mutex.
 type ExecProcessManager struct {
-	socketPath string
-	oroHome    string
-	mu         sync.Mutex
-	procs      map[string]*os.Process
-	wg         sync.WaitGroup
+	socketPath  string
+	oroHome     string
+	lifecycleMu sync.Mutex
+	mu          sync.Mutex
+	procs       map[string]*managedProcess
+	wg          sync.WaitGroup
+
+	residualScanFn func(context.Context, []string) ([]OwnedProcess, error)
+	residualKillFn func(context.Context, ...OwnedProcess) error
 
 	// cmdFactory builds the exec.Cmd for a given worker ID.
 	// Defaults to spawning `oro worker --socket <socketPath> --id <id>`.
 	// Tests can override this to spawn a dummy command like `sleep`.
 	cmdFactory func(id string) *exec.Cmd
+}
+
+type managedProcess struct {
+	process *os.Process
+	done    <-chan struct{}
+}
+
+func newExecProcessManager(socketPath string) *ExecProcessManager {
+	return &ExecProcessManager{
+		socketPath:     socketPath,
+		procs:          make(map[string]*managedProcess),
+		residualScanFn: scanOwnedProcesses,
+		residualKillFn: killOwnedProcesses,
+	}
 }
 
 // NewExecProcessManager creates a new ExecProcessManager that spawns
@@ -36,10 +54,7 @@ type ExecProcessManager struct {
 //
 //oro:testonly
 func NewExecProcessManager(socketPath string) *ExecProcessManager {
-	pm := &ExecProcessManager{
-		socketPath: socketPath,
-		procs:      make(map[string]*os.Process),
-	}
+	pm := newExecProcessManager(socketPath)
 	// Default to sleep for unit testing (no actual oro binary needed).
 	pm.cmdFactory = func(_ string) *exec.Cmd {
 		//nolint:gosec // test-only dummy process
@@ -54,16 +69,13 @@ func NewExecProcessManager(socketPath string) *ExecProcessManager {
 // oroHome/workers/<id>/output.log; if oroHome is empty, output falls back
 // to os.Stdout/os.Stderr with a warning.
 func NewOroProcessManager(socketPath, oroHome string) *ExecProcessManager {
-	pm := &ExecProcessManager{
-		socketPath: socketPath,
-		oroHome:    oroHome,
-		procs:      make(map[string]*os.Process),
-	}
+	pm := newExecProcessManager(socketPath)
+	pm.oroHome = oroHome
 	self := os.Args[0]
 	pm.cmdFactory = func(id string) *exec.Cmd {
 		//nolint:gosec // intentionally spawning worker subprocess
 		cmd := exec.CommandContext(context.Background(), self, "worker", "--socket", socketPath, "--id", id)
-		cmd.Env = processenv.ForWorkdir(os.Environ(), "")
+		cmd.Env = processenv.WithWorkerOwnership(processenv.ForWorkdir(os.Environ(), ""), socketPath, id)
 		return cmd
 	}
 	return pm
@@ -75,11 +87,9 @@ func NewOroProcessManager(socketPath, oroHome string) *ExecProcessManager {
 //
 //oro:testonly
 func NewExecProcessManagerWithFactory(socketPath string, factory func(id string) *exec.Cmd) *ExecProcessManager {
-	return &ExecProcessManager{
-		socketPath: socketPath,
-		procs:      make(map[string]*os.Process),
-		cmdFactory: factory,
-	}
+	pm := newExecProcessManager(socketPath)
+	pm.cmdFactory = factory
+	return pm
 }
 
 // SetCmdFactory replaces the command factory on an existing ExecProcessManager.
@@ -88,6 +98,19 @@ func NewExecProcessManagerWithFactory(socketPath string, factory func(id string)
 //oro:testonly
 func (pm *ExecProcessManager) SetCmdFactory(factory func(id string) *exec.Cmd) {
 	pm.cmdFactory = factory
+}
+
+// SetResidualProcessHooks replaces detached-process discovery and termination.
+//
+//oro:testonly
+func (pm *ExecProcessManager) SetResidualProcessHooks(
+	scanFn func(context.Context, []string) ([]OwnedProcess, error),
+	killFn func(context.Context, ...OwnedProcess) error,
+) {
+	pm.lifecycleMu.Lock()
+	defer pm.lifecycleMu.Unlock()
+	pm.residualScanFn = scanFn
+	pm.residualKillFn = killFn
 }
 
 // CmdForWorker returns the exec.Cmd that would be used to spawn a worker
@@ -106,6 +129,15 @@ func (pm *ExecProcessManager) CmdForWorker(id string) *exec.Cmd {
 // oroHome/workers/<id>/output.log (created if needed). If oroHome is empty,
 // output falls back to os.Stdout/os.Stderr with a warning.
 func (pm *ExecProcessManager) Spawn(id string) (*os.Process, error) {
+	pm.lifecycleMu.Lock()
+	defer pm.lifecycleMu.Unlock()
+
+	if pm.isTracked(id) {
+		if err := pm.killTracked(id); err != nil {
+			return nil, fmt.Errorf("replace worker %s: %w", id, err)
+		}
+	}
+
 	cmd := pm.cmdFactory(id)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
@@ -150,40 +182,56 @@ func (pm *ExecProcessManager) startAndTrack(id string, cmd *exec.Cmd, logFile *o
 	}
 
 	proc := cmd.Process
-
-	pm.mu.Lock()
-	oldProc := pm.procs[id]
-	pm.procs[id] = proc
-	pm.mu.Unlock()
-	terminateProcessGroup(oldProc, &pm.wg)
-
-	// Reap the child process in the background to avoid zombies.
+	done := make(chan struct{})
 	pm.wg.Add(1)
 	go func() {
 		defer pm.wg.Done()
 		_ = cmd.Wait()
+		close(done)
 	}()
+
+	pm.mu.Lock()
+	pm.procs[id] = &managedProcess{process: proc, done: done}
+	pm.mu.Unlock()
 
 	return proc, nil
 }
 
 // terminateProcessGroup best-effort terminates a process spawned by Spawn.
 // Spawn always sets Setpgid, so the process PID is also its process group ID.
-func terminateProcessGroup(proc *os.Process, wg *sync.WaitGroup) {
+func terminateProcessGroup(proc *managedProcess) {
 	if proc == nil {
 		return
 	}
-	pgid := proc.Pid
+	pgid := proc.process.Pid
 	if err := syscall.Kill(-pgid, syscall.SIGTERM); err != nil {
-		_ = proc.Kill()
+		_ = proc.process.Kill()
+		waitForManagedExit(proc.done, time.Second)
 		return
 	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		time.Sleep(3 * time.Second)
-		_ = syscall.Kill(-pgid, syscall.SIGKILL)
-	}()
+	if waitForManagedExit(proc.done, 3*time.Second) {
+		return
+	}
+	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	waitForManagedExit(proc.done, time.Second)
+}
+
+func waitForManagedExit(done <-chan struct{}, timeout time.Duration) bool {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+func (pm *ExecProcessManager) isTracked(id string) bool {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	_, ok := pm.procs[id]
+	return ok
 }
 
 // IsAlive reports whether the tracked process for id is still running.
@@ -196,13 +244,19 @@ func (pm *ExecProcessManager) IsAlive(id string) bool {
 	if !ok || proc == nil {
 		return false
 	}
-	return proc.Signal(syscall.Signal(0)) == nil
+	return proc.process.Signal(syscall.Signal(0)) == nil
 }
 
 // Kill sends SIGTERM to the tracked worker process, waits a short grace
 // period, and then sends SIGKILL if the process is still alive. The worker
 // is removed from tracking regardless of outcome.
 func (pm *ExecProcessManager) Kill(id string) error {
+	pm.lifecycleMu.Lock()
+	defer pm.lifecycleMu.Unlock()
+	return pm.killTracked(id)
+}
+
+func (pm *ExecProcessManager) killTracked(id string) error {
 	pm.mu.Lock()
 	proc, ok := pm.procs[id]
 	if !ok {
@@ -212,33 +266,8 @@ func (pm *ExecProcessManager) Kill(id string) error {
 	delete(pm.procs, id)
 	pm.mu.Unlock()
 
-	// Send SIGTERM to the entire process group (negative PID) so that
-	// descendant processes (claude, node, bash) are also terminated.
-	// If SIGTERM fails (process already exited), force-kill as best-effort.
-	pgid := proc.Pid
-	termErr := syscall.Kill(-pgid, syscall.SIGTERM)
-	if termErr != nil {
-		_ = proc.Kill()
-		return nil //nolint:nilerr // SIGTERM failure means process already exited; not an error
-	}
-
-	// Wait up to 3 seconds for graceful exit.
-	done := make(chan struct{})
-	go func() {
-		_, _ = proc.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// Exited gracefully.
-	case <-time.After(3 * time.Second):
-		// Grace period expired; force-kill the entire process group.
-		_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		<-done
-	}
-
-	return nil
+	terminateProcessGroup(proc)
+	return pm.cleanupResidualProcesses(id)
 }
 
 // Wait blocks until all zombie reaper goroutines have completed.

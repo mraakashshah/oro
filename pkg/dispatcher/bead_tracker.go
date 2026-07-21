@@ -19,6 +19,7 @@ const worktreeFailureCooldown = 60 * time.Second
 // Synchronisation is provided by the Dispatcher-level mu.
 type BeadTracker struct {
 	rejectionCounts        map[string]int             // bead ID -> review rejection count
+	reviewBlockedCounts    map[string]int             // bead ID -> consecutive blocked review count
 	handoffCounts          map[string]int             // bead ID -> ralph handoff count
 	attemptCounts          map[string]int             // bead ID -> QG retry attempt count (deterministic failures)
 	transientCounts        map[string]int             // bead ID -> transient/flaky QG retry count (does not burn worker-fix budget)
@@ -47,6 +48,7 @@ func (d *Dispatcher) clearBeadTracking(beadID string) {
 	delete(d.transientCounts, beadID)
 	delete(d.handoffCounts, beadID)
 	delete(d.rejectionCounts, beadID)
+	delete(d.reviewBlockedCounts, beadID)
 	delete(d.checkpointCounts, beadID)
 	delete(d.pendingHandoffs, beadID)
 	delete(d.qgStuckTracker, beadID)
@@ -59,10 +61,31 @@ func (d *Dispatcher) clearBeadTracking(beadID string) {
 	d.mu.Unlock()
 }
 
-// clearRejectionCount removes the rejection counter for a bead (e.g., on approval or completion).
+// clearBeadTrackingPreservingBlockedReviewCount releases a retryable review
+// assignment while retaining its consecutive blocked-review count.
+func (d *Dispatcher) clearBeadTrackingPreservingBlockedReviewCount(beadID string) {
+	d.mu.Lock()
+	delete(d.attemptCounts, beadID)
+	delete(d.transientCounts, beadID)
+	delete(d.handoffCounts, beadID)
+	delete(d.rejectionCounts, beadID)
+	delete(d.checkpointCounts, beadID)
+	delete(d.pendingHandoffs, beadID)
+	delete(d.qgStuckTracker, beadID)
+	delete(d.escalatedBeads, beadID)
+	delete(d.worktreeFailures, beadID)
+	delete(d.exhaustedBeads, beadID)
+	delete(d.assigningBeads, beadID)
+	delete(d.mergingBeads, beadID)
+	delete(d.processedExternalClose, beadID)
+	d.mu.Unlock()
+}
+
+// clearRejectionCount removes all review retry counters for a bead.
 func (d *Dispatcher) clearRejectionCount(beadID string) {
 	d.mu.Lock()
 	delete(d.rejectionCounts, beadID)
+	delete(d.reviewBlockedCounts, beadID)
 	d.mu.Unlock()
 }
 
@@ -137,6 +160,7 @@ func (d *Dispatcher) deleteOrphanedTracking(activeBeads map[string]bool) int {
 		delete(d.transientCounts, beadID)
 		delete(d.handoffCounts, beadID)
 		delete(d.rejectionCounts, beadID)
+		delete(d.reviewBlockedCounts, beadID)
 		delete(d.checkpointCounts, beadID)
 		delete(d.pendingHandoffs, beadID)
 		delete(d.qgStuckTracker, beadID)
@@ -179,6 +203,9 @@ func (d *Dispatcher) gcWorktrees(ctx context.Context) {
 		if err != nil {
 			return false
 		}
+		if detail == nil {
+			return false
+		}
 		return detail.Status == "closed"
 	}
 	if err := d.worktrees.GCClosedWorktrees(ctx, isBeadClosed); err != nil {
@@ -208,6 +235,7 @@ func (d *Dispatcher) allTrackingKeys() []string {
 	addIntMapKeys(seen, d.transientCounts)
 	addIntMapKeys(seen, d.handoffCounts)
 	addIntMapKeys(seen, d.rejectionCounts)
+	addIntMapKeys(seen, d.reviewBlockedCounts)
 	addIntMapKeys(seen, d.checkpointCounts)
 	for id := range d.pendingHandoffs {
 		seen[id] = true

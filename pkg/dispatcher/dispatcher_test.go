@@ -23,6 +23,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"oro/pkg/testutil/qgserial"
+
 	"oro/pkg/beadstore"
 	"oro/pkg/cards"
 	"oro/pkg/dbutil"
@@ -128,6 +130,7 @@ type fakeBeadStore struct {
 	dependencyCycles     []beadstore.Cycle
 	journeys             map[string][]beadstore.JourneyEvent
 	metadataMatches      []*protocol.Bead
+	dependencies         []protocol.Dependency
 }
 
 func (m *fakeBeadStore) Ready(_ context.Context) ([]protocol.Bead, error) {
@@ -277,7 +280,17 @@ func (m *fakeBeadStore) Create(_ context.Context, params beadstore.CreateParams)
 		tier:               params.Tier,
 		metadata:           maps.Clone(params.Metadata),
 	})
-	bead := &protocol.Bead{ID: id, Status: status, Metadata: make(map[string]any, len(params.Metadata))}
+	bead := &protocol.Bead{
+		ID:                 id,
+		Title:              params.Title,
+		Status:             status,
+		Priority:           params.Priority,
+		Epic:               params.ParentID,
+		Tier:               protocol.Tier(params.Tier),
+		AcceptanceCriteria: params.AcceptanceCriteria,
+		Tags:               append([]string(nil), params.Tags...),
+		Metadata:           make(map[string]any, len(params.Metadata)),
+	}
 	for key, value := range params.Metadata {
 		bead.Metadata[key] = value
 	}
@@ -316,8 +329,29 @@ func (m *fakeBeadStore) HasChildren(_ context.Context, epicID string) (bool, err
 	return false, nil
 }
 
-func (m *fakeBeadStore) FindByParentAndTag(_ context.Context, _ string, _ string) ([]protocol.Bead, error) {
-	return []protocol.Bead{}, nil
+func (m *fakeBeadStore) FindByParentAndTag(_ context.Context, parentID, tag string) ([]protocol.Bead, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	values := make([]protocol.Bead, 0, len(m.metadataMatches))
+	for _, bead := range m.metadataMatches {
+		if bead == nil || bead.Epic != parentID || !slices.Contains(bead.Tags, tag) {
+			continue
+		}
+		values = append(values, *bead)
+	}
+	return values, nil
+}
+
+func (m *fakeBeadStore) AddDependency(_ context.Context, beadID, dependsOnID, depType string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, dependency := range m.dependencies {
+		if dependency.IssueID == beadID && dependency.DependsOnID == dependsOnID && dependency.Type == depType {
+			return nil
+		}
+	}
+	m.dependencies = append(m.dependencies, protocol.Dependency{IssueID: beadID, DependsOnID: dependsOnID, Type: depType})
+	return nil
 }
 
 func (m *fakeBeadStore) FindByMetadataKey(_ context.Context, key string) ([]*protocol.Bead, error) {
@@ -504,6 +538,7 @@ type mockWorktreeManager struct {
 	updateBranchRefFn func(target, source string) error
 	branchHeadFn      func(branch string) (string, error)
 	prepareBaseFn     func(ctx context.Context, branch, baseBranch string) (bool, error)
+	baseUniqueFn      func(ctx context.Context, branch, baseBranch string) (bool, error)
 	existsFn          func(ctx context.Context, path string) bool
 	currentBranchFn   func(ctx context.Context, path string) (string, error)
 	prepareReuseFn    func(ctx context.Context, worktree, branch, baseBranch string) (bool, error)
@@ -691,6 +726,244 @@ func (m *mockWorktreeManager) PrepareBaseBranchForAssignment(ctx context.Context
 	return false, nil
 }
 
+func (m *mockWorktreeManager) BaseBranchHasUniqueCommits(ctx context.Context, branch, baseBranch string) (bool, error) {
+	m.mu.Lock()
+	fn := m.baseUniqueFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, branch, baseBranch)
+	}
+	return false, nil
+}
+
+func TestEpicRebaseChildAssignableOnDivergedBranch(t *testing.T) {
+	const (
+		epicID     = "oro-26yy"
+		beadID     = "oro-fm29"
+		workerID   = "worker-rebase"
+		baseBranch = protocol.EpicBranchPrefix + epicID
+	)
+
+	t.Run("rebase child remains assignable without cooldown", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		bead := protocol.Bead{ID: beadID, Title: "Rebase " + baseBranch + " onto main", Epic: epicID}
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: bead.Title, Type: "task", Status: "open"}
+		d.worktrees = newDivergedAssignmentWorktreeManager(t, baseBranch)
+
+		if !d.ensureEpicBranchReady(ctx, bead, &trackedWorker{id: workerID}, baseBranch, epicID) {
+			t.Fatal("ensureEpicBranchReady = false, want rebase child to remain assignable")
+		}
+		d.mu.Lock()
+		_, inCooldown := d.worktreeFailures[beadID]
+		d.mu.Unlock()
+		if inCooldown {
+			t.Fatal("assignment failure cooldown recorded, want none")
+		}
+	})
+
+	t.Run("ordinary child remains rejected with cooldown", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		bead := protocol.Bead{ID: beadID, Title: "Implement epic work", Epic: epicID}
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: bead.Title, Type: "task", Status: "open"}
+		d.worktrees = newDivergedAssignmentWorktreeManager(t, baseBranch)
+
+		if d.ensureEpicBranchReady(ctx, bead, &trackedWorker{id: workerID}, baseBranch, epicID) {
+			t.Fatal("ensureEpicBranchReady = true, want ordinary child rejected")
+		}
+		d.mu.Lock()
+		_, inCooldown := d.worktreeFailures[beadID]
+		d.mu.Unlock()
+		if !inCooldown {
+			t.Fatal("assignment failure cooldown not recorded for ordinary child")
+		}
+	})
+
+	t.Run("ordinary child remains assignable when epic is only ahead", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		bead := protocol.Bead{ID: beadID, Title: "Implement epic work", Epic: epicID}
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: bead.Title, Type: "task", Status: "open"}
+		d.worktrees = newAheadAssignmentWorktreeManager(t, baseBranch)
+
+		if !d.ensureEpicBranchReady(ctx, bead, &trackedWorker{id: workerID}, baseBranch, epicID) {
+			t.Fatal("ensureEpicBranchReady = false, want ahead-only epic branch to remain assignable")
+		}
+		d.mu.Lock()
+		_, inCooldown := d.worktreeFailures[beadID]
+		d.mu.Unlock()
+		if inCooldown {
+			t.Fatal("assignment failure cooldown recorded for healthy ahead-only epic branch")
+		}
+	})
+
+	t.Run("rebase child remains rejected on operational preparation error", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		bead := protocol.Bead{ID: beadID, Title: "Rebase " + baseBranch + " onto main", Epic: epicID}
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: bead.Title, Type: "task", Status: "open"}
+		wtMgr.prepareBaseFn = func(context.Context, string, string) (bool, error) {
+			return false, fmt.Errorf("rev-parse target branch: %w", errors.ErrUnsupported)
+		}
+
+		if d.ensureEpicBranchReady(ctx, bead, &trackedWorker{id: workerID}, baseBranch, epicID) {
+			t.Fatal("ensureEpicBranchReady = true, want operational preparation error rejected")
+		}
+		d.mu.Lock()
+		_, inCooldown := d.worktreeFailures[beadID]
+		d.mu.Unlock()
+		if !inCooldown {
+			t.Fatal("assignment failure cooldown not recorded after operational error")
+		}
+	})
+}
+
+func TestAssignmentDivergenceCreatesOneRecoveryChild(t *testing.T) {
+	const (
+		epicID     = "oro-assignment-recovery"
+		epicBranch = protocol.EpicBranchPrefix + epicID
+		workerID   = "worker-assignment-recovery"
+	)
+
+	d, beads, worktrees, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	beads.shown[epicID] = &protocol.BeadDetail{ID: epicID, Type: "epic", Tier: protocol.TierDeep}
+	worktrees.branchExistsFn = func(_ context.Context, branch string) (bool, error) {
+		return branch == epicBranch, nil
+	}
+	worktrees.prepareBaseFn = func(context.Context, string, string) (bool, error) { return false, nil }
+	worktrees.baseUniqueFn = func(_ context.Context, branch, base string) (bool, error) {
+		return (branch == epicBranch && base == "main") || (branch == "main" && base == epicBranch), nil
+	}
+
+	ordinaryChildren := []protocol.Bead{
+		{ID: "oro-assignment-child-a", Title: "ordinary child a", Epic: epicID},
+		{ID: "oro-assignment-child-b", Title: "ordinary child b", Epic: epicID},
+	}
+	for _, child := range ordinaryChildren {
+		beads.shown[child.ID] = &protocol.BeadDetail{ID: child.ID, Title: child.Title, Type: "task", Status: "in_progress"}
+		if d.ensureEpicBranchReady(ctx, child, &trackedWorker{id: workerID}, epicBranch, epicID) {
+			t.Fatalf("ensureEpicBranchReady(%s) = true, want divergence rejection", child.ID)
+		}
+	}
+
+	created := requireCreatedCall(t, beads, func(call createCall) bool { return call.parent == epicID })
+	beads.mu.Lock()
+	createdCount := len(beads.created)
+	dependencies := append([]protocol.Dependency(nil), beads.dependencies...)
+	updates := maps.Clone(beads.updated)
+	beads.mu.Unlock()
+	if createdCount != 1 {
+		t.Fatalf("recovery children created = %d, want exactly one", createdCount)
+	}
+	if created.title != "Rebase "+epicBranch+" onto main" || created.priority != 0 || created.status != "open" || created.tier != string(protocol.TierDeep) {
+		t.Fatalf("recovery child = %#v, want open P0 canonical child inheriting deep tier", created)
+	}
+	for _, child := range ordinaryChildren {
+		if updates[child.ID] != "open" {
+			t.Errorf("ordinary child %s status = %q, want reopened", child.ID, updates[child.ID])
+		}
+	}
+	if len(dependencies) != 1 || dependencies[0] != (protocol.Dependency{IssueID: epicID, DependsOnID: created.id, Type: "blocks"}) {
+		t.Fatalf("recovery dependency = %#v, want epic blocked by recovery child", dependencies)
+	}
+
+	beads.shown[created.id] = &protocol.BeadDetail{ID: created.id, Title: created.title, Type: "task", Status: "open", AcceptanceCriteria: created.acceptanceCriteria}
+	if !d.ensureEpicBranchReady(ctx, protocol.Bead{ID: created.id, Title: created.title, Epic: epicID}, &trackedWorker{id: workerID}, epicBranch, epicID) {
+		t.Fatal("canonical recovery child is not assignable against its diverged epic branch")
+	}
+
+	worktrees.mergeFFOnlyFn = func(_, _ string) (string, error) { return "", errors.New("not a fast-forward") }
+	if err := d.ffMergeEpicBranch(ctx, epicID, workerID, "main"); err == nil {
+		t.Fatal("ffMergeEpicBranch error = nil, want failure")
+	}
+	beads.mu.Lock()
+	defer beads.mu.Unlock()
+	if len(beads.created) != 1 {
+		t.Fatalf("FF failure created %d recovery children, want reuse of the assignment-time child", len(beads.created))
+	}
+
+	t.Run("recovery child is ready in the production store", func(t *testing.T) {
+		db := newTestDB(t)
+		if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+			t.Fatalf("migrate bead schema: %v", err)
+		}
+		store := beadstore.NewSQLiteStore(db)
+		if _, err := store.Create(ctx, beadstore.CreateParams{ID: epicID, Title: "Recovery epic", Type: "epic"}); err != nil {
+			t.Fatalf("create recovery epic: %v", err)
+		}
+		realDispatcher := &Dispatcher{beads: store}
+		child, err := realDispatcher.ensureEpicRebaseChild(ctx, epicID, epicBranch, "main", "diverged")
+		if err != nil {
+			t.Fatalf("ensure recovery child: %v", err)
+		}
+		ready, err := store.Ready(ctx)
+		if err != nil {
+			t.Fatalf("read ready beads: %v", err)
+		}
+		if len(ready) != 1 || ready[0].ID != child.ID {
+			t.Fatalf("ready beads = %#v, want only recovery child %q", ready, child.ID)
+		}
+	})
+}
+
+func newDivergedAssignmentWorktreeManager(t *testing.T, branch string) WorktreeManager {
+	t.Helper()
+	repo := t.TempDir()
+	runAssignmentTestGit(t, repo, "init", "-b", "main")
+	runAssignmentTestGit(t, repo, "config", "user.email", "test@example.com")
+	runAssignmentTestGit(t, repo, "config", "user.name", "Oro Test")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write base commit: %v", err)
+	}
+	runAssignmentTestGit(t, repo, "add", "base.txt")
+	runAssignmentTestGit(t, repo, "commit", "-m", "base commit")
+	runAssignmentTestGit(t, repo, "checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(repo, "epic.txt"), []byte("epic\n"), 0o644); err != nil {
+		t.Fatalf("write epic commit: %v", err)
+	}
+	runAssignmentTestGit(t, repo, "add", "epic.txt")
+	runAssignmentTestGit(t, repo, "commit", "-m", "epic commit")
+	runAssignmentTestGit(t, repo, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(repo, "main.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatalf("write main commit: %v", err)
+	}
+	runAssignmentTestGit(t, repo, "add", "main.txt")
+	runAssignmentTestGit(t, repo, "commit", "-m", "main commit")
+	return NewGitWorktreeManager(repo, "", "", &ExecCommandRunner{})
+}
+
+func newAheadAssignmentWorktreeManager(t *testing.T, branch string) WorktreeManager {
+	t.Helper()
+	repo := t.TempDir()
+	runAssignmentTestGit(t, repo, "init", "-b", "main")
+	runAssignmentTestGit(t, repo, "config", "user.email", "test@example.com")
+	runAssignmentTestGit(t, repo, "config", "user.name", "Oro Test")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write base commit: %v", err)
+	}
+	runAssignmentTestGit(t, repo, "add", "base.txt")
+	runAssignmentTestGit(t, repo, "commit", "-m", "base commit")
+	runAssignmentTestGit(t, repo, "checkout", "-b", branch)
+	if err := os.WriteFile(filepath.Join(repo, "epic.txt"), []byte("epic\n"), 0o644); err != nil {
+		t.Fatalf("write epic commit: %v", err)
+	}
+	runAssignmentTestGit(t, repo, "add", "epic.txt")
+	runAssignmentTestGit(t, repo, "commit", "-m", "epic commit")
+	runAssignmentTestGit(t, repo, "checkout", "main")
+	return NewGitWorktreeManager(repo, "", "", &ExecCommandRunner{})
+}
+
+func runAssignmentTestGit(t *testing.T, repo string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+	}
+}
+
 func (m *mockWorktreeManager) RebaseOnto(_ context.Context, _, _ string) error {
 	return nil // default: rebase succeeds
 }
@@ -715,6 +988,18 @@ type mockEscalator struct {
 	err      error
 }
 
+type callbackSSEBroadcaster struct {
+	send func(eventType, beadID, workerID string)
+}
+
+func (b *callbackSSEBroadcaster) Send(eventType, beadID, workerID string) {
+	b.send(eventType, beadID, workerID)
+}
+
+func (b *callbackSSEBroadcaster) Subscribe() chan string { return make(chan string, 1) }
+
+func (b *callbackSSEBroadcaster) Unsubscribe(_ chan string) {}
+
 func (m *mockEscalator) Escalate(_ context.Context, msg string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -737,12 +1022,17 @@ type mockGitRunner struct {
 	conflict     bool   // if true, rebase returns conflict error
 	conflictOnce bool   // if true, fail on the first rebase only
 	revListCount string
+	calls        [][]string // records all git calls
 	rebaseCalls  [][]string // records args for each rebase invocation
 }
 
 func (m *mockGitRunner) Run(_ context.Context, _ string, args ...string) (string, string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	cp := make([]string, len(args))
+	copy(cp, args)
+	m.calls = append(m.calls, cp)
 
 	for _, a := range args {
 		if m.failOn != "" && a == m.failOn {
@@ -756,8 +1046,6 @@ func (m *mockGitRunner) Run(_ context.Context, _ string, args ...string) (string
 			return "", "", nil // abort succeeds
 		}
 		// Record rebase call args (copy to avoid aliasing).
-		cp := make([]string, len(args))
-		copy(cp, args)
 		m.rebaseCalls = append(m.rebaseCalls, cp)
 		if m.conflict || m.conflictOnce {
 			m.conflictOnce = false // consume the one-shot flag
@@ -777,6 +1065,17 @@ func (m *mockGitRunner) Run(_ context.Context, _ string, args ...string) (string
 		return "abc123def456\n", "", nil
 	}
 	return "", "", nil
+}
+
+// Calls returns a snapshot of all git command arguments recorded so far.
+func (m *mockGitRunner) Calls() [][]string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([][]string, len(m.calls))
+	for i, call := range m.calls {
+		out[i] = append([]string(nil), call...)
+	}
+	return out
 }
 
 // RebaseCalls returns a snapshot of all rebase arg slices recorded so far.
@@ -978,11 +1277,15 @@ func TestConfigValidation(t *testing.T) {
 	}
 }
 
+var testResourceSequence atomic.Uint64
+
 // newTestDB creates an in-memory SQLite database with the protocol schema.
 func newTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	// Use a shared-cache in-memory DB so all connections see the same data.
-	dsn := fmt.Sprintf("file:test_%d?mode=memory&cache=shared", time.Now().UnixNano())
+	// A clock-derived name can collide when parallel tests call time.Now within
+	// the host clock's resolution, unintentionally sharing assignment rows.
+	dsn := fmt.Sprintf("file:test_%d_%d?mode=memory&cache=shared", os.Getpid(), testResourceSequence.Add(1))
 	db, err := dbutil.OpenDB(dsn)
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
@@ -1226,7 +1529,7 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *fakeBeadStore, *mockWorktree
 	esc := &mockEscalator{}
 
 	// Use short path for UDS — macOS limits to 108 chars.
-	sockPath := fmt.Sprintf("/tmp/oro-test-%d.sock", time.Now().UnixNano())
+	sockPath := fmt.Sprintf("/tmp/oro-test-%d-%d.sock", os.Getpid(), testResourceSequence.Add(1))
 	t.Cleanup(func() { _ = os.Remove(sockPath) })
 
 	cfg := Config{
@@ -1251,6 +1554,25 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *fakeBeadStore, *mockWorktree
 	// Use a short escalation retry interval so loop-panic tests don't wait 2 minutes.
 	d.escalationRetryInterval = 50 * time.Millisecond
 	return d, beadSrc, wtMgr, esc, gitRunner, spawnMock
+}
+
+func TestNewCardStoreFailureLeavesNilInterface(t *testing.T) {
+	t.Setenv("ORO_BEADSOURCE_MODE", "cli")
+	db := newTestDB(t)
+	if _, err := db.Exec(`CREATE VIEW cards AS SELECT 'blocked' AS id`); err != nil {
+		t.Fatalf("create conflicting cards view: %v", err)
+	}
+
+	d, err := New(Config{
+		SocketPath: "/tmp/oro-card-store-failure.sock",
+		MaxWorkers: 1,
+	}, db, nil, nil, &fakeBeadStore{}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	if d.cardStore != nil {
+		t.Fatalf("cardStore = %T(%v), want nil when optional card schema setup fails", d.cardStore, d.cardStore)
+	}
 }
 
 func TestNewUsesOroHomeForPanesDir(t *testing.T) {
@@ -1514,8 +1836,8 @@ func TestHeartbeatsNotPersistedDurably(t *testing.T) {
 	if worker.contextPct != 80 {
 		t.Errorf("contextPct = %d, want 80", worker.contextPct)
 	}
-	if !worker.lastProgress.Equal(now) {
-		t.Errorf("lastProgress = %s, want %s", worker.lastProgress, now)
+	if !worker.lastProgress.Equal(previousProgress) {
+		t.Errorf("lastProgress = %s, want unchanged %s", worker.lastProgress, previousProgress)
 	}
 	d.mu.Unlock()
 
@@ -1773,6 +2095,7 @@ func TestRunWaitsForGoroutines(t *testing.T) {
 }
 
 func TestAcceptLoopBackpressure(t *testing.T) {
+	qgserial.RequireSerial(t)
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
@@ -2921,7 +3244,7 @@ FAIL oro/pkg/dispatcher`
 	}
 }
 
-func TestReviewSandboxBlockedDoesNotIncrementRejectionCount(t *testing.T) {
+func TestReviewSandboxBlockedCountsTowardBoundedRetry(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 	const beadID = "bead-sandbox"
@@ -2971,10 +3294,315 @@ func TestReviewSandboxBlockedDoesNotIncrementRejectionCount(t *testing.T) {
 		t.Fatalf("sandbox-blocked review must complete assignment, got %q", assignmentStatus)
 	}
 	d.mu.Lock()
-	rejections := d.rejectionCounts[beadID]
+	rejections := d.reviewBlockedCounts[beadID]
 	d.mu.Unlock()
-	if rejections != 0 {
-		t.Fatalf("sandbox-blocked review must not increment rejection count, got %d", rejections)
+	if rejections != 1 {
+		t.Fatalf("sandbox-blocked review count = %d, want 1", rejections)
+	}
+}
+
+func TestHandleReviewBlocked_BoundedRetry(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const beadID = "bead-blocked-retry"
+	const workerID = "worker-blocked-retry"
+
+	reopens := 0
+	beadSrc.updateFn = func(_ context.Context, id string, params beadstore.UpdateParams) error {
+		if id == beadID && params.Status != nil && *params.Status == "open" {
+			reopens++
+		}
+		return nil
+	}
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+	d.mu.Lock()
+	d.rejectionCounts[beadID] = maxReviewRejections
+	d.mu.Unlock()
+
+	result := ops.Result{
+		Verdict:  ops.VerdictRejected,
+		Feedback: `{"type":"system","subtype":"hook_started","hook_name":"SessionStart:startup"}`,
+		Err:      errors.New("review subprocess failed"),
+	}
+	cleanupObserved := false
+	d.sseBroadcaster = &callbackSSEBroadcaster{send: func(eventType, _, _ string) {
+		if eventType != "review_escalated" {
+			return
+		}
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		_, countExists := d.reviewBlockedCounts[beadID]
+		w := d.workers[workerID]
+		cleanupObserved = !countExists && w != nil && w.state == protocol.WorkerIdle && w.beadID == ""
+	}}
+	for cycle := 1; cycle <= maxReviewRejections+1; cycle++ {
+		res, err := d.db.ExecContext(ctx,
+			`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`,
+			beadID, workerID, "/tmp/review-blocked")
+		if err != nil {
+			t.Fatalf("cycle %d: insert assignment: %v", cycle, err)
+		}
+		assignmentID, err := res.LastInsertId()
+		if err != nil {
+			t.Fatalf("cycle %d: assignment ID: %v", cycle, err)
+		}
+
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:           workerID,
+			state:        protocol.WorkerReviewing,
+			beadID:       beadID,
+			assignmentID: assignmentID,
+		}
+		d.assigningBeads[beadID] = true
+		d.mu.Unlock()
+
+		d.handleReviewBlocked(ctx, workerID, beadID, result)
+		if cycle == 1 {
+			if reopens != 1 {
+				t.Fatalf("first blocked review after ordinary rejections reopens = %d, want 1", reopens)
+			}
+			if got := eventCount(t, d.db, "review_escalated"); got != 0 {
+				t.Fatalf("first blocked review after ordinary rejections escalated %d times, want 0", got)
+			}
+		}
+	}
+
+	if reopens != maxReviewRejections {
+		t.Fatalf("blocked review reopens = %d, want %d before escalation", reopens, maxReviewRejections)
+	}
+	if got := eventCount(t, d.db, "review_escalated"); got != 1 {
+		t.Fatalf("review_escalated events = %d, want 1", got)
+	}
+	if !cleanupObserved {
+		t.Fatal("review_escalated was published before review tracking and worker state were cleaned up")
+	}
+}
+
+func TestHandleReviewBlocked_RejectsStaleAssignment(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const beadID = "bead-stale-blocked-review"
+	const workerID = "worker-stale-blocked-review"
+
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+	res, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`,
+		beadID, workerID, "/tmp/review-blocked-new")
+	if err != nil {
+		t.Fatalf("insert current assignment: %v", err)
+	}
+	currentAssignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("current assignment ID: %v", err)
+	}
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		state:        protocol.WorkerReviewing,
+		beadID:       beadID,
+		assignmentID: currentAssignmentID,
+	}
+	d.mu.Unlock()
+
+	result := ops.Result{
+		Verdict:  ops.VerdictRejected,
+		Feedback: `{"type":"system","subtype":"hook_started","hook_name":"SessionStart:startup"}`,
+		Err:      errors.New("stale review subprocess failed"),
+	}
+	d.handleReviewBlockedForAssignment(ctx, workerID, beadID, currentAssignmentID-1, result)
+
+	var assignmentStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, currentAssignmentID).
+		Scan(&assignmentStatus); err != nil {
+		t.Fatalf("current assignment status: %v", err)
+	}
+	if assignmentStatus != "active" {
+		t.Fatalf("current assignment status = %q, want active", assignmentStatus)
+	}
+	if got := eventCount(t, d.db, "review_infra_blocked_stale"); got != 1 {
+		t.Fatalf("stale blocked-review events = %d, want 1", got)
+	}
+	d.mu.Lock()
+	count := d.reviewBlockedCounts[beadID]
+	d.mu.Unlock()
+	if count != 0 {
+		t.Fatalf("stale blocked review count = %d, want 0", count)
+	}
+}
+
+func TestClassifyReviewFailure_ContentBased(t *testing.T) {
+	const startupHook = `{"type":"system","subtype":"hook_started","hook_name":"SessionStart:startup"}`
+	tests := []struct {
+		name     string
+		feedback string
+		err      error
+		want     ReviewFailureClass
+	}{
+		{
+			name:     "startup hook without agent activity is infrastructure blocked",
+			feedback: startupHook,
+			err:      errors.New("exit status 1"),
+			want:     ReviewFailureInfraBlocked,
+		},
+		{
+			name:     "tool use after startup is ordinary failure",
+			feedback: startupHook + "\n" + `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read"}]}}`,
+			err:      errors.New("exit status 1"),
+			want:     ReviewFailureOrdinary,
+		},
+		{
+			name:     "text delta after startup is ordinary failure",
+			feedback: startupHook + "\n" + `{"type":"content_block_delta","delta":{"type":"text_delta","text":"reviewing"}}`,
+			err:      errors.New("exit status 1"),
+			want:     ReviewFailureOrdinary,
+		},
+		{
+			name:     "result after startup is ordinary failure",
+			feedback: startupHook + "\n" + `{"type":"result","subtype":"error_max_turns","result":"stopped","is_error":true}`,
+			err:      errors.New("exit status 1"),
+			want:     ReviewFailureOrdinary,
+		},
+		{
+			name: "spawn failure without startup hook is ordinary failure",
+			err:  errors.New("ops: spawn failed: executable not found"),
+			want: ReviewFailureOrdinary,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyReviewFailure(ops.Result{Feedback: tt.feedback, Err: tt.err})
+			if got != tt.want {
+				t.Fatalf("classifyReviewFailure() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifyReviewFailure_RateLimited(t *testing.T) {
+	tests := []struct {
+		name     string
+		feedback string
+		want     ReviewFailureClass
+	}{
+		{
+			name:     "five hour overage rejected",
+			feedback: `{"rateLimitType":"five_hour","overageStatus":"rejected"}`,
+			want:     ReviewFailureClass("rate_limited"),
+		},
+		{
+			name:     "allowed overage is not rate limited",
+			feedback: `{"rateLimitType":"five_hour","overageStatus":"allowed"}`,
+			want:     ReviewFailureOrdinary,
+		},
+		{
+			name:     "missing overage signal is not rate limited",
+			feedback: `{"rateLimitType":"five_hour"}`,
+			want:     ReviewFailureOrdinary,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyReviewFailure(ops.Result{Feedback: tt.feedback, Err: errors.New("exit status 1")})
+			if got != tt.want {
+				t.Fatalf("classifyReviewFailure() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifyReviewFailure_RateLimitEvidence(t *testing.T) {
+	tests := []struct {
+		name     string
+		feedback string
+		want     ReviewFailureClass
+	}{
+		{
+			name:     "structured rejected five hour event",
+			feedback: `{"rateLimitType":"FIVE_HOUR","overageStatus":"REJECTED"}`,
+			want:     ReviewFailureRateLimited,
+		},
+		{
+			name: "rejected review quotes marker names",
+			feedback: `VERDICT: REJECTED
+This review discusses the rateLimitType, five_hour, overageStatus, and rejected marker names.`,
+			want: ReviewFailureOrdinary,
+		},
+		{
+			name:     "malformed JSON is not evidence",
+			feedback: `{"rateLimitType":"five_hour","overageStatus":"rejected"`,
+			want:     ReviewFailureOrdinary,
+		},
+		{
+			name:     "markers spread through prose are not evidence",
+			feedback: "rateLimitType\nfive_hour\noverageStatus\nrejected",
+			want:     ReviewFailureOrdinary,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyReviewFailure(ops.Result{Feedback: tt.feedback, Err: errors.New("exit status 1")})
+			if got != tt.want {
+				t.Fatalf("classifyReviewFailure() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleReviewResult_RateLimitedDefersReReview(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		beadID   = "bead-rate-limited"
+		workerID = "w-rate-limited"
+		worktree = "/tmp/rate-limited"
+	)
+
+	assignmentID, err := d.createAssignment(ctx, beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	conn := newMockConn()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		encoder:      json.NewEncoder(conn),
+		state:        protocol.WorkerReviewing,
+		beadID:       beadID,
+		worktree:     worktree,
+		assignmentID: assignmentID,
+	}
+	d.worktreeByBead[beadID] = worktree
+	d.assigningBeads[beadID] = true
+	d.mu.Unlock()
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+	beadSrc.mu.Unlock()
+
+	resultCh := make(chan ops.Result, 1)
+	resultCh <- ops.Result{
+		Verdict:  ops.VerdictRejected,
+		Feedback: `{"rateLimitType":"five_hour","overageStatus":"rejected"}`,
+		Err:      errors.New("exit status 1"),
+	}
+	d.handleReviewResult(ctx, workerID, beadID, resultCh)
+
+	if got := eventCount(t, d.db, "review_rate_limited"); got != 1 {
+		t.Fatalf("review_rate_limited events = %d, want 1", got)
+	}
+	if got := eventCount(t, d.db, "review_rejected"); got != 0 {
+		t.Fatalf("rate-limited review must not reassign immediately, review_rejected events = %d", got)
+	}
+	if len(beadSrc.deferCalls) != 1 || beadSrc.deferCalls[0].id != beadID {
+		t.Fatalf("defer calls = %+v, want one cooldown defer for %s", beadSrc.deferCalls, beadID)
+	}
+	if until, parseErr := time.Parse(time.RFC3339, beadSrc.deferCalls[0].until); parseErr != nil || !until.After(time.Now().UTC()) {
+		t.Fatalf("defer until = %q, want future RFC3339 timestamp (parse err %v)", beadSrc.deferCalls[0].until, parseErr)
 	}
 }
 
@@ -4622,6 +5250,7 @@ func TestFailedDecomposeOpsRunSetsAssignmentCooldown(t *testing.T) {
 }
 
 func TestDispatcher_ConcurrentWorkers(t *testing.T) {
+	qgserial.RequireSerial(t)
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
@@ -8349,7 +8978,7 @@ func TestQualityGateRetry_ModelEscalatedToOpus(t *testing.T) {
 		},
 	})
 
-	// Worker should receive re-ASSIGN escalated to Sol xhigh.
+	// Worker should receive re-ASSIGN escalated to Sol high.
 	retryMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected re-ASSIGN after quality gate failure")
@@ -8357,8 +8986,8 @@ func TestQualityGateRetry_ModelEscalatedToOpus(t *testing.T) {
 	if retryMsg.Type != protocol.MsgAssign {
 		t.Fatalf("expected ASSIGN, got %s", retryMsg.Type)
 	}
-	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "xhigh" {
-		t.Fatalf("re-ASSIGN should escalate to Sol xhigh, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
+	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "high" {
+		t.Fatalf("re-ASSIGN should escalate to Sol high, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
 	}
 
 	// Verify the worker's stored model was updated to Sol.
@@ -8414,13 +9043,13 @@ func TestQualityGateRetry_DefaultModelEscalatedToOpus(t *testing.T) {
 		},
 	})
 
-	// Worker should receive re-ASSIGN escalated to Sol xhigh.
+	// Worker should receive re-ASSIGN escalated to Sol high.
 	retryMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected re-ASSIGN after quality gate failure")
 	}
-	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "xhigh" {
-		t.Fatalf("re-ASSIGN should escalate to Sol xhigh, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
+	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "high" {
+		t.Fatalf("re-ASSIGN should escalate to Sol high, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
 	}
 }
 
@@ -8447,8 +9076,8 @@ func TestQualityGateRetry_OpusStaysOpus(t *testing.T) {
 	if !ok {
 		t.Fatal("expected ASSIGN")
 	}
-	if assignMsg.Assign.Model != "gpt-5.6-sol" || assignMsg.Assign.Reasoning != "xhigh" {
-		t.Fatalf("initial ASSIGN should map opus to Sol xhigh, got model=%q reasoning=%q", assignMsg.Assign.Model, assignMsg.Assign.Reasoning)
+	if assignMsg.Assign.Model != "gpt-5.6-sol" || assignMsg.Assign.Reasoning != "high" {
+		t.Fatalf("initial ASSIGN should map opus to Sol high, got model=%q reasoning=%q", assignMsg.Assign.Model, assignMsg.Assign.Reasoning)
 	}
 	beadSrc.SetBeads(nil)
 
@@ -8462,7 +9091,7 @@ func TestQualityGateRetry_OpusStaysOpus(t *testing.T) {
 		},
 	})
 
-	// Worker should receive re-ASSIGN with model still Sol xhigh.
+	// Worker should receive re-ASSIGN with model still Sol high.
 	retryMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected re-ASSIGN after quality gate failure")
@@ -8470,8 +9099,8 @@ func TestQualityGateRetry_OpusStaysOpus(t *testing.T) {
 	if retryMsg.Type != protocol.MsgAssign {
 		t.Fatalf("expected ASSIGN, got %s", retryMsg.Type)
 	}
-	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "xhigh" {
-		t.Fatalf("re-ASSIGN should keep Sol xhigh, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
+	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "high" {
+		t.Fatalf("re-ASSIGN should keep Sol high, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
 	}
 
 	// Verify attempt counter was NOT reset (should be 1 since no escalation happened)
@@ -9018,6 +9647,7 @@ func TestDispatcher_FocusImmediateAbortsStateTransitionRace(t *testing.T) {
 }
 
 func TestDispatcherFullSuiteStateDoesNotStarveEstimateAssignments(t *testing.T) {
+	qgserial.RequireSerial(t)
 	ctx := context.Background()
 	db := newTestDB(t)
 	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
@@ -9323,6 +9953,7 @@ type mockProcessManager struct {
 	events   []string               // chronological "spawn:<id>" / "kill:<id>" events
 	deadIDs  map[string]bool        // IDs explicitly marked as dead via MarkDead
 	spawnErr error                  // if set, Spawn returns this error
+	killErr  error                  // if set, Kill returns this error
 	procs    map[string]*os.Process // tracked processes (nil for tests)
 }
 
@@ -9347,7 +9978,7 @@ func (m *mockProcessManager) Kill(id string) error {
 	defer m.mu.Unlock()
 	m.killed = append(m.killed, id)
 	m.events = append(m.events, "kill:"+id)
-	return nil
+	return m.killErr
 }
 
 func (m *mockProcessManager) SpawnedIDs() []string {
@@ -10327,31 +10958,35 @@ func TestDispatcher_Handoff_NoProcManager_LogsOnly(t *testing.T) {
 	}, 2*time.Second)
 }
 
-func TestDispatcher_ReviewRejection_CounterResetsOnNewBead(t *testing.T) {
+func TestDispatcher_ReviewCountersResetIndependentlyByBead(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 
-	// Simulate rejection counts for different beads
+	// Simulate review retry counts for different beads.
 	d.mu.Lock()
-	if d.rejectionCounts == nil {
-		d.rejectionCounts = make(map[string]int)
-	}
 	d.rejectionCounts["bead-a"] = 2
 	d.rejectionCounts["bead-b"] = 1
+	d.reviewBlockedCounts["bead-a"] = 2
+	d.reviewBlockedCounts["bead-b"] = 1
 	d.mu.Unlock()
 
-	// Clear bead-a's count (simulates bead completion)
-	d.clearRejectionCount("bead-a")
+	// Approval resets both retry budgets for only the approved bead.
+	d.handleReviewApproved(context.Background(), "worker-a", "bead-a", ops.Result{
+		Verdict: ops.VerdictApproved,
+	})
 
 	d.mu.Lock()
-	_, aExists := d.rejectionCounts["bead-a"]
-	bCount := d.rejectionCounts["bead-b"]
+	_, rejectionAExists := d.rejectionCounts["bead-a"]
+	_, blockedAExists := d.reviewBlockedCounts["bead-a"]
+	rejectionBCount := d.rejectionCounts["bead-b"]
+	blockedBCount := d.reviewBlockedCounts["bead-b"]
 	d.mu.Unlock()
 
-	if aExists {
-		t.Fatal("expected bead-a rejection count to be cleared")
+	if rejectionAExists || blockedAExists {
+		t.Fatal("expected bead-a review counters to be cleared")
 	}
-	if bCount != 1 {
-		t.Fatalf("expected bead-b count to remain 1, got %d", bCount)
+	if rejectionBCount != 1 || blockedBCount != 1 {
+		t.Fatalf("expected bead-b review counters to remain 1, got rejection=%d blocked=%d",
+			rejectionBCount, blockedBCount)
 	}
 }
 
@@ -11287,6 +11922,7 @@ func TestMergeAndCompleteRebaseChildUpdatesEpicRefWithoutGenericRebase(t *testin
 		Type:               "task",
 		Status:             "open",
 		AcceptanceCriteria: rebaseChildAcceptance(epicID, targetBranch, "main"),
+		Metadata:           map[string]any{"epic_rebase_target": "main"},
 	}
 	beadSrc.allChildrenClosedMap = map[string]bool{epicID: false}
 
@@ -11303,6 +11939,96 @@ func TestMergeAndCompleteRebaseChildUpdatesEpicRefWithoutGenericRebase(t *testin
 	}
 	if got, want := wtMgr.deletedInto, []deleteBranchMergedIntoCall{{branch: branch, targetBranch: targetBranch}}; !slices.Equal(got, want) {
 		t.Fatalf("deleted merged branch calls = %+v, want %+v", got, want)
+	}
+}
+
+func TestCompleteEpicRebaseChildRejectsSourceWithoutTargetAncestry(t *testing.T) {
+	const (
+		epicID       = "oro-home-retention"
+		beadID       = "oro-2pff"
+		workerID     = "w-rebase-child"
+		worktree     = "/tmp/worktree-oro-2pff"
+		branch       = "agent/oro-2pff"
+		targetBranch = "epic/oro-home-retention"
+	)
+	tests := []struct {
+		name            string
+		missingAncestor string
+		checkError      error
+	}{
+		{name: "missing recovery target ancestor", missingAncestor: "main"},
+		{name: "missing prior epic ancestor", missingAncestor: targetBranch},
+		{name: "ancestry check error", missingAncestor: "main", checkError: errors.New("merge-base failed")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, beadSrc, wtMgr, esc, _, _ := newTestDispatcher(t)
+			ctx := context.Background()
+			if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+				t.Fatalf("init schema: %v", err)
+			}
+			beadSrc.shown[beadID] = &protocol.BeadDetail{
+				ID:                 beadID,
+				Title:              "Rebase epic/oro-home-retention onto main",
+				Type:               "task",
+				Status:             "in_progress",
+				AcceptanceCriteria: rebaseChildAcceptance(epicID, targetBranch, "main"),
+			}
+			beadSrc.allChildrenClosedMap = map[string]bool{epicID: false}
+			res, err := d.db.ExecContext(ctx,
+				`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`,
+				beadID, workerID, worktree)
+			if err != nil {
+				t.Fatalf("insert assignment: %v", err)
+			}
+			assignmentID, err := res.LastInsertId()
+			if err != nil {
+				t.Fatalf("assignment id: %v", err)
+			}
+			d.mu.Lock()
+			d.workers[workerID] = &trackedWorker{
+				id:           workerID,
+				state:        protocol.WorkerReserved,
+				beadID:       beadID,
+				worktree:     worktree,
+				assignmentID: assignmentID,
+			}
+			d.mu.Unlock()
+			wtMgr.baseUniqueFn = func(_ context.Context, candidate, base string) (bool, error) {
+				if candidate != tt.missingAncestor || base != branch {
+					return false, nil
+				}
+				return true, tt.checkError
+			}
+
+			d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, epicID, targetBranch, assignmentID)
+
+			if got := wtMgr.updatedBranchRefs; len(got) != 0 {
+				t.Fatalf("UpdateBranchRef calls = %+v, want none when ancestry is unverified", got)
+			}
+			if slices.Contains(beadSrc.closed, beadID) {
+				t.Fatalf("closed beads = %v, must preserve %s for recovery", beadSrc.closed, beadID)
+			}
+			if got := beadSrc.updated[beadID]; got != "open" {
+				t.Fatalf("bead status = %q, want reopened", got)
+			}
+			if got := wtMgr.removed; len(got) != 0 {
+				t.Fatalf("removed worktrees = %v, want recovery worktree preserved", got)
+			}
+			if got := wtMgr.deletedInto; len(got) != 0 {
+				t.Fatalf("DeleteBranchMergedInto calls = %+v, want no successful cleanup", got)
+			}
+			var assignmentStatus string
+			if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+				t.Fatalf("query assignment status: %v", err)
+			}
+			if assignmentStatus != "requeued" {
+				t.Fatalf("assignment status = %q, want requeued rather than successful completion", assignmentStatus)
+			}
+			if messages := esc.Messages(); len(messages) == 0 || !strings.Contains(messages[len(messages)-1], tt.missingAncestor) {
+				t.Fatalf("escalations = %v, want actionable ancestry failure", messages)
+			}
+		})
 	}
 }
 
@@ -11465,17 +12191,22 @@ type mockQGRunner struct {
 	passed        bool
 	output        string
 	err           error
+	callFn        func(context.Context, string, bool, string) (bool, string, error)
 	calls         []string // worktree paths passed to Run
 	skipMutations []bool
 	mutationBases []string
 }
 
-func (m *mockQGRunner) Run(_ context.Context, worktree string, skipMutation bool, mutationBase string) (bool, string, error) {
+func (m *mockQGRunner) Run(ctx context.Context, worktree string, skipMutation bool, mutationBase string) (bool, string, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.calls = append(m.calls, worktree)
 	m.skipMutations = append(m.skipMutations, skipMutation)
 	m.mutationBases = append(m.mutationBases, mutationBase)
+	callFn := m.callFn
+	m.mu.Unlock()
+	if callFn != nil {
+		return callFn(ctx, worktree, skipMutation, mutationBase)
+	}
 	return m.passed, m.output, m.err
 }
 
@@ -11826,6 +12557,97 @@ func TestMergeAndComplete_RunsPreMergeQG(t *testing.T) {
 		}
 		if eventCount(t, d.db, "pre_merge_qg_work_preserved") == 0 {
 			t.Errorf("expected pre_merge_qg_work_preserved event on QG error")
+		}
+	})
+}
+
+func TestMergeAndCompleteRunsQGPostRebaseViaPreFFCheck(t *testing.T) {
+	t.Run("QG runs once after rebase and before fast-forward", func(t *testing.T) {
+		d, _, _, _, gitRunner, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		const (
+			beadID   = "bead-post-rebase-qg"
+			workerID = "worker-post-rebase-qg"
+			worktree = "/tmp/worktree-post-rebase-qg"
+			branch   = "agent/bead-post-rebase-qg"
+		)
+		qgRunner := &mockQGRunner{
+			callFn: func(_ context.Context, gotWorktree string, _ bool, _ string) (bool, string, error) {
+				if gotWorktree != worktree {
+					t.Fatalf("QG worktree = %q, want %q", gotWorktree, worktree)
+				}
+				if calls := gitRunner.RebaseCalls(); len(calls) != 1 {
+					t.Fatalf("QG ran after %d rebases, want exactly one completed rebase", len(calls))
+				}
+				return true, "all green", nil
+			},
+		}
+		d.qgRunner = qgRunner
+
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "", 0)
+
+		qgRunner.mu.Lock()
+		qgCalls := len(qgRunner.calls)
+		qgRunner.mu.Unlock()
+		if qgCalls != 1 {
+			t.Fatalf("QG calls = %d, want exactly one", qgCalls)
+		}
+	})
+
+	t.Run("QG failure aborts fast-forward and uses QG failure handling", func(t *testing.T) {
+		d, beadSrc, wtMgr, _, gitRunner, _ := newTestDispatcher(t)
+		ctx := context.Background()
+
+		_, err := d.db.ExecContext(ctx, protocol.SchemaDDL)
+		if err != nil {
+			t.Fatalf("init schema: %v", err)
+		}
+
+		const (
+			beadID   = "bead-post-rebase-qg-failure"
+			workerID = "worker-post-rebase-qg-failure"
+			worktree = "/tmp/worktree-post-rebase-qg-failure"
+			branch   = "agent/bead-post-rebase-qg-failure"
+		)
+		d.qgRunner = &mockQGRunner{
+			callFn: func(_ context.Context, _ string, _ bool, _ string) (bool, string, error) {
+				if calls := gitRunner.RebaseCalls(); len(calls) != 1 {
+					t.Fatalf("QG ran after %d rebases, want exactly one completed rebase", len(calls))
+				}
+				return false, "post-rebase QG failure", nil
+			},
+		}
+		d.mu.Lock()
+		d.worktreeByBead[beadID] = worktree
+		d.mu.Unlock()
+
+		d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, "", "", 0)
+
+		if eventCount(t, d.db, "qg_failed") != 1 {
+			t.Fatal("expected post-rebase QG failure to be recorded")
+		}
+		for _, call := range gitRunner.Calls() {
+			if len(call) >= 2 && call[0] == "merge" && call[1] == "--ff-only" {
+				t.Fatalf("fast-forward merge ran after QG failure: %v", call)
+			}
+		}
+		wtMgr.mu.Lock()
+		removed := append([]string(nil), wtMgr.removed...)
+		wtMgr.mu.Unlock()
+		if slices.Contains(removed, worktree) {
+			t.Fatalf("worktree %q was removed after QG failure", worktree)
+		}
+		beadSrc.mu.Lock()
+		status := beadSrc.updated[beadID]
+		beadSrc.mu.Unlock()
+		if status != "open" {
+			t.Fatalf("bead status = %q, want open after QG failure", status)
 		}
 	})
 }
@@ -13268,6 +14090,7 @@ func TestPriorityContention(t *testing.T) {
 // numWorkers concurrent DONE deliveries to exercise assign-loop locking under
 // parallel mergeAndComplete goroutines.  The -race detector must not fire.
 func TestPriorityContention_StableUnderLoad(t *testing.T) {
+	qgserial.RequireSerial(t)
 	loadguard.SkipOutsidePushQG(t)
 
 	const numWorkers = 4
@@ -16646,6 +17469,203 @@ func TestTryCloseEpic_FFMergeToMain(t *testing.T) {
 	})
 }
 
+func TestEpicRebaseChildAcceptanceAllowsPreservedAncestry(t *testing.T) {
+	ctx := context.Background()
+	const (
+		epicID       = "oro-preserved-ancestry"
+		epicBranch   = "epic/oro-preserved-ancestry"
+		targetBranch = "main"
+		branch       = "agent/oro-preserved-ancestry"
+	)
+
+	t.Run("generated acceptance checks both required ancestors without rebasing", func(t *testing.T) {
+		acceptance := rebaseChildAcceptance(epicID, epicBranch, targetBranch)
+		for _, want := range []string{
+			"git merge-base --is-ancestor main HEAD",
+			"git merge-base --is-ancestor epic/oro-preserved-ancestry HEAD",
+			"go test ./pkg/dispatcher -run '^(TestEpicRebaseChildAcceptanceAllowsPreservedAncestry|TestEpicFFMergeFailureCreatesActionableRebaseChild)$'",
+		} {
+			if !strings.Contains(acceptance, want) {
+				t.Errorf("acceptance = %q, want %q", acceptance, want)
+			}
+		}
+		if strings.Contains(acceptance, "git rebase ") {
+			t.Errorf("acceptance must not rebase an ancestry-preserving merge: %s", acceptance)
+		}
+	})
+
+	t.Run("missing child detail has no recovery target", func(t *testing.T) {
+		if got := epicRebaseChildRecoveryTarget(nil, epicBranch); got != "" {
+			t.Fatalf("recovery target = %q, want empty", got)
+		}
+	})
+
+	t.Run("generated ancestry command follows real git topology", func(t *testing.T) {
+		acceptanceParts := strings.Split(rebaseChildAcceptance(epicID, epicBranch, targetBranch), " | ")
+		if len(acceptanceParts) < 2 {
+			t.Fatalf("acceptance fields = %v, want command field", acceptanceParts)
+		}
+		command := strings.TrimPrefix(acceptanceParts[1], "Cmd: ")
+		ancestryCommand, _, ok := strings.Cut(command, " && go test ")
+		if !ok {
+			t.Fatalf("acceptance command = %q, want ancestry checks before go test", command)
+		}
+
+		repo := t.TempDir()
+		runAssignmentTestGit(t, repo, "init", "-b", targetBranch)
+		runAssignmentTestGit(t, repo, "config", "user.email", "test@example.com")
+		runAssignmentTestGit(t, repo, "config", "user.name", "Oro Test")
+		if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+			t.Fatalf("write base commit: %v", err)
+		}
+		runAssignmentTestGit(t, repo, "add", "base.txt")
+		runAssignmentTestGit(t, repo, "commit", "-m", "base")
+		runAssignmentTestGit(t, repo, "checkout", "-b", epicBranch)
+		if err := os.WriteFile(filepath.Join(repo, "epic.txt"), []byte("epic\n"), 0o644); err != nil {
+			t.Fatalf("write epic commit: %v", err)
+		}
+		runAssignmentTestGit(t, repo, "add", "epic.txt")
+		runAssignmentTestGit(t, repo, "commit", "-m", "epic")
+		runAssignmentTestGit(t, repo, "checkout", targetBranch)
+		if err := os.WriteFile(filepath.Join(repo, "target.txt"), []byte("target\n"), 0o644); err != nil {
+			t.Fatalf("write target commit: %v", err)
+		}
+		runAssignmentTestGit(t, repo, "add", "target.txt")
+		runAssignmentTestGit(t, repo, "commit", "-m", "target")
+		runAssignmentTestGit(t, repo, "branch", "target-missing", epicBranch)
+		runAssignmentTestGit(t, repo, "branch", "prior-epic-missing", targetBranch)
+		runAssignmentTestGit(t, repo, "checkout", "-b", "preserved", targetBranch)
+		runAssignmentTestGit(t, repo, "merge", "--no-ff", "-s", "ours", epicBranch, "-m", "preserve epic ancestry")
+
+		for _, tc := range []struct {
+			name     string
+			branch   string
+			wantPass bool
+		}{
+			{name: "target missing", branch: "target-missing"},
+			{name: "prior epic missing", branch: "prior-epic-missing"},
+			{name: "both ancestors preserved", branch: "preserved", wantPass: true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				runAssignmentTestGit(t, repo, "checkout", tc.branch)
+				cmd := exec.Command("sh", "-c", ancestryCommand)
+				cmd.Dir = repo
+				output, err := cmd.CombinedOutput()
+				if (err == nil) != tc.wantPass {
+					t.Fatalf("command %q on %s error = %v, wantPass %t\n%s", ancestryCommand, tc.branch, err, tc.wantPass, output)
+				}
+			})
+		}
+	})
+
+	t.Run("active legacy child is reused and upgraded", func(t *testing.T) {
+		for _, status := range []string{"open", "in_progress"} {
+			t.Run(status, func(t *testing.T) {
+				d, beads, _, _, _, _ := newTestDispatcher(t)
+				title := fmt.Sprintf("Rebase %s onto %s", epicBranch, targetBranch)
+				legacyAcceptance := fmt.Sprintf(
+					"Test: epic %s rebase task keeps %s integration-ready for %s | Cmd: git fetch --all --prune && git rebase %s && go test ./... | Assert: legacy | Read: legacy",
+					epicID, epicBranch, targetBranch, targetBranch,
+				)
+				legacy := &protocol.Bead{
+					ID:                 "oro-legacy-rebase-child-" + status,
+					Epic:               epicID,
+					Title:              title,
+					Status:             status,
+					Tags:               []string{"rebase"},
+					AcceptanceCriteria: legacyAcceptance,
+				}
+				beads.metadataMatches = []*protocol.Bead{legacy}
+
+				var upgradedAcceptance string
+				beads.updateFn = func(_ context.Context, id string, params beadstore.UpdateParams) error {
+					if id != legacy.ID {
+						t.Errorf("updated child = %q, want %q", id, legacy.ID)
+					}
+					if params.AcceptanceCriteria == nil {
+						t.Fatal("legacy child update omitted acceptance criteria")
+					}
+					upgradedAcceptance = *params.AcceptanceCriteria
+					return nil
+				}
+
+				child, err := d.ensureEpicRebaseChild(ctx, epicID, epicBranch, targetBranch, "diverged")
+				if err != nil {
+					t.Fatalf("ensureEpicRebaseChild: %v", err)
+				}
+				if child.ID != legacy.ID {
+					t.Errorf("reused child ID = %q, want %q", child.ID, legacy.ID)
+				}
+				if len(beads.created) != 0 {
+					t.Fatalf("created %d replacement children, want 0", len(beads.created))
+				}
+				if upgradedAcceptance != rebaseChildAcceptance(epicID, epicBranch, targetBranch) {
+					t.Errorf("upgraded acceptance = %q, want %q", upgradedAcceptance, rebaseChildAcceptance(epicID, epicBranch, targetBranch))
+				}
+			})
+		}
+	})
+
+	t.Run("closed legacy child permits a replacement", func(t *testing.T) {
+		d, beads, _, _, _, _ := newTestDispatcher(t)
+		beads.metadataMatches = []*protocol.Bead{{
+			ID:                 "oro-closed-legacy-rebase-child",
+			Epic:               epicID,
+			Title:              fmt.Sprintf("Rebase %s onto %s", epicBranch, targetBranch),
+			Status:             "closed",
+			Tags:               []string{"rebase"},
+			AcceptanceCriteria: "Cmd: git fetch --all --prune && git rebase main && go test ./...",
+		}}
+
+		child, err := d.ensureEpicRebaseChild(ctx, epicID, epicBranch, targetBranch, "diverged")
+		if err != nil {
+			t.Fatalf("ensureEpicRebaseChild: %v", err)
+		}
+		if child.ID == "oro-closed-legacy-rebase-child" {
+			t.Fatal("closed legacy child was reused, want replacement")
+		}
+		if len(beads.created) != 1 {
+			t.Fatalf("created %d replacement children, want 1", len(beads.created))
+		}
+	})
+
+	t.Run("completion requires target and preserved epic ancestry", func(t *testing.T) {
+		for _, tc := range []struct {
+			name          string
+			targetMissing bool
+			epicMissing   bool
+			wantErr       bool
+		}{
+			{name: "target missing", targetMissing: true, wantErr: true},
+			{name: "prior epic missing", epicMissing: true, wantErr: true},
+			{name: "both ancestors preserved"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				d, _, worktrees, _, _, _ := newTestDispatcher(t)
+				worktrees.baseUniqueFn = func(_ context.Context, candidate, recovery string) (bool, error) {
+					if recovery != branch {
+						t.Errorf("recovery branch = %q, want %q", recovery, branch)
+					}
+					switch candidate {
+					case targetBranch:
+						return tc.targetMissing, nil
+					case epicBranch:
+						return tc.epicMissing, nil
+					default:
+						t.Errorf("unexpected ancestry candidate %q", candidate)
+						return false, nil
+					}
+				}
+
+				err := d.validateEpicRebaseChildAncestry(ctx, branch, targetBranch, epicBranch)
+				if (err != nil) != tc.wantErr {
+					t.Fatalf("validateEpicRebaseChildAncestry() error = %v, wantErr %t", err, tc.wantErr)
+				}
+			})
+		}
+	})
+}
+
 func TestEpicFFMergeFailureCreatesActionableRebaseChild(t *testing.T) {
 	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
@@ -16694,7 +17714,7 @@ func TestEpicFFMergeFailureCreatesActionableRebaseChild(t *testing.T) {
 			t.Errorf("rebase child acceptance criteria does not name branch %q: %s", branch, rebaseBead.acceptanceCriteria)
 		}
 	}
-	wantCmd := fmt.Sprintf("Cmd: git fetch --all --prune && git rebase %s && go test ./...", targetBranch)
+	wantCmd := fmt.Sprintf("Cmd: git merge-base --is-ancestor %s HEAD && git merge-base --is-ancestor %s HEAD && go test ./pkg/dispatcher -run '^(TestEpicRebaseChildAcceptanceAllowsPreservedAncestry|TestEpicFFMergeFailureCreatesActionableRebaseChild)$'", targetBranch, epicBranch)
 	if !strings.Contains(rebaseBead.acceptanceCriteria, wantCmd) {
 		t.Errorf("rebase child acceptance criteria command = %q, want to contain %q", rebaseBead.acceptanceCriteria, wantCmd)
 	}
@@ -21333,7 +22353,7 @@ func TestBuildAssignPayload_PopulatesAllFields(t *testing.T) {
 			isEpicDecomp: false,
 		}
 
-		got := d.buildAssignPayload(context.Background(), w, 1, "some feedback", "memory ctx")
+		got := d.buildAssignPayload(context.Background(), w, 1, "some feedback", "memory ctx", WorkerExecutionContext{})
 
 		if got.BeadID != "test-bead" {
 			t.Errorf("BeadID = %q, want %q", got.BeadID, "test-bead")
@@ -21400,7 +22420,7 @@ func TestBuildAssignPayload_PopulatesAllFields(t *testing.T) {
 			isEpicDecomp: true,
 		}
 
-		got := d.buildAssignPayload(context.Background(), w, 0, "", "")
+		got := d.buildAssignPayload(context.Background(), w, 0, "", "", WorkerExecutionContext{})
 
 		if got.GitLog != "" {
 			t.Errorf("GitLog should be empty for epic decomp, got %q", got.GitLog)
@@ -21435,7 +22455,7 @@ func TestBuildAssignPayload_PopulatesAllFields(t *testing.T) {
 			isEpicDecomp: false,
 		}
 
-		got := d.buildAssignPayload(context.Background(), w, 0, "", "")
+		got := d.buildAssignPayload(context.Background(), w, 0, "", "", WorkerExecutionContext{})
 
 		if got.Title != "" {
 			t.Errorf("Title should be empty on Show error, got %q", got.Title)
@@ -21753,10 +22773,10 @@ func TestAssignBead_UsesLLMEstimate(t *testing.T) {
 		}
 	}
 
-	// Test 1: bead-estimate-short should be estimated to 3 minutes → Terra low.
+	// Test 1: bead-estimate-short should be estimated to 3 minutes → Luna low.
 	if assign := assignedBeads["bead-estimate-short"]; assign != nil {
-		if assign.Model != "gpt-5.6-terra" || assign.Reasoning != "low" {
-			t.Errorf("bead-estimate-short: estimated 3 min should route to Terra low, got model=%s reasoning=%s", assign.Model, assign.Reasoning)
+		if assign.Model != "gpt-5.6-luna" || assign.Reasoning != "low" {
+			t.Errorf("bead-estimate-short: estimated 3 min should route to Luna low, got model=%s reasoning=%s", assign.Model, assign.Reasoning)
 		}
 		if !mockEstimator.wasCalled("Short task") {
 			t.Errorf("bead-estimate-short: estimator should have been called")
@@ -21775,8 +22795,8 @@ func TestAssignBead_UsesLLMEstimate(t *testing.T) {
 
 	// Test 3: bead-has-estimate has pre-set estimate, should NOT call estimator
 	if assign := assignedBeads["bead-has-estimate"]; assign != nil {
-		if assign.Model != "gpt-5.6-terra" || assign.Reasoning != "low" {
-			t.Errorf("bead-has-estimate: 3 minute estimate should route to Terra low, got model=%s reasoning=%s", assign.Model, assign.Reasoning)
+		if assign.Model != "gpt-5.6-luna" || assign.Reasoning != "low" {
+			t.Errorf("bead-has-estimate: 3 minute estimate should route to Luna low, got model=%s reasoning=%s", assign.Model, assign.Reasoning)
 		}
 		if mockEstimator.wasCalled("Has estimate") {
 			t.Errorf("bead-has-estimate: estimator should NOT have been called (already has estimate)")
@@ -21785,8 +22805,8 @@ func TestAssignBead_UsesLLMEstimate(t *testing.T) {
 
 	// Test 4: bead-has-model has explicit model, should NOT call estimator
 	if assign := assignedBeads["bead-has-model"]; assign != nil {
-		if assign.Model != "gpt-5.6-sol" || assign.Reasoning != "xhigh" {
-			t.Errorf("bead-has-model: legacy Opus should map to Sol xhigh, got model=%s reasoning=%s", assign.Model, assign.Reasoning)
+		if assign.Model != "gpt-5.6-sol" || assign.Reasoning != "high" {
+			t.Errorf("bead-has-model: legacy Opus should map to Sol high, got model=%s reasoning=%s", assign.Model, assign.Reasoning)
 		}
 		if mockEstimator.wasCalled("Has model") {
 			t.Errorf("bead-has-model: estimator should NOT have been called (has explicit model)")
@@ -22713,7 +23733,7 @@ func TestBuildSchedulingPlan_EpicPriorityBeatsEpicAge(t *testing.T) {
 	}
 }
 
-func TestTryAssign_FillsSelectedEpicBeforeNextEpic(t *testing.T) {
+func TestTryAssign_FillsIdleWorkersAcrossEpicUnitsByPriority(t *testing.T) {
 	d, beadSrc, workers := setupTryAssignSchedulingTest(t, 3)
 	seedTryAssignEpic(t, beadSrc, "epic-a", 0, "2026-05-01T00:00:00Z")
 	seedTryAssignEpic(t, beadSrc, "epic-b", 1, "2026-05-02T00:00:00Z")
@@ -22729,9 +23749,34 @@ func TestTryAssign_FillsSelectedEpicBeforeNextEpic(t *testing.T) {
 	d.tryAssign(context.Background())
 
 	got := assignedBeadIDsByCreation(t, d.db)
-	want := []string{"a-fast", "a-slow"}
+	want := []string{"a-fast", "a-slow", "b-fast"}
 	if !slices.Equal(got, want) {
-		t.Fatalf("assigned beads = %v, want only selected epic frontier %v", got, want)
+		t.Fatalf("assigned beads = %v, want epic frontiers filled by priority %v", got, want)
+	}
+	assertMockWorkerAssignCount(t, workers, len(want))
+}
+
+func TestTryAssign_ConcentratesWorkersOnTopEpic(t *testing.T) {
+	d, beadSrc, workers := setupTryAssignSchedulingTest(t, 2)
+	seedTryAssignEpic(t, beadSrc, "epic-a", 0, "2026-05-01T00:00:00Z")
+	seedTryAssignEpic(t, beadSrc, "epic-b", 1, "2026-05-02T00:00:00Z")
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "a-fast", Priority: 0, Epic: "epic-a"})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "a-middle", Priority: 1, Epic: "epic-a"})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "a-slow", Priority: 2, Epic: "epic-a"})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "b-fast", Priority: 0, Epic: "epic-b"})
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "b-fast", Priority: 0, Epic: "epic-b"},
+		{ID: "a-slow", Priority: 2, Epic: "epic-a"},
+		{ID: "a-middle", Priority: 1, Epic: "epic-a"},
+		{ID: "a-fast", Priority: 0, Epic: "epic-a"},
+	})
+
+	d.tryAssign(context.Background())
+
+	got := assignedBeadIDsByCreation(t, d.db)
+	want := []string{"a-fast", "a-middle"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("assigned beads = %v, want all workers concentrated on top epic %v", got, want)
 	}
 	assertMockWorkerAssignCount(t, workers, len(want))
 }
@@ -22756,6 +23801,62 @@ func TestTryAssign_IndependentBeforeEpicUnits(t *testing.T) {
 		t.Fatalf("assigned beads = %v, want independent units before epic unit %v", got, want)
 	}
 	assertMockWorkerAssignCount(t, workers, len(want))
+}
+
+func TestTryAssignNotFrozenByEmptySafeQuarantine(t *testing.T) {
+	tests := []struct {
+		name              string
+		preservableBranch string
+		wantAssigned      bool
+	}{
+		{
+			name:         "only empty-safe quarantines",
+			wantAssigned: true,
+		},
+		{
+			name:              "preservable quarantine still freezes assignment",
+			preservableBranch: "agent/oro-preserved",
+			wantAssigned:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, beadSrc, workers := setupTryAssignSchedulingTest(t, 1)
+			seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "oro-ready", Priority: 0})
+			beadSrc.SetBeads([]protocol.Bead{{ID: "oro-ready", Priority: 0}})
+
+			if _, err := d.db.ExecContext(t.Context(), `
+INSERT INTO recovery_quarantines (bead_id, reason, details, status)
+VALUES ('oro-empty-safe-1', 'stale_active_assignment', 'no branch or worktree remains', 'open'),
+       ('oro-empty-safe-2', 'missing_worktree', 'nothing remains to recover', 'open')`); err != nil {
+				t.Fatalf("insert empty-safe recovery quarantine: %v", err)
+			}
+			if tt.preservableBranch != "" {
+				if _, err := d.db.ExecContext(t.Context(), `
+INSERT INTO recovery_quarantines (bead_id, branch, reason, details, status)
+VALUES ('oro-preserved', ?, 'unsafe_stale_branch', 'branch still requires recovery', 'open')`,
+					tt.preservableBranch); err != nil {
+					t.Fatalf("insert preservable recovery quarantine: %v", err)
+				}
+			}
+
+			d.tryAssign(t.Context())
+
+			got := assignedBeadIDsByCreation(t, d.db)
+			if tt.wantAssigned {
+				if !slices.Equal(got, []string{"oro-ready"}) {
+					t.Fatalf("assigned beads = %v, want ready bead despite empty-safe quarantine", got)
+				}
+				assertMockWorkerAssignCount(t, workers, 1)
+				return
+			}
+			if len(got) != 0 {
+				t.Fatalf("assigned beads = %v, want preservable quarantine to freeze assignment", got)
+			}
+			assertMockWorkerAssignCount(t, workers, 0)
+		})
+	}
 }
 
 func TestTryAssign_EpicPriorityBeatsEpicAge(t *testing.T) {
@@ -22807,7 +23908,7 @@ func TestTryAssign_UnassignableEpicUnitDoesNotBlockNextEpic(t *testing.T) {
 	assertMockWorkerAssignCount(t, workers, len(want))
 }
 
-func TestTryAssign_ReservedEpicUnitBlocksNextEpic(t *testing.T) {
+func TestTryAssign_ReservedEpicUnitDoesNotIdleOtherWorkers(t *testing.T) {
 	d, beadSrc, workers := setupTryAssignSchedulingTest(t, 2)
 	seedTryAssignEpic(t, beadSrc, "epic-reserved", 0, "2026-05-01T00:00:00Z")
 	seedTryAssignEpic(t, beadSrc, "epic-next", 1, "2026-05-02T00:00:00Z")
@@ -22824,10 +23925,11 @@ func TestTryAssign_ReservedEpicUnitBlocksNextEpic(t *testing.T) {
 	d.tryAssign(context.Background())
 
 	got := assignedBeadIDsByCreation(t, d.db)
-	if len(got) != 0 {
-		t.Fatalf("assigned beads = %v, want reserved epic unit to block next epic", got)
+	want := []string{"next-child"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("assigned beads = %v, want reserved epic skipped and next epic assigned %v", got, want)
 	}
-	assertMockWorkerAssignCount(t, workers, 0)
+	assertMockWorkerAssignCount(t, workers, len(want))
 }
 
 func TestTryAssign_EscalatesDependencyCycle(t *testing.T) {
@@ -25489,4 +26591,18 @@ func dispatcherTestOpsRunStatusByID(t *testing.T, db *sql.DB, runID int64) strin
 		t.Fatalf("query ops_run %d status: %v", runID, err)
 	}
 	return status
+}
+
+func TestReviewFailureDetail_Bounded(t *testing.T) {
+	raw := strings.Repeat(`{"type":"assistant","delta":"noise"}`+"\n", 2000) +
+		`{"type":"result","is_error":true,"result":"terminal review error"}`
+
+	detail := reviewFailureDetail(ops.Result{Feedback: raw})
+
+	if len(detail) > 2*1024 {
+		t.Fatalf("review failure detail length = %d, want <= 2048", len(detail))
+	}
+	if !strings.Contains(detail, "terminal review error") {
+		t.Fatalf("review failure detail %q does not preserve terminal result", detail)
+	}
 }

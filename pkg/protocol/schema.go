@@ -52,6 +52,37 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_assignments_one_active_per_bead
 ON assignments(bead_id)
 WHERE status = 'active';
 
+-- Assignment-scoped bearer capability metadata. The raw bearer value is
+-- intentionally never persisted; token_hash is SHA-256 encoded as hex.
+CREATE TABLE IF NOT EXISTS assignment_capabilities (
+    capability_id TEXT PRIMARY KEY,
+    assignment_id INTEGER NOT NULL REFERENCES assignments(id),
+    generation INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('active', 'pending', 'superseded', 'revoked')),
+    pending_replacement_id TEXT REFERENCES assignment_capabilities(capability_id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    acknowledged_at TEXT,
+    superseded_at TEXT,
+    revoked_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_assignment_capabilities_assignment
+ON assignment_capabilities(assignment_id, generation, state);
+
+-- Request nonces make capability-authenticated requests durable and
+-- idempotent. response stores the prior serialized response, never a token.
+CREATE TABLE IF NOT EXISTS assignment_capability_nonces (
+    capability_id TEXT NOT NULL REFERENCES assignment_capabilities(capability_id),
+    nonce TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    response TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (capability_id, nonce)
+);
+
 -- Manager directives to the dispatcher (start, stop, pause, focus)
 CREATE TABLE IF NOT EXISTS commands (
     id INTEGER PRIMARY KEY,
@@ -268,6 +299,107 @@ CREATE TABLE IF NOT EXISTS beads (
     deleted               INTEGER NOT NULL DEFAULT 0
 );
 `
+
+const reviewCheckpointTableDDL = `CREATE TABLE IF NOT EXISTS review_checkpoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    checkpoint_key TEXT NOT NULL,
+    bead_id TEXT NOT NULL,
+    origin_assignment_id INTEGER NOT NULL,
+    current_assignment_id INTEGER,
+    worker_id TEXT,
+    worktree TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    target_branch TEXT NOT NULL,
+    head_sha TEXT NOT NULL,
+    target_sha TEXT NOT NULL,
+    acceptance_hash TEXT NOT NULL,
+    qg_run_id TEXT,
+    qg_script_hash TEXT NOT NULL,
+    qg_mode TEXT NOT NULL,
+    qg_output_hash TEXT,
+    qg_evidence_path TEXT,
+    qg_evidence_sha256 TEXT,
+    review_policy_hash TEXT NOT NULL,
+    triage_revision TEXT NOT NULL,
+    ready_attempt TEXT NOT NULL,
+    state TEXT NOT NULL,
+    review_attempt INTEGER NOT NULL DEFAULT 0,
+    recovery_attempt INTEGER NOT NULL DEFAULT 0,
+    recovery_strategy TEXT,
+    failure_fingerprint TEXT,
+    next_recovery_at TEXT,
+    quarantined_at TEXT,
+    next_quarantine_reminder_at TEXT,
+    quarantine_reminded_at TEXT,
+    quarantine_reminder_count INTEGER NOT NULL DEFAULT 0,
+    blockers_json TEXT NOT NULL DEFAULT '[]',
+    verification_json TEXT NOT NULL DEFAULT '{}',
+    summary TEXT NOT NULL DEFAULT '',
+    artifact_path TEXT,
+    artifact_sha256 TEXT,
+    artifact_bytes INTEGER NOT NULL DEFAULT 0,
+    recovery_artifact_path TEXT,
+    recovery_artifact_sha256 TEXT,
+    recovery_artifact_bytes INTEGER NOT NULL DEFAULT 0,
+    recovery_artifact_finding_count INTEGER NOT NULL DEFAULT 0,
+    ops_run_id INTEGER,
+    integration_target_before_sha TEXT,
+    integration_approved_head_sha TEXT,
+    integration_observed_target_sha TEXT,
+    integration_step TEXT,
+    override_kind TEXT,
+    override_source TEXT,
+    overridden_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT
+);`
+
+const reviewCheckpointActiveKeyIndexDDL = `CREATE UNIQUE INDEX idx_review_checkpoints_active_key
+ON review_checkpoints(checkpoint_key)
+WHERE state <> 'superseded'`
+
+const reviewCheckpointSchemaDDL = reviewCheckpointTableDDL + `
+CREATE UNIQUE INDEX IF NOT EXISTS idx_review_checkpoints_active_key
+ON review_checkpoints(checkpoint_key)
+WHERE state <> 'superseded';
+` + reviewCheckpointFindingsTableDDL + reviewRecoveryAttemptsTableDDL + reviewQuarantineDeliveriesTableDDL
+
+const reviewCheckpointFindingsTableDDL = `
+CREATE TABLE IF NOT EXISTS review_checkpoint_findings (
+    checkpoint_id INTEGER NOT NULL,
+    finding_id TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    file TEXT NOT NULL,
+    line INTEGER,
+    contract_impact TEXT NOT NULL,
+    required_action TEXT NOT NULL,
+    compact_json TEXT NOT NULL,
+    PRIMARY KEY(checkpoint_id, finding_id)
+);`
+
+const reviewRecoveryAttemptsTableDDL = `
+CREATE TABLE IF NOT EXISTS review_recovery_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    checkpoint_id INTEGER NOT NULL,
+    failure_fingerprint TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    strategy TEXT NOT NULL,
+    action_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    proof_json TEXT NOT NULL DEFAULT '{}',
+    started_at TEXT NOT NULL,
+    completed_at TEXT
+);`
+
+const reviewQuarantineDeliveriesTableDDL = `
+CREATE TABLE IF NOT EXISTS review_quarantine_deliveries (
+    checkpoint_id INTEGER NOT NULL,
+    scheduled_at TEXT NOT NULL,
+    delivered_at TEXT,
+    sink TEXT NOT NULL,
+    PRIMARY KEY(checkpoint_id, scheduled_at, sink)
+);`
 
 const beadSchemaDDL = beadTableDDL + `
 CREATE TABLE IF NOT EXISTS assignments (
@@ -563,6 +695,9 @@ func MigrateBeadSchema(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("migrate bead schema: %w", err)
 	}
+	if err := ensureReviewCheckpointSchema(ctx, db); err != nil {
+		return fmt.Errorf("migrate review checkpoint schema: %w", err)
+	}
 	rebuiltStatusConstraint, err := ensureBeadStatusAllowsBlocked(ctx, db)
 	if err != nil {
 		return fmt.Errorf("migrate bead status constraint: %w", err)
@@ -580,6 +715,352 @@ func MigrateBeadSchema(ctx context.Context, db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func ensureReviewCheckpointSchema(ctx context.Context, db *sql.DB) error {
+	columns, exists, err := sqliteTableColumns(ctx, db, "review_checkpoints")
+	if err != nil {
+		return fmt.Errorf("inspect review checkpoints: %w", err)
+	}
+	if exists && !hasCanonicalReviewCheckpointColumns(columns) {
+		if err := rebuildReviewCheckpoints(ctx, db, columns); err != nil {
+			return fmt.Errorf("rebuild legacy review checkpoints: %w", err)
+		}
+	}
+	if err := ensureReviewCheckpointChildSchemas(ctx, db); err != nil {
+		return fmt.Errorf("repair review checkpoint child schemas: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, reviewCheckpointSchemaDDL); err != nil {
+		return fmt.Errorf("create review checkpoint schema: %w", err)
+	}
+	if err := ensureReviewCheckpointActiveKeyIndex(ctx, db); err != nil {
+		return fmt.Errorf("repair review checkpoint active key index: %w", err)
+	}
+	return nil
+}
+
+func ensureReviewCheckpointActiveKeyIndex(ctx context.Context, db *sql.DB) error {
+	var indexSQL string
+	err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = 'idx_review_checkpoints_active_key'`).Scan(&indexSQL)
+	if err != nil {
+		return fmt.Errorf("inspect active key index: %w", err)
+	}
+	if normalizeReviewCheckpointSchemaSQL(indexSQL) == normalizeReviewCheckpointSchemaSQL(reviewCheckpointActiveKeyIndexDDL) {
+		return nil
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin active key index repair: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DROP INDEX idx_review_checkpoints_active_key`); err != nil {
+		return fmt.Errorf("drop mismatched active key index: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, reviewCheckpointActiveKeyIndexDDL); err != nil {
+		return fmt.Errorf("create canonical active key index: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit active key index repair: %w", err)
+	}
+	return nil
+}
+
+type reviewCheckpointChildSchema struct {
+	table       string
+	ddl         string
+	constraints []string
+	columns     []string
+	notNull     []string
+}
+
+func ensureReviewCheckpointChildSchemas(ctx context.Context, db *sql.DB) error {
+	for _, schema := range reviewCheckpointChildSchemas() {
+		columns, exists, err := sqliteTableColumns(ctx, db, schema.table)
+		if err != nil {
+			return fmt.Errorf("inspect %s: %w", schema.table, err)
+		}
+		if !exists || hasCanonicalReviewCheckpointChildSchema(ctx, db, schema, columns) {
+			continue
+		}
+		if err := rebuildReviewCheckpointChildSchema(ctx, db, schema, columns); err != nil {
+			return fmt.Errorf("rebuild %s: %w", schema.table, err)
+		}
+	}
+	return nil
+}
+
+func reviewCheckpointChildSchemas() []reviewCheckpointChildSchema {
+	return []reviewCheckpointChildSchema{
+		{
+			table:       "review_checkpoint_findings",
+			ddl:         reviewCheckpointFindingsTableDDL,
+			constraints: []string{"primarykey(checkpoint_id,finding_id)"},
+			columns:     []string{"checkpoint_id", "finding_id", "severity", "file", "line", "contract_impact", "required_action", "compact_json"},
+			notNull:     []string{"checkpoint_id", "finding_id", "severity", "file", "contract_impact", "required_action", "compact_json"},
+		},
+		{
+			table:       "review_recovery_attempts",
+			ddl:         reviewRecoveryAttemptsTableDDL,
+			constraints: []string{"primarykeyautoincrement", "idempotency_keytextnotnullunique", "proof_jsontextnotnulldefault'{}'"},
+			columns:     []string{"id", "checkpoint_id", "failure_fingerprint", "idempotency_key", "strategy", "action_json", "status", "proof_json", "started_at", "completed_at"},
+			notNull:     []string{"checkpoint_id", "failure_fingerprint", "idempotency_key", "strategy", "action_json", "status", "proof_json", "started_at"},
+		},
+		{
+			table:       "review_quarantine_deliveries",
+			ddl:         reviewQuarantineDeliveriesTableDDL,
+			constraints: []string{"primarykey(checkpoint_id,scheduled_at,sink)"},
+			columns:     []string{"checkpoint_id", "scheduled_at", "delivered_at", "sink"},
+			notNull:     []string{"checkpoint_id", "scheduled_at", "sink"},
+		},
+	}
+}
+
+func hasCanonicalReviewCheckpointChildSchema(ctx context.Context, db *sql.DB, schema reviewCheckpointChildSchema, columns map[string]bool) bool {
+	for _, column := range schema.columns {
+		if _, ok := columns[column]; !ok {
+			return false
+		}
+	}
+	for _, column := range schema.notNull {
+		if !columns[column] {
+			return false
+		}
+	}
+	var tableSQL string
+	if err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?`, schema.table).Scan(&tableSQL); err != nil {
+		return false
+	}
+	normalized := normalizeReviewCheckpointSchemaSQL(tableSQL)
+	for _, constraint := range schema.constraints {
+		if !strings.Contains(normalized, constraint) {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeReviewCheckpointSchemaSQL(sqlText string) string {
+	return strings.NewReplacer(" ", "", "\n", "", "\t", "").Replace(strings.ToLower(sqlText))
+}
+
+func rebuildReviewCheckpointChildSchema(ctx context.Context, db *sql.DB, schema reviewCheckpointChildSchema, columns map[string]bool) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin rebuild: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	legacyTable := schema.table + "_legacy"
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE `+schema.table+` RENAME TO `+legacyTable); err != nil {
+		return fmt.Errorf("rename legacy table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, schema.ddl); err != nil {
+		return fmt.Errorf("create canonical table: %w", err)
+	}
+	insertColumns, selectColumns := reviewCheckpointChildCopyColumns(schema, columns)
+	//nolint:gosec // G202: identifiers and expressions are selected from static migration lists.
+	query := `INSERT INTO ` + schema.table + ` (` + strings.Join(insertColumns, ", ") + `) SELECT ` + strings.Join(selectColumns, ", ") + ` FROM ` + legacyTable
+	if _, err := tx.ExecContext(ctx, query); err != nil {
+		return fmt.Errorf("copy compatible rows: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DROP TABLE `+legacyTable); err != nil {
+		return fmt.Errorf("drop legacy table: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit rebuild: %w", err)
+	}
+	return nil
+}
+
+func reviewCheckpointChildCopyColumns(schema reviewCheckpointChildSchema, columns map[string]bool) (insertColumns, selectColumns []string) {
+	for _, column := range schema.columns {
+		insertColumns = append(insertColumns, column)
+		selectColumns = append(selectColumns, reviewCheckpointChildCopyExpression(schema.table, column, columns))
+	}
+	return insertColumns, selectColumns
+}
+
+func reviewCheckpointChildCopyExpression(table, column string, columns map[string]bool) string {
+	if _, ok := columns[column]; ok {
+		return column
+	}
+	switch table {
+	case "review_checkpoint_findings":
+		return reviewCheckpointFindingCopyExpression(column)
+	case "review_recovery_attempts":
+		return reviewRecoveryAttemptCopyExpression(column)
+	case "review_quarantine_deliveries":
+		return reviewQuarantineDeliveryCopyExpression(column)
+	}
+	return "NULL"
+}
+
+func reviewCheckpointFindingCopyExpression(column string) string {
+	switch column {
+	case "finding_id":
+		return `'legacy-finding:' || rowid`
+	case "severity":
+		return `'unknown'`
+	case "file", "contract_impact", "required_action":
+		return `''`
+	case "compact_json":
+		return `'{}'`
+	default:
+		return "NULL"
+	}
+}
+
+func reviewRecoveryAttemptCopyExpression(column string) string {
+	switch column {
+	case "id":
+		return "rowid"
+	case "checkpoint_id":
+		return "0"
+	case "failure_fingerprint":
+		return `''`
+	case "idempotency_key":
+		return `'legacy-recovery:' || rowid`
+	case "strategy":
+		return `'legacy'`
+	case "action_json", "proof_json":
+		return `'{}'`
+	case "status":
+		return `'failed'`
+	case "started_at":
+		return "datetime('now')"
+	default:
+		return "NULL"
+	}
+}
+
+func reviewQuarantineDeliveryCopyExpression(column string) string {
+	switch column {
+	case "checkpoint_id":
+		return "0"
+	case "scheduled_at":
+		return "datetime('now') || ':' || rowid"
+	case "sink":
+		return `'legacy'`
+	default:
+		return "NULL"
+	}
+}
+
+func sqliteTableColumns(ctx context.Context, db *sql.DB, table string) (columns map[string]bool, exists bool, err error) {
+	rows, err := db.QueryContext(ctx, `SELECT name, "notnull" FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return nil, false, fmt.Errorf("query table columns: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	columns = make(map[string]bool)
+	for rows.Next() {
+		var name string
+		var notNull int
+		if err := rows.Scan(&name, &notNull); err != nil {
+			return nil, false, fmt.Errorf("scan table column: %w", err)
+		}
+		columns[name] = notNull != 0
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("iterate table columns: %w", err)
+	}
+	return columns, len(columns) > 0, nil
+}
+
+func hasCanonicalReviewCheckpointColumns(columns map[string]bool) bool {
+	for _, column := range reviewCheckpointColumnNames() {
+		if _, ok := columns[column]; !ok {
+			return false
+		}
+	}
+	return columns["checkpoint_key"]
+}
+
+func rebuildReviewCheckpoints(ctx context.Context, db *sql.DB, columns map[string]bool) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin review checkpoint rebuild: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE review_checkpoints RENAME TO review_checkpoints_legacy`); err != nil {
+		return fmt.Errorf("rename legacy review checkpoints: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, reviewCheckpointTableDDL); err != nil {
+		return fmt.Errorf("create canonical review checkpoints: %w", err)
+	}
+
+	insertColumns, selectColumns := reviewCheckpointCopyColumns(columns)
+	//nolint:gosec // G202: column names and expressions are selected from static migration lists.
+	query := `INSERT INTO review_checkpoints (` + strings.Join(insertColumns, ", ") + `) SELECT ` + strings.Join(selectColumns, ", ") + ` FROM review_checkpoints_legacy`
+	if _, err := tx.ExecContext(ctx, query); err != nil {
+		return fmt.Errorf("copy legacy review checkpoints: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DROP TABLE review_checkpoints_legacy`); err != nil {
+		return fmt.Errorf("drop legacy review checkpoints: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit review checkpoint rebuild: %w", err)
+	}
+	return nil
+}
+
+func reviewCheckpointCopyColumns(columns map[string]bool) (insertColumns, selectColumns []string) {
+	insertColumns = reviewCheckpointColumnNames()
+	selectColumns = make([]string, 0, len(insertColumns))
+	for _, column := range insertColumns {
+		selectColumns = append(selectColumns, reviewCheckpointCopyExpression(column, columns))
+	}
+	return insertColumns, selectColumns
+}
+
+func reviewCheckpointColumnNames() []string {
+	return []string{
+		"id", "checkpoint_key", "bead_id", "origin_assignment_id", "current_assignment_id", "worker_id",
+		"worktree", "branch", "target_branch", "head_sha", "target_sha", "acceptance_hash",
+		"qg_run_id", "qg_script_hash", "qg_mode", "qg_output_hash", "qg_evidence_path", "qg_evidence_sha256",
+		"review_policy_hash", "triage_revision", "ready_attempt", "state", "review_attempt", "recovery_attempt",
+		"recovery_strategy", "failure_fingerprint", "next_recovery_at", "quarantined_at", "next_quarantine_reminder_at",
+		"quarantine_reminded_at", "quarantine_reminder_count", "blockers_json", "verification_json", "summary",
+		"artifact_path", "artifact_sha256", "artifact_bytes", "recovery_artifact_path", "recovery_artifact_sha256",
+		"recovery_artifact_bytes", "recovery_artifact_finding_count", "ops_run_id", "integration_target_before_sha",
+		"integration_approved_head_sha", "integration_observed_target_sha", "integration_step", "override_kind",
+		"override_source", "overridden_at", "created_at", "updated_at", "completed_at",
+	}
+}
+
+func reviewCheckpointCopyExpression(column string, columns map[string]bool) string {
+	if column == "checkpoint_key" {
+		if _, ok := columns[column]; ok {
+			return `CASE WHEN COALESCE(checkpoint_key, '') = '' THEN 'legacy-unverified:' || id ELSE checkpoint_key END`
+		}
+		return `'legacy-unverified:' || id`
+	}
+	if _, ok := columns[column]; ok {
+		return column
+	}
+	switch column {
+	case "bead_id", "worktree", "branch", "target_branch", "head_sha", "target_sha", "acceptance_hash", "qg_script_hash", "qg_mode", "review_policy_hash", "triage_revision", "ready_attempt":
+		return `'legacy-unverified'`
+	case "origin_assignment_id":
+		return "0"
+	case "state":
+		return `'failed'`
+	case "review_attempt", "recovery_attempt", "quarantine_reminder_count", "artifact_bytes", "recovery_artifact_bytes", "recovery_artifact_finding_count":
+		return "0"
+	case "blockers_json":
+		return `'[]'`
+	case "verification_json":
+		return `'{}'`
+	case "summary":
+		return `''`
+	case "created_at", "updated_at":
+		return "datetime('now')"
+	default:
+		return "NULL"
+	}
 }
 
 const currentOpsRunsTableDDL = `CREATE TABLE IF NOT EXISTS ops_runs (

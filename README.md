@@ -609,7 +609,7 @@ The `--model` flag and task `model` field accept **tier names** (preferred) or p
 | `deep` | Complex architecture, multi-file refactors, review-heavy tasks |
 | `background` | Memory extraction, dreaming, ops subtasks |
 
-Tier names are the stable interface. Concrete model names are resolved from the active agent config. Without an `agent` block, fast/background work uses Codex Terra at low reasoning, ordinary work uses Terra at medium, deep/escalated work uses Sol at xhigh, and reviews use Claude Fable. `oro init` writes an `agent.provider_mode` by default; the default provider mode is `codex-coding-claude-review`.
+Tier names are the stable interface. Concrete model names are resolved from the active agent config. Without an `agent` block, fast/background work uses Codex Luna at low reasoning, ordinary work uses Terra at medium, deep/escalated work uses Sol at high, and reviews use Claude Fable. `oro init` writes an `agent.provider_mode` by default; the default provider mode is `codex-coding-claude-review`.
 
 Provider modes:
 

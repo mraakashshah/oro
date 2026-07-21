@@ -1,6 +1,9 @@
 package worker //nolint:testpackage // need access to unexported buildClaudeArgs and buildClaudeEnv
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -51,6 +54,49 @@ func TestBuildClaudeArgs_WithORO(t *testing.T) {
 			t.Fatalf("expected length 7 without ORO_PROJECT, got %d: %v", len(got), got)
 		}
 	})
+}
+
+func TestClaudeSpawnerForwardsReasoningAsEffort(t *testing.T) {
+	tmpDir := t.TempDir()
+	capturePath := filepath.Join(tmpDir, "args.txt")
+	claudePath := filepath.Join(tmpDir, "claude")
+	if err := os.WriteFile(claudePath, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CAPTURE\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmpDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CAPTURE", capturePath)
+	t.Setenv("ORO_HOME", "")
+	t.Setenv("ORO_PROJECT", "")
+
+	router := NewRuntimeSpawnerRouter(&ClaudeSpawner{}, nil)
+	proc, stdout, _, _, err := router.Spawn(context.Background(), "claude", "fable", "xhigh", "hello", tmpDir)
+	if err != nil {
+		t.Fatalf("spawn Claude: %v", err)
+	}
+	if stdout != nil {
+		defer stdout.Close()
+	}
+	if err := proc.Wait(); err != nil {
+		t.Fatalf("wait for Claude: %v", err)
+	}
+
+	gotBytes, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Fields(string(gotBytes))
+	if !slicesContainSequence(got, "--effort", "xhigh") {
+		t.Fatalf("Claude args = %v, want --effort xhigh", got)
+	}
+}
+
+func slicesContainSequence(values []string, first, second string) bool {
+	for i := 0; i+1 < len(values); i++ {
+		if values[i] == first && values[i+1] == second {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBuildClaudeEnv_StripsClaudecode(t *testing.T) {

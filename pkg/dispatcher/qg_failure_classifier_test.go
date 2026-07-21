@@ -189,6 +189,89 @@ func TestClassifyQGFailureDecisionMatrix(t *testing.T) {
 	}
 }
 
+func TestClassifyNilAwaySourceDiagnosticDeterministic(t *testing.T) {
+	output := `▶ nilaway                       ✗ FAIL
+pkg/dispatcher/presubmit.go:141:24: Potential nil panic detected`
+
+	got := dispatcher.ClassifyQGFailure(dispatcher.QGFailureRecord{Output: output}, dispatcher.QGFailureHistory{})
+	if got.Class != dispatcher.QGFailureClassWorkerDeterministic ||
+		got.Decision != dispatcher.QGFailureDecisionRetryOriginal ||
+		got.Confidence != dispatcher.QGFailureConfidenceHigh {
+		t.Fatalf("classification = %+v, want worker_deterministic/retry_original/high", got)
+	}
+}
+
+func TestClassifyNilAwayWithoutSourceDiagnosticPreservesExistingRules(t *testing.T) {
+	tests := []struct {
+		name         string
+		output       string
+		wantClass    dispatcher.QGFailureClass
+		wantDecision dispatcher.QGFailureDecision
+	}{
+		{
+			name:         "tool-only summary remains unknown",
+			output:       "▶ nilaway ✗ FAIL\nQuality gate FAILED",
+			wantClass:    dispatcher.QGFailureClassUnknown,
+			wantDecision: dispatcher.QGFailureDecisionStopForTriage,
+		},
+		{
+			name:         "infrastructure failure remains systemic",
+			output:       "▶ nilaway ✗ FAIL\npackage loader: cannot load stdlib",
+			wantClass:    dispatcher.QGFailureClassSystemic,
+			wantDecision: dispatcher.QGFailureDecisionCreateOrReuseInfra,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dispatcher.ClassifyQGFailure(dispatcher.QGFailureRecord{Output: tt.output}, dispatcher.QGFailureHistory{})
+			if got.Class != tt.wantClass || got.Decision != tt.wantDecision {
+				t.Fatalf("classification = %+v, want class=%q decision=%q", got, tt.wantClass, tt.wantDecision)
+			}
+		})
+	}
+}
+
+func TestClassifyQGFailureDeterministicMarkerWinsOverTimeoutText(t *testing.T) {
+	tests := []struct {
+		name         string
+		output       string
+		wantClass    dispatcher.QGFailureClass
+		wantDecision dispatcher.QGFailureDecision
+	}{
+		{
+			name: "go test failure with timeout-bearing name and flag is deterministic",
+			output: `▶ go test + coverage ✗ FAIL
+--- FAIL: TestProgressTimeoutReapsWedgedNonBusyWorker (60.00s)
+    progress_timeout_test.go:87: worker remained tracked after the deadline
+FAIL	oro/pkg/dispatcher	60.123s
+go test ./pkg/dispatcher -run TestProgressTimeoutReapsWedgedNonBusyWorker -timeout 60s`,
+			wantClass:    dispatcher.QGFailureClassWorkerDeterministic,
+			wantDecision: dispatcher.QGFailureDecisionRetryOriginal,
+		},
+		{
+			name: "network timeout remains transient despite formatter tool pass lines",
+			output: `▶ gofumpt ✓ PASS
+▶ goimports ✓ PASS
+▶ go test + coverage ✗ FAIL
+go: downloading example.com/module v1.2.3
+Get "https://proxy.example.com/example.com/module/@v/v1.2.3.zip": net/http: TLS handshake timeout`,
+			wantClass:    dispatcher.QGFailureClassTransient,
+			wantDecision: dispatcher.QGFailureDecisionBackoffRetry,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dispatcher.ClassifyQGFailure(dispatcher.QGFailureRecord{Output: tt.output}, dispatcher.QGFailureHistory{})
+			if got.Class != tt.wantClass || got.Decision != tt.wantDecision {
+				t.Fatalf("ClassifyQGFailure() = class=%q decision=%q reason=%q, want class=%q decision=%q",
+					got.Class, got.Decision, got.Reason, tt.wantClass, tt.wantDecision)
+			}
+		})
+	}
+}
+
 func TestClassifyRepeatedQGPatternsFromThroughputRun(t *testing.T) {
 	tests := []struct {
 		name         string

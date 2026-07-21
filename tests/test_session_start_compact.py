@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 from pathlib import Path
@@ -13,8 +14,29 @@ sys.path.insert(0, str(Path(__file__).parent.parent / ".claude" / "hooks"))
 from session_start_compact import main as session_start_main
 
 
+def _context(output: dict) -> str:
+    """Extract SessionStart additional context from a hook result."""
+    return output["hookSpecificOutput"]["additionalContext"]
+
+
 class TestSessionStartCompact:
     """Tests for the SessionStart(compact) hook."""
+
+    def test_emits_codex_session_start_schema(self, tmp_path: Path, capsys) -> None:
+        """Continuation context uses Codex's strict SessionStart JSON envelope."""
+
+        state_dir = tmp_path / ".oro" / "compaction-state"
+        state_dir.mkdir(parents=True)
+        (state_dir / "session-schema.json").write_text(json.dumps({"bead_id": "oro-test"}))
+        sys.stdin = io.StringIO(json.dumps({"session_id": "session-schema"}))
+
+        with patch("session_start_compact.Path.home", return_value=tmp_path):
+            session_start_main()
+
+        output = json.loads(capsys.readouterr().out)
+        assert set(output) == {"hookSpecificOutput"}
+        assert output["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+        assert "oro-test" in output["hookSpecificOutput"]["additionalContext"]
 
     def test_reads_saved_state_and_injects_context(
         self,
@@ -41,7 +63,7 @@ class TestSessionStartCompact:
             session_start_main()
 
         output = json.loads(capsys.readouterr().out)
-        ctx = output["additionalContext"]
+        ctx = _context(output)
         assert "oro-test" in ctx
         assert "src/main.go" in ctx
         assert "FAIL" in ctx
@@ -121,7 +143,7 @@ class TestSessionStartCompactRole:
 
         assert not debounce_file.exists()
         output = json.loads(capsys.readouterr().out)
-        assert "additionalContext" in output
+        assert "additionalContext" in output["hookSpecificOutput"]
 
     def test_injects_live_state(self, capsys) -> None:
         """Non-worker role injects live swarm context from BOTH oro status and task list."""
@@ -141,9 +163,9 @@ class TestSessionStartCompactRole:
             session_start_main()
 
         output = json.loads(capsys.readouterr().out)
-        assert "additionalContext" in output
-        assert "status output" in output["additionalContext"]
-        assert "task list output" in output["additionalContext"]
+        assert "additionalContext" in output["hookSpecificOutput"]
+        assert "status output" in _context(output)
+        assert "task list output" in _context(output)
         assert mock_run.call_count == 2
         first_cmd = mock_run.call_args_list[0][0][0]
         second_cmd = mock_run.call_args_list[1][0][0]
@@ -165,7 +187,7 @@ class TestSessionStartCompactRole:
             session_start_main()
 
         output = json.loads(capsys.readouterr().out)
-        assert "additionalContext" in output
+        assert "additionalContext" in output["hookSpecificOutput"]
 
     def test_oro_status_failure_still_injects_bd_list(self, capsys) -> None:
         """When oro status raises OSError, bd list output is still in additionalContext."""
@@ -181,8 +203,8 @@ class TestSessionStartCompactRole:
             session_start_main()
 
         output = json.loads(capsys.readouterr().out)
-        assert "additionalContext" in output
-        assert "bd list output" in output["additionalContext"]
+        assert "additionalContext" in output["hookSpecificOutput"]
+        assert "bd list output" in _context(output)
 
     def test_bd_list_failure_still_injects_oro_status(self, capsys) -> None:
         """When bd list raises OSError, oro status output is still in additionalContext."""
@@ -198,8 +220,8 @@ class TestSessionStartCompactRole:
             session_start_main()
 
         output = json.loads(capsys.readouterr().out)
-        assert "additionalContext" in output
-        assert "status output" in output["additionalContext"]
+        assert "additionalContext" in output["hookSpecificOutput"]
+        assert "status output" in _context(output)
 
     def test_worker_path_unchanged(self, tmp_path: Path, capsys) -> None:
         """Worker role falls through to transcript path after clearing debounce."""
@@ -226,5 +248,5 @@ class TestSessionStartCompactRole:
             session_start_main()
 
         output = json.loads(capsys.readouterr().out)
-        assert "additionalContext" in output
-        assert "oro-test" in output["additionalContext"]
+        assert "additionalContext" in output["hookSpecificOutput"]
+        assert "oro-test" in _context(output)

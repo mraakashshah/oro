@@ -83,7 +83,7 @@ func TestHookEndToEnd(t *testing.T) {
 		}
 	})
 
-	t.Run("allow_non_read_tool", func(t *testing.T) {
+	t.Run("allow_non_cat_bash_empty_stdout", func(t *testing.T) {
 		input := map[string]any{
 			"hook_type": "PreToolUse",
 			"tool_name": "Bash",
@@ -93,9 +93,9 @@ func TestHookEndToEnd(t *testing.T) {
 		}
 		stdout := runHookBinary(t, binPath, input)
 
-		trimmed := strings.TrimSpace(string(stdout))
-		if trimmed != "{}" {
-			t.Errorf("expected allow response {}, got %q", trimmed)
+		// Codex Bash allow contract is empty stdout (zero bytes), not {}.
+		if len(stdout) != 0 {
+			t.Errorf("expected empty stdout for non-cat Bash (allow), got %q", string(stdout))
 		}
 	})
 
@@ -117,26 +117,21 @@ func TestHookEndToEnd(t *testing.T) {
 	})
 
 	t.Run("settings_json_registration", func(t *testing.T) {
-		// This test requires ORO_PROJECT to be set (via oro start or test setup).
-		// Skip if not present — settings.json lives in ~/.oro/projects/<name>/.
-		oroProject := os.Getenv("ORO_PROJECT")
-		if oroProject == "" {
-			t.Skip("ORO_PROJECT not set, skipping settings.json registration check")
-		}
+		oroHome := t.TempDir()
+		oroProject := "fixture-project"
+		t.Setenv("ORO_HOME", oroHome)
+		t.Setenv("ORO_PROJECT", oroProject)
 
-		// Resolve ORO_HOME (defaults to ~/.oro if not set).
-		oroHome := os.Getenv("ORO_HOME")
-		if oroHome == "" {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				t.Fatalf("failed to get home dir: %v", err)
-			}
-			oroHome = filepath.Join(home, ".oro")
-		}
-
-		// Construct path to settings.json.
 		settingsPath := filepath.Join(oroHome, "projects", oroProject, "settings.json")
-		data, err := os.ReadFile(settingsPath) //nolint:gosec // test reads project-specific settings
+		if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+			t.Fatalf("failed to create settings fixture directory: %v", err)
+		}
+		fixture := `{"hooks":{"PreToolUse":[{"matcher":"Read","hooks":[{"type":"command","command":"$ORO_HOME/hooks/oro-search-hook","timeout":5000}]}]}}`
+		if err := os.WriteFile(settingsPath, []byte(fixture), 0o600); err != nil {
+			t.Fatalf("failed to write settings fixture: %v", err)
+		}
+
+		data, err := os.ReadFile(settingsPath) //nolint:gosec // test reads its temporary fixture
 		if err != nil {
 			t.Fatalf("failed to read settings.json at %s: %v", settingsPath, err)
 		}

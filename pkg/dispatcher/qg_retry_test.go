@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -103,6 +104,161 @@ func TestHandleDone_QGFailRetryIncrementsAttempt(t *testing.T) {
 	}
 }
 
+func TestQGRetryReconnectDuringReservationStillDeliversRetry(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	beadID := "bead-qg-reconnect"
+	workerID := "worker-qg-reconnect"
+	worktree := t.TempDir()
+
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: "QG reconnect retry", Status: "open"}
+	beadSrc.mu.Unlock()
+
+	result, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`,
+		beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("seed active assignment: %v", err)
+	}
+	assignmentID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("read assignment ID: %v", err)
+	}
+
+	oldServer, oldClient := net.Pipe()
+	defer func() { _ = oldServer.Close() }()
+	defer func() { _ = oldClient.Close() }()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         oldServer,
+		encoder:      json.NewEncoder(oldServer),
+		state:        protocol.WorkerReserved,
+		beadID:       beadID,
+		worktree:     worktree,
+		assignmentID: assignmentID,
+		targetBranch: "main",
+	}
+	d.mu.Unlock()
+
+	baselineStarted := make(chan struct{})
+	releaseBaseline := make(chan struct{})
+	d.cfg.RegressionRevert = true
+	d.shutdownRunner = &mockCommandRunner{callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if strings.Join(args, " ") != "-C "+worktree+" rev-parse HEAD" {
+			return []byte("qg-reconnect-head\n"), nil
+		}
+		close(baselineStarted)
+		<-releaseBaseline
+		return []byte("qg-reconnect-head\n"), nil
+	}}
+
+	retryDone := make(chan struct{})
+	go func() {
+		defer close(retryDone)
+		d.qgRetryWithReservation(ctx, workerID, beadID, "quality gate failed", 1)
+	}()
+
+	select {
+	case <-baselineStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for blocked baseline capture")
+	}
+
+	newServer, newClient := net.Pipe()
+	defer func() { _ = newServer.Close() }()
+	defer func() { _ = newClient.Close() }()
+	d.mu.Lock()
+	d.upsertWorker(workerID, newServer, false)
+	d.mu.Unlock()
+	d.handleReconnect(ctx, workerID, protocol.Message{
+		Type: protocol.MsgReconnect,
+		Reconnect: &protocol.ReconnectPayload{
+			WorkerID: workerID,
+			BeadID:   beadID,
+			State:    "running",
+		},
+	})
+
+	close(releaseBaseline)
+	msg, ok := readMsg(t, newClient, 2*time.Second)
+	if !ok {
+		t.Fatal("expected retry ASSIGN on reconnected worker")
+	}
+	if msg.Type != protocol.MsgAssign || msg.Assign == nil {
+		t.Fatalf("retry message = %#v, want ASSIGN", msg)
+	}
+	if msg.Assign.BeadID != beadID || msg.Assign.Attempt != 1 {
+		t.Fatalf("retry assignment = %#v, want bead %q attempt 1", msg.Assign, beadID)
+	}
+
+	select {
+	case <-retryDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for retry completion")
+	}
+
+	d.mu.Lock()
+	worker := d.workers[workerID]
+	workerState := worker.state
+	workerAssignmentID := worker.assignmentID
+	d.mu.Unlock()
+	if workerState != protocol.WorkerBusy || workerAssignmentID != assignmentID {
+		t.Fatalf("worker state=%s assignment=%d, want busy assignment=%d", workerState, workerAssignmentID, assignmentID)
+	}
+
+	var activeAssignments int
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM assignments WHERE bead_id=? AND status='active'`, beadID).Scan(&activeAssignments); err != nil {
+		t.Fatalf("count active assignments: %v", err)
+	}
+	if activeAssignments != 1 {
+		t.Fatalf("active assignments = %d, want 1", activeAssignments)
+	}
+	if got := eventCount(t, d.db, "qg_retry_assign_sent"); got != 1 {
+		t.Fatalf("qg_retry_assign_sent events = %d, want 1", got)
+	}
+}
+
+func TestReconnectDifferentBeadDoesNotStealQGRetryReservation(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	reservedBeadID := "bead-qg-reserved"
+	beadSrc.mu.Lock()
+	beadSrc.shown["bead-qg-other"] = &protocol.BeadDetail{ID: "bead-qg-other", Status: "open"}
+	beadSrc.mu.Unlock()
+
+	server, client := net.Pipe()
+	defer func() { _ = server.Close() }()
+	defer func() { _ = client.Close() }()
+	d.mu.Lock()
+	d.workers["worker-qg-reserved"] = &trackedWorker{
+		id:      "worker-qg-reserved",
+		conn:    server,
+		encoder: json.NewEncoder(server),
+		state:   protocol.WorkerReserved,
+		beadID:  reservedBeadID,
+	}
+	d.mu.Unlock()
+
+	d.handleReconnect(context.Background(), "worker-qg-reserved", protocol.Message{
+		Type: protocol.MsgReconnect,
+		Reconnect: &protocol.ReconnectPayload{
+			WorkerID: "worker-qg-reserved",
+			BeadID:   "bead-qg-other",
+			State:    "running",
+		},
+	})
+
+	d.mu.Lock()
+	worker := d.workers["worker-qg-reserved"]
+	state, beadID := worker.state, worker.beadID
+	d.mu.Unlock()
+	if state != protocol.WorkerReserved || beadID != reservedBeadID {
+		t.Fatalf("worker state=%s bead=%q, want reserved bead=%q", state, beadID, reservedBeadID)
+	}
+}
+
 func TestHandleDone_QGFailRetryAttemptContinuesAcrossModelEscalation(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	cancel := startDispatcher(t, d)
@@ -139,8 +295,8 @@ func TestHandleDone_QGFailRetryAttemptContinuesAcrossModelEscalation(t *testing.
 		if msg.Type != protocol.MsgAssign {
 			t.Fatalf("expected ASSIGN on attempt %d, got %s", attempt, msg.Type)
 		}
-		if msg.Assign.Model != "gpt-5.6-sol" || msg.Assign.Reasoning != "xhigh" {
-			t.Fatalf("expected retry Sol xhigh on attempt %d, got model=%q reasoning=%q", attempt, msg.Assign.Model, msg.Assign.Reasoning)
+		if msg.Assign.Model != "gpt-5.6-sol" || msg.Assign.Reasoning != "high" {
+			t.Fatalf("expected retry Sol high on attempt %d, got model=%q reasoning=%q", attempt, msg.Assign.Model, msg.Assign.Reasoning)
 		}
 		if msg.Assign.Attempt != attempt {
 			t.Fatalf("expected Attempt=%d across model escalation, got %d", attempt, msg.Assign.Attempt)

@@ -12,8 +12,120 @@ import (
 	"time"
 
 	"oro/pkg/config"
+	"oro/pkg/merge"
+	"oro/pkg/ops"
 	"oro/pkg/protocol"
 )
+
+func TestAutomaticBeadEstimationDisabled(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	binDir := t.TempDir()
+	estimatorMarker := filepath.Join(t.TempDir(), "estimator-called")
+	t.Setenv("HOME", home)
+	t.Setenv("ORO_HOME", filepath.Join(home, ".oro"))
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+	t.Setenv("ESTIMATOR_MARKER", estimatorMarker)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Chdir(project)
+	if err := os.MkdirAll(filepath.Join(project, ".oro"), 0o755); err != nil {
+		t.Fatalf("create project config directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(project, ".oro", "config.yaml"), []byte("agent: {}\n"), 0o600); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+	for _, name := range []string{"codex", "claude"} {
+		path := filepath.Join(binDir, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\ntouch \"$ESTIMATOR_MARKER\"\nprintf '4\\n'\n"), 0o755); err != nil {
+			t.Fatalf("write fake %s: %v", name, err)
+		}
+	}
+
+	t.Run("injected estimator remains available to tests", func(t *testing.T) {
+		injected := &mockBeadEstimator{}
+		if estimator := (&Config{Estimator: injected}).withDefaults().Estimator; estimator != injected {
+			t.Fatalf("configured estimator = %T, want injected estimator", estimator)
+		}
+	})
+
+	for _, tc := range []struct {
+		name             string
+		estimatedMinutes int
+		wantModel        string
+		wantReasoning    string
+	}{
+		{name: "zero estimate stays balanced without estimation", wantModel: "gpt-5.6-terra", wantReasoning: "medium"},
+		{name: "three minute estimate uses fast tier", estimatedMinutes: 3, wantModel: "gpt-5.6-luna", wantReasoning: "low"},
+		{name: "eight minute estimate uses balanced tier", estimatedMinutes: 8, wantModel: "gpt-5.6-terra", wantReasoning: "medium"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bead := protocol.Bead{
+				ID:               "oro-estimate-" + strings.ReplaceAll(tc.name, " ", "-"),
+				Title:            tc.name,
+				Type:             "task",
+				Priority:         1,
+				EstimatedMinutes: tc.estimatedMinutes,
+			}
+			db := newTestDB(t)
+			gitRunner := &mockGitRunner{}
+			beadSrc := &fakeBeadStore{
+				shown: map[string]*protocol.BeadDetail{
+					bead.ID: {
+						ID:                 bead.ID,
+						Title:              bead.Title,
+						Type:               bead.Type,
+						Status:             "open",
+						AcceptanceCriteria: "Test: named regression | Cmd: go test ./pkg/dispatcher | Assert: PASS",
+					},
+				},
+			}
+			wtMgr := &mockWorktreeManager{created: make(map[string]string)}
+			d, err := New(
+				Config{
+					SocketPath:       filepath.Join(t.TempDir(), "dispatcher.sock"),
+					DBPath:           ":memory:",
+					MaxWorkers:       1,
+					HeartbeatTimeout: 500 * time.Millisecond,
+					PollInterval:     50 * time.Millisecond,
+					ShutdownTimeout:  200 * time.Millisecond,
+				},
+				db,
+				merge.NewCoordinator(gitRunner),
+				ops.NewSpawner(&mockBatchSpawner{verdict: "VERDICT: APPROVED"}),
+				beadSrc,
+				wtMgr,
+				&mockEscalator{},
+				nil,
+				WithMemoryServices(newTestMemoryServices(db)),
+			)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if d.estimator != nil {
+				t.Fatalf("production New estimator = %T, want nil", d.estimator)
+			}
+
+			worker := &trackedWorker{
+				id:    "worker-" + bead.ID,
+				state: protocol.WorkerIdle,
+				conn:  newMockConn(),
+			}
+			d.mu.Lock()
+			d.workers[worker.id] = worker
+			d.mu.Unlock()
+			if err := d.assignBead(context.Background(), worker, bead); err != nil {
+				t.Fatalf("assignBead: %v", err)
+			}
+			if worker.runtime != "codex" || worker.model != tc.wantModel || worker.reasoning != tc.wantReasoning {
+				t.Fatalf("assigned route = (%q, %q, %q), want (%q, %q, %q)",
+					worker.runtime, worker.model, worker.reasoning, "codex", tc.wantModel, tc.wantReasoning)
+			}
+			if _, err := os.Stat(estimatorMarker); !os.IsNotExist(err) {
+				t.Fatalf("automatic estimator launched during assignment, stat err=%v", err)
+			}
+		})
+	}
+}
 
 func TestNewBeadEstimatorUsesSubscriptionCLIByDefault(t *testing.T) {
 	home := t.TempDir()
@@ -63,7 +175,7 @@ func TestNewBeadEstimatorUsesSubscriptionCLIByDefault(t *testing.T) {
 		t.Fatalf("read fake Codex args: %v", err)
 	}
 	for _, want := range []string{
-		"--model\ngpt-5.6-terra", "--sandbox\nread-only", "--ephemeral", "--ignore-user-config",
+		"--model\ngpt-5.6-luna", "--sandbox\nread-only", "--ephemeral", "--ignore-user-config",
 		"--disable\nplugins", "--disable\nshell_tool", "--disable\nunified_exec",
 		`model_reasoning_effort="low"`, "Implement routing", "Tests pass",
 	} {

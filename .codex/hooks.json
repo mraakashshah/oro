@@ -1,0 +1,149 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 '/Users/as21/codehouse/oro/.codex/hooks/pane_handoff_reminder.py'"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 '/Users/as21/codehouse/oro/.codex/hooks/worktree_guard.py'"
+          },
+          {
+            "type": "command",
+            "command": "python3 '/Users/as21/codehouse/oro/.codex/hooks/no_cd_guard.py'"
+          },
+          {
+            "type": "command",
+            "command": "python3 '/Users/as21/codehouse/oro/.codex/hooks/rebase_worktree_guard.py'"
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.oro/hooks/oro-search-hook",
+            "timeout": 5000,
+            "statusMessage": "Searching codebase..."
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 '/Users/as21/codehouse/oro/.codex/hooks/enforce_worktree.py'"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 '/Users/as21/codehouse/oro/.codex/hooks/enforce_worktree_writes.py'"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 '/Users/as21/codehouse/oro/.codex/hooks/context_pct_writer.py'"
+          },
+          {
+            "type": "command",
+            "command": "python3 '/Users/as21/codehouse/oro/.codex/hooks/context_pruner.py'"
+          }
+        ]
+      },
+      {
+        "matcher": "Read|WebFetch|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 '/Users/as21/codehouse/oro/.codex/hooks/prompt_injection_guard.py'"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/as21/codehouse/oro/.codex/hooks/auto-format.sh'"
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 '/Users/as21/codehouse/oro/.codex/hooks/validate_agent_completion.py'"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 '/Users/as21/codehouse/oro/.codex/hooks/pre_compact.py'"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 '/Users/as21/codehouse/oro/.codex/hooks/session_start_extras.py'",
+            "statusMessage": "Loading project context..."
+          }
+        ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 '/Users/as21/codehouse/oro/.codex/hooks/session_start_compact.py'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/as21/codehouse/oro/.codex/hooks/stop-checklist.sh'"
+          },
+          {
+            "type": "command",
+            "command": "python3 '/Users/as21/codehouse/oro/.codex/hooks/context_block_stop.py'"
+          }
+        ]
+      }
+    ]
+  }
+}

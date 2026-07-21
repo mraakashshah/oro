@@ -588,6 +588,136 @@ func TestFakeStoreCards(t *testing.T) {
 	})
 }
 
+func TestFakeReadTxDelegatesStoreReads(t *testing.T) {
+	ctx := context.Background()
+	base := time.Now().UTC().Add(-time.Minute)
+	store := beadstore.NewFakeStore(
+		protocol.Bead{ID: "epic", Title: "epic", Status: "open"},
+		protocol.Bead{
+			ID:       "child-open",
+			Title:    "open child",
+			Status:   "open",
+			Epic:     "epic",
+			Tags:     []string{"ready"},
+			Metadata: map[string]any{"source": "test"},
+		},
+		protocol.Bead{ID: "child-closed", Title: "closed child", Status: "closed", Epic: "epic"},
+	)
+	for i, event := range []string{"created", "updated"} {
+		if err := store.AppendJourney(ctx, "child-open", beadstore.JourneyEvent{
+			Ts:    base.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Actor: "test",
+			Event: event,
+		}); err != nil {
+			t.Fatalf("AppendJourney(%q): %v", event, err)
+		}
+	}
+	store.SetCards([]cards.Card{{ID: "card", Type: cards.CardTypeRule, Title: "card"}})
+
+	if err := store.WithReadTx(ctx, func(tx beadstore.ReadTx) error {
+		ready, err := tx.Ready(ctx)
+		if err != nil {
+			return err
+		}
+		if len(ready) != 2 || ready[0].ID != "child-open" || ready[1].ID != "epic" {
+			t.Fatalf("Ready() = %#v, want child-open then epic", ready)
+		}
+
+		inProgress, err := tx.InProgress(ctx)
+		if err != nil {
+			return err
+		}
+		if len(inProgress) != 0 {
+			t.Fatalf("InProgress() = %#v, want no in-progress beads", inProgress)
+		}
+
+		blocked, err := tx.Blocked(ctx)
+		if err != nil {
+			return err
+		}
+		if len(blocked) != 0 {
+			t.Fatalf("Blocked() = %#v, want no blocked beads", blocked)
+		}
+
+		closed, err := tx.Closed(ctx, 1)
+		if err != nil {
+			return err
+		}
+		if len(closed) != 1 || closed[0].ID != "child-closed" {
+			t.Fatalf("Closed(1) = %#v, want child-closed", closed)
+		}
+		noClosed, err := tx.Closed(ctx, 0)
+		if err != nil {
+			return err
+		}
+		if len(noClosed) != 0 {
+			t.Fatalf("Closed(0) = %#v, want empty", noClosed)
+		}
+
+		shown, err := tx.Show(ctx, "child-open")
+		if err != nil {
+			return err
+		}
+		if shown == nil || shown.ID != "child-open" {
+			t.Fatalf("Show(child-open) = %#v", shown)
+		}
+		hasChildren, err := tx.HasChildren(ctx, "epic")
+		if err != nil {
+			return err
+		}
+		if !hasChildren {
+			t.Fatal("HasChildren(epic) = false, want true")
+		}
+		allClosed, err := tx.AllChildrenClosed(ctx, "epic")
+		if err != nil {
+			return err
+		}
+		if allClosed {
+			t.Fatal("AllChildrenClosed(epic) = true, want false")
+		}
+
+		byTag, err := tx.FindByParentAndTag(ctx, "epic", "ready")
+		if err != nil {
+			return err
+		}
+		if len(byTag) != 1 || byTag[0].ID != "child-open" {
+			t.Fatalf("FindByParentAndTag = %#v, want child-open", byTag)
+		}
+		byMetadata, err := tx.FindByMetadataKey(ctx, "source")
+		if err != nil {
+			return err
+		}
+		if len(byMetadata) != 1 || byMetadata[0].ID != "child-open" {
+			t.Fatalf("FindByMetadataKey = %#v, want child-open", byMetadata)
+		}
+
+		journey, err := tx.Journey(ctx, "child-open", base)
+		if err != nil {
+			return err
+		}
+		if len(journey) != 2 {
+			t.Fatalf("Journey() = %#v, want two events", journey)
+		}
+		latest, err := tx.LatestJourney(ctx, "child-open", 1)
+		if err != nil {
+			return err
+		}
+		if len(latest) != 1 || latest[0].Event != "updated" {
+			t.Fatalf("LatestJourney(1) = %#v, want updated", latest)
+		}
+		card, err := tx.Cards().Show(ctx, "card")
+		if err != nil {
+			return err
+		}
+		if card == nil || card.ID != "card" {
+			t.Fatalf("Cards().Show(card) = %#v", card)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("WithReadTx: %v", err)
+	}
+}
+
 func TestFakeCardsReadTx_Filters(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()

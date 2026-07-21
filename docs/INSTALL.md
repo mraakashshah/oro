@@ -46,7 +46,7 @@ bash <(curl -fsSL .../install.sh) --version v0.1.0
 ```bash
 oro setup                 # standard setup
 oro setup --skip-tools    # bootstrap only, skip tool installation
-oro setup --force         # overwrite existing config files
+oro setup --force         # refresh generated assets and quality gate files
 oro setup --dry-run       # print what would happen without executing
 ```
 
@@ -135,7 +135,8 @@ Install it and re-run `oro setup`.
 
 **Re-running setup is safe**
 `oro setup` is idempotent. Run it again to install missing tools or repair config.
-Existing user-created files are never overwritten (use `--force` to override).
+Existing project config is preserved. Use `--force` to refresh generated Oro
+assets and quality gate files.
 
 **No quality gate generated for my project**
 `oro init` now generates a quality gate even when no languages are detected.

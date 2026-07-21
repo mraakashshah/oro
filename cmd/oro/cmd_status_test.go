@@ -521,6 +521,34 @@ func TestFormatStatusResponse_JSONFlag(t *testing.T) {
 	}
 }
 
+func TestStatusJSONRoundTripPreservesAssignmentFreeze(t *testing.T) {
+	resp, err := parseStatusFromACK(`{
+		"state":"running",
+		"assignment_frozen_by_quarantine":true,
+		"blocking_recovery_quarantines":2,
+		"assignment_freeze_reason":"open_recovery_quarantine"
+	}`)
+	if err != nil {
+		t.Fatalf("parse dispatcher status: %v", err)
+	}
+
+	var buf bytes.Buffer
+	formatStatusJSON(&buf, resp)
+	var got map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal formatted status: %v", err)
+	}
+	if frozen, ok := got["assignment_frozen_by_quarantine"].(bool); !ok || !frozen {
+		t.Fatalf("assignment_frozen_by_quarantine = %#v, want true", got["assignment_frozen_by_quarantine"])
+	}
+	if count, ok := got["blocking_recovery_quarantines"].(float64); !ok || count != 2 {
+		t.Fatalf("blocking_recovery_quarantines = %#v, want 2", got["blocking_recovery_quarantines"])
+	}
+	if reason, ok := got["assignment_freeze_reason"].(string); !ok || reason != "open_recovery_quarantine" {
+		t.Fatalf("assignment_freeze_reason = %#v, want open_recovery_quarantine", got["assignment_freeze_reason"])
+	}
+}
+
 func TestFormatStatusResponse_VerboseFlag(t *testing.T) {
 	resp := statusResponse{
 		State:       "running",

@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -239,6 +241,80 @@ VALUES
 	if !healthFindingActionContains(got, factoryhealth.FindingOpsRunStale, "oro ops list", "oro ops retry", "oro ops resolve") {
 		t.Fatalf("missing stale ops run action with list/retry/resolve: %+v", got.Findings)
 	}
+}
+
+func TestStorageHealthParity(t *testing.T) {
+	tmpDir := t.TempDir()
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+	t.Setenv("ORO_PROJECT", "")
+	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+
+	d, db, err := buildDispatcherWithReviewTimeouts(0, 0, 0, 0, 0, false, "", false, false, "")
+	if err != nil {
+		t.Fatalf("build dispatcher: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	paths, err := ResolveDaemonPaths()
+	if err != nil {
+		t.Fatalf("resolve daemon paths: %v", err)
+	}
+	offline, err := loadLocalFactoryHealth(context.Background(), paths.StateDBPath, false, 0, "stopped")
+	if err != nil {
+		t.Fatalf("load offline health: %v", err)
+	}
+	live, err := d.Health()
+	if err != nil {
+		t.Fatalf("load live health: %v", err)
+	}
+	assertStorageHealthParity(t, live, offline, true)
+
+	storagePaths, err := ResolveStoragePaths(oroHome)
+	if err != nil {
+		t.Fatalf("resolve storage paths: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(storagePaths.CatalogPath), 0o750); err != nil {
+		t.Fatalf("create storage directory: %v", err)
+	}
+	if err := os.WriteFile(storagePaths.CatalogPath, []byte("corrupt catalog"), 0o600); err != nil {
+		t.Fatalf("corrupt storage catalog: %v", err)
+	}
+	offline, err = loadLocalFactoryHealth(context.Background(), paths.StateDBPath, false, 0, "stopped")
+	if err != nil {
+		t.Fatalf("load offline health after catalog corruption: %v", err)
+	}
+	live, err = d.Health()
+	if err != nil {
+		t.Fatalf("load live health after catalog corruption: %v", err)
+	}
+	assertStorageHealthParity(t, live, offline, false)
+}
+
+func assertStorageHealthParity(t *testing.T, live, offline factoryhealth.FactoryHealth, available bool) {
+	t.Helper()
+	if !reflect.DeepEqual(live.Metrics.Storage, offline.Metrics.Storage) {
+		t.Fatalf("storage JSON fields differ: live=%+v offline=%+v", live.Metrics.Storage, offline.Metrics.Storage)
+	}
+	if live.Metrics.Storage == nil || live.Metrics.Storage.Available != available {
+		t.Fatalf("live storage = %+v, want available=%t", live.Metrics.Storage, available)
+	}
+	if got, want := storageHealthFindings(live), storageHealthFindings(offline); !reflect.DeepEqual(got, want) {
+		t.Fatalf("storage findings differ: live=%+v offline=%+v", got, want)
+	}
+	if !available && !healthHasFinding(live, factoryhealth.FindingStorageUnavailable) {
+		t.Fatalf("live health missing unavailable storage finding: %+v", live.Findings)
+	}
+}
+
+func storageHealthFindings(health factoryhealth.FactoryHealth) []factoryhealth.Finding {
+	findings := make([]factoryhealth.Finding, 0)
+	for _, finding := range health.Findings {
+		if finding.Component == "storage" {
+			findings = append(findings, finding)
+		}
+	}
+	return findings
 }
 
 func healthHasFinding(health factoryhealth.FactoryHealth, code string) bool {

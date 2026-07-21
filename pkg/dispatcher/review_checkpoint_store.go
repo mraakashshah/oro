@@ -1,0 +1,183 @@
+package dispatcher
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+)
+
+// ErrCheckpointConflict reports that a checkpoint changed before a requested transition.
+var ErrCheckpointConflict = errors.New("review checkpoint conflict")
+
+// ReviewCheckpointState is the durable lifecycle state for a review checkpoint.
+type ReviewCheckpointState string
+
+// ReviewCheckpointState values define the durable checkpoint lifecycle.
+const (
+	ReviewCheckpointStateQGPassed                 ReviewCheckpointState = "qg_passed"
+	ReviewCheckpointStateReviewRunning            ReviewCheckpointState = "review_running"
+	ReviewCheckpointStateRejected                 ReviewCheckpointState = "rejected"
+	ReviewCheckpointStateCorrectionAssigning      ReviewCheckpointState = "correction_assigning"
+	ReviewCheckpointStateCorrectionAssigned       ReviewCheckpointState = "correction_assigned"
+	ReviewCheckpointStateContractRepairRunning    ReviewCheckpointState = "contract_repair_running"
+	ReviewCheckpointStateBlocked                  ReviewCheckpointState = "blocked"
+	ReviewCheckpointStateFailed                   ReviewCheckpointState = "failed"
+	ReviewCheckpointStateRecoveryRunning          ReviewCheckpointState = "recovery_running"
+	ReviewCheckpointStateQuarantined              ReviewCheckpointState = "quarantined"
+	ReviewCheckpointStateApproved                 ReviewCheckpointState = "approved"
+	ReviewCheckpointStateManualIntegrationPending ReviewCheckpointState = "manual_integration_pending"
+	ReviewCheckpointStateIntegrating              ReviewCheckpointState = "integrating"
+	ReviewCheckpointStateIntegrated               ReviewCheckpointState = "integrated"
+	ReviewCheckpointStateSuperseded               ReviewCheckpointState = "superseded"
+)
+
+// CheckpointInput contains the immutable identity and initial ownership of a review checkpoint.
+type CheckpointInput struct {
+	CheckpointKey       string
+	BeadID              string
+	OriginAssignmentID  int64
+	CurrentAssignmentID int64
+	WorkerID            string
+	Worktree            string
+	Branch              string
+	TargetBranch        string
+	HeadSHA             string
+	TargetSHA           string
+	AcceptanceHash      string
+	QGScriptHash        string
+	QGMode              string
+	ReviewPolicyHash    string
+	TriageRevision      string
+	ReadyAttempt        string
+	State               ReviewCheckpointState
+}
+
+// ReviewCheckpoint is a durable review checkpoint record.
+type ReviewCheckpoint struct {
+	ID int64
+	CheckpointInput
+}
+
+// ReviewCheckpointStore persists durable review checkpoint lifecycle changes.
+type ReviewCheckpointStore struct {
+	db *sql.DB
+}
+
+// NewReviewCheckpointStore constructs a checkpoint store over db.
+//
+//oro:testonly
+func NewReviewCheckpointStore(db *sql.DB) *ReviewCheckpointStore {
+	return &ReviewCheckpointStore{db: db}
+}
+
+// CreateOrReuse returns the single active checkpoint for a canonical key.
+//
+//oro:testonly
+func (s *ReviewCheckpointStore) CreateOrReuse(ctx context.Context, in CheckpointInput) (ReviewCheckpoint, error) {
+	if s == nil || s.db == nil {
+		return ReviewCheckpoint{}, errors.New("create or reuse review checkpoint: db is nil")
+	}
+	if err := validateCheckpointInput(in); err != nil {
+		return ReviewCheckpoint{}, err
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO review_checkpoints (
+  checkpoint_key, bead_id, origin_assignment_id, current_assignment_id, worker_id,
+  worktree, branch, target_branch, head_sha, target_sha, acceptance_hash,
+  qg_script_hash, qg_mode, review_policy_hash, triage_revision, ready_attempt, state
+) VALUES (?, ?, ?, NULLIF(?, 0), NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(checkpoint_key) WHERE state <> 'superseded' DO NOTHING`,
+		in.CheckpointKey, in.BeadID, in.OriginAssignmentID, in.CurrentAssignmentID, in.WorkerID,
+		in.Worktree, in.Branch, in.TargetBranch, in.HeadSHA, in.TargetSHA, in.AcceptanceHash,
+		in.QGScriptHash, in.QGMode, in.ReviewPolicyHash, in.TriageRevision, in.ReadyAttempt, in.State)
+	if err != nil {
+		return ReviewCheckpoint{}, fmt.Errorf("insert review checkpoint: %w", err)
+	}
+
+	checkpoint, err := scanReviewCheckpoint(s.db.QueryRowContext(ctx, `
+SELECT id, checkpoint_key, bead_id, origin_assignment_id, COALESCE(current_assignment_id, 0),
+       COALESCE(worker_id, ''), worktree, branch, target_branch, head_sha, target_sha,
+       acceptance_hash, qg_script_hash, qg_mode, review_policy_hash, triage_revision,
+       ready_attempt, state
+FROM review_checkpoints
+WHERE checkpoint_key = ? AND state <> 'superseded'
+ORDER BY id DESC
+LIMIT 1`, in.CheckpointKey))
+	if err != nil {
+		return ReviewCheckpoint{}, fmt.Errorf("load active review checkpoint: %w", err)
+	}
+	return checkpoint, nil
+}
+
+// CompareAndSwap transitions a checkpoint only when it is still in from.
+func (s *ReviewCheckpointStore) CompareAndSwap(ctx context.Context, id int64, from, to ReviewCheckpointState) error {
+	if s == nil || s.db == nil {
+		return errors.New("compare and swap review checkpoint: db is nil")
+	}
+	if id <= 0 || from == "" || to == "" {
+		return fmt.Errorf("compare and swap review checkpoint: invalid transition %d %q -> %q", id, from, to)
+	}
+
+	result, err := s.db.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET state = ?, updated_at = datetime('now')
+WHERE id = ? AND state = ?`, to, id, from)
+	if err != nil {
+		return fmt.Errorf("compare and swap review checkpoint %d: %w", id, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count review checkpoint transition %d: %w", id, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("compare and swap review checkpoint %d from %q to %q: %w", id, from, to, ErrCheckpointConflict)
+	}
+	return nil
+}
+
+func validateCheckpointInput(in CheckpointInput) error {
+	if in.OriginAssignmentID <= 0 || in.State == "" || missingCheckpointIdentity(in) || missingCheckpointMetadata(in) {
+		return errors.New("create or reuse review checkpoint: missing required input")
+	}
+	return nil
+}
+
+func missingCheckpointIdentity(in CheckpointInput) bool {
+	return in.CheckpointKey == "" || in.BeadID == "" || in.Worktree == "" || in.Branch == "" ||
+		in.TargetBranch == "" || in.HeadSHA == "" || in.TargetSHA == "" || in.AcceptanceHash == ""
+}
+
+func missingCheckpointMetadata(in CheckpointInput) bool {
+	return in.QGScriptHash == "" || in.QGMode == "" || in.ReviewPolicyHash == "" ||
+		in.TriageRevision == "" || in.ReadyAttempt == ""
+}
+
+func scanReviewCheckpoint(row *sql.Row) (ReviewCheckpoint, error) {
+	var checkpoint ReviewCheckpoint
+	err := row.Scan(
+		&checkpoint.ID,
+		&checkpoint.CheckpointKey,
+		&checkpoint.BeadID,
+		&checkpoint.OriginAssignmentID,
+		&checkpoint.CurrentAssignmentID,
+		&checkpoint.WorkerID,
+		&checkpoint.Worktree,
+		&checkpoint.Branch,
+		&checkpoint.TargetBranch,
+		&checkpoint.HeadSHA,
+		&checkpoint.TargetSHA,
+		&checkpoint.AcceptanceHash,
+		&checkpoint.QGScriptHash,
+		&checkpoint.QGMode,
+		&checkpoint.ReviewPolicyHash,
+		&checkpoint.TriageRevision,
+		&checkpoint.ReadyAttempt,
+		&checkpoint.State,
+	)
+	if err != nil {
+		return ReviewCheckpoint{}, fmt.Errorf("scan review checkpoint: %w", err)
+	}
+	return checkpoint, nil
+}

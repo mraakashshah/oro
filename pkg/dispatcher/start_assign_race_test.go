@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/testutil/qgserial"
+
 	"oro/pkg/protocol"
 )
 
@@ -21,6 +23,7 @@ import (
 // Run with -race -count=20 to confirm there are no data races and the
 // assignment is deterministic across many iterations.
 func TestDispatcherStartSequence_AssignsWorkerUnderParallelStress(t *testing.T) {
+	qgserial.RequireSerial(t)
 	const numWorkers = 4
 
 	d, beadSrc, wt, _, _, _ := newTestDispatcher(t)

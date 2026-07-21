@@ -76,7 +76,7 @@ func TestEvaluateFactoryHealthStates(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := Evaluate(tt.snapshot)
+			got := evaluateWithAvailableStorage(tt.snapshot)
 			if got.State != tt.wantState {
 				t.Fatalf("state = %q, want %q; findings=%+v", got.State, tt.wantState, got.Findings)
 			}
@@ -87,8 +87,107 @@ func TestEvaluateFactoryHealthStates(t *testing.T) {
 	}
 }
 
+func TestLoadThroughputMetricsCountsAssignmentsAndTimeoutsChronologically(t *testing.T) {
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE assignments (assigned_at TEXT);
+CREATE TABLE events (type TEXT, created_at TEXT);
+INSERT INTO assignments VALUES
+	('2026-07-17 11:45:00'),
+	('2026-07-17T11:50:00Z'),
+	('2026-07-17T11:55:00.123Z'),
+	('2026-07-17 11:00:00'),
+	('not-a-timestamp');
+INSERT INTO events VALUES
+	('progress_timeout', '2026-07-17T11:45:00.123Z'),
+	('worker_progress', '2026-07-17T11:50:00Z'),
+	('progress_timeout', '2026-07-17 10:00:00');
+`); err != nil {
+		t.Fatalf("schema and fixtures: %v", err)
+	}
+
+	got, err := LoadThroughputMetrics(ctx, db, time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC), 30*time.Minute)
+	if err != nil {
+		t.Fatalf("LoadThroughputMetrics: %v", err)
+	}
+	if got.AssignmentsStarted != 3 {
+		t.Fatalf("assignments started = %d, want 3", got.AssignmentsStarted)
+	}
+	if got.ProgressTimeouts != 1 {
+		t.Fatalf("progress timeouts = %d, want 1", got.ProgressTimeouts)
+	}
+}
+
+func TestEvaluateFactoryHealthIgnoresPipelineOwnedWorkerStates(t *testing.T) {
+	got := evaluateWithAvailableStorage(Snapshot{
+		DaemonRunning:        true,
+		DispatcherState:      "running",
+		ProgressTimeoutSecs:  600,
+		HeartbeatTimeoutSecs: 45,
+		Workers: []WorkerSnapshot{
+			{ID: "reserved", State: "reserved", BeadID: "oro-r", LastProgressSecs: 601, LastHeartbeatSecs: 5},
+			{ID: "reviewing", State: "reviewing", BeadID: "oro-v", LastProgressSecs: 601, LastHeartbeatSecs: 5},
+			{ID: "busy", State: "busy", BeadID: "oro-b", LastProgressSecs: 601, LastHeartbeatSecs: 5},
+		},
+	})
+
+	if got.State != StateStalled {
+		t.Fatalf("state = %q, want stalled; findings=%+v", got.State, got.Findings)
+	}
+	if got.Metrics.ActiveWorkers != 3 {
+		t.Fatalf("active workers = %d, want 3", got.Metrics.ActiveWorkers)
+	}
+	if !hasFindingForWorker(got, FindingAliveNoProgress, "busy") {
+		t.Fatalf("missing busy alive_no_progress finding in %+v", got.Findings)
+	}
+	for _, workerID := range []string{"reserved", "reviewing"} {
+		if hasFindingForWorker(got, FindingAliveNoProgress, workerID) {
+			t.Fatalf("pipeline-owned worker %q emitted alive_no_progress: %+v", workerID, got.Findings)
+		}
+	}
+}
+
+func hasFindingForWorker(health FactoryHealth, code, workerID string) bool {
+	for _, finding := range health.Findings {
+		if finding.Code == code && finding.WorkerID == workerID {
+			return true
+		}
+	}
+	return false
+}
+
+func TestLoadThroughputMetricsSelectsLatestMixedFormatEvent(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 18, 12, 6, 0, 0, time.UTC)
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE assignments (assigned_at TEXT);
+CREATE TABLE beads (status TEXT, close_reason TEXT, closed_at TEXT, updated_at TEXT);
+CREATE TABLE events (type TEXT, created_at TEXT);
+INSERT INTO events (type, created_at) VALUES ('old', '2026-07-18T12:00:00Z'), ('new', '2026-07-18 12:05:00');`); err != nil {
+		t.Fatalf("schema and seed: %v", err)
+	}
+
+	got, err := LoadThroughputMetrics(ctx, db, now, time.Hour)
+	if err != nil {
+		t.Fatalf("LoadThroughputMetrics: %v", err)
+	}
+	if got.LastEventAgeSecs != 60 {
+		t.Fatalf("last event age = %v, want 60", got.LastEventAgeSecs)
+	}
+}
+
 func TestEvaluateAssignmentContradictions(t *testing.T) {
-	got := Evaluate(Snapshot{
+	got := evaluateWithAvailableStorage(Snapshot{
 		DaemonRunning:       true,
 		DispatcherState:     "running",
 		ReadyQueue:          2,
@@ -116,7 +215,7 @@ func TestEvaluateAssignmentContradictions(t *testing.T) {
 }
 
 func TestEvaluateRecoveryQuarantineOpenIsUnsafe(t *testing.T) {
-	got := Evaluate(Snapshot{
+	got := evaluateWithAvailableStorage(Snapshot{
 		DaemonRunning:           true,
 		DispatcherState:         "running",
 		OpenRecoveryQuarantines: 2,
@@ -133,7 +232,90 @@ func TestEvaluateRecoveryQuarantineOpenIsUnsafe(t *testing.T) {
 	}
 }
 
-func TestLoadRecoveryQuarantineMetricsIgnoresHumanOwned(t *testing.T) {
+func TestEvaluateStorageFindings(t *testing.T) {
+	t.Run("storage signals are stable and deduplicated", func(t *testing.T) {
+		snapshot := Snapshot{
+			DaemonRunning: true,
+			Storage: &StorageHealth{
+				Available:          true,
+				Pressure:           "critical",
+				SweepOverdue:       true,
+				BlockedRetirements: 2,
+				Failures:           []string{"provider cache cleanup failed", "provider cache cleanup failed"},
+				Cancellations:      []string{"namespace oro-a writer cancelled", "namespace oro-a writer cancelled"},
+				AdmissionPaused:    true,
+			},
+		}
+
+		findings := evaluateStorageFindings(snapshot)
+		wantCodes := []string{
+			FindingStoragePressure,
+			FindingStorageSweepOverdue,
+			FindingStorageRetirementBlocked,
+			FindingStorageFailure,
+			FindingStorageCancellation,
+			FindingStorageAdmissionPaused,
+		}
+		if len(findings) != len(wantCodes) {
+			t.Fatalf("findings = %+v, want %d stable findings", findings, len(wantCodes))
+		}
+		for index, wantCode := range wantCodes {
+			if findings[index].Code != wantCode {
+				t.Fatalf("finding[%d].Code = %q, want %q; findings=%+v", index, findings[index].Code, wantCode, findings)
+			}
+		}
+		if findings[3].Fingerprint != "provider cache cleanup failed" {
+			t.Fatalf("failure fingerprint = %q, want deduplicated failure", findings[3].Fingerprint)
+		}
+		if findings[4].Fingerprint != "namespace oro-a writer cancelled" {
+			t.Fatalf("cancellation fingerprint = %q, want deduplicated cancellation", findings[4].Fingerprint)
+		}
+
+		health := Evaluate(snapshot)
+		if health.Metrics.Storage == nil || !health.Metrics.Storage.AdmissionPaused {
+			t.Fatalf("metrics storage = %+v, want storage state", health.Metrics.Storage)
+		}
+	})
+
+	t.Run("missing storage snapshot is unavailable", func(t *testing.T) {
+		findings := evaluateStorageFindings(Snapshot{DaemonRunning: true})
+		if len(findings) != 1 || findings[0].Code != FindingStorageUnavailable {
+			t.Fatalf("findings = %+v, want one storage unavailable finding", findings)
+		}
+	})
+}
+
+func TestEvaluateAssignmentFrozenByQuarantine(t *testing.T) {
+	got := Evaluate(Snapshot{
+		DaemonRunning:                true,
+		DispatcherState:              "running",
+		Workers:                      []WorkerSnapshot{{ID: "w-idle", State: "idle"}},
+		AssignmentFrozenByQuarantine: true,
+		BlockingRecoveryQuarantines:  2,
+		AssignmentFreezeReason:       "open_recovery_quarantine",
+		OpenRecoveryQuarantines:      2,
+	})
+
+	if !got.Metrics.AssignmentFrozenByQuarantine {
+		t.Fatal("assignment frozen metric = false, want true")
+	}
+	if got.Metrics.BlockingRecoveryQuarantines != 2 {
+		t.Fatalf("blocking recovery quarantines = %d, want 2", got.Metrics.BlockingRecoveryQuarantines)
+	}
+	if got.Metrics.AssignmentFreezeReason != "open_recovery_quarantine" {
+		t.Fatalf("assignment freeze reason = %q, want open_recovery_quarantine", got.Metrics.AssignmentFreezeReason)
+	}
+	if !hasFinding(got, FindingAssignmentFrozenByQuarantine) {
+		t.Fatalf("missing assignment freeze finding in %+v", got.Findings)
+	}
+
+	unfrozen := Evaluate(Snapshot{DaemonRunning: true, DispatcherState: "running"})
+	if unfrozen.Metrics.AssignmentFrozenByQuarantine || hasFinding(unfrozen, FindingAssignmentFrozenByQuarantine) {
+		t.Fatalf("unfrozen health retained assignment freeze signal: %+v", unfrozen)
+	}
+}
+
+func TestLoadRecoveryQuarantineMetricsIncludesHumanOwned(t *testing.T) {
 	ctx := context.Background()
 	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
@@ -144,8 +326,11 @@ func TestLoadRecoveryQuarantineMetricsIgnoresHumanOwned(t *testing.T) {
 		t.Fatalf("schema: %v", err)
 	}
 	if _, err := db.ExecContext(ctx, `
-INSERT INTO recovery_quarantines (bead_id, reason, details, status, resolved_at)
-VALUES ('oro-human-owned', 'unsafe_stale_branch', 'operator owns branch', 'human_owned', datetime('now'));
+INSERT INTO recovery_quarantines (bead_id, reason, details, status)
+VALUES
+    ('oro-open', 'unsafe_stale_branch', 'assignment filtering blocks this row', 'open'),
+    ('oro-human-owned', 'unsafe_stale_branch', 'assignment filtering blocks this row', 'human_owned'),
+    ('oro-resolved', 'unsafe_stale_branch', 'resolved rows do not block assignment', 'resolved');
 `); err != nil {
 		t.Fatalf("seed recovery quarantine: %v", err)
 	}
@@ -154,13 +339,57 @@ VALUES ('oro-human-owned', 'unsafe_stale_branch', 'operator owns branch', 'human
 	if err != nil {
 		t.Fatalf("LoadRecoveryQuarantineMetrics: %v", err)
 	}
-	if got != 0 {
-		t.Fatalf("open recovery quarantines = %d, want 0", got)
+	if got != 2 {
+		t.Fatalf("open recovery quarantines = %d, want 2", got)
+	}
+
+	health := evaluateWithAvailableStorage(Snapshot{
+		DaemonRunning:           true,
+		DispatcherState:         "running",
+		OpenRecoveryQuarantines: got,
+	})
+	if health.State == StateHealthy {
+		t.Fatalf("state = %q, want non-healthy while recovery quarantines block assignment", health.State)
+	}
+	if !hasFinding(health, FindingRecoveryQuarantineOpen) {
+		t.Fatalf("missing recovery quarantine finding in %+v", health.Findings)
+	}
+}
+
+func TestLoadThroughputMetricsCountsRFC3339Chronologically(t *testing.T) {
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE assignments (assigned_at TEXT);
+CREATE TABLE events (type TEXT, created_at TEXT);
+CREATE TABLE beads (status TEXT, close_reason TEXT, closed_at TEXT, updated_at TEXT);
+INSERT INTO beads (status, close_reason, closed_at, updated_at) VALUES
+ ('closed', '', '2026-07-17T23:04:00Z', '2026-07-17T23:04:00Z'),
+ ('closed', '', '2026-07-17T20:33:00Z', '2026-07-17T20:33:00Z'),
+ ('closed', '', '2026-07-17T03:35:00Z', '2026-07-17T03:35:00Z'),
+ ('closed', '', '2026-07-17 23:05:00', '2026-07-17 23:05:00'),
+ ('closed', 'deferred', '2026-07-17T23:06:00Z', '2026-07-17T23:06:00Z'),
+ ('closed', 'duplicate', '2026-07-17T23:07:00Z', '2026-07-17T23:07:00Z'),
+ ('closed', 'not_planned', '2026-07-17T23:08:00Z', '2026-07-17T23:08:00Z');
+`); err != nil {
+		t.Fatalf("seed throughput tables: %v", err)
+	}
+
+	got, err := LoadThroughputMetrics(ctx, db, time.Date(2026, 7, 17, 23, 18, 0, 0, time.UTC), 30*time.Minute)
+	if err != nil {
+		t.Fatalf("LoadThroughputMetrics: %v", err)
+	}
+	if got.ProductiveClosures != 2 {
+		t.Fatalf("productive closures = %d, want 2", got.ProductiveClosures)
 	}
 }
 
 func TestEvaluateNoManagerPaneFindingByDefault(t *testing.T) {
-	got := Evaluate(Snapshot{
+	got := evaluateWithAvailableStorage(Snapshot{
 		DaemonRunning:   true,
 		DispatcherState: "running",
 	})
@@ -183,7 +412,7 @@ func TestEvaluateNoManagerPaneFindingByDefault(t *testing.T) {
 }
 
 func TestEvaluateOpsRunFindings(t *testing.T) {
-	got := Evaluate(Snapshot{
+	got := evaluateWithAvailableStorage(Snapshot{
 		DaemonRunning:   true,
 		DispatcherState: "running",
 		OpsRuns: OpsRunMetrics{
@@ -247,7 +476,7 @@ func TestEvaluateOpsRunFindings(t *testing.T) {
 }
 
 func TestEvaluateOpsRunFindingsFromAggregateCounts(t *testing.T) {
-	got := Evaluate(Snapshot{
+	got := evaluateWithAvailableStorage(Snapshot{
 		DaemonRunning:   true,
 		DispatcherState: "running",
 		OpsRuns: OpsRunMetrics{
@@ -282,7 +511,7 @@ func TestEvaluateOpsRunFindingsFromAggregateCounts(t *testing.T) {
 }
 
 func TestEvaluateOpsRunFindingsIgnoresEmptyCounts(t *testing.T) {
-	got := Evaluate(Snapshot{
+	got := evaluateWithAvailableStorage(Snapshot{
 		DaemonRunning:   true,
 		DispatcherState: "running",
 		OpsRuns: OpsRunMetrics{
@@ -299,7 +528,7 @@ func TestEvaluateOpsRunFindingsIgnoresEmptyCounts(t *testing.T) {
 }
 
 func TestPendingUnknownEscalationSurfacesUnroutedHealthFinding(t *testing.T) {
-	got := Evaluate(Snapshot{
+	got := evaluateWithAvailableStorage(Snapshot{
 		DaemonRunning:   true,
 		DispatcherState: "running",
 		PendingEscalations: EscalationMetrics{
@@ -335,7 +564,7 @@ func TestPendingUnknownEscalationSurfacesUnroutedHealthFinding(t *testing.T) {
 }
 
 func TestPendingEscalationFindingFallsBackToAggregateCount(t *testing.T) {
-	got := Evaluate(Snapshot{
+	got := evaluateWithAvailableStorage(Snapshot{
 		DaemonRunning:   true,
 		DispatcherState: "running",
 		PendingEscalations: EscalationMetrics{
@@ -593,6 +822,11 @@ func hasFinding(health FactoryHealth, code string) bool {
 		}
 	}
 	return false
+}
+
+func evaluateWithAvailableStorage(snapshot Snapshot) FactoryHealth {
+	snapshot.Storage = &StorageHealth{Available: true}
+	return Evaluate(snapshot)
 }
 
 func hasOpsRun(metrics OpsRunMetrics, beadID, runType, status string) bool {
