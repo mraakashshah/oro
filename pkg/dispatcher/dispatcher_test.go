@@ -3164,6 +3164,41 @@ func TestPreReviewGitHygieneIgnoresManagedQualityGateSnapshot(t *testing.T) {
 	}
 }
 
+func TestPreReviewGitHygieneIgnoresManagedAssignmentCapabilityFile(t *testing.T) {
+	ctx := context.Background()
+	worktree := t.TempDir()
+	if err := exec.Command("git", "-C", worktree, "init").Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	capabilityPath := filepath.Join(worktree, protocol.OroDir, "assignment-capability.json")
+	if err := os.MkdirAll(filepath.Dir(capabilityPath), 0o755); err != nil {
+		t.Fatalf("mkdir capability directory: %v", err)
+	}
+	if err := os.WriteFile(capabilityPath, []byte(`{"token":"runtime-only"}`), 0o600); err != nil {
+		t.Fatalf("write assignment capability: %v", err)
+	}
+
+	d := &Dispatcher{}
+	hygiene, err := d.checkPreReviewGitHygiene(ctx, "bead-clean", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene: %v", err)
+	}
+	if hygiene.Dirty {
+		t.Fatalf("managed assignment capability marked dirty: %#v", hygiene.Files)
+	}
+
+	if err := os.WriteFile(filepath.Join(worktree, "implementation.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write ordinary untracked source: %v", err)
+	}
+	hygiene, err = d.checkPreReviewGitHygiene(ctx, "bead-dirty", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene with source file: %v", err)
+	}
+	if !hygiene.Dirty || !slices.Equal(hygiene.Files, []string{"implementation.go"}) {
+		t.Fatalf("ordinary source file should remain dirty, got %#v", hygiene.Files)
+	}
+}
+
 func TestManagedQualityGateSnapshotMatches(t *testing.T) {
 	dir := t.TempDir()
 	managed := filepath.Join(dir, "managed.sh")
