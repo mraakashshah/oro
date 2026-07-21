@@ -11954,7 +11954,7 @@ func TestCompleteEpicRebaseChildRejectsSourceWithoutTargetAncestry(t *testing.T)
 		name       string
 		checkError error
 	}{
-		{name: "missing default branch ancestor"},
+		{name: "missing target branch ancestor"},
 		{name: "ancestry check error", checkError: errors.New("merge-base failed")},
 	}
 	for _, tt := range tests {
@@ -11992,7 +11992,7 @@ func TestCompleteEpicRebaseChildRejectsSourceWithoutTargetAncestry(t *testing.T)
 			}
 			d.mu.Unlock()
 			wtMgr.baseUniqueFn = func(_ context.Context, candidate, base string) (bool, error) {
-				return candidate == d.cfg.DefaultBranch && base == branch, tt.checkError
+				return candidate == targetBranch && base == branch, tt.checkError
 			}
 
 			d.mergeAndComplete(ctx, beadID, workerID, worktree, branch, epicID, targetBranch, assignmentID)
@@ -12019,7 +12019,7 @@ func TestCompleteEpicRebaseChildRejectsSourceWithoutTargetAncestry(t *testing.T)
 			if assignmentStatus != "requeued" {
 				t.Fatalf("assignment status = %q, want requeued rather than successful completion", assignmentStatus)
 			}
-			if messages := esc.Messages(); len(messages) == 0 || !strings.Contains(messages[len(messages)-1], "main") {
+			if messages := esc.Messages(); len(messages) == 0 || !strings.Contains(messages[len(messages)-1], targetBranch) {
 				t.Fatalf("escalations = %v, want actionable ancestry failure", messages)
 			}
 		})
@@ -17463,6 +17463,135 @@ func TestTryCloseEpic_FFMergeToMain(t *testing.T) {
 	})
 }
 
+func TestEpicRebaseChildAcceptanceAllowsPreservedAncestry(t *testing.T) {
+	ctx := context.Background()
+	const (
+		epicID       = "oro-preserved-ancestry"
+		epicBranch   = "epic/oro-preserved-ancestry"
+		targetBranch = "main"
+		branch       = "agent/oro-preserved-ancestry"
+	)
+
+	t.Run("generated acceptance checks both required ancestors without rebasing", func(t *testing.T) {
+		acceptance := rebaseChildAcceptance(epicID, epicBranch, targetBranch)
+		for _, want := range []string{
+			"git merge-base --is-ancestor main HEAD",
+			"git merge-base --is-ancestor epic/oro-preserved-ancestry HEAD",
+			"go test ./pkg/dispatcher -run '^(TestEpicRebaseChildAcceptanceAllowsPreservedAncestry|TestEpicFFMergeFailureCreatesActionableRebaseChild)$'",
+		} {
+			if !strings.Contains(acceptance, want) {
+				t.Errorf("acceptance = %q, want %q", acceptance, want)
+			}
+		}
+		if strings.Contains(acceptance, "git rebase ") {
+			t.Errorf("acceptance must not rebase an ancestry-preserving merge: %s", acceptance)
+		}
+	})
+
+	t.Run("active legacy child is reused and upgraded", func(t *testing.T) {
+		d, beads, _, _, _, _ := newTestDispatcher(t)
+		title := fmt.Sprintf("Rebase %s onto %s", epicBranch, targetBranch)
+		legacyAcceptance := fmt.Sprintf(
+			"Test: epic %s rebase task keeps %s integration-ready for %s | Cmd: git fetch --all --prune && git rebase %s && go test ./... | Assert: legacy | Read: legacy",
+			epicID, epicBranch, targetBranch, targetBranch,
+		)
+		legacy := &protocol.Bead{
+			ID:                 "oro-legacy-rebase-child",
+			Epic:               epicID,
+			Title:              title,
+			Status:             "in_progress",
+			Tags:               []string{"rebase"},
+			AcceptanceCriteria: legacyAcceptance,
+		}
+		beads.metadataMatches = []*protocol.Bead{legacy}
+
+		var upgradedAcceptance string
+		beads.updateFn = func(_ context.Context, id string, params beadstore.UpdateParams) error {
+			if id != legacy.ID {
+				t.Errorf("updated child = %q, want %q", id, legacy.ID)
+			}
+			if params.AcceptanceCriteria == nil {
+				t.Fatal("legacy child update omitted acceptance criteria")
+			}
+			upgradedAcceptance = *params.AcceptanceCriteria
+			return nil
+		}
+
+		child, err := d.ensureEpicRebaseChild(ctx, epicID, epicBranch, targetBranch, "diverged")
+		if err != nil {
+			t.Fatalf("ensureEpicRebaseChild: %v", err)
+		}
+		if child.ID != legacy.ID {
+			t.Errorf("reused child ID = %q, want %q", child.ID, legacy.ID)
+		}
+		if len(beads.created) != 0 {
+			t.Fatalf("created %d replacement children, want 0", len(beads.created))
+		}
+		if upgradedAcceptance != rebaseChildAcceptance(epicID, epicBranch, targetBranch) {
+			t.Errorf("upgraded acceptance = %q, want %q", upgradedAcceptance, rebaseChildAcceptance(epicID, epicBranch, targetBranch))
+		}
+	})
+
+	t.Run("closed legacy child permits a replacement", func(t *testing.T) {
+		d, beads, _, _, _, _ := newTestDispatcher(t)
+		beads.metadataMatches = []*protocol.Bead{{
+			ID:                 "oro-closed-legacy-rebase-child",
+			Epic:               epicID,
+			Title:              fmt.Sprintf("Rebase %s onto %s", epicBranch, targetBranch),
+			Status:             "closed",
+			Tags:               []string{"rebase"},
+			AcceptanceCriteria: "Cmd: git fetch --all --prune && git rebase main && go test ./...",
+		}}
+
+		child, err := d.ensureEpicRebaseChild(ctx, epicID, epicBranch, targetBranch, "diverged")
+		if err != nil {
+			t.Fatalf("ensureEpicRebaseChild: %v", err)
+		}
+		if child.ID == "oro-closed-legacy-rebase-child" {
+			t.Fatal("closed legacy child was reused, want replacement")
+		}
+		if len(beads.created) != 1 {
+			t.Fatalf("created %d replacement children, want 1", len(beads.created))
+		}
+	})
+
+	t.Run("completion requires target and preserved epic ancestry", func(t *testing.T) {
+		for _, tc := range []struct {
+			name          string
+			targetMissing bool
+			epicMissing   bool
+			wantErr       bool
+		}{
+			{name: "target missing", targetMissing: true, wantErr: true},
+			{name: "prior epic missing", epicMissing: true, wantErr: true},
+			{name: "both ancestors preserved"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				d, _, worktrees, _, _, _ := newTestDispatcher(t)
+				worktrees.baseUniqueFn = func(_ context.Context, candidate, recovery string) (bool, error) {
+					if recovery != branch {
+						t.Errorf("recovery branch = %q, want %q", recovery, branch)
+					}
+					switch candidate {
+					case targetBranch:
+						return tc.targetMissing, nil
+					case epicBranch:
+						return tc.epicMissing, nil
+					default:
+						t.Errorf("unexpected ancestry candidate %q", candidate)
+						return false, nil
+					}
+				}
+
+				err := d.validateEpicRebaseChildAncestry(ctx, branch, targetBranch, epicBranch)
+				if (err != nil) != tc.wantErr {
+					t.Fatalf("validateEpicRebaseChildAncestry() error = %v, wantErr %t", err, tc.wantErr)
+				}
+			})
+		}
+	})
+}
+
 func TestEpicFFMergeFailureCreatesActionableRebaseChild(t *testing.T) {
 	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
@@ -17511,7 +17640,7 @@ func TestEpicFFMergeFailureCreatesActionableRebaseChild(t *testing.T) {
 			t.Errorf("rebase child acceptance criteria does not name branch %q: %s", branch, rebaseBead.acceptanceCriteria)
 		}
 	}
-	wantCmd := fmt.Sprintf("Cmd: git fetch --all --prune && git rebase %s && go test ./...", targetBranch)
+	wantCmd := fmt.Sprintf("Cmd: git merge-base --is-ancestor %s HEAD && git merge-base --is-ancestor %s HEAD && go test ./pkg/dispatcher -run '^(TestEpicRebaseChildAcceptanceAllowsPreservedAncestry|TestEpicFFMergeFailureCreatesActionableRebaseChild)$'", targetBranch, epicBranch)
 	if !strings.Contains(rebaseBead.acceptanceCriteria, wantCmd) {
 		t.Errorf("rebase child acceptance criteria command = %q, want to contain %q", rebaseBead.acceptanceCriteria, wantCmd)
 	}

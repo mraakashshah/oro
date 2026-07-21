@@ -2997,7 +2997,7 @@ func (d *Dispatcher) completeEpicRebaseChild(ctx context.Context, detail *protoc
 	if !IsEpicRebaseChild(detail, epicID, targetBranch) {
 		return false
 	}
-	if err := d.validateEpicRebaseChildAncestry(ctx, branch); err != nil {
+	if err := d.validateEpicRebaseChildAncestry(ctx, branch, targetBranch, protocol.EpicBranchPrefix+epicID); err != nil {
 		d.failEpicRebaseChild(ctx, beadID, workerID, assignmentID, "epic rebase child ancestry check failed", err)
 		return true
 	}
@@ -3015,17 +3015,19 @@ func (d *Dispatcher) completeEpicRebaseChild(ctx context.Context, detail *protoc
 	return true
 }
 
-func (d *Dispatcher) validateEpicRebaseChildAncestry(ctx context.Context, branch string) error {
+func (d *Dispatcher) validateEpicRebaseChildAncestry(ctx context.Context, branch, targetBranch, epicBranch string) error {
 	checker, ok := d.worktrees.(assignmentBaseBranchSafetyChecker)
 	if !ok {
-		return fmt.Errorf("cannot verify that %s is an ancestor of recovery branch %s", d.cfg.DefaultBranch, branch)
+		return fmt.Errorf("cannot verify required ancestry for recovery branch %s", branch)
 	}
-	defaultHasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, d.cfg.DefaultBranch, branch)
-	if err != nil {
-		return fmt.Errorf("check whether recovery branch %s contains %s: %w", branch, d.cfg.DefaultBranch, err)
-	}
-	if defaultHasUniqueCommits {
-		return fmt.Errorf("recovery branch %s does not contain required target ancestry from %s", branch, d.cfg.DefaultBranch)
+	for _, requiredAncestor := range []string{targetBranch, epicBranch} {
+		hasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, requiredAncestor, branch)
+		if err != nil {
+			return fmt.Errorf("check whether recovery branch %s contains %s: %w", branch, requiredAncestor, err)
+		}
+		if hasUniqueCommits {
+			return fmt.Errorf("recovery branch %s does not contain required ancestry from %s", branch, requiredAncestor)
+		}
 	}
 	return nil
 }
@@ -3659,9 +3661,19 @@ func (d *Dispatcher) ensureEpicRebaseChild(ctx context.Context, epicID, epicBran
 	}
 	for i := range children {
 		child := &children[i]
-		if !isCanonicalEpicRebaseChild(child, epicID, title, acceptance) {
+		if isCanonicalEpicRebaseChild(child, epicID, title, acceptance) {
+			if err := d.addEpicRebaseDependency(ctx, epicID, child.ID); err != nil {
+				return nil, err
+			}
+			return child, nil
+		}
+		if !isLegacyEpicRebaseChild(child, epicID, title) {
 			continue
 		}
+		if err := d.beads.Update(ctx, child.ID, beadstore.UpdateParams{AcceptanceCriteria: &acceptance}); err != nil {
+			return nil, fmt.Errorf("upgrade legacy epic rebase child: %w", err)
+		}
+		child.AcceptanceCriteria = acceptance
 		if err := d.addEpicRebaseDependency(ctx, epicID, child.ID); err != nil {
 			return nil, err
 		}
@@ -3713,11 +3725,19 @@ func isCanonicalEpicRebaseChild(child *protocol.Bead, epicID, title, acceptance 
 	return child.Epic == epicID && child.Title == title && child.AcceptanceCriteria == acceptance
 }
 
+func isLegacyEpicRebaseChild(child *protocol.Bead, epicID, title string) bool {
+	if child == nil || (child.Status != "open" && child.Status != "in_progress") {
+		return false
+	}
+	return child.Epic == epicID && child.Title == title &&
+		strings.Contains(child.AcceptanceCriteria, "Cmd: git fetch --all --prune && git rebase ")
+}
+
 func rebaseChildAcceptance(epicID, epicBranch, targetBranch string) string {
 	return strings.Join([]string{
-		fmt.Sprintf("Test: epic %s rebase task keeps %s integration-ready for %s", epicID, epicBranch, targetBranch),
-		fmt.Sprintf("Cmd: git fetch --all --prune && git rebase %s && go test ./...", targetBranch),
-		fmt.Sprintf("Assert: %s is rebased onto %s, tests pass, and the epic can retry close without requiring the original merge failure to still exist.", epicBranch, targetBranch),
+		fmt.Sprintf("Test: epic %s recovery preserves %s and %s ancestry", epicID, targetBranch, epicBranch),
+		fmt.Sprintf("Cmd: git merge-base --is-ancestor %s HEAD && git merge-base --is-ancestor %s HEAD && go test ./pkg/dispatcher -run '^(TestEpicRebaseChildAcceptanceAllowsPreservedAncestry|TestEpicFFMergeFailureCreatesActionableRebaseChild)$'", targetBranch, epicBranch),
+		fmt.Sprintf("Assert: %s and %s are ancestors of HEAD, dispatcher tests pass, and the epic can retry close without replaying an already-preserved merge.", targetBranch, epicBranch),
 		"Read: pkg/dispatcher/dispatcher.go:ffMergeEpicBranch, pkg/dispatcher/dispatcher_test.go:TestEpicFFMergeFailureCreatesActionableRebaseChild",
 	}, " | ")
 }
