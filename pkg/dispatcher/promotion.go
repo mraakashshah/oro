@@ -4,12 +4,105 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"oro/pkg/beadstore"
 	"oro/pkg/cards"
+	"oro/pkg/config"
+	"oro/pkg/ops"
 )
+
+var gradeAutoApplyConfidence = []float64{0.80, 0.90, 0.95}
+
+// drainGradeProposals drives each outstanding proposal through its complete
+// escalation ladder. A failed card is logged by the caller while later cards
+// still receive a grading attempt during the same sweep.
+func (d *Dispatcher) drainGradeProposals(ctx context.Context) error {
+	if !d.cfg.GradeGateEnabled || d.cardStore == nil {
+		return nil
+	}
+	proposals, err := d.cardStore.ListProposed(ctx)
+	if err != nil {
+		return fmt.Errorf("list proposed cards: %w", err)
+	}
+	for _, proposal := range proposals {
+		if err := d.driveGradeProposal(ctx, proposal); err != nil {
+			slog.WarnContext(ctx, "grade proposal failed", "card_id", proposal.ID, "err", err)
+		}
+	}
+	return nil
+}
+
+func (d *Dispatcher) driveGradeProposal(ctx context.Context, proposal cards.Card) error {
+	if d.ops == nil {
+		return fmt.Errorf("grade proposal %s: ops spawner unavailable", proposal.ID)
+	}
+	rungs := config.GradeLadder(*config.DefaultAgentConfig())
+	for rung, routing := range rungs {
+		result := <-d.ops.Grade(ctx, ops.GradeOpts{
+			Card:      proposal,
+			Role:      "grade",
+			Model:     routing.Model,
+			Reasoning: routing.Reasoning,
+		})
+		if result.Err != nil {
+			return fmt.Errorf("grade proposal %s at rung %d: %w", proposal.ID, rung+1, result.Err)
+		}
+		outcome, terminal := gradeOutcomeForRung(proposal, result, rung, len(rungs))
+		if !terminal {
+			continue
+		}
+		if err := d.cardStore.ResolveProposal(ctx, proposal.ID, outcome); err != nil {
+			return fmt.Errorf("resolve proposal %s: %w", proposal.ID, err)
+		}
+		return nil
+	}
+	return fmt.Errorf("grade proposal %s exhausted without a terminal outcome", proposal.ID)
+}
+
+func gradeOutcomeForRung(proposal cards.Card, result ops.Result, rung, rungCount int) (cards.GradeOutcome, bool) {
+	verdict := cards.GradeVerdictValue(result.GradeVerdict)
+	confidence := result.GradeConfidence
+	if verdict == cards.GradeVerdictIncorrect {
+		return cards.GradeOutcome{
+			Action:     cards.GradeActionRejectAndRetire,
+			GradeState: cards.GradeStateRejected,
+			Verdict:    verdict,
+			Confidence: confidence,
+		}, true
+	}
+	if verdict == cards.GradeVerdictCorrect && confidence >= gradeConfidenceAt(rung) {
+		return cards.GradeOutcome{
+			Action:     cards.GradeActionApply,
+			GradeState: cards.GradeStateApplied,
+			Verdict:    verdict,
+			Confidence: confidence,
+		}, true
+	}
+	if isSubjectiveProposal(proposal) && rung+1 < rungCount {
+		return cards.GradeOutcome{}, false
+	}
+	return cards.GradeOutcome{
+		Action:     cards.GradeActionRejectAndRetire,
+		GradeState: cards.GradeStateRejected,
+		Verdict:    verdict,
+		Confidence: confidence,
+		Reason:     "grade_escalation_exhausted",
+	}, true
+}
+
+func gradeConfidenceAt(rung int) float64 {
+	if rung >= 0 && rung < len(gradeAutoApplyConfidence) {
+		return gradeAutoApplyConfidence[rung]
+	}
+	return 1
+}
+
+func isSubjectiveProposal(proposal cards.Card) bool {
+	return proposal.Type == cards.CardTypeDecision || proposal.Type == cards.CardTypeTaste
+}
 
 func promotionVerdictFromCloseReason(reason string) string {
 	lower := strings.ToLower(strings.TrimSpace(reason))

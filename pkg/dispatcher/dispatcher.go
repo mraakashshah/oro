@@ -1622,7 +1622,7 @@ func (d *Dispatcher) spawnBackgroundLoops(ctx context.Context, ln net.Listener) 
 	d.safeGo(func() { d.paneMonitorLoop(ctx) })
 	d.safeGo(func() { d.escalationRetryLoop(ctx) })
 	d.safeGo(func() { d.runPresubmitScheduler(ctx) })
-	d.safeGo(func() { RunSweepLoop(ctx, d.beads, d.db, SweepConfig{}) })
+	d.safeGo(func() { d.runSweepLoop(ctx, SweepConfig{}) })
 	if d.cfg.WebEnabled {
 		d.startHTTPServer()
 	}
