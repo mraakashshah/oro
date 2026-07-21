@@ -1726,8 +1726,22 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 		return
 	}
 	beadID := w.beadID
+	assignmentID := w.assignmentID
+	worktree := w.worktree
+	preempted := w.state == protocol.WorkerPreempting
+	if preempted && beadID != "" {
+		// Keep the bead reserved while its durable assignment is terminalized.
+		// Without this guard a concurrently idle replacement can create a second
+		// active assignment after the worker is removed but before cleanup runs.
+		d.assigningBeads[beadID] = true
+	}
 	delete(d.workers, workerID)
 	d.mu.Unlock()
+
+	if preempted && beadID != "" {
+		d.reconcilePreemptedDisconnect(workerID, beadID, assignmentID, worktree)
+		return
+	}
 
 	if beadID != "" {
 		d.clearBeadTracking(beadID)
@@ -1739,6 +1753,45 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 	// Wake the assign loop so reconcileScale can spawn a replacement immediately
 	// rather than waiting for the next fsnotify event or fallback tick.
 	d.notifyAssignLoop()
+}
+
+func (d *Dispatcher) reconcilePreemptedDisconnect(workerID, beadID string, assignmentID int64, worktree string) {
+	ctx := context.Background()
+	if !d.terminalizePreemptedDisconnect(ctx, workerID, beadID, assignmentID, worktree) {
+		return
+	}
+	if d.shouldReopenBead(ctx, beadID) {
+		if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
+			_ = d.logEvent(ctx, "preempt_disconnect_bead_reset_failed", "dispatcher", beadID, workerID, err.Error())
+		}
+	}
+	d.clearBeadTracking(beadID)
+	d.mu.Lock()
+	delete(d.assigningBeads, beadID)
+	d.mu.Unlock()
+	d.notifyAssignLoop()
+}
+
+func (d *Dispatcher) terminalizePreemptedDisconnect(ctx context.Context, workerID, beadID string, assignmentID int64, worktree string) bool {
+	err := d.completeAssignment(ctx, assignmentID, beadID)
+	if err == nil {
+		return true
+	}
+	_ = d.logEvent(ctx, "preempt_disconnect_assignment_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
+	_, quarantineErr := d.createRecoveryQuarantine(ctx, recoveryQuarantine{
+		BeadID:       beadID,
+		AssignmentID: assignmentID,
+		WorkerID:     workerID,
+		Worktree:     worktree,
+		Branch:       protocol.BranchPrefix + beadID,
+		Reason:       "preempted_worker_disconnect",
+		Details:      err.Error(),
+	})
+	if quarantineErr == nil {
+		return true
+	}
+	_ = d.logEvent(ctx, "preempt_disconnect_assignment_quarantine_failed", "dispatcher", beadID, workerID, quarantineErr.Error())
+	return false
 }
 
 // handleConn reads line-delimited JSON messages from a worker connection.
@@ -3950,6 +4003,15 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 	// Persist learnings and decisions from the handoff payload as memories.
 	d.persistHandoffContext(ctx, msg.Handoff)
 
+	// A HANDOFF is the worker's acknowledgement of PREEMPT. Release the old
+	// durable assignment before ordinary handoff logic can offer it to another
+	// worker. The assigningBeads reservation held by detachPreemptedHandoff
+	// keeps normal scheduling out until reconciliation reaches a terminal state.
+	if assignmentID, worktree, ok := d.detachPreemptedHandoff(workerID, beadID); ok {
+		d.reconcilePreemptedDisconnect(workerID, beadID, assignmentID, worktree)
+		return
+	}
+
 	// Track handoff count per bead.
 	handoffCount, assignmentID := d.incrementHandoffCount(workerID, beadID)
 	d.persistBeadCount(ctx, assignmentID, beadID, "handoff_count", handoffCount)
@@ -3983,6 +4045,30 @@ func (d *Dispatcher) incrementHandoffCount(workerID, beadID string) (handoffCoun
 	defer d.mu.Unlock()
 	d.handoffCounts[beadID]++
 	return d.handoffCounts[beadID], d.assignmentIDLocked(workerID, beadID)
+}
+
+func (d *Dispatcher) detachPreemptedHandoff(workerID, beadID string) (assignmentID int64, worktree string, ok bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w, exists := d.workers[workerID]
+	if !exists || w == nil || w.state != protocol.WorkerPreempting || w.beadID != beadID {
+		return 0, "", false
+	}
+
+	assignmentID = w.assignmentID
+	if assignmentID <= 0 {
+		assignmentID = w.execution.AssignmentID
+	}
+	worktree = w.worktree
+	d.assigningBeads[beadID] = true
+	_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
+	w.state = protocol.WorkerShuttingDown
+	w.assignmentID = 0
+	w.execution = WorkerExecutionContext{}
+	w.beadID = ""
+	w.epicID = ""
+	w.isEpicDecomp = false
+	return assignmentID, worktree, true
 }
 
 func (d *Dispatcher) shutdownWorkerForHandoff(workerID string) workerAssignmentSnapshot {
@@ -4343,7 +4429,7 @@ func (d *Dispatcher) checkPreReviewGitHygiene(ctx context.Context, _, worktree s
 		return PreReviewGitHygieneResult{}, fmt.Errorf("pre-review git metadata: %w", statErr)
 	}
 
-	out, err := (&ExecCommandRunner{Dir: worktree}).Run(ctx, "git", "status", "--porcelain", "-z")
+	out, err := (&ExecCommandRunner{Dir: worktree}).Run(ctx, "git", "status", "--porcelain", "--untracked-files=all", "-z")
 	if err != nil {
 		return PreReviewGitHygieneResult{}, fmt.Errorf("pre-review git status: %w", err)
 	}
@@ -4394,6 +4480,9 @@ type managedQualityGateProvider interface {
 }
 
 func (d *Dispatcher) isIgnorableManagedQualityGateStatus(worktree string, entry gitStatusPorcelainEntry) bool {
+	if entry.Code == "??" && entry.Path == filepath.ToSlash(filepath.Join(protocol.OroDir, "assignment-capability.json")) {
+		return true
+	}
 	if entry.Code != "??" || entry.Path != "quality_gate.sh" {
 		return false
 	}

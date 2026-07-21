@@ -3164,6 +3164,41 @@ func TestPreReviewGitHygieneIgnoresManagedQualityGateSnapshot(t *testing.T) {
 	}
 }
 
+func TestPreReviewGitHygieneIgnoresManagedAssignmentCapabilityFile(t *testing.T) {
+	ctx := context.Background()
+	worktree := t.TempDir()
+	if err := exec.Command("git", "-C", worktree, "init").Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	capabilityPath := filepath.Join(worktree, protocol.OroDir, "assignment-capability.json")
+	if err := os.MkdirAll(filepath.Dir(capabilityPath), 0o755); err != nil {
+		t.Fatalf("mkdir capability directory: %v", err)
+	}
+	if err := os.WriteFile(capabilityPath, []byte(`{"token":"runtime-only"}`), 0o600); err != nil {
+		t.Fatalf("write assignment capability: %v", err)
+	}
+
+	d := &Dispatcher{}
+	hygiene, err := d.checkPreReviewGitHygiene(ctx, "bead-clean", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene: %v", err)
+	}
+	if hygiene.Dirty {
+		t.Fatalf("managed assignment capability marked dirty: %#v", hygiene.Files)
+	}
+
+	if err := os.WriteFile(filepath.Join(worktree, "implementation.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write ordinary untracked source: %v", err)
+	}
+	hygiene, err = d.checkPreReviewGitHygiene(ctx, "bead-dirty", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene with source file: %v", err)
+	}
+	if !hygiene.Dirty || !slices.Equal(hygiene.Files, []string{"implementation.go"}) {
+		t.Fatalf("ordinary source file should remain dirty, got %#v", hygiene.Files)
+	}
+}
+
 func TestManagedQualityGateSnapshotMatches(t *testing.T) {
 	dir := t.TempDir()
 	managed := filepath.Join(dir, "managed.sh")
@@ -6163,6 +6198,303 @@ func TestPreemptDisconnectedWorker(t *testing.T) {
 	}
 
 	_ = server.Close()
+}
+
+func TestPreemptedWorkerDisconnectDoesNotCreateDuplicateAssignment(t *testing.T) {
+	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		beadID        = "oro-preempt-disconnect"
+		workerID      = "worker-preempted"
+		replacementID = "worker-replacement"
+		oldWorktree   = "/tmp/preempted-dirty-worktree"
+	)
+
+	oldConn := newMockConn()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:       workerID,
+		conn:     oldConn,
+		state:    protocol.WorkerBusy,
+		beadID:   beadID,
+		worktree: oldWorktree,
+		encoder:  json.NewEncoder(oldConn),
+	}
+	d.mu.Unlock()
+
+	assignmentID, err := d.createAssignment(ctx, beadID, workerID, oldWorktree)
+	if err != nil {
+		t.Fatalf("create old assignment: %v", err)
+	}
+	d.mu.Lock()
+	d.workers[workerID].assignmentID = assignmentID
+	d.mu.Unlock()
+
+	if _, err := d.applyPreempt(workerID); err != nil {
+		t.Fatalf("preempt worker: %v", err)
+	}
+
+	// This is the disconnect that can occur after PREEMPT is delivered but
+	// before the worker acknowledges it. A replacement must not be eligible
+	// until this old durable assignment is terminal.
+	d.connCloseCleanup(workerID, oldConn)
+
+	var oldStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&oldStatus); err != nil {
+		t.Fatalf("read old assignment: %v", err)
+	}
+	if oldStatus != "completed" && oldStatus != "quarantined" {
+		t.Fatalf("old assignment status = %q, want completed or quarantined before replacement scheduling", oldStatus)
+	}
+
+	replacementConn := newMockConn()
+	replacement := &trackedWorker{
+		id:      replacementID,
+		conn:    replacementConn,
+		state:   protocol.WorkerIdle,
+		encoder: json.NewEncoder(replacementConn),
+	}
+	d.mu.Lock()
+	d.workers[replacementID] = replacement
+	d.mu.Unlock()
+
+	if err := d.assignBead(ctx, replacement, protocol.Bead{ID: beadID, Title: "replacement", Type: "task"}); err != nil {
+		t.Fatalf("assign replacement: %v", err)
+	}
+
+	var activeAssignments int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM assignments WHERE bead_id=? AND status='active'`, beadID).Scan(&activeAssignments); err != nil {
+		t.Fatalf("count active assignments: %v", err)
+	}
+	if activeAssignments != 1 {
+		t.Fatalf("active assignments = %d, want exactly one", activeAssignments)
+	}
+
+	healthJSON, err := d.applyHealth()
+	if err != nil {
+		t.Fatalf("apply health: %v", err)
+	}
+	var health factoryhealth.FactoryHealth
+	if err := json.Unmarshal([]byte(healthJSON), &health); err != nil {
+		t.Fatalf("unmarshal health: %v", err)
+	}
+	for _, finding := range health.Findings {
+		if finding.Code == factoryhealth.FindingOrphanActiveAssignment {
+			t.Fatalf("health reported orphan active assignment: %+v", finding)
+		}
+	}
+
+	d.mu.Lock()
+	replacementWorktree := d.workers[replacementID].worktree
+	d.mu.Unlock()
+	if replacementWorktree == "" || replacementWorktree == oldWorktree {
+		t.Fatalf("replacement worktree = %q, want distinct safe worktree from %q", replacementWorktree, oldWorktree)
+	}
+	wtMgr.mu.Lock()
+	createdWorktree := wtMgr.created[beadID]
+	wtMgr.mu.Unlock()
+	if createdWorktree != replacementWorktree {
+		t.Fatalf("replacement worktree = %q, manager created %q", replacementWorktree, createdWorktree)
+	}
+
+	t.Run("handoff acknowledgement terminalizes before replacement", func(t *testing.T) {
+		d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		const (
+			beadID        = "oro-preempt-handoff"
+			workerID      = "worker-preempt-handoff"
+			replacementID = "worker-preempt-replacement"
+			oldWorktree   = "/tmp/preempt-handoff-dirty"
+		)
+
+		oldConn := newMockConn()
+		replacementConn := newMockConn()
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:       workerID,
+			conn:     oldConn,
+			state:    protocol.WorkerBusy,
+			beadID:   beadID,
+			worktree: oldWorktree,
+			encoder:  json.NewEncoder(oldConn),
+		}
+		d.workers[replacementID] = &trackedWorker{
+			id:      replacementID,
+			conn:    replacementConn,
+			state:   protocol.WorkerIdle,
+			encoder: json.NewEncoder(replacementConn),
+		}
+		d.worktreeByBead[beadID] = oldWorktree
+		d.mu.Unlock()
+		wtMgr.currentBranchFn = func(_ context.Context, path string) (string, error) {
+			if path != oldWorktree {
+				t.Fatalf("validate worktree path = %q, want preserved %q", path, oldWorktree)
+			}
+			return protocol.BranchPrefix + beadID, nil
+		}
+
+		assignmentID, err := d.createAssignment(ctx, beadID, workerID, oldWorktree)
+		if err != nil {
+			t.Fatalf("create preempted assignment: %v", err)
+		}
+		d.mu.Lock()
+		d.workers[workerID].assignmentID = assignmentID
+		d.mu.Unlock()
+
+		if _, err := d.applyPreempt(workerID); err != nil {
+			t.Fatalf("preempt worker: %v", err)
+		}
+		d.handleHandoff(ctx, workerID, protocol.Message{
+			Type: protocol.MsgHandoff,
+			Handoff: &protocol.HandoffPayload{
+				BeadID:   beadID,
+				WorkerID: workerID,
+			},
+		})
+
+		var oldStatus string
+		if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&oldStatus); err != nil {
+			t.Fatalf("read preempted assignment: %v", err)
+		}
+		if oldStatus != "completed" && oldStatus != "quarantined" {
+			t.Fatalf("preempted assignment status after handoff = %q, want completed or quarantined", oldStatus)
+		}
+		d.connCloseCleanup(workerID, oldConn)
+
+		d.mu.Lock()
+		replacement := d.workers[replacementID]
+		d.mu.Unlock()
+		if replacement.state != protocol.WorkerIdle || replacement.assignmentID != 0 {
+			t.Fatalf("replacement received old assignment before terminalization: state=%s assignment_id=%d", replacement.state, replacement.assignmentID)
+		}
+		if _, err := d.db.ExecContext(ctx, `
+CREATE TRIGGER fail_preempt_replacement_assignment
+BEFORE INSERT ON assignments
+WHEN NEW.bead_id='oro-preempt-handoff'
+BEGIN
+    SELECT RAISE(FAIL, 'forced replacement persistence failure');
+END`); err != nil {
+			t.Fatalf("create replacement persistence trigger: %v", err)
+		}
+		if err := d.assignBead(ctx, replacement, protocol.Bead{ID: beadID, Title: "failed replacement", Type: "task"}); err != nil {
+			t.Fatalf("attempt failed replacement: %v", err)
+		}
+		d.mu.Lock()
+		preservedWorktree := d.worktreeByBead[beadID]
+		d.mu.Unlock()
+		if replacement.state != protocol.WorkerIdle || replacement.assignmentID != 0 {
+			t.Fatalf("replacement after persistence failure: state=%s assignment_id=%d, want idle with no assignment", replacement.state, replacement.assignmentID)
+		}
+		if preservedWorktree != oldWorktree {
+			t.Fatalf("worktree after replacement persistence failure = %q, want preserved %q", preservedWorktree, oldWorktree)
+		}
+		var activeAfterFailure int
+		if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM assignments WHERE bead_id=? AND status='active'`, beadID).Scan(&activeAfterFailure); err != nil {
+			t.Fatalf("count active assignments after persistence failure: %v", err)
+		}
+		if activeAfterFailure != 0 {
+			t.Fatalf("active assignments after replacement persistence failure = %d, want zero", activeAfterFailure)
+		}
+		if _, err := d.db.ExecContext(ctx, `DROP TRIGGER fail_preempt_replacement_assignment`); err != nil {
+			t.Fatalf("drop replacement persistence trigger: %v", err)
+		}
+
+		if err := d.assignBead(ctx, replacement, protocol.Bead{ID: beadID, Title: "safe replacement", Type: "task"}); err != nil {
+			t.Fatalf("assign safe replacement: %v", err)
+		}
+		if replacement.assignmentID == assignmentID {
+			t.Fatalf("replacement assignment ID = old assignment ID %d, want distinct durable ownership", assignmentID)
+		}
+		if replacement.worktree != oldWorktree {
+			t.Fatalf("replacement worktree = %q, want preserved dirty worktree %q", replacement.worktree, oldWorktree)
+		}
+
+		var activeAssignments int
+		if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM assignments WHERE bead_id=? AND status='active'`, beadID).Scan(&activeAssignments); err != nil {
+			t.Fatalf("count active assignments: %v", err)
+		}
+		if activeAssignments != 1 {
+			t.Fatalf("active assignments after handoff replacement = %d, want exactly one", activeAssignments)
+		}
+
+		healthJSON, err := d.applyHealth()
+		if err != nil {
+			t.Fatalf("apply health after handoff replacement: %v", err)
+		}
+		var health factoryhealth.FactoryHealth
+		if err := json.Unmarshal([]byte(healthJSON), &health); err != nil {
+			t.Fatalf("unmarshal health after handoff replacement: %v", err)
+		}
+		for _, finding := range health.Findings {
+			if finding.Code == factoryhealth.FindingOrphanActiveAssignment {
+				t.Fatalf("health reported orphan active assignment after handoff: %+v", finding)
+			}
+		}
+	})
+
+	t.Run("completion failure quarantines and blocks replacement", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		const (
+			beadID      = "oro-preempt-quarantine"
+			workerID    = "worker-preempt-quarantine"
+			oldWorktree = "/tmp/preempt-quarantine-dirty"
+		)
+
+		oldConn := newMockConn()
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:       workerID,
+			conn:     oldConn,
+			state:    protocol.WorkerBusy,
+			beadID:   beadID,
+			worktree: oldWorktree,
+			encoder:  json.NewEncoder(oldConn),
+		}
+		d.worktreeByBead[beadID] = oldWorktree
+		d.mu.Unlock()
+
+		assignmentID, err := d.createAssignment(ctx, beadID, workerID, oldWorktree)
+		if err != nil {
+			t.Fatalf("create assignment for quarantine fallback: %v", err)
+		}
+		d.mu.Lock()
+		d.workers[workerID].assignmentID = assignmentID
+		d.mu.Unlock()
+		if _, err := d.db.ExecContext(ctx, fmt.Sprintf(`
+CREATE TRIGGER fail_preempt_assignment_completion
+BEFORE UPDATE OF status ON assignments
+WHEN OLD.id=%d AND NEW.status='completed'
+BEGIN
+    SELECT RAISE(FAIL, 'forced preempt completion failure');
+END`, assignmentID)); err != nil {
+			t.Fatalf("create completion failure trigger: %v", err)
+		}
+
+		if _, err := d.applyPreempt(workerID); err != nil {
+			t.Fatalf("preempt worker: %v", err)
+		}
+		d.connCloseCleanup(workerID, oldConn)
+
+		var status string
+		if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&status); err != nil {
+			t.Fatalf("read quarantined assignment: %v", err)
+		}
+		if status != "quarantined" {
+			t.Fatalf("assignment status after forced completion failure = %q, want quarantined", status)
+		}
+		var openQuarantines int
+		if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_quarantines WHERE assignment_id=? AND status='open'`, assignmentID).Scan(&openQuarantines); err != nil {
+			t.Fatalf("count recovery quarantines: %v", err)
+		}
+		if openQuarantines != 1 {
+			t.Fatalf("open recovery quarantines = %d, want one", openQuarantines)
+		}
+		assignable := d.filterAssignable(ctx, []protocol.Bead{{ID: beadID, Title: "blocked replacement", Type: "task"}})
+		if len(assignable) != 0 {
+			t.Fatalf("quarantined preempt replacement remained assignable: %+v", assignable)
+		}
+	})
 }
 
 func TestRun_RejectsShutdownDirective(t *testing.T) {
