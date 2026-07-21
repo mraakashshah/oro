@@ -8457,6 +8457,7 @@ func (d *Dispatcher) buildStatusJSON() string {
 
 	// Fetch ready beads to determine which attempt counts are valid.
 	ctx := context.Background()
+	storage := d.storageHealth(ctx)
 	readyBeads, err := d.beads.Ready(ctx)
 	if err != nil {
 		readyBeads = nil // Continue with empty ready list on error.
@@ -8545,6 +8546,7 @@ func (d *Dispatcher) buildStatusJSON() string {
 		assignmentFreezeReason:       assignmentFreezeReason,
 		progressTimeoutSecs:          progressTimeoutSecs,
 		heartbeatTimeoutSecs:         heartbeatTimeoutSecs,
+		storage:                      storage,
 	})
 	resp.Health = &health
 
