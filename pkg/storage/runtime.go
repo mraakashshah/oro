@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -114,7 +115,11 @@ func runtimeScratchRoot(env []string) string {
 			return value
 		}
 	}
-	return filepath.Join(os.TempDir(), "oro-subprocess")
+	root := os.TempDir()
+	if runtime.GOOS == "darwin" {
+		root = "/tmp"
+	}
+	return filepath.Join(root, "oro-subprocess")
 }
 
 func runtimeScratchToken(workdir string) string {
