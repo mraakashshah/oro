@@ -831,6 +831,167 @@ func TestFakeCardsReadTx_Filters(t *testing.T) {
 	})
 }
 
+func TestFakeStoreDependencyCyclesReflectActiveBlockingDependencies(t *testing.T) {
+	ctx := context.Background()
+	store := beadstore.NewFakeStore(
+		protocol.Bead{ID: "alpha", Status: "open"},
+		protocol.Bead{ID: "bravo", Status: "open"},
+		protocol.Bead{ID: "charlie", Status: "open"},
+		protocol.Bead{ID: "closed", Status: "closed"},
+	)
+	for _, edge := range []struct {
+		beadID      string
+		dependsOnID string
+		depType     string
+	}{
+		{beadID: "alpha", dependsOnID: "bravo", depType: "blocks"},
+		{beadID: "bravo", dependsOnID: "charlie", depType: "conditional-blocks"},
+		{beadID: "charlie", dependsOnID: "alpha", depType: "blocks"},
+		{beadID: "alpha", dependsOnID: "closed", depType: "blocks"},
+		{beadID: "bravo", dependsOnID: "closed", depType: "parent-child"},
+	} {
+		if err := store.AddDependency(ctx, edge.beadID, edge.dependsOnID, edge.depType); err != nil {
+			t.Fatalf("AddDependency(%q, %q, %q): %v", edge.beadID, edge.dependsOnID, edge.depType, err)
+		}
+	}
+
+	cycles, err := store.DependencyCycles(ctx)
+	if err != nil {
+		t.Fatalf("DependencyCycles: %v", err)
+	}
+	if len(cycles) != 1 {
+		t.Fatalf("DependencyCycles() = %#v, want one active blocking cycle", cycles)
+	}
+	if len(cycles[0]) != 4 || cycles[0][0] != cycles[0][3] {
+		t.Fatalf("DependencyCycles() = %#v, want a closed three-node cycle", cycles)
+	}
+
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := store.DependencyCycles(canceled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("DependencyCycles(canceled) error = %v, want context.Canceled", err)
+	}
+}
+
+func TestFakeStoreDeepClonesMetadata(t *testing.T) {
+	ctx := context.Background()
+	store := beadstore.NewFakeStore(protocol.Bead{
+		ID:     "metadata",
+		Status: "open",
+		Metadata: map[string]any{
+			"map":     map[string]any{"inner": "original"},
+			"strings": map[string]string{"inner": "original"},
+			"any":     []any{map[string]any{"inner": "original"}},
+			"slice":   []string{"original"},
+		},
+	})
+
+	shown, err := store.Show(ctx, "metadata")
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	shown.Metadata["map"].(map[string]any)["inner"] = "mutated"
+	shown.Metadata["strings"].(map[string]any)["inner"] = "mutated"
+	shown.Metadata["any"].([]any)[0].(map[string]any)["inner"] = "mutated"
+	shown.Metadata["slice"].([]string)[0] = "mutated"
+
+	again, err := store.Show(ctx, "metadata")
+	if err != nil {
+		t.Fatalf("Show after metadata mutation: %v", err)
+	}
+	if got := again.Metadata["map"].(map[string]any)["inner"]; got != "original" {
+		t.Fatalf("map metadata = %q, want original", got)
+	}
+	if got := again.Metadata["strings"].(map[string]any)["inner"]; got != "original" {
+		t.Fatalf("string-map metadata = %q, want original", got)
+	}
+	if got := again.Metadata["any"].([]any)[0].(map[string]any)["inner"]; got != "original" {
+		t.Fatalf("slice metadata = %q, want original", got)
+	}
+	if got := again.Metadata["slice"].([]string)[0]; got != "original" {
+		t.Fatalf("string-slice metadata = %q, want original", got)
+	}
+}
+
+func TestFakeStoreRejectsCanceledContexts(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	store := beadstore.NewFakeStore(protocol.Bead{ID: "bead", Status: "open"})
+
+	checks := map[string]func() error{
+		"Ready": func() error {
+			_, err := store.Ready(ctx)
+			return err
+		},
+		"InProgress": func() error {
+			_, err := store.InProgress(ctx)
+			return err
+		},
+		"Blocked": func() error {
+			_, err := store.Blocked(ctx)
+			return err
+		},
+		"Closed": func() error {
+			_, err := store.Closed(ctx, 1)
+			return err
+		},
+		"Show": func() error {
+			_, err := store.Show(ctx, "bead")
+			return err
+		},
+		"Create": func() error {
+			_, err := store.Create(ctx, beadstore.CreateParams{ID: "created"})
+			return err
+		},
+		"Update":           func() error { return store.Update(ctx, "bead", beadstore.UpdateParams{}) },
+		"Close":            func() error { return store.Close(ctx, "bead", "reason") },
+		"Delete":           func() error { return store.Delete(ctx, "bead", "reason") },
+		"AddDependency":    func() error { return store.AddDependency(ctx, "bead", "other", "blocks") },
+		"RemoveDependency": func() error { return store.RemoveDependency(ctx, "bead", "other") },
+		"ListDependencies": func() error {
+			_, err := store.ListDependencies(ctx, "bead")
+			return err
+		},
+		"CountByStatus": func() error {
+			_, err := store.CountByStatus(ctx)
+			return err
+		},
+		"Defer":   func() error { return store.Defer(ctx, "bead", time.Now().Add(time.Hour).Format(time.RFC3339Nano)) },
+		"Undefer": func() error { return store.Undefer(ctx, "bead") },
+		"HasChildren": func() error {
+			_, err := store.HasChildren(ctx, "bead")
+			return err
+		},
+		"AllChildrenClosed": func() error {
+			_, err := store.AllChildrenClosed(ctx, "bead")
+			return err
+		},
+		"FindByParentAndTag": func() error {
+			_, err := store.FindByParentAndTag(ctx, "bead", "tag")
+			return err
+		},
+		"FindByMetadataKey": func() error {
+			_, err := store.FindByMetadataKey(ctx, "key")
+			return err
+		},
+		"CountChildren": func() error {
+			_, err := store.CountChildren(ctx, "bead")
+			return err
+		},
+		"Export": func() error {
+			_, err := store.Export(ctx)
+			return err
+		},
+	}
+	for name, check := range checks {
+		t.Run(name, func(t *testing.T) {
+			if err := check(); !errors.Is(err, context.Canceled) {
+				t.Fatalf("error = %v, want context.Canceled", err)
+			}
+		})
+	}
+}
+
 func TestCardsRelevantDeckOmitsBodyFull(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
