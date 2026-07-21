@@ -541,6 +541,8 @@ func (s *Spawner) Dream(ctx context.Context, opts DreamOpts) <-chan Result {
 }
 
 // Grade spawns the configured grade worker and returns its parsed verdict.
+//
+//oro:testonly — wired into production by card grading orchestration
 func (s *Spawner) Grade(ctx context.Context, opts GradeOpts) <-chan Result {
 	prompt := buildGradePrompt(opts.Card, opts.Evidence)
 	return s.runWith(ctx, OpsGrade, spawnRouting{
@@ -647,20 +649,7 @@ func (s *Spawner) runWith(ctx context.Context, opsType Type, routing spawnRoutin
 			s.mu.Unlock()
 		}()
 
-		role := routing.role
-		if role == "" {
-			role = opsType.Role()
-		}
-		runtime, model, reasoning := agentmodel.ResolveForRole(role)
-		if routing.runtimeOverride != "" {
-			runtime = routing.runtimeOverride
-		}
-		if routing.modelOverride != "" {
-			model = routing.modelOverride
-		}
-		if routing.reasoningOverride != "" {
-			reasoning = routing.reasoningOverride
-		}
+		runtime, model, reasoning := resolveSpawnRouting(opsType, routing)
 		sp := s.spawner
 		if opsType == OpsReview && s.reviewSpawner != nil {
 			sp = s.reviewSpawner
@@ -701,6 +690,24 @@ func (s *Spawner) runWith(ctx context.Context, opsType Type, routing spawnRoutin
 	}()
 
 	return ch
+}
+
+func resolveSpawnRouting(opsType Type, routing spawnRouting) (runtime, model, reasoning string) {
+	role := routing.role
+	if role == "" {
+		role = opsType.Role()
+	}
+	runtime, model, reasoning = agentmodel.ResolveForRole(role)
+	if routing.runtimeOverride != "" {
+		runtime = routing.runtimeOverride
+	}
+	if routing.modelOverride != "" {
+		model = routing.modelOverride
+	}
+	if routing.reasoningOverride != "" {
+		reasoning = routing.reasoningOverride
+	}
+	return runtime, model, reasoning
 }
 
 func spawnOps(ctx context.Context, spawner BatchSpawner, runtime, model, reasoning, prompt, worktree string) (Process, error) {
