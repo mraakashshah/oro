@@ -900,6 +900,8 @@ type Dispatcher struct {
 	reconcilingScale atomic.Bool // prevents concurrent reconcileScale() calls (oro-ovpc.1)
 
 	state                       State
+	pauseSource                 string
+	pauseReason                 string
 	listener                    net.Listener
 	focusedEpic                 string
 	focusVersion                uint64
@@ -5276,19 +5278,20 @@ func (d *Dispatcher) handleDirectiveWithACK(ctx context.Context, conn net.Conn, 
 
 	dir := protocol.Directive(msg.Directive.Op)
 	args := msg.Directive.Args
+	source, reason := directiveProvenance(msg.Directive)
 	ack := protocol.ACKPayload{OK: true}
 
 	if !dir.Valid() && dir != directiveLaunchWorkers && dir != directiveCancelWorkerLaunch {
 		ack.OK = false
 		ack.Detail = "invalid directive"
 	} else {
-		detail, err := d.applyDirective(dir, args)
+		detail, err := d.applyDirectiveWithProvenance(dir, args, source, reason)
 		if err != nil {
 			ack.OK = false
 			ack.Detail = err.Error()
 		} else {
-			_ = d.logEvent(ctx, "directive", "manager", "", "",
-				fmt.Sprintf(`{"directive":%q,"args":%q}`, msg.Directive.Op, args))
+			_ = d.logEvent(ctx, "directive", source, "", "",
+				fmt.Sprintf(`{"directive":%q,"args":%q,"source":%q,"reason":%q}`, msg.Directive.Op, args, source, reason))
 			ack.Detail = detail
 		}
 	}
@@ -7495,9 +7498,12 @@ type workerLaunchReservation struct {
 
 // applyDirective transitions the dispatcher state machine and returns a detail
 // string for the ACK response. Returns an error for invalid args (e.g. scale).
-//
-//nolint:gocyclo // dispatcher routing function - complexity is inherent to the pattern
 func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string, error) {
+	return d.applyDirectiveWithProvenance(dir, args, "operator", "operator_request")
+}
+
+//nolint:gocyclo // dispatcher routing function - complexity is inherent to the pattern
+func (d *Dispatcher) applyDirectiveWithProvenance(dir protocol.Directive, args, source, reason string) (string, error) {
 	if detail, handled, err := d.applyCapacityDirective(dir, args); handled {
 		return detail, err
 	}
@@ -7527,7 +7533,7 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 	case protocol.DirectiveStop:
 		return "", fmt.Errorf("stop directive disabled; use 'oro stop' for graceful shutdown")
 	case protocol.DirectivePause:
-		return d.applyPause()
+		return d.applyPause(source, reason)
 	case protocol.DirectiveResume:
 		return d.applyResume()
 	case protocol.DirectiveStatus:
@@ -7580,8 +7586,25 @@ func (d *Dispatcher) applyStart() (string, error) {
 	return "started", nil
 }
 
-// applyPause transitions the dispatcher to paused state.
-func (d *Dispatcher) applyPause() (string, error) {
+// directiveProvenance normalizes legacy directives as explicit operator actions.
+func directiveProvenance(payload *protocol.DirectivePayload) (source, reason string) {
+	source = payload.Source
+	if source == "" {
+		source = "operator"
+	}
+	reason = payload.Reason
+	if reason == "" {
+		reason = "operator_request"
+	}
+	return source, reason
+}
+
+// applyPause transitions the dispatcher to paused state with its provenance.
+func (d *Dispatcher) applyPause(source, reason string) (string, error) {
+	d.mu.Lock()
+	d.pauseSource = source
+	d.pauseReason = reason
+	d.mu.Unlock()
 	d.setState(StatePaused)
 	return "paused", nil
 }
@@ -7592,6 +7615,10 @@ func (d *Dispatcher) applyResume() (string, error) {
 		return "already running", nil
 	}
 	d.setState(StateRunning)
+	d.mu.Lock()
+	d.pauseSource = ""
+	d.pauseReason = ""
+	d.mu.Unlock()
 	return "resumed", nil
 }
 

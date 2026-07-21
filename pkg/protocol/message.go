@@ -254,8 +254,10 @@ func (r *ReconnectPayload) Validate() error {
 
 // DirectivePayload is sent by the manager to issue directives to the dispatcher.
 type DirectivePayload struct {
-	Op   string `json:"op"`   // start | stop | pause | focus
-	Args string `json:"args"` // optional arguments (e.g., epic ID for focus)
+	Op     string `json:"op"`               // start | stop | pause | focus
+	Args   string `json:"args"`             // optional arguments (e.g., epic ID for focus)
+	Source string `json:"source,omitempty"` // actor that issued the directive
+	Reason string `json:"reason,omitempty"` // operator or policy rationale
 }
 
 // ACKPayload is sent by the dispatcher in response to a directive.

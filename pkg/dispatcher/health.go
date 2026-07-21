@@ -18,6 +18,8 @@ type factoryHealthInput struct {
 	daemonRunning                bool
 	daemonPID                    int
 	dispatcherState              string
+	pauseSource                  string
+	pauseReason                  string
 	workers                      []workerStatus
 	queueDepth                   int
 	targetWorkers                int
@@ -58,6 +60,8 @@ func (d *Dispatcher) applyHealth() (string, error) {
 		daemonRunning:                true,
 		daemonPID:                    os.Getpid(),
 		dispatcherState:              string(d.state),
+		pauseSource:                  d.pauseSource,
+		pauseReason:                  d.pauseReason,
 		workers:                      workers,
 		queueDepth:                   queueDepth,
 		targetWorkers:                d.targetWorkers,
@@ -108,6 +112,8 @@ func (d *Dispatcher) evaluateFactoryHealth(ctx context.Context, now time.Time, i
 		DaemonRunning:                input.daemonRunning,
 		DaemonPID:                    input.daemonPID,
 		DispatcherState:              input.dispatcherState,
+		PauseSource:                  input.pauseSource,
+		PauseReason:                  input.pauseReason,
 		Workers:                      toFactoryWorkers(input.workers),
 		ReadyQueue:                   input.queueDepth,
 		TargetWorkers:                input.targetWorkers,
