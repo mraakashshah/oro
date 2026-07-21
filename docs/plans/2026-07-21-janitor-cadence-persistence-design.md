@@ -184,8 +184,8 @@ it never observes an in-memory-only increment, reset, or completed role.
 Primary epic acceptance:
 
 ```
-Cmd: go test ./pkg/dispatcher/... -run '^TestJanitorCadencePersistsAcrossDispatcherRestart$' -count=1
-Assert: a fresh dispatcher reusing the same SQLite state database resumes a project-wide 39-bead counter, runs the pending janitor or audit against main before accepting further work, and clears the durable marker only after success.
+Cmd: test "$(git branch --show-current)" = main && go test ./pkg/dispatcher/... -run '^(TestJanitorCadencePersistsAcrossDispatcherRestart|TestJanitorCadenceTransitions|TestJanitorCadenceExcludesFailedClose|TestCadenceScansMainRegardlessOfDefaultBranch|TestJanitorStartPlumbing)$' -count=1
+Assert: on main, restart persistence, 40/120 gating, fourth-cycle audit substitution, failed-close exclusion, literal-main scans, and 40/4 production defaults all pass.
 ```
 
 Add focused dispatcher/store tests for:
