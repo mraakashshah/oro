@@ -1,5 +1,28 @@
 package protocol
 
+// WorkProposalPayload is a worker's provisional report of discovered work.
+// Canonical scope derivation is deliberately deferred to the controller.
+type WorkProposalPayload struct {
+	ClientProposalID  string `json:"client_proposal_id"`
+	AssignmentID      int64  `json:"assignment_id"`
+	WorkerID          string `json:"worker_id"`
+	BeadID            string `json:"bead_id"`
+	EvidenceRunID     string `json:"evidence_run_id"`
+	Fingerprint       string `json:"fingerprint"`
+	ScopeHint         string `json:"scope_hint"`
+	Kind              string `json:"kind"`
+	Summary           string `json:"summary"`
+	SuggestedTitle    string `json:"suggested_title"`
+	SuggestedType     string `json:"suggested_type"`
+	SuggestedPriority int    `json:"suggested_priority"`
+}
+
+// WorkProposalResult is the durable response to a work-proposal submission.
+type WorkProposalResult struct {
+	ProposalID string `json:"proposal_id"`
+	State      string `json:"state"`
+}
+
 // Event represents a row in the events SQLite table.
 // Tracks all dispatcher/worker lifecycle events.
 type Event struct {
