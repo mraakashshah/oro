@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -86,6 +87,66 @@ func TestApplyHealthReportsStorageUnavailableWithoutObservation(t *testing.T) {
 	}
 	if !hasHealthFinding(health, factoryhealth.FindingStorageUnavailable) {
 		t.Fatalf("missing storage unavailable finding: %+v", health.Findings)
+	}
+}
+
+func TestDirectiveStatusStorageHealthMatchesHealthDirective(t *testing.T) {
+	tests := []struct {
+		name      string
+		storage   func(context.Context) *factoryhealth.StorageHealth
+		available bool
+	}{
+		{
+			name: "healthy catalog",
+			storage: func(context.Context) *factoryhealth.StorageHealth {
+				return &factoryhealth.StorageHealth{Available: true}
+			},
+			available: true,
+		},
+		{
+			name:      "unavailable catalog",
+			available: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, _, _, _, _, _ := newTestDispatcher(t)
+			d.cfg.StorageHealth = tt.storage
+
+			healthJSON, err := d.applyDirective(protocol.DirectiveHealth, "")
+			if err != nil {
+				t.Fatalf("apply health directive: %v", err)
+			}
+			var health factoryhealth.FactoryHealth
+			if err := json.Unmarshal([]byte(healthJSON), &health); err != nil {
+				t.Fatalf("unmarshal health: %v", err)
+			}
+
+			statusJSON, err := d.applyDirective(protocol.DirectiveStatus, "")
+			if err != nil {
+				t.Fatalf("apply status directive: %v", err)
+			}
+			var status statusResponse
+			if err := json.Unmarshal([]byte(statusJSON), &status); err != nil {
+				t.Fatalf("unmarshal status: %v", err)
+			}
+			if status.Health == nil {
+				t.Fatal("status health missing")
+			}
+			if !reflect.DeepEqual(health.Metrics.Storage, status.Health.Metrics.Storage) {
+				t.Fatalf("storage snapshots differ: health=%+v status=%+v", health.Metrics.Storage, status.Health.Metrics.Storage)
+			}
+			healthAvailable := health.Metrics.Storage != nil && health.Metrics.Storage.Available
+			statusAvailable := status.Health.Metrics.Storage != nil && status.Health.Metrics.Storage.Available
+			if healthAvailable != tt.available || statusAvailable != tt.available {
+				t.Fatalf("storage availability = health:%t status:%t, want %t", healthAvailable, statusAvailable, tt.available)
+			}
+			if hasHealthFinding(health, factoryhealth.FindingStorageUnavailable) != !tt.available ||
+				hasHealthFinding(*status.Health, factoryhealth.FindingStorageUnavailable) != !tt.available {
+				t.Fatalf("storage findings = health:%+v status:%+v", health.Findings, status.Health.Findings)
+			}
+		})
 	}
 }
 
