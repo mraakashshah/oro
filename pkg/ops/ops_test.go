@@ -260,6 +260,48 @@ func TestOpsRoutingUsesLockedRoleModels(t *testing.T) {
 	}
 }
 
+func TestSpawner_Grade(t *testing.T) {
+	proposal := Card{
+		ID:       "card-grade",
+		Title:    "Verify current retry state",
+		BodyFull: "Run the exact acceptance command before changing a retry task.",
+	}
+	evidence := GradeEvidence{} // Dream proposals may not have an originating bead.
+	mock := &mockBatchSpawner{process: newReadyMockProcess(`{"verdict":"correct","confidence":0.96,"reasoning":"evidence supports the proposal"}`, nil)}
+
+	result := waitResult(t, NewSpawner(mock).Grade(context.Background(), GradeOpts{
+		Card:      proposal,
+		Evidence:  evidence,
+		Role:      "grade",
+		Model:     "gpt-5.6-terra",
+		Reasoning: "low",
+	}))
+	if result.Err != nil {
+		t.Fatalf("Grade() error = %v", result.Err)
+	}
+	if result.GradeVerdict != GradeVerdictCorrect || result.GradeConfidence != 0.96 || result.GradeReasoning != "evidence supports the proposal" {
+		t.Fatalf("Grade() result = %+v", result)
+	}
+
+	calls := mock.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("spawn calls = %d, want 1", len(calls))
+	}
+	if calls[0].runtime != "codex" || calls[0].model != "gpt-5.6-terra" || calls[0].reasoning != "low" {
+		t.Fatalf("spawn routing = (%q, %q, %q), want (codex, gpt-5.6-terra, low)", calls[0].runtime, calls[0].model, calls[0].reasoning)
+	}
+	if got, want := calls[0].prompt, buildGradePrompt(proposal, evidence); got != want {
+		t.Fatalf("grade prompt = %q, want %q", got, want)
+	}
+
+	malformed := waitResult(t, NewSpawner(&mockBatchSpawner{
+		process: newReadyMockProcess(`{"verdict":"not-a-grade"}`, nil),
+	}).Grade(context.Background(), GradeOpts{Card: proposal, Evidence: evidence}))
+	if malformed.Err == nil || malformed.Verdict != VerdictFailed || malformed.GradeVerdict != "" {
+		t.Fatalf("malformed grade result = %+v, want failed error without a grade verdict", malformed)
+	}
+}
+
 func TestDecomposeOpsUsesRepoRootWorkdir(t *testing.T) {
 	repoRoot := t.TempDir()
 	mock := &mockBatchSpawner{process: newReadyMockProcess("VERDICT: resolved", nil)}
