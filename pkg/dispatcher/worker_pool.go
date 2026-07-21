@@ -340,25 +340,27 @@ func (d *Dispatcher) escalateTimedOutWorkers(ctx context.Context, dead, stuck []
 		// on them after a restart is noisy and misleading (oro-ny8h).
 		// Prev-session workers also must NOT reset their bead to "open": their
 		// bead assignments are stale and the bead may already be closed (oro-p2ey).
-		if !dw.prevSession {
-			d.escalate(ctx, protocol.FormatEscalation(protocol.EscWorkerCrash, dw.beadID, "worker disconnected", "heartbeat timeout for worker "+dw.workerID), dw.beadID, dw.workerID)
+		if dw.prevSession {
 			if dw.beadID != "" {
-				if d.quarantineDisconnectedPreservedAssignment(ctx, dw.workerID, dw.beadID, dw.assignmentID, dw.worktree) {
-					d.clearBeadTracking(dw.beadID)
-					continue
-				}
-				if err := d.updateBeadStatus(ctx, dw.beadID, "open"); err != nil {
-					_ = d.logEvent(ctx, "heartbeat_bead_reset_failed", "dispatcher", dw.beadID, dw.workerID,
-						fmt.Sprintf(`{"error":%q}`, err.Error()))
-				}
-				_ = d.completeAssignment(ctx, dw.assignmentID, dw.beadID)
+				d.clearBeadTracking(dw.beadID)
 			}
+			continue
 		}
-		// Always clear internal tracking for timed-out workers, regardless of
-		// session — prev-session workers must not hold stale dispatcher references.
-		if dw.beadID != "" {
+
+		d.escalate(ctx, protocol.FormatEscalation(protocol.EscWorkerCrash, dw.beadID, "worker disconnected", "heartbeat timeout for worker "+dw.workerID), dw.beadID, dw.workerID)
+		if dw.beadID == "" {
+			continue
+		}
+		if d.quarantineDisconnectedPreservedAssignment(ctx, dw.workerID, dw.beadID, dw.assignmentID, dw.worktree) {
 			d.clearBeadTracking(dw.beadID)
+			continue
 		}
+		if err := d.updateBeadStatus(ctx, dw.beadID, "open"); err != nil {
+			_ = d.logEvent(ctx, "heartbeat_bead_reset_failed", "dispatcher", dw.beadID, dw.workerID,
+				fmt.Sprintf(`{"error":%q}`, err.Error()))
+		}
+		_ = d.completeAssignment(ctx, dw.assignmentID, dw.beadID)
+		d.clearBeadTracking(dw.beadID)
 	}
 	for _, sw := range stuck {
 		d.handleStuckTimedOutWorker(ctx, sw)
