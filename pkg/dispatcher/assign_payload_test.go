@@ -247,6 +247,10 @@ func (s *staticRelevantCardStore) List(context.Context, cards.ListQuery) ([]card
 	return nil, errors.New("not implemented")
 }
 
+func (s *staticRelevantCardStore) ListProposed(context.Context) ([]cards.Card, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (s *staticRelevantCardStore) PendingLearnings(context.Context, string) ([]cards.PendingLearning, error) {
 	return nil, errors.New("not implemented")
 }
@@ -269,6 +273,10 @@ func (s *staticRelevantCardStore) PromoteLearning(context.Context, int64) (strin
 
 func (s *staticRelevantCardStore) PromoteLearningAsProposal(context.Context, int64) (string, error) {
 	return "", errors.New("not implemented")
+}
+
+func (s *staticRelevantCardStore) ResolveProposal(context.Context, string, cards.GradeOutcome) error {
+	return errors.New("not implemented")
 }
 
 func (s *staticRelevantCardStore) RejectLearning(context.Context, int64, string) error {
