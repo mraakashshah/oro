@@ -2,10 +2,11 @@
 
 ## Purpose
 
-Preserve janitor and audit cadence progress when an Oro dispatcher is stopped
-and started again with the same cleanliness settings. A completion is counted
-only after gated integration has completed and the bead is safely closed. This
-includes both normal integrated branches and proven no-op merges.
+Preserve the project-wide janitor and audit cadence when an Oro dispatcher is
+stopped and started again. A completion is one bead whose gated integration has
+completed and whose closure succeeded; it is not one branch. This includes a
+normal integrated bead and a proven no-op integration. Janitor and audit always
+inspect `main`.
 
 ## Evidence and constraints
 
@@ -28,17 +29,20 @@ includes both normal integrated branches and proven no-op merges.
 
 ## Success criteria
 
-1. A dispatcher restarted against the same state database and target branch
-   resumes both counters exactly.
-2. The 50th completion schedules a cycle when the queue is empty; a busy queue
-   defers it, but the 150th completion schedules one regardless of queue depth.
-3. Every fifth eligible cycle schedules an audit in place of the janitor,
-   including when the first four cycles occurred before a restart.
-4. Normal integrations and proven no-op merges each advance the same durable
-   counter once, and no unsuccessful merge path advances it.
-5. If scheduling or the selected cleanliness cycle fails, the persisted state
-   retains the current retry behavior; persistence failure itself must not
-   silently advance, reset, or schedule a cycle.
+1. A dispatcher restarted against the same state database resumes the
+   project-wide counters and any pending role exactly.
+2. The 40th safely integrated bead schedules a cycle when the queue is empty;
+   a busy queue defers it, but the 120th safely integrated bead schedules one
+   regardless of queue depth.
+3. Every fourth eligible cycle schedules an audit in place of the janitor,
+   including when the first three cycles occurred before a restart.
+4. Normal integrations and proven no-op integrations each advance the same
+   durable counter once. Any path where `CloseBead` fails does not advance it.
+5. A scheduled role is durably pending before launch, is cleared only after a
+   successful complete cycle, and is reconciled against `main` before a
+   restarted dispatcher can count further beads.
+6. A persistence failure does not silently advance, reset, launch, or clear a
+   role.
 
 ## Options considered
 
@@ -57,42 +61,49 @@ also require changing the current `uint64` saturation behavior.
 
 ### C. Store a versioned JSON record in `kv_store` (chosen)
 
-Use one key per target branch, with counters encoded as decimal strings. This
-is migration-free, preserves `uint64`, isolates independent `main` and epic
-branch runs, and uses the existing state-DB durability boundary.
+Use one project-wide key with counters encoded as decimal strings and a pending
+role marker. This is migration-free, preserves `uint64`, and uses the existing
+state-DB durability boundary.
 
 ## Chosen design
 
 ### Durable record
 
 Create a dispatcher-local `janitorCadenceStore` backed by `*sql.DB` with a
-single key namespace:
+single key:
 
 ```
-janitor_cadence/v1/<target-branch>
+janitor_cadence/v1
 ```
 
 The value is canonical JSON:
 
 ```json
-{"merges_since_janitor":"49","janitor_runs_since_audit":"4"}
+{"merges_since_janitor":"39","janitor_runs_since_audit":"3","pending_role":""}
 ```
 
-The target branch is `Config.DefaultBranch` after defaults are applied. Branch
-scoping prevents merges to an epic branch from changing the cleanup cadence of
-`main`. The store validates both decimal fields as unsigned 64-bit integers and
-rejects missing/unknown schema versions or malformed values with a contextual
-startup/read error. An absent key means `{0,0}` and is initialized atomically
-with `INSERT ... ON CONFLICT DO UPDATE` only when the first successful mutation
-is committed.
+The record applies to the project, not a target branch. Every role receives the
+literal target branch `main`, independent of the base branch used for ordinary
+bead integration. The store validates both decimal fields as unsigned 64-bit
+integers and `pending_role` as empty, `janitor`, or `audit`; it rejects malformed
+values with a contextual startup/read error. An absent key means `{0,0,""}` and
+is initialized atomically with `INSERT ... ON CONFLICT DO UPDATE` only when the
+first successful mutation is committed.
 
 ### Dispatcher integration
 
 `New` constructs the cadence store only when janitor cadence is enabled. It
-loads the branch record before returning and hydrates the existing in-memory
+loads the project record before returning and hydrates the existing in-memory
 fields. A nil database or failed load is an explicit construction error for an
 enabled cadence; disabled janitor behavior remains a no-op and does not read or
-write cadence state.
+write cadence state. Production wiring through
+`buildDispatcherWithReviewTimeoutsAndCleanliness` must preserve this behavior.
+
+Before starting assignment/merge processing, `Run` checks `pending_role`. If
+non-empty, it runs that role synchronously against `main`. A fully successful
+cycle atomically clears `pending_role`; a failed or interrupted one leaves it
+unchanged and prevents the dispatcher from processing further beads. This makes
+restart recovery explicit rather than silently dropping a selected cycle.
 
 Replace direct counter mutation in `maybeTriggerJanitor`,
 `restoreJanitorCadenceAfterFailure`, and
@@ -100,33 +111,41 @@ Replace direct counter mutation in `maybeTriggerJanitor`,
 
 1. Copy the in-memory counters and apply the existing arithmetic and gate
    decision.
-2. Persist the resulting pair synchronously with an upsert.
-3. Only after persistence succeeds, publish the pair in memory, release
-   `d.mu`, and spawn the selected janitor or audit asynchronously.
+2. When a role is selected, persist the resulting pair plus its `pending_role`
+   synchronously with an upsert.
+3. Only after persistence succeeds, publish the state in memory, release
+   `d.mu`, and launch the selected role asynchronously.
 
-If the write fails, retain the prior pair, emit a `janitor_cadence_persist_failed`
-dispatcher event, and do not launch a cleanliness role. The next real
-completion retries the write from the unchanged state. Cycle failures use the
-same transition/persist/publish sequence for their restoration arithmetic.
+If the write fails, retain the prior state, emit a
+`janitor_cadence_persist_failed` dispatcher event, and do not launch or clear a
+cleanliness role. A successful role atomically clears its marker. A role failure
+leaves its marker present for startup recovery rather than restoring counters
+and allowing a later cycle to overtake it.
 
 The mutex already serializes counter changes inside one dispatcher. The
 synchronous SQLite write establishes the crash boundary: a restart observes
-either the prior state (no cycle was scheduled) or the selected/reset state (a
-cycle was scheduled), never an in-memory-only increment or reset.
+either the prior state (no cycle was scheduled), or an explicit pending role;
+it never observes an in-memory-only increment, reset, or completed role.
 
 ### Semantic boundaries
 
-- Keep cadence settings runtime-only. Changing `--janitor-interval` or
-  `--audit-every-n-janitors` does not reinterpret or reset saved progress; the
-  next completion evaluates the persisted counters under the newly supplied
-  settings.
+- Production defaults become `--janitor-interval=40` and
+  `--audit-every-n-janitors=4`; the forced-run multiplier remains three, so its
+  bound is 120 safely integrated beads. Explicit flag values continue to
+  override these defaults.
+- Keep cadence settings runtime-only. Changing explicit settings does not
+  reinterpret or reset saved progress; the next completion evaluates the
+  persisted counters under the newly supplied settings.
 - A janitor cycle is *eligible* when it passes the existing idle gate or forced
   three-interval gate. Only then does `janitorRunsSinceAudit` advance.
 - The audit replacement is counted as an eligible cycle, matching current
-  behavior. It resets both counters before its asynchronous execution begins;
-  audit failure restores one interval and leaves the audit counter at `N-1`.
-- No-op merges remain eligible because their existing path invokes the shared
-  trigger only after proof and safe bead closure.
+  behavior. It resets both counters and records `pending_role:"audit"` before
+  execution; success clears the marker and failure leaves it for retry.
+- No-op integrations remain eligible only after proof and safe bead closure.
+  Both merge completion paths must return before cadence mutation when
+  `CloseBead` fails.
+- Findings created by janitor/audit are ordinary beads. When one is safely
+  integrated, it counts as one of the 40 project-wide beads.
 
 ## Error handling and observability
 
@@ -134,9 +153,10 @@ cycle was scheduled), never an in-memory-only increment or reset.
   parsing cause so an operator can repair the state deliberately rather than
   silently losing cadence.
 - A transient write failure leaves both memory and disk unchanged. Log the
-  persistence failure with target branch and operation (`advance`,
-  `restore_janitor`, or `restore_audit`) but never counter values that could be
-  stale after a failed write.
+  persistence failure with operation (`advance`, `reserve`, or `clear`) but
+  never counter values that could be stale after a failed write.
+- Restart recovery failure is surfaced before the dispatcher accepts work, with
+  the pending role preserved for a safe retry.
 - Existing janitor/audit failure events remain intact. This change does not add
   a public CLI flag or alter their worktree, triage, or filing behavior.
 
@@ -146,7 +166,7 @@ Primary epic acceptance:
 
 ```
 Cmd: go test ./pkg/dispatcher/... -run '^TestJanitorCadencePersistsAcrossDispatcherRestart$' -count=1
-Assert: a fresh dispatcher reusing the same SQLite state database retains the pre-restart merge and eligible-cycle counters, schedules the expected janitor/audit at the configured threshold, and writes the resulting counters back to the same branch-scoped key.
+Assert: a fresh dispatcher reusing the same SQLite state database resumes a project-wide 39-bead counter, runs the pending janitor or audit against main before accepting further work, and clears the durable marker only after success.
 ```
 
 Add focused dispatcher/store tests for:
@@ -155,15 +175,17 @@ Add focused dispatcher/store tests for:
    `math.MaxUint64` values.
 2. Rejecting malformed JSON, unknown version, missing fields, and non-uint64
    strings without overwriting the record.
-3. Restart after 49 completions: completion 50 schedules a janitor only when
-   the queue is within the idle threshold; restart after 149 busy completions:
-   completion 150 force-schedules it.
-4. Restart after four eligible janitor cycles: the next eligible cycle schedules
+3. Restart after 39 safely integrated beads: bead 40 schedules a janitor only
+   when the queue is within the idle threshold; restart after 119 busy beads:
+   bead 120 force-schedules it.
+4. Restart after three eligible janitor cycles: the next eligible cycle schedules
    only the audit and resets the durable audit counter.
-5. Both `finalizeSuccessfulMerge` and `handleNoopMerge` advance once; merge
-   failure and cadence write failure do not.
-6. Janitor and audit failure restoration persists and is still present after a
-   new dispatcher is constructed.
+5. Reservation is durable before launch; a restarted dispatcher runs its pending
+   role against `main` before it accepts/merges another bead, then clears the
+   marker only after success.
+6. Both `finalizeSuccessfulMerge` and `handleNoopMerge` advance once after a
+   successful close; merge failure, close failure, and cadence write failure do
+   not.
 
 Run the focused package suite and the full dispatcher package after integration:
 
@@ -173,26 +195,24 @@ go test ./pkg/dispatcher/... -count=1 -timeout 180s
 
 ## Risks and mitigations
 
-- **Tiger — crash between persistence and role execution:** the counter is
-  already reset, so a crash can defer that selected scan until later progress.
-  This is no worse than the current asynchronous spawn boundary and avoids
-  duplicate roles. Future work can add an in-flight lease only if missed scans
-  become operationally unacceptable.
+- **Tiger — crash between reservation and role completion:** retain the pending
+  marker and reconcile it against `main` before processing new beads. A crash
+  after a role completes but before its marker clears can repeat a scan; that is
+  safe and preferable to silently skipping maintenance.
 - **Tiger — malformed operator-edited state:** fail closed at startup and name
   the exact key; never reset it automatically.
 - **Paper tiger — concurrent counter updates:** dispatcher `d.mu` serializes
   local mutations; SQLite serializes the durable upsert. Oro has one dispatcher
   per project/socket, so cross-process arbitration is out of scope.
-- **Elephant addressed — target-branch mixing:** state is branch-scoped rather
-  than global, because janitor and audit inspect the selected target branch.
+- **Elephant addressed — target-branch mixing:** cadence is deliberately
+  project-wide while cleanliness scans are deliberately pinned to `main`.
 
 ## Non-goals
 
 - Reconstructing cadence from historic beads or retroactively counting prior
   completions.
 - Persisting other in-memory dispatcher counters.
-- Changing cadence flags, defaults, queue-depth rules, forced-run multiplier,
-  or audit content.
+- Changing queue-depth rules, the forced-run multiplier, or audit content.
 - Introducing a user-facing cadence status command.
 
 ## Rollback
