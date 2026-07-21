@@ -376,6 +376,7 @@ func (w *Worker) SessionText() string {
 // Run is the main event loop. It reads messages from the UDS connection and
 // dispatches them. It returns nil on clean shutdown or context cancellation.
 func (w *Worker) Run(ctx context.Context) error {
+	defer w.removeAssignmentCapabilityFile()
 	msgCh, errCh := w.readMessages()
 
 	// Announce ourselves so the dispatcher can register this worker.
@@ -474,10 +475,15 @@ func (w *Worker) handleConnectionError(ctx context.Context, err error) error {
 		return nil //nolint:nilerr // context cancelled = clean shutdown, swallow connection error
 	}
 	if w.socketPath == "" {
+		w.removeAssignmentCapabilityFile()
 		// No socketPath means we can't reconnect (test with net.Pipe)
 		return fmt.Errorf("connection error (no reconnect possible): %w", err)
 	}
-	return w.reconnect(ctx)
+	if reconnectErr := w.reconnect(ctx); reconnectErr != nil {
+		w.removeAssignmentCapabilityFile()
+		return reconnectErr
+	}
+	return nil
 }
 
 // handleMessage processes a single incoming message. Returns (true, nil) on shutdown.
@@ -486,6 +492,7 @@ func (w *Worker) handleMessage(ctx context.Context, msg protocol.Message) (bool,
 	case protocol.MsgAssign:
 		return false, w.handleAssign(ctx, msg)
 	case protocol.MsgShutdown:
+		w.removeAssignmentCapabilityFile()
 		w.killProc()
 		return true, nil
 	case protocol.MsgPrepareShutdown:
@@ -504,6 +511,7 @@ func (w *Worker) handleMessage(ctx context.Context, msg protocol.Message) (bool,
 // subprocess, and exits so the dispatcher can reclaim this worker's slot.
 func (w *Worker) handlePreempt(ctx context.Context) (bool, error) {
 	_ = w.SendHandoff(ctx)
+	w.removeAssignmentCapabilityFile()
 	w.killProc()
 	return true, nil
 }
@@ -535,6 +543,7 @@ func (w *Worker) handleReviewResult(ctx context.Context, msg protocol.Message) e
 func (w *Worker) handlePrepareShutdown(ctx context.Context, msg protocol.Message) (bool, error) {
 	if msg.PrepareShutdown == nil {
 		// No payload — fall back to hard shutdown
+		w.removeAssignmentCapabilityFile()
 		w.killProc()
 		return true, nil
 	}
@@ -546,6 +555,7 @@ func (w *Worker) handlePrepareShutdown(ctx context.Context, msg protocol.Message
 	_ = w.SendShutdownApproved(ctx)
 
 	// Kill the subprocess
+	w.removeAssignmentCapabilityFile()
 	w.killProc()
 
 	return true, nil
@@ -576,10 +586,12 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 			},
 		})
 	}
+	if err := validateAssignedWorktree(msg.Assign.Worktree); err != nil {
+		return err
+	}
 
 	w.resetForNewAssignment(msg.Assign, execution)
-
-	if err := validateAssignedWorktree(msg.Assign.Worktree); err != nil {
+	if err := w.installAssignmentCredential(msg.Assign, execution); err != nil {
 		return err
 	}
 
@@ -690,6 +702,29 @@ func clearAssignmentLocalState(worktree string) {
 	oroDir := filepath.Join(worktree, protocol.OroDir)
 	_ = os.Remove(filepath.Join(oroDir, "handoff_done"))
 	_ = os.Remove(filepath.Join(oroDir, "context_pct"))
+}
+
+func (w *Worker) removeAssignmentCapabilityFile() {
+	w.mu.Lock()
+	path := w.execution.CapabilityFile
+	w.mu.Unlock()
+	_ = RemoveCapabilityFile(path)
+}
+
+func (w *Worker) installAssignmentCredential(a *protocol.AssignPayload, execution WorkerExecutionContext) error {
+	if execution.CapabilityFile == "" {
+		return nil
+	}
+	credential := AssignmentCredential{
+		AssignmentID: a.AssignmentID,
+		Generation:   a.Generation,
+		CapabilityID: a.Capability,
+		Token:        a.Capability,
+	}
+	if err := ReplaceCapabilityFile(execution.CapabilityFile, credential); err != nil {
+		return fmt.Errorf("install assignment capability: %w", err)
+	}
+	return nil
 }
 
 // recordSpawnedProc captures the freshly spawned subprocess + model and resets
