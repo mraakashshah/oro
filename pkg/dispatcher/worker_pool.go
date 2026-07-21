@@ -167,6 +167,7 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 	// Phase 1: Reserve the worker — heartbeat checker skips reserved workers.
 	w.state = protocol.WorkerReserved
 	w.assignmentID = h.assignmentID
+	w.execution = h.execution
 	w.beadID = h.beadID
 	w.worktree = h.worktree
 	w.runtime = h.runtime
@@ -195,6 +196,11 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 		Assign: &protocol.AssignPayload{
 			BeadID:       h.beadID,
 			Worktree:     h.worktree,
+			AssignmentID: h.execution.AssignmentID,
+			Generation:   h.execution.Generation,
+			ActorRole:    h.execution.ActorRole,
+			Project:      h.execution.Project,
+			Capability:   h.execution.Capability,
 			Runtime:      h.runtime,
 			Model:        h.model,
 			Reasoning:    h.reasoning,
@@ -356,14 +362,20 @@ func (d *Dispatcher) escalateTimedOutWorkers(ctx context.Context, dead, stuck []
 }
 
 func (d *Dispatcher) handleStuckTimedOutWorker(ctx context.Context, sw workerExitInfo) {
+	escalation := protocol.FormatEscalation(protocol.EscStuckWorker, sw.beadID,
+		"worker stalled with no progress", "progress timeout for worker "+sw.workerID)
 	if sw.reviewing && d.ops != nil {
-		if _, err := d.ops.CancelForBead(sw.beadID); err != nil {
+		if _, err := d.ops.CancelReviewsForBead(sw.beadID); err != nil {
 			_ = d.logEvent(ctx, "review_timeout_cancel_failed", "dispatcher", sw.beadID, sw.workerID,
 				fmt.Sprintf(`{"error":%q}`, err.Error()))
 		}
+		// A review timeout owns the existing ops process. Do not immediately
+		// replace it with a same-bead escalation process: callers need the
+		// cancellation boundary to leave no active review for this bead.
+		d.escalateWithoutOneShot(ctx, escalation, sw.beadID, sw.workerID)
+	} else {
+		d.escalate(ctx, escalation, sw.beadID, sw.workerID)
 	}
-	d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuckWorker, sw.beadID,
-		"worker stalled with no progress", "progress timeout for worker "+sw.workerID), sw.beadID, sw.workerID)
 	if sw.beadID == "" {
 		return
 	}

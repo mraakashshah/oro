@@ -1258,6 +1258,64 @@ func TestCancelForBeadNonExistentBead(t *testing.T) {
 	}
 }
 
+func TestCancelReviewsForBeadPreservesOtherOps(t *testing.T) {
+	procs := []*mockProcess{
+		newMockProcess("", nil), // target review
+		newMockProcess("", nil), // target diagnosis
+		newMockProcess("", nil), // other review
+	}
+	s := NewSpawner(&multiProcessSpawner{processes: procs})
+
+	_ = s.Review(context.Background(), ReviewOpts{BeadID: "oro-target", Worktree: "/tmp/wt1"})
+	_ = s.Diagnose(context.Background(), DiagOpts{BeadID: "oro-target", Worktree: "/tmp/wt2", Symptom: "stuck"})
+	_ = s.Review(context.Background(), ReviewOpts{BeadID: "oro-other", Worktree: "/tmp/wt3"})
+	waitActive(t, s, 3)
+
+	var targetReview, targetDiagnosis, otherReview *mockProcess
+	s.mu.Lock()
+	for _, agent := range s.active {
+		proc, ok := agent.proc.(*mockProcess)
+		if !ok {
+			s.mu.Unlock()
+			t.Fatalf("agent process = %T, want *mockProcess", agent.proc)
+		}
+		switch {
+		case agent.BeadID == "oro-target" && agent.Type == OpsReview:
+			targetReview = proc
+		case agent.BeadID == "oro-target" && agent.Type == OpsDiagnosis:
+			targetDiagnosis = proc
+		case agent.BeadID == "oro-other" && agent.Type == OpsReview:
+			otherReview = proc
+		}
+	}
+	s.mu.Unlock()
+	if targetReview == nil || targetDiagnosis == nil || otherReview == nil {
+		t.Fatalf("missing expected agents: targetReview=%v targetDiagnosis=%v otherReview=%v", targetReview != nil, targetDiagnosis != nil, otherReview != nil)
+	}
+
+	count, err := s.CancelReviewsForBead("oro-target")
+	if err != nil {
+		t.Fatalf("CancelReviewsForBead returned error: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("review cancellation count = %d, want 1", count)
+	}
+
+	if !targetReview.wasKilled() {
+		t.Fatal("target review process was not killed")
+	}
+	if targetDiagnosis.wasKilled() {
+		t.Fatal("target diagnosis process was killed")
+	}
+	if otherReview.wasKilled() {
+		t.Fatal("other bead review process was killed")
+	}
+
+	waitActive(t, s, 2)
+	_, _ = s.CancelForBead("oro-target")
+	_, _ = s.CancelForBead("oro-other")
+}
+
 func TestParseReviewOutputRequiresVerdictPrefix(t *testing.T) {
 	tests := []struct {
 		name        string

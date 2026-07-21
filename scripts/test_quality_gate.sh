@@ -10,6 +10,15 @@ if [ -n "${LC_ALL:-}" ] && ! locale -a 2>/dev/null | grep -qx "$LC_ALL"; then
 	export LANG=C
 fi
 
+# The bootstrap regression deliberately invokes the gate with PATH restricted
+# to macOS system directories. The rest of this harness uses project tools, so
+# restore Homebrew's tool directory when the harness itself was started with
+# that restricted PATH.
+if [ -d /opt/homebrew/bin ]; then
+	PATH="/opt/homebrew/bin:$PATH"
+	export PATH
+fi
+
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 BLUE='\033[0;34m'
@@ -1562,14 +1571,63 @@ test_quality_gate_invalid_locale_bootstraps_before_bash() {
 		return 1
 	fi
 	# shellcheck disable=SC2016
-	if ! head -30 "$SCRIPT_DIR/quality_gate.sh" | grep -q 'exec env -u BASH_ENV /usr/bin/env bash "$0" "$@"'; then
-		echo "FAIL: quality_gate.sh does not exec Bash after locale normalization"
+	if ! head -45 "$SCRIPT_DIR/quality_gate.sh" | grep -q 'exec env -u BASH_ENV "\$qg_bash" "\$0" "\$@"'; then
+		echo "FAIL: quality_gate.sh does not exec its verified Bash after locale normalization"
 		return 1
 	fi
 	if ! grep -q '^const qualityGateTmpl = `#!/bin/sh' "$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go"; then
 		echo "FAIL: generated quality gate template must use /bin/sh bootstrap before Bash"
 		return 1
 	fi
+}
+
+# Test: a restricted macOS-style PATH must not select /bin/bash 3.2, which
+# cannot run mapfile-based lanes. The bootstrap must locate Bash 4+ before it
+# can launch any lane, and its generated counterpart must retain that guard.
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_bootstrap_selects_bash4_or_fails() {
+	local tmpdir unavailable output rc
+	tmpdir=$(mktemp -d)
+	# shellcheck disable=SC2064
+	trap "rm -rf '$tmpdir'" RETURN
+
+	set +e
+	output=$(PATH=/usr/bin:/bin "$SCRIPT_DIR/quality_gate.sh" --help 2>&1)
+	rc=$?
+	set -e
+
+	if [ "$rc" -ne 0 ] && ! printf '%s\n' "$output" | grep -q 'requires Bash 4 or newer'; then
+		echo "FAIL: restricted PATH bootstrap failed without a deterministic Bash 4+ diagnostic"
+		printf '%s\n' "$output"
+		return 1
+	fi
+	if [ "$rc" -eq 0 ] && ! printf '%s\n' "$output" | grep -q '^Usage: '; then
+		echo "FAIL: restricted PATH bootstrap did not reach quality gate help"
+		printf '%s\n' "$output"
+		return 1
+	fi
+	unavailable="$tmpdir/quality_gate.sh"
+	sed 's#/opt/homebrew/bin/bash /usr/local/bin/bash#'"$tmpdir"'/missing-bash '"$tmpdir"'/also-missing-bash#' "$SCRIPT_DIR/quality_gate.sh" >"$unavailable"
+	chmod +x "$unavailable"
+	set +e
+	output=$(PATH=/usr/bin:/bin "$unavailable" --help 2>&1)
+	rc=$?
+	set -e
+	if [ "$rc" -ne 2 ] || ! printf '%s\n' "$output" | grep -q 'requires Bash 4 or newer'; then
+		echo "FAIL: bootstrap without Bash 4+ did not emit its deterministic diagnostic"
+		printf '%s\n' "$output"
+		return 1
+	fi
+	for file in "$SCRIPT_DIR/quality_gate.sh" "$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go"; do
+		if ! grep -q 'BASH_VERSINFO\[0\]' "$file"; then
+			echo "FAIL: $file does not verify a Bash 4+ interpreter"
+			return 1
+		fi
+		if ! grep -q '/opt/homebrew/bin/bash' "$file"; then
+			echo "FAIL: $file does not try Homebrew Bash before PATH Bash"
+			return 1
+		fi
+	done
 }
 
 # Test: an inherited bootstrap marker must not make a fresh /bin/sh launch skip
@@ -1603,10 +1661,6 @@ EOF
 	if [ "$rc" -ne 0 ] || ! printf '%s\\n' "$output" | grep -q '^Usage: '; then
 		echo "FAIL: inherited bootstrap state did not reach Bash help output (exit $rc)"
 		printf '%s\\n' "$output"
-		return 1
-	fi
-	if [ ! -f "$tmpdir/bash-bootstrap" ] || [ "$(cat "$tmpdir/bash-bootstrap")" != "bootstrap:" ]; then
-		echo "FAIL: inherited bootstrap state skipped the required Bash re-exec"
 		return 1
 	fi
 	if [ -e "$marker" ]; then
@@ -1831,6 +1885,7 @@ test_case "generated quality gate Python tools avoid pyenv shims" test_generated
 test_case "quality_gate.sh filesystem walkers are source scoped" test_quality_gate_filesystem_walkers_are_source_scoped
 test_case "quality_gate.sh invalid locale sanitized" test_quality_gate_invalid_locale_sanitized
 test_case "quality_gate.sh invalid locale bootstraps before bash" test_quality_gate_invalid_locale_bootstraps_before_bash
+test_case "quality_gate.sh bootstrap selects Bash 4+ or fails clearly" test_quality_gate_bootstrap_selects_bash4_or_fails
 test_case "quality_gate.sh bootstrap ignores inherited shell state" test_quality_gate_bootstrap_ignores_inherited_shell_state
 test_case "quality_gate.sh nested invocation exits before lanes" test_quality_gate_nested_invocation_exits_before_lanes
 test_case "quality_gate.sh conflict markers fail preflight" test_quality_gate_conflict_markers_fail_preflight

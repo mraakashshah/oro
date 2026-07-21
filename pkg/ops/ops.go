@@ -544,10 +544,20 @@ func (s *Spawner) Cancel(taskID string) error {
 // CancelForBead kills all running ops agents for the given bead ID.
 // Returns the number of agents cancelled and any error from the first kill failure.
 func (s *Spawner) CancelForBead(beadID string) (int, error) {
+	return s.cancelForBead(beadID, func(*Agent) bool { return true })
+}
+
+// CancelReviewsForBead kills running review agents for the given bead ID.
+// Other operations for the bead remain active.
+func (s *Spawner) CancelReviewsForBead(beadID string) (int, error) {
+	return s.cancelForBead(beadID, func(agent *Agent) bool { return agent.Type == OpsReview })
+}
+
+func (s *Spawner) cancelForBead(beadID string, matches func(*Agent) bool) (int, error) {
 	s.mu.Lock()
 	var toCancel []*Agent
 	for _, agent := range s.active {
-		if agent.BeadID == beadID {
+		if agent.BeadID == beadID && matches(agent) {
 			toCancel = append(toCancel, agent)
 		}
 	}

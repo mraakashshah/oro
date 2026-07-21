@@ -328,6 +328,30 @@ func TestReadProcessEnvironmentSnapshotsSkipsDarwinVanishedPID(t *testing.T) {
 	}
 }
 
+func TestReadProcessEnvironmentSnapshotsSkipsDarwinEIO(t *testing.T) {
+	markers := []string{
+		"ORO_SOCKET_PATH=/tmp/owned-process.sock",
+		"ORO_WORKER_ID=owned-worker",
+	}
+	racy := OwnedProcess{PID: os.Getpid(), PGID: os.Getpid()}
+	owned := OwnedProcess{PID: 60_005, PGID: 60_005}
+	processes := []OwnedProcess{racy, owned}
+
+	snapshots, err := readProcessEnvironmentSnapshotsWithReader(context.Background(), processes, func(pid int) ([]string, error) {
+		if pid == racy.PID {
+			return nil, fmt.Errorf("kern.procargs2: %w", syscall.EIO)
+		}
+		return append([]string{"PATH=/usr/bin"}, markers...), nil
+	})
+	if err != nil {
+		t.Fatalf("readProcessEnvironmentSnapshots error = %v, want Darwin EIO process skipped", err)
+	}
+	got := ownedProcessesFromEnvironmentSnapshot(processes, snapshots.environments, markers)
+	if len(got) != 1 || got[0] != owned {
+		t.Fatalf("owned processes = %#v, want only %#v", got, []OwnedProcess{owned})
+	}
+}
+
 func TestOwnedProcessExitedAfterPSRace(t *testing.T) {
 	probes := 0
 	exited := ownedProcessExitedWithProbe(context.Background(), 1234,

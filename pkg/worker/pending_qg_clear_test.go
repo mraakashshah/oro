@@ -48,8 +48,11 @@ func TestHandleAssignClearsPendingQGOutput(t *testing.T) {
 	msg := protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
-			BeadID:   "bead-qg-clear",
-			Worktree: t.TempDir(),
+			BeadID:       "bead-qg-clear",
+			Worktree:     t.TempDir(),
+			AssignmentID: 1,
+			Generation:   1,
+			ActorRole:    "execution_worker",
 		},
 	}
 	data, err := json.Marshal(msg)

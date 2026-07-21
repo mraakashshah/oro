@@ -11,6 +11,7 @@ import (
 
 func TestAssignBeadDoesNotSendWhenCreateAssignmentFails(t *testing.T) {
 	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	wtMgr.branchExistsFn = func(context.Context, string) (bool, error) { return false, nil }
 
 	server, client := net.Pipe()
 	defer server.Close()

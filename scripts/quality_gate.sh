@@ -25,7 +25,19 @@ if [ "${ORO_QG_BASH_BOOTSTRAPPED_PID:-}" != "${BASHPID:-$$}" ]; then
 	# shell hook can recursively launch this gate.
 	unset ORO_QG_BASH_BOOTSTRAPPED
 	export ORO_QG_BASH_BOOTSTRAPPED_PID=${BASHPID:-$$}
-	exec env -u BASH_ENV /usr/bin/env bash "$0" "$@"
+	qg_bash=""
+	for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash "$(command -v bash 2>/dev/null || true)"; do
+		# shellcheck disable=SC2016 # The candidate Bash, not this sh bootstrap, expands BASH_VERSINFO.
+		if [ -x "$candidate" ] && env -u BASH_ENV "$candidate" -c '[ "${BASH_VERSINFO[0]:-0}" -ge 4 ]' >/dev/null 2>&1; then
+			qg_bash="$candidate"
+			break
+		fi
+	done
+	if [ -z "$qg_bash" ]; then
+		echo "FAIL: quality_gate.sh requires Bash 4 or newer; install it (for example, Homebrew bash) or add it to PATH." >&2
+		exit 2
+	fi
+	exec env -u BASH_ENV "$qg_bash" "$0" "$@"
 fi
 unset ORO_QG_BASH_BOOTSTRAPPED
 unset ORO_QG_BASH_BOOTSTRAPPED_PID

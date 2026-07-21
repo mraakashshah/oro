@@ -557,6 +557,7 @@ type trackedWorker struct {
 	conn             net.Conn
 	state            protocol.WorkerState
 	assignmentID     int64
+	execution        WorkerExecutionContext
 	beadID           string
 	epicID           string // parent epic ID if the assigned bead is a child of an epic
 	isEpicDecomp     bool   // true when worker is assigned an epic for decomposition (no merge on done)
@@ -631,6 +632,7 @@ const shutdownReasonScaleDown = "scale_down"
 // bead+worktree instead of going through normal assignment.
 type pendingHandoff struct {
 	assignmentID   int64
+	execution      WorkerExecutionContext
 	beadID         string
 	epicID         string // parent epic ID if the bead is a child of an epic
 	worktree       string
@@ -646,6 +648,7 @@ type pendingHandoff struct {
 }
 
 type workerAssignmentSnapshot struct {
+	execution    WorkerExecutionContext
 	worktree     string
 	runtime      string
 	model        string
@@ -2272,7 +2275,7 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 						fmt.Sprintf(`{"error":%q,"attempt":%d}`, err.Error(), attempt))
 				}
 			}
-			payload = d.buildAssignPayload(ctx, &snap, attempt, qgOutput, "")
+			payload = d.buildAssignPayload(ctx, &snap, attempt, qgOutput, "", snap.execution)
 			return ""
 		},
 		// Assign function: update state and send message under lock.
@@ -3990,6 +3993,7 @@ func (d *Dispatcher) shutdownWorkerForHandoff(workerID string) workerAssignmentS
 		return workerAssignmentSnapshot{}
 	}
 	snap := workerAssignmentSnapshot{
+		execution:    w.execution,
 		worktree:     w.worktree,
 		runtime:      w.runtime,
 		model:        w.model,
@@ -4065,7 +4069,11 @@ func (d *Dispatcher) handleHandoffExhaustion(ctx context.Context, beadID, worker
 
 // respawnWorker stores a pending handoff and spawns a fresh worker process.
 func (d *Dispatcher) respawnWorker(ctx context.Context, beadID string, snap workerAssignmentSnapshot, title string, labels []string) {
-	assignmentID := d.activeAssignmentIDForBead(ctx, beadID)
+	assignmentID := snap.execution.AssignmentID
+	if assignmentID <= 0 {
+		assignmentID = d.activeAssignmentIDForBead(ctx, beadID)
+		snap.execution = workerExecutionContext(assignmentID, false, filepath.Base(d.cfg.RepoRoot))
+	}
 	newID := ""
 	if d.procMgr != nil {
 		newID = fmt.Sprintf("worker-handoff-%d", d.nowFunc().UnixNano())
@@ -4073,6 +4081,7 @@ func (d *Dispatcher) respawnWorker(ctx context.Context, beadID string, snap work
 	d.mu.Lock()
 	d.pendingHandoffs[beadID] = &pendingHandoff{
 		assignmentID: assignmentID,
+		execution:    snap.execution,
 		beadID:       beadID,
 		epicID:       snap.epicID,
 		worktree:     snap.worktree,
@@ -4420,7 +4429,7 @@ func (d *Dispatcher) sendPreReviewGitDirtyFeedback(ctx context.Context, workerID
 	snap := d.opusEscalationSnapshotLocked(workerID)
 	d.mu.Unlock()
 
-	payload := d.buildAssignPayload(ctx, &snap, 0, feedback, "")
+	payload := d.buildAssignPayload(ctx, &snap, 0, feedback, "", snap.execution)
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -4840,7 +4849,7 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 		// without consulting general memory context.
 		func() string {
 			memCtx := d.buildRejectionMemoryContext(ctx, beadID, feedback)
-			payload = d.buildAssignPayload(ctx, &snap, count, feedback, memCtx)
+			payload = d.buildAssignPayload(ctx, &snap, count, feedback, memCtx, snap.execution)
 			return memCtx
 		},
 		// Assign function: update state and send message under lock.
@@ -6204,7 +6213,7 @@ SELECT DISTINCT q.bead_id
 FROM recovery_quarantines q
 LEFT JOIN assignments a ON a.id=q.assignment_id
 WHERE q.status IN ('open', 'human_owned')
-   OR (q.status='resolved' AND a.status='requeued')`)
+   OR (q.status='resolved' AND a.status='requeued' AND q.reason != 'branch_worktree_mismatch')`)
 	if err != nil {
 		if strings.Contains(err.Error(), "no such table") {
 			return nil, nil
@@ -6864,6 +6873,32 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	if isEpicDecomp {
 		resolvedRuntime, resolvedModel, resolvedReasoning = agentmodel.ResolveForRole("ops_decompose")
 	}
+	execution := workerExecutionContext(assignmentID, isEpicDecomp, filepath.Base(d.cfg.RepoRoot))
+	capability, capabilityErr := d.issueAssignmentCapability(
+		ctx,
+		execution.AssignmentID,
+		execution.Generation,
+		ActorRole(execution.ActorRole),
+	)
+	if capabilityErr != nil {
+		_ = d.logEvent(ctx, "assignment_capability_issue_failed", "dispatcher", bead.ID, w.id, capabilityErr.Error())
+		if completeErr := d.completeAssignment(ctx, assignmentID, bead.ID); completeErr != nil {
+			_ = d.logEvent(ctx, "assignment_cleanup_failed", "dispatcher", bead.ID, w.id, completeErr.Error())
+		}
+		_ = d.updateBeadStatus(ctx, bead.ID, "open")
+		if createdWorktree {
+			_ = d.worktrees.Remove(ctx, worktree)
+			d.mu.Lock()
+			delete(d.worktreeByBead, bead.ID)
+			d.mu.Unlock()
+		}
+		d.mu.Lock()
+		delete(d.assigningBeads, bead.ID)
+		d.mu.Unlock()
+		d.releaseAssignmentReservation(w.id, bead.ID)
+		return nil
+	}
+	execution.Capability = capability.Token
 	payload := d.buildAssignPayload(ctx, &trackedWorker{
 		id:           w.id,
 		beadID:       bead.ID,
@@ -6873,7 +6908,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		reasoning:    resolvedReasoning,
 		isEpicDecomp: isEpicDecomp,
 		targetBranch: targetBranch,
-	}, 0, "", "")
+	}, 0, "", "", execution)
 	if payload.Title == "" {
 		payload.Title = title
 	}
@@ -6898,6 +6933,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	}
 	w.state = protocol.WorkerBusy
 	w.assignmentID = assignmentID
+	w.execution = execution
 	w.beadID = bead.ID
 	w.epicID = resolvedEpicID // actual epic ancestor ID for auto-close on merge
 	w.isEpicDecomp = isEpicDecomp
@@ -6967,14 +7003,18 @@ func (d *Dispatcher) prepareAssignmentWorktree(
 
 func (d *Dispatcher) createFreshAssignmentWorktreeAllowed(ctx context.Context, beadID, workerID, targetBranch string) bool {
 	if cleanErr := d.deleteStaleAgentBranch(ctx, beadID, workerID, targetBranch); cleanErr != nil {
-		d.recordAssignmentFailure(beadID)
-		_ = d.updateBeadStatus(ctx, beadID, "open")
-		d.mu.Lock()
-		delete(d.assigningBeads, beadID)
-		d.mu.Unlock()
-		return false
+		return d.rejectFreshAssignmentWorktree(ctx, beadID)
 	}
 	return true
+}
+
+func (d *Dispatcher) rejectFreshAssignmentWorktree(ctx context.Context, beadID string) bool {
+	d.recordAssignmentFailure(beadID)
+	_ = d.updateBeadStatus(ctx, beadID, "open")
+	d.mu.Lock()
+	delete(d.assigningBeads, beadID)
+	d.mu.Unlock()
+	return false
 }
 
 func (d *Dispatcher) validateExistingWorktreeForReuse(ctx context.Context, beadID, workerID, worktree, expectedBranch, baseBranch string) bool {
@@ -8773,11 +8813,22 @@ func (d *Dispatcher) broadcastEvent(evType, beadID, workerID string) {
 // MISSING_AC), it also spawns a one-shot claude -p agent to take corrective
 // action autonomously.
 func (d *Dispatcher) escalate(ctx context.Context, msg, beadID, workerID string) {
+	d.escalateWithOneShot(ctx, msg, beadID, workerID, true)
+}
+
+// escalateWithoutOneShot records and delivers an escalation without starting a
+// corrective ops process. It is used when a review timeout has just cancelled
+// the bead's active review, so cleanup has a stable no-active-ops boundary.
+func (d *Dispatcher) escalateWithoutOneShot(ctx context.Context, msg, beadID, workerID string) {
+	d.escalateWithOneShot(ctx, msg, beadID, workerID, false)
+}
+
+func (d *Dispatcher) escalateWithOneShot(ctx context.Context, msg, beadID, workerID string, allowOneShot bool) {
 	// Extract escalation type for database storage (separate from one-shot determination).
 	dbEscType := extractEscalationType(msg)
 
 	oneShot := ""
-	if d.ops != nil {
+	if allowOneShot && d.ops != nil {
 		oneShot = parseEscalationType(msg)
 	}
 	if protocol.EscalationType(oneShot) == protocol.EscOversizedBead {
@@ -9291,6 +9342,12 @@ func (d *Dispatcher) handleEscalationResult(ctx context.Context, escalationID in
 	_ = d.logEvent(ctx, "oneshot_escalation_complete", "ops", beadID, workerID,
 		fmt.Sprintf(`{"type":%q,"verdict":%q,"feedback":%q}`, escType, result.Verdict, result.Feedback))
 
+	if protocol.EscalationType(escType) == protocol.EscOversizedBead && result.Verdict == ops.VerdictFailed {
+		d.recordAssignmentFailure(beadID)
+		d.completeDecomposeOpsRunBestEffort(ctx, beadID, opsRunStatusFailed, string(result.Verdict), result.Feedback, result.Feedback)
+		d.ackEscalation(ctx, escalationID, beadID, workerID)
+		return
+	}
 	if protocol.EscalationType(escType) == protocol.EscOversizedBead {
 		if err := d.validateDecomposeResult(ctx, beadID); err != nil {
 			if errors.Is(err, errDecomposeValidationUnavailable) {
@@ -9615,6 +9672,8 @@ func (d *Dispatcher) pruneStaleAgentBranches(ctx context.Context) {
 // If git cannot safely delete the branch, the branch is recovery-quarantined
 // and assignment aborts. Startup/retry recovery must preserve ambiguous branch
 // state instead of force-deleting or removing the checked-out worktree.
+var errResolvedPreservedMismatch = errors.New("resolved preserved branch/worktree mismatch")
+
 func (d *Dispatcher) deleteStaleAgentBranch(ctx context.Context, beadID, workerID, targetBranch string) error {
 	branch := protocol.BranchPrefix + beadID
 	if targetBranch == "" {
@@ -9626,6 +9685,16 @@ func (d *Dispatcher) deleteStaleAgentBranch(ctx context.Context, beadID, workerI
 	}
 	if !exists {
 		return nil
+	}
+	preservedAssignmentID, preserved, err := d.resolvedPreservedMismatchForRequeuedBead(ctx, beadID)
+	if err != nil {
+		return fmt.Errorf("check stale branch %s preserved recovery state: %w", branch, err)
+	}
+	if preserved {
+		_ = d.logEvent(ctx, "stale_agent_branch_cleanup_suppressed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"branch":%q,"assignment_id":%d,"reason":"resolved_preserved_mismatch"}`,
+				branch, preservedAssignmentID))
+		return fmt.Errorf("%w: assignment %d", errResolvedPreservedMismatch, preservedAssignmentID)
 	}
 	err = d.worktrees.DeleteBranchMergedInto(ctx, branch, targetBranch)
 	if err == nil {
@@ -9757,6 +9826,9 @@ func (d *Dispatcher) loadActiveAssignments(ctx context.Context) ([]restoredAssig
 			continue
 		}
 		if reason := d.classifyAssignment(ctx, a); reason != "" {
+			if reason == "branch_worktree_mismatch" && d.resolvedPreservedMismatchAssignment(ctx, a.id) {
+				continue
+			}
 			quarantined = append(quarantined, quarantinedAssignment{
 				id:       a.id,
 				beadID:   a.beadID,

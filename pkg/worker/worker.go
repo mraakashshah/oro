@@ -220,28 +220,29 @@ type Worker struct {
 	memStore               LearningSink
 	extractSpawner         MemoryExtractSpawner
 	sessionText            strings.Builder
-	outputWg               sync.WaitGroup // tracks processOutput goroutine completion
-	reconnectDialHook      func(net.Conn) // test hook: called after dial, before sendMessage
-	reconnectTimerStopHook func()         // test hook: called when timer.Stop() fires on ctx cancel
-	pendingQGOutput        string         // QG output stored while awaiting review result
-	isEpicDecomposition    bool           // true when current assignment is an epic decomposition
-	subprocExitCh          chan struct{}  // closed when subprocess exits
-	subprocExitClosed      bool           // true if subprocExitCh has been closed
-	subprocExitErr         string         // Process.Wait error captured for diagnostics
-	subprocExitCode        int            // process exit code captured after Wait
-	subprocStderrTail      string         // final runtime stderr tail captured after Wait
-	handleExitClaimed      bool           // true if a handler claimed subprocess exit handling
-	subprocKilledByUs      bool           // true if we intentionally killed the subprocess
-	connWriteMu            sync.Mutex     // serializes conn writes so heartbeat deadlines don't leak
-	heartbeatInterval      time.Duration  // minimum time between periodic heartbeats
-	logFile                *os.File       // per-worker output log file at ~/.oro/workers/<ID>/output.log
-	logWriter              *bufio.Writer  // buffered writer for logFile to prevent blocking
-	streamContextPct       int32          // atomic: latest context_pct observed from stream output (0 = no signal yet)
-	assignmentGeneration   uint64         // guarded by mu: rejects stale stdout context from prior assignments
-	tier                   protocol.Tier  // routing tier from bead assignment; empty for legacy beads
-	targetBranch           string         // branch to rebase onto before QG; defaults to "main"
-	subprocStartedAt       time.Time      // subprocess start time for progress diagnostics
-	lastSubprocOutputAt    time.Time      // latest stdout activity for progress diagnostics
+	outputWg               sync.WaitGroup         // tracks processOutput goroutine completion
+	reconnectDialHook      func(net.Conn)         // test hook: called after dial, before sendMessage
+	reconnectTimerStopHook func()                 // test hook: called when timer.Stop() fires on ctx cancel
+	pendingQGOutput        string                 // QG output stored while awaiting review result
+	isEpicDecomposition    bool                   // true when current assignment is an epic decomposition
+	subprocExitCh          chan struct{}          // closed when subprocess exits
+	subprocExitClosed      bool                   // true if subprocExitCh has been closed
+	subprocExitErr         string                 // Process.Wait error captured for diagnostics
+	subprocExitCode        int                    // process exit code captured after Wait
+	subprocStderrTail      string                 // final runtime stderr tail captured after Wait
+	handleExitClaimed      bool                   // true if a handler claimed subprocess exit handling
+	subprocKilledByUs      bool                   // true if we intentionally killed the subprocess
+	connWriteMu            sync.Mutex             // serializes conn writes so heartbeat deadlines don't leak
+	heartbeatInterval      time.Duration          // minimum time between periodic heartbeats
+	logFile                *os.File               // per-worker output log file at ~/.oro/workers/<ID>/output.log
+	logWriter              *bufio.Writer          // buffered writer for logFile to prevent blocking
+	streamContextPct       int32                  // atomic: latest context_pct observed from stream output (0 = no signal yet)
+	assignmentGeneration   uint64                 // guarded by mu: rejects stale stdout context from prior assignments
+	execution              WorkerExecutionContext // guarded by mu: authority for the current assignment
+	tier                   protocol.Tier          // routing tier from bead assignment; empty for legacy beads
+	targetBranch           string                 // branch to rebase onto before QG; defaults to "main"
+	subprocStartedAt       time.Time              // subprocess start time for progress diagnostics
+	lastSubprocOutputAt    time.Time              // latest stdout activity for progress diagnostics
 }
 
 // New creates a Worker that connects to the Dispatcher at socketPath.
@@ -375,6 +376,7 @@ func (w *Worker) SessionText() string {
 // Run is the main event loop. It reads messages from the UDS connection and
 // dispatches them. It returns nil on clean shutdown or context cancellation.
 func (w *Worker) Run(ctx context.Context) error {
+	defer w.removeAssignmentCapabilityFile()
 	msgCh, errCh := w.readMessages()
 
 	// Announce ourselves so the dispatcher can register this worker.
@@ -473,10 +475,15 @@ func (w *Worker) handleConnectionError(ctx context.Context, err error) error {
 		return nil //nolint:nilerr // context cancelled = clean shutdown, swallow connection error
 	}
 	if w.socketPath == "" {
+		w.removeAssignmentCapabilityFile()
 		// No socketPath means we can't reconnect (test with net.Pipe)
 		return fmt.Errorf("connection error (no reconnect possible): %w", err)
 	}
-	return w.reconnect(ctx)
+	if reconnectErr := w.reconnect(ctx); reconnectErr != nil {
+		w.removeAssignmentCapabilityFile()
+		return reconnectErr
+	}
+	return nil
 }
 
 // handleMessage processes a single incoming message. Returns (true, nil) on shutdown.
@@ -485,6 +492,7 @@ func (w *Worker) handleMessage(ctx context.Context, msg protocol.Message) (bool,
 	case protocol.MsgAssign:
 		return false, w.handleAssign(ctx, msg)
 	case protocol.MsgShutdown:
+		w.removeAssignmentCapabilityFile()
 		w.killProc()
 		return true, nil
 	case protocol.MsgPrepareShutdown:
@@ -503,6 +511,7 @@ func (w *Worker) handleMessage(ctx context.Context, msg protocol.Message) (bool,
 // subprocess, and exits so the dispatcher can reclaim this worker's slot.
 func (w *Worker) handlePreempt(ctx context.Context) (bool, error) {
 	_ = w.SendHandoff(ctx)
+	w.removeAssignmentCapabilityFile()
 	w.killProc()
 	return true, nil
 }
@@ -534,6 +543,7 @@ func (w *Worker) handleReviewResult(ctx context.Context, msg protocol.Message) e
 func (w *Worker) handlePrepareShutdown(ctx context.Context, msg protocol.Message) (bool, error) {
 	if msg.PrepareShutdown == nil {
 		// No payload — fall back to hard shutdown
+		w.removeAssignmentCapabilityFile()
 		w.killProc()
 		return true, nil
 	}
@@ -545,6 +555,7 @@ func (w *Worker) handlePrepareShutdown(ctx context.Context, msg protocol.Message
 	_ = w.SendShutdownApproved(ctx)
 
 	// Kill the subprocess
+	w.removeAssignmentCapabilityFile()
 	w.killProc()
 
 	return true, nil
@@ -559,6 +570,10 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	if err := msg.Assign.Validate(); err != nil {
 		return fmt.Errorf("invalid assign payload: %w", err)
 	}
+	execution, err := executionContextForAssign(msg.Assign, w.socketPath)
+	if err != nil {
+		return fmt.Errorf("invalid assign execution context: %w", err)
+	}
 
 	if msg.Assign.Attempt > 0 {
 		_ = w.sendMessage(protocol.Message{
@@ -571,10 +586,12 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 			},
 		})
 	}
-
-	w.resetForNewAssignment(msg.Assign)
-
 	if err := validateAssignedWorktree(msg.Assign.Worktree); err != nil {
+		return err
+	}
+
+	w.resetForNewAssignment(msg.Assign, execution)
+	if err := w.installAssignmentCredential(msg.Assign, execution); err != nil {
 		return err
 	}
 
@@ -585,12 +602,8 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 		model = protocol.DefaultModel
 		fmt.Fprintf(os.Stderr, "oro worker: assign payload missing runtime; falling back to %s/%s\n", runtime, model)
 	}
-	// Export the assigned bead ID so the spawned claude subprocess (which
-	// inherits this process's env via buildClaudeEnv) can be identified by the
-	// `oro task close` self-close guard. See oro-t5ha.
-	_ = os.Setenv("ORO_WORKER_BEAD_ID", msg.Assign.BeadID)
 	stopSpawnHeartbeat := w.startSpawnHeartbeat(ctx)
-	proc, stdout, _, format, err := w.spawner.Spawn(ctx, runtime, model, msg.Assign.Reasoning, prompt, msg.Assign.Worktree)
+	proc, stdout, _, format, err := w.spawner.Spawn(withAssignmentContext(ctx, execution, msg.Assign.BeadID), runtime, model, msg.Assign.Reasoning, prompt, msg.Assign.Worktree)
 	stopSpawnHeartbeat()
 	if err != nil {
 		return fmt.Errorf("spawn %s: %w", runtime, err)
@@ -659,7 +672,7 @@ func validateAssignedWorktree(worktree string) error {
 // resetForNewAssignment kills any prior subprocess, clears worker state under
 // the lock, removes stale assignment-local sentinels from the new worktree, and
 // truncates the log file before the next subprocess spawns.
-func (w *Worker) resetForNewAssignment(a *protocol.AssignPayload) {
+func (w *Worker) resetForNewAssignment(a *protocol.AssignPayload, execution WorkerExecutionContext) {
 	w.killProc()
 	target := a.TargetBranch
 	if target == "" {
@@ -667,6 +680,7 @@ func (w *Worker) resetForNewAssignment(a *protocol.AssignPayload) {
 	}
 	w.mu.Lock()
 	w.assignmentGeneration++
+	w.execution = execution
 	atomic.StoreInt32(&w.streamContextPct, 0)
 	w.beadID = a.BeadID
 	w.worktree = a.Worktree
@@ -688,6 +702,29 @@ func clearAssignmentLocalState(worktree string) {
 	oroDir := filepath.Join(worktree, protocol.OroDir)
 	_ = os.Remove(filepath.Join(oroDir, "handoff_done"))
 	_ = os.Remove(filepath.Join(oroDir, "context_pct"))
+}
+
+func (w *Worker) removeAssignmentCapabilityFile() {
+	w.mu.Lock()
+	path := w.execution.CapabilityFile
+	w.mu.Unlock()
+	_ = RemoveCapabilityFile(path)
+}
+
+func (w *Worker) installAssignmentCredential(a *protocol.AssignPayload, execution WorkerExecutionContext) error {
+	if execution.CapabilityFile == "" {
+		return nil
+	}
+	credential := AssignmentCredential{
+		AssignmentID: a.AssignmentID,
+		Generation:   a.Generation,
+		CapabilityID: a.Capability,
+		Token:        a.Capability,
+	}
+	if err := ReplaceCapabilityFile(execution.CapabilityFile, credential); err != nil {
+		return fmt.Errorf("install assignment capability: %w", err)
+	}
+	return nil
 }
 
 // recordSpawnedProc captures the freshly spawned subprocess + model and resets
@@ -1921,6 +1958,10 @@ func buildClaudeArgsWithReasoning(model, reasoning, prompt string) []string {
 // When ORO_PROJECT is set, also appends CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1
 // so claude picks up CLAUDE.md from directories added via --add-dir.
 func buildClaudeEnv(workdir string) []string {
+	return buildClaudeEnvForExecution(workdir, WorkerExecutionContext{})
+}
+
+func buildClaudeEnvForExecution(workdir string, execution WorkerExecutionContext) []string {
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, e := range os.Environ() {
 		if strings.HasPrefix(e, "CLAUDECODE=") ||
@@ -1933,7 +1974,7 @@ func buildClaudeEnv(workdir string) []string {
 		env = append(env, "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1")
 	}
 	env = append(env, "ORO_WORKER=1")
-	return processenv.ForWorkdir(env, workdir)
+	return EnvironmentForExecution(processenv.ForWorkdir(env, workdir), execution)
 }
 
 // Spawn starts a `claude -p` subprocess with the given prompt and working directory.
@@ -1955,7 +1996,7 @@ func (s *ClaudeSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning
 	cmd.Dir = workdir
 	stderrTail := NewLineTailBuffer(100)
 	cmd.Stderr = io.MultiWriter(os.Stderr, stderrTail)
-	cmd.Env = buildClaudeEnv(workdir)
+	cmd.Env = EnvironmentForContext(ctx, buildClaudeEnvForExecution(workdir, WorkerExecutionContext{}))
 
 	// Open /dev/null for stdin to prevent the spawned process from inheriting parent stdin,
 	// which can cause claude -p to hang if the parent's stdin is a pipe.
