@@ -29,12 +29,42 @@ type EvidenceRun struct {
 
 // EvidenceRequest submits one durable evidence run before a proposal cites it.
 type EvidenceRequest struct {
-	Evidence EvidenceRun `json:"evidence"`
+	Evidence  EvidenceRun               `json:"evidence,omitempty"`
+	Execution *EvidenceExecutionRequest `json:"execution,omitempty"`
+}
+
+// WorkRequestCapability carries the live assignment credential on a
+// short-lived worker request. Dispatcher authorization validates it.
+type WorkRequestCapability struct {
+	CapabilityID string `json:"capability_id"`
+	Token        string `json:"token"`
+	Generation   int64  `json:"generation"`
+	Nonce        string `json:"nonce"`
+}
+
+// EvidenceExecutionRequest asks the dispatcher to execute argv in the
+// authoritative assignment worktree.
+type EvidenceExecutionRequest struct {
+	AssignmentID int64                 `json:"assignment_id"`
+	WorkerID     string                `json:"worker_id"`
+	BeadID       string                `json:"bead_id"`
+	Kind         string                `json:"kind"`
+	Argv         []string              `json:"argv"`
+	TimeoutMS    int64                 `json:"timeout_ms"`
+	Capability   WorkRequestCapability `json:"capability"`
+}
+
+// EvidenceRunResult is the bounded terminal result of dispatcher-owned evidence.
+type EvidenceRunResult struct {
+	ID       string `json:"id"`
+	Status   string `json:"status"`
+	ExitCode int    `json:"exit_code"`
 }
 
 // EvidenceResponse acknowledges an evidence request or reports its validation error.
 type EvidenceResponse struct {
-	Error string `json:"error,omitempty"`
+	Result EvidenceRunResult `json:"result"`
+	Error  string            `json:"error,omitempty"`
 }
 
 // WorkProposalResult is the durable response to a work-proposal submission.
@@ -45,7 +75,8 @@ type WorkProposalResult struct {
 
 // WorkProposalRequest submits one provisional work proposal.
 type WorkProposalRequest struct {
-	Proposal WorkProposalPayload `json:"proposal"`
+	Proposal   WorkProposalPayload   `json:"proposal"`
+	Capability WorkRequestCapability `json:"capability"`
 }
 
 // WorkProposalResponse returns the durable proposal result or a validation error.
