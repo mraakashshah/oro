@@ -52,6 +52,37 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_assignments_one_active_per_bead
 ON assignments(bead_id)
 WHERE status = 'active';
 
+-- Assignment-scoped bearer capability metadata. The raw bearer value is
+-- intentionally never persisted; token_hash is SHA-256 encoded as hex.
+CREATE TABLE IF NOT EXISTS assignment_capabilities (
+    capability_id TEXT PRIMARY KEY,
+    assignment_id INTEGER NOT NULL REFERENCES assignments(id),
+    generation INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('active', 'pending', 'superseded', 'revoked')),
+    pending_replacement_id TEXT REFERENCES assignment_capabilities(capability_id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    acknowledged_at TEXT,
+    superseded_at TEXT,
+    revoked_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_assignment_capabilities_assignment
+ON assignment_capabilities(assignment_id, generation, state);
+
+-- Request nonces make capability-authenticated requests durable and
+-- idempotent. response stores the prior serialized response, never a token.
+CREATE TABLE IF NOT EXISTS assignment_capability_nonces (
+    capability_id TEXT NOT NULL REFERENCES assignment_capabilities(capability_id),
+    nonce TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    response TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (capability_id, nonce)
+);
+
 -- Manager directives to the dispatcher (start, stop, pause, focus)
 CREATE TABLE IF NOT EXISTS commands (
     id INTEGER PRIMARY KEY,

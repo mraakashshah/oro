@@ -90,8 +90,11 @@ func TestProgressTickWriteDoesNotBlockContextWatcher(t *testing.T) {
 	workerConn.QueueReadMessage(t, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
-			BeadID:   "bead-progress-deadline",
-			Worktree: worktree,
+			BeadID:       "bead-progress-deadline",
+			Worktree:     worktree,
+			AssignmentID: 1,
+			Generation:   1,
+			ActorRole:    "execution_worker",
 		},
 	})
 
