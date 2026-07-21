@@ -14,8 +14,6 @@ import (
 	"oro/pkg/ops"
 )
 
-var gradeAutoApplyConfidence = []float64{0.80, 0.90, 0.95}
-
 // drainGradeProposals drives each outstanding proposal through its complete
 // escalation ladder. A failed card is logged by the caller while later cards
 // still receive a grading attempt during the same sweep.
@@ -94,10 +92,16 @@ func gradeOutcomeForRung(proposal cards.Card, result ops.Result, rung, rungCount
 }
 
 func gradeConfidenceAt(rung int) float64 {
-	if rung >= 0 && rung < len(gradeAutoApplyConfidence) {
-		return gradeAutoApplyConfidence[rung]
+	switch rung {
+	case 0:
+		return 0.80
+	case 1:
+		return 0.90
+	case 2:
+		return 0.95
+	default:
+		return 1
 	}
-	return 1
 }
 
 func isSubjectiveProposal(proposal cards.Card) bool {

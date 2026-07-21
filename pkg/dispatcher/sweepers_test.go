@@ -343,7 +343,7 @@ func TestSweepers(t *testing.T) {
 		ctx2, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
 
-		go RunSweepLoop(ctx2, spy, nil, SweepConfig{
+		go runSweepLoop(ctx2, spy, nil, SweepConfig{
 			Interval5m:  25 * time.Millisecond,
 			Interval60m: 1 * time.Hour,
 		})
@@ -362,7 +362,7 @@ func TestSweepers(t *testing.T) {
 		ctx2, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
 
-		go RunSweepLoop(ctx2, spy, db, SweepConfig{
+		go runSweepLoop(ctx2, spy, db, SweepConfig{
 			Interval5m:  1 * time.Hour,
 			Interval60m: 25 * time.Millisecond,
 		})
@@ -379,7 +379,7 @@ func TestSweepers(t *testing.T) {
 
 		done := make(chan struct{})
 		go func() {
-			RunSweepLoop(ctx2, spy, nil, SweepConfig{
+			runSweepLoop(ctx2, spy, nil, SweepConfig{
 				Interval5m:  10 * time.Millisecond,
 				Interval60m: 1 * time.Hour,
 			})
@@ -390,7 +390,7 @@ func TestSweepers(t *testing.T) {
 		select {
 		case <-done:
 		case <-time.After(500 * time.Millisecond):
-			t.Error("RunSweepLoop did not stop after context cancel")
+			t.Error("runSweepLoop did not stop after context cancel")
 		}
 	})
 }
