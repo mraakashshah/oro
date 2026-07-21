@@ -1568,6 +1568,7 @@ func TestCheckHeartbeats_ReviewTimeoutPreservesSameBeadEscalation(t *testing.T) 
 	}
 	d.mu.Unlock()
 	_ = d.ops.Review(context.Background(), ops.ReviewOpts{BeadID: beadID, Worktree: t.TempDir()})
+	waitFor(t, func() bool { return spawner.SpawnCount() == 1 }, time.Second)
 	_ = d.ops.Escalate(context.Background(), ops.EscalationOpts{BeadID: beadID, Workdir: t.TempDir()})
 	waitFor(t, func() bool { return spawner.SpawnCount() == 2 }, time.Second)
 
