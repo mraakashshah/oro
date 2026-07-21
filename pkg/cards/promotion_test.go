@@ -51,7 +51,7 @@ func TestPromotionDecision(t *testing.T) {
 			wantAction: cards.PromotionActionPromote,
 		},
 		{
-			name: "pattern near duplicate defers",
+			name: "pattern near duplicate rejects",
 			candidate: cards.CardCandidate{
 				Type:       string(cards.CardTypePattern),
 				Title:      "Separate stdout from stderr",
@@ -61,11 +61,11 @@ func TestPromotionDecision(t *testing.T) {
 			},
 			verdict:    "pass",
 			existing:   []cards.CardSummary{nearDuplicate},
-			wantAction: cards.PromotionActionDefer,
+			wantAction: cards.PromotionActionReject,
 			wantReason: "near_duplicate_card_dup",
 		},
 		{
-			name: "taste pass defers",
+			name: "taste pass promotes",
 			candidate: cards.CardCandidate{
 				Type:       string(cards.CardTypeTaste),
 				Title:      "Prefer terse prompts",
@@ -74,10 +74,10 @@ func TestPromotionDecision(t *testing.T) {
 				Evidence:   []string{"pkg/cards/promotion_test.go"},
 			},
 			verdict:    "pass",
-			wantAction: cards.PromotionActionDefer,
+			wantAction: cards.PromotionActionPromote,
 		},
 		{
-			name: "decision pass defers",
+			name: "decision pass promotes",
 			candidate: cards.CardCandidate{
 				Type:       string(cards.CardTypeDecision),
 				Title:      "Keep cards pure",
@@ -86,7 +86,7 @@ func TestPromotionDecision(t *testing.T) {
 				Evidence:   []string{"pkg/cards/promotion_test.go"},
 			},
 			verdict:    "pass",
-			wantAction: cards.PromotionActionDefer,
+			wantAction: cards.PromotionActionPromote,
 		},
 		{
 			name: "fail rejects ops review failed",
@@ -129,7 +129,7 @@ func TestPromotionDecision(t *testing.T) {
 			wantAction: cards.PromotionActionPromote,
 		},
 		{
-			name: "fact without confirmed flag defers",
+			name: "fact without confirmed flag rejects",
 			candidate: cards.CardCandidate{
 				Type:       string(cards.CardTypeFact),
 				Title:      "SQLite WAL enabled",
@@ -138,7 +138,7 @@ func TestPromotionDecision(t *testing.T) {
 				Evidence:   []string{"pkg/cards/promotion_test.go"},
 			},
 			verdict:    "pass",
-			wantAction: cards.PromotionActionDefer,
+			wantAction: cards.PromotionActionReject,
 		},
 		{
 			name: "fact with confirmed flag promotes",
@@ -166,7 +166,7 @@ func TestPromotionDecision(t *testing.T) {
 			wantAction: cards.PromotionActionPromote,
 		},
 		{
-			name: "unknown verdict defers",
+			name: "unknown verdict rejects",
 			candidate: cards.CardCandidate{
 				Type:       string(cards.CardTypePattern),
 				Title:      "Unknown verdict",
@@ -175,10 +175,10 @@ func TestPromotionDecision(t *testing.T) {
 				Evidence:   []string{"pkg/cards/promotion_test.go"},
 			},
 			verdict:    "needs_more",
-			wantAction: cards.PromotionActionDefer,
+			wantAction: cards.PromotionActionReject,
 		},
 		{
-			name: "below confidence threshold defers",
+			name: "below confidence threshold promotes",
 			candidate: cards.CardCandidate{
 				Type:       string(cards.CardTypePattern),
 				Title:      "Low confidence",
@@ -187,7 +187,7 @@ func TestPromotionDecision(t *testing.T) {
 				Evidence:   []string{"pkg/cards/promotion_test.go"},
 			},
 			verdict:    "pass",
-			wantAction: cards.PromotionActionDefer,
+			wantAction: cards.PromotionActionPromote,
 		},
 	}
 
@@ -200,11 +200,111 @@ func TestPromotionDecision(t *testing.T) {
 			if tt.wantReason != "" && got.Reason != tt.wantReason {
 				t.Fatalf("Reason = %q, want %q", got.Reason, tt.wantReason)
 			}
-			if got.Action == cards.PromotionActionPromote && got.Confidence < cards.PromotionConfidenceThreshold {
-				t.Fatalf("promoted with Confidence = %v, below threshold %v", got.Confidence, cards.PromotionConfidenceThreshold)
-			}
 			if strings.Contains(got.Reason, "near_duplicate") && got.Action == cards.PromotionActionPromote {
 				t.Fatalf("near duplicate promoted: %+v", got)
+			}
+		})
+	}
+}
+
+func TestDecidePromotionNoHumanQueue(t *testing.T) {
+	nearDuplicate := cards.CardSummary{
+		ID:          "duplicate",
+		Type:        cards.CardTypePattern,
+		Title:       "Capture output separately",
+		BodySummary: "Capture stdout separately from stderr when parsing command JSON output.",
+		BodyFull:    "Capture stdout separately from stderr when parsing command JSON output.",
+	}
+
+	tests := []struct {
+		name       string
+		candidate  cards.CardCandidate
+		verdict    string
+		existing   []cards.CardSummary
+		wantAction cards.PromotionAction
+	}{
+		{
+			name: "taste promotes as proposal",
+			candidate: cards.CardCandidate{
+				Type:       string(cards.CardTypeTaste),
+				Title:      "Prefer concise prompts",
+				Confidence: 0.9,
+			},
+			verdict:    "pass",
+			wantAction: cards.PromotionActionPromote,
+		},
+		{
+			name: "decision promotes as proposal",
+			candidate: cards.CardCandidate{
+				Type:       string(cards.CardTypeDecision),
+				Title:      "Keep promotion logic pure",
+				Confidence: 0.9,
+			},
+			verdict:    "pass",
+			wantAction: cards.PromotionActionPromote,
+		},
+		{
+			name: "below threshold pattern promotes as proposal",
+			candidate: cards.CardCandidate{
+				Type:       string(cards.CardTypePattern),
+				Title:      "Low confidence pattern",
+				Confidence: 0.2,
+			},
+			verdict:    "pass",
+			wantAction: cards.PromotionActionPromote,
+		},
+		{
+			name: "near duplicate rejects",
+			candidate: cards.CardCandidate{
+				Type:       string(cards.CardTypePattern),
+				Title:      "Capture output separately",
+				BodyFull:   "Capture stdout separately from stderr when parsing command JSON output.",
+				Confidence: 0.9,
+			},
+			verdict:    "pass",
+			existing:   []cards.CardSummary{nearDuplicate},
+			wantAction: cards.PromotionActionReject,
+		},
+		{
+			name: "unconfirmed fact rejects",
+			candidate: cards.CardCandidate{
+				Type:       string(cards.CardTypeFact),
+				Title:      "Unconfirmed fact",
+				Confidence: 0.9,
+			},
+			verdict:    "pass",
+			wantAction: cards.PromotionActionReject,
+		},
+		{
+			name: "unknown verdict rejects",
+			candidate: cards.CardCandidate{
+				Type:       string(cards.CardTypePattern),
+				Title:      "Unknown verdict",
+				Confidence: 0.9,
+			},
+			verdict:    "",
+			wantAction: cards.PromotionActionReject,
+		},
+		{
+			name: "invalid type rejects",
+			candidate: cards.CardCandidate{
+				Type:       "unsupported",
+				Title:      "Unsupported type",
+				Confidence: 0.9,
+			},
+			verdict:    "pass",
+			wantAction: cards.PromotionActionReject,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decision := cards.DecidePromotion(tt.candidate, tt.verdict, tt.existing)
+			if decision.Action != tt.wantAction {
+				t.Fatalf("Action = %q, want %q; decision=%+v", decision.Action, tt.wantAction, decision)
+			}
+			if decision.Action == cards.PromotionActionDefer {
+				t.Fatalf("decision unexpectedly queues human review: %+v", decision)
 			}
 		})
 	}

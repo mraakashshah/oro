@@ -6,7 +6,7 @@ import (
 	"unicode"
 )
 
-// PromotionConfidenceThreshold is the minimum candidate confidence for auto-promotion.
+// PromotionConfidenceThreshold is the minimum confidence for auto-promoting confirmed facts.
 const PromotionConfidenceThreshold = 0.7
 
 const (
@@ -91,31 +91,28 @@ func DecidePromotion(c CardCandidate, verdict string, existing []CardSummary) Pr
 		return rejectPromotion(confidence, "ops_review_failed")
 	case "pass":
 	default:
-		return deferPromotion(confidence, "unknown_verdict")
+		return rejectPromotion(confidence, "unknown_verdict")
 	}
 
 	if contradictionID := contradictingHighScoreCard(c, existing); contradictionID != "" && !hasContradictionRationale(c) {
 		return rejectPromotion(confidence, fmt.Sprintf("contradicts_card_%s_without_rationale", reasonID(contradictionID)))
 	}
 	if duplicateID := nearDuplicateCard(c, existing); duplicateID != "" {
-		return deferPromotion(confidence, fmt.Sprintf("near_duplicate_%s", reasonID(duplicateID)))
+		return rejectPromotion(confidence, fmt.Sprintf("near_duplicate_%s", reasonID(duplicateID)))
 	}
 
 	switch CardType(c.Type) {
 	case CardTypeRule, CardTypePattern:
-		if confidence >= PromotionConfidenceThreshold {
-			return PromotionDecision{Action: PromotionActionPromote, Confidence: confidence}
-		}
-		return deferPromotion(confidence, "confidence_below_threshold")
+		return PromotionDecision{Action: PromotionActionPromote, Confidence: confidence}
 	case CardTypeTaste, CardTypeDecision:
-		return deferPromotion(confidence, "human_review_required")
+		return PromotionDecision{Action: PromotionActionPromote, Confidence: confidence}
 	case CardTypeFact:
 		if c.Confirmed && confidence >= PromotionConfidenceThreshold {
 			return PromotionDecision{Action: PromotionActionPromote, Confidence: confidence}
 		}
-		return deferPromotion(confidence, "fact_unconfirmed")
+		return rejectPromotion(confidence, "fact_unconfirmed")
 	default:
-		return deferPromotion(confidence, "invalid_card_type")
+		return rejectPromotion(confidence, "invalid_card_type")
 	}
 }
 
