@@ -27,6 +27,7 @@ if [ "${ORO_QG_BASH_BOOTSTRAPPED_PID:-}" != "${BASHPID:-$$}" ]; then
 	export ORO_QG_BASH_BOOTSTRAPPED_PID=${BASHPID:-$$}
 	qg_bash=""
 	for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash "$(command -v bash 2>/dev/null || true)"; do
+		# shellcheck disable=SC2016 # The candidate Bash, not this sh bootstrap, expands BASH_VERSINFO.
 		if [ -x "$candidate" ] && env -u BASH_ENV "$candidate" -c '[ "${BASH_VERSINFO[0]:-0}" -ge 4 ]' >/dev/null 2>&1; then
 			qg_bash="$candidate"
 			break
