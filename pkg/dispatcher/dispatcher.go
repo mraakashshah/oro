@@ -1726,8 +1726,22 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 		return
 	}
 	beadID := w.beadID
+	assignmentID := w.assignmentID
+	worktree := w.worktree
+	preempted := w.state == protocol.WorkerPreempting
+	if preempted && beadID != "" {
+		// Keep the bead reserved while its durable assignment is terminalized.
+		// Without this guard a concurrently idle replacement can create a second
+		// active assignment after the worker is removed but before cleanup runs.
+		d.assigningBeads[beadID] = true
+	}
 	delete(d.workers, workerID)
 	d.mu.Unlock()
+
+	if preempted && beadID != "" {
+		d.reconcilePreemptedDisconnect(workerID, beadID, assignmentID, worktree)
+		return
+	}
 
 	if beadID != "" {
 		d.clearBeadTracking(beadID)
@@ -1739,6 +1753,45 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 	// Wake the assign loop so reconcileScale can spawn a replacement immediately
 	// rather than waiting for the next fsnotify event or fallback tick.
 	d.notifyAssignLoop()
+}
+
+func (d *Dispatcher) reconcilePreemptedDisconnect(workerID, beadID string, assignmentID int64, worktree string) {
+	ctx := context.Background()
+	if !d.terminalizePreemptedDisconnect(ctx, workerID, beadID, assignmentID, worktree) {
+		return
+	}
+	if d.shouldReopenBead(ctx, beadID) {
+		if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
+			_ = d.logEvent(ctx, "preempt_disconnect_bead_reset_failed", "dispatcher", beadID, workerID, err.Error())
+		}
+	}
+	d.clearBeadTracking(beadID)
+	d.mu.Lock()
+	delete(d.assigningBeads, beadID)
+	d.mu.Unlock()
+	d.notifyAssignLoop()
+}
+
+func (d *Dispatcher) terminalizePreemptedDisconnect(ctx context.Context, workerID, beadID string, assignmentID int64, worktree string) bool {
+	err := d.completeAssignment(ctx, assignmentID, beadID)
+	if err == nil {
+		return true
+	}
+	_ = d.logEvent(ctx, "preempt_disconnect_assignment_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
+	_, quarantineErr := d.createRecoveryQuarantine(ctx, recoveryQuarantine{
+		BeadID:       beadID,
+		AssignmentID: assignmentID,
+		WorkerID:     workerID,
+		Worktree:     worktree,
+		Branch:       protocol.BranchPrefix + beadID,
+		Reason:       "preempted_worker_disconnect",
+		Details:      err.Error(),
+	})
+	if quarantineErr == nil {
+		return true
+	}
+	_ = d.logEvent(ctx, "preempt_disconnect_assignment_quarantine_failed", "dispatcher", beadID, workerID, quarantineErr.Error())
+	return false
 }
 
 // handleConn reads line-delimited JSON messages from a worker connection.
