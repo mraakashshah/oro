@@ -39,3 +39,28 @@ VALUES (?, ?, ?, ?, ?, ?)`,
 		t.Fatalf("replayed result = %+v, want exact stored result %+v", replayed, stored)
 	}
 }
+
+func TestDispatcherStoreWorkProposalRejectsUnavailableDatabase(t *testing.T) {
+	t.Parallel()
+
+	if _, err := (*Dispatcher)(nil).storeWorkProposal(context.Background(), WorkProposalPayload{}); err == nil {
+		t.Fatal("nil dispatcher storeWorkProposal error = nil")
+	}
+
+	d := &Dispatcher{db: newTestDB(t)}
+	if err := d.db.Close(); err != nil {
+		t.Fatalf("close dispatcher database: %v", err)
+	}
+	if _, err := d.storeWorkProposal(context.Background(), WorkProposalPayload{
+		ClientProposalID: "proposal-closed-db",
+		AssignmentID:     1,
+		WorkerID:         "worker-1",
+		BeadID:           "bead-1",
+		EvidenceRunID:    "evidence-1",
+		Fingerprint:      "fingerprint-1",
+		Kind:             "prerequisite",
+		Summary:          "closed database",
+	}); err == nil {
+		t.Fatal("closed dispatcher database storeWorkProposal error = nil")
+	}
+}

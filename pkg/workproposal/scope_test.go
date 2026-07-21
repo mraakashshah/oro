@@ -62,6 +62,10 @@ func TestNormalizeScopeV1Equivalence(t *testing.T) {
 	}
 
 	for _, input := range []workproposal.ScopeInput{
+		{Kind: workproposal.ScopeKindPrerequisite, Invariant: "x"},
+		{Project: "oro", Kind: workproposal.ScopeKindPrerequisite},
+		{Project: "oro", Kind: workproposal.ScopeKindPrerequisite, Invariant: "x", Paths: []string{""}},
+		{Project: "oro", Kind: workproposal.ScopeKindPrerequisite, Invariant: "x", Paths: []string{"/outside.go"}},
 		{Project: "oro", Kind: workproposal.ScopeKindPrerequisite, Invariant: "x", Paths: []string{"../outside.go"}},
 		{Project: "oro", Kind: "unknown", Invariant: "x"},
 		{Project: "oro", Kind: workproposal.ScopeKindPrerequisite, Invariant: "x", Fields: map[string]string{"unknown": "value"}},
@@ -69,5 +73,17 @@ func TestNormalizeScopeV1Equivalence(t *testing.T) {
 		if _, err := workproposal.NormalizeScopeV1(input); err == nil {
 			t.Fatalf("workproposal.NormalizeScopeV1(%+v) error = nil, want rejection", input)
 		}
+	}
+
+	withoutPaths, err := workproposal.NormalizeScopeV1(workproposal.ScopeInput{
+		Project:   "oro",
+		Kind:      workproposal.ScopeKindPrerequisite,
+		Invariant: "x",
+	})
+	if err != nil {
+		t.Fatalf("workproposal.NormalizeScopeV1(without paths) error = %v", err)
+	}
+	if strings.Contains(string(withoutPaths), `"paths"`) {
+		t.Fatalf("scope without paths unexpectedly encoded paths: %s", withoutPaths)
 	}
 }
