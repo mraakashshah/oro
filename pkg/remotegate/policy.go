@@ -2,8 +2,12 @@
 package remotegate
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -46,6 +50,59 @@ func ValidateEffectivePolicy(policy EffectivePolicy) error {
 		}
 	}
 	return nil
+}
+
+// CanonicalPolicyHash returns the stable SHA-256 identity of validated policy
+// evidence. The hash is independent of caller-owned rule and value ordering.
+//
+//oro:testonly — production GitHub policy collection is wired by subsequent remote-gate tasks.
+func CanonicalPolicyHash(policy EffectivePolicy) (string, error) {
+	if err := ValidateEffectivePolicy(policy); err != nil {
+		return "", err
+	}
+
+	canonical := make([]canonicalApplicableRule, len(policy.Rules))
+	for index, rule := range policy.Rules {
+		canonical[index] = canonicalizeRule(rule)
+	}
+	sort.Slice(canonical, func(left, right int) bool {
+		return canonical[left].Source+"\x00"+canonical[left].ID < canonical[right].Source+"\x00"+canonical[right].ID
+	})
+
+	payload, err := json.Marshal(canonical)
+	if err != nil {
+		return "", fmt.Errorf("marshal canonical policy: %w", err)
+	}
+	digest := sha256.Sum256(payload)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+type canonicalApplicableRule struct {
+	Source         string   `json:"source"`
+	ID             string   `json:"id"`
+	Version        string   `json:"version"`
+	Pattern        string   `json:"pattern"`
+	Enforcement    string   `json:"enforcement"`
+	Operations     []string `json:"operations"`
+	BypassActors   []string `json:"bypass_actors"`
+	RequiredChecks []string `json:"required_checks"`
+}
+
+func canonicalizeRule(rule ApplicableRule) canonicalApplicableRule {
+	canonical := canonicalApplicableRule{
+		Source:         rule.Source,
+		ID:             rule.ID,
+		Version:        rule.Version,
+		Pattern:        rule.Pattern,
+		Enforcement:    rule.Enforcement,
+		Operations:     append([]string(nil), rule.Operations...),
+		BypassActors:   append([]string(nil), rule.BypassActors...),
+		RequiredChecks: append([]string(nil), rule.RequiredChecks...),
+	}
+	sort.Strings(canonical.Operations)
+	sort.Strings(canonical.BypassActors)
+	sort.Strings(canonical.RequiredChecks)
+	return canonical
 }
 
 func validateApplicableRule(rule ApplicableRule, seen map[string]struct{}) error {
