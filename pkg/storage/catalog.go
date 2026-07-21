@@ -13,7 +13,7 @@ import (
 )
 
 // CatalogSchemaVersion is the newest storage catalog schema understood by this binary.
-const CatalogSchemaVersion = 2
+const CatalogSchemaVersion = 3
 
 var (
 	// ErrCatalogCorrupt reports a catalog SQLite database that cannot be read safely.
@@ -54,6 +54,7 @@ type Controller struct {
 	ID, OwnerID   string
 	PID           int
 	ProcessStart  time.Time
+	Identity      ProcessIdentity
 	ObservedEpoch int64
 	HeartbeatAt   time.Time
 }
@@ -186,7 +187,7 @@ func migrateCatalog(ctx context.Context, tx catalogTx) error {
 		}
 	}
 	if version != CatalogSchemaVersion {
-		if _, err := tx.ExecContext(ctx, `PRAGMA user_version = 2`); err != nil {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, CatalogSchemaVersion)); err != nil {
 			return fmt.Errorf("set catalog schema version: %w", err)
 		}
 	}
@@ -325,8 +326,11 @@ func (c *Catalog) UpsertController(ctx context.Context, controller Controller) e
 	if controller.ID == "" || controller.OwnerID == "" || controller.PID <= 0 || controller.ProcessStart.IsZero() || controller.HeartbeatAt.IsZero() {
 		return fmt.Errorf("invalid controller")
 	}
-	_, err := c.db.ExecContext(ctx, `INSERT INTO runtime_controllers (id, owner_id, pid, process_start, observed_epoch, heartbeat_at) VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT(id) DO UPDATE SET owner_id=excluded.owner_id, pid=excluded.pid, process_start=excluded.process_start, observed_epoch=excluded.observed_epoch, heartbeat_at=excluded.heartbeat_at`, controller.ID, controller.OwnerID, controller.PID, formatTime(controller.ProcessStart), controller.ObservedEpoch, formatTime(controller.HeartbeatAt))
+	if !controller.Identity.Matches(controller.Identity) || controller.Identity.PID != controller.PID {
+		return fmt.Errorf("invalid controller identity")
+	}
+	_, err := c.db.ExecContext(ctx, `INSERT INTO runtime_controllers (id, owner_id, pid, process_start, identity_start, executable, process_group, observed_epoch, heartbeat_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET owner_id=excluded.owner_id, pid=excluded.pid, process_start=excluded.process_start, identity_start=excluded.identity_start, executable=excluded.executable, process_group=excluded.process_group, observed_epoch=excluded.observed_epoch, heartbeat_at=excluded.heartbeat_at`, controller.ID, controller.OwnerID, controller.PID, formatTime(controller.ProcessStart), controller.Identity.StartMarker, controller.Identity.Executable, controller.Identity.ProcessGroup, controller.ObservedEpoch, formatTime(controller.HeartbeatAt))
 	if err != nil {
 		return fmt.Errorf("upsert controller %s: %w", controller.ID, err)
 	}
@@ -339,7 +343,7 @@ ON CONFLICT(id) DO UPDATE SET owner_id=excluded.owner_id, pid=excluded.pid, proc
 func (c *Catalog) Controller(ctx context.Context, id string) (Controller, error) {
 	var value Controller
 	var processStart, heartbeat string
-	err := c.db.QueryRowContext(ctx, `SELECT id, owner_id, pid, process_start, observed_epoch, heartbeat_at FROM runtime_controllers WHERE id=?`, id).Scan(&value.ID, &value.OwnerID, &value.PID, &processStart, &value.ObservedEpoch, &heartbeat)
+	err := c.db.QueryRowContext(ctx, `SELECT id, owner_id, pid, process_start, identity_start, executable, process_group, observed_epoch, heartbeat_at FROM runtime_controllers WHERE id=?`, id).Scan(&value.ID, &value.OwnerID, &value.PID, &processStart, &value.Identity.StartMarker, &value.Identity.Executable, &value.Identity.ProcessGroup, &value.ObservedEpoch, &heartbeat)
 	if err != nil {
 		return Controller{}, fmt.Errorf("load controller %s: %w", id, err)
 	}
@@ -352,6 +356,7 @@ func (c *Catalog) Controller(ctx context.Context, id string) (Controller, error)
 	if parseErr != nil {
 		return Controller{}, fmt.Errorf("parse controller %s heartbeat: %w", id, parseErr)
 	}
+	value.Identity.PID = value.PID
 	return value, nil
 }
 
@@ -394,9 +399,16 @@ func (c *Catalog) AcknowledgePauseEpoch(ctx context.Context, acknowledgement Pau
 	if acknowledgement.Epoch < 0 || acknowledgement.ControllerID == "" || acknowledgement.State == "" || acknowledgement.AcknowledgedAt.IsZero() {
 		return fmt.Errorf("invalid pause acknowledgement")
 	}
-	_, err := c.db.ExecContext(ctx, `INSERT INTO runtime_pause_acknowledgements (epoch, controller_id, state, acknowledged_at) VALUES (?, ?, ?, ?) ON CONFLICT(epoch, controller_id) DO UPDATE SET state=excluded.state, acknowledged_at=excluded.acknowledged_at`, acknowledgement.Epoch, acknowledgement.ControllerID, acknowledgement.State, formatTime(acknowledgement.AcknowledgedAt))
+	result, err := c.db.ExecContext(ctx, `INSERT INTO runtime_pause_acknowledgements (epoch, controller_id, state, acknowledged_at) VALUES (?, ?, ?, ?) ON CONFLICT(epoch, controller_id) DO NOTHING`, acknowledgement.Epoch, acknowledgement.ControllerID, acknowledgement.State, formatTime(acknowledgement.AcknowledgedAt))
 	if err != nil {
 		return fmt.Errorf("acknowledge pause epoch %d: %w", acknowledgement.Epoch, err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("acknowledge pause epoch %d rows affected: %w", acknowledgement.Epoch, err)
+	}
+	if changed == 0 {
+		return fmt.Errorf("acknowledge pause epoch %d: %w", acknowledgement.Epoch, ErrPauseEpochAlreadyAcknowledged)
 	}
 	return nil
 }
@@ -498,7 +510,7 @@ type catalogTable struct {
 func catalogTables() []catalogTable {
 	return []catalogTable{
 		{"runtime_leases", `CREATE TABLE runtime_leases (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, controller_id TEXT NOT NULL, owner_id TEXT NOT NULL, pid INTEGER NOT NULL, process_start TEXT NOT NULL, acquired_at TEXT NOT NULL, heartbeat_at TEXT NOT NULL, released_at TEXT)`},
-		{"runtime_controllers", `CREATE TABLE runtime_controllers (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, pid INTEGER NOT NULL, process_start TEXT NOT NULL, observed_epoch INTEGER NOT NULL, heartbeat_at TEXT NOT NULL)`},
+		{"runtime_controllers", `CREATE TABLE runtime_controllers (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, pid INTEGER NOT NULL, process_start TEXT NOT NULL, identity_start TEXT NOT NULL DEFAULT '', executable TEXT NOT NULL DEFAULT '', process_group INTEGER NOT NULL DEFAULT 0, observed_epoch INTEGER NOT NULL, heartbeat_at TEXT NOT NULL)`},
 		{"runtime_pause_epochs", `CREATE TABLE runtime_pause_epochs (epoch INTEGER PRIMARY KEY, state TEXT NOT NULL, created_at TEXT NOT NULL)`},
 		{"runtime_pause_acknowledgements", `CREATE TABLE runtime_pause_acknowledgements (epoch INTEGER NOT NULL, controller_id TEXT NOT NULL, state TEXT NOT NULL, acknowledged_at TEXT NOT NULL, PRIMARY KEY (epoch, controller_id))`},
 		{"runtime_tombstones", `CREATE TABLE runtime_tombstones (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, reason TEXT NOT NULL, state TEXT NOT NULL, retired_at TEXT NOT NULL, retry_at TEXT, attempts INTEGER NOT NULL DEFAULT 0)`},
