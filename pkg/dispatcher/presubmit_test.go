@@ -335,6 +335,129 @@ func TestPresubmitEvidenceIdentity(t *testing.T) {
 	})
 }
 
+func TestPresubmitPostRebaseInvalidation(t *testing.T) {
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "post-rebase-presubmit.db"))
+	if err != nil {
+		t.Fatalf("open DB: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := NewStore(ctx, db)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	actions := []PresubmitAction{
+		{Name: "acceptance", Command: "go test ./pkg/dispatcher -run TestAcceptance", ResourceClass: ResourceCPULight},
+		{Name: "lint", Command: "golangci-lint run ./pkg/dispatcher", ResourceClass: ResourceMemoryHeavy},
+	}
+	initial := RemoteGateCandidate{
+		Key:          "oro-4vh0:initial",
+		BeadID:       "oro-4vh0",
+		AssignmentID: 41,
+		CandidateSHA: "candidate-before-rebase",
+		BaseSHA:      "base-before-rebase",
+		TargetBranch: "main",
+		AdoptionRef:  "refs/oro/adopted/oro/oro-4vh0/41",
+	}
+	initialGate, err := store.AdoptCandidate(ctx, initial)
+	if err != nil {
+		t.Fatalf("AdoptCandidate(initial): %v", err)
+	}
+	initialPlan := PresubmitEvidencePlan{
+		GateID:       initialGate.ID,
+		CandidateSHA: initial.CandidateSHA,
+		BaseSHA:      initial.BaseSHA,
+		Profile:      "go-v1",
+		ToolHash:     "tools-v1",
+		Actions:      actions,
+	}
+	for _, action := range actions {
+		if err := store.RecordPresubmitResult(ctx, PresubmitResult{
+			GateID:        initialGate.ID,
+			ActionName:    action.Name,
+			CandidateSHA:  initial.CandidateSHA,
+			BaseSHA:       initial.BaseSHA,
+			Command:       action.Command,
+			Profile:       initialPlan.Profile,
+			ToolHash:      initialPlan.ToolHash,
+			StartedAt:     "2026-07-20T12:00:00Z",
+			CompletedAt:   "2026-07-20T12:00:01Z",
+			Outcome:       "passed",
+			ResourceClass: action.ResourceClass,
+		}); err != nil {
+			t.Fatalf("RecordPresubmitResult(%s): %v", action.Name, err)
+		}
+	}
+	if passed, err := store.PresubmitPlanPassed(ctx, initialPlan); err != nil || !passed {
+		t.Fatalf("initial PresubmitPlanPassed = %t, %v; want true, nil", passed, err)
+	}
+
+	postRebase := initial
+	postRebase.Key = "oro-4vh0:post-rebase"
+	postRebase.CandidateSHA = "candidate-after-rebase"
+	postRebase.BaseSHA = "base-after-rebase"
+	postRebase.AdoptionRef = "refs/oro/adopted/oro/oro-4vh0/41-rebased"
+	postRebaseGate, err := store.AdoptCandidate(ctx, postRebase)
+	if err != nil {
+		t.Fatalf("AdoptCandidate(post-rebase): %v", err)
+	}
+	postRebasePlan := PresubmitEvidencePlan{
+		GateID:       postRebaseGate.ID,
+		CandidateSHA: postRebase.CandidateSHA,
+		BaseSHA:      postRebase.BaseSHA,
+		Profile:      initialPlan.Profile,
+		ToolHash:     initialPlan.ToolHash,
+		Actions:      actions,
+	}
+
+	if passed, err := store.PresubmitPlanPassed(ctx, postRebasePlan); err != nil || passed {
+		t.Fatalf("stale pre-rebase evidence admitted post-rebase plan = %t, %v; want false, nil", passed, err)
+	}
+
+	for _, action := range actions[:1] {
+		if err := store.RecordPresubmitResult(ctx, PresubmitResult{
+			GateID:        postRebaseGate.ID,
+			ActionName:    action.Name,
+			CandidateSHA:  postRebase.CandidateSHA,
+			BaseSHA:       postRebase.BaseSHA,
+			Command:       action.Command,
+			Profile:       postRebasePlan.Profile,
+			ToolHash:      postRebasePlan.ToolHash,
+			StartedAt:     "2026-07-20T12:01:00Z",
+			CompletedAt:   "2026-07-20T12:01:01Z",
+			Outcome:       "passed",
+			ResourceClass: action.ResourceClass,
+		}); err != nil {
+			t.Fatalf("RecordPresubmitResult(%s): %v", action.Name, err)
+		}
+	}
+	if passed, err := store.PresubmitPlanPassed(ctx, postRebasePlan); err != nil || passed {
+		t.Fatalf("partial post-rebase evidence admitted plan = %t, %v; want false, nil", passed, err)
+	}
+
+	for _, action := range actions[1:] {
+		if err := store.RecordPresubmitResult(ctx, PresubmitResult{
+			GateID:        postRebaseGate.ID,
+			ActionName:    action.Name,
+			CandidateSHA:  postRebase.CandidateSHA,
+			BaseSHA:       postRebase.BaseSHA,
+			Command:       action.Command,
+			Profile:       postRebasePlan.Profile,
+			ToolHash:      postRebasePlan.ToolHash,
+			StartedAt:     "2026-07-20T12:01:00Z",
+			CompletedAt:   "2026-07-20T12:01:01Z",
+			Outcome:       "passed",
+			ResourceClass: action.ResourceClass,
+		}); err != nil {
+			t.Fatalf("RecordPresubmitResult(%s): %v", action.Name, err)
+		}
+	}
+	if passed, err := store.PresubmitPlanPassed(ctx, postRebasePlan); err != nil || !passed {
+		t.Fatalf("complete post-rebase evidence admitted plan = %t, %v; want true, nil", passed, err)
+	}
+}
+
 func assertPersistedPresubmitEvidence(
 	ctx context.Context,
 	t *testing.T,
