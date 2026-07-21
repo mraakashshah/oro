@@ -18,6 +18,11 @@ agent:
       model: gpt-5.6-luna
       reasoning: low
   roles:
+    grade:
+      transport: cli
+      runtime: codex
+      model: gpt-5.6-terra
+      reasoning: low
     spec_writer:
       transport: cli
       runtime: codex
