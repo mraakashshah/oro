@@ -448,6 +448,9 @@ func restartMonitorFindingCode(cfg monitorConfig, state *monitorState, health fa
 		return "", false
 	}
 	for _, finding := range health.Findings {
+		if finding.Code == factoryhealth.FindingThroughputStall && health.Metrics.ActiveWorkers > 0 {
+			continue
+		}
 		if restartableMonitorFinding(finding.Code) && state.repeatedFindings[finding.Code] >= cfg.restartAfter {
 			return finding.Code, true
 		}
