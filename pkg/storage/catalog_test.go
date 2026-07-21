@@ -64,6 +64,7 @@ func TestCatalogRuntimeLeaseLifecycle(t *testing.T) {
 	}
 	if err := catalog.UpsertController(ctx, storage.Controller{
 		ID: "controller-1", OwnerID: "owner-1", PID: 101, ProcessStart: now.Add(-time.Minute), ObservedEpoch: 7, HeartbeatAt: now,
+		Identity: storage.ProcessIdentity{PID: 101, StartMarker: "start-controller-1", Executable: "oro", ProcessGroup: 101},
 	}); err != nil {
 		t.Fatalf("upsert controller: %v", err)
 	}
