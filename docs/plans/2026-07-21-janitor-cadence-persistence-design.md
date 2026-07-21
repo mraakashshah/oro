@@ -106,11 +106,14 @@ clears an existing pending marker; it remains durable until a cadence-active
 startup resumes it. This preserves an operator's explicit disablement without
 discarding required maintenance.
 
-Before starting assignment/merge processing, `Run` checks `pending_role`. If
-non-empty, it runs that role synchronously against `main`. A fully successful
-cycle atomically clears `pending_role`; a failed or interrupted one leaves it
-unchanged and prevents the dispatcher from processing further beads. This makes
-restart recovery explicit rather than silently dropping a selected cycle.
+Add `func (d *Dispatcher) recoverPendingCadence(ctx context.Context) error`.
+`Dispatcher.Run` calls it after construction/state initialization and before it
+opens its socket, starts background loops, or accepts assignment/merge work.
+If `pending_role` is non-empty, the helper runs that role synchronously against
+`main`. A fully successful cycle atomically clears `pending_role`; a failed or
+interrupted one leaves it unchanged and returns an error, preventing the
+dispatcher from processing further beads. This makes restart recovery explicit
+rather than silently dropping a selected cycle.
 
 The existing scan boundary (`withScanWorktree`) and janitor detector invocation
 must receive the literal branch `main`, not `Config.DefaultBranch`. This applies
