@@ -221,6 +221,9 @@ func (s *SQLiteStore) Update(ctx context.Context, id string, params UpdateParams
 	if params.Status != nil && !validStatus(*params.Status) {
 		return fmt.Errorf("beadstore: invalid status %q", *params.Status)
 	}
+	if params.Draft != nil && !*params.Draft {
+		return fmt.Errorf("beadstore: clearing draft requires validated publish")
+	}
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -1013,9 +1016,14 @@ func newUpdateStatement(params UpdateParams) updateStatement {
 		args:        []any{nowString()},
 	}
 	stmt.addStatus(params.Status)
+	stmt.addPtr("title=?", params.Title)
+	stmt.addPtr("description=?", params.Description)
 	stmt.addPtr("priority=?", params.Priority)
 	stmt.addPtr("type=?", params.Type)
 	stmt.addPtr("acceptance_criteria=?", params.AcceptanceCriteria)
+	stmt.addPtr("estimated_minutes=?", params.EstimatedMinutes)
+	stmt.addPtr("contract_version=?", params.ContractVersion)
+	stmt.addPtr("draft=?", params.Draft)
 	stmt.addNullableString("parent_id", params.ParentID)
 	stmt.addNullableString("owner", params.Owner)
 	return stmt
@@ -1052,6 +1060,11 @@ func (s *updateStatement) addPtr(assignment string, value any) {
 			s.assignments = append(s.assignments, assignment)
 			s.args = append(s.args, *v)
 		}
+	case *bool:
+		if v != nil {
+			s.assignments = append(s.assignments, assignment)
+			s.args = append(s.args, *v)
+		}
 	}
 }
 
@@ -1073,6 +1086,12 @@ func (s updateStatement) query() string {
 
 func updatePayload(params UpdateParams) map[string]any {
 	payload := map[string]any{}
+	if params.Title != nil {
+		payload["title"] = *params.Title
+	}
+	if params.Description != nil {
+		payload["description"] = *params.Description
+	}
 	if params.Status != nil {
 		payload["status"] = *params.Status
 	}
@@ -1084,6 +1103,15 @@ func updatePayload(params UpdateParams) map[string]any {
 	}
 	if params.AcceptanceCriteria != nil {
 		payload["acceptance_criteria"] = *params.AcceptanceCriteria
+	}
+	if params.EstimatedMinutes != nil {
+		payload["estimated_minutes"] = *params.EstimatedMinutes
+	}
+	if params.ContractVersion != nil {
+		payload["contract_version"] = *params.ContractVersion
+	}
+	if params.Draft != nil {
+		payload["draft"] = *params.Draft
 	}
 	if params.Notes != nil {
 		payload["notes"] = *params.Notes
