@@ -13,17 +13,45 @@ func TestDraftExcludedFromEveryReadyPath(t *testing.T) {
 	ctx := context.Background()
 	store := newTestSQLiteStore(t)
 
+	if _, err := store.Create(ctx, CreateParams{
+		ID:              "ready-control",
+		Title:           "Ready control",
+		ContractVersion: 2,
+	}); err != nil {
+		t.Fatalf("Create ready control: %v", err)
+	}
 	created, err := store.Create(ctx, CreateParams{
-		ID:              "draft-v2",
-		Title:           "Draft title",
+		ID:              "incomplete-draft",
+		Title:           "Incomplete draft",
 		ContractVersion: 2,
 		Draft:           true,
 	})
 	if err != nil {
-		t.Fatalf("Create: %v", err)
+		t.Fatalf("Create incomplete draft: %v", err)
 	}
-	if created.ContractVersion != 2 || !created.Draft {
+	if created.ContractVersion != 2 || !created.Draft || created.AcceptanceCriteria != "" {
 		t.Fatalf("created contract fields = version %d, draft %t", created.ContractVersion, created.Draft)
+	}
+	if _, err := store.Create(ctx, CreateParams{
+		ID:                 "updated-parent",
+		Title:              "Updated parent",
+		Status:             "closed",
+		ContractVersion:    2,
+		AcceptanceCriteria: "parent acceptance",
+	}); err != nil {
+		t.Fatalf("Create updated parent: %v", err)
+	}
+	if _, err := store.Create(ctx, CreateParams{
+		ID:                 "draft-v2",
+		Title:              "Initial title",
+		Description:        "Initial description",
+		AcceptanceCriteria: "initial acceptance",
+		EstimatedMinutes:   2,
+		Type:               "bug",
+		Priority:           4,
+		ContractVersion:    1,
+	}); err != nil {
+		t.Fatalf("Create update target: %v", err)
 	}
 
 	title := "Updated draft title"
@@ -32,7 +60,7 @@ func TestDraftExcludedFromEveryReadyPath(t *testing.T) {
 	estimate := 5
 	beadType := "task"
 	priority := 1
-	parent := ""
+	parent := "updated-parent"
 	owner := "owner"
 	notes := "draft note"
 	contractVersion := 2
@@ -59,17 +87,15 @@ func TestDraftExcludedFromEveryReadyPath(t *testing.T) {
 	}
 	if stored == nil || stored.Title != title || stored.Description != description ||
 		stored.AcceptanceCriteria != acceptance || stored.EstimatedMinutes != estimate ||
-		stored.Type != beadType || stored.Priority != priority || stored.Owner != owner ||
+		stored.Type != beadType || stored.Priority != priority || stored.Epic != parent || stored.Owner != owner ||
 		stored.Notes != notes || stored.ContractVersion != contractVersion || !stored.Draft {
 		t.Fatalf("stored draft = %#v", stored)
 	}
 
-	assertDraftAbsent := func(source string, beads []protocol.Bead) {
+	assertOnlyControlReady := func(source string, beads []protocol.Bead) {
 		t.Helper()
-		for _, bead := range beads {
-			if bead.ID == "draft-v2" {
-				t.Fatalf("%s Ready included draft: %#v", source, bead)
-			}
+		if len(beads) != 1 || beads[0].ID != "ready-control" {
+			t.Fatalf("%s Ready = %#v, want only ready-control", source, beads)
 		}
 	}
 
@@ -77,13 +103,13 @@ func TestDraftExcludedFromEveryReadyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Store.Ready: %v", err)
 	}
-	assertDraftAbsent("Store", ready)
+	assertOnlyControlReady("Store", ready)
 	if err := store.WithReadTx(ctx, func(tx ReadTx) error {
 		ready, err := tx.Ready(ctx)
 		if err != nil {
 			return err
 		}
-		assertDraftAbsent("ReadTx", ready)
+		assertOnlyControlReady("ReadTx", ready)
 		return nil
 	}); err != nil {
 		t.Fatalf("WithReadTx: %v", err)
