@@ -79,15 +79,16 @@ janitor_cadence/v1
 The value is canonical JSON:
 
 ```json
-{"merges_since_janitor":"39","janitor_runs_since_audit":"3","pending_role":""}
+{"version":1,"merges_since_janitor":"39","janitor_runs_since_audit":"3","pending_role":""}
 ```
 
 The record applies to the project, not a target branch. Every role receives the
 literal target branch `main`, independent of the base branch used for ordinary
 bead integration. The store validates both decimal fields as unsigned 64-bit
-integers and `pending_role` as empty, `janitor`, or `audit`; it rejects malformed
-values with a contextual startup/read error. An absent key means `{0,0,""}` and
-is initialized atomically with `INSERT ... ON CONFLICT DO UPDATE` only when the
+integers and `pending_role` as empty, `janitor`, or `audit`. `version` is
+required to equal `1`; unknown versions and unknown JSON fields are rejected
+with a contextual startup/read error. An absent key means `{1,0,0,""}` and is
+initialized atomically with `INSERT ... ON CONFLICT DO UPDATE` only when the
 first successful mutation is committed.
 
 ### Dispatcher integration
@@ -132,6 +133,13 @@ If the write fails, retain the prior state, emit a
 cleanliness role. A successful role atomically clears its marker. A role failure
 leaves its marker present for startup recovery rather than restoring counters
 and allowing a later cycle to overtake it.
+
+While `pending_role` is non-empty, every safely closed bead still increments
+and persists `merges_since_janitor`, but cannot select, replace, or launch a
+second role. When the pending role clears successfully, the dispatcher evaluates
+the accumulated count without incrementing it and reserves the next eligible
+role if the idle/forced gate permits. This prevents loss of completions while
+guaranteeing one durable role reservation at a time.
 
 The mutex already serializes counter changes inside one dispatcher. The
 synchronous SQLite write establishes the crash boundary: a restart observes
@@ -183,7 +191,7 @@ Assert: a fresh dispatcher reusing the same SQLite state database resumes a proj
 Add focused dispatcher/store tests for:
 
 1. Loading a missing record as zero and round-tripping counters, including
-   `math.MaxUint64` values.
+   `math.MaxUint64` values and a required `version:1` field.
 2. Rejecting malformed JSON, unknown version, missing fields, and non-uint64
    strings without overwriting the record.
 3. Restart after 39 safely integrated beads: bead 40 schedules a janitor only
@@ -197,6 +205,9 @@ Add focused dispatcher/store tests for:
 6. Both `finalizeSuccessfulMerge` and `handleNoopMerge` advance once after a
    successful close; merge failure, close failure, and cadence write failure do
    not.
+7. Completions during a blocked pending role accumulate durably but cannot
+   replace its marker; clearing the first role evaluates the accumulated budget
+   exactly once.
 
 Run the focused package suite and the full dispatcher package after integration:
 
@@ -208,8 +219,8 @@ go test ./pkg/dispatcher/... -count=1 -timeout 180s
 
 | Workstream | Delivers | Verification |
 |---|---|---|
-| Cadence record | JSON codec, `kv_store` load/upsert, malformed-state rejection | `TestJanitorCadenceStoreRoundTrip` |
-| Counter transition | 40/120 gate, fourth-cycle substitution, durable reserve/clear | `TestJanitorCadenceTransitions` |
+| Cadence record | Strict versioned JSON codec, `kv_store` load/upsert, malformed-state rejection | `TestJanitorCadenceStoreRoundTrip` |
+| Counter transition | 40/120 gate, fourth-cycle substitution, durable reserve/clear, pending guard | `TestJanitorCadenceTransitions` |
 | Safe completion boundary | Count only after `CloseBead` succeeds in normal and no-op paths | `TestJanitorCadenceExcludesFailedClose` |
 | Startup recovery | Replay pending role before listener/assignment startup; retain marker on failure | `TestJanitorCadencePersistsAcrossDispatcherRestart` |
 | Main scan pinning | Worktree and detector targets use literal `main` even with another default branch | `TestCadenceScansMainRegardlessOfDefaultBranch` |
