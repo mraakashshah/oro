@@ -172,6 +172,10 @@ func (s *promotionCardStore) List(context.Context, cards.ListQuery) ([]cards.Car
 	return nil, nil
 }
 
+func (s *promotionCardStore) ListProposed(context.Context) ([]cards.Card, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (s *promotionCardStore) PendingLearnings(_ context.Context, beadID string) ([]cards.PendingLearning, error) {
 	var out []cards.PendingLearning
 	for _, learning := range s.pending {
@@ -204,6 +208,10 @@ func (s *promotionCardStore) PromoteLearningAsProposal(_ context.Context, id int
 	s.decisions++
 	s.proposed = append(s.proposed, id)
 	return "card-proposed", nil
+}
+
+func (s *promotionCardStore) ResolveProposal(context.Context, string, cards.GradeOutcome) error {
+	return errors.New("not implemented")
 }
 
 func (s *promotionCardStore) RejectLearning(_ context.Context, id int64, _ string) error {
