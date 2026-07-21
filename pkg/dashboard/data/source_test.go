@@ -83,6 +83,27 @@ func TestSourceFetchActiveIssuesUsesFakeStore(t *testing.T) {
 	}
 }
 
+func TestFetchAllClosedCmdReturnsIssuesAndErrors(t *testing.T) {
+	store := beadstore.NewFakeStore(
+		protocol.Bead{ID: "open", Status: "open", UpdatedAt: "2026-01-01T00:00:00Z"},
+		protocol.Bead{ID: "closed", Status: "closed", UpdatedAt: "2026-01-01T00:00:00Z"},
+	)
+	msg := FetchAllClosedCmd(store)()
+	closed, ok := msg.(ClosedIssuesMsg)
+	if !ok {
+		t.Fatalf("FetchAllClosedCmd() message = %T, want ClosedIssuesMsg", msg)
+	}
+	if closed.Err != nil || len(closed.Issues) != 1 || closed.Issues[0].ID != "closed" {
+		t.Fatalf("FetchAllClosedCmd() = %#v, want only the closed issue", closed)
+	}
+
+	msg = FetchAllClosedCmd(nil)()
+	closed, ok = msg.(ClosedIssuesMsg)
+	if !ok || closed.Err == nil {
+		t.Fatalf("FetchAllClosedCmd(nil) = %#v, want ClosedIssuesMsg with error", msg)
+	}
+}
+
 func TestSourceFetchActiveIssuesRejectsNilStore(t *testing.T) {
 	_, err := FetchActiveIssues(nil)
 	if err == nil {
