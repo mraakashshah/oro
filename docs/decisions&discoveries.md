@@ -270,3 +270,10 @@ Hook inventory (same in both files):
 **Context:** A standalone worker may receive thousands of ranked deck cards, exceeding command and model input limits before it starts.
 **Decision:** Keep inline cards intact and cap only deck-view rendering at 256 KiB, retaining the ranked prefix, a rune-safe clipped final summary when needed, and an explicit omitted-card count.
 **Implications:** Deck-card input may grow without growing worker prompts unboundedly; workers can still retrieve omitted cards with `oro cards show`.
+
+## 2026-07-21: Scope golangci-lint cache to one quality-gate run
+
+**Tags:** #quality-gate #golangci-lint #worktrees
+**Context:** A scoped lint command reported diagnostics with absolute paths from sibling worktrees because golangci-lint reused a shared cache.
+**Decision:** Set `GOLANGCI_LINT_CACHE` only for the lint command, to a directory under the gate's temporary `QG_DIR`; preserve shared Go and Python caches.
+**Implications:** Each gate rebuilds lint diagnostics for its active checkout, eliminating stale sibling paths while retaining its own lint failures.
