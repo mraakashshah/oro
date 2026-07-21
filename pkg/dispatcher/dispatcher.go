@@ -8773,11 +8773,22 @@ func (d *Dispatcher) broadcastEvent(evType, beadID, workerID string) {
 // MISSING_AC), it also spawns a one-shot claude -p agent to take corrective
 // action autonomously.
 func (d *Dispatcher) escalate(ctx context.Context, msg, beadID, workerID string) {
+	d.escalateWithOneShot(ctx, msg, beadID, workerID, true)
+}
+
+// escalateWithoutOneShot records and delivers an escalation without starting a
+// corrective ops process. It is used when a review timeout has just cancelled
+// the bead's active review, so cleanup has a stable no-active-ops boundary.
+func (d *Dispatcher) escalateWithoutOneShot(ctx context.Context, msg, beadID, workerID string) {
+	d.escalateWithOneShot(ctx, msg, beadID, workerID, false)
+}
+
+func (d *Dispatcher) escalateWithOneShot(ctx context.Context, msg, beadID, workerID string, allowOneShot bool) {
 	// Extract escalation type for database storage (separate from one-shot determination).
 	dbEscType := extractEscalationType(msg)
 
 	oneShot := ""
-	if d.ops != nil {
+	if allowOneShot && d.ops != nil {
 		oneShot = parseEscalationType(msg)
 	}
 	if protocol.EscalationType(oneShot) == protocol.EscOversizedBead {

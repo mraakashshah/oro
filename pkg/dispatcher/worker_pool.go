@@ -356,14 +356,20 @@ func (d *Dispatcher) escalateTimedOutWorkers(ctx context.Context, dead, stuck []
 }
 
 func (d *Dispatcher) handleStuckTimedOutWorker(ctx context.Context, sw workerExitInfo) {
+	escalation := protocol.FormatEscalation(protocol.EscStuckWorker, sw.beadID,
+		"worker stalled with no progress", "progress timeout for worker "+sw.workerID)
 	if sw.reviewing && d.ops != nil {
 		if _, err := d.ops.CancelForBead(sw.beadID); err != nil {
 			_ = d.logEvent(ctx, "review_timeout_cancel_failed", "dispatcher", sw.beadID, sw.workerID,
 				fmt.Sprintf(`{"error":%q}`, err.Error()))
 		}
+		// A review timeout owns the existing ops process. Do not immediately
+		// replace it with a same-bead escalation process: callers need the
+		// cancellation boundary to leave no active review for this bead.
+		d.escalateWithoutOneShot(ctx, escalation, sw.beadID, sw.workerID)
+	} else {
+		d.escalate(ctx, escalation, sw.beadID, sw.workerID)
 	}
-	d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuckWorker, sw.beadID,
-		"worker stalled with no progress", "progress timeout for worker "+sw.workerID), sw.beadID, sw.workerID)
 	if sw.beadID == "" {
 		return
 	}

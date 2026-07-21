@@ -45,12 +45,28 @@ func (p *countingReviewProcess) Kill() error           { p.kills.Add(1); close(p
 func (*countingReviewProcess) Output() (string, error) { return "", nil }
 func (*countingReviewProcess) LastOutputAt() time.Time { return time.Time{} }
 
-type countingReviewSpawner struct {
-	process *countingReviewProcess
+type sequentialReviewSpawner struct {
+	mu        sync.Mutex
+	processes []ops.Process
+	spawns    int
 }
 
-func (s *countingReviewSpawner) Spawn(context.Context, string, string, string) (ops.Process, error) {
-	return s.process, nil
+func (s *sequentialReviewSpawner) Spawn(context.Context, string, string, string) (ops.Process, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.processes) == 0 {
+		return nil, errors.New("unexpected ops spawn")
+	}
+	process := s.processes[0]
+	s.processes = s.processes[1:]
+	s.spawns++
+	return process, nil
+}
+
+func (s *sequentialReviewSpawner) SpawnCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.spawns
 }
 
 func (p *blockingReviewProcess) Wait() error {
@@ -1474,9 +1490,20 @@ func TestCheckHeartbeats_ReviewTimeout(t *testing.T) {
 }
 
 func TestCheckHeartbeats_ReviewTimeoutCancelsOps(t *testing.T) {
-	d, _, _, _, _, _ := newTestDispatcher(t)
-	process := &countingReviewProcess{done: make(chan struct{})}
-	d.ops = ops.NewSpawner(&countingReviewSpawner{process: process})
+	d, _, _, esc, _, _ := newTestDispatcher(t)
+	timedOutProcess := &countingReviewProcess{done: make(chan struct{})}
+	unrelatedProcess := &countingReviewProcess{done: make(chan struct{})}
+	escalationRelease := make(chan struct{})
+	spawner := &sequentialReviewSpawner{processes: []ops.Process{
+		timedOutProcess,
+		unrelatedProcess,
+		&blockingReviewProcess{release: escalationRelease},
+	}}
+	d.ops = ops.NewSpawner(spawner)
+	t.Cleanup(func() {
+		close(escalationRelease)
+		_, _ = d.ops.CancelForBead("unrelated-review-bead")
+	})
 	d.cfg.ReviewTimeout = 100 * time.Millisecond
 	now := time.Now()
 	d.nowFunc = func() time.Time { return now }
@@ -1491,14 +1518,32 @@ func TestCheckHeartbeats_ReviewTimeoutCancelsOps(t *testing.T) {
 	}
 	d.mu.Unlock()
 	_ = d.ops.Review(context.Background(), ops.ReviewOpts{BeadID: beadID, Worktree: t.TempDir()})
+	_ = d.ops.Review(context.Background(), ops.ReviewOpts{BeadID: "unrelated-review-bead", Worktree: t.TempDir()})
 	waitFor(t, func() bool { return d.ops.HasActiveForBead(beadID) }, time.Second)
+	waitFor(t, func() bool { return d.ops.HasActiveForBead("unrelated-review-bead") }, time.Second)
 
 	d.checkHeartbeats(context.Background())
-	if got := process.kills.Load(); got != 1 {
+	if got := timedOutProcess.kills.Load(); got != 1 {
 		t.Fatalf("review process kills = %d, want 1", got)
 	}
 	if d.ops.HasActiveForBead(beadID) {
 		t.Fatal("timed-out review remained active")
+	}
+	if unrelatedProcess.kills.Load() != 0 || !d.ops.HasActiveForBead("unrelated-review-bead") {
+		t.Fatal("unrelated review was cancelled")
+	}
+	if got := spawner.SpawnCount(); got != 2 {
+		t.Fatalf("ops spawn count = %d, want 2 (no escalation process)", got)
+	}
+	if msgs := esc.Messages(); len(msgs) != 1 || !strings.Contains(msgs[0], string(protocol.EscStuckWorker)) {
+		t.Fatalf("timeout escalation = %v, want one %s escalation", msgs, protocol.EscStuckWorker)
+	}
+	var persisted int
+	if err := d.db.QueryRow(`SELECT COUNT(*) FROM escalations WHERE type = ? AND bead_id = ?`, protocol.EscStuckWorker, beadID).Scan(&persisted); err != nil {
+		t.Fatalf("query persisted timeout escalation: %v", err)
+	}
+	if persisted != 1 {
+		t.Fatalf("persisted timeout escalations = %d, want 1", persisted)
 	}
 }
 
