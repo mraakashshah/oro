@@ -1830,6 +1830,10 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn net.Conn) {
 			return
 		}
 
+		if d.handleWorkRequestConn(ctx, conn, msg) {
+			return
+		}
+
 		// Extract workerID from the first message that carries one.
 		if workerID == "" {
 			workerID = extractWorkerID(msg)
