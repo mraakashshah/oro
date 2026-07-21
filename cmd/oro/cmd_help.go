@@ -60,6 +60,7 @@ Renders:
   resume     Drop into a task's context (title, status, AC, recent journey, cards)
 
 Global:
+  version              Print the Oro version
   agent-assets         Sync oro skills and runtime assets for agent sessions
   global-skills        Deprecated alias for Claude agent assets sync
   global-oro-approach  Deprecated alias for Claude agent assets sync
