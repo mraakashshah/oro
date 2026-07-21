@@ -341,7 +341,7 @@ oro monitor --target 2 --max-workers 2 --interval 60s
 # Scale workers up
 oro directive scale 4
 
-# Pause new assignments (workers finish current tasks)
+# Pause new assignments (workers finish current tasks; monitor --act preserves this hold)
 oro directive pause
 
 # Resume
