@@ -926,6 +926,18 @@ func TestGradeRoleLadder(t *testing.T) {
 		t.Errorf("GradeLadder() = %+v, want %+v", got, want)
 	}
 
+	tierRouted := *config.DefaultAgentConfig()
+	tierRouted.Roles["grade"] = config.RoleConfig{Transport: "cli", Tier: protocol.TierFast}
+	got = config.GradeLadder(tierRouted)
+	want = []config.RoleRung{
+		{Model: "gpt-5.6-luna", Reasoning: "low"},
+		{Model: "gpt-5.6-sol", Reasoning: "high"},
+		{Model: "gpt-5.6-sol", Reasoning: "xhigh"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("GradeLadder() with tier-routed grade = %+v, want %+v", got, want)
+	}
+
 	for _, rung := range got {
 		if err := config.Validate(&config.AgentConfig{Roles: map[string]config.RoleConfig{
 			"grade": {Transport: "cli", Runtime: "codex", Model: rung.Model, Reasoning: rung.Reasoning},
