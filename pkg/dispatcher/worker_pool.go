@@ -343,6 +343,10 @@ func (d *Dispatcher) escalateTimedOutWorkers(ctx context.Context, dead, stuck []
 		if !dw.prevSession {
 			d.escalate(ctx, protocol.FormatEscalation(protocol.EscWorkerCrash, dw.beadID, "worker disconnected", "heartbeat timeout for worker "+dw.workerID), dw.beadID, dw.workerID)
 			if dw.beadID != "" {
+				if d.quarantineDisconnectedPreservedAssignment(ctx, dw.workerID, dw.beadID, dw.assignmentID, dw.worktree) {
+					d.clearBeadTracking(dw.beadID)
+					continue
+				}
 				if err := d.updateBeadStatus(ctx, dw.beadID, "open"); err != nil {
 					_ = d.logEvent(ctx, "heartbeat_bead_reset_failed", "dispatcher", dw.beadID, dw.workerID,
 						fmt.Sprintf(`{"error":%q}`, err.Error()))

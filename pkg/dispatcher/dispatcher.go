@@ -1746,6 +1746,11 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 	}
 
 	if beadID != "" {
+		if d.quarantineDisconnectedPreservedAssignment(context.Background(), workerID, beadID, assignmentID, worktree) {
+			d.clearBeadTracking(beadID)
+			d.notifyAssignLoop()
+			return
+		}
 		d.clearBeadTracking(beadID)
 		d.safeGo(func() {
 			_ = d.updateBeadStatus(context.Background(), beadID, "open")
@@ -1755,6 +1760,57 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 	// Wake the assign loop so reconcileScale can spawn a replacement immediately
 	// rather than waiting for the next fsnotify event or fallback tick.
 	d.notifyAssignLoop()
+}
+
+func (d *Dispatcher) quarantineDisconnectedPreservedAssignment(ctx context.Context, workerID, beadID string, assignmentID int64, worktree string) bool {
+	if assignmentID <= 0 {
+		return false
+	}
+	active, err := d.assignmentActive(ctx, assignmentID, beadID)
+	if err != nil {
+		_ = d.logEvent(ctx, "disconnected_assignment_lookup_failed", "dispatcher", beadID, workerID, err.Error())
+		return true
+	}
+	if !active {
+		return false
+	}
+	blocked, details, err := d.recoveryWorkBlocked(ctx, beadID, worktree, "")
+	if err == nil && !blocked {
+		return false
+	}
+	if err != nil {
+		details = appendRecoveryDetail(details, "error: "+err.Error())
+	}
+	if details == "" {
+		details = "disconnected worker left recovery state requiring preservation"
+	}
+	_, err = d.createRecoveryQuarantine(ctx, recoveryQuarantine{
+		BeadID:       beadID,
+		AssignmentID: assignmentID,
+		WorkerID:     workerID,
+		Worktree:     worktree,
+		Branch:       protocol.BranchPrefix + beadID,
+		Reason:       "stale_active_assignment",
+		Details:      details,
+	})
+	if err != nil {
+		_ = d.logEvent(ctx, "disconnected_assignment_quarantine_failed", "dispatcher", beadID, workerID, err.Error())
+		return true
+	}
+	if err := d.updateBeadStatus(ctx, beadID, "blocked"); err != nil {
+		_ = d.logEvent(ctx, "disconnected_assignment_block_failed", "dispatcher", beadID, workerID, err.Error())
+	}
+	return true
+}
+
+func (d *Dispatcher) assignmentActive(ctx context.Context, assignmentID int64, beadID string) (bool, error) {
+	var active bool
+	err := d.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM assignments WHERE id=? AND bead_id=? AND status='active')`, assignmentID, beadID).Scan(&active)
+	if err != nil {
+		return false, fmt.Errorf("lookup disconnected assignment: %w", err)
+	}
+	return active, nil
 }
 
 func (d *Dispatcher) reconcilePreemptedDisconnect(workerID, beadID string, assignmentID int64, worktree string) {

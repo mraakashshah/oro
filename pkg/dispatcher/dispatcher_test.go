@@ -15641,6 +15641,10 @@ func TestCrashRecovery_ReconnectPreservesAttemptCount(t *testing.T) {
 	}
 
 	// Close the worker connection before shutting down dispatcher.
+	// The mock worktree manager reports the synthetic path as present. Keep the
+	// matching Git inspection synthetic too so this test exercises a clean branch
+	// with no preserved commits rather than the disconnected-work quarantine path.
+	d1.shutdownRunner = &mockCommandRunner{}
 	_ = conn1.Close()
 
 	// ========== PHASE 2: Simulate crash — cancel first dispatcher ==========
