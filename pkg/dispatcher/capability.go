@@ -14,6 +14,10 @@ import (
 
 const assignmentCapabilityLifetime = 20 * time.Minute
 
+// ErrAssignmentCapabilityNonceConflict reports reuse of a consumed nonce with
+// request content different from the original request.
+var ErrAssignmentCapabilityNonceConflict = errors.New("assignment capability nonce conflict")
+
 // ActorRole scopes the work an assignment capability may authorize.
 type ActorRole string
 
@@ -95,6 +99,51 @@ INSERT INTO assignment_capabilities (
 		Token:        token,
 		ExpiresAt:    expiresAt,
 	}, nil
+}
+
+func (d *Dispatcher) recordAssignmentCapabilityNonce(
+	ctx context.Context,
+	capabilityID, nonce string,
+	request, response []byte,
+) ([]byte, error) {
+	if d == nil || d.db == nil {
+		return nil, errors.New("record assignment capability nonce: database is nil")
+	}
+	if capabilityID == "" || nonce == "" || len(request) == 0 {
+		return nil, errors.New("record assignment capability nonce: invalid identity")
+	}
+
+	requestSum := sha256.Sum256(request)
+	requestHash := hex.EncodeToString(requestSum[:])
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin assignment capability nonce transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO assignment_capability_nonces (capability_id, nonce, request_hash, response)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(capability_id, nonce) DO NOTHING`,
+		capabilityID, nonce, requestHash, string(response)); err != nil {
+		return nil, fmt.Errorf("persist assignment capability nonce: %w", err)
+	}
+
+	var storedRequestHash, storedResponse string
+	if err := tx.QueryRowContext(ctx, `
+SELECT request_hash, response
+FROM assignment_capability_nonces
+WHERE capability_id = ? AND nonce = ?`, capabilityID, nonce,
+	).Scan(&storedRequestHash, &storedResponse); err != nil {
+		return nil, fmt.Errorf("load assignment capability nonce: %w", err)
+	}
+	if storedRequestHash != requestHash {
+		return nil, fmt.Errorf("record assignment capability nonce %q: %w", nonce, ErrAssignmentCapabilityNonceConflict)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit assignment capability nonce: %w", err)
+	}
+	return []byte(storedResponse), nil
 }
 
 func randomCapabilityValue(bytes int) (string, error) {

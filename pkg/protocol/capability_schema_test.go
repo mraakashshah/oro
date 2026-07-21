@@ -56,15 +56,18 @@ INSERT INTO assignment_capability_nonces (
 	}
 	defer func() { _ = reopened.Close() }()
 
-	var activeHash, pendingState, supersededBy, response string
+	var activeHash, activeRole, activeExpiry, pendingState, supersededBy, response string
 	var generation int64
 	if err := reopened.QueryRowContext(ctx, `
-SELECT token_hash, generation FROM assignment_capabilities WHERE capability_id = ?`, "cap-active",
-	).Scan(&activeHash, &generation); err != nil {
+SELECT token_hash, role, generation, expires_at
+FROM assignment_capabilities
+WHERE capability_id = ?`, "cap-active",
+	).Scan(&activeHash, &activeRole, &generation, &activeExpiry); err != nil {
 		t.Fatalf("load active capability: %v", err)
 	}
-	if activeHash != "hash-active" || generation != 3 {
-		t.Fatalf("active capability = hash %q generation %d", activeHash, generation)
+	if activeHash != "hash-active" || activeRole != "execution_worker" || generation != 3 || activeExpiry != "2030-01-02T03:04:05Z" {
+		t.Fatalf("active capability = hash %q role %q generation %d expiry %q",
+			activeHash, activeRole, generation, activeExpiry)
 	}
 	if err := reopened.QueryRowContext(ctx, `
 SELECT state FROM assignment_capabilities WHERE capability_id = ?`, "cap-pending",

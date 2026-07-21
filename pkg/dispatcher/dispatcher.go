@@ -6874,6 +6874,31 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		resolvedRuntime, resolvedModel, resolvedReasoning = agentmodel.ResolveForRole("ops_decompose")
 	}
 	execution := workerExecutionContext(assignmentID, isEpicDecomp, filepath.Base(d.cfg.RepoRoot))
+	capability, capabilityErr := d.issueAssignmentCapability(
+		ctx,
+		execution.AssignmentID,
+		execution.Generation,
+		ActorRole(execution.ActorRole),
+	)
+	if capabilityErr != nil {
+		_ = d.logEvent(ctx, "assignment_capability_issue_failed", "dispatcher", bead.ID, w.id, capabilityErr.Error())
+		if completeErr := d.completeAssignment(ctx, assignmentID, bead.ID); completeErr != nil {
+			_ = d.logEvent(ctx, "assignment_cleanup_failed", "dispatcher", bead.ID, w.id, completeErr.Error())
+		}
+		_ = d.updateBeadStatus(ctx, bead.ID, "open")
+		if createdWorktree {
+			_ = d.worktrees.Remove(ctx, worktree)
+			d.mu.Lock()
+			delete(d.worktreeByBead, bead.ID)
+			d.mu.Unlock()
+		}
+		d.mu.Lock()
+		delete(d.assigningBeads, bead.ID)
+		d.mu.Unlock()
+		d.releaseAssignmentReservation(w.id, bead.ID)
+		return nil
+	}
+	execution.Capability = capability.Token
 	payload := d.buildAssignPayload(ctx, &trackedWorker{
 		id:           w.id,
 		beadID:       bead.ID,
