@@ -615,6 +615,22 @@ func TestFakeReadTxDelegatesStoreReads(t *testing.T) {
 	store.SetCards([]cards.Card{{ID: "card", Type: cards.CardTypeRule, Title: "card"}})
 
 	if err := store.WithReadTx(ctx, func(tx beadstore.ReadTx) error {
+		ready, err := tx.Ready(ctx)
+		if err != nil {
+			return err
+		}
+		if len(ready) != 2 || ready[0].ID != "child-open" || ready[1].ID != "epic" {
+			t.Fatalf("Ready() = %#v, want child-open then epic", ready)
+		}
+
+		inProgress, err := tx.InProgress(ctx)
+		if err != nil {
+			return err
+		}
+		if len(inProgress) != 0 {
+			t.Fatalf("InProgress() = %#v, want no in-progress beads", inProgress)
+		}
+
 		blocked, err := tx.Blocked(ctx)
 		if err != nil {
 			return err
