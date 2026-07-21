@@ -53,27 +53,40 @@ const (
 	MsgRerankByIDsResponse MessageType = "RERANK_BY_IDS_RESPONSE"
 )
 
+// Work intake message types use a short-lived connection. They intentionally
+// do not participate in the worker registration lifecycle.
+const (
+	MsgEvidenceRequest      MessageType = "EVIDENCE_REQUEST"
+	MsgEvidenceResponse     MessageType = "EVIDENCE_RESPONSE"
+	MsgWorkProposalRequest  MessageType = "WORK_PROPOSAL_REQUEST"
+	MsgWorkProposalResponse MessageType = "WORK_PROPOSAL_RESPONSE"
+)
+
 // Message is the envelope for all UDS messages. The Type field selects which
 // payload pointer is populated; unused payloads are nil and omitted from JSON.
 type Message struct {
-	Type             MessageType              `json:"type"`
-	Assign           *AssignPayload           `json:"assign,omitempty"`
-	Heartbeat        *HeartbeatPayload        `json:"heartbeat,omitempty"`
-	Status           *StatusPayload           `json:"status,omitempty"`
-	Handoff          *HandoffPayload          `json:"handoff,omitempty"`
-	Done             *DonePayload             `json:"done,omitempty"`
-	ReadyForReview   *ReadyForReviewPayload   `json:"ready_for_review,omitempty"`
-	Reconnect        *ReconnectPayload        `json:"reconnect,omitempty"`
-	PrepareShutdown  *PrepareShutdownPayload  `json:"prepare_shutdown,omitempty"`
-	ShutdownApproved *ShutdownApprovedPayload `json:"shutdown_approved,omitempty"`
-	Directive        *DirectivePayload        `json:"directive,omitempty"`
-	ACK              *ACKPayload              `json:"ack,omitempty"`
-	ReviewResult     *ReviewResultPayload     `json:"review_result,omitempty"`
-	Embed            *EmbedRequest            `json:"embed,omitempty"`
-	EmbedResp        *EmbedResponse           `json:"embed_response,omitempty"`
-	RerankReq        *RerankByIDsRequest      `json:"rerank_req,omitempty"`
-	RerankResp       *RerankByIDsResponse     `json:"rerank_resp,omitempty"`
-	CheckpointAck    *CheckpointAckPayload    `json:"checkpoint_ack,omitempty"`
+	Type                 MessageType              `json:"type"`
+	Assign               *AssignPayload           `json:"assign,omitempty"`
+	Heartbeat            *HeartbeatPayload        `json:"heartbeat,omitempty"`
+	Status               *StatusPayload           `json:"status,omitempty"`
+	Handoff              *HandoffPayload          `json:"handoff,omitempty"`
+	Done                 *DonePayload             `json:"done,omitempty"`
+	ReadyForReview       *ReadyForReviewPayload   `json:"ready_for_review,omitempty"`
+	Reconnect            *ReconnectPayload        `json:"reconnect,omitempty"`
+	PrepareShutdown      *PrepareShutdownPayload  `json:"prepare_shutdown,omitempty"`
+	ShutdownApproved     *ShutdownApprovedPayload `json:"shutdown_approved,omitempty"`
+	Directive            *DirectivePayload        `json:"directive,omitempty"`
+	ACK                  *ACKPayload              `json:"ack,omitempty"`
+	ReviewResult         *ReviewResultPayload     `json:"review_result,omitempty"`
+	Embed                *EmbedRequest            `json:"embed,omitempty"`
+	EmbedResp            *EmbedResponse           `json:"embed_response,omitempty"`
+	RerankReq            *RerankByIDsRequest      `json:"rerank_req,omitempty"`
+	RerankResp           *RerankByIDsResponse     `json:"rerank_resp,omitempty"`
+	CheckpointAck        *CheckpointAckPayload    `json:"checkpoint_ack,omitempty"`
+	EvidenceRequest      *EvidenceRequest         `json:"evidence_request,omitempty"`
+	EvidenceResponse     *EvidenceResponse        `json:"evidence_response,omitempty"`
+	WorkProposalRequest  *WorkProposalRequest     `json:"work_proposal_request,omitempty"`
+	WorkProposalResponse *WorkProposalResponse    `json:"work_proposal_response,omitempty"`
 }
 
 // AssignPayload is sent by the dispatcher to assign a bead to a worker.

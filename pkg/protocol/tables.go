@@ -19,18 +19,39 @@ type WorkProposalPayload struct {
 
 // EvidenceRun is the durable execution record a proposal must cite.
 type EvidenceRun struct {
-	ID           string
-	AssignmentID int64
-	WorkerID     string
-	BeadID       string
-	Kind         string
-	Status       string
+	ID           string `json:"id"`
+	AssignmentID int64  `json:"assignment_id"`
+	WorkerID     string `json:"worker_id"`
+	BeadID       string `json:"bead_id"`
+	Kind         string `json:"kind"`
+	Status       string `json:"status"`
+}
+
+// EvidenceRequest submits one durable evidence run before a proposal cites it.
+type EvidenceRequest struct {
+	Evidence EvidenceRun `json:"evidence"`
+}
+
+// EvidenceResponse acknowledges an evidence request or reports its validation error.
+type EvidenceResponse struct {
+	Error string `json:"error,omitempty"`
 }
 
 // WorkProposalResult is the durable response to a work-proposal submission.
 type WorkProposalResult struct {
 	ProposalID string `json:"proposal_id"`
 	State      string `json:"state"`
+}
+
+// WorkProposalRequest submits one provisional work proposal.
+type WorkProposalRequest struct {
+	Proposal WorkProposalPayload `json:"proposal"`
+}
+
+// WorkProposalResponse returns the durable proposal result or a validation error.
+type WorkProposalResponse struct {
+	Result WorkProposalResult `json:"result"`
+	Error  string             `json:"error,omitempty"`
 }
 
 // Event represents a row in the events SQLite table.
