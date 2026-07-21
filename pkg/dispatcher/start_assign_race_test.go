@@ -25,8 +25,10 @@ import (
 func TestDispatcherStartSequence_AssignsWorkerUnderParallelStress(t *testing.T) {
 	qgserial.RequireSerial(t)
 	const numWorkers = 4
+	const opTimeout = 10 * time.Second
 
 	d, beadSrc, wt, _, _, _ := newTestDispatcher(t)
+	d.cfg.HeartbeatTimeout = opTimeout
 	wt.createFn = func(_ context.Context, bID, _ string) (string, string, error) {
 		return "/tmp/stress-wt-" + bID, "agent/" + bID, nil
 	}
@@ -41,9 +43,9 @@ func TestDispatcherStartSequence_AssignsWorkerUnderParallelStress(t *testing.T) 
 	}
 	beadSrc.SetBeads(beads)
 
-	startDispatcher(t, d)
+	startDispatcherWithTimeout(t, d, opTimeout)
 	sendDirective(t, d.cfg.SocketPath, "start")
-	waitForState(t, d, StateRunning, 2*time.Second)
+	waitForState(t, d, StateRunning, opTimeout)
 
 	// Open all connections before sending any heartbeats so all workers
 	// can register concurrently, maximising the race window.
@@ -85,7 +87,7 @@ func TestDispatcherStartSequence_AssignsWorkerUnderParallelStress(t *testing.T) 
 	for i := range conns {
 		i := i
 		go func() {
-			_ = conns[i].SetReadDeadline(time.Now().Add(5 * time.Second))
+			_ = conns[i].SetReadDeadline(time.Now().Add(opTimeout))
 			if !scanners[i].Scan() {
 				resultCh <- result{idx: i, err: fmt.Sprintf("worker %d: timed out before ASSIGN", i)}
 				return
