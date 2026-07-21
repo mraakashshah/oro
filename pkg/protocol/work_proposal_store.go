@@ -44,7 +44,10 @@ func (s *WorkProposalStore) Close() error {
 	if s == nil || s.db == nil {
 		return nil
 	}
-	return s.db.Close()
+	if err := s.db.Close(); err != nil {
+		return fmt.Errorf("close work proposal store: %w", err)
+	}
+	return nil
 }
 
 // StoreWorkProposal persists one provisional proposal. Exact submissions

@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"oro/pkg/protocol"
 )
@@ -22,7 +23,11 @@ func (d *Dispatcher) storeWorkProposal(ctx context.Context, payload WorkProposal
 	}
 	store, err := protocol.NewWorkProposalStore(d.db)
 	if err != nil {
-		return WorkProposalResult{}, err
+		return WorkProposalResult{}, fmt.Errorf("create work proposal store: %w", err)
 	}
-	return store.StoreWorkProposal(ctx, payload)
+	result, err := store.StoreWorkProposal(ctx, payload)
+	if err != nil {
+		return WorkProposalResult{}, fmt.Errorf("persist work proposal: %w", err)
+	}
+	return result, nil
 }
