@@ -941,7 +941,10 @@ qg_pyright() {
 			VIRTUAL_ENV="$active_venv" PATH="$active_venv/bin:$PATH" "$path" "$@"
 			return
 		fi
-		(unset VIRTUAL_ENV; "$path" "$@")
+		(
+			unset VIRTUAL_ENV
+			"$path" "$@"
+		)
 		return
 	fi
 	echo "SKIP: pyright not installed"
