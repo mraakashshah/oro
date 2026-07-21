@@ -70,6 +70,7 @@ Maintenance:
   doctrine   Inspect enforcement doctrine artifacts
   uninstall  Remove oro and all its artifacts from this machine
   harness    Run Oro harness verification tests (§18)
+  version    Print the Oro version
 
 Internal:
   worker     Run an oro worker process (used by the dispatcher)
