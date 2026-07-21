@@ -58,6 +58,12 @@ type RoleConfig struct {
 	APIModel  string        `yaml:"api_model,omitempty"`
 }
 
+// RoleRung identifies a model and reasoning level in a role escalation ladder.
+type RoleRung struct {
+	Model     string
+	Reasoning string
+}
+
 // TransportConfig holds global transport-level settings (reserved for future use).
 type TransportConfig struct{}
 
@@ -202,6 +208,7 @@ func rolesForProviderMode(coding, review providerProfile) map[string]RoleConfig 
 	opsReviewModel := firstNonEmpty(review.opsReviewModel, review.deepModel)
 	opsReviewReasoning := firstNonEmpty(review.opsReviewReasoning, review.deepReasoning)
 	roles := map[string]RoleConfig{
+		"grade":                   roleConfig(coding.runtime, coding.balancedModel, coding.fastReasoning),
 		"spec_writer":             roleConfig(coding.runtime, coding.deepModel, firstNonEmpty(coding.specReasoning, coding.deepReasoning)),
 		"spec_challenger":         roleConfig(review.runtime, review.deepModel, firstNonEmpty(review.challengeReasoning, review.deepReasoning)),
 		"worker":                  roleConfig(coding.runtime, coding.balancedModel, coding.balancedReasoning),
@@ -226,6 +233,18 @@ func rolesForProviderMode(coding, review providerProfile) map[string]RoleConfig 
 		"estimator":               {Tier: protocol.TierFast, Transport: "cli"},
 	}
 	return roles
+}
+
+// GradeLadder returns the configured grade role and its two escalation rungs.
+func GradeLadder(cfg AgentConfig) []RoleRung {
+	grade := cfg.Roles["grade"]
+	deep := cfg.Tiers[protocol.TierDeep]
+
+	return []RoleRung{
+		{Model: grade.Model, Reasoning: grade.Reasoning},
+		{Model: deep.Model, Reasoning: deep.Reasoning},
+		{Model: deep.Model, Reasoning: "xhigh"},
+	}
 }
 
 func tierConfig(runtime, model, reasoning string) TierConfig {
@@ -385,6 +404,11 @@ func Validate(c *AgentConfig) error {
 
 	for name, role := range c.Roles {
 		errs = append(errs, validateRole(name, role)...)
+	}
+	for _, rung := range GradeLadder(*c) {
+		if msg := checkReasoning("grade ladder", c.Roles["grade"].Runtime, rung.Reasoning); msg != "" {
+			errs = append(errs, msg)
+		}
 	}
 
 	if len(errs) == 0 {
