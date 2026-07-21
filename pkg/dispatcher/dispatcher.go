@@ -4003,6 +4003,15 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 	// Persist learnings and decisions from the handoff payload as memories.
 	d.persistHandoffContext(ctx, msg.Handoff)
 
+	// A HANDOFF is the worker's acknowledgement of PREEMPT. Release the old
+	// durable assignment before ordinary handoff logic can offer it to another
+	// worker. The assigningBeads reservation held by detachPreemptedHandoff
+	// keeps normal scheduling out until reconciliation reaches a terminal state.
+	if assignmentID, worktree, ok := d.detachPreemptedHandoff(workerID, beadID); ok {
+		d.reconcilePreemptedDisconnect(workerID, beadID, assignmentID, worktree)
+		return
+	}
+
 	// Track handoff count per bead.
 	handoffCount, assignmentID := d.incrementHandoffCount(workerID, beadID)
 	d.persistBeadCount(ctx, assignmentID, beadID, "handoff_count", handoffCount)
@@ -4036,6 +4045,30 @@ func (d *Dispatcher) incrementHandoffCount(workerID, beadID string) (handoffCoun
 	defer d.mu.Unlock()
 	d.handoffCounts[beadID]++
 	return d.handoffCounts[beadID], d.assignmentIDLocked(workerID, beadID)
+}
+
+func (d *Dispatcher) detachPreemptedHandoff(workerID, beadID string) (assignmentID int64, worktree string, ok bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w, exists := d.workers[workerID]
+	if !exists || w == nil || w.state != protocol.WorkerPreempting || w.beadID != beadID {
+		return 0, "", false
+	}
+
+	assignmentID = w.assignmentID
+	if assignmentID <= 0 {
+		assignmentID = w.execution.AssignmentID
+	}
+	worktree = w.worktree
+	d.assigningBeads[beadID] = true
+	_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
+	w.state = protocol.WorkerShuttingDown
+	w.assignmentID = 0
+	w.execution = WorkerExecutionContext{}
+	w.beadID = ""
+	w.epicID = ""
+	w.isEpicDecomp = false
+	return assignmentID, worktree, true
 }
 
 func (d *Dispatcher) shutdownWorkerForHandoff(workerID string) workerAssignmentSnapshot {
