@@ -60,6 +60,35 @@ func RunSweepLoop(ctx context.Context, store DeferredStore, db *sql.DB, cfg Swee
 	}
 }
 
+// runSweepLoop runs the dispatcher-owned sweep loop. Grade draining needs the
+// dispatcher because it owns both the card store and the ops spawner.
+func (d *Dispatcher) runSweepLoop(ctx context.Context, cfg SweepConfig) {
+	cfg = cfg.withDefaults()
+
+	t5 := time.NewTicker(cfg.Interval5m)
+	t60 := time.NewTicker(cfg.Interval60m)
+	defer t5.Stop()
+	defer t60.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t5.C:
+			d.run5MinSweepers(ctx)
+		case <-t60.C:
+			run60MinSweepers(ctx, d.db, cfg.EventRetention, cfg.SLADays)
+		}
+	}
+}
+
+func (d *Dispatcher) run5MinSweepers(ctx context.Context) {
+	run5MinSweepers(ctx, d.beads, d.db)
+	if err := d.drainGradeProposals(ctx); err != nil {
+		slog.WarnContext(ctx, "sweep: drain grade proposals failed", "err", err)
+	}
+}
+
 func run5MinSweepers(ctx context.Context, store DeferredStore, db *sql.DB) {
 	if err := PromoteClosedParentChildren(ctx, store); err != nil {
 		slog.WarnContext(ctx, "sweep: PromoteClosedParentChildren failed", "err", err)
