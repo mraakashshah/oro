@@ -3,7 +3,10 @@ package storage_test
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -139,6 +142,61 @@ func TestRuntimeHandleLeaseEnvelope(t *testing.T) {
 				t.Fatalf("success run: %v", runErr)
 			}
 		})
+	}
+}
+
+func TestRuntimeHandleUsesShortTmpRootOnDarwin(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin has a short Unix socket path limit")
+	}
+	if os.Getenv("ORO_RUNTIME_SHORT_TMP_HELPER") == "1" {
+		assertRuntimeHandleUsesShortTmpRoot(t)
+		return
+	}
+
+	longTmpRoot, err := os.MkdirTemp("/var/tmp", strings.Repeat("oro-runtime-short-tmp-", 3))
+	if err != nil {
+		t.Fatalf("create long tmp root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(longTmpRoot); err != nil {
+			t.Errorf("remove long tmp root: %v", err)
+		}
+	})
+	command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestRuntimeHandleUsesShortTmpRootOnDarwin$")
+	command.Env = []string{
+		"ORO_RUNTIME_SHORT_TMP_HELPER=1",
+		"TMPDIR=" + longTmpRoot,
+	}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("short tmp root helper: %v\n%s", err, output)
+	}
+}
+
+func assertRuntimeHandleUsesShortTmpRoot(t *testing.T) {
+	t.Helper()
+
+	store := &recordingRuntimeLeaseStore{}
+	handle, err := storage.OpenRuntime(context.Background(), storage.RuntimeRequest{
+		Catalog: store,
+		Lease: storage.LeaseRequest{
+			ID: storage.LeaseID("short-tmp-root"),
+		},
+		Workdir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("open runtime: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := handle.Close(); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+
+	wantPrefix := filepath.Join("/tmp", "oro-subprocess") + string(filepath.Separator)
+	if !strings.HasPrefix(handle.ScratchDir, wantPrefix) {
+		t.Fatalf("scratch directory = %q, want short root prefix %q", handle.ScratchDir, wantPrefix)
 	}
 }
 
