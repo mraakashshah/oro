@@ -22353,7 +22353,7 @@ func TestBuildAssignPayload_PopulatesAllFields(t *testing.T) {
 			isEpicDecomp: false,
 		}
 
-		got := d.buildAssignPayload(context.Background(), w, 1, "some feedback", "memory ctx")
+		got := d.buildAssignPayload(context.Background(), w, 1, "some feedback", "memory ctx", WorkerExecutionContext{})
 
 		if got.BeadID != "test-bead" {
 			t.Errorf("BeadID = %q, want %q", got.BeadID, "test-bead")
@@ -22420,7 +22420,7 @@ func TestBuildAssignPayload_PopulatesAllFields(t *testing.T) {
 			isEpicDecomp: true,
 		}
 
-		got := d.buildAssignPayload(context.Background(), w, 0, "", "")
+		got := d.buildAssignPayload(context.Background(), w, 0, "", "", WorkerExecutionContext{})
 
 		if got.GitLog != "" {
 			t.Errorf("GitLog should be empty for epic decomp, got %q", got.GitLog)
@@ -22455,7 +22455,7 @@ func TestBuildAssignPayload_PopulatesAllFields(t *testing.T) {
 			isEpicDecomp: false,
 		}
 
-		got := d.buildAssignPayload(context.Background(), w, 0, "", "")
+		got := d.buildAssignPayload(context.Background(), w, 0, "", "", WorkerExecutionContext{})
 
 		if got.Title != "" {
 			t.Errorf("Title should be empty on Show error, got %q", got.Title)
