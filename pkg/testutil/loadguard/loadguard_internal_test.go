@@ -64,3 +64,26 @@ func TestSkipIfLoaded(t *testing.T) {
 		}
 	})
 }
+
+func TestParseLoadAverage(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		input string
+		want  float64
+		ok    bool
+	}{
+		{name: "plain value", input: "1.25 0.50 0.25", want: 1.25, ok: true},
+		{name: "sysctl tuple", input: "{ 2.50 1.00 0.75 }", want: 2.5, ok: true},
+		{name: "empty", input: "", ok: false},
+		{name: "invalid", input: "not-a-number", ok: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseLoadAverage(tc.input)
+			if ok != tc.ok || got != tc.want {
+				t.Fatalf("parseLoadAverage(%q) = (%v, %v), want (%v, %v)", tc.input, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
