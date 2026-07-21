@@ -50,7 +50,7 @@ type GradeVerdict struct {
 
 // GateConfig controls the proposal grade confidence gate.
 type GateConfig struct {
-	AutoApplyConfidence   float64
+	AutoApplyConfidence   []float64
 	EnsembleMinConfidence float64
 }
 
@@ -119,22 +119,22 @@ func DecidePromotion(c CardCandidate, verdict string, existing []CardSummary) Pr
 	}
 }
 
-func gradeGate(verdicts []GradeVerdict, cfg GateConfig) GradeOutcome {
+func gradeGate(verdicts []GradeVerdict, cfg GateConfig, rungs ...int) GradeOutcome {
 	if len(verdicts) == 0 {
 		return queueGrade(0, "", "no_verdicts")
 	}
 
 	if len(verdicts) == 1 {
-		return singleGradeGate(verdicts[0], cfg)
+		return singleGradeGate(verdicts[0], cfg, gradeRung(rungs))
 	}
 	return ensembleGradeGate(verdicts, cfg)
 }
 
-func singleGradeGate(verdict GradeVerdict, cfg GateConfig) GradeOutcome {
+func singleGradeGate(verdict GradeVerdict, cfg GateConfig, rung int) GradeOutcome {
 	confidence := clampConfidence(verdict.Confidence)
 	switch verdict.Verdict {
 	case GradeVerdictCorrect:
-		if confidence >= clampConfidence(cfg.AutoApplyConfidence) {
+		if threshold, ok := autoApplyConfidence(cfg, rung); ok && confidence >= threshold {
 			return applyGrade(confidence, GradeVerdictCorrect)
 		}
 		return queueGrade(confidence, GradeVerdictCorrect, "ensemble_required")
@@ -147,6 +147,20 @@ func singleGradeGate(verdict GradeVerdict, cfg GateConfig) GradeOutcome {
 	default:
 		return queueGrade(confidence, verdict.Verdict, "unknown_verdict")
 	}
+}
+
+func gradeRung(rungs []int) int {
+	if len(rungs) == 0 {
+		return 0
+	}
+	return rungs[0]
+}
+
+func autoApplyConfidence(cfg GateConfig, rung int) (float64, bool) {
+	if rung < 0 || rung >= len(cfg.AutoApplyConfidence) {
+		return 0, false
+	}
+	return clampConfidence(cfg.AutoApplyConfidence[rung]), true
 }
 
 func ensembleGradeGate(verdicts []GradeVerdict, cfg GateConfig) GradeOutcome {
