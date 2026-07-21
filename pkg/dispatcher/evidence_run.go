@@ -71,8 +71,6 @@ type EvidenceManifest struct {
 // RunEvidence executes req.Argv in the active assignment's stored worktree.
 // It persists only terminal manifests, so an interrupted process can never be
 // mistaken for usable evidence.
-//
-//oro:testonly — protocol request routing wires this dispatcher boundary in a later task.
 func (d *Dispatcher) RunEvidence(ctx context.Context, req EvidenceRunRequest) (EvidenceManifest, error) {
 	if d == nil || d.db == nil {
 		return EvidenceManifest{}, errors.New("run evidence: dispatcher database is unavailable")

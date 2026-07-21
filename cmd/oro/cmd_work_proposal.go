@@ -29,12 +29,6 @@ type workProposalIdentity struct {
 	capability   protocol.WorkRequestCapability
 }
 
-type evidenceRunCLIResult struct {
-	ID       string `json:"id"`
-	Status   string `json:"status"`
-	ExitCode int    `json:"exit_code"`
-}
-
 type workRequestError struct {
 	Operation string `json:"operation"`
 	Code      string `json:"code"`
@@ -102,7 +96,7 @@ func runEvidenceCommand(ctx context.Context, output io.Writer, kind string, time
 	if err != nil {
 		return err
 	}
-	if err := json.NewEncoder(output).Encode(evidenceRunCLIResult(result)); err != nil {
+	if err := json.NewEncoder(output).Encode(result); err != nil {
 		return fmt.Errorf("encode evidence result: %w", err)
 	}
 	return nil

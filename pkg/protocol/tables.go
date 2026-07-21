@@ -34,7 +34,7 @@ type EvidenceRequest struct {
 }
 
 // WorkRequestCapability carries the live assignment credential on a
-// short-lived worker request. Dispatcher authorization validates it.
+// short-lived worker request.
 type WorkRequestCapability struct {
 	CapabilityID string `json:"capability_id"`
 	Token        string `json:"token"`

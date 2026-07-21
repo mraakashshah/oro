@@ -46,6 +46,26 @@ func TestProposalConnectionPreservesTrackedWorker(t *testing.T) {
 		t.Fatalf("evidence response error = %q", evidenceResponse.EvidenceResponse.Error)
 	}
 
+	executionResponse := sendWorkRequest(t, d, protocol.Message{
+		Type: protocol.MsgEvidenceRequest,
+		EvidenceRequest: &protocol.EvidenceRequest{
+			Execution: &protocol.EvidenceExecutionRequest{
+				AssignmentID: 999,
+				WorkerID:     workerID,
+				BeadID:       "proposal-bead",
+				Kind:         "diagnostic",
+				Argv:         []string{"printf", "evidence"},
+				TimeoutMS:    int64(time.Second / time.Millisecond),
+			},
+		},
+	})
+	if executionResponse.Type != protocol.MsgEvidenceResponse || executionResponse.EvidenceResponse == nil {
+		t.Fatalf("execution response = %#v, want typed evidence response", executionResponse)
+	}
+	if got := executionResponse.EvidenceResponse.Error; got != "run evidence: active assignment not found" {
+		t.Fatalf("execution response error = %q, want execution-path assignment error", got)
+	}
+
 	proposalResponse := sendWorkRequest(t, d, protocol.Message{
 		Type: protocol.MsgWorkProposalRequest,
 		WorkProposalRequest: &protocol.WorkProposalRequest{
