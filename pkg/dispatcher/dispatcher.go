@@ -3021,6 +3021,9 @@ func (d *Dispatcher) completeEpicRebaseChild(ctx context.Context, detail *protoc
 }
 
 func epicRebaseChildRecoveryTarget(detail *protocol.BeadDetail, epicBranch string) string {
+	if detail == nil {
+		return ""
+	}
 	if target, _ := detail.Metadata["epic_rebase_target"].(string); strings.TrimSpace(target) != "" {
 		return strings.TrimSpace(target)
 	}

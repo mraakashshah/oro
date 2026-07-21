@@ -17494,6 +17494,12 @@ func TestEpicRebaseChildAcceptanceAllowsPreservedAncestry(t *testing.T) {
 		}
 	})
 
+	t.Run("missing child detail has no recovery target", func(t *testing.T) {
+		if got := epicRebaseChildRecoveryTarget(nil, epicBranch); got != "" {
+			t.Fatalf("recovery target = %q, want empty", got)
+		}
+	})
+
 	t.Run("generated ancestry command follows real git topology", func(t *testing.T) {
 		acceptanceParts := strings.Split(rebaseChildAcceptance(epicID, epicBranch, targetBranch), " | ")
 		if len(acceptanceParts) < 2 {
