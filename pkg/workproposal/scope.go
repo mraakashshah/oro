@@ -52,6 +52,8 @@ type canonicalScopeV1 struct {
 }
 
 // NormalizeScopeV1 validates and serializes a canonical V1 scope key.
+//
+//oro:testonly
 func NormalizeScopeV1(input ScopeInput) (ScopeKeyV1, error) {
 	if len(input.Fields) != 0 {
 		return "", fmt.Errorf("scope contains unknown fields")
