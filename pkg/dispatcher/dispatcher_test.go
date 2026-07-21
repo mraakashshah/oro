@@ -6739,6 +6739,85 @@ func TestDirective_FocusAndInvalid(t *testing.T) {
 	}
 }
 
+func TestDirectivePauseResumeEventsRecordSourceAndReason(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	for _, directive := range []struct {
+		op     string
+		source string
+		reason string
+	}{
+		{op: string(protocol.DirectivePause), source: "operator", reason: "safety_hold"},
+		{op: string(protocol.DirectiveResume), source: "monitor", reason: "policy_authorized_recovery"},
+	} {
+		conn, err := net.Dial("unix", d.cfg.SocketPath)
+		if err != nil {
+			t.Fatalf("connect to dispatcher: %v", err)
+		}
+		sendMsg(t, conn, protocol.Message{Type: protocol.MsgDirective, Directive: &protocol.DirectivePayload{
+			Op: directive.op, Source: directive.source, Reason: directive.reason,
+		}})
+		if _, ok := readMsg(t, conn, 2*time.Second); !ok {
+			t.Fatalf("missing ACK for %s", directive.op)
+		}
+		_ = conn.Close()
+	}
+
+	rows, err := d.db.Query(`SELECT source, payload FROM events WHERE type = 'directive' ORDER BY id ASC`)
+	if err != nil {
+		t.Fatalf("query directive events: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var got []string
+	for rows.Next() {
+		var source, payload string
+		if err := rows.Scan(&source, &payload); err != nil {
+			t.Fatalf("scan directive event: %v", err)
+		}
+		if strings.Contains(payload, `"directive":"pause"`) || strings.Contains(payload, `"directive":"resume"`) {
+			got = append(got, source+":"+payload)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate directive events: %v", err)
+	}
+	if len(got) != 2 || !strings.Contains(got[0], `operator:{"directive":"pause","args":"","source":"operator","reason":"safety_hold"}`) ||
+		!strings.Contains(got[1], `monitor:{"directive":"resume","args":"","source":"monitor","reason":"policy_authorized_recovery"}`) {
+		t.Fatalf("pause/resume directive events = %v", got)
+	}
+}
+
+func TestDirectivePauseProvenanceIsExposedInFactoryHealth(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, err := net.Dial("unix", d.cfg.SocketPath)
+	if err != nil {
+		t.Fatalf("connect to dispatcher: %v", err)
+	}
+	sendMsg(t, conn, protocol.Message{Type: protocol.MsgDirective, Directive: &protocol.DirectivePayload{
+		Op: string(protocol.DirectivePause), Source: "operator", Reason: "systemic_qg_hold",
+	}})
+	if _, ok := readMsg(t, conn, 2*time.Second); !ok {
+		t.Fatal("missing pause ACK")
+	}
+	_ = conn.Close()
+
+	detail, err := d.applyHealth()
+	if err != nil {
+		t.Fatalf("apply health: %v", err)
+	}
+	var health factoryhealth.FactoryHealth
+	if err := json.Unmarshal([]byte(detail), &health); err != nil {
+		t.Fatalf("unmarshal health: %v", err)
+	}
+	if health.Metrics.PauseSource != "operator" || health.Metrics.PauseReason != "systemic_qg_hold" {
+		t.Fatalf("pause provenance = (%q, %q), want operator systemic_qg_hold", health.Metrics.PauseSource, health.Metrics.PauseReason)
+	}
+}
+
 func TestSQLiteHelpers_ClosedDB(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
