@@ -88,7 +88,7 @@ func (s *WorkerSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning
 	cmd.Dir = workdir
 	stderrTail := worker.NewLineTailBuffer(100)
 	cmd.Stderr = io.MultiWriter(os.Stderr, stderrTail)
-	cmd.Env = processenv.ForWorkdir(os.Environ(), workdir)
+	cmd.Env = worker.EnvironmentForContext(ctx, processenv.ForWorkdir(os.Environ(), workdir))
 
 	cmd.Stdin = strings.NewReader(assembledPrompt)
 
