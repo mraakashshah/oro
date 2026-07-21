@@ -362,16 +362,18 @@ ORDER BY id`)
 	return records, nil
 }
 
-// countPreservableRecoveryQuarantines returns active quarantines that may hold
-// work worth recovering. Without a stored branch or worktree, the dispatcher
-// can prove the CLI empty-safe predicate with zero dirty files and no branch;
-// any stored recovery location remains blocking until it is inspected or
-// resolved explicitly.
+// countPreservableRecoveryQuarantines returns open quarantines that may hold
+// work worth recovering. Human-owned recovery work is deliberately excluded:
+// its branch and worktree remain protected by per-bead filtering, but an
+// operator taking ownership must not freeze unrelated factory work. Without a
+// stored branch or worktree, the dispatcher can prove the CLI empty-safe
+// predicate with zero dirty files and no branch; any stored recovery location
+// remains blocking until it is inspected or resolved explicitly.
 func (d *Dispatcher) countPreservableRecoveryQuarantines(ctx context.Context) (int, error) {
 	rows, err := d.db.QueryContext(ctx, `
 SELECT COALESCE(branch, ''), COALESCE(worktree, '')
 FROM recovery_quarantines
-WHERE status IN ('open', 'human_owned')`)
+WHERE status='open'`)
 	if err != nil {
 		if tableMissingErr(err) {
 			return 0, nil

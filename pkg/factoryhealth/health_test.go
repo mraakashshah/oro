@@ -315,7 +315,7 @@ func TestEvaluateAssignmentFrozenByQuarantine(t *testing.T) {
 	}
 }
 
-func TestLoadRecoveryQuarantineMetricsIncludesHumanOwned(t *testing.T) {
+func TestLoadRecoveryQuarantineMetricsExcludesHumanOwned(t *testing.T) {
 	ctx := context.Background()
 	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
@@ -339,8 +339,8 @@ VALUES
 	if err != nil {
 		t.Fatalf("LoadRecoveryQuarantineMetrics: %v", err)
 	}
-	if got != 2 {
-		t.Fatalf("open recovery quarantines = %d, want 2", got)
+	if got != 1 {
+		t.Fatalf("open recovery quarantines = %d, want 1", got)
 	}
 
 	health := evaluateWithAvailableStorage(Snapshot{
