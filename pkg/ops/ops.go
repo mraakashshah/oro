@@ -558,6 +558,9 @@ func (s *Spawner) CancelForBead(beadID string) (int, error) {
 		if err := agent.proc.Kill(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("ops: kill agent %q for bead %q: %w", agent.ID, beadID, err)
 		}
+		s.mu.Lock()
+		delete(s.active, agent.ID)
+		s.mu.Unlock()
 	}
 	return len(toCancel), firstErr
 }

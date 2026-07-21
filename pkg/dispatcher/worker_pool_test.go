@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,6 +33,24 @@ func (s *blockingReviewSpawner) Spawn(context.Context, string, string, string) (
 
 type blockingReviewProcess struct {
 	release <-chan struct{}
+}
+
+type countingReviewProcess struct {
+	kills atomic.Int32
+	done  chan struct{}
+}
+
+func (p *countingReviewProcess) Wait() error           { <-p.done; return nil }
+func (p *countingReviewProcess) Kill() error           { p.kills.Add(1); close(p.done); return nil }
+func (*countingReviewProcess) Output() (string, error) { return "", nil }
+func (*countingReviewProcess) LastOutputAt() time.Time { return time.Time{} }
+
+type countingReviewSpawner struct {
+	process *countingReviewProcess
+}
+
+func (s *countingReviewSpawner) Spawn(context.Context, string, string, string) (ops.Process, error) {
+	return s.process, nil
 }
 
 func (p *blockingReviewProcess) Wait() error {
@@ -1086,7 +1105,7 @@ func TestCheckHeartbeats_ActiveReviewUsesReviewTimeout(t *testing.T) {
 	}
 	d.mu.Unlock()
 
-	_ = d.ops.Review(context.Background(), ops.ReviewOpts{BeadID: beadID, Worktree: t.TempDir()})
+	_ = d.ops.Review(context.Background(), ops.ReviewOpts{BeadID: beadID, Worktree: d.repoRoot, BaseBranch: "missing-base"})
 	waitFor(t, func() bool { return d.ops.HasActiveForBead(beadID) }, time.Second)
 
 	d.checkHeartbeats(context.Background())
@@ -1451,6 +1470,35 @@ func TestCheckHeartbeats_ReviewTimeout(t *testing.T) {
 	}
 	if !strings.Contains(msgs[0], beadID) {
 		t.Errorf("expected escalation to mention bead %q, got %q", beadID, msgs[0])
+	}
+}
+
+func TestCheckHeartbeats_ReviewTimeoutCancelsOps(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	process := &countingReviewProcess{done: make(chan struct{})}
+	d.ops = ops.NewSpawner(&countingReviewSpawner{process: process})
+	d.cfg.ReviewTimeout = 100 * time.Millisecond
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+	server, client := net.Pipe()
+	t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
+	beadID := "review-timeout-cancel-bead"
+	d.mu.Lock()
+	d.workers["review-timeout-cancel-worker"] = &trackedWorker{
+		id: "review-timeout-cancel-worker", conn: server, state: protocol.WorkerReviewing,
+		managed: true, beadID: beadID, lastSeen: now, lastProgress: now.Add(-d.cfg.ReviewTimeout - time.Second),
+		encoder: json.NewEncoder(server),
+	}
+	d.mu.Unlock()
+	_ = d.ops.Review(context.Background(), ops.ReviewOpts{BeadID: beadID, Worktree: t.TempDir()})
+	waitFor(t, func() bool { return d.ops.HasActiveForBead(beadID) }, time.Second)
+
+	d.checkHeartbeats(context.Background())
+	if got := process.kills.Load(); got != 1 {
+		t.Fatalf("review process kills = %d, want 1", got)
+	}
+	if d.ops.HasActiveForBead(beadID) {
+		t.Fatal("timed-out review remained active")
 	}
 }
 

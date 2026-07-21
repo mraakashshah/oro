@@ -321,6 +321,7 @@ type workerExitInfo struct {
 	assignmentID int64
 	prevSession  bool // worker is from a previous dispatcher session
 	managed      bool // worker was spawned by the dispatcher (procMgr)
+	reviewing    bool // worker was in an active ops review
 }
 
 // escalateTimedOutWorkers dispatches escalation messages and clears bead
@@ -355,6 +356,12 @@ func (d *Dispatcher) escalateTimedOutWorkers(ctx context.Context, dead, stuck []
 }
 
 func (d *Dispatcher) handleStuckTimedOutWorker(ctx context.Context, sw workerExitInfo) {
+	if sw.reviewing && d.ops != nil {
+		if _, err := d.ops.CancelForBead(sw.beadID); err != nil {
+			_ = d.logEvent(ctx, "review_timeout_cancel_failed", "dispatcher", sw.beadID, sw.workerID,
+				fmt.Sprintf(`{"error":%q}`, err.Error()))
+		}
+	}
 	d.escalate(ctx, protocol.FormatEscalation(protocol.EscStuckWorker, sw.beadID,
 		"worker stalled with no progress", "progress timeout for worker "+sw.workerID), sw.beadID, sw.workerID)
 	if sw.beadID == "" {
@@ -635,7 +642,7 @@ func (d *Dispatcher) removeStuckWorkersLocked(ctx context.Context, stuck []strin
 		if w == nil {
 			continue
 		}
-		stuckWorkers = append(stuckWorkers, workerExitInfo{workerID: id, beadID: w.beadID, worktree: w.worktree, baseBranch: w.baseBranch, assignmentID: w.assignmentID, managed: w.managed})
+		stuckWorkers = append(stuckWorkers, workerExitInfo{workerID: id, beadID: w.beadID, worktree: w.worktree, baseBranch: w.baseBranch, assignmentID: w.assignmentID, managed: w.managed, reviewing: w.state == protocol.WorkerReviewing})
 		if w.managed && !w.spawnFor {
 			managedExits++
 		}
