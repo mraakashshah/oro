@@ -125,7 +125,7 @@ func TestResolveProposal(t *testing.T) {
 	if err := store.ResolveProposal(ctx, proposed.ID, apply); err != nil {
 		t.Fatalf("ResolveProposal apply: %v", err)
 	}
-	assertProposalGrade(t, ctx, db, proposed.ID, cards.GradeStateApplied, apply)
+	assertProposalGrade(ctx, t, db, proposed.ID, cards.GradeStateApplied, apply)
 
 	if err := store.ResolveProposal(ctx, proposed.ID, apply); !errors.Is(err, cards.ErrAlreadyResolved) {
 		t.Fatalf("ResolveProposal resolved card err = %v, want ErrAlreadyResolved", err)
@@ -147,12 +147,12 @@ func TestResolveProposal(t *testing.T) {
 	if err := store.ResolveProposal(ctx, rejected.ID, reject); err != nil {
 		t.Fatalf("ResolveProposal reject: %v", err)
 	}
-	assertProposalGrade(t, ctx, db, rejected.ID, cards.GradeStateRejected, reject)
+	assertProposalGrade(ctx, t, db, rejected.ID, cards.GradeStateRejected, reject)
 }
 
 func assertProposalGrade(
-	t *testing.T,
 	ctx context.Context,
+	t *testing.T,
 	db *sql.DB,
 	cardID string,
 	wantState cards.GradeState,
