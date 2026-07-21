@@ -99,11 +99,22 @@ enabled cadence; disabled janitor behavior remains a no-op and does not read or
 write cadence state. Production wiring through
 `buildDispatcherWithReviewTimeoutsAndCleanliness` must preserve this behavior.
 
+For this feature, **cadence-active** means `JanitorEnabled &&
+JanitorInterval > 0`. When cadence is disabled, startup neither replays nor
+clears an existing pending marker; it remains durable until a cadence-active
+startup resumes it. This preserves an operator's explicit disablement without
+discarding required maintenance.
+
 Before starting assignment/merge processing, `Run` checks `pending_role`. If
 non-empty, it runs that role synchronously against `main`. A fully successful
 cycle atomically clears `pending_role`; a failed or interrupted one leaves it
 unchanged and prevents the dispatcher from processing further beads. This makes
 restart recovery explicit rather than silently dropping a selected cycle.
+
+The existing scan boundary (`withScanWorktree`) and janitor detector invocation
+must receive the literal branch `main`, not `Config.DefaultBranch`. This applies
+to normal selected cycles and startup recovery, and must be proven with a
+non-main `DefaultBranch` fixture.
 
 Replace direct counter mutation in `maybeTriggerJanitor`,
 `restoreJanitorCadenceAfterFailure`, and
@@ -192,6 +203,20 @@ Run the focused package suite and the full dispatcher package after integration:
 ```
 go test ./pkg/dispatcher/... -count=1 -timeout 180s
 ```
+
+## Delivery map
+
+| Workstream | Delivers | Verification |
+|---|---|---|
+| Cadence record | JSON codec, `kv_store` load/upsert, malformed-state rejection | `TestJanitorCadenceStoreRoundTrip` |
+| Counter transition | 40/120 gate, fourth-cycle substitution, durable reserve/clear | `TestJanitorCadenceTransitions` |
+| Safe completion boundary | Count only after `CloseBead` succeeds in normal and no-op paths | `TestJanitorCadenceExcludesFailedClose` |
+| Startup recovery | Replay pending role before listener/assignment startup; retain marker on failure | `TestJanitorCadencePersistsAcrossDispatcherRestart` |
+| Main scan pinning | Worktree and detector targets use literal `main` even with another default branch | `TestCadenceScansMainRegardlessOfDefaultBranch` |
+| Production defaults | Start config defaults to 40 and 4, while explicit settings retain their values | `TestJanitorStartPlumbing` |
+
+The Oro task graph will split these workstreams into independently verifiable
+leaves after the design gate passes.
 
 ## Risks and mitigations
 
