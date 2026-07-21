@@ -53,6 +53,7 @@ func TestWorkerContextIsAssignmentLocal(t *testing.T) {
 
 	_ = readMessage(t, dispatcherConn) // initial heartbeat
 	worktree := validAssignWorktree(t, "context")
+	capabilityFile := filepath.Join(worktree, protocol.OroDir, "assignment-capability.json")
 	for _, assign := range []*protocol.AssignPayload{
 		{
 			BeadID: "bead-one", Worktree: worktree, AssignmentID: 101, Generation: 1,
@@ -74,8 +75,8 @@ func TestWorkerContextIsAssignmentLocal(t *testing.T) {
 		t.Fatalf("spawn contexts = %d, want 2", len(contexts))
 	}
 	for i, want := range []worker.WorkerExecutionContext{
-		{AssignmentID: 101, Generation: 1, Role: "execution_worker", SocketPath: socketPath, CapabilityFile: "/tmp/capability-one"},
-		{AssignmentID: 202, Generation: 2, Role: "recovery_worker", SocketPath: socketPath, CapabilityFile: "/tmp/capability-two"},
+		{AssignmentID: 101, Generation: 1, Role: "execution_worker", SocketPath: socketPath, CapabilityFile: capabilityFile},
+		{AssignmentID: 202, Generation: 2, Role: "recovery_worker", SocketPath: socketPath, CapabilityFile: capabilityFile},
 	} {
 		if contexts[i] != want {
 			t.Fatalf("spawn context %d = %#v, want %#v", i, contexts[i], want)
@@ -93,6 +94,9 @@ func TestWorkerContextIsAssignmentLocal(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("worker did not stop")
+	}
+	if _, err := os.Stat(capabilityFile); !os.IsNotExist(err) {
+		t.Fatalf("capability file after worker termination: err = %v, want not exist", err)
 	}
 }
 
