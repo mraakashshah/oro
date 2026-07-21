@@ -2997,7 +2997,12 @@ func (d *Dispatcher) completeEpicRebaseChild(ctx context.Context, detail *protoc
 	if !IsEpicRebaseChild(detail, epicID, targetBranch) {
 		return false
 	}
-	if err := d.validateEpicRebaseChildAncestry(ctx, branch, targetBranch, protocol.EpicBranchPrefix+epicID); err != nil {
+	recoveryTarget := epicRebaseChildRecoveryTarget(detail, targetBranch)
+	if recoveryTarget == "" {
+		d.failEpicRebaseChild(ctx, beadID, workerID, assignmentID, "epic rebase child target resolution failed", fmt.Errorf("cannot resolve recovery target for %s", beadID))
+		return true
+	}
+	if err := d.validateEpicRebaseChildAncestry(ctx, branch, recoveryTarget, targetBranch); err != nil {
 		d.failEpicRebaseChild(ctx, beadID, workerID, assignmentID, "epic rebase child ancestry check failed", err)
 		return true
 	}
@@ -3013,6 +3018,13 @@ func (d *Dispatcher) completeEpicRebaseChild(ctx context.Context, detail *protoc
 		fmt.Sprintf(`{"epic":%q,"branch":%q,"source":%q}`, epicID, targetBranch, branch))
 	d.finalizeSuccessfulMerge(ctx, beadID, workerID, worktree, epicID, targetBranch, assignmentID, sha)
 	return true
+}
+
+func epicRebaseChildRecoveryTarget(detail *protocol.BeadDetail, epicBranch string) string {
+	if target, _ := detail.Metadata["epic_rebase_target"].(string); strings.TrimSpace(target) != "" {
+		return strings.TrimSpace(target)
+	}
+	return strings.TrimSpace(strings.TrimPrefix(detail.Title, "Rebase "+epicBranch+" onto "))
 }
 
 func (d *Dispatcher) validateEpicRebaseChildAncestry(ctx context.Context, branch, targetBranch, epicBranch string) error {
