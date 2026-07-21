@@ -970,10 +970,81 @@ test_quality_gate_stage_assets_fail_closed() {
 	return 0
 }
 
-# Test: the checked-in gate keeps only transient scratch data under TMPDIR and
-# inherits shared tool caches (or each tool's standard external default).
+# Test: golangci-lint must use a worktree-local cache so stale sibling
+# diagnostics cannot leak into the active gate, while active findings remain.
 # shellcheck disable=SC2016,SC2317,SC2329
-test_quality_gate_uses_shared_external_caches() {
+test_golangci_lint_isolated_to_active_worktree() {
+	local tmpdir fixture active sibling cache harness output
+	tmpdir=$(mktemp -d)
+	fixture="$tmpdir/fixture"
+	active="$fixture/active"
+	sibling="$fixture/sibling"
+	cache="$fixture/cache"
+	harness="$tmpdir/run-lint.sh"
+	# shellcheck disable=SC2064
+	trap "rm -rf -- '$tmpdir'" RETURN
+
+	mkdir -p "$active/pkg/current" "$sibling/pkg/stale" "$cache"
+	printf 'module fixture\n\ngo 1.22\n' >"$active/go.mod"
+	printf 'package current\n' >"$active/pkg/current/current.go"
+	printf 'package stale\n' >"$sibling/pkg/stale/stale.go"
+	printf '%s\n%s\n' \
+		"$sibling/pkg/stale/stale.go:1: stale sibling finding" \
+		"$active/pkg/current/current.go:1: active finding" >"$cache/diagnostics"
+
+	mkdir -p "$tmpdir/bin"
+	cat >"$tmpdir/bin/golangci-lint" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ -f "$GOLANGCI_LINT_CACHE/diagnostics" ]; then
+	cat "$GOLANGCI_LINT_CACHE/diagnostics"
+fi
+printf '%s\n' "$(pwd)/pkg/current/current.go:1: active finding"
+exit 1
+EOF
+	chmod +x "$tmpdir/bin/golangci-lint"
+
+	{
+		printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
+		printf 'QG_DIR=%q\n' "$tmpdir/qg"
+		printf 'mkdir -p "$QG_DIR"\n'
+		sed -n '/^run_golangci_lint()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		printf '%s\n' 'run_golangci_lint'
+	} >"$harness"
+	chmod +x "$harness"
+
+	set +e
+	output=$(cd "$active" && PATH="$tmpdir/bin:$PATH" GOLANGCI_LINT_CACHE="$cache" "$harness" 2>&1)
+	local status=$?
+	set -e
+	if [ "$status" -eq 0 ]; then
+		echo 'FAIL: fixture lint command unexpectedly succeeded'
+		return 1
+	fi
+	if grep -Fq "$sibling/" <<<"$output"; then
+		echo "FAIL: sibling worktree path leaked from lint cache: $output"
+		return 1
+	fi
+	if ! grep -Fq "$active/" <<<"$output"; then
+		echo "FAIL: active-worktree lint finding was lost: $output"
+		return 1
+	fi
+	for gate in "$SCRIPT_DIR/quality_gate.sh" "$SCRIPT_DIR/../quality_gate.sh"; do
+		if ! grep -q 'run_golangci_lint()' "$gate" || ! grep -q '"golangci-lint" "run_golangci_lint"' "$gate"; then
+			echo "FAIL: $gate does not use the isolated golangci-lint runner"
+			return 1
+		fi
+	done
+	if ! grep -q 'run_golangci_lint()' "$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go"; then
+		echo 'FAIL: generated quality gate does not define the isolated golangci-lint runner'
+		return 1
+	fi
+}
+
+# Test: the checked-in gate keeps scratch data under TMPDIR, uses a scoped
+# golangci-lint cache, and otherwise inherits shared tool caches.
+# shellcheck disable=SC2016,SC2317,SC2329
+test_quality_gate_uses_scoped_lint_cache() {
 	local gate="$SCRIPT_DIR/quality_gate.sh"
 	local cache_override
 
@@ -985,7 +1056,6 @@ test_quality_gate_uses_shared_external_caches() {
 	for cache_override in \
 		'export GOCACHE=' \
 		'export GOMODCACHE=' \
-		'export GOLANGCI_LINT_CACHE=' \
 		'export UV_CACHE_DIR=' \
 		'GOCACHE=\$QG_DIR/'; do
 		if grep -q "$cache_override" "$gate"; then
@@ -993,6 +1063,10 @@ test_quality_gate_uses_shared_external_caches() {
 			return 1
 		fi
 	done
+	if ! grep -q 'GOLANGCI_LINT_CACHE="\$lint_cache"' "$gate"; then
+		echo 'FAIL: quality_gate.sh does not scope the golangci-lint cache'
+		return 1
+	fi
 }
 
 # Test: a process that times out waiting for the repo-wide QG lock must not
@@ -1911,7 +1985,8 @@ echo "=============================================="
 test_case "no SC2086 disable for \$changed" test_no_sc2086_disable_for_changed
 test_case "quality_gate.sh \$changed is quoted" test_quality_gate_changed_is_quoted
 test_case "quality_gate.sh stage-assets failures fail closed" test_quality_gate_stage_assets_fail_closed
-test_case "quality_gate.sh uses shared external caches" test_quality_gate_uses_shared_external_caches
+test_case "golangci-lint is isolated to active worktree" test_golangci_lint_isolated_to_active_worktree
+test_case "quality_gate.sh uses scoped lint cache" test_quality_gate_uses_scoped_lint_cache
 test_case "quality_gate.sh run lock timeout preserves holder" test_quality_gate_run_lock_timeout_preserves_holder
 test_case "quality_gate.sh archives stale legacy run lock" test_quality_gate_run_lock_archives_stale_legacy_lock
 test_case "quality_gate.sh garbage-collects archived stale run locks" test_quality_gate_archived_stale_locks_are_garbage_collected
