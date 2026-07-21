@@ -17,6 +17,16 @@ type WorkProposalPayload struct {
 	SuggestedPriority int    `json:"suggested_priority"`
 }
 
+// EvidenceRun is the durable execution record a proposal must cite.
+type EvidenceRun struct {
+	ID           string
+	AssignmentID int64
+	WorkerID     string
+	BeadID       string
+	Kind         string
+	Status       string
+}
+
 // WorkProposalResult is the durable response to a work-proposal submission.
 type WorkProposalResult struct {
 	ProposalID string `json:"proposal_id"`

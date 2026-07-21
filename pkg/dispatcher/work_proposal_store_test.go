@@ -20,6 +20,12 @@ func TestDispatcherStoreWorkProposalReplaysStoredResponse(t *testing.T) {
 		Summary:           "missing prerequisite",
 		SuggestedPriority: 2,
 	}
+	if _, err := d.db.ExecContext(context.Background(), `
+INSERT INTO evidence_runs (id, assignment_id, worker_id, bead_id, kind, status)
+VALUES (?, ?, ?, ?, ?, ?)`,
+		payload.EvidenceRunID, payload.AssignmentID, payload.WorkerID, payload.BeadID, "diagnostic", "completed"); err != nil {
+		t.Fatalf("seed evidence run: %v", err)
+	}
 
 	stored, err := d.storeWorkProposal(context.Background(), payload)
 	if err != nil {
