@@ -1807,12 +1807,11 @@ func checkBashSyntax(t *testing.T, script string) {
 	}
 }
 
-// TestGeneratedQualityGateUsesSharedCaches proves the generated quality gate
-// inherits shared Go/uv/lint/module caches instead of minting cold per-run
-// caches under QG_DIR. A fresh per-run GOCACHE forces every sibling worktree
-// gate to cold-compile the whole repo, so tool caches must inherit their
-// environment and only QG scratch data belongs under QG_DIR.
-func TestGeneratedQualityGateUsesSharedCaches(t *testing.T) {
+// TestGeneratedQualityGateScopesLintCache proves the generated quality gate
+// retains shared Go, uv, and module caches while isolating golangci-lint.
+// The lint cache can retain absolute paths from sibling worktrees, unlike the
+// other caches that should remain shared to avoid cold-compiling each gate.
+func TestGeneratedQualityGateScopesLintCache(t *testing.T) {
 	cfg := &langprofile.Config{
 		Languages: map[string]langprofile.LanguageConfig{
 			"go":     {TestCmd: "go test ./...", Linters: []string{"golangci-lint"}},
@@ -1828,16 +1827,19 @@ func TestGeneratedQualityGateUsesSharedCaches(t *testing.T) {
 		t.Fatalf("read checked-in quality gate: %v", err)
 	}
 
-	// No tool cache may be redirected under QG_DIR — that is the cold per-run
-	// cache anti-pattern this contract forbids.
-	forbidden := regexp.MustCompile(`\$QG_DIR/[A-Za-z0-9_-]*cache|QG_DIR.*(go-build-cache|golangci-go-cache|golangci-lint-cache|uv-cache)`)
+	// Only the lint cache may be redirected under QG_DIR. Fresh Go and uv
+	// caches would cold-compile or reinstall dependencies for every gate.
+	forbidden := regexp.MustCompile(`\$QG_DIR/(go-build-cache|golangci-go-cache|uv-cache)|QG_DIR.*(go-build-cache|golangci-go-cache|uv-cache)`)
 	for name, script := range map[string]string{
 		"generated":  generated,
 		"checked-in": string(checkedIn),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if loc := forbidden.FindString(script); loc != "" {
-				t.Errorf("quality gate redirects a tool cache under QG_DIR (%q); tool caches must inherit shared external caches", loc)
+				t.Errorf("quality gate redirects a shared tool cache under QG_DIR (%q)", loc)
+			}
+			if !strings.Contains(script, `GOLANGCI_LINT_CACHE="$lint_cache"`) {
+				t.Error("quality gate does not scope golangci-lint cache")
 			}
 			if !strings.Contains(script, "Tool caches deliberately inherit their environment") {
 				t.Error("quality gate missing the shared-cache inheritance contract")
