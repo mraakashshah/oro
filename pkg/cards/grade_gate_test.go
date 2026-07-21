@@ -4,7 +4,7 @@ import "testing"
 
 func TestGradeGate_AcceptsAtThreshold(t *testing.T) {
 	cfg := GateConfig{
-		AutoApplyConfidence:   0.95,
+		AutoApplyConfidence:   []float64{0.95},
 		EnsembleMinConfidence: 0.85,
 	}
 
@@ -22,9 +22,72 @@ func TestGradeGate_AcceptsAtThreshold(t *testing.T) {
 	}
 }
 
+func TestGradeGatePerRungThreshold(t *testing.T) {
+	cfg := GateConfig{
+		AutoApplyConfidence:   []float64{0.80, 0.95},
+		EnsembleMinConfidence: 0.85,
+	}
+
+	tests := []struct {
+		name       string
+		rung       int
+		verdict    GradeVerdict
+		wantAction GradeAction
+		wantState  GradeState
+		wantReason string
+	}{
+		{
+			name:       "correct applies at lower rung threshold",
+			rung:       0,
+			verdict:    GradeVerdict{Verdict: GradeVerdictCorrect, Confidence: 0.80},
+			wantAction: GradeActionApply,
+			wantState:  GradeStateApplied,
+		},
+		{
+			name:       "correct below higher rung threshold queues",
+			rung:       1,
+			verdict:    GradeVerdict{Verdict: GradeVerdictCorrect, Confidence: 0.80},
+			wantAction: GradeActionQueue,
+			wantState:  GradeStateProposed,
+			wantReason: "ensemble_required",
+		},
+		{
+			name:       "correct at rung threshold applies",
+			rung:       1,
+			verdict:    GradeVerdict{Verdict: GradeVerdictCorrect, Confidence: 0.95},
+			wantAction: GradeActionApply,
+			wantState:  GradeStateApplied,
+		},
+		{
+			name:       "correct below rung threshold queues",
+			rung:       1,
+			verdict:    GradeVerdict{Verdict: GradeVerdictCorrect, Confidence: 0.94},
+			wantAction: GradeActionQueue,
+			wantState:  GradeStateProposed,
+			wantReason: "ensemble_required",
+		},
+		{
+			name:       "incorrect rejects and retires regardless of rung threshold",
+			rung:       1,
+			verdict:    GradeVerdict{Verdict: GradeVerdictIncorrect, Confidence: 0.01},
+			wantAction: GradeActionRejectAndRetire,
+			wantState:  GradeStateRejected,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := gradeGate([]GradeVerdict{tt.verdict}, cfg, tt.rung)
+			if got.Action != tt.wantAction || got.GradeState != tt.wantState || got.Reason != tt.wantReason {
+				t.Fatalf("gradeGate() = %+v, want action %q, state %q, reason %q", got, tt.wantAction, tt.wantState, tt.wantReason)
+			}
+		})
+	}
+}
+
 func TestGradeGate_EnsembleUnanimityRequired(t *testing.T) {
 	cfg := GateConfig{
-		AutoApplyConfidence:   0.95,
+		AutoApplyConfidence:   []float64{0.95},
 		EnsembleMinConfidence: 0.85,
 	}
 
@@ -61,7 +124,7 @@ func TestGradeGate_EnsembleUnanimityRequired(t *testing.T) {
 
 func TestGradeGate_UnresolvableNeverAccepts(t *testing.T) {
 	cfg := GateConfig{
-		AutoApplyConfidence:   0.95,
+		AutoApplyConfidence:   []float64{0.95},
 		EnsembleMinConfidence: 0.85,
 	}
 
