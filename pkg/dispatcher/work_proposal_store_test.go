@@ -1,4 +1,4 @@
-package dispatcher
+package dispatcher //nolint:testpackage // white-box test needs the unexported proposal-store method
 
 import (
 	"context"
