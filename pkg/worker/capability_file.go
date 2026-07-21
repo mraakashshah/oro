@@ -71,8 +71,6 @@ func ReplaceCapabilityFile(path string, credential AssignmentCredential) error {
 }
 
 // ReadCapabilityFile rereads and validates the live assignment credential.
-//
-//oro:testonly — production CLI credential reads land with the capability protocol.
 func ReadCapabilityFile(path string) (AssignmentCredential, error) {
 	file, err := os.Open(path) //nolint:gosec // caller supplies the configured capability file path
 	if err != nil {

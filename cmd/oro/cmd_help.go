@@ -46,6 +46,7 @@ Codebase:
 
 Workflow:
   work       Execute a task through the full lifecycle
+  evidence   Record assignment-scoped diagnostic evidence
   task       Manage native Oro tasks
   shell      Launch an interactive agent session with oro settings
 

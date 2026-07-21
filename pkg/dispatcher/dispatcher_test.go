@@ -1147,6 +1147,32 @@ func (m *mockAcceptanceRunner) Run(_ context.Context, _ string) (string, bool, e
 	return m.output, m.passed, m.err
 }
 
+type blockingAcceptanceRunner struct {
+	mu      sync.Mutex
+	output  string
+	passed  bool
+	calls   int
+	started chan struct{}
+	release chan struct{}
+}
+
+func (m *blockingAcceptanceRunner) Run(_ context.Context, _ string) (string, bool, error) {
+	m.mu.Lock()
+	m.calls++
+	output, passed := m.output, m.passed
+	m.mu.Unlock()
+
+	m.started <- struct{}{}
+	<-m.release
+	return output, passed, nil
+}
+
+func (m *blockingAcceptanceRunner) callCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
+}
+
 type mockProcess struct {
 	output string
 }
@@ -15641,6 +15667,10 @@ func TestCrashRecovery_ReconnectPreservesAttemptCount(t *testing.T) {
 	}
 
 	// Close the worker connection before shutting down dispatcher.
+	// The mock worktree manager reports the synthetic path as present. Keep the
+	// matching Git inspection synthetic too so this test exercises a clean branch
+	// with no preserved commits rather than the disconnected-work quarantine path.
+	d1.shutdownRunner = &mockCommandRunner{}
 	_ = conn1.Close()
 
 	// ========== PHASE 2: Simulate crash — cancel first dispatcher ==========
@@ -17687,6 +17717,100 @@ func TestEpicAutoCloseRunsAcceptanceTest(t *testing.T) {
 			t.Error("expected epic_no_acceptance_cmd warning event to be logged")
 		}
 	})
+}
+
+func TestEpicAutoCloseDoesNotRunAcceptanceAfterClose(t *testing.T) {
+	d, beadSource, _, _, _, spawnMock := newTestDispatcher(t)
+	ctx := context.Background()
+	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	const (
+		epicID   = "epic-close-once"
+		workerID = "worker-close-once"
+	)
+	beadSource.allChildrenClosedMap = map[string]bool{epicID: true}
+	beadSource.mu.Lock()
+	beadSource.shown[epicID] = &protocol.BeadDetail{
+		ID:                 epicID,
+		Status:             "open",
+		AcceptanceCriteria: "Test: dispatcher_test.go:TestEpicAutoCloseDoesNotRunAcceptanceAfterClose | Cmd: go test ./... | Assert: PASS",
+	}
+	beadSource.mu.Unlock()
+	beadSource.closeFn = func(_ context.Context, id, _ string) error {
+		beadSource.mu.Lock()
+		defer beadSource.mu.Unlock()
+		beadSource.shown[id].Status = "closed"
+		return nil
+	}
+
+	blockingRunner := &blockingAcceptanceRunner{
+		output:  "acceptance failed",
+		started: make(chan struct{}, 2),
+		release: make(chan struct{}),
+	}
+	d.acceptance = blockingRunner
+
+	var closeWG sync.WaitGroup
+	closeWG.Add(2)
+	go func() {
+		defer closeWG.Done()
+		d.tryCloseEpic(ctx, epicID, workerID)
+	}()
+	<-blockingRunner.started
+	go func() {
+		defer closeWG.Done()
+		d.tryCloseEpic(ctx, epicID, workerID)
+	}()
+
+	select {
+	case <-blockingRunner.started:
+		t.Fatal("concurrent tryCloseEpic call ran acceptance more than once")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(blockingRunner.release)
+	closeWG.Wait()
+
+	if got := blockingRunner.callCount(); got != 1 {
+		t.Fatalf("failing acceptance calls = %d, want 1", got)
+	}
+	if eventCount(t, d.db, "epic_acceptance_failed") != 1 {
+		t.Fatal("expected one epic_acceptance_failed event")
+	}
+	waitFor(t, func() bool { return spawnMock.SpawnCountExcludingModel("haiku") == 1 }, time.Second)
+	beadSource.mu.Lock()
+	closedAfterFailure := slices.Contains(beadSource.closed, epicID)
+	beadSource.mu.Unlock()
+	if closedAfterFailure {
+		t.Fatal("failing acceptance must leave epic open")
+	}
+
+	passingRunner := &mockAcceptanceRunner{passed: true, output: "ok"}
+	d.acceptance = passingRunner
+	d.tryCloseEpic(ctx, epicID, workerID)
+	d.tryCloseEpic(ctx, epicID, workerID)
+
+	passingRunner.mu.Lock()
+	passingCalls := passingRunner.calls
+	passingRunner.mu.Unlock()
+	if passingCalls != 1 {
+		t.Fatalf("acceptance calls after close = %d, want 1", passingCalls)
+	}
+	if eventCount(t, d.db, "epic_acceptance_failed") != 1 {
+		t.Fatal("later close attempt emitted epic_acceptance_failed")
+	}
+	beadSource.mu.Lock()
+	closedCount := 0
+	for _, id := range beadSource.closed {
+		if id == epicID {
+			closedCount++
+		}
+	}
+	beadSource.mu.Unlock()
+	if closedCount != 1 {
+		t.Fatalf("epic close count = %d, want 1", closedCount)
+	}
 }
 
 // TestTryCloseEpic_FFMergeToMain verifies that tryCloseEpic FF-merges the

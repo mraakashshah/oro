@@ -47,6 +47,7 @@ func newTaskCmdWithStore(store beadstore.Store) *cobra.Command {
 		newTaskNoteCmd(store),
 		newBeadExportCmd(store),
 		newBeadStatusCmd(store),
+		newTaskProposeBlockerCmd(),
 	)
 	adaptTaskCommandHelp(cmd)
 

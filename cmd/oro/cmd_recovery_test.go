@@ -381,6 +381,115 @@ VALUES ('oro-reopen', ?, 'worker-1', '/tmp/oro-reopen', 'agent/oro-reopen', 'sta
 	}
 }
 
+func TestRecoveryResolveRequeuePreservedReopensBlockedBead(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := openStateDB(filepath.Join(tmpDir, "state.db"))
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(context.Background(), `
+INSERT INTO beads (id, title, status, type)
+VALUES ('oro-reopen-blocked', 'Reopen blocked preserved recovery bead', 'blocked', 'task')`); err != nil {
+		t.Fatalf("seed bead: %v", err)
+	}
+	res, err := db.ExecContext(context.Background(), `
+INSERT INTO assignments (bead_id, worker_id, worktree, status)
+VALUES ('oro-reopen-blocked', 'worker-1', '/tmp/oro-reopen-blocked', 'quarantined')`)
+	if err != nil {
+		t.Fatalf("seed assignment: %v", err)
+	}
+	assignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("assignment id: %v", err)
+	}
+	res, err = db.ExecContext(context.Background(), `
+INSERT INTO recovery_quarantines (bead_id, assignment_id, worker_id, worktree, branch, reason, details, status)
+VALUES ('oro-reopen-blocked', ?, 'worker-1', '/tmp/oro-reopen-blocked', 'agent/oro-reopen-blocked', 'stale_active_assignment', 'preserved', 'open')`,
+		assignmentID)
+	if err != nil {
+		t.Fatalf("seed recovery quarantine: %v", err)
+	}
+	quarantineID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("quarantine id: %v", err)
+	}
+
+	if err := resolveRecoveryQuarantineRequeuePreserved(context.Background(), db, quarantineID); err != nil {
+		t.Fatalf("resolve recovery quarantine: %v", err)
+	}
+
+	var beadStatus, assignmentStatus, quarantineStatus string
+	if err := db.QueryRowContext(context.Background(), `SELECT status FROM beads WHERE id='oro-reopen-blocked'`).Scan(&beadStatus); err != nil {
+		t.Fatalf("query bead status: %v", err)
+	}
+	if err := db.QueryRowContext(context.Background(), `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("query assignment status: %v", err)
+	}
+	if err := db.QueryRowContext(context.Background(), `SELECT status FROM recovery_quarantines WHERE id=?`, quarantineID).Scan(&quarantineStatus); err != nil {
+		t.Fatalf("query quarantine status: %v", err)
+	}
+	if beadStatus != "open" || assignmentStatus != "requeued" || quarantineStatus != "resolved" {
+		t.Fatalf("bead=%q assignment=%q quarantine=%q, want open/requeued/resolved", beadStatus, assignmentStatus, quarantineStatus)
+	}
+}
+
+func TestRecoveryResolveRequeuePreservedRefusesBlockedBeadWithUnresolvedDependency(t *testing.T) {
+	db, err := openStateDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `INSERT INTO beads (id, title, status, type) VALUES ('oro-blocker', 'Blocker', 'open', 'task')`); err != nil {
+		t.Fatalf("seed blocker: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO beads (id, title, status, type) VALUES ('oro-blocked-dependency', 'Blocked recovery bead', 'blocked', 'task')`); err != nil {
+		t.Fatalf("seed bead: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO bead_deps (bead_id, depends_on_id, type) VALUES ('oro-blocked-dependency', 'oro-blocker', 'blocks')`); err != nil {
+		t.Fatalf("seed dependency: %v", err)
+	}
+	res, err := db.ExecContext(ctx, `INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES ('oro-blocked-dependency', 'worker-1', '/tmp/oro-blocked-dependency', 'quarantined')`)
+	if err != nil {
+		t.Fatalf("seed assignment: %v", err)
+	}
+	assignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("assignment id: %v", err)
+	}
+	res, err = db.ExecContext(ctx, `
+INSERT INTO recovery_quarantines (bead_id, assignment_id, worker_id, worktree, branch, reason, details, status)
+VALUES ('oro-blocked-dependency', ?, 'worker-1', '/tmp/oro-blocked-dependency', 'agent/oro-blocked-dependency', 'stale_active_assignment', 'preserved', 'open')`, assignmentID)
+	if err != nil {
+		t.Fatalf("seed recovery quarantine: %v", err)
+	}
+	quarantineID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("quarantine id: %v", err)
+	}
+
+	if err := resolveRecoveryQuarantineRequeuePreserved(ctx, db, quarantineID); err == nil {
+		t.Fatal("resolve recovery quarantine unexpectedly accepted unresolved dependency")
+	}
+
+	var beadStatus, assignmentStatus, quarantineStatus string
+	if err := db.QueryRowContext(ctx, `SELECT status FROM beads WHERE id='oro-blocked-dependency'`).Scan(&beadStatus); err != nil {
+		t.Fatalf("query bead status: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("query assignment status: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT status FROM recovery_quarantines WHERE id=?`, quarantineID).Scan(&quarantineStatus); err != nil {
+		t.Fatalf("query quarantine status: %v", err)
+	}
+	if beadStatus != "blocked" || assignmentStatus != "quarantined" || quarantineStatus != "open" {
+		t.Fatalf("bead=%q assignment=%q quarantine=%q, want blocked/quarantined/open", beadStatus, assignmentStatus, quarantineStatus)
+	}
+}
+
 func TestRecoveryResolveRequeuePreservedRejectsUnavailableBeadWithoutPartialState(t *testing.T) {
 	tests := []struct {
 		name       string

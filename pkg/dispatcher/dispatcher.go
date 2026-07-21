@@ -1169,6 +1169,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 			mergingBeads:           make(map[string]bool),
 			worktreeByBead:         make(map[string]string),
 			epicMergeFailed:        make(map[string]bool),
+			epicCloseInFlight:      make(map[string]bool),
 			processedExternalClose: make(map[string]bool),
 			epicSkipLogged:         make(map[string]bool),
 		},
@@ -1730,6 +1731,7 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 	beadID := w.beadID
 	assignmentID := w.assignmentID
 	worktree := w.worktree
+	baseBranch := w.baseBranch
 	preempted := w.state == protocol.WorkerPreempting
 	if preempted && beadID != "" {
 		// Keep the bead reserved while its durable assignment is terminalized.
@@ -1746,6 +1748,11 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 	}
 
 	if beadID != "" {
+		if d.quarantineDisconnectedPreservedAssignment(context.Background(), workerID, beadID, assignmentID, worktree, baseBranch) {
+			d.clearBeadTracking(beadID)
+			d.notifyAssignLoop()
+			return
+		}
 		d.clearBeadTracking(beadID)
 		d.safeGo(func() {
 			_ = d.updateBeadStatus(context.Background(), beadID, "open")
@@ -1755,6 +1762,76 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 	// Wake the assign loop so reconcileScale can spawn a replacement immediately
 	// rather than waiting for the next fsnotify event or fallback tick.
 	d.notifyAssignLoop()
+}
+
+func (d *Dispatcher) quarantineDisconnectedPreservedAssignment(ctx context.Context, workerID, beadID string, assignmentID int64, worktree, baseBranch string) bool {
+	if assignmentID <= 0 {
+		return false
+	}
+	active, err := d.assignmentActive(ctx, assignmentID, beadID)
+	if err != nil {
+		_ = d.logEvent(ctx, "disconnected_assignment_lookup_failed", "dispatcher", beadID, workerID, err.Error())
+		return true
+	}
+	if !active {
+		return false
+	}
+	blocked, details, err := d.recoveryWorkBlocked(ctx, beadID, worktree, baseBranch)
+	if err == nil && !blocked {
+		return false
+	}
+	if err != nil {
+		details = appendRecoveryDetail(details, "error: "+err.Error())
+	}
+	if details == "" {
+		details = "disconnected worker left recovery state requiring preservation"
+	}
+	_, err = d.createRecoveryQuarantine(ctx, recoveryQuarantine{
+		BeadID:       beadID,
+		AssignmentID: assignmentID,
+		WorkerID:     workerID,
+		Worktree:     worktree,
+		Branch:       protocol.BranchPrefix + beadID,
+		Reason:       "stale_active_assignment",
+		Details:      details,
+	})
+	if err != nil {
+		_ = d.logEvent(ctx, "disconnected_assignment_quarantine_failed", "dispatcher", beadID, workerID, err.Error())
+		return true
+	}
+	if err := d.updateBeadStatus(ctx, beadID, "blocked"); err != nil {
+		_ = d.logEvent(ctx, "disconnected_assignment_block_failed", "dispatcher", beadID, workerID, err.Error())
+		if restoreErr := d.restoreDisconnectedAssignmentActive(ctx, assignmentID); restoreErr != nil {
+			_ = d.logEvent(ctx, "disconnected_assignment_restore_failed", "dispatcher", beadID, workerID, restoreErr.Error())
+		}
+	}
+	return true
+}
+
+func (d *Dispatcher) assignmentActive(ctx context.Context, assignmentID int64, beadID string) (bool, error) {
+	var active bool
+	err := d.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM assignments WHERE id=? AND bead_id=? AND status='active')`, assignmentID, beadID).Scan(&active)
+	if err != nil {
+		return false, fmt.Errorf("lookup disconnected assignment: %w", err)
+	}
+	return active, nil
+}
+
+func (d *Dispatcher) restoreDisconnectedAssignmentActive(ctx context.Context, assignmentID int64) error {
+	res, err := d.db.ExecContext(ctx,
+		`UPDATE assignments SET status='active', completed_at=NULL WHERE id=? AND status='quarantined'`, assignmentID)
+	if err != nil {
+		return fmt.Errorf("restore disconnected assignment active: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("restore disconnected assignment active rows: %w", err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("restore disconnected assignment active: assignment_id %d affected %d rows", assignmentID, rows)
+	}
+	return nil
 }
 
 func (d *Dispatcher) reconcilePreemptedDisconnect(workerID, beadID string, assignmentID int64, worktree string) {
@@ -1827,6 +1904,10 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn net.Conn) {
 		// Handle RERANK_BY_IDS_REQUEST from short-lived callers (e.g. search pipeline).
 		if msg.Type == protocol.MsgRerankByIDsRequest {
 			d.handleRerankByIDsWithResponse(ctx, conn, msg)
+			return
+		}
+
+		if d.handleWorkRequestConn(ctx, conn, msg) {
 			return
 		}
 
@@ -3579,6 +3660,26 @@ func (d *Dispatcher) epicMergeIsFailed(epicID string) bool {
 	return d.epicMergeFailed[epicID]
 }
 
+// tryBeginEpicClose reserves the epic's close path. Caller must invoke the
+// returned release function exactly once when it returns true.
+func (d *Dispatcher) tryBeginEpicClose(epicID string) (reserved bool, release func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.epicMergeFailed, epicID)
+	if d.epicCloseInFlight == nil {
+		d.epicCloseInFlight = make(map[string]bool)
+	}
+	if d.epicCloseInFlight[epicID] {
+		return false, nil
+	}
+	d.epicCloseInFlight[epicID] = true
+	return true, func() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		delete(d.epicCloseInFlight, epicID)
+	}
+}
+
 func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) {
 	allClosed, err := d.beads.AllChildrenClosed(ctx, epicID)
 	if err != nil {
@@ -3592,15 +3693,23 @@ func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) 
 		}
 		return
 	}
-	d.mu.Lock()
-	delete(d.epicMergeFailed, epicID)
-	d.mu.Unlock()
+	reserved, release := d.tryBeginEpicClose(epicID)
+	if !reserved {
+		return
+	}
+	defer release()
 
 	detail, ok := d.fetchEpicCloseDetail(ctx, epicID, workerID)
 	if !ok {
 		return
 	}
+	if strings.EqualFold(detail.Status, "closed") {
+		return
+	}
+	d.closeEpicAfterAcceptance(ctx, detail, epicID, workerID)
+}
 
+func (d *Dispatcher) closeEpicAfterAcceptance(ctx context.Context, detail *protocol.BeadDetail, epicID, workerID string) {
 	targetBranch := resolveEpicTargetBranch(detail.Metadata, d.cfg.DefaultBranch)
 
 	cmd, ok := d.parseEpicAcceptanceCmd(ctx, "epic_acceptance_parse_error", epicID, workerID, detail.AcceptanceCriteria)

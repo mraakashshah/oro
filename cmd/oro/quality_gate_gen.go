@@ -1180,9 +1180,17 @@ qg_ruff() {
 }
 
 qg_pyright() {
-    local path
+    local path active_venv
     if path=$(qg_python_tool_path pyright); then
-        "$path" "$@"
+        active_venv="$REPO_ROOT/.venv"
+        if [ -x "$active_venv/bin/python" ]; then
+            VIRTUAL_ENV="$active_venv" PATH="$active_venv/bin:$PATH" "$path" "$@"
+            return
+        fi
+        (
+            unset VIRTUAL_ENV
+            "$path" "$@"
+        )
         return
     fi
     echo "SKIP: pyright not installed"
@@ -1276,6 +1284,16 @@ ensure_stage_assets() {
 # LANE: GO
 # =============================================================================
 
+# Keep lint diagnostics scoped to this gate invocation. golangci-lint cache
+# entries can contain absolute source paths from sibling worktrees.
+# shellcheck disable=SC2317,SC2329
+run_golangci_lint() {
+    local lint_cache="$QG_DIR/golangci-lint-cache"
+    mkdir -p "$lint_cache"
+    GOLANGCI_LINT_CACHE="$lint_cache" GOFLAGS=-buildvcs=false \
+        golangci-lint run --timeout 10m --allow-parallel-runners ./cmd/... ./internal/... ./pkg/...
+}
+
 # shellcheck disable=SC2317
 lane_go() {
     local pass=0 fail=0
@@ -1299,7 +1317,7 @@ lane_go() {
     # --- Tier 2: Lint (parallel) ---
     header "GO TIER 2: LINT"
     parallel_checks \
-        "golangci-lint" "GOFLAGS=-buildvcs=false golangci-lint run --timeout 10m --allow-parallel-runners ./cmd/... ./internal/... ./pkg/..."
+        "golangci-lint" "run_golangci_lint"
     pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
     if [ "$fail" -gt 0 ]; then echo "${pass}:${fail}" > "$QG_DIR/go.rc"; return; fi
 
