@@ -32,6 +32,19 @@ func TestWorkProposalPersistenceAndSubmissionReplay(t *testing.T) {
 		SuggestedType:     "task",
 		SuggestedPriority: 2,
 	}
+	if _, err := store.StoreWorkProposal(ctx, first); !errors.Is(err, protocol.ErrWorkProposalEvidenceNotFound) {
+		t.Fatalf("proposal without evidence error = %v, want ErrWorkProposalEvidenceNotFound", err)
+	}
+	if err := store.StoreEvidenceRun(ctx, protocol.EvidenceRun{
+		ID:           first.EvidenceRunID,
+		AssignmentID: first.AssignmentID,
+		WorkerID:     first.WorkerID,
+		BeadID:       first.BeadID,
+		Kind:         "diagnostic",
+		Status:       "completed",
+	}); err != nil {
+		t.Fatalf("store evidence run: %v", err)
+	}
 	stored, err := store.StoreWorkProposal(ctx, first)
 	if err != nil {
 		t.Fatalf("store first proposal: %v", err)

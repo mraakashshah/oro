@@ -15,6 +15,10 @@ import (
 // with content different from its durable original submission.
 var ErrWorkProposalSubmissionConflict = errors.New("work proposal submission conflicts with existing content")
 
+// ErrWorkProposalEvidenceNotFound means a proposal did not cite durable
+// evidence for its own assignment and worker identity.
+var ErrWorkProposalEvidenceNotFound = errors.New("work proposal evidence run not found")
+
 // WorkProposalStore persists provisional work proposals and their replay
 // boundary. It does not derive canonical scope or materialize executable work.
 type WorkProposalStore struct {
@@ -46,6 +50,28 @@ func (s *WorkProposalStore) Close() error {
 	}
 	if err := s.db.Close(); err != nil {
 		return fmt.Errorf("close work proposal store: %w", err)
+	}
+	return nil
+}
+
+// StoreEvidenceRun records durable evidence before a proposal cites it.
+func (s *WorkProposalStore) StoreEvidenceRun(ctx context.Context, run EvidenceRun) error {
+	if s == nil || s.db == nil {
+		return errors.New("store evidence run: nil db")
+	}
+	run.ID = strings.TrimSpace(run.ID)
+	run.WorkerID = strings.TrimSpace(run.WorkerID)
+	run.BeadID = strings.TrimSpace(run.BeadID)
+	run.Kind = strings.TrimSpace(run.Kind)
+	run.Status = strings.TrimSpace(run.Status)
+	if run.ID == "" || run.AssignmentID <= 0 || run.WorkerID == "" || run.BeadID == "" || run.Kind == "" || run.Status == "" {
+		return errors.New("store evidence run: incomplete evidence")
+	}
+	if _, err := s.db.ExecContext(ctx, `
+INSERT INTO evidence_runs (id, assignment_id, worker_id, bead_id, kind, status)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO NOTHING`, run.ID, run.AssignmentID, run.WorkerID, run.BeadID, run.Kind, run.Status); err != nil {
+		return fmt.Errorf("store evidence run: insert: %w", err)
 	}
 	return nil
 }
@@ -82,6 +108,9 @@ func (s *WorkProposalStore) StoreWorkProposal(ctx context.Context, payload WorkP
 		}
 		return stored.result, nil
 	}
+	if err := proposalEvidenceExists(ctx, tx, payload); err != nil {
+		return WorkProposalResult{}, err
+	}
 
 	result := WorkProposalResult{
 		ProposalID: proposalIDForSubmission(payload.AssignmentID, payload.ClientProposalID),
@@ -108,6 +137,21 @@ VALUES (?, ?, ?, ?, ?)`,
 		return WorkProposalResult{}, fmt.Errorf("store work proposal: commit: %w", err)
 	}
 	return result, nil
+}
+
+func proposalEvidenceExists(ctx context.Context, tx *sql.Tx, payload WorkProposalPayload) error {
+	var count int
+	if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM evidence_runs
+ WHERE id=? AND assignment_id=? AND worker_id=? AND bead_id=?`,
+		payload.EvidenceRunID, payload.AssignmentID, payload.WorkerID, payload.BeadID,
+	).Scan(&count); err != nil {
+		return fmt.Errorf("store work proposal: load evidence run: %w", err)
+	}
+	if count == 0 {
+		return ErrWorkProposalEvidenceNotFound
+	}
+	return nil
 }
 
 type storedWorkProposalSubmission struct {
