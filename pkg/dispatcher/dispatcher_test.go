@@ -1590,6 +1590,14 @@ func TestNewUsesOroHomeForPanesDir(t *testing.T) {
 // startDispatcher starts the dispatcher in the background and returns a cancel func.
 func startDispatcher(t *testing.T, d *Dispatcher) context.CancelFunc {
 	t.Helper()
+	return startDispatcherWithTimeout(t, d, 2*time.Second)
+}
+
+// startDispatcherWithTimeout starts the dispatcher and waits for its listener
+// using timeout. Timing-sensitive tests can use a wider bound under race-mode
+// parallel load without changing the default for the wider test suite.
+func startDispatcherWithTimeout(t *testing.T, d *Dispatcher, timeout time.Duration) context.CancelFunc {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 
 	errCh := make(chan error, 1)
@@ -1610,7 +1618,7 @@ func startDispatcher(t *testing.T, d *Dispatcher) context.CancelFunc {
 		d.mu.Lock()
 		defer d.mu.Unlock()
 		return d.listener != nil
-	}, 2*time.Second)
+	}, timeout)
 
 	t.Cleanup(func() {
 		cancel()
