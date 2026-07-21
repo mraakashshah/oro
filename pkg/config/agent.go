@@ -229,14 +229,39 @@ func rolesForProviderMode(coding, review providerProfile) map[string]RoleConfig 
 
 // GradeLadder returns the configured grade role and its two escalation rungs.
 func GradeLadder(cfg AgentConfig) []RoleRung {
-	grade := cfg.Roles["grade"]
-	deep := cfg.Tiers[protocol.TierDeep]
+	defaults := defaultAgentConfig()
+	grade := effectiveGradeRung(cfg, defaults)
+	deep := effectiveTierRung(cfg, defaults, protocol.TierDeep)
 
 	return []RoleRung{
-		{Model: grade.Model, Reasoning: grade.Reasoning},
-		{Model: deep.Model, Reasoning: deep.Reasoning},
+		grade,
+		deep,
 		{Model: deep.Model, Reasoning: "xhigh"},
 	}
+}
+
+func effectiveGradeRung(cfg AgentConfig, defaults *AgentConfig) RoleRung {
+	grade, ok := cfg.Roles["grade"]
+	if !ok {
+		grade = defaults.Roles["grade"]
+	}
+	if grade.Runtime != "" && grade.Model != "" {
+		return RoleRung{Model: grade.Model, Reasoning: grade.Reasoning}
+	}
+
+	tier := grade.Tier
+	if !tier.IsKnown() {
+		tier = protocol.DefaultTier
+	}
+	return effectiveTierRung(cfg, defaults, tier)
+}
+
+func effectiveTierRung(cfg AgentConfig, defaults *AgentConfig, tier protocol.Tier) RoleRung {
+	tierCfg, ok := cfg.Tiers[tier]
+	if !ok {
+		tierCfg = defaults.Tiers[tier]
+	}
+	return RoleRung{Model: tierCfg.Model, Reasoning: tierCfg.Reasoning}
 }
 
 func tierConfig(runtime, model, reasoning string) TierConfig {

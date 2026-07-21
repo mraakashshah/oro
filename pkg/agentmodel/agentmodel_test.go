@@ -159,6 +159,7 @@ func TestLockedRoleResolution(t *testing.T) {
 		model     string
 		reasoning string
 	}{
+		"grade":                   {"codex", "gpt-5.6-terra", "low"},
 		"spec_writer":             {"codex", "gpt-5.6-sol", "high"},
 		"spec_challenger":         {"claude", "fable", "xhigh"},
 		"worker":                  {"codex", "gpt-5.6-terra", "medium"},
