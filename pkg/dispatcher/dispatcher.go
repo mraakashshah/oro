@@ -6204,7 +6204,7 @@ SELECT DISTINCT q.bead_id
 FROM recovery_quarantines q
 LEFT JOIN assignments a ON a.id=q.assignment_id
 WHERE q.status IN ('open', 'human_owned')
-   OR (q.status='resolved' AND a.status='requeued')`)
+   OR (q.status='resolved' AND a.status='requeued' AND q.reason != 'branch_worktree_mismatch')`)
 	if err != nil {
 		if strings.Contains(err.Error(), "no such table") {
 			return nil, nil
@@ -9774,6 +9774,9 @@ func (d *Dispatcher) loadActiveAssignments(ctx context.Context) ([]restoredAssig
 			continue
 		}
 		if reason := d.classifyAssignment(ctx, a); reason != "" {
+			if reason == "branch_worktree_mismatch" && d.resolvedPreservedMismatchAssignment(ctx, a.id) {
+				continue
+			}
 			quarantined = append(quarantined, quarantinedAssignment{
 				id:       a.id,
 				beadID:   a.beadID,

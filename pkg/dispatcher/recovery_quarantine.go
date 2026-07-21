@@ -149,6 +149,28 @@ LIMIT 1`, assignmentID).Scan(&id); err != nil {
 	return id, true, nil
 }
 
+// resolvedPreservedMismatchAssignment reports whether startup has already
+// quarantined and explicitly requeued this exact preserved assignment. The
+// caller has selected only requeued assignments, so this durable record lets a
+// later restart retain the operator's decision without claiming its detached
+// dirty worktree for reuse.
+func (d *Dispatcher) resolvedPreservedMismatchAssignment(ctx context.Context, assignmentID int64) bool {
+	if d.db == nil || assignmentID <= 0 {
+		return false
+	}
+
+	var found bool
+	err := d.db.QueryRowContext(ctx, `
+SELECT EXISTS(
+    SELECT 1
+    FROM recovery_quarantines
+    WHERE assignment_id=?
+      AND reason='branch_worktree_mismatch'
+      AND status='resolved'
+)`, assignmentID).Scan(&found)
+	return err == nil && found
+}
+
 func (d *Dispatcher) quarantineUnsafeRecoveryWork(ctx context.Context, q recoveryQuarantine) {
 	if q.Branch == "" && q.BeadID != "" {
 		q.Branch = protocol.BranchPrefix + q.BeadID
