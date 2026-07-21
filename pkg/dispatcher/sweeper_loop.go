@@ -32,7 +32,7 @@ func (c SweepConfig) withDefaults() SweepConfig {
 	return c
 }
 
-// RunSweepLoop runs the dispatcher sweep ticker until ctx is cancelled.
+// runSweepLoop runs the standalone sweep ticker until ctx is cancelled.
 // Sweepers run sequentially within each tick to limit concurrent SQLite writers.
 //
 // Every Interval5m:  PromoteClosedParentChildren, ReapDeletedParentChildren,
@@ -40,7 +40,7 @@ func (c SweepConfig) withDefaults() SweepConfig {
 //	SweepDeletedBeadLearnings (when db != nil)
 //
 // Every Interval60m: PruneEvents and ExpireReviewQueueSLA (when db != nil)
-func RunSweepLoop(ctx context.Context, store DeferredStore, db *sql.DB, cfg SweepConfig) {
+func runSweepLoop(ctx context.Context, store DeferredStore, db *sql.DB, cfg SweepConfig) {
 	cfg = cfg.withDefaults()
 
 	t5 := time.NewTicker(cfg.Interval5m)
