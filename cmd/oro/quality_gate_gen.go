@@ -1180,9 +1180,14 @@ qg_ruff() {
 }
 
 qg_pyright() {
-    local path
+    local path active_venv
     if path=$(qg_python_tool_path pyright); then
-        "$path" "$@"
+        active_venv="$REPO_ROOT/.venv"
+        if [ -x "$active_venv/bin/python" ]; then
+            VIRTUAL_ENV="$active_venv" PATH="$active_venv/bin:$PATH" "$path" "$@"
+            return
+        fi
+        (unset VIRTUAL_ENV; "$path" "$@")
         return
     fi
     echo "SKIP: pyright not installed"
