@@ -167,6 +167,7 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 	// Phase 1: Reserve the worker — heartbeat checker skips reserved workers.
 	w.state = protocol.WorkerReserved
 	w.assignmentID = h.assignmentID
+	w.execution = h.execution
 	w.beadID = h.beadID
 	w.worktree = h.worktree
 	w.runtime = h.runtime
@@ -195,6 +196,11 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 		Assign: &protocol.AssignPayload{
 			BeadID:       h.beadID,
 			Worktree:     h.worktree,
+			AssignmentID: h.execution.AssignmentID,
+			Generation:   h.execution.Generation,
+			ActorRole:    h.execution.ActorRole,
+			Project:      h.execution.Project,
+			Capability:   h.execution.Capability,
 			Runtime:      h.runtime,
 			Model:        h.model,
 			Reasoning:    h.reasoning,
