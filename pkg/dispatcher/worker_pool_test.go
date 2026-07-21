@@ -1645,18 +1645,16 @@ func TestCheckHeartbeats_ManagedReviewingWorkerWithDeadProcessIsRemoved(t *testi
 	}
 }
 
-// TestCheckHeartbeats_ReviewingWorkerWithLiveProcessButDeadReviewIsRemoved verifies
-// that a managed reviewing worker whose ops review subprocess is no longer active
-// (HasActiveForBead returns false) is removed by checkHeartbeats after ReviewDeadGrace
-// elapses, even when the worker OS process is alive, heartbeat is fresh, and the
-// review timeout has not fired.
-func TestCheckHeartbeats_ReviewingWorkerWithLiveProcessButDeadReviewIsRemoved(t *testing.T) {
+// TestCheckHeartbeats_ReviewDeadProcessReaped verifies that a managed reviewing
+// worker is retained for ReviewDeadGrace after its ops review disappears, then
+// reaped exactly once so its assignment becomes recoverable.
+func TestCheckHeartbeats_ReviewDeadProcessReaped(t *testing.T) {
 	t.Parallel()
-	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
 
-	pm := &mockProcessManager{} // IsAlive returns true for all IDs (none marked dead)
-	d.procMgr = pm
+	d.procMgr = &mockProcessManager{} // IsAlive returns true for all IDs.
 	d.cfg.ReviewDeadGrace = 100 * time.Millisecond
+	d.cfg.ReviewTimeout = time.Second
 
 	now := time.Now()
 	d.nowFunc = func() time.Time { return now }
@@ -1664,28 +1662,52 @@ func TestCheckHeartbeats_ReviewingWorkerWithLiveProcessButDeadReviewIsRemoved(t 
 	workerID := "reviewing-live-process-dead-review"
 	beadID := "bead-dead-review"
 	conn := newMockConn()
-	grace := d.cfg.ReviewDeadGrace
 
 	d.mu.Lock()
 	d.workers[workerID] = &trackedWorker{
-		id:              workerID,
-		conn:            conn,
-		state:           protocol.WorkerReviewing,
-		beadID:          beadID,
-		lastSeen:        now.Add(-50 * time.Millisecond), // fresh — heartbeat NOT timed out (timeout=500ms)
-		lastProgress:    now.Add(-50 * time.Millisecond), // fresh — review timeout NOT fired
-		managed:         true,
-		encoder:         json.NewEncoder(conn),
-		reviewDeadSince: now.Add(-(grace + time.Millisecond)), // past grace period
+		id:           workerID,
+		conn:         conn,
+		state:        protocol.WorkerReviewing,
+		beadID:       beadID,
+		lastSeen:     now,
+		lastProgress: now.Add(-(d.cfg.ReviewTimeout + time.Second)),
+		managed:      true,
+		encoder:      json.NewEncoder(conn),
 	}
 	d.mu.Unlock()
 
-	// d.ops.HasActiveForBead(beadID) returns false — no review was started for this bead
+	// d.ops.HasActiveForBead(beadID) returns false: no review was started for
+	// this bead. The stale progress timestamp makes this fail if the missing
+	// review's grace window is bypassed by review-timeout evaluation.
+	d.checkHeartbeats(context.Background())
+
+	d.mu.Lock()
+	w, stillPresent := d.workers[workerID]
+	d.mu.Unlock()
+	if !stillPresent {
+		t.Fatal("reviewing worker was reaped before ReviewDeadGrace elapsed")
+	}
+	if !w.reviewDeadSince.Equal(now) {
+		t.Fatalf("reviewDeadSince = %v, want %v", w.reviewDeadSince, now)
+	}
+	if conn.closed {
+		t.Fatal("worker connection was closed before ReviewDeadGrace elapsed")
+	}
+	if msgs := esc.Messages(); len(msgs) != 0 {
+		t.Fatalf("escalations before ReviewDeadGrace = %v, want none", msgs)
+	}
+
+	// Advance past grace while keeping the worker heartbeat fresh. The absent
+	// ops review must now reap the worker without waiting for ReviewTimeout.
+	now = now.Add(d.cfg.ReviewDeadGrace + time.Millisecond)
+	d.mu.Lock()
+	d.workers[workerID].lastSeen = now
+	d.mu.Unlock()
 
 	d.checkHeartbeats(context.Background())
 
 	d.mu.Lock()
-	_, stillPresent := d.workers[workerID]
+	_, stillPresent = d.workers[workerID]
 	d.mu.Unlock()
 
 	if stillPresent {
@@ -1700,6 +1722,12 @@ func TestCheckHeartbeats_ReviewingWorkerWithLiveProcessButDeadReviewIsRemoved(t 
 	beadSrc.mu.Unlock()
 	if !hasUpdate || status != "open" {
 		t.Errorf("bead status = %q (updated=%v), want %q", status, hasUpdate, "open")
+	}
+
+	// Further heartbeat scans cannot reap or recover the same assignment again.
+	d.checkHeartbeats(context.Background())
+	if msgs := esc.Messages(); len(msgs) != 1 {
+		t.Errorf("dead review escalations = %v, want exactly one", msgs)
 	}
 }
 
