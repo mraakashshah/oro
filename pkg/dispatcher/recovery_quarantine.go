@@ -171,6 +171,37 @@ SELECT EXISTS(
 	return err == nil && found
 }
 
+func (d *Dispatcher) resolvedPreservedMismatchForRequeuedBead(
+	ctx context.Context, beadID string,
+) (assignmentID int64, found bool, err error) {
+	if d.db == nil || beadID == "" {
+		return 0, false, nil
+	}
+
+	err = d.db.QueryRowContext(ctx, `
+SELECT a.id
+FROM assignments a
+JOIN recovery_quarantines q ON q.assignment_id=a.id
+WHERE a.bead_id=?
+  AND a.status='requeued'
+  AND q.reason='branch_worktree_mismatch'
+  AND q.status='resolved'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM assignments newer
+      WHERE newer.bead_id=a.bead_id AND newer.id>a.id
+  )
+ORDER BY q.id DESC
+LIMIT 1`, beadID).Scan(&assignmentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("query resolved preserved mismatch for bead %s: %w", beadID, err)
+	}
+	return assignmentID, true, nil
+}
+
 func (d *Dispatcher) quarantineUnsafeRecoveryWork(ctx context.Context, q recoveryQuarantine) {
 	if q.Branch == "" && q.BeadID != "" {
 		q.Branch = protocol.BranchPrefix + q.BeadID

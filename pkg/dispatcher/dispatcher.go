@@ -6967,14 +6967,18 @@ func (d *Dispatcher) prepareAssignmentWorktree(
 
 func (d *Dispatcher) createFreshAssignmentWorktreeAllowed(ctx context.Context, beadID, workerID, targetBranch string) bool {
 	if cleanErr := d.deleteStaleAgentBranch(ctx, beadID, workerID, targetBranch); cleanErr != nil {
-		d.recordAssignmentFailure(beadID)
-		_ = d.updateBeadStatus(ctx, beadID, "open")
-		d.mu.Lock()
-		delete(d.assigningBeads, beadID)
-		d.mu.Unlock()
-		return false
+		return d.rejectFreshAssignmentWorktree(ctx, beadID)
 	}
 	return true
+}
+
+func (d *Dispatcher) rejectFreshAssignmentWorktree(ctx context.Context, beadID string) bool {
+	d.recordAssignmentFailure(beadID)
+	_ = d.updateBeadStatus(ctx, beadID, "open")
+	d.mu.Lock()
+	delete(d.assigningBeads, beadID)
+	d.mu.Unlock()
+	return false
 }
 
 func (d *Dispatcher) validateExistingWorktreeForReuse(ctx context.Context, beadID, workerID, worktree, expectedBranch, baseBranch string) bool {
@@ -9632,6 +9636,8 @@ func (d *Dispatcher) pruneStaleAgentBranches(ctx context.Context) {
 // If git cannot safely delete the branch, the branch is recovery-quarantined
 // and assignment aborts. Startup/retry recovery must preserve ambiguous branch
 // state instead of force-deleting or removing the checked-out worktree.
+var errResolvedPreservedMismatch = errors.New("resolved preserved branch/worktree mismatch")
+
 func (d *Dispatcher) deleteStaleAgentBranch(ctx context.Context, beadID, workerID, targetBranch string) error {
 	branch := protocol.BranchPrefix + beadID
 	if targetBranch == "" {
@@ -9643,6 +9649,16 @@ func (d *Dispatcher) deleteStaleAgentBranch(ctx context.Context, beadID, workerI
 	}
 	if !exists {
 		return nil
+	}
+	preservedAssignmentID, preserved, err := d.resolvedPreservedMismatchForRequeuedBead(ctx, beadID)
+	if err != nil {
+		return fmt.Errorf("check stale branch %s preserved recovery state: %w", branch, err)
+	}
+	if preserved {
+		_ = d.logEvent(ctx, "stale_agent_branch_cleanup_suppressed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"branch":%q,"assignment_id":%d,"reason":"resolved_preserved_mismatch"}`,
+				branch, preservedAssignmentID))
+		return fmt.Errorf("%w: assignment %d", errResolvedPreservedMismatch, preservedAssignmentID)
 	}
 	err = d.worktrees.DeleteBranchMergedInto(ctx, branch, targetBranch)
 	if err == nil {
