@@ -249,8 +249,8 @@ func TestGenerateQualityGateScript(t *testing.T) {
 		if !strings.HasPrefix(script, "#!/bin/sh\n# shellcheck shell=bash") {
 			t.Error("script should start with /bin/sh Bash bootstrap")
 		}
-		if !strings.Contains(script, `exec env -u BASH_ENV /usr/bin/env bash "$0" "$@"`) {
-			t.Error("script should exec Bash after bootstrap")
+		if !strings.Contains(script, `BASH_VERSINFO[0]`) || !strings.Contains(script, `exec env -u BASH_ENV "$qg_bash" "$0" "$@"`) {
+			t.Error("script should verify and exec Bash 4+ after bootstrap")
 		}
 		if !strings.Contains(script, "lane_go") {
 			t.Error("go-only config should include lane_go function")
@@ -350,8 +350,8 @@ func TestGenerateQualityGateScript(t *testing.T) {
 		if !strings.HasPrefix(script, "#!/bin/sh\n# shellcheck shell=bash") {
 			t.Error("script should start with /bin/sh Bash bootstrap")
 		}
-		if !strings.Contains(script, `exec env -u BASH_ENV /usr/bin/env bash "$0" "$@"`) {
-			t.Error("script should exec Bash after bootstrap")
+		if !strings.Contains(script, `BASH_VERSINFO[0]`) || !strings.Contains(script, `exec env -u BASH_ENV "$qg_bash" "$0" "$@"`) {
+			t.Error("script should verify and exec Bash 4+ after bootstrap")
 		}
 		if strings.Contains(script, "lane_go") {
 			t.Error("python-only config should not include lane_go function")
@@ -395,8 +395,8 @@ func TestGenerateQualityGateScript(t *testing.T) {
 		if !strings.HasPrefix(script, "#!/bin/sh\n# shellcheck shell=bash") {
 			t.Error("script should start with /bin/sh Bash bootstrap")
 		}
-		if !strings.Contains(script, `exec env -u BASH_ENV /usr/bin/env bash "$0" "$@"`) {
-			t.Error("script should exec Bash after bootstrap")
+		if !strings.Contains(script, `BASH_VERSINFO[0]`) || !strings.Contains(script, `exec env -u BASH_ENV "$qg_bash" "$0" "$@"`) {
+			t.Error("script should verify and exec Bash 4+ after bootstrap")
 		}
 		if !strings.Contains(script, "lane_go") {
 			t.Error("both-lang config should include lane_go function")

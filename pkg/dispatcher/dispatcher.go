@@ -557,6 +557,7 @@ type trackedWorker struct {
 	conn             net.Conn
 	state            protocol.WorkerState
 	assignmentID     int64
+	execution        WorkerExecutionContext
 	beadID           string
 	epicID           string // parent epic ID if the assigned bead is a child of an epic
 	isEpicDecomp     bool   // true when worker is assigned an epic for decomposition (no merge on done)
@@ -631,6 +632,7 @@ const shutdownReasonScaleDown = "scale_down"
 // bead+worktree instead of going through normal assignment.
 type pendingHandoff struct {
 	assignmentID   int64
+	execution      WorkerExecutionContext
 	beadID         string
 	epicID         string // parent epic ID if the bead is a child of an epic
 	worktree       string
@@ -646,6 +648,7 @@ type pendingHandoff struct {
 }
 
 type workerAssignmentSnapshot struct {
+	execution    WorkerExecutionContext
 	worktree     string
 	runtime      string
 	model        string
@@ -848,6 +851,7 @@ func (c Config) validate() error {
 type Dispatcher struct {
 	cfg            Config
 	db             *sql.DB
+	remoteGates    *Store
 	merger         *merge.Coordinator
 	ops            *ops.Spawner
 	beads          DeferredStore
@@ -879,9 +883,14 @@ type Dispatcher struct {
 	acceptance      AcceptanceRunner // runs epic acceptance test commands
 	qgRunner        QGRunner         // runs quality gate before merge (defaults to &ShellQGRunner{})
 	qgBaselineCache map[string]qgBaseline
-	paneRestarter   PaneRestarter      // restarts named tmux panes (nil means no restart)
-	estimator       BeadEstimator      // estimates bead completion time (nil means no estimation)
-	sseBroadcaster  web.SSEBroadcaster // broadcasts server-sent events (never nil, initialized in New)
+	// presubmitCandidates holds independent local validation plans. Its
+	// semaphore scopes capacity to each action's declared resource class.
+	presubmitCandidates   chan presubmitCandidate
+	presubmitSemaphore    *QGSemaphore
+	presubmitActionRunner func(context.Context, PresubmitAction) error
+	paneRestarter         PaneRestarter      // restarts named tmux panes (nil means no restart)
+	estimator             BeadEstimator      // estimates bead completion time (nil means no estimation)
+	sseBroadcaster        web.SSEBroadcaster // broadcasts server-sent events (never nil, initialized in New)
 	// WorkerPool holds the connected-worker registry (embedded for field promotion).
 	WorkerPool
 	// BeadTracker holds per-bead counters and mappings (embedded for field promotion).
@@ -1102,9 +1111,17 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 	if err != nil {
 		return nil, err
 	}
+	var remoteGates *Store
+	if db != nil {
+		remoteGates, err = NewStore(context.Background(), db)
+		if err != nil {
+			return nil, err
+		}
+	}
 	d := &Dispatcher{
 		cfg:            resolved,
 		db:             db,
+		remoteGates:    remoteGates,
 		merger:         merger,
 		ops:            opsSpawner,
 		beads:          selectedBeads,
@@ -1117,16 +1134,18 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		embedderFactory: func(modelDir string) (Embedder, error) {
 			return embeddings.NewEmbedder(modelDir)
 		},
-		rerankerFactory: defaultRerankerFactory(resolved),
-		repoRoot:        rootDir,
-		shutdownRunner:  &ExecCommandRunner{Dir: rootDir},
-		acceptance:      &ShellAcceptanceRunner{},
-		estimator:       resolved.Estimator,
-		qgRunner:        &ShellQGRunner{},
-		qgBaselineCache: make(map[string]qgBaseline),
-		sseBroadcaster:  web.NewSSEBroadcaster(),
-		state:           StateInert,
-		targetWorkers:   resolved.InitialWorkers,
+		rerankerFactory:     defaultRerankerFactory(resolved),
+		repoRoot:            rootDir,
+		shutdownRunner:      &ExecCommandRunner{Dir: rootDir},
+		acceptance:          &ShellAcceptanceRunner{},
+		estimator:           resolved.Estimator,
+		qgRunner:            &ShellQGRunner{},
+		qgBaselineCache:     make(map[string]qgBaseline),
+		presubmitCandidates: make(chan presubmitCandidate),
+		presubmitSemaphore:  newPresubmitSemaphore(),
+		sseBroadcaster:      web.NewSSEBroadcaster(),
+		state:               StateInert,
+		targetWorkers:       resolved.InitialWorkers,
 		explicitScaleTarget: resolved.AllowZeroWorkers &&
 			resolved.InitialWorkers == 0 && resolved.MaxWorkers > 0,
 		WorkerPool: WorkerPool{
@@ -1600,6 +1619,7 @@ func (d *Dispatcher) spawnBackgroundLoops(ctx context.Context, ln net.Listener) 
 	d.safeGo(func() { d.heartbeatLoop(ctx) })
 	d.safeGo(func() { d.paneMonitorLoop(ctx) })
 	d.safeGo(func() { d.escalationRetryLoop(ctx) })
+	d.safeGo(func() { d.runPresubmitScheduler(ctx) })
 	d.safeGo(func() { RunSweepLoop(ctx, d.beads, d.db, SweepConfig{}) })
 	if d.cfg.WebEnabled {
 		d.startHTTPServer()
@@ -2250,12 +2270,12 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 		// I/O function: build full payload outside lock.
 		func() string {
 			if d.cfg.RegressionRevert {
-				if _, err := d.captureQGBaseline(ctx, beadID, snap.worktree, d.qgMutationBase(snap.targetBranch)); err != nil {
+				if _, err := d.seedQGBaselineFromFailure(ctx, beadID, snap.worktree, qgOutput); err != nil {
 					_ = d.logEvent(ctx, "qg_baseline_capture_failed", workerID, beadID, workerID,
 						fmt.Sprintf(`{"error":%q,"attempt":%d}`, err.Error(), attempt))
 				}
 			}
-			payload = d.buildAssignPayload(ctx, &snap, attempt, qgOutput, "")
+			payload = d.buildAssignPayload(ctx, &snap, attempt, qgOutput, "", snap.execution)
 			return ""
 		},
 		// Assign function: update state and send message under lock.
@@ -2980,7 +3000,12 @@ func (d *Dispatcher) completeEpicRebaseChild(ctx context.Context, detail *protoc
 	if !IsEpicRebaseChild(detail, epicID, targetBranch) {
 		return false
 	}
-	if err := d.validateEpicRebaseChildAncestry(ctx, branch); err != nil {
+	recoveryTarget := epicRebaseChildRecoveryTarget(detail, targetBranch)
+	if recoveryTarget == "" {
+		d.failEpicRebaseChild(ctx, beadID, workerID, assignmentID, "epic rebase child target resolution failed", fmt.Errorf("cannot resolve recovery target for %s", beadID))
+		return true
+	}
+	if err := d.validateEpicRebaseChildAncestry(ctx, branch, recoveryTarget, targetBranch); err != nil {
 		d.failEpicRebaseChild(ctx, beadID, workerID, assignmentID, "epic rebase child ancestry check failed", err)
 		return true
 	}
@@ -2998,17 +3023,29 @@ func (d *Dispatcher) completeEpicRebaseChild(ctx context.Context, detail *protoc
 	return true
 }
 
-func (d *Dispatcher) validateEpicRebaseChildAncestry(ctx context.Context, branch string) error {
+func epicRebaseChildRecoveryTarget(detail *protocol.BeadDetail, epicBranch string) string {
+	if detail == nil {
+		return ""
+	}
+	if target, _ := detail.Metadata["epic_rebase_target"].(string); strings.TrimSpace(target) != "" {
+		return strings.TrimSpace(target)
+	}
+	return strings.TrimSpace(strings.TrimPrefix(detail.Title, "Rebase "+epicBranch+" onto "))
+}
+
+func (d *Dispatcher) validateEpicRebaseChildAncestry(ctx context.Context, branch, targetBranch, epicBranch string) error {
 	checker, ok := d.worktrees.(assignmentBaseBranchSafetyChecker)
 	if !ok {
-		return fmt.Errorf("cannot verify that %s is an ancestor of recovery branch %s", d.cfg.DefaultBranch, branch)
+		return fmt.Errorf("cannot verify required ancestry for recovery branch %s", branch)
 	}
-	defaultHasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, d.cfg.DefaultBranch, branch)
-	if err != nil {
-		return fmt.Errorf("check whether recovery branch %s contains %s: %w", branch, d.cfg.DefaultBranch, err)
-	}
-	if defaultHasUniqueCommits {
-		return fmt.Errorf("recovery branch %s does not contain required target ancestry from %s", branch, d.cfg.DefaultBranch)
+	for _, requiredAncestor := range []string{targetBranch, epicBranch} {
+		hasUniqueCommits, err := checker.BaseBranchHasUniqueCommits(ctx, requiredAncestor, branch)
+		if err != nil {
+			return fmt.Errorf("check whether recovery branch %s contains %s: %w", branch, requiredAncestor, err)
+		}
+		if hasUniqueCommits {
+			return fmt.Errorf("recovery branch %s does not contain required ancestry from %s", branch, requiredAncestor)
+		}
 	}
 	return nil
 }
@@ -3642,9 +3679,19 @@ func (d *Dispatcher) ensureEpicRebaseChild(ctx context.Context, epicID, epicBran
 	}
 	for i := range children {
 		child := &children[i]
-		if !isCanonicalEpicRebaseChild(child, epicID, title, acceptance) {
+		if isCanonicalEpicRebaseChild(child, epicID, title, acceptance) {
+			if err := d.addEpicRebaseDependency(ctx, epicID, child.ID); err != nil {
+				return nil, err
+			}
+			return child, nil
+		}
+		if !isLegacyEpicRebaseChild(child, epicID, title) {
 			continue
 		}
+		if err := d.beads.Update(ctx, child.ID, beadstore.UpdateParams{AcceptanceCriteria: &acceptance}); err != nil {
+			return nil, fmt.Errorf("upgrade legacy epic rebase child: %w", err)
+		}
+		child.AcceptanceCriteria = acceptance
 		if err := d.addEpicRebaseDependency(ctx, epicID, child.ID); err != nil {
 			return nil, err
 		}
@@ -3696,11 +3743,19 @@ func isCanonicalEpicRebaseChild(child *protocol.Bead, epicID, title, acceptance 
 	return child.Epic == epicID && child.Title == title && child.AcceptanceCriteria == acceptance
 }
 
+func isLegacyEpicRebaseChild(child *protocol.Bead, epicID, title string) bool {
+	if child == nil || (child.Status != "open" && child.Status != "in_progress") {
+		return false
+	}
+	return child.Epic == epicID && child.Title == title &&
+		strings.Contains(child.AcceptanceCriteria, "Cmd: git fetch --all --prune && git rebase ")
+}
+
 func rebaseChildAcceptance(epicID, epicBranch, targetBranch string) string {
 	return strings.Join([]string{
-		fmt.Sprintf("Test: epic %s rebase task keeps %s integration-ready for %s", epicID, epicBranch, targetBranch),
-		fmt.Sprintf("Cmd: git fetch --all --prune && git rebase %s && go test ./...", targetBranch),
-		fmt.Sprintf("Assert: %s is rebased onto %s, tests pass, and the epic can retry close without requiring the original merge failure to still exist.", epicBranch, targetBranch),
+		fmt.Sprintf("Test: epic %s recovery preserves %s and %s ancestry", epicID, targetBranch, epicBranch),
+		fmt.Sprintf("Cmd: git merge-base --is-ancestor %s HEAD && git merge-base --is-ancestor %s HEAD && go test ./pkg/dispatcher -run '^(TestEpicRebaseChildAcceptanceAllowsPreservedAncestry|TestEpicFFMergeFailureCreatesActionableRebaseChild)$'", targetBranch, epicBranch),
+		fmt.Sprintf("Assert: %s and %s are ancestors of HEAD, dispatcher tests pass, and the epic can retry close without replaying an already-preserved merge.", targetBranch, epicBranch),
 		"Read: pkg/dispatcher/dispatcher.go:ffMergeEpicBranch, pkg/dispatcher/dispatcher_test.go:TestEpicFFMergeFailureCreatesActionableRebaseChild",
 	}, " | ")
 }
@@ -3938,6 +3993,7 @@ func (d *Dispatcher) shutdownWorkerForHandoff(workerID string) workerAssignmentS
 		return workerAssignmentSnapshot{}
 	}
 	snap := workerAssignmentSnapshot{
+		execution:    w.execution,
 		worktree:     w.worktree,
 		runtime:      w.runtime,
 		model:        w.model,
@@ -4013,7 +4069,11 @@ func (d *Dispatcher) handleHandoffExhaustion(ctx context.Context, beadID, worker
 
 // respawnWorker stores a pending handoff and spawns a fresh worker process.
 func (d *Dispatcher) respawnWorker(ctx context.Context, beadID string, snap workerAssignmentSnapshot, title string, labels []string) {
-	assignmentID := d.activeAssignmentIDForBead(ctx, beadID)
+	assignmentID := snap.execution.AssignmentID
+	if assignmentID <= 0 {
+		assignmentID = d.activeAssignmentIDForBead(ctx, beadID)
+		snap.execution = workerExecutionContext(assignmentID, false, filepath.Base(d.cfg.RepoRoot))
+	}
 	newID := ""
 	if d.procMgr != nil {
 		newID = fmt.Sprintf("worker-handoff-%d", d.nowFunc().UnixNano())
@@ -4021,6 +4081,7 @@ func (d *Dispatcher) respawnWorker(ctx context.Context, beadID string, snap work
 	d.mu.Lock()
 	d.pendingHandoffs[beadID] = &pendingHandoff{
 		assignmentID: assignmentID,
+		execution:    snap.execution,
 		beadID:       beadID,
 		epicID:       snap.epicID,
 		worktree:     snap.worktree,
@@ -4368,7 +4429,7 @@ func (d *Dispatcher) sendPreReviewGitDirtyFeedback(ctx context.Context, workerID
 	snap := d.opusEscalationSnapshotLocked(workerID)
 	d.mu.Unlock()
 
-	payload := d.buildAssignPayload(ctx, &snap, 0, feedback, "")
+	payload := d.buildAssignPayload(ctx, &snap, 0, feedback, "", snap.execution)
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -4788,7 +4849,7 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 		// without consulting general memory context.
 		func() string {
 			memCtx := d.buildRejectionMemoryContext(ctx, beadID, feedback)
-			payload = d.buildAssignPayload(ctx, &snap, count, feedback, memCtx)
+			payload = d.buildAssignPayload(ctx, &snap, count, feedback, memCtx, snap.execution)
 			return memCtx
 		},
 		// Assign function: update state and send message under lock.
@@ -6152,7 +6213,7 @@ SELECT DISTINCT q.bead_id
 FROM recovery_quarantines q
 LEFT JOIN assignments a ON a.id=q.assignment_id
 WHERE q.status IN ('open', 'human_owned')
-   OR (q.status='resolved' AND a.status='requeued')`)
+   OR (q.status='resolved' AND a.status='requeued' AND q.reason != 'branch_worktree_mismatch')`)
 	if err != nil {
 		if strings.Contains(err.Error(), "no such table") {
 			return nil, nil
@@ -6812,6 +6873,32 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	if isEpicDecomp {
 		resolvedRuntime, resolvedModel, resolvedReasoning = agentmodel.ResolveForRole("ops_decompose")
 	}
+	execution := workerExecutionContext(assignmentID, isEpicDecomp, filepath.Base(d.cfg.RepoRoot))
+	capability, capabilityErr := d.issueAssignmentCapability(
+		ctx,
+		execution.AssignmentID,
+		execution.Generation,
+		ActorRole(execution.ActorRole),
+	)
+	if capabilityErr != nil {
+		_ = d.logEvent(ctx, "assignment_capability_issue_failed", "dispatcher", bead.ID, w.id, capabilityErr.Error())
+		if completeErr := d.completeAssignment(ctx, assignmentID, bead.ID); completeErr != nil {
+			_ = d.logEvent(ctx, "assignment_cleanup_failed", "dispatcher", bead.ID, w.id, completeErr.Error())
+		}
+		_ = d.updateBeadStatus(ctx, bead.ID, "open")
+		if createdWorktree {
+			_ = d.worktrees.Remove(ctx, worktree)
+			d.mu.Lock()
+			delete(d.worktreeByBead, bead.ID)
+			d.mu.Unlock()
+		}
+		d.mu.Lock()
+		delete(d.assigningBeads, bead.ID)
+		d.mu.Unlock()
+		d.releaseAssignmentReservation(w.id, bead.ID)
+		return nil
+	}
+	execution.Capability = capability.Token
 	payload := d.buildAssignPayload(ctx, &trackedWorker{
 		id:           w.id,
 		beadID:       bead.ID,
@@ -6821,7 +6908,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 		reasoning:    resolvedReasoning,
 		isEpicDecomp: isEpicDecomp,
 		targetBranch: targetBranch,
-	}, 0, "", "")
+	}, 0, "", "", execution)
 	if payload.Title == "" {
 		payload.Title = title
 	}
@@ -6846,6 +6933,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	}
 	w.state = protocol.WorkerBusy
 	w.assignmentID = assignmentID
+	w.execution = execution
 	w.beadID = bead.ID
 	w.epicID = resolvedEpicID // actual epic ancestor ID for auto-close on merge
 	w.isEpicDecomp = isEpicDecomp
@@ -6915,14 +7003,18 @@ func (d *Dispatcher) prepareAssignmentWorktree(
 
 func (d *Dispatcher) createFreshAssignmentWorktreeAllowed(ctx context.Context, beadID, workerID, targetBranch string) bool {
 	if cleanErr := d.deleteStaleAgentBranch(ctx, beadID, workerID, targetBranch); cleanErr != nil {
-		d.recordAssignmentFailure(beadID)
-		_ = d.updateBeadStatus(ctx, beadID, "open")
-		d.mu.Lock()
-		delete(d.assigningBeads, beadID)
-		d.mu.Unlock()
-		return false
+		return d.rejectFreshAssignmentWorktree(ctx, beadID)
 	}
 	return true
+}
+
+func (d *Dispatcher) rejectFreshAssignmentWorktree(ctx context.Context, beadID string) bool {
+	d.recordAssignmentFailure(beadID)
+	_ = d.updateBeadStatus(ctx, beadID, "open")
+	d.mu.Lock()
+	delete(d.assigningBeads, beadID)
+	d.mu.Unlock()
+	return false
 }
 
 func (d *Dispatcher) validateExistingWorktreeForReuse(ctx context.Context, beadID, workerID, worktree, expectedBranch, baseBranch string) bool {
@@ -8721,11 +8813,22 @@ func (d *Dispatcher) broadcastEvent(evType, beadID, workerID string) {
 // MISSING_AC), it also spawns a one-shot claude -p agent to take corrective
 // action autonomously.
 func (d *Dispatcher) escalate(ctx context.Context, msg, beadID, workerID string) {
+	d.escalateWithOneShot(ctx, msg, beadID, workerID, true)
+}
+
+// escalateWithoutOneShot records and delivers an escalation without starting a
+// corrective ops process. It is used when a review timeout has just cancelled
+// the bead's active review, so cleanup has a stable no-active-ops boundary.
+func (d *Dispatcher) escalateWithoutOneShot(ctx context.Context, msg, beadID, workerID string) {
+	d.escalateWithOneShot(ctx, msg, beadID, workerID, false)
+}
+
+func (d *Dispatcher) escalateWithOneShot(ctx context.Context, msg, beadID, workerID string, allowOneShot bool) {
 	// Extract escalation type for database storage (separate from one-shot determination).
 	dbEscType := extractEscalationType(msg)
 
 	oneShot := ""
-	if d.ops != nil {
+	if allowOneShot && d.ops != nil {
 		oneShot = parseEscalationType(msg)
 	}
 	if protocol.EscalationType(oneShot) == protocol.EscOversizedBead {
@@ -9239,6 +9342,12 @@ func (d *Dispatcher) handleEscalationResult(ctx context.Context, escalationID in
 	_ = d.logEvent(ctx, "oneshot_escalation_complete", "ops", beadID, workerID,
 		fmt.Sprintf(`{"type":%q,"verdict":%q,"feedback":%q}`, escType, result.Verdict, result.Feedback))
 
+	if protocol.EscalationType(escType) == protocol.EscOversizedBead && result.Verdict == ops.VerdictFailed {
+		d.recordAssignmentFailure(beadID)
+		d.completeDecomposeOpsRunBestEffort(ctx, beadID, opsRunStatusFailed, string(result.Verdict), result.Feedback, result.Feedback)
+		d.ackEscalation(ctx, escalationID, beadID, workerID)
+		return
+	}
 	if protocol.EscalationType(escType) == protocol.EscOversizedBead {
 		if err := d.validateDecomposeResult(ctx, beadID); err != nil {
 			if errors.Is(err, errDecomposeValidationUnavailable) {
@@ -9563,6 +9672,8 @@ func (d *Dispatcher) pruneStaleAgentBranches(ctx context.Context) {
 // If git cannot safely delete the branch, the branch is recovery-quarantined
 // and assignment aborts. Startup/retry recovery must preserve ambiguous branch
 // state instead of force-deleting or removing the checked-out worktree.
+var errResolvedPreservedMismatch = errors.New("resolved preserved branch/worktree mismatch")
+
 func (d *Dispatcher) deleteStaleAgentBranch(ctx context.Context, beadID, workerID, targetBranch string) error {
 	branch := protocol.BranchPrefix + beadID
 	if targetBranch == "" {
@@ -9574,6 +9685,16 @@ func (d *Dispatcher) deleteStaleAgentBranch(ctx context.Context, beadID, workerI
 	}
 	if !exists {
 		return nil
+	}
+	preservedAssignmentID, preserved, err := d.resolvedPreservedMismatchForRequeuedBead(ctx, beadID)
+	if err != nil {
+		return fmt.Errorf("check stale branch %s preserved recovery state: %w", branch, err)
+	}
+	if preserved {
+		_ = d.logEvent(ctx, "stale_agent_branch_cleanup_suppressed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"branch":%q,"assignment_id":%d,"reason":"resolved_preserved_mismatch"}`,
+				branch, preservedAssignmentID))
+		return fmt.Errorf("%w: assignment %d", errResolvedPreservedMismatch, preservedAssignmentID)
 	}
 	err = d.worktrees.DeleteBranchMergedInto(ctx, branch, targetBranch)
 	if err == nil {
@@ -9705,6 +9826,9 @@ func (d *Dispatcher) loadActiveAssignments(ctx context.Context) ([]restoredAssig
 			continue
 		}
 		if reason := d.classifyAssignment(ctx, a); reason != "" {
+			if reason == "branch_worktree_mismatch" && d.resolvedPreservedMismatchAssignment(ctx, a.id) {
+				continue
+			}
 			quarantined = append(quarantined, quarantinedAssignment{
 				id:       a.id,
 				beadID:   a.beadID,
@@ -10592,6 +10716,15 @@ func buildSearchQuery(title string, labels []string) string {
 	}
 	parts = append(parts, labels...)
 	return strings.Join(parts, " ")
+}
+
+// advanceRemoteGate advances dispatcher-owned candidate state without relying
+// on the worker that originally produced the candidate.
+func (d *Dispatcher) advanceRemoteGate(ctx context.Context, gateID int64, from, to RemoteGateState) (RemoteGate, error) {
+	if d == nil || d.remoteGates == nil {
+		return RemoteGate{}, errors.New("advance remote gate: store is unavailable")
+	}
+	return d.remoteGates.AdvanceRemoteGate(ctx, gateID, from, to)
 }
 
 // ConnectedWorkers, TargetWorkers, WorkerInfo, WorkerModel → worker_pool.go

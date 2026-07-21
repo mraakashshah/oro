@@ -75,6 +75,7 @@ func rootSubcommands(root *cobra.Command) []*cobra.Command {
 		newTestContextSafetyCmd(),
 		newHarnessCmd(),
 		newCurrentCmd(),
+		newVersionCmd(root),
 		newHandoffCmd(),
 		newResumeCmd(),
 		newReviewCmd(),

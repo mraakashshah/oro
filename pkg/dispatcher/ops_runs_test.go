@@ -182,6 +182,108 @@ func TestOpsRunCompletionStates(t *testing.T) {
 	}
 }
 
+func TestDecomposeOpsRunPersistsTerminalOutcome(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, spawnMock := newTestDispatcher(t)
+
+	const (
+		beadID   = "oro-decompose-terminal-outcome"
+		workerID = "w-decompose-terminal-outcome"
+		verdict  = "resolved"
+		feedback = "decomposition closed the parent after creating child tasks"
+	)
+
+	seedValidDecomposeResultForTest(t, d.db, beadID)
+	if _, err := d.db.ExecContext(ctx, `UPDATE beads SET status='closed' WHERE id=?`, beadID); err != nil {
+		t.Fatalf("close decompose parent: %v", err)
+	}
+	runID := insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, workerID)
+	escalationID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, workerID)
+	resultCh := make(chan ops.Result, 1)
+	resultCh <- ops.Result{
+		Type:     ops.OpsDecompose,
+		BeadID:   beadID,
+		Verdict:  ops.Verdict(verdict),
+		Feedback: feedback,
+	}
+
+	d.handleEscalationResult(ctx, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
+
+	afterResult := fetchOpsRunForTest(t, d.db, runID)
+	if afterResult.Status != opsRunStatusResolved {
+		t.Fatalf("terminal ops_run status = %q, want %q", afterResult.Status, opsRunStatusResolved)
+	}
+	if afterResult.CompletedAt == "" {
+		t.Fatal("terminal ops_run completed_at is empty")
+	}
+	if afterResult.Verdict != verdict {
+		t.Fatalf("terminal ops_run verdict = %q, want %q", afterResult.Verdict, verdict)
+	}
+	if afterResult.Feedback != feedback {
+		t.Fatalf("terminal ops_run feedback = %q, want %q", afterResult.Feedback, feedback)
+	}
+
+	if err := d.reconcileOpsRunsOnStartup(ctx); err != nil {
+		t.Fatalf("reconcileOpsRunsOnStartup after terminal persistence: %v", err)
+	}
+	afterRestart := fetchOpsRunForTest(t, d.db, runID)
+	if afterRestart != afterResult {
+		t.Fatalf("terminal ops_run after restart = %#v, want unchanged %#v", afterRestart, afterResult)
+	}
+	if got := spawnMock.SpawnCount(); got != 0 {
+		t.Fatalf("restart rerouted terminal decompose ops_run %d times, want 0", got)
+	}
+}
+
+func TestDecomposeOpsRunPersistsFailedVerdict(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	const (
+		beadID   = "oro-decompose-failed-verdict"
+		workerID = "w-decompose-failed-verdict"
+		verdict  = "failed"
+		feedback = "the decomposition could not produce valid child tasks"
+	)
+
+	seedValidDecomposeResultForTest(t, d.db, beadID)
+	if _, err := d.db.ExecContext(ctx, `UPDATE beads SET status='closed' WHERE id=?`, beadID); err != nil {
+		t.Fatalf("close decompose parent: %v", err)
+	}
+	runID := insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, workerID)
+	escalationID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, workerID)
+	resultCh := make(chan ops.Result, 1)
+	resultCh <- ops.Result{
+		Type:     ops.OpsDecompose,
+		BeadID:   beadID,
+		Verdict:  ops.Verdict(verdict),
+		Feedback: feedback,
+	}
+
+	d.handleEscalationResult(ctx, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
+
+	afterResult := fetchOpsRunForTest(t, d.db, runID)
+	if afterResult.Status != opsRunStatusFailed {
+		t.Fatalf("failed verdict ops_run status = %q, want %q", afterResult.Status, opsRunStatusFailed)
+	}
+	if afterResult.CompletedAt == "" {
+		t.Fatal("failed verdict ops_run completed_at is empty")
+	}
+	if afterResult.Verdict != verdict {
+		t.Fatalf("failed verdict ops_run verdict = %q, want %q", afterResult.Verdict, verdict)
+	}
+	if afterResult.Feedback != feedback {
+		t.Fatalf("failed verdict ops_run feedback = %q, want %q", afterResult.Feedback, feedback)
+	}
+	blocking, err := FindBlockingOpsRun(ctx, d.db, string(ops.OpsDecompose), beadID)
+	if err != nil {
+		t.Fatalf("find failed verdict blocking ops_run: %v", err)
+	}
+	if blocking == nil || blocking.ID != runID {
+		t.Fatalf("failed verdict blocking ops_run = %#v, want run %d", blocking, runID)
+	}
+}
+
 func TestDispatcherStartupMarksOrphanedOpsRunsStale(t *testing.T) {
 	ctx := context.Background()
 	d, _, _, _, _, spawnMock := newTestDispatcher(t)

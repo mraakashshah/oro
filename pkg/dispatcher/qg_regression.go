@@ -51,6 +51,30 @@ func (d *Dispatcher) captureQGBaseline(ctx context.Context, beadID, worktree, mu
 	return d.storeQGBaseline(headSHA, baseline), nil
 }
 
+// seedQGBaselineFromFailure records the worker's failed QG result as the
+// retry baseline. The worker has already run QG on this exact HEAD, so running
+// it again would only delay delivering retry feedback.
+func (d *Dispatcher) seedQGBaselineFromFailure(ctx context.Context, beadID, worktree, qgOutput string) (qgBaseline, error) {
+	headOut, err := d.shutdownRunner.Run(ctx, "git", "-C", worktree, "rev-parse", "HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("seed qg baseline head: %w", err)
+	}
+	headSHA := strings.TrimSpace(string(headOut))
+
+	if cached, ok := d.cachedQGBaseline(headSHA); ok {
+		return cached, nil
+	}
+
+	baseline := qgBaseline{
+		beadID: {
+			HeadSHA:     headSHA,
+			SuitePassed: false,
+			Outcomes:    parseTestOutcomes(qgOutput),
+		},
+	}
+	return d.storeQGBaseline(headSHA, baseline), nil
+}
+
 func (d *Dispatcher) detectQGRegression(ctx context.Context, base qgBaseline, worktree, mutationBase string) (qgRegression, error) {
 	passed, output, err := d.qgRunner.Run(ctx, worktree, !d.cfg.MutationTesting, mutationBase)
 	if err != nil {
