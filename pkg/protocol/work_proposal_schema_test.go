@@ -16,7 +16,7 @@ func TestWorkProposalPersistenceAndSubmissionReplay(t *testing.T) {
 
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "proposals.db")
-	store := openWorkProposalStore(t, ctx, path)
+	store := openWorkProposalStore(ctx, t, path)
 
 	first := protocol.WorkProposalPayload{
 		ClientProposalID:  "client-proposal-1",
@@ -61,14 +61,14 @@ func TestWorkProposalPersistenceAndSubmissionReplay(t *testing.T) {
 	if secondStored.ProposalID == stored.ProposalID {
 		t.Fatalf("distinct provisional proposals collapsed to %q", stored.ProposalID)
 	}
-	if got := proposalCount(t, ctx, store.DB(), first.AssignmentID); got != 2 {
+	if got := proposalCount(ctx, t, store.DB(), first.AssignmentID); got != 2 {
 		t.Fatalf("provisional proposal count = %d, want 2", got)
 	}
 
 	if err := store.Close(); err != nil {
 		t.Fatalf("close initial store: %v", err)
 	}
-	reopened := openWorkProposalStore(t, ctx, path)
+	reopened := openWorkProposalStore(ctx, t, path)
 	afterRestart, err := reopened.StoreWorkProposal(ctx, first)
 	if err != nil {
 		t.Fatalf("replay after restart: %v", err)
@@ -78,7 +78,7 @@ func TestWorkProposalPersistenceAndSubmissionReplay(t *testing.T) {
 	}
 }
 
-func openWorkProposalStore(t *testing.T, ctx context.Context, path string) *protocol.WorkProposalStore {
+func openWorkProposalStore(ctx context.Context, t *testing.T, path string) *protocol.WorkProposalStore {
 	t.Helper()
 	db, err := dbutil.OpenDB(path)
 	if err != nil {
@@ -95,7 +95,7 @@ func openWorkProposalStore(t *testing.T, ctx context.Context, path string) *prot
 	return store
 }
 
-func proposalCount(t *testing.T, ctx context.Context, db *sql.DB, assignmentID int64) int {
+func proposalCount(ctx context.Context, t *testing.T, db *sql.DB, assignmentID int64) int {
 	t.Helper()
 	var count int
 	if err := db.QueryRowContext(ctx,
