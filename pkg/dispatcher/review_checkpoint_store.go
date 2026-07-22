@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // ErrCheckpointConflict reports that a checkpoint changed before a requested transition.
@@ -57,6 +58,11 @@ type CheckpointInput struct {
 type ReviewCheckpoint struct {
 	ID int64
 	CheckpointInput
+}
+
+// ReviewArtifact identifies an artifact eligible for retention pruning.
+type ReviewArtifact struct {
+	Path string
 }
 
 // ReviewCheckpointStore persists durable review checkpoint lifecycle changes.
@@ -135,6 +141,60 @@ WHERE id = ? AND state = ?`, to, id, from)
 		return fmt.Errorf("compare and swap review checkpoint %d from %q to %q: %w", id, from, to, ErrCheckpointConflict)
 	}
 	return nil
+}
+
+// ListPrunableArtifacts returns artifacts whose every checkpoint reference is
+// terminal and older than olderThan. Shared artifacts are retained until all
+// references become eligible.
+func (s *ReviewCheckpointStore) ListPrunableArtifacts(ctx context.Context, olderThan time.Time) ([]ReviewArtifact, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("list prunable review artifacts: db is nil")
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+WITH artifact_references AS (
+  SELECT artifact_path AS path, state, COALESCE(completed_at, updated_at, created_at) AS terminal_at
+  FROM review_checkpoints
+  WHERE COALESCE(artifact_path, '') <> ''
+  UNION ALL
+  SELECT recovery_artifact_path AS path, state, COALESCE(completed_at, updated_at, created_at) AS terminal_at
+  FROM review_checkpoints
+  WHERE COALESCE(recovery_artifact_path, '') <> ''
+)
+SELECT DISTINCT candidate.path
+FROM artifact_references AS candidate
+WHERE candidate.state IN (?, ?)
+  AND candidate.terminal_at < ?
+  AND NOT EXISTS (
+    SELECT 1
+    FROM artifact_references AS reference
+    WHERE reference.path = candidate.path
+      AND (reference.state NOT IN (?, ?) OR reference.terminal_at >= ?)
+  )
+ORDER BY candidate.path`,
+		ReviewCheckpointStateIntegrated,
+		ReviewCheckpointStateSuperseded,
+		olderThan.UTC().Format(time.RFC3339Nano),
+		ReviewCheckpointStateIntegrated,
+		ReviewCheckpointStateSuperseded,
+		olderThan.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, fmt.Errorf("query prunable review artifacts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	artifacts := make([]ReviewArtifact, 0)
+	for rows.Next() {
+		var artifact ReviewArtifact
+		if err := rows.Scan(&artifact.Path); err != nil {
+			return nil, fmt.Errorf("scan prunable review artifact: %w", err)
+		}
+		artifacts = append(artifacts, artifact)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate prunable review artifacts: %w", err)
+	}
+	return artifacts, nil
 }
 
 func validateCheckpointInput(in CheckpointInput) error {
