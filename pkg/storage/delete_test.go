@@ -36,7 +36,7 @@ func TestTombstonedDeleteRejectsPathEscape(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(path, "scratch"), []byte("scratch"), 0o600); err != nil {
 			t.Fatalf("write namespace: %v", err)
 		}
-		seedReleasedLease(t, catalog, namespace)
+		seedReleasedLease(t, catalog, namespace, path)
 
 		retirer := NewNamespaceRetirer(catalog, root)
 		if err := retirer.Retire(ctx, namespace, RetirementPostMerge); err != nil {
@@ -67,7 +67,7 @@ func TestTombstonedDeleteRejectsPathEscape(t *testing.T) {
 		if err := os.Symlink(outside, root); err != nil {
 			t.Fatalf("symlink scratch root: %v", err)
 		}
-		seedReleasedLease(t, catalog, namespace)
+		seedReleasedLease(t, catalog, namespace, filepath.Join(root, namespace))
 
 		retirer := NewNamespaceRetirer(catalog, root)
 		if err := retirer.Retire(ctx, namespace, RetirementPostMerge); err != nil {
@@ -78,6 +78,24 @@ func TestTombstonedDeleteRejectsPathEscape(t *testing.T) {
 		}
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("escaped namespace was removed: %v", err)
+		}
+	})
+
+	t.Run("rejects catalog ownership bound to another scratch path", func(t *testing.T) {
+		root := t.TempDir()
+		path := filepath.Join(root, namespace)
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatalf("create local namespace: %v", err)
+		}
+		foreignPath := filepath.Join(t.TempDir(), namespace)
+		seedReleasedLease(t, catalog, namespace, foreignPath)
+
+		retirer := NewNamespaceRetirer(catalog, root)
+		if err := retirer.Retire(ctx, namespace, RetirementPostMerge); err == nil {
+			t.Fatal("retire path-mismatched namespace error = nil")
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("path-mismatched namespace was removed: %v", err)
 		}
 	})
 
@@ -216,6 +234,52 @@ func TestTombstonedDeleteRejectsPathEscape(t *testing.T) {
 			t.Fatalf("original tombstone was not preserved: %v", err)
 		}
 	})
+
+	t.Run("keeps unlink anchored when the scratch root path is replaced", func(t *testing.T) {
+		parent := t.TempDir()
+		root := filepath.Join(parent, "oro-subprocess")
+		tombstone := filepath.Join(root, tombstoneDirectory, namespace)
+		originalEntry := filepath.Join(tombstone, "scratch")
+		if err := os.MkdirAll(tombstone, 0o700); err != nil {
+			t.Fatalf("create anchored deletion fixture: %v", err)
+		}
+		if err := os.WriteFile(originalEntry, []byte("original"), 0o600); err != nil {
+			t.Fatalf("write original anchored entry: %v", err)
+		}
+
+		retirer := NewNamespaceRetirer(catalog, root)
+		boundary, err := retirer.validateTombstoneBoundary(tombstone)
+		if err != nil {
+			t.Fatalf("validate anchored deletion fixture: %v", err)
+		}
+		entries, _, err := collectTombstoneEntries(tombstone, boundary.tombstoneInfo, boundary.rootInfo)
+		if err != nil {
+			t.Fatalf("collect anchored deletion fixture: %v", err)
+		}
+
+		preservedRoot := filepath.Join(parent, "preserved-root")
+		replacementEntry := filepath.Join(tombstone, "scratch")
+		err = removeTombstoneWithHook(boundary, entries, func() {
+			if renameErr := os.Rename(root, preservedRoot); renameErr != nil {
+				t.Fatalf("rename original scratch root: %v", renameErr)
+			}
+			if mkdirErr := os.MkdirAll(tombstone, 0o700); mkdirErr != nil {
+				t.Fatalf("create replacement scratch root: %v", mkdirErr)
+			}
+			if writeErr := os.WriteFile(replacementEntry, []byte("replacement"), 0o600); writeErr != nil {
+				t.Fatalf("write replacement entry: %v", writeErr)
+			}
+		})
+		if err != nil {
+			t.Fatalf("remove anchored entry: %v", err)
+		}
+		if _, err := os.Stat(replacementEntry); err != nil {
+			t.Fatalf("replacement entry was removed: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(preservedRoot, tombstoneDirectory, namespace, "scratch")); !os.IsNotExist(err) {
+			t.Fatalf("original entry remains after anchored deletion: %v", err)
+		}
+	})
 }
 
 func TestTombstoneAnchorDeletesNestedEntries(t *testing.T) {
@@ -277,7 +341,7 @@ func TestNamespaceRetirementResumesExistingTombstone(t *testing.T) {
 		t.Fatalf("open catalog: %v", err)
 	}
 	t.Cleanup(func() { _ = catalog.Close() })
-	seedReleasedLease(t, catalog, namespace)
+	seedReleasedLease(t, catalog, namespace, filepath.Join(root, namespace))
 
 	retirer := NewNamespaceRetirer(catalog, root)
 	if err := retirer.Retire(ctx, namespace, RetirementPostMerge); err != nil {
@@ -291,6 +355,72 @@ func TestNamespaceRetirementResumesExistingTombstone(t *testing.T) {
 	stored, err := catalog.Tombstone(ctx, namespace)
 	if err != nil {
 		t.Fatalf("load resumed tombstone: %v", err)
+	}
+	assertTombstoneByteEvidence(t, stored, int64(len("scratch")))
+}
+
+func TestTombstoneDeletionEvidenceSurvivesFinalizationFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	namespace := "0123456789abcdef"
+	path := filepath.Join(root, namespace)
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "scratch"), []byte("scratch"), 0o600); err != nil {
+		t.Fatalf("write namespace: %v", err)
+	}
+	catalog, err := OpenCatalog(ctx, filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = catalog.Close() })
+	seedReleasedLease(t, catalog, namespace, path)
+
+	for _, statement := range []string{
+		`CREATE TRIGGER fail_final_evidence_insert BEFORE INSERT ON runtime_tombstone_deletion_evidence WHEN NEW.after_bytes = 0 BEGIN SELECT RAISE(FAIL, 'injected final evidence failure'); END`,
+		`CREATE TRIGGER fail_final_evidence_update BEFORE UPDATE ON runtime_tombstone_deletion_evidence WHEN NEW.after_bytes = 0 BEGIN SELECT RAISE(FAIL, 'injected final evidence failure'); END`,
+	} {
+		if _, err := catalog.db.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("create final evidence failure trigger: %v", err)
+		}
+	}
+
+	retirer := NewNamespaceRetirer(catalog, root)
+	if err := retirer.Retire(ctx, namespace, RetirementPostMerge); err != nil {
+		t.Fatalf("schedule retirement: %v", err)
+	}
+	if err := waitForRetirementError(t, retirer); err == nil {
+		t.Fatal("final evidence failure error = nil")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("namespace remains after injected finalization failure: %v", err)
+	}
+	pending, err := catalog.Tombstone(ctx, namespace)
+	if err != nil {
+		t.Fatalf("load pending tombstone evidence: %v", err)
+	}
+	if got, want := pending.BeforeBytes, int64(len("scratch")); got != want {
+		t.Fatalf("pending before bytes = %d, want %d", got, want)
+	}
+	if got, want := pending.AfterBytes, int64(len("scratch")); got != want {
+		t.Fatalf("pending after bytes = %d, want %d", got, want)
+	}
+
+	for _, name := range []string{"fail_final_evidence_insert", "fail_final_evidence_update"} {
+		if _, err := catalog.db.ExecContext(ctx, `DROP TRIGGER `+name); err != nil {
+			t.Fatalf("drop final evidence failure trigger: %v", err)
+		}
+	}
+	if err := retirer.Retire(ctx, namespace, RetirementPostMerge); err != nil {
+		t.Fatalf("retry retirement: %v", err)
+	}
+	waitForRetirement(t, retirer)
+	stored, err := catalog.Tombstone(ctx, namespace)
+	if err != nil {
+		t.Fatalf("load recovered tombstone evidence: %v", err)
 	}
 	assertTombstoneByteEvidence(t, stored, int64(len("scratch")))
 }
