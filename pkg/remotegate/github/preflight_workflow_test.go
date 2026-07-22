@@ -150,6 +150,7 @@ type defaultBranchReader struct {
 	response any
 	err      error
 	paths    []string
+	decoded  bool
 }
 
 func (r *defaultBranchReader) GetJSON(_ context.Context, path string, dst any) error {
@@ -164,6 +165,7 @@ func (r *defaultBranchReader) GetJSON(_ context.Context, path string, dst any) e
 	if !ok {
 		return fmt.Errorf("malformed response")
 	}
+	r.decoded = true
 	*(dst.(*struct {
 		FullName      string `json:"full_name"`
 		DefaultBranch string `json:"default_branch"`
@@ -198,7 +200,10 @@ func TestFetchRepositoryDefaultBranch(t *testing.T) {
 		err      error
 		repo     string
 	}{
-		{name: "identity", response: struct{ FullName, DefaultBranch string }{"other/oro", "main"}, repo: "acme/oro"},
+		{name: "identity", response: struct {
+			FullName      string `json:"full_name"`
+			DefaultBranch string `json:"default_branch"`
+		}{FullName: "other/oro", DefaultBranch: "main"}, repo: "acme/oro"},
 		{name: "blank", response: response, repo: "acme/oro"},
 		{name: "reader", err: errors.New("reader failed"), repo: "acme/oro"},
 		{name: "malformed", response: "bad", repo: "acme/oro"},
@@ -224,6 +229,9 @@ func TestFetchRepositoryDefaultBranch(t *testing.T) {
 			_, err := client.fetchDefaultBranch(ctx, tc.repo)
 			if !errors.Is(err, remotegate.ErrWorkflowIneligible) {
 				t.Fatalf("error %v does not satisfy ErrWorkflowIneligible", err)
+			}
+			if tc.name == "identity" && !r.decoded {
+				t.Fatal("identity response was not decoded")
 			}
 			if tc.name == "empty repository" && len(r.paths) != 0 {
 				t.Fatalf("empty repository performed reads: %v", r.paths)
