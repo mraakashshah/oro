@@ -24,6 +24,7 @@ import (
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/processenv"
+	"oro/pkg/storage"
 
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
@@ -1124,9 +1125,6 @@ func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers 
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := catalog.Close(); err != nil {
-		return nil, nil, fmt.Errorf("close storage catalog: %w", err)
-	}
 	sockPath := paths.SocketPath
 	dbPath := paths.StateDBPath
 	// Migrate global DBs to per-project directory on first use (no-op if already migrated).
@@ -1191,11 +1189,20 @@ func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers 
 		StorageHealth: func(ctx context.Context) *factoryhealth.StorageHealth {
 			return loadFactoryStorageHealth(ctx, paths.OroHome)
 		},
+		AcceptanceRuntime: storage.RuntimeRequest{
+			Catalog: catalog,
+			Env:     os.Environ(),
+			Workdir: repoRoot,
+			Policy: storage.StoragePolicy{
+				RepositoryRoot: repoRoot,
+			},
+		},
 	}
 
 	d, err := dispatcher.New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, codeIdx,
 		dispatcher.WithMemoryServices(newDispatcherMemoryServices(db)))
 	if err != nil {
+		_ = catalog.Close()
 		return nil, nil, fmt.Errorf("create dispatcher: %w", err)
 	}
 	return d, db, nil
