@@ -50,6 +50,7 @@ import (
 	workerstream "oro/pkg/worker"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/google/uuid"
 )
 
 // --- Dispatcher states ---
@@ -491,8 +492,6 @@ func (r *ShellAcceptanceRunner) Run(ctx context.Context, cmd string) (output str
 	return output, result.ExitCode == 0, nil
 }
 
-var acceptanceLeaseSequence atomic.Uint64
-
 func (r *ShellAcceptanceRunner) runtimeRequest() storage.RuntimeRequest {
 	runtime := r.Runtime
 	if runtime.Env == nil {
@@ -506,7 +505,7 @@ func (r *ShellAcceptanceRunner) runtimeRequest() storage.RuntimeRequest {
 	}
 	now := time.Now().UTC()
 	runtime.Lease = storage.LeaseRequest{
-		ID:           storage.LeaseID(fmt.Sprintf("acceptance-%d-%d", os.Getpid(), acceptanceLeaseSequence.Add(1))),
+		ID:           storage.LeaseID(uuid.Must(uuid.NewV7()).String()),
 		ControllerID: "dispatcher",
 		OwnerID:      "dispatcher",
 		PID:          os.Getpid(),
