@@ -26,10 +26,14 @@ var (
 type PauseState string
 
 const (
+	// Open allows controllers to admit new work.
+	Open PauseState = "open"
 	// PauseRequested stops new admissions while controllers drain active work.
 	PauseRequested PauseState = "pause_requested"
 	// Paused confirms a controller has drained the requested epoch.
 	Paused PauseState = "paused"
+	// Resuming keeps admission closed while controllers verify stable headroom.
+	Resuming PauseState = "resuming"
 )
 
 // LeaseID uniquely identifies one persisted runtime lease.
@@ -57,6 +61,7 @@ type Controller struct {
 	Identity      ProcessIdentity
 	ObservedEpoch int64
 	HeartbeatAt   time.Time
+	runtime       *controllerRuntime
 }
 
 // PauseEpoch records a host-wide admission transition.

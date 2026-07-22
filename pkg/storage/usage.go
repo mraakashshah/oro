@@ -26,6 +26,13 @@ const (
 	ScratchCeilingBytes int64 = 3 << 30
 )
 
+// Usage is one controller observation of Oro-owned scratch and filesystem
+// headroom.
+type Usage struct {
+	ScratchBytes int64
+	FreeBytes    int64
+}
+
 // ScratchState is the most severe threshold reached by a scratch measurement.
 //
 //oro:testonly — runtime enforcement wiring lands in the storage lifecycle task.
