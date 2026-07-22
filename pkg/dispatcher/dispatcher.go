@@ -463,16 +463,24 @@ type AcceptanceRunner interface {
 	Run(ctx context.Context, cmd string) (output string, passed bool, err error)
 }
 
-// ShellAcceptanceRunner runs the acceptance command through sh -c and reports
-// pass when the process exits with code 0.
-type ShellAcceptanceRunner struct{}
+// ShellAcceptanceRunner runs acceptance commands through a lease-protected
+// runtime environment and reports pass when the process exits with code 0.
+type ShellAcceptanceRunner struct {
+	Runtime storage.RuntimeRequest
+}
 
 // Run executes cmd via sh -c and returns the combined output. passed is true
 // when the process exits with code 0.
 func (r *ShellAcceptanceRunner) Run(ctx context.Context, cmd string) (output string, passed bool, err error) {
-	c := exec.CommandContext(ctx, "sh", "-c", cmd) //nolint:gosec // cmd is a user-defined acceptance test string
-	out, runErr := c.CombinedOutput()
-	output = string(out)
+	var combined bytes.Buffer
+	result, runErr := storage.RunLeasedCommand(ctx, storage.CommandRequest{
+		Runtime: r.runtimeRequest(),
+		Path:    "sh",
+		Args:    []string{"-c", cmd}, //nolint:gosec // cmd is a user-defined acceptance test string
+		Stdout:  &combined,
+		Stderr:  &combined,
+	})
+	output = combined.String()
 	if runErr != nil {
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
@@ -480,7 +488,33 @@ func (r *ShellAcceptanceRunner) Run(ctx context.Context, cmd string) (output str
 		}
 		return output, false, fmt.Errorf("running acceptance test: %w", runErr)
 	}
-	return output, true, nil
+	return output, result.ExitCode == 0, nil
+}
+
+var acceptanceLeaseSequence atomic.Uint64
+
+func (r *ShellAcceptanceRunner) runtimeRequest() storage.RuntimeRequest {
+	runtime := r.Runtime
+	if runtime.Env == nil {
+		runtime.Env = os.Environ()
+	}
+	if runtime.Workdir == "" {
+		runtime.Workdir, _ = os.Getwd()
+	}
+	if runtime.Policy.RepositoryRoot == "" {
+		runtime.Policy.RepositoryRoot = runtime.Workdir
+	}
+	now := time.Now().UTC()
+	runtime.Lease = storage.LeaseRequest{
+		ID:           storage.LeaseID(fmt.Sprintf("acceptance-%d-%d", os.Getpid(), acceptanceLeaseSequence.Add(1))),
+		ControllerID: "dispatcher",
+		OwnerID:      "dispatcher",
+		PID:          os.Getpid(),
+		ProcessStart: now,
+		AcquiredAt:   now,
+		HeartbeatAt:  now,
+	}
+	return runtime
 }
 
 // QGRunner executes the quality gate script in a worktree and reports
@@ -757,6 +791,9 @@ type Config struct {
 	// StorageController coordinates durable storage pause epochs. A nil
 	// controller preserves the dispatcher's existing admission behavior.
 	StorageController *storage.Controller
+	// AcceptanceRuntime supplies the catalog, cache policy, and worktree used
+	// by shell acceptance commands. A nil catalog makes acceptance fail closed.
+	AcceptanceRuntime storage.RuntimeRequest
 }
 
 // LeakScanConfig controls the dispatcher's pre-merge secret scan.
@@ -1185,7 +1222,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		rerankerFactory:     defaultRerankerFactory(resolved),
 		repoRoot:            rootDir,
 		shutdownRunner:      &ExecCommandRunner{Dir: rootDir},
-		acceptance:          &ShellAcceptanceRunner{},
+		acceptance:          &ShellAcceptanceRunner{Runtime: resolved.AcceptanceRuntime},
 		estimator:           resolved.Estimator,
 		qgRunner:            &ShellQGRunner{},
 		qgBaselineCache:     make(map[string]qgBaseline),

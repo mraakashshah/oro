@@ -32,10 +32,65 @@ import (
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
+	"oro/pkg/storage"
 	"oro/pkg/testutil/loadguard"
 )
 
 // --- Mock implementations ---
+
+func TestShellAcceptanceRunnerUsesRuntimeLease(t *testing.T) {
+	t.Parallel()
+
+	catalog := &recordingAcceptanceLeaseCatalog{}
+	runner := &ShellAcceptanceRunner{Runtime: storage.RuntimeRequest{
+		Catalog: catalog,
+		Env: []string{
+			"ORO_SUBPROCESS_TMP_ROOT=" + t.TempDir(),
+		},
+		Workdir: t.TempDir(),
+	}}
+
+	output, passed, err := runner.Run(t.Context(), `test -n "$TMPDIR" && printf leased`)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !passed {
+		t.Fatalf("Run() passed = false, output = %q", output)
+	}
+	if output != "leased" {
+		t.Fatalf("Run() output = %q, want %q", output, "leased")
+	}
+	if catalog.acquireCalls != 1 || catalog.releaseCalls != 1 {
+		t.Fatalf("lease lifecycle = acquire %d, release %d; want one each", catalog.acquireCalls, catalog.releaseCalls)
+	}
+	if catalog.active {
+		t.Fatal("acceptance command completed while its runtime lease remained active")
+	}
+}
+
+type recordingAcceptanceLeaseCatalog struct {
+	active       bool
+	acquireCalls int
+	releaseCalls int
+}
+
+func (catalog *recordingAcceptanceLeaseCatalog) AcquireLease(_ context.Context, request storage.LeaseRequest) (storage.Lease, error) {
+	if request.ID == "" || request.Namespace == "" || request.ScratchPath == "" {
+		return storage.Lease{}, errors.New("acceptance lease missing identity")
+	}
+	catalog.active = true
+	catalog.acquireCalls++
+	return storage.Lease{LeaseRequest: request}, nil
+}
+
+func (catalog *recordingAcceptanceLeaseCatalog) ReleaseLease(_ context.Context, _ storage.LeaseID) error {
+	if !catalog.active {
+		return errors.New("acceptance lease released while inactive")
+	}
+	catalog.active = false
+	catalog.releaseCalls++
+	return nil
+}
 
 // mockConn is a simple net.Conn implementation that captures writes.
 type mockConn struct {
