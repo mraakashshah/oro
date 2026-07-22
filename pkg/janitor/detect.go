@@ -20,8 +20,6 @@ import (
 	"time"
 	"unicode"
 
-	"oro/pkg/processenv"
-
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/text"
@@ -62,9 +60,13 @@ type janitorFile struct {
 // when the detector exits non-zero, which is the normal lint finding signal.
 // targetBranch is passed to repository-level probes such as CI; when it is
 // empty, those probes are skipped and cannot contribute re-run commands.
-func RunBuiltins(ctx context.Context, worktree, targetBranch string) (cands []Candidate, ran, skipped []string, err error) {
-	for _, detector := range builtinsFor(worktree, targetBranch) {
-		builtinCands, detectorSkipped, runErr := runBuiltin(ctx, worktree, detector)
+func RunBuiltins(ctx context.Context, worktree, targetBranch string, options ...RunOption) (cands []Candidate, ran, skipped []string, err error) {
+	commands, err := commandRunnerFor(worktree, options)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	for _, detector := range builtinsFor(worktree, targetBranch, commands) {
+		builtinCands, detectorSkipped, runErr := runBuiltin(ctx, worktree, detector, commands)
 		if runErr != nil {
 			return nil, nil, nil, runErr
 		}
@@ -81,12 +83,16 @@ func RunBuiltins(ctx context.Context, worktree, targetBranch string) (cands []Ca
 // RunBuiltin reruns one named deterministic detector in worktree. A detector
 // that is unknown or unavailable is an error so callers never mistake a
 // skipped acceptance check for a clean repository.
-func RunBuiltin(ctx context.Context, worktree, targetBranch, name string) ([]Candidate, error) {
-	for _, detector := range builtinsFor(worktree, targetBranch) {
+func RunBuiltin(ctx context.Context, worktree, targetBranch, name string, options ...RunOption) ([]Candidate, error) {
+	commands, err := commandRunnerFor(worktree, options)
+	if err != nil {
+		return nil, err
+	}
+	for _, detector := range builtinsFor(worktree, targetBranch, commands) {
 		if detector.name != name {
 			continue
 		}
-		candidates, skipped, err := runBuiltin(ctx, worktree, detector)
+		candidates, skipped, err := runBuiltin(ctx, worktree, detector, commands)
 		if err != nil {
 			return nil, err
 		}
@@ -98,7 +104,7 @@ func RunBuiltin(ctx context.Context, worktree, targetBranch, name string) ([]Can
 	return nil, fmt.Errorf("unknown janitor detector %q", name)
 }
 
-func runBuiltin(ctx context.Context, worktree string, detector builtinDetector) ([]Candidate, bool, error) {
+func runBuiltin(ctx context.Context, worktree string, detector builtinDetector, commands commandRunner) ([]Candidate, bool, error) {
 	if detector.run != nil {
 		candidates, err := detector.run(ctx, worktree)
 		if errors.Is(err, errDetectorSkipped) {
@@ -118,28 +124,24 @@ func runBuiltin(ctx context.Context, worktree string, detector builtinDetector) 
 		return nil, false, fmt.Errorf("find janitor detector %q: %w", detector.name, err)
 	}
 
-	cmd := exec.CommandContext(ctx, binary, detector.args...) //nolint:gosec // binary and arguments are fixed built-in detector definitions
-	cmd.Dir = worktree
-	cmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	runErr := cmd.Run()
+	output, runErr := commands.run(ctx, binary, detector.args...)
 	if ctx.Err() != nil {
 		return nil, false, fmt.Errorf("run janitor detector %q: %w", detector.name, ctx.Err())
 	}
-	if runErr != nil && strings.TrimSpace(stdout.String()) == "" {
-		return nil, false, detectorRunError(detector.name, runErr, stderr.String())
+	if runErr != nil && strings.TrimSpace(string(output.stdout)) == "" {
+		return nil, false, detectorRunError(detector.name, runErr, string(output.stderr))
 	}
-	return candidatesFromOutput(worktree, detector.name, stdout.Bytes()), false, nil
+	return candidatesFromOutput(worktree, detector.name, output.stdout), false, nil
 }
 
-func builtinsFor(worktree, targetBranch string) []builtinDetector {
+func builtinsFor(worktree, targetBranch string, commands commandRunner) []builtinDetector {
 	detectors := []builtinDetector{
 		{name: "ci", run: func(ctx context.Context, worktree string) ([]Candidate, error) {
-			return ciDetector(ctx, worktree, targetBranch)
+			return ciDetector(ctx, worktree, targetBranch, commands)
 		}},
-		{name: "todo", run: staleTODOs},
+		{name: "todo", run: func(ctx context.Context, worktree string) ([]Candidate, error) {
+			return staleTODOs(ctx, worktree, commands)
+		}},
 		{name: "broken-links", run: brokenRelativeLinks},
 		{name: "orphan-files", run: orphanFiles},
 	}
@@ -176,7 +178,7 @@ type ciRunDetails struct {
 	Jobs []ciJob `json:"jobs"`
 }
 
-func ciDetector(ctx context.Context, worktree, targetBranch string) ([]Candidate, error) {
+func ciDetector(ctx context.Context, worktree, targetBranch string, commands commandRunner) ([]Candidate, error) {
 	gh, err := exec.LookPath("gh")
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
@@ -187,18 +189,18 @@ func ciDetector(ctx context.Context, worktree, targetBranch string) ([]Candidate
 	if targetBranch == "" {
 		return nil, errDetectorSkipped
 	}
-	host, err := ciRemoteHost(ctx, worktree)
+	host, err := ciRemoteHost(ctx, worktree, commands)
 	if err != nil {
 		return nil, err
 	}
-	authenticated, err := ciAuthenticated(ctx, worktree, gh, host)
+	authenticated, err := ciAuthenticated(ctx, commands, gh, host)
 	if err != nil {
 		return nil, err
 	}
 	if !authenticated {
 		return nil, errDetectorSkipped
 	}
-	out, err := runCIProbe(ctx, worktree, gh, "run", "list", "--branch", targetBranch, "--limit", "100", "--json", "databaseId,workflowDatabaseId,workflowName,conclusion,url")
+	out, err := runCIProbe(ctx, commands, gh, "run", "list", "--branch", targetBranch, "--limit", "100", "--json", "databaseId,workflowDatabaseId,workflowName,conclusion,url")
 	if err != nil {
 		return nil, err
 	}
@@ -206,33 +208,29 @@ func ciDetector(ctx context.Context, worktree, targetBranch string) ([]Candidate
 	if err := json.Unmarshal(out, &runs); err != nil {
 		return nil, fmt.Errorf("parse gh CI runs: %w", err)
 	}
-	return ciCandidates(ctx, worktree, gh, latestFailingCIRuns(runs))
+	return ciCandidates(ctx, worktree, commands, gh, latestFailingCIRuns(runs))
 }
 
-func ciRemoteHost(ctx context.Context, worktree string) (string, error) {
-	listCmd := exec.CommandContext(ctx, "git", "-C", worktree, "remote") //nolint:gosec // worktree is the controlled scan checkout
-	listCmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
-	remotes, err := listCmd.Output()
+func ciRemoteHost(ctx context.Context, worktree string, commands commandRunner) (string, error) {
+	result, err := commands.run(ctx, "git", "-C", worktree, "remote")
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", fmt.Errorf("list CI remotes: %w", ctx.Err())
 		}
 		return "", fmt.Errorf("list CI remotes: %w", err)
 	}
-	if !slices.Contains(strings.Fields(string(remotes)), "origin") {
+	if !slices.Contains(strings.Fields(string(result.stdout)), "origin") {
 		return "", errDetectorSkipped
 	}
 
-	cmd := exec.CommandContext(ctx, "git", "-C", worktree, "remote", "get-url", "origin") //nolint:gosec // worktree is the controlled scan checkout
-	cmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
-	out, err := cmd.Output()
+	result, err = commands.run(ctx, "git", "-C", worktree, "remote", "get-url", "origin")
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", fmt.Errorf("read CI remote: %w", ctx.Err())
 		}
 		return "", fmt.Errorf("read CI remote: %w", err)
 	}
-	host, err := gitRemoteHost(strings.TrimSpace(string(out)))
+	host, err := gitRemoteHost(strings.TrimSpace(string(result.stdout)))
 	if err != nil {
 		return "", err
 	}
@@ -257,11 +255,8 @@ func gitRemoteHost(remote string) (string, error) {
 	return "", errors.New("CI remote has no hostname")
 }
 
-func ciAuthenticated(ctx context.Context, worktree, gh, host string) (bool, error) {
-	cmd := exec.CommandContext(ctx, gh, "auth", "status", "--active", "--hostname", host) //nolint:gosec // gh path is fixed and host comes from the scan checkout's Git remote
-	cmd.Dir = worktree
-	cmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
-	if err := cmd.Run(); err != nil {
+func ciAuthenticated(ctx context.Context, commands commandRunner, gh, host string) (bool, error) {
+	if _, err := commands.run(ctx, gh, "auth", "status", "--active", "--hostname", host); err != nil {
 		if ctx.Err() != nil {
 			return false, fmt.Errorf("check gh authentication: %w", ctx.Err())
 		}
@@ -270,26 +265,19 @@ func ciAuthenticated(ctx context.Context, worktree, gh, host string) (bool, erro
 	return true, nil
 }
 
-func runCIProbe(ctx context.Context, worktree, gh string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, gh, args...) //nolint:gosec // gh path and arguments come from fixed CI detector definitions
-	cmd.Dir = worktree
-	cmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	runErr := cmd.Run()
+func runCIProbe(ctx context.Context, commands commandRunner, gh string, args ...string) ([]byte, error) {
+	output, runErr := commands.run(ctx, gh, args...)
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("run CI detector: %w", ctx.Err())
 	}
 	if runErr != nil {
-		detail := strings.TrimSpace(stderr.String())
+		detail := strings.TrimSpace(string(output.stderr))
 		if detail == "" {
 			return nil, fmt.Errorf("run gh CI probe: %w", runErr)
 		}
 		return nil, fmt.Errorf("run gh CI probe: %w: %s", runErr, detail)
 	}
-	return stdout.Bytes(), nil
+	return output.stdout, nil
 }
 
 func latestFailingCIRuns(runs []ciWorkflowRun) []ciWorkflowRun {
@@ -318,10 +306,10 @@ func ciWorkflowKey(run ciWorkflowRun) string {
 	return "run:" + strconv.FormatInt(run.DatabaseID, 10)
 }
 
-func ciCandidates(ctx context.Context, worktree, gh string, runs []ciWorkflowRun) ([]Candidate, error) {
+func ciCandidates(ctx context.Context, worktree string, commands commandRunner, gh string, runs []ciWorkflowRun) ([]Candidate, error) {
 	var candidates []Candidate
 	for _, run := range runs {
-		out, err := runCIProbe(ctx, worktree, gh, "run", "view", strconv.FormatInt(run.DatabaseID, 10), "--json", "jobs")
+		out, err := runCIProbe(ctx, commands, gh, "run", "view", strconv.FormatInt(run.DatabaseID, 10), "--json", "jobs")
 		if err != nil {
 			return nil, err
 		}
@@ -331,7 +319,7 @@ func ciCandidates(ctx context.Context, worktree, gh string, runs []ciWorkflowRun
 		}
 		workflow := firstNonEmpty(run.WorkflowName, "CI workflow")
 		job := firstNonEmpty(strings.Join(failedCIJobNames(details.Jobs), ", "), "unspecified job")
-		logOutput, err := runCIProbe(ctx, worktree, gh, "run", "view", strconv.FormatInt(run.DatabaseID, 10), "--log-failed")
+		logOutput, err := runCIProbe(ctx, commands, gh, "run", "view", strconv.FormatInt(run.DatabaseID, 10), "--log-failed")
 		if err != nil {
 			return nil, err
 		}
@@ -369,11 +357,11 @@ func detectorRunError(detector string, runErr error, stderr string) error {
 	return fmt.Errorf("run janitor detector %q: %w: %s", detector, runErr, detail)
 }
 
-func staleTODOs(ctx context.Context, worktree string) ([]Candidate, error) {
+func staleTODOs(ctx context.Context, worktree string, commands commandRunner) ([]Candidate, error) {
 	var cands []Candidate
 	deadline := time.Now().AddDate(0, 0, -60)
 	err := walkJanitorFiles(worktree, func(path string, entry fs.DirEntry) error {
-		fileCands, candidateErr := staleTODOCandidates(ctx, worktree, deadline, path, entry)
+		fileCands, candidateErr := staleTODOCandidates(ctx, worktree, deadline, path, entry, commands)
 		if candidateErr != nil {
 			return candidateErr
 		}
@@ -488,7 +476,7 @@ func walkJanitorFiles(worktree string, visit func(string, fs.DirEntry) error) er
 	return nil
 }
 
-func staleTODOCandidates(ctx context.Context, worktree string, deadline time.Time, path string, _ fs.DirEntry) ([]Candidate, error) {
+func staleTODOCandidates(ctx context.Context, worktree string, deadline time.Time, path string, _ fs.DirEntry, commands commandRunner) ([]Candidate, error) {
 	contents, err := os.ReadFile(path) //nolint:gosec // path comes from filepath.WalkDir under the supplied worktree
 	if err != nil {
 		return nil, fmt.Errorf("read %q: %w", path, err)
@@ -501,7 +489,7 @@ func staleTODOCandidates(ctx context.Context, worktree string, deadline time.Tim
 	if len(fileCands) == 0 {
 		return nil, nil
 	}
-	updatedAt, found, err := lastGitUpdate(ctx, worktree, relPath)
+	updatedAt, found, err := lastGitUpdate(ctx, relPath, commands)
 	if err != nil {
 		return nil, err
 	}
@@ -511,14 +499,12 @@ func staleTODOCandidates(ctx context.Context, worktree string, deadline time.Tim
 	return fileCands, nil
 }
 
-func lastGitUpdate(ctx context.Context, worktree, relPath string) (time.Time, bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "log", "-1", "--format=%ct", "--", filepath.ToSlash(relPath)) //nolint:gosec // relPath comes from WalkDir under worktree and follows --
-	cmd.Dir = worktree
-	out, err := cmd.Output()
+func lastGitUpdate(ctx context.Context, relPath string, commands commandRunner) (time.Time, bool, error) {
+	output, err := commands.run(ctx, "git", "log", "-1", "--format=%ct", "--", filepath.ToSlash(relPath))
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("find TODO age for %q: %w", relPath, err)
 	}
-	rawTimestamp := strings.TrimSpace(string(out))
+	rawTimestamp := strings.TrimSpace(string(output.stdout))
 	if rawTimestamp == "" {
 		return time.Time{}, false, nil
 	}
@@ -723,7 +709,7 @@ func repositoryLineExists(path string, lineNumber int) bool {
 // can fall back to built-in detectors. Malformed JSONL records are skipped and
 // returned in skippedLines. A non-zero script exit returns an error containing
 // the script's combined output.
-func RunDetectScript(ctx context.Context, worktree string) (cands []Candidate, skippedLines []string, found bool, err error) {
+func RunDetectScript(ctx context.Context, worktree string, options ...RunOption) (cands []Candidate, skippedLines []string, found bool, err error) {
 	scriptPath := filepath.Join(worktree, detectScriptPath)
 	if _, statErr := os.Stat(scriptPath); statErr != nil {
 		if os.IsNotExist(statErr) {
@@ -732,15 +718,17 @@ func RunDetectScript(ctx context.Context, worktree string) (cands []Candidate, s
 		return nil, nil, false, fmt.Errorf("stat janitor detector script: %w", statErr)
 	}
 
-	cmd := exec.CommandContext(ctx, "bash", scriptPath) //nolint:gosec // script path is constructed from the provided worktree
-	cmd.Dir = worktree
-	cmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
-	out, runErr := cmd.CombinedOutput()
+	commands, configErr := commandRunnerFor(worktree, options)
+	if configErr != nil {
+		return nil, nil, true, configErr
+	}
+	output, runErr := commands.run(ctx, "bash", scriptPath)
 	if runErr != nil {
-		return nil, nil, true, fmt.Errorf("run janitor detector: %w: %s", runErr, strings.TrimSpace(string(out)))
+		combined := append(append([]byte(nil), output.stdout...), output.stderr...)
+		return nil, nil, true, fmt.Errorf("run janitor detector: %w: %s", runErr, strings.TrimSpace(string(combined)))
 	}
 
-	cands, skippedLines, err = parseCandidates(out)
+	cands, skippedLines, err = parseCandidates(output.stdout)
 	if err != nil {
 		return nil, nil, true, err
 	}
