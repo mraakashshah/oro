@@ -112,6 +112,9 @@ func (r *NamespaceRetirer) Wait(ctx context.Context) error {
 
 func (r *NamespaceRetirer) run(namespace string, reason RetirementReason, job *retirementJob) {
 	job.err = r.retire(namespace, reason)
+	r.mu.Lock()
+	delete(r.jobs, namespace)
+	r.mu.Unlock()
 	close(job.done)
 }
 
