@@ -14,8 +14,8 @@ func TestReviewArtifactTerminalStateMatrix(t *testing.T) {
 
 	ctx := context.Background()
 	store := openReviewCheckpointStore(ctx, t, "file:review-artifact-terminal-matrix?mode=memory&cache=shared")
-	olderThan := time.Now().Add(-time.Hour)
-	createdAt := olderThan.Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+	olderThan := time.Date(2026, time.July, 22, 10, 0, 0, 0, time.UTC)
+	createdAt := "2026-07-22 08:00:00"
 
 	cases := []struct {
 		state    ReviewCheckpointState
@@ -53,15 +53,40 @@ WHERE id = ?`, tc.state, path, createdAt, createdAt, checkpoint.ID); err != nil 
 		})
 	}
 
+	// SQLite persists checkpoint timestamps with datetime('now'). A terminal
+	// artifact from later on the cutoff day must not compare as older merely
+	// because that format uses a space instead of RFC3339's T separator.
+	freshPath := "/artifacts/fresh.json"
+	freshCheckpoint := createMaintenanceCheckpoint(ctx, t, store, len(cases), ReviewCheckpointStateIntegrated)
+	if _, err := store.db.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET state = ?, artifact_path = ?, created_at = ?, updated_at = ?
+WHERE id = ?`, ReviewCheckpointStateIntegrated, freshPath, "2026-07-22 20:00:00", "2026-07-22 20:00:00", freshCheckpoint.ID); err != nil {
+		t.Fatalf("seed fresh artifact: %v", err)
+	}
+
 	// A shared artifact stays retained while any checkpoint still references it.
 	sharedPath := "/artifacts/shared.json"
 	for i, state := range []ReviewCheckpointState{ReviewCheckpointStateIntegrated, ReviewCheckpointStateBlocked} {
-		checkpoint := createMaintenanceCheckpoint(ctx, t, store, len(cases)+i, state)
+		checkpoint := createMaintenanceCheckpoint(ctx, t, store, len(cases)+1+i, state)
 		if _, err := store.db.ExecContext(ctx, `
 UPDATE review_checkpoints
 SET state = ?, artifact_path = ?, created_at = ?, updated_at = ?
 WHERE id = ?`, state, sharedPath, createdAt, createdAt, checkpoint.ID); err != nil {
 			t.Fatalf("seed shared artifact: %v", err)
+		}
+	}
+
+	// A shared artifact also stays retained when every reference is terminal
+	// but one reference is newer than the retention cutoff.
+	freshSharedPath := "/artifacts/shared-fresh.json"
+	for i, timestamp := range []string{createdAt, "2026-07-22 20:00:00"} {
+		checkpoint := createMaintenanceCheckpoint(ctx, t, store, len(cases)+3+i, ReviewCheckpointStateIntegrated)
+		if _, err := store.db.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET state = ?, artifact_path = ?, created_at = ?, updated_at = ?
+WHERE id = ?`, ReviewCheckpointStateIntegrated, freshSharedPath, timestamp, timestamp, checkpoint.ID); err != nil {
+			t.Fatalf("seed shared artifact with timestamp %q: %v", timestamp, err)
 		}
 	}
 

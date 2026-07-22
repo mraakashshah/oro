@@ -166,12 +166,12 @@ WITH artifact_references AS (
 SELECT DISTINCT candidate.path
 FROM artifact_references AS candidate
 WHERE candidate.state IN (?, ?)
-  AND candidate.terminal_at < ?
+  AND datetime(candidate.terminal_at) < datetime(?)
   AND NOT EXISTS (
     SELECT 1
     FROM artifact_references AS reference
     WHERE reference.path = candidate.path
-      AND (reference.state NOT IN (?, ?) OR reference.terminal_at >= ?)
+      AND (reference.state NOT IN (?, ?) OR datetime(reference.terminal_at) >= datetime(?))
   )
 ORDER BY candidate.path`,
 		ReviewCheckpointStateIntegrated,
