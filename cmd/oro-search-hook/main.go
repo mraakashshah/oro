@@ -23,6 +23,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -55,25 +56,69 @@ func run(r io.Reader, w io.Writer) error {
 	return nil
 }
 
-func handleSessionStart(probePath string) error {
+func openSessionStartProbeRoot(probePath string) (*os.Root, string, error) {
 	if probePath == "" {
-		return fmt.Errorf("ORO_HOOK_PROBE is not set")
+		return nil, "", fmt.Errorf("ORO_HOOK_PROBE is not set")
 	}
 	if !filepath.IsAbs(probePath) {
-		return fmt.Errorf("ORO_HOOK_PROBE must be an absolute path")
+		return nil, "", fmt.Errorf("ORO_HOOK_PROBE must be an absolute path")
 	}
-	parentInfo, err := os.Stat(filepath.Dir(probePath)) //nolint:gosec // G703: The dynamic parent is inspected here before the exclusive marker create.
+	if filepath.Clean(probePath) != probePath {
+		return nil, "", fmt.Errorf("ORO_HOOK_PROBE must be a clean path")
+	}
+	root, err := os.OpenRoot(filepath.Dir(probePath)) //nolint:gosec // G703: The dynamic parent is opened as a bound root before validation and marker creation.
 	if err != nil {
-		return fmt.Errorf("stat ORO_HOOK_PROBE parent: %w", err)
+		return nil, "", fmt.Errorf("open ORO_HOOK_PROBE parent: %w", err)
+	}
+	parentInfo, err := root.Stat(".")
+	if err != nil {
+		_ = root.Close()
+		return nil, "", fmt.Errorf("stat ORO_HOOK_PROBE parent: %w", err)
 	}
 	if !parentInfo.IsDir() || parentInfo.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("ORO_HOOK_PROBE parent is not a private directory")
+		_ = root.Close()
+		return nil, "", fmt.Errorf("ORO_HOOK_PROBE parent is not a private directory")
 	}
-	file, err := os.OpenFile(probePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: ORO_HOOK_PROBE intentionally selects the private probe path.
+	return root, filepath.Base(probePath), nil
+}
+
+func cleanupSessionStartProbe(root *os.Root, name string, file *os.File, cause error) error {
+	var cleanupErr error
+	if err := file.Close(); err != nil {
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("close ORO_HOOK_PROBE: %w", err))
+	}
+	if err := root.Remove(name); err != nil {
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove failed ORO_HOOK_PROBE: %w", err))
+	}
+	return errors.Join(cause, cleanupErr)
+}
+
+func handleSessionStart(probePath string) error {
+	root, name, err := openSessionStartProbeRoot(probePath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+
+	file, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return fmt.Errorf("create ORO_HOOK_PROBE: %w", err)
 	}
+	if err := file.Chmod(0o600); err != nil {
+		return cleanupSessionStartProbe(root, name, file, fmt.Errorf("set ORO_HOOK_PROBE mode: %w", err))
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return cleanupSessionStartProbe(root, name, file, fmt.Errorf("verify ORO_HOOK_PROBE mode: %w", err))
+	}
+	if info.Mode().Perm() != 0o600 {
+		return cleanupSessionStartProbe(root, name, file, fmt.Errorf("verify ORO_HOOK_PROBE mode: got %04o, want 0600", info.Mode().Perm()))
+	}
 	if err := file.Close(); err != nil {
+		removeErr := root.Remove(name)
+		if removeErr != nil {
+			return errors.Join(fmt.Errorf("close ORO_HOOK_PROBE: %w", err), fmt.Errorf("remove failed ORO_HOOK_PROBE: %w", removeErr))
+		}
 		return fmt.Errorf("close ORO_HOOK_PROBE: %w", err)
 	}
 	return nil
