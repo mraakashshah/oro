@@ -34,10 +34,8 @@ type NamespaceRetirer struct {
 	catalog      *Catalog
 	root         string
 	pollInterval time.Duration
-	removeAll    func(string) error
-
-	mu   sync.Mutex
-	jobs map[string]*retirementJob
+	mu           sync.Mutex
+	jobs         map[string]*retirementJob
 }
 
 type retirementJob struct {
@@ -53,7 +51,6 @@ func NewNamespaceRetirer(catalog *Catalog, root string) *NamespaceRetirer {
 		catalog:      catalog,
 		root:         root,
 		pollInterval: time.Second,
-		removeAll:    os.RemoveAll,
 		jobs:         make(map[string]*retirementJob),
 	}
 }
@@ -64,6 +61,13 @@ func NewNamespaceRetirer(catalog *Catalog, root string) *NamespaceRetirer {
 func (r *NamespaceRetirer) Retire(ctx context.Context, namespace string, reason RetirementReason) error {
 	if err := r.validate(namespace, reason); err != nil {
 		return err
+	}
+	owned, err := r.catalogOwnsNamespace(ctx, namespace)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return fmt.Errorf("namespace %s is not catalog-owned", namespace)
 	}
 	if err := r.catalog.UpsertTombstone(ctx, Tombstone{
 		ID:        namespace,
@@ -130,11 +134,18 @@ func (r *NamespaceRetirer) retire(namespace string, reason RetirementReason) err
 		time.Sleep(r.pollInterval)
 	}
 
-	tombstone, err := r.tombstone(namespace, reason)
+	tombstone, present, err := r.tombstone(namespace, reason)
 	if err != nil {
 		return err
 	}
-	if err := r.removeAll(tombstone); err != nil {
+	if !present {
+		return nil
+	}
+	evidence, err := r.deleteTombstone(tombstone)
+	if err != nil {
+		return r.recordState(namespace, reason, "tombstoned", err)
+	}
+	if err := r.catalog.recordTombstoneDeletion(context.Background(), namespace, evidence.beforeBytes, evidence.afterBytes); err != nil {
 		return r.recordState(namespace, reason, "tombstoned", err)
 	}
 	return r.recordState(namespace, reason, "deleted", nil)
@@ -149,34 +160,60 @@ func (r *NamespaceRetirer) activeLease(namespace string) (bool, error) {
 	return active, nil
 }
 
-func (r *NamespaceRetirer) tombstone(namespace string, reason RetirementReason) (string, error) {
+func (r *NamespaceRetirer) catalogOwnsNamespace(ctx context.Context, namespace string) (bool, error) {
+	var owned bool
+	err := r.catalog.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runtime_leases WHERE namespace=?)`, namespace).Scan(&owned)
+	if err != nil {
+		return false, fmt.Errorf("check namespace ownership for %s: %w", namespace, err)
+	}
+	return owned, nil
+}
+
+func (r *NamespaceRetirer) tombstone(namespace string, reason RetirementReason) (tombstone string, present bool, err error) {
+	if _, err := safeDirectory(r.root); err != nil {
+		return "", false, fmt.Errorf("validate scratch root: %w", err)
+	}
 	source := filepath.Join(r.root, namespace)
 	info, err := os.Lstat(source)
 	if errors.Is(err, os.ErrNotExist) {
-		return "", r.recordState(namespace, reason, "deleted", nil)
+		tombstone = filepath.Join(r.root, tombstoneDirectory, namespace)
+		tombstoneInfo, tombstoneErr := os.Lstat(tombstone)
+		if errors.Is(tombstoneErr, os.ErrNotExist) {
+			return "", false, r.recordState(namespace, reason, "deleted", nil)
+		}
+		if tombstoneErr != nil {
+			return "", false, fmt.Errorf("inspect tombstone %s: %w", namespace, tombstoneErr)
+		}
+		if !tombstoneInfo.IsDir() || tombstoneInfo.Mode()&os.ModeSymlink != 0 {
+			return "", false, fmt.Errorf("unsafe tombstone %s", namespace)
+		}
+		return tombstone, true, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("inspect namespace %s: %w", namespace, err)
+		return "", false, fmt.Errorf("inspect namespace %s: %w", namespace, err)
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("unsafe namespace %s", namespace)
+		return "", false, fmt.Errorf("unsafe namespace %s", namespace)
 	}
 
 	directory := filepath.Join(r.root, tombstoneDirectory)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return "", fmt.Errorf("create tombstone directory: %w", err)
+		return "", false, fmt.Errorf("create tombstone directory: %w", err)
 	}
-	tombstone := filepath.Join(directory, namespace)
+	if _, err := safeDirectory(directory); err != nil {
+		return "", false, fmt.Errorf("validate tombstone directory: %w", err)
+	}
+	tombstone = filepath.Join(directory, namespace)
 	if err := r.recordState(namespace, reason, "tombstoning", nil); err != nil {
-		return "", err
+		return "", false, err
 	}
 	if err := os.Rename(source, tombstone); err != nil {
-		return "", fmt.Errorf("tombstone namespace %s: %w", namespace, err)
+		return "", false, fmt.Errorf("tombstone namespace %s: %w", namespace, err)
 	}
 	if err := r.recordState(namespace, reason, "tombstoned", nil); err != nil {
-		return "", err
+		return "", false, err
 	}
-	return tombstone, nil
+	return tombstone, true, nil
 }
 
 func (r *NamespaceRetirer) recordState(namespace string, reason RetirementReason, state string, cause error) error {
