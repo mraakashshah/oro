@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"time"
 
 	"oro/pkg/janitor"
+	"oro/pkg/storage"
 
 	"github.com/spf13/cobra"
 )
@@ -46,14 +50,20 @@ func janitorDetectorCandidates(
 	worktree, targetBranch, detector string,
 	projectScript bool,
 ) ([]janitor.Candidate, error) {
+	runtime, catalog, err := janitorCommandRuntime(ctx, worktree)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = catalog.Close() }()
+	option := janitor.WithRuntime(runtime)
 	if !projectScript {
-		candidates, err := janitor.RunBuiltin(ctx, worktree, targetBranch, detector)
+		candidates, err := janitor.RunBuiltin(ctx, worktree, targetBranch, detector, option)
 		if err != nil {
 			return nil, fmt.Errorf("run built-in janitor detector: %w", err)
 		}
 		return candidates, nil
 	}
-	candidates, skippedLines, found, err := janitor.RunDetectScript(ctx, worktree)
+	candidates, skippedLines, found, err := janitor.RunDetectScript(ctx, worktree, option)
 	if err != nil {
 		return nil, fmt.Errorf("run project janitor detector: %w", err)
 	}
@@ -70,4 +80,33 @@ func janitorDetectorCandidates(
 		}
 	}
 	return matching, nil
+}
+
+func janitorCommandRuntime(ctx context.Context, worktree string) (storage.RuntimeRequest, *storage.Catalog, error) {
+	oroHome, err := resolveOroHome()
+	if err != nil {
+		return storage.RuntimeRequest{}, nil, fmt.Errorf("resolve oro home for janitor detector: %w", err)
+	}
+	catalog, err := openStorageCatalog(ctx, oroHome)
+	if err != nil {
+		return storage.RuntimeRequest{}, nil, err
+	}
+	now := time.Now().UTC()
+	return storage.RuntimeRequest{
+		Catalog: catalog,
+		Lease: storage.LeaseRequest{
+			ControllerID: "janitor-cli",
+			OwnerID:      "janitor-detector",
+			PID:          os.Getpid(),
+			ProcessStart: now,
+			AcquiredAt:   now,
+			HeartbeatAt:  now,
+		},
+		Env:     os.Environ(),
+		Workdir: worktree,
+		Policy: storage.StoragePolicy{
+			ProjectID:      filepath.Base(worktree),
+			RepositoryRoot: worktree,
+		},
+	}, catalog, nil
 }

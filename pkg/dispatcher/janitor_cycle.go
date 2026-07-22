@@ -8,10 +8,12 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"oro/pkg/janitor"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
+	"oro/pkg/storage"
 )
 
 const janitorRoleMetadataKey = cleanlinessRoleMetadataKey
@@ -39,7 +41,7 @@ func (d *Dispatcher) runJanitor(ctx context.Context) error {
 }
 
 func (d *Dispatcher) runJanitorInWorktree(ctx context.Context, roleBeadID, worktree string) error {
-	candidates, ran, skipped, projectScript, err := scanJanitorDetectors(ctx, worktree, d.cfg.DefaultBranch)
+	candidates, ran, skipped, projectScript, err := scanJanitorDetectors(ctx, worktree, d.cfg.DefaultBranch, d.cfg.StorageCatalogPath)
 	if err != nil {
 		return fmt.Errorf("run janitor detectors: %w", err)
 	}
@@ -120,18 +122,23 @@ func (d *Dispatcher) fileJanitorTriage(
 	})
 }
 
-func scanJanitorDetectors(ctx context.Context, worktree, targetBranch string) (
+func scanJanitorDetectors(ctx context.Context, worktree, targetBranch, catalogPath string) (
 	candidates []janitor.Candidate,
 	ran, skipped []string,
 	projectScript bool,
 	err error,
 ) {
-	candidates, skippedLines, found, err := janitor.RunDetectScript(ctx, worktree)
+	options, closeCatalog, err := janitorRunOptions(ctx, worktree, catalogPath)
+	if err != nil {
+		return nil, nil, nil, false, err
+	}
+	defer closeCatalog()
+	candidates, skippedLines, found, err := janitor.RunDetectScript(ctx, worktree, options...)
 	if err != nil {
 		return nil, nil, nil, false, fmt.Errorf("run detector script: %w", err)
 	}
 	if !found {
-		candidates, ran, skipped, err = janitor.RunBuiltins(ctx, worktree, targetBranch)
+		candidates, ran, skipped, err = janitor.RunBuiltins(ctx, worktree, targetBranch, options...)
 		if err != nil {
 			return nil, nil, nil, false, fmt.Errorf("run built-in detectors: %w", err)
 		}
@@ -142,6 +149,35 @@ func scanJanitorDetectors(ctx context.Context, worktree, targetBranch string) (
 		ran = append(ran, candidate.Detector)
 	}
 	return candidates, uniqueStrings(ran), skippedLines, true, nil
+}
+
+func janitorRunOptions(ctx context.Context, worktree, catalogPath string) ([]janitor.RunOption, func(), error) {
+	if catalogPath == "" {
+		return nil, nil, fmt.Errorf("janitor runtime catalog path is required")
+	}
+	catalog, err := storage.OpenCatalog(ctx, catalogPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open janitor runtime catalog: %w", err)
+	}
+	now := time.Now().UTC()
+	runtime := storage.RuntimeRequest{
+		Catalog: catalog,
+		Lease: storage.LeaseRequest{
+			ControllerID: "dispatcher",
+			OwnerID:      "janitor-detector",
+			PID:          os.Getpid(),
+			ProcessStart: now,
+			AcquiredAt:   now,
+			HeartbeatAt:  now,
+		},
+		Env:     os.Environ(),
+		Workdir: worktree,
+		Policy: storage.StoragePolicy{
+			ProjectID:      filepath.Base(worktree),
+			RepositoryRoot: worktree,
+		},
+	}
+	return []janitor.RunOption{janitor.WithRuntime(runtime)}, func() { _ = catalog.Close() }, nil
 }
 
 func (d *Dispatcher) janitorOpenTitles(ctx context.Context) ([]string, error) {

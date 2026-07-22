@@ -424,7 +424,7 @@ func TestJanitorTriageFallbackEvidence(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir)
 
-	candidates, _, _, err := janitor.RunBuiltins(t.Context(), worktree, "")
+	candidates, _, _, err := janitor.RunBuiltins(t.Context(), worktree, "", janitor.WithDirectExecutionForTest())
 	if err != nil {
 		t.Fatalf("run fallback detectors: %v", err)
 	}
