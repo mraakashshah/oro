@@ -19,6 +19,7 @@ func TestParseFlatWorkflowTriggerDeclarations(t *testing.T) {
 		wantBranches     []string
 		wantBranchesSkip []string
 		wantIneligible   bool
+		wantDistinct     bool
 	}{
 		{
 			name:         "literal workflow dispatch key",
@@ -26,15 +27,12 @@ func TestParseFlatWorkflowTriggerDeclarations(t *testing.T) {
 			wantDispatch: true,
 		},
 		{
-			name: "flat event sequence",
-			contents: `on:
-  - workflow_dispatch
-  - pull_request
-  - push
-`,
+			name:             "flat event sequence",
+			contents:         "on: [workflow_dispatch, pull_request, push]\n",
 			wantDispatch:     true,
 			wantBranches:     []string{},
 			wantBranchesSkip: []string{},
+			wantDistinct:     true,
 		},
 		{
 			name:           "malformed yaml",
@@ -114,6 +112,16 @@ on: workflow_dispatch
 			}
 			if !slices.Equal(triggers.PullRequestBranchesIgnore, tt.wantBranchesSkip) || (triggers.PullRequestBranchesIgnore == nil) != (tt.wantBranchesSkip == nil) {
 				t.Errorf("PullRequestBranchesIgnore = %#v, want %#v", triggers.PullRequestBranchesIgnore, tt.wantBranchesSkip)
+			}
+			if tt.wantDistinct {
+				if cap(triggers.PullRequestBranches) == 0 || cap(triggers.PullRequestBranchesIgnore) == 0 {
+					t.Fatal("pull-request filter slices do not have independently testable backing storage")
+				}
+				branches := append(triggers.PullRequestBranches, "include")
+				branchesIgnore := append(triggers.PullRequestBranchesIgnore, "ignore")
+				if branches[0] != "include" || branchesIgnore[0] != "ignore" {
+					t.Fatal("pull-request filter slices share backing storage")
+				}
 			}
 		})
 	}
