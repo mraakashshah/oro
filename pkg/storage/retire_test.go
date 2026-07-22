@@ -1,4 +1,4 @@
-package storage
+package storage //nolint:testpackage // white-box test pauses the package-private remover to verify tombstone ordering.
 
 import (
 	"context"
