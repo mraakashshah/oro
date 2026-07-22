@@ -2,7 +2,6 @@ package worker
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,6 +22,7 @@ import (
 	"oro/pkg/cards"
 	"oro/pkg/processenv"
 	"oro/pkg/protocol"
+	"oro/pkg/storage"
 )
 
 // StreamFormat identifies how a runtime emits subprocess stdout.
@@ -110,6 +110,18 @@ func (r *runtimeSpawnerRouter) spawnerForRuntime(runtime string) (StreamingSpawn
 	default:
 		return nil, fmt.Errorf("unknown agent runtime %q", runtime)
 	}
+}
+
+func (r *runtimeSpawnerRouter) runtimeRequest(runtime string) storage.RuntimeRequest {
+	spawner, err := r.spawnerForRuntime(runtime)
+	if err != nil {
+		return storage.RuntimeRequest{}
+	}
+	provider, ok := spawner.(runtimeLeaseProvider)
+	if !ok {
+		return storage.RuntimeRequest{}
+	}
+	return provider.RuntimeRequest()
 }
 
 // Process abstracts a running subprocess.
@@ -964,20 +976,26 @@ func (w *Worker) runQualityGateWithProgress(ctx context.Context, worktree string
 	if !skipMutation {
 		args = append(args, "--mutation-testing")
 	}
-	cmd := exec.CommandContext(ctx, "bash", args...) //nolint:gosec // script path constructed from worktree, not user input
-	cmd.Dir = worktree
-	cmd.Env = qualityGateEnv(worktree, skipMutation, mutationBase)
-
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-
-	if err := cmd.Start(); err != nil {
-		return false, "", fmt.Errorf("run quality gate: %w", err)
+	w.mu.Lock()
+	assignmentRuntime := w.runtime
+	w.mu.Unlock()
+	runtime := storage.RuntimeRequest{}
+	if router, ok := w.spawner.(*runtimeSpawnerRouter); ok {
+		runtime = router.runtimeRequest(assignmentRuntime)
 	}
-	w.recordSpawnedProc(&commandProcess{cmd: cmd}, "quality_gate", "quality_gate", StreamFormatLineText)
+	process, out, startErr := startQualityGateProcess(
+		ctx,
+		worktree,
+		args,
+		qualityGateEnv(worktree, skipMutation, mutationBase),
+		runtime,
+	)
+	if startErr != nil {
+		return false, "", startErr
+	}
+	w.recordSpawnedProc(process, "quality_gate", "quality_gate", StreamFormatLineText)
 
-	err = cmd.Wait()
+	err = process.Wait()
 	output = out.String()
 
 	w.mu.Lock()
@@ -1882,6 +1900,14 @@ func findQualityGateScript(ctx context.Context, worktree string) (string, error)
 // the slow mutation-testing tiers. When false, --mutation-testing is passed
 // explicitly; ambient ORO_RUN_MUTATION never enables mutation testing.
 func RunQualityGate(ctx context.Context, worktree string, skipMutation bool) (passed bool, output string, err error) {
+	return RunQualityGateWithRuntime(ctx, worktree, skipMutation, storage.RuntimeRequest{})
+}
+
+// RunQualityGateWithRuntime runs a quality gate while holding the supplied
+// runtime lease. A zero RuntimeRequest preserves the legacy unleased behavior.
+//
+//oro:testonly — production Worker calls use the runtime supplied by their spawner.
+func RunQualityGateWithRuntime(ctx context.Context, worktree string, skipMutation bool, runtime storage.RuntimeRequest) (passed bool, output string, err error) {
 	// Canonical location is scripts/quality_gate.sh; fall back to root for legacy repos.
 	scriptPath, statErr := findQualityGateScript(ctx, worktree)
 	if statErr != nil {
@@ -1892,6 +1918,10 @@ func RunQualityGate(ctx context.Context, worktree string, skipMutation bool) (pa
 	if !skipMutation {
 		args = append(args, "--mutation-testing")
 	}
+	if runtime.Catalog != nil {
+		return runLeasedQualityGate(ctx, worktree, args, qualityGateEnv(worktree, skipMutation, ""), runtime)
+	}
+
 	cmd := exec.CommandContext(ctx, "bash", args...) //nolint:gosec // script path constructed from worktree, not user input
 	cmd.Dir = worktree
 	cmd.Env = qualityGateEnv(worktree, skipMutation, "")
@@ -1913,11 +1943,18 @@ func RunQualityGate(ctx context.Context, worktree string, skipMutation bool) (pa
 }
 
 type commandProcess struct {
-	cmd *exec.Cmd
+	cmd    *exec.Cmd
+	leased *storage.StartedCommand
 }
 
 // Wait waits for the wrapped command to exit.
 func (p *commandProcess) Wait() error {
+	if p.leased != nil {
+		if err := p.leased.Wait(); err != nil {
+			return fmt.Errorf("wait command: %w", err)
+		}
+		return nil
+	}
 	if err := p.cmd.Wait(); err != nil {
 		return fmt.Errorf("wait command: %w", err)
 	}
@@ -1926,6 +1963,12 @@ func (p *commandProcess) Wait() error {
 
 // Kill terminates the wrapped command process.
 func (p *commandProcess) Kill() error {
+	if p.leased != nil {
+		if err := p.leased.Kill(); err != nil {
+			return fmt.Errorf("kill command: %w", err)
+		}
+		return nil
+	}
 	if p.cmd.Process == nil {
 		return nil
 	}
@@ -1953,7 +1996,18 @@ func qualityGateEnv(worktree string, skipMutation bool, mutationBase string) []s
 }
 
 // ClaudeSpawner is the production StreamingSpawner that invokes `claude -p`.
-type ClaudeSpawner struct{}
+type ClaudeSpawner struct {
+	Runtime storage.RuntimeRequest
+}
+
+// RuntimeRequest returns the optional lease template used by worker and
+// quality-gate children.
+func (s *ClaudeSpawner) RuntimeRequest() storage.RuntimeRequest {
+	if s == nil {
+		return storage.RuntimeRequest{}
+	}
+	return s.Runtime
+}
 
 // StreamFormat reports the stdout event format emitted by the Claude runtime.
 func (s *ClaudeSpawner) StreamFormat() StreamFormat { return StreamFormatClaudeJSON }
@@ -2021,11 +2075,9 @@ func (s *ClaudeSpawner) Spawn(ctx context.Context, model, prompt, workdir string
 // SpawnWithReasoning starts a `claude -p` subprocess with the configured effort.
 func (s *ClaudeSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning, prompt, workdir string) (Process, io.ReadCloser, io.WriteCloser, error) {
 	args := buildClaudeArgsWithReasoning(model, reasoning, prompt)
-	cmd := exec.CommandContext(ctx, "claude", args...) //nolint:gosec // args are constructed internally by buildClaudeArgs, not user input
-	cmd.Dir = workdir
 	stderrTail := NewLineTailBuffer(100)
-	cmd.Stderr = io.MultiWriter(os.Stderr, stderrTail)
-	cmd.Env = EnvironmentForContext(ctx, buildClaudeEnvForExecution(workdir, WorkerExecutionContext{}))
+	stderr := io.MultiWriter(os.Stderr, stderrTail)
+	env := EnvironmentForContext(ctx, buildClaudeEnvForExecution(workdir, WorkerExecutionContext{}))
 
 	// Open /dev/null for stdin to prevent the spawned process from inheriting parent stdin,
 	// which can cause claude -p to hang if the parent's stdin is a pipe.
@@ -2034,6 +2086,28 @@ func (s *ClaudeSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning
 		return nil, nil, nil, fmt.Errorf("open /dev/null: %w", err)
 	}
 	defer devNull.Close() // fd is dup'd into child by Start(); safe to close our copy on return
+	if s.Runtime.Catalog != nil {
+		process, stdout, startErr := startLeasedWorkerProcess(
+			ctx,
+			runtimeRequestForChild(s.Runtime, workdir, env, "worker"),
+			"claude",
+			args,
+			workdir,
+			devNull,
+			stderr,
+			agentruntime.RuntimeClaude,
+			stderrTail,
+		)
+		if startErr != nil {
+			return nil, nil, nil, fmt.Errorf("start claude: %w", startErr)
+		}
+		return process, stdout, nil, nil
+	}
+
+	cmd := exec.CommandContext(ctx, "claude", args...) //nolint:gosec // args are constructed internally by buildClaudeArgs, not user input
+	cmd.Dir = workdir
+	cmd.Stderr = stderr
+	cmd.Env = env
 	cmd.Stdin = devNull
 
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -2050,13 +2124,25 @@ func (s *ClaudeSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning
 // CmdProcess wraps *exec.Cmd to implement the Process interface.
 type CmdProcess struct {
 	Cmd     *exec.Cmd
+	Leased  *storage.StartedCommand
 	Runtime string
 	Stderr  *LineTailBuffer
+
+	stdoutCloser io.Closer
 }
 
 // Wait blocks until the subprocess exits.
 func (p *CmdProcess) Wait() error {
-	if err := p.Cmd.Wait(); err != nil {
+	var err error
+	if p.Leased != nil {
+		err = p.Leased.Wait()
+		if p.stdoutCloser != nil {
+			_ = p.stdoutCloser.Close()
+		}
+	} else {
+		err = p.Cmd.Wait()
+	}
+	if err != nil {
 		runtime := p.Runtime
 		if runtime == "" {
 			runtime = agentruntime.RuntimeClaude
@@ -2068,6 +2154,9 @@ func (p *CmdProcess) Wait() error {
 
 // ExitCode returns the subprocess exit code after Wait has completed.
 func (p *CmdProcess) ExitCode() int {
+	if p.Leased != nil {
+		return p.Leased.ExitCode()
+	}
 	if p.Cmd == nil || p.Cmd.ProcessState == nil {
 		return 0
 	}
@@ -2084,6 +2173,12 @@ func (p *CmdProcess) StderrTail() string {
 
 // Kill terminates the subprocess immediately.
 func (p *CmdProcess) Kill() error {
+	if p.Leased != nil {
+		if err := p.Leased.Kill(); err != nil {
+			return fmt.Errorf("kill claude process: %w", err)
+		}
+		return nil
+	}
 	if p.Cmd.Process == nil {
 		return nil
 	}
