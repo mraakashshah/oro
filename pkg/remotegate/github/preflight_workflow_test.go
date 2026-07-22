@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"oro/pkg/remotegate"
@@ -139,6 +141,98 @@ func TestFetchActiveWorkflowMetadata(t *testing.T) {
 			}
 			if path != "" || state != "" {
 				t.Fatalf("metadata = %q, %q on error", path, state)
+			}
+		})
+	}
+}
+
+type defaultBranchReader struct {
+	response any
+	err      error
+	paths    []string
+}
+
+func (r *defaultBranchReader) GetJSON(_ context.Context, path string, dst any) error {
+	r.paths = append(r.paths, path)
+	if r.err != nil {
+		return r.err
+	}
+	response, ok := r.response.(struct {
+		FullName      string `json:"full_name"`
+		DefaultBranch string `json:"default_branch"`
+	})
+	if !ok {
+		return fmt.Errorf("malformed response")
+	}
+	*(dst.(*struct {
+		FullName      string `json:"full_name"`
+		DefaultBranch string `json:"default_branch"`
+	})) = response
+	return nil
+}
+
+func (*defaultBranchReader) GetContent(context.Context, string, string) ([]byte, error) {
+	return nil, nil
+}
+
+func TestFetchRepositoryDefaultBranch(t *testing.T) {
+	t.Parallel()
+	response := struct {
+		FullName      string `json:"full_name"`
+		DefaultBranch string `json:"default_branch"`
+	}{FullName: "acme/oro", DefaultBranch: "main"}
+	reader := &defaultBranchReader{response: response}
+	client := Client{api: reader}
+
+	branch, err := client.fetchDefaultBranch(context.Background(), "acme/oro")
+	if err != nil || branch != "main" {
+		t.Fatalf("fetchDefaultBranch() = %q, %v; want main, nil", branch, err)
+	}
+	if !reflect.DeepEqual(reader.paths, []string{"repos/acme/oro"}) {
+		t.Fatalf("reads = %v, want one repository read", reader.paths)
+	}
+
+	cases := []struct {
+		name     string
+		response any
+		err      error
+		repo     string
+	}{
+		{name: "identity", response: struct{ FullName, DefaultBranch string }{"other/oro", "main"}, repo: "acme/oro"},
+		{name: "blank", response: response, repo: "acme/oro"},
+		{name: "reader", err: errors.New("reader failed"), repo: "acme/oro"},
+		{name: "malformed", response: "bad", repo: "acme/oro"},
+		{name: "empty repository", repo: ""},
+		{name: "cancelled", response: response, repo: "acme/oro"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "blank" {
+				tc.response = struct {
+					FullName      string `json:"full_name"`
+					DefaultBranch string `json:"default_branch"`
+				}{FullName: "acme/oro"}
+			}
+			ctx := context.Background()
+			if tc.name == "cancelled" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			r := &defaultBranchReader{response: tc.response, err: tc.err}
+			client := Client{api: r}
+			_, err := client.fetchDefaultBranch(ctx, tc.repo)
+			if !errors.Is(err, remotegate.ErrWorkflowIneligible) {
+				t.Fatalf("error %v does not satisfy ErrWorkflowIneligible", err)
+			}
+			if tc.name == "empty repository" && len(r.paths) != 0 {
+				t.Fatalf("empty repository performed reads: %v", r.paths)
+			}
+			if tc.name == "cancelled" && !errors.Is(err, context.Canceled) {
+				t.Fatalf("error %v does not preserve cancellation", err)
+			}
+			if strings.TrimSpace(tc.repo) == "" && len(r.paths) != 0 {
+				t.Fatalf("blank repository performed reads: %v", r.paths)
 			}
 		})
 	}

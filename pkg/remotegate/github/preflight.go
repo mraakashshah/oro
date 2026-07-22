@@ -3,6 +3,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -62,4 +63,30 @@ type workflowRegistration struct { //nolint:unused // registration shape is defi
 	Path          string
 	State         string
 	Contents      []byte
+}
+
+func (c *Client) fetchDefaultBranch(ctx context.Context, repository string) (string, error) {
+	if strings.TrimSpace(repository) == "" {
+		return "", fmt.Errorf("%w: repository is required", remotegate.ErrWorkflowIneligible)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("%w: %w", remotegate.ErrWorkflowIneligible, err)
+	}
+	var response struct {
+		FullName      string `json:"full_name"`
+		DefaultBranch string `json:"default_branch"`
+	}
+	if err := c.api.GetJSON(ctx, "repos/"+repository, &response); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("%w: %w", remotegate.ErrWorkflowIneligible, err)
+		}
+		return "", fmt.Errorf("%w: read repository metadata: %w", remotegate.ErrWorkflowIneligible, err)
+	}
+	if response.FullName != repository {
+		return "", fmt.Errorf("%w: repository identity %q does not match %q", remotegate.ErrWorkflowIneligible, response.FullName, repository)
+	}
+	if strings.TrimSpace(response.DefaultBranch) == "" {
+		return "", fmt.Errorf("%w: repository default branch is empty", remotegate.ErrWorkflowIneligible)
+	}
+	return response.DefaultBranch, nil
 }
