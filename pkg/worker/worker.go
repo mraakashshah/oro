@@ -492,7 +492,7 @@ func (w *Worker) handleMessage(ctx context.Context, msg protocol.Message) (bool,
 	case protocol.MsgAssign:
 		return false, w.handleAssign(ctx, msg)
 	case protocol.MsgCapabilityRefresh:
-		return false, w.handleCapabilityRefresh(ctx, msg)
+		return false, w.handleCapabilityRefresh(msg)
 	case protocol.MsgShutdown:
 		w.removeAssignmentCapabilityFile()
 		w.killProc()
@@ -509,7 +509,7 @@ func (w *Worker) handleMessage(ctx context.Context, msg protocol.Message) (bool,
 	}
 }
 
-func (w *Worker) handleCapabilityRefresh(ctx context.Context, msg protocol.Message) error {
+func (w *Worker) handleCapabilityRefresh(msg protocol.Message) error {
 	refresh := msg.CapabilityRefresh
 	if refresh == nil || refresh.AssignmentID <= 0 || refresh.Generation <= 0 || refresh.CapabilityID == "" || refresh.Capability == "" {
 		return fmt.Errorf("invalid capability refresh")
