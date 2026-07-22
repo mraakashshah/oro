@@ -80,14 +80,14 @@ func TestRunPreservesExternalGoCaches(t *testing.T) {
 	}
 }
 
-func TestRunDisablesTelemetryWhileResolvingMissingGoCache(t *testing.T) {
+func TestRunRedirectsTelemetryWhileResolvingMissingGoCache(t *testing.T) {
 	ambientRoot := t.TempDir()
 	ambientHome := filepath.Join(ambientRoot, "home")
 	binDir := t.TempDir()
 	goPath := filepath.Join(binDir, "go")
-	telemetryPath := filepath.Join(ambientHome, "telemetry")
+	telemetryPath := filepath.Join(ambientRoot, "telemetry")
 	goScript := "#!/bin/sh\n" +
-		"if [ \"$GOTELEMETRY\" != off ]; then mkdir -p \"$HOME/telemetry\"; fi\n" +
+		"if [ \"$TEST_TELEMETRY_DIR\" != \"$DISABLED_TELEMETRY_DIR\" ]; then mkdir -p \"$TEST_TELEMETRY_DIR/local\"; fi\n" +
 		"printf '%s\\n%s\\n' \"$GOCACHE\" \"/external/go-mod\"\n"
 	if err := os.WriteFile(goPath, []byte(goScript), 0o700); err != nil {
 		t.Fatal(err)
@@ -97,6 +97,8 @@ func TestRunDisablesTelemetryWhileResolvingMissingGoCache(t *testing.T) {
 	t.Setenv("GOCACHE", filepath.Join(ambientRoot, "go-build"))
 	t.Setenv("GOMODCACHE", "")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TEST_TELEMETRY_DIR", telemetryPath)
+	t.Setenv("DISABLED_TELEMETRY_DIR", os.DevNull)
 
 	if code := configenv.Run(func() int { return 0 }); code != 0 {
 		t.Fatalf("Run exit code = %d, want 0", code)
