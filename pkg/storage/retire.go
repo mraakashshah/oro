@@ -13,7 +13,7 @@ import (
 
 const tombstoneDirectory = ".tombstones"
 
-var namespaceTokenPattern = regexp.MustCompile(`^[a-f0-9]{32,64}$`)
+var namespaceTokenPattern = regexp.MustCompile(`^(?:[a-f0-9]{16}|[a-f0-9]{32,64})$`)
 
 // RetirementReason identifies the lifecycle event that permits scratch cleanup.
 //
@@ -145,7 +145,7 @@ func (r *NamespaceRetirer) retire(namespace string, reason RetirementReason) err
 	if err != nil {
 		return r.recordState(namespace, reason, "tombstoned", err)
 	}
-	if err := r.catalog.recordTombstoneDeletion(context.Background(), namespace, evidence.beforeBytes, evidence.afterBytes); err != nil {
+	if err := r.catalog.recordTombstoneDeletionProgress(context.Background(), namespace, evidence.beforeBytes, evidence.afterBytes); err != nil {
 		return r.recordState(namespace, reason, "tombstoned", err)
 	}
 	return r.recordState(namespace, reason, "deleted", nil)
@@ -161,8 +161,12 @@ func (r *NamespaceRetirer) activeLease(namespace string) (bool, error) {
 }
 
 func (r *NamespaceRetirer) catalogOwnsNamespace(ctx context.Context, namespace string) (bool, error) {
+	expectedPath, err := canonicalCachePath(filepath.Join(r.root, namespace))
+	if err != nil {
+		return false, fmt.Errorf("resolve namespace path %s: %w", namespace, err)
+	}
 	var owned bool
-	err := r.catalog.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runtime_leases WHERE namespace=?)`, namespace).Scan(&owned)
+	err = r.catalog.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runtime_leases WHERE namespace=? AND scratch_path=?)`, namespace, expectedPath).Scan(&owned)
 	if err != nil {
 		return false, fmt.Errorf("check namespace ownership for %s: %w", namespace, err)
 	}
@@ -176,18 +180,7 @@ func (r *NamespaceRetirer) tombstone(namespace string, reason RetirementReason) 
 	source := filepath.Join(r.root, namespace)
 	info, err := os.Lstat(source)
 	if errors.Is(err, os.ErrNotExist) {
-		tombstone = filepath.Join(r.root, tombstoneDirectory, namespace)
-		tombstoneInfo, tombstoneErr := os.Lstat(tombstone)
-		if errors.Is(tombstoneErr, os.ErrNotExist) {
-			return "", false, r.recordState(namespace, reason, "deleted", nil)
-		}
-		if tombstoneErr != nil {
-			return "", false, fmt.Errorf("inspect tombstone %s: %w", namespace, tombstoneErr)
-		}
-		if !tombstoneInfo.IsDir() || tombstoneInfo.Mode()&os.ModeSymlink != 0 {
-			return "", false, fmt.Errorf("unsafe tombstone %s", namespace)
-		}
-		return tombstone, true, nil
+		return r.existingTombstone(namespace, reason)
 	}
 	if err != nil {
 		return "", false, fmt.Errorf("inspect namespace %s: %w", namespace, err)
@@ -214,6 +207,35 @@ func (r *NamespaceRetirer) tombstone(namespace string, reason RetirementReason) 
 		return "", false, err
 	}
 	return tombstone, true, nil
+}
+
+func (r *NamespaceRetirer) existingTombstone(namespace string, reason RetirementReason) (tombstone string, present bool, err error) {
+	tombstone = filepath.Join(r.root, tombstoneDirectory, namespace)
+	tombstoneInfo, err := os.Lstat(tombstone)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := r.finalizeMissingTombstone(namespace); err != nil {
+			return "", false, err
+		}
+		return "", false, r.recordState(namespace, reason, "deleted", nil)
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("inspect tombstone %s: %w", namespace, err)
+	}
+	if !tombstoneInfo.IsDir() || tombstoneInfo.Mode()&os.ModeSymlink != 0 {
+		return "", false, fmt.Errorf("unsafe tombstone %s", namespace)
+	}
+	return tombstone, true, nil
+}
+
+func (r *NamespaceRetirer) finalizeMissingTombstone(namespace string) error {
+	stored, err := r.catalog.Tombstone(context.Background(), namespace)
+	if err != nil {
+		return fmt.Errorf("load missing tombstone evidence %s: %w", namespace, err)
+	}
+	if err := r.catalog.recordTombstoneDeletionProgress(context.Background(), namespace, stored.BeforeBytes, 0); err != nil {
+		return fmt.Errorf("finalize missing tombstone evidence %s: %w", namespace, err)
+	}
+	return nil
 }
 
 func (r *NamespaceRetirer) recordState(namespace string, reason RetirementReason, state string, cause error) error {

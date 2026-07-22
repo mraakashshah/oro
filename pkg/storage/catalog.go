@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 )
 
 // CatalogSchemaVersion is the newest storage catalog schema understood by this binary.
-const CatalogSchemaVersion = 4
+const CatalogSchemaVersion = 5
 
 var (
 	// ErrCatalogCorrupt reports a catalog SQLite database that cannot be read safely.
@@ -38,7 +39,8 @@ type LeaseID string
 // LeaseRequest identifies a runtime namespace and the process allowed to use it.
 type LeaseRequest struct {
 	ID                                    LeaseID
-	Namespace, ControllerID, OwnerID      string
+	Namespace, ScratchPath                string
+	ControllerID, OwnerID                 string
 	PID                                   int
 	ProcessStart, AcquiredAt, HeartbeatAt time.Time
 }
@@ -277,13 +279,21 @@ func (c *Catalog) AcquireLease(ctx context.Context, request LeaseRequest) (Lease
 	if err := validateLeaseRequest(request); err != nil {
 		return Lease{}, err
 	}
-	_, err := c.db.ExecContext(ctx, `
-INSERT INTO runtime_leases (id, namespace, controller_id, owner_id, pid, process_start, acquired_at, heartbeat_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(id) DO UPDATE SET namespace=excluded.namespace, controller_id=excluded.controller_id,
+	canonicalScratch, err := canonicalCachePath(request.ScratchPath)
+	if err != nil {
+		return Lease{}, fmt.Errorf("resolve lease scratch path: %w", err)
+	}
+	if filepath.Base(canonicalScratch) != request.Namespace {
+		return Lease{}, fmt.Errorf("lease namespace does not match scratch path")
+	}
+	request.ScratchPath = canonicalScratch
+	_, err = c.db.ExecContext(ctx, `
+INSERT INTO runtime_leases (id, namespace, scratch_path, controller_id, owner_id, pid, process_start, acquired_at, heartbeat_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET namespace=excluded.namespace, scratch_path=excluded.scratch_path, controller_id=excluded.controller_id,
  owner_id=excluded.owner_id, pid=excluded.pid, process_start=excluded.process_start,
  acquired_at=excluded.acquired_at, heartbeat_at=excluded.heartbeat_at, released_at=NULL`,
-		request.ID, request.Namespace, request.ControllerID, request.OwnerID, request.PID,
+		request.ID, request.Namespace, request.ScratchPath, request.ControllerID, request.OwnerID, request.PID,
 		formatTime(request.ProcessStart), formatTime(request.AcquiredAt), formatTime(request.HeartbeatAt))
 	if err != nil {
 		return Lease{}, fmt.Errorf("acquire lease %s: %w", request.ID, err)
@@ -316,7 +326,7 @@ func (c *Catalog) ReleaseLease(ctx context.Context, leaseID LeaseID) error {
 //
 //oro:testonly — production wiring lands in dependent runtime lifecycle tasks.
 func (c *Catalog) Lease(ctx context.Context, id LeaseID) (Lease, error) {
-	row := c.db.QueryRowContext(ctx, `SELECT id, namespace, controller_id, owner_id, pid, process_start, acquired_at, heartbeat_at, released_at FROM runtime_leases WHERE id=?`, id)
+	row := c.db.QueryRowContext(ctx, `SELECT id, namespace, scratch_path, controller_id, owner_id, pid, process_start, acquired_at, heartbeat_at, released_at FROM runtime_leases WHERE id=?`, id)
 	return scanLease(row)
 }
 
@@ -472,11 +482,11 @@ func (c *Catalog) Tombstone(ctx context.Context, id string) (Tombstone, error) {
 	return value, nil
 }
 
-func (c *Catalog) recordTombstoneDeletion(ctx context.Context, tombstoneID string, beforeBytes, afterBytes int64) error {
+func (c *Catalog) recordTombstoneDeletionProgress(ctx context.Context, tombstoneID string, beforeBytes, afterBytes int64) error {
 	if tombstoneID == "" || beforeBytes < 0 || afterBytes < 0 {
 		return fmt.Errorf("invalid tombstone deletion evidence")
 	}
-	_, err := c.db.ExecContext(ctx, `INSERT INTO runtime_tombstone_deletion_evidence (tombstone_id, before_bytes, after_bytes, recorded_at) VALUES (?, ?, ?, ?) ON CONFLICT(tombstone_id) DO UPDATE SET before_bytes=excluded.before_bytes, after_bytes=excluded.after_bytes, recorded_at=excluded.recorded_at`, tombstoneID, beforeBytes, afterBytes, formatTime(time.Now().UTC()))
+	_, err := c.db.ExecContext(ctx, `INSERT INTO runtime_tombstone_deletion_evidence (tombstone_id, before_bytes, after_bytes, recorded_at) VALUES (?, ?, ?, ?) ON CONFLICT(tombstone_id) DO UPDATE SET after_bytes=excluded.after_bytes, recorded_at=excluded.recorded_at`, tombstoneID, beforeBytes, afterBytes, formatTime(time.Now().UTC()))
 	if err != nil {
 		return fmt.Errorf("record tombstone deletion evidence %s: %w", tombstoneID, err)
 	}
@@ -521,7 +531,7 @@ type catalogTable struct {
 
 func catalogTables() []catalogTable {
 	return []catalogTable{
-		{"runtime_leases", `CREATE TABLE runtime_leases (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, controller_id TEXT NOT NULL, owner_id TEXT NOT NULL, pid INTEGER NOT NULL, process_start TEXT NOT NULL, acquired_at TEXT NOT NULL, heartbeat_at TEXT NOT NULL, released_at TEXT)`},
+		{"runtime_leases", `CREATE TABLE runtime_leases (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, scratch_path TEXT NOT NULL, controller_id TEXT NOT NULL, owner_id TEXT NOT NULL, pid INTEGER NOT NULL, process_start TEXT NOT NULL, acquired_at TEXT NOT NULL, heartbeat_at TEXT NOT NULL, released_at TEXT)`},
 		{"runtime_controllers", `CREATE TABLE runtime_controllers (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, pid INTEGER NOT NULL, process_start TEXT NOT NULL, identity_start TEXT NOT NULL DEFAULT '', executable TEXT NOT NULL DEFAULT '', process_group INTEGER NOT NULL DEFAULT 0, observed_epoch INTEGER NOT NULL, heartbeat_at TEXT NOT NULL)`},
 		{"runtime_pause_epochs", `CREATE TABLE runtime_pause_epochs (epoch INTEGER PRIMARY KEY, state TEXT NOT NULL, created_at TEXT NOT NULL)`},
 		{"runtime_pause_acknowledgements", `CREATE TABLE runtime_pause_acknowledgements (epoch INTEGER NOT NULL, controller_id TEXT NOT NULL, state TEXT NOT NULL, acknowledged_at TEXT NOT NULL, PRIMARY KEY (epoch, controller_id))`},
@@ -556,7 +566,7 @@ func ensureCatalogTable(ctx context.Context, tx catalogTx, table catalogTable) e
 }
 
 func validateLeaseRequest(request LeaseRequest) error {
-	if request.ID == "" || request.Namespace == "" || request.ControllerID == "" || request.OwnerID == "" || request.PID <= 0 || request.ProcessStart.IsZero() || request.AcquiredAt.IsZero() || request.HeartbeatAt.IsZero() {
+	if request.ID == "" || request.Namespace == "" || request.ScratchPath == "" || request.ControllerID == "" || request.OwnerID == "" || request.PID <= 0 || request.ProcessStart.IsZero() || request.AcquiredAt.IsZero() || request.HeartbeatAt.IsZero() {
 		return fmt.Errorf("invalid lease request")
 	}
 	return nil
@@ -581,7 +591,7 @@ func scanLease(row *sql.Row) (Lease, error) {
 	var value Lease
 	var processStart, acquiredAt, heartbeatAt string
 	var releasedAt sql.NullString
-	err := row.Scan(&value.ID, &value.Namespace, &value.ControllerID, &value.OwnerID, &value.PID, &processStart, &acquiredAt, &heartbeatAt, &releasedAt)
+	err := row.Scan(&value.ID, &value.Namespace, &value.ScratchPath, &value.ControllerID, &value.OwnerID, &value.PID, &processStart, &acquiredAt, &heartbeatAt, &releasedAt)
 	if err != nil {
 		return Lease{}, fmt.Errorf("load lease: %w", err)
 	}

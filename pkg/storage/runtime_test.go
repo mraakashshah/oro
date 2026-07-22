@@ -105,6 +105,9 @@ func TestRuntimeHandleLeaseEnvelope(t *testing.T) {
 			if handle.ScratchDir == "" {
 				t.Fatal("runtime did not resolve scratch directory")
 			}
+			if got, want := store.lease.Namespace, filepath.Base(handle.ScratchDir); got != want {
+				t.Fatalf("lease namespace = %q, want runtime scratch token %q", got, want)
+			}
 			if value := runtimeEnvValue(handle.Env, "GOCACHE"); value == "" {
 				t.Fatalf("runtime did not resolve GOCACHE: %v", handle.Env)
 			}
