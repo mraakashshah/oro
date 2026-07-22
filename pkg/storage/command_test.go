@@ -4,6 +4,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -79,6 +80,21 @@ func TestRunLeasedCommandOrdersLifecycle(t *testing.T) {
 				t.Fatalf("lifecycle trace = %v, want %v", trace, test.wantTrace)
 			}
 		})
+	}
+}
+
+func TestStartedCommandKillWrapsCancelError(t *testing.T) {
+	cancelErr := errors.New("cancel failed")
+	command := &StartedCommand{command: execCommand{command: &exec.Cmd{
+		Cancel: func() error { return cancelErr },
+	}}}
+
+	err := command.Kill()
+	if !errors.Is(err, cancelErr) {
+		t.Fatalf("Kill() error = %v, want wrapped %v", err, cancelErr)
+	}
+	if !strings.Contains(err.Error(), "cancel leased command") {
+		t.Fatalf("Kill() error = %q, want cancel context", err)
 	}
 }
 
