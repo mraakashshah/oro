@@ -16488,8 +16488,15 @@ func TestProgressTimeoutConfigValidation(t *testing.T) {
 // TestTryAssignNoDuplicateBeadAssignment verifies that when two workers are
 // idle, each gets a different bead — not the same bead assigned to both.
 func TestTryAssignNoDuplicateBeadAssignment(t *testing.T) {
+	const opTimeout = 10 * time.Second
+
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
-	startDispatcher(t, d)
+	// Assignment and heartbeat processing compete for scheduler time under the
+	// serialized gate's race-mode load. Keep this integration test's lifecycle
+	// bounds aligned so a delayed worker is not removed before it receives its
+	// ASSIGN message.
+	d.cfg.HeartbeatTimeout = opTimeout
+	startDispatcherWithTimeout(t, d, opTimeout)
 
 	// Connect two workers.
 	conn1, _ := connectWorker(t, d.cfg.SocketPath)
@@ -16508,7 +16515,7 @@ func TestTryAssignNoDuplicateBeadAssignment(t *testing.T) {
 			ContextPct: 5,
 		},
 	})
-	waitForWorkers(t, d, 2, 1*time.Second)
+	waitForWorkers(t, d, 2, opTimeout)
 
 	// Provide two beads.
 	beadSrc.SetBeads([]protocol.Bead{
@@ -16517,11 +16524,11 @@ func TestTryAssignNoDuplicateBeadAssignment(t *testing.T) {
 	})
 
 	sendDirective(t, d.cfg.SocketPath, "start")
-	waitForState(t, d, StateRunning, 1*time.Second)
+	waitForState(t, d, StateRunning, opTimeout)
 
 	// Read assignment messages from both workers.
-	msg1, ok1 := readMsg(t, conn1, 2*time.Second)
-	msg2, ok2 := readMsg(t, conn2, 2*time.Second)
+	msg1, ok1 := readMsg(t, conn1, opTimeout)
+	msg2, ok2 := readMsg(t, conn2, opTimeout)
 
 	if !ok1 || !ok2 {
 		t.Fatal("expected both workers to receive ASSIGN messages")
