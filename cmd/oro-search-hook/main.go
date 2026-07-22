@@ -58,7 +58,7 @@ func handleSessionStart(probePath string) error {
 	if probePath == "" {
 		return fmt.Errorf("ORO_HOOK_PROBE is not set")
 	}
-	file, err := os.OpenFile(probePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	file, err := os.OpenFile(probePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: ORO_HOOK_PROBE intentionally selects the private probe path.
 	if err != nil {
 		return fmt.Errorf("create ORO_HOOK_PROBE: %w", err)
 	}
