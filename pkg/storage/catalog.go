@@ -13,7 +13,7 @@ import (
 )
 
 // CatalogSchemaVersion is the newest storage catalog schema understood by this binary.
-const CatalogSchemaVersion = 3
+const CatalogSchemaVersion = 4
 
 var (
 	// ErrCatalogCorrupt reports a catalog SQLite database that cannot be read safely.
@@ -80,6 +80,7 @@ type Tombstone struct {
 	RetiredAt                    time.Time
 	RetryAt                      *time.Time
 	Attempts                     int
+	BeforeBytes, AfterBytes      int64
 }
 
 // ReconciliationCursor bounds a restartable legacy scan.
@@ -452,7 +453,7 @@ func (c *Catalog) Tombstone(ctx context.Context, id string) (Tombstone, error) {
 	var value Tombstone
 	var retiredAt string
 	var retryAt sql.NullString
-	err := c.db.QueryRowContext(ctx, `SELECT id, namespace, reason, state, retired_at, retry_at, attempts FROM runtime_tombstones WHERE id=?`, id).Scan(&value.ID, &value.Namespace, &value.Reason, &value.State, &retiredAt, &retryAt, &value.Attempts)
+	err := c.db.QueryRowContext(ctx, `SELECT t.id, t.namespace, t.reason, t.state, t.retired_at, t.retry_at, t.attempts, COALESCE(e.before_bytes, 0), COALESCE(e.after_bytes, 0) FROM runtime_tombstones AS t LEFT JOIN runtime_tombstone_deletion_evidence AS e ON e.tombstone_id=t.id WHERE t.id=?`, id).Scan(&value.ID, &value.Namespace, &value.Reason, &value.State, &retiredAt, &retryAt, &value.Attempts, &value.BeforeBytes, &value.AfterBytes)
 	if err != nil {
 		return Tombstone{}, fmt.Errorf("load tombstone %s: %w", id, err)
 	}
@@ -469,6 +470,17 @@ func (c *Catalog) Tombstone(ctx context.Context, id string) (Tombstone, error) {
 		value.RetryAt = &parsed
 	}
 	return value, nil
+}
+
+func (c *Catalog) recordTombstoneDeletion(ctx context.Context, tombstoneID string, beforeBytes, afterBytes int64) error {
+	if tombstoneID == "" || beforeBytes < 0 || afterBytes < 0 {
+		return fmt.Errorf("invalid tombstone deletion evidence")
+	}
+	_, err := c.db.ExecContext(ctx, `INSERT INTO runtime_tombstone_deletion_evidence (tombstone_id, before_bytes, after_bytes, recorded_at) VALUES (?, ?, ?, ?) ON CONFLICT(tombstone_id) DO UPDATE SET before_bytes=excluded.before_bytes, after_bytes=excluded.after_bytes, recorded_at=excluded.recorded_at`, tombstoneID, beforeBytes, afterBytes, formatTime(time.Now().UTC()))
+	if err != nil {
+		return fmt.Errorf("record tombstone deletion evidence %s: %w", tombstoneID, err)
+	}
+	return nil
 }
 
 // SaveReconciliationCursor persists the bounded scan checkpoint and proof.
@@ -514,6 +526,7 @@ func catalogTables() []catalogTable {
 		{"runtime_pause_epochs", `CREATE TABLE runtime_pause_epochs (epoch INTEGER PRIMARY KEY, state TEXT NOT NULL, created_at TEXT NOT NULL)`},
 		{"runtime_pause_acknowledgements", `CREATE TABLE runtime_pause_acknowledgements (epoch INTEGER NOT NULL, controller_id TEXT NOT NULL, state TEXT NOT NULL, acknowledged_at TEXT NOT NULL, PRIMARY KEY (epoch, controller_id))`},
 		{"runtime_tombstones", `CREATE TABLE runtime_tombstones (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, reason TEXT NOT NULL, state TEXT NOT NULL, retired_at TEXT NOT NULL, retry_at TEXT, attempts INTEGER NOT NULL DEFAULT 0)`},
+		{"runtime_tombstone_deletion_evidence", `CREATE TABLE runtime_tombstone_deletion_evidence (tombstone_id TEXT PRIMARY KEY REFERENCES runtime_tombstones(id) ON DELETE CASCADE, before_bytes INTEGER NOT NULL, after_bytes INTEGER NOT NULL, recorded_at TEXT NOT NULL)`},
 		{"runtime_reconciliation_cursors", `CREATE TABLE runtime_reconciliation_cursors (name TEXT PRIMARY KEY, cursor TEXT NOT NULL, proof TEXT NOT NULL, updated_at TEXT NOT NULL)`},
 	}
 }
