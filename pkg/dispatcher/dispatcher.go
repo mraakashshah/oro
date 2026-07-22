@@ -489,7 +489,9 @@ type QGRunner interface {
 // for scripts/quality_gate.sh first, then quality_gate.sh at the repo root.
 // It returns (true, output, nil) on exit 0, (false, output, nil) on non-zero
 // exit, and (false, "", err) if the script cannot be found or launched.
-type ShellQGRunner struct{}
+type ShellQGRunner struct {
+	executor shellCommandExecutor
+}
 
 // Run implements QGRunner using the same logic as worker.RunQualityGate but
 // self-contained in the dispatcher package to avoid an import cycle.
@@ -518,6 +520,10 @@ func (r *ShellQGRunner) Run(ctx context.Context, worktree string, skipMutation b
 	if !skipMutation {
 		args = append(args, "--mutation-testing")
 	}
+	if r.executor != nil {
+		output, passed, err := runLeasedShellCommand(ctx, r.executor, worktree, qgRunnerEnv(skipMutation, worktree, mutationBase), "bash", args)
+		return passed, output, err
+	}
 	cmd := exec.CommandContext(ctx, "bash", args...) //nolint:gosec // script path constructed from worktree, not user input
 	cmd.Dir = worktree
 	cmd.Env = qgRunnerEnv(skipMutation, worktree, mutationBase)
@@ -531,6 +537,59 @@ func (r *ShellQGRunner) Run(ctx context.Context, worktree string, skipMutation b
 		return false, output, fmt.Errorf("run quality gate: %w", runErr)
 	}
 	return true, output, nil
+}
+
+type shellCommandExecutor interface {
+	Run(context.Context, string, []string, string, []string, *bytes.Buffer) (storage.CommandResult, error)
+}
+
+type leasedShellCommandExecutor struct {
+	catalogPath string
+	projectID   string
+}
+
+func newLeasedShellCommandExecutor(catalogPath, projectID string) *leasedShellCommandExecutor {
+	return &leasedShellCommandExecutor{catalogPath: catalogPath, projectID: projectID}
+}
+
+func (executor *leasedShellCommandExecutor) Run(ctx context.Context, workdir string, env []string, path string, args []string, output *bytes.Buffer) (storage.CommandResult, error) {
+	catalog, err := storage.OpenCatalog(ctx, executor.catalogPath)
+	if err != nil {
+		return storage.CommandResult{}, fmt.Errorf("open dispatcher command catalog: %w", err)
+	}
+	defer func() { _ = catalog.Close() }()
+	now := time.Now().UTC()
+	return storage.RunLeasedCommand(ctx, storage.CommandRequest{
+		Runtime: storage.RuntimeRequest{
+			Catalog: catalog,
+			Lease: storage.LeaseRequest{
+				ID:           storage.LeaseID(generateCheckpointID()),
+				ControllerID: "dispatcher",
+				OwnerID:      "dispatcher-command",
+				PID:          os.Getpid(),
+				ProcessStart: now,
+				AcquiredAt:   now,
+				HeartbeatAt:  now,
+			},
+			Env:     env,
+			Workdir: workdir,
+			Policy:  storage.StoragePolicy{ProjectID: executor.projectID, RepositoryRoot: workdir},
+		},
+		Path:   path,
+		Args:   args,
+		Dir:    workdir,
+		Stdout: output,
+		Stderr: output,
+	})
+}
+
+func runLeasedShellCommand(ctx context.Context, executor shellCommandExecutor, workdir string, env []string, path string, args []string) (string, bool, error) {
+	var output bytes.Buffer
+	result, err := executor.Run(ctx, workdir, env, path, args, &output)
+	if err != nil && result.ExitCode == 0 {
+		return output.String(), false, err
+	}
+	return output.String(), result.ExitCode == 0, nil
 }
 
 func qualityGateConflictMarkerOutput(scriptPath string) (string, error) {
@@ -1169,6 +1228,10 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 			return nil, err
 		}
 	}
+	var commandExecutor shellCommandExecutor
+	if resolved.StorageCatalogPath != "" {
+		commandExecutor = newLeasedShellCommandExecutor(resolved.StorageCatalogPath, filepath.Base(rootDir))
+	}
 	d := &Dispatcher{
 		cfg:            resolved,
 		db:             db,
@@ -1190,7 +1253,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		shutdownRunner:      &ExecCommandRunner{Dir: rootDir},
 		acceptance:          &ShellAcceptanceRunner{Runtime: resolved.AcceptanceRuntime},
 		estimator:           resolved.Estimator,
-		qgRunner:            &ShellQGRunner{},
+		qgRunner:            &ShellQGRunner{executor: commandExecutor},
 		qgBaselineCache:     make(map[string]qgBaseline),
 		presubmitCandidates: make(chan presubmitCandidate),
 		presubmitSemaphore:  newPresubmitSemaphore(),
