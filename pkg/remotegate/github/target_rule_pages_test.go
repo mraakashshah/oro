@@ -101,6 +101,9 @@ func TestCollectEffectiveRulePages(t *testing.T) {
 				if !errors.Is(err, tt.wantErr) {
 					t.Fatalf("collectEffectiveRuleResponses() error = %v, want cause %v", err, tt.wantErr)
 				}
+				if errors.Is(err, ErrPolicyAmbiguous) {
+					t.Fatalf("collectEffectiveRuleResponses() error = %v, must preserve context cancellation", err)
+				}
 				if got.Items != nil || got.Evidence != (CollectionEvidence{}) {
 					t.Fatalf("collection = %+v, want zero collection", got)
 				}
