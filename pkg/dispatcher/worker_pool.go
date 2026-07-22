@@ -465,6 +465,7 @@ func (d *Dispatcher) heartbeatLoop(ctx context.Context) {
 				return true
 			case <-ticker.C:
 				d.callCheckHeartbeats(ctx)
+				_ = d.refreshExpiringCapabilities(ctx, d.nowFunc())
 			case <-pruneTicker.C:
 				d.pruneStaleTracking(ctx)
 				d.detectAndResolveDuplicateActiveAssignments(ctx)
