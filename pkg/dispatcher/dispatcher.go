@@ -5308,13 +5308,55 @@ func (d *Dispatcher) processBlockedReviewRetry(
 	return false, true, count
 }
 
+// reserveReviewRetryAttempt reserves an active worker when present, then checks
+// whether the bead became blocked before retrying a rejected review. Dependency
+// lookup failures fail closed so uncertain readiness cannot consume capacity.
+func (d *Dispatcher) reserveReviewRetryAttempt(ctx context.Context, workerID, beadID, feedback string) (bool, error) {
+	d.mu.Lock()
+	w, ok := d.workers[workerID]
+	assignmentID := int64(0)
+	if ok {
+		assignmentID = w.assignmentID
+		w.state = protocol.WorkerReserved
+	}
+	d.mu.Unlock()
+
+	blockerID, lookupErr := d.qgRetryBlockingDependency(ctx, beadID)
+	if blockerID == "" && lookupErr == nil {
+		return true, nil
+	}
+	d.storeRejectionFeedback(ctx, beadID, feedback)
+	if lookupErr != nil {
+		_ = d.logEvent(ctx, "review_retry_dependency_lookup_failed", workerID, beadID, workerID,
+			fmt.Sprintf(`{"error":%q}`, lookupErr.Error()))
+	}
+	if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
+		_ = d.logEvent(ctx, "review_retry_blocked_status_failed", workerID, beadID, workerID,
+			fmt.Sprintf(`{"error":%q}`, err.Error()))
+	}
+	if err := d.completeAssignment(ctx, assignmentID, beadID); err != nil {
+		_ = d.logEvent(ctx, "review_retry_blocked_assignment_cleanup_failed", workerID, beadID, workerID,
+			fmt.Sprintf(`{"error":%q}`, err.Error()))
+	}
+	d.releaseWorkerAfterDoneTerminal(workerID, beadID, assignmentID)
+	d.clearBeadTracking(beadID)
+	_ = d.logEvent(ctx, "review_retry_blocked_by_dependency", workerID, beadID, workerID,
+		fmt.Sprintf(`{"blocker_id":%q,"lookup_failed":%t}`, blockerID, lookupErr != nil))
+	return false, lookupErr
+}
+
 // handleReviewRejection processes a rejected review verdict: increments the
 // rejection counter, escalates if the cap is reached, or re-assigns the bead
 // to the worker with reviewer feedback using the two-phase reservation pattern.
 func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID, feedback string) {
 	_ = d.logEvent(ctx, "review_rejected", "ops", beadID, workerID, feedback)
 
-	// Increment rejection counter and reserve worker in a single lock.
+	reserved, err := d.reserveReviewRetryAttempt(ctx, workerID, beadID, feedback)
+	if err != nil || !reserved {
+		return
+	}
+
+	// Increment rejection counter after the dependency-safe reservation.
 	d.mu.Lock()
 	d.rejectionCounts[beadID]++
 	count := d.rejectionCounts[beadID]
@@ -5351,10 +5393,6 @@ func (d *Dispatcher) handleReviewRejection(ctx context.Context, workerID, beadID
 		return
 	}
 
-	// Phase 1: Reserve the worker — heartbeat checker skips reserved workers.
-	if w, wOK := d.workers[workerID]; wOK {
-		w.state = protocol.WorkerReserved
-	}
 	d.mu.Unlock()
 
 	// Capture snapshot for buildAssignPayload (I/O runs outside lock).
