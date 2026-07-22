@@ -223,10 +223,6 @@ func rejectPromotion(confidence float64, reason string) PromotionDecision {
 	return PromotionDecision{Action: PromotionActionReject, Reason: reason, Confidence: confidence}
 }
 
-func deferPromotion(confidence float64, reason string) PromotionDecision {
-	return PromotionDecision{Action: PromotionActionDefer, Reason: reason, Confidence: confidence}
-}
-
 func contradictingHighScoreCard(c CardCandidate, existing []CardSummary) string {
 	for _, card := range existing {
 		if card.Score < highScoreContradictionThreshold {
