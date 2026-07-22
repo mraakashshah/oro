@@ -33,16 +33,39 @@ import (
 
 // run reads a hook event from r, processes it, and writes the response to w.
 // Extracted from main for testability.
-func run(r io.Reader, w io.Writer) {
+func run(r io.Reader, w io.Writer) error {
 	input, err := io.ReadAll(r)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "oro-search-hook: failed to read stdin: %v\n", err)
 		// On stdin read error, output allow to avoid blocking.
 		writeOut(w, allowJSON)
-		return
+		return fmt.Errorf("read stdin: %w", err)
+	}
+
+	var event struct {
+		HookType      string `json:"hook_type"`
+		HookEventName string `json:"hook_event_name"`
+	}
+	if json.Unmarshal(input, &event) == nil &&
+		(event.HookType == "SessionStart" || event.HookEventName == "SessionStart") {
+		return handleSessionStart(os.Getenv("ORO_HOOK_PROBE"))
 	}
 
 	writeOut(w, HandleHook(input))
+	return nil
+}
+
+func handleSessionStart(probePath string) error {
+	if probePath == "" {
+		return fmt.Errorf("ORO_HOOK_PROBE is not set")
+	}
+	file, err := os.OpenFile(probePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create ORO_HOOK_PROBE: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close ORO_HOOK_PROBE: %w", err)
+	}
+	return nil
 }
 
 // hookInput represents the JSON payload sent by Claude Code on stdin.
@@ -304,7 +327,10 @@ func summarizeAndDeny(filePath string) []byte {
 }
 
 func main() {
-	run(os.Stdin, os.Stdout)
+	if err := run(os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "oro-search-hook: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 // writeOut writes data to w, logging any write error to stderr.
