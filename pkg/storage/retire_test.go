@@ -94,6 +94,35 @@ func TestNamespaceRetirementWaitsForLeases(t *testing.T) {
 	}
 }
 
+func TestNamespaceRetirementAllowsReretirement(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	namespace := "0123456789abcdef0123456789abcdef"
+	path := filepath.Join(root, namespace)
+
+	catalog, err := OpenCatalog(ctx, filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = catalog.Close() })
+
+	retirer := NewNamespaceRetirer(catalog, root)
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatalf("create namespace for attempt %d: %v", attempt, err)
+		}
+		if err := retirer.Retire(ctx, namespace, RetirementPostMerge); err != nil {
+			t.Fatalf("schedule retirement attempt %d: %v", attempt, err)
+		}
+		waitForRetirement(t, retirer)
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("namespace remains after retirement attempt %d: %v", attempt, err)
+		}
+	}
+}
+
 func waitForRetirement(t *testing.T, retirer *NamespaceRetirer) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
