@@ -45,6 +45,7 @@ import (
 	"oro/pkg/ops"
 	"oro/pkg/processenv"
 	"oro/pkg/protocol"
+	"oro/pkg/storage"
 	"oro/pkg/web"
 	workerstream "oro/pkg/worker"
 
@@ -92,6 +93,8 @@ var ErrSemanticDisabled = errors.New("semantic search disabled")
 // ErrEmbedderUnavailable is returned by WaitForEmbedder when the embedder
 // goroutine completed but the embedder could not be initialised.
 var ErrEmbedderUnavailable = errors.New("embedder unavailable")
+
+var errStorageAdmissionPaused = errors.New("storage admission paused")
 
 // --- Domain types ---
 
@@ -749,6 +752,9 @@ type Config struct {
 	// StorageHealth observes the host-global storage control plane. A nil
 	// observer leaves storage health unavailable.
 	StorageHealth func(context.Context) *factoryhealth.StorageHealth
+	// StorageController coordinates durable storage pause epochs. A nil
+	// controller preserves the dispatcher's existing admission behavior.
+	StorageController *storage.Controller
 }
 
 // LeakScanConfig controls the dispatcher's pre-merge secret scan.
@@ -1676,6 +1682,7 @@ func (d *Dispatcher) spawnBackgroundLoops(ctx context.Context, ln net.Listener) 
 	d.safeGo(func() { d.paneMonitorLoop(ctx) })
 	d.safeGo(func() { d.escalationRetryLoop(ctx) })
 	d.safeGo(func() { d.runPresubmitScheduler(ctx) })
+	d.safeGo(func() { d.storageControllerLoop(ctx) })
 	d.safeGo(func() { RunSweepLoop(ctx, d.beads, d.db, SweepConfig{}) })
 	if d.cfg.WebEnabled {
 		d.startHTTPServer()
@@ -2783,6 +2790,12 @@ func (e *preMergeQGRunError) Unwrap() error {
 // worktree. It leaves failure handling to its caller, except for regression
 // protection, which already performs the required recovery itself.
 func (d *Dispatcher) runPreMergeQG(ctx context.Context, beadID, workerID, worktree string, assignmentID int64, targetBranch string) error {
+	if err := d.observeStorageController(ctx); err != nil {
+		return err
+	}
+	if !d.storageAdmissionAllowed() {
+		return errStorageAdmissionPaused
+	}
 	mutationBase := d.qgMutationBase(targetBranch)
 	if !d.guardQGRegression(ctx, beadID, workerID, worktree, assignmentID, mutationBase) {
 		return errPreMergeQGAlreadyHandled
@@ -2931,6 +2944,9 @@ func (d *Dispatcher) blockPreMergeLeak(ctx context.Context, beadID, workerID, wo
 // tryCloseEpic should proceed to completeEpicClose. On failure or error it
 // handles logging/escalation and returns false.
 func (d *Dispatcher) checkEpicQG(ctx context.Context, epicID, workerID, epicBranch, targetBranch string) bool {
+	if err := d.observeStorageController(ctx); err != nil || !d.storageAdmissionAllowed() {
+		return false
+	}
 	wtID := d.epicQGWorktreeID(epicID)
 	worktree, _, err := d.worktrees.Create(ctx, wtID, epicBranch)
 	if err != nil {
@@ -4635,6 +4651,9 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 	if msg.ReadyForReview == nil {
 		return
 	}
+	if err := d.observeStorageController(ctx); err != nil || !d.storageAdmissionAllowed() {
+		return
+	}
 	beadID := msg.ReadyForReview.BeadID
 
 	d.touchProgress(workerID)
@@ -5987,6 +6006,9 @@ func (d *Dispatcher) isFocusedDescendant(ctx context.Context, parentID, focusedE
 func (d *Dispatcher) tryAssign(ctx context.Context) {
 	// Only assign in running state.
 	if d.GetState() != StateRunning {
+		return
+	}
+	if err := d.observeStorageController(ctx); err != nil || !d.storageAdmissionAllowed() {
 		return
 	}
 

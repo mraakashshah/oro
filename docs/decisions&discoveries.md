@@ -291,3 +291,10 @@ Hook inventory (same in both files):
 **Context:** The reservation-first fix still waited for every tracked assignment goroutine before `tryAssign` returned. On cold start, the first worker's slow worktree setup blocked the single assignment loop, so the second worker's coalesced ready signal could not schedule its own assignment.
 **Decision:** Keep reservation synchronous, but leave post-reservation setup in `safeGo` without awaiting it from the scheduling pass. `safeGo` remains the lifecycle owner for graceful shutdown; the assignment loop may immediately consume later readiness signals.
 **Implications:** Starting workers at different times refills all available slots without waiting for the first worktree setup. Scheduling tests that assert completed assignment records must wait for the dispatcher’s tracked goroutines explicitly.
+
+## 2026-07-22: Storage pauses gate every dispatcher admission boundary
+
+**Tags:** #dispatcher #storage #admission-control
+**Context:** A durable storage pause must stop assignment, review, and quality-gate starts while active managed work drains.
+**Decision:** Keep pause state in `storage.Controller`; observe it before every admission boundary and in a background polling loop. A nil controller preserves existing behavior. The controller remains responsible for fail-closed draining and acknowledges its epoch only after its configured drain callback succeeds.
+**Implications:** New dispatcher admission paths must call the storage admission guard before starting work; they must not independently acknowledge or reopen a storage pause.
