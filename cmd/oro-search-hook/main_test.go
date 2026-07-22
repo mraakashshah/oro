@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -64,6 +65,9 @@ func TestRun_readError(t *testing.T) {
 
 func TestRunSessionStartProbeExitStatus(t *testing.T) {
 	if os.Getenv("ORO_SEARCH_HOOK_TEST_MAIN") == "1" {
+		if os.Getenv("ORO_SEARCH_HOOK_TEST_UMASK") == "1" {
+			syscall.Umask(0o777)
+		}
 		main()
 		return
 	}
@@ -127,17 +131,18 @@ func TestRunSessionStartProbeExitStatus(t *testing.T) {
 			t.Fatalf("non-private probe was created: %v", err)
 		}
 
-		unwritableDir := t.TempDir()
-		if err := os.Chmod(unwritableDir, 0o700); err != nil {
-			t.Fatalf("make unwritable probe parent private: %v", err)
-		}
-		unwritableProbe := filepath.Join(unwritableDir, "probe")
-		if err := os.Mkdir(unwritableProbe, 0o700); err != nil {
-			t.Fatalf("create unwritable probe target: %v", err)
-		}
-		if err := handleSessionStart(unwritableProbe); err == nil {
-			t.Fatal("handleSessionStart() accepted unwritable probe target")
-		}
+		t.Run("unwritable private parent", func(t *testing.T) {
+			if os.Geteuid() == 0 {
+				t.Skip("root can bypass directory write permissions")
+			}
+			unwritableDir := t.TempDir()
+			if err := os.Chmod(unwritableDir, 0o500); err != nil {
+				t.Fatalf("make private probe parent unwritable: %v", err)
+			}
+			if err := handleSessionStart(filepath.Join(unwritableDir, "probe")); err == nil {
+				t.Fatal("handleSessionStart() accepted unwritable probe parent")
+			}
+		})
 	})
 
 	t.Run("malformed ordinary event fails open", func(t *testing.T) {
@@ -168,6 +173,68 @@ func TestRunSessionStartProbeExitStatus(t *testing.T) {
 		}
 		if !strings.Contains(stderr.String(), "ORO_HOOK_PROBE is not set") {
 			t.Fatalf("main stderr = %q, want probe error", stderr.String())
+		}
+	})
+
+	t.Run("creates exact mode under restrictive umask", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Fatalf("make probe directory private: %v", err)
+		}
+		probe := filepath.Join(dir, "probe")
+		cmd := exec.Command(os.Args[0], "-test.run=^TestRunSessionStartProbeExitStatus$") //nolint:gosec // Test re-executes its own fixed binary.
+		cmd.Env = []string{
+			"ORO_SEARCH_HOOK_TEST_MAIN=1",
+			"ORO_SEARCH_HOOK_TEST_UMASK=1",
+			"ORO_HOOK_PROBE=" + probe,
+		}
+		cmd.Stdin = strings.NewReader(`{"hook_event_name":"SessionStart"}`)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("main failed: %v: %s", err, output)
+		}
+		info, err := os.Stat(probe)
+		if err != nil {
+			t.Fatalf("stat probe: %v", err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("probe mode under restrictive umask = %04o, want 0600", got)
+		}
+	})
+
+	t.Run("binds the validated directory before marker creation", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Fatalf("make probe directory private: %v", err)
+		}
+		root, name, err := openSessionStartProbeRoot(filepath.Join(dir, "probe"))
+		if err != nil {
+			t.Fatalf("openSessionStartProbeRoot() error: %v", err)
+		}
+		defer func() {
+			if err := root.Close(); err != nil {
+				t.Errorf("close probe root: %v", err)
+			}
+		}()
+
+		movedDir := dir + "-moved"
+		if err := os.Rename(dir, movedDir); err != nil {
+			t.Fatalf("rename validated probe directory: %v", err)
+		}
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatalf("replace probe directory with public directory: %v", err)
+		}
+		file, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			t.Fatalf("create marker through bound root: %v", err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatalf("close marker: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(movedDir, "probe")); err != nil {
+			t.Fatalf("marker missing from validated directory: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "probe")); !os.IsNotExist(err) {
+			t.Fatalf("replacement directory received marker: %v", err)
 		}
 	})
 }
