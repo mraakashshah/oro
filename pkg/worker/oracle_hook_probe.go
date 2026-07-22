@@ -56,7 +56,10 @@ func (p *ReplayableProcess) Kill() error {
 	if p == nil || p.inner == nil {
 		return nil
 	}
-	return p.inner.Kill()
+	if err := p.inner.Kill(); err != nil {
+		return fmt.Errorf("kill replayable process: %w", err)
+	}
+	return nil
 }
 
 // ExitCode delegates runtime diagnostics unchanged.
@@ -95,7 +98,7 @@ func NewOracleHookProbe() (*OracleHookProbe, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create Oracle hook probe directory: %w", err)
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
+	if err := os.Chmod(dir, 0o700); err != nil { //nolint:gosec // directories need owner execute permission; 0700 keeps the probe private
 		_ = os.RemoveAll(dir)
 		return nil, fmt.Errorf("secure Oracle hook probe directory: %w", err)
 	}
@@ -122,11 +125,11 @@ func (p *OracleHookProbe) Environment() string {
 // Failed live launches are killed and reaped through the replayable process.
 func (p *OracleHookProbe) Await(ctx context.Context, proc *ReplayableProcess, timeout time.Duration) error {
 	if p == nil || p.markerPath == "" {
-		return errors.New("Oracle hook probe is not configured")
+		return errors.New("oracle hook probe is not configured")
 	}
 	if proc == nil {
 		p.remove()
-		return errors.New("Oracle hook probe process is nil")
+		return errors.New("oracle hook probe process is nil")
 	}
 	defer p.remove()
 
@@ -141,11 +144,11 @@ func (p *OracleHookProbe) Await(ctx context.Context, proc *ReplayableProcess, ti
 		}
 		select {
 		case <-proc.Done():
-			return fmt.Errorf("Oracle hook did not activate before process exit: %w", proc.Wait())
+			return fmt.Errorf("oracle hook did not activate before process exit: %w", proc.Wait())
 		case <-ctx.Done():
 			return p.stopAndReap(proc, fmt.Errorf("await Oracle hook activation: %w", ctx.Err()))
 		case <-timer.C:
-			return p.stopAndReap(proc, errors.New("Oracle hook did not activate within timeout"))
+			return p.stopAndReap(proc, errors.New("oracle hook did not activate within timeout"))
 		case <-ticker.C:
 		}
 	}

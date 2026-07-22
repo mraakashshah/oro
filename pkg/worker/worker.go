@@ -54,7 +54,9 @@ type ReasoningStreamingSpawner interface {
 type LaunchPolicy string
 
 const (
-	LaunchPolicyDefault  LaunchPolicy = ""
+	// LaunchPolicyDefault permits the runtime's normal mutation boundary.
+	LaunchPolicyDefault LaunchPolicy = ""
+	// LaunchPolicyReadOnly requires managed read-only hook activation.
 	LaunchPolicyReadOnly LaunchPolicy = "read-only"
 )
 

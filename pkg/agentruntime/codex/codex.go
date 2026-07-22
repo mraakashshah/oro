@@ -103,7 +103,7 @@ func (s *WorkerSpawner) SpawnWithLaunchPolicy(ctx context.Context, model, reason
 		var err error
 		probe, err = worker.NewOracleHookProbe()
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, fmt.Errorf("create Oracle hook probe: %w", err)
 		}
 		cmd.Env = append(cmd.Env, probe.Environment())
 	}
@@ -125,7 +125,7 @@ func (s *WorkerSpawner) SpawnWithLaunchPolicy(ctx context.Context, model, reason
 	if probe != nil {
 		replayable := worker.NewReplayableProcess(proc)
 		if err := probe.Await(ctx, replayable, 5*time.Second); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, fmt.Errorf("await Oracle hook activation: %w", err)
 		}
 		proc = replayable
 	}

@@ -2,8 +2,8 @@ package worker_test
 
 import (
 	"context"
-	"errors"
 	"os"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -17,7 +17,7 @@ func TestOracleHookProbeReplayableProcess(t *testing.T) {
 	t.Run("marker success replays one owned wait and diagnostics", func(t *testing.T) {
 		t.Parallel()
 
-		wantWait := errors.New("runtime failed")
+		wantWait := &probeWaitError{}
 		inner := newProbeProcess(wantWait, 23, "runtime stderr")
 		proc := worker.NewReplayableProcess(inner)
 		probe, err := worker.NewOracleHookProbe()
@@ -36,10 +36,10 @@ func TestOracleHookProbeReplayableProcess(t *testing.T) {
 		}
 
 		inner.Finish()
-		if got := proc.Wait(); got != wantWait {
+		if got := proc.Wait(); reflect.ValueOf(got) != reflect.ValueOf(wantWait) {
 			t.Fatalf("first replayed Wait = %v, want original %v", got, wantWait)
 		}
-		if got := proc.Wait(); got != wantWait {
+		if got := proc.Wait(); reflect.ValueOf(got) != reflect.ValueOf(wantWait) {
 			t.Fatalf("second replayed Wait = %v, want original %v", got, wantWait)
 		}
 		if got := inner.WaitCalls(); got != 1 {
@@ -108,6 +108,10 @@ func TestOracleHookProbeReplayableProcess(t *testing.T) {
 		})
 	}
 }
+
+type probeWaitError struct{}
+
+func (*probeWaitError) Error() string { return "runtime failed" }
 
 type probeProcess struct {
 	mu        sync.Mutex
