@@ -277,3 +277,10 @@ Hook inventory (same in both files):
 **Context:** A scoped lint command reported diagnostics with absolute paths from sibling worktrees because golangci-lint reused a shared cache.
 **Decision:** Set `GOLANGCI_LINT_CACHE` only for the lint command, to a directory under the gate's temporary `QG_DIR`; preserve shared Go and Python caches.
 **Implications:** Each gate rebuilds lint diagnostics for its active checkout, eliminating stale sibling paths while retaining its own lint failures.
+
+## 2026-07-22: Storage pauses gate every dispatcher admission boundary
+
+**Tags:** #dispatcher #storage #admission-control
+**Context:** A durable storage pause must stop assignment, review, and quality-gate starts while active managed work drains.
+**Decision:** Keep pause state in `storage.Controller`; observe it before every admission boundary and in a background polling loop. A nil controller preserves existing behavior. The controller remains responsible for fail-closed draining and acknowledges its epoch only after its configured drain callback succeeds.
+**Implications:** New dispatcher admission paths must call the storage admission guard before starting work; they must not independently acknowledge or reopen a storage pause.
