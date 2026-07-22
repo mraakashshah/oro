@@ -58,11 +58,38 @@ type PreflightRequest struct {
 	Targets    []string
 }
 
-type workflowRegistration struct { //nolint:unused // registration shape is defined for the preflight implementation.
+type workflowRegistration struct {
 	DefaultBranch string
 	Path          string
 	State         string
 	Contents      []byte
+}
+
+func (c *Client) fetchWorkflowRegistration(ctx context.Context, req PreflightRequest) (workflowRegistration, error) {
+	defaultBranch, err := c.fetchDefaultBranch(ctx, req.Repository)
+	if err != nil {
+		return workflowRegistration{}, err
+	}
+	path, state, err := c.fetchWorkflowMetadata(ctx, req.Repository, req.Workflow)
+	if err != nil {
+		return workflowRegistration{}, err
+	}
+	contents, readErr := c.api.GetContent(ctx, path, defaultBranch)
+	if err := ctx.Err(); err != nil {
+		return workflowRegistration{}, fmt.Errorf("%w: %w", remotegate.ErrWorkflowIneligible, err)
+	}
+	if readErr != nil {
+		return workflowRegistration{}, fmt.Errorf("%w: read workflow contents: %w", remotegate.ErrWorkflowIneligible, readErr)
+	}
+	if len(contents) == 0 {
+		return workflowRegistration{}, fmt.Errorf("%w: workflow contents are empty", remotegate.ErrWorkflowIneligible)
+	}
+	return workflowRegistration{
+		DefaultBranch: defaultBranch,
+		Path:          path,
+		State:         state,
+		Contents:      contents,
+	}, nil
 }
 
 func (c *Client) fetchDefaultBranch(ctx context.Context, repository string) (string, error) {

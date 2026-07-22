@@ -245,3 +245,119 @@ func TestFetchRepositoryDefaultBranch(t *testing.T) {
 		})
 	}
 }
+
+type workflowRegistrationReader struct {
+	repositoryResponse string
+	workflowResponse   string
+	contents           []byte
+	jsonErr            error
+	contentErr         error
+	cancelAfter        string
+	cancel             context.CancelFunc
+	calls              []string
+}
+
+func (r *workflowRegistrationReader) GetJSON(_ context.Context, path string, dst any) error {
+	r.calls = append(r.calls, "GET "+path)
+	if r.jsonErr != nil {
+		return r.jsonErr
+	}
+	var response string
+	switch path {
+	case "repos/acme/oro":
+		response = r.repositoryResponse
+	case "repos/acme/oro/actions/workflows/ci.yml":
+		response = r.workflowResponse
+	default:
+		return fmt.Errorf("unexpected JSON path %q", path)
+	}
+	if err := json.Unmarshal([]byte(response), dst); err != nil {
+		return err
+	}
+	if r.cancelAfter == path {
+		r.cancel()
+	}
+	return nil
+}
+
+func (r *workflowRegistrationReader) GetContent(_ context.Context, path, ref string) ([]byte, error) {
+	r.calls = append(r.calls, "CONTENT "+path+"@"+ref)
+	if r.contentErr != nil {
+		return nil, r.contentErr
+	}
+	if r.cancelAfter == "content" {
+		r.cancel()
+	}
+	return r.contents, nil
+}
+
+func TestFetchDefaultBranchWorkflowRegistration(t *testing.T) {
+	t.Parallel()
+	const (
+		repository = "acme/oro"
+		workflow   = "ci.yml"
+		path       = ".github/workflows/ci.yml"
+	)
+	contents := []byte("name: CI\n")
+	reader := &workflowRegistrationReader{
+		repositoryResponse: `{"full_name":"acme/oro","default_branch":"main"}`,
+		workflowResponse:   `{"path":".github/workflows/ci.yml","state":"active"}`,
+		contents:           contents,
+	}
+	client := Client{api: reader}
+
+	registration, err := client.fetchWorkflowRegistration(context.Background(), PreflightRequest{
+		Repository: repository,
+		Workflow:   workflow,
+	})
+	if err != nil {
+		t.Fatalf("fetchWorkflowRegistration() error = %v", err)
+	}
+	want := workflowRegistration{
+		DefaultBranch: "main",
+		Path:          path,
+		State:         "active",
+		Contents:      contents,
+	}
+	if !reflect.DeepEqual(registration, want) {
+		t.Fatalf("registration = %#v, want %#v", registration, want)
+	}
+	if !reflect.DeepEqual(reader.calls, []string{
+		"GET repos/acme/oro",
+		"GET repos/acme/oro/actions/workflows/ci.yml",
+		"CONTENT .github/workflows/ci.yml@main",
+	}) {
+		t.Fatalf("calls = %v", reader.calls)
+	}
+
+	for _, tc := range []struct {
+		name        string
+		reader      workflowRegistrationReader
+		cancelAfter string
+		wantCause   error
+	}{
+		{name: "empty contents", reader: workflowRegistrationReader{repositoryResponse: reader.repositoryResponse, workflowResponse: reader.workflowResponse}},
+		{name: "workflow reader failure", reader: workflowRegistrationReader{repositoryResponse: reader.repositoryResponse, jsonErr: errors.New("reader failed")}},
+		{name: "content reader failure", reader: workflowRegistrationReader{repositoryResponse: reader.repositoryResponse, workflowResponse: reader.workflowResponse, contentErr: errors.New("content failed")}},
+		{name: "cancelled after workflow read", reader: workflowRegistrationReader{repositoryResponse: reader.repositoryResponse, workflowResponse: reader.workflowResponse}, cancelAfter: "repos/acme/oro/actions/workflows/ci.yml", wantCause: context.Canceled},
+		{name: "cancelled after content read", reader: workflowRegistrationReader{repositoryResponse: reader.repositoryResponse, workflowResponse: reader.workflowResponse, contents: contents}, cancelAfter: "content", wantCause: context.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			r := tc.reader
+			r.cancelAfter = tc.cancelAfter
+			r.cancel = cancel
+			got, err := (&Client{api: &r}).fetchWorkflowRegistration(ctx, PreflightRequest{Repository: repository, Workflow: workflow})
+			if !errors.Is(err, remotegate.ErrWorkflowIneligible) {
+				t.Fatalf("error = %v, want ErrWorkflowIneligible", err)
+			}
+			if tc.wantCause != nil && !errors.Is(err, tc.wantCause) {
+				t.Fatalf("error = %v, want cause %v", err, tc.wantCause)
+			}
+			if !reflect.DeepEqual(got, workflowRegistration{}) {
+				t.Fatalf("registration = %#v, want zero value", got)
+			}
+		})
+	}
+}
