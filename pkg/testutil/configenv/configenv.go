@@ -55,7 +55,12 @@ func preserveGoCaches() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "go", "env", "GOCACHE", "GOMODCACHE").Output() //nolint:gosec // fixed Go command and arguments
+	cmd := exec.CommandContext(ctx, "go", "env", "GOCACHE", "GOMODCACHE") //nolint:gosec // fixed Go command and arguments
+	// The Go command may leave a telemetry sidecar writing after cmd.Output
+	// returns. Point its test override at a non-directory so it cannot create
+	// files beneath a caller-owned temporary HOME.
+	cmd.Env = append(os.Environ(), "TEST_TELEMETRY_DIR="+os.DevNull)
+	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("resolve cache roots: %w", err)
 	}
