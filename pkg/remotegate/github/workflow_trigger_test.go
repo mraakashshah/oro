@@ -35,6 +35,10 @@ func TestParseFlatWorkflowTriggerDeclarations(t *testing.T) {
 			wantDistinct:     true,
 		},
 		{
+			name:     "unrelated scalar event",
+			contents: "on: push\n",
+		},
+		{
 			name:           "malformed yaml",
 			contents:       "on: [workflow_dispatch\n",
 			wantIneligible: true,
