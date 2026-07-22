@@ -160,6 +160,50 @@ func (ci *CodeIndex) Close() error {
 	return nil
 }
 
+// IsPopulated reports whether the index contains at least one chunk.
+func (ci *CodeIndex) IsPopulated(ctx context.Context) (bool, error) {
+	if err := contextError(ctx); err != nil {
+		return false, err
+	}
+
+	var populated bool
+	if err := ci.db.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM chunks)").Scan(&populated); err != nil {
+		return false, fmt.Errorf("check code index population: %w", err)
+	}
+	return populated, nil
+}
+
+// EnsureCodeIndexReady builds an empty index before it is searched.
+//
+//oro:testonly
+func EnsureCodeIndexReady(ctx context.Context, idx *CodeIndex, root string) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	if idx == nil {
+		return errors.New("code index is nil")
+	}
+
+	populated, err := idx.IsPopulated(ctx)
+	if err != nil {
+		return fmt.Errorf("check code index readiness: %w", err)
+	}
+	if populated {
+		return nil
+	}
+	if _, err := idx.Build(ctx, root); err != nil {
+		return fmt.Errorf("build code index: %w", err)
+	}
+	return nil
+}
+
+func contextError(ctx context.Context) error {
+	if ctx == nil {
+		return context.Canceled
+	}
+	return ctx.Err()
+}
+
 // Build walks rootDir, chunks all Go files, embeds them, and stores in SQLite.
 // This is a full rebuild: existing data is cleared first.
 // Uses a transaction to ensure atomicity - if build fails, old data is preserved.

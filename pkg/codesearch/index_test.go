@@ -2,6 +2,7 @@ package codesearch_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,142 @@ import (
 
 	"oro/pkg/codesearch"
 )
+
+type cancelAfterFirstEmbedder struct {
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (e *cancelAfterFirstEmbedder) Embed(string) []float32 {
+	e.calls++
+	if e.calls == 1 {
+		e.cancel()
+	}
+	return []float32{1}
+}
+
+func (e *cancelAfterFirstEmbedder) Dim() int { return 1 }
+
+func (e *cancelAfterFirstEmbedder) Name() string { return "cancel-after-first" }
+
+func TestEnsureCodeIndexReady(t *testing.T) {
+	newIndex := func(t *testing.T) *codesearch.CodeIndex {
+		t.Helper()
+		idx, err := codesearch.NewCodeIndex(filepath.Join(t.TempDir(), "index.db"))
+		if err != nil {
+			t.Fatalf("NewCodeIndex: %v", err)
+		}
+		t.Cleanup(func() { _ = idx.Close() })
+		return idx
+	}
+
+	t.Run("empty index builds fixture symbol", func(t *testing.T) {
+		root := t.TempDir()
+		writeGoFile(t, root, "fixture.go", "package fixture\n\nfunc ReadyFixture() {}\n")
+		idx := newIndex(t)
+
+		if err := codesearch.EnsureCodeIndexReady(context.Background(), idx, root); err != nil {
+			t.Fatalf("EnsureCodeIndexReady: %v", err)
+		}
+		populated, err := idx.IsPopulated(context.Background())
+		if err != nil {
+			t.Fatalf("IsPopulated: %v", err)
+		}
+		if !populated {
+			t.Fatal("index should be populated after readiness build")
+		}
+		results, err := idx.FTS5Search(context.Background(), "ReadyFixture", 10)
+		if err != nil {
+			t.Fatalf("FTS5Search: %v", err)
+		}
+		if len(results) != 1 || results[0].Name != "ReadyFixture" {
+			t.Fatalf("expected one fixture symbol, got %#v", results)
+		}
+	})
+
+	t.Run("populated index is not rebuilt", func(t *testing.T) {
+		root := t.TempDir()
+		writeGoFile(t, root, "fixture.go", "package fixture\n\nfunc OriginalFixture() {}\n")
+		idx := newIndex(t)
+		if _, err := idx.Build(context.Background(), root); err != nil {
+			t.Fatalf("initial Build: %v", err)
+		}
+		writeGoFile(t, root, "fixture.go", "package fixture\n\nfunc ReplacementFixture() {}\n")
+
+		if err := codesearch.EnsureCodeIndexReady(context.Background(), idx, root); err != nil {
+			t.Fatalf("EnsureCodeIndexReady: %v", err)
+		}
+		original, err := idx.FTS5Search(context.Background(), "OriginalFixture", 10)
+		if err != nil {
+			t.Fatalf("search original: %v", err)
+		}
+		replacement, err := idx.FTS5Search(context.Background(), "ReplacementFixture", 10)
+		if err != nil {
+			t.Fatalf("search replacement: %v", err)
+		}
+		if len(original) != 1 || len(replacement) != 0 {
+			t.Fatalf("readiness rebuilt populated index: original=%d replacement=%d", len(original), len(replacement))
+		}
+	})
+
+	t.Run("non-empty failing root returns wrapped build error", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.Symlink("missing.go", filepath.Join(root, "broken.go")); err != nil {
+			t.Fatalf("create broken symlink: %v", err)
+		}
+		idx := newIndex(t)
+
+		err := codesearch.EnsureCodeIndexReady(context.Background(), idx, root)
+		if err == nil {
+			t.Fatal("EnsureCodeIndexReady returned nil for a failing build")
+		}
+		if !strings.Contains(err.Error(), "build code index") || !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("expected wrapped build failure, got %v", err)
+		}
+	})
+
+	t.Run("mid-build cancellation preserves prior contents", func(t *testing.T) {
+		root := t.TempDir()
+		writeGoFile(t, root, "fixture.go", "package fixture\n\nfunc PriorFixture() {}\n")
+		idx := newIndex(t)
+		if _, err := idx.Build(context.Background(), root); err != nil {
+			t.Fatalf("initial Build: %v", err)
+		}
+		writeGoFile(t, root, "fixture.go", "package fixture\n\nfunc NewOne() {}\nfunc NewTwo() {}\n")
+		ctx, cancel := context.WithCancel(context.Background())
+		idx.SetEmbedder(&cancelAfterFirstEmbedder{cancel: cancel})
+
+		if _, err := idx.Build(ctx, root); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Build error = %v, want context cancellation", err)
+		}
+		prior, err := idx.FTS5Search(context.Background(), "PriorFixture", 10)
+		if err != nil {
+			t.Fatalf("search prior: %v", err)
+		}
+		newResults, err := idx.FTS5Search(context.Background(), "NewOne", 10)
+		if err != nil {
+			t.Fatalf("search new: %v", err)
+		}
+		if len(prior) != 1 || len(newResults) != 0 {
+			t.Fatalf("cancelled rebuild changed index: prior=%d new=%d", len(prior), len(newResults))
+		}
+	})
+
+	t.Run("nil and cancelled contexts return context errors", func(t *testing.T) {
+		idx := newIndex(t)
+		if _, err := idx.IsPopulated(nil); !errors.Is(err, context.Canceled) {
+			t.Fatalf("IsPopulated(nil) error = %v, want context cancellation", err)
+		}
+		if err := codesearch.EnsureCodeIndexReady(nil, idx, t.TempDir()); !errors.Is(err, context.Canceled) {
+			t.Fatalf("EnsureCodeIndexReady(nil) error = %v, want context cancellation", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := codesearch.EnsureCodeIndexReady(ctx, idx, t.TempDir()); !errors.Is(err, context.Canceled) {
+			t.Fatalf("EnsureCodeIndexReady(cancelled) error = %v, want context cancellation", err)
+		}
+	})
+}
 
 func TestCodeIndex_BuildAndSearch(t *testing.T) {
 	// Create a temp directory with Go source files.
