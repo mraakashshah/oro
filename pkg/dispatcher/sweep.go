@@ -139,35 +139,6 @@ func ReapDeletedParentChildren(ctx context.Context, store DeferredStore) error {
 	return nil
 }
 
-// ExpireReviewQueueSLA auto-rejects bead_learnings_pending rows whose
-// queued_for_review_at is older than slaDays. Returns the number of rows rejected.
-func ExpireReviewQueueSLA(ctx context.Context, db *sql.DB, slaDays int) (int64, error) {
-	ok, err := tableExists(ctx, db, "bead_learnings_pending")
-	if err != nil {
-		return 0, fmt.Errorf("sweep: inspect review queue SLA table: %w", err)
-	}
-	if !ok {
-		return 0, nil
-	}
-	res, err := db.ExecContext(ctx, `
-		UPDATE bead_learnings_pending
-		   SET rejected_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-		       reason      = 'review_queue_sla_expired'
-		 WHERE queued_for_review_at IS NOT NULL
-		   AND promoted_to IS NULL
-		   AND rejected_at IS NULL
-		   AND datetime(queued_for_review_at) < datetime('now', printf('-%d days', ?))`,
-		slaDays)
-	if err != nil {
-		return 0, fmt.Errorf("sweep: expire review queue SLA: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("sweep: expire review queue SLA rows affected: %w", err)
-	}
-	return n, nil
-}
-
 // SweepDeletedBeadLearnings rejects pending bead_learnings_pending rows whose
 // associated bead is soft-deleted (beads.deleted=1). Returns the number of rows rejected.
 func SweepDeletedBeadLearnings(ctx context.Context, db *sql.DB) (int64, error) {
