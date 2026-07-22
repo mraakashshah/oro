@@ -606,8 +606,14 @@ func resolveRecoveryQuarantineRequeuePreserved(ctx context.Context, db *sql.DB, 
 	if err != nil {
 		return err
 	}
-	if err := reopenRecoveryBeadForRequeue(ctx, tx, q.BeadID); err != nil {
+	hasNewerActiveAssignment, err := recoveryBeadHasNewerActiveAssignment(ctx, tx, q.BeadID, assignmentID)
+	if err != nil {
 		return err
+	}
+	if !hasNewerActiveAssignment {
+		if err := reopenRecoveryBeadForRequeue(ctx, tx, q.BeadID); err != nil {
+			return err
+		}
 	}
 	if needsRequeue {
 		if err := requeuePreservedAssignment(ctx, tx, assignmentID, q.BeadID); err != nil {
@@ -692,6 +698,19 @@ SELECT EXISTS (
 		return false, fmt.Errorf("lookup requeue-preserved bead dependencies: %w", err)
 	}
 	return blocked, nil
+}
+
+func recoveryBeadHasNewerActiveAssignment(ctx context.Context, tx *sql.Tx, beadID string, preservedAssignmentID int64) (bool, error) {
+	var hasNewerActiveAssignment bool
+	if err := tx.QueryRowContext(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM assignments
+    WHERE bead_id=? AND id>? AND status='active'
+)`, beadID, preservedAssignmentID).Scan(&hasNewerActiveAssignment); err != nil {
+		return false, fmt.Errorf("lookup newer active assignment for requeue-preserved bead %s: %w", beadID, err)
+	}
+	return hasNewerActiveAssignment, nil
 }
 
 func recoveryAssignmentIDForRequeue(ctx context.Context, tx *sql.Tx, quarantineID int64, q recoveryQuarantineCLIRecord) (assignmentID int64, needsRequeue bool, err error) {
