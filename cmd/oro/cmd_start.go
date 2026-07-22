@@ -1168,11 +1168,11 @@ func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers 
 
 	cfg := dispatcher.Config{
 		SocketPath:              sockPath,
-		StorageCatalogPath:      storagePaths.CatalogPath,
 		InitialWorkers:          initialWorkers,
 		MaxWorkers:              maxWorkers,
 		AllowZeroWorkers:        initialWorkers == 0,
 		DBPath:                  dbPath,
+		StorageCatalogPath:      storagePaths.CatalogPath,
 		RepoRoot:                repoRoot,
 		ProgressTimeout:         progressTimeout,
 		ReviewTimeout:           reviewStallTimeout,
