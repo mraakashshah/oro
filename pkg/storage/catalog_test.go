@@ -48,7 +48,8 @@ func TestCatalogRuntimeLeaseLifecycle(t *testing.T) {
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
 	lease, err := catalog.AcquireLease(ctx, storage.LeaseRequest{
 		ID:           "lease-1",
-		Namespace:    "repo-a/worktree-a",
+		Namespace:    "0123456789abcdef",
+		ScratchPath:  "/tmp/oro-subprocess/0123456789abcdef",
 		ControllerID: "controller-1",
 		OwnerID:      "owner-1",
 		PID:          101,
@@ -146,7 +147,8 @@ CREATE TABLE runtime_leases (
 	now := time.Date(2026, time.July, 19, 12, 0, 0, 0, time.UTC)
 	if _, err := catalog.AcquireLease(ctx, storage.LeaseRequest{
 		ID:           "lease-1",
-		Namespace:    "repo-a/worktree-a",
+		Namespace:    "0123456789abcdef",
+		ScratchPath:  "/tmp/oro-subprocess/0123456789abcdef",
 		ControllerID: "controller-1",
 		OwnerID:      "owner-1",
 		PID:          101,
