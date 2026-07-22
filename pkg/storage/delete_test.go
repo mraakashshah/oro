@@ -218,6 +218,47 @@ func TestTombstonedDeleteRejectsPathEscape(t *testing.T) {
 	})
 }
 
+func TestTombstoneAnchorDeletesNestedEntries(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	namespace := "0123456789abcdef0123456789abcdef"
+	tombstone := filepath.Join(root, tombstoneDirectory, namespace)
+	nested := filepath.Join(tombstone, "nested")
+	entry := filepath.Join(nested, "scratch")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatalf("create nested tombstone: %v", err)
+	}
+	if err := os.WriteFile(entry, []byte("scratch"), 0o600); err != nil {
+		t.Fatalf("write nested tombstone entry: %v", err)
+	}
+
+	catalog, err := OpenCatalog(context.Background(), filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = catalog.Close() })
+
+	retirer := NewNamespaceRetirer(catalog, root)
+	boundary, err := retirer.validateTombstoneBoundary(tombstone)
+	if err != nil {
+		t.Fatalf("validate tombstone boundary: %v", err)
+	}
+	if err := revalidateTombstoneBoundary(boundary); err != nil {
+		t.Fatalf("revalidate unchanged tombstone boundary: %v", err)
+	}
+	entries, _, err := collectTombstoneEntries(tombstone, boundary.tombstoneInfo, boundary.rootInfo)
+	if err != nil {
+		t.Fatalf("collect nested tombstone entries: %v", err)
+	}
+	if err := removeTombstoneWithHook(boundary, entries, nil); err != nil {
+		t.Fatalf("remove nested tombstone: %v", err)
+	}
+	if _, err := os.Stat(tombstone); !os.IsNotExist(err) {
+		t.Fatalf("nested tombstone remains: %v", err)
+	}
+}
+
 func TestNamespaceRetirementResumesExistingTombstone(t *testing.T) {
 	t.Parallel()
 
