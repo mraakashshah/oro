@@ -219,25 +219,25 @@ func TestOpsRoutingUsesLockedRoleModels(t *testing.T) {
 	}{
 		{"ops_escalation", func(s *Spawner) <-chan Result {
 			return s.Escalate(context.Background(), EscalationOpts{BeadID: "b", Workdir: dir})
-		}, "codex", "gpt-5.6-sol", "high"},
+		}, "codex", "gpt-5.6-sol", "low"},
 		{"ops_merge", func(s *Spawner) <-chan Result {
 			return s.ResolveMergeConflict(context.Background(), MergeOpts{BeadID: "b", Worktree: dir})
-		}, "codex", "gpt-5.6-sol", "high"},
+		}, "codex", "gpt-5.6-sol", "low"},
 		{"ops_diagnosis", func(s *Spawner) <-chan Result {
 			return s.Diagnose(context.Background(), DiagOpts{BeadID: "b", Worktree: dir})
-		}, "codex", "gpt-5.6-sol", "high"},
+		}, "codex", "gpt-5.6-sol", "low"},
 		{"ops_review", func(s *Spawner) <-chan Result {
 			return s.Review(context.Background(), ReviewOpts{BeadID: "b", Worktree: ""})
-		}, "claude", "fable", "xhigh"},
+		}, "claude", "claude-opus-4-8", "high"},
 		{"ops_decompose", func(s *Spawner) <-chan Result {
 			return s.Decompose(context.Background(), DecomposeOpts{BeadID: "b"})
-		}, "codex", "gpt-5.6-sol", "high"},
+		}, "codex", "gpt-5.6-sol", "low"},
 		{"ops_epic_fix", func(s *Spawner) <-chan Result {
 			return s.DiagnoseEpicFailure(context.Background(), EpicFixOpts{EpicID: "e"})
-		}, "codex", "gpt-5.6-sol", "high"},
+		}, "codex", "gpt-5.6-sol", "low"},
 		{"ops_write_ac", func(s *Spawner) <-chan Result {
 			return s.WriteAC(context.Background(), WriteACOpts{BeadID: "b", Workdir: dir})
-		}, "codex", "gpt-5.6-sol", "high"},
+		}, "codex", "gpt-5.6-sol", "low"},
 		{"ops_dream", func(s *Spawner) <-chan Result {
 			return s.Dream(context.Background(), DreamOpts{})
 		}, "codex", "gpt-5.6-luna", "low"},
@@ -688,8 +688,8 @@ func TestReviewUsesCorrectModel(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 spawn call, got %d", len(calls))
 	}
-	if calls[0].model != "fable" {
-		t.Fatalf("expected model fable, got %q", calls[0].model)
+	if calls[0].model != "claude-opus-4-8" || calls[0].reasoning != "high" {
+		t.Fatalf("expected Opus high, got model=%q reasoning=%q", calls[0].model, calls[0].reasoning)
 	}
 }
 
@@ -853,8 +853,8 @@ func TestMergeUsesCorrectModel(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 spawn call, got %d", len(calls))
 	}
-	if calls[0].model != "gpt-5.6-sol" || calls[0].reasoning != "high" {
-		t.Fatalf("expected Sol high, got model=%q reasoning=%q", calls[0].model, calls[0].reasoning)
+	if calls[0].model != "gpt-5.6-sol" || calls[0].reasoning != "low" {
+		t.Fatalf("expected Sol low, got model=%q reasoning=%q", calls[0].model, calls[0].reasoning)
 	}
 }
 
@@ -899,8 +899,8 @@ func TestDiagnosisUsesCorrectModel(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 spawn call, got %d", len(calls))
 	}
-	if calls[0].model != "gpt-5.6-sol" || calls[0].reasoning != "high" {
-		t.Fatalf("expected Sol high, got model=%q reasoning=%q", calls[0].model, calls[0].reasoning)
+	if calls[0].model != "gpt-5.6-sol" || calls[0].reasoning != "low" {
+		t.Fatalf("expected Sol low, got model=%q reasoning=%q", calls[0].model, calls[0].reasoning)
 	}
 }
 
@@ -1889,8 +1889,8 @@ func TestOpsWriteAC(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 spawn call, got %d", len(calls))
 	}
-	if calls[0].model != "gpt-5.6-sol" || calls[0].reasoning != "high" {
-		t.Fatalf("WriteAC expected Sol high, got model=%q reasoning=%q", calls[0].model, calls[0].reasoning)
+	if calls[0].model != "gpt-5.6-sol" || calls[0].reasoning != "low" {
+		t.Fatalf("WriteAC expected Sol low, got model=%q reasoning=%q", calls[0].model, calls[0].reasoning)
 	}
 }
 

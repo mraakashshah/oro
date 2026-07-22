@@ -1267,11 +1267,19 @@ test_go_coverage_threshold_skips_uncovered_go_surfaces() {
 			echo "FAIL: $file lacks should_enforce_go_coverage_threshold helper"
 			return 1
 		fi
-		if ! grep -q 'Skipping 85% Go coverage threshold' "$file"; then
+		if ! grep -q 'Skipping 78% Go coverage threshold' "$file"; then
 			echo "FAIL: $file does not explain skipped Go coverage threshold"
 			return 1
 		fi
 	done
+	if ! grep -q 'cov < 78' "$script"; then
+		echo "FAIL: quality_gate.sh does not enforce the 78% Go coverage threshold"
+		return 1
+	fi
+	if ! grep -q 'below 78% threshold' "$script"; then
+		echo "FAIL: quality_gate.sh does not report the 78% Go coverage threshold"
+		return 1
+	fi
 
 	local tmpdir helpers oldpwd output_file
 	tmpdir=$(mktemp -d)

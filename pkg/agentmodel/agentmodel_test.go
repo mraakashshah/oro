@@ -111,10 +111,10 @@ languages:
 		}
 	})
 
-	t.Run("legacy deep model maps to Sol high", func(t *testing.T) {
+	t.Run("legacy deep model maps to Sol low", func(t *testing.T) {
 		runtime, model, reasoning := agentmodel.ResolveForBead("worker", protocol.Bead{Model: protocol.ModelOpus})
-		if runtime != "codex" || model != "gpt-5.6-sol" || reasoning != "high" {
-			t.Fatalf("ResolveForBead(opus) = (%q, %q, %q), want (codex, gpt-5.6-sol, high)", runtime, model, reasoning)
+		if runtime != "codex" || model != "gpt-5.6-sol" || reasoning != "low" {
+			t.Fatalf("ResolveForBead(opus) = (%q, %q, %q), want (codex, gpt-5.6-sol, low)", runtime, model, reasoning)
 		}
 	})
 }
@@ -159,24 +159,24 @@ func TestLockedRoleResolution(t *testing.T) {
 		model     string
 		reasoning string
 	}{
-		"spec_writer":             {"codex", "gpt-5.6-sol", "high"},
-		"spec_challenger":         {"claude", "fable", "xhigh"},
+		"spec_writer":             {"codex", "gpt-5.6-sol", "medium"},
+		"spec_challenger":         {"claude", "fable", "medium"},
 		"worker":                  {"codex", "gpt-5.6-terra", "medium"},
-		"worker_escalation":       {"codex", "gpt-5.6-sol", "high"},
-		"ops_review":              {"claude", "fable", "xhigh"},
-		"ops_review_triage":       {"claude", "fable", ""},
-		"ops_review_correctness":  {"claude", "fable", "xhigh"},
-		"ops_review_security":     {"claude", "fable", "xhigh"},
-		"ops_review_adversarial":  {"claude", "fable", "xhigh"},
-		"ops_review_design":       {"claude", "fable", ""},
-		"ops_review_test":         {"claude", "fable", ""},
-		"ops_review_architecture": {"claude", "fable", ""},
-		"ops_escalation":          {"codex", "gpt-5.6-sol", "high"},
-		"ops_merge":               {"codex", "gpt-5.6-sol", "high"},
-		"ops_diagnosis":           {"codex", "gpt-5.6-sol", "high"},
-		"ops_decompose":           {"codex", "gpt-5.6-sol", "high"},
-		"ops_epic_fix":            {"codex", "gpt-5.6-sol", "high"},
-		"ops_write_ac":            {"codex", "gpt-5.6-sol", "high"},
+		"worker_escalation":       {"codex", "gpt-5.6-sol", "low"},
+		"ops_review":              {"claude", "claude-opus-4-8", "high"},
+		"ops_review_triage":       {"claude", "claude-opus-4-8", "high"},
+		"ops_review_correctness":  {"claude", "claude-opus-4-8", "high"},
+		"ops_review_security":     {"claude", "claude-opus-4-8", "high"},
+		"ops_review_adversarial":  {"claude", "claude-opus-4-8", "high"},
+		"ops_review_design":       {"claude", "claude-opus-4-8", "high"},
+		"ops_review_test":         {"claude", "claude-opus-4-8", "high"},
+		"ops_review_architecture": {"claude", "claude-opus-4-8", "high"},
+		"ops_escalation":          {"codex", "gpt-5.6-sol", "low"},
+		"ops_merge":               {"codex", "gpt-5.6-sol", "low"},
+		"ops_diagnosis":           {"codex", "gpt-5.6-sol", "low"},
+		"ops_decompose":           {"codex", "gpt-5.6-sol", "low"},
+		"ops_epic_fix":            {"codex", "gpt-5.6-sol", "low"},
+		"ops_write_ac":            {"codex", "gpt-5.6-sol", "low"},
 		"ops_dream":               {"codex", "gpt-5.6-luna", "low"},
 		"memory_extractor":        {"codex", "gpt-5.6-luna", "low"},
 		"codesearch_reranker":     {"codex", "gpt-5.6-luna", "low"},
@@ -214,12 +214,12 @@ func TestProviderModeOverridesStaleRoleEntries(t *testing.T) {
 	}
 
 	runtime, model, reasoning = agentmodel.ResolveForRole("ops_review")
-	if runtime != "claude" || model != "fable" || reasoning != "xhigh" {
+	if runtime != "claude" || model != "claude-opus-4-8" || reasoning != "high" {
 		t.Fatalf("ResolveForRole(ops_review) = (%q, %q, %q), want claude review preset", runtime, model, reasoning)
 	}
 
 	runtime, model, reasoning = agentmodel.ResolveForRole("spec_challenger")
-	if runtime != "claude" || model != "fable" || reasoning != "xhigh" {
+	if runtime != "claude" || model != "fable" || reasoning != "medium" {
 		t.Fatalf("ResolveForRole(spec_challenger) = (%q, %q, %q), want claude review preset", runtime, model, reasoning)
 	}
 }

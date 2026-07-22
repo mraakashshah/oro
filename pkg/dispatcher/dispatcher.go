@@ -932,7 +932,8 @@ type Dispatcher struct {
 	// shutdownRunner is the CommandRunner used for repo-root git and recovery
 	// commands. Initialised by New() to &ExecCommandRunner{Dir: cfg.RepoRoot};
 	// overridable in tests.
-	shutdownRunner CommandRunner
+	shutdownRunner   CommandRunner
+	shutdownRunnerMu sync.RWMutex
 
 	// beadsDir is the internal task data directory to watch when using a
 	// filesystem-backed source (defaults to protocol.BeadsDir).
@@ -1406,6 +1407,21 @@ func (d *Dispatcher) ShutdownAuthorized() *atomic.Bool {
 //oro:testonly
 func (d *Dispatcher) SetQGRunner(r QGRunner) {
 	d.qgRunner = r
+}
+
+// commandRunner returns the recovery command runner as a stable snapshot.
+// Connection cleanup runs independently from test setup and must not race a
+// test-specific runner swap.
+func (d *Dispatcher) commandRunner() CommandRunner {
+	d.shutdownRunnerMu.RLock()
+	defer d.shutdownRunnerMu.RUnlock()
+	return d.shutdownRunner
+}
+
+func (d *Dispatcher) setCommandRunner(r CommandRunner) {
+	d.shutdownRunnerMu.Lock()
+	defer d.shutdownRunnerMu.Unlock()
+	d.shutdownRunner = r
 }
 
 // GetConfig returns the dispatcher's resolved Config. Intended for tests
@@ -2793,7 +2809,7 @@ func (d *Dispatcher) checkPreMergeLeaks(ctx context.Context, beadID, workerID, w
 	if target == "" {
 		target = d.cfg.DefaultBranch
 	}
-	diff, err := d.shutdownRunner.Run(ctx, "git", "-C", worktree, "diff", target+".."+branch)
+	diff, err := d.commandRunner().Run(ctx, "git", "-C", worktree, "diff", target+".."+branch)
 	if err != nil {
 		_ = d.logEvent(ctx, "pre_merge_leakscan_error", "dispatcher", beadID, workerID,
 			fmt.Sprintf(`{"branch":%q,"target":%q,"error":%q}`, branch, target, err.Error()))
@@ -6544,18 +6560,18 @@ func (d *Dispatcher) processEpicSkip(ctx context.Context, bead protocol.Bead) {
 // when the branch does not exist or any git command fails.
 func (d *Dispatcher) isBranchMergedInto(ctx context.Context, beadID, targetBranch string) bool {
 	branch := protocol.BranchPrefix + beadID // "agent/<beadID>"
-	tipOut, err := d.shutdownRunner.Run(ctx, "git", "rev-parse", branch)
+	tipOut, err := d.commandRunner().Run(ctx, "git", "rev-parse", branch)
 	if err != nil {
 		return false
 	}
-	baseOut, err := d.shutdownRunner.Run(ctx, "git", "merge-base", branch, targetBranch)
+	baseOut, err := d.commandRunner().Run(ctx, "git", "merge-base", branch, targetBranch)
 	if err != nil {
 		return false
 	}
 	if strings.TrimSpace(string(tipOut)) == strings.TrimSpace(string(baseOut)) {
 		return false
 	}
-	_, err = d.shutdownRunner.Run(ctx, "git", "merge-base", "--is-ancestor", branch, targetBranch)
+	_, err = d.commandRunner().Run(ctx, "git", "merge-base", "--is-ancestor", branch, targetBranch)
 	return err == nil
 }
 
@@ -9876,7 +9892,7 @@ func (d *Dispatcher) pruneStaleAgentBranches(ctx context.Context) {
 	if d.repoRoot == "" {
 		return
 	}
-	out, err := d.shutdownRunner.Run(ctx, "git", "-C", d.repoRoot, "branch", "--list", "agent/*")
+	out, err := d.commandRunner().Run(ctx, "git", "-C", d.repoRoot, "branch", "--list", "agent/*")
 	if err != nil {
 		_ = d.logEvent(ctx, "startup_prune_branches_list_failed", "dispatcher", "", "", err.Error())
 		return
@@ -9886,7 +9902,7 @@ func (d *Dispatcher) pruneStaleAgentBranches(ctx context.Context) {
 		if branch == "" {
 			continue
 		}
-		if _, delErr := d.shutdownRunner.Run(ctx, "git", "-C", d.repoRoot, "branch", "-d", branch); delErr != nil {
+		if _, delErr := d.commandRunner().Run(ctx, "git", "-C", d.repoRoot, "branch", "-d", branch); delErr != nil {
 			_ = d.logEvent(ctx, "startup_prune_branch_delete_failed", "dispatcher", "", "", branch+": "+delErr.Error())
 		}
 	}
@@ -10164,7 +10180,7 @@ func (d *Dispatcher) recoveryWorkBlocked(ctx context.Context, beadID, worktree, 
 }
 
 func (d *Dispatcher) worktreeDirty(ctx context.Context, worktree string) (dirty bool, status string, err error) {
-	out, err := d.shutdownRunner.Run(ctx, "git", "-C", worktree, "status", "--porcelain")
+	out, err := d.commandRunner().Run(ctx, "git", "-C", worktree, "status", "--porcelain")
 	if err != nil {
 		return false, "", fmt.Errorf("git status in %s: %w", worktree, err)
 	}
@@ -10183,7 +10199,7 @@ func (d *Dispatcher) branchHasUnmergedWork(ctx context.Context, beadID, worktree
 		baseBranch = "main"
 	}
 	branch := protocol.BranchPrefix + beadID
-	out, err := d.shutdownRunner.Run(ctx, "git", "-C", worktree, "rev-list", "--count", baseBranch+".."+branch)
+	out, err := d.commandRunner().Run(ctx, "git", "-C", worktree, "rev-list", "--count", baseBranch+".."+branch)
 	if err != nil {
 		return false, "", fmt.Errorf("git rev-list %s..%s in %s: %w", baseBranch, branch, worktree, err)
 	}
