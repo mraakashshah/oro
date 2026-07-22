@@ -201,7 +201,10 @@ func contextError(ctx context.Context) error {
 	if ctx == nil {
 		return context.Canceled
 	}
-	return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context error: %w", err)
+	}
+	return nil
 }
 
 // Build walks rootDir, chunks all Go files, embeds them, and stores in SQLite.

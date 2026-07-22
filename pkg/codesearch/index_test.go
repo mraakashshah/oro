@@ -33,6 +33,8 @@ func (e *cancelAfterFirstEmbedder) Dim() int { return 1 }
 
 func (e *cancelAfterFirstEmbedder) Name() string { return "cancel-after-first" }
 
+func nilContext() context.Context { return nil }
+
 func TestEnsureCodeIndexReady(t *testing.T) {
 	newIndex := func(t *testing.T) *codesearch.CodeIndex {
 		t.Helper()
@@ -138,10 +140,10 @@ func TestEnsureCodeIndexReady(t *testing.T) {
 
 	t.Run("nil and cancelled contexts return context errors", func(t *testing.T) {
 		idx := newIndex(t)
-		if _, err := idx.IsPopulated(nil); !errors.Is(err, context.Canceled) {
+		if _, err := idx.IsPopulated(nilContext()); !errors.Is(err, context.Canceled) {
 			t.Fatalf("IsPopulated(nil) error = %v, want context cancellation", err)
 		}
-		if err := codesearch.EnsureCodeIndexReady(nil, idx, t.TempDir()); !errors.Is(err, context.Canceled) {
+		if err := codesearch.EnsureCodeIndexReady(nilContext(), idx, t.TempDir()); !errors.Is(err, context.Canceled) {
 			t.Fatalf("EnsureCodeIndexReady(nil) error = %v, want context cancellation", err)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
