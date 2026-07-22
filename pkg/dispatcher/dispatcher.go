@@ -1730,6 +1730,7 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 	beadID := w.beadID
 	assignmentID := w.assignmentID
 	worktree := w.worktree
+	baseBranch := w.baseBranch
 	preempted := w.state == protocol.WorkerPreempting
 	if preempted && beadID != "" {
 		// Keep the bead reserved while its durable assignment is terminalized.
@@ -1746,7 +1747,7 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 	}
 
 	if beadID != "" {
-		if d.quarantineDisconnectedPreservedAssignment(context.Background(), workerID, beadID, assignmentID, worktree) {
+		if d.quarantineDisconnectedPreservedAssignment(context.Background(), workerID, beadID, assignmentID, worktree, baseBranch) {
 			d.clearBeadTracking(beadID)
 			d.notifyAssignLoop()
 			return
@@ -1762,7 +1763,7 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 	d.notifyAssignLoop()
 }
 
-func (d *Dispatcher) quarantineDisconnectedPreservedAssignment(ctx context.Context, workerID, beadID string, assignmentID int64, worktree string) bool {
+func (d *Dispatcher) quarantineDisconnectedPreservedAssignment(ctx context.Context, workerID, beadID string, assignmentID int64, worktree, baseBranch string) bool {
 	if assignmentID <= 0 {
 		return false
 	}
@@ -1774,7 +1775,7 @@ func (d *Dispatcher) quarantineDisconnectedPreservedAssignment(ctx context.Conte
 	if !active {
 		return false
 	}
-	blocked, details, err := d.recoveryWorkBlocked(ctx, beadID, worktree, "")
+	blocked, details, err := d.recoveryWorkBlocked(ctx, beadID, worktree, baseBranch)
 	if err == nil && !blocked {
 		return false
 	}
@@ -1799,6 +1800,9 @@ func (d *Dispatcher) quarantineDisconnectedPreservedAssignment(ctx context.Conte
 	}
 	if err := d.updateBeadStatus(ctx, beadID, "blocked"); err != nil {
 		_ = d.logEvent(ctx, "disconnected_assignment_block_failed", "dispatcher", beadID, workerID, err.Error())
+		if restoreErr := d.restoreDisconnectedAssignmentActive(ctx, assignmentID); restoreErr != nil {
+			_ = d.logEvent(ctx, "disconnected_assignment_restore_failed", "dispatcher", beadID, workerID, restoreErr.Error())
+		}
 	}
 	return true
 }
@@ -1811,6 +1815,22 @@ func (d *Dispatcher) assignmentActive(ctx context.Context, assignmentID int64, b
 		return false, fmt.Errorf("lookup disconnected assignment: %w", err)
 	}
 	return active, nil
+}
+
+func (d *Dispatcher) restoreDisconnectedAssignmentActive(ctx context.Context, assignmentID int64) error {
+	res, err := d.db.ExecContext(ctx,
+		`UPDATE assignments SET status='active', completed_at=NULL WHERE id=? AND status='quarantined'`, assignmentID)
+	if err != nil {
+		return fmt.Errorf("restore disconnected assignment active: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("restore disconnected assignment active rows: %w", err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("restore disconnected assignment active: assignment_id %d affected %d rows", assignmentID, rows)
+	}
+	return nil
 }
 
 func (d *Dispatcher) reconcilePreemptedDisconnect(workerID, beadID string, assignmentID int64, worktree string) {

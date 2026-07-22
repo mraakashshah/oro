@@ -729,6 +729,59 @@ WHERE bead_id=?`, beadID).Scan(
 	}
 }
 
+func TestDisconnectedWorkerComparesPreservedWorkAgainstAssignmentBase(t *testing.T) {
+	d, _, worktrees, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		beadID     = "oro-epic-base-disconnect"
+		workerID   = "worker-epic-base-disconnect"
+		worktree   = "/tmp/worktree-epic-base-disconnect"
+		baseBranch = "epic/oro-parent"
+	)
+	assignmentID := insertActiveAssignment(t, d, beadID, workerID, worktree)
+	worktrees.existsFn = func(_ context.Context, path string) bool { return path == worktree }
+	var comparedRange string
+	d.shutdownRunner = &mockCommandRunner{callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if len(args) >= 4 && args[2] == "status" {
+			return nil, nil
+		}
+		if len(args) == 5 && args[2] == "rev-list" {
+			comparedRange = args[4]
+			return []byte("0\n"), nil
+		}
+		t.Fatalf("unexpected git args: %q", args)
+		return nil, nil
+	}}
+
+	conn := newMockConn()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		state:        protocol.WorkerBusy,
+		beadID:       beadID,
+		assignmentID: assignmentID,
+		worktree:     worktree,
+		baseBranch:   baseBranch,
+		encoder:      json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+
+	d.connCloseCleanup(workerID, conn)
+
+	wantRange := baseBranch + ".." + protocol.BranchPrefix + beadID
+	if comparedRange != wantRange {
+		t.Fatalf("preserved work comparison = %q, want %q", comparedRange, wantRange)
+	}
+	var quarantines int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_quarantines WHERE assignment_id=?`, assignmentID).Scan(&quarantines); err != nil {
+		t.Fatalf("count recovery quarantines: %v", err)
+	}
+	if quarantines != 0 {
+		t.Fatalf("recovery quarantines for assignment at epic base = %d, want 0", quarantines)
+	}
+}
+
 func TestHeartbeatTimeoutWithPreservedWorktreeQuarantinesAssignment(t *testing.T) {
 	d, beadSrc, worktrees, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
@@ -820,6 +873,67 @@ func TestDisconnectedWorkerWithCompletedAssignmentDoesNotQuarantine(t *testing.T
 	}
 }
 
+func TestDisconnectedWorkerCompletedDuringInspectionDoesNotBlockOrQuarantine(t *testing.T) {
+	d, beadSrc, worktrees, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		beadID   = "oro-completed-during-inspection"
+		workerID = "worker-completed-during-inspection"
+		worktree = "/tmp/worktree-completed-during-inspection"
+	)
+	assignmentID := insertActiveAssignment(t, d, beadID, workerID, worktree)
+	worktrees.existsFn = func(_ context.Context, path string) bool { return path == worktree }
+	d.shutdownRunner = &mockCommandRunner{callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if len(args) >= 4 && args[2] == "status" {
+			return nil, nil
+		}
+		if len(args) == 5 && args[2] == "rev-list" {
+			if err := d.completeAssignment(ctx, assignmentID, beadID); err != nil {
+				t.Fatalf("complete assignment during inspection: %v", err)
+			}
+			return []byte("1\n"), nil
+		}
+		t.Fatalf("unexpected git args: %q", args)
+		return nil, nil
+	}}
+
+	conn := newMockConn()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		state:        protocol.WorkerBusy,
+		beadID:       beadID,
+		assignmentID: assignmentID,
+		worktree:     worktree,
+		encoder:      json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+
+	d.connCloseCleanup(workerID, conn)
+
+	var assignmentStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("query assignment: %v", err)
+	}
+	if assignmentStatus != "completed" {
+		t.Fatalf("assignment status = %q, want completed", assignmentStatus)
+	}
+	var quarantines int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_quarantines WHERE assignment_id=?`, assignmentID).Scan(&quarantines); err != nil {
+		t.Fatalf("count recovery quarantines: %v", err)
+	}
+	if quarantines != 0 {
+		t.Fatalf("recovery quarantines for concurrently completed assignment = %d, want 0", quarantines)
+	}
+	beadSrc.mu.Lock()
+	status, updated := beadSrc.updated[beadID]
+	beadSrc.mu.Unlock()
+	if updated {
+		t.Fatalf("concurrently completed bead status updated to %q", status)
+	}
+}
+
 func TestDisconnectedWorkerWithPreservedWorktreeCoalescesDuplicateCleanup(t *testing.T) {
 	d, _, worktrees, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
@@ -895,6 +1009,58 @@ END`); err != nil {
 	}
 	if got := eventCount(t, d.db, "disconnected_assignment_quarantine_failed"); got != 1 {
 		t.Fatalf("quarantine failure events = %d, want 1", got)
+	}
+}
+
+func TestDisconnectedWorkerBeadStatusFailurePreservesActiveAssignment(t *testing.T) {
+	d, beadSrc, worktrees, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		beadID   = "oro-block-status-failure"
+		workerID = "worker-block-status-failure"
+		worktree = "/tmp/worktree-block-status-failure"
+	)
+	assignmentID := insertActiveAssignment(t, d, beadID, workerID, worktree)
+	beadSrc.updateErrs = map[string]error{beadID: errors.New("forced bead status failure")}
+	worktrees.existsFn = func(_ context.Context, path string) bool { return path == worktree }
+	d.shutdownRunner = &mockCommandRunner{callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if len(args) >= 4 && args[2] == "status" {
+			return nil, nil
+		}
+		return []byte("1\n"), nil
+	}}
+
+	conn := newMockConn()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		state:        protocol.WorkerBusy,
+		beadID:       beadID,
+		assignmentID: assignmentID,
+		worktree:     worktree,
+		encoder:      json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+
+	d.connCloseCleanup(workerID, conn)
+
+	var assignmentStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("query assignment: %v", err)
+	}
+	if assignmentStatus != "active" {
+		t.Fatalf("assignment status after bead update failure = %q, want active", assignmentStatus)
+	}
+	var quarantines int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_quarantines WHERE assignment_id=?`, assignmentID).Scan(&quarantines); err != nil {
+		t.Fatalf("count recovery quarantines: %v", err)
+	}
+	if quarantines != 1 {
+		t.Fatalf("recovery quarantines after bead update failure = %d, want 1", quarantines)
+	}
+	if got := eventCount(t, d.db, "disconnected_assignment_block_failed"); got != 1 {
+		t.Fatalf("bead block failure events = %d, want 1", got)
 	}
 }
 
