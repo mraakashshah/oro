@@ -507,6 +507,38 @@ func TestExecWorkerSpawnerUsesResolvedSelfExecutable(t *testing.T) {
 	}
 }
 
+func TestExternalWorkerPropagatesOracleRuntimeIdentity(t *testing.T) {
+	projectRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(projectRoot, ".oro"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, ".oro", "config.yaml"), []byte("project: launch-project\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(projectRoot)
+	t.Setenv("ORO_HOME", "")
+	t.Setenv("ORO_PROJECT", "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sockPath := shortWorkerLaunchSocketPath(t)
+	startWorkerLaunchReservationServer(t, sockPath, protocol.ACKPayload{OK: true})
+	t.Setenv("ORO_SOCKET_PATH", sockPath)
+
+	spawner := &fakeWorkerSpawner{}
+	if err := runWorkerLaunch(spawner, 1, "worker", ""); err != nil {
+		t.Fatalf("runWorkerLaunch returned error: %v", err)
+	}
+	if len(spawner.calls) != 1 {
+		t.Fatalf("spawn calls = %d, want 1", len(spawner.calls))
+	}
+	if got, want := os.Getenv("ORO_HOME"), filepath.Join(home, ".oro"); got != want {
+		t.Fatalf("ORO_HOME = %q, want %q", got, want)
+	}
+	if got := os.Getenv("ORO_PROJECT"); got != "launch-project" {
+		t.Fatalf("ORO_PROJECT = %q, want launch-project", got)
+	}
+}
+
 // --- helpers ---
 
 // findSubcmd returns the first cobra.Command with the given name, or nil.
