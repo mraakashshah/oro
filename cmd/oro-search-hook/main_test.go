@@ -62,6 +62,29 @@ func TestRun_readError(t *testing.T) {
 	}
 }
 
+func TestRunSessionStartProbeExitStatus(t *testing.T) {
+	probe := filepath.Join(t.TempDir(), "probe")
+	t.Setenv("ORO_HOOK_PROBE", probe)
+	for _, input := range []string{
+		`{"hook_type":"SessionStart"}`,
+		`{"hook_event_name":"SessionStart"}`,
+	} {
+		var out bytes.Buffer
+		if err := run(strings.NewReader(input), &out); err != nil {
+			t.Fatalf("run() error: %v", err)
+		}
+		if out.Len() != 0 {
+			t.Fatalf("SessionStart wrote stdout %q", out.String())
+		}
+		if _, err := os.Stat(probe); err != nil {
+			t.Fatalf("probe was not created: %v", err)
+		}
+		if err := os.Remove(probe); err != nil {
+			t.Fatalf("remove probe: %v", err)
+		}
+	}
+}
+
 // Ensure errorWriter satisfies io.Writer at compile time.
 var _ io.Writer = (*errorWriter)(nil)
 
