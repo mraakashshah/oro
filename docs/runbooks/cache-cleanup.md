@@ -1,17 +1,23 @@
 # Daily Oro Disk-Containment Runbook
 
-This is a temporary operational routine, not the product fix. It deliberately
-uses a reboot as the liveness boundary because current Oro cannot reliably
-identify every detached child process.
+This is a temporary operational routine, not the product fix. A reboot is the
+strongest liveness boundary, but this runbook also supports a no-reboot pass
+when Oro, its tmux server, and every checked process/open-file reference have
+been stopped. Do not substitute an age check, a sleep, or a process-name guess
+for that boundary: detached workers can survive for hours.
 
-It deletes only two known scratch roots:
+It deletes these disposable Oro scratch roots:
 
 - /private/tmp/oro-subprocess
 - ~/Library/Caches/oro/subprocess
+- top-level /private/tmp/oro-config-test-*
+- top-level /private/tmp/oro*cache*
+- top-level /private/tmp/oro*qg* and /private/tmp/qg-*
 
-Other /private/tmp/oro* paths and Git worktrees are report-only.
+It never deletes review/home/history roots, arbitrary /private/tmp paths, or
+Git worktrees.
 
-## 1. Before reboot: record and stop
+## 1. Record and stop
 
 Run from /Users/as21/codehouse/oro:
 
@@ -20,38 +26,43 @@ Run from /Users/as21/codehouse/oro:
     date | tee "$ORO_DAILY_LOG"
     df -h / | tee -a "$ORO_DAILY_LOG"
     gdu -sh /private/tmp/oro-subprocess "$HOME/Library/Caches/oro/subprocess" "$HOME/Library/Caches/go-build" 2>&1 | tee -a "$ORO_DAILY_LOG"
-    find /private/tmp -maxdepth 1 -mindepth 1 -type d -name 'oro*' -print | tee -a "$ORO_DAILY_LOG"
+    find /private/tmp -maxdepth 1 -mindepth 1 -type d \( -name 'oro*' -o -name 'qg-*' \) -print | tee -a "$ORO_DAILY_LOG"
     git worktree list --porcelain | tee -a "$ORO_DAILY_LOG"
-    oro stop --all 2>&1 | tee -a "$ORO_DAILY_LOG"
+    oro stop --all --force 2>&1 | tee -a "$ORO_DAILY_LOG"
 
 Review the stop output. Keep the log: it is the list of projects to restart.
 
 Do not use Oro pause. Pause prevents new assignments but lets current workers
-continue.
+continue. Do not start Oro, an IDE task, a quality gate, or a Go build again
+until the cleanup is complete.
 
-## 2. Reboot macOS
+## 2. Stop Oro tmux (no-reboot pass only)
 
-Save unrelated work and restart the machine normally.
+If you are not rebooting, list Oro's dedicated tmux sockets:
 
-The reboot is required. Do not replace it with an age check, sleep, or process
-name guess. Detached workers in this incident survived for hours and looked
-stale.
+    find /tmp/oro-tmux-sockets -maxdepth 1 -type s -name 'oro-*.sock' -print 2>/dev/null
 
-## 3. After reboot: verify quiescence
+For each socket listed, inspect its sessions and then stop that exact server:
 
-Before starting Oro, an IDE, a quality gate, or a Go build, open Terminal and
-run:
+    tmux -S /tmp/oro-tmux-sockets/<exact-socket-name> list-sessions
+    tmux -S /tmp/oro-tmux-sockets/<exact-socket-name> kill-server
 
-    ORO_PROCESS_SNAPSHOT="$(ps eww -axo pid,ppid,pgid,command)"
-    print -r -- "$ORO_PROCESS_SNAPSHOT" | rg 'oro (start|worker|work|reviewer|ops)|(^|/)(go|compile|link)( |$)|quality_gate\.sh|golangci-lint|go-build.*/[^ /]+\.test|/private/tmp/oro-subprocess|/tmp/oro-subprocess'
+Do not kill unrelated tmux servers. A normal reboot makes this step unnecessary.
 
-    ORO_OPEN_FILE_SNAPSHOT="$(lsof -nP)"
-    print -r -- "$ORO_OPEN_FILE_SNAPSHOT" | rg '/private/tmp/oro-subprocess|/Library/Caches/oro/subprocess|/Library/Caches/go-build'
+## 3. Verify quiescence
 
-Both commands must complete without errors and print nothing. If either prints
-a real process/path match or fails to run, stop. Do not clean.
+Before deleting anything, run these commands. Do not use `ps eww`: environment
+output can expose credentials in the terminal or log.
 
-## 4. Delete only the known scratch roots
+    ps -axo pid,ppid,pgid,command | rg 'oro (start|worker|work|reviewer|ops)|(^|/)(go|compile|link)( |$)|quality_gate\.sh|golangci-lint|go-build.*/[^ /]+\.test|/private/tmp/oro-(subprocess|config-test-)|/private/tmp/(oro[^ ]*(cache|qg)|qg-)'
+
+    lsof -nP 2>/dev/null | rg '/private/tmp/oro-(subprocess|config-test-)|/private/tmp/(oro[^ ]*(cache|qg)|qg-)|/Library/Caches/oro/subprocess|/Library/Caches/go-build'
+
+Both commands must print nothing. An `rg` exit status of 1 means no matches and
+is expected; another error, or a real process/path match, means stop. Do not
+clean.
+
+## 4. Delete the known subprocess scratch roots
 
 Paste this block as one unit. It checks exact paths, rejects symlinks and
 wrong-owner directories, removes the roots, and recreates them empty.
@@ -67,19 +78,19 @@ wrong-owner directories, removes the roots, and recreates them empty.
           print -u2 -- "refusing unexpected path: $root"
           return 1
         }
-        [[ "$(stat -f '%u' -- "$root")" == "$EUID" ]] || {
+        [[ "$(stat -f '%Su' "$root")" == "$USER" ]] || {
           print -u2 -- "refusing path owned by another user: $root"
           return 1
         }
-        rm -rf -- "$root" || return 1
+        rm -rf "$root" || return 1
       }
 
       [[ "$tmp_root" == /private/tmp/oro-subprocess ]] || return 1
       [[ "$legacy_root" == "$HOME/Library/Caches/oro/subprocess" ]] || return 1
       delete_root "$tmp_root" || return 1
       delete_root "$legacy_root" || return 1
-      install -d -m 0750 -- "$tmp_root" || return 1
-      install -d -m 0750 -- "$legacy_root" || return 1
+      install -d -m 0750 "$tmp_root" || return 1
+      install -d -m 0750 "$legacy_root" || return 1
       print -- ORO_KNOWN_SCRATCH_CLEAN
     )
 
@@ -91,7 +102,58 @@ The pass condition is exactly:
 
 Do not run rm -rf /private/tmp/oro* or a find -mmin deletion.
 
-## 5. Optionally clean Go build cache
+## 5. Delete the confirmed disposable test/cache/QG roots
+
+This is intentionally limited to direct children of /private/tmp with the four
+patterns listed at the top of this document. The function validates every
+candidate before modifying it, makes Go module-cache trees writable, then
+deletes them in a *separate* pass. On macOS, combining `chmod -R` and `rm` as
+two `find -exec ... +` actions can run the delete before the deferred chmod;
+BSD `chmod` also does not accept `--`.
+
+    oro_delete_disposable_tmp() (
+      local tmp_root=/private/tmp
+      local candidate
+      local -a targets=()
+
+      while IFS= read -r -d '' candidate; do
+        [[ -d "$candidate" && ! -L "$candidate" ]] || {
+          print -u2 -- "refusing unexpected path: $candidate"
+          return 1
+        }
+        [[ "$(stat -f '%Su' "$candidate")" == "$USER" ]] || {
+          print -u2 -- "refusing path owned by another user: $candidate"
+          return 1
+        }
+        targets+=("$candidate")
+      done < <(
+        find "$tmp_root" -maxdepth 1 -mindepth 1 -type d \
+          \( -name 'oro-config-test-*' -o -name 'oro*cache*' \
+             -o -name 'oro*qg*' -o -name 'qg-*' \) -print0
+      )
+
+      (( ${#targets[@]} == 0 )) && {
+        print -- ORO_DISPOSABLE_TMP_ALREADY_EMPTY
+        return 0
+      }
+
+      chmod -R u+w "${targets[@]}" || return 1
+      rm -rf "${targets[@]}" || return 1
+      print -- ORO_DISPOSABLE_TMP_CLEAN
+    )
+
+    oro_delete_disposable_tmp
+
+The pass condition is exactly one of:
+
+    ORO_DISPOSABLE_TMP_CLEAN
+    ORO_DISPOSABLE_TMP_ALREADY_EMPTY
+
+The permission adjustment is confined to paths which have already passed the
+exact-name, direct-child, non-symlink, and owner checks. It is necessary because
+Go deliberately stores module-cache directories read-only.
+
+## 6. Optionally clean Go build cache
 
 Do this only before restarting Oro and only when the build cache is still at
 least 20 GiB.
@@ -115,14 +177,16 @@ routine. Because the current provider bug can place module content beneath the
 build-cache root, cleaning GOCACHE may also remove that misplaced, rebuildable
 module content.
 
-## 6. Report, but do not delete, other Oro temp paths
+## 7. Report, but do not delete, other Oro temp paths
 
-    find /private/tmp -maxdepth 1 -mindepth 1 -type d -name 'oro*' ! -name 'oro-subprocess' -print
+    find /private/tmp -maxdepth 1 -mindepth 1 -type d \( -name 'oro*' -o -name 'qg-*' \) ! -name 'oro-subprocess' -print
 
-Names such as oro-config-test-*, oro-review-home.*, and quality-gate caches are
-evidence, not ownership proof. Preserve them for a separate exact-path review.
+The disposable config-test/cache/QG paths from step 5 are expected to be gone.
+Preserve paths such as oro-review-home.*, oro-review-history.*, and any name
+outside the exact patterns for a separate review. `oro storage clean` does not
+currently account for or reclaim these /private/tmp roots.
 
-## 7. Report, but do not remove, worktrees
+## 8. Report, but do not remove, worktrees
 
     git worktree list --porcelain
 
@@ -130,11 +194,11 @@ Ignore the session-start cleanup banner as deletion authority. It does not prove
 that a worktree is closed, clean, merged into its recorded target, unleased, or
 outside recovery quarantine.
 
-## 8. Record after-state and restart
+## 9. Record after-state and restart
 
     df -h /
     gdu -sh /private/tmp/oro-subprocess "$HOME/Library/Caches/oro/subprocess" "$HOME/Library/Caches/go-build"
-    find /private/tmp -maxdepth 1 -mindepth 1 -type d -name 'oro*' -print
+    find /private/tmp -maxdepth 1 -mindepth 1 -type d \( -name 'oro*' -o -name 'qg-*' \) -print
     git worktree list --porcelain
 
 Review the log from step 1. Restart only the projects listed there, from each
@@ -142,6 +206,8 @@ project with its normal oro start workflow.
 
 ## Emergency rule
 
-Disk pressure does not relax the boundary. Reboot first, delete only the two
-known scratch roots, optionally clean the resolved Go build cache, and preserve
-unknown temp paths and worktrees.
+Disk pressure does not relax the boundary. Stop Oro and its dedicated tmux
+server, require empty process and open-file checks, delete only the named
+scratch/test/cache/QG roots, optionally clean the resolved Go build cache, and
+preserve unknown temp paths and worktrees. Reboot instead whenever quiescence
+cannot be proven.
