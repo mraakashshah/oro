@@ -42,6 +42,7 @@ func TestNamespaceRetirementWaitsForLeases(t *testing.T) {
 				ProcessStart: now.Add(-time.Minute),
 				AcquiredAt:   now,
 				HeartbeatAt:  now,
+				ScratchPath:  path,
 			})
 			if err != nil {
 				t.Fatalf("acquire lease: %v", err)
@@ -92,7 +93,7 @@ func TestNamespaceRetirementAllowsReretirement(t *testing.T) {
 		if err := os.Mkdir(path, 0o700); err != nil {
 			t.Fatalf("create namespace for attempt %d: %v", attempt, err)
 		}
-		seedReleasedLease(t, catalog, namespace)
+		seedReleasedLease(t, catalog, namespace, path)
 		if err := retirer.Retire(ctx, namespace, RetirementPostMerge); err != nil {
 			t.Fatalf("schedule retirement attempt %d: %v", attempt, err)
 		}
@@ -108,14 +109,15 @@ func TestNamespaceRetirementMissingOwnedNamespaceIsTerminal(t *testing.T) {
 
 	ctx := context.Background()
 	namespace := "0123456789abcdef0123456789abcdef"
+	root := t.TempDir()
 	catalog, err := OpenCatalog(ctx, filepath.Join(t.TempDir(), "catalog.db"))
 	if err != nil {
 		t.Fatalf("open catalog: %v", err)
 	}
 	t.Cleanup(func() { _ = catalog.Close() })
-	seedReleasedLease(t, catalog, namespace)
+	seedReleasedLease(t, catalog, namespace, filepath.Join(root, namespace))
 
-	retirer := NewNamespaceRetirer(catalog, t.TempDir())
+	retirer := NewNamespaceRetirer(catalog, root)
 	if err := retirer.Retire(ctx, namespace, RetirementPostMerge); err != nil {
 		t.Fatalf("schedule absent namespace retirement: %v", err)
 	}
@@ -129,7 +131,7 @@ func TestNamespaceRetirementMissingOwnedNamespaceIsTerminal(t *testing.T) {
 	}
 }
 
-func seedReleasedLease(t *testing.T, catalog *Catalog, namespace string) {
+func seedReleasedLease(t *testing.T, catalog *Catalog, namespace, scratchPath string) {
 	t.Helper()
 	now := time.Now().UTC()
 	lease, err := catalog.AcquireLease(context.Background(), LeaseRequest{
@@ -141,6 +143,7 @@ func seedReleasedLease(t *testing.T, catalog *Catalog, namespace string) {
 		ProcessStart: now.Add(-time.Minute),
 		AcquiredAt:   now,
 		HeartbeatAt:  now,
+		ScratchPath:  scratchPath,
 	})
 	if err != nil {
 		t.Fatalf("acquire ownership lease: %v", err)

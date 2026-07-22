@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +27,12 @@ type tombstoneBoundary struct {
 	rootInfo, directoryInfo, tombstoneInfo fs.FileInfo
 }
 
+type tombstoneAnchor interface {
+	removeEntry(tombstoneEntry, map[string]fs.FileInfo) error
+	removeRoot() error
+	close()
+}
+
 func (r *NamespaceRetirer) deleteTombstone(tombstone string) (tombstoneDeletion, error) {
 	boundary, err := r.validateTombstoneBoundary(tombstone)
 	if err != nil {
@@ -35,10 +42,10 @@ func (r *NamespaceRetirer) deleteTombstone(tombstone string) (tombstoneDeletion,
 	if err != nil {
 		return tombstoneDeletion{}, err
 	}
-	if err := removeTombstoneEntries(boundary, entries); err != nil {
+	if err := r.catalog.recordTombstoneDeletionProgress(context.Background(), filepath.Base(tombstone), beforeBytes, beforeBytes); err != nil {
 		return tombstoneDeletion{}, err
 	}
-	if err := removeTombstoneRoot(boundary); err != nil {
+	if err := removeTombstoneWithHook(boundary, entries, nil); err != nil {
 		return tombstoneDeletion{}, err
 	}
 	return tombstoneDeletion{beforeBytes: beforeBytes, afterBytes: 0}, nil
@@ -77,42 +84,33 @@ func (r *NamespaceRetirer) validateTombstoneBoundary(tombstone string) (tombston
 	}, nil
 }
 
-func removeTombstoneEntries(boundary tombstoneBoundary, entries []tombstoneEntry) error {
-	if err := revalidateTombstoneBoundary(boundary); err != nil {
+func removeTombstoneWithHook(boundary tombstoneBoundary, entries []tombstoneEntry, beforeUnlink func()) error {
+	anchor, err := openTombstoneAnchor(boundary)
+	if err != nil {
 		return err
+	}
+	defer anchor.close()
+
+	directories := make(map[string]fs.FileInfo)
+	for _, entry := range entries {
+		if !entry.info.IsDir() {
+			continue
+		}
+		relative, err := filepath.Rel(boundary.tombstone, entry.path)
+		if err != nil {
+			return fmt.Errorf("resolve tombstone directory %s: %w", entry.path, err)
+		}
+		directories[relative] = entry.info
+	}
+	if beforeUnlink != nil {
+		beforeUnlink()
 	}
 	for index := len(entries) - 1; index >= 0; index-- {
-		entry := entries[index]
-		if err := revalidateTombstoneBoundary(boundary); err != nil {
+		if err := anchor.removeEntry(entries[index], directories); err != nil {
 			return err
 		}
-		if err := revalidateEntry(entry.path, entry.info); err != nil {
-			return err
-		}
-		if err := os.Remove(entry.path); err != nil { //nolint:gosec // G703: entry is a revalidated direct descendant of the catalog-owned tombstone.
-			return fmt.Errorf("remove tombstone entry %s: %w", entry.path, err)
-		}
 	}
-	return nil
-}
-
-func removeTombstoneRoot(boundary tombstoneBoundary) error {
-	if err := revalidateTombstoneBoundary(boundary); err != nil {
-		return err
-	}
-	if err := os.Remove(boundary.tombstone); err != nil { //nolint:gosec // G703: tombstone is a revalidated direct child of the controlled tombstone directory.
-		return fmt.Errorf("remove tombstone root %s: %w", boundary.tombstone, err)
-	}
-	if err := revalidateDirectory(boundary.root, boundary.rootInfo); err != nil {
-		return err
-	}
-	if err := revalidateDirectory(boundary.directory, boundary.directoryInfo); err != nil {
-		return err
-	}
-	if _, err := os.Lstat(boundary.tombstone); !os.IsNotExist(err) { //nolint:gosec // G703: verifies removal of the already validated tombstone path.
-		return fmt.Errorf("verify tombstone removal %s: %w", boundary.tombstone, err)
-	}
-	return nil
+	return anchor.removeRoot()
 }
 
 func revalidateTombstoneBoundary(boundary tombstoneBoundary) error {
@@ -215,17 +213,6 @@ func revalidateDirectory(path string, expected fs.FileInfo) error {
 	}
 	if !os.SameFile(current, expected) {
 		return fmt.Errorf("tombstone directory changed: %s", path)
-	}
-	return nil
-}
-
-func revalidateEntry(path string, expected fs.FileInfo) error {
-	current, err := os.Lstat(path) //nolint:gosec // G703: path was collected beneath and is revalidated against a catalog-owned tombstone.
-	if err != nil {
-		return fmt.Errorf("revalidate tombstone entry %s: %w", path, err)
-	}
-	if current.Mode()&os.ModeSymlink != 0 || !os.SameFile(current, expected) {
-		return fmt.Errorf("tombstone entry changed: %s", path)
 	}
 	return nil
 }
