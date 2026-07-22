@@ -2,11 +2,72 @@ package dispatcher //nolint:testpackage // white-box test verifies durable refre
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"oro/pkg/protocol"
 )
+
+func TestCapabilityRefreshSnapshotsWorkerIdentity(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.nowFunc = func() time.Time { return now }
+	assignmentID, err := d.createAssignment(ctx, "refresh-race-bead", "refresh-race-worker", t.TempDir())
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	if _, err := d.issueAssignmentCapability(ctx, assignmentID, 1, ActorRoleExecutionWorker); err != nil {
+		t.Fatalf("issue predecessor: %v", err)
+	}
+	worker := &trackedWorker{
+		id:           "refresh-race-worker",
+		state:        protocol.WorkerBusy,
+		conn:         newMockConn(),
+		assignmentID: assignmentID,
+		execution: WorkerExecutionContext{
+			AssignmentID: assignmentID,
+			Generation:   1,
+			ActorRole:    string(ActorRoleExecutionWorker),
+		},
+	}
+	d.mu.Lock()
+	d.workers[worker.id] = worker
+	d.mu.Unlock()
+
+	stop := make(chan struct{})
+	started := make(chan struct{})
+	var writer sync.WaitGroup
+	writer.Add(1)
+	go func() {
+		defer writer.Done()
+		close(started)
+		generation := int64(1)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				generation = 3 - generation
+				d.mu.Lock()
+				worker.execution.Generation = generation
+				d.mu.Unlock()
+			}
+		}
+	}()
+	<-started
+	now = now.Add(assignmentCapabilityLifetime - capabilityRefreshLead)
+	for range 100 {
+		if err := d.refreshExpiringCapabilities(ctx, now); err != nil {
+			close(stop)
+			writer.Wait()
+			t.Fatalf("refresh capabilities: %v", err)
+		}
+	}
+	close(stop)
+	writer.Wait()
+}
 
 func TestCapabilityRefreshCrashPoints(t *testing.T) {
 	ctx := context.Background()
