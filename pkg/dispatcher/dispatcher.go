@@ -590,6 +590,7 @@ func newLeasedShellCommandExecutor(catalogPath, projectID string) *leasedShellCo
 	return &leasedShellCommandExecutor{catalogPath: catalogPath, projectID: projectID}
 }
 
+// Run executes one dispatcher-owned command through the storage lease boundary.
 func (executor *leasedShellCommandExecutor) Run(ctx context.Context, workdir string, env []string, path string, args []string, output *bytes.Buffer) (storage.CommandResult, error) {
 	catalog, err := storage.OpenCatalog(ctx, executor.catalogPath)
 	if err != nil {
@@ -597,7 +598,7 @@ func (executor *leasedShellCommandExecutor) Run(ctx context.Context, workdir str
 	}
 	defer func() { _ = catalog.Close() }()
 	now := time.Now().UTC()
-	return storage.RunLeasedCommand(ctx, storage.CommandRequest{
+	result, runErr := storage.RunLeasedCommand(ctx, storage.CommandRequest{
 		Runtime: storage.RuntimeRequest{
 			Catalog: catalog,
 			Lease: storage.LeaseRequest{
@@ -619,15 +620,19 @@ func (executor *leasedShellCommandExecutor) Run(ctx context.Context, workdir str
 		Stdout: output,
 		Stderr: output,
 	})
+	if runErr != nil {
+		return result, fmt.Errorf("run dispatcher leased command: %w", runErr)
+	}
+	return result, nil
 }
 
-func runLeasedShellCommand(ctx context.Context, executor shellCommandExecutor, workdir string, env []string, path string, args []string) (string, bool, error) {
-	var output bytes.Buffer
-	result, err := executor.Run(ctx, workdir, env, path, args, &output)
+func runLeasedShellCommand(ctx context.Context, executor shellCommandExecutor, workdir string, env []string, path string, args []string) (output string, passed bool, err error) {
+	var buffer bytes.Buffer
+	result, err := executor.Run(ctx, workdir, env, path, args, &buffer)
 	if err != nil && result.ExitCode == 0 {
-		return output.String(), false, err
+		return buffer.String(), false, err
 	}
-	return output.String(), result.ExitCode == 0, nil
+	return buffer.String(), result.ExitCode == 0, nil
 }
 
 func qualityGateConflictMarkerOutput(scriptPath string) (string, error) {
