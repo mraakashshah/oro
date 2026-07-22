@@ -21,6 +21,13 @@ func TestJanitorConfigValidation(t *testing.T) {
 			wantErr: "AuditEnabled requires JanitorEnabled because audit counters are driven by janitor cycles",
 		},
 		{
+			name: "enabled janitor requires runtime catalog",
+			cfg: Config{
+				JanitorEnabled: true,
+			},
+			wantErr: "JanitorEnabled requires StorageCatalogPath",
+		},
+		{
 			name: "negative janitor interval",
 			cfg: Config{
 				JanitorInterval: -1,
