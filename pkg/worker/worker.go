@@ -492,7 +492,10 @@ func (w *Worker) handleMessage(ctx context.Context, msg protocol.Message) (bool,
 	case protocol.MsgAssign:
 		return false, w.handleAssign(ctx, msg)
 	case protocol.MsgCapabilityRefresh:
-		return false, w.handleCapabilityRefresh(msg)
+		if err := w.handleCapabilityRefresh(msg); err != nil {
+			fmt.Fprintf(os.Stderr, "worker %s: ignore capability refresh: %v\n", w.ID, err)
+		}
+		return false, nil
 	case protocol.MsgShutdown:
 		w.removeAssignmentCapabilityFile()
 		w.killProc()

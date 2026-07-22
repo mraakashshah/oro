@@ -46,6 +46,13 @@ type AssignmentCapability struct {
 	ExpiresAt    time.Time
 }
 
+type capabilityRefreshWorker struct {
+	id           string
+	assignmentID int64
+	generation   int64
+	role         ActorRole
+}
+
 // issueAssignmentCapability mints and durably records a capability only after
 // its assignment exists. The caller receives the raw token exactly once; the
 // database retains only its SHA-256 hash.
@@ -123,10 +130,15 @@ func (d *Dispatcher) refreshExpiringCapabilities(ctx context.Context, now time.T
 		return errors.New("refresh assignment capabilities: database is nil")
 	}
 	d.mu.Lock()
-	workers := make([]*trackedWorker, 0, len(d.workers))
+	workers := make([]capabilityRefreshWorker, 0, len(d.workers))
 	for _, worker := range d.workers {
 		if worker.state == protocol.WorkerBusy && worker.assignmentID > 0 && worker.execution.ActorRole != "" {
-			workers = append(workers, worker)
+			workers = append(workers, capabilityRefreshWorker{
+				id:           worker.id,
+				assignmentID: worker.assignmentID,
+				generation:   worker.execution.Generation,
+				role:         ActorRole(worker.execution.ActorRole),
+			})
 		}
 	}
 	d.mu.Unlock()
@@ -151,10 +163,10 @@ func (d *Dispatcher) refreshExpiringCapabilities(ctx context.Context, now time.T
 	return nil
 }
 
-func (d *Dispatcher) refreshCapabilityForWorker(ctx context.Context, worker *trackedWorker, now time.Time) (AssignmentCapability, error) {
+func (d *Dispatcher) refreshCapabilityForWorker(ctx context.Context, worker capabilityRefreshWorker, now time.Time) (AssignmentCapability, error) {
 	var expiresAt string
 	var activeID string
-	err := d.db.QueryRowContext(ctx, `SELECT capability_id, expires_at FROM assignment_capabilities WHERE assignment_id=? AND generation=? AND role=? AND state='active' ORDER BY created_at DESC LIMIT 1`, worker.assignmentID, worker.execution.Generation, worker.execution.ActorRole).Scan(&activeID, &expiresAt)
+	err := d.db.QueryRowContext(ctx, `SELECT capability_id, expires_at FROM assignment_capabilities WHERE assignment_id=? AND generation=? AND role=? AND state='active' ORDER BY created_at DESC LIMIT 1`, worker.assignmentID, worker.generation, string(worker.role)).Scan(&activeID, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AssignmentCapability{}, nil
 	}
@@ -171,7 +183,7 @@ func (d *Dispatcher) refreshCapabilityForWorker(ctx context.Context, worker *tra
 	if _, err := d.db.ExecContext(ctx, `UPDATE assignment_capabilities SET state='superseded', superseded_at=? WHERE assignment_id=? AND state='pending'`, now.UTC().Format(time.RFC3339Nano), worker.assignmentID); err != nil {
 		return AssignmentCapability{}, fmt.Errorf("supersede pending capability: %w", err)
 	}
-	capability, err := d.issueAssignmentCapabilityWithState(ctx, worker.assignmentID, worker.execution.Generation, ActorRole(worker.execution.ActorRole), "pending")
+	capability, err := d.issueAssignmentCapabilityWithState(ctx, worker.assignmentID, worker.generation, worker.role, "pending")
 	if err != nil {
 		return AssignmentCapability{}, err
 	}
