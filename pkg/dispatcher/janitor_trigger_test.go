@@ -15,7 +15,7 @@ func TestJanitorTriggerGate(t *testing.T) {
 	t.Run("disabled settings leave counters untouched", func(t *testing.T) {
 		for _, cfg := range []Config{
 			{JanitorEnabled: false, JanitorInterval: 50},
-			{JanitorEnabled: true, JanitorInterval: 0},
+			{JanitorEnabled: true, JanitorInterval: 0, StorageCatalogPath: "catalog.db"},
 		} {
 			d, _, _, _, _, _ := newTestDispatcher(t)
 			d.cfg = cfg

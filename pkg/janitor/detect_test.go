@@ -30,7 +30,7 @@ printf '%s\n' '{"detector":"todo","file":"README.md","line":3,"title":"stale tod
 		t.Fatalf("write detector script: %v", err)
 	}
 
-	cands, skippedLines, found, err := janitor.RunDetectScript(context.Background(), worktree)
+	cands, skippedLines, found, err := janitor.RunDetectScript(context.Background(), worktree, janitor.WithDirectExecutionForTest())
 	if err != nil {
 		t.Fatalf("run detector script: %v", err)
 	}
@@ -52,7 +52,7 @@ printf '%s\n' '{"detector":"todo","file":"README.md","line":3,"title":"stale tod
 func TestRunDetectScriptMissing(t *testing.T) {
 	t.Parallel()
 
-	cands, skippedLines, found, err := janitor.RunDetectScript(context.Background(), t.TempDir())
+	cands, skippedLines, found, err := janitor.RunDetectScript(context.Background(), t.TempDir(), janitor.WithDirectExecutionForTest())
 	if err != nil {
 		t.Fatalf("missing script error = %v, want nil", err)
 	}
@@ -80,7 +80,7 @@ func TestRunDetectScriptExitFailureIncludesOutput(t *testing.T) {
 		t.Fatalf("write detector script: %v", err)
 	}
 
-	_, _, found, err := janitor.RunDetectScript(context.Background(), worktree)
+	_, _, found, err := janitor.RunDetectScript(context.Background(), worktree, janitor.WithDirectExecutionForTest())
 	if !found {
 		t.Fatal("expected detector script to be found")
 	}
@@ -98,7 +98,7 @@ func TestJanitorDetectCommandAPI(t *testing.T) {
 		t.Fatalf("write README fixture: %v", err)
 	}
 
-	cands, err := janitor.RunBuiltin(context.Background(), worktree, "", "broken-links")
+	cands, err := janitor.RunBuiltin(context.Background(), worktree, "", "broken-links", janitor.WithDirectExecutionForTest())
 	if err != nil {
 		t.Fatalf("run broken-links detector: %v", err)
 	}
@@ -113,10 +113,10 @@ func TestJanitorDetectCommandAPI(t *testing.T) {
 		t.Fatalf("candidates = %#v, want %#v", cands, want)
 	}
 
-	if _, err := janitor.RunBuiltin(context.Background(), worktree, "", "not-a-detector"); err == nil || !strings.Contains(err.Error(), "unknown janitor detector") {
+	if _, err := janitor.RunBuiltin(context.Background(), worktree, "", "not-a-detector", janitor.WithDirectExecutionForTest()); err == nil || !strings.Contains(err.Error(), "unknown janitor detector") {
 		t.Fatalf("unknown detector error = %v", err)
 	}
-	if _, err := janitor.RunBuiltin(context.Background(), worktree, "", "ci"); err == nil || !strings.Contains(err.Error(), "skipped") {
+	if _, err := janitor.RunBuiltin(context.Background(), worktree, "", "ci", janitor.WithDirectExecutionForTest()); err == nil || !strings.Contains(err.Error(), "skipped") {
 		t.Fatalf("skipped CI detector error = %v", err)
 	}
 }
@@ -128,7 +128,7 @@ func TestJanitorBuiltinsSkipMissing(t *testing.T) {
 	}
 	t.Setenv("PATH", t.TempDir())
 
-	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "")
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "", janitor.WithDirectExecutionForTest())
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -194,7 +194,7 @@ exit 1
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	candidates, _, _, err := janitor.RunBuiltins(context.Background(), worktree, "main")
+	candidates, _, _, err := janitor.RunBuiltins(context.Background(), worktree, "main", janitor.WithDirectExecutionForTest())
 	if err != nil {
 		t.Fatalf("run fallback detectors: %v", err)
 	}
@@ -282,7 +282,7 @@ exit 1
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main")
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main", janitor.WithDirectExecutionForTest())
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestCIDetectorNoopWhenToolMissing(t *testing.T) {
 	worktree := t.TempDir()
 	t.Setenv("PATH", t.TempDir())
 
-	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main")
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main", janitor.WithDirectExecutionForTest())
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -386,7 +386,7 @@ func TestCIDetectorNoopWithoutOrigin(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main")
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main", janitor.WithDirectExecutionForTest())
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -411,7 +411,7 @@ func TestCIDetectorNoopWhenUnauthed(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main")
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main", janitor.WithDirectExecutionForTest())
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -446,7 +446,7 @@ exit 4
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	_, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main")
+	_, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main", janitor.WithDirectExecutionForTest())
 	if err == nil {
 		t.Fatal("run built-in detectors succeeded, want authenticated CI probe error")
 	}
@@ -476,7 +476,7 @@ printf '%s\n' '[{"databaseId":44,"workflowDatabaseId":100,"workflowName":"CI","d
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main")
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "main", janitor.WithDirectExecutionForTest())
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -498,7 +498,7 @@ func TestCIDetectorNoopWithoutTargetBranch(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), t.TempDir(), "")
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), t.TempDir(), "", janitor.WithDirectExecutionForTest())
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -529,7 +529,7 @@ func TestJanitorBuiltinsKeepsLintFindings(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir)
 
-	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "")
+	cands, ran, skipped, err := janitor.RunBuiltins(context.Background(), worktree, "", janitor.WithDirectExecutionForTest())
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -560,7 +560,7 @@ func TestJanitorBuiltinsTreatsDetectorStderrAsCrash(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir)
 
-	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree, "")
+	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree, "", janitor.WithDirectExecutionForTest())
 	if err == nil {
 		t.Fatal("run built-in detectors succeeded, want detector crash error")
 	}
@@ -595,7 +595,7 @@ func TestJanitorBuiltinsFindsOrphanFiles(t *testing.T) {
 		t.Fatalf("write asset reference: %v", err)
 	}
 
-	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree, "")
+	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree, "", janitor.WithDirectExecutionForTest())
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -642,7 +642,7 @@ var examples = []string{"TODO marker", "FIXME marker"}
 		t.Fatalf("refresh TODO file mtime: %v", err)
 	}
 
-	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree, "")
+	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree, "", janitor.WithDirectExecutionForTest())
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
@@ -688,7 +688,7 @@ func RetryOperation[T any](fn func()) {}
 	}
 	t.Setenv("PATH", t.TempDir())
 
-	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree, "")
+	cands, ran, _, err := janitor.RunBuiltins(context.Background(), worktree, "", janitor.WithDirectExecutionForTest())
 	if err != nil {
 		t.Fatalf("run built-in detectors: %v", err)
 	}
