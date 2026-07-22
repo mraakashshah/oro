@@ -844,6 +844,55 @@ func TestHeartbeatTimeoutWithPreservedWorktreeQuarantinesAssignment(t *testing.T
 	}
 }
 
+func TestDisconnectedWorkerQuarantineIncludesHeartbeatTimeout(t *testing.T) {
+	d, beadSrc, worktrees, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		beadID   = "oro-heartbeat-quarantine-details"
+		workerID = "worker-heartbeat-quarantine-details"
+		worktree = "/tmp/worktree-heartbeat-quarantine-details"
+	)
+
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+	beadSrc.mu.Unlock()
+	assignmentID := insertActiveAssignment(t, d, beadID, workerID, worktree)
+	worktrees.existsFn = func(_ context.Context, path string) bool { return path == worktree }
+	d.shutdownRunner = &mockCommandRunner{callFn: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if len(args) >= 4 && args[2] == "status" {
+			return nil, nil
+		}
+		return []byte("1\n"), nil
+	}}
+
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+	conn := newMockConn()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         conn,
+		state:        protocol.WorkerBusy,
+		beadID:       beadID,
+		assignmentID: assignmentID,
+		worktree:     worktree,
+		lastSeen:     now,
+		encoder:      json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+	d.nowFunc = func() time.Time { return now.Add(2 * d.cfg.HeartbeatTimeout) }
+
+	d.checkHeartbeats(ctx)
+
+	var details string
+	if err := d.db.QueryRowContext(ctx, `SELECT details FROM recovery_quarantines WHERE assignment_id=?`, assignmentID).Scan(&details); err != nil {
+		t.Fatalf("query quarantine details: %v", err)
+	}
+	if !strings.Contains(details, "heartbeat timeout for worker "+workerID) {
+		t.Fatalf("quarantine details = %q, want heartbeat timeout cause and worker ID", details)
+	}
+}
+
 func TestDisconnectedWorkerWithCompletedAssignmentDoesNotQuarantine(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()

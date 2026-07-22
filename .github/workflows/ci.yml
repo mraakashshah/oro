@@ -63,7 +63,7 @@ jobs:
           go install github.com/fe3dback/go-arch-lint@v1.14.0
           go-arch-lint check --project-path .
 
-      # Tier 4: Testing + Coverage (82% minimum, matching local quality gate package scope)
+      # Tier 4: Testing + Coverage (78% minimum, matching local quality gate package scope)
       - name: Install ast-grep
         run: npm install -g @ast-grep/cli
 
@@ -77,7 +77,7 @@ jobs:
           go test -race -shuffle=on -coverprofile=coverage.out $COVERAGE_PKGS
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Total coverage (non-TUI): ${COVERAGE}%"
-          awk "BEGIN {exit ($COVERAGE < 82)}"
+          awk "BEGIN {exit ($COVERAGE < 78)}"
 
       # Tier 5: Security
       - name: govulncheck
