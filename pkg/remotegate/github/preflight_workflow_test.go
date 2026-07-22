@@ -3,6 +3,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -41,10 +42,11 @@ func TestReadOnlyWorkflowPreflightBoundary(t *testing.T) {
 }
 
 type workflowReader struct {
-	path  string
-	err   error
-	body  any
-	reads int
+	path            string
+	err             error
+	body            string
+	cancelAfterRead context.CancelFunc
+	reads           int
 }
 
 func (r *workflowReader) GetJSON(_ context.Context, path string, dst any) error {
@@ -53,58 +55,90 @@ func (r *workflowReader) GetJSON(_ context.Context, path string, dst any) error 
 	if r.err != nil {
 		return r.err
 	}
-	*(dst.(*struct {
-		Path  string `json:"path"`
-		State string `json:"state"`
-	})) = *(r.body.(*struct {
-		Path  string `json:"path"`
-		State string `json:"state"`
-	}))
-	return nil
+	err := json.Unmarshal([]byte(r.body), dst)
+	if r.cancelAfterRead != nil {
+		r.cancelAfterRead()
+	}
+	return err
 }
 
 func (r *workflowReader) GetContent(context.Context, string, string) ([]byte, error) { return nil, nil }
 
 func TestFetchActiveWorkflowMetadata(t *testing.T) {
-	active := struct {
-		Path  string `json:"path"`
-		State string `json:"state"`
-	}{Path: ".github/workflows/ci.yml", State: "active"}
+	readerFailure := errors.New("reader failure")
 	tests := []struct {
-		name, repository, workflow string
-		body                       any
-		err                        error
-		wantPath, wantState        string
-		wantRead                   int
+		name             string
+		repository       string
+		workflow         string
+		body             string
+		readerErr        error
+		cancelBeforeRead bool
+		cancelAfterRead  bool
+		wantPath         string
+		wantState        string
+		wantRead         int
+		wantErr          bool
+		wantCause        error
 	}{
-		{name: "active", repository: "acme/oro", workflow: "ci.yml", body: &active, wantPath: active.Path, wantState: active.State, wantRead: 1},
-		{name: "missing", repository: "acme/oro", workflow: "ci.yml", err: errors.New("404"), wantRead: 1},
-		{name: "inactive", repository: "acme/oro", workflow: "ci.yml", body: &struct {
-			Path  string `json:"path"`
-			State string `json:"state"`
-		}{active.Path, "disabled"}, wantRead: 1},
-		{name: "empty repository", workflow: "ci.yml", wantRead: 0},
-		{name: "empty workflow", repository: "acme/oro", wantRead: 0},
+		{
+			name:       "active",
+			repository: "acme/oro",
+			workflow:   "ci.yml",
+			body:       `{"path":".github/workflows/ci.yml","state":"active"}`,
+			wantPath:   ".github/workflows/ci.yml",
+			wantState:  "active",
+			wantRead:   1,
+		},
+		{name: "absent", repository: "acme/oro", workflow: "ci.yml", readerErr: errors.New("404 not found"), wantRead: 1, wantErr: true},
+		{name: "hidden", repository: "acme/oro", workflow: "ci.yml", readerErr: errors.New("404 hidden"), wantRead: 1, wantErr: true},
+		{name: "inactive", repository: "acme/oro", workflow: "ci.yml", body: `{"path":".github/workflows/ci.yml","state":"disabled"}`, wantRead: 1, wantErr: true},
+		{name: "path mismatch", repository: "acme/oro", workflow: "ci.yml", body: `{"path":".github/workflows/other.yml","state":"active"}`, wantRead: 1, wantErr: true},
+		{name: "reader failure", repository: "acme/oro", workflow: "ci.yml", readerErr: readerFailure, wantRead: 1, wantErr: true, wantCause: readerFailure},
+		{name: "malformed response", repository: "acme/oro", workflow: "ci.yml", body: `{`, wantRead: 1, wantErr: true},
+		{name: "empty repository", workflow: "ci.yml", wantErr: true},
+		{name: "empty workflow", repository: "acme/oro", wantErr: true},
+		{name: "canceled before read", repository: "acme/oro", workflow: "ci.yml", cancelBeforeRead: true, wantErr: true, wantCause: context.Canceled},
+		{name: "canceled during read", repository: "acme/oro", workflow: "ci.yml", body: `{"path":".github/workflows/ci.yml","state":"active"}`, cancelAfterRead: true, wantRead: 1, wantErr: true, wantCause: context.Canceled},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := &workflowReader{body: tt.body, err: tt.err}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tt.cancelBeforeRead {
+				cancel()
+			}
+			r := &workflowReader{body: tt.body, err: tt.readerErr}
+			if tt.cancelAfterRead {
+				r.cancelAfterRead = cancel
+			}
 			client := Client{api: r}
-			path, state, err := client.fetchWorkflowMetadata(context.Background(), tt.repository, tt.workflow)
+			path, state, err := client.fetchWorkflowMetadata(ctx, tt.repository, tt.workflow)
 			if tt.wantRead == 1 && r.path != "repos/acme/oro/actions/workflows/ci.yml" {
-				t.Fatalf("path = %q", r.path)
+				t.Fatalf("request path = %q", r.path)
 			}
 			if r.reads != tt.wantRead {
 				t.Fatalf("reads = %d, want %d", r.reads, tt.wantRead)
 			}
-			if tt.wantRead == 1 && err == nil && (path != tt.wantPath || state != tt.wantState) {
-				t.Fatalf("metadata = %q, %q", path, state)
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("fetch metadata: %v", err)
+				}
+				if path != tt.wantPath || state != tt.wantState {
+					t.Fatalf("metadata = %q, %q, want %q, %q", path, state, tt.wantPath, tt.wantState)
+				}
+				return
 			}
-			if tt.wantRead == 0 && err == nil {
-				t.Fatal("expected error")
+			if err == nil {
+				t.Fatal("fetch metadata succeeded, want error")
 			}
-			if err != nil && !errors.Is(err, remotegate.ErrWorkflowIneligible) {
+			if !errors.Is(err, remotegate.ErrWorkflowIneligible) {
 				t.Fatalf("error %v is not ineligible", err)
+			}
+			if tt.wantCause != nil && !errors.Is(err, tt.wantCause) {
+				t.Fatalf("error %v does not preserve %v", err, tt.wantCause)
+			}
+			if path != "" || state != "" {
+				t.Fatalf("metadata = %q, %q on error", path, state)
 			}
 		})
 	}

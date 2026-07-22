@@ -35,8 +35,12 @@ func (c *Client) fetchWorkflowMetadata(ctx context.Context, repository, workflow
 		State string `json:"state"`
 	}
 	requestPath := "repos/" + repository + "/actions/workflows/" + workflow
-	if err := c.api.GetJSON(ctx, requestPath, &response); err != nil {
+	readErr := c.api.GetJSON(ctx, requestPath, &response)
+	if err := ctx.Err(); err != nil {
 		return "", "", fmt.Errorf("%w: %w", remotegate.ErrWorkflowIneligible, err)
+	}
+	if readErr != nil {
+		return "", "", fmt.Errorf("%w: %w", remotegate.ErrWorkflowIneligible, readErr)
 	}
 	wantPath := ".github/workflows/" + workflow
 	if response.Path != wantPath || response.State != "active" {
