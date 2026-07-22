@@ -72,6 +72,8 @@ func OpenRuntime(ctx context.Context, request RuntimeRequest) (*RuntimeHandle, e
 	}
 
 	env := withRuntimeScratch(resolved.Env, scratchDir)
+	request.Lease.Namespace = filepath.Base(scratchDir)
+	request.Lease.ScratchPath = scratchDir
 	lease, err := request.Catalog.AcquireLease(ctx, request.Lease)
 	if err != nil {
 		return nil, fmt.Errorf("acquire runtime lease: %w", err)
