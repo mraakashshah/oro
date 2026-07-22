@@ -698,6 +698,7 @@ type workerAssignmentSnapshot struct {
 type Config struct {
 	SocketPath              string        // UDS socket path.
 	DBPath                  string        // SQLite database path.
+	StorageCatalogPath      string        // Host-global catalog path used to lease dispatcher-owned subprocesses.
 	RepoRoot                string        // Absolute path to the repository root. Used so oro task commands run from the right directory even when the process is started from a worktree. Falls back to os.Getwd() if empty.
 	BeadsDir                string        // Internal task data directory (defaults to protocol.BeadsDir when empty). Set from ProjectPaths.BeadsDir for stealth-mode support.
 	MaxWorkers              int           // Worker pool ceiling for auto-scale (default 10).
@@ -842,20 +843,8 @@ func (c Config) validate() error {
 	if c.MaxWorkers < 0 {
 		return fmt.Errorf("MaxWorkers must be non-negative, got %d", c.MaxWorkers)
 	}
-	if c.JanitorInterval < 0 {
-		return fmt.Errorf("JanitorInterval must be non-negative, got %d", c.JanitorInterval)
-	}
-	if c.JanitorIdleThreshold < 0 {
-		return fmt.Errorf("JanitorIdleThreshold must be non-negative, got %d", c.JanitorIdleThreshold)
-	}
-	if c.AuditEveryNJanitors < 0 {
-		return fmt.Errorf("AuditEveryNJanitors must be non-negative, got %d", c.AuditEveryNJanitors)
-	}
-	if c.JanitorTopK < 0 {
-		return fmt.Errorf("JanitorTopK must be non-negative, got %d", c.JanitorTopK)
-	}
-	if c.AuditEnabled && !c.JanitorEnabled {
-		return fmt.Errorf("AuditEnabled requires JanitorEnabled because audit counters are driven by janitor cycles")
+	if err := c.validateJanitor(); err != nil {
+		return err
 	}
 	if c.HeartbeatTimeout <= 0 {
 		return fmt.Errorf("HeartbeatTimeout must be positive, got %v", c.HeartbeatTimeout)
@@ -874,6 +863,28 @@ func (c Config) validate() error {
 	}
 	if c.ShutdownTimeout <= 0 {
 		return fmt.Errorf("ShutdownTimeout must be positive, got %v", c.ShutdownTimeout)
+	}
+	return nil
+}
+
+func (c Config) validateJanitor() error {
+	if c.JanitorInterval < 0 {
+		return fmt.Errorf("JanitorInterval must be non-negative, got %d", c.JanitorInterval)
+	}
+	if c.JanitorIdleThreshold < 0 {
+		return fmt.Errorf("JanitorIdleThreshold must be non-negative, got %d", c.JanitorIdleThreshold)
+	}
+	if c.AuditEveryNJanitors < 0 {
+		return fmt.Errorf("AuditEveryNJanitors must be non-negative, got %d", c.AuditEveryNJanitors)
+	}
+	if c.JanitorTopK < 0 {
+		return fmt.Errorf("JanitorTopK must be non-negative, got %d", c.JanitorTopK)
+	}
+	if c.JanitorEnabled && c.StorageCatalogPath == "" {
+		return fmt.Errorf("JanitorEnabled requires StorageCatalogPath")
+	}
+	if c.AuditEnabled && !c.JanitorEnabled {
+		return fmt.Errorf("AuditEnabled requires JanitorEnabled because audit counters are driven by janitor cycles")
 	}
 	return nil
 }

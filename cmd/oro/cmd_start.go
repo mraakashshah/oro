@@ -1121,6 +1121,10 @@ func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers 
 	if err != nil {
 		return nil, nil, err
 	}
+	storagePaths, err := ResolveStoragePaths(paths.OroHome)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve storage paths: %w", err)
+	}
 	catalog, err := openStorageCatalog(context.Background(), paths.OroHome)
 	if err != nil {
 		return nil, nil, err
@@ -1164,6 +1168,7 @@ func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers 
 
 	cfg := dispatcher.Config{
 		SocketPath:              sockPath,
+		StorageCatalogPath:      storagePaths.CatalogPath,
 		InitialWorkers:          initialWorkers,
 		MaxWorkers:              maxWorkers,
 		AllowZeroWorkers:        initialWorkers == 0,
