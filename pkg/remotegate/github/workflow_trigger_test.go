@@ -42,6 +42,29 @@ func TestParseFlatWorkflowTriggerDeclarations(t *testing.T) {
 			wantIneligible: true,
 		},
 		{
+			name: "malformed trailing document",
+			contents: `on: workflow_dispatch
+---
+on: [pull_request
+`,
+			wantIneligible: true,
+		},
+		{
+			name: "duplicate workflow trigger key",
+			contents: `on: workflow_dispatch
+on: push
+`,
+			wantIneligible: true,
+		},
+		{
+			name: "duplicate unrelated workflow key",
+			contents: `name: first
+name: second
+on: workflow_dispatch
+`,
+			wantIneligible: true,
+		},
+		{
 			name: "boolean sequence entry",
 			contents: `on:
   - true
