@@ -40,7 +40,7 @@ func TestReviewArtifactTerminalStateMatrix(t *testing.T) {
 			}
 
 			path := fmt.Sprintf("/artifacts/%d.json", i)
-			checkpoint := createMaintenanceCheckpoint(t, ctx, store, i, tc.state)
+			checkpoint := createMaintenanceCheckpoint(ctx, t, store, i, tc.state)
 			if _, err := store.db.ExecContext(ctx, `
 UPDATE review_checkpoints
 SET state = ?, artifact_path = ?, created_at = ?, updated_at = ?
@@ -56,7 +56,7 @@ WHERE id = ?`, tc.state, path, createdAt, createdAt, checkpoint.ID); err != nil 
 	// A shared artifact stays retained while any checkpoint still references it.
 	sharedPath := "/artifacts/shared.json"
 	for i, state := range []ReviewCheckpointState{ReviewCheckpointStateIntegrated, ReviewCheckpointStateBlocked} {
-		checkpoint := createMaintenanceCheckpoint(t, ctx, store, len(cases)+i, state)
+		checkpoint := createMaintenanceCheckpoint(ctx, t, store, len(cases)+i, state)
 		if _, err := store.db.ExecContext(ctx, `
 UPDATE review_checkpoints
 SET state = ?, artifact_path = ?, created_at = ?, updated_at = ?
@@ -80,7 +80,7 @@ WHERE id = ?`, state, sharedPath, createdAt, createdAt, checkpoint.ID); err != n
 	}
 }
 
-func createMaintenanceCheckpoint(t *testing.T, ctx context.Context, store *ReviewCheckpointStore, index int, state ReviewCheckpointState) ReviewCheckpoint {
+func createMaintenanceCheckpoint(ctx context.Context, t *testing.T, store *ReviewCheckpointStore, index int, state ReviewCheckpointState) ReviewCheckpoint {
 	t.Helper()
 	initialState := state
 	if state == ReviewCheckpointStateSuperseded {
