@@ -1169,6 +1169,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 			mergingBeads:           make(map[string]bool),
 			worktreeByBead:         make(map[string]string),
 			epicMergeFailed:        make(map[string]bool),
+			epicCloseInFlight:      make(map[string]bool),
 			processedExternalClose: make(map[string]bool),
 			epicSkipLogged:         make(map[string]bool),
 		},
@@ -3659,6 +3660,26 @@ func (d *Dispatcher) epicMergeIsFailed(epicID string) bool {
 	return d.epicMergeFailed[epicID]
 }
 
+// tryBeginEpicClose reserves the epic's close path. Caller must invoke the
+// returned release function exactly once when it returns true.
+func (d *Dispatcher) tryBeginEpicClose(epicID string) (reserved bool, release func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.epicMergeFailed, epicID)
+	if d.epicCloseInFlight == nil {
+		d.epicCloseInFlight = make(map[string]bool)
+	}
+	if d.epicCloseInFlight[epicID] {
+		return false, nil
+	}
+	d.epicCloseInFlight[epicID] = true
+	return true, func() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		delete(d.epicCloseInFlight, epicID)
+	}
+}
+
 func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) {
 	allClosed, err := d.beads.AllChildrenClosed(ctx, epicID)
 	if err != nil {
@@ -3672,15 +3693,23 @@ func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) 
 		}
 		return
 	}
-	d.mu.Lock()
-	delete(d.epicMergeFailed, epicID)
-	d.mu.Unlock()
+	reserved, release := d.tryBeginEpicClose(epicID)
+	if !reserved {
+		return
+	}
+	defer release()
 
 	detail, ok := d.fetchEpicCloseDetail(ctx, epicID, workerID)
 	if !ok {
 		return
 	}
+	if strings.EqualFold(detail.Status, "closed") {
+		return
+	}
+	d.closeEpicAfterAcceptance(ctx, detail, epicID, workerID)
+}
 
+func (d *Dispatcher) closeEpicAfterAcceptance(ctx context.Context, detail *protocol.BeadDetail, epicID, workerID string) {
 	targetBranch := resolveEpicTargetBranch(detail.Metadata, d.cfg.DefaultBranch)
 
 	cmd, ok := d.parseEpicAcceptanceCmd(ctx, "epic_acceptance_parse_error", epicID, workerID, detail.AcceptanceCriteria)
