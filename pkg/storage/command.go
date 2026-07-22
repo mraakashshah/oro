@@ -28,6 +28,13 @@ type CommandResult struct {
 	ExitCode int
 }
 
+// StartedCommand is a running command that owns its runtime lease until Wait
+// returns. Callers must call Wait after a successful StartLeasedCommand.
+type StartedCommand struct {
+	command leasedCommand
+	handle  *RuntimeHandle
+}
+
 type leasedCommand interface {
 	start() error
 	wait() error
@@ -44,25 +51,67 @@ func RunLeasedCommand(ctx context.Context, request CommandRequest) (CommandResul
 	return runLeasedCommandWithFactory(ctx, request, newExecLeasedCommand)
 }
 
+// StartLeasedCommand starts a command after acquiring its runtime lease. The
+// returned command releases the lease when Wait completes, including when the
+// child exits unsuccessfully or is cancelled.
+func StartLeasedCommand(ctx context.Context, request CommandRequest) (*StartedCommand, error) {
+	return startLeasedCommandWithFactory(ctx, request, newExecLeasedCommand)
+}
+
 func runLeasedCommandWithFactory(ctx context.Context, request CommandRequest, factory leasedCommandFactory) (result CommandResult, err error) {
+	command, err := startLeasedCommandWithFactory(ctx, request, factory)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	if waitErr := command.Wait(); waitErr != nil {
+		return CommandResult{ExitCode: command.ExitCode()}, fmt.Errorf("wait leased command %q: %w", request.Path, waitErr)
+	}
+	return CommandResult{ExitCode: command.ExitCode()}, nil
+}
+
+func startLeasedCommandWithFactory(ctx context.Context, request CommandRequest, factory leasedCommandFactory) (_ *StartedCommand, err error) {
 	handle, err := OpenRuntime(ctx, request.Runtime)
 	if err != nil {
-		return CommandResult{}, fmt.Errorf("open command runtime: %w", err)
+		return nil, fmt.Errorf("open command runtime: %w", err)
 	}
-	defer func() {
-		err = errors.Join(err, handle.Close())
-	}()
 
 	command := factory(ctx, request, handle.Env)
 	if startErr := command.start(); startErr != nil {
-		return CommandResult{}, fmt.Errorf("start leased command %q: %w", request.Path, startErr)
+		return nil, errors.Join(
+			fmt.Errorf("start leased command %q: %w", request.Path, startErr),
+			handle.Close(),
+		)
 	}
-	if waitErr := command.wait(); waitErr != nil {
-		result.ExitCode = command.exitCode()
-		return result, fmt.Errorf("wait leased command %q: %w", request.Path, waitErr)
+	return &StartedCommand{command: command, handle: handle}, nil
+}
+
+// Wait waits for the child and releases the runtime lease exactly once.
+func (command *StartedCommand) Wait() error {
+	if command == nil {
+		return nil
 	}
-	result.ExitCode = command.exitCode()
-	return result, nil
+	return errors.Join(command.command.wait(), command.handle.Close())
+}
+
+// ExitCode returns the child exit code after it exits.
+func (command *StartedCommand) ExitCode() int {
+	if command == nil {
+		return -1
+	}
+	return command.command.exitCode()
+}
+
+// Kill cancels an exec-backed leased child process. Callers still must Wait to
+// reap the process and release the lease.
+func (command *StartedCommand) Kill() error {
+	execCommand, ok := command.command.(execCommand)
+	if !ok || execCommand.command.Cancel == nil {
+		return fmt.Errorf("kill leased command: unsupported command type")
+	}
+	if err := execCommand.command.Cancel(); err != nil {
+		return fmt.Errorf("cancel leased command: %w", err)
+	}
+	return nil
 }
 
 func newExecLeasedCommand(ctx context.Context, request CommandRequest, env []string) leasedCommand {
