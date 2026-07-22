@@ -19,24 +19,26 @@ type MessageType string
 
 // Dispatcher -> Worker message types.
 const (
-	MsgAssign          MessageType = "ASSIGN"
-	MsgShutdown        MessageType = "SHUTDOWN"
-	MsgPrepareShutdown MessageType = "PREPARE_SHUTDOWN"
-	MsgPreempt         MessageType = "PREEMPT"
-	MsgACK             MessageType = "ACK"
-	MsgReviewResult    MessageType = "REVIEW_RESULT"
+	MsgAssign            MessageType = "ASSIGN"
+	MsgShutdown          MessageType = "SHUTDOWN"
+	MsgPrepareShutdown   MessageType = "PREPARE_SHUTDOWN"
+	MsgPreempt           MessageType = "PREEMPT"
+	MsgACK               MessageType = "ACK"
+	MsgCapabilityRefresh MessageType = "CAPABILITY_REFRESH"
+	MsgReviewResult      MessageType = "REVIEW_RESULT"
 )
 
 // Worker -> Dispatcher message types.
 const (
-	MsgHeartbeat        MessageType = "HEARTBEAT"
-	MsgStatus           MessageType = "STATUS"
-	MsgHandoff          MessageType = "HANDOFF"
-	MsgDone             MessageType = "DONE"
-	MsgReadyForReview   MessageType = "READY_FOR_REVIEW"
-	MsgReconnect        MessageType = "RECONNECT"
-	MsgShutdownApproved MessageType = "SHUTDOWN_APPROVED"
-	MsgCheckpointAck    MessageType = "CHECKPOINT_ACK"
+	MsgHeartbeat            MessageType = "HEARTBEAT"
+	MsgStatus               MessageType = "STATUS"
+	MsgHandoff              MessageType = "HANDOFF"
+	MsgDone                 MessageType = "DONE"
+	MsgReadyForReview       MessageType = "READY_FOR_REVIEW"
+	MsgReconnect            MessageType = "RECONNECT"
+	MsgShutdownApproved     MessageType = "SHUTDOWN_APPROVED"
+	MsgCheckpointAck        MessageType = "CHECKPOINT_ACK"
+	MsgCapabilityRefreshACK MessageType = "CAPABILITY_REFRESH_ACK"
 )
 
 // Manager -> Dispatcher message types.
@@ -65,28 +67,30 @@ const (
 // Message is the envelope for all UDS messages. The Type field selects which
 // payload pointer is populated; unused payloads are nil and omitted from JSON.
 type Message struct {
-	Type                 MessageType              `json:"type"`
-	Assign               *AssignPayload           `json:"assign,omitempty"`
-	Heartbeat            *HeartbeatPayload        `json:"heartbeat,omitempty"`
-	Status               *StatusPayload           `json:"status,omitempty"`
-	Handoff              *HandoffPayload          `json:"handoff,omitempty"`
-	Done                 *DonePayload             `json:"done,omitempty"`
-	ReadyForReview       *ReadyForReviewPayload   `json:"ready_for_review,omitempty"`
-	Reconnect            *ReconnectPayload        `json:"reconnect,omitempty"`
-	PrepareShutdown      *PrepareShutdownPayload  `json:"prepare_shutdown,omitempty"`
-	ShutdownApproved     *ShutdownApprovedPayload `json:"shutdown_approved,omitempty"`
-	Directive            *DirectivePayload        `json:"directive,omitempty"`
-	ACK                  *ACKPayload              `json:"ack,omitempty"`
-	ReviewResult         *ReviewResultPayload     `json:"review_result,omitempty"`
-	Embed                *EmbedRequest            `json:"embed,omitempty"`
-	EmbedResp            *EmbedResponse           `json:"embed_response,omitempty"`
-	RerankReq            *RerankByIDsRequest      `json:"rerank_req,omitempty"`
-	RerankResp           *RerankByIDsResponse     `json:"rerank_resp,omitempty"`
-	CheckpointAck        *CheckpointAckPayload    `json:"checkpoint_ack,omitempty"`
-	EvidenceRequest      *EvidenceRequest         `json:"evidence_request,omitempty"`
-	EvidenceResponse     *EvidenceResponse        `json:"evidence_response,omitempty"`
-	WorkProposalRequest  *WorkProposalRequest     `json:"work_proposal_request,omitempty"`
-	WorkProposalResponse *WorkProposalResponse    `json:"work_proposal_response,omitempty"`
+	Type                 MessageType                  `json:"type"`
+	Assign               *AssignPayload               `json:"assign,omitempty"`
+	Heartbeat            *HeartbeatPayload            `json:"heartbeat,omitempty"`
+	Status               *StatusPayload               `json:"status,omitempty"`
+	Handoff              *HandoffPayload              `json:"handoff,omitempty"`
+	Done                 *DonePayload                 `json:"done,omitempty"`
+	ReadyForReview       *ReadyForReviewPayload       `json:"ready_for_review,omitempty"`
+	Reconnect            *ReconnectPayload            `json:"reconnect,omitempty"`
+	PrepareShutdown      *PrepareShutdownPayload      `json:"prepare_shutdown,omitempty"`
+	ShutdownApproved     *ShutdownApprovedPayload     `json:"shutdown_approved,omitempty"`
+	Directive            *DirectivePayload            `json:"directive,omitempty"`
+	ACK                  *ACKPayload                  `json:"ack,omitempty"`
+	CapabilityRefresh    *CapabilityRefreshPayload    `json:"capability_refresh,omitempty"`
+	CapabilityRefreshACK *CapabilityRefreshACKPayload `json:"capability_refresh_ack,omitempty"`
+	ReviewResult         *ReviewResultPayload         `json:"review_result,omitempty"`
+	Embed                *EmbedRequest                `json:"embed,omitempty"`
+	EmbedResp            *EmbedResponse               `json:"embed_response,omitempty"`
+	RerankReq            *RerankByIDsRequest          `json:"rerank_req,omitempty"`
+	RerankResp           *RerankByIDsResponse         `json:"rerank_resp,omitempty"`
+	CheckpointAck        *CheckpointAckPayload        `json:"checkpoint_ack,omitempty"`
+	EvidenceRequest      *EvidenceRequest             `json:"evidence_request,omitempty"`
+	EvidenceResponse     *EvidenceResponse            `json:"evidence_response,omitempty"`
+	WorkProposalRequest  *WorkProposalRequest         `json:"work_proposal_request,omitempty"`
+	WorkProposalResponse *WorkProposalResponse        `json:"work_proposal_response,omitempty"`
 }
 
 // AssignPayload is sent by the dispatcher to assign a bead to a worker.
@@ -277,6 +281,23 @@ type DirectivePayload struct {
 type ACKPayload struct {
 	OK     bool   `json:"ok"`
 	Detail string `json:"detail,omitempty"`
+}
+
+// CapabilityRefreshPayload delivers a replacement assignment credential without
+// restarting the worker subprocess. The bearer is intentionally transient.
+type CapabilityRefreshPayload struct {
+	AssignmentID int64     `json:"assignment_id"`
+	Generation   int64     `json:"generation"`
+	CapabilityID string    `json:"capability_id"`
+	Capability   string    `json:"capability"`
+	ExpiresAt    time.Time `json:"expires_at"`
+}
+
+// CapabilityRefreshACKPayload confirms the worker atomically installed a
+// replacement credential.
+type CapabilityRefreshACKPayload struct {
+	AssignmentID int64  `json:"assignment_id"`
+	CapabilityID string `json:"capability_id"`
 }
 
 // beadIDPattern validates bead IDs for path safety. Matches IDs like "oro-1nf",

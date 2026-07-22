@@ -2011,6 +2011,8 @@ func (d *Dispatcher) handleMessage(ctx context.Context, workerID string, msg pro
 		d.handleShutdownApproved(ctx, workerID, msg)
 	case protocol.MsgCheckpointAck:
 		d.handleCheckpointAck(ctx, workerID, msg)
+	case protocol.MsgCapabilityRefreshACK:
+		d.handleCapabilityRefreshAck(ctx, workerID, msg)
 	}
 }
 

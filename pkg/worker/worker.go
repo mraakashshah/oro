@@ -491,6 +491,8 @@ func (w *Worker) handleMessage(ctx context.Context, msg protocol.Message) (bool,
 	switch msg.Type {
 	case protocol.MsgAssign:
 		return false, w.handleAssign(ctx, msg)
+	case protocol.MsgCapabilityRefresh:
+		return false, w.handleCapabilityRefresh(ctx, msg)
 	case protocol.MsgShutdown:
 		w.removeAssignmentCapabilityFile()
 		w.killProc()
@@ -505,6 +507,30 @@ func (w *Worker) handleMessage(ctx context.Context, msg protocol.Message) (bool,
 		// Unknown message type, ignore
 		return false, nil
 	}
+}
+
+func (w *Worker) handleCapabilityRefresh(ctx context.Context, msg protocol.Message) error {
+	refresh := msg.CapabilityRefresh
+	if refresh == nil || refresh.AssignmentID <= 0 || refresh.Generation <= 0 || refresh.CapabilityID == "" || refresh.Capability == "" {
+		return fmt.Errorf("invalid capability refresh")
+	}
+	w.mu.Lock()
+	execution := w.execution
+	w.mu.Unlock()
+	if execution.AssignmentID != refresh.AssignmentID || execution.Generation != refresh.Generation || execution.CapabilityFile == "" {
+		return fmt.Errorf("capability refresh does not match active assignment")
+	}
+	if err := ReplaceCapabilityFile(execution.CapabilityFile, AssignmentCredential{AssignmentID: refresh.AssignmentID, Generation: refresh.Generation, CapabilityID: refresh.CapabilityID, Token: refresh.Capability, ExpiresAt: refresh.ExpiresAt}); err != nil {
+		return fmt.Errorf("install refreshed capability: %w", err)
+	}
+	installed, err := ReadCapabilityFile(execution.CapabilityFile)
+	if err != nil {
+		return fmt.Errorf("verify refreshed capability: %w", err)
+	}
+	if installed.CapabilityID != refresh.CapabilityID {
+		return errors.New("verify refreshed capability: replacement ID mismatch")
+	}
+	return w.sendMessage(protocol.Message{Type: protocol.MsgCapabilityRefreshACK, CapabilityRefreshACK: &protocol.CapabilityRefreshACKPayload{AssignmentID: refresh.AssignmentID, CapabilityID: refresh.CapabilityID}})
 }
 
 // handlePreempt saves the current assignment context, stops any active
