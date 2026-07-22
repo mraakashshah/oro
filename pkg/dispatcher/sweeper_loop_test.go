@@ -3,6 +3,7 @@ package dispatcher //nolint:testpackage // white-box: exercises the dispatcher-o
 import (
 	"context"
 	"testing"
+	"time"
 
 	"oro/pkg/cards"
 )
@@ -83,4 +84,31 @@ func TestGradeDrainSweep(t *testing.T) {
 	if got := spawner.SpawnCount(); got != 2 {
 		t.Fatalf("grade spawns after disabled sweep = %d, want 2", got)
 	}
+}
+
+func TestGradeDrainSweepUsesConfiguredCadence(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	d, _, _, _, _, spawner := newTestDispatcher(t)
+	if _, err := d.cardStore.Create(ctx, cards.CardCreateParams{
+		ID:          "card-configured-grade-drain",
+		Type:        cards.CardTypePattern,
+		Title:       "Configured cadence proposal",
+		BodySummary: "The dispatcher uses its configured sweep cadence.",
+		BodyFull:    "The dispatcher uses its configured sweep cadence.",
+		GradeState:  string(cards.GradeStateProposed),
+	}); err != nil {
+		t.Fatalf("create proposal: %v", err)
+	}
+
+	d.cfg.GradeGateEnabled = true
+	d.cfg.SweepConfig = SweepConfig{Interval5m: 10 * time.Millisecond, Interval60m: time.Hour}
+	spawner.verdict = `{"verdict":"correct","confidence":0.99,"reasoning":"proposal is supported"}`
+	go d.runSweepLoop(ctx, d.cfg.SweepConfig)
+
+	waitFor(t, func() bool {
+		proposed, err := d.cardStore.ListProposed(ctx)
+		return err == nil && len(proposed) == 0
+	}, time.Second)
 }

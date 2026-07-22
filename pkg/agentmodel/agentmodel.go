@@ -22,6 +22,12 @@ func ResolveForRole(role string) (runtime, model, reasoning string) {
 	return resolveRole(cfg.cfg, role)
 }
 
+// GradeLadder returns the configured grade role and its escalation rungs.
+func GradeLadder() []config.RoleRung {
+	cfg := loadAgentConfig()
+	return config.GradeLadder(*cfg.cfg)
+}
+
 // UsesRuntime reports whether any effective CLI tier or role can route work to runtime.
 func UsesRuntime(runtime string) bool {
 	want := strings.TrimSpace(strings.ToLower(runtime))

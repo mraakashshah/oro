@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"oro/pkg/agentmodel"
 	"oro/pkg/beadstore"
 	"oro/pkg/cards"
-	"oro/pkg/config"
 	"oro/pkg/ops"
 )
 
@@ -37,7 +37,7 @@ func (d *Dispatcher) driveGradeProposal(ctx context.Context, proposal cards.Card
 	if d.ops == nil {
 		return fmt.Errorf("grade proposal %s: ops spawner unavailable", proposal.ID)
 	}
-	rungs := config.GradeLadder(*config.DefaultAgentConfig())
+	rungs := agentmodel.GradeLadder()
 	for rung, routing := range rungs {
 		result := <-d.ops.Grade(ctx, ops.GradeOpts{
 			Card:      proposal,
