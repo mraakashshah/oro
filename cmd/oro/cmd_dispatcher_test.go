@@ -29,6 +29,8 @@ type dispatcherFakeSpawner struct {
 	returnErr           error
 	socketPath          string // if set, create a UDS listener after "spawn"
 	daemonSkipPreflight string
+	oroHome             string
+	project             string
 }
 
 func (f *dispatcherFakeSpawner) SetManualIntegration(enabled bool) {
@@ -41,6 +43,8 @@ func (f *dispatcherFakeSpawner) SpawnDaemon(pidPath string, workers, maxWorkers 
 	f.workers = workers
 	f.maxWorkers = maxWorkers
 	f.daemonSkipPreflight = os.Getenv(daemonSkipPreflightEnv)
+	f.oroHome = os.Getenv("ORO_HOME")
+	f.project = os.Getenv("ORO_PROJECT")
 	if f.returnErr != nil {
 		return 0, f.returnErr
 	}
@@ -78,6 +82,58 @@ func (f *dispatcherFakeSpawner) SpawnDaemon(pidPath string, workers, maxWorkers 
 		}()
 	}
 	return f.returnPID, nil
+}
+
+func TestDispatcherStartPropagatesOracleRuntimeIdentity(t *testing.T) { //nolint:testpackage // white-box startup contract
+	t.Run("resolves unset identity before spawning", func(t *testing.T) {
+		t.Setenv("ORO_HOME", "")
+		t.Setenv("ORO_PROJECT", "")
+		t.Setenv("ORO_PID_PATH", filepath.Join(t.TempDir(), "oro.pid"))
+		t.Setenv("ORO_SOCKET_PATH", filepath.Join(t.TempDir(), "oro.sock"))
+
+		spawner := &dispatcherFakeSpawner{returnPID: 123}
+		var stdout bytes.Buffer
+		if err := runDispatcherStart(&stdout, 0, false, false, spawner, time.Millisecond); err == nil {
+			t.Fatal("expected socket error after the identity was resolved")
+		}
+		if !spawner.called {
+			t.Fatal("expected SpawnDaemon to be called")
+		}
+		if spawner.oroHome == "" || spawner.project != "oro" {
+			t.Fatalf("SpawnDaemon saw identity ORO_HOME=%q ORO_PROJECT=%q", spawner.oroHome, spawner.project)
+		}
+	})
+
+	t.Run("preserves explicit identity", func(t *testing.T) {
+		t.Setenv("ORO_HOME", filepath.Join(t.TempDir(), "home"))
+		t.Setenv("ORO_PROJECT", "explicit-project")
+		t.Setenv("ORO_PID_PATH", filepath.Join(t.TempDir(), "oro.pid"))
+		t.Setenv("ORO_SOCKET_PATH", filepath.Join(t.TempDir(), "oro.sock"))
+
+		spawner := &dispatcherFakeSpawner{returnPID: 123}
+		var stdout bytes.Buffer
+		_ = runDispatcherStart(&stdout, 0, false, false, spawner, time.Millisecond)
+		if spawner.oroHome != os.Getenv("ORO_HOME") || spawner.project != "explicit-project" {
+			t.Fatalf("explicit identity changed: ORO_HOME=%q ORO_PROJECT=%q", spawner.oroHome, spawner.project)
+		}
+	})
+
+	t.Run("resolution failure has no daemon side effects", func(t *testing.T) {
+		t.Setenv("ORO_HOME", "")
+		t.Setenv("ORO_PROJECT", "")
+		t.Setenv("ORO_PID_PATH", filepath.Join(t.TempDir(), "oro.pid"))
+		t.Setenv("ORO_SOCKET_PATH", filepath.Join(t.TempDir(), "oro.sock"))
+		t.Chdir(t.TempDir())
+
+		spawner := &dispatcherFakeSpawner{}
+		var stdout bytes.Buffer
+		if err := runDispatcherStart(&stdout, 0, false, false, spawner, time.Millisecond); err == nil {
+			t.Fatal("expected runtime identity resolution error")
+		}
+		if spawner.called {
+			t.Fatal("SpawnDaemon called after identity resolution failed")
+		}
+	})
 }
 
 // TestDispatcherStartSpawnsDaemon is the acceptance-criteria test for oro-18c5.3.
