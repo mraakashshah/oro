@@ -105,8 +105,8 @@ func removeTombstoneWithHook(boundary tombstoneBoundary, entries []tombstoneEntr
 	if beforeUnlink != nil {
 		beforeUnlink()
 	}
-	for index := len(entries) - 1; index >= 0; index-- {
-		if err := anchor.removeEntry(entries[index], directories); err != nil {
+	for _, entry := range entries {
+		if err := anchor.removeEntry(entry, directories); err != nil {
 			return err
 		}
 	}
