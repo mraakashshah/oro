@@ -630,6 +630,81 @@ END`); err != nil {
 	}
 }
 
+func TestRecoveryResolvePreservedLeavesNewerActiveAssignmentIntact(t *testing.T) {
+	db, err := openStateDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	const beadID = "oro-preserved-newer-active"
+	const preservedWorktree = "/tmp/oro-preserved-newer-active-a"
+	const preservedBranch = "agent/oro-preserved-newer-active-a"
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO beads (id, title, status, type)
+VALUES (?, 'Preserved recovery bead', 'in_progress', 'task')`, beadID); err != nil {
+		t.Fatalf("seed bead: %v", err)
+	}
+	res, err := db.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree, status)
+VALUES (?, 'worker-a', ?, 'quarantined')`, beadID, preservedWorktree)
+	if err != nil {
+		t.Fatalf("seed preserved assignment: %v", err)
+	}
+	preservedAssignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("preserved assignment id: %v", err)
+	}
+	res, err = db.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree, status)
+VALUES (?, 'worker-b', '/tmp/oro-preserved-newer-active-b', 'active')`, beadID)
+	if err != nil {
+		t.Fatalf("seed newer assignment: %v", err)
+	}
+	newerAssignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("newer assignment id: %v", err)
+	}
+	res, err = db.ExecContext(ctx, `
+INSERT INTO recovery_quarantines (bead_id, assignment_id, worker_id, worktree, branch, reason, details, status)
+VALUES (?, ?, 'worker-a', ?, ?, 'branch_worktree_mismatch', 'preserved evidence', 'open')`,
+		beadID, preservedAssignmentID, preservedWorktree, preservedBranch)
+	if err != nil {
+		t.Fatalf("seed recovery quarantine: %v", err)
+	}
+	quarantineID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("quarantine id: %v", err)
+	}
+
+	if err := resolveRecoveryQuarantineRequeuePreserved(ctx, db, quarantineID); err != nil {
+		t.Fatalf("resolve recovery quarantine: %v", err)
+	}
+
+	var beadStatus, preservedStatus, newerStatus, quarantineStatus string
+	var quarantineWorktree, quarantineBranch string
+	if err := db.QueryRowContext(ctx, `SELECT status FROM beads WHERE id=?`, beadID).Scan(&beadStatus); err != nil {
+		t.Fatalf("query bead status: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, preservedAssignmentID).Scan(&preservedStatus); err != nil {
+		t.Fatalf("query preserved assignment status: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, newerAssignmentID).Scan(&newerStatus); err != nil {
+		t.Fatalf("query newer assignment status: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `
+SELECT status, worktree, branch FROM recovery_quarantines WHERE id=?`, quarantineID).Scan(&quarantineStatus, &quarantineWorktree, &quarantineBranch); err != nil {
+		t.Fatalf("query quarantine: %v", err)
+	}
+	if beadStatus != "in_progress" || preservedStatus != "requeued" || newerStatus != "active" || quarantineStatus != "resolved" {
+		t.Fatalf("bead=%q preserved=%q newer=%q quarantine=%q, want in_progress/requeued/active/resolved", beadStatus, preservedStatus, newerStatus, quarantineStatus)
+	}
+	if quarantineWorktree != preservedWorktree || quarantineBranch != preservedBranch {
+		t.Fatalf("preserved evidence worktree/branch=%q/%q, want %q/%q", quarantineWorktree, quarantineBranch, preservedWorktree, preservedBranch)
+	}
+}
+
 func TestRecoveryResolveRequeuePreservedFallsBackToLatestAssignment(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "state.db")
