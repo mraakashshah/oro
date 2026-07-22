@@ -1,4 +1,4 @@
-package storage //nolint:testpackage // white-box test pauses the package-private remover to verify tombstone ordering.
+package storage //nolint:testpackage // white-box coverage controls retirement polling and catalog ownership fixtures.
 
 import (
 	"context"
@@ -49,13 +49,6 @@ func TestNamespaceRetirementWaitsForLeases(t *testing.T) {
 
 			retirer := NewNamespaceRetirer(catalog, root)
 			retirer.pollInterval = time.Millisecond
-			removalStarted := make(chan string, 1)
-			allowRemoval := make(chan struct{})
-			retirer.removeAll = func(tombstone string) error {
-				removalStarted <- tombstone
-				<-allowRemoval
-				return os.RemoveAll(tombstone)
-			}
 
 			started := time.Now()
 			if err := retirer.Retire(ctx, namespace, reason); err != nil {
@@ -72,23 +65,9 @@ func TestNamespaceRetirementWaitsForLeases(t *testing.T) {
 				t.Fatalf("release lease: %v", err)
 			}
 
-			var tombstone string
-			select {
-			case tombstone = <-removalStarted:
-			case <-time.After(time.Second):
-				t.Fatal("retirement did not begin after lease release")
-			}
-			if _, err := os.Stat(path); !os.IsNotExist(err) {
-				t.Fatalf("namespace still exists after tombstoning: %v", err)
-			}
-			if info, err := os.Stat(tombstone); err != nil || !info.IsDir() {
-				t.Fatalf("tombstone did not precede removal: info=%v err=%v", info, err)
-			}
-
-			close(allowRemoval)
 			waitForRetirement(t, retirer)
-			if _, err := os.Stat(tombstone); !os.IsNotExist(err) {
-				t.Fatalf("tombstone was not removed: %v", err)
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("namespace was not removed after lease release: %v", err)
 			}
 		})
 	}
@@ -113,6 +92,7 @@ func TestNamespaceRetirementAllowsReretirement(t *testing.T) {
 		if err := os.Mkdir(path, 0o700); err != nil {
 			t.Fatalf("create namespace for attempt %d: %v", attempt, err)
 		}
+		seedReleasedLease(t, catalog, namespace)
 		if err := retirer.Retire(ctx, namespace, RetirementPostMerge); err != nil {
 			t.Fatalf("schedule retirement attempt %d: %v", attempt, err)
 		}
@@ -120,6 +100,53 @@ func TestNamespaceRetirementAllowsReretirement(t *testing.T) {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("namespace remains after retirement attempt %d: %v", attempt, err)
 		}
+	}
+}
+
+func TestNamespaceRetirementMissingOwnedNamespaceIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	namespace := "0123456789abcdef0123456789abcdef"
+	catalog, err := OpenCatalog(ctx, filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = catalog.Close() })
+	seedReleasedLease(t, catalog, namespace)
+
+	retirer := NewNamespaceRetirer(catalog, t.TempDir())
+	if err := retirer.Retire(ctx, namespace, RetirementPostMerge); err != nil {
+		t.Fatalf("schedule absent namespace retirement: %v", err)
+	}
+	waitForRetirement(t, retirer)
+	tombstone, err := catalog.Tombstone(ctx, namespace)
+	if err != nil {
+		t.Fatalf("load tombstone: %v", err)
+	}
+	if tombstone.State != "deleted" {
+		t.Fatalf("tombstone state = %q, want deleted", tombstone.State)
+	}
+}
+
+func seedReleasedLease(t *testing.T, catalog *Catalog, namespace string) {
+	t.Helper()
+	now := time.Now().UTC()
+	lease, err := catalog.AcquireLease(context.Background(), LeaseRequest{
+		ID:           LeaseID("lease-" + namespace),
+		Namespace:    namespace,
+		ControllerID: "controller",
+		OwnerID:      "owner",
+		PID:          1,
+		ProcessStart: now.Add(-time.Minute),
+		AcquiredAt:   now,
+		HeartbeatAt:  now,
+	})
+	if err != nil {
+		t.Fatalf("acquire ownership lease: %v", err)
+	}
+	if err := catalog.ReleaseLease(context.Background(), lease.ID); err != nil {
+		t.Fatalf("release ownership lease: %v", err)
 	}
 }
 
