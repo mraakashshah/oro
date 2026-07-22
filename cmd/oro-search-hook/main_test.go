@@ -63,26 +63,113 @@ func TestRun_readError(t *testing.T) {
 }
 
 func TestRunSessionStartProbeExitStatus(t *testing.T) {
-	probe := filepath.Join(t.TempDir(), "probe")
-	t.Setenv("ORO_HOOK_PROBE", probe)
-	for _, input := range []string{
-		`{"hook_type":"SessionStart"}`,
-		`{"hook_event_name":"SessionStart"}`,
-	} {
+	if os.Getenv("ORO_SEARCH_HOOK_TEST_MAIN") == "1" {
+		main()
+		return
+	}
+
+	t.Run("accepts Claude and Codex SessionStart", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Fatalf("make probe directory private: %v", err)
+		}
+		probe := filepath.Join(dir, "probe")
+		t.Setenv("ORO_HOOK_PROBE", probe)
+		for _, input := range []string{
+			`{"hook_type":"SessionStart"}`,
+			`{"hook_event_name":"SessionStart"}`,
+		} {
+			var out bytes.Buffer
+			if err := run(strings.NewReader(input), &out); err != nil {
+				t.Fatalf("run() error: %v", err)
+			}
+			if out.Len() != 0 {
+				t.Fatalf("SessionStart wrote stdout %q", out.String())
+			}
+			info, err := os.Stat(probe)
+			if err != nil {
+				t.Fatalf("probe was not created: %v", err)
+			}
+			if got := info.Mode().Perm(); got != 0o600 {
+				t.Fatalf("probe mode = %04o, want 0600", got)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatalf("read probe directory: %v", err)
+			}
+			if len(entries) != 1 || entries[0].Name() != "probe" {
+				t.Fatalf("probe directory entries = %v, want only probe", entries)
+			}
+			if err := os.Remove(probe); err != nil {
+				t.Fatalf("remove probe: %v", err)
+			}
+		}
+	})
+
+	t.Run("rejects invalid missing non-private and unwritable probes", func(t *testing.T) {
+		t.Setenv("ORO_HOOK_PROBE", "")
+		if err := run(strings.NewReader(`{"hook_type":"SessionStart"}`), io.Discard); err == nil {
+			t.Fatal("run() accepted missing ORO_HOOK_PROBE")
+		}
+		if err := handleSessionStart("invalid\x00probe"); err == nil {
+			t.Fatal("handleSessionStart() accepted invalid probe path")
+		}
+
+		publicDir := t.TempDir()
+		if err := os.Chmod(publicDir, 0o755); err != nil {
+			t.Fatalf("make probe directory non-private: %v", err)
+		}
+		publicProbe := filepath.Join(publicDir, "probe")
+		if err := handleSessionStart(publicProbe); err == nil {
+			t.Fatal("handleSessionStart() accepted non-private probe directory")
+		}
+		if _, err := os.Stat(publicProbe); !os.IsNotExist(err) {
+			t.Fatalf("non-private probe was created: %v", err)
+		}
+
+		unwritableDir := t.TempDir()
+		if err := os.Chmod(unwritableDir, 0o700); err != nil {
+			t.Fatalf("make unwritable probe parent private: %v", err)
+		}
+		unwritableProbe := filepath.Join(unwritableDir, "probe")
+		if err := os.Mkdir(unwritableProbe, 0o700); err != nil {
+			t.Fatalf("create unwritable probe target: %v", err)
+		}
+		if err := handleSessionStart(unwritableProbe); err == nil {
+			t.Fatal("handleSessionStart() accepted unwritable probe target")
+		}
+	})
+
+	t.Run("malformed ordinary event fails open", func(t *testing.T) {
 		var out bytes.Buffer
-		if err := run(strings.NewReader(input), &out); err != nil {
+		if err := run(strings.NewReader(`{"hook_type":`), &out); err != nil {
 			t.Fatalf("run() error: %v", err)
 		}
-		if out.Len() != 0 {
-			t.Fatalf("SessionStart wrote stdout %q", out.String())
+		if got := out.String(); got != "{}" {
+			t.Fatalf("run() output = %q, want fail-open {}", got)
 		}
-		if _, err := os.Stat(probe); err != nil {
-			t.Fatalf("probe was not created: %v", err)
+	})
+
+	t.Run("main exits nonzero on SessionStart failure", func(t *testing.T) {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestRunSessionStartProbeExitStatus$") //nolint:gosec // Test re-executes its own fixed binary.
+		cmd.Env = []string{"ORO_SEARCH_HOOK_TEST_MAIN=1"}
+		cmd.Stdin = strings.NewReader(`{"hook_event_name":"SessionStart"}`)
+		var stdout bytes.Buffer
+		cmd.Stdout = &stdout
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 {
+			t.Fatalf("main exit error = %v, want nonzero exit", err)
 		}
-		if err := os.Remove(probe); err != nil {
-			t.Fatalf("remove probe: %v", err)
+		if stdout.Len() != 0 {
+			t.Fatalf("main wrote stdout %q", stdout.String())
 		}
-	}
+		if !strings.Contains(stderr.String(), "ORO_HOOK_PROBE is not set") {
+			t.Fatalf("main stderr = %q, want probe error", stderr.String())
+		}
+	})
 }
 
 // Ensure errorWriter satisfies io.Writer at compile time.
