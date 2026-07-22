@@ -47,6 +47,10 @@ This command is typically invoked by the dispatcher, not by humans.`,
 
 // runWorker creates a worker instance and runs its event loop.
 func runWorker(ctx context.Context, socketPath, id string) error {
+	if _, err := ensureRuntimeProjectEnv(currentRepoRoot()); err != nil {
+		return fmt.Errorf("resolve worker runtime identity: %w", err)
+	}
+
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 

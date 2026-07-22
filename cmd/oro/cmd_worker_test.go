@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -96,6 +97,33 @@ func TestWorkerSpawnerBuildsRuntimeRouter(t *testing.T) {
 	}
 	if codexSpawner.calls != 1 {
 		t.Fatalf("codex spawner calls = %d, want 1", codexSpawner.calls)
+	}
+}
+
+func TestRunWorkerResolvesIdentityBeforeRuntimeSpawner(t *testing.T) {
+	t.Setenv("ORO_HOME", filepath.Join(t.TempDir(), "oro-home"))
+	t.Setenv("ORO_PROJECT", "")
+	t.Chdir(currentRepoRoot())
+
+	var observedHome, observedProject string
+	previousClaude := newClaudeWorkerSpawner
+	previousCodex := newCodexWorkerSpawner
+	newClaudeWorkerSpawner = func() worker.StreamingSpawner {
+		observedHome, observedProject = os.Getenv("ORO_HOME"), os.Getenv("ORO_PROJECT")
+		return &workerRouterTestSpawner{}
+	}
+	newCodexWorkerSpawner = func() worker.StreamingSpawner { return &workerRouterTestSpawner{} }
+	defer func() {
+		newClaudeWorkerSpawner = previousClaude
+		newCodexWorkerSpawner = previousCodex
+	}()
+
+	err := runWorker(context.Background(), filepath.Join(t.TempDir(), "missing.sock"), "w-01")
+	if err == nil {
+		t.Fatal("expected missing socket connection to fail")
+	}
+	if observedHome == "" || observedProject == "" {
+		t.Fatalf("runtime spawner saw unresolved identity: home=%q project=%q", observedHome, observedProject)
 	}
 }
 
