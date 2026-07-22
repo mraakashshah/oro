@@ -79,3 +79,46 @@ func TestRunPreservesExternalGoCaches(t *testing.T) {
 		t.Fatalf("GOMODCACHE after Run = %q, want restored empty value", got)
 	}
 }
+
+func TestRunDisablesTelemetryWhileResolvingMissingGoCache(t *testing.T) {
+	ambientRoot := t.TempDir()
+	ambientHome := filepath.Join(ambientRoot, "home")
+	binDir := t.TempDir()
+	goPath := filepath.Join(binDir, "go")
+	telemetryPath := filepath.Join(ambientHome, "telemetry")
+	goScript := "#!/bin/sh\n" +
+		"if [ \"$GOTELEMETRY\" != off ]; then mkdir -p \"$HOME/telemetry\"; fi\n" +
+		"printf '%s\\n%s\\n' \"$GOCACHE\" \"/external/go-mod\"\n"
+	if err := os.WriteFile(goPath, []byte(goScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("HOME", ambientHome)
+	t.Setenv("GOCACHE", filepath.Join(ambientRoot, "go-build"))
+	t.Setenv("GOMODCACHE", "")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if code := configenv.Run(func() int { return 0 }); code != 0 {
+		t.Fatalf("Run exit code = %d, want 0", code)
+	}
+	if _, err := os.Stat(telemetryPath); !os.IsNotExist(err) {
+		t.Fatalf("go env telemetry path = %q, err = %v; want no caller-HOME writes", telemetryPath, err)
+	}
+}
+
+func TestRunSkipsGoLookupWhenBothCachesAreSet(t *testing.T) {
+	cacheRoot := t.TempDir()
+	binDir := t.TempDir()
+	goPath := filepath.Join(binDir, "go")
+	if err := os.WriteFile(goPath, []byte("#!/bin/sh\nexit 99\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("GOCACHE", filepath.Join(cacheRoot, "go-build"))
+	t.Setenv("GOMODCACHE", filepath.Join(cacheRoot, "go-mod"))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if code := configenv.Run(func() int { return 0 }); code != 0 {
+		t.Fatalf("Run exit code = %d, want 0", code)
+	}
+}

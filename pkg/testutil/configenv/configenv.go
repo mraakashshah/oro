@@ -55,7 +55,9 @@ func preserveGoCaches() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "go", "env", "GOCACHE", "GOMODCACHE").Output() //nolint:gosec // fixed Go command and arguments
+	cmd := exec.CommandContext(ctx, "go", "env", "GOCACHE", "GOMODCACHE") //nolint:gosec // fixed Go command and arguments
+	cmd.Env = append(os.Environ(), "GOTELEMETRY=off")
+	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("resolve cache roots: %w", err)
 	}
