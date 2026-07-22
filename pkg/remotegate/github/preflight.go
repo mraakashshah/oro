@@ -20,7 +20,10 @@ type APIReader interface {
 
 // Client performs read-only workflow preflight operations through api.
 type Client struct {
-	api APIReader
+	api              APIReader
+	repository       string
+	collection       CollectionReader
+	collectionLimits CollectionLimits
 }
 
 func (c *Client) fetchWorkflowMetadata(ctx context.Context, repository, workflow string) (path, state string, err error) {
