@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"oro/pkg/codesearch"
@@ -57,6 +58,16 @@ func run(r io.Reader, w io.Writer) error {
 func handleSessionStart(probePath string) error {
 	if probePath == "" {
 		return fmt.Errorf("ORO_HOOK_PROBE is not set")
+	}
+	if !filepath.IsAbs(probePath) {
+		return fmt.Errorf("ORO_HOOK_PROBE must be an absolute path")
+	}
+	parentInfo, err := os.Stat(filepath.Dir(probePath)) //nolint:gosec // G703: The dynamic parent is inspected here before the exclusive marker create.
+	if err != nil {
+		return fmt.Errorf("stat ORO_HOOK_PROBE parent: %w", err)
+	}
+	if !parentInfo.IsDir() || parentInfo.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("ORO_HOOK_PROBE parent is not a private directory")
 	}
 	file, err := os.OpenFile(probePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: ORO_HOOK_PROBE intentionally selects the private probe path.
 	if err != nil {
