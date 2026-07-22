@@ -1799,6 +1799,34 @@ func TestDaemonChildEnvMarksTmuxManagedDaemon(t *testing.T) {
 	}
 }
 
+func TestStartModesPropagateOracleRuntimeIdentity(t *testing.T) {
+	t.Run("daemon-only resolves identity before pid lifecycle", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		t.Setenv("ORO_HOME", filepath.Join(t.TempDir(), "oro-home"))
+		t.Setenv("ORO_PROJECT", "")
+		pidPath := filepath.Join(t.TempDir(), "oro.pid")
+		cmd := &cobra.Command{}
+		cmd.SetOut(io.Discard)
+		err := runDaemonOnly(cmd, pidPath, 1, 1, 0, 0, 0, false, "main", false, false, "", cleanlinessStartConfig{})
+		if err == nil {
+			t.Fatal("expected uninitialized project to fail closed")
+		}
+		if _, statErr := os.Stat(pidPath); !os.IsNotExist(statErr) {
+			t.Fatalf("pid lifecycle started before identity resolution: stat error = %v", statErr)
+		}
+	})
+
+	t.Run("child environments preserve resolved identity", func(t *testing.T) {
+		input := []string{"ORO_HOME=/resolved/home", "ORO_PROJECT=resolved-project"}
+		for _, env := range []func([]string) []string{cleanEnvForDaemon, daemonChildEnv} {
+			got := env(input)
+			if !containsEnvEntry(got, input[0]) || !containsEnvEntry(got, input[1]) {
+				t.Fatalf("environment lost runtime identity: %v", got)
+			}
+		}
+	})
+}
+
 func containsEnvEntry(env []string, want string) bool {
 	for _, entry := range env {
 		if entry == want {
