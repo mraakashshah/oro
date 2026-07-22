@@ -146,6 +146,8 @@ WHERE id = ? AND state = ?`, to, id, from)
 // ListPrunableArtifacts returns artifacts whose every checkpoint reference is
 // terminal and older than olderThan. Shared artifacts are retained until all
 // references become eligible.
+//
+//oro:testonly
 func (s *ReviewCheckpointStore) ListPrunableArtifacts(ctx context.Context, olderThan time.Time) ([]ReviewArtifact, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("list prunable review artifacts: db is nil")
