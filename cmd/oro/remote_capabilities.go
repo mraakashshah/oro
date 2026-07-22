@@ -16,6 +16,7 @@ import (
 	"syscall"
 
 	"oro/pkg/config"
+	"oro/pkg/remotegate"
 )
 
 const githubActionsMatrixEntriesLimit = 256
@@ -26,14 +27,27 @@ type RemoteGateConfig = config.RemoteGateConfig
 // Capabilities records the immutable local and provider observations required
 // to safely construct a remote quality-gate client.
 type Capabilities struct {
-	Host        string               `json:"host"`
-	Repository  string               `json:"repository"`
-	Workflow    string               `json:"workflow"`
-	Permission  RepositoryPermission `json:"permission"`
-	GitHubCLI   ExecutableEvidence   `json:"github_cli"`
-	Git         GitCapabilities      `json:"git"`
-	APILimits   APILimits            `json:"api_limits"`
-	MatrixBound int                  `json:"matrix_bound"`
+	Host                string                      `json:"host"`
+	Repository          string                      `json:"repository"`
+	Workflow            string                      `json:"workflow"`
+	Permission          RepositoryPermission        `json:"permission"`
+	GitHubCLI           ExecutableEvidence          `json:"github_cli"`
+	Git                 GitCapabilities             `json:"git"`
+	APILimits           APILimits                   `json:"api_limits"`
+	MatrixBound         int                         `json:"matrix_bound"`
+	DefaultBranch       string                      `json:"default_branch"`
+	WorkflowEvidence    WorkflowEvidence            `json:"workflow_evidence"`
+	ApplicableRules     []remotegate.ApplicableRule `json:"applicable_rules"`
+	EffectivePolicyHash string                      `json:"effective_policy_hash"`
+}
+
+// WorkflowEvidence records the workflow identity and dispatch eligibility for
+// the target branch attested during remote-gate setup.
+type WorkflowEvidence struct {
+	Path             string `json:"path"`
+	State            string `json:"state"`
+	Ref              string `json:"ref"`
+	WorkflowDispatch bool   `json:"workflow_dispatch"`
 }
 
 // RepositoryPermission records the repository permission required by Oro.
@@ -142,7 +156,7 @@ func AttestRemoteCapabilities(ctx context.Context, cfg RemoteGateConfig) (Capabi
 // exclusive create rejects an existing path (including a symlink) rather than
 // risking overwrite of a target outside Oro's evidence directory.
 func PersistRemoteCapabilities(path string, capabilities Capabilities) error {
-	data, err := json.Marshal(capabilities)
+	data, err := json.Marshal(canonicalRemoteCapabilities(capabilities))
 	if err != nil {
 		return fmt.Errorf("encode remote capabilities: %w", err)
 	}
@@ -189,11 +203,22 @@ func VerifyRemoteCapabilities(ctx context.Context, cfg RemoteGateConfig, path st
 }
 
 func remoteCapabilitiesDrifted(persisted, current Capabilities) bool {
+	persisted = canonicalRemoteCapabilities(persisted)
+	current = canonicalRemoteCapabilities(current)
 	persisted.APILimits.Core.Remaining = 0
 	persisted.APILimits.ActionsRunnerRegistration.Remaining = 0
 	current.APILimits.Core.Remaining = 0
 	current.APILimits.ActionsRunnerRegistration.Remaining = 0
 	return !reflect.DeepEqual(persisted, current)
+}
+
+func canonicalRemoteCapabilities(capabilities Capabilities) Capabilities {
+	if len(capabilities.ApplicableRules) == 0 {
+		// Empty policy evidence is always written as [] so local-mode fixtures
+		// remain serializable and nil/empty inputs compare identically.
+		capabilities.ApplicableRules = []remotegate.ApplicableRule{}
+	}
+	return capabilities
 }
 
 func persistSetupRemoteCapabilities(ctx context.Context, projectRoot string) error {

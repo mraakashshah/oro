@@ -6,14 +6,130 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"oro/pkg/config"
+	"oro/pkg/remotegate"
 
 	"github.com/spf13/cobra"
 )
+
+func TestRemoteCapabilitiesPersistTargetPolicyEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "capabilities.json")
+	capabilities := Capabilities{
+		DefaultBranch: "main",
+		WorkflowEvidence: WorkflowEvidence{
+			Path:             ".github/workflows/remote-gate.yml",
+			State:            "active",
+			Ref:              "main",
+			WorkflowDispatch: true,
+		},
+		ApplicableRules: []remotegate.ApplicableRule{{
+			Source:         "repository",
+			ID:             "protect-main",
+			Version:        "1",
+			Pattern:        "main",
+			Enforcement:    "active",
+			Operations:     []string{"create", "update"},
+			BypassActors:   []string{"release-bot"},
+			RequiredChecks: []string{"unit", "lint"},
+		}},
+		EffectivePolicyHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	}
+
+	if err := PersistRemoteCapabilities(path, capabilities); err != nil {
+		t.Fatalf("PersistRemoteCapabilities() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read persisted capabilities: %v", err)
+	}
+	var persisted Capabilities
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		t.Fatalf("decode persisted capabilities: %v", err)
+	}
+	if persisted.DefaultBranch != "main" || persisted.WorkflowEvidence != capabilities.WorkflowEvidence {
+		t.Fatalf("persisted target evidence = %+v, want %+v", persisted, capabilities)
+	}
+	if !reflect.DeepEqual(persisted.ApplicableRules, capabilities.ApplicableRules) {
+		t.Fatalf("persisted applicable rules = %+v, want %+v", persisted.ApplicableRules, capabilities.ApplicableRules)
+	}
+	if !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(persisted.EffectivePolicyHash) {
+		t.Fatalf("persisted EffectivePolicyHash = %q, want 64-character lowercase SHA-256 hex", persisted.EffectivePolicyHash)
+	}
+
+	for _, mutation := range capabilityTargetPolicyMutations() {
+		t.Run(mutation.name, func(t *testing.T) {
+			current := cloneTargetPolicyCapabilities(capabilities)
+			mutation.mutate(&current)
+			if !remoteCapabilitiesDrifted(capabilities, current) {
+				t.Fatal("remoteCapabilitiesDrifted() = false, want true")
+			}
+		})
+	}
+
+	t.Run("canonical empty applicable rules", func(t *testing.T) {
+		emptyPath := filepath.Join(t.TempDir(), "empty-capabilities.json")
+		empty := Capabilities{}
+		if err := PersistRemoteCapabilities(emptyPath, empty); err != nil {
+			t.Fatalf("PersistRemoteCapabilities() error = %v", err)
+		}
+		data, err := os.ReadFile(emptyPath)
+		if err != nil {
+			t.Fatalf("read persisted empty capabilities: %v", err)
+		}
+		var raw struct {
+			ApplicableRules json.RawMessage `json:"applicable_rules"`
+		}
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatalf("decode persisted empty capabilities: %v", err)
+		}
+		if string(raw.ApplicableRules) != "[]" {
+			t.Fatalf("persisted ApplicableRules = %s, want []", raw.ApplicableRules)
+		}
+		if remoteCapabilitiesDrifted(Capabilities{}, Capabilities{ApplicableRules: []remotegate.ApplicableRule{}}) {
+			t.Fatal("nil and empty ApplicableRules caused capability drift")
+		}
+	})
+}
+
+func cloneTargetPolicyCapabilities(capabilities Capabilities) Capabilities {
+	cloned := capabilities
+	cloned.ApplicableRules = append([]remotegate.ApplicableRule(nil), capabilities.ApplicableRules...)
+	cloned.ApplicableRules[0].Operations = append([]string(nil), capabilities.ApplicableRules[0].Operations...)
+	cloned.ApplicableRules[0].BypassActors = append([]string(nil), capabilities.ApplicableRules[0].BypassActors...)
+	cloned.ApplicableRules[0].RequiredChecks = append([]string(nil), capabilities.ApplicableRules[0].RequiredChecks...)
+	return cloned
+}
+
+func capabilityTargetPolicyMutations() []struct {
+	name   string
+	mutate func(*Capabilities)
+} {
+	return []struct {
+		name   string
+		mutate func(*Capabilities)
+	}{
+		{name: "default branch", mutate: func(capabilities *Capabilities) { capabilities.DefaultBranch = "release" }},
+		{name: "workflow path", mutate: func(capabilities *Capabilities) { capabilities.WorkflowEvidence.Path = "other.yml" }},
+		{name: "workflow state", mutate: func(capabilities *Capabilities) { capabilities.WorkflowEvidence.State = "disabled" }},
+		{name: "workflow ref", mutate: func(capabilities *Capabilities) { capabilities.WorkflowEvidence.Ref = "release" }},
+		{name: "workflow dispatch", mutate: func(capabilities *Capabilities) { capabilities.WorkflowEvidence.WorkflowDispatch = false }},
+		{name: "rule source", mutate: func(capabilities *Capabilities) { capabilities.ApplicableRules[0].Source = "organization" }},
+		{name: "rule ID", mutate: func(capabilities *Capabilities) { capabilities.ApplicableRules[0].ID = "other" }},
+		{name: "rule version", mutate: func(capabilities *Capabilities) { capabilities.ApplicableRules[0].Version = "2" }},
+		{name: "rule pattern", mutate: func(capabilities *Capabilities) { capabilities.ApplicableRules[0].Pattern = "release/**" }},
+		{name: "rule enforcement", mutate: func(capabilities *Capabilities) { capabilities.ApplicableRules[0].Enforcement = "disabled" }},
+		{name: "rule operations", mutate: func(capabilities *Capabilities) { capabilities.ApplicableRules[0].Operations[0] = "delete" }},
+		{name: "rule bypass actors", mutate: func(capabilities *Capabilities) { capabilities.ApplicableRules[0].BypassActors[0] = "other-bot" }},
+		{name: "rule required checks", mutate: func(capabilities *Capabilities) { capabilities.ApplicableRules[0].RequiredChecks[0] = "integration" }},
+		{name: "effective policy hash", mutate: func(capabilities *Capabilities) { capabilities.EffectivePolicyHash = strings.Repeat("f", 64) }},
+	}
+}
 
 func TestSetupPersistsRemoteCapabilitiesFromExistingConfig(t *testing.T) {
 	projectRoot := t.TempDir()

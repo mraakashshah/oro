@@ -17,7 +17,18 @@ import (
 func TestWorkerContextIsAssignmentLocal(t *testing.T) {
 	t.Setenv("ORO_WORKER_BEAD_ID", "caller-identity")
 
-	socketPath := filepath.Join(t.TempDir(), "worker.sock")
+	socketFile, err := os.CreateTemp("/tmp", "oro-worker-context-*.sock")
+	if err != nil {
+		t.Fatalf("create socket path: %v", err)
+	}
+	socketPath := socketFile.Name()
+	if err := socketFile.Close(); err != nil {
+		t.Fatalf("close socket path: %v", err)
+	}
+	if err := os.Remove(socketPath); err != nil {
+		t.Fatalf("remove socket placeholder: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
