@@ -35,6 +35,7 @@ func TestOpenCatalogMigratesFoundationAndRuntimeSchema(t *testing.T) {
 		"runtime_pause_epochs",
 		"runtime_pause_acknowledgements",
 		"runtime_tombstones",
+		"runtime_tombstone_deletion_evidence",
 		"runtime_reconciliation_cursors",
 	} {
 		var name string
