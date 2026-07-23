@@ -272,11 +272,11 @@ func TestAssemblePrompt_QualityGateContent(t *testing.T) {
 
 	prompt := worker.AssemblePrompt(params)
 
-	if !strings.Contains(prompt, "./quality_gate.sh") {
-		t.Error("expected Quality Gate section to prefer './quality_gate.sh'")
+	if strings.Contains(prompt, "./quality_gate.sh") {
+		t.Error("Quality Gate section should not instruct the subprocess to run './quality_gate.sh'")
 	}
-	if !strings.Contains(prompt, "./scripts/quality_gate.sh") {
-		t.Error("expected Quality Gate section to mention './scripts/quality_gate.sh' fallback")
+	if strings.Contains(prompt, "./scripts/quality_gate.sh") {
+		t.Error("Quality Gate section should not instruct the subprocess to run './scripts/quality_gate.sh'")
 	}
 	if strings.Contains(prompt, "ORO_SKIP_MUTATION") {
 		t.Error("Quality Gate section should not teach agents to use ORO_SKIP_MUTATION for local QG")
@@ -287,8 +287,38 @@ func TestAssemblePrompt_QualityGateContent(t *testing.T) {
 	if strings.Contains(prompt, "ORO_RUN_MUTATION") {
 		t.Error("Quality Gate section should not teach agents to use ORO_RUN_MUTATION")
 	}
-	if !strings.Contains(prompt, "Mutation testing is off by default") || !strings.Contains(prompt, "--mutation-testing") {
-		t.Error("expected Quality Gate section to explain mutation flag opt-in")
+	if strings.Contains(prompt, "--mutation-testing") {
+		t.Error("Quality Gate section should not instruct the subprocess to use --mutation-testing")
+	}
+	if !strings.Contains(prompt, "worker harness") || !strings.Contains(prompt, "full quality gate") {
+		t.Error("expected Quality Gate section to delegate the full quality gate to the worker harness")
+	}
+}
+
+func TestAssemblePrompt_DelegatesAuthoritativeQG(t *testing.T) {
+	t.Parallel()
+
+	params := worker.PromptParams{
+		BeadID:             "bead-qg-delegate",
+		Title:              "QG delegation test",
+		Description:        "Test quality gate delegation section",
+		AcceptanceCriteria: "Test: pkg/worker/prompt_test.go:TestAssemblePrompt_DelegatesAuthoritativeQG | Cmd: go test ./pkg/worker -run '^TestAssemblePrompt_DelegatesAuthoritativeQG$' -count=1 | Assert: PASS",
+		WorktreePath:       "/tmp/wt-qg-delegate",
+		Model:              "opus",
+	}
+
+	prompt := worker.AssemblePrompt(params)
+
+	if !strings.Contains(prompt, "acceptance") || !strings.Contains(prompt, "focused") {
+		t.Error("expected prompt to require the task acceptance command and focused verification")
+	}
+	if !strings.Contains(prompt, "worker harness") || !strings.Contains(prompt, "full quality gate") {
+		t.Error("expected prompt to identify the worker harness as full-QG owner")
+	}
+	for _, forbidden := range []string{"./quality_gate.sh", "./scripts/quality_gate.sh", "--mutation-testing"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Errorf("prompt must not instruct coding subprocess to run %q", forbidden)
+		}
 	}
 }
 

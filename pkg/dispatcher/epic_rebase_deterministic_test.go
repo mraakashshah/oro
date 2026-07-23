@@ -170,6 +170,138 @@ func TestPreserveEpicAncestryBadRefIsError(t *testing.T) {
 	}
 }
 
+// newDeterministicRecoveryFixture builds the same disjoint-file divergence
+// shape as TestFFMergeUsesDeterministicRecovery: epicBranch and targetBranch
+// each add a unique file on top of a shared base commit, so a preserve merge
+// is clean. Returns the repo path plus the original tip OIDs of each branch,
+// with "main" checked out.
+func newDeterministicRecoveryFixture(t *testing.T, epicBranch, targetBranch string) (repo, oldEpicOID, targetOID string) {
+	t.Helper()
+	repo = t.TempDir()
+	runAssignmentTestGit(t, repo, "init", "-b", "main")
+	runAssignmentTestGit(t, repo, "config", "user.email", "test@example.com")
+	runAssignmentTestGit(t, repo, "config", "user.name", "Oro Test")
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write base: %v", err)
+	}
+	runAssignmentTestGit(t, repo, "add", "base.txt")
+	runAssignmentTestGit(t, repo, "commit", "-m", "base commit")
+
+	runAssignmentTestGit(t, repo, "checkout", "-b", targetBranch)
+	if err := os.WriteFile(filepath.Join(repo, "parent.txt"), []byte("parent\n"), 0o644); err != nil {
+		t.Fatalf("write parent: %v", err)
+	}
+	runAssignmentTestGit(t, repo, "add", "parent.txt")
+	runAssignmentTestGit(t, repo, "commit", "-m", "parent commit")
+	targetOID = gitOut(t, repo, "rev-parse", targetBranch)
+
+	runAssignmentTestGit(t, repo, "checkout", "-b", epicBranch, "main")
+	if err := os.WriteFile(filepath.Join(repo, "epic.txt"), []byte("epic\n"), 0o644); err != nil {
+		t.Fatalf("write epic: %v", err)
+	}
+	runAssignmentTestGit(t, repo, "add", "epic.txt")
+	runAssignmentTestGit(t, repo, "commit", "-m", "epic commit")
+	oldEpicOID = gitOut(t, repo, "rev-parse", epicBranch)
+
+	runAssignmentTestGit(t, repo, "checkout", "main")
+	return repo, oldEpicOID, targetOID
+}
+
+// TestFFMergeDeterministicRecoveryRollsBackOnQGFailure proves that a failing
+// quality gate against the synthesized preserve-merge commit rolls the epic
+// ref back to its pre-merge OID, leaves targetBranch unadvanced, and falls
+// through to creating the LLM rebase child (oro-5pj4).
+func TestFFMergeDeterministicRecoveryRollsBackOnQGFailure(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+	const epicID = "oro-detrecov-qgfail"
+	epicBranch := protocol.EpicBranchPrefix + epicID
+	const targetBranch = "epic/detrecov-qgfail-parent"
+
+	repo, oldEpicOID, targetOID := newDeterministicRecoveryFixture(t, epicBranch, targetBranch)
+
+	d.worktrees = NewGitWorktreeManager(repo, "", "", &ExecCommandRunner{})
+	d.repoRoot = repo
+	d.cfg.DefaultBranch = "main"
+	qgRunner := &mockQGRunner{passed: false, output: "gate failed"}
+	d.qgRunner = qgRunner
+
+	beadSrc.mu.Lock()
+	beadSrc.shown[epicID] = &protocol.BeadDetail{ID: epicID, Title: "Recovery Epic"}
+	beadSrc.mu.Unlock()
+
+	if err := d.ffMergeEpicBranch(ctx, epicID, "worker-detrecov-qgfail", targetBranch); err == nil {
+		t.Fatal("ffMergeEpicBranch with failing QG on synthesized merge = nil, want error")
+	}
+
+	if got := gitOut(t, repo, "rev-parse", epicBranch); got != oldEpicOID {
+		t.Errorf("epic ref not rolled back: %s != original %s", got, oldEpicOID)
+	}
+	if got := gitOut(t, repo, "rev-parse", targetBranch); got != targetOID {
+		t.Errorf("target branch advanced despite QG failure: %s != original %s", got, targetOID)
+	}
+	if len(qgRunner.calls) != 1 {
+		t.Fatalf("qgRunner.Run called %d times, want 1", len(qgRunner.calls))
+	}
+
+	beadSrc.mu.Lock()
+	defer beadSrc.mu.Unlock()
+	foundChild := false
+	for _, call := range beadSrc.created {
+		if strings.HasPrefix(call.title, "Rebase ") {
+			foundChild = true
+		}
+	}
+	if !foundChild {
+		t.Error("QG failure did not fall through to creating an LLM rebase child")
+	}
+}
+
+// TestFFMergeDeterministicRecoveryRunsQGBeforeAdvancing proves that a passing
+// quality gate against the synthesized preserve-merge commit is required
+// before targetBranch advances, and that it does advance once the gate passes
+// (oro-5pj4).
+func TestFFMergeDeterministicRecoveryRunsQGBeforeAdvancing(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+
+	const epicID = "oro-detrecov-qgpass"
+	epicBranch := protocol.EpicBranchPrefix + epicID
+	const targetBranch = "epic/detrecov-qgpass-parent"
+
+	repo, oldEpicOID, targetOID := newDeterministicRecoveryFixture(t, epicBranch, targetBranch)
+
+	d.worktrees = NewGitWorktreeManager(repo, "", "", &ExecCommandRunner{})
+	d.repoRoot = repo
+	d.cfg.DefaultBranch = "main"
+	qgRunner := &mockQGRunner{passed: true, output: "all green"}
+	d.qgRunner = qgRunner
+
+	beadSrc.mu.Lock()
+	beadSrc.shown[epicID] = &protocol.BeadDetail{ID: epicID, Title: "Recovery Epic"}
+	beadSrc.mu.Unlock()
+
+	if err := d.ffMergeEpicBranch(ctx, epicID, "worker-detrecov-qgpass", targetBranch); err != nil {
+		t.Fatalf("ffMergeEpicBranch after QG-verified deterministic recovery = %v, want nil", err)
+	}
+
+	if len(qgRunner.calls) != 1 {
+		t.Fatalf("qgRunner.Run called %d times, want 1", len(qgRunner.calls))
+	}
+
+	newTargetOID := gitOut(t, repo, "rev-parse", targetBranch)
+	if newTargetOID == targetOID {
+		t.Fatal("target branch was not advanced")
+	}
+	if !isAncestorGit(t, repo, targetOID, newTargetOID) {
+		t.Error("original target tip is not an ancestor after recovery")
+	}
+	if !isAncestorGit(t, repo, oldEpicOID, newTargetOID) {
+		t.Error("original epic tip is not an ancestor after recovery")
+	}
+}
+
 // TestFFMergeUsesDeterministicRecovery proves the close-time ff failure path
 // recovers the divergence deterministically (no LLM rebase child) when the
 // worktree manager supports it.

@@ -649,6 +649,19 @@ func (g *GitWorktreeManager) preserveEpicAncestry(ctx context.Context, epicBranc
 	return epicPreserveMerged, newCommit, nil
 }
 
+// rollbackEpicPreserve reverts epicBranch from newOID back to oldOID using a
+// compare-and-swap `update-ref`, undoing a preserve merge that failed
+// post-merge verification (e.g. the quality gate). It fails without mutating
+// the ref if epicBranch no longer points at newOID, so it never clobbers
+// unrelated work that landed on the epic branch since the preserve merge.
+func (g *GitWorktreeManager) rollbackEpicPreserve(ctx context.Context, epicBranch, oldOID, newOID string) error {
+	if _, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "update-ref",
+		"refs/heads/"+epicBranch, oldOID, newOID); err != nil {
+		return fmt.Errorf("compare-and-swap rollback of epic ref %s to %s: %w", epicBranch, oldOID, err)
+	}
+	return nil
+}
+
 // mergeTreeWrite runs `git merge-tree --write-tree a b`. On a clean merge it
 // returns the written tree OID. A merge conflict is git exit status 1
 // (conflict=true, err=nil); any other non-zero exit is an operational error.
