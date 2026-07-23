@@ -405,7 +405,7 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 		section(b, "Worker Program", params.WorkerProgram)
 	}
 	section(b, "TDD", "Write tests FIRST. Red-green-refactor. Every feature/fix needs a test.")
-	section(b, "Quality Gate", "Before completing, run `./quality_gate.sh` if present; otherwise run `./scripts/quality_gate.sh`. Ensure it passes. Mutation testing is off by default; use `--mutation-testing` only when explicitly requested.")
+	section(b, "Quality Gate", "Run the task acceptance command and focused tests needed to validate your work; do not run the full quality gate yourself. The worker harness owns and enforces the full quality gate after your subprocess exits.")
 	section(b, "Worktree", fmt.Sprintf(
 		"You are in `%s`. Commit to branch `%s%s`.", params.WorktreePath, protocol.BranchPrefix, params.BeadID,
 	))
