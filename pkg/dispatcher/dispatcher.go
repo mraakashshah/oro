@@ -1764,7 +1764,7 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 	}
 
 	if beadID != "" {
-		if d.quarantineDisconnectedPreservedAssignment(context.Background(), workerID, beadID, assignmentID, worktree, baseBranch) {
+		if d.quarantineDisconnectedPreservedAssignment(context.Background(), workerID, beadID, assignmentID, worktree, baseBranch, "") {
 			d.clearBeadTracking(beadID)
 			d.notifyAssignLoop()
 			return
@@ -1780,7 +1780,7 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 	d.notifyAssignLoop()
 }
 
-func (d *Dispatcher) quarantineDisconnectedPreservedAssignment(ctx context.Context, workerID, beadID string, assignmentID int64, worktree, baseBranch string) bool {
+func (d *Dispatcher) quarantineDisconnectedPreservedAssignment(ctx context.Context, workerID, beadID string, assignmentID int64, worktree, baseBranch, cause string) bool {
 	if assignmentID <= 0 {
 		return false
 	}
@@ -1801,6 +1801,9 @@ func (d *Dispatcher) quarantineDisconnectedPreservedAssignment(ctx context.Conte
 	}
 	if details == "" {
 		details = "disconnected worker left recovery state requiring preservation"
+	}
+	if cause != "" {
+		details = appendRecoveryDetail(details, cause)
 	}
 	_, err = d.createRecoveryQuarantine(ctx, recoveryQuarantine{
 		BeadID:       beadID,
