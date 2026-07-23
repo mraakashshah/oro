@@ -6982,8 +6982,13 @@ func (d *Dispatcher) prepareEpicBranchForAssignment(ctx context.Context, beadID,
 			fmt.Sprintf(`{"branch":%q,"base_branch":%q}`, baseBranch, d.cfg.DefaultBranch))
 		return true
 	}
-	divergenceErr := fmt.Errorf("epic branch %s diverged from %s", baseBranch, d.cfg.DefaultBranch)
 	epicID := strings.TrimPrefix(baseBranch, protocol.EpicBranchPrefix)
+	if d.tryDeterministicEpicRebase(ctx, epicID, workerID, baseBranch, d.cfg.DefaultBranch) {
+		_ = d.logEvent(ctx, "epic_deterministic_rebase_prepare_diverged", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"branch":%q,"base_branch":%q}`, baseBranch, d.cfg.DefaultBranch))
+		return true
+	}
+	divergenceErr := fmt.Errorf("epic branch %s diverged from %s", baseBranch, d.cfg.DefaultBranch)
 	if _, ensureErr := d.ensureEpicRebaseChild(ctx, epicID, baseBranch, d.cfg.DefaultBranch, divergenceErr.Error()); ensureErr != nil {
 		_ = d.logEvent(ctx, "epic_rebase_child_ensure_failed", "dispatcher", beadID, workerID, ensureErr.Error())
 	}
