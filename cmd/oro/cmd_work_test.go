@@ -16,6 +16,46 @@ import (
 	"oro/pkg/worker"
 )
 
+type standaloneLeaseRecorder struct {
+	active bool
+	events []string
+}
+
+func (r *standaloneLeaseRecorder) Close() error {
+	if !r.active {
+		return errors.New("standalone runtime lease closed twice")
+	}
+	r.events = append(r.events, "release")
+	r.active = false
+	return nil
+}
+
+func (r *standaloneLeaseRecorder) Environment() []string { return []string{"WORK_LEASE_ACTIVE=1"} }
+
+type leaseAwareStandaloneWorktreeManager struct {
+	dispatcher.WorktreeManager
+	lease     *standaloneLeaseRecorder
+	worktree  string
+	createHit bool
+	removeHit bool
+}
+
+func (m *leaseAwareStandaloneWorktreeManager) Create(_ context.Context, _, _ string) (string, string, error) {
+	if !m.lease.active {
+		return "", "", errors.New("worktree setup began without runtime lease")
+	}
+	m.createHit = true
+	return m.worktree, "agent/lease-envelope", nil
+}
+
+func (m *leaseAwareStandaloneWorktreeManager) Remove(_ context.Context, _ string) error {
+	if !m.lease.active {
+		return errors.New("worktree removal began without runtime lease")
+	}
+	m.removeHit = true
+	return nil
+}
+
 type failingStandaloneWorktreeManager struct {
 	dispatcher.WorktreeManager
 	prepareCalls int
@@ -72,6 +112,62 @@ func TestWorkNoSeparatePreRebaseQG(t *testing.T) {
 	}
 	if recorded.Component != "oro-work-pre-merge" {
 		t.Fatalf("recorded component = %q, want oro-work-pre-merge", recorded.Component)
+	}
+}
+
+func TestStandaloneWorkHasEncompassingLease(t *testing.T) {
+	ctx := context.Background()
+	repoRoot := t.TempDir()
+	t.Setenv("ORO_PROJECT", "lease-envelope")
+	worktree := t.TempDir()
+	if err := os.WriteFile(filepath.Join(worktree, "acceptance_test.go"), []byte("package acceptance\n"), 0o600); err != nil {
+		t.Fatalf("write acceptance test fixture: %v", err)
+	}
+
+	db, err := openStateDB(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatalf("open state database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := beadstore.NewSQLiteStore(db)
+	if _, err := store.Create(ctx, beadstore.CreateParams{
+		ID:                 "lease-envelope",
+		Title:              "Lease standalone work lifecycle",
+		Type:               "task",
+		AcceptanceCriteria: "Test: acceptance_test.go:TestAcceptance | Cmd: test \"$WORK_LEASE_ACTIVE\" = 1",
+	}); err != nil {
+		t.Fatalf("create bead: %v", err)
+	}
+
+	lease := &standaloneLeaseRecorder{}
+	wtMgr := &leaseAwareStandaloneWorktreeManager{lease: lease, worktree: worktree}
+	deps := &workDeps{
+		beadSrc:       store,
+		wtMgr:         wtMgr,
+		spawner:       &workerRouterTestSpawner{},
+		repoRoot:      repoRoot,
+		defaultBranch: "main",
+		hasNewWork:    func(_, _, _ string) bool { return false },
+		worktreeDirty: func(context.Context, string) (bool, string, error) { return false, "", nil },
+		openRuntime: func(_ context.Context, path string) (workRuntime, error) {
+			if path == "" {
+				t.Fatal("runtime worktree path is empty")
+			}
+			lease.events = append(lease.events, "acquire")
+			lease.active = true
+			return lease, nil
+		},
+		runShellCmd: defaultRunShellCmd,
+	}
+
+	if err := executeWork(ctx, &workConfig{beadID: "lease-envelope", timeout: time.Second}, deps); err != nil {
+		t.Fatalf("executeWork: %v", err)
+	}
+	if !wtMgr.createHit || !wtMgr.removeHit {
+		t.Fatalf("leased lifecycle omitted stage: setup=%t cleanup=%t", wtMgr.createHit, wtMgr.removeHit)
+	}
+	if lease.active || len(lease.events) != 2 || lease.events[0] != "acquire" || lease.events[1] != "release" {
+		t.Fatalf("lease lifecycle = %v, active=%t; want [acquire release]", lease.events, lease.active)
 	}
 }
 
