@@ -817,21 +817,25 @@ func TestEpicRebaseChildAssignableOnDivergedBranch(t *testing.T) {
 		}
 	})
 
-	t.Run("ordinary child remains rejected with cooldown", func(t *testing.T) {
+	t.Run("ordinary child unblocked by deterministic recovery on clean divergence", func(t *testing.T) {
+		// oro-hp13: a worktree manager that implements epicMergePreserver now
+		// resolves a clean (disjoint-file) divergence deterministically at
+		// assignment time, so an ordinary child no longer needs to wait for
+		// an LLM rebase child — it proceeds without a cooldown.
 		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 		ctx := context.Background()
 		bead := protocol.Bead{ID: beadID, Title: "Implement epic work", Epic: epicID}
 		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: bead.Title, Type: "task", Status: "open"}
 		d.worktrees = newDivergedAssignmentWorktreeManager(t, baseBranch)
 
-		if d.ensureEpicBranchReady(ctx, bead, &trackedWorker{id: workerID}, baseBranch, epicID) {
-			t.Fatal("ensureEpicBranchReady = true, want ordinary child rejected")
+		if !d.ensureEpicBranchReady(ctx, bead, &trackedWorker{id: workerID}, baseBranch, epicID) {
+			t.Fatal("ensureEpicBranchReady = false, want deterministic recovery to unblock ordinary child")
 		}
 		d.mu.Lock()
 		_, inCooldown := d.worktreeFailures[beadID]
 		d.mu.Unlock()
-		if !inCooldown {
-			t.Fatal("assignment failure cooldown not recorded for ordinary child")
+		if inCooldown {
+			t.Fatal("assignment failure cooldown recorded despite successful deterministic recovery")
 		}
 	})
 
@@ -872,6 +876,76 @@ func TestEpicRebaseChildAssignableOnDivergedBranch(t *testing.T) {
 			t.Fatal("assignment failure cooldown not recorded after operational error")
 		}
 	})
+}
+
+// TestPrepareEpicBranchForAssignmentTriesDeterministicRebaseBeforeChild proves
+// that an ordinary (non-rebase-child) bead assigned against a cleanly
+// diverged epic branch is unblocked by deterministic recovery instead of
+// falling back to an LLM rebase child, when the worktree manager supports it
+// (oro-hp13).
+func TestPrepareEpicBranchForAssignmentTriesDeterministicRebaseBeforeChild(t *testing.T) {
+	const (
+		epicID     = "oro-hp13-clean"
+		beadID     = "oro-hp13-child"
+		workerID   = "worker-hp13"
+		baseBranch = protocol.EpicBranchPrefix + epicID
+	)
+
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: "Implement epic work", Type: "task", Status: "open"}
+	d.worktrees = newDivergedAssignmentWorktreeManager(t, baseBranch)
+	d.cfg.DefaultBranch = "main"
+
+	if !d.prepareEpicBranchForAssignment(ctx, beadID, workerID, baseBranch) {
+		t.Fatal("prepareEpicBranchForAssignment = false, want deterministic recovery to unblock a clean divergence")
+	}
+
+	beadSrc.mu.Lock()
+	defer beadSrc.mu.Unlock()
+	for _, call := range beadSrc.created {
+		if strings.HasPrefix(call.title, "Rebase ") {
+			t.Fatalf("deterministic recovery still created an LLM rebase child: %q", call.title)
+		}
+	}
+}
+
+// TestPrepareEpicBranchForAssignmentFallsBackWithoutPreserver proves that a
+// worktree manager which does not implement epicMergePreserver keeps the
+// existing ensureEpicRebaseChild + reject path unchanged on divergence
+// (oro-hp13).
+func TestPrepareEpicBranchForAssignmentFallsBackWithoutPreserver(t *testing.T) {
+	const (
+		epicID     = "oro-hp13-mock"
+		beadID     = "oro-hp13-mock-child"
+		workerID   = "worker-hp13-mock"
+		baseBranch = protocol.EpicBranchPrefix + epicID
+	)
+
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: "Implement epic work", Type: "task", Status: "open"}
+	wtMgr.prepareBaseFn = func(context.Context, string, string) (bool, error) { return false, nil }
+	wtMgr.baseUniqueFn = func(_ context.Context, branch, base string) (bool, error) {
+		return (branch == baseBranch && base == "main") || (branch == "main" && base == baseBranch), nil
+	}
+	d.cfg.DefaultBranch = "main"
+
+	if d.prepareEpicBranchForAssignment(ctx, beadID, workerID, baseBranch) {
+		t.Fatal("prepareEpicBranchForAssignment = true, want mock (non-preserver) manager to fall back and reject")
+	}
+
+	beadSrc.mu.Lock()
+	defer beadSrc.mu.Unlock()
+	found := false
+	for _, call := range beadSrc.created {
+		if strings.HasPrefix(call.title, "Rebase ") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("fallback path did not create an LLM rebase child")
+	}
 }
 
 func TestAssignmentDivergenceCreatesOneRecoveryChild(t *testing.T) {
@@ -18329,6 +18403,15 @@ func TestEpicFFMergeFailureCreatesActionableRebaseChild(t *testing.T) {
 	}
 	if strings.Contains(rebaseBead.acceptanceCriteria, "git checkout ") {
 		t.Errorf("rebase child acceptance criteria should not check out the epic branch in-place: %s", rebaseBead.acceptanceCriteria)
+	}
+	if !strings.Contains(rebaseBead.acceptanceCriteria, "Constraint:") {
+		t.Errorf("rebase child acceptance criteria missing a Constraint segment: %s", rebaseBead.acceptanceCriteria)
+	}
+	if !strings.Contains(rebaseBead.acceptanceCriteria, "--onto") {
+		t.Errorf("rebase child acceptance criteria does not forbid a terminal rebase --onto the epic tip: %s", rebaseBead.acceptanceCriteria)
+	}
+	if !strings.Contains(rebaseBead.acceptanceCriteria, "flattens the preserve merge") {
+		t.Errorf("rebase child acceptance criteria does not explain why a terminal rebase onto the epic tip is forbidden: %s", rebaseBead.acceptanceCriteria)
 	}
 
 	const rebaseChildID = "oro-rebase-child"
