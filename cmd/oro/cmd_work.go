@@ -141,6 +141,13 @@ type workMemoryStore interface {
 	SaveVocab(context.Context) error
 }
 
+// workRuntime owns the lease and subprocess environment for one standalone
+// work lifecycle.
+type workRuntime interface {
+	Close() error
+	Environment() []string
+}
+
 // workDeps holds injectable dependencies for testability.
 type workDeps struct {
 	beadSrc         beadstore.Store
@@ -155,8 +162,9 @@ type workDeps struct {
 	defaultBranch   string
 	hasNewWork      func(repoRoot, branch, targetBranch string) bool                                    // defaults to hasCommitsAhead
 	runQG           func(ctx context.Context, worktree string, skipMutation bool) (bool, string, error) // defaults to worker.RunQualityGate
-	runShellCmd     func(ctx context.Context, dir, cmd string) (bool, error)                            // defaults to defaultRunShellCmd
-	worktreeDirty   func(ctx context.Context, worktree string) (bool, string, error)                    // defaults to worktreeHasUncommittedChanges
+	runShellCmd     func(ctx context.Context, dir, cmd string, env []string) (bool, error)              // defaults to defaultRunShellCmd
+	openRuntime     func(ctx context.Context, workdir string) (workRuntime, error)
+	worktreeDirty   func(ctx context.Context, worktree string) (bool, string, error) // defaults to worktreeHasUncommittedChanges
 	recordQGFailure func(ctx context.Context, rec dispatcher.QGFailureRecord, cls dispatcher.QGFailureClassification) error
 	stdout          io.Writer
 	cardStore       cards.Store
@@ -340,6 +348,7 @@ func runWork(_ *cobra.Command, cfg *workConfig) error {
 		return err
 	}
 	deps.storagePolicy = storagePolicy
+	deps.openRuntime = newProductionWorkRuntime(repoRoot, storagePolicy)
 
 	err = executeWork(ctx, cfg, deps)
 	var ee *exitError
@@ -349,6 +358,59 @@ func runWork(_ *cobra.Command, cfg *workConfig) error {
 		os.Exit(ee.code) //nolint:gocritic // stop() called above; defer is backup only
 	}
 	return err
+}
+
+type productionWorkRuntime struct {
+	handle  *storage.RuntimeHandle
+	catalog *storage.Catalog
+}
+
+func (runtime *productionWorkRuntime) Close() error {
+	if runtime == nil {
+		return nil
+	}
+	return errors.Join(runtime.handle.Close(), runtime.catalog.Close())
+}
+
+func (runtime *productionWorkRuntime) Environment() []string {
+	if runtime == nil || runtime.handle == nil {
+		return nil
+	}
+	return runtime.handle.Env
+}
+
+func newProductionWorkRuntime(repoRoot string, _ config.StoragePolicy) func(context.Context, string) (workRuntime, error) {
+	return func(ctx context.Context, workdir string) (workRuntime, error) {
+		oroHome, err := resolveOroHome()
+		if err != nil {
+			return nil, fmt.Errorf("resolve standalone work oro home: %w", err)
+		}
+		catalog, err := openStorageCatalog(ctx, oroHome)
+		if err != nil {
+			return nil, fmt.Errorf("open standalone work catalog: %w", err)
+		}
+		now := time.Now().UTC()
+		handle, err := storage.OpenRuntime(ctx, storage.RuntimeRequest{
+			Catalog: catalog,
+			Lease: storage.LeaseRequest{
+				ID:           storage.LeaseID(fmt.Sprintf("standalone-work-%d-%d", os.Getpid(), now.UnixNano())),
+				ControllerID: "standalone-work",
+				OwnerID:      "standalone-work",
+				PID:          os.Getpid(),
+				ProcessStart: now,
+				AcquiredAt:   now,
+				HeartbeatAt:  now,
+			},
+			Env:     os.Environ(),
+			Workdir: workdir,
+			Policy:  storage.StoragePolicy{ProjectID: filepath.Base(repoRoot), RepositoryRoot: repoRoot},
+		})
+		if err != nil {
+			_ = catalog.Close()
+			return nil, fmt.Errorf("open standalone work runtime: %w", err)
+		}
+		return &productionWorkRuntime{handle: handle, catalog: catalog}, nil
+	}
 }
 
 // executeWork is the testable core of the work command.
@@ -413,6 +475,20 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		fmt.Fprintln(out, prompt)
 		logStep("Dry-run spawn prompt printed")
 		return nil
+	}
+
+	var runtimeEnv []string
+	if deps.openRuntime != nil {
+		runtime, runtimeErr := deps.openRuntime(ctx, deps.repoRoot)
+		if runtimeErr != nil {
+			return fmt.Errorf("open standalone work runtime: %w", runtimeErr)
+		}
+		runtimeEnv = runtime.Environment()
+		defer func() {
+			if closeErr := runtime.Close(); closeErr != nil {
+				logStep("Warning: release standalone work runtime: %v", closeErr)
+			}
+		}()
 	}
 
 	// Open per-bead log file for observability.
@@ -495,7 +571,7 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 
 			// Guard: bail out if claude produced no commits.
 			if !deps.hasNewWork(deps.repoRoot, branch, targetBranch) {
-				return noCommitsResult(ctx, cfg, deps, worktree, &merged)
+				return noCommitsResult(ctx, cfg, deps, worktree, runtimeEnv, &merged)
 			}
 		}
 		skipClaude = false // Only skip the first iteration.
@@ -1147,7 +1223,7 @@ func mergeToMain(ctx context.Context, cfg *workConfig, deps *workDeps, worktree,
 // If the bead has structured acceptance criteria (Test: + Cmd: fields) and the
 // specific AC test file exists and the AC command passes, the code is already on
 // main — close the bead. Otherwise return an error.
-func noCommitsResult(ctx context.Context, cfg *workConfig, deps *workDeps, worktree string, merged *bool) error {
+func noCommitsResult(ctx context.Context, cfg *workConfig, deps *workDeps, worktree string, runtimeEnv []string, merged *bool) error {
 	dirty, dirtyStatus, dirtyErr := noCommitWorktreeDirty(ctx, deps, worktree)
 	if dirtyErr != nil {
 		logStep("No commits on branch — preserving worktree because cleanliness check failed: %v", dirtyErr)
@@ -1160,7 +1236,7 @@ func noCommitsResult(ctx context.Context, cfg *workConfig, deps *workDeps, workt
 			cfg.beadID, worktree, dirtyStatus)
 	}
 
-	if acAlreadySatisfied(ctx, cfg, deps, worktree) {
+	if acAlreadySatisfied(ctx, cfg, deps, worktree, runtimeEnv) {
 		logStep("AC already satisfied — closing bead (code already on main)")
 		*merged = true
 		_ = deps.beadSrc.Close(ctx, cfg.beadID, "AC already satisfied — code already on main")
@@ -1193,7 +1269,7 @@ func worktreeHasUncommittedChanges(ctx context.Context, worktree string) (dirty 
 // acAlreadySatisfied checks if the bead's structured acceptance criteria
 // (Test: + Cmd: fields) are already satisfied on the unmodified worktree.
 // Returns false if AC is unparseable, test file is missing, or command fails.
-func acAlreadySatisfied(ctx context.Context, cfg *workConfig, deps *workDeps, worktree string) bool {
+func acAlreadySatisfied(ctx context.Context, cfg *workConfig, deps *workDeps, worktree string, runtimeEnv []string) bool {
 	if cfg.bead == nil || deps.runShellCmd == nil {
 		return false
 	}
@@ -1208,7 +1284,7 @@ func acAlreadySatisfied(ctx context.Context, cfg *workConfig, deps *workDeps, wo
 	if err := observeStandaloneStorageController(ctx, cfg.storageController); err != nil {
 		return false
 	}
-	passed, err := deps.runShellCmd(ctx, worktree, cmd)
+	passed, err := deps.runShellCmd(ctx, worktree, cmd, runtimeEnv)
 	return err == nil && passed
 }
 
@@ -1238,9 +1314,12 @@ func parseACTestFile(ac string) (string, bool) {
 
 // defaultRunShellCmd runs a shell command in a directory and returns whether it exited 0.
 // The cmd argument comes from bead acceptance criteria (trusted internal data).
-func defaultRunShellCmd(ctx context.Context, dir, cmd string) (bool, error) {
+func defaultRunShellCmd(ctx context.Context, dir, cmd string, env []string) (bool, error) {
 	c := exec.CommandContext(ctx, "bash", "-c", cmd) //nolint:gosec // cmd from trusted AC field
 	c.Dir = dir
+	if len(env) > 0 {
+		c.Env = env
+	}
 	if err := c.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
