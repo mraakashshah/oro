@@ -37,9 +37,23 @@ func Validate(bead protocol.BeadDetail, mode ValidationMode) error {
 	if bead.Type == "epic" {
 		return validateEpic(fields)
 	}
+	return validateExecutableTask(bead, fields, mode)
+}
+
+func validateExecutableTask(bead protocol.BeadDetail, fields map[string]string, mode ValidationMode) error {
 	if bead.Type != "task" && bead.Type != "bug" {
 		return fmt.Errorf("task contract: type must be task or bug, got %q", bead.Type)
 	}
+	if err := validateTaskShape(bead); err != nil {
+		return err
+	}
+	if err := requireAcceptanceFields(fields, "Test", "Cmd", "Assert", "Read"); err != nil {
+		return err
+	}
+	return validateTaskcraftFields(bead.Metadata, fields, mode)
+}
+
+func validateTaskShape(bead protocol.BeadDetail) error {
 	if strings.TrimSpace(bead.Title) == "" {
 		return fmt.Errorf("task contract: title is required")
 	}
@@ -49,18 +63,27 @@ func Validate(bead protocol.BeadDetail, mode ValidationMode) error {
 	if bead.EstimatedMinutes < 1 || bead.EstimatedMinutes > 7 {
 		return fmt.Errorf("task contract: estimate must be between 1 and 7 minutes")
 	}
-	for _, field := range []string{"Test", "Cmd", "Assert", "Read"} {
+	return nil
+}
+
+func requireAcceptanceFields(fields map[string]string, required ...string) error {
+	for _, field := range required {
 		if fields[field] == "" {
 			return fmt.Errorf("task contract: %s is required", field)
 		}
 	}
-	if mode == ValidationModeTaskcraft {
-		if metadataFlag(bead.Metadata, MetadataCallableAPI, "callable_api") && fields["Signature"] == "" {
-			return fmt.Errorf("task contract: Signature is required for callable APIs")
-		}
-		if metadataFlag(bead.Metadata, MetadataNonTrivialBoundary, "non_trivial_boundary") && fields["Edges"] == "" {
-			return fmt.Errorf("task contract: Edges is required for non-trivial boundaries")
-		}
+	return nil
+}
+
+func validateTaskcraftFields(metadata map[string]any, fields map[string]string, mode ValidationMode) error {
+	if mode != ValidationModeTaskcraft {
+		return nil
+	}
+	if metadataFlag(metadata, MetadataCallableAPI, "callable_api") && fields["Signature"] == "" {
+		return fmt.Errorf("task contract: Signature is required for callable APIs")
+	}
+	if metadataFlag(metadata, MetadataNonTrivialBoundary, "non_trivial_boundary") && fields["Edges"] == "" {
+		return fmt.Errorf("task contract: Edges is required for non-trivial boundaries")
 	}
 	return nil
 }

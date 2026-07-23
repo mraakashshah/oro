@@ -1,10 +1,11 @@
-package taskcontract
+package taskcontract_test
 
 import (
 	"strings"
 	"testing"
 
 	"oro/pkg/protocol"
+	"oro/pkg/taskcontract"
 )
 
 func TestValidateExecutableTaskV2(t *testing.T) {
@@ -27,31 +28,35 @@ func TestValidateExecutableTaskV2(t *testing.T) {
 	tests := []struct {
 		name string
 		bead protocol.BeadDetail
-		mode ValidationMode
+		mode taskcontract.ValidationMode
 		want string
 	}{
-		{name: "valid task", bead: validTask, mode: ValidationModeExecutable},
-		{name: "missing title", bead: without(validTask, func(bead *protocol.BeadDetail) { bead.Title = "" }), mode: ValidationModeExecutable, want: "title"},
-		{name: "missing test", bead: withoutAcceptanceField(validTask, "Test"), mode: ValidationModeExecutable, want: "Test"},
-		{name: "missing command", bead: withoutAcceptanceField(validTask, "Cmd"), mode: ValidationModeExecutable, want: "Cmd"},
-		{name: "missing assertion", bead: withoutAcceptanceField(validTask, "Assert"), mode: ValidationModeExecutable, want: "Assert"},
-		{name: "missing read", bead: withoutAcceptanceField(validTask, "Read"), mode: ValidationModeExecutable, want: "Read"},
-		{name: "estimate below range", bead: without(validTask, func(bead *protocol.BeadDetail) { bead.EstimatedMinutes = 0 }), mode: ValidationModeExecutable, want: "estimate"},
-		{name: "estimate above range", bead: without(validTask, func(bead *protocol.BeadDetail) { bead.EstimatedMinutes = 8 }), mode: ValidationModeExecutable, want: "estimate"},
-		{name: "invalid type", bead: without(validTask, func(bead *protocol.BeadDetail) { bead.Type = "feature" }), mode: ValidationModeExecutable, want: "type"},
-		{name: "invalid priority", bead: without(validTask, func(bead *protocol.BeadDetail) { bead.Priority = 5 }), mode: ValidationModeExecutable, want: "priority"},
-		{name: "callable API lacks signature", bead: without(validTask, func(bead *protocol.BeadDetail) { bead.Metadata = map[string]any{MetadataCallableAPI: true} }), mode: ValidationModeTaskcraft, want: "Signature"},
-		{name: "boundary lacks edges", bead: without(validTask, func(bead *protocol.BeadDetail) { bead.Metadata = map[string]any{MetadataNonTrivialBoundary: true} }), mode: ValidationModeTaskcraft, want: "Edges"},
-		{name: "epic needs main branch command", bead: protocol.BeadDetail{ContractVersion: 2, Type: "epic", AcceptanceCriteria: "Cmd: go test ./...\nAssert: passes"}, mode: ValidationModeExecutable, want: "main"},
-		{name: "epic needs assertion", bead: protocol.BeadDetail{ContractVersion: 2, Type: "epic", AcceptanceCriteria: "Cmd: git merge-base --is-ancestor main HEAD"}, mode: ValidationModeExecutable, want: "Assert"},
-		{name: "epic valid", bead: protocol.BeadDetail{ContractVersion: 2, Type: "epic", AcceptanceCriteria: "Cmd: git merge-base --is-ancestor main HEAD\nAssert: main is an ancestor"}, mode: ValidationModeExecutable},
-		{name: "historical version is compatible", bead: protocol.BeadDetail{ContractVersion: 0, Type: "task"}, mode: ValidationModeExecutable},
-		{name: "exempt producer is compatible", bead: protocol.BeadDetail{ContractVersion: 2, Type: "task"}, mode: ValidationModeExempt},
+		{name: "valid task", bead: validTask, mode: taskcontract.ValidationModeExecutable},
+		{name: "missing title", bead: without(validTask, func(bead *protocol.BeadDetail) { bead.Title = "" }), mode: taskcontract.ValidationModeExecutable, want: "title"},
+		{name: "missing test", bead: withoutAcceptanceField(validTask, "Test"), mode: taskcontract.ValidationModeExecutable, want: "Test"},
+		{name: "missing command", bead: withoutAcceptanceField(validTask, "Cmd"), mode: taskcontract.ValidationModeExecutable, want: "Cmd"},
+		{name: "missing assertion", bead: withoutAcceptanceField(validTask, "Assert"), mode: taskcontract.ValidationModeExecutable, want: "Assert"},
+		{name: "missing read", bead: withoutAcceptanceField(validTask, "Read"), mode: taskcontract.ValidationModeExecutable, want: "Read"},
+		{name: "estimate below range", bead: without(validTask, func(bead *protocol.BeadDetail) { bead.EstimatedMinutes = 0 }), mode: taskcontract.ValidationModeExecutable, want: "estimate"},
+		{name: "estimate above range", bead: without(validTask, func(bead *protocol.BeadDetail) { bead.EstimatedMinutes = 8 }), mode: taskcontract.ValidationModeExecutable, want: "estimate"},
+		{name: "invalid type", bead: without(validTask, func(bead *protocol.BeadDetail) { bead.Type = "feature" }), mode: taskcontract.ValidationModeExecutable, want: "type"},
+		{name: "invalid priority", bead: without(validTask, func(bead *protocol.BeadDetail) { bead.Priority = 5 }), mode: taskcontract.ValidationModeExecutable, want: "priority"},
+		{name: "callable API lacks signature", bead: without(validTask, func(bead *protocol.BeadDetail) {
+			bead.Metadata = map[string]any{taskcontract.MetadataCallableAPI: true}
+		}), mode: taskcontract.ValidationModeTaskcraft, want: "Signature"},
+		{name: "boundary lacks edges", bead: without(validTask, func(bead *protocol.BeadDetail) {
+			bead.Metadata = map[string]any{taskcontract.MetadataNonTrivialBoundary: true}
+		}), mode: taskcontract.ValidationModeTaskcraft, want: "Edges"},
+		{name: "epic needs main branch command", bead: protocol.BeadDetail{ContractVersion: 2, Type: "epic", AcceptanceCriteria: "Cmd: go test ./...\nAssert: passes"}, mode: taskcontract.ValidationModeExecutable, want: "main"},
+		{name: "epic needs assertion", bead: protocol.BeadDetail{ContractVersion: 2, Type: "epic", AcceptanceCriteria: "Cmd: git merge-base --is-ancestor main HEAD"}, mode: taskcontract.ValidationModeExecutable, want: "Assert"},
+		{name: "epic valid", bead: protocol.BeadDetail{ContractVersion: 2, Type: "epic", AcceptanceCriteria: "Cmd: git merge-base --is-ancestor main HEAD\nAssert: main is an ancestor"}, mode: taskcontract.ValidationModeExecutable},
+		{name: "historical version is compatible", bead: protocol.BeadDetail{ContractVersion: 0, Type: "task"}, mode: taskcontract.ValidationModeExecutable},
+		{name: "exempt producer is compatible", bead: protocol.BeadDetail{ContractVersion: 2, Type: "task"}, mode: taskcontract.ValidationModeExempt},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := Validate(tc.bead, tc.mode)
+			err := taskcontract.Validate(tc.bead, tc.mode)
 			if tc.want == "" {
 				if err != nil {
 					t.Fatalf("Validate() error = %v", err)
