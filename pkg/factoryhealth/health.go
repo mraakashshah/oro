@@ -93,6 +93,8 @@ type Metrics struct {
 	DaemonRunning                bool              `json:"daemon_running"`
 	DaemonPID                    int               `json:"daemon_pid,omitempty"`
 	DispatcherState              string            `json:"dispatcher_state,omitempty"`
+	PauseSource                  string            `json:"pause_source,omitempty"`
+	PauseReason                  string            `json:"pause_reason,omitempty"`
 	WorkerCount                  int               `json:"worker_count"`
 	ActiveWorkers                int               `json:"active_workers"`
 	IdleWorkers                  int               `json:"idle_workers"`
@@ -201,6 +203,8 @@ type Snapshot struct {
 	DaemonRunning                bool
 	DaemonPID                    int
 	DispatcherState              string
+	PauseSource                  string
+	PauseReason                  string
 	Workers                      []WorkerSnapshot
 	ReadyQueue                   int
 	TargetWorkers                int
@@ -241,6 +245,8 @@ func metricsFromSnapshot(snapshot Snapshot) Metrics {
 		DaemonRunning:                snapshot.DaemonRunning,
 		DaemonPID:                    snapshot.DaemonPID,
 		DispatcherState:              snapshot.DispatcherState,
+		PauseSource:                  snapshot.PauseSource,
+		PauseReason:                  snapshot.PauseReason,
 		WorkerCount:                  len(snapshot.Workers),
 		ReadyQueue:                   snapshot.ReadyQueue,
 		TargetWorkers:                snapshot.TargetWorkers,
@@ -766,12 +772,14 @@ SELECT i.fingerprint
 	return topFingerprints, nil
 }
 
-// LoadRecoveryQuarantineMetrics reads assignment-blocking recovery quarantine counts from the state database.
+// LoadRecoveryQuarantineMetrics reads globally assignment-blocking recovery
+// quarantine counts from the state database. Human-owned records still protect
+// their own bead, but do not freeze unrelated factory work.
 func LoadRecoveryQuarantineMetrics(ctx context.Context, db *sql.DB) (openQuarantines int, err error) {
 	if db == nil {
 		return 0, nil
 	}
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_quarantines WHERE status IN ('open', 'human_owned')`).Scan(&openQuarantines); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_quarantines WHERE status='open'`).Scan(&openQuarantines); err != nil {
 		if tableMissing(err) {
 			return 0, nil
 		}

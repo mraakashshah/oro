@@ -185,7 +185,7 @@ func actOnMonitorHealth(ctx context.Context, w io.Writer, cfg monitorConfig, run
 	if err := maintainMonitorWorkerTargets(ctx, cfg, runner, health.Metrics); err != nil {
 		return err
 	}
-	if err := resumePausedMonitor(ctx, runner, health.Findings); err != nil {
+	if err := resumePausedMonitor(ctx, runner, health.Metrics, health.Findings); err != nil {
 		return err
 	}
 	return restartMonitorIfNeeded(ctx, cfg, runner, state, health)
@@ -219,7 +219,10 @@ func maintainMonitorWorkerTargets(ctx context.Context, cfg monitorConfig, runner
 	return nil
 }
 
-func resumePausedMonitor(ctx context.Context, runner monitorRunner, findings []factoryhealth.Finding) error {
+func resumePausedMonitor(ctx context.Context, runner monitorRunner, metrics factoryhealth.Metrics, findings []factoryhealth.Finding) error {
+	if metrics.PauseSource != "monitor" {
+		return nil
+	}
 	for _, finding := range findings {
 		if finding.Code == factoryhealth.FindingPausedWithReadyQueue {
 			if err := runner.Resume(ctx); err != nil {
@@ -599,7 +602,7 @@ func sendMonitorDirective(ctx context.Context, op, args string) error {
 		return err
 	}
 	defer conn.Close()
-	if err := sendDirective(conn, op, args); err != nil {
+	if err := sendDirectiveWithProvenance(conn, op, args, "monitor", "policy_authorized_recovery"); err != nil {
 		return err
 	}
 	_, err = readACK(conn)

@@ -66,17 +66,42 @@ func (d *Dispatcher) createRecoveryQuarantine(ctx context.Context, q recoveryQua
 		return 0, fmt.Errorf("create recovery quarantine: reason is required")
 	}
 
-	if q.AssignmentID > 0 {
-		id, ok, err := d.coalesceOpenRecoveryQuarantineForAssignment(ctx, q)
+	if q.AssignmentID <= 0 {
+		return insertRecoveryQuarantineRow(ctx, d.db, q)
+	}
+
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin recovery quarantine transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := markAssignmentQuarantinedExec(ctx, tx, q.AssignmentID); err != nil {
+		return 0, err
+	}
+
+	id, found, err := findOpenRecoveryQuarantineForAssignment(ctx, tx, q.AssignmentID)
+	if err != nil {
+		return 0, err
+	}
+	if found {
+		if _, err := tx.ExecContext(ctx, `
+UPDATE recovery_quarantines
+SET bead_id=?, worker_id=?, worktree=?, branch=?, reason=?, details=?
+WHERE id=? AND status='open'`,
+			q.BeadID, q.WorkerID, q.Worktree, q.Branch, q.Reason, q.Details, id); err != nil {
+			return 0, fmt.Errorf("update recovery quarantine: %w", err)
+		}
+	} else {
+		id, err = insertRecoveryQuarantineRow(ctx, tx, q)
 		if err != nil {
 			return 0, err
 		}
-		if ok {
-			return id, nil
-		}
 	}
-
-	return insertRecoveryQuarantineRow(ctx, d.db, q)
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit recovery quarantine transaction: %w", err)
+	}
+	return id, nil
 }
 
 // insertRecoveryQuarantineRow inserts (or coalesces onto the existing open
@@ -107,35 +132,12 @@ ON CONFLICT(bead_id, reason) WHERE status='open' DO UPDATE SET
 	return id, nil
 }
 
-func (d *Dispatcher) coalesceOpenRecoveryQuarantineForAssignment(ctx context.Context, q recoveryQuarantine) (id int64, ok bool, err error) {
-	if err := d.markAssignmentQuarantined(ctx, q.AssignmentID); err != nil {
-		return 0, false, err
-	}
-
-	id, ok, err = d.findOpenRecoveryQuarantineForAssignment(ctx, q.AssignmentID)
-	if err != nil || !ok {
-		return id, ok, err
-	}
-
-	if _, err := d.db.ExecContext(ctx, `
-UPDATE recovery_quarantines
-SET bead_id=?, worker_id=?, worktree=?, branch=?, reason=?, details=?
-WHERE id=? AND status='open'`,
-		q.BeadID, q.WorkerID, q.Worktree, q.Branch, q.Reason, q.Details, id); err != nil {
-		return 0, false, fmt.Errorf("update recovery quarantine: %w", err)
-	}
-	return id, true, nil
-}
-
-func (d *Dispatcher) findOpenRecoveryQuarantineForAssignment(ctx context.Context, assignmentID int64) (id int64, found bool, err error) {
-	if d.db == nil {
-		return 0, false, fmt.Errorf("find recovery quarantine: db is nil")
-	}
+func findOpenRecoveryQuarantineForAssignment(ctx context.Context, ex execer, assignmentID int64) (id int64, found bool, err error) {
 	if assignmentID <= 0 {
 		return 0, false, nil
 	}
 
-	if err := d.db.QueryRowContext(ctx, `
+	if err := ex.QueryRowContext(ctx, `
 SELECT id
 FROM recovery_quarantines
 WHERE assignment_id=? AND status='open'
@@ -307,17 +309,13 @@ func (d *Dispatcher) preservedWorktreeUnownedLocked(beadID, worktree string, all
 	return trackedWorktree == worktree || (allowUntracked && trackedWorktree == "")
 }
 
-func (d *Dispatcher) markAssignmentQuarantined(ctx context.Context, assignmentID int64) error {
-	return markAssignmentQuarantinedExec(ctx, d.db, assignmentID)
-}
-
 // markAssignmentQuarantinedExec flips an assignment to status='quarantined'
 // and clears completed_at. It is the single source of truth for the
 // quarantine UPDATE, shared by the online dispatcher and the offline recovery
 // command so the two paths cannot drift.
 func markAssignmentQuarantinedExec(ctx context.Context, ex execer, assignmentID int64) error {
 	res, err := ex.ExecContext(ctx,
-		`UPDATE assignments SET status='quarantined', completed_at=NULL WHERE id=?`,
+		`UPDATE assignments SET status='quarantined', completed_at=NULL WHERE id=? AND status IN ('active', 'quarantined')`,
 		assignmentID)
 	if err != nil {
 		return fmt.Errorf("mark assignment quarantined: %w", err)
@@ -362,16 +360,18 @@ ORDER BY id`)
 	return records, nil
 }
 
-// countPreservableRecoveryQuarantines returns active quarantines that may hold
-// work worth recovering. Without a stored branch or worktree, the dispatcher
-// can prove the CLI empty-safe predicate with zero dirty files and no branch;
-// any stored recovery location remains blocking until it is inspected or
-// resolved explicitly.
+// countPreservableRecoveryQuarantines returns open quarantines that may hold
+// work worth recovering. Human-owned recovery work is deliberately excluded:
+// its branch and worktree remain protected by per-bead filtering, but an
+// operator taking ownership must not freeze unrelated factory work. Without a
+// stored branch or worktree, the dispatcher can prove the CLI empty-safe
+// predicate with zero dirty files and no branch; any stored recovery location
+// remains blocking until it is inspected or resolved explicitly.
 func (d *Dispatcher) countPreservableRecoveryQuarantines(ctx context.Context) (int, error) {
 	rows, err := d.db.QueryContext(ctx, `
 SELECT COALESCE(branch, ''), COALESCE(worktree, '')
 FROM recovery_quarantines
-WHERE status IN ('open', 'human_owned')`)
+WHERE status='open'`)
 	if err != nil {
 		if tableMissingErr(err) {
 			return 0, nil

@@ -46,6 +46,7 @@ Codebase:
 
 Workflow:
   work       Execute a task through the full lifecycle
+  evidence   Record assignment-scoped diagnostic evidence
   task       Manage native Oro tasks
   shell      Launch an interactive agent session with oro settings
 
@@ -69,6 +70,7 @@ Maintenance:
   doctrine   Inspect enforcement doctrine artifacts
   uninstall  Remove oro and all its artifacts from this machine
   harness    Run Oro harness verification tests (§18)
+  version    Print the Oro version
 
 Internal:
   worker     Run an oro worker process (used by the dispatcher)

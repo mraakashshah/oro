@@ -121,6 +121,65 @@ func TestFilterIssuesFuzzy(t *testing.T) {
 	}
 }
 
+func TestFilterIssuesWithHighlights(t *testing.T) {
+	issues := []Issue{
+		{ID: "oro-001", Title: "Fix login flow", IssueType: TypeBug, Priority: PriorityCritical},
+		{ID: "oro-002", Title: "Add search", IssueType: TypeFeature, Priority: PriorityHigh},
+	}
+
+	tests := []struct {
+		name          string
+		query         string
+		wantIDs       []string
+		wantHighlight string
+	}{
+		{
+			name:    "empty query returns original issues without highlights",
+			query:   " ",
+			wantIDs: []string{"oro-001", "oro-002"},
+		},
+		{
+			name:    "structured query returns matches without highlights",
+			query:   "type:bug p0",
+			wantIDs: []string{"oro-001"},
+		},
+		{
+			name:          "free text returns title highlights",
+			query:         "login",
+			wantIDs:       []string{"oro-001"},
+			wantHighlight: "oro-001",
+		},
+		{
+			name:    "structured query with no candidates returns no result",
+			query:   "type:chore login",
+			wantIDs: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, highlights := FilterIssuesWithHighlights(issues, tt.query)
+			if len(got) != len(tt.wantIDs) {
+				t.Fatalf("FilterIssuesWithHighlights(%q) returned %d issues, want %d", tt.query, len(got), len(tt.wantIDs))
+			}
+			for i, wantID := range tt.wantIDs {
+				if got[i].ID != wantID {
+					t.Fatalf("FilterIssuesWithHighlights(%q)[%d] = %q, want %q", tt.query, i, got[i].ID, wantID)
+				}
+			}
+			if tt.wantHighlight == "" {
+				if len(highlights) != 0 {
+					t.Fatalf("FilterIssuesWithHighlights(%q) highlights = %#v, want none", tt.query, highlights)
+				}
+				return
+			}
+			if len(highlights[tt.wantHighlight]) == 0 {
+				t.Fatalf("FilterIssuesWithHighlights(%q) highlights = %#v, want title indices for %q", tt.query, highlights, tt.wantHighlight)
+			}
+		})
+	}
+}
+
 func TestIsStructuredToken(t *testing.T) {
 	tests := []struct {
 		token    string

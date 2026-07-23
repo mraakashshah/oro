@@ -124,7 +124,7 @@ func TestMonitorActResumesPausedQueueAndMaintainsWorkers(t *testing.T) {
 		Findings: []factoryhealth.Finding{
 			{Code: factoryhealth.FindingPausedWithReadyQueue, Severity: factoryhealth.SeverityWarning},
 		},
-		Metrics: factoryhealth.Metrics{DaemonRunning: true, ReadyQueue: 3, WorkerCount: 1, TargetWorkers: 1, MaxWorkers: 1},
+		Metrics: factoryhealth.Metrics{DaemonRunning: true, ReadyQueue: 3, WorkerCount: 1, TargetWorkers: 1, MaxWorkers: 1, PauseSource: "monitor"},
 	}}
 
 	var buf bytes.Buffer
@@ -136,6 +136,35 @@ func TestMonitorActResumesPausedQueueAndMaintainsWorkers(t *testing.T) {
 	want := []string{"max-workers", "scale", "resume"}
 	if strings.Join(runner.calls, ",") != strings.Join(want, ",") {
 		t.Fatalf("calls = %v, want %v", runner.calls, want)
+	}
+}
+
+func TestMonitorActPreservesOperatorPauseAcrossRepeatedCycles(t *testing.T) {
+	runner := &fakeMonitorRunner{health: factoryhealth.FactoryHealth{
+		State: factoryhealth.StateDegraded,
+		Findings: []factoryhealth.Finding{
+			{Code: factoryhealth.FindingPausedWithReadyQueue, Severity: factoryhealth.SeverityWarning},
+			{Code: factoryhealth.FindingQGIncidentsOpen, Severity: factoryhealth.SeverityError},
+			{Code: factoryhealth.FindingQGIncidentIncrease, Severity: factoryhealth.SeverityError, Fingerprint: "qg:systemic"},
+		},
+		Metrics: factoryhealth.Metrics{
+			DaemonRunning: true,
+			ReadyQueue:    3,
+			PauseSource:   "operator",
+			PauseReason:   "operator_request",
+		},
+	}}
+	cfg := monitorConfig{act: true, restartAfter: 2}
+	state := newMonitorState()
+
+	for i := 0; i < 3; i++ {
+		if err := runMonitorIteration(context.Background(), &bytes.Buffer{}, cfg, runner, state); err != nil {
+			t.Fatalf("iteration %d: %v", i+1, err)
+		}
+	}
+
+	if got := strings.Join(runner.calls, ","); got != "" {
+		t.Fatalf("calls = %q, want no silent resume of operator pause", got)
 	}
 }
 
@@ -599,6 +628,7 @@ func TestMonitorActIgnoresStaleOpsRunFindingWhenCountsAreZero(t *testing.T) {
 			WorkerCount:   1,
 			TargetWorkers: 1,
 			MaxWorkers:    2,
+			PauseSource:   "monitor",
 			OpsRuns:       factoryhealth.OpsRunMetrics{},
 		},
 	}}

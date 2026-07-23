@@ -1147,6 +1147,32 @@ func (m *mockAcceptanceRunner) Run(_ context.Context, _ string) (string, bool, e
 	return m.output, m.passed, m.err
 }
 
+type blockingAcceptanceRunner struct {
+	mu      sync.Mutex
+	output  string
+	passed  bool
+	calls   int
+	started chan struct{}
+	release chan struct{}
+}
+
+func (m *blockingAcceptanceRunner) Run(_ context.Context, _ string) (string, bool, error) {
+	m.mu.Lock()
+	m.calls++
+	output, passed := m.output, m.passed
+	m.mu.Unlock()
+
+	m.started <- struct{}{}
+	<-m.release
+	return output, passed, nil
+}
+
+func (m *blockingAcceptanceRunner) callCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
+}
+
 type mockProcess struct {
 	output string
 }
@@ -1590,6 +1616,14 @@ func TestNewUsesOroHomeForPanesDir(t *testing.T) {
 // startDispatcher starts the dispatcher in the background and returns a cancel func.
 func startDispatcher(t *testing.T, d *Dispatcher) context.CancelFunc {
 	t.Helper()
+	return startDispatcherWithTimeout(t, d, 2*time.Second)
+}
+
+// startDispatcherWithTimeout starts the dispatcher and waits for its listener
+// using timeout. Timing-sensitive tests can use a wider bound under race-mode
+// parallel load without changing the default for the wider test suite.
+func startDispatcherWithTimeout(t *testing.T, d *Dispatcher, timeout time.Duration) context.CancelFunc {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 
 	errCh := make(chan error, 1)
@@ -1610,7 +1644,7 @@ func startDispatcher(t *testing.T, d *Dispatcher) context.CancelFunc {
 		d.mu.Lock()
 		defer d.mu.Unlock()
 		return d.listener != nil
-	}, 2*time.Second)
+	}, timeout)
 
 	t.Cleanup(func() {
 		cancel()
@@ -3161,6 +3195,41 @@ func TestPreReviewGitHygieneIgnoresManagedQualityGateSnapshot(t *testing.T) {
 	}
 	if hygiene.Dirty {
 		t.Fatalf("managed quality_gate.sh snapshot marked dirty: %#v", hygiene.Files)
+	}
+}
+
+func TestPreReviewGitHygieneIgnoresManagedAssignmentCapabilityFile(t *testing.T) {
+	ctx := context.Background()
+	worktree := t.TempDir()
+	if err := exec.Command("git", "-C", worktree, "init").Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	capabilityPath := filepath.Join(worktree, protocol.OroDir, "assignment-capability.json")
+	if err := os.MkdirAll(filepath.Dir(capabilityPath), 0o755); err != nil {
+		t.Fatalf("mkdir capability directory: %v", err)
+	}
+	if err := os.WriteFile(capabilityPath, []byte(`{"token":"runtime-only"}`), 0o600); err != nil {
+		t.Fatalf("write assignment capability: %v", err)
+	}
+
+	d := &Dispatcher{}
+	hygiene, err := d.checkPreReviewGitHygiene(ctx, "bead-clean", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene: %v", err)
+	}
+	if hygiene.Dirty {
+		t.Fatalf("managed assignment capability marked dirty: %#v", hygiene.Files)
+	}
+
+	if err := os.WriteFile(filepath.Join(worktree, "implementation.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write ordinary untracked source: %v", err)
+	}
+	hygiene, err = d.checkPreReviewGitHygiene(ctx, "bead-dirty", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene with source file: %v", err)
+	}
+	if !hygiene.Dirty || !slices.Equal(hygiene.Files, []string{"implementation.go"}) {
+		t.Fatalf("ordinary source file should remain dirty, got %#v", hygiene.Files)
 	}
 }
 
@@ -6165,6 +6234,303 @@ func TestPreemptDisconnectedWorker(t *testing.T) {
 	_ = server.Close()
 }
 
+func TestPreemptedWorkerDisconnectDoesNotCreateDuplicateAssignment(t *testing.T) {
+	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		beadID        = "oro-preempt-disconnect"
+		workerID      = "worker-preempted"
+		replacementID = "worker-replacement"
+		oldWorktree   = "/tmp/preempted-dirty-worktree"
+	)
+
+	oldConn := newMockConn()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:       workerID,
+		conn:     oldConn,
+		state:    protocol.WorkerBusy,
+		beadID:   beadID,
+		worktree: oldWorktree,
+		encoder:  json.NewEncoder(oldConn),
+	}
+	d.mu.Unlock()
+
+	assignmentID, err := d.createAssignment(ctx, beadID, workerID, oldWorktree)
+	if err != nil {
+		t.Fatalf("create old assignment: %v", err)
+	}
+	d.mu.Lock()
+	d.workers[workerID].assignmentID = assignmentID
+	d.mu.Unlock()
+
+	if _, err := d.applyPreempt(workerID); err != nil {
+		t.Fatalf("preempt worker: %v", err)
+	}
+
+	// This is the disconnect that can occur after PREEMPT is delivered but
+	// before the worker acknowledges it. A replacement must not be eligible
+	// until this old durable assignment is terminal.
+	d.connCloseCleanup(workerID, oldConn)
+
+	var oldStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&oldStatus); err != nil {
+		t.Fatalf("read old assignment: %v", err)
+	}
+	if oldStatus != "completed" && oldStatus != "quarantined" {
+		t.Fatalf("old assignment status = %q, want completed or quarantined before replacement scheduling", oldStatus)
+	}
+
+	replacementConn := newMockConn()
+	replacement := &trackedWorker{
+		id:      replacementID,
+		conn:    replacementConn,
+		state:   protocol.WorkerIdle,
+		encoder: json.NewEncoder(replacementConn),
+	}
+	d.mu.Lock()
+	d.workers[replacementID] = replacement
+	d.mu.Unlock()
+
+	if err := d.assignBead(ctx, replacement, protocol.Bead{ID: beadID, Title: "replacement", Type: "task"}); err != nil {
+		t.Fatalf("assign replacement: %v", err)
+	}
+
+	var activeAssignments int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM assignments WHERE bead_id=? AND status='active'`, beadID).Scan(&activeAssignments); err != nil {
+		t.Fatalf("count active assignments: %v", err)
+	}
+	if activeAssignments != 1 {
+		t.Fatalf("active assignments = %d, want exactly one", activeAssignments)
+	}
+
+	healthJSON, err := d.applyHealth()
+	if err != nil {
+		t.Fatalf("apply health: %v", err)
+	}
+	var health factoryhealth.FactoryHealth
+	if err := json.Unmarshal([]byte(healthJSON), &health); err != nil {
+		t.Fatalf("unmarshal health: %v", err)
+	}
+	for _, finding := range health.Findings {
+		if finding.Code == factoryhealth.FindingOrphanActiveAssignment {
+			t.Fatalf("health reported orphan active assignment: %+v", finding)
+		}
+	}
+
+	d.mu.Lock()
+	replacementWorktree := d.workers[replacementID].worktree
+	d.mu.Unlock()
+	if replacementWorktree == "" || replacementWorktree == oldWorktree {
+		t.Fatalf("replacement worktree = %q, want distinct safe worktree from %q", replacementWorktree, oldWorktree)
+	}
+	wtMgr.mu.Lock()
+	createdWorktree := wtMgr.created[beadID]
+	wtMgr.mu.Unlock()
+	if createdWorktree != replacementWorktree {
+		t.Fatalf("replacement worktree = %q, manager created %q", replacementWorktree, createdWorktree)
+	}
+
+	t.Run("handoff acknowledgement terminalizes before replacement", func(t *testing.T) {
+		d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		const (
+			beadID        = "oro-preempt-handoff"
+			workerID      = "worker-preempt-handoff"
+			replacementID = "worker-preempt-replacement"
+			oldWorktree   = "/tmp/preempt-handoff-dirty"
+		)
+
+		oldConn := newMockConn()
+		replacementConn := newMockConn()
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:       workerID,
+			conn:     oldConn,
+			state:    protocol.WorkerBusy,
+			beadID:   beadID,
+			worktree: oldWorktree,
+			encoder:  json.NewEncoder(oldConn),
+		}
+		d.workers[replacementID] = &trackedWorker{
+			id:      replacementID,
+			conn:    replacementConn,
+			state:   protocol.WorkerIdle,
+			encoder: json.NewEncoder(replacementConn),
+		}
+		d.worktreeByBead[beadID] = oldWorktree
+		d.mu.Unlock()
+		wtMgr.currentBranchFn = func(_ context.Context, path string) (string, error) {
+			if path != oldWorktree {
+				t.Fatalf("validate worktree path = %q, want preserved %q", path, oldWorktree)
+			}
+			return protocol.BranchPrefix + beadID, nil
+		}
+
+		assignmentID, err := d.createAssignment(ctx, beadID, workerID, oldWorktree)
+		if err != nil {
+			t.Fatalf("create preempted assignment: %v", err)
+		}
+		d.mu.Lock()
+		d.workers[workerID].assignmentID = assignmentID
+		d.mu.Unlock()
+
+		if _, err := d.applyPreempt(workerID); err != nil {
+			t.Fatalf("preempt worker: %v", err)
+		}
+		d.handleHandoff(ctx, workerID, protocol.Message{
+			Type: protocol.MsgHandoff,
+			Handoff: &protocol.HandoffPayload{
+				BeadID:   beadID,
+				WorkerID: workerID,
+			},
+		})
+
+		var oldStatus string
+		if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&oldStatus); err != nil {
+			t.Fatalf("read preempted assignment: %v", err)
+		}
+		if oldStatus != "completed" && oldStatus != "quarantined" {
+			t.Fatalf("preempted assignment status after handoff = %q, want completed or quarantined", oldStatus)
+		}
+		d.connCloseCleanup(workerID, oldConn)
+
+		d.mu.Lock()
+		replacement := d.workers[replacementID]
+		d.mu.Unlock()
+		if replacement.state != protocol.WorkerIdle || replacement.assignmentID != 0 {
+			t.Fatalf("replacement received old assignment before terminalization: state=%s assignment_id=%d", replacement.state, replacement.assignmentID)
+		}
+		if _, err := d.db.ExecContext(ctx, `
+CREATE TRIGGER fail_preempt_replacement_assignment
+BEFORE INSERT ON assignments
+WHEN NEW.bead_id='oro-preempt-handoff'
+BEGIN
+    SELECT RAISE(FAIL, 'forced replacement persistence failure');
+END`); err != nil {
+			t.Fatalf("create replacement persistence trigger: %v", err)
+		}
+		if err := d.assignBead(ctx, replacement, protocol.Bead{ID: beadID, Title: "failed replacement", Type: "task"}); err != nil {
+			t.Fatalf("attempt failed replacement: %v", err)
+		}
+		d.mu.Lock()
+		preservedWorktree := d.worktreeByBead[beadID]
+		d.mu.Unlock()
+		if replacement.state != protocol.WorkerIdle || replacement.assignmentID != 0 {
+			t.Fatalf("replacement after persistence failure: state=%s assignment_id=%d, want idle with no assignment", replacement.state, replacement.assignmentID)
+		}
+		if preservedWorktree != oldWorktree {
+			t.Fatalf("worktree after replacement persistence failure = %q, want preserved %q", preservedWorktree, oldWorktree)
+		}
+		var activeAfterFailure int
+		if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM assignments WHERE bead_id=? AND status='active'`, beadID).Scan(&activeAfterFailure); err != nil {
+			t.Fatalf("count active assignments after persistence failure: %v", err)
+		}
+		if activeAfterFailure != 0 {
+			t.Fatalf("active assignments after replacement persistence failure = %d, want zero", activeAfterFailure)
+		}
+		if _, err := d.db.ExecContext(ctx, `DROP TRIGGER fail_preempt_replacement_assignment`); err != nil {
+			t.Fatalf("drop replacement persistence trigger: %v", err)
+		}
+
+		if err := d.assignBead(ctx, replacement, protocol.Bead{ID: beadID, Title: "safe replacement", Type: "task"}); err != nil {
+			t.Fatalf("assign safe replacement: %v", err)
+		}
+		if replacement.assignmentID == assignmentID {
+			t.Fatalf("replacement assignment ID = old assignment ID %d, want distinct durable ownership", assignmentID)
+		}
+		if replacement.worktree != oldWorktree {
+			t.Fatalf("replacement worktree = %q, want preserved dirty worktree %q", replacement.worktree, oldWorktree)
+		}
+
+		var activeAssignments int
+		if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM assignments WHERE bead_id=? AND status='active'`, beadID).Scan(&activeAssignments); err != nil {
+			t.Fatalf("count active assignments: %v", err)
+		}
+		if activeAssignments != 1 {
+			t.Fatalf("active assignments after handoff replacement = %d, want exactly one", activeAssignments)
+		}
+
+		healthJSON, err := d.applyHealth()
+		if err != nil {
+			t.Fatalf("apply health after handoff replacement: %v", err)
+		}
+		var health factoryhealth.FactoryHealth
+		if err := json.Unmarshal([]byte(healthJSON), &health); err != nil {
+			t.Fatalf("unmarshal health after handoff replacement: %v", err)
+		}
+		for _, finding := range health.Findings {
+			if finding.Code == factoryhealth.FindingOrphanActiveAssignment {
+				t.Fatalf("health reported orphan active assignment after handoff: %+v", finding)
+			}
+		}
+	})
+
+	t.Run("completion failure quarantines and blocks replacement", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		ctx := context.Background()
+		const (
+			beadID      = "oro-preempt-quarantine"
+			workerID    = "worker-preempt-quarantine"
+			oldWorktree = "/tmp/preempt-quarantine-dirty"
+		)
+
+		oldConn := newMockConn()
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id:       workerID,
+			conn:     oldConn,
+			state:    protocol.WorkerBusy,
+			beadID:   beadID,
+			worktree: oldWorktree,
+			encoder:  json.NewEncoder(oldConn),
+		}
+		d.worktreeByBead[beadID] = oldWorktree
+		d.mu.Unlock()
+
+		assignmentID, err := d.createAssignment(ctx, beadID, workerID, oldWorktree)
+		if err != nil {
+			t.Fatalf("create assignment for quarantine fallback: %v", err)
+		}
+		d.mu.Lock()
+		d.workers[workerID].assignmentID = assignmentID
+		d.mu.Unlock()
+		if _, err := d.db.ExecContext(ctx, fmt.Sprintf(`
+CREATE TRIGGER fail_preempt_assignment_completion
+BEFORE UPDATE OF status ON assignments
+WHEN OLD.id=%d AND NEW.status='completed'
+BEGIN
+    SELECT RAISE(FAIL, 'forced preempt completion failure');
+END`, assignmentID)); err != nil {
+			t.Fatalf("create completion failure trigger: %v", err)
+		}
+
+		if _, err := d.applyPreempt(workerID); err != nil {
+			t.Fatalf("preempt worker: %v", err)
+		}
+		d.connCloseCleanup(workerID, oldConn)
+
+		var status string
+		if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&status); err != nil {
+			t.Fatalf("read quarantined assignment: %v", err)
+		}
+		if status != "quarantined" {
+			t.Fatalf("assignment status after forced completion failure = %q, want quarantined", status)
+		}
+		var openQuarantines int
+		if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_quarantines WHERE assignment_id=? AND status='open'`, assignmentID).Scan(&openQuarantines); err != nil {
+			t.Fatalf("count recovery quarantines: %v", err)
+		}
+		if openQuarantines != 1 {
+			t.Fatalf("open recovery quarantines = %d, want one", openQuarantines)
+		}
+		assignable := d.filterAssignable(ctx, []protocol.Bead{{ID: beadID, Title: "blocked replacement", Type: "task"}})
+		if len(assignable) != 0 {
+			t.Fatalf("quarantined preempt replacement remained assignable: %+v", assignable)
+		}
+	})
+}
+
 func TestRun_RejectsShutdownDirective(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 
@@ -6404,6 +6770,85 @@ func TestDirective_FocusAndInvalid(t *testing.T) {
 	}
 	if msg.ACK.OK {
 		t.Fatal("expected ACK.OK=false for invalid directive")
+	}
+}
+
+func TestDirectivePauseResumeEventsRecordSourceAndReason(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	for _, directive := range []struct {
+		op     string
+		source string
+		reason string
+	}{
+		{op: string(protocol.DirectivePause), source: "operator", reason: "safety_hold"},
+		{op: string(protocol.DirectiveResume), source: "monitor", reason: "policy_authorized_recovery"},
+	} {
+		conn, err := net.Dial("unix", d.cfg.SocketPath)
+		if err != nil {
+			t.Fatalf("connect to dispatcher: %v", err)
+		}
+		sendMsg(t, conn, protocol.Message{Type: protocol.MsgDirective, Directive: &protocol.DirectivePayload{
+			Op: directive.op, Source: directive.source, Reason: directive.reason,
+		}})
+		if _, ok := readMsg(t, conn, 2*time.Second); !ok {
+			t.Fatalf("missing ACK for %s", directive.op)
+		}
+		_ = conn.Close()
+	}
+
+	rows, err := d.db.Query(`SELECT source, payload FROM events WHERE type = 'directive' ORDER BY id ASC`)
+	if err != nil {
+		t.Fatalf("query directive events: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var got []string
+	for rows.Next() {
+		var source, payload string
+		if err := rows.Scan(&source, &payload); err != nil {
+			t.Fatalf("scan directive event: %v", err)
+		}
+		if strings.Contains(payload, `"directive":"pause"`) || strings.Contains(payload, `"directive":"resume"`) {
+			got = append(got, source+":"+payload)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate directive events: %v", err)
+	}
+	if len(got) != 2 || !strings.Contains(got[0], `operator:{"directive":"pause","args":"","source":"operator","reason":"safety_hold"}`) ||
+		!strings.Contains(got[1], `monitor:{"directive":"resume","args":"","source":"monitor","reason":"policy_authorized_recovery"}`) {
+		t.Fatalf("pause/resume directive events = %v", got)
+	}
+}
+
+func TestDirectivePauseProvenanceIsExposedInFactoryHealth(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	conn, err := net.Dial("unix", d.cfg.SocketPath)
+	if err != nil {
+		t.Fatalf("connect to dispatcher: %v", err)
+	}
+	sendMsg(t, conn, protocol.Message{Type: protocol.MsgDirective, Directive: &protocol.DirectivePayload{
+		Op: string(protocol.DirectivePause), Source: "operator", Reason: "systemic_qg_hold",
+	}})
+	if _, ok := readMsg(t, conn, 2*time.Second); !ok {
+		t.Fatal("missing pause ACK")
+	}
+	_ = conn.Close()
+
+	detail, err := d.applyHealth()
+	if err != nil {
+		t.Fatalf("apply health: %v", err)
+	}
+	var health factoryhealth.FactoryHealth
+	if err := json.Unmarshal([]byte(detail), &health); err != nil {
+		t.Fatalf("unmarshal health: %v", err)
+	}
+	if health.Metrics.PauseSource != "operator" || health.Metrics.PauseReason != "systemic_qg_hold" {
+		t.Fatalf("pause provenance = (%q, %q), want operator systemic_qg_hold", health.Metrics.PauseSource, health.Metrics.PauseReason)
 	}
 }
 
@@ -8978,7 +9423,7 @@ func TestQualityGateRetry_ModelEscalatedToOpus(t *testing.T) {
 		},
 	})
 
-	// Worker should receive re-ASSIGN escalated to Sol high.
+	// Worker should receive re-ASSIGN escalated to Sol low.
 	retryMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected re-ASSIGN after quality gate failure")
@@ -8986,8 +9431,8 @@ func TestQualityGateRetry_ModelEscalatedToOpus(t *testing.T) {
 	if retryMsg.Type != protocol.MsgAssign {
 		t.Fatalf("expected ASSIGN, got %s", retryMsg.Type)
 	}
-	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "high" {
-		t.Fatalf("re-ASSIGN should escalate to Sol high, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
+	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "low" {
+		t.Fatalf("re-ASSIGN should escalate to Sol low, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
 	}
 
 	// Verify the worker's stored model was updated to Sol.
@@ -9043,13 +9488,13 @@ func TestQualityGateRetry_DefaultModelEscalatedToOpus(t *testing.T) {
 		},
 	})
 
-	// Worker should receive re-ASSIGN escalated to Sol high.
+	// Worker should receive re-ASSIGN escalated to Sol low.
 	retryMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected re-ASSIGN after quality gate failure")
 	}
-	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "high" {
-		t.Fatalf("re-ASSIGN should escalate to Sol high, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
+	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "low" {
+		t.Fatalf("re-ASSIGN should escalate to Sol low, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
 	}
 }
 
@@ -9076,8 +9521,8 @@ func TestQualityGateRetry_OpusStaysOpus(t *testing.T) {
 	if !ok {
 		t.Fatal("expected ASSIGN")
 	}
-	if assignMsg.Assign.Model != "gpt-5.6-sol" || assignMsg.Assign.Reasoning != "high" {
-		t.Fatalf("initial ASSIGN should map opus to Sol high, got model=%q reasoning=%q", assignMsg.Assign.Model, assignMsg.Assign.Reasoning)
+	if assignMsg.Assign.Model != "gpt-5.6-sol" || assignMsg.Assign.Reasoning != "low" {
+		t.Fatalf("initial ASSIGN should map opus to Sol low, got model=%q reasoning=%q", assignMsg.Assign.Model, assignMsg.Assign.Reasoning)
 	}
 	beadSrc.SetBeads(nil)
 
@@ -9091,7 +9536,7 @@ func TestQualityGateRetry_OpusStaysOpus(t *testing.T) {
 		},
 	})
 
-	// Worker should receive re-ASSIGN with model still Sol high.
+	// Worker should receive re-ASSIGN with model still Sol low.
 	retryMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected re-ASSIGN after quality gate failure")
@@ -9099,8 +9544,8 @@ func TestQualityGateRetry_OpusStaysOpus(t *testing.T) {
 	if retryMsg.Type != protocol.MsgAssign {
 		t.Fatalf("expected ASSIGN, got %s", retryMsg.Type)
 	}
-	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "high" {
-		t.Fatalf("re-ASSIGN should keep Sol high, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
+	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "low" {
+		t.Fatalf("re-ASSIGN should keep Sol low, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
 	}
 
 	// Verify attempt counter was NOT reset (should be 1 since no escalation happened)
@@ -15222,6 +15667,10 @@ func TestCrashRecovery_ReconnectPreservesAttemptCount(t *testing.T) {
 	}
 
 	// Close the worker connection before shutting down dispatcher.
+	// The mock worktree manager reports the synthetic path as present. Keep the
+	// matching Git inspection synthetic too so this test exercises a clean branch
+	// with no preserved commits rather than the disconnected-work quarantine path.
+	d1.setCommandRunner(&mockCommandRunner{})
 	_ = conn1.Close()
 
 	// ========== PHASE 2: Simulate crash — cancel first dispatcher ==========
@@ -16039,8 +16488,15 @@ func TestProgressTimeoutConfigValidation(t *testing.T) {
 // TestTryAssignNoDuplicateBeadAssignment verifies that when two workers are
 // idle, each gets a different bead — not the same bead assigned to both.
 func TestTryAssignNoDuplicateBeadAssignment(t *testing.T) {
+	const opTimeout = 10 * time.Second
+
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
-	startDispatcher(t, d)
+	// Assignment and heartbeat processing compete for scheduler time under the
+	// serialized gate's race-mode load. Keep this integration test's lifecycle
+	// bounds aligned so a delayed worker is not removed before it receives its
+	// ASSIGN message.
+	d.cfg.HeartbeatTimeout = opTimeout
+	startDispatcherWithTimeout(t, d, opTimeout)
 
 	// Connect two workers.
 	conn1, _ := connectWorker(t, d.cfg.SocketPath)
@@ -16059,7 +16515,7 @@ func TestTryAssignNoDuplicateBeadAssignment(t *testing.T) {
 			ContextPct: 5,
 		},
 	})
-	waitForWorkers(t, d, 2, 1*time.Second)
+	waitForWorkers(t, d, 2, opTimeout)
 
 	// Provide two beads.
 	beadSrc.SetBeads([]protocol.Bead{
@@ -16068,11 +16524,11 @@ func TestTryAssignNoDuplicateBeadAssignment(t *testing.T) {
 	})
 
 	sendDirective(t, d.cfg.SocketPath, "start")
-	waitForState(t, d, StateRunning, 1*time.Second)
+	waitForState(t, d, StateRunning, opTimeout)
 
 	// Read assignment messages from both workers.
-	msg1, ok1 := readMsg(t, conn1, 2*time.Second)
-	msg2, ok2 := readMsg(t, conn2, 2*time.Second)
+	msg1, ok1 := readMsg(t, conn1, opTimeout)
+	msg2, ok2 := readMsg(t, conn2, opTimeout)
 
 	if !ok1 || !ok2 {
 		t.Fatal("expected both workers to receive ASSIGN messages")
@@ -17268,6 +17724,100 @@ func TestEpicAutoCloseRunsAcceptanceTest(t *testing.T) {
 			t.Error("expected epic_no_acceptance_cmd warning event to be logged")
 		}
 	})
+}
+
+func TestEpicAutoCloseDoesNotRunAcceptanceAfterClose(t *testing.T) {
+	d, beadSource, _, _, _, spawnMock := newTestDispatcher(t)
+	ctx := context.Background()
+	if _, err := d.db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("init schema: %v", err)
+	}
+
+	const (
+		epicID   = "epic-close-once"
+		workerID = "worker-close-once"
+	)
+	beadSource.allChildrenClosedMap = map[string]bool{epicID: true}
+	beadSource.mu.Lock()
+	beadSource.shown[epicID] = &protocol.BeadDetail{
+		ID:                 epicID,
+		Status:             "open",
+		AcceptanceCriteria: "Test: dispatcher_test.go:TestEpicAutoCloseDoesNotRunAcceptanceAfterClose | Cmd: go test ./... | Assert: PASS",
+	}
+	beadSource.mu.Unlock()
+	beadSource.closeFn = func(_ context.Context, id, _ string) error {
+		beadSource.mu.Lock()
+		defer beadSource.mu.Unlock()
+		beadSource.shown[id].Status = "closed"
+		return nil
+	}
+
+	blockingRunner := &blockingAcceptanceRunner{
+		output:  "acceptance failed",
+		started: make(chan struct{}, 2),
+		release: make(chan struct{}),
+	}
+	d.acceptance = blockingRunner
+
+	var closeWG sync.WaitGroup
+	closeWG.Add(2)
+	go func() {
+		defer closeWG.Done()
+		d.tryCloseEpic(ctx, epicID, workerID)
+	}()
+	<-blockingRunner.started
+	go func() {
+		defer closeWG.Done()
+		d.tryCloseEpic(ctx, epicID, workerID)
+	}()
+
+	select {
+	case <-blockingRunner.started:
+		t.Fatal("concurrent tryCloseEpic call ran acceptance more than once")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(blockingRunner.release)
+	closeWG.Wait()
+
+	if got := blockingRunner.callCount(); got != 1 {
+		t.Fatalf("failing acceptance calls = %d, want 1", got)
+	}
+	if eventCount(t, d.db, "epic_acceptance_failed") != 1 {
+		t.Fatal("expected one epic_acceptance_failed event")
+	}
+	waitFor(t, func() bool { return spawnMock.SpawnCountExcludingModel("haiku") == 1 }, time.Second)
+	beadSource.mu.Lock()
+	closedAfterFailure := slices.Contains(beadSource.closed, epicID)
+	beadSource.mu.Unlock()
+	if closedAfterFailure {
+		t.Fatal("failing acceptance must leave epic open")
+	}
+
+	passingRunner := &mockAcceptanceRunner{passed: true, output: "ok"}
+	d.acceptance = passingRunner
+	d.tryCloseEpic(ctx, epicID, workerID)
+	d.tryCloseEpic(ctx, epicID, workerID)
+
+	passingRunner.mu.Lock()
+	passingCalls := passingRunner.calls
+	passingRunner.mu.Unlock()
+	if passingCalls != 1 {
+		t.Fatalf("acceptance calls after close = %d, want 1", passingCalls)
+	}
+	if eventCount(t, d.db, "epic_acceptance_failed") != 1 {
+		t.Fatal("later close attempt emitted epic_acceptance_failed")
+	}
+	beadSource.mu.Lock()
+	closedCount := 0
+	for _, id := range beadSource.closed {
+		if id == epicID {
+			closedCount++
+		}
+	}
+	beadSource.mu.Unlock()
+	if closedCount != 1 {
+		t.Fatalf("epic close count = %d, want 1", closedCount)
+	}
 }
 
 // TestTryCloseEpic_FFMergeToMain verifies that tryCloseEpic FF-merges the
@@ -22805,8 +23355,8 @@ func TestAssignBead_UsesLLMEstimate(t *testing.T) {
 
 	// Test 4: bead-has-model has explicit model, should NOT call estimator
 	if assign := assignedBeads["bead-has-model"]; assign != nil {
-		if assign.Model != "gpt-5.6-sol" || assign.Reasoning != "high" {
-			t.Errorf("bead-has-model: legacy Opus should map to Sol high, got model=%s reasoning=%s", assign.Model, assign.Reasoning)
+		if assign.Model != "gpt-5.6-sol" || assign.Reasoning != "low" {
+			t.Errorf("bead-has-model: legacy Opus should map to Sol low, got model=%s reasoning=%s", assign.Model, assign.Reasoning)
 		}
 		if mockEstimator.wasCalled("Has model") {
 			t.Errorf("bead-has-model: estimator should NOT have been called (has explicit model)")

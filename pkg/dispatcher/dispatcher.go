@@ -380,6 +380,36 @@ type assignmentBaseBranchSafetyChecker interface {
 	BaseBranchHasUniqueCommits(ctx context.Context, branch, baseBranch string) (bool, error)
 }
 
+// epicPreserveOutcome is the result of a deterministic epic-ancestry preserve
+// merge. On any error the caller falls back regardless of outcome.
+type epicPreserveOutcome int
+
+const (
+	// epicPreserveNoop means target's tip is already an ancestor of the epic
+	// branch: nothing to do.
+	epicPreserveNoop epicPreserveOutcome = iota
+	// epicPreserveMerged means a new preserve commit was created and the epic
+	// ref advanced to it via compare-and-swap.
+	epicPreserveMerged
+	// epicPreserveConflict means the merge could not be computed without a
+	// content conflict; the caller must fall back to LLM recovery.
+	epicPreserveConflict
+)
+
+// epicMergePreserver deterministically preserves both target and epic ancestry
+// on the epic branch without an LLM worker or a checked-out worktree.
+// Implemented by *GitWorktreeManager; worktree managers that do not implement
+// it cause the dispatcher to fall back to ensureEpicRebaseChild.
+type epicMergePreserver interface {
+	// preserveEpicAncestry merges target into epicBranch so that both the epic
+	// branch's current tip and target become ancestors of the epic branch,
+	// advancing the epic ref transactionally (compare-and-swap). It never
+	// checks out a worktree. Returns the new epic tip on epicPreserveMerged
+	// (or the unchanged tip on epicPreserveNoop). Any failure before the ref
+	// mutation leaves all refs untouched.
+	preserveEpicAncestry(ctx context.Context, epicBranch, target string) (epicPreserveOutcome, string, error)
+}
+
 // Escalator accepts escalation messages from dispatcher checks.
 type Escalator interface {
 	Escalate(ctx context.Context, msg string) error
@@ -900,6 +930,8 @@ type Dispatcher struct {
 	reconcilingScale atomic.Bool // prevents concurrent reconcileScale() calls (oro-ovpc.1)
 
 	state                       State
+	pauseSource                 string
+	pauseReason                 string
 	listener                    net.Listener
 	focusedEpic                 string
 	focusVersion                uint64
@@ -930,7 +962,8 @@ type Dispatcher struct {
 	// shutdownRunner is the CommandRunner used for repo-root git and recovery
 	// commands. Initialised by New() to &ExecCommandRunner{Dir: cfg.RepoRoot};
 	// overridable in tests.
-	shutdownRunner CommandRunner
+	shutdownRunner   CommandRunner
+	shutdownRunnerMu sync.RWMutex
 
 	// beadsDir is the internal task data directory to watch when using a
 	// filesystem-backed source (defaults to protocol.BeadsDir).
@@ -1167,6 +1200,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 			mergingBeads:           make(map[string]bool),
 			worktreeByBead:         make(map[string]string),
 			epicMergeFailed:        make(map[string]bool),
+			epicCloseInFlight:      make(map[string]bool),
 			processedExternalClose: make(map[string]bool),
 			epicSkipLogged:         make(map[string]bool),
 		},
@@ -1403,6 +1437,21 @@ func (d *Dispatcher) ShutdownAuthorized() *atomic.Bool {
 //oro:testonly
 func (d *Dispatcher) SetQGRunner(r QGRunner) {
 	d.qgRunner = r
+}
+
+// commandRunner returns the recovery command runner as a stable snapshot.
+// Connection cleanup runs independently from test setup and must not race a
+// test-specific runner swap.
+func (d *Dispatcher) commandRunner() CommandRunner {
+	d.shutdownRunnerMu.RLock()
+	defer d.shutdownRunnerMu.RUnlock()
+	return d.shutdownRunner
+}
+
+func (d *Dispatcher) setCommandRunner(r CommandRunner) {
+	d.shutdownRunnerMu.Lock()
+	defer d.shutdownRunnerMu.Unlock()
+	d.shutdownRunner = r
 }
 
 // GetConfig returns the dispatcher's resolved Config. Intended for tests
@@ -1726,10 +1775,30 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 		return
 	}
 	beadID := w.beadID
+	assignmentID := w.assignmentID
+	worktree := w.worktree
+	baseBranch := w.baseBranch
+	preempted := w.state == protocol.WorkerPreempting
+	if preempted && beadID != "" {
+		// Keep the bead reserved while its durable assignment is terminalized.
+		// Without this guard a concurrently idle replacement can create a second
+		// active assignment after the worker is removed but before cleanup runs.
+		d.assigningBeads[beadID] = true
+	}
 	delete(d.workers, workerID)
 	d.mu.Unlock()
 
+	if preempted && beadID != "" {
+		d.reconcilePreemptedDisconnect(workerID, beadID, assignmentID, worktree)
+		return
+	}
+
 	if beadID != "" {
+		if d.quarantineDisconnectedPreservedAssignment(context.Background(), workerID, beadID, assignmentID, worktree, baseBranch, "") {
+			d.clearBeadTracking(beadID)
+			d.notifyAssignLoop()
+			return
+		}
 		d.clearBeadTracking(beadID)
 		d.safeGo(func() {
 			_ = d.updateBeadStatus(context.Background(), beadID, "open")
@@ -1739,6 +1808,118 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 	// Wake the assign loop so reconcileScale can spawn a replacement immediately
 	// rather than waiting for the next fsnotify event or fallback tick.
 	d.notifyAssignLoop()
+}
+
+func (d *Dispatcher) quarantineDisconnectedPreservedAssignment(ctx context.Context, workerID, beadID string, assignmentID int64, worktree, baseBranch, cause string) bool {
+	if assignmentID <= 0 {
+		return false
+	}
+	active, err := d.assignmentActive(ctx, assignmentID, beadID)
+	if err != nil {
+		_ = d.logEvent(ctx, "disconnected_assignment_lookup_failed", "dispatcher", beadID, workerID, err.Error())
+		return true
+	}
+	if !active {
+		return false
+	}
+	blocked, details, err := d.recoveryWorkBlocked(ctx, beadID, worktree, baseBranch)
+	if err == nil && !blocked {
+		return false
+	}
+	if err != nil {
+		details = appendRecoveryDetail(details, "error: "+err.Error())
+	}
+	if details == "" {
+		details = "disconnected worker left recovery state requiring preservation"
+	}
+	if cause != "" {
+		details = appendRecoveryDetail(details, cause)
+	}
+	_, err = d.createRecoveryQuarantine(ctx, recoveryQuarantine{
+		BeadID:       beadID,
+		AssignmentID: assignmentID,
+		WorkerID:     workerID,
+		Worktree:     worktree,
+		Branch:       protocol.BranchPrefix + beadID,
+		Reason:       "stale_active_assignment",
+		Details:      details,
+	})
+	if err != nil {
+		_ = d.logEvent(ctx, "disconnected_assignment_quarantine_failed", "dispatcher", beadID, workerID, err.Error())
+		return true
+	}
+	if err := d.updateBeadStatus(ctx, beadID, "blocked"); err != nil {
+		_ = d.logEvent(ctx, "disconnected_assignment_block_failed", "dispatcher", beadID, workerID, err.Error())
+		if restoreErr := d.restoreDisconnectedAssignmentActive(ctx, assignmentID); restoreErr != nil {
+			_ = d.logEvent(ctx, "disconnected_assignment_restore_failed", "dispatcher", beadID, workerID, restoreErr.Error())
+		}
+	}
+	return true
+}
+
+func (d *Dispatcher) assignmentActive(ctx context.Context, assignmentID int64, beadID string) (bool, error) {
+	var active bool
+	err := d.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM assignments WHERE id=? AND bead_id=? AND status='active')`, assignmentID, beadID).Scan(&active)
+	if err != nil {
+		return false, fmt.Errorf("lookup disconnected assignment: %w", err)
+	}
+	return active, nil
+}
+
+func (d *Dispatcher) restoreDisconnectedAssignmentActive(ctx context.Context, assignmentID int64) error {
+	res, err := d.db.ExecContext(ctx,
+		`UPDATE assignments SET status='active', completed_at=NULL WHERE id=? AND status='quarantined'`, assignmentID)
+	if err != nil {
+		return fmt.Errorf("restore disconnected assignment active: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("restore disconnected assignment active rows: %w", err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("restore disconnected assignment active: assignment_id %d affected %d rows", assignmentID, rows)
+	}
+	return nil
+}
+
+func (d *Dispatcher) reconcilePreemptedDisconnect(workerID, beadID string, assignmentID int64, worktree string) {
+	ctx := context.Background()
+	if !d.terminalizePreemptedDisconnect(ctx, workerID, beadID, assignmentID, worktree) {
+		return
+	}
+	if d.shouldReopenBead(ctx, beadID) {
+		if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
+			_ = d.logEvent(ctx, "preempt_disconnect_bead_reset_failed", "dispatcher", beadID, workerID, err.Error())
+		}
+	}
+	d.clearBeadTracking(beadID)
+	d.mu.Lock()
+	delete(d.assigningBeads, beadID)
+	d.mu.Unlock()
+	d.notifyAssignLoop()
+}
+
+func (d *Dispatcher) terminalizePreemptedDisconnect(ctx context.Context, workerID, beadID string, assignmentID int64, worktree string) bool {
+	err := d.completeAssignment(ctx, assignmentID, beadID)
+	if err == nil {
+		return true
+	}
+	_ = d.logEvent(ctx, "preempt_disconnect_assignment_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
+	_, quarantineErr := d.createRecoveryQuarantine(ctx, recoveryQuarantine{
+		BeadID:       beadID,
+		AssignmentID: assignmentID,
+		WorkerID:     workerID,
+		Worktree:     worktree,
+		Branch:       protocol.BranchPrefix + beadID,
+		Reason:       "preempted_worker_disconnect",
+		Details:      err.Error(),
+	})
+	if quarantineErr == nil {
+		return true
+	}
+	_ = d.logEvent(ctx, "preempt_disconnect_assignment_quarantine_failed", "dispatcher", beadID, workerID, quarantineErr.Error())
+	return false
 }
 
 // handleConn reads line-delimited JSON messages from a worker connection.
@@ -1772,6 +1953,10 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn net.Conn) {
 		// Handle RERANK_BY_IDS_REQUEST from short-lived callers (e.g. search pipeline).
 		if msg.Type == protocol.MsgRerankByIDsRequest {
 			d.handleRerankByIDsWithResponse(ctx, conn, msg)
+			return
+		}
+
+		if d.handleWorkRequestConn(ctx, conn, msg) {
 			return
 		}
 
@@ -1875,6 +2060,8 @@ func (d *Dispatcher) handleMessage(ctx context.Context, workerID string, msg pro
 		d.handleShutdownApproved(ctx, workerID, msg)
 	case protocol.MsgCheckpointAck:
 		d.handleCheckpointAck(ctx, workerID, msg)
+	case protocol.MsgCapabilityRefreshACK:
+		d.handleCapabilityRefreshAck(ctx, workerID, msg)
 	}
 }
 
@@ -2655,7 +2842,7 @@ func (d *Dispatcher) checkPreMergeLeaks(ctx context.Context, beadID, workerID, w
 	if target == "" {
 		target = d.cfg.DefaultBranch
 	}
-	diff, err := d.shutdownRunner.Run(ctx, "git", "-C", worktree, "diff", target+".."+branch)
+	diff, err := d.commandRunner().Run(ctx, "git", "-C", worktree, "diff", target+".."+branch)
 	if err != nil {
 		_ = d.logEvent(ctx, "pre_merge_leakscan_error", "dispatcher", beadID, workerID,
 			fmt.Sprintf(`{"branch":%q,"target":%q,"error":%q}`, branch, target, err.Error()))
@@ -3524,6 +3711,26 @@ func (d *Dispatcher) epicMergeIsFailed(epicID string) bool {
 	return d.epicMergeFailed[epicID]
 }
 
+// tryBeginEpicClose reserves the epic's close path. Caller must invoke the
+// returned release function exactly once when it returns true.
+func (d *Dispatcher) tryBeginEpicClose(epicID string) (reserved bool, release func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.epicMergeFailed, epicID)
+	if d.epicCloseInFlight == nil {
+		d.epicCloseInFlight = make(map[string]bool)
+	}
+	if d.epicCloseInFlight[epicID] {
+		return false, nil
+	}
+	d.epicCloseInFlight[epicID] = true
+	return true, func() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		delete(d.epicCloseInFlight, epicID)
+	}
+}
+
 func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) {
 	allClosed, err := d.beads.AllChildrenClosed(ctx, epicID)
 	if err != nil {
@@ -3537,15 +3744,23 @@ func (d *Dispatcher) tryCloseEpic(ctx context.Context, epicID, workerID string) 
 		}
 		return
 	}
-	d.mu.Lock()
-	delete(d.epicMergeFailed, epicID)
-	d.mu.Unlock()
+	reserved, release := d.tryBeginEpicClose(epicID)
+	if !reserved {
+		return
+	}
+	defer release()
 
 	detail, ok := d.fetchEpicCloseDetail(ctx, epicID, workerID)
 	if !ok {
 		return
 	}
+	if strings.EqualFold(detail.Status, "closed") {
+		return
+	}
+	d.closeEpicAfterAcceptance(ctx, detail, epicID, workerID)
+}
 
+func (d *Dispatcher) closeEpicAfterAcceptance(ctx context.Context, detail *protocol.BeadDetail, epicID, workerID string) {
 	targetBranch := resolveEpicTargetBranch(detail.Metadata, d.cfg.DefaultBranch)
 
 	cmd, ok := d.parseEpicAcceptanceCmd(ctx, "epic_acceptance_parse_error", epicID, workerID, detail.AcceptanceCriteria)
@@ -3635,22 +3850,10 @@ func (d *Dispatcher) ffMergeEpicBranch(ctx context.Context, epicID, workerID, ta
 		return nil
 	}
 
-	var mergeErr error
-	if targetBranch == d.cfg.DefaultBranch {
-		// Target is the HEAD branch: use ff-only merge so the working tree advances.
-		_, mergeErr = d.worktrees.MergeFFOnly(ctx, epicBranch, d.repoRoot)
-	} else {
-		// Target is not checked out: directly advance the ref.
-		mergeErr = d.worktrees.UpdateBranchRef(ctx, targetBranch, epicBranch)
-	}
-	if mergeErr != nil {
-		wrapped := fmt.Errorf("ff merge %s to %s: %w", epicBranch, targetBranch, mergeErr)
-		_ = d.logEvent(ctx, "epic_ff_merge_failed", "dispatcher", epicID, workerID,
-			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, wrapped.Error()))
-		if _, ensureErr := d.ensureEpicRebaseChild(ctx, epicID, epicBranch, targetBranch, wrapped.Error()); ensureErr != nil {
-			_ = d.logEvent(ctx, "epic_rebase_child_ensure_failed", "dispatcher", epicID, workerID, ensureErr.Error())
+	if mergeErr := d.advanceTargetToEpic(ctx, epicBranch, targetBranch); mergeErr != nil {
+		if recoverErr := d.recoverEpicDivergence(ctx, epicID, workerID, epicBranch, targetBranch, mergeErr); recoverErr != nil {
+			return recoverErr
 		}
-		return wrapped
 	}
 
 	_ = d.logEvent(ctx, "epic_ff_merged", "dispatcher", epicID, workerID,
@@ -3661,6 +3864,76 @@ func (d *Dispatcher) ffMergeEpicBranch(ctx context.Context, epicID, workerID, ta
 			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, delErr.Error()))
 	}
 	return nil
+}
+
+// advanceTargetToEpic fast-forwards targetBranch to the tip of epicBranch. For
+// the HEAD branch it uses an ff-only merge so the working tree advances; for any
+// other target it advances the ref directly (no checkout required).
+func (d *Dispatcher) advanceTargetToEpic(ctx context.Context, epicBranch, targetBranch string) error {
+	if targetBranch == d.cfg.DefaultBranch {
+		if _, err := d.worktrees.MergeFFOnly(ctx, epicBranch, d.repoRoot); err != nil {
+			return fmt.Errorf("ff-only merge %s into %s: %w", epicBranch, targetBranch, err)
+		}
+		return nil
+	}
+	if err := d.worktrees.UpdateBranchRef(ctx, targetBranch, epicBranch); err != nil {
+		return fmt.Errorf("advance %s to %s: %w", targetBranch, epicBranch, err)
+	}
+	return nil
+}
+
+// recoverEpicDivergence handles a failed close-time fast-forward of the epic
+// branch. It first attempts a deterministic preserve merge and retries the ff;
+// only on a content conflict, an operational error, or a worktree manager that
+// does not implement epicMergePreserver does it fall back to creating an LLM
+// rebase child. Returns nil when the ff ultimately succeeds.
+func (d *Dispatcher) recoverEpicDivergence(ctx context.Context, epicID, workerID, epicBranch, targetBranch string, cause error) error {
+	wrapped := fmt.Errorf("ff merge %s to %s: %w", epicBranch, targetBranch, cause)
+	_ = d.logEvent(ctx, "epic_ff_merge_failed", "dispatcher", epicID, workerID,
+		fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, wrapped.Error()))
+
+	if d.tryDeterministicEpicRebase(ctx, epicID, workerID, epicBranch, targetBranch) {
+		if retryErr := d.advanceTargetToEpic(ctx, epicBranch, targetBranch); retryErr == nil {
+			_ = d.logEvent(ctx, "epic_deterministic_rebase_recovered", "dispatcher", epicID, workerID,
+				fmt.Sprintf(`{"branch":%q,"target":%q}`, epicBranch, targetBranch))
+			return nil
+		}
+	}
+
+	if _, ensureErr := d.ensureEpicRebaseChild(ctx, epicID, epicBranch, targetBranch, wrapped.Error()); ensureErr != nil {
+		_ = d.logEvent(ctx, "epic_rebase_child_ensure_failed", "dispatcher", epicID, workerID, ensureErr.Error())
+	}
+	return wrapped
+}
+
+// tryDeterministicEpicRebase attempts to preserve target ancestry on the epic
+// branch without an LLM worker. It returns true when the epic branch now
+// contains target (either it already did, or a preserve merge was created and
+// committed via compare-and-swap), meaning the caller may retry the ff. A
+// content conflict, an operational error, or a worktree manager that does not
+// implement epicMergePreserver returns false so the caller falls back to
+// ensureEpicRebaseChild.
+func (d *Dispatcher) tryDeterministicEpicRebase(ctx context.Context, epicID, workerID, epicBranch, targetBranch string) bool {
+	preserver, ok := d.worktrees.(epicMergePreserver)
+	if !ok {
+		return false
+	}
+	outcome, sha, err := preserver.preserveEpicAncestry(ctx, epicBranch, targetBranch)
+	if err != nil {
+		_ = d.logEvent(ctx, "epic_deterministic_rebase_failed", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, err.Error()))
+		return false
+	}
+	switch outcome {
+	case epicPreserveNoop, epicPreserveMerged:
+		_ = d.logEvent(ctx, "epic_deterministic_rebase_preserved", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"branch":%q,"target":%q,"outcome":%d,"sha":%q}`, epicBranch, targetBranch, outcome, sha))
+		return true
+	default: // epicPreserveConflict
+		_ = d.logEvent(ctx, "epic_deterministic_rebase_conflict", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"branch":%q,"target":%q}`, epicBranch, targetBranch))
+		return false
+	}
 }
 
 // ensureEpicRebaseChild returns the one active recovery child for an epic
@@ -3950,6 +4223,15 @@ func (d *Dispatcher) handleHandoff(ctx context.Context, workerID string, msg pro
 	// Persist learnings and decisions from the handoff payload as memories.
 	d.persistHandoffContext(ctx, msg.Handoff)
 
+	// A HANDOFF is the worker's acknowledgement of PREEMPT. Release the old
+	// durable assignment before ordinary handoff logic can offer it to another
+	// worker. The assigningBeads reservation held by detachPreemptedHandoff
+	// keeps normal scheduling out until reconciliation reaches a terminal state.
+	if assignmentID, worktree, ok := d.detachPreemptedHandoff(workerID, beadID); ok {
+		d.reconcilePreemptedDisconnect(workerID, beadID, assignmentID, worktree)
+		return
+	}
+
 	// Track handoff count per bead.
 	handoffCount, assignmentID := d.incrementHandoffCount(workerID, beadID)
 	d.persistBeadCount(ctx, assignmentID, beadID, "handoff_count", handoffCount)
@@ -3983,6 +4265,30 @@ func (d *Dispatcher) incrementHandoffCount(workerID, beadID string) (handoffCoun
 	defer d.mu.Unlock()
 	d.handoffCounts[beadID]++
 	return d.handoffCounts[beadID], d.assignmentIDLocked(workerID, beadID)
+}
+
+func (d *Dispatcher) detachPreemptedHandoff(workerID, beadID string) (assignmentID int64, worktree string, ok bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w, exists := d.workers[workerID]
+	if !exists || w == nil || w.state != protocol.WorkerPreempting || w.beadID != beadID {
+		return 0, "", false
+	}
+
+	assignmentID = w.assignmentID
+	if assignmentID <= 0 {
+		assignmentID = w.execution.AssignmentID
+	}
+	worktree = w.worktree
+	d.assigningBeads[beadID] = true
+	_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
+	w.state = protocol.WorkerShuttingDown
+	w.assignmentID = 0
+	w.execution = WorkerExecutionContext{}
+	w.beadID = ""
+	w.epicID = ""
+	w.isEpicDecomp = false
+	return assignmentID, worktree, true
 }
 
 func (d *Dispatcher) shutdownWorkerForHandoff(workerID string) workerAssignmentSnapshot {
@@ -4343,7 +4649,7 @@ func (d *Dispatcher) checkPreReviewGitHygiene(ctx context.Context, _, worktree s
 		return PreReviewGitHygieneResult{}, fmt.Errorf("pre-review git metadata: %w", statErr)
 	}
 
-	out, err := (&ExecCommandRunner{Dir: worktree}).Run(ctx, "git", "status", "--porcelain", "-z")
+	out, err := (&ExecCommandRunner{Dir: worktree}).Run(ctx, "git", "status", "--porcelain", "--untracked-files=all", "-z")
 	if err != nil {
 		return PreReviewGitHygieneResult{}, fmt.Errorf("pre-review git status: %w", err)
 	}
@@ -4394,6 +4700,9 @@ type managedQualityGateProvider interface {
 }
 
 func (d *Dispatcher) isIgnorableManagedQualityGateStatus(worktree string, entry gitStatusPorcelainEntry) bool {
+	if entry.Code == "??" && entry.Path == filepath.ToSlash(filepath.Join(protocol.OroDir, "assignment-capability.json")) {
+		return true
+	}
 	if entry.Code != "??" || entry.Path != "quality_gate.sh" {
 		return false
 	}
@@ -5187,19 +5496,20 @@ func (d *Dispatcher) handleDirectiveWithACK(ctx context.Context, conn net.Conn, 
 
 	dir := protocol.Directive(msg.Directive.Op)
 	args := msg.Directive.Args
+	source, reason := directiveProvenance(msg.Directive)
 	ack := protocol.ACKPayload{OK: true}
 
 	if !dir.Valid() && dir != directiveLaunchWorkers && dir != directiveCancelWorkerLaunch {
 		ack.OK = false
 		ack.Detail = "invalid directive"
 	} else {
-		detail, err := d.applyDirective(dir, args)
+		detail, err := d.applyDirectiveWithProvenance(dir, args, source, reason)
 		if err != nil {
 			ack.OK = false
 			ack.Detail = err.Error()
 		} else {
-			_ = d.logEvent(ctx, "directive", "manager", "", "",
-				fmt.Sprintf(`{"directive":%q,"args":%q}`, msg.Directive.Op, args))
+			_ = d.logEvent(ctx, "directive", source, "", "",
+				fmt.Sprintf(`{"directive":%q,"args":%q,"source":%q,"reason":%q}`, msg.Directive.Op, args, source, reason))
 			ack.Detail = detail
 		}
 	}
@@ -6341,18 +6651,18 @@ func (d *Dispatcher) processEpicSkip(ctx context.Context, bead protocol.Bead) {
 // when the branch does not exist or any git command fails.
 func (d *Dispatcher) isBranchMergedInto(ctx context.Context, beadID, targetBranch string) bool {
 	branch := protocol.BranchPrefix + beadID // "agent/<beadID>"
-	tipOut, err := d.shutdownRunner.Run(ctx, "git", "rev-parse", branch)
+	tipOut, err := d.commandRunner().Run(ctx, "git", "rev-parse", branch)
 	if err != nil {
 		return false
 	}
-	baseOut, err := d.shutdownRunner.Run(ctx, "git", "merge-base", branch, targetBranch)
+	baseOut, err := d.commandRunner().Run(ctx, "git", "merge-base", branch, targetBranch)
 	if err != nil {
 		return false
 	}
 	if strings.TrimSpace(string(tipOut)) == strings.TrimSpace(string(baseOut)) {
 		return false
 	}
-	_, err = d.shutdownRunner.Run(ctx, "git", "merge-base", "--is-ancestor", branch, targetBranch)
+	_, err = d.commandRunner().Run(ctx, "git", "merge-base", "--is-ancestor", branch, targetBranch)
 	return err == nil
 }
 
@@ -7406,9 +7716,12 @@ type workerLaunchReservation struct {
 
 // applyDirective transitions the dispatcher state machine and returns a detail
 // string for the ACK response. Returns an error for invalid args (e.g. scale).
-//
-//nolint:gocyclo // dispatcher routing function - complexity is inherent to the pattern
 func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string, error) {
+	return d.applyDirectiveWithProvenance(dir, args, "operator", "operator_request")
+}
+
+//nolint:gocyclo // dispatcher routing function - complexity is inherent to the pattern
+func (d *Dispatcher) applyDirectiveWithProvenance(dir protocol.Directive, args, source, reason string) (string, error) {
 	if detail, handled, err := d.applyCapacityDirective(dir, args); handled {
 		return detail, err
 	}
@@ -7438,7 +7751,7 @@ func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string
 	case protocol.DirectiveStop:
 		return "", fmt.Errorf("stop directive disabled; use 'oro stop' for graceful shutdown")
 	case protocol.DirectivePause:
-		return d.applyPause()
+		return d.applyPause(source, reason)
 	case protocol.DirectiveResume:
 		return d.applyResume()
 	case protocol.DirectiveStatus:
@@ -7491,8 +7804,25 @@ func (d *Dispatcher) applyStart() (string, error) {
 	return "started", nil
 }
 
-// applyPause transitions the dispatcher to paused state.
-func (d *Dispatcher) applyPause() (string, error) {
+// directiveProvenance normalizes legacy directives as explicit operator actions.
+func directiveProvenance(payload *protocol.DirectivePayload) (source, reason string) {
+	source = payload.Source
+	if source == "" {
+		source = "operator"
+	}
+	reason = payload.Reason
+	if reason == "" {
+		reason = "operator_request"
+	}
+	return source, reason
+}
+
+// applyPause transitions the dispatcher to paused state with its provenance.
+func (d *Dispatcher) applyPause(source, reason string) (string, error) {
+	d.mu.Lock()
+	d.pauseSource = source
+	d.pauseReason = reason
+	d.mu.Unlock()
 	d.setState(StatePaused)
 	return "paused", nil
 }
@@ -7503,6 +7833,10 @@ func (d *Dispatcher) applyResume() (string, error) {
 		return "already running", nil
 	}
 	d.setState(StateRunning)
+	d.mu.Lock()
+	d.pauseSource = ""
+	d.pauseReason = ""
+	d.mu.Unlock()
 	return "resumed", nil
 }
 
@@ -9649,7 +9983,7 @@ func (d *Dispatcher) pruneStaleAgentBranches(ctx context.Context) {
 	if d.repoRoot == "" {
 		return
 	}
-	out, err := d.shutdownRunner.Run(ctx, "git", "-C", d.repoRoot, "branch", "--list", "agent/*")
+	out, err := d.commandRunner().Run(ctx, "git", "-C", d.repoRoot, "branch", "--list", "agent/*")
 	if err != nil {
 		_ = d.logEvent(ctx, "startup_prune_branches_list_failed", "dispatcher", "", "", err.Error())
 		return
@@ -9659,7 +9993,7 @@ func (d *Dispatcher) pruneStaleAgentBranches(ctx context.Context) {
 		if branch == "" {
 			continue
 		}
-		if _, delErr := d.shutdownRunner.Run(ctx, "git", "-C", d.repoRoot, "branch", "-d", branch); delErr != nil {
+		if _, delErr := d.commandRunner().Run(ctx, "git", "-C", d.repoRoot, "branch", "-d", branch); delErr != nil {
 			_ = d.logEvent(ctx, "startup_prune_branch_delete_failed", "dispatcher", "", "", branch+": "+delErr.Error())
 		}
 	}
@@ -9937,7 +10271,7 @@ func (d *Dispatcher) recoveryWorkBlocked(ctx context.Context, beadID, worktree, 
 }
 
 func (d *Dispatcher) worktreeDirty(ctx context.Context, worktree string) (dirty bool, status string, err error) {
-	out, err := d.shutdownRunner.Run(ctx, "git", "-C", worktree, "status", "--porcelain")
+	out, err := d.commandRunner().Run(ctx, "git", "-C", worktree, "status", "--porcelain")
 	if err != nil {
 		return false, "", fmt.Errorf("git status in %s: %w", worktree, err)
 	}
@@ -9956,7 +10290,7 @@ func (d *Dispatcher) branchHasUnmergedWork(ctx context.Context, beadID, worktree
 		baseBranch = "main"
 	}
 	branch := protocol.BranchPrefix + beadID
-	out, err := d.shutdownRunner.Run(ctx, "git", "-C", worktree, "rev-list", "--count", baseBranch+".."+branch)
+	out, err := d.commandRunner().Run(ctx, "git", "-C", worktree, "rev-list", "--count", baseBranch+".."+branch)
 	if err != nil {
 		return false, "", fmt.Errorf("git rev-list %s..%s in %s: %w", baseBranch, branch, worktree, err)
 	}

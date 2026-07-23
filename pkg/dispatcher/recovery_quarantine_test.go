@@ -825,6 +825,59 @@ UPDATE recovery_quarantines SET status='resolved', resolved_at=datetime('now') W
 	}
 }
 
+func TestTryAssignAllowsFreshWorkWhenRecoveryQuarantineIsHumanOwned(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	if _, err := d.db.ExecContext(ctx, `
+INSERT INTO recovery_quarantines (bead_id, branch, reason, details, status, resolved_at)
+VALUES ('oro-human-owned', 'agent/oro-human-owned', 'unsafe_stale_branch', 'operator owns branch', 'human_owned', datetime('now'));
+`); err != nil {
+		t.Fatalf("insert human-owned recovery quarantine: %v", err)
+	}
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "oro-human-owned", Status: "open", Priority: 0, Type: "task"},
+		{ID: "oro-ready", Status: "open", Priority: 1, Type: "task"},
+	})
+
+	server, client := net.Pipe()
+	t.Cleanup(func() {
+		_ = server.Close()
+		_ = client.Close()
+	})
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			if _, err := client.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	d.mu.Lock()
+	d.state = StateRunning
+	d.workers["w-idle"] = &trackedWorker{
+		id:      "w-idle",
+		conn:    server,
+		state:   protocol.WorkerIdle,
+		encoder: json.NewEncoder(server),
+	}
+	d.mu.Unlock()
+
+	d.tryAssign(ctx)
+
+	beadSrc.mu.Lock()
+	readyStatus := beadSrc.updated["oro-ready"]
+	humanOwnedStatus := beadSrc.updated["oro-human-owned"]
+	beadSrc.mu.Unlock()
+	if readyStatus != "in_progress" {
+		t.Fatalf("fresh ready bead status = %q, want in_progress", readyStatus)
+	}
+	if humanOwnedStatus == "in_progress" {
+		t.Fatal("human-owned bead was assigned")
+	}
+}
+
 func TestPreservedWorktreeAutoRedeploysFreshWorker(t *testing.T) {
 	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()

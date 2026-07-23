@@ -107,11 +107,17 @@ func dialDispatcher(ctx context.Context, sockPath string) (net.Conn, error) {
 
 // sendDirective marshals and sends a DIRECTIVE message.
 func sendDirective(conn net.Conn, op, opArgs string) error {
+	return sendDirectiveWithProvenance(conn, op, opArgs, "", "")
+}
+
+func sendDirectiveWithProvenance(conn net.Conn, op, opArgs, source, reason string) error {
 	msg := protocol.Message{
 		Type: protocol.MsgDirective,
 		Directive: &protocol.DirectivePayload{
-			Op:   op,
-			Args: opArgs,
+			Op:     op,
+			Args:   opArgs,
+			Source: source,
+			Reason: reason,
 		},
 	}
 

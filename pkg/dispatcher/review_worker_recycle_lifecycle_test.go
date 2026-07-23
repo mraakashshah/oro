@@ -26,6 +26,9 @@ import (
 // marks its own spawned workers).
 func TestReadyForReview_OpsSubprocessDies_BeadResetToOpen(t *testing.T) {
 	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+	// The mock worktree path is synthetic. Model a clean branch with no
+	// preserved commits so this test remains focused on dead-review cleanup.
+	d.shutdownRunner = &mockCommandRunner{}
 
 	// Make ops review's underlying subprocess "fail to spawn." The ops.Spawner
 	// then sends VerdictFailed without ever registering the agent in its
