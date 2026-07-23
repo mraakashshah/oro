@@ -21,29 +21,6 @@ const (
 	MutationPolicyRouteIPC MutationPolicy = "route-ipc"
 )
 
-var taskWorkerMutationPolicies = map[string]MutationPolicy{
-	"task ready":           MutationPolicyReadOnly,
-	"task list":            MutationPolicyReadOnly,
-	"task show":            MutationPolicyReadOnly,
-	"task create":          MutationPolicyDeny,
-	"task update":          MutationPolicyDeny,
-	"task close":           MutationPolicyDeny,
-	"task delete":          MutationPolicyDeny,
-	"task reopen":          MutationPolicyDeny,
-	"task defer":           MutationPolicyDeny,
-	"task undefer":         MutationPolicyDeny,
-	"task blocked":         MutationPolicyReadOnly,
-	"task closed":          MutationPolicyReadOnly,
-	"task dep add":         MutationPolicyDeny,
-	"task dep rm":          MutationPolicyDeny,
-	"task dep list":        MutationPolicyReadOnly,
-	"task dep cycles":      MutationPolicyReadOnly,
-	"task note add":        MutationPolicyDeny,
-	"task export":          MutationPolicyReadOnly,
-	"task status":          MutationPolicyReadOnly,
-	"task propose-blocker": MutationPolicyRouteIPC,
-}
-
 // workerMutationPolicy returns the explicit worker policy for a Cobra leaf.
 // An unlisted command is unknown by design: the Cobra-tree regression catches
 // it before a new task command can silently mutate worker-owned state.
@@ -51,11 +28,16 @@ func workerMutationPolicy(cmd *cobra.Command) MutationPolicy {
 	if cmd == nil {
 		return MutationPolicyUnknown
 	}
-	policy, ok := taskWorkerMutationPolicies[cmd.CommandPath()]
-	if !ok {
+	switch cmd.CommandPath() {
+	case "task ready", "task list", "task show", "task blocked", "task closed", "task dep list", "task dep cycles", "task export", "task status":
+		return MutationPolicyReadOnly
+	case "task create", "task update", "task close", "task delete", "task reopen", "task defer", "task undefer", "task dep add", "task dep rm", "task note add":
+		return MutationPolicyDeny
+	case "task propose-blocker":
+		return MutationPolicyRouteIPC
+	default:
 		return MutationPolicyUnknown
 	}
-	return policy
 }
 
 func guardTaskWorkerMutation(cmd *cobra.Command) error {
