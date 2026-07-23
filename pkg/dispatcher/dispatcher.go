@@ -408,6 +408,11 @@ type epicMergePreserver interface {
 	// (or the unchanged tip on epicPreserveNoop). Any failure before the ref
 	// mutation leaves all refs untouched.
 	preserveEpicAncestry(ctx context.Context, epicBranch, target string) (epicPreserveOutcome, string, error)
+	// rollbackEpicPreserve reverts a preserve merge that failed post-merge
+	// verification (e.g. the quality gate), advancing epicBranch from newOID
+	// back to oldOID via compare-and-swap. It fails without mutating the ref
+	// if epicBranch no longer points at newOID.
+	rollbackEpicPreserve(ctx context.Context, epicBranch, oldOID, newOID string) error
 }
 
 // Escalator accepts escalation messages from dispatcher checks.
@@ -3908,14 +3913,21 @@ func (d *Dispatcher) recoverEpicDivergence(ctx context.Context, epicID, workerID
 
 // tryDeterministicEpicRebase attempts to preserve target ancestry on the epic
 // branch without an LLM worker. It returns true when the epic branch now
-// contains target (either it already did, or a preserve merge was created and
-// committed via compare-and-swap), meaning the caller may retry the ff. A
-// content conflict, an operational error, or a worktree manager that does not
-// implement epicMergePreserver returns false so the caller falls back to
+// contains target (either it already did, or a preserve merge was created,
+// verified by the quality gate, and committed via compare-and-swap), meaning
+// the caller may retry the ff. A content conflict, an operational error, a
+// failing quality gate, or a worktree manager that does not implement
+// epicMergePreserver returns false so the caller falls back to
 // ensureEpicRebaseChild.
 func (d *Dispatcher) tryDeterministicEpicRebase(ctx context.Context, epicID, workerID, epicBranch, targetBranch string) bool {
 	preserver, ok := d.worktrees.(epicMergePreserver)
 	if !ok {
+		return false
+	}
+	oldEpicOID, headErr := d.worktrees.BranchHead(ctx, epicBranch)
+	if headErr != nil {
+		_ = d.logEvent(ctx, "epic_deterministic_rebase_failed", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, headErr.Error()))
 		return false
 	}
 	outcome, sha, err := preserver.preserveEpicAncestry(ctx, epicBranch, targetBranch)
@@ -3925,7 +3937,14 @@ func (d *Dispatcher) tryDeterministicEpicRebase(ctx context.Context, epicID, wor
 		return false
 	}
 	switch outcome {
-	case epicPreserveNoop, epicPreserveMerged:
+	case epicPreserveNoop:
+		_ = d.logEvent(ctx, "epic_deterministic_rebase_preserved", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"branch":%q,"target":%q,"outcome":%d,"sha":%q}`, epicBranch, targetBranch, outcome, sha))
+		return true
+	case epicPreserveMerged:
+		if !d.verifyEpicPreserveMerge(ctx, epicID, workerID, epicBranch, targetBranch, oldEpicOID, sha, preserver) {
+			return false
+		}
 		_ = d.logEvent(ctx, "epic_deterministic_rebase_preserved", "dispatcher", epicID, workerID,
 			fmt.Sprintf(`{"branch":%q,"target":%q,"outcome":%d,"sha":%q}`, epicBranch, targetBranch, outcome, sha))
 		return true
@@ -3934,6 +3953,51 @@ func (d *Dispatcher) tryDeterministicEpicRebase(ctx context.Context, epicID, wor
 			fmt.Sprintf(`{"branch":%q,"target":%q}`, epicBranch, targetBranch))
 		return false
 	}
+}
+
+// verifyEpicPreserveMerge runs the quality gate against the synthesized
+// preserve-merge commit (sha) that preserveEpicAncestry already advanced
+// epicBranch to via compare-and-swap. Main must never advance onto an
+// unverified merge, so on gate failure or infra error this rolls epicBranch
+// back to oldEpicOID before returning false. Returns true only when the gate
+// passes.
+func (d *Dispatcher) verifyEpicPreserveMerge(ctx context.Context, epicID, workerID, epicBranch, targetBranch, oldEpicOID, sha string, preserver epicMergePreserver) bool {
+	wtID := d.epicQGWorktreeID(epicID)
+	worktree, _, err := d.worktrees.Create(ctx, wtID, epicBranch)
+	if err != nil {
+		_ = d.logEvent(ctx, "epic_preserve_verify_worktree_failed", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, err.Error()))
+		d.rollbackEpicPreserveMerge(ctx, epicID, workerID, epicBranch, oldEpicOID, sha, preserver)
+		return false
+	}
+	defer func() { _ = d.worktrees.Remove(context.Background(), worktree) }()
+
+	passed, qgOutput, qgErr := d.qgRunner.Run(ctx, worktree, !d.cfg.MutationTesting, d.qgMutationBase(targetBranch))
+	if qgErr != nil {
+		_ = d.logEvent(ctx, "epic_preserve_verify_error", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, qgErr.Error()))
+		d.rollbackEpicPreserveMerge(ctx, epicID, workerID, epicBranch, oldEpicOID, sha, preserver)
+		return false
+	}
+	if !passed {
+		_ = d.logEvent(ctx, "epic_preserve_verify_failed", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"branch":%q,"output":%q}`, epicBranch, qgOutput))
+		d.rollbackEpicPreserveMerge(ctx, epicID, workerID, epicBranch, oldEpicOID, sha, preserver)
+		return false
+	}
+	return true
+}
+
+// rollbackEpicPreserveMerge reverts a preserve merge that failed post-merge
+// verification, logging the outcome either way.
+func (d *Dispatcher) rollbackEpicPreserveMerge(ctx context.Context, epicID, workerID, epicBranch, oldEpicOID, sha string, preserver epicMergePreserver) {
+	if err := preserver.rollbackEpicPreserve(ctx, epicBranch, oldEpicOID, sha); err != nil {
+		_ = d.logEvent(ctx, "epic_preserve_rollback_failed", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, err.Error()))
+		return
+	}
+	_ = d.logEvent(ctx, "epic_preserve_rolled_back", "dispatcher", epicID, workerID,
+		fmt.Sprintf(`{"branch":%q,"old":%q,"rejected":%q}`, epicBranch, oldEpicOID, sha))
 }
 
 // ensureEpicRebaseChild returns the one active recovery child for an epic
