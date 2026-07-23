@@ -137,8 +137,11 @@ type providerProfile struct {
 	balancedReasoning   string
 	deepReasoning       string
 	backgroundReasoning string
+	specReasoning       string
 	escalationReasoning string
 	challengeReasoning  string
+	opsReviewModel      string
+	opsReviewReasoning  string
 }
 
 func codexProfile() providerProfile {
@@ -154,9 +157,10 @@ func oroCodexProfile() providerProfile {
 		backgroundModel:     "gpt-5.6-luna",
 		fastReasoning:       "low",
 		balancedReasoning:   "medium",
-		deepReasoning:       "high",
+		deepReasoning:       "low",
 		backgroundReasoning: "low",
-		escalationReasoning: "high",
+		specReasoning:       "medium",
+		escalationReasoning: "low",
 		challengeReasoning:  "high",
 	}
 }
@@ -179,7 +183,9 @@ func fableProfile() providerProfile {
 		deepModel:          "fable",
 		backgroundModel:    "fable",
 		deepReasoning:      "xhigh",
-		challengeReasoning: "xhigh",
+		challengeReasoning: "medium",
+		opsReviewModel:     "claude-opus-4-8",
+		opsReviewReasoning: "high",
 	}
 }
 
@@ -193,19 +199,21 @@ func tiersForProvider(p providerProfile) map[protocol.Tier]TierConfig {
 }
 
 func rolesForProviderMode(coding, review providerProfile) map[string]RoleConfig {
+	opsReviewModel := firstNonEmpty(review.opsReviewModel, review.deepModel)
+	opsReviewReasoning := firstNonEmpty(review.opsReviewReasoning, review.deepReasoning)
 	roles := map[string]RoleConfig{
-		"spec_writer":             roleConfig(coding.runtime, coding.deepModel, coding.deepReasoning),
+		"spec_writer":             roleConfig(coding.runtime, coding.deepModel, firstNonEmpty(coding.specReasoning, coding.deepReasoning)),
 		"spec_challenger":         roleConfig(review.runtime, review.deepModel, firstNonEmpty(review.challengeReasoning, review.deepReasoning)),
 		"worker":                  roleConfig(coding.runtime, coding.balancedModel, coding.balancedReasoning),
 		"worker_escalation":       roleConfig(coding.runtime, coding.deepModel, firstNonEmpty(coding.escalationReasoning, coding.deepReasoning)),
-		"ops_review":              roleConfig(review.runtime, review.deepModel, review.deepReasoning),
-		"ops_review_triage":       roleConfig(review.runtime, review.fastModel, review.fastReasoning),
-		"ops_review_correctness":  roleConfig(review.runtime, review.deepModel, review.deepReasoning),
-		"ops_review_security":     roleConfig(review.runtime, review.deepModel, review.deepReasoning),
-		"ops_review_adversarial":  roleConfig(review.runtime, review.deepModel, review.deepReasoning),
-		"ops_review_design":       roleConfig(review.runtime, review.balancedModel, review.balancedReasoning),
-		"ops_review_test":         roleConfig(review.runtime, review.balancedModel, review.balancedReasoning),
-		"ops_review_architecture": roleConfig(review.runtime, review.balancedModel, review.balancedReasoning),
+		"ops_review":              roleConfig(review.runtime, opsReviewModel, opsReviewReasoning),
+		"ops_review_triage":       roleConfig(review.runtime, opsReviewModel, opsReviewReasoning),
+		"ops_review_correctness":  roleConfig(review.runtime, opsReviewModel, opsReviewReasoning),
+		"ops_review_security":     roleConfig(review.runtime, opsReviewModel, opsReviewReasoning),
+		"ops_review_adversarial":  roleConfig(review.runtime, opsReviewModel, opsReviewReasoning),
+		"ops_review_design":       roleConfig(review.runtime, opsReviewModel, opsReviewReasoning),
+		"ops_review_test":         roleConfig(review.runtime, opsReviewModel, opsReviewReasoning),
+		"ops_review_architecture": roleConfig(review.runtime, opsReviewModel, opsReviewReasoning),
 		"ops_escalation":          roleConfig(coding.runtime, coding.deepModel, coding.deepReasoning),
 		"ops_merge":               roleConfig(coding.runtime, coding.deepModel, coding.deepReasoning),
 		"ops_diagnosis":           roleConfig(coding.runtime, coding.deepModel, coding.deepReasoning),

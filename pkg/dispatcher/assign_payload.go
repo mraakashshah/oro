@@ -106,7 +106,7 @@ func (d *Dispatcher) buildAssignPayload(ctx context.Context, w *trackedWorker, a
 	// Git log — 2s hard timeout to keep assignment latency bounded.
 	gitCtx, gitCancel := context.WithTimeout(ctx, gitLogTimeout)
 	defer gitCancel()
-	gitOut, gitErr := d.shutdownRunner.Run(gitCtx, "git", "log", "--oneline", "-20")
+	gitOut, gitErr := d.commandRunner().Run(gitCtx, "git", "log", "--oneline", "-20")
 	if gitErr == nil {
 		p.GitLog = strings.TrimSpace(string(gitOut))
 	}
