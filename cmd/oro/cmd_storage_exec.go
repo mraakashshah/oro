@@ -113,7 +113,7 @@ func storageExecWorkdir(workdir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve storage exec workdir: %w", err)
 	}
-	info, err := os.Stat(absWorkdir)
+	info, err := os.Stat(absWorkdir) // #nosec G703 -- an operator explicitly supplies this local workdir to execute within it.
 	if err != nil {
 		return "", fmt.Errorf("stat storage exec workdir: %w", err)
 	}
