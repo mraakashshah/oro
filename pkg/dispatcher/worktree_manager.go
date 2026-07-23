@@ -2,9 +2,11 @@ package dispatcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -580,6 +582,89 @@ func (g *GitWorktreeManager) BranchHead(ctx context.Context, branch string) (str
 		return "", fmt.Errorf("rev-parse %s: %w", branch, err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// preserveEpicAncestry merges target into epicBranch so both the epic branch's
+// current tip and target become ancestors of the epic branch, without checking
+// out a worktree. It resolves both refs to immutable OIDs up front, computes a
+// merge tree with `git merge-tree --write-tree`, builds a two-parent merge
+// commit, validates both parents are ancestors of it, and advances the epic ref
+// with a compare-and-swap `update-ref`. Any failure before the CAS leaves all
+// refs untouched, so the caller can fall back losslessly. It satisfies the
+// dispatcher's epicMergePreserver capability interface.
+func (g *GitWorktreeManager) preserveEpicAncestry(ctx context.Context, epicBranch, target string) (epicPreserveOutcome, string, error) {
+	oldEpicOID, err := g.revParse(ctx, g.repoRoot, epicBranch)
+	if err != nil {
+		return epicPreserveConflict, "", err
+	}
+	targetOID, err := g.revParse(ctx, g.repoRoot, target)
+	if err != nil {
+		return epicPreserveConflict, "", err
+	}
+
+	// Idempotency: if the epic already contains target's current tip there is
+	// nothing to preserve. isAncestorOrUnrelated maps a clean "not an ancestor"
+	// (git exit 1) to (false, nil) and surfaces operational failures as errors.
+	contains, err := g.isAncestorOrUnrelated(ctx, targetOID, oldEpicOID)
+	if err != nil {
+		return epicPreserveConflict, "", fmt.Errorf("check target ancestry of epic %s: %w", epicBranch, err)
+	}
+	if contains {
+		return epicPreserveNoop, oldEpicOID, nil
+	}
+
+	tree, conflict, err := g.mergeTreeWrite(ctx, oldEpicOID, targetOID)
+	if err != nil {
+		return epicPreserveConflict, "", err
+	}
+	if conflict {
+		return epicPreserveConflict, "", nil
+	}
+
+	msg := fmt.Sprintf("chore(epic): preserve %s ancestry over %s", epicBranch, target)
+	commitOut, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "commit-tree", tree,
+		"-p", oldEpicOID, "-p", targetOID, "-m", msg)
+	if err != nil {
+		return epicPreserveConflict, "", fmt.Errorf("commit-tree preserve merge for %s: %w", epicBranch, err)
+	}
+	newCommit := strings.TrimSpace(string(commitOut))
+
+	// Validate against the captured OIDs (not branch names, which would make
+	// the epic-side check tautological once the ref is advanced).
+	for _, parent := range []string{oldEpicOID, targetOID} {
+		isAnc, ancErr := g.isAncestorOrUnrelated(ctx, parent, newCommit)
+		if ancErr != nil {
+			return epicPreserveConflict, "", fmt.Errorf("validate preserve commit ancestry for %s: %w", epicBranch, ancErr)
+		}
+		if !isAnc {
+			return epicPreserveConflict, "", fmt.Errorf("preserve commit %s does not contain required ancestor %s", newCommit, parent)
+		}
+	}
+
+	// Compare-and-swap: fail if the epic ref moved since we resolved it.
+	if _, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "update-ref",
+		"refs/heads/"+epicBranch, newCommit, oldEpicOID); err != nil {
+		return epicPreserveConflict, "", fmt.Errorf("compare-and-swap epic ref %s: %w", epicBranch, err)
+	}
+	return epicPreserveMerged, newCommit, nil
+}
+
+// mergeTreeWrite runs `git merge-tree --write-tree a b`. On a clean merge it
+// returns the written tree OID. A merge conflict is git exit status 1
+// (conflict=true, err=nil); any other non-zero exit is an operational error.
+// Exit status is read from the wrapped *exec.ExitError rather than string
+// matching so status 128 (unrelated histories, bad ref) is not mistaken for a
+// content conflict.
+func (g *GitWorktreeManager) mergeTreeWrite(ctx context.Context, a, b string) (tree string, conflict bool, err error) {
+	out, runErr := g.runner.Run(ctx, "git", "-C", g.repoRoot, "merge-tree", "--write-tree", a, b)
+	if runErr == nil {
+		return strings.TrimSpace(string(out)), false, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(runErr, &exitErr) && exitErr.ExitCode() == 1 {
+		return "", true, nil
+	}
+	return "", false, fmt.Errorf("merge-tree --write-tree %s %s: %w", a, b, runErr)
 }
 
 // GCClosedWorktrees removes worktree directories and branches for beads that
