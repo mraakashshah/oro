@@ -592,7 +592,7 @@ func (g *GitWorktreeManager) BranchHead(ctx context.Context, branch string) (str
 // with a compare-and-swap `update-ref`. Any failure before the CAS leaves all
 // refs untouched, so the caller can fall back losslessly. It satisfies the
 // dispatcher's epicMergePreserver capability interface.
-func (g *GitWorktreeManager) preserveEpicAncestry(ctx context.Context, epicBranch, target, msg string) (epicPreserveOutcome, string, error) {
+func (g *GitWorktreeManager) preserveEpicAncestry(ctx context.Context, epicBranch, target string) (epicPreserveOutcome, string, error) {
 	oldEpicOID, err := g.revParse(ctx, g.repoRoot, epicBranch)
 	if err != nil {
 		return epicPreserveConflict, "", err
@@ -621,6 +621,7 @@ func (g *GitWorktreeManager) preserveEpicAncestry(ctx context.Context, epicBranc
 		return epicPreserveConflict, "", nil
 	}
 
+	msg := fmt.Sprintf("chore(epic): preserve %s ancestry over %s", epicBranch, target)
 	commitOut, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "commit-tree", tree,
 		"-p", oldEpicOID, "-p", targetOID, "-m", msg)
 	if err != nil {

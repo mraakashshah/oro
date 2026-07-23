@@ -77,7 +77,7 @@ func TestPreserveEpicAncestryCleanMergeCreatesBothAncestors(t *testing.T) {
 	oldEpicOID := gitOut(t, repo, "rev-parse", "epic/clean")
 	mainOID := gitOut(t, repo, "rev-parse", "main")
 
-	outcome, sha, err := mgr.preserveEpicAncestry(ctx, "epic/clean", "main", "preserve")
+	outcome, sha, err := mgr.preserveEpicAncestry(ctx, "epic/clean", "main")
 	if err != nil {
 		t.Fatalf("PreserveEpicAncestry: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestPreserveEpicAncestryConflictLeavesRefUnchanged(t *testing.T) {
 	repo, mgr := newPreserveRepo(t, "epic/conflict", true)
 	oldEpicOID := gitOut(t, repo, "rev-parse", "epic/conflict")
 
-	outcome, sha, err := mgr.preserveEpicAncestry(ctx, "epic/conflict", "main", "preserve")
+	outcome, sha, err := mgr.preserveEpicAncestry(ctx, "epic/conflict", "main")
 	if err != nil {
 		t.Fatalf("PreserveEpicAncestry returned error, want conflict outcome: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestPreserveEpicAncestryIdempotentNoop(t *testing.T) {
 	mgr := NewGitWorktreeManager(repo, "", "", &ExecCommandRunner{})
 	oldEpicOID := gitOut(t, repo, "rev-parse", "epic/ahead")
 
-	outcome, sha, err := mgr.preserveEpicAncestry(ctx, "epic/ahead", "main", "preserve")
+	outcome, sha, err := mgr.preserveEpicAncestry(ctx, "epic/ahead", "main")
 	if err != nil {
 		t.Fatalf("PreserveEpicAncestry: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestPreserveEpicAncestryBadRefIsError(t *testing.T) {
 	repo, mgr := newPreserveRepo(t, "epic/clean", false)
 	oldEpicOID := gitOut(t, repo, "rev-parse", "epic/clean")
 
-	_, _, err := mgr.preserveEpicAncestry(ctx, "epic/clean", "does-not-exist", "preserve")
+	_, _, err := mgr.preserveEpicAncestry(ctx, "epic/clean", "does-not-exist")
 	if err == nil {
 		t.Fatal("PreserveEpicAncestry with a bad target ref returned nil error")
 	}

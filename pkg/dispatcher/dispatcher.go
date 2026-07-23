@@ -407,7 +407,7 @@ type epicMergePreserver interface {
 	// checks out a worktree. Returns the new epic tip on epicPreserveMerged
 	// (or the unchanged tip on epicPreserveNoop). Any failure before the ref
 	// mutation leaves all refs untouched.
-	preserveEpicAncestry(ctx context.Context, epicBranch, target, msg string) (epicPreserveOutcome, string, error)
+	preserveEpicAncestry(ctx context.Context, epicBranch, target string) (epicPreserveOutcome, string, error)
 }
 
 // Escalator accepts escalation messages from dispatcher checks.
@@ -3850,26 +3850,10 @@ func (d *Dispatcher) ffMergeEpicBranch(ctx context.Context, epicID, workerID, ta
 		return nil
 	}
 
-	mergeErr := d.advanceTargetToEpic(ctx, epicBranch, targetBranch)
-	if mergeErr != nil {
-		wrapped := fmt.Errorf("ff merge %s to %s: %w", epicBranch, targetBranch, mergeErr)
-		_ = d.logEvent(ctx, "epic_ff_merge_failed", "dispatcher", epicID, workerID,
-			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, wrapped.Error()))
-
-		// Attempt deterministic recovery before dispatching an LLM rebase child:
-		// merge target into the epic branch (preserving both ancestries) and
-		// retry the fast-forward. Only genuine content conflicts fall through.
-		if d.tryDeterministicEpicRebase(ctx, epicID, workerID, epicBranch, targetBranch) {
-			mergeErr = d.advanceTargetToEpic(ctx, epicBranch, targetBranch)
+	if mergeErr := d.advanceTargetToEpic(ctx, epicBranch, targetBranch); mergeErr != nil {
+		if recoverErr := d.recoverEpicDivergence(ctx, epicID, workerID, epicBranch, targetBranch, mergeErr); recoverErr != nil {
+			return recoverErr
 		}
-		if mergeErr != nil {
-			if _, ensureErr := d.ensureEpicRebaseChild(ctx, epicID, epicBranch, targetBranch, wrapped.Error()); ensureErr != nil {
-				_ = d.logEvent(ctx, "epic_rebase_child_ensure_failed", "dispatcher", epicID, workerID, ensureErr.Error())
-			}
-			return wrapped
-		}
-		_ = d.logEvent(ctx, "epic_deterministic_rebase_recovered", "dispatcher", epicID, workerID,
-			fmt.Sprintf(`{"branch":%q,"target":%q}`, epicBranch, targetBranch))
 	}
 
 	_ = d.logEvent(ctx, "epic_ff_merged", "dispatcher", epicID, workerID,
@@ -3887,10 +3871,39 @@ func (d *Dispatcher) ffMergeEpicBranch(ctx context.Context, epicID, workerID, ta
 // other target it advances the ref directly (no checkout required).
 func (d *Dispatcher) advanceTargetToEpic(ctx context.Context, epicBranch, targetBranch string) error {
 	if targetBranch == d.cfg.DefaultBranch {
-		_, err := d.worktrees.MergeFFOnly(ctx, epicBranch, d.repoRoot)
-		return err
+		if _, err := d.worktrees.MergeFFOnly(ctx, epicBranch, d.repoRoot); err != nil {
+			return fmt.Errorf("ff-only merge %s into %s: %w", epicBranch, targetBranch, err)
+		}
+		return nil
 	}
-	return d.worktrees.UpdateBranchRef(ctx, targetBranch, epicBranch)
+	if err := d.worktrees.UpdateBranchRef(ctx, targetBranch, epicBranch); err != nil {
+		return fmt.Errorf("advance %s to %s: %w", targetBranch, epicBranch, err)
+	}
+	return nil
+}
+
+// recoverEpicDivergence handles a failed close-time fast-forward of the epic
+// branch. It first attempts a deterministic preserve merge and retries the ff;
+// only on a content conflict, an operational error, or a worktree manager that
+// does not implement epicMergePreserver does it fall back to creating an LLM
+// rebase child. Returns nil when the ff ultimately succeeds.
+func (d *Dispatcher) recoverEpicDivergence(ctx context.Context, epicID, workerID, epicBranch, targetBranch string, cause error) error {
+	wrapped := fmt.Errorf("ff merge %s to %s: %w", epicBranch, targetBranch, cause)
+	_ = d.logEvent(ctx, "epic_ff_merge_failed", "dispatcher", epicID, workerID,
+		fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, wrapped.Error()))
+
+	if d.tryDeterministicEpicRebase(ctx, epicID, workerID, epicBranch, targetBranch) {
+		if retryErr := d.advanceTargetToEpic(ctx, epicBranch, targetBranch); retryErr == nil {
+			_ = d.logEvent(ctx, "epic_deterministic_rebase_recovered", "dispatcher", epicID, workerID,
+				fmt.Sprintf(`{"branch":%q,"target":%q}`, epicBranch, targetBranch))
+			return nil
+		}
+	}
+
+	if _, ensureErr := d.ensureEpicRebaseChild(ctx, epicID, epicBranch, targetBranch, wrapped.Error()); ensureErr != nil {
+		_ = d.logEvent(ctx, "epic_rebase_child_ensure_failed", "dispatcher", epicID, workerID, ensureErr.Error())
+	}
+	return wrapped
 }
 
 // tryDeterministicEpicRebase attempts to preserve target ancestry on the epic
@@ -3905,8 +3918,7 @@ func (d *Dispatcher) tryDeterministicEpicRebase(ctx context.Context, epicID, wor
 	if !ok {
 		return false
 	}
-	msg := fmt.Sprintf("chore(epic): preserve %s ancestry over %s", epicBranch, targetBranch)
-	outcome, sha, err := preserver.preserveEpicAncestry(ctx, epicBranch, targetBranch, msg)
+	outcome, sha, err := preserver.preserveEpicAncestry(ctx, epicBranch, targetBranch)
 	if err != nil {
 		_ = d.logEvent(ctx, "epic_deterministic_rebase_failed", "dispatcher", epicID, workerID,
 			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, err.Error()))
