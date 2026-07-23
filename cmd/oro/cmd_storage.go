@@ -55,7 +55,7 @@ func newStorageCmd() *cobra.Command {
 		Use:   "storage",
 		Short: "Inspect Oro-managed storage",
 	}
-	cmd.AddCommand(newStorageStatusCmd(), newStorageCleanCmd())
+	cmd.AddCommand(newStorageStatusCmd(), newStorageCleanCmd(), newStorageExecCmd())
 	return cmd
 }
 
