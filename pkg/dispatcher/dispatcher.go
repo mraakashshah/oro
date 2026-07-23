@@ -380,6 +380,36 @@ type assignmentBaseBranchSafetyChecker interface {
 	BaseBranchHasUniqueCommits(ctx context.Context, branch, baseBranch string) (bool, error)
 }
 
+// epicPreserveOutcome is the result of a deterministic epic-ancestry preserve
+// merge. On any error the caller falls back regardless of outcome.
+type epicPreserveOutcome int
+
+const (
+	// epicPreserveNoop means target's tip is already an ancestor of the epic
+	// branch: nothing to do.
+	epicPreserveNoop epicPreserveOutcome = iota
+	// epicPreserveMerged means a new preserve commit was created and the epic
+	// ref advanced to it via compare-and-swap.
+	epicPreserveMerged
+	// epicPreserveConflict means the merge could not be computed without a
+	// content conflict; the caller must fall back to LLM recovery.
+	epicPreserveConflict
+)
+
+// epicMergePreserver deterministically preserves both target and epic ancestry
+// on the epic branch without an LLM worker or a checked-out worktree.
+// Implemented by *GitWorktreeManager; worktree managers that do not implement
+// it cause the dispatcher to fall back to ensureEpicRebaseChild.
+type epicMergePreserver interface {
+	// preserveEpicAncestry merges target into epicBranch so that both the epic
+	// branch's current tip and target become ancestors of the epic branch,
+	// advancing the epic ref transactionally (compare-and-swap). It never
+	// checks out a worktree. Returns the new epic tip on epicPreserveMerged
+	// (or the unchanged tip on epicPreserveNoop). Any failure before the ref
+	// mutation leaves all refs untouched.
+	preserveEpicAncestry(ctx context.Context, epicBranch, target, msg string) (epicPreserveOutcome, string, error)
+}
+
 // Escalator accepts escalation messages from dispatcher checks.
 type Escalator interface {
 	Escalate(ctx context.Context, msg string) error
@@ -3820,22 +3850,26 @@ func (d *Dispatcher) ffMergeEpicBranch(ctx context.Context, epicID, workerID, ta
 		return nil
 	}
 
-	var mergeErr error
-	if targetBranch == d.cfg.DefaultBranch {
-		// Target is the HEAD branch: use ff-only merge so the working tree advances.
-		_, mergeErr = d.worktrees.MergeFFOnly(ctx, epicBranch, d.repoRoot)
-	} else {
-		// Target is not checked out: directly advance the ref.
-		mergeErr = d.worktrees.UpdateBranchRef(ctx, targetBranch, epicBranch)
-	}
+	mergeErr := d.advanceTargetToEpic(ctx, epicBranch, targetBranch)
 	if mergeErr != nil {
 		wrapped := fmt.Errorf("ff merge %s to %s: %w", epicBranch, targetBranch, mergeErr)
 		_ = d.logEvent(ctx, "epic_ff_merge_failed", "dispatcher", epicID, workerID,
 			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, wrapped.Error()))
-		if _, ensureErr := d.ensureEpicRebaseChild(ctx, epicID, epicBranch, targetBranch, wrapped.Error()); ensureErr != nil {
-			_ = d.logEvent(ctx, "epic_rebase_child_ensure_failed", "dispatcher", epicID, workerID, ensureErr.Error())
+
+		// Attempt deterministic recovery before dispatching an LLM rebase child:
+		// merge target into the epic branch (preserving both ancestries) and
+		// retry the fast-forward. Only genuine content conflicts fall through.
+		if d.tryDeterministicEpicRebase(ctx, epicID, workerID, epicBranch, targetBranch) {
+			mergeErr = d.advanceTargetToEpic(ctx, epicBranch, targetBranch)
 		}
-		return wrapped
+		if mergeErr != nil {
+			if _, ensureErr := d.ensureEpicRebaseChild(ctx, epicID, epicBranch, targetBranch, wrapped.Error()); ensureErr != nil {
+				_ = d.logEvent(ctx, "epic_rebase_child_ensure_failed", "dispatcher", epicID, workerID, ensureErr.Error())
+			}
+			return wrapped
+		}
+		_ = d.logEvent(ctx, "epic_deterministic_rebase_recovered", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"branch":%q,"target":%q}`, epicBranch, targetBranch))
 	}
 
 	_ = d.logEvent(ctx, "epic_ff_merged", "dispatcher", epicID, workerID,
@@ -3846,6 +3880,48 @@ func (d *Dispatcher) ffMergeEpicBranch(ctx context.Context, epicID, workerID, ta
 			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, delErr.Error()))
 	}
 	return nil
+}
+
+// advanceTargetToEpic fast-forwards targetBranch to the tip of epicBranch. For
+// the HEAD branch it uses an ff-only merge so the working tree advances; for any
+// other target it advances the ref directly (no checkout required).
+func (d *Dispatcher) advanceTargetToEpic(ctx context.Context, epicBranch, targetBranch string) error {
+	if targetBranch == d.cfg.DefaultBranch {
+		_, err := d.worktrees.MergeFFOnly(ctx, epicBranch, d.repoRoot)
+		return err
+	}
+	return d.worktrees.UpdateBranchRef(ctx, targetBranch, epicBranch)
+}
+
+// tryDeterministicEpicRebase attempts to preserve target ancestry on the epic
+// branch without an LLM worker. It returns true when the epic branch now
+// contains target (either it already did, or a preserve merge was created and
+// committed via compare-and-swap), meaning the caller may retry the ff. A
+// content conflict, an operational error, or a worktree manager that does not
+// implement epicMergePreserver returns false so the caller falls back to
+// ensureEpicRebaseChild.
+func (d *Dispatcher) tryDeterministicEpicRebase(ctx context.Context, epicID, workerID, epicBranch, targetBranch string) bool {
+	preserver, ok := d.worktrees.(epicMergePreserver)
+	if !ok {
+		return false
+	}
+	msg := fmt.Sprintf("chore(epic): preserve %s ancestry over %s", epicBranch, targetBranch)
+	outcome, sha, err := preserver.preserveEpicAncestry(ctx, epicBranch, targetBranch, msg)
+	if err != nil {
+		_ = d.logEvent(ctx, "epic_deterministic_rebase_failed", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"branch":%q,"error":%q}`, epicBranch, err.Error()))
+		return false
+	}
+	switch outcome {
+	case epicPreserveNoop, epicPreserveMerged:
+		_ = d.logEvent(ctx, "epic_deterministic_rebase_preserved", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"branch":%q,"target":%q,"outcome":%d,"sha":%q}`, epicBranch, targetBranch, outcome, sha))
+		return true
+	default: // epicPreserveConflict
+		_ = d.logEvent(ctx, "epic_deterministic_rebase_conflict", "dispatcher", epicID, workerID,
+			fmt.Sprintf(`{"branch":%q,"target":%q}`, epicBranch, targetBranch))
+		return false
+	}
 }
 
 // ensureEpicRebaseChild returns the one active recovery child for an epic
