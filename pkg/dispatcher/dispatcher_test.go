@@ -18348,6 +18348,15 @@ func TestEpicFFMergeFailureCreatesActionableRebaseChild(t *testing.T) {
 	if strings.Contains(rebaseBead.acceptanceCriteria, "git checkout ") {
 		t.Errorf("rebase child acceptance criteria should not check out the epic branch in-place: %s", rebaseBead.acceptanceCriteria)
 	}
+	if !strings.Contains(rebaseBead.acceptanceCriteria, "Constraint:") {
+		t.Errorf("rebase child acceptance criteria missing a Constraint segment: %s", rebaseBead.acceptanceCriteria)
+	}
+	if !strings.Contains(rebaseBead.acceptanceCriteria, "--onto") {
+		t.Errorf("rebase child acceptance criteria does not forbid a terminal rebase --onto the epic tip: %s", rebaseBead.acceptanceCriteria)
+	}
+	if !strings.Contains(rebaseBead.acceptanceCriteria, "flattens the preserve merge") {
+		t.Errorf("rebase child acceptance criteria does not explain why a terminal rebase onto the epic tip is forbidden: %s", rebaseBead.acceptanceCriteria)
+	}
 
 	const rebaseChildID = "oro-rebase-child"
 	beadSrc.mu.Lock()

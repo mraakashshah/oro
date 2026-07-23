@@ -4094,6 +4094,7 @@ func rebaseChildAcceptance(epicID, epicBranch, targetBranch string) string {
 		fmt.Sprintf("Cmd: git merge-base --is-ancestor %s HEAD && git merge-base --is-ancestor %s HEAD && go test ./pkg/dispatcher -run '^(TestEpicRebaseChildAcceptanceAllowsPreservedAncestry|TestEpicFFMergeFailureCreatesActionableRebaseChild)$'", targetBranch, epicBranch),
 		fmt.Sprintf("Assert: %s and %s are ancestors of HEAD, dispatcher tests pass, and the epic can retry close without replaying an already-preserved merge.", targetBranch, epicBranch),
 		"Read: pkg/dispatcher/dispatcher.go:ffMergeEpicBranch, pkg/dispatcher/dispatcher_test.go:TestEpicFFMergeFailureCreatesActionableRebaseChild",
+		fmt.Sprintf("Constraint: once the -s ours preserve merge lands on %s, do not replay it via a terminal rebase onto the %s tip (e.g. `rebase --onto <epic-tip>` or a plain rebase onto <epic-tip>) — that flattens the preserve merge and drops %s ancestry, failing the Cmd above; if %s advances again, redo the -s ours merge instead.", epicBranch, epicBranch, targetBranch, epicBranch),
 	}, " | ")
 }
 
