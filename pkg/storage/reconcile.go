@@ -36,14 +36,24 @@ type LegacyEntrySource interface {
 	ReadPage(context.Context, string, string, int) (LegacyEntryPage, error)
 }
 
+// LegacyOwnerProbe determines whether a legacy scratch path may still belong
+// to a running process. Errors are treated as possible ownership.
+//
+//oro:testonly — recurring maintenance wiring supplies the process probe.
+type LegacyOwnerProbe interface {
+	PossibleLiveOwner(context.Context, string) (bool, error)
+}
+
 // LegacyReconcileResult reports one bounded legacy scratch scan.
 //
 //oro:testonly — recurring maintenance wiring lands with the recurring storage triggers.
 type LegacyReconcileResult struct {
-	Examined int
-	Adopted  int
-	Cursor   string
-	Complete bool
+	Examined      int
+	Adopted       int
+	Preserved     int
+	Preservations map[string]PreserveReason
+	Cursor        string
+	Complete      bool
 }
 
 // LegacyReconciler scans one configured legacy scratch root through a paged source.
@@ -53,13 +63,18 @@ type LegacyReconciler struct {
 	catalog *Catalog
 	root    string
 	source  LegacyEntrySource
+	probe   LegacyOwnerProbe
 }
 
 // NewLegacyReconciler creates a bounded legacy scratch reconciler.
 //
 //oro:testonly — recurring maintenance wiring lands with the recurring storage triggers.
-func NewLegacyReconciler(catalog *Catalog, root string, source LegacyEntrySource) *LegacyReconciler {
-	return &LegacyReconciler{catalog: catalog, root: root, source: source}
+func NewLegacyReconciler(catalog *Catalog, root string, source LegacyEntrySource, probes ...LegacyOwnerProbe) *LegacyReconciler {
+	var probe LegacyOwnerProbe
+	if len(probes) > 0 {
+		probe = probes[0]
+	}
+	return &LegacyReconciler{catalog: catalog, root: root, source: source, probe: probe}
 }
 
 // Reconcile reads no more than one bounded page and a one-entry completion
@@ -119,18 +134,22 @@ func (r *LegacyReconciler) readPage(ctx context.Context, root, after string, lim
 }
 
 func (r *LegacyReconciler) processPage(ctx context.Context, root string, page LegacyEntryPage) (LegacyReconcileResult, error) {
-	result := LegacyReconcileResult{Examined: len(page.Entries)}
+	result := LegacyReconcileResult{Examined: len(page.Entries), Preservations: make(map[string]PreserveReason)}
 	for _, entry := range page.Entries {
 		if err := ctx.Err(); err != nil {
 			return LegacyReconcileResult{}, fmt.Errorf("reconcile legacy scratch context: %w", err)
 		}
 		result.Cursor = entry.Name
-		adopted, err := r.adopt(ctx, root, entry)
+		adopted, preserved, err := r.adopt(ctx, root, entry)
 		if err != nil {
 			return LegacyReconcileResult{}, err
 		}
 		if adopted {
 			result.Adopted++
+		}
+		if preserved != "" {
+			result.Preserved++
+			result.Preservations[entry.Name] = preserved
 		}
 	}
 	return result, nil
@@ -200,31 +219,41 @@ func validateLegacyPage(page LegacyEntryPage, after string, limit int) error {
 	return nil
 }
 
-func (r *LegacyReconciler) adopt(ctx context.Context, root string, entry LegacyEntry) (bool, error) {
+func (r *LegacyReconciler) adopt(ctx context.Context, root string, entry LegacyEntry) (bool, PreserveReason, error) {
 	if !entry.IsDir || !namespaceTokenPattern.MatchString(entry.Name) {
-		return false, nil
+		return false, "", nil
 	}
 	path := filepath.Join(root, entry.Name)
 	info, err := os.Lstat(path) //nolint:gosec // G304: path is the named direct child of the validated configured scratch root.
 	if err != nil {
-		return false, fmt.Errorf("inspect legacy namespace %s: %w", entry.Name, err)
+		return false, "", fmt.Errorf("inspect legacy namespace %s: %w", entry.Name, err)
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return false, nil
+		return false, "", nil
+	}
+	if r.probe == nil {
+		return false, PreserveOwnershipUncertain, nil
+	}
+	possibleLiveOwner, err := r.probe.PossibleLiveOwner(ctx, path)
+	if err != nil {
+		return false, PreserveOwnershipUncertain, nil
+	}
+	if possibleLiveOwner {
+		return false, PreserveActive, nil
 	}
 
 	var exists bool
 	err = r.catalog.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runtime_leases WHERE namespace = ? AND scratch_path = ?)`, entry.Name, path).Scan(&exists)
 	if err != nil {
-		return false, fmt.Errorf("check legacy namespace %s: %w", entry.Name, err)
+		return false, "", fmt.Errorf("check legacy namespace %s: %w", entry.Name, err)
 	}
 	if exists {
-		return false, nil
+		return false, "", nil
 	}
 	now := time.Now().UTC()
 	_, err = r.catalog.db.ExecContext(ctx, `INSERT INTO runtime_leases (id, namespace, scratch_path, controller_id, owner_id, pid, process_start, acquired_at, heartbeat_at, released_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, "legacy:"+entry.Name, entry.Name, path, "legacy-reconcile", "legacy-reconcile", 1, formatTime(now), formatTime(now), formatTime(now), formatTime(now))
 	if err != nil {
-		return false, fmt.Errorf("adopt legacy namespace %s: %w", entry.Name, err)
+		return false, "", fmt.Errorf("adopt legacy namespace %s: %w", entry.Name, err)
 	}
-	return true, nil
+	return true, "", nil
 }
