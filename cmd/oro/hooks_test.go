@@ -375,6 +375,19 @@ printf '%s:%s' "${ORO_RUN_MUTATION:-unset}" "${ORO_QG_CONTEXT:-unset}" > "$MARKE
 		if err := os.WriteFile(qgPath, []byte(qgScript), 0o755); err != nil { //nolint:gosec // test hook script
 			t.Fatal(err)
 		}
+		oroBinDir := t.TempDir()
+		oroBinary := filepath.Join(oroBinDir, "oro")
+		oroScript := `#!/bin/sh
+if [ "$1" != "storage" ] || [ "$2" != "exec" ] || [ "$3" != "--workdir" ] || [ "$5" != "--" ]; then
+    exit 2
+fi
+cd "$4" || exit $?
+shift 5
+exec "$@"
+`
+		if err := os.WriteFile(oroBinary, []byte(oroScript), 0o755); err != nil { //nolint:gosec // test hook script
+			t.Fatal(err)
+		}
 
 		if err := installHookWrapper(gitDir, "pre-push", buildOroPrePushCheck(qgPath)); err != nil {
 			t.Fatalf("installHookWrapper pre-push: %v", err)
@@ -384,7 +397,7 @@ printf '%s:%s' "${ORO_RUN_MUTATION:-unset}" "${ORO_QG_CONTEXT:-unset}" > "$MARKE
 		cmd := exec.Command(hookPath, "origin", "git@example.invalid:repo.git") //nolint:gosec // test-created hook
 		cmd.Dir = tmpDir
 		cmd.Stdin = strings.NewReader("refs/heads/main 0000000000000000000000000000000000000000 refs/heads/main 0000000000000000000000000000000000000000\n")
-		cmd.Env = append(os.Environ(), "MARKER="+marker)
+		cmd.Env = append(os.Environ(), "MARKER="+marker, "PATH="+oroBinDir+":"+os.Getenv("PATH"))
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("pre-push hook failed: %v\n%s", err, string(output))

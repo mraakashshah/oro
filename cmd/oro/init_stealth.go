@@ -31,10 +31,10 @@ if [ "${ORO_PRE_PUSH_QG:-1}" != "0" ]; then
 const oroPrePushCheckSuffix = `
     if [ -x "$oro_root/scripts/quality_gate.sh" ]; then
         echo "oro: running quality gate (mutation testing disabled by default)" >&2
-        (cd "$oro_root" && ORO_QG_CONTEXT=push "$oro_root/scripts/quality_gate.sh") || exit $?
+        ORO_QG_CONTEXT=push oro storage exec --workdir "$oro_root" -- "$oro_root/scripts/quality_gate.sh" || exit $?
     elif [ -x "$oro_qg" ]; then
         echo "oro: running quality gate (mutation testing disabled by default)" >&2
-        (cd "$oro_root" && ORO_QG_CONTEXT=push "$oro_qg") || exit $?
+        ORO_QG_CONTEXT=push oro storage exec --workdir "$oro_root" -- "$oro_qg" || exit $?
     fi
 fi`
 
