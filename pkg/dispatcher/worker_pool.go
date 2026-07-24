@@ -206,8 +206,8 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 			Reasoning:    h.reasoning,
 			Cards:        cardsCtx,
 			TargetBranch: h.targetBranch,
-			Feedback:     h.nextAction,
-			Attempt:      h.checkpointTurn,
+			Feedback:     firstNonEmptyQGRetryFeedback(h.feedback, h.nextAction),
+			Attempt:      max(h.attempt, h.checkpointTurn),
 		},
 	}); err != nil {
 		_ = w.conn.Close()
@@ -218,6 +218,16 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 		return
 	}
 	delete(d.pendingHandoffs, handoffBeadID)
+	delete(d.pendingQGRetries, id)
+}
+
+func firstNonEmptyQGRetryFeedback(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (d *Dispatcher) buildHandoffCardContext(h *pendingHandoff) cards.RelevantCards {

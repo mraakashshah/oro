@@ -686,6 +686,8 @@ type pendingHandoff struct {
 	labels         []string // bead labels for memory search on respawn
 	nextAction     string   // intent_summary from checkpoint_acked (§9.3); empty for ralph handoffs
 	checkpointTurn int      // checkpoint respawn count for this bead (§9.3 step 9); 0 for ralph handoffs
+	feedback       string   // authoritative QG feedback for a replacement retry
+	attempt        int      // QG retry attempt; zero for ordinary handoffs
 }
 
 type workerAssignmentSnapshot struct {
@@ -1079,6 +1081,7 @@ type Dispatcher struct {
 	// pendingExternalSince records when external launch reservations were made
 	// so stale reservations do not strand capacity forever.
 	pendingExternalSince map[string]time.Time
+	pendingQGRetries     map[string]QGRetryContext
 
 	// unexpectedManagedExits counts managed workers removed by checkHeartbeats
 	// (heartbeat or progress timeout). Used by reconcileScale to cap spawning:
@@ -1226,6 +1229,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		pendingSpawnForWorkers: make(map[string]bool),
 		pendingExternalIDs:     make(map[string]bool),
 		pendingExternalSince:   make(map[string]time.Time),
+		pendingQGRetries:       make(map[string]QGRetryContext),
 		workerReadyCh:          make(chan struct{}, 1),
 		shutdownCh:             make(chan struct{}),
 		beadsDir:               beadsDir,
@@ -2470,6 +2474,7 @@ func (d *Dispatcher) recordQGFailureIncident(ctx context.Context, workerID, bead
 		Summary:      summary,
 		Output:       output,
 	}
+	rec = normalizeQGFailureRecord(rec)
 	incident, err := RecordQGFailureOccurrence(ctx, d.db, rec, cls)
 	if err != nil {
 		_ = d.logEvent(ctx, "qg_failure_record_failed", workerID, beadID, workerID,
@@ -2480,6 +2485,7 @@ func (d *Dispatcher) recordQGFailureIncident(ctx context.Context, workerID, bead
 		_ = d.logEvent(ctx, "qg_failure_link_failed", workerID, beadID, workerID,
 			fmt.Sprintf(`{"error":%q,"fingerprint":%q,"incident_id":%d}`, err.Error(), fingerprint, incident.ID))
 	}
+	d.rememberQGRetryContext(workerID, rec, attempt)
 }
 
 // withReservation executes a two-phase reservation pattern for worker re-assignment:
@@ -2559,6 +2565,7 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 			}
 			_ = d.logEventLocked(ctx, "qg_retry_assign_sent", workerID, beadID, workerID,
 				fmt.Sprintf(`{"attempt":%d,"model":%q}`, attempt, payload.Model))
+			delete(d.pendingQGRetries, workerID)
 			w.state = protocol.WorkerBusy
 			w.beadID = beadID
 			w.lastProgress = d.nowFunc()
@@ -2567,7 +2574,7 @@ func (d *Dispatcher) qgRetryWithReservation(ctx context.Context, workerID, beadI
 	)
 
 	// If assignment failed, clean up tracking state outside the lock.
-	if !success {
+	if !success && !d.hasPendingQGRetry(workerID, beadID, attempt) {
 		d.clearBeadTracking(beadID)
 	}
 }
@@ -9040,6 +9047,17 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 	beadID := w.beadID
 	assignmentID := w.assignmentID
 	wasManaged := w.managed
+	retryContext, retryPending := d.pendingQGRetries[workerID]
+	retrySnapshot := workerAssignmentSnapshot{
+		execution:    w.execution,
+		worktree:     w.worktree,
+		runtime:      w.runtime,
+		model:        w.model,
+		reasoning:    w.reasoning,
+		epicID:       w.epicID,
+		baseBranch:   w.baseBranch,
+		targetBranch: w.targetBranch,
+	}
 
 	// Close connection and remove worker from pool
 	_ = w.conn.Close()
@@ -9055,6 +9073,46 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 	// Target count remains unchanged (unlike kill-worker)
 	procMgr := d.procMgr
 	d.mu.Unlock()
+	if retryPending {
+		feedback, err := d.loadQGRetryFeedback(ctx, retryContext, retrySnapshot.worktree)
+		if err != nil {
+			d.mu.Lock()
+			delete(d.pendingManagedIDs, workerID)
+			delete(d.pendingManagedSince, workerID)
+			d.mu.Unlock()
+			return "", fmt.Errorf("restore qg retry feedback: %w", err)
+		}
+		if retrySnapshot.execution.AssignmentID == 0 {
+			retrySnapshot.execution = workerExecutionContext(assignmentID, false, filepath.Base(d.cfg.RepoRoot))
+		}
+		d.mu.Lock()
+		d.pendingHandoffs[beadID] = &pendingHandoff{
+			assignmentID: assignmentID,
+			execution:    retrySnapshot.execution,
+			beadID:       beadID,
+			epicID:       retrySnapshot.epicID,
+			worktree:     retrySnapshot.worktree,
+			baseBranch:   retrySnapshot.baseBranch,
+			targetBranch: retrySnapshot.targetBranch,
+			runtime:      retrySnapshot.runtime,
+			model:        retrySnapshot.model,
+			reasoning:    retrySnapshot.reasoning,
+			feedback:     feedback,
+			attempt:      retryContext.Attempt,
+		}
+		d.mu.Unlock()
+		if err := d.killManagedWorkerForRestart(ctx, procMgr, workerID, beadID, wasManaged); err != nil {
+			return "", err
+		}
+		if procMgr != nil {
+			if _, err := procMgr.Spawn(workerID); err != nil {
+				return "", fmt.Errorf("spawn new worker: %w", err)
+			}
+		}
+		_ = d.logEvent(ctx, "qg_retry_worker_restarted", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"attempt":%d,"occurrence_id":%q}`, retryContext.Attempt, retryContext.OccurrenceID))
+		return fmt.Sprintf("worker %s restarted", workerID), nil
+	}
 
 	killErr := d.killManagedWorkerForRestart(ctx, procMgr, workerID, beadID, wasManaged)
 	completeErr := d.completeRestartAssignment(ctx, beadID, assignmentID, workerID)
