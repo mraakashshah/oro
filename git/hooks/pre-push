@@ -8,6 +8,6 @@ if [ "${ORO_PRE_PUSH_QG:-1}" != "0" ]; then
   _oro_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
   if [ -x "$_oro_root/scripts/quality_gate.sh" ]; then
     echo >&2 "oro: running quality gate (mutation testing disabled by default)"
-    (cd "$_oro_root" && ORO_QG_CONTEXT=push scripts/quality_gate.sh) || exit $?
+    ORO_QG_CONTEXT=push oro storage exec --workdir "$_oro_root" -- "$_oro_root/scripts/quality_gate.sh" || exit $?
   fi
 fi
