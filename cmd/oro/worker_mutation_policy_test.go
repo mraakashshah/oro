@@ -30,9 +30,14 @@ func TestWorkerMutationPolicyCoversCobraTree(t *testing.T) {
 		"task propose-blocker": {},
 	}
 
-	root := newTaskCmdWithStore(beadstore.NewFakeStore())
-	walkCobraLeaves(root, func(cmd *cobra.Command) {
-		path := cmd.CommandPath()
+	root := newRootCmd()
+	taskRoot, _, err := root.Find([]string{"task"})
+	if err != nil {
+		t.Fatalf("find task command: %v", err)
+	}
+
+	walkCobraLeaves(taskRoot, func(cmd *cobra.Command) {
+		path := taskMutationPath(cmd)
 		policy := workerMutationPolicy(cmd)
 		if policy == MutationPolicyUnknown {
 			t.Errorf("%s has no explicit worker mutation policy", path)

@@ -25,10 +25,9 @@ const (
 // An unlisted command is unknown by design: the Cobra-tree regression catches
 // it before a new task command can silently mutate worker-owned state.
 func workerMutationPolicy(cmd *cobra.Command) MutationPolicy {
-	if cmd == nil {
+	switch taskMutationPath(cmd) {
+	case "":
 		return MutationPolicyUnknown
-	}
-	switch cmd.CommandPath() {
 	case "task ready", "task list", "task show", "task blocked", "task closed", "task dep list", "task dep cycles", "task export", "task status":
 		return MutationPolicyReadOnly
 	case "task create", "task update", "task close", "task delete", "task reopen", "task defer", "task undefer", "task dep add", "task dep rm", "task note add":
@@ -38,6 +37,20 @@ func workerMutationPolicy(cmd *cobra.Command) MutationPolicy {
 	default:
 		return MutationPolicyUnknown
 	}
+}
+
+func taskMutationPath(cmd *cobra.Command) string {
+	var names []string
+	for current := cmd; current != nil; current = current.Parent() {
+		names = append(names, current.Name())
+		if current.Name() == "task" {
+			for left, right := 0, len(names)-1; left < right; left, right = left+1, right-1 {
+				names[left], names[right] = names[right], names[left]
+			}
+			return strings.Join(names, " ")
+		}
+	}
+	return ""
 }
 
 func guardTaskWorkerMutation(cmd *cobra.Command) error {
