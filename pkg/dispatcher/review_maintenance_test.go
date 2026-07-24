@@ -4,9 +4,13 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
+
+	"oro/pkg/protocol"
 )
 
 func TestReviewArtifactTerminalStateMatrix(t *testing.T) {
@@ -102,6 +106,90 @@ WHERE id = ?`, ReviewCheckpointStateIntegrated, freshSharedPath, timestamp, time
 	slices.Sort(wantPaths)
 	if !slices.Equal(gotPaths, wantPaths) {
 		t.Fatalf("prunable artifact paths = %v, want %v", gotPaths, wantPaths)
+	}
+}
+
+func TestReviewArtifactJanitorScheduled(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	if err := protocol.MigrateBeadSchema(ctx, d.db); err != nil {
+		t.Fatalf("migrate review checkpoint schema: %v", err)
+	}
+	d.reviewArtifactRetention = time.Hour
+	d.reviewMaintenanceInterval = time.Millisecond
+
+	store := NewReviewCheckpointStore(d.db)
+	artifactDir := t.TempDir()
+	duePath := filepath.Join(artifactDir, "due.json")
+	activePath := filepath.Join(artifactDir, "active.json")
+	for _, path := range []string{duePath, activePath} {
+		if err := os.WriteFile(path, []byte(path), 0o600); err != nil {
+			t.Fatalf("write artifact %s: %v", path, err)
+		}
+	}
+	retryPath := filepath.Join(artifactDir, "retry.json")
+	if err := os.Mkdir(retryPath, 0o700); err != nil {
+		t.Fatalf("create retry artifact directory: %v", err)
+	}
+	retryChild := filepath.Join(retryPath, "pending")
+	if err := os.WriteFile(retryChild, []byte("pending"), 0o600); err != nil {
+		t.Fatalf("write retry artifact child: %v", err)
+	}
+
+	oldTimestamp := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339Nano)
+	seedReviewArtifact(t, ctx, store, 100, duePath, ReviewCheckpointStateIntegrated, oldTimestamp)
+	seedReviewArtifact(t, ctx, store, 101, activePath, ReviewCheckpointStateIntegrated, oldTimestamp)
+	seedReviewArtifact(t, ctx, store, 102, activePath, ReviewCheckpointStateReviewRunning, oldTimestamp)
+	seedReviewArtifact(t, ctx, store, 103, retryPath, ReviewCheckpointStateIntegrated, oldTimestamp)
+
+	cancel := startDispatcher(t, d)
+	waitFor(t, func() bool {
+		_, err := os.Stat(duePath)
+		return os.IsNotExist(err)
+	}, time.Second)
+	cancel()
+
+	if _, err := os.Stat(activePath); err != nil {
+		t.Fatalf("active referenced artifact stat: %v", err)
+	}
+	artifacts, err := store.ListPrunableArtifacts(ctx, time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("list artifacts after scheduled prune: %v", err)
+	}
+	if len(artifacts) != 1 || artifacts[0].Path != retryPath {
+		t.Fatalf("prunable artifacts after failed deletion = %v, want only %q", artifacts, retryPath)
+	}
+	if err := os.Remove(retryChild); err != nil {
+		t.Fatalf("clear retry artifact failure: %v", err)
+	}
+
+	// A restart-safe duplicate tick sees the durable acknowledgement, retries a
+	// failed deletion, and retains the active reference.
+	d.pruneReviewArtifacts(ctx)
+	if _, err := os.Stat(retryPath); !os.IsNotExist(err) {
+		t.Fatalf("retried artifact stat error = %v, want not exist", err)
+	}
+	if _, err := os.Stat(activePath); err != nil {
+		t.Fatalf("active referenced artifact after duplicate tick: %v", err)
+	}
+}
+
+func seedReviewArtifact(
+	t *testing.T,
+	ctx context.Context,
+	store *ReviewCheckpointStore,
+	index int,
+	path string,
+	state ReviewCheckpointState,
+	timestamp string,
+) {
+	t.Helper()
+	checkpoint := createMaintenanceCheckpoint(ctx, t, store, index, state)
+	if _, err := store.db.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET state = ?, artifact_path = ?, created_at = ?, updated_at = ?
+WHERE id = ?`, state, path, timestamp, timestamp, checkpoint.ID); err != nil {
+		t.Fatalf("seed review artifact %s: %v", path, err)
 	}
 }
 
