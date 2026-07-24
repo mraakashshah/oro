@@ -16,6 +16,7 @@ import (
 
 	"oro/pkg/processenv"
 	"oro/pkg/protocol"
+	"oro/pkg/storage"
 )
 
 // RuntimeSpec describes how an ops runtime launches a subprocess.
@@ -24,6 +25,7 @@ type RuntimeSpec struct {
 	BuildArgs              func(model, prompt string) []string
 	BuildArgsWithReasoning func(model, reasoning, prompt string) []string
 	BuildEnv               func() []string
+	NewRuntime             func() storage.RuntimeRequest
 }
 
 // ExecSpawner implements BatchSpawner for a runtime-specific exec spec.
@@ -51,6 +53,9 @@ func (s *ExecSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning, 
 	} else if buildArgs != nil {
 		args = buildArgs(model, prompt)
 	}
+	if s.spec.NewRuntime != nil {
+		return s.spawnLeased(ctx, args, workdir)
+	}
 	cmd := exec.CommandContext(ctx, s.spec.Command, args...)
 	// Give every ops subprocess its own process group. Runtime launchers such
 	// as codex may spawn the actual agent as a child process, so cancellation
@@ -76,6 +81,38 @@ func (s *ExecSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning, 
 	}
 	proc.stdoutDone = make(chan error, 1)
 	go proc.scanStdout(stdoutPipe)
+	return proc, nil
+}
+
+func (s *ExecSpawner) spawnLeased(ctx context.Context, args []string, workdir string) (Process, error) {
+	stdoutReader, stdoutWriter := io.Pipe()
+	runtime := s.spec.NewRuntime()
+	runtime.Workdir = workdir
+	if s.spec.BuildEnv != nil {
+		runtime.Env = processenv.ForWorkdir(s.spec.BuildEnv(), workdir)
+	} else {
+		runtime.Env = processenv.ForWorkdir(os.Environ(), workdir)
+	}
+
+	proc := &opsProcess{stdoutDone: make(chan error, 1), stdoutCloser: stdoutWriter}
+	command, err := storage.StartLeasedCommand(ctx, storage.CommandRequest{
+		Runtime: runtime,
+		Path:    s.spec.Command,
+		Args:    args,
+		Dir:     workdir,
+		Stdout:  stdoutWriter,
+		Stderr:  proc,
+	})
+	if err != nil {
+		_ = stdoutWriter.Close()
+		_ = stdoutReader.Close()
+		return nil, fmt.Errorf("spawn %s: %w", s.spec.Command, err)
+	}
+	proc.leased = command
+	go func() {
+		proc.scanStdout(stdoutReader)
+		_ = stdoutReader.Close()
+	}()
 	return proc, nil
 }
 
@@ -165,13 +202,29 @@ func (s *ClaudeOpsSpawner) Spawn(ctx context.Context, model, prompt, workdir str
 type opsProcess struct {
 	mu           sync.Mutex
 	cmd          *exec.Cmd
+	leased       *storage.StartedCommand
 	output       strings.Builder
 	lastOutputAt time.Time
 	stdoutDone   chan error
+	stdoutCloser io.Closer
 }
 
 // Wait waits for the subprocess to exit.
 func (p *opsProcess) Wait() error {
+	if p.leased != nil {
+		waitErr := p.leased.Wait()
+		if p.stdoutCloser != nil {
+			_ = p.stdoutCloser.Close()
+		}
+		stdoutErr := <-p.stdoutDone
+		if stdoutErr != nil && waitErr == nil {
+			return stdoutErr
+		}
+		if waitErr != nil {
+			return fmt.Errorf("wait: %w", waitErr)
+		}
+		return nil
+	}
 	var stdoutErr error
 	if p.stdoutDone != nil {
 		stdoutErr = <-p.stdoutDone
@@ -188,6 +241,12 @@ func (p *opsProcess) Wait() error {
 
 // Kill sends SIGKILL to the subprocess process group.
 func (p *opsProcess) Kill() error {
+	if p.leased != nil {
+		if err := p.leased.Kill(); err != nil {
+			return fmt.Errorf("kill leased ops process: %w", err)
+		}
+		return nil
+	}
 	pgid := p.cmd.Process.Pid
 	if err := syscall.Kill(-pgid, syscall.SIGKILL); err == nil {
 		return nil

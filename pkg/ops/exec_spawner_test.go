@@ -3,15 +3,162 @@ package ops //nolint:testpackage // internal test needs access to unexported ops
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
+
+	"oro/pkg/storage"
 )
+
+func TestOpsSpawnerUsesRuntimeLease(t *testing.T) {
+	t.Parallel()
+
+	workdir := t.TempDir()
+	catalog := &recordingOpsLeaseCatalog{}
+	newRuntime := newOpsRuntimeRequest(t, catalog, workdir)
+	spawner := NewExecSpawner(RuntimeSpec{
+		Command: "sh",
+		BuildArgs: func(_, _ string) []string {
+			return []string{"-c", "test -n \"$TMPDIR\""}
+		},
+		NewRuntime: newRuntime,
+	})
+
+	processes := make([]Process, 2)
+	for index := range processes {
+		proc, err := spawner.Spawn(t.Context(), "balanced", "review this", workdir)
+		if err != nil {
+			t.Fatalf("Spawn(%d) error = %v", index, err)
+		}
+		processes[index] = proc
+	}
+	if got := catalog.activeCount(); got != len(processes) {
+		t.Fatalf("agent active leases = %d, want %d before child exit", got, len(processes))
+	}
+
+	for index, proc := range processes {
+		if err := proc.Wait(); err != nil {
+			t.Fatalf("agent Wait(%d) error = %v", index, err)
+		}
+	}
+	catalog.assertLifecycle(t, len(processes))
+
+	catalog = &recordingOpsLeaseCatalog{}
+	newRuntime = newOpsRuntimeRequest(t, catalog, workdir)
+	var commands sync.WaitGroup
+	start := make(chan struct{})
+	commands.Add(2)
+	for range 2 {
+		go func() {
+			defer commands.Done()
+			<-start
+			if _, err := runOpsCommand(t.Context(), newRuntime, "sh", []string{"-c", "test -n \"$TMPDIR\"; sleep 0.05"}, workdir); err != nil {
+				t.Errorf("runOpsCommand() error = %v", err)
+			}
+		}()
+	}
+	close(start)
+	commands.Wait()
+	catalog.assertLifecycle(t, 2)
+}
+
+type recordingOpsLeaseCatalog struct {
+	mu       sync.Mutex
+	active   map[storage.LeaseID]struct{}
+	acquired []storage.LeaseID
+	released []storage.LeaseID
+}
+
+func (catalog *recordingOpsLeaseCatalog) AcquireLease(_ context.Context, request storage.LeaseRequest) (storage.Lease, error) {
+	catalog.mu.Lock()
+	defer catalog.mu.Unlock()
+	if catalog.active == nil {
+		catalog.active = make(map[storage.LeaseID]struct{})
+	}
+	if _, exists := catalog.active[request.ID]; exists {
+		return storage.Lease{}, fmt.Errorf("duplicate active lease %q", request.ID)
+	}
+	catalog.active[request.ID] = struct{}{}
+	catalog.acquired = append(catalog.acquired, request.ID)
+	return storage.Lease{LeaseRequest: request}, nil
+}
+
+func (catalog *recordingOpsLeaseCatalog) ReleaseLease(_ context.Context, leaseID storage.LeaseID) error {
+	catalog.mu.Lock()
+	defer catalog.mu.Unlock()
+	delete(catalog.active, leaseID)
+	catalog.released = append(catalog.released, leaseID)
+	return nil
+}
+
+func (catalog *recordingOpsLeaseCatalog) activeCount() int {
+	catalog.mu.Lock()
+	defer catalog.mu.Unlock()
+	return len(catalog.active)
+}
+
+func (catalog *recordingOpsLeaseCatalog) assertLifecycle(t *testing.T, want int) {
+	t.Helper()
+	catalog.mu.Lock()
+	defer catalog.mu.Unlock()
+	if got := len(catalog.active); got != 0 {
+		t.Fatalf("active leases = %d, want 0 after child exit", got)
+	}
+	if got := len(catalog.acquired); got != want {
+		t.Fatalf("acquired leases = %d, want %d", got, want)
+	}
+	if got := len(catalog.released); got != want {
+		t.Fatalf("released leases = %d, want %d", got, want)
+	}
+	for _, leaseID := range catalog.acquired {
+		if occurrences(catalog.released, leaseID) != 1 {
+			t.Fatalf("lease %q released %d times, want once", leaseID, occurrences(catalog.released, leaseID))
+		}
+	}
+}
+
+func occurrences(ids []storage.LeaseID, want storage.LeaseID) int {
+	count := 0
+	for _, id := range ids {
+		if id == want {
+			count++
+		}
+	}
+	return count
+}
+
+func newOpsRuntimeRequest(t *testing.T, catalog storage.RuntimeLeaseCatalog, workdir string) func() storage.RuntimeRequest {
+	t.Helper()
+	var sequence int
+	var mu sync.Mutex
+	return func() storage.RuntimeRequest {
+		mu.Lock()
+		defer mu.Unlock()
+		sequence++
+		now := time.Now().UTC()
+		return storage.RuntimeRequest{
+			Catalog: catalog,
+			Lease: storage.LeaseRequest{
+				ID:           storage.LeaseID(fmt.Sprintf("%s-%d", t.Name(), sequence)),
+				ControllerID: "ops-test-controller",
+				OwnerID:      "ops-test-owner",
+				PID:          os.Getpid(),
+				ProcessStart: now,
+				AcquiredAt:   now,
+				HeartbeatAt:  now,
+			},
+			Env:     append(os.Environ(), "ORO_SUBPROCESS_TMP_ROOT="+t.TempDir()),
+			Workdir: workdir,
+		}
+	}
+}
 
 func TestOpsSpawnerUsesRuntime(t *testing.T) {
 	t.Setenv("PWD", "/wrong/root")
