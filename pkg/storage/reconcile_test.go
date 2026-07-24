@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -82,6 +83,60 @@ func TestLegacyReconcileReadIsActuallyBounded(t *testing.T) {
 	}
 	if got := storedReconciliationCursor(ctx, t, catalog, failed.cursorName()); got != "durable-cursor" {
 		t.Fatalf("source error changed durable cursor to %q", got)
+	}
+}
+
+func TestLegacyReconcileUsesRootScopedCursor(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	catalog, err := OpenCatalog(ctx, filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = catalog.Close() })
+
+	root := t.TempDir()
+	cacheRoot := t.TempDir()
+	tmpAlias := filepath.Join(root, "alias")
+	if err := os.Symlink(root, tmpAlias); err != nil {
+		t.Fatalf("create root alias: %v", err)
+	}
+	entries := make([]LegacyEntry, legacyReconcileEntryLimit+1)
+	for index := range entries {
+		entries[index] = LegacyEntry{Name: fmt.Sprintf("candidate-%06d", index)}
+	}
+
+	tmpSource := &recordingLegacyEntrySource{entries: entries}
+	cacheSource := &recordingLegacyEntrySource{entries: entries}
+	tmpReconciler := NewLegacyReconciler(catalog, root, tmpSource)
+	aliasReconciler := NewLegacyReconciler(catalog, tmpAlias, &recordingLegacyEntrySource{entries: entries})
+	cacheReconciler := NewLegacyReconciler(catalog, cacheRoot, cacheSource)
+
+	if _, err := tmpReconciler.Reconcile(ctx); err != nil {
+		t.Fatalf("reconcile temp root: %v", err)
+	}
+	if _, err := cacheReconciler.Reconcile(ctx); err != nil {
+		t.Fatalf("reconcile cache root: %v", err)
+	}
+	if _, err := cacheReconciler.Reconcile(ctx); err != nil {
+		t.Fatalf("resume cache root: %v", err)
+	}
+	if got, want := legacyReconciliationCursorName(root), legacyReconciliationCursorName(tmpAlias); got != want {
+		t.Fatalf("canonical aliases use different cursors: %q != %q", got, want)
+	}
+	if got, want := legacyReconciliationCursorName(root), legacyReconciliationCursorName(cacheRoot); got == want {
+		t.Fatalf("distinct roots share cursor %q", got)
+	}
+
+	if _, err := aliasReconciler.Reconcile(ctx); err != nil {
+		t.Fatalf("resume through root alias: %v", err)
+	}
+	if got, want := aliasReconciler.cursorName(), tmpReconciler.cursorName(); got != want {
+		t.Fatalf("alias cursor = %q, original cursor = %q", got, want)
+	}
+	if got, want := cacheSource.calls[2].after, entries[legacyReconcileEntryLimit-1].Name; got != want {
+		t.Fatalf("cache root resumed at %q, want %q", got, want)
 	}
 }
 

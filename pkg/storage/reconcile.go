@@ -163,7 +163,15 @@ func (r *LegacyReconciler) cursorName() string {
 }
 
 func (r *LegacyReconciler) cursorNameForRoot(root string) string {
-	sum := sha256.Sum256([]byte(root))
+	return legacyReconciliationCursorName(root)
+}
+
+func legacyReconciliationCursorName(root string) string {
+	canonical, err := canonicalCachePath(root)
+	if err != nil {
+		canonical = filepath.Clean(root)
+	}
+	sum := sha256.Sum256([]byte(canonical))
 	return fmt.Sprintf("legacy-scratch:%x", sum[:])
 }
 
