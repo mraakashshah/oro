@@ -855,6 +855,8 @@ func resolveBeadStore(store beadstore.Store) (beadstore.Store, error) {
 type beadJSON struct {
 	ID                 string                `json:"id"`
 	Title              string                `json:"title"`
+	ContractVersion    int                   `json:"contract_version"`
+	Draft              bool                  `json:"draft"`
 	Status             any                   `json:"status"`
 	Priority           int                   `json:"priority"`
 	ParentID           any                   `json:"parent_id"`
@@ -1026,6 +1028,8 @@ func beadJSONFromProtocol(bead protocol.Bead) beadJSON {
 	return beadJSON{
 		ID:                 bead.ID,
 		Title:              bead.Title,
+		ContractVersion:    bead.ContractVersion,
+		Draft:              bead.Draft,
 		Status:             nullableString(bead.Status),
 		Priority:           bead.Priority,
 		ParentID:           nullableString(bead.Epic),
