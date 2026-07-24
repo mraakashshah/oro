@@ -15,6 +15,7 @@ import (
 	"oro/pkg/config"
 	"oro/pkg/langprofile"
 	"oro/pkg/protocol"
+	"oro/pkg/worker"
 
 	"github.com/spf13/cobra"
 )
@@ -1164,6 +1165,128 @@ func TestGenerateSettings(t *testing.T) {
 		if !strings.Contains(content, phase) {
 			t.Errorf("should contain %s phase, got:\n%s", phase, content)
 		}
+	}
+}
+
+func TestBootstrapPublishesOracleSettings(t *testing.T) {
+	assets := testAssets()
+
+	tests := []struct {
+		name      string
+		bootstrap func(t *testing.T, projectDir, oroHome string) string
+	}{
+		{
+			name: "normal project",
+			bootstrap: func(t *testing.T, projectDir, oroHome string) string {
+				t.Helper()
+				if _, err := bootstrapProject(projectDir, "oracle-project", oroHome, assets, false); err != nil {
+					t.Fatalf("bootstrapProject: %v", err)
+				}
+				return filepath.Join(oroHome, "projects", "oracle-project")
+			},
+		},
+		{
+			name: "stealth project",
+			bootstrap: func(t *testing.T, projectDir, oroHome string) string {
+				t.Helper()
+				if err := bootstrapStealthProject(projectDir, oroHome, assets, false); err != nil {
+					t.Fatalf("bootstrapStealthProject: %v", err)
+				}
+				hash, err := projectHash(projectDir)
+				if err != nil {
+					t.Fatalf("projectHash: %v", err)
+				}
+				return filepath.Join(oroHome, "projects", "s-"+hash)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			projectDir := t.TempDir()
+			oroHome := t.TempDir()
+			hookPath := filepath.Join(oroHome, "hooks", "oro-search-hook")
+			if err := os.MkdirAll(filepath.Dir(hookPath), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(hookPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			canonicalHookPath, err := worker.ValidateManagedOracleHook(hookPath)
+			if err != nil {
+				t.Fatalf("ValidateManagedOracleHook: %v", err)
+			}
+
+			projectSettingsDir := tt.bootstrap(t, projectDir, oroHome)
+			oracleSettingsPath := filepath.Join(projectSettingsDir, "oracle-settings.json")
+			data, err := os.ReadFile(oracleSettingsPath)
+			if err != nil {
+				t.Fatalf("read oracle settings: %v", err)
+			}
+			if got := tt.bootstrap(t, projectDir, oroHome); got != projectSettingsDir {
+				t.Fatalf("second bootstrap settings dir = %q, want %q", got, projectSettingsDir)
+			}
+			secondData, err := os.ReadFile(oracleSettingsPath)
+			if err != nil {
+				t.Fatalf("read idempotent oracle settings: %v", err)
+			}
+			if !bytes.Equal(secondData, data) {
+				t.Fatalf("oracle settings changed across identical bootstrap runs:\nfirst: %s\nsecond: %s", data, secondData)
+			}
+
+			var settings struct {
+				Hooks map[string][]hookGroup `json:"hooks"`
+			}
+			if err := json.Unmarshal(data, &settings); err != nil {
+				t.Fatalf("unmarshal oracle settings: %v", err)
+			}
+			if len(settings.Hooks) != 2 {
+				t.Fatalf("oracle hooks = %#v, want only SessionStart and PreToolUse", settings.Hooks)
+			}
+			assertOracleHookGroup(t, settings.Hooks["SessionStart"], "", canonicalHookPath)
+			assertOracleHookGroup(t, settings.Hooks["PreToolUse"], "Read", canonicalHookPath)
+		})
+	}
+}
+
+func assertOracleHookGroup(t *testing.T, groups []hookGroup, matcher, hookPath string) {
+	t.Helper()
+	if len(groups) != 1 {
+		t.Fatalf("groups = %#v, want one group", groups)
+	}
+	if groups[0].Matcher != matcher {
+		t.Fatalf("matcher = %q, want %q", groups[0].Matcher, matcher)
+	}
+	if len(groups[0].Hooks) != 1 {
+		t.Fatalf("hooks = %#v, want one hook", groups[0].Hooks)
+	}
+	if groups[0].Hooks[0] != (hookEntry{Type: "command", Command: hookPath}) {
+		t.Fatalf("hook = %#v, want command %q", groups[0].Hooks[0], hookPath)
+	}
+}
+
+func TestWriteOracleSettingsRejectsUntrustedHookWithoutReplacingProfile(t *testing.T) {
+	projectDir := t.TempDir()
+	profilePath := filepath.Join(projectDir, "oracle-settings.json")
+	priorProfile := []byte("{\"prior\":true}\n")
+	if err := os.WriteFile(profilePath, priorProfile, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	untrustedHook := filepath.Join(projectDir, "untrusted-hook")
+	if err := os.WriteFile(untrustedHook, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeOracleSettings(projectDir, untrustedHook); err == nil {
+		t.Fatal("writeOracleSettings succeeded with a non-executable hook")
+	}
+	data, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatalf("read prior profile: %v", err)
+	}
+	if !bytes.Equal(data, priorProfile) {
+		t.Fatalf("profile = %q, want preserved %q", data, priorProfile)
 	}
 }
 

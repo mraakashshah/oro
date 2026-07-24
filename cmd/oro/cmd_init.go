@@ -18,6 +18,7 @@ import (
 	"oro/pkg/agentassets"
 	"oro/pkg/config"
 	"oro/pkg/langprofile"
+	"oro/pkg/worker"
 
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
@@ -645,6 +646,7 @@ func bootstrapStealthProject(projectRoot, oroHome string, assets fs.FS, force bo
 		filepath.Join(oroHome, "hooks", "oro-search-hook"),
 		filepath.Join(absProjectRoot, "cmd", "oro-search-hook"),
 	)
+	publishOracleSettings(stealthDir, oroHome)
 
 	return nil
 }
@@ -783,6 +785,7 @@ func bootstrapProject(projectRoot, projectName, oroHome string, assets fs.FS, fo
 		filepath.Join(oroHome, "hooks", "oro-search-hook"),
 		filepath.Join(absProjectRoot, "cmd", "oro-search-hook"),
 	)
+	publishOracleSettings(projectDir, oroHome)
 
 	return cfg, nil
 }
@@ -1065,6 +1068,68 @@ func generateSettings(oroHome string) ([]byte, error) { //nolint:unparam // call
 		return nil, fmt.Errorf("marshal settings: %w", err)
 	}
 	return data, nil
+}
+
+// generateOracleSettings produces the isolated settings profile used by
+// read-only Oracle launches. It intentionally contains no general permissions
+// or project hooks: only the managed hook's activation probe and Read guard.
+func generateOracleSettings(hookPath string) ([]byte, error) {
+	settings := struct {
+		Hooks map[string][]hookGroup `json:"hooks"`
+	}{
+		Hooks: map[string][]hookGroup{
+			"SessionStart": {{Hooks: []hookEntry{{Type: "command", Command: hookPath}}}},
+			"PreToolUse":   {{Matcher: "Read", Hooks: []hookEntry{{Type: "command", Command: hookPath}}}},
+		},
+	}
+
+	data, err := json.MarshalIndent(settings, "", "\t")
+	if err != nil {
+		return nil, fmt.Errorf("marshal Oracle settings: %w", err)
+	}
+	return data, nil
+}
+
+// writeOracleSettings validates the managed executable and atomically replaces
+// the isolated Oracle profile without touching the regular project settings.
+func writeOracleSettings(projectDir, hookPath string) error {
+	canonicalHookPath, err := worker.ValidateManagedOracleHook(hookPath)
+	if err != nil {
+		return fmt.Errorf("validate managed Oracle hook: %w", err)
+	}
+	data, err := generateOracleSettings(canonicalHookPath)
+	if err != nil {
+		return err
+	}
+
+	tmp, err := os.CreateTemp(projectDir, ".oracle-settings-*")
+	if err != nil {
+		return fmt.Errorf("create Oracle settings temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath) //nolint:errcheck // best-effort cleanup after an interrupted write
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write Oracle settings temp file: %w", err)
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("set Oracle settings permissions: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close Oracle settings temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, filepath.Join(projectDir, "oracle-settings.json")); err != nil {
+		return fmt.Errorf("install Oracle settings: %w", err)
+	}
+	return nil
+}
+
+func publishOracleSettings(projectDir, oroHome string) {
+	hookPath := filepath.Join(oroHome, "hooks", "oro-search-hook")
+	if err := writeOracleSettings(projectDir, hookPath); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: Oracle settings not published: %v\n", err)
+	}
 }
 
 // assetMapping maps source directory names in the embedded FS to their
