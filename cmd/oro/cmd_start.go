@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"fmt"
 	"io"
@@ -1129,6 +1130,15 @@ func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers 
 	if err != nil {
 		return nil, nil, err
 	}
+	opsRuntimeFactory := newOpsRuntimeFactory(catalog, repoRoot)
+	if err := ops.ConfigureRuntimeFactory(runtime.opsSpawn, opsRuntimeFactory); err != nil {
+		_ = catalog.Close()
+		return nil, nil, fmt.Errorf("configure ops runtime leases: %w", err)
+	}
+	if err := ops.ConfigureRuntimeFactory(runtime.reviewOpsSpawn, opsRuntimeFactory); err != nil {
+		_ = catalog.Close()
+		return nil, nil, fmt.Errorf("configure review ops runtime leases: %w", err)
+	}
 	sockPath := paths.SocketPath
 	dbPath := paths.StateDBPath
 	// Migrate global DBs to per-project directory on first use (no-op if already migrated).
@@ -1211,6 +1221,29 @@ func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers 
 		return nil, nil, fmt.Errorf("create dispatcher: %w", err)
 	}
 	return d, db, nil
+}
+
+func newOpsRuntimeFactory(catalog storage.RuntimeLeaseCatalog, repoRoot string) func() storage.RuntimeRequest {
+	return func() storage.RuntimeRequest {
+		now := time.Now().UTC()
+		return storage.RuntimeRequest{
+			Catalog: catalog,
+			Lease: storage.LeaseRequest{
+				ID:           storage.LeaseID(fmt.Sprintf("ops-%d-%s", os.Getpid(), rand.Text())),
+				ControllerID: "dispatcher-ops",
+				OwnerID:      "dispatcher-ops",
+				PID:          os.Getpid(),
+				ProcessStart: now,
+				AcquiredAt:   now,
+				HeartbeatAt:  now,
+			},
+			Env:     os.Environ(),
+			Workdir: repoRoot,
+			Policy: storage.StoragePolicy{
+				RepositoryRoot: repoRoot,
+			},
+		}
+	}
 }
 
 // resolveWorkerProgramPath returns the worker-program.md path for repoRoot.

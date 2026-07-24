@@ -38,6 +38,34 @@ func NewExecSpawner(spec RuntimeSpec) *ExecSpawner {
 	return &ExecSpawner{spec: spec}
 }
 
+// SetRuntimeFactory configures a fresh lease-backed runtime request for every
+// spawned child.
+func (s *ExecSpawner) SetRuntimeFactory(factory func() storage.RuntimeRequest) {
+	if s == nil {
+		return
+	}
+	s.spec.NewRuntime = factory
+}
+
+// ConfigureRuntimeFactory requires every production ops spawner to support
+// lease-backed runtime requests. Unsupported spawners fail closed.
+func ConfigureRuntimeFactory(spawner BatchSpawner, factory func() storage.RuntimeRequest) error {
+	if spawner == nil {
+		return errors.New("ops spawner is nil")
+	}
+	if router, ok := spawner.(*RuntimeSpawnerRouter); ok {
+		return router.configureRuntimeFactory(factory)
+	}
+	setter, ok := spawner.(interface {
+		SetRuntimeFactory(func() storage.RuntimeRequest)
+	})
+	if !ok {
+		return fmt.Errorf("ops spawner %T does not support runtime leases", spawner)
+	}
+	setter.SetRuntimeFactory(factory)
+	return nil
+}
+
 // Spawn starts a subprocess using the runtime spec.
 func (s *ExecSpawner) Spawn(ctx context.Context, model, prompt, workdir string) (Process, error) {
 	return s.SpawnWithReasoning(ctx, model, "", prompt, workdir)
@@ -125,6 +153,19 @@ type RuntimeSpawnerRouter struct {
 // NewRuntimeSpawnerRouter creates an ops spawner that routes each call by runtime.
 func NewRuntimeSpawnerRouter(claude, codex BatchSpawner) *RuntimeSpawnerRouter {
 	return &RuntimeSpawnerRouter{claude: claude, codex: codex}
+}
+
+func (r *RuntimeSpawnerRouter) configureRuntimeFactory(factory func() storage.RuntimeRequest) error {
+	if r == nil {
+		return errors.New("ops runtime router is nil")
+	}
+	if err := ConfigureRuntimeFactory(r.claude, factory); err != nil {
+		return fmt.Errorf("configure claude ops runtime: %w", err)
+	}
+	if err := ConfigureRuntimeFactory(r.codex, factory); err != nil {
+		return fmt.Errorf("configure codex ops runtime: %w", err)
+	}
+	return nil
 }
 
 // Spawn preserves the BatchSpawner interface by defaulting to Claude.

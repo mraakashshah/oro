@@ -22,6 +22,7 @@ import (
 	"oro/pkg/dispatcher"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
+	"oro/pkg/storage"
 
 	"github.com/spf13/cobra"
 )
@@ -1642,6 +1643,92 @@ func TestBuildDispatcherCallsMigrateGlobalDBs(t *testing.T) {
 	}
 }
 
+func TestStartConfiguresOpsRuntimeLease(t *testing.T) {
+	tmpDir := t.TempDir()
+	oroHome := t.TempDir()
+	t.Chdir(tmpDir)
+	t.Setenv(agentRuntimeEnvVar, runtimeClaude)
+	t.Setenv("ORO_HOME", oroHome)
+	t.Setenv("ORO_PROJECT", "")
+	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+
+	claudeOps := &runtimeFactoryOpsSpawner{}
+	claudeReviewOps := &runtimeFactoryOpsSpawner{}
+	codexOps := &runtimeFactoryOpsSpawner{}
+	previousClaudeOps := newClaudeOpsSpawner
+	previousClaudeReviewOps := newClaudeReviewOpsSpawner
+	previousCodexOps := newCodexOpsSpawner
+	newClaudeOpsSpawner = func() ops.BatchSpawner { return claudeOps }
+	newClaudeReviewOpsSpawner = func() ops.BatchSpawner { return claudeReviewOps }
+	newCodexOpsSpawner = func() ops.BatchSpawner { return codexOps }
+	t.Cleanup(func() {
+		newClaudeOpsSpawner = previousClaudeOps
+		newClaudeReviewOpsSpawner = previousClaudeReviewOps
+		newCodexOpsSpawner = previousCodexOps
+	})
+
+	d, db, err := buildDispatcher("", false, "")
+	if err != nil {
+		t.Fatalf("buildDispatcher() error = %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	_ = d
+
+	for name, spawner := range map[string]*runtimeFactoryOpsSpawner{
+		"claude":        claudeOps,
+		"claude review": claudeReviewOps,
+		"codex":         codexOps,
+	} {
+		if spawner.factory == nil {
+			t.Fatalf("%s ops factory is nil", name)
+		}
+		first := spawner.factory()
+		second := spawner.factory()
+		if first.Catalog == nil {
+			t.Fatalf("%s runtime catalog is nil", name)
+		}
+		if first.Lease.ID == second.Lease.ID {
+			t.Fatalf("%s lease IDs = %q and %q, want distinct child IDs", name, first.Lease.ID, second.Lease.ID)
+		}
+	}
+}
+
+func TestStartRejectsOpsSpawnerWithoutRuntimeLease(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+	t.Setenv(agentRuntimeEnvVar, runtimeClaude)
+	t.Setenv("ORO_HOME", t.TempDir())
+	t.Setenv("ORO_PROJECT", "")
+	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+
+	unsupported := &testRuntimeOpsSpawner{}
+	previousClaudeOps := newClaudeOpsSpawner
+	previousClaudeReviewOps := newClaudeReviewOpsSpawner
+	previousCodexOps := newCodexOpsSpawner
+	newClaudeOpsSpawner = func() ops.BatchSpawner { return unsupported }
+	newClaudeReviewOpsSpawner = func() ops.BatchSpawner { return unsupported }
+	newCodexOpsSpawner = func() ops.BatchSpawner { return unsupported }
+	t.Cleanup(func() {
+		newClaudeOpsSpawner = previousClaudeOps
+		newClaudeReviewOpsSpawner = previousClaudeReviewOps
+		newCodexOpsSpawner = previousCodexOps
+	})
+
+	_, _, err := buildDispatcher("", false, "")
+	if err == nil || !strings.Contains(err.Error(), "does not support runtime leases") {
+		t.Fatalf("buildDispatcher() error = %v, want unsupported ops spawner failure", err)
+	}
+}
+
+type runtimeFactoryOpsSpawner struct {
+	testRuntimeOpsSpawner
+	factory func() storage.RuntimeRequest
+}
+
+func (s *runtimeFactoryOpsSpawner) SetRuntimeFactory(factory func() storage.RuntimeRequest) {
+	s.factory = factory
+}
+
 func TestBuildDispatcherResolvesOpsRuntime(t *testing.T) {
 	t.Run("defaults to claude runtime when unset", func(t *testing.T) {
 		tmpDir := mkdirTempIgnoreCleanupErrors(t)
@@ -1652,7 +1739,7 @@ func TestBuildDispatcherResolvesOpsRuntime(t *testing.T) {
 		t.Setenv("ORO_PROJECT", "")
 		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
 
-		wantOps := &testRuntimeOpsSpawner{}
+		wantOps := &runtimeFactoryOpsSpawner{}
 		prevOps := newClaudeOpsSpawner
 		newClaudeOpsSpawner = func() ops.BatchSpawner { return wantOps }
 		defer func() { newClaudeOpsSpawner = prevOps }()
@@ -1689,7 +1776,7 @@ func TestBuildDispatcherResolvesOpsRuntime(t *testing.T) {
 		t.Setenv("ORO_PROJECT", "")
 		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
 
-		wantOps := &testRuntimeOpsSpawner{}
+		wantOps := &runtimeFactoryOpsSpawner{}
 		prevOps := newCodexOpsSpawner
 		newCodexOpsSpawner = func() ops.BatchSpawner { return wantOps }
 		defer func() { newCodexOpsSpawner = prevOps }()
