@@ -180,11 +180,20 @@ func TestRunSerialLaneOnlyRetainsNestedFailureOutput(t *testing.T) {
 	}
 }
 
+func TestConcurrentQualityGatesSerializeDispatcherAggregateSuite(t *testing.T) {
+	assertConcurrentQualityGatesSerializeDispatcherAggregateSuite(t)
+}
+
 // TestConcurrentGatesNoTimingFlakeSerialLaneCatchesRegression is the integration
 // proof for oro-eee8: concurrent main phases run lock-free and flake-free (guarded
 // tests skipped, even when the serial-lane env leaks in ambiently), while the
 // serialized lane still runs the guarded tests and catches a regression.
 func TestConcurrentGatesNoTimingFlakeSerialLaneCatchesRegression(t *testing.T) {
+	assertConcurrentQualityGatesSerializeDispatcherAggregateSuite(t)
+}
+
+func assertConcurrentQualityGatesSerializeDispatcherAggregateSuite(t *testing.T) {
+	t.Helper()
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not available")
 	}

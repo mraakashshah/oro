@@ -272,11 +272,11 @@ func TestAssemblePrompt_QualityGateContent(t *testing.T) {
 
 	prompt := worker.AssemblePrompt(params)
 
-	if !strings.Contains(prompt, "./quality_gate.sh") {
-		t.Error("expected Quality Gate section to prefer './quality_gate.sh'")
+	if strings.Contains(prompt, "./quality_gate.sh") {
+		t.Error("Quality Gate section should not instruct the subprocess to run './quality_gate.sh'")
 	}
-	if !strings.Contains(prompt, "./scripts/quality_gate.sh") {
-		t.Error("expected Quality Gate section to mention './scripts/quality_gate.sh' fallback")
+	if strings.Contains(prompt, "./scripts/quality_gate.sh") {
+		t.Error("Quality Gate section should not instruct the subprocess to run './scripts/quality_gate.sh'")
 	}
 	if strings.Contains(prompt, "ORO_SKIP_MUTATION") {
 		t.Error("Quality Gate section should not teach agents to use ORO_SKIP_MUTATION for local QG")
@@ -287,8 +287,38 @@ func TestAssemblePrompt_QualityGateContent(t *testing.T) {
 	if strings.Contains(prompt, "ORO_RUN_MUTATION") {
 		t.Error("Quality Gate section should not teach agents to use ORO_RUN_MUTATION")
 	}
-	if !strings.Contains(prompt, "Mutation testing is off by default") || !strings.Contains(prompt, "--mutation-testing") {
-		t.Error("expected Quality Gate section to explain mutation flag opt-in")
+	if strings.Contains(prompt, "--mutation-testing") {
+		t.Error("Quality Gate section should not instruct the subprocess to use --mutation-testing")
+	}
+	if !strings.Contains(prompt, "worker harness") || !strings.Contains(prompt, "full quality gate") {
+		t.Error("expected Quality Gate section to delegate the full quality gate to the worker harness")
+	}
+}
+
+func TestAssemblePrompt_DelegatesAuthoritativeQG(t *testing.T) {
+	t.Parallel()
+
+	params := worker.PromptParams{
+		BeadID:             "bead-qg-delegate",
+		Title:              "QG delegation test",
+		Description:        "Test quality gate delegation section",
+		AcceptanceCriteria: "Test: pkg/worker/prompt_test.go:TestAssemblePrompt_DelegatesAuthoritativeQG | Cmd: go test ./pkg/worker -run '^TestAssemblePrompt_DelegatesAuthoritativeQG$' -count=1 | Assert: PASS",
+		WorktreePath:       "/tmp/wt-qg-delegate",
+		Model:              "opus",
+	}
+
+	prompt := worker.AssemblePrompt(params)
+
+	if !strings.Contains(prompt, "acceptance") || !strings.Contains(prompt, "focused") {
+		t.Error("expected prompt to require the task acceptance command and focused verification")
+	}
+	if !strings.Contains(prompt, "worker harness") || !strings.Contains(prompt, "full quality gate") {
+		t.Error("expected prompt to identify the worker harness as full-QG owner")
+	}
+	for _, forbidden := range []string{"./quality_gate.sh", "./scripts/quality_gate.sh", "--mutation-testing"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Errorf("prompt must not instruct coding subprocess to run %q", forbidden)
+		}
 	}
 }
 
@@ -327,11 +357,45 @@ func TestAssemblePrompt_FailureContent(t *testing.T) {
 
 	prompt := worker.AssemblePrompt(params)
 
-	if !strings.Contains(prompt, "3 failed test attempts") {
-		t.Error("expected Failure section to contain '3 failed test attempts'")
+	if !strings.Contains(prompt, "assignment-scoped work-proposal gateway") {
+		t.Error("expected Failure section to describe the work-proposal gateway")
 	}
-	if !strings.Contains(prompt, "oro task create") {
-		t.Error("expected Failure section to mention oro task create for decomposition")
+	if !strings.Contains(prompt, "oro task propose-blocker") {
+		t.Error("expected Failure section to mention oro task propose-blocker")
+	}
+}
+
+func TestFailurePromptUsesWorkProposalGateway(t *testing.T) {
+	t.Parallel()
+
+	prompt := worker.AssemblePrompt(worker.PromptParams{
+		BeadID:             "bead-proposal",
+		Title:              "Proposal prompt test",
+		Description:        "Test proposal gateway instructions",
+		AcceptanceCriteria: "Proposal instructions present",
+		WorktreePath:       "/tmp/wt-proposal",
+		Model:              "opus",
+	})
+
+	failureStart := strings.Index(prompt, "## Failure")
+	if failureStart == -1 {
+		t.Fatal("expected prompt to contain ## Failure section")
+	}
+	failureSection := prompt[failureStart:]
+	if !strings.Contains(failureSection, "oro evidence run --kind diagnostic --timeout 2m --") {
+		t.Error("expected Failure section to contain the evidence command")
+	}
+	if !strings.Contains(failureSection, "oro task propose-blocker --evidence-run <run-id> --fingerprint <fingerprint> --summary <summary>") {
+		t.Error("expected Failure section to contain the proposal command")
+	}
+	if !strings.Contains(failureSection, "--priority=2") {
+		t.Error("expected Failure section to use the default P2 proposal priority")
+	}
+	forbidden := []string{"oro task create", "oro task dep add", "All bug tasks MUST use --priority=0", "Bugs are always P0"}
+	for _, text := range forbidden {
+		if strings.Contains(failureSection, text) {
+			t.Errorf("Failure section must not contain %q", text)
+		}
 	}
 }
 
@@ -385,11 +449,11 @@ func TestAssemblePrompt_BeadToolsContent(t *testing.T) {
 
 	prompt := worker.AssemblePrompt(params)
 
-	if !strings.Contains(prompt, "oro task create") {
-		t.Error("expected Task Tools section to contain 'oro task create'")
+	if !strings.Contains(prompt, "oro evidence run") {
+		t.Error("expected Task Tools section to contain 'oro evidence run'")
 	}
-	if !strings.Contains(prompt, "oro task dep add") {
-		t.Error("expected Task Tools section to contain 'oro task dep add'")
+	if !strings.Contains(prompt, "oro task propose-blocker") {
+		t.Error("expected Task Tools section to contain 'oro task propose-blocker'")
 	}
 }
 
@@ -543,17 +607,14 @@ func TestAssemblePrompt_FailureSectionHasOroBeadCreateExamples(t *testing.T) {
 		failureSection = prompt[failStart : failStart+1+failEnd]
 	}
 
-	// Each failure mode should have a concrete oro task create command example.
+	// The gateway commands are the supported failure escalation path.
 	checks := []struct {
 		name   string
 		substr string
 	}{
-		{"oro task create --title flag", `oro task create --title=`},
-		{"test failure bug type+priority", `--type=bug --priority=0`},
-		{"decompose uses native create parent", `oro task create --title="<subtask>" --type=task --parent <task-id>`},
-		{"context limit handoff", `oro task create --title="Continue:`},
-		{"blocker bug creation", `oro task create --title="Blocker:`},
-		{"oro task dep add example", `oro task dep add`},
+		{"evidence command", `oro evidence run --kind diagnostic --timeout 2m --`},
+		{"proposal command", `oro task propose-blocker --evidence-run <run-id> --fingerprint <fingerprint> --summary <summary>`},
+		{"default priority", `--priority=2`},
 	}
 
 	for _, c := range checks {
@@ -799,19 +860,8 @@ func TestPromptHandoffTemplate(t *testing.T) {
 		failureSection = prompt[failStart : failStart+1+failEnd]
 	}
 
-	// Check that handoff template attaches child bead with native create --parent.
-	if !strings.Contains(failureSection, "--parent oro-xyz123") {
-		t.Error("expected handoff template to contain 'oro task create ... --parent oro-xyz123'")
-	}
-
-	// Check that handoff template contains --acceptance-criteria flag
-	if !strings.Contains(failureSection, "--acceptance-criteria") {
-		t.Error("expected handoff template to contain --acceptance-criteria flag")
-	}
-
-	// Check that handoff template instructs agent to copy AC from assignment context
-	if !strings.Contains(failureSection, "copy") && !strings.Contains(failureSection, "same acceptance criteria") {
-		t.Error("expected handoff template to instruct agent to copy AC from assignment context")
+	if strings.Contains(failureSection, "oro task create") || strings.Contains(failureSection, "oro task dep add") {
+		t.Error("expected handoff failures to use the proposal gateway, not direct task mutation")
 	}
 }
 
@@ -1563,8 +1613,8 @@ func TestContextHandoffPrompt(t *testing.T) {
 	}
 }
 
-// TestAssemblePrompt_BugP0Rule verifies that the Failure section contains
-// the mandatory rule: all bug tasks must use --priority=0.
+// TestAssemblePrompt_BugP0Rule verifies that the Failure section uses the
+// validated default severity rather than claiming every bug is P0.
 func TestAssemblePrompt_BugP0Rule(t *testing.T) {
 	t.Parallel()
 
@@ -1592,8 +1642,8 @@ func TestAssemblePrompt_BugP0Rule(t *testing.T) {
 		failureSection = prompt[failureStart : failureStart+1+failureEnd]
 	}
 
-	if !strings.Contains(failureSection, "All bug tasks MUST use --priority=0") {
-		t.Errorf("Failure section must contain 'All bug tasks MUST use --priority=0'. Got:\n%s", failureSection)
+	if !strings.Contains(failureSection, "--priority=2") || strings.Contains(failureSection, "Bugs are always P0") {
+		t.Errorf("Failure section must use default P2 severity without blanket P0 guidance. Got:\n%s", failureSection)
 	}
 }
 

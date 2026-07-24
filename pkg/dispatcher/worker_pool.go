@@ -351,7 +351,7 @@ func (d *Dispatcher) escalateTimedOutWorkers(ctx context.Context, dead, stuck []
 		if dw.beadID == "" {
 			continue
 		}
-		if d.quarantineDisconnectedPreservedAssignment(ctx, dw.workerID, dw.beadID, dw.assignmentID, dw.worktree, dw.baseBranch) {
+		if d.quarantineDisconnectedPreservedAssignment(ctx, dw.workerID, dw.beadID, dw.assignmentID, dw.worktree, dw.baseBranch, "heartbeat timeout for worker "+dw.workerID) {
 			d.clearBeadTracking(dw.beadID)
 			continue
 		}
