@@ -641,10 +641,10 @@ func verifyRecoveryPreservedRef(ctx context.Context, preservedRef string) (strin
 	if !strings.HasPrefix(preservedRef, "recovery/") || strings.ContainsAny(preservedRef, " \t\n\\") {
 		return "", fmt.Errorf("retry-fresh-preserved requires a recovery/* ref")
 	}
-	if err := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+preservedRef).Run(); err != nil {
+	if err := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+preservedRef).Run(); err != nil { //nolint:gosec // validated recovery ref is passed as one argv value beneath refs/heads, without a shell.
 		return "", fmt.Errorf("verify retry-fresh-preserved ref %q: %w", preservedRef, err)
 	}
-	if err := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", preservedRef+"^{commit}").Run(); err != nil {
+	if err := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", preservedRef+"^{commit}").Run(); err != nil { //nolint:gosec // validated recovery ref is passed as one argv value, without a shell.
 		return "", fmt.Errorf("verify retry-fresh-preserved commit %q: %w", preservedRef, err)
 	}
 	return preservedRef, nil
