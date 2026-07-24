@@ -52,10 +52,11 @@ type managedHookFileFacts struct {
 	Symlink bool
 }
 
-//oro:testonly // This trust-predicate foundation is exercised directly until its setup and launcher consumers land.
 // ValidateManagedOracleHook returns the canonical absolute hook path only when
 // the file is regular, executable, owned by this user, and not writable by its
 // group or by other users.
+//
+//oro:testonly // This trust-predicate foundation is exercised directly until its setup and launcher consumers land.
 func ValidateManagedOracleHook(path string) (string, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
