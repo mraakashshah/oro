@@ -35,6 +35,7 @@ type PromptParams struct {
 	TargetBranch         string // merge target branch; defaults to "main" if empty
 	GitLog               string // git log context; may be empty
 	WorkerProgram        string // worker program invocation string; may be empty
+	LegacyFailurePrompt  bool   // retain direct task instructions while proposal gateway rolls out
 }
 
 // section writes a markdown section (## header + body) to the builder.
@@ -419,8 +420,8 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 
 	section(b, "Git", "Use conventional commits (`feat(scope): msg`, `fix(scope): msg`, `test(scope): msg`).\nNo amend, new commits only.\nNever run bare `git commit`; always provide the message non-interactively with `git commit -m \"<message>\"` or `git commit --message \"<message>\"`.")
 	section(b, "Task Tools",
-		"- `oro task create` — decompose a task into smaller child tasks\n"+
-			"- `oro task dep add` — declare a blocker dependency")
+		"- `oro evidence run` — record assignment-scoped diagnostic evidence\n"+
+			"- `oro task propose-blocker` — propose an evidence-backed blocker through the gateway")
 	appendEditToolsSection(b)
 	section(b, "Constraints", strings.Join([]string{
 		"- NEVER run `git push` — you are in a worktree on an agent branch. Pushing is the dispatcher/manager's job. This overrides any global rules that say to push.",
@@ -449,10 +450,10 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 		"Use these 3 strategies to stay autonomous:",
 		"1. **Decide and act** \u2014 make implementation choices yourself based on acceptance criteria.",
 		"2. **Recover from errors** \u2014 if a test fails or a command errors, diagnose and fix without escalating.",
-		"3. **Timebox exploration** \u2014 if you spend more than 5 minutes stuck, create a blocker task and exit.",
+		"3. **Timebox exploration** \u2014 if you spend more than 5 minutes stuck, record evidence and propose a blocker through the work-proposal gateway, then exit.",
 	}, "\n"))
 	appendContextHandoffSection(b)
-	appendFailureSection(b, params.BeadID)
+	appendFailureSection(b, params.BeadID, params.LegacyFailurePrompt)
 	appendExitSection(b)
 }
 
@@ -495,7 +496,23 @@ func appendContextHandoffSection(b *strings.Builder) {
 }
 
 // appendFailureSection writes the Failure section with escalation instructions.
-func appendFailureSection(b *strings.Builder, beadID string) {
+func appendFailureSection(b *strings.Builder, beadID string, legacy bool) {
+	if legacy {
+		appendLegacyFailureSection(b, beadID)
+		return
+	}
+	section(b, "Failure", strings.Join([]string{
+		"Report failures through the assignment-scoped work-proposal gateway; do not create tasks or dependencies directly.",
+		"",
+		"1. Record terminal diagnostic evidence:",
+		"   `oro evidence run --kind diagnostic --timeout 2m -- <command> <args...>`",
+		"2. Propose the blocker backed by that evidence:",
+		"   `oro task propose-blocker --evidence-run <run-id> --fingerprint <fingerprint> --summary <summary> --kind prerequisite --priority=2`",
+		"Use priority P2 by default. Request a different severity only when the validated severity policy requires it; do not assume every bug is P0.",
+	}, "\n"))
+}
+
+func appendLegacyFailureSection(b *strings.Builder, beadID string) {
 	section(b, "Failure", strings.Join([]string{
 		"All bug tasks MUST use --priority=0. Bugs are always P0.",
 		"",
