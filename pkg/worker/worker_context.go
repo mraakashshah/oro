@@ -18,6 +18,7 @@ import (
 type WorkerExecutionContext struct {
 	AssignmentID   int64
 	Generation     int64
+	WorkerID       string
 	Role           string
 	SocketPath     string
 	CapabilityFile string
@@ -44,7 +45,7 @@ func withAssignmentContext(ctx context.Context, execution WorkerExecutionContext
 	return context.WithValue(ctx, assignmentBeadIDKey{}, beadID)
 }
 
-func executionContextForAssign(a *protocol.AssignPayload, socketPath string) (WorkerExecutionContext, error) {
+func executionContextForAssign(a *protocol.AssignPayload, workerID, socketPath string) (WorkerExecutionContext, error) {
 	if a.AssignmentID <= 0 {
 		return WorkerExecutionContext{}, fmt.Errorf("assign execution context missing assignment ID")
 	}
@@ -54,9 +55,13 @@ func executionContextForAssign(a *protocol.AssignPayload, socketPath string) (Wo
 	if strings.TrimSpace(a.ActorRole) == "" {
 		return WorkerExecutionContext{}, fmt.Errorf("assign execution context missing role")
 	}
+	if strings.TrimSpace(workerID) == "" {
+		return WorkerExecutionContext{}, fmt.Errorf("assign execution context missing worker ID")
+	}
 	execution := WorkerExecutionContext{
 		AssignmentID: a.AssignmentID,
 		Generation:   a.Generation,
+		WorkerID:     workerID,
 		Role:         a.ActorRole,
 		SocketPath:   socketPath,
 	}
@@ -86,6 +91,7 @@ func environmentForExecution(env []string, execution WorkerExecutionContext, bea
 	owned := map[string]string{
 		"ORO_ASSIGNMENT_ID":         strconv.FormatInt(execution.AssignmentID, 10),
 		"ORO_ASSIGNMENT_GENERATION": strconv.FormatInt(execution.Generation, 10),
+		"ORO_WORKER_ID":             execution.WorkerID,
 		"ORO_ROLE":                  execution.Role,
 		"ORO_SOCKET_PATH":           execution.SocketPath,
 		"ORO_CAPABILITY_FILE":       execution.CapabilityFile,
@@ -101,7 +107,7 @@ func environmentForExecution(env []string, execution WorkerExecutionContext, bea
 		}
 		filtered = append(filtered, entry)
 	}
-	for _, key := range []string{"ORO_ASSIGNMENT_ID", "ORO_ASSIGNMENT_GENERATION", "ORO_ROLE", "ORO_SOCKET_PATH", "ORO_CAPABILITY_FILE", "ORO_WORKER_BEAD_ID"} {
+	for _, key := range []string{"ORO_ASSIGNMENT_ID", "ORO_ASSIGNMENT_GENERATION", "ORO_WORKER_ID", "ORO_ROLE", "ORO_SOCKET_PATH", "ORO_CAPABILITY_FILE", "ORO_WORKER_BEAD_ID"} {
 		if value := owned[key]; value != "" {
 			filtered = append(filtered, key+"="+value)
 		}
