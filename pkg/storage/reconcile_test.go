@@ -87,7 +87,6 @@ func TestLegacyReconcileReadIsActuallyBounded(t *testing.T) {
 }
 
 func TestLegacyReconcilePreservesPossibleLiveOwner(t *testing.T) {
-
 	ctx := context.Background()
 	root := t.TempDir()
 
