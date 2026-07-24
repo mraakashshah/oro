@@ -1,4 +1,4 @@
-package worker
+package worker //nolint:testpackage // exercises the required unexported facts validation seam.
 
 import (
 	"errors"
