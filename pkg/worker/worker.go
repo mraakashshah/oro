@@ -599,7 +599,7 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	if err := msg.Assign.Validate(); err != nil {
 		return fmt.Errorf("invalid assign payload: %w", err)
 	}
-	execution, err := executionContextForAssign(msg.Assign, w.socketPath)
+	execution, err := executionContextForAssign(msg.Assign, w.ID, w.socketPath)
 	if err != nil {
 		return fmt.Errorf("invalid assign execution context: %w", err)
 	}

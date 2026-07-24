@@ -86,8 +86,8 @@ func TestWorkerContextIsAssignmentLocal(t *testing.T) {
 		t.Fatalf("spawn contexts = %d, want 2", len(contexts))
 	}
 	for i, want := range []worker.WorkerExecutionContext{
-		{AssignmentID: 101, Generation: 1, Role: "execution_worker", SocketPath: socketPath, CapabilityFile: capabilityFile},
-		{AssignmentID: 202, Generation: 2, Role: "recovery_worker", SocketPath: socketPath, CapabilityFile: capabilityFile},
+		{AssignmentID: 101, Generation: 1, WorkerID: "w-context", Role: "execution_worker", SocketPath: socketPath, CapabilityFile: capabilityFile},
+		{AssignmentID: 202, Generation: 2, WorkerID: "w-context", Role: "recovery_worker", SocketPath: socketPath, CapabilityFile: capabilityFile},
 	} {
 		if contexts[i] != want {
 			t.Fatalf("spawn context %d = %#v, want %#v", i, contexts[i], want)
