@@ -92,6 +92,36 @@ func TestReviewLifecycleStopsWhenBeadGainsBlocker(t *testing.T) {
 		}
 	})
 
+	t.Run("concurrent terminal verdict cannot bypass dependency claim", func(t *testing.T) {
+		d, beads, _, _, _, _ := newTestDispatcher(t)
+		const (
+			beadID    = "bead-concurrent-parent"
+			blockerID = "bead-concurrent-blocker"
+			workerID  = "worker-concurrent-parent"
+		)
+
+		assignmentID := seedReviewAssignment(t, d, beadID, workerID)
+		beads.mu.Lock()
+		beads.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress", Dependencies: []protocol.Dependency{{
+			IssueID: beadID, DependsOnID: blockerID, Type: "blocks",
+		}}}
+		beads.shown[blockerID] = &protocol.BeadDetail{ID: blockerID, Status: "open"}
+		beads.mu.Unlock()
+		installReviewingWorker(d, workerID, beadID, assignmentID, t.TempDir())
+		d.mu.Lock()
+		d.workers[workerID].state = protocol.WorkerReserved
+		d.mu.Unlock()
+
+		d.handleReviewApproved(context.Background(), workerID, beadID, ops.Result{
+			Verdict:  ops.VerdictApproved,
+			Feedback: "VERDICT: APPROVED",
+		})
+
+		if got := eventCount(t, d.db, "review_approved"); got != 0 {
+			t.Fatalf("review_approved events = %d, want 0", got)
+		}
+	})
+
 	t.Run("closed blocker permits approval", func(t *testing.T) {
 		d, beads, _, _, _, _ := newTestDispatcher(t)
 		const (

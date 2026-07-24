@@ -5017,7 +5017,7 @@ func (d *Dispatcher) handleReviewApproved(ctx context.Context, workerID, beadID 
 func (d *Dispatcher) blockReviewForDependency(ctx context.Context, workerID, beadID, phase string) (bool, error) {
 	assignmentID, claimed := d.claimReviewDependencyCheck(workerID, beadID)
 	if !claimed {
-		return false, nil
+		return true, nil
 	}
 
 	blockerID, err := d.unresolvedBlockingDependency(ctx, beadID)
