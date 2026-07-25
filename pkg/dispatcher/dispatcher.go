@@ -6553,12 +6553,17 @@ func (d *Dispatcher) filterRecoveryQuarantinedBeads(ctx context.Context, allBead
 	if len(allBeads) == 0 || d.db == nil {
 		return allBeads
 	}
-	quarantined, err := d.openRecoveryQuarantineBeads(ctx)
+	tracked, err := d.openRecoveryQuarantineBeads(ctx)
 	if err != nil {
 		_ = d.logEvent(ctx, "recovery_quarantine_filter_failed", "dispatcher", "", "", err.Error())
 		return nil
 	}
-	if len(quarantined) == 0 {
+	blocking, err := d.blockingRecoveryQuarantineBeads(ctx)
+	if err != nil {
+		_ = d.logEvent(ctx, "recovery_quarantine_filter_failed", "dispatcher", "", "", err.Error())
+		return nil
+	}
+	if len(tracked) == 0 && len(blocking) == 0 {
 		return allBeads
 	}
 	redeployable, err := d.autoRedeployablePreservedWorktrees(ctx)
@@ -6568,7 +6573,7 @@ func (d *Dispatcher) filterRecoveryQuarantinedBeads(ctx context.Context, allBead
 	}
 	filtered := make([]protocol.Bead, 0, len(allBeads))
 	for _, bead := range allBeads {
-		if quarantined[bead.ID] {
+		if blocking[bead.ID] {
 			if redeployable[bead.ID] {
 				filtered = append(filtered, bead)
 				continue
@@ -6606,6 +6611,36 @@ WHERE q.status IN ('open', 'human_owned')
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate open recovery quarantines: %w", err)
+	}
+	return out, nil
+}
+
+// blockingRecoveryQuarantineBeads returns only unresolved recovery work that
+// must stay out of normal assignment. Resolved requeue-preserved records remain
+// visible to worktree reuse and garbage collection, but must not suppress a
+// fresh assignment when their preserved worktree is no longer redeployable.
+func (d *Dispatcher) blockingRecoveryQuarantineBeads(ctx context.Context) (map[string]bool, error) {
+	rows, err := d.db.QueryContext(ctx, `
+SELECT DISTINCT bead_id
+FROM recovery_quarantines
+WHERE status IN ('open', 'human_owned')`)
+	if err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("query blocking recovery quarantines: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make(map[string]bool)
+	for rows.Next() {
+		var beadID string
+		if err := rows.Scan(&beadID); err != nil {
+			return nil, fmt.Errorf("scan blocking recovery quarantine: %w", err)
+		}
+		out[beadID] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate blocking recovery quarantines: %w", err)
 	}
 	return out, nil
 }
