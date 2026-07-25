@@ -754,6 +754,36 @@ VALUES ('oro-quarantined', 'agent/oro-quarantined', 'unsafe_stale_branch', 'unme
 	}
 }
 
+func TestFilterAssignableAllowsBeadAfterRequeuePreservedResolution(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	assignment, err := d.db.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree, status)
+VALUES ('oro-requeued-preserved', 'offline-worker', '/tmp/oro-requeued-preserved', 'requeued')`)
+	if err != nil {
+		t.Fatalf("insert requeued preserved assignment: %v", err)
+	}
+	assignmentID, err := assignment.LastInsertId()
+	if err != nil {
+		t.Fatalf("requeued preserved assignment ID: %v", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `
+INSERT INTO recovery_quarantines (bead_id, assignment_id, reason, details, status, resolved_at)
+VALUES ('oro-requeued-preserved', ?, 'unsafe_stale_branch', 'preserved and requeued', 'resolved', datetime('now'))`, assignmentID); err != nil {
+		t.Fatalf("insert resolved recovery quarantine: %v", err)
+	}
+
+	got := d.filterAssignable(ctx, []protocol.Bead{
+		{ID: "oro-requeued-preserved", Status: "open", Priority: 1, Type: "task"},
+		{ID: "oro-ready", Status: "open", Priority: 2, Type: "task"},
+	})
+
+	if len(got) != 2 {
+		t.Fatalf("filterAssignable = %+v, want both ready beads after requeue-preserved resolution", got)
+	}
+}
+
 func TestTryAssignBlocksFreshWorkWhenRecoveryQuarantineOpen(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
