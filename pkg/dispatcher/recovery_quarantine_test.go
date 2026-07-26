@@ -39,6 +39,27 @@ func TestRecoveryQuarantineEmptySafeMatchesRecoveryCommandSemantics(t *testing.T
 	}
 }
 
+func TestResolvedPreservedAssignmentSuppressesStaleBranchRecovery(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	res, err := d.db.ExecContext(ctx, `INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES ('oro-preserved-stale', 'worker', '/tmp/preserved-stale', 'requeued')`)
+	if err != nil {
+		t.Fatalf("insert requeued assignment: %v", err)
+	}
+	assignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("assignment id: %v", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `INSERT INTO recovery_quarantines (bead_id, assignment_id, reason, details, status, resolved_at) VALUES ('oro-preserved-stale', ?, 'unsafe_stale_branch', 'operator preserved and requeued dirty worktree', 'resolved', datetime('now'))`, assignmentID); err != nil {
+		t.Fatalf("insert resolved stale quarantine: %v", err)
+	}
+
+	if !d.resolvedPreservedMismatchAssignment(ctx, assignmentID) {
+		t.Fatal("resolved requeue-preserved stale assignment must be suppressed on restart")
+	}
+}
+
 func TestCreateRecoveryQuarantineIdempotent(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
