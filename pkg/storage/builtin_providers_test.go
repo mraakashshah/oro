@@ -126,6 +126,51 @@ func TestNPMProviderMaintenanceDescriptor(t *testing.T) {
 	}
 }
 
+func TestUVProviderMaintenanceDescriptor(t *testing.T) {
+	providers := providerByID(storage.BuiltinProviders())
+	provider, ok := providers["uv"]
+	if !ok {
+		t.Fatal("BuiltinProviders() missing uv provider")
+	}
+
+	if provider.Ownership != storage.ToolNative {
+		t.Errorf("Ownership = %q, want %q", provider.Ownership, storage.ToolNative)
+	}
+	if !provider.ToolMayBeAbsent {
+		t.Error("ToolMayBeAbsent = false, want true so an unavailable uv is explicitly skipped")
+	}
+	if got, want := provider.Cleaner.Executable, "uv"; got != want {
+		t.Errorf("Cleaner.Executable = %q, want %q", got, want)
+	}
+	if got, want := provider.Cleaner.Args, []string{"cache", "prune"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Cleaner.Args = %q, want fixed argv %q", got, want)
+	}
+	if !provider.Cleaner.Trusted {
+		t.Error("Cleaner.Trusted = false, want true")
+	}
+}
+
+func TestGolangciProviderMaintenanceDescriptor(t *testing.T) {
+	provider, ok := providerByID(storage.BuiltinProviders())["golangci-lint"]
+	if !ok {
+		t.Fatal("BuiltinProviders() missing golangci-lint provider")
+	}
+
+	if got, want := provider.Cleaner, (storage.CleanerDescriptor{
+		Executable: "golangci-lint",
+		Args:       []string{"cache", "clean"},
+		Trusted:    true,
+	}); !reflect.DeepEqual(got, want) {
+		t.Errorf("Cleaner = %#v, want %#v", got, want)
+	}
+	if !provider.ToolMayBeAbsent {
+		t.Error("ToolMayBeAbsent = false, want true so an unavailable tool is reported as skipped")
+	}
+	if got, want := provider.Variables, []string{"GOLANGCI_LINT_CACHE"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Variables = %q, want %q to retain the shared cache identity", got, want)
+	}
+}
+
 func providerByID(providers []storage.CacheProvider) map[string]storage.CacheProvider {
 	byID := make(map[string]storage.CacheProvider, len(providers))
 	for _, provider := range providers {
