@@ -11,7 +11,80 @@ import (
 	"time"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/storage"
 )
+
+func TestLegacyCleanupDelegatesToStoragePlanner(t *testing.T) {
+	ctx := context.Background()
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+	target := filepath.Join(t.TempDir(), "retired-runtime")
+	leasedTarget := filepath.Join(t.TempDir(), "active-runtime")
+	for _, path := range []string{target, leasedTarget} {
+		if err := os.WriteFile(path, []byte(path), 0o600); err != nil {
+			t.Fatalf("write runtime candidate %q: %v", path, err)
+		}
+	}
+
+	catalog, err := openStorageCatalog(ctx, oroHome)
+	if err != nil {
+		t.Fatalf("open storage catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := catalog.Close(); err != nil {
+			t.Errorf("close storage catalog: %v", err)
+		}
+	})
+	statements := []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO providers (id, created_at, updated_at) VALUES ('runtime', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, nil},
+		{`INSERT INTO namespaces (id, provider_id, path, created_at, updated_at) VALUES ('retired', 'runtime', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, []any{target}},
+		{`INSERT INTO namespaces (id, provider_id, path, created_at, updated_at) VALUES ('active', 'runtime', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, []any{leasedTarget}},
+		{`INSERT INTO leases (id, namespace_id, owner_id, expires_at, created_at) VALUES ('active-lease', 'active', 'worker-1', '2099-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, nil},
+	}
+	for _, statement := range statements {
+		if _, err := catalog.DB().ExecContext(ctx, statement.query, statement.args...); err != nil {
+			t.Fatalf("seed storage catalog: %v", err)
+		}
+	}
+	runCommand := func(args ...string) string {
+		t.Helper()
+		root := newRootCmd()
+		var out strings.Builder
+		root.SetOut(&out)
+		root.SetArgs(args)
+		if err := root.Execute(); err != nil {
+			t.Fatalf("execute oro %s: %v", strings.Join(args, " "), err)
+		}
+		return out.String()
+	}
+
+	wantDryRun := runCommand("storage", "clean", "--scope", string(storage.ScopeRuntime), "--dry-run", "--json")
+	gotDryRun := runCommand("cleanup", "--dry-run", "--json")
+	if gotDryRun != wantDryRun {
+		t.Fatalf("legacy dry-run output = %s, want %s", gotDryRun, wantDryRun)
+	}
+
+	wantApply := runCommand("storage", "clean", "--scope", string(storage.ScopeRuntime), "--apply", "--json")
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("storage apply did not remove planned target: %v", err)
+	}
+	if err := os.WriteFile(target, []byte("retired"), 0o600); err != nil {
+		t.Fatalf("restore target for legacy apply: %v", err)
+	}
+	gotApply := runCommand("cleanup", "--apply", "--json")
+	if gotApply != wantApply {
+		t.Fatalf("legacy apply output = %s, want %s", gotApply, wantApply)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("legacy apply did not remove planned target: %v", err)
+	}
+	if _, err := os.Stat(leasedTarget); err != nil {
+		t.Fatalf("legacy apply bypassed active lease protection: %v", err)
+	}
+}
 
 func TestCleanup_NothingToClean(t *testing.T) {
 	fake := newFakeCmd()
@@ -244,7 +317,7 @@ func TestCleanup_RemovesStaleStateDBLock(t *testing.T) {
 	}
 }
 
-func TestCleanupPrunesSubprocessCache(t *testing.T) {
+func TestCleanupPreservesUncatalogedSubprocessCache(t *testing.T) {
 	fake := newFakeCmd()
 	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
 	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
@@ -271,32 +344,30 @@ func TestCleanupPrunesSubprocessCache(t *testing.T) {
 
 	var buf bytes.Buffer
 	cfg := &cleanupConfig{
-		runner:                fake,
-		w:                     &buf,
-		tmuxName:              TmuxSessionName(""),
-		pidPath:               filepath.Join(tmpDir, "oro.pid"),
-		sockPath:              filepath.Join(tmpDir, "oro.sock"),
-		subprocessCacheRoot:   cacheRoot,
-		subprocessCacheMaxAge: 7 * 24 * time.Hour,
-		signalFn:              func(int) error { return nil },
-		aliveFn:               func(int) bool { return false },
+		runner:   fake,
+		w:        &buf,
+		tmuxName: TmuxSessionName(""),
+		pidPath:  filepath.Join(tmpDir, "oro.pid"),
+		sockPath: filepath.Join(tmpDir, "oro.sock"),
+		signalFn: func(int) error { return nil },
+		aliveFn:  func(int) bool { return false },
 	}
 
 	if err := runCleanup(context.Background(), cfg); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, err := os.Stat(staleNamespace); !os.IsNotExist(err) {
-		t.Fatalf("expected stale subprocess cache namespace to be removed, stat err: %v", err)
+	if _, err := os.Stat(staleNamespace); err != nil {
+		t.Fatalf("legacy cleanup removed uncataloged stale cache namespace: %v", err)
 	}
 	if _, err := os.Stat(recentNamespace); err != nil {
 		t.Fatalf("expected recent subprocess cache namespace to be preserved: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "pruned 1 stale subprocess cache namespace") {
-		t.Fatalf("expected subprocess cache pruning output, got:\n%s", out)
+	if strings.Contains(out, "pruned") {
+		t.Fatalf("legacy cleanup reported an independent cache prune:\n%s", out)
 	}
-	if strings.Contains(out, "nothing to clean") {
-		t.Fatalf("cleanup reported nothing to clean after pruning cache:\n%s", out)
+	if !strings.Contains(out, "nothing to clean") {
+		t.Fatalf("cleanup did not report preservation-only result:\n%s", out)
 	}
 }
 
