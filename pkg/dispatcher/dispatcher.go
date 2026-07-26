@@ -1100,11 +1100,12 @@ type Dispatcher struct {
 	// acceptSem limits concurrent connection handlers in acceptLoop
 	acceptSem chan struct{}
 
-	// lastStatusTime and lastStatusJSON implement throttling for status
+	// lastStatusTime, lastStatusJSON, and lastStatusStorageKey implement throttling for status
 	// directives. If a status request arrives within statusThrottleWindow
-	// of the previous one, the cached JSON is returned without rebuilding.
-	lastStatusTime time.Time
-	lastStatusJSON string
+	// of the previous one, the cached JSON is returned unless storage changed.
+	lastStatusTime       time.Time
+	lastStatusJSON       string
+	lastStatusStorageKey string
 }
 
 func (d *Dispatcher) qgMutationBase(targetBranch string) string {
@@ -7953,18 +7954,28 @@ func (d *Dispatcher) applyResume() (string, error) {
 // response exists and was built within statusThrottleWindow, it is returned
 // immediately. Otherwise the status is rebuilt and cached.
 func (d *Dispatcher) applyStatus() (string, error) {
+	ctx := context.Background()
+	storage := d.storageHealth(ctx)
+	storageJSON, err := json.Marshal(storage)
+	if err != nil {
+		return "", fmt.Errorf("marshal storage health cache key: %w", err)
+	}
+	storageKey := string(storageJSON)
+
 	now := d.nowFunc()
 	d.mu.Lock()
 	cached := d.lastStatusJSON
 	elapsed := now.Sub(d.lastStatusTime)
+	cachedStorageKey := d.lastStatusStorageKey
 	d.mu.Unlock()
-	if cached != "" && elapsed < statusThrottleWindow {
+	if cached != "" && elapsed < statusThrottleWindow && cachedStorageKey == storageKey {
 		return cached, nil
 	}
-	result := d.buildStatusJSON()
+	result := d.buildStatusJSONWithStorage(ctx, storage)
 	d.mu.Lock()
 	d.lastStatusTime = now
 	d.lastStatusJSON = result
+	d.lastStatusStorageKey = storageKey
 	d.mu.Unlock()
 	return result, nil
 }
@@ -8337,11 +8348,14 @@ UPDATE qg_failure_incidents
 
 //nolint:funlen // Status JSON intentionally assembles one wire contract in field order.
 func (d *Dispatcher) buildStatusJSON() string {
+	ctx := context.Background()
+	return d.buildStatusJSONWithStorage(ctx, d.storageHealth(ctx))
+}
+
+func (d *Dispatcher) buildStatusJSONWithStorage(ctx context.Context, storage *factoryhealth.StorageHealth) string {
 	now := d.nowFunc()
 
 	// Fetch ready beads to determine which attempt counts are valid.
-	ctx := context.Background()
-	storage := d.storageHealth(ctx)
 	readyBeads, err := d.beads.Ready(ctx)
 	if err != nil {
 		readyBeads = nil // Continue with empty ready list on error.

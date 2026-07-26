@@ -104,7 +104,10 @@ func TestDirectiveStatusStorageHealthMatchesHealthDirective(t *testing.T) {
 			available: true,
 		},
 		{
-			name:      "unavailable catalog",
+			name: "unavailable catalog",
+			storage: func(context.Context) *factoryhealth.StorageHealth {
+				return &factoryhealth.StorageHealth{Available: false}
+			},
 			available: false,
 		},
 	}
@@ -145,6 +148,81 @@ func TestDirectiveStatusStorageHealthMatchesHealthDirective(t *testing.T) {
 			if hasHealthFinding(health, factoryhealth.FindingStorageUnavailable) != !tt.available ||
 				hasHealthFinding(*status.Health, factoryhealth.FindingStorageUnavailable) != !tt.available {
 				t.Fatalf("storage findings = health:%+v status:%+v", health.Findings, status.Health.Findings)
+			}
+		})
+	}
+}
+
+func TestDirectiveStatusRefreshesStorageHealthInsideThrottleWindow(t *testing.T) {
+	tests := []struct {
+		name string
+		from factoryhealth.StorageHealth
+		to   factoryhealth.StorageHealth
+	}{
+		{
+			name: "catalog becomes unavailable",
+			from: factoryhealth.StorageHealth{Available: true},
+			to:   factoryhealth.StorageHealth{Available: false},
+		},
+		{
+			name: "catalog recovers",
+			from: factoryhealth.StorageHealth{Available: false},
+			to:   factoryhealth.StorageHealth{Available: true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, _, _, _, _, _ := newTestDispatcher(t)
+			storage := tt.from
+			d.cfg.StorageHealth = func(context.Context) *factoryhealth.StorageHealth {
+				snapshot := storage
+				return &snapshot
+			}
+			cancel := startDispatcher(t, d)
+			defer cancel()
+
+			warmStatus := sendDirectiveWithArgs(t, d.cfg.SocketPath, string(protocol.DirectiveStatus), "")
+			if !warmStatus.OK {
+				t.Fatalf("warm status cache: %s", warmStatus.Detail)
+			}
+			storage = tt.to
+
+			healthACK := sendDirectiveWithArgs(t, d.cfg.SocketPath, string(protocol.DirectiveHealth), "")
+			if !healthACK.OK {
+				t.Fatalf("apply health directive: %s", healthACK.Detail)
+			}
+			var health factoryhealth.FactoryHealth
+			if err := json.Unmarshal([]byte(healthACK.Detail), &health); err != nil {
+				t.Fatalf("unmarshal health: %v", err)
+			}
+
+			statusACK := sendDirectiveWithArgs(t, d.cfg.SocketPath, string(protocol.DirectiveStatus), "")
+			if !statusACK.OK {
+				t.Fatalf("apply cached status directive: %s", statusACK.Detail)
+			}
+			var status statusResponse
+			if err := json.Unmarshal([]byte(statusACK.Detail), &status); err != nil {
+				t.Fatalf("unmarshal status: %v", err)
+			}
+			if status.Health == nil {
+				t.Fatal("status health missing")
+			}
+			if !reflect.DeepEqual(health.Metrics.Storage, status.Health.Metrics.Storage) {
+				t.Fatalf("storage snapshots differ after transition: health=%+v status=%+v", health.Metrics.Storage, status.Health.Metrics.Storage)
+			}
+
+			wantUnavailable := !tt.to.Available
+			if hasHealthFinding(health, factoryhealth.FindingStorageUnavailable) != wantUnavailable ||
+				hasHealthFinding(*status.Health, factoryhealth.FindingStorageUnavailable) != wantUnavailable {
+				t.Fatalf("storage findings after transition = health:%+v status:%+v", health.Findings, status.Health.Findings)
+			}
+			if wantUnavailable {
+				for _, finding := range status.Health.Findings {
+					if finding.Code == factoryhealth.FindingStorageUnavailable && finding.Severity != factoryhealth.SeverityCritical {
+						t.Fatalf("storage unavailable severity = %q, want %q", finding.Severity, factoryhealth.SeverityCritical)
+					}
+				}
 			}
 		})
 	}
