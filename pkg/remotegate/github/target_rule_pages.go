@@ -7,7 +7,15 @@ import (
 )
 
 type effectiveRuleResponse struct {
-	ID int64 `json:"id"`
+	ID             int64                        `json:"id"`
+	Target         string                       `json:"target"`
+	Source         string                       `json:"source"`
+	Version        string                       `json:"version"`
+	Pattern        string                       `json:"pattern"`
+	Enforcement    string                       `json:"enforcement"`
+	Operations     []string                     `json:"operations"`
+	BypassActors   []effectiveRuleBypassActor   `json:"bypass_actors"`
+	RequiredChecks []effectiveRuleRequiredCheck `json:"required_status_checks"`
 }
 
 type effectiveRuleCollection struct {

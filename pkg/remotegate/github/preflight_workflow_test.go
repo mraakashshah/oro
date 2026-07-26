@@ -361,3 +361,127 @@ func TestFetchDefaultBranchWorkflowRegistration(t *testing.T) {
 		})
 	}
 }
+
+type workflowEligibilityReader struct {
+	repositoryResponse string
+	workflowResponse   string
+	contents           []byte
+	jsonErrPath        string
+	jsonErr            error
+	contentErr         error
+	mutations          int
+}
+
+func (r *workflowEligibilityReader) GetJSON(_ context.Context, path string, dst any) error {
+	if path == r.jsonErrPath {
+		return r.jsonErr
+	}
+	var response string
+	switch path {
+	case "repos/acme/oro":
+		response = r.repositoryResponse
+	case "repos/acme/oro/actions/workflows/ci.yml":
+		response = r.workflowResponse
+	default:
+		return fmt.Errorf("unexpected JSON path %q", path)
+	}
+	return json.Unmarshal([]byte(response), dst)
+}
+
+func (r *workflowEligibilityReader) GetContent(context.Context, string, string) ([]byte, error) {
+	return r.contents, r.contentErr
+}
+
+func TestPreflightWorkflowEligibility(t *testing.T) {
+	t.Parallel()
+
+	const (
+		repositoryResponse = `{"full_name":"acme/oro","default_branch":"main"}`
+		workflowResponse   = `{"path":".github/workflows/ci.yml","state":"active"}`
+	)
+	request := PreflightRequest{
+		Repository: "acme/oro",
+		Workflow:   "ci.yml",
+		Targets:    []string{"main", "release/1", "epic/demo"},
+	}
+	validContents := []byte("on:\n  workflow_dispatch:\n  pull_request:\n")
+	want := remotegate.WorkflowEvidence{
+		Path:               ".github/workflows/ci.yml",
+		State:              "active",
+		Ref:                "main",
+		WorkflowDispatch:   true,
+		PullRequestTargets: []string{"main", "release/1", "epic/demo"},
+	}
+
+	reader := &workflowEligibilityReader{
+		repositoryResponse: repositoryResponse,
+		workflowResponse:   workflowResponse,
+		contents:           validContents,
+	}
+	got, err := (&Client{api: reader}).inspectWorkflow(context.Background(), request)
+	if err != nil {
+		t.Fatalf("inspectWorkflow() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("inspectWorkflow() = %#v, want %#v", got, want)
+	}
+	if reader.mutations != 0 {
+		t.Fatalf("mutation calls = %d, want 0", reader.mutations)
+	}
+
+	tests := []struct {
+		name               string
+		repositoryResponse string
+		workflowResponse   string
+		contents           []byte
+		jsonErrPath        string
+		jsonErr            error
+		contentErr         error
+		cancel             bool
+		wantCause          error
+	}{
+		{name: "absent", repositoryResponse: repositoryResponse, jsonErrPath: "repos/acme/oro/actions/workflows/ci.yml", jsonErr: errors.New("404 not found")},
+		{name: "hidden", repositoryResponse: repositoryResponse, jsonErrPath: "repos/acme/oro/actions/workflows/ci.yml", jsonErr: errors.New("404 hidden")},
+		{name: "disabled", repositoryResponse: repositoryResponse, workflowResponse: `{"path":".github/workflows/ci.yml","state":"disabled"}`, contents: validContents},
+		{name: "ambiguous state", repositoryResponse: repositoryResponse, workflowResponse: `{"path":".github/workflows/ci.yml","state":""}`, contents: validContents},
+		{name: "default branch failure", jsonErrPath: "repos/acme/oro", jsonErr: errors.New("metadata unavailable")},
+		{name: "missing workflow dispatch", repositoryResponse: repositoryResponse, workflowResponse: workflowResponse, contents: []byte("on: pull_request\n")},
+		{name: "missing pull request", repositoryResponse: repositoryResponse, workflowResponse: workflowResponse, contents: []byte("on: workflow_dispatch\n")},
+		{name: "base filtered", repositoryResponse: repositoryResponse, workflowResponse: workflowResponse, contents: []byte("on:\n  workflow_dispatch:\n  pull_request:\n    branches: [main]\n")},
+		{name: "content failure", repositoryResponse: repositoryResponse, workflowResponse: workflowResponse, contentErr: errors.New("content unavailable")},
+		{name: "cancelled", repositoryResponse: repositoryResponse, workflowResponse: workflowResponse, contents: validContents, cancel: true, wantCause: context.Canceled},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			if tt.cancel {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			r := &workflowEligibilityReader{
+				repositoryResponse: tt.repositoryResponse,
+				workflowResponse:   tt.workflowResponse,
+				contents:           tt.contents,
+				jsonErrPath:        tt.jsonErrPath,
+				jsonErr:            tt.jsonErr,
+				contentErr:         tt.contentErr,
+			}
+			evidence, err := (&Client{api: r}).inspectWorkflow(ctx, request)
+			if !errors.Is(err, remotegate.ErrWorkflowIneligible) {
+				t.Fatalf("inspectWorkflow() error = %v, want ErrWorkflowIneligible", err)
+			}
+			if tt.wantCause != nil && !errors.Is(err, tt.wantCause) {
+				t.Fatalf("inspectWorkflow() error = %v, want cause %v", err, tt.wantCause)
+			}
+			if !reflect.DeepEqual(evidence, remotegate.WorkflowEvidence{}) {
+				t.Fatalf("inspectWorkflow() evidence = %#v, want zero value", evidence)
+			}
+			if r.mutations != 0 {
+				t.Fatalf("mutation calls = %d, want 0", r.mutations)
+			}
+		})
+	}
+}

@@ -32,6 +32,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"oro/pkg/agentmodel"
@@ -4802,7 +4803,7 @@ func (d *Dispatcher) isIgnorableManagedQualityGateStatus(beadID, worktree string
 	if entry.Code == "??" && entry.Path == filepath.ToSlash(filepath.Join(protocol.OroDir, "assignment-capability.json")) {
 		return true
 	}
-	if entry.Code == "??" && strings.HasPrefix(entry.Path, ".tmp-gocache-"+beadID+"/") {
+	if entry.Code == "??" && (isManagedQualityGateCachePath(beadID, entry.Path)) {
 		return true
 	}
 	if entry.Code != "??" || entry.Path != "quality_gate.sh" {
@@ -4818,6 +4819,41 @@ func (d *Dispatcher) isIgnorableManagedQualityGateStatus(beadID, worktree string
 	}
 	linkPath := filepath.Join(worktree, entry.Path)
 	return managedQualityGateSnapshotMatches(linkPath, managedPath)
+}
+
+func isManagedQualityGateCachePath(beadID, path string) bool {
+	prefixes := []string{
+		".tmp-gocache-" + beadID + "/",
+		".gocache-" + beadID + "/",
+		".golangci-cache-" + beadID + "/",
+		".tmp-gocache/",
+		".gocache-task/",
+		".task-gocache/",
+		".golangci-cache/",
+		".golangci-lint-cache/",
+	}
+	if sanitizedBeadID := sanitizedQualityGateCacheBeadID(beadID); sanitizedBeadID != "" {
+		prefixes = append(prefixes, ".gocache-"+sanitizedBeadID+"/")
+	}
+	return hasPathPrefix(path, prefixes)
+}
+
+func sanitizedQualityGateCacheBeadID(beadID string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return r
+		}
+		return -1
+	}, beadID)
+}
+
+func hasPathPrefix(path string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func managedQualityGateSnapshotMatches(linkPath, managedPath string) bool {
@@ -6305,6 +6341,11 @@ func (d *Dispatcher) assignGeneralIdleWorkers(ctx context.Context, idle []idleWo
 	// Assign beads to idle workers. Advance the idle cursor only when a worker is
 	// actually claimed — epics skipped in assignBead leave the worker idle so the
 	// next bead in the list can still be paired with it.
+	//
+	// Worktree creation can fetch and run several git commands. Start each
+	// assignment after its worker is reserved, but do not wait for its setup to
+	// finish: safeGo tracks the background work for shutdown while allowing the
+	// assignment loop to process later worker-ready signals immediately.
 	idleIdx := 0
 	for _, unit := range plan.units {
 		idleIdx = d.assignGeneralSchedulingUnit(ctx, idle, idleIdx, unit, pbSnapshot, assignedBeads, reservedTargets, focusVersion)
@@ -6324,10 +6365,27 @@ func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idl
 		if nextIdleIdx >= len(idle) {
 			break
 		}
-		_ = d.assignBead(ctx, idle[nextIdleIdx].worker, bead, focusVersion)
+		claimed := d.launchAssignment(ctx, idle[nextIdleIdx].worker, bead, focusVersion)
+		if !claimed {
+			continue
+		}
 		_, nextIdleIdx = d.advanceAssignedGeneralIdle(idle, nextIdleIdx, bead.ID, pbSnapshot)
 	}
 	return nextIdleIdx
+}
+
+// launchAssignment starts the slow assignment preparation in the background
+// and waits only until assignBead has either reserved the worker or declined
+// the candidate. The safeGo wrapper tracks slow setup for graceful shutdown
+// without blocking the assignment loop after the reservation decision.
+func (d *Dispatcher) launchAssignment(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersion uint64) bool {
+	claimedCh := make(chan bool, 1)
+	d.safeGo(func() {
+		_ = d.assignBeadWithClaim(ctx, w, bead, []uint64{focusVersion}, func(claimed bool) {
+			claimedCh <- claimed
+		})
+	})
+	return <-claimedCh
 }
 
 func (d *Dispatcher) nextGeneralIdleIndex(idle []idleWorker, idleIdx int) int {
@@ -7125,6 +7183,19 @@ func (d *Dispatcher) lazyCreateEpicBranch(ctx context.Context, beadID, baseBranc
 }
 
 func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersionOpt ...uint64) error { //nolint:funlen,gocognit,gocyclo // orchestration logic, splitting would obscure flow
+	return d.assignBeadWithClaim(ctx, w, bead, focusVersionOpt, nil)
+}
+
+func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersionOpt []uint64, onClaim func(bool)) error { //nolint:funlen,gocognit,gocyclo // orchestration logic, splitting would obscure flow
+	claimReported := false
+	reportClaim := func(claimed bool) {
+		if onClaim != nil && !claimReported {
+			onClaim(claimed)
+			claimReported = true
+		}
+	}
+	defer reportClaim(false)
+
 	if strings.TrimSpace(bead.ID) == "" {
 		return fmt.Errorf("assignBead: empty bead ID")
 	}
@@ -7189,6 +7260,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	w.reasoning = ""
 	w.lastProgress = d.nowFunc()
 	d.mu.Unlock()
+	reportClaim(true)
 
 	// Mark bead as in_progress BEFORE worktree creation.
 	// This updates external state so other dispatchers see the bead is claimed.
@@ -10420,19 +10492,28 @@ func (d *Dispatcher) recoveryWorkBlocked(ctx context.Context, beadID, worktree, 
 		return true, "worktree path missing: " + worktree, nil
 	}
 
-	dirty, dirtyStatus, dirtyErr := d.worktreeDirty(ctx, worktree)
+	dirty, dirtyStatus, dirtyErr := d.worktreeDirty(ctx, beadID, worktree)
 	if dirty || dirtyErr != nil {
 		return dirty, dirtyStatus, dirtyErr
 	}
 	return d.branchHasUnmergedWork(ctx, beadID, worktree, baseBranch)
 }
 
-func (d *Dispatcher) worktreeDirty(ctx context.Context, worktree string) (dirty bool, status string, err error) {
+func (d *Dispatcher) worktreeDirty(ctx context.Context, beadID, worktree string) (dirty bool, status string, err error) {
 	out, err := d.commandRunner().Run(ctx, "git", "-C", worktree, "status", "--porcelain")
 	if err != nil {
 		return false, "", fmt.Errorf("git status in %s: %w", worktree, err)
 	}
-	status = strings.TrimSpace(string(out))
+	var remaining []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if len(line) >= 4 && line[:2] == "??" && isManagedQualityGateCachePath(beadID, strings.TrimSpace(line[3:])) {
+			continue
+		}
+		if line != "" {
+			remaining = append(remaining, line)
+		}
+	}
+	status = strings.Join(remaining, "\n")
 	return status != "", status, nil
 }
 
