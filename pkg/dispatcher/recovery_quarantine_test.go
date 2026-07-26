@@ -1015,6 +1015,41 @@ VALUES (?, 'disconnected-worker', ?, ?, 'stale_active_assignment', 'preserved cl
 	}
 }
 
+func TestPreservedWorktreeAutoRedeploysWithManagedQualityGateCache(t *testing.T) {
+	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const beadID = "oro-preserved-cache-redeploy"
+	const worktree = "/tmp/worktree-oro-preserved-cache-redeploy"
+
+	if _, err := d.db.ExecContext(ctx, `
+INSERT INTO recovery_quarantines (bead_id, worker_id, worktree, branch, reason, details, status)
+VALUES (?, 'disconnected-worker', ?, ?, 'stale_active_assignment', 'managed cache only', 'open')`,
+		beadID, worktree, protocol.BranchPrefix+beadID); err != nil {
+		t.Fatalf("insert recovery quarantine: %v", err)
+	}
+	wtMgr.existsFn = func(_ context.Context, path string) bool { return path == worktree }
+	wtMgr.currentBranchFn = func(_ context.Context, path string) (string, error) {
+		return protocol.BranchPrefix + beadID, nil
+	}
+	d.shutdownRunner = &mockCommandRunner{callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "git" && strings.Join(args, " ") == "-C "+worktree+" status --porcelain" {
+			return []byte("?? .tmp-gocache/trim.txt\n?? .gocache-task/trim.txt\n?? .golangci-cache/trim.txt\n"), nil
+		}
+		return nil, fmt.Errorf("unexpected command: %s %s", name, strings.Join(args, " "))
+	}}
+	d.mu.Lock()
+	d.worktreeByBead[beadID] = worktree
+	d.mu.Unlock()
+
+	redeployable, err := d.autoRedeployablePreservedWorktrees(ctx)
+	if err != nil {
+		t.Fatalf("inspect preserved worktree: %v", err)
+	}
+	if !redeployable[beadID] {
+		t.Fatalf("managed-cache preserved worktree %q was not eligible for auto-redeploy", beadID)
+	}
+}
+
 func TestOfflineRequeuePreservedRedeploy(t *testing.T) {
 	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
