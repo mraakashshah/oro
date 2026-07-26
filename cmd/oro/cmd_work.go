@@ -309,6 +309,14 @@ func runWork(_ *cobra.Command, cfg *workConfig) error {
 		return fmt.Errorf("load storage policy: %w", err)
 	}
 
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getwd: %w", err)
+	}
+	if _, err := ensureRuntimeProjectEnv(repoRoot); err != nil {
+		return fmt.Errorf("resolve runtime project environment: %w", err)
+	}
+
 	deps, err := newProductionDeps(cfg.reviewTimeout)
 	if err != nil {
 		return err
@@ -327,6 +335,10 @@ func runWork(_ *cobra.Command, cfg *workConfig) error {
 
 // executeWork is the testable core of the work command.
 func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { //nolint:funlen,gocognit,cyclop,gocyclo // orchestration logic, splitting would obscure the linear flow
+	if _, err := ensureRuntimeProjectEnv(deps.repoRoot); err != nil {
+		return fmt.Errorf("resolve runtime project environment: %w", err)
+	}
+
 	// Persist embedder vocabulary on exit so future sessions start with the
 	// same vector space. Mirrors the SaveVocab call in cmd_worker.go:runWorker.
 	if deps.memStore != nil {

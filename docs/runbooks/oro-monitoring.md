@@ -74,11 +74,10 @@ oro monitor --target 2 --max-workers 2 --interval 60s
 
 Default mode is observe-only: it prints health findings and recommended actions
 without changing dispatcher state. Add `--act` only when the operator wants the
-monitor to recover a monitor-owned paused ready queue, maintain the requested
-worker count, and restart the daemon after repeated stalled or unsafe findings.
-An explicit `oro directive pause` remains in force until an explicit
-`oro directive resume`; the monitor may report the paused queue but does not
-silently override the operator hold:
+monitor to maintain the requested worker count and restart the daemon after
+repeated stalled or unsafe findings. It resumes a paused ready queue only when
+the durable monitor ledger proves this monitor issued the matching QG-recovery
+pause; explicit operator pauses remain paused:
 
 ```bash
 oro monitor --target 2 --max-workers 2 --interval 60s --act

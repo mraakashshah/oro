@@ -21,6 +21,9 @@ func newTaskCmdWithStore(store beadstore.Store) *cobra.Command {
 		Use:   "task",
 		Short: "Manage native Oro tasks",
 		Long:  "Manage native Oro tasks.",
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			return guardTaskWorkerMutation(cmd)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
 				return fmt.Errorf("unknown task command %q", args[0])
@@ -47,6 +50,7 @@ func newTaskCmdWithStore(store beadstore.Store) *cobra.Command {
 		newTaskNoteCmd(store),
 		newBeadExportCmd(store),
 		newBeadStatusCmd(store),
+		newTaskProposeBlockerCmd(),
 	)
 	adaptTaskCommandHelp(cmd)
 

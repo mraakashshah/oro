@@ -33,6 +33,7 @@ type BeadTracker struct {
 	mergingBeads           map[string]bool            // bead ID -> true if mergeAndComplete is in-flight (oro-x4x8: prevents duplicate merge on external close)
 	worktreeByBead         map[string]string          // bead ID -> worktree path (preserved on timeout/kill for respawn reuse, oro-1eo8)
 	epicMergeFailed        map[string]bool            // epic ID -> true if FF-merge failed (blocks auto-close until a rebase fix child merges)
+	epicCloseInFlight      map[string]bool            // epic ID -> true while tryCloseEpic is running (prevents duplicate acceptance and close side effects)
 	processedExternalClose map[string]bool            // bead ID -> true once handleClosedAssignment has processed an external close (FM2: prevents re-entry)
 	epicSkipLogged         map[string]bool            // epic ID -> true once non_executable_issue_type has been logged (dedup; oro-cn6a)
 }

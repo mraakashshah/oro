@@ -81,6 +81,10 @@ func TestAssignBead_StaleWorktreeByBead_CreatesNewWorktree(t *testing.T) {
 func TestWorkerRespawn_PreservesUncommittedChanges(t *testing.T) {
 	d, beads, wt, _, _, _ := newTestDispatcher(t)
 	d.cfg.HeartbeatTimeout = 500 * time.Millisecond
+	// The mock worktree path is synthetic. Keep recovery inspection synthetic
+	// too so this test exercises the existing reusable-worktree path rather
+	// than failing closed on a real Git command against a nonexistent path.
+	d.shutdownRunner = &mockCommandRunner{}
 
 	beadID := "oro-respawn-test"
 

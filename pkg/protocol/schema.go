@@ -252,6 +252,88 @@ CREATE TABLE IF NOT EXISTS qg_epic_fix_beads (
     PRIMARY KEY (epic_id, fingerprint)
 );
 
+-- Evidence retained for worker-submitted work proposals. Evidence validation
+-- and execution are owned by the dispatcher, while this table preserves the
+-- durable record across controller restarts.
+CREATE TABLE IF NOT EXISTS evidence_runs (
+    id TEXT PRIMARY KEY,
+    assignment_id INTEGER NOT NULL,
+    worker_id TEXT NOT NULL,
+    bead_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    argv_json TEXT NOT NULL DEFAULT '[]',
+    manifest_hash TEXT,
+    exit_code INTEGER,
+    output TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_evidence_runs_assignment
+ON evidence_runs(assignment_id, id);
+
+-- Work proposals retain their provisional identity until the controller has
+-- derived a canonical scope. In particular, fingerprint and scope_hint are
+-- intentionally not unique here.
+CREATE TABLE IF NOT EXISTS work_proposals (
+    id TEXT PRIMARY KEY,
+    assignment_id INTEGER NOT NULL,
+    worker_id TEXT NOT NULL,
+    bead_id TEXT NOT NULL,
+    evidence_run_id TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    provisional_scope_hint TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    suggested_title TEXT NOT NULL DEFAULT '',
+    suggested_type TEXT NOT NULL DEFAULT '',
+    suggested_priority INTEGER NOT NULL DEFAULT 2,
+    state TEXT NOT NULL DEFAULT 'pending',
+    decision TEXT NOT NULL DEFAULT '',
+    repair_attempts INTEGER NOT NULL DEFAULT 0,
+    canonical_scope_key TEXT,
+    executable_bead_id TEXT,
+    generation INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_work_proposals_assignment
+ON work_proposals(assignment_id, state);
+
+CREATE TABLE IF NOT EXISTS work_proposal_transitions (
+    proposal_id TEXT NOT NULL REFERENCES work_proposals(id),
+    generation INTEGER NOT NULL,
+    from_state TEXT NOT NULL DEFAULT '',
+    to_state TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (proposal_id, generation)
+);
+
+CREATE TABLE IF NOT EXISTS work_proposal_events (
+    proposal_id TEXT NOT NULL REFERENCES work_proposals(id),
+    generation INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (proposal_id, generation, event_type)
+);
+
+-- This is the replay boundary for worker submissions. response_json preserves
+-- the exact original response, while content_hash rejects a reused client ID
+-- carrying different content.
+CREATE TABLE IF NOT EXISTS work_proposal_submissions (
+    assignment_id INTEGER NOT NULL,
+    client_proposal_id TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    proposal_id TEXT NOT NULL REFERENCES work_proposals(id),
+    response_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (assignment_id, client_proposal_id)
+);
+
 -- FTS5 full-text index over memories for BM25-ranked search
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
     content,
@@ -279,6 +361,8 @@ const beadTableDDL = `
 CREATE TABLE IF NOT EXISTS beads (
     id                    TEXT PRIMARY KEY,
     title                 TEXT NOT NULL,
+    contract_version      INTEGER NOT NULL DEFAULT 0,
+    draft                 INTEGER NOT NULL DEFAULT 0,
     description           TEXT NOT NULL DEFAULT '',
     acceptance_criteria   TEXT NOT NULL DEFAULT '',
     status                TEXT NOT NULL CHECK (status IN
@@ -507,6 +591,7 @@ SELECT b.*
 FROM beads b
 WHERE b.deleted = 0
   AND b.status = 'open'
+  AND b.draft = 0
   AND (b.deferred_until IS NULL OR b.deferred_until = '' OR julianday(b.deferred_until) <= julianday('now'))
   AND NOT EXISTS (
     SELECT 1 FROM assignments a
@@ -695,6 +780,9 @@ func MigrateBeadSchema(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("migrate bead schema: %w", err)
 	}
+	if err := ensureBeadContractColumns(ctx, db); err != nil {
+		return fmt.Errorf("migrate bead contract columns: %w", err)
+	}
 	if err := ensureReviewCheckpointSchema(ctx, db); err != nil {
 		return fmt.Errorf("migrate review checkpoint schema: %w", err)
 	}
@@ -712,6 +800,28 @@ func MigrateBeadSchema(ctx context.Context, db *sql.DB) error {
 	if rebuiltStatusConstraint {
 		if _, err := db.ExecContext(ctx, `INSERT INTO beads_fts(beads_fts) VALUES('rebuild')`); err != nil {
 			return fmt.Errorf("rebuild beads fts: %w", err)
+		}
+	}
+	return nil
+}
+
+func ensureBeadContractColumns(ctx context.Context, db *sql.DB) error {
+	columns, exists, err := sqliteTableColumns(ctx, db, "beads")
+	if err != nil {
+		return fmt.Errorf("inspect beads columns: %w", err)
+	}
+	if !exists {
+		return nil
+	}
+	for column, definition := range map[string]string{
+		"contract_version": "INTEGER NOT NULL DEFAULT 0",
+		"draft":            "INTEGER NOT NULL DEFAULT 0",
+	} {
+		if _, ok := columns[column]; ok {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, `ALTER TABLE beads ADD COLUMN `+column+` `+definition); err != nil {
+			return fmt.Errorf("add beads.%s: %w", column, err)
 		}
 	}
 	return nil
@@ -1204,7 +1314,7 @@ func runBeadsStatusRebuild(ctx context.Context, conn *sql.Conn, foreignKeysEnabl
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	const beadColumns = `id, title, description, acceptance_criteria, status, priority, type, parent_id, owner, estimated_minutes, tier, model, deferred_until, close_reason, created_at, updated_at, closed_at, deleted`
+	const beadColumns = `id, title, contract_version, draft, description, acceptance_criteria, status, priority, type, parent_id, owner, estimated_minutes, tier, model, deferred_until, close_reason, created_at, updated_at, closed_at, deleted`
 	rebuildSteps := []string{
 		`DROP VIEW IF EXISTS beads_ready`,
 		`DROP VIEW IF EXISTS beads_blocked`,

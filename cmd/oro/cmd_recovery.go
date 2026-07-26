@@ -606,8 +606,14 @@ func resolveRecoveryQuarantineRequeuePreserved(ctx context.Context, db *sql.DB, 
 	if err != nil {
 		return err
 	}
-	if err := reopenRecoveryBeadForRequeue(ctx, tx, q.BeadID); err != nil {
+	hasNewerActiveAssignment, err := recoveryBeadHasNewerActiveAssignment(ctx, tx, q.BeadID, assignmentID)
+	if err != nil {
 		return err
+	}
+	if !hasNewerActiveAssignment {
+		if err := reopenRecoveryBeadForRequeue(ctx, tx, q.BeadID); err != nil {
+			return err
+		}
 	}
 	if needsRequeue {
 		if err := requeuePreservedAssignment(ctx, tx, assignmentID, q.BeadID); err != nil {
@@ -652,11 +658,19 @@ func reopenRecoveryBeadForRequeue(ctx context.Context, tx *sql.Tx, beadID string
 	if beadStatus == "open" {
 		return nil
 	}
-	if beadStatus != "in_progress" {
+	if beadStatus == "blocked" {
+		blocked, err := recoveryBeadHasUnresolvedDependency(ctx, tx, beadID)
+		if err != nil {
+			return err
+		}
+		if blocked {
+			return fmt.Errorf("requeue-preserved bead %s has unresolved dependencies", beadID)
+		}
+	} else if beadStatus != "in_progress" {
 		return fmt.Errorf("requeue-preserved bead %s has status %q", beadID, beadStatus)
 	}
 	res, err := tx.ExecContext(ctx,
-		`UPDATE beads SET status='open', updated_at=datetime('now') WHERE id=? AND deleted=0 AND status='in_progress'`, beadID)
+		`UPDATE beads SET status='open', updated_at=datetime('now') WHERE id=? AND deleted=0 AND status IN ('in_progress', 'blocked')`, beadID)
 	if err != nil {
 		return fmt.Errorf("reopen requeue-preserved bead: %w", err)
 	}
@@ -668,6 +682,35 @@ func reopenRecoveryBeadForRequeue(ctx context.Context, tx *sql.Tx, beadID string
 		return fmt.Errorf("requeue-preserved bead %s reopen affected %d rows", beadID, rows)
 	}
 	return nil
+}
+
+func recoveryBeadHasUnresolvedDependency(ctx context.Context, tx *sql.Tx, beadID string) (bool, error) {
+	var blocked bool
+	if err := tx.QueryRowContext(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM bead_deps d
+    LEFT JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
+    WHERE d.bead_id = ?
+      AND d.type IN ('blocks', 'conditional-blocks')
+      AND (parent.id IS NULL OR parent.status != 'closed')
+)`, beadID).Scan(&blocked); err != nil {
+		return false, fmt.Errorf("lookup requeue-preserved bead dependencies: %w", err)
+	}
+	return blocked, nil
+}
+
+func recoveryBeadHasNewerActiveAssignment(ctx context.Context, tx *sql.Tx, beadID string, preservedAssignmentID int64) (bool, error) {
+	var hasNewerActiveAssignment bool
+	if err := tx.QueryRowContext(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM assignments
+    WHERE bead_id=? AND id>? AND status='active'
+)`, beadID, preservedAssignmentID).Scan(&hasNewerActiveAssignment); err != nil {
+		return false, fmt.Errorf("lookup newer active assignment for requeue-preserved bead %s: %w", beadID, err)
+	}
+	return hasNewerActiveAssignment, nil
 }
 
 func recoveryAssignmentIDForRequeue(ctx context.Context, tx *sql.Tx, quarantineID int64, q recoveryQuarantineCLIRecord) (assignmentID int64, needsRequeue bool, err error) {

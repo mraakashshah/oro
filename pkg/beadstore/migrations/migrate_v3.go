@@ -147,6 +147,7 @@ SELECT b.*
 FROM beads b
 WHERE b.deleted = 0
   AND b.status = 'open'
+  AND b.draft = 0
   AND (b.deferred_until IS NULL OR b.deferred_until = '' OR julianday(b.deferred_until) <= julianday('now'))
   AND NOT EXISTS (
     SELECT 1 FROM assignments a

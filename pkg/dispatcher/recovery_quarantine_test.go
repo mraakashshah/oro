@@ -39,6 +39,27 @@ func TestRecoveryQuarantineEmptySafeMatchesRecoveryCommandSemantics(t *testing.T
 	}
 }
 
+func TestResolvedPreservedAssignmentSuppressesStaleBranchRecovery(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	res, err := d.db.ExecContext(ctx, `INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES ('oro-preserved-stale', 'worker', '/tmp/preserved-stale', 'requeued')`)
+	if err != nil {
+		t.Fatalf("insert requeued assignment: %v", err)
+	}
+	assignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("assignment id: %v", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `INSERT INTO recovery_quarantines (bead_id, assignment_id, reason, details, status, resolved_at) VALUES ('oro-preserved-stale', ?, 'unsafe_stale_branch', 'operator preserved and requeued dirty worktree', 'resolved', datetime('now'))`, assignmentID); err != nil {
+		t.Fatalf("insert resolved stale quarantine: %v", err)
+	}
+
+	if !d.resolvedPreservedMismatchAssignment(ctx, assignmentID) {
+		t.Fatal("resolved requeue-preserved stale assignment must be suppressed on restart")
+	}
+}
+
 func TestCreateRecoveryQuarantineIdempotent(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
@@ -754,6 +775,36 @@ VALUES ('oro-quarantined', 'agent/oro-quarantined', 'unsafe_stale_branch', 'unme
 	}
 }
 
+func TestFilterAssignableAllowsBeadAfterRequeuePreservedResolution(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	assignment, err := d.db.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree, status)
+VALUES ('oro-requeued-preserved', 'offline-worker', '/tmp/oro-requeued-preserved', 'requeued')`)
+	if err != nil {
+		t.Fatalf("insert requeued preserved assignment: %v", err)
+	}
+	assignmentID, err := assignment.LastInsertId()
+	if err != nil {
+		t.Fatalf("requeued preserved assignment ID: %v", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `
+INSERT INTO recovery_quarantines (bead_id, assignment_id, reason, details, status, resolved_at)
+VALUES ('oro-requeued-preserved', ?, 'unsafe_stale_branch', 'preserved and requeued', 'resolved', datetime('now'))`, assignmentID); err != nil {
+		t.Fatalf("insert resolved recovery quarantine: %v", err)
+	}
+
+	got := d.filterAssignable(ctx, []protocol.Bead{
+		{ID: "oro-requeued-preserved", Status: "open", Priority: 1, Type: "task"},
+		{ID: "oro-ready", Status: "open", Priority: 2, Type: "task"},
+	})
+
+	if len(got) != 2 {
+		t.Fatalf("filterAssignable = %+v, want both ready beads after requeue-preserved resolution", got)
+	}
+}
+
 func TestTryAssignBlocksFreshWorkWhenRecoveryQuarantineOpen(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
@@ -961,6 +1012,41 @@ VALUES (?, 'disconnected-worker', ?, ?, 'stale_active_assignment', 'preserved cl
 	wtMgr.mu.Unlock()
 	if created != 0 {
 		t.Fatalf("created %d fresh worktrees, want preserved worktree reuse", created)
+	}
+}
+
+func TestPreservedWorktreeAutoRedeploysWithManagedQualityGateCache(t *testing.T) {
+	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const beadID = "oro-preserved-cache-redeploy"
+	const worktree = "/tmp/worktree-oro-preserved-cache-redeploy"
+
+	if _, err := d.db.ExecContext(ctx, `
+INSERT INTO recovery_quarantines (bead_id, worker_id, worktree, branch, reason, details, status)
+VALUES (?, 'disconnected-worker', ?, ?, 'stale_active_assignment', 'managed cache only', 'open')`,
+		beadID, worktree, protocol.BranchPrefix+beadID); err != nil {
+		t.Fatalf("insert recovery quarantine: %v", err)
+	}
+	wtMgr.existsFn = func(_ context.Context, path string) bool { return path == worktree }
+	wtMgr.currentBranchFn = func(_ context.Context, path string) (string, error) {
+		return protocol.BranchPrefix + beadID, nil
+	}
+	d.shutdownRunner = &mockCommandRunner{callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "git" && strings.Join(args, " ") == "-C "+worktree+" status --porcelain" {
+			return []byte("?? .tmp-gocache/trim.txt\n?? .gocache-task/trim.txt\n?? .golangci-cache/trim.txt\n"), nil
+		}
+		return nil, fmt.Errorf("unexpected command: %s %s", name, strings.Join(args, " "))
+	}}
+	d.mu.Lock()
+	d.worktreeByBead[beadID] = worktree
+	d.mu.Unlock()
+
+	redeployable, err := d.autoRedeployablePreservedWorktrees(ctx)
+	if err != nil {
+		t.Fatalf("inspect preserved worktree: %v", err)
+	}
+	if !redeployable[beadID] {
+		t.Fatalf("managed-cache preserved worktree %q was not eligible for auto-redeploy", beadID)
 	}
 }
 

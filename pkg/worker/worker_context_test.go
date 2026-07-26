@@ -17,7 +17,18 @@ import (
 func TestWorkerContextIsAssignmentLocal(t *testing.T) {
 	t.Setenv("ORO_WORKER_BEAD_ID", "caller-identity")
 
-	socketPath := filepath.Join(t.TempDir(), "worker.sock")
+	socketFile, err := os.CreateTemp("/tmp", "oro-worker-context-*.sock")
+	if err != nil {
+		t.Fatalf("create socket path: %v", err)
+	}
+	socketPath := socketFile.Name()
+	if err := socketFile.Close(); err != nil {
+		t.Fatalf("close socket path: %v", err)
+	}
+	if err := os.Remove(socketPath); err != nil {
+		t.Fatalf("remove socket placeholder: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -75,8 +86,8 @@ func TestWorkerContextIsAssignmentLocal(t *testing.T) {
 		t.Fatalf("spawn contexts = %d, want 2", len(contexts))
 	}
 	for i, want := range []worker.WorkerExecutionContext{
-		{AssignmentID: 101, Generation: 1, Role: "execution_worker", SocketPath: socketPath, CapabilityFile: capabilityFile},
-		{AssignmentID: 202, Generation: 2, Role: "recovery_worker", SocketPath: socketPath, CapabilityFile: capabilityFile},
+		{AssignmentID: 101, Generation: 1, WorkerID: "w-context", Role: "execution_worker", SocketPath: socketPath, CapabilityFile: capabilityFile},
+		{AssignmentID: 202, Generation: 2, WorkerID: "w-context", Role: "recovery_worker", SocketPath: socketPath, CapabilityFile: capabilityFile},
 	} {
 		if contexts[i] != want {
 			t.Fatalf("spawn context %d = %#v, want %#v", i, contexts[i], want)

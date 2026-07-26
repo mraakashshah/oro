@@ -1507,15 +1507,37 @@ exit 0
 	}
 }
 
-func TestBuildPrompt_IncludesQualityGateInstruction(t *testing.T) {
+func TestBuildPrompt_DelegatesQualityGateInstruction(t *testing.T) {
 	t.Parallel()
 
 	prompt := worker.BuildPrompt("bead-123", "/tmp/wt-123", "")
-	if !strings.Contains(prompt, "./quality_gate.sh") {
-		t.Error("expected prompt to prefer root quality_gate.sh instruction")
+	if strings.Contains(prompt, "quality_gate.sh") {
+		t.Error("expected prompt not to name a quality gate script")
 	}
-	if !strings.Contains(prompt, "./scripts/quality_gate.sh") {
-		t.Error("expected prompt to include scripts/quality_gate.sh fallback")
+	if !strings.Contains(prompt, "worker harness") {
+		t.Error("expected prompt to delegate quality gate ownership to worker harness")
+	}
+}
+
+func TestBuildPrompt_DelegatesAuthoritativeQG(t *testing.T) {
+	t.Parallel()
+
+	const memory = "memory context\nwith exact bytes"
+	prompt := worker.BuildPrompt("bead-123", "/tmp/wt-123", memory)
+
+	if !strings.Contains(prompt, "acceptance") || !strings.Contains(prompt, "focused") {
+		t.Error("expected prompt to require acceptance and focused verification")
+	}
+	if !strings.Contains(prompt, "worker harness") || !strings.Contains(prompt, "full quality gate") {
+		t.Error("expected prompt to identify the worker harness as full-QG owner")
+	}
+	for _, forbidden := range []string{"./quality_gate.sh", "./scripts/quality_gate.sh", "--mutation-testing"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Errorf("prompt must not instruct coding subprocess to run %q", forbidden)
+		}
+	}
+	if !strings.HasSuffix(prompt, "\n\n"+memory) {
+		t.Error("expected memory context to remain appended byte-for-byte")
 	}
 }
 
