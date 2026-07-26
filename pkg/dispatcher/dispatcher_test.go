@@ -3402,6 +3402,12 @@ func TestPreReviewGitHygieneIgnoresManagedQualityGateCacheDirectories(t *testing
 	}
 }
 
+func TestSanitizedQualityGateCacheBeadID(t *testing.T) {
+	if got, want := sanitizedQualityGateCacheBeadID("oro-dev_go.42"), "orodevgo42"; got != want {
+		t.Fatalf("sanitizedQualityGateCacheBeadID() = %q, want %q", got, want)
+	}
+}
+
 func TestReadyForReviewRechecksManagedAssignmentCapabilityWithoutReassignment(t *testing.T) {
 	ctx := context.Background()
 	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)

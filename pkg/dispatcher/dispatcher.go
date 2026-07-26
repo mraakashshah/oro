@@ -32,6 +32,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"oro/pkg/agentmodel"
@@ -4821,21 +4822,38 @@ func (d *Dispatcher) isIgnorableManagedQualityGateStatus(beadID, worktree string
 }
 
 func isManagedQualityGateCachePath(beadID, path string) bool {
-	sanitizedBeadID := strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+	prefixes := []string{
+		".tmp-gocache-" + beadID + "/",
+		".gocache-" + beadID + "/",
+		".golangci-cache-" + beadID + "/",
+		".tmp-gocache/",
+		".gocache-task/",
+		".task-gocache/",
+		".golangci-cache/",
+		".golangci-lint-cache/",
+	}
+	if sanitizedBeadID := sanitizedQualityGateCacheBeadID(beadID); sanitizedBeadID != "" {
+		prefixes = append(prefixes, ".gocache-"+sanitizedBeadID+"/")
+	}
+	return hasPathPrefix(path, prefixes)
+}
+
+func sanitizedQualityGateCacheBeadID(beadID string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			return r
 		}
 		return -1
 	}, beadID)
-	return strings.HasPrefix(path, ".tmp-gocache-"+beadID+"/") ||
-		strings.HasPrefix(path, ".gocache-"+beadID+"/") ||
-		strings.HasPrefix(path, ".golangci-cache-"+beadID+"/") ||
-		(sanitizedBeadID != "" && strings.HasPrefix(path, ".gocache-"+sanitizedBeadID+"/")) ||
-		strings.HasPrefix(path, ".tmp-gocache/") ||
-		strings.HasPrefix(path, ".gocache-task/") ||
-		strings.HasPrefix(path, ".task-gocache/") ||
-		strings.HasPrefix(path, ".golangci-cache/") ||
-		strings.HasPrefix(path, ".golangci-lint-cache/")
+}
+
+func hasPathPrefix(path string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func managedQualityGateSnapshotMatches(linkPath, managedPath string) bool {
@@ -6366,16 +6384,16 @@ func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idl
 // and waits only until assignBead has either reserved the worker or declined
 // the candidate. The returned completion channel must be drained before the
 // caller returns so graceful shutdown still tracks assignment work.
-func (d *Dispatcher) launchAssignment(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersion uint64) (bool, <-chan struct{}) {
+func (d *Dispatcher) launchAssignment(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersion uint64) (claimed bool, done <-chan struct{}) {
 	claimedCh := make(chan bool, 1)
-	done := make(chan struct{})
+	assignmentDone := make(chan struct{})
 	d.safeGo(func() {
-		defer close(done)
+		defer close(assignmentDone)
 		_ = d.assignBeadWithClaim(ctx, w, bead, []uint64{focusVersion}, func(claimed bool) {
 			claimedCh <- claimed
 		})
 	})
-	return <-claimedCh, done
+	return <-claimedCh, assignmentDone
 }
 
 func (d *Dispatcher) nextGeneralIdleIndex(idle []idleWorker, idleIdx int) int {
