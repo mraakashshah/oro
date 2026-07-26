@@ -94,6 +94,30 @@ func TestBuiltinProviders(t *testing.T) {
 	}
 }
 
+func TestUVProviderMaintenanceDescriptor(t *testing.T) {
+	providers := providerByID(storage.BuiltinProviders())
+	provider, ok := providers["uv"]
+	if !ok {
+		t.Fatal("BuiltinProviders() missing uv provider")
+	}
+
+	if provider.Ownership != storage.ToolNative {
+		t.Errorf("Ownership = %q, want %q", provider.Ownership, storage.ToolNative)
+	}
+	if !provider.ToolMayBeAbsent {
+		t.Error("ToolMayBeAbsent = false, want true so an unavailable uv is explicitly skipped")
+	}
+	if got, want := provider.Cleaner.Executable, "uv"; got != want {
+		t.Errorf("Cleaner.Executable = %q, want %q", got, want)
+	}
+	if got, want := provider.Cleaner.Args, []string{"cache", "prune"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Cleaner.Args = %q, want fixed argv %q", got, want)
+	}
+	if !provider.Cleaner.Trusted {
+		t.Error("Cleaner.Trusted = false, want true")
+	}
+}
+
 func providerByID(providers []storage.CacheProvider) map[string]storage.CacheProvider {
 	byID := make(map[string]storage.CacheProvider, len(providers))
 	for _, provider := range providers {
