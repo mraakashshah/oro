@@ -275,7 +275,7 @@ func (d *Dispatcher) preservedWorktreeSafeForRedeploy(
 	if err != nil || currentBranch != expectedBranch {
 		return false
 	}
-	dirty, _, err := d.worktreeDirty(ctx, worktree)
+	dirty, _, err := d.worktreeDirty(ctx, beadID, worktree)
 	if err != nil || dirty {
 		return false
 	}
