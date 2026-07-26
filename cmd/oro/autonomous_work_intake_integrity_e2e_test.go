@@ -69,6 +69,24 @@ func TestAutonomousWorkIntakeIntegrityHarness(t *testing.T) {
 	}
 }
 
+func TestAutonomousIntakeHarnessStopsExternalWorker(t *testing.T) {
+	h := newAutonomousIntakeHarness(t)
+	h.start(t)
+	h.directive(t, protocol.DirectiveStart, "")
+	h.directive(t, protocol.DirectiveScale, "1")
+	h.runCLI(t, "worker", "launch", "--id", h.externalWorkerID)
+
+	h.waitForWorkers(t, 1, 1)
+	externalPID := h.externalWorkerPID(t)
+	h.close(t)
+
+	if processExists(externalPID) {
+		t.Fatalf("external worker PID %d still exists after harness close", externalPID)
+	}
+	// Cleanup is intentionally idempotent.
+	h.close(t)
+}
+
 type autonomousIntakeHarness struct {
 	rootDir, binDir, cliPath string
 	dbPath, socketPath       string
@@ -76,6 +94,7 @@ type autonomousIntakeHarness struct {
 	externalWorktree         string
 	managedWorkerID          string
 	externalWorkerID         string
+	externalWorkerLaunched   bool
 	clock                    *autonomousIntakeClock
 	db                       *sql.DB
 	dispatcher               *dispatcher.Dispatcher
@@ -84,6 +103,27 @@ type autonomousIntakeHarness struct {
 	runErr                   chan error
 	mu                       sync.Mutex
 	managedArgs              [][]string
+}
+
+func (h *autonomousIntakeHarness) externalWorkerPID(t *testing.T) int {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		cmd := exec.Command("pgrep", "-f", "worker --socket "+h.socketPath+" --id "+h.externalWorkerID) //nolint:gosec // test-owned query
+		if output, err := cmd.Output(); err == nil {
+			var pid int
+			if _, err := fmt.Sscanf(strings.TrimSpace(string(output)), "%d", &pid); err == nil && pid > 0 {
+				return pid
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("external worker %q PID not found", h.externalWorkerID)
+	return 0
+}
+
+func processExists(pid int) bool {
+	return exec.Command("kill", "-0", fmt.Sprint(pid)).Run() == nil //nolint:gosec // test-owned PID probe
 }
 
 type autonomousIntakeClock struct {
@@ -261,10 +301,26 @@ func (h *autonomousIntakeHarness) stop(t *testing.T) {
 
 func (h *autonomousIntakeHarness) close(t *testing.T) {
 	t.Helper()
+	h.stopExternalWorker(t)
 	if h.cancel != nil || h.db != nil {
 		h.stop(t)
 	}
 	_ = os.Remove(h.socketPath)
+}
+
+func (h *autonomousIntakeHarness) stopExternalWorker(t *testing.T) {
+	t.Helper()
+	if !h.externalWorkerLaunched || h.cancel == nil {
+		return
+	}
+	cmd := exec.Command(h.cliPath, "worker", "stop", h.externalWorkerID) //nolint:gosec // test-owned CLI and fixed worker ID
+	cmd.Env = h.childEnv()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		if !strings.Contains(string(out), "worker not found") {
+			t.Errorf("stop external worker %q: %v\n%s", h.externalWorkerID, err, out)
+		}
+	}
+	h.externalWorkerLaunched = false
 }
 
 func (h *autonomousIntakeHarness) directive(t *testing.T, op protocol.Directive, args string) {
@@ -288,6 +344,9 @@ func (h *autonomousIntakeHarness) runCLI(t *testing.T, args ...string) {
 	cmd.Env = h.childEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("oro %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	if len(args) == 4 && args[0] == "worker" && args[1] == "launch" && args[2] == "--id" && args[3] == h.externalWorkerID {
+		h.externalWorkerLaunched = true
 	}
 }
 

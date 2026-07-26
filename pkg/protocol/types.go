@@ -44,6 +44,8 @@ type RerankByIDsResponse struct {
 type Bead struct {
 	ID                 string         `json:"id"`
 	Title              string         `json:"title"`
+	ContractVersion    int            `json:"contract_version,omitempty"`
+	Draft              bool           `json:"draft,omitempty"`
 	Status             string         `json:"status,omitempty"` // open, in_progress, blocked, closed
 	Priority           int            `json:"priority"`
 	Epic               string         `json:"parent,omitempty"`              // parent epic ID for focus filtering

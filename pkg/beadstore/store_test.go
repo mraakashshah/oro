@@ -69,11 +69,18 @@ func TestStoreInterfaceDeleteSignature(t *testing.T) {
 }
 
 func TestCreateAndUpdateParamsExposeSpecFields(t *testing.T) {
+	title := "Updated title"
+	description := "Updated description"
 	status := "in_progress"
 	priority := 1
 	issueType := "bug"
+	acceptance := "updated acceptance"
+	estimate := 5
+	contractVersion := 2
+	draft := true
 	parentID := "oro-parent"
 	owner := "aakash"
+	notes := "updated notes"
 
 	create := beadstore.CreateParams{
 		ID:                 "oro-test",
@@ -90,14 +97,21 @@ func TestCreateAndUpdateParamsExposeSpecFields(t *testing.T) {
 	}
 
 	update := beadstore.UpdateParams{
-		Status:   &status,
-		Priority: &priority,
-		Type:     &issueType,
-		ParentID: &parentID,
-		Owner:    &owner,
+		Title:              &title,
+		Description:        &description,
+		Status:             &status,
+		Priority:           &priority,
+		Type:               &issueType,
+		AcceptanceCriteria: &acceptance,
+		EstimatedMinutes:   &estimate,
+		ContractVersion:    &contractVersion,
+		Draft:              &draft,
+		ParentID:           &parentID,
+		Owner:              &owner,
+		Notes:              &notes,
 	}
 
-	if create.ID != "oro-test" ||
+	if create.ContractVersion != 0 || create.Draft || create.ID != "oro-test" ||
 		create.Title != "Define store interface" ||
 		create.Type != "task" ||
 		create.Priority != 1 ||
@@ -112,16 +126,30 @@ func TestCreateAndUpdateParamsExposeSpecFields(t *testing.T) {
 		create.Metadata["source"] != "migration" {
 		t.Fatalf("CreateParams did not retain expected fields: %#v", create)
 	}
-	if update.Status == nil ||
+	if update.Title == nil ||
+		*update.Title != title ||
+		update.Description == nil ||
+		*update.Description != description ||
+		update.Status == nil ||
 		*update.Status != "in_progress" ||
 		update.Priority == nil ||
 		*update.Priority != 1 ||
 		update.Type == nil ||
 		*update.Type != "bug" ||
+		update.AcceptanceCriteria == nil ||
+		*update.AcceptanceCriteria != acceptance ||
+		update.EstimatedMinutes == nil ||
+		*update.EstimatedMinutes != estimate ||
+		update.ContractVersion == nil ||
+		*update.ContractVersion != contractVersion ||
+		update.Draft == nil ||
+		!*update.Draft ||
 		update.ParentID == nil ||
 		*update.ParentID != "oro-parent" ||
 		update.Owner == nil ||
-		*update.Owner != "aakash" {
+		*update.Owner != "aakash" ||
+		update.Notes == nil ||
+		*update.Notes != notes {
 		t.Fatalf("UpdateParams did not retain expected pointer fields: %#v", update)
 	}
 }

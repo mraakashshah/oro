@@ -762,21 +762,25 @@ func TestEpicRebaseChildAssignableOnDivergedBranch(t *testing.T) {
 		}
 	})
 
-	t.Run("ordinary child remains rejected with cooldown", func(t *testing.T) {
+	t.Run("ordinary child unblocked by deterministic recovery on clean divergence", func(t *testing.T) {
+		// oro-hp13: a worktree manager that implements epicMergePreserver now
+		// resolves a clean (disjoint-file) divergence deterministically at
+		// assignment time, so an ordinary child no longer needs to wait for
+		// an LLM rebase child — it proceeds without a cooldown.
 		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 		ctx := context.Background()
 		bead := protocol.Bead{ID: beadID, Title: "Implement epic work", Epic: epicID}
 		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: bead.Title, Type: "task", Status: "open"}
 		d.worktrees = newDivergedAssignmentWorktreeManager(t, baseBranch)
 
-		if d.ensureEpicBranchReady(ctx, bead, &trackedWorker{id: workerID}, baseBranch, epicID) {
-			t.Fatal("ensureEpicBranchReady = true, want ordinary child rejected")
+		if !d.ensureEpicBranchReady(ctx, bead, &trackedWorker{id: workerID}, baseBranch, epicID) {
+			t.Fatal("ensureEpicBranchReady = false, want deterministic recovery to unblock ordinary child")
 		}
 		d.mu.Lock()
 		_, inCooldown := d.worktreeFailures[beadID]
 		d.mu.Unlock()
-		if !inCooldown {
-			t.Fatal("assignment failure cooldown not recorded for ordinary child")
+		if inCooldown {
+			t.Fatal("assignment failure cooldown recorded despite successful deterministic recovery")
 		}
 	})
 
@@ -817,6 +821,76 @@ func TestEpicRebaseChildAssignableOnDivergedBranch(t *testing.T) {
 			t.Fatal("assignment failure cooldown not recorded after operational error")
 		}
 	})
+}
+
+// TestPrepareEpicBranchForAssignmentTriesDeterministicRebaseBeforeChild proves
+// that an ordinary (non-rebase-child) bead assigned against a cleanly
+// diverged epic branch is unblocked by deterministic recovery instead of
+// falling back to an LLM rebase child, when the worktree manager supports it
+// (oro-hp13).
+func TestPrepareEpicBranchForAssignmentTriesDeterministicRebaseBeforeChild(t *testing.T) {
+	const (
+		epicID     = "oro-hp13-clean"
+		beadID     = "oro-hp13-child"
+		workerID   = "worker-hp13"
+		baseBranch = protocol.EpicBranchPrefix + epicID
+	)
+
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: "Implement epic work", Type: "task", Status: "open"}
+	d.worktrees = newDivergedAssignmentWorktreeManager(t, baseBranch)
+	d.cfg.DefaultBranch = "main"
+
+	if !d.prepareEpicBranchForAssignment(ctx, beadID, workerID, baseBranch) {
+		t.Fatal("prepareEpicBranchForAssignment = false, want deterministic recovery to unblock a clean divergence")
+	}
+
+	beadSrc.mu.Lock()
+	defer beadSrc.mu.Unlock()
+	for _, call := range beadSrc.created {
+		if strings.HasPrefix(call.title, "Rebase ") {
+			t.Fatalf("deterministic recovery still created an LLM rebase child: %q", call.title)
+		}
+	}
+}
+
+// TestPrepareEpicBranchForAssignmentFallsBackWithoutPreserver proves that a
+// worktree manager which does not implement epicMergePreserver keeps the
+// existing ensureEpicRebaseChild + reject path unchanged on divergence
+// (oro-hp13).
+func TestPrepareEpicBranchForAssignmentFallsBackWithoutPreserver(t *testing.T) {
+	const (
+		epicID     = "oro-hp13-mock"
+		beadID     = "oro-hp13-mock-child"
+		workerID   = "worker-hp13-mock"
+		baseBranch = protocol.EpicBranchPrefix + epicID
+	)
+
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: "Implement epic work", Type: "task", Status: "open"}
+	wtMgr.prepareBaseFn = func(context.Context, string, string) (bool, error) { return false, nil }
+	wtMgr.baseUniqueFn = func(_ context.Context, branch, base string) (bool, error) {
+		return (branch == baseBranch && base == "main") || (branch == "main" && base == baseBranch), nil
+	}
+	d.cfg.DefaultBranch = "main"
+
+	if d.prepareEpicBranchForAssignment(ctx, beadID, workerID, baseBranch) {
+		t.Fatal("prepareEpicBranchForAssignment = true, want mock (non-preserver) manager to fall back and reject")
+	}
+
+	beadSrc.mu.Lock()
+	defer beadSrc.mu.Unlock()
+	found := false
+	for _, call := range beadSrc.created {
+		if strings.HasPrefix(call.title, "Rebase ") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("fallback path did not create an LLM rebase child")
+	}
 }
 
 func TestAssignmentDivergenceCreatesOneRecoveryChild(t *testing.T) {
@@ -3230,6 +3304,165 @@ func TestPreReviewGitHygieneIgnoresManagedAssignmentCapabilityFile(t *testing.T)
 	}
 	if !hygiene.Dirty || !slices.Equal(hygiene.Files, []string{"implementation.go"}) {
 		t.Fatalf("ordinary source file should remain dirty, got %#v", hygiene.Files)
+	}
+}
+
+func TestPreReviewGitHygieneIgnoresAssignmentScopedGoCache(t *testing.T) {
+	ctx := context.Background()
+	worktree := t.TempDir()
+	if err := exec.Command("git", "-C", worktree, "init").Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+
+	cacheFile := filepath.Join(worktree, ".tmp-gocache-bead-cache", "trim.txt")
+	if err := os.MkdirAll(filepath.Dir(cacheFile), 0o755); err != nil {
+		t.Fatalf("mkdir cache: %v", err)
+	}
+	if err := os.WriteFile(cacheFile, []byte("cache"), 0o600); err != nil {
+		t.Fatalf("write cache: %v", err)
+	}
+
+	d := &Dispatcher{}
+	hygiene, err := d.checkPreReviewGitHygiene(ctx, "bead-cache", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene: %v", err)
+	}
+	if hygiene.Dirty {
+		t.Fatalf("assignment-scoped Go cache marked dirty: %#v", hygiene.Files)
+	}
+
+	for _, cacheDir := range []string{".gocache-bead-cache", ".golangci-cache-bead-cache"} {
+		cacheFile := filepath.Join(worktree, cacheDir, "trim.txt")
+		if err := os.MkdirAll(filepath.Dir(cacheFile), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", cacheDir, err)
+		}
+		if err := os.WriteFile(cacheFile, []byte("cache"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", cacheDir, err)
+		}
+	}
+	hygiene, err = d.checkPreReviewGitHygiene(ctx, "bead-cache", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene with assignment-scoped tool caches: %v", err)
+	}
+	if hygiene.Dirty {
+		t.Fatalf("assignment-scoped tool caches marked dirty: %#v", hygiene.Files)
+	}
+
+	otherCacheFile := filepath.Join(worktree, ".tmp-gocache-other-bead", "trim.txt")
+	if err := os.MkdirAll(filepath.Dir(otherCacheFile), 0o755); err != nil {
+		t.Fatalf("mkdir other cache: %v", err)
+	}
+	if err := os.WriteFile(otherCacheFile, []byte("cache"), 0o600); err != nil {
+		t.Fatalf("write other cache: %v", err)
+	}
+	hygiene, err = d.checkPreReviewGitHygiene(ctx, "bead-cache", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene with other cache: %v", err)
+	}
+	if !hygiene.Dirty || !slices.Equal(hygiene.Files, []string{".tmp-gocache-other-bead/trim.txt"}) {
+		t.Fatalf("other assignment cache should remain dirty, got %#v", hygiene.Files)
+	}
+}
+
+func TestPreReviewGitHygieneIgnoresManagedQualityGateCacheDirectories(t *testing.T) {
+	ctx := context.Background()
+	worktree := t.TempDir()
+	if err := exec.Command("git", "-C", worktree, "init").Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+
+	for _, cacheDir := range []string{".tmp-gocache", ".gocache-task", ".golangci-cache"} {
+		cacheFile := filepath.Join(worktree, cacheDir, "trim.txt")
+		if err := os.MkdirAll(filepath.Dir(cacheFile), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", cacheDir, err)
+		}
+		if err := os.WriteFile(cacheFile, []byte("cache"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", cacheDir, err)
+		}
+	}
+
+	d := &Dispatcher{}
+	hygiene, err := d.checkPreReviewGitHygiene(ctx, "bead-cache", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene: %v", err)
+	}
+	if hygiene.Dirty {
+		t.Fatalf("managed quality-gate caches marked dirty: %#v", hygiene.Files)
+	}
+
+	if err := os.WriteFile(filepath.Join(worktree, "ordinary.txt"), []byte("dirty"), 0o600); err != nil {
+		t.Fatalf("write ordinary file: %v", err)
+	}
+	hygiene, err = d.checkPreReviewGitHygiene(ctx, "bead-cache", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene with ordinary file: %v", err)
+	}
+	if !hygiene.Dirty || !slices.Equal(hygiene.Files, []string{"ordinary.txt"}) {
+		t.Fatalf("ordinary file should remain dirty, got %#v", hygiene.Files)
+	}
+}
+
+func TestReadyForReviewRechecksManagedAssignmentCapabilityWithoutReassignment(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	worktree := t.TempDir()
+	if err := exec.Command("git", "-C", worktree, "init").Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	capabilityPath := filepath.Join(worktree, protocol.OroDir, "assignment-capability.json")
+	if err := os.MkdirAll(filepath.Dir(capabilityPath), 0o755); err != nil {
+		t.Fatalf("mkdir capability directory: %v", err)
+	}
+	if err := os.WriteFile(capabilityPath, []byte(`{"token":"runtime-only"}`), 0o600); err != nil {
+		t.Fatalf("write assignment capability: %v", err)
+	}
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, time.Second)
+
+	beadSrc.shown["bead-capability"] = &protocol.BeadDetail{
+		Title:              "Capability hygiene retry",
+		AcceptanceCriteria: "Test: review proceeds | Assert: no replacement assignment",
+	}
+	d.mu.Lock()
+	w := d.workers["w1"]
+	w.state = protocol.WorkerBusy
+	w.beadID = "bead-capability"
+	w.assignmentID = 42
+	w.worktree = worktree
+	w.targetBranch = "main"
+	d.mu.Unlock()
+
+	d.handleReadyForReview(ctx, "w1", protocol.Message{
+		Type:           protocol.MsgReadyForReview,
+		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-capability", WorkerID: "w1"},
+	})
+
+	waitFor(t, func() bool { return spawnMock.SpawnCount() == 1 }, time.Second)
+	waitFor(t, func() bool { return eventCount(t, d.db, "pre_review_hygiene_recheck") == 1 }, time.Second)
+
+	var payload string
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT payload FROM events WHERE type='pre_review_hygiene_recheck' AND bead_id='bead-capability'`,
+	).Scan(&payload); err != nil {
+		t.Fatalf("query hygiene recheck event: %v", err)
+	}
+	if !strings.Contains(payload, `"source":"managed_assignment_capability"`) {
+		t.Fatalf("hygiene recheck payload = %q, want managed capability retry source", payload)
+	}
+
+	msg, ok := readMsg(t, conn, time.Second)
+	if !ok {
+		t.Fatal("expected review result without worker restart")
+	}
+	if msg.Type != protocol.MsgReviewResult {
+		t.Fatalf("message type = %s, want REVIEW_RESULT (not replacement ASSIGN)", msg.Type)
 	}
 }
 
@@ -9423,7 +9656,7 @@ func TestQualityGateRetry_ModelEscalatedToOpus(t *testing.T) {
 		},
 	})
 
-	// Worker should receive re-ASSIGN escalated to Sol high.
+	// Worker should receive re-ASSIGN escalated to Sol low.
 	retryMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected re-ASSIGN after quality gate failure")
@@ -9431,8 +9664,8 @@ func TestQualityGateRetry_ModelEscalatedToOpus(t *testing.T) {
 	if retryMsg.Type != protocol.MsgAssign {
 		t.Fatalf("expected ASSIGN, got %s", retryMsg.Type)
 	}
-	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "high" {
-		t.Fatalf("re-ASSIGN should escalate to Sol high, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
+	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "low" {
+		t.Fatalf("re-ASSIGN should escalate to Sol low, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
 	}
 
 	// Verify the worker's stored model was updated to Sol.
@@ -9488,13 +9721,13 @@ func TestQualityGateRetry_DefaultModelEscalatedToOpus(t *testing.T) {
 		},
 	})
 
-	// Worker should receive re-ASSIGN escalated to Sol high.
+	// Worker should receive re-ASSIGN escalated to Sol low.
 	retryMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected re-ASSIGN after quality gate failure")
 	}
-	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "high" {
-		t.Fatalf("re-ASSIGN should escalate to Sol high, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
+	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "low" {
+		t.Fatalf("re-ASSIGN should escalate to Sol low, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
 	}
 }
 
@@ -9521,8 +9754,8 @@ func TestQualityGateRetry_OpusStaysOpus(t *testing.T) {
 	if !ok {
 		t.Fatal("expected ASSIGN")
 	}
-	if assignMsg.Assign.Model != "gpt-5.6-sol" || assignMsg.Assign.Reasoning != "high" {
-		t.Fatalf("initial ASSIGN should map opus to Sol high, got model=%q reasoning=%q", assignMsg.Assign.Model, assignMsg.Assign.Reasoning)
+	if assignMsg.Assign.Model != "gpt-5.6-sol" || assignMsg.Assign.Reasoning != "low" {
+		t.Fatalf("initial ASSIGN should map opus to Sol low, got model=%q reasoning=%q", assignMsg.Assign.Model, assignMsg.Assign.Reasoning)
 	}
 	beadSrc.SetBeads(nil)
 
@@ -9536,7 +9769,7 @@ func TestQualityGateRetry_OpusStaysOpus(t *testing.T) {
 		},
 	})
 
-	// Worker should receive re-ASSIGN with model still Sol high.
+	// Worker should receive re-ASSIGN with model still Sol low.
 	retryMsg, ok := readMsg(t, conn, 2*time.Second)
 	if !ok {
 		t.Fatal("expected re-ASSIGN after quality gate failure")
@@ -9544,8 +9777,8 @@ func TestQualityGateRetry_OpusStaysOpus(t *testing.T) {
 	if retryMsg.Type != protocol.MsgAssign {
 		t.Fatalf("expected ASSIGN, got %s", retryMsg.Type)
 	}
-	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "high" {
-		t.Fatalf("re-ASSIGN should keep Sol high, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
+	if retryMsg.Assign.Model != "gpt-5.6-sol" || retryMsg.Assign.Reasoning != "low" {
+		t.Fatalf("re-ASSIGN should keep Sol low, got model=%q reasoning=%q", retryMsg.Assign.Model, retryMsg.Assign.Reasoning)
 	}
 
 	// Verify attempt counter was NOT reset (should be 1 since no escalation happened)
@@ -15670,7 +15903,7 @@ func TestCrashRecovery_ReconnectPreservesAttemptCount(t *testing.T) {
 	// The mock worktree manager reports the synthetic path as present. Keep the
 	// matching Git inspection synthetic too so this test exercises a clean branch
 	// with no preserved commits rather than the disconnected-work quarantine path.
-	d1.shutdownRunner = &mockCommandRunner{}
+	d1.setCommandRunner(&mockCommandRunner{})
 	_ = conn1.Close()
 
 	// ========== PHASE 2: Simulate crash — cancel first dispatcher ==========
@@ -16488,8 +16721,15 @@ func TestProgressTimeoutConfigValidation(t *testing.T) {
 // TestTryAssignNoDuplicateBeadAssignment verifies that when two workers are
 // idle, each gets a different bead — not the same bead assigned to both.
 func TestTryAssignNoDuplicateBeadAssignment(t *testing.T) {
+	const opTimeout = 10 * time.Second
+
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
-	startDispatcher(t, d)
+	// Assignment and heartbeat processing compete for scheduler time under the
+	// serialized gate's race-mode load. Keep this integration test's lifecycle
+	// bounds aligned so a delayed worker is not removed before it receives its
+	// ASSIGN message.
+	d.cfg.HeartbeatTimeout = opTimeout
+	startDispatcherWithTimeout(t, d, opTimeout)
 
 	// Connect two workers.
 	conn1, _ := connectWorker(t, d.cfg.SocketPath)
@@ -16508,7 +16748,7 @@ func TestTryAssignNoDuplicateBeadAssignment(t *testing.T) {
 			ContextPct: 5,
 		},
 	})
-	waitForWorkers(t, d, 2, 1*time.Second)
+	waitForWorkers(t, d, 2, opTimeout)
 
 	// Provide two beads.
 	beadSrc.SetBeads([]protocol.Bead{
@@ -16517,11 +16757,11 @@ func TestTryAssignNoDuplicateBeadAssignment(t *testing.T) {
 	})
 
 	sendDirective(t, d.cfg.SocketPath, "start")
-	waitForState(t, d, StateRunning, 1*time.Second)
+	waitForState(t, d, StateRunning, opTimeout)
 
 	// Read assignment messages from both workers.
-	msg1, ok1 := readMsg(t, conn1, 2*time.Second)
-	msg2, ok2 := readMsg(t, conn2, 2*time.Second)
+	msg1, ok1 := readMsg(t, conn1, opTimeout)
+	msg2, ok2 := readMsg(t, conn2, opTimeout)
 
 	if !ok1 || !ok2 {
 		t.Fatal("expected both workers to receive ASSIGN messages")
@@ -18266,6 +18506,15 @@ func TestEpicFFMergeFailureCreatesActionableRebaseChild(t *testing.T) {
 	}
 	if strings.Contains(rebaseBead.acceptanceCriteria, "git checkout ") {
 		t.Errorf("rebase child acceptance criteria should not check out the epic branch in-place: %s", rebaseBead.acceptanceCriteria)
+	}
+	if !strings.Contains(rebaseBead.acceptanceCriteria, "Constraint:") {
+		t.Errorf("rebase child acceptance criteria missing a Constraint segment: %s", rebaseBead.acceptanceCriteria)
+	}
+	if !strings.Contains(rebaseBead.acceptanceCriteria, "--onto") {
+		t.Errorf("rebase child acceptance criteria does not forbid a terminal rebase --onto the epic tip: %s", rebaseBead.acceptanceCriteria)
+	}
+	if !strings.Contains(rebaseBead.acceptanceCriteria, "flattens the preserve merge") {
+		t.Errorf("rebase child acceptance criteria does not explain why a terminal rebase onto the epic tip is forbidden: %s", rebaseBead.acceptanceCriteria)
 	}
 
 	const rebaseChildID = "oro-rebase-child"
@@ -23348,8 +23597,8 @@ func TestAssignBead_UsesLLMEstimate(t *testing.T) {
 
 	// Test 4: bead-has-model has explicit model, should NOT call estimator
 	if assign := assignedBeads["bead-has-model"]; assign != nil {
-		if assign.Model != "gpt-5.6-sol" || assign.Reasoning != "high" {
-			t.Errorf("bead-has-model: legacy Opus should map to Sol high, got model=%s reasoning=%s", assign.Model, assign.Reasoning)
+		if assign.Model != "gpt-5.6-sol" || assign.Reasoning != "low" {
+			t.Errorf("bead-has-model: legacy Opus should map to Sol low, got model=%s reasoning=%s", assign.Model, assign.Reasoning)
 		}
 		if mockEstimator.wasCalled("Has model") {
 			t.Errorf("bead-has-model: estimator should NOT have been called (has explicit model)")

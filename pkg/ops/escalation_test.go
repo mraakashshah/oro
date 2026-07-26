@@ -67,8 +67,8 @@ func TestEscalateUsesCorrectModel(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 spawn call, got %d", len(calls))
 	}
-	if calls[0].model != "gpt-5.6-sol" || calls[0].reasoning != "high" {
-		t.Fatalf("expected Sol high, got model=%q reasoning=%q", calls[0].model, calls[0].reasoning)
+	if calls[0].model != "gpt-5.6-sol" || calls[0].reasoning != "low" {
+		t.Fatalf("expected Sol low, got model=%q reasoning=%q", calls[0].model, calls[0].reasoning)
 	}
 }
 

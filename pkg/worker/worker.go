@@ -599,7 +599,7 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	if err := msg.Assign.Validate(); err != nil {
 		return fmt.Errorf("invalid assign payload: %w", err)
 	}
-	execution, err := executionContextForAssign(msg.Assign, w.socketPath)
+	execution, err := executionContextForAssign(msg.Assign, w.ID, w.socketPath)
 	if err != nil {
 		return fmt.Errorf("invalid assign execution context: %w", err)
 	}
@@ -1198,11 +1198,11 @@ func (w *Worker) closeLogFile() {
 }
 
 // BuildPrompt constructs the prompt string for claude -p.
-// It includes the instruction to run quality_gate.sh before completing.
+// It delegates the authoritative full quality gate to the worker harness.
 // If memoryContext is non-empty, it is appended as a section so the worker
 // benefits from cross-session memories retrieved by the dispatcher.
 func BuildPrompt(beadID, worktree, memoryContext string) string {
-	base := fmt.Sprintf("Execute bead %s in worktree %s. Before completing, run ./quality_gate.sh if present; otherwise run ./scripts/quality_gate.sh. Ensure the gate passes.", beadID, worktree)
+	base := fmt.Sprintf("Execute bead %s in worktree %s. Run the task acceptance tests and focused verification needed to validate your work. The worker harness owns and enforces the full quality gate; do not run the full quality gate yourself.", beadID, worktree)
 	if memoryContext == "" {
 		return base
 	}

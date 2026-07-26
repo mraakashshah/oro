@@ -189,9 +189,9 @@ func (s *SQLiteStore) Create(ctx context.Context, params CreateParams) (*protoco
 	tier := sql.NullString{String: params.Tier, Valid: params.Tier != ""}
 
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO beads (id, title, description, acceptance_criteria, status, priority, type, parent_id, estimated_minutes, tier, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		params.ID, params.Title, params.Description, params.AcceptanceCriteria, params.Status, params.Priority, params.Type, parent, estimate, tier, now, now); err != nil {
+INSERT INTO beads (id, title, contract_version, draft, description, acceptance_criteria, status, priority, type, parent_id, estimated_minutes, tier, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		params.ID, params.Title, params.ContractVersion, params.Draft, params.Description, params.AcceptanceCriteria, params.Status, params.Priority, params.Type, parent, estimate, tier, now, now); err != nil {
 		return nil, fmt.Errorf("beadstore: create bead %s: %w", params.ID, err)
 	}
 	if err := replaceStrings(ctx, tx, "bead_tags", "tag", params.ID, params.Tags); err != nil {
@@ -220,6 +220,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 func (s *SQLiteStore) Update(ctx context.Context, id string, params UpdateParams) error {
 	if params.Status != nil && !validStatus(*params.Status) {
 		return fmt.Errorf("beadstore: invalid status %q", *params.Status)
+	}
+	if params.Draft != nil && !*params.Draft {
+		return fmt.Errorf("beadstore: clearing draft requires validated publish")
 	}
 
 	s.writeMu.Lock()
@@ -660,7 +663,7 @@ func (s *SQLiteStore) Export(ctx context.Context) ([]byte, error) {
 	return []byte(out.String()), nil
 }
 
-const beadColumns = `id, title, description, acceptance_criteria, status, priority, type, parent_id, owner, estimated_minutes, tier, model, deferred_until, close_reason, created_at, updated_at, closed_at`
+const beadColumns = `id, title, contract_version, draft, description, acceptance_criteria, status, priority, type, parent_id, owner, estimated_minutes, tier, model, deferred_until, close_reason, created_at, updated_at, closed_at`
 
 func prefixedBeadColumns() string {
 	parts := strings.Split(beadColumns, ", ")
@@ -753,6 +756,8 @@ func scanBead(rows *sql.Rows) (protocol.Bead, error) {
 	if err := rows.Scan(
 		&bead.ID,
 		&bead.Title,
+		&bead.ContractVersion,
+		&bead.Draft,
 		&bead.Description,
 		&bead.AcceptanceCriteria,
 		&bead.Status,
@@ -1011,9 +1016,14 @@ func newUpdateStatement(params UpdateParams) updateStatement {
 		args:        []any{nowString()},
 	}
 	stmt.addStatus(params.Status)
+	stmt.addPtr("title=?", params.Title)
+	stmt.addPtr("description=?", params.Description)
 	stmt.addPtr("priority=?", params.Priority)
 	stmt.addPtr("type=?", params.Type)
 	stmt.addPtr("acceptance_criteria=?", params.AcceptanceCriteria)
+	stmt.addPtr("estimated_minutes=?", params.EstimatedMinutes)
+	stmt.addPtr("contract_version=?", params.ContractVersion)
+	stmt.addPtr("draft=?", params.Draft)
 	stmt.addNullableString("parent_id", params.ParentID)
 	stmt.addNullableString("owner", params.Owner)
 	return stmt
@@ -1050,6 +1060,11 @@ func (s *updateStatement) addPtr(assignment string, value any) {
 			s.assignments = append(s.assignments, assignment)
 			s.args = append(s.args, *v)
 		}
+	case *bool:
+		if v != nil {
+			s.assignments = append(s.assignments, assignment)
+			s.args = append(s.args, *v)
+		}
 	}
 }
 
@@ -1071,6 +1086,12 @@ func (s updateStatement) query() string {
 
 func updatePayload(params UpdateParams) map[string]any {
 	payload := map[string]any{}
+	if params.Title != nil {
+		payload["title"] = *params.Title
+	}
+	if params.Description != nil {
+		payload["description"] = *params.Description
+	}
 	if params.Status != nil {
 		payload["status"] = *params.Status
 	}
@@ -1082,6 +1103,15 @@ func updatePayload(params UpdateParams) map[string]any {
 	}
 	if params.AcceptanceCriteria != nil {
 		payload["acceptance_criteria"] = *params.AcceptanceCriteria
+	}
+	if params.EstimatedMinutes != nil {
+		payload["estimated_minutes"] = *params.EstimatedMinutes
+	}
+	if params.ContractVersion != nil {
+		payload["contract_version"] = *params.ContractVersion
+	}
+	if params.Draft != nil {
+		payload["draft"] = *params.Draft
 	}
 	if params.Notes != nil {
 		payload["notes"] = *params.Notes
