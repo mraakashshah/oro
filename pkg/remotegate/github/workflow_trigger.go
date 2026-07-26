@@ -104,9 +104,40 @@ func parseFlatWorkflowTriggers(on *yaml.Node) (workflowTriggers, error) {
 		return parseWorkflowEvents([]*yaml.Node{on})
 	case yaml.SequenceNode:
 		return parseWorkflowEvents(on.Content)
+	case yaml.MappingNode:
+		return parseMappedWorkflowTriggers(on)
 	default:
 		return workflowTriggers{}, fmt.Errorf("%w: workflow on declaration must be a scalar or sequence", remotegate.ErrWorkflowIneligible)
 	}
+}
+
+func parseMappedWorkflowTriggers(on *yaml.Node) (workflowTriggers, error) {
+	var triggers workflowTriggers
+	for index := 0; index+1 < len(on.Content); index += 2 {
+		key, value := on.Content[index], on.Content[index+1]
+		if key.Kind != yaml.ScalarNode || key.Tag != "!!str" {
+			return workflowTriggers{}, fmt.Errorf("%w: workflow event key must be a string", remotegate.ErrWorkflowIneligible)
+		}
+		if key.Value == "workflow_dispatch" && !isUnfilteredWorkflowEvent(value) {
+			return workflowTriggers{}, fmt.Errorf("%w: workflow_dispatch configuration must be a mapping or null", remotegate.ErrWorkflowIneligible)
+		}
+		if key.Value == "pull_request" {
+			if !isUnfilteredWorkflowEvent(value) {
+				return workflowTriggers{}, fmt.Errorf("%w: pull_request configuration must be a mapping or null", remotegate.ErrWorkflowIneligible)
+			}
+			triggers.PullRequestBranches = make([]string, 0, 1)
+			triggers.PullRequestBranchesIgnore = make([]string, 0, 1)
+			continue
+		}
+		if key.Value == "workflow_dispatch" {
+			triggers.WorkflowDispatch = true
+		}
+	}
+	return triggers, nil
+}
+
+func isUnfilteredWorkflowEvent(value *yaml.Node) bool {
+	return value.Kind == yaml.MappingNode || (value.Kind == yaml.ScalarNode && value.Tag == "!!null")
 }
 
 func parseWorkflowEvents(events []*yaml.Node) (workflowTriggers, error) {

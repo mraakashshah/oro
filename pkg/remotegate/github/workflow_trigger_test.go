@@ -130,3 +130,55 @@ on: workflow_dispatch
 		})
 	}
 }
+
+func TestParseMappedWorkflowTriggerDeclarations(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		contents         string
+		wantDispatch     bool
+		wantBranches     []string
+		wantBranchesSkip []string
+		wantIneligible   bool
+	}{
+		{
+			name:             "null and empty mappings are unfiltered",
+			contents:         "on:\n  workflow_dispatch:\n  pull_request: {}\n",
+			wantDispatch:     true,
+			wantBranches:     []string{},
+			wantBranchesSkip: []string{},
+		},
+		{
+			name:         "dispatch without pull request preserves nil filters",
+			contents:     "on:\n  workflow_dispatch:\n",
+			wantDispatch: true,
+		},
+		{
+			name:     "unrelated event is ignored",
+			contents: "on:\n  push:\n    branches: [main]\n",
+		},
+		{name: "non-string event key", contents: "on:\n  true: {}\n", wantIneligible: true},
+		{name: "duplicate event key", contents: "on:\n  push: {}\n  push: {}\n", wantIneligible: true},
+		{name: "dispatch scalar configuration", contents: "on:\n  workflow_dispatch: true\n", wantIneligible: true},
+		{name: "pull request scalar configuration", contents: "on:\n  pull_request: false\n", wantIneligible: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			triggers, err := parseWorkflowTriggers([]byte(tt.contents))
+			if tt.wantIneligible {
+				if !errors.Is(err, remotegate.ErrWorkflowIneligible) {
+					t.Fatalf("parseWorkflowTriggers() error = %v, want ErrWorkflowIneligible", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseWorkflowTriggers() error = %v", err)
+			}
+			if triggers.WorkflowDispatch != tt.wantDispatch || !slices.Equal(triggers.PullRequestBranches, tt.wantBranches) || (triggers.PullRequestBranches == nil) != (tt.wantBranches == nil) || !slices.Equal(triggers.PullRequestBranchesIgnore, tt.wantBranchesSkip) || (triggers.PullRequestBranchesIgnore == nil) != (tt.wantBranchesSkip == nil) {
+				t.Fatalf("triggers = %#v", triggers)
+			}
+		})
+	}
+}
