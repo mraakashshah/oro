@@ -8,6 +8,7 @@ import (
 
 type effectiveRuleResponse struct {
 	ID             int64                        `json:"id"`
+	Target         string                       `json:"target"`
 	Source         string                       `json:"source"`
 	Version        string                       `json:"version"`
 	Pattern        string                       `json:"pattern"`
