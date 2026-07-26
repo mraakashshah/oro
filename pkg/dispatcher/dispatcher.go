@@ -8462,12 +8462,12 @@ UPDATE qg_failure_incidents
 	return nil
 }
 
-//nolint:funlen // Status JSON intentionally assembles one wire contract in field order.
 func (d *Dispatcher) buildStatusJSON() string {
 	ctx := context.Background()
 	return d.buildStatusJSONWithStorage(ctx, d.storageHealth(ctx))
 }
 
+//nolint:funlen // Status JSON intentionally assembles one wire contract in field order.
 func (d *Dispatcher) buildStatusJSONWithStorage(ctx context.Context, storage *factoryhealth.StorageHealth) string {
 	now := d.nowFunc()
 
