@@ -167,7 +167,6 @@ SELECT EXISTS(
     SELECT 1
     FROM recovery_quarantines
     WHERE assignment_id=?
-      AND reason='branch_worktree_mismatch'
       AND status='resolved'
 )`, assignmentID).Scan(&found)
 	return err == nil && found
@@ -276,7 +275,7 @@ func (d *Dispatcher) preservedWorktreeSafeForRedeploy(
 	if err != nil || currentBranch != expectedBranch {
 		return false
 	}
-	dirty, _, err := d.worktreeDirty(ctx, worktree)
+	dirty, _, err := d.worktreeDirty(ctx, beadID, worktree)
 	if err != nil || dirty {
 		return false
 	}

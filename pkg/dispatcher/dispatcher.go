@@ -32,6 +32,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"oro/pkg/agentmodel"
@@ -1100,11 +1101,12 @@ type Dispatcher struct {
 	// acceptSem limits concurrent connection handlers in acceptLoop
 	acceptSem chan struct{}
 
-	// lastStatusTime and lastStatusJSON implement throttling for status
+	// lastStatusTime, lastStatusJSON, and lastStatusStorageKey implement throttling for status
 	// directives. If a status request arrives within statusThrottleWindow
-	// of the previous one, the cached JSON is returned without rebuilding.
-	lastStatusTime time.Time
-	lastStatusJSON string
+	// of the previous one, the cached JSON is returned unless storage changed.
+	lastStatusTime       time.Time
+	lastStatusJSON       string
+	lastStatusStorageKey string
 }
 
 func (d *Dispatcher) qgMutationBase(targetBranch string) string {
@@ -4670,6 +4672,7 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 		d.sendPreReviewGitDirtyFeedback(ctx, workerID, feedback)
 		return
 	}
+	d.logManagedPreReviewHygieneRecheck(ctx, beadID, workerID, hygiene.IgnoredManagedFiles)
 
 	// Look up bead details for the reviewer
 	title, acceptance, _ := d.lookupBeadDetail(ctx, beadID, workerID)
@@ -4693,8 +4696,9 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 // PreReviewGitHygieneResult describes whether a worker worktree is clean
 // enough to enter ops review.
 type PreReviewGitHygieneResult struct {
-	Dirty bool
-	Files []string
+	Dirty               bool
+	Files               []string
+	IgnoredManagedFiles []string
 }
 
 // Feedback returns actionable worker feedback for a dirty pre-review worktree.
@@ -4706,7 +4710,7 @@ func (r PreReviewGitHygieneResult) Feedback() string {
 		strings.Join(r.Files, ", ")
 }
 
-func (d *Dispatcher) checkPreReviewGitHygiene(ctx context.Context, _, worktree string) (PreReviewGitHygieneResult, error) {
+func (d *Dispatcher) checkPreReviewGitHygiene(ctx context.Context, beadID, worktree string) (PreReviewGitHygieneResult, error) {
 	if _, statErr := os.Stat(filepath.Join(worktree, ".git")); statErr != nil {
 		if errors.Is(statErr, os.ErrNotExist) {
 			return PreReviewGitHygieneResult{}, nil
@@ -4721,17 +4725,48 @@ func (d *Dispatcher) checkPreReviewGitHygiene(ctx context.Context, _, worktree s
 
 	entries := parseGitStatusPorcelainZ(out)
 	files := make([]string, 0, len(entries))
+	ignoredManagedFiles := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if d.isIgnorableManagedQualityGateStatus(worktree, entry) {
+		if d.isIgnorableManagedQualityGateStatus(beadID, worktree, entry) {
+			ignoredManagedFiles = append(ignoredManagedFiles, entry.Path)
 			continue
 		}
 		files = append(files, entry.Path)
 	}
 	if len(files) == 0 {
-		return PreReviewGitHygieneResult{}, nil
+		sort.Strings(ignoredManagedFiles)
+		return PreReviewGitHygieneResult{IgnoredManagedFiles: ignoredManagedFiles}, nil
 	}
 	sort.Strings(files)
 	return PreReviewGitHygieneResult{Dirty: true, Files: files}, nil
+}
+
+func (d *Dispatcher) logManagedPreReviewHygieneRecheck(
+	ctx context.Context,
+	beadID, workerID string,
+	files []string,
+) {
+	if len(files) == 0 {
+		return
+	}
+	payload, err := json.Marshal(map[string]any{
+		"source": managedPreReviewHygieneSource(files),
+		"files":  files,
+	})
+	if err != nil {
+		payload = []byte(`{"source":"managed_runtime_artifact","files":[]}`)
+	}
+	_ = d.logEvent(ctx, "pre_review_hygiene_recheck", "dispatcher", beadID, workerID, string(payload))
+}
+
+func managedPreReviewHygieneSource(files []string) string {
+	capabilityPath := filepath.ToSlash(filepath.Join(protocol.OroDir, "assignment-capability.json"))
+	for _, file := range files {
+		if file == capabilityPath {
+			return "managed_assignment_capability"
+		}
+	}
+	return "managed_runtime_artifact"
 }
 
 type gitStatusPorcelainEntry struct {
@@ -4764,8 +4799,11 @@ type managedQualityGateProvider interface {
 	ManagedQualityGatePath() string
 }
 
-func (d *Dispatcher) isIgnorableManagedQualityGateStatus(worktree string, entry gitStatusPorcelainEntry) bool {
+func (d *Dispatcher) isIgnorableManagedQualityGateStatus(beadID, worktree string, entry gitStatusPorcelainEntry) bool {
 	if entry.Code == "??" && entry.Path == filepath.ToSlash(filepath.Join(protocol.OroDir, "assignment-capability.json")) {
+		return true
+	}
+	if entry.Code == "??" && (isManagedQualityGateCachePath(beadID, entry.Path)) {
 		return true
 	}
 	if entry.Code != "??" || entry.Path != "quality_gate.sh" {
@@ -4781,6 +4819,41 @@ func (d *Dispatcher) isIgnorableManagedQualityGateStatus(worktree string, entry 
 	}
 	linkPath := filepath.Join(worktree, entry.Path)
 	return managedQualityGateSnapshotMatches(linkPath, managedPath)
+}
+
+func isManagedQualityGateCachePath(beadID, path string) bool {
+	prefixes := []string{
+		".tmp-gocache-" + beadID + "/",
+		".gocache-" + beadID + "/",
+		".golangci-cache-" + beadID + "/",
+		".tmp-gocache/",
+		".gocache-task/",
+		".task-gocache/",
+		".golangci-cache/",
+		".golangci-lint-cache/",
+	}
+	if sanitizedBeadID := sanitizedQualityGateCacheBeadID(beadID); sanitizedBeadID != "" {
+		prefixes = append(prefixes, ".gocache-"+sanitizedBeadID+"/")
+	}
+	return hasPathPrefix(path, prefixes)
+}
+
+func sanitizedQualityGateCacheBeadID(beadID string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return r
+		}
+		return -1
+	}, beadID)
+}
+
+func hasPathPrefix(path string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func managedQualityGateSnapshotMatches(linkPath, managedPath string) bool {
@@ -6268,6 +6341,11 @@ func (d *Dispatcher) assignGeneralIdleWorkers(ctx context.Context, idle []idleWo
 	// Assign beads to idle workers. Advance the idle cursor only when a worker is
 	// actually claimed — epics skipped in assignBead leave the worker idle so the
 	// next bead in the list can still be paired with it.
+	//
+	// Worktree creation can fetch and run several git commands. Start each
+	// assignment after its worker is reserved, but do not wait for its setup to
+	// finish: safeGo tracks the background work for shutdown while allowing the
+	// assignment loop to process later worker-ready signals immediately.
 	idleIdx := 0
 	for _, unit := range plan.units {
 		idleIdx = d.assignGeneralSchedulingUnit(ctx, idle, idleIdx, unit, pbSnapshot, assignedBeads, reservedTargets, focusVersion)
@@ -6287,10 +6365,27 @@ func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idl
 		if nextIdleIdx >= len(idle) {
 			break
 		}
-		_ = d.assignBead(ctx, idle[nextIdleIdx].worker, bead, focusVersion)
+		claimed := d.launchAssignment(ctx, idle[nextIdleIdx].worker, bead, focusVersion)
+		if !claimed {
+			continue
+		}
 		_, nextIdleIdx = d.advanceAssignedGeneralIdle(idle, nextIdleIdx, bead.ID, pbSnapshot)
 	}
 	return nextIdleIdx
+}
+
+// launchAssignment starts the slow assignment preparation in the background
+// and waits only until assignBead has either reserved the worker or declined
+// the candidate. The safeGo wrapper tracks slow setup for graceful shutdown
+// without blocking the assignment loop after the reservation decision.
+func (d *Dispatcher) launchAssignment(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersion uint64) bool {
+	claimedCh := make(chan bool, 1)
+	d.safeGo(func() {
+		_ = d.assignBeadWithClaim(ctx, w, bead, []uint64{focusVersion}, func(claimed bool) {
+			claimedCh <- claimed
+		})
+	})
+	return <-claimedCh
 }
 
 func (d *Dispatcher) nextGeneralIdleIndex(idle []idleWorker, idleIdx int) int {
@@ -6553,12 +6648,17 @@ func (d *Dispatcher) filterRecoveryQuarantinedBeads(ctx context.Context, allBead
 	if len(allBeads) == 0 || d.db == nil {
 		return allBeads
 	}
-	quarantined, err := d.openRecoveryQuarantineBeads(ctx)
+	tracked, err := d.openRecoveryQuarantineBeads(ctx)
 	if err != nil {
 		_ = d.logEvent(ctx, "recovery_quarantine_filter_failed", "dispatcher", "", "", err.Error())
 		return nil
 	}
-	if len(quarantined) == 0 {
+	blocking, err := d.blockingRecoveryQuarantineBeads(ctx)
+	if err != nil {
+		_ = d.logEvent(ctx, "recovery_quarantine_filter_failed", "dispatcher", "", "", err.Error())
+		return nil
+	}
+	if len(tracked) == 0 && len(blocking) == 0 {
 		return allBeads
 	}
 	redeployable, err := d.autoRedeployablePreservedWorktrees(ctx)
@@ -6568,7 +6668,7 @@ func (d *Dispatcher) filterRecoveryQuarantinedBeads(ctx context.Context, allBead
 	}
 	filtered := make([]protocol.Bead, 0, len(allBeads))
 	for _, bead := range allBeads {
-		if quarantined[bead.ID] {
+		if blocking[bead.ID] {
 			if redeployable[bead.ID] {
 				filtered = append(filtered, bead)
 				continue
@@ -6606,6 +6706,36 @@ WHERE q.status IN ('open', 'human_owned')
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate open recovery quarantines: %w", err)
+	}
+	return out, nil
+}
+
+// blockingRecoveryQuarantineBeads returns only unresolved recovery work that
+// must stay out of normal assignment. Resolved requeue-preserved records remain
+// visible to worktree reuse and garbage collection, but must not suppress a
+// fresh assignment when their preserved worktree is no longer redeployable.
+func (d *Dispatcher) blockingRecoveryQuarantineBeads(ctx context.Context) (map[string]bool, error) {
+	rows, err := d.db.QueryContext(ctx, `
+SELECT DISTINCT bead_id
+FROM recovery_quarantines
+WHERE status IN ('open', 'human_owned')`)
+	if err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("query blocking recovery quarantines: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make(map[string]bool)
+	for rows.Next() {
+		var beadID string
+		if err := rows.Scan(&beadID); err != nil {
+			return nil, fmt.Errorf("scan blocking recovery quarantine: %w", err)
+		}
+		out[beadID] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate blocking recovery quarantines: %w", err)
 	}
 	return out, nil
 }
@@ -7053,6 +7183,19 @@ func (d *Dispatcher) lazyCreateEpicBranch(ctx context.Context, beadID, baseBranc
 }
 
 func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersionOpt ...uint64) error { //nolint:funlen,gocognit,gocyclo // orchestration logic, splitting would obscure flow
+	return d.assignBeadWithClaim(ctx, w, bead, focusVersionOpt, nil)
+}
+
+func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersionOpt []uint64, onClaim func(bool)) error { //nolint:funlen,gocognit,gocyclo // orchestration logic, splitting would obscure flow
+	claimReported := false
+	reportClaim := func(claimed bool) {
+		if onClaim != nil && !claimReported {
+			onClaim(claimed)
+			claimReported = true
+		}
+	}
+	defer reportClaim(false)
+
 	if strings.TrimSpace(bead.ID) == "" {
 		return fmt.Errorf("assignBead: empty bead ID")
 	}
@@ -7117,6 +7260,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	w.reasoning = ""
 	w.lastProgress = d.nowFunc()
 	d.mu.Unlock()
+	reportClaim(true)
 
 	// Mark bead as in_progress BEFORE worktree creation.
 	// This updates external state so other dispatchers see the bead is claimed.
@@ -7915,18 +8059,28 @@ func (d *Dispatcher) applyResume() (string, error) {
 // response exists and was built within statusThrottleWindow, it is returned
 // immediately. Otherwise the status is rebuilt and cached.
 func (d *Dispatcher) applyStatus() (string, error) {
+	ctx := context.Background()
+	storage := d.storageHealth(ctx)
+	storageJSON, err := json.Marshal(storage)
+	if err != nil {
+		return "", fmt.Errorf("marshal storage health cache key: %w", err)
+	}
+	storageKey := string(storageJSON)
+
 	now := d.nowFunc()
 	d.mu.Lock()
 	cached := d.lastStatusJSON
 	elapsed := now.Sub(d.lastStatusTime)
+	cachedStorageKey := d.lastStatusStorageKey
 	d.mu.Unlock()
-	if cached != "" && elapsed < statusThrottleWindow {
+	if cached != "" && elapsed < statusThrottleWindow && cachedStorageKey == storageKey {
 		return cached, nil
 	}
-	result := d.buildStatusJSON()
+	result := d.buildStatusJSONWithStorage(ctx, storage)
 	d.mu.Lock()
 	d.lastStatusTime = now
 	d.lastStatusJSON = result
+	d.lastStatusStorageKey = storageKey
 	d.mu.Unlock()
 	return result, nil
 }
@@ -8297,12 +8451,16 @@ UPDATE qg_failure_incidents
 	return nil
 }
 
-//nolint:funlen // Status JSON intentionally assembles one wire contract in field order.
 func (d *Dispatcher) buildStatusJSON() string {
+	ctx := context.Background()
+	return d.buildStatusJSONWithStorage(ctx, d.storageHealth(ctx))
+}
+
+//nolint:funlen // Status JSON intentionally assembles one wire contract in field order.
+func (d *Dispatcher) buildStatusJSONWithStorage(ctx context.Context, storage *factoryhealth.StorageHealth) string {
 	now := d.nowFunc()
 
 	// Fetch ready beads to determine which attempt counts are valid.
-	ctx := context.Background()
 	readyBeads, err := d.beads.Ready(ctx)
 	if err != nil {
 		readyBeads = nil // Continue with empty ready list on error.
@@ -8391,6 +8549,7 @@ func (d *Dispatcher) buildStatusJSON() string {
 		assignmentFreezeReason:       assignmentFreezeReason,
 		progressTimeoutSecs:          progressTimeoutSecs,
 		heartbeatTimeoutSecs:         heartbeatTimeoutSecs,
+		storage:                      storage,
 	})
 	resp.Health = &health
 
@@ -10333,19 +10492,28 @@ func (d *Dispatcher) recoveryWorkBlocked(ctx context.Context, beadID, worktree, 
 		return true, "worktree path missing: " + worktree, nil
 	}
 
-	dirty, dirtyStatus, dirtyErr := d.worktreeDirty(ctx, worktree)
+	dirty, dirtyStatus, dirtyErr := d.worktreeDirty(ctx, beadID, worktree)
 	if dirty || dirtyErr != nil {
 		return dirty, dirtyStatus, dirtyErr
 	}
 	return d.branchHasUnmergedWork(ctx, beadID, worktree, baseBranch)
 }
 
-func (d *Dispatcher) worktreeDirty(ctx context.Context, worktree string) (dirty bool, status string, err error) {
+func (d *Dispatcher) worktreeDirty(ctx context.Context, beadID, worktree string) (dirty bool, status string, err error) {
 	out, err := d.commandRunner().Run(ctx, "git", "-C", worktree, "status", "--porcelain")
 	if err != nil {
 		return false, "", fmt.Errorf("git status in %s: %w", worktree, err)
 	}
-	status = strings.TrimSpace(string(out))
+	var remaining []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if len(line) >= 4 && line[:2] == "??" && isManagedQualityGateCachePath(beadID, strings.TrimSpace(line[3:])) {
+			continue
+		}
+		if line != "" {
+			remaining = append(remaining, line)
+		}
+	}
+	status = strings.Join(remaining, "\n")
 	return status != "", status, nil
 }
 

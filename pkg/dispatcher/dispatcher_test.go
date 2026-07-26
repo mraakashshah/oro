@@ -3307,6 +3307,171 @@ func TestPreReviewGitHygieneIgnoresManagedAssignmentCapabilityFile(t *testing.T)
 	}
 }
 
+func TestPreReviewGitHygieneIgnoresAssignmentScopedGoCache(t *testing.T) {
+	ctx := context.Background()
+	worktree := t.TempDir()
+	if err := exec.Command("git", "-C", worktree, "init").Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+
+	cacheFile := filepath.Join(worktree, ".tmp-gocache-bead-cache", "trim.txt")
+	if err := os.MkdirAll(filepath.Dir(cacheFile), 0o755); err != nil {
+		t.Fatalf("mkdir cache: %v", err)
+	}
+	if err := os.WriteFile(cacheFile, []byte("cache"), 0o600); err != nil {
+		t.Fatalf("write cache: %v", err)
+	}
+
+	d := &Dispatcher{}
+	hygiene, err := d.checkPreReviewGitHygiene(ctx, "bead-cache", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene: %v", err)
+	}
+	if hygiene.Dirty {
+		t.Fatalf("assignment-scoped Go cache marked dirty: %#v", hygiene.Files)
+	}
+
+	for _, cacheDir := range []string{".gocache-bead-cache", ".golangci-cache-bead-cache"} {
+		cacheFile := filepath.Join(worktree, cacheDir, "trim.txt")
+		if err := os.MkdirAll(filepath.Dir(cacheFile), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", cacheDir, err)
+		}
+		if err := os.WriteFile(cacheFile, []byte("cache"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", cacheDir, err)
+		}
+	}
+	hygiene, err = d.checkPreReviewGitHygiene(ctx, "bead-cache", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene with assignment-scoped tool caches: %v", err)
+	}
+	if hygiene.Dirty {
+		t.Fatalf("assignment-scoped tool caches marked dirty: %#v", hygiene.Files)
+	}
+
+	otherCacheFile := filepath.Join(worktree, ".tmp-gocache-other-bead", "trim.txt")
+	if err := os.MkdirAll(filepath.Dir(otherCacheFile), 0o755); err != nil {
+		t.Fatalf("mkdir other cache: %v", err)
+	}
+	if err := os.WriteFile(otherCacheFile, []byte("cache"), 0o600); err != nil {
+		t.Fatalf("write other cache: %v", err)
+	}
+	hygiene, err = d.checkPreReviewGitHygiene(ctx, "bead-cache", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene with other cache: %v", err)
+	}
+	if !hygiene.Dirty || !slices.Equal(hygiene.Files, []string{".tmp-gocache-other-bead/trim.txt"}) {
+		t.Fatalf("other assignment cache should remain dirty, got %#v", hygiene.Files)
+	}
+}
+
+func TestPreReviewGitHygieneIgnoresManagedQualityGateCacheDirectories(t *testing.T) {
+	ctx := context.Background()
+	worktree := t.TempDir()
+	if err := exec.Command("git", "-C", worktree, "init").Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+
+	for _, cacheDir := range []string{".tmp-gocache", ".gocache-task", ".task-gocache", ".golangci-cache", ".golangci-lint-cache", ".gocache-orodevgo"} {
+		cacheFile := filepath.Join(worktree, cacheDir, "trim.txt")
+		if err := os.MkdirAll(filepath.Dir(cacheFile), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", cacheDir, err)
+		}
+		if err := os.WriteFile(cacheFile, []byte("cache"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", cacheDir, err)
+		}
+	}
+
+	d := &Dispatcher{}
+	hygiene, err := d.checkPreReviewGitHygiene(ctx, "oro-dev-go", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene: %v", err)
+	}
+	if hygiene.Dirty {
+		t.Fatalf("managed quality-gate caches marked dirty: %#v", hygiene.Files)
+	}
+
+	if err := os.WriteFile(filepath.Join(worktree, "ordinary.txt"), []byte("dirty"), 0o600); err != nil {
+		t.Fatalf("write ordinary file: %v", err)
+	}
+	hygiene, err = d.checkPreReviewGitHygiene(ctx, "oro-dev-go", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene with ordinary file: %v", err)
+	}
+	if !hygiene.Dirty || !slices.Equal(hygiene.Files, []string{"ordinary.txt"}) {
+		t.Fatalf("ordinary file should remain dirty, got %#v", hygiene.Files)
+	}
+}
+
+func TestSanitizedQualityGateCacheBeadID(t *testing.T) {
+	if got, want := sanitizedQualityGateCacheBeadID("oro-dev_go.42"), "orodevgo42"; got != want {
+		t.Fatalf("sanitizedQualityGateCacheBeadID() = %q, want %q", got, want)
+	}
+}
+
+func TestReadyForReviewRechecksManagedAssignmentCapabilityWithoutReassignment(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+	startDispatcher(t, d)
+
+	worktree := t.TempDir()
+	if err := exec.Command("git", "-C", worktree, "init").Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	capabilityPath := filepath.Join(worktree, protocol.OroDir, "assignment-capability.json")
+	if err := os.MkdirAll(filepath.Dir(capabilityPath), 0o755); err != nil {
+		t.Fatalf("mkdir capability directory: %v", err)
+	}
+	if err := os.WriteFile(capabilityPath, []byte(`{"token":"runtime-only"}`), 0o600); err != nil {
+		t.Fatalf("write assignment capability: %v", err)
+	}
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
+	})
+	waitForWorkers(t, d, 1, time.Second)
+
+	beadSrc.shown["bead-capability"] = &protocol.BeadDetail{
+		Title:              "Capability hygiene retry",
+		AcceptanceCriteria: "Test: review proceeds | Assert: no replacement assignment",
+	}
+	d.mu.Lock()
+	w := d.workers["w1"]
+	w.state = protocol.WorkerBusy
+	w.beadID = "bead-capability"
+	w.assignmentID = 42
+	w.worktree = worktree
+	w.targetBranch = "main"
+	d.mu.Unlock()
+
+	d.handleReadyForReview(ctx, "w1", protocol.Message{
+		Type:           protocol.MsgReadyForReview,
+		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-capability", WorkerID: "w1"},
+	})
+
+	waitFor(t, func() bool { return spawnMock.SpawnCount() == 1 }, time.Second)
+	waitFor(t, func() bool { return eventCount(t, d.db, "pre_review_hygiene_recheck") == 1 }, time.Second)
+
+	var payload string
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT payload FROM events WHERE type='pre_review_hygiene_recheck' AND bead_id='bead-capability'`,
+	).Scan(&payload); err != nil {
+		t.Fatalf("query hygiene recheck event: %v", err)
+	}
+	if !strings.Contains(payload, `"source":"managed_assignment_capability"`) {
+		t.Fatalf("hygiene recheck payload = %q, want managed capability retry source", payload)
+	}
+
+	msg, ok := readMsg(t, conn, time.Second)
+	if !ok {
+		t.Fatal("expected review result without worker restart")
+	}
+	if msg.Type != protocol.MsgReviewResult {
+		t.Fatalf("message type = %s, want REVIEW_RESULT (not replacement ASSIGN)", msg.Type)
+	}
+}
+
 func TestManagedQualityGateSnapshotMatches(t *testing.T) {
 	dir := t.TempDir()
 	managed := filepath.Join(dir, "managed.sh")
@@ -24380,6 +24545,7 @@ func TestTryAssign_FillsIdleWorkersAcrossEpicUnitsByPriority(t *testing.T) {
 	})
 
 	d.tryAssign(context.Background())
+	d.wg.Wait()
 
 	got := assignedBeadIDsByCreation(t, d.db)
 	want := []string{"a-fast", "a-slow", "b-fast"}
@@ -24405,6 +24571,7 @@ func TestTryAssign_ConcentratesWorkersOnTopEpic(t *testing.T) {
 	})
 
 	d.tryAssign(context.Background())
+	d.wg.Wait()
 
 	got := assignedBeadIDsByCreation(t, d.db)
 	want := []string{"a-fast", "a-middle"}
@@ -24412,6 +24579,102 @@ func TestTryAssign_ConcentratesWorkersOnTopEpic(t *testing.T) {
 		t.Fatalf("assigned beads = %v, want all workers concentrated on top epic %v", got, want)
 	}
 	assertMockWorkerAssignCount(t, workers, len(want))
+}
+
+func TestTryAssign_ReservesAllIdleWorkersBeforeSlowWorktreeSetupCompletes(t *testing.T) {
+	d, beadSrc, _ := setupTryAssignSchedulingTest(t, 2)
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "oro-slow-first", Priority: 0})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "oro-second", Priority: 1})
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "oro-slow-first", Priority: 0},
+		{ID: "oro-second", Priority: 1},
+	})
+
+	firstCreateStarted := make(chan struct{})
+	releaseFirstCreate := make(chan struct{})
+	var firstCreate sync.Once
+	wt := d.worktrees.(*mockWorktreeManager)
+	wt.createFn = func(_ context.Context, beadID, _ string) (string, string, error) {
+		firstCreate.Do(func() {
+			close(firstCreateStarted)
+			<-releaseFirstCreate
+		})
+		return "/tmp/worktree-" + beadID, protocol.BranchPrefix + beadID, nil
+	}
+
+	assignDone := make(chan struct{})
+	go func() {
+		d.tryAssign(context.Background())
+		close(assignDone)
+	}()
+
+	select {
+	case <-firstCreateStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first worktree setup did not start")
+	}
+
+	d.mu.Lock()
+	reserved := 0
+	for _, worker := range d.workers {
+		if worker.state == protocol.WorkerReserved {
+			reserved++
+		}
+	}
+	d.mu.Unlock()
+	if reserved != 2 {
+		t.Fatalf("reserved workers while first worktree setup is blocked = %d, want 2", reserved)
+	}
+
+	close(releaseFirstCreate)
+	select {
+	case <-assignDone:
+	case <-time.After(time.Second):
+		t.Fatal("assignment did not finish after worktree setup was released")
+	}
+}
+
+func TestTryAssignReturnsAfterReservingSingleWorkerWithSlowWorktreeSetup(t *testing.T) {
+	d, beadSrc, _ := setupTryAssignSchedulingTest(t, 1)
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "oro-slow-startup", Priority: 0})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "oro-slow-startup", Priority: 0}})
+
+	createStarted := make(chan struct{})
+	releaseCreate := make(chan struct{})
+	wt := d.worktrees.(*mockWorktreeManager)
+	wt.createFn = func(_ context.Context, beadID, _ string) (string, string, error) {
+		close(createStarted)
+		<-releaseCreate
+		return "/tmp/worktree-" + beadID, protocol.BranchPrefix + beadID, nil
+	}
+
+	assignReturned := make(chan struct{})
+	go func() {
+		d.tryAssign(context.Background())
+		close(assignReturned)
+	}()
+
+	select {
+	case <-createStarted:
+	case <-time.After(time.Second):
+		t.Fatal("worktree setup did not start")
+	}
+
+	returnedBeforeSetupFinished := false
+	select {
+	case <-assignReturned:
+		returnedBeforeSetupFinished = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseCreate)
+	select {
+	case <-assignReturned:
+	case <-time.After(time.Second):
+		t.Fatal("assignment did not finish after worktree setup was released")
+	}
+	if !returnedBeforeSetupFinished {
+		t.Fatal("tryAssign waited for slow worktree setup; later worker-ready signals cannot refill idle capacity")
+	}
 }
 
 func TestTryAssign_IndependentBeforeEpicUnits(t *testing.T) {
@@ -24427,6 +24690,7 @@ func TestTryAssign_IndependentBeforeEpicUnits(t *testing.T) {
 	})
 
 	d.tryAssign(context.Background())
+	d.wg.Wait()
 
 	got := assignedBeadIDsByCreation(t, d.db)
 	want := []string{"independent-p0", "independent-p1", "epic-child"}
