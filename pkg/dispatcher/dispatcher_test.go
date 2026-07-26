@@ -3331,6 +3331,23 @@ func TestPreReviewGitHygieneIgnoresAssignmentScopedGoCache(t *testing.T) {
 		t.Fatalf("assignment-scoped Go cache marked dirty: %#v", hygiene.Files)
 	}
 
+	for _, cacheDir := range []string{".gocache-bead-cache", ".golangci-cache-bead-cache"} {
+		cacheFile := filepath.Join(worktree, cacheDir, "trim.txt")
+		if err := os.MkdirAll(filepath.Dir(cacheFile), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", cacheDir, err)
+		}
+		if err := os.WriteFile(cacheFile, []byte("cache"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", cacheDir, err)
+		}
+	}
+	hygiene, err = d.checkPreReviewGitHygiene(ctx, "bead-cache", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene with assignment-scoped tool caches: %v", err)
+	}
+	if hygiene.Dirty {
+		t.Fatalf("assignment-scoped tool caches marked dirty: %#v", hygiene.Files)
+	}
+
 	otherCacheFile := filepath.Join(worktree, ".tmp-gocache-other-bead", "trim.txt")
 	if err := os.MkdirAll(filepath.Dir(otherCacheFile), 0o755); err != nil {
 		t.Fatalf("mkdir other cache: %v", err)

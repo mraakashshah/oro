@@ -4802,7 +4802,9 @@ func (d *Dispatcher) isIgnorableManagedQualityGateStatus(beadID, worktree string
 	if entry.Code == "??" && entry.Path == filepath.ToSlash(filepath.Join(protocol.OroDir, "assignment-capability.json")) {
 		return true
 	}
-	if entry.Code == "??" && strings.HasPrefix(entry.Path, ".tmp-gocache-"+beadID+"/") {
+	if entry.Code == "??" && (strings.HasPrefix(entry.Path, ".tmp-gocache-"+beadID+"/") ||
+		strings.HasPrefix(entry.Path, ".gocache-"+beadID+"/") ||
+		strings.HasPrefix(entry.Path, ".golangci-cache-"+beadID+"/")) {
 		return true
 	}
 	if entry.Code != "??" || entry.Path != "quality_gate.sh" {
