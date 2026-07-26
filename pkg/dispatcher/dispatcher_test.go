@@ -3307,6 +3307,46 @@ func TestPreReviewGitHygieneIgnoresManagedAssignmentCapabilityFile(t *testing.T)
 	}
 }
 
+func TestPreReviewGitHygieneIgnoresAssignmentScopedGoCache(t *testing.T) {
+	ctx := context.Background()
+	worktree := t.TempDir()
+	if err := exec.Command("git", "-C", worktree, "init").Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+
+	cacheFile := filepath.Join(worktree, ".tmp-gocache-bead-cache", "trim.txt")
+	if err := os.MkdirAll(filepath.Dir(cacheFile), 0o755); err != nil {
+		t.Fatalf("mkdir cache: %v", err)
+	}
+	if err := os.WriteFile(cacheFile, []byte("cache"), 0o600); err != nil {
+		t.Fatalf("write cache: %v", err)
+	}
+
+	d := &Dispatcher{}
+	hygiene, err := d.checkPreReviewGitHygiene(ctx, "bead-cache", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene: %v", err)
+	}
+	if hygiene.Dirty {
+		t.Fatalf("assignment-scoped Go cache marked dirty: %#v", hygiene.Files)
+	}
+
+	otherCacheFile := filepath.Join(worktree, ".tmp-gocache-other-bead", "trim.txt")
+	if err := os.MkdirAll(filepath.Dir(otherCacheFile), 0o755); err != nil {
+		t.Fatalf("mkdir other cache: %v", err)
+	}
+	if err := os.WriteFile(otherCacheFile, []byte("cache"), 0o600); err != nil {
+		t.Fatalf("write other cache: %v", err)
+	}
+	hygiene, err = d.checkPreReviewGitHygiene(ctx, "bead-cache", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene with other cache: %v", err)
+	}
+	if !hygiene.Dirty || !slices.Equal(hygiene.Files, []string{".tmp-gocache-other-bead/trim.txt"}) {
+		t.Fatalf("other assignment cache should remain dirty, got %#v", hygiene.Files)
+	}
+}
+
 func TestManagedQualityGateSnapshotMatches(t *testing.T) {
 	dir := t.TempDir()
 	managed := filepath.Join(dir, "managed.sh")
