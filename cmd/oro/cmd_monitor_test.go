@@ -207,7 +207,11 @@ func TestMonitorActPreservesOperatorPause(t *testing.T) {
 
 	t.Run("monitor owned QG pause resumes once after finding clears", func(t *testing.T) {
 		runner := &fakeMonitorRunner{
-			health: health,
+			health: factoryhealth.FactoryHealth{
+				State:    health.State,
+				Findings: health.Findings,
+				Metrics:  factoryhealth.Metrics{DaemonRunning: true, ReadyQueue: 1, PauseSource: "monitor"},
+			},
 			recentActions: map[string]bool{
 				monitorActionDedupeKey(monitorActionQGChurnPause, "qg:resolved"): true,
 			},
