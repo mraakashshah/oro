@@ -171,6 +171,53 @@ func TestGolangciProviderMaintenanceDescriptor(t *testing.T) {
 	}
 }
 
+func TestNPXCleanupRequiresStrictOwnership(t *testing.T) {
+	cacheRoot := t.TempDir()
+	ownedPath := filepath.Join(cacheRoot, "_npx")
+	if err := os.Mkdir(ownedPath, 0o755); err != nil {
+		t.Fatalf("create owned npx path: %v", err)
+	}
+
+	outside := t.TempDir()
+	symlinkRoot := t.TempDir()
+	symlinkPath := filepath.Join(symlinkRoot, "_npx")
+	if err := os.Symlink(outside, symlinkPath); err != nil {
+		t.Fatalf("create npx symlink: %v", err)
+	}
+
+	unknownPath := filepath.Join(cacheRoot, "other")
+	if err := os.Mkdir(unknownPath, 0o755); err != nil {
+		t.Fatalf("create unknown npx path: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		cacheRoot  string
+		path       string
+		lease      bool
+		wantAction storage.ActionType
+	}{
+		{name: "inactive provider-owned", cacheRoot: cacheRoot, path: ownedPath, wantAction: storage.Delete},
+		{name: "symlink", cacheRoot: symlinkRoot, path: symlinkPath, wantAction: storage.Preserve},
+		{name: "leased", cacheRoot: cacheRoot, path: ownedPath, lease: true, wantAction: storage.Preserve},
+		{name: "unknown owner", cacheRoot: cacheRoot, path: unknownPath, wantAction: storage.Preserve},
+		{name: "escaped", cacheRoot: cacheRoot, path: outside, wantAction: storage.Preserve},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := storage.NPXCleanupCandidate(test.cacheRoot, test.path, test.lease)
+			plan := storage.PlanCleanup(storage.Snapshot{
+				CatalogHealthy: true,
+				Candidates:     []storage.Candidate{candidate},
+			}, storage.StoragePolicy{DeletionAuthorized: true}, storage.ScopeDevTools)
+			if got := plan.Decisions[0].Action; got != test.wantAction {
+				t.Errorf("planned action = %q, want %q", got, test.wantAction)
+			}
+		})
+	}
+}
+
 func providerByID(providers []storage.CacheProvider) map[string]storage.CacheProvider {
 	byID := make(map[string]storage.CacheProvider, len(providers))
 	for _, provider := range providers {
