@@ -277,3 +277,10 @@ Hook inventory (same in both files):
 **Context:** A scoped lint command reported diagnostics with absolute paths from sibling worktrees because golangci-lint reused a shared cache.
 **Decision:** Set `GOLANGCI_LINT_CACHE` only for the lint command, to a directory under the gate's temporary `QG_DIR`; preserve shared Go and Python caches.
 **Implications:** Each gate rebuilds lint diagnostics for its active checkout, eliminating stale sibling paths while retaining its own lint failures.
+
+## 2026-07-26: Reserve the whole worker batch before slow assignment setup
+
+**Tags:** #dispatcher #workers #scheduling #worktrees
+**Context:** With two workers launched together and a ready queue, the dispatcher completed the first assignment's worktree setup before beginning the second. Fetching and creating that first worktree left the other connected worker idle for nearly a minute.
+**Decision:** General scheduling reserves each worker synchronously, launches its slow assignment preparation in a tracked goroutine, then waits for the launched preparations before returning from the scheduling pass.
+**Implications:** A slow fetch or worktree creation cannot strand available workers behind the first assignment. Worker and bead reservation remains atomic before concurrent preparation begins.
