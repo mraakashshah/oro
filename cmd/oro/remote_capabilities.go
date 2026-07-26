@@ -148,14 +148,15 @@ func AttestRemoteCapabilities(ctx context.Context, cfg RemoteGateConfig) (Capabi
 		return Capabilities{}, err
 	}
 	return Capabilities{
-		Host:        host,
-		Repository:  repository,
-		Workflow:    cfg.GitHub.Workflow,
-		Permission:  repo.Permission,
-		GitHubCLI:   gh,
-		Git:         git,
-		APILimits:   limits,
-		MatrixBound: matrixBound,
+		Host:          host,
+		Repository:    repository,
+		Workflow:      cfg.GitHub.Workflow,
+		Permission:    repo.Permission,
+		GitHubCLI:     gh,
+		Git:           git,
+		APILimits:     limits,
+		MatrixBound:   matrixBound,
+		DefaultBranch: repo.DefaultBranch,
 	}, nil
 }
 
@@ -291,10 +292,10 @@ func preflightStartupRemoteGate(ctx context.Context, projectRoot string) error {
 	if err != nil {
 		return err
 	}
-	if capabilities.Repository == "" || capabilities.DefaultBranch == "" {
-		return errors.New("persisted remote capabilities are missing repository or default branch")
+	if capabilities.Host == "" || capabilities.Repository == "" || capabilities.DefaultBranch == "" {
+		return errors.New("persisted remote capabilities are missing host, repository, or default branch")
 	}
-	api, err := newStartupGitHubAPI(cfg.Factory.QualityGate, capabilities.Repository)
+	api, err := newStartupGitHubAPI(cfg.Factory.QualityGate, capabilities.Host, capabilities.Repository)
 	if err != nil {
 		return err
 	}
@@ -335,7 +336,7 @@ type startupGitHubAPI struct {
 	repository string
 }
 
-func newStartupGitHubAPI(cfg RemoteGateConfig, repository string) (startupGitHubAPI, error) {
+func newStartupGitHubAPI(cfg RemoteGateConfig, host, repository string) (startupGitHubAPI, error) {
 	baseURL, err := url.Parse(cfg.GitHub.API.BaseURL)
 	if err != nil {
 		return startupGitHubAPI{}, fmt.Errorf("parse GitHub API base URL: %w", err)
@@ -347,7 +348,7 @@ func newStartupGitHubAPI(cfg RemoteGateConfig, repository string) (startupGitHub
 	if executable == "" || executable == "managed" {
 		executable = "gh"
 	}
-	return startupGitHubAPI{executable: executable, host: baseURL.Host, repository: repository}, nil
+	return startupGitHubAPI{executable: executable, host: host, repository: repository}, nil
 }
 
 func (api startupGitHubAPI) GetJSON(ctx context.Context, path string, dst any) error {
@@ -615,24 +616,36 @@ func validateConfiguredAPIHost(baseURL, host string) error {
 	return nil
 }
 
-func fetchRepositoryCapability(ctx context.Context, ghPath, host, repository string) (struct{ Permission RepositoryPermission }, error) {
+type repositoryCapability struct {
+	Permission    RepositoryPermission
+	DefaultBranch string
+}
+
+func fetchRepositoryCapability(ctx context.Context, ghPath, host, repository string) (repositoryCapability, error) {
 	out, err := runCapabilityCommand(ctx, ghPath, "api", "--hostname", host, "repos/"+repository)
 	if err != nil {
-		return struct{ Permission RepositoryPermission }{}, fmt.Errorf("read GitHub repository capability: %w", err)
+		return repositoryCapability{}, fmt.Errorf("read GitHub repository capability: %w", err)
 	}
 	var response struct {
-		FullName    string `json:"full_name"`
-		Permissions struct {
+		FullName      string `json:"full_name"`
+		DefaultBranch string `json:"default_branch"`
+		Permissions   struct {
 			Push bool `json:"push"`
 		} `json:"permissions"`
 	}
 	if err := json.Unmarshal(out, &response); err != nil {
-		return struct{ Permission RepositoryPermission }{}, fmt.Errorf("decode GitHub repository capability: %w", err)
+		return repositoryCapability{}, fmt.Errorf("decode GitHub repository capability: %w", err)
 	}
 	if response.FullName != repository {
-		return struct{ Permission RepositoryPermission }{}, fmt.Errorf("GitHub repository identity %q does not match %q", response.FullName, repository)
+		return repositoryCapability{}, fmt.Errorf("GitHub repository identity %q does not match %q", response.FullName, repository)
 	}
-	return struct{ Permission RepositoryPermission }{Permission: RepositoryPermission{Push: response.Permissions.Push}}, nil
+	if response.DefaultBranch == "" {
+		return repositoryCapability{}, errors.New("GitHub repository default branch is absent")
+	}
+	return repositoryCapability{
+		Permission:    RepositoryPermission{Push: response.Permissions.Push},
+		DefaultBranch: response.DefaultBranch,
+	}, nil
 }
 
 func fetchAPILimits(ctx context.Context, ghPath, host string) (APILimits, error) {
