@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"oro/pkg/remotegate"
@@ -20,7 +21,10 @@ type APIReader interface {
 
 // Client performs read-only workflow preflight operations through api.
 type Client struct {
-	api APIReader
+	api              APIReader
+	repository       string
+	collection       CollectionReader
+	collectionLimits CollectionLimits
 }
 
 func (c *Client) fetchWorkflowMetadata(ctx context.Context, repository, workflow string) (path, state string, err error) {
@@ -90,6 +94,32 @@ func (c *Client) fetchWorkflowRegistration(ctx context.Context, req PreflightReq
 		State:         state,
 		Contents:      contents,
 	}, nil
+}
+
+func (c *Client) inspectWorkflow(ctx context.Context, req PreflightRequest) (remotegate.WorkflowEvidence, error) {
+	registration, err := c.fetchWorkflowRegistration(ctx, req)
+	if err != nil {
+		return remotegate.WorkflowEvidence{}, err
+	}
+	triggers, err := parseWorkflowTriggers(registration.Contents)
+	if err != nil {
+		return remotegate.WorkflowEvidence{}, err
+	}
+	eligibleTargets := triggers.eligibleTargets(req.Targets)
+	if !slices.Equal(eligibleTargets, req.Targets) {
+		return remotegate.WorkflowEvidence{}, fmt.Errorf("%w: pull_request does not cover every required target", remotegate.ErrWorkflowIneligible)
+	}
+	evidence := remotegate.WorkflowEvidence{
+		Path:               registration.Path,
+		State:              registration.State,
+		Ref:                registration.DefaultBranch,
+		WorkflowDispatch:   triggers.WorkflowDispatch,
+		PullRequestTargets: eligibleTargets,
+	}
+	if err := remotegate.ValidateWorkflowEvidence(evidence); err != nil {
+		return remotegate.WorkflowEvidence{}, fmt.Errorf("validate workflow evidence: %w", err)
+	}
+	return evidence, nil
 }
 
 func (c *Client) fetchDefaultBranch(ctx context.Context, repository string) (string, error) {

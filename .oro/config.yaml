@@ -12,7 +12,7 @@ agent:
     deep:
       runtime: codex
       model: gpt-5.6-sol
-      reasoning: high
+      reasoning: low
     background:
       runtime: codex
       model: gpt-5.6-luna
@@ -22,12 +22,12 @@ agent:
       transport: cli
       runtime: codex
       model: gpt-5.6-sol
-      reasoning: high
+      reasoning: medium
     spec_challenger:
       transport: cli
       runtime: claude
       model: fable
-      reasoning: xhigh
+      reasoning: medium
     worker:
       transport: cli
       runtime: codex
@@ -37,42 +37,42 @@ agent:
       transport: cli
       runtime: codex
       model: gpt-5.6-sol
-      reasoning: high
+      reasoning: low
     ops_review:
       transport: cli
       runtime: claude
       model: claude-opus-4-8
-      reasoning: xhigh
+      reasoning: high
     ops_escalation:
       transport: cli
       runtime: codex
       model: gpt-5.6-sol
-      reasoning: high
+      reasoning: low
     ops_merge:
       transport: cli
       runtime: codex
       model: gpt-5.6-sol
-      reasoning: high
+      reasoning: low
     ops_diagnosis:
       transport: cli
       runtime: codex
       model: gpt-5.6-sol
-      reasoning: high
+      reasoning: low
     ops_epic_fix:
       transport: cli
       runtime: codex
       model: gpt-5.6-sol
-      reasoning: high
+      reasoning: low
     ops_write_ac:
       transport: cli
       runtime: codex
       model: gpt-5.6-sol
-      reasoning: high
+      reasoning: low
     ops_decompose:
       transport: cli
       runtime: codex
       model: gpt-5.6-sol
-      reasoning: high
+      reasoning: low
     ops_dream:
       transport: cli
       runtime: codex

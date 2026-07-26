@@ -46,6 +46,47 @@ func TestMonitorActionLedgerRecordsAndFindsRecentActions(t *testing.T) {
 	}
 }
 
+func TestPendingMonitorPauseRequiresUnconsumedQGPause(t *testing.T) {
+	ctx := context.Background()
+	db, err := openStateDB(":memory:")
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	pause, ok, err := pendingMonitorPause(ctx, db)
+	if err != nil {
+		t.Fatalf("pending monitor pause before record: %v", err)
+	}
+	if ok {
+		t.Fatalf("pending monitor pause = %+v, want none without a monitor-owned pause", pause)
+	}
+	if err := recordMonitorAction(ctx, db, monitorAction{Action: monitorActionQGChurnPause, Key: "qg:durable"}); err != nil {
+		t.Fatalf("record qg pause: %v", err)
+	}
+
+	pause, ok, err = pendingMonitorPause(ctx, db)
+	if err != nil {
+		t.Fatalf("pending monitor pause after record: %v", err)
+	}
+	if !ok || pause.Action != monitorActionQGChurnPause || pause.Key != "qg:durable" {
+		t.Fatalf("pending monitor pause = %+v, %v; want durable qg pause", pause, ok)
+	}
+	if err := recordMonitorAction(ctx, db, monitorAction{Action: monitorActionQGChurnResume, Key: pause.Key}); err != nil {
+		t.Fatalf("record qg resume: %v", err)
+	}
+
+	if pause, ok, err = pendingMonitorPause(ctx, db); err != nil || ok {
+		t.Fatalf("pending monitor pause after resume = %+v, %v, %v; want none", pause, ok, err)
+	}
+	if err := recordMonitorAction(ctx, db, monitorAction{Action: monitorActionQGChurnPause, Key: "qg:durable"}); err != nil {
+		t.Fatalf("record repeated qg pause: %v", err)
+	}
+	if pause, ok, err = pendingMonitorPause(ctx, db); err != nil || !ok || pause.Key != "qg:durable" {
+		t.Fatalf("pending repeated monitor pause = %+v, %v, %v; want latest unconsumed pause", pause, ok, err)
+	}
+}
+
 func TestMonitorActionLedgerWrapsSQLErrors(t *testing.T) {
 	ctx := context.Background()
 	db, err := openStateDB(":memory:")

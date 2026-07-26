@@ -95,7 +95,7 @@ func (s *FakeStore) Ready(ctx context.Context) ([]protocol.Bead, error) {
 
 	var ready []protocol.Bead
 	for _, bead := range s.beads {
-		if bead.Status == "open" && bead.WorkerID == "" && !isFutureDeferred(bead.DeferUntil) && !s.hasActiveBlockerLocked(bead) {
+		if bead.Status == "open" && !bead.Draft && bead.WorkerID == "" && !isFutureDeferred(bead.DeferUntil) && !s.hasActiveBlockerLocked(bead) {
 			ready = append(ready, cloneBead(bead))
 		}
 	}
@@ -221,6 +221,8 @@ func (s *FakeStore) Create(ctx context.Context, params CreateParams) (*protocol.
 	bead := protocol.Bead{
 		ID:                 id,
 		Title:              params.Title,
+		ContractVersion:    params.ContractVersion,
+		Draft:              params.Draft,
 		Status:             status,
 		Priority:           params.Priority,
 		Epic:               params.ParentID,
@@ -276,13 +278,16 @@ func validateUpdateParams(params UpdateParams) error {
 	if params.Status != nil && !validStatus(*params.Status) {
 		return fmt.Errorf("beadstore: invalid status %q", *params.Status)
 	}
+	if params.Draft != nil && !*params.Draft {
+		return fmt.Errorf("beadstore: clearing draft requires validated publish")
+	}
 	return nil
 }
 
 // applyBeadFields applies non-nil fields from params to bead.
 // Returns true when at least one field changed.
 func applyBeadFields(bead *protocol.Bead, params UpdateParams) bool {
-	changed := false
+	changed := applyContractFields(bead, params)
 	if params.Status != nil {
 		applyStatusUpdate(bead, *params.Status)
 		changed = true
@@ -293,10 +298,6 @@ func applyBeadFields(bead *protocol.Bead, params UpdateParams) bool {
 	}
 	if params.Type != nil {
 		bead.Type = *params.Type
-		changed = true
-	}
-	if params.AcceptanceCriteria != nil {
-		bead.AcceptanceCriteria = *params.AcceptanceCriteria
 		changed = true
 	}
 	if params.Notes != nil && strings.TrimSpace(*params.Notes) != "" {
@@ -317,6 +318,35 @@ func applyBeadFields(bead *protocol.Bead, params UpdateParams) bool {
 	}
 	if params.Tags != nil {
 		bead.Tags = cloneStrings(*params.Tags)
+		changed = true
+	}
+	return changed
+}
+
+func applyContractFields(bead *protocol.Bead, params UpdateParams) bool {
+	changed := false
+	if params.Title != nil {
+		bead.Title = *params.Title
+		changed = true
+	}
+	if params.Description != nil {
+		bead.Description = *params.Description
+		changed = true
+	}
+	if params.AcceptanceCriteria != nil {
+		bead.AcceptanceCriteria = *params.AcceptanceCriteria
+		changed = true
+	}
+	if params.EstimatedMinutes != nil {
+		bead.EstimatedMinutes = *params.EstimatedMinutes
+		changed = true
+	}
+	if params.ContractVersion != nil {
+		bead.ContractVersion = *params.ContractVersion
+		changed = true
+	}
+	if params.Draft != nil {
+		bead.Draft = *params.Draft
 		changed = true
 	}
 	return changed

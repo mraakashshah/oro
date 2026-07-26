@@ -27,7 +27,7 @@ var (
 )
 
 func (d *Dispatcher) captureQGBaseline(ctx context.Context, beadID, worktree, mutationBase string) (qgBaseline, error) {
-	headOut, err := d.shutdownRunner.Run(ctx, "git", "-C", worktree, "rev-parse", "HEAD")
+	headOut, err := d.commandRunner().Run(ctx, "git", "-C", worktree, "rev-parse", "HEAD")
 	if err != nil {
 		return nil, fmt.Errorf("capture qg baseline head: %w", err)
 	}
@@ -55,7 +55,7 @@ func (d *Dispatcher) captureQGBaseline(ctx context.Context, beadID, worktree, mu
 // retry baseline. The worker has already run QG on this exact HEAD, so running
 // it again would only delay delivering retry feedback.
 func (d *Dispatcher) seedQGBaselineFromFailure(ctx context.Context, beadID, worktree, qgOutput string) (qgBaseline, error) {
-	headOut, err := d.shutdownRunner.Run(ctx, "git", "-C", worktree, "rev-parse", "HEAD")
+	headOut, err := d.commandRunner().Run(ctx, "git", "-C", worktree, "rev-parse", "HEAD")
 	if err != nil {
 		return nil, fmt.Errorf("seed qg baseline head: %w", err)
 	}

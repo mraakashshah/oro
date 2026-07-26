@@ -811,12 +811,14 @@ func TestCmdBeadLifecycleSubcommands(t *testing.T) {
 
 func TestBeadExportJSONEmitsOroNativeArray(t *testing.T) {
 	store := beadstore.NewFakeStore(protocol.Bead{
-		ID:       "oro-export",
-		Title:    "Export",
-		Status:   "open",
-		Priority: 1,
-		Type:     "task",
-		Epic:     "oro-parent",
+		ID:              "oro-export",
+		Title:           "Export",
+		ContractVersion: 2,
+		Draft:           true,
+		Status:          "open",
+		Priority:        1,
+		Type:            "task",
+		Epic:            "oro-parent",
 	})
 
 	got := decodeBeadJSONArray(t, executeBeadCommand(t, store, "export", "--json"))
@@ -825,6 +827,9 @@ func TestBeadExportJSONEmitsOroNativeArray(t *testing.T) {
 	}
 	if got[0]["id"] != "oro-export" || got[0]["parent_id"] != "oro-parent" {
 		t.Fatalf("export JSON = %#v, want oro-native exported bead", got[0])
+	}
+	if got[0]["contract_version"] != float64(2) || got[0]["draft"] != true {
+		t.Fatalf("export contract fields = version %#v, draft %#v; want 2, true", got[0]["contract_version"], got[0]["draft"])
 	}
 	if _, ok := got[0]["issue_type"]; ok {
 		t.Fatalf("legacy issue_type key present in oro-native JSON")

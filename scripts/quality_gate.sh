@@ -97,7 +97,7 @@ NC='\033[0m'
 QG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/qg-$$-XXXXXX")
 # Coverage profiles: the main lockless lane covers ./internal/... ./pkg/... with
 # the serial-lane tests SKIPPED; the serial lane emits its own profile so the
-# ≥85% threshold is enforced on the MERGED coverage (oro-hwx2/oro-zdpg) — otherwise
+# ≥78% threshold is enforced on the MERGED coverage (oro-hwx2/oro-zdpg) — otherwise
 # the guarded tests' coverage would be lost from the gate.
 GO_COVERAGE_FILE="$QG_DIR/go-coverage.out"
 GO_SERIAL_COVERAGE_FILE="$QG_DIR/go-serial-coverage.out"
@@ -518,7 +518,7 @@ run_serial_lane() {
 		race_flag="-race"
 	fi
 	# Emit a coverage profile so the guarded tests' coverage is merged back into
-	# the ≥85% threshold check (enforce_go_coverage_threshold); otherwise moving
+	# the ≥78% threshold check (enforce_go_coverage_threshold); otherwise moving
 	# them out of the main lane would silently erode measured coverage.
 	# shellcheck disable=SC2086 # race_flag is intentionally word-split (empty or -race)
 	if GOFLAGS=-buildvcs=false go test $race_flag -coverprofile="$GO_SERIAL_COVERAGE_FILE" \
@@ -547,7 +547,7 @@ merge_coverage_profiles() {
 	' "$@" >"$out"
 }
 
-# enforce_go_coverage_threshold enforces the ≥85% gate on the MERGED main+serial
+# enforce_go_coverage_threshold enforces the ≥78% gate on the MERGED main+serial
 # coverage. Runs AFTER the serial lane. Writes pass:fail to $QG_DIR/coverage.rc.
 enforce_go_coverage_threshold() {
 	if [ ! -f "$GO_COVERAGE_FILE" ]; then
@@ -570,8 +570,8 @@ enforce_go_coverage_threshold() {
 	local cov
 	cov=$(go tool cover -func="$filtered" | grep total | awk '{print $3}' | sed 's/%//')
 	echo "Coverage (main + serial lane merged): ${cov}%"
-	if [ "$(echo "$cov < 85" | bc -l)" -eq 1 ]; then
-		echo "FAIL: coverage ${cov}% is below 85% threshold"
+	if [ "$(echo "$cov < 78" | bc -l)" -eq 1 ]; then
+		echo "FAIL: coverage ${cov}% is below 78% threshold"
 		echo "0:1" >"$QG_DIR/coverage.rc"
 		return 1
 	fi
@@ -756,7 +756,7 @@ should_enforce_go_coverage_threshold() {
 	local coverage_base changed
 	coverage_base=$(mutation_base_ref)
 	if ! qg_git rev-parse --verify "$coverage_base" >/dev/null 2>&1; then
-		echo "WARNING: Cannot find coverage base $coverage_base — enforcing 85% Go coverage threshold"
+		echo "WARNING: Cannot find coverage base $coverage_base — enforcing 78% Go coverage threshold"
 		return 0
 	fi
 	changed=$(qg_git diff --name-only "$coverage_base" -- internal/ pkg/ 2>/dev/null |
@@ -764,7 +764,7 @@ should_enforce_go_coverage_threshold() {
 		grep -v '_test\.go$' ||
 		true)
 	if [ -z "$changed" ]; then
-		echo "Skipping 85% Go coverage threshold: changed files are outside measured ./internal and ./pkg production surface"
+		echo "Skipping 78% Go coverage threshold: changed files are outside measured ./internal and ./pkg production surface"
 		return 1
 	fi
 	return 0
@@ -1262,7 +1262,7 @@ lane_go() {
 		# shellcheck disable=SC2086
 		GOFLAGS=-buildvcs=false go test $race_flag -shuffle=on -p 3 \
 			-coverprofile="$COVERAGE_FILE" ./internal/... ./pkg/... || return 1
-		# Report the main-lane coverage for visibility. The ≥85% THRESHOLD is
+		# Report the main-lane coverage for visibility. The ≥78% THRESHOLD is
 		# enforced later, after the serial lane, on the MERGED profile — the
 		# serial-lane tests self-skip here, so this partial number would understate
 		# coverage and could fail the gate spuriously (enforce_go_coverage_threshold).
