@@ -30,12 +30,14 @@ type monitorRunner interface {
 	MaxWorkers(context.Context, int) error
 	RestartDaemon(context.Context, int, int) error
 	RecentMonitorAction(context.Context, string, string, time.Duration) (bool, error)
+	PendingMonitorPause(context.Context) (monitorAction, bool, error)
 	RecordMonitorAction(context.Context, monitorAction) error
 }
 
 const (
 	monitorActionDedupeWindow          = 2 * time.Hour
 	monitorActionQGChurnPause          = "qg_churn_pause"
+	monitorActionQGChurnResume         = "qg_churn_resume"
 	monitorActionDaemonRestart         = "daemon_restart"
 	monitorActionScaleWorkers          = "scale_workers"
 	monitorActionMaxWorkers            = "max_workers"
@@ -185,7 +187,7 @@ func actOnMonitorHealth(ctx context.Context, w io.Writer, cfg monitorConfig, run
 	if err := maintainMonitorWorkerTargets(ctx, cfg, runner, health.Metrics); err != nil {
 		return err
 	}
-	if err := resumePausedMonitor(ctx, runner, health.Metrics, health.Findings); err != nil {
+	if err := resumePausedMonitor(ctx, runner, health.Findings); err != nil {
 		return err
 	}
 	return restartMonitorIfNeeded(ctx, cfg, runner, state, health)
@@ -219,18 +221,37 @@ func maintainMonitorWorkerTargets(ctx context.Context, cfg monitorConfig, runner
 	return nil
 }
 
-func resumePausedMonitor(ctx context.Context, runner monitorRunner, metrics factoryhealth.Metrics, findings []factoryhealth.Finding) error {
-	if metrics.PauseSource != "monitor" {
+func resumePausedMonitor(ctx context.Context, runner monitorRunner, findings []factoryhealth.Finding) error {
+	if !hasMonitorFinding(findings, factoryhealth.FindingPausedWithReadyQueue) {
 		return nil
 	}
-	for _, finding := range findings {
-		if finding.Code == factoryhealth.FindingPausedWithReadyQueue {
-			if err := runner.Resume(ctx); err != nil {
-				return fmt.Errorf("resume dispatcher: %w", err)
-			}
-		}
+	pause, ok, err := runner.PendingMonitorPause(ctx)
+	if err != nil {
+		return fmt.Errorf("check monitor pause ownership: %w", err)
+	}
+	if !ok {
+		return nil
+	}
+	if err := runner.Resume(ctx); err != nil {
+		return fmt.Errorf("resume dispatcher: %w", err)
+	}
+	if err := runner.RecordMonitorAction(ctx, monitorAction{
+		Action:  monitorActionQGChurnResume,
+		Key:     pause.Key,
+		Payload: fmt.Sprintf(`{"pause_action":%q}`, pause.Action),
+	}); err != nil {
+		return fmt.Errorf("record qg churn resume: %w", err)
 	}
 	return nil
+}
+
+func hasMonitorFinding(findings []factoryhealth.Finding, code string) bool {
+	for _, finding := range findings {
+		if finding.Code == code {
+			return true
+		}
+	}
+	return false
 }
 
 func restartMonitorIfNeeded(ctx context.Context, cfg monitorConfig, runner monitorRunner, state *monitorState, health factoryhealth.FactoryHealth) error {
