@@ -94,6 +94,27 @@ func TestBuiltinProviders(t *testing.T) {
 	}
 }
 
+func TestGolangciProviderMaintenanceDescriptor(t *testing.T) {
+	provider, ok := providerByID(storage.BuiltinProviders())["golangci-lint"]
+	if !ok {
+		t.Fatal("BuiltinProviders() missing golangci-lint provider")
+	}
+
+	if got, want := provider.Cleaner, (storage.CleanerDescriptor{
+		Executable: "golangci-lint",
+		Args:       []string{"cache", "clean"},
+		Trusted:    true,
+	}); !reflect.DeepEqual(got, want) {
+		t.Errorf("Cleaner = %#v, want %#v", got, want)
+	}
+	if !provider.ToolMayBeAbsent {
+		t.Error("ToolMayBeAbsent = false, want true so an unavailable tool is reported as skipped")
+	}
+	if got, want := provider.Variables, []string{"GOLANGCI_LINT_CACHE"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Variables = %q, want %q to retain the shared cache identity", got, want)
+	}
+}
+
 func providerByID(providers []storage.CacheProvider) map[string]storage.CacheProvider {
 	byID := make(map[string]storage.CacheProvider, len(providers))
 	for _, provider := range providers {
