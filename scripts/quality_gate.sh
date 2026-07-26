@@ -1030,6 +1030,7 @@ read_go_formatters_from_config() {
 go_formatter_check() {
 	local tool="$1"
 	local runner=""
+	local output=""
 	if go tool -n "$tool" >/dev/null 2>&1; then
 		runner="go-tool"
 	elif command -v "$tool" >/dev/null 2>&1; then
@@ -1051,10 +1052,15 @@ go_formatter_check() {
 	fi
 
 	if [ "$runner" = "go-tool" ]; then
-		test -z "$(go tool "$tool" -l "${dirs[@]}" 2>/dev/null)"
+		output=$(go tool "$tool" -l "${dirs[@]}" 2>/dev/null)
 	else
-		test -z "$("$tool" -l "${dirs[@]}" 2>/dev/null)"
+		output=$("$tool" -l "${dirs[@]}" 2>/dev/null)
 	fi
+	if [ -z "$output" ]; then
+		return 0
+	fi
+	printf '%s\n' "$output"
+	return 1
 }
 
 # Ensure go:embed assets exist without deleting them during another QG run.

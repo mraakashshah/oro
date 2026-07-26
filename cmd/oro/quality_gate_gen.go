@@ -1294,6 +1294,18 @@ run_golangci_lint() {
         golangci-lint run --timeout 10m --allow-parallel-runners ./cmd/... ./internal/... ./pkg/...
 }
 
+# shellcheck disable=SC2317,SC2329
+go_formatter_check() {
+    local tool="$1"
+    local output=""
+    output=$(go tool "$tool" -l $GO_DIRS 2>/dev/null)
+    if [ -z "$output" ]; then
+        return 0
+    fi
+    printf '%s\n' "$output"
+    return 1
+}
+
 # shellcheck disable=SC2317
 lane_go() {
     local pass=0 fail=0
@@ -1309,8 +1321,8 @@ lane_go() {
     # --- Tier 1: Formatting (parallel) ---
     header "GO TIER 1: FORMATTING"
     parallel_checks \
-        "gofumpt" "test -z \"\$(go tool gofumpt -l $GO_DIRS 2>/dev/null)\"" \
-        "goimports" "test -z \"\$(go tool goimports -l $GO_DIRS 2>/dev/null)\""
+        "gofumpt" "go_formatter_check gofumpt" \
+        "goimports" "go_formatter_check goimports"
     pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
     if [ "$fail" -gt 0 ]; then echo "${pass}:${fail}" > "$QG_DIR/go.rc"; return; fi
 

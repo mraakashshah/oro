@@ -23,8 +23,7 @@ import (
 )
 
 const (
-	weeklyStorageSweepInterval     = 7 * 24 * time.Hour
-	supportedStorageCatalogVersion = 1
+	weeklyStorageSweepInterval = 7 * 24 * time.Hour
 )
 
 type storageStatus struct {
@@ -428,11 +427,25 @@ func loadStorageCatalogStatus(ctx context.Context, path string, status storageSt
 }
 
 func storageCatalogPragmasHealthy(integrity string, version int) bool {
-	return integrity == "ok" && version == supportedStorageCatalogVersion
+	return integrity == "ok" && version == storage.CatalogSchemaVersion
 }
 
 func validateStorageCatalog(ctx context.Context, db *sql.DB) error {
-	requiredTables := []string{"providers", "namespaces", "leases", "controllers", "refs", "sweeps", "evidence"}
+	requiredTables := []string{
+		"providers",
+		"namespaces",
+		"leases",
+		"controllers",
+		"refs",
+		"sweeps",
+		"evidence",
+		"runtime_leases",
+		"runtime_controllers",
+		"runtime_pause_epochs",
+		"runtime_pause_acknowledgements",
+		"runtime_tombstones",
+		"runtime_reconciliation_cursors",
+	}
 	for _, table := range requiredTables {
 		var count int
 		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = ?`, table).Scan(&count); err != nil {
