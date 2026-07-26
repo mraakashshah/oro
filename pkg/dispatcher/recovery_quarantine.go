@@ -167,7 +167,6 @@ SELECT EXISTS(
     SELECT 1
     FROM recovery_quarantines
     WHERE assignment_id=?
-      AND reason='branch_worktree_mismatch'
       AND status='resolved'
 )`, assignmentID).Scan(&found)
 	return err == nil && found

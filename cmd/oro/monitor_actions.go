@@ -16,6 +16,15 @@ func (r *cliMonitorRunner) RecentMonitorAction(ctx context.Context, action, key 
 	return recentMonitorAction(ctx, db, action, key, window)
 }
 
+func (r *cliMonitorRunner) PendingMonitorPause(ctx context.Context) (monitorAction, bool, error) {
+	db, err := openMonitorActionDB()
+	if err != nil {
+		return monitorAction{}, false, err
+	}
+	defer db.Close()
+	return pendingMonitorPause(ctx, db)
+}
+
 func (r *cliMonitorRunner) RecordMonitorAction(ctx context.Context, action monitorAction) error {
 	db, err := openMonitorActionDB()
 	if err != nil {
@@ -69,4 +78,32 @@ VALUES (?, ?, ?)`,
 		return fmt.Errorf("insert monitor action ledger row: %w", err)
 	}
 	return nil
+}
+
+func pendingMonitorPause(ctx context.Context, db *sql.DB) (monitorAction, bool, error) {
+	if db == nil {
+		return monitorAction{}, false, nil
+	}
+	var action monitorAction
+	err := db.QueryRowContext(ctx, `
+SELECT pause.action, pause.action_key, pause.payload
+  FROM monitor_actions AS pause
+ WHERE pause.action = ?
+   AND NOT EXISTS (
+       SELECT 1
+        FROM monitor_actions AS resume
+        WHERE resume.action = ?
+          AND resume.action_key = pause.action_key
+          AND resume.id > pause.id
+   )
+ ORDER BY pause.id DESC
+ LIMIT 1`, monitorActionQGChurnPause, monitorActionQGChurnResume).
+		Scan(&action.Action, &action.Key, &action.Payload)
+	if err == sql.ErrNoRows {
+		return monitorAction{}, false, nil
+	}
+	if err != nil {
+		return monitorAction{}, false, fmt.Errorf("query pending monitor pause: %w", err)
+	}
+	return action, true, nil
 }

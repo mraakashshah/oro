@@ -4822,7 +4822,7 @@ func (r PreReviewGitHygieneResult) Feedback() string {
 		strings.Join(r.Files, ", ")
 }
 
-func (d *Dispatcher) checkPreReviewGitHygiene(ctx context.Context, _, worktree string) (PreReviewGitHygieneResult, error) {
+func (d *Dispatcher) checkPreReviewGitHygiene(ctx context.Context, beadID, worktree string) (PreReviewGitHygieneResult, error) {
 	if _, statErr := os.Stat(filepath.Join(worktree, ".git")); statErr != nil {
 		if errors.Is(statErr, os.ErrNotExist) {
 			return PreReviewGitHygieneResult{}, nil
@@ -4838,7 +4838,7 @@ func (d *Dispatcher) checkPreReviewGitHygiene(ctx context.Context, _, worktree s
 	entries := parseGitStatusPorcelainZ(out)
 	files := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if d.isIgnorableManagedQualityGateStatus(worktree, entry) {
+		if d.isIgnorableManagedQualityGateStatus(beadID, worktree, entry) {
 			continue
 		}
 		files = append(files, entry.Path)
@@ -4880,8 +4880,11 @@ type managedQualityGateProvider interface {
 	ManagedQualityGatePath() string
 }
 
-func (d *Dispatcher) isIgnorableManagedQualityGateStatus(worktree string, entry gitStatusPorcelainEntry) bool {
+func (d *Dispatcher) isIgnorableManagedQualityGateStatus(beadID, worktree string, entry gitStatusPorcelainEntry) bool {
 	if entry.Code == "??" && entry.Path == filepath.ToSlash(filepath.Join(protocol.OroDir, "assignment-capability.json")) {
+		return true
+	}
+	if entry.Code == "??" && strings.HasPrefix(entry.Path, ".tmp-gocache-"+beadID+"/") {
 		return true
 	}
 	if entry.Code != "??" || entry.Path != "quality_gate.sh" {
