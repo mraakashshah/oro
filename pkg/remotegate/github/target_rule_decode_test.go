@@ -1,3 +1,4 @@
+//nolint:testpackage // The acceptance test must call the required unexported decoder seam.
 package github
 
 import (
