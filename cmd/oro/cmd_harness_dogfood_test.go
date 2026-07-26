@@ -54,6 +54,19 @@ func (r *dogfoodHarnessTestRunner) RecentMonitorAction(_ context.Context, action
 	return r.recentActions[monitorActionDedupeKey(action, key)], nil
 }
 
+func (r *dogfoodHarnessTestRunner) PendingMonitorPause(context.Context) (monitorAction, bool, error) {
+	for key := range r.recentActions {
+		if !strings.HasPrefix(key, monitorActionQGChurnPause+"\x00") {
+			continue
+		}
+		pauseKey := strings.TrimPrefix(key, monitorActionQGChurnPause+"\x00")
+		if !r.recentActions[monitorActionDedupeKey(monitorActionQGChurnResume, pauseKey)] {
+			return monitorAction{Action: monitorActionQGChurnPause, Key: pauseKey}, true, nil
+		}
+	}
+	return monitorAction{}, false, nil
+}
+
 func (r *dogfoodHarnessTestRunner) RecordMonitorAction(_ context.Context, action monitorAction) error {
 	if r.recentActions == nil {
 		r.recentActions = make(map[string]bool)
@@ -95,6 +108,8 @@ func TestDogfoodHarnessSeedsRunsAndAssertsInvariants(t *testing.T) {
 			MaxWorkers:    1,
 			PauseSource:   "monitor",
 		},
+	}, recentActions: map[string]bool{
+		monitorActionDedupeKey(monitorActionQGChurnPause, "dogfood:recovery"): true,
 	}}
 	out.Reset()
 	runCmd := newHarnessDogfoodCmdWithRunner(runner)

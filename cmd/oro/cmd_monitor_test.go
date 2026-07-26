@@ -54,6 +54,19 @@ func (f *fakeMonitorRunner) RecentMonitorAction(_ context.Context, action, key s
 	return f.recentActions[monitorActionDedupeKey(action, key)], nil
 }
 
+func (f *fakeMonitorRunner) PendingMonitorPause(context.Context) (monitorAction, bool, error) {
+	for key := range f.recentActions {
+		if !strings.HasPrefix(key, monitorActionQGChurnPause+"\x00") {
+			continue
+		}
+		pauseKey := strings.TrimPrefix(key, monitorActionQGChurnPause+"\x00")
+		if !f.recentActions[monitorActionDedupeKey(monitorActionQGChurnResume, pauseKey)] {
+			return monitorAction{Action: monitorActionQGChurnPause, Key: pauseKey}, true, nil
+		}
+	}
+	return monitorAction{}, false, nil
+}
+
 func (f *fakeMonitorRunner) RecordMonitorAction(_ context.Context, action monitorAction) error {
 	if f.recentActions == nil {
 		f.recentActions = make(map[string]bool)
@@ -124,7 +137,9 @@ func TestMonitorActResumesPausedQueueAndMaintainsWorkers(t *testing.T) {
 		Findings: []factoryhealth.Finding{
 			{Code: factoryhealth.FindingPausedWithReadyQueue, Severity: factoryhealth.SeverityWarning},
 		},
-		Metrics: factoryhealth.Metrics{DaemonRunning: true, ReadyQueue: 3, WorkerCount: 1, TargetWorkers: 1, MaxWorkers: 1, PauseSource: "monitor"},
+		Metrics: factoryhealth.Metrics{DaemonRunning: true, ReadyQueue: 3, WorkerCount: 1, TargetWorkers: 1, MaxWorkers: 1},
+	}, recentActions: map[string]bool{
+		monitorActionDedupeKey(monitorActionQGChurnPause, "qg:resume"): true,
 	}}
 
 	var buf bytes.Buffer
@@ -166,6 +181,49 @@ func TestMonitorActPreservesOperatorPauseAcrossRepeatedCycles(t *testing.T) {
 	if got := strings.Join(runner.calls, ","); got != "" {
 		t.Fatalf("calls = %q, want no silent resume of operator pause", got)
 	}
+}
+
+func TestMonitorActPreservesOperatorPause(t *testing.T) {
+	ctx := context.Background()
+	cfg := monitorConfig{act: true}
+	health := factoryhealth.FactoryHealth{
+		State: factoryhealth.StateDegraded,
+		Findings: []factoryhealth.Finding{
+			{Code: factoryhealth.FindingPausedWithReadyQueue, Severity: factoryhealth.SeverityWarning},
+		},
+		Metrics: factoryhealth.Metrics{DaemonRunning: true, ReadyQueue: 1},
+	}
+
+	t.Run("operator pause is preserved without monitor ledger ownership", func(t *testing.T) {
+		runner := &fakeMonitorRunner{health: health}
+
+		if err := runMonitorIteration(ctx, &bytes.Buffer{}, cfg, runner, newMonitorState()); err != nil {
+			t.Fatalf("monitor iteration: %v", err)
+		}
+		if len(runner.calls) != 0 {
+			t.Fatalf("calls = %v, want no resume for operator pause", runner.calls)
+		}
+	})
+
+	t.Run("monitor owned QG pause resumes once after finding clears", func(t *testing.T) {
+		runner := &fakeMonitorRunner{
+			health: health,
+			recentActions: map[string]bool{
+				monitorActionDedupeKey(monitorActionQGChurnPause, "qg:resolved"): true,
+			},
+		}
+		state := newMonitorState()
+
+		if err := runMonitorIteration(ctx, &bytes.Buffer{}, cfg, runner, state); err != nil {
+			t.Fatalf("first monitor iteration: %v", err)
+		}
+		if err := runMonitorIteration(ctx, &bytes.Buffer{}, cfg, runner, state); err != nil {
+			t.Fatalf("second monitor iteration: %v", err)
+		}
+		if got := strings.Join(runner.calls, ","); got != "resume" {
+			t.Fatalf("calls = %v, want one resume for monitor-owned pause", runner.calls)
+		}
+	})
 }
 
 func TestMonitorActWorkerTargetActionsSurviveMonitorRestart(t *testing.T) {
@@ -631,6 +689,8 @@ func TestMonitorActIgnoresStaleOpsRunFindingWhenCountsAreZero(t *testing.T) {
 			PauseSource:   "monitor",
 			OpsRuns:       factoryhealth.OpsRunMetrics{},
 		},
+	}, recentActions: map[string]bool{
+		monitorActionDedupeKey(monitorActionQGChurnPause, "qg:stale-ops"): true,
 	}}
 
 	var buf bytes.Buffer
