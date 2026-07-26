@@ -284,3 +284,10 @@ Hook inventory (same in both files):
 **Context:** With two workers launched together and a ready queue, the dispatcher completed the first assignment's worktree setup before beginning the second. Fetching and creating that first worktree left the other connected worker idle for nearly a minute.
 **Decision:** General scheduling reserves each worker synchronously, launches its slow assignment preparation in a tracked goroutine, then waits for the launched preparations before returning from the scheduling pass.
 **Implications:** A slow fetch or worktree creation cannot strand available workers behind the first assignment. Worker and bead reservation remains atomic before concurrent preparation begins.
+
+## 2026-07-26: Do not await tracked assignment setup in the scheduling loop
+
+**Tags:** #dispatcher #workers #scheduling #startup
+**Context:** The reservation-first fix still waited for every tracked assignment goroutine before `tryAssign` returned. On cold start, the first worker's slow worktree setup blocked the single assignment loop, so the second worker's coalesced ready signal could not schedule its own assignment.
+**Decision:** Keep reservation synchronous, but leave post-reservation setup in `safeGo` without awaiting it from the scheduling pass. `safeGo` remains the lifecycle owner for graceful shutdown; the assignment loop may immediately consume later readiness signals.
+**Implications:** Starting workers at different times refills all available slots without waiting for the first worktree setup. Scheduling tests that assert completed assignment records must wait for the dispatcher’s tracked goroutines explicitly.
