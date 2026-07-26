@@ -1212,11 +1212,12 @@ type Dispatcher struct {
 	// acceptSem limits concurrent connection handlers in acceptLoop
 	acceptSem chan struct{}
 
-	// lastStatusTime and lastStatusJSON implement throttling for status
+	// lastStatusTime, lastStatusJSON, and lastStatusStorageKey implement throttling for status
 	// directives. If a status request arrives within statusThrottleWindow
-	// of the previous one, the cached JSON is returned without rebuilding.
-	lastStatusTime time.Time
-	lastStatusJSON string
+	// of the previous one, the cached JSON is returned unless storage changed.
+	lastStatusTime       time.Time
+	lastStatusJSON       string
+	lastStatusStorageKey string
 }
 
 func (d *Dispatcher) qgMutationBase(targetBranch string) string {
@@ -4786,6 +4787,7 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 		d.sendPreReviewGitDirtyFeedback(ctx, workerID, feedback)
 		return
 	}
+	d.logManagedPreReviewHygieneRecheck(ctx, beadID, workerID, hygiene.IgnoredManagedFiles)
 
 	// Look up bead details for the reviewer
 	title, acceptance, _ := d.lookupBeadDetail(ctx, beadID, workerID)
@@ -4809,8 +4811,9 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 // PreReviewGitHygieneResult describes whether a worker worktree is clean
 // enough to enter ops review.
 type PreReviewGitHygieneResult struct {
-	Dirty bool
-	Files []string
+	Dirty               bool
+	Files               []string
+	IgnoredManagedFiles []string
 }
 
 // Feedback returns actionable worker feedback for a dirty pre-review worktree.
@@ -4837,17 +4840,48 @@ func (d *Dispatcher) checkPreReviewGitHygiene(ctx context.Context, beadID, workt
 
 	entries := parseGitStatusPorcelainZ(out)
 	files := make([]string, 0, len(entries))
+	ignoredManagedFiles := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		if d.isIgnorableManagedQualityGateStatus(beadID, worktree, entry) {
+			ignoredManagedFiles = append(ignoredManagedFiles, entry.Path)
 			continue
 		}
 		files = append(files, entry.Path)
 	}
 	if len(files) == 0 {
-		return PreReviewGitHygieneResult{}, nil
+		sort.Strings(ignoredManagedFiles)
+		return PreReviewGitHygieneResult{IgnoredManagedFiles: ignoredManagedFiles}, nil
 	}
 	sort.Strings(files)
 	return PreReviewGitHygieneResult{Dirty: true, Files: files}, nil
+}
+
+func (d *Dispatcher) logManagedPreReviewHygieneRecheck(
+	ctx context.Context,
+	beadID, workerID string,
+	files []string,
+) {
+	if len(files) == 0 {
+		return
+	}
+	payload, err := json.Marshal(map[string]any{
+		"source": managedPreReviewHygieneSource(files),
+		"files":  files,
+	})
+	if err != nil {
+		payload = []byte(`{"source":"managed_runtime_artifact","files":[]}`)
+	}
+	_ = d.logEvent(ctx, "pre_review_hygiene_recheck", "dispatcher", beadID, workerID, string(payload))
+}
+
+func managedPreReviewHygieneSource(files []string) string {
+	capabilityPath := filepath.ToSlash(filepath.Join(protocol.OroDir, "assignment-capability.json"))
+	for _, file := range files {
+		if file == capabilityPath {
+			return "managed_assignment_capability"
+		}
+	}
+	return "managed_runtime_artifact"
 }
 
 type gitStatusPorcelainEntry struct {
@@ -4884,7 +4918,7 @@ func (d *Dispatcher) isIgnorableManagedQualityGateStatus(beadID, worktree string
 	if entry.Code == "??" && entry.Path == filepath.ToSlash(filepath.Join(protocol.OroDir, "assignment-capability.json")) {
 		return true
 	}
-	if entry.Code == "??" && strings.HasPrefix(entry.Path, ".tmp-gocache-"+beadID+"/") {
+	if entry.Code == "??" && (isManagedQualityGateCachePath(beadID, entry.Path)) {
 		return true
 	}
 	if entry.Code != "??" || entry.Path != "quality_gate.sh" {
@@ -4900,6 +4934,15 @@ func (d *Dispatcher) isIgnorableManagedQualityGateStatus(beadID, worktree string
 	}
 	linkPath := filepath.Join(worktree, entry.Path)
 	return managedQualityGateSnapshotMatches(linkPath, managedPath)
+}
+
+func isManagedQualityGateCachePath(beadID, path string) bool {
+	return strings.HasPrefix(path, ".tmp-gocache-"+beadID+"/") ||
+		strings.HasPrefix(path, ".gocache-"+beadID+"/") ||
+		strings.HasPrefix(path, ".golangci-cache-"+beadID+"/") ||
+		strings.HasPrefix(path, ".tmp-gocache/") ||
+		strings.HasPrefix(path, ".gocache-task/") ||
+		strings.HasPrefix(path, ".golangci-cache/")
 }
 
 func managedQualityGateSnapshotMatches(linkPath, managedPath string) bool {
@@ -8069,18 +8112,28 @@ func (d *Dispatcher) applyResume() (string, error) {
 // response exists and was built within statusThrottleWindow, it is returned
 // immediately. Otherwise the status is rebuilt and cached.
 func (d *Dispatcher) applyStatus() (string, error) {
+	ctx := context.Background()
+	storage := d.storageHealth(ctx)
+	storageJSON, err := json.Marshal(storage)
+	if err != nil {
+		return "", fmt.Errorf("marshal storage health cache key: %w", err)
+	}
+	storageKey := string(storageJSON)
+
 	now := d.nowFunc()
 	d.mu.Lock()
 	cached := d.lastStatusJSON
 	elapsed := now.Sub(d.lastStatusTime)
+	cachedStorageKey := d.lastStatusStorageKey
 	d.mu.Unlock()
-	if cached != "" && elapsed < statusThrottleWindow {
+	if cached != "" && elapsed < statusThrottleWindow && cachedStorageKey == storageKey {
 		return cached, nil
 	}
-	result := d.buildStatusJSON()
+	result := d.buildStatusJSONWithStorage(ctx, storage)
 	d.mu.Lock()
 	d.lastStatusTime = now
 	d.lastStatusJSON = result
+	d.lastStatusStorageKey = storageKey
 	d.mu.Unlock()
 	return result, nil
 }
@@ -8451,12 +8504,16 @@ UPDATE qg_failure_incidents
 	return nil
 }
 
-//nolint:funlen // Status JSON intentionally assembles one wire contract in field order.
 func (d *Dispatcher) buildStatusJSON() string {
+	ctx := context.Background()
+	return d.buildStatusJSONWithStorage(ctx, d.storageHealth(ctx))
+}
+
+//nolint:funlen // Status JSON intentionally assembles one wire contract in field order.
+func (d *Dispatcher) buildStatusJSONWithStorage(ctx context.Context, storage *factoryhealth.StorageHealth) string {
 	now := d.nowFunc()
 
 	// Fetch ready beads to determine which attempt counts are valid.
-	ctx := context.Background()
 	readyBeads, err := d.beads.Ready(ctx)
 	if err != nil {
 		readyBeads = nil // Continue with empty ready list on error.
@@ -8545,6 +8602,7 @@ func (d *Dispatcher) buildStatusJSON() string {
 		assignmentFreezeReason:       assignmentFreezeReason,
 		progressTimeoutSecs:          progressTimeoutSecs,
 		heartbeatTimeoutSecs:         heartbeatTimeoutSecs,
+		storage:                      storage,
 	})
 	resp.Health = &health
 
@@ -10487,19 +10545,28 @@ func (d *Dispatcher) recoveryWorkBlocked(ctx context.Context, beadID, worktree, 
 		return true, "worktree path missing: " + worktree, nil
 	}
 
-	dirty, dirtyStatus, dirtyErr := d.worktreeDirty(ctx, worktree)
+	dirty, dirtyStatus, dirtyErr := d.worktreeDirty(ctx, beadID, worktree)
 	if dirty || dirtyErr != nil {
 		return dirty, dirtyStatus, dirtyErr
 	}
 	return d.branchHasUnmergedWork(ctx, beadID, worktree, baseBranch)
 }
 
-func (d *Dispatcher) worktreeDirty(ctx context.Context, worktree string) (dirty bool, status string, err error) {
+func (d *Dispatcher) worktreeDirty(ctx context.Context, beadID, worktree string) (dirty bool, status string, err error) {
 	out, err := d.commandRunner().Run(ctx, "git", "-C", worktree, "status", "--porcelain")
 	if err != nil {
 		return false, "", fmt.Errorf("git status in %s: %w", worktree, err)
 	}
-	status = strings.TrimSpace(string(out))
+	var remaining []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if len(line) >= 4 && line[:2] == "??" && isManagedQualityGateCachePath(beadID, strings.TrimSpace(line[3:])) {
+			continue
+		}
+		if line != "" {
+			remaining = append(remaining, line)
+		}
+	}
+	status = strings.Join(remaining, "\n")
 	return status != "", status, nil
 }
 
