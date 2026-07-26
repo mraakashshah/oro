@@ -93,6 +93,10 @@ type storageCleanupDecision struct {
 	Scope          storage.Scope          `json:"scope"`
 	Action         storage.ActionType     `json:"action"`
 	PreserveReason storage.PreserveReason `json:"preserve_reason,omitempty"`
+	Reason         storage.RetentionClass `json:"reason,omitempty"`
+	BeforeBytes    int64                  `json:"before_bytes"`
+	AfterBytes     int64                  `json:"after_bytes"`
+	Changed        bool                   `json:"changed"`
 }
 
 // newStorageCleanCmd creates the preservation-first "oro storage clean" command.
@@ -143,6 +147,9 @@ func parseStorageCleanupScope(value string) (storage.Scope, error) {
 }
 
 func runStorageClean(ctx context.Context, oroHome string, scope storage.Scope, apply bool) (storageCleanupOutput, error) {
+	if scope == storage.ScopeOroHome {
+		return runOroHomeCleanup(ctx, oroHome, apply)
+	}
 	paths, err := ResolveStoragePaths(oroHome)
 	if err != nil {
 		return storageCleanupOutput{}, fmt.Errorf("resolve storage paths: %w", err)
@@ -154,11 +161,32 @@ func runStorageClean(ctx context.Context, oroHome string, scope storage.Scope, a
 			return storageCleanupOutput{}, err
 		}
 	}
-	return storageCleanupOutput{
+	result := storageCleanupOutput{
 		Scope:          scope,
 		Apply:          apply,
 		CatalogHealthy: snapshot.CatalogHealthy,
 		Decisions:      storageCleanupDecisions(plan),
+	}
+	if scope != storage.ScopeAll {
+		return result, nil
+	}
+	homeResult, err := runOroHomeCleanup(ctx, oroHome, apply)
+	if err != nil {
+		return storageCleanupOutput{}, err
+	}
+	result.Decisions = append(result.Decisions, homeResult.Decisions...)
+	return result, nil
+}
+
+func runOroHomeCleanup(ctx context.Context, oroHome string, apply bool) (storageCleanupOutput, error) {
+	result, err := storage.CleanOroHome(ctx, oroHome, apply)
+	if err != nil {
+		return storageCleanupOutput{}, fmt.Errorf("clean Oro home: %w", err)
+	}
+	return storageCleanupOutput{
+		Scope:     storage.ScopeOroHome,
+		Apply:     apply,
+		Decisions: oroHomeCleanupDecisions(result.Entries, apply),
 	}, nil
 }
 
@@ -243,6 +271,26 @@ func storageCleanupDecisions(plan storage.Plan) []storageCleanupDecision {
 	return decisions
 }
 
+func oroHomeCleanupDecisions(entries []storage.OroHomeCleanupEntry, apply bool) []storageCleanupDecision {
+	decisions := make([]storageCleanupDecision, 0, len(entries))
+	for _, entry := range entries {
+		action := storage.Preserve
+		if apply {
+			action = storage.Delete
+		}
+		decisions = append(decisions, storageCleanupDecision{
+			Path:        entry.Path,
+			Scope:       storage.ScopeOroHome,
+			Action:      action,
+			Reason:      entry.Reason,
+			BeforeBytes: entry.BeforeBytes,
+			AfterBytes:  entry.AfterBytes,
+			Changed:     entry.Changed,
+		})
+	}
+	return decisions
+}
+
 func writeStorageCleanup(w io.Writer, result storageCleanupOutput, jsonOut bool) error {
 	if jsonOut {
 		if err := json.NewEncoder(w).Encode(result); err != nil {
@@ -251,6 +299,12 @@ func writeStorageCleanup(w io.Writer, result storageCleanupOutput, jsonOut bool)
 		return nil
 	}
 	for _, decision := range result.Decisions {
+		if decision.Reason != "" {
+			if _, err := fmt.Fprintf(w, "%s %s (%s; before=%d after=%d changed=%t)\n", decision.Action, decision.Path, decision.Reason, decision.BeforeBytes, decision.AfterBytes, decision.Changed); err != nil {
+				return fmt.Errorf("write storage cleanup: %w", err)
+			}
+			continue
+		}
 		if decision.Action == storage.Delete {
 			if _, err := fmt.Fprintf(w, "%s %s\n", decision.Action, decision.Path); err != nil {
 				return fmt.Errorf("write storage cleanup: %w", err)

@@ -383,6 +383,60 @@ func TestStorageCleanDefaultsToDryRun(t *testing.T) {
 	}
 }
 
+func TestStorageCleanOroHomeUsesAllowlistedEvidencePlan(t *testing.T) {
+	oroHome := t.TempDir()
+	t.Setenv("ORO_HOME", oroHome)
+
+	logPath := filepath.Join(oroHome, "logs", "expired.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o750); err != nil {
+		t.Fatalf("create log directory: %v", err)
+	}
+	if err := os.WriteFile(logPath, []byte("expired"), 0o600); err != nil {
+		t.Fatalf("write expired log: %v", err)
+	}
+	old := time.Now().Add(-8 * 24 * time.Hour)
+	if err := os.Chtimes(logPath, old, old); err != nil {
+		t.Fatalf("age expired log: %v", err)
+	}
+
+	var out strings.Builder
+	root := newRootCmd()
+	root.SetOut(&out)
+	root.SetArgs([]string{"storage", "clean", "--scope", "oro-home", "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute Oro-home dry-run clean: %v", err)
+	}
+
+	var result struct {
+		Scope     storage.Scope `json:"scope"`
+		Apply     bool          `json:"apply"`
+		Decisions []struct {
+			Path        string                 `json:"path"`
+			Scope       storage.Scope          `json:"scope"`
+			Reason      storage.RetentionClass `json:"reason"`
+			BeforeBytes int64                  `json:"before_bytes"`
+			AfterBytes  int64                  `json:"after_bytes"`
+			Changed     bool                   `json:"changed"`
+		} `json:"decisions"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &result); err != nil {
+		t.Fatalf("decode Oro-home cleanup JSON %q: %v", out.String(), err)
+	}
+	if result.Scope != storage.ScopeOroHome || result.Apply {
+		t.Errorf("scope/apply = (%q, %t), want (oro-home, false)", result.Scope, result.Apply)
+	}
+	if len(result.Decisions) != 1 {
+		t.Fatalf("Oro-home decisions = %+v, want one allowlisted log", result.Decisions)
+	}
+	decision := result.Decisions[0]
+	if decision.Path != "logs/expired.log" || decision.Scope != storage.ScopeOroHome || decision.Reason != storage.RetentionLog || decision.BeforeBytes != 7 || decision.AfterBytes != 7 || decision.Changed {
+		t.Errorf("Oro-home decision = %+v, want unchanged log evidence", decision)
+	}
+	if _, err := os.Stat(logPath); err != nil {
+		t.Errorf("dry-run removed allowlisted log: %v", err)
+	}
+}
+
 func storageCatalogFilesBytes(t *testing.T, catalogPath string) int64 {
 	t.Helper()
 	var total int64
