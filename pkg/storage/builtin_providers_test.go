@@ -94,6 +94,38 @@ func TestBuiltinProviders(t *testing.T) {
 	}
 }
 
+func TestNPMProviderMaintenanceDescriptor(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	provider, ok := providerByID(storage.BuiltinProviders())["npm"]
+	if !ok {
+		t.Fatal("BuiltinProviders() missing npm provider")
+	}
+
+	if got, want := provider.Cleaner, (storage.CleanerDescriptor{
+		Executable: "npm",
+		Args:       []string{"cache", "clean", "--force"},
+		Trusted:    true,
+	}); !reflect.DeepEqual(got, want) {
+		t.Errorf("Cleaner = %#v, want fixed npm argv %#v", got, want)
+	}
+	if !provider.ToolMayBeAbsent {
+		t.Error("ToolMayBeAbsent = false, want true so an unavailable npm is reported as skipped")
+	}
+	if got, want := provider.Variables, []string{"NPM_CONFIG_CACHE"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Variables = %q, want %q to retain the shared npm cache identity", got, want)
+	}
+	if got, want := provider.DefaultPath(), filepath.Join(homeDir, ".npm"); got != want {
+		t.Errorf("DefaultPath() = %q, want npm cache root %q", got, want)
+	}
+	for _, adjacent := range []string{filepath.Join(homeDir, ".npm", "_npx"), filepath.Join(homeDir, "node_modules", ".cache")} {
+		if got := provider.DefaultPath(); got == adjacent {
+			t.Errorf("DefaultPath() = %q, must not select npm-adjacent directory %q", got, adjacent)
+		}
+	}
+}
+
 func providerByID(providers []storage.CacheProvider) map[string]storage.CacheProvider {
 	byID := make(map[string]storage.CacheProvider, len(providers))
 	for _, provider := range providers {
