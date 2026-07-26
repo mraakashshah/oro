@@ -3364,6 +3364,44 @@ func TestPreReviewGitHygieneIgnoresAssignmentScopedGoCache(t *testing.T) {
 	}
 }
 
+func TestPreReviewGitHygieneIgnoresManagedQualityGateCacheDirectories(t *testing.T) {
+	ctx := context.Background()
+	worktree := t.TempDir()
+	if err := exec.Command("git", "-C", worktree, "init").Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+
+	for _, cacheDir := range []string{".tmp-gocache", ".gocache-task", ".golangci-cache"} {
+		cacheFile := filepath.Join(worktree, cacheDir, "trim.txt")
+		if err := os.MkdirAll(filepath.Dir(cacheFile), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", cacheDir, err)
+		}
+		if err := os.WriteFile(cacheFile, []byte("cache"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", cacheDir, err)
+		}
+	}
+
+	d := &Dispatcher{}
+	hygiene, err := d.checkPreReviewGitHygiene(ctx, "bead-cache", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene: %v", err)
+	}
+	if hygiene.Dirty {
+		t.Fatalf("managed quality-gate caches marked dirty: %#v", hygiene.Files)
+	}
+
+	if err := os.WriteFile(filepath.Join(worktree, "ordinary.txt"), []byte("dirty"), 0o600); err != nil {
+		t.Fatalf("write ordinary file: %v", err)
+	}
+	hygiene, err = d.checkPreReviewGitHygiene(ctx, "bead-cache", worktree)
+	if err != nil {
+		t.Fatalf("checkPreReviewGitHygiene with ordinary file: %v", err)
+	}
+	if !hygiene.Dirty || !slices.Equal(hygiene.Files, []string{"ordinary.txt"}) {
+		t.Fatalf("ordinary file should remain dirty, got %#v", hygiene.Files)
+	}
+}
+
 func TestReadyForReviewRechecksManagedAssignmentCapabilityWithoutReassignment(t *testing.T) {
 	ctx := context.Background()
 	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
