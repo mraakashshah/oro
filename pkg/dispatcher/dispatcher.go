@@ -32,6 +32,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"oro/pkg/agentmodel"
@@ -44,6 +45,7 @@ import (
 	"oro/pkg/ops"
 	"oro/pkg/processenv"
 	"oro/pkg/protocol"
+	"oro/pkg/storage"
 	"oro/pkg/web"
 	workerstream "oro/pkg/worker"
 
@@ -91,6 +93,8 @@ var ErrSemanticDisabled = errors.New("semantic search disabled")
 // ErrEmbedderUnavailable is returned by WaitForEmbedder when the embedder
 // goroutine completed but the embedder could not be initialised.
 var ErrEmbedderUnavailable = errors.New("embedder unavailable")
+
+var errStorageAdmissionPaused = errors.New("storage admission paused")
 
 // --- Domain types ---
 
@@ -748,6 +752,9 @@ type Config struct {
 	// StorageHealth observes the host-global storage control plane. A nil
 	// observer leaves storage health unavailable.
 	StorageHealth func(context.Context) *factoryhealth.StorageHealth
+	// StorageController coordinates durable storage pause epochs. A nil
+	// controller preserves the dispatcher's existing admission behavior.
+	StorageController *storage.Controller
 }
 
 // LeakScanConfig controls the dispatcher's pre-merge secret scan.
@@ -1675,6 +1682,7 @@ func (d *Dispatcher) spawnBackgroundLoops(ctx context.Context, ln net.Listener) 
 	d.safeGo(func() { d.paneMonitorLoop(ctx) })
 	d.safeGo(func() { d.escalationRetryLoop(ctx) })
 	d.safeGo(func() { d.runPresubmitScheduler(ctx) })
+	d.safeGo(func() { d.storageControllerLoop(ctx) })
 	d.safeGo(func() { RunSweepLoop(ctx, d.beads, d.db, SweepConfig{}) })
 	if d.cfg.WebEnabled {
 		d.startHTTPServer()
@@ -2782,6 +2790,12 @@ func (e *preMergeQGRunError) Unwrap() error {
 // worktree. It leaves failure handling to its caller, except for regression
 // protection, which already performs the required recovery itself.
 func (d *Dispatcher) runPreMergeQG(ctx context.Context, beadID, workerID, worktree string, assignmentID int64, targetBranch string) error {
+	if err := d.observeStorageController(ctx); err != nil {
+		return err
+	}
+	if !d.storageAdmissionAllowed() {
+		return errStorageAdmissionPaused
+	}
 	mutationBase := d.qgMutationBase(targetBranch)
 	if !d.guardQGRegression(ctx, beadID, workerID, worktree, assignmentID, mutationBase) {
 		return errPreMergeQGAlreadyHandled
@@ -2930,6 +2944,9 @@ func (d *Dispatcher) blockPreMergeLeak(ctx context.Context, beadID, workerID, wo
 // tryCloseEpic should proceed to completeEpicClose. On failure or error it
 // handles logging/escalation and returns false.
 func (d *Dispatcher) checkEpicQG(ctx context.Context, epicID, workerID, epicBranch, targetBranch string) bool {
+	if err := d.observeStorageController(ctx); err != nil || !d.storageAdmissionAllowed() {
+		return false
+	}
 	wtID := d.epicQGWorktreeID(epicID)
 	worktree, _, err := d.worktrees.Create(ctx, wtID, epicBranch)
 	if err != nil {
@@ -4634,6 +4651,9 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 	if msg.ReadyForReview == nil {
 		return
 	}
+	if err := d.observeStorageController(ctx); err != nil || !d.storageAdmissionAllowed() {
+		return
+	}
 	beadID := msg.ReadyForReview.BeadID
 
 	d.touchProgress(workerID)
@@ -4821,14 +4841,38 @@ func (d *Dispatcher) isIgnorableManagedQualityGateStatus(beadID, worktree string
 }
 
 func isManagedQualityGateCachePath(beadID, path string) bool {
-	return strings.HasPrefix(path, ".tmp-gocache-"+beadID+"/") ||
-		strings.HasPrefix(path, ".gocache-"+beadID+"/") ||
-		strings.HasPrefix(path, ".golangci-cache-"+beadID+"/") ||
-		strings.HasPrefix(path, ".tmp-gocache/") ||
-		strings.HasPrefix(path, ".gocache-task/") ||
-		strings.HasPrefix(path, ".task-gocache/") ||
-		strings.HasPrefix(path, ".golangci-cache/") ||
-		strings.HasPrefix(path, ".golangci-lint-cache/")
+	prefixes := []string{
+		".tmp-gocache-" + beadID + "/",
+		".gocache-" + beadID + "/",
+		".golangci-cache-" + beadID + "/",
+		".tmp-gocache/",
+		".gocache-task/",
+		".task-gocache/",
+		".golangci-cache/",
+		".golangci-lint-cache/",
+	}
+	if sanitizedBeadID := sanitizedQualityGateCacheBeadID(beadID); sanitizedBeadID != "" {
+		prefixes = append(prefixes, ".gocache-"+sanitizedBeadID+"/")
+	}
+	return hasPathPrefix(path, prefixes)
+}
+
+func sanitizedQualityGateCacheBeadID(beadID string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return r
+		}
+		return -1
+	}, beadID)
+}
+
+func hasPathPrefix(path string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func managedQualityGateSnapshotMatches(linkPath, managedPath string) bool {
@@ -5964,6 +6008,9 @@ func (d *Dispatcher) tryAssign(ctx context.Context) {
 	if d.GetState() != StateRunning {
 		return
 	}
+	if err := d.observeStorageController(ctx); err != nil || !d.storageAdmissionAllowed() {
+		return
+	}
 
 	// Detect beads closed externally while a worker is assigned and clean up.
 	d.checkClosedBeadAssignments(ctx)
@@ -6316,6 +6363,11 @@ func (d *Dispatcher) assignGeneralIdleWorkers(ctx context.Context, idle []idleWo
 	// Assign beads to idle workers. Advance the idle cursor only when a worker is
 	// actually claimed — epics skipped in assignBead leave the worker idle so the
 	// next bead in the list can still be paired with it.
+	//
+	// Worktree creation can fetch and run several git commands. Start each
+	// assignment after its worker is reserved, but do not wait for its setup to
+	// finish: safeGo tracks the background work for shutdown while allowing the
+	// assignment loop to process later worker-ready signals immediately.
 	idleIdx := 0
 	for _, unit := range plan.units {
 		idleIdx = d.assignGeneralSchedulingUnit(ctx, idle, idleIdx, unit, pbSnapshot, assignedBeads, reservedTargets, focusVersion)
@@ -6335,10 +6387,27 @@ func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idl
 		if nextIdleIdx >= len(idle) {
 			break
 		}
-		_ = d.assignBead(ctx, idle[nextIdleIdx].worker, bead, focusVersion)
+		claimed := d.launchAssignment(ctx, idle[nextIdleIdx].worker, bead, focusVersion)
+		if !claimed {
+			continue
+		}
 		_, nextIdleIdx = d.advanceAssignedGeneralIdle(idle, nextIdleIdx, bead.ID, pbSnapshot)
 	}
 	return nextIdleIdx
+}
+
+// launchAssignment starts the slow assignment preparation in the background
+// and waits only until assignBead has either reserved the worker or declined
+// the candidate. The safeGo wrapper tracks slow setup for graceful shutdown
+// without blocking the assignment loop after the reservation decision.
+func (d *Dispatcher) launchAssignment(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersion uint64) bool {
+	claimedCh := make(chan bool, 1)
+	d.safeGo(func() {
+		_ = d.assignBeadWithClaim(ctx, w, bead, []uint64{focusVersion}, func(claimed bool) {
+			claimedCh <- claimed
+		})
+	})
+	return <-claimedCh
 }
 
 func (d *Dispatcher) nextGeneralIdleIndex(idle []idleWorker, idleIdx int) int {
@@ -7136,6 +7205,19 @@ func (d *Dispatcher) lazyCreateEpicBranch(ctx context.Context, beadID, baseBranc
 }
 
 func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersionOpt ...uint64) error { //nolint:funlen,gocognit,gocyclo // orchestration logic, splitting would obscure flow
+	return d.assignBeadWithClaim(ctx, w, bead, focusVersionOpt, nil)
+}
+
+func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersionOpt []uint64, onClaim func(bool)) error { //nolint:funlen,gocognit,gocyclo // orchestration logic, splitting would obscure flow
+	claimReported := false
+	reportClaim := func(claimed bool) {
+		if onClaim != nil && !claimReported {
+			onClaim(claimed)
+			claimReported = true
+		}
+	}
+	defer reportClaim(false)
+
 	if strings.TrimSpace(bead.ID) == "" {
 		return fmt.Errorf("assignBead: empty bead ID")
 	}
@@ -7200,6 +7282,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	w.reasoning = ""
 	w.lastProgress = d.nowFunc()
 	d.mu.Unlock()
+	reportClaim(true)
 
 	// Mark bead as in_progress BEFORE worktree creation.
 	// This updates external state so other dispatchers see the bead is claimed.
@@ -7999,8 +8082,8 @@ func (d *Dispatcher) applyResume() (string, error) {
 // immediately. Otherwise the status is rebuilt and cached.
 func (d *Dispatcher) applyStatus() (string, error) {
 	ctx := context.Background()
-	storage := d.storageHealth(ctx)
-	storageJSON, err := json.Marshal(storage)
+	storageHealth := d.storageHealth(ctx)
+	storageJSON, err := json.Marshal(storageHealth)
 	if err != nil {
 		return "", fmt.Errorf("marshal storage health cache key: %w", err)
 	}
@@ -8015,7 +8098,7 @@ func (d *Dispatcher) applyStatus() (string, error) {
 	if cached != "" && elapsed < statusThrottleWindow && cachedStorageKey == storageKey {
 		return cached, nil
 	}
-	result := d.buildStatusJSONWithStorage(ctx, storage)
+	result := d.buildStatusJSONWithStorage(ctx, storageHealth)
 	d.mu.Lock()
 	d.lastStatusTime = now
 	d.lastStatusJSON = result
@@ -8396,7 +8479,7 @@ func (d *Dispatcher) buildStatusJSON() string {
 }
 
 //nolint:funlen // Status JSON intentionally assembles one wire contract in field order.
-func (d *Dispatcher) buildStatusJSONWithStorage(ctx context.Context, storage *factoryhealth.StorageHealth) string {
+func (d *Dispatcher) buildStatusJSONWithStorage(ctx context.Context, storageHealth *factoryhealth.StorageHealth) string {
 	now := d.nowFunc()
 
 	// Fetch ready beads to determine which attempt counts are valid.
@@ -8488,7 +8571,7 @@ func (d *Dispatcher) buildStatusJSONWithStorage(ctx context.Context, storage *fa
 		assignmentFreezeReason:       assignmentFreezeReason,
 		progressTimeoutSecs:          progressTimeoutSecs,
 		heartbeatTimeoutSecs:         heartbeatTimeoutSecs,
-		storage:                      storage,
+		storage:                      storageHealth,
 	})
 	resp.Health = &health
 
