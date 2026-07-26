@@ -4802,12 +4802,7 @@ func (d *Dispatcher) isIgnorableManagedQualityGateStatus(beadID, worktree string
 	if entry.Code == "??" && entry.Path == filepath.ToSlash(filepath.Join(protocol.OroDir, "assignment-capability.json")) {
 		return true
 	}
-	if entry.Code == "??" && (strings.HasPrefix(entry.Path, ".tmp-gocache-"+beadID+"/") ||
-		strings.HasPrefix(entry.Path, ".gocache-"+beadID+"/") ||
-		strings.HasPrefix(entry.Path, ".golangci-cache-"+beadID+"/") ||
-		strings.HasPrefix(entry.Path, ".tmp-gocache/") ||
-		strings.HasPrefix(entry.Path, ".gocache-task/") ||
-		strings.HasPrefix(entry.Path, ".golangci-cache/")) {
+	if entry.Code == "??" && (isManagedQualityGateCachePath(beadID, entry.Path)) {
 		return true
 	}
 	if entry.Code != "??" || entry.Path != "quality_gate.sh" {
@@ -4823,6 +4818,15 @@ func (d *Dispatcher) isIgnorableManagedQualityGateStatus(beadID, worktree string
 	}
 	linkPath := filepath.Join(worktree, entry.Path)
 	return managedQualityGateSnapshotMatches(linkPath, managedPath)
+}
+
+func isManagedQualityGateCachePath(beadID, path string) bool {
+	return strings.HasPrefix(path, ".tmp-gocache-"+beadID+"/") ||
+		strings.HasPrefix(path, ".gocache-"+beadID+"/") ||
+		strings.HasPrefix(path, ".golangci-cache-"+beadID+"/") ||
+		strings.HasPrefix(path, ".tmp-gocache/") ||
+		strings.HasPrefix(path, ".gocache-task/") ||
+		strings.HasPrefix(path, ".golangci-cache/")
 }
 
 func managedQualityGateSnapshotMatches(linkPath, managedPath string) bool {
@@ -10425,19 +10429,28 @@ func (d *Dispatcher) recoveryWorkBlocked(ctx context.Context, beadID, worktree, 
 		return true, "worktree path missing: " + worktree, nil
 	}
 
-	dirty, dirtyStatus, dirtyErr := d.worktreeDirty(ctx, worktree)
+	dirty, dirtyStatus, dirtyErr := d.worktreeDirty(ctx, beadID, worktree)
 	if dirty || dirtyErr != nil {
 		return dirty, dirtyStatus, dirtyErr
 	}
 	return d.branchHasUnmergedWork(ctx, beadID, worktree, baseBranch)
 }
 
-func (d *Dispatcher) worktreeDirty(ctx context.Context, worktree string) (dirty bool, status string, err error) {
+func (d *Dispatcher) worktreeDirty(ctx context.Context, beadID, worktree string) (dirty bool, status string, err error) {
 	out, err := d.commandRunner().Run(ctx, "git", "-C", worktree, "status", "--porcelain")
 	if err != nil {
 		return false, "", fmt.Errorf("git status in %s: %w", worktree, err)
 	}
-	status = strings.TrimSpace(string(out))
+	var remaining []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if len(line) >= 4 && line[:2] == "??" && isManagedQualityGateCachePath(beadID, strings.TrimSpace(line[3:])) {
+			continue
+		}
+		if line != "" {
+			remaining = append(remaining, line)
+		}
+	}
+	status = strings.Join(remaining, "\n")
 	return status != "", status, nil
 }
 
