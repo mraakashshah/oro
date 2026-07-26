@@ -4671,6 +4671,16 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 		d.sendPreReviewGitDirtyFeedback(ctx, workerID, feedback)
 		return
 	}
+	if len(hygiene.IgnoredManagedFiles) > 0 {
+		payload, marshalErr := json.Marshal(map[string]any{
+			"source": managedPreReviewHygieneSource(hygiene.IgnoredManagedFiles),
+			"files":  hygiene.IgnoredManagedFiles,
+		})
+		if marshalErr != nil {
+			payload = []byte(`{"source":"managed_runtime_artifact","files":[]}`)
+		}
+		_ = d.logEvent(ctx, "pre_review_hygiene_recheck", "dispatcher", beadID, workerID, string(payload))
+	}
 
 	// Look up bead details for the reviewer
 	title, acceptance, _ := d.lookupBeadDetail(ctx, beadID, workerID)
@@ -4694,8 +4704,9 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 // PreReviewGitHygieneResult describes whether a worker worktree is clean
 // enough to enter ops review.
 type PreReviewGitHygieneResult struct {
-	Dirty bool
-	Files []string
+	Dirty               bool
+	Files               []string
+	IgnoredManagedFiles []string
 }
 
 // Feedback returns actionable worker feedback for a dirty pre-review worktree.
@@ -4722,17 +4733,30 @@ func (d *Dispatcher) checkPreReviewGitHygiene(ctx context.Context, beadID, workt
 
 	entries := parseGitStatusPorcelainZ(out)
 	files := make([]string, 0, len(entries))
+	ignoredManagedFiles := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		if d.isIgnorableManagedQualityGateStatus(beadID, worktree, entry) {
+			ignoredManagedFiles = append(ignoredManagedFiles, entry.Path)
 			continue
 		}
 		files = append(files, entry.Path)
 	}
 	if len(files) == 0 {
-		return PreReviewGitHygieneResult{}, nil
+		sort.Strings(ignoredManagedFiles)
+		return PreReviewGitHygieneResult{IgnoredManagedFiles: ignoredManagedFiles}, nil
 	}
 	sort.Strings(files)
 	return PreReviewGitHygieneResult{Dirty: true, Files: files}, nil
+}
+
+func managedPreReviewHygieneSource(files []string) string {
+	capabilityPath := filepath.ToSlash(filepath.Join(protocol.OroDir, "assignment-capability.json"))
+	for _, file := range files {
+		if file == capabilityPath {
+			return "managed_assignment_capability"
+		}
+	}
+	return "managed_runtime_artifact"
 }
 
 type gitStatusPorcelainEntry struct {
