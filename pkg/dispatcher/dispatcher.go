@@ -4821,9 +4821,16 @@ func (d *Dispatcher) isIgnorableManagedQualityGateStatus(beadID, worktree string
 }
 
 func isManagedQualityGateCachePath(beadID, path string) bool {
+	sanitizedBeadID := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return -1
+	}, beadID)
 	return strings.HasPrefix(path, ".tmp-gocache-"+beadID+"/") ||
 		strings.HasPrefix(path, ".gocache-"+beadID+"/") ||
 		strings.HasPrefix(path, ".golangci-cache-"+beadID+"/") ||
+		(sanitizedBeadID != "" && strings.HasPrefix(path, ".gocache-"+sanitizedBeadID+"/")) ||
 		strings.HasPrefix(path, ".tmp-gocache/") ||
 		strings.HasPrefix(path, ".gocache-task/") ||
 		strings.HasPrefix(path, ".task-gocache/") ||
@@ -6316,13 +6323,22 @@ func (d *Dispatcher) assignGeneralIdleWorkers(ctx context.Context, idle []idleWo
 	// Assign beads to idle workers. Advance the idle cursor only when a worker is
 	// actually claimed — epics skipped in assignBead leave the worker idle so the
 	// next bead in the list can still be paired with it.
+	//
+	// Worktree creation can fetch and run several git commands. Start each
+	// assignment after its worker is reserved, then wait for the launched work at
+	// the end. This prevents a slow first worktree from leaving later workers idle
+	// while the ready queue is non-empty.
+	var assignmentDone []<-chan struct{}
 	idleIdx := 0
 	for _, unit := range plan.units {
-		idleIdx = d.assignGeneralSchedulingUnit(ctx, idle, idleIdx, unit, pbSnapshot, assignedBeads, reservedTargets, focusVersion)
+		idleIdx = d.assignGeneralSchedulingUnit(ctx, idle, idleIdx, unit, pbSnapshot, assignedBeads, reservedTargets, focusVersion, &assignmentDone)
+	}
+	for _, done := range assignmentDone {
+		<-done
 	}
 }
 
-func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idleWorker, idleIdx int, unit schedulingUnit, pbSnapshot, assignedBeads, reservedTargets map[string]bool, focusVersion uint64) int {
+func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idleWorker, idleIdx int, unit schedulingUnit, pbSnapshot, assignedBeads, reservedTargets map[string]bool, focusVersion uint64, assignmentDone *[]<-chan struct{}) int {
 	nextIdleIdx := idleIdx
 	for _, bead := range unit.beads {
 		if assignedBeads[bead.ID] {
@@ -6335,10 +6351,31 @@ func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idl
 		if nextIdleIdx >= len(idle) {
 			break
 		}
-		_ = d.assignBead(ctx, idle[nextIdleIdx].worker, bead, focusVersion)
+		claimed, done := d.launchAssignment(ctx, idle[nextIdleIdx].worker, bead, focusVersion)
+		if !claimed {
+			<-done
+			continue
+		}
+		*assignmentDone = append(*assignmentDone, done)
 		_, nextIdleIdx = d.advanceAssignedGeneralIdle(idle, nextIdleIdx, bead.ID, pbSnapshot)
 	}
 	return nextIdleIdx
+}
+
+// launchAssignment starts the slow assignment preparation in the background
+// and waits only until assignBead has either reserved the worker or declined
+// the candidate. The returned completion channel must be drained before the
+// caller returns so graceful shutdown still tracks assignment work.
+func (d *Dispatcher) launchAssignment(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersion uint64) (bool, <-chan struct{}) {
+	claimedCh := make(chan bool, 1)
+	done := make(chan struct{})
+	d.safeGo(func() {
+		defer close(done)
+		_ = d.assignBeadWithClaim(ctx, w, bead, []uint64{focusVersion}, func(claimed bool) {
+			claimedCh <- claimed
+		})
+	})
+	return <-claimedCh, done
 }
 
 func (d *Dispatcher) nextGeneralIdleIndex(idle []idleWorker, idleIdx int) int {
@@ -7136,6 +7173,19 @@ func (d *Dispatcher) lazyCreateEpicBranch(ctx context.Context, beadID, baseBranc
 }
 
 func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersionOpt ...uint64) error { //nolint:funlen,gocognit,gocyclo // orchestration logic, splitting would obscure flow
+	return d.assignBeadWithClaim(ctx, w, bead, focusVersionOpt, nil)
+}
+
+func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersionOpt []uint64, onClaim func(bool)) error { //nolint:funlen,gocognit,gocyclo // orchestration logic, splitting would obscure flow
+	claimReported := false
+	reportClaim := func(claimed bool) {
+		if onClaim != nil && !claimReported {
+			onClaim(claimed)
+			claimReported = true
+		}
+	}
+	defer reportClaim(false)
+
 	if strings.TrimSpace(bead.ID) == "" {
 		return fmt.Errorf("assignBead: empty bead ID")
 	}
@@ -7200,6 +7250,7 @@ func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead prot
 	w.reasoning = ""
 	w.lastProgress = d.nowFunc()
 	d.mu.Unlock()
+	reportClaim(true)
 
 	// Mark bead as in_progress BEFORE worktree creation.
 	// This updates external state so other dispatchers see the bead is claimed.
