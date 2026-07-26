@@ -4787,16 +4787,7 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 		d.sendPreReviewGitDirtyFeedback(ctx, workerID, feedback)
 		return
 	}
-	if len(hygiene.IgnoredManagedFiles) > 0 {
-		payload, marshalErr := json.Marshal(map[string]any{
-			"source": managedPreReviewHygieneSource(hygiene.IgnoredManagedFiles),
-			"files":  hygiene.IgnoredManagedFiles,
-		})
-		if marshalErr != nil {
-			payload = []byte(`{"source":"managed_runtime_artifact","files":[]}`)
-		}
-		_ = d.logEvent(ctx, "pre_review_hygiene_recheck", "dispatcher", beadID, workerID, string(payload))
-	}
+	d.logManagedPreReviewHygieneRecheck(ctx, beadID, workerID, hygiene.IgnoredManagedFiles)
 
 	// Look up bead details for the reviewer
 	title, acceptance, _ := d.lookupBeadDetail(ctx, beadID, workerID)
@@ -4863,6 +4854,24 @@ func (d *Dispatcher) checkPreReviewGitHygiene(ctx context.Context, beadID, workt
 	}
 	sort.Strings(files)
 	return PreReviewGitHygieneResult{Dirty: true, Files: files}, nil
+}
+
+func (d *Dispatcher) logManagedPreReviewHygieneRecheck(
+	ctx context.Context,
+	beadID, workerID string,
+	files []string,
+) {
+	if len(files) == 0 {
+		return
+	}
+	payload, err := json.Marshal(map[string]any{
+		"source": managedPreReviewHygieneSource(files),
+		"files":  files,
+	})
+	if err != nil {
+		payload = []byte(`{"source":"managed_runtime_artifact","files":[]}`)
+	}
+	_ = d.logEvent(ctx, "pre_review_hygiene_recheck", "dispatcher", beadID, workerID, string(payload))
 }
 
 func managedPreReviewHygieneSource(files []string) string {
