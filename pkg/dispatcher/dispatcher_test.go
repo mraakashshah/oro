@@ -3371,7 +3371,7 @@ func TestPreReviewGitHygieneIgnoresManagedQualityGateCacheDirectories(t *testing
 		t.Fatalf("git init: %v", err)
 	}
 
-	for _, cacheDir := range []string{".tmp-gocache", ".gocache-task", ".golangci-cache"} {
+	for _, cacheDir := range []string{".tmp-gocache", ".gocache-task", ".task-gocache", ".golangci-cache", ".golangci-lint-cache"} {
 		cacheFile := filepath.Join(worktree, cacheDir, "trim.txt")
 		if err := os.MkdirAll(filepath.Dir(cacheFile), 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", cacheDir, err)

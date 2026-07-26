@@ -4826,7 +4826,9 @@ func isManagedQualityGateCachePath(beadID, path string) bool {
 		strings.HasPrefix(path, ".golangci-cache-"+beadID+"/") ||
 		strings.HasPrefix(path, ".tmp-gocache/") ||
 		strings.HasPrefix(path, ".gocache-task/") ||
-		strings.HasPrefix(path, ".golangci-cache/")
+		strings.HasPrefix(path, ".task-gocache/") ||
+		strings.HasPrefix(path, ".golangci-cache/") ||
+		strings.HasPrefix(path, ".golangci-lint-cache/")
 }
 
 func managedQualityGateSnapshotMatches(linkPath, managedPath string) bool {
