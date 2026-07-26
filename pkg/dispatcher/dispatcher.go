@@ -6459,20 +6459,16 @@ func (d *Dispatcher) assignGeneralIdleWorkers(ctx context.Context, idle []idleWo
 	// next bead in the list can still be paired with it.
 	//
 	// Worktree creation can fetch and run several git commands. Start each
-	// assignment after its worker is reserved, then wait for the launched work at
-	// the end. This prevents a slow first worktree from leaving later workers idle
-	// while the ready queue is non-empty.
-	var assignmentDone []<-chan struct{}
+	// assignment after its worker is reserved, but do not wait for its setup to
+	// finish: safeGo tracks the background work for shutdown while allowing the
+	// assignment loop to process later worker-ready signals immediately.
 	idleIdx := 0
 	for _, unit := range plan.units {
-		idleIdx = d.assignGeneralSchedulingUnit(ctx, idle, idleIdx, unit, pbSnapshot, assignedBeads, reservedTargets, focusVersion, &assignmentDone)
-	}
-	for _, done := range assignmentDone {
-		<-done
+		idleIdx = d.assignGeneralSchedulingUnit(ctx, idle, idleIdx, unit, pbSnapshot, assignedBeads, reservedTargets, focusVersion)
 	}
 }
 
-func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idleWorker, idleIdx int, unit schedulingUnit, pbSnapshot, assignedBeads, reservedTargets map[string]bool, focusVersion uint64, assignmentDone *[]<-chan struct{}) int {
+func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idleWorker, idleIdx int, unit schedulingUnit, pbSnapshot, assignedBeads, reservedTargets map[string]bool, focusVersion uint64) int {
 	nextIdleIdx := idleIdx
 	for _, bead := range unit.beads {
 		if assignedBeads[bead.ID] {
@@ -6485,12 +6481,10 @@ func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idl
 		if nextIdleIdx >= len(idle) {
 			break
 		}
-		claimed, done := d.launchAssignment(ctx, idle[nextIdleIdx].worker, bead, focusVersion)
+		claimed := d.launchAssignment(ctx, idle[nextIdleIdx].worker, bead, focusVersion)
 		if !claimed {
-			<-done
 			continue
 		}
-		*assignmentDone = append(*assignmentDone, done)
 		_, nextIdleIdx = d.advanceAssignedGeneralIdle(idle, nextIdleIdx, bead.ID, pbSnapshot)
 	}
 	return nextIdleIdx
@@ -6498,18 +6492,16 @@ func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idl
 
 // launchAssignment starts the slow assignment preparation in the background
 // and waits only until assignBead has either reserved the worker or declined
-// the candidate. The returned completion channel must be drained before the
-// caller returns so graceful shutdown still tracks assignment work.
-func (d *Dispatcher) launchAssignment(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersion uint64) (claimed bool, done <-chan struct{}) {
+// the candidate. The safeGo wrapper tracks slow setup for graceful shutdown
+// without blocking the assignment loop after the reservation decision.
+func (d *Dispatcher) launchAssignment(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersion uint64) bool {
 	claimedCh := make(chan bool, 1)
-	assignmentDone := make(chan struct{})
 	d.safeGo(func() {
-		defer close(assignmentDone)
 		_ = d.assignBeadWithClaim(ctx, w, bead, []uint64{focusVersion}, func(claimed bool) {
 			claimedCh <- claimed
 		})
 	})
-	return <-claimedCh, assignmentDone
+	return <-claimedCh
 }
 
 func (d *Dispatcher) nextGeneralIdleIndex(idle []idleWorker, idleIdx int) int {

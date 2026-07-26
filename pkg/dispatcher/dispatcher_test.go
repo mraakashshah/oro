@@ -24601,6 +24601,7 @@ func TestTryAssign_FillsIdleWorkersAcrossEpicUnitsByPriority(t *testing.T) {
 	})
 
 	d.tryAssign(context.Background())
+	d.wg.Wait()
 
 	got := assignedBeadIDsByCreation(t, d.db)
 	want := []string{"a-fast", "a-slow", "b-fast"}
@@ -24626,6 +24627,7 @@ func TestTryAssign_ConcentratesWorkersOnTopEpic(t *testing.T) {
 	})
 
 	d.tryAssign(context.Background())
+	d.wg.Wait()
 
 	got := assignedBeadIDsByCreation(t, d.db)
 	want := []string{"a-fast", "a-middle"}
@@ -24688,6 +24690,49 @@ func TestTryAssign_ReservesAllIdleWorkersBeforeSlowWorktreeSetupCompletes(t *tes
 	}
 }
 
+func TestTryAssignReturnsAfterReservingSingleWorkerWithSlowWorktreeSetup(t *testing.T) {
+	d, beadSrc, _ := setupTryAssignSchedulingTest(t, 1)
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "oro-slow-startup", Priority: 0})
+	beadSrc.SetBeads([]protocol.Bead{{ID: "oro-slow-startup", Priority: 0}})
+
+	createStarted := make(chan struct{})
+	releaseCreate := make(chan struct{})
+	wt := d.worktrees.(*mockWorktreeManager)
+	wt.createFn = func(_ context.Context, beadID, _ string) (string, string, error) {
+		close(createStarted)
+		<-releaseCreate
+		return "/tmp/worktree-" + beadID, protocol.BranchPrefix + beadID, nil
+	}
+
+	assignReturned := make(chan struct{})
+	go func() {
+		d.tryAssign(context.Background())
+		close(assignReturned)
+	}()
+
+	select {
+	case <-createStarted:
+	case <-time.After(time.Second):
+		t.Fatal("worktree setup did not start")
+	}
+
+	returnedBeforeSetupFinished := false
+	select {
+	case <-assignReturned:
+		returnedBeforeSetupFinished = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseCreate)
+	select {
+	case <-assignReturned:
+	case <-time.After(time.Second):
+		t.Fatal("assignment did not finish after worktree setup was released")
+	}
+	if !returnedBeforeSetupFinished {
+		t.Fatal("tryAssign waited for slow worktree setup; later worker-ready signals cannot refill idle capacity")
+	}
+}
+
 func TestTryAssign_IndependentBeforeEpicUnits(t *testing.T) {
 	d, beadSrc, workers := setupTryAssignSchedulingTest(t, 3)
 	seedTryAssignEpic(t, beadSrc, "epic-a", 0, "2026-05-01T00:00:00Z")
@@ -24701,6 +24746,7 @@ func TestTryAssign_IndependentBeforeEpicUnits(t *testing.T) {
 	})
 
 	d.tryAssign(context.Background())
+	d.wg.Wait()
 
 	got := assignedBeadIDsByCreation(t, d.db)
 	want := []string{"independent-p0", "independent-p1", "epic-child"}
