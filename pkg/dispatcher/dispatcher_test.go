@@ -24677,6 +24677,71 @@ func TestTryAssignReturnsAfterReservingSingleWorkerWithSlowWorktreeSetup(t *test
 	}
 }
 
+// TestTryAssignBatchReturnsHandlePerLaunchedSetup proves tryAssignBatch hands
+// back one completion handle per assignment setup it launched, and that each
+// handle only closes once its setup actually finishes — not before, and not
+// as a side effect of tryAssignBatch itself returning. The batch call must
+// come back immediately (reservations only) while setup for every launched
+// bead is still blocked.
+func TestTryAssignBatchReturnsHandlePerLaunchedSetup(t *testing.T) {
+	d, beadSrc, _ := setupTryAssignSchedulingTest(t, 2)
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "oro-batch-a", Priority: 0})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "oro-batch-b", Priority: 1})
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "oro-batch-a", Priority: 0},
+		{ID: "oro-batch-b", Priority: 1},
+	})
+
+	release := make(chan struct{})
+	var createCalls atomic.Int32
+	wt := d.worktrees.(*mockWorktreeManager)
+	wt.createFn = func(_ context.Context, beadID, _ string) (string, string, error) {
+		createCalls.Add(1)
+		<-release
+		return "/tmp/worktree-" + beadID, protocol.BranchPrefix + beadID, nil
+	}
+
+	batchReturned := make(chan []<-chan struct{}, 1)
+	go func() {
+		batchReturned <- d.tryAssignBatch(context.Background())
+	}()
+
+	var handles []<-chan struct{}
+	select {
+	case handles = <-batchReturned:
+	case <-time.After(time.Second):
+		t.Fatal("tryAssignBatch did not return promptly; it must not wait on setup handles")
+	}
+
+	if len(handles) != 2 {
+		t.Fatalf("handles returned = %d, want one per launched setup (2)", len(handles))
+	}
+
+	// Setup for both launches is still blocked on release: neither handle may
+	// have closed yet.
+	for i, h := range handles {
+		select {
+		case <-h:
+			t.Fatalf("handle %d closed before its blocked worktree setup completed", i)
+		default:
+		}
+	}
+
+	close(release)
+
+	for i, h := range handles {
+		select {
+		case <-h:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("handle %d did not close after its setup was released", i)
+		}
+	}
+
+	if got := createCalls.Load(); got != 2 {
+		t.Fatalf("worktree createFn calls = %d, want 2 (one per launched setup)", got)
+	}
+}
+
 func TestTryAssign_IndependentBeforeEpicUnits(t *testing.T) {
 	d, beadSrc, workers := setupTryAssignSchedulingTest(t, 3)
 	seedTryAssignEpic(t, beadSrc, "epic-a", 0, "2026-05-01T00:00:00Z")
