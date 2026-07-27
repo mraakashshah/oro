@@ -27,6 +27,7 @@ import (
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
+	"oro/pkg/storage"
 	"oro/pkg/worker"
 
 	"github.com/spf13/cobra"
@@ -43,18 +44,19 @@ const (
 
 // workConfig holds parsed flags and loaded bead for the work command.
 type workConfig struct {
-	beadID          string
-	model           string
-	runtime         string
-	timeout         time.Duration
-	reviewTimeout   time.Duration
-	skipReview      bool
-	dryRun          bool
-	dryRunSpawn     bool
-	auto            bool
-	baseBranch      string
-	mutationTesting bool
-	bead            *protocol.Bead
+	beadID            string
+	model             string
+	runtime           string
+	timeout           time.Duration
+	reviewTimeout     time.Duration
+	skipReview        bool
+	dryRun            bool
+	dryRunSpawn       bool
+	auto              bool
+	baseBranch        string
+	mutationTesting   bool
+	bead              *protocol.Bead
+	storageController *storage.Controller
 }
 
 // validate checks that the loaded bead has the required fields.
@@ -64,6 +66,22 @@ func (c *workConfig) validate() error {
 	}
 	if c.bead.AcceptanceCriteria == "" {
 		return fmt.Errorf("task %s has no acceptance criteria — add with: oro task update %s --acceptance \"...\"", c.bead.ID, c.bead.ID)
+	}
+	return nil
+}
+
+// observeStandaloneStorageController refreshes standalone work admission before
+// it starts an Oro-owned subprocess. A nil controller preserves existing work
+// behavior.
+func observeStandaloneStorageController(ctx context.Context, controller *storage.Controller) error {
+	if controller == nil {
+		return nil
+	}
+	if err := controller.Observe(ctx, time.Now().UTC()); err != nil {
+		return fmt.Errorf("observe standalone storage controller: %w", err)
+	}
+	if !controller.Admit() {
+		return errors.New("standalone storage admission paused")
 	}
 	return nil
 }
@@ -425,6 +443,9 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 	if project := readProjectNameCWD(); project != "" {
 		_ = os.Setenv("ORO_PROJECT", project)
 	}
+	if err := observeStandaloneStorageController(ctx, cfg.storageController); err != nil {
+		return err
+	}
 
 	// Step 3: Create or resume worktree.
 	// Resolve defaultBranch: --base-branch flag > config default_branch > "main"
@@ -462,6 +483,9 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		}
 
 		if !skipClaude {
+			if err := observeStandaloneStorageController(ctx, cfg.storageController); err != nil {
+				return err
+			}
 			logStep("--- attempt %d (%s) ---", attempt, modelShort(model))
 			logStep("Spawning %s (%s, attempt %d)...", runtime, modelShort(model), attempt)
 			if err := spawnAndWait(ctx, cfg, deps, worktree, runtime, model, reasoning, attempt, feedback, logFile); err != nil {
@@ -477,6 +501,9 @@ func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { /
 		skipClaude = false // Only skip the first iteration.
 
 		mutationMode := workMutationMode(cfg)
+		if err := observeStandaloneStorageController(ctx, cfg.storageController); err != nil {
+			return err
+		}
 		logStep("Running local quality gate (%s)...", mutationMode)
 		passed, qgOutput, qgErr := deps.runQG(ctx, worktree, !cfg.mutationTesting)
 		if qgErr != nil {
@@ -892,6 +919,9 @@ func reviewLoop(ctx context.Context, cfg *workConfig, deps *workDeps, worktree, 
 	}
 
 	for rejects := 0; ; {
+		if err := observeStandaloneStorageController(ctx, cfg.storageController); err != nil {
+			return err
+		}
 		logStep("Running ops review (opus)...")
 		resultCh := deps.opsMgr.Review(ctx, ops.ReviewOpts{
 			BeadID:             cfg.beadID,
@@ -957,11 +987,17 @@ func handleReviewRejection(ctx context.Context, cfg *workConfig, deps *workDeps,
 	*feedback = result.Feedback
 
 	logStep("Re-executing with review feedback (%s)...", modelShort(*model))
+	if err := observeStandaloneStorageController(ctx, cfg.storageController); err != nil {
+		return rejects, err
+	}
 	if err := spawnAndWait(ctx, cfg, deps, worktree, runtime, *model, reasoning, *attempt, *feedback, logFile); err != nil {
 		return rejects, fmt.Errorf("%s re-spawn after review: %w", runtime, err)
 	}
 
 	logStep("Re-running local quality gate (%s)...", workMutationMode(cfg))
+	if err := observeStandaloneStorageController(ctx, cfg.storageController); err != nil {
+		return rejects, err
+	}
 	passed, qgOutput, qgErr := deps.runQG(ctx, worktree, !cfg.mutationTesting)
 	if qgErr != nil {
 		recordWorkQGFailure(ctx, cfg, deps, "oro-work-implementation", qgErr.Error())
@@ -1057,6 +1093,9 @@ func modelShort(model string) string {
 // mergeToMain performs the merge and handles conflict errors.
 // targetBranch is the branch to merge into (epic branch or "main").
 func mergeToMain(ctx context.Context, cfg *workConfig, deps *workDeps, worktree, branch, targetBranch string) (*merge.Result, error) {
+	if err := observeStandaloneStorageController(ctx, cfg.storageController); err != nil {
+		return nil, err
+	}
 	logStep("Merging to main...")
 	result, err := deps.merger.Merge(ctx, merge.Opts{
 		Branch:       branch,
@@ -1064,6 +1103,9 @@ func mergeToMain(ctx context.Context, cfg *workConfig, deps *workDeps, worktree,
 		BeadID:       cfg.beadID,
 		TargetBranch: targetBranch,
 		PreFFCheck: func(checkCtx context.Context, finalWorktree string) error {
+			if err := observeStandaloneStorageController(checkCtx, cfg.storageController); err != nil {
+				return err
+			}
 			logStep("Running pre-merge quality gate (%s)...", workMutationMode(cfg))
 			passed, output, qgErr := deps.runQG(checkCtx, finalWorktree, !cfg.mutationTesting)
 			if qgErr != nil {
@@ -1161,6 +1203,9 @@ func acAlreadySatisfied(ctx context.Context, cfg *workConfig, deps *workDeps, wo
 		return false
 	}
 	if _, err := os.Stat(filepath.Join(worktree, testFile)); err != nil {
+		return false
+	}
+	if err := observeStandaloneStorageController(ctx, cfg.storageController); err != nil {
 		return false
 	}
 	passed, err := deps.runShellCmd(ctx, worktree, cmd)
