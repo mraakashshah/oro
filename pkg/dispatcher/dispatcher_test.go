@@ -14688,7 +14688,7 @@ func TestPriorityContention(t *testing.T) {
 	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "bead-p1", Title: "P1 Task", Priority: 1},
 	})
-	d.tryAssign(t.Context())
+	tryAssignAndWait(t, d, t.Context())
 
 	msg := lastMessage()
 	if msg.Type != protocol.MsgAssign {
@@ -14709,7 +14709,7 @@ func TestPriorityContention(t *testing.T) {
 		{ID: "bead-p1", Title: "P1 Task", Priority: 1}, // still in queue (worker busy)
 		{ID: "bead-p0", Title: "P0 Urgent", Priority: 0},
 	})
-	d.tryAssign(t.Context())
+	tryAssignAndWait(t, d, t.Context())
 
 	if got := messageCount(); got != 1 {
 		t.Fatalf("busy worker received %d messages, want only its original assignment", got)
@@ -14741,7 +14741,7 @@ func TestPriorityContention(t *testing.T) {
 		{ID: "bead-p1-next", Title: "Next P1 Task", Priority: 1},
 		{ID: "bead-p0", Title: "P0 Urgent", Priority: 0},
 	})
-	d.tryAssign(t.Context())
+	tryAssignAndWait(t, d, t.Context())
 
 	msg = lastMessage()
 	if msg.Type != protocol.MsgAssign {
@@ -21743,7 +21743,7 @@ func TestAssignment_SkipsClosedBeads(t *testing.T) {
 		beadSrc.mu.Unlock()
 
 		// Invoke tryAssign
-		d.tryAssign(context.Background())
+		tryAssignAndWait(t, d, context.Background())
 
 		// Worker should be assigned to oro-open-1 (closed bead was skipped)
 		st, beadID, ok := d.WorkerInfo("w-skip-test")
@@ -21810,7 +21810,7 @@ func TestAssignment_SkipsClosedBeads(t *testing.T) {
 		beadSrc.mu.Unlock()
 
 		// Invoke tryAssign
-		d.tryAssign(context.Background())
+		tryAssignAndWait(t, d, context.Background())
 
 		// Worker should remain idle (all beads were closed)
 		st, beadID, ok := d.WorkerInfo("w-all-closed")
@@ -22523,7 +22523,7 @@ func TestTryAssign_DeadSocketRemovesWorker(t *testing.T) {
 	d.mu.Unlock()
 
 	// Run tryAssign — should attempt to send ASSIGN, fail, and remove the worker.
-	d.tryAssign(ctx)
+	tryAssignAndWait(t, d, ctx)
 
 	// Worker should be REMOVED from d.workers.
 	d.mu.Lock()
@@ -24803,7 +24803,7 @@ VALUES ('oro-preserved', ?, 'unsafe_stale_branch', 'branch still requires recove
 				}
 			}
 
-			d.tryAssign(t.Context())
+			tryAssignAndWait(t, d, t.Context())
 
 			got := assignedBeadIDsByCreation(t, d.db)
 			if tt.wantAssigned {
@@ -24832,7 +24832,7 @@ func TestTryAssign_EpicPriorityBeatsEpicAge(t *testing.T) {
 		{ID: "new-child", Priority: 0, Epic: "epic-new"},
 	})
 
-	d.tryAssign(context.Background())
+	tryAssignAndWait(t, d, context.Background())
 
 	got := assignedBeadIDsByCreation(t, d.db)
 	want := []string{"new-child"}
@@ -24860,7 +24860,7 @@ func TestTryAssign_UnassignableEpicUnitDoesNotBlockNextEpic(t *testing.T) {
 		{ID: "ready-child", Priority: 0, Epic: "epic-ready"},
 	})
 
-	d.tryAssign(context.Background())
+	tryAssignAndWait(t, d, context.Background())
 
 	got := assignedBeadIDsByCreation(t, d.db)
 	want := []string{"ready-child"}
@@ -24884,7 +24884,7 @@ func TestTryAssign_ReservedEpicUnitDoesNotIdleOtherWorkers(t *testing.T) {
 	d.pendingWorkerTargets["w-reserved-pending"] = "reserved-child"
 	d.mu.Unlock()
 
-	d.tryAssign(context.Background())
+	tryAssignAndWait(t, d, context.Background())
 
 	got := assignedBeadIDsByCreation(t, d.db)
 	want := []string{"next-child"}
