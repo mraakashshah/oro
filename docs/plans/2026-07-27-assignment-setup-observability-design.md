@@ -96,8 +96,8 @@ Tests use a bounded helper:
 
 ```go
 func tryAssignAndWait(t *testing.T, d *Dispatcher, ctx context.Context) {
-	t.Helper()
-	waitForSetup(t, d.tryAssignBatch(ctx))
+    t.Helper()
+    waitForSetup(t, d.tryAssignBatch(ctx))
 }
 ```
 
