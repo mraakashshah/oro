@@ -24,6 +24,7 @@ import (
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/processenv"
+	"oro/pkg/storage"
 
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
@@ -1123,6 +1124,18 @@ func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers 
 	catalog, err := openStorageCatalog(context.Background(), paths.OroHome)
 	if err != nil {
 		return nil, nil, err
+	}
+	storagePaths, err := ResolveStoragePaths(paths.OroHome)
+	if err != nil {
+		_ = catalog.Close()
+		return nil, nil, fmt.Errorf("resolve storage paths for weekly dev-cache sweep: %w", err)
+	}
+	if _, err := storage.RunWeeklyDevCacheSweep(context.Background(), storage.WeeklyDevCacheSweepRequest{
+		Catalog:   catalog,
+		LockPath:  storagePaths.LockPath,
+		Providers: storage.BuiltinProviders(),
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: run weekly dev-cache sweep: %v\n", err)
 	}
 	if err := catalog.Close(); err != nil {
 		return nil, nil, fmt.Errorf("close storage catalog: %w", err)
