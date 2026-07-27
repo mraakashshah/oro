@@ -189,11 +189,11 @@ jobs:
 
       # Tier 1: Formatting
       - name: ruff format
-        run: uvx ruff format --check .
+        run: uvx ruff@0.16.0 format --check .
 
       # Tier 2: Linting
       - name: ruff check
-        run: uvx ruff check .
+        run: uvx ruff@0.16.0 check .
 
       - name: pylint (errors only)
         run: |

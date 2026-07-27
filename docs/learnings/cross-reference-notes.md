@@ -225,12 +225,15 @@ Task(subagent_type="oracle", prompt="Research OAuth best practices")
 # Both run in parallel
 
 # Hierarchical (maestro pattern)
-Task(subagent_type="maestro", prompt="""
+Task(
+    subagent_type="maestro",
+    prompt="""
 Coordinate these agents:
 - architect: design
 - kraken: implement
 - arbiter: validate
-""")
+""",
+)
 ```
 
 **Agent Categories**:
