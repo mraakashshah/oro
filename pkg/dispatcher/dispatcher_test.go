@@ -24544,11 +24544,11 @@ func TestTryAssign_FillsIdleWorkersAcrossEpicUnitsByPriority(t *testing.T) {
 		{ID: "a-fast", Priority: 0, Epic: "epic-a"},
 	})
 
-	d.tryAssign(context.Background())
-	d.wg.Wait()
+	tryAssignAndWait(t, d, context.Background())
 
-	got := assignedBeadIDsByCreation(t, d.db)
+	got := assignedBeadIDsSorted(t, d.db)
 	want := []string{"a-fast", "a-slow", "b-fast"}
+	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Fatalf("assigned beads = %v, want epic frontiers filled by priority %v", got, want)
 	}
@@ -24570,11 +24570,11 @@ func TestTryAssign_ConcentratesWorkersOnTopEpic(t *testing.T) {
 		{ID: "a-fast", Priority: 0, Epic: "epic-a"},
 	})
 
-	d.tryAssign(context.Background())
-	d.wg.Wait()
+	tryAssignAndWait(t, d, context.Background())
 
-	got := assignedBeadIDsByCreation(t, d.db)
+	got := assignedBeadIDsSorted(t, d.db)
 	want := []string{"a-fast", "a-middle"}
+	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Fatalf("assigned beads = %v, want all workers concentrated on top epic %v", got, want)
 	}
@@ -24754,11 +24754,11 @@ func TestTryAssign_IndependentBeforeEpicUnits(t *testing.T) {
 		{ID: "independent-p0", Priority: 0},
 	})
 
-	d.tryAssign(context.Background())
-	d.wg.Wait()
+	tryAssignAndWait(t, d, context.Background())
 
-	got := assignedBeadIDsByCreation(t, d.db)
+	got := assignedBeadIDsSorted(t, d.db)
 	want := []string{"independent-p0", "independent-p1", "epic-child"}
+	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Fatalf("assigned beads = %v, want independent units before epic unit %v", got, want)
 	}
@@ -25018,6 +25018,19 @@ func assignedBeadIDsByCreation(t *testing.T, db *sql.DB) []string {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate assignment rows: %v", err)
 	}
+	return ids
+}
+
+// assignedBeadIDsSorted returns the assigned bead IDs sorted lexically,
+// rather than by insertion order. Assignment setup runs on concurrent
+// goroutines since c629e33e, so which goroutine reaches createAssignment
+// first — and thus insertion order — no longer reflects scheduling order.
+// Callers that only need to assert *which* beads were scheduled (not the
+// order) should use this instead of assignedBeadIDsByCreation.
+func assignedBeadIDsSorted(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+	ids := assignedBeadIDsByCreation(t, db)
+	slices.Sort(ids)
 	return ids
 }
 
