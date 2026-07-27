@@ -21,12 +21,13 @@ type DevCacheMaintenanceRunner func(context.Context, ProviderMaintenance) (Maint
 
 // WeeklyDevCacheSweepRequest supplies the dependencies for one scheduled sweep.
 type WeeklyDevCacheSweepRequest struct {
-	Catalog   *Catalog
-	LockPath  string
-	Now       func() time.Time
-	Interval  time.Duration
-	Providers []CacheProvider
-	Run       DevCacheMaintenanceRunner
+	Catalog     *Catalog
+	LockPath    string
+	Now         func() time.Time
+	Interval    time.Duration
+	Providers   []CacheProvider
+	Run         DevCacheMaintenanceRunner
+	GlobalDrain GlobalDrainRequest
 }
 
 // WeeklyDevCacheSweepResult describes whether a due sweep ran and when it is next due.
@@ -67,6 +68,11 @@ func RunWeeklyDevCacheSweep(ctx context.Context, request WeeklyDevCacheSweepRequ
 	}
 	if now.Before(due) {
 		return WeeklyDevCacheSweepResult{NextDue: due}, nil
+	}
+	if overdueDevCleanupRequiresGlobalDrain(now, due) {
+		if err := request.GlobalDrain.wait(ctx, request.Catalog, now); err != nil {
+			return WeeklyDevCacheSweepResult{}, err
+		}
 	}
 
 	nextDue := now.Add(interval)
