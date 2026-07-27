@@ -8082,8 +8082,8 @@ func (d *Dispatcher) applyResume() (string, error) {
 // immediately. Otherwise the status is rebuilt and cached.
 func (d *Dispatcher) applyStatus() (string, error) {
 	ctx := context.Background()
-	storage := d.storageHealth(ctx)
-	storageJSON, err := json.Marshal(storage)
+	storageHealth := d.storageHealth(ctx)
+	storageJSON, err := json.Marshal(storageHealth)
 	if err != nil {
 		return "", fmt.Errorf("marshal storage health cache key: %w", err)
 	}
@@ -8098,7 +8098,7 @@ func (d *Dispatcher) applyStatus() (string, error) {
 	if cached != "" && elapsed < statusThrottleWindow && cachedStorageKey == storageKey {
 		return cached, nil
 	}
-	result := d.buildStatusJSONWithStorage(ctx, storage)
+	result := d.buildStatusJSONWithStorage(ctx, storageHealth)
 	d.mu.Lock()
 	d.lastStatusTime = now
 	d.lastStatusJSON = result
@@ -8479,7 +8479,7 @@ func (d *Dispatcher) buildStatusJSON() string {
 }
 
 //nolint:funlen // Status JSON intentionally assembles one wire contract in field order.
-func (d *Dispatcher) buildStatusJSONWithStorage(ctx context.Context, storage *factoryhealth.StorageHealth) string {
+func (d *Dispatcher) buildStatusJSONWithStorage(ctx context.Context, storageHealth *factoryhealth.StorageHealth) string {
 	now := d.nowFunc()
 
 	// Fetch ready beads to determine which attempt counts are valid.
@@ -8571,7 +8571,7 @@ func (d *Dispatcher) buildStatusJSONWithStorage(ctx context.Context, storage *fa
 		assignmentFreezeReason:       assignmentFreezeReason,
 		progressTimeoutSecs:          progressTimeoutSecs,
 		heartbeatTimeoutSecs:         heartbeatTimeoutSecs,
-		storage:                      storage,
+		storage:                      storageHealth,
 	})
 	resp.Health = &health
 
