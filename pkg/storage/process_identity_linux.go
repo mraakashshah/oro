@@ -41,7 +41,7 @@ func InspectProcessIdentity(pid int) (ProcessIdentity, error) {
 	}, nil
 }
 
-func linuxProcessStatIdentity(contents []byte) (int, string, error) {
+func linuxProcessStatIdentity(contents []byte) (processGroup int, startMarker string, err error) {
 	stat := string(contents)
 	closeParen := strings.LastIndex(stat, ")")
 	if closeParen < 0 || len(stat) <= closeParen+2 {
@@ -55,7 +55,7 @@ func linuxProcessStatIdentity(contents []byte) (int, string, error) {
 	if len(fields) <= startTimeIndex {
 		return 0, "", fmt.Errorf("expected at least %d process fields, got %d", startTimeIndex+1, len(fields))
 	}
-	processGroup, err := strconv.Atoi(fields[processGroupIndex])
+	processGroup, err = strconv.Atoi(fields[processGroupIndex])
 	if err != nil {
 		return 0, "", fmt.Errorf("parse process group: %w", err)
 	}
