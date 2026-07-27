@@ -919,7 +919,7 @@ func TestGradeRoleLadder(t *testing.T) {
 	got := config.GradeLadder(*cfg)
 	want := []config.RoleRung{
 		{Model: "gpt-5.6-terra", Reasoning: "low"},
-		{Model: "gpt-5.6-sol", Reasoning: "high"},
+		{Model: "gpt-5.6-sol", Reasoning: "low"},
 		{Model: "gpt-5.6-sol", Reasoning: "xhigh"},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -931,7 +931,7 @@ func TestGradeRoleLadder(t *testing.T) {
 	got = config.GradeLadder(tierRouted)
 	want = []config.RoleRung{
 		{Model: "gpt-5.6-luna", Reasoning: "low"},
-		{Model: "gpt-5.6-sol", Reasoning: "high"},
+		{Model: "gpt-5.6-sol", Reasoning: "low"},
 		{Model: "gpt-5.6-sol", Reasoning: "xhigh"},
 	}
 	if !reflect.DeepEqual(got, want) {
