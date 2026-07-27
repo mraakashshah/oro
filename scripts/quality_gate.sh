@@ -360,7 +360,9 @@ sweep_repo_root_escape_artifacts() {
 	local repo_root="$1"
 	local artifact
 	for artifact in "$repo_root"/$'\033]8;;file:'*; do
-		[ -d "$artifact" ] && [ ! -L "$artifact" ] || continue
+		if [ ! -d "$artifact" ] || [ -L "$artifact" ]; then
+			continue
+		fi
 		rm -rf -- "$artifact"
 	done
 }
