@@ -30,6 +30,7 @@ func TestOpenCatalogMigratesFoundationAndRuntimeSchema(t *testing.T) {
 		"refs",
 		"sweeps",
 		"evidence",
+		"weekly_dev_cache_schedule",
 		"runtime_leases",
 		"runtime_controllers",
 		"runtime_pause_epochs",
