@@ -45,6 +45,131 @@ func TestMessageTypes(t *testing.T) {
 	}
 }
 
+func TestRemoteGateProtocolVersions(t *testing.T) { //nolint:funlen // validates all versioned control messages and rejection edges
+	t.Parallel()
+
+	supported := protocol.Range{Min: 1, Max: 1}
+	identity := protocol.ProtocolIdentity{
+		ProjectID:         "oro",
+		WorkerID:          "worker-1",
+		WorkerGeneration:  4,
+		RestartGeneration: 9,
+		BuildID:           "build-abc",
+	}
+	metadata := func() protocol.ProtocolMetadata {
+		return protocol.ProtocolMetadata{
+			ProtocolRange:     supported,
+			ProjectID:         identity.ProjectID,
+			WorkerID:          identity.WorkerID,
+			WorkerGeneration:  identity.WorkerGeneration,
+			RestartGeneration: identity.RestartGeneration,
+			BuildID:           identity.BuildID,
+		}
+	}
+
+	tests := []struct {
+		name string
+		msg  protocol.Message
+	}{
+		{
+			name: "hello",
+			msg: protocol.Message{
+				Type:     protocol.MsgHello,
+				Protocol: metadata(),
+				Hello: &protocol.Hello{
+					ProtocolRange:     supported,
+					ProjectID:         identity.ProjectID,
+					RestartGeneration: identity.RestartGeneration,
+					BuildID:           identity.BuildID,
+				},
+			},
+		},
+		{
+			name: "hello acknowledgement",
+			msg: protocol.Message{
+				Type:     protocol.MsgHelloACK,
+				Protocol: metadata(),
+				HelloACK: &protocol.HelloACK{ProtocolVersion: 1},
+			},
+		},
+		{name: "assignment", msg: protocol.Message{Type: protocol.MsgAssign, Protocol: metadata()}},
+		{name: "heartbeat", msg: protocol.Message{Type: protocol.MsgHeartbeat, Protocol: metadata()}},
+		{
+			name: "candidate",
+			msg: protocol.Message{
+				Type:     protocol.MsgCandidateReady,
+				Protocol: metadata(),
+				Candidate: &protocol.CandidateReady{
+					ProjectID:     identity.ProjectID,
+					AssignmentID:  "assignment-1",
+					CandidateSHA:  "abcdef1",
+					AdoptionToken: "token-1",
+				},
+			},
+		},
+		{name: "review", msg: protocol.Message{Type: protocol.MsgReadyForReview, Protocol: metadata()}},
+		{name: "completion", msg: protocol.Message{Type: protocol.MsgDone, Protocol: metadata()}},
+		{name: "shutdown", msg: protocol.Message{Type: protocol.MsgShutdown, Protocol: metadata()}},
+		{name: "correction", msg: protocol.Message{Type: protocol.MsgCorrection, Protocol: metadata()}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if err := test.msg.Validate(supported, identity); err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+		})
+	}
+
+	invalid := []struct {
+		name   string
+		mutate func(*protocol.Message)
+	}{
+		{
+			name: "missing identity",
+			mutate: func(msg *protocol.Message) {
+				msg.Protocol.ProjectID = ""
+			},
+		},
+		{
+			name: "oversized build identity",
+			mutate: func(msg *protocol.Message) {
+				msg.Protocol.BuildID = strings.Repeat("b", protocol.MaxBuildIDLength+1)
+			},
+		},
+		{
+			name: "stale restart generation",
+			mutate: func(msg *protocol.Message) {
+				msg.Protocol.RestartGeneration--
+			},
+		},
+		{
+			name: "unknown version",
+			mutate: func(msg *protocol.Message) {
+				msg.Protocol.ProtocolRange = protocol.Range{Min: 2, Max: 2}
+			},
+		},
+		{
+			name: "cross project",
+			mutate: func(msg *protocol.Message) {
+				msg.Protocol.ProjectID = "other"
+			},
+		},
+	}
+
+	for _, test := range invalid {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			msg := protocol.Message{Type: protocol.MsgHeartbeat, Protocol: metadata()}
+			test.mutate(&msg)
+			if err := msg.Validate(supported, identity); err == nil {
+				t.Fatal("Validate() error = nil, want protocol rejection")
+			}
+		})
+	}
+}
+
 func TestAssignPayload_CodeSearchContext(t *testing.T) {
 	t.Parallel()
 
