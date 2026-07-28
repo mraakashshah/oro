@@ -1242,6 +1242,12 @@ lane_go() {
 				echo "  Only referenced from test files (or not at all outside its own file)"
 				dead_found=$((dead_found + 1))
 			fi
+		# NOTE: cmd/ is deliberately NOT scanned for dead exports yet. Adding it
+		# surfaces 15 genuinely-unused exported funcs (11 in cmd/oro/tmux.go),
+		# and the only ways to make the gate pass today are to add 15
+		# //oro:testonly suppressions — the exact debt this check exists to
+		# prevent — or to delete them, which is a separate change. The caller
+		# search above already includes cmd/, so wiring FROM cmd/ counts.
 		done < <(grep -rn --include="*.go" --exclude="*_test.go" -E '^func[[:space:]]+(\([^)]*\)[[:space:]]+)?[A-Z]' pkg/ internal/)
 
 		echo ""
@@ -1289,6 +1295,21 @@ lane_go() {
 		# shellcheck disable=SC2086
 		GOFLAGS=-buildvcs=false go test $race_flag -shuffle=on -p 3 \
 			-coverprofile="$COVERAGE_FILE" ./internal/... ./pkg/... || return 1
+		# ./cmd/... is NOT run here yet, and that is a known hole: the merge gate
+		# does not test 24k lines of source / 39k lines of tests, which is how the
+		# e33f7187 regression reached main. CI does cover it
+		# (.github/workflows/ci.yml:73,137) but nothing in the merge path consults CI.
+		#
+		# Adding `go test ./cmd/...` to this lane was tried and reverted. cmd/oro
+		# contains tests that INVOKE THIS SCRIPT (quality_gate_gen_test.go FIFO/lock
+		# tests). Running them from inside a gate trips the nested-invocation guard
+		# ("Nested quality gate invocation detected; using active parent result"),
+		# and they fail — plus collateral failures in the same process. They pass
+		# standalone, shuffled, and under -p 3; only nesting breaks them.
+		#
+		# Prerequisite before retrying: make cmd/oro's gate-invoking tests
+		# nested-safe (skip when ORO_QG_ACTIVE_PID is set) or move them to
+		# pkg/dispatcher/testdata/serial_lane_tests.txt.
 		# Report the main-lane coverage for visibility. The ≥78% THRESHOLD is
 		# enforced later, after the serial lane, on the MERGED profile — the
 		# serial-lane tests self-skip here, so this partial number would understate
