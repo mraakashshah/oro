@@ -2312,8 +2312,14 @@ func TestQualityGateRuntimeLockIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read .gitignore: %v", err)
 	}
-	if !strings.Contains(string(data), "/.oro-quality-gate.lock*") {
-		t.Error("repo .gitignore must ignore quality-gate lock directories and stale archives")
+	for _, entry := range []string{
+		"/.oro-quality-gate.lock*",
+		"/.qg-local/",
+		"/.qg-cache/",
+	} {
+		if !strings.Contains(string(data), entry) {
+			t.Errorf("repo .gitignore must ignore quality-gate runtime artifact %q", entry)
+		}
 	}
 }
 
