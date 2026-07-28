@@ -24592,6 +24592,7 @@ func TestTryAssign_ReservesAllIdleWorkersBeforeSlowWorktreeSetupCompletes(t *tes
 
 	firstCreateStarted := make(chan struct{})
 	releaseFirstCreate := make(chan struct{})
+	defer close(releaseFirstCreate)
 	var firstCreate sync.Once
 	wt := d.worktrees.(*mockWorktreeManager)
 	wt.createFn = func(_ context.Context, beadID, _ string) (string, string, error) {
@@ -24631,8 +24632,6 @@ func TestTryAssign_ReservesAllIdleWorkersBeforeSlowWorktreeSetupCompletes(t *tes
 	if reserved != 2 {
 		t.Fatalf("reserved workers while first worktree setup is blocked = %d, want 2", reserved)
 	}
-
-	close(releaseFirstCreate)
 }
 
 func TestTryAssignReturnsAfterReservingSingleWorkerWithSlowWorktreeSetup(t *testing.T) {
