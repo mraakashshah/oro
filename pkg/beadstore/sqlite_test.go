@@ -113,6 +113,93 @@ func TestSQLiteStoreCreateShowExportAndMemory(t *testing.T) {
 	}
 }
 
+func TestUpdateStatusIfCompareAndSwap(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+	const id = "oro-status-cas"
+
+	mustCreate(t, store, CreateParams{
+		ID:     id,
+		Title:  "status compare-and-swap",
+		Status: "in_progress",
+	})
+
+	updated, err := store.UpdateStatusIf(ctx, id, "in_progress", "open")
+	if err != nil {
+		t.Fatalf("first UpdateStatusIf: %v", err)
+	}
+	if !updated {
+		t.Fatal("first UpdateStatusIf = false, want true")
+	}
+	bead, err := store.Show(ctx, id)
+	if err != nil {
+		t.Fatalf("Show after first UpdateStatusIf: %v", err)
+	}
+	if bead == nil || bead.Status != "open" {
+		t.Fatalf("status after first UpdateStatusIf = %#v, want open", bead)
+	}
+
+	updated, err = store.UpdateStatusIf(ctx, id, "in_progress", "open")
+	if err != nil {
+		t.Fatalf("second UpdateStatusIf: %v", err)
+	}
+	if updated {
+		t.Fatal("second UpdateStatusIf = true, want false")
+	}
+	bead, err = store.Show(ctx, id)
+	if err != nil {
+		t.Fatalf("Show after second UpdateStatusIf: %v", err)
+	}
+	if bead == nil || bead.Status != "open" {
+		t.Fatalf("status after second UpdateStatusIf = %#v, want open", bead)
+	}
+
+	status := "in_progress"
+	if err := store.Update(ctx, id, UpdateParams{Status: &status}); err != nil {
+		t.Fatalf("reset status: %v", err)
+	}
+
+	const callers = 20
+	results := make(chan bool, callers)
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			updated, err := store.UpdateStatusIf(ctx, id, "in_progress", "open")
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- updated
+		}()
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+
+	for err := range errs {
+		t.Fatalf("concurrent UpdateStatusIf: %v", err)
+	}
+	updates := 0
+	for updated := range results {
+		if updated {
+			updates++
+		}
+	}
+	if updates != 1 {
+		t.Fatalf("concurrent UpdateStatusIf successes = %d, want 1", updates)
+	}
+	bead, err = store.Show(ctx, id)
+	if err != nil {
+		t.Fatalf("Show after concurrent UpdateStatusIf: %v", err)
+	}
+	if bead == nil || bead.Status != "open" {
+		t.Fatalf("status after concurrent UpdateStatusIf = %#v, want open", bead)
+	}
+}
+
 func TestFindByMetadataKeyJanitor(t *testing.T) {
 	ctx := context.Background()
 	store := newTestSQLiteStore(t)

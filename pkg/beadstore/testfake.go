@@ -273,6 +273,27 @@ func (s *FakeStore) Update(ctx context.Context, id string, params UpdateParams) 
 	return nil
 }
 
+// UpdateStatusIf atomically changes id from expected to next status.
+func (s *FakeStore) UpdateStatusIf(ctx context.Context, id, expected, next string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, fmt.Errorf("conditionally update bead status context: %w", err)
+	}
+	if !validStatus(next) {
+		return false, fmt.Errorf("beadstore: invalid status %q", next)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	bead, ok := s.beads[id]
+	if !ok || bead.Status != expected {
+		return false, nil
+	}
+	bead.Status = next
+	bead.UpdatedAt = nowString()
+	s.beads[id] = bead
+	return true, nil
+}
+
 // validateUpdateParams returns an error for semantically invalid fields.
 func validateUpdateParams(params UpdateParams) error {
 	if params.Status != nil && !validStatus(*params.Status) {

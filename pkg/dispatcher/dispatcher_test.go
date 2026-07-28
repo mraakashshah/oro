@@ -235,6 +235,25 @@ func (m *fakeBeadStore) Update(ctx context.Context, id string, params beadstore.
 	return nil
 }
 
+func (m *fakeBeadStore) UpdateStatusIf(ctx context.Context, id, expected, next string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	status, ok := m.updated[id]
+	if !ok || status != expected {
+		return false, nil
+	}
+	if m.updateErrs != nil {
+		if err, ok := m.updateErrs[id]; ok {
+			return false, err
+		}
+	}
+	if m.updated == nil {
+		m.updated = make(map[string]string)
+	}
+	m.updated[id] = next
+	return true, nil
+}
+
 func (m *fakeBeadStore) appendNoteLocked(id string, note *string) {
 	if note == nil || strings.TrimSpace(*note) == "" {
 		return
