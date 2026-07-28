@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/beadstore"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
 )
@@ -1674,6 +1675,291 @@ func TestCheckHeartbeats_RemovesStaleIdleWorkers(t *testing.T) {
 	}
 }
 
+// TestTimedOutSetupCannotClobberReplacement proves that a setup operation
+// which outlives its reservation cannot mutate the successor reservation for
+// the same worker and bead.
+func TestTimedOutSetupCannotClobberReplacement(t *testing.T) {
+	d, beadSrc, _ := setupTryAssignSchedulingTest(t, 1)
+	const (
+		beadID      = "oro-stale-setup"
+		successorWT = "/tmp/successor-worktree"
+	)
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: beadID, Priority: 0})
+
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+	d.cfg.ProgressTimeout = time.Second
+
+	createStarted := make(chan struct{})
+	releaseCreate := make(chan struct{})
+	wt := d.worktrees.(*mockWorktreeManager)
+	wt.createFn = func(_ context.Context, id, _ string) (string, string, error) {
+		if id == beadID {
+			close(createStarted)
+			<-releaseCreate
+		}
+		return "/tmp/stale-worktree", protocol.BranchPrefix + id, nil
+	}
+
+	d.mu.Lock()
+	worker := d.workers["w-sched-0"]
+	d.mu.Unlock()
+	claimed, staleDone := d.launchAssignment(context.Background(), worker, protocol.Bead{ID: beadID, Priority: 0}, 0)
+	if !claimed {
+		t.Fatal("stale assignment was not claimed")
+	}
+	select {
+	case <-createStarted:
+	case <-time.After(time.Second):
+		t.Fatal("stale worktree creation did not start")
+	}
+
+	// Reap the setup, then install a successor that owns the same worker and
+	// bead. Its generation and tracking must survive the stale goroutine.
+	now = now.Add(d.cfg.ProgressTimeout + time.Second)
+	d.checkHeartbeats(context.Background())
+	d.mu.Lock()
+	if worker.state != protocol.WorkerIdle {
+		d.mu.Unlock()
+		t.Fatalf("worker state after timeout = %s, want idle", worker.state)
+	}
+	worker.state = protocol.WorkerReserved
+	worker.beadID = beadID
+	worker.setupReservedAt = now
+	worker.reservationGen++
+	successorGen := worker.reservationGen
+	d.assigningBeads[beadID] = true
+	d.worktreeByBead[beadID] = successorWT
+	d.attemptCounts[beadID] = 1
+	d.mu.Unlock()
+	beadSrc.mu.Lock()
+	beadSrc.updated[beadID] = "in_progress"
+	beadSrc.mu.Unlock()
+
+	close(releaseCreate)
+	select {
+	case <-staleDone:
+	case <-time.After(time.Second):
+		t.Fatal("stale setup did not finish")
+	}
+
+	d.mu.Lock()
+	state, assignmentID := worker.state, worker.assignmentID
+	gotGen := worker.reservationGen
+	gotWorktree := d.worktreeByBead[beadID]
+	assigning := d.assigningBeads[beadID]
+	attempts := d.attemptCounts[beadID]
+	d.mu.Unlock()
+	if state != protocol.WorkerReserved || assignmentID != 0 || gotGen != successorGen {
+		t.Fatalf("stale setup clobbered successor worker: state=%s assignment=%d generation=%d want generation=%d", state, assignmentID, gotGen, successorGen)
+	}
+	if !assigning || gotWorktree != successorWT || attempts != 1 {
+		t.Fatalf("stale setup clobbered successor tracking: assigning=%t worktree=%q attempts=%d", assigning, gotWorktree, attempts)
+	}
+	beadSrc.mu.Lock()
+	status := beadSrc.updated[beadID]
+	beadSrc.mu.Unlock()
+	if status != "in_progress" {
+		t.Fatalf("stale setup reopened successor bead: status=%q", status)
+	}
+}
+
+// TestTimedOutReaperCannotClobberReplacement proves a setup reaper does not
+// reopen or clear a successor that claims the bead after the reaper releases
+// its reservation but before its external cleanup runs.
+func TestTimedOutReaperCannotClobberReplacement(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	const (
+		workerID = "timed-out-setup-worker"
+		beadID   = "timed-out-setup-bead"
+	)
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+	d.cfg.ProgressTimeout = time.Second
+
+	cleanupStarted := make(chan struct{})
+	releaseCleanup := make(chan struct{})
+	beadSrc.showFn = func(ctx context.Context, id string) (*protocol.BeadDetail, error) {
+		if id != beadID {
+			return &protocol.BeadDetail{Status: "open"}, nil
+		}
+		close(cleanupStarted)
+		select {
+		case <-releaseCleanup:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return &protocol.BeadDetail{Status: "in_progress"}, nil
+	}
+
+	d.mu.Lock()
+	worker := &trackedWorker{
+		id:              workerID,
+		conn:            newMockConn(),
+		state:           protocol.WorkerReserved,
+		beadID:          beadID,
+		setupReservedAt: now.Add(-2 * time.Second),
+		reservationGen:  1,
+		encoder:         json.NewEncoder(newMockConn()),
+	}
+	d.workers[workerID] = worker
+	d.assigningBeads[beadID] = true
+	d.attemptCounts[beadID] = 1
+	d.worktreeByBead[beadID] = "/tmp/g1"
+	d.mu.Unlock()
+	beadSrc.mu.Lock()
+	beadSrc.updated = make(map[string]string)
+	beadSrc.updated[beadID] = "in_progress"
+	beadSrc.mu.Unlock()
+
+	reaped := make(chan struct{})
+	go func() {
+		d.checkHeartbeats(context.Background())
+		close(reaped)
+	}()
+
+	select {
+	case <-d.workerReadyCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed-out setup did not notify scheduling")
+	}
+	select {
+	case <-cleanupStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed-out setup did not begin external cleanup")
+	}
+
+	d.mu.Lock()
+	worker.state = protocol.WorkerReserved
+	worker.beadID = beadID
+	worker.setupReservedAt = now
+	worker.reservationGen++
+	g2 := worker.reservationGen
+	d.assigningBeads[beadID] = true
+	d.attemptCounts[beadID] = 2
+	d.worktreeByBead[beadID] = "/tmp/g2"
+	d.mu.Unlock()
+
+	close(releaseCleanup)
+	select {
+	case <-reaped:
+	case <-time.After(time.Second):
+		t.Fatal("timed-out reaper did not finish")
+	}
+
+	d.mu.Lock()
+	state, gotGen := worker.state, worker.reservationGen
+	assigning := d.assigningBeads[beadID]
+	attempts := d.attemptCounts[beadID]
+	worktree := d.worktreeByBead[beadID]
+	d.mu.Unlock()
+	if state != protocol.WorkerReserved || gotGen != g2 {
+		t.Fatalf("g1 clobbered g2 worker reservation: state=%s generation=%d, want generation=%d", state, gotGen, g2)
+	}
+	if !assigning || attempts != 2 || worktree != "/tmp/g2" {
+		t.Fatalf("g1 clobbered g2 tracking: assigning=%t attempts=%d worktree=%q", assigning, attempts, worktree)
+	}
+	beadSrc.mu.Lock()
+	status := beadSrc.updated[beadID]
+	beadSrc.mu.Unlock()
+	if status != "in_progress" {
+		t.Fatalf("g1 reopened g2 bead: status=%q", status)
+	}
+}
+
+// TestTimedOutReaperCleanupCannotClobberSuccessor proves timeout cleanup keeps
+// g1's reservation until its last bead effect is complete. The update seam
+// installs g2 only when the reservation is visibly released, reproducing the
+// former ownership-check-to-update window without holding dispatcher locks
+// across the bead-store call.
+func TestTimedOutReaperCleanupCannotClobberSuccessor(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	const (
+		workerID = "timed-out-cleanup-worker"
+		beadID   = "timed-out-cleanup-bead"
+	)
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+	d.cfg.ProgressTimeout = time.Second
+
+	d.mu.Lock()
+	worker := &trackedWorker{
+		id:              workerID,
+		conn:            newMockConn(),
+		state:           protocol.WorkerReserved,
+		beadID:          beadID,
+		setupReservedAt: now.Add(-2 * time.Second),
+		reservationGen:  1,
+		encoder:         json.NewEncoder(newMockConn()),
+	}
+	d.workers[workerID] = worker
+	d.assigningBeads[beadID] = true
+	d.attemptCounts[beadID] = 1
+	d.handoffCounts[beadID] = 1
+	d.worktreeByBead[beadID] = "/tmp/g1"
+	d.mu.Unlock()
+	beadSrc.mu.Lock()
+	beadSrc.updated = map[string]string{beadID: "in_progress"}
+	beadSrc.mu.Unlock()
+
+	var injected bool
+	beadSrc.updateFn = func(_ context.Context, id string, params beadstore.UpdateParams) error {
+		if id != beadID || params.Status == nil {
+			return nil
+		}
+		// Install g2 only on the reopen, at the moment the write lands — this is
+		// the ownership-check-to-update window. Every status is recorded, matching
+		// the default fakeBeadStore.Update, so a compensating write after the race
+		// is observable.
+		if *params.Status == "open" {
+			d.mu.Lock()
+			if worker.state == protocol.WorkerIdle && !d.assigningBeads[beadID] {
+				worker.state = protocol.WorkerReserved
+				worker.beadID = beadID
+				worker.setupReservedAt = now
+				worker.reservationGen++
+				d.assigningBeads[beadID] = true
+				d.attemptCounts[beadID] = 2
+				d.handoffCounts[beadID] = 2
+				d.worktreeByBead[beadID] = "/tmp/g2"
+				injected = true
+			}
+			d.mu.Unlock()
+		}
+
+		beadSrc.mu.Lock()
+		beadSrc.updated[beadID] = *params.Status
+		beadSrc.mu.Unlock()
+		return nil
+	}
+
+	d.checkHeartbeats(context.Background())
+
+	d.mu.Lock()
+	state, generation := worker.state, worker.reservationGen
+	assigning := d.assigningBeads[beadID]
+	attempts := d.attemptCounts[beadID]
+	handoffs := d.handoffCounts[beadID]
+	worktree := d.worktreeByBead[beadID]
+	d.mu.Unlock()
+	beadSrc.mu.Lock()
+	status := beadSrc.updated[beadID]
+	beadSrc.mu.Unlock()
+
+	if injected {
+		if state != protocol.WorkerReserved || !assigning || attempts != 2 || handoffs != 2 || worktree != "/tmp/g2" {
+			t.Fatalf("g1 clobbered g2 tracking: state=%s assigning=%t attempts=%d handoffs=%d worktree=%q", state, assigning, attempts, handoffs, worktree)
+		}
+		if status != "in_progress" {
+			t.Fatalf("g1 reopened g2 bead: status=%q", status)
+		}
+		return
+	}
+	if state != protocol.WorkerIdle || generation != 2 || assigning || attempts != 0 || handoffs != 0 || worktree != "/tmp/g1" || status != "open" {
+		t.Fatalf("g1 cleanup = state=%s generation=%d assigning=%t attempts=%d handoffs=%d worktree=%q status=%q", state, generation, assigning, attempts, handoffs, worktree, status)
+	}
+}
+
 // TestCheckHeartbeats_SkipsReservedWorkers verifies that reserved workers are not timed out.
 // Kills mutations 17, 39 (skip reserved check).
 func TestCheckHeartbeats_SkipsReservedWorkers(t *testing.T) {
@@ -2614,6 +2900,199 @@ func isWorkerUnreachable(err error, out **protocol.WorkerUnreachableError) bool 
 
 // --- GracefulShutdownWorker tests ---
 
+func TestGracefulShutdownBlocksAssignToReservedWorker(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	blocker := &blockingCodeIndex{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	d.codeIndex = blocker
+
+	cancel := startDispatcher(t, d)
+	defer cancel()
+	d.setState(StateRunning)
+
+	const (
+		beadID   = "shutdown-reserved-bead"
+		workerID = "shutdown-reserved-worker"
+	)
+	beadSrc.SetBeads([]protocol.Bead{{
+		ID:       beadID,
+		Title:    "assignment setup interrupted by graceful shutdown",
+		Priority: 1,
+		Type:     "task",
+	}})
+
+	conn, scanner := connectWorker(t, d.cfg.SocketPath)
+	defer conn.Close()
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: workerID},
+	})
+
+	select {
+	case <-blocker.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("assignment setup did not reach blocking code search")
+	}
+
+	d.GracefulShutdownWorker(workerID, time.Second)
+	d.mu.Lock()
+	w := d.workers[workerID]
+	if w == nil {
+		d.mu.Unlock()
+		t.Fatal("worker disappeared during graceful shutdown")
+	}
+	if w.state != protocol.WorkerShuttingDown {
+		d.mu.Unlock()
+		t.Fatalf("worker state after graceful shutdown = %s, want %s", w.state, protocol.WorkerShuttingDown)
+	}
+	d.mu.Unlock()
+
+	close(blocker.release)
+
+	msg, got := readMsgFromScanner(t, scanner, 2*time.Second)
+	if !got {
+		t.Fatal("expected PREPARE_SHUTDOWN")
+	}
+	if msg.Type != protocol.MsgPrepareShutdown {
+		t.Fatalf("first message after graceful shutdown = %s, want %s", msg.Type, protocol.MsgPrepareShutdown)
+	}
+
+	msg, got = readMsgFromScanner(t, scanner, 200*time.Millisecond)
+	if got && msg.Type == protocol.MsgAssign {
+		t.Fatal("gracefully shutting down reserved worker received ASSIGN")
+	}
+
+	waitFor(t, func() bool {
+		var active int
+		err := d.db.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM assignments WHERE bead_id=? AND status='active'`, beadID,
+		).Scan(&active)
+		return err == nil && active == 0
+	}, 2*time.Second)
+}
+
+func TestGracefulShutdownTimeoutKeepsWorkerOutOfAssignmentPool(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+	go drainConn(clientConn)
+
+	const workerID = "shutdown-timeout-worker"
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:      workerID,
+		conn:    serverConn,
+		state:   protocol.WorkerIdle,
+		encoder: json.NewEncoder(serverConn),
+	}
+	d.mu.Unlock()
+
+	d.GracefulShutdownWorker(workerID, 10*time.Millisecond)
+	waitFor(t, func() bool {
+		state, _, ok := d.WorkerInfo(workerID)
+		return ok && state == protocol.WorkerShuttingDown
+	}, time.Second)
+}
+
+func TestShuttingDownWorkerHeartbeatTimeoutReleasesCapacity(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.cfg.MaxWorkers = 1
+	now := time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC)
+	d.nowFunc = func() time.Time { return now }
+
+	const workerID = "stale-shutdown-worker"
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:       workerID,
+		conn:     newMockConn(),
+		state:    protocol.WorkerShuttingDown,
+		managed:  true,
+		lastSeen: now.Add(-2 * d.cfg.HeartbeatTimeout),
+	}
+	if got := d.liveWorkerCountLocked(); got != d.cfg.MaxWorkers {
+		d.mu.Unlock()
+		t.Fatalf("live worker count before stale reap = %d, want %d", got, d.cfg.MaxWorkers)
+	}
+	d.mu.Unlock()
+
+	d.checkHeartbeats(context.Background())
+
+	d.mu.Lock()
+	_, stillTracked := d.workers[workerID]
+	liveWorkers := d.liveWorkerCountLocked()
+	d.mu.Unlock()
+	if stillTracked {
+		t.Fatal("stale shutting-down worker should be reaped after heartbeat timeout")
+	}
+	if liveWorkers != 0 {
+		t.Fatalf("live worker count after stale reap = %d, want 0", liveWorkers)
+	}
+}
+
+func TestGracefulShutdownAttemptSurvivesHeartbeatTimeout(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	now := time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC)
+	d.nowFunc = func() time.Time { return now }
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const workerID = "active-graceful-shutdown-worker"
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:             workerID,
+		conn:           newMockConn(),
+		state:          protocol.WorkerShuttingDown,
+		lastSeen:       now.Add(-2 * d.cfg.HeartbeatTimeout),
+		shutdownCancel: cancel,
+	}
+	d.mu.Unlock()
+
+	d.checkHeartbeats(context.Background())
+
+	d.mu.Lock()
+	_, stillTracked := d.workers[workerID]
+	d.mu.Unlock()
+	if !stillTracked {
+		t.Fatal("active graceful-shutdown attempt was reaped by heartbeat timeout")
+	}
+}
+
+func TestGracefulShutdownApprovalKeepsWorkerOutOfAssignmentPool(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	const workerID = "shutdown-approved-worker"
+	conn := newMockConn()
+	beadSrc.SetBeads([]protocol.Bead{{ID: "ready-after-shutdown", Priority: 0, Type: "task"}})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "ready-after-shutdown", Priority: 0})
+	d.setState(StateRunning)
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:      workerID,
+		conn:    conn,
+		state:   protocol.WorkerShuttingDown,
+		encoder: json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+
+	d.handleShutdownApproved(context.Background(), workerID, protocol.Message{
+		Type:             protocol.MsgShutdownApproved,
+		ShutdownApproved: &protocol.ShutdownApprovedPayload{WorkerID: workerID},
+	})
+
+	d.mu.Lock()
+	state := d.workers[workerID].state
+	d.mu.Unlock()
+	if state != protocol.WorkerShuttingDown {
+		t.Fatalf("worker state after shutdown approval = %s, want %s", state, protocol.WorkerShuttingDown)
+	}
+
+	tryAssignAndWait(t, d, context.Background())
+	assertMockWorkerAssignCount(t, []*mockConn{conn}, 0)
+}
+
 // TestGracefulShutdownWorker_NoopForMissingWorker verifies early return for
 // unknown worker.
 // Kills mutation 25 (skip unlock+return when worker not found).
@@ -2946,8 +3425,12 @@ func TestHandleShutdownTimeout_ResetsWorkerState(t *testing.T) {
 	if w == nil {
 		t.Fatal("worker should still exist after handleShutdownTimeout")
 	}
-	if w.state != protocol.WorkerIdle {
-		t.Errorf("state = %v, want Idle", w.state)
+	// ShuttingDown, not Idle: handleShutdownTimeout has already sent a hard
+	// SHUTDOWN, and Idle is the assignability predicate (isAssignableIdle in
+	// dispatcher.go), so Idle here would make a killed worker eligible for
+	// a fresh bead.
+	if w.state != protocol.WorkerShuttingDown {
+		t.Errorf("state = %v, want ShuttingDown", w.state)
 	}
 	if w.beadID != "" {
 		t.Errorf("beadID = %q, want empty", w.beadID)
