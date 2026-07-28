@@ -2746,6 +2746,33 @@ func TestShuttingDownWorkerHeartbeatTimeoutReleasesCapacity(t *testing.T) {
 	}
 }
 
+func TestShutdownApprovalKeepsWorkerOutOfAssignmentPool(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	const workerID = "shutdown-approved-worker"
+	conn := newMockConn()
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:      workerID,
+		conn:    conn,
+		state:   protocol.WorkerShuttingDown,
+		encoder: json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+
+	d.handleShutdownApproved(context.Background(), workerID, protocol.Message{
+		Type:             protocol.MsgShutdownApproved,
+		ShutdownApproved: &protocol.ShutdownApprovedPayload{WorkerID: workerID},
+	})
+
+	d.mu.Lock()
+	state := d.workers[workerID].state
+	d.mu.Unlock()
+	if state != protocol.WorkerShuttingDown {
+		t.Fatalf("worker state after shutdown approval = %s, want %s", state, protocol.WorkerShuttingDown)
+	}
+}
+
 // TestGracefulShutdownWorker_NoopForMissingWorker verifies early return for
 // unknown worker.
 // Kills mutation 25 (skip unlock+return when worker not found).
