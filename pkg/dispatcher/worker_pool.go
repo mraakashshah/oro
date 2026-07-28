@@ -503,10 +503,11 @@ func managedWorkerIDs(slices ...[]workerExitInfo) []string {
 func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 	now := d.nowFunc()
 	d.mu.Lock()
-	dead, stuck, stoppedSpawnFor := d.collectTimedOutWorkersLocked(now)
+	dead, stuck, stoppedSpawnFor, timedOutSetups := d.collectTimedOutWorkersLocked(now)
 	deadWorkers, deadManagedExits := d.removeDeadWorkersLocked(ctx, dead)
 	d.removeStoppedSpawnForWorkersLocked(ctx, stoppedSpawnFor)
 	stuckWorkers, stuckManagedExits := d.removeStuckWorkersLocked(ctx, stuck, now)
+	reclaimedSetups := d.reclaimTimedOutSetupsLocked(ctx, timedOutSetups, now)
 	newManagedExits := deadManagedExits + stuckManagedExits
 	d.unexpectedManagedExits += newManagedExits
 	d.clampManagedExitCapAfterPoolDrainLocked(ctx, newManagedExits)
@@ -516,12 +517,13 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 	// Wake the assign loop so reconcileScale can spawn replacements immediately,
 	// and so idle managed workers pick up newly-ready beads without waiting for
 	// the next poll tick (oro-ntr3).
-	if len(deadWorkers)+len(stuckWorkers) > 0 || hasManagedIdle {
+	if len(deadWorkers)+len(stuckWorkers)+len(reclaimedSetups) > 0 || hasManagedIdle {
 		d.notifyAssignLoop()
 	}
 
 	// Escalate outside the lock and clear tracking maps for abandoned beads.
 	d.escalateTimedOutWorkers(ctx, deadWorkers, stuckWorkers)
+	d.reopenTimedOutSetupBeads(ctx, reclaimedSetups)
 
 	// Kill OS processes for timed-out managed workers (best-effort, outside lock).
 	d.killManagedWorkers(managedWorkerIDs(deadWorkers, stuckWorkers))
@@ -575,9 +577,12 @@ func (d *Dispatcher) reviewDeadStateLocked(w *trackedWorker, now time.Time) (exp
 	return false, true
 }
 
-func (d *Dispatcher) collectTimedOutWorkersLocked(now time.Time) (dead, stuck, stoppedSpawnFor []string) {
+func (d *Dispatcher) collectTimedOutWorkersLocked(now time.Time) (dead, stuck, stoppedSpawnFor, timedOutSetups []string) {
 	for id, w := range d.workers {
 		if w.state == protocol.WorkerReserved {
+			if workerSetupTimedOut(w, now, d.cfg.ProgressTimeout) {
+				timedOutSetups = append(timedOutSetups, id)
+			}
 			continue
 		}
 		if stoppedSpawnForHeartbeatTimedOut(w, now, d.cfg.HeartbeatTimeout) {
@@ -621,7 +626,35 @@ func (d *Dispatcher) collectTimedOutWorkersLocked(now time.Time) (dead, stuck, s
 			stuck = append(stuck, id)
 		}
 	}
-	return dead, stuck, stoppedSpawnFor
+	return dead, stuck, stoppedSpawnFor, timedOutSetups
+}
+
+func (d *Dispatcher) reclaimTimedOutSetupsLocked(ctx context.Context, workerIDs []string, now time.Time) []workerExitInfo {
+	reclaimed := make([]workerExitInfo, 0, len(workerIDs))
+	for _, id := range workerIDs {
+		w := d.workers[id]
+		if w == nil || !workerSetupTimedOut(w, now, d.cfg.ProgressTimeout) {
+			continue
+		}
+		reclaimed = append(reclaimed, workerExitInfo{workerID: id, beadID: w.beadID})
+		_ = d.logEventLocked(ctx, "assignment_setup_timeout", "dispatcher", w.beadID, id,
+			fmt.Sprintf(`{"setup_ago":%q}`, now.Sub(w.setupReservedAt).Round(time.Second)))
+		delete(d.assigningBeads, w.beadID)
+		d.releaseAssignmentReservationLocked(id, w.beadID, w.reservationGen)
+	}
+	return reclaimed
+}
+
+func (d *Dispatcher) reopenTimedOutSetupBeads(ctx context.Context, reclaimed []workerExitInfo) {
+	for _, setup := range reclaimed {
+		if !d.isBeadClosed(ctx, setup.beadID) {
+			if err := d.updateBeadStatus(ctx, setup.beadID, "open"); err != nil {
+				_ = d.logEvent(ctx, "assignment_setup_bead_reset_failed", "dispatcher", setup.beadID, setup.workerID,
+					fmt.Sprintf(`{"error":%q}`, err.Error()))
+			}
+		}
+		d.clearBeadTracking(setup.beadID)
+	}
 }
 
 func (d *Dispatcher) removeDeadWorkersLocked(ctx context.Context, dead []string) (deadWorkers []workerExitInfo, managedExits int) {
@@ -684,6 +717,11 @@ func heartbeatTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) b
 func workerProgressTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) bool {
 	return !w.spawnFor && w.state == protocol.WorkerBusy &&
 		!w.lastProgress.IsZero() && now.Sub(w.lastProgress) > timeout
+}
+
+func workerSetupTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) bool {
+	return w.state == protocol.WorkerReserved && !w.setupReservedAt.IsZero() &&
+		now.Sub(w.setupReservedAt) > timeout
 }
 
 func workerReviewTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) bool {

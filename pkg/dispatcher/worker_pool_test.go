@@ -1674,6 +1674,95 @@ func TestCheckHeartbeats_RemovesStaleIdleWorkers(t *testing.T) {
 	}
 }
 
+// TestTimedOutSetupCannotClobberReplacement proves that a setup operation
+// which outlives its reservation cannot mutate the successor reservation for
+// the same worker and bead.
+func TestTimedOutSetupCannotClobberReplacement(t *testing.T) {
+	d, beadSrc, _ := setupTryAssignSchedulingTest(t, 1)
+	const (
+		beadID      = "oro-stale-setup"
+		successorWT = "/tmp/successor-worktree"
+	)
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: beadID, Priority: 0})
+
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+	d.cfg.ProgressTimeout = time.Second
+
+	createStarted := make(chan struct{})
+	releaseCreate := make(chan struct{})
+	wt := d.worktrees.(*mockWorktreeManager)
+	wt.createFn = func(_ context.Context, id, _ string) (string, string, error) {
+		if id == beadID {
+			close(createStarted)
+			<-releaseCreate
+		}
+		return "/tmp/stale-worktree", protocol.BranchPrefix + id, nil
+	}
+
+	d.mu.Lock()
+	worker := d.workers["w-sched-0"]
+	d.mu.Unlock()
+	claimed, staleDone := d.launchAssignment(context.Background(), worker, protocol.Bead{ID: beadID, Priority: 0}, 0)
+	if !claimed {
+		t.Fatal("stale assignment was not claimed")
+	}
+	select {
+	case <-createStarted:
+	case <-time.After(time.Second):
+		t.Fatal("stale worktree creation did not start")
+	}
+
+	// Reap the setup, then install a successor that owns the same worker and
+	// bead. Its generation and tracking must survive the stale goroutine.
+	now = now.Add(d.cfg.ProgressTimeout + time.Second)
+	d.checkHeartbeats(context.Background())
+	d.mu.Lock()
+	if worker.state != protocol.WorkerIdle {
+		d.mu.Unlock()
+		t.Fatalf("worker state after timeout = %s, want idle", worker.state)
+	}
+	worker.state = protocol.WorkerReserved
+	worker.beadID = beadID
+	worker.setupReservedAt = now
+	worker.reservationGen++
+	successorGen := worker.reservationGen
+	d.assigningBeads[beadID] = true
+	d.worktreeByBead[beadID] = successorWT
+	d.attemptCounts[beadID] = 1
+	d.mu.Unlock()
+	beadSrc.mu.Lock()
+	beadSrc.updated[beadID] = "in_progress"
+	beadSrc.mu.Unlock()
+
+	close(releaseCreate)
+	select {
+	case <-staleDone:
+	case <-time.After(time.Second):
+		t.Fatal("stale setup did not finish")
+	}
+
+	d.mu.Lock()
+	state, assignmentID := worker.state, worker.assignmentID
+	gotGen := worker.reservationGen
+	gotWorktree := d.worktreeByBead[beadID]
+	assigning := d.assigningBeads[beadID]
+	attempts := d.attemptCounts[beadID]
+	d.mu.Unlock()
+	if state != protocol.WorkerReserved || assignmentID != 0 || gotGen != successorGen {
+		t.Fatalf("stale setup clobbered successor worker: state=%s assignment=%d generation=%d want generation=%d", state, assignmentID, gotGen, successorGen)
+	}
+	if !assigning || gotWorktree != successorWT || attempts != 1 {
+		t.Fatalf("stale setup clobbered successor tracking: assigning=%t worktree=%q attempts=%d", assigning, gotWorktree, attempts)
+	}
+	beadSrc.mu.Lock()
+	status := beadSrc.updated[beadID]
+	beadSrc.mu.Unlock()
+	if status != "in_progress" {
+		t.Fatalf("stale setup reopened successor bead: status=%q", status)
+	}
+}
+
 // TestCheckHeartbeats_SkipsReservedWorkers verifies that reserved workers are not timed out.
 // Kills mutations 17, 39 (skip reserved check).
 func TestCheckHeartbeats_SkipsReservedWorkers(t *testing.T) {
