@@ -512,6 +512,15 @@ func validateReconcileChangeRequest(request ReconcileChangeRequest) error {
 	if err := validateRemoteChange(request.Change); err != nil {
 		return err
 	}
+	if !isKnownAttemptedOperation(request.AttemptedOperation) || strings.TrimSpace(request.AttemptID) == "" || request.ObservedOperation != request.AttemptedOperation || request.ObservedAttemptID != request.AttemptID {
+		return invalidRequest("reconciliation observation does not match attempted operation")
+	}
+	if !isObservedOutcome(request.AttemptedOperation, request.ObservedOutcome) {
+		return invalidRequest("reconciliation outcome is not valid for operation")
+	}
+	if isEphemeralTargetOperation(request.AttemptedOperation) {
+		return validateMutationLease(request.Change.Owner, request.Change.Generation, request.Lease, request.Change.Change.Candidate.SHA, false)
+	}
 	if err := validateEvidence(request.Evidence); err != nil {
 		return err
 	}
@@ -526,12 +535,6 @@ func validateReconcileChangeRequest(request ReconcileChangeRequest) error {
 	}
 	if request.Run.Change != request.Change.Change || request.Run.CandidateSHA != request.Evidence.CandidateSHA || request.Run.Target != request.Evidence.Target || request.Run.TestedTreeSHA != request.Evidence.TestedTreeSHA {
 		return invalidRequest("reconciliation run identity does not match evidence")
-	}
-	if !isKnownAttemptedOperation(request.AttemptedOperation) || strings.TrimSpace(request.AttemptID) == "" || request.ObservedOperation != request.AttemptedOperation || request.ObservedAttemptID != request.AttemptID {
-		return invalidRequest("reconciliation observation does not match attempted operation")
-	}
-	if !isObservedOutcome(request.AttemptedOperation, request.ObservedOutcome) {
-		return invalidRequest("reconciliation outcome is not valid for operation")
 	}
 	return validateMutationLease(request.Change.Owner, request.Change.Generation, request.Lease, request.Change.Change.Candidate.SHA, false)
 }
@@ -717,6 +720,10 @@ func isKnownAttemptedOperation(operation string) bool {
 	default:
 		return false
 	}
+}
+
+func isEphemeralTargetOperation(operation string) bool {
+	return operation == "create_ephemeral_target" || operation == "delete_ephemeral_target"
 }
 
 func isObservedOutcome(operation, outcome string) bool {
