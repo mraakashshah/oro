@@ -2746,6 +2746,34 @@ func TestShuttingDownWorkerHeartbeatTimeoutReleasesCapacity(t *testing.T) {
 	}
 }
 
+func TestGracefulShutdownAttemptSurvivesHeartbeatTimeout(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	now := time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC)
+	d.nowFunc = func() time.Time { return now }
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const workerID = "active-graceful-shutdown-worker"
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:             workerID,
+		conn:           newMockConn(),
+		state:          protocol.WorkerShuttingDown,
+		lastSeen:       now.Add(-2 * d.cfg.HeartbeatTimeout),
+		shutdownCancel: cancel,
+	}
+	d.mu.Unlock()
+
+	d.checkHeartbeats(context.Background())
+
+	d.mu.Lock()
+	_, stillTracked := d.workers[workerID]
+	d.mu.Unlock()
+	if !stillTracked {
+		t.Fatal("active graceful-shutdown attempt was reaped by heartbeat timeout")
+	}
+}
+
 func TestShutdownApprovalKeepsWorkerOutOfAssignmentPool(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	const workerID = "shutdown-approved-worker"
