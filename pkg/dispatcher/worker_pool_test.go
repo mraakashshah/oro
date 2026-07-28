@@ -3425,8 +3425,12 @@ func TestHandleShutdownTimeout_ResetsWorkerState(t *testing.T) {
 	if w == nil {
 		t.Fatal("worker should still exist after handleShutdownTimeout")
 	}
-	if w.state != protocol.WorkerIdle {
-		t.Errorf("state = %v, want Idle", w.state)
+	// ShuttingDown, not Idle: handleShutdownTimeout has already sent a hard
+	// SHUTDOWN, and Idle is the assignability predicate (isAssignableIdle in
+	// dispatcher.go), so Idle here would make a killed worker eligible for
+	// a fresh bead.
+	if w.state != protocol.WorkerShuttingDown {
+		t.Errorf("state = %v, want ShuttingDown", w.state)
 	}
 	if w.beadID != "" {
 		t.Errorf("beadID = %q, want empty", w.beadID)
