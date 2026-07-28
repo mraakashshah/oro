@@ -1902,38 +1902,52 @@ func TestTimedOutReaperCleanupCannotClobberSuccessor(t *testing.T) {
 	beadSrc.updated = map[string]string{beadID: "in_progress"}
 	beadSrc.mu.Unlock()
 
-	var injected bool
+	var casCalled bool
 	beadSrc.updateFn = func(_ context.Context, id string, params beadstore.UpdateParams) error {
-		if id != beadID || params.Status == nil {
-			return nil
+		if id == beadID && params.Status != nil {
+			t.Fatalf("timeout cleanup used non-atomic status update: %q", *params.Status)
 		}
-		// Install g2 only on the reopen, at the moment the write lands — this is
-		// the ownership-check-to-update window. Every status is recorded, matching
-		// the default fakeBeadStore.Update, so a compensating write after the race
-		// is observable.
-		if *params.Status == "open" {
-			d.mu.Lock()
-			if worker.state == protocol.WorkerIdle && !d.assigningBeads[beadID] {
-				worker.state = protocol.WorkerReserved
-				worker.beadID = beadID
-				worker.setupReservedAt = now
-				worker.reservationGen++
-				d.assigningBeads[beadID] = true
-				d.attemptCounts[beadID] = 2
-				d.handoffCounts[beadID] = 2
-				d.worktreeByBead[beadID] = "/tmp/g2"
-				injected = true
-			}
-			d.mu.Unlock()
-		}
-
-		beadSrc.mu.Lock()
-		beadSrc.updated[beadID] = *params.Status
-		beadSrc.mu.Unlock()
 		return nil
+	}
+	beadSrc.statusIfFn = func(_ context.Context, id, expected, next string) (bool, error) {
+		if id != beadID || expected != "in_progress" || next != "open" {
+			t.Fatalf("timeout cleanup CAS = (%q, %q, %q), want (%q, %q, %q)", id, expected, next, beadID, "in_progress", "open")
+		}
+		beadSrc.mu.Lock()
+		defer beadSrc.mu.Unlock()
+		casCalled = true
+		if beadSrc.updated[beadID] != expected {
+			return false, nil
+		}
+		beadSrc.updated[beadID] = next
+		return true, nil
 	}
 
 	d.checkHeartbeats(context.Background())
+	if !casCalled {
+		t.Fatal("timeout cleanup did not conditionally reopen g1's bead")
+	}
+
+	// Install g2 immediately after g1 released its reservation. Because release
+	// and all shared g1 teardown happen in one lock-held transition, no g1
+	// cleanup remains that can clobber these successor values.
+	d.mu.Lock()
+	if worker.state != protocol.WorkerIdle || d.assigningBeads[beadID] {
+		d.mu.Unlock()
+		t.Fatalf("g1 did not finish cleanup before releasing reservation: state=%s assigning=%t", worker.state, d.assigningBeads[beadID])
+	}
+	worker.state = protocol.WorkerReserved
+	worker.beadID = beadID
+	worker.setupReservedAt = now
+	worker.reservationGen++
+	d.assigningBeads[beadID] = true
+	d.attemptCounts[beadID] = 2
+	d.handoffCounts[beadID] = 2
+	d.worktreeByBead[beadID] = "/tmp/g2"
+	d.mu.Unlock()
+	beadSrc.mu.Lock()
+	beadSrc.updated[beadID] = "in_progress"
+	beadSrc.mu.Unlock()
 
 	d.mu.Lock()
 	state, generation := worker.state, worker.reservationGen
@@ -1946,17 +1960,8 @@ func TestTimedOutReaperCleanupCannotClobberSuccessor(t *testing.T) {
 	status := beadSrc.updated[beadID]
 	beadSrc.mu.Unlock()
 
-	if injected {
-		if state != protocol.WorkerReserved || !assigning || attempts != 2 || handoffs != 2 || worktree != "/tmp/g2" {
-			t.Fatalf("g1 clobbered g2 tracking: state=%s assigning=%t attempts=%d handoffs=%d worktree=%q", state, assigning, attempts, handoffs, worktree)
-		}
-		if status != "in_progress" {
-			t.Fatalf("g1 reopened g2 bead: status=%q", status)
-		}
-		return
-	}
-	if state != protocol.WorkerIdle || generation != 2 || assigning || attempts != 0 || handoffs != 0 || worktree != "/tmp/g1" || status != "open" {
-		t.Fatalf("g1 cleanup = state=%s generation=%d assigning=%t attempts=%d handoffs=%d worktree=%q status=%q", state, generation, assigning, attempts, handoffs, worktree, status)
+	if state != protocol.WorkerReserved || generation != 3 || !assigning || attempts != 2 || handoffs != 2 || worktree != "/tmp/g2" || status != "in_progress" {
+		t.Fatalf("g1 clobbered g2 cleanup state: state=%s generation=%d assigning=%t attempts=%d handoffs=%d worktree=%q status=%q", state, generation, assigning, attempts, handoffs, worktree, status)
 	}
 }
 
