@@ -132,6 +132,40 @@ func TestRemoteGateConfigModes(t *testing.T) {
 	}
 }
 
+func TestKeychainPrivateKeyReference(t *testing.T) {
+	valid := func(ref string) config.RemoteGateConfig {
+		identity := config.GitHubAppIdentityConfig{Type: "github-app", AppID: 1, InstallationID: 2, PrivateKeyRef: ref}
+		return config.RemoteGateConfig{
+			Mode: config.RemoteGateModeGitHubPR,
+			GitHub: config.GitHubRemoteGateConfig{
+				Remote: "origin", Workflow: "ci.yml", AggregateCheck: "qg", MaxInFlight: 1,
+				PollMinInterval: time.Second, PollMaxInterval: time.Second, RunTimeout: time.Minute,
+				OutageFallbackAfter: time.Minute, CLI: config.GitHubCLIConfig{Executable: "gh"},
+				API: config.GitHubAPIConfig{BaseURL: "https://api.github.com"}, RuntimeIdentity: identity,
+				PolicyReconciliation: config.PolicyReconciliationConfig{Enabled: true, OwnedRulesetKey: "key", OwnedRulesetName: "name", DesiredTemplateHash: "hash", MaintenanceIdentity: identity},
+			},
+		}
+	}
+
+	for _, ref := range []string{"keychain:team:oro", "keychain:oro/github-app"} {
+		if err := config.ValidateRemoteGateConfig(valid(ref)); err != nil {
+			t.Errorf("reference %q rejected: %v", ref, err)
+		}
+	}
+	for _, ref := range []string{"keychain:", "/tmp/key", "$ORO_KEY", " keychain:oro", "keychain:oro\n"} {
+		err := config.ValidateRemoteGateConfig(valid(ref))
+		if err == nil || !strings.Contains(err.Error(), "runtime_identity.private_key_ref must be a nonempty keychain reference") {
+			t.Errorf("reference %q error = %v, want deterministic field-specific validation", ref, err)
+		}
+		maintenance := valid("keychain:valid")
+		maintenance.GitHub.PolicyReconciliation.MaintenanceIdentity.PrivateKeyRef = ref
+		err = config.ValidateRemoteGateConfig(maintenance)
+		if err == nil || !strings.Contains(err.Error(), "policy_reconciliation.maintenance_identity.private_key_ref must be a nonempty keychain reference") {
+			t.Errorf("maintenance reference %q error = %v, want deterministic field-specific validation", ref, err)
+		}
+	}
+}
+
 func writeRemoteGateConfig(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")
