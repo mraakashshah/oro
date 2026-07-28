@@ -92,11 +92,33 @@ func TestCredentialScopesAreNoninterchangeable(t *testing.T) {
 	for name, provider := range map[string]remotegate.CredentialSource{
 		"nil source":   nil,
 		"source error": &credentialSource{err: errors.New("secret-token source error")},
+		"transient source error": &credentialSource{err: errors.Join(
+			remotegate.ErrTransient,
+			errors.New("secret-token transient source error"),
+		)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := remotegate.NewRuntimeCredentialProvider(target, provider).Resolve(context.Background())
+			if name == "transient source error" {
+				if !errors.Is(err, remotegate.ErrTransient) {
+					t.Fatalf("error = %v, want wrapped ErrTransient", err)
+				}
+				if errors.Is(err, remotegate.ErrCredentialInvalid) {
+					t.Fatalf("error = %v, must not be classified as ErrCredentialInvalid", err)
+				}
+				if strings.Contains(err.Error(), "secret-token") {
+					t.Errorf("error leaked token: %q", err)
+				}
+				return
+			}
 			assertCredentialInvalidWithoutToken(t, err, "secret-token")
 		})
+	}
+	if _, err := remotegate.NewMaintenanceCredentialProvider(target, &credentialSource{err: errors.Join(
+		remotegate.ErrTransient,
+		errors.New("secret-token maintenance transient source error"),
+	)}).Resolve(context.Background()); !errors.Is(err, remotegate.ErrTransient) || errors.Is(err, remotegate.ErrCredentialInvalid) || strings.Contains(err.Error(), "secret-token") {
+		t.Errorf("maintenance transient source error = %v, want sanitized wrapped ErrTransient", err)
 	}
 
 	malformedTarget := target

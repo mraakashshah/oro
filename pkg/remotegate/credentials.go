@@ -134,6 +134,9 @@ func resolveCredential(ctx context.Context, target CredentialTarget, source Cred
 		Permissions: clonePermissions(permissions),
 	})
 	if err != nil {
+		if errors.Is(err, ErrTransient) {
+			return Credential{}, fmt.Errorf("%w: credential source unavailable", ErrTransient)
+		}
 		return Credential{}, invalidCredential("credential source rejected request")
 	}
 	if !validCredential(credential, target, role, permissions, time.Now()) {
