@@ -312,7 +312,7 @@ func validateChange(change Change) error {
 }
 
 func validateEvidence(evidence Evidence) error {
-	if strings.TrimSpace(evidence.ID) == "" || strings.TrimSpace(evidence.CandidateSHA) == "" || strings.TrimSpace(evidence.TestedTreeSHA) == "" {
+	if strings.TrimSpace(evidence.ID) == "" || strings.TrimSpace(evidence.CandidateSHA) == "" || strings.TrimSpace(evidence.TestedTreeSHA) == "" || strings.TrimSpace(evidence.PolicyHash) == "" {
 		return invalidRequest("evidence identity is incomplete")
 	}
 	if err := validateChange(evidence.Change); err != nil {

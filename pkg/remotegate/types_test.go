@@ -8,18 +8,32 @@ import (
 	"testing"
 
 	"oro/pkg/remotegate"
+	"oro/pkg/remotegate/github"
 )
+
+type providerAdapterContract struct {
+	Client github.Client
+}
 
 func TestRemoteGateContracts(t *testing.T) {
 	identity := remotegate.Repository{Host: "code.example", Owner: "oro", Name: "oro"}
 	target := remotegate.Target{Repository: identity, Ref: "main", SHA: "base"}
 	candidate := remotegate.Candidate{Repository: identity, Ref: "refs/oro/candidate/1", SHA: "candidate", TreeSHA: "tree"}
 	change := remotegate.Change{ID: "change-1", Candidate: candidate, Target: target}
-	evidence := remotegate.Evidence{ID: "evidence-1", Change: change, CandidateSHA: candidate.SHA, Target: target, TestedTreeSHA: candidate.TreeSHA}
+	evidence := remotegate.Evidence{ID: "evidence-1", Change: change, CandidateSHA: candidate.SHA, Target: target, TestedTreeSHA: candidate.TreeSHA, PolicyHash: "policy"}
 	prepared := remotegate.PreparedSquash{AttemptKey: "attempt-1", Change: change, Candidate: candidate, Target: target, Evidence: evidence, SHA: "squash", ParentSHA: target.SHA, TreeSHA: candidate.TreeSHA, LocalRef: "refs/oro/integrations/attempt-1"}
 
 	assertClientSignature(t)
 	assertTransportNeutral(t, contractTypes())
+	if !isTransportNeutral(reflect.TypeOf((*context.Context)(nil)).Elem()) {
+		t.Fatal("context.Context must remain transport-neutral")
+	}
+	if !isTransportNeutral(reflect.TypeOf((*error)(nil)).Elem()) {
+		t.Fatal("error must remain transport-neutral")
+	}
+	if isTransportNeutral(reflect.TypeOf(providerAdapterContract{})) {
+		t.Fatal("concrete provider adapter must not be transport-neutral")
+	}
 	for _, class := range []error{
 		remotegate.ErrInvalidRequest,
 		remotegate.ErrDeterministic,
@@ -27,6 +41,8 @@ func TestRemoteGateContracts(t *testing.T) {
 		remotegate.ErrAuth,
 		remotegate.ErrConfig,
 		remotegate.ErrAmbiguous,
+		remotegate.ErrInvalidPolicyEvidence,
+		remotegate.ErrWorkflowIneligible,
 	} {
 		if class == nil {
 			t.Fatal("remote-gate error class is nil")
@@ -57,27 +73,30 @@ func TestRemoteGateContracts(t *testing.T) {
 	mismatchedEvidenceTarget.Target.SHA = "other-base"
 	mismatchedEvidenceTree := evidence
 	mismatchedEvidenceTree.TestedTreeSHA = "other-tree"
+	emptyEvidencePolicyHash := evidence
+	emptyEvidencePolicyHash.PolicyHash = ""
 	mismatchedParent := prepared
 	mismatchedParent.ParentSHA = "other-base"
 	mismatchedTree := prepared
 	mismatchedTree.TreeSHA = "other-tree"
 
 	for name, request := range map[string]any{
-		"nil":                  nil,
-		"incomplete preflight": remotegate.PreflightRequest{},
-		"incomplete publish":   remotegate.PublishRequest{},
-		"incomplete observe":   remotegate.ObserveGateRequest{},
-		"incomplete prepare":   remotegate.PrepareSquashRequest{},
-		"incomplete prepared":  remotegate.PreparedSquash{},
-		"candidate repository": remotegate.PublishRequest{Candidate: mismatchedRepository, Target: target},
-		"preflight repository": remotegate.PreflightRequest{Repository: identity, Target: remotegate.Target{Repository: mismatchedRepository.Repository, Ref: target.Ref, SHA: target.SHA}},
-		"change candidate":     remotegate.ObserveGateRequest{Change: mismatchedChange, Candidate: candidate, Target: target},
-		"change target":        remotegate.ObserveGateRequest{Change: change, Candidate: candidate, Target: remotegate.Target{Repository: identity, Ref: "release", SHA: target.SHA}},
-		"evidence candidate":   remotegate.PrepareSquashRequest{Change: change, Candidate: candidate, Target: target, Evidence: mismatchedEvidenceCandidate},
-		"evidence target":      remotegate.PrepareSquashRequest{Change: change, Candidate: candidate, Target: target, Evidence: mismatchedEvidenceTarget},
-		"evidence tree":        remotegate.PrepareSquashRequest{Change: change, Candidate: candidate, Target: target, Evidence: mismatchedEvidenceTree},
-		"prepared parent":      mismatchedParent,
-		"prepared tree":        mismatchedTree,
+		"nil":                   nil,
+		"incomplete preflight":  remotegate.PreflightRequest{},
+		"incomplete publish":    remotegate.PublishRequest{},
+		"incomplete observe":    remotegate.ObserveGateRequest{},
+		"incomplete prepare":    remotegate.PrepareSquashRequest{},
+		"incomplete prepared":   remotegate.PreparedSquash{},
+		"candidate repository":  remotegate.PublishRequest{Candidate: mismatchedRepository, Target: target},
+		"preflight repository":  remotegate.PreflightRequest{Repository: identity, Target: remotegate.Target{Repository: mismatchedRepository.Repository, Ref: target.Ref, SHA: target.SHA}},
+		"change candidate":      remotegate.ObserveGateRequest{Change: mismatchedChange, Candidate: candidate, Target: target},
+		"change target":         remotegate.ObserveGateRequest{Change: change, Candidate: candidate, Target: remotegate.Target{Repository: identity, Ref: "release", SHA: target.SHA}},
+		"evidence candidate":    remotegate.PrepareSquashRequest{Change: change, Candidate: candidate, Target: target, Evidence: mismatchedEvidenceCandidate},
+		"evidence target":       remotegate.PrepareSquashRequest{Change: change, Candidate: candidate, Target: target, Evidence: mismatchedEvidenceTarget},
+		"evidence tree":         remotegate.PrepareSquashRequest{Change: change, Candidate: candidate, Target: target, Evidence: mismatchedEvidenceTree},
+		"empty evidence policy": remotegate.PrepareSquashRequest{Change: change, Candidate: candidate, Target: target, Evidence: emptyEvidencePolicyHash},
+		"prepared parent":       mismatchedParent,
+		"prepared tree":         mismatchedTree,
 	} {
 		if err := remotegate.ValidateRequest(request); !errors.Is(err, remotegate.ErrInvalidRequest) {
 			t.Errorf("ValidateRequest(%s) error = %v, want ErrInvalidRequest", name, err)
@@ -135,55 +154,57 @@ func contractTypes() []reflect.Type {
 
 func assertTransportNeutral(t *testing.T, roots []reflect.Type) {
 	t.Helper()
-	seen := make(map[reflect.Type]struct{})
 	for _, root := range roots {
-		walkContractType(t, root, seen)
+		if !isTransportNeutral(root) {
+			t.Errorf("contract type %s exposes a provider transport package", root)
+		}
 	}
 }
 
-func walkContractType(t *testing.T, typ reflect.Type, seen map[reflect.Type]struct{}) {
-	t.Helper()
+func isTransportNeutral(typ reflect.Type) bool {
+	return !hasProviderTransport(typ, make(map[reflect.Type]struct{}))
+}
+
+func hasProviderTransport(typ reflect.Type, seen map[reflect.Type]struct{}) bool {
 	if typ == nil {
-		return
+		return false
 	}
 	if _, ok := seen[typ]; ok {
-		return
+		return false
 	}
 	seen[typ] = struct{}{}
 	if packagePathIsProviderTransport(typ.PkgPath()) {
-		t.Errorf("contract type %s exposes provider transport package %q", typ, typ.PkgPath())
+		return true
 	}
 	switch typ.Kind() {
 	case reflect.Array, reflect.Pointer, reflect.Slice:
-		walkContractType(t, typ.Elem(), seen)
+		return hasProviderTransport(typ.Elem(), seen)
 	case reflect.Map:
-		walkContractType(t, typ.Key(), seen)
-		walkContractType(t, typ.Elem(), seen)
+		return hasProviderTransport(typ.Key(), seen) || hasProviderTransport(typ.Elem(), seen)
 	case reflect.Struct:
 		for index := 0; index < typ.NumField(); index++ {
-			walkContractType(t, typ.Field(index).Type, seen)
+			if hasProviderTransport(typ.Field(index).Type, seen) {
+				return true
+			}
 		}
 	case reflect.Interface:
 		for index := 0; index < typ.NumMethod(); index++ {
 			method := typ.Method(index).Type
 			for input := 0; input < method.NumIn(); input++ {
-				walkContractType(t, method.In(input), seen)
+				if hasProviderTransport(method.In(input), seen) {
+					return true
+				}
 			}
 			for output := 0; output < method.NumOut(); output++ {
-				walkContractType(t, method.Out(output), seen)
+				if hasProviderTransport(method.Out(output), seen) {
+					return true
+				}
 			}
-		}
-	}
-}
-
-func packagePathIsProviderTransport(path string) bool {
-	parts := strings.FieldsFunc(strings.ToLower(path), func(r rune) bool {
-		return r == '/' || r == '.' || r == '-'
-	})
-	for _, part := range parts {
-		if part == "github" || part == "gh" {
-			return true
 		}
 	}
 	return false
+}
+
+func packagePathIsProviderTransport(path string) bool {
+	return strings.HasPrefix(strings.ToLower(path), "oro/pkg/remotegate/")
 }
