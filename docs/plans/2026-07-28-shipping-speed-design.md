@@ -1,7 +1,7 @@
 # Design: Reduce Oro's Time-to-Ship
 
 **Date:** 2026-07-28
-**Status:** Revision 3 — post second adversarial review (rev 1 FAIL, rev 2 FAIL)
+**Status:** Revision 4 — post third adversarial review (rev 1–3 FAIL)
 **Related:** `docs/audits/2026-07-28-architecture-review.md`
 
 ---
@@ -22,7 +22,7 @@ Decomposition converts the parent to `--type=epic` (`decompose_prompt.go:51`), r
 
 | Signal | Value | Source |
 |---|---|---|
-| `OVERSIZED_BEAD` escalations | **1,104** | live `state.db` |
+| `OVERSIZED_BEAD` escalations | **1,104** all-time (690 still pending) | live `state.db` |
 | `decompose` ops runs | 214 of 240 | `ops_runs` |
 | Assignments per executed task | **3.5×** | `assignments` |
 | Assignments in worst 1% of tasks | **35%** | `assignments` |
@@ -88,19 +88,34 @@ If `check_dead_exports` dominates, the correct fix is a single `go list`-based c
 | `pkg/protocol/types_test.go:287-539` | 6 test functions |
 | `scripts/test_managerless_oversized_e2e.sh` | Orphaned e2e (reads `CountDistinctModules` at `:117`); tests a flow that ceases to exist |
 
-**`retryOversizedBead` is removed as a whole**, not repointed. Verified: it has exactly one caller (`dispatcher.go:9815`) and its short-circuits at `escalation_precheck.go:109-118` serve no other escalation type — every other type has its own predicate (`:9805`–`:9817`).
+**The function `retryOversizedBead` is deleted entirely.** Verified: it has exactly one caller (`dispatcher.go:9815`) and its short-circuits at `escalation_precheck.go:109-118` serve no other escalation type — every other type has its own predicate (`:9805`–`:9817`).
 
-> **The switch case must be repointed, not deleted.** `dispatcher.go:9803-9823` ends in `default: return true` ("Unknown escType: always retry"). Removing `case protocol.EscOversizedBead:` (`:9814`) drops control into that arm and converts all **1,104** open escalations into permanent retries — the exact failure this section claims to prevent. Required:
+> **But its `switch` case is repointed, not removed.** (These are distinct: the *function* goes; the *case label* stays with a new body.) `dispatcher.go:9803-9823` ends in `default: return true` ("Unknown escType: always retry"). Removing `case protocol.EscOversizedBead:` (`:9814`) drops control into that arm and converts the **690 currently-pending** `OVERSIZED_BEAD` escalations into permanent retries (1,104 is the all-time total; 414 are already `acked`) — the exact failure this section claims to prevent. Required:
 > ```go
 > case protocol.EscOversizedBead:
-> 	return false   // gate deleted; escalation is stale, drain it
+>     return false   // gate deleted; escalation is stale, drain it
 > ```
 > plus a regression test asserting `shouldRetryEscalation` returns `false` for `OVERSIZED_BEAD`, and a one-time drain in the same change:
-> `UPDATE escalations SET status='acked' WHERE type='OVERSIZED_BEAD' AND status='pending'`
+> ```sql
+> UPDATE escalations SET status='acked', acked_at=datetime('now')
+>  WHERE type='OVERSIZED_BEAD' AND status='pending';
+> ```
+> Schema verified against the live DB: `status` is bare `TEXT DEFAULT 'pending'` with no CHECK constraint, the only values in use are `pending` (1,245) and `acked` (2,950), and `acked_at` must be set alongside — the rev-3 draft omitted it.
 
-**Remaining consumers become dead branches.** `dispatcher.go:7017` is the **sole producer** of `EscOversizedBead` (verified: only `FormatEscalation` call site). After deletion these still reference an escalation nothing raises: `:9440-9452`, `:9666`, `:9773`, `:9850`, `:9906`, `:9941-9980`, `:10165-10178`, and `factoryhealth/health.go:1013`. They are harmless but must be enumerated and consciously left or removed — not discovered later.
+**Remaining consumers — two are load-bearing, six are inert.** `dispatcher.go:7017` is the **sole producer** of `EscOversizedBead` (verified: only `FormatEscalation` call site). After deletion the type is never raised again, but *existing* pending rows still need to drain, and the drain depends on two of these sites.
 
-**Oversized becomes a review verdict, not an admission gate.** A too-large task is admitted, attempted, and either passes (it wasn't too large) or fails review. Note this routes through `routeReviewOpsRun` (`ops_runs.go:460`), **not** through `EscOversizedBead` — see C2.
+> **MUST LEAVE — removing either strands the 690 pending rows forever:**
+>
+> - **`dispatcher.go:9773`** (the `EscOversizedBead` case in `routedOpsRunType`). Verified: the primary sweep `retryPendingEscalations` (`:9642`) **skips these rows entirely** — `shouldSkipPendingEscalationRetry` (`:9664-9667`) returns true whenever `d.ops != nil`, which is always true in production. So `routePendingRoutableEscalations` (`:9669-9729`) is the **only** sweep that acks them, and it admits rows solely via `isRoutableEscalationType` (`:9702`) → `routedOpsRunType` → this case. Delete it and both sweeps skip: the rows pend forever, re-queried every cycle, never terminal.
+> - **`factoryhealth/health.go:1013`**. Historical rows retain `type='OVERSIZED_BEAD'`; dropping it makes `IsKnownEscalationType` false for them, which feeds the *first* clause of `shouldSkipPendingEscalationRetry` (`:9665`) and health-metric classification.
+>
+> The one-time `UPDATE` masks this locally but not for rows created after it, nor on any other project's `state.db`, nor on a restored backup. Leave both until the pending count is verified zero across all state DBs.
+
+**Genuinely inert** (safe to remove or leave): `:9440-9452`, `:9666`, `:9850`, `:9906`, `:9941-9980`, `:10165-10178`.
+
+**Oversized becomes a review verdict, not an admission gate.** A too-large task is admitted, attempted, and either passes (it wasn't too large) or fails review — routing through `routeReviewOpsRun` (`ops_runs.go:460`), **not** through `EscOversizedBead`.
+
+This means no new escalation is raised for oversized work and none is added by this design. That is deliberate: the deleted gate never measured size, so it protected nothing, and simulating replacement coverage would be dishonest. The `OpsDecompose` one-shot survives only for whatever residual paths spawn it — see C2's recorded contradiction.
 
 **Acceptance (runnable):**
 ```
@@ -121,7 +136,7 @@ Assert: exit 0
 
 > *"Create the fewest child tasks that each deliver an independently verifiable outcome. Prefer rewriting the acceptance criteria to the minimum that satisfies the intent over splitting the work."*
 
-This still lands the intended behavior change — decomposition must justify itself against a simpler alternative — for the residual paths that spawn `OpsDecompose`, at a fraction of the surface.
+**Stated honestly: after C1 this is a no-op.** Verified — `d.ops.Decompose` has exactly two call sites (`dispatcher.go:9910`, `ops_runs.go:463`), both downstream of `EscOversizedBead` only, and `ops_runs.go:463` merely replays already-persisted `ops_runs` rows on startup (drains once). There are no residual live spawn paths. It is landed now because it is one line and it makes the guidance correct *if* the retry-exhaustion trigger below is ever wired — not because it buys throughput today.
 
 **Unresolved contradiction, recorded not fixed:** `ops.go:73` documents `OpsDecompose` as *"spawned when a bead exhausts all worker retry attempts,"* but the only wired spawn is the oversized path that C1 removes. Either the doc comment is aspirational or a retry-exhaustion trigger was intended and never wired. Resolve before building anything further on decompose.
 
@@ -169,7 +184,17 @@ The corrected audit finding stands: CI catches these defects, **CI is red on 4 o
 runCIProbe(ctx, worktree, gh, "run", "list", "--branch", targetBranch,
     "--limit", "100", "--json", "databaseId,workflowDatabaseId,workflowName,conclusion,url")
 ```
-with `errDetectorSkipped` on missing `gh` (`:182`) and on unauthenticated (`:202`) — **fail-open is already built**. Do not reimplement.
+with `errDetectorSkipped` on missing `gh` (`:182`) and on unauthenticated (`:202`) — the fail-open logic already exists.
+
+**But it is not callable from the dispatcher.** Verified: `ciDetector` (`:179`), `errDetectorSkipped` (`:32`), `ciAuthenticated` (`:260`), `runCIProbe` (`:273`), `latestFailingCIRuns` (`:295`) are **all unexported**. The only exported entries are `RunBuiltins`, `RunBuiltin`, `RunDetectScript` — and `RunBuiltin` signals a skip as a plain `fmt.Errorf` (`:94`), distinguishable from a genuine failure only by string match, while `RunBuiltins` would run all four detectors on every admission check. Both return `[]Candidate`, not a red/green answer.
+
+**Therefore: add a narrow exported wrapper; do not duplicate the probe.** Something like:
+```go
+func MainCIStatus(ctx context.Context, workdir, branch string) (red, known bool, err error)
+```
+returning `known=false` where `errDetectorSkipped` fires, so "unknown" and "green" are distinguishable at the call site. Without that distinction the implementer must treat every error as admit, and the gate never fires.
+
+**Hook:** `tryAssignBatch` (`dispatcher.go:6036-6042`) already opens with `observeStorageController` / `storageAdmissionAllowed` returning `nil` to pause — an exact precedent for this shape. The CI check goes immediately after.
 
 **Sequencing:** must land after `main` is green (phase 1), or it halts the factory on arrival.
 
@@ -253,13 +278,13 @@ Therefore the gate **only fails on increase and never writes**. Lowering the bas
 
 | Risk | Mitigation |
 |---|---|
-| Deleting the gate admits genuinely huge tasks | They fail review and route to decompose via the existing path. The gate never measured size anyway |
-| Stranded `OVERSIZED_BEAD` escalations retry forever | `retryOversizedBead` removed wholesale in the same change as the gate (C1) |
+| Deleting the gate admits genuinely huge tasks | They fail review, routing through `routeReviewOpsRun` (`ops_runs.go:460`) — **not** decompose. No replacement escalation is added; the deleted gate measured AC citation count, never size |
+| Stranded `OVERSIZED_BEAD` escalations retry forever | Function `retryOversizedBead` deleted, but its `switch` case **repointed to `return false`** (not removed), `:9773` and `health.go:1013` left in place, plus a one-time drain — all in the same change as the gate (C1) |
 | Scoped tests hide cross-package regressions | Reverse-dep closure via `-test`; full gate mandatory pre-merge; scope var stripped from the pre-merge env |
 | Empty scope silently passes | Hard-fail, not fallback (C4a) |
 | C3 flakes under concurrent worktrees | Host-isolation audit is a prerequisite task; host-touching tests go to the serial lane |
 | `balanced` review lets defects through | Ships last, behind per-tier metrics; one-line revert |
-| C5a blocks unrelated work via baseline conflicts | Report-only in worktrees; enforcing only pre-merge |
+| C5a blocks unrelated work via baseline conflicts | Check-only: the gate fails on increase and **never writes**. Lowering the baseline is a separate human-committed step |
 | C5b breaks generated gates | Fails open with no bead store |
 
 ### Paper tigers
@@ -284,7 +309,7 @@ Therefore the gate **only fails on increase and never writes**. Lowering the bas
 |---|---|---|
 | 0 | C0 profiling; C5d (boot call) | Lane timing breakdown published (state the measured grep count; C3 raises it ~10%) |
 | 1 | C3 host-isolation audit → C3 (`cmd/` in gate), fix 3 fixtures | Full suite **and CI** green on `main` |
-| 2 | C1 (delete gate + repoint switch case + drain 1,104 rows), C2 (prompt string), C5c | `OVERSIZED_BEAD` → 0 **and** escalation queue drains — verify both; a stuck queue is the C1 failure mode |
+| 2 | C1 (delete gate + repoint switch case + drain 690 pending rows), C2 (prompt string), C5c | `OVERSIZED_BEAD` → 0 **and** `SELECT count(*) FROM escalations WHERE type='OVERSIZED_BEAD' AND status='pending'` = 0. A stuck queue is the C1 failure mode — assert it, don't eyeball it |
 | 3 | C3b (pause admission on red `main`), C5a (check-only ratchet, baseline now) | Admission pauses correctly on a seeded red run; never blocks when `gh` is absent |
 | 4 | C5b (promise expiry) | Stale promises detected in a seeded case |
 | 5 | C4a — **only if C0 justifies it** | Every `$scope` element accepted by `go list`; retry wall-clock down; zero escaped defects |
@@ -295,7 +320,7 @@ C2 moves to phase 2 alongside C1 — it is now a single prompt string, and seque
 ## Epic acceptance
 
 ```
-Cmd: git checkout main && ! rg -q 'CountDistinctModules' pkg/ cmd/ && ORO_QG_CONTEXT=local ./scripts/quality_gate.sh
+Cmd: git checkout main && ! rg -q 'CountDistinctModules' pkg/ cmd/ scripts/ && ORO_QG_CONTEXT=local ./scripts/quality_gate.sh && [ "$(sqlite3 ~/.oro/projects/oro/state.db "SELECT count(*) FROM escalations WHERE type='OVERSIZED_BEAD' AND status='pending'")" = 0 ]
 Assert: exit 0
 ```
 (Symbol gone repo-wide **and** the full local gate green with `cmd/` in the test lane.)
