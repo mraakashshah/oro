@@ -229,6 +229,12 @@ func TestRemoteGateLifecycleContract(t *testing.T) {
 	missingTargetRepository := create
 	missingTargetRepository.EphemeralTarget.Target.Repository = remotegate.Repository{}
 	reject("missing ephemeral target repository", missingTargetRepository)
+	missingProjectID := create
+	missingProjectID.EphemeralTarget.ProjectID = ""
+	reject("missing ephemeral target project ID", missingProjectID)
+	missingEpicID := create
+	missingEpicID.EphemeralTarget.EpicID = ""
+	reject("missing ephemeral target epic ID", missingEpicID)
 	deleteExpectedAbsent := delete
 	deleteExpectedAbsent.Lease.ExpectedAbsent = true
 	deleteExpectedAbsent.Lease.ExpectedSHA = ""
