@@ -1,7 +1,7 @@
 # Design: Reduce Oro's Time-to-Ship
 
 **Date:** 2026-07-28
-**Status:** Revision 2 — post adversarial review (rev 1 verdict: FAIL)
+**Status:** Revision 3 — post second adversarial review (rev 1 FAIL, rev 2 FAIL)
 **Related:** `docs/audits/2026-07-28-architecture-review.md`
 
 ---
@@ -86,40 +86,50 @@ If `check_dead_exports` dominates, the correct fix is a single `go list`-based c
 | `pkg/dispatcher/dispatcher.go:7011-7022` | The admission gate, including its `isEpic`/`hasChildren` bypass |
 | `pkg/dispatcher/escalation_precheck.go:119` | The retry predicate — **must land in the same change or the build breaks** |
 | `pkg/protocol/types_test.go:287-539` | 6 test functions |
+| `scripts/test_managerless_oversized_e2e.sh` | Orphaned e2e (reads `CountDistinctModules` at `:117`); tests a flow that ceases to exist |
 
-**`retryOversizedBead` must be removed as a whole**, not merely repointed. Its surrounding short-circuits at `escalation_precheck.go:109-118` (closed / epic / `hasChildren` + `validateDecomposeResult`) exist only to service this escalation type. Leaving the predicate while removing the gate strands the 1,104 open `OVERSIZED_BEAD` escalations on a signal nothing raises — they would retry forever.
+**`retryOversizedBead` is removed as a whole**, not repointed. Verified: it has exactly one caller (`dispatcher.go:9815`) and its short-circuits at `escalation_precheck.go:109-118` serve no other escalation type — every other type has its own predicate (`:9805`–`:9817`).
 
-**Oversized becomes a review verdict, not an admission gate.** A genuinely too-large task is admitted, attempted, and either passes (in which case it was not too large) or fails review and routes to decompose through the existing path.
+> **The switch case must be repointed, not deleted.** `dispatcher.go:9803-9823` ends in `default: return true` ("Unknown escType: always retry"). Removing `case protocol.EscOversizedBead:` (`:9814`) drops control into that arm and converts all **1,104** open escalations into permanent retries — the exact failure this section claims to prevent. Required:
+> ```go
+> case protocol.EscOversizedBead:
+> 	return false   // gate deleted; escalation is stale, drain it
+> ```
+> plus a regression test asserting `shouldRetryEscalation` returns `false` for `OVERSIZED_BEAD`, and a one-time drain in the same change:
+> `UPDATE escalations SET status='acked' WHERE type='OVERSIZED_BEAD' AND status='pending'`
+
+**Remaining consumers become dead branches.** `dispatcher.go:7017` is the **sole producer** of `EscOversizedBead` (verified: only `FormatEscalation` call site). After deletion these still reference an escalation nothing raises: `:9440-9452`, `:9666`, `:9773`, `:9850`, `:9906`, `:9941-9980`, `:10165-10178`, and `factoryhealth/health.go:1013`. They are harmless but must be enumerated and consciously left or removed — not discovered later.
+
+**Oversized becomes a review verdict, not an admission gate.** A too-large task is admitted, attempted, and either passes (it wasn't too large) or fails review. Note this routes through `routeReviewOpsRun` (`ops_runs.go:460`), **not** through `EscOversizedBead` — see C2.
 
 **Acceptance (runnable):**
 ```
-Cmd: ! rg -q 'CountDistinctModules' pkg/ cmd/ && go build ./... && go test ./pkg/dispatcher/... ./pkg/protocol/...
+Cmd: ! rg -q 'CountDistinctModules' pkg/ cmd/ scripts/ && make stage-assets && go build ./cmd/... ./internal/... ./pkg/... && go test ./pkg/dispatcher/... ./pkg/protocol/...
 Assert: exit 0
 ```
+(`go build ./...` cannot pass here — `archive/` and `_assets`, per the corrections table above.)
 
 **Follow-up, not in scope:** if an outlier catcher proves necessary, wire the existing `pkg/taskcontract` (re-deriving its range from live data) rather than adding new config. That pays down unwired debt instead of adding a gate.
 
 ---
 
-### C2 — Give "oversized" a simplify exit
+### C2 — Reduce decomposition fan-out *(descoped)*
 
-Today `routedOpsRunType` (`dispatcher.go:9771`) maps `EscOversizedBead → ops.OpsDecompose` and nothing else. The system cannot respond to "too big" with "build less."
+**Rev 2 proposed a three-verdict grammar. That is withdrawn.** C1 deletes `dispatcher.go:7017`, the sole producer of `EscOversizedBead` — so `OpsDecompose` would never spawn, and a five-file grammar change plus parser rewrite would ship into a code path with no trigger. Rev 2 scheduled it two phases *after* C1, guaranteeing it was dead on arrival.
 
-**The verdict grammar must change atomically with the parser.** `parseDecomposeOutput` (`decompose_prompt.go:65-75`) recognizes only `RESOLVED` and `FAILED`, and `ops.Verdict` has exactly those two constants (`ops.go:172-173`). Emitting `VERDICT: decompose` would parse as `VerdictFailed`. Compounding this, `decompose_prompt.go:52` *already* prints `VERDICT: resolved` for a **successful decomposition** — so "resolved" is currently overloaded across two distinct outcomes, and the parser is a substring scan in which `RESOLVED` wins.
+**What remains is one string.** `decompose_prompt.go:44` currently reads *"Create 2-4 smaller child tasks."* Replace with:
 
-**One task owns all of:**
+> *"Create the fewest child tasks that each deliver an independently verifiable outcome. Prefer rewriting the acceptance criteria to the minimum that satisfies the intent over splitting the work."*
 
-| File | Change |
-|---|---|
-| `pkg/ops/decompose_prompt.go:36-60` | Require one of `simplify` / `decompose` / `resolved`, chosen *before* creating children; remove the hardcoded "Create 2-4 smaller child tasks" (`:44`) |
-| `pkg/ops/decompose_prompt.go:65-75` | Extend `parseDecomposeOutput` to the three-verdict grammar; disambiguate the overloaded `resolved` |
-| `pkg/ops/ops.go:172-173`, `:867-868` | Add `VerdictSimplify`; update the parse dispatch |
-| `pkg/dispatcher/dispatcher.go:9910` | Handle `VerdictSimplify` |
-| `pkg/dispatcher/ops_runs.go:463` | Currently **discards** the result channel on startup reroute — must not drop the new verdict |
+This still lands the intended behavior change — decomposition must justify itself against a simpler alternative — for the residual paths that spawn `OpsDecompose`, at a fraction of the surface.
 
-**Reuse, do not build.** The AC-rewrite machinery already exists as `ops.OpsWriteAC` (`ops.go:70`, routed at `ops_runs.go:469`). `VerdictSimplify` routes there.
+**Unresolved contradiction, recorded not fixed:** `ops.go:73` documents `OpsDecompose` as *"spawned when a bead exhausts all worker retry attempts,"* but the only wired spawn is the oversized path that C1 removes. Either the doc comment is aspirational or a retry-exhaustion trigger was intended and never wired. Resolve before building anything further on decompose.
 
-**Acceptance:** feed `parseDecomposeOutput` a realistic transcript for each of the three verdicts and assert the mapping, including a transcript containing both "resolved" and "decompose" tokens.
+**Acceptance:**
+```
+Cmd: rg -q 'fewest child tasks' pkg/ops/decompose_prompt.go && ! rg -q '2-4 smaller' pkg/ops/decompose_prompt.go && go test ./pkg/ops/...
+Assert: exit 0
+```
 
 ---
 
@@ -143,13 +153,25 @@ Separately, `should_enforce_go_coverage_threshold` (`:776-793`) derives its diff
 
 ---
 
-### C3b — Make merge consult CI *(new)*
+### C3b — Pause admission when `main`'s CI is red *(rescoped)*
 
-The audit's corrected finding: CI catches these defects and **CI is red on 4 of the last 5 `main` runs**, yet merges proceed, because nothing in the dispatcher's merge path reads CI status. Oro's merge gate and its CI disagree about "green" and only the weaker one is enforced.
+The corrected audit finding stands: CI catches these defects, **CI is red on 4 of the last 5 `main` runs**, and merges proceed anyway.
 
-**Task:** before fast-forward merge, query the head commit's CI conclusion and refuse on `failure`. `pkg/remotegate` already models exactly this (GitHub CLI, workflow status, `MaxInFlight`) and currently has **zero rows** — this is the capability it was built for. Either wire it or implement a minimal `gh run list --json conclusion` check.
+**Rev 2's shape was unworkable and its justification was wrong.** Two verified errors:
 
-**Fails open:** if CI status is unreachable or pending beyond a timeout, log and admit. Never block merges on an unreachable API.
+- `ci.yml:3-7` triggers **only** on `push: [main]` and `pull_request: [main]`. Oro ff-merges `agent/*` branches locally and never opens PRs, so the commit at pre-FF time has never had a CI run and never will. Combined with fail-open, a pre-merge check admits 100% of merges — a no-op that reads as shipped.
+- The claim that `pkg/remotegate` "already models this (GitHub CLI, workflow status, `MaxInFlight`)" is false. Verified: `MaxInFlight` does not exist in the package, nothing in it invokes `gh` (`github/preflight.go:17` takes an injected `APIReader`), and it inspects workflow *registration*, never run *conclusions*. That sentence is withdrawn.
+
+**Correct shape — gate admission, not merge.** Before assigning new work, if `main`'s most recent CI conclusion is `failure`, pause the assign loop and escalate. This reads a commit CI has actually observed, needs no merge-path surgery, and directly serves the "red CI runs on `main`: 4 → 0" metric.
+
+**Reuse `pkg/janitor`.** `detect.go:201` already runs exactly the needed query:
+```go
+runCIProbe(ctx, worktree, gh, "run", "list", "--branch", targetBranch,
+    "--limit", "100", "--json", "databaseId,workflowDatabaseId,workflowName,conclusion,url")
+```
+with `errDetectorSkipped` on missing `gh` (`:182`) and on unauthenticated (`:202`) — **fail-open is already built**. Do not reimplement.
+
+**Sequencing:** must land after `main` is green (phase 1), or it halts the factory on arrival.
 
 ---
 
@@ -172,13 +194,15 @@ pat=$(printf '%s|' $changed); pat="(^| )(${pat%|})( |\$)"
 scope=$(go list -test -f '{{.ImportPath}} {{join .Deps " "}}' \
           ./cmd/... ./internal/... ./pkg/... |
         grep -E "$pat" | awk '{print $1}' |
-        sed -E 's/ \[.*\]$//; s/\.test$//' | sort -u)
+        sed -E 's/ \[.*\]$//; s/\.test$//; s/_test$//' | sort -u)
 if [ -z "$scope" ]; then
     echo "FAIL: empty test scope — refusing to run a vacuous lane"
     return 1
 fi
 go test $race_flag $scope
 ```
+
+`$base` reuses `mutation_base_ref()` (`quality_gate.sh:751-773`) — do not introduce a second base concept. The `s/_test$//` arm is **required**: without it the pipeline emits 8 unbuildable names for a `pkg/config` change (`oro/pkg/config_test`, `oro/pkg/dispatcher_test`, …) and every retry errors. Acceptance must assert every element of `$scope` is accepted by `go list`.
 
 `-test` is load-bearing: a plain package's `.Deps` omits test-only imports, so the `cmd/oro`-depends-on-`pkg/config` case only appears via synthetic `.test` rows. Verified to produce a 17-package closure for a `pkg/config` change.
 
@@ -211,7 +235,9 @@ count=$(rg -c --glob '!*_test.go' 'oro:testonly' pkg/ internal/ cmd/ 2>/dev/null
 
 `rg -c` exits 1 on no matches, so `2>/dev/null` plus `s+0` is required or the ratchet crashes at zero. Note it counts *lines*: two annotations on one line undercount. Acceptable — the ratchet only needs monotonicity.
 
-**Concurrency policy (required).** The count is whole-tree, not diff-scoped, and re-baselining writes a file inside the worktree. With concurrent workers this produces conflicts on a file outside their own diff, and a worktree branched before a sibling's increase fails on debt it did not add. Therefore: **report-only in worker worktrees; enforcing only on the pre-merge run**, which is single-threaded and owns the baseline commit.
+**Check-only. No auto-ratchet.** Rev 2 proposed "report-only in worktrees, enforcing pre-merge." That is unimplementable on three counts, all verified: the pre-merge gate **also** runs in a worktree (`dispatcher.go:3130` `finalWorktree`, `:2952` for epic QG), so `--git-dir`/`--git-common-dir` cannot discriminate; that worktree is **deleted** (`defer d.worktrees.Remove`, `:2957`), so a downward re-baseline is discarded every time; and the main phase is explicitly lockless across worktrees (`quality_gate.sh:471-473`), so "single-threaded" is false.
+
+Therefore the gate **only fails on increase and never writes**. Lowering the baseline is a separate, explicit, human-committed step. This removes the detection problem, the persistence problem, and the concurrency problem at once, and loses nothing — the ratchet needs monotonicity, not automation.
 
 **C5b — Promises name a live task.** Form: `//oro:testonly(oro-abcd) — wiring lands in <task>`. Gate fails when the cited task is `closed` and the symbol still has no production caller. **Must fail open when no bead store is reachable** — `quality_gate.sh` is generated for other projects by `cmd/oro/quality_gate_gen.go:251-404`, where no bead DB exists.
 
@@ -256,13 +282,15 @@ count=$(rg -c --glob '!*_test.go' 'oro:testonly' pkg/ internal/ cmd/ 2>/dev/null
 
 | Phase | Changes | Gate to proceed |
 |---|---|---|
-| 0 | C0 profiling; C5d (boot call) | Lane timing breakdown published |
+| 0 | C0 profiling; C5d (boot call) | Lane timing breakdown published (state the measured grep count; C3 raises it ~10%) |
 | 1 | C3 host-isolation audit → C3 (`cmd/` in gate), fix 3 fixtures | Full suite **and CI** green on `main` |
-| 2 | C1 (delete gate), C5c | `OVERSIZED_BEAD` → 0; no new escalation class |
-| 3 | C3b (merge consults CI), C5a (ratchet, baseline now) | No merge blocked by unreachable CI |
-| 4 | C2 (three-verdict decompose), C5b | simplify:decompose ratio observable |
-| 5 | C4a — **only if C0 justifies it** | Retry wall-clock down; zero escaped defects |
+| 2 | C1 (delete gate + repoint switch case + drain 1,104 rows), C2 (prompt string), C5c | `OVERSIZED_BEAD` → 0 **and** escalation queue drains — verify both; a stuck queue is the C1 failure mode |
+| 3 | C3b (pause admission on red `main`), C5a (check-only ratchet, baseline now) | Admission pauses correctly on a seeded red run; never blocks when `gh` is absent |
+| 4 | C5b (promise expiry) | Stale promises detected in a seeded case |
+| 5 | C4a — **only if C0 justifies it** | Every `$scope` element accepted by `go list`; retry wall-clock down; zero escaped defects |
 | 6 | C4b (review tier) | Per-tier escaped-defect rate flat |
+
+C2 moves to phase 2 alongside C1 — it is now a single prompt string, and sequencing it after C1 was what made rev 2's version unreachable.
 
 ## Epic acceptance
 
