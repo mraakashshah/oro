@@ -1,7 +1,7 @@
 # Design: Reduce Oro's Time-to-Ship
 
 **Date:** 2026-07-28
-**Status:** Revision 4 — post third adversarial review (rev 1–3 FAIL)
+**Status:** Revision 5 — **PASSED** adversarial review at rev 4 (rev 1–3 FAIL); rev 5 applies four minor non-blocking notes
 **Related:** `docs/audits/2026-07-28-architecture-review.md`
 
 ---
@@ -104,10 +104,10 @@ If `check_dead_exports` dominates, the correct fix is a single `go list`-based c
 
 **Remaining consumers — two are load-bearing, six are inert.** `dispatcher.go:7017` is the **sole producer** of `EscOversizedBead` (verified: only `FormatEscalation` call site). After deletion the type is never raised again, but *existing* pending rows still need to drain, and the drain depends on two of these sites.
 
-> **MUST LEAVE — removing either strands the 690 pending rows forever:**
+> **MUST LEAVE — for two different reasons:**
 >
-> - **`dispatcher.go:9773`** (the `EscOversizedBead` case in `routedOpsRunType`). Verified: the primary sweep `retryPendingEscalations` (`:9642`) **skips these rows entirely** — `shouldSkipPendingEscalationRetry` (`:9664-9667`) returns true whenever `d.ops != nil`, which is always true in production. So `routePendingRoutableEscalations` (`:9669-9729`) is the **only** sweep that acks them, and it admits rows solely via `isRoutableEscalationType` (`:9702`) → `routedOpsRunType` → this case. Delete it and both sweeps skip: the rows pend forever, re-queried every cycle, never terminal.
-> - **`factoryhealth/health.go:1013`**. Historical rows retain `type='OVERSIZED_BEAD'`; dropping it makes `IsKnownEscalationType` false for them, which feeds the *first* clause of `shouldSkipPendingEscalationRetry` (`:9665`) and health-metric classification.
+> - **`dispatcher.go:9773` — removing it strands the 690 pending rows forever.** (the `EscOversizedBead` case in `routedOpsRunType`). Verified: the primary sweep `retryPendingEscalations` (`:9642`) **skips these rows entirely** — `shouldSkipPendingEscalationRetry` (`:9664-9667`) returns true whenever `d.ops != nil`, which is always true in production. So `routePendingRoutableEscalations` (`:9669-9729`) is the **only** sweep that acks them, and it admits rows solely via `isRoutableEscalationType` (`:9702`) → `routedOpsRunType` → this case. Delete it and both sweeps skip: the rows pend forever, re-queried every cycle, never terminal.
+> - **`factoryhealth/health.go:1013` — needed for correct health reporting, not for the drain.** (Removing it would *not* strand rows: Sweep A already skips them via the second clause of `:9666`, and Sweep B never consults this predicate.) Historical rows retain `type='OVERSIZED_BEAD'`; dropping it makes `IsKnownEscalationType` false for them, which feeds the *first* clause of `shouldSkipPendingEscalationRetry` (`:9665`) and health-metric classification.
 >
 > The one-time `UPDATE` masks this locally but not for rows created after it, nor on any other project's `state.db`, nor on a restored backup. Leave both until the pending count is verified zero across all state DBs.
 
@@ -115,7 +115,7 @@ If `check_dead_exports` dominates, the correct fix is a single `go list`-based c
 
 **Oversized becomes a review verdict, not an admission gate.** A too-large task is admitted, attempted, and either passes (it wasn't too large) or fails review — routing through `routeReviewOpsRun` (`ops_runs.go:460`), **not** through `EscOversizedBead`.
 
-This means no new escalation is raised for oversized work and none is added by this design. That is deliberate: the deleted gate never measured size, so it protected nothing, and simulating replacement coverage would be dishonest. The `OpsDecompose` one-shot survives only for whatever residual paths spawn it — see C2's recorded contradiction.
+This means no new escalation is raised for oversized work and none is added by this design. That is deliberate: the deleted gate never measured size, so it protected nothing, and simulating replacement coverage would be dishonest. The `OpsDecompose` one-shot survives only as unreachable code — see C2.
 
 **Acceptance (runnable):**
 ```
@@ -190,9 +190,14 @@ with `errDetectorSkipped` on missing `gh` (`:182`) and on unauthenticated (`:202
 
 **Therefore: add a narrow exported wrapper; do not duplicate the probe.** Something like:
 ```go
-func MainCIStatus(ctx context.Context, workdir, branch string) (red, known bool, err error)
+type CIStatus int
+const ( CIUnknown CIStatus = iota; CIGreen; CIRed )
+
+func MainCIStatus(ctx context.Context, workdir, branch string) (CIStatus, error)
 ```
-returning `known=false` where `errDetectorSkipped` fires, so "unknown" and "green" are distinguishable at the call site. Without that distinction the implementer must treat every error as admit, and the gate never fires.
+returning `CIUnknown` where `errDetectorSkipped` fires, so "unknown" and "green" are distinguishable at the call site. Without that distinction the implementer must treat every error as admit, and the gate never fires.
+
+**Tri-state, not `(red, known bool)`.** A boolean pair leaves `red=true, known=false` undefined and encodes the admit decision twice. The obvious call site `if red { pause }` would then be correct only under an unstated invariant, and an implementer returning `red=true` on a partial parse produces a fail-*closed* pause — inverting principle 1. With the enum, `if s == CIRed { pause }` is the only correct reading and unknown cannot be mistaken for green.
 
 **Hook:** `tryAssignBatch` (`dispatcher.go:6036-6042`) already opens with `observeStorageController` / `storageAdmissionAllowed` returning `nil` to pause — an exact precedent for this shape. The CI check goes immediately after.
 
@@ -320,10 +325,14 @@ C2 moves to phase 2 alongside C1 — it is now a single prompt string, and seque
 ## Epic acceptance
 
 ```
-Cmd: git checkout main && ! rg -q 'CountDistinctModules' pkg/ cmd/ scripts/ && ORO_QG_CONTEXT=local ./scripts/quality_gate.sh && [ "$(sqlite3 ~/.oro/projects/oro/state.db "SELECT count(*) FROM escalations WHERE type='OVERSIZED_BEAD' AND status='pending'")" = 0 ]
+Cmd: git checkout main && ! rg -q 'CountDistinctModules' pkg/ cmd/ scripts/ && ORO_QG_CONTEXT=local ./scripts/quality_gate.sh
 Assert: exit 0
 ```
 (Symbol gone repo-wide **and** the full local gate green with `cmd/` in the test lane.)
+
+**Precondition: run from the primary checkout.** `git checkout main` fails inside a worker worktree — main is already checked out in the primary.
+
+The escalation-drain assertion deliberately lives *only* in the phase-2 gate, not here: it reads machine-local state (`~/.oro/projects/<project>/state.db`), while this acceptance is a portable repo-state check.
 
 ## Success metrics
 
