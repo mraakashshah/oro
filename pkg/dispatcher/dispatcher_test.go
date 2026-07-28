@@ -14688,7 +14688,7 @@ func TestPriorityContention(t *testing.T) {
 	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "bead-p1", Title: "P1 Task", Priority: 1},
 	})
-	d.tryAssign(t.Context())
+	tryAssignAndWait(t, d, t.Context())
 
 	msg := lastMessage()
 	if msg.Type != protocol.MsgAssign {
@@ -14709,7 +14709,7 @@ func TestPriorityContention(t *testing.T) {
 		{ID: "bead-p1", Title: "P1 Task", Priority: 1}, // still in queue (worker busy)
 		{ID: "bead-p0", Title: "P0 Urgent", Priority: 0},
 	})
-	d.tryAssign(t.Context())
+	tryAssignAndWait(t, d, t.Context())
 
 	if got := messageCount(); got != 1 {
 		t.Fatalf("busy worker received %d messages, want only its original assignment", got)
@@ -14741,7 +14741,7 @@ func TestPriorityContention(t *testing.T) {
 		{ID: "bead-p1-next", Title: "Next P1 Task", Priority: 1},
 		{ID: "bead-p0", Title: "P0 Urgent", Priority: 0},
 	})
-	d.tryAssign(t.Context())
+	tryAssignAndWait(t, d, t.Context())
 
 	msg = lastMessage()
 	if msg.Type != protocol.MsgAssign {
@@ -21743,7 +21743,7 @@ func TestAssignment_SkipsClosedBeads(t *testing.T) {
 		beadSrc.mu.Unlock()
 
 		// Invoke tryAssign
-		d.tryAssign(context.Background())
+		tryAssignAndWait(t, d, context.Background())
 
 		// Worker should be assigned to oro-open-1 (closed bead was skipped)
 		st, beadID, ok := d.WorkerInfo("w-skip-test")
@@ -21810,7 +21810,7 @@ func TestAssignment_SkipsClosedBeads(t *testing.T) {
 		beadSrc.mu.Unlock()
 
 		// Invoke tryAssign
-		d.tryAssign(context.Background())
+		tryAssignAndWait(t, d, context.Background())
 
 		// Worker should remain idle (all beads were closed)
 		st, beadID, ok := d.WorkerInfo("w-all-closed")
@@ -22523,7 +22523,7 @@ func TestTryAssign_DeadSocketRemovesWorker(t *testing.T) {
 	d.mu.Unlock()
 
 	// Run tryAssign — should attempt to send ASSIGN, fail, and remove the worker.
-	d.tryAssign(ctx)
+	tryAssignAndWait(t, d, ctx)
 
 	// Worker should be REMOVED from d.workers.
 	d.mu.Lock()
@@ -24544,11 +24544,11 @@ func TestTryAssign_FillsIdleWorkersAcrossEpicUnitsByPriority(t *testing.T) {
 		{ID: "a-fast", Priority: 0, Epic: "epic-a"},
 	})
 
-	d.tryAssign(context.Background())
-	d.wg.Wait()
+	tryAssignAndWait(t, d, context.Background())
 
-	got := assignedBeadIDsByCreation(t, d.db)
+	got := assignedBeadIDsSorted(t, d.db)
 	want := []string{"a-fast", "a-slow", "b-fast"}
+	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Fatalf("assigned beads = %v, want epic frontiers filled by priority %v", got, want)
 	}
@@ -24570,11 +24570,11 @@ func TestTryAssign_ConcentratesWorkersOnTopEpic(t *testing.T) {
 		{ID: "a-fast", Priority: 0, Epic: "epic-a"},
 	})
 
-	d.tryAssign(context.Background())
-	d.wg.Wait()
+	tryAssignAndWait(t, d, context.Background())
 
-	got := assignedBeadIDsByCreation(t, d.db)
+	got := assignedBeadIDsSorted(t, d.db)
 	want := []string{"a-fast", "a-middle"}
+	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Fatalf("assigned beads = %v, want all workers concentrated on top epic %v", got, want)
 	}
@@ -24592,6 +24592,7 @@ func TestTryAssign_ReservesAllIdleWorkersBeforeSlowWorktreeSetupCompletes(t *tes
 
 	firstCreateStarted := make(chan struct{})
 	releaseFirstCreate := make(chan struct{})
+	defer close(releaseFirstCreate)
 	var firstCreate sync.Once
 	wt := d.worktrees.(*mockWorktreeManager)
 	wt.createFn = func(_ context.Context, beadID, _ string) (string, string, error) {
@@ -24614,6 +24615,12 @@ func TestTryAssign_ReservesAllIdleWorkersBeforeSlowWorktreeSetupCompletes(t *tes
 		t.Fatal("first worktree setup did not start")
 	}
 
+	select {
+	case <-assignDone:
+	case <-time.After(time.Second):
+		t.Fatal("assignment pass did not finish while first worktree setup was blocked")
+	}
+
 	d.mu.Lock()
 	reserved := 0
 	for _, worker := range d.workers {
@@ -24624,13 +24631,6 @@ func TestTryAssign_ReservesAllIdleWorkersBeforeSlowWorktreeSetupCompletes(t *tes
 	d.mu.Unlock()
 	if reserved != 2 {
 		t.Fatalf("reserved workers while first worktree setup is blocked = %d, want 2", reserved)
-	}
-
-	close(releaseFirstCreate)
-	select {
-	case <-assignDone:
-	case <-time.After(time.Second):
-		t.Fatal("assignment did not finish after worktree setup was released")
 	}
 }
 
@@ -24677,6 +24677,71 @@ func TestTryAssignReturnsAfterReservingSingleWorkerWithSlowWorktreeSetup(t *test
 	}
 }
 
+// TestTryAssignBatchReturnsHandlePerLaunchedSetup proves tryAssignBatch hands
+// back one completion handle per assignment setup it launched, and that each
+// handle only closes once its setup actually finishes — not before, and not
+// as a side effect of tryAssignBatch itself returning. The batch call must
+// come back immediately (reservations only) while setup for every launched
+// bead is still blocked.
+func TestTryAssignBatchReturnsHandlePerLaunchedSetup(t *testing.T) {
+	d, beadSrc, _ := setupTryAssignSchedulingTest(t, 2)
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "oro-batch-a", Priority: 0})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "oro-batch-b", Priority: 1})
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "oro-batch-a", Priority: 0},
+		{ID: "oro-batch-b", Priority: 1},
+	})
+
+	release := make(chan struct{})
+	var createCalls atomic.Int32
+	wt := d.worktrees.(*mockWorktreeManager)
+	wt.createFn = func(_ context.Context, beadID, _ string) (string, string, error) {
+		createCalls.Add(1)
+		<-release
+		return "/tmp/worktree-" + beadID, protocol.BranchPrefix + beadID, nil
+	}
+
+	batchReturned := make(chan []<-chan struct{}, 1)
+	go func() {
+		batchReturned <- d.tryAssignBatch(context.Background())
+	}()
+
+	var handles []<-chan struct{}
+	select {
+	case handles = <-batchReturned:
+	case <-time.After(time.Second):
+		t.Fatal("tryAssignBatch did not return promptly; it must not wait on setup handles")
+	}
+
+	if len(handles) != 2 {
+		t.Fatalf("handles returned = %d, want one per launched setup (2)", len(handles))
+	}
+
+	// Setup for both launches is still blocked on release: neither handle may
+	// have closed yet.
+	for i, h := range handles {
+		select {
+		case <-h:
+			t.Fatalf("handle %d closed before its blocked worktree setup completed", i)
+		default:
+		}
+	}
+
+	close(release)
+
+	for i, h := range handles {
+		select {
+		case <-h:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("handle %d did not close after its setup was released", i)
+		}
+	}
+
+	if got := createCalls.Load(); got != 2 {
+		t.Fatalf("worktree createFn calls = %d, want 2 (one per launched setup)", got)
+	}
+}
+
 func TestTryAssign_IndependentBeforeEpicUnits(t *testing.T) {
 	d, beadSrc, workers := setupTryAssignSchedulingTest(t, 3)
 	seedTryAssignEpic(t, beadSrc, "epic-a", 0, "2026-05-01T00:00:00Z")
@@ -24689,11 +24754,11 @@ func TestTryAssign_IndependentBeforeEpicUnits(t *testing.T) {
 		{ID: "independent-p0", Priority: 0},
 	})
 
-	d.tryAssign(context.Background())
-	d.wg.Wait()
+	tryAssignAndWait(t, d, context.Background())
 
-	got := assignedBeadIDsByCreation(t, d.db)
+	got := assignedBeadIDsSorted(t, d.db)
 	want := []string{"independent-p0", "independent-p1", "epic-child"}
+	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Fatalf("assigned beads = %v, want independent units before epic unit %v", got, want)
 	}
@@ -24738,7 +24803,7 @@ VALUES ('oro-preserved', ?, 'unsafe_stale_branch', 'branch still requires recove
 				}
 			}
 
-			d.tryAssign(t.Context())
+			tryAssignAndWait(t, d, t.Context())
 
 			got := assignedBeadIDsByCreation(t, d.db)
 			if tt.wantAssigned {
@@ -24767,7 +24832,7 @@ func TestTryAssign_EpicPriorityBeatsEpicAge(t *testing.T) {
 		{ID: "new-child", Priority: 0, Epic: "epic-new"},
 	})
 
-	d.tryAssign(context.Background())
+	tryAssignAndWait(t, d, context.Background())
 
 	got := assignedBeadIDsByCreation(t, d.db)
 	want := []string{"new-child"}
@@ -24795,7 +24860,7 @@ func TestTryAssign_UnassignableEpicUnitDoesNotBlockNextEpic(t *testing.T) {
 		{ID: "ready-child", Priority: 0, Epic: "epic-ready"},
 	})
 
-	d.tryAssign(context.Background())
+	tryAssignAndWait(t, d, context.Background())
 
 	got := assignedBeadIDsByCreation(t, d.db)
 	want := []string{"ready-child"}
@@ -24819,7 +24884,7 @@ func TestTryAssign_ReservedEpicUnitDoesNotIdleOtherWorkers(t *testing.T) {
 	d.pendingWorkerTargets["w-reserved-pending"] = "reserved-child"
 	d.mu.Unlock()
 
-	d.tryAssign(context.Background())
+	tryAssignAndWait(t, d, context.Background())
 
 	got := assignedBeadIDsByCreation(t, d.db)
 	want := []string{"next-child"}
@@ -24953,6 +25018,19 @@ func assignedBeadIDsByCreation(t *testing.T, db *sql.DB) []string {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate assignment rows: %v", err)
 	}
+	return ids
+}
+
+// assignedBeadIDsSorted returns the assigned bead IDs sorted lexically,
+// rather than by insertion order. Assignment setup runs on concurrent
+// goroutines since c629e33e, so which goroutine reaches createAssignment
+// first — and thus insertion order — no longer reflects scheduling order.
+// Callers that only need to assert *which* beads were scheduled (not the
+// order) should use this instead of assignedBeadIDsByCreation.
+func assignedBeadIDsSorted(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+	ids := assignedBeadIDsByCreation(t, db)
+	slices.Sort(ids)
 	return ids
 }
 

@@ -3,6 +3,7 @@ package processenv_test
 import (
 	"encoding/binary"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -17,6 +18,14 @@ import (
 
 func TestReadEntriesPreservesOwnershipEntryBoundaries(t *testing.T) {
 	if os.Getenv("ORO_PROCESSENV_ENTRY_HELPER") == "1" {
+		ready := os.NewFile(3, "processenv-entry-ready")
+		if ready == nil {
+			t.Fatal("open process environment helper readiness pipe")
+		}
+		if _, err := ready.Write([]byte{1}); err != nil {
+			t.Fatalf("signal process environment helper readiness: %v", err)
+		}
+		_ = ready.Close()
 		for {
 			time.Sleep(time.Hour)
 		}
@@ -27,16 +36,30 @@ func TestReadEntriesPreservesOwnershipEntryBoundaries(t *testing.T) {
 
 	markers := processenv.WorkerOwnershipMarkers("/tmp/processenv.sock", "processenv-worker")
 	note := "NOTE=foreign " + strings.Join(markers, " ") + " text"
+	readyReader, readyWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create process environment helper readiness pipe: %v", err)
+	}
+	t.Cleanup(func() { _ = readyReader.Close() })
 	cmd := exec.Command(os.Args[0], "-test.run=^TestReadEntriesPreservesOwnershipEntryBoundaries$") //nolint:gosec // re-executes this test binary as a helper
 	cmd.Env = append(processenv.WithWorkerOwnership(os.Environ(), "/tmp/processenv.sock", "processenv-worker"),
 		"ORO_PROCESSENV_ENTRY_HELPER=1", note)
+	cmd.ExtraFiles = []*os.File{readyWriter}
 	if err := cmd.Start(); err != nil {
+		_ = readyWriter.Close()
 		t.Fatalf("start environment helper: %v", err)
 	}
+	_ = readyWriter.Close()
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
 	})
+	if err := readyReader.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set process environment helper readiness deadline: %v", err)
+	}
+	if _, err := io.ReadFull(readyReader, make([]byte, 1)); err != nil {
+		t.Fatalf("wait for process environment helper readiness: %v", err)
+	}
 
 	entries, err := processenv.ReadEntries(cmd.Process.Pid)
 	if err != nil {

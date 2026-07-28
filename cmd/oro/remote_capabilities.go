@@ -385,7 +385,7 @@ func executableEvidence(path, version string) (ExecutableEvidence, error) {
 
 func fileDevice(info os.FileInfo) uint64 {
 	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-		return uint64(stat.Dev)
+		return uint64(stat.Dev) //nolint:unconvert // stat.Dev is int32 on darwin/arm64 (conversion required) but uint64 on linux/amd64 (no-op there, hence CI-only unconvert flag)
 	}
 	return 0
 }

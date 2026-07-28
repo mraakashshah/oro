@@ -360,7 +360,9 @@ sweep_repo_root_escape_artifacts() {
 	local repo_root="$1"
 	local artifact
 	for artifact in "$repo_root"/$'\033]8;;file:'*; do
-		[ -d "$artifact" ] && [ ! -L "$artifact" ] || continue
+		if [ ! -d "$artifact" ] || [ -L "$artifact" ]; then
+			continue
+		fi
 		rm -rf -- "$artifact"
 	done
 }
@@ -517,11 +519,30 @@ run_serial_lane() {
 	if [ "${ORO_SKIP_MUTATION:-}" != "1" ] && ! { [ "$goos" = "darwin" ] && [ "$goarch" = "arm64" ]; }; then
 		race_flag="-race"
 	fi
+	# -race requires cgo on every OS except darwin (go's own build-time
+	# exemption; see cmd/go/internal/work/init.go). This script can itself be
+	# invoked as a subprocess of a CGO-free `go test` run (e.g. the CI
+	# "CGO-free Build" job runs `CGO_ENABLED=0 go test ./...`, and
+	# TestConcurrentGatesNoTimingFlakeSerialLaneCatchesRegression shells out to
+	# this script from inside that process) — an inherited CGO_ENABLED=0 would
+	# then make -race fail outright with "go: -race requires cgo" on
+	# linux/amd64 CI runners even though the guarded tests have nothing to do
+	# with the CGO-free build under test. Force cgo on for just this
+	# invocation whenever -race needs it.
+	#
+	# The default is a bare `env` rather than an empty array: this script's
+	# shebang is #!/bin/sh, which on macOS is bash 3.2, where expanding an
+	# empty array under `set -u` aborts with "unbound variable". A bare `env`
+	# prefix is a no-op, so the array is never empty on any path.
+	local force_cgo=(env)
+	if [ -n "$race_flag" ] && [ "$goos" != "darwin" ]; then
+		force_cgo=(env CGO_ENABLED=1)
+	fi
 	# Emit a coverage profile so the guarded tests' coverage is merged back into
 	# the ≥78% threshold check (enforce_go_coverage_threshold); otherwise moving
 	# them out of the main lane would silently erode measured coverage.
 	# shellcheck disable=SC2086 # race_flag is intentionally word-split (empty or -race)
-	if GOFLAGS=-buildvcs=false go test $race_flag -coverprofile="$GO_SERIAL_COVERAGE_FILE" \
+	if GOFLAGS=-buildvcs=false "${force_cgo[@]}" go test $race_flag -coverprofile="$GO_SERIAL_COVERAGE_FILE" \
 		./pkg/dispatcher -run "$run_filter" -count=1; then
 		echo "1:0" >"$QG_DIR/serial.rc"
 	else
