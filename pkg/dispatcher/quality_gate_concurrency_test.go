@@ -63,9 +63,12 @@ func TestProbeFailureSummaryIncludesDiagnostics(t *testing.T) {
 	if r.exit == 0 {
 		t.Fatal("probe unexpectedly passed with an unusable TMPDIR")
 	}
+	if strings.TrimSpace(r.output) == "" {
+		t.Fatal("failed probe did not capture output")
+	}
 
 	summary := probeFailureSummary("serial lane", "broken", r)
-	for _, want := range []string{"serial lane", "broken", "exit=", "output:"} {
+	for _, want := range []string{"serial lane", "broken", "exit=" + strconv.Itoa(r.exit), "output:", strings.TrimSpace(r.output)} {
 		if !strings.Contains(summary, want) {
 			t.Errorf("failure summary missing %q:\n%s", want, summary)
 		}
