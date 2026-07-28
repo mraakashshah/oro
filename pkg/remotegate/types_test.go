@@ -107,6 +107,125 @@ func TestRemoteGateLifecycleContract(t *testing.T) {
 	}
 }
 
+func TestRemoteGateOperationObservationIdentity(t *testing.T) {
+	identity := remotegate.Repository{Host: "code.example", Owner: "oro", Name: "oro"}
+	target := remotegate.Target{Repository: identity, Ref: "main", SHA: "base-sha"}
+	candidate := remotegate.Candidate{Repository: identity, Ref: "refs/oro/candidate/1", SHA: "candidate-sha", TreeSHA: "tree-sha"}
+	change := remotegate.Change{ID: "change-1", Candidate: candidate, Target: target, Draft: true}
+	evidence := remotegate.Evidence{ID: "evidence-1", Change: change, CandidateSHA: candidate.SHA, Target: target, TestedTreeSHA: candidate.TreeSHA, PolicyHash: "policy-hash"}
+	owned := remotegate.RemoteChange{Change: change, Owner: "worker-1", Generation: 7}
+	lease := remotegate.Lease{Owner: "worker-1", Generation: 7, ExpectedSHA: candidate.SHA}
+
+	if err := remotegate.ValidateRequest(remotegate.ChangeReadyRequest{Change: owned, Evidence: evidence, Lease: lease}); err != nil {
+		t.Fatalf("draft ready rejected: %v", err)
+	}
+	if err := remotegate.ValidateRequest(remotegate.PrepareSquashRequest{Change: change, Candidate: candidate, Target: target, Evidence: evidence}); !errors.Is(err, remotegate.ErrInvalidRequest) {
+		t.Fatalf("draft squash error = %v, want ErrInvalidRequest", err)
+	}
+
+	ephemeral := remotegate.EphemeralTarget{Target: remotegate.Target{Repository: identity, Ref: "refs/heads/epic/1", SHA: "seed-sha"}, Owner: "worker-1", Generation: 7}
+	mutationRequests := map[string]any{
+		"create ephemeral": remotegate.EnsureEphemeralTargetRequest{ProjectID: "project-1", EpicID: "epic-1", Target: ephemeral.Target, SeedSHA: ephemeral.Target.SHA, Owner: ephemeral.Owner, Generation: ephemeral.Generation, Lease: remotegate.Lease{Owner: ephemeral.Owner, Generation: ephemeral.Generation, ExpectedAbsent: true}},
+		"delete ephemeral": remotegate.DeleteEphemeralTargetRequest{Target: ephemeral, FinalSHA: ephemeral.Target.SHA, Retired: true, Lease: remotegate.Lease{Owner: ephemeral.Owner, Generation: ephemeral.Generation, ExpectedSHA: ephemeral.Target.SHA}},
+		"ensure change":    remotegate.EnsureChangeRequest{Change: owned, Lease: lease},
+		"ready":            remotegate.ChangeReadyRequest{Change: owned, Evidence: evidence, Lease: lease},
+		"cancel":           remotegate.CancelGateRequest{Change: owned, Reason: "operator requested", Lease: lease},
+		"reconcile":        remotegate.ReconcileChangeRequest{Change: owned, Evidence: evidence, Lease: lease},
+	}
+	for name, request := range mutationRequests {
+		t.Run(name+" wrong lease", func(t *testing.T) {
+			mutated := replaceExpectedSHA(request, "wrong-sha")
+			if err := remotegate.ValidateRequest(mutated); !errors.Is(err, remotegate.ErrInvalidRequest) {
+				t.Fatalf("wrong lease error = %v, want ErrInvalidRequest", err)
+			}
+		})
+	}
+
+	workflow := remotegate.WorkflowEvidence{Path: ".github/workflows/quality.yml", State: "active", Ref: "refs/heads/main", WorkflowDispatch: true, PullRequestTargets: []string{"main"}}
+	run := remotegate.RunEvidence{
+		Change: change, CandidateSHA: candidate.SHA, Target: target, TestedTreeSHA: candidate.TreeSHA,
+		Workflow: workflow, RunID: "run-1", PolicyHash: evidence.PolicyHash,
+		Checks: []remotegate.CheckEvidence{{ID: "check-1", Name: "quality", Conclusion: "success"}},
+		Pages:  []remotegate.PageEvidence{{Number: 1, Complete: true}, {Number: 2, Complete: true}}, ExpectedPages: []int{1, 2},
+		ExpectedWorkflowPath: workflow.Path, ExpectedWorkflowRef: workflow.Ref, ExpectedRunID: "run-1", ExpectedCheckIDs: []string{"check-1"},
+	}
+	valid := remotegate.ReconcileChangeRequest{Change: owned, Evidence: evidence, Run: run, AttemptedOperation: "set_ready", AttemptID: "attempt-1", ObservedOperation: "set_ready", ObservedAttemptID: "attempt-1", ObservedOutcome: "accepted", Lease: lease}
+	if err := remotegate.ValidateRequest(valid); err != nil {
+		t.Fatalf("valid reconciliation rejected: %v", err)
+	}
+
+	invalid := map[string]remotegate.ReconcileChangeRequest{}
+	for name, mutate := range map[string]func(*remotegate.ReconcileChangeRequest){
+		"workflow path": func(r *remotegate.ReconcileChangeRequest) { r.Run.Workflow.Path = "other.yml" },
+		"workflow ref":  func(r *remotegate.ReconcileChangeRequest) { r.Run.Workflow.Ref = "refs/heads/release" },
+		"run ID":        func(r *remotegate.ReconcileChangeRequest) { r.Run.RunID = "run-2" },
+		"check ID":      func(r *remotegate.ReconcileChangeRequest) { r.Run.Checks[0].ID = "check-2" },
+		"terminal pages": func(r *remotegate.ReconcileChangeRequest) {
+			r.Run.Pages = []remotegate.PageEvidence{{Number: 1, Complete: true}, {Number: 3, Complete: true}}
+		},
+		"operation":       func(r *remotegate.ReconcileChangeRequest) { r.ObservedOperation = "cancel" },
+		"attempt":         func(r *remotegate.ReconcileChangeRequest) { r.ObservedAttemptID = "attempt-2" },
+		"unknown outcome": func(r *remotegate.ReconcileChangeRequest) { r.ObservedOutcome = "mystery" },
+		"wrong lease":     func(r *remotegate.ReconcileChangeRequest) { r.Lease.ExpectedSHA = "other-sha" },
+	} {
+		request := valid
+		request.Run.Checks = append([]remotegate.CheckEvidence(nil), valid.Run.Checks...)
+		request.Run.Pages = append([]remotegate.PageEvidence(nil), valid.Run.Pages...)
+		mutate(&request)
+		invalid[name] = request
+	}
+	for name, request := range invalid {
+		t.Run(name, func(t *testing.T) {
+			if err := remotegate.ValidateRequest(request); !errors.Is(err, remotegate.ErrInvalidRequest) {
+				t.Fatalf("ValidateRequest() = %v, want ErrInvalidRequest", err)
+			}
+		})
+	}
+
+	for name, operation := range map[string]string{
+		"create": "create_ephemeral_target", "delete": "delete_ephemeral_target", "ensure": "ensure_change", "ready": "set_ready", "cancel": "cancel",
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := valid
+			request.AttemptedOperation, request.ObservedOperation = operation, operation
+			request.AttemptID, request.ObservedAttemptID = "attempt-1", "attempt-1"
+			request.ObservedOutcome = "accepted"
+			if operation == "create_ephemeral_target" || operation == "delete_ephemeral_target" {
+				return
+			}
+			if err := remotegate.ValidateRequest(request); err != nil {
+				t.Fatalf("operation-specific observation rejected: %v", err)
+			}
+		})
+	}
+}
+
+func replaceExpectedSHA(request any, sha string) any {
+	switch typed := request.(type) {
+	case remotegate.EnsureEphemeralTargetRequest:
+		typed.Lease.ExpectedAbsent = false
+		typed.Lease.ExpectedSHA = sha
+		return typed
+	case remotegate.DeleteEphemeralTargetRequest:
+		typed.Lease.ExpectedSHA = sha
+		return typed
+	case remotegate.EnsureChangeRequest:
+		typed.Lease.ExpectedSHA = sha
+		return typed
+	case remotegate.ChangeReadyRequest:
+		typed.Lease.ExpectedSHA = sha
+		return typed
+	case remotegate.CancelGateRequest:
+		typed.Lease.ExpectedSHA = sha
+		return typed
+	case remotegate.ReconcileChangeRequest:
+		typed.Lease.ExpectedSHA = sha
+		return typed
+	default:
+		panic("unsupported mutation request")
+	}
+}
+
 func assertClientSignature(t *testing.T) {
 	t.Helper()
 	clientType := reflect.TypeOf((*remotegate.RemoteGateClient)(nil)).Elem()

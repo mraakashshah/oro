@@ -151,11 +151,20 @@ type PageEvidence struct {
 //
 //oro:testonly — remote-gate orchestration is wired by subsequent tasks.
 type RunEvidence struct {
-	Workflow   WorkflowEvidence
-	RunID      string
-	PolicyHash string
-	Checks     []CheckEvidence
-	Pages      []PageEvidence
+	Change               Change
+	CandidateSHA         string
+	Target               Target
+	TestedTreeSHA        string
+	Workflow             WorkflowEvidence
+	RunID                string
+	PolicyHash           string
+	Checks               []CheckEvidence
+	Pages                []PageEvidence
+	ExpectedPages        []int
+	ExpectedWorkflowPath string
+	ExpectedWorkflowRef  string
+	ExpectedRunID        string
+	ExpectedCheckIDs     []string
 }
 
 // Policy is the provider-neutral effective policy evidence for a target.
@@ -261,10 +270,15 @@ type CancelGateRequest struct {
 //
 //oro:testonly — remote-gate orchestration is wired by subsequent tasks.
 type ReconcileChangeRequest struct {
-	Change   RemoteChange
-	Evidence Evidence
-	Run      RunEvidence
-	Lease    Lease
+	Change             RemoteChange
+	Evidence           Evidence
+	Run                RunEvidence
+	AttemptedOperation string
+	AttemptID          string
+	ObservedOperation  string
+	ObservedAttemptID  string
+	ObservedOutcome    string
+	Lease              Lease
 }
 
 // PublishedCandidate records the provider-visible identity after publication.
@@ -419,7 +433,7 @@ func validateEnsureEphemeralTargetRequest(request EnsureEphemeralTargetRequest) 
 	if request.Target.SHA != request.SeedSHA {
 		return invalidRequest("ephemeral target seed does not match target SHA")
 	}
-	return validateOwnedLease(request.Owner, request.Generation, request.Lease)
+	return validateMutationLease(request.Owner, request.Generation, request.Lease, request.SeedSHA, true)
 }
 
 func validateDeleteEphemeralTargetRequest(request DeleteEphemeralTargetRequest) error {
@@ -432,14 +446,14 @@ func validateDeleteEphemeralTargetRequest(request DeleteEphemeralTargetRequest) 
 	if request.Target.Target.SHA != request.FinalSHA {
 		return invalidRequest("ephemeral target final SHA does not match target")
 	}
-	return validateOwnedLease(request.Target.Owner, request.Target.Generation, request.Lease)
+	return validateMutationLease(request.Target.Owner, request.Target.Generation, request.Lease, request.FinalSHA, false)
 }
 
 func validateEnsureChangeRequest(request EnsureChangeRequest) error {
 	if err := validateRemoteChange(request.Change); err != nil {
 		return err
 	}
-	return validateOwnedLease(request.Change.Owner, request.Change.Generation, request.Lease)
+	return validateMutationLease(request.Change.Owner, request.Change.Generation, request.Lease, request.Change.Change.Candidate.SHA, false)
 }
 
 func validateObserveGateRequest(request ObserveGateRequest) error {
@@ -475,16 +489,13 @@ func validateChangeReadyRequest(request ChangeReadyRequest) error {
 	if err := validateRemoteChange(request.Change); err != nil {
 		return err
 	}
-	if request.Change.Change.Draft {
-		return invalidRequest("draft change cannot become ready")
-	}
 	if err := validateEvidence(request.Evidence); err != nil {
 		return err
 	}
 	if request.Evidence.Change != request.Change.Change {
 		return invalidRequest("ready evidence does not match change")
 	}
-	return validateOwnedLease(request.Change.Owner, request.Change.Generation, request.Lease)
+	return validateMutationLease(request.Change.Owner, request.Change.Generation, request.Lease, request.Change.Change.Candidate.SHA, false)
 }
 
 func validateCancelGateRequest(request CancelGateRequest) error {
@@ -494,7 +505,7 @@ func validateCancelGateRequest(request CancelGateRequest) error {
 	if strings.TrimSpace(request.Reason) == "" {
 		return invalidRequest("cancellation reason is required")
 	}
-	return validateOwnedLease(request.Change.Owner, request.Change.Generation, request.Lease)
+	return validateMutationLease(request.Change.Owner, request.Change.Generation, request.Lease, request.Change.Change.Candidate.SHA, false)
 }
 
 func validateReconcileChangeRequest(request ReconcileChangeRequest) error {
@@ -513,7 +524,16 @@ func validateReconcileChangeRequest(request ReconcileChangeRequest) error {
 	if request.Run.PolicyHash != request.Evidence.PolicyHash {
 		return invalidRequest("reconciliation policy does not match evidence")
 	}
-	return validateOwnedLease(request.Change.Owner, request.Change.Generation, request.Lease)
+	if request.Run.Change != request.Change.Change || request.Run.CandidateSHA != request.Evidence.CandidateSHA || request.Run.Target != request.Evidence.Target || request.Run.TestedTreeSHA != request.Evidence.TestedTreeSHA {
+		return invalidRequest("reconciliation run identity does not match evidence")
+	}
+	if !isKnownAttemptedOperation(request.AttemptedOperation) || strings.TrimSpace(request.AttemptID) == "" || request.ObservedOperation != request.AttemptedOperation || request.ObservedAttemptID != request.AttemptID {
+		return invalidRequest("reconciliation observation does not match attempted operation")
+	}
+	if !isObservedOutcome(request.AttemptedOperation, request.ObservedOutcome) {
+		return invalidRequest("reconciliation outcome is not valid for operation")
+	}
+	return validateMutationLease(request.Change.Owner, request.Change.Generation, request.Lease, request.Change.Change.Candidate.SHA, false)
 }
 
 func validatePreparedSquash(prepared PreparedSquash) error {
@@ -543,7 +563,13 @@ func validateEvidence(evidence Evidence) error {
 	if err := validateChange(evidence.Change); err != nil {
 		return err
 	}
-	return validateTarget(evidence.Target)
+	if err := validateTarget(evidence.Target); err != nil {
+		return err
+	}
+	if evidence.CandidateSHA != evidence.Change.Candidate.SHA || evidence.TestedTreeSHA != evidence.Change.Candidate.TreeSHA || evidence.Target != evidence.Change.Target {
+		return invalidRequest("evidence identity does not match change")
+	}
+	return nil
 }
 
 func validateEphemeralTarget(target EphemeralTarget) error {
@@ -576,12 +602,40 @@ func validateOwnedLease(owner string, generation int64, lease Lease) error {
 	return nil
 }
 
+func validateMutationLease(owner string, generation int64, lease Lease, expectedSHA string, allowAbsent bool) error {
+	if err := validateOwnedLease(owner, generation, lease); err != nil {
+		return err
+	}
+	if lease.ExpectedAbsent {
+		if allowAbsent {
+			return nil
+		}
+		return invalidRequest("mutation lease cannot expect absent")
+	}
+	if lease.ExpectedSHA != expectedSHA {
+		return invalidRequest("mutation lease SHA does not match request")
+	}
+	return nil
+}
+
 func validateRunEvidence(evidence RunEvidence) error {
+	if err := validateChange(evidence.Change); err != nil {
+		return invalidRequest("run change identity is invalid")
+	}
+	if evidence.CandidateSHA != evidence.Change.Candidate.SHA || evidence.Target != evidence.Change.Target || evidence.TestedTreeSHA != evidence.Change.Candidate.TreeSHA {
+		return invalidRequest("run identity does not match change")
+	}
 	if err := ValidateWorkflowEvidence(evidence.Workflow); err != nil {
 		return invalidRequest("workflow evidence is invalid")
 	}
-	if strings.TrimSpace(evidence.RunID) == "" || strings.TrimSpace(evidence.PolicyHash) == "" || len(evidence.Checks) == 0 || len(evidence.Pages) == 0 {
+	if strings.TrimSpace(evidence.RunID) == "" || strings.TrimSpace(evidence.PolicyHash) == "" || len(evidence.Checks) == 0 || len(evidence.Pages) == 0 || len(evidence.ExpectedPages) == 0 || strings.TrimSpace(evidence.ExpectedWorkflowPath) == "" || strings.TrimSpace(evidence.ExpectedWorkflowRef) == "" || strings.TrimSpace(evidence.ExpectedRunID) == "" || len(evidence.ExpectedCheckIDs) == 0 {
 		return invalidRequest("run evidence is incomplete")
+	}
+	if evidence.Workflow.Path != evidence.ExpectedWorkflowPath || evidence.Workflow.Ref != evidence.ExpectedWorkflowRef || evidence.RunID != evidence.ExpectedRunID {
+		return invalidRequest("run evidence identity does not match expected gate")
+	}
+	if !sameStringSet(checkIDs(evidence.Checks), evidence.ExpectedCheckIDs) || !sameIntSet(pageNumbers(evidence.Pages), evidence.ExpectedPages) {
+		return invalidRequest("run evidence collection does not match expected gate")
 	}
 	for _, check := range evidence.Checks {
 		if strings.TrimSpace(check.ID) == "" || strings.TrimSpace(check.Name) == "" || strings.TrimSpace(check.Conclusion) == "" {
@@ -594,6 +648,90 @@ func validateRunEvidence(evidence RunEvidence) error {
 		}
 	}
 	return nil
+}
+
+func checkIDs(checks []CheckEvidence) []string {
+	ids := make([]string, 0, len(checks))
+	for _, check := range checks {
+		ids = append(ids, check.ID)
+	}
+	return ids
+}
+
+func pageNumbers(pages []PageEvidence) []int {
+	numbers := make([]int, 0, len(pages))
+	for _, page := range pages {
+		numbers = append(numbers, page.Number)
+	}
+	return numbers
+}
+
+func sameStringSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(left))
+	for _, value := range left {
+		if _, ok := seen[value]; ok {
+			return false
+		}
+		seen[value] = struct{}{}
+	}
+	for _, value := range right {
+		if _, ok := seen[value]; !ok {
+			return false
+		}
+	}
+	if len(seen) != len(right) {
+		return false
+	}
+	return true
+}
+
+func sameIntSet(left, right []int) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	seen := make(map[int]struct{}, len(left))
+	for _, value := range left {
+		if _, ok := seen[value]; ok {
+			return false
+		}
+		seen[value] = struct{}{}
+	}
+	for _, value := range right {
+		if _, ok := seen[value]; !ok {
+			return false
+		}
+	}
+	if len(seen) != len(right) {
+		return false
+	}
+	return true
+}
+
+func isKnownAttemptedOperation(operation string) bool {
+	switch strings.TrimSpace(operation) {
+	case "create_ephemeral_target", "delete_ephemeral_target", "ensure_change", "set_ready", "cancel":
+		return true
+	default:
+		return false
+	}
+}
+
+func isObservedOutcome(operation, outcome string) bool {
+	switch operation {
+	case "create_ephemeral_target", "ensure_change":
+		return outcome == "accepted" || outcome == "adopted" || outcome == "already_exists"
+	case "delete_ephemeral_target":
+		return outcome == "accepted" || outcome == "not_found" || outcome == "already_deleted"
+	case "set_ready":
+		return outcome == "accepted" || outcome == "already_ready"
+	case "cancel":
+		return outcome == "accepted" || outcome == "already_cancelled"
+	default:
+		return false
+	}
 }
 
 func validateCandidate(candidate Candidate) error {
