@@ -1904,22 +1904,28 @@ func TestTimedOutReaperCleanupCannotClobberSuccessor(t *testing.T) {
 
 	var injected bool
 	beadSrc.updateFn = func(_ context.Context, id string, params beadstore.UpdateParams) error {
-		if id != beadID || params.Status == nil || *params.Status != "open" {
+		if id != beadID || params.Status == nil {
 			return nil
 		}
-		d.mu.Lock()
-		if worker.state == protocol.WorkerIdle && !d.assigningBeads[beadID] {
-			worker.state = protocol.WorkerReserved
-			worker.beadID = beadID
-			worker.setupReservedAt = now
-			worker.reservationGen++
-			d.assigningBeads[beadID] = true
-			d.attemptCounts[beadID] = 2
-			d.handoffCounts[beadID] = 2
-			d.worktreeByBead[beadID] = "/tmp/g2"
-			injected = true
+		// Install g2 only on the reopen, at the moment the write lands — this is
+		// the ownership-check-to-update window. Every status is recorded, matching
+		// the default fakeBeadStore.Update, so a compensating write after the race
+		// is observable.
+		if *params.Status == "open" {
+			d.mu.Lock()
+			if worker.state == protocol.WorkerIdle && !d.assigningBeads[beadID] {
+				worker.state = protocol.WorkerReserved
+				worker.beadID = beadID
+				worker.setupReservedAt = now
+				worker.reservationGen++
+				d.assigningBeads[beadID] = true
+				d.attemptCounts[beadID] = 2
+				d.handoffCounts[beadID] = 2
+				d.worktreeByBead[beadID] = "/tmp/g2"
+				injected = true
+			}
+			d.mu.Unlock()
 		}
-		d.mu.Unlock()
 
 		beadSrc.mu.Lock()
 		beadSrc.updated[beadID] = *params.Status
