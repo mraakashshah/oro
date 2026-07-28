@@ -136,11 +136,12 @@ func TestAbortAssignmentReservationLostPreservesExternalClose(t *testing.T) {
 
 	d.mu.Lock()
 	d.workers[workerID] = &trackedWorker{
-		id:           workerID,
-		state:        protocol.WorkerReserved,
-		beadID:       beadID,
-		assignmentID: assignmentID,
-		worktree:     worktree,
+		id:             workerID,
+		state:          protocol.WorkerReserved,
+		beadID:         beadID,
+		assignmentID:   assignmentID,
+		worktree:       worktree,
+		reservationGen: 1,
 	}
 	d.assigningBeads[beadID] = true
 	d.mu.Unlock()
@@ -149,7 +150,7 @@ func TestAbortAssignmentReservationLostPreservesExternalClose(t *testing.T) {
 	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "closed"}
 	beadSrc.mu.Unlock()
 
-	d.abortAssignmentReservationLost(ctx, beadID, workerID, worktree, false, assignmentID)
+	d.abortAssignmentReservationLost(ctx, beadID, workerID, 1, worktree, false, assignmentID)
 
 	beadSrc.mu.Lock()
 	gotStatus, recorded := beadSrc.updated[beadID]
@@ -190,9 +191,10 @@ func TestAbortAssignmentReservationLostReopensWhenShowErrors(t *testing.T) {
 
 	d.mu.Lock()
 	d.workers[workerID] = &trackedWorker{
-		id:     workerID,
-		state:  protocol.WorkerReserved,
-		beadID: beadID,
+		id:             workerID,
+		state:          protocol.WorkerReserved,
+		beadID:         beadID,
+		reservationGen: 1,
 	}
 	d.assigningBeads[beadID] = true
 	d.mu.Unlock()
@@ -201,7 +203,7 @@ func TestAbortAssignmentReservationLostReopensWhenShowErrors(t *testing.T) {
 	beadSrc.showErr = errors.New("bead source unavailable")
 	beadSrc.mu.Unlock()
 
-	d.abortAssignmentReservationLost(ctx, beadID, workerID, "", false, 0)
+	d.abortAssignmentReservationLost(ctx, beadID, workerID, 1, "", false, 0)
 
 	beadSrc.mu.Lock()
 	gotStatus, recorded := beadSrc.updated[beadID]

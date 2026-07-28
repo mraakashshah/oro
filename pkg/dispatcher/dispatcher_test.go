@@ -115,6 +115,7 @@ type fakeBeadStore struct {
 	closedErr            error            // if set, Closed() returns this error
 	updateErrs           map[string]error // beadID -> error returned by Update()
 	updateFn             func(ctx context.Context, id string, params beadstore.UpdateParams) error
+	showFn               func(ctx context.Context, id string) (*protocol.BeadDetail, error)
 	showErr              error            // if set, Show() returns this error for all IDs
 	showErrFn            map[string]error // per-ID Show errors (takes precedence over showErr)
 	shownNil             map[string]bool  // per-ID nil detail (returns nil, nil)
@@ -155,9 +156,12 @@ func (m *fakeBeadStore) Ready(_ context.Context) ([]protocol.Bead, error) {
 	return out, nil
 }
 
-func (m *fakeBeadStore) Show(_ context.Context, id string) (*protocol.BeadDetail, error) {
+func (m *fakeBeadStore) Show(ctx context.Context, id string) (*protocol.BeadDetail, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.showFn != nil {
+		return m.showFn(ctx, id)
+	}
 	// Check per-ID Show error first (takes precedence).
 	if m.showErrFn != nil {
 		if err, ok := m.showErrFn[id]; ok {
@@ -14903,18 +14907,21 @@ func TestShutdownTimeout_ForceKill(t *testing.T) {
 			t.Fatalf("expected SHUTDOWN (hard kill), got %s", msg2.Type)
 		}
 
-		// After timeout: worker state should be Idle and beadID cleared.
+		// After timeout: worker state should be ShuttingDown and beadID cleared.
+		// Not Idle — Idle is the assignability predicate (isAssignableIdle in
+		// dispatcher.go), so leaving a hard-killed worker Idle would let the
+		// dispatcher hand a bead to a worker it just sent SHUTDOWN to.
 		waitFor(t, func() bool {
 			st, _, ok := d.WorkerInfo("w-force")
-			return ok && st == protocol.WorkerIdle
+			return ok && st == protocol.WorkerShuttingDown
 		}, 2*time.Second)
 
 		state, beadID, exists = d.WorkerInfo("w-force")
 		if !exists {
 			t.Fatal("worker w-force should still exist after timeout")
 		}
-		if state != protocol.WorkerIdle {
-			t.Fatalf("expected WorkerIdle after timeout, got %s", state)
+		if state != protocol.WorkerShuttingDown {
+			t.Fatalf("expected WorkerShuttingDown after timeout, got %s", state)
 		}
 		if beadID != "" {
 			t.Fatalf("expected beadID cleared after timeout, got %q", beadID)
