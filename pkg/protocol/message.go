@@ -46,8 +46,8 @@ func (r Range) overlaps(other Range) bool {
 	return r.Min <= other.Max && other.Min <= r.Max
 }
 
-// ProtocolIdentity is the immutable dispatcher expectation for a worker.
-type ProtocolIdentity struct {
+// Identity is the immutable dispatcher expectation for a worker.
+type Identity struct {
 	ProjectID         string
 	WorkerID          string
 	WorkerGeneration  uint64
@@ -55,7 +55,7 @@ type ProtocolIdentity struct {
 	BuildID           string
 }
 
-func (i ProtocolIdentity) validate() error {
+func (i Identity) validate() error {
 	if i.ProjectID == "" {
 		return fmt.Errorf("project ID cannot be empty")
 	}
@@ -77,9 +77,9 @@ func (i ProtocolIdentity) validate() error {
 	return nil
 }
 
-// ProtocolMetadata versions every control message after HELLO negotiation and
+// Metadata versions every control message after HELLO negotiation and
 // binds it to one project, worker, restart, and build identity.
-type ProtocolMetadata struct {
+type Metadata struct {
 	ProtocolRange     Range  `json:"protocol_range"`
 	ProjectID         string `json:"project_id"`
 	WorkerID          string `json:"worker_id"`
@@ -88,8 +88,8 @@ type ProtocolMetadata struct {
 	BuildID           string `json:"build_id"`
 }
 
-func (m ProtocolMetadata) identity() ProtocolIdentity {
-	return ProtocolIdentity{
+func (m Metadata) identity() Identity {
+	return Identity{
 		ProjectID:         m.ProjectID,
 		WorkerID:          m.WorkerID,
 		WorkerGeneration:  m.WorkerGeneration,
@@ -174,7 +174,7 @@ const (
 // payload pointer is populated; unused payloads are nil and omitted from JSON.
 type Message struct {
 	Type                 MessageType                  `json:"type"`
-	Protocol             ProtocolMetadata             `json:"protocol"`
+	Protocol             Metadata                     `json:"protocol"`
 	Hello                *Hello                       `json:"hello,omitempty"`
 	HelloACK             *HelloACK                    `json:"hello_ack,omitempty"`
 	Assign               *AssignPayload               `json:"assign,omitempty"`
@@ -205,10 +205,17 @@ type Message struct {
 
 // Validate rejects stale, cross-project, oversized, or incompatible control
 // messages before callers register a worker or mutate dispatcher state.
-func (m Message) Validate(supported Range, expected ProtocolIdentity) error {
+func (m Message) Validate(supported Range, expected Identity) error {
 	if !m.requiresProtocolValidation() {
 		return nil
 	}
+	if err := m.validateProtocolEnvelope(supported, expected); err != nil {
+		return err
+	}
+	return m.validateProtocolPayload(supported)
+}
+
+func (m Message) validateProtocolEnvelope(supported Range, expected Identity) error {
 	if err := supported.Validate(); err != nil {
 		return fmt.Errorf("supported protocol range: %w", err)
 	}
@@ -224,37 +231,55 @@ func (m Message) Validate(supported Range, expected ProtocolIdentity) error {
 	if got := m.Protocol.identity(); got != expected {
 		return fmt.Errorf("protocol identity does not match active worker")
 	}
+	return nil
+}
 
+func (m Message) validateProtocolPayload(supported Range) error {
 	switch m.Type {
 	case MsgHello:
-		if m.Hello == nil {
-			return fmt.Errorf("HELLO payload is required")
-		}
-		if err := m.Hello.ProtocolRange.Validate(); err != nil {
-			return fmt.Errorf("HELLO protocol range: %w", err)
-		}
-		if m.Hello.ProtocolRange != m.Protocol.ProtocolRange ||
-			m.Hello.ProjectID != m.Protocol.ProjectID ||
-			m.Hello.RestartGeneration != m.Protocol.RestartGeneration ||
-			m.Hello.BuildID != m.Protocol.BuildID {
-			return fmt.Errorf("HELLO payload does not match protocol metadata")
-		}
+		return m.validateHello()
 	case MsgHelloACK:
-		if m.HelloACK == nil {
-			return fmt.Errorf("HELLO_ACK payload is required")
-		}
-		if m.HelloACK.ProtocolVersion < supported.Min || m.HelloACK.ProtocolVersion > supported.Max ||
-			m.HelloACK.ProtocolVersion < m.Protocol.ProtocolRange.Min || m.HelloACK.ProtocolVersion > m.Protocol.ProtocolRange.Max {
-			return fmt.Errorf("HELLO_ACK protocol version %d is not negotiated", m.HelloACK.ProtocolVersion)
-		}
+		return m.validateHelloACK(supported)
 	case MsgCandidateReady:
-		if m.Candidate == nil {
-			return fmt.Errorf("CANDIDATE_READY payload is required")
-		}
-		if m.Candidate.ProjectID != m.Protocol.ProjectID || m.Candidate.AssignmentID == "" ||
-			m.Candidate.CandidateSHA == "" || m.Candidate.AdoptionToken == "" {
-			return fmt.Errorf("CANDIDATE_READY payload is invalid")
-		}
+		return m.validateCandidate()
+	}
+	return nil
+}
+
+func (m Message) validateHello() error {
+	if m.Hello == nil {
+		return fmt.Errorf("HELLO payload is required")
+	}
+	if err := m.Hello.ProtocolRange.Validate(); err != nil {
+		return fmt.Errorf("HELLO protocol range: %w", err)
+	}
+	if m.Hello.ProtocolRange != m.Protocol.ProtocolRange ||
+		m.Hello.ProjectID != m.Protocol.ProjectID ||
+		m.Hello.RestartGeneration != m.Protocol.RestartGeneration ||
+		m.Hello.BuildID != m.Protocol.BuildID {
+		return fmt.Errorf("HELLO payload does not match protocol metadata")
+	}
+	return nil
+}
+
+func (m Message) validateHelloACK(supported Range) error {
+	if m.HelloACK == nil {
+		return fmt.Errorf("HELLO_ACK payload is required")
+	}
+	if m.HelloACK.ProtocolVersion < supported.Min || m.HelloACK.ProtocolVersion > supported.Max ||
+		m.HelloACK.ProtocolVersion < m.Protocol.ProtocolRange.Min || m.HelloACK.ProtocolVersion > m.Protocol.ProtocolRange.Max {
+		return fmt.Errorf("HELLO_ACK protocol version %d is not negotiated", m.HelloACK.ProtocolVersion)
+	}
+	return nil
+}
+
+func (m Message) validateCandidate() error {
+	if m.Candidate == nil {
+		return fmt.Errorf("CANDIDATE_READY payload is required")
+	}
+	if m.Candidate.ProjectID != m.Protocol.ProjectID || m.Candidate.AssignmentID == "" ||
+		m.Candidate.CandidateSHA == "" || m.Candidate.AdoptionToken == "" {
+		return fmt.Errorf("CANDIDATE_READY payload is invalid")
 	}
 	return nil
 }

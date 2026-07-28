@@ -49,15 +49,15 @@ func TestRemoteGateProtocolVersions(t *testing.T) { //nolint:funlen // validates
 	t.Parallel()
 
 	supported := protocol.Range{Min: 1, Max: 1}
-	identity := protocol.ProtocolIdentity{
+	identity := protocol.Identity{
 		ProjectID:         "oro",
 		WorkerID:          "worker-1",
 		WorkerGeneration:  4,
 		RestartGeneration: 9,
 		BuildID:           "build-abc",
 	}
-	metadata := func() protocol.ProtocolMetadata {
-		return protocol.ProtocolMetadata{
+	metadata := func() protocol.Metadata {
+		return protocol.Metadata{
 			ProtocolRange:     supported,
 			ProjectID:         identity.ProjectID,
 			WorkerID:          identity.WorkerID,
