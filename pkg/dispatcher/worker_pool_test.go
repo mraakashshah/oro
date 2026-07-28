@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/beadstore"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
 )
@@ -1863,6 +1864,93 @@ func TestTimedOutReaperCannotClobberReplacement(t *testing.T) {
 	beadSrc.mu.Unlock()
 	if status != "in_progress" {
 		t.Fatalf("g1 reopened g2 bead: status=%q", status)
+	}
+}
+
+// TestTimedOutReaperCleanupCannotClobberSuccessor proves timeout cleanup keeps
+// g1's reservation until its last bead effect is complete. The update seam
+// installs g2 only when the reservation is visibly released, reproducing the
+// former ownership-check-to-update window without holding dispatcher locks
+// across the bead-store call.
+func TestTimedOutReaperCleanupCannotClobberSuccessor(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	const (
+		workerID = "timed-out-cleanup-worker"
+		beadID   = "timed-out-cleanup-bead"
+	)
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+	d.cfg.ProgressTimeout = time.Second
+
+	d.mu.Lock()
+	worker := &trackedWorker{
+		id:              workerID,
+		conn:            newMockConn(),
+		state:           protocol.WorkerReserved,
+		beadID:          beadID,
+		setupReservedAt: now.Add(-2 * time.Second),
+		reservationGen:  1,
+		encoder:         json.NewEncoder(newMockConn()),
+	}
+	d.workers[workerID] = worker
+	d.assigningBeads[beadID] = true
+	d.attemptCounts[beadID] = 1
+	d.handoffCounts[beadID] = 1
+	d.worktreeByBead[beadID] = "/tmp/g1"
+	d.mu.Unlock()
+	beadSrc.mu.Lock()
+	beadSrc.updated = map[string]string{beadID: "in_progress"}
+	beadSrc.mu.Unlock()
+
+	var injected bool
+	beadSrc.updateFn = func(_ context.Context, id string, params beadstore.UpdateParams) error {
+		if id != beadID || params.Status == nil || *params.Status != "open" {
+			return nil
+		}
+		d.mu.Lock()
+		if worker.state == protocol.WorkerIdle && !d.assigningBeads[beadID] {
+			worker.state = protocol.WorkerReserved
+			worker.beadID = beadID
+			worker.setupReservedAt = now
+			worker.reservationGen++
+			d.assigningBeads[beadID] = true
+			d.attemptCounts[beadID] = 2
+			d.handoffCounts[beadID] = 2
+			d.worktreeByBead[beadID] = "/tmp/g2"
+			injected = true
+		}
+		d.mu.Unlock()
+
+		beadSrc.mu.Lock()
+		beadSrc.updated[beadID] = *params.Status
+		beadSrc.mu.Unlock()
+		return nil
+	}
+
+	d.checkHeartbeats(context.Background())
+
+	d.mu.Lock()
+	state, generation := worker.state, worker.reservationGen
+	assigning := d.assigningBeads[beadID]
+	attempts := d.attemptCounts[beadID]
+	handoffs := d.handoffCounts[beadID]
+	worktree := d.worktreeByBead[beadID]
+	d.mu.Unlock()
+	beadSrc.mu.Lock()
+	status := beadSrc.updated[beadID]
+	beadSrc.mu.Unlock()
+
+	if injected {
+		if state != protocol.WorkerReserved || !assigning || attempts != 2 || handoffs != 2 || worktree != "/tmp/g2" {
+			t.Fatalf("g1 clobbered g2 tracking: state=%s assigning=%t attempts=%d handoffs=%d worktree=%q", state, assigning, attempts, handoffs, worktree)
+		}
+		if status != "in_progress" {
+			t.Fatalf("g1 reopened g2 bead: status=%q", status)
+		}
+		return
+	}
+	if state != protocol.WorkerIdle || generation != 2 || assigning || attempts != 0 || handoffs != 0 || worktree != "/tmp/g1" || status != "open" {
+		t.Fatalf("g1 cleanup = state=%s generation=%d assigning=%t attempts=%d handoffs=%d worktree=%q status=%q", state, generation, assigning, attempts, handoffs, worktree, status)
 	}
 }
 
