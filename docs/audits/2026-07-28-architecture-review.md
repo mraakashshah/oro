@@ -16,7 +16,11 @@ GOFLAGS=-buildvcs=false go test $race_flag -shuffle=on -p 3 \
     -coverprofile="$COVERAGE_FILE" ./internal/... ./pkg/... || return 1
 ```
 
-The 1,677-line quality gate lints `./cmd/...` (line 1156), runs NilAway on `./cmd/...` (line 1260), and builds `./cmd/...` (line 1309) — but **never tests it**. That is 24,398 lines of production source and **39,297 lines of tests that the merge gate never executes**.
+The 1,677-line quality gate lints `./cmd/...` (line 1156), runs NilAway on `./cmd/...` (line 1260), and builds `./cmd/...` (line 1309) — but **never tests it**. That is 24,398 lines of production source and 39,297 lines of tests that the merge gate never executes.
+
+> **Correction (post-review).** An earlier draft of this section implied those tests are never run anywhere. That is wrong: `.github/workflows/ci.yml:73` runs `go test -race -shuffle=on ./internal/... ./pkg/... ./cmd/...` on every push, and `:137` repeats it CGO-free. The gap is specific to the **local worker quality gate** — the thing that actually gates a merge.
+>
+> The corrected picture is worse, not better. CI *does* catch this, and **CI is red**: 4 of the last 5 runs on `main` failed (`gh run list`), including the two most recent. So the signal exists, fires correctly, and merges proceed anyway — because nothing in the dispatcher's merge path consults CI. Oro's merge gate and Oro's CI disagree about what "green" means, and only the weaker one is enforced.
 
 Everything else in this review is downstream of that fact. A factory whose defining claim is mechanically-enforced correctness has a 28%-of-source blind spot in the mechanism, and a real defect walked through it in the last 48 hours.
 
@@ -283,7 +287,7 @@ Monotonic. Overall 1,589 fix vs 1,125 feat. `fix(dispatcher)` alone is 468 commi
 | **Worker lifecycle + UDS protocol** | Spawn agents, heartbeat, ASSIGN/DONE | **Essential now** | `pkg/protocol` 2,754 LOC; `worker_pool.go` 919 | 5,840 assignments executed; heartbeat catches crashes (158 `WORKER_CRASH`) | **Keep as-is.** Best-engineered part of the system |
 | **Git worktree isolation** | Concurrent agents can't collide | **Essential now** | `worktree_manager.go` 763 LOC | No cross-worker corruption observed | **Keep** |
 | **SQLite task state + event log** | Durability, resume | **Essential now** | 36 tables in `protocol/schema.go` (1,521 LOC) | Survives restarts; 245 handoffs recovered | **Keep, but prune.** 61 tables → target ~20 |
-| **Quality gate script** | Mechanical correctness bar | **Essential now — but broken** | 1,677 LOC bash; 45 `fix(qg)` + 33 `fix(quality-gate)` commits | **Never runs `./cmd/...` (line 1290).** 39,297 test LOC unexecuted; live regression escaped | **Fix immediately** (add `./cmd/...`), then simplify. Highest-value one-line change in the repo |
+| **Quality gate script** | Mechanical correctness bar | **Essential now — but broken** | 1,677 LOC bash; 45 `fix(qg)` + 33 `fix(quality-gate)` commits | **Never runs `./cmd/...` (line 1290)**, so 39,297 test LOC are outside the merge gate. CI does run them (`ci.yml:73`) and **CI is red on 4 of the last 5 `main` runs** — nothing in the merge path consults it | **Fix immediately** (add `./cmd/...`, copying `ci.yml:75-77`'s coverage exclusion), and make merge consult CI status |
 | **Ops review agent** | Independent judgment pass | **Essential now** | `pkg/ops` 3,401 LOC | 265 approvals / 154 rejections | **Keep.** Cap review cycles is right; add a global attempt ceiling |
 | **Epic branch / rebase / ancestry preservation** | Keep epic branches integrable | **Wrong abstraction** | 585 commits (12.7%); 3,562 failure events vs 205 merges; 31 duplicated commits on main; 15-rule operator decision tree | Fails 17:1 against success | **Delete.** Replace with: task branches off `main`, serialized fast-forward merge, and on conflict → escalate to human. Epics become metadata, not git objects |
 | **Recovery quarantines** | Isolate unsafe work | **Useful but over-scaled** | `recovery_quarantine.go` 495 LOC; 8 reason codes; 395 quarantines | Generates 316,517 spam events (89.6% of log); `requeue-preserved` mode feeds rejection loops (operator's own note) | **Simplify to 2 states** (retryable / human-owned). Fix the log spam. Delete `requeue-preserved` |
