@@ -1763,6 +1763,109 @@ func TestTimedOutSetupCannotClobberReplacement(t *testing.T) {
 	}
 }
 
+// TestTimedOutReaperCannotClobberReplacement proves a setup reaper does not
+// reopen or clear a successor that claims the bead after the reaper releases
+// its reservation but before its external cleanup runs.
+func TestTimedOutReaperCannotClobberReplacement(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	const (
+		workerID = "timed-out-setup-worker"
+		beadID   = "timed-out-setup-bead"
+	)
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+	d.cfg.ProgressTimeout = time.Second
+
+	cleanupStarted := make(chan struct{})
+	releaseCleanup := make(chan struct{})
+	beadSrc.showFn = func(ctx context.Context, id string) (*protocol.BeadDetail, error) {
+		if id != beadID {
+			return &protocol.BeadDetail{Status: "open"}, nil
+		}
+		close(cleanupStarted)
+		select {
+		case <-releaseCleanup:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return &protocol.BeadDetail{Status: "in_progress"}, nil
+	}
+
+	d.mu.Lock()
+	worker := &trackedWorker{
+		id:              workerID,
+		conn:            newMockConn(),
+		state:           protocol.WorkerReserved,
+		beadID:          beadID,
+		setupReservedAt: now.Add(-2 * time.Second),
+		reservationGen:  1,
+		encoder:         json.NewEncoder(newMockConn()),
+	}
+	d.workers[workerID] = worker
+	d.assigningBeads[beadID] = true
+	d.attemptCounts[beadID] = 1
+	d.worktreeByBead[beadID] = "/tmp/g1"
+	d.mu.Unlock()
+	beadSrc.mu.Lock()
+	beadSrc.updated = make(map[string]string)
+	beadSrc.updated[beadID] = "in_progress"
+	beadSrc.mu.Unlock()
+
+	reaped := make(chan struct{})
+	go func() {
+		d.checkHeartbeats(context.Background())
+		close(reaped)
+	}()
+
+	select {
+	case <-d.workerReadyCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed-out setup did not notify scheduling")
+	}
+	select {
+	case <-cleanupStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed-out setup did not begin external cleanup")
+	}
+
+	d.mu.Lock()
+	worker.state = protocol.WorkerReserved
+	worker.beadID = beadID
+	worker.setupReservedAt = now
+	worker.reservationGen++
+	g2 := worker.reservationGen
+	d.assigningBeads[beadID] = true
+	d.attemptCounts[beadID] = 2
+	d.worktreeByBead[beadID] = "/tmp/g2"
+	d.mu.Unlock()
+
+	close(releaseCleanup)
+	select {
+	case <-reaped:
+	case <-time.After(time.Second):
+		t.Fatal("timed-out reaper did not finish")
+	}
+
+	d.mu.Lock()
+	state, gotGen := worker.state, worker.reservationGen
+	assigning := d.assigningBeads[beadID]
+	attempts := d.attemptCounts[beadID]
+	worktree := d.worktreeByBead[beadID]
+	d.mu.Unlock()
+	if state != protocol.WorkerReserved || gotGen != g2 {
+		t.Fatalf("g1 clobbered g2 worker reservation: state=%s generation=%d, want generation=%d", state, gotGen, g2)
+	}
+	if !assigning || attempts != 2 || worktree != "/tmp/g2" {
+		t.Fatalf("g1 clobbered g2 tracking: assigning=%t attempts=%d worktree=%q", assigning, attempts, worktree)
+	}
+	beadSrc.mu.Lock()
+	status := beadSrc.updated[beadID]
+	beadSrc.mu.Unlock()
+	if status != "in_progress" {
+		t.Fatalf("g1 reopened g2 bead: status=%q", status)
+	}
+}
+
 // TestCheckHeartbeats_SkipsReservedWorkers verifies that reserved workers are not timed out.
 // Kills mutations 17, 39 (skip reserved check).
 func TestCheckHeartbeats_SkipsReservedWorkers(t *testing.T) {

@@ -115,6 +115,7 @@ type fakeBeadStore struct {
 	closedErr            error            // if set, Closed() returns this error
 	updateErrs           map[string]error // beadID -> error returned by Update()
 	updateFn             func(ctx context.Context, id string, params beadstore.UpdateParams) error
+	showFn               func(ctx context.Context, id string) (*protocol.BeadDetail, error)
 	showErr              error            // if set, Show() returns this error for all IDs
 	showErrFn            map[string]error // per-ID Show errors (takes precedence over showErr)
 	shownNil             map[string]bool  // per-ID nil detail (returns nil, nil)
@@ -155,9 +156,12 @@ func (m *fakeBeadStore) Ready(_ context.Context) ([]protocol.Bead, error) {
 	return out, nil
 }
 
-func (m *fakeBeadStore) Show(_ context.Context, id string) (*protocol.BeadDetail, error) {
+func (m *fakeBeadStore) Show(ctx context.Context, id string) (*protocol.BeadDetail, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.showFn != nil {
+		return m.showFn(ctx, id)
+	}
 	// Check per-ID Show error first (takes precedence).
 	if m.showErrFn != nil {
 		if err, ok := m.showErrFn[id]; ok {

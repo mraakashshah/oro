@@ -320,14 +320,15 @@ func (d *Dispatcher) touchProgress(workerID string) {
 // workerExitInfo holds the minimal details needed to escalate a timed-out
 // worker exit after releasing d.mu.
 type workerExitInfo struct {
-	workerID     string
-	beadID       string
-	worktree     string
-	baseBranch   string
-	assignmentID int64
-	prevSession  bool // worker is from a previous dispatcher session
-	managed      bool // worker was spawned by the dispatcher (procMgr)
-	reviewing    bool // worker was in an active ops review
+	workerID       string
+	beadID         string
+	reservationGen uint64
+	worktree       string
+	baseBranch     string
+	assignmentID   int64
+	prevSession    bool // worker is from a previous dispatcher session
+	managed        bool // worker was spawned by the dispatcher (procMgr)
+	reviewing      bool // worker was in an active ops review
 }
 
 // escalateTimedOutWorkers dispatches escalation messages and clears bead
@@ -636,11 +637,15 @@ func (d *Dispatcher) reclaimTimedOutSetupsLocked(ctx context.Context, workerIDs 
 		if w == nil || !workerSetupTimedOut(w, now, d.cfg.ProgressTimeout) {
 			continue
 		}
-		reclaimed = append(reclaimed, workerExitInfo{workerID: id, beadID: w.beadID})
-		_ = d.logEventLocked(ctx, "assignment_setup_timeout", "dispatcher", w.beadID, id,
+		beadID := w.beadID
+		reservationGen := w.reservationGen
+		_ = d.logEventLocked(ctx, "assignment_setup_timeout", "dispatcher", beadID, id,
 			fmt.Sprintf(`{"setup_ago":%q}`, now.Sub(w.setupReservedAt).Round(time.Second)))
-		delete(d.assigningBeads, w.beadID)
-		d.releaseAssignmentReservationLocked(id, w.beadID, w.reservationGen)
+		delete(d.assigningBeads, beadID)
+		if !d.releaseAssignmentReservationLocked(id, beadID, reservationGen) {
+			continue
+		}
+		reclaimed = append(reclaimed, workerExitInfo{workerID: id, beadID: beadID, reservationGen: reservationGen + 1})
 	}
 	return reclaimed
 }
@@ -648,13 +653,30 @@ func (d *Dispatcher) reclaimTimedOutSetupsLocked(ctx context.Context, workerIDs 
 func (d *Dispatcher) reopenTimedOutSetupBeads(ctx context.Context, reclaimed []workerExitInfo) {
 	for _, setup := range reclaimed {
 		if !d.isBeadClosed(ctx, setup.beadID) {
+			if !d.timedOutSetupCleanupCurrent(setup) {
+				continue
+			}
 			if err := d.updateBeadStatus(ctx, setup.beadID, "open"); err != nil {
 				_ = d.logEvent(ctx, "assignment_setup_bead_reset_failed", "dispatcher", setup.beadID, setup.workerID,
 					fmt.Sprintf(`{"error":%q}`, err.Error()))
 			}
 		}
-		d.clearBeadTracking(setup.beadID)
+		if d.timedOutSetupCleanupCurrent(setup) {
+			d.clearBeadTracking(setup.beadID)
+		}
 	}
+}
+
+// timedOutSetupCleanupCurrent reports whether a reaped setup still owns its
+// bead's logical cleanup. The worker reservation is already released so the
+// scheduler can make progress; a successor reservation changes the generation
+// or restores assigningBeads and must keep its status and tracking intact.
+func (d *Dispatcher) timedOutSetupCleanupCurrent(setup workerExitInfo) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w := d.workers[setup.workerID]
+	return w != nil && w.state == protocol.WorkerIdle && w.beadID == "" &&
+		w.reservationGen == setup.reservationGen && !d.assigningBeads[setup.beadID]
 }
 
 func (d *Dispatcher) removeDeadWorkersLocked(ctx context.Context, dead []string) (deadWorkers []workerExitInfo, managedExits int) {
