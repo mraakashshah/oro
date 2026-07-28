@@ -580,6 +580,9 @@ func (d *Dispatcher) collectTimedOutWorkersLocked(now time.Time) (dead, stuck, s
 		if w.state == protocol.WorkerReserved {
 			continue
 		}
+		if w.state == protocol.WorkerShuttingDown && w.shutdownCancel != nil {
+			continue
+		}
 		if stoppedSpawnForHeartbeatTimedOut(w, now, d.cfg.HeartbeatTimeout) {
 			stoppedSpawnFor = append(stoppedSpawnFor, id)
 			continue
