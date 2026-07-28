@@ -54,6 +54,22 @@ type probeResult struct {
 	serialPeak int
 	mainEnv    string
 	serialEnv  string
+	output     string
+}
+
+func TestProbeFailureSummaryIncludesDiagnostics(t *testing.T) {
+	markerDir := t.TempDir()
+	r := runGateProbe(t, markerDir, t.TempDir(), "broken", "TMPDIR=/does-not-exist/oro-qg-probe")
+	if r.exit == 0 {
+		t.Fatal("probe unexpectedly passed with an unusable TMPDIR")
+	}
+
+	summary := probeFailureSummary("serial lane", "broken", r)
+	for _, want := range []string{"serial lane", "broken", "exit=", "output:"} {
+		if !strings.Contains(summary, want) {
+			t.Errorf("failure summary missing %q:\n%s", want, summary)
+		}
+	}
 }
 
 // runGateProbe runs the script in phase-marker mode and returns the observed
@@ -87,6 +103,19 @@ func runGateProbe(t *testing.T, markerDir, repoRoot, id string, extraEnv ...stri
 		serialPeak: readIntMarker(markerDir, "peak.serial."+id),
 		mainEnv:    readMarker(markerDir, "env.main."+id),
 		serialEnv:  readMarker(markerDir, "env.serial."+id),
+		output:     string(out),
+	}
+}
+
+func probeFailureSummary(phase, id string, result probeResult) string {
+	return "quality-gate probe failed: phase=" + phase + " id=" + id +
+		" exit=" + strconv.Itoa(result.exit) + " output:\n" + result.output
+}
+
+func assertProbeSucceeded(t *testing.T, phase, id string, result probeResult) {
+	t.Helper()
+	if result.exit != 0 {
+		t.Fatal(probeFailureSummary(phase, id, result))
 	}
 }
 
@@ -220,6 +249,7 @@ func assertConcurrentQualityGatesSerializeDispatcherAggregateSuite(t *testing.T)
 		wg.Wait()
 		maxPeak := 0
 		for i, r := range results {
+			assertProbeSucceeded(t, "concurrent main phase", ids[i], r)
 			maxPeak = max(maxPeak, r.mainPeak)
 			// These are deterministic per gate regardless of overlap timing:
 			if r.mainEnv != "" {
@@ -287,6 +317,8 @@ func TestMainGateRunsConcurrentSerialLaneSerializes(t *testing.T) {
 			}(i, id)
 		}
 		wg.Wait()
+		assertProbeSucceeded(t, "main phase", "a", results[0])
+		assertProbeSucceeded(t, "main phase", "b", results[1])
 		// A global lock would serialize the main phases, forcing every peak to 1.
 		// Concurrency means at least one probe observed the other running (>=2).
 		// (Requiring BOTH to see 2 flakes when process-startup skew approaches the
@@ -309,6 +341,8 @@ func TestMainGateRunsConcurrentSerialLaneSerializes(t *testing.T) {
 			}(i, id)
 		}
 		wg.Wait()
+		assertProbeSucceeded(t, "serial lane", "a", results[0])
+		assertProbeSucceeded(t, "serial lane", "b", results[1])
 		// Serial lanes must be mutually exclusive: each sees only itself.
 		if results[0].serialPeak != 1 || results[1].serialPeak != 1 {
 			t.Fatalf("serial lane not serialized: peaks a=%d b=%d, want both ==1", results[0].serialPeak, results[1].serialPeak)
@@ -320,6 +354,7 @@ func TestMainGateRunsConcurrentSerialLaneSerializes(t *testing.T) {
 		repoRoot := t.TempDir()
 		// Ambient leak: ORO_QG_SERIAL_LANE=1 must NOT reach the concurrent main phase.
 		r := runGateProbe(t, markerDir, repoRoot, "leak", "ORO_QG_SERIAL_LANE=1", "ORO_QG_MAIN_SLEEP=0", "ORO_QG_SERIAL_SLEEP=0")
+		assertProbeSucceeded(t, "serial env probe", "leak", r)
 		if r.mainEnv != "" {
 			t.Errorf("main phase saw ORO_QG_SERIAL_LANE=%q, want neutralized (empty)", r.mainEnv)
 		}
@@ -362,6 +397,7 @@ func TestMainGateRunsConcurrentSerialLaneSerializes(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		r := runGateProbe(t, markerDir, repoRoot, "stale",
 			"ORO_QG_STALE_LOCK_SECONDS=0", "ORO_QG_MAIN_SLEEP=0", "ORO_QG_SERIAL_SLEEP=0")
+		assertProbeSucceeded(t, "stale-lock serial lane", "stale", r)
 		// The serial lane must have run (archived the stale lock, then acquired).
 		if r.serialPeak != 1 {
 			t.Fatalf("serial lane did not proceed past stale lock (serialPeak=%d)", r.serialPeak)
