@@ -586,6 +586,9 @@ func (d *Dispatcher) collectTimedOutWorkersLocked(now time.Time) (dead, stuck, s
 			}
 			continue
 		}
+		if w.state == protocol.WorkerShuttingDown && w.shutdownCancel != nil {
+			continue
+		}
 		if stoppedSpawnForHeartbeatTimedOut(w, now, d.cfg.HeartbeatTimeout) {
 			stoppedSpawnFor = append(stoppedSpawnFor, id)
 			continue
@@ -824,9 +827,7 @@ func (d *Dispatcher) gracefulShutdownWorker(workerID string, timeout time.Durati
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	w.shutdownCancel = cancel
 	w.shutdownReason = reason
-	if reason == shutdownReasonScaleDown || w.spawnFor {
-		w.state = protocol.WorkerShuttingDown
-	}
+	w.state = protocol.WorkerShuttingDown
 
 	if w.spawnFor {
 		sendPrepareShutdownWithoutBuffering(w, timeout)
@@ -880,14 +881,10 @@ func (d *Dispatcher) handleShutdownTimeout(workerID string) {
 		dispatcherStopping = d.state == StateStopping
 		if w.shutdownReason == shutdownReasonScaleDown || w.spawnFor {
 			sendShutdownWithoutBuffering(w)
-			w.markShuttingDownWithoutAssignment()
 		} else {
 			_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
-			w.state = protocol.WorkerIdle
-			w.shutdownReason = ""
-			w.assignmentID = 0
-			w.beadID = ""
 		}
+		w.markShuttingDownWithoutAssignment()
 		w.shutdownCancel = nil
 	}
 	d.mu.Unlock()

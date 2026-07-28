@@ -542,7 +542,7 @@ const remoteCapabilityConfigYAML = `factory:
         type: github-app
         app_id: 1
         installation_id: 2
-        private_key_ref: runtime-key
+        private_key_ref: keychain:runtime-key
       policy_reconciliation:
         enabled: true
         owned_ruleset_key: oro
@@ -552,7 +552,7 @@ const remoteCapabilityConfigYAML = `factory:
           type: github-app
           app_id: 3
           installation_id: 4
-          private_key_ref: maintenance-key
+          private_key_ref: keychain:maintenance-key
 `
 
 const canonicalRemoteCapabilityConfigYAML = `factory:
@@ -575,7 +575,7 @@ const canonicalRemoteCapabilityConfigYAML = `factory:
         type: github-app
         app_id: 1
         installation_id: 2
-        private_key_ref: runtime-key
+        private_key_ref: keychain:runtime-key
       policy_reconciliation:
         enabled: true
         owned_ruleset_key: oro
@@ -585,7 +585,7 @@ const canonicalRemoteCapabilityConfigYAML = `factory:
           type: github-app
           app_id: 3
           installation_id: 4
-          private_key_ref: maintenance-key
+          private_key_ref: keychain:maintenance-key
 `
 
 func writeRemoteCapabilityFixture(t *testing.T, path, body string) {

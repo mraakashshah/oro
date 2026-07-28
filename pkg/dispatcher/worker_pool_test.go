@@ -2894,6 +2894,199 @@ func isWorkerUnreachable(err error, out **protocol.WorkerUnreachableError) bool 
 
 // --- GracefulShutdownWorker tests ---
 
+func TestGracefulShutdownBlocksAssignToReservedWorker(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	blocker := &blockingCodeIndex{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	d.codeIndex = blocker
+
+	cancel := startDispatcher(t, d)
+	defer cancel()
+	d.setState(StateRunning)
+
+	const (
+		beadID   = "shutdown-reserved-bead"
+		workerID = "shutdown-reserved-worker"
+	)
+	beadSrc.SetBeads([]protocol.Bead{{
+		ID:       beadID,
+		Title:    "assignment setup interrupted by graceful shutdown",
+		Priority: 1,
+		Type:     "task",
+	}})
+
+	conn, scanner := connectWorker(t, d.cfg.SocketPath)
+	defer conn.Close()
+	sendMsg(t, conn, protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: workerID},
+	})
+
+	select {
+	case <-blocker.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("assignment setup did not reach blocking code search")
+	}
+
+	d.GracefulShutdownWorker(workerID, time.Second)
+	d.mu.Lock()
+	w := d.workers[workerID]
+	if w == nil {
+		d.mu.Unlock()
+		t.Fatal("worker disappeared during graceful shutdown")
+	}
+	if w.state != protocol.WorkerShuttingDown {
+		d.mu.Unlock()
+		t.Fatalf("worker state after graceful shutdown = %s, want %s", w.state, protocol.WorkerShuttingDown)
+	}
+	d.mu.Unlock()
+
+	close(blocker.release)
+
+	msg, got := readMsgFromScanner(t, scanner, 2*time.Second)
+	if !got {
+		t.Fatal("expected PREPARE_SHUTDOWN")
+	}
+	if msg.Type != protocol.MsgPrepareShutdown {
+		t.Fatalf("first message after graceful shutdown = %s, want %s", msg.Type, protocol.MsgPrepareShutdown)
+	}
+
+	msg, got = readMsgFromScanner(t, scanner, 200*time.Millisecond)
+	if got && msg.Type == protocol.MsgAssign {
+		t.Fatal("gracefully shutting down reserved worker received ASSIGN")
+	}
+
+	waitFor(t, func() bool {
+		var active int
+		err := d.db.QueryRowContext(context.Background(),
+			`SELECT COUNT(*) FROM assignments WHERE bead_id=? AND status='active'`, beadID,
+		).Scan(&active)
+		return err == nil && active == 0
+	}, 2*time.Second)
+}
+
+func TestGracefulShutdownTimeoutKeepsWorkerOutOfAssignmentPool(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+	go drainConn(clientConn)
+
+	const workerID = "shutdown-timeout-worker"
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:      workerID,
+		conn:    serverConn,
+		state:   protocol.WorkerIdle,
+		encoder: json.NewEncoder(serverConn),
+	}
+	d.mu.Unlock()
+
+	d.GracefulShutdownWorker(workerID, 10*time.Millisecond)
+	waitFor(t, func() bool {
+		state, _, ok := d.WorkerInfo(workerID)
+		return ok && state == protocol.WorkerShuttingDown
+	}, time.Second)
+}
+
+func TestShuttingDownWorkerHeartbeatTimeoutReleasesCapacity(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.cfg.MaxWorkers = 1
+	now := time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC)
+	d.nowFunc = func() time.Time { return now }
+
+	const workerID = "stale-shutdown-worker"
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:       workerID,
+		conn:     newMockConn(),
+		state:    protocol.WorkerShuttingDown,
+		managed:  true,
+		lastSeen: now.Add(-2 * d.cfg.HeartbeatTimeout),
+	}
+	if got := d.liveWorkerCountLocked(); got != d.cfg.MaxWorkers {
+		d.mu.Unlock()
+		t.Fatalf("live worker count before stale reap = %d, want %d", got, d.cfg.MaxWorkers)
+	}
+	d.mu.Unlock()
+
+	d.checkHeartbeats(context.Background())
+
+	d.mu.Lock()
+	_, stillTracked := d.workers[workerID]
+	liveWorkers := d.liveWorkerCountLocked()
+	d.mu.Unlock()
+	if stillTracked {
+		t.Fatal("stale shutting-down worker should be reaped after heartbeat timeout")
+	}
+	if liveWorkers != 0 {
+		t.Fatalf("live worker count after stale reap = %d, want 0", liveWorkers)
+	}
+}
+
+func TestGracefulShutdownAttemptSurvivesHeartbeatTimeout(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	now := time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC)
+	d.nowFunc = func() time.Time { return now }
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const workerID = "active-graceful-shutdown-worker"
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:             workerID,
+		conn:           newMockConn(),
+		state:          protocol.WorkerShuttingDown,
+		lastSeen:       now.Add(-2 * d.cfg.HeartbeatTimeout),
+		shutdownCancel: cancel,
+	}
+	d.mu.Unlock()
+
+	d.checkHeartbeats(context.Background())
+
+	d.mu.Lock()
+	_, stillTracked := d.workers[workerID]
+	d.mu.Unlock()
+	if !stillTracked {
+		t.Fatal("active graceful-shutdown attempt was reaped by heartbeat timeout")
+	}
+}
+
+func TestGracefulShutdownApprovalKeepsWorkerOutOfAssignmentPool(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	const workerID = "shutdown-approved-worker"
+	conn := newMockConn()
+	beadSrc.SetBeads([]protocol.Bead{{ID: "ready-after-shutdown", Priority: 0, Type: "task"}})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "ready-after-shutdown", Priority: 0})
+	d.setState(StateRunning)
+
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:      workerID,
+		conn:    conn,
+		state:   protocol.WorkerShuttingDown,
+		encoder: json.NewEncoder(conn),
+	}
+	d.mu.Unlock()
+
+	d.handleShutdownApproved(context.Background(), workerID, protocol.Message{
+		Type:             protocol.MsgShutdownApproved,
+		ShutdownApproved: &protocol.ShutdownApprovedPayload{WorkerID: workerID},
+	})
+
+	d.mu.Lock()
+	state := d.workers[workerID].state
+	d.mu.Unlock()
+	if state != protocol.WorkerShuttingDown {
+		t.Fatalf("worker state after shutdown approval = %s, want %s", state, protocol.WorkerShuttingDown)
+	}
+
+	tryAssignAndWait(t, d, context.Background())
+	assertMockWorkerAssignCount(t, []*mockConn{conn}, 0)
+}
+
 // TestGracefulShutdownWorker_NoopForMissingWorker verifies early return for
 // unknown worker.
 // Kills mutation 25 (skip unlock+return when worker not found).

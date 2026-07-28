@@ -5620,16 +5620,10 @@ func (d *Dispatcher) handleShutdownApproved(ctx context.Context, workerID string
 		assignmentID = w.assignmentID
 		if w.shutdownReason == shutdownReasonScaleDown || w.spawnFor {
 			sendShutdownWithoutBuffering(w)
-			w.markShuttingDownWithoutAssignment()
 		} else {
 			_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
-			w.state = protocol.WorkerIdle
-			w.shutdownReason = ""
-			w.assignmentID = 0
-			w.beadID = ""
-			w.epicID = ""
-			w.isEpicDecomp = false
 		}
+		w.markShuttingDownWithoutAssignment()
 	}
 	d.mu.Unlock()
 
@@ -7010,18 +7004,13 @@ func (d *Dispatcher) checkBeadReady(ctx context.Context, bead protocol.Bead, wor
 			return title, "", false
 		}
 	}
-	if modules := protocol.CountDistinctModules(acceptance); modules > 2 {
-		// Epics are expected to span multiple modules; skip the oversized check.
-		// Also skip if the bead already has children — it was decomposed externally.
-		isEpic := strings.EqualFold(bead.Type, "epic")
-		hasChildren, _ := d.beads.HasChildren(ctx, bead.ID)
-		if !isEpic && !hasChildren {
-			d.escalate(ctx, protocol.FormatEscalation(protocol.EscOversizedBead, bead.ID,
-				fmt.Sprintf("touches %d modules — needs decomposition", modules), ""), bead.ID, workerID)
-			d.recordAssignmentFailure(bead.ID)
-			return title, "", false
-		}
-	}
+	// The oversized admission gate was removed here. It counted distinct
+	// directories cited in the acceptance criteria's "Read:" lines, which
+	// measures how thoroughly the criteria were researched — not how large the
+	// change is. A well-cited task was rejected; a task with no Read: line
+	// counted zero and always passed. It fired 1,104 times, and its only remedy
+	// was decomposition into more tasks, each paying full quality-gate and
+	// review cost. Oversized work is now caught at review instead.
 	return title, acceptance, true
 }
 
@@ -9814,8 +9803,18 @@ func (d *Dispatcher) logOpsRunBlockedAssignment(ctx context.Context, rec OpsRunR
 //     worker with no bead assigned, stops the 2-minute replay loop (oro-p2ey)
 //   - Empty beadID (other types): always retry (no bead context to check)
 //   - beads.Show error: always retry (don't suppress on error)
+//   - OVERSIZED_BEAD: never retries — the gate that raised it was removed
 //   - Unknown escType: always retry (don't block future escalation types)
 func (d *Dispatcher) shouldRetryEscalation(ctx context.Context, escType, beadID string) bool {
+	// OVERSIZED_BEAD is checked before the beadID branch because it is stale
+	// unconditionally: the admission gate that raised it was removed (it counted
+	// Read: citations in the acceptance criteria, not change size), so no new
+	// rows are created and every surviving one must drain regardless of bead
+	// context. Keep this ahead of the switch's `default: return true`.
+	if protocol.EscalationType(escType) == protocol.EscOversizedBead {
+		return false
+	}
+
 	// Empty beadID: WORKER_CRASH auto-acks (stale prev-session alert, oro-p2ey);
 	// all other types retry because there's no bead context to check.
 	if beadID == "" {
@@ -9835,7 +9834,12 @@ func (d *Dispatcher) shouldRetryEscalation(ctx context.Context, escType, beadID 
 	case protocol.EscPriorityContention:
 		return d.retryPriorityContention(ctx, beadID)
 	case protocol.EscOversizedBead:
-		return d.retryOversizedBead(ctx, beadID)
+		// The oversized admission gate was removed (it counted Read: citations
+		// in the acceptance criteria, not change size). Nothing raises this
+		// escalation any more, so every surviving pending row is stale and must
+		// drain. Keep the case: deleting it falls through to `default: return
+		// true` below and retries these rows forever.
+		return false
 	case protocol.EscNonTDDAC:
 		return d.retryNonTDDAC(ctx, beadID)
 	case protocol.EscMergeComplete, protocol.EscManualIntegration, protocol.EscDependencyCycle:

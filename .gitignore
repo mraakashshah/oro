@@ -52,3 +52,5 @@ uv.lock
 docs/handoffs/
 archive/yap/reference/
 *.db
+/.oro/context_summary.txt
+/.oro/handoff_done
