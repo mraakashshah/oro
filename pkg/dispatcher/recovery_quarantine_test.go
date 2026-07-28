@@ -995,7 +995,7 @@ VALUES (?, 'disconnected-worker', ?, ?, 'stale_active_assignment', 'preserved cl
 		t.Fatalf("clean preserved worktree %q was not eligible for auto-redeploy", beadID)
 	}
 
-	d.tryAssign(ctx)
+	tryAssignAndWait(t, d, ctx)
 
 	state, assigned, ok := d.WorkerInfo(w.id)
 	if !ok || state != protocol.WorkerBusy || assigned != beadID {
@@ -1121,7 +1121,7 @@ VALUES (?, ?, 'offline-worker', ?, ?, 'stale_active_assignment', 'requeued prese
 	d.worktreeByBead = make(map[string]string)
 	d.mu.Unlock()
 
-	d.tryAssign(ctx)
+	tryAssignAndWait(t, d, ctx)
 
 	state, assigned, ok := d.WorkerInfo(w.id)
 	if !ok || state != protocol.WorkerBusy || assigned != beadID {

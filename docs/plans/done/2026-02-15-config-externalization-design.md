@@ -158,8 +158,10 @@ Shared resolution pattern at the top of each hook:
 ```python
 import os
 
+
 def oro_home():
     return os.environ.get("ORO_HOME", os.path.expanduser("~/.oro"))
+
 
 def oro_project_dir():
     home = oro_home()
@@ -167,6 +169,7 @@ def oro_project_dir():
     if not project:
         return None  # fallback to current paths
     return os.path.join(home, "projects", project)
+
 
 BEACONS_DIR = os.path.join(oro_home(), "beacons")
 HOOKS_DIR = os.path.join(oro_home(), "hooks")

@@ -189,18 +189,18 @@ jobs:
 
       # Tier 1: Formatting
       - name: ruff format
-        run: uvx ruff format --check .
+        run: uvx ruff@0.16.0 format --check .
 
       # Tier 2: Linting
       - name: ruff check
-        run: uvx ruff check .
+        run: uvx ruff@0.16.0 check .
 
       - name: pylint (errors only)
         run: |
           find . -name '*.py' -not -path './references/*' \
             -not -path './archive/*' -not -path './.worktrees/*' -not -path './.venv/*' \
             -not -path './assets/*' -not -path './.claude/*' \
-            | xargs uvx pylint --disable=all --enable=E
+            | xargs uv run --with pylint pylint --disable=all --enable=E
 
       # Tier 3: Type checking
       - name: pyright
