@@ -1,7 +1,7 @@
 # Design: Reduce Oro's Time-to-Ship
 
 **Date:** 2026-07-28
-**Status:** Revision 5 — **PASSED** adversarial review at rev 4 (rev 1–3 FAIL); rev 5 applies four minor non-blocking notes
+**Status:** Revision 6 — **PASSED** adversarial review at rev 4 (rev 1–3 FAIL). Rev 5 applied four non-blocking notes; rev 6 removes C3b by decision.
 **Related:** `docs/audits/2026-07-28-architecture-review.md`
 
 ---
@@ -168,43 +168,6 @@ Separately, `should_enforce_go_coverage_threshold` (`:776-793`) derives its diff
 
 ---
 
-### C3b — Pause admission when `main`'s CI is red *(rescoped)*
-
-The corrected audit finding stands: CI catches these defects, **CI is red on 4 of the last 5 `main` runs**, and merges proceed anyway.
-
-**Rev 2's shape was unworkable and its justification was wrong.** Two verified errors:
-
-- `ci.yml:3-7` triggers **only** on `push: [main]` and `pull_request: [main]`. Oro ff-merges `agent/*` branches locally and never opens PRs, so the commit at pre-FF time has never had a CI run and never will. Combined with fail-open, a pre-merge check admits 100% of merges — a no-op that reads as shipped.
-- The claim that `pkg/remotegate` "already models this (GitHub CLI, workflow status, `MaxInFlight`)" is false. Verified: `MaxInFlight` does not exist in the package, nothing in it invokes `gh` (`github/preflight.go:17` takes an injected `APIReader`), and it inspects workflow *registration*, never run *conclusions*. That sentence is withdrawn.
-
-**Correct shape — gate admission, not merge.** Before assigning new work, if `main`'s most recent CI conclusion is `failure`, pause the assign loop and escalate. This reads a commit CI has actually observed, needs no merge-path surgery, and directly serves the "red CI runs on `main`: 4 → 0" metric.
-
-**Reuse `pkg/janitor`.** `detect.go:201` already runs exactly the needed query:
-```go
-runCIProbe(ctx, worktree, gh, "run", "list", "--branch", targetBranch,
-    "--limit", "100", "--json", "databaseId,workflowDatabaseId,workflowName,conclusion,url")
-```
-with `errDetectorSkipped` on missing `gh` (`:182`) and on unauthenticated (`:202`) — the fail-open logic already exists.
-
-**But it is not callable from the dispatcher.** Verified: `ciDetector` (`:179`), `errDetectorSkipped` (`:32`), `ciAuthenticated` (`:260`), `runCIProbe` (`:273`), `latestFailingCIRuns` (`:295`) are **all unexported**. The only exported entries are `RunBuiltins`, `RunBuiltin`, `RunDetectScript` — and `RunBuiltin` signals a skip as a plain `fmt.Errorf` (`:94`), distinguishable from a genuine failure only by string match, while `RunBuiltins` would run all four detectors on every admission check. Both return `[]Candidate`, not a red/green answer.
-
-**Therefore: add a narrow exported wrapper; do not duplicate the probe.** Something like:
-```go
-type CIStatus int
-const ( CIUnknown CIStatus = iota; CIGreen; CIRed )
-
-func MainCIStatus(ctx context.Context, workdir, branch string) (CIStatus, error)
-```
-returning `CIUnknown` where `errDetectorSkipped` fires, so "unknown" and "green" are distinguishable at the call site. Without that distinction the implementer must treat every error as admit, and the gate never fires.
-
-**Tri-state, not `(red, known bool)`.** A boolean pair leaves `red=true, known=false` undefined and encodes the admit decision twice. The obvious call site `if red { pause }` would then be correct only under an unstated invariant, and an implementer returning `red=true` on a partial parse produces a fail-*closed* pause — inverting principle 1. With the enum, `if s == CIRed { pause }` is the only correct reading and unknown cannot be mistaken for green.
-
-**Hook:** `tryAssignBatch` (`dispatcher.go:6036-6042`) already opens with `observeStorageController` / `storageAdmissionAllowed` returning `nil` to pause — an exact precedent for this shape. The CI check goes immediately after.
-
-**Sequencing:** must land after `main` is green (phase 1), or it halts the factory on arrival.
-
----
-
 ### C4 — Scale gate and review cost to change size
 
 **Gated on C0.** If profiling shows `check_dead_exports` dominates, fix that instead and drop C4a.
@@ -304,7 +267,7 @@ Therefore the gate **only fails on increase and never writes**. Lowering the bas
 1. **This does not fix epic integration.** The 17:1 ratio is untouched. C1/C2 reduce the *load* reaching it by producing fewer epics. Audit P2.
 2. **C0 may invalidate C4a entirely** — and that is the preferred outcome. If a caller index fixes `check_dead_exports`, the riskiest change in this plan is unnecessary.
 3. **Deleting C1's gate removes the only pre-assignment size check.** Nothing replaces it. This is deliberate: an unreachable gate provided no protection, and the honest position is to admit that rather than simulate coverage.
-4. **C3b depends on CI being trustworthy.** CI is currently red; wiring merge to CI while CI is red would halt the factory. C3b must land *after* `main` is green.
+4. **Merging into a red `main` remains accepted, by decision.** The audit found that CI catches defects the local merge gate misses, that CI is red on 4 of the last 5 `main` runs, and that nothing in the merge path consults it. A rev-4 proposal (C3b) to pause admission on red `main` was **removed by decision**: for a local-first factory that batches pushes, halting work on CI state was judged the wrong trade. C3 still closes the local gate's `cmd/` hole, which is where the escaping defect actually came from. What stays unaddressed is the divergence itself — the merge gate and CI can disagree indefinitely, and only the weaker one is enforced.
 
 ---
 
@@ -313,9 +276,9 @@ Therefore the gate **only fails on increase and never writes**. Lowering the bas
 | Phase | Changes | Gate to proceed |
 |---|---|---|
 | 0 | C0 profiling; C5d (boot call) | Lane timing breakdown published (state the measured grep count; C3 raises it ~10%) |
-| 1 | C3 host-isolation audit → C3 (`cmd/` in gate), fix 3 fixtures | Full suite **and CI** green on `main` |
+| 1 | C3 host-isolation audit → C3 (`cmd/` in gate), fix 3 fixtures | Local `./scripts/quality_gate.sh` green on `main` with `cmd/` in the lane. CI green is *desirable, not blocking* — merging into a red `main` is accepted (see elephant 4) |
 | 2 | C1 (delete gate + repoint switch case + drain 690 pending rows), C2 (prompt string), C5c | `OVERSIZED_BEAD` → 0 **and** `SELECT count(*) FROM escalations WHERE type='OVERSIZED_BEAD' AND status='pending'` = 0. A stuck queue is the C1 failure mode — assert it, don't eyeball it |
-| 3 | C3b (pause admission on red `main`), C5a (check-only ratchet, baseline now) | Admission pauses correctly on a seeded red run; never blocks when `gh` is absent |
+| 3 | C5a (check-only ratchet, baseline now) | Baseline committed; gate fails on increase, never writes |
 | 4 | C5b (promise expiry) | Stale promises detected in a seeded case |
 | 5 | C4a — **only if C0 justifies it** | Every `$scope` element accepted by `go list`; retry wall-clock down; zero escaped defects |
 | 6 | C4b (review tier) | Per-tier escaped-defect rate flat |
@@ -345,7 +308,7 @@ The escalation-drain assertion deliberately lives *only* in the phase-2 gate, no
 | Unfulfilled future-task promises | 89 | 0 |
 | Gate wall clock (dominant lane, from C0) | TBD by C0 | −50% |
 | Review rejection rate | 37% | ≤ 37% (must not worsen) |
-| Red CI runs on `main` (last 5) | **4** | 0 |
+| Escaped defects (broken `main`) | 1 open | 0 |
 
 *The rev 1 metric "median QG wall clock on retry 2:20 → <0:45" is withdrawn: the baseline predates C3, which adds `./cmd/...` to the lane, so it was confounded. C0 establishes an honest baseline.*
 
