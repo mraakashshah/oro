@@ -5618,16 +5618,10 @@ func (d *Dispatcher) handleShutdownApproved(ctx context.Context, workerID string
 		assignmentID = w.assignmentID
 		if w.shutdownReason == shutdownReasonScaleDown || w.spawnFor {
 			sendShutdownWithoutBuffering(w)
-			w.markShuttingDownWithoutAssignment()
 		} else {
 			_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
-			w.state = protocol.WorkerIdle
-			w.shutdownReason = ""
-			w.assignmentID = 0
-			w.beadID = ""
-			w.epicID = ""
-			w.isEpicDecomp = false
 		}
+		w.markShuttingDownWithoutAssignment()
 	}
 	d.mu.Unlock()
 
