@@ -98,6 +98,66 @@ type Evidence struct {
 	PolicyHash    string
 }
 
+// Lease authorizes one exact provider mutation without exposing provider
+// transport lease types.
+//
+//oro:testonly — remote-gate orchestration is wired by subsequent tasks.
+type Lease struct {
+	Owner          string
+	Generation     int64
+	ExpectedSHA    string
+	ExpectedAbsent bool
+}
+
+// EphemeralTarget records a dispatcher-owned target that may be advanced or
+// retired only by its owning generation.
+//
+//oro:testonly — remote-gate orchestration is wired by subsequent tasks.
+type EphemeralTarget struct {
+	Target     Target
+	Owner      string
+	Generation int64
+}
+
+// RemoteChange records the provider-visible change with its immutable
+// dispatcher ownership identity.
+//
+//oro:testonly — remote-gate orchestration is wired by subsequent tasks.
+type RemoteChange struct {
+	Change     Change
+	Owner      string
+	Generation int64
+}
+
+// CheckEvidence identifies one provider-neutral check attached to a run.
+//
+//oro:testonly — remote-gate orchestration is wired by subsequent tasks.
+type CheckEvidence struct {
+	ID         string
+	Name       string
+	Conclusion string
+}
+
+// PageEvidence proves that a paginated provider collection was complete.
+//
+//oro:testonly — remote-gate orchestration is wired by subsequent tasks.
+type PageEvidence struct {
+	Number   int
+	Complete bool
+}
+
+// RunEvidence binds workflow, run, check, policy, and page evidence to a
+// provider-neutral gate observation.
+//
+//oro:testonly — remote-gate orchestration is wired by subsequent tasks.
+type RunEvidence struct {
+	Workflow   WorkflowEvidence
+	RunID      string
+	PolicyHash string
+	Checks     []CheckEvidence
+	Pages      []PageEvidence
+}
+
 // Policy is the provider-neutral effective policy evidence for a target.
 //
 //oro:testonly — remote-gate orchestration is wired by subsequent tasks.
@@ -140,6 +200,71 @@ type PreflightRequest struct {
 type PublishRequest struct {
 	Candidate Candidate
 	Target    Target
+}
+
+// EnsureEphemeralTargetRequest creates or adopts an owned ephemeral target
+// using an expected-absent or exact-SHA lease.
+//
+//oro:testonly — remote-gate orchestration is wired by subsequent tasks.
+type EnsureEphemeralTargetRequest struct {
+	ProjectID  string
+	EpicID     string
+	Target     Target
+	SeedSHA    string
+	Owner      string
+	Generation int64
+	Lease      Lease
+}
+
+// DeleteEphemeralTargetRequest retires an owned ephemeral target at its exact
+// final SHA and generation.
+//
+//oro:testonly — remote-gate orchestration is wired by subsequent tasks.
+type DeleteEphemeralTargetRequest struct {
+	Target   EphemeralTarget
+	FinalSHA string
+	Retired  bool
+	Lease    Lease
+}
+
+// EnsureChangeRequest creates or adopts the exact provider change for an
+// owned candidate and target.
+//
+//oro:testonly — remote-gate orchestration is wired by subsequent tasks.
+type EnsureChangeRequest struct {
+	Change RemoteChange
+	Lease  Lease
+}
+
+// ChangeReadyRequest records exact evidence before a non-draft change is
+// marked ready for provider evaluation.
+//
+//oro:testonly — remote-gate orchestration is wired by subsequent tasks.
+type ChangeReadyRequest struct {
+	Change   RemoteChange
+	Evidence Evidence
+	Lease    Lease
+}
+
+// CancelGateRequest cancels only the owned change identity represented by its
+// exact lease.
+//
+//oro:testonly — remote-gate orchestration is wired by subsequent tasks.
+type CancelGateRequest struct {
+	Change RemoteChange
+	Reason string
+	Lease  Lease
+}
+
+// ReconcileChangeRequest observes an owned change after lost responses before
+// any retry can be attempted.
+//
+//oro:testonly — remote-gate orchestration is wired by subsequent tasks.
+type ReconcileChangeRequest struct {
+	Change   RemoteChange
+	Evidence Evidence
+	Run      RunEvidence
+	Lease    Lease
 }
 
 // PublishedCandidate records the provider-visible identity after publication.
@@ -217,10 +342,16 @@ type MergeResult struct {
 //oro:testonly — remote-gate orchestration is wired by subsequent tasks.
 type RemoteGateClient interface {
 	Preflight(context.Context, PreflightRequest) (Capabilities, error)
+	EnsureEphemeralTarget(context.Context, EnsureEphemeralTargetRequest) (EphemeralTarget, error)
+	DeleteEphemeralTarget(context.Context, DeleteEphemeralTargetRequest) error
 	Publish(context.Context, PublishRequest) (PublishedCandidate, error)
+	EnsureChange(context.Context, EnsureChangeRequest) (RemoteChange, error)
 	Observe(context.Context, ObserveGateRequest) (RemoteGateObservation, error)
+	SetChangeReady(context.Context, ChangeReadyRequest) (RemoteChange, error)
 	PrepareSquash(context.Context, PrepareSquashRequest) (PreparedSquash, error)
 	IntegrateSquashCAS(context.Context, PreparedSquash) (MergeResult, error)
+	Cancel(context.Context, CancelGateRequest) error
+	Reconcile(context.Context, ReconcileChangeRequest) error
 }
 
 // ValidateRequest rejects nil, unknown, or incomplete remote-gate identities.
@@ -232,12 +363,24 @@ func ValidateRequest(request any) error {
 		return validatePreflightRequest(typed)
 	case PublishRequest:
 		return validatePublishRequest(typed)
+	case EnsureEphemeralTargetRequest:
+		return validateEnsureEphemeralTargetRequest(typed)
+	case DeleteEphemeralTargetRequest:
+		return validateDeleteEphemeralTargetRequest(typed)
+	case EnsureChangeRequest:
+		return validateEnsureChangeRequest(typed)
 	case ObserveGateRequest:
 		return validateObserveGateRequest(typed)
+	case ChangeReadyRequest:
+		return validateChangeReadyRequest(typed)
 	case PrepareSquashRequest:
 		return validatePrepareSquashRequest(typed)
 	case PreparedSquash:
 		return validatePreparedSquash(typed)
+	case CancelGateRequest:
+		return validateCancelGateRequest(typed)
+	case ReconcileChangeRequest:
+		return validateReconcileChangeRequest(typed)
 	default:
 		return invalidRequest("unsupported request type")
 	}
@@ -266,6 +409,39 @@ func validatePublishRequest(request PublishRequest) error {
 	return nil
 }
 
+func validateEnsureEphemeralTargetRequest(request EnsureEphemeralTargetRequest) error {
+	if strings.TrimSpace(request.ProjectID) == "" || strings.TrimSpace(request.EpicID) == "" || strings.TrimSpace(request.SeedSHA) == "" {
+		return invalidRequest("ephemeral target identity is incomplete")
+	}
+	if err := validateTarget(request.Target); err != nil {
+		return err
+	}
+	if request.Target.SHA != request.SeedSHA {
+		return invalidRequest("ephemeral target seed does not match target SHA")
+	}
+	return validateOwnedLease(request.Owner, request.Generation, request.Lease)
+}
+
+func validateDeleteEphemeralTargetRequest(request DeleteEphemeralTargetRequest) error {
+	if !request.Retired || strings.TrimSpace(request.FinalSHA) == "" {
+		return invalidRequest("ephemeral target is not durably retired")
+	}
+	if err := validateEphemeralTarget(request.Target); err != nil {
+		return err
+	}
+	if request.Target.Target.SHA != request.FinalSHA {
+		return invalidRequest("ephemeral target final SHA does not match target")
+	}
+	return validateOwnedLease(request.Target.Owner, request.Target.Generation, request.Lease)
+}
+
+func validateEnsureChangeRequest(request EnsureChangeRequest) error {
+	if err := validateRemoteChange(request.Change); err != nil {
+		return err
+	}
+	return validateOwnedLease(request.Change.Owner, request.Change.Generation, request.Lease)
+}
+
 func validateObserveGateRequest(request ObserveGateRequest) error {
 	if err := validateChange(request.Change); err != nil {
 		return err
@@ -286,10 +462,58 @@ func validatePrepareSquashRequest(request PrepareSquashRequest) error {
 	if err := validateEvidence(request.Evidence); err != nil {
 		return err
 	}
+	if request.Change.Draft {
+		return invalidRequest("draft change cannot integrate")
+	}
 	if request.Evidence.Change != request.Change || request.Evidence.CandidateSHA != request.Candidate.SHA || request.Evidence.Target != request.Target || request.Evidence.TestedTreeSHA != request.Candidate.TreeSHA {
 		return invalidRequest("evidence does not match squash identity")
 	}
 	return nil
+}
+
+func validateChangeReadyRequest(request ChangeReadyRequest) error {
+	if err := validateRemoteChange(request.Change); err != nil {
+		return err
+	}
+	if request.Change.Change.Draft {
+		return invalidRequest("draft change cannot become ready")
+	}
+	if err := validateEvidence(request.Evidence); err != nil {
+		return err
+	}
+	if request.Evidence.Change != request.Change.Change {
+		return invalidRequest("ready evidence does not match change")
+	}
+	return validateOwnedLease(request.Change.Owner, request.Change.Generation, request.Lease)
+}
+
+func validateCancelGateRequest(request CancelGateRequest) error {
+	if err := validateRemoteChange(request.Change); err != nil {
+		return err
+	}
+	if strings.TrimSpace(request.Reason) == "" {
+		return invalidRequest("cancellation reason is required")
+	}
+	return validateOwnedLease(request.Change.Owner, request.Change.Generation, request.Lease)
+}
+
+func validateReconcileChangeRequest(request ReconcileChangeRequest) error {
+	if err := validateRemoteChange(request.Change); err != nil {
+		return err
+	}
+	if err := validateEvidence(request.Evidence); err != nil {
+		return err
+	}
+	if request.Evidence.Change != request.Change.Change {
+		return invalidRequest("reconciliation evidence does not match change")
+	}
+	if err := validateRunEvidence(request.Run); err != nil {
+		return err
+	}
+	if request.Run.PolicyHash != request.Evidence.PolicyHash {
+		return invalidRequest("reconciliation policy does not match evidence")
+	}
+	return validateOwnedLease(request.Change.Owner, request.Change.Generation, request.Lease)
 }
 
 func validatePreparedSquash(prepared PreparedSquash) error {
@@ -320,6 +544,56 @@ func validateEvidence(evidence Evidence) error {
 		return err
 	}
 	return validateTarget(evidence.Target)
+}
+
+func validateEphemeralTarget(target EphemeralTarget) error {
+	if err := validateTarget(target.Target); err != nil {
+		return err
+	}
+	if strings.TrimSpace(target.Owner) == "" || target.Generation <= 0 {
+		return invalidRequest("ephemeral target ownership is incomplete")
+	}
+	return nil
+}
+
+func validateRemoteChange(change RemoteChange) error {
+	if err := validateChange(change.Change); err != nil {
+		return err
+	}
+	if strings.TrimSpace(change.Owner) == "" || change.Generation <= 0 {
+		return invalidRequest("remote change ownership is incomplete")
+	}
+	return nil
+}
+
+func validateOwnedLease(owner string, generation int64, lease Lease) error {
+	if strings.TrimSpace(owner) == "" || generation <= 0 || lease.Owner != owner || lease.Generation != generation {
+		return invalidRequest("lease is foreign or unowned")
+	}
+	if lease.ExpectedAbsent == (strings.TrimSpace(lease.ExpectedSHA) != "") {
+		return invalidRequest("lease must expect absent or exact SHA")
+	}
+	return nil
+}
+
+func validateRunEvidence(evidence RunEvidence) error {
+	if err := ValidateWorkflowEvidence(evidence.Workflow); err != nil {
+		return invalidRequest("workflow evidence is invalid")
+	}
+	if strings.TrimSpace(evidence.RunID) == "" || strings.TrimSpace(evidence.PolicyHash) == "" || len(evidence.Checks) == 0 || len(evidence.Pages) == 0 {
+		return invalidRequest("run evidence is incomplete")
+	}
+	for _, check := range evidence.Checks {
+		if strings.TrimSpace(check.ID) == "" || strings.TrimSpace(check.Name) == "" || strings.TrimSpace(check.Conclusion) == "" {
+			return invalidRequest("check evidence is incomplete")
+		}
+	}
+	for _, page := range evidence.Pages {
+		if page.Number <= 0 || !page.Complete {
+			return invalidRequest("page evidence is incomplete")
+		}
+	}
+	return nil
 }
 
 func validateCandidate(candidate Candidate) error {

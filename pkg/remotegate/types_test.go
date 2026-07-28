@@ -15,7 +15,7 @@ type providerAdapterContract struct {
 	Client github.Client
 }
 
-func TestRemoteGateContracts(t *testing.T) {
+func TestRemoteGateLifecycleContract(t *testing.T) {
 	identity := remotegate.Repository{Host: "code.example", Owner: "oro", Name: "oro"}
 	target := remotegate.Target{Repository: identity, Ref: "main", SHA: "base"}
 	candidate := remotegate.Candidate{Repository: identity, Ref: "refs/oro/candidate/1", SHA: "candidate", TreeSHA: "tree"}
@@ -111,11 +111,17 @@ func assertClientSignature(t *testing.T) {
 	t.Helper()
 	clientType := reflect.TypeOf((*remotegate.RemoteGateClient)(nil)).Elem()
 	wantMethods := map[string]reflect.Type{
-		"Preflight":          reflect.TypeOf((func(context.Context, remotegate.PreflightRequest) (remotegate.Capabilities, error))(nil)),
-		"Publish":            reflect.TypeOf((func(context.Context, remotegate.PublishRequest) (remotegate.PublishedCandidate, error))(nil)),
-		"Observe":            reflect.TypeOf((func(context.Context, remotegate.ObserveGateRequest) (remotegate.RemoteGateObservation, error))(nil)),
-		"PrepareSquash":      reflect.TypeOf((func(context.Context, remotegate.PrepareSquashRequest) (remotegate.PreparedSquash, error))(nil)),
-		"IntegrateSquashCAS": reflect.TypeOf((func(context.Context, remotegate.PreparedSquash) (remotegate.MergeResult, error))(nil)),
+		"Preflight":             reflect.TypeOf((func(context.Context, remotegate.PreflightRequest) (remotegate.Capabilities, error))(nil)),
+		"EnsureEphemeralTarget": reflect.TypeOf((func(context.Context, remotegate.EnsureEphemeralTargetRequest) (remotegate.EphemeralTarget, error))(nil)),
+		"DeleteEphemeralTarget": reflect.TypeOf((func(context.Context, remotegate.DeleteEphemeralTargetRequest) error)(nil)),
+		"Publish":               reflect.TypeOf((func(context.Context, remotegate.PublishRequest) (remotegate.PublishedCandidate, error))(nil)),
+		"EnsureChange":          reflect.TypeOf((func(context.Context, remotegate.EnsureChangeRequest) (remotegate.RemoteChange, error))(nil)),
+		"Observe":               reflect.TypeOf((func(context.Context, remotegate.ObserveGateRequest) (remotegate.RemoteGateObservation, error))(nil)),
+		"SetChangeReady":        reflect.TypeOf((func(context.Context, remotegate.ChangeReadyRequest) (remotegate.RemoteChange, error))(nil)),
+		"PrepareSquash":         reflect.TypeOf((func(context.Context, remotegate.PrepareSquashRequest) (remotegate.PreparedSquash, error))(nil)),
+		"IntegrateSquashCAS":    reflect.TypeOf((func(context.Context, remotegate.PreparedSquash) (remotegate.MergeResult, error))(nil)),
+		"Cancel":                reflect.TypeOf((func(context.Context, remotegate.CancelGateRequest) error)(nil)),
+		"Reconcile":             reflect.TypeOf((func(context.Context, remotegate.ReconcileChangeRequest) error)(nil)),
 	}
 	if clientType.NumMethod() != len(wantMethods) {
 		t.Fatalf("RemoteGateClient method count = %d, want %d", clientType.NumMethod(), len(wantMethods))
@@ -151,6 +157,18 @@ func contractTypes() []reflect.Type {
 		reflect.TypeOf(remotegate.Audit{}),
 		reflect.TypeOf(remotegate.Capabilities{}),
 		reflect.TypeOf(remotegate.WorkflowEvidence{}),
+		reflect.TypeOf(remotegate.Lease{}),
+		reflect.TypeOf(remotegate.EphemeralTarget{}),
+		reflect.TypeOf(remotegate.RemoteChange{}),
+		reflect.TypeOf(remotegate.CheckEvidence{}),
+		reflect.TypeOf(remotegate.PageEvidence{}),
+		reflect.TypeOf(remotegate.RunEvidence{}),
+		reflect.TypeOf(remotegate.EnsureEphemeralTargetRequest{}),
+		reflect.TypeOf(remotegate.DeleteEphemeralTargetRequest{}),
+		reflect.TypeOf(remotegate.EnsureChangeRequest{}),
+		reflect.TypeOf(remotegate.ChangeReadyRequest{}),
+		reflect.TypeOf(remotegate.CancelGateRequest{}),
+		reflect.TypeOf(remotegate.ReconcileChangeRequest{}),
 		reflect.TypeOf((*remotegate.RemoteGateClient)(nil)).Elem(),
 	}
 }
