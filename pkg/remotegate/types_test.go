@@ -154,6 +154,31 @@ func TestRemoteGateLifecycleContract(t *testing.T) {
 	if err := remotegate.ValidateRequest(pr); err != nil {
 		t.Fatalf("valid PR reconciliation rejected: %v", err)
 	}
+	ensureEphemeral := remotegate.EnsureEphemeralTargetRequest{
+		ProjectID: "project-1", EpicID: "epic-1", Target: ephemeral.Target,
+		SeedSHA: ephemeral.Target.SHA, Owner: ephemeral.Owner, Generation: ephemeral.Generation,
+		Lease: remotegate.Lease{Owner: ephemeral.Owner, Generation: ephemeral.Generation, ExpectedAbsent: true},
+	}
+	deleteEphemeral := remotegate.DeleteEphemeralTargetRequest{
+		Target: ephemeral, FinalSHA: ephemeral.Target.SHA, Retired: true,
+		Lease: remotegate.Lease{Owner: ephemeral.Owner, Generation: ephemeral.Generation, ExpectedSHA: ephemeral.Target.SHA},
+	}
+	ensureChange := remotegate.EnsureChangeRequest{Change: owned, Lease: lease}
+	ready := remotegate.ChangeReadyRequest{Change: owned, Evidence: readyEvidence, Lease: lease}
+	cancel := remotegate.CancelGateRequest{Change: owned, Reason: "operator requested", Lease: lease}
+	mutations := map[string]any{
+		"EnsureEphemeralTarget":  ensureEphemeral,
+		"DeleteEphemeralTarget":  deleteEphemeral,
+		"EnsureChange":           ensureChange,
+		"ChangeReady":            ready,
+		"CancelGateRequest":      cancel,
+		"ReconcileChangeRequest": pr,
+	}
+	for name, request := range mutations {
+		if err := remotegate.ValidateRequest(request); err != nil {
+			t.Fatalf("valid %s rejected: %v", name, err)
+		}
+	}
 
 	reject := func(name string, request remotegate.ReconcileChangeRequest) {
 		t.Helper()
@@ -163,9 +188,51 @@ func TestRemoteGateLifecycleContract(t *testing.T) {
 			}
 		})
 	}
+	wrongEnsureEphemeral := ensureEphemeral
+	wrongEnsureEphemeral.Lease.ExpectedAbsent = false
+	wrongEnsureEphemeral.Lease.ExpectedSHA = "wrong-sha"
+	if err := remotegate.ValidateRequest(wrongEnsureEphemeral); !errors.Is(err, remotegate.ErrInvalidRequest) {
+		t.Fatalf("EnsureEphemeralTarget wrong lease error = %v, want ErrInvalidRequest", err)
+	}
+	wrongDeleteEphemeral := deleteEphemeral
+	wrongDeleteEphemeral.Lease.ExpectedSHA = "wrong-sha"
+	if err := remotegate.ValidateRequest(wrongDeleteEphemeral); !errors.Is(err, remotegate.ErrInvalidRequest) {
+		t.Fatalf("DeleteEphemeralTarget wrong lease error = %v, want ErrInvalidRequest", err)
+	}
+	wrongEnsureChange := ensureChange
+	wrongEnsureChange.Lease.ExpectedSHA = "wrong-sha"
+	if err := remotegate.ValidateRequest(wrongEnsureChange); !errors.Is(err, remotegate.ErrInvalidRequest) {
+		t.Fatalf("EnsureChange wrong lease error = %v, want ErrInvalidRequest", err)
+	}
+	wrongReady := ready
+	wrongReady.Lease.ExpectedSHA = "wrong-sha"
+	if err := remotegate.ValidateRequest(wrongReady); !errors.Is(err, remotegate.ErrInvalidRequest) {
+		t.Fatalf("ChangeReady wrong lease error = %v, want ErrInvalidRequest", err)
+	}
+	wrongCancel := cancel
+	wrongCancel.Lease.ExpectedSHA = "wrong-sha"
+	if err := remotegate.ValidateRequest(wrongCancel); !errors.Is(err, remotegate.ErrInvalidRequest) {
+		t.Fatalf("CancelGateRequest wrong lease error = %v, want ErrInvalidRequest", err)
+	}
+	wrongPRLease := pr
+	wrongPRLease.Lease.ExpectedSHA = "wrong-sha"
+	if err := remotegate.ValidateRequest(wrongPRLease); !errors.Is(err, remotegate.ErrInvalidRequest) {
+		t.Fatalf("ReconcileChangeRequest wrong lease error = %v, want ErrInvalidRequest", err)
+	}
+
 	missingIdentity := create
-	missingIdentity.EphemeralTarget.ProjectID = ""
-	reject("missing ephemeral identity", missingIdentity)
+	missingIdentity.EphemeralTarget.Target.Ref = ""
+	reject("missing ephemeral target ref", missingIdentity)
+	missingTargetSHA := create
+	missingTargetSHA.EphemeralTarget.Target.SHA = ""
+	reject("missing ephemeral target SHA", missingTargetSHA)
+	missingTargetRepository := create
+	missingTargetRepository.EphemeralTarget.Target.Repository = remotegate.Repository{}
+	reject("missing ephemeral target repository", missingTargetRepository)
+	deleteExpectedAbsent := delete
+	deleteExpectedAbsent.Lease.ExpectedAbsent = true
+	deleteExpectedAbsent.Lease.ExpectedSHA = ""
+	reject("delete reconciliation expected absent", deleteExpectedAbsent)
 	populatedChange := create
 	populatedChange.Change = owned
 	reject("populated remote change for early operation", populatedChange)
