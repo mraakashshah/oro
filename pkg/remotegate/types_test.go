@@ -153,6 +153,20 @@ func TestRemoteGateOperationObservationIdentity(t *testing.T) {
 	if err := remotegate.ValidateRequest(valid); err != nil {
 		t.Fatalf("valid reconciliation rejected: %v", err)
 	}
+	for name, operation := range map[string]string{
+		"create ephemeral target": "create_ephemeral_target",
+		"delete ephemeral target": "delete_ephemeral_target",
+	} {
+		t.Run(name+" without gate evidence", func(t *testing.T) {
+			request := remotegate.ReconcileChangeRequest{
+				Change: owned, AttemptedOperation: operation, AttemptID: "attempt-1",
+				ObservedOperation: operation, ObservedAttemptID: "attempt-1", ObservedOutcome: "accepted", Lease: lease,
+			}
+			if err := remotegate.ValidateRequest(request); err != nil {
+				t.Fatalf("ephemeral reconciliation rejected without gate evidence: %v", err)
+			}
+		})
+	}
 
 	invalid := map[string]remotegate.ReconcileChangeRequest{}
 	for name, mutate := range map[string]func(*remotegate.ReconcileChangeRequest){
