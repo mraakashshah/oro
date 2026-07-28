@@ -2,13 +2,8 @@ package protocol
 
 import (
 	"fmt"
-	"path/filepath"
-	"regexp"
 	"strings"
 )
-
-// parenAnnotation matches parenthetical annotations in Read: tokens, e.g. "(from bead 1.1)".
-var parenAnnotation = regexp.MustCompile(`\s*\([^)]*\)`)
 
 // Dependency represents a dependency relationship between beads.
 type Dependency struct {
@@ -206,86 +201,6 @@ func FormatEscalation(typ EscalationType, beadID, summary, details string) strin
 		return fmt.Sprintf("[ORO-DISPATCH] %s: %s — %s. %s.", typ, beadID, summary, details)
 	}
 	return fmt.Sprintf("[ORO-DISPATCH] %s: %s — %s.", typ, beadID, summary)
-}
-
-// CountDistinctModules counts distinct Go package directories referenced in
-// "Read:" lines of the acceptance criteria text. Each Read: line may contain
-// comma-separated file paths (e.g. "pkg/foo/bar.go:42, pkg/baz/qux.go:10").
-// The package directory is computed via filepath.Dir; duplicate directories are
-// collapsed. Returns 0 when no Read: lines are present.
-//
-//oro:testonly
-func CountDistinctModules(acceptance string) int {
-	seen := make(map[string]struct{})
-	for _, line := range strings.Split(acceptance, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "Read:") {
-			continue
-		}
-		content := strings.TrimPrefix(line, "Read:")
-		// Treat semicolons as additional separators like commas.
-		content = strings.ReplaceAll(content, ";", ",")
-		for _, part := range strings.Split(content, ",") {
-			// Strip parenthetical annotations (e.g. "(from bead 1.1)") before processing.
-			part = parenAnnotation.ReplaceAllString(part, "")
-			part = strings.TrimSpace(part)
-			if part == "" || isAllDigits(part) {
-				continue
-			}
-			// Skip bare symbol names: entries with no slash and no dot (e.g., "Embed", "ExportVocab").
-			// Keep filenames like "main.go" (has dot) and paths like "pkg/foo/bar.go" (has slash).
-			if !strings.Contains(part, "/") && !strings.Contains(part, ".") {
-				continue
-			}
-			// Strip the symbol suffix after ':'. A bead Read: line often carries
-			// slash-separated symbol names like "pkg/a/cache.go:ReadCache/WriteCache/CacheKey";
-			// without this trim, filepath.Dir treats "/WriteCache/CacheKey" as path
-			// segments and counts each symbol suffix as its own fake module,
-			// inflating the OVERSIZED_BEAD count. Colon isn't valid in POSIX paths,
-			// so splitting on the first one is safe.
-			if i := strings.Index(part, ":"); i >= 0 {
-				part = part[:i]
-			}
-			seen[filepath.Dir(stripMirrorPrefix(part))] = struct{}{}
-		}
-	}
-	return len(seen)
-}
-
-// mirrorPrefixes returns path prefixes for skill/asset files that are mirrored
-// copies of a single logical source. Paths carrying these prefixes point at
-// the same module (skill/command) and should collapse to one module when
-// counting bead scope. Order doesn't matter — none is a prefix of another.
-func mirrorPrefixes() []string {
-	return []string{
-		"cmd/oro/_assets/", // auto-staged via `make stage-assets`
-		".claude/",         // project dogfood mirror
-		"assets/",          // canonical source of truth
-	}
-}
-
-// stripMirrorPrefix removes a known mirror prefix from path so that mirrored
-// files (e.g. assets/skills/X/SKILL.md, .claude/skills/X/SKILL.md,
-// cmd/oro/_assets/skills/X/SKILL.md) normalize to the same canonical path
-// before module counting. Returns path unchanged when no mirror prefix matches.
-func stripMirrorPrefix(path string) string {
-	for _, prefix := range mirrorPrefixes() {
-		if rest, ok := strings.CutPrefix(path, prefix); ok {
-			return rest
-		}
-	}
-	return path
-}
-
-// isAllDigits reports whether s is non-empty and contains only ASCII digits.
-// Used to detect bare line-number tokens (e.g. "26", "51") in Read: fields.
-func isAllDigits(s string) bool {
-	for i := range len(s) {
-		if s[i] < '0' || s[i] > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 // CountReadFiles counts lines starting with "Read:" in the acceptance criteria string.

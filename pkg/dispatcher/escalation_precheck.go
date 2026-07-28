@@ -2,10 +2,7 @@ package dispatcher
 
 import (
 	"context"
-	"errors"
 	"strings"
-
-	"oro/pkg/protocol"
 )
 
 // retryMissingAC returns true if the bead still has no acceptance criteria.
@@ -93,28 +90,4 @@ func (d *Dispatcher) retryNonTDDAC(ctx context.Context, beadID string) bool {
 	hasOperationalMarker := strings.Contains(detail.AcceptanceCriteria, "Cmd:") ||
 		strings.Contains(detail.AcceptanceCriteria, "Assert:")
 	return !hasTest && hasOperationalMarker
-}
-
-// retryOversizedBead returns true if the bead is still oversized.
-// Resolved if the bead has been promoted to an epic, already has children
-// (decomposed via oro bead dep add), is closed, or the module count dropped to <=2.
-func (d *Dispatcher) retryOversizedBead(ctx context.Context, beadID string) bool {
-	detail, err := d.beads.Show(ctx, beadID)
-	if err != nil {
-		return true
-	}
-	if detail == nil {
-		return false // bead gone — escalation is stale
-	}
-	if detail.Status == "closed" {
-		return false
-	}
-	if detail.Type == "epic" {
-		return false
-	}
-	if hasChildren, hcErr := d.beads.HasChildren(ctx, beadID); hcErr == nil && hasChildren {
-		err := d.validateDecomposeResult(ctx, beadID)
-		return err != nil && !errors.Is(err, errDecomposeValidationUnavailable)
-	}
-	return protocol.CountDistinctModules(detail.AcceptanceCriteria) > 2
 }
