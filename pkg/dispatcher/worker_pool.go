@@ -587,44 +587,45 @@ func (d *Dispatcher) collectTimedOutWorkersLocked(now time.Time) (dead, stuck, s
 			stoppedSpawnFor = append(stoppedSpawnFor, id)
 			continue
 		}
-		// Liveness check: heartbeat timeout (applies to all non-reserved workers,
-		// including idle — an idle worker with a stale heartbeat is disconnected).
-		if heartbeatTimedOut(w, now, d.cfg.HeartbeatTimeout) {
+		workerDead, workerStuck := d.workerTimedOutLocked(id, w, now)
+		if workerDead {
 			dead = append(dead, id)
 			continue
 		}
-		// Dead process check: managed reviewing worker whose OS process has exited.
-		// Reviewing workers may keep heartbeating long after their process dies
-		// (the review timeout is 15m), so we detect exit via signal(0) instead.
-		if w.managed && w.state == protocol.WorkerReviewing && d.procMgr != nil && !d.procMgr.IsAlive(id) {
-			dead = append(dead, id)
-			continue
-		}
-		// Dead ops review check: reviewing worker whose ops subprocess has exited
-		// while the OS process is still alive. After ReviewDeadGrace, remove worker.
-		reviewDead, reviewGraceActive := d.reviewDeadStateLocked(w, now)
-		if reviewDead {
-			dead = append(dead, id)
-			continue
-		}
-		// A missing ops review gets its full grace period before any progress
-		// or review timeout can reap the owning worker.
-		if reviewGraceActive {
-			continue
-		}
-		// Progress check: a busy coding worker has not made meaningful progress.
-		// Reviewing workers use the separate ReviewTimeout below, allowing an
-		// active ops review to outlive the shorter coding-progress deadline.
-		if workerProgressTimedOut(w, now, d.cfg.ProgressTimeout) {
-			stuck = append(stuck, id)
-			continue
-		}
-		// Review timeout: reviewing worker has stalled without progress.
-		if workerReviewTimedOut(w, now, d.cfg.ReviewTimeout) {
+		if workerStuck {
 			stuck = append(stuck, id)
 		}
 	}
 	return dead, stuck, stoppedSpawnFor
+}
+
+// workerTimedOutLocked classifies a non-reserved worker after the caller has
+// already handled the special spawn-for shutdown timeout. Must be called with
+// d.mu held.
+func (d *Dispatcher) workerTimedOutLocked(id string, w *trackedWorker, now time.Time) (dead, stuck bool) {
+	// Liveness check: heartbeat timeout applies to all non-reserved workers,
+	// including idle workers.
+	if heartbeatTimedOut(w, now, d.cfg.HeartbeatTimeout) {
+		return true, false
+	}
+	// Reviewing workers may keep heartbeating after their OS process exits, so
+	// signal(0) detects that failure independently of the review timeout.
+	if w.managed && w.state == protocol.WorkerReviewing && d.procMgr != nil && !d.procMgr.IsAlive(id) {
+		return true, false
+	}
+	reviewDead, reviewGraceActive := d.reviewDeadStateLocked(w, now)
+	if reviewDead {
+		return true, false
+	}
+	// A missing ops review gets its full grace period before progress or review
+	// timeout can reap the owning worker.
+	if reviewGraceActive {
+		return false, false
+	}
+	// Reviewing workers use ReviewTimeout so an active ops review can outlive
+	// the shorter coding-progress deadline.
+	return false, workerProgressTimedOut(w, now, d.cfg.ProgressTimeout) ||
+		workerReviewTimedOut(w, now, d.cfg.ReviewTimeout)
 }
 
 func (d *Dispatcher) removeDeadWorkersLocked(ctx context.Context, dead []string) (deadWorkers []workerExitInfo, managedExits int) {
