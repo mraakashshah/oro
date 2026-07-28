@@ -512,11 +512,8 @@ func validateReconcileChangeRequest(request ReconcileChangeRequest) error {
 	if err := validateRemoteChange(request.Change); err != nil {
 		return err
 	}
-	if !isKnownAttemptedOperation(request.AttemptedOperation) || strings.TrimSpace(request.AttemptID) == "" || request.ObservedOperation != request.AttemptedOperation || request.ObservedAttemptID != request.AttemptID {
-		return invalidRequest("reconciliation observation does not match attempted operation")
-	}
-	if !isObservedOutcome(request.AttemptedOperation, request.ObservedOutcome) {
-		return invalidRequest("reconciliation outcome is not valid for operation")
+	if err := validateOperationObservation(request); err != nil {
+		return err
 	}
 	if isEphemeralTargetOperation(request.AttemptedOperation) {
 		return validateMutationLease(request.Change.Owner, request.Change.Generation, request.Lease, request.Change.Change.Candidate.SHA, false)
@@ -533,10 +530,28 @@ func validateReconcileChangeRequest(request ReconcileChangeRequest) error {
 	if request.Run.PolicyHash != request.Evidence.PolicyHash {
 		return invalidRequest("reconciliation policy does not match evidence")
 	}
-	if request.Run.Change != request.Change.Change || request.Run.CandidateSHA != request.Evidence.CandidateSHA || request.Run.Target != request.Evidence.Target || request.Run.TestedTreeSHA != request.Evidence.TestedTreeSHA {
+	if !runMatchesReconciliation(request) {
 		return invalidRequest("reconciliation run identity does not match evidence")
 	}
 	return validateMutationLease(request.Change.Owner, request.Change.Generation, request.Lease, request.Change.Change.Candidate.SHA, false)
+}
+
+func validateOperationObservation(request ReconcileChangeRequest) error {
+	if !isKnownAttemptedOperation(request.AttemptedOperation) || strings.TrimSpace(request.AttemptID) == "" ||
+		request.ObservedOperation != request.AttemptedOperation || request.ObservedAttemptID != request.AttemptID {
+		return invalidRequest("reconciliation observation does not match attempted operation")
+	}
+	if !isObservedOutcome(request.AttemptedOperation, request.ObservedOutcome) {
+		return invalidRequest("reconciliation outcome is not valid for operation")
+	}
+	return nil
+}
+
+func runMatchesReconciliation(request ReconcileChangeRequest) bool {
+	return request.Run.Change == request.Change.Change &&
+		request.Run.CandidateSHA == request.Evidence.CandidateSHA &&
+		request.Run.Target == request.Evidence.Target &&
+		request.Run.TestedTreeSHA == request.Evidence.TestedTreeSHA
 }
 
 func validatePreparedSquash(prepared PreparedSquash) error {
@@ -622,26 +637,51 @@ func validateMutationLease(owner string, generation int64, lease Lease, expected
 }
 
 func validateRunEvidence(evidence RunEvidence) error {
+	if err := validateRunIdentity(evidence); err != nil {
+		return err
+	}
+	if err := validateExpectedRunIdentity(evidence); err != nil {
+		return err
+	}
+	return validateRunCollections(evidence)
+}
+
+func validateRunIdentity(evidence RunEvidence) error {
 	if err := validateChange(evidence.Change); err != nil {
 		return invalidRequest("run change identity is invalid")
 	}
-	if evidence.CandidateSHA != evidence.Change.Candidate.SHA || evidence.Target != evidence.Change.Target || evidence.TestedTreeSHA != evidence.Change.Candidate.TreeSHA {
+	if evidence.CandidateSHA != evidence.Change.Candidate.SHA || evidence.Target != evidence.Change.Target ||
+		evidence.TestedTreeSHA != evidence.Change.Candidate.TreeSHA {
 		return invalidRequest("run identity does not match change")
 	}
 	if err := ValidateWorkflowEvidence(evidence.Workflow); err != nil {
 		return invalidRequest("workflow evidence is invalid")
 	}
-	if strings.TrimSpace(evidence.RunID) == "" || strings.TrimSpace(evidence.PolicyHash) == "" || len(evidence.Checks) == 0 || len(evidence.Pages) == 0 || len(evidence.ExpectedPages) == 0 || strings.TrimSpace(evidence.ExpectedWorkflowPath) == "" || strings.TrimSpace(evidence.ExpectedWorkflowRef) == "" || strings.TrimSpace(evidence.ExpectedRunID) == "" || len(evidence.ExpectedCheckIDs) == 0 {
+	return nil
+}
+
+func validateExpectedRunIdentity(evidence RunEvidence) error {
+	if strings.TrimSpace(evidence.RunID) == "" || strings.TrimSpace(evidence.PolicyHash) == "" ||
+		len(evidence.Checks) == 0 || len(evidence.Pages) == 0 || len(evidence.ExpectedPages) == 0 ||
+		strings.TrimSpace(evidence.ExpectedWorkflowPath) == "" || strings.TrimSpace(evidence.ExpectedWorkflowRef) == "" ||
+		strings.TrimSpace(evidence.ExpectedRunID) == "" || len(evidence.ExpectedCheckIDs) == 0 {
 		return invalidRequest("run evidence is incomplete")
 	}
-	if evidence.Workflow.Path != evidence.ExpectedWorkflowPath || evidence.Workflow.Ref != evidence.ExpectedWorkflowRef || evidence.RunID != evidence.ExpectedRunID {
+	if evidence.Workflow.Path != evidence.ExpectedWorkflowPath || evidence.Workflow.Ref != evidence.ExpectedWorkflowRef ||
+		evidence.RunID != evidence.ExpectedRunID {
 		return invalidRequest("run evidence identity does not match expected gate")
 	}
-	if !sameStringSet(checkIDs(evidence.Checks), evidence.ExpectedCheckIDs) || !sameIntSet(pageNumbers(evidence.Pages), evidence.ExpectedPages) {
+	if !sameStringSet(checkIDs(evidence.Checks), evidence.ExpectedCheckIDs) ||
+		!sameIntSet(pageNumbers(evidence.Pages), evidence.ExpectedPages) {
 		return invalidRequest("run evidence collection does not match expected gate")
 	}
+	return nil
+}
+
+func validateRunCollections(evidence RunEvidence) error {
 	for _, check := range evidence.Checks {
-		if strings.TrimSpace(check.ID) == "" || strings.TrimSpace(check.Name) == "" || strings.TrimSpace(check.Conclusion) == "" {
+		if strings.TrimSpace(check.ID) == "" || strings.TrimSpace(check.Name) == "" ||
+			strings.TrimSpace(check.Conclusion) == "" {
 			return invalidRequest("check evidence is incomplete")
 		}
 	}
@@ -685,10 +725,7 @@ func sameStringSet(left, right []string) bool {
 			return false
 		}
 	}
-	if len(seen) != len(right) {
-		return false
-	}
-	return true
+	return len(seen) == len(right)
 }
 
 func sameIntSet(left, right []int) bool {
@@ -707,10 +744,7 @@ func sameIntSet(left, right []int) bool {
 			return false
 		}
 	}
-	if len(seen) != len(right) {
-		return false
-	}
-	return true
+	return len(seen) == len(right)
 }
 
 func isKnownAttemptedOperation(operation string) bool {
