@@ -1,6 +1,7 @@
 package dispatcher //nolint:testpackage // internal white-box tests need access to unexported fields
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,127 @@ import (
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
 )
+
+func TestWorkerHelloFencing(t *testing.T) { //nolint:funlen // exercises the full HELLO admission boundary
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.helloProjectID = "oro"
+	d.helloRestartGeneration = 7
+	d.helloBuildID = "build-current"
+	d.helloSupportedRange = protocol.Range{Min: 1, Max: 1}
+
+	metadata := func(workerID string, restartGeneration uint64, buildID string, protocolRange protocol.Range) protocol.Metadata {
+		return protocol.Metadata{
+			ProtocolRange:     protocolRange,
+			ProjectID:         "oro",
+			WorkerID:          workerID,
+			WorkerGeneration:  1,
+			RestartGeneration: restartGeneration,
+			BuildID:           buildID,
+		}
+	}
+	hello := func(workerID string, restartGeneration uint64, buildID string, protocolRange protocol.Range) protocol.Message {
+		return protocol.Message{
+			Type:     protocol.MsgHello,
+			Protocol: metadata(workerID, restartGeneration, buildID, protocolRange),
+			Hello: &protocol.Hello{
+				ProtocolRange:     protocolRange,
+				ProjectID:         "oro",
+				RestartGeneration: restartGeneration,
+				BuildID:           buildID,
+			},
+		}
+	}
+
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close() })
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.handleConn(t.Context(), server)
+	}()
+
+	if err := json.NewEncoder(client).Encode(hello("worker-current", 7, "build-current", protocol.Range{Min: 1, Max: 1})); err != nil {
+		t.Fatalf("send HELLO: %v", err)
+	}
+	ack, ok := readWorkerHelloACK(client, time.Second)
+	if !ok || ack.Type != protocol.MsgHelloACK || ack.HelloACK == nil || ack.HelloACK.ProtocolVersion != 1 {
+		t.Fatalf("HELLO_ACK = %#v, ok=%t", ack, ok)
+	}
+	if err := json.NewEncoder(client).Encode(protocol.Message{
+		Type:      protocol.MsgHeartbeat,
+		Protocol:  metadata("worker-current", 7, "build-current", protocol.Range{Min: 1, Max: 1}),
+		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "worker-current"},
+	}); err != nil {
+		t.Fatalf("send compatible HEARTBEAT: %v", err)
+	}
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		_, ok := d.workers["worker-current"]
+		return ok && d.liveWorkerCountLocked() == 1
+	}, time.Second)
+
+	droppingClient, droppingServer := net.Pipe()
+	droppingDone := make(chan struct{})
+	go func() {
+		defer close(droppingDone)
+		d.handleConn(t.Context(), droppingServer)
+	}()
+	if err := json.NewEncoder(droppingClient).Encode(hello("worker-dropped", 7, "build-current", protocol.Range{Min: 1, Max: 1})); err != nil {
+		t.Fatalf("send dropped HELLO: %v", err)
+	}
+	_ = droppingClient.Close()
+	select {
+	case <-droppingDone:
+	case <-time.After(time.Second):
+		t.Fatal("dropped HELLO connection did not close")
+	}
+
+	external := hello("worker-external", 7, "build-current", protocol.Range{Min: 1, Max: 1})
+	external.Protocol.ProjectID = "other-project"
+	external.Hello.ProjectID = "other-project"
+	for _, rejected := range []protocol.Message{
+		hello("worker-current", 6, "build-current", protocol.Range{Min: 1, Max: 1}),
+		hello("worker-mixed", 7, "build-current", protocol.Range{Min: 2, Max: 2}),
+		hello("worker-old-build", 7, "build-old", protocol.Range{Min: 1, Max: 1}),
+		external,
+	} {
+		staleClient, staleServer := net.Pipe()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			d.handleConn(t.Context(), staleServer)
+		}()
+		if err := json.NewEncoder(staleClient).Encode(rejected); err != nil {
+			t.Fatalf("send rejected HELLO: %v", err)
+		}
+		_ = staleClient.Close()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("rejected HELLO connection did not close")
+		}
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.workers) != 1 || d.workers["worker-current"] == nil {
+		t.Fatalf("workers after rejected HELLOs = %#v, want only current worker", d.workers)
+	}
+}
+
+func readWorkerHelloACK(conn net.Conn, timeout time.Duration) (protocol.Message, bool) {
+	_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	scanner := bufio.NewScanner(conn)
+	if !scanner.Scan() {
+		return protocol.Message{}, false
+	}
+	var message protocol.Message
+	if err := json.Unmarshal(scanner.Bytes(), &message); err != nil {
+		return protocol.Message{}, false
+	}
+	return message, true
+}
 
 // --- failConn: a net.Conn whose Write always fails ---
 

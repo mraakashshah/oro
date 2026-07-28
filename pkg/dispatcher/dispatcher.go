@@ -995,6 +995,13 @@ type Dispatcher struct {
 	// startTime records when Run() was called (for uptime).
 	startTime time.Time
 
+	// HELLO admission values fence workers to this dispatcher process. They are
+	// initialized once and never accepted from a connecting worker.
+	helloProjectID         string
+	helloRestartGeneration uint64
+	helloBuildID           string
+	helloSupportedRange    protocol.Range
+
 	// checkpoints tracks the in-flight checkpoint state per bead (§9.3).
 	checkpoints *checkpointTracker
 
@@ -1188,18 +1195,22 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		embedderFactory: func(modelDir string) (Embedder, error) {
 			return embeddings.NewEmbedder(modelDir)
 		},
-		rerankerFactory:     defaultRerankerFactory(resolved),
-		repoRoot:            rootDir,
-		shutdownRunner:      &ExecCommandRunner{Dir: rootDir},
-		acceptance:          &ShellAcceptanceRunner{},
-		estimator:           resolved.Estimator,
-		qgRunner:            &ShellQGRunner{},
-		qgBaselineCache:     make(map[string]qgBaseline),
-		presubmitCandidates: make(chan presubmitCandidate),
-		presubmitSemaphore:  newPresubmitSemaphore(),
-		sseBroadcaster:      web.NewSSEBroadcaster(),
-		state:               StateInert,
-		targetWorkers:       resolved.InitialWorkers,
+		rerankerFactory:        defaultRerankerFactory(resolved),
+		repoRoot:               rootDir,
+		shutdownRunner:         &ExecCommandRunner{Dir: rootDir},
+		acceptance:             &ShellAcceptanceRunner{},
+		estimator:              resolved.Estimator,
+		qgRunner:               &ShellQGRunner{},
+		qgBaselineCache:        make(map[string]qgBaseline),
+		presubmitCandidates:    make(chan presubmitCandidate),
+		presubmitSemaphore:     newPresubmitSemaphore(),
+		sseBroadcaster:         web.NewSSEBroadcaster(),
+		state:                  StateInert,
+		helloProjectID:         filepath.Base(rootDir),
+		helloRestartGeneration: uint64(time.Now().UnixNano()),
+		helloBuildID:           "dev",
+		helloSupportedRange:    protocol.Range{Min: 1, Max: 1},
+		targetWorkers:          resolved.InitialWorkers,
 		explicitScaleTarget: resolved.AllowZeroWorkers &&
 			resolved.InitialWorkers == 0 && resolved.MaxWorkers > 0,
 		WorkerPool: WorkerPool{
@@ -1985,15 +1996,51 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn net.Conn) {
 			return
 		}
 
-		// Extract workerID from the first message that carries one.
 		if workerID == "" {
-			workerID = extractWorkerID(msg)
-			if workerID != "" {
-				d.registerWorker(workerID, conn)
+			ack, err := d.handleHello(conn, msg)
+			if err != nil {
+				return
 			}
+			if err := json.NewEncoder(conn).Encode(protocol.Message{
+				Type:     protocol.MsgHelloACK,
+				Protocol: msg.Protocol,
+				HelloACK: &ack,
+			}); err != nil {
+				return
+			}
+			workerID = msg.Protocol.WorkerID
+			d.registerWorker(workerID, conn)
+			continue
+		}
+
+		if err := msg.Validate(d.helloSupportedRange, d.helloIdentity(workerID, msg.Protocol.WorkerGeneration)); err != nil {
+			return
 		}
 
 		d.handleMessage(ctx, workerID, msg)
+	}
+}
+
+// handleHello validates a worker's admission request before it can enter the
+// worker pool. The caller writes the returned acknowledgement before calling
+// registerWorker so a connection that drops before ACK leaves no worker row.
+func (d *Dispatcher) handleHello(_ net.Conn, msg protocol.Message) (protocol.HelloACK, error) {
+	if msg.Type != protocol.MsgHello {
+		return protocol.HelloACK{}, fmt.Errorf("expected HELLO, got %s", msg.Type)
+	}
+	if err := msg.Validate(d.helloSupportedRange, d.helloIdentity(msg.Protocol.WorkerID, msg.Protocol.WorkerGeneration)); err != nil {
+		return protocol.HelloACK{}, fmt.Errorf("validate HELLO: %w", err)
+	}
+	return protocol.HelloACK{ProtocolVersion: min(d.helloSupportedRange.Max, msg.Protocol.ProtocolRange.Max)}, nil
+}
+
+func (d *Dispatcher) helloIdentity(workerID string, workerGeneration uint64) protocol.Identity {
+	return protocol.Identity{
+		ProjectID:         d.helloProjectID,
+		WorkerID:          workerID,
+		WorkerGeneration:  workerGeneration,
+		RestartGeneration: d.helloRestartGeneration,
+		BuildID:           d.helloBuildID,
 	}
 }
 
