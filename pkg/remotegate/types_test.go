@@ -69,6 +69,8 @@ func TestRemoteGateContracts(t *testing.T) {
 	mismatchedChange.Candidate.TreeSHA = "other-tree"
 	mismatchedEvidenceCandidate := evidence
 	mismatchedEvidenceCandidate.CandidateSHA = "other-candidate"
+	mismatchedEvidenceChange := evidence
+	mismatchedEvidenceChange.Change.ID = "other-change"
 	mismatchedEvidenceTarget := evidence
 	mismatchedEvidenceTarget.Target.SHA = "other-base"
 	mismatchedEvidenceTree := evidence
@@ -92,6 +94,7 @@ func TestRemoteGateContracts(t *testing.T) {
 		"change candidate":      remotegate.ObserveGateRequest{Change: mismatchedChange, Candidate: candidate, Target: target},
 		"change target":         remotegate.ObserveGateRequest{Change: change, Candidate: candidate, Target: remotegate.Target{Repository: identity, Ref: "release", SHA: target.SHA}},
 		"evidence candidate":    remotegate.PrepareSquashRequest{Change: change, Candidate: candidate, Target: target, Evidence: mismatchedEvidenceCandidate},
+		"evidence change":       remotegate.PrepareSquashRequest{Change: change, Candidate: candidate, Target: target, Evidence: mismatchedEvidenceChange},
 		"evidence target":       remotegate.PrepareSquashRequest{Change: change, Candidate: candidate, Target: target, Evidence: mismatchedEvidenceTarget},
 		"evidence tree":         remotegate.PrepareSquashRequest{Change: change, Candidate: candidate, Target: target, Evidence: mismatchedEvidenceTree},
 		"empty evidence policy": remotegate.PrepareSquashRequest{Change: change, Candidate: candidate, Target: target, Evidence: emptyEvidencePolicyHash},
