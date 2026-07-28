@@ -24614,6 +24614,12 @@ func TestTryAssign_ReservesAllIdleWorkersBeforeSlowWorktreeSetupCompletes(t *tes
 		t.Fatal("first worktree setup did not start")
 	}
 
+	select {
+	case <-assignDone:
+	case <-time.After(time.Second):
+		t.Fatal("assignment pass did not finish while first worktree setup was blocked")
+	}
+
 	d.mu.Lock()
 	reserved := 0
 	for _, worker := range d.workers {
@@ -24627,11 +24633,6 @@ func TestTryAssign_ReservesAllIdleWorkersBeforeSlowWorktreeSetupCompletes(t *tes
 	}
 
 	close(releaseFirstCreate)
-	select {
-	case <-assignDone:
-	case <-time.After(time.Second):
-		t.Fatal("assignment did not finish after worktree setup was released")
-	}
 }
 
 func TestTryAssignReturnsAfterReservingSingleWorkerWithSlowWorktreeSetup(t *testing.T) {
