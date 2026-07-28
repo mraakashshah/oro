@@ -188,6 +188,15 @@ func (s *ShadowStore) Update(ctx context.Context, id string, params UpdateParams
 	return nil
 }
 
+// UpdateStatusIf conditionally writes to the primary store only.
+func (s *ShadowStore) UpdateStatusIf(ctx context.Context, id, expected, next string) (bool, error) {
+	updated, err := s.primary.UpdateStatusIf(ctx, id, expected, next)
+	if err != nil {
+		return false, fmt.Errorf("shadow primary conditionally update bead status: %w", err)
+	}
+	return updated, nil
+}
+
 // Close writes to primary only.
 func (s *ShadowStore) Close(ctx context.Context, id, reason string) error {
 	if err := s.primary.Close(ctx, id, reason); err != nil {
