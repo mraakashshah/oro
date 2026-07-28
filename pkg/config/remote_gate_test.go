@@ -153,15 +153,22 @@ func TestKeychainPrivateKeyReference(t *testing.T) {
 		}
 	}
 	for _, ref := range []string{"keychain:", "/tmp/key", "$ORO_KEY", " keychain:oro", "keychain:oro\n"} {
-		err := config.ValidateRemoteGateConfig(valid(ref))
-		if err == nil || !strings.Contains(err.Error(), "runtime_identity.private_key_ref must be a nonempty keychain reference") {
-			t.Errorf("reference %q error = %v, want deterministic field-specific validation", ref, err)
+		runtimeErr := config.ValidateRemoteGateConfig(valid("keychain:runtime"))
+		if runtimeErr != nil {
+			t.Fatalf("valid runtime identity: %v", runtimeErr)
 		}
-		maintenance := valid("keychain:valid")
+		runtime := valid("keychain:runtime")
+		runtime.GitHub.RuntimeIdentity.PrivateKeyRef = ref
+		wantRuntime := "invalid github-pr remote gate config: runtime_identity.private_key_ref must be a nonempty keychain reference"
+		if err := config.ValidateRemoteGateConfig(runtime); err == nil || err.Error() != wantRuntime {
+			t.Errorf("runtime reference %q error = %v, want %q", ref, err, wantRuntime)
+		}
+
+		maintenance := valid("keychain:runtime")
 		maintenance.GitHub.PolicyReconciliation.MaintenanceIdentity.PrivateKeyRef = ref
-		err = config.ValidateRemoteGateConfig(maintenance)
-		if err == nil || !strings.Contains(err.Error(), "policy_reconciliation.maintenance_identity.private_key_ref must be a nonempty keychain reference") {
-			t.Errorf("maintenance reference %q error = %v, want deterministic field-specific validation", ref, err)
+		wantMaintenance := "invalid github-pr remote gate config: policy_reconciliation.maintenance_identity.private_key_ref must be a nonempty keychain reference"
+		if err := config.ValidateRemoteGateConfig(maintenance); err == nil || err.Error() != wantMaintenance {
+			t.Errorf("maintenance reference %q error = %v, want %q", ref, err, wantMaintenance)
 		}
 	}
 }
