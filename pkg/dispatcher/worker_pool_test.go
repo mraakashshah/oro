@@ -2774,10 +2774,13 @@ func TestGracefulShutdownAttemptSurvivesHeartbeatTimeout(t *testing.T) {
 	}
 }
 
-func TestShutdownApprovalKeepsWorkerOutOfAssignmentPool(t *testing.T) {
-	d, _, _, _, _, _ := newTestDispatcher(t)
+func TestGracefulShutdownApprovalKeepsWorkerOutOfAssignmentPool(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	const workerID = "shutdown-approved-worker"
 	conn := newMockConn()
+	beadSrc.SetBeads([]protocol.Bead{{ID: "ready-after-shutdown", Priority: 0, Type: "task"}})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "ready-after-shutdown", Priority: 0})
+	d.setState(StateRunning)
 
 	d.mu.Lock()
 	d.workers[workerID] = &trackedWorker{
@@ -2799,6 +2802,9 @@ func TestShutdownApprovalKeepsWorkerOutOfAssignmentPool(t *testing.T) {
 	if state != protocol.WorkerShuttingDown {
 		t.Fatalf("worker state after shutdown approval = %s, want %s", state, protocol.WorkerShuttingDown)
 	}
+
+	tryAssignAndWait(t, d, context.Background())
+	assertMockWorkerAssignCount(t, []*mockConn{conn}, 0)
 }
 
 // TestGracefulShutdownWorker_NoopForMissingWorker verifies early return for
