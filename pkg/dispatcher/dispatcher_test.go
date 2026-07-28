@@ -14926,18 +14926,21 @@ func TestShutdownTimeout_ForceKill(t *testing.T) {
 			t.Fatalf("expected SHUTDOWN (hard kill), got %s", msg2.Type)
 		}
 
-		// After timeout: worker state should be Idle and beadID cleared.
+		// After timeout: worker state should be ShuttingDown and beadID cleared.
+		// Not Idle — Idle is the assignability predicate (isAssignableIdle in
+		// dispatcher.go), so leaving a hard-killed worker Idle would let the
+		// dispatcher hand a bead to a worker it just sent SHUTDOWN to.
 		waitFor(t, func() bool {
 			st, _, ok := d.WorkerInfo("w-force")
-			return ok && st == protocol.WorkerIdle
+			return ok && st == protocol.WorkerShuttingDown
 		}, 2*time.Second)
 
 		state, beadID, exists = d.WorkerInfo("w-force")
 		if !exists {
 			t.Fatal("worker w-force should still exist after timeout")
 		}
-		if state != protocol.WorkerIdle {
-			t.Fatalf("expected WorkerIdle after timeout, got %s", state)
+		if state != protocol.WorkerShuttingDown {
+			t.Fatalf("expected WorkerShuttingDown after timeout, got %s", state)
 		}
 		if beadID != "" {
 			t.Fatalf("expected beadID cleared after timeout, got %q", beadID)
