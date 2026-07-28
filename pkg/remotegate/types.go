@@ -114,6 +114,8 @@ type Lease struct {
 //
 //oro:testonly — remote-gate orchestration is wired by subsequent tasks.
 type EphemeralTarget struct {
+	ProjectID  string
+	EpicID     string
 	Target     Target
 	Owner      string
 	Generation int64
@@ -271,6 +273,9 @@ type CancelGateRequest struct {
 //oro:testonly — remote-gate orchestration is wired by subsequent tasks.
 type ReconcileChangeRequest struct {
 	Change             RemoteChange
+	EphemeralTarget    EphemeralTarget
+	SeedSHA            string
+	FinalSHA           string
 	Evidence           Evidence
 	Run                RunEvidence
 	AttemptedOperation string
@@ -509,14 +514,14 @@ func validateCancelGateRequest(request CancelGateRequest) error {
 }
 
 func validateReconcileChangeRequest(request ReconcileChangeRequest) error {
-	if err := validateRemoteChange(request.Change); err != nil {
-		return err
-	}
 	if err := validateOperationObservation(request); err != nil {
 		return err
 	}
 	if isEphemeralTargetOperation(request.AttemptedOperation) {
-		return validateMutationLease(request.Change.Owner, request.Change.Generation, request.Lease, request.Change.Change.Candidate.SHA, false)
+		return validateEphemeralReconciliation(request)
+	}
+	if err := validateRemoteChange(request.Change); err != nil {
+		return err
 	}
 	if err := validateEvidence(request.Evidence); err != nil {
 		return err
@@ -534,6 +539,29 @@ func validateReconcileChangeRequest(request ReconcileChangeRequest) error {
 		return invalidRequest("reconciliation run identity does not match evidence")
 	}
 	return validateMutationLease(request.Change.Owner, request.Change.Generation, request.Lease, request.Change.Change.Candidate.SHA, false)
+}
+
+func validateEphemeralReconciliation(request ReconcileChangeRequest) error {
+	if request.Change != (RemoteChange{}) {
+		return invalidRequest("ephemeral reconciliation cannot include a remote change")
+	}
+	if err := validateEphemeralTarget(request.EphemeralTarget); err != nil {
+		return err
+	}
+	switch request.AttemptedOperation {
+	case "create_ephemeral_target":
+		if strings.TrimSpace(request.SeedSHA) == "" || request.SeedSHA != request.EphemeralTarget.Target.SHA || strings.TrimSpace(request.FinalSHA) != "" || !request.Lease.ExpectedAbsent {
+			return invalidRequest("ephemeral create SHA identity is invalid")
+		}
+		return validateMutationLease(request.EphemeralTarget.Owner, request.EphemeralTarget.Generation, request.Lease, request.SeedSHA, true)
+	case "delete_ephemeral_target":
+		if strings.TrimSpace(request.FinalSHA) == "" || request.FinalSHA != request.EphemeralTarget.Target.SHA || strings.TrimSpace(request.SeedSHA) != "" {
+			return invalidRequest("ephemeral delete SHA identity is invalid")
+		}
+		return validateMutationLease(request.EphemeralTarget.Owner, request.EphemeralTarget.Generation, request.Lease, request.FinalSHA, false)
+	default:
+		return invalidRequest("unsupported ephemeral reconciliation operation")
+	}
 }
 
 func validateOperationObservation(request ReconcileChangeRequest) error {
@@ -593,6 +621,9 @@ func validateEvidence(evidence Evidence) error {
 func validateEphemeralTarget(target EphemeralTarget) error {
 	if err := validateTarget(target.Target); err != nil {
 		return err
+	}
+	if strings.TrimSpace(target.ProjectID) == "" || strings.TrimSpace(target.EpicID) == "" {
+		return invalidRequest("ephemeral target project or epic identity is incomplete")
 	}
 	if strings.TrimSpace(target.Owner) == "" || target.Generation <= 0 {
 		return invalidRequest("ephemeral target ownership is incomplete")
