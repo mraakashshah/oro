@@ -483,9 +483,12 @@ esac
 	writeRemoteCapabilityFixture(t, filepath.Join(binDir, "gh"), `#!/bin/sh
 case "$*" in
   "--version") printf '%s\n' 'gh version 2.63.0 (2025-01-01)' ;;
+  "auth token --hostname github.com") printf '%s\n' 'runtime-token' ;;
   "api --hostname github.com repos/acme/oro") printf '%s\n' '{"full_name":"acme/oro","default_branch":"main","permissions":{"push":true}}' ;;
   "api --hostname github.com rate_limit") printf '%s\n' '{"resources":{"core":{"limit":5000,"remaining":4999},"actions_runner_registration":{"limit":1000,"remaining":999}}}' ;;
   "api --hostname github.com repos/acme/oro/actions/workflows/ci.yml") printf '%s\n' '{"path":".github/workflows/ci.yml","state":"active"}' ;;
+  "api --method GET --hostname github.com /repos/acme/oro") printf '%s\n' '{"full_name":"acme/oro","default_branch":"main","permissions":{"push":true}}' ;;
+  "api --method GET --hostname github.com /repos/acme/oro/actions/workflows/ci.yml") printf '%s\n' '{"path":".github/workflows/ci.yml","state":"active"}' ;;
   *"contents/.github/workflows/ci.yml"*) printf '%s\n' 'on: [pull_request, workflow_dispatch]' ;;
   *"/repos/acme/oro/rules/branches/main"*) printf '%s\n' '[]' ;;
   *) exit 1 ;;
