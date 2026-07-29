@@ -12,16 +12,12 @@ import (
 )
 
 // EffectivePolicy is the complete effective policy for a target ref.
-//
-//oro:testonly — production GitHub policy collection is wired by subsequent remote-gate tasks.
 type EffectivePolicy struct {
 	Rules []ApplicableRule
 }
 
 // ApplicableRule describes one repository or organization rule that applies
 // to a concrete target ref.
-//
-//oro:testonly — production GitHub policy collection is wired by subsequent remote-gate tasks.
 type ApplicableRule struct {
 	Source         string
 	ID             string
@@ -34,14 +30,10 @@ type ApplicableRule struct {
 }
 
 // ErrInvalidPolicyEvidence indicates incomplete or unsupported policy evidence.
-//
-//oro:testonly — production GitHub policy collection is wired by subsequent remote-gate tasks.
 var ErrInvalidPolicyEvidence = errors.New("invalid policy evidence")
 
 // ValidateEffectivePolicy verifies that policy evidence is complete and
 // unambiguous. An empty policy is valid evidence that no rules apply.
-//
-//oro:testonly — production GitHub policy collection is wired by subsequent remote-gate tasks.
 func ValidateEffectivePolicy(policy EffectivePolicy) error {
 	seen := make(map[string]struct{}, len(policy.Rules))
 	for _, rule := range policy.Rules {
@@ -54,8 +46,6 @@ func ValidateEffectivePolicy(policy EffectivePolicy) error {
 
 // CanonicalPolicyHash returns the stable SHA-256 identity of validated policy
 // evidence. The hash is independent of caller-owned rule and value ordering.
-//
-//oro:testonly — production GitHub policy collection is wired by subsequent remote-gate tasks.
 func CanonicalPolicyHash(policy EffectivePolicy) (string, error) {
 	if err := ValidateEffectivePolicy(policy); err != nil {
 		return "", err

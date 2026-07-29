@@ -37,6 +37,24 @@ cmd/oro/_assets/
 .claude/worktrees/
 /.oro-quality-gate.lock*
 /.oro-quality-gate.queue/
+/.qg-local/
+/.qg-cache/
+# Go/lint caches created by quality-gate runs and ad-hoc worker invocations.
+# These are regenerable build artifacts, but an UNIGNORED one makes
+# `git status --porcelain` non-empty, which the dispatcher reads as
+# unpreserved work and quarantines as stale_active_assignment — that froze
+# the factory on 2026-07-28. Patterns are unanchored and cover the per-bead
+# suffixed forms (e.g. .gocache-oro-3zk9) seen in worker worktrees.
+.gocache*/
+.golangci-cache*/
+.golangci-lint-cache/
+.task-gocache/
+.qg-go-cache/
+.qg-lint-cache/
+.qg-golangci-cache/
+# Undotted forms nested under .oro/ — leading-dot patterns above miss these.
+.oro/gocache/
+.oro/golangci-cache/
 **/dispatcher.exit.log
 .gstack/
 pkg/dispatcher/workers/
@@ -52,3 +70,5 @@ uv.lock
 docs/handoffs/
 archive/yap/reference/
 *.db
+/.oro/context_summary.txt
+/.oro/handoff_done

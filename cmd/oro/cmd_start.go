@@ -1120,13 +1120,26 @@ func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers 
 	if err != nil {
 		return nil, nil, err
 	}
-	catalog, err := openStorageCatalog(context.Background(), paths.OroHome)
-	if err != nil {
-		return nil, nil, err
+	// Provision the storage catalog, but never let it block boot.
+	//
+	// The catalog's runtime consumers are the dev-cache sweep below and the
+	// file that storage health reports on (factoryhealth
+	// evaluateStorageFindings); storage.NewController is never constructed
+	// outside tests, so every dispatcher admission gate short-circuits
+	// (storage_controller.go:22-24). A failure here previously returned an
+	// error and aborted `oro start`. It now warns and continues: degraded
+	// storage health belongs in `oro health`, not in a boot failure. The sweep
+	// is best-effort for the same reason — cache maintenance must never be the
+	// thing that stops the factory starting.
+	if catalog, catErr := openStorageCatalog(context.Background(), paths.OroHome); catErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: storage catalog unavailable: %v\n", catErr)
+	} else {
+		runStartupDevCacheSweep(catalog, paths.OroHome)
+		if closeErr := catalog.Close(); closeErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: close storage catalog: %v\n", closeErr)
+		}
 	}
-	if err := catalog.Close(); err != nil {
-		return nil, nil, fmt.Errorf("close storage catalog: %w", err)
-	}
+
 	sockPath := paths.SocketPath
 	dbPath := paths.StateDBPath
 	// Migrate global DBs to per-project directory on first use (no-op if already migrated).

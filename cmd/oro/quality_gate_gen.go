@@ -1242,14 +1242,17 @@ parallel_checks() {
     done
 }
 
-# Ensure go:embed assets exist without deleting them during another QG run.
+# Ensure go:embed assets are current without deleting them during another QG run.
 # The Makefile target rebuilds cmd/oro/_assets in place via rm -rf, so QG only
-# invokes it when assets are missing and serializes that initial staging.
+# invokes it when the mirror is missing or stale and serializes that staging.
 ensure_stage_assets() {
-    if [ -f "cmd/oro/_assets/.version" ]; then
+    if [ ! -f "cmd/oro/embed.go" ] || ! grep -q "_assets" "cmd/oro/embed.go"; then
         return 0
     fi
-    if [ ! -f "cmd/oro/embed.go" ] || ! grep -q "_assets" "cmd/oro/embed.go"; then
+    if [ ! -d "assets" ]; then
+        return 0
+    fi
+    if [ -f "cmd/oro/_assets/.version" ] && ! find assets -type f -newer "cmd/oro/_assets/.version" -print -quit | grep -q .; then
         return 0
     fi
     if [ ! -f "Makefile" ] || ! grep -qE '^stage-assets:' "Makefile"; then
@@ -1269,7 +1272,7 @@ ensure_stage_assets() {
     done
     QG_STAGE_ASSETS_LOCK="$lock_dir"
 
-    if [ ! -f "cmd/oro/_assets/.version" ]; then
+    if [ ! -f "cmd/oro/_assets/.version" ] || find assets -type f -newer "cmd/oro/_assets/.version" -print -quit | grep -q .; then
         if ! make stage-assets; then
             rmdir "$QG_STAGE_ASSETS_LOCK" 2>/dev/null || true
             QG_STAGE_ASSETS_LOCK=""
@@ -1294,6 +1297,18 @@ run_golangci_lint() {
         golangci-lint run --timeout 10m --allow-parallel-runners ./cmd/... ./internal/... ./pkg/...
 }
 
+# shellcheck disable=SC2317,SC2329
+go_formatter_check() {
+    local tool="$1"
+    local output=""
+    output=$(go tool "$tool" -l $GO_DIRS 2>/dev/null)
+    if [ -z "$output" ]; then
+        return 0
+    fi
+    printf '%s\n' "$output"
+    return 1
+}
+
 # shellcheck disable=SC2317
 lane_go() {
     local pass=0 fail=0
@@ -1309,8 +1324,8 @@ lane_go() {
     # --- Tier 1: Formatting (parallel) ---
     header "GO TIER 1: FORMATTING"
     parallel_checks \
-        "gofumpt" "test -z \"\$(go tool gofumpt -l $GO_DIRS 2>/dev/null)\"" \
-        "goimports" "test -z \"\$(go tool goimports -l $GO_DIRS 2>/dev/null)\""
+        "gofumpt" "go_formatter_check gofumpt" \
+        "goimports" "go_formatter_check goimports"
     pass=$((pass + TIER_PASS)); fail=$((fail + TIER_FAIL))
     if [ "$fail" -gt 0 ]; then echo "${pass}:${fail}" > "$QG_DIR/go.rc"; return; fi
 

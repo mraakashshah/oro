@@ -73,8 +73,7 @@ Clear name, tests real behavior, one thing
 <Bad>
 ```python
 def test_retry_works(mocker):
-    mock = mocker.patch("module.operation",
-        side_effect=[RuntimeError(), RuntimeError(), "success"])
+    mock = mocker.patch("module.operation", side_effect=[RuntimeError(), RuntimeError(), "success"])
     retry_operation(mock)
     assert mock.call_count == 3
 ```

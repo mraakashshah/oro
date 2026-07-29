@@ -320,14 +320,15 @@ func (d *Dispatcher) touchProgress(workerID string) {
 // workerExitInfo holds the minimal details needed to escalate a timed-out
 // worker exit after releasing d.mu.
 type workerExitInfo struct {
-	workerID     string
-	beadID       string
-	worktree     string
-	baseBranch   string
-	assignmentID int64
-	prevSession  bool // worker is from a previous dispatcher session
-	managed      bool // worker was spawned by the dispatcher (procMgr)
-	reviewing    bool // worker was in an active ops review
+	workerID       string
+	beadID         string
+	reservationGen uint64
+	worktree       string
+	baseBranch     string
+	assignmentID   int64
+	prevSession    bool // worker is from a previous dispatcher session
+	managed        bool // worker was spawned by the dispatcher (procMgr)
+	reviewing      bool // worker was in an active ops review
 }
 
 // escalateTimedOutWorkers dispatches escalation messages and clears bead
@@ -503,10 +504,11 @@ func managedWorkerIDs(slices ...[]workerExitInfo) []string {
 func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 	now := d.nowFunc()
 	d.mu.Lock()
-	dead, stuck, stoppedSpawnFor := d.collectTimedOutWorkersLocked(now)
+	dead, stuck, stoppedSpawnFor, timedOutSetups := d.collectTimedOutWorkersLocked(now)
 	deadWorkers, deadManagedExits := d.removeDeadWorkersLocked(ctx, dead)
 	d.removeStoppedSpawnForWorkersLocked(ctx, stoppedSpawnFor)
 	stuckWorkers, stuckManagedExits := d.removeStuckWorkersLocked(ctx, stuck, now)
+	reclaimedSetups := d.reclaimTimedOutSetupsLocked(ctx, timedOutSetups, now)
 	newManagedExits := deadManagedExits + stuckManagedExits
 	d.unexpectedManagedExits += newManagedExits
 	d.clampManagedExitCapAfterPoolDrainLocked(ctx, newManagedExits)
@@ -516,12 +518,13 @@ func (d *Dispatcher) checkHeartbeats(ctx context.Context) {
 	// Wake the assign loop so reconcileScale can spawn replacements immediately,
 	// and so idle managed workers pick up newly-ready beads without waiting for
 	// the next poll tick (oro-ntr3).
-	if len(deadWorkers)+len(stuckWorkers) > 0 || hasManagedIdle {
+	if len(deadWorkers)+len(stuckWorkers)+len(reclaimedSetups) > 0 || hasManagedIdle {
 		d.notifyAssignLoop()
 	}
 
 	// Escalate outside the lock and clear tracking maps for abandoned beads.
 	d.escalateTimedOutWorkers(ctx, deadWorkers, stuckWorkers)
+	d.reopenTimedOutSetupBeads(ctx, reclaimedSetups)
 
 	// Kill OS processes for timed-out managed workers (best-effort, outside lock).
 	d.killManagedWorkers(managedWorkerIDs(deadWorkers, stuckWorkers))
@@ -575,53 +578,175 @@ func (d *Dispatcher) reviewDeadStateLocked(w *trackedWorker, now time.Time) (exp
 	return false, true
 }
 
-func (d *Dispatcher) collectTimedOutWorkersLocked(now time.Time) (dead, stuck, stoppedSpawnFor []string) {
+func (d *Dispatcher) collectTimedOutWorkersLocked(now time.Time) (dead, stuck, stoppedSpawnFor, timedOutSetups []string) {
 	for id, w := range d.workers {
 		if w.state == protocol.WorkerReserved {
+			if workerSetupTimedOut(w, now, d.cfg.ProgressTimeout) {
+				timedOutSetups = append(timedOutSetups, id)
+			}
 			continue
 		}
-		if stoppedSpawnForHeartbeatTimedOut(w, now, d.cfg.HeartbeatTimeout) {
+		switch d.classifyLiveWorkerLocked(w, id, now) {
+		case workerTimeoutDead:
+			dead = append(dead, id)
+		case workerTimeoutStuck:
+			stuck = append(stuck, id)
+		case workerTimeoutStoppedSpawn:
 			stoppedSpawnFor = append(stoppedSpawnFor, id)
-			continue
-		}
-		// Liveness check: heartbeat timeout (applies to all non-reserved workers,
-		// including idle — an idle worker with a stale heartbeat is disconnected).
-		if heartbeatTimedOut(w, now, d.cfg.HeartbeatTimeout) {
-			dead = append(dead, id)
-			continue
-		}
-		// Dead process check: managed reviewing worker whose OS process has exited.
-		// Reviewing workers may keep heartbeating long after their process dies
-		// (the review timeout is 15m), so we detect exit via signal(0) instead.
-		if w.managed && w.state == protocol.WorkerReviewing && d.procMgr != nil && !d.procMgr.IsAlive(id) {
-			dead = append(dead, id)
-			continue
-		}
-		// Dead ops review check: reviewing worker whose ops subprocess has exited
-		// while the OS process is still alive. After ReviewDeadGrace, remove worker.
-		reviewDead, reviewGraceActive := d.reviewDeadStateLocked(w, now)
-		if reviewDead {
-			dead = append(dead, id)
-			continue
-		}
-		// A missing ops review gets its full grace period before any progress
-		// or review timeout can reap the owning worker.
-		if reviewGraceActive {
-			continue
-		}
-		// Progress check: a busy coding worker has not made meaningful progress.
-		// Reviewing workers use the separate ReviewTimeout below, allowing an
-		// active ops review to outlive the shorter coding-progress deadline.
-		if workerProgressTimedOut(w, now, d.cfg.ProgressTimeout) {
-			stuck = append(stuck, id)
-			continue
-		}
-		// Review timeout: reviewing worker has stalled without progress.
-		if workerReviewTimedOut(w, now, d.cfg.ReviewTimeout) {
-			stuck = append(stuck, id)
+		case workerTimeoutNone:
 		}
 	}
-	return dead, stuck, stoppedSpawnFor
+	return dead, stuck, stoppedSpawnFor, timedOutSetups
+}
+
+// workerTimeoutClass buckets a non-reserved worker by which timeout, if any,
+// has fired. Extracted from collectTimedOutWorkersLocked to keep that loop
+// within the gocognit budget once reserved-setup handling joined it.
+type workerTimeoutClass int
+
+const (
+	workerTimeoutNone workerTimeoutClass = iota
+	workerTimeoutDead
+	workerTimeoutStuck
+	workerTimeoutStoppedSpawn
+)
+
+// classifyLiveWorkerLocked returns the timeout bucket for a non-reserved worker.
+// Caller must hold d.mu. Order is significant and preserved from the original
+// guard chain: the first matching condition wins.
+func (d *Dispatcher) classifyLiveWorkerLocked(w *trackedWorker, id string, now time.Time) workerTimeoutClass {
+	if w.state == protocol.WorkerShuttingDown && w.shutdownCancel != nil {
+		return workerTimeoutNone
+	}
+	if stoppedSpawnForHeartbeatTimedOut(w, now, d.cfg.HeartbeatTimeout) {
+		return workerTimeoutStoppedSpawn
+	}
+	// Liveness check: heartbeat timeout (applies to all non-reserved workers,
+	// including idle — an idle worker with a stale heartbeat is disconnected).
+	if heartbeatTimedOut(w, now, d.cfg.HeartbeatTimeout) {
+		return workerTimeoutDead
+	}
+	// Dead process check: managed reviewing worker whose OS process has exited.
+	// Reviewing workers may keep heartbeating long after their process dies
+	// (the review timeout is 15m), so we detect exit via signal(0) instead.
+	if w.managed && w.state == protocol.WorkerReviewing && d.procMgr != nil && !d.procMgr.IsAlive(id) {
+		return workerTimeoutDead
+	}
+	// Dead ops review check: reviewing worker whose ops subprocess has exited
+	// while the OS process is still alive. After ReviewDeadGrace, remove worker.
+	reviewDead, reviewGraceActive := d.reviewDeadStateLocked(w, now)
+	if reviewDead {
+		return workerTimeoutDead
+	}
+	// A missing ops review gets its full grace period before any progress
+	// or review timeout can reap the owning worker.
+	if reviewGraceActive {
+		return workerTimeoutNone
+	}
+	// Progress check: a busy coding worker has not made meaningful progress.
+	// Reviewing workers use the separate ReviewTimeout below, allowing an
+	// active ops review to outlive the shorter coding-progress deadline.
+	if workerProgressTimedOut(w, now, d.cfg.ProgressTimeout) {
+		return workerTimeoutStuck
+	}
+	// Review timeout: reviewing worker has stalled without progress.
+	if workerReviewTimedOut(w, now, d.cfg.ReviewTimeout) {
+		return workerTimeoutStuck
+	}
+	return workerTimeoutNone
+}
+
+func (d *Dispatcher) reclaimTimedOutSetupsLocked(ctx context.Context, workerIDs []string, now time.Time) []workerExitInfo {
+	reclaimed := make([]workerExitInfo, 0, len(workerIDs))
+	for _, id := range workerIDs {
+		w := d.workers[id]
+		if w == nil || !workerSetupTimedOut(w, now, d.cfg.ProgressTimeout) {
+			continue
+		}
+		beadID := w.beadID
+		reservationGen := w.reservationGen
+		_ = d.logEventLocked(ctx, "assignment_setup_timeout", "dispatcher", beadID, id,
+			fmt.Sprintf(`{"setup_ago":%q}`, now.Sub(w.setupReservedAt).Round(time.Second)))
+		reclaimed = append(reclaimed, workerExitInfo{
+			workerID:       id,
+			beadID:         beadID,
+			reservationGen: reservationGen,
+			worktree:       w.worktree,
+			assignmentID:   w.assignmentID,
+		})
+	}
+	return reclaimed
+}
+
+func (d *Dispatcher) reopenTimedOutSetupBeads(ctx context.Context, reclaimed []workerExitInfo) {
+	for _, setup := range reclaimed {
+		d.reopenTimedOutSetupBead(ctx, setup)
+		d.cleanTimedOutSetupResources(ctx, setup)
+		if d.finishTimedOutSetupCleanup(setup) {
+			d.notifyAssignLoop()
+		}
+	}
+}
+
+// cleanTimedOutSetupResources terminalizes resources captured while the setup
+// reservation was still held. It never holds d.mu across database or worktree
+// cleanup, and it cannot remove a deterministic worktree path republished by
+// a newer reservation generation.
+func (d *Dispatcher) cleanTimedOutSetupResources(ctx context.Context, setup workerExitInfo) {
+	if setup.assignmentID > 0 {
+		if err := d.completeAssignment(ctx, setup.assignmentID, setup.beadID); err != nil {
+			_ = d.logEvent(ctx, "assignment_setup_timeout_cleanup_failed", "dispatcher", setup.beadID, setup.workerID,
+				fmt.Sprintf(`{"assignment_id":%d,"error":%q}`, setup.assignmentID, err.Error()))
+		}
+	}
+	if setup.worktree == "" {
+		return
+	}
+	if d.timedOutSetupCleanupCurrent(setup) {
+		if err := d.worktrees.Remove(ctx, setup.worktree); err != nil {
+			_ = d.logEvent(ctx, "assignment_setup_worktree_cleanup_failed", "dispatcher", setup.beadID, setup.workerID,
+				fmt.Sprintf(`{"worktree":%q,"error":%q}`, setup.worktree, err.Error()))
+		}
+	}
+}
+
+// reopenTimedOutSetupBead returns a timed-out setup's bead to the ready queue,
+// unless a successor generation has claimed it in the meantime.
+func (d *Dispatcher) reopenTimedOutSetupBead(ctx context.Context, setup workerExitInfo) {
+	if d.isBeadClosed(ctx, setup.beadID) {
+		return
+	}
+	if !d.timedOutSetupCleanupCurrent(setup) {
+		return
+	}
+	if _, err := d.beads.UpdateStatusIf(ctx, setup.beadID, "in_progress", "open"); err != nil {
+		_ = d.logEvent(ctx, "assignment_setup_bead_reset_failed", "dispatcher", setup.beadID, setup.workerID,
+			fmt.Sprintf(`{"error":%q}`, err.Error()))
+	}
+}
+
+// timedOutSetupCleanupCurrent reports whether a reaped setup still owns its
+// bead's logical cleanup. The reservation remains held across remote cleanup,
+// so a successor cannot claim the bead until g1 has completed local teardown.
+func (d *Dispatcher) timedOutSetupCleanupCurrent(setup workerExitInfo) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.assignmentReservationHeldLocked(setup.workerID, setup.beadID, setup.reservationGen)
+}
+
+// finishTimedOutSetupCleanup releases a reaped setup only after its remote
+// cleanup has returned. Reservation validation and every shared tracking-map
+// effect occur in one lock-held transition, so a successor cannot observe or
+// overwrite a partial g1 teardown.
+func (d *Dispatcher) finishTimedOutSetupCleanup(setup workerExitInfo) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.assignmentReservationHeldLocked(setup.workerID, setup.beadID, setup.reservationGen) {
+		return false
+	}
+	d.clearBeadTrackingLocked(setup.beadID)
+	delete(d.worktreeByBead, setup.beadID)
+	return d.releaseAssignmentReservationLocked(setup.workerID, setup.beadID, setup.reservationGen)
 }
 
 func (d *Dispatcher) removeDeadWorkersLocked(ctx context.Context, dead []string) (deadWorkers []workerExitInfo, managedExits int) {
@@ -684,6 +809,11 @@ func heartbeatTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) b
 func workerProgressTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) bool {
 	return !w.spawnFor && w.state == protocol.WorkerBusy &&
 		!w.lastProgress.IsZero() && now.Sub(w.lastProgress) > timeout
+}
+
+func workerSetupTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) bool {
+	return w.state == protocol.WorkerReserved && !w.setupReservedAt.IsZero() &&
+		now.Sub(w.setupReservedAt) > timeout
 }
 
 func workerReviewTimedOut(w *trackedWorker, now time.Time, timeout time.Duration) bool {
@@ -764,9 +894,7 @@ func (d *Dispatcher) gracefulShutdownWorker(workerID string, timeout time.Durati
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	w.shutdownCancel = cancel
 	w.shutdownReason = reason
-	if reason == shutdownReasonScaleDown || w.spawnFor {
-		w.state = protocol.WorkerShuttingDown
-	}
+	w.state = protocol.WorkerShuttingDown
 
 	if w.spawnFor {
 		sendPrepareShutdownWithoutBuffering(w, timeout)
@@ -820,14 +948,10 @@ func (d *Dispatcher) handleShutdownTimeout(workerID string) {
 		dispatcherStopping = d.state == StateStopping
 		if w.shutdownReason == shutdownReasonScaleDown || w.spawnFor {
 			sendShutdownWithoutBuffering(w)
-			w.markShuttingDownWithoutAssignment()
 		} else {
 			_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
-			w.state = protocol.WorkerIdle
-			w.shutdownReason = ""
-			w.assignmentID = 0
-			w.beadID = ""
 		}
+		w.markShuttingDownWithoutAssignment()
 		w.shutdownCancel = nil
 	}
 	d.mu.Unlock()

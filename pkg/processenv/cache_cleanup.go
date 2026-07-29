@@ -28,6 +28,14 @@ func SubprocessCacheRoot() string {
 	return defaultCacheRoot()
 }
 
+// SubprocessTmpRoot returns the default root for isolated subprocess TMPDIRs.
+// This is a different directory from SubprocessCacheRoot — the cache root
+// lives under os.UserCacheDir, the tmp root under os.TempDir — and it needs
+// its own pruning, because one namespace is created per spawned subprocess.
+func SubprocessTmpRoot() string {
+	return defaultTmpRoot()
+}
+
 // PruneSubprocessCache removes subprocess cache namespaces older than MaxAge.
 func PruneSubprocessCache(root string, opts PruneOptions) (PruneResult, error) {
 	if opts.MaxAge <= 0 {

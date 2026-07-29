@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -2312,8 +2313,53 @@ func TestQualityGateRuntimeLockIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read .gitignore: %v", err)
 	}
-	if !strings.Contains(string(data), "/.oro-quality-gate.lock*") {
-		t.Error("repo .gitignore must ignore quality-gate lock directories and stale archives")
+	for _, entry := range []string{
+		"/.oro-quality-gate.lock*",
+		"/.qg-local/",
+		"/.qg-cache/",
+	} {
+		if !strings.Contains(string(data), entry) {
+			t.Errorf("repo .gitignore must ignore quality-gate runtime artifact %q", entry)
+		}
+	}
+}
+
+// TestGateCacheDirectoriesIgnored asserts that every Go/lint cache directory
+// name observed in worker worktrees is ignored. An unignored cache directory
+// makes `git status --porcelain` non-empty, which the dispatcher reads as
+// unpreserved work and quarantines the assignment as stale — that froze the
+// factory on 2026-07-28. Substring checks against .gitignore cannot catch a
+// new variant, so this asks git itself whether each path is ignored.
+func TestGateCacheDirectoriesIgnored(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot determine test file path")
+	}
+	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..")
+
+	// Names observed in real worktrees plus the per-bead suffixed forms.
+	for _, dir := range []string{
+		".gocache",
+		".gocache-somebead",
+		".golangci-cache",
+		".golangci-cache-somebead",
+		".golangci-lint-cache",
+		".task-gocache",
+		".qg-local",
+		".qg-cache",
+		".qg-go-cache",
+		".qg-lint-cache",
+		".qg-golangci-cache",
+		// Nested, undotted forms: the directory name carries no leading dot,
+		// so leading-dot patterns miss it entirely.
+		".oro/golangci-cache",
+		".oro/gocache",
+	} {
+		cmd := exec.Command("git", "check-ignore", "-q", filepath.Join(dir, "probe"))
+		cmd.Dir = repoRoot
+		if err := cmd.Run(); err != nil {
+			t.Errorf("gate cache directory %q is NOT gitignored: an unignored cache dir dirties the worktree and triggers stale_active_assignment quarantines", dir)
+		}
 	}
 }
 
