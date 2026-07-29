@@ -123,6 +123,7 @@ type Capabilities struct {
 	Policy            Policy
 	PolicyHash        string
 	SupportsSquashCAS bool
+	Git               GitTransportCapabilities
 }
 
 // PreflightRequest requests provider capability and target-policy evidence.
