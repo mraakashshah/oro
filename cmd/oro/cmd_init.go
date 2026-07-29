@@ -1119,6 +1119,9 @@ func writeOracleSettings(projectDir, hookPath string) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close Oracle settings temp file: %w", err)
 	}
+	// #nosec G703 -- projectDir is the resolved Oro home projects directory
+	// (filepath.Join(oroHome, "projects", projectName)) and the basename is a
+	// constant, so neither component is caller-tainted.
 	if err := os.Rename(tmpPath, filepath.Join(projectDir, "oracle-settings.json")); err != nil {
 		return fmt.Errorf("install Oracle settings: %w", err)
 	}
