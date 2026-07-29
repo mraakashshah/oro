@@ -242,6 +242,13 @@ linters:
         linters:
           - gosec
 
+      # The /proc stat path is built from an already-validated (>0) int
+      # pid against a fixed /proc/%d/stat format string, not user input.
+      - path: pkg/storage/process_identity_linux\.go
+        text: "G304: Potential file inclusion via variable"
+        linters:
+          - gosec
+
 formatters:
   enable:
     - goimports

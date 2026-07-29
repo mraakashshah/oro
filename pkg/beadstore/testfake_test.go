@@ -21,6 +21,20 @@ func TestFakeStore(t *testing.T) {
 		var _ beadstore.Store = beadstore.NewFakeStore()
 	})
 
+	t.Run("conditionally updates status", func(t *testing.T) {
+		ctx := context.Background()
+		store := beadstore.NewFakeStore(protocol.Bead{ID: "cas", Status: "in_progress"})
+
+		updated, err := store.UpdateStatusIf(ctx, "cas", "in_progress", "open")
+		if err != nil || !updated {
+			t.Fatalf("UpdateStatusIf first = %t, %v; want true, nil", updated, err)
+		}
+		updated, err = store.UpdateStatusIf(ctx, "cas", "in_progress", "open")
+		if err != nil || updated {
+			t.Fatalf("UpdateStatusIf second = %t, %v; want false, nil", updated, err)
+		}
+	})
+
 	t.Run("creates shows updates and closes beads", func(t *testing.T) {
 		ctx := context.Background()
 		store := beadstore.NewFakeStore()
@@ -943,7 +957,11 @@ func TestFakeStoreRejectsCanceledContexts(t *testing.T) {
 			_, err := store.Create(ctx, beadstore.CreateParams{ID: "created"})
 			return err
 		},
-		"Update":           func() error { return store.Update(ctx, "bead", beadstore.UpdateParams{}) },
+		"Update": func() error { return store.Update(ctx, "bead", beadstore.UpdateParams{}) },
+		"UpdateStatusIf": func() error {
+			_, err := store.UpdateStatusIf(ctx, "bead", "open", "in_progress")
+			return err
+		},
 		"Close":            func() error { return store.Close(ctx, "bead", "reason") },
 		"Delete":           func() error { return store.Delete(ctx, "bead", "reason") },
 		"AddDependency":    func() error { return store.AddDependency(ctx, "bead", "other", "blocks") },

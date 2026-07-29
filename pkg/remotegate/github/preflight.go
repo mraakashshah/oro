@@ -62,6 +62,45 @@ type PreflightRequest struct {
 	Targets    []string
 }
 
+// PreflightEvidence is the complete read-only workflow and policy evidence
+// collected for a startup target.
+type PreflightEvidence struct {
+	Workflow remotegate.WorkflowEvidence
+	Policy   remotegate.EffectivePolicy
+	Hash     string
+}
+
+// NewClient constructs a read-only GitHub preflight client.
+func NewClient(api APIReader, repository string, collection CollectionReader, limits CollectionLimits) *Client {
+	return &Client{
+		api:              api,
+		repository:       repository,
+		collection:       collection,
+		collectionLimits: limits,
+	}
+}
+
+// Preflight verifies workflow eligibility and effective policy for every
+// requested target without mutating GitHub state.
+func (c *Client) Preflight(ctx context.Context, req PreflightRequest) (PreflightEvidence, error) {
+	if err := ctx.Err(); err != nil {
+		return PreflightEvidence{}, fmt.Errorf("preflight context: %w", err)
+	}
+	workflow, err := c.inspectWorkflow(ctx, req)
+	if err != nil {
+		return PreflightEvidence{}, fmt.Errorf("inspect workflow: %w", err)
+	}
+	policy, err := c.effectiveTargetPolicy(ctx, req.Targets)
+	if err != nil {
+		return PreflightEvidence{}, fmt.Errorf("inspect effective policy: %w", err)
+	}
+	hash, err := remotegate.CanonicalPolicyHash(policy)
+	if err != nil {
+		return PreflightEvidence{}, fmt.Errorf("hash effective policy: %w", err)
+	}
+	return PreflightEvidence{Workflow: workflow, Policy: policy, Hash: hash}, nil
+}
+
 type workflowRegistration struct {
 	DefaultBranch string
 	Path          string

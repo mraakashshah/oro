@@ -5,12 +5,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/factoryhealth"
 )
 
 func TestCleanup_NothingToClean(t *testing.T) {
@@ -241,6 +243,64 @@ func TestCleanup_RemovesStaleStateDBLock(t *testing.T) {
 	}
 	if out := buf.String(); !strings.Contains(out, "state DB lock") {
 		t.Errorf("expected output to mention state DB lock removal, got: %s", out)
+	}
+}
+
+// TestCleanupPrunesSubprocessTmpRoot covers the subprocess TMP root, which is
+// a different directory from the cache root: processenv.defaultCacheRoot
+// resolves under os.UserCacheDir ("~/Library/Caches/oro/subprocess") while
+// defaultTmpRoot resolves under os.TempDir ("/tmp/oro-subprocess" on darwin).
+// Only the cache root was pruned, so the tmp root accumulated one directory
+// per spawned subprocess forever — 16,467 of them, 1.6 GB, observed
+// 2026-07-29 while the pruned cache root sat empty.
+func TestCleanupPrunesSubprocessTmpRoot(t *testing.T) {
+	fake := newFakeCmd()
+	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
+	fake.output[key("git", "branch", "--list", "agent/*")] = ""
+	fake.output[key("git", "branch", "--list", "epic/*")] = ""
+
+	now := time.Now()
+	tmpDir := t.TempDir()
+	tmpRoot := filepath.Join(tmpDir, "oro-subprocess")
+	staleNamespace := filepath.Join(tmpRoot, "stale")
+	recentNamespace := filepath.Join(tmpRoot, "recent")
+	for _, dir := range []string{staleNamespace, recentNamespace} {
+		if err := os.MkdirAll(filepath.Join(dir, "T"), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	if err := os.Chtimes(staleNamespace, now.Add(-8*24*time.Hour), now.Add(-8*24*time.Hour)); err != nil {
+		t.Fatalf("chtimes stale namespace: %v", err)
+	}
+	if err := os.Chtimes(recentNamespace, now.Add(-2*24*time.Hour), now.Add(-2*24*time.Hour)); err != nil {
+		t.Fatalf("chtimes recent namespace: %v", err)
+	}
+
+	var buf bytes.Buffer
+	cfg := &cleanupConfig{
+		runner:                fake,
+		w:                     &buf,
+		tmuxName:              TmuxSessionName(""),
+		pidPath:               filepath.Join(tmpDir, "oro.pid"),
+		sockPath:              filepath.Join(tmpDir, "oro.sock"),
+		subprocessTmpRoot:     tmpRoot,
+		subprocessCacheMaxAge: 7 * 24 * time.Hour,
+		signalFn:              func(int) error { return nil },
+		aliveFn:               func(int) bool { return false },
+	}
+
+	if err := runCleanup(context.Background(), cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(staleNamespace); !os.IsNotExist(err) {
+		t.Fatalf("expected stale subprocess tmp namespace to be removed, stat err: %v", err)
+	}
+	if _, err := os.Stat(recentNamespace); err != nil {
+		t.Fatalf("expected recent subprocess tmp namespace to be preserved: %v", err)
+	}
+	if out := buf.String(); !strings.Contains(out, tmpRoot) {
+		t.Fatalf("expected pruning output naming the tmp root %s, got:\n%s", tmpRoot, out)
 	}
 }
 
@@ -615,6 +675,152 @@ func TestCleanup_ResetsInProgressBeads(t *testing.T) {
 	}
 	if !strings.Contains(out, "cleared active assignment for bead oro-assigned-open") {
 		t.Errorf("expected output to mention cleared assignment, got: %s", out)
+	}
+}
+
+func TestCleanupAssignmentsOnlyPreservesBranchesAndWorktrees(t *testing.T) {
+	ctx := context.Background()
+	repo := initLeakscanGitRepo(t)
+	worktree := filepath.Join(repo, ".worktrees", "oro-fixture")
+	if err := os.MkdirAll(filepath.Dir(worktree), 0o750); err != nil {
+		t.Fatalf("create worktrees directory: %v", err)
+	}
+	runGit(t, repo, "worktree", "add", "-b", "agent/oro-fixture", worktree, "HEAD")
+
+	dbPath := filepath.Join(repo, "state.db")
+	db, err := openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	store := beadstore.NewSQLiteStore(db)
+	for _, bead := range []beadstore.CreateParams{
+		{ID: "oro-stale", Title: "oro-stale", Type: "task", Priority: 1, Status: "in_progress"},
+		{ID: "oro-live", Title: "oro-live", Type: "task", Priority: 1, Status: "in_progress"},
+	} {
+		if _, err := store.Create(ctx, bead); err != nil {
+			t.Fatalf("create bead %s: %v", bead.ID, err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES
+  ('oro-stale', 'crashed-worker', ?, 'active'),
+  ('oro-live', 'live-worker', '/tmp/oro-live', 'active')`, worktree); err != nil {
+		t.Fatalf("seed assignments: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seeded state db: %v", err)
+	}
+
+	pidPath := filepath.Join(repo, "oro.pid")
+	sockPath := filepath.Join(repo, "oro.sock")
+	for _, path := range []string{pidPath, sockPath} {
+		if err := os.WriteFile(path, []byte("preserve"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	fake := newFakeCmd()
+	var buf bytes.Buffer
+	signaled := false
+	cfg := &cleanupConfig{
+		AssignmentsOnly: true,
+		runner:          fake,
+		w:               &buf,
+		pidPath:         pidPath,
+		sockPath:        sockPath,
+		stateDBPath:     dbPath,
+		worktreesDir:    filepath.Join(repo, ".worktrees"),
+		signalFn: func(int) error {
+			signaled = true
+			return nil
+		},
+		liveWorkerIDs: func(context.Context) (map[string]bool, error) {
+			return map[string]bool{"live-worker": true}, nil
+		},
+	}
+	if err := runCleanup(ctx, cfg); err != nil {
+		t.Fatalf("run assignments-only cleanup: %v", err)
+	}
+	if signaled || len(fake.getCalls()) != 0 {
+		t.Fatalf("assignments-only cleanup touched processes or git: signaled=%t calls=%v", signaled, fake.getCalls())
+	}
+
+	db, err = openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("reopen state db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	store = beadstore.NewSQLiteStore(db)
+	active, err := factoryhealth.LoadActiveAssignments(ctx, db, time.Now())
+	if err != nil {
+		t.Fatalf("load active assignments: %v", err)
+	}
+	health := factoryhealth.Evaluate(factoryhealth.Snapshot{
+		DaemonRunning:     true,
+		Workers:           []factoryhealth.WorkerSnapshot{{ID: "live-worker", BeadID: "oro-live"}},
+		ActiveAssignments: active,
+		Storage:           &factoryhealth.StorageHealth{Available: true},
+	})
+	if health.Metrics.OrphanAssignments != 0 {
+		t.Fatalf("orphan assignments = %d, want 0; health=%+v", health.Metrics.OrphanAssignments, health)
+	}
+
+	var staleStatus, liveStatus string
+	if err := db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE worker_id='crashed-worker'`).Scan(&staleStatus); err != nil {
+		t.Fatalf("read stale assignment: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE worker_id='live-worker'`).Scan(&liveStatus); err != nil {
+		t.Fatalf("read live assignment: %v", err)
+	}
+	if staleStatus != "completed" || liveStatus != "active" {
+		t.Fatalf("assignment statuses stale/live = %q/%q, want completed/active", staleStatus, liveStatus)
+	}
+	staleBead, err := store.Show(ctx, "oro-stale")
+	if err != nil {
+		t.Fatalf("show stale bead: %v", err)
+	}
+	liveBead, err := store.Show(ctx, "oro-live")
+	if err != nil {
+		t.Fatalf("show live bead: %v", err)
+	}
+	if staleBead.Status != "open" || liveBead.Status != "in_progress" {
+		t.Fatalf("bead statuses stale/live = %q/%q, want open/in_progress", staleBead.Status, liveBead.Status)
+	}
+
+	branchCmd := exec.Command("git", "branch", "--list", "agent/oro-fixture")
+	branchCmd.Dir = repo
+	branchOut, err := branchCmd.Output()
+	if err != nil {
+		t.Fatalf("list fixture branch: %v", err)
+	}
+	if strings.TrimSpace(string(branchOut)) == "" {
+		t.Fatal("fixture agent branch was removed")
+	}
+	if _, err := os.Stat(worktree); err != nil {
+		t.Fatalf("fixture worktree was removed: %v", err)
+	}
+	for _, path := range []string{pidPath, sockPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("assignments-only cleanup removed %s: %v", path, err)
+		}
+	}
+}
+
+func TestCleanupAssignmentsOnlyDoesNotReportSuccessOnError(t *testing.T) {
+	var buf bytes.Buffer
+	err := runCleanup(context.Background(), &cleanupConfig{
+		AssignmentsOnly: true,
+		stateDBPath:     filepath.Join(t.TempDir(), "state.db"),
+		w:               &buf,
+		liveWorkerIDs: func(context.Context) (map[string]bool, error) {
+			return nil, fmt.Errorf("status unavailable")
+		},
+	})
+	if err == nil {
+		t.Fatal("assignments-only cleanup succeeded with unavailable worker status")
+	}
+	if strings.Contains(buf.String(), "nothing to clean") {
+		t.Fatalf("assignments-only cleanup reported success after error: %s", buf.String())
 	}
 }
 

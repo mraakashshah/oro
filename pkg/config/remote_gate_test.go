@@ -132,6 +132,47 @@ func TestRemoteGateConfigModes(t *testing.T) {
 	}
 }
 
+func TestKeychainPrivateKeyReference(t *testing.T) {
+	valid := func(ref string) config.RemoteGateConfig {
+		identity := config.GitHubAppIdentityConfig{Type: "github-app", AppID: 1, InstallationID: 2, PrivateKeyRef: ref}
+		return config.RemoteGateConfig{
+			Mode: config.RemoteGateModeGitHubPR,
+			GitHub: config.GitHubRemoteGateConfig{
+				Remote: "origin", Workflow: "ci.yml", AggregateCheck: "qg", MaxInFlight: 1,
+				PollMinInterval: time.Second, PollMaxInterval: time.Second, RunTimeout: time.Minute,
+				OutageFallbackAfter: time.Minute, CLI: config.GitHubCLIConfig{Executable: "gh"},
+				API: config.GitHubAPIConfig{BaseURL: "https://api.github.com"}, RuntimeIdentity: identity,
+				PolicyReconciliation: config.PolicyReconciliationConfig{Enabled: true, OwnedRulesetKey: "key", OwnedRulesetName: "name", DesiredTemplateHash: "hash", MaintenanceIdentity: identity},
+			},
+		}
+	}
+
+	for _, ref := range []string{"keychain:team:oro", "keychain:oro/github-app"} {
+		if err := config.ValidateRemoteGateConfig(valid(ref)); err != nil {
+			t.Errorf("reference %q rejected: %v", ref, err)
+		}
+	}
+	for _, ref := range []string{"keychain:", "/tmp/key", "$ORO_KEY", " keychain:oro", "keychain:oro\n"} {
+		runtimeErr := config.ValidateRemoteGateConfig(valid("keychain:runtime"))
+		if runtimeErr != nil {
+			t.Fatalf("valid runtime identity: %v", runtimeErr)
+		}
+		runtime := valid("keychain:runtime")
+		runtime.GitHub.RuntimeIdentity.PrivateKeyRef = ref
+		wantRuntime := "invalid github-pr remote gate config: runtime_identity.private_key_ref must be a nonempty keychain reference"
+		if err := config.ValidateRemoteGateConfig(runtime); err == nil || err.Error() != wantRuntime {
+			t.Errorf("runtime reference %q error = %v, want %q", ref, err, wantRuntime)
+		}
+
+		maintenance := valid("keychain:runtime")
+		maintenance.GitHub.PolicyReconciliation.MaintenanceIdentity.PrivateKeyRef = ref
+		wantMaintenance := "invalid github-pr remote gate config: policy_reconciliation.maintenance_identity.private_key_ref must be a nonempty keychain reference"
+		if err := config.ValidateRemoteGateConfig(maintenance); err == nil || err.Error() != wantMaintenance {
+			t.Errorf("maintenance reference %q error = %v, want %q", ref, err, wantMaintenance)
+		}
+	}
+}
+
 func writeRemoteGateConfig(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")

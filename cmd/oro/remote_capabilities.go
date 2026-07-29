@@ -17,9 +17,16 @@ import (
 
 	"oro/pkg/config"
 	"oro/pkg/remotegate"
+	remotegithub "oro/pkg/remotegate/github"
 )
 
 const githubActionsMatrixEntriesLimit = 256
+
+const (
+	startupPolicyMaxPages = 1
+	startupPolicyMaxItems = 256
+	startupPolicyMaxBytes = 1 << 20
+)
 
 // RemoteGateConfig is the remote-gate configuration used for capability attestation.
 type RemoteGateConfig = config.RemoteGateConfig
@@ -141,14 +148,15 @@ func AttestRemoteCapabilities(ctx context.Context, cfg RemoteGateConfig) (Capabi
 		return Capabilities{}, err
 	}
 	return Capabilities{
-		Host:        host,
-		Repository:  repository,
-		Workflow:    cfg.GitHub.Workflow,
-		Permission:  repo.Permission,
-		GitHubCLI:   gh,
-		Git:         git,
-		APILimits:   limits,
-		MatrixBound: matrixBound,
+		Host:          host,
+		Repository:    repository,
+		Workflow:      cfg.GitHub.Workflow,
+		Permission:    repo.Permission,
+		GitHubCLI:     gh,
+		Git:           git,
+		APILimits:     limits,
+		MatrixBound:   matrixBound,
+		DefaultBranch: repo.DefaultBranch,
 	}, nil
 }
 
@@ -177,20 +185,9 @@ func PersistRemoteCapabilities(path string, capabilities Capabilities) error {
 // VerifyRemoteCapabilities re-attests the local environment and rejects any
 // difference from setup's persisted remote capability evidence.
 func VerifyRemoteCapabilities(ctx context.Context, cfg RemoteGateConfig, path string) error {
-	info, err := os.Lstat(path)
+	persisted, err := loadRemoteCapabilities(path)
 	if err != nil {
-		return fmt.Errorf("inspect remote capability evidence: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("remote capability evidence %s is not a regular file", path)
-	}
-	data, err := os.ReadFile(path) //nolint:gosec // a regular project-local evidence file was checked above.
-	if err != nil {
-		return fmt.Errorf("read remote capability evidence: %w", err)
-	}
-	var persisted Capabilities
-	if err := json.Unmarshal(data, &persisted); err != nil {
-		return fmt.Errorf("decode remote capability evidence: %w", err)
+		return err
 	}
 	current, err := AttestRemoteCapabilities(ctx, cfg)
 	if err != nil {
@@ -200,6 +197,25 @@ func VerifyRemoteCapabilities(ctx context.Context, cfg RemoteGateConfig, path st
 		return fmt.Errorf("remote capability evidence drifted since setup")
 	}
 	return nil
+}
+
+func loadRemoteCapabilities(path string) (Capabilities, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return Capabilities{}, fmt.Errorf("inspect remote capability evidence: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return Capabilities{}, fmt.Errorf("remote capability evidence %s is not a regular file", path)
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // a regular project-local evidence file was checked above.
+	if err != nil {
+		return Capabilities{}, fmt.Errorf("read remote capability evidence: %w", err)
+	}
+	var capabilities Capabilities
+	if err := json.Unmarshal(data, &capabilities); err != nil {
+		return Capabilities{}, fmt.Errorf("decode remote capability evidence: %w", err)
+	}
+	return canonicalRemoteCapabilities(capabilities), nil
 }
 
 func remoteCapabilitiesDrifted(persisted, current Capabilities) bool {
@@ -253,8 +269,70 @@ func verifyStartupRemoteCapabilities(ctx context.Context, projectRoot string) er
 	if cfg.Factory.QualityGate.Mode != config.RemoteGateModeGitHubPR {
 		return nil
 	}
+	if err := preflightStartupRemoteGate(ctx, projectRoot); err != nil {
+		return fmt.Errorf("remote capability startup preflight: remote gate startup preflight: %w", err)
+	}
 	if err := VerifyRemoteCapabilities(ctx, cfg.Factory.QualityGate, remoteCapabilityEvidencePath(projectRoot)); err != nil {
 		return fmt.Errorf("remote capability startup preflight: %w", err)
+	}
+	return nil
+}
+
+// preflightStartupRemoteGate rejects an ineligible workflow or changed policy
+// before dispatcher startup creates mutable runtime state.
+func preflightStartupRemoteGate(ctx context.Context, projectRoot string) error {
+	cfg, err := config.Load(filepath.Join(projectRoot, ".oro", "config.yaml"))
+	if err != nil {
+		return fmt.Errorf("load remote gate config: %w", err)
+	}
+	if cfg.Factory.QualityGate.Mode != config.RemoteGateModeGitHubPR {
+		return nil
+	}
+	capabilities, err := loadRemoteCapabilities(remoteCapabilityEvidencePath(projectRoot))
+	if err != nil {
+		return err
+	}
+	if capabilities.Host == "" || capabilities.Repository == "" || capabilities.DefaultBranch == "" {
+		return errors.New("persisted remote capabilities are missing host, repository, or default branch")
+	}
+	api, err := remotegithub.NewStartupAPI(remotegithub.StartupAPIConfig{
+		APIBaseURL:      cfg.Factory.QualityGate.GitHub.API.BaseURL,
+		RuntimeIdentity: cfg.Factory.QualityGate.GitHub.RuntimeIdentity,
+		Host:            capabilities.Host,
+		Repository:      capabilities.Repository,
+		CLIPath:         capabilities.GitHubCLI.Path,
+		CLIHash:         capabilities.GitHubCLI.Hash,
+	})
+	if err != nil {
+		return fmt.Errorf("construct startup GitHub API: %w", err)
+	}
+	client := remotegithub.NewClient(api, capabilities.Repository, api, remotegithub.CollectionLimits{
+		MaxPages: startupPolicyMaxPages,
+		MaxItems: startupPolicyMaxItems,
+		MaxBytes: startupPolicyMaxBytes,
+	})
+	evidence, err := client.Preflight(ctx, remotegithub.PreflightRequest{
+		Repository: capabilities.Repository,
+		Workflow:   cfg.Factory.QualityGate.GitHub.Workflow,
+		Targets:    []string{capabilities.DefaultBranch},
+	})
+	if err != nil {
+		return fmt.Errorf("preflight GitHub startup gate: %w", err)
+	}
+	if evidence.Workflow.Ref != capabilities.DefaultBranch {
+		return errors.New("GitHub default branch drifted since setup")
+	}
+	observedWorkflow := WorkflowEvidence{
+		Path:             evidence.Workflow.Path,
+		State:            evidence.Workflow.State,
+		Ref:              evidence.Workflow.Ref,
+		WorkflowDispatch: evidence.Workflow.WorkflowDispatch,
+	}
+	if capabilities.WorkflowEvidence.Path != "" && observedWorkflow != capabilities.WorkflowEvidence {
+		return errors.New("GitHub workflow evidence drifted since setup")
+	}
+	if capabilities.EffectivePolicyHash != "" && evidence.Hash != capabilities.EffectivePolicyHash {
+		return errors.New("GitHub effective policy drifted since setup")
 	}
 	return nil
 }
@@ -385,7 +463,7 @@ func executableEvidence(path, version string) (ExecutableEvidence, error) {
 
 func fileDevice(info os.FileInfo) uint64 {
 	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-		return uint64(stat.Dev)
+		return uint64(stat.Dev) //nolint:unconvert // stat.Dev is int32 on darwin/arm64 (conversion required) but uint64 on linux/amd64 (no-op there, hence CI-only unconvert flag)
 	}
 	return 0
 }
@@ -478,24 +556,36 @@ func validateConfiguredAPIHost(baseURL, host string) error {
 	return nil
 }
 
-func fetchRepositoryCapability(ctx context.Context, ghPath, host, repository string) (struct{ Permission RepositoryPermission }, error) {
+type repositoryCapability struct {
+	Permission    RepositoryPermission
+	DefaultBranch string
+}
+
+func fetchRepositoryCapability(ctx context.Context, ghPath, host, repository string) (repositoryCapability, error) {
 	out, err := runCapabilityCommand(ctx, ghPath, "api", "--hostname", host, "repos/"+repository)
 	if err != nil {
-		return struct{ Permission RepositoryPermission }{}, fmt.Errorf("read GitHub repository capability: %w", err)
+		return repositoryCapability{}, fmt.Errorf("read GitHub repository capability: %w", err)
 	}
 	var response struct {
-		FullName    string `json:"full_name"`
-		Permissions struct {
+		FullName      string `json:"full_name"`
+		DefaultBranch string `json:"default_branch"`
+		Permissions   struct {
 			Push bool `json:"push"`
 		} `json:"permissions"`
 	}
 	if err := json.Unmarshal(out, &response); err != nil {
-		return struct{ Permission RepositoryPermission }{}, fmt.Errorf("decode GitHub repository capability: %w", err)
+		return repositoryCapability{}, fmt.Errorf("decode GitHub repository capability: %w", err)
 	}
 	if response.FullName != repository {
-		return struct{ Permission RepositoryPermission }{}, fmt.Errorf("GitHub repository identity %q does not match %q", response.FullName, repository)
+		return repositoryCapability{}, fmt.Errorf("GitHub repository identity %q does not match %q", response.FullName, repository)
 	}
-	return struct{ Permission RepositoryPermission }{Permission: RepositoryPermission{Push: response.Permissions.Push}}, nil
+	if response.DefaultBranch == "" {
+		return repositoryCapability{}, errors.New("GitHub repository default branch is absent")
+	}
+	return repositoryCapability{
+		Permission:    RepositoryPermission{Push: response.Permissions.Push},
+		DefaultBranch: response.DefaultBranch,
+	}, nil
 }
 
 func fetchAPILimits(ctx context.Context, ghPath, host string) (APILimits, error) {

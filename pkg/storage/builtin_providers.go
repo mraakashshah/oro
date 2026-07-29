@@ -11,14 +11,18 @@ import (
 func BuiltinProviders() []CacheProvider {
 	return []CacheProvider{
 		{
-			ID:              "go",
-			Variables:       []string{"GOCACHE", "GOMODCACHE"},
-			DefaultPath:     userCachePath("go-build"),
-			Scope:           UserScope,
-			Concurrency:     Concurrent,
-			Ownership:       ToolNative,
-			Status:          &OperationDescriptor{Executable: "go", Args: []string{"env", "GOCACHE"}},
-			Cleaner:         CleanerDescriptor{Executable: "go", Args: []string{"clean", "-cache", "-modcache", "-fuzzcache"}, Trusted: true},
+			ID:          "go",
+			Variables:   []string{"GOCACHE", "GOMODCACHE"},
+			DefaultPath: userCachePath("go-build"),
+			Scope:       UserScope,
+			Concurrency: Concurrent,
+			Ownership:   ToolNative,
+			Status:      &OperationDescriptor{Executable: "go", Args: []string{"env", "GOCACHE"}},
+			// Build cache only. -modcache would force re-downloading every
+			// dependency, and -fuzzcache would discard an accumulated corpus;
+			// neither is derived output the way the build cache is, and the
+			// build cache is what actually grows under factory load.
+			Cleaner:         CleanerDescriptor{Executable: "go", Args: []string{"clean", "-cache"}, Trusted: true},
 			ToolMayBeAbsent: true,
 		},
 		{

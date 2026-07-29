@@ -14,6 +14,15 @@ import (
 // WeeklyDevCacheSweepInterval is the cadence for developer-tool cache maintenance.
 const WeeklyDevCacheSweepInterval = 7 * 24 * time.Hour
 
+// DevCacheSweepSizeThreshold is the size at which a developer-tool cache is
+// swept regardless of the calendar. The weekly interval alone is not a
+// sufficient trigger: it is only evaluated at `oro start`, so a continuously
+// running daemon never reaches the check, and a factory building many
+// worktrees fills the Go build cache far faster than weekly. Observed
+// 2026-07-29: 50 GB of GOCACHE accumulated in five days across 57 worktrees,
+// every entry younger than Go's own five-day trim horizon.
+const DevCacheSweepSizeThreshold int64 = 24 << 30 // 24 GiB
+
 const weeklyDevCacheScheduleID = "weekly-dev-cache"
 
 // DevCacheMaintenanceRunner runs one provider maintenance operation.
@@ -27,6 +36,10 @@ type WeeklyDevCacheSweepRequest struct {
 	Interval  time.Duration
 	Providers []CacheProvider
 	Run       DevCacheMaintenanceRunner
+	// SizeThreshold forces a sweep once any provider's cache reaches this many
+	// bytes, even when the scheduled sweep is not yet due. Zero selects
+	// DevCacheSweepSizeThreshold; negative disables the size trigger.
+	SizeThreshold int64
 }
 
 // WeeklyDevCacheSweepResult describes whether a due sweep ran and when it is next due.
@@ -65,7 +78,7 @@ func RunWeeklyDevCacheSweep(ctx context.Context, request WeeklyDevCacheSweepRequ
 	if err != nil {
 		return WeeklyDevCacheSweepResult{}, err
 	}
-	if now.Before(due) {
+	if now.Before(due) && !devCacheOverSizeThreshold(request.Providers, request.SizeThreshold) {
 		return WeeklyDevCacheSweepResult{NextDue: due}, nil
 	}
 
@@ -88,6 +101,33 @@ func RunWeeklyDevCacheSweep(ctx context.Context, request WeeklyDevCacheSweepRequ
 		}
 	}
 	return WeeklyDevCacheSweepResult{Ran: true, NextDue: nextDue}, errors.Join(runErrs...)
+}
+
+// devCacheOverSizeThreshold reports whether any provider's cache has reached
+// the size at which maintenance is warranted regardless of the schedule. A
+// provider whose path cannot be measured — most often because the tool has
+// never run and the directory is absent — is treated as under threshold, so a
+// measurement failure can never force a sweep.
+func devCacheOverSizeThreshold(providers []CacheProvider, threshold int64) bool {
+	if threshold < 0 {
+		return false
+	}
+	if threshold == 0 {
+		threshold = DevCacheSweepSizeThreshold
+	}
+	for _, provider := range providers {
+		if provider.DefaultPath == nil || !provider.Cleaner.present() {
+			continue
+		}
+		bytes, err := scratchPathBytes(provider.DefaultPath())
+		if err != nil {
+			continue
+		}
+		if bytes >= threshold {
+			return true
+		}
+	}
+	return false
 }
 
 func weeklySweepNow(now func() time.Time) time.Time {
