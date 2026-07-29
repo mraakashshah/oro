@@ -266,6 +266,26 @@ func (s *SQLiteStore) Update(ctx context.Context, id string, params UpdateParams
 	return nil
 }
 
+// UpdateStatusIf atomically changes id from expected to next status.
+func (s *SQLiteStore) UpdateStatusIf(ctx context.Context, id, expected, next string) (bool, error) {
+	if !validStatus(next) {
+		return false, fmt.Errorf("beadstore: invalid status %q", next)
+	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	res, err := s.db.ExecContext(ctx, `UPDATE beads SET status = ? WHERE id = ? AND status = ?`, next, id, expected)
+	if err != nil {
+		return false, fmt.Errorf("beadstore: conditionally update status for %s: %w", id, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("beadstore: conditionally update status for %s rows affected: %w", id, err)
+	}
+	return affected == 1, nil
+}
+
 // applyUpdateSideEffects applies tag and note side-effects inside an open
 // transaction. Extracted to keep (*SQLiteStore).Update below the cyclomatic
 // complexity limit.

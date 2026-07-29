@@ -39,6 +39,24 @@ func openStorageCatalog(ctx context.Context, oroHome string) (*storage.Catalog, 
 	return catalog, nil
 }
 
+// runStartupDevCacheSweep runs one due developer-tool cache sweep during
+// `oro start`. Every failure is a warning, never a boot failure: cache
+// maintenance is housekeeping and must not prevent the factory from starting.
+func runStartupDevCacheSweep(catalog *storage.Catalog, oroHome string) {
+	paths, err := ResolveStoragePaths(oroHome)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: resolve storage paths for dev-cache sweep: %v\n", err)
+		return
+	}
+	if _, err := storage.RunWeeklyDevCacheSweep(context.Background(), storage.WeeklyDevCacheSweepRequest{
+		Catalog:   catalog,
+		LockPath:  paths.LockPath,
+		Providers: storage.BuiltinProviders(),
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: run dev-cache sweep: %v\n", err)
+	}
+}
+
 // openStateDB opens the dispatcher state database and ensures the full schema
 // (tables, indexes) exists. It wraps openDB with SchemaDDL + migrations so
 // that any consumer (oro logs, oro status, buildDispatcher) gets a usable DB

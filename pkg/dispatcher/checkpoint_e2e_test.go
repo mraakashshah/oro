@@ -170,6 +170,17 @@ func TestCheckpointE2EFromHighContext(t *testing.T) {
 		return false
 	}, 5*time.Second)
 
+	// CloseBead precedes the merged event in finalizeSuccessfulMerge, so wait
+	// for that event before snapshotting the ordered journey.
+	waitFor(t, func() bool {
+		var count int
+		err := d.db.QueryRowContext(context.Background(),
+			`SELECT count(*) FROM events WHERE type='merged' AND bead_id=?`,
+			beadID,
+		).Scan(&count)
+		return err == nil && count > 0
+	}, 5*time.Second)
+
 	// Assert event chain in SQLite events table (ordered):
 	// WORKER_ASSIGNED → CHECKPOINT_REQUESTED → CHECKPOINT_RECEIVED → BEAD_CLOSED
 	ctx := context.Background()

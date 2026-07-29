@@ -398,4 +398,50 @@ printf '%s:%s' "${ORO_RUN_MUTATION:-unset}" "${ORO_QG_CONTEXT:-unset}" > "$MARKE
 			t.Fatalf("expected explicit quality gate to run in push context with mutation disabled by default, got %q", string(got))
 		}
 	})
+
+	t.Run("pre_push_hook_prefers_repo_quality_gate_to_stale_explicit_path", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		gitDir := filepath.Join(tmpDir, ".git")
+		if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		marker := filepath.Join(tmpDir, "selected-quality-gate.txt")
+		repoQGPath := filepath.Join(tmpDir, "scripts", "quality_gate.sh")
+		if err := os.MkdirAll(filepath.Dir(repoQGPath), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		repoQGScript := "#!/bin/sh\nprintf repo > \"$MARKER\"\n"
+		if err := os.WriteFile(repoQGPath, []byte(repoQGScript), 0o755); err != nil { //nolint:gosec // test hook script
+			t.Fatal(err)
+		}
+
+		staleQGPath := filepath.Join(tmpDir, "stale-quality_gate.sh")
+		staleQGScript := "#!/bin/sh\nprintf stale > \"$MARKER\"\n"
+		if err := os.WriteFile(staleQGPath, []byte(staleQGScript), 0o755); err != nil { //nolint:gosec // test hook script
+			t.Fatal(err)
+		}
+
+		if err := installHookWrapper(gitDir, "pre-push", buildOroPrePushCheck(staleQGPath)); err != nil {
+			t.Fatalf("installHookWrapper pre-push: %v", err)
+		}
+
+		hookPath := filepath.Join(gitDir, "hooks", "pre-push")
+		cmd := exec.Command(hookPath, "origin", "git@example.invalid:repo.git") //nolint:gosec // test-created hook
+		cmd.Dir = tmpDir
+		cmd.Stdin = strings.NewReader("refs/heads/main 0000000000000000000000000000000000000000 refs/heads/main 0000000000000000000000000000000000000000\n")
+		cmd.Env = append(os.Environ(), "MARKER="+marker)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("pre-push hook failed: %v\n%s", err, string(output))
+		}
+
+		got, err := os.ReadFile(marker) //nolint:gosec // test marker
+		if err != nil {
+			t.Fatalf("read marker: %v", err)
+		}
+		if string(got) != "repo" {
+			t.Fatalf("expected repository quality gate to win over stale explicit path, got %q", string(got))
+		}
+	})
 }
