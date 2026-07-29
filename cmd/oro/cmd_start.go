@@ -1178,7 +1178,6 @@ func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers 
 
 	cfg := dispatcher.Config{
 		SocketPath:              sockPath,
-		StorageCatalogPath:      storagePaths.CatalogPath,
 		InitialWorkers:          initialWorkers,
 		MaxWorkers:              maxWorkers,
 		AllowZeroWorkers:        initialWorkers == 0,

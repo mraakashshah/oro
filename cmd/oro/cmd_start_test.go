@@ -92,6 +92,62 @@ func TestStartReadsProjectConfig(t *testing.T) {
 	})
 }
 
+func TestStartRejectsGitHubPolicyBeforeDispatcherMutation(t *testing.T) {
+	projectRoot := t.TempDir()
+	binDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectRoot, ".oro"), 0o750); err != nil {
+		t.Fatalf("make project config directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, ".oro", "config.yaml"), []byte(remoteCapabilityConfigYAML), 0o600); err != nil {
+		t.Fatalf("write remote gate config: %v", err)
+	}
+	if err := PersistRemoteCapabilities(remoteCapabilityEvidencePath(projectRoot), Capabilities{
+		Host:          "github.com",
+		Repository:    "acme/oro",
+		Workflow:      "ci.yml",
+		DefaultBranch: "main",
+	}); err != nil {
+		t.Fatalf("persist remote capabilities: %v", err)
+	}
+	writeRemoteCapabilityFixture(t, filepath.Join(binDir, "gh"), `#!/bin/sh
+case "$*" in
+  *"repos/acme/oro/actions/workflows/ci.yml") printf '%s\n' '{"path":".github/workflows/ci.yml","state":"active"}' ;;
+  *"repos/acme/oro") printf '%s\n' '{"full_name":"acme/oro","default_branch":"main"}' ;;
+  *"contents/.github/workflows/ci.yml"*) printf '%s\n' 'on: pull_request' ;;
+  *) exit 1 ;;
+esac
+`)
+	t.Setenv("PATH", binDir)
+	env := hermeticOroEnv(t, t.TempDir())
+
+	launched := false
+	previousRunDaemonOnly := runDaemonOnlyFn
+	runDaemonOnlyFn = func(_ *cobra.Command, _ string, _, _ int, _, _, _ time.Duration, _ bool, _ string, _ bool, _ bool, _ string, _ cleanlinessStartConfig) error {
+		launched = true
+		return nil
+	}
+	t.Cleanup(func() { runDaemonOnlyFn = previousRunDaemonOnly })
+
+	cmd := newStartCmd()
+	cmd.SetContext(context.Background())
+	if err := cmd.Flags().Set("daemon-only", "true"); err != nil {
+		t.Fatalf("set daemon-only: %v", err)
+	}
+	var startErr error
+	withChdir(t, projectRoot, func() { startErr = cmd.RunE(cmd, nil) })
+	if startErr == nil || !strings.Contains(startErr.Error(), "remote gate startup preflight") {
+		t.Fatalf("start error = %v, want GitHub preflight rejection", startErr)
+	}
+	if launched {
+		t.Fatal("start launched dispatcher after GitHub preflight rejection")
+	}
+	for _, path := range []string{env.PIDPath, env.SocketPath, env.DBPath} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("startup mutated %s before GitHub preflight rejection: %v", path, err)
+		}
+	}
+}
+
 func TestStartRejectsRepoLocalOroShadow(t *testing.T) {
 	t.Run("PATH resolves to repo-local shadow", func(t *testing.T) {
 		repoRoot := t.TempDir()

@@ -38,6 +38,123 @@ import (
 
 // --- Mock implementations ---
 
+// TestStaleSetupFailureCannotDeleteReplacementState verifies that cleanup from
+// a setup generation that lost its reservation still releases only its
+// captured durable resources. It must never reopen or clear the replacement
+// generation that has already published the same bead.
+func TestStaleSetupFailureCannotDeleteReplacementState(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		beadID   = "oro-stale-setup"
+		workerID = "worker-stale-setup"
+		worktree = "/tmp/worktree-stale-setup"
+	)
+
+	g1AssignmentID, err := d.createAssignment(ctx, beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("create g1 assignment: %v", err)
+	}
+	if err := d.requeueAssignment(ctx, g1AssignmentID); err != nil {
+		t.Fatalf("requeue g1 assignment: %v", err)
+	}
+	g2AssignmentID, err := d.createAssignment(ctx, beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("create g2 assignment: %v", err)
+	}
+
+	// g1 was blocked during setup. While it was away from the dispatcher lock,
+	// g2 replaced its reservation and published its own assignment/worktree.
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:             workerID,
+		state:          protocol.WorkerReserved,
+		beadID:         beadID,
+		assignmentID:   g2AssignmentID,
+		worktree:       worktree,
+		reservationGen: 2,
+	}
+	d.assigningBeads[beadID] = true
+	d.attemptCounts[beadID] = 2
+	d.handoffCounts[beadID] = 2
+	d.worktreeByBead[beadID] = worktree
+	d.mu.Unlock()
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+	beadSrc.mu.Unlock()
+
+	d.abortAssignmentReservationLost(ctx, beadID, workerID, 1, worktree, true, g1AssignmentID)
+
+	var g1Status, g2Status string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, g1AssignmentID).Scan(&g1Status); err != nil {
+		t.Fatalf("query g1 assignment: %v", err)
+	}
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, g2AssignmentID).Scan(&g2Status); err != nil {
+		t.Fatalf("query g2 assignment: %v", err)
+	}
+	if g1Status != "completed" {
+		t.Fatalf("g1 assignment status = %q, want completed", g1Status)
+	}
+	if g2Status != "active" {
+		t.Fatalf("g2 assignment status = %q, want active", g2Status)
+	}
+
+	wtMgr.mu.Lock()
+	removed := append([]string(nil), wtMgr.removed...)
+	wtMgr.mu.Unlock()
+	if len(removed) != 0 {
+		t.Fatalf("removed worktrees = %v, want shared successor worktree preserved", removed)
+	}
+
+	d.mu.Lock()
+	w := d.workers[workerID]
+	observedWorktree := d.worktreeByBead[beadID]
+	assigning := d.assigningBeads[beadID]
+	attempts := d.attemptCounts[beadID]
+	handoffs := d.handoffCounts[beadID]
+	d.mu.Unlock()
+	if w == nil || w.state != protocol.WorkerReserved || w.beadID != beadID || w.assignmentID != g2AssignmentID || w.worktree != worktree || w.reservationGen != 2 {
+		t.Fatalf("g1 cleanup mutated g2 worker state: %+v", w)
+	}
+	if observedWorktree != worktree || !assigning || attempts != 2 || handoffs != 2 {
+		t.Fatalf("g1 cleanup mutated g2 tracking: worktree=%q assigning=%t attempts=%d handoffs=%d", observedWorktree, assigning, attempts, handoffs)
+	}
+	beadSrc.mu.Lock()
+	updated, reopened := beadSrc.updated[beadID]
+	beadSrc.mu.Unlock()
+	if reopened {
+		t.Fatalf("g1 cleanup reopened g2 bead: %q", updated)
+	}
+
+	t.Run("created worktree", func(t *testing.T) {
+		const createdWorktree = "/tmp/worktree-created-stale-setup"
+		wtMgr.createFn = func(_ context.Context, _, _ string) (string, string, error) {
+			d.mu.Lock()
+			d.workers[workerID].reservationGen = 3
+			d.worktreeByBead[beadID] = createdWorktree
+			d.mu.Unlock()
+			return createdWorktree, protocol.BranchPrefix + beadID, nil
+		}
+
+		if worktree, _, created := d.prepareAssignmentWorktree(ctx, beadID, workerID, 2, "", "main", "main"); worktree != "" || created {
+			t.Fatalf("stale setup returned worktree=%q created=%t, want no assignment", worktree, created)
+		}
+
+		wtMgr.mu.Lock()
+		removed := append([]string(nil), wtMgr.removed...)
+		wtMgr.mu.Unlock()
+		if len(removed) != 0 {
+			t.Fatalf("stale created-worktree cleanup removed successor worktree: %v", removed)
+		}
+		d.mu.Lock()
+		observedWorktree := d.worktreeByBead[beadID]
+		d.mu.Unlock()
+		if observedWorktree != createdWorktree {
+			t.Fatalf("stale created-worktree cleanup cleared successor mapping: %q", observedWorktree)
+		}
+	})
+}
+
 func TestShellAcceptanceRunnerUsesRuntimeLease(t *testing.T) {
 	t.Parallel()
 
@@ -1718,14 +1835,13 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *fakeBeadStore, *mockWorktree
 	t.Cleanup(func() { _ = os.Remove(sockPath) })
 
 	cfg := Config{
-		SocketPath:         sockPath,
-		DBPath:             ":memory:",
-		StorageCatalogPath: filepath.Join(t.TempDir(), "storage-catalog.db"),
-		MaxWorkers:         5,
-		HeartbeatTimeout:   500 * time.Millisecond,
-		PollInterval:       50 * time.Millisecond,
-		ShutdownTimeout:    200 * time.Millisecond,
-		Estimator:          &mockBeadEstimator{},
+		SocketPath:       sockPath,
+		DBPath:           ":memory:",
+		MaxWorkers:       5,
+		HeartbeatTimeout: 500 * time.Millisecond,
+		PollInterval:     50 * time.Millisecond,
+		ShutdownTimeout:  200 * time.Millisecond,
+		Estimator:        &mockBeadEstimator{},
 	}
 
 	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil,
