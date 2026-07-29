@@ -976,6 +976,74 @@ test_quality_gate_stage_assets_fail_closed() {
 	return 0
 }
 
+# Test: a stale embedded asset version is refreshed under the shared staging lock,
+# while a current version does not rebuild the mirror.
+# shellcheck disable=SC2016,SC2317,SC2329
+test_ensure_stage_assets_refreshes_stale_assets() {
+	local tmpdir fixture harness make_log
+	tmpdir=$(mktemp -d)
+	fixture="$tmpdir/fixture"
+	harness="$tmpdir/ensure-stage-assets.sh"
+	make_log="$tmpdir/make.log"
+	# shellcheck disable=SC2064
+	trap "rm -rf -- '$tmpdir'" RETURN
+
+	mkdir -p "$fixture/assets/hooks" "$fixture/cmd/oro/_assets/hooks" "$fixture/bin" "$tmpdir/tmp"
+	printf 'source hook\n' >"$fixture/assets/hooks/example.py"
+	printf 'stale hook\n' >"$fixture/cmd/oro/_assets/hooks/example.py"
+	: >"$fixture/cmd/oro/_assets/.version"
+	touch -t 202001010000 "$fixture/cmd/oro/_assets/.version"
+	printf '//go:embed all:_assets\n' >"$fixture/cmd/oro/embed.go"
+	printf 'stage-assets:\n\t@true\n' >"$fixture/Makefile"
+
+	cat >"$fixture/bin/make" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1" = "stage-assets" ]
+[ -d "${TMPDIR}/oro-stage-assets.lock" ]
+printf '%s\n' "$*" >>"$STAGE_ASSETS_MAKE_LOG"
+rm -rf cmd/oro/_assets
+mkdir -p cmd/oro/_assets
+cp -R assets/. cmd/oro/_assets/
+: >cmd/oro/_assets/.version
+EOF
+	chmod +x "$fixture/bin/make"
+
+	{
+		printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
+		sed -n '/^ensure_stage_assets()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		printf '%s\n' 'ensure_stage_assets'
+	} >"$harness"
+	chmod +x "$harness"
+
+	if ! (
+		cd "$fixture"
+		PATH="$fixture/bin:$PATH" TMPDIR="$tmpdir/tmp" STAGE_ASSETS_MAKE_LOG="$make_log" "$harness"
+	); then
+		echo 'FAIL: stale embedded assets were not refreshed'
+		return 1
+	fi
+	if ! cmp -s "$fixture/assets/hooks/example.py" "$fixture/cmd/oro/_assets/hooks/example.py"; then
+		echo 'FAIL: refreshed embedded assets did not match their source'
+		return 1
+	fi
+	if [ "$(wc -l <"$make_log")" -ne 1 ]; then
+		echo 'FAIL: stale embedded assets should invoke make stage-assets exactly once'
+		return 1
+	fi
+	if ! (
+		cd "$fixture"
+		PATH="$fixture/bin:$PATH" TMPDIR="$tmpdir/tmp" STAGE_ASSETS_MAKE_LOG="$make_log" "$harness"
+	); then
+		echo 'FAIL: current embedded assets should remain usable'
+		return 1
+	fi
+	if [ "$(wc -l <"$make_log")" -ne 1 ]; then
+		echo 'FAIL: current embedded assets unexpectedly invoked make stage-assets'
+		return 1
+	fi
+}
+
 # Test: golangci-lint must use a worktree-local cache so stale sibling
 # diagnostics cannot leak into the active gate, while active findings remain.
 # shellcheck disable=SC2016,SC2317,SC2329
@@ -2048,6 +2116,7 @@ echo "=============================================="
 test_case "no SC2086 disable for \$changed" test_no_sc2086_disable_for_changed
 test_case "quality_gate.sh \$changed is quoted" test_quality_gate_changed_is_quoted
 test_case "quality_gate.sh stage-assets failures fail closed" test_quality_gate_stage_assets_fail_closed
+test_case "ensure_stage_assets refreshes stale assets" test_ensure_stage_assets_refreshes_stale_assets
 test_case "golangci-lint is isolated to active worktree" test_golangci_lint_isolated_to_active_worktree
 test_case "formatter failures print offending files" test_go_formatter_failure_prints_files
 test_case "quality_gate.sh uses scoped lint cache" test_quality_gate_uses_scoped_lint_cache
