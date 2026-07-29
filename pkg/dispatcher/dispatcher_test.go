@@ -14299,10 +14299,10 @@ func TestDispatcherBuffering(t *testing.T) {
 		t.Fatalf("dial dispatcher (reconnect): %v", err)
 	}
 	defer func() { _ = wConn.Close() }()
+	workerConn := &testWorkerConn{Conn: wConn, dispatcher: d}
 
 	// Send RECONNECT message
-	enc := json.NewEncoder(wConn)
-	_ = enc.Encode(protocol.Message{
+	sendMsg(t, workerConn, protocol.Message{
 		Type:      protocol.MsgReconnect,
 		Reconnect: &protocol.ReconnectPayload{WorkerID: "w1", BeadID: "bead1", State: "idle"},
 	})
@@ -19765,6 +19765,7 @@ func TestApplyRestartDaemon(t *testing.T) {
 	// Connect a worker
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
+	workerConn := &testWorkerConn{Conn: clientConn, dispatcher: d}
 
 	go d.handleConn(ctx, serverConn)
 
@@ -19776,9 +19777,7 @@ func TestApplyRestartDaemon(t *testing.T) {
 			WorkerID: workerID,
 		},
 	}
-	data, _ := json.Marshal(hb)
-	data = append(data, '\n')
-	_, _ = clientConn.Write(data)
+	sendMsg(t, workerConn, hb)
 
 	// Wait for worker to be registered
 	waitFor(t, func() bool {
@@ -19922,13 +19921,14 @@ func TestHandleConnCleanupPrunesBeadTracking(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 
 	serverConn, clientConn := net.Pipe()
+	workerConn := &testWorkerConn{Conn: clientConn, dispatcher: d}
 	done := make(chan struct{})
 	go func() {
 		d.handleConn(context.Background(), serverConn)
 		close(done)
 	}()
 
-	sendMsg(t, clientConn, protocol.Message{
+	sendMsg(t, workerConn, protocol.Message{
 		Type: protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{
 			WorkerID:   "w1",
@@ -20051,13 +20051,14 @@ func TestHandleConnCleanupDoesNotWaitForBeadStatusUpdate(t *testing.T) {
 	defer close(releaseUpdate)
 
 	serverConn, clientConn := net.Pipe()
+	workerConn := &testWorkerConn{Conn: clientConn, dispatcher: d}
 	done := make(chan struct{})
 	go func() {
 		d.handleConn(context.Background(), serverConn)
 		close(done)
 	}()
 
-	sendMsg(t, clientConn, protocol.Message{
+	sendMsg(t, workerConn, protocol.Message{
 		Type: protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{
 			WorkerID:   "w1",
