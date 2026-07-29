@@ -19,15 +19,15 @@ type APIReader interface {
 	GetContent(ctx context.Context, path string, ref string) ([]byte, error)
 }
 
-// Client performs read-only workflow preflight operations through api.
-type Client struct {
+// PreflightClient performs read-only workflow preflight operations through api.
+type PreflightClient struct {
 	api              APIReader
 	repository       string
 	collection       CollectionReader
 	collectionLimits CollectionLimits
 }
 
-func (c *Client) fetchWorkflowMetadata(ctx context.Context, repository, workflow string) (path, state string, err error) {
+func (c *PreflightClient) fetchWorkflowMetadata(ctx context.Context, repository, workflow string) (path, state string, err error) {
 	if strings.TrimSpace(repository) == "" || strings.TrimSpace(workflow) == "" {
 		return "", "", remotegate.ErrWorkflowIneligible
 	}
@@ -70,9 +70,9 @@ type PreflightEvidence struct {
 	Hash     string
 }
 
-// NewClient constructs a read-only GitHub preflight client.
-func NewClient(api APIReader, repository string, collection CollectionReader, limits CollectionLimits) *Client {
-	return &Client{
+// NewPreflightClient constructs a read-only GitHub preflight client.
+func NewPreflightClient(api APIReader, repository string, collection CollectionReader, limits CollectionLimits) *PreflightClient {
+	return &PreflightClient{
 		api:              api,
 		repository:       repository,
 		collection:       collection,
@@ -82,7 +82,7 @@ func NewClient(api APIReader, repository string, collection CollectionReader, li
 
 // Preflight verifies workflow eligibility and effective policy for every
 // requested target without mutating GitHub state.
-func (c *Client) Preflight(ctx context.Context, req PreflightRequest) (PreflightEvidence, error) {
+func (c *PreflightClient) Preflight(ctx context.Context, req PreflightRequest) (PreflightEvidence, error) {
 	if err := ctx.Err(); err != nil {
 		return PreflightEvidence{}, fmt.Errorf("preflight context: %w", err)
 	}
@@ -108,7 +108,7 @@ type workflowRegistration struct {
 	Contents      []byte
 }
 
-func (c *Client) fetchWorkflowRegistration(ctx context.Context, req PreflightRequest) (workflowRegistration, error) {
+func (c *PreflightClient) fetchWorkflowRegistration(ctx context.Context, req PreflightRequest) (workflowRegistration, error) {
 	defaultBranch, err := c.fetchDefaultBranch(ctx, req.Repository)
 	if err != nil {
 		return workflowRegistration{}, err
@@ -135,7 +135,7 @@ func (c *Client) fetchWorkflowRegistration(ctx context.Context, req PreflightReq
 	}, nil
 }
 
-func (c *Client) inspectWorkflow(ctx context.Context, req PreflightRequest) (remotegate.WorkflowEvidence, error) {
+func (c *PreflightClient) inspectWorkflow(ctx context.Context, req PreflightRequest) (remotegate.WorkflowEvidence, error) {
 	registration, err := c.fetchWorkflowRegistration(ctx, req)
 	if err != nil {
 		return remotegate.WorkflowEvidence{}, err
@@ -161,7 +161,7 @@ func (c *Client) inspectWorkflow(ctx context.Context, req PreflightRequest) (rem
 	return evidence, nil
 }
 
-func (c *Client) fetchDefaultBranch(ctx context.Context, repository string) (string, error) {
+func (c *PreflightClient) fetchDefaultBranch(ctx context.Context, repository string) (string, error) {
 	if strings.TrimSpace(repository) == "" {
 		return "", fmt.Errorf("%w: repository is required", remotegate.ErrWorkflowIneligible)
 	}
