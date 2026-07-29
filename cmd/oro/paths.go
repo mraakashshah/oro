@@ -322,10 +322,10 @@ type runtimeProjectEnv struct {
 	Project string
 }
 
-// ensureRuntimeProjectEnv resolves and exports the runtime identity required by
-// standalone worker construction. Explicit non-empty environment values win;
-// otherwise project detection fails closed so workers cannot start unscoped.
-func ensureRuntimeProjectEnv(repoRoot string) (runtimeProjectEnv, error) { //nolint:unparam // snapshot is part of the contract; production callers need the environment mutation
+// ensureRuntimeProjectEnv resolves the runtime identity required by standalone
+// worker construction. Explicit non-empty environment values win; otherwise
+// project detection fails closed so workers cannot start unscoped.
+func ensureRuntimeProjectEnv(repoRoot string) (runtimeProjectEnv, error) {
 	env := runtimeProjectEnv{
 		OroHome: os.Getenv("ORO_HOME"),
 		Project: os.Getenv("ORO_PROJECT"),
@@ -353,11 +353,46 @@ func ensureRuntimeProjectEnv(repoRoot string) (runtimeProjectEnv, error) { //nol
 			return runtimeProjectEnv{}, fmt.Errorf("resolve ORO_PROJECT for %s: project is not initialized; run 'oro init'", repoRoot)
 		}
 		env.Project = project
-		if err := os.Setenv("ORO_PROJECT", env.Project); err != nil {
-			return runtimeProjectEnv{}, fmt.Errorf("set ORO_PROJECT: %w", err)
-		}
 	}
 	return env, nil
+}
+
+// withRuntimeProjectEnv exposes a resolved runtime identity only while fn runs.
+// Child processes spawned by fn inherit the identity, while callers retain their
+// original environment after the command completes.
+func withRuntimeProjectEnv(repoRoot string, fn func(runtimeProjectEnv) error) error {
+	env, err := ensureRuntimeProjectEnv(repoRoot)
+	if err != nil {
+		return err
+	}
+
+	restore := make([]func(), 0, 2)
+	for _, entry := range []struct {
+		key   string
+		value string
+	}{
+		{key: "ORO_HOME", value: env.OroHome},
+		{key: "ORO_PROJECT", value: env.Project},
+	} {
+		previous, set := os.LookupEnv(entry.key)
+		if err := os.Setenv(entry.key, entry.value); err != nil {
+			return fmt.Errorf("set %s: %w", entry.key, err)
+		}
+		restore = append(restore, func() {
+			if set {
+				_ = os.Setenv(entry.key, previous)
+				return
+			}
+			_ = os.Unsetenv(entry.key)
+		})
+	}
+	defer func() {
+		for i := len(restore) - 1; i >= 0; i-- {
+			restore[i]()
+		}
+	}()
+
+	return fn(env)
 }
 
 // resolveOroHome returns the oro home directory from ORO_HOME env var or ~/.oro.

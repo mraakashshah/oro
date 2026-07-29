@@ -47,38 +47,36 @@ This command is typically invoked by the dispatcher, not by humans.`,
 
 // runWorker creates a worker instance and runs its event loop.
 func runWorker(ctx context.Context, socketPath, id string) error {
-	if _, err := ensureRuntimeProjectEnv(currentRepoRoot()); err != nil {
-		return fmt.Errorf("resolve worker runtime identity: %w", err)
-	}
+	return withRuntimeProjectEnv(currentRepoRoot(), func(_ runtimeProjectEnv) error {
+		ctx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
+		defer stop()
 
-	ctx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
+		spawner := workerSpawnerForRuntime()
+		w, err := worker.NewWithRuntimeSpawner(id, socketPath, spawner)
+		if err != nil {
+			return fmt.Errorf("create worker %s: %w", id, err)
+		}
 
-	spawner := workerSpawnerForRuntime()
-	w, err := worker.NewWithRuntimeSpawner(id, socketPath, spawner)
-	if err != nil {
-		return fmt.Errorf("create worker %s: %w", id, err)
-	}
-
-	// Wire card store so [MEMORY] markers and implicit patterns are captured.
-	paths, pathsErr := ResolveProjectDBPaths()
-	if pathsErr == nil {
-		db, dbErr := openStateDB(paths.StateDBPath)
-		if dbErr == nil {
-			defer func() { _ = db.Close() }()
-			cardStore := openWorkerCardStore(db)
-			if cardStore != nil {
-				w.SetMemoryStore(cardStore)
+		// Wire card store so [MEMORY] markers and implicit patterns are captured.
+		paths, pathsErr := ResolveProjectDBPaths()
+		if pathsErr == nil {
+			db, dbErr := openStateDB(paths.StateDBPath)
+			if dbErr == nil {
+				defer func() { _ = db.Close() }()
+				cardStore := openWorkerCardStore(db)
+				if cardStore != nil {
+					w.SetMemoryStore(cardStore)
+				}
 			}
 		}
-	}
-	w.SetExtractSpawner(newWorkerMemoryExtractSpawner())
+		w.SetExtractSpawner(newWorkerMemoryExtractSpawner())
 
-	if err := w.Run(ctx); err != nil {
-		return fmt.Errorf("worker %s: %w", id, err)
-	}
+		if err := w.Run(ctx); err != nil {
+			return fmt.Errorf("worker %s: %w", id, err)
+		}
 
-	return nil
+		return nil
+	})
 }
 
 func workerSpawnerForRuntime() worker.RuntimeStreamingSpawner {

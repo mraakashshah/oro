@@ -331,253 +331,243 @@ func runWork(_ *cobra.Command, cfg *workConfig) error {
 	if err != nil {
 		return fmt.Errorf("getwd: %w", err)
 	}
-	if _, err := ensureRuntimeProjectEnv(repoRoot); err != nil {
-		return fmt.Errorf("resolve runtime project environment: %w", err)
-	}
+	return withRuntimeProjectEnv(repoRoot, func(_ runtimeProjectEnv) error {
+		deps, depsErr := newProductionDeps(cfg.reviewTimeout)
+		if depsErr != nil {
+			return depsErr
+		}
+		deps.storagePolicy = storagePolicy
 
-	deps, err := newProductionDeps(cfg.reviewTimeout)
-	if err != nil {
-		return err
-	}
-	deps.storagePolicy = storagePolicy
-
-	err = executeWork(ctx, cfg, deps)
-	var ee *exitError
-	if errors.As(err, &ee) {
-		stop() // release signal handler before exit
-		fmt.Fprintf(os.Stderr, "%s\n", ee.msg)
-		os.Exit(ee.code) //nolint:gocritic // stop() called above; defer is backup only
-	}
-	return err
+		execErr := executeWork(ctx, cfg, deps)
+		var ee *exitError
+		if errors.As(execErr, &ee) {
+			stop() // release signal handler before exit
+			fmt.Fprintf(os.Stderr, "%s\n", ee.msg)
+			os.Exit(ee.code) //nolint:gocritic // stop() called above; defer is backup only
+		}
+		return execErr
+	})
 }
 
 // executeWork is the testable core of the work command.
 func executeWork(ctx context.Context, cfg *workConfig, deps *workDeps) error { //nolint:funlen,gocognit,cyclop,gocyclo // orchestration logic, splitting would obscure the linear flow
-	if _, err := ensureRuntimeProjectEnv(deps.repoRoot); err != nil {
-		return fmt.Errorf("resolve runtime project environment: %w", err)
-	}
-
-	// Persist embedder vocabulary on exit so future sessions start with the
-	// same vector space. Mirrors the SaveVocab call in cmd_worker.go:runWorker.
-	if deps.memStore != nil {
-		defer func() { _ = deps.memStore.SaveVocab(context.Background()) }()
-	}
-
-	// Step 1: Load bead.
-	detail, err := deps.beadSrc.Show(ctx, cfg.beadID)
-	if cfg.dryRunSpawn {
-		detail, err = dryRunSpawnBeadDetail(ctx, cfg.beadID, detail, err)
-	}
-	if err != nil {
-		return &exitError{code: exitCodeBeadError, msg: fmt.Sprintf("error: %v", err)}
-	}
-	cfg.bead = detail
-
-	if err := cfg.validate(); err != nil {
-		return &exitError{code: exitCodeBeadError, msg: fmt.Sprintf("error: %v", err)}
-	}
-	logStep("Loaded %s: %s", cfg.bead.ID, cfg.bead.Title)
-
-	// Apply --model flag: parse into (tier, providerModel) and update bead fields.
-	// Tier names and legacy shortnames (opus/sonnet/haiku) set Bead.Tier.
-	// Provider-native strings (e.g. claude-opus-4-7) set Bead.Model directly.
-	// Empty flag leaves bead metadata unchanged.
-	if cfg.model != "" {
-		tier, providerModel := parseModelFlag(cfg.model)
-		if tier != "" {
-			cfg.bead.Tier = tier
-			cfg.bead.Model = ""
-		} else {
-			cfg.bead.Model = providerModel
-			cfg.bead.Tier = ""
-		}
-	}
-	// Resolve runtime, model, and reasoning using standard bead resolution.
-	runtime, model, reasoning := resolveWorkerRuntimeModel(cfg)
-
-	if cfg.dryRun {
-		reviewRuntime, reviewModel, reviewReasoning := agentmodel.ResolveForRole("ops_review")
-		logStep("Dry run — would execute bead %s with runtime=%s, model=%s, reasoning=%s, review-runtime=%s, review-model=%s, review-reasoning=%s, timeout=%s, skip-review=%t",
-			cfg.beadID, runtime, model, reasoning, reviewRuntime, reviewModel, reviewReasoning, cfg.timeout, cfg.skipReview)
-		return nil
-	}
-	if cfg.dryRunSpawn {
-		prompt, promptErr := dryRunSpawnPrompt(cfg, deps, model)
-		if promptErr != nil {
-			return promptErr
-		}
-		out := deps.stdout
-		if out == nil {
-			out = os.Stdout
-		}
-		fmt.Fprintln(out, prompt)
-		logStep("Dry-run spawn prompt printed")
-		return nil
-	}
-
-	// Open per-bead log file for observability.
-	logFile, logFileErr := openBeadLog(cfg.beadID)
-	if logFileErr != nil {
-		logStep("Warning: %v", logFileErr)
-	}
-	if logFile != nil {
-		defer logFile.Close()
-		logOut = io.MultiWriter(os.Stderr, logFile)
-		defer func() { logOut = os.Stderr }()
-	}
-
-	// Step 2: Mark in_progress and set up deferred bead reset.
-	_ = updateWorkBeadStatus(ctx, deps.beadSrc, cfg.beadID, "in_progress")
-	var merged bool
-	defer func() {
-		if !merged {
-			// Reset bead to open so it can be re-assigned.
-			// Use Background context because the parent ctx may be cancelled.
-			_ = updateWorkBeadStatus(context.Background(), deps.beadSrc, cfg.beadID, "open")
-		}
-	}()
-
-	// Propagate project name to subprocesses. readProjectName reads from
-	// ORO_PROJECT env var first, then .oro/config.yaml in CWD. Setting it
-	// ensures worker subprocesses inherit it even when it came from config.yaml.
-	if project := readProjectNameCWD(); project != "" {
-		_ = os.Setenv("ORO_PROJECT", project)
-	}
-	if err := observeStandaloneStorageController(ctx, cfg.storageController); err != nil {
-		return err
-	}
-
-	// Step 3: Create or resume worktree.
-	// Resolve defaultBranch: --base-branch flag > config default_branch > "main"
-	defaultBranch := deps.defaultBranch
-	if cfg.baseBranch != "" {
-		defaultBranch = cfg.baseBranch
-	}
-	// Resolve targetBranch by walking the parent chain: returns "epic/<id>" only when
-	// an epic-type ancestor exists. Non-epic parents (tasks, features) resolve to defaultBranch.
-	targetBranch, resolvedEpicID, resolveErr := dispatcher.ResolveEpicBranch(ctx, deps.beadSrc, cfg.bead.Epic, defaultBranch)
-	if resolveErr != nil {
-		return fmt.Errorf("resolve epic branch: %w", resolveErr)
-	}
-	if prepareErr := prepareStandaloneWorkTargetBranch(ctx, deps, targetBranch, defaultBranch, resolvedEpicID, cfg.bead); prepareErr != nil {
-		return fmt.Errorf("prepare target branch: %w", prepareErr)
-	}
-	worktree, branch, err := setupWorktree(ctx, cfg, deps, targetBranch)
-	if err != nil {
-		return fmt.Errorf("worktree setup: %w", err)
-	}
-
-	var feedback string
-	var attempt int
-	var escalated bool
-
-	// Auto-resume: if worktree has commits ahead of targetBranch, skip first claude spawn.
-	skipClaude := deps.hasNewWork(deps.repoRoot, branch, targetBranch)
-	if skipClaude {
-		logStep("Resuming — branch %s has commits, skipping to QG", branch)
-	}
-
-	for {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("interrupted")
+	return withRuntimeProjectEnv(deps.repoRoot, func(_ runtimeProjectEnv) error {
+		// Persist embedder vocabulary on exit so future sessions start with the
+		// same vector space. Mirrors the SaveVocab call in cmd_worker.go:runWorker.
+		if deps.memStore != nil {
+			defer func() { _ = deps.memStore.SaveVocab(context.Background()) }()
 		}
 
-		if !skipClaude {
-			if err := observeStandaloneStorageController(ctx, cfg.storageController); err != nil {
-				return err
-			}
-			logStep("--- attempt %d (%s) ---", attempt, modelShort(model))
-			logStep("Spawning %s (%s, attempt %d)...", runtime, modelShort(model), attempt)
-			if err := spawnAndWait(ctx, cfg, deps, worktree, runtime, model, reasoning, attempt, feedback, logFile); err != nil {
-				return fmt.Errorf("%s spawn: %w", runtime, err)
-			}
-			logStep("%s completed", runtime)
+		// Step 1: Load bead.
+		detail, err := deps.beadSrc.Show(ctx, cfg.beadID)
+		if cfg.dryRunSpawn {
+			detail, err = dryRunSpawnBeadDetail(ctx, cfg.beadID, detail, err)
+		}
+		if err != nil {
+			return &exitError{code: exitCodeBeadError, msg: fmt.Sprintf("error: %v", err)}
+		}
+		cfg.bead = detail
 
-			// Guard: bail out if claude produced no commits.
-			if !deps.hasNewWork(deps.repoRoot, branch, targetBranch) {
-				return noCommitsResult(ctx, cfg, deps, worktree, &merged)
+		if err := cfg.validate(); err != nil {
+			return &exitError{code: exitCodeBeadError, msg: fmt.Sprintf("error: %v", err)}
+		}
+		logStep("Loaded %s: %s", cfg.bead.ID, cfg.bead.Title)
+
+		// Apply --model flag: parse into (tier, providerModel) and update bead fields.
+		// Tier names and legacy shortnames (opus/sonnet/haiku) set Bead.Tier.
+		// Provider-native strings (e.g. claude-opus-4-7) set Bead.Model directly.
+		// Empty flag leaves bead metadata unchanged.
+		if cfg.model != "" {
+			tier, providerModel := parseModelFlag(cfg.model)
+			if tier != "" {
+				cfg.bead.Tier = tier
+				cfg.bead.Model = ""
+			} else {
+				cfg.bead.Model = providerModel
+				cfg.bead.Tier = ""
 			}
 		}
-		skipClaude = false // Only skip the first iteration.
+		// Resolve runtime, model, and reasoning using standard bead resolution.
+		runtime, model, reasoning := resolveWorkerRuntimeModel(cfg)
 
-		mutationMode := workMutationMode(cfg)
+		if cfg.dryRun {
+			reviewRuntime, reviewModel, reviewReasoning := agentmodel.ResolveForRole("ops_review")
+			logStep("Dry run — would execute bead %s with runtime=%s, model=%s, reasoning=%s, review-runtime=%s, review-model=%s, review-reasoning=%s, timeout=%s, skip-review=%t",
+				cfg.beadID, runtime, model, reasoning, reviewRuntime, reviewModel, reviewReasoning, cfg.timeout, cfg.skipReview)
+			return nil
+		}
+		if cfg.dryRunSpawn {
+			prompt, promptErr := dryRunSpawnPrompt(cfg, deps, model)
+			if promptErr != nil {
+				return promptErr
+			}
+			out := deps.stdout
+			if out == nil {
+				out = os.Stdout
+			}
+			fmt.Fprintln(out, prompt)
+			logStep("Dry-run spawn prompt printed")
+			return nil
+		}
+
+		// Open per-bead log file for observability.
+		logFile, logFileErr := openBeadLog(cfg.beadID)
+		if logFileErr != nil {
+			logStep("Warning: %v", logFileErr)
+		}
+		if logFile != nil {
+			defer logFile.Close()
+			logOut = io.MultiWriter(os.Stderr, logFile)
+			defer func() { logOut = os.Stderr }()
+		}
+
+		// Step 2: Mark in_progress and set up deferred bead reset.
+		_ = updateWorkBeadStatus(ctx, deps.beadSrc, cfg.beadID, "in_progress")
+		var merged bool
+		defer func() {
+			if !merged {
+				// Reset bead to open so it can be re-assigned.
+				// Use Background context because the parent ctx may be cancelled.
+				_ = updateWorkBeadStatus(context.Background(), deps.beadSrc, cfg.beadID, "open")
+			}
+		}()
+
 		if err := observeStandaloneStorageController(ctx, cfg.storageController); err != nil {
 			return err
 		}
-		logStep("Running local quality gate (%s)...", mutationMode)
-		passed, qgOutput, qgErr := deps.runQG(ctx, worktree, !cfg.mutationTesting)
-		if qgErr != nil {
-			recordWorkQGFailure(ctx, cfg, deps, "oro-work-implementation", qgErr.Error())
-			return fmt.Errorf("quality gate error: %w", qgErr)
+
+		// Step 3: Create or resume worktree.
+		// Resolve defaultBranch: --base-branch flag > config default_branch > "main"
+		defaultBranch := deps.defaultBranch
+		if cfg.baseBranch != "" {
+			defaultBranch = cfg.baseBranch
+		}
+		// Resolve targetBranch by walking the parent chain: returns "epic/<id>" only when
+		// an epic-type ancestor exists. Non-epic parents (tasks, features) resolve to defaultBranch.
+		targetBranch, resolvedEpicID, resolveErr := dispatcher.ResolveEpicBranch(ctx, deps.beadSrc, cfg.bead.Epic, defaultBranch)
+		if resolveErr != nil {
+			return fmt.Errorf("resolve epic branch: %w", resolveErr)
+		}
+		if prepareErr := prepareStandaloneWorkTargetBranch(ctx, deps, targetBranch, defaultBranch, resolvedEpicID, cfg.bead); prepareErr != nil {
+			return fmt.Errorf("prepare target branch: %w", prepareErr)
+		}
+		worktree, branch, err := setupWorktree(ctx, cfg, deps, targetBranch)
+		if err != nil {
+			return fmt.Errorf("worktree setup: %w", err)
 		}
 
-		if passed {
-			logStep("Quality gate passed (%s)", mutationMode)
-			break
+		var feedback string
+		var attempt int
+		var escalated bool
+
+		// Auto-resume: if worktree has commits ahead of targetBranch, skip first claude spawn.
+		skipClaude := deps.hasNewWork(deps.repoRoot, branch, targetBranch)
+		if skipClaude {
+			logStep("Resuming — branch %s has commits, skipping to QG", branch)
 		}
 
-		attempt++
-		feedback = qgOutput
-		logStep("Quality gate failed (attempt %d)", attempt)
+		for {
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("interrupted")
+			}
 
-		if attempt >= maxQGRetriesPerTier && !escalated {
-			runtime, model, reasoning = resolveWorkerEscalationRuntimeModel(cfg)
-			logStep("Escalating to %s (%s)", runtime, modelShort(model))
-			attempt = 0
-			escalated = true
-		}
-		if attempt >= maxQGRetriesPerTier {
-			recordWorkQGFailure(ctx, cfg, deps, "oro-work-implementation", qgOutput)
-			return &exitError{
-				code: exitCodeRetries,
-				msg:  fmt.Sprintf("Quality gate failed %d times. Last output:\n%s", attempt, qgOutput),
+			if !skipClaude {
+				if err := observeStandaloneStorageController(ctx, cfg.storageController); err != nil {
+					return err
+				}
+				logStep("--- attempt %d (%s) ---", attempt, modelShort(model))
+				logStep("Spawning %s (%s, attempt %d)...", runtime, modelShort(model), attempt)
+				if err := spawnAndWait(ctx, cfg, deps, worktree, runtime, model, reasoning, attempt, feedback, logFile); err != nil {
+					return fmt.Errorf("%s spawn: %w", runtime, err)
+				}
+				logStep("%s completed", runtime)
+
+				// Guard: bail out if claude produced no commits.
+				if !deps.hasNewWork(deps.repoRoot, branch, targetBranch) {
+					return noCommitsResult(ctx, cfg, deps, worktree, &merged)
+				}
+			}
+			skipClaude = false // Only skip the first iteration.
+
+			mutationMode := workMutationMode(cfg)
+			if err := observeStandaloneStorageController(ctx, cfg.storageController); err != nil {
+				return err
+			}
+			logStep("Running local quality gate (%s)...", mutationMode)
+			passed, qgOutput, qgErr := deps.runQG(ctx, worktree, !cfg.mutationTesting)
+			if qgErr != nil {
+				recordWorkQGFailure(ctx, cfg, deps, "oro-work-implementation", qgErr.Error())
+				return fmt.Errorf("quality gate error: %w", qgErr)
+			}
+
+			if passed {
+				logStep("Quality gate passed (%s)", mutationMode)
+				break
+			}
+
+			attempt++
+			feedback = qgOutput
+			logStep("Quality gate failed (attempt %d)", attempt)
+
+			if attempt >= maxQGRetriesPerTier && !escalated {
+				runtime, model, reasoning = resolveWorkerEscalationRuntimeModel(cfg)
+				logStep("Escalating to %s (%s)", runtime, modelShort(model))
+				attempt = 0
+				escalated = true
+			}
+			if attempt >= maxQGRetriesPerTier {
+				recordWorkQGFailure(ctx, cfg, deps, "oro-work-implementation", qgOutput)
+				return &exitError{
+					code: exitCodeRetries,
+					msg:  fmt.Sprintf("Quality gate failed %d times. Last output:\n%s", attempt, qgOutput),
+				}
 			}
 		}
-	}
 
-	// Step 8: Ops review.
-	if !cfg.skipReview {
-		if err := reviewLoop(ctx, cfg, deps, worktree, targetBranch, &model, &attempt, &feedback, logFile); err != nil {
-			return err
+		// Step 8: Ops review.
+		if !cfg.skipReview {
+			if err := reviewLoop(ctx, cfg, deps, worktree, targetBranch, &model, &attempt, &feedback, logFile); err != nil {
+				return err
+			}
+		} else {
+			logStep("Skipping review (--skip-review)")
 		}
-	} else {
-		logStep("Skipping review (--skip-review)")
-	}
 
-	// Step 9: Merge to main. The final quality gate runs inside mergeToMain
-	// after rebase and while the FF lock prevents the target from advancing.
-	mergeResult, mergeErr := mergeToMain(ctx, cfg, deps, worktree, branch, targetBranch)
-	if mergeErr != nil {
-		var exitErr *exitError
-		if errors.As(mergeErr, &exitErr) {
-			return exitErr
+		// Step 9: Merge to main. The final quality gate runs inside mergeToMain
+		// after rebase and while the FF lock prevents the target from advancing.
+		mergeResult, mergeErr := mergeToMain(ctx, cfg, deps, worktree, branch, targetBranch)
+		if mergeErr != nil {
+			var exitErr *exitError
+			if errors.As(mergeErr, &exitErr) {
+				return exitErr
+			}
+			return &exitError{
+				code: exitCodeMergeFail,
+				msg:  fmt.Sprintf("Merge failed: %v", mergeErr),
+			}
 		}
-		return &exitError{
-			code: exitCodeMergeFail,
-			msg:  fmt.Sprintf("Merge failed: %v", mergeErr),
+		merged = true
+		logStep("Merged (commit %s)", mergeResult.CommitSHA)
+
+		// Step 10: Close bead.
+		_ = deps.beadSrc.Close(ctx, cfg.beadID, fmt.Sprintf("Merged: %s", mergeResult.CommitSHA))
+		logStep("Bead %s closed", cfg.beadID)
+
+		// Step 11: Remove worktree.
+		if err := deps.wtMgr.Remove(ctx, worktree); err != nil {
+			logStep("Warning: worktree cleanup failed: %v", err)
+		} else {
+			logStep("Worktree cleaned up")
 		}
-	}
-	merged = true
-	logStep("Merged (commit %s)", mergeResult.CommitSHA)
 
-	// Step 10: Close bead.
-	_ = deps.beadSrc.Close(ctx, cfg.beadID, fmt.Sprintf("Merged: %s", mergeResult.CommitSHA))
-	logStep("Bead %s closed", cfg.beadID)
+		// Step 12: Delete branch (best-effort).
+		branchName := protocol.BranchPrefix + cfg.beadID
+		if err := deps.wtMgr.DeleteBranchMergedInto(ctx, branchName, targetBranch); err != nil {
+			logStep("Warning: branch cleanup failed: %v", err)
+		}
 
-	// Step 11: Remove worktree.
-	if err := deps.wtMgr.Remove(ctx, worktree); err != nil {
-		logStep("Warning: worktree cleanup failed: %v", err)
-	} else {
-		logStep("Worktree cleaned up")
-	}
-
-	// Step 12: Delete branch (best-effort).
-	branchName := protocol.BranchPrefix + cfg.beadID
-	if err := deps.wtMgr.DeleteBranchMergedInto(ctx, branchName, targetBranch); err != nil {
-		logStep("Warning: branch cleanup failed: %v", err)
-	}
-
-	return nil
+		return nil
+	})
 }
 
 func prepareStandaloneWorkTargetBranch(ctx context.Context, deps *workDeps, targetBranch, defaultBranch, resolvedEpicID string, bead *protocol.BeadDetail) error {

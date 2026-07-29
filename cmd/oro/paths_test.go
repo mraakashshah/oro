@@ -467,6 +467,58 @@ func TestReadProjectName_EnvFirst(t *testing.T) {
 	}
 }
 
+func TestEnsureRuntimeProjectEnvDoesNotExportResolvedProject(t *testing.T) {
+	repoRoot := t.TempDir()
+	oroHome := t.TempDir()
+	project := "isolated-project"
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".oro"), 0o750); err != nil {
+		t.Fatalf("create project config directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, ".oro", "config.yaml"), []byte("project: "+project+"\n"), 0o600); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+	t.Setenv("ORO_HOME", oroHome)
+	t.Setenv("ORO_PROJECT", "")
+
+	runtimeEnv, err := ensureRuntimeProjectEnv(repoRoot)
+	if err != nil {
+		t.Fatalf("ensureRuntimeProjectEnv: %v", err)
+	}
+	if runtimeEnv.Project != project {
+		t.Fatalf("resolved project = %q, want %q", runtimeEnv.Project, project)
+	}
+	if got := os.Getenv("ORO_PROJECT"); got != "" {
+		t.Fatalf("ensureRuntimeProjectEnv leaked ORO_PROJECT=%q", got)
+	}
+}
+
+func TestWithRuntimeProjectEnvRestoresResolvedProject(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".oro"), 0o750); err != nil {
+		t.Fatalf("create project config directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, ".oro", "config.yaml"), []byte("project: scoped-project\n"), 0o600); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+	t.Setenv("ORO_HOME", t.TempDir())
+	t.Setenv("ORO_PROJECT", "")
+
+	if err := withRuntimeProjectEnv(repoRoot, func(runtimeEnv runtimeProjectEnv) error {
+		if runtimeEnv.Project != "scoped-project" {
+			t.Errorf("resolved project = %q, want scoped-project", runtimeEnv.Project)
+		}
+		if got := os.Getenv("ORO_PROJECT"); got != "scoped-project" {
+			t.Errorf("scoped ORO_PROJECT = %q, want scoped-project", got)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("withRuntimeProjectEnv: %v", err)
+	}
+	if got := os.Getenv("ORO_PROJECT"); got != "" {
+		t.Fatalf("withRuntimeProjectEnv leaked ORO_PROJECT=%q", got)
+	}
+}
+
 func TestReadProjectName_EmptyFallback(t *testing.T) {
 	t.Setenv("ORO_PROJECT", "")
 	noConfigDir := t.TempDir()

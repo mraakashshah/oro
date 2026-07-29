@@ -947,29 +947,26 @@ func registerCleanlinessStartFlags(cmd *cobra.Command, cleanliness *cleanlinessS
 
 // startFreshSwarm sets up project env vars and launches the full swarm (daemon + tmux).
 func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach bool, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration, mutationTesting, webEnabled bool, webAddr string, cleanliness cleanlinessStartConfig) error {
-	runtimeEnv, err := ensureRuntimeProjectEnv(currentRepoRoot())
-	if err != nil {
-		return err
-	}
-	if err := requireNativeProductionBeadSourceMode("oro start"); err != nil {
-		return err
-	}
-	project := runtimeEnv.Project
-	return runFullStart(w, workers, maxWorkers, model, project,
-		&ExecDaemonSpawner{
-			ProgressTimeout:    progressTimeout,
-			OpsReviewTimeout:   opsReviewTimeout,
-			ReviewStallTimeout: reviewStallTimeout,
-			ManualIntegration:  manualIntegration,
-			MutationTesting:    mutationTesting,
-			WebEnabled:         webEnabled,
-			WebAddr:            webAddr,
-			Cleanliness:        cleanliness,
-		},
-		&ExecRunner{},
-		func(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) },
-		socketPollTimeout, nil, 0, isDetached(detach),
-	)
+	return withRuntimeProjectEnv(currentRepoRoot(), func(runtimeEnv runtimeProjectEnv) error {
+		if err := requireNativeProductionBeadSourceMode("oro start"); err != nil {
+			return err
+		}
+		return runFullStart(w, workers, maxWorkers, model, runtimeEnv.Project,
+			&ExecDaemonSpawner{
+				ProgressTimeout:    progressTimeout,
+				OpsReviewTimeout:   opsReviewTimeout,
+				ReviewStallTimeout: reviewStallTimeout,
+				ManualIntegration:  manualIntegration,
+				MutationTesting:    mutationTesting,
+				WebEnabled:         webEnabled,
+				WebAddr:            webAddr,
+				Cleanliness:        cleanliness,
+			},
+			&ExecRunner{},
+			func(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) },
+			socketPollTimeout, nil, 0, isDetached(detach),
+		)
+	})
 }
 
 func startProjectName(dir string) (string, error) {
@@ -1004,40 +1001,39 @@ func cleanStaleWorkerLogs(oroHome string, maxAge time.Duration) { //nolint:unpar
 
 // runDaemonOnly runs the dispatcher in the foreground (used for testing/CI).
 func runDaemonOnly(cmd *cobra.Command, pidPath string, workers, maxWorkers int, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool, baseBranch string, mutationTesting, webEnabled bool, webAddr string, cleanliness cleanlinessStartConfig) error {
-	if _, err := ensureRuntimeProjectEnv(currentRepoRoot()); err != nil {
-		return err
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "starting dispatcher (PID %d, workers=%d)\n", os.Getpid(), workers)
-	if err := WritePIDFile(pidPath, os.Getpid()); err != nil {
-		return fmt.Errorf("write pid file: %w", err)
-	}
+	return withRuntimeProjectEnv(currentRepoRoot(), func(_ runtimeProjectEnv) error {
+		fmt.Fprintf(cmd.OutOrStdout(), "starting dispatcher (PID %d, workers=%d)\n", os.Getpid(), workers)
+		if err := WritePIDFile(pidPath, os.Getpid()); err != nil {
+			return fmt.Errorf("write pid file: %w", err)
+		}
 
-	paths, err := ResolveDaemonPaths()
-	if err != nil {
-		return fmt.Errorf("resolve paths: %w", err)
-	}
-	cleanStaleWorkerLogs(paths.OroHome, 7*24*time.Hour)
+		paths, err := ResolveDaemonPaths()
+		if err != nil {
+			return fmt.Errorf("resolve paths: %w", err)
+		}
+		cleanStaleWorkerLogs(paths.OroHome, 7*24*time.Hour)
 
-	// Build dispatcher first so we can wire its shutdown authorization flag
-	// into the signal handler. This makes the daemon immune to raw SIGTERM
-	// until the "shutdown" directive authorizes it.
-	d, db, err := buildDispatcherWithReviewTimeoutsAndCleanliness(workers, maxWorkers, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, baseBranch, mutationTesting, webEnabled, webAddr, cleanliness)
-	if err != nil {
-		return fmt.Errorf("build dispatcher: %w", err)
-	}
-	defer db.Close()
+		// Build dispatcher first so we can wire its shutdown authorization flag
+		// into the signal handler. This makes the daemon immune to raw SIGTERM
+		// until the "shutdown" directive authorizes it.
+		d, db, err := buildDispatcherWithReviewTimeoutsAndCleanliness(workers, maxWorkers, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, baseBranch, mutationTesting, webEnabled, webAddr, cleanliness)
+		if err != nil {
+			return fmt.Errorf("build dispatcher: %w", err)
+		}
+		defer db.Close()
 
-	wireDependencies(d, paths.SocketPath, paths.OroHome)
+		wireDependencies(d, paths.SocketPath, paths.OroHome)
 
-	ctx := cmd.Context()
-	shutdownCtx, cleanup := SetupSignalHandler(ctx, pidPath, d.ShutdownAuthorized())
-	defer cleanup()
+		ctx := cmd.Context()
+		shutdownCtx, cleanup := SetupSignalHandler(ctx, pidPath, d.ShutdownAuthorized())
+		defer cleanup()
 
-	if err := d.Run(shutdownCtx); err != nil {
-		return fmt.Errorf("dispatcher: %w", err)
-	}
-	fmt.Fprintln(cmd.OutOrStdout(), "dispatcher stopped")
-	return nil
+		if err := d.Run(shutdownCtx); err != nil {
+			return fmt.Errorf("dispatcher: %w", err)
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "dispatcher stopped")
+		return nil
+	})
 }
 
 // bootstrapOroDir creates the oro state directory with 0700 permissions.
