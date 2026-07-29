@@ -13,8 +13,9 @@ var ErrInvalidRetention = errors.New("invalid subprocess cache retention")
 
 // PruneOptions configures subprocess cache namespace pruning.
 type PruneOptions struct {
-	MaxAge time.Duration
-	Now    func() time.Time
+	MaxAge    time.Duration
+	Now       func() time.Time
+	CanRemove func(path string) bool
 }
 
 // PruneResult reports how many subprocess cache namespaces were removed or kept.
@@ -72,6 +73,10 @@ func PruneSubprocessCache(root string, opts PruneOptions) (PruneResult, error) {
 			continue
 		}
 		path := filepath.Join(root, entry.Name())
+		if opts.CanRemove != nil && !opts.CanRemove(path) {
+			result.Kept++
+			continue
+		}
 		if err := os.RemoveAll(path); err != nil {
 			removeErrs = append(removeErrs, fmt.Errorf("remove subprocess cache namespace %s: %w", path, err))
 			continue

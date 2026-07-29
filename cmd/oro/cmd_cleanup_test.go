@@ -13,7 +13,27 @@ import (
 
 	"oro/pkg/beadstore"
 	"oro/pkg/factoryhealth"
+	"oro/pkg/storage"
 )
+
+func testSubprocessCatalog(t *testing.T, oroHome, namespacePath string) *storage.Catalog {
+	t.Helper()
+	catalog, err := openStorageCatalog(context.Background(), oroHome)
+	if err != nil {
+		t.Fatalf("open storage catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := catalog.Close(); err != nil {
+			t.Errorf("close storage catalog: %v", err)
+		}
+	})
+	if _, err := catalog.DB().ExecContext(context.Background(), `
+INSERT INTO providers (id, created_at, updated_at) VALUES ('subprocess', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+INSERT INTO namespaces (id, provider_id, path, created_at, updated_at) VALUES ('stale', 'subprocess', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, namespacePath); err != nil {
+		t.Fatalf("seed subprocess catalog: %v", err)
+	}
+	return catalog
+}
 
 func TestCleanup_NothingToClean(t *testing.T) {
 	fake := newFakeCmd()
@@ -286,6 +306,7 @@ func TestCleanupPrunesSubprocessTmpRoot(t *testing.T) {
 		sockPath:              filepath.Join(tmpDir, "oro.sock"),
 		subprocessTmpRoot:     tmpRoot,
 		subprocessCacheMaxAge: 7 * 24 * time.Hour,
+		subprocessCatalog:     testSubprocessCatalog(t, tmpDir, staleNamespace),
 		signalFn:              func(int) error { return nil },
 		aliveFn:               func(int) bool { return false },
 	}
@@ -338,6 +359,7 @@ func TestCleanupPrunesSubprocessCache(t *testing.T) {
 		sockPath:              filepath.Join(tmpDir, "oro.sock"),
 		subprocessCacheRoot:   cacheRoot,
 		subprocessCacheMaxAge: 7 * 24 * time.Hour,
+		subprocessCatalog:     testSubprocessCatalog(t, tmpDir, staleNamespace),
 		signalFn:              func(int) error { return nil },
 		aliveFn:               func(int) bool { return false },
 	}
@@ -357,6 +379,45 @@ func TestCleanupPrunesSubprocessCache(t *testing.T) {
 	}
 	if strings.Contains(out, "nothing to clean") {
 		t.Fatalf("cleanup reported nothing to clean after pruning cache:\n%s", out)
+	}
+}
+
+func TestCleanupPreservesUncatalogedSubprocessCache(t *testing.T) {
+	fake := newFakeCmd()
+	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
+	fake.output[key("git", "branch", "--list", "agent/*")] = ""
+	fake.output[key("git", "branch", "--list", "epic/*")] = ""
+
+	tmpDir := t.TempDir()
+	cacheRoot := filepath.Join(tmpDir, "subprocess")
+	staleNamespace := filepath.Join(cacheRoot, "stale")
+	if err := os.MkdirAll(filepath.Join(staleNamespace, "go-build"), 0o755); err != nil {
+		t.Fatalf("mkdir stale namespace: %v", err)
+	}
+	staleAt := time.Now().Add(-8 * 24 * time.Hour)
+	if err := os.Chtimes(staleNamespace, staleAt, staleAt); err != nil {
+		t.Fatalf("chtimes stale namespace: %v", err)
+	}
+
+	var buf bytes.Buffer
+	cfg := &cleanupConfig{
+		runner:                fake,
+		w:                     &buf,
+		tmuxName:              TmuxSessionName(""),
+		pidPath:               filepath.Join(tmpDir, "oro.pid"),
+		sockPath:              filepath.Join(tmpDir, "oro.sock"),
+		subprocessCacheRoot:   cacheRoot,
+		subprocessCacheMaxAge: 7 * 24 * time.Hour,
+		signalFn:              func(int) error { return nil },
+		aliveFn:               func(int) bool { return false },
+	}
+
+	if err := runCleanup(context.Background(), cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(staleNamespace); err != nil {
+		t.Fatalf("cleanup removed uncataloged stale cache namespace: %v", err)
 	}
 }
 
