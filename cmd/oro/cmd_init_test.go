@@ -2350,6 +2350,10 @@ func TestGateCacheDirectoriesIgnored(t *testing.T) {
 		".qg-go-cache",
 		".qg-lint-cache",
 		".qg-golangci-cache",
+		// Nested, undotted forms: the directory name carries no leading dot,
+		// so leading-dot patterns miss it entirely.
+		".oro/golangci-cache",
+		".oro/gocache",
 	} {
 		cmd := exec.Command("git", "check-ignore", "-q", filepath.Join(dir, "probe"))
 		cmd.Dir = repoRoot

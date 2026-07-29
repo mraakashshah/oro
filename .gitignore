@@ -52,6 +52,9 @@ cmd/oro/_assets/
 .qg-go-cache/
 .qg-lint-cache/
 .qg-golangci-cache/
+# Undotted forms nested under .oro/ — leading-dot patterns above miss these.
+.oro/gocache/
+.oro/golangci-cache/
 **/dispatcher.exit.log
 .gstack/
 pkg/dispatcher/workers/
