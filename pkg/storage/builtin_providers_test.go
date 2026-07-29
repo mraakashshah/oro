@@ -35,7 +35,7 @@ func TestBuiltinProviders(t *testing.T) {
 			mode:        storage.Concurrent,
 			ownership:   storage.ToolNative,
 			status:      &storage.OperationDescriptor{Executable: "go", Args: []string{"env", "GOCACHE"}},
-			cleaner:     storage.CleanerDescriptor{Executable: "go", Args: []string{"clean", "-cache", "-modcache", "-fuzzcache"}, Trusted: true},
+			cleaner:     storage.CleanerDescriptor{Executable: "go", Args: []string{"clean", "-cache"}, Trusted: true},
 		},
 		{
 			id:          "uv",
@@ -168,6 +168,35 @@ func TestGolangciProviderMaintenanceDescriptor(t *testing.T) {
 	}
 	if got, want := provider.Variables, []string{"GOLANGCI_LINT_CACHE"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("Variables = %q, want %q to retain the shared cache identity", got, want)
+	}
+}
+
+// TestGoProviderCleansBuildCacheOnly pins the Go cleaner to the build cache.
+// The build cache is what actually grows — 50 GB in five days across 57
+// worktrees on 2026-07-29 — and it is purely derived, so reclaiming it costs
+// only a recompile. -modcache is deliberately excluded: it holds downloaded
+// module source, so clearing it forces a full re-download of every dependency
+// over the network. -fuzzcache is excluded because a fuzz corpus is
+// accumulated discovery, not derived output, and cannot be regenerated cheaply.
+func TestGoProviderCleansBuildCacheOnly(t *testing.T) {
+	provider, ok := providerByID(storage.BuiltinProviders())["go"]
+	if !ok {
+		t.Fatal("BuiltinProviders() missing go provider")
+	}
+
+	if got, want := provider.Cleaner, (storage.CleanerDescriptor{
+		Executable: "go",
+		Args:       []string{"clean", "-cache"},
+		Trusted:    true,
+	}); !reflect.DeepEqual(got, want) {
+		t.Errorf("Cleaner = %#v, want %#v", got, want)
+	}
+	for _, forbidden := range []string{"-modcache", "-fuzzcache"} {
+		for _, arg := range provider.Cleaner.Args {
+			if arg == forbidden {
+				t.Errorf("Cleaner.Args contains %q: the size-triggered sweep must not force dependency re-download or discard a fuzz corpus", forbidden)
+			}
+		}
 	}
 }
 
