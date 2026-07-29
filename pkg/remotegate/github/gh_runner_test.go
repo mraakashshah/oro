@@ -19,7 +19,7 @@ import (
 )
 
 func TestAttestedGHRunner(t *testing.T) {
-	assertConstructionSuppression(t)
+	assertConstructionIsProductionWired(t)
 
 	helper, marker := testHelperEvidence(t)
 	provider := testRuntimeCredentialProvider()
@@ -48,6 +48,18 @@ func TestAttestedGHRunner(t *testing.T) {
 	}
 	if !strings.Contains(string(result), `"path":"/repos/oro/oro"`) {
 		t.Errorf("helper result = %s, want API path", result)
+	}
+	raw, err := runner.Run(context.Background(), github.APIRequest{
+		Method:  "GET",
+		Path:    "/repos/oro/oro/contents/.github/workflows/ci.yml",
+		Headers: []string{"Accept: application/vnd.github.raw+json"},
+		Raw:     true,
+	})
+	if err != nil {
+		t.Fatalf("Run(raw) error = %v", err)
+	}
+	if string(raw) != "on: workflow_dispatch" {
+		t.Fatalf("Run(raw) = %q, want raw workflow contents", raw)
 	}
 	if err := os.Remove(marker); err != nil {
 		t.Fatalf("remove successful-run marker: %v", err)
@@ -97,7 +109,7 @@ func TestAttestedGHRunner(t *testing.T) {
 	})
 }
 
-func assertConstructionSuppression(t *testing.T) {
+func assertConstructionIsProductionWired(t *testing.T) {
 	t.Helper()
 	_, testFile, _, ok := runtime.Caller(0)
 	if !ok {
@@ -107,12 +119,8 @@ func assertConstructionSuppression(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read gh runner source: %v", err)
 	}
-	const expected = "//oro:testonly — production wiring tracked by oro-1e76"
-	if strings.Count(string(source), "//oro:testonly") != 1 {
-		t.Fatal("gh runner must have exactly one oro:testonly suppression")
-	}
-	if !strings.Contains(string(source), expected) {
-		t.Fatalf("gh runner must contain %q", expected)
+	if strings.Contains(string(source), "//oro:testonly") {
+		t.Fatal("gh runner must not retain a test-only suppression after production wiring")
 	}
 }
 
@@ -125,6 +133,9 @@ func testHelperEvidence(t *testing.T) (github.AttestedCLI, string) {
 printf started > '` + marker + `'
 case "$GH_TOKEN:$GITHUB_TOKEN:$GIT_CONFIG_GLOBAL:$GIT_CONFIG_SYSTEM" in
   *ambient-gh-token*|*ambient-github-token*|*/ambient/*) exit 2 ;;
+esac
+case "$*" in
+  *"--header Accept: application/vnd.github.raw+json"*) printf 'on: workflow_dispatch'; exit 0 ;;
 esac
 last=""
 for arg do last="$arg"; done

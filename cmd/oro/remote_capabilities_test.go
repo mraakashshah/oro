@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -17,6 +19,52 @@ import (
 
 	"github.com/spf13/cobra"
 )
+
+func TestStartupGitHubAPIRunsAttestedRunner(t *testing.T) {
+	binDir := t.TempDir()
+	ghPath := filepath.Join(binDir, "gh")
+	writeRemoteCapabilityFixture(t, ghPath, `#!/bin/sh
+case "$*" in
+  "auth token --hostname github.example") printf runtime-token ;;
+  "api --method GET --hostname github.example /user")
+    [ "$GH_TOKEN" = 'runtime-token' ] || exit 2
+    printf '{"login":"oro"}'
+    ;;
+  *) exit 1 ;;
+esac
+`)
+	ghPath, err := filepath.EvalSymlinks(ghPath)
+	if err != nil {
+		t.Fatalf("resolve gh helper: %v", err)
+	}
+	contents, err := os.ReadFile(ghPath)
+	if err != nil {
+		t.Fatalf("read gh helper: %v", err)
+	}
+	digest := sha256.Sum256(contents)
+	api, err := newStartupGitHubAPI(config.RemoteGateConfig{
+		GitHub: config.GitHubRemoteGateConfig{
+			API:             config.GitHubAPIConfig{BaseURL: "https://api.github.example"},
+			RuntimeIdentity: config.GitHubAppIdentityConfig{Type: "github-app", AppID: 1, InstallationID: 2, PrivateKeyRef: "keychain:runtime"},
+		},
+	}, Capabilities{
+		Host:       "github.example",
+		Repository: "oro/oro",
+		GitHubCLI:  ExecutableEvidence{Path: ghPath, Hash: hex.EncodeToString(digest[:])},
+	})
+	if err != nil {
+		t.Fatalf("newStartupGitHubAPI() error = %v", err)
+	}
+	var response struct {
+		Login string `json:"login"`
+	}
+	if err := api.GetJSON(context.Background(), "/user", &response); err != nil {
+		t.Fatalf("GetJSON() error = %v", err)
+	}
+	if response.Login != "oro" {
+		t.Fatalf("GetJSON() login = %q, want oro", response.Login)
+	}
+}
 
 func TestRemoteCapabilitiesPersistTargetPolicyEvidence(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "capabilities.json")

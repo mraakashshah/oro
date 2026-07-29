@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"strings"
 	"syscall"
+	"time"
 
 	"oro/pkg/config"
 	"oro/pkg/remotegate"
@@ -295,7 +296,7 @@ func preflightStartupRemoteGate(ctx context.Context, projectRoot string) error {
 	if capabilities.Host == "" || capabilities.Repository == "" || capabilities.DefaultBranch == "" {
 		return errors.New("persisted remote capabilities are missing host, repository, or default branch")
 	}
-	api, err := newStartupGitHubAPI(cfg.Factory.QualityGate, capabilities.Host, capabilities.Repository)
+	api, err := newStartupGitHubAPI(cfg.Factory.QualityGate, capabilities)
 	if err != nil {
 		return err
 	}
@@ -331,12 +332,12 @@ func preflightStartupRemoteGate(ctx context.Context, projectRoot string) error {
 }
 
 type startupGitHubAPI struct {
-	executable string
+	runner     *remotegithub.GHRunner
 	host       string
 	repository string
 }
 
-func newStartupGitHubAPI(cfg RemoteGateConfig, host, repository string) (startupGitHubAPI, error) {
+func newStartupGitHubAPI(cfg RemoteGateConfig, capabilities Capabilities) (startupGitHubAPI, error) {
 	baseURL, err := url.Parse(cfg.GitHub.API.BaseURL)
 	if err != nil {
 		return startupGitHubAPI{}, fmt.Errorf("parse GitHub API base URL: %w", err)
@@ -344,11 +345,21 @@ func newStartupGitHubAPI(cfg RemoteGateConfig, host, repository string) (startup
 	if baseURL.Host == "" {
 		return startupGitHubAPI{}, errors.New("GitHub API base URL is missing a host")
 	}
-	executable := cfg.GitHub.CLI.Executable
-	if executable == "" || executable == "managed" {
-		executable = "gh"
+	target := remotegate.CredentialTarget{
+		Identity: cfg.GitHub.RuntimeIdentity,
+		Host:     capabilities.Host,
+		Owner:    strings.Split(capabilities.Repository, "/")[0],
+		Name:     strings.TrimPrefix(capabilities.Repository, strings.Split(capabilities.Repository, "/")[0]+"/"),
 	}
-	return startupGitHubAPI{executable: executable, host: host, repository: repository}, nil
+	provider := remotegate.NewRuntimeCredentialProvider(target, startupGitHubCredentialSource{executable: capabilities.GitHubCLI.Path})
+	runner, err := remotegithub.NewGHRunner(remotegithub.AttestedCLI{
+		Path: capabilities.GitHubCLI.Path,
+		Hash: capabilities.GitHubCLI.Hash,
+	}, provider, remotegithub.GHRunnerConfig{Host: capabilities.Host})
+	if err != nil {
+		return startupGitHubAPI{}, fmt.Errorf("construct attested GitHub API runner: %w", err)
+	}
+	return startupGitHubAPI{runner: runner, host: capabilities.Host, repository: capabilities.Repository}, nil
 }
 
 func (api startupGitHubAPI) GetJSON(ctx context.Context, path string, dst any) error {
@@ -389,12 +400,68 @@ func (api startupGitHubAPI) CollectJSON(ctx context.Context, request remotegithu
 }
 
 func (api startupGitHubAPI) run(ctx context.Context, args ...string) ([]byte, error) {
-	command := exec.CommandContext(ctx, api.executable, args...) //nolint:gosec // executable and arguments come from validated remote-gate configuration.
-	output, err := command.Output()
+	request, err := startupAPIRequest(args)
+	if err != nil {
+		return nil, fmt.Errorf("run GitHub API command: %w", err)
+	}
+	output, err := api.runner.Run(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("run GitHub API command: %w", err)
 	}
 	return output, nil
+}
+
+type startupGitHubCredentialSource struct {
+	executable string
+}
+
+func (source startupGitHubCredentialSource) Resolve(ctx context.Context, request remotegate.CredentialRequest) (remotegate.Credential, error) {
+	command := exec.CommandContext(ctx, source.executable, "auth", "token", "--hostname", request.Host) //nolint:gosec // executable is validated by the attested GH runner constructor.
+	output, err := command.Output()
+	if err != nil {
+		return remotegate.Credential{}, fmt.Errorf("read GitHub runtime token: %w", err)
+	}
+	return remotegate.Credential{
+		Token:          strings.TrimSpace(string(output)),
+		Role:           request.Role,
+		AppID:          request.Identity.AppID,
+		InstallationID: request.Identity.InstallationID,
+		Host:           request.Host,
+		Owner:          request.Owner,
+		Name:           request.Name,
+		Permissions:    request.Permissions,
+		ExpiresAt:      time.Now().Add(time.Minute),
+	}, nil
+}
+
+func startupAPIRequest(args []string) (remotegithub.APIRequest, error) {
+	if len(args) < 2 || args[0] != "api" {
+		return remotegithub.APIRequest{}, errors.New("unsupported GitHub API command")
+	}
+	request := remotegithub.APIRequest{Method: "GET"}
+	for index := 1; index < len(args); index++ {
+		argument := args[index]
+		switch argument {
+		case "--hostname":
+			index++
+		case "--header":
+			index++
+			if index >= len(args) {
+				return remotegithub.APIRequest{}, errors.New("GitHub API header is missing a value")
+			}
+			request.Headers = append(request.Headers, args[index])
+			request.Raw = true
+		default:
+			if strings.HasPrefix(argument, "--") || request.Path != "" {
+				return remotegithub.APIRequest{}, errors.New("unsupported GitHub API command")
+			}
+			request.Path = "/" + strings.TrimPrefix(argument, "/")
+		}
+	}
+	if request.Path == "/" {
+		return remotegithub.APIRequest{}, errors.New("GitHub API path is missing")
+	}
+	return request, nil
 }
 
 func verifyStartCommandRemoteCapabilities(ctx context.Context) error {

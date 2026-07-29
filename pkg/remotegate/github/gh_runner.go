@@ -34,9 +34,11 @@ type GHRunnerConfig struct {
 
 // APIRequest describes a token-free GitHub API request.
 type APIRequest struct {
-	Method string
-	Path   string
-	Body   json.RawMessage
+	Method  string
+	Path    string
+	Body    json.RawMessage
+	Headers []string
+	Raw     bool
 }
 
 // GHRunner runs the setup-attested GitHub CLI with just-in-time credentials.
@@ -47,8 +49,6 @@ type GHRunner struct {
 }
 
 // NewGHRunner validates persisted CLI evidence before returning a runner.
-//
-//oro:testonly — production wiring tracked by oro-1e76
 func NewGHRunner(cli AttestedCLI, credentials remotegate.RuntimeCredentialProvider, config GHRunnerConfig) (*GHRunner, error) {
 	if err := validateAttestedCLI(cli); err != nil {
 		return nil, err
@@ -87,7 +87,7 @@ func (runner *GHRunner) Run(ctx context.Context, request APIRequest) (json.RawMe
 		}
 		return nil, fmt.Errorf("run GitHub CLI API request: %w", err)
 	}
-	if !json.Valid(output) {
+	if !request.Raw && !json.Valid(output) {
 		return nil, fmt.Errorf("GitHub CLI returned invalid JSON")
 	}
 	return json.RawMessage(output), nil
@@ -130,6 +130,11 @@ func validateAPIRequest(request APIRequest) error {
 	if len(request.Body) > 0 && !json.Valid(request.Body) {
 		return fmt.Errorf("validate GitHub API request body: %w", remotegate.ErrInvalidRequest)
 	}
+	for _, header := range request.Headers {
+		if strings.TrimSpace(header) == "" || strings.ContainsAny(header, "\r\n") {
+			return fmt.Errorf("validate GitHub API request header: %w", remotegate.ErrInvalidRequest)
+		}
+	}
 	return nil
 }
 
@@ -140,6 +145,9 @@ func ghAPIArgs(request APIRequest, host string) []string {
 	}
 	if len(request.Body) > 0 {
 		args = append(args, "--input", "-")
+	}
+	for _, header := range request.Headers {
+		args = append(args, "--header", header)
 	}
 	return append(args, request.Path)
 }
