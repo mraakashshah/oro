@@ -876,6 +876,102 @@ UPDATE recovery_quarantines SET status='resolved', resolved_at=datetime('now') W
 	}
 }
 
+func TestUnsafeStaleBranchOnOpenBeadDoesNotFreezeAssignment(t *testing.T) {
+	for _, tt := range []struct {
+		name              string
+		quarantinedStatus string
+		wantFrozen        bool
+		wantReadyAssigned bool
+	}{
+		{
+			name:              "open bead leaves unrelated work assignable",
+			quarantinedStatus: "open",
+			wantReadyAssigned: true,
+		},
+		{
+			name:              "closed bead retains assignment freeze",
+			quarantinedStatus: "closed",
+			wantFrozen:        true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+			ctx := context.Background()
+
+			beadSrc.shown["oro-quarantined"] = &protocol.BeadDetail{Status: tt.quarantinedStatus}
+			beadSrc.SetBeads([]protocol.Bead{
+				{ID: "oro-quarantined", Status: tt.quarantinedStatus, Priority: 0, Type: "task"},
+				{ID: "oro-ready", Status: "open", Priority: 1, Type: "task"},
+			})
+			if _, err := d.db.ExecContext(ctx, `
+INSERT INTO recovery_quarantines (bead_id, branch, reason, details, status)
+VALUES ('oro-quarantined', 'agent/oro-quarantined', 'unsafe_stale_branch', 'unmerged branch', 'open');
+`); err != nil {
+				t.Fatalf("insert recovery quarantine: %v", err)
+			}
+
+			server, client := net.Pipe()
+			t.Cleanup(func() {
+				_ = server.Close()
+				_ = client.Close()
+			})
+			go func() {
+				buf := make([]byte, 4096)
+				for {
+					if _, err := client.Read(buf); err != nil {
+						return
+					}
+				}
+			}()
+
+			d.mu.Lock()
+			d.state = StateRunning
+			d.workers["w-idle"] = &trackedWorker{
+				id:      "w-idle",
+				conn:    server,
+				state:   protocol.WorkerIdle,
+				encoder: json.NewEncoder(server),
+			}
+			d.mu.Unlock()
+
+			if _, blocked := d.recoveryQuarantineAssignmentScope(ctx); blocked != tt.wantFrozen {
+				t.Fatalf("assignment freeze = %t, want %t", blocked, tt.wantFrozen)
+			}
+
+			tryAssignAndWait(t, d, ctx)
+
+			beadSrc.mu.Lock()
+			readyStatus := beadSrc.updated["oro-ready"]
+			beadSrc.mu.Unlock()
+			if got := readyStatus == "in_progress"; got != tt.wantReadyAssigned {
+				t.Fatalf("ready bead assigned = %t, want %t (status %q)", got, tt.wantReadyAssigned, readyStatus)
+			}
+			beadSrc.mu.Lock()
+			quarantinedStatus := beadSrc.updated["oro-quarantined"]
+			beadSrc.mu.Unlock()
+			if quarantinedStatus == "in_progress" {
+				t.Fatal("quarantined bead was assigned")
+			}
+			if !tt.wantFrozen {
+				result, err := d.applyHealth()
+				if err != nil {
+					t.Fatalf("applyHealth: %v", err)
+				}
+				var health SwarmHealth
+				if err := json.Unmarshal([]byte(result), &health); err != nil {
+					t.Fatalf("unmarshal health: %v", err)
+				}
+				if health.Metrics.AssignmentFrozenByQuarantine {
+					t.Fatal("open-bead stale-branch quarantine froze assignment health")
+				}
+				if !hasHealthFinding(health, factoryhealth.FindingRecoveryQuarantineOpen) {
+					t.Fatalf("health missing open recovery quarantine finding: %+v", health.Findings)
+				}
+			}
+		})
+	}
+}
+
 func TestTryAssignAllowsFreshWorkWhenRecoveryQuarantineIsHumanOwned(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()

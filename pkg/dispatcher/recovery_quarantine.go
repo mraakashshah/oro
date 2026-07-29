@@ -359,8 +359,10 @@ ORDER BY id`)
 	return records, nil
 }
 
-// countPreservableRecoveryQuarantines returns open quarantines that may hold
-// work worth recovering. Human-owned recovery work is deliberately excluded:
+// countPreservableRecoveryQuarantines returns open quarantines that must freeze
+// unrelated assignment. An unsafe stale branch on an open bead remains visible
+// and protected per-bead, but its unmerged branch is expected active work, not
+// a factory-wide recovery hazard. Human-owned recovery work is also excluded:
 // its branch and worktree remain protected by per-bead filtering, but an
 // operator taking ownership must not freeze unrelated factory work. Without a
 // stored branch or worktree, the dispatcher can prove the CLI empty-safe
@@ -368,7 +370,7 @@ ORDER BY id`)
 // remains blocking until it is inspected or resolved explicitly.
 func (d *Dispatcher) countPreservableRecoveryQuarantines(ctx context.Context) (int, error) {
 	rows, err := d.db.QueryContext(ctx, `
-SELECT COALESCE(branch, ''), COALESCE(worktree, '')
+SELECT bead_id, reason, COALESCE(branch, ''), COALESCE(worktree, '')
 FROM recovery_quarantines
 WHERE status='open'`)
 	if err != nil {
@@ -381,9 +383,12 @@ WHERE status='open'`)
 
 	preservable := 0
 	for rows.Next() {
-		var branch, worktree string
-		if err := rows.Scan(&branch, &worktree); err != nil {
+		var beadID, reason, branch, worktree string
+		if err := rows.Scan(&beadID, &reason, &branch, &worktree); err != nil {
 			return 0, fmt.Errorf("scan preservable recovery quarantine: %w", err)
+		}
+		if d.unsafeStaleBranchOnOpenBead(ctx, beadID, reason) {
+			continue
 		}
 		if branch == "" && worktree == "" && RecoveryQuarantineEmptySafe(0, false, 0) {
 			continue
@@ -394,6 +399,14 @@ WHERE status='open'`)
 		return 0, fmt.Errorf("iterate preservable recovery quarantines: %w", err)
 	}
 	return preservable, nil
+}
+
+func (d *Dispatcher) unsafeStaleBranchOnOpenBead(ctx context.Context, beadID, reason string) bool {
+	if reason != "unsafe_stale_branch" {
+		return false
+	}
+	detail, err := d.beads.Show(ctx, beadID)
+	return err == nil && detail != nil && strings.EqualFold(detail.Status, "open")
 }
 
 func (d *Dispatcher) autoResolveEmptySafeRecoveryQuarantines(ctx context.Context) int {
