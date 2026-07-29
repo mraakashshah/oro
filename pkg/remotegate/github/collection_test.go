@@ -96,6 +96,19 @@ func TestCompleteCollection(t *testing.T) {
 			}
 		})
 	}
+
+	for _, name := range []string{"later-page failure", "cycle", "foreign host", "repeated token"} {
+		t.Run(name, func(t *testing.T) {
+			runner := collectionTestRunnerWithStatus(t, `[[{"id":"partial"}]]`, 1)
+			collection, err := github.Collect[collectionItem](context.Background(), runner, request)
+			if !errors.Is(err, github.ErrIncompleteCollection) {
+				t.Fatalf("Collect() error = %v, want ErrIncompleteCollection", err)
+			}
+			if collection.Items != nil {
+				t.Fatalf("Collect() items = %+v, want no collection", collection.Items)
+			}
+		})
+	}
 }
 
 func collectionIDs[T github.Identified](collection github.CompleteCollection[T]) []string {
@@ -117,9 +130,14 @@ func collectionPagesJSON(t *testing.T, pages ...any) string {
 
 func collectionTestRunner(t *testing.T, output string) *github.GHRunner {
 	t.Helper()
+	return collectionTestRunnerWithStatus(t, output, 0)
+}
+
+func collectionTestRunnerWithStatus(t *testing.T, output string, status int) *github.GHRunner {
+	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "gh")
-	script := "#!/bin/sh\ncase \"$*\" in\n  *'--paginate'*'--slurp'*) printf '%s' '" + output + "' ;;\n  *) exit 9 ;;\nesac\n"
+	script := fmt.Sprintf("#!/bin/sh\ncase \"$*\" in\n  *'--paginate'*'--slurp'*) printf '%%s' '%s'; exit %d ;;\n  *) exit 9 ;;\nesac\n", output, status)
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatalf("write gh helper: %v", err)
 	}
