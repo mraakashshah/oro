@@ -667,11 +667,7 @@ func (d *Dispatcher) reclaimTimedOutSetupsLocked(ctx context.Context, workerIDs 
 		reservationGen := w.reservationGen
 		_ = d.logEventLocked(ctx, "assignment_setup_timeout", "dispatcher", beadID, id,
 			fmt.Sprintf(`{"setup_ago":%q}`, now.Sub(w.setupReservedAt).Round(time.Second)))
-		delete(d.assigningBeads, beadID)
-		if !d.releaseAssignmentReservationLocked(id, beadID, reservationGen) {
-			continue
-		}
-		reclaimed = append(reclaimed, workerExitInfo{workerID: id, beadID: beadID, reservationGen: reservationGen + 1})
+		reclaimed = append(reclaimed, workerExitInfo{workerID: id, beadID: beadID, reservationGen: reservationGen})
 	}
 	return reclaimed
 }
@@ -679,8 +675,8 @@ func (d *Dispatcher) reclaimTimedOutSetupsLocked(ctx context.Context, workerIDs 
 func (d *Dispatcher) reopenTimedOutSetupBeads(ctx context.Context, reclaimed []workerExitInfo) {
 	for _, setup := range reclaimed {
 		d.reopenTimedOutSetupBead(ctx, setup)
-		if d.timedOutSetupCleanupCurrent(setup) {
-			d.clearBeadTracking(setup.beadID)
+		if d.finishTimedOutSetupCleanup(setup) {
+			d.notifyAssignLoop()
 		}
 	}
 }
@@ -694,39 +690,33 @@ func (d *Dispatcher) reopenTimedOutSetupBead(ctx context.Context, setup workerEx
 	if !d.timedOutSetupCleanupCurrent(setup) {
 		return
 	}
-	if err := d.updateBeadStatus(ctx, setup.beadID, "open"); err != nil {
+	if _, err := d.beads.UpdateStatusIf(ctx, setup.beadID, "in_progress", "open"); err != nil {
 		_ = d.logEvent(ctx, "assignment_setup_bead_reset_failed", "dispatcher", setup.beadID, setup.workerID,
 			fmt.Sprintf(`{"error":%q}`, err.Error()))
-		return
-	}
-	if d.timedOutSetupCleanupCurrent(setup) {
-		return
-	}
-	// A successor generation claimed the bead while this reopen was in flight.
-	// The ownership check above cannot prevent that: the store write is not
-	// conditional, so the successor can install itself between the check and the
-	// write landing. Restore in_progress so a live assignment's bead is not
-	// handed back to the ready queue — which would let two generations run it.
-	//
-	// This compensates rather than excludes. Making it atomic needs a conditional
-	// update in the bead store (set open WHERE the current owner is still this
-	// generation); that is a store-layer change, deliberately not attempted here.
-	if rerr := d.updateBeadStatus(ctx, setup.beadID, "in_progress"); rerr != nil {
-		_ = d.logEvent(ctx, "assignment_setup_bead_reset_restore_failed", "dispatcher", setup.beadID, setup.workerID,
-			fmt.Sprintf(`{"error":%q}`, rerr.Error()))
 	}
 }
 
 // timedOutSetupCleanupCurrent reports whether a reaped setup still owns its
-// bead's logical cleanup. The worker reservation is already released so the
-// scheduler can make progress; a successor reservation changes the generation
-// or restores assigningBeads and must keep its status and tracking intact.
+// bead's logical cleanup. The reservation remains held across remote cleanup,
+// so a successor cannot claim the bead until g1 has completed local teardown.
 func (d *Dispatcher) timedOutSetupCleanupCurrent(setup workerExitInfo) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	w := d.workers[setup.workerID]
-	return w != nil && w.state == protocol.WorkerIdle && w.beadID == "" &&
-		w.reservationGen == setup.reservationGen && !d.assigningBeads[setup.beadID]
+	return d.assignmentReservationHeldLocked(setup.workerID, setup.beadID, setup.reservationGen)
+}
+
+// finishTimedOutSetupCleanup releases a reaped setup only after its remote
+// cleanup has returned. Reservation validation and every shared tracking-map
+// effect occur in one lock-held transition, so a successor cannot observe or
+// overwrite a partial g1 teardown.
+func (d *Dispatcher) finishTimedOutSetupCleanup(setup workerExitInfo) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.assignmentReservationHeldLocked(setup.workerID, setup.beadID, setup.reservationGen) {
+		return false
+	}
+	d.clearBeadTrackingLocked(setup.beadID)
+	return d.releaseAssignmentReservationLocked(setup.workerID, setup.beadID, setup.reservationGen)
 }
 
 func (d *Dispatcher) removeDeadWorkersLocked(ctx context.Context, dead []string) (deadWorkers []workerExitInfo, managedExits int) {

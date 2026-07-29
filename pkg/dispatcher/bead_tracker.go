@@ -45,6 +45,11 @@ type BeadTracker struct {
 // escalation, heartbeat timeout) to prevent map entry leaks.
 func (d *Dispatcher) clearBeadTracking(beadID string) {
 	d.mu.Lock()
+	d.clearBeadTrackingLocked(beadID)
+	d.mu.Unlock()
+}
+
+func (d *Dispatcher) clearBeadTrackingLocked(beadID string) {
 	delete(d.attemptCounts, beadID)
 	delete(d.transientCounts, beadID)
 	delete(d.handoffCounts, beadID)
@@ -59,7 +64,6 @@ func (d *Dispatcher) clearBeadTracking(beadID string) {
 	delete(d.assigningBeads, beadID)
 	delete(d.mergingBeads, beadID)
 	delete(d.processedExternalClose, beadID)
-	d.mu.Unlock()
 }
 
 // clearBeadTrackingPreservingBlockedReviewCount releases a retryable review
