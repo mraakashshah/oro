@@ -95,7 +95,7 @@ func TestCollectEffectiveRulePages(t *testing.T) {
 				cancel()
 			}
 
-			client := Client{repository: "acme/oro", collection: &fixture, collectionLimits: limits}
+			client := PreflightClient{repository: "acme/oro", collection: &fixture, collectionLimits: limits}
 			got, err := client.collectEffectiveRuleResponses(ctx, "main")
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {

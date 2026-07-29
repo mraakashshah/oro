@@ -23,7 +23,7 @@ func (readOnlyWorkflowAPI) GetContent(context.Context, string, string) ([]byte, 
 
 func TestReadOnlyWorkflowPreflightBoundary(t *testing.T) {
 	var reader APIReader = readOnlyWorkflowAPI{}
-	client := Client{api: reader}
+	client := PreflightClient{api: reader}
 	if client.api != reader {
 		t.Fatal("Client did not retain the read-only API reader")
 	}
@@ -113,7 +113,7 @@ func TestFetchActiveWorkflowMetadata(t *testing.T) {
 			if tt.cancelAfterRead {
 				r.cancelAfterRead = cancel
 			}
-			client := Client{api: r}
+			client := PreflightClient{api: r}
 			path, state, err := client.fetchWorkflowMetadata(ctx, tt.repository, tt.workflow)
 			if tt.wantRead == 1 && r.path != "repos/acme/oro/actions/workflows/ci.yml" {
 				t.Fatalf("request path = %q", r.path)
@@ -184,7 +184,7 @@ func TestFetchRepositoryDefaultBranch(t *testing.T) {
 		DefaultBranch string `json:"default_branch"`
 	}{FullName: "acme/oro", DefaultBranch: "main"}
 	reader := &defaultBranchReader{response: response}
-	client := Client{api: reader}
+	client := PreflightClient{api: reader}
 
 	branch, err := client.fetchDefaultBranch(context.Background(), "acme/oro")
 	if err != nil || branch != "main" {
@@ -225,7 +225,7 @@ func TestFetchRepositoryDefaultBranch(t *testing.T) {
 				cancel()
 			}
 			r := &defaultBranchReader{response: tc.response, err: tc.err}
-			client := Client{api: r}
+			client := PreflightClient{api: r}
 			_, err := client.fetchDefaultBranch(ctx, tc.repo)
 			if !errors.Is(err, remotegate.ErrWorkflowIneligible) {
 				t.Fatalf("error %v does not satisfy ErrWorkflowIneligible", err)
@@ -304,7 +304,7 @@ func TestFetchDefaultBranchWorkflowRegistration(t *testing.T) {
 		workflowResponse:   `{"path":".github/workflows/ci.yml","state":"active"}`,
 		contents:           contents,
 	}
-	client := Client{api: reader}
+	client := PreflightClient{api: reader}
 
 	registration, err := client.fetchWorkflowRegistration(context.Background(), PreflightRequest{
 		Repository: repository,
@@ -348,7 +348,7 @@ func TestFetchDefaultBranchWorkflowRegistration(t *testing.T) {
 			r := tc.reader
 			r.cancelAfter = tc.cancelAfter
 			r.cancel = cancel
-			got, err := (&Client{api: &r}).fetchWorkflowRegistration(ctx, PreflightRequest{Repository: repository, Workflow: workflow})
+			got, err := (&PreflightClient{api: &r}).fetchWorkflowRegistration(ctx, PreflightRequest{Repository: repository, Workflow: workflow})
 			if !errors.Is(err, remotegate.ErrWorkflowIneligible) {
 				t.Fatalf("error = %v, want ErrWorkflowIneligible", err)
 			}
@@ -418,7 +418,7 @@ func TestPreflightWorkflowEligibility(t *testing.T) {
 		workflowResponse:   workflowResponse,
 		contents:           validContents,
 	}
-	got, err := (&Client{api: reader}).inspectWorkflow(context.Background(), request)
+	got, err := (&PreflightClient{api: reader}).inspectWorkflow(context.Background(), request)
 	if err != nil {
 		t.Fatalf("inspectWorkflow() error = %v", err)
 	}
@@ -469,7 +469,7 @@ func TestPreflightWorkflowEligibility(t *testing.T) {
 				jsonErr:            tt.jsonErr,
 				contentErr:         tt.contentErr,
 			}
-			evidence, err := (&Client{api: r}).inspectWorkflow(ctx, request)
+			evidence, err := (&PreflightClient{api: r}).inspectWorkflow(ctx, request)
 			if !errors.Is(err, remotegate.ErrWorkflowIneligible) {
 				t.Fatalf("inspectWorkflow() error = %v, want ErrWorkflowIneligible", err)
 			}
@@ -500,7 +500,7 @@ func TestClientPreflightCollectsWorkflowAndPolicy(t *testing.T) {
 		Enforcement: "active",
 		Operations:  []string{"update"},
 	}}}}
-	client := NewClient(reader, "acme/oro", collection, CollectionLimits{MaxPages: 1, MaxItems: 2, MaxBytes: 1024})
+	client := NewPreflightClient(reader, "acme/oro", collection, CollectionLimits{MaxPages: 1, MaxItems: 2, MaxBytes: 1024})
 	evidence, err := client.Preflight(context.Background(), PreflightRequest{
 		Repository: "acme/oro",
 		Workflow:   "ci.yml",
