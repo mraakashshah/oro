@@ -18,6 +18,36 @@ workflow_on_block() {
 	' "$workflow_path"
 }
 
+workflow_job_names() {
+	awk '
+		/^jobs:$/ { in_jobs = 1; next }
+		in_jobs && /^[^[:space:]]/ { exit }
+		in_jobs && /^  [a-z0-9][a-z0-9-]*:$/ {
+			job = $1
+			sub(/:$/, "", job)
+			print job
+		}
+	' "$workflow_path"
+}
+
+portable_job_names() {
+	workflow_job_names | grep -vx 'oro-portable-qg'
+}
+
+portable_qg_needs() {
+	awk '
+		/^  oro-portable-qg:$/ { in_aggregate = 1; next }
+		in_aggregate && /^  [a-z0-9][a-z0-9-]*:$/ { exit }
+		in_aggregate && /^    needs: / {
+			needs = $0
+			sub(/^    needs: \[/, "", needs)
+			sub(/\]$/, "", needs)
+			gsub(/, /, "\n", needs)
+			print needs
+		}
+	' "$workflow_path"
+}
+
 TestPullRequestTargets() {
 	local on_block push_block pr_block
 	on_block=$(workflow_on_block)
@@ -49,11 +79,46 @@ TestPullRequestTargets() {
 		fail 'push must retain an explicit target branch filter'
 }
 
+TestPortableQGAggregate() {
+	local expected_jobs actual_needs actual_required needs_json successful_needs status
+	expected_jobs=$(portable_job_names | sort)
+	actual_needs=$(portable_qg_needs | sort)
+	actual_required=$(sed -n 's/^readonly required_jobs=(\(.*\))$/\1/p' \
+		"$repo_root/scripts/ci/require-needs-success.sh" | tr ' ' '\n' | sort)
+
+	[[ $(grep -Ec '^  oro-portable-qg:$' "$workflow_path") -eq 1 ]] ||
+		fail 'oro-portable-qg must be defined exactly once'
+	awk '
+		/^  oro-portable-qg:$/ { in_aggregate = 1; next }
+		in_aggregate && /^  [a-z0-9][a-z0-9-]*:$/ { exit }
+		in_aggregate && /^    if: \$\{\{ always\(\) \}\}$/ { found = 1 }
+		END { exit !found }
+	' "$workflow_path" || fail 'oro-portable-qg must use always()'
+	[[ "$actual_needs" == "$expected_jobs" ]] ||
+		fail 'oro-portable-qg needs must include every portable job exactly once'
+	[[ "$actual_required" == "$expected_jobs" ]] ||
+		fail 'require-needs-success must require every portable job exactly once'
+
+	successful_needs='{"go":{"result":"success"},"cgo-free":{"result":"success"},"shell":{"result":"success"},"docs":{"result":"success"},"python":{"result":"success"}}'
+	for status in skipped cancelled timed_out action_required; do
+		needs_json=$(printf '%s\n' "$successful_needs" | jq --arg status "$status" '.go.result = $status')
+		if "$repo_root/scripts/ci/require-needs-success.sh" "$needs_json" >/dev/null 2>&1; then
+			fail "require-needs-success accepted $status dependency"
+		fi
+	done
+	if "$repo_root/scripts/ci/require-needs-success.sh" '{}' >/dev/null 2>&1; then
+		fail 'require-needs-success accepted missing dependencies'
+	fi
+}
+
 main() {
 	local requested_test=${1:-}
 	case "$requested_test" in
 	'' | TestPullRequestTargets)
 		TestPullRequestTargets
+		;;
+	TestPortableQGAggregate)
+		TestPortableQGAggregate
 		;;
 	*)
 		fail "unknown test $requested_test"
