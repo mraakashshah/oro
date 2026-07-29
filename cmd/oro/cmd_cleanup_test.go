@@ -5,12 +5,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/factoryhealth"
 )
 
 func TestCleanup_NothingToClean(t *testing.T) {
@@ -615,6 +617,119 @@ func TestCleanup_ResetsInProgressBeads(t *testing.T) {
 	}
 	if !strings.Contains(out, "cleared active assignment for bead oro-assigned-open") {
 		t.Errorf("expected output to mention cleared assignment, got: %s", out)
+	}
+}
+
+func TestCleanupAssignmentsOnlyPreservesBranchesAndWorktrees(t *testing.T) {
+	ctx := context.Background()
+	repo := initLeakscanGitRepo(t)
+	worktree := filepath.Join(repo, ".worktrees", "oro-fixture")
+	if err := os.MkdirAll(filepath.Dir(worktree), 0o750); err != nil {
+		t.Fatalf("create worktrees directory: %v", err)
+	}
+	runGit(t, repo, "worktree", "add", "-b", "agent/oro-fixture", worktree, "HEAD")
+
+	dbPath := filepath.Join(repo, "state.db")
+	db, err := openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	store := beadstore.NewSQLiteStore(db)
+	for _, id := range []string{"oro-stale", "oro-live"} {
+		if _, err := store.Create(ctx, beadstore.CreateParams{ID: id, Title: id, Type: "task", Priority: 1}); err != nil {
+			t.Fatalf("create bead %s: %v", id, err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES
+  ('oro-stale', 'crashed-worker', ?, 'active'),
+  ('oro-live', 'live-worker', '/tmp/oro-live', 'active')`, worktree); err != nil {
+		t.Fatalf("seed assignments: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seeded state db: %v", err)
+	}
+
+	pidPath := filepath.Join(repo, "oro.pid")
+	sockPath := filepath.Join(repo, "oro.sock")
+	for _, path := range []string{pidPath, sockPath} {
+		if err := os.WriteFile(path, []byte("preserve"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	fake := newFakeCmd()
+	var buf bytes.Buffer
+	signaled := false
+	cfg := &cleanupConfig{
+		AssignmentsOnly: true,
+		runner:          fake,
+		w:               &buf,
+		pidPath:         pidPath,
+		sockPath:        sockPath,
+		stateDBPath:     dbPath,
+		worktreesDir:    filepath.Join(repo, ".worktrees"),
+		signalFn: func(int) error {
+			signaled = true
+			return nil
+		},
+		liveWorkerIDs: func(context.Context) (map[string]bool, error) {
+			return map[string]bool{"live-worker": true}, nil
+		},
+	}
+	if err := runCleanup(ctx, cfg); err != nil {
+		t.Fatalf("run assignments-only cleanup: %v", err)
+	}
+	if signaled || len(fake.getCalls()) != 0 {
+		t.Fatalf("assignments-only cleanup touched processes or git: signaled=%t calls=%v", signaled, fake.getCalls())
+	}
+
+	db, err = openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("reopen state db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	active, err := factoryhealth.LoadActiveAssignments(ctx, db, time.Now())
+	if err != nil {
+		t.Fatalf("load active assignments: %v", err)
+	}
+	health := factoryhealth.Evaluate(factoryhealth.Snapshot{
+		DaemonRunning:     true,
+		Workers:           []factoryhealth.WorkerSnapshot{{ID: "live-worker", BeadID: "oro-live"}},
+		ActiveAssignments: active,
+		Storage:           &factoryhealth.StorageHealth{Available: true},
+	})
+	if health.Metrics.OrphanAssignments != 0 {
+		t.Fatalf("orphan assignments = %d, want 0; health=%+v", health.Metrics.OrphanAssignments, health)
+	}
+
+	var staleStatus, liveStatus string
+	if err := db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE worker_id='crashed-worker'`).Scan(&staleStatus); err != nil {
+		t.Fatalf("read stale assignment: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE worker_id='live-worker'`).Scan(&liveStatus); err != nil {
+		t.Fatalf("read live assignment: %v", err)
+	}
+	if staleStatus != "completed" || liveStatus != "active" {
+		t.Fatalf("assignment statuses stale/live = %q/%q, want completed/active", staleStatus, liveStatus)
+	}
+
+	branchCmd := exec.Command("git", "branch", "--list", "agent/oro-fixture")
+	branchCmd.Dir = repo
+	branchOut, err := branchCmd.Output()
+	if err != nil {
+		t.Fatalf("list fixture branch: %v", err)
+	}
+	if strings.TrimSpace(string(branchOut)) == "" {
+		t.Fatal("fixture agent branch was removed")
+	}
+	if _, err := os.Stat(worktree); err != nil {
+		t.Fatalf("fixture worktree was removed: %v", err)
+	}
+	for _, path := range []string{pidPath, sockPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("assignments-only cleanup removed %s: %v", path, err)
+		}
 	}
 }
 
