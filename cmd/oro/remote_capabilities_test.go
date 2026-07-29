@@ -16,6 +16,7 @@ import (
 
 	"oro/pkg/config"
 	"oro/pkg/remotegate"
+	remotegithub "oro/pkg/remotegate/github"
 
 	"github.com/spf13/cobra"
 )
@@ -42,18 +43,16 @@ esac
 		t.Fatalf("read gh helper: %v", err)
 	}
 	digest := sha256.Sum256(contents)
-	api, err := newStartupGitHubAPI(config.RemoteGateConfig{
-		GitHub: config.GitHubRemoteGateConfig{
-			API:             config.GitHubAPIConfig{BaseURL: "https://api.github.example"},
-			RuntimeIdentity: config.GitHubAppIdentityConfig{Type: "github-app", AppID: 1, InstallationID: 2, PrivateKeyRef: "keychain:runtime"},
-		},
-	}, Capabilities{
-		Host:       "github.example",
-		Repository: "oro/oro",
-		GitHubCLI:  ExecutableEvidence{Path: ghPath, Hash: hex.EncodeToString(digest[:])},
+	api, err := remotegithub.NewStartupAPI(remotegithub.StartupAPIConfig{
+		APIBaseURL:      "https://api.github.example",
+		RuntimeIdentity: config.GitHubAppIdentityConfig{Type: "github-app", AppID: 1, InstallationID: 2, PrivateKeyRef: "keychain:runtime"},
+		Host:            "github.example",
+		Repository:      "oro/oro",
+		CLIPath:         ghPath,
+		CLIHash:         hex.EncodeToString(digest[:]),
 	})
 	if err != nil {
-		t.Fatalf("newStartupGitHubAPI() error = %v", err)
+		t.Fatalf("NewStartupAPI() error = %v", err)
 	}
 	var response struct {
 		Login string `json:"login"`

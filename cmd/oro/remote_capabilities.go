@@ -14,7 +14,6 @@ import (
 	"reflect"
 	"strings"
 	"syscall"
-	"time"
 
 	"oro/pkg/config"
 	"oro/pkg/remotegate"
@@ -296,9 +295,16 @@ func preflightStartupRemoteGate(ctx context.Context, projectRoot string) error {
 	if capabilities.Host == "" || capabilities.Repository == "" || capabilities.DefaultBranch == "" {
 		return errors.New("persisted remote capabilities are missing host, repository, or default branch")
 	}
-	api, err := newStartupGitHubAPI(cfg.Factory.QualityGate, capabilities)
+	api, err := remotegithub.NewStartupAPI(remotegithub.StartupAPIConfig{
+		APIBaseURL:      cfg.Factory.QualityGate.GitHub.API.BaseURL,
+		RuntimeIdentity: cfg.Factory.QualityGate.GitHub.RuntimeIdentity,
+		Host:            capabilities.Host,
+		Repository:      capabilities.Repository,
+		CLIPath:         capabilities.GitHubCLI.Path,
+		CLIHash:         capabilities.GitHubCLI.Hash,
+	})
 	if err != nil {
-		return err
+		return fmt.Errorf("construct startup GitHub API: %w", err)
 	}
 	client := remotegithub.NewClient(api, capabilities.Repository, api, remotegithub.CollectionLimits{
 		MaxPages: startupPolicyMaxPages,
@@ -329,139 +335,6 @@ func preflightStartupRemoteGate(ctx context.Context, projectRoot string) error {
 		return errors.New("GitHub effective policy drifted since setup")
 	}
 	return nil
-}
-
-type startupGitHubAPI struct {
-	runner     *remotegithub.GHRunner
-	host       string
-	repository string
-}
-
-func newStartupGitHubAPI(cfg RemoteGateConfig, capabilities Capabilities) (startupGitHubAPI, error) {
-	baseURL, err := url.Parse(cfg.GitHub.API.BaseURL)
-	if err != nil {
-		return startupGitHubAPI{}, fmt.Errorf("parse GitHub API base URL: %w", err)
-	}
-	if baseURL.Host == "" {
-		return startupGitHubAPI{}, errors.New("GitHub API base URL is missing a host")
-	}
-	target := remotegate.CredentialTarget{
-		Identity: cfg.GitHub.RuntimeIdentity,
-		Host:     capabilities.Host,
-		Owner:    strings.Split(capabilities.Repository, "/")[0],
-		Name:     strings.TrimPrefix(capabilities.Repository, strings.Split(capabilities.Repository, "/")[0]+"/"),
-	}
-	provider := remotegate.NewRuntimeCredentialProvider(target, startupGitHubCredentialSource{executable: capabilities.GitHubCLI.Path})
-	runner, err := remotegithub.NewGHRunner(remotegithub.AttestedCLI{
-		Path: capabilities.GitHubCLI.Path,
-		Hash: capabilities.GitHubCLI.Hash,
-	}, provider, remotegithub.GHRunnerConfig{Host: capabilities.Host})
-	if err != nil {
-		return startupGitHubAPI{}, fmt.Errorf("construct attested GitHub API runner: %w", err)
-	}
-	return startupGitHubAPI{runner: runner, host: capabilities.Host, repository: capabilities.Repository}, nil
-}
-
-func (api startupGitHubAPI) GetJSON(ctx context.Context, path string, dst any) error {
-	output, err := api.run(ctx, "api", "--hostname", api.host, path)
-	if err != nil {
-		return err
-	}
-	if err := json.Unmarshal(output, dst); err != nil {
-		return fmt.Errorf("decode GitHub JSON: %w", err)
-	}
-	return nil
-}
-
-func (api startupGitHubAPI) GetContent(ctx context.Context, path, ref string) ([]byte, error) {
-	endpoint := "repos/" + api.repository + "/contents/" + strings.TrimPrefix(path, "/") + "?ref=" + url.QueryEscape(ref)
-	return api.run(ctx, "api", "--hostname", api.host, "--header", "Accept: application/vnd.github.raw+json", endpoint)
-}
-
-func (api startupGitHubAPI) CollectJSON(ctx context.Context, request remotegithub.CollectionRequest, dst any) (remotegithub.CollectionEvidence, error) {
-	output, err := api.run(ctx, "api", "--hostname", api.host, request.Path)
-	if err != nil {
-		return remotegithub.CollectionEvidence{}, err
-	}
-	if len(output) > request.MaxBytes {
-		return remotegithub.CollectionEvidence{}, errors.New("GitHub policy response exceeds byte limit")
-	}
-	var items []json.RawMessage
-	if err := json.Unmarshal(output, &items); err != nil {
-		return remotegithub.CollectionEvidence{}, fmt.Errorf("decode GitHub policy collection: %w", err)
-	}
-	if len(items) > request.MaxItems {
-		return remotegithub.CollectionEvidence{}, errors.New("GitHub policy response exceeds item limit")
-	}
-	if err := json.Unmarshal(output, dst); err != nil {
-		return remotegithub.CollectionEvidence{}, fmt.Errorf("decode GitHub policy collection: %w", err)
-	}
-	return remotegithub.CollectionEvidence{PageCount: 1, ItemCount: len(items)}, nil
-}
-
-func (api startupGitHubAPI) run(ctx context.Context, args ...string) ([]byte, error) {
-	request, err := startupAPIRequest(args)
-	if err != nil {
-		return nil, fmt.Errorf("run GitHub API command: %w", err)
-	}
-	output, err := api.runner.Run(ctx, request)
-	if err != nil {
-		return nil, fmt.Errorf("run GitHub API command: %w", err)
-	}
-	return output, nil
-}
-
-type startupGitHubCredentialSource struct {
-	executable string
-}
-
-func (source startupGitHubCredentialSource) Resolve(ctx context.Context, request remotegate.CredentialRequest) (remotegate.Credential, error) {
-	command := exec.CommandContext(ctx, source.executable, "auth", "token", "--hostname", request.Host) //nolint:gosec // executable is validated by the attested GH runner constructor.
-	output, err := command.Output()
-	if err != nil {
-		return remotegate.Credential{}, fmt.Errorf("read GitHub runtime token: %w", err)
-	}
-	return remotegate.Credential{
-		Token:          strings.TrimSpace(string(output)),
-		Role:           request.Role,
-		AppID:          request.Identity.AppID,
-		InstallationID: request.Identity.InstallationID,
-		Host:           request.Host,
-		Owner:          request.Owner,
-		Name:           request.Name,
-		Permissions:    request.Permissions,
-		ExpiresAt:      time.Now().Add(time.Minute),
-	}, nil
-}
-
-func startupAPIRequest(args []string) (remotegithub.APIRequest, error) {
-	if len(args) < 2 || args[0] != "api" {
-		return remotegithub.APIRequest{}, errors.New("unsupported GitHub API command")
-	}
-	request := remotegithub.APIRequest{Method: "GET"}
-	for index := 1; index < len(args); index++ {
-		argument := args[index]
-		switch argument {
-		case "--hostname":
-			index++
-		case "--header":
-			index++
-			if index >= len(args) {
-				return remotegithub.APIRequest{}, errors.New("GitHub API header is missing a value")
-			}
-			request.Headers = append(request.Headers, args[index])
-			request.Raw = true
-		default:
-			if strings.HasPrefix(argument, "--") || request.Path != "" {
-				return remotegithub.APIRequest{}, errors.New("unsupported GitHub API command")
-			}
-			request.Path = "/" + strings.TrimPrefix(argument, "/")
-		}
-	}
-	if request.Path == "/" {
-		return remotegithub.APIRequest{}, errors.New("GitHub API path is missing")
-	}
-	return request, nil
 }
 
 func verifyStartCommandRemoteCapabilities(ctx context.Context) error {
