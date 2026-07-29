@@ -7562,7 +7562,7 @@ func (d *Dispatcher) prepareAssignmentWorktree(
 	d.mu.Lock()
 	if !d.assignmentReservationHeldLocked(workerID, beadID, reservationGen) {
 		d.mu.Unlock()
-		_ = d.worktrees.Remove(ctx, worktree)
+		d.removeUnsharedAssignmentWorktree(ctx, beadID, worktree)
 		return "", "", false
 	}
 	d.worktreeByBead[beadID] = worktree
@@ -7760,11 +7760,8 @@ func (d *Dispatcher) abortAssignmentReservationLost(ctx context.Context, beadID,
 		_ = d.completeAssignment(ctx, assignmentID, beadID)
 	}
 	if !current {
-		d.mu.Lock()
-		worktreeIsShared := d.worktreeByBead[beadID] == worktree
-		d.mu.Unlock()
-		if removeWorktree && worktree != "" && !worktreeIsShared {
-			_ = d.worktrees.Remove(ctx, worktree)
+		if removeWorktree {
+			d.removeUnsharedAssignmentWorktree(ctx, beadID, worktree)
 		}
 		_ = d.logEvent(ctx, "assignment_aborted_reservation_lost", "dispatcher", beadID, workerID, "")
 		return
@@ -7778,6 +7775,20 @@ func (d *Dispatcher) abortAssignmentReservationLost(ctx context.Context, beadID,
 	d.releaseAssignmentClaim(workerID, beadID, reservationGen)
 	_ = d.logEvent(ctx, "assignment_aborted_reservation_lost", "dispatcher", beadID, workerID, "")
 	d.notifyAssignLoop()
+}
+
+// removeUnsharedAssignmentWorktree removes a setup worktree only when a newer
+// reservation has not published that same deterministic path for the bead.
+func (d *Dispatcher) removeUnsharedAssignmentWorktree(ctx context.Context, beadID, worktree string) {
+	if worktree == "" {
+		return
+	}
+	d.mu.Lock()
+	shared := d.worktreeByBead[beadID] == worktree
+	d.mu.Unlock()
+	if !shared {
+		_ = d.worktrees.Remove(ctx, worktree)
+	}
 }
 
 func (d *Dispatcher) abortAssignmentForFocusChange(ctx context.Context, beadID, workerID string, reservationGen uint64, worktree string, removeWorktree bool, assignmentID int64) {

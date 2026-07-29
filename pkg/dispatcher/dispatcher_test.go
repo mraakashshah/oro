@@ -124,6 +124,34 @@ func TestStaleSetupFailureCannotDeleteReplacementState(t *testing.T) {
 	if reopened {
 		t.Fatalf("g1 cleanup reopened g2 bead: %q", updated)
 	}
+
+	t.Run("created worktree", func(t *testing.T) {
+		const createdWorktree = "/tmp/worktree-created-stale-setup"
+		wtMgr.createFn = func(_ context.Context, _, _ string) (string, string, error) {
+			d.mu.Lock()
+			d.workers[workerID].reservationGen = 3
+			d.worktreeByBead[beadID] = createdWorktree
+			d.mu.Unlock()
+			return createdWorktree, protocol.BranchPrefix + beadID, nil
+		}
+
+		if worktree, _, created := d.prepareAssignmentWorktree(ctx, beadID, workerID, 2, "", "main", "main"); worktree != "" || created {
+			t.Fatalf("stale setup returned worktree=%q created=%t, want no assignment", worktree, created)
+		}
+
+		wtMgr.mu.Lock()
+		removed := append([]string(nil), wtMgr.removed...)
+		wtMgr.mu.Unlock()
+		if len(removed) != 0 {
+			t.Fatalf("stale created-worktree cleanup removed successor worktree: %v", removed)
+		}
+		d.mu.Lock()
+		observedWorktree := d.worktreeByBead[beadID]
+		d.mu.Unlock()
+		if observedWorktree != createdWorktree {
+			t.Fatalf("stale created-worktree cleanup cleared successor mapping: %q", observedWorktree)
+		}
+	})
 }
 
 // mockConn is a simple net.Conn implementation that captures writes.
