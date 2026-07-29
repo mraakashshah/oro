@@ -485,3 +485,37 @@ func TestPreflightWorkflowEligibility(t *testing.T) {
 		})
 	}
 }
+
+func TestClientPreflightCollectsWorkflowAndPolicy(t *testing.T) {
+	reader := &workflowEligibilityReader{
+		repositoryResponse: `{"full_name":"acme/oro","default_branch":"main"}`,
+		workflowResponse:   `{"path":".github/workflows/ci.yml","state":"active"}`,
+		contents:           []byte("on:\n  workflow_dispatch:\n  pull_request:\n"),
+	}
+	collection := &targetRuleCollectionFixture{itemsByTarget: map[string][]effectiveRuleResponse{"main": {{
+		ID:          1,
+		Source:      "repository",
+		Version:     "1",
+		Pattern:     "main",
+		Enforcement: "active",
+		Operations:  []string{"update"},
+	}}}}
+	client := NewClient(reader, "acme/oro", collection, CollectionLimits{MaxPages: 1, MaxItems: 2, MaxBytes: 1024})
+	evidence, err := client.Preflight(context.Background(), PreflightRequest{
+		Repository: "acme/oro",
+		Workflow:   "ci.yml",
+		Targets:    []string{"main"},
+	})
+	if err != nil {
+		t.Fatalf("Preflight() error = %v", err)
+	}
+	if evidence.Workflow.Ref != "main" || evidence.Hash == "" || len(evidence.Policy.Rules) != 1 {
+		t.Fatalf("Preflight() evidence = %+v, want workflow and policy evidence", evidence)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := client.Preflight(ctx, PreflightRequest{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Preflight() canceled error = %v, want context.Canceled", err)
+	}
+}

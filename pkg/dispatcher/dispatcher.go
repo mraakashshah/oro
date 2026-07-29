@@ -608,6 +608,8 @@ type trackedWorker struct {
 	reasoning        string // resolved Codex reasoning effort for the current bead assignment
 	lastSeen         time.Time
 	lastProgress     time.Time // last time meaningful progress was observed (DONE/READY_FOR_REVIEW/QG/first STATUS)
+	setupReservedAt  time.Time // start of assignment setup; zero for other reserved-worker flows
+	reservationGen   uint64    // increments on every assignment-reservation transition
 	contextPct       int       // context usage percentage from last heartbeat (0-100)
 	encoder          *json.Encoder
 	pendingMsgs      []protocol.Message // buffered messages for disconnected worker
@@ -5618,16 +5620,10 @@ func (d *Dispatcher) handleShutdownApproved(ctx context.Context, workerID string
 		assignmentID = w.assignmentID
 		if w.shutdownReason == shutdownReasonScaleDown || w.spawnFor {
 			sendShutdownWithoutBuffering(w)
-			w.markShuttingDownWithoutAssignment()
 		} else {
 			_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
-			w.state = protocol.WorkerIdle
-			w.shutdownReason = ""
-			w.assignmentID = 0
-			w.beadID = ""
-			w.epicID = ""
-			w.isEpicDecomp = false
 		}
+		w.markShuttingDownWithoutAssignment()
 	}
 	d.mu.Unlock()
 
@@ -7008,18 +7004,13 @@ func (d *Dispatcher) checkBeadReady(ctx context.Context, bead protocol.Bead, wor
 			return title, "", false
 		}
 	}
-	if modules := protocol.CountDistinctModules(acceptance); modules > 2 {
-		// Epics are expected to span multiple modules; skip the oversized check.
-		// Also skip if the bead already has children — it was decomposed externally.
-		isEpic := strings.EqualFold(bead.Type, "epic")
-		hasChildren, _ := d.beads.HasChildren(ctx, bead.ID)
-		if !isEpic && !hasChildren {
-			d.escalate(ctx, protocol.FormatEscalation(protocol.EscOversizedBead, bead.ID,
-				fmt.Sprintf("touches %d modules — needs decomposition", modules), ""), bead.ID, workerID)
-			d.recordAssignmentFailure(bead.ID)
-			return title, "", false
-		}
-	}
+	// The oversized admission gate was removed here. It counted distinct
+	// directories cited in the acceptance criteria's "Read:" lines, which
+	// measures how thoroughly the criteria were researched — not how large the
+	// change is. A well-cited task was rejected; a task with no Read: line
+	// counted zero and always passed. It fired 1,104 times, and its only remedy
+	// was decomposition into more tasks, each paying full quality-gate and
+	// review cost. Oversized work is now caught at review instead.
 	return title, acceptance, true
 }
 
@@ -7302,6 +7293,9 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 	w.model = ""
 	w.reasoning = ""
 	w.lastProgress = d.nowFunc()
+	w.setupReservedAt = w.lastProgress
+	w.reservationGen++
+	reservationGen := w.reservationGen
 	d.mu.Unlock()
 	reportClaim(true)
 
@@ -7313,11 +7307,11 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 		d.mu.Lock()
 		delete(d.assigningBeads, bead.ID)
 		d.mu.Unlock()
-		d.releaseAssignmentReservation(w.id, bead.ID)
+		d.releaseAssignmentReservation(w.id, bead.ID, reservationGen)
 		return nil
 	}
 	if d.focusChangedSince(focusVersion) {
-		d.abortAssignmentForFocusChange(ctx, bead.ID, w.id, "", false, 0)
+		d.abortAssignmentForFocusChange(ctx, bead.ID, w.id, reservationGen, "", false, 0)
 		return nil
 	}
 
@@ -7352,12 +7346,12 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 		d.mu.Lock()
 		delete(d.assigningBeads, bead.ID)
 		d.mu.Unlock()
-		d.releaseAssignmentReservation(w.id, bead.ID)
+		d.releaseAssignmentReservation(w.id, bead.ID, reservationGen)
 		return nil
 	}
 	if baseBranch != d.cfg.DefaultBranch {
 		if !d.ensureEpicBranchReady(ctx, bead, w, baseBranch, resolvedEpicID) {
-			d.releaseAssignmentReservation(w.id, bead.ID)
+			d.releaseAssignmentReservation(w.id, bead.ID, reservationGen)
 			return nil
 		}
 	}
@@ -7375,17 +7369,17 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 			fmt.Sprintf(`{"stale_path":%q}`, stalePath))
 	}
 
-	worktree, branch, createdWorktree = d.prepareAssignmentWorktree(ctx, bead.ID, w.id, existingWorktree, baseBranch, targetBranch)
+	worktree, branch, createdWorktree = d.prepareAssignmentWorktree(ctx, bead.ID, w.id, reservationGen, existingWorktree, baseBranch, targetBranch)
 	if worktree == "" {
-		d.releaseAssignmentReservation(w.id, bead.ID)
+		d.releaseAssignmentReservation(w.id, bead.ID, reservationGen)
 		return nil
 	}
 	if d.focusChangedSince(focusVersion) {
-		d.abortAssignmentForFocusChange(ctx, bead.ID, w.id, worktree, createdWorktree, 0)
+		d.abortAssignmentForFocusChange(ctx, bead.ID, w.id, reservationGen, worktree, createdWorktree, 0)
 		return nil
 	}
-	if !d.assignmentReservationHeld(w.id, bead.ID) {
-		d.abortAssignmentReservationLost(ctx, bead.ID, w.id, worktree, createdWorktree, 0)
+	if !d.assignmentReservationHeld(w.id, bead.ID, reservationGen) {
+		d.abortAssignmentReservationLost(ctx, bead.ID, w.id, reservationGen, worktree, createdWorktree, 0)
 		return nil
 	}
 
@@ -7403,15 +7397,15 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 		d.mu.Lock()
 		delete(d.assigningBeads, bead.ID)
 		d.mu.Unlock()
-		d.releaseAssignmentReservation(w.id, bead.ID)
+		d.releaseAssignmentReservation(w.id, bead.ID, reservationGen)
 		return nil
 	}
 	if d.focusChangedSince(focusVersion) {
-		d.abortAssignmentForFocusChange(ctx, bead.ID, w.id, worktree, createdWorktree, assignmentID)
+		d.abortAssignmentForFocusChange(ctx, bead.ID, w.id, reservationGen, worktree, createdWorktree, assignmentID)
 		return nil
 	}
-	if !d.attachAssignmentToReservation(w.id, bead.ID, assignmentID, worktree, baseBranch, targetBranch, resolvedEpicID, isEpicDecomp) {
-		d.abortAssignmentReservationLost(ctx, bead.ID, w.id, worktree, createdWorktree, assignmentID)
+	if !d.attachAssignmentToReservation(w.id, bead.ID, reservationGen, assignmentID, worktree, baseBranch, targetBranch, resolvedEpicID, isEpicDecomp) {
+		d.abortAssignmentReservationLost(ctx, bead.ID, w.id, reservationGen, worktree, createdWorktree, assignmentID)
 		return nil
 	}
 	_ = d.logEvent(ctx, "assign", "dispatcher", bead.ID, w.id,
@@ -7462,7 +7456,7 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 		d.mu.Lock()
 		delete(d.assigningBeads, bead.ID)
 		d.mu.Unlock()
-		d.releaseAssignmentReservation(w.id, bead.ID)
+		d.releaseAssignmentReservation(w.id, bead.ID, reservationGen)
 		return nil
 	}
 	execution.Capability = capability.Token
@@ -7490,12 +7484,12 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 	d.mu.Lock()
 	if d.focusVersion != focusVersion {
 		d.mu.Unlock()
-		d.abortAssignmentForFocusChange(ctx, bead.ID, w.id, worktree, createdWorktree, assignmentID)
+		d.abortAssignmentForFocusChange(ctx, bead.ID, w.id, reservationGen, worktree, createdWorktree, assignmentID)
 		return nil
 	}
-	if !d.assignmentReservationHeldLocked(w.id, bead.ID) {
+	if !d.assignmentReservationHeldLocked(w.id, bead.ID, reservationGen) {
 		d.mu.Unlock()
-		d.abortAssignmentReservationLost(ctx, bead.ID, w.id, worktree, createdWorktree, assignmentID)
+		d.abortAssignmentReservationLost(ctx, bead.ID, w.id, reservationGen, worktree, createdWorktree, assignmentID)
 		return nil
 	}
 	w.state = protocol.WorkerBusy
@@ -7511,6 +7505,7 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 	w.model = resolvedModel
 	w.reasoning = resolvedReasoning
 	w.lastProgress = d.nowFunc()
+	w.setupReservedAt = time.Time{}
 	err = d.sendToWorker(w, protocol.Message{
 		Type:   protocol.MsgAssign,
 		Assign: payload,
@@ -7538,7 +7533,9 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 
 func (d *Dispatcher) prepareAssignmentWorktree(
 	ctx context.Context,
-	beadID, workerID, existingWorktree, baseBranch, targetBranch string,
+	beadID, workerID string,
+	reservationGen uint64,
+	existingWorktree, baseBranch, targetBranch string,
 ) (worktree, branch string, created bool) {
 	if existingWorktree != "" {
 		expectedBranch := protocol.BranchPrefix + beadID
@@ -7563,6 +7560,11 @@ func (d *Dispatcher) prepareAssignmentWorktree(
 		return "", "", false
 	}
 	d.mu.Lock()
+	if !d.assignmentReservationHeldLocked(workerID, beadID, reservationGen) {
+		d.mu.Unlock()
+		d.removeUnsharedAssignmentWorktree(ctx, beadID, worktree)
+		return "", "", false
+	}
 	d.worktreeByBead[beadID] = worktree
 	d.mu.Unlock()
 	return worktree, branch, true
@@ -7691,21 +7693,21 @@ func (d *Dispatcher) currentFocusVersion() uint64 {
 	return version
 }
 
-func (d *Dispatcher) assignmentReservationHeld(workerID, beadID string) bool {
+func (d *Dispatcher) assignmentReservationHeld(workerID, beadID string, reservationGen uint64) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.assignmentReservationHeldLocked(workerID, beadID)
+	return d.assignmentReservationHeldLocked(workerID, beadID, reservationGen)
 }
 
-func (d *Dispatcher) assignmentReservationHeldLocked(workerID, beadID string) bool {
+func (d *Dispatcher) assignmentReservationHeldLocked(workerID, beadID string, reservationGen uint64) bool {
 	w, ok := d.workers[workerID]
-	return ok && w != nil && w.state == protocol.WorkerReserved && w.beadID == beadID
+	return ok && w != nil && w.state == protocol.WorkerReserved && w.beadID == beadID && w.reservationGen == reservationGen
 }
 
-func (d *Dispatcher) attachAssignmentToReservation(workerID, beadID string, assignmentID int64, worktree, baseBranch, targetBranch, epicID string, isEpicDecomp bool) bool {
+func (d *Dispatcher) attachAssignmentToReservation(workerID, beadID string, reservationGen uint64, assignmentID int64, worktree, baseBranch, targetBranch, epicID string, isEpicDecomp bool) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if !d.assignmentReservationHeldLocked(workerID, beadID) {
+	if !d.assignmentReservationHeldLocked(workerID, beadID, reservationGen) {
 		return false
 	}
 	w := d.workers[workerID]
@@ -7721,18 +7723,18 @@ func (d *Dispatcher) attachAssignmentToReservation(workerID, beadID string, assi
 	return true
 }
 
-func (d *Dispatcher) releaseAssignmentReservation(workerID, beadID string) {
+func (d *Dispatcher) releaseAssignmentReservation(workerID, beadID string, reservationGen uint64) {
 	d.mu.Lock()
-	released := d.releaseAssignmentReservationLocked(workerID, beadID)
+	released := d.releaseAssignmentReservationLocked(workerID, beadID, reservationGen)
 	d.mu.Unlock()
 	if released {
 		d.notifyAssignLoop()
 	}
 }
 
-func (d *Dispatcher) releaseAssignmentReservationLocked(workerID, beadID string) bool {
+func (d *Dispatcher) releaseAssignmentReservationLocked(workerID, beadID string, reservationGen uint64) bool {
 	w, ok := d.workers[workerID]
-	if !ok || w.state != protocol.WorkerReserved || w.beadID != beadID {
+	if !ok || w.state != protocol.WorkerReserved || w.beadID != beadID || w.reservationGen != reservationGen {
 		return false
 	}
 	w.state = protocol.WorkerIdle
@@ -7747,31 +7749,52 @@ func (d *Dispatcher) releaseAssignmentReservationLocked(workerID, beadID string)
 	w.model = ""
 	w.reasoning = ""
 	w.lastProgress = d.nowFunc()
+	w.setupReservedAt = time.Time{}
+	w.reservationGen++
 	return true
 }
 
-func (d *Dispatcher) abortAssignmentReservationLost(ctx context.Context, beadID, workerID, worktree string, removeWorktree bool, assignmentID int64) {
+func (d *Dispatcher) abortAssignmentReservationLost(ctx context.Context, beadID, workerID string, reservationGen uint64, worktree string, removeWorktree bool, assignmentID int64) {
+	current := d.assignmentReservationHeld(workerID, beadID, reservationGen)
 	if assignmentID != 0 {
 		_ = d.completeAssignment(ctx, assignmentID, beadID)
+	}
+	if !current {
+		if removeWorktree {
+			d.removeUnsharedAssignmentWorktree(ctx, beadID, worktree)
+		}
+		_ = d.logEvent(ctx, "assignment_aborted_reservation_lost", "dispatcher", beadID, workerID, "")
+		return
 	}
 	if !d.isBeadClosed(ctx, beadID) {
 		_ = d.updateBeadStatus(ctx, beadID, "open")
 	}
 	if removeWorktree && worktree != "" {
 		_ = d.worktrees.Remove(ctx, worktree)
-		d.mu.Lock()
-		delete(d.worktreeByBead, beadID)
-		d.mu.Unlock()
 	}
-	d.mu.Lock()
-	delete(d.assigningBeads, beadID)
-	d.releaseAssignmentReservationLocked(workerID, beadID)
-	d.mu.Unlock()
+	d.releaseAssignmentClaim(workerID, beadID, reservationGen)
 	_ = d.logEvent(ctx, "assignment_aborted_reservation_lost", "dispatcher", beadID, workerID, "")
 	d.notifyAssignLoop()
 }
 
-func (d *Dispatcher) abortAssignmentForFocusChange(ctx context.Context, beadID, workerID, worktree string, removeWorktree bool, assignmentID int64) {
+// removeUnsharedAssignmentWorktree removes a setup worktree only when a newer
+// reservation has not published that same deterministic path for the bead.
+func (d *Dispatcher) removeUnsharedAssignmentWorktree(ctx context.Context, beadID, worktree string) {
+	if worktree == "" {
+		return
+	}
+	d.mu.Lock()
+	shared := d.worktreeByBead[beadID] == worktree
+	d.mu.Unlock()
+	if !shared {
+		_ = d.worktrees.Remove(ctx, worktree)
+	}
+}
+
+func (d *Dispatcher) abortAssignmentForFocusChange(ctx context.Context, beadID, workerID string, reservationGen uint64, worktree string, removeWorktree bool, assignmentID int64) {
+	if !d.releaseAssignmentClaim(workerID, beadID, reservationGen) {
+		return
+	}
 	if assignmentID != 0 {
 		_ = d.completeAssignment(ctx, assignmentID, beadID)
 	}
@@ -7784,12 +7807,18 @@ func (d *Dispatcher) abortAssignmentForFocusChange(ctx context.Context, beadID, 
 		delete(d.worktreeByBead, beadID)
 		d.mu.Unlock()
 	}
-	d.mu.Lock()
-	delete(d.assigningBeads, beadID)
-	d.releaseAssignmentReservationLocked(workerID, beadID)
-	d.mu.Unlock()
 	_ = d.logEvent(ctx, "assignment_aborted_focus_changed", "dispatcher", beadID, workerID, "")
 	d.notifyAssignLoop()
+}
+
+func (d *Dispatcher) releaseAssignmentClaim(workerID, beadID string, reservationGen uint64) bool {
+	d.mu.Lock()
+	released := d.releaseAssignmentReservationLocked(workerID, beadID, reservationGen)
+	if released {
+		delete(d.assigningBeads, beadID)
+	}
+	d.mu.Unlock()
+	return released
 }
 
 func (d *Dispatcher) isBeadClosed(ctx context.Context, beadID string) bool {
@@ -9791,8 +9820,18 @@ func (d *Dispatcher) logOpsRunBlockedAssignment(ctx context.Context, rec OpsRunR
 //     worker with no bead assigned, stops the 2-minute replay loop (oro-p2ey)
 //   - Empty beadID (other types): always retry (no bead context to check)
 //   - beads.Show error: always retry (don't suppress on error)
+//   - OVERSIZED_BEAD: never retries — the gate that raised it was removed
 //   - Unknown escType: always retry (don't block future escalation types)
 func (d *Dispatcher) shouldRetryEscalation(ctx context.Context, escType, beadID string) bool {
+	// OVERSIZED_BEAD is checked before the beadID branch because it is stale
+	// unconditionally: the admission gate that raised it was removed (it counted
+	// Read: citations in the acceptance criteria, not change size), so no new
+	// rows are created and every surviving one must drain regardless of bead
+	// context. Keep this ahead of the switch's `default: return true`.
+	if protocol.EscalationType(escType) == protocol.EscOversizedBead {
+		return false
+	}
+
 	// Empty beadID: WORKER_CRASH auto-acks (stale prev-session alert, oro-p2ey);
 	// all other types retry because there's no bead context to check.
 	if beadID == "" {
@@ -9812,7 +9851,12 @@ func (d *Dispatcher) shouldRetryEscalation(ctx context.Context, escType, beadID 
 	case protocol.EscPriorityContention:
 		return d.retryPriorityContention(ctx, beadID)
 	case protocol.EscOversizedBead:
-		return d.retryOversizedBead(ctx, beadID)
+		// The oversized admission gate was removed (it counted Read: citations
+		// in the acceptance criteria, not change size). Nothing raises this
+		// escalation any more, so every surviving pending row is stale and must
+		// drain. Keep the case: deleting it falls through to `default: return
+		// true` below and retries these rows forever.
+		return false
 	case protocol.EscNonTDDAC:
 		return d.retryNonTDDAC(ctx, beadID)
 	case protocol.EscMergeComplete, protocol.EscManualIntegration, protocol.EscDependencyCycle:
