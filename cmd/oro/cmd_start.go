@@ -947,25 +947,14 @@ func registerCleanlinessStartFlags(cmd *cobra.Command, cleanliness *cleanlinessS
 
 // startFreshSwarm sets up project env vars and launches the full swarm (daemon + tmux).
 func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach bool, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration, mutationTesting, webEnabled bool, webAddr string, cleanliness cleanlinessStartConfig) error {
-	project, err := startProjectName(".")
-	if err != nil {
-		return fmt.Errorf("read project config: %w", err)
-	}
-	if project != "" {
-		if err := os.Setenv("ORO_PROJECT", project); err != nil {
-			return fmt.Errorf("set ORO_PROJECT: %w", err)
-		}
-	}
-	oroHome, err := resolveOroHome()
+	runtimeEnv, err := ensureRuntimeProjectEnv(currentRepoRoot())
 	if err != nil {
 		return err
-	}
-	if err := os.Setenv("ORO_HOME", oroHome); err != nil {
-		return fmt.Errorf("set ORO_HOME: %w", err)
 	}
 	if err := requireNativeProductionBeadSourceMode("oro start"); err != nil {
 		return err
 	}
+	project := runtimeEnv.Project
 	return runFullStart(w, workers, maxWorkers, model, project,
 		&ExecDaemonSpawner{
 			ProgressTimeout:    progressTimeout,
@@ -1015,6 +1004,9 @@ func cleanStaleWorkerLogs(oroHome string, maxAge time.Duration) { //nolint:unpar
 
 // runDaemonOnly runs the dispatcher in the foreground (used for testing/CI).
 func runDaemonOnly(cmd *cobra.Command, pidPath string, workers, maxWorkers int, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool, baseBranch string, mutationTesting, webEnabled bool, webAddr string, cleanliness cleanlinessStartConfig) error {
+	if _, err := ensureRuntimeProjectEnv(currentRepoRoot()); err != nil {
+		return err
+	}
 	fmt.Fprintf(cmd.OutOrStdout(), "starting dispatcher (PID %d, workers=%d)\n", os.Getpid(), workers)
 	if err := WritePIDFile(pidPath, os.Getpid()); err != nil {
 		return fmt.Errorf("write pid file: %w", err)

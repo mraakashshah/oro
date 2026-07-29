@@ -175,6 +175,9 @@ Useful for CI environments or manual worker management (--workers 0 disables aut
 //
 // No tmux session is created. The spawner is injected for testability.
 func runDispatcherStart(w io.Writer, workers int, manualIntegration, mutationTesting bool, spawner DaemonSpawner, socketTimeout time.Duration) error {
+	if _, err := ensureRuntimeProjectEnv(currentRepoRoot()); err != nil {
+		return fmt.Errorf("resolve runtime identity: %w", err)
+	}
 	paths, err := ResolveDaemonPaths()
 	if err != nil {
 		return fmt.Errorf("resolve paths: %w", err)

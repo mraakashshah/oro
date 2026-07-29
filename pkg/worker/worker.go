@@ -50,6 +50,21 @@ type ReasoningStreamingSpawner interface {
 	SpawnWithReasoning(ctx context.Context, model string, reasoning string, prompt string, workdir string) (Process, io.ReadCloser, io.WriteCloser, error)
 }
 
+// LaunchPolicy identifies the mutation boundary required for a runtime process.
+type LaunchPolicy string
+
+const (
+	// LaunchPolicyDefault permits the runtime's normal mutation boundary.
+	LaunchPolicyDefault LaunchPolicy = ""
+	// LaunchPolicyReadOnly requires managed read-only hook activation.
+	LaunchPolicyReadOnly LaunchPolicy = "read-only"
+)
+
+// LaunchPolicyStreamingSpawner starts a subprocess with an explicit policy.
+type LaunchPolicyStreamingSpawner interface {
+	SpawnWithLaunchPolicy(ctx context.Context, model, reasoning, prompt, workdir string, policy LaunchPolicy) (Process, io.ReadCloser, io.WriteCloser, error)
+}
+
 // RuntimeStreamingSpawner routes subprocess invocation by runtime.
 type RuntimeStreamingSpawner interface {
 	Spawn(ctx context.Context, runtime string, model string, reasoning string, prompt string, workdir string) (Process, io.ReadCloser, io.WriteCloser, StreamFormat, error)
@@ -2020,12 +2035,30 @@ func (s *ClaudeSpawner) Spawn(ctx context.Context, model, prompt, workdir string
 
 // SpawnWithReasoning starts a `claude -p` subprocess with the configured effort.
 func (s *ClaudeSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning, prompt, workdir string) (Process, io.ReadCloser, io.WriteCloser, error) {
+	return s.SpawnWithLaunchPolicy(ctx, model, reasoning, prompt, workdir, LaunchPolicyDefault)
+}
+
+// SpawnWithLaunchPolicy starts Claude and verifies managed hook activation for
+// read-only Oracle launches before returning the process.
+func (s *ClaudeSpawner) SpawnWithLaunchPolicy(ctx context.Context, model, reasoning, prompt, workdir string, policy LaunchPolicy) (Process, io.ReadCloser, io.WriteCloser, error) {
+	if policy != LaunchPolicyDefault && policy != LaunchPolicyReadOnly {
+		return nil, nil, nil, fmt.Errorf("unknown launch policy %q", policy)
+	}
 	args := buildClaudeArgsWithReasoning(model, reasoning, prompt)
 	cmd := exec.CommandContext(ctx, "claude", args...) //nolint:gosec // args are constructed internally by buildClaudeArgs, not user input
 	cmd.Dir = workdir
 	stderrTail := NewLineTailBuffer(100)
 	cmd.Stderr = io.MultiWriter(os.Stderr, stderrTail)
 	cmd.Env = EnvironmentForContext(ctx, buildClaudeEnvForExecution(workdir, WorkerExecutionContext{}))
+	var probe *OracleHookProbe
+	if policy == LaunchPolicyReadOnly {
+		var err error
+		probe, err = NewOracleHookProbe()
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		cmd.Env = append(cmd.Env, probe.Environment())
+	}
 
 	// Open /dev/null for stdin to prevent the spawned process from inheriting parent stdin,
 	// which can cause claude -p to hang if the parent's stdin is a pipe.
@@ -2042,9 +2075,20 @@ func (s *ClaudeSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning
 	}
 
 	if err := cmd.Start(); err != nil {
+		if probe != nil {
+			probe.remove()
+		}
 		return nil, nil, nil, fmt.Errorf("start claude: %w", err)
 	}
-	return &CmdProcess{Cmd: cmd, Runtime: agentruntime.RuntimeClaude, Stderr: stderrTail}, stdoutPipe, nil, nil
+	proc := Process(&CmdProcess{Cmd: cmd, Runtime: agentruntime.RuntimeClaude, Stderr: stderrTail})
+	if probe != nil {
+		replayable := NewReplayableProcess(proc)
+		if err := probe.Await(ctx, replayable, 5*time.Second); err != nil {
+			return nil, nil, nil, err
+		}
+		proc = replayable
+	}
+	return proc, stdoutPipe, nil, nil
 }
 
 // CmdProcess wraps *exec.Cmd to implement the Process interface.

@@ -83,12 +83,30 @@ func (s *WorkerSpawner) Spawn(ctx context.Context, model, prompt, workdir string
 
 // SpawnWithReasoning starts Codex with an optional model reasoning effort.
 func (s *WorkerSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning, prompt, workdir string) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
+	return s.SpawnWithLaunchPolicy(ctx, model, reasoning, prompt, workdir, worker.LaunchPolicyDefault)
+}
+
+// SpawnWithLaunchPolicy starts Codex and verifies managed hook activation for
+// read-only Oracle launches before returning the process.
+func (s *WorkerSpawner) SpawnWithLaunchPolicy(ctx context.Context, model, reasoning, prompt, workdir string, policy worker.LaunchPolicy) (worker.Process, io.ReadCloser, io.WriteCloser, error) {
+	if policy != worker.LaunchPolicyDefault && policy != worker.LaunchPolicyReadOnly {
+		return nil, nil, nil, fmt.Errorf("unknown launch policy %q", policy)
+	}
 	assembledPrompt := strings.ToValidUTF8(BuildBootstrapPrompt(prompt, workdir), "�")
 	cmd := exec.CommandContext(ctx, s.binary(), buildWorkerExecArgsWithReasoning(model, reasoning, workdir)...) //nolint:gosec // args built internally
 	cmd.Dir = workdir
 	stderrTail := worker.NewLineTailBuffer(100)
 	cmd.Stderr = io.MultiWriter(os.Stderr, stderrTail)
 	cmd.Env = worker.EnvironmentForContext(ctx, processenv.ForWorkdir(os.Environ(), workdir))
+	var probe *worker.OracleHookProbe
+	if policy == worker.LaunchPolicyReadOnly {
+		var err error
+		probe, err = worker.NewOracleHookProbe()
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("create Oracle hook probe: %w", err)
+		}
+		cmd.Env = append(cmd.Env, probe.Environment())
+	}
 
 	cmd.Stdin = strings.NewReader(assembledPrompt)
 
@@ -98,9 +116,20 @@ func (s *WorkerSpawner) SpawnWithReasoning(ctx context.Context, model, reasoning
 	}
 
 	if err := cmd.Start(); err != nil {
+		if probe != nil {
+			_ = os.RemoveAll(filepath.Dir(probe.MarkerPath()))
+		}
 		return nil, nil, nil, wrapStartError(err)
 	}
-	return &worker.CmdProcess{Cmd: cmd, Runtime: commandName, Stderr: stderrTail}, stdoutPipe, nil, nil
+	proc := worker.Process(&worker.CmdProcess{Cmd: cmd, Runtime: commandName, Stderr: stderrTail})
+	if probe != nil {
+		replayable := worker.NewReplayableProcess(proc)
+		if err := probe.Await(ctx, replayable, 5*time.Second); err != nil {
+			return nil, nil, nil, fmt.Errorf("await Oracle hook activation: %w", err)
+		}
+		proc = replayable
+	}
+	return proc, stdoutPipe, nil, nil
 }
 
 func (s *WorkerSpawner) binary() string {

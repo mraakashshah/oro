@@ -98,6 +98,9 @@ func runWorkerLaunch(spawner WorkerSpawner, count int, workerID, beadID string) 
 	if count < 1 {
 		return fmt.Errorf("--count must be at least 1, got %d", count)
 	}
+	if _, err := ensureRuntimeProjectEnv(currentRepoRoot()); err != nil {
+		return fmt.Errorf("resolve runtime identity: %w", err)
+	}
 
 	paths, err := ResolveDaemonPaths()
 	if err != nil {

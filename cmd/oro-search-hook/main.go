@@ -23,9 +23,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"oro/pkg/codesearch"
@@ -33,16 +35,93 @@ import (
 
 // run reads a hook event from r, processes it, and writes the response to w.
 // Extracted from main for testability.
-func run(r io.Reader, w io.Writer) {
+func run(r io.Reader, w io.Writer) error {
 	input, err := io.ReadAll(r)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "oro-search-hook: failed to read stdin: %v\n", err)
 		// On stdin read error, output allow to avoid blocking.
 		writeOut(w, allowJSON)
-		return
+		return fmt.Errorf("read stdin: %w", err)
+	}
+
+	var event struct {
+		HookType      string `json:"hook_type"`
+		HookEventName string `json:"hook_event_name"`
+	}
+	if json.Unmarshal(input, &event) == nil &&
+		(event.HookType == "SessionStart" || event.HookEventName == "SessionStart") {
+		return handleSessionStart(os.Getenv("ORO_HOOK_PROBE"))
 	}
 
 	writeOut(w, HandleHook(input))
+	return nil
+}
+
+func openSessionStartProbeRoot(probePath string) (*os.Root, string, error) {
+	if probePath == "" {
+		return nil, "", fmt.Errorf("ORO_HOOK_PROBE is not set")
+	}
+	if !filepath.IsAbs(probePath) {
+		return nil, "", fmt.Errorf("ORO_HOOK_PROBE must be an absolute path")
+	}
+	if filepath.Clean(probePath) != probePath {
+		return nil, "", fmt.Errorf("ORO_HOOK_PROBE must be a clean path")
+	}
+	root, err := os.OpenRoot(filepath.Dir(probePath)) //nolint:gosec // G703: The dynamic parent is opened as a bound root before validation and marker creation.
+	if err != nil {
+		return nil, "", fmt.Errorf("open ORO_HOOK_PROBE parent: %w", err)
+	}
+	parentInfo, err := root.Stat(".")
+	if err != nil {
+		_ = root.Close()
+		return nil, "", fmt.Errorf("stat ORO_HOOK_PROBE parent: %w", err)
+	}
+	if !parentInfo.IsDir() || parentInfo.Mode().Perm()&0o077 != 0 {
+		_ = root.Close()
+		return nil, "", fmt.Errorf("ORO_HOOK_PROBE parent is not a private directory")
+	}
+	return root, filepath.Base(probePath), nil
+}
+
+func cleanupSessionStartProbe(root *os.Root, name string, file *os.File, cause error) error {
+	var cleanupErr error
+	if err := file.Close(); err != nil {
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("close ORO_HOOK_PROBE: %w", err))
+	}
+	if err := root.Remove(name); err != nil {
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove failed ORO_HOOK_PROBE: %w", err))
+	}
+	return errors.Join(cause, cleanupErr)
+}
+
+func handleSessionStart(probePath string) error {
+	root, name, err := openSessionStartProbeRoot(probePath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+
+	file, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create ORO_HOOK_PROBE: %w", err)
+	}
+	if err := file.Chmod(0o600); err != nil {
+		return cleanupSessionStartProbe(root, name, file, fmt.Errorf("set ORO_HOOK_PROBE mode: %w", err))
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return cleanupSessionStartProbe(root, name, file, fmt.Errorf("verify ORO_HOOK_PROBE mode: %w", err))
+	}
+	if info.Mode().Perm() != 0o600 {
+		return cleanupSessionStartProbe(root, name, file, fmt.Errorf("verify ORO_HOOK_PROBE mode: got %04o, want 0600", info.Mode().Perm()))
+	}
+	if err := file.Close(); err != nil {
+		removeErr := root.Remove(name)
+		if removeErr != nil {
+			return errors.Join(fmt.Errorf("close ORO_HOOK_PROBE: %w", err), fmt.Errorf("remove failed ORO_HOOK_PROBE: %w", removeErr))
+		}
+		return fmt.Errorf("close ORO_HOOK_PROBE: %w", err)
+	}
+	return nil
 }
 
 // hookInput represents the JSON payload sent by Claude Code on stdin.
@@ -304,7 +383,10 @@ func summarizeAndDeny(filePath string) []byte {
 }
 
 func main() {
-	run(os.Stdin, os.Stdout)
+	if err := run(os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "oro-search-hook: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 // writeOut writes data to w, logging any write error to stderr.
