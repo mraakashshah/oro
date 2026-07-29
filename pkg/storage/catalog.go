@@ -13,7 +13,7 @@ import (
 )
 
 // CatalogSchemaVersion is the newest storage catalog schema understood by this binary.
-const CatalogSchemaVersion = 3
+const CatalogSchemaVersion = 4
 
 var (
 	// ErrCatalogCorrupt reports a catalog SQLite database that cannot be read safely.
@@ -514,6 +514,7 @@ type catalogTable struct {
 
 func catalogTables() []catalogTable {
 	return []catalogTable{
+		{"weekly_dev_cache_schedule", `CREATE TABLE weekly_dev_cache_schedule (id TEXT PRIMARY KEY, due_at TEXT NOT NULL, updated_at TEXT NOT NULL)`},
 		{"runtime_leases", `CREATE TABLE runtime_leases (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, controller_id TEXT NOT NULL, owner_id TEXT NOT NULL, pid INTEGER NOT NULL, process_start TEXT NOT NULL, acquired_at TEXT NOT NULL, heartbeat_at TEXT NOT NULL, released_at TEXT)`},
 		{"runtime_controllers", `CREATE TABLE runtime_controllers (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, pid INTEGER NOT NULL, process_start TEXT NOT NULL, identity_start TEXT NOT NULL DEFAULT '', executable TEXT NOT NULL DEFAULT '', process_group INTEGER NOT NULL DEFAULT 0, observed_epoch INTEGER NOT NULL, heartbeat_at TEXT NOT NULL)`},
 		{"runtime_pause_epochs", `CREATE TABLE runtime_pause_epochs (epoch INTEGER PRIMARY KEY, state TEXT NOT NULL, created_at TEXT NOT NULL)`},

@@ -1114,19 +1114,22 @@ func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers 
 	}
 	// Provision the storage catalog, but never let it block boot.
 	//
-	// Nothing consumes the catalog at runtime: storage.NewController is never
-	// constructed outside tests, so every dispatcher admission gate
-	// short-circuits (storage_controller.go:22-24) and all 13 tables stay empty.
-	// Its only real effect is creating the file that storage health reports on
-	// (factoryhealth evaluateStorageFindings). Previously a failure here returned
-	// an error and aborted `oro start` — a fail-closed dependency on a no-op.
-	// Now it warns and continues: degraded storage health is surfaced by
-	// `oro health`, which is the right place to see it, rather than preventing
-	// the factory from starting at all.
+	// The catalog's runtime consumers are the dev-cache sweep below and the
+	// file that storage health reports on (factoryhealth
+	// evaluateStorageFindings); storage.NewController is never constructed
+	// outside tests, so every dispatcher admission gate short-circuits
+	// (storage_controller.go:22-24). A failure here previously returned an
+	// error and aborted `oro start`. It now warns and continues: degraded
+	// storage health belongs in `oro health`, not in a boot failure. The sweep
+	// is best-effort for the same reason — cache maintenance must never be the
+	// thing that stops the factory starting.
 	if catalog, catErr := openStorageCatalog(context.Background(), paths.OroHome); catErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: storage catalog unavailable: %v\n", catErr)
-	} else if closeErr := catalog.Close(); closeErr != nil {
-		fmt.Fprintf(os.Stderr, "warning: close storage catalog: %v\n", closeErr)
+	} else {
+		runStartupDevCacheSweep(catalog, paths.OroHome)
+		if closeErr := catalog.Close(); closeErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: close storage catalog: %v\n", closeErr)
+		}
 	}
 
 	sockPath := paths.SocketPath
