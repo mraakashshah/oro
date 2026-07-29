@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -45,11 +46,12 @@ func (d *Dispatcher) hasPendingQGRetry(workerID, beadID string, attempt int) boo
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	retry, ok := d.pendingQGRetries[workerID]
-	if !ok || retry.Attempt != attempt {
-		return false
+	if ok && retry.Attempt == attempt {
+		worker := d.workers[workerID]
+		return worker == nil || worker.beadID == beadID
 	}
-	worker := d.workers[workerID]
-	return worker == nil || worker.beadID == beadID
+	handoff := d.pendingHandoffs[beadID]
+	return handoff != nil && handoff.attempt == attempt
 }
 
 func (d *Dispatcher) loadQGRetryFeedback(ctx context.Context, retry QGRetryContext, worktree string) (string, error) {
@@ -68,4 +70,36 @@ func (d *Dispatcher) loadQGRetryFeedback(ctx context.Context, retry QGRetryConte
 		return "", fmt.Errorf("qg occurrence feedback hash mismatch")
 	}
 	return output, nil
+}
+
+func (d *Dispatcher) restoreQGRetryHandoff(ctx context.Context, workerID, beadID string, assignmentID int64, retry QGRetryContext, snapshot workerAssignmentSnapshot) error {
+	feedback, err := d.loadQGRetryFeedback(ctx, retry, snapshot.worktree)
+	if err != nil {
+		return fmt.Errorf("load qg retry feedback: %w", err)
+	}
+	if snapshot.execution.AssignmentID == 0 {
+		snapshot.execution = workerExecutionContext(assignmentID, false, filepath.Base(d.cfg.RepoRoot))
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, exists := d.pendingHandoffs[beadID]; exists {
+		return fmt.Errorf("qg retry handoff already pending for bead %q", beadID)
+	}
+	d.pendingHandoffs[beadID] = &pendingHandoff{
+		assignmentID: assignmentID,
+		execution:    snapshot.execution,
+		beadID:       beadID,
+		epicID:       snapshot.epicID,
+		worktree:     snapshot.worktree,
+		baseBranch:   snapshot.baseBranch,
+		targetBranch: snapshot.targetBranch,
+		runtime:      snapshot.runtime,
+		model:        snapshot.model,
+		reasoning:    snapshot.reasoning,
+		feedback:     feedback,
+		attempt:      retry.Attempt,
+	}
+	delete(d.pendingQGRetries, workerID)
+	return nil
 }

@@ -409,6 +409,85 @@ func TestQGRetryFeedbackSurvivesWorkerRestart(t *testing.T) {
 	}
 }
 
+func TestQGRetryFeedbackSurvivesWorkerDisconnect(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	const (
+		beadID   = "bead-qg-disconnect"
+		workerID = "worker-qg-disconnect"
+		worktree = "/tmp/qg-disconnect-worktree"
+		output   = "pkg/dispatcher/dispatcher.go:42:2: dependencyStore redeclared in this block\nNilAway: nilable value flows into dependencyStore"
+	)
+	d.setCommandRunner(&mockCommandRunner{callFn: func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+		return []byte("qg-disconnect-head\n"), nil
+	}})
+
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: "Preserve QG feedback", Status: "in_progress"}
+	beadSrc.mu.Unlock()
+
+	assignmentID := insertActiveAssignment(t, d, beadID, workerID, worktree)
+	oldServer, oldClient := net.Pipe()
+	defer func() { _ = oldServer.Close() }()
+	defer func() { _ = oldClient.Close() }()
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:           workerID,
+		conn:         oldServer,
+		encoder:      json.NewEncoder(oldServer),
+		state:        protocol.WorkerBusy,
+		beadID:       beadID,
+		assignmentID: assignmentID,
+		worktree:     worktree,
+		targetBranch: "main",
+	}
+	d.mu.Unlock()
+
+	retryPaused := make(chan struct{})
+	releaseRetry := make(chan struct{})
+	d.testUnlockHook = func() {
+		close(retryPaused)
+		<-releaseRetry
+	}
+	retryDone := make(chan struct{})
+	go func() {
+		defer close(retryDone)
+		d.handleQGFailure(ctx, workerID, beadID, output)
+	}()
+	select {
+	case <-retryPaused:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for retry reservation")
+	}
+
+	d.connCloseCleanup(workerID, oldServer)
+	close(releaseRetry)
+	select {
+	case <-retryDone:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for interrupted retry")
+	}
+	d.testUnlockHook = nil
+
+	newServer, newClient := net.Pipe()
+	defer func() { _ = newServer.Close() }()
+	defer func() { _ = newClient.Close() }()
+	go d.registerWorker(workerID, newServer)
+	msg, ok := readMsg(t, newClient, 2*time.Second)
+	if !ok {
+		t.Fatal("replacement did not receive retry ASSIGN")
+	}
+	if msg.Type != protocol.MsgAssign || msg.Assign == nil {
+		t.Fatalf("replacement message = %#v, want ASSIGN", msg)
+	}
+	if msg.Assign.Attempt != 1 {
+		t.Fatalf("retry attempt = %d, want 1", msg.Assign.Attempt)
+	}
+	if msg.Assign.Feedback != output {
+		t.Fatalf("retry feedback = %q, want exact persisted output %q", msg.Assign.Feedback, output)
+	}
+}
+
 func TestReconnectDifferentBeadDoesNotStealQGRetryReservation(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	reservedBeadID := "bead-qg-reserved"

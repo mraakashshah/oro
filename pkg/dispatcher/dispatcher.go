@@ -1798,6 +1798,17 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 	assignmentID := w.assignmentID
 	worktree := w.worktree
 	baseBranch := w.baseBranch
+	retryContext, retryPending := d.pendingQGRetries[workerID]
+	retrySnapshot := workerAssignmentSnapshot{
+		execution:    w.execution,
+		worktree:     w.worktree,
+		runtime:      w.runtime,
+		model:        w.model,
+		reasoning:    w.reasoning,
+		epicID:       w.epicID,
+		baseBranch:   w.baseBranch,
+		targetBranch: w.targetBranch,
+	}
 	preempted := w.state == protocol.WorkerPreempting
 	if preempted && beadID != "" {
 		// Keep the bead reserved while its durable assignment is terminalized.
@@ -1810,6 +1821,14 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 
 	if preempted && beadID != "" {
 		d.reconcilePreemptedDisconnect(workerID, beadID, assignmentID, worktree)
+		return
+	}
+	if retryPending {
+		if err := d.restoreQGRetryHandoff(context.Background(), workerID, beadID, assignmentID, retryContext, retrySnapshot); err != nil {
+			_ = d.logEvent(context.Background(), "qg_retry_feedback_restore_failed", "dispatcher", beadID, workerID, err.Error())
+			return
+		}
+		d.notifyAssignLoop()
 		return
 	}
 
@@ -9074,33 +9093,13 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 	procMgr := d.procMgr
 	d.mu.Unlock()
 	if retryPending {
-		feedback, err := d.loadQGRetryFeedback(ctx, retryContext, retrySnapshot.worktree)
-		if err != nil {
+		if err := d.restoreQGRetryHandoff(ctx, workerID, beadID, assignmentID, retryContext, retrySnapshot); err != nil {
 			d.mu.Lock()
 			delete(d.pendingManagedIDs, workerID)
 			delete(d.pendingManagedSince, workerID)
 			d.mu.Unlock()
 			return "", fmt.Errorf("restore qg retry feedback: %w", err)
 		}
-		if retrySnapshot.execution.AssignmentID == 0 {
-			retrySnapshot.execution = workerExecutionContext(assignmentID, false, filepath.Base(d.cfg.RepoRoot))
-		}
-		d.mu.Lock()
-		d.pendingHandoffs[beadID] = &pendingHandoff{
-			assignmentID: assignmentID,
-			execution:    retrySnapshot.execution,
-			beadID:       beadID,
-			epicID:       retrySnapshot.epicID,
-			worktree:     retrySnapshot.worktree,
-			baseBranch:   retrySnapshot.baseBranch,
-			targetBranch: retrySnapshot.targetBranch,
-			runtime:      retrySnapshot.runtime,
-			model:        retrySnapshot.model,
-			reasoning:    retrySnapshot.reasoning,
-			feedback:     feedback,
-			attempt:      retryContext.Attempt,
-		}
-		d.mu.Unlock()
 		if err := d.killManagedWorkerForRestart(ctx, procMgr, workerID, beadID, wasManaged); err != nil {
 			return "", err
 		}
