@@ -99,7 +99,7 @@ TestPortableQGAggregate() {
 	[[ "$actual_required" == "$expected_jobs" ]] ||
 		fail 'require-needs-success must require every portable job exactly once'
 
-	successful_needs='{"go":{"result":"success"},"cgo-free":{"result":"success"},"shell":{"result":"success"},"docs":{"result":"success"},"python":{"result":"success"}}'
+	successful_needs='{"go":{"result":"success"},"cgo-free":{"result":"success"},"shell":{"result":"success"},"docs":{"result":"success"},"python":{"result":"success"},"incremental-mutation":{"result":"success"}}'
 	for status in skipped cancelled timed_out action_required; do
 		needs_json=$(printf '%s\n' "$successful_needs" | jq --arg status "$status" '.go.result = $status')
 		if "$repo_root/scripts/ci/require-needs-success.sh" "$needs_json" >/dev/null 2>&1; then

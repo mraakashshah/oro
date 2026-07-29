@@ -5,7 +5,40 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
+
+  incremental-mutation:
+    name: Incremental Mutation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run strict incremental mutation
+        run: |
+          base_sha="${{ github.event.pull_request.base.sha || github.event.before }}"
+          bash scripts/quality_gate/mutation.sh \
+            --base "$base_sha" \
+            --head "${{ github.sha }}" \
+            --evidence mutation-evidence.json
+
+      - name: Upload incremental mutation evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: incremental-mutation-evidence
+          path: mutation-evidence.json
+          if-no-files-found: error
+
   go:
     name: Go
     runs-on: ubuntu-latest
@@ -215,7 +248,7 @@ jobs:
 
   oro-portable-qg:
     if: ${{ always() }}
-    needs: [go, cgo-free, shell, docs, python]
+    needs: [go, cgo-free, shell, docs, python, incremental-mutation]
     runs-on: ubuntu-latest
     steps:
       - name: Require every portable gate
