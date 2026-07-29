@@ -34,11 +34,13 @@ type GHRunnerConfig struct {
 
 // APIRequest describes a token-free GitHub API request.
 type APIRequest struct {
-	Method  string
-	Path    string
-	Body    json.RawMessage
-	Headers []string
-	Raw     bool
+	Method   string
+	Path     string
+	Body     json.RawMessage
+	Headers  []string
+	Raw      bool
+	Paginate bool
+	Slurp    bool
 }
 
 // GHRunner runs the setup-attested GitHub CLI with just-in-time credentials.
@@ -140,6 +142,12 @@ func validateAPIRequest(request APIRequest) error {
 
 func ghAPIArgs(request APIRequest, host string) []string {
 	args := []string{"api", "--method", request.Method}
+	if request.Paginate {
+		args = append(args, "--paginate")
+	}
+	if request.Slurp {
+		args = append(args, "--slurp")
+	}
 	if host = strings.TrimSpace(host); host != "" {
 		args = append(args, "--hostname", host)
 	}
