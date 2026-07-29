@@ -25,6 +25,8 @@ type CompleteCollection[T Identified] struct {
 
 // Collect reads every GitHub pagination page before returning a normalized,
 // bounded collection. Any malformed or ambiguous result returns no collection.
+//
+//oro:testonly — production endpoint readers are wired by subsequent remote-gate tasks.
 func Collect[T Identified](ctx context.Context, runner *GHRunner, request CollectionRequest) (CompleteCollection[T], error) {
 	if err := validateCollectionRequest(request); err != nil {
 		return CompleteCollection[T]{}, err
