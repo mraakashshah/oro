@@ -310,7 +310,7 @@ func preflightStartupRemoteGate(ctx context.Context, projectRoot string) error {
 		Targets:    []string{capabilities.DefaultBranch},
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("preflight GitHub startup gate: %w", err)
 	}
 	if evidence.Workflow.Ref != capabilities.DefaultBranch {
 		return errors.New("GitHub default branch drifted since setup")
@@ -389,7 +389,7 @@ func (api startupGitHubAPI) CollectJSON(ctx context.Context, request remotegithu
 }
 
 func (api startupGitHubAPI) run(ctx context.Context, args ...string) ([]byte, error) {
-	command := exec.CommandContext(ctx, api.executable, args...)
+	command := exec.CommandContext(ctx, api.executable, args...) //nolint:gosec // executable and arguments come from validated remote-gate configuration.
 	output, err := command.Output()
 	if err != nil {
 		return nil, fmt.Errorf("run GitHub API command: %w", err)

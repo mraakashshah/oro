@@ -84,7 +84,7 @@ func NewClient(api APIReader, repository string, collection CollectionReader, li
 // requested target without mutating GitHub state.
 func (c *Client) Preflight(ctx context.Context, req PreflightRequest) (PreflightEvidence, error) {
 	if err := ctx.Err(); err != nil {
-		return PreflightEvidence{}, err
+		return PreflightEvidence{}, fmt.Errorf("preflight context: %w", err)
 	}
 	workflow, err := c.inspectWorkflow(ctx, req)
 	if err != nil {
