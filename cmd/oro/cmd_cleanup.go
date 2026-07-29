@@ -36,6 +36,7 @@ type cleanupConfig struct {
 	worktreesDir          string // path to .worktrees directory; empty disables worktree dir removal
 	AssignmentsOnly       bool
 	subprocessCacheRoot   string
+	subprocessTmpRoot     string
 	subprocessCacheMaxAge time.Duration
 	signalFn              func(int) error // sends SIGINT; injectable for testing
 	aliveFn               func(int) bool  // checks process liveness; injectable for testing
@@ -79,6 +80,7 @@ Safe to run anytime. If nothing is running, reports "nothing to clean".`,
 				stateDBPath:           paths.StateDBPath,
 				worktreesDir:          projPaths.WorktreesDir,
 				subprocessCacheRoot:   processenv.SubprocessCacheRoot(),
+				subprocessTmpRoot:     processenv.SubprocessTmpRoot(),
 				subprocessCacheMaxAge: cleanupSubprocessCacheMaxAge,
 				signalFn:              defaultSignalINT,
 				aliveFn:               IsProcessAlive,
@@ -300,22 +302,33 @@ func cleanupLiveWorkerIDs(ctx context.Context, cfg *cleanupConfig) (map[string]b
 	return liveWorkerIDs, nil
 }
 
+// cleanupSubprocessCache prunes expired namespaces from BOTH subprocess roots.
+// They are separate directories — the cache root under os.UserCacheDir and the
+// TMPDIR root under os.TempDir — and each accrues one namespace per spawned
+// subprocess, so pruning only one leaves the other growing without bound.
 func cleanupSubprocessCache(cfg *cleanupConfig) bool {
-	if cfg.subprocessCacheRoot == "" || cfg.subprocessCacheMaxAge <= 0 {
+	if cfg.subprocessCacheMaxAge <= 0 {
 		return false
 	}
-	result, err := processenv.PruneSubprocessCache(cfg.subprocessCacheRoot, processenv.PruneOptions{
-		MaxAge: cfg.subprocessCacheMaxAge,
-	})
-	if err != nil {
-		fmt.Fprintf(cfg.w, "warning: prune subprocess cache: %v\n", err)
+	cleaned := false
+	for _, root := range []string{cfg.subprocessCacheRoot, cfg.subprocessTmpRoot} {
+		if root == "" {
+			continue
+		}
+		result, err := processenv.PruneSubprocessCache(root, processenv.PruneOptions{
+			MaxAge: cfg.subprocessCacheMaxAge,
+		})
+		if err != nil {
+			fmt.Fprintf(cfg.w, "warning: prune subprocess cache %s: %v\n", root, err)
+		}
+		if result.Removed == 0 {
+			continue
+		}
+		fmt.Fprintf(cfg.w, "pruned %d stale subprocess cache %s from %s\n",
+			result.Removed, pluralize(result.Removed, "namespace", "namespaces"), root)
+		cleaned = true
 	}
-	if result.Removed == 0 {
-		return false
-	}
-	fmt.Fprintf(cfg.w, "pruned %d stale subprocess cache %s from %s\n",
-		result.Removed, pluralize(result.Removed, "namespace", "namespaces"), cfg.subprocessCacheRoot)
-	return true
+	return cleaned
 }
 
 func pluralize(count int, singular, plural string) string {

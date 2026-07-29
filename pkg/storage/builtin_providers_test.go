@@ -35,7 +35,7 @@ func TestBuiltinProviders(t *testing.T) {
 			mode:        storage.Concurrent,
 			ownership:   storage.ToolNative,
 			status:      &storage.OperationDescriptor{Executable: "go", Args: []string{"env", "GOCACHE"}},
-			cleaner:     storage.CleanerDescriptor{Executable: "go", Args: []string{"clean", "-cache", "-modcache", "-fuzzcache"}, Trusted: true},
+			cleaner:     storage.CleanerDescriptor{Executable: "go", Args: []string{"clean", "-cache"}, Trusted: true},
 		},
 		{
 			id:          "uv",
@@ -90,6 +90,159 @@ func TestBuiltinProviders(t *testing.T) {
 				t.Fatalf("BuiltinProviders() missing %q", test.id)
 			}
 			assertProvider(t, provider, test.variables, test.defaultPath, test.scope, test.mode, test.ownership, test.status, test.cleaner)
+		})
+	}
+}
+
+func TestNPMProviderMaintenanceDescriptor(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	provider, ok := providerByID(storage.BuiltinProviders())["npm"]
+	if !ok {
+		t.Fatal("BuiltinProviders() missing npm provider")
+	}
+
+	if got, want := provider.Cleaner, (storage.CleanerDescriptor{
+		Executable: "npm",
+		Args:       []string{"cache", "clean", "--force"},
+		Trusted:    true,
+	}); !reflect.DeepEqual(got, want) {
+		t.Errorf("Cleaner = %#v, want fixed npm argv %#v", got, want)
+	}
+	if !provider.ToolMayBeAbsent {
+		t.Error("ToolMayBeAbsent = false, want true so an unavailable npm is reported as skipped")
+	}
+	if got, want := provider.Variables, []string{"NPM_CONFIG_CACHE"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Variables = %q, want %q to retain the shared npm cache identity", got, want)
+	}
+	if got, want := provider.DefaultPath(), filepath.Join(homeDir, ".npm"); got != want {
+		t.Errorf("DefaultPath() = %q, want npm cache root %q", got, want)
+	}
+	for _, adjacent := range []string{filepath.Join(homeDir, ".npm", "_npx"), filepath.Join(homeDir, "node_modules", ".cache")} {
+		if got := provider.DefaultPath(); got == adjacent {
+			t.Errorf("DefaultPath() = %q, must not select npm-adjacent directory %q", got, adjacent)
+		}
+	}
+}
+
+func TestUVProviderMaintenanceDescriptor(t *testing.T) {
+	providers := providerByID(storage.BuiltinProviders())
+	provider, ok := providers["uv"]
+	if !ok {
+		t.Fatal("BuiltinProviders() missing uv provider")
+	}
+
+	if provider.Ownership != storage.ToolNative {
+		t.Errorf("Ownership = %q, want %q", provider.Ownership, storage.ToolNative)
+	}
+	if !provider.ToolMayBeAbsent {
+		t.Error("ToolMayBeAbsent = false, want true so an unavailable uv is explicitly skipped")
+	}
+	if got, want := provider.Cleaner.Executable, "uv"; got != want {
+		t.Errorf("Cleaner.Executable = %q, want %q", got, want)
+	}
+	if got, want := provider.Cleaner.Args, []string{"cache", "prune"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Cleaner.Args = %q, want fixed argv %q", got, want)
+	}
+	if !provider.Cleaner.Trusted {
+		t.Error("Cleaner.Trusted = false, want true")
+	}
+}
+
+func TestGolangciProviderMaintenanceDescriptor(t *testing.T) {
+	provider, ok := providerByID(storage.BuiltinProviders())["golangci-lint"]
+	if !ok {
+		t.Fatal("BuiltinProviders() missing golangci-lint provider")
+	}
+
+	if got, want := provider.Cleaner, (storage.CleanerDescriptor{
+		Executable: "golangci-lint",
+		Args:       []string{"cache", "clean"},
+		Trusted:    true,
+	}); !reflect.DeepEqual(got, want) {
+		t.Errorf("Cleaner = %#v, want %#v", got, want)
+	}
+	if !provider.ToolMayBeAbsent {
+		t.Error("ToolMayBeAbsent = false, want true so an unavailable tool is reported as skipped")
+	}
+	if got, want := provider.Variables, []string{"GOLANGCI_LINT_CACHE"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Variables = %q, want %q to retain the shared cache identity", got, want)
+	}
+}
+
+// TestGoProviderCleansBuildCacheOnly pins the Go cleaner to the build cache.
+// The build cache is what actually grows — 50 GB in five days across 57
+// worktrees on 2026-07-29 — and it is purely derived, so reclaiming it costs
+// only a recompile. -modcache is deliberately excluded: it holds downloaded
+// module source, so clearing it forces a full re-download of every dependency
+// over the network. -fuzzcache is excluded because a fuzz corpus is
+// accumulated discovery, not derived output, and cannot be regenerated cheaply.
+func TestGoProviderCleansBuildCacheOnly(t *testing.T) {
+	provider, ok := providerByID(storage.BuiltinProviders())["go"]
+	if !ok {
+		t.Fatal("BuiltinProviders() missing go provider")
+	}
+
+	if got, want := provider.Cleaner, (storage.CleanerDescriptor{
+		Executable: "go",
+		Args:       []string{"clean", "-cache"},
+		Trusted:    true,
+	}); !reflect.DeepEqual(got, want) {
+		t.Errorf("Cleaner = %#v, want %#v", got, want)
+	}
+	for _, forbidden := range []string{"-modcache", "-fuzzcache"} {
+		for _, arg := range provider.Cleaner.Args {
+			if arg == forbidden {
+				t.Errorf("Cleaner.Args contains %q: the size-triggered sweep must not force dependency re-download or discard a fuzz corpus", forbidden)
+			}
+		}
+	}
+}
+
+func TestNPXCleanupRequiresStrictOwnership(t *testing.T) {
+	cacheRoot := t.TempDir()
+	ownedPath := filepath.Join(cacheRoot, "_npx")
+	if err := os.Mkdir(ownedPath, 0o755); err != nil {
+		t.Fatalf("create owned npx path: %v", err)
+	}
+
+	outside := t.TempDir()
+	symlinkRoot := t.TempDir()
+	symlinkPath := filepath.Join(symlinkRoot, "_npx")
+	if err := os.Symlink(outside, symlinkPath); err != nil {
+		t.Fatalf("create npx symlink: %v", err)
+	}
+
+	unknownPath := filepath.Join(cacheRoot, "other")
+	if err := os.Mkdir(unknownPath, 0o755); err != nil {
+		t.Fatalf("create unknown npx path: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		cacheRoot  string
+		path       string
+		lease      bool
+		wantAction storage.ActionType
+	}{
+		{name: "inactive provider-owned", cacheRoot: cacheRoot, path: ownedPath, wantAction: storage.Delete},
+		{name: "symlink", cacheRoot: symlinkRoot, path: symlinkPath, wantAction: storage.Preserve},
+		{name: "leased", cacheRoot: cacheRoot, path: ownedPath, lease: true, wantAction: storage.Preserve},
+		{name: "unknown owner", cacheRoot: cacheRoot, path: unknownPath, wantAction: storage.Preserve},
+		{name: "escaped", cacheRoot: cacheRoot, path: outside, wantAction: storage.Preserve},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := storage.NPXCleanupCandidate(test.cacheRoot, test.path, test.lease)
+			plan := storage.PlanCleanup(storage.Snapshot{
+				CatalogHealthy: true,
+				Candidates:     []storage.Candidate{candidate},
+			}, storage.StoragePolicy{DeletionAuthorized: true}, storage.ScopeDevTools)
+			if got := plan.Decisions[0].Action; got != test.wantAction {
+				t.Errorf("planned action = %q, want %q", got, test.wantAction)
+			}
 		})
 	}
 }
