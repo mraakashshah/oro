@@ -1997,19 +1997,11 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn net.Conn) {
 		}
 
 		if workerID == "" {
-			ack, err := d.handleHello(conn, msg)
-			if err != nil {
+			admitted, ok := d.admitHello(conn, msg)
+			if !ok {
 				return
 			}
-			if err := json.NewEncoder(conn).Encode(protocol.Message{
-				Type:     protocol.MsgHelloACK,
-				Protocol: msg.Protocol,
-				HelloACK: &ack,
-			}); err != nil {
-				return
-			}
-			workerID = msg.Protocol.WorkerID
-			d.registerWorker(workerID, conn)
+			workerID = admitted
 			continue
 		}
 
@@ -2019,6 +2011,28 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn net.Conn) {
 
 		d.handleMessage(ctx, workerID, msg)
 	}
+}
+
+// admitHello runs the full HELLO handshake for a not-yet-identified connection:
+// validate, write the ACK, then register the worker. It returns the admitted
+// worker ID and true on success; on any failure it returns false and the caller
+// must close the connection. Extracted from handleConn so the handshake's nested
+// error branches do not push that loop past the gocognit limit.
+func (d *Dispatcher) admitHello(conn net.Conn, msg protocol.Message) (string, bool) {
+	ack, err := d.handleHello(conn, msg)
+	if err != nil {
+		return "", false
+	}
+	if err := json.NewEncoder(conn).Encode(protocol.Message{
+		Type:     protocol.MsgHelloACK,
+		Protocol: msg.Protocol,
+		HelloACK: &ack,
+	}); err != nil {
+		return "", false
+	}
+	workerID := msg.Protocol.WorkerID
+	d.registerWorker(workerID, conn)
+	return workerID, true
 }
 
 // handleHello validates a worker's admission request before it can enter the
