@@ -14509,7 +14509,12 @@ func TestShutdownHardTimeout(t *testing.T) {
 		Type:      protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-unresponsive", ContextPct: 5},
 	})
-	waitForWorkers(t, d, 1, 2*time.Second)
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		worker := d.workers["w-unresponsive"]
+		return worker != nil && worker.contextPct == 5
+	}, 2*time.Second)
 
 	// Verify worker is connected
 	if d.ConnectedWorkers() != 1 {
