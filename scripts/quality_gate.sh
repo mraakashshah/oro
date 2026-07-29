@@ -1084,14 +1084,17 @@ go_formatter_check() {
 	return 1
 }
 
-# Ensure go:embed assets exist without deleting them during another QG run.
+# Ensure go:embed assets are current without deleting them during another QG run.
 # The Makefile target rebuilds cmd/oro/_assets in place via rm -rf, so QG only
-# invokes it when assets are missing and serializes that initial staging.
+# invokes it when the mirror is missing or stale and serializes that staging.
 ensure_stage_assets() {
-	if [ -f "cmd/oro/_assets/.version" ]; then
+	if [ ! -f "cmd/oro/embed.go" ] || ! grep -q "_assets" "cmd/oro/embed.go"; then
 		return 0
 	fi
-	if [ ! -f "cmd/oro/embed.go" ] || ! grep -q "_assets" "cmd/oro/embed.go"; then
+	if [ ! -d "assets" ]; then
+		return 0
+	fi
+	if [ -f "cmd/oro/_assets/.version" ] && ! find assets -type f -newer "cmd/oro/_assets/.version" -print -quit | grep -q .; then
 		return 0
 	fi
 	if [ ! -f "Makefile" ] || ! grep -qE '^stage-assets:' "Makefile"; then
@@ -1111,7 +1114,7 @@ ensure_stage_assets() {
 	done
 	QG_STAGE_ASSETS_LOCK="$lock_dir"
 
-	if [ ! -f "cmd/oro/_assets/.version" ]; then
+	if [ ! -f "cmd/oro/_assets/.version" ] || find assets -type f -newer "cmd/oro/_assets/.version" -print -quit | grep -q .; then
 		if ! make stage-assets; then
 			rmdir "$QG_STAGE_ASSETS_LOCK" 2>/dev/null || true
 			QG_STAGE_ASSETS_LOCK=""
