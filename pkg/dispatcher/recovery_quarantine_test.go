@@ -953,22 +953,28 @@ VALUES ('oro-quarantined', 'agent/oro-quarantined', 'unsafe_stale_branch', 'unme
 				t.Fatal("quarantined bead was assigned")
 			}
 			if !tt.wantFrozen {
-				result, err := d.applyHealth()
-				if err != nil {
-					t.Fatalf("applyHealth: %v", err)
-				}
-				var health SwarmHealth
-				if err := json.Unmarshal([]byte(result), &health); err != nil {
-					t.Fatalf("unmarshal health: %v", err)
-				}
-				if health.Metrics.AssignmentFrozenByQuarantine {
-					t.Fatal("open-bead stale-branch quarantine froze assignment health")
-				}
-				if !hasHealthFinding(health, factoryhealth.FindingRecoveryQuarantineOpen) {
-					t.Fatalf("health missing open recovery quarantine finding: %+v", health.Findings)
-				}
+				assertOpenBeadStaleBranchHealth(t, d)
 			}
 		})
+	}
+}
+
+func assertOpenBeadStaleBranchHealth(t *testing.T, d *Dispatcher) {
+	t.Helper()
+
+	result, err := d.applyHealth()
+	if err != nil {
+		t.Fatalf("applyHealth: %v", err)
+	}
+	var health SwarmHealth
+	if err := json.Unmarshal([]byte(result), &health); err != nil {
+		t.Fatalf("unmarshal health: %v", err)
+	}
+	if health.Metrics.AssignmentFrozenByQuarantine {
+		t.Fatal("open-bead stale-branch quarantine froze assignment health")
+	}
+	if !hasHealthFinding(health, factoryhealth.FindingRecoveryQuarantineOpen) {
+		t.Fatalf("health missing open recovery quarantine finding: %+v", health.Findings)
 	}
 }
 
