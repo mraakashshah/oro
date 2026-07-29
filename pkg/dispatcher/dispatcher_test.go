@@ -47,18 +47,17 @@ func TestStaleSetupFailureCannotDeleteReplacementState(t *testing.T) {
 	const (
 		beadID   = "oro-stale-setup"
 		workerID = "worker-stale-setup"
-		g1Tree   = "/tmp/worktree-g1"
-		g2Tree   = "/tmp/worktree-g2"
+		worktree = "/tmp/worktree-stale-setup"
 	)
 
-	g1AssignmentID, err := d.createAssignment(ctx, beadID, workerID, g1Tree)
+	g1AssignmentID, err := d.createAssignment(ctx, beadID, workerID, worktree)
 	if err != nil {
 		t.Fatalf("create g1 assignment: %v", err)
 	}
 	if err := d.requeueAssignment(ctx, g1AssignmentID); err != nil {
 		t.Fatalf("requeue g1 assignment: %v", err)
 	}
-	g2AssignmentID, err := d.createAssignment(ctx, beadID, workerID, g2Tree)
+	g2AssignmentID, err := d.createAssignment(ctx, beadID, workerID, worktree)
 	if err != nil {
 		t.Fatalf("create g2 assignment: %v", err)
 	}
@@ -71,19 +70,19 @@ func TestStaleSetupFailureCannotDeleteReplacementState(t *testing.T) {
 		state:          protocol.WorkerReserved,
 		beadID:         beadID,
 		assignmentID:   g2AssignmentID,
-		worktree:       g2Tree,
+		worktree:       worktree,
 		reservationGen: 2,
 	}
 	d.assigningBeads[beadID] = true
 	d.attemptCounts[beadID] = 2
 	d.handoffCounts[beadID] = 2
-	d.worktreeByBead[beadID] = g2Tree
+	d.worktreeByBead[beadID] = worktree
 	d.mu.Unlock()
 	beadSrc.mu.Lock()
 	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
 	beadSrc.mu.Unlock()
 
-	d.abortAssignmentReservationLost(ctx, beadID, workerID, 1, g1Tree, true, g1AssignmentID)
+	d.abortAssignmentReservationLost(ctx, beadID, workerID, 1, worktree, true, g1AssignmentID)
 
 	var g1Status, g2Status string
 	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, g1AssignmentID).Scan(&g1Status); err != nil {
@@ -102,22 +101,22 @@ func TestStaleSetupFailureCannotDeleteReplacementState(t *testing.T) {
 	wtMgr.mu.Lock()
 	removed := append([]string(nil), wtMgr.removed...)
 	wtMgr.mu.Unlock()
-	if len(removed) != 1 || removed[0] != g1Tree {
-		t.Fatalf("removed worktrees = %v, want only %q", removed, g1Tree)
+	if len(removed) != 0 {
+		t.Fatalf("removed worktrees = %v, want shared successor worktree preserved", removed)
 	}
 
 	d.mu.Lock()
 	w := d.workers[workerID]
-	worktree := d.worktreeByBead[beadID]
+	observedWorktree := d.worktreeByBead[beadID]
 	assigning := d.assigningBeads[beadID]
 	attempts := d.attemptCounts[beadID]
 	handoffs := d.handoffCounts[beadID]
 	d.mu.Unlock()
-	if w == nil || w.state != protocol.WorkerReserved || w.beadID != beadID || w.assignmentID != g2AssignmentID || w.worktree != g2Tree || w.reservationGen != 2 {
+	if w == nil || w.state != protocol.WorkerReserved || w.beadID != beadID || w.assignmentID != g2AssignmentID || w.worktree != worktree || w.reservationGen != 2 {
 		t.Fatalf("g1 cleanup mutated g2 worker state: %+v", w)
 	}
-	if worktree != g2Tree || !assigning || attempts != 2 || handoffs != 2 {
-		t.Fatalf("g1 cleanup mutated g2 tracking: worktree=%q assigning=%t attempts=%d handoffs=%d", worktree, assigning, attempts, handoffs)
+	if observedWorktree != worktree || !assigning || attempts != 2 || handoffs != 2 {
+		t.Fatalf("g1 cleanup mutated g2 tracking: worktree=%q assigning=%t attempts=%d handoffs=%d", observedWorktree, assigning, attempts, handoffs)
 	}
 	beadSrc.mu.Lock()
 	updated, reopened := beadSrc.updated[beadID]

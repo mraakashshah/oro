@@ -7760,7 +7760,10 @@ func (d *Dispatcher) abortAssignmentReservationLost(ctx context.Context, beadID,
 		_ = d.completeAssignment(ctx, assignmentID, beadID)
 	}
 	if !current {
-		if removeWorktree && worktree != "" {
+		d.mu.Lock()
+		worktreeIsShared := d.worktreeByBead[beadID] == worktree
+		d.mu.Unlock()
+		if removeWorktree && worktree != "" && !worktreeIsShared {
 			_ = d.worktrees.Remove(ctx, worktree)
 		}
 		_ = d.logEvent(ctx, "assignment_aborted_reservation_lost", "dispatcher", beadID, workerID, "")
