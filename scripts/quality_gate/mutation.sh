@@ -87,7 +87,7 @@ main() {
 	fi
 
 	local changed
-	changed=$(git diff --name-only "$base" "$head" -- '*.go' 2>/dev/null | \
+	changed=$(git diff --name-only "$base" "$head" -- '*.go' 2>/dev/null |
 		grep -Ev '(^|/)([^/]+_test|[^/]+_generated)\.go$|^cmd/oro/_assets/' || true)
 	local -a changed_files=()
 	if [[ -n "$changed" ]]; then
