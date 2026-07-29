@@ -109,6 +109,15 @@ func runCleanup(ctx context.Context, cfg *cleanupConfig) error {
 		return err
 	}
 
+	return runFullCleanup(ctx, cfg)
+}
+
+// runFullCleanup performs the destructive cleanup sequence: processes, stale
+// runtime files, worktrees, agent branches, and bead reset. Extracted from
+// runCleanup so that adding guard branches there does not push a single
+// function past the gocyclo limit — the eleven sequential steps already sit
+// close to it on their own.
+func runFullCleanup(ctx context.Context, cfg *cleanupConfig) error {
 	cleaned := false
 	var cleanupErr error
 
