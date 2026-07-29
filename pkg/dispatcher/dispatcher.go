@@ -1024,6 +1024,12 @@ type Dispatcher struct {
 	// iteration completes. Tests use this to synchronize without time.Sleep.
 	testPanePollDone func()
 
+	// Review artifact maintenance is serialized so overlapping scheduled ticks
+	// cannot delete or acknowledge the same artifact concurrently.
+	reviewArtifactPruneMu     sync.Mutex
+	reviewArtifactRetention   time.Duration
+	reviewMaintenanceInterval time.Duration
+
 	// escalationRetryInterval controls how often escalationRetryLoop fires.
 	// Defaults to 2 minutes; tests may set this to a shorter value.
 	escalationRetryInterval time.Duration
@@ -1219,23 +1225,25 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 			processedExternalClose: make(map[string]bool),
 			epicSkipLogged:         make(map[string]bool),
 		},
-		priorityBeads:          make(map[string]bool),
-		pendingManagedIDs:      make(map[string]bool),
-		pendingManagedSince:    make(map[string]time.Time),
-		pendingWorkerTargets:   make(map[string]string),
-		pendingSpawnForWorkers: make(map[string]bool),
-		pendingExternalIDs:     make(map[string]bool),
-		pendingExternalSince:   make(map[string]time.Time),
-		workerReadyCh:          make(chan struct{}, 1),
-		shutdownCh:             make(chan struct{}),
-		beadsDir:               beadsDir,
-		panesDir:               defaultPanesDir(),
-		signaledPanes:          make(map[string]bool),
-		paneStates:             make(map[string]*paneState),
-		escalatedCycles:        make(map[string]bool),
-		checkpoints:            newCheckpointTracker(),
-		nowFunc:                time.Now,
-		acceptSem:              make(chan struct{}, 100), // limit to 100 concurrent connection handlers
+		priorityBeads:             make(map[string]bool),
+		pendingManagedIDs:         make(map[string]bool),
+		pendingManagedSince:       make(map[string]time.Time),
+		pendingWorkerTargets:      make(map[string]string),
+		pendingSpawnForWorkers:    make(map[string]bool),
+		pendingExternalIDs:        make(map[string]bool),
+		pendingExternalSince:      make(map[string]time.Time),
+		workerReadyCh:             make(chan struct{}, 1),
+		shutdownCh:                make(chan struct{}),
+		beadsDir:                  beadsDir,
+		panesDir:                  defaultPanesDir(),
+		signaledPanes:             make(map[string]bool),
+		paneStates:                make(map[string]*paneState),
+		escalatedCycles:           make(map[string]bool),
+		checkpoints:               newCheckpointTracker(),
+		nowFunc:                   time.Now,
+		reviewArtifactRetention:   defaultReviewArtifactRetention,
+		reviewMaintenanceInterval: defaultReviewMaintenanceInterval,
+		acceptSem:                 make(chan struct{}, 100), // limit to 100 concurrent connection handlers
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -1683,6 +1691,7 @@ func (d *Dispatcher) spawnBackgroundLoops(ctx context.Context, ln net.Listener) 
 	d.safeGo(func() { d.heartbeatLoop(ctx) })
 	d.safeGo(func() { d.paneMonitorLoop(ctx) })
 	d.safeGo(func() { d.escalationRetryLoop(ctx) })
+	d.safeGo(func() { d.reviewMaintenanceLoop(ctx) })
 	d.safeGo(func() { d.runPresubmitScheduler(ctx) })
 	d.safeGo(func() { d.storageControllerLoop(ctx) })
 	d.safeGo(func() { RunSweepLoop(ctx, d.beads, d.db, SweepConfig{}) })

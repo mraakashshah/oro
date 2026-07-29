@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"oro/pkg/reviewcontract"
 )
@@ -250,4 +251,85 @@ func scanReviewCheckpoint(row *sql.Row) (ReviewCheckpoint, error) {
 		return ReviewCheckpoint{}, fmt.Errorf("scan review checkpoint: %w", err)
 	}
 	return checkpoint, nil
+}
+
+// ArtifactRef identifies an artifact eligible for retention pruning.
+type ArtifactRef struct {
+	Path string
+}
+
+// ListPrunableArtifacts returns artifacts whose every checkpoint reference is
+// terminal and older than olderThan. Shared artifacts are retained until all
+// references become eligible.
+func (s *ReviewCheckpointStore) ListPrunableArtifacts(ctx context.Context, olderThan time.Time) ([]ArtifactRef, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("list prunable review artifacts: db is nil")
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+WITH artifact_references AS (
+  SELECT artifact_path AS path, state, COALESCE(completed_at, updated_at, created_at) AS terminal_at
+  FROM review_checkpoints
+  WHERE COALESCE(artifact_path, '') <> ''
+  UNION ALL
+  SELECT recovery_artifact_path AS path, state, COALESCE(completed_at, updated_at, created_at) AS terminal_at
+  FROM review_checkpoints
+  WHERE COALESCE(recovery_artifact_path, '') <> ''
+)
+SELECT DISTINCT candidate.path
+FROM artifact_references AS candidate
+WHERE candidate.state IN (?, ?)
+  AND datetime(candidate.terminal_at) < datetime(?)
+  AND NOT EXISTS (
+    SELECT 1
+    FROM artifact_references AS reference
+    WHERE reference.path = candidate.path
+      AND (reference.state NOT IN (?, ?) OR datetime(reference.terminal_at) >= datetime(?))
+  )
+ORDER BY candidate.path`,
+		ReviewCheckpointStateIntegrated,
+		ReviewCheckpointStateSuperseded,
+		olderThan.UTC().Format(time.RFC3339Nano),
+		ReviewCheckpointStateIntegrated,
+		ReviewCheckpointStateSuperseded,
+		olderThan.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, fmt.Errorf("query prunable review artifacts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	artifacts := make([]ArtifactRef, 0)
+	for rows.Next() {
+		var artifact ArtifactRef
+		if err := rows.Scan(&artifact.Path); err != nil {
+			return nil, fmt.Errorf("scan prunable review artifact: %w", err)
+		}
+		artifacts = append(artifacts, artifact)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate prunable review artifacts: %w", err)
+	}
+	return artifacts, nil
+}
+
+// ClearPrunedArtifact removes durable references after an artifact was deleted.
+// A missing file is also acknowledged so a restart after deletion does not retry it.
+func (s *ReviewCheckpointStore) ClearPrunedArtifact(ctx context.Context, path string) error {
+	if s == nil || s.db == nil {
+		return errors.New("clear pruned review artifact: db is nil")
+	}
+	if path == "" {
+		return errors.New("clear pruned review artifact: path is empty")
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET artifact_path = CASE WHEN artifact_path = ? THEN NULL ELSE artifact_path END,
+    recovery_artifact_path = CASE WHEN recovery_artifact_path = ? THEN NULL ELSE recovery_artifact_path END,
+    updated_at = datetime('now')
+WHERE artifact_path = ? OR recovery_artifact_path = ?`, path, path, path, path)
+	if err != nil {
+		return fmt.Errorf("clear pruned review artifact %q: %w", path, err)
+	}
+	return nil
 }
