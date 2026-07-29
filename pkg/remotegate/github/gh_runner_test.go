@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,8 @@ import (
 )
 
 func TestAttestedGHRunner(t *testing.T) {
+	assertConstructionSuppression(t)
+
 	helper, marker := testHelperEvidence(t)
 	provider := testRuntimeCredentialProvider()
 	runner, err := github.NewGHRunner(helper, provider, github.GHRunnerConfig{Host: "github.example"})
@@ -92,6 +95,25 @@ func TestAttestedGHRunner(t *testing.T) {
 			})
 		}
 	})
+}
+
+func assertConstructionSuppression(t *testing.T) {
+	t.Helper()
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate gh runner test source")
+	}
+	source, err := os.ReadFile(filepath.Join(filepath.Dir(testFile), "gh_runner.go"))
+	if err != nil {
+		t.Fatalf("read gh runner source: %v", err)
+	}
+	const expected = "//oro:testonly — production wiring tracked by oro-1e76"
+	if strings.Count(string(source), "//oro:testonly") != 1 {
+		t.Fatal("gh runner must have exactly one oro:testonly suppression")
+	}
+	if !strings.Contains(string(source), expected) {
+		t.Fatalf("gh runner must contain %q", expected)
+	}
 }
 
 func testHelperEvidence(t *testing.T) (github.AttestedCLI, string) {

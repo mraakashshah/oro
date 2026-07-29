@@ -48,7 +48,7 @@ type GHRunner struct {
 
 // NewGHRunner validates persisted CLI evidence before returning a runner.
 //
-//oro:testonly — production wiring is owned by subsequent remote-gate tasks.
+//oro:testonly — production wiring tracked by oro-1e76
 func NewGHRunner(cli AttestedCLI, credentials remotegate.RuntimeCredentialProvider, config GHRunnerConfig) (*GHRunner, error) {
 	if err := validateAttestedCLI(cli); err != nil {
 		return nil, err
