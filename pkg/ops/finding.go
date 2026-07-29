@@ -6,52 +6,40 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+
+	"oro/pkg/reviewcontract"
 )
 
-// Severity mirrors the existing review prompt vocabulary.
-type Severity string
+// Severity aliases the dependency-neutral review finding vocabulary.
+type Severity = reviewcontract.Severity
 
 const (
 	// SevCritical identifies a critical structured review finding.
-	SevCritical Severity = "critical"
+	SevCritical = reviewcontract.SevCritical
 	// SevImportant identifies an important structured review finding.
-	SevImportant Severity = "important"
+	SevImportant = reviewcontract.SevImportant
 	// SevMinor identifies a minor structured review finding.
-	SevMinor Severity = "minor"
+	SevMinor = reviewcontract.SevMinor
 )
 
-// Evidence pins a finding to a file:line(:quote) the reviewer was shown.
-type Evidence struct {
-	File      string `json:"file"`
-	LineStart int    `json:"line_start"`
-	LineEnd   int    `json:"line_end"`
-	Quote     string `json:"quote,omitempty"`
-}
+// Evidence aliases the dependency-neutral evidence contract.
+type Evidence = reviewcontract.Evidence
 
-// Finding is the shared structured review finding emitted by reviewers.
-type Finding struct {
-	ID         string     `json:"id"`
-	Severity   Severity   `json:"severity"`
-	Category   string     `json:"category"`
-	Title      string     `json:"title"`
-	Detail     string     `json:"detail"`
-	Evidence   []Evidence `json:"evidence"`
-	Confidence int        `json:"confidence"`
-	Sources    []string   `json:"sources"`
-	// SourceFamilies names independent evidence families used by cheap triage.
-	SourceFamilies []string              `json:"source_families,omitempty"`
-	Origin         string                `json:"origin"`
-	Status         string                `json:"status,omitempty"`
-	History        []FindingHistoryEntry `json:"history,omitempty"`
-}
+// ContractImpact aliases the dependency-neutral recovery contract impact.
+type ContractImpact = reviewcontract.ContractImpact
 
-// FindingHistoryEntry records an append-only triage status change for a finding.
-type FindingHistoryEntry struct {
-	Status string `json:"status"`
-	Actor  string `json:"actor,omitempty"`
-	Note   string `json:"note,omitempty"`
-	At     string `json:"at,omitempty"`
-}
+const (
+	// ContractImplementationFix identifies a finding requiring an implementation change.
+	ContractImplementationFix = reviewcontract.ContractImplementationFix
+	// ContractAcceptanceGap identifies a finding requiring an acceptance-contract revision.
+	ContractAcceptanceGap = reviewcontract.ContractAcceptanceGap
+)
+
+// Finding aliases the dependency-neutral structured review finding contract.
+type Finding = reviewcontract.Finding
+
+// FindingHistoryEntry aliases the dependency-neutral finding history contract.
+type FindingHistoryEntry = reviewcontract.FindingHistoryEntry
 
 // ReviewReport is the parsed structured output of one reviewer pass.
 type ReviewReport struct {

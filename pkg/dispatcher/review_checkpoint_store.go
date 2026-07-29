@@ -3,8 +3,11 @@ package dispatcher
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+
+	"oro/pkg/reviewcontract"
 )
 
 // ErrCheckpointConflict reports that a checkpoint changed before a requested transition.
@@ -135,6 +138,73 @@ WHERE id = ? AND state = ?`, to, id, from)
 		return fmt.Errorf("compare and swap review checkpoint %d from %q to %q: %w", id, from, to, ErrCheckpointConflict)
 	}
 	return nil
+}
+
+// SaveRejectedFindings atomically replaces the structured findings persisted for a rejected checkpoint.
+//
+//oro:testonly
+func (s *ReviewCheckpointStore) SaveRejectedFindings(ctx context.Context, checkpointID int64, findings []reviewcontract.Finding) error {
+	if s == nil || s.db == nil {
+		return errors.New("save rejected findings: db is nil")
+	}
+	if checkpointID <= 0 {
+		return fmt.Errorf("save rejected findings: invalid checkpoint ID %d", checkpointID)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin save rejected findings: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM review_checkpoint_findings WHERE checkpoint_id = ?`, checkpointID); err != nil {
+		return fmt.Errorf("clear rejected findings: %w", err)
+	}
+	for _, finding := range findings {
+		if err := insertRejectedFinding(ctx, tx, checkpointID, finding); err != nil {
+			return err
+		}
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE review_checkpoints SET updated_at = datetime('now') WHERE id = ?`, checkpointID)
+	if err != nil {
+		return fmt.Errorf("touch review checkpoint after rejected findings: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count touched review checkpoint after rejected findings: %w", err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("save rejected findings: checkpoint %d not found", checkpointID)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit rejected findings: %w", err)
+	}
+	return nil
+}
+
+func insertRejectedFinding(ctx context.Context, tx *sql.Tx, checkpointID int64, finding reviewcontract.Finding) error {
+	if finding.ID == "" {
+		return errors.New("save rejected findings: finding ID is empty")
+	}
+	compact, err := json.Marshal(finding)
+	if err != nil {
+		return fmt.Errorf("marshal rejected finding %q: %w", finding.ID, err)
+	}
+	file, line := compactFindingLocation(finding)
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO review_checkpoint_findings (
+  checkpoint_id, finding_id, severity, file, line, contract_impact, required_action, compact_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, checkpointID, finding.ID, finding.Severity, file, line,
+		finding.ContractImpact, finding.RequiredAction, compact); err != nil {
+		return fmt.Errorf("insert rejected finding %q: %w", finding.ID, err)
+	}
+	return nil
+}
+
+func compactFindingLocation(finding reviewcontract.Finding) (file string, line any) {
+	if len(finding.Evidence) == 0 {
+		return "", nil
+	}
+	return finding.Evidence[0].File, finding.Evidence[0].LineStart
 }
 
 func validateCheckpointInput(in CheckpointInput) error {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"oro/pkg/cards"
+	"oro/pkg/reviewcontract"
 )
 
 // MaxMessageSize is the maximum size in bytes for a single UDS message.
@@ -130,6 +131,28 @@ type AssignPayload struct {
 	TargetBranch         string              `json:"target_branch,omitempty"`
 	GitLog               string              `json:"git_log,omitempty"`
 	WorkerProgram        string              `json:"worker_program,omitempty"`
+	ReviewRecovery       *ReviewRecovery     `json:"review_recovery,omitempty"`
+}
+
+// ReviewRecoveryArtifactRef identifies the lossless artifact used when findings exceed the wire budget.
+//
+//oro:testonly
+type ReviewRecoveryArtifactRef struct {
+	Path         string `json:"path"`
+	SHA256       string `json:"sha256"`
+	FindingCount int    `json:"finding_count"`
+}
+
+// ReviewRecovery carries rejected-review correction context to a replacement worker.
+//
+//oro:testonly
+type ReviewRecovery struct {
+	CheckpointID    int64                      `json:"checkpoint_id"`
+	RejectedHeadSHA string                     `json:"rejected_head_sha"`
+	Findings        []reviewcontract.Finding   `json:"findings,omitempty"`
+	FindingsRef     *ReviewRecoveryArtifactRef `json:"findings_ref,omitempty"`
+	Attempt         int                        `json:"attempt"`
+	AcceptanceHash  string                     `json:"acceptance_hash"`
 }
 
 // Validate checks that the AssignPayload has required fields populated.
