@@ -1872,7 +1872,7 @@ func TestTimedOutReaperCannotClobberReplacement(t *testing.T) {
 // installs g2 only when the reservation is visibly released, reproducing the
 // former ownership-check-to-update window without holding dispatcher locks
 // across the bead-store call.
-func TestTimedOutReaperCleanupCannotClobberSuccessor(t *testing.T) {
+func TestTimedOutSetupCannotCaptureReusedReservation(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	const (
 		workerID = "timed-out-cleanup-worker"
@@ -1962,6 +1962,71 @@ func TestTimedOutReaperCleanupCannotClobberSuccessor(t *testing.T) {
 
 	if state != protocol.WorkerReserved || generation != 3 || !assigning || attempts != 2 || handoffs != 2 || worktree != "/tmp/g2" || status != "in_progress" {
 		t.Fatalf("g1 clobbered g2 cleanup state: state=%s generation=%d assigning=%t attempts=%d handoffs=%d worktree=%q status=%q", state, generation, assigning, attempts, handoffs, worktree, status)
+	}
+}
+
+func TestTimedOutAttachedSetupCleansOwnedResources(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		workerID = "timed-out-attached-worker"
+		beadID   = "timed-out-attached-bead"
+		worktree = "/tmp/worktree-timed-out-attached"
+	)
+	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+	d.cfg.ProgressTimeout = time.Second
+
+	assignmentID := insertActiveAssignment(t, d, beadID, workerID, worktree)
+	wtMgr.removeFn = func(_ context.Context, path string) error {
+		if path != worktree {
+			t.Fatalf("remove worktree path = %q, want %q", path, worktree)
+		}
+		if !d.mu.TryLock() {
+			t.Fatal("worktree cleanup ran while dispatcher mutex was held")
+		}
+		d.mu.Unlock()
+		return nil
+	}
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:              workerID,
+		conn:            newMockConn(),
+		state:           protocol.WorkerReserved,
+		beadID:          beadID,
+		assignmentID:    assignmentID,
+		worktree:        worktree,
+		setupReservedAt: now.Add(-2 * time.Second),
+		reservationGen:  1,
+		encoder:         json.NewEncoder(newMockConn()),
+	}
+	d.assigningBeads[beadID] = true
+	d.worktreeByBead[beadID] = worktree
+	d.mu.Unlock()
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+	beadSrc.mu.Unlock()
+
+	d.checkHeartbeats(ctx)
+
+	var assignmentStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("query assignment: %v", err)
+	}
+	if assignmentStatus != "completed" {
+		t.Fatalf("assignment status = %q, want completed", assignmentStatus)
+	}
+	wtMgr.mu.Lock()
+	removed := append([]string(nil), wtMgr.removed...)
+	wtMgr.mu.Unlock()
+	if len(removed) != 1 || removed[0] != worktree {
+		t.Fatalf("removed worktrees = %v, want [%q]", removed, worktree)
+	}
+	d.mu.Lock()
+	_, tracked := d.worktreeByBead[beadID]
+	d.mu.Unlock()
+	if tracked {
+		t.Fatalf("worktreeByBead[%q] still tracked", beadID)
 	}
 }
 

@@ -7562,7 +7562,7 @@ func (d *Dispatcher) prepareAssignmentWorktree(
 	d.mu.Lock()
 	if !d.assignmentReservationHeldLocked(workerID, beadID, reservationGen) {
 		d.mu.Unlock()
-		_ = d.worktrees.Remove(ctx, worktree)
+		d.removeUnsharedAssignmentWorktree(ctx, beadID, worktree)
 		return "", "", false
 	}
 	d.worktreeByBead[beadID] = worktree
@@ -7755,23 +7755,40 @@ func (d *Dispatcher) releaseAssignmentReservationLocked(workerID, beadID string,
 }
 
 func (d *Dispatcher) abortAssignmentReservationLost(ctx context.Context, beadID, workerID string, reservationGen uint64, worktree string, removeWorktree bool, assignmentID int64) {
-	if !d.releaseAssignmentClaim(workerID, beadID, reservationGen) {
-		return
-	}
+	current := d.assignmentReservationHeld(workerID, beadID, reservationGen)
 	if assignmentID != 0 {
 		_ = d.completeAssignment(ctx, assignmentID, beadID)
+	}
+	if !current {
+		if removeWorktree {
+			d.removeUnsharedAssignmentWorktree(ctx, beadID, worktree)
+		}
+		_ = d.logEvent(ctx, "assignment_aborted_reservation_lost", "dispatcher", beadID, workerID, "")
+		return
 	}
 	if !d.isBeadClosed(ctx, beadID) {
 		_ = d.updateBeadStatus(ctx, beadID, "open")
 	}
 	if removeWorktree && worktree != "" {
 		_ = d.worktrees.Remove(ctx, worktree)
-		d.mu.Lock()
-		delete(d.worktreeByBead, beadID)
-		d.mu.Unlock()
 	}
+	d.releaseAssignmentClaim(workerID, beadID, reservationGen)
 	_ = d.logEvent(ctx, "assignment_aborted_reservation_lost", "dispatcher", beadID, workerID, "")
 	d.notifyAssignLoop()
+}
+
+// removeUnsharedAssignmentWorktree removes a setup worktree only when a newer
+// reservation has not published that same deterministic path for the bead.
+func (d *Dispatcher) removeUnsharedAssignmentWorktree(ctx context.Context, beadID, worktree string) {
+	if worktree == "" {
+		return
+	}
+	d.mu.Lock()
+	shared := d.worktreeByBead[beadID] == worktree
+	d.mu.Unlock()
+	if !shared {
+		_ = d.worktrees.Remove(ctx, worktree)
+	}
 }
 
 func (d *Dispatcher) abortAssignmentForFocusChange(ctx context.Context, beadID, workerID string, reservationGen uint64, worktree string, removeWorktree bool, assignmentID int64) {

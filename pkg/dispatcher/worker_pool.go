@@ -667,7 +667,13 @@ func (d *Dispatcher) reclaimTimedOutSetupsLocked(ctx context.Context, workerIDs 
 		reservationGen := w.reservationGen
 		_ = d.logEventLocked(ctx, "assignment_setup_timeout", "dispatcher", beadID, id,
 			fmt.Sprintf(`{"setup_ago":%q}`, now.Sub(w.setupReservedAt).Round(time.Second)))
-		reclaimed = append(reclaimed, workerExitInfo{workerID: id, beadID: beadID, reservationGen: reservationGen})
+		reclaimed = append(reclaimed, workerExitInfo{
+			workerID:       id,
+			beadID:         beadID,
+			reservationGen: reservationGen,
+			worktree:       w.worktree,
+			assignmentID:   w.assignmentID,
+		})
 	}
 	return reclaimed
 }
@@ -675,8 +681,31 @@ func (d *Dispatcher) reclaimTimedOutSetupsLocked(ctx context.Context, workerIDs 
 func (d *Dispatcher) reopenTimedOutSetupBeads(ctx context.Context, reclaimed []workerExitInfo) {
 	for _, setup := range reclaimed {
 		d.reopenTimedOutSetupBead(ctx, setup)
+		d.cleanTimedOutSetupResources(ctx, setup)
 		if d.finishTimedOutSetupCleanup(setup) {
 			d.notifyAssignLoop()
+		}
+	}
+}
+
+// cleanTimedOutSetupResources terminalizes resources captured while the setup
+// reservation was still held. It never holds d.mu across database or worktree
+// cleanup, and it cannot remove a deterministic worktree path republished by
+// a newer reservation generation.
+func (d *Dispatcher) cleanTimedOutSetupResources(ctx context.Context, setup workerExitInfo) {
+	if setup.assignmentID > 0 {
+		if err := d.completeAssignment(ctx, setup.assignmentID, setup.beadID); err != nil {
+			_ = d.logEvent(ctx, "assignment_setup_timeout_cleanup_failed", "dispatcher", setup.beadID, setup.workerID,
+				fmt.Sprintf(`{"assignment_id":%d,"error":%q}`, setup.assignmentID, err.Error()))
+		}
+	}
+	if setup.worktree == "" {
+		return
+	}
+	if d.timedOutSetupCleanupCurrent(setup) {
+		if err := d.worktrees.Remove(ctx, setup.worktree); err != nil {
+			_ = d.logEvent(ctx, "assignment_setup_worktree_cleanup_failed", "dispatcher", setup.beadID, setup.workerID,
+				fmt.Sprintf(`{"worktree":%q,"error":%q}`, setup.worktree, err.Error()))
 		}
 	}
 }
@@ -716,6 +745,7 @@ func (d *Dispatcher) finishTimedOutSetupCleanup(setup workerExitInfo) bool {
 		return false
 	}
 	d.clearBeadTrackingLocked(setup.beadID)
+	delete(d.worktreeByBead, setup.beadID)
 	return d.releaseAssignmentReservationLocked(setup.workerID, setup.beadID, setup.reservationGen)
 }
 
