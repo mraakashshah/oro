@@ -103,7 +103,7 @@ func runCleanup(ctx context.Context, cfg *cleanupConfig) error {
 	}
 	if cfg.AssignmentsOnly {
 		cleaned, err := cleanupOrphanedAssignments(ctx, cfg)
-		if !cleaned {
+		if err == nil && !cleaned {
 			fmt.Fprintln(cfg.w, "nothing to clean")
 		}
 		return err
@@ -206,7 +206,12 @@ func cleanupOrphanedAssignments(ctx context.Context, cfg *cleanupConfig) (bool, 
 	}
 	defer func() { _ = rows.Close() }()
 
-	cleaned := false
+	type activeAssignment struct {
+		id       int64
+		beadID   string
+		workerID string
+	}
+	var assignments []activeAssignment
 	for rows.Next() {
 		var assignmentID int64
 		var beadID, workerID string
@@ -216,26 +221,61 @@ func cleanupOrphanedAssignments(ctx context.Context, cfg *cleanupConfig) (bool, 
 		if liveWorkerIDs[workerID] {
 			continue
 		}
-		res, err := db.ExecContext(ctx, `
-UPDATE assignments
-   SET status='completed', completed_at=datetime('now')
- WHERE id=? AND status='active'`, assignmentID)
-		if err != nil {
-			return false, fmt.Errorf("complete orphaned assignment %d: %w", assignmentID, err)
-		}
-		affected, err := res.RowsAffected()
-		if err != nil {
-			return false, fmt.Errorf("read completed assignment count: %w", err)
-		}
-		if affected > 0 {
-			cleaned = true
-			fmt.Fprintf(cfg.w, "completed orphaned assignment for bead %s\n", beadID)
-		}
+		assignments = append(assignments, activeAssignment{id: assignmentID, beadID: beadID, workerID: workerID})
 	}
 	if err := rows.Err(); err != nil {
 		return false, fmt.Errorf("iterate active assignments: %w", err)
 	}
+	if err := rows.Close(); err != nil {
+		return false, fmt.Errorf("close active assignments: %w", err)
+	}
+
+	cleaned := false
+	for _, assignment := range assignments {
+		completed, err := completeOrphanedAssignment(ctx, db, assignment.id, assignment.beadID)
+		if err != nil {
+			return false, err
+		}
+		if completed {
+			cleaned = true
+			fmt.Fprintf(cfg.w, "completed orphaned assignment for bead %s\n", assignment.beadID)
+		}
+	}
 	return cleaned, nil
+}
+
+func completeOrphanedAssignment(ctx context.Context, db *sql.DB, assignmentID int64, beadID string) (bool, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin complete orphaned assignment %d: %w", assignmentID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `
+UPDATE beads
+   SET status='open'
+ WHERE id=?
+   AND status='in_progress'
+   AND EXISTS (SELECT 1 FROM assignments WHERE id=? AND status='active')
+   AND NOT EXISTS (SELECT 1 FROM assignments WHERE bead_id=? AND status='active' AND id<>?)`, beadID, assignmentID, beadID, assignmentID); err != nil {
+		return false, fmt.Errorf("reset orphaned bead %s: %w", beadID, err)
+	}
+
+	res, err := tx.ExecContext(ctx, `
+UPDATE assignments
+   SET status='completed', completed_at=datetime('now')
+ WHERE id=? AND status='active'`, assignmentID)
+	if err != nil {
+		return false, fmt.Errorf("complete orphaned assignment %d: %w", assignmentID, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read completed assignment count: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit completed orphaned assignment %d: %w", assignmentID, err)
+	}
+	return affected > 0, nil
 }
 
 func cleanupLiveWorkerIDs(ctx context.Context, cfg *cleanupConfig) (map[string]bool, error) {

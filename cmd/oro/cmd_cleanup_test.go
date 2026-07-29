@@ -635,9 +635,12 @@ func TestCleanupAssignmentsOnlyPreservesBranchesAndWorktrees(t *testing.T) {
 		t.Fatalf("open state db: %v", err)
 	}
 	store := beadstore.NewSQLiteStore(db)
-	for _, id := range []string{"oro-stale", "oro-live"} {
-		if _, err := store.Create(ctx, beadstore.CreateParams{ID: id, Title: id, Type: "task", Priority: 1}); err != nil {
-			t.Fatalf("create bead %s: %v", id, err)
+	for _, bead := range []beadstore.CreateParams{
+		{ID: "oro-stale", Title: "oro-stale", Type: "task", Priority: 1, Status: "in_progress"},
+		{ID: "oro-live", Title: "oro-live", Type: "task", Priority: 1, Status: "in_progress"},
+	} {
+		if _, err := store.Create(ctx, bead); err != nil {
+			t.Fatalf("create bead %s: %v", bead.ID, err)
 		}
 	}
 	if _, err := db.ExecContext(ctx, `
@@ -689,6 +692,7 @@ INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES
 		t.Fatalf("reopen state db: %v", err)
 	}
 	defer func() { _ = db.Close() }()
+	store = beadstore.NewSQLiteStore(db)
 	active, err := factoryhealth.LoadActiveAssignments(ctx, db, time.Now())
 	if err != nil {
 		t.Fatalf("load active assignments: %v", err)
@@ -713,6 +717,17 @@ INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES
 	if staleStatus != "completed" || liveStatus != "active" {
 		t.Fatalf("assignment statuses stale/live = %q/%q, want completed/active", staleStatus, liveStatus)
 	}
+	staleBead, err := store.Show(ctx, "oro-stale")
+	if err != nil {
+		t.Fatalf("show stale bead: %v", err)
+	}
+	liveBead, err := store.Show(ctx, "oro-live")
+	if err != nil {
+		t.Fatalf("show live bead: %v", err)
+	}
+	if staleBead.Status != "open" || liveBead.Status != "in_progress" {
+		t.Fatalf("bead statuses stale/live = %q/%q, want open/in_progress", staleBead.Status, liveBead.Status)
+	}
 
 	branchCmd := exec.Command("git", "branch", "--list", "agent/oro-fixture")
 	branchCmd.Dir = repo
@@ -730,6 +745,24 @@ INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("assignments-only cleanup removed %s: %v", path, err)
 		}
+	}
+}
+
+func TestCleanupAssignmentsOnlyDoesNotReportSuccessOnError(t *testing.T) {
+	var buf bytes.Buffer
+	err := runCleanup(context.Background(), &cleanupConfig{
+		AssignmentsOnly: true,
+		stateDBPath:     filepath.Join(t.TempDir(), "state.db"),
+		w:               &buf,
+		liveWorkerIDs: func(context.Context) (map[string]bool, error) {
+			return nil, fmt.Errorf("status unavailable")
+		},
+	})
+	if err == nil {
+		t.Fatal("assignments-only cleanup succeeded with unavailable worker status")
+	}
+	if strings.Contains(buf.String(), "nothing to clean") {
+		t.Fatalf("assignments-only cleanup reported success after error: %s", buf.String())
 	}
 }
 
