@@ -403,7 +403,7 @@ func TestSpawnFor_StalePendingTargetDoesNotReserveBeadForever(t *testing.T) {
 	}
 	d.mu.Unlock()
 
-	d.tryAssign(context.Background())
+	tryAssignAndWait(t, d, context.Background())
 
 	if len(generalConn.written) == 0 {
 		t.Fatal("stale pending spawn-for target reserved bead forever; general idle worker received no assignment")

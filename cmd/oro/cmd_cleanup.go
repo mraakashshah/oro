@@ -34,17 +34,20 @@ type cleanupConfig struct {
 	sockPath              string
 	stateDBPath           string // path to native SQLite state.db; empty disables bead state repair
 	worktreesDir          string // path to .worktrees directory; empty disables worktree dir removal
+	AssignmentsOnly       bool
 	subprocessCacheRoot   string
 	subprocessCacheMaxAge time.Duration
 	signalFn              func(int) error // sends SIGINT; injectable for testing
 	aliveFn               func(int) bool  // checks process liveness; injectable for testing
 	isTTY                 func() bool     // returns true if stdin is a TTY; injectable for testing
 	exitWait              time.Duration   // bounded wait for dispatcher exit after SIGINT
+	liveWorkerIDs         func(context.Context) (map[string]bool, error)
 }
 
 // newCleanupCmd creates the "oro cleanup" subcommand.
 func newCleanupCmd() *cobra.Command {
-	return &cobra.Command{
+	cfg := cleanupConfig{}
+	cmd := &cobra.Command{
 		Use:   "cleanup",
 		Short: "Clean all stale state after a crash",
 		Long: `Idempotently cleans up all Oro state: kills tmux session, dispatcher,
@@ -67,7 +70,7 @@ Safe to run anytime. If nothing is running, reports "nothing to clean".`,
 				return fmt.Errorf("resolve project paths: %w", err)
 			}
 
-			cfg := &cleanupConfig{
+			cleanupCfg := &cleanupConfig{
 				runner:                &ExecRunner{},
 				w:                     cmd.OutOrStdout(),
 				tmuxName:              TmuxSessionName(readProjectNameCWD()),
@@ -81,11 +84,14 @@ Safe to run anytime. If nothing is running, reports "nothing to clean".`,
 				aliveFn:               IsProcessAlive,
 				isTTY:                 isStdinTTY,
 				exitWait:              cleanupDispatcherExitWait,
+				AssignmentsOnly:       cfg.AssignmentsOnly,
 			}
 
-			return runCleanup(cmd.Context(), cfg)
+			return runCleanup(cmd.Context(), cleanupCfg)
 		},
 	}
+	cmd.Flags().BoolVar(&cfg.AssignmentsOnly, "assignments-only", false, "complete orphaned assignment rows only; leave processes, worktrees and agent branches untouched")
+	return cmd
 }
 
 // runCleanup performs best-effort cleanup of all Oro state.
@@ -95,7 +101,23 @@ func runCleanup(ctx context.Context, cfg *cleanupConfig) error {
 	if cfg.isTTY != nil && !cfg.isTTY() {
 		return fmt.Errorf("oro cleanup requires an interactive terminal (stdin is not a TTY)")
 	}
+	if cfg.AssignmentsOnly {
+		cleaned, err := cleanupOrphanedAssignments(ctx, cfg)
+		if err == nil && !cleaned {
+			fmt.Fprintln(cfg.w, "nothing to clean")
+		}
+		return err
+	}
 
+	return runFullCleanup(ctx, cfg)
+}
+
+// runFullCleanup performs the destructive cleanup sequence: processes, stale
+// runtime files, worktrees, agent branches, and bead reset. Extracted from
+// runCleanup so that adding guard branches there does not push a single
+// function past the gocyclo limit — the eleven sequential steps already sit
+// close to it on their own.
+func runFullCleanup(ctx context.Context, cfg *cleanupConfig) error {
 	cleaned := false
 	var cleanupErr error
 
@@ -162,6 +184,120 @@ func runCleanup(ctx context.Context, cfg *cleanupConfig) error {
 	}
 
 	return cleanupErr
+}
+
+func cleanupOrphanedAssignments(ctx context.Context, cfg *cleanupConfig) (bool, error) {
+	if cfg.stateDBPath == "" {
+		return false, nil
+	}
+	liveWorkerIDs, err := cleanupLiveWorkerIDs(ctx, cfg)
+	if err != nil {
+		return false, err
+	}
+	db, err := openStateDB(cfg.stateDBPath)
+	if err != nil {
+		return false, fmt.Errorf("open state db: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rows, err := db.QueryContext(ctx, `SELECT id, bead_id, worker_id FROM assignments WHERE status='active'`)
+	if err != nil {
+		return false, fmt.Errorf("list active assignments: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	type activeAssignment struct {
+		id       int64
+		beadID   string
+		workerID string
+	}
+	var assignments []activeAssignment
+	for rows.Next() {
+		var assignmentID int64
+		var beadID, workerID string
+		if err := rows.Scan(&assignmentID, &beadID, &workerID); err != nil {
+			return false, fmt.Errorf("scan active assignment: %w", err)
+		}
+		if liveWorkerIDs[workerID] {
+			continue
+		}
+		assignments = append(assignments, activeAssignment{id: assignmentID, beadID: beadID, workerID: workerID})
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate active assignments: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return false, fmt.Errorf("close active assignments: %w", err)
+	}
+
+	cleaned := false
+	for _, assignment := range assignments {
+		completed, err := completeOrphanedAssignment(ctx, db, assignment.id, assignment.beadID)
+		if err != nil {
+			return false, err
+		}
+		if completed {
+			cleaned = true
+			fmt.Fprintf(cfg.w, "completed orphaned assignment for bead %s\n", assignment.beadID)
+		}
+	}
+	return cleaned, nil
+}
+
+func completeOrphanedAssignment(ctx context.Context, db *sql.DB, assignmentID int64, beadID string) (bool, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin complete orphaned assignment %d: %w", assignmentID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `
+UPDATE beads
+   SET status='open'
+ WHERE id=?
+   AND status='in_progress'
+   AND EXISTS (SELECT 1 FROM assignments WHERE id=? AND status='active')
+   AND NOT EXISTS (SELECT 1 FROM assignments WHERE bead_id=? AND status='active' AND id<>?)`, beadID, assignmentID, beadID, assignmentID); err != nil {
+		return false, fmt.Errorf("reset orphaned bead %s: %w", beadID, err)
+	}
+
+	res, err := tx.ExecContext(ctx, `
+UPDATE assignments
+   SET status='completed', completed_at=datetime('now')
+ WHERE id=? AND status='active'`, assignmentID)
+	if err != nil {
+		return false, fmt.Errorf("complete orphaned assignment %d: %w", assignmentID, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read completed assignment count: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit completed orphaned assignment %d: %w", assignmentID, err)
+	}
+	return affected > 0, nil
+}
+
+func cleanupLiveWorkerIDs(ctx context.Context, cfg *cleanupConfig) (map[string]bool, error) {
+	if cfg.liveWorkerIDs != nil {
+		return cfg.liveWorkerIDs(ctx)
+	}
+	status, _, err := DaemonStatus(cfg.pidPath, cfg.sockPath)
+	if err != nil {
+		return nil, fmt.Errorf("get daemon status: %w", err)
+	}
+	if status != StatusRunning {
+		return map[string]bool{}, nil
+	}
+	resp, err := fetchDispatcherStatusAt(ctx, cfg.sockPath)
+	if err != nil {
+		return nil, fmt.Errorf("get live workers: %w", err)
+	}
+	liveWorkerIDs := make(map[string]bool, len(resp.Workers))
+	for _, worker := range resp.Workers {
+		liveWorkerIDs[worker.ID] = true
+	}
+	return liveWorkerIDs, nil
 }
 
 func cleanupSubprocessCache(cfg *cleanupConfig) bool {

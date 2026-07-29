@@ -157,7 +157,7 @@ esac
 	writeRemoteCapabilityFixture(t, filepath.Join(binDir, "gh"), `#!/bin/sh
 case "$*" in
   "--version") printf '%s\n' 'gh version 2.63.0 (2025-01-01)' ;;
-  "api --hostname github.com repos/acme/oro") printf '%s\n' '{"full_name":"acme/oro","permissions":{"push":true}}' ;;
+  "api --hostname github.com repos/acme/oro") printf '%s\n' '{"full_name":"acme/oro","default_branch":"main","permissions":{"push":true}}' ;;
   "api --hostname github.com rate_limit") printf '%s\n' '{"resources":{"core":{"limit":5000,"remaining":4999},"actions_runner_registration":{"limit":1000,"remaining":999}}}' ;;
   "api --hostname github.com repos/acme/oro/actions/workflows/ci.yml") printf '%s\n' '{"path":".github/workflows/ci.yml","state":"active"}' ;;
   *) exit 1 ;;
@@ -216,7 +216,7 @@ esac
 	writeRemoteCapabilityFixture(t, filepath.Join(binDir, "gh"), `#!/bin/sh
 case "$*" in
   "--version") printf '%s\n' 'gh version 2.63.0 (2025-01-01)' ;;
-  "api --hostname github.com repos/acme/oro") printf '%s\n' '{"full_name":"acme/oro","permissions":{"push":true}}' ;;
+  "api --hostname github.com repos/acme/oro") printf '%s\n' '{"full_name":"acme/oro","default_branch":"main","permissions":{"push":true}}' ;;
   "api --hostname github.com rate_limit") printf '%s\n' '{"resources":{"core":{"limit":5000,"remaining":4999},"actions_runner_registration":{"limit":1000,"remaining":999}}}' ;;
   "api --hostname github.com repos/acme/oro/actions/workflows/ci.yml") printf '%s\n' '{"path":".github/workflows/ci.yml","state":"active"}' ;;
   *) exit 1 ;;
@@ -238,6 +238,9 @@ esac
 	}
 	if caps.Host != "github.com" || caps.MatrixBound != 256 {
 		t.Fatalf("capabilities = %+v, want github.com with matrix bound 256", caps)
+	}
+	if caps.DefaultBranch != "main" {
+		t.Fatalf("capabilities DefaultBranch = %q, want main", caps.DefaultBranch)
 	}
 }
 
@@ -329,7 +332,7 @@ esac
 	writeRemoteCapabilityFixture(t, ghPath, `#!/bin/sh
 case "$*" in
   "--version") printf '%s\n' 'gh version 2.63.0 (2025-01-01)' ;;
-  "api --hostname github.com repos/acme/oro") printf '%s\n' '{"full_name":"acme/oro","permissions":{"push":true}}' ;;
+  "api --hostname github.com repos/acme/oro") printf '%s\n' '{"full_name":"acme/oro","default_branch":"main","permissions":{"push":true}}' ;;
   "api --hostname github.com rate_limit") printf '%s\n' '{"resources":{"core":{"limit":5000,"remaining":4999},"actions_runner_registration":{"limit":1000,"remaining":999}}}' ;;
   "api --hostname github.com repos/acme/oro/actions/workflows/ci.yml") printf '%s\n' '{"path":".github/workflows/ci.yml","state":"active"}' ;;
   *) exit 1 ;;
@@ -432,9 +435,11 @@ esac
 	writeRemoteCapabilityFixture(t, filepath.Join(binDir, "gh"), `#!/bin/sh
 case "$*" in
   "--version") printf '%s\n' 'gh version 2.63.0 (2025-01-01)' ;;
-  "api --hostname github.com repos/acme/oro") printf '%s\n' '{"full_name":"acme/oro","permissions":{"push":true}}' ;;
+  "api --hostname github.com repos/acme/oro") printf '%s\n' '{"full_name":"acme/oro","default_branch":"main","permissions":{"push":true}}' ;;
   "api --hostname github.com rate_limit") printf '%s\n' '{"resources":{"core":{"limit":5000,"remaining":4999},"actions_runner_registration":{"limit":1000,"remaining":999}}}' ;;
   "api --hostname github.com repos/acme/oro/actions/workflows/ci.yml") printf '%s\n' '{"path":".github/workflows/ci.yml","state":"active"}' ;;
+  *"contents/.github/workflows/ci.yml"*) printf '%s\n' 'on: [pull_request, workflow_dispatch]' ;;
+  *"/repos/acme/oro/rules/branches/main"*) printf '%s\n' '[]' ;;
   *) exit 1 ;;
 esac
 `)
@@ -542,7 +547,7 @@ const remoteCapabilityConfigYAML = `factory:
         type: github-app
         app_id: 1
         installation_id: 2
-        private_key_ref: runtime-key
+        private_key_ref: keychain:runtime-key
       policy_reconciliation:
         enabled: true
         owned_ruleset_key: oro
@@ -552,7 +557,7 @@ const remoteCapabilityConfigYAML = `factory:
           type: github-app
           app_id: 3
           installation_id: 4
-          private_key_ref: maintenance-key
+          private_key_ref: keychain:maintenance-key
 `
 
 const canonicalRemoteCapabilityConfigYAML = `factory:
@@ -575,7 +580,7 @@ const canonicalRemoteCapabilityConfigYAML = `factory:
         type: github-app
         app_id: 1
         installation_id: 2
-        private_key_ref: runtime-key
+        private_key_ref: keychain:runtime-key
       policy_reconciliation:
         enabled: true
         owned_ruleset_key: oro
@@ -585,7 +590,7 @@ const canonicalRemoteCapabilityConfigYAML = `factory:
           type: github-app
           app_id: 3
           installation_id: 4
-          private_key_ref: maintenance-key
+          private_key_ref: keychain:maintenance-key
 `
 
 func writeRemoteCapabilityFixture(t *testing.T, path, body string) {

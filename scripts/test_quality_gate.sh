@@ -204,6 +204,12 @@ test_repo_root_rejects_terminal_escape_artifacts() {
 	fi
 }
 
+# Test: the checked-in gate itself is acceptable to its shfmt lane.
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_shell_source_is_shfmt_clean() {
+	shfmt -ln bash -d "$SCRIPT_DIR/quality_gate.sh"
+}
+
 # =============================================================================
 # Trap EXIT Tests (oro-bl44): mutation testing cleanup on interrupt
 # =============================================================================
@@ -1985,6 +1991,7 @@ test_case "Reads config when present" test_reads_config_when_present
 test_case "Falls back when config missing" test_fallback_when_config_missing
 test_case "Skips when tool missing" test_skip_when_tool_missing
 test_case "Removes terminal escape artifacts at repo root" test_repo_root_rejects_terminal_escape_artifacts
+test_case "quality_gate.sh is shfmt clean" test_quality_gate_shell_source_is_shfmt_clean
 
 echo ""
 echo "Testing mutation trap handlers (oro-bl44)"

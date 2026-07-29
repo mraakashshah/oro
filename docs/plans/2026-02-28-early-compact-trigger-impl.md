@@ -140,6 +140,7 @@ Create `tests/test_compact_trigger.py`:
 
 ```python
 """Tests for compact_trigger.py hook."""
+
 from __future__ import annotations
 
 import json
@@ -161,9 +162,11 @@ class TestCompactTrigger:
     def _run_main(self, stdin_json: str) -> None:
         """Import and run main() fresh (no module cache between tests)."""
         import io
+
         if "compact_trigger" in sys.modules:
             del sys.modules["compact_trigger"]
         import compact_trigger
+
         sys.stdin = io.StringIO(stdin_json)
         compact_trigger.main()
 
@@ -501,14 +504,14 @@ class TestSessionStartCompactRole:
         monkeypatch.delenv("ORO_WORKER", raising=False)
 
         import io
+
         sys.stdin = io.StringIO(json.dumps({"session_id": ""}))
 
         # Patch PANES_DIR directly — it's a module-level constant computed at import time.
         # Do NOT patch os.path.expanduser (already evaluated; patch would be a no-op).
         with (
             patch("session_start_compact.PANES_DIR", str(tmp_path)),
-            patch("session_start_compact.subprocess.run",
-                  return_value=MagicMock(returncode=0, stdout="")),
+            patch("session_start_compact.subprocess.run", return_value=MagicMock(returncode=0, stdout="")),
         ):
             session_start_main()
 
@@ -523,6 +526,7 @@ class TestSessionStartCompactRole:
         monkeypatch.delenv("ORO_WORKER", raising=False)
 
         import io
+
         sys.stdin = io.StringIO(json.dumps({"session_id": ""}))
 
         with (
@@ -549,6 +553,7 @@ class TestSessionStartCompactRole:
         monkeypatch.delenv("ORO_WORKER", raising=False)
 
         import io
+
         sys.stdin = io.StringIO(json.dumps({"session_id": ""}))
 
         with (
@@ -578,6 +583,7 @@ class TestSessionStartCompactRole:
         monkeypatch.delenv("ORO_ROLE", raising=False)
 
         import io
+
         sys.stdin = io.StringIO(json.dumps({"session_id": "session-w1"}))
 
         with patch("session_start_compact.Path.home", return_value=tmp_path):
@@ -732,9 +738,17 @@ def _create_continuation_bead(bead_id: str, state: dict) -> None:
     description = f"Continue work from compacted session.\nFiles: {files}\nContext: {last_msg}"
     with contextlib.suppress(OSError, subprocess.TimeoutExpired):
         subprocess.run(
-            ["bd", "create", f"--title=Continue: {bead_id}", "--type=task",
-             f"--parent={bead_id}", f"--description={description}"],
-            capture_output=True, timeout=10, check=False,
+            [
+                "bd",
+                "create",
+                f"--title=Continue: {bead_id}",
+                "--type=task",
+                f"--parent={bead_id}",
+                f"--description={description}",
+            ],
+            capture_output=True,
+            timeout=10,
+            check=False,
         )
 
 

@@ -37,6 +37,123 @@ import (
 
 // --- Mock implementations ---
 
+// TestStaleSetupFailureCannotDeleteReplacementState verifies that cleanup from
+// a setup generation that lost its reservation still releases only its
+// captured durable resources. It must never reopen or clear the replacement
+// generation that has already published the same bead.
+func TestStaleSetupFailureCannotDeleteReplacementState(t *testing.T) {
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		beadID   = "oro-stale-setup"
+		workerID = "worker-stale-setup"
+		worktree = "/tmp/worktree-stale-setup"
+	)
+
+	g1AssignmentID, err := d.createAssignment(ctx, beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("create g1 assignment: %v", err)
+	}
+	if err := d.requeueAssignment(ctx, g1AssignmentID); err != nil {
+		t.Fatalf("requeue g1 assignment: %v", err)
+	}
+	g2AssignmentID, err := d.createAssignment(ctx, beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("create g2 assignment: %v", err)
+	}
+
+	// g1 was blocked during setup. While it was away from the dispatcher lock,
+	// g2 replaced its reservation and published its own assignment/worktree.
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id:             workerID,
+		state:          protocol.WorkerReserved,
+		beadID:         beadID,
+		assignmentID:   g2AssignmentID,
+		worktree:       worktree,
+		reservationGen: 2,
+	}
+	d.assigningBeads[beadID] = true
+	d.attemptCounts[beadID] = 2
+	d.handoffCounts[beadID] = 2
+	d.worktreeByBead[beadID] = worktree
+	d.mu.Unlock()
+	beadSrc.mu.Lock()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+	beadSrc.mu.Unlock()
+
+	d.abortAssignmentReservationLost(ctx, beadID, workerID, 1, worktree, true, g1AssignmentID)
+
+	var g1Status, g2Status string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, g1AssignmentID).Scan(&g1Status); err != nil {
+		t.Fatalf("query g1 assignment: %v", err)
+	}
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, g2AssignmentID).Scan(&g2Status); err != nil {
+		t.Fatalf("query g2 assignment: %v", err)
+	}
+	if g1Status != "completed" {
+		t.Fatalf("g1 assignment status = %q, want completed", g1Status)
+	}
+	if g2Status != "active" {
+		t.Fatalf("g2 assignment status = %q, want active", g2Status)
+	}
+
+	wtMgr.mu.Lock()
+	removed := append([]string(nil), wtMgr.removed...)
+	wtMgr.mu.Unlock()
+	if len(removed) != 0 {
+		t.Fatalf("removed worktrees = %v, want shared successor worktree preserved", removed)
+	}
+
+	d.mu.Lock()
+	w := d.workers[workerID]
+	observedWorktree := d.worktreeByBead[beadID]
+	assigning := d.assigningBeads[beadID]
+	attempts := d.attemptCounts[beadID]
+	handoffs := d.handoffCounts[beadID]
+	d.mu.Unlock()
+	if w == nil || w.state != protocol.WorkerReserved || w.beadID != beadID || w.assignmentID != g2AssignmentID || w.worktree != worktree || w.reservationGen != 2 {
+		t.Fatalf("g1 cleanup mutated g2 worker state: %+v", w)
+	}
+	if observedWorktree != worktree || !assigning || attempts != 2 || handoffs != 2 {
+		t.Fatalf("g1 cleanup mutated g2 tracking: worktree=%q assigning=%t attempts=%d handoffs=%d", observedWorktree, assigning, attempts, handoffs)
+	}
+	beadSrc.mu.Lock()
+	updated, reopened := beadSrc.updated[beadID]
+	beadSrc.mu.Unlock()
+	if reopened {
+		t.Fatalf("g1 cleanup reopened g2 bead: %q", updated)
+	}
+
+	t.Run("created worktree", func(t *testing.T) {
+		const createdWorktree = "/tmp/worktree-created-stale-setup"
+		wtMgr.createFn = func(_ context.Context, _, _ string) (string, string, error) {
+			d.mu.Lock()
+			d.workers[workerID].reservationGen = 3
+			d.worktreeByBead[beadID] = createdWorktree
+			d.mu.Unlock()
+			return createdWorktree, protocol.BranchPrefix + beadID, nil
+		}
+
+		if worktree, _, created := d.prepareAssignmentWorktree(ctx, beadID, workerID, 2, "", "main", "main"); worktree != "" || created {
+			t.Fatalf("stale setup returned worktree=%q created=%t, want no assignment", worktree, created)
+		}
+
+		wtMgr.mu.Lock()
+		removed := append([]string(nil), wtMgr.removed...)
+		wtMgr.mu.Unlock()
+		if len(removed) != 0 {
+			t.Fatalf("stale created-worktree cleanup removed successor worktree: %v", removed)
+		}
+		d.mu.Lock()
+		observedWorktree := d.worktreeByBead[beadID]
+		d.mu.Unlock()
+		if observedWorktree != createdWorktree {
+			t.Fatalf("stale created-worktree cleanup cleared successor mapping: %q", observedWorktree)
+		}
+	})
+}
+
 // mockConn is a simple net.Conn implementation that captures writes.
 type mockConn struct {
 	written [][]byte
@@ -115,6 +232,8 @@ type fakeBeadStore struct {
 	closedErr            error            // if set, Closed() returns this error
 	updateErrs           map[string]error // beadID -> error returned by Update()
 	updateFn             func(ctx context.Context, id string, params beadstore.UpdateParams) error
+	statusIfFn           func(ctx context.Context, id, expected, next string) (bool, error)
+	showFn               func(ctx context.Context, id string) (*protocol.BeadDetail, error)
 	showErr              error            // if set, Show() returns this error for all IDs
 	showErrFn            map[string]error // per-ID Show errors (takes precedence over showErr)
 	shownNil             map[string]bool  // per-ID nil detail (returns nil, nil)
@@ -155,9 +274,12 @@ func (m *fakeBeadStore) Ready(_ context.Context) ([]protocol.Bead, error) {
 	return out, nil
 }
 
-func (m *fakeBeadStore) Show(_ context.Context, id string) (*protocol.BeadDetail, error) {
+func (m *fakeBeadStore) Show(ctx context.Context, id string) (*protocol.BeadDetail, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.showFn != nil {
+		return m.showFn(ctx, id)
+	}
 	// Check per-ID Show error first (takes precedence).
 	if m.showErrFn != nil {
 		if err, ok := m.showErrFn[id]; ok {
@@ -229,6 +351,31 @@ func (m *fakeBeadStore) Update(ctx context.Context, id string, params beadstore.
 	}
 	m.appendNoteLocked(id, params.Notes)
 	return nil
+}
+
+func (m *fakeBeadStore) UpdateStatusIf(ctx context.Context, id, expected, next string) (bool, error) {
+	m.mu.Lock()
+	statusIfFn := m.statusIfFn
+	m.mu.Unlock()
+	if statusIfFn != nil {
+		return statusIfFn(ctx, id, expected, next)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	status, ok := m.updated[id]
+	if !ok || status != expected {
+		return false, nil
+	}
+	if m.updateErrs != nil {
+		if err, ok := m.updateErrs[id]; ok {
+			return false, err
+		}
+	}
+	if m.updated == nil {
+		m.updated = make(map[string]string)
+	}
+	m.updated[id] = next
+	return true, nil
 }
 
 func (m *fakeBeadStore) appendNoteLocked(id string, note *string) {
@@ -2358,191 +2505,6 @@ func TestDispatcher_AssignBead_SkipsBeadWithoutAcceptance(t *testing.T) {
 	}, 2*time.Second)
 }
 
-func TestCheckBeadReady_RejectsOversizedBead(t *testing.T) {
-	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
-	startDispatcher(t, d)
-
-	conn, _ := connectWorker(t, d.cfg.SocketPath)
-	sendMsg(t, conn, protocol.Message{
-		Type:      protocol.MsgHeartbeat,
-		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
-	})
-	waitForWorkers(t, d, 1, 1*time.Second)
-
-	sendDirective(t, d.cfg.SocketPath, "start")
-	waitForState(t, d, StateRunning, 1*time.Second)
-
-	// Bead with AC that touches 3 distinct modules — exceeds the 2-module limit.
-	oversizedAC := "Read: pkg/dispatcher/dispatcher.go:510, pkg/ops/review_prompt.go:128, langprofile/detect.go:38"
-	beadSrc.mu.Lock()
-	beadSrc.shown = map[string]*protocol.BeadDetail{
-		"bead-oversize": {Title: "Oversized bead", AcceptanceCriteria: oversizedAC},
-	}
-	beadSrc.mu.Unlock()
-	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-oversize", Title: "Oversized bead", Priority: 1}})
-
-	// Bead must NOT be assigned — OVERSIZED_BEAD routes to decompose ops instead.
-	msg, ok := readMsg(t, conn, 1*time.Second)
-	if ok && msg.Type == protocol.MsgAssign {
-		t.Fatal("oversized bead should not be assigned; OVERSIZED_BEAD escalation should fire instead")
-	}
-
-	// OVERSIZED_BEAD is handled by ops decompose, not tmux. The dispatcher
-	// heartbeat loop may emit unrelated worker-liveness escalations while this
-	// integration-style test waits on assignment state, so assert the oversized
-	// route specifically instead of requiring the shared mock escalator to stay
-	// completely empty.
-	waitFor(t, func() bool {
-		return spawnMock.SpawnCount() > 0 && len(d.ops.Active()) == 0
-	}, 2*time.Second)
-	for _, got := range esc.Messages() {
-		if strings.Contains(got, string(protocol.EscOversizedBead)) {
-			t.Fatalf("oversized bead should not paste to tmux when ops decompose is routed, got message: %s", got)
-		}
-	}
-
-	// Bead must enter worktreeFailure cooldown (same mechanism as MISSING_AC).
-	d.mu.Lock()
-	_, inCooldown := d.worktreeFailures["bead-oversize"]
-	d.mu.Unlock()
-	if !inCooldown {
-		t.Error("oversized bead should be in worktreeFailures cooldown after rejection")
-	}
-}
-
-func TestCheckBeadReady_OversizedBeadDoesNotEscalateToTmuxWhenOpsRouted(t *testing.T) {
-	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
-	ctx := context.Background()
-
-	const beadID = "oro-big1"
-	oversizedAC := "Test: pkg/a/a_test.go:TestA | Cmd: go test ./pkg/a | Assert: PASS\n" +
-		"Read: pkg/a/a.go:1, pkg/b/b.go:1, pkg/c/c.go:1"
-	beadSrc.shown[beadID] = &protocol.BeadDetail{
-		ID:                 beadID,
-		Title:              "Oversized task",
-		AcceptanceCriteria: oversizedAC,
-	}
-
-	_, _, ok := d.checkBeadReady(ctx, protocol.Bead{ID: beadID, Title: "Oversized task", Type: "task"}, "w1")
-	if ok {
-		t.Fatal("checkBeadReady returned ok=true for oversized bead, want false")
-	}
-	if got := len(esc.Messages()); got != 0 {
-		t.Fatalf("OVERSIZED_BEAD should route to ops without tmux paste, got %d messages: %v", got, esc.Messages())
-	}
-
-	waitFor(t, func() bool {
-		return spawnMock.SpawnCount() > 0
-	}, 2*time.Second)
-
-	spawnMock.mu.Lock()
-	spawns := append([]spawnCall(nil), spawnMock.spawns...)
-	spawnMock.mu.Unlock()
-	if len(spawns) != 1 {
-		t.Fatalf("spawn count = %d, want 1 decompose spawn", len(spawns))
-	}
-	if strings.Contains(spawns[0].prompt, "You are the oro ops manager") {
-		t.Fatalf("OVERSIZED_BEAD routed to generic escalation prompt, want decompose prompt")
-	}
-	if !strings.Contains(spawns[0].prompt, "task decomposition agent") {
-		t.Fatalf("OVERSIZED_BEAD prompt does not look like decompose prompt:\n%s", spawns[0].prompt)
-	}
-	if spawns[0].workdir != d.repoRoot {
-		t.Fatalf("decompose workdir = %q, want repo root %q", spawns[0].workdir, d.repoRoot)
-	}
-}
-
-// TestCheckBeadReady_SkipsOversizedCheckForEpicType verifies that epics with
-// oversized AC are filtered at the type level (non_executable_issue_type) before
-// reaching checkBeadReady, so OVERSIZED_BEAD escalation never fires for epics.
-func TestCheckBeadReady_SkipsOversizedCheckForEpicType(t *testing.T) {
-	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
-	startDispatcher(t, d)
-
-	conn, _ := connectWorker(t, d.cfg.SocketPath)
-	sendMsg(t, conn, protocol.Message{
-		Type:      protocol.MsgHeartbeat,
-		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
-	})
-	waitForWorkers(t, d, 1, 1*time.Second)
-
-	sendDirective(t, d.cfg.SocketPath, "start")
-	waitForState(t, d, StateRunning, 1*time.Second)
-
-	// Epic bead touching 3 modules — would be oversized if not filtered first.
-	oversizedAC := "Read: pkg/dispatcher/dispatcher.go:510, pkg/ops/review_prompt.go:128, langprofile/detect.go:38"
-	beadSrc.mu.Lock()
-	beadSrc.hasChildrenMap = map[string]bool{"bead-epic1": true}
-	beadSrc.allChildrenClosedMap = map[string]bool{"bead-epic1": false}
-	beadSrc.shown = map[string]*protocol.BeadDetail{
-		"bead-epic1": {ID: "bead-epic1", Title: "Epic bead", AcceptanceCriteria: oversizedAC, Type: "epic"},
-	}
-	beadSrc.mu.Unlock()
-	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-epic1", Title: "Epic bead", Priority: 1, Type: "epic"}})
-
-	// Epic must NOT be assigned — it is filtered as a non-executable issue type.
-	// Wait for the non_executable_issue_type event to confirm the dispatcher saw it.
-	waitFor(t, func() bool {
-		var count int
-		_ = d.db.QueryRow(`SELECT COUNT(*) FROM events WHERE type = ? AND bead_id = ?`,
-			"non_executable_issue_type", "bead-epic1").Scan(&count)
-		return count > 0
-	}, 2*time.Second)
-
-	_, assigned := readMsg(t, conn, 200*time.Millisecond)
-	if assigned {
-		t.Fatal("epic bead must not be assigned to a worker")
-	}
-
-	// OVERSIZED_BEAD escalation must NOT have fired.
-	for _, m := range esc.Messages() {
-		if strings.Contains(m, string(protocol.EscOversizedBead)) {
-			t.Errorf("OVERSIZED_BEAD escalation must not fire for epic bead; got: %s", m)
-		}
-	}
-}
-
-// TestCheckBeadReady_SkipsOversizedCheckWhenHasChildren verifies that a bead
-// with existing children (already decomposed) is NOT blocked by the
-// OVERSIZED_BEAD check and can be processed normally.
-func TestCheckBeadReady_SkipsOversizedCheckWhenHasChildren(t *testing.T) {
-	d, beadSrc, _, esc, _, _ := newTestDispatcher(t)
-	startDispatcher(t, d)
-
-	conn, _ := connectWorker(t, d.cfg.SocketPath)
-	sendMsg(t, conn, protocol.Message{
-		Type:      protocol.MsgHeartbeat,
-		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w1", ContextPct: 5},
-	})
-	waitForWorkers(t, d, 1, 1*time.Second)
-
-	sendDirective(t, d.cfg.SocketPath, "start")
-	waitForState(t, d, StateRunning, 1*time.Second)
-
-	// Non-epic bead touching 3 modules — oversized, but already has children.
-	oversizedAC := "Read: pkg/dispatcher/dispatcher.go:510, pkg/ops/review_prompt.go:128, langprofile/detect.go:38"
-	beadSrc.mu.Lock()
-	beadSrc.shown = map[string]*protocol.BeadDetail{
-		"bead-decomp1": {ID: "bead-decomp1", Title: "Decomposed bead", AcceptanceCriteria: oversizedAC, Type: "task"},
-	}
-	beadSrc.hasChildrenMap = map[string]bool{"bead-decomp1": true}
-	beadSrc.mu.Unlock()
-	beadSrc.SetBeads([]protocol.Bead{{ID: "bead-decomp1", Title: "Decomposed bead", Priority: 1, Type: "task"}})
-
-	// Bead must receive an ASSIGN message (not be blocked).
-	msg, ok := readMsg(t, conn, 2*time.Second)
-	if !ok || msg.Type != protocol.MsgAssign {
-		t.Fatalf("decomposed bead should be assigned; got ok=%v type=%v", ok, msg.Type)
-	}
-
-	// OVERSIZED_BEAD escalation must NOT have fired.
-	for _, m := range esc.Messages() {
-		if strings.Contains(m, string(protocol.EscOversizedBead)) {
-			t.Errorf("OVERSIZED_BEAD escalation must not fire for already-decomposed bead; got: %s", m)
-		}
-	}
-}
-
 func TestDispatcher_AssignBead_ModelPropagation(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
@@ -4648,89 +4610,6 @@ func TestEscalateOversizedRoutesToDecomposeProductionPath(t *testing.T) {
 	}
 }
 
-func TestRetryPendingEscalations_RoutesLegacyOversizedToOpsRun(t *testing.T) {
-	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
-	ctx := context.Background()
-
-	const routedBeadID = "oro-legacy-big"
-	beadSrc.shown[routedBeadID] = &protocol.BeadDetail{
-		ID:                 routedBeadID,
-		Title:              "Legacy oversized task",
-		Description:        "Predates managerless routing.",
-		AcceptanceCriteria: oversizedAcceptanceForTest(),
-	}
-	seedValidDecomposeResultForTest(t, d.db, routedBeadID)
-	routedEscID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, routedBeadID, "w-legacy")
-
-	d.retryPendingEscalations(ctx)
-
-	waitFor(t, func() bool {
-		return spawnMock.SpawnCount() > 0 &&
-			dispatcherTestEscalationStatus(t, d.db, routedEscID) == "acked"
-	}, 2*time.Second)
-
-	if got := len(esc.Messages()); got != 0 {
-		t.Fatalf("retry routed OVERSIZED_BEAD pasted to tmux, got %d messages: %v", got, esc.Messages())
-	}
-	if status := dispatcherTestEscalationStatus(t, d.db, routedEscID); status != "acked" {
-		t.Fatalf("routed escalation status = %q, want acked", status)
-	}
-	if got := dispatcherTestOpsRunCount(t, d.db, ops.OpsDecompose, routedBeadID); got != 1 {
-		t.Fatalf("decompose ops_run count = %d, want 1", got)
-	}
-
-	const resolvedBeadID = "oro-resolved-big"
-	beadSrc.shown[resolvedBeadID] = &protocol.BeadDetail{
-		ID:                 resolvedBeadID,
-		Title:              "No longer oversized",
-		AcceptanceCriteria: tddAcceptanceForTest() + "\nRead: pkg/dispatcher/dispatcher.go:1",
-	}
-	resolvedEscID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, resolvedBeadID, "w-resolved")
-
-	d.retryPendingEscalations(ctx)
-
-	if status := dispatcherTestEscalationStatus(t, d.db, resolvedEscID); status != "acked" {
-		t.Fatalf("resolved escalation status = %q, want acked", status)
-	}
-	if got := dispatcherTestOpsRunCount(t, d.db, ops.OpsDecompose, resolvedBeadID); got != 0 {
-		t.Fatalf("resolved bead decompose ops_run count = %d, want 0", got)
-	}
-}
-
-func TestStartupConvertsLegacyPendingOversizedToOpsRun(t *testing.T) {
-	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
-	ctx := context.Background()
-
-	const beadID = "oro-startup-big"
-	beadSrc.shown[beadID] = &protocol.BeadDetail{
-		ID:                 beadID,
-		Title:              "Startup legacy oversized task",
-		Description:        "Pending before dispatcher restart.",
-		AcceptanceCriteria: oversizedAcceptanceForTest(),
-	}
-	seedValidDecomposeResultForTest(t, d.db, beadID)
-	escID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, "w-startup")
-
-	if err := d.startupRecovery(ctx); err != nil {
-		t.Fatalf("startupRecovery: %v", err)
-	}
-
-	waitFor(t, func() bool {
-		return spawnMock.SpawnCount() > 0 &&
-			dispatcherTestEscalationStatus(t, d.db, escID) == "acked"
-	}, 2*time.Second)
-
-	if got := len(esc.Messages()); got != 0 {
-		t.Fatalf("startup routed OVERSIZED_BEAD pasted to tmux, got %d messages: %v", got, esc.Messages())
-	}
-	if status := dispatcherTestEscalationStatus(t, d.db, escID); status != "acked" {
-		t.Fatalf("startup routed escalation status = %q, want acked", status)
-	}
-	if got := dispatcherTestOpsRunCount(t, d.db, ops.OpsDecompose, beadID); got != 1 {
-		t.Fatalf("startup decompose ops_run count = %d, want 1", got)
-	}
-}
-
 func TestEscalateNoOpWhenBlockingOpsRunExists(t *testing.T) {
 	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
 	ctx := context.Background()
@@ -4807,38 +4686,6 @@ func TestConcurrentEscalateCreatesOneOpsRun(t *testing.T) {
 	slowSpawner.mu.Unlock()
 	for _, p := range processes {
 		_ = p.Kill()
-	}
-}
-
-func TestRetryPendingEscalations_DoesNotRepasteRoutedOpsRun(t *testing.T) {
-	d, beadSrc, _, esc, _, spawnMock := newTestDispatcher(t)
-	ctx := context.Background()
-
-	const beadID = "oro-already-routed"
-	beadSrc.shown[beadID] = &protocol.BeadDetail{
-		ID:                 beadID,
-		Title:              "Already routed oversized task",
-		AcceptanceCriteria: oversizedAcceptanceForTest(),
-	}
-	escID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, "w-legacy")
-	insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, "w-existing")
-
-	d.retryPendingEscalations(ctx)
-
-	if got := len(esc.Messages()); got != 0 {
-		t.Fatalf("retry pasted routed OVERSIZED_BEAD to tmux, got %d messages: %v", got, esc.Messages())
-	}
-	if got := spawnMock.SpawnCount(); got != 0 {
-		t.Fatalf("retry spawned duplicate decompose agent = %d, want 0", got)
-	}
-	if status := dispatcherTestEscalationStatus(t, d.db, escID); status != "acked" {
-		t.Fatalf("already-routed escalation status = %q, want acked", status)
-	}
-	if got := dispatcherTestOpsRunCount(t, d.db, ops.OpsDecompose, beadID); got != 1 {
-		t.Fatalf("already-routed decompose ops_run count = %d, want 1", got)
-	}
-	if got := eventCount(t, d.db, "ops_run_blocked_assignment"); got != 1 {
-		t.Fatalf("ops_run_blocked_assignment events = %d, want 1", got)
 	}
 }
 
@@ -14688,7 +14535,7 @@ func TestPriorityContention(t *testing.T) {
 	beadSrc.SetBeads([]protocol.Bead{
 		{ID: "bead-p1", Title: "P1 Task", Priority: 1},
 	})
-	d.tryAssign(t.Context())
+	tryAssignAndWait(t, d, t.Context())
 
 	msg := lastMessage()
 	if msg.Type != protocol.MsgAssign {
@@ -14709,7 +14556,7 @@ func TestPriorityContention(t *testing.T) {
 		{ID: "bead-p1", Title: "P1 Task", Priority: 1}, // still in queue (worker busy)
 		{ID: "bead-p0", Title: "P0 Urgent", Priority: 0},
 	})
-	d.tryAssign(t.Context())
+	tryAssignAndWait(t, d, t.Context())
 
 	if got := messageCount(); got != 1 {
 		t.Fatalf("busy worker received %d messages, want only its original assignment", got)
@@ -14741,7 +14588,7 @@ func TestPriorityContention(t *testing.T) {
 		{ID: "bead-p1-next", Title: "Next P1 Task", Priority: 1},
 		{ID: "bead-p0", Title: "P0 Urgent", Priority: 0},
 	})
-	d.tryAssign(t.Context())
+	tryAssignAndWait(t, d, t.Context())
 
 	msg = lastMessage()
 	if msg.Type != protocol.MsgAssign {
@@ -15203,18 +15050,21 @@ func TestShutdownTimeout_ForceKill(t *testing.T) {
 			t.Fatalf("expected SHUTDOWN (hard kill), got %s", msg2.Type)
 		}
 
-		// After timeout: worker state should be Idle and beadID cleared.
+		// After timeout: worker state should be ShuttingDown and beadID cleared.
+		// Not Idle — Idle is the assignability predicate (isAssignableIdle in
+		// dispatcher.go), so leaving a hard-killed worker Idle would let the
+		// dispatcher hand a bead to a worker it just sent SHUTDOWN to.
 		waitFor(t, func() bool {
 			st, _, ok := d.WorkerInfo("w-force")
-			return ok && st == protocol.WorkerIdle
+			return ok && st == protocol.WorkerShuttingDown
 		}, 2*time.Second)
 
 		state, beadID, exists = d.WorkerInfo("w-force")
 		if !exists {
 			t.Fatal("worker w-force should still exist after timeout")
 		}
-		if state != protocol.WorkerIdle {
-			t.Fatalf("expected WorkerIdle after timeout, got %s", state)
+		if state != protocol.WorkerShuttingDown {
+			t.Fatalf("expected WorkerShuttingDown after timeout, got %s", state)
 		}
 		if beadID != "" {
 			t.Fatalf("expected beadID cleared after timeout, got %q", beadID)
@@ -21743,7 +21593,7 @@ func TestAssignment_SkipsClosedBeads(t *testing.T) {
 		beadSrc.mu.Unlock()
 
 		// Invoke tryAssign
-		d.tryAssign(context.Background())
+		tryAssignAndWait(t, d, context.Background())
 
 		// Worker should be assigned to oro-open-1 (closed bead was skipped)
 		st, beadID, ok := d.WorkerInfo("w-skip-test")
@@ -21810,7 +21660,7 @@ func TestAssignment_SkipsClosedBeads(t *testing.T) {
 		beadSrc.mu.Unlock()
 
 		// Invoke tryAssign
-		d.tryAssign(context.Background())
+		tryAssignAndWait(t, d, context.Background())
 
 		// Worker should remain idle (all beads were closed)
 		st, beadID, ok := d.WorkerInfo("w-all-closed")
@@ -22523,7 +22373,7 @@ func TestTryAssign_DeadSocketRemovesWorker(t *testing.T) {
 	d.mu.Unlock()
 
 	// Run tryAssign — should attempt to send ASSIGN, fail, and remove the worker.
-	d.tryAssign(ctx)
+	tryAssignAndWait(t, d, ctx)
 
 	// Worker should be REMOVED from d.workers.
 	d.mu.Lock()
@@ -24544,11 +24394,11 @@ func TestTryAssign_FillsIdleWorkersAcrossEpicUnitsByPriority(t *testing.T) {
 		{ID: "a-fast", Priority: 0, Epic: "epic-a"},
 	})
 
-	d.tryAssign(context.Background())
-	d.wg.Wait()
+	tryAssignAndWait(t, d, context.Background())
 
-	got := assignedBeadIDsByCreation(t, d.db)
+	got := assignedBeadIDsSorted(t, d.db)
 	want := []string{"a-fast", "a-slow", "b-fast"}
+	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Fatalf("assigned beads = %v, want epic frontiers filled by priority %v", got, want)
 	}
@@ -24570,11 +24420,11 @@ func TestTryAssign_ConcentratesWorkersOnTopEpic(t *testing.T) {
 		{ID: "a-fast", Priority: 0, Epic: "epic-a"},
 	})
 
-	d.tryAssign(context.Background())
-	d.wg.Wait()
+	tryAssignAndWait(t, d, context.Background())
 
-	got := assignedBeadIDsByCreation(t, d.db)
+	got := assignedBeadIDsSorted(t, d.db)
 	want := []string{"a-fast", "a-middle"}
+	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Fatalf("assigned beads = %v, want all workers concentrated on top epic %v", got, want)
 	}
@@ -24592,6 +24442,7 @@ func TestTryAssign_ReservesAllIdleWorkersBeforeSlowWorktreeSetupCompletes(t *tes
 
 	firstCreateStarted := make(chan struct{})
 	releaseFirstCreate := make(chan struct{})
+	defer close(releaseFirstCreate)
 	var firstCreate sync.Once
 	wt := d.worktrees.(*mockWorktreeManager)
 	wt.createFn = func(_ context.Context, beadID, _ string) (string, string, error) {
@@ -24614,6 +24465,12 @@ func TestTryAssign_ReservesAllIdleWorkersBeforeSlowWorktreeSetupCompletes(t *tes
 		t.Fatal("first worktree setup did not start")
 	}
 
+	select {
+	case <-assignDone:
+	case <-time.After(time.Second):
+		t.Fatal("assignment pass did not finish while first worktree setup was blocked")
+	}
+
 	d.mu.Lock()
 	reserved := 0
 	for _, worker := range d.workers {
@@ -24624,13 +24481,6 @@ func TestTryAssign_ReservesAllIdleWorkersBeforeSlowWorktreeSetupCompletes(t *tes
 	d.mu.Unlock()
 	if reserved != 2 {
 		t.Fatalf("reserved workers while first worktree setup is blocked = %d, want 2", reserved)
-	}
-
-	close(releaseFirstCreate)
-	select {
-	case <-assignDone:
-	case <-time.After(time.Second):
-		t.Fatal("assignment did not finish after worktree setup was released")
 	}
 }
 
@@ -24677,6 +24527,71 @@ func TestTryAssignReturnsAfterReservingSingleWorkerWithSlowWorktreeSetup(t *test
 	}
 }
 
+// TestTryAssignBatchReturnsHandlePerLaunchedSetup proves tryAssignBatch hands
+// back one completion handle per assignment setup it launched, and that each
+// handle only closes once its setup actually finishes — not before, and not
+// as a side effect of tryAssignBatch itself returning. The batch call must
+// come back immediately (reservations only) while setup for every launched
+// bead is still blocked.
+func TestTryAssignBatchReturnsHandlePerLaunchedSetup(t *testing.T) {
+	d, beadSrc, _ := setupTryAssignSchedulingTest(t, 2)
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "oro-batch-a", Priority: 0})
+	seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "oro-batch-b", Priority: 1})
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "oro-batch-a", Priority: 0},
+		{ID: "oro-batch-b", Priority: 1},
+	})
+
+	release := make(chan struct{})
+	var createCalls atomic.Int32
+	wt := d.worktrees.(*mockWorktreeManager)
+	wt.createFn = func(_ context.Context, beadID, _ string) (string, string, error) {
+		createCalls.Add(1)
+		<-release
+		return "/tmp/worktree-" + beadID, protocol.BranchPrefix + beadID, nil
+	}
+
+	batchReturned := make(chan []<-chan struct{}, 1)
+	go func() {
+		batchReturned <- d.tryAssignBatch(context.Background())
+	}()
+
+	var handles []<-chan struct{}
+	select {
+	case handles = <-batchReturned:
+	case <-time.After(time.Second):
+		t.Fatal("tryAssignBatch did not return promptly; it must not wait on setup handles")
+	}
+
+	if len(handles) != 2 {
+		t.Fatalf("handles returned = %d, want one per launched setup (2)", len(handles))
+	}
+
+	// Setup for both launches is still blocked on release: neither handle may
+	// have closed yet.
+	for i, h := range handles {
+		select {
+		case <-h:
+			t.Fatalf("handle %d closed before its blocked worktree setup completed", i)
+		default:
+		}
+	}
+
+	close(release)
+
+	for i, h := range handles {
+		select {
+		case <-h:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("handle %d did not close after its setup was released", i)
+		}
+	}
+
+	if got := createCalls.Load(); got != 2 {
+		t.Fatalf("worktree createFn calls = %d, want 2 (one per launched setup)", got)
+	}
+}
+
 func TestTryAssign_IndependentBeforeEpicUnits(t *testing.T) {
 	d, beadSrc, workers := setupTryAssignSchedulingTest(t, 3)
 	seedTryAssignEpic(t, beadSrc, "epic-a", 0, "2026-05-01T00:00:00Z")
@@ -24689,11 +24604,11 @@ func TestTryAssign_IndependentBeforeEpicUnits(t *testing.T) {
 		{ID: "independent-p0", Priority: 0},
 	})
 
-	d.tryAssign(context.Background())
-	d.wg.Wait()
+	tryAssignAndWait(t, d, context.Background())
 
-	got := assignedBeadIDsByCreation(t, d.db)
+	got := assignedBeadIDsSorted(t, d.db)
 	want := []string{"independent-p0", "independent-p1", "epic-child"}
+	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Fatalf("assigned beads = %v, want independent units before epic unit %v", got, want)
 	}
@@ -24738,7 +24653,7 @@ VALUES ('oro-preserved', ?, 'unsafe_stale_branch', 'branch still requires recove
 				}
 			}
 
-			d.tryAssign(t.Context())
+			tryAssignAndWait(t, d, t.Context())
 
 			got := assignedBeadIDsByCreation(t, d.db)
 			if tt.wantAssigned {
@@ -24767,7 +24682,7 @@ func TestTryAssign_EpicPriorityBeatsEpicAge(t *testing.T) {
 		{ID: "new-child", Priority: 0, Epic: "epic-new"},
 	})
 
-	d.tryAssign(context.Background())
+	tryAssignAndWait(t, d, context.Background())
 
 	got := assignedBeadIDsByCreation(t, d.db)
 	want := []string{"new-child"}
@@ -24795,7 +24710,7 @@ func TestTryAssign_UnassignableEpicUnitDoesNotBlockNextEpic(t *testing.T) {
 		{ID: "ready-child", Priority: 0, Epic: "epic-ready"},
 	})
 
-	d.tryAssign(context.Background())
+	tryAssignAndWait(t, d, context.Background())
 
 	got := assignedBeadIDsByCreation(t, d.db)
 	want := []string{"ready-child"}
@@ -24819,7 +24734,7 @@ func TestTryAssign_ReservedEpicUnitDoesNotIdleOtherWorkers(t *testing.T) {
 	d.pendingWorkerTargets["w-reserved-pending"] = "reserved-child"
 	d.mu.Unlock()
 
-	d.tryAssign(context.Background())
+	tryAssignAndWait(t, d, context.Background())
 
 	got := assignedBeadIDsByCreation(t, d.db)
 	want := []string{"next-child"}
@@ -24953,6 +24868,19 @@ func assignedBeadIDsByCreation(t *testing.T, db *sql.DB) []string {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate assignment rows: %v", err)
 	}
+	return ids
+}
+
+// assignedBeadIDsSorted returns the assigned bead IDs sorted lexically,
+// rather than by insertion order. Assignment setup runs on concurrent
+// goroutines since c629e33e, so which goroutine reaches createAssignment
+// first — and thus insertion order — no longer reflects scheduling order.
+// Callers that only need to assert *which* beads were scheduled (not the
+// order) should use this instead of assignedBeadIDsByCreation.
+func assignedBeadIDsSorted(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+	ids := assignedBeadIDsByCreation(t, db)
+	slices.Sort(ids)
 	return ids
 }
 

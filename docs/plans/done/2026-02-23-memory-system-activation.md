@@ -127,6 +127,7 @@ _TYPE_PREFIXES = [
     (re.compile(r"^pattern:\s*", re.IGNORECASE), "pattern"),
 ]
 
+
 def detect_memory_type(content: str) -> tuple[str, str]:
     """Detect memory type from content prefix. Returns (type_prefix, clean_content)."""
     for pattern, mem_type in _TYPE_PREFIXES:
@@ -134,6 +135,7 @@ def detect_memory_type(content: str) -> tuple[str, str]:
             clean = pattern.sub("", content).strip()
             return f"{mem_type}: {clean}", clean
         return f"lesson: {content}", content
+
 
 def sync_to_memories_db(content: str, tags: list[str]) -> None:
     """Best-effort sync to oro memories.db via CLI."""
@@ -167,7 +169,9 @@ def recent_memories_db(n: int = 5) -> list[dict]:
     try:
         result = subprocess.run(
             ["oro", "memories", "list", "--limit", str(n), "--format=json"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0 and result.stdout.strip():
             return json.loads(result.stdout)

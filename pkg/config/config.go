@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Config is Oro's project configuration. It remains an alias for AgentConfig
@@ -140,7 +141,22 @@ func validateGitHubAppIdentity(invalid *[]string, name string, identity GitHubAp
 	if identity.InstallationID <= 0 {
 		*invalid = append(*invalid, name+".installation_id is required")
 	}
-	requireRemoteGateField(invalid, name+".private_key_ref", identity.PrivateKeyRef)
+	if !validKeychainPrivateKeyReference(identity.PrivateKeyRef) {
+		*invalid = append(*invalid, name+".private_key_ref must be a nonempty keychain reference")
+	}
+}
+
+func validKeychainPrivateKeyReference(ref string) bool {
+	const scheme = "keychain:"
+	if !strings.HasPrefix(ref, scheme) || len(ref) == len(scheme) {
+		return false
+	}
+	for _, char := range ref[len(scheme):] {
+		if unicode.IsSpace(char) || unicode.IsControl(char) {
+			return false
+		}
+	}
+	return true
 }
 
 func validatePolicyReconciliation(invalid *[]string, policy PolicyReconciliationConfig) {
