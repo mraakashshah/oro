@@ -37,6 +37,8 @@ cmd/oro/_assets/
 .claude/worktrees/
 /.oro-quality-gate.lock*
 /.oro-quality-gate.queue/
+/.qg-local/
+/.qg-cache/
 **/dispatcher.exit.log
 .gstack/
 pkg/dispatcher/workers/
@@ -52,3 +54,5 @@ uv.lock
 docs/handoffs/
 archive/yap/reference/
 *.db
+/.oro/context_summary.txt
+/.oro/handoff_done

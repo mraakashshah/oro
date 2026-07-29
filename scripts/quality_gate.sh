@@ -360,7 +360,9 @@ sweep_repo_root_escape_artifacts() {
 	local repo_root="$1"
 	local artifact
 	for artifact in "$repo_root"/$'\033]8;;file:'*; do
-		[ -d "$artifact" ] && [ ! -L "$artifact" ] || continue
+		if [ ! -d "$artifact" ] || [ -L "$artifact" ]; then
+			continue
+		fi
 		rm -rf -- "$artifact"
 	done
 }
@@ -517,11 +519,30 @@ run_serial_lane() {
 	if [ "${ORO_SKIP_MUTATION:-}" != "1" ] && ! { [ "$goos" = "darwin" ] && [ "$goarch" = "arm64" ]; }; then
 		race_flag="-race"
 	fi
+	# -race requires cgo on every OS except darwin (go's own build-time
+	# exemption; see cmd/go/internal/work/init.go). This script can itself be
+	# invoked as a subprocess of a CGO-free `go test` run (e.g. the CI
+	# "CGO-free Build" job runs `CGO_ENABLED=0 go test ./...`, and
+	# TestConcurrentGatesNoTimingFlakeSerialLaneCatchesRegression shells out to
+	# this script from inside that process) — an inherited CGO_ENABLED=0 would
+	# then make -race fail outright with "go: -race requires cgo" on
+	# linux/amd64 CI runners even though the guarded tests have nothing to do
+	# with the CGO-free build under test. Force cgo on for just this
+	# invocation whenever -race needs it.
+	#
+	# The default is a bare `env` rather than an empty array: this script's
+	# shebang is #!/bin/sh, which on macOS is bash 3.2, where expanding an
+	# empty array under `set -u` aborts with "unbound variable". A bare `env`
+	# prefix is a no-op, so the array is never empty on any path.
+	local force_cgo=(env)
+	if [ -n "$race_flag" ] && [ "$goos" != "darwin" ]; then
+		force_cgo=(env CGO_ENABLED=1)
+	fi
 	# Emit a coverage profile so the guarded tests' coverage is merged back into
 	# the ≥78% threshold check (enforce_go_coverage_threshold); otherwise moving
 	# them out of the main lane would silently erode measured coverage.
 	# shellcheck disable=SC2086 # race_flag is intentionally word-split (empty or -race)
-	if GOFLAGS=-buildvcs=false go test $race_flag -coverprofile="$GO_SERIAL_COVERAGE_FILE" \
+	if GOFLAGS=-buildvcs=false "${force_cgo[@]}" go test $race_flag -coverprofile="$GO_SERIAL_COVERAGE_FILE" \
 		./pkg/dispatcher -run "$run_filter" -count=1; then
 		echo "1:0" >"$QG_DIR/serial.rc"
 	else
@@ -1030,6 +1051,7 @@ read_go_formatters_from_config() {
 go_formatter_check() {
 	local tool="$1"
 	local runner=""
+	local output=""
 	if go tool -n "$tool" >/dev/null 2>&1; then
 		runner="go-tool"
 	elif command -v "$tool" >/dev/null 2>&1; then
@@ -1051,10 +1073,15 @@ go_formatter_check() {
 	fi
 
 	if [ "$runner" = "go-tool" ]; then
-		test -z "$(go tool "$tool" -l "${dirs[@]}" 2>/dev/null)"
+		output=$(go tool "$tool" -l "${dirs[@]}" 2>/dev/null)
 	else
-		test -z "$("$tool" -l "${dirs[@]}" 2>/dev/null)"
+		output=$("$tool" -l "${dirs[@]}" 2>/dev/null)
 	fi
+	if [ -z "$output" ]; then
+		return 0
+	fi
+	printf '%s\n' "$output"
+	return 1
 }
 
 # Ensure go:embed assets exist without deleting them during another QG run.
@@ -1215,6 +1242,12 @@ lane_go() {
 				echo "  Only referenced from test files (or not at all outside its own file)"
 				dead_found=$((dead_found + 1))
 			fi
+			# NOTE: cmd/ is deliberately NOT scanned for dead exports yet. Adding it
+			# surfaces 15 genuinely-unused exported funcs (11 in cmd/oro/tmux.go),
+			# and the only ways to make the gate pass today are to add 15
+			# //oro:testonly suppressions — the exact debt this check exists to
+			# prevent — or to delete them, which is a separate change. The caller
+			# search above already includes cmd/, so wiring FROM cmd/ counts.
 		done < <(grep -rn --include="*.go" --exclude="*_test.go" -E '^func[[:space:]]+(\([^)]*\)[[:space:]]+)?[A-Z]' pkg/ internal/)
 
 		echo ""
@@ -1262,6 +1295,21 @@ lane_go() {
 		# shellcheck disable=SC2086
 		GOFLAGS=-buildvcs=false go test $race_flag -shuffle=on -p 3 \
 			-coverprofile="$COVERAGE_FILE" ./internal/... ./pkg/... || return 1
+		# ./cmd/... is NOT run here yet, and that is a known hole: the merge gate
+		# does not test 24k lines of source / 39k lines of tests, which is how the
+		# e33f7187 regression reached main. CI does cover it
+		# (.github/workflows/ci.yml:73,137) but nothing in the merge path consults CI.
+		#
+		# Adding `go test ./cmd/...` to this lane was tried and reverted. cmd/oro
+		# contains tests that INVOKE THIS SCRIPT (quality_gate_gen_test.go FIFO/lock
+		# tests). Running them from inside a gate trips the nested-invocation guard
+		# ("Nested quality gate invocation detected; using active parent result"),
+		# and they fail — plus collateral failures in the same process. They pass
+		# standalone, shuffled, and under -p 3; only nesting breaks them.
+		#
+		# Prerequisite before retrying: make cmd/oro's gate-invoking tests
+		# nested-safe (skip when ORO_QG_ACTIVE_PID is set) or move them to
+		# pkg/dispatcher/testdata/serial_lane_tests.txt.
 		# Report the main-lane coverage for visibility. The ≥78% THRESHOLD is
 		# enforced later, after the serial lane, on the MERGED profile — the
 		# serial-lane tests self-skip here, so this partial number would understate

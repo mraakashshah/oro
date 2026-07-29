@@ -46,7 +46,7 @@ Changes to dispatcher.go:
 **Files**: `assets/hooks/memory_capture.py` (source of truth), then copy to `.claude/hooks/` and `~/.oro/hooks/`
 
 Add to TAG_KEYWORDS:
-```python
+```text
 # oro-domain
 "bead", "dispatcher", "pane", "swarm", "worker", "worktree",
 # tools

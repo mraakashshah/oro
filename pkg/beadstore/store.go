@@ -26,6 +26,9 @@ type Store interface {
 	Create(ctx context.Context, params CreateParams) (*protocol.Bead, error)
 	// Update applies non-nil fields from params.
 	Update(ctx context.Context, id string, params UpdateParams) error
+	// UpdateStatusIf atomically changes a bead's status when it equals expected.
+	// It returns false, nil when the bead does not exist or has a different status.
+	UpdateStatusIf(ctx context.Context, id, expected, next string) (bool, error)
 	// Close marks a bead closed with the supplied reason.
 	Close(ctx context.Context, id, reason string) error
 	// Delete soft-deletes a bead with the supplied reason.

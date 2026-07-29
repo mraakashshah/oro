@@ -502,6 +502,9 @@ func (d *Dispatcher) routeOpsRun(ctx context.Context, rec OpsRunRecord) bool {
 }
 
 func (d *Dispatcher) routeReviewOpsRun(ctx context.Context, rec OpsRunRecord) bool {
+	if err := d.observeStorageController(ctx); err != nil || !d.storageAdmissionAllowed() {
+		return false
+	}
 	worktree, targetBranch := d.reviewContextForOpsRun(rec)
 	if worktree == "" {
 		return false

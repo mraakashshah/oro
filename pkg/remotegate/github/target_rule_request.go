@@ -10,13 +10,9 @@ import (
 
 // ErrPolicyAmbiguous indicates that a target rule request cannot be resolved
 // to one unambiguous repository branch collection.
-//
-//oro:testonly — production GitHub policy collection is wired by subsequent remote-gate tasks.
 var ErrPolicyAmbiguous = errors.New("ambiguous policy")
 
 // CollectionLimits bounds a JSON collection operation.
-//
-//oro:testonly — production GitHub policy collection is wired by subsequent remote-gate tasks.
 type CollectionLimits struct {
 	MaxPages int
 	MaxItems int
@@ -24,8 +20,6 @@ type CollectionLimits struct {
 }
 
 // CollectionRequest describes one bounded GitHub JSON collection request.
-//
-//oro:testonly — production GitHub policy collection is wired by subsequent remote-gate tasks.
 type CollectionRequest struct {
 	Path     string
 	MaxPages int
@@ -34,16 +28,12 @@ type CollectionRequest struct {
 }
 
 // CollectionEvidence reports the bounded collection result.
-//
-//oro:testonly — production GitHub policy collection is wired by subsequent remote-gate tasks.
 type CollectionEvidence struct {
 	PageCount int
 	ItemCount int
 }
 
 // CollectionReader is the read-only API seam for bounded JSON collection.
-//
-//oro:testonly — production GitHub policy collection is wired by subsequent remote-gate tasks.
 type CollectionReader interface {
 	CollectJSON(context.Context, CollectionRequest, any) (CollectionEvidence, error)
 }

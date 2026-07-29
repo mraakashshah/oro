@@ -164,8 +164,10 @@ func fetchDispatcherStatus(ctx context.Context) (*statusResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve paths: %w", err)
 	}
-	sockPath := paths.SocketPath
+	return fetchDispatcherStatusAt(ctx, paths.SocketPath)
+}
 
+func fetchDispatcherStatusAt(ctx context.Context, sockPath string) (*statusResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, statusSocketTimeout)
 	defer cancel()
 

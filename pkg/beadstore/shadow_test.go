@@ -15,6 +15,29 @@ import (
 )
 
 func TestShadowStore(t *testing.T) {
+	t.Run("conditionally writes only to primary", func(t *testing.T) {
+		ctx := context.Background()
+		primary := beadstore.NewFakeStore(protocol.Bead{ID: "cas", Status: "in_progress"})
+		secondary := beadstore.NewFakeStore(protocol.Bead{ID: "cas", Status: "in_progress"})
+		store := beadstore.NewShadowStore(primary, secondary)
+
+		updated, err := store.UpdateStatusIf(ctx, "cas", "in_progress", "open")
+		if err != nil || !updated {
+			t.Fatalf("UpdateStatusIf = %t, %v; want true, nil", updated, err)
+		}
+		primaryBead, err := primary.Show(ctx, "cas")
+		if err != nil {
+			t.Fatalf("primary Show: %v", err)
+		}
+		secondaryBead, err := secondary.Show(ctx, "cas")
+		if err != nil {
+			t.Fatalf("secondary Show: %v", err)
+		}
+		if primaryBead.Status != "open" || secondaryBead.Status != "in_progress" {
+			t.Fatalf("statuses = primary %q, secondary %q; want open, in_progress", primaryBead.Status, secondaryBead.Status)
+		}
+	})
+
 	t.Run("dual reads every read method and returns primary results", func(t *testing.T) {
 		ctx := context.Background()
 		seed := []protocol.Bead{

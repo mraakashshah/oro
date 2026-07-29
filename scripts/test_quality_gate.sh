@@ -204,6 +204,12 @@ test_repo_root_rejects_terminal_escape_artifacts() {
 	fi
 }
 
+# Test: the checked-in gate itself is acceptable to its shfmt lane.
+# shellcheck disable=SC2317,SC2329
+test_quality_gate_shell_source_is_shfmt_clean() {
+	shfmt -ln bash -d "$SCRIPT_DIR/quality_gate.sh"
+}
+
 # =============================================================================
 # Trap EXIT Tests (oro-bl44): mutation testing cleanup on interrupt
 # =============================================================================
@@ -1035,6 +1041,56 @@ EOF
 	fi
 	if ! grep -q 'run_golangci_lint()' "$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go"; then
 		echo 'FAIL: generated quality gate does not define the isolated golangci-lint runner'
+		return 1
+	fi
+}
+
+# Test: formatter failures must retain the offending file list so distinct
+# worker defects do not collapse to the same lane-only QG fingerprint.
+# shellcheck disable=SC2317,SC2329
+test_go_formatter_failure_prints_files() {
+	local tmpdir harness output status
+	tmpdir=$(mktemp -d)
+	harness="$tmpdir/run-formatter.sh"
+	# shellcheck disable=SC2064
+	trap "rm -rf -- '$tmpdir'" RETURN
+
+	mkdir -p "$tmpdir/bin" "$tmpdir/pkg"
+	cat >"$tmpdir/bin/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$1" = "tool" ] && [ "$2" = "-n" ]; then
+	exit 0
+fi
+if [ "$1" = "tool" ] && [ "$3" = "-l" ]; then
+	echo "pkg/unformatted.go"
+	exit 0
+fi
+exit 2
+EOF
+	chmod +x "$tmpdir/bin/go"
+
+	{
+		printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
+		sed -n '/^go_formatter_check()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		printf '%s\n' 'go_formatter_check gofumpt'
+	} >"$harness"
+	chmod +x "$harness"
+
+	set +e
+	output=$(cd "$tmpdir" && PATH="$tmpdir/bin:$PATH" "$harness" 2>&1)
+	status=$?
+	set -e
+	if [ "$status" -eq 0 ]; then
+		echo "FAIL: formatter fixture unexpectedly passed"
+		return 1
+	fi
+	if ! grep -Fq "pkg/unformatted.go" <<<"$output"; then
+		echo "FAIL: formatter failure hid the offending file: $output"
+		return 1
+	fi
+	if grep -q 'test -z.*go tool gofumpt -l' "$SCRIPT_DIR/../cmd/oro/quality_gate_gen.go"; then
+		echo "FAIL: generated quality gate hides formatter file lists"
 		return 1
 	fi
 }
@@ -1935,6 +1991,7 @@ test_case "Reads config when present" test_reads_config_when_present
 test_case "Falls back when config missing" test_fallback_when_config_missing
 test_case "Skips when tool missing" test_skip_when_tool_missing
 test_case "Removes terminal escape artifacts at repo root" test_repo_root_rejects_terminal_escape_artifacts
+test_case "quality_gate.sh is shfmt clean" test_quality_gate_shell_source_is_shfmt_clean
 
 echo ""
 echo "Testing mutation trap handlers (oro-bl44)"
@@ -1992,6 +2049,7 @@ test_case "no SC2086 disable for \$changed" test_no_sc2086_disable_for_changed
 test_case "quality_gate.sh \$changed is quoted" test_quality_gate_changed_is_quoted
 test_case "quality_gate.sh stage-assets failures fail closed" test_quality_gate_stage_assets_fail_closed
 test_case "golangci-lint is isolated to active worktree" test_golangci_lint_isolated_to_active_worktree
+test_case "formatter failures print offending files" test_go_formatter_failure_prints_files
 test_case "quality_gate.sh uses scoped lint cache" test_quality_gate_uses_scoped_lint_cache
 test_case "quality_gate.sh run lock timeout preserves holder" test_quality_gate_run_lock_timeout_preserves_holder
 test_case "quality_gate.sh archives stale legacy run lock" test_quality_gate_run_lock_archives_stale_legacy_lock
