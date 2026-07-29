@@ -42,13 +42,24 @@ func openStorageCatalog(ctx context.Context, oroHome string) (*storage.Catalog, 
 // runStartupDevCacheSweep runs one due developer-tool cache sweep during
 // `oro start`. Every failure is a warning, never a boot failure: cache
 // maintenance is housekeeping and must not prevent the factory from starting.
+// startupDevCacheSweepBudget bounds how long boot will spend on cache
+// maintenance. The sweep runs before the dispatcher opens its socket, so an
+// unbounded sweep is a boot failure waiting to happen: a 52 GB Go build cache
+// made `go clean -cache` outlast oro start's socket-readiness wait on
+// 2026-07-29 and the launch reported failure. Exceeding the budget cancels the
+// cleaner mid-run, which is safe — a partially pruned cache is still a valid
+// cache, and the size trigger simply resumes the sweep on the next start.
+const startupDevCacheSweepBudget = 20 * time.Second
+
 func runStartupDevCacheSweep(catalog *storage.Catalog, oroHome string) {
 	paths, err := ResolveStoragePaths(oroHome)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: resolve storage paths for dev-cache sweep: %v\n", err)
 		return
 	}
-	if _, err := storage.RunWeeklyDevCacheSweep(context.Background(), storage.WeeklyDevCacheSweepRequest{
+	ctx, cancel := context.WithTimeout(context.Background(), startupDevCacheSweepBudget)
+	defer cancel()
+	if _, err := storage.RunWeeklyDevCacheSweep(ctx, storage.WeeklyDevCacheSweepRequest{
 		Catalog:   catalog,
 		LockPath:  paths.LockPath,
 		Providers: storage.BuiltinProviders(),
