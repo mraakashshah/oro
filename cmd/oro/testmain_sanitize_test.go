@@ -15,9 +15,11 @@ import (
 // ORO_HOME is intentionally excluded: TestMain sets it to a temp dir explicitly
 // for hermeticity (so tests never resolve to the developer's real ~/.oro).
 var inheritedOroRuntimeVars = []string{
+	"ORO_CAPABILITY_FILE",
 	"ORO_PROJECT",
 	"ORO_SOCKET_PATH",
 	"ORO_TMUX_MANAGED_DAEMON",
+	"ORO_WORKER",
 	"ORO_WORKER_ID",
 	"ORO_WORKER_BEAD_ID",
 }
@@ -34,9 +36,11 @@ func sanitizeInheritedOroEnv() error {
 }
 
 func TestSanitizeInheritedOroEnv(t *testing.T) {
+	t.Setenv("ORO_WORKER", "1")
 	t.Setenv("ORO_WORKER_ID", "leaked-worker")
 	t.Setenv("ORO_PROJECT", "leaked-project")
 	t.Setenv("ORO_SOCKET_PATH", "/tmp/leaked.sock")
+	t.Setenv("ORO_CAPABILITY_FILE", "/tmp/leaked-capability.json")
 
 	if err := sanitizeInheritedOroEnv(); err != nil {
 		t.Fatalf("sanitizeInheritedOroEnv: %v", err)
