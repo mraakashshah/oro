@@ -25,6 +25,7 @@ type recoveryQuarantineCLIRecord struct {
 	WorkerID     string `json:"worker_id,omitempty"`
 	Worktree     string `json:"worktree,omitempty"`
 	Branch       string `json:"branch,omitempty"`
+	PreservedRef string `json:"preserved_ref,omitempty"`
 	Reason       string `json:"reason"`
 	Details      string `json:"details"`
 	Status       string `json:"status"`
@@ -155,6 +156,7 @@ func newRecoveryInspectCmd() *cobra.Command {
 
 func newRecoveryResolveCmd() *cobra.Command {
 	var mode string
+	var preservedRef string
 	var all bool
 	var force bool
 	cmd := &cobra.Command{
@@ -165,10 +167,11 @@ func newRecoveryResolveCmd() *cobra.Command {
 			if all {
 				return runRecoveryResolveAllCmd(cmd, args, mode, force)
 			}
-			return runRecoveryResolveSingleCmd(cmd, args, mode)
+			return runRecoveryResolveSingleCmd(cmd, args, mode, preservedRef)
 		},
 	}
-	cmd.Flags().StringVar(&mode, "mode", "", "resolution mode: requeue-preserved, resolved-after-merge, human-owned, discard-empty-safe")
+	cmd.Flags().StringVar(&mode, "mode", "", "resolution mode: requeue-preserved, retry-fresh-preserved, resolved-after-merge, human-owned, discard-empty-safe")
+	cmd.Flags().StringVar(&preservedRef, "preserved-ref", "", "verified recovery/* ref retained when using retry-fresh-preserved")
 	cmd.Flags().BoolVar(&all, "all", false, "resolve every open quarantine with --mode (bulk); requires confirmation")
 	cmd.Flags().BoolVar(&force, "force", false, "skip interactive confirmation for --all (requires ORO_HUMAN_CONFIRMED=1)")
 	return cmd
@@ -177,7 +180,7 @@ func newRecoveryResolveCmd() *cobra.Command {
 // runRecoveryResolveSingleCmd resolves exactly one quarantine by positional id,
 // preserving the original single-id behavior (including the empty-mode
 // compatibility path and message).
-func runRecoveryResolveSingleCmd(cmd *cobra.Command, args []string, mode string) error {
+func runRecoveryResolveSingleCmd(cmd *cobra.Command, args []string, mode, preservedRef string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("recovery resolve requires exactly one <id> (or use --all)")
 	}
@@ -190,7 +193,7 @@ func runRecoveryResolveSingleCmd(cmd *cobra.Command, args []string, mode string)
 		return err
 	}
 	defer db.Close()
-	if err := resolveRecoveryQuarantine(cmd.Context(), db, id, mode); err != nil {
+	if err := resolveRecoveryQuarantineWithPreservedRef(cmd.Context(), db, id, mode, preservedRef); err != nil {
 		return err
 	}
 	if mode == "" {
@@ -308,7 +311,7 @@ func openRecoveryStateDB() (*sql.DB, error) {
 func listRecoveryQuarantines(ctx context.Context, db *sql.DB) ([]recoveryQuarantineCLIRecord, error) {
 	rows, err := db.QueryContext(ctx, `
 SELECT id, bead_id, COALESCE(assignment_id, 0), COALESCE(worker_id, ''), COALESCE(worktree, ''),
-       COALESCE(branch, ''), reason, details, status, created_at
+       COALESCE(branch, ''), COALESCE(preserved_ref, ''), reason, details, status, created_at
 FROM recovery_quarantines
 WHERE status IN ('open', 'human_owned')
 ORDER BY id`)
@@ -320,7 +323,7 @@ ORDER BY id`)
 	var records []recoveryQuarantineCLIRecord
 	for rows.Next() {
 		var r recoveryQuarantineCLIRecord
-		if err := rows.Scan(&r.ID, &r.BeadID, &r.AssignmentID, &r.WorkerID, &r.Worktree, &r.Branch, &r.Reason, &r.Details, &r.Status, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.BeadID, &r.AssignmentID, &r.WorkerID, &r.Worktree, &r.Branch, &r.PreservedRef, &r.Reason, &r.Details, &r.Status, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan recovery quarantine: %w", err)
 		}
 		records = append(records, r)
@@ -375,9 +378,9 @@ func queryRecoveryQuarantine(ctx context.Context, db recoveryQueryRower, id int6
 	var r recoveryQuarantineCLIRecord
 	err := db.QueryRowContext(ctx, `
 SELECT id, bead_id, COALESCE(assignment_id, 0), COALESCE(worker_id, ''), COALESCE(worktree, ''),
-       COALESCE(branch, ''), reason, details, status, created_at
+       COALESCE(branch, ''), COALESCE(preserved_ref, ''), reason, details, status, created_at
 FROM recovery_quarantines
-WHERE id=?`, id).Scan(&r.ID, &r.BeadID, &r.AssignmentID, &r.WorkerID, &r.Worktree, &r.Branch, &r.Reason, &r.Details, &r.Status, &r.CreatedAt)
+WHERE id=?`, id).Scan(&r.ID, &r.BeadID, &r.AssignmentID, &r.WorkerID, &r.Worktree, &r.Branch, &r.PreservedRef, &r.Reason, &r.Details, &r.Status, &r.CreatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return r, fmt.Errorf("recovery quarantine %d not found", id)
@@ -568,6 +571,10 @@ func recommendedRecoveryAction(inspection recoveryInspection) string {
 }
 
 func resolveRecoveryQuarantine(ctx context.Context, db *sql.DB, id int64, mode string) error {
+	return resolveRecoveryQuarantineWithPreservedRef(ctx, db, id, mode, "")
+}
+
+func resolveRecoveryQuarantineWithPreservedRef(ctx context.Context, db *sql.DB, id int64, mode, preservedRef string) error {
 	mode = strings.TrimSpace(mode)
 	switch mode {
 	case "":
@@ -578,6 +585,8 @@ func resolveRecoveryQuarantine(ctx context.Context, db *sql.DB, id int64, mode s
 		return markRecoveryQuarantineHumanOwned(ctx, db, id)
 	case "requeue-preserved":
 		return resolveRecoveryQuarantineRequeuePreserved(ctx, db, id)
+	case "retry-fresh-preserved":
+		return resolveRecoveryQuarantineRetryFreshPreserved(ctx, db, id, preservedRef)
 	case "discard-empty-safe":
 		inspection, err := inspectRecoveryQuarantine(ctx, db, id)
 		if err != nil {
@@ -590,6 +599,76 @@ func resolveRecoveryQuarantine(ctx context.Context, db *sql.DB, id int64, mode s
 	default:
 		return fmt.Errorf("unknown recovery resolve mode %q", mode)
 	}
+}
+
+func resolveRecoveryQuarantineRetryFreshPreserved(ctx context.Context, db *sql.DB, id int64, preservedRef string) error {
+	preservedRef, err := verifyRecoveryPreservedRef(ctx, preservedRef)
+	if err != nil {
+		return err
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin retry-fresh-preserved transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	q, err := queryRecoveryQuarantine(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if q.Status != "open" && q.Status != "human_owned" && q.Status != "resolved" {
+		return fmt.Errorf("retry-fresh-preserved recovery quarantine %d has status %q", id, q.Status)
+	}
+	if err := completeRetryFreshPreservedAssignment(ctx, tx, q); err != nil {
+		return err
+	}
+	if err := reopenRecoveryBeadForRequeue(ctx, tx, q.BeadID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE recovery_quarantines
+SET status='resolved', resolved_at=COALESCE(resolved_at, datetime('now')), preserved_ref=?
+WHERE id=?`, preservedRef, id); err != nil {
+		return fmt.Errorf("record retry-fresh-preserved recovery quarantine: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit retry-fresh-preserved transaction: %w", err)
+	}
+	return nil
+}
+
+func verifyRecoveryPreservedRef(ctx context.Context, preservedRef string) (string, error) {
+	preservedRef = strings.TrimSpace(preservedRef)
+	if !strings.HasPrefix(preservedRef, "recovery/") || strings.ContainsAny(preservedRef, " \t\n\\") {
+		return "", fmt.Errorf("retry-fresh-preserved requires a recovery/* ref")
+	}
+	if err := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+preservedRef).Run(); err != nil { //nolint:gosec // validated recovery ref is passed as one argv value beneath refs/heads, without a shell.
+		return "", fmt.Errorf("verify retry-fresh-preserved ref %q: %w", preservedRef, err)
+	}
+	if err := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", preservedRef+"^{commit}").Run(); err != nil { //nolint:gosec // validated recovery ref is passed as one argv value, without a shell.
+		return "", fmt.Errorf("verify retry-fresh-preserved commit %q: %w", preservedRef, err)
+	}
+	return preservedRef, nil
+}
+
+func completeRetryFreshPreservedAssignment(ctx context.Context, tx *sql.Tx, q recoveryQuarantineCLIRecord) error {
+	if q.AssignmentID <= 0 {
+		return fmt.Errorf("retry-fresh-preserved recovery quarantine %d has no linked assignment", q.ID)
+	}
+	res, err := tx.ExecContext(ctx, `
+UPDATE assignments
+SET status='completed', completed_at=COALESCE(completed_at, datetime('now'))
+WHERE id=? AND bead_id=? AND status IN ('quarantined', 'requeued')`, q.AssignmentID, q.BeadID)
+	if err != nil {
+		return fmt.Errorf("complete retry-fresh-preserved assignment: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("complete retry-fresh-preserved assignment rows affected: %w", err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("retry-fresh-preserved assignment_id %d is not a linked quarantined or requeued assignment for bead %s", q.AssignmentID, q.BeadID)
+	}
+	return nil
 }
 
 func resolveRecoveryQuarantineRequeuePreserved(ctx context.Context, db *sql.DB, id int64) error {
@@ -855,6 +934,9 @@ func writeRecoveryQuarantineList(w io.Writer, records []recoveryQuarantineCLIRec
 		fmt.Fprintf(w, "#%d %s %s", r.ID, r.BeadID, r.Reason)
 		if r.Branch != "" {
 			fmt.Fprintf(w, " branch=%s", r.Branch)
+		}
+		if r.PreservedRef != "" {
+			fmt.Fprintf(w, " preserved_ref=%s", r.PreservedRef)
 		}
 		if r.Worktree != "" {
 			fmt.Fprintf(w, " worktree=%s", r.Worktree)

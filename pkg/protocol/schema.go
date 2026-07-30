@@ -214,6 +214,7 @@ CREATE TABLE IF NOT EXISTS recovery_quarantines (
     worker_id TEXT,
     worktree TEXT,
     branch TEXT,
+    preserved_ref TEXT,
     reason TEXT NOT NULL,
     details TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'open',
@@ -786,6 +787,9 @@ func MigrateBeadSchema(ctx context.Context, db *sql.DB) error {
 	if err := ensureReviewCheckpointSchema(ctx, db); err != nil {
 		return fmt.Errorf("migrate review checkpoint schema: %w", err)
 	}
+	if err := ensureRecoveryQuarantineSchema(ctx, db); err != nil {
+		return fmt.Errorf("migrate recovery quarantine schema: %w", err)
+	}
 	rebuiltStatusConstraint, err := ensureBeadStatusAllowsBlocked(ctx, db)
 	if err != nil {
 		return fmt.Errorf("migrate bead status constraint: %w", err)
@@ -801,6 +805,23 @@ func MigrateBeadSchema(ctx context.Context, db *sql.DB) error {
 		if _, err := db.ExecContext(ctx, `INSERT INTO beads_fts(beads_fts) VALUES('rebuild')`); err != nil {
 			return fmt.Errorf("rebuild beads fts: %w", err)
 		}
+	}
+	return nil
+}
+
+func ensureRecoveryQuarantineSchema(ctx context.Context, db *sql.DB) error {
+	columns, exists, err := sqliteTableColumns(ctx, db, "recovery_quarantines")
+	if err != nil {
+		return fmt.Errorf("inspect recovery_quarantines columns: %w", err)
+	}
+	if !exists {
+		return nil
+	}
+	if _, ok := columns["preserved_ref"]; ok {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx, `ALTER TABLE recovery_quarantines ADD COLUMN preserved_ref TEXT`); err != nil {
+		return fmt.Errorf("add recovery_quarantines.preserved_ref: %w", err)
 	}
 	return nil
 }
