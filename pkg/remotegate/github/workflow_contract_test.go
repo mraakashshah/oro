@@ -8,14 +8,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 )
 
 const aggregateJobName = "oro-portable-qg"
-
-var portableJobNames = []string{"go", "cgo-free", "shell", "docs", "python"}
 
 func TestPortableAggregateWorkflowContract(t *testing.T) {
 	t.Parallel()
@@ -24,9 +23,9 @@ func TestPortableAggregateWorkflowContract(t *testing.T) {
 	workflow := readWorkflow(t, filepath.Join(repoRoot, ".github", "workflows", "ci.yml"))
 	assertPullRequestAllowsEveryBase(t, workflow)
 	aggregate := assertSingleAggregateJob(t, workflow)
-	assertAggregateDependsOnPortableJobs(t, aggregate)
+	assertAggregateDependsOnPortableJobs(t, workflow, aggregate)
 	assertAggregateAlwaysRuns(t, aggregate)
-	assertNeedsSuccessHelper(t, repoRoot)
+	assertNeedsSuccessHelper(t, repoRoot, portableJobNamesFromWorkflow(t, workflow))
 }
 
 func repositoryRoot(t *testing.T) string {
@@ -94,7 +93,32 @@ func countAggregateJobs(workflow map[string]any) int {
 	return count
 }
 
-func assertAggregateDependsOnPortableJobs(t *testing.T, aggregate map[string]any) {
+// portableJobNamesFromWorkflow derives the expected gate set from the workflow
+// itself - every job except the aggregate - so a newly added CI job cannot
+// silently escape the required aggregate. This mirrors portable_job_names() in
+// scripts/ci/workflow_contract_test.sh, which already derives it dynamically.
+// This Go copy used to hardcode the list and went stale when 9dab8d8c added the
+// blocking incremental-mutation job and updated only the shell contract.
+func portableJobNamesFromWorkflow(t *testing.T, workflow map[string]any) []string {
+	t.Helper()
+	jobs, ok := workflow["jobs"].(map[string]any)
+	if !ok {
+		t.Fatalf("workflow jobs = %#v, want map", workflow["jobs"])
+	}
+	names := make([]string, 0, len(jobs))
+	for name := range jobs {
+		if name == aggregateJobName {
+			continue
+		}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		t.Fatal("workflow declares no jobs besides the aggregate")
+	}
+	return names
+}
+
+func assertAggregateDependsOnPortableJobs(t *testing.T, workflow, aggregate map[string]any) {
 	t.Helper()
 	needs, ok := aggregate["needs"].([]any)
 	if !ok {
@@ -109,7 +133,7 @@ func assertAggregateDependsOnPortableJobs(t *testing.T, aggregate map[string]any
 		actual = append(actual, name)
 	}
 	slices.Sort(actual)
-	want := slices.Clone(portableJobNames)
+	want := portableJobNamesFromWorkflow(t, workflow)
 	slices.Sort(want)
 	if !slices.Equal(actual, want) {
 		t.Fatalf("aggregate needs = %v, want every portable job %v", actual, want)
@@ -123,11 +147,12 @@ func assertAggregateAlwaysRuns(t *testing.T, aggregate map[string]any) {
 	}
 }
 
-func assertNeedsSuccessHelper(t *testing.T, repoRoot string) {
+func assertNeedsSuccessHelper(t *testing.T, repoRoot string, jobNames []string) {
 	t.Helper()
 	script := filepath.Join(repoRoot, "scripts", "ci", "require-needs-success.sh")
+	assertHelperRequiresEveryJob(t, script, jobNames)
 	t.Run("accepts all successful dependencies", func(t *testing.T) {
-		runNeedsHelper(t, script, needsJSON(t, "success", "success", "success", "success", "success"), false)
+		runNeedsHelper(t, script, needsJSON(t, jobNames, "success"), false)
 	})
 	for _, conclusion := range []string{"missing", "skipped", "cancelled", "timed_out", "action_required", "stale", "failure"} {
 		t.Run("rejects "+conclusion, func(t *testing.T) {
@@ -135,16 +160,44 @@ func assertNeedsSuccessHelper(t *testing.T, repoRoot string) {
 				runNeedsHelper(t, script, `{}`, true)
 				return
 			}
-			runNeedsHelper(t, script, needsJSON(t, conclusion, "success", "success", "success", "success"), true)
+			runNeedsHelper(t, script, needsJSON(t, jobNames, conclusion), true)
 		})
 	}
 }
 
-func needsJSON(t *testing.T, conclusions ...string) string {
+// assertHelperRequiresEveryJob keeps require-needs-success.sh's hardcoded
+// required_jobs array in sync with ci.yml. That array is a third copy of the job
+// list alongside this test and scripts/ci/workflow_contract_test.sh; when
+// 9dab8d8c added incremental-mutation it updated the shell contract and the helper
+// but not this test, so the aggregate could have gone green while a required job
+// was silently absent from the gate.
+func assertHelperRequiresEveryJob(t *testing.T, script string, jobNames []string) {
 	t.Helper()
-	needs := make(map[string]map[string]string, len(portableJobNames))
-	for index, jobName := range portableJobNames {
-		needs[jobName] = map[string]string{"result": conclusions[index]}
+	data, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatalf("read needs helper: %v", err)
+	}
+	for _, name := range jobNames {
+		if !strings.Contains(string(data), name) {
+			t.Errorf("require-needs-success.sh does not require job %q; a job in ci.yml is missing from required_jobs", name)
+		}
+	}
+}
+
+// needsJSON builds a needs fixture where the first job carries firstConclusion
+// and every other required job succeeds.
+func needsJSON(t *testing.T, jobNames []string, firstConclusion string) string {
+	t.Helper()
+	// The helper validates dependencies BY NAME, so the fixture must use the real
+	// job names. Deriving them from ci.yml means a newly added job is covered
+	// automatically instead of silently shrinking this fixture.
+	needs := make(map[string]map[string]string, len(jobNames))
+	for index, name := range jobNames {
+		result := "success"
+		if index == 0 {
+			result = firstConclusion
+		}
+		needs[name] = map[string]string{"result": result}
 	}
 	encoded, err := json.Marshal(needs)
 	if err != nil {
