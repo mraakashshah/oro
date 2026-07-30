@@ -202,71 +202,6 @@ func TestSweepers(t *testing.T) {
 		}
 	})
 
-	// ─── ExpireReviewQueueSLA ────────────────────────────────────────────────
-
-	t.Run("ExpireReviewQueueSLA/rejects_rows_past_sla", func(t *testing.T) {
-		db := sweeperTestDB(t)
-		insertSweeperTestBead(t, db, "sla-b1", 0)
-		insertLearningRow(t, db, "sla-b1", "-100 days")
-
-		n, err := ExpireReviewQueueSLA(ctx, db, 60)
-		if err != nil {
-			t.Fatalf("ExpireReviewQueueSLA: %v", err)
-		}
-		if n != 1 {
-			t.Errorf("rows rejected = %d, want 1", n)
-		}
-
-		var rejectedAt sql.NullString
-		_ = db.QueryRowContext(ctx, `SELECT rejected_at FROM bead_learnings_pending WHERE bead_id=?`, "sla-b1").Scan(&rejectedAt)
-		if !rejectedAt.Valid || rejectedAt.String == "" {
-			t.Error("rejected_at must be set after SLA sweep")
-		}
-	})
-
-	t.Run("ExpireReviewQueueSLA/keeps_fresh_rows_within_sla", func(t *testing.T) {
-		db := sweeperTestDB(t)
-		insertSweeperTestBead(t, db, "sla-b2", 0)
-		insertLearningRow(t, db, "sla-b2", "-10 days")
-
-		n, err := ExpireReviewQueueSLA(ctx, db, 60)
-		if err != nil {
-			t.Fatalf("ExpireReviewQueueSLA: %v", err)
-		}
-		if n != 0 {
-			t.Errorf("rows rejected = %d, want 0 (fresh rows must not expire)", n)
-		}
-	})
-
-	t.Run("ExpireReviewQueueSLA/skips_already_rejected_rows", func(t *testing.T) {
-		db := sweeperTestDB(t)
-		insertSweeperTestBead(t, db, "sla-b3", 0)
-		insertLearningRow(t, db, "sla-b3", "-100 days")
-
-		// First run rejects it
-		_, _ = ExpireReviewQueueSLA(ctx, db, 60)
-		// Second run should be a no-op
-		n, err := ExpireReviewQueueSLA(ctx, db, 60)
-		if err != nil {
-			t.Fatalf("second ExpireReviewQueueSLA: %v", err)
-		}
-		if n != 0 {
-			t.Errorf("second run rows rejected = %d, want 0 (idempotent)", n)
-		}
-	})
-
-	t.Run("ExpireReviewQueueSLA/skips_db_without_learning_table", func(t *testing.T) {
-		db := newTestDB(t)
-
-		n, err := ExpireReviewQueueSLA(ctx, db, 60)
-		if err != nil {
-			t.Fatalf("ExpireReviewQueueSLA without learning table: %v", err)
-		}
-		if n != 0 {
-			t.Errorf("rows rejected = %d, want 0 without learning table", n)
-		}
-	})
-
 	// ─── SweepDeletedBeadLearnings ───────────────────────────────────────────
 
 	t.Run("SweepDeletedBeadLearnings/rejects_learnings_for_soft_deleted_bead", func(t *testing.T) {
@@ -343,7 +278,7 @@ func TestSweepers(t *testing.T) {
 		ctx2, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
 
-		go RunSweepLoop(ctx2, spy, nil, SweepConfig{
+		go runSweepLoop(ctx2, spy, nil, SweepConfig{
 			Interval5m:  25 * time.Millisecond,
 			Interval60m: 1 * time.Hour,
 		})
@@ -362,7 +297,7 @@ func TestSweepers(t *testing.T) {
 		ctx2, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
 
-		go RunSweepLoop(ctx2, spy, db, SweepConfig{
+		go runSweepLoop(ctx2, spy, db, SweepConfig{
 			Interval5m:  1 * time.Hour,
 			Interval60m: 25 * time.Millisecond,
 		})
@@ -379,7 +314,7 @@ func TestSweepers(t *testing.T) {
 
 		done := make(chan struct{})
 		go func() {
-			RunSweepLoop(ctx2, spy, nil, SweepConfig{
+			runSweepLoop(ctx2, spy, nil, SweepConfig{
 				Interval5m:  10 * time.Millisecond,
 				Interval60m: 1 * time.Hour,
 			})
@@ -390,7 +325,7 @@ func TestSweepers(t *testing.T) {
 		select {
 		case <-done:
 		case <-time.After(500 * time.Millisecond):
-			t.Error("RunSweepLoop did not stop after context cancel")
+			t.Error("runSweepLoop did not stop after context cancel")
 		}
 	})
 }

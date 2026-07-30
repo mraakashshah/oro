@@ -53,8 +53,10 @@ type RuntimeBatchSpawner interface {
 }
 
 type spawnRouting struct {
-	role            string
-	runtimeOverride string
+	role              string
+	runtimeOverride   string
+	modelOverride     string
+	reasoningOverride string
 }
 
 // --- Ops types and verdicts ---
@@ -72,6 +74,7 @@ const (
 	OpsWriteAC    Type = "write_ac"
 	OpsDecompose  Type = "decompose" // spawned when a bead exhausts all worker retry attempts
 	OpsDream      Type = "dream"     // spawned for background memory consolidation
+	OpsGrade      Type = "grade"     // spawned to grade a proposed durable card
 	OpsJanitor    Type = "janitor"   // spawned for low-cost codebase cleanliness triage
 	OpsAudit      Type = "audit"     // spawned for periodic deep whole-repo audits
 )
@@ -91,6 +94,8 @@ func (t Type) Tier() protocol.Tier {
 		return protocol.TierDeep // bead decomposition requires careful judgment
 	case OpsDream:
 		return protocol.TierBackground // lightweight background memory consolidation
+	case OpsGrade:
+		return protocol.TierBalanced // card promotion requires evidence-based judgment
 	case OpsJanitor:
 		return protocol.TierFast // continuous low-cost codebase cleanliness triage
 	case OpsAudit:
@@ -131,6 +136,8 @@ func (t Type) Role() string {
 		return "ops_decompose"
 	case OpsDream:
 		return "ops_dream"
+	case OpsGrade:
+		return "grade"
 	case OpsJanitor:
 		return "ops_janitor"
 	case OpsAudit:
@@ -175,11 +182,14 @@ const (
 
 // Result is the output of an ops agent.
 type Result struct {
-	Type     Type
-	BeadID   string
-	Verdict  Verdict
-	Feedback string // reviewer feedback, resolution description, or diagnosis
-	Err      error
+	Type            Type
+	BeadID          string
+	Verdict         Verdict
+	Feedback        string // reviewer feedback, resolution description, or diagnosis
+	GradeVerdict    GradeVerdict
+	GradeConfidence float64
+	GradeReasoning  string
+	Err             error
 }
 
 // --- Agent ---
@@ -264,6 +274,16 @@ type DecomposeOpts struct {
 type DreamOpts struct {
 	Memories       string   // serialized memories to process; may be empty
 	ActiveBiasTags []string // calibration tags to counter in the next proposal prompt
+}
+
+// GradeOpts configures a grade worker for a proposed durable card. Model and
+// Reasoning select the escalation rung while Role preserves runtime routing.
+type GradeOpts struct {
+	Card      Card
+	Evidence  GradeEvidence
+	Role      string
+	Model     string
+	Reasoning string
 }
 
 // JanitorOpts configures a deterministic-cleanliness triage agent.
@@ -610,6 +630,18 @@ func (s *Spawner) Dream(ctx context.Context, opts DreamOpts) <-chan Result {
 	return s.run(ctx, OpsDream, "", "", prompt)
 }
 
+// Grade spawns the configured grade worker and returns its parsed verdict.
+//
+//oro:testonly — wired into production by card grading orchestration
+func (s *Spawner) Grade(ctx context.Context, opts GradeOpts) <-chan Result {
+	prompt := buildGradePrompt(opts.Card, opts.Evidence)
+	return s.runWith(ctx, OpsGrade, spawnRouting{
+		role:              opts.Role,
+		modelOverride:     opts.Model,
+		reasoningOverride: opts.Reasoning,
+	}, "", "", prompt)
+}
+
 // Janitor spawns a cheap deterministic-cleanliness triage agent.
 func (s *Spawner) Janitor(ctx context.Context, opts JanitorOpts) <-chan Result {
 	prompt := buildJanitorPrompt(opts)
@@ -707,14 +739,7 @@ func (s *Spawner) runWith(ctx context.Context, opsType Type, routing spawnRoutin
 			s.mu.Unlock()
 		}()
 
-		role := routing.role
-		if role == "" {
-			role = opsType.Role()
-		}
-		runtime, model, reasoning := agentmodel.ResolveForRole(role)
-		if routing.runtimeOverride != "" {
-			runtime = routing.runtimeOverride
-		}
+		runtime, model, reasoning := resolveSpawnRouting(opsType, routing)
 		sp := s.spawner
 		if opsType == OpsReview && s.reviewSpawner != nil {
 			sp = s.reviewSpawner
@@ -755,6 +780,24 @@ func (s *Spawner) runWith(ctx context.Context, opsType Type, routing spawnRoutin
 	}()
 
 	return ch
+}
+
+func resolveSpawnRouting(opsType Type, routing spawnRouting) (runtime, model, reasoning string) {
+	role := routing.role
+	if role == "" {
+		role = opsType.Role()
+	}
+	runtime, model, reasoning = agentmodel.ResolveForRole(role)
+	if routing.runtimeOverride != "" {
+		runtime = routing.runtimeOverride
+	}
+	if routing.modelOverride != "" {
+		model = routing.modelOverride
+	}
+	if routing.reasoningOverride != "" {
+		reasoning = routing.reasoningOverride
+	}
+	return runtime, model, reasoning
 }
 
 func spawnOps(ctx context.Context, spawner BatchSpawner, runtime, model, reasoning, prompt, worktree string) (Process, error) {
@@ -952,6 +995,19 @@ func parseResult(opsType Type, beadID, stdout string, waitErr error) Result {
 	case OpsDiagnosis, OpsEpicFix, OpsDream, OpsJanitor, OpsAudit:
 		// These runs have no verdict parsing — the whole output is the feedback.
 		r.Feedback = stdout
+	case OpsGrade:
+		grade, ok := parseGradeWorkerOutput(stdout)
+		if !ok {
+			r.Verdict = VerdictFailed
+			r.Err = errors.New("ops: malformed grade worker output")
+			r.Feedback = stdout
+			return r
+		}
+		r.Verdict = VerdictResolved
+		r.GradeVerdict = grade.Verdict
+		r.GradeConfidence = grade.Confidence
+		r.GradeReasoning = grade.Reasoning
+		r.Feedback = grade.Reasoning
 	case OpsEscalation:
 		r.Verdict, r.Feedback = parseEscalationOutput(stdout)
 	case OpsDecompose:

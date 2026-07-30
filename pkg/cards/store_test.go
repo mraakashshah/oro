@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -88,6 +89,88 @@ func newTestStoreWithBeads(t *testing.T) (*cards.SQLiteCardStore, *sql.DB) {
 		t.Fatalf("new store: %v", err)
 	}
 	return store, db
+}
+
+func TestResolveProposal(t *testing.T) {
+	ctx := context.Background()
+	store, db := newTestStoreWithDB(t)
+	proposed := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "proposed card",
+		BodySummary: "pending grade review",
+		BodyFull:    "This card should transition exactly once.",
+		GradeState:  string(cards.GradeStateProposed),
+	})
+	active := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "active card",
+		BodySummary: "not a proposal",
+		BodyFull:    "This card should not appear in the proposal queue.",
+	})
+
+	proposals, err := store.ListProposed(ctx)
+	if err != nil {
+		t.Fatalf("ListProposed: %v", err)
+	}
+	if len(proposals) != 1 || proposals[0].ID != proposed.ID {
+		t.Fatalf("ListProposed = %+v, want only %q (not %q)", proposals, proposed.ID, active.ID)
+	}
+
+	apply := cards.GradeOutcome{
+		Action:     cards.GradeActionApply,
+		GradeState: cards.GradeStateApplied,
+		Verdict:    cards.GradeVerdictCorrect,
+		Confidence: 0.92,
+	}
+	if err := store.ResolveProposal(ctx, proposed.ID, apply); err != nil {
+		t.Fatalf("ResolveProposal apply: %v", err)
+	}
+	assertProposalGrade(ctx, t, db, proposed.ID, cards.GradeStateApplied, apply)
+
+	if err := store.ResolveProposal(ctx, proposed.ID, apply); !errors.Is(err, cards.ErrAlreadyResolved) {
+		t.Fatalf("ResolveProposal resolved card err = %v, want ErrAlreadyResolved", err)
+	}
+
+	rejected := mustCreate(t, store, cards.CardCreateParams{
+		Type:        cards.CardTypePattern,
+		Title:       "rejected proposal",
+		BodySummary: "incorrect proposal",
+		BodyFull:    "This proposal should be rejected.",
+		GradeState:  string(cards.GradeStateProposed),
+	})
+	reject := cards.GradeOutcome{
+		Action:     cards.GradeActionRejectAndRetire,
+		GradeState: cards.GradeStateRejected,
+		Verdict:    cards.GradeVerdictIncorrect,
+		Confidence: 0.31,
+	}
+	if err := store.ResolveProposal(ctx, rejected.ID, reject); err != nil {
+		t.Fatalf("ResolveProposal reject: %v", err)
+	}
+	assertProposalGrade(ctx, t, db, rejected.ID, cards.GradeStateRejected, reject)
+}
+
+func assertProposalGrade(
+	ctx context.Context,
+	t *testing.T,
+	db *sql.DB,
+	cardID string,
+	wantState cards.GradeState,
+	want cards.GradeOutcome,
+) {
+	t.Helper()
+	var state, verdict string
+	var confidence float64
+	if err := db.QueryRowContext(ctx, `
+		SELECT grade_state, grade_verdict, grade_confidence
+		  FROM cards
+		 WHERE id = ?`, cardID,
+	).Scan(&state, &verdict, &confidence); err != nil {
+		t.Fatalf("query resolved proposal: %v", err)
+	}
+	if state != string(wantState) || verdict != string(want.Verdict) || confidence != want.Confidence {
+		t.Fatalf("resolved proposal = state=%q verdict=%q confidence=%v, want state=%q verdict=%q confidence=%v", state, verdict, confidence, wantState, want.Verdict, want.Confidence)
+	}
 }
 
 func TestCreate_EmbedsCard(t *testing.T) {

@@ -98,7 +98,7 @@ func TestBeadCloseRunsPromotion(t *testing.T) {
 		}
 	})
 
-	t.Run("no verdict defers to review queue", func(t *testing.T) {
+	t.Run("no verdict rejects pending learning", func(t *testing.T) {
 		store := beadstore.NewFakeStore(protocol.Bead{ID: "bead-force", Type: "task", Status: "open"})
 		cardStore := newPromotionCardStore(cards.PendingLearning{
 			ID:     13,
@@ -106,8 +106,8 @@ func TestBeadCloseRunsPromotion(t *testing.T) {
 			Candidate: cards.CardCandidate{
 				Type:        string(cards.CardTypePattern),
 				Title:       "Force close learning",
-				BodySummary: "Force close defers learning.",
-				BodyFull:    "Force-closing without a review verdict defers learning to review.",
+				BodySummary: "Force close rejects learning.",
+				BodyFull:    "Force-closing without a review verdict rejects the learning.",
 				Confidence:  0.95,
 				Evidence:    []string{"manual close"},
 			},
@@ -118,10 +118,9 @@ func TestBeadCloseRunsPromotion(t *testing.T) {
 			t.Fatalf("CloseBead: %v", err)
 		}
 
-		if got := cardStore.deferred; !equalInt64s(got, []int64{13}) {
-			t.Fatalf("deferred learnings = %v, want [13]", got)
+		if got := cardStore.rejected; !equalInt64s(got, []int64{13}) {
+			t.Fatalf("rejected learnings = %v, want [13]", got)
 		}
-		assertJourneyEvent(t, store, "bead-force", "learning_deferred_to_review")
 	})
 
 	t.Run("no pending learnings is no-op", func(t *testing.T) {
@@ -172,6 +171,10 @@ func (s *promotionCardStore) List(context.Context, cards.ListQuery) ([]cards.Car
 	return nil, nil
 }
 
+func (s *promotionCardStore) ListProposed(context.Context) ([]cards.Card, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (s *promotionCardStore) PendingLearnings(_ context.Context, beadID string) ([]cards.PendingLearning, error) {
 	var out []cards.PendingLearning
 	for _, learning := range s.pending {
@@ -204,6 +207,10 @@ func (s *promotionCardStore) PromoteLearningAsProposal(_ context.Context, id int
 	s.decisions++
 	s.proposed = append(s.proposed, id)
 	return "card-proposed", nil
+}
+
+func (s *promotionCardStore) ResolveProposal(context.Context, string, cards.GradeOutcome) error {
+	return errors.New("not implemented")
 }
 
 func (s *promotionCardStore) RejectLearning(_ context.Context, id int64, _ string) error {

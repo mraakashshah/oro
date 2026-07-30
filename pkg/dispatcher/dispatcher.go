@@ -721,6 +721,7 @@ type Config struct {
 	ConsolidateAfterN       int           // Trigger context consolidation after N completed beads (default 5).
 	DreamInterval           int           // Spawn a dream memory-consolidation agent after N completed beads (default 10; 0 disables).
 	GradeGateEnabled        bool          // When true, dream actions are queued as card proposals instead of directly applying memory mutations.
+	SweepConfig             SweepConfig   // Dispatcher sweep cadence; zero values use maintenance defaults.
 	JanitorInterval         int           // Run janitor after N completed merges; 0 disables it.
 	JanitorIdleThreshold    int           // Require at most this many queued beads before janitor runs; 0 means only an empty queue.
 	AuditEveryNJanitors     int           // Run audit every N janitor cycles; 0 disables periodic audit cadence.
@@ -1698,7 +1699,10 @@ func (d *Dispatcher) spawnBackgroundLoops(ctx context.Context, ln net.Listener) 
 	d.safeGo(func() { d.reviewMaintenanceLoop(ctx) })
 	d.safeGo(func() { d.runPresubmitScheduler(ctx) })
 	d.safeGo(func() { d.storageControllerLoop(ctx) })
-	d.safeGo(func() { RunSweepLoop(ctx, d.beads, d.db, SweepConfig{}) })
+	// oro-pcp9 replaces the package-level RunSweepLoop(..., SweepConfig{}) call with
+	// the method form so the sweep honours d.cfg.SweepConfig instead of zero values.
+	// storageControllerLoop is main-only and unaffected, so both loops start.
+	d.safeGo(func() { d.runSweepLoop(ctx, d.cfg.SweepConfig) })
 	if d.cfg.WebEnabled {
 		d.startHTTPServer()
 	}

@@ -23,6 +23,7 @@ type Store interface {
 	Relevant(ctx context.Context, q RelevanceQuery) (RelevantCards, error)
 	Show(ctx context.Context, id string) (*Card, error)
 	List(ctx context.Context, q ListQuery) ([]Card, error)
+	ListProposed(ctx context.Context) ([]Card, error)
 	PendingLearnings(ctx context.Context, beadID string) ([]PendingLearning, error)
 	ReviewQueue(ctx context.Context) ([]PendingLearning, error)
 
@@ -30,6 +31,7 @@ type Store interface {
 	AppendLearningPending(ctx context.Context, beadID string, c CardCandidate) (int64, error)
 	PromoteLearning(ctx context.Context, learningID int64) (cardID string, err error)
 	PromoteLearningAsProposal(ctx context.Context, learningID int64) (cardID string, err error)
+	ResolveProposal(ctx context.Context, cardID string, o GradeOutcome) error
 	RejectLearning(ctx context.Context, id int64, reason string) error
 	DeferToReviewQueue(ctx context.Context, id int64, reason string) error
 	Create(ctx context.Context, c CardCreateParams) (*Card, error)
@@ -414,6 +416,31 @@ func (s *SQLiteCardStore) List(ctx context.Context, q ListQuery) ([]Card, error)
 		return nil, fmt.Errorf("list cards rows: %w", err)
 	}
 	return cards, nil
+}
+
+// ListProposed returns non-retired cards awaiting a grade outcome.
+func (s *SQLiteCardStore) ListProposed(ctx context.Context) ([]Card, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT`+cardSelectCols+`
+		FROM cards
+		WHERE retired_at IS NULL AND grade_state = ?
+		ORDER BY created_at ASC`, GradeStateProposed)
+	if err != nil {
+		return nil, fmt.Errorf("query proposed cards: %w", err)
+	}
+	defer rows.Close()
+
+	var proposed []Card
+	for rows.Next() {
+		card, err := scanCard(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan proposed card: %w", err)
+		}
+		proposed = append(proposed, *card)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate proposed cards: %w", err)
+	}
+	return proposed, nil
 }
 
 // PendingLearnings returns pending, non-terminal learning candidates for a bead.
@@ -982,6 +1009,44 @@ func (s *SQLiteCardStore) PromoteLearning(ctx context.Context, learningID int64)
 // PromoteLearningAsProposal creates a proposed card from a pending learning and marks it resolved.
 func (s *SQLiteCardStore) PromoteLearningAsProposal(ctx context.Context, learningID int64) (cardID string, err error) {
 	return s.promoteLearning(ctx, learningID, true)
+}
+
+// ResolveProposal records a terminal grade outcome for a proposed card.
+func (s *SQLiteCardStore) ResolveProposal(ctx context.Context, cardID string, o GradeOutcome) error {
+	state, err := resolvedProposalState(o.Action)
+	if err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE cards
+		   SET grade_state = ?, grade_verdict = ?, grade_confidence = ?, updated_at = ?
+		 WHERE id = ? AND grade_state = ?`,
+		state, o.Verdict, o.Confidence, nowRFC3339(), cardID, GradeStateProposed)
+	if err != nil {
+		return fmt.Errorf("resolve proposal %s: %w", cardID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("resolve proposal rows affected: %w", err)
+	}
+	if affected == 1 {
+		return nil
+	}
+	if _, err := s.Show(ctx, cardID); err != nil {
+		return err
+	}
+	return ErrAlreadyResolved
+}
+
+func resolvedProposalState(action GradeAction) (GradeState, error) {
+	switch action {
+	case GradeActionApply:
+		return GradeStateApplied, nil
+	case GradeActionRejectAndRetire:
+		return GradeStateRejected, nil
+	default:
+		return "", fmt.Errorf("resolve proposal: unsupported grade action %q", action)
+	}
 }
 
 func (s *SQLiteCardStore) promoteLearning(ctx context.Context, learningID int64, asProposal bool) (cardID string, err error) {

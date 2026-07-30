@@ -2180,7 +2180,7 @@ func TestEventRetention(t *testing.T) {
 		ts(now.Add(-72*time.Hour))); err != nil {
 		t.Fatalf("seed sweep event: %v", err)
 	}
-	run60MinSweepers(ctx, db, 24*time.Hour, 60)
+	run60MinSweepers(ctx, db, 24*time.Hour)
 	if got := eventCount(t, db, "sweep_old"); got != 0 {
 		t.Fatalf("60-minute sweep retained %d old events, want 0", got)
 	}

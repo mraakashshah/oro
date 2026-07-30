@@ -6,7 +6,7 @@ import (
 	"unicode"
 )
 
-// PromotionConfidenceThreshold is the minimum candidate confidence for auto-promotion.
+// PromotionConfidenceThreshold is the minimum confidence for auto-promoting confirmed facts.
 const PromotionConfidenceThreshold = 0.7
 
 const (
@@ -50,7 +50,7 @@ type GradeVerdict struct {
 
 // GateConfig controls the proposal grade confidence gate.
 type GateConfig struct {
-	AutoApplyConfidence   float64
+	AutoApplyConfidence   []float64
 	EnsembleMinConfidence float64
 }
 
@@ -91,50 +91,47 @@ func DecidePromotion(c CardCandidate, verdict string, existing []CardSummary) Pr
 		return rejectPromotion(confidence, "ops_review_failed")
 	case "pass":
 	default:
-		return deferPromotion(confidence, "unknown_verdict")
+		return rejectPromotion(confidence, "unknown_verdict")
 	}
 
 	if contradictionID := contradictingHighScoreCard(c, existing); contradictionID != "" && !hasContradictionRationale(c) {
 		return rejectPromotion(confidence, fmt.Sprintf("contradicts_card_%s_without_rationale", reasonID(contradictionID)))
 	}
 	if duplicateID := nearDuplicateCard(c, existing); duplicateID != "" {
-		return deferPromotion(confidence, fmt.Sprintf("near_duplicate_%s", reasonID(duplicateID)))
+		return rejectPromotion(confidence, fmt.Sprintf("near_duplicate_%s", reasonID(duplicateID)))
 	}
 
 	switch CardType(c.Type) {
 	case CardTypeRule, CardTypePattern:
-		if confidence >= PromotionConfidenceThreshold {
-			return PromotionDecision{Action: PromotionActionPromote, Confidence: confidence}
-		}
-		return deferPromotion(confidence, "confidence_below_threshold")
+		return PromotionDecision{Action: PromotionActionPromote, Confidence: confidence}
 	case CardTypeTaste, CardTypeDecision:
-		return deferPromotion(confidence, "human_review_required")
+		return PromotionDecision{Action: PromotionActionPromote, Confidence: confidence}
 	case CardTypeFact:
 		if c.Confirmed && confidence >= PromotionConfidenceThreshold {
 			return PromotionDecision{Action: PromotionActionPromote, Confidence: confidence}
 		}
-		return deferPromotion(confidence, "fact_unconfirmed")
+		return rejectPromotion(confidence, "fact_unconfirmed")
 	default:
-		return deferPromotion(confidence, "invalid_card_type")
+		return rejectPromotion(confidence, "invalid_card_type")
 	}
 }
 
-func gradeGate(verdicts []GradeVerdict, cfg GateConfig) GradeOutcome {
+func gradeGate(verdicts []GradeVerdict, cfg GateConfig, rungs ...int) GradeOutcome {
 	if len(verdicts) == 0 {
 		return queueGrade(0, "", "no_verdicts")
 	}
 
 	if len(verdicts) == 1 {
-		return singleGradeGate(verdicts[0], cfg)
+		return singleGradeGate(verdicts[0], cfg, gradeRung(rungs))
 	}
 	return ensembleGradeGate(verdicts, cfg)
 }
 
-func singleGradeGate(verdict GradeVerdict, cfg GateConfig) GradeOutcome {
+func singleGradeGate(verdict GradeVerdict, cfg GateConfig, rung int) GradeOutcome {
 	confidence := clampConfidence(verdict.Confidence)
 	switch verdict.Verdict {
 	case GradeVerdictCorrect:
-		if confidence >= clampConfidence(cfg.AutoApplyConfidence) {
+		if threshold, ok := autoApplyConfidence(cfg, rung); ok && confidence >= threshold {
 			return applyGrade(confidence, GradeVerdictCorrect)
 		}
 		return queueGrade(confidence, GradeVerdictCorrect, "ensemble_required")
@@ -147,6 +144,20 @@ func singleGradeGate(verdict GradeVerdict, cfg GateConfig) GradeOutcome {
 	default:
 		return queueGrade(confidence, verdict.Verdict, "unknown_verdict")
 	}
+}
+
+func gradeRung(rungs []int) int {
+	if len(rungs) == 0 {
+		return 0
+	}
+	return rungs[0]
+}
+
+func autoApplyConfidence(cfg GateConfig, rung int) (float64, bool) {
+	if rung < 0 || rung >= len(cfg.AutoApplyConfidence) {
+		return 0, false
+	}
+	return clampConfidence(cfg.AutoApplyConfidence[rung]), true
 }
 
 func ensembleGradeGate(verdicts []GradeVerdict, cfg GateConfig) GradeOutcome {
@@ -210,10 +221,6 @@ func queueGrade(confidence float64, verdict GradeVerdictValue, reason string) Gr
 
 func rejectPromotion(confidence float64, reason string) PromotionDecision {
 	return PromotionDecision{Action: PromotionActionReject, Reason: reason, Confidence: confidence}
-}
-
-func deferPromotion(confidence float64, reason string) PromotionDecision {
-	return PromotionDecision{Action: PromotionActionDefer, Reason: reason, Confidence: confidence}
 }
 
 func contradictingHighScoreCard(c CardCandidate, existing []CardSummary) string {
