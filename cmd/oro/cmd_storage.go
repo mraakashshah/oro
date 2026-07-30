@@ -84,10 +84,13 @@ func newStorageStatusCmd() *cobra.Command {
 }
 
 type storageCleanupOutput struct {
-	Scope          storage.Scope            `json:"scope"`
-	Apply          bool                     `json:"apply"`
-	CatalogHealthy bool                     `json:"catalog_healthy"`
-	Decisions      []storageCleanupDecision `json:"decisions"`
+	Scope          storage.Scope                 `json:"scope"`
+	Apply          bool                          `json:"apply"`
+	CatalogHealthy bool                          `json:"catalog_healthy"`
+	Decisions      []storageCleanupDecision      `json:"decisions"`
+	Providers      []storage.MaintenanceEvidence `json:"providers,omitempty"`
+	FreedBytes     uint64                        `json:"freed_bytes,omitempty"`
+	FreeBytes      uint64                        `json:"free_bytes,omitempty"`
 }
 
 type storageCleanupDecision struct {
@@ -101,8 +104,23 @@ type storageCleanupDecision struct {
 	Changed        bool                   `json:"changed"`
 }
 
-// newStorageCleanCmd creates the preservation-first "oro storage clean" command.
+type storageCleanDependencies struct {
+	providers              []storage.CacheProvider
+	runProviderMaintenance storage.ProviderMaintenanceRunner
+}
+
+func defaultStorageCleanDependencies() storageCleanDependencies {
+	return storageCleanDependencies{
+		providers:              storage.BuiltinProviders(),
+		runProviderMaintenance: storage.RunProviderMaintenance,
+	}
+}
+
 func newStorageCleanCmd() *cobra.Command {
+	return newStorageCleanCmdWithDependencies(defaultStorageCleanDependencies())
+}
+
+func newStorageCleanCmdWithDependencies(dependencies storageCleanDependencies) *cobra.Command {
 	var scopeValue string
 	var apply bool
 	var dryRun bool
@@ -110,7 +128,7 @@ func newStorageCleanCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "clean",
 		Short: "Plan scoped storage cleanup",
-		Long:  "Plans cleanup from the storage catalog without modifying files. Pass --apply to remove only candidates proven safe by the plan.",
+		Long:  "Plans cleanup from the storage catalog without modifying files. With --scope dev-tools, --apply runs trusted provider maintenance and reports cleanup evidence.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if apply && dryRun {
@@ -120,11 +138,7 @@ func newStorageCleanCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			oroHome, err := resolveOroHome()
-			if err != nil {
-				return fmt.Errorf("resolve Oro home: %w", err)
-			}
-			result, err := runStorageClean(cmd.Context(), oroHome, scope, apply)
+			result, err := runStorageCleanWithDependencies(cmd.Context(), scope, apply, dependencies)
 			if err != nil {
 				return err
 			}
@@ -149,6 +163,23 @@ func parseStorageCleanupScope(value string) (storage.Scope, error) {
 }
 
 func runStorageClean(ctx context.Context, oroHome string, scope storage.Scope, apply bool) (storageCleanupOutput, error) {
+	return runStorageCleanAtHome(ctx, oroHome, scope, apply)
+}
+
+func runStorageCleanWithDependencies(ctx context.Context, scope storage.Scope, apply bool, dependencies storageCleanDependencies) (storageCleanupOutput, error) {
+	if scope == storage.ScopeDevTools {
+		return runDevToolsStorageClean(ctx, apply, dependencies)
+	}
+	oroHome, err := resolveOroHome()
+	if err != nil {
+		return storageCleanupOutput{}, fmt.Errorf("resolve Oro home: %w", err)
+	}
+	return runStorageCleanAtHome(ctx, oroHome, scope, apply)
+}
+
+func runStorageCleanAtHome(ctx context.Context, oroHome string, scope storage.Scope, apply bool) (storageCleanupOutput, error) {
+	// Moved here from runStorageClean by the oro-dev-cli merge: this function now
+	// owns the body the scope check guarded, and both entry points route through it.
 	if scope == storage.ScopeOroHome {
 		return runOroHomeCleanup(ctx, oroHome, apply)
 	}
@@ -190,6 +221,24 @@ func runOroHomeCleanup(ctx context.Context, oroHome string, apply bool) (storage
 		Apply:     apply,
 		Decisions: oroHomeCleanupDecisions(result.Entries, apply),
 	}, nil
+}
+
+func runDevToolsStorageClean(ctx context.Context, apply bool, dependencies storageCleanDependencies) (storageCleanupOutput, error) {
+	result := storageCleanupOutput{Scope: storage.ScopeDevTools, Apply: apply}
+	if !apply {
+		return result, nil
+	}
+	cleanup, err := storage.RunDevToolsCleanup(ctx, storage.DevToolsCleanupRequest{
+		Providers: dependencies.providers,
+		Run:       dependencies.runProviderMaintenance,
+	})
+	result.Providers = cleanup.Providers
+	result.FreedBytes = cleanup.FreedBytes
+	result.FreeBytes = cleanup.FreeBytes
+	if err != nil {
+		return result, err
+	}
+	return result, nil
 }
 
 func loadStorageCleanupSnapshot(ctx context.Context, catalogPath string) storage.Snapshot {
@@ -300,6 +349,12 @@ func writeStorageCleanup(w io.Writer, result storageCleanupOutput, jsonOut bool)
 		}
 		return nil
 	}
+	if result.Scope == storage.ScopeDevTools {
+		if _, err := fmt.Fprintf(w, "Freed %.2f GiB — now %.2f GiB free\n", bytesToGiB(result.FreedBytes), bytesToGiB(result.FreeBytes)); err != nil {
+			return fmt.Errorf("write dev-tools cleanup summary: %w", err)
+		}
+		return nil
+	}
 	for _, decision := range result.Decisions {
 		if decision.Reason != "" {
 			if _, err := fmt.Fprintf(w, "%s %s (%s; before=%d after=%d changed=%t)\n", decision.Action, decision.Path, decision.Reason, decision.BeforeBytes, decision.AfterBytes, decision.Changed); err != nil {
@@ -318,6 +373,10 @@ func writeStorageCleanup(w io.Writer, result storageCleanupOutput, jsonOut bool)
 		}
 	}
 	return nil
+}
+
+func bytesToGiB(bytes uint64) float64 {
+	return float64(bytes) / float64(uint64(1)<<30)
 }
 
 func loadStorageStatus(ctx context.Context, oroHome string) (storageStatus, error) {
