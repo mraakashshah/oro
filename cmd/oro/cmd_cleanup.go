@@ -23,6 +23,9 @@ import (
 const (
 	cleanupDispatcherExitWait = 5 * time.Second
 	cleanupPIDLockMaxAge      = time.Hour
+	// cleanupSubprocessCacheMaxAge is the retention window for subprocess cache
+	// and TMPDIR namespaces. Matches the 7 days asserted by cmd_cleanup_test.go.
+	cleanupSubprocessCacheMaxAge = 7 * 24 * time.Hour
 )
 
 // cleanupConfig holds injectable dependencies for the cleanup command.
@@ -79,43 +82,12 @@ storage planner.`,
 				return writeStorageCleanup(cmd.OutOrStdout(), result, jsonOut)
 			}
 
-			paths, err := ResolveDaemonPaths()
+			cleanupCfg, err := resolveCleanupConfig(cmd.OutOrStdout(), cfg.AssignmentsOnly)
 			if err != nil {
-				return fmt.Errorf("resolve paths: %w", err)
+				return err
 			}
-
-			cwd, err := os.Getwd()
-			if err != nil {
-				return fmt.Errorf("getwd: %w", err)
-			}
-			projPaths, err := ResolvePaths(cwd)
-			if err != nil {
-				return fmt.Errorf("resolve project paths: %w", err)
-			}
-
-			cleanupCfg := &cleanupConfig{
-				runner:          &ExecRunner{},
-				w:               cmd.OutOrStdout(),
-				tmuxName:        TmuxSessionName(readProjectNameCWD()),
-				pidPath:         paths.PIDPath,
-				sockPath:        paths.SocketPath,
-				stateDBPath:     paths.StateDBPath,
-				worktreesDir:    projPaths.WorktreesDir,
-				signalFn:        defaultSignalINT,
-				aliveFn:         IsProcessAlive,
-				isTTY:           isStdinTTY,
-				exitWait:        cleanupDispatcherExitWait,
-				AssignmentsOnly: cfg.AssignmentsOnly,
-			}
-			oroHome, homeErr := resolveOroHome()
-			if homeErr != nil {
-				fmt.Fprintf(cleanupCfg.w, "warning: resolve Oro home for subprocess cleanup: %v\n", homeErr)
-			} else if catalog, catalogErr := openStorageCatalog(cmd.Context(), oroHome); catalogErr != nil {
-				fmt.Fprintf(cleanupCfg.w, "warning: open subprocess cleanup catalog: %v\n", catalogErr)
-			} else {
-				cleanupCfg.subprocessCatalog = catalog
-				defer func() { _ = catalog.Close() }()
-			}
+			releaseSubprocessCleanup := wireSubprocessCleanup(cmd.Context(), cleanupCfg)
+			defer releaseSubprocessCleanup()
 
 			return runCleanup(cmd.Context(), cleanupCfg)
 		},
@@ -335,6 +307,64 @@ func cleanupLiveWorkerIDs(ctx context.Context, cfg *cleanupConfig) (map[string]b
 		liveWorkerIDs[worker.ID] = true
 	}
 	return liveWorkerIDs, nil
+}
+
+// resolveCleanupConfig builds the cleanup dependencies from the daemon and
+// project paths. Extracted from newCleanupCmd's RunE to keep that closure under
+// the funlen limit; behaviour is unchanged.
+func resolveCleanupConfig(w io.Writer, assignmentsOnly bool) (*cleanupConfig, error) {
+	paths, err := ResolveDaemonPaths()
+	if err != nil {
+		return nil, fmt.Errorf("resolve paths: %w", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("getwd: %w", err)
+	}
+	projPaths, err := ResolvePaths(cwd)
+	if err != nil {
+		return nil, fmt.Errorf("resolve project paths: %w", err)
+	}
+	return &cleanupConfig{
+		runner:          &ExecRunner{},
+		w:               w,
+		tmuxName:        TmuxSessionName(readProjectNameCWD()),
+		pidPath:         paths.PIDPath,
+		sockPath:        paths.SocketPath,
+		stateDBPath:     paths.StateDBPath,
+		worktreesDir:    projPaths.WorktreesDir,
+		signalFn:        defaultSignalINT,
+		aliveFn:         IsProcessAlive,
+		isTTY:           isStdinTTY,
+		exitWait:        cleanupDispatcherExitWait,
+		AssignmentsOnly: assignmentsOnly,
+	}, nil
+}
+
+// wireSubprocessCleanup populates the subprocess cache-pruning configuration and
+// returns a release func the caller must defer. Without this the roots stay empty
+// and subprocessCacheMaxAge stays zero, so cleanupSubprocessCache returns early and
+// nothing is ever pruned - the state the dead-exports check caught after the
+// oro-run-cleanup-compat merge dropped the original wiring. Catalog failures are
+// warnings that leave pruning disabled rather than aborting the whole cleanup,
+// because pruning is opportunistic next to killing processes and freeing locks.
+func wireSubprocessCleanup(ctx context.Context, cfg *cleanupConfig) func() {
+	cfg.subprocessCacheRoot = processenv.SubprocessCacheRoot()
+	cfg.subprocessTmpRoot = processenv.SubprocessTmpRoot()
+	cfg.subprocessCacheMaxAge = cleanupSubprocessCacheMaxAge
+
+	oroHome, err := resolveOroHome()
+	if err != nil {
+		fmt.Fprintf(cfg.w, "warning: resolve Oro home for subprocess cleanup: %v\n", err)
+		return func() {}
+	}
+	catalog, err := openStorageCatalog(ctx, oroHome)
+	if err != nil {
+		fmt.Fprintf(cfg.w, "warning: open subprocess cleanup catalog: %v\n", err)
+		return func() {}
+	}
+	cfg.subprocessCatalog = catalog
+	return func() { _ = catalog.Close() }
 }
 
 // cleanupSubprocessCache prunes expired namespaces from BOTH subprocess roots.

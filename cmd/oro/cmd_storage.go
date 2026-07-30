@@ -236,7 +236,7 @@ func runDevToolsStorageClean(ctx context.Context, apply bool, dependencies stora
 	result.FreedBytes = cleanup.FreedBytes
 	result.FreeBytes = cleanup.FreeBytes
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("run dev tools cleanup: %w", err)
 	}
 	return result, nil
 }
@@ -419,14 +419,6 @@ func loadFactoryStorageHealth(ctx context.Context, oroHome string) *factoryhealt
 			status.DevCleanup.Pause.State == storage.Resuming,
 		DevCleanup: &status.DevCleanup,
 	}
-}
-
-func storageSweepOverdue(status storageStatus, now time.Time) bool {
-	if status.NextSweep == "" {
-		return false
-	}
-	nextSweep, err := time.Parse(time.RFC3339, status.NextSweep)
-	return err == nil && !nextSweep.After(now)
 }
 
 func storageFilesystemStatus(path string) (storageStatus, error) {
@@ -634,20 +626,8 @@ func loadStorageCatalogCounts(ctx context.Context, db *sql.DB, status *storageSt
 }
 
 func loadStorageDevCleanupStatus(ctx context.Context, db *sql.DB, status *storageStatus, now time.Time) error {
-	var dueAt string
-	err := db.QueryRowContext(ctx, `SELECT due_at FROM weekly_dev_cache_schedule WHERE id = 'weekly-dev-cache'`).Scan(&dueAt)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("load weekly developer cleanup due time: %w", err)
-	}
-	if err == nil {
-		due, parseErr := time.Parse(time.RFC3339, dueAt)
-		if parseErr != nil {
-			return fmt.Errorf("parse weekly developer cleanup due time: %w", parseErr)
-		}
-		status.DevCleanup.NextDue = due.Format(time.RFC3339)
-		if now.After(due) {
-			status.DevCleanup.OverdueBySeconds = int64(now.Sub(due).Seconds())
-		}
+	if err := loadStorageDevCleanupSchedule(ctx, db, status, now); err != nil {
+		return err
 	}
 
 	rows, err := db.QueryContext(ctx, `
@@ -671,39 +651,70 @@ ORDER BY s.provider_id, s.finished_at DESC`)
 			continue
 		}
 		seen[providerID] = struct{}{}
-		var evidence storage.MaintenanceEvidence
-		if err := json.Unmarshal([]byte(payload), &evidence); err != nil {
-			return fmt.Errorf("parse weekly developer cleanup evidence: %w", err)
+		if err := appendDevCleanupProvider(status, providerID, sweepStatus, finishedAt, payload); err != nil {
+			return err
 		}
-		result := storage.DevCleanupProviderResult{
-			ProviderID: providerID,
-			Status:     sweepStatus,
-			ExitCode:   evidence.ExitCode,
-		}
-		if finishedAt.Valid && finishedAt.String != "" {
-			finished, parseErr := time.Parse(time.RFC3339, finishedAt.String)
-			if parseErr != nil {
-				return fmt.Errorf("parse weekly developer cleanup attempt: %w", parseErr)
-			}
-			result.AttemptedAt = finished.Format(time.RFC3339)
-			if status.DevCleanup.LastAttempt == "" || result.AttemptedAt > status.DevCleanup.LastAttempt {
-				status.DevCleanup.LastAttempt = result.AttemptedAt
-			}
-			if sweepStatus == "completed" && (status.DevCleanup.LastSuccess == "" || result.AttemptedAt > status.DevCleanup.LastSuccess) {
-				status.DevCleanup.LastSuccess = result.AttemptedAt
-			}
-		}
-		freed := int64(evidence.Before.UsedBytes) - int64(evidence.After.UsedBytes)
-		if freed > 0 {
-			result.FreedBytes = freed
-			status.DevCleanup.FreedBytes += freed
-		}
-		status.DevCleanup.Providers = append(status.DevCleanup.Providers, result)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate weekly developer cleanup providers: %w", err)
 	}
 	return loadStorageDevCleanupPause(ctx, db, status)
+}
+
+// loadStorageDevCleanupSchedule fills the next-due and overdue fields from the
+// weekly schedule row. A missing row is not an error - the schedule simply has
+// not been written yet. Extracted from loadStorageDevCleanupStatus for gocognit.
+func loadStorageDevCleanupSchedule(ctx context.Context, db *sql.DB, status *storageStatus, now time.Time) error {
+	var dueAt string
+	err := db.QueryRowContext(ctx, `SELECT due_at FROM weekly_dev_cache_schedule WHERE id = 'weekly-dev-cache'`).Scan(&dueAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load weekly developer cleanup due time: %w", err)
+	}
+	due, parseErr := time.Parse(time.RFC3339, dueAt)
+	if parseErr != nil {
+		return fmt.Errorf("parse weekly developer cleanup due time: %w", parseErr)
+	}
+	status.DevCleanup.NextDue = due.Format(time.RFC3339)
+	if now.After(due) {
+		status.DevCleanup.OverdueBySeconds = int64(now.Sub(due).Seconds())
+	}
+	return nil
+}
+
+// appendDevCleanupProvider decodes one provider sweep row and folds it into the
+// status aggregate. Extracted from loadStorageDevCleanupStatus for gocognit.
+func appendDevCleanupProvider(status *storageStatus, providerID, sweepStatus string, finishedAt sql.NullString, payload string) error {
+	var evidence storage.MaintenanceEvidence
+	if err := json.Unmarshal([]byte(payload), &evidence); err != nil {
+		return fmt.Errorf("parse weekly developer cleanup evidence: %w", err)
+	}
+	result := storage.DevCleanupProviderResult{
+		ProviderID: providerID,
+		Status:     sweepStatus,
+		ExitCode:   evidence.ExitCode,
+	}
+	if finishedAt.Valid && finishedAt.String != "" {
+		finished, parseErr := time.Parse(time.RFC3339, finishedAt.String)
+		if parseErr != nil {
+			return fmt.Errorf("parse weekly developer cleanup attempt: %w", parseErr)
+		}
+		result.AttemptedAt = finished.Format(time.RFC3339)
+		if status.DevCleanup.LastAttempt == "" || result.AttemptedAt > status.DevCleanup.LastAttempt {
+			status.DevCleanup.LastAttempt = result.AttemptedAt
+		}
+		if sweepStatus == "completed" && (status.DevCleanup.LastSuccess == "" || result.AttemptedAt > status.DevCleanup.LastSuccess) {
+			status.DevCleanup.LastSuccess = result.AttemptedAt
+		}
+	}
+	if freed := int64(evidence.Before.UsedBytes) - int64(evidence.After.UsedBytes); freed > 0 {
+		result.FreedBytes = freed
+		status.DevCleanup.FreedBytes += freed
+	}
+	status.DevCleanup.Providers = append(status.DevCleanup.Providers, result)
+	return nil
 }
 
 func loadStorageDevCleanupPause(ctx context.Context, db *sql.DB, status *storageStatus) error {

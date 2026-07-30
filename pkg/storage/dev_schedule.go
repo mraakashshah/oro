@@ -49,19 +49,28 @@ type WeeklyDevCacheSweepResult struct {
 	NextDue time.Time
 }
 
+// validate rejects a sweep request that cannot run. Extracted from
+// RunWeeklyDevCacheSweep to keep it under the gocyclo limit.
+func (request WeeklyDevCacheSweepRequest) validate(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("weekly dev cache sweep context: %w", err)
+	}
+	if request.Catalog == nil {
+		return fmt.Errorf("weekly dev cache sweep catalog is nil")
+	}
+	if strings.TrimSpace(request.LockPath) == "" {
+		return fmt.Errorf("weekly dev cache sweep lock path is empty")
+	}
+	return nil
+}
+
 // RunWeeklyDevCacheSweep catches up one overdue weekly developer-cache sweep.
 // It serializes every trigger with the host-wide maintenance lock and advances
 // the persisted due time before returning provider failures, preventing repeated
 // sweeps for the same due interval.
 func RunWeeklyDevCacheSweep(ctx context.Context, request WeeklyDevCacheSweepRequest) (WeeklyDevCacheSweepResult, error) {
-	if err := ctx.Err(); err != nil {
-		return WeeklyDevCacheSweepResult{}, fmt.Errorf("weekly dev cache sweep context: %w", err)
-	}
-	if request.Catalog == nil {
-		return WeeklyDevCacheSweepResult{}, fmt.Errorf("weekly dev cache sweep catalog is nil")
-	}
-	if strings.TrimSpace(request.LockPath) == "" {
-		return WeeklyDevCacheSweepResult{}, fmt.Errorf("weekly dev cache sweep lock path is empty")
+	if err := request.validate(ctx); err != nil {
+		return WeeklyDevCacheSweepResult{}, err
 	}
 
 	lock, err := AcquireMaintenanceLock(ctx, request.LockPath)

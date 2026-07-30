@@ -419,35 +419,35 @@ func evaluateFindings(snapshot Snapshot, metrics *Metrics) []Finding {
 // evaluateStorageFindings converts storage control-plane state into stable,
 // deduplicated health findings.
 func evaluateStorageFindings(snapshot Snapshot) []Finding {
-	storage := snapshot.Storage
-	if storage == nil || !storage.Available {
+	storageHealth := snapshot.Storage
+	if storageHealth == nil || !storageHealth.Available {
 		return []Finding{{
 			Code:              FindingStorageUnavailable,
 			Severity:          SeverityCritical,
-			Component:         "storage",
-			Message:           "storage health is unavailable",
-			RecommendedAction: "inspect oro storage status and repair the storage catalog before admitting new work",
+			Component:         "storageHealth",
+			Message:           "storageHealth health is unavailable",
+			RecommendedAction: "inspect oro storageHealth status and repair the storageHealth catalog before admitting new work",
 		}}
 	}
 
-	findings := storageStateFindings(*storage)
-	findings = append(findings, storageMessageFindings(FindingStorageFailure, SeverityError, "storage cleanup failed", "inspect oro storage status and retry the failed cleanup", storage.Failures)...)
-	findings = append(findings, storageMessageFindings(FindingStorageCancellation, SeverityWarning, "storage cancelled an active writer", "inspect the cancelled process and storage pressure before retrying work", storage.Cancellations)...)
-	if storage.AdmissionPaused {
+	findings := storageStateFindings(*storageHealth)
+	findings = append(findings, storageMessageFindings(FindingStorageFailure, SeverityError, "storageHealth cleanup failed", "inspect oro storageHealth status and retry the failed cleanup", storageHealth.Failures)...)
+	findings = append(findings, storageMessageFindings(FindingStorageCancellation, SeverityWarning, "storageHealth cancelled an active writer", "inspect the cancelled process and storageHealth pressure before retrying work", storageHealth.Cancellations)...)
+	if storageHealth.AdmissionPaused {
 		findings = append(findings, Finding{
 			Code:              FindingStorageAdmissionPaused,
 			Severity:          SeverityWarning,
-			Component:         "storage",
-			Message:           "storage admission is paused",
-			RecommendedAction: "inspect oro storage status and resume admissions only after pressure and active leases are clear",
+			Component:         "storageHealth",
+			Message:           "storageHealth admission is paused",
+			RecommendedAction: "inspect oro storageHealth status and resume admissions only after pressure and active leases are clear",
 		})
 	}
 	return findings
 }
 
-func storageStateFindings(storage StorageHealth) []Finding {
+func storageStateFindings(storageHealth StorageHealth) []Finding {
 	findings := make([]Finding, 0, 3)
-	if pressure := strings.TrimSpace(storage.Pressure); pressure != "" && !strings.EqualFold(pressure, "normal") {
+	if pressure := strings.TrimSpace(storageHealth.Pressure); pressure != "" && !strings.EqualFold(pressure, "normal") {
 		severity := SeverityWarning
 		if strings.EqualFold(pressure, "critical") {
 			severity = SeverityCritical
@@ -461,7 +461,7 @@ func storageStateFindings(storage StorageHealth) []Finding {
 			RecommendedAction: "inspect oro storage status and reclaim only storage proven safe to retire",
 		})
 	}
-	if storage.SweepOverdue {
+	if storageHealth.SweepOverdue {
 		findings = append(findings, Finding{
 			Code:              FindingStorageSweepOverdue,
 			Severity:          SeverityWarning,
@@ -470,12 +470,12 @@ func storageStateFindings(storage StorageHealth) []Finding {
 			RecommendedAction: "run oro storage clean after controllers acknowledge the maintenance pause",
 		})
 	}
-	if storage.BlockedRetirements > 0 {
+	if storageHealth.BlockedRetirements > 0 {
 		findings = append(findings, Finding{
 			Code:              FindingStorageRetirementBlocked,
 			Severity:          SeverityWarning,
 			Component:         "storage",
-			Message:           fmt.Sprintf("%d storage retirement(s) are blocked", storage.BlockedRetirements),
+			Message:           fmt.Sprintf("%d storage retirement(s) are blocked", storageHealth.BlockedRetirements),
 			RecommendedAction: "inspect oro storage status for leased, dirty, or ownership-uncertain retirement records",
 		})
 	}

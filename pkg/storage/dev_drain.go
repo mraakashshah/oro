@@ -49,7 +49,7 @@ func (request GlobalDrainRequest) wait(ctx context.Context, catalog *Catalog, no
 func (c *Catalog) activeLeasesDrained(ctx context.Context) (bool, error) {
 	var count int
 	if err := c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM runtime_leases WHERE released_at IS NULL`).Scan(&count); err != nil {
-		return false, err
+		return false, fmt.Errorf("count active runtime leases: %w", err)
 	}
 	return count == 0, nil
 }
@@ -62,7 +62,7 @@ func waitForDrainPoll(ctx context.Context, interval time.Duration) error {
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return fmt.Errorf("wait for drain poll: %w", ctx.Err())
 	case <-timer.C:
 		return nil
 	}

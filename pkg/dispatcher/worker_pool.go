@@ -165,18 +165,7 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 		return
 	}
 	// Phase 1: Reserve the worker — heartbeat checker skips reserved workers.
-	w.state = protocol.WorkerReserved
-	w.assignmentID = h.assignmentID
-	w.execution = h.execution
-	w.beadID = h.beadID
-	w.worktree = h.worktree
-	w.runtime = h.runtime
-	w.model = h.model
-	w.reasoning = h.reasoning
-	w.epicID = h.epicID
-	w.baseBranch = h.baseBranch
-	w.targetBranch = h.targetBranch
-	w.lastProgress = d.nowFunc()
+	d.reserveWorkerForHandoff(w, h)
 
 	cardsCtx := d.buildHandoffCardContext(h)
 	defer d.mu.Unlock()
@@ -191,7 +180,40 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 	}
 	w.state = protocol.WorkerBusy
 	w.targetBeadID = ""
-	if err := d.sendToWorker(w, protocol.Message{
+	if err := d.sendToWorker(w, handoffAssignMessage(h, cardsCtx)); err != nil {
+		_ = w.conn.Close()
+		delete(d.workers, id)
+		if _, exists := d.pendingHandoffs[handoffBeadID]; !exists {
+			d.pendingHandoffs[handoffBeadID] = h
+		}
+		return
+	}
+	delete(d.pendingHandoffs, handoffBeadID)
+	delete(d.pendingQGRetries, id)
+}
+
+// reserveWorkerForHandoff copies the handoff's assignment identity onto the
+// worker row. Caller must hold d.mu. Extracted from assignHandoffToWorker to keep
+// it under the funlen limit; behaviour is unchanged.
+func (d *Dispatcher) reserveWorkerForHandoff(w *trackedWorker, h *pendingHandoff) {
+	w.state = protocol.WorkerReserved
+	w.assignmentID = h.assignmentID
+	w.execution = h.execution
+	w.beadID = h.beadID
+	w.worktree = h.worktree
+	w.runtime = h.runtime
+	w.model = h.model
+	w.reasoning = h.reasoning
+	w.epicID = h.epicID
+	w.baseBranch = h.baseBranch
+	w.targetBranch = h.targetBranch
+	w.lastProgress = d.nowFunc()
+}
+
+// handoffAssignMessage builds the ASSIGN message for a pending handoff.
+// Extracted from assignHandoffToWorker for funlen; behaviour is unchanged.
+func handoffAssignMessage(h *pendingHandoff, cardsCtx cards.RelevantCards) protocol.Message {
+	return protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
 			BeadID:       h.beadID,
@@ -209,16 +231,7 @@ func (d *Dispatcher) assignHandoffToWorker(id, handoffBeadID string, h *pendingH
 			Feedback:     firstNonEmptyQGRetryFeedback(h.feedback, h.nextAction),
 			Attempt:      max(h.attempt, h.checkpointTurn),
 		},
-	}); err != nil {
-		_ = w.conn.Close()
-		delete(d.workers, id)
-		if _, exists := d.pendingHandoffs[handoffBeadID]; !exists {
-			d.pendingHandoffs[handoffBeadID] = h
-		}
-		return
 	}
-	delete(d.pendingHandoffs, handoffBeadID)
-	delete(d.pendingQGRetries, id)
 }
 
 func firstNonEmptyQGRetryFeedback(values ...string) string {

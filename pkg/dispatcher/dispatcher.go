@@ -1791,46 +1791,80 @@ func (d *Dispatcher) acceptLoop(ctx context.Context, ln net.Listener) {
 // It guards against clobbering a reconnected worker: only cleans up if the
 // stored conn still matches the one this goroutine was serving.
 // workerID is captured by reference in the defer so it holds its final value.
+// connCloseState is the snapshot connCloseCleanup takes under d.mu before it
+// dispatches the unlocked cleanup work.
+type connCloseState struct {
+	beadID        string
+	assignmentID  int64
+	worktree      string
+	baseBranch    string
+	retryContext  QGRetryContext
+	retryPending  bool
+	retrySnapshot workerAssignmentSnapshot
+	preempted     bool
+}
+
+// takeConnCloseState performs connCloseCleanup's locked phase: it verifies the
+// connection still owns the worker row, snapshots the assignment, and removes the
+// worker. proceed is false when there is nothing further to clean up; notify is
+// true when the caller must still wake the assign loop. Extracted to keep
+// connCloseCleanup under the funlen limit; behaviour is unchanged.
+func (d *Dispatcher) takeConnCloseState(workerID string, conn net.Conn) (connCloseState, bool, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	w, exists := d.workers[workerID]
+	if !exists || w.conn != conn {
+		return connCloseState{}, false, false
+	}
+	if w.spawnFor && w.state == protocol.WorkerShuttingDown {
+		w.lastSeen = d.nowFunc()
+		return connCloseState{}, false, true
+	}
+
+	st := connCloseState{
+		beadID:       w.beadID,
+		assignmentID: w.assignmentID,
+		worktree:     w.worktree,
+		baseBranch:   w.baseBranch,
+		retrySnapshot: workerAssignmentSnapshot{
+			execution:    w.execution,
+			worktree:     w.worktree,
+			runtime:      w.runtime,
+			model:        w.model,
+			reasoning:    w.reasoning,
+			epicID:       w.epicID,
+			baseBranch:   w.baseBranch,
+			targetBranch: w.targetBranch,
+		},
+		preempted: w.state == protocol.WorkerPreempting,
+	}
+	st.retryContext, st.retryPending = d.pendingQGRetries[workerID]
+	if st.preempted && st.beadID != "" {
+		// Keep the bead reserved while its durable assignment is terminalized.
+		// Without this guard a concurrently idle replacement can create a second
+		// active assignment after the worker is removed but before cleanup runs.
+		d.assigningBeads[st.beadID] = true
+	}
+	delete(d.workers, workerID)
+	return st, true, false
+}
+
 func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 	if workerID == "" {
 		return
 	}
-	d.mu.Lock()
-	w, exists := d.workers[workerID]
-	if !exists || w.conn != conn {
-		d.mu.Unlock()
+	st, proceed, notify := d.takeConnCloseState(workerID, conn)
+	if !proceed {
+		if notify {
+			d.notifyAssignLoop()
+		}
 		return
 	}
-	if w.spawnFor && w.state == protocol.WorkerShuttingDown {
-		w.lastSeen = d.nowFunc()
-		d.mu.Unlock()
-		d.notifyAssignLoop()
-		return
-	}
-	beadID := w.beadID
-	assignmentID := w.assignmentID
-	worktree := w.worktree
-	baseBranch := w.baseBranch
-	retryContext, retryPending := d.pendingQGRetries[workerID]
-	retrySnapshot := workerAssignmentSnapshot{
-		execution:    w.execution,
-		worktree:     w.worktree,
-		runtime:      w.runtime,
-		model:        w.model,
-		reasoning:    w.reasoning,
-		epicID:       w.epicID,
-		baseBranch:   w.baseBranch,
-		targetBranch: w.targetBranch,
-	}
-	preempted := w.state == protocol.WorkerPreempting
-	if preempted && beadID != "" {
-		// Keep the bead reserved while its durable assignment is terminalized.
-		// Without this guard a concurrently idle replacement can create a second
-		// active assignment after the worker is removed but before cleanup runs.
-		d.assigningBeads[beadID] = true
-	}
-	delete(d.workers, workerID)
-	d.mu.Unlock()
+	beadID, assignmentID, worktree, baseBranch := st.beadID, st.assignmentID, st.worktree, st.baseBranch
+	retryContext, retryPending := st.retryContext, st.retryPending
+	retrySnapshot := st.retrySnapshot
+	preempted := st.preempted
 
 	if preempted && beadID != "" {
 		d.reconcilePreemptedDisconnect(workerID, beadID, assignmentID, worktree)
@@ -4742,6 +4776,22 @@ func truncateHandoffCandidate(s string, limit int) string {
 	return strings.TrimSpace(s[:limit])
 }
 
+// markWorkerReviewing flips the worker to Reviewing and returns the assignment
+// details the unlocked remainder needs. A missing worker yields zero values, which
+// the caller treats as "no worktree" and returns. Extracted from
+// handleReadyForReview for funlen; behaviour is unchanged.
+func (d *Dispatcher) markWorkerReviewing(workerID string) (worktree, targetBranch string, assignmentID int64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	w, ok := d.workers[workerID]
+	if !ok {
+		return "", "", 0
+	}
+	w.state = protocol.WorkerReviewing
+	return w.worktree, w.targetBranch, w.assignmentID
+}
+
 func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, msg protocol.Message) {
 	if msg.ReadyForReview == nil {
 		return
@@ -4755,17 +4805,7 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 	d.recordWorkerProgress(ctx, workerID, beadID, "ready_for_review")
 	_ = d.logEvent(ctx, "ready_for_review", workerID, beadID, workerID, "")
 
-	d.mu.Lock()
-	w, ok := d.workers[workerID]
-	var worktree, targetBranch string
-	var assignmentID int64
-	if ok {
-		w.state = protocol.WorkerReviewing
-		worktree = w.worktree
-		targetBranch = w.targetBranch
-		assignmentID = w.assignmentID
-	}
-	d.mu.Unlock()
+	worktree, targetBranch, assignmentID := d.markWorkerReviewing(workerID)
 
 	blocked, err := d.blockReviewForDependency(ctx, workerID, beadID, "ready_for_review")
 	if blocked {
@@ -9169,6 +9209,94 @@ func (d *Dispatcher) applyCancelWorkerLaunch(args string) (string, error) {
 // ready queue, spawns a new worker with the same ID, and keeps targetWorkers
 // unchanged. Returns an error if args is empty, the worker ID is not found,
 // or spawning the new worker fails.
+// restartWorkerPreservingQGRetry restarts a worker that still owes a QG retry: the
+// persisted feedback is restored as a pending handoff before the process is replaced
+// so the replacement receives the exact failure. On restore failure the managed-ID
+// bookkeeping is rolled back, otherwise registerWorker would mark an unrelated
+// future connection as managed. Extracted from applyRestartWorker for gocognit and
+// nestif; behaviour is unchanged.
+func (d *Dispatcher) restartWorkerPreservingQGRetry(ctx context.Context, workerID string, st restartWorkerState) (string, error) {
+	if err := d.restoreQGRetryHandoff(ctx, workerID, st.beadID, st.assignmentID, st.retryContext, st.retrySnapshot); err != nil {
+		d.forgetPendingManagedWorker(workerID)
+		return "", fmt.Errorf("restore qg retry feedback: %w", err)
+	}
+	if err := d.killManagedWorkerForRestart(ctx, st.procMgr, workerID, st.beadID, st.wasManaged); err != nil {
+		return "", err
+	}
+	if st.procMgr != nil {
+		if _, err := st.procMgr.Spawn(workerID); err != nil {
+			return "", fmt.Errorf("spawn new worker: %w", err)
+		}
+	}
+	_ = d.logEvent(ctx, "qg_retry_worker_restarted", "dispatcher", st.beadID, workerID,
+		fmt.Sprintf(`{"attempt":%d,"occurrence_id":%q}`, st.retryContext.Attempt, st.retryContext.OccurrenceID))
+	return fmt.Sprintf("worker %s restarted", workerID), nil
+}
+
+// forgetPendingManagedWorker drops the managed-respawn bookkeeping for workerID.
+func (d *Dispatcher) forgetPendingManagedWorker(workerID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.pendingManagedIDs, workerID)
+	delete(d.pendingManagedSince, workerID)
+}
+
+// restartWorkerState is the snapshot applyRestartWorker takes under d.mu before
+// it respawns the worker.
+type restartWorkerState struct {
+	beadID        string
+	assignmentID  int64
+	wasManaged    bool
+	retryContext  QGRetryContext
+	retryPending  bool
+	retrySnapshot workerAssignmentSnapshot
+	procMgr       ProcessManager
+}
+
+// takeRestartWorkerState performs applyRestartWorker's locked phase: snapshot the
+// assignment, close the connection, drop the worker row, and remember a managed ID
+// so registerWorker re-marks the respawned process as managed. Extracted to keep
+// applyRestartWorker under the gocognit limit; behaviour is unchanged.
+func (d *Dispatcher) takeRestartWorkerState(workerID string) (restartWorkerState, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	w, ok := d.workers[workerID]
+	if !ok {
+		return restartWorkerState{}, fmt.Errorf("worker not found")
+	}
+
+	st := restartWorkerState{
+		beadID:       w.beadID,
+		assignmentID: w.assignmentID,
+		wasManaged:   w.managed,
+		retrySnapshot: workerAssignmentSnapshot{
+			execution:    w.execution,
+			worktree:     w.worktree,
+			runtime:      w.runtime,
+			model:        w.model,
+			reasoning:    w.reasoning,
+			epicID:       w.epicID,
+			baseBranch:   w.baseBranch,
+			targetBranch: w.targetBranch,
+		},
+		procMgr: d.procMgr,
+	}
+	st.retryContext, st.retryPending = d.pendingQGRetries[workerID]
+
+	_ = w.conn.Close()
+	delete(d.workers, workerID)
+
+	// If the original worker was managed, record the ID so registerWorker
+	// sets managed=true when the respawned process connects.
+	if st.wasManaged {
+		d.pendingManagedIDs[workerID] = true
+		d.pendingManagedSince[workerID] = d.nowFunc()
+	}
+	// Target count remains unchanged (unlike kill-worker).
+	return st, nil
+}
+
 func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 	if args == "" {
 		return "", fmt.Errorf("worker ID required")
@@ -9177,72 +9305,21 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 	workerID := args
 	ctx := context.Background()
 
-	d.mu.Lock()
-	w, ok := d.workers[workerID]
-	if !ok {
-		d.mu.Unlock()
-		return "", fmt.Errorf("worker not found")
+	st, err := d.takeRestartWorkerState(workerID)
+	if err != nil {
+		return "", err
 	}
-
-	// Capture bead ID, assignment ID, and managed flag before removing worker.
-	beadID := w.beadID
-	assignmentID := w.assignmentID
-	wasManaged := w.managed
-	retryContext, retryPending := d.pendingQGRetries[workerID]
-	retrySnapshot := workerAssignmentSnapshot{
-		execution:    w.execution,
-		worktree:     w.worktree,
-		runtime:      w.runtime,
-		model:        w.model,
-		reasoning:    w.reasoning,
-		epicID:       w.epicID,
-		baseBranch:   w.baseBranch,
-		targetBranch: w.targetBranch,
+	if st.retryPending {
+		return d.restartWorkerPreservingQGRetry(ctx, workerID, st)
 	}
-
-	// Close connection and remove worker from pool
-	_ = w.conn.Close()
-	delete(d.workers, workerID)
-
-	// If the original worker was managed, record the ID so registerWorker
-	// sets managed=true when the respawned process connects.
-	if wasManaged {
-		d.pendingManagedIDs[workerID] = true
-		d.pendingManagedSince[workerID] = d.nowFunc()
-	}
-
-	// Target count remains unchanged (unlike kill-worker)
-	procMgr := d.procMgr
-	d.mu.Unlock()
-	if retryPending {
-		if err := d.restoreQGRetryHandoff(ctx, workerID, beadID, assignmentID, retryContext, retrySnapshot); err != nil {
-			d.mu.Lock()
-			delete(d.pendingManagedIDs, workerID)
-			delete(d.pendingManagedSince, workerID)
-			d.mu.Unlock()
-			return "", fmt.Errorf("restore qg retry feedback: %w", err)
-		}
-		if err := d.killManagedWorkerForRestart(ctx, procMgr, workerID, beadID, wasManaged); err != nil {
-			return "", err
-		}
-		if procMgr != nil {
-			if _, err := procMgr.Spawn(workerID); err != nil {
-				return "", fmt.Errorf("spawn new worker: %w", err)
-			}
-		}
-		_ = d.logEvent(ctx, "qg_retry_worker_restarted", "dispatcher", beadID, workerID,
-			fmt.Sprintf(`{"attempt":%d,"occurrence_id":%q}`, retryContext.Attempt, retryContext.OccurrenceID))
-		return fmt.Sprintf("worker %s restarted", workerID), nil
-	}
+	beadID, assignmentID, wasManaged := st.beadID, st.assignmentID, st.wasManaged
+	procMgr := st.procMgr
 
 	killErr := d.killManagedWorkerForRestart(ctx, procMgr, workerID, beadID, wasManaged)
 	completeErr := d.completeRestartAssignment(ctx, beadID, assignmentID, workerID)
 	if completeErr != nil || killErr != nil {
 		if wasManaged {
-			d.mu.Lock()
-			delete(d.pendingManagedIDs, workerID)
-			delete(d.pendingManagedSince, workerID)
-			d.mu.Unlock()
+			d.forgetPendingManagedWorker(workerID)
 		}
 		if completeErr != nil {
 			_ = d.logEvent(ctx, "restart_worker_assignment_completion_failed", "dispatcher", beadID, workerID,

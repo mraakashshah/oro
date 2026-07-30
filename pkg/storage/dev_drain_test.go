@@ -86,7 +86,7 @@ VALUES ('weekly-dev-cache', ?, ?)
 		resultCh <- runErr
 	}()
 
-	epoch := waitForDevDrainEpoch(t, ctx, catalog)
+	epoch := waitForDevDrainEpoch(ctx, t, catalog)
 	one := devDrainRuntimeController(t, catalog, controllers[0], func(context.Context) error {
 		return catalog.ReleaseLease(ctx, "lease-one")
 	})
@@ -170,7 +170,7 @@ func devDrainProvider(t *testing.T) storage.CacheProvider {
 	}
 }
 
-func waitForDevDrainEpoch(t *testing.T, ctx context.Context, catalog *storage.Catalog) int64 {
+func waitForDevDrainEpoch(ctx context.Context, t *testing.T, catalog *storage.Catalog) int64 {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
