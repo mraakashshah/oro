@@ -2473,6 +2473,10 @@ func TestGateCacheDirectoriesIgnored(t *testing.T) {
 		".qg-go-cache",
 		".qg-lint-cache",
 		".qg-golangci-cache",
+		// "affected" variants: the gate names caches after the lane that owns
+		// them, so new lanes introduce new names. Observed in .worktrees/oro-3eax.
+		".qg-affected-golangci-cache",
+		".qg-affected-go-cache",
 		// Nested, undotted forms: the directory name carries no leading dot,
 		// so leading-dot patterns miss it entirely.
 		".oro/golangci-cache",

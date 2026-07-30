@@ -49,6 +49,11 @@ cmd/oro/_assets/
 .golangci-cache*/
 .golangci-lint-cache/
 .task-gocache/
+# Wildcard over the whole .qg-*cache* family instead of enumerating names: the
+# gate names each cache after the lane that owns it, so every new lane invents a
+# new directory (.qg-affected-golangci-cache turned up in .worktrees/oro-3eax
+# after the three explicit patterns below were added). Covers per-bead suffixes.
+.qg-*cache*/
 .qg-go-cache/
 .qg-lint-cache/
 .qg-golangci-cache/
