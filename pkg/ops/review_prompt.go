@@ -1,7 +1,6 @@
 package ops
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -29,9 +28,8 @@ func buildReviewPrompt(opts ReviewOpts) string {
 	return b.String()
 }
 
-func buildStructuredReviewPrompt(opts ReviewOpts) (manifest PromptManifest, prompt string) {
-	manifest = buildPromptManifest(opts)
-	prompt = buildReviewPrompt(opts) + strings.Join([]string{
+func buildStructuredReviewPrompt(opts ReviewOpts) string {
+	return buildReviewPrompt(opts) + strings.Join([]string{
 		"",
 		"## Structured Review Output",
 		"Return one JSON object in a fenced json block or as the full response body.",
@@ -41,28 +39,6 @@ func buildStructuredReviewPrompt(opts ReviewOpts) (manifest PromptManifest, prom
 		"Use an empty findings array when there are no findings.",
 		"",
 	}, "\n")
-	return manifest, prompt
-}
-
-func buildPromptManifest(opts ReviewOpts) PromptManifest {
-	paths, err := reviewDiffPaths(context.Background(), opts.Worktree, opts.BaseBranch)
-	if err != nil || len(paths) == 0 {
-		return PromptManifest{Shown: map[string][][2]int{}}
-	}
-
-	shown := make(map[string][][2]int, len(paths))
-	for _, path := range paths {
-		clean, err := normalizeManifestPath(path)
-		if err != nil {
-			continue
-		}
-		lines := countFileLines(filepath.Join(opts.Worktree, filepath.FromSlash(clean)))
-		if lines == 0 {
-			lines = 1
-		}
-		shown[clean] = [][2]int{{1, lines}}
-	}
-	return PromptManifest{Shown: shown}
 }
 
 func countFileLines(path string) int {

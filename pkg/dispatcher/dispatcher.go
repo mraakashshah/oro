@@ -4824,6 +4824,14 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 	}
 	d.mu.Unlock()
 
+	blocked, err := d.blockReviewForDependency(ctx, workerID, beadID, "ready_for_review")
+	if blocked {
+		return
+	}
+	if err != nil {
+		return
+	}
+
 	if worktree == "" {
 		return
 	}
@@ -5139,10 +5147,111 @@ func (d *Dispatcher) handleReviewApproved(ctx context.Context, workerID, beadID 
 		d.clearBeadTracking(beadID)
 		return
 	}
+	blocked, err := d.blockReviewForDependency(ctx, workerID, beadID, "review_approved")
+	if blocked {
+		return
+	}
+	if err != nil {
+		return
+	}
 	_ = d.logEvent(ctx, "review_approved", "ops", beadID, workerID, result.Feedback)
 	d.clearRejectionCount(beadID)
 	d.appendExtractedReviewPatterns(ctx, beadID, workerID, result.Feedback)
 	d.sendReviewApproved(workerID, result.Feedback)
+}
+
+// blockReviewForDependency prevents a review lifecycle transition when the
+// parent bead has gained an unresolved blocking dependency. It reserves the
+// reviewing assignment while inspecting storage so a terminal verdict cannot
+// deliver approval between the dependency check and terminal cleanup.
+func (d *Dispatcher) blockReviewForDependency(ctx context.Context, workerID, beadID, phase string) (bool, error) {
+	assignmentID, claimed := d.claimReviewDependencyCheck(workerID, beadID)
+	if !claimed {
+		return true, nil
+	}
+
+	blockerID, err := d.unresolvedBlockingDependency(ctx, beadID)
+	if err != nil {
+		d.finishDependencyBlockedReview(ctx, workerID, beadID, assignmentID, phase, "", err)
+		return true, err
+	}
+	if blockerID == "" {
+		d.restoreReviewDependencyCheck(workerID, beadID, assignmentID)
+		return false, nil
+	}
+
+	d.finishDependencyBlockedReview(ctx, workerID, beadID, assignmentID, phase, blockerID, nil)
+	return true, nil
+}
+
+func (d *Dispatcher) claimReviewDependencyCheck(workerID, beadID string) (int64, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w, ok := d.workers[workerID]
+	if !ok || w.beadID != beadID || w.state != protocol.WorkerReviewing {
+		return 0, false
+	}
+	w.state = protocol.WorkerReserved
+	return w.assignmentID, true
+}
+
+func (d *Dispatcher) restoreReviewDependencyCheck(workerID, beadID string, assignmentID int64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w, ok := d.workers[workerID]
+	if !ok || w.beadID != beadID || w.assignmentID != assignmentID || w.state != protocol.WorkerReserved {
+		return
+	}
+	w.state = protocol.WorkerReviewing
+}
+
+func (d *Dispatcher) unresolvedBlockingDependency(ctx context.Context, beadID string) (string, error) {
+	bead, err := d.beads.Show(ctx, beadID)
+	if err != nil {
+		return "", fmt.Errorf("show review bead %s: %w", beadID, err)
+	}
+	if bead == nil {
+		return "", fmt.Errorf("show review bead %s: missing", beadID)
+	}
+	for _, dep := range bead.Dependencies {
+		if dep.Type != "blocks" && dep.Type != "conditional-blocks" {
+			continue
+		}
+		dependency, showErr := d.beads.Show(ctx, dep.DependsOnID)
+		if showErr != nil {
+			return "", fmt.Errorf("show blocking dependency %s: %w", dep.DependsOnID, showErr)
+		}
+		if dependency != nil && dependency.Status != "closed" {
+			return dep.DependsOnID, nil
+		}
+	}
+	return "", nil
+}
+
+func (d *Dispatcher) finishDependencyBlockedReview(
+	ctx context.Context,
+	workerID, beadID string,
+	assignmentID int64,
+	phase, blockerID string,
+	lookupErr error,
+) {
+	detail := fmt.Sprintf(`{"phase":%q,"blocker_id":%q}`, phase, blockerID)
+	eventType := "review_blocked_by_dependency"
+	if lookupErr != nil {
+		eventType = "review_dependency_lookup_failed"
+		detail = fmt.Sprintf(`{"phase":%q,"error":%q}`, phase, lookupErr.Error())
+	}
+	_ = d.logEvent(ctx, eventType, "dispatcher", beadID, workerID, detail)
+	if err := d.completeAssignment(ctx, assignmentID, beadID); err != nil {
+		_ = d.logEvent(ctx, eventType+"_assignment_cleanup_failed", "dispatcher", beadID, workerID, err.Error())
+	}
+	if d.shouldReopenBead(ctx, beadID) {
+		if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
+			_ = d.logEvent(ctx, eventType+"_reopen_failed", "dispatcher", beadID, workerID, err.Error())
+		}
+	}
+	d.clearBeadTracking(beadID)
+	d.releaseBlockedReviewAssignment(workerID, beadID, assignmentID)
 }
 
 func (d *Dispatcher) appendExtractedReviewPatterns(ctx context.Context, beadID, workerID, feedback string) {

@@ -2,6 +2,8 @@ package ops
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +12,76 @@ import (
 
 	"oro/pkg/processenv"
 )
+
+const docsOnlyReviewPolicy = "docs-only: markdown and documentation paths only"
+
+// ReviewPolicy identifies the rules used to approve a review outcome.
+type ReviewPolicy struct {
+	Hash             string
+	RequiredPersonas []string
+}
+
+// requiredPersonas returns only the personas explicitly required by policy.
+// A policy without required personas has no implicit fallback coverage.
+func requiredPersonas(policy ReviewPolicy) []string {
+	seen := make(map[string]struct{}, len(policy.RequiredPersonas))
+	personas := make([]string, 0, len(policy.RequiredPersonas))
+	for _, persona := range policy.RequiredPersonas {
+		persona = strings.TrimSpace(persona)
+		if persona == "" {
+			continue
+		}
+		if _, ok := seen[persona]; ok {
+			continue
+		}
+		seen[persona] = struct{}{}
+		personas = append(personas, persona)
+	}
+	return personas
+}
+
+func reviewPolicy(opts ReviewOpts) ReviewPolicy {
+	if opts.ReviewPolicy != nil {
+		return *opts.ReviewPolicy
+	}
+	sum := sha256.Sum256([]byte(docsOnlyReviewPolicy))
+	return ReviewPolicy{
+		Hash: hex.EncodeToString(sum[:]),
+		RequiredPersonas: []string{
+			"correctness",
+			"security",
+			"adversarial",
+			"design",
+			"test",
+			"architecture",
+		},
+	}
+}
+
+func buildDocsOnlyReviewOutcome(policy ReviewPolicy) (ReviewOutcome, error) {
+	if strings.TrimSpace(policy.Hash) == "" {
+		return ReviewOutcome{}, fmt.Errorf("docs-only review policy hash is required")
+	}
+	outcome := ReviewOutcome{
+		Decision:   ReviewApproved,
+		PolicyHash: policy.Hash,
+		Verification: ReviewVerification{
+			AcceptanceStatus: "passed",
+		},
+		Execution: ReviewExecution{
+			Kind:     ReviewExecSucceeded,
+			Complete: true,
+		},
+		Summary: "Approved automatically: diff only touches markdown/docs files.",
+		Artifact: ReviewArtifactRef{
+			SHA256: policy.Hash,
+		},
+	}
+	if err := ValidateReviewOutcome(outcome); err != nil {
+		return ReviewOutcome{}, fmt.Errorf("validate docs-only review outcome: %w", err)
+	}
+	return outcome, nil
+}
 
 // Persona identifies one focused reviewer in the multi-persona review team.
 type Persona struct {

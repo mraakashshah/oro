@@ -11561,10 +11561,15 @@ func TestDispatcher_Handoff_NoProcManager_LogsOnly(t *testing.T) {
 }
 
 func TestDispatcher_ReviewCountersResetIndependentlyByBead(t *testing.T) {
-	d, _, _, _, _, _ := newTestDispatcher(t)
+	d, beads, _, _, _, _ := newTestDispatcher(t)
 
 	// Simulate review retry counts for different beads.
+	beads.mu.Lock()
+	beads.shown["bead-a"] = &protocol.BeadDetail{ID: "bead-a", Status: "in_progress"}
+	beads.mu.Unlock()
+	installReviewingWorker(d, "worker-a", "bead-a", 0, t.TempDir())
 	d.mu.Lock()
+	d.workers["worker-a"].state = protocol.WorkerReviewing
 	d.rejectionCounts["bead-a"] = 2
 	d.rejectionCounts["bead-b"] = 1
 	d.reviewBlockedCounts["bead-a"] = 2
@@ -27151,7 +27156,7 @@ func TestApprovedReview_WritesCandidateInboxNotAssets(t *testing.T) {
 // approved review: the worker must still receive MsgReviewResult "approved"
 // and review_approved must still be logged.
 func TestReviewPatternCandidateCaptureFailureDoesNotBlockApproval(t *testing.T) {
-	d, _, _, _, _, _ := newTestDispatcher(t)
+	d, beads, _, _, _, _ := newTestDispatcher(t)
 	startDispatcher(t, d)
 
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
@@ -27170,7 +27175,12 @@ func TestReviewPatternCandidateCaptureFailureDoesNotBlockApproval(t *testing.T) 
 		t.Fatalf("setup blocking file: %v", err)
 	}
 	d.cfg.ReviewPatternCandidates = filepath.Join(blockingFile, "subdir", "candidates.md")
+	beads.mu.Lock()
+	beads.shown["bead-nonblock"] = &protocol.BeadDetail{ID: "bead-nonblock", Status: "in_progress"}
+	beads.mu.Unlock()
 	d.mu.Lock()
+	d.workers[workerID].state = protocol.WorkerReviewing
+	d.workers[workerID].beadID = "bead-nonblock"
 	d.rejectionCounts["bead-nonblock"] = 2
 	d.mu.Unlock()
 

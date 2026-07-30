@@ -29,7 +29,7 @@ func TestMergeAuditReportsCoverage(t *testing.T) {
 		t.Fatalf("covered_sections = %#v, want %#v", auditFeedback.CoveredSections, wantSections)
 	}
 
-	normalResult := mergeReports(reports, reviewMergeManifest(), ReviewOpts{BeadID: "oro-review"})
+	normalResult := mergeReportResults(reports, reviewMergeManifest(), ReviewOpts{BeadID: "oro-review"})
 	var normalFeedback map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(normalResult.Feedback), &normalFeedback); err != nil {
 		t.Fatalf("normal review feedback is not structured JSON: %v\n%s", err, normalResult.Feedback)
@@ -73,7 +73,7 @@ func TestAuditMergeAllFindings(t *testing.T) {
 		t.Fatalf("below-gate status = %q, want below_gate", feedback.AllFindings[1].Status)
 	}
 
-	normal := mergeReports(reports, reviewMergeManifest(), ReviewOpts{BeadID: "oro-review"})
+	normal := mergeReportResults(reports, reviewMergeManifest(), ReviewOpts{BeadID: "oro-review"})
 	var normalFeedback map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(normal.Feedback), &normalFeedback); err != nil {
 		t.Fatalf("parse normal feedback: %v", err)
@@ -145,7 +145,7 @@ func TestDedupAndUnionSources(t *testing.T) {
 		},
 	}
 
-	result := mergeReports(reports, reviewMergeManifest(), ReviewOpts{BeadID: "oro-test"})
+	result := mergeReportResults(reports, reviewMergeManifest(), ReviewOpts{BeadID: "oro-test"})
 	findings := reviewMergeFeedbackFindings(t, result)
 
 	if result.Verdict != VerdictRejected {
@@ -177,7 +177,7 @@ func TestPromote(t *testing.T) {
 		},
 	}
 
-	result := mergeReports(reports, reviewMergeManifest(), ReviewOpts{BeadID: "oro-test"})
+	result := mergeReportResults(reports, reviewMergeManifest(), ReviewOpts{BeadID: "oro-test"})
 	findings := reviewMergeFeedbackFindings(t, result)
 
 	if len(findings) != 1 {
@@ -208,7 +208,7 @@ func TestGateRunsLast(t *testing.T) {
 		},
 	}
 
-	result := mergeReports(reports, reviewMergeManifest(), ReviewOpts{BeadID: "oro-test"})
+	result := mergeReportResults(reports, reviewMergeManifest(), ReviewOpts{BeadID: "oro-test"})
 	findings := reviewMergeFeedbackFindings(t, result)
 
 	if got, want := reviewMergeTitles(findings), []string{"critical confidence fifty", "promoted survivor"}; !equalStrings(got, want) {
@@ -235,7 +235,7 @@ func TestOnePersonaErrors_MergesSurvivors(t *testing.T) {
 		},
 	}
 
-	result := mergeReports(reports, reviewMergeManifest(), ReviewOpts{BeadID: "oro-test"})
+	result := mergeReportResults(reports, reviewMergeManifest(), ReviewOpts{BeadID: "oro-test"})
 	findings := reviewMergeFeedbackFindings(t, result)
 
 	if result.Verdict != VerdictRejected {
