@@ -29,6 +29,7 @@ type workerSpawnCall struct {
 	socketPath string
 	workerID   string
 	logPath    string
+	project    string
 }
 
 func (f *fakeWorkerSpawner) SpawnWorker(socketPath, workerID, logPath string) error {
@@ -36,6 +37,7 @@ func (f *fakeWorkerSpawner) SpawnWorker(socketPath, workerID, logPath string) er
 		socketPath: socketPath,
 		workerID:   workerID,
 		logPath:    logPath,
+		project:    os.Getenv("ORO_PROJECT"),
 	})
 	if f.failOn > 0 && len(f.calls) == f.failOn {
 		if f.failErr != nil {
@@ -534,8 +536,11 @@ func TestExternalWorkerPropagatesOracleRuntimeIdentity(t *testing.T) {
 	if got, want := os.Getenv("ORO_HOME"), filepath.Join(home, ".oro"); got != want {
 		t.Fatalf("ORO_HOME = %q, want %q", got, want)
 	}
-	if got := os.Getenv("ORO_PROJECT"); got != "launch-project" {
-		t.Fatalf("ORO_PROJECT = %q, want launch-project", got)
+	if got := spawner.calls[0].project; got != "launch-project" {
+		t.Fatalf("spawned worker ORO_PROJECT = %q, want launch-project", got)
+	}
+	if got := os.Getenv("ORO_PROJECT"); got != "" {
+		t.Fatalf("runWorkerLaunch leaked ORO_PROJECT=%q", got)
 	}
 }
 

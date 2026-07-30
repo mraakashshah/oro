@@ -175,47 +175,46 @@ Useful for CI environments or manual worker management (--workers 0 disables aut
 //
 // No tmux session is created. The spawner is injected for testability.
 func runDispatcherStart(w io.Writer, workers int, manualIntegration, mutationTesting bool, spawner DaemonSpawner, socketTimeout time.Duration) error {
-	if _, err := ensureRuntimeProjectEnv(currentRepoRoot()); err != nil {
-		return fmt.Errorf("resolve runtime identity: %w", err)
-	}
-	paths, err := ResolveDaemonPaths()
-	if err != nil {
-		return fmt.Errorf("resolve paths: %w", err)
-	}
-	pidPath := paths.PIDPath
-	sockPath := paths.SocketPath
-
-	if manualIntegration {
-		configurable, ok := spawner.(interface{ SetManualIntegration(bool) })
-		if !ok {
-			return fmt.Errorf("spawner does not support manual integration")
+	return withRuntimeProjectEnv(currentRepoRoot(), func(_ runtimeProjectEnv) error {
+		paths, err := ResolveDaemonPaths()
+		if err != nil {
+			return fmt.Errorf("resolve paths: %w", err)
 		}
-		configurable.SetManualIntegration(true)
-	}
-	if mutationTesting {
-		configurable, ok := spawner.(interface{ SetMutationTesting(bool) })
-		if !ok {
-			return fmt.Errorf("spawner does not support mutation testing opt-in")
+		pidPath := paths.PIDPath
+		sockPath := paths.SocketPath
+
+		if manualIntegration {
+			configurable, ok := spawner.(interface{ SetManualIntegration(bool) })
+			if !ok {
+				return fmt.Errorf("spawner does not support manual integration")
+			}
+			configurable.SetManualIntegration(true)
 		}
-		configurable.SetMutationTesting(true)
-	}
+		if mutationTesting {
+			configurable, ok := spawner.(interface{ SetMutationTesting(bool) })
+			if !ok {
+				return fmt.Errorf("spawner does not support mutation testing opt-in")
+			}
+			configurable.SetMutationTesting(true)
+		}
 
-	// Spawn the daemon subprocess.
-	pid, err := spawner.SpawnDaemon(pidPath, workers, workers)
-	if err != nil {
-		return fmt.Errorf("spawn daemon: %w", err)
-	}
+		// Spawn the daemon subprocess.
+		pid, err := spawner.SpawnDaemon(pidPath, workers, workers)
+		if err != nil {
+			return fmt.Errorf("spawn daemon: %w", err)
+		}
 
-	// Wait for the dispatcher socket to be connectable (not just file-exists).
-	if err := pollForSocket(nil, sockPath, socketTimeout); err != nil {
-		return err
-	}
+		// Wait for the dispatcher socket to be connectable (not just file-exists).
+		if err := pollForSocket(nil, sockPath, socketTimeout); err != nil {
+			return err
+		}
 
-	// Send start directive so dispatcher transitions from Inert to Running.
-	if err := sendStartDirective(sockPath); err != nil {
-		return fmt.Errorf("send start directive: %w", err)
-	}
+		// Send start directive so dispatcher transitions from Inert to Running.
+		if err := sendStartDirective(sockPath); err != nil {
+			return fmt.Errorf("send start directive: %w", err)
+		}
 
-	fmt.Fprintf(w, "dispatcher started (PID %d, workers=%d)\n", pid, workers)
-	return nil
+		fmt.Fprintf(w, "dispatcher started (PID %d, workers=%d)\n", pid, workers)
+		return nil
+	})
 }

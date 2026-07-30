@@ -219,7 +219,7 @@ func TestRunWorkResolvesRuntimeIdentityBeforeSpawnerConstruction(t *testing.T) {
 	if err := executeWork(ctx, &workConfig{beadID: "runtime-identity", dryRun: true}, &workDeps{beadSrc: store, repoRoot: repoRoot}); err != nil {
 		t.Fatalf("executeWork: %v", err)
 	}
-	if got := (observedEnv{oroHome: os.Getenv("ORO_HOME"), project: os.Getenv("ORO_PROJECT")}); got != (observedEnv{oroHome: oroHome, project: project}) {
-		t.Fatalf("executeWork environment = %+v, want ORO_HOME=%q and ORO_PROJECT=%q", got, oroHome, project)
+	if got := os.Getenv("ORO_PROJECT"); got != "" {
+		t.Fatalf("executeWork leaked ORO_PROJECT=%q", got)
 	}
 }

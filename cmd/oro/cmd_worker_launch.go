@@ -98,41 +98,39 @@ func runWorkerLaunch(spawner WorkerSpawner, count int, workerID, beadID string) 
 	if count < 1 {
 		return fmt.Errorf("--count must be at least 1, got %d", count)
 	}
-	if _, err := ensureRuntimeProjectEnv(currentRepoRoot()); err != nil {
-		return fmt.Errorf("resolve runtime identity: %w", err)
-	}
-
-	paths, err := ResolveDaemonPaths()
-	if err != nil {
-		return fmt.Errorf("resolve paths: %w", err)
-	}
-	sockPath := paths.SocketPath
-
-	// Verify dispatcher is running by checking socket file existence.
-	if _, err := os.Stat(sockPath); err != nil {
-		return fmt.Errorf("dispatcher not running (socket %s not found); start it with: oro dispatcher start", sockPath)
-	}
-
-	// --bead flag: delegate to dispatcher via spawn-for directive.
-	if beadID != "" {
-		return sendSpawnForDirective(sockPath, beadID)
-	}
-	ts := time.Now().UnixNano()
-	ids := buildWorkerLaunchIDs(count, workerID, ts)
-	if err := reserveWorkerLaunch(sockPath, ids); err != nil {
-		return err
-	}
-
-	for i, id := range ids {
-		logDir := filepath.Join(paths.OroHome, "workers", id)
-		logPath := filepath.Join(logDir, "output.log")
-
-		if err := spawner.SpawnWorker(sockPath, id, logPath); err != nil {
-			releaseWorkerLaunchReservation(sockPath, ids[i:])
-			return fmt.Errorf("spawn worker %s: %w", id, err)
+	return withRuntimeProjectEnv(currentRepoRoot(), func(_ runtimeProjectEnv) error {
+		paths, err := ResolveDaemonPaths()
+		if err != nil {
+			return fmt.Errorf("resolve paths: %w", err)
 		}
-	}
-	return nil
+		sockPath := paths.SocketPath
+
+		// Verify dispatcher is running by checking socket file existence.
+		if _, err := os.Stat(sockPath); err != nil {
+			return fmt.Errorf("dispatcher not running (socket %s not found); start it with: oro dispatcher start", sockPath)
+		}
+
+		// --bead flag: delegate to dispatcher via spawn-for directive.
+		if beadID != "" {
+			return sendSpawnForDirective(sockPath, beadID)
+		}
+		ts := time.Now().UnixNano()
+		ids := buildWorkerLaunchIDs(count, workerID, ts)
+		if err := reserveWorkerLaunch(sockPath, ids); err != nil {
+			return err
+		}
+
+		for i, id := range ids {
+			logDir := filepath.Join(paths.OroHome, "workers", id)
+			logPath := filepath.Join(logDir, "output.log")
+
+			if err := spawner.SpawnWorker(sockPath, id, logPath); err != nil {
+				releaseWorkerLaunchReservation(sockPath, ids[i:])
+				return fmt.Errorf("spawn worker %s: %w", id, err)
+			}
+		}
+		return nil
+	})
 }
 
 func buildWorkerLaunchIDs(count int, workerID string, ts int64) []string {
