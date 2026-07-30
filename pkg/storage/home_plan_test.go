@@ -59,10 +59,34 @@ func TestOroHomeCleanupPlanIsAllowlisted(t *testing.T) {
 			t.Fatalf("CleanOroHome(apply) call %d: %v", i, err)
 		}
 	}
-	if !reflect.DeepEqual(results[0], results[1]) {
-		t.Fatalf("concurrent cleanup calls did not coalesce:\nfirst: %#v\nsecond: %#v", results[0], results[1])
+	// singleflight.Do coalesces only calls that are still IN FLIGHT. If the first
+	// goroutine finishes before the second reaches Do, the second runs a fresh
+	// pass, finds the allowlisted files already removed, and correctly reports no
+	// entries. Both interleavings are correct, so assert the invariants that hold
+	// either way instead of requiring the two results to be identical. Safety
+	// against concurrent destructive runs comes from AcquireMaintenanceLock in
+	// cleanOroHome, not from singleflight.
+	performed := make([]storage.OroHomeCleanupResult, 0, len(results))
+	for _, result := range results {
+		if len(result.Entries) > 0 {
+			performed = append(performed, result)
+		}
 	}
-	for _, entry := range results[0].Entries {
+	if len(performed) == 0 {
+		t.Fatalf("neither concurrent cleanup reported the allowlisted entries:\nfirst: %#v\nsecond: %#v", results[0], results[1])
+	}
+	for index, result := range performed {
+		if result.DryRun {
+			t.Errorf("apply result %d reported dry-run mode", index)
+		}
+		assertOroHomePaths(t, result.Entries, []string{"logs/expired.log", "tmp/oro-failed.tmp"})
+	}
+	// When the calls do overlap, singleflight shares one result, so both callers
+	// must observe exactly the same evidence.
+	if len(performed) == 2 && !reflect.DeepEqual(performed[0], performed[1]) {
+		t.Fatalf("coalesced cleanup results differ:\nfirst: %#v\nsecond: %#v", performed[0], performed[1])
+	}
+	for _, entry := range performed[0].Entries {
 		if !entry.Changed {
 			t.Errorf("entry %q was not marked changed", entry.Path)
 		}
