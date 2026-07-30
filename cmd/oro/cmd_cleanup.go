@@ -14,40 +14,39 @@ import (
 	"time"
 
 	"oro/pkg/beadstore"
-	"oro/pkg/processenv"
+	"oro/pkg/storage"
 
 	"github.com/spf13/cobra"
 )
 
 const (
-	cleanupDispatcherExitWait    = 5 * time.Second
-	cleanupPIDLockMaxAge         = time.Hour
-	cleanupSubprocessCacheMaxAge = 7 * 24 * time.Hour
+	cleanupDispatcherExitWait = 5 * time.Second
+	cleanupPIDLockMaxAge      = time.Hour
 )
 
 // cleanupConfig holds injectable dependencies for the cleanup command.
 type cleanupConfig struct {
-	runner                CmdRunner
-	w                     io.Writer
-	tmuxName              string
-	pidPath               string
-	sockPath              string
-	stateDBPath           string // path to native SQLite state.db; empty disables bead state repair
-	worktreesDir          string // path to .worktrees directory; empty disables worktree dir removal
-	AssignmentsOnly       bool
-	subprocessCacheRoot   string
-	subprocessTmpRoot     string
-	subprocessCacheMaxAge time.Duration
-	signalFn              func(int) error // sends SIGINT; injectable for testing
-	aliveFn               func(int) bool  // checks process liveness; injectable for testing
-	isTTY                 func() bool     // returns true if stdin is a TTY; injectable for testing
-	exitWait              time.Duration   // bounded wait for dispatcher exit after SIGINT
-	liveWorkerIDs         func(context.Context) (map[string]bool, error)
+	runner          CmdRunner
+	w               io.Writer
+	tmuxName        string
+	pidPath         string
+	sockPath        string
+	stateDBPath     string // path to native SQLite state.db; empty disables bead state repair
+	worktreesDir    string // path to .worktrees directory; empty disables worktree dir removal
+	AssignmentsOnly bool
+	signalFn        func(int) error // sends SIGINT; injectable for testing
+	aliveFn         func(int) bool  // checks process liveness; injectable for testing
+	isTTY           func() bool     // returns true if stdin is a TTY; injectable for testing
+	exitWait        time.Duration   // bounded wait for dispatcher exit after SIGINT
+	liveWorkerIDs   func(context.Context) (map[string]bool, error)
 }
 
 // newCleanupCmd creates the "oro cleanup" subcommand.
 func newCleanupCmd() *cobra.Command {
 	cfg := cleanupConfig{}
+	var apply bool
+	var dryRun bool
+	var jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "cleanup",
 		Short: "Clean all stale state after a crash",
@@ -55,8 +54,26 @@ func newCleanupCmd() *cobra.Command {
 and worker processes; removes stale PID/socket files; prunes git worktrees;
 deletes agent/* branches; and resets orphaned in_progress beads to open.
 
-Safe to run anytime. If nothing is running, reports "nothing to clean".`,
+Safe to run anytime. If nothing is running, reports "nothing to clean".
+
+Use --dry-run or --apply for compatibility with the preservation-first runtime
+storage planner.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if apply && dryRun {
+				return fmt.Errorf("--apply and --dry-run cannot be used together")
+			}
+			if apply || dryRun || jsonOut {
+				oroHome, err := resolveOroHome()
+				if err != nil {
+					return fmt.Errorf("resolve Oro home: %w", err)
+				}
+				result, err := runLegacyCleanupStorage(cmd.Context(), oroHome, apply)
+				if err != nil {
+					return err
+				}
+				return writeStorageCleanup(cmd.OutOrStdout(), result, jsonOut)
+			}
+
 			paths, err := ResolveDaemonPaths()
 			if err != nil {
 				return fmt.Errorf("resolve paths: %w", err)
@@ -72,28 +89,32 @@ Safe to run anytime. If nothing is running, reports "nothing to clean".`,
 			}
 
 			cleanupCfg := &cleanupConfig{
-				runner:                &ExecRunner{},
-				w:                     cmd.OutOrStdout(),
-				tmuxName:              TmuxSessionName(readProjectNameCWD()),
-				pidPath:               paths.PIDPath,
-				sockPath:              paths.SocketPath,
-				stateDBPath:           paths.StateDBPath,
-				worktreesDir:          projPaths.WorktreesDir,
-				subprocessCacheRoot:   processenv.SubprocessCacheRoot(),
-				subprocessTmpRoot:     processenv.SubprocessTmpRoot(),
-				subprocessCacheMaxAge: cleanupSubprocessCacheMaxAge,
-				signalFn:              defaultSignalINT,
-				aliveFn:               IsProcessAlive,
-				isTTY:                 isStdinTTY,
-				exitWait:              cleanupDispatcherExitWait,
-				AssignmentsOnly:       cfg.AssignmentsOnly,
+				runner:          &ExecRunner{},
+				w:               cmd.OutOrStdout(),
+				tmuxName:        TmuxSessionName(readProjectNameCWD()),
+				pidPath:         paths.PIDPath,
+				sockPath:        paths.SocketPath,
+				stateDBPath:     paths.StateDBPath,
+				worktreesDir:    projPaths.WorktreesDir,
+				signalFn:        defaultSignalINT,
+				aliveFn:         IsProcessAlive,
+				isTTY:           isStdinTTY,
+				exitWait:        cleanupDispatcherExitWait,
+				AssignmentsOnly: cfg.AssignmentsOnly,
 			}
 
 			return runCleanup(cmd.Context(), cleanupCfg)
 		},
 	}
 	cmd.Flags().BoolVar(&cfg.AssignmentsOnly, "assignments-only", false, "complete orphaned assignment rows only; leave processes, worktrees and agent branches untouched")
+	cmd.Flags().BoolVar(&apply, "apply", false, "remove runtime candidates proven safe by the storage cleanup plan")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview the runtime storage cleanup plan")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit the runtime storage cleanup plan as JSON")
 	return cmd
+}
+
+func runLegacyCleanupStorage(ctx context.Context, oroHome string, apply bool) (storageCleanupOutput, error) {
+	return runStorageClean(ctx, oroHome, storage.ScopeRuntime, apply)
 }
 
 // runCleanup performs best-effort cleanup of all Oro state.
@@ -139,35 +160,30 @@ func runFullCleanup(ctx context.Context, cfg *cleanupConfig) error {
 		cleaned = true
 	}
 
-	// 4. Prune subprocess tool caches after runtime processes are stopped.
-	if cleanedSubprocessCache := cleanupSubprocessCache(cfg); cleanedSubprocessCache {
-		cleaned = true
-	}
-
-	// 5. Remove stale PID file.
+	// 4. Remove stale PID file.
 	if cleanedPID := cleanupPIDFile(cfg); cleanedPID {
 		cleaned = true
 	}
 
-	// 6. Remove stale socket file.
+	// 5. Remove stale socket file.
 	if cleanedSock := cleanupSocketFile(cfg); cleanedSock {
 		cleaned = true
 	}
 
-	// 7. Remove stale dispatcher state DB lock.
+	// 6. Remove stale dispatcher state DB lock.
 	if cleanedLock := cleanupStateDBLock(cfg); cleanedLock {
 		cleaned = true
 	}
 
-	// 8. Prune git worktrees.
+	// 7. Prune git worktrees.
 	cleanupWorktrees(cfg)
 
-	// 9. Remove .worktrees/ directory.
+	// 8. Remove .worktrees/ directory.
 	if cleanedWorktreeDir := cleanupWorktreeDir(cfg); cleanedWorktreeDir {
 		cleaned = true
 	}
 
-	// 10. Delete agent/* and epic/* branches.
+	// 9. Delete agent/* and epic/* branches.
 	cleanedBranches, err := cleanupAgentBranches(ctx, cfg)
 	if cleanedBranches {
 		cleaned = true
@@ -176,7 +192,7 @@ func runFullCleanup(ctx context.Context, cfg *cleanupConfig) error {
 		cleanupErr = err
 	}
 
-	// 11. Reset in_progress beads back to open.
+	// 10. Reset in_progress beads back to open.
 	if cleanedBeads := cleanupBeads(ctx, cfg); cleanedBeads {
 		cleaned = true
 	}
@@ -300,42 +316,6 @@ func cleanupLiveWorkerIDs(ctx context.Context, cfg *cleanupConfig) (map[string]b
 		liveWorkerIDs[worker.ID] = true
 	}
 	return liveWorkerIDs, nil
-}
-
-// cleanupSubprocessCache prunes expired namespaces from BOTH subprocess roots.
-// They are separate directories — the cache root under os.UserCacheDir and the
-// TMPDIR root under os.TempDir — and each accrues one namespace per spawned
-// subprocess, so pruning only one leaves the other growing without bound.
-func cleanupSubprocessCache(cfg *cleanupConfig) bool {
-	if cfg.subprocessCacheMaxAge <= 0 {
-		return false
-	}
-	cleaned := false
-	for _, root := range []string{cfg.subprocessCacheRoot, cfg.subprocessTmpRoot} {
-		if root == "" {
-			continue
-		}
-		result, err := processenv.PruneSubprocessCache(root, processenv.PruneOptions{
-			MaxAge: cfg.subprocessCacheMaxAge,
-		})
-		if err != nil {
-			fmt.Fprintf(cfg.w, "warning: prune subprocess cache %s: %v\n", root, err)
-		}
-		if result.Removed == 0 {
-			continue
-		}
-		fmt.Fprintf(cfg.w, "pruned %d stale subprocess cache %s from %s\n",
-			result.Removed, pluralize(result.Removed, "namespace", "namespaces"), root)
-		cleaned = true
-	}
-	return cleaned
-}
-
-func pluralize(count int, singular, plural string) string {
-	if count == 1 {
-		return singular
-	}
-	return plural
 }
 
 // cleanupTmux kills the tmux session if it exists. Returns true if something was cleaned.
