@@ -2,7 +2,7 @@
 set -euo pipefail
 
 needs_json=${1:?usage: require-needs-success.sh '<needs-json>'}
-readonly required_jobs=(go cgo-free shell docs python)
+readonly required_jobs=(go cgo-free shell docs python incremental-mutation)
 
 if ! printf '%s\n' "$needs_json" | jq -e --argjson required "$(printf '%s\n' "${required_jobs[@]}" | jq -R . | jq -s .)" '
   . as $needs |
