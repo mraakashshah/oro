@@ -217,6 +217,67 @@ func TestStorageStatusCommand(t *testing.T) {
 	})
 }
 
+func TestDevCleanupHealthProjection(t *testing.T) {
+	ctx := context.Background()
+	oroHome := t.TempDir()
+	now := time.Now().UTC().Truncate(time.Second)
+	catalog, err := openStorageCatalog(ctx, oroHome)
+	if err != nil {
+		t.Fatalf("openStorageCatalog() error = %v", err)
+	}
+	t.Cleanup(func() { _ = catalog.Close() })
+
+	due := now.Add(-25 * time.Hour)
+	lastSuccess := now.Add(-8 * 24 * time.Hour)
+	lastAttempt := now.Add(-time.Hour)
+	for _, statement := range []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO providers (id, created_at, updated_at) VALUES ('go', ?, ?)`, []any{lastSuccess.Format(time.RFC3339), lastSuccess.Format(time.RFC3339)}},
+		{`INSERT INTO providers (id, created_at, updated_at) VALUES ('uv', ?, ?)`, []any{lastAttempt.Format(time.RFC3339), lastAttempt.Format(time.RFC3339)}},
+		{`INSERT INTO weekly_dev_cache_schedule (id, due_at, updated_at) VALUES ('weekly-dev-cache', ?, ?)`, []any{due.Format(time.RFC3339), due.Format(time.RFC3339)}},
+		{`INSERT INTO sweeps (id, provider_id, started_at, finished_at, status) VALUES ('weekly-go', 'go', ?, ?, 'completed')`, []any{lastSuccess.Format(time.RFC3339), lastSuccess.Format(time.RFC3339)}},
+		{`INSERT INTO sweeps (id, provider_id, started_at, finished_at, status) VALUES ('weekly-uv', 'uv', ?, ?, 'failed')`, []any{lastAttempt.Format(time.RFC3339), lastAttempt.Format(time.RFC3339)}},
+		{`INSERT INTO evidence (id, sweep_id, kind, payload, created_at) VALUES ('weekly-go-evidence', 'weekly-go', 'weekly_dev_cache_provider', ?, ?)`, []any{`{"provider_id":"go","before":{"used_bytes":400},"after":{"used_bytes":125},"exit_code":0}`, lastSuccess.Format(time.RFC3339)}},
+		{`INSERT INTO evidence (id, sweep_id, kind, payload, created_at) VALUES ('weekly-uv-evidence', 'weekly-uv', 'weekly_dev_cache_provider', ?, ?)`, []any{`{"provider_id":"uv","before":{"used_bytes":800},"after":{"used_bytes":800},"exit_code":19}`, lastAttempt.Format(time.RFC3339)}},
+		{`INSERT INTO runtime_pause_epochs (epoch, state, created_at) VALUES (7, 'paused', ?)`, []any{lastAttempt.Format(time.RFC3339)}},
+		{`INSERT INTO runtime_pause_acknowledgements (epoch, controller_id, state, acknowledged_at) VALUES (7, 'dispatcher', 'paused', ?)`, []any{lastAttempt.Format(time.RFC3339)}},
+	} {
+		if _, err := catalog.DB().ExecContext(ctx, statement.query, statement.args...); err != nil {
+			t.Fatalf("seed catalog: %v", err)
+		}
+	}
+
+	status, err := loadStorageStatus(ctx, oroHome)
+	if err != nil {
+		t.Fatalf("loadStorageStatus() error = %v", err)
+	}
+	if status.DevCleanup.LastAttempt != lastAttempt.Format(time.RFC3339) || status.DevCleanup.LastSuccess != lastSuccess.Format(time.RFC3339) {
+		t.Fatalf("cleanup attempts = %+v, want attempt=%s success=%s", status.DevCleanup, lastAttempt, lastSuccess)
+	}
+	if status.DevCleanup.NextDue != due.Format(time.RFC3339) || status.DevCleanup.OverdueBySeconds < int64((24*time.Hour).Seconds()) {
+		t.Fatalf("cleanup schedule = %+v, want next_due=%s and overdue by >=24h", status.DevCleanup, due)
+	}
+	if status.DevCleanup.FreedBytes != 275 || len(status.DevCleanup.Providers) != 2 {
+		t.Fatalf("cleanup provider projection = %+v, want 275 freed bytes and two providers", status.DevCleanup)
+	}
+	if status.DevCleanup.Providers[0].ProviderID != "go" || status.DevCleanup.Providers[0].Status != "completed" || status.DevCleanup.Providers[1].ProviderID != "uv" || status.DevCleanup.Providers[1].Status != "failed" {
+		t.Fatalf("cleanup provider results = %+v, want completed go and failed uv", status.DevCleanup.Providers)
+	}
+	if status.DevCleanup.Pause.State != storage.Paused || !status.DevCleanup.Pause.Drained {
+		t.Fatalf("cleanup pause = %+v, want paused and drained", status.DevCleanup.Pause)
+	}
+
+	health := loadFactoryStorageHealth(ctx, oroHome)
+	if !health.SweepOverdue || !health.AdmissionPaused || health.DevCleanup == nil {
+		t.Fatalf("factory storage health = %+v, want overdue paused cleanup health", health)
+	}
+	if health.DevCleanup.FreedBytes != status.DevCleanup.FreedBytes || health.DevCleanup.LastAttempt != status.DevCleanup.LastAttempt || health.DevCleanup.Pause != status.DevCleanup.Pause || len(health.DevCleanup.Providers) != len(status.DevCleanup.Providers) {
+		t.Fatalf("status and health cleanup projections differ: status=%+v health=%+v", status.DevCleanup, health.DevCleanup)
+	}
+}
+
 func TestStorageCleanDefaultsToDryRun(t *testing.T) {
 	oroHome := t.TempDir()
 	t.Setenv("ORO_HOME", oroHome)

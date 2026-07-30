@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"oro/pkg/protocol"
+	"oro/pkg/storage"
 )
 
 // State is the top-level factory health state.
@@ -170,13 +171,14 @@ type EscalationSnapshot struct {
 // StorageHealth summarizes the storage control plane observed by a health
 // caller. A nil snapshot means storage health could not be observed.
 type StorageHealth struct {
-	Available          bool     `json:"available"`
-	Pressure           string   `json:"pressure,omitempty"`
-	SweepOverdue       bool     `json:"sweep_overdue,omitempty"`
-	BlockedRetirements int      `json:"blocked_retirements,omitempty"`
-	Failures           []string `json:"failures,omitempty"`
-	Cancellations      []string `json:"cancellations,omitempty"`
-	AdmissionPaused    bool     `json:"admission_paused,omitempty"`
+	Available          bool                      `json:"available"`
+	Pressure           string                    `json:"pressure,omitempty"`
+	SweepOverdue       bool                      `json:"sweep_overdue,omitempty"`
+	BlockedRetirements int                       `json:"blocked_retirements,omitempty"`
+	Failures           []string                  `json:"failures,omitempty"`
+	Cancellations      []string                  `json:"cancellations,omitempty"`
+	AdmissionPaused    bool                      `json:"admission_paused,omitempty"`
+	DevCleanup         *storage.DevCleanupHealth `json:"dev_cleanup,omitempty"`
 }
 
 // WorkerSnapshot is a worker state sample used by the evaluator.

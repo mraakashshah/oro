@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -45,8 +46,9 @@ type storageStatus struct {
 	Backlog struct {
 		PendingSweeps int `json:"pending_sweeps"`
 	} `json:"backlog"`
-	LastSweep string `json:"last_sweep,omitempty"`
-	NextSweep string `json:"next_sweep,omitempty"`
+	LastSweep  string                   `json:"last_sweep,omitempty"`
+	NextSweep  string                   `json:"next_sweep,omitempty"`
+	DevCleanup storage.DevCleanupHealth `json:"dev_cleanup"`
 }
 
 // newStorageCmd creates the storage inspection and cleanup command group.
@@ -352,7 +354,11 @@ func loadFactoryStorageHealth(ctx context.Context, oroHome string) *factoryhealt
 	return &factoryhealth.StorageHealth{
 		Available:    true,
 		Pressure:     status.Pressure,
-		SweepOverdue: storageSweepOverdue(status, time.Now()),
+		SweepOverdue: status.DevCleanup.OverdueBySeconds > 0,
+		AdmissionPaused: status.DevCleanup.Pause.State == storage.PauseRequested ||
+			status.DevCleanup.Pause.State == storage.Paused ||
+			status.DevCleanup.Pause.State == storage.Resuming,
+		DevCleanup: &status.DevCleanup,
 	}
 }
 
@@ -562,7 +568,100 @@ func loadStorageCatalogCounts(ctx context.Context, db *sql.DB, status *storageSt
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate catalog leases: %w", err)
 	}
-	return loadStorageSweepStatus(ctx, db, status)
+	if err := loadStorageSweepStatus(ctx, db, status); err != nil {
+		return err
+	}
+	return loadStorageDevCleanupStatus(ctx, db, status, time.Now().UTC())
+}
+
+func loadStorageDevCleanupStatus(ctx context.Context, db *sql.DB, status *storageStatus, now time.Time) error {
+	var dueAt string
+	err := db.QueryRowContext(ctx, `SELECT due_at FROM weekly_dev_cache_schedule WHERE id = 'weekly-dev-cache'`).Scan(&dueAt)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("load weekly developer cleanup due time: %w", err)
+	}
+	if err == nil {
+		due, parseErr := time.Parse(time.RFC3339, dueAt)
+		if parseErr != nil {
+			return fmt.Errorf("parse weekly developer cleanup due time: %w", parseErr)
+		}
+		status.DevCleanup.NextDue = due.Format(time.RFC3339)
+		if now.After(due) {
+			status.DevCleanup.OverdueBySeconds = int64(now.Sub(due).Seconds())
+		}
+	}
+
+	rows, err := db.QueryContext(ctx, `
+SELECT s.provider_id, s.status, s.finished_at, e.payload
+FROM sweeps s
+JOIN evidence e ON e.sweep_id = s.id AND e.kind = 'weekly_dev_cache_provider'
+ORDER BY s.provider_id, s.finished_at DESC`)
+	if err != nil {
+		return fmt.Errorf("list weekly developer cleanup providers: %w", err)
+	}
+	defer rows.Close()
+	seen := make(map[string]struct{})
+	for rows.Next() {
+		var providerID, sweepStatus string
+		var finishedAt sql.NullString
+		var payload string
+		if err := rows.Scan(&providerID, &sweepStatus, &finishedAt, &payload); err != nil {
+			return fmt.Errorf("scan weekly developer cleanup provider: %w", err)
+		}
+		if _, ok := seen[providerID]; ok {
+			continue
+		}
+		seen[providerID] = struct{}{}
+		var evidence storage.MaintenanceEvidence
+		if err := json.Unmarshal([]byte(payload), &evidence); err != nil {
+			return fmt.Errorf("parse weekly developer cleanup evidence: %w", err)
+		}
+		result := storage.DevCleanupProviderResult{
+			ProviderID: providerID,
+			Status:     sweepStatus,
+			ExitCode:   evidence.ExitCode,
+		}
+		if finishedAt.Valid && finishedAt.String != "" {
+			finished, parseErr := time.Parse(time.RFC3339, finishedAt.String)
+			if parseErr != nil {
+				return fmt.Errorf("parse weekly developer cleanup attempt: %w", parseErr)
+			}
+			result.AttemptedAt = finished.Format(time.RFC3339)
+			if status.DevCleanup.LastAttempt == "" || result.AttemptedAt > status.DevCleanup.LastAttempt {
+				status.DevCleanup.LastAttempt = result.AttemptedAt
+			}
+			if sweepStatus == "completed" && (status.DevCleanup.LastSuccess == "" || result.AttemptedAt > status.DevCleanup.LastSuccess) {
+				status.DevCleanup.LastSuccess = result.AttemptedAt
+			}
+		}
+		freed := int64(evidence.Before.UsedBytes) - int64(evidence.After.UsedBytes)
+		if freed > 0 {
+			result.FreedBytes = freed
+			status.DevCleanup.FreedBytes += freed
+		}
+		status.DevCleanup.Providers = append(status.DevCleanup.Providers, result)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate weekly developer cleanup providers: %w", err)
+	}
+	return loadStorageDevCleanupPause(ctx, db, status)
+}
+
+func loadStorageDevCleanupPause(ctx context.Context, db *sql.DB, status *storageStatus) error {
+	var pause storage.DevCleanupPauseStatus
+	err := db.QueryRowContext(ctx, `SELECT epoch, state FROM runtime_pause_epochs ORDER BY epoch DESC LIMIT 1`).Scan(&pause.Epoch, &pause.State)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load weekly developer cleanup pause: %w", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM runtime_pause_acknowledgements WHERE epoch = ?`, pause.Epoch).Scan(&pause.AcknowledgedControllers); err != nil {
+		return fmt.Errorf("count weekly developer cleanup acknowledgements: %w", err)
+	}
+	pause.Drained = pause.State == storage.Paused && pause.AcknowledgedControllers > 0
+	status.DevCleanup.Pause = pause
+	return nil
 }
 
 func loadStorageSweepStatus(ctx context.Context, db *sql.DB, status *storageStatus) error {
