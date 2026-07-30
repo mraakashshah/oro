@@ -62,13 +62,15 @@ func TestDispatcherStartSequence_AssignsWorkerUnderParallelStress(t *testing.T) 
 		i, conn := i, conn
 		go func() {
 			defer sendWg.Done()
-			sendMsg(t, conn, protocol.Message{
+			data, _ := json.Marshal(protocol.Message{
 				Type: protocol.MsgHeartbeat,
 				Heartbeat: &protocol.HeartbeatPayload{
 					WorkerID:   fmt.Sprintf("stress-worker-%d", i),
 					ContextPct: 5,
 				},
 			})
+			data = append(data, '\n')
+			_, _ = conn.Write(data)
 		}()
 	}
 	sendWg.Wait()
