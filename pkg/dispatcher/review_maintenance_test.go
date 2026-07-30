@@ -137,10 +137,10 @@ func TestReviewArtifactJanitorScheduled(t *testing.T) {
 	}
 
 	oldTimestamp := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339Nano)
-	seedReviewArtifact(t, ctx, store, 100, duePath, ReviewCheckpointStateIntegrated, oldTimestamp)
-	seedReviewArtifact(t, ctx, store, 101, activePath, ReviewCheckpointStateIntegrated, oldTimestamp)
-	seedReviewArtifact(t, ctx, store, 102, activePath, ReviewCheckpointStateReviewRunning, oldTimestamp)
-	seedReviewArtifact(t, ctx, store, 103, retryPath, ReviewCheckpointStateIntegrated, oldTimestamp)
+	seedReviewArtifact(ctx, t, store, 100, duePath, ReviewCheckpointStateIntegrated, oldTimestamp)
+	seedReviewArtifact(ctx, t, store, 101, activePath, ReviewCheckpointStateIntegrated, oldTimestamp)
+	seedReviewArtifact(ctx, t, store, 102, activePath, ReviewCheckpointStateReviewRunning, oldTimestamp)
+	seedReviewArtifact(ctx, t, store, 103, retryPath, ReviewCheckpointStateIntegrated, oldTimestamp)
 
 	cancel := startDispatcher(t, d)
 	waitFor(t, func() bool {
@@ -175,8 +175,8 @@ func TestReviewArtifactJanitorScheduled(t *testing.T) {
 }
 
 func seedReviewArtifact(
-	t *testing.T,
 	ctx context.Context,
+	t *testing.T,
 	store *ReviewCheckpointStore,
 	index int,
 	path string,
