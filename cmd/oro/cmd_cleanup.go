@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/processenv"
 	"oro/pkg/storage"
 
 	"github.com/spf13/cobra"
@@ -26,19 +27,23 @@ const (
 
 // cleanupConfig holds injectable dependencies for the cleanup command.
 type cleanupConfig struct {
-	runner          CmdRunner
-	w               io.Writer
-	tmuxName        string
-	pidPath         string
-	sockPath        string
-	stateDBPath     string // path to native SQLite state.db; empty disables bead state repair
-	worktreesDir    string // path to .worktrees directory; empty disables worktree dir removal
-	AssignmentsOnly bool
-	signalFn        func(int) error // sends SIGINT; injectable for testing
-	aliveFn         func(int) bool  // checks process liveness; injectable for testing
-	isTTY           func() bool     // returns true if stdin is a TTY; injectable for testing
-	exitWait        time.Duration   // bounded wait for dispatcher exit after SIGINT
-	liveWorkerIDs   func(context.Context) (map[string]bool, error)
+	runner                CmdRunner
+	w                     io.Writer
+	tmuxName              string
+	pidPath               string
+	sockPath              string
+	stateDBPath           string // path to native SQLite state.db; empty disables bead state repair
+	worktreesDir          string // path to .worktrees directory; empty disables worktree dir removal
+	AssignmentsOnly       bool
+	subprocessCacheRoot   string
+	subprocessTmpRoot     string
+	subprocessCacheMaxAge time.Duration
+	subprocessCatalog     *storage.Catalog
+	signalFn              func(int) error // sends SIGINT; injectable for testing
+	aliveFn               func(int) bool  // checks process liveness; injectable for testing
+	isTTY                 func() bool     // returns true if stdin is a TTY; injectable for testing
+	exitWait              time.Duration   // bounded wait for dispatcher exit after SIGINT
+	liveWorkerIDs         func(context.Context) (map[string]bool, error)
 }
 
 // newCleanupCmd creates the "oro cleanup" subcommand.
@@ -102,6 +107,15 @@ storage planner.`,
 				exitWait:        cleanupDispatcherExitWait,
 				AssignmentsOnly: cfg.AssignmentsOnly,
 			}
+			oroHome, homeErr := resolveOroHome()
+			if homeErr != nil {
+				fmt.Fprintf(cleanupCfg.w, "warning: resolve Oro home for subprocess cleanup: %v\n", homeErr)
+			} else if catalog, catalogErr := openStorageCatalog(cmd.Context(), oroHome); catalogErr != nil {
+				fmt.Fprintf(cleanupCfg.w, "warning: open subprocess cleanup catalog: %v\n", catalogErr)
+			} else {
+				cleanupCfg.subprocessCatalog = catalog
+				defer func() { _ = catalog.Close() }()
+			}
 
 			return runCleanup(cmd.Context(), cleanupCfg)
 		},
@@ -160,7 +174,12 @@ func runFullCleanup(ctx context.Context, cfg *cleanupConfig) error {
 		cleaned = true
 	}
 
-	// 4. Remove stale PID file.
+	// 4. Prune subprocess tool caches after runtime processes are stopped.
+	if cleanedSubprocessCache := cleanupSubprocessCache(ctx, cfg); cleanedSubprocessCache {
+		cleaned = true
+	}
+
+	// 5. Remove stale PID file.
 	if cleanedPID := cleanupPIDFile(cfg); cleanedPID {
 		cleaned = true
 	}
@@ -316,6 +335,70 @@ func cleanupLiveWorkerIDs(ctx context.Context, cfg *cleanupConfig) (map[string]b
 		liveWorkerIDs[worker.ID] = true
 	}
 	return liveWorkerIDs, nil
+}
+
+// cleanupSubprocessCache prunes expired namespaces from BOTH subprocess roots.
+// They are separate directories — the cache root under os.UserCacheDir and the
+// TMPDIR root under os.TempDir — and each accrues one namespace per spawned
+// subprocess, so pruning only one leaves the other growing without bound.
+func cleanupSubprocessCache(ctx context.Context, cfg *cleanupConfig) bool {
+	if cfg.subprocessCacheMaxAge <= 0 || cfg.subprocessCatalog == nil {
+		return false
+	}
+	cleaned := false
+	for _, root := range []string{cfg.subprocessCacheRoot, cfg.subprocessTmpRoot} {
+		if root == "" {
+			continue
+		}
+		result, err := processenv.PruneSubprocessCache(root, processenv.PruneOptions{
+			MaxAge: cfg.subprocessCacheMaxAge,
+			CanRemove: func(path string) bool {
+				dead, proofErr := catalogProvesSubprocessNamespaceDead(ctx, cfg.subprocessCatalog, path)
+				if proofErr != nil {
+					fmt.Fprintf(cfg.w, "warning: verify subprocess namespace %s: %v\n", path, proofErr)
+				}
+				return proofErr == nil && dead
+			},
+		})
+		if err != nil {
+			fmt.Fprintf(cfg.w, "warning: prune subprocess cache %s: %v\n", root, err)
+		}
+		if result.Removed == 0 {
+			continue
+		}
+		fmt.Fprintf(cfg.w, "pruned %d stale subprocess cache %s from %s\n",
+			result.Removed, pluralize(result.Removed, "namespace", "namespaces"), root)
+		cleaned = true
+	}
+	return cleaned
+}
+
+// catalogProvesSubprocessNamespaceDead requires a cataloged namespace with no
+// live lease or durable reference before cleanup can remove it.
+func catalogProvesSubprocessNamespaceDead(ctx context.Context, catalog *storage.Catalog, path string) (bool, error) {
+	var dead bool
+	err := catalog.DB().QueryRowContext(ctx, `
+SELECT EXISTS (
+    SELECT 1
+      FROM namespaces n
+     WHERE n.path = ?
+       AND NOT EXISTS (
+           SELECT 1 FROM leases l
+            WHERE l.namespace_id = n.id AND l.expires_at > ?
+       )
+       AND NOT EXISTS (SELECT 1 FROM refs r WHERE r.namespace_id = n.id)
+)`, path, time.Now().UTC().Format(time.RFC3339Nano)).Scan(&dead)
+	if err != nil {
+		return false, fmt.Errorf("query namespace proof: %w", err)
+	}
+	return dead, nil
+}
+
+func pluralize(count int, singular, plural string) string {
+	if count == 1 {
+		return singular
+	}
+	return plural
 }
 
 // cleanupTmux kills the tmux session if it exists. Returns true if something was cleaned.

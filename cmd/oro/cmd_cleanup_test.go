@@ -1394,3 +1394,138 @@ func TestCleanupEpicBranches(t *testing.T) {
 		t.Errorf("expected output to mention deleted epic branches, got: %s", out)
 	}
 }
+
+func testSubprocessCatalog(t *testing.T, oroHome, namespacePath string) *storage.Catalog {
+	t.Helper()
+	catalog, err := openStorageCatalog(context.Background(), oroHome)
+	if err != nil {
+		t.Fatalf("open storage catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := catalog.Close(); err != nil {
+			t.Errorf("close storage catalog: %v", err)
+		}
+	})
+	if _, err := catalog.DB().ExecContext(context.Background(), `
+INSERT INTO providers (id, created_at, updated_at) VALUES ('subprocess', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+INSERT INTO namespaces (id, provider_id, path, created_at, updated_at) VALUES ('stale', 'subprocess', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, namespacePath); err != nil {
+		t.Fatalf("seed subprocess catalog: %v", err)
+	}
+	return catalog
+}
+
+// TestCleanupPrunesSubprocessTmpRoot covers the subprocess TMP root, which is
+// a different directory from the cache root: processenv.defaultCacheRoot
+// resolves under os.UserCacheDir ("~/Library/Caches/oro/subprocess") while
+// defaultTmpRoot resolves under os.TempDir ("/tmp/oro-subprocess" on darwin).
+// Only the cache root was pruned, so the tmp root accumulated one directory
+// per spawned subprocess forever — 16,467 of them, 1.6 GB, observed
+// 2026-07-29 while the pruned cache root sat empty.
+func TestCleanupPrunesSubprocessTmpRoot(t *testing.T) {
+	fake := newFakeCmd()
+	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
+	fake.output[key("git", "branch", "--list", "agent/*")] = ""
+	fake.output[key("git", "branch", "--list", "epic/*")] = ""
+
+	now := time.Now()
+	tmpDir := t.TempDir()
+	tmpRoot := filepath.Join(tmpDir, "oro-subprocess")
+	staleNamespace := filepath.Join(tmpRoot, "stale")
+	recentNamespace := filepath.Join(tmpRoot, "recent")
+	for _, dir := range []string{staleNamespace, recentNamespace} {
+		if err := os.MkdirAll(filepath.Join(dir, "T"), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	if err := os.Chtimes(staleNamespace, now.Add(-8*24*time.Hour), now.Add(-8*24*time.Hour)); err != nil {
+		t.Fatalf("chtimes stale namespace: %v", err)
+	}
+	if err := os.Chtimes(recentNamespace, now.Add(-2*24*time.Hour), now.Add(-2*24*time.Hour)); err != nil {
+		t.Fatalf("chtimes recent namespace: %v", err)
+	}
+
+	var buf bytes.Buffer
+	cfg := &cleanupConfig{
+		runner:                fake,
+		w:                     &buf,
+		tmuxName:              TmuxSessionName(""),
+		pidPath:               filepath.Join(tmpDir, "oro.pid"),
+		sockPath:              filepath.Join(tmpDir, "oro.sock"),
+		subprocessTmpRoot:     tmpRoot,
+		subprocessCacheMaxAge: 7 * 24 * time.Hour,
+		subprocessCatalog:     testSubprocessCatalog(t, tmpDir, staleNamespace),
+		signalFn:              func(int) error { return nil },
+		aliveFn:               func(int) bool { return false },
+	}
+
+	if err := runCleanup(context.Background(), cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(staleNamespace); !os.IsNotExist(err) {
+		t.Fatalf("expected stale subprocess tmp namespace to be removed, stat err: %v", err)
+	}
+	if _, err := os.Stat(recentNamespace); err != nil {
+		t.Fatalf("expected recent subprocess tmp namespace to be preserved: %v", err)
+	}
+	if out := buf.String(); !strings.Contains(out, tmpRoot) {
+		t.Fatalf("expected pruning output naming the tmp root %s, got:\n%s", tmpRoot, out)
+	}
+}
+
+func TestCleanupPrunesSubprocessCache(t *testing.T) {
+	fake := newFakeCmd()
+	fake.errs[key("tmux", "has-session", "-t", "oro")] = fmt.Errorf("no session")
+	fake.errs[key("pgrep", "-f", "ORO_ROLE")] = fmt.Errorf("no match")
+	fake.output[key("git", "branch", "--list", "agent/*")] = ""
+	fake.output[key("git", "branch", "--list", "epic/*")] = ""
+
+	now := time.Now()
+	tmpDir := t.TempDir()
+	cacheRoot := filepath.Join(tmpDir, "subprocess")
+	staleNamespace := filepath.Join(cacheRoot, "stale")
+	recentNamespace := filepath.Join(cacheRoot, "recent")
+	if err := os.MkdirAll(filepath.Join(staleNamespace, "go-build"), 0o755); err != nil {
+		t.Fatalf("mkdir stale namespace: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(recentNamespace, "go-build"), 0o755); err != nil {
+		t.Fatalf("mkdir recent namespace: %v", err)
+	}
+	if err := os.Chtimes(staleNamespace, now.Add(-8*24*time.Hour), now.Add(-8*24*time.Hour)); err != nil {
+		t.Fatalf("chtimes stale namespace: %v", err)
+	}
+	if err := os.Chtimes(recentNamespace, now.Add(-2*24*time.Hour), now.Add(-2*24*time.Hour)); err != nil {
+		t.Fatalf("chtimes recent namespace: %v", err)
+	}
+
+	var buf bytes.Buffer
+	cfg := &cleanupConfig{
+		runner:                fake,
+		w:                     &buf,
+		tmuxName:              TmuxSessionName(""),
+		pidPath:               filepath.Join(tmpDir, "oro.pid"),
+		sockPath:              filepath.Join(tmpDir, "oro.sock"),
+		subprocessCacheRoot:   cacheRoot,
+		subprocessCacheMaxAge: 7 * 24 * time.Hour,
+		subprocessCatalog:     testSubprocessCatalog(t, tmpDir, staleNamespace),
+		signalFn:              func(int) error { return nil },
+		aliveFn:               func(int) bool { return false },
+	}
+
+	if err := runCleanup(context.Background(), cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(staleNamespace); !os.IsNotExist(err) {
+		t.Fatalf("expected stale subprocess cache namespace to be removed, stat err: %v", err)
+	}
+	if _, err := os.Stat(recentNamespace); err != nil {
+		t.Fatalf("expected recent subprocess cache namespace to be preserved: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "pruned 1 stale subprocess cache namespace") {
+		t.Fatalf("expected subprocess cache pruning output, got:\n%s", out)
+	}
+	if strings.Contains(out, "nothing to clean") {
+		t.Fatalf("cleanup reported nothing to clean after pruning cache:\n%s", out)
+	}
+}

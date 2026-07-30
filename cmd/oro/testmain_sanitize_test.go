@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -15,13 +16,13 @@ import (
 // ORO_HOME is intentionally excluded: TestMain sets it to a temp dir explicitly
 // for hermeticity (so tests never resolve to the developer's real ~/.oro).
 var inheritedOroRuntimeVars = []string{
-	"ORO_CAPABILITY_FILE",
 	"ORO_PROJECT",
 	"ORO_SOCKET_PATH",
 	"ORO_TMUX_MANAGED_DAEMON",
 	"ORO_WORKER",
 	"ORO_WORKER_ID",
 	"ORO_WORKER_BEAD_ID",
+	"ORO_CAPABILITY_FILE",
 }
 
 // sanitizeInheritedOroEnv unsets the transient ORO_* runtime vars so inherited
@@ -46,6 +47,20 @@ func TestSanitizeInheritedOroEnv(t *testing.T) {
 		t.Fatalf("sanitizeInheritedOroEnv: %v", err)
 	}
 	for _, key := range inheritedOroRuntimeVars {
+		if v, ok := os.LookupEnv(key); ok {
+			t.Errorf("%s still set after sanitize: %q", key, v)
+		}
+	}
+}
+
+func TestSanitizeInheritedOroEnvCoversMutationIdentity(t *testing.T) {
+	t.Setenv("ORO_WORKER", "1")
+	t.Setenv("ORO_CAPABILITY_FILE", filepath.Join(t.TempDir(), "capability.json"))
+
+	if err := sanitizeInheritedOroEnv(); err != nil {
+		t.Fatalf("sanitizeInheritedOroEnv: %v", err)
+	}
+	for _, key := range []string{"ORO_WORKER", "ORO_CAPABILITY_FILE"} {
 		if v, ok := os.LookupEnv(key); ok {
 			t.Errorf("%s still set after sanitize: %q", key, v)
 		}
