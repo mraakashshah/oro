@@ -30,12 +30,13 @@ type DevCacheMaintenanceRunner func(context.Context, ProviderMaintenance) (Maint
 
 // WeeklyDevCacheSweepRequest supplies the dependencies for one scheduled sweep.
 type WeeklyDevCacheSweepRequest struct {
-	Catalog   *Catalog
-	LockPath  string
-	Now       func() time.Time
-	Interval  time.Duration
-	Providers []CacheProvider
-	Run       DevCacheMaintenanceRunner
+	Catalog     *Catalog
+	LockPath    string
+	Now         func() time.Time
+	Interval    time.Duration
+	Providers   []CacheProvider
+	Run         DevCacheMaintenanceRunner
+	GlobalDrain GlobalDrainRequest
 	// SizeThreshold forces a sweep once any provider's cache reaches this many
 	// bytes, even when the scheduled sweep is not yet due. Zero selects
 	// DevCacheSweepSizeThreshold; negative disables the size trigger.
@@ -80,6 +81,11 @@ func RunWeeklyDevCacheSweep(ctx context.Context, request WeeklyDevCacheSweepRequ
 	}
 	if now.Before(due) && !devCacheOverSizeThreshold(request.Providers, request.SizeThreshold) {
 		return WeeklyDevCacheSweepResult{NextDue: due}, nil
+	}
+	if overdueDevCleanupRequiresGlobalDrain(now, due) {
+		if err := request.GlobalDrain.wait(ctx, request.Catalog, now); err != nil {
+			return WeeklyDevCacheSweepResult{}, err
+		}
 	}
 
 	nextDue := now.Add(interval)
