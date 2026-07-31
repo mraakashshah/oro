@@ -403,10 +403,8 @@ func (w *Worker) SessionText() string {
 // dispatches them. It returns nil on clean shutdown or context cancellation.
 func (w *Worker) Run(ctx context.Context) error {
 	defer w.removeAssignmentCapabilityFile()
-	if w.handshake {
-		if err := w.negotiateHello(); err != nil {
-			return fmt.Errorf("negotiate HELLO: %w", err)
-		}
+	if err := w.negotiateHelloIfEnabled(); err != nil {
+		return err
 	}
 	msgCh, errCh := w.readMessages()
 
@@ -432,10 +430,11 @@ func (w *Worker) Run(ctx context.Context) error {
 			_ = w.SendHeartbeat(ctx, 0)
 
 		case msg := <-msgCh:
-			if done, err := w.handleMessage(ctx, msg); err != nil || done {
-				if err != nil {
-					return fmt.Errorf("handle message: %w", err)
-				}
+			done, err := w.handleRunMessage(ctx, msg)
+			if err != nil {
+				return err
+			}
+			if done {
 				return nil
 			}
 
@@ -450,6 +449,24 @@ func (w *Worker) Run(ctx context.Context) error {
 			msgCh, errCh = nextMsgCh, nextErrCh
 		}
 	}
+}
+
+func (w *Worker) handleRunMessage(ctx context.Context, msg protocol.Message) (bool, error) {
+	done, err := w.handleMessage(ctx, msg)
+	if err != nil {
+		return false, fmt.Errorf("handle message: %w", err)
+	}
+	return done, nil
+}
+
+func (w *Worker) negotiateHelloIfEnabled() error {
+	if !w.handshake {
+		return nil
+	}
+	if err := w.negotiateHello(); err != nil {
+		return fmt.Errorf("negotiate HELLO: %w", err)
+	}
+	return nil
 }
 
 func (w *Worker) negotiateHello() error {
@@ -1540,11 +1557,9 @@ func (w *Worker) reconnect(ctx context.Context) error {
 		}
 		hook := w.reconnectDialHook
 		w.mu.Unlock()
-		if w.handshake {
-			if err := w.negotiateHello(); err != nil {
-				_ = conn.Close()
-				continue
-			}
+		if err := w.negotiateHelloIfEnabled(); err != nil {
+			_ = conn.Close()
+			continue
 		}
 
 		if hook != nil {

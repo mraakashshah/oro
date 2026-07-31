@@ -3546,7 +3546,6 @@ func TestSetExtractSpawner(t *testing.T) {
 // TestWorkerNegotiatesHelloBeforeHeartbeat verifies that registration begins
 // with HELLO and that the worker does not emit normal traffic until HELLO_ACK.
 func TestWorkerNegotiatesHelloBeforeHeartbeat(t *testing.T) {
-
 	spawner := newMockSpawner()
 	socketPath := filepath.Join(t.TempDir(), "worker.sock")
 	listener, err := net.Listen("unix", socketPath)
