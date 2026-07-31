@@ -228,6 +228,7 @@ type Worker struct {
 	mu                     sync.Mutex
 	spawner                RuntimeStreamingSpawner
 	socketPath             string // for reconnection
+	metadata               protocol.Metadata
 	buffer                 *MessageBuffer
 	disconnected           bool
 	contextPollInterval    time.Duration
@@ -237,6 +238,7 @@ type Worker struct {
 	sessionText            strings.Builder
 	outputWg               sync.WaitGroup         // tracks processOutput goroutine completion
 	reconnectDialHook      func(net.Conn)         // test hook: called after dial, before sendMessage
+	handshake              bool                   // production connections negotiate HELLO before normal traffic
 	reconnectTimerStopHook func()                 // test hook: called when timer.Stop() fires on ctx cancel
 	pendingQGOutput        string                 // QG output stored while awaiting review result
 	isEpicDecomposition    bool                   // true when current assignment is an epic decomposition
@@ -278,10 +280,19 @@ func NewWithRuntimeSpawner(id, socketPath string, spawner RuntimeStreamingSpawne
 		conn:                conn,
 		spawner:             spawner,
 		socketPath:          socketPath,
+		metadata:            workerProtocolMetadata(id),
 		buffer:              NewMessageBuffer(maxBufferedMessages),
 		contextPollInterval: DefaultContextPollInterval,
 		reconnectInterval:   reconnectBaseInterval,
 	}, nil
+}
+
+// EnableHelloHandshake makes this worker negotiate HELLO before sending worker traffic.
+// The CLI enables it for production workers; test constructors retain their legacy fixtures.
+func (w *Worker) EnableHelloHandshake() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.handshake = true
 }
 
 // NewWithConn creates a Worker with a pre-established connection (for testing).
@@ -392,6 +403,11 @@ func (w *Worker) SessionText() string {
 // dispatches them. It returns nil on clean shutdown or context cancellation.
 func (w *Worker) Run(ctx context.Context) error {
 	defer w.removeAssignmentCapabilityFile()
+	if w.handshake {
+		if err := w.negotiateHello(); err != nil {
+			return fmt.Errorf("negotiate HELLO: %w", err)
+		}
+	}
 	msgCh, errCh := w.readMessages()
 
 	// Announce ourselves so the dispatcher can register this worker.
@@ -433,6 +449,56 @@ func (w *Worker) Run(ctx context.Context) error {
 			}
 			msgCh, errCh = nextMsgCh, nextErrCh
 		}
+	}
+}
+
+func (w *Worker) negotiateHello() error {
+	if err := w.sendMessage(protocol.Message{Type: protocol.MsgHello, Protocol: w.metadata, Hello: &protocol.Hello{
+		ProtocolRange:     w.metadata.ProtocolRange,
+		ProjectID:         w.metadata.ProjectID,
+		RestartGeneration: w.metadata.RestartGeneration,
+		BuildID:           w.metadata.BuildID,
+	}}); err != nil {
+		return fmt.Errorf("send HELLO: %w", err)
+	}
+	scanner := bufio.NewScanner(w.conn)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return fmt.Errorf("read HELLO_ACK: %w", err)
+		}
+		return fmt.Errorf("read HELLO_ACK: connection closed")
+	}
+	var ack protocol.Message
+	if err := json.Unmarshal(scanner.Bytes(), &ack); err != nil {
+		return fmt.Errorf("decode HELLO_ACK: %w", err)
+	}
+	if ack.Type != protocol.MsgHelloACK {
+		return fmt.Errorf("expected HELLO_ACK, got %s", ack.Type)
+	}
+	if ack.HelloACK == nil || ack.Protocol.ProtocolRange != w.metadata.ProtocolRange ||
+		ack.Protocol.ProjectID != w.metadata.ProjectID || ack.Protocol.WorkerID != w.metadata.WorkerID ||
+		ack.Protocol.WorkerGeneration != w.metadata.WorkerGeneration || ack.Protocol.BuildID != w.metadata.BuildID ||
+		ack.Protocol.RestartGeneration == 0 {
+		return fmt.Errorf("invalid HELLO_ACK identity")
+	}
+	w.mu.Lock()
+	w.metadata.RestartGeneration = ack.Protocol.RestartGeneration
+	w.mu.Unlock()
+	return nil
+}
+
+func workerProtocolMetadata(id string) protocol.Metadata {
+	projectID := os.Getenv("ORO_PROJECT")
+	if projectID == "" {
+		projectID = "oro"
+	}
+	return protocol.Metadata{
+		ProtocolRange:     protocol.Range{Min: 1, Max: 1},
+		ProjectID:         projectID,
+		WorkerID:          id,
+		WorkerGeneration:  1,
+		RestartGeneration: 0,
+		BuildID:           "dev",
 	}
 }
 
@@ -1474,6 +1540,12 @@ func (w *Worker) reconnect(ctx context.Context) error {
 		}
 		hook := w.reconnectDialHook
 		w.mu.Unlock()
+		if w.handshake {
+			if err := w.negotiateHello(); err != nil {
+				_ = conn.Close()
+				continue
+			}
+		}
 
 		if hook != nil {
 			hook(conn)
@@ -1503,11 +1575,15 @@ func (w *Worker) reconnect(ctx context.Context) error {
 func (w *Worker) sendMessage(msg protocol.Message) error {
 	w.mu.Lock()
 	disconnected := w.disconnected
+	metadata := w.metadata
 	w.mu.Unlock()
 
 	if disconnected {
 		w.buffer.Add(msg)
 		return nil
+	}
+	if metadata.WorkerID != "" {
+		msg.Protocol = metadata
 	}
 
 	data, err := json.Marshal(msg)

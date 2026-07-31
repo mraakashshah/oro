@@ -3543,28 +3543,55 @@ func TestSetExtractSpawner(t *testing.T) {
 	w.SetExtractSpawner(nil)
 }
 
-// TestWorkerSendsInitialHeartbeat verifies that Run() sends a HEARTBEAT
-// immediately on startup so the dispatcher can register the worker.
-func TestWorkerSendsInitialHeartbeat(t *testing.T) {
-	t.Parallel()
+// TestWorkerNegotiatesHelloBeforeHeartbeat verifies that registration begins
+// with HELLO and that the worker does not emit normal traffic until HELLO_ACK.
+func TestWorkerNegotiatesHelloBeforeHeartbeat(t *testing.T) {
 
 	spawner := newMockSpawner()
-	dispatcherConn, workerConn := net.Pipe()
-	defer func() { _ = dispatcherConn.Close() }()
+	socketPath := filepath.Join(t.TempDir(), "worker.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
 
-	w := worker.NewWithConn("w-announce", workerConn, spawner)
+	w, err := worker.New("w-announce", socketPath, spawner)
+	if err != nil {
+		t.Fatalf("new worker: %v", err)
+	}
+	w.EnableHelloHandshake()
+	dispatcherConn, err := listener.Accept()
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	defer func() { _ = dispatcherConn.Close() }()
 
 	ctx := t.Context()
 
 	go func() { _ = w.Run(ctx) }()
 
-	// The first message from the worker should be a HEARTBEAT with its ID.
+	// The first message from the worker must be HELLO.
 	msg := readMessage(t, dispatcherConn)
-	if msg.Type != protocol.MsgHeartbeat {
-		t.Fatalf("expected first message to be HEARTBEAT, got %s", msg.Type)
+	if msg.Type != protocol.MessageType("HELLO") {
+		t.Fatalf("expected first message to be HELLO, got %s", msg.Type)
 	}
-	if msg.Heartbeat == nil {
-		t.Fatal("heartbeat payload is nil")
+
+	sendMessage(t, dispatcherConn, protocol.Message{
+		Type: protocol.MsgHelloACK,
+		Protocol: protocol.Metadata{
+			ProtocolRange:     protocol.Range{Min: 1, Max: 1},
+			ProjectID:         "oro",
+			WorkerID:          "w-announce",
+			WorkerGeneration:  1,
+			RestartGeneration: 1,
+			BuildID:           "dev",
+		},
+		HelloACK: &protocol.HelloACK{ProtocolVersion: 1},
+	})
+
+	msg = readMessage(t, dispatcherConn)
+	if msg.Type != protocol.MsgHeartbeat {
+		t.Fatalf("expected HEARTBEAT after HELLO_ACK, got %s", msg.Type)
 	}
 	if msg.Heartbeat.WorkerID != "w-announce" {
 		t.Fatalf("expected worker ID %q, got %q", "w-announce", msg.Heartbeat.WorkerID)
