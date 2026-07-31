@@ -2477,6 +2477,16 @@ func TestGateCacheDirectoriesIgnored(t *testing.T) {
 		// them, so new lanes introduce new names. Observed in .worktrees/oro-3eax.
 		".qg-affected-golangci-cache",
 		".qg-affected-go-cache",
+		// Randomized per-run scratch dirs with NO "cache" in the name. The gate
+		// mints these per lane+invocation, so the family is unbounded and only a
+		// prefix pattern can cover it. Observed dirtying .worktrees/oro-3eax and
+		// .worktrees/oro-qg-incident-375, which raised
+		// progress_timeout_recovery_blocked quarantine 449.
+		".qg-lint-1QyLYx",
+		".qg-verify-lint-main-IZ8Rzy",
+		".qg-incident375-lint-NV2cq3",
+		".qg-recheck-go-UQiLDM",
+		".qg-final-lint-cache-W8VY44",
 		// Nested, undotted forms: the directory name carries no leading dot,
 		// so leading-dot patterns miss it entirely.
 		".oro/golangci-cache",

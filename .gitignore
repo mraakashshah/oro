@@ -49,14 +49,14 @@ cmd/oro/_assets/
 .golangci-cache*/
 .golangci-lint-cache/
 .task-gocache/
-# Wildcard over the whole .qg-*cache* family instead of enumerating names: the
-# gate names each cache after the lane that owns it, so every new lane invents a
-# new directory (.qg-affected-golangci-cache turned up in .worktrees/oro-3eax
-# after the three explicit patterns below were added). Covers per-bead suffixes.
-.qg-*cache*/
-.qg-go-cache/
-.qg-lint-cache/
-.qg-golangci-cache/
+# Cover the ENTIRE .qg-* family by prefix. Three narrower attempts each leaked:
+# enumerated names missed .qg-affected-golangci-cache, and .qg-*cache* missed the
+# randomized per-run scratch dirs the gate mints per lane+invocation
+# (.qg-lint-1QyLYx, .qg-verify-lint-main-IZ8Rzy, .qg-recheck-go-UQiLDM) because
+# those carry no "cache" in the name. That leak dirtied two worktrees and raised
+# progress_timeout_recovery_blocked quarantine 449, idling the factory.
+# The gate owns the .qg- prefix, so match on it rather than on any inner word.
+.qg-*/
 # Undotted forms nested under .oro/ — leading-dot patterns above miss these.
 .oro/gocache/
 .oro/golangci-cache/
