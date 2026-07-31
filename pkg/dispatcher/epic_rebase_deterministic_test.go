@@ -99,6 +99,23 @@ func TestPreserveEpicAncestryCleanMergeCreatesBothAncestors(t *testing.T) {
 	}
 }
 
+func TestValidatePreserveMergeContentRejectsDroppedSecondParentFile(t *testing.T) {
+	ctx := context.Background()
+	repo, mgr := newPreserveRepo(t, "epic/dropped-content", false)
+	runAssignmentTestGit(t, repo, "merge", "--no-ff", "-s", "ours", "epic/dropped-content", "-m", "bad preserve merge")
+
+	merge := gitOut(t, repo, "rev-parse", "HEAD")
+	firstParent := gitOut(t, repo, "rev-parse", "HEAD^1")
+	secondParent := gitOut(t, repo, "rev-parse", "HEAD^2")
+	err := mgr.validatePreserveMergeContent(ctx, merge, firstParent, secondParent)
+	if err == nil {
+		t.Fatal("validatePreserveMergeContent accepted a tree-neutral merge that dropped epic.txt")
+	}
+	if !strings.Contains(err.Error(), "epic.txt") {
+		t.Fatalf("validatePreserveMergeContent error = %v, want dropped epic.txt", err)
+	}
+}
+
 func TestPreserveEpicAncestryConflictLeavesRefUnchanged(t *testing.T) {
 	ctx := context.Background()
 	repo, mgr := newPreserveRepo(t, "epic/conflict", true)

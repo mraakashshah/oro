@@ -629,6 +629,10 @@ func (g *GitWorktreeManager) preserveEpicAncestry(ctx context.Context, epicBranc
 	}
 	newCommit := strings.TrimSpace(string(commitOut))
 
+	if err := g.validatePreserveMergeContent(ctx, newCommit, oldEpicOID, targetOID); err != nil {
+		return epicPreserveConflict, "", fmt.Errorf("validate preserve commit content for %s: %w", epicBranch, err)
+	}
+
 	// Validate against the captured OIDs (not branch names, which would make
 	// the epic-side check tautological once the ref is advanced).
 	for _, parent := range []string{oldEpicOID, targetOID} {
@@ -647,6 +651,42 @@ func (g *GitWorktreeManager) preserveEpicAncestry(ctx context.Context, epicBranc
 		return epicPreserveConflict, "", fmt.Errorf("compare-and-swap epic ref %s: %w", epicBranch, err)
 	}
 	return epicPreserveMerged, newCommit, nil
+}
+
+// validatePreserveMergeContent rejects a tree-neutral merge that discards files
+// newly added by the target parent. Ancestry alone is insufficient: `-s ours`
+// records both parents while preserving only the first parent's tree.
+func (g *GitWorktreeManager) validatePreserveMergeContent(ctx context.Context, mergeCommit, firstParent, targetParent string) error {
+	mergeTree, err := g.revParse(ctx, g.repoRoot, mergeCommit+"^{tree}")
+	if err != nil {
+		return err
+	}
+	firstParentTree, err := g.revParse(ctx, g.repoRoot, firstParent+"^{tree}")
+	if err != nil {
+		return err
+	}
+	if mergeTree != firstParentTree {
+		return nil
+	}
+
+	base, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "merge-base", firstParent, targetParent)
+	if err != nil {
+		return fmt.Errorf("find merge base: %w", err)
+	}
+	added, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "diff", "--name-only", "-z", "--diff-filter=A",
+		strings.TrimSpace(string(base)), targetParent)
+	if err != nil {
+		return fmt.Errorf("list target-added files: %w", err)
+	}
+	for _, path := range strings.Split(string(added), "\x00") {
+		if path == "" {
+			continue
+		}
+		if _, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "cat-file", "-e", mergeCommit+":"+path); err != nil {
+			return fmt.Errorf("merge %s drops target-added file %s", mergeCommit, path)
+		}
+	}
+	return nil
 }
 
 // rollbackEpicPreserve reverts epicBranch from newOID back to oldOID using a
