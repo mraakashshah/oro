@@ -146,7 +146,7 @@ func TestExternalCloseEscalatesOnMergeConflict(t *testing.T) {
 	d.checkClosedBeadAssignments(ctx)
 
 	waitFor(t, func() bool {
-		return eventCount(t, d.db, "external_close_recovery_failed") > 0
+		return eventCount(t, d.db, "external_close_recovery_failed") > 0 && len(esc.Messages()) > 0
 	}, 2*time.Second)
 
 	if len(esc.Messages()) == 0 {

@@ -395,6 +395,7 @@ func TestRouteOpsRunRoutesReviewOpsRun(t *testing.T) {
 			t.Fatalf("review prompt missing %q\nprompt:\n%s", want, spawn.prompt)
 		}
 	}
+	d.wg.Wait()
 
 	defaultBranchBeadID := "oro-review-default-branch"
 	defaultBranchWorktree := t.TempDir()

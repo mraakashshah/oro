@@ -2067,11 +2067,11 @@ func TestCheckHeartbeats_SkipsReservedWorkers(t *testing.T) {
 func TestCheckHeartbeats_RemovesDeadBusyWorker(t *testing.T) {
 	t.Parallel()
 	d, _, _, _, _, _ := newTestDispatcher(t)
-	cancel := startDispatcher(t, d)
-	defer cancel()
-
 	now := time.Now()
 	timeout := d.cfg.HeartbeatTimeout
+	d.nowFunc = func() time.Time { return now }
+	cancel := startDispatcher(t, d)
+	defer cancel()
 
 	conn := newMockConn()
 	workerID := "dead-worker"
@@ -2085,9 +2085,6 @@ func TestCheckHeartbeats_RemovesDeadBusyWorker(t *testing.T) {
 		encoder:  json.NewEncoder(conn),
 	}
 	d.mu.Unlock()
-
-	// Override time to "now"
-	d.nowFunc = func() time.Time { return now }
 
 	d.checkHeartbeats(context.Background())
 
@@ -2145,13 +2142,14 @@ func TestCheckHeartbeats_StrictlyGreaterThanTimeout(t *testing.T) {
 func TestCheckHeartbeats_DetectsStuckWorker(t *testing.T) {
 	t.Parallel()
 	d, _, _, _, _, _ := newTestDispatcher(t)
-	cancel := startDispatcher(t, d)
-	defer cancel()
-
 	// Use a short ProgressTimeout
 	d.cfg.ProgressTimeout = 100 * time.Millisecond
 
 	now := time.Now()
+	d.nowFunc = func() time.Time { return now }
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
 	// lastSeen is recent (within heartbeat timeout) — not dead
 	// lastProgress is old (past progress timeout) — stuck
 	progressTime := now.Add(-(d.cfg.ProgressTimeout + time.Second))
@@ -2170,7 +2168,6 @@ func TestCheckHeartbeats_DetectsStuckWorker(t *testing.T) {
 	}
 	d.mu.Unlock()
 
-	d.nowFunc = func() time.Time { return now }
 	d.checkHeartbeats(context.Background())
 
 	d.mu.Lock()
@@ -3678,11 +3675,11 @@ func TestRegisterWorker_OnlyFirstHandoffAssigned(t *testing.T) {
 func TestCheckHeartbeats_DeadWorkerContinuesLoop(t *testing.T) {
 	t.Parallel()
 	d, _, _, _, _, _ := newTestDispatcher(t)
-	cancel := startDispatcher(t, d)
-	defer cancel()
-
 	now := time.Now()
 	timeout := d.cfg.HeartbeatTimeout
+	d.nowFunc = func() time.Time { return now }
+	cancel := startDispatcher(t, d)
+	defer cancel()
 
 	conn1 := newMockConn()
 	conn2 := newMockConn()
@@ -3705,7 +3702,6 @@ func TestCheckHeartbeats_DeadWorkerContinuesLoop(t *testing.T) {
 	}
 	d.mu.Unlock()
 
-	d.nowFunc = func() time.Time { return now }
 	d.checkHeartbeats(context.Background())
 
 	d.mu.Lock()
