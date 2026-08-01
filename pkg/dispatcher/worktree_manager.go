@@ -13,6 +13,88 @@ import (
 	"oro/pkg/protocol"
 )
 
+// WorktreeManager creates and removes git worktrees.
+type WorktreeManager interface {
+	Create(ctx context.Context, beadID, baseBranch string) (path string, branch string, err error)
+	Remove(ctx context.Context, path string) error
+	Prune(ctx context.Context) error
+	DeleteBranch(ctx context.Context, branch string) error
+	DeleteBranchMergedInto(ctx context.Context, branch, targetBranch string) error
+	ForceDeleteBranch(ctx context.Context, branch string) error
+	BranchExists(ctx context.Context, branch string) (bool, error)
+	MergeFFOnly(ctx context.Context, branch string, target string) (commitSHA string, err error)
+	// UpdateBranchRef advances targetBranch to point at the tip of sourceBranch
+	// without requiring sourceBranch to be checked out. Used when the target is
+	// not the HEAD branch (i.e., not the branch checked out in the main worktree).
+	UpdateBranchRef(ctx context.Context, targetBranch, sourceBranch string) error
+	BranchHead(ctx context.Context, branch string) (string, error)
+	GCClosedWorktrees(ctx context.Context, isBeadClosed func(string) bool) error
+	// Exists reports whether the worktree at path is still present on disk.
+	// Returns false if the path does not exist or cannot be accessed.
+	Exists(ctx context.Context, path string) bool
+	// CurrentBranch reports the branch checked out in the worktree.
+	CurrentBranch(ctx context.Context, path string) (string, error)
+	// RebaseOnto rebases branch onto onto using git rebase --onto.
+	RebaseOnto(ctx context.Context, branch, onto string) error
+	// PushBranch pushes branch to origin.
+	PushBranch(ctx context.Context, branch string) error
+	// CreateBranch creates a new branch named `name` starting from `from`.
+	// If the branch already exists git returns a non-zero exit code; the
+	// caller is responsible for deciding whether that is an error.
+	CreateBranch(ctx context.Context, name string, from string) error
+}
+
+type existingWorktreeReusePreparer interface {
+	PrepareExistingForReuse(ctx context.Context, worktree, branch, baseBranch string) (fastForwarded bool, err error)
+}
+
+type existingWorktreeDivergedRebaser interface {
+	RebaseDivergedExistingForReuse(ctx context.Context, worktree, branch, baseBranch string) error
+}
+
+type assignmentBaseBranchPreparer interface {
+	PrepareBaseBranchForAssignment(ctx context.Context, branch, baseBranch string) (fastForwarded bool, err error)
+}
+
+type assignmentBaseBranchSafetyChecker interface {
+	BaseBranchHasUniqueCommits(ctx context.Context, branch, baseBranch string) (bool, error)
+}
+
+// epicPreserveOutcome is the result of a deterministic epic-ancestry preserve
+// merge. On any error the caller falls back regardless of outcome.
+type epicPreserveOutcome int
+
+const (
+	// epicPreserveNoop means target's tip is already an ancestor of the epic
+	// branch: nothing to do.
+	epicPreserveNoop epicPreserveOutcome = iota
+	// epicPreserveMerged means a new preserve commit was created and the epic
+	// ref advanced to it via compare-and-swap.
+	epicPreserveMerged
+	// epicPreserveConflict means the merge could not be computed without a
+	// content conflict; the caller must fall back to LLM recovery.
+	epicPreserveConflict
+)
+
+// epicMergePreserver deterministically preserves both target and epic ancestry
+// on the epic branch without an LLM worker or a checked-out worktree.
+// Implemented by *GitWorktreeManager; worktree managers that do not implement
+// it cause the dispatcher to fall back to ensureEpicRebaseChild.
+type epicMergePreserver interface {
+	// preserveEpicAncestry merges target into epicBranch so that both the epic
+	// branch's current tip and target become ancestors of the epic branch,
+	// advancing the epic ref transactionally (compare-and-swap). It never
+	// checks out a worktree. Returns the new epic tip on epicPreserveMerged
+	// (or the unchanged tip on epicPreserveNoop). Any failure before the ref
+	// mutation leaves all refs untouched.
+	preserveEpicAncestry(ctx context.Context, epicBranch, target string) (epicPreserveOutcome, string, error)
+	// rollbackEpicPreserve reverts a preserve merge that failed post-merge
+	// verification (e.g. the quality gate), advancing epicBranch from newOID
+	// back to oldOID via compare-and-swap. It fails without mutating the ref
+	// if epicBranch no longer points at newOID.
+	rollbackEpicPreserve(ctx context.Context, epicBranch, oldOID, newOID string) error
+}
+
 // GitWorktreeManager is the production WorktreeManager that shells out
 // to git to create and remove worktrees.
 type GitWorktreeManager struct {

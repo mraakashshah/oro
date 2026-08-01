@@ -4,6 +4,11 @@ import (
 	"context"
 )
 
+// Escalator accepts escalation messages from dispatcher checks.
+type Escalator interface {
+	Escalate(ctx context.Context, msg string) error
+}
+
 // EscalationType and FormatEscalation are now in pkg/protocol/types.go.
 
 // NoopEscalator records no side effects while satisfying the Escalator

@@ -13,6 +13,16 @@ import (
 	"oro/pkg/processenv"
 )
 
+// ProcessManager spawns and kills oro worker OS processes.
+// Production implementations use exec.Command to run `oro worker`.
+type ProcessManager interface {
+	Spawn(id string) (*os.Process, error)
+	Kill(id string) error
+	// IsAlive reports whether the tracked process for id is still running.
+	// Returns false if id is not tracked or the process has exited.
+	IsAlive(id string) bool
+}
+
 // ExecProcessManager implements ProcessManager by spawning worker
 // subprocesses and tracking them for lifecycle management.
 //
