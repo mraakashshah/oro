@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"oro/pkg/factoryhealth"
-	"oro/pkg/protocol"
 	"os"
 	"strings"
 	"time"
+
+	"oro/pkg/factoryhealth"
+	"oro/pkg/protocol"
 )
 
 func (d *Dispatcher) snapshotWorkers(now time.Time) (workers []workerStatus, assignments map[string]string, active, idle int) {

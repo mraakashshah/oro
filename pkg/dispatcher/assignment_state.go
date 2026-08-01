@@ -5,9 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"oro/pkg/protocol"
 	"strings"
 	"time"
+
+	"oro/pkg/protocol"
 )
 
 func (d *Dispatcher) createAssignment(ctx context.Context, beadID, workerID, worktree string) (int64, error) {

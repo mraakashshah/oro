@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"oro/pkg/merge"
-	"oro/pkg/protocol"
 	"os"
 	"time"
+
+	"oro/pkg/merge"
+	"oro/pkg/protocol"
 )
 
 func (d *Dispatcher) guardMerge(beadID string) func() {

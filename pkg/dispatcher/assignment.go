@@ -3,11 +3,12 @@ package dispatcher
 import (
 	"context"
 	"fmt"
-	"oro/pkg/agentmodel"
-	"oro/pkg/protocol"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"oro/pkg/agentmodel"
+	"oro/pkg/protocol"
 )
 
 func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersionOpt ...uint64) error { //nolint:funlen,gocognit,gocyclo // orchestration logic, splitting would obscure flow

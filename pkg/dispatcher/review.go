@@ -6,16 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"oro/pkg/agentmodel"
-	"oro/pkg/ops"
-	"oro/pkg/protocol"
-	workerstream "oro/pkg/worker"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 	"unicode"
+
+	"oro/pkg/agentmodel"
+	"oro/pkg/ops"
+	"oro/pkg/protocol"
+	workerstream "oro/pkg/worker"
 )
 
 func (d *Dispatcher) markWorkerReviewing(workerID string) (worktree, targetBranch string, assignmentID int64) {

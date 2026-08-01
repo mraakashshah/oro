@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+
 	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
-	"strings"
 )
 
 func (d *Dispatcher) mergeAndComplete(ctx context.Context, beadID, workerID, worktree, branch, epicID, targetBranch string, assignmentID int64) { //nolint:funlen // orchestrates merge pipeline; splitting would obscure the sequential flow

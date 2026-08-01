@@ -3,10 +3,11 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"strings"
+
 	"oro/pkg/beadstore"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
-	"strings"
 )
 
 // removeWorktreeAndClearTracking removes a worktree, deletes the agent branch,

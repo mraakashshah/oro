@@ -3,10 +3,11 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"strings"
+
 	"oro/pkg/agentmodel"
 	"oro/pkg/leakscan"
 	"oro/pkg/protocol"
-	"strings"
 )
 
 // handleQGStuckDetected handles the case where a bead has produced the same QG

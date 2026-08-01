@@ -5,12 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"oro/pkg/cards"
-	"oro/pkg/ops"
-	"oro/pkg/protocol"
 	"strconv"
 	"strings"
 	"time"
+
+	"oro/pkg/cards"
+	"oro/pkg/ops"
+	"oro/pkg/protocol"
 )
 
 // MemoryRejection is dispatcher-owned rejection history read from the memory boundary.

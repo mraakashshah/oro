@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"oro/pkg/protocol"
 	"strings"
+
+	"oro/pkg/protocol"
 )
 
 func (d *Dispatcher) applyDirective(dir protocol.Directive, args string) (string, error) {

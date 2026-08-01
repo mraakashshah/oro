@@ -3,9 +3,10 @@ package dispatcher
 import (
 	"context"
 	"fmt"
-	"oro/pkg/protocol"
 	"strconv"
 	"time"
+
+	"oro/pkg/protocol"
 )
 
 func (d *Dispatcher) applyScaleDirective(args string) (string, error) {

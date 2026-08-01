@@ -3,12 +3,13 @@ package dispatcher
 import (
 	"context"
 	"fmt"
-	"oro/pkg/beadstore"
-	"oro/pkg/protocol"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"oro/pkg/beadstore"
+	"oro/pkg/protocol"
 )
 
 // checkEpicQG creates a temporary worktree from epicBranch, runs the local

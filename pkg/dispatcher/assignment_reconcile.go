@@ -3,10 +3,11 @@ package dispatcher
 import (
 	"context"
 	"fmt"
-	"oro/pkg/merge"
-	"oro/pkg/protocol"
 	"strings"
 	"time"
+
+	"oro/pkg/merge"
+	"oro/pkg/protocol"
 )
 
 func (d *Dispatcher) checkClosedBeadAssignments(ctx context.Context) {
