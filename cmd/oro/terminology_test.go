@@ -817,11 +817,16 @@ func TestTaskTerminologyGuard(t *testing.T) {
 	})
 
 	t.Run("allows explicit split dispatcher file arguments", func(t *testing.T) {
-		cmd := exec.Command(script, "./pkg/dispatcher/assignment.go")
-		cmd.Dir = repoRoot
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("terminology guard rejected split dispatcher file argument:\n%s", string(output))
+		for _, path := range []string{
+			"./pkg/dispatcher/assignment.go",
+			filepath.Join(repoRoot, "pkg", "dispatcher", "assignment.go"),
+		} {
+			cmd := exec.Command(script, path)
+			cmd.Dir = repoRoot
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("terminology guard rejected split dispatcher file argument %q:\n%s", path, string(output))
+			}
 		}
 	})
 
@@ -862,6 +867,22 @@ func TestTaskTerminologyGuard(t *testing.T) {
 		}
 		if !strings.Contains(string(output), "oro bead commands") || !strings.Contains(string(output), "runtime comments") {
 			t.Fatalf("terminology guard rejection did not cite split dispatcher source:\n%s", string(output))
+		}
+
+		if err := os.WriteFile(filepath.Join(tempRoot, "pkg", "dispatcher", "worker_pool.go"), []byte("// Internal storage compatibility.\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(tempRoot, "pkg", "dispatcher", "router.go"), []byte("// Execute one bead at a time.\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cmd = exec.Command(tempScript, "./pkg/dispatcher/router.go")
+		cmd.Dir = tempRoot
+		output, err = cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("terminology guard accepted public wording in non-allowlisted dispatcher source:\n%s", string(output))
+		}
+		if !strings.Contains(string(output), "router.go") || !strings.Contains(string(output), "Execute one bead") {
+			t.Fatalf("terminology guard rejection did not cite non-allowlisted dispatcher source:\n%s", string(output))
 		}
 	})
 

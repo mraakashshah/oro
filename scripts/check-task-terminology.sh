@@ -160,20 +160,33 @@ runtime_comment_files=(cmd/oro/tmux.go)
 while IFS= read -r file; do
 	runtime_comment_files+=("$file")
 done < <(find pkg/dispatcher -type f -name '*.go' ! -name '*_test.go')
+dispatcher_internal_files=(
+	pkg/dispatcher/assignment.go pkg/dispatcher/assignment_reconcile.go pkg/dispatcher/assignment_state.go
+	pkg/dispatcher/autoscale.go pkg/dispatcher/bead_source.go pkg/dispatcher/code_search.go
+	pkg/dispatcher/completion.go pkg/dispatcher/config.go pkg/dispatcher/connection.go
+	pkg/dispatcher/directives.go pkg/dispatcher/dispatcher.go pkg/dispatcher/epic_close.go
+	pkg/dispatcher/epic_qg.go pkg/dispatcher/escalation.go pkg/dispatcher/escalator.go
+	pkg/dispatcher/handoff.go pkg/dispatcher/memory_dream.go pkg/dispatcher/merge_flow.go
+	pkg/dispatcher/process_manager.go pkg/dispatcher/qg_exhaustion.go pkg/dispatcher/qg_flow.go
+	pkg/dispatcher/qg_runner.go pkg/dispatcher/reconnect.go pkg/dispatcher/review.go
+	pkg/dispatcher/scheduling.go pkg/dispatcher/shutdown.go pkg/dispatcher/startup_recovery.go
+	pkg/dispatcher/status.go pkg/dispatcher/store.go pkg/dispatcher/worker_directives.go
+	pkg/dispatcher/worker_pool.go pkg/dispatcher/worktree_manager.go
+)
 generic_files=()
 for file in "${files[@]}"; do
-	normalized_file="${file#./}"
+	normalized_file="${file#"$repo_root"/}"
+	normalized_file="${normalized_file#./}"
 	case "$normalized_file" in
 	cmd/oro/tmux.go)
 		continue
 		;;
-	pkg/dispatcher/*.go)
-		case "$normalized_file" in
-		*_test.go) ;;
-		*) continue ;;
-		esac
-		;;
 	esac
+	for internal_file in "${dispatcher_internal_files[@]}"; do
+		if [[ "$normalized_file" == "$internal_file" ]]; then
+			continue 2
+		fi
+	done
 	generic_files+=("$file")
 done
 
