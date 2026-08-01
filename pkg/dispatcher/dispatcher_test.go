@@ -1987,6 +1987,7 @@ func (c *testWorkerConn) metadata(workerID string) protocol.Metadata {
 func TestHandleHelloRejectsForeignDispatcherIdentity(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	valid := testWorkerMetadata("foreign-worker")
+	valid.RestartGeneration = 0
 
 	for _, tc := range []struct {
 		name   string
@@ -2001,7 +2002,7 @@ func TestHandleHelloRejectsForeignDispatcherIdentity(t *testing.T) {
 		{
 			name: "restart generation",
 			mutate: func(metadata *protocol.Metadata) {
-				metadata.RestartGeneration++
+				metadata.RestartGeneration = d.helloRestartGeneration
 			},
 		},
 		{
