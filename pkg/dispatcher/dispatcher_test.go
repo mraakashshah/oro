@@ -8,8 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
-	"go/parser"
-	"go/token"
 	"maps"
 	"net"
 	"os"
@@ -27141,7 +27139,7 @@ func TestReviewPatternCandidateCaptureFailureDoesNotBlockApproval(t *testing.T) 
 
 func TestProgrammaticBeadCreateInheritsTier(t *testing.T) {
 	t.Run("dispatcher create params with parent include tier field", func(t *testing.T) {
-		assertCreateParamsParentLiteralsSetTier(t, "dispatcher.go")
+		assertCreateParamsParentLiteralsSetTier(t)
 	})
 
 	t.Run("create bead graph children inherit parent tier", func(t *testing.T) {
@@ -27240,43 +27238,41 @@ func TestProgrammaticBeadCreateInheritsTier(t *testing.T) {
 	})
 }
 
-func assertCreateParamsParentLiteralsSetTier(t *testing.T, path string) {
+func assertCreateParamsParentLiteralsSetTier(t *testing.T) {
 	t.Helper()
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, path, nil, 0)
-	if err != nil {
-		t.Fatalf("parse %s: %v", path, err)
-	}
+	fset, files := parseDispatcherSourceFiles(t)
 	var missing []string
-	ast.Inspect(file, func(node ast.Node) bool {
-		lit, ok := node.(*ast.CompositeLit)
-		if !ok || !isBeadstoreCreateParamsLiteral(lit) {
+	for path, file := range files {
+		ast.Inspect(file, func(node ast.Node) bool {
+			lit, ok := node.(*ast.CompositeLit)
+			if !ok || !isBeadstoreCreateParamsLiteral(lit) {
+				return true
+			}
+			hasParentID := false
+			hasTier := false
+			for _, elt := range lit.Elts {
+				kv, ok := elt.(*ast.KeyValueExpr)
+				if !ok {
+					continue
+				}
+				key, ok := kv.Key.(*ast.Ident)
+				if !ok {
+					continue
+				}
+				switch key.Name {
+				case "ParentID":
+					hasParentID = true
+				case "Tier":
+					hasTier = true
+				}
+			}
+			if hasParentID && !hasTier {
+				pos := fset.Position(lit.Lbrace)
+				missing = append(missing, fmt.Sprintf("%s:%d", path, pos.Line))
+			}
 			return true
-		}
-		hasParentID := false
-		hasTier := false
-		for _, elt := range lit.Elts {
-			kv, ok := elt.(*ast.KeyValueExpr)
-			if !ok {
-				continue
-			}
-			key, ok := kv.Key.(*ast.Ident)
-			if !ok {
-				continue
-			}
-			switch key.Name {
-			case "ParentID":
-				hasParentID = true
-			case "Tier":
-				hasTier = true
-			}
-		}
-		if hasParentID && !hasTier {
-			pos := fset.Position(lit.Lbrace)
-			missing = append(missing, fmt.Sprintf("%s:%d", path, pos.Line))
-		}
-		return true
-	})
+		})
+	}
 	if len(missing) > 0 {
 		t.Fatalf("CreateParams literals with ParentID must set Tier: %s", strings.Join(missing, ", "))
 	}

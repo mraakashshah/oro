@@ -3,8 +3,6 @@ package dispatcher //nolint:testpackage // white-box: asserts mergeAndComplete s
 import (
 	"context"
 	"go/ast"
-	"go/parser"
-	"go/token"
 	"testing"
 
 	"oro/pkg/protocol"
@@ -167,34 +165,37 @@ func TestNoopMergeCompletesAssignmentBeforeClose(t *testing.T) {
 }
 
 func TestNoopMergeCleanupUsesTargetBranch(t *testing.T) {
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "dispatcher.go", nil, 0)
-	if err != nil {
-		t.Fatalf("parse dispatcher.go: %v", err)
+	_, files := parseDispatcherSourceFiles(t)
+	var handleNoopMerges []*ast.FuncDecl
+	for _, file := range files {
+		if fn := findFuncDecl(file, "handleNoopMerge"); fn != nil {
+			handleNoopMerges = append(handleNoopMerges, fn)
+		}
 	}
-	handleNoopMerge := findFuncDecl(file, "handleNoopMerge")
-	if handleNoopMerge == nil {
+	if len(handleNoopMerges) == 0 {
 		t.Fatal("handleNoopMerge not found")
 	}
-	var cleanupArg ast.Expr
-	ast.Inspect(handleNoopMerge, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
+	for _, handleNoopMerge := range handleNoopMerges {
+		var cleanupArg ast.Expr
+		ast.Inspect(handleNoopMerge, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "removeWorktreeAndClearTracking" {
+				return true
+			}
+			if len(call.Args) != 5 {
+				t.Fatalf("removeWorktreeAndClearTracking arg count = %d, want 5", len(call.Args))
+			}
+			cleanupArg = call.Args[4]
+			return false
+		})
+		ident, ok := cleanupArg.(*ast.Ident)
+		if !ok || ident.Name != "target" {
+			t.Fatalf("handleNoopMerge cleanup target arg = %T %[1]v, want ident target", cleanupArg)
 		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "removeWorktreeAndClearTracking" {
-			return true
-		}
-		if len(call.Args) != 5 {
-			t.Fatalf("removeWorktreeAndClearTracking arg count = %d, want 5", len(call.Args))
-		}
-		cleanupArg = call.Args[4]
-		return false
-	})
-	ident, ok := cleanupArg.(*ast.Ident)
-	if !ok || ident.Name != "target" {
-		t.Fatalf("handleNoopMerge cleanup target arg = %T %[1]v, want ident target", cleanupArg)
 	}
 
 	t.Run("explicit target", func(t *testing.T) {
