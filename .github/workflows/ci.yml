@@ -251,6 +251,8 @@ jobs:
     needs: [go, cgo-free, shell, docs, python, incremental-mutation]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Require every portable gate
         env:
           NEEDS_JSON: ${{ toJson(needs) }}

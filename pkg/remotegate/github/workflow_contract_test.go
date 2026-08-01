@@ -25,6 +25,7 @@ func TestPortableAggregateWorkflowContract(t *testing.T) {
 	aggregate := assertSingleAggregateJob(t, workflow)
 	assertAggregateDependsOnPortableJobs(t, workflow, aggregate)
 	assertAggregateAlwaysRuns(t, aggregate)
+	assertAggregateChecksOutRepository(t, aggregate)
 	assertNeedsSuccessHelper(t, repoRoot, portableJobNamesFromWorkflow(t, workflow))
 }
 
@@ -144,6 +145,37 @@ func assertAggregateAlwaysRuns(t *testing.T, aggregate map[string]any) {
 	t.Helper()
 	if condition, _ := aggregate["if"].(string); condition != "${{ always() }}" {
 		t.Fatalf("aggregate if = %q, want ${{ always() }}", condition)
+	}
+}
+
+func assertAggregateChecksOutRepository(t *testing.T, aggregate map[string]any) {
+	t.Helper()
+	steps, ok := aggregate["steps"].([]any)
+	if !ok {
+		t.Fatalf("aggregate steps = %#v, want list", aggregate["steps"])
+	}
+	checkoutIndex := -1
+	helperIndex := -1
+	for index, rawStep := range steps {
+		step, ok := rawStep.(map[string]any)
+		if !ok {
+			t.Fatalf("aggregate step = %#v, want mapping", rawStep)
+		}
+		if uses, _ := step["uses"].(string); uses == "actions/checkout@v4" {
+			checkoutIndex = index
+		}
+		if command, _ := step["run"].(string); strings.Contains(command, "scripts/ci/require-needs-success.sh") {
+			helperIndex = index
+		}
+	}
+	if checkoutIndex < 0 {
+		t.Fatal("aggregate must check out the repository before running its helper script")
+	}
+	if helperIndex < 0 {
+		t.Fatal("aggregate needs-success helper step missing")
+	}
+	if checkoutIndex > helperIndex {
+		t.Fatal("aggregate must check out the repository before running its helper script")
 	}
 }
 
