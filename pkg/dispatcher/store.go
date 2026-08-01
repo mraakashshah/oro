@@ -137,6 +137,15 @@ type Store struct {
 	db *sql.DB
 }
 
+// advanceRemoteGate advances dispatcher-owned candidate state without relying
+// on the worker that originally produced the candidate.
+func (d *Dispatcher) advanceRemoteGate(ctx context.Context, gateID int64, from, to RemoteGateState) (RemoteGate, error) {
+	if d == nil || d.remoteGates == nil {
+		return RemoteGate{}, errors.New("advance remote gate: store is unavailable")
+	}
+	return d.remoteGates.AdvanceRemoteGate(ctx, gateID, from, to)
+}
+
 // NewStore opens the remote gate persistence boundary and ensures its schema.
 func NewStore(ctx context.Context, db *sql.DB) (*Store, error) {
 	if db == nil {
