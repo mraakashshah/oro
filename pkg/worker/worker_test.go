@@ -3547,16 +3547,7 @@ func TestSetExtractSpawner(t *testing.T) {
 // with HELLO and that the worker does not emit normal traffic until HELLO_ACK.
 func TestWorkerNegotiatesHelloBeforeHeartbeat(t *testing.T) {
 	spawner := newMockSpawner()
-	// Use /tmp for short socket path (macOS has 104-char limit). t.TempDir()
-	// embeds this long test name, yielding a 115-byte path that fails
-	// net.Listen with "bind: invalid argument". Matches the convention the
-	// other socket tests in this file already use.
-	sockDir, mkErr := os.MkdirTemp("/tmp", "oro-test-")
-	if mkErr != nil {
-		t.Fatalf("mkdtemp: %v", mkErr)
-	}
-	defer func() { _ = os.RemoveAll(sockDir) }()
-	socketPath := filepath.Join(sockDir, "w.sock")
+	socketPath := filepath.Join(t.TempDir(), "worker.sock")
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
