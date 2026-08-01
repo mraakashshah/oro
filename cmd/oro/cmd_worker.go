@@ -56,6 +56,7 @@ func runWorker(ctx context.Context, socketPath, id string) error {
 		if err != nil {
 			return fmt.Errorf("create worker %s: %w", id, err)
 		}
+		w.EnableHelloHandshake()
 
 		// Wire card store so [MEMORY] markers and implicit patterns are captured.
 		paths, pathsErr := ResolveProjectDBPaths()

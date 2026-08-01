@@ -277,6 +277,7 @@ func TestCheckpointRespawn_ConnCloseDoesNotWipeState(t *testing.T) {
 	// procMgr.Kill terminates the real subprocess in production.
 	client, server := net.Pipe()
 	t.Cleanup(func() { _ = client.Close() })
+	workerConn := &testWorkerConn{Conn: client, dispatcher: d}
 
 	handleConnDone := make(chan struct{})
 	go func() {
@@ -286,7 +287,7 @@ func TestCheckpointRespawn_ConnCloseDoesNotWipeState(t *testing.T) {
 
 	// Register the worker with the dispatcher via heartbeat so handleConn
 	// owns the connection and will drive cleanup on close.
-	sendMsg(t, client, protocol.Message{
+	sendMsg(t, workerConn, protocol.Message{
 		Type: protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{
 			WorkerID:   workerID,
