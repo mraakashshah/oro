@@ -42,6 +42,121 @@ type WorkerPool struct {
 	workers map[string]*trackedWorker
 }
 
+// --- Worker tracking ---
+
+// WorkerState is now in pkg/protocol/types.go
+
+// trackedWorker holds runtime state for a connected worker.
+type trackedWorker struct {
+	id               string
+	conn             net.Conn
+	state            protocol.WorkerState
+	assignmentID     int64
+	execution        WorkerExecutionContext
+	beadID           string
+	epicID           string // parent epic ID if the assigned bead is a child of an epic
+	isEpicDecomp     bool   // true when worker is assigned an epic for decomposition (no merge on done)
+	worktree         string
+	baseBranch       string // branch the worktree was created from (main or epic/<epicID>)
+	targetBranch     string // branch the worker's changes should merge into (same as baseBranch)
+	runtime          string // resolved runtime for the current bead assignment
+	model            string // resolved model for the current bead assignment
+	reasoning        string // resolved Codex reasoning effort for the current bead assignment
+	lastSeen         time.Time
+	lastProgress     time.Time // last time meaningful progress was observed (DONE/READY_FOR_REVIEW/QG/first STATUS)
+	setupReservedAt  time.Time // start of assignment setup; zero for other reserved-worker flows
+	reservationGen   uint64    // increments on every assignment-reservation transition
+	contextPct       int       // context usage percentage from last heartbeat (0-100)
+	encoder          *json.Encoder
+	pendingMsgs      []protocol.Message // buffered messages for disconnected worker
+	shutdownCancel   context.CancelFunc // cancels previous shutdown goroutine (1nf.5)
+	shutdownApproved bool               // set by handleShutdownApproved; checked by checkShutdownApproved
+	shutdownReason   string             // why graceful shutdown was requested
+	managed          bool               // true if spawned by the dispatcher (vs externally connected)
+	spawnFor         bool               // true for one-shot workers spawned by spawn-for
+	targetBeadID     string             // set for spawn-for workers; only this bead may be assigned
+	prevSession      bool               // true if worker ID predates this dispatcher's startTime (previous session)
+	reviewDeadSince  time.Time          // set when ops review subprocess is detected dead; zero if review is active
+}
+
+func (w *trackedWorker) markShuttingDownWithoutAssignment() {
+	w.state = protocol.WorkerShuttingDown
+	w.assignmentID = 0
+	w.beadID = ""
+	w.epicID = ""
+	w.isEpicDecomp = false
+	w.targetBeadID = ""
+}
+
+const directWorkerWriteTimeout = 250 * time.Millisecond
+
+func sendToWorkerWithoutBuffering(w *trackedWorker, msg protocol.Message) {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+	data = append(data, '\n')
+
+	if err := w.conn.SetWriteDeadline(time.Now().Add(directWorkerWriteTimeout)); err == nil {
+		defer func() { _ = w.conn.SetWriteDeadline(time.Time{}) }()
+	}
+	_, _ = w.conn.Write(data)
+}
+
+func sendShutdownWithoutBuffering(w *trackedWorker) {
+	sendToWorkerWithoutBuffering(w, protocol.Message{Type: protocol.MsgShutdown})
+}
+
+func sendPrepareShutdownWithoutBuffering(w *trackedWorker, timeout time.Duration) {
+	sendToWorkerWithoutBuffering(w, protocol.Message{
+		Type: protocol.MsgPrepareShutdown,
+		PrepareShutdown: &protocol.PrepareShutdownPayload{
+			Timeout: timeout,
+		},
+	})
+}
+
+type idleWorker struct {
+	worker       *trackedWorker
+	targetBeadID string
+	spawnFor     bool
+}
+
+const shutdownReasonScaleDown = "scale_down"
+
+// pendingHandoff holds context for a bead whose worker has been shut down
+// during a ralph handoff. The next worker to connect will be assigned this
+// bead+worktree instead of going through normal assignment.
+type pendingHandoff struct {
+	assignmentID   int64
+	execution      WorkerExecutionContext
+	beadID         string
+	epicID         string // parent epic ID if the bead is a child of an epic
+	worktree       string
+	baseBranch     string // branch the worktree was created from (main or epic/<epicID>)
+	targetBranch   string // branch the worker's changes should merge into (same as baseBranch)
+	runtime        string
+	model          string
+	reasoning      string
+	title          string   // bead title for memory search on respawn
+	labels         []string // bead labels for memory search on respawn
+	nextAction     string   // intent_summary from checkpoint_acked (§9.3); empty for ralph handoffs
+	checkpointTurn int      // checkpoint respawn count for this bead (§9.3 step 9); 0 for ralph handoffs
+	feedback       string   // authoritative QG feedback for a replacement retry
+	attempt        int      // QG retry attempt; zero for ordinary handoffs
+}
+
+type workerAssignmentSnapshot struct {
+	execution    WorkerExecutionContext
+	worktree     string
+	runtime      string
+	model        string
+	reasoning    string
+	epicID       string
+	baseBranch   string
+	targetBranch string
+}
+
 // --- Worker lifecycle ---
 
 // registerWorker adds or updates a tracked worker. If a pending handoff exists,
