@@ -360,7 +360,6 @@ func (h *autonomousIntakeHarness) childEnv() []string {
 	return append(env,
 		"ORO_SOCKET_PATH="+h.socketPath,
 		"ORO_HOME="+filepath.Join(h.rootDir, "oro-home"),
-		"ORO_PROJECT="+filepath.Base(h.managedWorktree),
 		"ORO_DB_PATH="+h.dbPath,
 		"PATH="+h.binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 	)

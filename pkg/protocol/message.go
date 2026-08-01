@@ -15,109 +15,8 @@ import (
 // Scanner buffers are configured to accept up to this size.
 const MaxMessageSize = 1 * 1024 * 1024 // 1 MB
 
-// MaxBuildIDLength bounds immutable build identities carried by protocol
-// messages. Build IDs are diagnostic identity, not an unbounded log field.
-const MaxBuildIDLength = 256
-
 // MessageType identifies the kind of UDS message.
 type MessageType string
-
-// Range is an inclusive supported protocol version range.
-type Range struct {
-	Min uint64 `json:"min"`
-	Max uint64 `json:"max"`
-}
-
-// Validate rejects empty or inverted protocol ranges.
-func (r Range) Validate() error {
-	if r.Min == 0 {
-		return fmt.Errorf("protocol range minimum cannot be zero")
-	}
-	if r.Max == 0 {
-		return fmt.Errorf("protocol range maximum cannot be zero")
-	}
-	if r.Min > r.Max {
-		return fmt.Errorf("protocol range minimum %d exceeds maximum %d", r.Min, r.Max)
-	}
-	return nil
-}
-
-func (r Range) overlaps(other Range) bool {
-	return r.Min <= other.Max && other.Min <= r.Max
-}
-
-// Identity is the immutable dispatcher expectation for a worker.
-type Identity struct {
-	ProjectID         string
-	WorkerID          string
-	WorkerGeneration  uint64
-	RestartGeneration uint64
-	BuildID           string
-}
-
-func (i Identity) validate(allowUnassignedRestart bool) error {
-	if i.ProjectID == "" {
-		return fmt.Errorf("project ID cannot be empty")
-	}
-	if i.WorkerID == "" {
-		return fmt.Errorf("worker ID cannot be empty")
-	}
-	if i.WorkerGeneration == 0 {
-		return fmt.Errorf("worker generation cannot be zero")
-	}
-	if i.RestartGeneration == 0 && !allowUnassignedRestart {
-		return fmt.Errorf("restart generation cannot be zero")
-	}
-	if i.BuildID == "" {
-		return fmt.Errorf("build ID cannot be empty")
-	}
-	if len(i.BuildID) > MaxBuildIDLength {
-		return fmt.Errorf("build ID exceeds %d bytes", MaxBuildIDLength)
-	}
-	return nil
-}
-
-// Metadata versions every control message after HELLO negotiation and
-// binds it to one project, worker, restart, and build identity.
-type Metadata struct {
-	ProtocolRange     Range  `json:"protocol_range"`
-	ProjectID         string `json:"project_id"`
-	WorkerID          string `json:"worker_id"`
-	WorkerGeneration  uint64 `json:"worker_generation"`
-	RestartGeneration uint64 `json:"restart_generation"`
-	BuildID           string `json:"build_id"`
-}
-
-func (m Metadata) identity() Identity {
-	return Identity{
-		ProjectID:         m.ProjectID,
-		WorkerID:          m.WorkerID,
-		WorkerGeneration:  m.WorkerGeneration,
-		RestartGeneration: m.RestartGeneration,
-		BuildID:           m.BuildID,
-	}
-}
-
-// Hello starts version negotiation before worker registration.
-type Hello struct {
-	ProtocolRange     Range  `json:"protocol_range"`
-	ProjectID         string `json:"project_id"`
-	RestartGeneration uint64 `json:"restart_generation"`
-	BuildID           string `json:"build_id"`
-}
-
-// HelloACK confirms the negotiated version.
-type HelloACK struct {
-	ProtocolVersion uint64 `json:"protocol_version"`
-}
-
-// CandidateReady transfers a committed candidate to dispatcher ownership.
-type CandidateReady struct {
-	ProjectID     string `json:"project_id"`
-	AssignmentID  string `json:"assignment_id"`
-	CandidateSHA  string `json:"candidate_sha"`
-	AdoptionToken string `json:"adoption_token"`
-}
 
 // Dispatcher -> Worker message types.
 const (
@@ -128,9 +27,6 @@ const (
 	MsgACK               MessageType = "ACK"
 	MsgCapabilityRefresh MessageType = "CAPABILITY_REFRESH"
 	MsgReviewResult      MessageType = "REVIEW_RESULT"
-	MsgHello             MessageType = "HELLO"
-	MsgHelloACK          MessageType = "HELLO_ACK"
-	MsgCorrection        MessageType = "CORRECTION"
 )
 
 // Worker -> Dispatcher message types.
@@ -144,7 +40,6 @@ const (
 	MsgShutdownApproved     MessageType = "SHUTDOWN_APPROVED"
 	MsgCheckpointAck        MessageType = "CHECKPOINT_ACK"
 	MsgCapabilityRefreshACK MessageType = "CAPABILITY_REFRESH_ACK"
-	MsgCandidateReady       MessageType = "CANDIDATE_READY"
 )
 
 // Manager -> Dispatcher message types.
@@ -174,9 +69,6 @@ const (
 // payload pointer is populated; unused payloads are nil and omitted from JSON.
 type Message struct {
 	Type                 MessageType                  `json:"type"`
-	Protocol             Metadata                     `json:"protocol"`
-	Hello                *Hello                       `json:"hello,omitempty"`
-	HelloACK             *HelloACK                    `json:"hello_ack,omitempty"`
 	Assign               *AssignPayload               `json:"assign,omitempty"`
 	Heartbeat            *HeartbeatPayload            `json:"heartbeat,omitempty"`
 	Status               *StatusPayload               `json:"status,omitempty"`
@@ -200,98 +92,6 @@ type Message struct {
 	EvidenceResponse     *EvidenceResponse            `json:"evidence_response,omitempty"`
 	WorkProposalRequest  *WorkProposalRequest         `json:"work_proposal_request,omitempty"`
 	WorkProposalResponse *WorkProposalResponse        `json:"work_proposal_response,omitempty"`
-	Candidate            *CandidateReady              `json:"candidate,omitempty"`
-}
-
-// Validate rejects stale, cross-project, oversized, or incompatible control
-// messages before callers register a worker or mutate dispatcher state.
-func (m Message) Validate(supported Range, expected Identity) error {
-	if !m.requiresProtocolValidation() {
-		return nil
-	}
-	if err := m.validateProtocolEnvelope(supported, expected); err != nil {
-		return err
-	}
-	return m.validateProtocolPayload(supported)
-}
-
-func (m Message) validateProtocolEnvelope(supported Range, expected Identity) error {
-	if err := supported.Validate(); err != nil {
-		return fmt.Errorf("supported protocol range: %w", err)
-	}
-	if err := expected.validate(m.Type == MsgHello); err != nil {
-		return fmt.Errorf("expected protocol identity: %w", err)
-	}
-	if err := m.Protocol.ProtocolRange.Validate(); err != nil {
-		return fmt.Errorf("message protocol range: %w", err)
-	}
-	if !m.Protocol.ProtocolRange.overlaps(supported) {
-		return fmt.Errorf("unsupported protocol range %d-%d", m.Protocol.ProtocolRange.Min, m.Protocol.ProtocolRange.Max)
-	}
-	if got := m.Protocol.identity(); got != expected {
-		return fmt.Errorf("protocol identity does not match active worker")
-	}
-	return nil
-}
-
-func (m Message) validateProtocolPayload(supported Range) error {
-	switch m.Type {
-	case MsgHello:
-		return m.validateHello()
-	case MsgHelloACK:
-		return m.validateHelloACK(supported)
-	case MsgCandidateReady:
-		return m.validateCandidate()
-	}
-	return nil
-}
-
-func (m Message) validateHello() error {
-	if m.Hello == nil {
-		return fmt.Errorf("HELLO payload is required")
-	}
-	if err := m.Hello.ProtocolRange.Validate(); err != nil {
-		return fmt.Errorf("HELLO protocol range: %w", err)
-	}
-	if m.Hello.ProtocolRange != m.Protocol.ProtocolRange ||
-		m.Hello.ProjectID != m.Protocol.ProjectID ||
-		m.Hello.RestartGeneration != m.Protocol.RestartGeneration ||
-		m.Hello.BuildID != m.Protocol.BuildID {
-		return fmt.Errorf("HELLO payload does not match protocol metadata")
-	}
-	return nil
-}
-
-func (m Message) validateHelloACK(supported Range) error {
-	if m.HelloACK == nil {
-		return fmt.Errorf("HELLO_ACK payload is required")
-	}
-	if m.HelloACK.ProtocolVersion < supported.Min || m.HelloACK.ProtocolVersion > supported.Max ||
-		m.HelloACK.ProtocolVersion < m.Protocol.ProtocolRange.Min || m.HelloACK.ProtocolVersion > m.Protocol.ProtocolRange.Max {
-		return fmt.Errorf("HELLO_ACK protocol version %d is not negotiated", m.HelloACK.ProtocolVersion)
-	}
-	return nil
-}
-
-func (m Message) validateCandidate() error {
-	if m.Candidate == nil {
-		return fmt.Errorf("CANDIDATE_READY payload is required")
-	}
-	if m.Candidate.ProjectID != m.Protocol.ProjectID || m.Candidate.AssignmentID == "" ||
-		m.Candidate.CandidateSHA == "" || m.Candidate.AdoptionToken == "" {
-		return fmt.Errorf("CANDIDATE_READY payload is invalid")
-	}
-	return nil
-}
-
-func (m Message) requiresProtocolValidation() bool {
-	switch m.Type {
-	case MsgHello, MsgHelloACK, MsgAssign, MsgHeartbeat, MsgCandidateReady,
-		MsgReadyForReview, MsgReviewResult, MsgDone, MsgShutdown, MsgCorrection:
-		return true
-	default:
-		return false
-	}
 }
 
 // AssignPayload is sent by the dispatcher to assign a bead to a worker.

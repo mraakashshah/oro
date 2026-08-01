@@ -1524,10 +1524,7 @@ func TestConfigValidation(t *testing.T) {
 	}
 }
 
-var (
-	testResourceSequence   atomic.Uint64
-	testDispatcherBySocket sync.Map //nolint:gochecknoglobals // test connections need their dispatcher's HELLO identity
-)
+var testResourceSequence atomic.Uint64
 
 // newTestDB creates an in-memory SQLite database with the protocol schema.
 func newTestDB(t *testing.T) *sql.DB {
@@ -1803,10 +1800,6 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *fakeBeadStore, *mockWorktree
 	d.qgRunner = &mockQGRunner{passed: true}
 	// Use a short escalation retry interval so loop-panic tests don't wait 2 minutes.
 	d.escalationRetryInterval = 50 * time.Millisecond
-	d.helloProjectID = "test-project"
-	d.helloRestartGeneration = 1
-	d.helloBuildID = "test-build"
-	d.helloSupportedRange = protocol.Range{Min: 1, Max: 1}
 	return d, beadSrc, wtMgr, esc, gitRunner, spawnMock
 }
 
@@ -1852,8 +1845,6 @@ func startDispatcher(t *testing.T, d *Dispatcher) context.CancelFunc {
 // parallel load without changing the default for the wider test suite.
 func startDispatcherWithTimeout(t *testing.T, d *Dispatcher, timeout time.Duration) context.CancelFunc {
 	t.Helper()
-	testDispatcherBySocket.Store(d.cfg.SocketPath, d)
-	t.Cleanup(func() { testDispatcherBySocket.Delete(d.cfg.SocketPath) })
 	ctx, cancel := context.WithCancel(context.Background())
 
 	errCh := make(chan error, 1)
@@ -1898,27 +1889,12 @@ func connectWorker(t *testing.T, socketPath string) (net.Conn, *bufio.Scanner) {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	scanner := bufio.NewScanner(conn)
-	workerConn := &testWorkerConn{Conn: conn}
-	if value, ok := testDispatcherBySocket.Load(socketPath); ok {
-		if d, dispatcherOK := value.(*Dispatcher); dispatcherOK {
-			workerConn.dispatcher = d
-		}
-	}
-	return workerConn, scanner
+	return conn, scanner
 }
 
 // sendMsg sends a protocol.Message as line-delimited JSON over the connection.
 func sendMsg(t *testing.T, conn net.Conn, msg protocol.Message) {
 	t.Helper()
-	if workerConn, ok := conn.(*testWorkerConn); ok {
-		workerID := extractWorkerID(msg)
-		if msg.Type == protocol.MsgHeartbeat || msg.Type == protocol.MsgReconnect {
-			workerConn.ensureHello(t, workerID)
-		}
-		if workerConn.helloSent {
-			msg.Protocol = workerConn.metadata(workerID)
-		}
-	}
 	data, err := json.Marshal(msg)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -1926,130 +1902,6 @@ func sendMsg(t *testing.T, conn net.Conn, msg protocol.Message) {
 	data = append(data, '\n')
 	if _, err := conn.Write(data); err != nil {
 		t.Fatalf("write: %v", err)
-	}
-}
-
-type testWorkerConn struct {
-	net.Conn
-	helloSent  bool
-	dispatcher *Dispatcher
-}
-
-func (c *testWorkerConn) ensureHello(t *testing.T, workerID string) {
-	t.Helper()
-	if c.helloSent || workerID == "" {
-		return
-	}
-	metadata := c.metadata(workerID)
-	metadata.RestartGeneration = 0
-	sendMsg(t, c.Conn, protocol.Message{
-		Type:     protocol.MsgHello,
-		Protocol: metadata,
-		Hello: &protocol.Hello{
-			ProtocolRange:     metadata.ProtocolRange,
-			ProjectID:         metadata.ProjectID,
-			RestartGeneration: metadata.RestartGeneration,
-			BuildID:           metadata.BuildID,
-		},
-	})
-	ack, ok := readMsg(t, c.Conn, time.Second)
-	if !ok || ack.Type != protocol.MsgHelloACK {
-		t.Fatalf("HELLO_ACK = %#v, ok=%t", ack, ok)
-	}
-	c.helloSent = true
-}
-
-func testWorkerMetadata(workerID string) protocol.Metadata {
-	return protocol.Metadata{
-		ProtocolRange:     protocol.Range{Min: 1, Max: 1},
-		ProjectID:         "test-project",
-		WorkerID:          workerID,
-		WorkerGeneration:  1,
-		RestartGeneration: 1,
-		BuildID:           "test-build",
-	}
-}
-
-func (c *testWorkerConn) metadata(workerID string) protocol.Metadata {
-	if c.dispatcher == nil {
-		return testWorkerMetadata(workerID)
-	}
-	return protocol.Metadata{
-		ProtocolRange:     c.dispatcher.helloSupportedRange,
-		ProjectID:         c.dispatcher.helloProjectID,
-		WorkerID:          workerID,
-		WorkerGeneration:  1,
-		RestartGeneration: c.dispatcher.helloRestartGeneration,
-		BuildID:           c.dispatcher.helloBuildID,
-	}
-}
-
-func TestHandleHelloRejectsForeignDispatcherIdentity(t *testing.T) {
-	d, _, _, _, _, _ := newTestDispatcher(t)
-	valid := testWorkerMetadata("foreign-worker")
-	valid.RestartGeneration = 0
-
-	for _, tc := range []struct {
-		name   string
-		mutate func(*protocol.Metadata)
-	}{
-		{
-			name: "project",
-			mutate: func(metadata *protocol.Metadata) {
-				metadata.ProjectID = "foreign-project"
-			},
-		},
-		{
-			name: "restart generation",
-			mutate: func(metadata *protocol.Metadata) {
-				metadata.RestartGeneration = d.helloRestartGeneration
-			},
-		},
-		{
-			name: "build",
-			mutate: func(metadata *protocol.Metadata) {
-				metadata.BuildID = "foreign-build"
-			},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			metadata := valid
-			tc.mutate(&metadata)
-			msg := protocol.Message{
-				Type:     protocol.MsgHello,
-				Protocol: metadata,
-				Hello: &protocol.Hello{
-					ProtocolRange:     metadata.ProtocolRange,
-					ProjectID:         metadata.ProjectID,
-					RestartGeneration: metadata.RestartGeneration,
-					BuildID:           metadata.BuildID,
-				},
-			}
-
-			if _, err := d.handleHello(nil, msg); err == nil {
-				t.Fatal("handleHello accepted foreign dispatcher identity")
-			}
-		})
-	}
-}
-
-func TestHandleHelloAssignsRestartGeneration(t *testing.T) {
-	d, _, _, _, _, _ := newTestDispatcher(t)
-	metadata := testWorkerMetadata("admitted-worker")
-	metadata.RestartGeneration = 0
-	msg := protocol.Message{
-		Type:     protocol.MsgHello,
-		Protocol: metadata,
-		Hello: &protocol.Hello{
-			ProtocolRange:     metadata.ProtocolRange,
-			ProjectID:         metadata.ProjectID,
-			RestartGeneration: metadata.RestartGeneration,
-			BuildID:           metadata.BuildID,
-		},
-	}
-
-	if _, err := d.handleHello(nil, msg); err != nil {
-		t.Fatalf("handleHello rejected unassigned restart generation: %v", err)
 	}
 }
 
@@ -2523,6 +2375,15 @@ func TestAcceptLoopBackpressure(t *testing.T) {
 			}
 			conns[idx] = conn
 			connected[idx] = true
+
+			// Send heartbeat to register with dispatcher
+			sendMsg(t, conn, protocol.Message{
+				Type: protocol.MsgHeartbeat,
+				Heartbeat: &protocol.HeartbeatPayload{
+					WorkerID:   fmt.Sprintf("worker-%d", idx),
+					ContextPct: 10,
+				},
+			})
 		}(i)
 	}
 
@@ -3046,7 +2907,6 @@ func TestDispatcher_HeartbeatTimeout_DetectsDeadWorker(t *testing.T) {
 	// waitForState path).
 	hbData, _ := json.Marshal(protocol.Message{
 		Type:      protocol.MsgHeartbeat,
-		Protocol:  testWorkerMetadata("w-dead"),
 		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-dead", ContextPct: 5},
 	})
 	hbData = append(hbData, '\n')
@@ -3108,7 +2968,6 @@ func TestDispatcher_HeartbeatTimeout_EscalatesWithStructuredFormat(t *testing.T)
 	// waitForState path).
 	hbData, _ := json.Marshal(protocol.Message{
 		Type:      protocol.MsgHeartbeat,
-		Protocol:  testWorkerMetadata("w-crash"),
 		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-crash", ContextPct: 5},
 	})
 	hbData = append(hbData, '\n')
@@ -14374,10 +14233,10 @@ func TestDispatcherBuffering(t *testing.T) {
 		t.Fatalf("dial dispatcher (reconnect): %v", err)
 	}
 	defer func() { _ = wConn.Close() }()
-	workerConn := &testWorkerConn{Conn: wConn, dispatcher: d}
 
 	// Send RECONNECT message
-	sendMsg(t, workerConn, protocol.Message{
+	enc := json.NewEncoder(wConn)
+	_ = enc.Encode(protocol.Message{
 		Type:      protocol.MsgReconnect,
 		Reconnect: &protocol.ReconnectPayload{WorkerID: "w1", BeadID: "bead1", State: "idle"},
 	})
@@ -14584,12 +14443,7 @@ func TestShutdownHardTimeout(t *testing.T) {
 		Type:      protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{WorkerID: "w-unresponsive", ContextPct: 5},
 	})
-	waitFor(t, func() bool {
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		worker := d.workers["w-unresponsive"]
-		return worker != nil && worker.contextPct == 5
-	}, 2*time.Second)
+	waitForWorkers(t, d, 1, 2*time.Second)
 
 	// Verify worker is connected
 	if d.ConnectedWorkers() != 1 {
@@ -15830,8 +15684,6 @@ func TestCrashRecovery_ReconnectPreservesAttemptCount(t *testing.T) {
 		if err != nil {
 			t.Fatalf("New() failed: %v", err)
 		}
-		testDispatcherBySocket.Store(sockPath, d)
-		t.Cleanup(func() { testDispatcherBySocket.Delete(sockPath) })
 		return d
 	}
 
@@ -19845,7 +19697,6 @@ func TestApplyRestartDaemon(t *testing.T) {
 	// Connect a worker
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
-	workerConn := &testWorkerConn{Conn: clientConn, dispatcher: d}
 
 	go d.handleConn(ctx, serverConn)
 
@@ -19857,7 +19708,9 @@ func TestApplyRestartDaemon(t *testing.T) {
 			WorkerID: workerID,
 		},
 	}
-	sendMsg(t, workerConn, hb)
+	data, _ := json.Marshal(hb)
+	data = append(data, '\n')
+	_, _ = clientConn.Write(data)
 
 	// Wait for worker to be registered
 	waitFor(t, func() bool {
@@ -20001,14 +19854,13 @@ func TestHandleConnCleanupPrunesBeadTracking(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 
 	serverConn, clientConn := net.Pipe()
-	workerConn := &testWorkerConn{Conn: clientConn, dispatcher: d}
 	done := make(chan struct{})
 	go func() {
 		d.handleConn(context.Background(), serverConn)
 		close(done)
 	}()
 
-	sendMsg(t, workerConn, protocol.Message{
+	sendMsg(t, clientConn, protocol.Message{
 		Type: protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{
 			WorkerID:   "w1",
@@ -20131,14 +19983,13 @@ func TestHandleConnCleanupDoesNotWaitForBeadStatusUpdate(t *testing.T) {
 	defer close(releaseUpdate)
 
 	serverConn, clientConn := net.Pipe()
-	workerConn := &testWorkerConn{Conn: clientConn, dispatcher: d}
 	done := make(chan struct{})
 	go func() {
 		d.handleConn(context.Background(), serverConn)
 		close(done)
 	}()
 
-	sendMsg(t, workerConn, protocol.Message{
+	sendMsg(t, clientConn, protocol.Message{
 		Type: protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{
 			WorkerID:   "w1",
@@ -20203,13 +20054,12 @@ func TestReconnectDoesNotDeleteNewWorker(t *testing.T) {
 	// First connection: client1 <-> server1
 	client1, server1 := net.Pipe()
 	defer client1.Close()
-	workerClient1 := &testWorkerConn{Conn: client1}
 
 	// Start handleConn for first connection.
 	go d.handleConn(ctx, server1)
 
 	// Register worker via first connection heartbeat.
-	sendMsg(t, workerClient1, protocol.Message{
+	sendMsg(t, client1, protocol.Message{
 		Type: protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{
 			WorkerID:   workerID,
@@ -20228,13 +20078,12 @@ func TestReconnectDoesNotDeleteNewWorker(t *testing.T) {
 	// Second connection: client2 <-> server2 (simulating reconnect).
 	client2, server2 := net.Pipe()
 	defer client2.Close()
-	workerClient2 := &testWorkerConn{Conn: client2}
 
 	// Start handleConn for second connection.
 	go d.handleConn(ctx, server2)
 
 	// Register worker via second connection heartbeat — upsertWorker will update conn to server2.
-	sendMsg(t, workerClient2, protocol.Message{
+	sendMsg(t, client2, protocol.Message{
 		Type: protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{
 			WorkerID:   workerID,
