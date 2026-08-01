@@ -2498,6 +2498,21 @@ func TestGateCacheDirectoriesIgnored(t *testing.T) {
 			t.Errorf("gate cache directory %q is NOT gitignored: an unignored cache dir dirties the worktree and triggers stale_active_assignment quarantines", dir)
 		}
 	}
+
+	// FILE artifacts, checked as paths in their own right. The directory loop
+	// above appends "probe", so it would pass these via a directory-only
+	// pattern and never exercise the file case. .qg-incident-588-coverage.out
+	// leaked exactly this way and dirtied .worktrees/oro-qg-incident-588.
+	for _, file := range []string{
+		".qg-incident-588-coverage.out",
+		".qg-coverage.out",
+	} {
+		cmd := exec.Command("git", "check-ignore", "-q", file)
+		cmd.Dir = repoRoot
+		if err := cmd.Run(); err != nil {
+			t.Errorf("gate cache file %q is NOT gitignored: an unignored artifact dirties the worktree and triggers stale_active_assignment quarantines", file)
+		}
+	}
 }
 
 // TestInitEmitsBothClaudeAndAgentsMD verifies that extractAssets materialises

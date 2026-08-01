@@ -56,7 +56,9 @@ cmd/oro/_assets/
 # those carry no "cache" in the name. That leak dirtied two worktrees and raised
 # progress_timeout_recovery_blocked quarantine 449, idling the factory.
 # The gate owns the .qg- prefix, so match on it rather than on any inner word.
-.qg-*/
+# No trailing slash: the gate emits FILES too (.qg-incident-588-coverage.out),
+# and a trailing-slash pattern matches directories only.
+.qg-*
 # Undotted forms nested under .oro/ — leading-dot patterns above miss these.
 .oro/gocache/
 .oro/golangci-cache/
