@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1551,7 +1552,16 @@ func newTestDB(t *testing.T) *sql.DB {
 	if _, err := db.Exec(protocol.MigrateSemanticMemoryReadEvents); err != nil {
 		t.Fatalf("init semantic memory read events: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
+	// Keep one connection outside the pool so cancellation cannot discard the
+	// final connection and erase the shared in-memory database.
+	keeper, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("keep test db alive: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = keeper.Close()
+		_ = db.Close()
+	})
 	return db
 }
 
@@ -1732,6 +1742,25 @@ func TestNewTestDBMigratesMemoryReadEvents(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("memory_read_events count = %d, want 1", count)
+	}
+}
+
+func TestNewTestDBKeepsSchemaWhenPoolDiscardsConnection(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("acquire pooled connection: %v", err)
+	}
+	if err := conn.Raw(func(any) error { return driver.ErrBadConn }); !errors.Is(err, driver.ErrBadConn) {
+		t.Fatalf("discard pooled connection: %v", err)
+	}
+	_ = conn.Close()
+
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events`).Scan(&count); err != nil {
+		t.Fatalf("events schema disappeared after pooled connection discard: %v", err)
 	}
 }
 
