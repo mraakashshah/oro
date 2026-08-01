@@ -8,6 +8,7 @@ Run commands from the repository root unless noted otherwise.
 
 | Script | Purpose | Invocation |
 |---|---|---|
+| `check-merge-content.sh` | Reject a tree-neutral merge that drops files newly added by a non-first parent. | `scripts/check-merge-content.sh . <merge-commit>` |
 | `check-beadstore-shadow-monitor.sh` | Verify that a beadstore shadow-mode observation window has run for at least 24 hours. | `ORO_BEADSOURCE_MODE=shadow ORO_DB_PATH=/path/to/state.db scripts/check-beadstore-shadow-monitor.sh` |
 | `check_parity_docs.sh` | Check that Codex parity documentation retains required commands, paths, and terminology. | `scripts/check_parity_docs.sh` |
 | `install_test.sh` | Exercise platform detection, URL construction, and installation behavior in `install.sh`. | `scripts/install_test.sh` |
