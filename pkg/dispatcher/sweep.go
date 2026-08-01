@@ -149,6 +149,13 @@ func SweepDeletedBeadLearnings(ctx context.Context, db *sql.DB) (int64, error) {
 	if !ok {
 		return 0, nil
 	}
+	ok, err = tableExists(ctx, db, "beads")
+	if err != nil {
+		return 0, fmt.Errorf("sweep: inspect beads table: %w", err)
+	}
+	if !ok {
+		return 0, nil
+	}
 	res, err := db.ExecContext(ctx, `
 		UPDATE bead_learnings_pending
 		   SET rejected_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),

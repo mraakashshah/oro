@@ -270,6 +270,27 @@ func TestSweepers(t *testing.T) {
 		}
 	})
 
+	t.Run("SweepDeletedBeadLearnings/skips_db_without_beads_table", func(t *testing.T) {
+		db := newTestDB(t)
+		if _, err := db.ExecContext(ctx, `
+			CREATE TABLE bead_learnings_pending (
+				bead_id TEXT NOT NULL,
+				promoted_to INTEGER,
+				rejected_at TEXT,
+				reason TEXT
+			)`); err != nil {
+			t.Fatalf("create bead learnings table: %v", err)
+		}
+
+		n, err := SweepDeletedBeadLearnings(ctx, db)
+		if err != nil {
+			t.Fatalf("SweepDeletedBeadLearnings without beads table: %v", err)
+		}
+		if n != 0 {
+			t.Errorf("rows rejected = %d, want 0 without beads table", n)
+		}
+	})
+
 	// ─── Ticker scheduling ───────────────────────────────────────────────────
 
 	t.Run("SweepTicker/runs_five_minute_sweepers_at_interval", func(t *testing.T) {
