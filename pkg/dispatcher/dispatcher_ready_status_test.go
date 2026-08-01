@@ -33,18 +33,26 @@ func TestDispatcherDoesNotWriteReadyStatus(t *testing.T) {
 func parseDispatcherSourceFiles(t *testing.T) (*token.FileSet, map[string]*ast.File) {
 	t.Helper()
 	fset := token.NewFileSet()
-	packages, err := parser.ParseDir(fset, ".", func(info os.FileInfo) bool {
-		name := info.Name()
-		return strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go")
-	}, 0)
+	entries, err := os.ReadDir(".")
 	if err != nil {
-		t.Fatalf("parse dispatcher source: %v", err)
+		t.Fatalf("read dispatcher source directory: %v", err)
 	}
-	files := packages["dispatcher"]
-	if files == nil || len(files.Files) == 0 {
+	files := make(map[string]*ast.File)
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, parseErr := parser.ParseFile(fset, name, nil, 0)
+		if parseErr != nil {
+			t.Fatalf("parse dispatcher source %s: %v", name, parseErr)
+		}
+		files[name] = file
+	}
+	if len(files) == 0 {
 		t.Fatal("parse dispatcher source: no non-test Go files found")
 	}
-	return fset, files.Files
+	return fset, files
 }
 
 func isUpdateBeadStatusCall(fn ast.Expr) bool {
