@@ -816,6 +816,46 @@ func TestTaskTerminologyGuard(t *testing.T) {
 		}
 	})
 
+	t.Run("scans split dispatcher production sources", func(t *testing.T) {
+		tempRoot := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(tempRoot, "scripts"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		scriptBytes, err := os.ReadFile(script)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tempScript := filepath.Join(tempRoot, "scripts", "check-task-terminology.sh")
+		if err := os.WriteFile(tempScript, scriptBytes, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		readme := strings.Join([]string{
+			"### Task Terminology",
+			"- **Task:** an Oro work item.",
+			"- **Task type:** the `type` field, whose values include `task`, `bug`, `epic`, `research`, and `chore`.",
+			"",
+		}, "\n")
+		if err := os.WriteFile(filepath.Join(tempRoot, "README.md"), []byte(readme), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(tempRoot, "pkg", "dispatcher"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(tempRoot, "pkg", "dispatcher", "worker_pool.go"), []byte("// Determine the effective repo root for oro bead commands.\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		cmd := exec.Command(tempScript)
+		cmd.Dir = tempRoot
+		output, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("terminology guard accepted stale split dispatcher source:\n%s", string(output))
+		}
+		if !strings.Contains(string(output), "oro bead commands") || !strings.Contains(string(output), "runtime comments") {
+			t.Fatalf("terminology guard rejection did not cite split dispatcher source:\n%s", string(output))
+		}
+	})
+
 	t.Run("rejects invented task branch naming", func(t *testing.T) {
 		badDoc := filepath.Join(t.TempDir(), "bad-branch.md")
 		if err := os.WriteFile(badDoc, []byte("Worker worktrees use task/abc branches.\n"), 0o644); err != nil {

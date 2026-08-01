@@ -156,7 +156,10 @@ for file in "${files[@]}"; do
 	existing_files+=("$file")
 done
 files=("${existing_files[@]}")
-runtime_comment_files=(cmd/oro/tmux.go pkg/dispatcher/dispatcher.go)
+runtime_comment_files=(cmd/oro/tmux.go)
+while IFS= read -r file; do
+	runtime_comment_files+=("$file")
+done < <(find pkg/dispatcher -type f -name '*.go' ! -name '*_test.go')
 generic_files=()
 for file in "${files[@]}"; do
 	normalized_file="${file#./}"
