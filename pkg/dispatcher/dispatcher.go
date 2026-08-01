@@ -1949,46 +1949,6 @@ func (d *Dispatcher) handleShutdownApproved(ctx context.Context, workerID string
 	}
 }
 
-// handleDirectiveWithACK handles a DIRECTIVE message from the manager and sends an ACK response.
-// This is used for short-lived manager connections that send a directive and expect an ACK.
-func (d *Dispatcher) handleDirectiveWithACK(ctx context.Context, conn net.Conn, msg protocol.Message) {
-	if msg.Directive == nil {
-		return
-	}
-
-	dir := protocol.Directive(msg.Directive.Op)
-	args := msg.Directive.Args
-	source, reason := directiveProvenance(msg.Directive)
-	ack := protocol.ACKPayload{OK: true}
-
-	if !dir.Valid() && dir != directiveLaunchWorkers && dir != directiveCancelWorkerLaunch {
-		ack.OK = false
-		ack.Detail = "invalid directive"
-	} else {
-		detail, err := d.applyDirectiveWithProvenance(dir, args, source, reason)
-		if err != nil {
-			ack.OK = false
-			ack.Detail = err.Error()
-		} else {
-			_ = d.logEvent(ctx, "directive", source, "", "",
-				fmt.Sprintf(`{"directive":%q,"args":%q,"source":%q,"reason":%q}`, msg.Directive.Op, args, source, reason))
-			ack.Detail = detail
-		}
-	}
-
-	// Send ACK response
-	ackMsg := protocol.Message{
-		Type: protocol.MsgACK,
-		ACK:  &ack,
-	}
-	data, err := json.Marshal(ackMsg)
-	if err != nil {
-		return
-	}
-	data = append(data, '\n')
-	_, _ = conn.Write(data)
-}
-
 // GracefulShutdownWorker, shutdownWaitLoop, handleShutdownTimeout, checkShutdownApproved → worker_pool.go
 
 // --- Priority queue / assignment loop ---
@@ -2064,15 +2024,6 @@ type statusResponse struct {
 	BlockingRecoveryQuarantines  int                          `json:"blocking_recovery_quarantines,omitempty"`
 	AssignmentFreezeReason       string                       `json:"assignment_freeze_reason,omitempty"`
 	Health                       *factoryhealth.FactoryHealth `json:"health,omitempty"`
-}
-
-const (
-	directiveLaunchWorkers      protocol.Directive = "launch-workers"
-	directiveCancelWorkerLaunch protocol.Directive = "cancel-worker-launch"
-)
-
-type workerLaunchReservation struct {
-	WorkerIDs []string `json:"worker_ids"`
 }
 
 // applyDirective transitions the dispatcher state machine and returns a detail
