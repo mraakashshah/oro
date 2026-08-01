@@ -15,6 +15,13 @@ import (
 	"time"
 )
 
+// Run starts the Dispatcher event loop. It:
+//  1. Initializes the SQLite schema
+//  2. Starts the UDS listener
+//  3. Polls for commands (directives) and ready beads
+//  4. Monitors worker heartbeats
+//
+// Run blocks until ctx is cancelled.
 func (d *Dispatcher) Run(ctx context.Context) error {
 	// Defer-recover so a panic anywhere in Run() (or its synchronous callees)
 	// leaves a breadcrumb on disk before the process dies. Background loops

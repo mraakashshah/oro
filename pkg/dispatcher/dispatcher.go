@@ -809,13 +809,6 @@ func (d *Dispatcher) startHTTPServer() {
 	})
 }
 
-// Run starts the Dispatcher event loop. It:
-//  1. Initializes the SQLite schema
-//  2. Starts the UDS listener
-//  3. Polls for commands (directives) and ready beads
-//  4. Monitors worker heartbeats
-//
-// Run blocks until ctx is cancelled.
 func (d *Dispatcher) storeRejectionFeedback(ctx context.Context, beadID, feedback string) {
 	if d.memoryServices.InsertRejection == nil || feedback == "" {
 		return
