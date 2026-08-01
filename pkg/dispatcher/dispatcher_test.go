@@ -1556,6 +1556,7 @@ func newTestDB(t *testing.T) *sql.DB {
 	// final connection and erase the shared in-memory database.
 	keeper, err := db.Conn(context.Background())
 	if err != nil {
+		_ = db.Close()
 		t.Fatalf("keep test db alive: %v", err)
 	}
 	t.Cleanup(func() {
