@@ -2265,3 +2265,37 @@ func TestWorkerPromptTaskCreateIncludesTier(t *testing.T) {
 		}
 	})
 }
+
+// TestAssemblePrompt_WarnsAgainstScratchInWorktree proves the prompt tells
+// workers to keep the worktree clean.
+//
+// Root cause this guards: nothing in the prompt ever said so, so workers
+// invented scratch paths inside their worktree while investigating
+// (.qg-incident-588-coverage.out, .qg-recheck-go-UQiLDM,
+// .qg-verify-lint-main-IZ8Rzy). Any untracked file makes `git status
+// --porcelain` non-empty, which the dispatcher reads as unpreserved work and
+// quarantines as stale_active_assignment — freezing the assignment.
+//
+// .gitignore was patched four times chasing those names (enumerated ->
+// .qg-*cache* -> .qg-*/ -> .qg-*) and each narrower pattern leaked, because a
+// pattern can only ever match names already observed. This asserts the
+// upstream instruction instead.
+func TestAssemblePrompt_WarnsAgainstScratchInWorktree(t *testing.T) {
+	t.Parallel()
+
+	prompt := worker.AssemblePrompt(worker.PromptParams{
+		BeadID:       "bead-scratch",
+		Title:        "Scratch hygiene",
+		WorktreePath: "/tmp/wt-scratch",
+	})
+
+	for _, want := range []string{
+		"scratch",
+		"$TMPDIR",
+		"untracked",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt does not mention %q; workers need explicit guidance to keep the worktree clean", want)
+		}
+	}
+}

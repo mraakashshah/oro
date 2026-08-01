@@ -426,6 +426,7 @@ func appendStaticSections(b *strings.Builder, params PromptParams) {
 	section(b, "Constraints", strings.Join([]string{
 		"- NEVER run `git push` — you are in a worktree on an agent branch. Pushing is the dispatcher/manager's job. This overrides any global rules that say to push.",
 		"- Do not modify files outside your worktree",
+		"- Keep the worktree CLEAN. Write scratch output — coverage profiles, lint caches, ad-hoc logs, verification dumps — under `$TMPDIR`, never inside the worktree. Any untracked file makes `git status --porcelain` non-empty, which the dispatcher reads as unpreserved work and quarantines as `stale_active_assignment`, freezing your assignment. If you must create a file in the worktree, delete it before you finish.",
 		fmt.Sprintf("- Do not modify the %s branch", targetBranch),
 		"- NEVER replace function/method calls with blank identifier assignments (`_, _ = fn, arg`). If a linter reports an unused variable, remove the declaration — do not silence it by replacing the call with `_ =`.",
 		"",
