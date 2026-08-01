@@ -816,6 +816,15 @@ func TestTaskTerminologyGuard(t *testing.T) {
 		}
 	})
 
+	t.Run("allows explicit split dispatcher file arguments", func(t *testing.T) {
+		cmd := exec.Command(script, "./pkg/dispatcher/assignment.go")
+		cmd.Dir = repoRoot
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("terminology guard rejected split dispatcher file argument:\n%s", string(output))
+		}
+	})
+
 	t.Run("scans split dispatcher production sources", func(t *testing.T) {
 		tempRoot := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(tempRoot, "scripts"), 0o755); err != nil {

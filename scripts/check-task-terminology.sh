@@ -164,8 +164,14 @@ generic_files=()
 for file in "${files[@]}"; do
 	normalized_file="${file#./}"
 	case "$normalized_file" in
-	cmd/oro/tmux.go | pkg/dispatcher/dispatcher.go)
+	cmd/oro/tmux.go)
 		continue
+		;;
+	pkg/dispatcher/*.go)
+		case "$normalized_file" in
+		*_test.go) ;;
+		*) continue ;;
+		esac
 		;;
 	esac
 	generic_files+=("$file")
