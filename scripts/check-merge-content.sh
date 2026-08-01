@@ -34,6 +34,10 @@ main() {
 		fail "not a Git worktree: $repo_root"
 	parents=$(git -C "$repo_root" rev-list --parents -n 1 "$commit") ||
 		fail "cannot resolve commit $commit"
+	# Intentional word splitting: rev-parse --parents emits
+	# "<commit> <parent1> [<parent2>...]" on one space-separated line, and we want
+	# each SHA as its own positional parameter. Quoting would make it a single arg.
+	# shellcheck disable=SC2086
 	set -- $parents
 	if [ "$#" -lt 3 ]; then
 		return 0
