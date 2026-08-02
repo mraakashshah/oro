@@ -105,10 +105,34 @@ QG_STAGE_ASSETS_LOCK=""
 QG_RUN_LOCK=""
 QG_RUN_LOCK_TOKEN=""
 QG_RUN_QUEUE_TICKET=""
+QG_RUN_QUEUE_STAGING=""
+QG_RUN_QUEUE_STAGING_TARGET=""
+QG_RUN_QUEUE_STAGING_TOKEN=""
 QG_EXIT_STATUS=0
+cleanup_quality_gate_queue_staging() {
+	local staging="${QG_RUN_QUEUE_STAGING:-}"
+	local target="${QG_RUN_QUEUE_STAGING_TARGET:-}"
+	local token="${QG_RUN_QUEUE_STAGING_TOKEN:-}"
+	if [ -n "$staging" ]; then
+		rm -f "$staging/owner" 2>/dev/null || true
+		rmdir "$staging" 2>/dev/null || true
+	fi
+	if [ -n "$target" ] && [ -n "$token" ] && [ -f "$target/owner" ] &&
+		grep -qx "ticket_token=$token" "$target/owner" 2>/dev/null; then
+		rm -f "$target/owner" 2>/dev/null || true
+		rmdir "$target" 2>/dev/null || true
+	fi
+	if [ -n "$target" ]; then
+		rmdir "$(dirname "$target")" 2>/dev/null || true
+	fi
+	QG_RUN_QUEUE_STAGING=""
+	QG_RUN_QUEUE_STAGING_TARGET=""
+	QG_RUN_QUEUE_STAGING_TOKEN=""
+}
 # shellcheck disable=SC2317,SC2329
 cleanup_qg() {
 	local status=$?
+	cleanup_quality_gate_queue_staging
 	if [ -n "${QG_RUN_QUEUE_TICKET:-}" ]; then
 		rm -f "$QG_RUN_QUEUE_TICKET/owner" 2>/dev/null || true
 		rmdir "$QG_RUN_QUEUE_TICKET" 2>/dev/null || true
@@ -299,17 +323,33 @@ quality_gate_lock_timeout_reached() {
 
 create_quality_gate_queue_ticket() {
 	local queue_dir="$1"
-	local ticket_dir
-	mkdir -p "$queue_dir"
+	local ticket_dir ticket_name ticket_token staging_dir
 	while :; do
-		ticket_dir="$queue_dir/$(date +%s)-$$-$RANDOM"
-		if mkdir "$ticket_dir" 2>/dev/null; then
-			{
+		mkdir -p "$queue_dir"
+		ticket_name="$(date +%s)-$$-$RANDOM"
+		ticket_token="$ticket_name-$RANDOM"
+		ticket_dir="$queue_dir/$ticket_name"
+		staging_dir="${queue_dir}.staging.$ticket_token"
+		if mkdir "$staging_dir" 2>/dev/null; then
+			QG_RUN_QUEUE_STAGING="$staging_dir"
+			QG_RUN_QUEUE_STAGING_TARGET="$ticket_dir"
+			QG_RUN_QUEUE_STAGING_TOKEN="$ticket_token"
+			if ! {
 				echo "pid=$$"
 				echo "created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-			} >"$ticket_dir/owner"
-			QG_RUN_QUEUE_TICKET="$ticket_dir"
-			return 0
+				echo "ticket_token=$ticket_token"
+			} >"$staging_dir/owner"; then
+				cleanup_quality_gate_queue_staging
+				continue
+			fi
+			if mv "$staging_dir" "$ticket_dir" 2>/dev/null; then
+				QG_RUN_QUEUE_TICKET="$ticket_dir"
+				QG_RUN_QUEUE_STAGING=""
+				QG_RUN_QUEUE_STAGING_TARGET=""
+				QG_RUN_QUEUE_STAGING_TOKEN=""
+				return 0
+			fi
+			cleanup_quality_gate_queue_staging
 		fi
 	done
 }
