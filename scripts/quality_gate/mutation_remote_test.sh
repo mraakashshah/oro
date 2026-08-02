@@ -43,6 +43,9 @@ case "${MUTATION_FIXTURE:?}" in
 pass)
 	printf 'The mutation score is 0.90\ntotal is 10\n'
 	;;
+annotated)
+	printf 'The mutation score is 1.000000 (38 passed, 0 failed, 2 duplicated, 0 skipped, total is 38)\n'
+	;;
 below)
 	printf 'The mutation score is 0.40\ntotal is 10\n'
 	;;
@@ -63,6 +66,9 @@ timeout)
 	;;
 malformed)
 	printf 'not a mutation report\n'
+	;;
+malformed-annotated)
+	printf 'The mutation score is 1.000000 (38 passed, total is nope)\n'
 	;;
 *)
 	echo "unknown mutation fixture: $MUTATION_FIXTURE" >&2
@@ -134,6 +140,12 @@ TestStrictIncrementalMutation() {
 	run_fixture "$tmp/zero-clean" zero-clean infrastructure_failure 2
 	run_fixture "$tmp/timeout" timeout infrastructure_failure 2
 	run_fixture "$tmp/malformed" malformed infrastructure_failure 2
+	run_fixture "$tmp/malformed-annotated" malformed-annotated infrastructure_failure 2
+	jq -e '.score == null and .total == 0' "$tmp/malformed-annotated/mutation-evidence.json" >/dev/null ||
+		fail 'malformed annotated output was accepted as mutation evidence'
+	run_fixture "$tmp/annotated" annotated pass 0
+	jq -e '.score == 1 and .total == 38' "$tmp/annotated/mutation-evidence.json" >/dev/null ||
+		fail 'annotated output did not preserve its score and total'
 	run_missing_base_fixture "$tmp/missing-base"
 
 	awk '
