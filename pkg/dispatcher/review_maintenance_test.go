@@ -145,7 +145,11 @@ func TestReviewArtifactJanitorScheduled(t *testing.T) {
 	cancel := startDispatcher(t, d)
 	waitFor(t, func() bool {
 		_, err := os.Stat(duePath)
-		return os.IsNotExist(err)
+		if !os.IsNotExist(err) {
+			return false
+		}
+		artifacts, err := store.ListPrunableArtifacts(ctx, time.Now().Add(-time.Hour))
+		return err == nil && len(artifacts) == 1 && artifacts[0].Path == retryPath
 	}, time.Second)
 	cancel()
 
