@@ -43,6 +43,12 @@ case "${MUTATION_FIXTURE:?}" in
 pass)
 	printf 'The mutation score is 0.90\ntotal is 10\n'
 	;;
+reversed)
+	printf 'total is 10\nThe mutation score is 0.90\n'
+	;;
+intervening)
+	printf 'The mutation score is 0.90\nmutation detail\ntotal is 10\n'
+	;;
 annotated)
 	printf 'The mutation score is 1.000000 (38 passed, 0 failed, 2 duplicated, 0 skipped, total is 38)\n'
 	;;
@@ -134,6 +140,8 @@ TestStrictIncrementalMutation() {
 	trap 'rm -rf "$tmp"' RETURN
 
 	run_fixture "$tmp/pass" pass pass 0
+	run_fixture "$tmp/intervening" intervening infrastructure_failure 2
+	run_fixture "$tmp/reversed" reversed infrastructure_failure 2
 	run_fixture "$tmp/below" below deterministic_failure 1
 	run_fixture "$tmp/crash" crash infrastructure_failure 2
 	run_fixture "$tmp/zero" zero infrastructure_failure 2

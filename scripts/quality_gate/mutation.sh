@@ -108,14 +108,24 @@ main() {
 		return
 	fi
 
+	local bare_record
 	local summary
 	local score
 	local total
-	summary=$(sed -nE '/^The mutation score is [0-9]+(\.[0-9]+)?([[:space:]]+\([0-9]+ passed, [0-9]+ failed, [0-9]+ duplicated, [0-9]+ skipped, total is [0-9]+\))?[[:space:]]*$/p' <<<"$output" | tail -1)
+	summary=$(sed -nE '/^The mutation score is [0-9]+(\.[0-9]+)?[[:space:]]+\([0-9]+ passed, [0-9]+ failed, [0-9]+ duplicated, [0-9]+ skipped, total is [0-9]+\)[[:space:]]*$/p' <<<"$output" | tail -1)
 	score=$(sed -nE 's/^The mutation score is ([0-9]+(\.[0-9]+)?).*$/\1/p' <<<"$summary")
 	total=$(sed -nE 's/^The mutation score is [0-9]+(\.[0-9]+)?[[:space:]]+\([0-9]+ passed, [0-9]+ failed, [0-9]+ duplicated, [0-9]+ skipped, total is ([0-9]+)\)[[:space:]]*$/\2/p' <<<"$summary")
 	if [[ -z "$total" ]]; then
-		total=$(sed -nE 's/^total is ([0-9]+)[[:space:]]*$/\1/p' <<<"$output" | tail -1)
+		bare_record=$(awk '
+			previous ~ /^The mutation score is [0-9]+(\.[0-9]+)?[[:space:]]*$/ &&
+				$0 ~ /^total is [0-9]+[[:space:]]*$/ {
+				print previous
+				print
+			}
+			{ previous = $0 }
+		' <<<"$output" | tail -2)
+		score=$(sed -nE 's/^The mutation score is ([0-9]+(\.[0-9]+)?)[[:space:]]*$/\1/p' <<<"$bare_record")
+		total=$(sed -nE 's/^total is ([0-9]+)[[:space:]]*$/\1/p' <<<"$bare_record")
 	fi
 	if [[ -z "$score" || -z "$total" || ! "$score" =~ ^[0-9]+(\.[0-9]+)?$ || ! "$total" =~ ^[0-9]+$ ]]; then
 		infrastructure_failure "$evidence" "$base" "$head" 'mutation output was malformed or absent' 0 "${changed_files[@]}"
