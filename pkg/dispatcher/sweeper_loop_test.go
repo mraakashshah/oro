@@ -87,11 +87,8 @@ func TestGradeDrainSweep(t *testing.T) {
 }
 
 func TestGradeDrainSweepUsesConfiguredCadence(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
 	d, _, _, _, _, spawner := newTestDispatcher(t)
-	if _, err := d.cardStore.Create(ctx, cards.CardCreateParams{
+	if _, err := d.cardStore.Create(context.Background(), cards.CardCreateParams{
 		ID:          "card-configured-grade-drain",
 		Type:        cards.CardTypePattern,
 		Title:       "Configured cadence proposal",
@@ -105,6 +102,8 @@ func TestGradeDrainSweepUsesConfiguredCadence(t *testing.T) {
 	d.cfg.GradeGateEnabled = true
 	d.cfg.SweepConfig = SweepConfig{Interval5m: 10 * time.Millisecond, Interval60m: time.Hour}
 	spawner.verdict = `{"verdict":"correct","confidence":0.99,"reasoning":"proposal is supported"}`
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	go d.runSweepLoop(ctx, d.cfg.SweepConfig)
 
 	waitFor(t, func() bool {
