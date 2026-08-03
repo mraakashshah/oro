@@ -238,6 +238,34 @@ INSERT INTO epic_branch_admissions (
 		assertAdmissionState(t, db, "epic/oro-e", "blocked", 5, false)
 	})
 
+	t.Run("reports the generation resolved by the CAS despite immediate reclaim", func(t *testing.T) {
+		db, err := openStateDB(filepath.Join(t.TempDir(), "state.db"))
+		if err != nil {
+			t.Fatalf("open state db: %v", err)
+		}
+		defer db.Close()
+		seedBlockedEpicBranchAdmission(t, db, "epic/oro-e", "oro-e", 4)
+		if _, err := db.Exec(`
+CREATE TRIGGER reclaim_epic_branch_after_resolve
+AFTER UPDATE OF state ON epic_branch_admissions
+WHEN NEW.branch = 'epic/oro-e' AND NEW.state = 'resolved' AND NEW.generation = 4
+BEGIN
+    UPDATE epic_branch_admissions
+    SET generation = 5
+    WHERE branch = NEW.branch;
+END`); err != nil {
+			t.Fatalf("create immediate reclaim trigger: %v", err)
+		}
+
+		got, err := resolveEpicBranchAdmission(context.Background(), db, &stubEpicBranchInspector{}, "epic/oro-e", 4)
+		if err != nil {
+			t.Fatalf("resolve generation 4: %v", err)
+		}
+		if got != 4 {
+			t.Fatalf("reported generation = %d, want resolved CAS generation 4", got)
+		}
+	})
+
 	t.Run("production inspector accepts only present unchecked non-diverged refs", func(t *testing.T) {
 		repo := t.TempDir()
 		runRecoveryGit(t, repo, "init", "-b", "main")

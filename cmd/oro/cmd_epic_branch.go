@@ -227,17 +227,5 @@ WHERE branch = ? AND state = 'blocked' AND generation = ?`,
 	if rowsAffected != 1 {
 		return 0, fmt.Errorf("epic branch %q changed during inspection; blocker was not resolved", branch)
 	}
-
-	var resolvedState string
-	var persistedGeneration int64
-	if err := db.QueryRowContext(ctx, `
-SELECT state, generation
-FROM epic_branch_admissions
-WHERE branch = ?`, branch).Scan(&resolvedState, &persistedGeneration); err != nil {
-		return 0, fmt.Errorf("read resolved epic-branch admission %q: %w", branch, err)
-	}
-	if resolvedState != "resolved" {
-		return 0, fmt.Errorf("epic branch %q persisted unexpected state %q", branch, resolvedState)
-	}
-	return persistedGeneration, nil
+	return generation, nil
 }
