@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"oro/pkg/beadstore"
 	"oro/pkg/protocol"
@@ -18,11 +19,24 @@ const (
 	epicBranchRecoveryMaxCandidates = 16
 )
 
+var errEpicBranchRecoveryInspection = errors.New("epic branch recovery inspection failed")
+
 // ensureEpicBranchBlockRecovery returns the one active recovery child linked
 // to a blocked branch generation, creating and CAS-linking it when necessary.
 func (d *Dispatcher) ensureEpicBranchBlockRecovery(ctx context.Context, admission epicBranchAdmission) (*protocol.Bead, error) {
+	return d.ensureEpicBranchBlockRecoveryAt(ctx, admission, d.nowFunc())
+}
+
+func (d *Dispatcher) ensureEpicBranchBlockRecoveryAt(
+	ctx context.Context,
+	admission epicBranchAdmission,
+	now time.Time,
+) (*protocol.Bead, error) {
 	if err := validateEpicBranchRecoveryAdmission(admission); err != nil {
 		return nil, err
+	}
+	if now.IsZero() {
+		return nil, errors.New("ensure epic branch recovery: reconciliation time is zero")
 	}
 
 	// The deterministic ID and the admission-row CAS make repair safe across
@@ -46,7 +60,7 @@ func (d *Dispatcher) ensureEpicBranchBlockRecovery(ctx context.Context, admissio
 		if child == nil {
 			return nil, fmt.Errorf("create or reuse epic branch recovery child: store returned nil bead")
 		}
-		next, linked, err := d.linkEpicBranchRecoveryCandidate(ctx, store, admission, child)
+		next, linked, err := d.linkEpicBranchRecoveryCandidate(ctx, store, admission, child, now)
 		if err != nil {
 			return nil, err
 		}
@@ -64,9 +78,10 @@ func (d *Dispatcher) linkEpicBranchRecoveryCandidate(
 	store *epicBranchAdmissionStore,
 	admission epicBranchAdmission,
 	child *protocol.Bead,
+	now time.Time,
 ) (epicBranchAdmission, bool, error) {
 	linked, err := store.linkRecovery(ctx, admission.branch, admission.generation,
-		admission.recoveryBeadID, child.ID, d.nowFunc())
+		admission.recoveryBeadID, child.ID, now)
 	if err == nil {
 		if linked.recoveryBeadID != child.ID {
 			return epicBranchAdmission{}, false,
@@ -98,7 +113,7 @@ func (d *Dispatcher) findLinkedEpicBranchRecoveryChild(
 	}
 	child, err := d.beads.Show(ctx, admission.recoveryBeadID)
 	if err != nil {
-		return nil, false, fmt.Errorf("show linked epic branch recovery child: %w", err)
+		return nil, false, epicBranchRecoveryInspectionError(ctx, "show linked epic branch recovery child", err)
 	}
 	if child == nil || !isExactEpicBranchRecoveryChild(child, admission) {
 		return nil, false, nil
@@ -163,7 +178,7 @@ func (d *Dispatcher) loadOrCreateEpicBranchRecoveryCandidate(
 ) (*protocol.Bead, bool, error) {
 	child, err := d.beads.Show(ctx, admission.recoveryBeadID)
 	if err != nil {
-		return nil, false, fmt.Errorf("show epic branch recovery candidate: %w", err)
+		return nil, false, epicBranchRecoveryInspectionError(ctx, "show epic branch recovery candidate", err)
 	}
 	if child != nil {
 		return child, isExactEpicBranchRecoveryChild(child, admission), nil
@@ -322,7 +337,8 @@ func (d *Dispatcher) retireEpicBranchRecoveryPredecessors(
 		seen[predecessor] = true
 		candidate, err := d.beads.Show(ctx, predecessor)
 		if err != nil {
-			return fmt.Errorf("show epic branch recovery predecessor %s: %w", predecessor, err)
+			return epicBranchRecoveryInspectionError(ctx,
+				fmt.Sprintf("show epic branch recovery predecessor %s", predecessor), err)
 		}
 		if candidate == nil {
 			return nil
@@ -376,36 +392,80 @@ func (d *Dispatcher) retireEpicBranchRecovery(
 }
 
 func (d *Dispatcher) repairBlockedEpicBranchRecoveries(ctx context.Context) error {
-	admissions, err := newEpicBranchAdmissionStore(d.db).blocked(ctx)
-	if err != nil {
-		return err
-	}
-	for i := range admissions {
-		if _, err := d.ensureEpicBranchBlockRecovery(ctx, admissions[i]); err != nil {
-			return fmt.Errorf("repair blocked epic branch %s: %w", admissions[i].branch, err)
-		}
-	}
-	return nil
+	return d.reconcileEpicBranchAdmissions(ctx, d.nowFunc())
 }
 
-func (d *Dispatcher) filterBlockedEpicBranchReady(ctx context.Context, beads []protocol.Bead) ([]protocol.Bead, error) {
-	if d.db == nil || len(beads) == 0 {
-		return beads, nil
+// reconcileEpicBranchAdmissions repairs each durable blocked admission without
+// re-running branch preparation or emitting assignment-failure side effects.
+// Errors are collected per branch so one unreadable recovery does not prevent
+// the remaining durable rows from being reconciled.
+func (d *Dispatcher) reconcileEpicBranchAdmissions(ctx context.Context, now time.Time) error {
+	if d.db == nil {
+		return nil
+	}
+	if now.IsZero() {
+		return errors.New("reconcile epic branch admissions: reconciliation time is zero")
 	}
 	store := newEpicBranchAdmissionStore(d.db)
 	exists, err := store.schemaExists(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("filter blocked epic branch ready beads: %w", err)
+		return fmt.Errorf("reconcile epic branch admissions: %w", err)
 	}
 	if !exists {
-		return beads, nil
+		return nil
 	}
 	admissions, err := store.blocked(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("filter blocked epic branch ready beads: %w", err)
+		return fmt.Errorf("reconcile epic branch admissions: %w", err)
+	}
+	var reconciliationErrors []error
+	for i := range admissions {
+		if _, err := d.ensureEpicBranchBlockRecoveryAt(ctx, admissions[i], now); err != nil {
+			if errors.Is(err, errEpicBranchRecoveryInspection) {
+				continue
+			}
+			reconciliationErrors = append(reconciliationErrors,
+				fmt.Errorf("reconcile blocked epic branch %s: %w", admissions[i].branch, err))
+		}
+	}
+	return errors.Join(reconciliationErrors...)
+}
+
+func epicBranchRecoveryInspectionError(ctx context.Context, operation string, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		if !errors.Is(err, ctxErr) {
+			return fmt.Errorf("%s: context: %w: inspection: %w", operation, ctxErr, err)
+		}
+		return fmt.Errorf("%s: %w", operation, err)
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%s: %w", operation, err)
+	}
+	return fmt.Errorf("%w: %s: %w", errEpicBranchRecoveryInspection, operation, err)
+}
+
+// filterEpicBranchAdmissions excludes descendants of durable blocked epic
+// branches before assignment. The one exact linked recovery child remains
+// eligible. A parent-chain inspection failure rejects only that candidate;
+// unrelated ready work remains schedulable.
+func (d *Dispatcher) filterEpicBranchAdmissions(ctx context.Context, beads []protocol.Bead) []protocol.Bead {
+	if d.db == nil || len(beads) == 0 {
+		return beads
+	}
+	store := newEpicBranchAdmissionStore(d.db)
+	exists, err := store.schemaExists(ctx)
+	if err != nil {
+		return nil
+	}
+	if !exists {
+		return beads
+	}
+	admissions, err := store.blocked(ctx)
+	if err != nil {
+		return nil
 	}
 	if len(admissions) == 0 {
-		return beads, nil
+		return beads
 	}
 	blockedRecoveries := make(map[string]string, len(admissions))
 	for i := range admissions {
@@ -416,13 +476,13 @@ func (d *Dispatcher) filterBlockedEpicBranchReady(ctx context.Context, beads []p
 	for i := range beads {
 		blocked, err := d.hasBlockingEpicAncestor(ctx, beads[i].ID, beads[i].Epic, blockedRecoveries, parentCache)
 		if err != nil {
-			return nil, err
+			continue
 		}
 		if !blocked {
 			filtered = append(filtered, beads[i])
 		}
 	}
-	return filtered, nil
+	return filtered
 }
 
 func (d *Dispatcher) hasBlockingEpicAncestor(

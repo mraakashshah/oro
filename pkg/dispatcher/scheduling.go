@@ -414,11 +414,15 @@ func (d *Dispatcher) tryAssignBatch(ctx context.Context) []<-chan struct{} {
 }
 
 func (d *Dispatcher) readyBeadsForScheduling(ctx context.Context) ([]protocol.Bead, error) {
+	// Repair linked recovery work quietly before filtering the ready queue. A
+	// branch-local repair error leaves its durable blocked row in force; queue
+	// filtering still admits unrelated work.
+	_ = d.reconcileEpicBranchAdmissions(ctx, d.nowFunc())
 	beads, err := d.beads.Ready(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("load ready beads for scheduling: %w", err)
 	}
-	return d.filterBlockedEpicBranchReady(ctx, beads)
+	return d.filterEpicBranchAdmissions(ctx, beads), nil
 }
 
 func filterBeadsByID(beads []protocol.Bead, ids map[string]bool) []protocol.Bead {

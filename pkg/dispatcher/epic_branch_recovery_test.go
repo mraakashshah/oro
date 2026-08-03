@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -31,6 +33,18 @@ type observingEpicRecoveryStore struct {
 	removeDependencyOnce        sync.Once
 	deleteBarrier               chan struct{}
 	deleteCalls                 int
+	showErrID                   string
+	showErr                     error
+}
+
+func (s *observingEpicRecoveryStore) Show(ctx context.Context, id string) (*protocol.Bead, error) {
+	s.mu.Lock()
+	showErrID, showErr := s.showErrID, s.showErr
+	s.mu.Unlock()
+	if id == showErrID && showErr != nil {
+		return nil, showErr
+	}
+	return s.FakeStore.Show(ctx, id)
 }
 
 func (s *observingEpicRecoveryStore) Create(ctx context.Context, params beadstore.CreateParams) (*protocol.Bead, error) {
@@ -385,31 +399,38 @@ WHERE branch=? AND state='blocked' AND generation=?`,
 
 	t.Run("missing parent fails closed before assignment status churn", func(t *testing.T) {
 		ctx := context.Background()
-		d, beads, _, worker, epicID, _, branch := newEpicRecoveryPipeline(t, epicBranchInspection{})
+		d, beads, _, _, epicID, _, branch := newEpicRecoveryPipeline(t, epicBranchInspection{})
 		admission := seedBlockedRecoveryAdmission(ctx, t, d, epicID, branch, "diverged")
-		if _, err := d.ensureEpicBranchBlockRecovery(ctx, admission); err != nil {
+		recovery, err := d.ensureEpicBranchBlockRecovery(ctx, admission)
+		if err != nil {
 			t.Fatalf("ensure blocker for missing-parent filter: %v", err)
 		}
-		const beadID = "oro-missing-parent-child"
+		const (
+			beadID      = "oro-missing-parent-child"
+			unrelatedID = "oro-missing-parent-unrelated"
+		)
 		if _, err := beads.Create(ctx, beadstore.CreateParams{
 			ID: beadID, Title: "Missing parent child", Type: "task", ParentID: "oro-parent-does-not-exist",
 			AcceptanceCriteria: "Test: missing ancestry fails closed | Assert: no assignment status churn",
 		}); err != nil {
 			t.Fatalf("create missing-parent child: %v", err)
 		}
-		if _, err := d.readyBeadsForScheduling(ctx); err == nil {
-			t.Fatal("missing parent ancestry returned no scheduling error")
+		if _, err := beads.Create(ctx, beadstore.CreateParams{
+			ID: unrelatedID, Title: "Unrelated ready work", Type: "task",
+			AcceptanceCriteria: "Test: missing ancestry is branch-local | Assert: unrelated work remains ready",
+		}); err != nil {
+			t.Fatalf("create unrelated work: %v", err)
 		}
-		d.setState(StateRunning)
-		tryAssignAndWait(t, d, ctx)
-		d.mu.Lock()
-		state, assigned := worker.state, worker.beadID
-		d.mu.Unlock()
+		ready, err := d.readyBeadsForScheduling(ctx)
+		if err != nil {
+			t.Fatalf("load ready beads with missing parent: %v", err)
+		}
+		readyIDs := beadIDs(ready)
 		beads.mu.Lock()
 		updates := beads.updateCalls[beadID]
 		beads.mu.Unlock()
-		if state != protocol.WorkerIdle || assigned != "" || updates != 0 {
-			t.Fatalf("missing-parent scheduling = state %q bead %q updates %d, want idle/empty/0", state, assigned, updates)
+		if slices.Contains(readyIDs, beadID) || !slices.Contains(readyIDs, recovery.ID) || !slices.Contains(readyIDs, unrelatedID) || updates != 0 {
+			t.Fatalf("missing-parent scheduling = ready %v updates %d, want affected bead excluded and recovery/unrelated preserved with 0 updates", readyIDs, updates)
 		}
 	})
 
@@ -761,6 +782,209 @@ WHERE b.parent_id=? AND b.deleted=0 AND b.status IN ('open','in_progress')`,
 			t.Fatalf("active sqlite recoveries = %d, want 1", active)
 		}
 	})
+}
+
+func TestStartupRecoveryKeepsBranchLocalEpicRepairFailureNonFatal(t *testing.T) {
+	ctx := context.Background()
+	d, beads, _, _, epicID, blockedChildID, branch := newEpicRecoveryPipeline(t, epicBranchInspection{})
+	admission := seedBlockedRecoveryAdmission(ctx, t, d, epicID, branch, "diverged")
+	recovery, err := d.ensureEpicBranchBlockRecovery(ctx, admission)
+	if err != nil {
+		t.Fatalf("materialize recovery child: %v", err)
+	}
+	const unrelatedID = "oro-startup-repair-unrelated"
+	if _, err := beads.Create(ctx, beadstore.CreateParams{
+		ID: unrelatedID, Title: "Unrelated ready work", Type: "task", Status: "open",
+		AcceptanceCriteria: "Test: branch-local startup repair | Assert: unrelated work remains ready",
+	}); err != nil {
+		t.Fatalf("create unrelated ready work: %v", err)
+	}
+
+	beforeAdmission := loadRecoveryAdmission(t, d, branch)
+	beforeEpic, err := beads.Show(ctx, epicID)
+	if err != nil {
+		t.Fatalf("show epic before startup: %v", err)
+	}
+	beforeRecovery, err := beads.Show(ctx, recovery.ID)
+	if err != nil {
+		t.Fatalf("show recovery before startup: %v", err)
+	}
+	beforeBranchEvents := epicBranchBeadEventCount(t, d, epicID, recovery.ID)
+	beads.mu.Lock()
+	beforeCreates := beads.createCalls
+	beforeUpdates := maps.Clone(beads.updateCalls)
+	beads.showErrID = recovery.ID
+	beads.showErr = errors.New("injected branch-local recovery child read failure")
+	beads.mu.Unlock()
+
+	if err := d.startupRecovery(ctx); err != nil {
+		t.Fatalf("startup with branch-local recovery repair failure: %v", err)
+	}
+
+	beads.mu.Lock()
+	beads.showErrID = ""
+	beads.showErr = nil
+	afterCreates := beads.createCalls
+	afterUpdates := maps.Clone(beads.updateCalls)
+	beads.mu.Unlock()
+	afterAdmission := loadRecoveryAdmission(t, d, branch)
+	afterEpic, err := beads.Show(ctx, epicID)
+	if err != nil {
+		t.Fatalf("show epic after startup: %v", err)
+	}
+	afterRecovery, err := beads.Show(ctx, recovery.ID)
+	if err != nil {
+		t.Fatalf("show recovery after startup: %v", err)
+	}
+	if !reflect.DeepEqual(afterAdmission, beforeAdmission) || !reflect.DeepEqual(afterEpic, beforeEpic) ||
+		!reflect.DeepEqual(afterRecovery, beforeRecovery) || afterCreates != beforeCreates || !reflect.DeepEqual(afterUpdates, beforeUpdates) {
+		t.Fatalf("branch-local repair failure mutated durable state:\nadmission before=%+v after=%+v\nepic before=%+v after=%+v\nrecovery before=%+v after=%+v\ncreates=%d/%d updates=%v/%v",
+			beforeAdmission, afterAdmission, beforeEpic, afterEpic, beforeRecovery, afterRecovery,
+			beforeCreates, afterCreates, beforeUpdates, afterUpdates)
+	}
+	if got := epicBranchBeadEventCount(t, d, epicID, recovery.ID); got != beforeBranchEvents {
+		t.Fatalf("branch-local repair events = %d, want unchanged %d", got, beforeBranchEvents)
+	}
+	d.mu.Lock()
+	_, blockedAttempts := d.attemptCounts[blockedChildID]
+	_, recoveryAttempts := d.attemptCounts[recovery.ID]
+	_, blockedCooldown := d.worktreeFailures[blockedChildID]
+	_, recoveryCooldown := d.worktreeFailures[recovery.ID]
+	d.mu.Unlock()
+	if blockedAttempts || recoveryAttempts || blockedCooldown || recoveryCooldown {
+		t.Fatalf("branch-local repair retry state = attempts %v/%v cooldown %v/%v, want none",
+			blockedAttempts, recoveryAttempts, blockedCooldown, recoveryCooldown)
+	}
+	escalator, ok := d.escalator.(*mockEscalator)
+	if !ok {
+		t.Fatalf("escalator type = %T, want *mockEscalator", d.escalator)
+	}
+	if messages := escalator.Messages(); len(messages) != 0 {
+		t.Fatalf("branch-local repair escalations = %v, want none", messages)
+	}
+
+	ready, err := d.readyBeadsForScheduling(ctx)
+	if err != nil {
+		t.Fatalf("load ready work after branch-local startup repair failure: %v", err)
+	}
+	readyIDs := beadIDs(ready)
+	if slices.Contains(readyIDs, blockedChildID) || !slices.Contains(readyIDs, recovery.ID) || !slices.Contains(readyIDs, unrelatedID) {
+		t.Fatalf("ready work after branch-local startup repair failure = %v, want blocked child excluded and recovery/unrelated schedulable", readyIDs)
+	}
+}
+
+func TestStartupRecoveryKeepsReturnedCancellationFatal(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		cause error
+	}{
+		{name: "canceled", cause: context.Canceled},
+		{name: "deadline exceeded", cause: context.DeadlineExceeded},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			d, beads, _, _, epicID, _, branch := newEpicRecoveryPipeline(t, epicBranchInspection{})
+			admission := seedBlockedRecoveryAdmission(ctx, t, d, epicID, branch, "diverged")
+			recovery, err := d.ensureEpicBranchBlockRecovery(ctx, admission)
+			if err != nil {
+				t.Fatalf("materialize recovery child: %v", err)
+			}
+			beads.mu.Lock()
+			beads.showErrID = recovery.ID
+			beads.showErr = tt.cause
+			beads.mu.Unlock()
+
+			err = d.startupRecovery(ctx)
+			if !errors.Is(err, tt.cause) {
+				t.Fatalf("startup returned Show %v as %v, want cause reachable", tt.cause, err)
+			}
+		})
+	}
+}
+
+func TestRepairBlockedEpicBranchRecoveriesKeepsLedgerFailuresFatal(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	if err := d.db.Close(); err != nil {
+		t.Fatalf("close admission ledger: %v", err)
+	}
+	if err := d.repairBlockedEpicBranchRecoveries(context.Background()); err == nil {
+		t.Fatal("repair with unavailable admission ledger returned nil error")
+	}
+}
+
+func TestStartupRecoveryKeepsLateAdmissionCASFailureFatal(t *testing.T) {
+	ctx := context.Background()
+	d, beads, _, _, epicID, _, branch := newEpicRecoveryPipeline(t, epicBranchInspection{})
+	seedBlockedRecoveryAdmission(ctx, t, d, epicID, branch, "diverged")
+	var injectionErr error
+	beads.afterDependency = func() {
+		_, injectionErr = d.db.ExecContext(context.Background(), `
+UPDATE epic_branch_admissions
+SET generation = generation + 1
+WHERE branch = ? AND state = 'blocked'`, branch)
+	}
+
+	err := d.startupRecovery(ctx)
+	if injectionErr != nil {
+		t.Fatalf("inject late admission generation change: %v", injectionErr)
+	}
+	if !errors.Is(err, ErrEpicBranchAdmissionCAS) {
+		t.Fatalf("startup late admission CAS error = %v, want reachable ErrEpicBranchAdmissionCAS", err)
+	}
+}
+
+func TestStartupRecoveryDoesNotMaskLedgerFailureBesideInspectionFailure(t *testing.T) {
+	ctx := context.Background()
+	d, beads, _, _, inspectionEpicID, _, inspectionBranch := newEpicRecoveryPipeline(t, epicBranchInspection{})
+	inspectionAdmission := seedBlockedRecoveryAdmission(ctx, t, d, inspectionEpicID, inspectionBranch, "diverged")
+	inspectionRecovery, err := d.ensureEpicBranchBlockRecovery(ctx, inspectionAdmission)
+	if err != nil {
+		t.Fatalf("materialize inspection-failure recovery: %v", err)
+	}
+
+	const ledgerEpicID = "oro-recovery-ledger-failure"
+	ledgerBranch := protocol.EpicBranchPrefix + ledgerEpicID
+	if _, err := beads.Create(ctx, beadstore.CreateParams{
+		ID: ledgerEpicID, Title: "Ledger failure epic", Type: "epic", Status: "in_progress",
+	}); err != nil {
+		t.Fatalf("create ledger-failure epic: %v", err)
+	}
+	seedBlockedRecoveryAdmission(ctx, t, d, ledgerEpicID, ledgerBranch, "diverged")
+
+	beads.mu.Lock()
+	beads.showErrID = inspectionRecovery.ID
+	beads.showErr = errors.New("injected sibling recovery inspection failure")
+	beads.afterDependencyOnce = sync.Once{}
+	beads.mu.Unlock()
+	var injectionErr error
+	beads.afterDependency = func() {
+		_, injectionErr = d.db.ExecContext(context.Background(), `
+UPDATE epic_branch_admissions
+SET generation = generation + 1
+WHERE branch = ? AND state = 'blocked'`, ledgerBranch)
+	}
+
+	err = d.startupRecovery(ctx)
+	if injectionErr != nil {
+		t.Fatalf("inject sibling admission generation change: %v", injectionErr)
+	}
+	if !errors.Is(err, ErrEpicBranchAdmissionCAS) {
+		t.Fatalf("startup mixed inspection/CAS error = %v, want reachable ErrEpicBranchAdmissionCAS", err)
+	}
+}
+
+func epicBranchBeadEventCount(t *testing.T, d *Dispatcher, beadIDs ...string) int {
+	t.Helper()
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(beadIDs)), ",")
+	args := make([]any, len(beadIDs))
+	for i := range beadIDs {
+		args[i] = beadIDs[i]
+	}
+	var count int
+	if err := d.db.QueryRow(`SELECT COUNT(*) FROM events WHERE bead_id IN (`+placeholders+`)`, args...).Scan(&count); err != nil {
+		t.Fatalf("count epic branch bead events: %v", err)
+	}
+	return count
 }
 
 func newEpicRecoveryPipeline(
