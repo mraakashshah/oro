@@ -20,6 +20,10 @@ import (
 //   - §4.6.d: 4 new tables (bead_journey, cards, bead_learnings_pending, card_events) + indexes
 //   - §4.6.e: beads_ready and beads_blocked views amended with awaits_parent_close clause
 func MigrateToV3(ctx context.Context, db *sql.DB) error {
+	return migrateToV3WithViewsDDL(ctx, db, protocol.BeadQueueViewsDDL)
+}
+
+func migrateToV3WithViewsDDL(ctx context.Context, db *sql.DB, viewsDDL string) error {
 	var userVersion int
 	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&userVersion); err != nil {
 		return fmt.Errorf("migrate v3 user_version: %w", err)
@@ -27,6 +31,11 @@ func MigrateToV3(ctx context.Context, db *sql.DB) error {
 	if userVersion >= 4 {
 		return nil
 	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("migrate v3 begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
 
 	// §4.6.a + §4.6.b — bead-table column additions (10 total).
 	alters := []string{
@@ -44,29 +53,36 @@ func MigrateToV3(ctx context.Context, db *sql.DB) error {
 		`ALTER TABLE beads ADD COLUMN context_thresholds    TEXT`,
 	}
 	for _, stmt := range alters {
-		if err := tryAlterTableAddColumn(ctx, db, stmt); err != nil {
+		if err := tryAlterTableAddColumn(ctx, tx, stmt); err != nil {
 			return err
 		}
 	}
 
 	// §4.6.d — new tables and indexes.
-	if _, err := db.ExecContext(ctx, v3TablesDDL); err != nil {
+	if _, err := tx.ExecContext(ctx, v3TablesDDL); err != nil {
 		return fmt.Errorf("migrate v3 tables: %w", err)
 	}
 
 	// §4.6.e — view rewrites (drop-and-recreate is inherently idempotent).
-	if _, err := db.ExecContext(ctx, protocol.BeadQueueViewsDDL); err != nil {
+	if _, err := tx.ExecContext(ctx, viewsDDL); err != nil {
 		return fmt.Errorf("migrate v3 views: %w", err)
 	}
 
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migrate v3 commit: %w", err)
+	}
 	return nil
+}
+
+type v3Execer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
 // tryAlterTableAddColumn executes an ALTER TABLE ... ADD COLUMN statement and
 // silences the "duplicate column name" error SQLite returns when the column
 // already exists, making the step idempotent.
-func tryAlterTableAddColumn(ctx context.Context, db *sql.DB, stmt string) error {
-	_, err := db.ExecContext(ctx, stmt)
+func tryAlterTableAddColumn(ctx context.Context, execer v3Execer, stmt string) error {
+	_, err := execer.ExecContext(ctx, stmt)
 	if err != nil && strings.Contains(err.Error(), "duplicate column name") {
 		return nil
 	}
